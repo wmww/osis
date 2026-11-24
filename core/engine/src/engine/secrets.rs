@@ -521,8 +521,8 @@ pub struct CommitSecrets<'c> {
     /// The first epochs of things the commit mints with a key, its rotation from none
     /// (`Mutation::minted`).
     pub minted: &'c crate::engine::write::Minted,
-    /// Interim: delete keys published in `keys.0` of delete bases whose secret of that role is
-    /// not held ([`published_keys`]).
+    /// The step keys `keys.0` publishes for delete bases recording no step here
+    /// ([`published_keys`]).
     pub published: &'c BTreeMap<(Tid, Role), VerifyingKey>,
     /// The delete keys found for things outside the commit, by the thing and role: the things a
     /// commit writes mostly share a delete base, and the node's state does not move while one
@@ -545,63 +545,50 @@ fn base_of(created: &crate::engine::write::Creates, minted: &crate::engine::writ
     }
 }
 
-/// Interim (issues/delete-key-levels-unchecked.md; `CommitSecrets::key`): the admin and write
-/// delete keys published in `keys.0` of the delete bases of `tids` whose secret of that role this
-/// node does not hold.
+/// The step keys `keys.0` publishes for the delete bases of `tids` that record no step here
+/// (`CommitSecrets::key`; spec/crypto.md §7 Header list): written with the step a `sync.0`
+/// records, so a step recorded before the reading commit bears them.
 pub(crate) fn published_keys(tx: &mut crate::engine::Tx<'_>, created: &crate::engine::write::Creates, minted: &crate::engine::write::Minted, tids: impl IntoIterator<Item = Tid>) -> Result<BTreeMap<(Tid, Role), VerifyingKey>> {
-    // the roles of a delete base whose secret this node does not hold
-    let unheld = |base: Option<DeleteBase>| -> Vec<(Tid, Role)> {
-        let Some(DeleteBase(b, e)) = base else { return Vec::new() };
-        [Role::Admin, Role::Write].into_iter().filter(|r| e.as_ref().is_none_or(|e| e.role(*r).newest_held().is_none())).map(|r| (b, r)).collect()
-    };
-    let mut need = std::collections::BTreeSet::new();
     // each thing outside the commit found once: the things a commit writes mostly share one base
-    let mut outside: BTreeMap<Tid, Vec<(Tid, Role)>> = BTreeMap::new();
+    let mut need = std::collections::BTreeSet::new();
+    let mut outside = std::collections::BTreeSet::new();
     for t in tids {
-        match base_of(created, minted, &t) {
-            Some(Ok(b)) => need.extend(unheld(Some(b))),
-            Some(Err(up)) => need.extend(outside.entry(up).or_insert_with(|| unheld(tx.core.delete_base(&up))).iter().copied()),
-            None => {}
+        if let Some(Err(up)) = base_of(created, minted, &t)
+            && outside.insert(up)
+            && let Some(DeleteBase(b, _)) = tx.core.delete_base(&up)
+            && tx.core.listed_step(&b).is_none()
+        {
+            need.insert(b);
         }
     }
+    let key = |k: &SigningKey| match k {
+        SigningKey::Ed25519(k) => VerifyingKey::from_slice(k).ok(),
+    };
     let mut out = BTreeMap::new();
-    for (b, r) in need {
-        let keys = Core::keys_in(tx, &b)?;
-        let ks = keys.and_then(|k| if r == Role::Admin { k.admin } else { k.write });
-        let published = match ks.map(|ks| ks.delete_key) {
-            Some(SigningKey::Ed25519(k)) => VerifyingKey::from_slice(&k).ok(),
-            _ => None,
-        };
-        if let Some(vk) = published {
-            out.insert((b, r), vk);
+    for b in need {
+        let Some(s) = Core::keys_in(tx, &b)?.and_then(|k| k.step) else { continue };
+        for (r, k) in [(Role::Admin, &s.delete), (Role::Write, &s.write)] {
+            if let Some(vk) = key(k) {
+                out.insert((b, r), vk);
+            }
         }
     }
     Ok(out)
 }
 
 /// Whether a content write on `tid` can list its admin and write delete keys (`CommitSecrets`,
-/// `published` from `published_keys`): what every write on it needs, whatever its purge-by, so a
-/// write and [`usable_role`] agree.
+/// `published` from `published_keys`): what every write on it needs, whatever its purge-by.
 pub(crate) fn holds_listed_keys(core: &Core, created: &crate::engine::write::Creates, minted: &crate::engine::write::Minted, published: &BTreeMap<(Tid, Role), VerifyingKey>, keys: &KeyCache, tid: &Tid) -> bool {
     let s = CommitSecrets::own(core, created, minted, published, keys);
     osis_commit::Secrets::admin_key(&s, tid).is_some() && osis_commit::Secrets::write_key(&s, tid).is_some()
 }
 
 /// The level-3 delete key a certificate blob of `t`'s sync ID commits to (spec/crypto.md §7):
-/// what a header lists at that level for `t`, the newest held write secret's, else the one
-/// published in `keys.0`.
+/// what a header lists at that level for `t` (`CommitSecrets::key`).
 pub(crate) fn writer_delete_key_in(tx: &mut crate::engine::Tx<'_>, t: &Tid) -> Result<Option<VerifyingKey>> {
     let (created, minted) = Default::default();
     let published = published_keys(tx, &created, &minted, [*t])?;
     Ok(osis_commit::Secrets::write_key(&CommitSecrets::own(tx.core, &created, &minted, &published, &KeyCache::default()), t))
-}
-
-/// Whether this node holds the delete keys every write on `t` lists (`framing_for`'s check), in
-/// `tx`: what answers and covers wait for, and what [`usable_role`] asks.
-pub(crate) fn holds_delete_keys_in(tx: &mut crate::engine::Tx<'_>, t: &Tid) -> Result<bool> {
-    let (created, minted) = Default::default();
-    let published = published_keys(tx, &created, &minted, [*t])?;
-    Ok(holds_listed_keys(tx.core, &created, &minted, &published, &KeyCache::default(), t))
 }
 
 /// Whether this node waits for a `retention^.0` setting on `t` while it holds none valid: a held
@@ -614,20 +601,14 @@ pub(crate) fn awaits_setting(core: &Core, t: &Tid) -> bool {
     crate::sync::setting::waiting(core, t) && crate::apply::validity::settings(core, t).is_empty()
 }
 
-/// Whether this node holds what every write on `t` is written under: the delete keys it lists
-/// ([`holds_delete_keys_in`]) and the setting it knows of ([`awaits_setting`]).
-pub(crate) fn ready_to_write_in(tx: &mut crate::engine::Tx<'_>, t: &Tid) -> Result<bool> {
-    Ok(!awaits_setting(tx.core, t) && holds_delete_keys_in(tx, t)?)
-}
-
-/// `role` on `t` as this node can use it now (spec/crypto.md §7, spec/commits.md §5 The
-/// setting): a write or admin role counts as read until this node is ready to write `t`
-/// ([`ready_to_write_in`]), as it writes nothing on `t` before. The one rule for every local call
+/// `role` on `t` as this node can use it now (spec/commits.md §5 The setting): a write or admin
+/// role counts as read while this node waits for `t`'s setting ([`awaits_setting`]), as it
+/// writes nothing on `t` before. The one rule for every local call
 /// that needs a role (a content write, a grant, a removal, a link, `Osis::role_on`), so each
 /// fails `Permission` alike meanwhile; never for judging a received commit.
 pub(crate) fn usable_role(tx: &mut crate::engine::Tx<'_>, t: &Tid, role: Option<Role>) -> Result<Option<Role>> {
     Ok(match role {
-        Some(r) if r >= Role::Write && !ready_to_write_in(tx, t)? => Some(Role::Read),
+        Some(r) if r >= Role::Write && awaits_setting(tx.core, t) => Some(Role::Read),
         r => r,
     })
 }
@@ -639,13 +620,6 @@ pub(crate) fn usable_role_now(tx: &mut crate::engine::Tx<'_>, who: &Tid, t: &Tid
 }
 
 impl crate::Engine {
-    /// [`holds_delete_keys_in`], for tests.
-    #[doc(hidden)]
-    pub fn holds_delete_keys(&mut self, t: &Tid) -> Result<bool> {
-        let t = *t;
-        self.run(|tx| holds_delete_keys_in(tx, &t))
-    }
-
     /// [`usable_role`]: `role` on `t` as this node can use it now.
     pub fn usable_role(&mut self, t: &Tid, role: Option<Role>) -> Result<Option<Role>> {
         let t = *t;
@@ -744,23 +718,27 @@ impl<'c> CommitSecrets<'c> {
     }
 
     /// The delete key of role `r` of `tid`'s delete base (spec/crypto.md §7 Header list): that
-    /// role's key of the newest step the base's `sync.0` records here (`Core::listed_step`); a
-    /// base this commit mints with a key, its first step's, which the commit records.
+    /// role's key of the newest step the base's `sync.0` records here (`Core::listed_step`), else
+    /// of the step its `keys.0` publishes (`published`); a base this commit mints with a key, its
+    /// genesis step's, which the commit records (its keys are its minting epochs' step keys).
+    /// `None`: no step of the base known here, and nothing is written under it.
     ///
-    /// Interim (issues/delete-key-levels-unchecked.md): a node recording no step of the base
-    /// lists the step key of its newest held secret of the role, else the one the base's
-    /// `keys.0` publishes (a link's redeemer holds K's `keys.0` and boxes and no `sync.0` part
-    /// of K when it writes its join as the link key, a may-grant reader), until every holder
-    /// is handed the base's `sync.0` with its boxes; by the spec a writer recording none cannot
-    /// write.
+    /// Invariant: every key listed for a base outside the commit is one a step recorded before
+    /// the commit bears (spec/crypto.md §7 Checked keys): a recorded step is, and so is the
+    /// published one, which `keys.0` takes in the commit recording it (`flows::sync_ids::put_step`).
+    /// No held secret is read for it: a step key a held secret derives may be one no step bears
+    /// yet (a rotation's epoch before its step).
     fn key(&self, tid: &Tid, r: Role) -> Option<VerifyingKey> {
-        let of = |DeleteBase(b, e): DeleteBase| match self.core.listed_step(&b) {
-            Some(s) => VerifyingKey::from_slice(if r == Role::Admin { &s.delete } else { &s.write }).ok(),
-            None => e.and_then(|e| newest_delete_key(&e, r)).or_else(|| self.published.get(&(b, r)).copied()),
-        };
+        let pick = |delete: &[u8; 32], write: &[u8; 32]| VerifyingKey::from_slice(if r == Role::Admin { delete } else { write }).ok();
         match base_of(self.created, self.minted, tid)? {
-            Ok(base) => of(base),
-            Err(t) => *self.keys.borrow_mut().entry((t, r)).or_insert_with(|| self.core.delete_base(&t).and_then(of)),
+            Ok(DeleteBase(_, e)) => e.and_then(|e| newest_delete_key(&e, r)),
+            Err(t) => *self.keys.borrow_mut().entry((t, r)).or_insert_with(|| {
+                let DeleteBase(b, _) = self.core.delete_base(&t)?;
+                match self.core.listed_step(&b) {
+                    Some(s) => pick(&s.delete, &s.write),
+                    None => self.published.get(&(b, r)).copied(),
+                }
+            }),
         }
     }
 }

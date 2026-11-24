@@ -143,12 +143,17 @@ codec_struct! {
     pub struct Edge { 0 role: Role, 1 until: Option<WallMs>, 2 may_grant: bool, 3 retain: bool, 4 floor: Option<u64> }
 }
 codec_struct! {
-    /// A keyset: epoch, KEM key, suite ID of the epoch, delete key, the epochs its rotation
+    /// A keyset: epoch, KEM key, suite ID of the epoch, the epochs its rotation
     /// supersedes, names digest, the keysets of each holder actor its rotation left out at, and
     /// the demotions it carries: other commits', and whether its own commit is one
-    /// (spec/crypto.md §3, §4, §7, §8).
+    /// (spec/crypto.md §3, §4, §8).
     #[derive(Clone, Debug, PartialEq, Eq)]
-    pub struct Keyset { 0 epoch: Epoch, 1 kem_key: KemKey, 2 suite: u64, 3 delete_key: SigningKey, 4 supersedes: BTreeSet<Epoch>, 5 names: [u8; 32], 6 left_out: BTreeMap<Weak, BTreeMap<Epoch, BTreeSet<CommitId>>>, 7 demotions: BTreeSet<CommitId>, 8 demotes: bool }
+    pub struct Keyset { 0 epoch: Epoch, 1 kem_key: KemKey, 2 suite: u64, 3 supersedes: BTreeSet<Epoch>, 4 names: [u8; 32], 5 left_out: BTreeMap<Weak, BTreeMap<Epoch, BTreeSet<CommitId>>>, 6 demotions: BTreeSet<CommitId>, 7 demotes: bool }
+}
+codec_struct! {
+    /// The delete and write keys of a step (spec/sync-ids.md §2), as `keys.0` publishes them.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub struct StepKeys { 0 delete: SigningKey, 1 write: SigningKey }
 }
 codec_struct! {
     #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -195,15 +200,15 @@ codec_struct! {
     pub struct SyncEntry { 0 steps: BTreeMap<[u8; 32], StepRecord> }
 }
 codec_struct! {
-    /// `keys.0`: keysets per role, the
-    /// thing's inbox, 32-byte deposit seed, an actor's sync ID, and
+    /// `keys.0`: keysets per role, the thing's inbox, 32-byte deposit seed, an actor's sync ID,
     /// per box to a holder actor, keyed as that box, the holder's keysets it names (spec/crypto.md
-    /// §4, Stale).
+    /// §4, Stale), and the keys of the step its `sync.0` records in the same write (§7).
     #[derive(Clone, Debug, Default, PartialEq, Eq)]
     pub struct Keys {
         0 read: Option<Keyset>, 1 write: Option<Keyset>, 2 admin: Option<Keyset>,
         4 inbox: Option<Weak>, 5 deposit_seed: Option<[u8; 32]>,
         7 sync: Option<Keyset>, 8 sealed: BTreeMap<BoxKey, BTreeSet<Epoch>>, 9 sync_id: Option<SyncId>,
+        10 step: Option<StepKeys>,
     }
 }
 codec_struct! {

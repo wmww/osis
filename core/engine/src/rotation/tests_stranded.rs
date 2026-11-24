@@ -211,6 +211,55 @@ fn a_writer_taking_a_stranded_notice_reseals_its_holder_spec_sync_inbox_5() {
     assert!(lp.peers[1].engine.epochs(&g).unwrap().read.secret(&e).is_some(), "m holds the new epoch");
 }
 
+// spec/crypto.md §7 (Header list, Checked keys), spec/sync-inbox.md §2, spec/sync-ids.md §6
+// Steps: a fire from outside lists the step keys g's `keys.0` publishes, written in the commit
+// recording that step. Peer 0, g's admin, rotates g's admin role; peer 1, holding g's public key
+// record and no secret of g, takes the rotation's keysets before the step registering them is
+// issued, and fires on g: its fire lists the recorded step's delete key, not the rotation's, and
+// the admin, issuing the step after it, takes it. Fails if the fire lists the rotation's key (no
+// step recorded before the fire bears it: unjudgeable for good, the fire refused) or the step
+// leaves `keys.0` as it was (the published key then never moves on).
+#[test]
+fn a_fire_sent_between_a_rotation_and_its_step_is_taken_spec_crypto_7() {
+    use osis_base::{Ak, Value};
+    use osis_schema::core_types as ct;
+    let (mut lp, g, _) = granted(2, &[]);
+    let f = Ak::new("x:f@~0").unwrap();
+    let keep = ct::RetentionEntry { history: Some(osis_schema::History::FOREVER), ..Default::default() };
+    let mut m = crate::Mutation::new();
+    m.set(g, &ct::RETENTION, &ct::RetentionSetting::from(std::collections::BTreeMap::from([(f.clone(), keep)]))).unwrap();
+    lp.peers[0].commit(m).unwrap().unwrap();
+    lp.sync_all().unwrap();
+    let published = |lp: &mut LocalPeer, i: usize| lp.peers[i].engine.get_typed(&g, &ct::KEYS).unwrap().and_then(|k| k.step).map(|s| s.delete);
+    let head = lp.peers[0].engine.core.listed_step(&g).unwrap();
+    let head_key = ct::SigningKey::Ed25519(head.delete.to_vec());
+    assert_eq!(published(&mut lp, 1), Some(head_key.clone()), "g's keys.0 publishes its head's keys");
+    lp.peers[0].engine.rotate_leaving_out(&g, &[Role::Admin], &[]).unwrap().expect("rotated");
+    let admin = lp.peers[0].engine.epochs(&g).unwrap().admin.newest_held().unwrap().1.clone();
+    let rotated = osis_crypto::DeleteSecret::admin(&admin).verifying_key().to_bytes();
+    assert_ne!(rotated, head.delete);
+    assert_eq!(lp.peers[0].engine.core.listed_step(&g), Some(head.clone()), "no step yet");
+    lp.sync(0, 1).unwrap();
+    let held = lp.peers[1].engine.get_typed(&g, &ct::KEYS).unwrap().unwrap();
+    let new_epoch = osis_keys::aspects::to_schema(&lp.peers[0].engine.epochs(&g).unwrap().admin.newest_held().unwrap().0);
+    assert_eq!(held.admin.map(|k| k.epoch), Some(new_epoch), "peer 1 holds the rotation's keysets");
+    assert_eq!(held.step.map(|s| s.delete), Some(head_key.clone()), "and the recorded step's keys");
+    let s = &mut lp.peers[1].engine;
+    s.fire_open(&g, f.as_str(), Value::Int(5)).unwrap();
+    let id = *s.fires_owed().first().expect("a sealed fire owed");
+    let out = s.sealed_fire(&id).unwrap().expect("sealed");
+    let fire = osis_commit::CommitBlob::decode(s.core.ix.fires.get(&id).unwrap().commit.as_ref().unwrap()).unwrap();
+    let listed: Vec<[u8; 32]> = fire.header.keys.iter().filter(|k| k.level == osis_base::format::DELETE_ADMIN).map(|k| k.key).collect();
+    assert_eq!(listed, vec![head.delete], "the fire lists the recorded step's key");
+    lp.advance(1_000);
+    let sync_id = head.sync_id;
+    lp.peers[0].engine.issue_step(&g, &sync_id, false).unwrap().expect("the step is due");
+    assert_eq!(lp.peers[0].engine.core.listed_step(&g).map(|s| s.delete), Some(rotated), "the step registers the rotation");
+    assert_eq!(published(&mut lp, 0), Some(ct::SigningKey::Ed25519(rotated.to_vec())), "published with the step");
+    let opened = lp.peers[0].engine.open_entry(&out.sync_id, &osis_blob::blob_id(&out.blob), &[0; 57], &out.blob, u64::MAX).unwrap();
+    assert!(matches!(opened, crate::sync::Opened::Commit(..)), "the admin takes the fire: {opened:?}");
+}
+
 // spec/sync-inbox.md §4 (A sealed fire: one holding any delta but one fire of an external signal of
 // S's thing is not promoted): peer 1, holding g's public record and no secret of it, seals fires
 // to g's keyset; peer 0, a writer of g, takes the one holding one fire of an external signal of g and

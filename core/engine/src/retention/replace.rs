@@ -9,10 +9,10 @@
 //! keep the promise. A node without write writes none and drops only under a writer's snapshot. Judged at the end of each transaction over the aspects whose
 //! purge-on-replace bodies, snapshots or roles changed (`Core::none_due`), from what is held then: a
 //! function of the held set, whatever the order things arrived in. "May write" is the snapshot's
-//! own check (`snapshot::may_snapshot`: role, the thing's minting and delete keys); a writer that
-//! may only later waits (`Indexes::cover_waits`) and is judged again when what it waits for
-//! arrives (`wake_covers`), so the last to arrive of body, replacement, role and keys triggers the
-//! cover. A cover that fails leaves the body and never fails the transaction.
+//! own check (`snapshot::may_snapshot`: role, the thing's minting, the epochs the writes it
+//! carries were read under); a writer that may only later waits (`Indexes::cover_waits`) and is
+//! judged again when what it waits for arrives (`wake_covers`), so the last to arrive of body,
+//! replacement, role, minting and keys triggers the cover. A cover that fails leaves the body and never fails the transaction.
 
 use crate::engine::write::{MayWrite, may_write_on};
 use crate::engine::{Core, DropFor, Step, Tx};
@@ -270,3 +270,4 @@ pub(super) fn floor_passed(tx: &mut Tx<'_>, c: &CommitId, ai: usize) {
         tx.core.none_due.insert((a.tid, a.ak.clone()));
     }
 }
+

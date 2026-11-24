@@ -105,8 +105,16 @@ pub(crate) fn issue(tx: &mut Tx<'_>, t: &Tid, epochs: &ActorEpochs, parent: Opti
     Ok(register_with(p, keys, &rk, (t, re, rs), (se, ss), epochs.read.wrapped_under([&re], |s| epochs.read.secret(s).is_some()).and_then(|s| epochs.read.secret(&s).map(|x| (s, x))), &mut *tx.rng)?)
 }
 
-/// `sync.0` write: a new sync ID of `t` with its genesis step (`genesis`), or a step added.
+/// `sync.0` write: a new sync ID of `t` with its genesis step (`genesis`), or a step added; and
+/// the step's keys published in `t`'s `keys.0` in the same commit (spec/crypto.md §7 Header
+/// list).
+///
+/// Invariant: the keys `keys.0` publishes are those of a step recorded by the same commit, so at
+/// the same stamp: a writer listing them (one holding no `sync.0` of `t`, a fire from outside)
+/// lists keys a step recorded before its commit places, never a rotation's before its step.
 pub(crate) fn put_step(m: &mut Mutation, t: Tid, sync_id: SyncId, step: &Step, set: &ClaimSet, genesis: bool) -> Result<()> {
+    let published = ct::StepKeys { delete: ct::SigningKey::Ed25519(step.keys.delete.to_bytes().to_vec()), write: ct::SigningKey::Ed25519(step.keys.write.to_bytes().to_vec()) };
+    m.op(t, &ct::KEYS, PathOp { path: vec![PathSeg::Field(10)], op: Op::Set(Some(published).to_value()) })?;
     match genesis {
         true => {
             let l = ct::SyncEntry { steps: [(step.id().0, step_record(step, Some(set)))].into_iter().collect() };

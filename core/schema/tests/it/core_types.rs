@@ -21,7 +21,7 @@ fn samples() -> Vec<(&'static str, &'static str, Value)> {
         (tid(7).into(), Edge { role: Role::Admin, until: None, may_grant: false, retain: false, floor: None }),
     ]);
     let keys = Keys {
-        read: Some(Keyset { epoch: epoch(1), kem_key: KemKey::X25519MlKem768(vec![9; 1216]), suite: 1, delete_key: SigningKey::Ed25519(vec![8; 32]), supersedes: BTreeSet::from([epoch(0)]), names: [6; 32], left_out: BTreeMap::new(), demotions: BTreeSet::new(), demotes: false }),
+        read: Some(Keyset { epoch: epoch(1), kem_key: KemKey::X25519MlKem768(vec![9; 1216]), suite: 1, supersedes: BTreeSet::from([epoch(0)]), names: [6; 32], left_out: BTreeMap::new(), demotions: BTreeSet::new(), demotes: false }),
         inbox: Some(Tid::from_bytes([10; 15]).into()),
         deposit_seed: Some([12; 32]),
         ..Keys::default()

@@ -290,7 +290,7 @@ pub fn rotate_leaving_out(actor: &Tid, roles: &BTreeSet<Role>, held: &ActorEpoch
         // the keyset lists its current epochs but derived ones (held only where the mint admin's
         // secret is: superseded through the history box)
         let listed: BTreeSet<Epoch> = current.iter().filter(|e| re.provenance(e) != Some(Provenance::Derived)).copied().collect();
-        let mut ks = keyset(r, &epoch, &secret, &listed, names);
+        let mut ks = keyset(&epoch, &secret, &listed, names);
         // a keyset with no cause is never recorded (spec/wire.md §7 Left out: nonempty, a reader
         // takes such a body as bad input); it would count for nothing (spec/crypto.md §4 Left
         // out: every block has a cause), and M stays unboxed all the same

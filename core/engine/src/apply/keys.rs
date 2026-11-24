@@ -1138,7 +1138,7 @@ mod tests {
             let genuine = e0.read.secret(&e).cloned().unwrap();
             lp.sync(0, 1).unwrap();
             // the writer's `keys.0`: E's keyset with another secret's keys
-            let junk = osis_keys::keyset(Role::Read, &e, &Secret32::from_bytes([0x66; 32]), &Default::default(), &Default::default());
+            let junk = osis_keys::keyset(&e, &Secret32::from_bytes([0x66; 32]), &Default::default(), &Default::default());
             let mut mu = Mutation::new();
             mu.op(t, &ct::KEYS, PathOp { path: vec![PathSeg::Field(0)], op: Op::Set(Some(junk.clone()).to_value()) }).unwrap();
             mu.unchecked();

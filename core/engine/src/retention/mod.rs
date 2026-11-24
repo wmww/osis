@@ -1865,14 +1865,13 @@ mod tests {
         assert_eq!(e.run(left).unwrap(), two, "the write undone");
     }
 
-    // spec/commits.md §5, spec/crypto.md §7, spec/requirements.md Purge on replace: a writer whose
-    // delete keys of the thing are not here writes nothing on it, so the replacement applies there
-    // (no refused own snapshot fails the receive) and the replaced body stays; once the keys come it
-    // covers it, so the end is the one of the keys coming first: whatever arrives last of body,
-    // replacement, role and keys triggers the cover
+    // spec/commits.md §5, spec/crypto.md §5 (Passing on), spec/requirements.md Purge on replace:
+    // a writer that may not yet pass on the replaced writes (the commit giving the thing secrets
+    // of its own is not here) writes nothing on it, so the replacement applies there and the
+    // replaced body stays; once that commit comes it covers it, so the end is the one of it coming
+    // first: whatever arrives last of body, replacement, role and keys triggers the cover
     #[test]
-    #[ignore = "sync rewrite: a role held without delete keys"]
-    fn writer_covers_once_its_delete_keys_come_in_any_order_spec_commits_5() {
+    fn writer_covers_once_its_thing_turns_independent_in_any_order_spec_commits_5() {
         let end = |keys_first: bool| {
             let mut lp = LocalPeer::fresh(3, WallMs(1_700_000_000_000));
             lp.sync_all().unwrap();
@@ -1893,7 +1892,6 @@ mod tests {
             lp.peers[0].commit(m).unwrap();
             lp.hold(t);
             lp.sync(0, 1).unwrap();
-            assert!(lp.peers[1].engine.holds_delete_keys(&t).unwrap());
             // alice keeps both bodies uncovered (as when her cover is still on its way)
             lp.peers[0].engine.keep_bodies(true);
             let mut puts = Vec::new();
@@ -1903,15 +1901,15 @@ mod tests {
                 m.set(t, &x, &Value::Int(v)).unwrap().purge_by(t, &x, none).unwrap();
                 puts.push(lp.peers[0].commit(m).unwrap().unwrap());
             }
-            // a first holder by the flow makes `t` independent, its `keys.0` in that
-            // commit: bob gets the rest, then the two puts and the keys in either order
+            // a first holder by the flow makes `t` independent, its `keys.0` and `sync.0` in
+            // that commit: bob gets the rest, then the two puts and that commit in either order
             lp.peers[0].engine.grant(&t, &carol, &edge(Role::Read)).unwrap();
             lp.peers[0].engine.grant(&t, &bob, &edge(Role::Write)).unwrap();
             let pks = lp.packages_to(0, 1).unwrap();
             let carries = |id: &CommitId| lp.peers[0].engine.writes_keyset(&t, id);
             let (key_pks, other): (Vec<_>, Vec<_>) = pks.into_iter().partition(|pk| carries(&pk.id));
             let (put_pks, rest): (Vec<_>, Vec<_>) = other.into_iter().partition(|pk| puts.contains(&pk.id));
-            // the keys reach bob in the commits ordered below, his grant's fire with the last
+            // his grant's fire comes with the last
             lp.hold_fires(true);
             for pk in &rest {
                 lp.deliver(1, pk).unwrap();
@@ -1922,7 +1920,6 @@ mod tests {
             }
             if !keys_first {
                 let e = &mut lp.peers[1].engine;
-                assert!(!e.holds_delete_keys(&t).unwrap(), "bob's write is here, t's delete keys are not");
                 assert_eq!(e.get(&t, &x).unwrap(), Some(Value::Int(2)));
                 assert!(super::held_part(&e.core, &puts[0], &t, &x).is_some(), "no cover yet: the replaced body stays");
             }
@@ -1939,7 +1936,7 @@ mod tests {
         // the live put is no purge-on-replace body: only the replaced one goes here (the live one
         // is the compaction trigger's, node-sync's)
         assert_eq!(keys_first, (Some(Value::Int(2)), vec![false, true], 1), "bob covers on the replacement");
-        assert_eq!(end(false), keys_first, "bob covers once the keys come");
+        assert_eq!(end(false), keys_first, "bob covers once t turns independent here");
     }
 
     // spec/sync-judgement.md §1 entitlement: a thing's independent is the nearest independent thing up its record

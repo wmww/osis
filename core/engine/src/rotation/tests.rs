@@ -783,7 +783,7 @@ fn forge_rotation(lp: &mut LocalPeer, w: usize, g: Tid, s: osis_crypto::Epoch, h
         .engine
         .run(|tx| {
             let held = tx.core.epochs(&g).unwrap();
-            let ks = osis_keys::keyset(Role::Read, &s, held.read.secret(&s).unwrap(), &Default::default(), &Default::default());
+            let ks = osis_keys::keyset(&s, held.read.secret(&s).unwrap(), &Default::default(), &Default::default());
             let state = crate::flows::secrets_in(tx, &g)?;
             let at = ct::Epoch { n: s.n(), nonce: *s.nonce() };
             let key = ct::HistoryKey { role: Role::Read, epoch: at.clone() };
@@ -929,7 +929,7 @@ fn writer_rotation_skips(list_s: bool) {
             let mut rot = osis_keys::rotate(&g, &[Role::Read].into(), &held, &secrets, &holders.holders, &osis_keys::Names::default(), &mut *tx.rng).unwrap();
             let r = &rot.rotated[0];
             let list: BTreeSet<osis_crypto::Epoch> = if list_s { [s].into() } else { BTreeSet::new() };
-            rot.keys.keysets.insert(Role::Read, osis_keys::keyset(Role::Read, &r.epoch, &r.secret, &list, &rot.names));
+            rot.keys.keysets.insert(Role::Read, osis_keys::keyset(&r.epoch, &r.secret, &list, &rot.names));
             crate::flows::put_secrets(&mut m, g, &rot.secrets, false)?;
             crate::flows::put_keysets(&mut m, g, &rot.keys)?;
             crate::engine::Engine::commit_tx(tx, m)?;

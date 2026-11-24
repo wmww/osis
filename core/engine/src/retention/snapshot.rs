@@ -1250,7 +1250,7 @@ pub(crate) fn compacted(ak: &Ak) -> bool {
 }
 
 /// The re-snapshot owed on `(tid, ak)` (`Indexes::resnapshots_owed`), in `tx`: one this node may
-/// write only later (its minting or delete keys are not here) stays owed, waiting with the
+/// write only later (`MayWrite::Later`) stays owed, waiting with the
 /// purge-on-replace covers for what moves that (`replace::await_cover`, `wake_covers`); else it is
 /// owed no more, and where this node may write it writes a snapshot from its whole state unless it
 /// holds a valid snapshot the purge left whole covering every named body it had applied

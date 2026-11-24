@@ -310,8 +310,8 @@ pub(crate) fn check_role(core: &Core, node: Tid, records: Records<'_>, tid: &Tid
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum MayWrite {
     Yes,
-    /// Not yet: the thing's minting or the delete keys every write on it lists are not here
-    /// (spec/crypto.md §7); they may arrive.
+    /// Not yet: the thing's minting, the setting this node knows it has, or (a snapshot) the
+    /// establishment of an epoch a write it carries was read under is not here; they may arrive.
     Later,
     /// Not on what is held: the thing does not exist here (or was destroyed), or the node lacks the role.
     No,
@@ -364,12 +364,12 @@ pub(crate) fn writable_split<V>(tx: &mut Tx<'_>, node: Tid, by_thing: BTreeMap<T
 }
 
 /// `may_write` but for the role: whether the thing takes writes here (`Core::writable`) and this
-/// node is ready to write it (`secrets::ready_to_write_in`).
+/// node holds the setting they are written under (`secrets::awaits_setting`).
 pub(crate) fn may_write_on(tx: &mut Tx<'_>, tid: &Tid) -> Result<MayWrite> {
     if !tx.core.exists(tid) {
         return Ok(MayWrite::No);
     }
-    Ok(if tx.core.writable(tid) && super::secrets::ready_to_write_in(tx, tid)? { MayWrite::Yes } else { MayWrite::Later })
+    Ok(if tx.core.writable(tid) && !super::secrets::awaits_setting(tx.core, tid) { MayWrite::Yes } else { MayWrite::Later })
 }
 
 /// The path a commit signed by `signer` states where no path is found for what it writes (a
@@ -820,8 +820,8 @@ pub(crate) fn settle(core: &Core, memory: bool, kind: Kind, ts: Ts, tid: &Tid, a
 /// spec/wire.md §5). `published`: [`super::secrets::published_keys`] of the commit's things;
 /// `keys`: the commit's [`super::secrets::KeyCache`].
 pub(crate) fn framing_for(core: &Core, memory: bool, plan: &CommitPlan, published: &BTreeMap<(Tid, osis_base::Role), osis_crypto::VerifyingKey>, keys: &super::secrets::KeyCache, tid: &Tid, purge_by: &PurgeBy) -> Result<Framing> {
-    // a role is of use once its delete keys are here (spec/crypto.md §7): until then this node
-    // writes nothing on the thing, whatever the delta's purge-by (`secrets::usable_role`)
+    // a writer knowing no step of the thing's delete base writes nothing on it, whatever the
+    // delta's purge-by (spec/crypto.md §7 Header list)
     if !super::secrets::holds_listed_keys(core, &plan.creates, &plan.minted, published, keys, tid) {
         return Err(Error::Permission { tid: *tid, needs: Role::Write });
     }

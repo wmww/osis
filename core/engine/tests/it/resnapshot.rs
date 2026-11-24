@@ -1,5 +1,5 @@
 //! The re-snapshot a writer owes after a purge (spec/commits.md §5 Purge) is written whatever
-//! happens between the purge and the write: a stop, or delete keys that come only later.
+//! comes between the purge and the write, a stop included.
 
 use osis_engine::Mutation;
 use osis_engine::local_peer::LocalPeer;
@@ -11,11 +11,9 @@ fn reg() -> Ak {
     Ak::new("x:a.0").unwrap()
 }
 
-/// Admin 0 and writer 1 on a thing of 0. With `keys`, 1 holds every commit of 0; without, all but
-/// those carrying the thing's `keys.0` (its delete keys), returned for later.
-fn world(keys: bool) -> (LocalPeer, Tid, Vec<osis_engine::local_peer::Package>) {
-    let key = if keys { "retention::tests_resnapshot::keys" } else { "retention::tests_resnapshot::no_keys" };
-    let (lp, (t, rest)) = LocalPeer::cached(key, || {
+/// Admin 0 and writer 1 on a thing of 0, 1 holding every commit of 0.
+fn world() -> (LocalPeer, Tid) {
+    LocalPeer::cached("retention::tests_resnapshot::world", || {
         let mut lp = LocalPeer::fresh(2, T0);
         lp.sync_all().unwrap();
         let (a, w) = (lp.peers[0].engine.me(), lp.peers[1].engine.me());
@@ -23,24 +21,13 @@ fn world(keys: bool) -> (LocalPeer, Tid, Vec<osis_engine::local_peer::Package>) 
         let t = lp.peers[0].engine.new_thing(&mut m, a);
         lp.peers[0].commit(m).unwrap();
         lp.hold(t);
-        let mut m = Mutation::new();
-        // the writer's role by a raw edge write, so it holds the role without the grant's keys
-        m.op(t, &ct::ROLES, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(Value::Weak(w))], op: osis_crdt::Op::Set(osis_schema::Codec::to_value(&edge(Role::Write))) }).unwrap();
-        lp.peers[0].commit(m).unwrap();
         lp.peers[0].engine.grant(&t, &w, &edge(Role::Write)).unwrap();
-        let pks = lp.packages_for(0, 1).unwrap();
-        let carries = |lp: &LocalPeer, id: &CommitId| lp.peers[0].engine.writes_keyset(&t, id);
-        let (held, rest): (Vec<_>, Vec<_>) = pks.into_iter().partition(|pk| keys || !carries(&lp, &pk.id));
-        // without the keys, the grant's fire (its copy carries them) has not come either
-        lp.hold_fires(!keys);
-        for pk in &held {
+        for pk in &lp.packages_for(0, 1).unwrap() {
             lp.deliver(1, pk).unwrap();
         }
-        assert_eq!(lp.peers[1].engine.holds_delete_keys(&t).unwrap(), keys);
         lp.advance(60_000);
-        (lp, (t, rest))
-    });
-    (lp, t, rest)
+        (lp, t)
+    })
 }
 
 /// How the secret reaches 1 (`purged`).
@@ -111,7 +98,7 @@ fn own_snapshots(lp: &LocalPeer, t: Tid) -> usize {
 // re-snapshot it owes, writes it once open again, once only
 #[test]
 fn owed_resnapshot_survives_a_stop_spec_commits_5() {
-    let (mut lp, t, _) = world(true);
+    let (mut lp, t) = world();
     purged(&mut lp, t, Secret::First);
     assert_eq!(own_snapshots(&lp, t), 0, "not written yet");
     lp.peers[1].restart(1).unwrap();
@@ -123,31 +110,12 @@ fn owed_resnapshot_survives_a_stop_spec_commits_5() {
     assert_eq!(own_snapshots(&lp, t), 1, "owed no more");
 }
 
-// spec/commits.md §5 Purge, spec/crypto.md §7: a writer that may not write the re-snapshot yet
-// (the thing's delete keys are not here) writes it once they come
-#[test]
-#[ignore = "sync rewrite: a role held without delete keys"]
-fn owed_resnapshot_waits_for_delete_keys_spec_commits_5() {
-    let (mut lp, t, keys) = world(false);
-    lp.hold_fires(true);
-    purged(&mut lp, t, Secret::First);
-    lp.peers[1].engine.purge_resnapshots().unwrap();
-    assert_eq!(own_snapshots(&lp, t), 0, "the keys are not here");
-    lp.hold_fires(false);
-    for pk in &keys {
-        lp.deliver(1, pk).unwrap();
-    }
-    assert!(lp.peers[1].engine.holds_delete_keys(&t).unwrap());
-    lp.peers[1].engine.purge_resnapshots().unwrap();
-    assert_eq!(own_snapshots(&lp, t), 1, "written once the keys came");
-}
-
 // spec/commits.md §5 Purge, §4 Order independence: a writer owes the re-snapshot whichever of the
 // request and the delta it names came first: the request dropped something here either way
 #[test]
 fn owed_resnapshot_whichever_comes_first_spec_commits_5() {
     for secret in [Secret::First, Secret::LateBody, Secret::LateHeader] {
-        let (mut lp, t, _) = world(true);
+        let (mut lp, t) = world();
         purged(&mut lp, t, secret);
         lp.peers[1].engine.purge_resnapshots().unwrap();
         assert_eq!(own_snapshots(&lp, t), 1, "{secret:?}");
@@ -161,7 +129,7 @@ fn owed_resnapshot_whichever_comes_first_spec_commits_5() {
 #[test]
 fn purged_secret_reads_what_it_replaced_whatever_reaches_first_spec_commits_5() {
     for secret in [Secret::First, Secret::LateBody, Secret::LateHeader] {
-        let (mut lp, t, _) = world(true);
+        let (mut lp, t) = world();
         purged(&mut lp, t, secret);
         for i in [0, 1] {
             lp.peers[i].engine.purge_resnapshots().unwrap();
@@ -180,7 +148,7 @@ fn purged_secret_reads_what_it_replaced_whatever_reaches_first_spec_commits_5() 
 // of, even from a writer holding them; it reads it again once that writer re-snapshots
 #[test]
 fn a_compacted_node_reads_what_a_purge_brought_back_once_a_writer_resnapshots_spec_commits_5() {
-    let (mut lp, t, _) = world(true);
+    let (mut lp, t) = world();
     let mut ids = Vec::new();
     for v in ["old", "SECRET"] {
         let mut m = Mutation::new();

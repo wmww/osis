@@ -134,22 +134,25 @@ type keyset = struct {
     kem_key 1: kem_key,
     /// Which set of algorithms the secret is used with.
     suite 2: int,
-    /// Interim (issues/delete-key-levels-unchecked.md): the step key of the role's secret
-    /// (spec/crypto.md §7), for a writer holding no `sync.0` of the actor.
-    delete_key 3: signing_key,
     /// The earlier epochs this one replaces.
-    supersedes 4: set<epoch>,
+    supersedes 3: set<epoch>,
     /// 32-byte digest of the names this change of secrets records.
-    names 5: blob,
+    names 4: blob,
     /// Per holder actor this change of secrets left out of the role, the keysets of it it was
     /// left out at, each with the 32-byte IDs of its causes' commits: it stays left out at a
     /// keyset while a cause stands (spec/crypto.md §4, Left out).
-    left_out 6: map<weak, map<epoch, set<blob>>>,
+    left_out 5: map<weak, map<epoch, set<blob>>>,
     /// 32-byte IDs of other commits demoting a writer or admin of the actor or of an actor
     /// below it, which travel with the keyset (spec/crypto.md §4, Carried demotions).
-    demotions 7: set<blob>,
+    demotions 6: set<blob>,
     /// Whether this keyset's own commit is such a demotion.
-    demotes 8: bool,
+    demotes 7: bool,
+};
+
+/// The delete and write keys of a step of an actor's sync ID (spec/sync-ids.md §2).
+type step_keys = struct {
+    delete 0: signing_key,
+    write 1: signing_key,
 };
 
 /// An actor's public keys (spec/crypto.md §3).
@@ -169,6 +172,10 @@ aspect keys.0: struct {
     sealed 8: map<box_key, set<epoch>> = {},
     /// 16 bytes. Its sync ID (spec/sync-ids.md §2), where external fires on it go.
     sync_id 9: option<blob>,
+    /// The keys of the step its `sync.0` records in the same write: what a writer holding no
+    /// `sync.0` of the actor lists, a fire from outside among them (spec/crypto.md §7 Header
+    /// list).
+    step 10: option<step_keys>,
 };
 
 type box_key = struct {

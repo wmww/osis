@@ -45,7 +45,7 @@
 - **`keys.0`**: a struct holding the current keyset only, and the box records (§4, Stale).
   - Per role a `keyset` (spec/data-model.md §9; `demotions`, `demotes`: §4, Carried demotions).
   - `sealed`: per box of the thing to a holder actor, keyed as the box, the keysets of the holder it names (§4, Stale), written with the box by whoever writes it.
-  - For an independent thing, also its **sync ID** (spec/sync-ids.md §2) and **deposit seed** (32 random bytes): what an external fire on it goes under and is signed with (spec/sync-inbox.md §2).
+  - For an independent thing, also its **sync ID** (spec/sync-ids.md §2) and **deposit seed** (32 random bytes): what an external fire on it goes under and is signed with (spec/sync-inbox.md §2); and its **step keys**, the delete and write keys of the step its `sync.0` records in the same commit, written in every commit recording a step (spec/sync-ids.md §6).
   - A role's entry is written by the node that rotates that role (spec/permissions.md §3).
   - An admin writes the sync ID and deposit seed; it MAY refresh the deposit seed at any time and MUST write a fresh one in each rotation of the sync role it makes.
   - `inbox`: the thing's inbox where it is another thing (spec/sync-inbox.md §1), written by an admin.
@@ -261,7 +261,7 @@ A **holder actor** of A is a holder for keys of A (its mint admin included while
 - **Delete base**: a dependent thing (§3) uses those of its independent, the last thing of its derivation chain (§3): its delete base.
 - **Delete key** of a role secret s: the Ed25519 key (secret scalar a, public key A = a·B, RFC 8032) with seed `kdf("sync delete", s, "")` for an admin secret and `kdf("sync write", s, "")` for a write secret: a step's delete and write keys (spec/sync-ids.md §2) are its epochs' delete keys.
 - **Header list**: a header lists, per level of each delta, for the level's base (the delete base of the delta's thing at levels 1 and 3, of its purge author at level 2):
-  - at levels 1 and 3, the key of that level of the newest step of the base's sync ID that the writer's `sync.0` records (its head, spec/sync-ids.md §3); a writer recording none cannot write;
+  - at levels 1 and 3, the key of that level of the newest step of the base's sync ID that the writer's `sync.0` records (its head, spec/sync-ids.md §3); a writer recording none lists the base's step keys its `keys.0` holds (§3), and one holding neither cannot write;
   - at level 2, the delete key of the newest current write epoch of the base it holds;
   - A linked header list's chunks carry one empty group (spec/wire.md §4, §5): no delete key covers them; they go by the delete key or at their expiry (spec/sync-ids.md §6 Delete).
 - Every delta lists exactly the levels its purge-by calls for (spec/wire.md §4).

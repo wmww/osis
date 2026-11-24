@@ -127,8 +127,7 @@ fn jumped_base_forks_derive_base_newest() {
 }
 
 // spec/crypto.md §7: a level's delete key from its newest held secret (the step key of its role);
-// level 2 from the author's actor; holders try every epoch; the published keyset (Interim)
-// names the same key.
+// level 2 from the author's actor; holders try every epoch.
 #[test]
 fn delete_keys() {
     let dk = |l: u8, s: &Secret32| osis_crypto::DeleteSecret::at_level(l, s).verifying_key();
@@ -143,10 +142,6 @@ fn delete_keys() {
     assert_eq!(delete_key(2, &thing, Some(&author)), Some(dk(2, author.write.secret(&ep(1, 0x30)).unwrap())));
     assert_eq!(delete_key(3, &thing, Some(&author)), Some(dk(3, thing.write.secret(&ep(1, 0x20)).unwrap())));
     assert_eq!(delete_key(2, &thing, None), None);
-    let ks = osis_keys::keyset(Role::Admin, &ep(1, 0x20), thing.admin.secret(&ep(1, 0x20)).unwrap(), &Default::default(), &Default::default());
-    assert_eq!(ks.delete_key, osis_schema::core_types::SigningKey::Ed25519(delete_key(1, &thing, None).unwrap().to_bytes().to_vec()));
-    let ks = osis_keys::keyset(Role::Write, &ep(1, 0x20), thing.write.secret(&ep(1, 0x20)).unwrap(), &Default::default(), &Default::default());
-    assert_eq!(ks.delete_key, osis_schema::core_types::SigningKey::Ed25519(delete_key(3, &thing, None).unwrap().to_bytes().to_vec()));
     thing.write.set_history(ep(2, 0), BTreeSet::new(), [ep(1, 0x20)], None);
     thing.write.set_established(ep(2, 0), osis_keys::Provenance::Fixed);
     thing.write.set_secret(ep(2, 0), Secret32::from_bytes([5; 32]));

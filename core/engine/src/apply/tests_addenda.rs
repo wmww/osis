@@ -968,7 +968,6 @@ fn own_cover_stands_with_its_removal_spec_perm_5_1() {
 // Carol, never holding the removal, removes Alice: the removal falls, its own cover with it, and
 // Dave and Carol read the edit from Dave's copy, Bob gone.
 #[test]
-#[ignore = "sync rewrite: a key verdict moving under a keyset"]
 fn a_voided_removal_leaves_holders_as_they_were_spec_perm_5_1() {
     let (mut lp, t) = world(4, &[Role::Write, Role::Admin, Role::Write]);
     let a = ak("x:e.0");

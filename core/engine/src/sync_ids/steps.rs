@@ -11,7 +11,7 @@
 //! before the commit. Only an admin's write is valid on `sync.0`, a step verifies only under a
 //! key an admin secret derives, and no secret this node holds is read: every node holding the
 //! same writes places the same keys. A non-admin signer's own key is on no such path, so a part
-//! listing it is invalid with its whole commit.
+//! listing it applies nowhere (unjudgeable, `Core::miskeyed`).
 //!
 //! Every sync ID entry counts, owned or not (ownership turns on the secrets a node holds,
 //! spec/sync-ids.md §4, which a verdict must not): an admin recording a sync ID of its own making
@@ -389,5 +389,75 @@ mod tests {
         assert!(core.wrong_keys(&other).is_empty(), "before any step, the record's key lists unchecked");
         other.key = Some(osis_base::SignKey([3; 32]));
         assert_eq!(core.wrong_keys(&other), BTreeSet::from([n]), "another key signing as n is checked");
+    }
+
+    // spec/crypto.md §7 (Header list, Checked keys): a may-grant writer's grant lists the step
+    // keys of g's `sync.0`, right everywhere; listing instead a key of its own (the step's write
+    // key at the admin level, or a key its write secret derives for that level) is wrong for g.
+    #[test]
+    fn a_may_grant_writers_grant_listing_its_own_key_is_wrong_spec_crypto_7() {
+        let (mut lp, g, _) = world();
+        let bob = lp.peers[1].engine.me();
+        lp.peers[0].engine.grant(&g, &bob, &ct::Edge { role: Role::Write, until: None, may_grant: true, retain: false, floor: None }).unwrap();
+        lp.sync_all().unwrap();
+        let mut m = Mutation::new();
+        let to = lp.peers[1].engine.new_thing(&mut m, bob);
+        lp.peers[1].commit(m).unwrap();
+        let before = lp.commit_ids(1);
+        lp.peers[1].engine.grant(&g, &to, &ct::Edge { role: Role::Read, until: None, may_grant: false, retain: false, floor: None }).unwrap();
+        lp.sync_all().unwrap();
+        let roles = osis_base::Ak::new("roles.0").unwrap();
+        let core = &lp.peers[0].engine.core;
+        let c = *lp.commit_ids(1).difference(&before).find(|c| core.ix.commits.get(c).is_some_and(|m| m.header.aspects.iter().any(|a| a.tid == g && a.ak == roles))).expect("the grant");
+        for p in &lp.peers {
+            assert!(p.engine.core.ix.miskeyed.is_empty(), "the flow's grant lists right keys");
+        }
+        let core = &lp.peers[0].engine.core;
+        let h = (*core.ix.commits.get(&c).unwrap().header).clone();
+        let s = core.listed_step(&g).unwrap();
+        let write = lp.peers[1].engine.core.epochs(&g).unwrap().write.newest_held().unwrap().1.clone();
+        assert!(lp.peers[1].engine.core.epochs(&g).unwrap().admin.newest_held().is_none(), "bob holds no admin secret");
+        let own = [s.write, osis_crypto::DeleteSecret::admin(&write).verifying_key().to_bytes()];
+        let on_g = h.aspects.iter().find(|a| a.tid == g).expect("the grant writes g");
+        let at = on_g.keys.iter().copied().find(|k| h.keys[*k].level == DELETE_ADMIN).expect("its edge write lists the admin level");
+        for key in own {
+            let mut forged = h.clone();
+            forged.keys[at].key = key;
+            assert_eq!(core.wrong_keys(&forged), BTreeSet::from([g]), "bob's own key at the admin level");
+        }
+    }
+
+    // spec/crypto.md §7 (Checked keys), spec/commits.md §4 (Unjudgeable): a write listing a step
+    // a reader does not hold applies nowhere there, and applies once the `sync.0` write recording
+    // the step arrives after it. Alice rotates g's admin and issues the step registering it, then
+    // writes under it; bob's node gets the rotation, her write, and only then the step.
+    #[test]
+    fn a_write_applies_once_the_step_it_lists_arrives_after_it_spec_crypto_7() {
+        let (mut lp, g, _) = world();
+        let x = osis_base::Ak::new("x:v.0").unwrap();
+        let sync_id = lp.peers[0].engine.core.listed_step(&g).unwrap().sync_id;
+        let rot = lp.peers[0].engine.rotate_leaving_out(&g, &[Role::Admin], &[]).unwrap().expect("rotated");
+        lp.advance(1_000);
+        let before = lp.commit_ids(0);
+        lp.peers[0].engine.issue_step(&g, &sync_id, false).unwrap().expect("the step is due");
+        let step = *lp.commit_ids(0).difference(&before).next().expect("the step's commit");
+        lp.advance(1_000);
+        let mut m = Mutation::new();
+        m.set(g, &x, &osis_base::Value::Int(1)).unwrap();
+        let c = lp.peers[0].commit(m).unwrap().unwrap();
+        let listed = lp.peers[0].engine.core.listed_step(&g).unwrap();
+        for id in [rot, c] {
+            let pk = lp.peers[0].engine.package(&id).unwrap().unwrap();
+            lp.deliver(1, &pk).unwrap();
+        }
+        let e = &mut lp.peers[1].engine;
+        assert!(!e.core.ix.steps.get(&g).unwrap().bears(DELETE_ADMIN, &listed.delete), "bob holds no step bearing the key");
+        assert!(e.core.miskeyed(&c, &g), "unjudgeable while the step is not here");
+        assert_ne!(e.get(&g, &x).unwrap(), Some(osis_base::Value::Int(1)));
+        let pk = lp.peers[0].engine.package(&step).unwrap().unwrap();
+        lp.deliver(1, &pk).unwrap();
+        let e = &mut lp.peers[1].engine;
+        assert!(!e.core.miskeyed(&c, &g), "right once the step is recorded");
+        assert_eq!(e.get(&g, &x).unwrap(), Some(osis_base::Value::Int(1)));
     }
 }

@@ -687,7 +687,7 @@ impl Load {
 
 /// Whether this node may write a snapshot of `k` now (`snapshot::may_snapshot`). Where it may not,
 /// `k` is owed a weighing (`Trigger::owe`) that what lets it write
-/// wakes (`Trigger::wake`): its minting or delete keys arriving (`Later`: the thing waits in
+/// wakes (`Trigger::wake`): what it waits for arriving (`Later`: the thing waits in
 /// `Indexes::cover_waits`, `replace::wake_covers`) or a role moving above it
 /// (`Core::timelines_changed`).
 fn owe_unwritable(tx: &mut Tx<'_>, k: &(Tid, Ak)) -> Result<bool> {
@@ -1286,64 +1286,5 @@ mod tests {
             assert_eq!(weighed, if restart { 2 } else { 1 }, "restart {restart}: only the owed aspects weighed");
             assert!(e.compactions().unwrap().is_empty(), "restart {restart}: owed once");
         }
-    }
-
-    // spec/sync-compaction.md §1 (trigger): a writer whose held bodies passed the trigger while the thing's
-    // delete keys were not here (`MayWrite::Later`: a first holder's grant gave the thing secrets
-    // of its own, its `keys.0` not yet received) compacts them once the keys arrive, with no write
-    // of the aspect between (`replace::wake_covers` wakes the owed weighing).
-    #[test]
-    #[ignore = "issues/writes-on-unheld-things-tests.md"]
-    fn writer_compacts_once_its_delete_keys_arrive_spec_sync_7() {
-        use osis_base::Role;
-        use osis_schema::core_types as ct;
-        let mut lp = LocalPeer::fresh(3, osis_base::WallMs(1_700_000_000_000));
-        lp.sync_all().unwrap();
-        let [b, c] = [1, 2].map(|i| lp.peers[i].engine.me());
-        let a = lp.peers[0].engine.me();
-        let edge = |role| ct::Edge { role, until: None, may_grant: false, retain: false, floor: None };
-        // bob writes `t` by write on its mint admin `k`, whose secrets `t` keeps, holding both
-        let mut m = Mutation::new();
-        let k = lp.peers[0].engine.new_thing(&mut m, a);
-        lp.peers[0].commit(m).unwrap();
-        lp.hold(k);
-        let mut m = Mutation::new();
-        let t = lp.peers[0].engine.new_thing(&mut m, k);
-        lp.peers[0].commit(m).unwrap();
-        lp.hold(t);
-        lp.peers[0].engine.grant(&k, &b, &edge(Role::Write)).unwrap();
-        lp.sync(0, 1).unwrap();
-        let m_ak = Ak::new("x:m.0").unwrap();
-        for i in 0..8 {
-            lp.advance(10);
-            let mut m = Mutation::new();
-            m.op(t, &m_ak, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(Value::Str(format!("k{i}")))], op: osis_crdt::Op::Set(Value::Int(1)) }).unwrap();
-            lp.peers[1].commit(m).unwrap().unwrap();
-        }
-        // a first holder by the flow makes `t` independent, its `keys.0` in that commit:
-        // bob gets the rest first
-        lp.peers[0].engine.grant(&t, &c, &edge(Role::Read)).unwrap();
-        lp.peers[0].engine.grant(&t, &b, &edge(Role::Write)).unwrap();
-        let pks = lp.packages_to(0, 1).unwrap();
-        let carries = |id: &CommitId| lp.peers[0].engine.writes_keyset(&t, id);
-        let (key_pks, rest): (Vec<_>, Vec<_>) = pks.into_iter().partition(|pk| carries(&pk.id));
-        assert!(!key_pks.is_empty());
-        for pk in &rest {
-            lp.deliver(1, pk).unwrap();
-        }
-        let e = &mut lp.peers[1].engine;
-        assert!(!e.holds_delete_keys(&t).unwrap(), "t's delete keys are not here");
-        let l = e.compaction_load().unwrap().into_iter().find(|l| l.ak == m_ak).unwrap();
-        assert!(l.bodies >= 8 && l.held > FACTOR * l.snapshot, "over the trigger: {l:?}");
-        assert!(e.compactions().unwrap().is_empty(), "no snapshot without the delete keys");
-        assert!(e.compactions().unwrap().is_empty());
-        for pk in &key_pks {
-            lp.deliver(1, pk).unwrap();
-        }
-        let e = &mut lp.peers[1].engine;
-        assert!(e.holds_delete_keys(&t).unwrap());
-        let snaps = e.compactions().unwrap();
-        assert_eq!(snaps.iter().map(|x| (x.0, x.1.clone())).collect::<Vec<_>>(), vec![(t, m_ak.clone())], "compacted once the keys came");
-        assert!(e.compactions().unwrap().is_empty(), "owed once");
     }
 }
