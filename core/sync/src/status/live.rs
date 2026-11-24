@@ -109,7 +109,7 @@ impl Ground for Live<'_, '_> {
         self.streams.knows(at, Some(conn), s, b)
     }
     fn knows_now(&self, at: Source, s: &SyncId, b: &BlobId) -> bool {
-        self.streams.known().knows(at, s, b) || self.opens.conn_of(at).is_some_and(|c| self.streams.knows(at, Some(c), s, b))
+        self.streams.knows(at, self.opens.conn_of(at), s, b)
     }
     fn reported(&self, conn: ConnId, s: &SyncId) -> Option<Position> {
         self.opens.reported_at(conn, s).map(|(p, _)| *p)
