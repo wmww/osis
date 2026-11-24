@@ -137,7 +137,7 @@ fn listener_with_scripted_dialer() -> (End, End, Session, Hello) {
 fn link_key(seed: u8) -> Prover {
     let key = SigningSecret::from_seed(&Secret32::from_bytes([seed; 32]));
     let record = osis_base::CreationRecord { link: Some(osis_base::Tid::from_bytes([seed; 15])), ..osis_base::CreationRecord::with_key(osis_base::SignKey(key.verifying_key().to_bytes()), [seed; 32]) };
-    Prover { key, record }
+    Prover { key, record, path: Vec::new() }
 }
 
 fn pull(max_reply: u64) -> Msg {
@@ -184,7 +184,7 @@ fn a_client_connection_proves_nothing_spec_sync_transport_6() {
     p.ds.client();
     p.flow();
     assert!(!p.ds.proofs_done() && !p.ls.proofs_done());
-    assert!(p.ds.acted_for().is_none() && p.ls.proven().actors().is_empty());
+    assert!(p.ds.acted_for().is_none() && p.ls.proven().is_empty());
     let id = p.ds.request(To::Port, Msg::Call { id: 0, max_reply: SMALL_REPLY as u64, method: 0, args: Vec::new() });
     p.flow();
     let Some(Incoming::Request(rid, m)) = p.l_in.pop() else { panic!("no request: {:?}", p.l_in) };
@@ -260,16 +260,15 @@ fn strangers_prove_to_each_other_spec_sync_opens_2() {
     p.flow();
     assert!(matches!(p.l_in.as_slice(), [Incoming::Proved]), "{:?}", p.l_in);
     assert!(matches!(p.d_in.as_slice(), [Incoming::Proved]), "{:?}", p.d_in);
-    assert_eq!(p.ls.proven().node, p.d.node(), "the dialer's node");
-    assert_eq!(p.ds.proven().node, p.l.node(), "the listener's node");
-    assert_eq!(p.ds.acted_for().unwrap_or_default().iter().map(|x| x.0).collect::<Vec<_>>(), [p.d.node().expect("node")], "the dialer acted for its node");
-    assert_eq!(p.ls.acted_for().unwrap_or_default().iter().map(|x| x.0).collect::<Vec<_>>(), [p.l.node().expect("node")]);
+    assert_eq!(p.ls.proven().node(), p.d.node(), "the dialer's node");
+    assert_eq!(p.ds.proven().node(), p.l.node(), "the listener's node");
+    assert_eq!(p.ds.acted_for().unwrap_or_default().iter().map(|x| x.thing).collect::<Vec<_>>(), [p.d.node().expect("node")], "the dialer acted for its node");
+    assert_eq!(p.ls.acted_for().unwrap_or_default().iter().map(|x| x.thing).collect::<Vec<_>>(), [p.l.node().expect("node")]);
 }
 
 // spec/wire.md §11.2 (Prove): a verifier checks proofs in order and stops at the first that does
-// not verify: those before it stand; link keys proved count whether known or not.
+// not verify: those before it stand, whether this node knows their things or not.
 #[test]
-#[ignore = "accounts: proofs"]
 fn proofs_stop_at_the_first_bad_spec_wire_11_2() {
     let (_, mut l, mut ls, _) = listener_with_scripted_dialer();
     let b = *ls.binding().expect("binding");
@@ -277,11 +276,11 @@ fn proofs_stop_at_the_first_bad_spec_wire_11_2() {
     let bad = link_key(2).sign(false, &[0; 32], &LISTEN.0);
     let after = link_key(3).sign(false, &b.listener_challenge, &LISTEN.0);
     let wrong_side = link_key(4).sign(true, &b.listener_challenge, &LISTEN.0);
-    ls.receive(&frame(&Msg::Prove { id: 4, proofs: vec![good.clone(), bad, after] }), &mut l.cx()).expect("kept");
-    assert_eq!(ls.proven().link_keys.keys().copied().collect::<Vec<_>>(), [good.actor()]);
+    ls.receive(&frame(&Msg::Prove { id: 4, proofs: vec![good.clone(), bad, after], copies: Default::default() }), &mut l.cx()).expect("kept");
+    assert_eq!(ls.proven().named.things(), [good.thing()]);
     let (_, mut l, mut ls, _) = listener_with_scripted_dialer();
-    ls.receive(&frame(&Msg::Prove { id: 4, proofs: vec![wrong_side] }), &mut l.cx()).expect("kept");
-    assert!(ls.proven().link_keys.is_empty(), "a proof made as the listener proves nothing from the dialer");
+    ls.receive(&frame(&Msg::Prove { id: 4, proofs: vec![wrong_side], copies: Default::default() }), &mut l.cx()).expect("kept");
+    assert!(ls.proven().is_empty(), "a proof made as the listener proves nothing from the dialer");
 }
 
 // spec/wire.md §11.2 (Prove): at most one per connection, dialer to listener: a second Prove, or
@@ -289,13 +288,13 @@ fn proofs_stop_at_the_first_bad_spec_wire_11_2() {
 #[test]
 fn one_prove_from_the_dialer_spec_wire_11_2() {
     let (_, mut l, mut ls, _) = listener_with_scripted_dialer();
-    ls.receive(&frame(&Msg::Prove { id: 4, proofs: Vec::new() }), &mut l.cx()).expect("kept");
+    ls.receive(&frame(&Msg::Prove { id: 4, proofs: Vec::new(), copies: Default::default() }), &mut l.cx()).expect("kept");
     ls.take_bytes();
-    let ins = ls.receive(&frame(&Msg::Prove { id: 5, proofs: Vec::new() }), &mut l.cx()).expect("kept");
+    let ins = ls.receive(&frame(&Msg::Prove { id: 5, proofs: Vec::new(), copies: Default::default() }), &mut l.cx()).expect("kept");
     assert!(ins.is_empty());
     assert_eq!(frames(&ls.take_bytes(), false).1, [Msg::Error { id: 5, code: Code::MALFORMED }]);
     let mut p = quiet_pair();
-    let ins = p.ds.receive(&frame(&Msg::Prove { id: 6, proofs: Vec::new() }), &mut p.d.cx()).expect("kept");
+    let ins = p.ds.receive(&frame(&Msg::Prove { id: 6, proofs: Vec::new(), copies: Default::default() }), &mut p.d.cx()).expect("kept");
     assert!(ins.is_empty());
     assert_eq!(frames(&p.ds.take_bytes(), false).1, [Msg::Error { id: 6, code: Code::MALFORMED }]);
 }

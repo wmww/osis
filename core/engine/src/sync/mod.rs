@@ -16,6 +16,8 @@ pub(crate) mod own;
 pub(crate) mod rows;
 pub use rows::Held;
 pub(crate) mod pieces;
+pub(crate) mod proofs;
+pub use proofs::{Claim, ProvenThing, Prover, Proving};
 pub use pieces::PieceLink;
 pub(crate) mod certblobs;
 pub use certblobs::{CertBlob, CertBlobs};
@@ -38,7 +40,7 @@ use crate::engine::DropFor;
 use crate::error::Result;
 use crate::sync_ids::{Certs, HeadKeys};
 use crate::{Engine, Ingested};
-use osis_base::{Ak, BlobId, CommitId, CreationRecord, Role, SyncId, Tid, WallMs};
+use osis_base::{Ak, BlobId, CommitId, Role, SyncId, Tid, WallMs};
 use osis_crypto::{Epoch, Secret32, SigningSecret, WRAP_LEN};
 use osis_blob::{Address, Step, StepId};
 use std::collections::{BTreeMap, BTreeSet};
@@ -422,27 +424,6 @@ pub struct Signers {
     pub delete: Option<SigningSecret>,
 }
 
-/// Who may hold a sync ID besides this node, by the rosters (`Engine::roster_holders`).
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct RosterHolders {
-    /// Anyone may: S kept unread (its granters are not named here).
-    pub anyone: bool,
-    /// The provable things other than this node's holding a role on S's thing.
-    pub holders: BTreeSet<Tid>,
-}
-
-impl RosterHolders {
-    /// Some node other than this one may hold S.
-    pub fn any(&self) -> bool {
-        self.anyone || !self.holders.is_empty()
-    }
-
-    /// A peer proving `proven` may hold S: one of them is a holder named here.
-    pub fn may_hold(&self, proven: &[Tid]) -> bool {
-        self.anyone || proven.iter().any(|x| self.holders.contains(x))
-    }
-}
-
 /// J of a peer for S (spec/sync-opens.md §4).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum J {
@@ -504,7 +485,7 @@ impl Engine {
 
     /// Brings the read things kept per sync ID (`read_things_of`) up to date: whether any moved.
     /// Before each memo reading them is asked (`follow_bodies`, `read_credentials`, `dial_peers`,
-    /// `roster_holders`): a hit asks none of them.
+    /// `may_hold`, `others_may_hold`): a hit asks none of them.
     pub(crate) fn follow_read_things(&mut self) -> Result<bool> {
         osis_base::memo::Cutoff::refresh_in(self, |e| &e.core.read_things, |e, s| e.read_things_now(s))
     }
@@ -753,32 +734,6 @@ impl Engine {
 
     // Grants, removals, peers
 
-    /// J of a peer's proven actors for `s` (spec/sync-opens.md §4), from the rosters held here:
-    /// a reader of one of `s`'s things, else a holder of sync alone on one, else departed from one
-    /// (every grant path ended), else unknown. `Unknown` for a sync ID this node does not read.
-    pub fn judge_peer(&mut self, s: &SyncId, proven: &[Tid]) -> Result<J> {
-        let rank = |j: &J| match j {
-            J::Reader => 3,
-            J::SyncHolder => 2,
-            J::Departed => 1,
-            J::Unknown => 0,
-        };
-        let mut out = J::Unknown;
-        for t in self.sync_things_of(s)? {
-            let reader = self.core.reader_of(&t);
-            let j = match self.core.judge(proven.iter().copied()).of(&t) {
-                crate::sync_ids::Judgment::Holder => J::Reader,
-                crate::sync_ids::Judgment::Departed => J::Departed,
-                crate::sync_ids::Judgment::Unknown if proven.iter().any(|x| self.core.role_now(x, &reader) == Some(osis_base::Role::Sync)) => J::SyncHolder,
-                crate::sync_ids::Judgment::Unknown => J::Unknown,
-            };
-            if rank(&j) > rank(&out) {
-                out = j;
-            }
-        }
-        Ok(out)
-    }
-
     /// Whether `epoch` of one of `s`'s things, of the role it is an epoch of (a read secret's read,
     /// a sync key's or proof's sync), covers every departure this node knows from it
     /// (spec/sync-opens.md §4 Departed: a departed peer opens only by a credential at an epoch
@@ -797,20 +752,11 @@ impl Engine {
         Ok(false)
     }
 
-    /// The keys this node proves with on a connection, in proof order (spec/wire.md §11.2 Prove):
-    /// its node thing's key first, then its held link keys by ascending tid. Each with its
-    /// creation record; signing and checking proofs is osis-proto's (`Prover`).
-    pub fn provers(&mut self) -> Result<Vec<(SigningSecret, CreationRecord)>> {
-        let mut out = vec![(self.core.id.signing().clone(), self.core.id.record().clone())];
-        out.extend(self.core.link_keys.values().map(|k| (k.signing().clone(), k.record().clone())));
-        Ok(out)
-    }
-
     /// Whether this node publishes a `dial.0` entry (a reader can pull from it,
-    /// spec/sync-judgement.md §3 Own store; `publish_reach`).
+    /// spec/sync-judgement.md §3 Own store; `publish_reach`: its node root's list keeps it).
     pub fn publishes_dial(&mut self) -> Result<bool> {
-        let me = self.core.me();
-        Ok(self.get_typed(&me, &osis_schema::core_types::DIAL)?.is_some_and(|d| !d.is_empty()))
+        let Some(root) = self.core.node_root else { return Ok(false) };
+        Ok(self.get_typed(&root, &osis_schema::core_types::DIAL)?.is_some_and(|d| !d.is_empty()))
     }
 
     /// The nodes this node may dial for S (spec/sync-opens.md §1 Whom to dial), each at the
@@ -820,15 +766,6 @@ impl Engine {
     pub fn dial_peers(&mut self, s: &SyncId) -> Result<Arc<Vec<Address>>> {
         self.follow_read_things()?;
         osis_base::memo::Memo::get_in(self, |e| &e.core.dial_peers, s, |e| e.dial_peers_now(s))
-    }
-
-    /// The nodes other than this one that may hold S, by the rosters and records held here
-    /// (spec/sync-status.md §3 held by no other node; spec/sync-set.md §3 the peers a leave waits
-    /// for): of S read, the provable things other than this node's holding a role on S's thing; S kept
-    /// unread, anyone (its granters, whom the rosters do not name). A memo per sync ID.
-    pub fn roster_holders(&mut self, s: &SyncId) -> Result<Arc<RosterHolders>> {
-        self.follow_read_things()?;
-        osis_base::memo::Memo::get_in(self, |e| &e.core.roster_holders, s, |e| e.roster_holders_now(s))
     }
 
     /// Whether the entries of held commit `c` are role entries (spec/sync-ids.md §6 Role

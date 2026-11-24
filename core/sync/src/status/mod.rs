@@ -399,7 +399,7 @@ impl Status {
     pub fn moved(&mut self, sessions: &Sessions, opens: &Opens, m: &Moved) {
         let up = |conn: ConnId| {
             let proven = sessions.get(conn).map(|x| x.proven());
-            Up { conn, node: proven.and_then(|p| p.node) }
+            Up { conn, node: proven.and_then(|p| p.node()) }
         };
         match *m {
             Moved::Joined(conn, s, _) => {
@@ -926,7 +926,7 @@ impl Status {
     /// one some other node may hold is unconnected; failed `Stranded` while one is stranded here
     /// (notes/api-design.md: a wait on `Stranded` fails). Reads only.
     /// `ids_of`: the sync IDs carrying a thing (the engine's `carrying`); `others`: whether some
-    /// other node may hold S (the engine's `roster_holders`).
+    /// other node may hold S (the engine's `others_may_hold`).
     pub fn wait(&self, net: &impl Net, scope: Scope, ids_of: impl FnOnce(&Tid) -> Result<Vec<SyncId>>, mut others: impl FnMut(&SyncId) -> bool) -> Waiting {
         let ids: Vec<SyncId> = match scope {
             Scope::All => self.holding.keys().copied().collect(),

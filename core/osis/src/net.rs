@@ -257,7 +257,7 @@ impl crate::Osis {
 
     /// Gives this node a new key, so a new address for direct sync and for `listen`: every
     /// listener moves to it, and nodes that knew the old one reach this node again through
-    /// what the account tells them (`reach.0`). Links made before stop reaching it directly. Never
+    /// its entries in its account's and profile's dial lists (`dial.0`). Links made before stop reaching it directly. Never
     /// done by itself.
     pub fn rotate_peer_address(&self) -> Result<()> {
         self.local("rotate_peer_address")?;
@@ -286,7 +286,7 @@ impl crate::Osis {
     /// Publishes where this node is dialed after it listened under `key` at `addrs` (spec/sync-
     /// transport.md §3, §5 Key change; spec/sync-set.md §1): its entry, listing each `peer://`
     /// listener's global addresses (an unspecified one standing for `routes`) and relays, in the
-    /// dial lists of its node thing, its account and the account's profile. A failed write is
+    /// dial lists of its account and the account's profile. A failed write is
     /// published again at the next listen.
     pub(crate) fn publish_reach(&self, key: [u8; 32], addrs: &[osis_blob::Address], routes: &[std::net::IpAddr]) {
         let items: Vec<String> = addrs.iter().flat_map(|a| osis_transport::p2p::reach_items(&a.url, routes)).collect();
@@ -295,7 +295,7 @@ impl crate::Osis {
     }
 }
 
-/// The local addresses of this host's routes out (`reach.0`'s stand-ins for an unspecified bound
+/// The local addresses of this host's routes out (the dial entry's stand-ins for an unspecified bound
 /// address, spec/sync-transport.md §3).
 async fn routes() -> Vec<std::net::IpAddr> {
     let (v4, v6) = osis_transport::lan::route_ips().await;

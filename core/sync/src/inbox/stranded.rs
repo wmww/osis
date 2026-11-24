@@ -192,8 +192,8 @@ impl Reports {
         let mut keys = None;
         let mut writers = 0;
         for conn in self.conns.clone() {
-            let actors = net.named(conn).actors();
-            let Some(acct) = h.engine.writer_of(&s, &actors)? else { continue };
+            let proven = h.engine.proven(&net.named(conn).claims, &osis_blob::Certificates::default())?;
+            let Some(acct) = h.engine.writer_of(&s, &proven)? else { continue };
             writers += 1;
             if sent.to.contains(&To::Peer(acct)) || self.out.values().any(|o| *o == (s, key, acct)) {
                 continue;

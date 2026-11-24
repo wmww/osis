@@ -79,7 +79,7 @@ struct FakeNet {
 impl Net for FakeNet {
     fn named(&self, conn: ConnId) -> osis_store::Named {
         // link keys: each counts whatever this node holds
-        osis_store::Named { link_keys: self.actors.get(&conn).cloned().unwrap_or_default(), ..Default::default() }
+        osis_store::Named { claims: self.actors.get(&conn).cloned().unwrap_or_default().into_iter().map(|thing| osis_store::Claim { thing, key: [0; 32], path: Vec::new() }).collect() }
     }
     fn member(&self, conn: ConnId, s: &SyncId) -> Option<Member> {
         self.members.get(&(conn, *s)).cloned()
@@ -146,6 +146,10 @@ struct FakeJudge<'a> {
 impl Judge for FakeJudge<'_> {
     fn deposit_key(&mut self, s: &SyncId, _: Option<Tid>) -> Result<Option<SigningSecret>> {
         Ok(self.keys.get(s).map(|n| deposit_key(&deposit_seed(*n), s)))
+    }
+    /// Every thing a claim was signed as.
+    fn proven(&mut self, named: &osis_store::Named) -> Vec<Tid> {
+        named.things()
     }
 }
 

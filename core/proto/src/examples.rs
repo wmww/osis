@@ -5,7 +5,7 @@
 
 use crate::api::{Outcome, Payload};
 use crate::msg::*;
-use crate::{ActorProof, Prover, SyncId};
+use crate::{Proof, Prover, SyncId};
 use osis_base::{BlobId, CreationRecord, Tid, Value, WallMs, cbor};
 use osis_crypto::{Epoch, KemSecret, RoleKey, SeededRng, Secret32, SigningSecret, X25519Secret, role_key};
 use osis_blob::{Parent, Prefix, Reader, StepKeys, genesis_sync_id, register, sign_stamp};
@@ -94,11 +94,12 @@ fn cursor(b: u8) -> Cursor {
     Cursor::new(vec![b; 72]).expect("a short cursor")
 }
 
-/// A node thing's connection proof over the examples' challenge and static key.
-pub fn proof(b: u8) -> ActorProof {
+/// A node thing's connection proof over the examples' challenge and static key, claiming the
+/// path [account] (`b`'s account).
+pub fn proof(b: u8) -> Proof {
     let key = SigningSecret::from_seed(&s32(b));
     let record = CreationRecord::with_key(osis_base::SignKey(key.verifying_key().to_bytes()), [b; 32]);
-    Prover { key, record }.sign(false, &CHALLENGE, &STATIC_KEY)
+    Prover { key, record, path: vec![Tid::from_bytes([b; 15])] }.sign(false, &CHALLENGE, &STATIC_KEY)
 }
 
 /// `(name, message)` for every kind, in kind order, plus variants of the sum types.
@@ -149,11 +150,18 @@ pub fn messages() -> Vec<(&'static str, Msg)> {
                 id: 30,
                 sync_id: l,
                 holder: Tid::from_bytes([0x0d; 15]),
-                keys: osis_blob::HolderKeys { commits: vec![Value::List(vec![Value::List(vec![]), Value::Int(1), Value::List(vec![])])], records: vec![CreationRecord::with_admin(Tid::from_bytes([0x0e; 15]), [0x0f; 32])] },
+                keys: osis_blob::Certificates { commits: vec![Value::List(vec![Value::List(vec![]), Value::Int(1), Value::List(vec![])])], records: vec![CreationRecord::with_admin(Tid::from_bytes([0x0e; 15]), [0x0f; 32])] },
             },
         ),
-        ("prove", Msg::Prove { id: 32, proofs: vec![proof(0x32), proof(0x33)] }),
-        ("proved", Msg::Proved { id: 32, proofs: vec![] }),
+        (
+            "prove",
+            Msg::Prove {
+                id: 32,
+                proofs: vec![proof(0x32), proof(0x33)],
+                copies: osis_blob::Certificates { commits: vec![Value::List(vec![Value::List(vec![]), Value::Int(1), Value::List(vec![])])], records: vec![CreationRecord::with_admin(Tid::from_bytes([0x0e; 15]), [0x0f; 32])] },
+            },
+        ),
+        ("proved", Msg::Proved { id: 32, proofs: vec![], copies: osis_blob::Certificates::default() }),
         ("resume", Msg::Resume { id: 34, nonce: [0x34; 32], tags: vec![[0x35; 32], [0x36; 32]] }),
         ("resumed", Msg::Resumed { id: 34, nonce: [0x37; 32], tag: Some([0x35; 32]) }),
         ("beacons", Msg::Beacons { id: top(36), generation: 1, base: None, f: 9, lo: 0, hi: 512, gcs, more: false }),

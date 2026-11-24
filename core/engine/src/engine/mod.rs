@@ -957,9 +957,9 @@ pub struct Core {
     pub(crate) sync_set: memo::Memo<(), Arc<crate::sync::SyncSet>>,
     /// `Engine::dial_peers` per sync ID (`memo`): sync's dials read it at each move of what it read.
     pub(crate) dial_peers: memo::Memo<SyncId, Arc<Vec<osis_base::Address>>>,
-    /// `Engine::roster_holders` per sync ID (`memo`): waits and leaving's peers read it per sync
+    /// `Engine::proven` per (claims, copies) digest (`memo`): opens reads a connection's per sync
     /// ID at each step.
-    pub(crate) roster_holders: memo::Memo<SyncId, Arc<crate::sync::RosterHolders>>,
+    pub(crate) proven: memo::Memo<[u8; 32], Arc<Vec<crate::sync::ProvenThing>>>,
     /// What each gathered removal owes at this node and may write now (`flows::addenda::Decides`),
     /// followed: settled at each transaction's end that moved what it read.
     pub(crate) addenda_owed: crate::flows::addenda::Decides,
@@ -1876,7 +1876,7 @@ impl Core {
             thing_sync: _,
             sync_set: _,
             dial_peers: _,
-            roster_holders: _,
+            proven: _,
             addenda_owed: _,
             // built again from the journaled `ix.paths_unknown` (`apply::paths::Wait`)
             paths_wait: _,
@@ -2123,7 +2123,7 @@ impl Core {
             thing_sync: memo::Memo::new("sync: thing sync"),
             sync_set: memo::Memo::new("sync: sync set"),
             dial_peers: memo::Memo::new("sync: dial peers"),
-            roster_holders: memo::Memo::new("sync: roster holders"),
+            proven: memo::Memo::new("sync: proven"),
             addenda_owed: crate::flows::addenda::Decides::default(),
             own_roles: memo::Cutoff::new("own roles"),
             paths_wait: None,

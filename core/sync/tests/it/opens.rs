@@ -88,7 +88,7 @@ fn a_record_resumes_its_shared_set_spec_sync_opens_3() {
 #[test]
 fn waited_by_a_connection_or_a_kept_record_spec_sync_set_3() {
     let mut p = readers();
-    let other = |a: &osis_store::Named| if a.actors().contains(&tid(2)) { Peer::Skipped } else { Peer::Unlisted };
+    let other = |a: &osis_store::Named| if a.things().contains(&tid(2)) { Peer::Skipped } else { Peer::Unlisted };
     let wait = |p: &Pair, s: &SyncId, f: &dyn Fn(&osis_store::Named) -> Peer| p.a.opens.wait_for(&p.a.store, s, f).unwrap();
     assert!(wait(&p, &S, &|_| Peer::Unlisted), "open on a connection");
     assert!(!wait(&p, &S, &other), "only a skipped peer");
@@ -133,7 +133,7 @@ fn a_sync_id_just_joined_waits_for_a_peer_the_rosters_name_spec_sync_set_3() {
     assert!(!wait(&p, &may), "the same peer, told by its other record");
     p.a.store.with_tx(|t| t.record_create([8; 32], &named(3)).map(drop)).unwrap();
     p.a.restart();
-    assert!(wait(&p, &may) && !wait(&p, &|a| if a.actors().contains(&tid(3)) { Peer::Unlisted } else { Peer::MayHold }), "another peer, never told");
+    assert!(wait(&p, &may) && !wait(&p, &|a| if a.things().contains(&tid(3)) { Peer::Unlisted } else { Peer::MayHold }), "another peer, never told");
     let st3 = StepKeys::new(3, 0);
     p.a.table.set(s2, Some(reader(&s2, &read_secret(3, 0), &st3, &[], &[], &[])));
     p.a.settle();
@@ -884,10 +884,10 @@ fn a_peer_that_is_no_one_closes_once_no_connection_holds_its_record_spec_sync_op
 // it came. Else it stays there unjudged and unfollowed: b departing while away closes nothing of it,
 // and the next take, of a record in memory, judges nothing, serving S to a departed peer.
 #[test]
-#[ignore = "accounts: proofs"]
 fn a_take_refused_for_its_pair_leaves_nothing_unjudged_spec_sync_opens_6() {
     use osis_sync::types::ConnId;
-    let node = |n: u8, k: u8| Proven { node: Some(tid(k)), ..account(n) };
+    // node thing `k` of account `n`
+    let node = |n: u8, k: u8| Proven { named: osis_store::Named { claims: vec![osis_store::Claim { thing: tid(k), key: [k; 32], path: vec![tid(n)] }] }, ..Proven::default() };
     let st = StepKeys::new(1, 0);
     let rs = read_secret(1, 0);
     let side = |seed| {

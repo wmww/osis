@@ -28,17 +28,17 @@ pub(crate) fn walk_sides(p: &mut osis_engine::local_peer::Peer) -> usize {
 /// other, neither having seen the other's removal: `b` removes `a` at a later time (`w`), `a`
 /// removes `b` stamped earlier (`r`: the thief backdating, or a clock behind). Peer 2 and any
 /// peers after it hold neither yet.
-struct Fight {
-    lp: LocalPeer,
-    a: Tid,
-    b: Tid,
-    t: Tid,
-    w: Vec<CommitId>,
-    r: Vec<CommitId>,
+pub(crate) struct Fight {
+    pub(crate) lp: LocalPeer,
+    pub(crate) a: Tid,
+    pub(crate) b: Tid,
+    pub(crate) t: Tid,
+    pub(crate) w: Vec<CommitId>,
+    pub(crate) r: Vec<CommitId>,
 }
 
 /// Built once per `n` (`LocalPeer::cached`).
-fn fight(n: usize) -> Fight {
+pub(crate) fn fight(n: usize) -> Fight {
     let (lp, (a, b, t, w, r)) = LocalPeer::cached(&format!("disputes::fight/{n}"), || {
         let f = fight_built(n);
         (f.lp, (f.a, f.b, f.t, f.w, f.r))
@@ -78,7 +78,7 @@ fn new_ids(lp: &LocalPeer, i: usize, before: &BTreeSet<CommitId>) -> Vec<CommitI
 }
 
 /// Which of `a` and `b` peer `i` reads as admin of `t`.
-fn admins(f: &Fight, i: usize) -> (bool, bool) {
+pub(crate) fn admins(f: &Fight, i: usize) -> (bool, bool) {
     let r = f.lp.peers[i].engine.roster(&f.t);
     (r.contains_key(&f.a), r.contains_key(&f.b))
 }

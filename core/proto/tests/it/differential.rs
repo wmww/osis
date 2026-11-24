@@ -4,7 +4,7 @@
 //! re-encodes to its bytes (spec/wire.md §1, §12). Embedded structures of other subsystems
 //! (creation records, `box` values, AKs, value depth) are read by their own crates' rules.
 
-use osis_base::format::{MAX_BLOB, MAX_MESSAGE, MAX_VALUE_DEPTH};
+use osis_base::format::{MAX_BLOB, MAX_MESSAGE, MAX_PATH_THINGS, MAX_VALUE_DEPTH};
 use osis_base::{Ak, CreationRecord, Limits, Value, cbor};
 use osis_proto::Msg;
 use osis_proto::examples::messages;
@@ -120,10 +120,6 @@ fn claim_set(v: &Value) -> R {
 
 fn val(v: &Value) -> R {
     ok(!v.deeper_than(MAX_VALUE_DEPTH), "value depth")
-}
-
-fn creation(v: &Value) -> R {
-    ok(CreationRecord::from_value(v).is_some(), "creation")
 }
 
 fn max_reply(v: &Value) -> R {
@@ -266,12 +262,6 @@ fn beacons(a: &[Value]) -> R {
     boolean(more)
 }
 
-/// A header-only copy `[Header, signature, Opt(inner), [signature*], []]`.
-fn rotation(v: &Value) -> R {
-    let a = tuple(v, 5)?;
-    ok(arr(&a[4])?.is_empty(), "rotation sections")
-}
-
 fn records(v: &Value) -> R {
     let a = arr(v)?;
     let mut tids = Vec::new();
@@ -293,12 +283,12 @@ fn spec_decode(body: &[u8]) -> Result<(), &'static str> {
     let id = uint(&all[1]).filter(|i| *i < 1 << 32).ok_or("id")?;
     let a = &all[2..];
     // spec/wire.md §11.1, §11.2: pushes 0; requests and replies nonzero but an Error; the shared
-    // set's and the stream's requests and answers (every Fetch) top-bit; NoRecord 2^31
+    // set's and the stream's requests and answers (every Fetch, Want) top-bit; NoRecord 2^31
     let push = matches!(kind, 29 | 43..=46);
     let id_ok = match kind {
         0 => true,
         _ if push => id == 0,
-        19 | 20 | 36..=42 => id & TOP != 0 && (kind != 40 || id == TOP),
+        19 | 20 | 36..=42 | 47 | 48 => id & TOP != 0 && (kind != 40 || id == TOP),
         _ => id != 0,
     };
     let n = |k: usize| ok(a.len() == k, "arity");
@@ -376,13 +366,17 @@ fn spec_decode(body: &[u8]) -> Result<(), &'static str> {
         32 | 33 => {
             let proofs = |v: &Value| {
                 list(v, 0, 256, |p| {
-                    let p = tuple(p, 3)?;
-                    creation(&p[0])?;
+                    let p = tuple(p, 4)?;
+                    let me = CreationRecord::from_value(&p[0]).ok_or("record")?.tid();
                     b(&p[1], 32)?;
-                    b(&p[2], 64)
+                    b(&p[2], 64)?;
+                    list(&p[3], 0, MAX_PATH_THINGS, |t| b(t, 15))?;
+                    let path = arr(&p[3])?;
+                    let tids: std::collections::BTreeSet<&Value> = path.iter().collect();
+                    ok(tids.len() == path.len() && !path.iter().any(|t| matches!(t, Value::Bytes(t) if t.as_slice() == me.as_bytes())), "path")
                 })
             };
-            n(2).and_then(|_| proofs(&a[0])).and_then(|_| opt_of(&a[1], |r| list(r, 0, 256, rotation)))
+            n(3).and_then(|_| proofs(&a[0])).and_then(|_| list(&a[1], 0, 256, |c| arr(c).map(|_| ()))).and_then(|_| records(&a[2]))
         }
         34 => n(2).and_then(|_| b(&a[0], 32)).and_then(|_| list(&a[1], 0, (MAX_MESSAGE - 64) / 34, |t| b(t, 32))),
         35 => n(2).and_then(|_| b(&a[0], 32)).and_then(|_| opt_of(&a[1], |t| b(t, 32))),
@@ -404,8 +398,32 @@ fn spec_decode(body: &[u8]) -> Result<(), &'static str> {
         44 => n(1).and_then(|_| cursor(&a[0])),
         45 => n(1).and_then(|_| b(&a[0], 32)),
         46 => n(2).and_then(|_| list(&a[0], 0, 4096, |s| b(s, 16))).and_then(|_| boolean(&a[1])),
-        47 => n(1).and_then(|_| b(&a[0], 32)),
-        48 => n(1).and_then(|_| opt_of(&a[0], |t| b(t, 32))),
+        47 => n(2).and_then(|_| max_reply(&a[0])).and_then(|_| {
+            // groups of a sync ID and its commit IDs, each once per group, 1024 IDs in all
+            let total = std::cell::Cell::new(0usize);
+            list(&a[1], 1, 1024, |g| {
+                let p = tuple(g, 2)?;
+                b(&p[0], 16)?;
+                list(&p[1], 1, 1024, |x| b(x, 32))?;
+                let ids = arr(&p[1])?;
+                total.set(total.get() + ids.len());
+                ok(total.get() <= 1024, "want ids")?;
+                let distinct: std::collections::BTreeSet<String> = ids.iter().map(|x| format!("{x:?}")).collect();
+                ok(distinct.len() == ids.len(), "a commit ID twice")
+            })
+        }),
+        48 => n(1).and_then(|_| {
+            list(&a[0], 0, 1024, |x| {
+                let p = tuple(x, 2)?;
+                b(&p[0], 32)?;
+                opt_of(&p[1], |e| {
+                    let e = tuple(e, 3)?;
+                    bmax(&e[0], MAX_BLOB)?;
+                    b(&e[1], 57)?;
+                    opt_of(&e[2], |s| b(s, 64))
+                })
+            })
+        }),
         _ => return Err("unknown kind"),
     };
     ok(id_ok, "id")?;
@@ -521,7 +539,6 @@ fn mutate_embedded(v: &mut Value, r: &mut Rng) {
 // what `Msg::decode` accepts, on every example and its mutations, and an accepted body
 // re-encodes to its bytes
 #[test]
-#[ignore = "accounts: proofs"]
 fn decoder_agrees_with_the_spec_layouts_spec_wire_11_2() {
     let ms = messages();
     let cases = osis_base::testenv::large_n(200_000);

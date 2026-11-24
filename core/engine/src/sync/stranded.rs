@@ -31,7 +31,7 @@ use crate::error::{Error, Result};
 use crate::sync_ids::Certs;
 use osis_base::{CommitId, CreationRecord, Role, SyncId, Tid, Value};
 use osis_commit::CommitBlob;
-use osis_blob::HolderKeys;
+use osis_blob::Certificates;
 use osis_store::Shred;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -181,7 +181,7 @@ impl Engine {
     /// A stranded report's holder keys of `holder` (spec/wire.md §11.2 Stranded): its current
     /// `keys.0` commits each projected to that delta, with their evidence (projected, no `keys.0`
     /// but each commit's signer's own) and its records.
-    pub fn holder_keys(&mut self, holder: &Tid) -> Result<HolderKeys> {
+    pub fn holder_keys(&mut self, holder: &Tid) -> Result<Certificates> {
         let ev = self.evidence_now()?;
         let mut evidence = Certs::default();
         let mut own = Certs::default();
@@ -202,15 +202,7 @@ impl Engine {
         let mut certs = own;
         certs.extend(evidence);
         let (commits, records) = self.certs_values(&certs)?;
-        Ok(HolderKeys { commits, records })
-    }
-
-    /// The thing among `proven` holding write or above on read sync ID `s`'s actor, as this
-    /// node judges it (spec/permissions.md §4: who a Stranded message goes to).
-    pub fn writer_of(&mut self, s: &SyncId, proven: &[Tid]) -> Result<Option<Tid>> {
-        let Some((t, _)) = self.read_sync_id(s)? else { return Ok(None) };
-        let a = self.core.reader_of(&t);
-        Ok(proven.iter().find(|x| self.core.role_now(x, &a) >= Some(Role::Write)).copied())
+        Ok(Certificates { commits, records })
     }
 
     /// A stranded report (a Stranded message, or a stranded notice taken from this node's inbox):
@@ -219,7 +211,7 @@ impl Engine {
     /// node may rotate a role of at or below the holder's; then the keys are taken
     /// (`take_holder_keys`) and the re-seal asked for, met at the end of the actor's next complete
     /// pass (`pass_end`). Returns whether the ask is new.
-    pub fn take_stranded(&mut self, s: &SyncId, holder: &Tid, keys: &HolderKeys) -> Result<bool> {
+    pub fn take_stranded(&mut self, s: &SyncId, holder: &Tid, keys: &Certificates) -> Result<bool> {
         let Some((t, _)) = self.read_sync_id(s)? else { return Ok(false) };
         let actor = self.core.reader_of(&t);
         self.take_stranded_from(s, holder, keys, Carrier::Report { actor, sync_id: *s, holder: *holder })
@@ -228,7 +220,7 @@ impl Engine {
     /// `take_stranded` of a report carried by `from`: a Stranded message's report itself (the
     /// newest on its sync ID replacing the one before, `carriers::report_taken`), or the fire of a
     /// stranded notice.
-    pub(crate) fn take_stranded_from(&mut self, s: &SyncId, holder: &Tid, keys: &HolderKeys, from: Carrier) -> Result<bool> {
+    pub(crate) fn take_stranded_from(&mut self, s: &SyncId, holder: &Tid, keys: &Certificates, from: Carrier) -> Result<bool> {
         let Some((t, _)) = self.read_sync_id(s)? else { return Ok(false) };
         let a = self.core.reader_of(&t);
         if !self.may_reseal(&a, holder) {
@@ -272,7 +264,7 @@ impl Engine {
     /// commit, projected to those deltas, kept only if judged valid with every edge write it makes
     /// applied (`ingest_valid`), carried by `from` while it pends. Everything else is ignored.
     /// Returns the commits taken.
-    pub fn take_holder_keys(&mut self, holder: &Tid, keys: &HolderKeys, from: Option<Carrier>) -> Result<usize> {
+    pub fn take_holder_keys(&mut self, holder: &Tid, keys: &Certificates, from: Option<Carrier>) -> Result<usize> {
         let blobs: Vec<CommitBlob> = keys.commits.iter().filter_map(|v| CommitBlob::decode(&osis_base::encode(v)).ok()).collect();
         let records: BTreeMap<Tid, CreationRecord> = keys.records.iter().map(|r| (r.tid(), r.clone())).collect();
         // the authors of the holder's `keys.0` deltas carried: their cards are on the chain

@@ -809,21 +809,13 @@ impl Osis {
         }))
     }
 
-    /// This account's nodes: those holding read or above on it (a holder of sync alone keeps
-    /// the account's inbox and is no node).
+    /// This account's nodes: the things holding read or above on it (spec/permissions.md §8: an
+    /// account's nodes hold admin or write on it; a holder of sync alone keeps its inbox).
     /// `Unsupported` on a client with its own actor.
     pub fn nodes(&self) -> Result<Vec<AccountNode>> {
         self.local("nodes")?;
         let root = self.account_root();
-        self.engine(|e| -> Result<Vec<AccountNode>> {
-            let mut out = Vec::new();
-            for (m, edge) in e.roster(&root) {
-                if edge.role >= Role::Read && e.is_node(&m)? {
-                    out.push(AccountNode { node: m, role: edge.role });
-                }
-            }
-            Ok(out)
-        })
+        self.engine(|e| -> Result<Vec<AccountNode>> { Ok(e.roster(&root).into_iter().filter(|(_, edge)| edge.role >= Role::Read).map(|(node, edge)| AccountNode { node, role: edge.role }).collect()) })
     }
 
     /// Removes a node from this account. This is `set_role(account_root(), node, None, o)`, here because of

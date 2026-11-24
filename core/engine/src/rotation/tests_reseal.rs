@@ -922,12 +922,12 @@ fn j_moves_at_an_until_spec_sync_opens_4() {
     let s = e0.sync_id_of(&g).unwrap().expect("g's sync ID");
     let mut fx: osis_base::memo::Effects<(), crate::sync::J> = osis_base::memo::Effects::new("J at now");
     fx.want(());
-    assert_eq!(fx.settle(&(), || e0.judge_peer(&s, &[tids[1]]).unwrap()), Some((None, crate::sync::J::Reader)));
+    assert_eq!(fx.settle(&(), || e0.judge_peer(&s, &[crate::sync::ProvenThing { thing: tids[1], role: Some(Role::Admin) }]).unwrap()), Some((None, crate::sync::J::Reader)));
     assert!(fx.due().is_empty());
     lp.peers[0].clock.advance(2_000);
     let e0 = &mut lp.peers[0].engine;
     let now = e0.now();
     e0.set_now(now);
     assert_eq!(fx.due(), vec![()], "due at the until");
-    assert_eq!(fx.settle(&(), || e0.judge_peer(&s, &[tids[1]]).unwrap()), Some((Some(crate::sync::J::Reader), crate::sync::J::Departed)));
+    assert_eq!(fx.settle(&(), || e0.judge_peer(&s, &[crate::sync::ProvenThing { thing: tids[1], role: Some(Role::Admin) }]).unwrap()), Some((Some(crate::sync::J::Reader), crate::sync::J::Departed)));
 }

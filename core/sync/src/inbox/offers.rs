@@ -60,11 +60,21 @@ type Key = (SyncId, BlobId);
 pub trait Judge {
     /// The deposit key S's offers are signed with, for a fired thing from its deposit seed.
     fn deposit_key(&mut self, s: &SyncId, thing: Option<Tid>) -> Result<Option<SigningSecret>>;
+    /// The things `named`'s claims prove now, each with a role by its path (spec/sync-opens.md
+    /// §2), ascending.
+    fn proven(&mut self, named: &osis_store::Named) -> Vec<Tid>;
 }
 
 impl Judge for osis_engine::Engine {
     fn deposit_key(&mut self, s: &SyncId, thing: Option<Tid>) -> Result<Option<SigningSecret>> {
         Ok(self.signers(s, thing.as_ref())?.deposit)
+    }
+    fn proven(&mut self, named: &osis_store::Named) -> Vec<Tid> {
+        let p = osis_engine::Engine::proven(self, &named.claims, &osis_blob::Certificates::default()).unwrap_or_default();
+        let mut v: Vec<Tid> = p.iter().filter(|x| x.role.is_some()).map(|x| x.thing).collect();
+        v.sort();
+        v.dedup();
+        v
     }
 }
 
@@ -104,7 +114,7 @@ pub struct Offers {
     took: Vec<Key>,
     /// The offers to each recipient, for an actor counted anew at a connection.
     to: BTreeMap<Tid, BTreeSet<Key>>,
-    /// Each connection's counted actors (`Named::actors` of what its proofs named).
+    /// Each connection's counted things (`Judge::proven` of what its proofs named).
     who: Effects<ConnId, Vec<Tid>>,
     /// Each connection's record once its digests agreed there (`Net::agreed_on`).
     agreed: Effects<ConnId, Option<Source>>,
@@ -246,7 +256,7 @@ impl Offers {
                 continue;
             };
             let named = net.named(conn);
-            let Some((_, actors)) = self.who.settle(&conn, || named.actors()) else { continue };
+            let Some((_, actors)) = self.who.settle(&conn, || judge.proven(&named)) else { continue };
             // an actor counted anew: its offers may go there now; one no longer counted is
             // judged out as each of its offers comes up (`may_take`)
             for a in actors.iter().filter(|a| !c.actors.contains(a)) {

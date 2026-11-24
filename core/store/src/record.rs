@@ -1,16 +1,16 @@
 //! Durable per-peer records (spec/sync-opens.md §3): one per peer node a node has shared
-//! something with or that proved an actor to it, found by what the peer proves and the pair key
+//! something with or that proved a thing to it, found by what the peer proves and the pair key
 //! both hold, never by a node key.
 //!
 //! The rule: a record says only what need not be sent again, so losing one is a first contact.
-//! The record itself is its pair key, the actors it names and its place in the LRU order; all
+//! The record itself is its pair key, the claims it names and its place in the LRU order; all
 //! else is rows the modules of osis-sync keep in it (`record_put_row`), each module under its
 //! own tags and each row written by the transaction that makes it true. A record and every row
 //! of it go together (`records_evict`), and a sync ID leaving the node leaves every record
 //! (`records_forget_sync_id`).
 //!
 //! Rows, all catalog rows under `kind::RECORD`, keyed by a random ID so no row key holds r:
-//! `m` meta (total bytes, LRU sequence); `c id` the record; `a actor id` the actor index;
+//! `m` meta (total bytes, LRU sequence); `c id` the record; `a thing id` the index of the things its claims were signed as;
 //! `u seq id` least recently used first; `x id tag sync_id key` a module's row about a sync ID;
 //! `X sync_id tag key id` its index: what leaves with the sync ID, and which records hold a row
 //! (`records_with_row`); `w id tag key` a module's row about the record as a whole (no sync ID,
@@ -43,28 +43,40 @@ const WIDE: &[u8] = &[kind::RECORD, b'w'];
 /// A module row of a record: its sync ID, key and value.
 pub type RecordRow = (SyncId, Vec<u8>, Vec<u8>);
 
-/// The actors a record names: what the peer's last session proved and those proofs counted for
-/// then (spec/sync-opens.md §2-§3), each kept with what it is judged again by.
-#[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+/// A claim a peer's proof made (spec/sync-opens.md §2): the thing its key signed as, that key,
+/// and the path it claims through other things.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Claim {
+    pub thing: Tid,
+    pub key: [u8; 32],
+    pub path: Vec<Tid>,
+}
+
+/// What a record names: the claims of the peer's last session's proofs (spec/sync-opens.md §3),
+/// judged again on what this node holds whenever it is read.
+#[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Named {
-    /// Its node: the thing its first proof proved.
-    pub node: Option<Tid>,
-    /// The link keys it proved by their own keys, ascending.
-    pub link_keys: Vec<Tid>,
+    /// In proof order: the peer's node thing's first.
+    pub claims: Vec<Claim>,
 }
 
 impl Named {
-    /// Every actor named, ascending.
-    pub fn actors(&self) -> Vec<Tid> {
-        let mut v: Vec<Tid> = self.node.into_iter().chain(self.link_keys.iter().copied()).collect();
+    /// The peer's node thing: the thing its first proof proved.
+    pub fn node(&self) -> Option<Tid> {
+        self.claims.first().map(|c| c.thing)
+    }
+
+    /// Every thing a proof was signed as, ascending.
+    pub fn things(&self) -> Vec<Tid> {
+        let mut v: Vec<Tid> = self.claims.iter().map(|c| c.thing).collect();
         v.sort();
         v.dedup();
         v
     }
 
-    /// Names no actor: a connection keeping no record.
+    /// Names no claim: a connection keeping no record.
     pub fn is_empty(&self) -> bool {
-        self.node.is_none() && self.link_keys.is_empty()
+        self.claims.is_empty()
     }
 }
 
@@ -74,7 +86,7 @@ pub struct Record {
     pub id: RecordId,
     /// The pair key: 32 bytes only the two nodes know.
     pub r: [u8; 32],
-    /// The actors last named (`Transaction::record_create`).
+    /// The claims last named (`Transaction::record_create`).
     pub named: Named,
     /// Its place in the LRU order: higher is more recent.
     pub used: u64,
@@ -112,14 +124,12 @@ impl Record {
     fn encode(&self) -> Vec<u8> {
         let mut w = W::new();
         w.raw(&self.r);
-        let n = &self.named;
-        w.u8(u8::from(n.node.is_some()));
-        if let Some(x) = &n.node {
-            w.raw(x.as_bytes());
-        }
-        w.u32(n.link_keys.len() as u32);
-        for a in &n.link_keys {
-            w.raw(a.as_bytes());
+        w.u32(self.named.claims.len() as u32);
+        for c in &self.named.claims {
+            w.raw(c.thing.as_bytes()).raw(&c.key).u32(c.path.len() as u32);
+            for t in &c.path {
+                w.raw(t.as_bytes());
+            }
         }
         w.u64(self.used).u64(self.row_bytes);
         w.take()
@@ -128,25 +138,27 @@ impl Record {
     fn decode(id: RecordId, b: &[u8]) -> Result<Record, Error> {
         let mut r = R::new(b);
         let key: [u8; 32] = r.array()?;
-        let flags = r.u8()?;
-        if flags > 1 {
-            return Err(Error::Corrupt("peer record"));
-        }
-        let node = if flags & 1 != 0 { Some(Tid::from_bytes(r.array()?)) } else { None };
         let n = r.u32()? as usize;
-        let mut link_keys = Vec::with_capacity(n.min(b.len() / TID_LEN));
+        let mut claims = Vec::with_capacity(n.min(b.len() / TID_LEN));
         for _ in 0..n {
-            link_keys.push(Tid::from_bytes(r.array()?));
+            let thing = Tid::from_bytes(r.array()?);
+            let key = r.array()?;
+            let k = r.u32()? as usize;
+            let mut path = Vec::with_capacity(k.min(b.len() / TID_LEN));
+            for _ in 0..k {
+                path.push(Tid::from_bytes(r.array()?));
+            }
+            claims.push(Claim { thing, key, path });
         }
         let (used, row_bytes) = (r.u64()?, r.u64()?);
         r.end()?;
-        Ok(Record { id, r: key, named: Named { node, link_keys }, used, row_bytes })
+        Ok(Record { id, r: key, named: Named { claims }, used, row_bytes })
     }
 
     /// The bytes this record's rows take: what `RECORD_BUDGET` counts.
     fn cost(&self) -> u64 {
         let core = self.encode().len() + CORE.len() + 16;
-        let actors = self.named.actors().len() * (ACTOR.len() + TID_LEN + 16);
+        let actors = self.named.things().len() * (ACTOR.len() + TID_LEN + 16);
         let used = USED.len() + 8 + 16;
         (core + actors + used) as u64 + self.row_bytes
     }
@@ -201,7 +213,7 @@ impl Transaction<'_> {
         self.rng().fill_bytes(&mut id);
         let used = self.record_next_used()?;
         let rec = Record { id, r, named: named.clone(), used, row_bytes: 0 };
-        for a in &named.actors() {
+        for a in &named.things() {
             self.cat_put_to(&actor_key(a, &id), Vec::new(), Shred::No, false)?;
         }
         self.cat_put_to(&used_key(used, &id), Vec::new(), Shred::No, false)?;
@@ -220,10 +232,10 @@ impl Transaction<'_> {
         Ok(out)
     }
 
-    /// Records naming any of `actors`, most recently used first. O(records naming them).
-    pub fn records_of_actors(&mut self, actors: &[Tid]) -> Result<Vec<Record>, Error> {
+    /// Records with a claim signed as any of `things`, most recently used first. O(records naming them).
+    pub fn records_of_things(&mut self, things: &[Tid]) -> Result<Vec<Record>, Error> {
         let mut ids = BTreeSet::new();
-        for a in actors {
+        for a in things {
             self.cat_each(&[ACTOR, a.as_bytes()].concat(), |_, k, _| {
                 ids.insert(tail(&k)?);
                 Ok(())
@@ -243,10 +255,10 @@ impl Transaction<'_> {
     pub fn record_used(&mut self, id: &RecordId, named: &Named) -> Result<(), Error> {
         let Some(mut rec) = self.record(id)? else { return Err(Error::Corrupt("peer record")) };
         let before = rec.cost();
-        for a in &rec.named.actors() {
+        for a in &rec.named.things() {
             self.cat_remove(&actor_key(a, id), Shred::No)?;
         }
-        for a in &named.actors() {
+        for a in &named.things() {
             self.cat_put_to(&actor_key(a, id), Vec::new(), Shred::No, false)?;
         }
         self.cat_remove(&used_key(rec.used, id), Shred::No)?;
@@ -405,7 +417,7 @@ impl Transaction<'_> {
             t.cat_remove(&k, Shred::Yes).map(drop)
         })?;
         self.cat_each(&[WIDE, &id].concat(), |t, k, _| t.cat_remove(&k, Shred::Yes).map(drop))?;
-        for a in &rec.named.actors() {
+        for a in &rec.named.things() {
             self.cat_remove(&actor_key(a, &id), Shred::No)?;
         }
         self.cat_remove(&used_key(rec.used, &id), Shred::No)?;

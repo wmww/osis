@@ -292,10 +292,10 @@ fn a_step_needs_its_epochs_rotations_spec_sync_ids_6() {
     assert!(needs.iter().all(|c| e.core.ix.commits.contains_key(c)));
 }
 
-/// The link keys `e` proves as besides its node thing (`provers`: what it acts for on the wire).
+/// The link keys `e` proves as besides its node thing (`proving`: what it acts for on the wire).
 fn link_keys_held(e: &mut osis_engine::Engine) -> BTreeSet<Tid> {
     let me = e.me();
-    e.provers().unwrap().iter().map(|(_, r)| r.tid()).filter(|t| *t != me).collect()
+    e.proving().unwrap().provers.iter().map(|p| p.record.tid()).filter(|t| *t != me).collect()
 }
 
 // spec/permissions.md §7 (First contact: the redeemer proves L until its join is held, then keeps

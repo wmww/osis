@@ -32,7 +32,7 @@ use dials::{Dials, NodePeers, Why};
 use crate::unread::Unread;
 use crate::leave::Leave;
 use crate::life::Life;
-use osis_base::{Mono, SyncId, Tid, WallMs};
+use osis_base::{Mono, SyncId, WallMs};
 use osis_crypto::NodeRng;
 use osis_engine::Engine;
 use osis_blob::Address;
@@ -92,7 +92,7 @@ struct Driver {
     changed: u64,
     /// The actors this node proves for, each with the key it proves with, as of the last
     /// owner's write.
-    proving: Vec<(Tid, [u8; 32])>,
+    proving: Vec<osis_store::Claim>,
     /// A store failure's stretch, while no commit of the store has landed since it began.
     failing: Option<Stretch>,
     /// Restarts in place so far (tests).
@@ -455,7 +455,7 @@ impl Node {
         };
         // by the rosters, not by who has S open: a sync ID just joined is open at no peer yet;
         // a failed read keeps the wait waiting
-        self.status.wait(&net, scope, |_| carrying, |s| engine.roster_holders(s).map_or(true, |r| r.any()))
+        self.status.wait(&net, scope, |_| carrying, |s| engine.others_may_hold(s).unwrap_or(true))
     }
 
     fn net(&self) -> NetView<'_> {
@@ -511,12 +511,12 @@ impl Node {
     }
 
     /// spec/sync-opens.md §1: a connection proves once, at its start: one where this node now
-    /// acts for an actor it did not act for when it proved there (none, a policy proving nothing,
-    /// counts) closes, and its dialer dials again. The actors it acts for move only by its owner's
-    /// writes (a link key held), so they are read at `Wrote`, compared, and the sessions walked
-    /// only on a move.
+    /// acts for a claim it did not act for when it proved there (none, a policy proving nothing,
+    /// counts) closes, and its dialer dials again. What it acts for moves by writes (a link key
+    /// held, an account made or joined), so it is read at `Wrote`, compared, and the sessions
+    /// walked only on a move.
     fn proving(&mut self, out: &mut Vec<Out>) -> Result<()> {
-        let mut now: Vec<(Tid, [u8; 32])> = self.engine.provers()?.into_iter().map(|(k, r)| (r.tid(), k.verifying_key().to_bytes())).collect();
+        let mut now: Vec<osis_store::Claim> = self.engine.proving()?.provers.iter().map(|p| p.claim()).collect();
         now.sort();
         if now == self.driver.proving {
             return Ok(());
@@ -526,7 +526,7 @@ impl Node {
         for c in stale {
             self.driver.dials.redial_now(c);
             out.push(Out::Close(c));
-            self.closed(c, "this node acts for an actor it did not prove there", out);
+            self.closed(c, "this node acts for a thing it did not prove there", out);
         }
         Ok(())
     }

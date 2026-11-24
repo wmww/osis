@@ -14,10 +14,12 @@
 use crate::types::{ConnId, Cx, NodeKey, Out};
 use osis_base::{Mono, Tid, WallMs};
 use osis_proto::frame::MAX_HELLO_BODY;
-use osis_proto::limits::{MAX_ID, MAX_MESSAGE, MAX_PROOFS, NO_RECORD_ID, REPLY_BUDGET, SMALL_REPLY, TOP_BIT, WINDOW};
+use osis_proto::limits::{MAX_ID, MAX_MESSAGE, MAX_PROOF_COPIES, MAX_PROOFS, NO_RECORD_ID, REPLY_BUDGET, SMALL_REPLY, TOP_BIT, WINDOW};
 use osis_proto::msg::{Flow, answers, peek_head};
 use osis_proto::prove::verified;
-use osis_proto::{ActorProof, ClockSamples, Code, FrameDecoder, Hello, Msg, OFFSET_DIAGNOSTIC_MS, OffsetSample, PROTOCOL_VERSION, Prover, encode_frame, negotiate};
+use osis_blob::Certificates;
+use osis_proto::{ClockSamples, Code, FrameDecoder, Hello, Msg, OFFSET_DIAGNOSTIC_MS, OffsetSample, PROTOCOL_VERSION, Proof, Prover, encode_frame, negotiate};
+use osis_store::{Claim, Named};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 /// A request's id on its connection (spec/wire.md §11.2).
@@ -129,20 +131,30 @@ impl Incoming {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Close(pub &'static str);
 
-/// What the peer proved on this connection (spec/sync-opens.md §2).
+/// What the peer proved on this connection (spec/sync-opens.md §2): its proofs' claims, each
+/// signature verified here, and the copies they came with, kept with the connection alone. What
+/// they prove is the engine's judgement, made on what this node holds now (`Engine::proven`).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Proven {
-    /// The peer's node: the thing its first proof proved.
-    pub node: Option<Tid>,
-    /// The link keys proved by their own signing keys, with that key (a static entry is
-    /// checked against it), known here or not.
-    pub link_keys: BTreeMap<Tid, [u8; 32]>,
+    /// What the record names: the claims in proof order, the peer's node thing's first.
+    pub named: Named,
+    pub copies: Certificates,
 }
 
 impl Proven {
-    /// Every thing proved: the node thing, the link keys.
-    pub fn actors(&self) -> Vec<Tid> {
-        self.node.into_iter().chain(self.link_keys.keys().copied()).collect()
+    /// The peer's node thing: the thing its first proof was signed as.
+    pub fn node(&self) -> Option<Tid> {
+        self.named.node()
+    }
+
+    /// Proved nothing.
+    pub fn is_empty(&self) -> bool {
+        self.named.is_empty()
+    }
+
+    /// The keys its proofs were signed by (a link key's static entry is checked against them).
+    pub fn keys(&self) -> impl Iterator<Item = &[u8; 32]> + '_ {
+        self.named.claims.iter().map(|c| &c.key)
     }
 }
 
@@ -208,7 +220,7 @@ pub struct Session {
     frames: FrameDecoder,
     proofs: Proofs,
     proven: Proven,
-    acted_for: Option<Vec<(Tid, [u8; 32])>>,
+    acted_for: Option<Vec<Claim>>,
     /// The wall clock (Hello, Ping and Pong carry it) and the monotonic one (the stall clock).
     now: WallMs,
     mono: Mono,
@@ -461,10 +473,10 @@ impl Session {
         self.proofs == Proofs::Done
     }
 
-    /// The actors this node acted for when it proved on this connection (its Prove, or its
-    /// Proved), each with its key (an account's: its signing key at that epoch), whether or not
-    /// its policy sent their proofs; none before it proved, and on a client connection.
-    pub fn acted_for(&self) -> Option<&[(Tid, [u8; 32])]> {
+    /// The claims this node acted for when it proved on this connection (its Prove, or its
+    /// Proved), whether or not its policy sent their proofs; none before it proved, and on a
+    /// client connection.
+    pub fn acted_for(&self) -> Option<&[Claim]> {
         self.acted_for.as_deref()
     }
 
@@ -653,39 +665,35 @@ impl Session {
         Ok(())
     }
 
-    /// The dialer's Prove (spec/sync-opens.md §2 Order): its node thing, then its link keys;
-    /// none where its policy proves nothing to this peer (`Policy::identify`).
+    /// The dialer's Prove (spec/sync-opens.md §2 Order): its node thing's proofs, then its
+    /// link keys'; none where its policy proves nothing to this peer (`Policy::identify`).
     fn prove(&mut self, cx: &mut Cx) -> Result<(), Close> {
         let Some(b) = self.binding else { return Ok(()) };
-        let proofs = self.signed(cx, cx.policy.identify(None), false, &b.listener_challenge)?;
-        self.send_request(None, Msg::Prove { id: 0, proofs });
+        let (proofs, copies) = self.signed(cx, cx.policy.identify(None), false, &b.listener_challenge)?;
+        self.send_request(None, Msg::Prove { id: 0, proofs, copies });
         Ok(())
     }
 
     /// This node's proofs over `challenge`, by `by_listener`, in proof order, at most
-    /// `MAX_PROOFS`; none unless `identify` (its policy). What it acts for is noted either way.
-    fn signed(&mut self, cx: &mut Cx, identify: bool, by_listener: bool, challenge: &[u8; 32]) -> Result<Vec<ActorProof>, Close> {
-        let provers = cx.engine.provers().map_err(|_| Close("engine"))?;
-        self.acted_for = Some(provers.iter().map(|(key, record)| (record.tid(), key.verifying_key().to_bytes())).collect());
+    /// `MAX_PROOFS`, with their copies, at most `MAX_PROOF_COPIES`; none unless `identify` (its
+    /// policy). What it acts for is noted either way.
+    fn signed(&mut self, cx: &mut Cx, identify: bool, by_listener: bool, challenge: &[u8; 32]) -> Result<(Vec<Proof>, Certificates), Close> {
+        let p = cx.engine.proving().map_err(|_| Close("engine"))?;
+        self.acted_for = Some(p.provers.iter().map(|x| x.claim()).collect());
         if !identify {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), Certificates::default()));
         }
         let listener = self.listener_key.0;
-        Ok(provers.into_iter().take(MAX_PROOFS).map(|(key, record)| Prover { key, record }.sign(by_listener, challenge, &listener)).collect())
+        let proofs = p.provers.into_iter().take(MAX_PROOFS).map(|x| Prover { key: x.key, record: x.record, path: x.path }.sign(by_listener, challenge, &listener)).collect();
+        let mut copies = p.copies;
+        copies.commits.truncate(MAX_PROOF_COPIES);
+        Ok((proofs, copies))
     }
 
-    /// What verified proofs show: the first proof the peer's node thing, every other a link key.
-    fn judge(&self, proofs: Vec<ActorProof>) -> Proven {
-        let mut p = Proven::default();
-        for (i, a) in proofs.into_iter().enumerate() {
-            let t = a.actor();
-            if i == 0 {
-                p.node = Some(t);
-            } else {
-                p.link_keys.insert(t, a.key);
-            }
-        }
-        p
+    /// What verified proofs claim, with the copies they came with.
+    fn judge(&self, proofs: Vec<Proof>, copies: Certificates) -> Proven {
+        let claims = proofs.into_iter().map(|p| Claim { thing: p.thing(), key: p.key, path: p.path }).collect();
+        Proven { named: Named { claims }, copies }
     }
 
     /// One frame after Hello, and how it moves the stall clock.
@@ -740,7 +748,7 @@ impl Session {
         self.reserved += a;
         match m {
             Msg::Ping { .. } => self.answer(id, Msg::Pong { id, wall_ms: self.now.0 }),
-            Msg::Prove { proofs, .. } => self.proved_to(id, proofs, cx, ins)?,
+            Msg::Prove { proofs, copies, .. } => self.proved_to(id, proofs, copies, cx, ins)?,
             m => ins.push(Incoming::Request(id, m)),
         }
         Ok(())
@@ -748,19 +756,19 @@ impl Session {
 
     /// The dialer's Prove at the listener: its proofs judged, then the listener's own, by its
     /// policy (spec/sync-opens.md §1 Policy, §2 Order).
-    fn proved_to(&mut self, id: RequestId, proofs: Vec<ActorProof>, cx: &mut Cx, ins: &mut Vec<Incoming>) -> Result<(), Close> {
+    fn proved_to(&mut self, id: RequestId, proofs: Vec<Proof>, copies: Certificates, cx: &mut Cx, ins: &mut Vec<Incoming>) -> Result<(), Close> {
         let Some(b) = self.binding.filter(|_| !self.dialer && self.proofs == Proofs::Proving) else {
             self.answer(id, Msg::Error { id, code: Code::MALFORMED });
             return Ok(());
         };
-        let proven = self.judge(verified(proofs, false, &b.listener_challenge, &b.listener_key));
+        let proven = self.judge(verified(proofs, false, &b.listener_challenge, &b.listener_key), copies);
         if !cx.policy.sync_with(&proven) {
             return Err(Close("policy"));
         }
-        let proofs = self.signed(cx, cx.policy.identify(Some(&proven)), true, &b.dialer_challenge)?;
+        let (proofs, copies) = self.signed(cx, cx.policy.identify(Some(&proven)), true, &b.dialer_challenge)?;
         self.proven = proven;
         self.proofs = Proofs::Done;
-        self.answer(id, Msg::Proved { id, proofs });
+        self.answer(id, Msg::Proved { id, proofs, copies });
         ins.push(Incoming::Proved);
         Ok(())
     }
@@ -796,9 +804,9 @@ impl Session {
     /// The answer to the session's own Prove or Ping.
     fn own_reply(&mut self, kind: u64, m: Msg, cx: &mut Cx, ins: &mut Vec<Incoming>) -> Result<(), Close> {
         match (kind, m) {
-            (32, Msg::Proved { proofs, .. }) => {
+            (32, Msg::Proved { proofs, copies, .. }) => {
                 let Some(b) = self.binding else { return Ok(()) };
-                self.proven = self.judge(verified(proofs, true, &b.dialer_challenge, &b.listener_key));
+                self.proven = self.judge(verified(proofs, true, &b.dialer_challenge, &b.listener_key), copies);
                 if !cx.policy.sync_with(&self.proven) {
                     return Err(Close("policy"));
                 }

@@ -4,41 +4,42 @@
 use crate::common::*;
 use osis_base::SyncId;
 use osis_crypto::SeededRng;
-use osis_store::{Named, RecordId, Shred, Store, Transaction};
+use osis_store::{Claim, Named, RecordId, Shred, Store, Transaction};
 use std::collections::BTreeSet;
 
 fn l(n: u8) -> SyncId {
     SyncId([n; 16])
 }
 
-/// A record naming `actors` as link keys.
-fn named(actors: &[osis_base::Tid]) -> Named {
-    Named { link_keys: actors.to_vec(), ..Named::default() }
+/// A record naming a claim signed as each of `things`, with no path.
+fn named(things: &[osis_base::Tid]) -> Named {
+    Named { claims: things.iter().map(|t| Claim { thing: *t, key: [0; 32], path: Vec::new() }).collect() }
 }
 
-// a record keeps what it names as named (spec/sync-opens.md §3), and is found by each actor it
-// names
+// a record keeps what it names as named (spec/sync-opens.md §3), and is found by each thing its
+// claims were signed as
 #[test]
 fn a_record_keeps_what_it_names() {
     let (_d, mut rng, mut s) = fresh(cfg());
-    let n = Named { node: Some(tid(2)), link_keys: vec![tid(3)] };
+    let mut n = named(&[tid(2), tid(3)]);
+    n.claims[0].path = vec![tid(4)];
     let mut t = s.transaction(&mut rng).unwrap();
     let id = t.record_create([1; 32], &n).unwrap();
     t.commit().unwrap();
     let mut t = s.transaction(&mut rng).unwrap();
     assert_eq!(t.record(&id).unwrap().unwrap().named, n);
     for a in [2, 3] {
-        assert_eq!(t.records_of_actors(&[tid(a)]).unwrap().len(), 1, "found by actor {a}");
+        assert_eq!(t.records_of_things(&[tid(a)]).unwrap().len(), 1, "found by thing {a}");
     }
-    let m = Named { node: Some(tid(1)), ..Named::default() };
+    let m = named(&[tid(1)]);
     t.record_used(&id, &m).unwrap();
     assert_eq!(t.record(&id).unwrap().unwrap().named, m, "named anew");
-    assert!(t.records_of_actors(&[tid(2)]).unwrap().is_empty(), "no longer found by the old node");
+    assert!(t.records_of_things(&[tid(2)]).unwrap().is_empty(), "no longer found by the old node");
 }
 
-fn create(s: &mut Store, rng: &mut SeededRng, r: u8, actor: u8) -> RecordId {
+fn create(s: &mut Store, rng: &mut SeededRng, r: u8, thing: u8) -> RecordId {
     let mut t = s.transaction(rng).unwrap();
-    let id = t.record_create([r; 32], &named(&[tid(actor)])).unwrap();
+    let id = t.record_create([r; 32], &named(&[tid(thing)])).unwrap();
     t.commit().unwrap();
     id
 }
@@ -52,9 +53,9 @@ fn crash_at_any_write_leaves_a_record_whole_or_absent() {
         t.record_put_row(&id, b'm', &l(1), b"", b"member".to_vec()).unwrap();
         t.record_put_wide_row(&id, b'c', b"", b"cur".to_vec()).unwrap();
     };
-    crash_at_each_write(0..40, |_, _| (), work, |k, t, _| match t.records_of_actors(&[tid(1)]).unwrap().as_slice() {
+    crash_at_each_write(0..40, |_, _| (), work, |k, t, _| match t.records_of_things(&[tid(1)]).unwrap().as_slice() {
         [] => {
-            assert!(t.records_of_actors(&[tid(2)]).unwrap().is_empty(), "crash at write {k}: an actor index row outlived its record");
+            assert!(t.records_of_things(&[tid(2)]).unwrap().is_empty(), "crash at write {k}: a thing index row outlived its record");
             assert_eq!(t.records_total().unwrap(), 0, "crash at write {k}: a total without a record");
             assert!(t.records_with_row(&l(1), b'm', b"", 10).unwrap().is_empty(), "crash at write {k}: an index row without its record");
             false
@@ -144,7 +145,7 @@ fn eviction_drops_the_least_recently_used_not_in_use_whole() {
     assert!(t.record(&a).unwrap().is_none(), "the least recently used not in use goes");
     assert!(t.record(&c).unwrap().is_some(), "a record in use stays");
     assert!(t.record(&b).unwrap().is_some());
-    assert!(t.records_of_actors(&[tid(1)]).unwrap().is_empty(), "with its actor rows");
+    assert!(t.records_of_things(&[tid(1)]).unwrap().is_empty(), "with its thing rows");
     assert!(t.record_tag_rows(&a, b'm').unwrap().is_empty() && t.record_wide_rows(&a, b'F').unwrap().is_empty(), "and its rows");
     assert!(t.records_with_row(&l(1), b'm', b"", 10).unwrap().is_empty(), "and their index");
     assert!(t.records_total().unwrap() < total - 1000);
@@ -167,7 +168,7 @@ fn a_copied_or_restored_store_keeps_its_records_as_of_the_copy() {
     t.commit().unwrap();
     let mut c = reopen(&copy);
     let mut t = c.transaction(&mut rng).unwrap();
-    let held = t.records_of_actors(&[tid(1)]).unwrap();
+    let held = t.records_of_things(&[tid(1)]).unwrap();
     assert_eq!(held.len(), 1, "the record made after the copy is not in it");
     assert_eq!(held[0].r, [1; 32], "the pair key is the copy's own, as it was");
     assert_eq!(t.record_get_wide_row(&a, b'c', b"").unwrap(), None, "and its rows as of the copy");
@@ -198,9 +199,9 @@ fn the_index_finds_records_by_exact_row() {
     assert!(t.records_with_row(&l(1), b'k', &[6; 32], 10).unwrap().is_empty());
 }
 
-// the lookup reads the records of the proven actors, however many others the node keeps
+// the lookup reads the records of the proven things, however many others the node keeps
 #[test]
-fn a_lookup_reads_only_the_records_of_the_proven_actors() {
+fn a_lookup_reads_only_the_records_of_the_proven_things() {
     for n in [10u32, 100] {
         let (_d, mut rng, mut s) = fresh(cfg());
         let mut t = s.transaction(&mut rng).unwrap();
@@ -210,7 +211,7 @@ fn a_lookup_reads_only_the_records_of_the_proven_actors() {
             t.record_create([1; 32], &named(&[osis_base::Tid::from_bytes(a)])).unwrap();
         }
         t.record_create([2; 32], &named(&[tid(0xfe)])).unwrap();
-        assert_eq!(t.records_of_actors(&[tid(0xfe)]).unwrap().len(), 1, "at n = {n}");
+        assert_eq!(t.records_of_things(&[tid(0xfe)]).unwrap().len(), 1, "at n = {n}");
     }
 }
 
@@ -244,7 +245,7 @@ fn owned_rows_go_with_the_record_and_the_sync_id() {
 }
 
 // spec: none (notes/local-store.md, Stamps): a memo reading a module's rows, absent ones
-// included, holds while records are used (each use moves the record's LRU and actor rows): those
+// included, holds while records are used (each use moves the record's LRU and thing rows): those
 // rows share no stamp table with the module rows
 #[test]
 fn using_a_record_moves_no_reader_of_module_rows() {

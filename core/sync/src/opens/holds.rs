@@ -6,18 +6,18 @@ use super::cred::{Shown, Tested};
 use crate::session::Proven;
 use crate::types::{Credential, Cursor, Cx, Holding, Position, RecordId};
 use crate::unread::{Unread, UnreadCredentials};
-use osis_base::{SyncId, Tid};
+use osis_base::SyncId;
 use osis_crypto::Epoch;
-use osis_engine::sync::{J, Path, ReadCredentials};
+use osis_engine::sync::{J, Path, ProvenThing, ReadCredentials};
 use osis_blob::{Step, StepId};
 use osis_proto::{BehindItem, Code, DepositItem, Grant, SharedItem};
 use osis_base::memo::Effects;
 use osis_store::Named;
 use std::sync::Arc;
 
-/// What `proven` counts for at its proof (spec/sync-opens.md §2): its node thing and its link keys.
+/// What a record of `proven`'s connection names (spec/sync-opens.md §3): its claims.
 pub fn named(proven: &Proven) -> Named {
-    Named { node: proven.node, link_keys: proven.link_keys.keys().copied().collect() }
+    proven.named.clone()
 }
 
 
@@ -102,18 +102,20 @@ pub trait Holds {
     /// What a connection's proofs count for at its proof (spec/sync-opens.md §2): what its
     /// record names (`named`).
     fn named(&mut self, proven: &Proven) -> Named;
-    /// The actors `named` counts for now (`counted`), ascending.
-    fn counts(&mut self, named: &Named) -> Vec<Tid>;
-    /// J of a peer's actors (`counts`) for S.
-    fn judge(&mut self, s: &SyncId, actors: &[Tid]) -> J;
+    /// What `named`'s claims prove now, with `copies` (none for a record judged with no
+    /// connection; `Engine::proven`).
+    fn counts(&mut self, named: &Named, copies: &osis_blob::Certificates) -> Vec<ProvenThing>;
+    /// J of a peer whose proofs prove `proven` (`counts`) for S.
+    fn judge(&mut self, s: &SyncId, proven: &[ProvenThing]) -> J;
     /// J for S of the peer record `rec` names (`named`), now (`judge` of `counts`), for member S
     /// of `rec`, which is followed from then on, across its connections: `standing_due` gives it
     /// once anything this read moves (the peer's removal or demotion, its account's revocation,
     /// its node's removal, an `until` passing; spec/sync-opens.md §6). Followed and nothing it
     /// read moved, the value kept, read nothing again. `None`: the peer is no one (`awaited` of
     /// a `named` that names someone is empty; spec/sync-opens.md §3 who it may be), so it never
-    /// resumes the record.
-    fn standing(&mut self, rec: RecordId, s: &SyncId, named: &Named) -> Option<J>;
+    /// resumes the record. `copies`: those of the connection holding `rec` (none with none): a
+    /// member whose record's connection moves is judged with its copies at its next due.
+    fn standing(&mut self, rec: RecordId, s: &SyncId, named: &Named, copies: &osis_blob::Certificates) -> Option<J>;
     /// The members followed (`standing`) whose J may have moved since the last call.
     fn standing_due(&mut self) -> Vec<(RecordId, SyncId)>;
     /// Member S of `rec` is followed no more.
@@ -317,15 +319,15 @@ impl Holds for NodeHolds<'_, '_> {
         named(proven)
     }
 
-    fn counts(&mut self, named: &Named) -> Vec<Tid> {
-        named.actors()
+    fn counts(&mut self, named: &Named, copies: &osis_blob::Certificates) -> Vec<ProvenThing> {
+        self.cx.engine.proven(&named.claims, copies).map(|p| (*p).clone()).unwrap_or_default()
     }
 
-    fn judge(&mut self, s: &SyncId, actors: &[Tid]) -> J {
-        self.cx.engine.judge_peer(s, actors).unwrap_or(J::Unknown)
+    fn judge(&mut self, s: &SyncId, proven: &[ProvenThing]) -> J {
+        self.cx.engine.judge_peer(s, proven).unwrap_or(J::Unknown)
     }
 
-    fn standing(&mut self, rec: RecordId, s: &SyncId, named: &Named) -> Option<J> {
+    fn standing(&mut self, rec: RecordId, s: &SyncId, named: &Named, copies: &osis_blob::Certificates) -> Option<J> {
         let k = (rec, *s);
         if let Some(j) = self.fx.standing.current(&k) {
             return j;
@@ -334,7 +336,8 @@ impl Holds for NodeHolds<'_, '_> {
         let engine = &mut *self.cx.engine;
         let mut j = None;
         self.fx.standing.settle(&k, || {
-            j = Some(engine.judge_peer(s, &named.actors()).unwrap_or(J::Unknown));
+            let proven = engine.proven(&named.claims, copies).map(|p| (*p).clone()).unwrap_or_default();
+            j = Some(engine.judge_peer(s, &proven).unwrap_or(J::Unknown));
             j
         });
         j

@@ -143,32 +143,6 @@ pub(crate) fn ts_at(now: u64) -> osis_base::Ts {
 }
 
 impl Core {
-    /// The things holding a role on `start`, directly or through the things holding it, that a
-    /// connection can prove (`provable`): who may hold it.
-    pub(crate) fn provable_holders_of(&self, start: Tid) -> BTreeSet<Tid> {
-        let mut seen = BTreeSet::from([start]);
-        let mut todo = vec![start];
-        let mut out = BTreeSet::new();
-        while let Some(x) = todo.pop() {
-            for (m, _) in self.key_holders(&x) {
-                if !seen.insert(m) {
-                    continue;
-                }
-                if self.provable(&m) {
-                    out.insert(m);
-                }
-                todo.push(m);
-            }
-        }
-        out
-    }
-
-    /// Whether a connection can prove `t`: a key holds a grant on it (its record's key, or a key
-    /// grant), and a proof is by such a key (spec/sync-opens.md §2).
-    pub(crate) fn provable(&self, t: &Tid) -> bool {
-        self.created(t).is_some_and(|r| r.key().is_some()) || self.timelines().key_grants(t, None).values().next().is_some()
-    }
-
     /// The typed state of `keys.0` of `tid`.
     pub(crate) fn keys_in(tx: &mut Tx<'_>, tid: &Tid) -> Result<Option<Keys>> {
         Ok(tx.state(tid, &ak("keys.0")?)?.and_then(Fragment::read).and_then(|v| ct::KEYS.decode(&v).ok()))
@@ -189,13 +163,6 @@ impl Core {
     /// with a key or an unknown thing.
     pub(crate) fn mint_admin(&self, tid: &Tid) -> Option<Tid> {
         self.created(tid)?.mint_admin()
-    }
-
-    /// Whether `t` is a node thing: minted with a key, and no link key (spec/sync-set.md §1).
-    /// Interim (notes/accounts-switch-brief.md, connection proofs): read where a node's key
-    /// actor was, until proofs state their paths.
-    pub fn is_node(&self, t: &Tid) -> bool {
-        self.created(t).is_some_and(|r| r.key().is_some() && r.link.is_none())
     }
 
     /// Current holders of `actor` with their role and `until` (alive edges), its record edge
@@ -269,11 +236,6 @@ pub(crate) fn recipient(tx: &mut Tx<'_>, holder: Tid, role: Role) -> Result<Reci
 /// two) (`sync_ids::owned_in`).
 pub(crate) fn sync_id_of(tx: &mut Tx<'_>, tid: &Tid) -> Result<Option<SyncId>> {
     Ok(sync_ids::owned_in(tx, tid)?.into_keys().next_back())
-}
-
-/// Whether `t` is a node (`Core::is_node`).
-pub(crate) fn is_node(tx: &mut Tx<'_>, t: &Tid) -> Result<bool> {
-    Ok(tx.core.is_node(t))
 }
 
 /// `secrets.0` of `actor`, decoded (`Core::secrets_read`).
@@ -436,11 +398,6 @@ impl Engine {
         e.read.newest_held().map(|(_, s)| osis_crypto::role_kem(s))
     }
 
-    /// Whether `t` is a node (`Core::is_node`).
-    pub fn is_node(&mut self, t: &Tid) -> Result<bool> {
-        let t = *t;
-        self.read(|tx| is_node(tx, &t))
-    }
 
     /// Lets go of a link key held by `hold_link_key`; a followed link naming it still holds it.
     pub fn drop_link_key(&mut self, tid: &Tid) {

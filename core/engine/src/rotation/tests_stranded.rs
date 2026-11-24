@@ -27,7 +27,7 @@ fn held(lp: &LocalPeer, i: usize, ids: &[CommitId]) -> usize {
     ids.iter().filter(|c| lp.peers[i].engine.header(c).is_some()).count()
 }
 
-fn ids_of(keys: &osis_blob::HolderKeys) -> Vec<CommitId> {
+fn ids_of(keys: &osis_blob::Certificates) -> Vec<CommitId> {
     keys.commits.iter().map(|v| osis_commit::CommitBlob::decode(&osis_base::encode(v)).unwrap().id()).collect()
 }
 
@@ -88,7 +88,7 @@ fn holder_keys_take_no_edge_write_off_the_chain_spec_permissions_4() {
     let c = lp.peers[2].engine.grant(&x, &p1, &edge(Role::Read)).unwrap().commits[0];
     let limits = osis_base::Limits::new(osis_base::format::MAX_OBJECT_DEPTH, osis_base::format::MAX_BLOB);
     let v = osis_base::decode(&lp.peers[2].engine.run(|tx| tx.get_commit(&c)).unwrap().unwrap().encode(), &limits).unwrap();
-    let keys = osis_blob::HolderKeys { commits: vec![v], records: Vec::new() };
+    let keys = osis_blob::Certificates { commits: vec![v], records: Vec::new() };
     assert_eq!(lp.peers[0].engine.take_holder_keys(&t, &keys, None).unwrap(), 0);
     assert!(lp.peers[0].engine.header(&c).is_none(), "the grant on X not kept");
 }
@@ -101,7 +101,7 @@ fn asks(lp: &mut LocalPeer, g: Tid) -> Vec<(Tid, bool)> {
 /// Peer 0 takes a report from holder `m` on `g` (no keys) and runs a pass end's re-seals.
 fn report_and_pass(lp: &mut LocalPeer, g: Tid, m: Tid) {
     let s = lp.peers[0].engine.sync_ids(&g).unwrap()[0].id;
-    assert!(lp.peers[0].engine.take_stranded(&s, &m, &osis_blob::HolderKeys::default()).unwrap(), "asked");
+    assert!(lp.peers[0].engine.take_stranded(&s, &m, &osis_blob::Certificates::default()).unwrap(), "asked");
     lp.peers[0].engine.reseal_run(&g).unwrap();
 }
 
@@ -627,7 +627,7 @@ fn a_report_letting_go_forgets_what_only_it_carries_spec_commits_4() {
     }
     lp.peers[0].receive(&b2, Vec::new()).unwrap();
     assert!([d1, d2].iter().all(|d| lp.peers[0].engine.pends(d)) && awaited_at(&lp.peers[0].engine, &w1));
-    let mut keys = osis_blob::HolderKeys::default();
+    let mut keys = osis_blob::Certificates::default();
     keys.commits.push(osis_base::decode(&b3, &osis_base::Limits::new(osis_base::format::MAX_OBJECT_DEPTH, osis_base::format::MAX_BLOB)).unwrap());
     // the newer report: D3 rides it alone (off M's chain, so it is not taken from it)
     lp.peers[0].engine.take_stranded(&s, &m, &keys).unwrap();

@@ -1710,6 +1710,34 @@ impl Engine {
         r.map(Some)
     }
 
+    /// `f` of this node's state with `records` and `copies` taken in as any receipt takes them in
+    /// (verified, applied, the sides their receipt records, spec/permissions.md §5.1 Held first),
+    /// all of it undone after: a trial, for one judgement alone (spec/sync-opens.md §2). A copy
+    /// that is bad input or does not apply is as if not received. Invariant: nothing of the
+    /// trial stays (the transaction rolls back), so a peer's copies change nothing this node holds.
+    pub(crate) fn trial<T>(&mut self, records: Vec<CreationRecord>, copies: Vec<CommitBlob>, f: impl FnOnce(&mut crate::engine::Core) -> T) -> Result<T> {
+        let mut out = None;
+        let r = self.run(|tx| {
+            learn_records_in(tx, records)?;
+            for b in copies {
+                let id = b.id();
+                match arrive(tx, &id, b, false) {
+                    Err(e) if e.class() == ErrorClass::Local => return Err(e),
+                    _ => {}
+                }
+            }
+            tx.core.update_timelines();
+            out = Some(f(tx.core));
+            // rolled back
+            Err::<(), _>(Error::Misuse("trial"))
+        });
+        match (out, r) {
+            (Some(v), _) => Ok(v),
+            (None, Err(e)) => Err(e),
+            (None, Ok(())) => Err(Error::Misuse("trial")),
+        }
+    }
+
     /// `ingest` keeping nothing of a commit `refuse` objects to (its outcome, judged in the
     /// transaction, which is then rolled back): `None` for those. One kept is carried by `from`.
     fn ingest_kept(&mut self, bytes: &[u8], from: Option<carriers::Carrier>, refuse: impl Fn(&crate::engine::Core, &CommitId, &[usize], &Ingested) -> bool) -> Result<Option<Ingested>> {

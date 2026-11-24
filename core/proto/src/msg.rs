@@ -8,10 +8,10 @@ use crate::Error;
 use crate::api::{Outcome, Payload, value};
 use crate::dec::{self, Fields};
 use crate::limits::*;
-use crate::{ActorProof, SyncId};
+use crate::{Proof, SyncId};
 use osis_base::{BlobId, CommitId, Limits, Tid, Value, cbor};
 pub use osis_crypto::Signature;
-pub use osis_blob::{ClaimSet, DeleteItem, HolderKeys, Step, StepId};
+pub use osis_blob::{Certificates, ClaimSet, DeleteItem, Step, StepId};
 use osis_schema::Codec;
 use std::cell::Cell;
 pub use osis_schema::core_types::SecretBox;
@@ -247,7 +247,7 @@ impl SharedItem {
     }
 }
 
-/// `ditem` is osis-blob's `DeleteItem`; a proof is an `ActorProof`.
+/// `ditem` is osis-blob's `DeleteItem`; a proof is a `Proof`.
 /// Every message after Hello (spec/wire.md §11.2).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Msg {
@@ -280,9 +280,11 @@ pub enum Msg {
     Notify { sub_id: Id, payload: Payload },
     /// A sync ID the sender is stranded on, the holder it reads the sync ID's actor through and
     /// that holder's holder keys (spec/wire.md §9).
-    Stranded { id: Id, sync_id: SyncId, holder: Tid, keys: HolderKeys },
-    Prove { id: Id, proofs: Vec<ActorProof> },
-    Proved { id: Id, proofs: Vec<ActorProof> },
+    Stranded { id: Id, sync_id: SyncId, holder: Tid, keys: Certificates },
+    /// Proofs, and certificate copies of edge writes on their key hops and claimed paths with
+    /// their evidence and records (spec/wire.md §11.2 Prove).
+    Prove { id: Id, proofs: Vec<Proof>, copies: Certificates },
+    Proved { id: Id, proofs: Vec<Proof>, copies: Certificates },
     Resume { id: Id, nonce: [u8; 32], tags: Vec<[u8; 32]> },
     Resumed { id: Id, nonce: [u8; 32], tag: Option<[u8; 32]> },
     /// One page of generation `generation` of a side's filter; `base` present: additions to it.
@@ -498,7 +500,10 @@ impl Msg {
                 let [commits, records] = keys.to_values();
                 vec![k, id, s(sync_id), Value::bytes(holder.as_bytes()), commits, records]
             }
-            M::Prove { proofs, .. } | M::Proved { proofs, .. } => vec![k, id, proofs_value(proofs)],
+            M::Prove { proofs, copies, .. } | M::Proved { proofs, copies, .. } => {
+                let [commits, records] = copies.to_values();
+                vec![k, id, proofs_value(proofs), commits, records]
+            }
             M::Resume { nonce, tags, .. } => vec![k, id, Value::bytes(nonce), Value::List(tags.iter().map(|t| Value::bytes(t)).collect())],
             M::Resumed { nonce, tag, .. } => vec![k, id, Value::bytes(nonce), Value::opt(tag.as_ref().map(|t| Value::bytes(t)))],
             M::Beacons { generation, base, f, lo, hi, gcs, more, .. } => vec![k, id, Value::uint(*generation), Value::opt(base.map(Value::uint)), Value::uint(u64::from(*f)), Value::uint(*lo), Value::uint(*hi), Value::bytes(gcs), Value::Bool(*more)],
@@ -614,10 +619,16 @@ fn decode_body(kind: u64, id: Id, v: Value, n: &Items) -> Result<Msg, Error> {
             let sync_id = sync_id(&mut f)?;
             let holder = Tid::from_bytes(f.fixed()?);
             let (commits, records) = (f.next()?, f.next()?);
-            Msg::Stranded { id, sync_id, holder, keys: HolderKeys::from_values(&commits, &records)? }
+            Msg::Stranded { id, sync_id, holder, keys: Certificates::from_values(&commits, &records, usize::MAX)? }
         }
-        32 => Msg::Prove { id, proofs: proofs(&mut f)? },
-        33 => Msg::Proved { id, proofs: proofs(&mut f)? },
+        32 => {
+            let (proofs, copies) = proofs(&mut f)?;
+            Msg::Prove { id, proofs, copies }
+        }
+        33 => {
+            let (proofs, copies) = proofs(&mut f)?;
+            Msg::Proved { id, proofs, copies }
+        }
         34 => Msg::Resume { id, nonce: f.fixed()?, tags: f.list(0, MAX_RESUME_TAGS, "resume tags")?.into_iter().map(|v| dec::fixed(v, "tag")).collect::<Result<_, _>>()? },
         35 => Msg::Resumed { id, nonce: f.fixed()?, tag: f.opt()?.map(|v| dec::fixed(v, "tag")).transpose()? },
         36 => beacons(id, &mut f)?,
@@ -685,13 +696,15 @@ fn beacons(id: Id, f: &mut Fields) -> Result<Msg, Error> {
     Ok(Msg::Beacons { id, generation, base, f: width, lo, hi, gcs, more: f.bool()? })
 }
 
-/// `[proof*]`, at most `MAX_PROOFS`: past it the message is refused whole.
-fn proofs(f: &mut Fields) -> Result<Vec<ActorProof>, Error> {
-    f.list(0, MAX_PROOFS, "proofs")?.into_iter().map(ActorProof::from_value).collect()
+/// `[proof*], [copy*], [creation*]`: past `MAX_PROOFS` or `MAX_PROOF_COPIES` refused whole.
+fn proofs(f: &mut Fields) -> Result<(Vec<Proof>, Certificates), Error> {
+    let proofs = f.list(0, MAX_PROOFS, "proofs")?.into_iter().map(Proof::from_value).collect::<Result<_, _>>()?;
+    let (commits, records) = (f.next()?, f.next()?);
+    Ok((proofs, Certificates::from_values(&commits, &records, MAX_PROOF_COPIES)?))
 }
 
-fn proofs_value(proofs: &[ActorProof]) -> Value {
-    Value::List(proofs.iter().map(ActorProof::to_value).collect())
+fn proofs_value(proofs: &[Proof]) -> Value {
+    Value::List(proofs.iter().map(Proof::to_value).collect())
 }
 
 /// A reply allowance: `SMALL_REPLY..=REPLY_BUDGET` (spec/wire.md §11.2).

@@ -18,8 +18,10 @@ pub const WINDOW: usize = 16 * MIB;
 pub const MAX_SUBS: usize = 4096;
 /// Authenticated sessions of one client actor (spec/wire.md §2).
 pub const MAX_CONNS_PER_CLIENT: usize = 8;
-/// Actor proofs in one Prove or Proved (spec/wire.md §2).
+/// Proofs in one Prove or Proved (spec/wire.md §2).
 pub const MAX_PROOFS: usize = 256;
+/// Certificate copies in one Prove or Proved (spec/wire.md §2).
+pub const MAX_PROOF_COPIES: usize = 256;
 /// Tags in one Resume: ⌊(`MAX_MESSAGE` − 64) / 34⌋, a tag's encoding 34 bytes (spec/wire.md §2).
 pub const MAX_RESUME_TAGS: usize = (MAX_MESSAGE - 64) / 34;
 

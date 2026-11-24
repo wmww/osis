@@ -1,8 +1,8 @@
 //! Whom a node dials and where (spec/sync-opens.md §1 Where to dial, Whom to dial): `dial_peers`
 //! per sync ID, from the `dial.0` lists of S's things held here (spec/sync-set.md §1), and this
-//! node's own entry (`publish_reach`). For dialing only, never proof.
+//! node's own entries (`publish_reach`). For dialing only, never proof.
 
-use super::{Holding, RosterHolders};
+use super::Holding;
 use crate::engine::Engine;
 use crate::error::Result;
 use crate::Mutation;
@@ -35,7 +35,7 @@ impl Engine {
 
     /// S's things and how this node holds S; a sync ID left that sync still syncs: as read while
     /// its things' read secrets are held.
-    fn synced_things(&mut self, s: &SyncId) -> Result<Option<super::Held>> {
+    pub(crate) fn synced_things(&mut self, s: &SyncId) -> Result<Option<super::Held>> {
         Ok(match self.sync_holder(s)? {
             Some(x) => Some(x),
             None => {
@@ -45,32 +45,19 @@ impl Engine {
         })
     }
 
-    /// See `Engine::roster_holders`: the holders other than this node, by who they are, not where
-    /// they are dialed.
-    pub(crate) fn roster_holders_now(&mut self, s: &SyncId) -> Result<Arc<RosterHolders>> {
-        let Some((things, holding)) = self.synced_things(s)? else { return Ok(Arc::default()) };
-        // kept unread: kept for the things that granted it, which the rosters here do not name
-        if holding == Holding::Unread {
-            return Ok(Arc::new(RosterHolders { anyone: true, ..RosterHolders::default() }));
-        }
-        let me = self.core.me();
-        let holders = things.iter().flat_map(|t| self.core.provable_holders_of(self.core.reader_of(t))).filter(|a| *a != me).collect();
-        Ok(Arc::new(RosterHolders { anyone: false, holders }))
-    }
-
-    /// Publishes where this node is dialed (spec/sync-transport.md §3, §5 Key change): its own
-    /// entry, dialable key `dialable` to the `peer://` URL of the items it listens at, in the
-    /// `dial.0` of its node thing and of each of `also` it may write (its account and the
-    /// account's profile, spec/sync-set.md §1), in place of its entries under its earlier keys
-    /// (those its node thing's list names: only this node writes there); other nodes' entries
-    /// stay. Only where it changed.
-    pub fn publish_reach(&mut self, dialable: [u8; 32], items: Vec<String>, also: &[Tid]) -> Result<()> {
-        let me = self.core.me();
-        let mine: Vec<Vec<u8>> = self.get_typed(&me, &ct::DIAL)?.unwrap_or_default().into_keys().filter(|k| k.as_slice() != dialable.as_slice()).collect();
+    /// Publishes where this node is dialed (spec/sync-transport.md §3, §5 Key change;
+    /// spec/sync-set.md §1): its own entry, dialable key `dialable` to the `peer://` URL of the
+    /// items it listens at, in the `dial.0` of each of `on` it may write (its account and the
+    /// account's profile), in place of its entry under an earlier key; other nodes' entries
+    /// stay. Its node root's `dial.0` (local: read by nobody else) keeps its own entry, the
+    /// record of which key it published last. Only where it changed.
+    pub fn publish_reach(&mut self, dialable: [u8; 32], items: Vec<String>, on: &[Tid]) -> Result<()> {
+        let root = self.core.node_root.ok_or(crate::error::Error::Misuse("no node root"))?;
+        let mine: Vec<Vec<u8>> = self.get_typed(&root, &ct::DIAL)?.unwrap_or_default().into_keys().filter(|k| k.as_slice() != dialable.as_slice()).collect();
         let url = vec![peer_url(&items)];
         let mut m = Mutation::new();
-        for t in std::iter::once(me).chain(also.iter().copied()) {
-            if t != me && self.role_on(&t) < Some(osis_base::Role::Write) {
+        for t in std::iter::once(root).chain(on.iter().copied()) {
+            if t != root && self.role_on(&t) < Some(osis_base::Role::Write) {
                 continue;
             }
             let mut list = self.get_typed(&t, &ct::DIAL)?.unwrap_or_default();

@@ -8,7 +8,7 @@
 use osis_base::{SyncId, Tid};
 use osis_crypto::kdf::{beacon, sync_proof};
 use osis_crypto::{Epoch, RoleKey, NodeRng, Secret32, SeededRng, SigningSecret, role_key, role_key_seed, static_entry};
-use osis_engine::sync::J;
+use osis_engine::sync::{J, ProvenThing};
 use osis_blob::StepId;
 use osis_proto::{BehindItem, Code, DepositItem, Flow, Grant, Id, Msg, SharedItem};
 use osis_sync::opens::cred::{Bind, Shown, Tested};
@@ -166,18 +166,21 @@ impl Holds for Table {
         self.creds.get(s).cloned()
     }
     fn named(&mut self, proven: &Proven) -> osis_store::Named {
-        osis_store::Named { node: proven.node, link_keys: proven.link_keys.keys().copied().collect() }
+        proven.named.clone()
     }
-    fn counts(&mut self, named: &osis_store::Named) -> Vec<Tid> {
-        named.actors()
+    /// Each thing a claim names (signed as, or on its path), proven at admin: the table judges it.
+    fn counts(&mut self, named: &osis_store::Named, _copies: &osis_blob::Certificates) -> Vec<ProvenThing> {
+        let things: BTreeSet<Tid> = named.claims.iter().flat_map(|c| std::iter::once(c.thing).chain(c.path.iter().copied())).collect();
+        things.into_iter().map(|thing| ProvenThing { thing, role: Some(osis_base::Role::Admin) }).collect()
     }
-    fn judge(&mut self, s: &SyncId, actors: &[Tid]) -> J {
-        let js: Vec<J> = actors.iter().filter_map(|a| self.j.get(&(*s, *a)).copied()).collect();
+    fn judge(&mut self, s: &SyncId, proven: &[ProvenThing]) -> J {
+        let js: Vec<J> = proven.iter().filter_map(|p| self.j.get(&(*s, p.thing)).copied()).collect();
         [J::Reader, J::SyncHolder, J::Departed].into_iter().find(|j| js.contains(j)).unwrap_or(J::Unknown)
     }
-    fn standing(&mut self, rec: RecordId, s: &SyncId, named: &osis_store::Named) -> Option<J> {
-        let actors = self.counts(named);
-        let j = self.judge(s, &actors);
+    fn standing(&mut self, rec: RecordId, s: &SyncId, named: &osis_store::Named, _copies: &osis_blob::Certificates) -> Option<J> {
+        let proven = self.counts(named, &osis_blob::Certificates::default());
+        let j = self.judge(s, &proven);
+        let actors: Vec<Tid> = proven.iter().map(|p| p.thing).collect();
         let no_one = !actors.is_empty() && actors.iter().all(|a| self.no_one.contains(a));
         self.followed.insert((rec, *s), actors);
         (!no_one).then_some(j)
@@ -379,12 +382,12 @@ fn account_record(n: u8) -> osis_base::CreationRecord {
 
 /// Node `n`, proved.
 pub fn account(n: u8) -> Proven {
-    Proven { node: Some(tid(n)), ..Proven::default() }
+    Proven { named: named(n), ..Proven::default() }
 }
 
-/// What a record of a peer proving `account(n)` names.
+/// What a record of a peer proving `account(n)` names: node `n`'s claim, no path.
 pub fn named(n: u8) -> osis_store::Named {
-    osis_store::Named { node: Some(tid(n)), ..osis_store::Named::default() }
+    osis_store::Named { claims: vec![osis_store::Claim { thing: tid(n), key: [n; 32], path: Vec::new() }] }
 }
 
 /// Node `n`'s tid.

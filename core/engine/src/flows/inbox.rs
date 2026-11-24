@@ -722,7 +722,7 @@ impl Engine {
 
     /// The report stranded notice `fire` on `t` carries (`Engine::fire_stranded`): its sync ID,
     /// holder and holder keys. `None` for any other fire, or one that does not decode.
-    fn stranded_notice(&self, t: &Tid, fire: &osis_commit::CommitBlob) -> Option<(osis_base::SyncId, Tid, osis_blob::HolderKeys)> {
+    fn stranded_notice(&self, t: &Tid, fire: &osis_commit::CommitBlob) -> Option<(osis_base::SyncId, Tid, osis_blob::Certificates)> {
         let h = &fire.header;
         let p = fire.parts.first().filter(|p| h.aspects.get(p.ai).is_some_and(|a| a.ak.as_str() == STRANDED_FIRE))?;
         let dedup = self.core.dedup(t)?;
@@ -733,14 +733,14 @@ impl Engine {
 
 /// The report a stranded notice's value `v` holds (`Engine::fire_stranded`): its sync ID, holder
 /// and holder keys.
-fn notice_of(v: &Value) -> Option<(osis_base::SyncId, Tid, osis_blob::HolderKeys)> {
+fn notice_of(v: &Value) -> Option<(osis_base::SyncId, Tid, osis_blob::Certificates)> {
     let Value::Map(m) = v else { return None };
     let (Some(Value::Bytes(s)), Some(Value::Weak(holder)), Some(Value::List(commits)), Some(Value::List(records))) = (m.get(&Value::Int(0)), m.get(&Value::Int(1)), m.get(&Value::Int(2)), m.get(&Value::Int(3))) else { return None };
     let limits = osis_base::Limits::new(osis_base::format::MAX_OBJECT_DEPTH, osis_base::format::MAX_BLOB);
     let decoded = |l: &[Value]| l.iter().map(|x| if let Value::Bytes(b) = x { osis_base::decode(b, &limits).ok() } else { None }).collect::<Option<Vec<Value>>>();
     let commits = Value::List(decoded(commits)?);
     let records = Value::List(decoded(records)?);
-    let keys = osis_blob::HolderKeys::from_values(&commits, &records).ok()?;
+    let keys = osis_blob::Certificates::from_values(&commits, &records, usize::MAX).ok()?;
     Some((osis_base::SyncId(s.as_slice().try_into().ok()?), *holder, keys))
 }
 
