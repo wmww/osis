@@ -13,11 +13,11 @@ Sessions run out of room on it, so each session takes one piece and ends pushed 
 
 ## In flight beside it
 In-flight lines name issues in words, not paths: a branch that closes its issue would fail policy on this note.
-- `mizzen-addenda-memo` (worker): removal follow-ups decided by memo; dropping role rows nothing reads, then landing.
-- `mizzen-prop-cost` (worker): the gate's property stage grew ~1.5x; slimming non-coverage work.
 - Gates count instructions per test binary (tools/test_cost.txt): NEW-COST fails, STALE-COST lowers its line in the landing.
 
 ## Safe parallel work queue (outside the rewrite)
+- Failing on main, unassigned (next tasks when work resumes): a cold seq edit-then-move seed (engine pages) and a rotation seed where a holder with key access lacks a box (security); both have issues and rate lines.
+- The held-writes dating is about a quarter of the rotation and deep-departure properties' cost: product cost worth a design pass (notes/time-limits.md, Investigations).
 - After the sync rewrite lands: delete suspect repair whole (spec, wire message, sync, engine, notes): no divergence is left for it (purged writes have no effect, landed).
 - After the sync rewrite lands: the deprecated-terms rename pass ("edge" where a role grant is meant → grant, spec and code; issues/deprecated-terms.md).
 - Workflow agent about half the time; one cleanup always.
