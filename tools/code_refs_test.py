@@ -2,7 +2,8 @@
 """Tests tools/code_refs.py's citation forms on fabricated notes against a fabricated code: each
 form passes when its name, family or file is in the code and fails when it is not, words that are no code
 name are not checked, `Type::item` checks the item is the type's, Rust doc comments are checked
-against Rust code with its comments left out, and a stale allow-list line fails. Exit 1 on a mismatch."""
+against Rust code with its comments left out, a Rust string citing a model's test needs that test,
+and a stale allow-list line fails. Exit 1 on a mismatch."""
 import os, sys, tempfile
 
 sys.dont_write_bytecode = True
@@ -133,6 +134,21 @@ with tempfile.TemporaryDirectory() as d:
         if bool(g) != want:
             bad += 1
             print(f"FAIL rust {text!r}: expected {'stale' if want else 'fine'}, got {g}")
-n = len(CASES) + 3 + 4 + len(DOCS)
+# a Rust string citing a model's test: the crate has the module and fn
+MODEL = {"core/test/roles-model/src/lib.rs": "mod content;\n", "core/test/roles-model/src/content.rs": "#[test]\nfn kept_test() {}\n",
+         "core/engine/tests/it/j.rs": 'const A: &str = "roles-model content::kept_test (x)";\n'
+         'const B: &str = "roles-model content::gone_test";\nconst C: &str = "roles-model joint::kept_test";\n'
+         'const D: &str = "held-model differs: not a citation";\n'}
+with tempfile.TemporaryDirectory() as d:
+    for rel, text in MODEL.items():
+        os.makedirs(os.path.dirname(os.path.join(d, rel)), exist_ok=True)
+        open(os.path.join(d, rel), "w").write(text)
+    got = list(code_refs.model_citations(d, list(MODEL)))
+    want = ["core/engine/tests/it/j.rs:2: `roles-model content::gone_test`: no such test in core/test/roles-model",
+            "core/engine/tests/it/j.rs:3: `roles-model joint::kept_test`: no such test in core/test/roles-model"]
+    if got != want:
+        bad += 1
+        print(f"FAIL model citations: got {got}")
+n = len(CASES) + 3 + 4 + len(DOCS) + 1
 print(f"code_refs_test: {n - bad}/{n} passed")
 sys.exit(1 if bad else 0)

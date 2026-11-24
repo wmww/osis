@@ -21,6 +21,8 @@ Checked, in each inline backtick span (fenced blocks are sketches, not citations
   paths: a span that is a relative path of a source extension (`core/x/src/y.rs`, `apply/mod.rs`):
       a repo file's path ends with it, also with `src/` left out (`store/store.rs`) or its crate
       named by package (`osis-keys/tests/it/x.rs`).
+  model tests: a Rust string `"<crate>-model mod::test_name ..."` (a test citing a model's test as
+      its source): core/test/<crate> has that fn and each module named.
 A repo file is tracked, or untracked and not ignored (a new file counts before its `git add`).
 Not read: notes/complaints/ (consumed), the Investigations section of notes/time-limits.md (a record
 of what ran then), spec/ (its names are wire and grammar terms). Names not in our code on purpose
@@ -282,6 +284,34 @@ def code_names(root, files):
     return words, ends, members, docs
 
 
+# a Rust string citing a model crate's test (core/test/<name>-model): `"roles-model mod::test_name ..."`
+MODEL_CITE = re.compile(r'"([a-z]+-model) ((?:\w+::)+\w+)')
+
+
+def model_citations(root, files):
+    """Each Rust string citing a model crate's test whose crate (core/test/<crate>) has no such
+    module or fn."""
+    def model(crate):
+        d = f"core/test/{crate}/"
+        body = "".join(open(os.path.join(root, f), errors="replace").read() for f in files
+                       if f.startswith(d) and f.endswith(".rs") and os.path.isfile(os.path.join(root, f)))
+        stems = {os.path.splitext(os.path.basename(f))[0] for f in files if f.startswith(d)}
+        return set(re.findall(r"\bfn (\w+)", body)), set(re.findall(r"\bmod (\w+)", body)) | stems
+    models = {}
+    for rel in files:
+        if not rel.endswith(".rs") or rel.startswith(VENDORED) or not os.path.isfile(os.path.join(root, rel)):
+            continue
+        text = open(os.path.join(root, rel), errors="replace").read()
+        for m in MODEL_CITE.finditer(text):
+            crate, cite = m.groups()
+            if crate not in models:
+                models[crate] = model(crate)
+            fns, mods = models[crate]
+            *path, name = cite.split("::")
+            if name not in fns or not set(path) <= mods:
+                yield f"{rel}:{text.count(chr(10), 0, m.start()) + 1}: `{crate} {cite}`: no such test in core/test/{crate}"
+
+
 def check(root=ROOT):
     # tracked files and untracked ones not ignored: a new file counts before its `git add`
     files = subprocess.run(["git", "ls-files", "--cached", "--others", "--exclude-standard"], cwd=root, capture_output=True, text=True).stdout.split()
@@ -292,6 +322,7 @@ def check(root=ROOT):
     yield from errs
     words, ends, members, rdocs = code_names(root, files)
     yield from stale({**docs, **rdocs}, words, ends, allow, members)
+    yield from model_citations(root, files)
 
 
 if __name__ == "__main__":

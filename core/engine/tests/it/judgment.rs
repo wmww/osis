@@ -373,7 +373,7 @@ fn files() -> Vec<(String, String)> {
     FILES.iter().map(|n| file(n)).collect()
 }
 
-/// The roles model's pinned reference scenarios played on the engine (core/test/roles-model):
+/// Pinned reference scenarios of the role rules played on the engine:
 /// peer 0 is G's mint admin, 1 writes, 2 is admin (`order::play`'s setup).
 fn models() -> Vec<Scenario> {
     use Step::*;
@@ -385,21 +385,21 @@ fn models() -> Vec<Scenario> {
         Scenario {
             name: "pre-revoke edit unseen by the revoker",
             spec: "spec/permissions.md §5.2",
-            source: "roles-model content::frontier_decides_pre_revoke_edits (unseen: both invalid)",
+            source: "hand-picked: a write the revoker had not received when it demoted its writer (unseen: both invalid)",
             steps: vec![w(1, 1), tick.clone(), revoke.clone(), tick.clone(), w(1, 2)],
             orders: None,
         },
         Scenario {
             name: "pre-revoke edit seen by the revoker",
             spec: "spec/permissions.md §5.1, §5.2",
-            source: "roles-model content::frontier_decides_pre_revoke_edits (seen: the first stands)",
+            source: "hand-picked: a write the revoker had received when it demoted its writer (seen: the first stands)",
             steps: vec![w(1, 1), Sync { from: 1, to: 0 }, tick.clone(), revoke.clone(), tick.clone(), w(1, 2)],
             orders: None,
         },
         Scenario {
             name: "revoked writer re-granted",
             spec: "spec/permissions.md §5.2",
-            source: "roles-model content::frontier_decides_pre_revoke_edits (re-granted: both stand)",
+            source: "hand-picked: a demoted writer re-granted (re-granted: both stand)",
             steps: vec![w(1, 1), Sync { from: 1, to: 0 }, tick.clone(), revoke.clone(), tick.clone(), w(1, 2), tick.clone(), Edge { by: 0, t: 0, holder: 1, role: Some(Role::Write) }],
             orders: None,
         },
@@ -420,14 +420,14 @@ fn models() -> Vec<Scenario> {
         Scenario {
             name: "concurrent cross removals, the earlier wins",
             spec: "spec/permissions.md §5.1",
-            source: "roles-model joint::concurrent_cross_removals",
+            source: "hand-picked: two admins removing each other concurrently (the earlier wins)",
             steps: vec![Edge { by: 0, t: 0, holder: 1, role: Some(Role::Admin) }, Sync { from: 0, to: 1 }, tick.clone(), Edge { by: 1, t: 0, holder: 2, role: None }, tick.clone(), Edge { by: 2, t: 0, holder: 1, role: None }],
             orders: None,
         },
         Scenario {
             name: "concurrent cross removals, the mint admin removes the earlier unseen",
             spec: "spec/permissions.md §5.1",
-            source: "roles-model joint::concurrent_cross_removals (the mint admin's removal of x drops x's removal of y)",
+            source: "hand-picked: two admins removing each other concurrently (the mint admin's removal of x drops x's removal of y)",
             steps: vec![Edge { by: 0, t: 0, holder: 1, role: Some(Role::Admin) }, Sync { from: 0, to: 1 }, tick.clone(), Edge { by: 1, t: 0, holder: 2, role: None }, tick.clone(), Edge { by: 2, t: 0, holder: 1, role: None }, tick.clone(), Edge { by: 0, t: 0, holder: 1, role: None }],
             orders: None,
         },
