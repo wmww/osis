@@ -327,7 +327,7 @@ impl<'a> BlobReader<'a> {
         if crate::blob::blob_id(&blob) != link.blob {
             return Err(Error::Verify("blob id"));
         }
-        Ok(open(&blob, &Secret32::from_bytes(link.key))?)
+        open(&blob, &Secret32::from_bytes(link.key))
     }
 }
 

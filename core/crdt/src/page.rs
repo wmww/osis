@@ -199,6 +199,8 @@ pub struct MemoryPages {
     pub written: Vec<[u8; 32]>,
     next: u64,
     params: PageParams,
+    /// The delete keys its links name, as a framing's would (spec/crypto.md §7 Page links).
+    pub del: osis_base::Del,
 }
 
 impl Default for MemoryPages {
@@ -213,7 +215,7 @@ impl MemoryPages {
     }
     /// With non-format parameters (tests).
     pub fn with_params(params: PageParams) -> MemoryPages {
-        MemoryPages { pages: HashMap::new(), written: Vec::new(), next: 0, params }
+        MemoryPages { pages: HashMap::new(), written: Vec::new(), next: 0, params, del: osis_base::Del::NONE }
     }
     pub fn len(&self) -> usize {
         self.pages.len()
@@ -233,7 +235,7 @@ impl PageSink for MemoryPages {
         }
         self.pages.insert(hash, plaintext.to_vec());
         self.written.push(hash);
-        Ok(Link { hash, blob: BlobId(blob), suite: 1, key: [0; 32], salt: [0; 16], del: osis_base::Del::NONE })
+        Ok(Link { hash, blob: BlobId(blob), suite: 1, key: [0; 32], salt: [0; 16], del: self.del })
     }
     fn params(&self) -> PageParams {
         self.params

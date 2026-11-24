@@ -429,9 +429,16 @@ fn relay_only_delta_never_pages_spec_commits_2() {
         build(b, &mut MemoryBlobs::default()).unwrap().commit
     };
     let mut pages = MemoryPages::with_params(small);
+    let listed = crate::delete_keys(&TestSecrets { admin: true }, &t(3), &crate::retention::EPHEMERAL_PURGE_BY).unwrap();
+    pages.del = osis_base::Del::from_keys(listed.iter().map(|k| (k.level, k.key))).unwrap();
     let plain = commit(false, &mut pages);
     assert!(!pages.is_empty(), "paged");
     verify_blob(&plain, &key().verifying_key(), &dedup, Some(&mut pages)).unwrap();
+    // spec/crypto.md §7 Page links: pages naming other delete keys than the delta lists
+    pages.del = osis_base::Del::NONE;
+    let unkeyed = commit(false, &mut pages);
+    assert!(matches!(verify_blob(&unkeyed, &key().verifying_key(), &dedup, Some(&mut pages)), Err(Error::Delta(osis_crdt::Error::Page(osis_crdt::PageError::Keys)))));
+    pages.del = osis_base::Del::from_keys(listed.iter().map(|k| (k.level, k.key))).unwrap();
     let relay = commit(true, &mut pages);
     let err = verify_blob(&relay, &key().verifying_key(), &dedup, Some(&mut pages)).unwrap_err();
     assert_eq!(osis_base::Classified::class(&err), osis_base::ErrorClass::BadInput, "{err}");
