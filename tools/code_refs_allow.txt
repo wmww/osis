@@ -26,7 +26,6 @@ num_alive_tasks  third-party: tokio
 posix_fadvise  third-party: libc
 F_NOCACHE  third-party: macOS fcntl
 SO_REUSEPORT  third-party: socket option
-ptrace_scope  third-party: Linux sysctl
 GLIBC_TUNABLES  third-party: glibc
 trim_threshold  third-party: glibc tunable
 mmap_threshold  third-party: glibc tunable
@@ -39,7 +38,6 @@ do_y  placeholder
 do_z  placeholder
 actually_do_y  placeholder
 x_or_y  placeholder
-X_Y  placeholder
 WxH  placeholder: a window size
 r_B  placeholder: math
 last_modified  placeholder: an example schema field

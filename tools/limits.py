@@ -29,7 +29,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 NOTE = os.path.join(ROOT, "notes", "time-limits.md")
 LOG = os.path.expanduser("~/.cache/osis/limits.log")
 BOX = socket.gethostname().split(".")[0]
-# The investigation triggers (notes/coordination.md, Time limits): the same limit hit this many
+# The investigation triggers (notes/time-limits.md, Policy): the same limit hit this many
 # times within this window, or one run over this multiple of its limit.
 REPEAT, WINDOW_H, FAR = 5, 3, 2.0
 
@@ -90,7 +90,7 @@ def check(name, cpu, wall, what="", quiet=False, since=None):
         print(f"   limit {label}: CPU {cpu:.0f}/{lim[0]:.0f} s, wall {wall:.0f}/{lim[1]:.0f} s")
     role = kind(name)
     for k, v, l in over:
-        far = " (over 2x: an investigation, notes/coordination.md Time limits)" if v > FAR * l else ""
+        far = " (over 2x: an investigation, notes/time-limits.md, Policy)" if v > FAR * l else ""
         hit = f"{label} {k} {v:.0f} s > {l:.0f} s ({v / l:.2f}x) on {BOX} at load {os.getloadavg()[0]:.0f}{far}"
         if role == "share":
             print(f"   over share: {hit}, over its share of {tables()[1][name][2]}, not a cap")

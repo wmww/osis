@@ -4,41 +4,24 @@
 ## Scale checks
 Default tests against spec/requirements.md (Scale): each runs one operation at a size n and at 10n and counts its work, never time (notes/principles.md). `flat` (at 10n at most 2x + 2 the count at n) is O(change); `linear` (at most 15x + 15) allows O(n) or O(n log n), never quadratic. A failing count names the phase and both counts; a known violation is an ignored `repro_*` naming its issue.
 - Store reads include debug-only checks, so tests count reads by spans and use the store for rows and bytes written; rows are the sharper count (each write's 20-40 KB of fixed bytes hides a per-commit term under 100 B).
-- A collection of two or more elements pages above 3 KB of its own (notes/engine-paged.md): a check comparing n with 10n keeps both sizes on one side of that (or both paged), or a count that is zero unpaged (pages loaded, records read from the store) fails `linear` at 10n.
-- Engine checks (core/engine/tests/it/scale.rs) run on `osis_engine::local_peer`: a few peers, packages delivered by hand, a peer's `restart` for a new session. Their wall time is mostly debug checks re-deriving what was kept (O(state) each, uncounted); a check's cost is cut by its n, never by its 10x.
+- A collection of two or more elements pages above 3 KB of its own (notes/engine-paged.md): a check keeps n and 10n on one side of that (or both paged), or a count that is zero unpaged fails `linear` at 10n.
+- Engine checks (core/engine/tests/it/scale.rs) run on `osis_engine::local_peer`: a few peers, packages delivered by hand, a peer's `restart` for a new session. Their wall time is mostly debug checks (O(state) each, uncounted); cut a check's cost by its n, never by its 10x.
 
-| property | test | counted |
-|---|---|---|
-| `covered` per body | engine `decoded::tests::cover_judgments_read_the_bodys_pages_spec_commits_5` | past the first judgment each streams 2 pieces (skeleton and the body's page) at both sizes |
-| the walk | perm `paths::counts` (notes/perm-paths.md, Cost shapes) | an appended part costs its own step, a backdated or forgotten one replays its component from its key, a lowering with drops restarts once from its earliest drop, from scratch linear in the parts; an appended delta is a point query, a removal cutting n deltas costs nothing per delta, a request over n deltas reports one scope; what is left: issues/perm-eval-cost.md |
-| map edit in store tables | store `paged::table_edit_is_flat` (3000 / 30,000 keys) | 4 unit rows at both; one more B-tree level |
-| paged snapshot rewrite | bench `scale::big_map_snapshot_rewrite` (10^4 / 10^5 keys) | one change writes 1 new page at both |
-| held-writes edit below a deep path | crdt `row_pages::tests::deep_edit_is_flat` (300 / 3000 rows nine steps down) | one page written, 1.3 / 1.6 KB, 4 store reads at both |
-| text joins at the crdt | crdt `small_joins_follow_cached_placement_spec_6` (30 / 300 runs) | no whole pass; placement work about the square root (the block walk) |
-| large value read | osis `scale::large_value_read_work_is_linear` (1 / 10 MiB) | each chunk fetched once, at most 320 KiB held |
-| one commit on many things | osis `commits::commit_work_linear_in_things_spec_requirements_decentralization` (50 / 500 things) | every engine span and count plus perm's things reached by role walks (`osis_perm::roles_reached`, debug checks' walks included), for creating the things in one commit, a commit changing each, and its apply elsewhere: linear (`meta: parts indexed` 100 / 1000 per side, write's roles reached 106 / 1006) |
-| large value edits | engine `write::large_edit_reuses_chunks_spec_sync_1` | an edit of a 4 MiB value writes the changed chunks plus the root node |
-| map entry edit, at the root and in a map entry | engine `scale::map_edit_is_flat` (500 / 5000 entries of 200 B) | store bytes 28 / 40 KB; a new session's read of one key 2 pages, its first edit 2 loaded and 1 written |
-| set ops by value | engine `scale::set_by_value_is_flat` (10^3 / 10^4) | each op in a new session: 1-2 pages loaded, 0-1 written |
-| tid removal from a set | engine `scale::tid_removal_is_flat` (4000 / 40,000) | remove and add back in a new session: 2 pages loaded, 1 written, a 451-466 B commit |
-| text by index | engine `scale::text_edits_are_flat` (by hand, about 3-4 minutes in a debug build: 80k / 800k chars) | read of 100 chars 2-3 pages; insert, delete 2 loaded, 4-5 written; edit 5 loaded, 6 written; undo 2 loaded, 5 written; a move of 4 chars 5 loaded, 8 written; of 600, 6-8 loaded, 13-15 written; store rows read 4 per read, 23-35 per write; blob bytes read 0, but the aspect's first death (the delete) reading the kept body once to build its held writes (82 KB / 824 KB, store bytes linear) and an undo's at most two wire pages of it (82 KB / 270 KB) |
-| removal from a roster | engine `scale::roster_removal_is_linear` (20 / 200 writers) | rotation commit 2.87 KB per remaining holder (budget 3000 B past 4 KiB); one more `secrets.0` entry flat |
-| purge on replace pays its state | engine `scale::purge_on_replace_pays_its_state` (200 / 2000 entries of 100 B) | store bytes per replacing edit linear (77 / 469 KB); no history 51 / 30 KB |
-| late deltas and deaths | engine `scale::late_delta_deaths_are_flat_spec_crdt_4_8` (30 / 300) | every span, death walks and replaced reads flat (replaced reads 1) |
-| judging every body of an aspect | engine `scale::judging_every_body_reads_each_once_spec_commits_5` (20 / 200) | bodies read for deaths and replaced reads per judgment 1 / 1 |
-| validity flip | engine `scale::validity_flip_is_linear_and_invalid_arrival_flat_spec_permissions_5_2` (30 / 300; no addenda) | a flip rebuilds the aspect once (bodies 31 / 301), commits re-judged 2 / 2; an invalid arrival reads no other body |
-| snapshots | engine `scale::snapshot_join_is_flat_spec_permissions_5_2`, `commits_after_their_snapshot_are_linear_spec_permissions_5_2`, `kept_snapshots_stay_within_their_window_spec_commits_5`, `dropped_snapshot_frontier_is_linear_spec_commits_5` | a snapshot join linear (O(state)), the next delta flat; snapshots held 2 / 2 (the D window); a dropped snapshot about 35 B of frontier |
-| addenda | engine `scale::addenda_rejudge_spec_permissions_5_2` (20 / 200) | a member joining a holder re-judges 1 commit; with an addendum held the thing is judged whole (28 / 208) |
-| addenda wake | engine `scale::addenda_wake_is_flat_in_the_removed_partys_reach_spec_permissions_5_2` (10 / 100 things the removed party holds) | its 3 backdated edits and 3 grants after its removal: 18 wake lookups, no removal woken, every phase flat |
-| path wait | engine `scale::the_path_wait_reads_each_write_once_spec_commits_4` (3 / 30 forged writes per layer) | writes read by the wait linear: each edge's writes judged once per part |
-| purge requests | engine `scale::purge_rejudge_is_linear_in_requests_spec_permissions_6` (30 / 300) | a join flat; a requester's fall and rise rebuild the aspect once |
-| grant and open | engine `scale::grant_is_flat_in_content_commits` (30 / 300) | a grant flat in content commits; open rebuilds nothing |
-| open with role history | engine `scale::open_is_linear_in_role_commits` (20 / 200 grants on one thing) | the walk given the role commits once: grants judged for key access 30 / 210 |
-| one aspect, many kept writes (chat) | engine `scale::long_aspect_writes_are_flat` (40 / 400) | a write and its arrival flat (17 rows); removing a writer re-judges its writes (11 / 101) |
-| role history at a joiner | engine `scale::role_history_join_is_linear` (30 / 300 edge writes) | ingesting them linear (perm commits walked 16 / 151); a grant, a removal and their arrival flat |
-| history moves | engine `scale::setting_change_and_window_passing_are_flat_spec_commits_5`, `kept_overwrite_dates_what_it_replaces_spec_commits_5` (20 / 200) | a setting change, a window passing, a shortening: no store row read, commits told 1-3; an overwrite of a kept register dates two bodies (the one it replaces and itself) and notes its own alone in the held writes |
-| expiry | engine `scale::expiry_is_flat_spec_crdt_4_7` (40 / 400) | no rebuild, no body read but the expiring one; the snapshot's carried bound one entry per source |
-| chunks a compaction drops | engine `scale::chunk_drop_judgment_is_flat` (10 / 100 other bodies) | tree refs: 2 parts read, 15 links and blobs, at both |
+Engine checks live in core/engine/tests/it/scale.rs (`scale::*`), one per property, named for its shape (`_is_flat`, `_is_linear`, `_spec_*` for the rule): map and set edits, text by index, roster removal (a rotation commit about 2.9 KB per remaining holder, budget 3000 B), purge on replace, late deltas and deaths, validity flips, snapshots, addenda, the path wait, purge requests, grants and open, long aspects, role history, history settings, expiry, chunk drops. Elsewhere:
+
+| property | test |
+|---|---|
+| `covered` per body | engine `decoded::tests::cover_judgments_read_the_bodys_pages_spec_commits_5` |
+| large value edits | engine `write::large_edit_reuses_chunks_spec_sync_1` |
+| the walk | perm `paths::counts` (notes/perm-paths.md, Cost shapes; left: issues/perm-eval-cost.md) |
+| map edit in store tables | store `paged::table_edit_is_flat` |
+| paged snapshot rewrite | bench `scale::big_map_snapshot_rewrite` |
+| held-writes edit below a deep path | crdt `row_pages::tests::deep_edit_is_flat` |
+| text joins at the crdt | crdt `small_joins_follow_cached_placement_spec_6` |
+| large value read | osis `scale::large_value_read_work_is_linear` |
+| one commit on many things | osis `commits::commit_work_linear_in_things_spec_requirements_decentralization` |
+
+`scale::text_edits_are_flat` is by hand (minutes in a debug build).
 
 ## Sync scale checks
 osis-sync's checks (core/sync/tests/it) count module work (`Work` counters, store rows) at n and 10n: `driver::dial_work_follows_change_spec_sync_opens_1`; `opens::a_credential_change_costs_the_same_at_n_and_10n_spec_sync_opens_6`, `a_credential_change_costs_per_connection_not_per_sync_id_spec_sync_opens_6`, `a_reconnect_costs_the_same_at_n_and_10n_spec_sync_opens_3`; `read::work_follows_change`, `work_follows_sources`; `status::work_follows_change`; `store::log_reads_cost_what_they_return_spec_sync_streams_3`, `removal_and_expiry_cost_alike_at_any_size_spec_sync_ids_5`; `streams::push_work_follows_the_events_not_the_log_spec_sync_streams_4`, `a_reconnect_after_a_restart_costs_the_same_at_10n_spec_sync_streams_4`.
@@ -55,14 +38,14 @@ osis-sync's checks (core/sync/tests/it) count module work (`Work` counters, stor
 - a node keeping S unread writing a 64-entry log or delete batch in a few durable writes at any size.
 
 ## Size budgets and benches (core/bench)
-- Budgets: `core/bench/tests/it/budgets.rs`, each `#[test] #[ignore] fn budget_<name>` calling `assert_budget(name, actual, budget)` with its source's number plus about 10%, citing the source; public APIs only. Live: `budget_creation_record`, `budget_minimal_commit` (commit blob plaintext of a header plus one register delta: 288 B against about 300), `budget_text_snapshot_ratio` (a synthetic typist's text snapshot: 2.89x at 100 edits per commit, 6.73x at 10, against 3.5x and 7x; notes/crdt.md, Text size). Pending: role boxes about 1.2 KB per holder and role (notes/crypto.md); revoke frontier after a long-held role.
-- Benches: `core/bench/benches/<crate>.rs` with `harness = false`, calling `osis_bench::bench(name, bytes, f)` (median ns/iter and MB/s; `OSIS_BENCH_MS` sets the sample time). `cargo bench`, by hand, release, not gated; record notable numbers in notes. No criterion: a 40-line harness keeps the tree small (a new external dependency needs its line in notes/architecture.md §5).
+- Budgets: `core/bench/tests/it/budgets.rs`, each `#[test] #[ignore] fn budget_<name>` calling `assert_budget(name, actual, budget)` with its source's number plus about 10%, citing the source; public APIs only. Live: `budget_creation_record`, `budget_minimal_commit`, `budget_text_snapshot_ratio` (notes/crdt.md, Text size). Pending: role boxes about 1.2 KB per holder and role (notes/crypto.md); revoke frontier after a long-held role.
+- Benches: `core/bench/benches/<crate>.rs` with `harness = false`, calling `osis_bench::bench(name, bytes, f)` (median ns/iter and MB/s; `OSIS_BENCH_MS` sets the sample time). `cargo bench`, by hand, release, not gated. No criterion: a 40-line harness keeps the tree small.
 
 ## Memory checks
 By hand, release, each alone (they read the resident set): run with `GLIBC_TUNABLES=glibc.malloc.trim_threshold=0:glibc.malloc.mmap_threshold=65536`, or one child process per step as `big_map_apply_memory` and crdt `stream_memory_big_map` do.
-- engine `memory::eph_decoded_memory` (`OSIS_EPH_SHAPE` tiny/large/aspects): RSS per encoded byte held against the charge (`Engine::memory_charge`); last release figures: tiny map entries 218x, 8 KB strings 1.6x, one small write per aspect 22x, the charge 0.95-1.6x of that RSS (issues/eph-node-cost-bounds.md); with `OSIS_EPH_ROOM=16777216` a 3.8 MB commit of 200k tiny entries is refused with nothing decoded (`Engine::ingest_memory`). `memory::eph_leftover_memory`: expired ephemeral deltas held as leftovers until the writer's snapshot covers them.
-- engine `memory::big_map_apply_memory` (`OSIS_SCALE_N`, default 10^6 in release): peaks of writing an N-key map commit, a node holding the thing applying it, one applying the snapshot alone, one judging the commit covered and dropping it, each in a child process (last: writing 3.1 GB, applying 0.24 GB, the snapshot alone 0.35 GB; the writer fails Scale: issues/durable-decode-bound.md).
-- osis `scale::multi_gb_value_streams` (`OSIS_LARGE_MIB`, store in a directory): peak RSS growth reading a value as a `ValueStream` (bound 64 MB); the write holds the value whole (issues/api-deferred.md).
+- engine `memory::eph_decoded_memory` (`OSIS_EPH_SHAPE` tiny/large/aspects): RSS per encoded byte held against the charge (`Engine::memory_charge`; issues/eph-node-cost-bounds.md); with `OSIS_EPH_ROOM=16777216` a 3.8 MB commit of 200k tiny entries is refused with nothing decoded (`Engine::ingest_memory`). `memory::eph_leftover_memory`: expired ephemeral deltas held as leftovers until the writer's snapshot covers them.
+- engine `memory::big_map_apply_memory` (`OSIS_SCALE_N`, default 10^6 in release): peaks of writing an N-key map commit, applying it, applying the snapshot alone, judging it covered and dropping it, each in a child process (the writer fails Scale: issues/durable-decode-bound.md).
+- osis `scale::multi_gb_value_streams` (`OSIS_LARGE_MIB`): peak RSS growth reading a value as a `ValueStream` (bound 64 MB); the write holds the value whole (issues/api-deferred.md).
 
 ## Performance budgets
 Coordinator-owned targets (Tess delegated; prefer simple, verifiable code that meets them over faster intricate code). At 10^4 commits per aspect and 10^4 things per closure, release, a quiet box: a single local write, read or received commit under 50 ms; node open under 1 s; one sync step after one new write under 100 ms; a late or out-of-order commit under 500 ms (a whole replay of one aspect is acceptable here); rare events (revocation) under a few seconds. Work beyond these is not pursued without a realistic scenario missing them; issues that only chase speed below them are closed as within budget.
