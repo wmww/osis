@@ -78,8 +78,8 @@ The sync crate's one `tests/it` binary: its default tests (spec rules, scale, dr
 | driver | `TransportLinks` over loopback QUIC and `peer://` | 50 G |
 
 Enforcement:
-- Per test, deterministic: the world counts deliveries and node calls and panics past the layer's cap (a rule test 2,000 deliveries), so a test that storms or grows fails in the worker's own run, not in a profile weeks later.
-- Per layer and whole: no limit row of its own; the default tests fall under `default-tests` in notes/time-limits.md, Limits. `tools/icount` over the binary per module (`<layer>::`) is the comparable number, and a branch that raises it by more than 5% says why in its review. The test optimizer compares `tools/pertest.py` profiles.
+- Per test, deterministic: the world counts deliveries and node calls and panics past the layer's cap (a rule test 2,000 deliveries), so a test that storms or grows fails in the run of the change that caused it, not in a profile weeks later.
+- Per layer and whole: no limit row of its own; the default tests fall under `default-tests` in notes/time-limits.md, Limits. `tools/icount` over the binary per module (`<layer>::`) is the comparable number, and a change raising it by more than 5% says why in its commit message. The test optimizer compares `tools/pertest.py` profiles.
 
 ## Open
 - Whether held-model joins the differential's oracle (an independent check of the reference engine) or stays the engine's: the reference is a bare engine, which is what the oracle needs (sync's property is perfect delivery); held-model would add an independent reading of retention, worth it only once the histories write with retention settings.

@@ -1,12 +1,12 @@
 # Testing
-> Summary: Index of the testing notes, plus what every test follows: principles, when each kind of test runs (gate, release checks, by hand) and what a worker runs, sizes, conventions every crate follows, and what nothing covers.
+> Summary: Index of the testing notes, plus what every test follows: principles, when each kind of test runs (gate, release checks, by hand) and what a job runs before landing, sizes, conventions every crate follows, and what nothing covers.
 
 ## Where to look
 | question | where |
 |---|---|
 | the command for the default tests, one crate, clippy, a property, sim-sweep, old vs new | notes/build.md, Profile and command forms |
-| what a worker runs before finishing | When tests run, below |
-| what the gate runs, its per-branch selection, KNOWN and NEW failures, policy and spec-map checks | notes/gate.md |
+| what a job runs before landing | When tests run, below |
+| what the gate runs, its selection by changed paths, KNOWN and NEW failures, policy and spec-map checks | notes/gate.md |
 | replay a failing seed, harness env vars, seed runners, the property list | notes/test-harnesses.md, Env vars and seeds |
 | cached setups and world copies; the debug rebuild and index checks | notes/test-harnesses.md |
 | count instructions, profile, compare against main | notes/test-harnesses.md, Measuring |
@@ -31,13 +31,13 @@ Everything runs locally; there is no CI. Tests are organised by when they run, n
 
 | when | what | how |
 |---|---|---|
-| the gate, once per branch | the default tests (every test not `#[ignore]`: unit, small proptest, vectors, scale counts) plus the properties and sim scenarios the branch's changes reach, at small size | `tools/gate.sh` (notes/gate.md) |
+| the gate, once per reviewed change (a rule others build on, a security fix, a big change at its end) | the default tests (every test not `#[ignore]`: unit, small proptest, vectors, scale counts) plus the properties and sim scenarios the change reaches, at small size | `tools/gate.sh` (notes/gate.md) |
 | release checks | the same properties and scenarios at large size on fresh seeds; when Tess asks and in the release process | notes/coordination.md, Release checks |
-| by hand | fuzz, TLA+, roles-model searches beyond the gate's samples, benches and memory checks, coverage, real-network tests, `#[ignore]` tests without a size word | By hand, below, by a branch that touches the area |
+| by hand | fuzz, TLA+, roles-model searches beyond the gate's samples, benches and memory checks, coverage, real-network tests, `#[ignore]` tests without a size word | By hand, below, by a job that touches the area |
 
-A seed runner's sample is a property, never a default test, in every crate: a test running a harness that a `_large` or `_exhaustive` property runs at more seeds or cases (a fixed seed list, every nth case, a slice of a family) is that harness's `_plain` property, its covering set kept. Only a change in the crates the gate then selects can move its answer, and that change runs it. A sampled search in a model crate (roles-model, held-model: they depend on no osis crate) likewise. Hand-written fixed worlds stay default tests, and so does a test whose answer can move with a branch that does not select its crate's properties (a random proptest drawing fresh seeds per run).
+A seed runner's sample is a property, never a default test, in every crate: a test running a harness that a `_large` or `_exhaustive` property runs at more seeds or cases (a fixed seed list, every nth case, a slice of a family) is that harness's `_plain` property, its covering set kept. Only a change in the crates the gate then selects can move its answer, and that change runs it. A sampled search in a model crate (roles-model, held-model: they depend on no osis crate) likewise. Hand-written fixed worlds stay default tests, and so does a test whose answer can move with a change that does not select its crate's properties (a random proptest drawing fresh seeds per run).
 
-**A worker** runs, before finishing (the gate is the branch's one full run: notes/coordination.md, Test budget):
+**A job** runs, before landing (notes/coordination.md, Test budget):
 - `cargo test -p <crate>` for each crate it touched;
 - the `_plain` property of each seed runner it changed or whose property its change is about (`cargo test -p <crate> <binary> -- --ignored <name>_plain`; `held_set_decides_plain` runs the gate's 8 seeds, so a quick look sets `OSIS_ORDER_SEEDS=1`);
 - `cargo test -p osis --test it` when it changed engine judgment (validity, keys, rotation, ending) or what syncs or is kept (the sync set, closures, forgetting): the osis crate holds the cross-crate flows;
