@@ -270,7 +270,7 @@ def land(name, fixed):
     ancestor = lambda a, b: run("git", "merge-base", "--is-ancestor", a, b, cwd=w, check=False).returncode == 0
     # a land's rebase stopped on a conflict and finished by hand: HEAD is the rebased branch
     rb = rec.get("rebasing")
-    resumed = rb is not None and rb["head"] == rec["head"] and head != rec["head"] and ancestor(rb["onto"], head)
+    resumed = rb is not None and head != rb["head"] and ancestor(rec["head"], rb["head"]) and ancestor(rb["onto"], head)
     if resumed:
         say(f"finishing the land's rebase of {rb['head'][:9]} onto {rb['onto'][:9]}, completed by hand")
         if main != rb["onto"]:
