@@ -87,7 +87,7 @@ Commands (the full set; an area run takes its own items), under `nice -n 19`:
 ## Standing jobs
 Workflow and cleanup jobs (Job mix). Act on each report.
 - **Watchdog**, at the start of every session and whenever notes/complaints/ has files: read every file there, then delete them all. For each complaint, in this order: fix the tool, script or note that caused it; else, if it is a real problem that needs design, one issue; else nothing. A complaint does not become a rule in a note unless nothing else can fix it: every rule added is read by every later agent. Also `tools/agent-times.py` and `tools/heavy --report` for where agents' time went.
-- **Test optimizer**: make the tests faster and cleaner without losing real coverage. Pick the area by evidence (issues/test-time.md, `tools/limits.py tests`); delete tests that are not useful, speed up slow ones, redesign a harness, or make core faster where tests pay for its slowness. Count work, no timing runs.
+- **Test optimizer**: make the tests faster and cleaner without losing real coverage. Pick the area by evidence (issues/test-time.md; `tools/limits.py tests`, a full default-suite run from a worktree under `tools/heavy`); delete tests that are not useful, speed up slow ones, redesign a harness, or make core faster where tests pay for its slowness. Count work, no timing runs.
 - **Cleanup**: simplify, refactor and delete code in an area picked by evidence (`tools/loc.py`, `tools/deprecated_probe.py`, `tools/dup_windows.py`). Behaviour stays; report the line counts before and after.
 - **Prose editor**: rewrite and simplify notes, spec or issues so what a reader looks for is easy to find and true; delete what is no longer or never was useful; keep Tess's own wording.
 

@@ -149,6 +149,11 @@ def tests(jobs):
     """Every default test as its own process, `jobs` at a time, against the `test` CPU limit; the
     ones over either limit (or near the wall limit, which this concurrent run inflates) again
     alone, each the box's only test. Take the heavy lock first."""
+    common = subprocess.run(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"], cwd=ROOT,
+                            capture_output=True, text=True).stdout.strip()
+    if os.path.dirname(common) == ROOT:
+        sys.exit(f"limits: {ROOT} is the main checkout, and `tests` builds and runs every default test: "
+                 "run it from a task worktree under tools/heavy")
     from pertest import default_tests, test_env, timed
     todo, env = default_tests(ROOT), test_env()
     print(f"{len(todo)} default tests in {len({t[2] for t in todo})} binaries, {jobs} at a time")
