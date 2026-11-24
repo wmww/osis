@@ -689,15 +689,11 @@ impl Core {
     }
 
     /// Whether the node opens dependent thing `y` (spec/sync-set.md §2 local part): it holds a read
-    /// secret of the independent thing `y`'s secrets derive from, or the keys of the key actor
-    /// they derive from (itself, its account, a key actor it holds). A tid the node holds no
-    /// record of opens nothing.
+    /// secret of the independent thing `y`'s secrets derive from. A tid the node holds no record
+    /// of opens nothing.
     pub(crate) fn opens_dependent(&self, y: &Tid) -> bool {
         let Some(a) = self.secret_actor(y) else { return false };
-        if self.is_independent(&a) {
-            return self.epochs(&a).is_some_and(|e| e.role(Role::Read).holds_any());
-        }
-        a == self.id.tid() || self.key_actors.contains_key(&a)
+        self.epochs(&a).is_some_and(|e| e.role(Role::Read).holds_any())
     }
 
     /// Whether `y` is independent here (spec/sync-set.md §2): by the role commits held of it, or by
@@ -745,8 +741,7 @@ fn strong_to(tx: &mut Tx<'_>, x: &Tid, y: &Tid) -> Result<bool> {
 fn given_by(core: &Core, v: Vx, y: Tid) -> BTreeSet<Vx> {
     let (c, x) = v;
     let mut out = BTreeSet::new();
-    // the walk does not enter a key actor: it has no sync unit
-    if matches!(c, Ctx::Unread(_)) || x == y || core.is_key_actor(&y) {
+    if matches!(c, Ctx::Unread(_)) || x == y {
         return out;
     }
     let independent = core.counts_independent(&y);
@@ -854,11 +849,11 @@ fn held_for_keys(core: &Core, t: &Tid) -> bool {
 }
 
 /// Whether `t` is a holder the node opens without reading it in the node closure: an independent
-/// thing, no key actor, of which the node holds a read secret of its own (a box to an own actor
+/// thing of which the node holds a read secret of its own (a box to an own actor
 /// or to a holder it opens gave it; the lost-access rule keeps it only while the node's role
 /// reads `t`, `rotation::lost`).
 fn opened_holder(core: &Core, t: &Tid) -> bool {
-    !core.is_key_actor(t) && core.enter(t) == Some(Ctx::Read(*t)) && !core.ix.closure.reads(t)
+    core.enter(t) == Some(Ctx::Read(*t)) && !core.ix.closure.reads(t)
 }
 
 /// Whether the grants of a thing the node closure holds (read, or kept unread: its edge piece is
@@ -949,7 +944,7 @@ fn judge(tx: &mut Tx<'_>, f: &mut Follow, v: Vx, y: Tid) -> Result<BTreeSet<Vx>>
     set_targeted(tx, y, v, true);
     // a strong to a thing whose record is not held awaits it: a record blob's copy of it, kept
     // loose, is learned (spec/commits.md §4 Records)
-    let unknown = !tx.core.exists(&y) && !tx.core.is_key_actor(&y);
+    let unknown = !tx.core.exists(&y);
     tx.core.ix.closure.set_unknown(y, v, unknown);
     if unknown {
         tx.core.waits.loose.want(&y);
@@ -980,7 +975,7 @@ fn judge(tx: &mut Tx<'_>, f: &mut Follow, v: Vx, y: Tid) -> Result<BTreeSet<Vx>>
 fn refetch(tx: &mut Tx<'_>, v: Vx, y: Tid, was_held: bool) -> Result<()> {
     let Ctx::Read(t) = v.0 else { return Ok(()) };
     let cl = &tx.core.ix.closure;
-    if was_held || cl.holds(&y) || cl.left().contains_key(&y) || tx.core.learned.contains(&y) || tx.core.is_key_actor(&y) {
+    if was_held || cl.holds(&y) || cl.left().contains_key(&y) || tx.core.learned.contains(&y) {
         return Ok(());
     }
     // a held commit minting `y` whose part on it was never taken: nothing keeps its blobs out
@@ -1148,7 +1143,7 @@ impl Engine {
     }
 
     /// The targets of `x`'s strongs that are neither carried where the strong is nor held
-    /// otherwise (spec/sync-set.md §2 Not carried), key actors aside: none when the node closure
+    /// otherwise (spec/sync-set.md §2 Not carried): none when the node closure
     /// does not hold `x`. O(`x`'s strongs).
     pub fn not_carried_from(&mut self, x: &Tid) -> Result<Vec<Tid>> {
         if !self.core.ix.closure.holds(x) {
@@ -1156,7 +1151,7 @@ impl Engine {
         }
         let x = *x;
         let ys = self.run(|tx| strongs_from(tx, &x))?;
-        Ok(ys.into_iter().filter(|y| !self.core.is_key_actor(y) && !self.core.ix.closure.holds(y)).collect())
+        Ok(ys.into_iter().filter(|y| !self.core.ix.closure.holds(y)).collect())
     }
 
     /// Those of `ys` that `x` strongly references and `not_carried_from` would name: O(`ys`).
@@ -1165,7 +1160,7 @@ impl Engine {
             return Ok(Vec::new());
         }
         let x = *x;
-        let ys: Vec<Tid> = ys.iter().filter(|y| !self.core.is_key_actor(y) && !self.core.ix.closure.holds(y)).copied().collect();
+        let ys: Vec<Tid> = ys.iter().filter(|y| !self.core.ix.closure.holds(y)).copied().collect();
         self.run(|tx| {
             let mut out = Vec::new();
             for y in ys {

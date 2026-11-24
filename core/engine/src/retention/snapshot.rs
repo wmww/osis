@@ -1079,7 +1079,7 @@ pub(crate) fn build_snapshot(tx: &mut Tx<'_>, tid: Tid, ak: Ak, st: SnapState, t
     absorbed.retain(|c, _| listed.contains(&osis_crdt::Source::commit(*c)));
     let facts = facts_of(tx, &tid, &ak, &st)?;
     let purge_by = osis_commit::retention::snapshot_purge_by(ak.as_str());
-    let plan = CommitPlan { kind, ts, actor: node, form: Form::Commit, creates: Default::default(), purge: Vec::new(), undoes: None, frontier: None, signer: node, key: None, blind: crate::engine::write::draw_blind(&mut *tx.rng), expires, restores: false, own_cover, adminless: false };
+    let plan = CommitPlan { kind, ts, actor: node, form: Form::Commit, creates: Default::default(), minted: Default::default(), purge: Vec::new(), undoes: None, frontier: None, signer: node, key: None, blind: crate::engine::write::draw_blind(&mut *tx.rng), expires, restores: false, own_cover, adminless: false };
     let d = Resolved { tid, ak, fragment: Fragment::default(), lo: 0, hi: 0, schema: None, purge_by: Some(purge_by), expires, replaces: None, original_floor: 0, snapshot: Some(crate::engine::write::SnapshotPart { state: st, frontiers, absorbed, facts }), chunks: Vec::new() };
     build_and_apply(tx, plan, vec![d])
 }

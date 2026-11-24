@@ -358,7 +358,7 @@ fn parked_spec_versioning_2() {
     w.purge_by = osis_base::PurgeBy::Writer;
     let mut b = CommitBuilder::new(Kind::Content, ts, e.me(), osis_commit::Path::default(), crate::common::forged_session(e.me()));
     b.aspects.push(w);
-    let forge_key = e.identity().keys().signing.clone();
+    let forge_key = e.identity().signing().clone();
     let built = b.build(&forge_key, &e.hand_secrets(&[rec]), &mut MemoryBlobs::default(), &mut SeededRng::from_u64(0)).unwrap();
     let bytes = built.commit.encode();
     let r = lp.peers[1].receive(&bytes, Vec::new()).unwrap();

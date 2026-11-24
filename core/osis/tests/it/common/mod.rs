@@ -243,7 +243,7 @@ pub fn recv<T>(rx: &Receiver<T>) -> T {
 
 /// `db`'s account keeps account `who` (a contact, a peer it grants): a strong in its account
 /// root's `holds.0`, so `who`'s chain stays once received (spec/commits.md §5 What a held thing
-/// needs; a strong to a key actor enters nothing). Nothing when it keeps it already.
+/// needs). Nothing when it keeps it already.
 pub fn know(db: &Osis, who: Tid) {
     let root = db.account_root();
     if who == db.me() || db.holds(root, who).unwrap() {

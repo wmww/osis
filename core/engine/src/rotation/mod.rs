@@ -46,7 +46,7 @@ pub enum Walk {
     Log,
 }
 
-/// The roles of `a` that `who` (this node, or a key actor it signs as) may not encrypt under
+/// The roles of `a` that `who` (its node thing, or a link key it signs as) may not encrypt under
 /// (spec/crypto.md §4, encrypting under), or log under (`walk`): those whose newest held
 /// current epoch is blocked (`blocked_epoch`, `deps` the departures from `a` counted).
 pub fn blocked_roles_of(tx: &mut Tx<'_>, who: &Tid, a: &Tid, deps: &[Departure], walk: Walk) -> Result<BTreeSet<Role>> {
@@ -464,13 +464,14 @@ pub(crate) enum Departs {
 /// names mark it by `ts`, signer and blind, and the commit covers that departure itself
 /// (spec/crypto.md §4, covers).
 pub(crate) fn rotation_into(tx: &mut Tx<'_>, m: &mut Mutation, a: Tid, roles: &BTreeSet<Role>, held: &ActorEpochs, boxing: &Boxing, departs: Departs) -> Result<Rotation> {
-    cut_into(tx, m, a, roles, held, boxing, departs, false)
+    cut_into(tx, m, a, roles, held, boxing, departs, false, None)
 }
 
 /// `rotation_into`; `cut`: a grant without history's rotation (spec/crypto.md §4, Floors): its
-/// read history box carries no earlier secret and its floor is its own n.
+/// read history box carries no earlier secret and its floor is its own n. `seed`: a link key's
+/// minting, its secrets the seed's (spec/crypto.md §3).
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn cut_into(tx: &mut Tx<'_>, m: &mut Mutation, a: Tid, roles: &BTreeSet<Role>, held: &ActorEpochs, boxing: &Boxing, departs: Departs, cut: bool) -> Result<Rotation> {
+pub(crate) fn cut_into(tx: &mut Tx<'_>, m: &mut Mutation, a: Tid, roles: &BTreeSet<Role>, held: &ActorEpochs, boxing: &Boxing, departs: Departs, cut: bool, seed: Option<&osis_crypto::Secret32>) -> Result<Rotation> {
     let secrets = secrets_in(tx, &a)?;
     let own = if departs != Departs::No {
         let ts = *m.ts.get_or_insert_with(|| tx.core.hlc.next());
@@ -485,7 +486,7 @@ pub(crate) fn cut_into(tx: &mut Tx<'_>, m: &mut Mutation, a: Tid, roles: &BTreeS
     };
     let names = departures::names(tx.core, &a, own);
     let carried = osis_keys::Carried { demotions: departures::carried(tx.core, &a), demotes: departs == Departs::Demoting };
-    let rot = osis_keys::rotate_leaving_out(&a, roles, held, &secrets, &boxing.holders, &boxing.left_out, &carried, &names, cut, &mut *tx.rng)?;
+    let rot = osis_keys::rotate_leaving_out(&a, roles, held, &secrets, &boxing.holders, &boxing.left_out, &carried, &names, cut, seed, &mut *tx.rng)?;
     put_secrets(m, a, &rot.secrets, false)?;
     flows::unseal(tx, m, a, &rot.secrets.removed)?;
     put_keysets(m, a, &rot.keys)?;
@@ -606,7 +607,7 @@ pub(crate) fn above(core: &Core, a: &Tid) -> Vec<Tid> {
     out
 }
 
-/// Performs the rotations due on `a` before `who` (this node, or a key actor it signs as)
+/// Performs the rotations due on `a` before `who` (its node thing, or a link key it signs as)
 /// encrypts under its secrets (spec/permissions.md §3): first, depth-first, those of the holder
 /// actors of `a` with key access that `who` may rotate (boxing `a` to one is encrypting under
 /// its epoch, so its rotation due goes first and `a`'s boxes then name its new keyset), each
@@ -673,7 +674,7 @@ fn secret_actor_up(core: &Core, a: &Tid) -> Option<Tid> {
             return Some(t);
         }
         match step {
-            osis_base::ChainStep::Up { admin: up, .. } if !core.is_key_actor(&up) => {}
+            osis_base::ChainStep::Up { .. } => {}
             _ => return None,
         }
     }
@@ -714,7 +715,7 @@ fn rotate_below(tx: &mut Tx<'_>, who: Tid, a: Tid, keep: Option<Keep<'_>>, mode:
 /// The holder actors of `x` the downward cascade enters (`rotate_below`): keyed ones with secrets
 /// of their own that `who` may rotate, in the order the walk pops them.
 fn below(core: &Core, who: &Tid, x: &Tid) -> Vec<Tid> {
-    let ms: Vec<Tid> = core.key_holders(x).into_iter().map(|m| m.0).filter(|m| m != x && !core.is_key_actor(m) && core.is_independent(m)).collect();
+    let ms: Vec<Tid> = core.key_holders(x).into_iter().map(|m| m.0).filter(|m| m != x && core.is_independent(m)).collect();
     let mut out: Vec<Tid> = ms.into_iter().filter(|m| members::keyed(core, x, m) && !may_rotate(core, who, m).is_empty()).collect();
     out.reverse();
     out
@@ -778,7 +779,7 @@ pub(crate) fn own_secrets(tx: &mut Tx<'_>, t: Tid, done: &mut Done) -> Result<()
 /// `own_secrets`, its genesis step listing `also` besides the holders it boxes (a link's key,
 /// granted next).
 pub(crate) fn own_secrets_listing(tx: &mut Tx<'_>, t: Tid, also: &[crate::flows::sync_ids::ReaderKey], done: &mut Done) -> Result<()> {
-    if let Some((c, rot, to)) = own_secrets_rot(tx, t, None, also, done)? {
+    if let Some((c, rot, to)) = own_secrets_rot(tx, t, None, also, None, done)? {
         recorded(tx, t, c, &rot, &to, done)?;
     }
     Ok(())
@@ -786,16 +787,20 @@ pub(crate) fn own_secrets_listing(tx: &mut Tx<'_>, t: Tid, also: &[crate::flows:
 
 /// Makes the thing of `rec` independent (`own_secrets_listing`): its record goes in
 /// the rotation commit (spec/permissions.md §3), held here ahead of it so the rotation is built
-/// as for a held dependent thing. Its tid.
-pub(crate) fn own_secrets_new(tx: &mut Tx<'_>, rec: osis_base::CreationRecord, also: &[crate::flows::sync_ids::ReaderKey], done: &mut Done) -> Result<Tid> {
+/// as for a held dependent thing. A thing minted with a key is minted so, its rotation from none
+/// signed by that key as it, its secrets random or, for a link key, `seed`'s (spec/crypto.md §3).
+/// Its tid.
+pub(crate) fn own_secrets_new(tx: &mut Tx<'_>, rec: osis_base::CreationRecord, also: &[crate::flows::sync_ids::ReaderKey], seed: Option<&osis_crypto::Secret32>, done: &mut Done) -> Result<Tid> {
     let t = rec.tid();
     if tx.core.created(&t).is_some() {
         return Err(Error::Misuse("thing already exists"));
     }
-    // as its commit would judge the creation, before anything is held of it
+    // as its commit would judge the creation, before anything is held of it: signed by the key
+    // it is minted with as it, else by this node
     let creates = BTreeMap::from([(t, rec.clone())]);
-    crate::engine::write::check_authority(tx.core, tx.core.me(), &|x| creates.get(x), &t, osis_commit::retention::CREATED, tx.core.hlc.peek())?;
-    let Some((c, rot, to)) = own_secrets_rot(tx, t, Some(rec), also, done)? else { return Err(Error::Misuse("a new thing is made independent")) };
+    let signer = if rec.key().is_some() { t } else { tx.core.me() };
+    crate::engine::write::check_authority(tx.core, signer, &|x| creates.get(x), &t, osis_commit::retention::CREATED, tx.core.hlc.peek())?;
+    let Some((c, rot, to)) = own_secrets_rot(tx, t, Some(rec), also, seed, done)? else { return Err(Error::Misuse("a new thing is made independent")) };
     recorded(tx, t, c, &rot, &to, done)?;
     Ok(t)
 }
@@ -804,29 +809,39 @@ pub(crate) fn own_secrets_new(tx: &mut Tx<'_>, rec: osis_base::CreationRecord, a
 /// holders it boxes that held no box at a current read epoch before it (`unreached`).
 type OwnRot = (Option<osis_base::CommitId>, Rotation, Vec<Tid>);
 /// `rec`: the record of a new `t`, held from here and carried by the rotation commit
-/// (`own_secrets_new`).
-fn own_secrets_rot(tx: &mut Tx<'_>, t: Tid, rec: Option<osis_base::CreationRecord>, also: &[crate::flows::sync_ids::ReaderKey], done: &mut Done) -> Result<Option<OwnRot>> {
+/// (`own_secrets_new`); `seed`: a new link key's.
+fn own_secrets_rot(tx: &mut Tx<'_>, t: Tid, rec: Option<osis_base::CreationRecord>, also: &[crate::flows::sync_ids::ReaderKey], seed: Option<&osis_crypto::Secret32>, done: &mut Done) -> Result<Option<OwnRot>> {
     if let Some(r) = &rec {
         crate::apply::atomic::learn_record(tx, r.clone())?;
     }
-    if tx.core.is_independent(&t) || tx.core.is_key_actor(&t) {
+    if tx.core.is_independent(&t) {
         return Ok(None);
     }
-    let who = tx.core.me();
+    // a thing minted with a key: its minting is its rotation from none, signed by the key as it
+    // (spec/permissions.md §3); it has no mint admin, nothing it derives from, nothing due
+    let key = rec.as_ref().and_then(osis_base::CreationRecord::key).is_some();
+    if !key && tx.core.created(&t).is_some_and(|r| r.key().is_some()) {
+        return Err(Error::Misuse("the keysets of a thing minted with a key are not held here"));
+    }
+    let who = if key { t } else { tx.core.me() };
     // its boxes make its mint admin a holder actor of `t`, which is made independent first, as
     // a grant's holder does (spec/permissions.md §3): a dependent one has no keyset to be sealed at, so
     // it is left out and its holders lose `t` (where this node administers it). Up the record
     // chain only, so the recursion ends (holders may form cycles, record chains do not).
     let up = tx.core.mint_admin(&t).filter(|m| tx.core.key_holders(&t).iter().any(|(h, _)| h == m));
     if let Some(m) = up
-        && !tx.core.is_key_actor(&m)
         && !tx.core.is_independent(&m)
         && tx.core.role_now(&who, &m) == Some(Role::Admin)
     {
         own_secrets(tx, m, done)?;
     }
-    ensure_rotated(tx, who, t, done)?;
-    let held = tx.core.epochs(&t).ok_or(Error::Misuse("the secrets it derives from are not held"))?;
+    let held = match key {
+        true => Arc::new(ActorEpochs::default()),
+        false => {
+            ensure_rotated(tx, who, t, done)?;
+            tx.core.epochs(&t).ok_or(Error::Misuse("the secrets it derives from are not held"))?
+        }
+    };
     // a holder whose grant this node may finalize is boxed nothing (spec/permissions.md §2), as
     // a re-seal boxes it nothing: its departure is due, and the finalize follows
     let ended: Vec<(Tid, Option<Role>)> = ended_holders(tx.core, &who, &t).into_iter().map(|m| (m, None)).collect();
@@ -835,14 +850,20 @@ fn own_secrets_rot(tx: &mut Tx<'_>, t: Tid, rec: Option<osis_base::CreationRecor
     if let Some(r) = rec {
         m.create(r);
     }
-    let rot = rotation_into(tx, &mut m, t, &ROLES.into_iter().collect(), &held, &holders, Departs::No)?;
+    if key && t != tx.core.me() {
+        m.sign_as(t);
+    }
+    let rot = cut_into(tx, &mut m, t, &ROLES.into_iter().collect(), &held, &holders, Departs::No, false, seed)?;
+    if key {
+        m.minted.insert(t, rot.preview(&held)?);
+    }
     let deposit = fresh_deposit_seed(tx, &mut m, t)?;
     // the rule (spec/sync-ids.md §2): its own role secrets and its one sync ID, in this one
     // commit
     if crate::flows::sync_id_of(tx, &t)?.is_none() {
         let mut readers = Vec::new();
         for r in &holders.holders {
-            readers.extend(crate::flows::sync_ids::reader_key(tx, &r.holder)?);
+            readers.extend(crate::flows::sync_ids::reader_key(tx, &t, &r.holder)?);
         }
         let after = rot.preview(&held)?;
         let readers: Vec<_> = readers.into_iter().chain(also.iter().cloned()).collect();
@@ -861,7 +882,8 @@ fn own_secrets_rot(tx: &mut Tx<'_>, t: Tid, rec: Option<osis_base::CreationRecor
 /// there, and rotators reaching it only through it hold no epoch there (`boxes_rotator`).
 pub(crate) fn own_secrets_candidates(core: &Core, a: &Tid) -> Vec<Tid> {
     let me = core.me();
-    let plain = |t: &Tid| !core.is_independent(t) && !core.is_key_actor(t) && core.secret_actor(t) == Some(*a) && core.role_now(&me, t) == Some(Role::Admin);
+    // only a thing minted with a mint admin is ever dependent
+    let plain = |t: &Tid| !core.is_independent(t) && core.mint_admin(t).is_some() && core.secret_actor(t) == Some(*a) && core.role_now(&me, t) == Some(Role::Admin);
     // a scan per call; only dependent targets and holders go further
     let mut out = BTreeSet::new();
     // things' grants alone: a key holds no secret (spec/permissions.md §1 Signing key)
@@ -884,7 +906,7 @@ pub(crate) fn own_secrets_candidates(core: &Core, a: &Tid) -> Vec<Tid> {
 /// first under the sync IDs above the thing (its new `keys.0`).
 fn own_secrets_delivered(tx: &mut Tx<'_>, t: Tid) -> Result<Done> {
     let mut done = Done::default();
-    let Some((c, rot, to)) = own_secrets_rot(tx, t, None, &[], &mut done)? else { return Ok(done) };
+    let Some((c, rot, to)) = own_secrets_rot(tx, t, None, &[], None, &mut done)? else { return Ok(done) };
     recorded(tx, t, c, &rot, &to, &mut done)?;
     Ok(done)
 }

@@ -207,7 +207,7 @@ pub enum OfferItem {
     ByRole { sync_id: SyncId, hits: Vec<[u8; 32]>, class: SourceClass },
     Deposit(DepositItem),
     Behind(BehindItem),
-    /// A Hit on a key actor's static entry with its signing key and an open signature by it.
+    /// A Hit on a link key's static entry with its signing key and an open signature by it.
     Static { hit: [u8; 32], signing_pk: [u8; 32], sig: Signature, class: SourceClass },
 }
 

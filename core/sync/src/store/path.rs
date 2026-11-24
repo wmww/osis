@@ -23,7 +23,7 @@ pub enum Cred {
     Sync(VerifyingKey),
     /// A claim public key of a step's claim set.
     Claim([u8; 32]),
-    /// A key actor's signing key, whose static entry a claim set may list.
+    /// A link key's signing key, whose static entry a claim set may list.
     Signing(VerifyingKey),
 }
 

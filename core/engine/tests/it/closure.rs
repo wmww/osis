@@ -36,13 +36,12 @@ fn make(e: &mut Engine, admin: Tid, from: Tid) -> Tid {
     t
 }
 
-// spec/sync-set.md §1, §2: a new account's node holds its node root, the account root, the
-// profile and the inbox; a key actor (the node thing, the account) is never entered, by a strong
-// from the node root or the account root alike. A dependent thing under the
+// spec/sync-set.md §1, §2: a new account's node holds its node root, its node thing (by the node
+// root's strong), the account root, the profile and the inbox. A dependent thing under the
 // account root referenced from it is held in its sync unit; removing the strong takes it out and
 // notes it as left with the sync unit it was in.
 #[test]
-#[ignore = "accounts: keys"]
+#[ignore = "accounts: making an account"]
 fn the_node_closure_follows_strongs_spec_sync_set_2() {
     let (mut lp, _) = people(1);
     let e = &mut lp.peers[0].engine;
@@ -52,12 +51,7 @@ fn the_node_closure_follows_strongs_spec_sync_set_2() {
     for t in [root, d, inbox] {
         assert!(e.closure_holds(&t), "{t:?}");
     }
-    assert!(!e.closure_holds(&e.tid()), "a key actor is never entered");
-    let (me, account) = (e.tid(), e.me());
-    for (from, k) in [(d, me), (d, account), (root, me), (root, account)] {
-        strong(e, from, k, true);
-        assert!(!e.closure_holds(&k), "a strong to key actor {k:?} enters it");
-    }
+    assert!(e.closure_holds(&e.tid()), "the node root holds the node thing");
     let x = make(e, d, d);
     assert!(e.closure_holds(&x));
     assert!(e.sync_unit(&d).contains(&x) && e.units_holding(&x).contains(&d));
@@ -374,11 +368,11 @@ fn try_make(e: &mut Engine, admin: Tid, from: Option<Tid>) -> osis_engine::Resul
 }
 
 // spec/sync-set.md §2 Making a thing: the commits of one storage transaction must
-// leave every thing they make, but a key actor, in the node closure at its end, or nothing
+// leave every thing they make in the node closure at its end, or nothing
 // applies. X and U are independent: a dependent thing minted with admin X referenced by X is made; one nothing
 // references, or one from U referenced only by X (X's keys do not open it), is refused and
 // leaves no commit; a thing made in one commit and held by the next of its transaction is made,
-// and refused with that commit holding nothing; a link (its key actor held by nothing, its seed
+// and refused with that commit holding nothing; a link (its link key held by nothing, its seed
 // thing minted with the account root as admin with its strong) is made; the account's creation was.
 #[test]
 #[ignore = "accounts: keys"]
@@ -534,7 +528,7 @@ fn lowered_to_sync_a_thing_is_kept_unread_spec_sync_set_3() {
     assert_ne!(read(&mut lp), Some(Value::Str("after".into())), "unread");
 }
 
-// spec/sync-set.md §2 Cost: taking up an opener (a key actor, as a bearer does) and making a
+// spec/sync-set.md §2 Cost: taking up an opener (a link key, as a bearer does) and making a
 // link cost what the new opener can open, never the node closure or every held actor: counted
 // (`closure:` and `reopen:`) with n and 10n independent things held.
 #[test]
@@ -549,7 +543,7 @@ fn a_take_up_costs_what_the_opener_opens_spec_sync_set_2() {
             f(e);
             osis_base::costs::take().into_iter().filter(|(k, _, _)| k.starts_with("closure:") || k.starts_with("reopen:")).map(|(_, _, c)| c).sum::<u64>()
         };
-        let take_up = counted(e, &|e| { e.hold_key_actor(osis_crypto::Secret32::from_bytes([0x5a; 32])).unwrap(); });
+        let take_up = counted(e, &|e| { e.hold_link_key(osis_crypto::Secret32::from_bytes([0x5a; 32]), things[0]).unwrap(); });
         let spec = osis_engine::flows::LinkSpec { target: things[0], role: osis_base::Role::Read, until: None, peers: vec![], single_use: false };
         let link = counted(e, &|e| drop(e.create_link(&p, &spec).unwrap()));
         e.check_closure();

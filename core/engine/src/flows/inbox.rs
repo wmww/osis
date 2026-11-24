@@ -33,7 +33,7 @@ pub(crate) fn deliver_copy(tx: &mut Tx<'_>, holder: Tid, c: CommitId, target: Ti
 /// Fires `grant@~0` on `holder`'s inbox carrying role commit `c`'s copy on `target`: the fire's
 /// value, the copy with its evidence and their records (`Engine::grant_value`), is made when the
 /// fire is first sealed, `c` applied by then. One already owed stays as it is. A holder with no
-/// inbox here (a key actor other than an account: a node or a link key) is fired nothing.
+/// inbox here (not independent here) is fired nothing.
 pub(crate) fn fire_copy(tx: &mut Tx<'_>, holder: Tid, c: CommitId, target: Tid) -> Result<()> {
     let Some(inbox) = inbox_in(tx, &holder)? else { return Ok(()) };
     let to = fire_to(tx, &holder);
@@ -45,12 +45,14 @@ pub(crate) fn fire_copy(tx: &mut Tx<'_>, holder: Tid, c: CommitId, target: Tid) 
 }
 
 /// Whom a fire on `holder`'s inbox is offered to where proven (spec/sync-inbox.md §3 Sending):
-/// a key actor itself, else the key actors holding a role on it as this node judges them.
+/// the holder where a connection can prove it, and the things holding a role on it that one
+/// can, as this node judges them.
 fn fire_to(tx: &mut Tx<'_>, holder: &Tid) -> BTreeSet<Tid> {
-    match tx.core.is_key_actor(holder) {
-        true => BTreeSet::from([*holder]),
-        false => tx.core.holder_keys_of(*holder),
+    let mut out = tx.core.provable_holders_of(*holder);
+    if tx.core.provable(holder) {
+        out.insert(*holder);
     }
+    out
 }
 
 /// `Engine::inbox_thing` in a transaction.
@@ -556,6 +558,14 @@ impl Engine {
         let fire = osis_blob::SealedFire { copy: false, commit, evidence, records, pages: (*pages).clone() };
         let sealed = osis_blob::seal_fire(&prefix, &o.thing, &epoch, &kem, &fire, &mut rng)?;
         Ok(Some(SealedFireOut { sync_id, thing: o.thing, to: o.to.clone(), blob: sealed }))
+    }
+
+    /// Whether `t`'s current setting here enables external signal `ak` (spec/sync-inbox.md §1:
+    /// the default never; a node thing enables none), for tests: a fire of it from a party
+    /// holding no write on `t` is invalid otherwise.
+    #[doc(hidden)]
+    pub fn enables(&self, t: &Tid, ak: &str) -> bool {
+        osis_base::Ak::new(ak).is_ok_and(|a| crate::apply::validity::setting_now(&self.core, t).is_some_and(|s| s.enables(&a)))
     }
 
     /// Takes sealed fire `f` as a peer offers it (spec/sync-inbox.md §3 Sending): what a caller

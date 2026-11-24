@@ -208,7 +208,7 @@ pub(crate) fn departures(tx: &mut Tx<'_>, a: &Tid) -> Result<Vec<Departure>> {
     osis_base::memo::Memo::get_in(tx, |tx| &tx.core.departures, a, |tx| Ok(direct_departures(tx, a)?.into_iter().collect()))
 }
 
-/// The roles of `a` that `who` (this node, a key actor it signs as, or a holder actor) may
+/// The roles of `a` that `who` (its node thing, a link key it signs as, or a holder actor) may
 /// rotate now (spec/permissions.md §3, Who rotates): write and above rotates its role and below,
 /// over grants with key access only. A role through a keyless grant is a role (a rotation by it
 /// is valid), but its holder never gets the secret of the holder actor it reaches `a` through,
@@ -253,10 +253,10 @@ fn own_removal_on(core: &Core, tl: &Timeline, a: &Tid, holder: &Tid) -> Option<o
 
 /// Whether applied write `op` of `mc` on `a`, the newest changing the holder's edge there, is this
 /// node's own self-removal (spec/permissions.md §2, §3 Lost access): it lowers the edge, and it
-/// was made here or its author is this node or a key actor it holds: it waits for it to be held
+/// was made here or its author is its node thing or a link key it holds: it waits for it to be held
 /// elsewhere.
 fn own_leaving_write(core: &Core, tl: &Timeline, a: &Tid, mc: &RoleCommit, op: &EdgeOp) -> bool {
-    let own = core.ix.commits.get(&mc.id).is_some_and(|m| m.origin == crate::events::Origin::Local) || mc.signer == core.id.tid() || core.key_actors.contains_key(&mc.signer);
+    let own = core.ix.commits.get(&mc.id).is_some_and(|m| m.origin == crate::events::Origin::Local) || mc.signer == core.id.tid() || core.link_keys.contains_key(&mc.signer);
     own && departure_of(tl, a, mc, op).is_some() && op.holder.thing().is_some_and(|h| crate::apply::validity::self_removal(core, &mc.signer, a, &h, mc.ts))
 }
 
@@ -266,7 +266,7 @@ fn own_leaving_write(core: &Core, tl: &Timeline, a: &Tid, mc: &RoleCommit, op: &
 pub(crate) fn own_self_removal(core: &Core, c: &osis_base::CommitId, targets: &BTreeSet<Tid>) -> bool {
     let Some(m) = core.ix.commits.get(c) else { return false };
     let a = m.view.signer;
-    if m.origin != crate::events::Origin::Local && a != core.id.tid() && !core.key_actors.contains_key(&a) {
+    if m.origin != crate::events::Origin::Local && a != core.id.tid() && !core.link_keys.contains_key(&a) {
         return false;
     }
     targets.iter().any(|t| core.timelines().get(t).is_some_and(|tl| edge_writes(tl, t).any(|(mc, op)| mc.id == *c && op.holder.thing().is_some_and(|h| own_removal_on(core, tl, t, &h) == Some(*c)))))

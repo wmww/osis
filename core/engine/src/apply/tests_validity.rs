@@ -374,7 +374,7 @@ mod tests {
         assert_eq!(box_entries(&forged).remove(0).0, a_dot);
         assert!(!super::super::validity::grantee_boxes_only(&t, "secrets.0", &forged, &granted, &own), "a write into the admin's entry");
     }
-    // spec/permissions.md §1: a record chain reaches its key actor within `MAX_CHAIN_DEPTH`
+    // spec/permissions.md §1: a record chain reaches its top within `MAX_CHAIN_DEPTH`
     // links; a delta written on a thing deeper is invalid and the rest of its commit applies, at
     // every node alike. The writer refuses such a commit.
     #[test]
@@ -462,7 +462,7 @@ mod tests {
         lp.sync_all().unwrap();
         assert_eq!(lp.peers[1].engine.get(&up, &x).unwrap(), Some(Value::Int(1)), "at the cap: applies");
         let mut m = Mutation::new();
-        let d = m.create(osis_base::CreationRecord::Thing { admin: up, nonce: [7; 32], link: None, expires: None });
+        let d = m.create(osis_base::CreationRecord::with_admin(up, [7; 32]));
         m.set(d, &x, &Value::Int(9)).unwrap();
         assert!(lp.peers[0].commit(m.clone()).is_err(), "the writer refuses it");
         lp.peers[0].engine.core.skip_writer_rules = true;
@@ -585,10 +585,9 @@ mod keys_tests {
     use osis_schema::core_types as ct;
     use osis_schema::Codec;
 
-    // spec/crypto.md §3: "inbox and deposit seed by an admin; a key actor's by its own key". A
-    // writer's `keys.0` write of the deposit seed or of a key-actor KEM key is invalid: otherwise a
-    // writer (kept valid by its demoter's frontier after removal) set an actor's `key` field and
-    // every later grant to the actor was sealed to it.
+    // spec/crypto.md §3: the inbox and deposit seed are an admin's to write. A writer's `keys.0`
+    // write of either is invalid: otherwise a writer (kept valid by its demoter's frontier after
+    // removal) named the thing's inbox, and every later grant to it went there.
     #[test]
     fn writer_cannot_write_admin_keys_fields_spec_crypto_3() {
         let mut lp = LocalPeer::fresh(2, WallMs(1_700_000_000_000));
@@ -600,8 +599,7 @@ mod keys_tests {
         lp.sync_all().unwrap();
         assert_eq!(lp.peers[1].engine.role_on(&t), Some(Role::Write));
         let before = lp.peers[0].engine.get_typed(&t, &ct::KEYS).unwrap().unwrap();
-        let kem = lp.peers[1].engine.core.id.keys().kem.public().clone();
-        for (field, v) in [(5u64, Some([9u8; 32]).to_value()), (3, Some(ct::KemKey::X25519MlKem768(kem.as_bytes().to_vec())).to_value())] {
+        for (field, v) in [(5u64, Some([9u8; 32]).to_value()), (4, Some(osis_base::Weak(w)).to_value())] {
             let mut m = Mutation::new();
             m.op(t, &ct::KEYS, PathOp { path: vec![PathSeg::Field(field)], op: Op::Set(v) }).unwrap();
             assert!(lp.peers[1].commit(m.clone()).is_err(), "refused writer-side");

@@ -53,7 +53,7 @@ fn floor_in(core: &Core, a: &Tid, p: &Tid, seen: &mut BTreeSet<Tid>) -> u64 {
         let by = author.map_or(0, |x| floor_in(core, a, &x, &mut seen.clone()));
         paths.push(e.floor.unwrap_or(0).max(by));
     }
-    let actors: Vec<Tid> = on.holders().into_iter().map(|(h, _)| h).filter(|h| h != p && !core.is_key_actor(h)).collect();
+    let actors: Vec<Tid> = on.holders().into_iter().map(|(h, _)| h).filter(|h| h != p).collect();
     for h in actors {
         if super::members::role_for_keys(core, p, &h).is_some_and(|r| r >= Role::Read) {
             paths.push(floor_in(core, a, &h, &mut seen.clone()));

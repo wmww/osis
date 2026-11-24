@@ -215,9 +215,9 @@ impl Engine {
         }
         if let Some((fs, l)) = self.core.followed_links.get(t)
             && fs == *s
-            && let Some(id) = self.core.key_actors.get(&l)
+            && let Some(id) = self.core.link_keys.get(&l)
         {
-            c.acting.push(id.keys().signing.clone());
+            c.acting.push(id.signing().clone());
         }
         if let Some(e) = self.core.epochs(t) {
             // each held sync secret's key derived once (a curve multiplication), then matched per step
@@ -280,16 +280,16 @@ impl Engine {
     }
 
     /// The claim key of this node for step `step` of `s` (spec/sync-ids.md §3): from the X25519
-    /// half of a read KEM key it holds (its node key, its account's epoch keys, the read keysets
-    /// of the actors holding the thing's independent that it holds), the one the step's claim set
-    /// lists. `None` when no held key is listed (or the claim set is not held).
+    /// half of a read KEM key it holds (its node thing's read keysets, those of the things holding
+    /// the thing's independent that it holds), the one the step's claim set lists. `None` when no held key is listed (or the claim set is not held).
     pub fn claim_key(&mut self, s: &SyncId, step: &StepId) -> Result<Option<SigningSecret>> {
         let Some((t, o)) = self.read_sync_id(s)? else { return Ok(None) };
         let Some((st, Some(claims))) = o.path.steps.iter().find(|(x, _)| x.id() == *step) else { return Ok(None) };
         let listed: BTreeSet<[u8; 32]> = claims.claims.iter().copied().collect();
-        let mut keys: Vec<X25519Secret> = vec![self.core.id.keys().kem.x25519().clone()];
+        let mut keys: Vec<X25519Secret> = Vec::new();
         let reader = self.core.reader_of(&t);
-        for (m, _) in self.core.key_holders(&reader) {
+        let me = self.core.me();
+        for m in std::iter::once(me).chain(self.core.key_holders(&reader).into_iter().map(|(m, _)| m).filter(|m| *m != me)) {
             if let Some(e) = self.core.epochs(&m) {
                 keys.extend(e.role(Role::Read).held_newest_first().into_iter().map(|(_, s)| osis_crypto::role_kem(s).x25519().clone()));
             }

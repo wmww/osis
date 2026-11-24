@@ -60,9 +60,6 @@ impl Records {
             RecordLink::Key => self.keys.get(t).map(|k| Holder::Key(*k)),
         }
     }
-    pub fn is_key(&self, t: &Tid) -> bool {
-        self.link(t) == Some(RecordLink::Key)
-    }
     /// The things `a` is mint admin of (its record edges' targets).
     pub fn mint_admin_of(&self, a: &Tid) -> &[Tid] {
         self.mint_admin_of.get(a).map_or(&[], |v| v.as_slice())
@@ -288,10 +285,6 @@ impl<'a> View<'a> {
     pub fn at(edges: &'a EdgesAt<'a>, ts: Option<Ts>) -> View<'a> {
         let over = Some(&edges.over).filter(|o| !o.is_empty());
         View { records: edges.records, edges: edges.base, over, ts, patch: None }
-    }
-    /// Whether `t`'s record holds a key.
-    pub fn is_key(&self, t: &Tid) -> bool {
-        self.records.is_key(t)
     }
     /// The same view with edge (holder, target) set to `edge`.
     pub fn patched(self, holder: Tid, target: Tid, edge: Option<Edge>) -> View<'a> {

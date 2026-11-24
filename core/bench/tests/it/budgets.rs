@@ -11,7 +11,7 @@ use osis_base::{CreationRecord, Tid, encode};
 #[test]
 #[ignore]
 fn budget_creation_record() {
-    let rec = CreationRecord::Thing { admin: Tid::from_bytes([1; 15]), nonce: [2; 32], link: None, expires: None };
+    let rec = CreationRecord::with_admin(Tid::from_bytes([1; 15]), [2; 32]);
     assert_budget("creation record (thing)", encode(&rec.to_value()).len(), 64);
 }
 

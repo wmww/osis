@@ -134,15 +134,15 @@ pub struct Close(pub &'static str);
 pub struct Proven {
     /// The peer's node: the thing its first proof proved.
     pub node: Option<Tid>,
-    /// The other key actors proved by their own signing keys, with that key (a static entry is
+    /// The link keys proved by their own signing keys, with that key (a static entry is
     /// checked against it), known here or not.
-    pub key_actors: BTreeMap<Tid, [u8; 32]>,
+    pub link_keys: BTreeMap<Tid, [u8; 32]>,
 }
 
 impl Proven {
-    /// Every actor proved: the node, the key actors.
+    /// Every thing proved: the node thing, the link keys.
     pub fn actors(&self) -> Vec<Tid> {
-        self.node.into_iter().chain(self.key_actors.keys().copied()).collect()
+        self.node.into_iter().chain(self.link_keys.keys().copied()).collect()
     }
 }
 
@@ -653,7 +653,7 @@ impl Session {
         Ok(())
     }
 
-    /// The dialer's Prove (spec/sync-opens.md §2 Order): its node thing, then its key actors;
+    /// The dialer's Prove (spec/sync-opens.md §2 Order): its node thing, then its link keys;
     /// none where its policy proves nothing to this peer (`Policy::identify`).
     fn prove(&mut self, cx: &mut Cx) -> Result<(), Close> {
         let Some(b) = self.binding else { return Ok(()) };
@@ -674,7 +674,7 @@ impl Session {
         Ok(provers.into_iter().take(MAX_PROOFS).map(|(key, record)| Prover { key, record }.sign(by_listener, challenge, &listener)).collect())
     }
 
-    /// What verified proofs show: the first proof the peer's node, every other a key actor.
+    /// What verified proofs show: the first proof the peer's node thing, every other a link key.
     fn judge(&self, proofs: Vec<ActorProof>) -> Proven {
         let mut p = Proven::default();
         for (i, a) in proofs.into_iter().enumerate() {
@@ -682,7 +682,7 @@ impl Session {
             if i == 0 {
                 p.node = Some(t);
             } else {
-                p.key_actors.insert(t, a.key);
+                p.link_keys.insert(t, a.key);
             }
         }
         p

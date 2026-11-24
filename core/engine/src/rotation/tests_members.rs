@@ -1909,7 +1909,7 @@ fn unrecorded(lp: &mut LocalPeer, boxer: usize, other: usize, a: Tid) -> Vec<(Ti
     let mut out = Vec::new();
     for (k, b) in &s.boxes {
         let e = osis_keys::aspects::from_schema(&k.epoch).unwrap();
-        if !epochs.role(k.role).current().contains(&e) || core.is_key_actor(&k.holder.0) {
+        if !epochs.role(k.role).current().contains(&e) {
             continue;
         }
         let ks = osis_keys::box_keysets(b);

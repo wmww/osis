@@ -157,7 +157,8 @@ fn fork_beside_the_cut_never_reaches_the_newcomer_spec_crypto_4() {
 fn a_rotation_before_the_cut_wraps_under_what_it_supersedes_or_not_at_all_spec_crypto_5() {
     let (mut lp, g, _, cut) = cut_world(2);
     let at_a = lp.peers[0].engine.epochs(&g).unwrap();
-    let before: Vec<Epoch> = at_a.read.held().map(|x| x.0).filter(|e| e.n() > 0 && e.n() < cut.n()).collect();
+    // the rotations before the cut (the derived epochs before them were no rotation's)
+    let before: Vec<Epoch> = at_a.read.held().map(|x| x.0).filter(|e| e.n() < cut.n() && at_a.read.provenance(e) != Some(osis_keys::Provenance::Derived)).collect();
     assert!(!before.is_empty(), "no rotation before the cut");
     for e in before {
         let (_, r) = *lp.peers[0].engine.core.ix.epoch_intro.get(&(g, Role::Read, e)).unwrap();
@@ -255,7 +256,7 @@ fn hostile_rotation(lp: &mut LocalPeer, i: usize, g: Tid, lists: &BTreeSet<Epoch
             // a view whose own floor lets nothing in: its history box carries nothing
             held.read.set_floors(Default::default(), u64::MAX);
             let names = super::departures::names(tx.core, &g, None);
-            let mut rot = osis_keys::rotate_leaving_out(&g, &BTreeSet::from(READ), &held, &secrets, &boxing.holders, &Default::default(), &Default::default(), &names, false, &mut *tx.rng)?;
+            let mut rot = osis_keys::rotate_leaving_out(&g, &BTreeSet::from(READ), &held, &secrets, &boxing.holders, &Default::default(), &Default::default(), &names, false, None, &mut *tx.rng)?;
             let ks = rot.keys.keysets.get_mut(&Role::Read).unwrap();
             ks.supersedes = lists.iter().map(osis_keys::aspects::to_schema).collect();
             let x = &rot.rotated[0];

@@ -266,7 +266,7 @@ fn more_accepted() -> Vec<Record> {
     // purge request, with a creation
     let at = ts(1_700_000_005_000);
     let mut b = CommitBuilder::new(Kind::Content, at, SIGNER, osis_commit::Path::through(LISTED), SESSION);
-    let cr = AspectWrite::new(THING, Ak::new("created.0").unwrap(), 1, 2, core_delta("created.0", SESSION, Kind::Content, at, 1, osis_base::CreationRecord::Thing { admin: LISTED, nonce: [0x2e; 32], link: None, expires: None }.to_value(), 7));
+    let cr = AspectWrite::new(THING, Ak::new("created.0").unwrap(), 1, 2, core_delta("created.0", SESSION, Kind::Content, at, 1, osis_base::CreationRecord::with_admin(LISTED, [0x2e; 32]).to_value(), 7));
     b.aspects.push(cr);
     b.aspects.push(AspectWrite::new(THING, Ak::new("app:body.0").unwrap(), 1, 2, delta(SESSION, Kind::Content, at, 1, Value::Str("".into()), 8)));
     b.purge = vec![

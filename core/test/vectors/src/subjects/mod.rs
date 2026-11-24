@@ -45,7 +45,7 @@ pub const GENERATED: [Generated; 20] = {
     }
     [
         g("tid/thing", tid::thing),
-        g("tid/key-actor", tid::key_actor),
+        g("tid/key", tid::key),
         g("chunker/gear", chunker::gear),
         g("chunker/tree", chunker::tree),
         g("chunker/pages", chunker::pages),

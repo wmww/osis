@@ -1,12 +1,12 @@
 #![allow(dead_code)]
-//! Shared fixtures: actors with explicit epochs, key actors, recipients.
+//! Shared fixtures: actors with explicit epochs, recipients.
 
 use osis_base::{Role, Tid};
-use osis_crypto::{Epoch, KeyActorKeys, Secret32, SeededRng};
+use osis_crypto::{Epoch, Secret32, SeededRng};
 use osis_keys::aspects::keyset;
 use osis_keys::{ActorEpochs, HolderKeys, Provenance, ROLES, Recipient};
 use std::collections::BTreeSet;
-use osis_schema::core_types::{KemKey, Keys};
+use osis_schema::core_types::Keys;
 
 pub fn tid(b: u8) -> Tid {
     Tid::from_bytes([b; 15])
@@ -55,11 +55,6 @@ pub fn keys_of(a: &ActorEpochs) -> Keys {
     k
 }
 
-pub fn key_actor_keys(seed: &Secret32) -> Keys {
-    let kem = KeyActorKeys::from_seed(seed).kem;
-    Keys { key: Some(KemKey::X25519MlKem768(kem.public().as_bytes().to_vec())), ..Keys::default() }
-}
-
 pub fn actor_rcpt(holder: Tid, role: Role, a: &ActorEpochs) -> Recipient {
     Recipient { holder, role, keys: HolderKeys::from_keys(&keys_of(a)).unwrap(), floor: 0 }
 }
@@ -67,10 +62,6 @@ pub fn actor_rcpt(holder: Tid, role: Role, a: &ActorEpochs) -> Recipient {
 /// Mint admin `p` holding `pe`, with its own secrets.
 pub fn admin_rcpt(p: Tid, pe: &ActorEpochs) -> Recipient {
     Recipient { holder: p, role: Role::Admin, keys: HolderKeys::from_keys(&keys_of(pe)).unwrap().with_own(pe), floor: 0 }
-}
-
-pub fn key_rcpt(holder: Tid, role: Role, seed: &Secret32) -> Recipient {
-    Recipient { holder, role, keys: HolderKeys::from_keys(&key_actor_keys(seed)).unwrap(), floor: 0 }
 }
 
 /// `view` after the rotator applies its own rotation commit `rot` under ID `[id; 32]`: what a

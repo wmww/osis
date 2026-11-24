@@ -26,7 +26,7 @@ use crate::engine::{Core, Engine, Tx};
 use crate::error::{Error, Result};
 use crate::identity::Identity;
 use crate::Mutation;
-use osis_base::{Ak, CommitId, CreationRecord, SyncId, Role, Tid, Value, WallMs};
+use osis_base::{Ak, CommitId, SyncId, Role, Tid, Value, WallMs};
 use osis_crdt::{Fragment, Op, PathOp, PathSeg};
 use osis_crypto::Secret32;
 use osis_keys::{KeysWrite, HolderKeys, Recipient, SecretsWrite};
@@ -142,9 +142,9 @@ pub(crate) fn ts_at(now: u64) -> osis_base::Ts {
 }
 
 impl Core {
-    /// The key actors holding a role on actor `start`, directly or through the actors holding
-    /// it: the nodes that may hold it.
-    pub(crate) fn holder_keys_of(&self, start: Tid) -> BTreeSet<Tid> {
+    /// The things holding a role on `start`, directly or through the things holding it, that a
+    /// connection can prove (`provable`): who may hold it.
+    pub(crate) fn provable_holders_of(&self, start: Tid) -> BTreeSet<Tid> {
         let mut seen = BTreeSet::from([start]);
         let mut todo = vec![start];
         let mut out = BTreeSet::new();
@@ -153,14 +153,19 @@ impl Core {
                 if !seen.insert(m) {
                     continue;
                 }
-                if self.is_key_actor(&m) {
+                if self.provable(&m) {
                     out.insert(m);
-                } else {
-                    todo.push(m);
                 }
+                todo.push(m);
             }
         }
         out
+    }
+
+    /// Whether a connection can prove `t`: a key holds a grant on it (its record's key, or a key
+    /// grant), and a proof is by such a key (spec/sync-opens.md §2).
+    pub(crate) fn provable(&self, t: &Tid) -> bool {
+        self.created(t).is_some_and(|r| r.key().is_some()) || self.timelines().key_grants(t, None).values().next().is_some()
     }
 
     /// The typed state of `keys.0` of `tid`.
@@ -178,26 +183,18 @@ impl Core {
         })
     }
 
-    /// The mint admin of `tid` (spec/permissions.md §1): the next actor up its record chain,
-    /// whose secrets a dependent `tid` derives from (spec/crypto.md §3). None for a key actor or an
-    /// unknown thing.
+    /// The mint admin of `tid` (spec/permissions.md §1): the next thing up its record chain,
+    /// whose secrets a dependent `tid` derives from (spec/crypto.md §3). None for a thing minted
+    /// with a key or an unknown thing.
     pub(crate) fn mint_admin(&self, tid: &Tid) -> Option<Tid> {
         self.created(tid)?.mint_admin()
     }
 
-    pub fn is_key_actor(&self, tid: &Tid) -> bool {
-        matches!(self.created(tid), Some(CreationRecord::KeyActor { .. }))
-    }
-
-    /// Whether `t` is a link key: a key actor holding a grant on a link's thing K
-    /// (spec/permissions.md §7).
-    pub fn is_link_key(&self, t: &Tid) -> bool {
-        self.is_key_actor(t) && self.ix.held.named_on(t).any(|x| self.created(x).is_some_and(CreationRecord::is_link))
-    }
-
-    /// Whether `t` is a node: a key actor that is no link key (spec/sync-set.md §1).
+    /// Whether `t` is a node thing: minted with a key, and no link key (spec/sync-set.md §1).
+    /// Interim (notes/accounts-switch-brief.md, connection proofs): read where a node's key
+    /// actor was, until proofs state their paths.
     pub fn is_node(&self, t: &Tid) -> bool {
-        *t == self.id.tid() || self.is_key_actor(t) && !self.is_link_key(t)
+        self.created(t).is_some_and(|r| r.key().is_some() && r.link.is_none())
     }
 
     /// Current holders of `actor` with their role and `until` (alive edges), its record edge
@@ -242,10 +239,9 @@ impl Core {
         }
     }
 
-    /// Whether `m` is a destroyed actor other than a key actor (a key actor's keys are its seed's:
-    /// its own nodes still hold them).
+    /// Whether `m` is a destroyed thing (spec/crypto.md §4 Destroyed: it holds no keys).
     pub(crate) fn destroyed_actor(&self, m: &Tid) -> bool {
-        matches!(self.created(m), Some(CreationRecord::Thing { .. })) && self.destroyed(m)
+        self.destroyed(m)
     }
 
     /// Whether `tid` is independent (else a dependent thing derives its role secrets from its mint
@@ -257,23 +253,13 @@ impl Core {
 
 /// A recipient for boxes of `actor` to `holder` at `role`, from the holder's held `keys.0`.
 pub(crate) fn recipient(tx: &mut Tx<'_>, holder: Tid, role: Role) -> Result<Recipient> {
-    let keys = Core::keys_in(tx, &holder)?;
-    let keys = match (tx.core.is_key_actor(&holder), keys) {
-        (true, Some(k)) => HolderKeys::from_keys(&Keys { read: None, write: None, admin: None, ..k })?,
-        (true, None) if holder == tx.core.id.tid() => HolderKeys::KeyActor { kem: tx.core.id.keys().kem.public().clone(), seed: None },
-        (true, None) => match tx.core.key_actors.get(&holder) {
-            Some(k) => HolderKeys::KeyActor { kem: k.keys().kem.public().clone(), seed: None },
-            None => return Err(Error::Misuse("no keys.0 held for the holder")),
-        },
-        // a key-actor KEM key on an actor's `keys.0` is never sealed to (only key actors have one)
-        (false, Some(k)) => {
-            let mk = HolderKeys::from_keys(&Keys { key: None, ..k })?;
-            match tx.core.own_epochs(&holder) {
-                Some(e) => mk.with_own(&e),
-                None => mk,
-            }
-        }
-        (false, None) => return Err(Error::Misuse("the holder is not independent")),
+    let Some(k) = Core::keys_in(tx, &holder)? else { return Err(Error::Misuse("the holder is not independent")) };
+    let mk = HolderKeys::from_keys(&k)?;
+    // a holder whose secrets this node holds (its own things, a held link key) is boxed
+    // symmetrically
+    let keys = match tx.core.link_key_epochs(&holder).or_else(|| tx.core.own_epochs(&holder)) {
+        Some(e) => mk.with_own(&e),
+        None => mk,
     };
     Ok(Recipient { holder, role, keys, floor: 0 })
 }
@@ -362,7 +348,7 @@ pub(crate) fn retake(tx: &mut Tx<'_>) -> Result<bool> {
     Ok(any)
 }
 
-/// Opener `h` taken up (a key actor, or the account): the boxes keyed to it open, and what they
+/// Opener `h` taken up (a link key): the boxes keyed to it open, and what they
 /// give opens the boxes keyed to that in turn (`reopen_dependents`); boxes the node's roles kept out are taken where the
 /// roles as `h` give them (`retake`). O(what `h` opens), never the held actors or the node
 /// closure.
@@ -399,13 +385,13 @@ pub(crate) fn reopen_all(tx: &mut Tx<'_>) -> Result<()> {
 }
 
 impl Engine {
-    /// Takes up a key actor from its seed (a link key from its link) until `drop_key_actor`: it
-    /// can sign (`Mutation::sign_as`) and its boxes open. Returns its tid.
-    pub fn hold_key_actor(&mut self, seed: Secret32) -> Result<Tid> {
-        let id = Arc::new(Identity::from_seed(seed));
+    /// Takes up the link key of `seed` on link's thing `k` until `drop_link_key`: it can sign
+    /// (`Mutation::sign_as`) and its boxes open by its seed's secrets. Returns its tid.
+    pub fn hold_link_key(&mut self, seed: Secret32, k: Tid) -> Result<Tid> {
+        let id = Arc::new(Identity::link_key(seed, k));
         let t = id.tid();
-        self.core.held_keys.insert(t, id);
-        self.settle_key_actor(&t);
+        self.core.held_link_keys.insert(t, id);
+        self.settle_link_key(&t);
         self.reopen_held(t)?;
         Ok(t)
     }
@@ -414,12 +400,12 @@ impl Engine {
     /// L while a followed link names it and keeps K's sync ID from the link text in the sync set,
     /// read, until `unfollow_link`. Returns L.
     pub fn follow_link(&mut self, link: &osis_blob::ShareLink) -> Result<Tid> {
-        let id = Arc::new(Identity::from_seed(link.seed.clone()));
+        let id = Arc::new(Identity::link_key(link.seed.clone(), link.k));
         let l = id.tid();
         let old = self.core.followed_links.insert(link.k, link.k_sync_id, id);
-        self.settle_key_actor(&l);
+        self.settle_link_key(&l);
         if let Some(o) = old {
-            self.settle_key_actor(&o);
+            self.settle_link_key(&o);
         }
         self.reopen_held(l)?;
         Ok(l)
@@ -429,8 +415,24 @@ impl Engine {
     /// it (spec/permissions.md §7).
     pub fn unfollow_link(&mut self, k: &Tid) {
         if let Some(l) = self.core.followed_links.remove(k) {
-            self.settle_key_actor(&l);
+            self.settle_link_key(&l);
         }
+    }
+
+    /// A recipient for boxes to `holder` at `role` as this node writes them (`recipient`), for
+    /// tests building boxes by hand.
+    #[doc(hidden)]
+    pub fn recipient_for(&mut self, holder: &Tid, role: Role) -> Result<Recipient> {
+        let holder = *holder;
+        self.read(|tx| recipient(tx, holder, role))
+    }
+
+    /// The KEM key of the node thing's newest read epoch held: its claim key's X25519 half
+    /// (spec/crypto.md §3), for tests.
+    #[doc(hidden)]
+    pub fn node_read_kem(&self) -> Option<osis_crypto::KemSecret> {
+        let e = self.core.epochs(&self.core.me())?;
+        e.read.newest_held().map(|(_, s)| osis_crypto::role_kem(s))
     }
 
     /// Whether `t` is a node (`Core::is_node`).
@@ -439,23 +441,23 @@ impl Engine {
         self.read(|tx| is_node(tx, &t))
     }
 
-    /// Lets go of a key actor held by `hold_key_actor`; a followed link naming it still holds it.
-    pub fn drop_key_actor(&mut self, tid: &Tid) {
-        self.core.held_keys.remove(tid);
-        self.settle_key_actor(tid);
+    /// Lets go of a link key held by `hold_link_key`; a followed link naming it still holds it.
+    pub fn drop_link_key(&mut self, tid: &Tid) {
+        self.core.held_link_keys.remove(tid);
+        self.settle_link_key(tid);
     }
 
-    /// Holds key actor `t` exactly while `hold_key_actor` or a followed link names it.
-    fn settle_key_actor(&mut self, t: &Tid) {
-        let want = self.core.held_keys.get(t).or_else(|| self.core.followed_links.key(t)).cloned();
+    /// Holds link key `t` exactly while `hold_link_key` or a followed link names it.
+    fn settle_link_key(&mut self, t: &Tid) {
+        let want = self.core.held_link_keys.get(t).or_else(|| self.core.followed_links.key(t)).cloned();
         match want {
-            Some(id) if !self.core.key_actors.contains_key(t) => drop(self.core.key_actors.replace(*t, id)),
-            None if self.core.key_actors.contains_key(t) => drop(self.core.key_actors.remove(t)),
+            Some(id) if !self.core.link_keys.contains_key(t) => drop(self.core.link_keys.replace(*t, id)),
+            None if self.core.link_keys.contains_key(t) => drop(self.core.link_keys.remove(t)),
             _ => {}
         }
     }
 
-    /// Opens what key actor `t`, taken up, may open now (`take_up_opener`).
+    /// Opens what link key `t`, taken up, may open now (`take_up_opener`).
     fn reopen_held(&mut self, t: Tid) -> Result<()> {
         if let Some(ch) = &mut self.core.wakes {
             ch.reopen_awaits = true;

@@ -27,22 +27,25 @@ impl Engine {
         m.op(root, &ct::HOLDS, PathOp { path: Vec::new(), op: Op::Remove(Value::Strong(s.0)) })?;
         self.commit(m).map(|_| ())
     }
+}
 
-    /// The node root, made at the node's first start (`bootstrap`): a thing whose mint admin
-    /// is the node, its commits the node's own.
-    pub(crate) fn make_node_root(&mut self) -> Result<()> {
-        let node = self.tid();
-        self.run(|tx| {
-            let rec = crate::identity::thing_record(node, None, &mut *tx.rng);
-            let root = rec.tid();
-            tx.core.node_root = Some(root);
-            tx.txn.put_local(records::NODE_ROOT, root.as_bytes(), Shred::No)?;
-            let mut m = Mutation::new();
-            m.create(rec);
-            crate::engine::write::commit_in(tx, m)?;
-            Ok(())
-        })
-    }
+/// The node's first start (spec/sync-set.md §1, §2 Making a thing), in `tx`: its node thing N
+/// minted with its key, independent at its minting (its keysets, sync ID and deposit seed, its
+/// secrets this node's alone), and its node root, minted with admin N, a dependent of N, holding a
+/// strong to N. Both made in one transaction, so each is in the node closure at its end.
+pub(crate) fn first_start(tx: &mut Tx<'_>) -> Result<()> {
+    let node = tx.core.id.record().clone();
+    let n = node.tid();
+    let mut done = crate::flows::Done::default();
+    crate::rotation::own_secrets_new(tx, node, &[], None, &mut done)?;
+    let rec = crate::identity::thing_record(n, None, &mut *tx.rng);
+    let root = rec.tid();
+    tx.core.node_root = Some(root);
+    tx.txn.put_local(records::NODE_ROOT, root.as_bytes(), Shred::No)?;
+    let mut m = Mutation::new();
+    m.create(rec);
+    m.op(root, &ct::HOLDS, PathOp { path: Vec::new(), op: Op::Add(Value::Strong(n)) })?;
+    crate::engine::write::commit_in(tx, m).map(|_| ())
 }
 
 /// Writes a strong from the node root's `holds.0` to `t`, in `tx`.

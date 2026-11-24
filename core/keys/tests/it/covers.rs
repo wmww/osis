@@ -3,7 +3,6 @@
 
 use crate::common::*;
 use osis_base::{Role, Tid};
-use osis_crypto::Secret32;
 use osis_keys::{
     ActorEpochs, AllHeld, Departure, EdgeLog, EdgeWrite, Holder, Key, Name, Names, Opener, Own, Recipient, box_holder, ingest, pins,
     reseal_needed, roles_up_to, rotate, uncovered,
@@ -64,7 +63,7 @@ fn grant_raced_by_rotation() {
     reseal.apply(&mut s);
     assert!(reseal_needed(&s, &v, &holders).is_empty());
     let mut gv = ActorEpochs::default();
-    ingest(&a, &s, &Opener::Actor { holder: g, epochs: &ge }, &mut gv, None).unwrap();
+    ingest(&a, &s, &Opener { holder: g, epochs: &ge }, &mut gv, None).unwrap();
     assert!(gv.read.secret(&v.read.newest().unwrap()).is_some());
 }
 
@@ -107,11 +106,11 @@ fn rotation_held_before_the_removal() {
     assert!(uncovered(&v, Role::Read, &e3, &deps, &AllHeld).is_empty());
     assert!(!merge_due_at(&v, Role::Read, &deps, &AllHeld));
     let mut mv = ActorEpochs::default();
-    ingest(&a, &s, &Opener::Actor { holder: m, epochs: &me }, &mut mv, None).unwrap();
+    ingest(&a, &s, &Opener { holder: m, epochs: &me }, &mut mv, None).unwrap();
     assert!(mv.read.secret(&e3).is_none());
-    // A key-actor holder boxed write is boxed read too.
-    let (k, seed) = (tid(6), Secret32::from_bytes([0x60; 32]));
-    let w = box_holder(&a, &v, &hist(&a, &v, &s), &key_rcpt(k, Role::Write, &seed), &roles_up_to(Role::Write), &mut *rg).unwrap().unwrap();
+    // A holder boxed write is boxed read too.
+    let (k, ke) = (tid(6), actor_epochs(0x60));
+    let w = box_holder(&a, &v, &hist(&a, &v, &s), &actor_rcpt(k, Role::Write, &ke), &roles_up_to(Role::Write), &mut *rg).unwrap().unwrap();
     w.apply(&mut s);
     let kdep = [removal(k, 10).0];
     assert!(!uncovered(&v, Role::Read, &e3, &kdep, &AllHeld).is_empty());

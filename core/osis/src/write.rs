@@ -186,10 +186,7 @@ impl<'d> Write<'d> {
             .ops
             .iter()
             .flat_map(|o| match o {
-                WriteOp::Create(r) => match r {
-                    CreationRecord::Thing { admin, .. } => vec![r.tid(), *admin],
-                    CreationRecord::KeyActor { .. } => vec![r.tid()],
-                },
+                WriteOp::Create(r) => std::iter::once(r.tid()).chain(r.mint_admin()).collect(),
                 WriteOp::Path { tid, .. } | WriteOp::Fire { tid, .. } | WriteOp::PurgeBy { tid, .. } | WriteOp::Purge { tid, .. } | WriteOp::PurgeCommit { tid, .. } | WriteOp::PurgeAuthor { tid, .. } => vec![*tid],
                 WriteOp::PurgeThing(t) => vec![*t],
             })
@@ -438,8 +435,8 @@ impl<'d> Write<'d> {
             match op {
                 WriteOp::Create(rec) => {
                     // the client's actor goes away with the client (notes/client-port.md §3)
-                    if let (Some(a), CreationRecord::Thing { admin, .. }) = (acting, &rec)
-                        && *admin == a
+                    if let Some(a) = acting
+                        && rec.mint_admin() == Some(a)
                     {
                         return Err(Error::Invalid("a thin client's actor goes with it, so it creates nothing under it: name a thing that stays".into()));
                     }

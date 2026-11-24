@@ -8,8 +8,8 @@ use std::collections::BTreeMap;
 
 const SPEC: &str = "spec/wire.md §3";
 
-/// Thing records and the field rejections. Key-actor records need osis-crypto
-/// (`tid/key-actor.vec`).
+/// Thing records and the field rejections. Records holding a key need osis-crypto
+/// (`tid/key.vec`).
 pub fn thing() -> VecFile {
     let admin = Tid::from_bytes([1; 15]);
     let nonce = [2u8; 32];
@@ -17,7 +17,7 @@ pub fn thing() -> VecFile {
     let mut cases: Vec<Record> = [("thing", None), ("thing that expires", Some(1_700_000_000_000u64))]
         .into_iter()
         .map(|(name, expires)| {
-            let rec = CreationRecord::Thing { admin, nonce, link: None, expires };
+            let rec = CreationRecord { expires, ..CreationRecord::with_admin(admin, nonce) };
             let bytes = encode(&rec.to_value());
             let tid = rec.tid();
             assert_eq!(osis_base::hash::hash(&bytes)[..15], tid.as_bytes()[..], "tid is BLAKE3 of the record");
@@ -47,15 +47,16 @@ pub fn thing() -> VecFile {
     VecFile { header: generated_header("tid", SPEC), cases }
 }
 
-/// Key-actor records: a node (signing key from seed 03 via `kdf("sign", seed)`, random nonce
-/// 04*32) and a link key (same seed, nonce `kdf("creation nonce", seed, "")`).
-pub fn key_actor() -> VecFile {
+/// Records of things minted with a key: a node thing (signing key from seed 03 via
+/// `kdf("sign", seed)`, random nonce 04*32) and a link key (same seed, nonce `kdf("creation
+/// nonce", seed, "")`, field 3 its K, 05*15).
+pub fn key() -> VecFile {
     let seed = osis_crypto::Secret32::from_bytes([3; 32]);
-    let key = osis_crypto::KeyActorKeys::from_seed(&seed).signing.verifying_key();
+    let key = osis_base::SignKey(osis_crypto::signing_key(&seed).verifying_key().to_bytes());
+    let k = Tid::from_bytes([5; 15]);
     let mut cases = Vec::new();
-    for (name, nonce) in [("node", [4u8; 32]), ("link key", osis_crypto::creation_nonce(&seed))] {
-        // alg 1: `signing_key` case ed25519 (spec/wire.md §3).
-        let rec = CreationRecord::KeyActor { alg: 1, public_key: key.to_bytes().to_vec(), nonce };
+    for (name, nonce, link) in [("node thing", [4u8; 32], None), ("link key", osis_crypto::creation_nonce(&seed), Some(k))] {
+        let rec = CreationRecord { link, ..CreationRecord::with_key(key, nonce) };
         let bytes = encode(&rec.to_value());
         let tid = rec.tid();
         assert_eq!(CreationRecord::from_value(&rec.to_value()), Some(rec.clone()));
@@ -64,7 +65,7 @@ pub fn key_actor() -> VecFile {
                 .with("case", name)
                 .with("spec", SPEC)
                 .with("seed", hex(seed.expose()))
-                .with("signing-key", hex(&key.to_bytes()))
+                .with("signing-key", hex(&key.0))
                 .with("nonce", hex(&nonce))
                 .with("record", hex(&bytes))
                 .with("tid", hex(tid.as_bytes()))

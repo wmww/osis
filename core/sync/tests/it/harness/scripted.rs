@@ -52,13 +52,13 @@ pub fn read_secret(seed: u8, n: u8) -> (Epoch, Secret32) {
     (epoch(n), Secret32::from_bytes([seed, n, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7]))
 }
 
-/// A key actor's signing key (a link).
+/// A link key's signing key.
 pub fn link_key(n: u8) -> SigningSecret {
     SigningSecret::from_seed(&Secret32::from_bytes([n; 32]))
 }
 
 /// What a node reading S at `step` holds: its read secret, the static entries its roster lists,
-/// the key actors it acts for, and the walk's sync keys of the steps it holds (newest first).
+/// the link keys it acts for, and the walk's sync keys of the steps it holds (newest first).
 pub fn reader(s: &SyncId, read: &(Epoch, Secret32), step: &StepKeys, older: &[StepKeys], roster_links: &[&SigningSecret], own_links: &[&SigningSecret]) -> Creds {
     let mut c = Creds { holding: Some(Holding::Read), ..Creds::default() };
     c.shows.push((Shown::Read(read.0, *read.1.expose()), Some(read.0)));
@@ -166,7 +166,7 @@ impl Holds for Table {
         self.creds.get(s).cloned()
     }
     fn named(&mut self, proven: &Proven) -> osis_store::Named {
-        osis_store::Named { node: proven.node, key_actors: proven.key_actors.keys().copied().collect() }
+        osis_store::Named { node: proven.node, link_keys: proven.link_keys.keys().copied().collect() }
     }
     fn counts(&mut self, named: &osis_store::Named) -> Vec<Tid> {
         named.actors()
@@ -372,9 +372,9 @@ pub fn incoming(m: Msg) -> Incoming {
     }
 }
 
-/// Node `n`'s creation record.
+/// Node `n`'s node thing's creation record.
 fn account_record(n: u8) -> osis_base::CreationRecord {
-    osis_base::CreationRecord::KeyActor { alg: osis_base::SIGNING_KEY_ED25519, public_key: vec![n; 32], nonce: [n; 32] }
+    osis_base::CreationRecord::with_key(osis_base::SignKey([n; 32]), [n; 32])
 }
 
 /// Node `n`, proved.

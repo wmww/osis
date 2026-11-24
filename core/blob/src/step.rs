@@ -279,7 +279,7 @@ impl ClaimSet {
         self.claims.contains(key)
     }
 
-    /// The entry box of a key actor's static entry.
+    /// The entry box of a link key's static entry.
     pub fn entry_box(&self, sync_id: &SyncId, signing: &VerifyingKey) -> Option<&SecretBox> {
         self.entries.get(&static_entry(sync_id, signing))
     }
@@ -302,7 +302,7 @@ pub fn entry_box_from_value(v: &Value) -> Result<SecretBox, Error> {
 pub enum Reader<'a> {
     /// Listed by claim key: the X25519 half of its read-role KEM key (a node: its KEM key).
     Dh([u8; 32]),
-    /// A key actor other than a node, by static entry, with an entry box sealed to its KEM key.
+    /// A link key, by static entry, with an entry box sealed to its first read keyset's KEM key.
     Static { signing: VerifyingKey, kem: &'a KemPublicKey },
 }
 
@@ -316,7 +316,7 @@ pub enum Parent<'a> {
 
 /// Issues a step with a fresh step key, its claim set and entry boxes (spec/sync-ids.md §3): one
 /// claim key per DH reader (a non-contributory result omits it), one static entry and entry box
-/// per key actor, padded with random public keys to a power of two, shuffled. `read` is the
+/// per static reader, padded with random public keys to a power of two, shuffled. `read` is the
 /// sync ID's thing, the registered read epoch and its secret; `sync` the sync epoch and
 /// secret its sync key derives from. The step private key is dropped (zeroized) on return.
 /// A step without rotation passes the parent's keys. Randomness in draw order: the step key
@@ -395,7 +395,7 @@ fn seal_entry_box(slot: &BoxSlot, kem: &KemPublicKey, item: &EntryItem, rng: &mu
     Ok(SecretBox::Sealed(SealedBox { keyset: None, suite: u64::from(osis_crypto::SUITE_1), sealed: Sealed::X25519MlKem768(sealed) }))
 }
 
-/// Opens an entry box of `step` of `t`'s sync ID with the key actor's KEM key: the read
+/// Opens an entry box of `step` of `t`'s sync ID with the link key's read KEM key: the read
 /// secrets it carries, with the epochs of `t` they name (spec/sync-ids.md §3).
 pub fn open_entry_box(b: &SecretBox, step: &Step, kem: &KemSecret, t: &Tid) -> Result<EntryItem, Error> {
     let slot = BoxSlot::Entry { sync_id: step.sync_id, step_key: step.step_key, actor: *t };
@@ -409,7 +409,7 @@ pub fn open_entry_box(b: &SecretBox, step: &Step, kem: &KemSecret, t: &Tid) -> R
 pub(crate) mod tests {
     use super::*;
     use osis_base::Role;
-    use osis_crypto::{KeyActorKeys, SeededRng};
+    use osis_crypto::{KemSecret, SeededRng, SigningSecret, signing_key};
     use proptest::prelude::*;
 
     pub(crate) struct Secrets {
@@ -511,13 +511,17 @@ pub(crate) mod tests {
     fn claims_and_entry_boxes() {
         let mut rng = SeededRng::from_u64(0);
         let g = Secrets::new(40);
-        let m1 = KeyActorKeys::from_seed(&Secret32::from_bytes([1; 32]));
-        let m2 = KeyActorKeys::from_seed(&Secret32::from_bytes([2; 32]));
-        let link = KeyActorKeys::from_seed(&Secret32::from_bytes([3; 32]));
-        let card = KeyActorKeys::from_seed(&Secret32::from_bytes([4; 32]));
+        // two link keys: a signing key, and their first read keyset's KEM key
+        struct Link {
+            signing: SigningSecret,
+            kem: KemSecret,
+        }
+        let link_key = |b: u8| Link { signing: signing_key(&Secret32::from_bytes([b; 32])), kem: KemSecret::derive(&Secret32::from_bytes([b + 0x10; 32])) };
+        let (m1, m2) = (KemSecret::derive(&Secret32::from_bytes([1; 32])), KemSecret::derive(&Secret32::from_bytes([2; 32])));
+        let (link, card) = (link_key(3), link_key(4));
         let readers = [
-            Reader::Dh(m1.kem.public().x25519()),
-            Reader::Dh(m2.kem.public().x25519()),
+            Reader::Dh(m1.public().x25519()),
+            Reader::Dh(m2.public().x25519()),
             Reader::Dh([0; 32]),
             Reader::Static { signing: card.signing.verifying_key(), kem: card.kem.public() },
             Reader::Static { signing: link.signing.verifying_key(), kem: link.kem.public() },
@@ -528,11 +532,11 @@ pub(crate) mod tests {
         assert_eq!(ClaimSet::parse(&c0.to_bytes()).unwrap(), c0);
         assert_eq!(s0.claims_hash, c0.hash());
         for m in [&m1, &m2] {
-            let k = s0.claim_key(m.kem.x25519()).unwrap();
+            let k = s0.claim_key(m.x25519()).unwrap();
             assert!(c0.contains(&k.verifying_key().to_bytes()));
         }
-        let outsider = KeyActorKeys::from_seed(&Secret32::from_bytes([6; 32]));
-        assert!(!c0.contains(&s0.claim_key(outsider.kem.x25519()).unwrap().verifying_key().to_bytes()));
+        let outsider = KemSecret::derive(&Secret32::from_bytes([6; 32]));
+        assert!(!c0.contains(&s0.claim_key(outsider.x25519()).unwrap().verifying_key().to_bytes()));
         let b = c0.entry_box(&s0.sync_id, &card.signing.verifying_key()).unwrap();
         let want = EntryItem { epoch: e3, secret: g.read.clone(), earlier: None, sync: (g.sync_at().0, g.sync.clone()) };
         assert_eq!(open_entry_box(b, &s0, &card.kem, &THING).unwrap(), want);

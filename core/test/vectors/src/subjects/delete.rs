@@ -47,27 +47,6 @@ pub fn keys() -> VecFile {
             );
         }
     }
-    // a key actor's delete key is its signing key (seed `kdf("sign", key actor seed)`)
-    let seed = s32(0x1a);
-    let signing = kdf::kdf(kdf::SIGN, seed.expose(), b"");
-    let d = DeleteSecret::from_seed(signing.clone());
-    assert_eq!(d.verifying_key(), KeyActorKeys::from_seed(&seed).signing.verifying_key());
-    let salt = [0x1b; 16];
-    let c = commitment(1, &d.verifying_key(), &salt, &hb).unwrap();
-    let digest = osis_blob::auth::delete_digest(&sync_id, &blob, &[1]);
-    let sig = d.sign(&salt, &hb, &digest);
-    verify_delete(&c[1..].try_into().unwrap(), &digest, &sig).unwrap();
-    cases.push(
-        case("key actor: signing key at level 1", SPEC)
-            .with("key-actor-seed", hex(seed.expose()))
-            .with("signing-seed", hex(signing.expose()))
-            .with("key", hex(&d.verifying_key().to_bytes()))
-            .with("salt", hex(&salt))
-            .with("header-blind", hex(&hb))
-            .with("commitment", hex(&c))
-            .with("digest", hex(&digest))
-            .with("signature", hex(&sig.0)),
-    );
     // the unblinded key's signature is refused under the commitment
     let d = DeleteSecret::admin(&s32(0x14));
     let salt = [0x13u8; 16];

@@ -136,18 +136,18 @@ impl Core {
     }
 
     /// The independent of `t`, whose read role reads its deltas: `t` if independent,
-    /// else the nearest record-chain actor that has them (a key actor is its own).
+    /// else the nearest record-chain thing that has them (one minted with a key is its own).
     pub fn reader_of(&self, t: &Tid) -> Tid {
         // the actor whose secrets `t`'s derive from, up the record chain
         self.secret_actor(t).unwrap_or(*t)
     }
 
-    /// The actor whose secrets `t`'s derive from: up the record chain to a thing with secrets of
-    /// its own or a key actor.
+    /// The thing whose secrets `t`'s derive from: up the record chain to a thing with secrets of
+    /// its own, one minted with a key at the latest (independent from its minting).
     pub fn secret_actor(&self, t: &Tid) -> Option<Tid> {
         for step in self.record_chain(t) {
             let cur = step.thing()?;
-            if self.ix.independent.contains(&cur) || cur == self.me() {
+            if self.ix.independent.contains(&cur) {
                 return Some(cur);
             }
             match step {
@@ -236,7 +236,7 @@ pub(crate) fn held_sync_ids(core: &Core, g: &Tid, m: &ct::SyncIds) -> Vec<OwnedS
 /// and its link key L, read per key three ways (by K; by L, an author this node writes as; by
 /// sync ID), so a reader asking about one link, actor or sync ID moves only when that one does,
 /// not at every link followed or let go. Each key L is kept exactly while some followed link names
-/// it, so it goes with the last link naming it (`Engine::settle_key_actor`). In memory only
+/// it, so it goes with the last link naming it (`Engine::settle_link_key`). In memory only
 /// (`Core::followed_links`).
 #[derive(Clone, Default)]
 pub(crate) struct FollowedLinks {

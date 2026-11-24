@@ -4,12 +4,12 @@
 
 use libfuzzer_sys::fuzz_target;
 use osis_base::{BlobId, Limits, Role, Tid, decode};
-use osis_crypto::{BoxForm, BoxSlot, Epoch, KeyActorKeys, Secret32, decrypt_blob, open_box, open_history, open_sealed, open_symmetric_box, unpad, unwrap};
+use osis_crypto::{BoxForm, BoxSlot, Epoch, KemSecret, Secret32, decrypt_blob, open_box, open_history, open_sealed, open_symmetric_box, unpad, unwrap};
 use osis_schema::core_types as ct;
 use osis_schema::{RawKey, Codec};
 
 fuzz_target!(|data: &[u8]| {
-    let kem = KeyActorKeys::from_seed(&Secret32::from_bytes([1; 32])).kem;
+    let kem = KemSecret::derive(&Secret32::from_bytes([1; 32]));
     let s = Secret32::from_bytes([2; 32]);
     let actor = Tid::from_bytes([3; 15]);
     let slot = BoxSlot::Secrets { actor, holder: Tid::from_bytes([4; 15]), role: Role::Read, epoch: Epoch::ZERO };

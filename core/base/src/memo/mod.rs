@@ -1284,7 +1284,7 @@ impl<K: Hash + Eq + Clone, V: Clone> Clone for Memo<K, V> {
     }
 }
 
-/// A map outside the journal whose reads and writes are stamped (`Core::key_actors`).
+/// A map outside the journal whose reads and writes are stamped (`Core::link_keys`).
 #[derive(Debug)]
 pub struct Stamped<K, V> {
     map: BTreeMap<K, V>,

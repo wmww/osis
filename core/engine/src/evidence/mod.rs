@@ -75,7 +75,7 @@ pub enum Level {
 }
 
 /// A delete key a part lists at level 1 or 3 for its thing's delete base (spec/crypto.md §7 Header
-/// list); a key-actor base lists none here.
+/// list).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Del<T, S> {
     pub base: T,

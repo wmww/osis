@@ -2632,7 +2632,7 @@ fn starts(n: usize) -> Vec<Start> {
 // the session left unlogged; it commits the same at n and 10n things shared with a reader and a
 // node keeping them unread; a start with nothing new after it commits nothing.
 #[test]
-#[ignore = "accounts: keys"]
+#[ignore = "accounts: making an account"]
 fn a_start_after_a_session_finds_nothing_owed_at_n_and_10n_spec_sync_judgement_3() {
     let (a, b) = (starts(1), starts(10));
     for (i, (_, new, _)) in a.iter().chain(&b).enumerate() {

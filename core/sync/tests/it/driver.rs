@@ -252,7 +252,7 @@ fn acting_for_a_new_actor_redials_spec_sync_opens_1() {
     while !proved(&w) {
         assert!(w.step(), "the dial came up and proved");
     }
-    w.write(0, |e| e.hold_key_actor(osis_crypto::Secret32::from_bytes([0x33; 32])).unwrap());
+    w.write(0, |e| e.hold_link_key(osis_crypto::Secret32::from_bytes([0x33; 32]), osis_base::Tid::from_bytes([0x33; 15])).unwrap());
     assert_eq!(dials_to(&w, 0, 1), 2, "closed and dialed again at once");
     w.run();
     assert_eq!(ups_to(&w, 0, 1), 2);
@@ -317,7 +317,7 @@ fn a_store_failure_restarts_in_place_once_per_stretch() {
 // node's steps go on and it takes what comes after (else each step failed at that commit, and
 // restarted, for good).
 #[test]
-#[ignore = "accounts: keys"]
+#[ignore = "accounts: making an account"]
 fn a_commit_faulting_on_apply_is_set_aside_and_sync_goes_on_spec_commits_4() {
     use crate::harness::history::{Gives, three, value_ak};
     use osis_base::{Ak, Value};

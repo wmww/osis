@@ -245,7 +245,7 @@ impl Peer {
 
     /// This node keeps the nodes `who` (a contact, a peer it will grant): a strong to each in its
     /// node root's `holds.0`, so their records stay once received (spec/commits.md §5 What a held
-    /// thing needs; a strong to a key actor enters nothing). One commit; none when it keeps each
+    /// thing needs; a strong to a thing it holds no role on enters nothing). One commit; none when it keeps each
     /// already.
     pub fn know(&mut self, who: &[osis_base::Tid]) -> Result<()> {
         let root = self.engine.node_root().ok_or(crate::error::Error::Misuse("no node root"))?;
@@ -405,10 +405,10 @@ impl Engine {
     }
 
     /// The certificate parts of held commit `id` (spec/commits.md §5 What a held thing needs:
-    /// every part but content, `retention::forget::content`; every part on a key actor).
+    /// every part but content, `retention::forget::content`).
     pub fn certificate_parts(&self, id: &CommitId) -> BTreeSet<usize> {
         let Some(m) = self.core.ix.commits.get(id) else { return BTreeSet::new() };
-        m.view.aspects.iter().enumerate().filter(|(ai, a)| m.holds(*ai) && (!crate::retention::forget::content(&a.ak) || self.core.is_key_actor(&a.tid))).map(|(ai, _)| ai).collect()
+        m.view.aspects.iter().enumerate().filter(|(ai, a)| m.holds(*ai) && !crate::retention::forget::content(&a.ak)).map(|(ai, _)| ai).collect()
     }
 
     /// The blobs of a held commit's linked header lists that this node holds.
@@ -433,7 +433,7 @@ impl Engine {
         let Some(s) = self.seal(&b, osis_blob::Class::of_marker(self.header(id).and_then(|h| h.ephemeral)), &[], rng)? else { return Ok(None) };
         let mut wraps = Vec::new();
         for a in self.independents(id) {
-            if !self.core.is_key_actor(&a) && self.run(|tx| { let deps = crate::rotation::departures(tx, &a)?; crate::rotation::blocked_roles_of(tx, &tx.core.me(), &a, &deps, crate::rotation::Walk::Log) })?.contains(&osis_base::Role::Read) {
+            if self.run(|tx| { let deps = crate::rotation::departures(tx, &a)?; crate::rotation::blocked_roles_of(tx, &tx.core.me(), &a, &deps, crate::rotation::Walk::Log) })?.contains(&osis_base::Role::Read) {
                 continue;
             }
             let Some(secret) = self.wrap_secret(&a, Some((id, &b.parts)))? else { continue };

@@ -40,7 +40,7 @@ fn written(core: &crate::engine::Core, target: &Tid, old: Option<&PermEdge>, d: 
     Ok(retain.then_some(Edge { role: Role::Read, until: Some(osis_base::WallMs(0)), may_grant: false, retain: false, floor: None }))
 }
 
-/// A grant or a raise of `holder`'s edge on `target` by `who` (this node, or a held key actor
+/// A grant or a raise of `holder`'s edge on `target` by `who` (its node thing, or a held link key
 /// signing), with the grantee's boxes for every granted role at each current epoch
 /// (spec/crypto.md §4). An admin's grant, or a may-grant grant (spec/permissions.md §2) where
 /// `who`'s effective may-grant allows it and the holder has no current edge. `leave`: the signer's
@@ -93,10 +93,10 @@ pub(crate) fn grant_history(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, h
     let mut done = Done::default();
     // a thing is made a holder only once independent; a target gets them on its first
     // holder other than its mint admin (spec/permissions.md §3)
-    if !tx.core.is_key_actor(&holder) && !tx.core.is_independent(&holder) {
+    if !tx.core.is_independent(&holder) {
         rotation::own_secrets(tx, holder, &mut done)?;
     }
-    if !tx.core.is_independent(&target) && !tx.core.is_key_actor(&target) {
+    if !tx.core.is_independent(&target) {
         if !admin {
             return Err(Error::Permission { tid: target, needs: Role::Admin });
         }
@@ -106,10 +106,8 @@ pub(crate) fn grant_history(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, h
     // box the holder at the current epochs held, blocked ones included: a box carrying a secret
     // is encrypted under its recipient's key, not under that epoch (spec/crypto.md §4,
     // Encrypting under; `rotation::reseal_one` alike)
-    if !tx.core.is_key_actor(&holder) {
-        let me = tx.core.me();
-        rotation::ensure_rotated(tx, me, holder, &mut done)?;
-    }
+    let me = tx.core.me();
+    rotation::ensure_rotated(tx, me, holder, &mut done)?;
     let mut roles = roles_up_to(edge.role);
     // a renewal of an ended edge is not finalized first: the grant writes it anew
     rotation::ensure_rotated_but(tx, who, target, &[holder], &BTreeSet::new(), &mut done)?;
@@ -144,7 +142,7 @@ pub(crate) fn grant_history(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, h
                 return Err(Error::Misuse("this node may not rotate the target's read role now"));
             }
             let rotated = BTreeSet::from([Role::Read]);
-            let rot = rotation::cut_into(tx, &mut m, target, &rotated, &epochs, &boxing, rotation::Departs::No, true)?;
+            let rot = rotation::cut_into(tx, &mut m, target, &rotated, &epochs, &boxing, rotation::Departs::No, true, None)?;
             edge.floor = rot.role(Role::Read).map(|x| x.epoch.n());
             // a re-add: boxes at each epoch the holder's removal's rotation listed that this node
             // holds (what its earlier nodes read before it left), below its floor; a holder that
@@ -351,7 +349,7 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
     Ok(done)
 }
 
-/// The edges on `target` that `who` (this node, or a key actor it signs as) may finalize now
+/// The edges on `target` that `who` (its node thing, or a link key it signs as) may finalize now
 /// (spec/permissions.md §2), each with whether its finalize says retain: past their `until` by
 /// this node's clock (an edge the timeline holds with every applied write in effect), of a role
 /// at most `who`'s own there, `who` holding write; not its own (that is a self-removal).

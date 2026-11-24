@@ -173,7 +173,6 @@ fn what_a_reader_fetches_and_drops_does_not_grow_spec_permissions_4() {
 // held back for one (streams::ephemeral_entries_wait_for_a_log_position builds that case on a
 // bare store): the maker, the node keeping the closure unread and the new reader alike.
 #[test]
-#[ignore = "accounts: keys"]
 fn a_node_holding_an_entry_of_s_has_its_head_logged_spec_sync_streams_4() {
     let c = cost(N);
     for (i, (held, missing)) in c.heads.iter().enumerate() {

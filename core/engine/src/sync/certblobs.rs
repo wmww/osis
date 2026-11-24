@@ -7,7 +7,6 @@
 //! a restart, whoever logged it (spec/permissions.md §4: a record blob logged by any node counts).
 
 use super::Wrap;
-use crate::engine::secrets::DeleteSource;
 use crate::engine::{Engine, Tx};
 use crate::error::{Error, Result};
 use osis_base::memo::{Effects, Feed, Quiet, Stamped, Unrecorded};
@@ -107,11 +106,8 @@ impl Engine {
         let Some(c) = self.core.ix.cert_blobs.get(s).and_then(|m| m.get(b).cloned()) else { return Ok(None) };
         let mut held = Vec::new();
         for t in self.read_things_of(s)? {
-            for src in self.core.delete_chain(&t) {
-                match src {
-                    DeleteSource::Epochs(e) => held.extend(osis_keys::delete_candidates(DELETE_WRITER, &e, Some(&e)).into_iter().map(|(_, x)| (DELETE_WRITER, osis_crypto::DeleteSecret::write(x)))),
-                    DeleteSource::KeyActor { seed, .. } => held.push((DELETE_WRITER, osis_crypto::DeleteSecret::from_seed(seed))),
-                }
+            for e in self.core.delete_chain(&t) {
+                held.extend(osis_keys::delete_candidates(DELETE_WRITER, &e, Some(&e)).into_iter().map(|(_, x)| (DELETE_WRITER, osis_crypto::DeleteSecret::write(x))));
             }
         }
         Ok(Some(crate::sync::DeleteBasis { prefix: c.prefix, blind: c.blind, held }))
@@ -339,7 +335,7 @@ impl Engine {
             if admin == ctx.actor || (core.is_independent(&admin) && ctx.holds(core, &admin) && !core.destroyed(&admin)) {
                 return true;
             }
-            if core.is_independent(&admin) || core.is_key_actor(&admin) {
+            if core.is_independent(&admin) {
                 return false;
             }
         }
@@ -456,8 +452,8 @@ pub(crate) fn with_chains(core: &crate::engine::Core, seeds: Vec<Tid>, batch: &B
             continue;
         }
         let Some(r) = batch.get(&t).or_else(|| core.waits.loose.get(&t)) else { continue };
-        if let CreationRecord::Thing { admin, .. } = r {
-            stack.push(*admin);
+        if let Some(admin) = r.mint_admin() {
+            stack.push(admin);
         }
         out.insert(t, r.clone());
     }

@@ -167,15 +167,15 @@ impl Engine {
     }
 
     /// The holder of `a` this node reads it through, as it judges it (spec/permissions.md §4):
-    /// its node thing when that holds `a`, else a holder of `a` that is no key actor and that its
-    /// node thing holds a role on (an organization); its node thing when it judges none.
+    /// its node thing when that holds `a`, else a holder of `a` that its node thing holds a role
+    /// on (an organization); its node thing when it judges none.
     fn own_holder(&self, a: &Tid) -> Tid {
         let me = self.core.me();
         let holders: Vec<Tid> = self.core.key_holders(a).into_iter().map(|x| x.0).collect();
         if holders.contains(&me) {
             return me;
         }
-        holders.into_iter().find(|h| !self.core.is_key_actor(h) && self.core.role_now(&me, h).is_some()).unwrap_or(me)
+        holders.into_iter().find(|h| self.core.role_now(&me, h).is_some()).unwrap_or(me)
     }
 
     /// A stranded report's holder keys of `holder` (spec/wire.md §11.2 Stranded): its current

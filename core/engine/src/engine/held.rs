@@ -235,7 +235,7 @@ impl Held {
         set
     }
 
-    /// Whether `t`'s record chain ends at a key actor within `MAX_CHAIN_DEPTH` links, mint-admin
+    /// Whether `t`'s record chain ends at a thing minted with a key within `MAX_CHAIN_DEPTH` links, mint-admin
     /// links counted, by the records held (spec/permissions.md §1): nothing written on a thing
     /// failing it applies; unknown fails (forgetting a record never makes a deep part count).
     /// Reads each record of the chain. O(`MAX_CHAIN_DEPTH`).
@@ -271,10 +271,7 @@ impl Held {
             return old;
         }
         // a thing's mint admin is named on it by its record (spec/permissions.md §1)
-        let genesis = |r: Option<&CreationRecord>| match r {
-            Some(CreationRecord::Thing { admin, .. }) => vec![(*admin, t)],
-            _ => Vec::new(),
-        };
+        let genesis = |r: Option<&CreationRecord>| r.and_then(CreationRecord::mint_admin).map(|a| (a, t)).into_iter().collect::<Vec<_>>();
         let (was, now) = (genesis(old.as_ref()), genesis(self.created.get(&t)));
         if was != now {
             self.count(was, false);
@@ -829,11 +826,11 @@ impl Timelines {
             self.stamps.wrote(&Read::Things, true);
         }
         // a keyless grant closes a cycle of actor grants (spec/crypto.md §4 Key access): judged
-        // anew where an actor's grant moved (a holder that is no key actor) or a record came or
-        // went other than a new leaf's (its record edge is in no cycle: it holds nothing)
+        // anew where an actor's grant moved or a record came or went other than a new leaf's
+        // (its record edge is in no cycle: it holds nothing)
         let records = self.of.records();
         let leaf = |t: &Tid| records.link(t).is_some() && records.mint_admin_of(t).is_empty() && !self.of.holds_edge(t);
-        if c.edges().any(|(h, _)| !records.is_key(&h)) || c.created.iter().any(|t| !leaf(t)) {
+        if c.edges().next().is_some() || c.created.iter().any(|t| !leaf(t)) {
             self.rekey();
         }
     }
@@ -890,10 +887,10 @@ mod tests {
     use osis_perm::{Edge, EdgeOp};
 
     fn thing(admin: Tid, n: u8) -> CreationRecord {
-        CreationRecord::Thing { admin, nonce: [n; 32], link: None, expires: None }
+        CreationRecord::with_admin(admin, [n; 32])
     }
     fn actor(n: u8) -> CreationRecord {
-        CreationRecord::KeyActor { alg: 1, public_key: vec![n; 32], nonce: [n; 32] }
+        CreationRecord::with_key(osis_base::SignKey([n; 32]), [n; 32])
     }
     fn grant(id: u64, by: Tid, on: Tid, to: Tid, role: Role) -> RoleCommit {
         let mut c = [0; 32];
@@ -1105,7 +1102,7 @@ mod tests {
 
     // spec: none (internal: notes/engine.md, Derived values). The same, differential: random
     // edge writes (grants, removals, retains, `until`s; authors with and without authority) over
-    // key actors and things minted with them or each other as admin, records created and forgotten,
+    // things minted with keys and things minted with them or each other as admin, records created and forgotten,
     // commits removed, and undos; after each update a memo of every read through
     // the timelines answers as a fresh read, and the keyless grants kept per component are those
     // of one evaluation of everything (`osis_keys::key_access` over all actor grants).
@@ -1143,7 +1140,7 @@ mod tests {
         for world in 0..48u32 {
             let memo: Memo<(u8, Tid), String> = Memo::new("test timeline random");
             let keys: Vec<CreationRecord> = (0..3).map(actor).collect();
-            // things under key actors, then under things (depth up to 3)
+            // things under things minted with keys, then under things (depth up to 3)
             let mut recs: Vec<CreationRecord> = keys.clone();
             for n in 0..6u8 {
                 let admin = recs[rng(recs.len())].tid();
@@ -1196,9 +1193,7 @@ mod tests {
                 let mut grants = Vec::new();
                 for (t, on) in full.standing_since_all(None) {
                     for (m, since) in on {
-                        if !matches!(h.created(&m), Some(CreationRecord::KeyActor { .. })) {
-                            grants.push(osis_keys::Grant { order: (1u8, since), target: t, holder: m });
-                        }
+                        grants.push(osis_keys::Grant { order: (1u8, since), target: t, holder: m });
                     }
                 }
                 assert_eq!(*tl.keyless(), osis_keys::key_access(grants), "world {world} step {step}: keyless grants");

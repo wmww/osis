@@ -19,8 +19,8 @@ pub struct Epoch {
 }
 
 impl Epoch {
-    /// `(0, 32 zero bytes)`: the fixed epoch of a key actor's role secrets, the one exception to
-    /// the nonce rule (spec/crypto.md §3).
+    /// `(0, 32 zero bytes)`: the least epoch, a bound for ranges; the nonce rule names it for no
+    /// secret.
     pub const ZERO: Epoch = Epoch { n: 0, nonce: [0; 32] };
 
     /// `TooLarge` above `i64::MAX`.
@@ -76,7 +76,7 @@ impl Epoch {
 /// Form fields of a box, as they enter its AD.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum BoxForm<'a> {
-    /// To the holder's KEM key of the keyset `keyset` (none for a key actor), under `suite`.
+    /// To the holder's KEM key of the keyset `keyset` (none for an entry box), under `suite`.
     Sealed { keyset: Option<Epoch>, suite: u64 },
     /// Wrap under `kdf("box", s)`, s the holder's own secret of epoch `epoch_s`.
     Symmetric { epoch_s: Epoch },
@@ -148,7 +148,7 @@ pub struct BoxItem {
 }
 
 /// Sealed form, payload `[role, n, secret]`, to `recipient` (the KEM key of keyset `keyset`,
-/// none for a key actor) under suite 1. Returns the raw sealed box. The item's epoch must be the
+/// none for an entry box) under suite 1. Returns the raw sealed box. The item's epoch must be the
 /// one its secret names (spec/crypto.md §4); at a `secrets.0` slot, its key's (role, epoch).
 pub fn seal_box(recipient: &KemPublicKey, slot: &BoxSlot, keyset: Option<Epoch>, item: &BoxItem, rng: &mut dyn CryptoRngCore) -> Result<Vec<u8>, Error> {
     let payload = box_payload(slot, item)?;

@@ -50,19 +50,14 @@ impl Certs {
 }
 
 impl Engine {
-    /// The newest applied commit whose delta on `(tid, ak)` is valid here: `ts` is the author's
-    /// to choose, so an invalid write (anyone's commit on another's card) never stands for the
+    /// The newest applied commit whose delta on `(tid, ak)` is valid here, written by `author`
+    /// when given: `ts` is the author's to choose, so an invalid write never stands for the
     /// current one.
-    fn latest_on(&self, tid: &Tid, ak: &str) -> Option<CommitId> {
-        self.latest_by(tid, ak, None)
-    }
-
-    /// `latest_on`, written by `author` when given.
     pub fn latest_by(&self, tid: &Tid, ak: &str, author: Option<&Tid>) -> Option<CommitId> {
         self.latest_where(tid, ak, |c| author.is_none_or(|a| self.core.ix.commits.get(c).is_some_and(|m| m.header.signer == *a)))
     }
 
-    /// `latest_on` among the commits `keep` passes.
+    /// `latest_by` among the commits `keep` passes.
     fn latest_where(&self, tid: &Tid, ak: &str, keep: impl Fn(&CommitId) -> bool) -> Option<CommitId> {
         let k = Ak::new(ak).ok()?;
         let held = self.core.ix.by_aspect.get(&(*tid, k))?;
@@ -239,8 +234,8 @@ impl Engine {
 
     /// What any node logs under `g` beside its evidence (spec/permissions.md §4): the records up
     /// `g`'s record chain, the destroyed things its closure needs with their frozen permission
-    /// history, and the public key records of the key actors holding `g`. Nothing here depends
-    /// on which node asks. Added to `out`.
+    /// history, and the public key records of the independent things holding `g`. Nothing here
+    /// depends on which node asks. Added to `out`.
     fn shared_certificates(&mut self, ev: &Ev, g: &Tid, out: &mut Certs) {
         out.records.extend(self.core.record_chain(g).filter_map(|s| s.thing()));
         // the destroyed things the sync ID's closure needs told destroyed: on an authority path into it,
@@ -256,12 +251,13 @@ impl Engine {
             }
             self.add_closure(ev, &frozen, out);
         }
-        // the public key records of the key actors holding `g` (spec/permissions.md §4: keys, not
-        // evidence)
-        let keys: Vec<Tid> = self.core.roster_of(g).into_keys().filter(|k| self.core.is_key_actor(k)).collect();
+        // the public key records of the independent things holding `g` (spec/sync-inbox.md §1:
+        // a record and current `keys.0`, wherever their `keys.0` commits go): a link key's
+        // redeemer, holding its seed alone, learns its record and keysets from `g`'s sync ID
+        let keys: Vec<Tid> = self.core.roster_of(g).into_keys().filter(|k| self.core.is_independent(k)).collect();
         for k in keys {
             out.records.insert(k);
-            if let Some(c) = self.latest_on(&k, "keys.0") {
+            if let Some(c) = self.latest_by(&k, "keys.0", None) {
                 out.add(c, self.parts_of(&c, &BTreeSet::from([k]), &["keys.0"]));
             }
         }

@@ -145,15 +145,16 @@ impl Core {
 
     /// The things for which header `h` lists a wrong key: each with a delta listing a level-1 or
     /// level-3 key that is not right (`key_right`). Level 2 is not checked (spec/crypto.md §7).
-    /// A thing whose record chain is not known to its key actor here is not judged: nothing
+    /// A thing whose record chain is not known up to its top here is not judged: nothing
     /// written on it applies meanwhile (spec/commits.md §4 Unjudgeable), and a commit judged on
-    /// missing evidence is never judged invalid for it.
+    /// missing evidence is never judged invalid for it. Nor is a thing on the commit minting it
+    /// with a key (`mints_with_key`): it lists the keys of the first step it records itself.
     pub(crate) fn wrong_keys(&self, h: &Header) -> BTreeSet<Tid> {
         // a commit's deltas mostly share a thing and its keys: each (thing, key) checked once
         let mut seen: BTreeSet<(Tid, usize)> = BTreeSet::new();
         let mut out = BTreeSet::new();
         for a in &h.aspects {
-            if out.contains(&a.tid) {
+            if out.contains(&a.tid) || self.mints_with_key(h, &a.tid) {
                 continue;
             }
             let wrong = a.keys.iter().filter(|k| seen.insert((a.tid, **k))).filter_map(|k| h.keys.get(*k)).any(|k| k.level != DELETE_AUTHOR && !self.key_right(&a.tid, k.level, &k.key, h.ts));
@@ -162,6 +163,18 @@ impl Core {
             }
         }
         out
+    }
+
+    /// Whether `h` mints `t` with a key (spec/crypto.md §7 Checked keys): it carries `t`'s
+    /// `created.0`, its record holds a key, and it is signed by that key as `t`. Its deltas on `t`
+    /// list the keys of the genesis step its own `sync.0` delta records, which no step recorded
+    /// before it can place. Invariant: only the holder of the record's key, `t`'s admin from the
+    /// start (spec/permissions.md §1), signs it, so a key it lists is its admin's own.
+    fn mints_with_key(&self, h: &Header, t: &Tid) -> bool {
+        h.signer == *t
+            && h.key.is_none()
+            && h.aspects.iter().any(|x| x.tid == *t && x.ak.as_str() == osis_commit::retention::CREATED)
+            && self.created(t).is_some_and(|r| r.key().is_some())
     }
 
     /// What the key check reads of header `h`, for a failing check's message: per delta listing
@@ -225,8 +238,7 @@ impl Core {
 
     /// Whether `key`, listed at level 1 or 3 by a commit stamped `ts` for a delta on `t`, is
     /// right (spec/crypto.md §7 Checked keys): a thing on `t`'s record chain, itself first,
-    /// places it before `ts` (`Recorded::places`), or the chain ends at a key actor whose signing
-    /// key it is (an account: the signing key of a held epoch of its chain).
+    /// places it before `ts` (`Recorded::places`).
     ///
     /// Any base up the chain, not the nearest alone: a write made while `t` derived its secrets
     /// lists its former base's step, and so does a writer that has not yet received the commit
@@ -237,30 +249,17 @@ impl Core {
     }
 
     /// The thing on `t`'s record chain whose steps bear `key` at `level` (recorded before `ts`,
-    /// when given), or the key actor ending the chain whose signing key it is (`Err`).
-    pub(crate) fn key_base(&self, t: &Tid, level: u8, key: &[u8; 32], ts: Option<Ts>) -> Option<std::result::Result<Tid, Tid>> {
+    /// when given).
+    pub(crate) fn key_base(&self, t: &Tid, level: u8, key: &[u8; 32], ts: Option<Ts>) -> Option<Tid> {
         for step in self.record_chain(t) {
             let cur = step.thing()?;
             if let Some(r) = self.ix.steps.get(&cur)
                 && ts.map_or_else(|| r.bears(level, key), |ts| r.places(level, key, ts))
             {
-                return Some(Ok(cur));
-            }
-            if self.signing_keys_of(&cur).any(|k| k == *key) {
-                return Some(Err(cur));
+                return Some(cur);
             }
         }
         None
-    }
-
-    /// The signing key of key actor `t` that is its delete key (spec/crypto.md §7): its record's
-    /// key. None for a thing.
-    fn signing_keys_of(&self, t: &Tid) -> impl Iterator<Item = [u8; 32]> {
-        match self.created(t) {
-            Some(osis_base::CreationRecord::KeyActor { public_key, .. }) => <[u8; 32]>::try_from(public_key.as_slice()).ok(),
-            _ => None,
-        }
-        .into_iter()
     }
 }
 
@@ -309,7 +308,7 @@ mod tests {
                 assert!(core.key_right(&g, level, &key, Ts::MAX));
                 assert!(!core.key_right(&t, level, &key, s.since), "not before the write recording the step");
                 assert!(r.places(level, &key, Ts::MAX) && !r.places(level, &key, s.since));
-                assert_eq!(core.key_base(&t, level, &key, None), Some(Ok(g)));
+                assert_eq!(core.key_base(&t, level, &key, None), Some(g));
             }
             // each key at its own level alone, and no other key
             assert!(!core.key_right(&t, DELETE_ADMIN, &s.write, Ts::MAX) && !core.key_right(&t, DELETE_WRITER, &s.delete, Ts::MAX));

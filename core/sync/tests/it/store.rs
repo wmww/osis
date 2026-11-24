@@ -392,7 +392,7 @@ fn a_behind_refused_is_13_only_where_s_is_not_kept_spec_sync_ids_6() {
     assert_eq!(st.behind_refusal(&s.id).unwrap(), Code::DECLINED, "read here");
 }
 
-// spec/sync-ids.md §6 (behind static): naming no step, by a key actor's signing key whose static
+// spec/sync-ids.md §6 (behind static): naming no step, by a link key's signing key whose static
 // entry the head's claim set lists, the answer is the head's entry box for it and the path from
 // genesis.
 #[test]

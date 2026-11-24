@@ -8,7 +8,7 @@
 use crate::common::{BIG, GONEMAP, REFS, TEXT, edge, net, new_thing, s, set_edge, edge_write};
 use osis_base::{Ak, Role, Tid, Value};
 use osis_crdt::{Op, PathOp, PathSeg};
-use osis_crypto::{Epoch, KeyActorKeys, Secret32, SeededRng};
+use osis_crypto::{Epoch, Secret32, SeededRng};
 use osis_keys::{HolderKeys, Recipient, rotate};
 use osis_engine::Mutation;
 use osis_engine::local_peer::LocalPeer;
@@ -501,14 +501,14 @@ fn roster_removal(n: usize) -> (u64, usize, u64) {
     let a = e.new_thing(&mut m, me);
     e.commit(m).unwrap().unwrap();
     // account-like holders: keysets per role (one KEM key reused; a box's size does not depend on it)
-    let kem = KeyActorKeys::from_seed(&Secret32::from_bytes([9; 32])).kem.public().clone();
+    let kem = osis_crypto::KemSecret::derive(&Secret32::from_bytes([9; 32])).public().clone();
     let ep = Epoch::new(1, [3; 32]).unwrap();
-    let mut holders = vec![Recipient { holder: me, role: Role::Admin, keys: HolderKeys::KeyActor { kem: e.identity().keys().kem.public().clone(), seed: None }, floor: 0 }];
+    let mut holders = vec![e.recipient_for(&me, Role::Admin).unwrap()];
     for i in 0..n - 1 {
         let mut x = [0u8; 15];
         x[..8].copy_from_slice(&(i as u64 + 1).to_le_bytes());
         let keysets = [Role::Read, Role::Write].into_iter().map(|r| (r, vec![(ep, kem.clone())])).collect();
-        holders.push(Recipient { holder: Tid::from_bytes(x), role: Role::Write, keys: HolderKeys::Actor { keysets, own: BTreeMap::new() }, floor: 0 });
+        holders.push(Recipient { holder: Tid::from_bytes(x), role: Role::Write, keys: HolderKeys { keysets, own: BTreeMap::new() }, floor: 0 });
     }
     // an independent thing's secrets are all three roles' (spec/crypto.md §3): the thing gets them first
     let all = BTreeSet::from(Role::ALL);
@@ -1730,7 +1730,7 @@ fn a_whole_write_redates_only_what_it_replaces_spec_commits_5() {
     flat("bodies dated (replaced at)", a.n("replaced at"), b.n("replaced at"));
 }
 
-/// n grants on one thing to holders that are no key actor, then an open.
+/// n grants on one thing to holder things, then an open.
 fn grants_and_open(n: usize) -> Work {
     let mut lp = net(1, 0);
     let t = new_thing(&mut lp, 0);
@@ -1859,7 +1859,6 @@ fn expired_charge(n: usize, map: bool) -> [u64; 2] {
 // anchored at it sits at its virtual anchor), from n to 10n elements: near nothing each,
 // never a decoded record each; the holder's state holds as few.
 #[test]
-#[ignore = "accounts: keys"]
 fn expired_list_elements_charge_near_nothing() {
     let (small, big) = (expired_log_charge(10), expired_log_charge(100));
     let per = [(big[0] - small[0]) / 90, big[1].saturating_sub(small[1]) / 90];
@@ -1872,7 +1871,6 @@ fn expired_list_elements_charge_near_nothing() {
 // own, once a snapshot covers them, from n to 10n keys: near nothing (the entry goes with its
 // creation, no record of it is kept), in what it is charged and in its state.
 #[test]
-#[ignore = "accounts: keys"]
 fn expired_map_keys_charge_near_nothing() {
     let (small, big) = (expired_charge(10, true), expired_charge(100, true));
     let per = [big[0].saturating_sub(small[0]) / 90, big[1].saturating_sub(small[1]) / 90];

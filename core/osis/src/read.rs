@@ -338,7 +338,7 @@ impl Reader<'_> {
     pub(crate) fn holder_kind(&self, t: Tid) -> crate::HolderKind {
         match self.e.core.created(&t) {
             Some(r) if r.is_link() => crate::HolderKind::Link,
-            Some(osis_base::CreationRecord::KeyActor { .. }) => crate::HolderKind::Key,
+            Some(r) if r.key().is_some() => crate::HolderKind::Key,
             _ => crate::HolderKind::Actor,
         }
     }

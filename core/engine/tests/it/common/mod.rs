@@ -475,7 +475,7 @@ pub fn forge_snapshot_bytes(lp: &mut LocalPeer, by: usize, t: Tid, a: &osis_base
     let mut cb = CommitBuilder::new(Kind::ContentSnapshot, ts, author, osis_commit::Path::default(), Form::Commit);
     cb.aspects.push(aw);
     let rec = lp.peers[0].engine.get_typed(&t, &osis_schema::core_types::CREATED).unwrap().unwrap();
-    let forge_key = lp.peers[by].engine.identity().keys().signing.clone();
+    let forge_key = lp.peers[by].engine.identity().signing().clone();
     cb.build(&forge_key, &lp.peers[0].engine.hand_secrets(&[rec]), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(0)).unwrap().commit.encode()
 }
 
@@ -494,7 +494,7 @@ pub fn session_of(lp: &LocalPeer, i: usize) -> osis_commit::Form {
 /// Node `e` as a reader to box a secret to.
 pub fn read_recipient(e: &mut Engine) -> osis_keys::Recipient {
     let me = e.me();
-    osis_keys::Recipient { holder: me, role: Role::Read, keys: osis_keys::HolderKeys::KeyActor { kem: e.identity().keys().kem.public().clone(), seed: None }, floor: 0 }
+    e.recipient_for(&me, Role::Read).unwrap()
 }
 
 /// The keep-at-least bound of part `(t, a)` of `c` (`Engine::part_keeps`).

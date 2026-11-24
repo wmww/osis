@@ -6,21 +6,19 @@ use crate::epoch::{ActorEpochs, Unchecked};
 use crate::names::Names;
 use crate::Error;
 use osis_base::{Role, Tid};
-use osis_crypto::{BoxForm, BoxSlot, Epoch, KeyActorKeys, Secret32, key_actor_role_secret, open_box, open_history, open_joint_box, open_symmetric_box, role_kem};
+use osis_crypto::{BoxForm, BoxSlot, Epoch, Secret32, open_box, open_history, open_joint_box, open_symmetric_box, role_kem};
 use osis_schema::core_types::{BoxKey, HistoryKey, Sealed, SecretBox, Secrets};
 use std::collections::{BTreeMap, BTreeSet};
 
-/// Who opens: a key actor by its keys, or an actor holder by the role secrets it holds.
-pub enum Opener<'a> {
-    KeyActor { holder: Tid, keys: &'a KeyActorKeys },
-    Actor { holder: Tid, epochs: &'a ActorEpochs },
+/// Who opens: a holder by the role secrets it holds.
+pub struct Opener<'a> {
+    pub holder: Tid,
+    pub epochs: &'a ActorEpochs,
 }
 
 impl Opener<'_> {
     pub fn holder(&self) -> Tid {
-        match self {
-            Opener::KeyActor { holder, .. } | Opener::Actor { holder, .. } => *holder,
-        }
+        self.holder
     }
 }
 
@@ -61,16 +59,13 @@ fn open_one(actor: &Tid, k: &BoxKey, b: &SecretBox, opener: &Opener) -> Result<O
         SecretBox::Sealed(sb) => {
             let keyset = sb.keyset.as_ref().map(from_schema).transpose()?;
             let role;
-            let kem = match (opener, keyset) {
-                (Opener::KeyActor { keys, .. }, None) => &keys.kem,
-                (Opener::Actor { epochs, .. }, Some(ks)) => match epochs.role(k.role).secret(&ks) {
-                    Some(s) => {
-                        role = role_kem(s);
-                        &role
-                    }
-                    None => return Ok(None),
-                },
-                _ => return Err(Error::Mismatch("sealed form does not fit the holder kind")),
+            let Some(ks) = keyset else { return Err(Error::Mismatch("a sealed box names no keyset")) };
+            let kem = match opener.epochs.role(k.role).secret(&ks) {
+                Some(s) => {
+                    role = role_kem(s);
+                    &role
+                }
+                None => return Ok(None),
             };
             let Sealed::X25519MlKem768(bytes) = &sb.sealed;
             // osis-crypto checks the item is the key's (role, epoch)
@@ -82,12 +77,9 @@ fn open_one(actor: &Tid, k: &BoxKey, b: &SecretBox, opener: &Opener) -> Result<O
             let mut roles = Vec::new();
             let mut kems = Vec::new();
             for ks in &keysets {
-                match opener {
-                    Opener::Actor { epochs, .. } => match epochs.role(k.role).secret(ks) {
-                        Some(s) => roles.push(role_kem(s)),
-                        None => return Ok(None),
-                    },
-                    Opener::KeyActor { .. } => return Err(Error::Mismatch("joint form does not fit the holder kind")),
+                match opener.epochs.role(k.role).secret(ks) {
+                    Some(s) => roles.push(role_kem(s)),
+                    None => return Ok(None),
                 }
             }
             kems.extend(roles.iter());
@@ -97,14 +89,7 @@ fn open_one(actor: &Tid, k: &BoxKey, b: &SecretBox, opener: &Opener) -> Result<O
         }
         SecretBox::Symmetric(sym) => {
             let epoch_s = from_schema(&sym.epoch)?;
-            let s = match opener {
-                Opener::KeyActor { keys, .. } if epoch_s == Epoch::ZERO => key_actor_role_secret(keys.seed(), k.role),
-                Opener::KeyActor { .. } => return Ok(None),
-                Opener::Actor { epochs, .. } => match epochs.role(k.role).secret(&epoch_s) {
-                    Some(s) => s.clone(),
-                    None => return Ok(None),
-                },
-            };
+            let Some(s) = opener.epochs.role(k.role).secret(&epoch_s).cloned() else { return Ok(None) };
             let secret = open_symmetric_box(&s, &slot, epoch_s, &sym.wrap)?;
             Ok(Some(Opened { role: k.role, epoch, secret }))
         }
@@ -209,6 +194,16 @@ pub fn ingest(actor: &Tid, secrets: &Secrets, opener: &Opener, epochs: &mut Acto
     ingest_with(actor, secrets, &HistoryAlts::new(), opener, epochs, unchecked)
 }
 
+/// `ingest_with` with no box to open: what the secrets `epochs` holds already learn from
+/// `actor`'s `secrets.0` by history (a thing minted with a key, its secrets the minter's alone,
+/// boxed to nobody).
+pub fn ingest_held(actor: &Tid, secrets: &Secrets, alts: &HistoryAlts, epochs: &mut ActorEpochs, unchecked: Option<Unchecked>) -> Result<Vec<Error>, Error> {
+    if unchecked.is_none() {
+        observe_secrets(secrets, epochs)?;
+    }
+    Ok(open_histories(actor, secrets, alts, epochs, unchecked).into_iter().map(|(_, e)| e).collect())
+}
+
 /// `ingest` trying every live entry of the history keys in `alts`.
 pub fn ingest_with(actor: &Tid, secrets: &Secrets, alts: &HistoryAlts, opener: &Opener, epochs: &mut ActorEpochs, unchecked: Option<Unchecked>) -> Result<Vec<Error>, Error> {
     // an unchecked source records no epoch beyond its bounded reading-only secrets
@@ -221,8 +216,7 @@ pub fn ingest_with(actor: &Tid, secrets: &Secrets, alts: &HistoryAlts, opener: &
     // form the secret, against the key, spec/crypto.md §4), and the epoch's nonce is a 32-byte
     // KDF of that secret's roles secret, so a second secret naming it is a KDF collision; given
     // the same secret, `set_secret` keeps it and `set_reading_secret` returns at a checked one.
-    // The held secret is checked against the epoch here rather than trusted (a key actor's fixed
-    // epoch is named by none). What is lost: the open error of a malformed box at such an epoch,
+    // The held secret is checked against the epoch here rather than trusted. What is lost: the open error of a malformed box at such an epoch,
     // which reads nothing (spec/crypto.md §4: a box proves itself by what it opens).
     let held = |k: &BoxKey| {
         from_schema(&k.epoch).is_ok_and(|e| epochs.role(k.role).secret(&e).is_some_and(|s| e.names(actor, k.role, s)))

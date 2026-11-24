@@ -19,9 +19,10 @@ use osis_schema::{RawKey, Codec};
 /// A reader of a thing's read epoch as the registrar lists it.
 #[derive(Clone)]
 pub(crate) enum ReaderKey {
-    /// A node or an actor: the X25519 half of its (read-role) KEM key.
+    /// A thing: the X25519 half of its read-role KEM key.
     Dh([u8; 32]),
-    /// A link key: static entry with an entry box sealed to its KEM key.
+    /// A link key of the sync ID's thing: its static entry, by its signing key, with an entry
+    /// box sealed to its read KEM key (spec/sync-ids.md §3).
     Static(VerifyingKey, KemPublicKey),
 }
 
@@ -31,8 +32,8 @@ fn kem_of(k: &KemKey) -> Result<KemPublicKey> {
 }
 
 /// The readers of `t`'s read epoch `e` (spec/sync-ids.md §3): holders of read boxes at `e`, its
-/// mint admin included while its record edge stands; a node by its KEM key, another key actor
-/// by static entry, an actor by its newest read keyset.
+/// mint admin included while its record edge stands; each by its newest read keyset, a link key
+/// of `t` by its static entry.
 pub(crate) fn readers(tx: &mut Tx<'_>, t: &Tid, e: &Epoch) -> Result<Vec<ReaderKey>> {
     let mut holders: Vec<Tid> = Vec::new();
     if let Some(o) = tx.core.mint_admin(t).filter(|a| tx.core.key_holders(t).iter().any(|(m, _)| m == a)) {
@@ -48,31 +49,22 @@ pub(crate) fn readers(tx: &mut Tx<'_>, t: &Tid, e: &Epoch) -> Result<Vec<ReaderK
     holders.dedup();
     let mut out = Vec::new();
     for m in holders {
-        out.extend(reader_key(tx, &m)?);
+        out.extend(reader_key(tx, t, &m)?);
     }
     Ok(out)
 }
 
-pub(crate) fn reader_key(tx: &mut Tx<'_>, m: &Tid) -> Result<Option<ReaderKey>> {
-    let keys = Core::keys_in(tx, m)?;
-    if tx.core.is_key_actor(m) {
-        let kem = match (keys.as_ref().and_then(|k| k.key.as_ref()), tx.core.key_actors.get(m)) {
-            (Some(k), _) => kem_of(k)?,
-            (None, Some(id)) => id.keys().kem.public().clone(),
-            (None, None) if *m == tx.core.id.tid() => tx.core.id.keys().kem.public().clone(),
-            _ => return Ok(None),
-        };
-        if super::is_node(tx, m)? {
-            return Ok(Some(ReaderKey::Dh(kem.x25519())));
-        }
-        let Some(osis_base::CreationRecord::KeyActor { public_key, .. }) = tx.core.created(m) else { return Ok(None) };
-        let vk = VerifyingKey::from_slice(public_key)?;
-        return Ok(Some(ReaderKey::Static(vk, kem)));
-    }
-    Ok(match keys.and_then(|k| k.read) {
-        Some(ks) => Some(ReaderKey::Dh(kem_of(&ks.kem_key)?.x25519())),
-        None => None,
-    })
+/// Reader `m` of `t`'s sync ID as the registrar lists it (`readers`): by its newest read keyset
+/// held here; a link key of `t` (its record names `t` as its K) by its static entry, the one
+/// reader so listed (spec/sync-ids.md §3: a bearer secret opens `t` from a store with nothing
+/// else). None while no keyset of it is held.
+pub(crate) fn reader_key(tx: &mut Tx<'_>, t: &Tid, m: &Tid) -> Result<Option<ReaderKey>> {
+    let Some(ks) = Core::keys_in(tx, m)?.and_then(|k| k.read) else { return Ok(None) };
+    let kem = kem_of(&ks.kem_key)?;
+    Ok(Some(match tx.core.created(m).filter(|r| r.link_key_of() == Some(*t)).and_then(osis_base::CreationRecord::key) {
+        Some(k) => ReaderKey::Static(VerifyingKey::from_bytes(&k.0)?, kem),
+        None => ReaderKey::Dh(kem.x25519()),
+    }))
 }
 
 /// The deposit seed `t`'s sync IDs derive from (spec/sync-ids.md §2): its secret actor's

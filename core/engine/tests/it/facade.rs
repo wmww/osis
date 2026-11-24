@@ -174,7 +174,7 @@ fn all_done(lp: &mut LocalPeer, i: usize) {
     assert!(e.waiting_removals().is_empty(), "node {i}");
 }
 
-// spec/permissions.md §3 (Lost access: a self-removal by itself, its account or a key actor it
+// spec/permissions.md §3 (Lost access: a self-removal by itself, its account or a link key it
 // holds): another account's removal of this account is no wait of its; an own removal that
 // leaves a path drops nothing when done; a done told for a commit not waited on drops nothing.
 #[test]
@@ -278,44 +278,39 @@ fn a_step_needs_its_epochs_rotations_spec_sync_ids_6() {
     assert!(needs.iter().all(|c| e.core.ix.commits.contains_key(c)));
 }
 
-/// The key actors `e` proves as besides its node (`provers`: what it acts for on the wire).
+/// The link keys `e` proves as besides its node thing (`provers`: what it acts for on the wire).
 fn link_keys_held(e: &mut osis_engine::Engine) -> BTreeSet<Tid> {
     let me = e.me();
     e.provers().unwrap().iter().map(|(_, r)| r.tid()).filter(|t| *t != me).collect()
 }
 
 // spec/permissions.md §7 (First contact: the redeemer proves L until its join is held, then keeps
-// the link's peers, not the seed): a link key is held exactly while a followed link names
-// it. Two link texts sharing one seed: letting one go keeps the key the other still uses, across
-// a reload; it goes with the last. A key held by `hold_key_actor` stays when a link naming it goes.
+// the link's peers, not the seed): a link key is held exactly while its followed link names it,
+// across a reload; it goes with the link. A key held by `hold_link_key` stays when the link
+// naming it goes.
 #[test]
-fn a_link_key_goes_with_the_last_followed_link_naming_it_spec_permissions_7() {
+fn a_link_key_goes_with_its_followed_link_spec_permissions_7() {
     let (mut lp, ps) = people(2);
     let target = thing_of(&mut lp, 0, ps[0]);
     let spec = osis_engine::flows::LinkSpec { target, role: Role::Read, until: None, peers: Vec::new(), single_use: false };
     let a = lp.peers[0].engine.create_link(&ps[0], &spec).unwrap().0;
-    let b = lp.peers[0].engine.create_link(&ps[0], &spec).unwrap().0;
-    // b's text with a's seed
-    let shared = osis_blob::ShareLink { seed: a.seed.clone(), ..b.clone() };
-    let l = osis_engine::identity::key_actor_tid(&a.seed);
+    let l = osis_engine::identity::link_key_tid(&a.seed, a.k);
     let e = &mut lp.peers[1].engine;
     assert!(link_keys_held(e).is_empty());
     e.follow_link(&a).unwrap();
-    e.follow_link(&shared).unwrap();
-    e.unfollow_link(&a.k);
-    assert_eq!(link_keys_held(e), BTreeSet::from([l]), "b's text still names L");
+    assert_eq!(link_keys_held(e), BTreeSet::from([l]), "the link names L");
     e.reload().unwrap();
     assert_eq!(link_keys_held(e), BTreeSet::from([l]), "and after a reload");
-    e.unfollow_link(&shared.k);
-    assert!(link_keys_held(e).is_empty(), "L goes with the last link naming it");
+    e.unfollow_link(&a.k);
+    assert!(link_keys_held(e).is_empty(), "L goes with the link naming it");
     e.check_index();
-    e.hold_key_actor(a.seed.clone()).unwrap();
+    e.hold_link_key(a.seed.clone(), a.k).unwrap();
     e.reload().unwrap();
     e.follow_link(&a).unwrap();
     e.unfollow_link(&a.k);
-    assert_eq!(link_keys_held(e), BTreeSet::from([l]), "held by hold_key_actor, across a reload: kept");
+    assert_eq!(link_keys_held(e), BTreeSet::from([l]), "held by hold_link_key, across a reload: kept");
     e.check_index();
-    e.drop_key_actor(&l);
+    e.drop_link_key(&l);
     assert!(link_keys_held(e).is_empty());
     e.check_index();
 }
@@ -330,7 +325,7 @@ fn following_a_link_again_under_another_seed_lets_its_old_key_go_spec_permission
     let a = lp.peers[0].engine.create_link(&ps[0], &spec).unwrap().0;
     let b = lp.peers[0].engine.create_link(&ps[0], &spec).unwrap().0;
     let reseeded = osis_blob::ShareLink { seed: b.seed.clone(), ..a.clone() };
-    let lb = osis_engine::identity::key_actor_tid(&b.seed);
+    let lb = osis_engine::identity::link_key_tid(&b.seed, reseeded.k);
     let e = &mut lp.peers[1].engine;
     e.follow_link(&a).unwrap();
     e.follow_link(&reseeded).unwrap();
@@ -430,8 +425,7 @@ fn a_forged_record_in_a_record_blob_names_no_other_thing_spec_wire_3() {
     let u = unshared_thing(&mut lp, a);
     let real = lp.peers[0].engine.core.created(&u).cloned().unwrap();
     assert!(lp.peers[1].engine.core.created(&u).is_none(), "u not spread");
-    let osis_base::CreationRecord::Thing { nonce, .. } = real.clone() else { panic!() };
-    let forged = osis_base::CreationRecord::Thing { admin: lp.peers[1].engine.tid(), nonce, link: None, expires: None };
+    let forged = osis_base::CreationRecord::with_admin(lp.peers[1].engine.tid(), real.nonce);
     assert_ne!(forged.tid(), u);
     let (id, blob, wrap) = record_blob_by_hand(&mut lp, 0, &d, std::slice::from_ref(&forged));
     match lp.peers[1].engine.open_entry(&ds, &id, &wrap, &blob, u64::MAX).unwrap() {
@@ -497,7 +491,7 @@ fn junk_records(n: usize) -> (usize, usize, usize, bool) {
     let a = lp.peers[0].engine.me();
     let u = unshared_thing(&mut lp, a);
     let real = lp.peers[0].engine.core.created(&u).cloned().unwrap();
-    let junk: Vec<osis_base::CreationRecord> = (0..n).map(|i| osis_base::CreationRecord::Thing { admin: a, nonce: { let mut x = [9u8; 32]; x[..8].copy_from_slice(&(i as u64).to_be_bytes()); x }, link: None, expires: None }).collect();
+    let junk: Vec<osis_base::CreationRecord> = (0..n).map(|i| osis_base::CreationRecord::with_admin(a, { let mut x = [9u8; 32]; x[..8].copy_from_slice(&(i as u64).to_be_bytes()); x })).collect();
     let known = |lp: &LocalPeer| junk.iter().filter(|r| lp.peers[1].engine.core.created(&r.tid()).is_some()).count();
     let (jb, jbytes, jwrap) = record_blob_by_hand(&mut lp, 0, &d, &junk);
     let (gb, gbytes, gwrap) = record_blob_by_hand(&mut lp, 0, &d, std::slice::from_ref(&real));

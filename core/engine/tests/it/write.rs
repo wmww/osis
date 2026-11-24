@@ -18,16 +18,22 @@ fn peer(seed: u64) -> Peer {
     Peer::new(seed, WallMs(1_700_000_000_000)).unwrap()
 }
 
-// spec/data-model.md §1, §9; spec/permissions.md §4: a new node holds its own thing with
-// `created.0` and `keys.0`.
+// spec/sync-set.md §1, spec/permissions.md §3: a new node holds its node thing, minted with its
+// key and independent from its minting: `created.0` holding the key, `keys.0` with a keyset per
+// role, a sync ID and a deposit seed; its node root, minted with admin N, holds a strong to N.
 #[test]
 fn node_identity_spec_dm_1() {
     let mut p = peer(0);
     let me = p.engine.tid();
     let rec = p.engine.get_typed(&me, &ct::CREATED).unwrap().unwrap();
     assert_eq!(rec.tid(), me);
+    assert_eq!(rec.key().map(|k| k.0), Some(p.engine.identity().signing().verifying_key().to_bytes()));
     let keys = p.engine.get_typed(&me, &ct::KEYS).unwrap().unwrap();
-    assert!(keys.key.is_some());
+    assert!(keys.read.is_some() && keys.write.is_some() && keys.admin.is_some() && keys.sync.is_some(), "a keyset per role");
+    assert!(keys.sync_id.is_some() && keys.deposit_seed.is_some(), "its sync ID and deposit seed");
+    let root = p.engine.node_root().unwrap();
+    assert_eq!(p.engine.core.created(&root).and_then(|r| r.mint_admin()), Some(me), "the node root is minted with admin N");
+    assert!(p.engine.get_typed(&root, &ct::HOLDS).unwrap().is_some_and(|h| h.contains(&osis_base::Ref::Strong(osis_base::Strong(me)))), "the node root holds N");
     let aspects = p.engine.aspects(&me).unwrap();
     assert!(aspects.contains(&ak("created.0")) && aspects.contains(&ak("keys.0")));
     assert_eq!(p.engine.core.role_now(&me, &me), Some(osis_base::Role::Admin));

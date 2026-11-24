@@ -646,7 +646,7 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
         };
         if let Some(wait) = thing_wait(tx.core, &h, id, a, path.as_ref().map(|p| (p.to(&a.tid), p.direct)), &record, &chain_rec) {
             unjudged.insert(ai, wait);
-        } else if origin == Origin::Remote && record(&a.tid).is_some_and(|r| !crate::retention::needed::applies_on(tx.core, &a.tid, &a.ak, &r)) {
+        } else if origin == Origin::Remote && record(&a.tid).is_some() && !crate::retention::needed::applies_on(tx.core, &a.tid, &a.ak) {
             // nothing but certificates applies on a thing outside the node closure: content waits
             // until it enters (a node's own commits write only what it holds, `check_written`)
             unjudged.insert(ai, Reason::Outside(a.tid));
@@ -912,7 +912,7 @@ fn header_wait(h: &Header, record: &dyn Fn(&Tid) -> Option<CreationRecord>) -> s
     record(&acting).map(|_| author).ok_or(Reason::UnknownCreated(acting))
 }
 
-/// What thing `a.tid` waits for: its `created.0` record, the record chain up to a key actor, an
+/// What thing `a.tid` waits for: its `created.0` record, the record chain up to its top, an
 /// edge write on each edge of the path stated for it (spec/commits.md §4 Unjudgeable). A function of the thing, not of the part.
 fn thing_wait(
     core: &crate::engine::Core,
@@ -2731,8 +2731,8 @@ mod tests {
     #[test]
     fn a_signer_form_names_one_key_spec_wire_4() {
         use osis_base::{CreationRecord, SignKey, Tid};
-        let keyed = CreationRecord::KeyActor { alg: 1, public_key: vec![3; 32], nonce: [0; 32] };
-        let minted = CreationRecord::Thing { admin: Tid::from_bytes([1; 15]), nonce: [0; 32], link: None, expires: None };
+        let keyed = CreationRecord::with_key(osis_base::SignKey([3; 32]), [0; 32]);
+        let minted = CreationRecord::with_admin(Tid::from_bytes([1; 15]), [0; 32]);
         let (own, other) = (SignKey([3; 32]), SignKey([4; 32]));
         assert_eq!(super::named_key(None, &keyed).ok(), Some(own));
         assert_eq!(super::named_key(Some(other), &keyed).ok(), Some(other));

@@ -39,7 +39,7 @@ hand_written! {
 generated! {
     crdt_deltas => "crdt/deltas",
     tid_thing => "tid/thing",
-    tid_key_actor => "tid/key-actor",
+    tid_key => "tid/key",
     chunker_gear => "chunker/gear",
     chunker_tree => "chunker/tree",
     chunker_pages => "chunker/pages",

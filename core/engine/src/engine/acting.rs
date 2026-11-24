@@ -109,7 +109,7 @@ impl Engine {
         self.run(|tx| {
             let mut done = Done::default();
             let rec = crate::identity::thing_record(admin, None, &mut *tx.rng);
-            let a = rotation::own_secrets_new(tx, rec, &[], &mut done)?;
+            let a = rotation::own_secrets_new(tx, rec, &[], None, &mut done)?;
             done.add(Engine::commit_tx(tx, also(a)?)?);
             Ok((a, done))
         })

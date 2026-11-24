@@ -531,7 +531,7 @@ fn chains(members: impl IntoIterator<Item = Tid>, record: &dyn Fn(&Tid) -> Optio
     for start in members {
         let mut x = start;
         for _ in 0..=osis_base::format::MAX_CHAIN_DEPTH {
-            let Some(up) = record(&x).and_then(|r| r.holder()) else { break };
+            let Some(up) = record(&x).map(|r| r.holder()) else { break };
             if mint.insert(x, up).is_some() {
                 break;
             }
@@ -665,7 +665,7 @@ fn rotation_required(ak: &str, f: &Fragment) -> Option<Role> {
         return Some(Role::Admin);
     }
     let Some(osis_crdt::SlotRef::Frag(Fragment::Struct(st))) = f.slot(osis_crdt::Encoding::Struct) else { return Some(Role::Write) };
-    // the admin keyset, a key actor's KEM key, the inbox, the deposit seed and the sync ID need
+    // the admin keyset, the inbox, the deposit seed and the sync ID need
     // admin (spec/crypto.md §3: by an admin); sync, read and write keysets their rotator
     if (2..=5).chain([9]).any(|id| st.field(id).is_some()) {
         return Some(Role::Admin);
@@ -877,7 +877,7 @@ pub(crate) fn resolve_unresolved(tx: &mut Tx<'_>) -> Result<()> {
     Ok(())
 }
 
-/// Whether `t`'s record chain is not known to end at a key actor within `MAX_CHAIN_DEPTH` links,
+/// Whether `t`'s record chain is not known to end at a thing minted with a key within `MAX_CHAIN_DEPTH` links,
 /// mint-admin links counted (spec/permissions.md §1): deeper, or a creation record on it is not
 /// held (unknown counts as invalid, so forgetting a record never makes a deep delta valid).
 /// O(`MAX_CHAIN_DEPTH`).
@@ -1024,7 +1024,7 @@ impl osis_perm::HeldSet for Core {
     fn commit(&self, id: &CommitId) -> Option<osis_perm::Held> {
         reading(self, id)
     }
-    /// O(the held commits): a key actor's record goes only with what is signed as it
+    /// O(the held commits): a record of a thing signed as goes only with what is signed as it
     /// (`retention::needed`), so this finds none but for a record forgotten out of turn.
     fn signed_as(&self, signer: &Tid) -> Vec<CommitId> {
         self.ix.commits.iter().filter(|(_, m)| m.view.signer == *signer).map(|(id, _)| *id).collect()
@@ -1086,7 +1086,7 @@ impl<'a> Judge<'a> {
     fn by_path(&mut self, h: &Header, view: &View, id: &CommitId, ai: usize, a: &osis_commit::AspectEntry) -> bool {
         let core = self.core;
         let ak = a.ak.as_str();
-        // a thing more than `MAX_CHAIN_DEPTH` record links below its key actor: nothing written on
+        // a thing more than `MAX_CHAIN_DEPTH` record links below its top: nothing written on
         // it applies (spec/permissions.md §1); judged per delta from creation records alone
         if too_deep(core, &a.tid) {
             return false;

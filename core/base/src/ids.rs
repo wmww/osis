@@ -117,18 +117,29 @@ impl crate::Classified for TidParseError {
     }
 }
 
-/// A thing's creation record (spec/wire.md §3): the `creation` struct of the core schema.
+/// A thing's creation record (spec/wire.md §3): the `creation` struct of the core schema. How
+/// the thing came to exist is the one fact fixed in it (spec/permissions.md §1): minted with a
+/// mint admin, or with a key.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum CreationRecord {
-    /// Ordinary thing (spec/permissions.md §1): `admin` holds its record edge (admin) from the
-    /// start, fixed by the tid; a 32-byte random nonce; `link`: it is a share link's actor K,
-    /// made for this target (spec/permissions.md §7); `expires`: the wall ms the thing ends at,
-    /// whatever any minting of it says (spec/commits.md §5 Destruction).
-    Thing { admin: Tid, nonce: [u8; 32], link: Option<Tid>, expires: Option<u64> },
-    /// Key actor (admin of itself): `signing_key` enum case and key bytes, and a 32-byte nonce.
-    /// Only `alg` 1 (ed25519, 32 bytes) is readable in this build; other cases can be built (a later
-    /// suite) but `from_value` refuses them.
-    KeyActor { alg: u64, public_key: Vec<u8>, nonce: [u8; 32] },
+pub struct CreationRecord {
+    /// Its mint admin or its key.
+    pub minter: Minter,
+    /// 32 bytes: random, a link key's from its seed (spec/crypto.md §3).
+    pub nonce: [u8; 32],
+    /// Beside a mint admin: it is a link's thing K, made for this target; beside a key: it is
+    /// a link key, holding a grant on this K (spec/permissions.md §7).
+    pub link: Option<Tid>,
+    /// Beside a mint admin only: the wall ms the thing ends at, whatever any minting of it says
+    /// (spec/commits.md §5 Destruction).
+    pub expires: Option<u64>,
+}
+
+/// What a thing was minted with (spec/permissions.md §1): its mint admin, holding its record
+/// edge (admin) from the start, or a key, the record's key, holding admin from the start.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Minter {
+    Admin(Tid),
+    Key(SignKey),
 }
 
 // spec/wire.md §3: `creation = struct { admin 0: weak, key 1: signing_key, nonce 2: blob, link 3: weak, expires 5: timestamp }`.
@@ -141,61 +152,59 @@ const REC_EXPIRES: i64 = 5;
 pub const SIGNING_KEY_ED25519: u64 = 1;
 
 impl CreationRecord {
+    /// A thing minted with admin `admin`.
+    pub fn with_admin(admin: Tid, nonce: [u8; 32]) -> CreationRecord {
+        CreationRecord { minter: Minter::Admin(admin), nonce, link: None, expires: None }
+    }
+    /// A thing minted with `key`.
+    pub fn with_key(key: SignKey, nonce: [u8; 32]) -> CreationRecord {
+        CreationRecord { minter: Minter::Key(key), nonce, link: None, expires: None }
+    }
     /// The record's value; its canonical encoding is what the tid hashes.
     pub fn to_value(&self) -> Value {
         let mut m = crate::ValueMap::new();
-        match self {
-            CreationRecord::Thing { admin, nonce, link, expires } => {
-                m.insert(Value::Int(REC_ADMIN), Value::Weak(*admin));
-                m.insert(Value::Int(REC_NONCE), Value::Bytes(nonce.to_vec()));
-                if let Some(t) = link {
-                    m.insert(Value::Int(REC_LINK), Value::Weak(*t));
-                }
-                if let Some(t) = expires {
-                    m.insert(Value::Int(REC_EXPIRES), Value::Int(i64::try_from(*t).unwrap_or(i64::MAX)));
-                }
-            }
-            CreationRecord::KeyActor { alg, public_key, nonce } => {
-                let key = Value::Enum(*alg, Some(Box::new(Value::Bytes(public_key.clone()))));
-                m.insert(Value::Int(REC_KEY), key);
-                m.insert(Value::Int(REC_NONCE), Value::Bytes(nonce.to_vec()));
-            }
+        match self.minter {
+            Minter::Admin(admin) => m.insert(Value::Int(REC_ADMIN), Value::Weak(admin)),
+            Minter::Key(key) => m.insert(Value::Int(REC_KEY), key.to_value()),
+        };
+        m.insert(Value::Int(REC_NONCE), Value::Bytes(self.nonce.to_vec()));
+        if let Some(t) = self.link {
+            m.insert(Value::Int(REC_LINK), Value::Weak(t));
+        }
+        if let Some(t) = self.expires {
+            m.insert(Value::Int(REC_EXPIRES), Value::Int(i64::try_from(t).unwrap_or(i64::MAX)));
         }
         Value::Map(m)
     }
-    /// Reads a record: exactly one of admin and key, a 32-byte nonce, `link` and `expires` only beside admin, no other field, key an ed25519 `signing_key` of 32 bytes. `None` is bad input (an unknown key case included:
-    /// callers that must park it check the enum case themselves).
+    /// Reads a record: exactly one of admin and key, a 32-byte nonce, `link` a weak, `expires`
+    /// only beside admin, no other field, key an ed25519 `signing_key` of 32 bytes. `None` is bad
+    /// input (an unknown key case included: callers that must park it check the enum case
+    /// themselves).
     pub fn from_value(v: &Value) -> Option<CreationRecord> {
         let Value::Map(m) = v else { return None };
         let nonce: [u8; 32] = match m.get(&Value::Int(REC_NONCE)) {
             Some(Value::Bytes(b)) => b.as_slice().try_into().ok()?,
             _ => return None,
         };
+        let minter = match (m.get(&Value::Int(REC_ADMIN)), m.get(&Value::Int(REC_KEY))) {
+            (Some(Value::Weak(admin)), None) => Minter::Admin(*admin),
+            (None, Some(k)) => Minter::Key(SignKey::from_value(k)?),
+            _ => return None,
+        };
         let link = match m.get(&Value::Int(REC_LINK)) {
             None => None,
-            Some(Value::Weak(t)) if m.contains_key(&Value::Int(REC_ADMIN)) => Some(*t),
+            Some(Value::Weak(t)) => Some(*t),
             _ => return None,
         };
         let expires = match m.get(&Value::Int(REC_EXPIRES)) {
             None => None,
-            Some(Value::Int(t)) if *t >= 0 && m.contains_key(&Value::Int(REC_ADMIN)) => Some(t.unsigned_abs()),
+            Some(Value::Int(t)) if *t >= 0 && matches!(minter, Minter::Admin(_)) => Some(t.unsigned_abs()),
             _ => return None,
         };
-        match (m.get(&Value::Int(REC_ADMIN)), m.get(&Value::Int(REC_KEY)), m.len() - usize::from(link.is_some()) - usize::from(expires.is_some())) {
-            (Some(Value::Weak(admin)), None, 2) => Some(CreationRecord::Thing { admin: *admin, nonce, link, expires }),
-            (None, Some(Value::Enum(SIGNING_KEY_ED25519, Some(p))), 2) => match p.as_ref() {
-                Value::Bytes(pk) if pk.len() == 32 => {
-                    Some(CreationRecord::KeyActor { alg: SIGNING_KEY_ED25519, public_key: pk.clone(), nonce })
-                }
-                _ => None,
-            },
-            _ => None,
-        }
+        (m.len() == 2 + usize::from(link.is_some()) + usize::from(expires.is_some())).then_some(CreationRecord { minter, nonce, link, expires })
     }
     pub fn nonce(&self) -> &[u8; 32] {
-        match self {
-            CreationRecord::Thing { nonce, .. } | CreationRecord::KeyActor { nonce, .. } => nonce,
-        }
+        &self.nonce
     }
     /// The thing's tid: the first 15 bytes of BLAKE3 of the record's encoding (spec/wire.md §3).
     pub fn tid(&self) -> Tid {
@@ -206,44 +215,46 @@ impl CreationRecord {
         }
         Tid(b)
     }
-    /// Whether this is a share link's actor K (spec/permissions.md §7).
+    /// Whether this is a link's thing K (spec/permissions.md §7).
     pub fn is_link(&self) -> bool {
         self.link_target().is_some()
     }
     /// The wall ms the thing ends at, whatever any minting of it says; `None`: it never expires
     /// (spec/commits.md §5 Destruction). Every minting's commit carries it as its `expires`.
     pub fn expires(&self) -> Option<u64> {
-        match self {
-            CreationRecord::Thing { expires, .. } => *expires,
-            CreationRecord::KeyActor { .. } => None,
-        }
+        self.expires
     }
-    /// The target a link's actor K was made for, as its creator says (spec/permissions.md §7).
+    /// The target a link's thing K was made for, as its creator says (spec/permissions.md §7).
     pub fn link_target(&self) -> Option<Tid> {
-        match self {
-            CreationRecord::Thing { link, .. } => *link,
-            CreationRecord::KeyActor { .. } => None,
-        }
+        self.mint_admin().and(self.link)
     }
-    /// The mint admin (spec/permissions.md §1): the next actor up the record chain, whose
-    /// secrets a dependent thing derives from (none for a key actor).
+    /// The K a link key holds a grant on (spec/permissions.md §7): what scopes its static entry
+    /// (spec/sync-ids.md §3).
+    pub fn link_key_of(&self) -> Option<Tid> {
+        self.key().and(self.link)
+    }
+    /// The mint admin (spec/permissions.md §1): the next thing up the record chain, whose
+    /// secrets a dependent thing derives from (none for a thing minted with a key).
     pub fn mint_admin(&self) -> Option<Tid> {
-        match self {
-            CreationRecord::Thing { admin, .. } => Some(*admin),
-            CreationRecord::KeyActor { .. } => None,
+        match self.minter {
+            Minter::Admin(a) => Some(a),
+            Minter::Key(_) => None,
         }
     }
     /// The key the record holds (spec/permissions.md §1 Key grant), where it names no mint admin.
     pub fn key(&self) -> Option<SignKey> {
-        match self {
-            CreationRecord::Thing { .. } => None,
-            CreationRecord::KeyActor { public_key, .. } => public_key.as_slice().try_into().ok().map(SignKey),
+        match self.minter {
+            Minter::Admin(_) => None,
+            Minter::Key(k) => Some(k),
         }
     }
     /// The holder of the record's admin edge from the start: its mint admin (the record edge) or
-    /// its key (the record's key). `None` only for a key of a case this build cannot read.
-    pub fn holder(&self) -> Option<Holder> {
-        self.mint_admin().map(Holder::Thing).or_else(|| self.key().map(Holder::Key))
+    /// its key (the record's key).
+    pub fn holder(&self) -> Holder {
+        match self.minter {
+            Minter::Admin(a) => Holder::Thing(a),
+            Minter::Key(k) => Holder::Key(k),
+        }
     }
 }
 
@@ -673,24 +684,27 @@ mod tests {
     // exactly these bytes.
     #[test]
     fn creation_record_bytes() {
-        let r = CreationRecord::Thing { admin: Tid::from_bytes([7; 15]), nonce: [1; 32], link: None, expires: None };
+        let r = CreationRecord::with_admin(Tid::from_bytes([7; 15]), [1; 32]);
         let rb = hex(&format!("a2 00 d90655 4f{} 02 5820{}", "07".repeat(15), "01".repeat(32)));
-        let l = CreationRecord::Thing { admin: Tid::from_bytes([7; 15]), nonce: [1; 32], link: Some(Tid::from_bytes([8; 15])), expires: None };
+        let l = CreationRecord { link: Some(Tid::from_bytes([8; 15])), ..r.clone() };
         assert_ne!(l.tid(), r.tid(), "the link's target is in the tid");
         assert!(l.is_link() && !r.is_link());
         assert_eq!(l.link_target(), Some(Tid::from_bytes([8; 15])));
         assert_eq!(CreationRecord::from_value(&l.to_value()), Some(l.clone()));
-        // `link` only a weak, and only beside admin
+        // `link` only a weak
         let with = |f: &dyn Fn(&mut crate::ValueMap)| {
             let Value::Map(mut m) = l.to_value() else { panic!() };
             f(&mut m);
             CreationRecord::from_value(&Value::Map(m))
         };
         assert!(with(&|m| { m.insert(Value::Int(REC_LINK), Value::Bool(true)); }).is_none());
-        assert!(with(&|m| { m.remove(&Value::Int(REC_ADMIN)); m.insert(Value::Int(REC_KEY), Value::Enum(1, Some(Box::new(Value::Bytes(vec![9; 32]))))); }).is_none());
-        let k = CreationRecord::KeyActor { alg: 1, public_key: vec![9; 32], nonce: [1; 32] };
+        let k = CreationRecord::with_key(crate::SignKey([9; 32]), [1; 32]);
+        // beside a key, `link` makes a link key, naming its K
+        let lk = with(&|m| { m.remove(&Value::Int(REC_ADMIN)); m.insert(Value::Int(REC_KEY), crate::SignKey([9; 32]).to_value()); }).unwrap();
+        assert_eq!((lk.link_key_of(), lk.link_target(), lk.is_link()), (Some(Tid::from_bytes([8; 15])), None, false));
+        assert_eq!(lk, CreationRecord { link: Some(Tid::from_bytes([8; 15])), ..k.clone() });
         // `expires`: field 5, a uint beside admin only, in the tid
-        let e = CreationRecord::Thing { admin: Tid::from_bytes([7; 15]), nonce: [1; 32], link: None, expires: Some(5) };
+        let e = CreationRecord { expires: Some(5), ..r.clone() };
         assert_ne!(e.tid(), r.tid(), "the expiry is in the tid");
         assert_eq!((e.expires(), r.expires(), k.expires()), (Some(5), None, None));
         assert_eq!(CreationRecord::from_value(&e.to_value()), Some(e.clone()));
@@ -717,8 +731,8 @@ mod tests {
     #[test]
     fn creation_record_rejects() {
         let admin = Tid::from_bytes([7; 15]);
-        let r = CreationRecord::Thing { admin, nonce: [1; 32], link: None, expires: None };
-        assert_ne!(r.tid(), CreationRecord::Thing { admin, nonce: [2; 32], link: None, expires: None }.tid());
+        let r = CreationRecord::with_admin(admin, [1; 32]);
+        assert_ne!(r.tid(), CreationRecord::with_admin(admin, [2; 32]).tid());
         assert_eq!(CreationRecord::from_value(&Value::Int(0)), None);
         let Value::Map(m) = r.to_value() else { unreachable!() };
         let key = |alg, len| Value::Enum(alg, Some(Box::new(Value::Bytes(vec![9; len]))));

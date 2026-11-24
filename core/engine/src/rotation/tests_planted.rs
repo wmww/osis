@@ -37,7 +37,7 @@ fn plant_box(lp: &mut LocalPeer, i: usize, g: Tid, e: &Epoch, s: &Secret32) -> C
     let mut fake = osis_keys::ActorEpochs::default();
     fake.role_mut(Role::Read).set_secret(*e, s.clone());
     fake.role_mut(Role::Read).set_established(*e, osis_keys::Provenance::Fixed);
-    let rcpt = osis_keys::Recipient { holder: me, role: Role::Read, keys: osis_keys::HolderKeys::KeyActor { kem: lp.peers[i].engine.identity().keys().kem.public().clone(), seed: None }, floor: 0 };
+    let rcpt = lp.peers[i].engine.run(|tx| crate::flows::recipient(tx, me, Role::Read)).unwrap();
     let w = lp.peers[i].engine.run(|tx| Ok(osis_keys::box_holder(&g, &fake, &osis_keys::HistoryBoxes::new(), &rcpt, &[Role::Read].into(), &mut *tx.rng)?.unwrap())).unwrap();
     let mut m = Mutation::new();
     crate::flows::put_secrets(&mut m, g, &w, true).unwrap();

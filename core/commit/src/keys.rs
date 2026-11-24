@@ -13,7 +13,7 @@ pub trait Secrets {
     /// Dedup secret of a thing (spec/crypto.md §3).
     fn dedup(&self, tid: &Tid) -> Option<Secret32>;
     /// The thing's admin delete key (level 1): the delete key of the newest step its delete
-    /// base's `sync.0` records here, or a key-actor base's signing key (spec/crypto.md §7).
+    /// base's `sync.0` records here (spec/crypto.md §7).
     fn admin_key(&self, tid: &Tid) -> Option<VerifyingKey>;
     /// The write delete key of the commit's purge author (level 2, spec/crypto.md §7).
     fn purge_author_key(&self) -> Option<VerifyingKey>;

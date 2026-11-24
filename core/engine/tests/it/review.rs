@@ -139,7 +139,7 @@ fn purge_drops_snapshots_spec_commits_5() {
 // arrival order: a snapshot arriving after the request and the named delta, or the named delta
 // arriving after the request and the snapshot.
 #[test]
-#[ignore = "accounts: keys"]
+#[ignore = "accounts: making an account"]
 fn purge_drops_late_snapshot_spec_commits_5() {
     let mut lp = net(2, 0);
     let t = new_shared(&mut lp, 0);
@@ -228,7 +228,7 @@ fn late_snapshot_of_purged_value_reads_nothing_spec_crdt_4_7() {
 
 // spec/crdt.md §8: snapshot frontiers cover only writes the state reflects (valid ones).
 #[test]
-#[ignore = "accounts: keys"]
+#[ignore = "accounts: making an account"]
 fn snapshot_frontier_valid_only_spec_crdt_8() {
     let mut lp = net(2, 0);
     lp.sync_all().unwrap();

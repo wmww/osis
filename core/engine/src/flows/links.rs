@@ -1,5 +1,7 @@
-//! Share links (spec/permissions.md §7, spec/wire.md §10): K an independent thing whose mint admin is the sharer's actor, a holder of the target with the link's role; L a key actor from the
-//! link's seed with (r, may-grant) on K, listed in K's sync ID steps by static entry. Redeem (a
+//! Share links (spec/permissions.md §7, spec/wire.md §10): K an independent thing whose mint
+//! admin is the sharer's thing, a holder of the target with the link's role; L the link key, a
+//! thing minted with the key the link's seed derives, its secrets the seed's, with (r,
+//! may-grant) on K, listed in K's sync ID steps by static entry. Redeem (a
 //! may-grant grant signed as L, single use with L's self-removal in the same commit), bearer use,
 //! finalization and revoking a joiner are demotions by a sharer node.
 
@@ -8,13 +10,12 @@ use super::{Done, put_edge};
 use crate::engine::{Engine, Tx};
 use crate::error::{Error, Result};
 use crate::flows::edges::grant_in;
-use crate::identity::key_actor_record;
 use crate::rotation;
 use crate::Mutation;
 use osis_base::{Role, Tid, Value, WallMs};
 use osis_crdt::{Op, PathOp};
-use osis_crypto::{KeyActorKeys, Secret32};
-use osis_keys::{HolderKeys, Recipient, box_holder, roles_up_to};
+use osis_crypto::Secret32;
+use osis_keys::{box_holder, roles_up_to};
 use osis_blob::ShareLink;
 use osis_schema::core_types::{self as ct, Edge};
 use std::sync::Arc;
@@ -51,11 +52,11 @@ pub struct LinkSpec {
 }
 
 impl Engine {
-    /// Creates a link to `spec.target` for actor `sharer` (an actor this node is admin of):
-    /// K (mint admin `sharer`, independent, its sync ID listing L by
-    /// static entry), L (key actor from a fresh seed, `created.0` and `keys.0` signed by itself),
-    /// L's edge (r, may-grant, `until`) on K with its boxes, K's edge on the target, and a
-    /// thing minted with the account root as admin keeping the seed. Returns the link and the seed thing.
+    /// Creates a link to `spec.target` for `sharer` (a thing this node is admin of): K (mint
+    /// admin `sharer`, independent, its sync ID listing L by static entry), L (minted with the key
+    /// of a fresh seed, its minting signed by that key as L), L's edge (r, may-grant, `until`) on
+    /// K with its boxes, K's edge on the target, and a thing minted with the node root as admin
+    /// keeping the seed. Returns the link and the seed thing.
     pub fn create_link(&mut self, sharer: &Tid, spec: &LinkSpec) -> Result<(ShareLink, Tid, Done)> {
         // redeeming reads K's sync ID as L (its roster shows K's grant on the target), which a
         // role below read does not give (spec/permissions.md §7)
@@ -63,29 +64,29 @@ impl Engine {
             return Err(Error::Misuse("a link gives read or above: grant sync to the holder's account instead"));
         }
         // a fresh seed, never copied to an unwiped stack array
-        let seed = self.run(|tx| Ok(Secret32::random(&mut *tx.rng)))?;
-        let l = self.hold_key_actor(seed.clone())?;
-        let res = self.run(|tx| create_link_in(tx, *sharer, spec, l, &seed));
-        self.drop_key_actor(&l);
+        let (seed, k) = self.run(|tx| Ok((Secret32::random(&mut *tx.rng), crate::identity::link_record(*sharer, spec.target, &mut *tx.rng))))?;
+        let l = self.hold_link_key(seed.clone(), k.tid())?;
+        let res = self.run(|tx| create_link_in(tx, *sharer, spec, k.clone(), l, &seed));
+        self.drop_link_key(&l);
         let (k, k_sync_id, keep, done) = res?;
         Ok((ShareLink { seed, target: spec.target, k, k_sync_id, peers: spec.peers.clone(), single_use: spec.single_use }, keep, done))
     }
 
     /// Redeems a link once K's sync ID was claimed by L's static entry and downloaded (node-sync;
-    /// `hold_key_actor(link.seed)` came first so L's boxes open): signing as L, a may-grant grant
+    /// `hold_link_key` came first so L's boxes open): signing as L, a may-grant grant
     /// of `grantee` (this node's actor, or this node) to K with the link's role and K's boxes;
     /// `single_use` also removes L's own edge in the same commit. Deposited under K's sync ID
     /// unless the role is write or above. Leaves the seed held as it was: a caller holding it
     /// keeps it (a redeemer proves L until its join is at a source, spec/permissions.md §7).
     pub fn redeem(&mut self, link: &ShareLink, grantee: &Tid, single_use: bool) -> Result<Done> {
-        let l = crate::identity::key_actor_tid(&link.seed);
-        let held = self.core.key_actors.contains_key(&l);
+        let l = crate::identity::link_key_tid(&link.seed, link.k);
+        let held = self.core.link_keys.contains_key(&l);
         if !held {
-            self.hold_key_actor(link.seed.clone())?;
+            self.hold_link_key(link.seed.clone(), link.k)?;
         }
         let res = self.redeem_in(l, link, *grantee, single_use);
         if !held {
-            self.drop_key_actor(&l);
+            self.drop_link_key(&l);
         }
         res
     }
@@ -95,7 +96,7 @@ impl Engine {
     /// grantee). K's sync ID brings L's grant and K's keyset as separate bodies, the keyset's
     /// wrapped under the epoch it supersedes and so fetched last: L listed says nothing of it.
     pub fn redeemable(&mut self, link: &ShareLink) -> bool {
-        let l = crate::identity::key_actor_tid(&link.seed);
+        let l = crate::identity::link_key_tid(&link.seed, link.k);
         let ts = osis_base::Ts::make(self.now(), 0).unwrap_or_default();
         // the target is the link text's word: K's grant on it held first (step 3)
         let on_target = self.roster(&link.target).get(&link.k).is_some_and(|e| e.alive_at(Some(ts)));
@@ -145,7 +146,7 @@ impl Engine {
     /// the clock up to the next `until` or role commit of K's and the target's components, so an
     /// `until` passing moves it.
     pub fn link_ended(&mut self, link: &ShareLink) -> bool {
-        let l = crate::identity::key_actor_tid(&link.seed);
+        let l = crate::identity::link_key_tid(&link.seed, link.k);
         let _horizon = self.core.bound_to_horizon([link.k, link.target].into_iter());
         self.edge_gone(&link.k, &l) || self.edge_gone(&link.target, &link.k)
     }
@@ -216,7 +217,7 @@ impl Engine {
             {
                 let ids: Vec<osis_base::CommitId> = self.core.on_thing(&t).collect();
                 let here = ids.iter().any(|c| self.core.ix.commits.get(c).is_some_and(|m| m.origin == crate::events::Origin::Local && m.view.aspect(&t, LINK_SEED).is_some()));
-                out.push(HeldLink { k: *k, l: crate::identity::key_actor_tid(&Secret32::from_bytes(seed)), mint_admin, target: *target, single_use: *single_use, keep: t, here });
+                out.push(HeldLink { k: *k, l: crate::identity::link_key_tid(&Secret32::from_bytes(seed), *k), mint_admin, target: *target, single_use: *single_use, keep: t, here });
             }
         }
         out.sort();
@@ -286,7 +287,7 @@ impl Engine {
     /// Bearer use (spec/permissions.md §7): act as L without writing anything; reads open
     /// through L's boxes once K's sync ID is downloaded. Returns L.
     pub fn bear(&mut self, link: &ShareLink) -> Result<Tid> {
-        self.hold_key_actor(link.seed.clone())
+        self.hold_link_key(link.seed.clone(), link.k)
     }
 }
 
@@ -307,37 +308,23 @@ fn let_seeds_go(tx: &mut Tx<'_>, keeps: &[Tid]) -> Result<()> {
     Ok(())
 }
 
-/// A key actor's `keys.0`: its KEM key (spec/crypto.md §3).
-fn key_actor_keys(m: &mut Mutation, t: Tid, keys: &KeyActorKeys) -> Result<()> {
-    let k = ct::Keys { key: Some(ct::KemKey::X25519MlKem768(keys.kem.public().as_bytes().to_vec())), ..Default::default() };
-    m.set(t, &ct::KEYS, &k)?;
-    Ok(())
-}
-
-fn create_link_in(tx: &mut Tx<'_>, sharer: Tid, spec: &LinkSpec, l: Tid, seed: &Secret32) -> Result<(Tid, osis_base::SyncId, Tid, Done)> {
+fn create_link_in(tx: &mut Tx<'_>, sharer: Tid, spec: &LinkSpec, krec: osis_base::CreationRecord, l: Tid, seed: &Secret32) -> Result<(Tid, osis_base::SyncId, Tid, Done)> {
     let me = tx.core.me();
     if crate::engine::secrets::usable_role_now(tx, &me, &sharer)? != Some(Role::Admin) {
         return Err(Error::Permission { tid: sharer, needs: Role::Admin });
     }
     let mut done = Done::default();
-    // L: creation and keys.0, signed by itself
-    let lkeys = KeyActorKeys::from_seed(seed);
-    let mut m = Mutation::new();
-    m.create(key_actor_record(&lkeys.signing.verifying_key(), seed));
-    m.sign_as(l);
-    key_actor_keys(&mut m, l, &lkeys)?;
-    let lc = Engine::commit_tx(tx, m)?;
-    done.add(lc);
-    // K, independent
-    let mut m = Mutation::new();
-    let k = m.create(crate::identity::link_record(sharer, spec.target, &mut *tx.rng));
-    done.add(Engine::commit_tx(tx, m)?);
-    // K's secrets, its sync ID listing L, its inbox: one commit
-    let lvk = lkeys.signing.verifying_key();
-    rotation::own_secrets_listing(tx, k, &[ReaderKey::Static(lvk, lkeys.kem.public().clone())], &mut done)?;
-    // L's edge (r, may-grant, until) with its boxes
+    // K, independent, in one commit with its secrets and its sync ID, whose genesis step lists L
+    // by static entry with an entry box sealed to L's first read keyset (spec/sync-ids.md §3)
+    let lid = crate::identity::Identity::link_key(seed.clone(), krec.tid());
+    let lread = lid.link_read_kem().ok_or(Error::Misuse("L's read keyset"))?.public().clone();
+    let k = rotation::own_secrets_new(tx, krec, &[ReaderKey::Static(lid.signing().verifying_key(), lread)], None, &mut done)?;
+    // L: minted with the seed's key, its secrets the seed's, signed by that key as L
+    rotation::own_secrets_new(tx, lid.record().clone(), &[], Some(seed), &mut done)?;
+    debug_assert_eq!(lid.tid(), l);
+    // L's edge (r, may-grant, until) with its boxes, sealed to L's keysets
     let epochs = tx.core.epochs(&k).ok_or(Error::Misuse("K's secrets"))?;
-    let rcpt = Recipient { holder: l, role: spec.role, keys: HolderKeys::KeyActor { kem: lkeys.kem.public().clone(), seed: None }, floor: 0 };
+    let rcpt = super::recipient(tx, l, spec.role)?;
     let hist = crate::rotation::history_boxes(tx, &sharer, &k)?;
     let boxes = box_holder(&k, &epochs, &hist, &rcpt, &roles_up_to(spec.role), &mut *tx.rng)?.ok_or(Error::Misuse("L's keys"))?;
     let mut m = Mutation::new();

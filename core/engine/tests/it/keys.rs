@@ -17,8 +17,7 @@ use std::collections::BTreeSet;
 fn rcpt(lp: &mut LocalPeer, i: usize, role: Role) -> Recipient {
     let e = &mut lp.peers[i].engine;
     let holder = e.me();
-    let keys = osis_keys::HolderKeys::KeyActor { kem: e.identity().keys().kem.public().clone(), seed: None };
-    Recipient { holder, role, keys, floor: 0 }
+    e.recipient_for(&holder, role).unwrap()
 }
 
 /// Node 0 grants node 1 read on `a`: its boxes then give node 1 `a`'s secrets
@@ -134,11 +133,63 @@ fn history_chain_from_state_spec_crypto_4() {
     assert_eq!(v1.read.secret(&e1), lp.peers[0].engine.epochs(&a).unwrap().read.secret(&e1));
 }
 
-// spec/crypto.md §3, §4: a key actor taken up (a link's L) opens every box reachable from it,
+// spec/permissions.md §3, spec/crypto.md §3 (a thing minted with a key: its secrets its minter's,
+// held by the minting store, boxed to nobody): a node thing's minting boxes nobody, its node holds
+// its secrets established, and another node holding every commit of it holds none of them. A
+// thing the node mints with admin N derives from those secrets, and a box N's node writes to N
+// is symmetric under them.
+#[test]
+fn a_node_things_secrets_are_its_nodes_alone_spec_permissions_3() {
+    let mut lp = net(2, 0);
+    lp.sync_all().unwrap();
+    let n0 = lp.peers[0].engine.me();
+    // `secrets.0` field 0, its boxes: never written
+    let Some(Value::Map(s)) = lp.peers[0].engine.get(&n0, &ak("secrets.0")).unwrap() else { panic!("N's secrets.0") };
+    assert!(s.get(&Value::Int(0)).is_none_or(|b| matches!(b, Value::Map(m) if m.is_empty())), "its minting boxes nobody");
+    assert!(matches!(s.get(&Value::Int(1)), Some(Value::Map(h)) if h.len() == 4), "a history box per role");
+    let e0 = lp.peers[0].engine.epochs(&n0).unwrap();
+    for r in osis_keys::ROLES {
+        assert!(e0.role(r).newest_held().is_some(), "{r:?}: its node holds it, established");
+    }
+    let t = new_thing(&mut lp, 0);
+    // node 1 reads t, whose commits N0 signs: N0's minting reaches it as their evidence
+    read_by_1(&mut lp, t);
+    lp.hold(t);
+    lp.sync_all().unwrap();
+    assert!(lp.peers[1].engine.core.created(&n0).is_some(), "node 1 holds N0's record");
+    assert!(!lp.peers[1].engine.epochs(&n0).is_some_and(|e| e.holds_any()), "another node holds none of N's secrets");
+    assert!(lp.peers[0].engine.epochs(&t).is_some_and(|e| e.read.holds_any()), "N's dependent derives from them");
+    let r = lp.peers[0].engine.recipient_for(&n0, Role::Read).unwrap();
+    assert!(r.keys.own.contains_key(&Role::Read), "its own node boxes it symmetrically");
+}
+
+// spec/permissions.md §7, spec/crypto.md §3, spec/sync-ids.md §3: a link key's first secrets
+// are its seed's: its published read keyset is the one the seed derives, which its entry boxes
+// are sealed to, so a store holding nothing but the seed opens K.
+#[test]
+fn a_link_keys_keysets_are_its_seeds_spec_permissions_7() {
+    let mut lp = net(1, 0);
+    let me = lp.peers[0].engine.me();
+    let target = new_thing(&mut lp, 0);
+    let spec = osis_engine::flows::LinkSpec { target, role: Role::Read, until: None, peers: Vec::new(), single_use: false };
+    let (link, _, _) = lp.peers[0].engine.create_link(&me, &spec).unwrap();
+    let l = osis_engine::identity::Identity::link_key(link.seed.clone(), link.k);
+    let rec = lp.peers[0].engine.get_typed(&l.tid(), &ct::CREATED).unwrap().unwrap();
+    assert_eq!((rec.link_key_of(), rec.key().map(|k| k.0)), (Some(link.k), Some(l.signing().verifying_key().to_bytes())), "its record names K and holds its key");
+    let keys = lp.peers[0].engine.get_typed(&l.tid(), &ct::KEYS).unwrap().unwrap();
+    let ct::KemKey::X25519MlKem768(published) = keys.read.unwrap().kem_key;
+    assert_eq!(published, l.link_read_kem().unwrap().public().as_bytes().to_vec(), "its read keyset is the seed's");
+    let seeded = l.link_epochs().unwrap();
+    for r in osis_keys::ROLES {
+        assert!(seeded.role(r).newest_held().is_some(), "{r:?}: the seed gives it");
+    }
+}
+
+// spec/crypto.md §3, §4: a link key taken up (a link's L) opens every box reachable from it,
 // however deep the chain of holder actors (each box opens with the secrets of the holder below
 // it). Tids descend along the chain, so a bare sweep over actors in tid order opens one level per sweep.
 #[test]
-fn key_actor_opens_deep_holder_chain_spec_crypto_4() {
+fn link_key_opens_deep_holder_chain_spec_crypto_4() {
     let mut lp = net(2, 0);
     lp.sync_all().unwrap();
     let mut chain: Vec<Tid> = (0..12).map(|_| new_thing(&mut lp, 0)).collect();
@@ -153,7 +204,7 @@ fn key_actor_opens_deep_holder_chain_spec_crypto_4() {
     sync(&mut lp, 0, 1);
     let held = |lp: &LocalPeer, t: &Tid| lp.peers[1].engine.epochs(t).is_some_and(|e| e.read.holds_any());
     assert!(chain.iter().all(|t| !held(&lp, t)), "nothing opens before the key");
-    lp.peers[1].engine.hold_key_actor(link.seed.clone()).unwrap();
+    lp.peers[1].engine.hold_link_key(link.seed.clone(), link.k).unwrap();
     assert!(held(&lp, &link.k), "K, boxed to L");
     let missing: Vec<usize> = (0..chain.len()).filter(|i| !held(&lp, &chain[*i])).collect();
     assert!(missing.is_empty(), "levels left unopened: {missing:?}");

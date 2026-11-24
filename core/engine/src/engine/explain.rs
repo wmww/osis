@@ -35,9 +35,9 @@ fn label(core: &Core, t: &Tid) -> String {
     let what = if core.node_root == Some(*t) {
         " (node root)"
     } else if core.me() == *t {
-        " (node)"
-    } else if core.is_key_actor(t) {
-        " (a key actor)"
+        " (node thing)"
+    } else if core.link_keys.contains_key(t) {
+        " (a held link key)"
     } else {
         ""
     };
@@ -116,11 +116,11 @@ fn held_of(core: &Core, t: &Tid) -> String {
 }
 
 
-/// The identities whose roles are the node's (`rotation::role_here`): itself, its held key
-/// actors, each named.
+/// The things whose roles are the node's (`rotation::role_here`): its node thing, its held link
+/// keys, each named.
 fn ours(core: &Core) -> Vec<(Tid, &'static str)> {
-    let mut out: Vec<(Tid, &'static str)> = vec![(core.me(), "node")];
-    out.extend(core.key_actors.keys().map(|k| (*k, "key actor")));
+    let mut out: Vec<(Tid, &'static str)> = vec![(core.me(), "node thing")];
+    out.extend(core.link_keys.keys().map(|k| (*k, "link key")));
     out
 }
 

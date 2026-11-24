@@ -96,7 +96,7 @@ pub const INBOX_LIFETIME_MS: u64 = 90 * DAY_MS;
 pub const DEPOSITS_WAITING: usize = 32;
 /// See `DEPOSITS_WAITING`, in bytes: that many recommended budget entries of 32 KiB.
 pub const DEPOSITS_WAITING_BYTES: usize = DEPOSITS_WAITING * 32 * 1024;
-/// Most mint-admin links from a thing up its record chain to its key actor
+/// Most mint-admin links from a thing up its record chain to the thing minted with a key at its top
 /// (spec/wire.md §2, spec/permissions.md §1). fixed.
 pub const MAX_CHAIN_DEPTH: usize = 64;
 /// Most things listed in one stated path (spec/wire.md §2, §4 `Path`; spec/permissions.md §1).

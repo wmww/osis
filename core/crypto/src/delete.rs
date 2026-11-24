@@ -8,7 +8,7 @@ use ed25519_dalek::hazmat::{ExpandedSecretKey, raw_sign};
 use ed25519_dalek::Sha512;
 
 /// A delete key (spec/crypto.md §7): a role secret's step key (the delete key of an admin secret,
-/// the write key of a write secret, spec/sync-ids.md §2), or a key actor's signing key. Signs
+/// the write key of a write secret, spec/sync-ids.md §2). Signs
 /// only under a blob's blinded key. Zeroized on drop; `Debug` redacted.
 pub struct DeleteSecret {
     seed: Secret32,
@@ -33,7 +33,7 @@ impl DeleteSecret {
         if level == 1 { DeleteSecret::admin(secret) } else { DeleteSecret::write(secret) }
     }
 
-    /// From an Ed25519 seed (a key actor's signing seed `kdf("sign", seed)`, spec/crypto.md §3).
+    /// From an Ed25519 seed.
     pub fn from_seed(seed: Secret32) -> DeleteSecret {
         let esk = ExpandedSecretKey::from(seed.expose());
         let vk = VerifyingKey(ed25519_dalek::VerifyingKey::from(&esk));

@@ -357,7 +357,7 @@ pub struct ReadCredentials {
     pub read_secrets: Vec<(Epoch, Secret32)>,
     /// Static entries of S's roster (link keys).
     pub statics: BTreeSet<[u8; 32]>,
-    /// The signing keys of the key actors this node acts for on S (the link it redeems): their
+    /// The signing keys of the link keys this node acts for on S (the link it redeems): their
     /// static entries are tested (spec/sync-opens.md §4).
     pub acting: Vec<osis_crypto::SigningSecret>,
     /// The sync proof (spec/sync-ids.md §2) of each recorded step whose sync key this node holds,
@@ -427,7 +427,7 @@ pub struct Signers {
 pub struct RosterHolders {
     /// Anyone may: S kept unread (its granters are not named here).
     pub anyone: bool,
-    /// The key actors other than this node holding a role on S's thing.
+    /// The provable things other than this node's holding a role on S's thing.
     pub holders: BTreeSet<Tid>,
 }
 
@@ -710,7 +710,7 @@ impl Engine {
 
     /// Opens a static entry's grant (spec/sync-opens.md §5): `steps` verify from S's genesis step
     /// (`verify_path`: its delete key hashes to `s`) and pass through the newest step of S recorded
-    /// here; a key actor this node holds has static entry `entry` and opens the head's entry box
+    /// here; a link key this node holds has static entry `entry` and opens the head's entry box
     /// (spec/sync-ids.md §3 Entry boxes), each secret naming its epoch of S's thing; the box's sync
     /// secret derives the head's sync key. Returns that key and the box, learning nothing: the
     /// caller verifies the answer's signature under the key, then `learn_grant`. `None` when any
@@ -728,10 +728,11 @@ impl Engine {
             return Ok(None);
         }
         let Some((things, _)) = self.sync_holder(s)? else { return Ok(None) };
-        let ids: Vec<Arc<crate::identity::Identity>> = self.core.key_actors.values().cloned().collect();
-        let Some(id) = ids.iter().find(|id| osis_crypto::static_entry(s, &id.keys().signing.verifying_key()) == *entry) else { return Ok(None) };
+        let ids: Vec<Arc<crate::identity::Identity>> = self.core.link_keys.values().cloned().collect();
+        let Some(id) = ids.iter().find(|id| osis_crypto::static_entry(s, &id.signing().verifying_key()) == *entry) else { return Ok(None) };
+        let Some(kem) = id.link_read_kem() else { return Ok(None) };
         // the box names the thing it is of: whichever of S's things opens it
-        let Some((thing, item)) = things.iter().find_map(|t| osis_blob::open_entry_box(b, head, &id.keys().kem, t).ok().map(|i| (*t, i))) else { return Ok(None) };
+        let Some((thing, item)) = things.iter().find_map(|t| osis_blob::open_entry_box(b, head, &kem, t).ok().map(|i| (*t, i))) else { return Ok(None) };
         let key = osis_crypto::role_key(osis_crypto::RoleKey::Sync, &item.sync.1).verifying_key().to_bytes();
         if key != head.keys.sync.to_bytes() {
             return Ok(None);
@@ -797,11 +798,11 @@ impl Engine {
     }
 
     /// The keys this node proves with on a connection, in proof order (spec/wire.md §11.2 Prove):
-    /// its node key first, then the key actors it acts for (link keys) by ascending tid. Each
-    /// with its creation record; signing and checking proofs is osis-proto's (`Prover`).
+    /// its node thing's key first, then its held link keys by ascending tid. Each with its
+    /// creation record; signing and checking proofs is osis-proto's (`Prover`).
     pub fn provers(&mut self) -> Result<Vec<(SigningSecret, CreationRecord)>> {
-        let mut out = vec![(self.core.id.keys().signing.clone(), self.core.id.record().clone())];
-        out.extend(self.core.key_actors.values().map(|k| (k.keys().signing.clone(), k.record().clone())));
+        let mut out = vec![(self.core.id.signing().clone(), self.core.id.record().clone())];
+        out.extend(self.core.link_keys.values().map(|k| (k.signing().clone(), k.record().clone())));
         Ok(out)
     }
 
@@ -823,7 +824,7 @@ impl Engine {
 
     /// The nodes other than this one that may hold S, by the rosters and records held here
     /// (spec/sync-status.md §3 held by no other node; spec/sync-set.md §3 the peers a leave waits
-    /// for): of S read, the key actors other than this node holding a role on S's thing; S kept
+    /// for): of S read, the provable things other than this node's holding a role on S's thing; S kept
     /// unread, anyone (its granters, whom the rosters do not name). A memo per sync ID.
     pub fn roster_holders(&mut self, s: &SyncId) -> Result<Arc<RosterHolders>> {
         self.follow_read_things()?;

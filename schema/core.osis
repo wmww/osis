@@ -16,9 +16,10 @@ type signing_key = enum {
 
 /// How a thing was created (spec/wire.md §3). Exactly one of `admin` and `key` is set:
 /// - `admin`: the thing's mint admin;
-/// - `key`: the thing is minted with this public key (a node thing or a share-link key).
-///   It has no mint admin; whoever holds the key's secret acts as it.
-/// `link`, only beside `admin`: the thing is a share link's actor, made for this target.
+/// - `key`: the thing is minted with this public key (a node thing or a share-link key),
+///   which holds admin on it from the start. It has no mint admin.
+/// `link`: beside `admin`, the thing is a share link's thing K, made for this target; beside
+/// `key`, it is the link's key, holding a grant on this K.
 /// `expires`, only beside `admin`: the wall ms the thing ends at, whole, whatever any later
 /// creation of it says.
 type creation = struct {
@@ -153,12 +154,10 @@ type keyset = struct {
 
 /// An actor's public keys (spec/crypto.md §3).
 aspect keys.0: struct {
-    /// One per role. Absent for a key actor.
+    /// One per role.
     read 0: option<keyset>,
     write 1: option<keyset>,
     admin 2: option<keyset>,
-    /// A key actor's one encryption key.
-    key 3: option<kem_key>,
     /// The thing's inbox, where it is another thing (spec/sync-inbox.md §1).
     inbox 4: option<weak>,
     /// 32 bytes. Lets others add data for the actor at nodes keeping it unread without being able to read it

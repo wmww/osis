@@ -157,7 +157,7 @@ fn every_stated_role_path_is_a_chain_of_held_edges_spec_wire_4() {
             let tl = e.core.timelines().get(&t);
             let ops: Vec<(osis_base::Holder, Option<osis_perm::Edge>)> = tl.map(|tl| tl.held_on(&t).filter(|(w, _, _)| w.0 == id).map(|(_, _, op)| (op.holder, op.edge)).collect()).unwrap_or_default();
             let leave = !ops.is_empty() && ops.iter().any(|(m, _)| *m == osis_base::Holder::Thing(end));
-            // a key actor writing itself: [S] (spec/permissions.md §1 Path)
+            // a thing signed as writing itself: [S] (spec/permissions.md §1 Path)
             let members: Vec<Tid> = std::iter::once(h.signer).chain(listed.iter().copied()).chain((!leave && t != h.signer).then_some(t)).collect();
             let hops: Vec<(Role, Option<Role>)> = members.windows(2).enumerate().map(|(j, x)| hop(e, x[0], x[1], p.direct >> j & 1 == 1, point).unwrap_or_else(|| panic!("{id:?}: {:?} holds nothing on {:?} (path to {t:?}: {listed:?}; {:?}, effective {:?}, record {:?})", x[0], x[1], h.aspects.iter().map(|a| (a.tid, a.ak.as_str().to_string())).collect::<Vec<_>>(), e.core.timelines().role(&h.signer, &t, At::before(point)), e.core.created(&t)))).collect();
             let role = hops.iter().map(|x| x.0).min().unwrap_or(Role::Admin);
@@ -249,7 +249,7 @@ pub(crate) fn walk_afresh(e: &osis_engine::Engine) -> (osis_perm::paths::Paths, 
     let mut records = BTreeMap::new();
     let mut todo: Vec<Tid> = named.into_iter().collect();
     while let Some(t) = todo.pop() {
-        if let Some(a) = e.core.created(&t).and_then(|r| r.holder())
+        if let Some(a) = e.core.created(&t).map(|r| r.holder())
             && records.insert(t, a).is_none()
             && let osis_base::Holder::Thing(a) = a
         {

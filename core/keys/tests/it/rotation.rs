@@ -1,9 +1,9 @@
-//! Key-actor holders across rotations, wrap epochs, supersession read from the commits alone
+//! Holders across rotations, wrap epochs, supersession read from the commits alone
 //! (spec/crypto.md §4, §5; spec/permissions.md §3).
 
 use crate::common::*;
 use osis_base::{Role, Tid};
-use osis_crypto::{Epoch, Secret32};
+use osis_crypto::Epoch;
 use osis_keys::aspects::box_key;
 use osis_keys::{ActorEpochs, Holder, Opener, Recipient, SecretsWrite, box_holder, ingest, reseal_needed, roles_up_to, rotate};
 use osis_schema::core_types::Secrets;
@@ -22,14 +22,14 @@ fn switched(extra: &[Recipient], rg: &mut osis_crypto::SeededRng) -> (Tid, Tid, 
     (a, p, pe, view, s)
 }
 
-// spec/permissions.md §3: a key actor's grant raced by a read-only rotation (made unaware of
-// it) keeps its box at the superseded read epoch only: the re-seal trigger asks for the new one.
+// spec/permissions.md §3: a grant raced by a read-only rotation (made unaware of it) keeps its
+// box at the superseded read epoch only: the re-seal trigger asks for the new one.
 #[test]
-fn key_actor_grant_raced_by_read_rotation() {
+fn grant_raced_by_read_rotation() {
     let rg = &mut rng(0);
     let (a, p, pe, view, base) = switched(&[], rg);
-    let (k, seed) = (tid(6), Secret32::from_bytes([0x60; 32]));
-    let grant = box_holder(&a, &view, &hist(&a, &view, &base), &key_rcpt(k, Role::Write, &seed), &roles_up_to(Role::Write), &mut *rg).unwrap().unwrap();
+    let (k, ke) = (tid(6), actor_epochs(0x60));
+    let grant = box_holder(&a, &view, &hist(&a, &view, &base), &actor_rcpt(k, Role::Write, &ke), &roles_up_to(Role::Write), &mut *rg).unwrap().unwrap();
     let rot = rotate(&a, &roles(&[Role::Read]), &view, &base, &[admin_rcpt(p, &pe)], &osis_keys::Names::default(), &mut *rg).unwrap();
     let mut s = base.clone();
     grant.apply(&mut s);
@@ -39,24 +39,24 @@ fn key_actor_grant_raced_by_read_rotation() {
     let er2 = rot.role(Role::Read).unwrap().epoch;
     let holders = [Holder { holder: k, role: Role::Write }];
     assert_eq!(reseal_needed(&s, &v, &holders), vec![(k, roles(&[Role::Read]))]);
-    let w = box_holder(&a, &v, &hist(&a, &v, &s), &key_rcpt(k, Role::Write, &seed), &roles(&[Role::Read]), &mut *rg).unwrap().unwrap();
+    let w = box_holder(&a, &v, &hist(&a, &v, &s), &actor_rcpt(k, Role::Write, &ke), &roles(&[Role::Read]), &mut *rg).unwrap().unwrap();
     w.apply(&mut s);
     assert!(reseal_needed(&s, &v, &holders).is_empty());
     let mut kv = ActorEpochs::default();
-    ingest(&a, &s, &Opener::KeyActor { holder: k, keys: &osis_crypto::KeyActorKeys::from_seed(&seed) }, &mut kv, None).unwrap();
+    ingest(&a, &s, &Opener { holder: k, epochs: &ke }, &mut kv, None).unwrap();
     assert!(kv.read.secret(&er2).is_some());
 }
 
-// spec/crypto.md §4: a rotation of admin demoting a key actor to write removes its admin box
+// spec/crypto.md §4: a rotation of admin demoting a holder to write removes its admin box
 // only; its read and write boxes stay.
 #[test]
-fn key_actor_demoted_keeps_lower_roles() {
+fn demoted_keeps_lower_roles() {
     let rg = &mut rng(0);
-    let (k, seed) = (tid(6), Secret32::from_bytes([0x60; 32]));
-    let (a, p, pe, view, s0) = switched(&[key_rcpt(k, Role::Admin, &seed)], rg);
+    let (k, ke) = (tid(6), actor_epochs(0x60));
+    let (a, p, pe, view, s0) = switched(&[actor_rcpt(k, Role::Admin, &ke)], rg);
     let ea = view.admin.newest().unwrap();
     assert!(s0.boxes.contains_key(&box_key(k, Role::Admin, &ea)));
-    let rot = rotate(&a, &roles(&[Role::Admin]), &view, &s0, &[admin_rcpt(p, &pe), key_rcpt(k, Role::Write, &seed)], &osis_keys::Names::default(), &mut *rg).unwrap();
+    let rot = rotate(&a, &roles(&[Role::Admin]), &view, &s0, &[admin_rcpt(p, &pe), actor_rcpt(k, Role::Write, &ke)], &osis_keys::Names::default(), &mut *rg).unwrap();
     let mut s = s0.clone();
     rot.secrets.apply(&mut s);
     let mut v = view.clone();
@@ -66,7 +66,7 @@ fn key_actor_demoted_keeps_lower_roles() {
     want.sort();
     assert_eq!(s.boxes.keys().filter(|b| b.holder == osis_base::Weak(k)).cloned().collect::<Vec<_>>(), want);
     let mut kv = ActorEpochs::default();
-    ingest(&a, &s, &Opener::KeyActor { holder: k, keys: &osis_crypto::KeyActorKeys::from_seed(&seed) }, &mut kv, None).unwrap();
+    ingest(&a, &s, &Opener { holder: k, epochs: &ke }, &mut kv, None).unwrap();
     assert!(kv.read.secret(&er).is_some());
     assert!(kv.write.secret(&ew).is_some());
     assert!(kv.admin.secret(&rot.role(Role::Admin).unwrap().epoch).is_none());
@@ -168,8 +168,8 @@ fn observe_and_extend() {
     rv = rot.preview(&rv).unwrap();
     let mut s2 = s.clone();
     rot.secrets.apply(&mut s2);
-    let (k, seed) = (tid(6), Secret32::from_bytes([0x60; 32]));
-    let reseal = osis_keys::box_holder(&a, &rv, &hist(&a, &rv, &s2), &key_rcpt(k, Role::Read, &seed), &roles(&[Role::Read]), &mut *rg).unwrap().unwrap();
+    let (k, ke) = (tid(6), actor_epochs(0x60));
+    let reseal = osis_keys::box_holder(&a, &rv, &hist(&a, &rv, &s2), &actor_rcpt(k, Role::Read, &ke), &roles(&[Role::Read]), &mut *rg).unwrap().unwrap();
     assert!(!reseal.history.is_empty());
     assert!(!reseal.applied(&mut v, osis_base::CommitId([3; 32]), &osis_keys::KeysWrite::default()).unwrap());
     assert!(!v.read.is_current(&e2));

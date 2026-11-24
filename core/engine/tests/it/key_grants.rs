@@ -10,7 +10,7 @@ use osis_engine::local_peer::LocalPeer;
 use osis_engine::Mutation;
 
 fn key_of(lp: &LocalPeer, i: usize) -> SignKey {
-    SignKey(lp.peers[i].engine.identity().keys().signing.verifying_key().to_bytes())
+    SignKey(lp.peers[i].engine.identity().signing().verifying_key().to_bytes())
 }
 
 fn reg(lp: &mut LocalPeer, i: usize, t: Tid) -> Option<osis_base::Value> {

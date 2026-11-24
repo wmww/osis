@@ -323,7 +323,7 @@ fn ephemeral_purge_by_writer_spec_commits_2() {
 
 // spec/commits.md §3 (session form), spec/wire.md §4: session form `[1, nonce]` round-trips; the
 // form rule is one for durable and ephemeral commits: an ephemeral content commit may be in
-// commit form (a shared key actor's) and a snapshot in session form is bad input either way.
+// commit form (a shared link key's) and a snapshot in session form is bad input either way.
 #[test]
 fn session_form_spec_commits_3() {
     let mut h = sample_header();

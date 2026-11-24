@@ -123,7 +123,7 @@ pub enum Tested {
     SyncKey { step: Option<StepId>, key: SigningSecret },
     /// A claim of `step`'s claim set; `sync` that step's sync key, which signs the answer.
     Claim { step: StepId, key: SigningSecret, sync: [u8; 32] },
-    /// A key actor's static entry this node acts for, with that actor's signing key.
+    /// A link key's static entry this node acts for, with that key.
     Static { step: Option<StepId>, key: SigningSecret },
 }
 

@@ -10,19 +10,18 @@ use osis_crypto::*;
 
 pub fn seed() -> VecFile {
     let seed = s32(0x05);
-    let k = KeyActorKeys::from_seed(&seed);
+    let signing = signing_key(&seed);
     let mut cases = Vec::new();
-    let mut c = case("key actor from seed", "spec/crypto.md §3")
+    let mut c = case("signing key and link key from seed", "spec/crypto.md §3")
         .with("seed", hex(seed.expose()))
-        .with("ed25519-public", hex(&k.signing.verifying_key().to_bytes()))
-        .with("signing-key-value", hex(&encode(&k.signing.verifying_key().to_value())))
-        .with("kem-public", hex(k.kem.public().as_bytes()))
-        .with("kem-key-value", hex(&encode(&k.kem.public().to_value())))
-        .with("x25519-public", hex(&k.kem.public().x25519()))
+        .with("ed25519-public", hex(&signing.verifying_key().to_bytes()))
+        .with("signing-key-value", hex(&encode(&signing.verifying_key().to_value())))
         .with("creation-nonce", hex(&creation_nonce(&seed)));
     for (n, r) in [("read", Role::Read), ("write", Role::Write), ("admin", Role::Admin)] {
-        c = c.with(&format!("role-secret-{n}"), hex(key_actor_role_secret(&seed, r).expose()));
+        c = c.with(&format!("link-role-secret-{n}"), hex(link_key_role_secret(&seed, r).expose()));
     }
+    let kem = role_kem(&link_key_role_secret(&seed, Role::Read));
+    c = c.with("link-read-kem-public", hex(kem.public().as_bytes())).with("kem-key-value", hex(&encode(&kem.public().to_value()))).with("x25519-public", hex(&kem.public().x25519()));
     cases.push(c);
 
     let tid = Tid::from_bytes([0x01; 15]);
@@ -35,12 +34,12 @@ pub fn seed() -> VecFile {
 
     let sync_id = SyncId([0x0a; 16]);
     let step = X25519Secret::from_secret(&s32(0x06));
-    let claim = claim_key(&step, &k.kem.public().x25519(), &sync_id, &step.public()).unwrap();
-    let by_holder = claim_key(k.kem.x25519(), &step.public(), &sync_id, &step.public()).unwrap();
+    let claim = claim_key(&step, &kem.public().x25519(), &sync_id, &step.public()).unwrap();
+    let by_holder = claim_key(kem.x25519(), &step.public(), &sync_id, &step.public()).unwrap();
     assert_eq!(claim.verifying_key(), by_holder.verifying_key(), "both sides derive one claim key");
     cases.push(
         case("claim key", "spec/sync-ids.md §3")
-            .with("holder-seed", hex(seed.expose()))
+            .with("holder-read-secret", hex(link_key_role_secret(&seed, Role::Read).expose()))
             .with("step-private", hex(s32(0x06).expose()))
             .with("step-key", hex(&step.public()))
             .with("sync-id", hex(&sync_id.0))
@@ -49,8 +48,8 @@ pub fn seed() -> VecFile {
     cases.push(
         case("static entry", "spec/wire.md §8")
             .with("sync-id", hex(&sync_id.0))
-            .with("signing-key", hex(&k.signing.verifying_key().to_bytes()))
-            .with("entry", hex(&static_entry(&sync_id, &k.signing.verifying_key()))),
+            .with("signing-key", hex(&signing.verifying_key().to_bytes()))
+            .with("entry", hex(&static_entry(&sync_id, &signing.verifying_key()))),
     );
     {
         let mut c = case("role keys", "spec/sync-ids.md §2").with("secret", hex(seed.expose()));

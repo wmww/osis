@@ -86,7 +86,7 @@ impl Engine {
         let me = self.core.me();
         self.run(|tx| {
             let cx = osis_commit::writer_ctx(Form::Commit, Kind::ContentSnapshot, ts, me, 0, 0);
-            let creates = Creates::new();
+            let (creates, minted) = (Creates::new(), Default::default());
             let mut writes = Vec::with_capacity(deltas.len());
             for (tid, ak, fragment) in deltas {
                 let mut nonce = [0u8; osis_crdt::NONCE_LEN];
@@ -95,14 +95,14 @@ impl Engine {
                 writes.push(AspectWrite { tid, ak, lo: 0, hi: 0, delta: bytes, replaces: None, original_floor: 0, purge_by: osis_commit::retention::EPHEMERAL_PURGE_BY });
             }
             let things: Vec<Tid> = writes.iter().map(|w| w.tid).collect();
-            let published = published_keys(tx, &creates, things)?;
+            let published = published_keys(tx, &creates, &minted, things)?;
             // the relayed snapshot is judged by no path (a signal valid by its key)
             let mut b = CommitBuilder::new(Kind::ContentSnapshot, ts, me, crate::engine::write::plain_path(me, actor), Form::Commit);
             b.aspects = writes;
             b.ephemeral = Some(EphClass::Relay);
             let keys = crate::engine::secrets::KeyCache::default();
-            let secrets = CommitSecrets { core: tx.core, purge_author: actor, created: &creates, published: &published, keys: &keys };
-            let built = b.build(&tx.core.id.keys().signing, &secrets, &mut MemoryBlobs::default(), &mut *tx.rng)?;
+            let secrets = CommitSecrets { core: tx.core, purge_author: actor, created: &creates, minted: &minted, published: &published, keys: &keys };
+            let built = b.build(tx.core.id.signing(), &secrets, &mut MemoryBlobs::default(), &mut *tx.rng)?;
             Ok(EphCommit { id: built.commit.id(), blob: built.commit })
         })
     }

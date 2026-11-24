@@ -45,7 +45,7 @@
 //! a role).
 
 use held_model as hm;
-use osis_base::{Ak, CommitId, CreationRecord, Tid, Value};
+use osis_base::{Ak, CommitId, Tid, Value};
 use osis_commit::{CommitBlob, Form, Header, Kind};
 use osis_crdt::{Fragment, Source};
 use osis_engine::Engine;
@@ -612,8 +612,10 @@ fn convert(e: &mut Engine, hist: &History) -> Input {
             done.insert(t);
             let link = match e.core.created(&t) {
                 None => continue,
-                Some(CreationRecord::KeyActor { .. }) => hm::RecordLink::Key,
-                Some(CreationRecord::Thing { admin, .. }) => hm::RecordLink::Admin(cv.id(admin)),
+                Some(r) => match r.mint_admin() {
+                    None => hm::RecordLink::Key,
+                    Some(admin) => hm::RecordLink::Admin(cv.id(&admin)),
+                },
             };
             records.push(hm::Record { id: cv.id(&t), link });
         }
@@ -647,8 +649,10 @@ fn created(e: &mut Engine, cv: &mut Conv, c: &CommitId, t: &Tid) -> hm::Body {
     let _ = c;
     match e.core.created(t).cloned() {
         None => hm::Body::Missing,
-        Some(CreationRecord::KeyActor { .. }) => hm::Body::Held(hm::Delta::Created(hm::RecordLink::Key)),
-        Some(CreationRecord::Thing { admin, .. }) => hm::Body::Held(hm::Delta::Created(hm::RecordLink::Admin(cv.id(&admin)))),
+        Some(r) => hm::Body::Held(hm::Delta::Created(match r.mint_admin() {
+            None => hm::RecordLink::Key,
+            Some(admin) => hm::RecordLink::Admin(cv.id(&admin)),
+        })),
     }
 }
 

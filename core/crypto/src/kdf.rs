@@ -45,12 +45,12 @@ pub const THING_SYNC: &str = "thing sync";
 pub const THING_READ: &str = "thing read";
 pub const THING_WRITE: &str = "thing write";
 pub const THING_ADMIN: &str = "thing admin";
-/// Key actor role secrets from its seed (spec/crypto.md §3); `role_purpose` picks one.
+/// A link key's role secrets from its seed (spec/crypto.md §3); `role_purpose` picks one.
 pub const ROLE_SYNC: &str = "role sync";
 pub const ROLE_READ: &str = "role read";
 pub const ROLE_WRITE: &str = "role write";
 pub const ROLE_ADMIN: &str = "role admin";
-/// Key actor signing key from its seed.
+/// A signing key from its seed (spec/crypto.md §3).
 pub const SIGN: &str = "sign";
 /// KEM key pair from a seed or role secret.
 pub const KEM: &str = "kem";

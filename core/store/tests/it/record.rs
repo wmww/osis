@@ -11,9 +11,9 @@ fn l(n: u8) -> SyncId {
     SyncId([n; 16])
 }
 
-/// A record naming `actors` as key actors.
+/// A record naming `actors` as link keys.
 fn named(actors: &[osis_base::Tid]) -> Named {
-    Named { key_actors: actors.to_vec(), ..Named::default() }
+    Named { link_keys: actors.to_vec(), ..Named::default() }
 }
 
 // a record keeps what it names as named (spec/sync-opens.md §3), and is found by each actor it
@@ -21,7 +21,7 @@ fn named(actors: &[osis_base::Tid]) -> Named {
 #[test]
 fn a_record_keeps_what_it_names() {
     let (_d, mut rng, mut s) = fresh(cfg());
-    let n = Named { node: Some(tid(2)), key_actors: vec![tid(3)] };
+    let n = Named { node: Some(tid(2)), link_keys: vec![tid(3)] };
     let mut t = s.transaction(&mut rng).unwrap();
     let id = t.record_create([1; 32], &n).unwrap();
     t.commit().unwrap();

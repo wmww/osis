@@ -54,7 +54,7 @@ impl Engine {
             return Ok(Arc::new(RosterHolders { anyone: true, ..RosterHolders::default() }));
         }
         let me = self.core.me();
-        let holders = things.iter().flat_map(|t| self.core.holder_keys_of(self.core.reader_of(t))).filter(|a| *a != me).collect();
+        let holders = things.iter().flat_map(|t| self.core.provable_holders_of(self.core.reader_of(t))).filter(|a| *a != me).collect();
         Ok(Arc::new(RosterHolders { anyone: false, holders }))
     }
 

@@ -38,10 +38,15 @@ pub(crate) struct AspectMut {
 /// Creation records of a commit by tid (each `tid` is a hash: computed once).
 pub(crate) type Creates = BTreeMap<Tid, CreationRecord>;
 
+/// The first epochs of the things a commit mints with a key, from its rotation from none
+/// (spec/permissions.md §3): their delete base is themselves, at those epochs.
+pub(crate) type Minted = BTreeMap<Tid, osis_keys::ActorEpochs>;
+
 /// Writes that become one commit.
 #[derive(Clone, Debug)]
 pub struct Mutation {
     pub(crate) creates: Creates,
+    pub(crate) minted: Minted,
     pub(crate) aspects: BTreeMap<(Tid, Ak), AspectMut>,
     pub(crate) actor: Option<Tid>,
     /// `Engine::write` holds the mutation to `actor`'s own rights first (`Mutation::confine`).
@@ -55,7 +60,7 @@ pub struct Mutation {
     pub(crate) frontier: Option<osis_perm::Frontier>,
     /// Role flows judge their own authority (may-grant grants, self-removals).
     pub(crate) unchecked: bool,
-    /// A held key actor that signs instead of the node (commit form).
+    /// The thing signed as where it is not the node's (commit form).
     pub(crate) signer: Option<Tid>,
     /// Map entries to reset whatever their liveness here (spec/crdt.md §5.6): an explicit removal
     /// of an edge already removed (role flows).
@@ -89,7 +94,7 @@ fn ak_of<K: RawKey>(key: &K) -> Result<Ak> {
 
 impl Mutation {
     pub fn new() -> Mutation {
-        Mutation { creates: Creates::new(), aspects: BTreeMap::new(), actor: None, confined: false, commit_form: false, purge: Vec::new(), purge_named: Vec::new(), undoes: None, frontier: None, unchecked: false, signer: None, dead_resets: BTreeMap::new(), fresh_resets: BTreeMap::new(), sweeps: BTreeSet::new(), fresh: Default::default(), ts: None, blind: None, sealed: false }
+        Mutation { creates: Creates::new(), minted: Minted::new(), aspects: BTreeMap::new(), actor: None, confined: false, commit_form: false, purge: Vec::new(), purge_named: Vec::new(), undoes: None, frontier: None, unchecked: false, signer: None, dead_resets: BTreeMap::new(), fresh_resets: BTreeMap::new(), sweeps: BTreeSet::new(), fresh: Default::default(), ts: None, blind: None, sealed: false }
     }
 
     /// The actor this node acts for (header field 2); default the node itself.
@@ -278,7 +283,7 @@ pub(crate) fn role_with(core: &Core, node: Tid, records: Records<'_>, tid: &Tid,
     }
 }
 
-/// May `node` (this node or a key actor it signs as) write `ak` of `tid` at `ts`? Things not
+/// May `node` (its node thing or a link key it signs as) write `ak` of `tid` at `ts`? Things not
 /// held yet (`records`: those the commit creates) take their mint admin's, through mint admins
 /// the commit creates too.
 pub(crate) fn check_authority(core: &Core, node: Tid, records: Records<'_>, tid: &Tid, ak: &str, ts: Ts) -> Result<()> {
@@ -626,7 +631,7 @@ fn clear_tells_nothing(core: &Core, plan: &CommitPlan, q: &osis_commit::Path, ea
 }
 
 /// Whether thing `t` reads by its own secrets when a content commit applies: held as
-/// independent, or a key actor (spec/crypto.md §3). A thing a content commit makes is dependent
+/// independent, or one minted with a key (spec/crypto.md §3). A thing a content commit makes is dependent
 /// in it: only a role commit writing its `keys.0` makes it independent, and a role commit states
 /// no split path (`stated_paths`).
 fn independent_in(core: &Core, t: &Tid) -> bool {
@@ -665,7 +670,7 @@ pub(crate) fn check_acts(core: &Core, node: Tid, records: Records<'_>, actor: &T
     if node == *actor || role_with(core, node, records, actor, ts) >= Some(Role::Write) { Ok(()) } else { Err(Error::Permission { tid: *actor, needs: Role::Write }) }
 }
 
-/// Whether `tid`'s record chain, through the records not yet held, reaches a key actor
+/// Whether `tid`'s record chain, through the records not yet held, reaches a thing minted with a key
 /// within `MAX_CHAIN_DEPTH` links (spec/permissions.md §1: a write deeper is invalid).
 pub(crate) fn within_depth(core: &Core, records: Records<'_>, tid: &Tid) -> bool {
     let end = record_chain(*tid, |t| records(t).or_else(|| core.created(t)).map(CreationRecord::record_link)).end();
@@ -738,6 +743,7 @@ pub(crate) struct CommitPlan {
     pub actor: Tid,
     pub form: Form,
     pub creates: Creates,
+    pub minted: Minted,
     pub purge: Vec<PurgeItem>,
     pub undoes: Option<CommitId>,
     pub frontier: Option<osis_perm::Frontier>,
@@ -815,10 +821,10 @@ pub(crate) fn settle(core: &Core, memory: bool, kind: Kind, ts: Ts, tid: &Tid, a
 pub(crate) fn framing_for(core: &Core, memory: bool, plan: &CommitPlan, published: &BTreeMap<(Tid, osis_base::Role), osis_crypto::VerifyingKey>, keys: &super::secrets::KeyCache, tid: &Tid, purge_by: &PurgeBy) -> Result<Framing> {
     // a role is of use once its delete keys are here (spec/crypto.md §7): until then this node
     // writes nothing on the thing, whatever the delta's purge-by (`secrets::usable_role`)
-    if !super::secrets::holds_listed_keys(core, &plan.creates, published, keys, tid) {
+    if !super::secrets::holds_listed_keys(core, &plan.creates, &plan.minted, published, keys, tid) {
         return Err(Error::Permission { tid: *tid, needs: Role::Write });
     }
-    let secrets = CommitSecrets { core, purge_author: plan.actor, created: &plan.creates, published, keys };
+    let secrets = CommitSecrets { core, purge_author: plan.actor, created: &plan.creates, minted: &plan.minted, published, keys };
     let keys = osis_commit::delete_keys(&secrets, tid, purge_by)?;
     let dedup = osis_commit::Secrets::dedup(&secrets, tid).ok_or(Error::UnknownThing(*tid))?;
     let class = if memory { osis_blob::Class::Ephemeral } else { osis_blob::Class::Durable };
@@ -931,18 +937,12 @@ pub(crate) fn build_and_apply(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Res
 /// Encodes, pages, reserves counters, builds and signs.
 fn build(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Resolved>) -> Result<osis_commit::Built> {
     let node = plan.signer;
-    let published = super::secrets::published_keys(tx, &plan.creates, deltas.iter().map(|d| d.tid))?;
+    let published = super::secrets::published_keys(tx, &plan.creates, &plan.minted, deltas.iter().map(|d| d.tid))?;
     let keys = super::secrets::KeyCache::default();
     // the mark goes only on a commit that needs it: one marking nothing it leaves would say
     // more than its author meant
     let adminless = plan.adminless && crate::apply::validity::needs_adminless_mark(tx.core, deltas.iter().map(|d| (d.tid, &d.ak, &d.fragment)));
     let edges = if plan.kind == Kind::Role { crate::apply::validity::edge_writes(tx.core, deltas.iter().map(|d| (d.tid, &d.ak, &d.fragment))) } else { Vec::new() };
-    // no edge write targets a key actor: it has no roster (spec/permissions.md §1 Key actor);
-    // tests let a local writer break this, to test receivers
-    let key_actor = |t: &Tid| tx.core.is_key_actor(t) || matches!(plan.creates.get(t), Some(CreationRecord::KeyActor { .. }));
-    if !tx.core.skip_writer_rules && edges.iter().any(|(t, _, _)| key_actor(t)) {
-        return Err(Error::Misuse("no edge write targets a key actor: it has no roster"));
-    }
     let mut writes = Vec::with_capacity(deltas.len());
     for d in deltas {
         let (purge_by, expires) = settle(tx.core, tx.txn.is_memory(), plan.kind, plan.ts, &d.tid, &d.ak, d.schema.as_deref(), d.replaces.is_some(), d.purge_by, d.expires)?;
@@ -1006,7 +1006,7 @@ fn build(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Resolved>) -> Result<osi
     b.ephemeral = tx.txn.is_memory().then_some(osis_commit::EphClass::Plain);
     let built = {
         let core: &Core = tx.core;
-        let secrets = CommitSecrets { core, purge_author: plan.actor, created: &plan.creates, published: &published, keys: &keys };
+        let secrets = CommitSecrets { core, purge_author: plan.actor, created: &plan.creates, minted: &plan.minted, published: &published, keys: &keys };
         let mut seed = [0u8; 32];
         tx.rng.fill_bytes(&mut seed);
         let mut list_rng = osis_crypto::SeededRng::from_seed(seed);
@@ -1060,11 +1060,11 @@ impl Engine {
 
     /// Tests: writes in `m` the strong that holds `t`, minted with admin `admin` (spec/sync-set.md §2
     /// Making a thing): from `admin` where that is a thing `m` makes or the node holds, else from
-    /// the node root.
+    /// the node root, as for the node thing (its sync unit is itself alone, spec/sync-set.md §1).
     #[doc(hidden)]
     #[allow(clippy::expect_used)] // tests: an op on a static core aspect
     pub fn hold_where_it_lives(&self, m: &mut Mutation, t: Tid, admin: Tid) {
-        let holder = if m.creates.contains_key(&admin) || self.closure_holds(&admin) {
+        let holder = if admin != self.core.me() && (m.creates.contains_key(&admin) || self.closure_holds(&admin)) {
             Some(admin)
         } else {
             self.core.node_root
@@ -1143,11 +1143,14 @@ pub(crate) fn commit_or_build(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option
     let ts = m.ts.unwrap_or_else(|| tx.core.hlc.next());
     // a node writes only what it holds (spec/sync-set.md §2 Writing): every thing the commit
     // makes, and every thing it writes not held as it writes, must be held at the transaction's
-    // end; a key actor is in no closure; a sealed fire is built, never applied
+    // end; a sealed fire is built, never applied.
+    // Interim (notes/accounts-switch-brief.md, Open): a link key is held by no strong, so a
+    // node writes it outside its closure
     if !sealed {
-        tx.core.wrote_on.extend(m.creates.iter().filter(|(_, r)| !matches!(r, CreationRecord::KeyActor { .. })).map(|(t, _)| *t));
-        let unheld: Vec<Tid> = m.aspects.keys().map(|(t, _)| *t).filter(|t| !m.creates.contains_key(t) && !tx.core.is_key_actor(t) && !tx.core.ix.closure.holds(t)).collect();
-        tx.core.wrote_on.extend(unheld);
+        let link_key = |t: &Tid| m.creates.get(t).or_else(|| tx.core.created(t)).is_some_and(|r| r.link_key_of().is_some());
+        let made: Vec<Tid> = m.creates.keys().copied().filter(|t| !link_key(t)).collect();
+        let unheld: Vec<Tid> = m.aspects.keys().map(|(t, _)| *t).filter(|t| !m.creates.contains_key(t) && !link_key(t) && !tx.core.ix.closure.holds(t)).collect();
+        tx.core.wrote_on.extend(made.into_iter().chain(unheld));
     }
     // every minting's commit expires with its record (spec/commits.md §5 Destruction)
     for (&t, rec) in &m.creates {
@@ -1193,7 +1196,7 @@ pub(crate) fn commit_or_build(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option
     }
     // under `Engine::leaving_adminless`, an edge write may carry the adminless mark (`build`)
     let adminless = tx.core.leave_adminless && kind == Kind::Role && m.aspects.keys().any(|(_, ak)| crate::apply::validity::edge_ak(ak.as_str()));
-    let base = CommitPlan { kind, ts, actor: m.actor.unwrap_or(node), form: Form::Commit, creates: std::mem::take(&mut m.creates), purge: std::mem::take(&mut m.purge), undoes: None, frontier: m.frontier.take(), signer: node, key, blind: m.blind.unwrap_or_else(|| draw_blind(&mut *tx.rng)), expires: None, restores: false, own_cover: false, adminless };
+    let base = CommitPlan { kind, ts, actor: m.actor.unwrap_or(node), form: Form::Commit, creates: std::mem::take(&mut m.creates), minted: std::mem::take(&mut m.minted), purge: std::mem::take(&mut m.purge), undoes: None, frontier: m.frontier.take(), signer: node, key, blind: m.blind.unwrap_or_else(|| draw_blind(&mut *tx.rng)), expires: None, restores: false, own_cover: false, adminless };
     if !m.unchecked {
         check_acts(tx.core, node, &|t| base.creates.get(t), &base.actor, ts)?;
     }
@@ -1268,7 +1271,7 @@ pub(crate) fn commit_or_build(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option
     let form = plan.form;
     let mut next_ctr = 1u64;
     let mut deltas: Vec<Resolved> = Vec::new();
-    let published = super::secrets::published_keys(tx, &plan.creates, aspects.iter().map(|k| k.0.0))?;
+    let published = super::secrets::published_keys(tx, &plan.creates, &plan.minted, aspects.iter().map(|k| k.0.0))?;
     let keys = super::secrets::KeyCache::default();
     for ((tid, ak), mut am) in aspects {
         // a `retention^.0` delta is read alone: it writes the whole value

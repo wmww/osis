@@ -146,17 +146,16 @@ pub(crate) fn holding(tx: &mut Tx<'_>, t: &Tid, reached: &mut Reached) -> Result
 }
 
 /// Whether the node holds a content part on `t` (`forget::content`): what a thing held as
-/// certificates loses. A key actor bears none: all of it is its card (spec/sync-set.md §1).
-/// O(the commits on `t`).
+/// certificates loses. O(the commits on `t`).
 pub(crate) fn holds_content(core: &Core, t: &Tid) -> bool {
-    !core.is_key_actor(t) && core.aspects_of(t).filter(|((_, ak), _)| super::forget::content(ak)).any(|((_, ak), cs)| cs.iter().any(|(_, c)| core.ix.commits.get(c).is_some_and(|m| m.aspect(t, ak).is_some_and(|ai| m.holds(ai)))))
+    core.aspects_of(t).filter(|((_, ak), _)| super::forget::content(ak)).any(|((_, ak), cs)| cs.iter().any(|(_, c)| core.ix.commits.get(c).is_some_and(|m| m.aspect(t, ak).is_some_and(|ai| m.holds(ai)))))
 }
 
-/// Whether a part on `(t, ak)` applies here, `rec` its record (spec/commits.md §4 Outside the
-/// node closure): it is no content (`forget::content`), or `t` is a key actor or held whole
-/// (`whole`). Else it waits for `t` to enter (`apply::Reason::Outside`).
-pub(crate) fn applies_on(core: &Core, t: &Tid, ak: &osis_base::Ak, rec: &osis_base::CreationRecord) -> bool {
-    !super::forget::content(ak) || matches!(rec, osis_base::CreationRecord::KeyActor { .. }) || whole(core, t)
+/// Whether a part on `(t, ak)` applies here (spec/commits.md §4 Outside the node closure): it is
+/// no content (`forget::content`), or `t` is held whole (`whole`). Else it waits for `t` to enter
+/// (`apply::Reason::Outside`).
+pub(crate) fn applies_on(core: &Core, t: &Tid, ak: &osis_base::Ak) -> bool {
+    !super::forget::content(ak) || whole(core, t)
 }
 
 /// Whether the node holds `t` whole, so content on it applies (spec/commits.md §4 Outside the
@@ -174,7 +173,7 @@ pub(crate) fn whole(core: &Core, t: &Tid) -> bool {
 /// applies (`applies_on`). Such a part missing keeps its commit's header (spec/commits.md §5 A
 /// released thing).
 pub(crate) fn takes_part(core: &Core, t: &Tid, ak: &osis_base::Ak) -> bool {
-    core.created(t).is_some_and(|r| applies_on(core, t, ak, r))
+    core.created(t).is_some() && applies_on(core, t, ak)
 }
 
 /// Whether the node holds the commit minting `t` (a held `created.0` part on it): then it judges

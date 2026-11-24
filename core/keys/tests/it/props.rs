@@ -4,7 +4,7 @@
 
 use crate::common::*;
 use osis_base::{Role, Tid};
-use osis_crypto::{Epoch, Secret32};
+use osis_crypto::Epoch;
 use osis_keys::{
     ActorEpochs, HolderKeys, Opener, ROLES, Recipient, box_holder, ingest, roles_up_to, rotate,
 };
@@ -37,9 +37,10 @@ const POOL: usize = 4;
 /// Roles lost, and the epochs per role known when it departed.
 type Departed = (BTreeSet<Role>, BTreeMap<Role, BTreeSet<Epoch>>);
 
+/// A holder sealed to, or one whose secrets the writer holds (symmetric boxes).
 enum Kind {
     Actor(ActorEpochs),
-    Key(Secret32),
+    Own(ActorEpochs),
 }
 
 struct Sim {
@@ -61,7 +62,7 @@ impl Sim {
         let pool = (0..POOL)
             .map(|i| {
                 let t = tid(10 + i as u8);
-                let k = if i % 2 == 0 { Kind::Actor(actor_epochs(0x30 + i as u8)) } else { Kind::Key(Secret32::from_bytes([0x60 + i as u8; 32])) };
+                let k = if i % 2 == 0 { Kind::Actor(actor_epochs(0x30 + i as u8)) } else { Kind::Own(actor_epochs(0x60 + i as u8)) };
                 (t, k)
             })
             .collect();
@@ -74,7 +75,7 @@ impl Sim {
         let (t, k) = &self.pool[i];
         match k {
             Kind::Actor(e) => actor_rcpt(*t, role, e),
-            Kind::Key(seed) => key_rcpt(*t, role, seed),
+            Kind::Own(e) => Recipient { holder: *t, role, keys: HolderKeys::from_keys(&keys_of(e)).unwrap().with_own(e), floor: 0 },
         }
     }
 
@@ -144,13 +145,8 @@ impl Sim {
     fn opened(&self, i: usize) -> ActorEpochs {
         let (t, k) = &self.pool[i];
         let mut v = ActorEpochs::default();
-        let keys;
         let opener = match k {
-            Kind::Actor(e) => Opener::Actor { holder: *t, epochs: e },
-            Kind::Key(seed) => {
-                keys = osis_crypto::KeyActorKeys::from_seed(seed);
-                Opener::KeyActor { holder: *t, keys: &keys }
-            }
+            Kind::Actor(e) | Kind::Own(e) => Opener { holder: *t, epochs: e },
         };
         let errs = ingest(&self.a, &self.s, &opener, &mut v, None).unwrap();
         assert!(errs.is_empty(), "{errs:?}");

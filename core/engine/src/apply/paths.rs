@@ -24,7 +24,10 @@ pub(crate) fn open(core: &Core, h: &Header, key: Option<&[u8; 32]>, i: usize, t:
     let mut x = Some(*t);
     for _ in 0..=osis_base::format::MAX_CHAIN_DEPTH + 1 {
         let Some(cur) = x else { break };
-        if let Some(e) = core.epochs(&cur) {
+        // the roles secrets held (spec/crypto.md §5: a reader tries every one), read from the held
+        // secrets alone, never the established view: a load decides paths before the walk is
+        // given what it loaded
+        if let Some(e) = core.ix.secrets.get(&cur).cloned().or_else(|| core.link_key_epochs(&cur)) {
             let mut eps: Vec<_> = e.read.epochs().map(|(ep, _)| *ep).collect();
             eps.reverse();
             for ep in eps {
@@ -68,8 +71,7 @@ pub(crate) fn undecided(h: &Header, paths: Option<&Decided>) -> bool {
 /// nowhere here: per such thing, per thing up its record chain, the epochs of its own secrets
 /// whose roles secret is held (`Indexes::secrets`). What may open an entry, read from stamped
 /// containers alone (no state, no derivation): a `memo::Effects` following it is due exactly when
-/// one of them moves (a record learned up a chain, an independent thing's secrets). A key actor's
-/// are fixed.
+/// one of them moves (a record learned up a chain, an independent thing's secrets).
 fn openers(core: &Core, id: &osis_base::CommitId) -> Openers {
     let Some(m) = core.ix.commits.get(id) else { return Vec::new() };
     let Some(paths) = m.view.paths.as_deref() else { return Vec::new() };

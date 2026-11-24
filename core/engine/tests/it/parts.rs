@@ -215,7 +215,7 @@ fn parked_part_waits_alone_spec_versioning_2() {
     let mut cb = CommitBuilder::new(Kind::Content, ts, author, osis_commit::Path::default(), form);
     cb.aspects.push(AspectWrite::new(g, ak("t:reg.0"), r.lo, r.hi, good));
     cb.aspects.push(AspectWrite::new(h, ak("t:future.0"), 100, 101, parked));
-    let forge_key = e.identity().keys().signing.clone();
+    let forge_key = e.identity().signing().clone();
     let blob = cb.build(&forge_key, &e.hand_secrets(&recs), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(0)).unwrap().commit;
     let part = |t: Tid| on_blob(&blob, t);
     let id = blob.id();
@@ -276,7 +276,7 @@ fn waiting_parts_boxes_are_read_in_either_order_spec_crypto_4() {
         aw.purge_by = osis_commit::retention::write_purge_by(secrets.as_str(), None, None).unwrap();
         cb.aspects.push(aw);
     }
-    let forge_key = e.identity().keys().signing.clone();
+    let forge_key = e.identity().signing().clone();
     let blob = cb.build(&forge_key, &e.hand_secrets(&recs), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(0)).unwrap().commit;
     let part = |t: Tid| on_blob(&blob, t);
     let (one, two, whole) = (part(g), part(h), blob.encode());
@@ -293,7 +293,7 @@ fn waiting_parts_boxes_are_read_in_either_order_spec_crypto_4() {
             aw.purge_by = osis_commit::retention::write_purge_by(a.as_str(), None, None).unwrap();
             cb.aspects.push(aw);
         }
-        let forge_key = lp.peers[0].engine.identity().keys().signing.clone();
+        let forge_key = lp.peers[0].engine.identity().signing().clone();
         cb.build(&forge_key, &lp.peers[0].engine.hand_secrets(&recs2), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(0)).unwrap().commit
     };
     let plain_id = plain.id();
@@ -367,7 +367,7 @@ fn bad_part_beside_good_ones_holds_nothing_back_spec_commits_4() {
     cb.aspects.push(AspectWrite::new(g, ak("t:one.0"), one.1, one.2, one.0));
     cb.aspects.push(AspectWrite::new(g, ak("t:two.0"), two.1, two.2, two.0));
     cb.aspects.push(AspectWrite::new(g, ak("t:bad.0"), 100, 101, bad));
-    let forge_key = e.identity().keys().signing.clone();
+    let forge_key = e.identity().signing().clone();
     let blob = cb.build(&forge_key, &e.hand_secrets(&recs), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(0)).unwrap().commit;
     let id = blob.id();
     lp.peers[0].clock.advance(10);
@@ -852,7 +852,7 @@ fn forge_with(f: &mut Forge, parts: &[(Tid, &str, Made, Option<u64>)], purge: Ve
         cb.expires = cb.expires.or(exp.map(|x| now + x));
         cb.aspects.push(AspectWrite::new(*t, ak(k), r.lo, r.hi, d));
     }
-    let forge_key = e.identity().keys().signing.clone();
+    let forge_key = e.identity().signing().clone();
     cb.build(&forge_key, &e.hand_secrets(&recs), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(0)).unwrap().commit
 }
 

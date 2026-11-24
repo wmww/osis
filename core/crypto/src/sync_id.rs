@@ -70,7 +70,7 @@ pub fn claim_key(own: &X25519Secret, their: &[u8; 32], sync_id: &SyncId, step_ke
     Ok(SigningSecret::from_seed(&kdf(kdf::SYNC_CLAIM, dh.expose(), &input)))
 }
 
-/// Static entry of a key actor: BLAKE3("osis v1 static claim" || sync ID || signing key).
+/// Static entry of a link key (spec/sync-ids.md §3): BLAKE3("osis v1 static claim" || sync ID || signing key).
 pub fn static_entry(sync_id: &SyncId, signing: &VerifyingKey) -> [u8; 32] {
     let mut h = blake3::Hasher::new();
     h.update(STATIC_CLAIM.as_bytes()).update(&sync_id.0).update(&signing.to_bytes());
@@ -110,7 +110,7 @@ pub fn verify_open(key: &VerifyingKey, by_listener: bool, sync_id: &SyncId, chal
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{KeyActorKeys, SeededRng};
+    use crate::{KemSecret, SeededRng, signing_key};
 
     // spec/sync-ids.md §2: role keys differ per role and secret; deposit keys per sync ID.
     #[test]
@@ -135,16 +135,17 @@ mod tests {
     fn claim_keys() {
         let mut rng = SeededRng::from_u64(0);
         let step = X25519Secret::random(&mut rng);
-        let m = KeyActorKeys::from_seed(&Secret32::from_bytes([6; 32]));
+        let kem = KemSecret::derive(&Secret32::from_bytes([6; 32]));
         let sync_id = SyncId([7; 16]);
-        let by_registrar = claim_key(&step, &m.kem.public().x25519(), &sync_id, &step.public()).unwrap();
-        let by_holder = claim_key(m.kem.x25519(), &step.public(), &sync_id, &step.public()).unwrap();
+        let by_registrar = claim_key(&step, &kem.public().x25519(), &sync_id, &step.public()).unwrap();
+        let by_holder = claim_key(kem.x25519(), &step.public(), &sync_id, &step.public()).unwrap();
         assert_eq!(by_registrar.verifying_key(), by_holder.verifying_key());
-        let other = claim_key(&step, &m.kem.public().x25519(), &SyncId([8; 16]), &step.public()).unwrap();
+        let other = claim_key(&step, &kem.public().x25519(), &SyncId([8; 16]), &step.public()).unwrap();
         assert_ne!(other.verifying_key(), by_holder.verifying_key());
         assert_eq!(claim_key(&step, &[0; 32], &sync_id, &step.public()).err(), Some(Error::NonContributory));
-        let e = static_entry(&sync_id, &m.signing.verifying_key());
-        assert_ne!(e, static_entry(&SyncId([8; 16]), &m.signing.verifying_key()));
+        let signing = signing_key(&Secret32::from_bytes([6; 32])).verifying_key();
+        let e = static_entry(&sync_id, &signing);
+        assert_ne!(e, static_entry(&SyncId([8; 16]), &signing));
     }
 
     // spec/wire.md §11.2: an open signature binds sync ID, challenge and static key.

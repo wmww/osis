@@ -241,11 +241,10 @@ pub(super) enum Via {
 pub(super) fn opens_by(lp: &LocalPeer, states: &[(Tid, ct::Secrets)], secrets: &BTreeMap<Key, osis_crypto::Secret32>, party: Tid, known: BTreeSet<Key>, skip: &BTreeSet<(Tid, Role, osis_crypto::Epoch, Tid)>) -> BTreeMap<Key, Via> {
     use osis_keys::aspects::from_schema;
     let mut out: BTreeMap<Key, Via> = known.into_iter().map(|k| (k, Via::Known)).collect();
-    // boxes to the party itself (a key actor)
-    if let Some(p) = lp.peers.iter().find(|p| p.engine.me() == party) {
-        let keys = p.engine.core.id.keys().clone();
+    // boxes to the party itself (a node thing, its secrets its node's own)
+    if let Some(e) = lp.peers.iter().find(|p| p.engine.me() == party).and_then(|p| p.engine.core.epochs(&party)) {
         for (a, s) in states {
-            for o in osis_keys::open_boxes(a, s, &osis_keys::Opener::KeyActor { holder: party, keys: &keys }).0 {
+            for o in osis_keys::open_boxes(a, s, &osis_keys::Opener { holder: party, epochs: &e }).0 {
                 out.entry((*a, o.role, o.epoch)).or_insert(Via::Box(*a, o.role, o.epoch, party, vec![]));
             }
         }
@@ -1341,9 +1340,9 @@ fn finalize_applies_whole_or_not_spec_permissions_2() {
     lp.sync_all().unwrap();
     let _ = lp.peers[0].engine.ensure_rotated(&g);
     let state = lp.peers[0].engine.run(|tx| crate::flows::secrets_in(tx, &g)).unwrap();
-    let keys_d = lp.peers[3].engine.core.id.keys().clone();
+    let epochs_d = lp.peers[3].engine.core.epochs(&tids[3]).unwrap();
     let mut got = lp.peers[3].engine.epochs(&g).map(std::sync::Arc::unwrap_or_clone).unwrap_or_default();
-    let _ = osis_keys::ingest(&g, &state, &osis_keys::Opener::KeyActor { holder: tids[3], keys: &keys_d }, &mut got, None);
+    let _ = osis_keys::ingest(&g, &state, &osis_keys::Opener { holder: tids[3], epochs: &epochs_d }, &mut got, None);
     for e in lp.peers[0].engine.epochs(&g).unwrap().read.current() {
         assert!(got.read.reading_secret(&e).is_none(), "D1 opens read epoch {e:?}, current at A");
     }
@@ -1477,7 +1476,7 @@ pub(super) fn send_skipping(lp: &mut LocalPeer, from: usize, to: usize, skip: &B
 pub(super) fn opens_through(lp: &mut LocalPeer, i: usize, a: Tid, m: Tid, epochs: &osis_keys::ActorEpochs) -> osis_keys::ActorEpochs {
     let state = lp.peers[i].engine.run(|tx| crate::flows::secrets_in(tx, &a)).unwrap();
     let mut got = osis_keys::ActorEpochs::default();
-    osis_keys::ingest(&a, &state, &osis_keys::Opener::Actor { holder: m, epochs }, &mut got, None).unwrap();
+    osis_keys::ingest(&a, &state, &osis_keys::Opener { holder: m, epochs }, &mut got, None).unwrap();
     got
 }
 
@@ -1742,7 +1741,7 @@ fn reader_history_add_valid_box_put_not_spec_permissions_3() {
     let history = [(osis_keys::aspects::history_key(Role::Read, &e), ct)].into_iter().collect();
     crate::flows::put_secrets(&mut m, g, &osis_keys::SecretsWrite { history, ..Default::default() }, true).unwrap();
     let add = lp.peers[1].engine.commit_hostile(m).unwrap().unwrap();
-    let rcpt = osis_keys::Recipient { holder: r, role: Role::Read, keys: osis_keys::HolderKeys::KeyActor { kem: lp.peers[1].engine.identity().keys().kem.public().clone(), seed: None }, floor: 0 };
+    let rcpt = lp.peers[1].engine.run(|tx| crate::flows::recipient(tx, r, Role::Read)).unwrap();
     let w = lp.peers[1]
         .engine
         .run(|tx| {

@@ -39,7 +39,7 @@ mod tests {
     use osis_base::Tid;
 
     fn rec(n: u8) -> CreationRecord {
-        CreationRecord::Thing { admin: Tid::from_bytes([n; 15]), nonce: [n; 32], link: None, expires: None }
+        CreationRecord::with_admin(Tid::from_bytes([n; 15]), [n; 32])
     }
 
     // spec/wire.md §3 (record blob): records round-trip sorted and distinct; an empty blob, a

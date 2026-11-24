@@ -133,10 +133,10 @@ fn listener_with_scripted_dialer() -> (End, End, Session, Hello) {
     (d, l, ls, h.expect("listener hello"))
 }
 
-/// A key actor's prover (a link key), not an account.
-fn key_actor(seed: u8) -> Prover {
+/// A link key's prover.
+fn link_key(seed: u8) -> Prover {
     let key = SigningSecret::from_seed(&Secret32::from_bytes([seed; 32]));
-    let record = osis_base::CreationRecord::KeyActor { alg: 1, public_key: key.verifying_key().to_bytes().to_vec(), nonce: [seed; 32] };
+    let record = osis_base::CreationRecord { link: Some(osis_base::Tid::from_bytes([seed; 15])), ..osis_base::CreationRecord::with_key(osis_base::SignKey(key.verifying_key().to_bytes()), [seed; 32]) };
     Prover { key, record }
 }
 
@@ -267,21 +267,21 @@ fn strangers_prove_to_each_other_spec_sync_opens_2() {
 }
 
 // spec/wire.md §11.2 (Prove): a verifier checks proofs in order and stops at the first that does
-// not verify: those before it stand; key actors proved count whether known or not.
+// not verify: those before it stand; link keys proved count whether known or not.
 #[test]
 #[ignore = "accounts: keys"]
 fn proofs_stop_at_the_first_bad_spec_wire_11_2() {
     let (_, mut l, mut ls, _) = listener_with_scripted_dialer();
     let b = *ls.binding().expect("binding");
-    let good = key_actor(1).sign(false, &b.listener_challenge, &LISTEN.0);
-    let bad = key_actor(2).sign(false, &[0; 32], &LISTEN.0);
-    let after = key_actor(3).sign(false, &b.listener_challenge, &LISTEN.0);
-    let wrong_side = key_actor(4).sign(true, &b.listener_challenge, &LISTEN.0);
+    let good = link_key(1).sign(false, &b.listener_challenge, &LISTEN.0);
+    let bad = link_key(2).sign(false, &[0; 32], &LISTEN.0);
+    let after = link_key(3).sign(false, &b.listener_challenge, &LISTEN.0);
+    let wrong_side = link_key(4).sign(true, &b.listener_challenge, &LISTEN.0);
     ls.receive(&frame(&Msg::Prove { id: 4, proofs: vec![good.clone(), bad, after] }), &mut l.cx()).expect("kept");
-    assert_eq!(ls.proven().key_actors.keys().copied().collect::<Vec<_>>(), [good.actor()]);
+    assert_eq!(ls.proven().link_keys.keys().copied().collect::<Vec<_>>(), [good.actor()]);
     let (_, mut l, mut ls, _) = listener_with_scripted_dialer();
     ls.receive(&frame(&Msg::Prove { id: 4, proofs: vec![wrong_side] }), &mut l.cx()).expect("kept");
-    assert!(ls.proven().key_actors.is_empty(), "a proof made as the listener proves nothing from the dialer");
+    assert!(ls.proven().link_keys.is_empty(), "a proof made as the listener proves nothing from the dialer");
 }
 
 // spec/wire.md §11.2 (Prove): at most one per connection, dialer to listener: a second Prove, or

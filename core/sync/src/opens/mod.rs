@@ -631,7 +631,7 @@ impl Opens {
         let held: BTreeSet<RecordId> = self.conns.values().filter_map(|c| c.rec).collect();
         // a kept record no connection holds stays in memory only for its members (what is judged
         // of them across its connections), without its peer's filter entries: one with none
-        // keeps nothing there that its rows do not, so a dialer proving fresh key actors with no
+        // keeps nothing there that its rows do not, so a dialer proving fresh link keys with no
         // right to any S costs memory only while connected
         let unloaded = &mut self.unloaded;
         self.records.retain(|id, r| {
@@ -2809,10 +2809,10 @@ fn break_format(ctx: &mut Ctx, conn: ConnId, id: Id, why: &'static str) {
     ctx.wire.close(conn, why);
 }
 
-/// The static entries of S whose key actor the peer proved on this connection by its signing key
+/// The static entries of S whose link key the peer proved on this connection by its signing key
 /// (spec/sync-opens.md §5 Proof).
 fn proven_statics(s: &SyncId, p: &Proven) -> Vec<[u8; 32]> {
-    p.key_actors.values().filter_map(|k| osis_crypto::VerifyingKey::from_bytes(k).ok()).map(|k| osis_crypto::static_entry(s, &k)).collect()
+    p.link_keys.values().filter_map(|k| osis_crypto::VerifyingKey::from_bytes(k).ok()).map(|k| osis_crypto::static_entry(s, &k)).collect()
 }
 
 fn random<const N: usize>(rng: &mut dyn NodeRng) -> [u8; N] {

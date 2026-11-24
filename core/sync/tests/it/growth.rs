@@ -117,7 +117,7 @@ fn grows_nothing(gives: Gives, by: &[usize]) {
 // one register 3 and 30 more times stores the same rows and blobs at the writer, a reader and a node
 // keeping S unread once tombstones have aged out.
 #[test]
-#[ignore = "accounts: keys"]
+#[ignore = "accounts: making an account"]
 fn single_writer_replace_grows_nothing_spec_commits_5() {
     grows_nothing(Gives::Reads, &[0]);
 }
@@ -126,7 +126,7 @@ fn single_writer_replace_grows_nothing_spec_commits_5() {
 // replacing one register in turn store the same at 3 and 30 more writes (automatic compaction covers
 // the other's writes).
 #[test]
-#[ignore = "accounts: keys"]
+#[ignore = "accounts: making an account"]
 fn several_writers_grow_nothing_spec_commits_5() {
     grows_nothing(Gives::Writes, &[0, 2]);
 }
@@ -135,7 +135,7 @@ fn several_writers_grow_nothing_spec_commits_5() {
 // once at first contact, yet each pair keeps one connection, so each write crosses each pair on one
 // stream: deliveries per write are the same at n and 10n writes, all on one connection per pair.
 #[test]
-#[ignore = "accounts: keys"]
+#[ignore = "accounts: making an account"]
 fn each_write_crosses_each_pair_on_one_connection_spec_sync_opens_1() {
     let (mut w, _) = setup(Gives::Writes);
     for i in 0..3 {
@@ -607,7 +607,6 @@ fn fresh_node() -> (World, Held) {
 // A mismatch prints the rows a fresh node lacks and why each thing they name is kept (`leaked`:
 // notes/test-harnesses.md, Why kept and row dumps).
 #[test]
-#[ignore = "accounts: keys"]
 fn releasing_own_things_returns_storage_to_a_fresh_nodes_spec_sync_set_3() {
     let (mut wf, fresh) = fresh_node();
     let [(mut wa, a), (mut wb, b)] = one_and_ten(world_of(0, 1, 1), |w, _| own_round(w), aged);
@@ -705,7 +704,6 @@ fn history_round(w: &mut World) {
 // held, leaves its rows and blobs as a fresh node's, at 1 and 10 rounds: but the root's set
 // tombstones (one removal a round).
 #[test]
-#[ignore = "accounts: keys"]
 fn releasing_held_history_returns_storage_to_a_fresh_nodes_spec_data_model_8() {
     let (mut wf, fresh) = fresh_node();
     let [(mut wa, a), (mut wb, b)] = one_and_ten(world_of(0, 1, 1), |w, _| history_round(w), aged);
@@ -817,7 +815,7 @@ fn redeem_round(w: &mut World) {
     w.run();
     assert_eq!(w.redeem(1, &link), osis_sync::types::Waiting::Done, "redeemed");
     let _ = play(w, &[Write(0, 0), Run], String::new());
-    let l = osis_engine::identity::key_actor_tid(&link.seed);
+    let l = osis_engine::identity::link_key_tid(&link.seed, link.k);
     w.write(0, |e| {
         e.finalize_link(&link.k, &l)?;
         e.demote(&t, &Demotion { holder: link.k, new: None, retain: None })
@@ -906,7 +904,6 @@ fn offered_and_withdrawn_grants_grow_nothing_spec_sync_inbox_5() {
 // inbox lifetime, the role keep and tombstones have passed, at 1 and 10 rounds. Storage is a fresh
 // world's, and read's judgements per round do not grow with the rounds played (`flat_work`).
 #[test]
-#[ignore = "accounts: keys"]
 fn a_granted_and_revoked_thing_returns_storage_to_a_fresh_worlds_spec_sync_set_3() {
     grants_as_fresh(true, false, 4);
 }
@@ -923,7 +920,6 @@ fn a_redeemed_and_ended_link_returns_storage_to_a_fresh_worlds_spec_sync_set_3()
 // S1, its decline arm (spec/sync-set.md §4 (nothing else makes a node hold a thing it is granted a
 // role on)): as the grant arm, the grant never held from the grantee's account root.
 #[test]
-#[ignore = "accounts: keys"]
 fn a_declined_grant_returns_storage_to_a_fresh_worlds_spec_sync_set_3() {
     grants_as_fresh(false, false, 4);
 }
@@ -986,7 +982,7 @@ fn a_released_things_forgotten_commits_leave_no_own_entry_spec_sync_judgement_3(
 // of S's records at once, its own store holding no other (as each logs one before it holds
 // another's).
 #[test]
-#[ignore = "accounts: keys"]
+#[ignore = "accounts: making an account"]
 fn record_blobs_at_a_store_stay_flat_spec_sync_ids_6() {
     let (mut w, _, s) = crate::deletes::four();
     w.cap = 200_000;

@@ -195,14 +195,14 @@ codec_struct! {
     pub struct SyncEntry { 0 steps: BTreeMap<[u8; 32], StepRecord> }
 }
 codec_struct! {
-    /// `keys.0`: keysets per role (actors other than key actors), a key actor's KEM key, the
+    /// `keys.0`: keysets per role, the
     /// thing's inbox, 32-byte deposit seed, an actor's sync ID, and
     /// per box to a holder actor, keyed as that box, the holder's keysets it names (spec/crypto.md
     /// §4, Stale).
     #[derive(Clone, Debug, Default, PartialEq, Eq)]
     pub struct Keys {
         0 read: Option<Keyset>, 1 write: Option<Keyset>, 2 admin: Option<Keyset>,
-        3 key: Option<KemKey>, 4 inbox: Option<Weak>, 5 deposit_seed: Option<[u8; 32]>,
+        4 inbox: Option<Weak>, 5 deposit_seed: Option<[u8; 32]>,
         7 sync: Option<Keyset>, 8 sealed: BTreeMap<BoxKey, BTreeSet<Epoch>>, 9 sync_id: Option<SyncId>,
     }
 }

@@ -20,7 +20,7 @@ use osis_engine::sync::Holding;
 // first) or its new one, and registers the step only once node 1 holds the write rotation (holding
 // no write secret to tell the step's write epoch, it reads the current one), so nothing is refused.
 #[test]
-#[ignore = "accounts: keys"]
+#[ignore = "accounts: making an account"]
 fn a_head_move_restamps_own_entries_and_readers_deposit_nothing_spec_sync_judgement_3() {
     use crate::harness::history::{Gives, three, value_ak};
     let (mut w, t, s) = three(Gives::Reads, 2);
@@ -112,7 +112,7 @@ fn a_head_move_restamps_own_entries_and_readers_deposit_nothing_spec_sync_judgem
 // a report, not on a message): at quiet neither node counts the other a source of S on a
 // connection where S is no member (`World::run` checks every node).
 #[test]
-#[ignore = "accounts: keys"]
+#[ignore = "accounts: making an account"]
 fn a_reader_moves_a_removed_store_past_its_keys_spec_sync_opens_6() {
     use crate::harness::Step::*;
     use crate::harness::history::{Gives, Holder, three};
@@ -241,7 +241,7 @@ fn readers_logging_the_same_records_settle_on_one_record_blob_spec_permissions_4
 // unread) is apart from every reader, its record held by no connection; once they meet again the
 // step is registered there, with nothing else moving.
 #[test]
-#[ignore = "accounts: keys"]
+#[ignore = "accounts: making an account"]
 fn a_step_issued_while_a_store_is_away_is_registered_when_it_is_back_spec_sync_ids_6() {
     use crate::harness::history::{Gives, three};
     let (mut w, t, s) = three(Gives::Reads, 2);
@@ -265,7 +265,7 @@ fn a_step_issued_while_a_store_is_away_is_registered_when_it_is_back_spec_sync_i
 // connection; the plan, judged again while no connection holds the record, waits, and the step
 // goes once they meet again.
 #[test]
-#[ignore = "accounts: keys"]
+#[ignore = "accounts: making an account"]
 fn a_register_lost_with_its_connection_goes_again_at_the_reconnect_spec_sync_ids_6() {
     use crate::harness::history::{Gives, three};
     let (mut w, t, s) = three(Gives::Reads, 2);

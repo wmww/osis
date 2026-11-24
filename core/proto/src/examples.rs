@@ -19,7 +19,7 @@ fn s32(b: u8) -> Secret32 {
 }
 
 /// One thing's sync ID: a genesis step and a child without rotation, each with a claim
-/// set listing one DH reader and one key actor (entry box sealed to a KEM key from `b+6`).
+/// set listing one DH reader and one link key (entry box sealed to a KEM key from `b+6`).
 pub struct Fixture {
     pub sync_id: SyncId,
     pub genesis: Step,
@@ -29,12 +29,12 @@ pub struct Fixture {
     pub write: SigningSecret,
     pub delete: SigningSecret,
     pub deposit: SigningSecret,
-    /// The key actor listed by static entry.
-    pub key_actor: SigningSecret,
+    /// The link key listed by static entry.
+    pub link_key: SigningSecret,
 }
 
 impl Fixture {
-    /// The thing's role secrets from bytes `b..b+3`, deposit seed `b+3`; reader `b+4`; key actor `b+5`;
+    /// The thing's role secrets from bytes `b..b+3`, deposit seed `b+3`; reader `b+4`; link key `b+5`;
     /// sync secret `b+8`.
     pub fn new(b: u8) -> Fixture {
         let (read, write, admin, dseed, sync) = (s32(b), s32(b + 1), s32(b + 2), s32(b + 3), s32(b + 8));
@@ -42,12 +42,12 @@ impl Fixture {
         let keys = StepKeys::derive(&sync, &write, &admin, &dseed, &sync_id);
         let delete = role_key(RoleKey::Delete, &admin);
         let reader = X25519Secret::from_secret(&s32(b + 4));
-        let key_actor = SigningSecret::from_seed(&s32(b + 5));
+        let link_key = SigningSecret::from_seed(&s32(b + 5));
         let kem = KemSecret::derive(&s32(b + 6));
         let thing = osis_base::Tid::from_bytes([b; 15]);
         let read_epoch = Epoch::derive(&thing, osis_base::Role::Read, 1, &read).expect("small epoch");
         let sync_epoch = Epoch::derive(&thing, osis_base::Role::Sync, 1, &sync).expect("small epoch");
-        let readers = [Reader::Dh(reader.public()), Reader::Static { signing: key_actor.verifying_key(), kem: kem.public() }];
+        let readers = [Reader::Dh(reader.public()), Reader::Static { signing: link_key.verifying_key(), kem: kem.public() }];
         let mut rng = SeededRng::from_seed([b + 7; 32]);
         let (genesis, genesis_claims) = register(Parent::Genesis(&delete), keys, &readers, (&thing, read_epoch, &read), (sync_epoch, &sync), &mut rng).expect("fixed genesis");
         let (child, _) = register(Parent::Child { step: &genesis, delete: &delete }, keys, &readers, (&thing, read_epoch, &read), (sync_epoch, &sync), &mut rng).expect("fixed child");
@@ -60,7 +60,7 @@ impl Fixture {
             write: role_key(RoleKey::Write, &write),
             delete,
             deposit: osis_crypto::deposit_key(&dseed, &sync_id),
-            key_actor,
+            link_key,
         }
     }
 
@@ -94,10 +94,10 @@ fn cursor(b: u8) -> Cursor {
     Cursor::new(vec![b; 72]).expect("a short cursor")
 }
 
-/// A key actor's connection proof over the examples' challenge and static key.
+/// A node thing's connection proof over the examples' challenge and static key.
 pub fn proof(b: u8) -> ActorProof {
     let key = SigningSecret::from_seed(&s32(b));
-    let record = CreationRecord::KeyActor { alg: 1, public_key: key.verifying_key().to_bytes().to_vec(), nonce: [b; 32] };
+    let record = CreationRecord::with_key(osis_base::SignKey(key.verifying_key().to_bytes()), [b; 32]);
     Prover { key, record }.sign(false, &CHALLENGE, &STATIC_KEY)
 }
 
@@ -110,7 +110,7 @@ pub fn messages() -> Vec<(&'static str, Msg)> {
     let top = |n: u32| crate::limits::TOP_BIT | n;
     let entry = f.entry(Fixture::blob(1));
     let added = Event::Added { blob_id: osis_blob::blob_id(&entry.blob), blob: Some(entry.blob.clone()), wrap: entry.wrap, stamp: Some(entry.stamp) };
-    let entry_box = f.genesis_claims.entry_box(&l, &f.key_actor.verifying_key()).cloned().expect("the key actor is listed");
+    let entry_box = f.genesis_claims.entry_box(&l, &f.link_key.verifying_key()).cloned().expect("the link key is listed");
     let deposited = Fixture::blob(2);
     let dep_wrap = [0x78; WRAP_LEN];
     let dep_sig = osis_blob::sign_deposit(&f.deposit, &l, &osis_blob::blob_id(&deposited), &dep_wrap, false);
@@ -147,7 +147,7 @@ pub fn messages() -> Vec<(&'static str, Msg)> {
                 id: 30,
                 sync_id: l,
                 holder: Tid::from_bytes([0x0d; 15]),
-                keys: osis_blob::HolderKeys { commits: vec![Value::List(vec![Value::List(vec![]), Value::Int(1), Value::List(vec![])])], records: vec![CreationRecord::Thing { admin: Tid::from_bytes([0x0e; 15]), nonce: [0x0f; 32], link: None, expires: None }] },
+                keys: osis_blob::HolderKeys { commits: vec![Value::List(vec![Value::List(vec![]), Value::Int(1), Value::List(vec![])])], records: vec![CreationRecord::with_admin(Tid::from_bytes([0x0e; 15]), [0x0f; 32])] },
             },
         ),
         ("prove", Msg::Prove { id: 32, proofs: vec![proof(0x32), proof(0x33)] }),
@@ -158,7 +158,7 @@ pub fn messages() -> Vec<(&'static str, Msg)> {
         ("beacons additions", Msg::Beacons { id: top(37), generation: 2, base: Some(1), f: 9, lo: 0, hi: 512, gcs: vec![], more: false }),
         ("offer", Msg::Offer { id: top(37), items: vec![OfferItem::Hit { hit: [9; 32], sig: None, class: SourceClass::Reader }, OfferItem::Hit { hit: [10; 32], sig: Some(open(&f.sync)), class: SourceClass::Store }, OfferItem::ByRole { sync_id: l, hits: vec![[8; 32]], class: SourceClass::Reader }] }),
         ("offer with a deposit", Msg::Offer { id: top(38), items: vec![OfferItem::Deposit(DepositItem { sync_id: l, blob: deposited, wrap: dep_wrap, sig: dep_sig })] }),
-        ("offer static", Msg::Offer { id: top(39), items: vec![OfferItem::Static { hit: [12; 32], signing_pk: f.key_actor.verifying_key().to_bytes(), sig: open(&f.key_actor), class: SourceClass::Keys }] }),
+        ("offer static", Msg::Offer { id: top(39), items: vec![OfferItem::Static { hit: [12; 32], signing_pk: f.link_key.verifying_key().to_bytes(), sig: open(&f.link_key), class: SourceClass::Keys }] }),
         (
             "offer behind",
             Msg::Offer {

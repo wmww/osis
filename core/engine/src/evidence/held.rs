@@ -41,7 +41,7 @@ pub(crate) fn mint(core: &Core) -> BTreeMap<Tid, Tid> {
 /// records.
 fn records(core: &Core) -> BTreeMap<Tid, Holder> {
     let held = &core.ix.held;
-    held.things().filter_map(|t| Some((*t, held.created(t)?.holder()?))).collect()
+    held.things().filter_map(|t| Some((*t, held.created(t)?.holder()))).collect()
 }
 
 /// Every held copy with its parts (`copy_parts` of each held commit).
@@ -80,7 +80,7 @@ pub(crate) fn copy_parts(tx: &mut Tx<'_>, id: &CommitId) -> Result<CopyParts> {
             let mut out = BTreeMap::new();
             for t in ts {
                 let mut x = t;
-                while let Some(a) = core.ix.held.created(&x).and_then(|r| r.holder()) {
+                while let Some(a) = core.ix.held.created(&x).map(|r| r.holder()) {
                     if out.insert(x, a).is_some() {
                         break;
                     }

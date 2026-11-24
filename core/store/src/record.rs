@@ -49,14 +49,14 @@ pub type RecordRow = (SyncId, Vec<u8>, Vec<u8>);
 pub struct Named {
     /// Its node: the thing its first proof proved.
     pub node: Option<Tid>,
-    /// The key actors it proved by their own keys, ascending.
-    pub key_actors: Vec<Tid>,
+    /// The link keys it proved by their own keys, ascending.
+    pub link_keys: Vec<Tid>,
 }
 
 impl Named {
     /// Every actor named, ascending.
     pub fn actors(&self) -> Vec<Tid> {
-        let mut v: Vec<Tid> = self.node.into_iter().chain(self.key_actors.iter().copied()).collect();
+        let mut v: Vec<Tid> = self.node.into_iter().chain(self.link_keys.iter().copied()).collect();
         v.sort();
         v.dedup();
         v
@@ -64,7 +64,7 @@ impl Named {
 
     /// Names no actor: a connection keeping no record.
     pub fn is_empty(&self) -> bool {
-        self.node.is_none() && self.key_actors.is_empty()
+        self.node.is_none() && self.link_keys.is_empty()
     }
 }
 
@@ -117,8 +117,8 @@ impl Record {
         if let Some(x) = &n.node {
             w.raw(x.as_bytes());
         }
-        w.u32(n.key_actors.len() as u32);
-        for a in &n.key_actors {
+        w.u32(n.link_keys.len() as u32);
+        for a in &n.link_keys {
             w.raw(a.as_bytes());
         }
         w.u64(self.used).u64(self.row_bytes);
@@ -134,13 +134,13 @@ impl Record {
         }
         let node = if flags & 1 != 0 { Some(Tid::from_bytes(r.array()?)) } else { None };
         let n = r.u32()? as usize;
-        let mut key_actors = Vec::with_capacity(n.min(b.len() / TID_LEN));
+        let mut link_keys = Vec::with_capacity(n.min(b.len() / TID_LEN));
         for _ in 0..n {
-            key_actors.push(Tid::from_bytes(r.array()?));
+            link_keys.push(Tid::from_bytes(r.array()?));
         }
         let (used, row_bytes) = (r.u64()?, r.u64()?);
         r.end()?;
-        Ok(Record { id, r: key, named: Named { node, key_actors }, used, row_bytes })
+        Ok(Record { id, r: key, named: Named { node, link_keys }, used, row_bytes })
     }
 
     /// The bytes this record's rows take: what `RECORD_BUDGET` counts.

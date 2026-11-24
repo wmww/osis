@@ -5,7 +5,7 @@
 
 use crate::names::{Held, Names};
 use osis_base::{CommitId, Role, Tid};
-use osis_crypto::{Epoch, Secret32, key_actor_role_secret, thing_role_secret};
+use osis_crypto::{Epoch, Secret32, link_key_role_secret, thing_role_secret};
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -33,7 +33,7 @@ pub fn newest_of<'a>(epochs: impl IntoIterator<Item = &'a Epoch>) -> Option<Epoc
 /// directly; `Rotated` is computed by `RoleEpochs::establish`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Provenance {
-    /// A key actor's fixed epoch.
+    /// Set by construction: a link key's first epochs, from its seed (`ActorEpochs::link_key`).
     Fixed,
     /// Derived from an established epoch of the mint admin (a dependent thing).
     Derived,
@@ -732,13 +732,17 @@ impl ActorEpochs {
         }
     }
 
-    /// A key actor's role secrets `kdf("role <role>", seed)`, each at `Epoch::ZERO`, never
-    /// rotated (spec/crypto.md §3).
-    pub fn key_actor(seed: &Secret32) -> ActorEpochs {
+    /// Link key `tid`'s first epochs (spec/crypto.md §3): its minting commit's rotation from
+    /// none, each role's secret `kdf("role <role>", seed)` at n 1 by the nonce rule. What the
+    /// seed alone opens, from a store holding nothing else (spec/permissions.md §7).
+    pub fn link_key(tid: &Tid, seed: &Secret32) -> ActorEpochs {
         let mut a = ActorEpochs::default();
         for r in ROLES {
-            a.role_mut(r).set_secret(Epoch::ZERO, key_actor_role_secret(seed, r));
-            a.role_mut(r).set_established(Epoch::ZERO, Provenance::Fixed);
+            let s = link_key_role_secret(seed, r);
+            // n 1 is far below the cap
+            let Ok(e) = Epoch::derive(tid, r, 1, &s) else { continue };
+            a.role_mut(r).set_secret(e, s);
+            a.role_mut(r).set_established(e, Provenance::Fixed);
         }
         a
     }
@@ -1032,17 +1036,19 @@ mod tests {
     }
 
     // spec/crypto.md §3: derived secrets take the mint admin's n at the epochs the nonce rule names;
-    // a key actor's are fixed; a base epoch without a secret stays a placeholder, so what it
-    // supersedes stays superseded.
+    // a link key's are its seed's at n 1; a base epoch without a secret stays a placeholder, so
+    // what it supersedes stays superseded.
     #[test]
-    fn derived_and_key_actor() {
+    fn derived_and_link_key() {
         let seed = Secret32::from_bytes([7; 32]);
-        let k = ActorEpochs::key_actor(&seed);
-        assert_eq!(k.admin.current(), vec![Epoch::ZERO]);
+        let l = Tid::from_bytes([4; 15]);
+        let k = ActorEpochs::link_key(&l, &seed);
+        let ka = Epoch::derive(&l, Role::Admin, 1, &link_key_role_secret(&seed, Role::Admin)).unwrap();
+        assert_eq!(k.admin.current(), vec![ka]);
         let t = Tid::from_bytes([3; 15]);
         let d = ActorEpochs::derived(&k, &t);
-        let want = thing_role_secret(&key_actor_role_secret(&seed, Role::Write), Role::Write, &t);
-        let dz = Epoch::derive(&t, Role::Write, 0, &want).unwrap();
+        let want = thing_role_secret(&link_key_role_secret(&seed, Role::Write), Role::Write, &t);
+        let dz = Epoch::derive(&t, Role::Write, 1, &want).unwrap();
         assert_eq!(d.write.current(), vec![dz]);
         assert_eq!(d.write.secret(&dz), Some(&want));
         let mut base = ActorEpochs::default();

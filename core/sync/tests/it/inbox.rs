@@ -78,8 +78,8 @@ struct FakeNet {
 
 impl Net for FakeNet {
     fn named(&self, conn: ConnId) -> osis_store::Named {
-        // key actors: each counts whatever this node holds
-        osis_store::Named { key_actors: self.actors.get(&conn).cloned().unwrap_or_default(), ..Default::default() }
+        // link keys: each counts whatever this node holds
+        osis_store::Named { link_keys: self.actors.get(&conn).cloned().unwrap_or_default(), ..Default::default() }
     }
     fn member(&self, conn: ConnId, s: &SyncId) -> Option<Member> {
         self.members.get(&(conn, *s)).cloned()
@@ -625,7 +625,7 @@ fn register_refusals_spec_sync_ids_6() {
 // (stamped in its store under the new head), and node 1 takes the stamped entry in place of the
 // deposit (what readers pull).
 #[test]
-#[ignore = "accounts: keys"]
+#[ignore = "accounts: making an account"]
 fn a_writer_promotes_a_deposit_spec_sync_inbox_4() {
     use crate::harness::history::{Gives, three, value_ak};
     use osis_base::{Role, Value};

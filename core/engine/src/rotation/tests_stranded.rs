@@ -365,7 +365,6 @@ fn a_report_letting_go_forgets_what_only_it_carries_spec_commits_4() {
 // carried by the fire alone, rooting W. Once the fire leaves Bob's inbox history and is
 // forgotten, nothing of the commit or W is left, across a restart.
 #[test]
-#[ignore = "accounts: keys"]
 fn a_grant_fire_carries_what_it_brings_until_it_goes_spec_commits_4() {
     use crate::apply::carriers::Carrier;
     use crate::flows::inbox::{save, Fire, OwedFire, GRANT_FIRE};
@@ -450,7 +449,6 @@ fn keeps_fires_an_hour(lp: &mut LocalPeer, fire: &osis_base::Ak) -> (Tid, Tid) {
 // write pends for W's record, carried by the fire alone, rooting W; once the fire leaves Bob's
 // inbox history and is forgotten, nothing of the write or W is left.
 #[test]
-#[ignore = "accounts: keys"]
 fn a_sealed_fire_carries_its_chain_until_it_goes_spec_commits_4() {
     use crate::apply::carriers::Carrier;
     use crate::flows::inbox::GRANT_FIRE;
@@ -508,7 +506,6 @@ fn a_sealed_fire_carries_its_chain_until_it_goes_spec_commits_4() {
 // not write: a fire is owed. Bob's H hangs under his A, on which Alice holds admin by a grant:
 // she writes H through A, and nothing is fired.
 #[test]
-#[ignore = "accounts: keys"]
 fn an_edge_write_fires_only_where_its_writer_may_not_write_the_holder_spec_permissions_4() {
     let mut lp = synced(2);
     let (alice, bob) = (lp.peers[0].engine.me(), lp.peers[1].engine.me());

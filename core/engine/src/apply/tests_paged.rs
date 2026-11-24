@@ -966,7 +966,7 @@ fn forge_snapshot_in(w: &mut World, by: usize, ak: &Ak, ts: osis_base::Ts, f: os
     if memory {
         cb.ephemeral = Some(osis_commit::EphClass::Plain);
     }
-    let forge_key = w.lp.peers[by].engine.identity().keys().signing.clone();
+    let forge_key = w.lp.peers[by].engine.identity().signing().clone();
     let c = cb.build(&forge_key, &sec, &mut osis_commit::MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(0)).unwrap().commit;
     Package { id: c.id(), bytes: c.encode(), blobs: blobs.0.into_iter().collect() }
 }

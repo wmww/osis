@@ -230,21 +230,21 @@ impl Engine {
 
     /// The derivation chain a section lists for thing `t` (spec/wire.md §4): from its mint admin
     /// up to and including the actor its read secret derives from; empty for an independent
-    /// thing or a key actor.
+    /// thing.
     fn section_chain(&self, t: &Tid) -> Vec<Tid> {
         let mut out = Vec::new();
-        if self.core.ix.independent.contains(t) || *t == self.core.me() {
+        if self.core.ix.independent.contains(t) {
             return out;
         }
         for step in self.core.record_chain(t) {
             match step {
                 osis_base::ChainStep::Up { admin: up, .. } => {
                     out.push(up);
-                    if self.core.ix.independent.contains(&up) || up == self.core.me() {
+                    if self.core.ix.independent.contains(&up) {
                         return out;
                     }
                 }
-                // a key actor above `t` is the mint admin the step before pushed: listed once
+                // a thing minted with a key above `t` is the mint admin the step before pushed: listed once
                 _ => return out,
             }
         }
@@ -298,7 +298,7 @@ impl Engine {
     /// opened or not) copied verbatim where none of their parts is held stripped or dropped; the
     /// prefix commits to the delete-key groups of every section's aspects. A part neither covers
     /// is left out (one another wrote that this node read only under an epoch not established
-    /// here; a key actor's own record or card, whose current secret it lacks, which travels as a
+    /// here; a thing's own record or card, whose current secret it lacks, which travels as a
     /// certificate copy), unless the body needs it (`b.parts`): then `None`, nothing is sealed
     /// now. A dependent thing's derived epoch sealed under is noted (`note_sealed`, spec/crypto.md
     /// §4 Current).
@@ -450,7 +450,7 @@ impl Engine {
     }
 
     /// How a section of a commit blob of header `h` opens here (spec/sync-judgement.md §1
-    /// Sealed sections): a role section, or one of a thing this node holds (in its node closure) or of a key actor (never in a closure: its sections are certificate material), whole; one of
+    /// Sealed sections): a role section, or one of a thing this node holds (in its node closure) whole; one of
     /// a thing it does not hold stays sealed, but for the record minted there of a thing whose
     /// record it lacks (not destroyed here), which it needs to judge whether a held strong
     /// brings the thing in. Opening content only of held things keeps a purged part from being
@@ -468,9 +468,9 @@ impl Engine {
     }
 
     /// Whether this node opens thing `t`'s sections whole (`section_opens`): `t` is in its node
-    /// closure or a key actor.
+    /// closure.
     fn holds_sections(&self, t: &Tid) -> bool {
-        self.core.ix.closure.holds(t) || self.core.is_key_actor(t)
+        self.core.ix.closure.holds(t)
     }
 
     /// Whether this node holds thing `t` whole: its content applies here (spec/commits.md §4
@@ -696,14 +696,11 @@ impl Engine {
     /// not still logs what tells their rotators); anything else by the encrypting walk, and also
     /// while this node holds a grant on `a` it may finalize (spec/permissions.md §2 Finalize: the
     /// finalize goes before its next commit encrypting under `a`; the driver's role duties write
-    /// it, `Engine::role_duty_due`). A key actor's epochs are its seed's: never blocked.
+    /// it, `Engine::role_duty_due`).
     /// Kept per (actor, walk) (`Core::wrap_blocks`, `memo::Cutoff`): every body judged under a
     /// sync ID asks it, and what it reads (the actor's component whole) moves far more often
     /// than its answer.
     fn wrap_blocked(&mut self, a: &Tid, c: Option<&CommitId>) -> Result<bool> {
-        if self.core.is_key_actor(a) {
-            return Ok(false);
-        }
         let walk = match c.and_then(|c| self.header(c)) {
             Some(h) if !h.kind.is_role() => crate::rotation::Walk::Encrypt,
             _ => crate::rotation::Walk::Log,
@@ -731,20 +728,15 @@ impl Engine {
         })
     }
 
-    /// Held read secrets of an independent thing, newest first; then those derived from its mint admin's (a
-    /// thing made independent, or one whose derivation chain ends at a key actor this node holds: the rotation
-    /// that gave it its own is wrapped under the derived epoch, spec/crypto.md §5).
+    /// Held read secrets of an independent thing, newest first; then those derived from its mint
+    /// admin's (a thing made independent: the rotation that gave it its own is wrapped under the
+    /// derived epoch, spec/crypto.md §5).
     /// Each epoch's roles secret follows its secret (spec/crypto.md §4, Roles secrets), and one
     /// held without its secret stands alone.
     pub fn read_secrets(&self, g: &Tid) -> Vec<Secret32> {
         let mut v: Vec<Secret32> = self.epochs(g).map(|e| e.read.opening_newest_first()).unwrap_or_default();
-        // the mint admin's epochs; a thing whose `created.0` is not here yet (a link's
-        // account) may have any key actor held as mint admin
-        let firsts: Vec<Arc<osis_keys::ActorEpochs>> = match self.core.created(g).map(osis_base::CreationRecord::mint_admin) {
-            Some(Some(up)) => self.epochs(&up).or_else(|| self.core.key_actors.get(&up).map(|id| Arc::new(osis_keys::ActorEpochs::key_actor(id.seed())))).into_iter().collect(),
-            Some(None) => Vec::new(),
-            None => self.core.key_actors.values().map(|id| Arc::new(osis_keys::ActorEpochs::key_actor(id.seed()))).collect(),
-        };
+        // the mint admin's epochs
+        let firsts: Vec<Arc<osis_keys::ActorEpochs>> = self.core.created(g).and_then(osis_base::CreationRecord::mint_admin).and_then(|up| self.epochs(&up)).into_iter().collect();
         for oe in firsts {
             for s in osis_keys::ActorEpochs::derived(&oe, g).read.opening_newest_first() {
                 if !v.iter().any(|x| x.expose() == s.expose()) {

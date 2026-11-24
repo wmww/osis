@@ -570,7 +570,7 @@ pub fn three(gives: Gives, runs: usize) -> (World, Tid, osis_base::SyncId) {
 /// `three(Gives::Reads, 1)` with `n` things, each kept unread by node 1 and read by node 2, quiet,
 /// each pair reconnected once since (those past the first made on the world of one, after its
 /// reconnects); built once per process per `n` (`fixture`). The first reconnect after first contact
-/// proves other actors than the record names (the cards' key actors), so it tests every credential
+/// proves other actors than the record names (the cards' link keys), so it tests every credential
 /// again (spec/sync-opens.md §3): an idle reconnect comes after it.
 pub fn shared(n: usize) -> World {
     super::fixture(&format!("shared {n}"), || {

@@ -58,8 +58,8 @@ pub enum HolderKind {
     Actor,
     /// The actor of a share link: those who joined by the link hold through it.
     Link,
-    /// A key: a node, or a share link's own key, which holds that link's actor
-    /// until the link ends.
+    /// A thing minted with a key: a node thing, or a share link's key, which holds that link's
+    /// actor until the link ends.
     Key,
 }
 
@@ -321,8 +321,8 @@ fn below_held(e: &osis_engine::Engine, t: &Tid, h: &Tid, role: Role) -> bool {
     e.role_on(t) == Some(Role::Admin) && e.key_role(t, h).is_some_and(|r| role < r)
 }
 
-/// `UnknownActor` unless `h` is known here as an actor a grant can box: a thing with a mint
-/// admin, or a key actor (a node or a link key) whose `keys.0` is held.
+/// `UnknownActor` unless `h` is known here as a thing a grant can box: one with a mint admin, or
+/// one minted with a key (a node thing or a link key) whose `keys.0` is held.
 fn known_actor(e: &mut osis_engine::Engine, h: Tid) -> Result<()> {
     if !e.knows(&h) || (e.mint_admin(&h).is_none() && e.get_typed(&h, &ct::KEYS)?.is_none()) {
         return Err(Error::UnknownActor { tid: h });

@@ -2221,7 +2221,7 @@ fn a_commit_of_several_writes_is_judged_part_by_part_its_own_path_last() {
 
 // ---- The single-use link redemption (spec/permissions.md §7; notes/a1-spec/README.md, OPEN 14) ----
 
-/// The link thing (minted with A, the sharer's account), its key actor, two redeemers and a key
+/// The link thing (minted with A, the sharer's account), its link key, two redeemers and a key
 /// the thief makes up.
 const LK: Thing = 30;
 const L: Thing = 31;

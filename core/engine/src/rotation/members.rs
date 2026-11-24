@@ -8,7 +8,7 @@
 
 use crate::engine::{Core, Tx};
 use crate::error::Result;
-use crate::flows::{recipient, secrets_in};
+use crate::flows::secrets_in;
 use osis_base::{CommitId, Role, Tid};
 use osis_crypto::Epoch;
 use osis_keys::{Grant, HolderKeys, Keysets, ROLES, Recipient, Seal};
@@ -25,21 +25,15 @@ type Order = (u8, Option<osis_perm::Point>);
 /// record edge of each of `also` without a timeline here (nothing wrote it: in force).
 fn grants(core: &Core, also: &[Tid]) -> Vec<osis_keys::Grant<Order>> {
     let mut grants = Vec::new();
-    let actors = |m: &Tid| !core.is_key_actor(m);
     for t in &core.timelines().things() {
         let Some(on) = core.timelines().on(t) else { continue };
-        if !on.holders().iter().any(|(m, _)| actors(m)) {
-            continue;
-        }
         for (h, since) in on.standing_since() {
-            if actors(&h) {
-                grants.push(Grant { order: (1, since), target: *t, holder: h });
-            }
+            grants.push(Grant { order: (1, since), target: *t, holder: h });
         }
     }
     for t in also {
         if core.timelines().get(t).is_none()
-            && let Some(a) = core.mint_admin(t).filter(actors)
+            && let Some(a) = core.mint_admin(t)
         {
             grants.push(Grant { order: (1, None), target: *t, holder: a });
         }
@@ -61,7 +55,7 @@ pub(crate) fn keyless_in(tl: &osis_perm::Timeline) -> BTreeSet<(Tid, Tid)> {
     let standing = tl.standing_since_all(None);
     // counted: tests read that making a thing judges no component's grants anew
     osis_base::costs::count("keys: grants judged for key access", standing.values().map(|on| on.len() as u64).sum());
-    keyless_among(tl, standing)
+    keyless_among(standing)
 }
 
 /// Whether `h`'s grant on `a`, ended by the removal at `p`, had key access just before it: it
@@ -71,23 +65,21 @@ pub(crate) fn keyless_in(tl: &osis_perm::Timeline) -> BTreeSet<(Tid, Tid)> {
 /// gets the answer an honest removal written there would have.
 pub(crate) fn keyed_before(tl: &osis_perm::Timeline, a: &Tid, h: &Tid, p: osis_perm::Point) -> bool {
     let standing = tl.standing_since_all(Some(p));
-    standing.get(a).is_some_and(|on| on.contains_key(h)) && !keyless_among(tl, standing).contains(&(*a, *h))
+    standing.get(a).is_some_and(|on| on.contains_key(h)) && !keyless_among(standing).contains(&(*a, *h))
 }
 
 /// `keyless_in` over the writes before `p` alone: the keyless grants as they stood there.
 #[cfg(test)]
 pub(crate) fn keyless_before(tl: &osis_perm::Timeline, p: osis_perm::Point) -> BTreeSet<(Tid, Tid)> {
-    keyless_among(tl, tl.standing_since_all(Some(p)))
+    keyless_among(tl.standing_since_all(Some(p)))
 }
 
 /// The keyless grants among the actor grants `standing` (per thing, each holder's standing since).
-fn keyless_among(tl: &osis_perm::Timeline, standing: BTreeMap<Tid, BTreeMap<Tid, Option<osis_perm::Point>>>) -> BTreeSet<(Tid, Tid)> {
+fn keyless_among(standing: BTreeMap<Tid, BTreeMap<Tid, Option<osis_perm::Point>>>) -> BTreeSet<(Tid, Tid)> {
     let mut grants = Vec::new();
     for (t, on) in standing {
         for (h, since) in on {
-            if !tl.records().is_key(&h) {
-                grants.push(Grant { order: (1, since), target: t, holder: h });
-            }
+            grants.push(Grant { order: (1, since), target: t, holder: h });
         }
     }
     osis_keys::key_access(grants)
@@ -123,7 +115,7 @@ pub(crate) type KeyRoles = BTreeMap<Tid, (Role, Option<Role>)>;
 /// Each holder of `a` for keys at its role for keys and at its role with key access: the
 /// greatest over the paths of grants from it to `a` with key access at every grant, through
 /// destroyed actors in their frozen holders' place at the lesser role along the way
-/// (`Core::keyed_holders`; a key actor's grant is never keyless), `None` without one. `None`
+/// (`Core::keyed_holders`), `None` without one. `None`
 /// when no grant held is keyless (the usual case): every holder keyed at its role for keys.
 fn key_roles(core: &Core, a: &Tid) -> Option<Arc<KeyRoles>> {
     if key_access(core).is_empty() {
@@ -140,9 +132,6 @@ fn key_roles(core: &Core, a: &Tid) -> Option<Arc<KeyRoles>> {
 /// standing edge on `target` (`edge_holders`) keeps its standing's judgement, a new one comes
 /// after every grant held.
 pub(crate) fn grant_keyless(core: &mut Core, target: &Tid, holder: &Tid) -> bool {
-    if core.is_key_actor(holder) {
-        return false;
-    }
     if core.edge_holders(target).iter().any(|(m, _)| m == holder) {
         return key_access(core).contains(&(*target, *holder));
     }
@@ -256,7 +245,7 @@ pub(crate) fn left_out_at(tx: &mut Tx<'_>, a: &Tid, m: &Tid, r: Role) -> Result<
             }
         }
     }
-    if recs.is_empty() || tx.core.is_key_actor(m) {
+    if recs.is_empty() {
         return Ok(out);
     }
     let held: BTreeSet<Epoch> = tx.core.keysets_of(m).filter(|x| x.0 == r).map(|x| x.1).collect();
@@ -337,8 +326,8 @@ pub(crate) enum Sealed {
 }
 
 /// Holder `m` of `a`, holding `role`, as a rotation, grant or re-seal of `a` by `who` (this node,
-/// or a key actor it signs as) boxes it (spec/crypto.md §4), up to `role` capped at its key
-/// access (`keyed_role`; none without it): a key actor whole; a holder actor per role, at the keysets Seal gives
+/// or a link key it signs as) boxes it (spec/crypto.md §4), up to `role` capped at its key
+/// access (`keyed_role`; none without it): per role, at the keysets Seal gives
 /// (`osis_keys::seal_keyset`): one, symmetric where this node holds that
 /// established epoch's secret, or several jointly; cut at the first role with none or whose box
 /// `who` may not make (`seal_blocked`: a departure from `m` it knows that keyset, or every keyset
@@ -362,9 +351,6 @@ pub(crate) fn sealed_granted(tx: &mut Tx<'_>, who: &Tid, a: &Tid, m: &Tid, role:
 
 /// `sealed` at `role` as given (key access judged by the caller), the recipient's floor 0.
 fn sealing_at(tx: &mut Tx<'_>, who: &Tid, a: &Tid, m: &Tid, role: Role) -> Result<Sealed> {
-    if tx.core.is_key_actor(m) {
-        return Ok(recipient(tx, *m, role).ok().map_or(Sealed::Out, Sealed::Boxed));
-    }
     let own = tx.core.own_epochs(m);
     let deps = super::departures(tx, m)?;
     let (mut keysets, mut secrets, mut top) = (BTreeMap::new(), BTreeMap::new(), None);
@@ -391,7 +377,7 @@ fn sealing_at(tx: &mut Tx<'_>, who: &Tid, a: &Tid, m: &Tid, role: Role) -> Resul
         secrets.extend(wrap.map(|p| (r, p)));
         top = Some(r);
     }
-    Ok(top.map_or(Sealed::Out, |role| Sealed::Boxed(Recipient { holder: *m, role, keys: HolderKeys::Actor { keysets, own: secrets }, floor: 0 })))
+    Ok(top.map_or(Sealed::Out, |role| Sealed::Boxed(Recipient { holder: *m, role, keys: HolderKeys { keysets, own: secrets }, floor: 0 })))
 }
 
 /// The keysets `ks` Seal gives for `m` at `r` that leave `m` out of `a` (`super::joint_blocked`):
@@ -425,15 +411,12 @@ pub(crate) struct Boxing {
 /// record already with theirs, a keyset recorded twice taking the union, less those another of
 /// them descends from (a holder actor left out across rotations records its frontier, not its
 /// history). A keyset blocked by nothing a commit shows (a box or maker departure alone) has no
-/// cause and is not recorded. A key actor's boxes name no keyset: nothing.
+/// cause and is not recorded.
 ///
 /// Invariant: every record names only commits the rotator's own judgement read, so at a node
 /// holding them they block exactly what they blocked at the rotator, and stop when they would
 /// stop blocking there.
 pub(crate) fn left_out(tx: &mut Tx<'_>, who: &Tid, a: &Tid, m: &Tid, role: Role, boxed: Option<Role>, out: &mut osis_keys::LeftOut) -> Result<()> {
-    if tx.core.is_key_actor(m) {
-        return Ok(());
-    }
     let deps = super::departures(tx, m)?;
     for r in ROLES.into_iter().filter(|r| *r <= role && Some(*r) > boxed) {
         let mut ks: BTreeMap<Epoch, BTreeSet<CommitId>> = BTreeMap::new();
@@ -469,7 +452,6 @@ pub(crate) fn boxed_keysets(tx: &mut Tx<'_>, a: &Tid, r: Role, e: &Epoch) -> Res
     Ok(s.boxes
         .iter()
         .filter(|(k, _)| k.role == r && osis_keys::aspects::from_schema(&k.epoch).is_ok_and(|x| x == *e))
-        .filter(|(k, _)| !tx.core.is_key_actor(&k.holder.0))
         .map(|(k, b)| (k.holder.0, osis_keys::box_keysets(b)))
         .collect())
 }
@@ -548,9 +530,6 @@ pub(crate) fn carried(core: &Core, w: &osis_keys::SecretsWrite, keys: Option<&os
     let mut out: Vec<osis_base::CommitId> = boxed
         .chain(out)
         .flat_map(|(m, r, e)| {
-            if core.is_key_actor(&m.0) {
-                return Vec::new();
-            }
             let carries = core.keyset(&m.0, r, &e).into_iter().flat_map(|x| x.demotions.iter().copied());
             // the epoch's box records travel with its keyset (spec/crypto.md §4, Stale)
             let records = core.ix.sealed.get(&(m.0, r, e)).into_iter().flat_map(|x| x.by.iter().copied());

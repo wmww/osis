@@ -968,7 +968,7 @@ mod tests {
     /// writer rules. Returns how many it delivered.
     fn flood(lp: &mut LocalPeer, t: Tid, per: usize) -> usize {
         let b = lp.peers[1].engine.me();
-        let keys = osis_keys::HolderKeys::KeyActor { kem: lp.peers[1].engine.identity().keys().kem.public().clone(), seed: None };
+        let keys = osis_keys::HolderKeys::from_keys(&lp.peers[1].engine.get_typed(&b, &ct::KEYS).unwrap().unwrap()).unwrap();
         let rec = lp.peers[0].engine.get_typed(&t, &ct::CREATED).unwrap().unwrap();
         let mut sent = 0;
         for x in 2..lp.peers.len() {
@@ -1007,14 +1007,14 @@ mod tests {
         let mut aw = AspectWrite::new(t, ak.clone(), r.lo, r.hi, bytes.clone());
         aw.purge_by = osis_commit::retention::write_purge_by(ak.as_str(), None, None).unwrap();
         cb.aspects.push(aw);
-        let forge_key = lp.peers[by].engine.identity().keys().signing.clone();
+        let forge_key = lp.peers[by].engine.identity().signing().clone();
         cb.build(&forge_key, &lp.peers[0].engine.hand_secrets(std::slice::from_ref(rec)), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(0)).unwrap().commit.encode()
     }
 
     /// A pending commit by peer `by` boxing peer 1 a fresh read secret of `t`.
     fn forged_grant(lp: &mut LocalPeer, by: usize, t: Tid) {
         let b = lp.peers[1].engine.me();
-        let keys = osis_keys::HolderKeys::KeyActor { kem: lp.peers[1].engine.identity().keys().kem.public().clone(), seed: None };
+        let keys = osis_keys::HolderKeys::from_keys(&lp.peers[1].engine.get_typed(&b, &ct::KEYS).unwrap().unwrap()).unwrap();
         let rec = lp.peers[0].engine.get_typed(&t, &ct::CREATED).unwrap().unwrap();
         let mut held = ActorEpochs::default();
         held.read.set_established(Epoch::new(1, [0; 32]).unwrap(), osis_keys::Provenance::Fixed);
@@ -1384,7 +1384,7 @@ mod tests {
                 assert_ne!(held.role(Role::Read).newest(), Some(rot), "peer {i}");
             }
             assert!(!held.role(Role::Read).is_established(&rot), "peer {i}: A's epoch is for reading only");
-            assert!(matches!(core.delete_base(&t), Some(crate::engine::secrets::DeleteBase::Actor(b, _)) if b == g), "peer {i}: delete base G");
+            assert!(matches!(core.delete_base(&t), Some(crate::engine::secrets::DeleteBase(b, _)) if b == g), "peer {i}: delete base G");
             let d0 = lp.peers[i].engine.index_digest();
             lp.peers[i].engine.rebuild_index().unwrap();
             assert_eq!(d0.first_diff(&lp.peers[i].engine.index_digest()), None, "peer {i}: open = rebuild");

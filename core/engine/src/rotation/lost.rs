@@ -85,7 +85,7 @@ fn holds_at(core: &Core, a: &Tid, min: Role) -> bool {
 }
 
 /// The node's role on `a` (spec/sync-set.md §2 Own things): the best its own things (itself, a
-/// held key actor) hold on `a` now by `a`'s grants as the node holds them, by paths
+/// held link key) hold on `a` now by `a`'s grants as the node holds them, by paths
 /// with key access, `until` honoured (`Core::keyed_role_now`), where those grants count
 /// (`grants_count`); none where they do not.
 pub(crate) fn role_here(core: &Core, a: &Tid) -> Option<Role> {
@@ -132,9 +132,9 @@ fn syncs(core: &Core, t: &Tid) -> bool {
     one(t) || core.secret_actor(t).is_some_and(|a| a != *t && one(&a))
 }
 
-/// The node's own actors: itself, each held key actor.
+/// The node's own things: its node thing, each held link key.
 fn own_actors(core: &Core) -> Vec<Tid> {
-    std::iter::once(core.me()).chain(core.key_actors.keys().copied()).collect()
+    std::iter::once(core.me()).chain(core.link_keys.keys().copied()).collect()
 }
 
 /// Whether the node (`holds_at`) reads `a` now: read or above.
@@ -169,7 +169,7 @@ pub(crate) fn may_take_role(core: &Core, a: &Tid, r: Role) -> bool {
 
 /// Whether an entry box may give this node `a`'s secret of role `r`
 /// (spec/sync-ids.md §3): as a box may (`may_take_role`), or while nothing held says the node lost
-/// `a`: no ended edge on it of the node, a held key actor or an actor it reads (a link's redeemer
+/// `a`: no ended edge on it of the node, a held link key or a thing it reads (a link's redeemer
 /// opens the sync ID before it holds the grant to its key; the trigger judges `a` once role
 /// commits on it apply).
 pub(crate) fn may_learn(core: &Core, a: &Tid, r: Role) -> bool {
@@ -184,7 +184,7 @@ fn over_held(core: &Core, a: &Tid) -> bool {
     ROLES.iter().any(|r| e.role(*r).holds_any() && !holds_at(core, a, need(*r)))
 }
 
-/// Whether all that ended the node's (or a held key actor's) role on `a` is an `until` passing:
+/// Whether all that ended the node's (or a held link key's) role on `a` is an `until` passing:
 /// walked with every edge's time ahead and every finalize undone (it counts as the `until` it
 /// finalizes, spec/permissions.md §2), a role giving what it holds is there. A removal saying
 /// its own retain is written with `until` 0, gone at every clock, so it never counts.
@@ -196,7 +196,7 @@ pub(super) fn lost_by_time(core: &Core, a: &Tid) -> bool {
     let reads = core.ix.secrets.get(a).is_some_and(|e| ROLES.iter().any(|r| *r != Role::Sync && e.role(*r).holds_any()));
     let need = if reads { Role::Read } else { Role::Sync };
     let role = |x: &Tid| tl.role_unfinalized(x, a, ts).is_some_and(|r| r >= need);
-    role(&core.me()) || core.key_actors.keys().any(role)
+    role(&core.me()) || core.link_keys.keys().any(role)
 }
 
 /// How long an actor lost by the time alone waits for node-sync to hear its sync IDs out before
@@ -208,9 +208,9 @@ pub(super) fn lost_by_time(core: &Core, a: &Tid) -> bool {
 /// share on the node for good.
 pub const LOST_HEARD_WAIT_MS: u64 = osis_base::format::ROLE_KEEP_MS;
 
-/// Whether box recipient `m` is this node, a held key actor or an actor it holds and reads now.
+/// Whether box recipient `m` is this node, a held link key or a thing it holds and reads now.
 fn ours(core: &Core, m: &Tid) -> bool {
-    *m == core.me() || core.key_actors.contains_key(m) || (core.ix.secrets.contains_key(m) && readable(core, m))
+    *m == core.me() || core.link_keys.contains_key(m) || (core.ix.secrets.contains_key(m) && readable(core, m))
 }
 
 /// Whether an edge of holder `h` that ended or lowered was one of the node's ways: `h` is an own
@@ -227,7 +227,7 @@ fn reaches(core: &Core, x: &Tid, a: &Tid) -> bool {
     core.record_chain(a).filter_map(|s| s.thing()).any(|c| c == *x) || core.role_now(x, a).is_some()
 }
 
-/// The actors not applied commit `id` boxes to this node, a held key actor or an actor it reads
+/// The actors not applied commit `id` boxes to this node, a held link key or a thing it reads
 /// a read epoch newer than any it held checked (`held`: newest checked read epoch number per
 /// dropped actor; a grant from after a rotation that left the node out; reading candidates, as
 /// a re-grant read before the removal applied gives, do not count), signed (`authentic`) by an
@@ -333,7 +333,7 @@ fn own_leaving(tx: &mut Tx<'_>, a: &Tid) -> Result<BTreeSet<osis_base::CommitId>
     while let Some(t) = work.pop() {
         out.extend(super::departures_with_own(tx, &t)?.into_iter().filter_map(|(_, c)| c));
         for (m, _) in tx.core.edge_holders(&t) {
-            if !tx.core.is_key_actor(&m) && seen.insert(m) {
+            if seen.insert(m) {
                 work.push(m);
             }
         }
@@ -411,12 +411,12 @@ fn ways(core: &Core, actors: &BTreeSet<Tid>) -> BTreeMap<Tid, BTreeMap<Tid, Way>
 /// cannot keep each other.
 fn keeps(core: &Core, lost: &BTreeSet<Tid>, marks: &BTreeMap<Tid, BTreeSet<Tid>>) -> BTreeMap<Tid, BTreeSet<Tid>> {
     let me = core.me();
-    let own = |h: &Tid| *h == me || core.key_actors.contains_key(h);
+    let own = |h: &Tid| *h == me || core.link_keys.contains_key(h);
     let all: BTreeSet<Tid> = lost.iter().chain(marks.keys()).copied().collect();
     let ways = ways(core, &all);
     let read_then = |a: &Tid, h: &Tid, end: Option<osis_perm::Point>| {
         let Some(p) = end else { return true };
-        own(h) || core.timelines().get(a).is_some_and(|tl| std::iter::once(&me).chain(core.key_actors.keys()).any(|x| tl.role(x, h, At::before(p)) >= Some(Role::Read)))
+        own(h) || core.timelines().get(a).is_some_and(|tl| std::iter::once(&me).chain(core.link_keys.keys()).any(|x| tl.role(x, h, At::before(p)) >= Some(Role::Read)))
     };
     // a holder lost but not dropped in this judging (left to node-sync, or held by a pending grant):
     // the node still has it until it is judged, and a copy hanging on it is judged again then
@@ -563,7 +563,7 @@ pub enum LostScope<'a> {
 }
 
 /// The actors whose roles reach `a` (`reaches`): `a`, its record chain, and the holders of an
-/// edge on any of them, transitively (key actors aside): where a role commit that took `a` from
+/// edge on any of them, transitively: where a role commit that took `a` from
 /// this node was written.
 fn reaching(core: &Core, a: &Tid) -> BTreeSet<Tid> {
     let mut seen = BTreeSet::from([*a]);
@@ -571,7 +571,7 @@ fn reaching(core: &Core, a: &Tid) -> BTreeSet<Tid> {
     while let Some(t) = work.pop() {
         let up = core.record_chain(&t).filter_map(|s| s.thing()).chain(core.edge_holders(&t).into_iter().map(|(m, _)| m));
         for m in up.collect::<Vec<_>>() {
-            if !core.is_key_actor(&m) && seen.insert(m) {
+            if seen.insert(m) {
                 work.push(m);
             }
         }
@@ -580,7 +580,7 @@ fn reaching(core: &Core, a: &Tid) -> BTreeSet<Tid> {
 }
 
 /// Whether what this node holds says it lost `a` (spec/permissions.md §3: a node that learns it
-/// lost read access): an edge of it, a held key actor or an actor it reads ended or lowered on an actor whose
+/// lost read access): an edge of it, a held link key or a thing it reads ended or lowered on an actor whose
 /// roles reach `a` (`reaching`), or reading-only secrets of it outlived their source commit, or
 /// its role commits show it a role on `a` (`role_here`: they show what it may hold).
 /// Secrets taken with no role yet (an entry box a link's redeemer opens before its grant

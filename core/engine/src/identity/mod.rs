@@ -1,29 +1,49 @@
-//! Node identity (spec/permissions.md §1, spec/crypto.md §3): a seed that never leaves the
-//! device gives the node's signing and KEM keys, its creation record and tid. Creation records
-//! of new things (spec/data-model.md §1).
+//! Signing identities (spec/permissions.md §1, spec/crypto.md §3): a 32-byte seed that never
+//! leaves the device gives a signing key, and the thing minted with that key is what it signs as:
+//! the node thing (its nonce random, its secrets random from its minting, kept in the node's own
+//! store like every secret it holds) or a link key (its nonce and secrets from the link's seed).
+//! Creation records of new things (spec/data-model.md §1).
 
-use osis_base::{CreationRecord, SIGNING_KEY_ED25519, Tid};
-use osis_crypto::{CryptoRngCore, KeyActorKeys, Secret32, VerifyingKey, creation_nonce};
+use osis_base::{CreationRecord, SignKey, Tid};
+use osis_crypto::{CryptoRngCore, Secret32, SigningSecret, creation_nonce, signing_key};
 use osis_keys::ActorEpochs;
 
-/// A key actor this node signs as: the node itself.
+/// A signing key and the thing minted with it, which this node signs as.
 #[derive(Clone)]
 pub struct Identity {
-    keys: KeyActorKeys,
+    seed: Secret32,
+    signing: SigningSecret,
     record: CreationRecord,
     tid: Tid,
 }
 
 impl Identity {
-    pub fn from_seed(seed: Secret32) -> Identity {
-        let keys = KeyActorKeys::from_seed(&seed);
-        let record = key_actor_record(&keys.signing.verifying_key(), keys.seed());
-        let tid = record.tid();
-        Identity { keys, record, tid }
+    /// The node thing of signing seed `seed`, minted with creation nonce `nonce`.
+    pub fn node(seed: Secret32, nonce: [u8; 32]) -> Identity {
+        let signing = signing_key(&seed);
+        let record = CreationRecord::with_key(SignKey(signing.verifying_key().to_bytes()), nonce);
+        Identity::of(seed, signing, record)
     }
 
+    /// A fresh node thing: a random seed and nonce.
     pub fn generate(rng: &mut dyn CryptoRngCore) -> Identity {
-        Identity::from_seed(Secret32::random(rng))
+        let seed = Secret32::random(rng);
+        let mut nonce = [0u8; 32];
+        rng.fill_bytes(&mut nonce);
+        Identity::node(seed, nonce)
+    }
+
+    /// The link key of a link's seed `seed`, holding a grant on the link's thing `k`
+    /// (spec/permissions.md §7).
+    pub fn link_key(seed: Secret32, k: Tid) -> Identity {
+        let signing = signing_key(&seed);
+        let record = link_key_record(&seed, k);
+        Identity::of(seed, signing, record)
+    }
+
+    fn of(seed: Secret32, signing: SigningSecret, record: CreationRecord) -> Identity {
+        let tid = record.tid();
+        Identity { seed, signing, record, tid }
     }
 
     pub fn tid(&self) -> Tid {
@@ -32,33 +52,41 @@ impl Identity {
     pub fn record(&self) -> &CreationRecord {
         &self.record
     }
-    pub fn keys(&self) -> &KeyActorKeys {
-        &self.keys
+    /// The signing key, the record's key.
+    pub fn signing(&self) -> &SigningSecret {
+        &self.signing
     }
     #[doc(hidden)]
     pub fn seed(&self) -> &Secret32 {
-        self.keys.seed()
+        &self.seed
     }
-    /// The node's own role secrets (never rotated).
-    pub fn epochs(&self) -> ActorEpochs {
-        ActorEpochs::key_actor(self.keys.seed())
+    /// A link key's secrets, from its seed alone (spec/crypto.md §3); none for a node thing,
+    /// whose random secrets its minting gave the node's store.
+    pub fn link_epochs(&self) -> Option<ActorEpochs> {
+        self.record.link_key_of().map(|_| ActorEpochs::link_key(&self.tid, &self.seed))
+    }
+    /// A link key's first read keyset's KEM key, which its entry boxes are sealed to
+    /// (spec/sync-ids.md §3).
+    pub fn link_read_kem(&self) -> Option<osis_crypto::KemSecret> {
+        self.record.link_key_of().map(|_| osis_crypto::role_kem(&osis_crypto::link_key_role_secret(&self.seed, osis_base::Role::Read)))
     }
 }
 
-/// The creation record of the key actor of `seed`, whose signing key is `signing` (spec/wire.md §3).
-pub fn key_actor_record(signing: &VerifyingKey, seed: &Secret32) -> CreationRecord {
-    CreationRecord::KeyActor { alg: SIGNING_KEY_ED25519, public_key: signing.to_bytes().to_vec(), nonce: creation_nonce(seed) }
+/// The creation record of the link key of `seed` holding a grant on link's thing `k`
+/// (spec/wire.md §3): its key, its nonce from the seed, K in `link`.
+pub fn link_key_record(seed: &Secret32, k: Tid) -> CreationRecord {
+    let key = SignKey(signing_key(seed).verifying_key().to_bytes());
+    CreationRecord { link: Some(k), ..CreationRecord::with_key(key, creation_nonce(seed)) }
 }
 
-/// The tid of the key actor of `seed`, without deriving its KEM key pair.
-pub fn key_actor_tid(seed: &Secret32) -> Tid {
-    key_actor_record(&KeyActorKeys::signing_of(seed).verifying_key(), seed).tid()
+/// The tid of the link key of `seed` on `k`.
+pub fn link_key_tid(seed: &Secret32, k: Tid) -> Tid {
+    link_key_record(seed, k).tid()
 }
 
-/// A fresh record for a link's actor K of `admin`, made for `target` (spec/permissions.md §7).
+/// A fresh record for a link's thing K of `admin`, made for `target` (spec/permissions.md §7).
 pub fn link_record(admin: Tid, target: Tid, rng: &mut dyn CryptoRngCore) -> CreationRecord {
-    let CreationRecord::Thing { nonce, .. } = thing_record(admin, None, rng) else { unreachable!() };
-    CreationRecord::Thing { admin, nonce, link: Some(target), expires: None }
+    CreationRecord { link: Some(target), ..thing_record(admin, None, rng) }
 }
 
 /// A fresh record for a thing whose mint admin is `admin` (32 random nonce bytes), ending at
@@ -66,5 +94,5 @@ pub fn link_record(admin: Tid, target: Tid, rng: &mut dyn CryptoRngCore) -> Crea
 pub fn thing_record(admin: Tid, expires: Option<u64>, rng: &mut dyn CryptoRngCore) -> CreationRecord {
     let mut nonce = [0u8; 32];
     rng.fill_bytes(&mut nonce);
-    CreationRecord::Thing { admin, nonce, link: None, expires }
+    CreationRecord { expires, ..CreationRecord::with_admin(admin, nonce) }
 }

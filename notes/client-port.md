@@ -117,7 +117,7 @@ Built ones with their 0/∞ lines: notes/arbitrary-values-table.md (`MAX_WRITE_O
 - **Client-signed commits** (Tess): a signature over a header the client did not build is meaningless without the node's validation code; the node signs, as for its account. A key without a store would be a key actor trusting its node for all but the header.
 - **Node-authored scope lists**: two mechanisms for one thing, and a node-authored request carries the node's full power (confused deputy); acting as the client's actor makes the engine's rights check the one bound.
 - **Thin nodes**, as a default: a node of an account is a full admin of it, so a scoped one needs another threat model; an unscoped one is `pair`. A store-less process wanting full power is by default a thin client whose actor holds admin grants. Other policies open (issues/client-auth.md).
-- A key actor per thin client: the node would sign as a second key, and a `KeyActor` record names no mint admin to carry attribution.
+- A thing minted with a key per thin client: the node would sign as a second key, and a record holding a key names no mint admin to carry attribution.
 - The main-actor tier from key equality: any transport reporting an arbitrary peer key would get it.
 - Values typed by the node: typing is a view, not data.
 - Port requests under the handle lock: deadlock on re-entry; a slow client would block the engine.

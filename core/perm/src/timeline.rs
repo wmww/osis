@@ -203,9 +203,7 @@ impl<S: Store> Timeline<S> {
                 (Some(rec), None) => {
                     self.records.insert(*t, &rec);
                     out.created.insert(*t);
-                    if let Some(h) = rec.holder() {
-                        came.push((*t, h));
-                    }
+                    came.push((*t, rec.holder()));
                     forced.extend(self.waiting.remove(t).unwrap_or_default());
                 }
                 (None, Some(_)) => {

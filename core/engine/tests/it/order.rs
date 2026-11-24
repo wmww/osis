@@ -720,14 +720,17 @@ pub(crate) fn judge_at(now: WallMs) -> Peer {
 }
 
 /// `p` is offered each of `fires` (`Played::fires`) it does not hold, and takes those it opens
-/// (one stamped ahead of its clock waits there as any commit does).
+/// (one stamped ahead of its clock waits there as any commit does). A grant fire on a thing
+/// whose setting enables no `grant@~0` (a node thing's) is refused as invalid
+/// (spec/sync-inbox.md §1).
 pub(crate) fn take_fires(p: &mut Peer, fires: &[(CommitId, WallMs, osis_engine::sync::SealedFireOut)]) {
     for (c, _, f) in fires {
         if p.engine.header(c).is_some() {
             continue;
         }
         let opened = p.engine.offer_fire(f).unwrap();
-        assert!(!matches!(opened, osis_engine::sync::Opened::Bad), "a fire refused");
+        let enabled = p.engine.enables(&f.thing, osis_schema::core_types::INBOX_SIGNALS[0]);
+        assert!(!enabled || !matches!(opened, osis_engine::sync::Opened::Bad), "a fire refused");
     }
 }
 
@@ -854,16 +857,13 @@ fn share_top(lp: &mut LocalPeer, by: usize, t: Tid, reader: Tid, write: Option<u
 }
 
 /// Peer `to` learns `t`'s record chain as peer `from` holds it (each record up to the first
-/// admin that is a key actor), as the certificates a grant comes with bring it.
+/// admin minted with a key), as the certificates a grant comes with bring it.
 fn give_chain(lp: &mut LocalPeer, from: usize, to: usize, t: Tid) {
     let mut recs = Vec::new();
     let mut x = Some(t);
     while let Some(y) = x {
         let Some(r) = lp.peers[from].engine.core.created(&y).cloned() else { break };
-        x = match &r {
-            osis_base::CreationRecord::Thing { admin, .. } => Some(*admin),
-            _ => None,
-        };
+        x = r.mint_admin();
         recs.push(r);
     }
     lp.peers[to].engine.learn_records(recs).unwrap();

@@ -4,7 +4,7 @@
 //! secrets, so it is done whole or not at all.
 //!
 //! A thing is forgotten when its secret actor is one of the actors just lost and neither the
-//! node nor a held key actor may read it now. Of a forgotten thing only the certificate material
+//! node nor a held link key may read it now. Of a forgotten thing only the certificate material
 //! perm judges others' writes by stays: `created.0`, and the role-class aspects except
 //! `secrets.0` (edges, public keysets, sync IDs). Everything else goes, shredded:
 //! aspect units (state, tables), the deltas in commit
@@ -69,12 +69,12 @@ enum Fate {
 }
 
 /// Whether a held path reads `t`: its secrets derive from an own actor's (the node's account,
-/// itself, a held key actor), or the node reads the actor they derive from by its role there
+/// itself, a held link key), or the node reads the actor they derive from by its role there
 /// (`rotation::role_here`, notes/node-closure.md The node's role): the one role the
 /// lost-access drop judges by, so what it keeps is what that role reads.
 pub(crate) fn read_path(core: &Core, t: &Tid) -> bool {
     let Some(a) = core.secret_actor(t) else { return false };
-    let own = a == core.me() || core.key_actors.contains_key(&a);
+    let own = a == core.me() || core.link_keys.contains_key(&a);
     own || crate::rotation::role_here(core, &a) >= Some(osis_base::Role::Read)
 }
 

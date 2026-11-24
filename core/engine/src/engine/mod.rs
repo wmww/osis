@@ -1144,14 +1144,15 @@ pub struct Core {
     /// Tests: the original's floor this node's edits claim, over the true one (`commit_in`).
     #[cfg(test)]
     pub(crate) lie_floor: Option<u64>,
-    /// Key actors other than the node whose seed this node holds for now: they sign commits
-    /// (`Mutation::sign_as`) and open their boxes. Derived: each is held exactly while
-    /// `held_keys` or a followed link names it (`Engine::settle_key_actor`). In memory only.
-    pub key_actors: memo::Stamped<Tid, Arc<Identity>>,
-    /// Key actors held by `Engine::hold_key_actor` until `drop_key_actor` (role flows, bearer use).
-    pub(crate) held_keys: BTreeMap<Tid, Arc<Identity>>,
+    /// Link keys whose seed this node holds for now: they sign commits (`Mutation::sign_as`) and
+    /// open their boxes by their seed's secrets. Derived: each is held exactly while
+    /// `held_link_keys` or a followed link names it (`Engine::settle_link_key`). In memory only.
+    pub link_keys: memo::Stamped<Tid, Arc<Identity>>,
+    /// Link keys held by `Engine::hold_link_key` until `drop_link_key` (making a link, a redeem,
+    /// bearer use).
+    pub(crate) held_link_keys: BTreeMap<Tid, Arc<Identity>>,
     /// Links this node redeems (`Engine::follow_link`): K to its sync ID from the link text and
-    /// the link key L, held in `key_actors`. K's sync ID is in the sync set while followed
+    /// the link key L, held in `link_keys`. K's sync ID is in the sync set while followed
     /// (spec/sync-set.md §2). In memory only: sync holds the link durably and follows it again
     /// at a start.
     pub(crate) followed_links: crate::sync_ids::actors::FollowedLinks,
@@ -1365,7 +1366,7 @@ impl Core {
 pub struct Wakes {
     /// Commits whose boxes the reading-only budget now has room for.
     pub reread: BTreeSet<CommitId>,
-    /// Every awaiting entry is fetched again (a key actor taken up: boxes may open to it).
+    /// Every awaiting entry is fetched again (a link key taken up: boxes may open to it).
     pub reopen_awaits: bool,
     /// Sync IDs pulled anew (`flows::sync_ids::pull_anew`).
     pub pulled_anew: BTreeSet<osis_base::SyncId>,
@@ -1538,12 +1539,11 @@ impl Core {
         self.created(t).is_some() && !self.destroyed(t)
     }
 
-    /// Whether `t` takes writes here: it exists and, but for a key actor (its record is its
-    /// creation's whole content, and only its own nodes see it end), a minting of it is held. A
-    /// node that learned a thing's record raw (a record blob) cannot tell it was destroyed, and a write
-    /// there would be one every node that saw the destruction ignores.
+    /// Whether `t` takes writes here: it exists and a minting of it is held. A node that learned
+    /// a thing's record raw (a record blob) cannot tell it was destroyed, and a write there would
+    /// be one every node that saw the destruction ignores.
     pub fn writable(&self, t: &Tid) -> bool {
-        self.exists(t) && (matches!(self.created(t), Some(osis_base::CreationRecord::KeyActor { .. })) || self.mintings(t).next().is_some())
+        self.exists(t) && self.mintings(t).next().is_some()
     }
 
     /// The held mintings of `t`: its `created.0` deltas, each `(commit, delta index)`.
@@ -1938,8 +1938,8 @@ impl Core {
             refs_watched,
             commit_listeners,
             forge_bad,
-            key_actors,
-            held_keys,
+            link_keys,
+            held_link_keys,
             followed_links,
             keep_bodies,
             list_bound,
@@ -1978,7 +1978,7 @@ impl Core {
             (
                 (id.tid(), detect, key_salt, addenda_on, skip_writer_rules, leave_adminless),
                 (commits_watched, refs_watched, commit_listeners.is_some(), forge_bad, keep_bodies, list_bound, sourced_elsewhere),
-                (actors(&mut key_actors.keys()), actors(&mut held_keys.keys()), followed_links.all()),
+                (actors(&mut link_keys.keys()), actors(&mut held_link_keys.keys()), followed_links.all()),
             )
         )
     }
@@ -2045,12 +2045,12 @@ impl Core {
     /// node holds it, else the first held key holding a grant on `thing` that is alive now. The
     /// walk judges what the grant gives; a key with none here is never used.
     pub(crate) fn key_for(&self, thing: &Tid) -> Option<(&osis_crypto::SigningSecret, Option<osis_base::SignKey>)> {
-        let ids = || std::iter::once(&self.id).chain(self.key_actors.values().map(|i| &**i));
+        let ids = || std::iter::once(&self.id).chain(self.link_keys.values().map(|i| &**i));
         // a record this node made it holds before any commit carries it
         if let Some(i) = ids().find(|i| i.tid() == *thing) {
-            return Some((&i.keys().signing, None));
+            return Some((i.signing(), None));
         }
-        let held = ids().map(|i| &i.keys().signing);
+        let held = ids().map(|i| i.signing());
         let record = self.created(thing).and_then(osis_base::CreationRecord::key);
         let ts = crate::flows::now_ts(self);
         let mut granted = None;
@@ -2188,8 +2188,8 @@ impl Core {
             snapshot_fault: None,
             #[cfg(test)]
             lie_floor: None,
-            key_actors: Default::default(),
-            held_keys: Default::default(),
+            link_keys: Default::default(),
+            held_link_keys: Default::default(),
             followed_links: Default::default(),
             epochs_of: memo::Memo::new("epochs"),
             store_rows,
@@ -2921,8 +2921,8 @@ impl Engine {
         Engine { store, store_rng, blobs, blob_stamps: Default::default(), blob_seq: 1, blobs_unsettled: false, failed_seen: (0, 0), taken_failed: false, loads: 0, rng, core: Core::new(id, clock.clone(), session, expiring, rows), eph: crate::ephemeral::Eph::default(), clock, cfg, #[cfg(debug_assertions)] index_unchecked: false, #[cfg(debug_assertions)] verdicts_unchecked: false, #[cfg(debug_assertions)] last_tx_wall: None, #[cfg(debug_assertions)] loading: false, #[cfg(test)] index_poked: false, #[cfg(test)] check_every_tx: false, #[cfg(test)] fail_round: false }
     }
 
-    /// A new node over an empty backend: fresh identity, its node thing with `created.0`,
-    /// `node.0` and `keys.0` (spec/permissions.md §4 node card).
+    /// A new node over an empty backend: a fresh signing key, its node thing and node root
+    /// (`bootstrap`).
     pub fn create(backend: Box<dyn Backend>, root: Box<dyn RootStorage>, blobs: Arc<dyn osis_store::Ciphertext>, cfg: Config, clock: Arc<dyn Clock>, mut rng: Box<dyn osis_crypto::NodeRng>) -> Result<Engine> {
         let store = Store::create(backend, root, cfg.store, &mut *rng)?;
         let mut seed = [0u8; 32];
@@ -2930,7 +2930,8 @@ impl Engine {
         let store_rng = SeededRng::from_seed(seed);
         let id = Identity::generate(&mut *rng);
         let mut e = Engine::over(store, store_rng, blobs, cfg, clock, rng, id);
-        let seed_bytes = e.core.id.seed().expose().to_vec();
+        // the signing seed, then the node thing's creation nonce
+        let seed_bytes = [e.core.id.seed().expose().as_slice(), e.core.id.record().nonce()].concat();
         // a new store: its (empty) persisted index is current
         e.run(|tx| {
             tx.txn.put_local(records::SEED, &seed_bytes, Shred::No)?;
@@ -2951,8 +2952,10 @@ impl Engine {
             let mut txn = store.transaction(&mut store_rng)?;
             txn.get_local(records::SEED)?.ok_or(Error::Corrupt("no seed"))?
         };
-        let s: [u8; 32] = s.as_slice().try_into().map_err(|_| Error::Corrupt("seed"))?;
-        let id = Identity::from_seed(osis_crypto::Secret32::from_bytes(s));
+        let (s, nonce) = s.split_at_checked(32).ok_or(Error::Corrupt("seed"))?;
+        let s: [u8; 32] = s.try_into().map_err(|_| Error::Corrupt("seed"))?;
+        let nonce: [u8; 32] = nonce.try_into().map_err(|_| Error::Corrupt("seed"))?;
+        let id = Identity::node(osis_crypto::Secret32::from_bytes(s), nonce);
         let node_root = {
             let mut txn = store.transaction(&mut store_rng)?;
             txn.get_local(records::NODE_ROOT)?.map(|b| <[u8; osis_base::format::TID_LEN]>::try_from(b.as_slice()).map(Tid::from_bytes).map_err(|_| Error::Corrupt("node root"))).transpose()?
@@ -3020,18 +3023,9 @@ impl Engine {
         Ok(())
     }
 
-    /// The node thing's first commits: `created.0`, then `keys.0` (its KEM key).
+    /// The node's first start (`flows::roots::first_start`).
     fn bootstrap(&mut self) -> Result<()> {
-        use osis_schema::core_types as ct;
-        let node = self.tid();
-        let mut m = Mutation::new();
-        m.create(self.core.id.record().clone());
-        self.commit(m)?;
-        let kem = self.core.id.keys().kem.public();
-        let mut k = Mutation::new();
-        k.set(node, &ct::KEYS, &ct::Keys { key: Some(ct::KemKey::X25519MlKem768(kem.as_bytes().to_vec())), ..Default::default() })?;
-        self.commit(k)?;
-        self.make_node_root()
+        self.run(crate::flows::roots::first_start)
     }
 
     /// Registers an app schema: typed views of its AKs for undo and large-value write-back
@@ -3064,7 +3058,7 @@ impl Engine {
         self.core.events.diagnostic_from(d, remote, self.core.hlc.mono());
     }
 
-    /// The mint admin of `tid` (`None`: a key actor or an unknown thing).
+    /// The mint admin of `tid` (`None`: a thing minted with a key or an unknown thing).
     pub fn mint_admin(&self, tid: &Tid) -> Option<Tid> {
         self.core.mint_admin(tid)
     }
@@ -3358,9 +3352,9 @@ impl Engine {
         self.loads = self.loads.wrapping_add(1);
         let mut fresh = self.blank_core(self.clock.clone());
         fresh.events = std::mem::take(&mut self.core.events);
-        fresh.key_actors = std::mem::take(&mut self.core.key_actors);
-        fresh.held_keys = std::mem::take(&mut self.core.held_keys);
-        // links followed are this session's, as the key actors they hold
+        fresh.link_keys = std::mem::take(&mut self.core.link_keys);
+        fresh.held_link_keys = std::mem::take(&mut self.core.held_link_keys);
+        // links followed are this session's, as the link keys they hold
         fresh.followed_links = std::mem::take(&mut self.core.followed_links);
         // the pass place never goes back: passes under way began at places below it
         fresh.place = self.core.place;
@@ -3443,9 +3437,9 @@ impl Engine {
             osis_base::costs::paused(|| osis_perm::uncounted(|| memo::unrecorded(|| self.read(|tx| crate::retention::leaving::rows_exact(tx, &rows)))))?;
             self.index_unchecked = false;
         }
-        // key actors are derived: held exactly while `hold_key_actor` or a followed link names them
-        let named: BTreeSet<Tid> = self.core.held_keys.keys().chain(self.core.followed_links.all().values().map(|(_, l)| l)).copied().collect();
-        assert_eq!(self.core.key_actors.keys().copied().collect::<BTreeSet<_>>(), named, "key actors: held or named by a followed link");
+        // link keys are derived: held exactly while `hold_link_key` or a followed link names them
+        let named: BTreeSet<Tid> = self.core.held_link_keys.keys().chain(self.core.followed_links.all().values().map(|(_, l)| l)).copied().collect();
+        assert_eq!(self.core.link_keys.keys().copied().collect::<BTreeSet<_>>(), named, "link keys: held or named by a followed link");
         match self.checked_closure() {
             Err(e @ Error::Store(_)) => return Err(e),
             r => assert!(r.is_ok(), "node closure walked afresh: {:?}", r.err()),
@@ -3460,7 +3454,7 @@ impl Engine {
             // the store's records decoded as this node keeps them: a decode is a function of
             // the record's bytes, compared at each hit (`decoded`), so judging is all redone
             fresh.decoded = std::mem::take(&mut self.core.decoded);
-            fresh.key_actors = self.core.key_actors.clone();
+            fresh.link_keys = self.core.link_keys.clone();
             // a link followed is synced, so its grants count (`rotation::role_here`)
             fresh.followed_links = self.core.followed_links.clone();
             let mut rng = SeededRng::from_u64(0);

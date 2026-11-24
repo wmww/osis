@@ -896,7 +896,7 @@ fn commit_form_redemption_canonical_spec_crdt_3_2() {
         let link = loop {
             let (link, _, _) = lp.peers[0].engine.create_link(&pa, &link_spec(d, Role::Write, None)).unwrap();
             follow(&mut lp, &link);
-            if (osis_engine::identity::Identity::from_seed(link.seed.clone()).tid() < sharer) == l_first {
+            if (osis_engine::identity::link_key_tid(&link.seed, link.k) < sharer) == l_first {
                 break link;
             }
         };
@@ -978,7 +978,7 @@ fn link_redeem_single_use_spec_perm_7() {
     sync(&mut lp, 0, 1);
     let done = lp.peers[1].engine.redeem(&link, &ps1, true).unwrap();
     assert_eq!(done.commits.len(), 1);
-    let l = osis_engine::identity::Identity::from_seed(link.seed.clone()).tid();
+    let l = osis_engine::identity::link_key_tid(&link.seed, link.k);
     sync(&mut lp, 1, 0);
     for i in [0, 1] {
         let r = lp.peers[i].engine.roster(&link.k);
@@ -1002,7 +1002,7 @@ fn link_redeem_single_use_spec_perm_7() {
 #[test]
 fn single_use_finalization_audits_spec_perm_7() {
     let (mut lp, [_, ps1, ps2], _, link) = read_link_followed();
-    let l = osis_engine::identity::Identity::from_seed(link.seed.clone()).tid();
+    let l = osis_engine::identity::link_key_tid(&link.seed, link.k);
     // the forger redeems first (earlier ts) but the sharer never hears of it before finalizing
     lp.peers[2].engine.redeem(&link, &ps2, true).unwrap();
     lp.peers[1].clock.advance(1000);
@@ -1025,7 +1025,7 @@ fn single_use_finalization_audits_spec_perm_7() {
 #[test]
 fn single_use_loser_keeps_secrets_until_finalized_spec_perm_7() {
     let (mut lp, [_, ps1, ps2], d, link) = read_link_followed();
-    let l = osis_engine::identity::Identity::from_seed(link.seed.clone()).tid();
+    let l = osis_engine::identity::link_key_tid(&link.seed, link.k);
     let early = lp.peers[2].engine.redeem(&link, &ps2, true).unwrap().commits;
     lp.peers[1].clock.advance(1000);
     let late = lp.peers[1].engine.redeem(&link, &ps1, true).unwrap().commits;
@@ -1074,7 +1074,7 @@ fn link_bearer_and_until_spec_perm_7() {
     assert!(lp.peers[1].engine.redeem(&link, &ps1, false).is_err(), "expired");
     // the sharer finalizes: a plain removal of L (with a frontier), L's departure for keys: it
     // carries K's rotation (spec/crypto.md §4)
-    let l = osis_engine::identity::Identity::from_seed(link.seed.clone()).tid();
+    let l = osis_engine::identity::link_key_tid(&link.seed, link.k);
     let k0 = newest_read(&lp, 0, link.k).unwrap();
     assert!(lp.peers[0].engine.departures(&link.k).unwrap().is_empty(), "past `until` is no departure by itself");
     let fin = lp.peers[0].engine.finalize_link(&link.k, &l).unwrap();
@@ -1109,7 +1109,7 @@ fn until_link_backdated_grant_void_spec_perm_7() {
     let until = osis_base::WallMs(lp.peers[0].engine.now().0 + 3_600_000);
     let (link, keep, _) = lp.peers[0].engine.create_link(&p, &link_spec(d, Role::Read, Some(until))).unwrap();
     follow(&mut lp, &link);
-    let l = osis_engine::identity::Identity::from_seed(link.seed.clone()).tid();
+    let l = osis_engine::identity::link_key_tid(&link.seed, link.k);
     spread(&mut lp);
     lp.peers[2].engine.redeem(&link, &joiner, false).unwrap();
     spread(&mut lp);
@@ -1324,7 +1324,7 @@ fn registration_step_after_rotation_spec_sync_5() {
     lp.peers[1].engine.demote(&p, &Demotion { holder: d1, new: None, retain: None }).unwrap();
     let (step, set) = lp.peers[1].engine.issue_step(&p, &card, false).unwrap().unwrap();
     step.verify_child(&parent).unwrap();
-    let claims = |i: usize| step.claim_key(lp.peers[i].engine.identity().keys().kem.x25519()).unwrap().verifying_key().to_bytes();
+    let claims = |i: usize| step.claim_key(lp.peers[i].engine.node_read_kem().unwrap().x25519()).unwrap().verifying_key().to_bytes();
     assert!(set.contains(&claims(1)));
     assert!(!set.contains(&claims(0)));
     let now = lp.peers[1].engine.get_typed(&p, &ct::SYNC).unwrap().unwrap();
@@ -1516,7 +1516,7 @@ fn write_link_rotates_as_signer_spec_perm_3() {
     spread(&mut lp);
     let e0 = newest_read(&lp, 0, link.k).unwrap();
     let done = lp.peers[2].engine.redeem(&link, &ps2, false).unwrap();
-    let l = osis_engine::identity::Identity::from_seed(link.seed.clone()).tid();
+    let l = osis_engine::identity::link_key_tid(&link.seed, link.k);
     assert_eq!(done.commits.len(), 3, "L's rotation, D's (its box to K that made stale), then the grant");
     assert_eq!(lp.peers[2].engine.header(&done.commits[0]).unwrap().signer, l);
     let e1 = newest_read(&lp, 2, link.k).unwrap();
@@ -1554,7 +1554,7 @@ fn issue_step_after_inside_removal_spec_sync_5() {
 // spec/crypto.md §4 (covers by names), spec/permissions.md §2 (finalize). A node granted write
 // with `until` while another admin rotated write only (a demotion it had not seen with the grant)
 // keeps its box at the current read epoch. Once `until` passes, the next writer finalizes the
-// edge before encrypting, rotating read, and the key actor holds none of it.
+// edge before encrypting, rotating read, and the node thing holds none of it.
 #[test]
 fn raced_grant_read_box_after_until_spec_crypto_4() {
     let (mut lp, ps) = people(4);
@@ -1570,14 +1570,14 @@ fn raced_grant_read_box_after_until_spec_crypto_4() {
     lp.peers[1].engine.demote(&t, &Demotion { holder: pc, new: Some(edge_of(Role::Read)), retain: None }).unwrap();
     spread(&mut lp);
     let r0 = newest_read(&lp, 1, t).unwrap();
-    assert!(!lp.peers[3].engine.epochs(&t).unwrap().read.reading_secret(&r0).is_none(), "the key actor holds the read epoch");
+    assert!(!lp.peers[3].engine.epochs(&t).unwrap().read.reading_secret(&r0).is_none(), "the node thing holds the read epoch");
     lp.advance(2 * 3_600_000);
     let (done, still) = lp.peers[1].engine.ensure_rotated(&t).unwrap();
     assert!(still.is_empty());
     let r1 = newest_read(&lp, 1, t).unwrap();
     assert_ne!(r0, r1, "read rotated: {done:?}");
     spread(&mut lp);
-    assert!(lp.peers[3].engine.epochs(&t).unwrap().read.reading_secret(&r1).is_none(), "the departed key actor is out");
+    assert!(lp.peers[3].engine.epochs(&t).unwrap().read.reading_secret(&r1).is_none(), "the departed node thing is out");
 }
 
 // spec/commits.md §3 (shared key commit form): a link key, usable from several nodes, signs
@@ -1591,7 +1591,7 @@ fn link_key_writes_commit_form_spec_commits_3() {
     follow(&mut lp, &link);
     sync(&mut lp, 0, 1);
     let done = lp.peers[1].engine.redeem(&link, &ps1, true).unwrap();
-    let l = osis_engine::identity::Identity::from_seed(link.seed.clone()).tid();
+    let l = osis_engine::identity::link_key_tid(&link.seed, link.k);
     let by_l: Vec<CommitId> = done.commits.iter().copied().filter(|c| lp.peers[1].engine.header(c).unwrap().signer == l).collect();
     assert!(!by_l.is_empty());
     for c in by_l {
@@ -1651,7 +1651,7 @@ fn stranger_secrets(lp: &mut LocalPeer, t: Tid, secrets: &ct::Secrets) -> Vec<u8
     use osis_commit::{AspectWrite, CommitBuilder, Form, Kind, MemoryBlobs, writer_ctx};
     use osis_crdt::{Delta, Source, Writer, create, encode_delta};
     use osis_schema::Codec;
-    let keys = osis_crypto::KeyActorKeys::from_seed(&osis_crypto::Secret32::from_bytes([0x55; 32]));
+    let key = osis_crypto::signing_key(&osis_crypto::Secret32::from_bytes([0x55; 32]));
     let author = Tid::from_bytes([0x77; 15]);
     let ts = osis_base::Ts::make(lp.peers[0].engine.now(), 0).unwrap();
     let a = ak("secrets.0");
@@ -1669,7 +1669,7 @@ fn stranger_secrets(lp: &mut LocalPeer, t: Tid, secrets: &ct::Secrets) -> Vec<u8
     let mut cb = CommitBuilder::new(Kind::Role, ts, author, osis_commit::Path::default(), Form::Commit);
     cb.aspects.push(aw);
     let rec = lp.peers[0].engine.get_typed(&t, &ct::CREATED).unwrap().unwrap();
-    cb.build(&keys.signing, &lp.peers[0].engine.hand_secrets(&[rec]), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(9)).unwrap().commit.encode()
+    cb.build(&key, &lp.peers[0].engine.hand_secrets(&[rec]), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(9)).unwrap().commit.encode()
 }
 
 // spec/crypto.md §4 (Rotation; Reading-only secrets): a rotation's n is 1 + the greatest n it supersedes; a pending commit's
@@ -1689,7 +1689,7 @@ fn planted_epoch_blocks_no_removal_spec_crypto_4() {
     let mut v = osis_keys::ActorEpochs::default();
     v.read.set_secret(top, top_secret);
     v.read.set_established(top, osis_keys::Provenance::Fixed);
-    let rc = osis_keys::Recipient { holder: pa, role: Role::Admin, keys: osis_keys::HolderKeys::KeyActor { kem: lp.peers[0].engine.identity().keys().kem.public().clone(), seed: None }, floor: 0 };
+    let rc = osis_keys::Recipient { holder: pa, role: Role::Admin, keys: osis_keys::HolderKeys::from_keys(&lp.peers[0].engine.get_typed(&pa, &ct::KEYS).unwrap().unwrap()).unwrap(), floor: 0 };
     let w = osis_keys::box_holder(&d, &v, &osis_keys::HistoryBoxes::new(), &rc, &BTreeSet::from([Role::Read]), &mut osis_crypto::SeededRng::from_u64(5)).unwrap().unwrap();
     let mut s = ct::Secrets::default();
     w.apply(&mut s);

@@ -2194,7 +2194,7 @@ fn classes(w: &crate::harness::World, i: usize, j: usize, s: &SyncId) -> Vec<Sou
 // node 1 a store and nodes 0 and 1 class node 2 a reader, after a reconnect and a restart too;
 // and node 2's purge of its own write deletes it at node 1.
 #[test]
-#[ignore = "accounts: keys"]
+#[ignore = "accounts: making an account"]
 fn a_sources_class_follows_what_the_peer_holds_spec_sync_opens_4() {
     use crate::harness::Step::*;
     use crate::harness::history::{Gives, three, value_ak};
@@ -2429,7 +2429,7 @@ fn removed(w: &mut crate::harness::World, _: osis_base::Tid) {
 
 // Its removal: at a reader by J, at a node keeping S unread by the step registered there.
 #[test]
-#[ignore = "accounts: keys"]
+#[ignore = "accounts: making an account"]
 fn a_removal_while_away_serves_nothing_after_it_spec_sync_opens_6() {
     use crate::harness::history::Gives;
     assert!(!served_after_a_change_while_away(Gives::Reads, removed), "at a reader");
@@ -2439,7 +2439,7 @@ fn a_removal_while_away_serves_nothing_after_it_spec_sync_opens_6() {
 // Node 1 restarts while node 2 is away and hears of the removal after: the record, read from its
 // rows at the take, is judged there.
 #[test]
-#[ignore = "accounts: keys"]
+#[ignore = "accounts: making an account"]
 fn a_removal_after_a_restart_serves_nothing_after_it_spec_sync_opens_6() {
     let restarted = |w: &mut crate::harness::World, t: osis_base::Tid| {
         w.power_off(1);
@@ -2455,7 +2455,7 @@ fn a_removal_after_a_restart_serves_nothing_after_it_spec_sync_opens_6() {
 // epoch still covers every departure node 1 knows of (§4 Departed): a credential open toward it
 // stays until the rotation, and what it is served is what it held the secret for.
 #[test]
-#[ignore = "accounts: keys"]
+#[ignore = "accounts: making an account"]
 fn an_until_passing_while_away_serves_nothing_after_it_spec_sync_opens_6() {
     let expire = |w: &mut crate::harness::World, t: osis_base::Tid| {
         let a2 = w.node(2).account.unwrap();
@@ -2479,7 +2479,7 @@ fn shown_rows(w: &crate::harness::World, rid: osis_sync::types::RecordId, s: &Sy
 // The same for a peer judged departed (§6: at a reader source it closes at once): node 2,
 // away, is removed from t.
 #[test]
-#[ignore = "accounts: keys"]
+#[ignore = "accounts: making an account"]
 fn a_departed_peer_keeps_nothing_it_showed_spec_sync_judgement_3() {
     let (mut w, (t, s)) = away_and_back(crate::harness::history::Gives::Reads);
     let conn = w.links_of(1).into_iter().find(|(_, j)| *j == 2).expect("node 2 is connected to node 1").0;
@@ -2496,7 +2496,7 @@ fn a_departed_peer_keeps_nothing_it_showed_spec_sync_judgement_3() {
 // The same where node 1 restarted while node 2 was away (§6: re-judged whether or not a
 // connection holds its record, a restart's records included).
 #[test]
-#[ignore = "accounts: keys"]
+#[ignore = "accounts: making an account"]
 fn a_peer_departed_after_a_restart_keeps_nothing_it_showed_spec_sync_judgement_3() {
     let (mut w, (t, s)) = away_and_back(crate::harness::history::Gives::Reads);
     let conn = w.links_of(1).into_iter().find(|(_, j)| *j == 2).expect("node 2 is connected to node 1").0;
@@ -2522,7 +2522,7 @@ fn a_peer_departed_after_a_restart_keeps_nothing_it_showed_spec_sync_judgement_3
 // self-removal, and still holds S. Node 2 goes away and back once after the pairing, so the record
 // names its account's new key and the reconnect's take re-judges nothing.
 #[test]
-#[ignore = "accounts: keys"]
+#[ignore = "accounts: making an account"]
 fn a_self_removal_alone_ends_what_is_served_spec_sync_opens_6() {
     let (mut w, (t, s, n)) = paired_away_and_back();
     w.partition(0, 2);

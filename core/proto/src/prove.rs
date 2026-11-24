@@ -39,11 +39,10 @@ impl ActorProof {
         self.record.tid()
     }
 
-    /// Whether `key` signed this connection's challenge and may stand for the record: a key
-    /// actor's own key. Any other record (a thing, a key of another algorithm) proves nothing.
+    /// Whether `key` signed this connection's challenge and may stand for the record: the key
+    /// it holds. A record holding none (minted with a mint admin) proves nothing.
     pub fn verify(&self, by_listener: bool, challenge: &[u8; 32], listener_key: &[u8; 32]) -> bool {
-        let CreationRecord::KeyActor { public_key, .. } = &self.record else { return false };
-        public_key.as_slice() == self.key.as_slice() && VerifyingKey::from_slice(&self.key).is_ok_and(|k| k.verify(Domain::ConnectionProof, &proof_digest(by_listener, challenge, listener_key), &self.sig).is_ok())
+        self.record.key().is_some_and(|k| k.0 == self.key) && VerifyingKey::from_slice(&self.key).is_ok_and(|k| k.verify(Domain::ConnectionProof, &proof_digest(by_listener, challenge, listener_key), &self.sig).is_ok())
     }
 
     pub fn to_value(&self) -> Value {
@@ -74,7 +73,7 @@ mod tests {
 
     fn prover(seed: u8) -> Prover {
         let key = SigningSecret::from_seed(&Secret32::from_bytes([seed; 32]));
-        let record = CreationRecord::KeyActor { alg: 1, public_key: key.verifying_key().to_bytes().to_vec(), nonce: [seed; 32] };
+        let record = CreationRecord::with_key(osis_base::SignKey(key.verifying_key().to_bytes()), [seed; 32]);
         Prover { key, record }
     }
 
@@ -90,7 +89,7 @@ mod tests {
         assert!(!p.verify(false, &c, &[3; 32]), "another listener");
         let mut forged = p.clone();
         forged.record = prover(8).record;
-        assert!(!forged.verify(false, &c, &l), "another actor's record");
+        assert!(!forged.verify(false, &c, &l), "another thing's record");
     }
 
     // spec/wire.md §11.2 Prove: checking stops at the first proof that does not verify: the ones
@@ -105,11 +104,11 @@ mod tests {
         assert_eq!(verified(vec![bad, good, also], false, &c, &l), Vec::new(), "a bad first proof ends it");
     }
 
-    // spec/wire.md §11.2 Prove: a record that names no key actor proves nothing
+    // spec/wire.md §11.2 Prove: a record holding no key proves nothing
     #[test]
     fn record_of_a_thing_proves_nothing_spec_wire_11_2() {
         let mut p = prover(9).sign(false, &[1; 32], &[2; 32]);
-        p.record = CreationRecord::Thing { admin: Tid::from_bytes([1; 15]), nonce: [0; 32], link: None, expires: None };
+        p.record = CreationRecord::with_admin(Tid::from_bytes([1; 15]), [0; 32]);
         assert!(!p.verify(false, &[1; 32], &[2; 32]));
     }
 

@@ -79,7 +79,6 @@ fn jumped_person(b: u8) -> ActorEpochs {
 #[test]
 fn jumped_mint_admin_rotation_steps_a_dependent_thing() {
     let (p, u) = (tid(2), tid(11));
-    let s1 = Secret32::from_bytes([0x51; 32]);
     for b in 0..32u8 {
         let mut pe = jumped_person(b);
         let before = ActorEpochs::derived(&pe, &u);
@@ -87,7 +86,7 @@ fn jumped_mint_admin_rotation_steps_a_dependent_thing() {
         let head = [s, w, ad];
         assert!(!newer_than_head(&before, head));
         // k2 removed: the rotation boxes k1 only
-        let r = osis_keys::rotate(&p, &roles_up_to(Role::Admin), &pe, &Default::default(), &[key_rcpt(tid(3), Role::Admin, &s1)], &osis_keys::Names::default(), &mut rng(b.into())).unwrap();
+        let r = osis_keys::rotate(&p, &roles_up_to(Role::Admin), &pe, &Default::default(), &[actor_rcpt(tid(3), Role::Admin, &actor_epochs(0x51))], &osis_keys::Names::default(), &mut rng(b.into())).unwrap();
         pe = r.preview(&pe).unwrap();
         let after = ActorEpochs::derived(&pe, &u);
         assert!(newer_than_head(&after, head), "seed {b}");

@@ -15,9 +15,9 @@ use osis_base::memo::Effects;
 use osis_store::Named;
 use std::sync::Arc;
 
-/// What `proven` counts for at its proof (spec/sync-opens.md §2): its node and its key actors.
+/// What `proven` counts for at its proof (spec/sync-opens.md §2): its node thing and its link keys.
 pub fn named(proven: &Proven) -> Named {
-    Named { node: proven.node, key_actors: proven.key_actors.keys().copied().collect() }
+    Named { node: proven.node, link_keys: proven.link_keys.keys().copied().collect() }
 }
 
 
@@ -203,7 +203,7 @@ fn node_creds(cx: &mut Cx, unread: &Unread, s: &SyncId) -> Option<Arc<Creds>> {
             for st in &rc.statics {
                 c.shows.push((Shown::Static(*st), None));
             }
-            // the static entries of the key actors it acts for (its link, spec/sync-opens.md §4)
+            // the static entries of the link keys it acts for (its link, spec/sync-opens.md §4)
             for k in &rc.acting {
                 c.tests.push((Tested::Static { key: k.clone(), step: None }, None));
             }

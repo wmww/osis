@@ -11,7 +11,7 @@ use crate::ids::{CreationRecord, Tid};
 pub enum RecordLink {
     /// An ordinary thing's mint admin: the record chain goes on to that actor.
     Admin(Tid),
-    /// A key actor: the top of its chain.
+    /// A thing minted with a key: the top of its chain.
     Key,
 }
 
@@ -27,7 +27,7 @@ impl CreationRecord {
 pub enum ChainStep {
     /// `thing`'s mint admin is `admin`, where the walk goes on.
     Up { thing: Tid, admin: Tid },
-    /// `thing` is a key actor: the top.
+    /// `thing` is minted with a key: the top.
     Key(Tid),
     /// `thing`'s creation record is not known to the lookup.
     Unknown(Tid),
@@ -46,7 +46,7 @@ impl ChainStep {
 }
 
 /// The steps up `t`'s record chain, `t` first, with creation records looked up by `lookup`: one
-/// `Up` per link, then the end (a key actor, an unknown record, or `TooDeep` after
+/// `Up` per link, then the end (a thing minted with a key, an unknown record, or `TooDeep` after
 /// `MAX_CHAIN_DEPTH` links). At most `MAX_CHAIN_DEPTH + 2` steps, so a cycle ends too.
 pub fn record_chain<F: FnMut(&Tid) -> Option<RecordLink>>(t: Tid, lookup: F) -> RecordChain<F> {
     RecordChain { at: Some((t, 0)), lookup }
@@ -141,7 +141,7 @@ mod tests {
     #[test]
     fn record_link_of_each_record() {
         let nonce = [7; 32];
-        assert_eq!(CreationRecord::Thing { admin: tid(1), nonce, link: None, expires: None }.record_link(), RecordLink::Admin(tid(1)));
-        assert_eq!(CreationRecord::KeyActor { alg: 1, public_key: vec![0; 32], nonce }.record_link(), RecordLink::Key);
+        assert_eq!(CreationRecord::with_admin(tid(1), nonce).record_link(), RecordLink::Admin(tid(1)));
+        assert_eq!(CreationRecord::with_key(crate::SignKey([0; 32]), nonce).record_link(), RecordLink::Key);
     }
 }

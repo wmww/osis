@@ -159,7 +159,7 @@ fn overlapping_counters_spec_commits_4() {
     let mut cb = CommitBuilder::new(Kind::Content, ts, b, osis_commit::Path::default(), h.form);
     cb.aspects.push(aw);
     let rec = lp.peers[0].engine.get_typed(&d, &osis_schema::core_types::CREATED).unwrap().unwrap();
-    let forge_key = lp.peers[1].engine.identity().keys().signing.clone();
+    let forge_key = lp.peers[1].engine.identity().signing().clone();
     let built = cb.build(&forge_key, &lp.peers[0].engine.hand_secrets(&[rec]), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(0)).unwrap();
     sync(&mut lp, 1, 0);
     assert_eq!(lp.peers[0].engine.get(&d, &other).unwrap(), Some(s("first")));
@@ -188,7 +188,7 @@ fn forge_reg_keyed(lp: &mut LocalPeer, d: Tid, ak: &osis_base::Ak, lo: u64, ts: 
     let mut cb = CommitBuilder::new(Kind::Content, ts, b, osis_commit::Path::default(), form);
     cb.aspects.push(aw);
     let rec = lp.peers[0].engine.get_typed(&d, &osis_schema::core_types::CREATED).unwrap().unwrap();
-    let forge_key = lp.peers[1].engine.identity().keys().signing.clone();
+    let forge_key = lp.peers[1].engine.identity().signing().clone();
     let secrets = lp.peers[0].engine.hand_secrets(&[rec]);
     let secrets = if listed { secrets } else { secrets.all_made_up() };
     cb.build(&forge_key, &secrets, &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(0)).unwrap().commit.encode()
@@ -329,7 +329,7 @@ fn equivocation_under_snapshot_dot_reads_snapshot_copy_spec_perm_5_2() {
 // uncompacted register write: her frontier lists both, compacted or not; both stay, at Alice
 // and at a fresh node that never gets the compacted commit (the snapshot vouches for it).
 #[test]
-#[ignore = "accounts: keys"]
+#[ignore = "accounts: making an account"]
 fn frontier_lists_compacted_too_snapshot_vouches_at_fresh_node_spec_perm_5_1() {
     let (mut lp, d, b, _) = setup();
     let tags_ak = ak("t:tags.0");
@@ -414,7 +414,7 @@ fn reused_counters_never_void_a_grant_spec_commits_4() {
     cb.aspects.push(aw);
     let rec = lp.peers[0].engine.get_typed(&d, &osis_schema::core_types::CREATED).unwrap().unwrap();
     // a session-form role commit is refused when built and when received (spec/commits.md §4)
-    let forge_key = lp.peers[0].engine.identity().keys().signing.clone();
+    let forge_key = lp.peers[0].engine.identity().signing().clone();
     let e = cb.build(&forge_key, &lp.peers[0].engine.hand_secrets(&[rec]), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(0)).unwrap_err();
     assert!(e.to_string().contains("session form outside a content commit"), "{e}");
     assert_eq!(lp.peers[1].engine.role_on(&d), Some(Role::Write));
@@ -506,7 +506,7 @@ fn forge_acting(lp: &mut LocalPeer, d: Tid, actor: Tid, v: &str) -> Vec<u8> {
     let mut cb = CommitBuilder::new(Kind::Content, ts, b, path, Form::Commit);
     cb.aspects.push(aw);
     let rec = lp.peers[0].engine.get_typed(&d, &osis_schema::core_types::CREATED).unwrap().unwrap();
-    let forge_key = lp.peers[1].engine.identity().keys().signing.clone();
+    let forge_key = lp.peers[1].engine.identity().signing().clone();
     cb.build(&forge_key, &lp.peers[0].engine.hand_secrets(&[rec]), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(0)).unwrap().commit.encode()
 }
 
@@ -574,46 +574,6 @@ fn an_unjudgeable_edge_write_is_no_evidence_spec_commits_4() {
     assert_eq!(e1.get(&x, &ak("t:reg.0")).unwrap(), Some(s("as q again")));
 }
 
-// spec/permissions.md §1 Key actor ("No edge write targets a key actor: it has no roster"): the
-// engine refuses an edge write on a key actor, its own included; one a hostile writer makes
-// anyway (peer 2 giving B write on its own key actor, as a "holder") applies nowhere at any node:
-// no roster entry, no role, the edge write unapplied by the walk.
-#[test]
-#[ignore = "accounts: keys"]
-fn an_edge_write_on_a_key_actor_is_refused_and_applies_nowhere_spec_permissions_1() {
-    let mut lp = net(3, 0);
-    lp.sync_all().unwrap();
-    let (b, k2) = (lp.peers[1].engine.me(), lp.peers[2].engine.me());
-    let write = |k: Tid| {
-        let mut m = Mutation::new();
-        m.op(k, &osis_schema::core_types::ROLES, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(Value::Weak(b))], op: osis_crdt::Op::Set(edge(Role::Write).to_value()) }).unwrap();
-        m
-    };
-    // on its own key actor, where it holds admin, and on another's, where it holds nothing
-    let r = lp.peers[2].engine.commit(write(k2));
-    assert!(matches!(r, Err(osis_engine::Error::Misuse(m)) if m.contains("key actor")), "{r:?}");
-    let k0 = lp.peers[0].engine.me();
-    assert!(lp.peers[2].engine.commit(write(k0)).is_err());
-    assert!(matches!(lp.peers[2].engine.grant(&k2, &b, &edge(Role::Write)), Err(osis_engine::Error::Misuse(_))));
-    lp.peers[2].engine.core.skip_writer_rules = true;
-    let id = lp.peers[2].engine.commit(write(k2)).unwrap().unwrap();
-    lp.peers[2].engine.core.skip_writer_rules = false;
-    lp.advance(1_000);
-    let pk = lp.peers[2].engine.package(&id).unwrap().unwrap();
-    for i in [0, 1] {
-        lp.deliver(i, &pk).unwrap();
-    }
-    for i in 0..3 {
-        let e = &lp.peers[i].engine;
-        assert!(e.header(&id).is_some(), "peer {i} holds the write");
-        assert_eq!(e.roster(&k2).get(&b), None, "peer {i}");
-        assert_eq!(e.key_role(&k2, &b), None, "peer {i}");
-        if let Some(tl) = e.core.timelines().get(&k2) {
-            assert!(tl.held_on(&k2).all(|(w, _, _)| !tl.is_applied(&w)), "peer {i}: applied");
-        }
-    }
-}
-
 /// A role commit signed by peer `by`'s key writing `v` to `ak` on `t`, built by hand past
 /// the writer-side rules; its counters start at `lo`.
 pub(crate) fn forge_role_commit(lp: &mut LocalPeer, by: usize, t: Tid, ak: &osis_base::Ak, v: &Value, lo: u64) -> Vec<u8> {
@@ -647,7 +607,7 @@ pub(crate) fn forge_by(by: &osis_engine::Engine, secrets: &osis_engine::engine::
     aw.purge_by = osis_commit::retention::write_purge_by(ak.as_str(), None, None).unwrap();
     let mut cb = CommitBuilder::new(kind, ts, author, path, Form::Commit);
     cb.aspects.push(aw);
-    let forge_key = by.identity().keys().signing.clone();
+    let forge_key = by.identity().signing().clone();
     cb.build(&forge_key, secrets, &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(0)).unwrap().commit.encode()
 }
 
@@ -687,7 +647,8 @@ fn void_grant_by_leaver_keeps_no_secrets_spec_perm_3() {
     lp.sync_all().unwrap();
     assert_eq!(lp.peers[2].engine.role_on(&d), None);
     lp.peers[2].engine.drop_lost_secrets().unwrap();
-    assert!(lp.peers[2].engine.epochs(&d).is_none(), "Carol kept D's secrets");
+    // the epochs of D's mint admin Carol observed (its keysets, as evidence) derive no secret
+    assert!(!lp.peers[2].engine.epochs(&d).is_some_and(|e| e.holds_any()), "Carol kept D's secrets");
 }
 
 // spec/permissions.md §1 (role-class by admins): a writer's `sync.0` write, forged past its own node's writer-side refusal, is invalid where it is received (the
@@ -805,7 +766,7 @@ fn admin_only_snapshot_by_writer_invalid_spec_perm_5_2() {
 // the snapshot) keep both, whether the revoke arrives after the snapshot or before it, across a
 // restart and a re-grant.
 #[test]
-#[ignore = "accounts: keys"]
+#[ignore = "accounts: making an account"]
 fn snapshot_vouches_for_its_writes_spec_perm_5_2() {
     for revoke_first in [false, true] {
         let (mut lp, d, b, _) = setup();
@@ -1010,7 +971,7 @@ fn put_at(lp: &mut LocalPeer, i: usize, t: Tid, path: &[&str], v: Value) {
 // (function of the held set), spec/permissions.md §5.1: alike with Dave receiving Carol's write
 // inside "late" before her snapshot (dated after it, as spec/crdt.md §8 requires).
 #[test]
-#[ignore = "accounts: keys"]
+#[ignore = "accounts: making an account"]
 fn entry_created_after_demotion_spec_perm_5_2() {
     for snapshot_first in [true, false] {
         entry_created_after_demotion(snapshot_first);
@@ -1461,7 +1422,7 @@ fn unmerge_paged_matches_fresh_large_spec_crdt_4_6() {
 // Bob's commit whole before Carol's; a node never getting the rest agrees with itself in either
 // order.
 #[test]
-#[ignore = "accounts: keys"]
+#[ignore = "accounts: making an account"]
 fn late_invalid_part_unmerges_alike_spec_crdt_4_6() {
     let (mut lp, d, b, _) = setup();
     // Bob's independent thing (its own secrets: he grants read on it)
@@ -1961,7 +1922,7 @@ fn a_readers_snapshot_changes_nothing_spec_perm_5_2() {
 // snapshot is stripped like Carol's other writes and Bob's tag goes at Dave (Alice, holding Bob's
 // commit, keeps it), whichever of the snapshot and the demotion Dave gets first, across a restart.
 #[test]
-#[ignore = "accounts: keys"]
+#[ignore = "accounts: making an account"]
 fn demoted_compactor_snapshot_by_frontier_spec_perm_5_2() {
     for (covered, demote_first) in [(true, false), (true, true), (false, false), (false, true)] {
         let (mut lp, d, b, c) = setup();
@@ -2158,7 +2119,7 @@ fn snapshot_extra_dot_of_dropped_delta_joins_alike_spec_perm_5_2() {
 // and at nodes holding Bob's commits too, in every order of the snapshot, the revoke and "x"
 // and "y" themselves, and after a rebuild of the state and a restart.
 #[test]
-#[ignore = "accounts: keys"]
+#[ignore = "accounts: making an account"]
 fn removed_holder_write_compacted_earlier_stays_alike_spec_perm_5_2() {
     let (mut lp, d, b, _) = setup();
     let id_of = |lp: &mut LocalPeer, i: usize| lp.peers[i].engine.commit_ids().into_iter().filter(|c| lp.peers[i].engine.header(c).is_some_and(|h| h.signer == b && h.aspects.iter().any(|a| a.ak.as_str() == "t:tags.0"))).max_by_key(|c| lp.peers[i].engine.header(c).unwrap().ts).unwrap();
@@ -2679,7 +2640,7 @@ fn missing_snapshot_not_covered_by_older_spec_perm_5_2() {
 // (valid, then invalid) or after the removal, the fresh node's frontier for Bob lists exactly
 // his received commits, also after a restart.
 #[test]
-#[ignore = "accounts: keys"]
+#[ignore = "accounts: making an account"]
 fn flipped_snapshot_leaves_frontier_alike_spec_perm_5_2() {
     let (mut lp, d, b, c) = setup();
     add_tag(&mut lp, 1, d, "bob");
@@ -2789,7 +2750,7 @@ fn listed_part_peer(lp: &mut LocalPeer, d: Tid, held: &BTreeSet<osis_base::Commi
 // does not, also after a restart; at a node that got the removal first, the part joins once it
 // arrives.
 #[test]
-#[ignore = "accounts: keys"]
+#[ignore = "accounts: making an account"]
 fn part_listed_by_invalid_snapshot_applies_alike_in_any_order_spec_commits_4() {
     for commit_form in [false, true] {
         let (mut lp, d, held, ids) = listed_part_setup(commit_form);
@@ -2823,7 +2784,7 @@ fn part_listed_by_invalid_snapshot_applies_alike_in_any_order_spec_commits_4() {
 // reaching the node only through it, his header held) is not in a frontier backdated to before
 // it came.
 #[test]
-#[ignore = "accounts: keys"]
+#[ignore = "accounts: making an account"]
 fn late_snapshot_part_received_when_it_came_spec_perm_5_1() {
     let (mut lp, d, b, _) = setup();
     add_tag(&mut lp, 1, d, "bob");
@@ -2873,7 +2834,7 @@ fn late_snapshot_part_received_when_it_came_spec_perm_5_1() {
 // claims, is invalid at Alice and at fresh nodes getting it before or after the removal, and its
 // header alone shows nothing of it.
 #[test]
-#[ignore = "accounts: keys"]
+#[ignore = "accounts: making an account"]
 fn inflated_snapshot_claims_count_nothing_spec_crdt_8() {
     let tags_ak = ak("t:tags.0");
     for (n, snap_first) in [true, false].into_iter().enumerate() {
@@ -2960,7 +2921,7 @@ fn forge_minting(lp: &mut LocalPeer, by: usize, rec: &osis_base::CreationRecord,
     let mut cb = CommitBuilder::new(Kind::Content, ts, author, path, form);
     cb.aspects.push(aw);
     cb.expires = expires;
-    let forge_key = lp.peers[by].engine.identity().keys().signing.clone();
+    let forge_key = lp.peers[by].engine.identity().signing().clone();
     Ok(cb.build(&forge_key, &lp.peers[0].engine.hand_secrets(std::slice::from_ref(rec)), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(0)).map_err(|e| format!("{e:?}"))?.commit.encode())
 }
 
@@ -3205,7 +3166,7 @@ fn late_joiner_after_compaction_keeps_writes_spec_crdt_8() {
 // superseded "one" stays valid where held; a new node never given it reads alike. Past the
 // keep-at-least window both are still listed.
 #[test]
-#[ignore = "accounts: keys"]
+#[ignore = "accounts: making an account"]
 fn frontier_lists_kept_writes_compacted_or_not_spec_perm_5_1() {
     let (mut lp, d, b, _) = setup();
     let kept = ak("t:kept.0");
@@ -3295,7 +3256,7 @@ fn forge_on(lp: &mut LocalPeer, k: Tid, a: &str) -> osis_commit::CommitBlob {
     }
     cb.aspects.push(w);
     let rec = lp.peers[0].engine.get_typed(&k, &osis_schema::core_types::CREATED).unwrap().unwrap();
-    let forge_key = lp.peers[1].engine.identity().keys().signing.clone();
+    let forge_key = lp.peers[1].engine.identity().signing().clone();
     cb.build(&forge_key, &lp.peers[0].engine.hand_secrets(&[rec]), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(0)).unwrap().commit
 }
 
@@ -3353,7 +3314,7 @@ fn forge_parts(lp: &mut LocalPeer, by: usize, holder: usize, parts: &[ForgedPart
             recs.push(r.clone());
         }
     }
-    let forge_key = lp.peers[by].engine.identity().keys().signing.clone();
+    let forge_key = lp.peers[by].engine.identity().signing().clone();
     // a thing given no record (its part sent header only) gets a made-up dedup secret
     let mut secrets = lp.peers[holder].engine.hand_secrets(&recs);
     secrets.unknown = Some(osis_crypto::Secret32::from_bytes([0; 32]));
@@ -3393,7 +3354,10 @@ fn stranger_undo_listing_moves_no_step_back_spec_crdt_4_6() {
         };
         if let Some(blob) = forged {
             let id = blob.id();
-            assert_eq!(lp.peers[0].receive(&blob.encode(), Vec::new()).unwrap(), Ingested::Applied(id), "{variant}");
+            let got = lp.peers[0].receive(&blob.encode(), Vec::new()).unwrap();
+            // its own node thing is no thing the receiver holds: its part waits there
+            let applied = got == Ingested::Applied(id) || variant == "undo valid elsewhere" && got == Ingested::Pending(id, osis_engine::Reason::Outside(me));
+            assert!(applied, "{variant}: {got:?}");
         }
         lp.advance(1_000);
         assert!(lp.peers[0].engine.revert(&c1).unwrap().is_some(), "{variant}: the undo writes");
@@ -3584,7 +3548,7 @@ fn kick_reads_bodies_down_to_its_winner() {
 // first y. A node holding Bob's commit reads as a node that never got it (y and z at X's place,
 // at the end; the list absent), whether it arrived invalid or flipped (Carol's node).
 #[test]
-#[ignore = "accounts: keys"]
+#[ignore = "accounts: making an account"]
 fn invalid_insert_leaves_no_trace_in_order_spec_crdt_6_1() {
     use osis_crdt::{Op, PathOp, PathSeg};
     let (mut lp, d, b, _) = setup();
@@ -4033,7 +3997,7 @@ fn resigned(lp: &mut LocalPeer, c: &osis_commit::CommitBlob, entries: Vec<Vec<u8
 fn resigned_with(lp: &mut LocalPeer, c: &osis_commit::CommitBlob, path: osis_commit::Paths) -> osis_commit::CommitBlob {
     let mut h = c.header.clone();
     h.path = path;
-    let key = lp.peers[1].engine.identity().keys().signing.clone();
+    let key = lp.peers[1].engine.identity().signing().clone();
     let id = h.id();
     let sigs = osis_commit::Sigs::signed(&id, &key);
     osis_commit::CommitBlob { header: h, sigs, parts: Vec::new(), keys: BTreeMap::new() }

@@ -1091,7 +1091,7 @@ fn a_grant_after_its_thing_became_independent_brings_the_history_its_boxes_open_
 // 1 alone: its view still holds X, so it logs X's value there again; node 0, meeting node 1
 // alone, takes Y -> X and reads X again from the store.
 #[test]
-#[ignore = "accounts: keys"]
+#[ignore = "accounts: making an account"]
 fn a_thing_left_by_one_view_is_logged_again_by_one_still_holding_it_spec_sync_set_3() {
     let (mut w, t, s) = crate::harness::history::three(crate::harness::history::Gives::Writes, 2);
     let x = make_in(&mut w, 0, t, "x");

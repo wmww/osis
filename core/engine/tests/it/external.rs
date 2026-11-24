@@ -336,7 +336,7 @@ fn carried_on(lp: &LocalPeer, i: usize, x: &Tid) -> Vec<CommitId> {
 // account. Bob holds the offer and syncs X. Past the inbox lifetime the offer is gone and Bob
 // reads X as before: his role is by X's grants.
 #[test]
-#[ignore = "accounts: keys"]
+#[ignore = "accounts: making an account"]
 fn a_grant_outlives_its_offer_spec_sync_inbox_5() {
     let (mut lp, ps) = people(2);
     let x = crate::flows::thing_of(&mut lp, 0, ps[0]);
@@ -417,7 +417,6 @@ fn an_ended_grant() -> (LocalPeer, Tid, osis_engine::sync::SealedFireOut) {
 // removal is the later write: the grant's sealed fire offered again within the inbox lifetime (a
 // store's stale copy, or anyone who kept it) is judged against it and gives Bob nothing.
 #[test]
-#[ignore = "accounts: keys"]
 fn a_replayed_offer_of_an_ended_grant_gives_no_role_spec_sync_inbox_5() {
     let (mut lp, x, grant) = an_ended_grant();
     lp.advance(3_600_000);
@@ -432,7 +431,6 @@ fn a_replayed_offer_of_an_ended_grant_gives_no_role_spec_sync_inbox_5() {
 // its keep is no offer): past the inbox lifetime Bob's node holds nothing of X, and the grant's
 // sealed fire offered again is past its keep too: never taken.
 #[test]
-#[ignore = "accounts: keys"]
 fn an_offer_past_its_keep_is_never_taken_spec_sync_inbox_5() {
     let (mut lp, x, grant) = an_ended_grant();
     lp.advance(osis_base::format::INBOX_LIFETIME_MS + 3_600_000);
@@ -482,16 +480,17 @@ fn a_held_grant_counts_only_where_its_thing_is_synced_spec_sync_set_2() {
     assert_eq!(lp.peers[1].engine.get(&x, &ak("t:reg.0")).unwrap(), Some(s("x")), "Bob reads X");
 }
 
-// spec/sync-inbox.md §1: Alice grants her node, a key actor, read on
-// X: no fire goes, and the grant is X's as any.
+// spec/permissions.md §4 (Delivering an edge piece): Alice grants her node thing read on X: the
+// node writes its node thing, whose key part carries the grant, so no fire goes, and the grant is
+// X's as any.
 #[test]
-#[ignore = "accounts: keys"]
-fn a_grant_to_a_key_actor_fires_nothing_spec_sync_inbox_1() {
+#[ignore = "accounts: making an account"]
+fn a_grant_to_the_node_thing_fires_nothing_spec_permissions_4() {
     let (mut lp, ps) = people(1);
     let x = crate::flows::thing_of(&mut lp, 0, ps[0]);
     let node = lp.peers[0].engine.tid();
     let owed = lp.peers[0].engine.fires_owed();
     lp.peers[0].engine.grant(&x, &node, &edge_of(Role::Read)).unwrap();
-    assert_eq!(lp.peers[0].engine.fires_owed(), owed, "a key actor has no inbox: no fire");
+    assert_eq!(lp.peers[0].engine.fires_owed(), owed, "its node writes it: no fire");
     assert!(lp.peers[0].engine.roster(&x).contains_key(&node), "granted");
 }

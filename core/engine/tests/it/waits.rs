@@ -426,7 +426,7 @@ fn list_element_stays_beside_snapshot_before_expiry_spec_crdt_4_7() {
 // writer's edit in it stays held but shows nothing, whichever of the request, the creation and the
 // edit arrives first.
 #[test]
-#[ignore = "accounts: keys"]
+#[ignore = "accounts: making an account"]
 fn purged_list_element_takes_edit_in_any_order_spec_crdt_4_7() {
     let k = ak("t:list.0");
     let mut lp = net(3, 0);
@@ -535,7 +535,7 @@ fn snapshot_past_expiry_beside_body_spec_crdt_4_7() {
 // writer's edit in it arriving first or last, before or after T, reads and holds alike, and goes
 // from the read with it past T.
 #[test]
-#[ignore = "accounts: keys"]
+#[ignore = "accounts: making an account"]
 fn list_element_expiry_in_any_order_spec_crdt_5_7() {
     let k = ak("t:list.0");
     let (mut lp, t) = one_writer(2);

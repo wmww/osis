@@ -78,7 +78,7 @@ fn gone_at_unread(w: &mut World, s: &SyncId, held: &[BlobId]) -> bool {
 // are those the blob's prefix bears, and its level-2 key alone covers both. (Level 3 by a writer
 // that is not the author: `a_writer_deletes_only_what_it_may_purge_spec_sync_judgement_3`.)
 #[test]
-#[ignore = "accounts: keys"]
+#[ignore = "accounts: making an account"]
 fn a_writers_purge_of_its_own_write_deletes_it_at_a_node_keeping_s_unread_spec_sync_ids_6() {
     let (mut w, t, s) = three();
     let other = Ak::new("u:n.0").unwrap();
@@ -119,7 +119,7 @@ fn a_writers_purge_of_its_own_write_deletes_it_at_a_node_keeping_s_unread_spec_s
 // replaced one any writer may purge at the node keeping S unread (level 3), and the other stays
 // (it holds no level key there).
 #[test]
-#[ignore = "accounts: keys"]
+#[ignore = "accounts: making an account"]
 fn a_writer_deletes_only_what_it_may_purge_spec_sync_judgement_3() {
     let (mut w, t, s) = four();
     let other = Ak::new("u:n.0").unwrap();
@@ -179,7 +179,7 @@ fn purged_while_away(purger: usize, restart: bool) -> bool {
 // key) made while node 1 is away deletes the entry there once it is back. (By a writer's level
 // key: the next test, which also restarts the purger.)
 #[test]
-#[ignore = "accounts: keys"]
+#[ignore = "accounts: making an account"]
 fn a_purge_made_while_the_unread_store_is_away_deletes_there_on_return_spec_sync_judgement_3() {
     assert!(purged_while_away(0, false), "the purge deleted it at node 1 on return");
 }
@@ -191,7 +191,7 @@ fn a_purge_made_while_the_unread_store_is_away_deletes_there_on_return_spec_sync
 // again on the new connection, only once its digests agreed there. Fails with acts going on the
 // record's connection at its take (`Ground::connected` as `conn_of`).
 #[test]
-#[ignore = "accounts: keys"]
+#[ignore = "accounts: making an account"]
 fn an_owed_delete_waits_for_the_digests_to_agree_spec_sync_opens_3() {
     let (mut w, t, s, c, held) = written();
     w.power_off(1);
@@ -230,7 +230,7 @@ fn an_owed_delete_waits_for_the_digests_to_agree_spec_sync_opens_3() {
 // purging writer while node 1 is away; it signs from the prefix salt and aspects it kept of the
 // dropped blob (`BlobOf`), its bytes gone. (An admin's delete key needs no kept blob.)
 #[test]
-#[ignore = "accounts: keys"]
+#[ignore = "accounts: making an account"]
 fn an_owed_delete_survives_the_purgers_restart_spec_sync_judgement_3() {
     assert!(purged_while_away(2, true), "the purge deleted it at node 1 after the purger's restart");
 }
@@ -239,7 +239,7 @@ fn an_owed_delete_survives_the_purgers_restart_spec_sync_judgement_3() {
 // again only what is owed there, never each entry its stream shows: its leaving and return
 // judge as many bodies toward it with 2 entries shown as with 6.
 #[test]
-#[ignore = "accounts: keys"]
+#[ignore = "accounts: making an account"]
 fn a_source_coming_back_judges_only_what_is_owed_there() {
     let toward = |n: usize| {
         let (mut w, t, _) = three();
@@ -265,7 +265,7 @@ fn a_source_coming_back_judges_only_what_is_owed_there() {
 // spec/sync-set.md §2 (Sync set; kept unread): node 1 keeps S unread by its sync grant; after
 // a restart S stays in its sync set.
 #[test]
-#[ignore = "accounts: keys"]
+#[ignore = "accounts: making an account"]
 fn a_sync_id_kept_unread_by_a_grant_stays_synced_across_a_restart_spec_sync_set_2() {
     let (mut w, t, s) = three();
     let unread = Some((std::collections::BTreeSet::from([t]), osis_engine::sync::Holding::Unread));
@@ -279,7 +279,7 @@ fn a_sync_id_kept_unread_by_a_grant_stays_synced_across_a_restart_spec_sync_set_
 // by the target's grants, whatever becomes of the fire): node 1 keeps S unread by the grant its
 // fire carried; past the inbox's lifetime the fire is gone and it keeps S as before.
 #[test]
-#[ignore = "accounts: keys"]
+#[ignore = "accounts: making an account"]
 fn a_grant_outlives_its_offer_spec_sync_inbox_5() {
     let (mut w, t, s) = three();
     w.advance(osis_base::format::INBOX_LIFETIME_MS + 86_400_000);
@@ -305,7 +305,7 @@ fn two_parts(w: &mut World, t: Tid, marker: &str) -> CommitId {
 // old blob from the node keeping S unread once the rewrite is there; the other part still reads,
 // and the purged one reads as if never written.
 #[test]
-#[ignore = "accounts: keys"]
+#[ignore = "accounts: making an account"]
 fn a_purge_of_one_part_rewrites_the_blob_everywhere_spec_sync_judgement_2() {
     let (mut w, t, s) = three();
     // what the purged write replaced: the read once it is gone (spec/crdt.md §4.7)
