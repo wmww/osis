@@ -18,7 +18,9 @@ Each binary's budget is its line in tools/test_cost.txt; each new default test n
 5. **A body's facts derived again per write on its aspect**: a part's date reads the aspect's state row, own covers read the author's newest own replace: O(n) per write (issues/derived-state-recomputed.md item 2).
 6. **Memos re-run on unchanged answers**: `Core::bound_to_horizon` and `may_rotate` read a component's whole timeline (issues/derived-state-recomputed.md item 3).
 7. **The forensic attack** in a sync world (`deletes::a_purged_or_replaced_part_*`): the path it guards exists only in a sync world, so it stays; its cost is candidates times sealed sections (`Trial`'s section key derivation, `Keystream::new`, zeroizing).
-8. Allocation (`Value` trees for epochs and schema reads, fragment clones where a join could consume its side, `kdf_key` formatting its purpose per call); redb serializing its allocator state at every open and close (most of osis-cli's `cli::*`).
+8. **A large map written whole** (osis `api::values_past_limits_error`, `a_whole_read_loads_at_most_its_bound`): about 0.5 M instructions per entry of a 10-20k-entry map, half the drop's `checked_index` (`rows_exact_on` streams the part again), half the paged join (`join_part` per page: `set_state_touched`, `rewrite_set`, `Killed::note`). Count per page at n and 10n entries before changing it.
+9. Allocation (`Value` trees for epochs and schema reads, fragment clones where a join could consume its side, `kdf_key` formatting its purpose per call); redb serializing its allocator state at every open and close (about 15% of an osis-cli `cli::*` test on a directory store).
+10. **Each CLI call opens the store**: an open judges every held body again (`Read::settle`, about 40% of osis-cli `cli::named_keys_with_schema_plan_cli_1`) and its close runs the debug whole checks (about 25%), so a test of k calls on a growing store is O(k^2).
 
 Rejected: `opt-level` 2 for the workspace (3-10%); fake or memoized crypto in tests (debug and release differ, every forgery test must opt out).
 
