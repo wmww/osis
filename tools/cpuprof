@@ -1,8 +1,9 @@
 #!/bin/sh
 # tools/cpuprof OUT CMD...: runs CMD under a SIGPROF sampler (no perf or gdb on this box), then
 # prints the functions holding the most CPU samples, inclusive and self (notes/test-harnesses.md, Measuring).
-# Samples stay in OUT.<pid>; `tools/cpuprof --report OUT.<pid> [N] [FILTER...]` reprints them
-# (per FILTER: only samples with a frame whose name contains it; symbolized once for all). Builds cpuprof.c on first use. Sets
+# Samples stay in OUT.<pid>; `tools/cpuprof --report OUT.<pid> [N] [FILTER...] [--inlines]
+# [--callers FN] [--under FN]` reprints them (per FILTER: only samples with a frame whose name
+# contains it; inlined frames, FN's callers, FN's callees: tools/cpuprof_report.py). Builds cpuprof.c on first use. Sets
 # cargo's [env] (tools/cargo_env.sh), so a copied test binary runs what `cargo test` runs.
 set -e
 . "$(dirname "$0")/cargo_env.sh"

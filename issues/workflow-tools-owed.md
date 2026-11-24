@@ -1,5 +1,5 @@
 # Tool and harness fixes owed
-> Summary: Fixes to test harnesses and tools that agents asked for and that are too large for a quick fix: failure messages and dumps that name what failed, quiet checks that miss stuck states, cpuprof by caller, a generator census. Ordered by how much time each cost.
+> Summary: Fixes to test harnesses and tools that agents asked for and that are too large for a quick fix: failure messages and dumps that name what failed, quiet checks that miss stuck states, a generator census. Ordered by how much time each cost.
 > Priority: low
 > Tags: tests, tools
 
@@ -12,7 +12,6 @@
    - the sync trace: an entry that stays NotOpen shows `+entry` without `+commit` and nothing says why;
    - a held-in-part placement reports misses and bail-outs as bare bools.
 2. **Quiet checks that miss stuck states** (a test passed vacuously at half the seeds; a stale-read bug hid behind the second): a quiet end with a commit pending `WaitBlobs` on blobs a source shows; `World::parks` skipping store entries never opened.
-3. **cpuprof by caller and inlined frame**: `cpuprof_report.py` filters by one frame and symbolizes with `--no-inlines`, so inlined walks fold into their callers; splitting a cost by caller (`--callers FN`, `--under FN`) or by innermost source line (`llvm-symbolizer --inlines`) took private scripts.
-4. **Generator census and a no-room knob**: which of a model's generators write a shape took a temporary panic in `World::put`; the sync harness has no knob holding pushes back, so a test cannot tell an at-once lost-access drop from release's pass wait.
+3. **Generator census and a no-room knob**: which of a model's generators write a shape took a temporary panic in `World::put`; the sync harness has no knob holding pushes back, so a test cannot tell an at-once lost-access drop from release's pass wait.
 
 Seed-dependent fixtures (a fixture seed taken from an env var): issues/fixture-seed-luck.md.
