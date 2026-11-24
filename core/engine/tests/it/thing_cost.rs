@@ -134,7 +134,6 @@ fn what_a_thing_costs() {
 // What a second account reading an independent thing costs (notes/thing-cost.md): peer 0 grants peer
 // 1's account read on it; the grant's commits, what peer 1 stores and downloads, KEM operations.
 #[test]
-#[ignore = "accounts: keys"]
 fn what_a_reader_costs() {
     let (mut lp, ps) = people(2);
     let show = std::env::var_os("THING_COST").is_some();
@@ -145,6 +144,8 @@ fn what_a_reader_costs() {
         let t = e.new_thing(&mut m, ps[0]);
         m.set(t, &REG, &s("new")).unwrap();
         e.commit(m).unwrap().unwrap();
+        // measured from an independent thing: the grant alone
+        e.make_independent(&t).unwrap();
         crate::flows::spread(&mut lp);
         let (c0, r0) = (lp.peers[0].engine.census().unwrap(), lp.peers[1].engine.census().unwrap());
         costs::take();
@@ -197,7 +198,8 @@ fn what_a_reader_costs() {
     // the granter) keeps its held writes from here on, 4,460 B for its 50 writes (89 B a write,
     // notes/thing-cost.md): what dating replaced role bodies costs (spec/commits.md §5 Fixed
     // retention: a replaced one is kept `ROLE_KEEP` after replaced). The reader is measured past
-    // the inbox lifetime, the offer's fire forgotten (36,067 B, 40 B of it a history cursor of t
-    // the passing time writes, `hf/`: its last place out), and with the offer held (59,033 B)
+    // the inbox lifetime, the offer's fire forgotten (35,536 B, a history cursor of t the passing
+    // time writes among it, `hf/`: its last place out), and before (35,496 B: a node thing takes
+    // no grant fire, so no offer is held; offers reach a node through its account's inbox)
     assert!(*commits == 1 && *bytes < 4_000 && *reader < 36_200 && *offered < 59_200, "{:?}, rows by table:\n{rows}", each[1]);
 }

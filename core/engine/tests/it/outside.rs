@@ -166,7 +166,7 @@ fn content_dropped_as_not_carried_comes_back_when_the_minting_strong_does_spec_s
 // writes S, X's strong to W. Peer 1 takes W's commits and S before peer 2's grant (S waits for a
 // reach, W's content for W to enter), then the grant in the same pass.
 #[test]
-#[ignore = "accounts: keys"]
+#[ignore = "issues/node-root-independent.md"]
 fn a_grant_making_a_strong_valid_wakes_what_waits_on_its_target_spec_commits_4() {
     let reg = crate::common::ak("t:reg.0");
     let ((mut lp, x), ps) = base_n(3);

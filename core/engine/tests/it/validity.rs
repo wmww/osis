@@ -536,7 +536,6 @@ fn a_write_stated_through_an_ungranted_actor_pends_spec_commits_4() {
 // could rely on. Once 0 grants q write on x, the same forgery through o2 and a write as q after
 // both apply, the write valid: the forgery after the grant stalls nothing.
 #[test]
-#[ignore = "accounts: keys"]
 fn an_unjudgeable_edge_write_is_no_evidence_spec_commits_4() {
     let mut lp = net(2, 0);
     let x = new_shared(&mut lp, 0);
@@ -1153,17 +1152,23 @@ fn record_then_edge_chain_applies_spec_perm_1() {
 // on C to the thing at the cap lets n0 write C, the write applying at n0 and a receiver; through
 // the thing one link past it no path gives the role, and the write is refused.
 #[test]
-#[ignore = "accounts: keys"]
 fn record_chain_depth_edge_chain_spec_perm_1() {
     use osis_base::format::MAX_CHAIN_DEPTH;
     let mut lp = net(3, 0);
     lp.sync_all().unwrap();
     let mut up = lp.peers[0].engine.me();
+    let root = lp.peers[0].engine.node_root().unwrap();
     let mut chain = Vec::new();
-    for _ in 0..=MAX_CHAIN_DEPTH {
+    for i in 0..=MAX_CHAIN_DEPTH {
         let mut m = Mutation::new();
         up = lp.peers[0].engine.new_thing(&mut m, up);
-        lp.peers[0].commit(m).unwrap();
+        m.op(root, &osis_schema::core_types::HOLDS, osis_crdt::PathOp { path: vec![], op: osis_crdt::Op::Add(Value::Strong(up)) }).unwrap();
+        // the thing past the cap opens nothing here, so nothing holds it: made past the writer's rules
+        if i == MAX_CHAIN_DEPTH {
+            lp.peers[0].engine.commit_hostile(m).unwrap();
+        } else {
+            lp.peers[0].commit(m).unwrap();
+        }
         chain.push(up);
     }
     let (at_cap, past) = (chain[MAX_CHAIN_DEPTH - 1], chain[MAX_CHAIN_DEPTH]);

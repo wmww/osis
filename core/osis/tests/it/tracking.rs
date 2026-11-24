@@ -204,7 +204,7 @@ fn role_on_hears_roles_and_compares() {
 // with no commit (a reader cannot finalize it); a tracked `role_on` and `holders` hear it then (the
 // node wakes at the `until`), with no grants watch anywhere, and nothing before it.
 #[test]
-#[ignore = "accounts: keys"]
+#[ignore = "accounts: osis/CLI/app"]
 fn an_until_passing_tells_tracked_role_reads_spec_permissions_2() {
     let c = clock();
     let net = osis::internals::ManualNet::new(c.clone());
@@ -365,7 +365,7 @@ fn read_counts_say_what_a_pass_read_twice() {
 // moved. At n and 10n tracked things, a grant on another thing calls none of their listeners
 // and reads none of them again.
 #[test]
-#[ignore = "accounts: keys"]
+#[ignore = "accounts: osis/CLI/app"]
 fn tracked_role_reads_follow_their_thing_at_n_and_10n() {
     let other = db(9);
     let cost = |n: usize| {

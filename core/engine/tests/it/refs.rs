@@ -81,7 +81,6 @@ fn equal_set_values_count_once_spec_data_model_8() {
 // the chunked one's reference once they arrive, and then holds X and reads it. Removing the
 // element takes the reference at both.
 #[test]
-#[ignore = "accounts: keys"]
 fn a_reference_in_a_chunked_element_counts_as_one_inline_spec_data_model_6() {
     use osis_crdt::{Op, PathOp};
     let a = ak("x:a.0");
@@ -94,8 +93,8 @@ fn a_reference_in_a_chunked_element_counts_as_one_inline_spec_data_model_6() {
         let had = lp.commit_ids(0);
         let e = &mut lp.peers[0].engine;
         let mut m = Mutation::new();
-        // minted held by nothing but the element
-        let x = m.create(e.thing_record(e.me(), None));
+        // minted with S, held by nothing but the element
+        let x = m.create(e.thing_record(s, None));
         m.set(x, &REG, &Value::Str("x".into())).unwrap();
         // the element's encoding at the threshold, or a byte past it
         let elem = |n: usize| Value::List(vec![Value::Strong(x), Value::Str("p".repeat(n))]);
@@ -146,7 +145,6 @@ fn a_reference_in_a_chunked_element_counts_as_one_inline_spec_data_model_6() {
 // the writer; a reader given both commits without the element's chunks holds it once they
 // arrive; the flag off lets X go at both.
 #[test]
-#[ignore = "accounts: keys"]
 fn a_strong_in_a_chunked_element_of_held_history_holds_its_target_spec_data_model_8() {
     use osis_crdt::{Op, PathOp};
     let a = ak("x:a.0");
@@ -161,8 +159,8 @@ fn a_strong_in_a_chunked_element_of_held_history_holds_its_target_spec_data_mode
     let had = lp.commit_ids(0);
     let e = &mut lp.peers[0].engine;
     let mut m = Mutation::new();
-    // minted held by nothing but the element
-    let x = m.create(e.thing_record(e.me(), None));
+    // minted with S, held by nothing but the element
+    let x = m.create(e.thing_record(s, None));
     m.set(x, &REG, &Value::Str("x".into())).unwrap();
     let elem = Value::List(vec![Value::Strong(x), Value::Str("p".repeat(osis_base::format::CHUNK_THRESHOLD))]);
     m.set(s, &a, &Value::Set([elem.clone()].into_iter().collect())).unwrap();

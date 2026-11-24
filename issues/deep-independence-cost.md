@@ -3,4 +3,4 @@
 > Priority: normal
 > Tags: engine
 
-Seen building `edge_on_deep_thing_not_held_spec_permissions_1` (core/engine/src/apply/tests_validity.rs), which now makes the chain's top independent instead. Count the work (records read, epochs derived, rotations considered) at depth 8 and 64 to find what grows.
+`record_chain_depth_edge_chain_spec_perm_1` (osis-engine `it`, a 65-deep chain of held dependents) takes about 7 s. Seen building `edge_on_deep_thing_not_held_spec_permissions_1` (core/engine/src/apply/tests_validity.rs), which now makes the chain's top independent instead. Count the work (records read, epochs derived, rotations considered) at depth 8 and 64 to find what grows.

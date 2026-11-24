@@ -1862,7 +1862,7 @@ fn frozen_holder_through_a_keyless_grant_is_boxed_nothing_spec_crypto_4() {
 // keyless (T2 holds U first); once all three are destroyed, X's admin boxes M read alone: the
 // admin path never gave M's members X's admin secret, and its destruction gives them nothing
 #[test]
-#[ignore = "accounts: keys"]
+#[ignore = "issues/node-root-independent.md"]
 fn frozen_holder_keyed_at_the_role_of_its_keyed_paths_spec_crypto_4() {
     let mut lp = LocalPeer::new(2, 0, T0).unwrap();
     let me = lp.peers[0].engine.me();

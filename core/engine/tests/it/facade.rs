@@ -14,13 +14,13 @@ use std::collections::BTreeSet;
 
 // spec/sync-ids.md §3 (claim key: a listed reader derives it from its own key and the step key),
 // §4 (owner), spec/sync-opens.md §4 (admissible: read secrets at a current epoch, the head's sync
-// proof).
+// proof): of the node thing D's sync ID, whose genesis step lists no reader (its minting boxes
+// nobody: spec/permissions.md §3), so the node derives no claim key there.
 #[test]
-#[ignore = "accounts: keys"]
 fn read_credentials_and_claim_key_spec_sync_ids_3() {
     let (mut lp, _) = people(1);
     let e = &mut lp.peers[0].engine;
-    let d = e.node_root().unwrap();
+    let d = e.me();
     let ds = e.sync_id_of(&d).unwrap().unwrap();
     let ids = e.sync_ids(&d).unwrap();
     assert_eq!(ids.len(), 1);
@@ -31,9 +31,8 @@ fn read_credentials_and_claim_key_spec_sync_ids_3() {
     assert_eq!(rc.head.as_ref().map(|s| s.id()), Some(head.id()));
     assert!(!rc.read_secrets.is_empty(), "a current read secret");
     assert_eq!(rc.proofs.first().map(|p| p.0), Some(head.id()), "the head's sync proof first");
-    let ck = e.claim_key(&ds, &head.id()).unwrap().expect("this node is listed at genesis");
-    let (_, Some(claims)) = &ids[0].path.steps[0] else { panic!("claim set held") };
-    assert!(claims.claims.contains(&ck.verifying_key().to_bytes()));
+    assert!(e.claim_key(&ds, &head.id()).unwrap().is_none(), "nobody is listed at genesis");
+    assert!(matches!(&ids[0].path.steps[0], (_, Some(_))), "its claim set held");
 }
 
 // spec/data-model.md §9 (`caps^.0`: on the node root), spec/sync-ids.md §5 (caps).
@@ -265,12 +264,16 @@ fn a_crash_between_drop_and_clear_is_done_again_spec_perm_3() {
 // spec/sync-ids.md §6 (steps: registered only once the source holds the role commits its epochs
 // depend on): the genesis step's needs are the rotations of its epochs, held here.
 #[test]
-#[ignore = "accounts: keys"]
 fn a_step_needs_its_epochs_rotations_spec_sync_ids_6() {
     let (mut lp, _) = people(1);
     let e = &mut lp.peers[0].engine;
-    let me = e.me();
-    let (d, _) = e.mint_actor(&me, |_| Ok(Mutation::new())).unwrap();
+    let (me, root) = (e.me(), e.node_root().unwrap());
+    let hold = |a: Tid| {
+        let mut m = Mutation::new();
+        m.op(root, &ct::HOLDS, osis_crdt::PathOp { path: vec![], op: osis_crdt::Op::Add(osis_base::Value::Strong(a)) }).unwrap();
+        Ok(m)
+    };
+    let (d, _) = e.mint_actor(&me, hold).unwrap();
     let ids = e.sync_ids(&d).unwrap();
     let step = ids[0].path.steps[0].0.id();
     let needs = e.step_needs(&ids[0].id, &step).unwrap();
@@ -339,13 +342,13 @@ fn following_a_link_again_under_another_seed_lets_its_old_key_go_spec_permission
 }
 
 // spec/sync-status.md §3 History complete (a complete pass of every sync ID carrying the thing):
-// a fresh node wants one pass of D's sync ID, whenever begun; history is complete once it is noted.
+// a fresh node wants one pass of its node thing D's sync ID, whenever begun; history is complete
+// once it is noted.
 #[test]
-#[ignore = "accounts: keys"]
 fn history_completes_with_a_pass_spec_sync_status_3() {
     let (mut lp, _) = people(1);
     let e = &mut lp.peers[0].engine;
-    let d = e.node_root().unwrap();
+    let d = e.me();
     let ds = e.sync_id_of(&d).unwrap().unwrap();
     assert_eq!(e.passes_wanted().unwrap().get(&ds), Some(&0), "one pass, whenever");
     assert!(!e.history_complete(&d).unwrap());
@@ -526,23 +529,24 @@ fn junk_records_go_with_their_carrier_spec_commits_4() {
 // spec/commits.md §4 (Records: learned once something awaits it): a loose record is learned when
 // a commit by its actor arrives, the author's record being what that commit awaits.
 #[test]
-#[ignore = "accounts: keys"]
 fn a_loose_author_record_is_learned_when_its_commit_comes_spec_commits_4() {
-    let mut lp = crate::common::net(2, 5);
+    let mut lp = crate::common::net(1, 5);
+    // the author: a node peer 0 never met
+    let mut p = osis_engine::local_peer::Peer::new(77, lp.peers[0].engine.now()).unwrap();
     let a = lp.peers[0].engine.me();
-    let b = lp.peers[1].engine.me();
+    let b = p.engine.me();
     let t = thing_of(&mut lp, 0, a);
     lp.peers[0].engine.make_independent(&t).unwrap();
     let s0 = lp.peers[0].engine.sync_id_of(&t).unwrap().unwrap();
-    let rec = lp.peers[1].engine.core.created(&b).cloned().unwrap();
+    let rec = p.engine.core.created(&b).cloned().unwrap();
     let (id, bytes, wrap) = record_blob_by_hand(&mut lp, 0, &t, std::slice::from_ref(&rec));
     assert!(matches!(lp.peers[0].engine.open_entry(&s0, &id, &wrap, &bytes, u64::MAX).unwrap(), osis_engine::sync::Opened::Records(_)));
     assert!(lp.peers[0].engine.core.created(&b).is_none() && lp.peers[0].engine.carries_loose(&id));
-    let u = thing_of(&mut lp, 1, b);
     let mut m = Mutation::new();
+    let u = p.engine.new_thing(&mut m, b);
     m.set(u, &REG, &s("later")).unwrap();
-    let c = lp.peers[1].engine.commit(m).unwrap().unwrap();
-    let cb = lp.peers[1].engine.commit_bytes(&c).unwrap().unwrap();
+    let c = p.engine.commit(m).unwrap().unwrap();
+    let cb = p.engine.commit_bytes(&c).unwrap().unwrap();
     lp.peers[0].engine.ingest(&cb, Vec::new()).unwrap();
     assert_eq!(lp.peers[0].engine.core.created(&b), Some(&rec), "the author's record, awaited");
 }
@@ -691,10 +695,10 @@ fn a_link_followed_enters_alone_spec_sync_set_2() {
 // carries the step's commit as a certificate copy on G, as it does every commit D's certificates
 // name: a reader of D alone (a link's redeemer) places the keys D's writes list.
 #[test]
-#[ignore = "accounts: keys"]
 fn a_step_on_the_delete_base_travels_as_a_certificate_copy_spec_permissions_4() {
     let (mut lp, ps) = people(2);
     let g = thing_of(&mut lp, 0, ps[0]);
+    lp.peers[0].engine.make_independent(&g).unwrap();
     let gs = lp.peers[0].engine.sync_id_of(&g).unwrap().unwrap();
     lp.advance(1000);
     let before: BTreeSet<_> = lp.peers[0].engine.commit_ids().into_iter().collect();

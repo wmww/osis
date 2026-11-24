@@ -1228,7 +1228,7 @@ fn a_part_outside_the_node_closure_waits_beside_one_in_it_spec_commits_4() {
 // releases it; a second write on Y then waits until the pass end, which judges Y in no sync unit
 // peer 1 syncs (it holds Y's minting commit): not carried, it goes. Each step counts the same work.
 #[test]
-#[ignore = "accounts: keys"]
+#[ignore = "issues/node-root-independent.md"]
 fn waiting_and_pulling_anew_cost_the_thing_not_the_node_closure_spec_commits_5() {
     let work = |n: usize| {
         let (mut lp, _, y) = minted_with_y(n, false);

@@ -270,7 +270,7 @@ fn a_sealed_fire_is_one_fire_of_its_thing_spec_sync_inbox_4() {
 // on Bob's inbox. Bob, taking it, checks it against the roster he holds: he still reads g, and holds
 // nothing of the forged commit.
 #[test]
-#[ignore = "accounts: keys"]
+#[ignore = "accounts: making an account"]
 fn a_forged_grant_fire_changes_nothing_spec_sync_inbox_5() {
     let (mut lp, g, tids) = granted(3, &[(1, Role::Read), (2, Role::Read)]);
     let bob = tids[1];

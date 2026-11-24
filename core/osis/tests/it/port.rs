@@ -148,7 +148,6 @@ fn a_write_through_a_node_is_bounded_notes_client_port() {
 // once, then each change wherever made; once dropped it hears nothing and the node's
 // subscription goes at its next change.
 #[test]
-#[ignore = "accounts: keys"]
 fn a_watch_through_a_thin_client_spec_sync_transport_6() {
     use osis::internals::Internals as _;
     let w = world(Some(Role::Write));
@@ -411,7 +410,6 @@ fn login(w: &World) -> NodeLogin {
 // node's client actor; this node's own identity and process-wide calls stay its own; a read
 // this port does not carry is `Unsupported`; moved back, it reads this node's copy again.
 #[test]
-#[ignore = "accounts: keys"]
 fn a_group_read_at_another_node_spec_sync_set_5() {
     let w = world(Some(Role::Write));
     let (b, _) = node(&w.net, 2, &w.c);
@@ -586,7 +584,6 @@ fn write_outcomes_are_bounded_spec_wire_11() {
 // revert through a thin client run at the node as its actor, each a write row under a nonce;
 // what it would undo reads alike; a commit it did not make is not its to undo.
 #[test]
-#[ignore = "accounts: keys"]
 fn undo_through_a_thin_client_spec_wire_11() {
     let w = world(Some(Role::Write));
     let cl = connect(&w.net, &w.c, &w.addr, &w.secret).unwrap();
@@ -611,7 +608,6 @@ fn undo_through_a_thin_client_spec_wire_11() {
 // spec/wire.md §11.2 (Write nonces): undo, redo and revert are write rows: a resend gets the
 // first outcome and runs nothing again (a second undo would undo the next commit back).
 #[test]
-#[ignore = "accounts: keys"]
 fn undo_resends_run_once_spec_wire_11() {
     let w = world(Some(Role::Write));
     crate::common::keep_day(&w.a, w.t, &["x:v.0"]);

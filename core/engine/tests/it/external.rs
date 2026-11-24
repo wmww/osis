@@ -137,7 +137,7 @@ fn open(lp: &mut LocalPeer, to: usize, out: &osis_engine::sync::SealedFireOut) -
 // `grant@~0` disabled on Bob's inbox, Alice's grant fire is refused; enabled, the same fire is
 // taken.
 #[test]
-#[ignore = "accounts: keys"]
+#[ignore = "accounts: making an account"]
 fn a_grant_fire_is_taken_only_while_enabled_spec_sync_inbox_5() {
     let (mut lp, ps) = people(2);
     let t = crate::flows::thing_of(&mut lp, 0, ps[0]);
@@ -157,7 +157,7 @@ fn a_grant_fire_is_taken_only_while_enabled_spec_sync_inbox_5() {
 // references nowhere. Disabling the signal ends the offer, and what it carried goes with it:
 // Bob's node holds nothing of X.
 #[test]
-#[ignore = "accounts: keys"]
+#[ignore = "accounts: making an account"]
 fn disabling_grant_fires_ends_the_offer_and_what_it_carried_spec_sync_inbox_5() {
     let (mut lp, ps) = people(2);
     let x = crate::flows::thing_of(&mut lp, 0, ps[0]);

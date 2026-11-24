@@ -228,7 +228,7 @@ fn two_nodes_remote_watch() {
 // wakes at the `until`), and a watched roster no `until` ends meanwhile is neither called nor
 // read again, nor one no longer watched.
 #[test]
-#[ignore = "accounts: keys"]
+#[ignore = "accounts: osis/CLI/app"]
 fn an_until_passing_tells_a_roster_watcher_spec_permissions_2() {
     let c = clock();
     let net = osis::internals::ManualNet::new(c.clone());
@@ -808,7 +808,7 @@ fn a_watch_reads_as_its_acting_subscriber() {
 // not move). Differential: the actor's last word equals its handle's read, which then differs
 // from the node's. Inputs: alice grants the thing and `grp`; bob's clock passes.
 #[test]
-#[ignore = "accounts: keys"]
+#[ignore = "accounts: osis/CLI/app"]
 fn an_until_ending_an_actors_way_in_tells_its_roster_watch() {
     let c = clock();
     let net = osis::internals::ManualNet::new(c.clone());

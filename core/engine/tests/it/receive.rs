@@ -184,7 +184,6 @@ fn a_removal_ordered_before_a_part_is_evidence_spec_commits_4() {
 // pends, whatever else leads from 0 to x. 0's grant of write on x to o, stamped after the write,
 // is no write ordered before it: it still pends.
 #[test]
-#[ignore = "accounts: keys"]
 fn a_part_waits_for_the_edges_of_its_stated_path_spec_commits_4() {
     let mut lp = net(2, 0);
     let x = new_shared(&mut lp, 0);

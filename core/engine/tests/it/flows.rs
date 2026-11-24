@@ -201,12 +201,11 @@ pub(crate) fn big(marker: &str) -> String {
 const SEALED_MARK: &str = "SEALED-MARK-9c41";
 
 // spec/sync-judgement.md §1 (Sealed sections), spec/requirements.md Deletion: bob's commit makes
-// y under t, held from his account root alone, with a value beside a write to x, which alice
+// y under t, held from his node root alone, with a value beside a write to x, which alice
 // reads through t. She derives y's read secret but does not hold y: of the sealed commit she
 // opens x's section and takes y's record alone, never y's value, and no disk of hers ever holds
 // it. Fails if a node opens the sections of a thing it merely has the secret for.
 #[test]
-#[ignore = "accounts: keys"]
 fn a_section_of_a_thing_not_held_leaves_nothing_on_disk_spec_sync_judgement_1() {
     let mut lp = LocalPeer::of(vec![forensic_peer(0, &osis_store::Faults::new()), forensic_peer(1, &osis_store::Faults::new())], 0).unwrap();
     let pa = lp.peers[0].engine.me();
@@ -224,7 +223,8 @@ fn a_section_of_a_thing_not_held_leaves_nothing_on_disk_spec_sync_judgement_1() 
         }
         (t, lp.peers[1].commit(m).unwrap().unwrap())
     };
-    let (t, _) = make(&mut lp, d, d, "t", None);
+    let pb = lp.peers[1].engine.me();
+    let (t, _) = make(&mut lp, pb, d, "t", None);
     let (x, _) = make(&mut lp, t, t, "x", None);
     lp.peers[1].engine.grant(&t, &pa, &edge_of(Role::Read)).unwrap();
     lp.hold_at(0, t);
@@ -492,9 +492,10 @@ fn removal_with_another_path_keeps_all_spec_perm_3() {
 // spec/permissions.md §3: a planted grant (bad signature, unjudgeable while its author is
 // unknown) yields reading-only secrets; once it proves bad and is dropped, they go.
 #[test]
-#[ignore = "accounts: keys"]
 fn dropped_pending_grant_drops_reading_secrets_spec_crypto_4() {
-    let mut lp = net(2, 0);
+    // bob never met alice: her node thing, the grant's signer, is unknown to him
+    let peer = |seed| osis_engine::local_peer::Peer::new(seed, crate::common::T0).unwrap();
+    let mut lp = LocalPeer::apart(vec![peer(1), peer(2)], 0);
     let pa = lp.peers[0].engine.me();
     let pb = lp.peers[1].engine.me();
     lp.peers[0].know(&[pb]).unwrap();
@@ -963,7 +964,6 @@ fn read_link_followed() -> (LocalPeer, [Tid; 3], Tid, osis_blob::ShareLink) {
 // own actor to K (deposited: read), single use removes L's edge in the same commit, so a
 // second redeemer finds no link; the redeemer reads the target through K.
 #[test]
-#[ignore = "accounts: keys"]
 fn link_redeem_single_use_spec_perm_7() {
     let (mut lp, ps) = people(3);
     let (pa, ps1, ps2) = (ps[0], ps[1], ps[2]);
@@ -972,7 +972,7 @@ fn link_redeem_single_use_spec_perm_7() {
     follow(&mut lp, &link);
     let text = link.to_text().unwrap();
     assert_eq!(osis_blob::ShareLink::from_text(&text).unwrap(), link);
-    assert_eq!(lp.peers[0].engine.roster(&link.k).get(&lp.peers[0].engine.tid()), None);
+    assert_eq!(lp.peers[0].engine.roster(&link.k).get(&pa).map(|e| e.role), Some(Role::Admin), "K's mint admin, the sharer");
     assert!(lp.peers[0].engine.get(&keep, &ak(osis_engine::flows::LINK_SEED)).unwrap().is_some());
     // the stranger downloads K's sync ID (here: everything the sharer holds)
     sync(&mut lp, 0, 1);

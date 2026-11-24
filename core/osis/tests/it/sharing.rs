@@ -258,7 +258,7 @@ fn purge_without_the_right_is_refused_spec_permissions_6() {
 // the sides are read from the one told. A dispute's id reads back from its text; a side of
 // another kind is `Invalid`.
 #[test]
-#[ignore = "accounts: keys"]
+#[ignore = "accounts: osis/CLI/app"]
 fn disputes_listed_told_and_chosen_spec_permissions_5_1() {
     let (a, b, c) = (db(1), db(2), db(3));
     deliver(&b, &a);
@@ -363,7 +363,7 @@ fn mesh(dbs: &[&osis::Osis]) {
 // G's, and M's to Bob. Once Carol reads M her watch on M's grants hears its roster, and hears it
 // hidden once she reads it no more.
 #[test]
-#[ignore = "accounts: keys"]
+#[ignore = "accounts: osis/CLI/app"]
 fn a_parents_reader_sees_no_roster_of_its_member_org_spec_crypto_4() {
     let (alice, bob, carol, erin) = (db(1), db(2), db(3), db(4));
     let all = [&alice, &bob, &carol, &erin];

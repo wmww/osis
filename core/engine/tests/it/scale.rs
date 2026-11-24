@@ -248,9 +248,12 @@ fn the_undo_check_costs_what_was_written() {
 
 /// A covered drop at n entries of a paged map (`big_map`): two one-entry edits (one replacing the
 /// other's write, one live), a snapshot covering both, then each dropped as covered: (store
-/// bytes, pages written) per drop.
-fn covered_drop(n: usize) -> [u64; 2] {
+/// bytes, pages written) per drop. `independent`: the thing made independent first.
+fn covered_drop(n: usize, independent: bool) -> [u64; 2] {
     let (mut lp, t) = big_map(n, false);
+    if independent {
+        lp.peers[0].engine.make_independent(&t).unwrap();
+    }
     let (b, a) = (lp.peers[0].backend.clone(), big());
     let (dead, live) = (edit_entry(&mut lp, t, n / 2, false, "x"), edit_entry(&mut lp, t, n / 3, false, "y"));
     edit_entry(&mut lp, t, n / 2, false, "z");
@@ -268,9 +271,18 @@ fn covered_drop(n: usize) -> [u64; 2] {
 // (Scale: O(change)): a body dropped as covered rewrites shredded the pages holding its writes,
 // not the whole state: store bytes and pages written per drop flat from n to 10n entries.
 #[test]
-#[ignore = "accounts: keys"]
 fn covered_drop_is_flat() {
-    let (small, big) = (covered_drop(500), covered_drop(5000));
+    let (small, big) = (covered_drop(500, true), covered_drop(5000, true));
+    flat("covered drop: store bytes", small[0], big[0]);
+    flat("covered drop: pages written", small[1], big[1]);
+}
+
+// spec/commits.md §5 (Covered), spec/requirements.md (Scale): as `covered_drop_is_flat`, on a
+// dependent thing.
+#[test]
+#[ignore = "issues/covered-drop-dependent.md"]
+fn covered_drop_on_a_dependent_thing_is_flat() {
+    let (small, big) = (covered_drop(500, false), covered_drop(5000, false));
     flat("covered drop: store bytes", small[0], big[0]);
     flat("covered drop: pages written", small[1], big[1]);
 }
@@ -1792,7 +1804,6 @@ fn forged_layers(n: usize) -> u64 {
 // on an edge once per part judged, however many writes' paths share that edge: linear in the
 // writes held, n forged writes on each layer.
 #[test]
-#[ignore = "accounts: keys"]
 fn the_path_wait_reads_each_write_once_spec_commits_4() {
     linear("path wait: writes read", forged_layers(3), forged_layers(30));
 }

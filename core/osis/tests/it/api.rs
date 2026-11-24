@@ -461,7 +461,6 @@ fn expiry_purge_by_and_purge_spec_commits_5_6() {
 // notes/api.md Writes: `act_as` changes the thing the header's path acts on; the default is `me()`.
 // spec/commits.md §1
 #[test]
-#[ignore = "accounts: keys"]
 fn act_as_spec_commits_1() {
     let db = db(0);
     let mut w = db.write();
@@ -950,7 +949,7 @@ fn what_public_signatures_show_can_be_named_api_design() {
 // later grant keeps it unless it says `Reads::All` (never by default), and asking `FromNow` of a
 // holder that reads what came before is `Invalid`.
 #[test]
-#[ignore = "accounts: keys"]
+#[ignore = "accounts: osis/CLI/app"]
 fn from_now_grant_is_kept_until_a_grant_shows_everything() {
     let db = common::db(41);
     let g = db.commit_with(|w| w.create_held()).unwrap();

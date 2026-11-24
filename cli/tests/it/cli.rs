@@ -361,7 +361,7 @@ fn commits_undo_redo_plan_cli_4() {
 // sharing commands on one store (nobody to dial): links, cards, nodes, grants by error
 // category, status. The delivering ones (notes/cli.md) wait on nothing on a node alone.
 #[test]
-#[ignore = "accounts: keys"]
+#[ignore = "accounts: osis/CLI/app"]
 fn sharing_commands_local_plan_cli_4() {
     let s = S::mem();
     // minted with the account as admin, so `me` reads it as its mint admin
@@ -526,7 +526,7 @@ fn inspect_and_diag_plan_cli_4() {
 
 // CLI `chat`, notes/chat.md: a local chat through the commands: post and read, the JSON, a cursor, edit (the id stays; kept history in `earlier`), delete, editing off, bad arguments
 #[test]
-#[ignore = "accounts: keys"]
+#[ignore = "accounts: osis/CLI/app"]
 fn chat_commands_plan_cli() {
     let s = S::mem();
     let c = s.ok(&["chat", "create", "--name", "room"]).line().to_string();
