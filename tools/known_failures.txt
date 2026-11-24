@@ -1,7 +1,8 @@
 # Failures on main the gate marks KNOWN (notes/gate.md, The summary): one per line,
 # NAME REPRO ISSUE PATTERN. NAME: CRATE/LIBTEST_PATH or sim-sweep:SCENARIO; REPRO: the setting that
 # fails on main (a sim's SEED), prefixed `rate:` when it fails on some seeds only (the gate's
-# random seeds pass it most runs, and its summary says passing is expected); ISSUE: its issues/
+# random seeds pass it most runs, and its summary says passing is expected; the gate replays a
+# `rate:VAR=VAL,...` or `rate:SEED` REPRO and reports one passing, STALE-RATE); ISSUE: its issues/
 # file; PATTERN: a regex every failing unit of NAME (each seed line of its panic, or its whole
 # panic) must match (tools/gate_failures.py).
 osis-engine/parts::forged_parts_beside_a_part_past_expiry_alike_plain_spec_commits_4 OSIS_FORGED_START=0 issues/accounts-properties-fail.md accounts: pairing

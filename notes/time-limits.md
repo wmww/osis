@@ -28,6 +28,7 @@ Limits are multiples of the box's base unit `u` (the CPU-s of one fixed work qua
 | `gate.deny` | 10 | 2 | `gate` | schema check, deny, core bans |
 | `gate.properties` | 1670 | 94 | `gate.hold` | the selected properties |
 | `gate.sim` | 210 | 14 | `gate.hold` | every sim scenario at 15 seeds |
+| `gate.replay` | 20 | 4 |  | one `rate:` known line replayed at its REPRO, in the hold (one seed: no share) |
 | `gate.doctests` | 55 | 10 |  | the comments path's doctests (notes/gate.md, Components pay for themselves), as `build` |
 | `gate.gui-tests` | 20 | 4 | `gate` | GUI tests |
 | `gate.hold` | 3300 | 210 | `gate` | the gate's one heavy-lock hold |

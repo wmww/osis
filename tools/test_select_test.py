@@ -207,16 +207,22 @@ git("checkout", "--", "Cargo.toml", "core/mid/Cargo.toml")
 # packages and offset; the report still printed
 emitted = os.path.abspath("emitted")
 write(emitted, "kept\n")
+# `rate:` lines replayed: a selected crate's and the sim's; an unselected crate's and a plain line not
+write("tools/known_failures.txt", "osis-mid/m::mid_it_plain rate:OSIS_ORDER_SEED=5,OSIS_SYNC_START=1 issues/i.md p\nosis-leaf/leaf_large rate:OSIS_ORDER_SEED=5 issues/i.md p\n"
+      "osis-mid/m::mid_prop_plain 1 issues/i.md p\nsim-sweep:two_nodes rate:9 issues/i.md p\n")
 check("--emit report", out("--emit", emitted, "--paths", "core/mid/src/lib.rs"), "crates selected")
 lines = open(emitted).read().splitlines()
 kinds = [l.split(" ", 1)[0] for l in lines]
-if kinds != ["kept", "build", "build", "check", "run", "run"]:
+if kinds != ["kept", "build", "build", "check", "run", "run", "run", "run"]:
     print(f"FAIL --emit: line kinds {kinds}\n" + "\n".join(lines))
     fails = 1
 check("--emit", "\n".join(lines), "build cargo test --locked -p osis-mid -p osis-top --tests --no-run", "build cargo build --locked --bin sim-sweep",
       "check python3 tools/test_select.py --listed mid_cfg_test_large mid_child_large ", "_RUNNER=" + test_select.RUNNER + " cargo test --locked --no-fail-fast ", " model_large top_exhaustive -- cargo", "cargo test --locked --quiet -p osis-mid -p osis-top --tests -- --list --ignored ",
       "run gate.properties env ", "OSIS_ORDER_START=7 ", "run gate.sim cargo run --locked --bin sim-sweep -- --seeds 15 --from 7",
-      absent=["paths:", "crates selected"])
+      "run gate.replay printf 'gate: replay %s %s\\n' osis-mid/m::mid_it_plain rate:OSIS_ORDER_SEED=5,OSIS_SYNC_START=1 && env OSIS_ORDER_SEED=5 OSIS_SYNC_START=1 cargo test --locked --no-fail-fast -p osis-mid --tests -- --exact m::mid_it_plain --include-ignored",
+      "run gate.replay printf 'gate: replay %s %s\\n' sim-sweep:two_nodes rate:9 && cargo run --locked --bin sim-sweep -- --seeds 1 --from 9 --only two_nodes",
+      absent=["paths:", "crates selected", "osis-leaf", "mid_prop_plain 1"])
+os.remove("tools/known_failures.txt")
 write(emitted, "")
 out("--emit", emitted, "--paths", "notes/a.md")
 check("--emit nothing", open(emitted).read(), absent=["build", "run"])

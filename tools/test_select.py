@@ -27,13 +27,17 @@ A name the scan finds can still be in no built target (a file no target compiles
 filters would then run nothing and pass. So the gate lists each selection's tests with the built
 binaries before its hold (`check`, `--listed`) and stops on a selected name nothing lists.
 
+Rate replays: each `rate:` line of tools/known_failures.txt whose crate is selected (a sim scenario's:
+when the sim is) runs once at its REPRO, as its own stage (gate_failures.REPLAY_STAGE), its log first
+naming the line; tools/gate_failures.py reports one passing as STALE-RATE.
+
 Offsets: one random value per run (--offset to repeat one) starts every harness seed range and
 sim sweep, so a gate samples seeds no earlier gate ran.
 """
 import json, os, random, re, shlex, subprocess, sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import gate_paths
+import gate_failures, gate_paths
 
 SIZE_WORD = re.compile(r"_(large|plain|exhaustive)(_spec_\w*)?$")
 IGNORE = re.compile(r"^(?!\s*//).*#\[(ignore\b|cfg_attr\(.*\bignore\b)")
@@ -391,7 +395,7 @@ def main():
     sim = "osis-sim" in selected
 
     # unlocked builds first, with the same cargo arguments as the runs, so the runs build nothing
-    build, checks, cmds = [], [], []
+    build, checks, cmds, replays = [], [], [], []
     if props:
         pkgs, filters = cargo_args(props, others)
         build.append(["cargo", "test", "--locked", *pkgs, "--tests", "--no-run"])
@@ -401,9 +405,26 @@ def main():
     if sim:
         build.append(["cargo", "build", "--locked", "--bin", "sim-sweep"])
         cmds.append(("gate.sim", ["cargo", "run", "--locked", "--bin", "sim-sweep", "--", "--seeds", str(SIM_SEEDS), "--from", str(offset)]))
+    # each `rate:` line of a selected crate or scenario replayed at its REPRO, its log naming it
+    for name, repro in gate_failures.replays("."):
+        at = repro[len("rate:"):]
+        if name.startswith("sim-sweep:"):
+            if not sim:
+                continue
+            c = ["cargo", "run", "--locked", "--bin", "sim-sweep", "--", "--seeds", "1", "--from", at, "--only", name.split(":", 1)[1]]
+        else:
+            crate, _, path = name.rpartition("/")
+            if crate not in selected and crate not in local:
+                continue
+            # built by the properties' build already, or once here
+            if not any(b[:3] == ["cargo", "test", "--locked"] and crate in b[4::2] for b in build):
+                build.append(["cargo", "test", "--locked", "-p", crate, "--tests", "--no-run"])
+            c = ["env", *at.split(","), "cargo", "test", "--locked", "--no-fail-fast", "-p", crate, "--tests", "--", "--exact", path, "--include-ignored"]
+        replays.append(f"printf 'gate: replay %s %s\\n' {shlex.quote(name)} {shlex.quote(repro)} && {shlex.join(c)}")
     if emit:
         with open(emit, "a") as f:
-            f.writelines([f"build {shlex.join(b)}\n" for b in build] + [f"check {shlex.join(c)}\n" for c in checks] + [f"run {n} {shlex.join(c)}\n" for n, c in cmds])
+            f.writelines([f"build {shlex.join(b)}\n" for b in build] + [f"check {shlex.join(c)}\n" for c in checks] + [f"run {n} {shlex.join(c)}\n" for n, c in cmds]
+                         + [f"run {gate_failures.REPLAY_STAGE} {r}\n" for r in replays])
 
     print(f"paths: {'every crate (--all)' if every else len(paths)}")
     for p, why in sorted(nothing.items()):
@@ -425,16 +446,19 @@ def main():
     for u in unread:
         print(f"  not read: {u} (an #[ignore] with no named fn, so not selected: check it by hand)")
     print(f"sim: {'every scenario, ' + str(SIM_SEEDS) + ' seeds from ' + str(offset) if sim else 'none'}")
-    if cmds:
+    print(f"rate replays: {len(replays)}")
+    if cmds or replays:
         # --paths takes the rest of the line, so it goes last
         how = ["--all"] if every else ["--paths", *paths] if given else ["--base", base] if base else []
         print(f"offset: {offset} (replay this selection: {shlex.join(['tools/test_select.py', '--offset', str(offset), *how])})")
-    if not cmds:
+    if not cmds and not replays:
         print("nothing to run")
         return 0
     print("commands (tools/gate.sh builds and checks, then runs these in its hold of the heavy lock):")
     for c in build + checks + [c for _, c in cmds]:
         print("  " + shlex.join(c))
+    for r in replays:
+        print("  " + r)
     return 0
 
 

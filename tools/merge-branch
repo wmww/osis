@@ -22,7 +22,7 @@ The task loop), every step checked and reported, run from any checkout of the re
       package both sides changed (files changed base..HEAD and base..origin/main); a conflict
       stops it, and once the rebase is finished by hand the next land checks and lands that; commits
       the gate summary's KNOWN-BUT-PASSED lines removed from tools/known_failures.txt (but `rate:`
-      ones) and its STALE-COST lines lowered or dropped in tools/test_cost.txt (a line main changed
+      ones), its STALE-RATE lines (a `rate:` line whose REPRO passed) removed, and its STALE-COST lines lowered or dropped in tools/test_cost.txt (a line main changed
       since kept); `tools/land
       --delete` the one pushed copy origin/*-NAME (plain `tools/land` with none); checks origin/main
       is HEAD; `wt release` of W; `git branch -D NAME`; removes LOGS/NAME. Exit 0 landed, 1 not.
@@ -274,17 +274,19 @@ def reread(w, rec, main):
 
 
 STALE_KNOWN = re.compile(r"^   KNOWN-BUT-PASSED: (\S+) \(", re.M)
+STALE_RATE = re.compile(r"^   STALE-RATE: (\S+) (\S+) \(", re.M)
 STALE_COST = re.compile(r"^   STALE-COST: (\S+) \((?:.*under its line (\S+) / .*: lower it to (\S+)|its crate ran, it did not: drop the line)\)$", re.M)
 
 
 def apply_stale(w, summary):
-    """Applies the summary's KNOWN-BUT-PASSED and STALE-COST lines to W's lists: each listed test's
-    lines removed but its `rate:` ones, each cost line lowered or dropped where it still reads as the
+    """Applies the summary's KNOWN-BUT-PASSED, STALE-RATE and STALE-COST lines to W's lists: each
+    listed test's lines removed but its `rate:` ones, each replayed `rate:` line that passed removed, each cost line lowered or dropped where it still reads as the
     gate saw it. Commits the change; returns its lines (empty when nothing changed)."""
     done, paths = [], []
     gone = set(STALE_KNOWN.findall(summary))
+    rates = set(STALE_RATE.findall(summary))
     p = os.path.join(w, KNOWN)
-    if gone and os.path.exists(p):
+    if (gone or rates) and os.path.exists(p):
         out = []
         for line in open(p).read().splitlines(keepends=True):
             f = line.split()
@@ -292,6 +294,9 @@ def apply_stale(w, summary):
             path = "" if not f else f[0] if f[0].startswith("sim-sweep:") else f[0].rpartition("/")[2]
             if len(f) > 1 and not line.startswith("#") and path in gone and not f[1].startswith("rate:"):
                 done.append(f"{KNOWN}: removed (KNOWN-BUT-PASSED) {line.strip()}")
+                continue
+            if len(f) > 1 and not line.startswith("#") and (f[0], f[1]) in rates:
+                done.append(f"{KNOWN}: removed (STALE-RATE) {line.strip()}")
                 continue
             out.append(line)
         open(p, "w").write("".join(out))
@@ -379,7 +384,7 @@ def land(name, fixed):
         if not ok:
             stop("not landed: fix the failure in the branch, then land with --fixed", 1)
         head = new
-    # the gate's KNOWN-BUT-PASSED and STALE-COST lines, applied to the tree being landed
+    # the gate's KNOWN-BUT-PASSED, STALE-RATE and STALE-COST lines, applied to the tree being landed
     for line in apply_stale(w, summary):
         say(f"applied: {line}")
     head = git("rev-parse", "HEAD", cwd=w)

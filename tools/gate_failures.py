@@ -35,6 +35,11 @@ its line is stale (STALE-COST: tools/merge-branch land lowers it), as is a line 
 run lacked. A binary that reached its summary without a count is NEW: the runner did not apply,
 or perf counters are off (`INSTR unavailable`).
 
+A `rate:` line's replay (REPLAY_STAGE, tools/test_select.py: its log's first line `gate: replay NAME
+REPRO`) that passes makes the line STALE-RATE (tools/merge-branch land removes it); one failing with
+units its NAME's patterns match prints `replayed:` and is no failure; any other failure is NEW. A
+`rate:` REPRO must be replayable: `rate:VAR=VAL,...` (a test) or `rate:SEED` (a sim scenario).
+
 A listed NAME that ran and passed in every stage that ran it (a `test NAME ... ok` line, a sim
 tally of 0 failed) and failed in none is listed under `KNOWN-BUT-PASSED`: its line is stale
 (tools/merge-branch land removes it) unless it fails at a rate; when every line of NAME is a `rate:` one, it says
@@ -85,6 +90,12 @@ ROOM = 1.5
 
 
 Known = collections.namedtuple("Known", "issue pattern rate counts env")
+# a `rate:` line's REPRO, replayed at the gate (`replays`): a test's settings, or a sim scenario's seed
+RATE_TEST = re.compile(r"^rate:\w+=[^\s,]*(,\w+=[^\s,]*)*$")
+RATE_SIM = re.compile(r"^rate:\d+$")
+# the gate's replay of one `rate:` line (tools/test_select.py), its first log line naming it
+REPLAY_STAGE = "gate.replay"
+REPLAY = re.compile(r"^gate: replay (\S+) (\S+)$", re.M)
 COUNTS = re.compile(r"^counts:((?:[^\s=,]+=\d+)(?:,[^\s=,]+=\d+)*)$")
 SETTING = re.compile(r"^-$|^(\w+=[^\s,]*)(,\w+=[^\s,]*)*$")
 
@@ -123,6 +134,9 @@ def known(root=ROOT):
             errs.append(f"{KNOWN}:{n}: want `NAME REPRO ISSUE PATTERN`, got {line!r}")
             continue
         name, repro, issue, pat = f
+        if repro.startswith("rate:") and not (RATE_SIM if name.startswith("sim-sweep:") else RATE_TEST).match(repro):
+            errs.append(f"{KNOWN}:{n}: a `rate:` REPRO is replayed at the gate: `rate:VAR=VAL,...` for a test, `rate:SEED` for a sim scenario, got {repro!r}")
+            continue
         if not (issue.startswith("issues/") and issue.endswith(".md") and os.path.isfile(os.path.join(root, issue))):
             errs.append(f"{KNOWN}:{n}: {issue}: no such issue file (fixed? drop the line)")
             continue
@@ -136,6 +150,19 @@ def known(root=ROOT):
         if any(k.counts is not None for k in ks) and len(ks) > 1:
             errs.append(f"{KNOWN}: {name}: a test with a `counts:` line has no other line (its counts are the whole of its failure)")
     return names, errs
+
+
+def replays(root=ROOT):
+    """[(NAME, REPRO)] of every well-formed `rate:` line: what the gate replays."""
+    path = os.path.join(root, KNOWN)
+    if not os.path.exists(path):
+        return []
+    out = []
+    for line in open(path):
+        f = line.split(None, 3)
+        if len(f) == 4 and not f[0].startswith("#") and (RATE_SIM if f[0].startswith("sim-sweep:") else RATE_TEST).match(f[1]):
+            out.append((f[0], f[1]))
+    return list(dict.fromkeys(out))
 
 
 def counted_envs(root=ROOT):
@@ -357,6 +384,39 @@ def line_g(n):
     return f"{math.ceil(round(x / e, 6)) * e:.10g}"
 
 
+def replay(rc, text, names, rows, replayed, stale_rate):
+    """One `rate:` line's replay (REPLAY_STAGE): passing, its line is stale (`STALE-RATE`); failing as
+    its NAME's patterns say, as expected (`replayed:`, no failure counted); failing otherwise, NEW."""
+    m = REPLAY.search(text)
+    if not m:
+        rows.append(("NEW", REPLAY_STAGE, f"a replay log without its `gate: replay NAME REPRO` line (exit {rc or '?'}): read its output"))
+        return
+    name, repro = m.groups()
+    path, sim = test_path(name), name.startswith("sim-sweep:")
+    listed = names.get(path, [])
+    issues = ", ".join(dict.fromkeys(k.issue for k in listed if k.rate)) or "no `rate:` line now"
+    if rc == "0":
+        if path in passed(text, sim):
+            stale_rate.append(f"   STALE-RATE: {name} {repro} (its REPRO passed; {issues})")
+        else:
+            rows.append(("NEW", REPLAY_STAGE, f"{name} at {repro}: exited 0 without running it: read its output"))
+        return
+    fails = (sim_failures(text) if sim else cargo_failures(text)) or [(None, f"exited {rc or '?'} without naming a failing test: read its output", [])]
+    bad = False
+    for n, us, _ in fails:
+        if n is None:
+            rows.append(("NEW", REPLAY_STAGE, f"{name} at {repro}: {us}"))
+        elif n != path:
+            rows.append(("NEW", REPLAY_STAGE, f"{name} at {repro}: another test failed: {n}"))
+        elif miss := next((u for u in us if not any(k.pattern.search(u) for k in listed)), None):
+            rows.append(("NEW-TEXT", REPLAY_STAGE, f"{name} at {repro}: fails, but matching none of its patterns: {miss.strip().split(chr(10))[0][:200]}"))
+        else:
+            continue
+        bad = True
+    if not bad:
+        replayed.append(f"   replayed: {name} at {repro} fails as listed ({issues})")
+
+
 def main():
     if len(sys.argv) not in (3, 4):
         sys.exit(__doc__)
@@ -374,9 +434,13 @@ def main():
         rows.append(("NEW", "known list", e))
     for stage, n in (expected - ran).items():
         rows.append(("NEW", stage, f"did not run{f' ({n} of its runs)' if n > 1 else ''} (the heavy-lock hold ended early: read its output)"))
+    replayed, stale_rate = [], []
     for r in results:
         stage, rc, log = (r + ["", ""])[:3]
         text = open(log, errors="replace").read() if os.path.exists(log) else ""
+        if stage == REPLAY_STAGE:
+            replay(rc, text, names, rows, replayed, stale_rate)
+            continue
         for n in passed(text, stage == "gate.sim"):
             ok[n].add(stage)
         if rc == "0":
@@ -446,7 +510,7 @@ def main():
         ran = {n.split("/")[0] for n in counts}
         stale_cost += [f"   STALE-COST: {n} (its crate ran, it did not: drop the line)" for n in sorted(lines) if n not in counts and n.split("/")[0] in ran]
         print(f"== test cost: {len(counts)} binaries, {sum(i for i, _ in counts.values()) / 1e9:.0f} G instructions ({COST})")
-    failed = sum(1 for r in results if r[1:2] != ["0"])
+    failed = sum(1 for r in results if r[1:2] != ["0"] and r[0] != REPLAY_STAGE)
     print(f"== test stages: {len(results)} run of {max(sum(expected.values()), len(results))}, {failed} failed")
     for kind, stage, text in rows:
         print(f"   {kind:5} {stage}  {text}" if kind else f"         {text}")
@@ -462,10 +526,16 @@ def main():
         print(f"== KNOWN-BUT-PASSED ({len(stale)}): listed, not `rate:`, passing in this run. tools/merge-branch land removes "
               "each but `rate:` lines from {KNOWN} (delete its issue if fixed; a test failing on some seeds only gets a `rate:` line first)")
         print("\n".join(stale))
+    if replayed:
+        print("\n".join(replayed))
+    if stale_rate:
+        print(f"== STALE-RATE ({len(stale_rate)}): `rate:` lines whose REPRO passed when replayed. tools/merge-branch land removes "
+              f"each from {KNOWN} (delete its issue if fixed; a failure still seen at other seeds gets a failing REPRO)")
+        print("\n".join(stale_rate))
     if stale_cost:
         print(f"== STALE-COST ({len(stale_cost)}): test-cost lines past their binaries' counts. tools/merge-branch land updates each in {COST}")
         print("\n".join(stale_cost))
-    tail = (f"; {len(stale)} KNOWN-BUT-PASSED to remove" if stale else "") + (f"; {len(stale_cost)} STALE-COST to lower" if stale_cost else "")
+    tail = (f"; {len(stale)} KNOWN-BUT-PASSED to remove" if stale else "") + (f"; {len(stale_rate)} STALE-RATE to remove" if stale_rate else "") + (f"; {len(stale_cost)} STALE-COST to lower" if stale_cost else "")
     new = sum(1 for k, _, _ in rows if k in ("NEW", "NEW-TEXT", "NEW-COUNTS", "NEW-COST"))
     old = sum(1 for k, _, _ in rows if k == "KNOWN")
     if new:

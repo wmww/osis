@@ -247,6 +247,22 @@ rc, out = summary(f"{LISTED}ok 1 issues/known.md x\nfine 1 issues/known.md x\ndr
 check("known but passed", (rc, [l for l in out.split("\n") if "KNOWN-BUT-PASSED:" in l], out.split("\n")[-2].endswith("; 2 KNOWN-BUT-PASSED to remove")), (3, ["   KNOWN-BUT-PASSED: ok (default-tests, gate.gui; issues/known.md)", "   KNOWN-BUT-PASSED: sim-sweep:drift_parks (gate.sim; issues/sim.md)"], True))
 rc, out = summary(f"{LISTED}quick 1 issues/known.md x\n", [("default-tests", "0", "test quick ... ok\n"), ("gate.gui", "101", "     Running tests/q.rs (q-1)\ngate: binary q/q\nINSTR 1000000000\n\nrunning 1 test\ntest quick ... FAILED\n\nfailures:\n\n---- quick stdout ----\nx\n\nfailures:\n    quick\n\ntest result: FAILED. 0 passed; 1 failed\n\nerror: test failed, to rerun pass `--test q`\n" + COUNT1)])
 check("known, passed in one stage, failed in another: not reported", (rc, "KNOWN-BUT-PASSED" in out), (3, False))
+# a `rate:` line replayed at its REPRO (its own stage): passing, its line is STALE-RATE; failing as
+# listed, said so and not a failure; failing otherwise, NEW-TEXT; a log not naming its line, NEW
+RATE = "x/r::t_plain rate:S=1 issues/known.md order #\\d+ reads\nx/r::t_plain 2 issues/sim.md other\n"
+HEAD = "gate: replay x/r::t_plain rate:S=1\n     Running tests/it/main.rs (target/debug/deps/it-5)\n\nrunning 1 test\n"
+def replay_fails(why):
+    return HEAD + f"test r::t_plain ... FAILED\n\nfailures:\n\n---- r::t_plain stdout ----\n{why}\n\nfailures:\n    r::t_plain\n\ntest result: FAILED. 0 passed; 1 failed\n\nerror: test failed, to rerun pass `--test it`\n" + COUNT1
+rc, out = summary(RATE, [("default-tests", "0", ""), ("gate.replay", "0", HEAD + "test r::t_plain ... ok\n\ntest result: ok. 1 passed; 0 failed\n")])
+check("rate replay passed: STALE-RATE", (rc, out.split("\n")[-3:-1]), (0, ["== STALE-RATE (1): `rate:` lines whose REPRO passed when replayed. tools/merge-branch land removes each from tools/known_failures.txt (delete its issue if fixed; a failure still seen at other seeds gets a failing REPRO)", "   STALE-RATE: x/r::t_plain rate:S=1 (its REPRO passed; issues/known.md)"]))
+rc, out = summary(RATE, [("default-tests", "0", ""), ("gate.replay", "101", replay_fails("order #3 reads Some"))])
+check("rate replay failed as listed: passes", (rc, out.split("\n")[1:]), (0, ["   replayed: x/r::t_plain at rate:S=1 fails as listed (issues/known.md)", ""]))
+rc, out = summary(RATE, [("gate.replay", "101", replay_fails("index out of bounds"))])
+check("rate replay failed otherwise: NEW-TEXT", (rc, "NEW-TEXT gate.replay  x/r::t_plain at rate:S=1: fails, but matching none of its patterns: index out of bounds" in out), (1, True))
+rc, out = summary(RATE, [("gate.replay", "101", "error: could not compile\n")])
+check("rate replay log naming no line: NEW", (rc, "NEW   gate.replay  a replay log without its" in out), (1, True))
+_, errs = known("a rate:1 issues/known.md x\nsim-sweep:s rate:S=1 issues/known.md x\nsim-sweep:t rate:4 issues/known.md x\n")
+check("rate REPRO forms", [e.split(", got ")[-1] for e in errs], ["'rate:1'", "'rate:S=1'"])
 # a line failing at a rate: passing is expected, said so; a name with one plain line keeps the question
 rc, out = summary(f"{LISTED}ok rate:S=1 issues/known.md x\nfine rate:S=1 issues/known.md x\nfine 2 issues/sim.md y\n", [("default-tests", "101", KNOWN_ONLY + COUNT1), ("gate.gui", "0", HUNG.replace("test fine ... ok", "test ok ... ok") + "test fine ... ok\n")])
 check("known at a rate, passed", (rc, [l for l in out.split("\n") if "passed:" in l or "   KNOWN-BUT-PASSED:" in l]), (3, ["   KNOWN, passed: ok (default-tests, gate.gui): fails at a rate (issues/known.md): passing this run is expected", "   KNOWN-BUT-PASSED: fine (gate.gui; issues/sim.md)"]))

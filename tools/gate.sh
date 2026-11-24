@@ -148,10 +148,12 @@ passed() {
       echo "== summary again (this gate's files kept in $tmp; rm -r it when done): python3 $tools/gate_failures.py $sel $results"
       exit "$rc"
     fi
-    # a known line whose test passed (stale unless `rate:`) or a stale test-cost line: the pass
-    # line (the one read) says so; `tools/merge-branch land` applies them
+    # a known line whose test passed (stale unless `rate:`), a `rate:` line whose REPRO passed or a
+    # stale test-cost line: the pass line (the one read) says so; `tools/merge-branch land` applies them
     n=$(grep -c '^   KNOWN-BUT-PASSED:' "$tmp/summary" || true)
     [ "$n" = 0 ] || stale="; $n KNOWN-BUT-PASSED to remove (above; the landing applies it)"
+    n=$(grep -c '^   STALE-RATE:' "$tmp/summary" || true)
+    [ "$n" = 0 ] || stale="$stale; $n STALE-RATE to remove (above; the landing applies it)"
     n=$(grep -c '^   STALE-COST:' "$tmp/summary" || true)
     [ "$n" = 0 ] || stale="$stale; $n STALE-COST to lower (above; the landing applies it)"
   fi
