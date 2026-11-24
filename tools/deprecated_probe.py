@@ -23,7 +23,7 @@ missed, a use of the alias a dropped `pub use … as` gave it) is put back `pub`
 committed (no diff against HEAD); after restoring, `git diff` of it must be empty again.
 Usage: tools/deprecated_probe.py [--dead] [-v] CRATE   (a package name, e.g. osis-blob; -v
 also lists every used item with its sites)"""
-import argparse, collections, os, re, shutil, signal, subprocess, sys
+import argparse, collections, glob, os, re, shutil, signal, subprocess, sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from rustsrc import ROOT, members
@@ -368,9 +368,13 @@ def main():
     unused = sorted(k for k in items if k not in uses)
     test_only = sorted(k for k in uses if all(is_test(p, n) for p, n in uses[k]))
     show = lambda k: f"{k[0]}::{k[1]}  ({', '.join(items[k])})"
+    # osis-android compiles only for target_os = "android", so the host clippy run sees none of its
+    # uses: an item its sources name is marked for a check by hand (issues/android-unchecked.md)
+    android = "\n".join(open(f).read() for f in glob.glob(os.path.join(ROOT, "app/android/src/**/*.rs"), recursive=True))
+    in_android = {k for k in unused if re.search(rf"\b{re.escape(k[1])}\b", android)}
     print(f"unused outside {crate_src} ({len(unused)}):")
     for k in unused:
-        print("  " + show(k))
+        print("  " + show(k) + ("  (named in app/android/src, not compiled here: check by hand)" if k in in_android else ""))
     print(f"used only by tests ({len(test_only)}):")
     for k in test_only:
         print("  " + show(k) + "  <- " + ", ".join(sorted({p for p, _ in uses[k]})))
@@ -390,7 +394,9 @@ def main():
             if names and len(out) == len(names):
                 hidden.append(w)
             else:
-                shown.append(w + (f"  (used outside, not dead: {', '.join(out)})" if out else ""))
+                droid = [n for n in names if any(k[1] == n for k in in_android)]
+                shown.append(w + (f"  (used outside, not dead: {', '.join(out)})" if out else "")
+                             + (f"  (named in app/android/src, not compiled here: {', '.join(droid)})" if droid else ""))
         warnings = shown
         if not clean(crate_src):
             sys.exit(f"deprecated_probe: {crate_src} differs from HEAD after restoring: check git diff")

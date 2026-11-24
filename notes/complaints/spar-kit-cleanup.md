@@ -1,2 +1,0 @@
-# spar-kit-cleanup
-- `tools/deprecated_probe.py --dead osis-kit` lists items only osis-android uses as dead (`ime::android` constants and `editor_info`, `Input::back`/`menu_gone`, `Started::back`/`menu_pick`/...): osis-android is `cfg(target_os = "android")`, so the host clippy run sees none of its uses. Checking each by hand cost time. Fix: the probe could also grep app/android/src for the name, or say that osis-android is not compiled (issues/android-unchecked.md).
