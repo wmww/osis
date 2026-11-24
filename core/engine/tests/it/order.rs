@@ -3608,7 +3608,7 @@ impl Size {
 
 /// Checks the histories of `size`'s seeds (one seed per task, a thread per core) and reports every
 /// failing one, each with the command that replays it; then the coverage tally (`Seen::floors`)
-/// over all of them. `OSIS_ORDER_SHRINK=1` shrinks each failure first (slow: a shrink reruns the
+/// over all of them, unless one seed ran. `OSIS_ORDER_SHRINK=1` shrinks each failure first (slow: a shrink reruns the
 /// check per dropped step).
 fn held_set_decides_at(size: Size) {
     use osis_base::testenv::u64_var;
@@ -3664,6 +3664,11 @@ fn held_set_decides_at(size: Size) {
         eprintln!("{}\nemphases {:?}, pending {:?}, invalid {}, aspects {:?}, judged {:?}, {} of {} early clocks moved, {} bodies dropped as covered, model reached {:?}, skipped {:?}", seen.tally.show(), seen.emphases, seen.pending, seen.invalid, seen.aspects, seen.judged, seen.moved, seen.clocked, seen.dropped, seen.model.reached, seen.model.skipped);
     }
     assert!(fails.is_empty(), "{} histories judged differently by what was held:\n{}", fails.len(), fails.join("\n\n"));
+    // a floor is over many seeds: one seed (a replay) reaches what its history holds, no more
+    if size.seeds.len() == 1 {
+        osis_base::testenv::visible(true, "order::held_set_decides: one seed, so the coverage floors (Seen::floors) are not checked");
+        return;
+    }
     seen.floors(&open, &by);
 }
 
