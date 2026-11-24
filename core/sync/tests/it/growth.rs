@@ -245,7 +245,7 @@ fn lowered_writes(n: usize) -> (World, Tid, Vec<CommitId>, Vec<Held>) {
 // again and every node reads its last write. Fails if a node keeps its entry of a body judged
 // invalid, the author included, or the engine keeps a commit known only for invalid parts.
 #[test]
-#[ignore = "accounts: keys"]
+#[ignore = "accounts: making an account"]
 fn a_lowered_writers_invalid_writes_leave_nothing_and_return_on_regrant_spec_commits_5() {
     let (_, _, _, few) = lowered_writes(10);
     let (mut w, t, bad, many) = lowered_writes(20);
@@ -278,7 +278,7 @@ fn a_lowered_writers_invalid_writes_leave_nothing_and_return_on_regrant_spec_com
 // away: node 2 reads the write from node 3, which keeps S unread and holds it. Fails if node 2
 // forgets the write while node 3 shows it and nothing brings it back.
 #[test]
-#[ignore = "accounts: keys"]
+#[ignore = "accounts: making an account"]
 fn a_write_valid_again_before_its_author_hears_comes_from_a_store_spec_permissions_6() {
     let mut w = world_of(0, 4, 4);
     w.cap = 200_000;
@@ -322,7 +322,7 @@ fn a_write_valid_again_before_its_author_hears_comes_from_a_store_spec_permissio
 // void, and forgets it; a re-grant of write on thing 1 alone gives the request force while the
 // commit's part on thing 0 stays invalid: every node reads the purge.
 #[test]
-#[ignore = "accounts: keys"]
+#[ignore = "accounts: making an account"]
 fn a_request_given_force_again_reaches_a_node_that_forgot_it_spec_perm_6() {
     let mut w = world_of(0, 2, 2);
     let _ = play(&mut w, &[New(0), New(0), Grant(0, 0, 1, Gives::Writes), Grant(0, 1, 1, Gives::Writes), Run], String::new());
@@ -874,8 +874,11 @@ fn a_granted_and_revoked_thing_returns_storage_to_a_fresh_worlds_spec_sync_set_3
 // Its redeem arm (spec/sync-set.md §4, §3 Nothing of R stays): as the
 // grant arm, the first round granting by a link redeemed and ended (`redeem_round`): the link's
 // seed thing goes with its end.
+// Ignored: the round's first commit writes the node root's strong and the thing together, so
+// its root section is sealed under the thing's sync ID once a link makes the thing independent
+// (a `dw/` row of the root stays: issues/node-root-independent.md).
 #[test]
-#[ignore = "accounts: keys"]
+#[ignore = "accounts: making an account"]
 fn a_redeemed_and_ended_link_returns_storage_to_a_fresh_worlds_spec_sync_set_3() {
     grants_as_fresh(true, true, 4);
 }
@@ -896,7 +899,7 @@ fn a_declined_grant_returns_storage_to_a_fresh_worlds_spec_sync_set_3() {
 // there as a grant naming the account, spec/sync-judgement.md §2, until nothing held needs the
 // thing).
 #[test]
-#[ignore = "accounts: keys"]
+#[ignore = "accounts: making an account"]
 fn a_released_things_forgotten_commits_leave_no_own_entry_spec_sync_judgement_3() {
     use osis_schema::core_types::HOLDS;
     let mut w = world_of(0, 1, 1);

@@ -135,7 +135,7 @@ fn a_shrink_finds_a_planted_failure_in_few_candidates() {
 // failing (`capped`); under the cap it runs as ever, and a world's own lower cap still panics as
 // a storm, its message naming the cap and that it counts the world's whole run.
 #[test]
-#[ignore = "accounts: keys"]
+#[ignore = "accounts: making an account"]
 fn a_shrink_candidate_past_its_cap_does_not_fail() {
     use crate::harness::{Step::*, capped, contacts, play};
     let steps = [PowerOff(1), PowerOn(1), Run];

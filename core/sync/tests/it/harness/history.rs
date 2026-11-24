@@ -419,12 +419,13 @@ fn make(w: &mut World, i: usize, mint_admin: Option<usize>) -> Result<String, St
     };
     let v = w.history.value();
     match w.write(i, |e| -> osis_engine::Result<_> {
+        // minted with the node thing (the node root is local: nothing shared is its dependent),
+        // held from the node root, or from the thing it is minted with
         let d = root_of(e)?;
-        let admin = admin.unwrap_or(d);
         let mut m = Mutation::new();
-        let t = m.create(e.thing_record(admin, None));
+        let t = m.create(e.thing_record(admin.unwrap_or(e.me()), None));
         m.set(t, &value_ak(), &Value::Str(v.clone()))?;
-        strong_in(&mut m, admin, t, true)?;
+        strong_in(&mut m, admin.unwrap_or(d), t, true)?;
         Ok((t, d, e.commit(m)?))
     }) {
         Ok((t, d, c)) => {

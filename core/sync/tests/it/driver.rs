@@ -101,7 +101,7 @@ fn a_silent_dial_times_out_and_redials_spec_sync_opens_1() {
 // is the node's to keep whatever its wall clock does: with both nodes' clocks gone back an hour
 // while each waits to redial the other, they connect within a pause of the heal, not an hour on.
 #[test]
-#[ignore = "accounts: keys"]
+#[ignore = "accounts: making an account"]
 fn a_clock_gone_back_delays_no_redial_spec_sync_opens_1() {
     let mut w = contacts();
     w.partition(0, 1);

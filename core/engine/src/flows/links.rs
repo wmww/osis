@@ -55,7 +55,7 @@ impl Engine {
     /// Creates a link to `spec.target` for `sharer` (a thing this node is admin of): K (mint
     /// admin `sharer`, independent, its sync ID listing L by static entry), L (minted with the key
     /// of a fresh seed, its minting signed by that key as L), L's edge (r, may-grant, `until`) on
-    /// K with its boxes, K's edge on the target, and a thing minted with the node root as admin
+    /// K with its boxes, K's edge on the target, and a thing minted with K's mint admin as admin
     /// keeping the seed. Returns the link and the seed thing.
     pub fn create_link(&mut self, sharer: &Tid, spec: &LinkSpec) -> Result<(ShareLink, Tid, Done)> {
         // redeeming reads K's sync ID as L (its roster shows K's grant on the target), which a
@@ -197,8 +197,8 @@ impl Engine {
         Ok(self.held_links()?.iter().filter(|h| h.k == *k && h.l == *l).map(|h| h.keep).collect())
     }
 
-    /// The links whose seed this node holds (a `link:seed.0` on a thing minted with the node root
-    /// as admin; `Core::links`).
+    /// The links whose seed this node holds (a `link:seed.0` on a thing minted with K's mint admin
+    /// as admin, spec/permissions.md §7; `Core::links`).
     pub fn held_links(&mut self) -> Result<Arc<Vec<HeldLink>>> {
         osis_base::memo::Memo::get_in(self, |e| &e.core.links, &(), Self::held_links_read)
     }
@@ -212,8 +212,8 @@ impl Engine {
                 && let (Some(Value::Weak(k)), Some(Value::Bytes(b))) = (m.get(&Value::Int(0)), m.get(&Value::Int(1)))
                 && let Ok(seed) = <[u8; 32]>::try_from(b.as_slice())
                 && let (Some(Value::Weak(target)), Some(Value::Bool(single_use))) = (m.get(&Value::Int(2)), m.get(&Value::Int(3)))
-                && self.mint_admin(&t).is_some_and(|a| Some(a) == self.core.node_root)
                 && let Some(mint_admin) = self.mint_admin(k)
+                && self.mint_admin(&t) == Some(mint_admin)
             {
                 let ids: Vec<osis_base::CommitId> = self.core.on_thing(&t).collect();
                 let here = ids.iter().any(|c| self.core.ix.commits.get(c).is_some_and(|m| m.origin == crate::events::Origin::Local && m.view.aspect(&t, LINK_SEED).is_some()));
@@ -348,12 +348,12 @@ fn create_link_in(tx: &mut Tx<'_>, sharer: Tid, spec: &LinkSpec, krec: osis_base
     let mut m = Mutation::new();
     m.op(k, &ct::HOLDS, PathOp { path: Vec::new(), op: Op::Add(Value::Strong(spec.target)) })?;
     done.add(Engine::commit_tx(tx, m)?);
-    // the seed on a thing minted with the node root as admin, which holds it and K by strongs:
-    // the node holds the seed, may finalize and serves K's sync ID to redeemers
-    // (spec/permissions.md §7)
+    // the seed on a thing minted with K's mint admin as admin (spec/permissions.md §7), held with
+    // K by strongs from the node root: the node holds the seed, may finalize and serves K's sync
+    // ID to redeemers
     let d = tx.core.node_root.ok_or(Error::Misuse("no node root"))?;
     let mut m = Mutation::new();
-    let keep = m.create(crate::identity::thing_record(d, None, &mut *tx.rng));
+    let keep = m.create(crate::identity::thing_record(sharer, None, &mut *tx.rng));
     for t in [keep, k] {
         m.op(d, &ct::HOLDS, PathOp { path: Vec::new(), op: Op::Add(Value::Strong(t)) })?;
     }

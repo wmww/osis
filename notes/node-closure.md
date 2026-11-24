@@ -29,7 +29,7 @@ Tess: every stored row is attributable to what the node holds, and releasing eve
 Links between owners are counts over acyclic structure (entry → blob `X/`; blob → commit `bp/`, `cb/`; commit → thing; thing or commit → derived rows keyed owner-first), so no walk beyond the closure is needed. Releasing everything also leaves, each bounded: inbox fires for the inbox's history setting, a link's sync ID while redeemed, role changes under a former grantee's sync ID for `ROLE_KEEP`, tombstones for `TOMBSTONE_LIFETIME`. Tests: osis-sync `growth::` own things, expiry, held history, grant and decline, redeem (storage after releasing equals a fresh node's).
 
 ## Roots
-- The node root: made at the first start with the node thing (`flows::roots::first_start`; local record `records::NODE_ROOT`), holding a strong to it. The node writes it and its dependents as itself (`Core::nodes_own`, `made_nodes_own` for things a commit makes): no account holds a role there.
+- The node root: made at the first start with the node thing (`flows::roots::first_start`; local record `records::NODE_ROOT`), holding a strong to it. The node writes it as its node thing, as any thing it holds a role on. Making a thing it administers independent makes the root independent too (issues/node-root-independent.md).
 
 ## The structure (`Closure`: journaled, built again by an open)
 The vertices, contexts (`Ctx`) and out-lists are units.rs's module doc and `given_by`; the rule is spec/sync-set.md §2. Beside it:

@@ -137,7 +137,7 @@ fn a_reader_moves_a_removed_store_past_its_keys_spec_sync_opens_6() {
 // step lets node 1's Hit on its step open S there to be moved past its keys. Fails when a
 // departed peer is shown nothing: node 1 keeps its copy.
 #[test]
-#[ignore = "accounts: keys"]
+#[ignore = "accounts: making an account"]
 fn a_reader_moves_a_removed_store_it_never_showed_its_step_spec_sync_opens_6() {
     use crate::harness::Step::*;
     use crate::harness::history::{Gives, Holder, world_of};
@@ -163,7 +163,7 @@ fn a_reader_moves_a_removed_store_it_never_showed_its_step_spec_sync_opens_6() {
 // proof, which node 0's filter shows toward a departed peer, opens S ended at node 0, which
 // registers past node 1's keys, and node 1 drops its copy.
 #[test]
-#[ignore = "accounts: keys"]
+#[ignore = "accounts: making an account"]
 fn a_reader_moves_a_store_departed_before_it_kept_s_unread_spec_sync_opens_6() {
     use crate::harness::Step::*;
     use crate::harness::history::{Gives, Holder, world_of};
@@ -182,7 +182,7 @@ fn a_reader_moves_a_store_departed_before_it_kept_s_unread_spec_sync_opens_6() {
 // every own store: one carrying all another carries, and more or under a lower ID, wins; none
 // logs another of its own.
 #[test]
-#[ignore = "accounts: keys"]
+#[ignore = "accounts: making an account"]
 fn readers_logging_the_same_records_settle_on_one_record_blob_spec_permissions_4() {
     use crate::harness::Step::*;
     use crate::harness::history::{Gives, world_of};

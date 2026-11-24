@@ -218,7 +218,7 @@ fn a_write_is_one_blob_however_many_read_it_spec_sync_judgement_3() {
 // blob. Fails if a blob opened before its lists resolve is never opened again (the reader reads
 // nothing of the commit, and keeps the framed blob as one of it).
 #[test]
-#[ignore = "accounts: keys"]
+#[ignore = "accounts: making an account"]
 fn a_blob_framed_under_other_commitments_is_dropped_once_its_lists_resolve_spec_commits_4() {
     let mut w = world_of(0, 2, 2);
     w.cap = 200_000;

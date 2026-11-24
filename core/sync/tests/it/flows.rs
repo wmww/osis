@@ -34,7 +34,7 @@ fn a_raced_grant_is_resealed_at_a_complete_passs_end_spec_perm_3() {
 // steps: one sync logs them all under S, in the order made. Enough writes that their commit IDs
 // do not sort in that order (asserted), so logging in ID order fails this.
 #[test]
-#[ignore = "accounts: keys"]
+#[ignore = "accounts: making an account"]
 fn a_removal_is_logged_before_what_was_written_after_it_spec_permissions_3() {
     use crate::harness::history::{Gives, three, value_ak};
     let (mut w, t, s) = three(Gives::Reads, 1);

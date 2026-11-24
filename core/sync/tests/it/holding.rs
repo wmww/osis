@@ -1600,7 +1600,7 @@ fn inbox_grants(w: &mut World, i: usize, enabled: bool) {
 // Bob's node, which refuses it. Writes of Bob's own elsewhere open the refused deposit no more
 // often for being ten times as many; Bob enabling grant fires takes it: the grant is his.
 #[test]
-#[ignore = "accounts: keys"]
+#[ignore = "accounts: making an account"]
 fn a_refused_sealed_fire_is_opened_again_only_when_what_refused_it_moves_spec_sync_inbox_4() {
     let mut w = contacts();
     inbox_grants(&mut w, 1, false);

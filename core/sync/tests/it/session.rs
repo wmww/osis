@@ -269,7 +269,7 @@ fn strangers_prove_to_each_other_spec_sync_opens_2() {
 // spec/wire.md §11.2 (Prove): a verifier checks proofs in order and stops at the first that does
 // not verify: those before it stand; link keys proved count whether known or not.
 #[test]
-#[ignore = "accounts: keys"]
+#[ignore = "accounts: proofs"]
 fn proofs_stop_at_the_first_bad_spec_wire_11_2() {
     let (_, mut l, mut ls, _) = listener_with_scripted_dialer();
     let b = *ls.binding().expect("binding");

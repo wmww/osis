@@ -884,7 +884,7 @@ fn a_peer_that_is_no_one_closes_once_no_connection_holds_its_record_spec_sync_op
 // it came. Else it stays there unjudged and unfollowed: b departing while away closes nothing of it,
 // and the next take, of a record in memory, judges nothing, serving S to a departed peer.
 #[test]
-#[ignore = "accounts: keys"]
+#[ignore = "accounts: proofs"]
 fn a_take_refused_for_its_pair_leaves_nothing_unjudged_spec_sync_opens_6() {
     use osis_sync::types::ConnId;
     let node = |n: u8, k: u8| Proven { node: Some(tid(k)), ..account(n) };
@@ -2552,7 +2552,7 @@ fn a_self_removal_alone_ends_what_is_served_spec_sync_opens_6() {
 // from it, is away; what streams kept of S for node 2's record goes with S's rows already gone
 // (`Moved::Gone`), and the two meet again with nothing of S open.
 #[test]
-#[ignore = "accounts: keys"]
+#[ignore = "accounts: making an account"]
 fn s_shredded_while_its_reader_is_away_spec_sync_opens_3() {
     use crate::harness::Step::*;
     use crate::harness::history::{Gives, world_of};

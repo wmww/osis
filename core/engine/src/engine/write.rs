@@ -1113,11 +1113,6 @@ pub(crate) fn commit_or_build(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option
     let sealed = m.sealed;
     let (node, key) = match m.signer {
         Some(s) => (s, tx.core.key_for(&s).ok_or(Error::Misuse("no key held with a grant on the signer"))?.1),
-        // a node writes its own thing as itself: nobody else has rights on it
-        None if !(m.aspects.is_empty() && m.creates.is_empty()) && m.aspects.keys().map(|(t, _)| t).chain(m.creates.keys()).all(|t| tx.core.made_nodes_own(t, &m.creates)) => {
-            m.actor = None;
-            (tx.core.id.tid(), None)
-        }
         None => (tx.core.me(), None),
     };
     if m.undoes.is_some() && !(m.creates.is_empty() && m.aspects.is_empty() && m.purge.is_empty() && m.purge_named.is_empty() && m.frontier.is_none()) {

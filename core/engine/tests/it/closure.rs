@@ -136,19 +136,22 @@ fn removal_costs_what_it_held_spec_sync_set_2() {
 }
 
 // spec/sync-set.md §3 Release: a thing that leaves waits for each sync ID that carried it when it
-// left. X is dependent, minted with admin A (independent, minted with admin D), so in D's and A's sync units; one write removing
-// A -> X takes it out of both, and both are noted, whatever order the walk drops them in.
+// left. G and A are independent, A minted with admin G and held by G; X is dependent, minted with
+// admin A and held by A, so in G's and A's sync units; one write removing A -> X takes it out of
+// both, and both are noted, whatever order the walk drops them in.
 #[test]
-#[ignore = "accounts: keys"]
 fn a_thing_leaving_two_units_at_once_notes_both_spec_sync_set_3() {
     let (mut lp, d) = alone();
     let e = &mut lp.peers[0].engine;
-    let a = make(e, d, d);
+    let me = e.me();
+    let g = make(e, me, d);
+    e.make_independent(&g).unwrap();
+    let a = make(e, g, g);
     e.make_independent(&a).unwrap();
     let x = make(e, a, a);
-    assert_eq!(e.units_holding(&x), [d, a].into());
+    assert_eq!(e.units_holding(&x), [g, a].into());
     strong(e, a, x, false);
-    assert_eq!(e.left_closure().get(&x), Some(&[d, a].into()));
+    assert_eq!(e.left_closure().get(&x), Some(&[g, a].into()));
 }
 
 // spec/sync-set.md §2 Not carried: X in D's sync unit strongly references Y, a thing this node
@@ -372,16 +375,19 @@ fn try_make(e: &mut Engine, admin: Tid, from: Option<Tid>) -> osis_engine::Resul
 // applies. X and U are independent: a dependent thing minted with admin X referenced by X is made; one nothing
 // references, or one from U referenced only by X (X's keys do not open it), is refused and
 // leaves no commit; a thing made in one commit and held by the next of its transaction is made,
-// and refused with that commit holding nothing; a link (its link key held by nothing, its seed
-// thing minted with the account root as admin with its strong) is made; the account's creation was.
+// and refused with that commit holding nothing, its record alone held by nothing and a holder of
+// nothing; a link is made, its link key held by no strong, as K's holder (made with its role
+// entries alone).
 #[test]
-#[ignore = "accounts: keys"]
 fn a_thing_is_made_only_where_it_is_held_spec_sync_set_2() {
     let (mut lp, _) = people(1);
     let e = &mut lp.peers[0].engine;
     let (d, p) = (e.node_root().unwrap(), e.me());
     assert!(e.closure_holds(&d), "the node root");
     let (x, u) = (make(e, p, d), make(e, p, d));
+    for t in [x, u] {
+        e.make_independent(&t).unwrap();
+    }
     let made = try_make(e, x, Some(x)).unwrap();
     assert!(e.closure_holds(&made));
     let before = e.commit_ids().len();
@@ -693,16 +699,16 @@ fn a_part_missing_outside_the_node_closure_keeps_nothing_spec_commits_5() {
 
 // spec/commits.md §5 What a held thing needs, §4 Unjudgeable: a commit needs the things its path
 // lists, whose records judge it. Peer 0 writes X acting as T, a thing of its own outside peer 1's
-// node closure, holding no role on X: no write is held on T's edge on X, so the commit pends at
-// peer 1; nothing else needs T there, and its record stays past the pass's end with the commit.
+// node closure, holding no role on X: the commit pends at peer 1 until T's chain is known;
+// nothing else needs T there, and its record stays past the pass's end with the commit.
 #[test]
-#[ignore = "accounts: keys"]
 fn a_commit_needs_the_thing_it_acts_as_spec_commits_5() {
     let mut lp = crate::common::net(2, 0);
     let d = lp.peers[0].engine.node_root().unwrap();
     let x = crate::common::new_shared(&mut lp, 0);
     let e0 = &mut lp.peers[0].engine;
-    let t = make(e0, d, d);
+    let me = e0.me();
+    let t = make(e0, me, d);
     let mut m = Mutation::new();
     m.set(x, &crate::common::REG, &crate::common::s("as t")).unwrap();
     m.act_as(t);
