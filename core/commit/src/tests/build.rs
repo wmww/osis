@@ -437,7 +437,7 @@ fn relay_only_delta_never_pages_spec_commits_2() {
     // spec/crypto.md §7 Page links: pages naming other delete keys than the delta lists
     pages.del = osis_base::Del::NONE;
     let unkeyed = commit(false, &mut pages);
-    assert!(matches!(verify_blob(&unkeyed, &key().verifying_key(), &dedup, Some(&mut pages)), Err(Error::Delta(osis_crdt::Error::Page(osis_crdt::PageError::Keys)))));
+    assert!(matches!(verify_blob(&unkeyed, &key().verifying_key(), &dedup, Some(&mut pages)), Err(Error::Delta(osis_crdt::Error::Page(osis_crdt::PageError::Framing)))));
     pages.del = osis_base::Del::from_keys(listed.iter().map(|k| (k.level, k.key))).unwrap();
     let relay = commit(true, &mut pages);
     let err = verify_blob(&relay, &key().verifying_key(), &dedup, Some(&mut pages)).unwrap_err();

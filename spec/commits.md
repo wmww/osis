@@ -120,7 +120,7 @@ Encoding: spec/wire.md §4. Fields:
     - a `created.0` delta that is not one minting of its record, or whose commit does not expire at its record's `expires` (§5 Destruction);
     - a `roles.0` write inside an entry it did not create, or a value that is no well-formed grant (spec/permissions.md §2); a `signers.0` write that is no well-formed key grant (spec/data-model.md §9); a `keys.0` write of a keyset recording a keyset left out with no cause (spec/wire.md §7 Left out);
     - a value held unchunked that spec/data-model.md §6 chunks;
-    - a page framed for other delete keys than the delta lists (spec/crypto.md §7 Page links);
+    - a page not framed for the delta: other delete keys than it lists, or another salt, expiry or class (spec/crypto.md §7 Page links);
     - a carried write stamped after its commit.
   - A blob holding only such deltas, none of its parts waiting, is bad input.
   - Where such a delta, or its commit, waits, the delta is judged when that wait ends.

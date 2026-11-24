@@ -20,6 +20,7 @@
   - A node opening a blob of a commit refuses it unless its prefix expiry is the one this rule gives (from the header's `expires`, class and timestamp, and whether the blob carries sections), whatever else it can check of the prefix.
 - **Chunk reuse**: a chunk reused by a later delta keeps its blob and prefix, unless it must be re-encrypted.
   - It is re-encrypted when one of these holds:
+    - its class is not the new delta's commit's;
     - its expiry is earlier than the new delta's;
     - its commitments to the thing's delete keys (levels 1 and 3) are not exactly those of the keys the reusing delta lists;
     - it commits to a level-2 key other than the reusing delta's, and that delta lists no level-2 key or only a level-2 key;

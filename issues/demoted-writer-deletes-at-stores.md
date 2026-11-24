@@ -13,3 +13,5 @@ Options:
 1. A level-2 Delete needs the head's write key, as level 3 does; the lowering's write rotation then ends it. One rule (spec/sync-ids.md §6, `osis_blob::key_for_levels`). A demoted author's honest request made before its lowering then reaches stores only through a current writer's or admin's node.
 2. Re-log the demoted writer's blobs at each lowering under keys it lacks: work in its whole history per lowering, and level 2 stops meaning the author's right.
 3. Accept: availability, not erasure; the requirements' "Malicious readers can only waste storage" then needs "or, having written, delete their own earlier writes at stores".
+
+Option 1 does not reach chunks a writer framed itself: chunk links are not checked against their delta (notes/delete-keys.md, Links), so a writer can frame its own write's chunks with a level-1 key of its own, and a level-1 Delete needs only the head's sync key, which lowering to read keeps. Closing that too needs a rule such as: a snapshot carrying a value re-frames (re-encrypts) each chunk whose prefix is not its own framing, as reuse does; or option 3 stated for chunks.

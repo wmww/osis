@@ -152,7 +152,7 @@ fn verify_waiting(tx: &mut Tx<'_>, id: &CommitId, part: &osis_commit::Part, h: &
     let mut interner = osis_crdt::Interner::new();
     let mut blobs = crate::engine::blobs::TxBlobs::new(&mut tx.blobs, tx.txn.is_memory());
     let thing = h.aspects.get(part.ai).map(|a| a.tid).ok_or(())?;
-    let mut paged = osis_blob::BlobReader::judging(dedup, thing, &mut blobs);
+    let mut paged = osis_blob::BlobReader::judging(dedup, h, thing, &mut blobs);
     let reader: &mut dyn osis_crdt::PageSource = &mut paged;
     match osis_commit::verify_part(h, id, part, dedup, &mut interner, Some(reader)) {
         Ok(d) => Ok(Some(d)),

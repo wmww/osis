@@ -295,7 +295,7 @@ mod tests {
     }
 
     // spec/sync-ids.md §1: the re-encryption rule: a reused blob keeps its encryption unless its
-    // expiry is earlier than the new delta's or its commitments to the thing's delete keys are
+    // class is another, its expiry is earlier than the new delta's or its commitments to the thing's delete keys are
     // not exactly the new delta's; purge author's (level-2) commitments need not match beside an admin or
     // writer key, but need the new delta's own key where it lists no level 2 or only level 2: else
     // that author could delete a blob the delta's purge-by gives it no right over.
@@ -314,6 +314,7 @@ mod tests {
             (fr(Some(100), vec![(1, 1), (2, 2), (3, 4)]), false),
             (fr(Some(100), vec![(2, 2), (3, 3)]), false),
             (fr(Some(100), vec![(1, 1), (2, 2)]), false),
+            (Framing { class: crate::blob::Class::Ephemeral, ..fr(Some(100), vec![(1, 1), (2, 2), (3, 3)]) }, false),
         ];
         for (i, (f2, keep)) in cases.into_iter().enumerate() {
             let mut store = MemoryBlobs::default();

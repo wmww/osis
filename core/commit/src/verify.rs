@@ -74,7 +74,7 @@ struct Keyed<'a> {
 impl PageSource for Keyed<'_> {
     fn get(&mut self, link: &osis_base::Link) -> Result<Vec<u8>, osis_crdt::PageError> {
         if self.del != Some(link.del) {
-            return Err(osis_crdt::PageError::Keys);
+            return Err(osis_crdt::PageError::Framing);
         }
         self.inner.get(link)
     }

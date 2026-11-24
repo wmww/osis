@@ -15,9 +15,9 @@ pub enum PageError {
     Missing,
     /// The page failed its content hash or decryption. BadInput.
     Corrupt,
-    /// The page's link or blob names other delete keys than its delta lists (spec/crypto.md §7
-    /// Checked keys). BadInput.
-    Keys,
+    /// The page's link or blob is not its delta's framing: other delete keys than the delta
+    /// lists, or another salt, expiry or class (spec/crypto.md §7 Page links). BadInput.
+    Framing,
     /// Storage failure. Local.
     Storage,
 }
@@ -25,14 +25,14 @@ pub enum PageError {
 osis_base::impl_error!(PageError {
     Missing => ("missing"),
     Corrupt => ("content hash or decryption failed"),
-    Keys => ("a page framed for other delete keys than its delta lists"),
+    Framing => ("a page not framed for its delta"),
     Storage => ("storage failure"),
 });
 
 impl Classified for PageError {
     fn class(&self) -> ErrorClass {
         match self {
-            PageError::Corrupt | PageError::Keys => ErrorClass::BadInput,
+            PageError::Corrupt | PageError::Framing => ErrorClass::BadInput,
             PageError::Missing | PageError::Storage => ErrorClass::Local,
         }
     }

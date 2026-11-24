@@ -43,7 +43,8 @@ impl Framing {
     }
 
     /// Whether the blob `link` reaches, framed earlier, keeps its encryption when a delta framed
-    /// with `self` reuses it (spec/sync-ids.md §1): its expiry is not earlier than this one's, and its
+    /// with `self` reuses it (spec/sync-ids.md §1): its class is this one's (an ephemeral blob is
+    /// held in memory at stores), its expiry is not earlier than this one's, and its
     /// commitments to the thing's delete keys (levels 1 and 3) are exactly this framing's under
     /// its salt and the thing blind of the link's link blind (the link alone decides). A
     /// purge author's (level-2) commitment need not match while this delta lists another level-2 key beside
@@ -63,15 +64,18 @@ impl Framing {
         let author: Result<BTreeSet<[u8; 33]>, _> = self.keys.iter().filter(|(l, _)| *l == DELETE_AUTHOR).map(|(l, k)| commitment(*l, k, salt, blind)).collect();
         let shared = self.keys.iter().any(|(l, _)| *l == DELETE_AUTHOR) && self.keys.iter().any(|(l, _)| *l != DELETE_AUTHOR);
         let author_ok = shared || author.is_ok_and(|a| prefix.commitments().filter(|c| c[0] == DELETE_AUTHOR).all(|c| a.contains(c)));
-        expiry_ok && author_ok && mine.is_ok_and(|m| m == theirs) && link.salt == *salt && bears(prefix, &link.del, blind)
+        prefix.class() == self.class && expiry_ok && author_ok && mine.is_ok_and(|m| m == theirs) && link.salt == *salt && bears(prefix, &link.del, blind)
     }
 }
 
 /// Whether `prefix` commits to exactly the keys of `del` (its one group), under its salt and
 /// `blind`: a link's Del is its writer's claim, checked before use.
+/// One group, not the same commitments split: a Delete needs a signature per group (spec/wire.md
+/// §5), so split they would need every key's holder at once.
 pub fn bears(prefix: &Prefix, del: &Del, blind: &[u8; 16]) -> bool {
+    let [group] = prefix.groups() else { return false };
     let claimed: Result<BTreeSet<[u8; 33]>, ()> = del.iter().map(|(l, k)| VerifyingKey::from_bytes(&k).map_err(|_| ()).and_then(|vk| commitment(l, &vk, prefix.salt(), blind).map_err(|_| ()))).collect();
-    let borne: BTreeSet<[u8; 33]> = prefix.commitments().copied().collect();
+    let borne: BTreeSet<[u8; 33]> = group.iter().copied().collect();
     claimed.is_ok_and(|c| c == borne)
 }
 
@@ -297,12 +301,19 @@ impl Reuse {
     }
 }
 
+/// What a judged delta's pages are framed for: its thing, its commit's expiry and class.
+struct Judging {
+    thing: Tid,
+    expiry: Option<WallMs>,
+    class: crate::blob::Class,
+}
+
 /// Fetches and decrypts linked blobs, checking the blob ID and suite.
 pub struct BlobReader<'a> {
     pub dedup: &'a Secret32,
     fetch: &'a mut dyn BlobFetch,
-    /// Judging a delta of this thing: each page's prefix must bear its link (`judging`).
-    judging: Option<Tid>,
+    /// Judging a delta: each page's prefix must be its framing (`judging`).
+    judging: Option<Judging>,
 }
 
 impl<'a> BlobReader<'a> {
@@ -310,13 +321,15 @@ impl<'a> BlobReader<'a> {
         BlobReader { dedup, fetch, judging: None }
     }
 
-    /// A reader of the pages of a delta on `thing` being judged (spec/crypto.md §7 Checked keys):
-    /// a page whose blob prefix does not bear its link's salt and delete keys under the link's
-    /// thing blind is `PageError::Keys`. Invariant: a page applies only where its blob's
-    /// commitments are the delete keys its link names, so what deletes it at stores is what the
-    /// key check judged. A part already judged is read again without it.
-    pub fn judging(dedup: &'a Secret32, thing: Tid, fetch: &'a mut dyn BlobFetch) -> BlobReader<'a> {
-        BlobReader { dedup, fetch, judging: Some(thing) }
+    /// A reader of the pages of a delta on `thing` of a commit headed `h` being judged
+    /// (spec/crypto.md §7 Page links, spec/wire.md §5): a page whose blob prefix does not bear its
+    /// link's salt and delete keys under the link's thing blind, or not the commit's expiry and
+    /// class, is `PageError::Framing`. Invariant: a page applies only where its blob's prefix is its
+    /// delta's framing, so what deletes or expires it at stores is what judged its delta. A part
+    /// already judged is read again without it.
+    pub fn judging(dedup: &'a Secret32, h: &osis_commit::Header, thing: Tid, fetch: &'a mut dyn BlobFetch) -> BlobReader<'a> {
+        let judging = Judging { thing, expiry: osis_commit::blob_expiry(h).map(WallMs), class: crate::blob::Class::of_marker(h.ephemeral) };
+        BlobReader { dedup, fetch, judging: Some(judging) }
     }
 
     fn open_link(&mut self, link: &Link) -> Result<(Prefix, Vec<u8>), Error> {
@@ -345,10 +358,10 @@ impl PageSource for BlobReader<'_> {
         if link_hash(self.dedup, &pt) != link.hash {
             return Err(PageError::Corrupt);
         }
-        if let Some(thing) = self.judging
-            && (prefix.salt() != &link.salt || !bears(&prefix, &link.del, &thing_blind(&link_blind(&link.key), thing.as_bytes())))
+        if let Some(j) = &self.judging
+            && (prefix.salt() != &link.salt || prefix.expiry() != j.expiry || prefix.class() != j.class || !bears(&prefix, &link.del, &thing_blind(&link_blind(&link.key), j.thing.as_bytes())))
         {
-            return Err(PageError::Keys);
+            return Err(PageError::Framing);
         }
         Ok(pt)
     }

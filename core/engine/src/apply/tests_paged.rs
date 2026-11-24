@@ -983,50 +983,71 @@ fn seal_snapshot(w: &mut World, by: usize, ak: &Ak, ts: osis_base::Ts, sec: &cra
     Package { id: c.id(), bytes: c.encode(), blobs: blobs.0.into_iter().collect() }
 }
 
-/// A page sink framing under one framing and handing back each link as `relink` makes it.
-struct Relinking<'a, 'b> {
-    inner: osis_blob::BlobWriter<'a>,
-    relink: &'b dyn Fn(osis_base::Link) -> osis_base::Link,
+/// A page sink framing each page under `framing`, its commitments one group per key if `split`,
+/// and handing back each link as `relink` makes it.
+struct Reframing<'a> {
+    framing: osis_blob::Framing,
+    split: bool,
+    blobs: &'a mut osis_blob::MemoryBlobs,
+    rng: osis_crypto::SeededRng,
+    relink: &'a dyn Fn(osis_base::Link) -> osis_base::Link,
 }
-impl osis_crdt::PageSink for Relinking<'_, '_> {
+impl osis_crdt::PageSink for Reframing<'_> {
     fn put(&mut self, plaintext: &[u8]) -> std::result::Result<osis_base::Link, osis_crdt::PageError> {
-        Ok((self.relink)(self.inner.put(plaintext)?))
+        let f = &self.framing;
+        let (salt, key, lb) = osis_blob::linked_prefix_inputs(&mut self.rng);
+        let groups: Vec<Vec<_>> = if self.split { f.keys.iter().map(|k| vec![*k]).collect() } else { vec![f.keys.clone()] };
+        let prefix = osis_blob::Prefix::for_groups(salt, &f.blind(&lb), f.expiry, &groups).unwrap().with_class(f.class);
+        let (key, blob) = osis_blob::frame_under(key, &prefix, plaintext).unwrap();
+        let id = osis_blob::blob_id(&blob);
+        self.blobs.0.insert(id, blob);
+        let link = osis_base::Link { hash: osis_crypto::link_hash(&f.dedup, plaintext), blob: id, suite: osis_crypto::SUITE_1, key: *key.expose(), salt, del: f.del().unwrap() };
+        Ok((self.relink)(link))
     }
     fn params(&self) -> osis_crdt::PageParams {
-        self.inner.params()
+        osis_crdt::PageParams::wire()
     }
 }
 
-/// spec/crypto.md §7 Checked keys, spec/commits.md §4: a page's link names its delta's delete keys
-/// and its blob's prefix bears that link (salt and commitments). Node 0's paged snapshot whose
-/// pages are framed for another level-1 key (the link naming it too, or naming the delta's keys
-/// over a blob bearing the other), or whose links name another salt, is bad by itself at node 3,
-/// nothing of it kept waiting; framed for the delta's keys it applies. Who writes each input:
-/// the snapshot's writer, its pages and their links.
+/// spec/crypto.md §7 Page links, spec/commits.md §4: a page's link names its delta's delete keys
+/// and its blob's prefix is its delta's framing (that link's salt and commitments, as one group;
+/// the commit's expiry and class). Node 0's paged snapshot is bad by itself at node 3, nothing of
+/// it kept waiting, when its pages are framed for another level-1 key (the link naming it too,
+/// or naming the delta's keys over a blob bearing the other), its links name another salt, its
+/// pages' commitments are split one group per key (a Delete then needs every key's holder), or
+/// its pages expire or are ephemeral while the commit neither expires nor is; framed for the delta
+/// it applies. Who writes each input: the snapshot's writer, its pages and their links.
 #[test]
-fn page_framed_for_other_delete_keys_is_bad_spec_crypto_7() {
+fn page_not_framed_for_its_delta_is_bad_spec_crypto_7() {
     use osis_commit::{Form, Kind, writer_ctx};
     let a = aks()[0].clone();
     let other = osis_crypto::DeleteSecret::write(&osis_crypto::Secret32::from_bytes([0x77; 32])).verifying_key();
-    // (name, the blobs framed for another level-1 key, the links naming the delta's keys anyway,
-    // the links naming another salt, the outcome)
-    let cases = [
-        ("framed for the delta's keys", false, false, false, "Applied"),
-        ("link and blob name another key", true, false, false, "Page(Keys)"),
-        ("blob bears another key", true, true, false, "Page(Keys)"),
-        ("link names another salt", false, false, true, "Page(Keys)"),
+    let key = |f: &mut osis_blob::Framing| f.keys[0].1 = other;
+    let expiry = |f: &mut osis_blob::Framing| f.expiry = Some(osis_base::WallMs(u64::MAX >> 2));
+    let class = |f: &mut osis_blob::Framing| f.class = osis_blob::Class::Ephemeral;
+    let same = |_: &mut osis_blob::Framing| {};
+    // (name, the pages' framing from the delta's, its commitments split, the links naming the
+    // delta's keys anyway, the links naming another salt, the outcome)
+    type Case<'a> = (&'a str, &'a dyn Fn(&mut osis_blob::Framing), bool, bool, bool, &'a str);
+    let cases: [Case<'_>; 7] = [
+        ("framed for the delta", &same, false, false, false, "Applied"),
+        ("link and blob name another key", &key, false, false, false, "Page(Framing)"),
+        ("blob bears another key", &key, false, true, false, "Page(Framing)"),
+        ("link names another salt", &same, false, false, true, "Page(Framing)"),
+        ("the delta's keys split into groups", &same, true, false, false, "Page(Framing)"),
+        ("pages expire", &expiry, false, false, false, "Page(Framing)"),
+        ("pages ephemeral", &class, false, false, false, "Page(Framing)"),
     ];
-    for (name, reframe, relink, resalt, want) in cases {
+    for (name, reframe, split, relink, resalt, want) in cases {
         let mut w = world(false);
         let (t, by) = (w.t, 0);
         let now = osis_base::Ts::make(w.lp.peers[0].engine.now(), 0).unwrap();
         let sec = hand(&mut w);
         let keys = osis_commit::delete_keys(&sec, &t, &osis_commit::retention::snapshot_purge_by(a.as_str())).unwrap();
         let framing = osis_blob::Framing { thing: t, dedup: osis_commit::Secrets::dedup(&sec, &t).unwrap(), expiry: None, keys: keys.iter().map(|k| (k.level, k.verifying_key().unwrap())).collect(), class: osis_blob::Class::Durable };
+        assert!(keys.len() >= 2 || !split, "{name}: one key splits into one group");
         let mut framed = framing.clone();
-        if reframe {
-            framed.keys[0].1 = other;
-        }
+        reframe(&mut framed);
         let listed = framing.del().unwrap();
         let fix = move |mut l: osis_base::Link| {
             if relink {
@@ -1038,9 +1059,8 @@ fn page_framed_for_other_delete_keys_is_bad_spec_crypto_7() {
             l
         };
         let mut blobs = osis_blob::MemoryBlobs::default();
-        let mut rng = osis_crypto::SeededRng::from_u64(0);
         let snap = osis_crdt::Snapshot { absorbed: Default::default(), facts: Default::default(), nonce: [7; 16], fragment: forged_map(now, ENTRIES, 0x80), frontiers: Default::default() };
-        let mut sink = Relinking { inner: osis_blob::BlobWriter::new(&framed, &mut blobs, &mut rng), relink: &fix };
+        let mut sink = Reframing { framing: framed, split, blobs: &mut blobs, rng: osis_crypto::SeededRng::from_u64(0), relink: &fix };
         let bytes = osis_crdt::encode_snapshot(&snap, &writer_ctx(Form::Commit, Kind::ContentSnapshot, now, w.lp.peers[by].engine.me(), 0, 0), Some(&mut sink)).unwrap();
         drop(sink);
         assert!(blobs.0.len() >= 2, "{name}: not paged");
