@@ -237,7 +237,7 @@ Every act open to a reader, for a party whose only role is through public:
 ### Profiles and contact-only information (the schema's)
 - A **profile** is a schema concept: a thing with a name and a picture, public, with a sync ID of its own. A writer puts a strong reference to its own profile, as ordinary data, in the thing it writes in (decided). The write placing it states its actors, which is the actor naming its profile, checkable by any reader without reading the actor.
 - It is reached by the reference: every thing's keys open it, so the strong brings it into the referring thing's sync unit, and a reader served only by a node keeping the referring unit unread still fetches it. Nothing about profiles is in evidence and no rule pulls things in. Cost: each commit on the profile is an entry and stamp under every unit referencing it; one profile blob under every unit its owner writes in links those units at a node keeping them unread (issues/sync-units-linked-at-rest.md).
-- Rejected: granting the referring thing read on the profile (its roster would list every thing its owner writes in); a ticket or a link's secret in the reference; proving whose profile it is from the profile's side.
+- Rejected: granting the referring thing read on the profile (its roster would list every thing its owner writes in); a link's secret in the reference; proving whose profile it is from the profile's side.
 - **Contact-only information** (decided): the dial list is in a thing of its own, read by those its owner shares with; where it sits and who reads it is the schema's. The dial aspect stays core's: a node dials what it reads in that aspect on any thing it holds (argued).
 
 ### The card: where a thing's inbox is named
@@ -295,7 +295,7 @@ Checked in the named files; the right-hand side argued.
 | `nodes`, `remove_node` (core/osis/src/share.rs) | `holders` of A, and the ordinary removal |
 | siblings to sync with (engine `dial_peers`, core/engine/src/sync/dial.rs; spec/sync-set.md §1) | no sibling rule: a node dials what the dial aspect of any thing it holds lists (§3) |
 | inbox delivery by the account's `keys.0` naming its inbox (`Engine::inbox_thing`) | the card (§3): any thing's inbox, named by its admins |
-| the node root's strong to the account root, refused removal; the account's tickets written by each node (spec/sync-set.md §1) | an ordinary strong from the node root to A, written by the library; A's members enter what A holds roles on by its boxes to A under A's sync ID |
+| the node root's strong to the account root, refused removal; each node holding the account's things by their key part under the account root (spec/sync-set.md §1) | an ordinary strong from the node root to A, written by the library; A's members enter what A holds roles on by its boxes to A under A's sync ID |
 | `profile`, `profile_of`, `contact_card`, `import_contact` (core/osis/src/share.rs) | the schema library: a profile is a public thing; a contact card is a link to the contact-only thing with a reference to the profile |
 | thin clients acting as a thing minted with the account (core/osis/src/clients.rs) | stays core's, a node's policy: a client session's configured path |
 | connection proofs of an account (spec/permissions.md §4 Stranded, spec/sync-opens.md §2) | a proof of a key of a thing, with the path it claims as evidence |

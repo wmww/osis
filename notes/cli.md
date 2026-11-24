@@ -26,7 +26,7 @@ Commands, flags and output are documented in `cli/src/args.rs` doc comments (`os
 ## Value syntax
 CBOR diagnostic notation narrowed to one printed form per value. Printer: `cli/src/text.rs` `print`; parser `parse`; property test: `parse(print(v)) == v`, numbered and named.
 ```text
-value  := string | blob | "true" | "false" | int | float | ref | ticket | list | map | set | enum | tag
+value  := string | blob | "true" | "false" | int | float | ref | list | map | set | enum | tag
 string := JSON string ("\u" escapes incl. surrogate pairs; printer escapes ", \, controls, DEL)
 blob   := "h'" hex "'"  |  "b64'" base64 or base64url, padding optional "'"   (input only)
 int    := "-"? digits                          (i64; no leading zeros)
@@ -34,7 +34,6 @@ float  := "-"? digits ("." digits)? (("e"|"E") ("+"|"-")? digits)?  with "." or 
         | "NaN" | "Infinity" | "-Infinity"     (printer: Rust's shortest round-trip form; -0.0)
 ref    := ("strong" | "weak") "(" target ")"  |  target (input only, where the type is strong or weak)
 target := tid | alias                          tid := "osis://" 20 base64url chars
-ticket := "ticket(" value ")"                  (the ticket's content as its value)
 list   := "[" (value ","?)* "]"                set := "#{" (value ","?)* "}"
 map    := "{" (key ":" value ","?)* "}"        key := value | field-name (typed struct) | "name"
 enum   := "#" (u64 | case-name) ("(" value ")")?
@@ -50,7 +49,7 @@ typed  : timestamp := RFC 3339 (bare; `T` separator; real calendar dates; printe
 - Flags: durations `30s`, `5m`, `1h30m`, `0`; timestamps RFC 3339 or ms; `--purge-by` admin, author_or_admin or writer over the key's default (what history keeps is the thing's `retention^.0`); roles `read`, `write`, `admin` (`none` on `set-role`). Arguments: literal, `@FILE`, or `-` (stdin).
 
 ## JSON mapping
-One JSON document per command; streaming commands print JSON lines. int → number; float → number with `.` or exponent, `"NaN"`/`"Infinity"`/`"-Infinity"` strings; string → string; strong → `{"$strong": "osis://…"}`, weak → `{"$weak": …}`, ticket → `{"$ticket": content}`; blob → `{"$blob": base64url}`; set → `{"$set": [...]}`; enum → `{"$case": name-or-id, "$payload": v}` (payload omitted when none); typed struct → object by field name (unknown ids as decimal strings); map with only string keys, none a marker (`$blob`, `$set`, `$case`, `$payload`, `$map`, `$tag`, `$bytes`, `$strong`, `$weak`, `$ticket`) → object; every other map → `{"$map": [[k, v], …]}`, so an object never reads as a marker form; unknown tag → `{"$tag": N, "$bytes": base64url of the content}`; timestamps and durations stay ms ints. Results name tids by API names (`tid`, `actor`, `node`, `me`, `commit`). Errors on stderr: `{"error": {"kind", "message", "tid", "needs"}}`; kind is the API `Error` variant, `Usage`, `Cli` or `Other`.
+One JSON document per command; streaming commands print JSON lines. int → number; float → number with `.` or exponent, `"NaN"`/`"Infinity"`/`"-Infinity"` strings; string → string; strong → `{"$strong": "osis://…"}`, weak → `{"$weak": …}`; blob → `{"$blob": base64url}`; set → `{"$set": [...]}`; enum → `{"$case": name-or-id, "$payload": v}` (payload omitted when none); typed struct → object by field name (unknown ids as decimal strings); map with only string keys, none a marker (`$blob`, `$set`, `$case`, `$payload`, `$map`, `$tag`, `$bytes`, `$strong`, `$weak`) → object; every other map → `{"$map": [[k, v], …]}`, so an object never reads as a marker form; unknown tag → `{"$tag": N, "$bytes": base64url of the content}`; timestamps and durations stay ms ints. Results name tids by API names (`tid`, `actor`, `node`, `me`, `commit`). Errors on stderr: `{"error": {"kind", "message", "tid", "needs"}}`; kind is the API `Error` variant, `Usage`, `Cli` or `Other`.
 
 ## Exit codes
 | code | meaning |

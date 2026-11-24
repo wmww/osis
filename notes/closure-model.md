@@ -10,9 +10,9 @@ How it reads the plan:
 - Strongs are an OR-set of edges per source thing: an add is a commit, a remove names the adds its writer saw.
 - A grant is an entry of the target's role record naming a holder, set by a role commit on the target (last wins). "T's keys" (`keys_of`) are the independent things T holds read or above on, by grants followed transitively, a chain giving its lowest role, the best chain counting.
 - A sync unit (`sync unit`) walks from T by strongs; a thing T's keys open is in it and followed, any other stops the walk and is not in it (no leaves). Independent things T's keys open are in it.
-- `Sync`: nodes exchange per sync ID and log to a store per sync ID. A node syncs each independent thing it holds a ticket or keys for, and every independent thing those sync units hold. It holds only what some sync ID it syncs carries by its own view and drops the rest. A delete-key holder deletes store entries its view does not carry; any node logs what its view carries. Under a sync ID go the commits on its sync unit's things and, as certificates, the role commits on things among its keys.
+- `Sync`: nodes exchange per sync ID and log to a store per sync ID. A node syncs each independent thing its own actors hold a role on, and every independent thing those sync units hold. It holds only what some sync ID it syncs carries by its own view and drops the rest. A delete-key holder deletes store entries its view does not carry; any node logs what its view carries. Under a sync ID go the commits on its sync unit's things and, as certificates, the role commits on things among its keys.
   - `certify_revokes` also carries a role commit naming a thing among its keys (itself included). That is the fix for the hole below, which the spec states (spec/permissions.md §4 Role changes travel); "by the plan's words" below is the mode without it.
-- `closure` walks the node closure sync unit by sync unit. The node's keys and sync secrets are the least sets the independent things it reads yield (a fixpoint over the walk): an open ticket gives its keys only where the walk enters its thing (Interim (issues/tickets-retired.md)), and an independent thing reached that the node's keys hold sync on (no read) is kept unread as by a sync-only ticket. Kept unread, the walk stops at it: the node holds it alone (spec/sync-set.md §2). `Walk::Literal` follows every strong the node can open: a mutation kept for contrast.
+- `closure` walks the node closure sync unit by sync unit from `NodeView { roots, own }` (the node root's strongs, the own actors). The node's keys and sync secrets are the least sets the own actors' roles over the world's grants yield (a fixpoint over the walk), and an independent thing reached that they hold sync on (no read) is kept unread. Kept unread, the walk stops at it: the node holds it alone (spec/sync-set.md §2). `Walk::Literal` follows every strong the node can open: a mutation kept for contrast.
 - `Net` is release: a pass of a node with its connected peers. `Tree` is the spanning-tree structure for removing a strong.
 
 ### Properties and tests
@@ -29,8 +29,8 @@ How it reads the plan:
     - Fixed grants, no bridge: 26 of 300 runs split. Every split traces to a dependent thing's edit missing at a node (check (d)).
     - By the plan's words, 2 of 600 runs never settle or keep a revoked thing.
 - **P3 Holding.**
-  - `p3_worked_case`: Bob (tickets for X and Y) holds Y. Carol (X only) does not, and holds the same with or without X -> Y. PASS.
-  - `p3_strong_never_changes_what_no_role_holds_exhaustive` covers every world of 2 independent and 2 dependent things, grants, 5 candidate strongs, root strongs and every ticket combination. A node reads an independent thing only by keys it holds. It stores one unread only inside a sync unit it has a sync-only ticket for. A strong into or out of an independent thing that it has no ticket or keys for, and that no stored sync unit's keys open, never changes what it holds. PASS.
+  - `p3_worked_case`: Bob (read on X and Y) holds Y. Carol (X only) does not, and holds the same with or without X -> Y. PASS.
+  - `p3_strong_never_changes_what_no_role_holds_exhaustive` covers every world of 2 independent and 2 dependent things, grants, 5 candidate strongs, root strongs and every role combination. A node reads an independent thing only at a role of read or above, and stores one unread only at a role of sync. A strong into or out of an independent thing it holds no role on, and that no stored sync unit's keys open, never changes what it holds. PASS.
   - `p3_held_is_carried_exhaustive`: everything held is carried by an entered sync unit or the local part. PASS. The literal walk fails it: with X and U open, X -> L -> M, L and M dependents of U, X holding no role on U, it holds M, which nothing carries. Sync unit by sync unit it holds X alone.
   - `p3_making_rule`: "leave it in the node closure" admits a dependent thing minted with admin X and an independent thing whose keys the maker holds. It refuses one of U's dependents referenced only by X, though a held thing references it. PASS.
   - The new checks (a)-(c) and the reach test for (d) are under New checks.
@@ -58,9 +58,9 @@ Each rule the passing tests rely on was removed once and failed tests:
 
 ### New checks
 - **(a) Nested sharing**, `p3_nested_sharing`. Setup: Y is independent, X is granted read on Y, X -> Y -> B.
-  - Y and B are in X's sync unit. A reader of X holds and reads them with no ticket for Y; a node keeping X unread holds X alone (it reads none of X's strongs), their commits carried under X's sync ID.
+  - Y and B are in X's sync unit. A reader of X holds and reads them with no grant on Y; a node keeping X unread holds X alone (it reads none of X's strongs), their commits carried under X's sync ID.
   - In `Sync`, a node reading only X gets Y's commits under X and syncs Y.
-  - Without the grant only a holder of Y's ticket holds Y. PASS.
+  - Without the grant only a node granted Y holds Y. PASS.
 - **(b) Taking Y out again**, `p3_unlinking_takes_it_out_for_every_reader`. Removing X -> Y, or Z -> A for a dependent A in two sync units, takes the thing out for every reader. Each reader drops it, the delete-key holder deletes its entries, nothing logs them again, and everything settles. PASS under both rules: the removal is a commit on the referrer, which stays in the sync unit.
   - Revoking the grant: FAIL by the plan's words when the target is dependent or the grant is a chain (Hole); PASS with `certify_revokes`.
 - **(c) Chains**, `p3_grant_chains`. X opens Y through W by the lowest role along the chain, and the best chain counts:
@@ -101,7 +101,7 @@ Work is edges examined plus parent-chain steps, at n = 50 / 500. `ancestor_step`
 
 ### Questions for the design
 1. The Hole: stated as the model's rule (spec/permissions.md §4 Role changes travel).
-2. That rule keeps a revoked entry of a role record carried under the former grantee. How long? Settled: `ROLE_KEEP` after replaced, a removal after its `ts` (spec/sync-judgement.md §2); the model keeps it for good.
+2. That rule keeps a revoked entry of a role record carried under the former grantee. How long? Settled: while held (spec/sync-judgement.md §2); the model keeps it for good.
 3. A direct revocation on an independent Y reaches X's holders through Y's own sync ID. That needs them to keep fetching under Y after the removal and the key change, until they hold the removal. Spec/sync-opens.md must allow it.
 4. Where a chain's middle record travels. The model carries the role records of every thing among a sync ID's keys as certificates, W included though it is not in X's sync unit; the spec says so (spec/permissions.md §4 Role changes travel).
 5. What a read of a strong that holds nothing returns (P4): "destroyed", "released" and "not held" read alike, with no marker (spec/sync-set.md §2).

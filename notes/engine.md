@@ -114,7 +114,7 @@ Rustdoc has the list; the rules it rests on:
 - Receiving: `ingest` and its variants answer `Ingested`; sync ingests through `open_entry`.
 - Retention: sync judges deletions and re-snapshots from the commit index, no queue (`snapshot`, `covered`, `drop_body`, `part_keeps`, `delta_live`, `replaced_at`; `body_not_dropped` is true for a missing part too).
 - Schemas: one per app AK, never from the wire (`register_schema` replaces one of a lower or equal version, a local typed write only a lower one; read at open); they serve undo's typed views and large write-back after a restart. `osis::Osis::aspect_key` types only by this session's registrations, so the CLI's `schema rm` untypes.
-- Flows return `Done { commits }`; what a flow owes others (tickets, removal notices) it fires in its own transaction, and sync logs every body from `sync_bodies`.
+- Flows return `Done { commits }`; what a flow owes others (grant fires, stranded notices) it fires in its own transaction, and sync logs every body from `sync_bodies`.
 - Rotation and lost access: notes/engine-roles.md, notes/engine-lost-access.md. Events: `Event`'s variant docs; sync and the API report diagnostics through `Engine::report` (one `DiagnosticKind` enum).
 
 ## The engine-* notes

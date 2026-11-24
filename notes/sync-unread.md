@@ -3,7 +3,7 @@
 
 Spec: spec/sync-judgement.md §6, spec/sync-set.md §3, spec/sync-opens.md §4 (what it shows), spec/sync.md §3. Model: core/test/tla/net/NetKeep.tla. Overview: notes/sync.md.
 
-**Principle:** a node keeping S unread holds S's sync secrets (from its tickets and from when it last read S) and S's path in its store, nothing of what S carries; it keeps S while a held secret derives the head's sync key.
+**Principle:** a node keeping S unread holds S's sync secrets (from the key part or offer that gave its role, and from when it last read S) and S's path in its store, nothing of what S carries; it keeps S while a held secret derives the head's sync key.
 
 ## The rule
 `unread::judge`, over plain values (`Judged`):

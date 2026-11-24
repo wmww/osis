@@ -35,6 +35,6 @@ Adding a thing or a tag to a shared tag has significant privacy implications and
 A thing made of parts (a presentation of slides) is mint admin of its parts and references them strongly; sharing it is one grant on the whole. Users never see this as a container. Apps must not depend on sharing parts individually.
 
 ## Other conventions settled
-- Shared roots (a shared tag, a chat) are independent from creation and are held by ticket (spec/sync-set.md §2).
+- Shared roots (a shared tag, a chat) are independent from creation and held by a strong from their maker's holder (spec/sync-set.md §2).
 - Timestamps come from commits (`Osis::created`, commit `ts`), never from aspects.
 - Files: `blob` plus a mime string on a file thing.
