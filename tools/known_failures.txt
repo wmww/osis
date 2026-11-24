@@ -1,15 +1,1 @@
-# Failures on main the gate marks KNOWN (notes/gate.md, The summary): one per line,
-# NAME REPRO ISSUE PATTERN. NAME: CRATE/LIBTEST_PATH or sim-sweep:SCENARIO; REPRO: the setting that
-# fails on main (a sim's SEED), prefixed `rate:` when it fails on some seeds only (the gate's
-# random seeds pass it most runs, and its summary says passing is expected); ISSUE: its issues/
-# file; PATTERN: a regex every failing unit of NAME (each seed line of its panic, or its whole
-# panic) must match (tools/gate_failures.py).
-roles-model/custody::tests::random_worlds_hold_large rate:OSIS_ROLES_START=647344785567 issues/custody-differential-failures.md FAIL flip: node \w+ at \d+ dropped a taken revocation
-roles-model/custody::tests::random_worlds_hold_large rate:OSIS_ROLES_START=567669682357 issues/custody-differential-failures.md FAIL writes: node \w+ settled without \w+'s write \d+ on \w+
-osis-engine/rotation::tests_custody::engine_agrees_with_custody_model_plain_spec_permissions_5_4 rate:OSIS_CUSTODY_START=192781816512 issues/custody-differential-failures.md T paired by A: needs Write on
-osis-engine/rotation::tests_custody::engine_agrees_with_custody_model_plain_spec_permissions_5_4 rate:OSIS_CUSTODY_START=357482902476 issues/custody-differential-failures.md node \w+: dropped a taken revocation
-osis-engine/rotation::tests_custody::engine_agrees_with_custody_model_plain_spec_permissions_5_4 rate:OSIS_CUSTODY_START=210455287849 issues/custody-differential-failures.md \w+ acting: certificate engine None, model Some
-osis-engine/rotation::tests_custody::engine_agrees_with_custody_model_plain_spec_permissions_5_4 rate:OSIS_CUSTODY_START=146887569055 issues/custody-differential-failures.md node \w+, account \w+: seeds held: engine
-held-model/spec_gaps::evidence_reach_and_generator_gaps_large rate:OSIS_HELD_START=662818812978 issues/held-model-p4-held-wide.md P4-held
-osis-engine/order::held_set_decides_plain rate:OSIS_ORDER_SEED=512007751,OSIS_ORDER_LEN=60 issues/order-purged-message-shown.md shows other than the node keeping every body: Tid\(\S+\) t:msg\.0
-osis-sync/differential::histories_hold_their_closure_plain rate:OSIS_SYNC_START=157455058984 issues/differential-closure-read-lost.md node \d+ reads thing \d+: None, the model reads it
+probe/x rate:1 issues/p.md fails
