@@ -6,7 +6,7 @@
 1. **Failure messages and dumps that name the cause.** Each cost one or more probe builds (an engine or sync rebuild is 1-5 minutes; one sync job spent a third of its time on `eprintln!` probes):
    - sync's quiet-check dumps and the rotation property's failing-history log name things by tid while the script names them by index: print both;
    - the order harness: name the failing check beside its text (`applied differs` was read as a walk disagreement for an hour), and a step-to-pack map (finding a step's pack means decoding headers);
-   - `Engine::why_kept` says "goes when next judged (a pass end or a lost need)" for a thing waiting in `Core::pass_due`: name the queue; `why_role` could say why `Core::enter` took its context; a blob-to-sync-IDs dump beside `why_kept` (the storage-as-fresh tests name a leaked row, not who holds it);
+   - `Engine::why_role` could say why `Core::enter` took its context; a blob-to-sync-IDs dump beside `why_kept` (the storage-as-fresh tests name a leaked row, not who holds it);
    - the missed-wake panic: whether the wait is due (drain missing, not dependency missing);
    - `Effects` causes: the key, not only the table, and whether a moved read came from the settle's own rollback;
    - the sync trace: an entry that stays NotOpen shows `+entry` without `+commit` and nothing says why;

@@ -252,7 +252,7 @@ impl Engine {
     /// Debug builds: why `t` is still held, from the retention rule's own needs
     /// (`retention::needed::search`): rooted (in the node closure, by its path of strongs from
     /// the node root and their contexts, or otherwise), the chain of needs to the first rooted
-    /// thing, or that nothing rooted needs it and it goes at the next pass end.
+    /// thing, or that nothing rooted needs it and which judgement it waits for.
     #[doc(hidden)]
     pub fn why_kept(&mut self, t: &Tid) -> String {
         let t = *t;
@@ -268,7 +268,14 @@ impl Engine {
                     let Some((r, why)) = needed::search(tx, &t, &mut reached)? else {
                         let core = &*tx.core;
                         let others: Vec<String> = reached.keys().filter(|x| **x != t).map(|x| label(core, x)).collect();
-                        return Ok(format!("{name}: nothing rooted needs it: goes when next judged (a pass end or a lost need){}", if others.is_empty() { String::new() } else { format!(" (with {})", others.join(", ")) }));
+                        // which judgement it waits for (`retention::needed`): none is a missed note
+                        let when = match &core.pass_due {
+                            None => "every held record is judged at the first pass end after an open (`Core::pass_due` unset)",
+                            Some(a) if a.contains(&t) => "it arrived in the pass in flight: judged when that pass ends (`Core::pass_due`)",
+                            Some(_) if core.lost_due.contains(&t) => "it lost a need: judged at a pass end, or at once with none in flight (`Core::lost_due`)",
+                            Some(_) => "it is in no queue (`Core::pass_due`, `Core::lost_due`): nothing will judge it, a missed note",
+                        };
+                        return Ok(format!("{name}: nothing rooted needs it: {when}{}", if others.is_empty() { String::new() } else { format!(" (with {})", others.join(", ")) }));
                     };
                     let core = &*tx.core;
                     let mut chain = vec![];
