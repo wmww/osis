@@ -187,12 +187,12 @@ pub struct KeysetRec {
 /// itself is read from that body when sealing to it, `apply::keys::keyset_kem`: an index row of
 /// it would be its third copy; earliest, so two bodies naming different keys give every node
 /// the same), the key of its
-/// earliest body (Seal's order fallback and the order rule read it), the names digests they
+/// earliest body (the order rule reads it), the names digests they
 /// publish, each with its body's author (what binds a history entry to a rotator,
 /// spec/crypto.md §4: a forger's body binds entries to the forger), the left-out keysets they
 /// record with their causes, joined (spec/crypto.md §4, Left out: read at the actor's current
 /// epochs), and the demotions they carry, joined (Carried demotions: its rotation commit among
-/// them where it demotes). Held only once those and the causes are (`Core::keyset`).
+/// them where it demotes). Held only once those demotions are (`Core::keyset`).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct HeldKeyset {
     pub lists: BTreeSet<osis_crypto::Epoch>,
@@ -1472,18 +1472,18 @@ impl Core {
     }
 
     /// Held valid keyset `e` of role `r` of actor `m` (spec/crypto.md §4, Held keyset): a valid
-    /// body of it noted (`Indexes::keysets`), and the demotions it carries and the causes it
-    /// records held here (Carried demotions, Carried): until then it counts as not arrived, so
-    /// nothing seals to it, finds a box stale by it, or descends through it.
+    /// body of it noted (`Indexes::keysets`), and the demotions it carries held here (Carried
+    /// demotions; not the left-out causes it records, which count unheld): until then it counts
+    /// as not arrived, so nothing seals to it, finds a box stale by it, or descends through it.
     pub(crate) fn keyset(&self, m: &Tid, r: osis_base::Role, e: &osis_crypto::Epoch) -> Option<&HeldKeyset> {
         let k = (*m, r, *e);
         self.ix.keysets.get(&k).filter(|v| self.carried_held(v))
     }
 
-    /// Whether this node holds the demotions keyset `v` carries (the edge writes of each commit
-    /// it carries, `HeldKeyset::demotions`) and the causes it records (`cause_held`).
+    /// Whether this node holds the demotions keyset `v` carries: the edge writes of each commit
+    /// it carries (`HeldKeyset::demotions`).
     fn carried_held(&self, v: &HeldKeyset) -> bool {
-        v.demotions.iter().all(|c| self.ix.held.edge_commit(c).is_some()) && v.left_out.values().flat_map(|x| x.values().flatten()).all(|c| self.cause_held(c))
+        v.demotions.iter().all(|c| self.ix.held.edge_commit(c).is_some())
     }
 
     /// Whether this node holds left-out cause `c` (spec/crypto.md §4, Left out; Carried): its

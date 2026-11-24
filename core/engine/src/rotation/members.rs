@@ -231,9 +231,10 @@ fn anchors(tx: &mut Tx<'_>, a: &Tid, m: &Tid, r: Role) -> Result<BTreeSet<Epoch>
 
 /// The keysets of holder actor `m` of role `r` that `a` leaves it out at (spec/crypto.md §4,
 /// Left out), each with its causes: those held valid that a keyset of a current epoch of `r` of
-/// `a` records for `m` with a cause that stands here (`stands`), or with a cause not yet held (that
-/// keyset of `a` has not arrived: its record is judged once each cause is, so it is never read
-/// void for want of a cause that travels with it, spec/crypto.md §4 Carried). Each is blocked by a
+/// `a` records for `m` with a cause that stands here (`stands`), or with a cause not held (judged
+/// once each is: a record is never read void for want of a cause that travels with it,
+/// spec/crypto.md §4 Carried; `a`'s keyset does not wait for it, so a cause nobody holds keeps
+/// no keyset of `a` from arriving). Each is blocked by a
 /// box (`box_blocked`, `seal_blocked`), so Seal leaves `m` out at it.
 ///
 /// Invariant: a record is evidence, not a verdict. Its effect is re-derived here from the commits
@@ -246,7 +247,7 @@ fn anchors(tx: &mut Tx<'_>, a: &Tid, m: &Tid, r: Role) -> Result<BTreeSet<Epoch>
 pub(crate) fn left_out_at(tx: &mut Tx<'_>, a: &Tid, m: &Tid, r: Role) -> Result<BTreeMap<Epoch, BTreeSet<CommitId>>> {
     let mut out = BTreeMap::new();
     let Some(epochs) = tx.core.epochs(a) else { return Ok(out) };
-    // the noted keysets, held or not: a keyset of `a` waiting for its causes counts its record
+    // the noted keysets, held or not (one waiting for its carried demotions counts its record)
     let mut recs: BTreeMap<Epoch, BTreeSet<CommitId>> = BTreeMap::new();
     for e in epochs.role(r).current() {
         if let Some(ks) = tx.core.ix.keysets.get(&(*a, r, e)).and_then(|x| x.left_out.get(m)) {

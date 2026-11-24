@@ -2496,3 +2496,53 @@ fn hostile_record_forces_one_rotation_per_record_spec_crypto_4() {
     assert!(all_boxed(&mut lp, 0, &[m, a]));
     assert_eq!(leaked(&mut lp, 0, &[m, a], d, start), Vec::<Tid>::new(), "D opens nothing");
 }
+
+// spec/crypto.md §4 (Left out: a record with a cause not held counts; Held keyset), hostile
+// writer H of A removed: M {m0}, A {a0, H writer, M reader}, G {g0, A reader}. H rotates A
+// recording M's current keyset with a commit nobody holds, then a0 removes H from A; M's only
+// rotator m0 is away for good. Each rotation of A copies the record while M is left out, so a
+// keyset of A waiting for its causes would arrive nowhere, a0 included, and A would rotate again
+// at every pass. A's keysets arrive wherever their bodies do: A and G settle, G boxes A at A's
+// current keyset, and M stays out of A only at the recorded keyset until M re-keys (the stated
+// cost of a false record).
+#[test]
+fn a_removed_writers_unheld_cause_keeps_no_keyset_from_arriving_spec_crypto_4() {
+    let mut lp = synced(4);
+    let [_, h, _, _] = std::array::from_fn(|i| lp.peers[i].engine.me());
+    let m = independent_thing(&mut lp, 3);
+    let a = independent_thing(&mut lp, 0);
+    lp.peers[0].engine.grant(&a, &h, &edge(Role::Write)).unwrap();
+    lp.sync_all().unwrap();
+    lp.peers[0].engine.grant(&a, &m, &edge(Role::Read)).unwrap();
+    lp.sync_all().unwrap();
+    let g = independent_thing(&mut lp, 2);
+    lp.peers[2].engine.grant(&g, &a, &edge(Role::Read)).unwrap();
+    lp.sync_all().unwrap();
+    let k = newest_read(&lp, 3, m).unwrap();
+    rotate_recording(&mut lp, 1, a, m, k, &[CommitId([3; 32])]);
+    for (x, y) in [(1, 0), (1, 2)] {
+        lp.sync(x, y).unwrap();
+    }
+    removal(&mut lp, 0, a, h);
+    let mut last = 0;
+    for _ in 0..6 {
+        last = 0;
+        for p in [0, 2] {
+            for x in [a, g] {
+                last += lp.peers[p].engine.ensure_rotated(&x).unwrap().0.commits.len();
+                last += lp.peers[p].engine.reseal_after_pass(&x).unwrap().commits.len();
+            }
+            for (x, y) in [(0, 2), (2, 0), (0, 1), (2, 1)] {
+                lp.sync(x, y).unwrap();
+            }
+        }
+    }
+    assert_eq!(last, 0, "A and G settle with m0 away");
+    let e = newest_read(&lp, 0, a).unwrap();
+    for i in [0, 2] {
+        assert!(lp.peers[i].engine.core.keyset(&a, Role::Read, &e).is_some(), "peer {i}: A's current keyset arrived");
+    }
+    assert_eq!(recorded(&lp, 0, a, m).into_keys().collect::<Vec<_>>(), vec![k], "M left out of A at k alone");
+    assert_eq!(sealed_at(&mut lp, 2, g, a), Some(e), "G seals A at its current keyset");
+    assert!(all_boxed(&mut lp, 2, &[g]), "every holder of G boxed");
+}
