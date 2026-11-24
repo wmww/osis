@@ -10,7 +10,7 @@ Default tests against spec/requirements.md (Scale): each runs one operation at a
 | property | test | counted |
 |---|---|---|
 | `covered` per body | engine `decoded::tests::cover_judgments_read_the_bodys_pages_spec_commits_5` | past the first judgment each streams 2 pieces (skeleton and the body's page) at both sizes |
-| perm evaluation | perm `scale::` (10^2 / 10^3 edge writes) | evaluate walks each commit once; saved walks restored walk nothing; late grants, demotion scopes, record leaves bounded; late writes re-judging their readers and evaluation with drops left: issues/perm-eval-cost.md |
+| the walk | perm `paths::counts` (notes/perm-paths.md, Cost shapes) | an appended part costs its own step, a backdated or forgotten one replays its component from its key, a lowering with drops restarts once from its earliest drop, from scratch linear in the parts; an appended delta is a point query, a removal cutting n deltas costs nothing per delta, a request over n deltas reports one scope; what is left: issues/perm-eval-cost.md |
 | map edit in store tables | store `paged::table_edit_is_flat` (3000 / 30,000 keys) | 4 unit rows at both; one more B-tree level |
 | paged snapshot rewrite | bench `scale::big_map_snapshot_rewrite` (10^4 / 10^5 keys) | one change writes 1 new page at both |
 | text joins at the crdt | crdt `small_joins_follow_cached_placement_spec_6` (30 / 300 runs) | no whole pass; placement work about the square root (the block walk) |
@@ -29,6 +29,7 @@ Default tests against spec/requirements.md (Scale): each runs one operation at a
 | snapshots | engine `scale::snapshot_join_is_flat_spec_permissions_5_2`, `commits_after_their_snapshot_are_linear_spec_permissions_5_2`, `kept_snapshots_stay_within_their_window_spec_commits_5`, `dropped_snapshot_frontier_is_linear_spec_commits_5` | a snapshot join linear (O(state)), the next delta flat; snapshots held 2 / 2 (the D window); a dropped snapshot about 35 B of frontier |
 | addenda | engine `scale::addenda_rejudge_spec_permissions_5_2` (20 / 200) | a member joining a holder re-judges 1 commit; with an addendum held the thing is judged whole (28 / 208) |
 | addenda wake | engine `scale::addenda_wake_is_flat_in_the_removed_partys_reach_spec_permissions_5_2` (10 / 100 things the removed party holds) | its 3 backdated edits and 3 grants after its removal: 18 wake lookups, no removal woken, every phase flat |
+| path wait | engine `scale::the_path_wait_reads_each_write_once_spec_commits_4` (3 / 30 forged writes per layer) | writes read by the wait linear: each edge's writes judged once per part |
 | purge requests | engine `scale::purge_rejudge_is_linear_in_requests_spec_permissions_6` (30 / 300) | a join flat; a requester's fall and rise rebuild the aspect once |
 | grant and open | engine `scale::grant_is_flat_in_content_commits` (30 / 300) | a grant flat in content commits; open rebuilds nothing |
 | open with role history | engine `scale::open_is_linear_in_role_commits` (20 / 200 grants on one thing) | the walk given the role commits once: grants judged for key access 30 / 210 |
