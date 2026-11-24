@@ -5,9 +5,14 @@
 //!   purge worlds (README.md, Paths; findings in notes/path-model-findings.md). osis-perm's
 //!   `paths::` differentials and held-model's judgment read it. Searches `paths`, `paths-exh`,
 //!   `paths-tiny*`, `paths-purge`.
+//! - `paths::proofs`: connection proofs by claimed path (spec/sync-opens.md §2, §4 J). Searches
+//!   `proofs`, `proofs-exh`.
+//! - `leave`: the own self-removal exception of Encrypting under (spec/crypto.md §4) and held
+//!   elsewhere for a self-removal (spec/sync-status.md §2). Searches `leave`, `leave-exh`.
 //! - `shrink`: `without`, a move list less one move.
 //! Binary: `cargo run --bin roles-model -- [samples] [mode]`; `cargo test` runs the hand worlds.
 
+pub mod leave;
 pub mod paths;
 pub mod shrink;
 

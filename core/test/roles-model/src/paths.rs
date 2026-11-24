@@ -2283,6 +2283,7 @@ pub fn current(eps: &[Epoch], s: &Side, rule: Withdraw) -> Vec<usize> {
     (0..eps.len()).filter(|&i| counts(eps, i, s, rule) && !(0..eps.len()).any(|f| counts(eps, f, s, rule) && eps[f].supersedes.contains(&i))).collect()
 }
 
+pub mod proofs;
 mod purge;
 mod story;
 pub use purge::*;

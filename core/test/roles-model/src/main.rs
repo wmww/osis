@@ -1,9 +1,20 @@
-//! Search driver for the roles model: `[samples] [paths[-exh|-tiny[-flags|-detached][-honest[-writers]]][-control] [--from K | --only K] (paths::mode_rules)|paths-purge[-variant] (paths::purge_rules)]`.
+//! Search driver for the roles model: `[samples] [proofs[-exh][-control] | leave[-exh][-control] | paths[-exh|-tiny[-flags|-detached][-honest[-writers]]][-control] [--from K | --only K] (paths::mode_rules)|paths-purge[-variant] (paths::purge_rules)]`.
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let samples = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(2_000_000);
     match args.get(2).map(String::as_str) {
+        Some(m) if m.starts_with("leave") => {
+            if roles_model::leave::leave_run(samples, m) > 0 {
+                std::process::exit(1);
+            }
+        }
+        Some(m) if m.starts_with("proofs") => {
+            let from = args.iter().position(|a| a == "--from").and_then(|k| args.get(k + 1)).and_then(|v| v.parse().ok()).unwrap_or(0);
+            if roles_model::paths::proofs::proofs_run(samples, from, m) > 0 {
+                std::process::exit(1);
+            }
+        }
         Some(m) if m.starts_with("paths") => {
             // `-- N paths-exh`: every Nth family world (paths::run)
             if let Some(why) = m.starts_with("paths-exh").then(|| roles_model::stride_refusal(samples.max(1) as usize, roles_model::paths::FAMILY)).flatten() {
