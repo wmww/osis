@@ -8,7 +8,7 @@
 
 use super::incremental::reading;
 use super::{input, rules, MODES};
-use osis_base::Tid;
+use osis_base::{Holder, Tid};
 use osis_perm::paths::{Changed, Commit, Paths};
 use osis_perm::WriteId;
 use roles_model::paths as m;
@@ -33,7 +33,7 @@ fn changed(c: &Changed) -> [String; 3] {
     [format!("{:?}{:?}{:?}{:?}{:?}", c.parts, c.edges, c.cuts, c.regrant, c.named.union(&c.carried).collect::<Vec<_>>()), String::new(), format!("{:?}", c.purges)]
 }
 
-fn trace(records: &BTreeMap<Tid, Tid>, trust: &BTreeSet<WriteId>, commits: &[Commit], seed: u64, disputes: bool) -> [String; 3] {
+fn trace(records: &BTreeMap<Tid, Holder>, trust: &BTreeSet<WriteId>, commits: &[Commit], seed: u64, disputes: bool) -> [String; 3] {
     let mut out: [String; 3] = Default::default();
     let mut take = |x: [String; 3]| {
         for (o, x) in out.iter_mut().zip(x) {

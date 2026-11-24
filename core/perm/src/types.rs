@@ -2,7 +2,7 @@
 //! spec/data-model.md §9). The node adapts commit headers and deltas into these; perm parses no
 //! bytes. Every record is untrusted: perm never panics on one.
 
-use osis_base::{CommitId, Role, Tid, Ts, WallMs};
+use osis_base::{CommitId, Holder, Role, SignKey, Tid, Ts, WallMs};
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
@@ -115,7 +115,8 @@ impl Frontier {
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct EdgeOp {
     pub target: Tid,
-    pub holder: Tid,
+    /// A thing (`roles.0`) or a key (`signers.0`).
+    pub holder: Holder,
     pub edge: Option<Edge>,
 }
 
@@ -124,8 +125,9 @@ pub struct EdgeOp {
 pub struct RoleCommit {
     pub id: CommitId,
     pub ts: Ts,
-    /// Its signer (header field 1).
+    /// Its signer (header field 1): the thing it is signed as, and the key that signed it.
     pub signer: Tid,
+    pub key: SignKey,
     /// The things its one stated path lists and the hops it marks direct (spec/wire.md §4
     /// `Path`).
     pub listed: Vec<Tid>,

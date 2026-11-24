@@ -8,7 +8,7 @@ use crate::engine::write::required_role;
 use crate::engine::{Core, Meta, Owned, Tx, View};
 use crate::error::{Error, Result};
 use osis_commit::{Decoded, Header, Kind};
-use osis_base::{Ak, CommitId, CreationRecord, Role, Tid, Value};
+use osis_base::{Ak, CommitId, CreationRecord, Holder, Role, SignKey, Tid, Value};
 use osis_crdt::{Dot, Fragment};
 use osis_perm::paths::{Content, Delta, DeltaClass, Part, PartKind, Way};
 use osis_perm::{At, Edge, EdgeOp, Frontier, Point, RoleCommit, WriteId};
@@ -286,7 +286,7 @@ fn edge_ops(core: &Core, target: &Tid, es: &[Entry], own: Option<&Owned>) -> (Ve
     for m in removed {
         per.entry(m).or_insert(None);
     }
-    (per.into_iter().map(|(holder, edge)| EdgeOp { target: *target, holder, edge }).collect(), known)
+    (per.into_iter().map(|(holder, edge)| EdgeOp { target: *target, holder: Holder::Thing(holder), edge }).collect(), known)
 }
 
 /// Holders whose edge on `target` a `roles.0` delta writes: an entry it creates names its key,
@@ -386,7 +386,7 @@ pub(crate) fn hold_role_commit(core: &mut Core, h: &View, path: &osis_commit::Pa
             osis_commit::Paths::One(p) => (p.things.clone(), p.direct),
             osis_commit::Paths::Split(_) => return core.ix.held.remove(id),
         };
-        core.ix.held.add_commit(RoleCommit { id: *id, ts: h.ts, signer: h.signer, listed, direct, frontier: h.frontier.clone(), ops });
+        core.ix.held.add_commit(RoleCommit { id: *id, ts: h.ts, signer: h.signer, key: signing_key(core, &h.signer), listed, direct, frontier: h.frontier.clone(), ops });
     }
 }
 
@@ -411,7 +411,14 @@ pub(crate) enum Place {
 
 /// An edge write's place among its commit's (spec/permissions.md §5.1 step 1): on an edge of a
 /// path the commit states or not, then thing, then holder.
-pub(crate) type WritePlace = (bool, Tid, Tid);
+pub(crate) type WritePlace = (bool, Tid, Holder);
+
+/// The key that signed held commit `signer`'s: the key its record holds (spec/wire.md §4 field 1,
+/// its first form). A commit is held only once its signer's record verified it; where that record
+/// is not held the zero key stands in, which no record holds and no grant names.
+pub(crate) fn signing_key(core: &Core, signer: &Tid) -> SignKey {
+    core.created(signer).and_then(CreationRecord::key).unwrap_or(SignKey([0; 32]))
+}
 
 impl Place {
     /// Whether an edge write of the commit at `at` is ordered before it, `place` its place in
@@ -424,13 +431,15 @@ impl Place {
     }
 }
 
-/// The place of the edge write on `holder`'s edge on `target` in a commit by `signer` stating
-/// `along` (marks `direct`) for `target`, `mint` holding the record chains it reads. Interim
+/// The place of the edge write on `holder`'s edge on `target` in a commit signed by `key` as
+/// `signer` stating `along` (marks `direct`) for `target`, `mint` holding the record chains it
+/// reads. Interim
 /// (issues/stated-path-wait-order.md): an edge on another thing's path counts as stated only
 /// where it is on `target`'s, so a write on a record edge down to a thing the commit writes other
 /// than by edge writes may sit apart from the walk's place for it.
-pub(crate) fn write_place(mint: &BTreeMap<Tid, Tid>, signer: Tid, along: &[Tid], direct: osis_base::format::PathMarks, target: Tid, holder: Tid) -> WritePlace {
-    let stated = osis_perm::paths::hops(mint, signer, along, direct, target, None, true).contains(&(holder, target));
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn write_place(mint: &BTreeMap<Tid, Holder>, key: SignKey, signer: Tid, along: &[Tid], direct: osis_base::format::PathMarks, target: Tid, holder: Holder) -> WritePlace {
+    let stated = osis_perm::paths::hops(mint, key, signer, along, direct, target, None, true).contains(&(holder, target));
     (stated, target, holder)
 }
 
@@ -445,7 +454,8 @@ pub(crate) fn write_place(mint: &BTreeMap<Tid, Tid>, signer: Tid, along: &[Tid],
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn unreached(core: &Core, signer: Tid, along: &[Tid], direct: osis_base::format::PathMarks, t: &Tid, edge_class: bool, leaves: bool, at: Place, record: &dyn Fn(&Tid) -> Option<CreationRecord>) -> bool {
     let holder = leaves.then(|| along.last().copied().unwrap_or(signer));
-    Reach::new(core, record).unreached(signer, along, direct, *t, edge_class, holder, at)
+    let key = record(&signer).and_then(|r| r.key()).unwrap_or(SignKey([0; 32]));
+    Reach::new(core, record).unreached(key, signer, along, direct, *t, edge_class, holder, at)
 }
 
 /// The path wait over the held edge writes. Each edge's writes are judged in order, each once, up
@@ -460,16 +470,18 @@ struct Reach<'a> {
     first: BTreeMap<(Tid, Tid), std::result::Result<Point, Point>>,
 }
 
-/// The record chains of `members` (`record` the records read): what a path's descents read.
-fn chains(members: impl IntoIterator<Item = Tid>, record: &dyn Fn(&Tid) -> Option<CreationRecord>) -> BTreeMap<Tid, Tid> {
-    let mut mint: BTreeMap<Tid, Tid> = BTreeMap::new();
+/// The record chains of `members` (`record` the records read), each record's holder: what a
+/// path's descents and record edges read, a record's key included.
+fn chains(members: impl IntoIterator<Item = Tid>, record: &dyn Fn(&Tid) -> Option<CreationRecord>) -> BTreeMap<Tid, Holder> {
+    let mut mint: BTreeMap<Tid, Holder> = BTreeMap::new();
     for start in members {
         let mut x = start;
         for _ in 0..=osis_base::format::MAX_CHAIN_DEPTH {
-            let Some(up) = record(&x).and_then(|r| r.mint_admin()) else { break };
+            let Some(up) = record(&x).and_then(|r| r.holder()) else { break };
             if mint.insert(x, up).is_some() {
                 break;
             }
+            let Holder::Thing(up) = up else { break };
             x = up;
         }
     }
@@ -481,15 +493,23 @@ impl<'a> Reach<'a> {
         Reach { core, record, first: BTreeMap::new() }
     }
 
-    fn mint(&self, members: impl IntoIterator<Item = Tid>) -> BTreeMap<Tid, Tid> {
+    fn mint(&self, members: impl IntoIterator<Item = Tid>) -> BTreeMap<Tid, Holder> {
         chains(members, self.record)
     }
 
+    /// Whether an edge of the path stated by `key`'s commit as `signer` has not arrived: one that
+    /// is no record edge with no held edge write before `at` (none is held on a key's grant).
     #[allow(clippy::too_many_arguments)]
-    fn unreached(&mut self, signer: Tid, along: &[Tid], direct: osis_base::format::PathMarks, t: Tid, edge_class: bool, holder: Option<Tid>, at: Place) -> bool {
+    fn unreached(&mut self, key: SignKey, signer: Tid, along: &[Tid], direct: osis_base::format::PathMarks, t: Tid, edge_class: bool, holder: Option<Tid>, at: Place) -> bool {
         let mint = self.mint([signer, t].into_iter().chain(along.iter().copied()));
-        let hops = osis_perm::paths::hops(&mint, signer, along, direct, t, holder, edge_class);
-        hops.into_iter().any(|(p, q)| mint.get(&q) != Some(&p) && !self.arrived(p, q, at))
+        let hops = osis_perm::paths::hops(&mint, key, signer, along, direct, t, holder.map(Holder::Thing), edge_class);
+        hops.into_iter().any(|(p, q)| {
+            mint.get(&q) != Some(&p)
+                && match p {
+                    Holder::Thing(p) => !self.arrived(p, q, at),
+                    Holder::Key(_) => true,
+                }
+        })
     }
 
     /// Whether a held edge write on `p`'s edge on `q`, not itself unjudgeable, is ordered before
@@ -521,9 +541,9 @@ impl<'a> Reach<'a> {
     /// Whether the write of `c` (held, at `w`) on `p`'s edge on `q` is ordered before `at`.
     fn before(&self, c: Option<&RoleCommit>, w: &Point, p: Tid, q: Tid, at: Place) -> bool {
         at.after(w, || {
-            let Some(c) = c else { return (true, q, p) };
+            let Some(c) = c else { return (true, q, Holder::Thing(p)) };
             let along = c.path_to(&q);
-            write_place(&self.mint([c.signer, q].into_iter().chain(along.iter().copied())), c.signer, along, c.direct, q, p)
+            write_place(&self.mint([c.signer, q].into_iter().chain(along.iter().copied())), c.key, c.signer, along, c.direct, q, Holder::Thing(p))
         })
     }
 
@@ -532,8 +552,8 @@ impl<'a> Reach<'a> {
         let along = c.path_to(&target);
         let end = along.last().copied().unwrap_or(c.signer);
         let mint = self.mint([c.signer, target].into_iter().chain(along.iter().copied()));
-        let at = Place::Write(c.point(), Some(write_place(&mint, c.signer, along, c.direct, target, holder)));
-        self.unreached(c.signer, along, c.direct, target, true, (holder == end).then_some(holder), at)
+        let at = Place::Write(c.point(), Some(write_place(&mint, c.key, c.signer, along, c.direct, target, Holder::Thing(holder))));
+        self.unreached(c.key, c.signer, along, c.direct, target, true, (holder == end).then_some(holder), at)
     }
 }
 
@@ -549,14 +569,15 @@ pub(crate) fn writes_unreached(core: &Core, h: &Header, id: &CommitId, ai: usize
     let end = along.last().copied().unwrap_or(h.signer);
     let point = Point { ts: h.ts, node: h.signer, commit: *id };
     let ops = if known && !too_deep(core, &a.tid) { edge_ops(core, &a.tid, es, Owned::of(h, id, ai).as_ref()).0 } else { Vec::new() };
+    let key = record(&h.signer).and_then(|r| r.key()).unwrap_or(SignKey([0; 32]));
     let mut reach = Reach::new(core, record);
     if ops.is_empty() {
-        return reach.unreached(h.signer, along, p.direct, a.tid, true, None, Place::Write(point, None));
+        return reach.unreached(key, h.signer, along, p.direct, a.tid, true, None, Place::Write(point, None));
     }
     let mint = chains([h.signer, a.tid].into_iter().chain(along.iter().copied()), record);
     ops.iter().all(|o| {
-        let at = Place::Write(point, Some(write_place(&mint, h.signer, along, p.direct, a.tid, o.holder)));
-        reach.unreached(h.signer, along, p.direct, a.tid, true, (o.holder == end).then_some(end), at)
+        let at = Place::Write(point, Some(write_place(&mint, key, h.signer, along, p.direct, a.tid, o.holder)));
+        reach.unreached(key, h.signer, along, p.direct, a.tid, true, (o.holder == Holder::Thing(end)).then_some(end), at)
     })
 }
 
@@ -918,7 +939,7 @@ fn read(core: &Core, id: &CommitId, h: &Header, view: &View, carries: bool) -> o
         }
     }
     let carriers = if void || !carries { Vec::new() } else { crate::retention::snapshot::carriers(core, id, view) };
-    osis_perm::Held { id: *id, ts: h.ts, signer: h.signer, parts, role: core.ix.held.held_commit(id), carriers }
+    osis_perm::Held { id: *id, ts: h.ts, signer: h.signer, key: signing_key(core, &h.signer), parts, role: core.ix.held.held_commit(id), carriers }
 }
 
 /// [signer, the things `t` is written along] of the path commit `h` states for `t` (`stated`).

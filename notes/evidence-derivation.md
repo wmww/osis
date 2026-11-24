@@ -6,7 +6,7 @@
 ## Input
 Per held **copy** (commit ID, thing), held whole (a commit's edge writes on a thing are one `roles.0` delta, spec/crdt.md §2), its parts on that thing (`evidence::Part`), as the derivation's own structs (independent of header types):
 - `kind`: content (anything with no edge write: content, purge requests, snapshots, `sync.0`) or an edge write (`Write`: its holder, and `gives_read`: read or above, any `until`, no self-removal, a step of the keys-open graph).
-- `hops`: the edges of the path its commit states for that thing, key hop first; `None` while not known here (a split entry waiting to open: notes/path-form.md); `open_path` when it opens. A part with no known path brings no path edges.
+- `hops`: the edges of the path its commit states for that thing, key hop first (the engine gives grants of things alone until key grants are written: `evidence::held::thing_hops`, Interim); `None` while not known here (a split entry waiting to open: notes/path-form.md); `open_path` when it opens. A part with no known path brings no path edges.
 - `dels`: the delete keys it lists at levels 1 and 3 for its thing's delete base (`Del`: base, level, key; spec/crypto.md §7). A key-actor base lists none here.
 - `steps`: the steps a `sync.0` part records on its thing (`Step`: ID, parent, delete and write keys; spec/sync-ids.md §2).
 - Per sync ID: its actor (whose role changes travel under it) and its unit's things (`join`, `leave`).

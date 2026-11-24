@@ -6,7 +6,7 @@
 
 use crate::types::{earliest, mark, Edge};
 use osis_base::format::{PathMarks, MAX_CHAIN_DEPTH};
-use osis_base::{CreationRecord, RecordLink, Role, Tid, Ts, WallMs};
+use osis_base::{CreationRecord, Holder, RecordLink, Role, SignKey, Tid, Ts, WallMs};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -14,10 +14,12 @@ use std::sync::Arc;
 pub const RECORD_EDGE: Edge = Edge { role: Role::Admin, until: None, may_grant: false, retain: false, floor: None };
 
 /// Record links of every thing with a verified `created.0`: each thing's mint admin (or that
-/// it is a key actor), and the things each actor is mint admin of.
+/// it holds a key), and the things each actor is mint admin of.
 #[derive(Clone, Debug, Default)]
 pub struct Records {
     link: BTreeMap<Tid, RecordLink>,
+    /// The key of each record holding one.
+    keys: BTreeMap<Tid, SignKey>,
     mint_admin_of: BTreeMap<Tid, Vec<Tid>>,
 }
 
@@ -27,10 +29,14 @@ impl Records {
         if let RecordLink::Admin(a) = link {
             self.mint_admin_of.entry(a).or_default().push(t);
         }
+        if let Some(k) = rec.key() {
+            self.keys.insert(t, k);
+        }
         self.link.insert(t, link);
     }
     /// Forgets `t`'s record.
     pub fn remove(&mut self, t: &Tid) {
+        self.keys.remove(t);
         if let Some(RecordLink::Admin(a)) = self.link.remove(t)
             && let Some(v) = self.mint_admin_of.get_mut(&a)
         {
@@ -46,6 +52,13 @@ impl Records {
     }
     pub fn link(&self, t: &Tid) -> Option<RecordLink> {
         self.link.get(t).copied()
+    }
+    /// The holder of `t`'s record edge from the start: its mint admin or the key its record holds.
+    pub fn holder(&self, t: &Tid) -> Option<Holder> {
+        match self.link.get(t)? {
+            RecordLink::Admin(a) => Some(Holder::Thing(*a)),
+            RecordLink::Key => self.keys.get(t).map(|k| Holder::Key(*k)),
+        }
     }
     pub fn is_key(&self, t: &Tid) -> bool {
         self.link(t) == Some(RecordLink::Key)
@@ -276,7 +289,7 @@ impl<'a> View<'a> {
         let over = Some(&edges.over).filter(|o| !o.is_empty());
         View { records: edges.records, edges: edges.base, over, ts, patch: None }
     }
-    /// Whether `t` is a key actor by its record.
+    /// Whether `t`'s record holds a key.
     pub fn is_key(&self, t: &Tid) -> bool {
         self.records.is_key(t)
     }

@@ -41,10 +41,11 @@ pub(crate) fn key_role(e: Option<&osis_perm::Edge>) -> Option<Role> {
 }
 
 /// The departure edge write `op` of `mc` on `t` makes, if it lowers the holder's edge for keys
-/// (`key_role`).
+/// (`key_role`): none for a key's grant, which holds nothing sealed (spec/permissions.md §1).
 fn departure_of(tl: &Timeline, t: &Tid, mc: &RoleCommit, op: &EdgeOp) -> Option<Departure> {
-    let old = key_role(tl.edges_at(Some(mc.point())).get(&op.holder, t));
-    Departure::of_change(op.holder, old, key_role(op.edge.as_ref()))
+    let holder = op.holder.thing()?;
+    let old = key_role(tl.edges_at(Some(mc.point())).get(&holder, t));
+    Departure::of_change(holder, old, key_role(op.edge.as_ref()))
 }
 
 /// The key (spec/permissions.md §5.1) of point `p`.
@@ -65,10 +66,11 @@ fn key_of(p: &osis_perm::Point) -> osis_keys::Key {
 pub(crate) fn edge_logs<'t>(core: &Core, on: &On<'t>, a: &Tid) -> BTreeMap<Tid, EdgeLog> {
     let mut by: BTreeMap<Tid, Vec<(osis_perm::Point, WriteId, &'t RoleCommit, &'t EdgeOp)>> = BTreeMap::new();
     for (w, mc, op) in on.held() {
-        if op.holder == *a || !core.ix.commits.contains_key(&mc.id) || core.ix.unresolved.contains(&mc.id) {
+        let Some(holder) = op.holder.thing() else { continue };
+        if holder == *a || !core.ix.commits.contains_key(&mc.id) || core.ix.unresolved.contains(&mc.id) {
             continue;
         }
-        by.entry(op.holder).or_default().push((mc.point(), w, mc, op));
+        by.entry(holder).or_default().push((mc.point(), w, mc, op));
     }
     by.into_iter()
         .map(|(m, mut ws)| {
@@ -136,7 +138,7 @@ pub(crate) fn carried(core: &Core, a: &Tid) -> BTreeSet<osis_base::CommitId> {
         for (w, mc, op) in tl.held_on(t) {
             let Some(x) = tl.applied(&w) else { continue };
             let below = if x.cuts(Role::Write) { Role::Write } else if x.cuts(Role::Admin) { Role::Admin } else { continue };
-            if now.get(&op.holder).copied() < Some(below) {
+            if op.holder.thing().and_then(|h| now.get(&h).copied()) < Some(below) {
                 out.insert(mc.id);
             }
         }
@@ -244,8 +246,8 @@ pub(super) fn own_leaving(core: &Core, a: &Tid, d: &Departure) -> Option<osis_ba
 /// changing nothing (a sibling's concurrent removal of the same edge) leaves the removal it
 /// follows the one behind the departure.
 fn own_removal_on(core: &Core, tl: &Timeline, a: &Tid, holder: &Tid) -> Option<osis_base::CommitId> {
-    let changed = |mc: &RoleCommit, op: &EdgeOp| key_role(tl.edges_at(Some(mc.point())).get(&op.holder, a)) != key_role(op.edge.as_ref());
-    let (mc, op) = edge_writes(tl, a).filter(|(mc, op)| op.holder == *holder && changed(mc, op)).max_by_key(|(mc, _)| mc.point())?;
+    let changed = |mc: &RoleCommit, op: &EdgeOp| key_role(tl.edges_at(Some(mc.point())).get(holder, a)) != key_role(op.edge.as_ref());
+    let (mc, op) = edge_writes(tl, a).filter(|(mc, op)| op.holder == osis_base::Holder::Thing(*holder) && changed(mc, op)).max_by_key(|(mc, _)| mc.point())?;
     own_leaving_write(core, tl, a, mc, op).then_some(mc.id)
 }
 
@@ -255,7 +257,7 @@ fn own_removal_on(core: &Core, tl: &Timeline, a: &Tid, holder: &Tid) -> Option<o
 /// elsewhere.
 fn own_leaving_write(core: &Core, tl: &Timeline, a: &Tid, mc: &RoleCommit, op: &EdgeOp) -> bool {
     let own = core.ix.commits.get(&mc.id).is_some_and(|m| m.origin == crate::events::Origin::Local) || mc.signer == core.id.tid() || core.key_actors.contains_key(&mc.signer);
-    own && departure_of(tl, a, mc, op).is_some() && crate::apply::validity::self_removal(core, &mc.signer, a, &op.holder, mc.ts)
+    own && departure_of(tl, a, mc, op).is_some() && op.holder.thing().is_some_and(|h| crate::apply::validity::self_removal(core, &mc.signer, a, &h, mc.ts))
 }
 
 /// Whether applied role commit `c` is an own self-removal (`own_removal_on`) on one of
@@ -267,5 +269,5 @@ pub(crate) fn own_self_removal(core: &Core, c: &osis_base::CommitId, targets: &B
     if m.origin != crate::events::Origin::Local && a != core.id.tid() && !core.key_actors.contains_key(&a) {
         return false;
     }
-    targets.iter().any(|t| core.timelines().get(t).is_some_and(|tl| edge_writes(tl, t).any(|(mc, op)| mc.id == *c && own_removal_on(core, tl, t, &op.holder) == Some(*c))))
+    targets.iter().any(|t| core.timelines().get(t).is_some_and(|tl| edge_writes(tl, t).any(|(mc, op)| mc.id == *c && op.holder.thing().is_some_and(|h| own_removal_on(core, tl, t, &h) == Some(*c)))))
 }

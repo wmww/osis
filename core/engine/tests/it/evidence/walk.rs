@@ -4,7 +4,7 @@
 //! are built by hand with real stated paths: engine role commits state the Interim empty path and
 //! the engine does not run the walk yet (A1 step 3), so this is the walk's plain input, with a
 //! minimal adapter (`Node`) from it to the derivation's `Part`s.
-use osis_base::{Ak, CommitId, PurgeBy, Role, Tid, Ts, WallMs};
+use osis_base::{Ak, CommitId, Holder, PurgeBy, Role, SignKey, Tid, Ts, WallMs};
 use osis_engine::evidence::{Config, CopyId, Evidence, Kind, Part, Write};
 use osis_perm::paths::{Commit, Content, Delta, DeltaClass, EdgeWrite, Key, List, Part as PPart, PartKind, Paths};
 use osis_perm::{Edge, WriteId};
@@ -47,7 +47,7 @@ impl World {
     }
     fn push(&mut self, t: u64, signer: u8, parts: Vec<PPart>) -> CommitId {
         let id = cid(self.commits.len() as u32 + 1);
-        self.commits.push(Commit { id, ts: ts(t), signer: tid(signer), parts });
+        self.commits.push(Commit { id, ts: ts(t), signer: tid(signer), key: own(tid(signer)), parts });
         id
     }
     /// An edge write along the empty path (the signer the target's mint admin, or holding admin
@@ -62,10 +62,25 @@ impl World {
     fn content(&mut self, t: u64, signer: u8, path: &[u8], on: u8) -> CommitId {
         self.push(t, signer, vec![content_part(path, on)])
     }
+    /// The walk's records: each mint admin's, and each signer naming none holding its own key.
+    fn holders(&self) -> BTreeMap<Tid, Holder> {
+        let mut r: BTreeMap<Tid, Holder> = self.records.iter().map(|(t, m)| (*t, Holder::Thing(*m))).collect();
+        for c in &self.commits {
+            r.entry(c.signer).or_insert(Holder::Key(own(c.signer)));
+        }
+        r
+    }
+}
+
+/// The key `t`'s record holds where it names no mint admin.
+fn own(t: Tid) -> SignKey {
+    let mut b = [0xee; 32];
+    b[..15].copy_from_slice(t.as_bytes());
+    SignKey(b)
 }
 
 fn edge_part(path: &[u8], on: u8, holder: u8, value: Option<Edge>, frontier: Option<Arc<List>>) -> PPart {
-    PPart { on: tid(on), path: path.iter().map(|&t| tid(t)).collect(), direct: 0, kind: PartKind::Edge(EdgeWrite { holder: tid(holder), value, frontier }) }
+    PPart { on: tid(on), path: path.iter().map(|&t| tid(t)).collect(), direct: 0, kind: PartKind::Edge(EdgeWrite { holder: Holder::Thing(tid(holder)), value, frontier }) }
 }
 fn content_part(path: &[u8], on: u8) -> PPart {
     let delta = Delta { aspect: Ak::new("doc.0").unwrap(), needs: Role::Write, purge_author: 0, purge_by: PurgeBy::AuthorOrAdmin, class: DeltaClass::Plain };
@@ -90,7 +105,7 @@ fn joins(records: &BTreeMap<Tid, Tid>, p: Tid, q: Tid) -> Vec<(Tid, Tid)> {
 /// A part's hops: members [signer, path.., on] (a self-removal ends at its holder).
 fn hops(records: &BTreeMap<Tid, Tid>, c: &Commit, p: &PPart) -> Vec<(Tid, Tid)> {
     let ak = *p.path.last().unwrap_or(&c.signer);
-    let leave = matches!(&p.kind, PartKind::Edge(w) if w.holder == ak);
+    let leave = matches!(&p.kind, PartKind::Edge(w) if w.holder == Holder::Thing(ak));
     let mut members = vec![c.signer];
     members.extend(&p.path);
     if !leave {
@@ -110,7 +125,7 @@ struct Node {
 
 impl Node {
     fn new(w: &World, held: &[Commit], trust: BTreeSet<WriteId>, unit: &[u8]) -> Node {
-        let paths = Paths::evaluate(&w.records, trust, held);
+        let paths = Paths::evaluate(&w.holders(), trust, held);
         let mut ev = Evidence::new(Config { keys_open: false });
         ev.add_sid(tid(D), tid(D));
         for &t in unit {
@@ -121,8 +136,9 @@ impl Node {
             for p in &c.parts {
                 let kind = match &p.kind {
                     PartKind::Edge(e) => {
-                        let leave = e.holder == *p.path.last().unwrap_or(&c.signer);
-                        Kind::Write(Write { holder: e.holder, gives_read: e.value.is_some_and(|v| v.role >= Role::Read) && !leave })
+                        let Holder::Thing(holder) = e.holder else { continue };
+                        let leave = holder == *p.path.last().unwrap_or(&c.signer);
+                        Kind::Write(Write { holder, gives_read: e.value.is_some_and(|v| v.role >= Role::Read) && !leave })
                     }
                     PartKind::Delta(_) => Kind::Content,
                     PartKind::None => continue,
@@ -201,7 +217,7 @@ fn reader_agrees(w: &World, unit: &[u8], trust: &[WriteId]) -> (BTreeSet<CopyId<
 /// Verdicts of a reader holding D's bodies and `copies`.
 fn reader_verdicts(w: &World, unit: &[u8], copies: &BTreeSet<CopyId<CommitId, Tid>>) -> BTreeMap<WriteId, String> {
     let (held, ids) = reader_set(w, unit, copies);
-    verdicts(w, &Paths::evaluate(&w.records, BTreeSet::new(), &held), unit, Some(&ids))
+    verdicts(w, &Paths::evaluate(&w.holders(), BTreeSet::new(), &held), unit, Some(&ids))
 }
 
 fn valid() -> String {
@@ -320,7 +336,7 @@ fn a_trusted_void_write_on_a_path_edge_is_a_copy_and_moves_no_verdict_spec_permi
     let (req, wv) = reader_agrees(&w, &[D], &[WriteId(junk, 0)]);
     assert_eq!(req, BTreeSet::from([(gk, tid(A)), (gz, tid(A)), (junk, tid(A))]));
     assert_eq!(wv[&WriteId(ck, 0)], valid());
-    let p = Paths::evaluate(&w.records, BTreeSet::from([WriteId(junk, 0)]), &w.commits);
+    let p = Paths::evaluate(&w.holders(), BTreeSet::from([WriteId(junk, 0)]), &w.commits);
     assert!(p.void_trusted().contains(&WriteId(junk, 0)));
 }
 

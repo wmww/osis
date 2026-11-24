@@ -454,7 +454,7 @@ impl NamesHeld<'_> {
     fn applies(&self, c: &CommitId, holder: &Tid) -> bool {
         let Some(tl) = self.core.timelines().get(&self.actor) else { return false };
         tl.role_commit(c).is_some_and(|mc| {
-            mc.ops.iter().enumerate().any(|(i, op)| op.target == self.actor && op.holder == *holder && tl.is_applied(&osis_perm::WriteId(*c, i as u32)))
+            mc.ops.iter().enumerate().any(|(i, op)| op.target == self.actor && op.holder == osis_base::Holder::Thing(*holder) && tl.is_applied(&osis_perm::WriteId(*c, i as u32)))
         })
     }
 

@@ -20,7 +20,7 @@ mod shapes;
 mod single;
 
 use crate::common::{seeded, sharded};
-use osis_base::{Ak, CommitId, PurgeBy, Role, Tid, Ts, WallMs};
+use osis_base::{Ak, CommitId, Holder, PurgeBy, Role, SignKey, Tid, Ts, WallMs};
 use osis_perm::paths::{Commit, Content, Delta, DeltaClass, EdgeWrite, List, Names, Part, PartKind, Paths, Stated, Status};
 use osis_perm::{Edge, Frontier, WriteId};
 use roles_model::paths::{self as m, Honesty, Id, Kind, Reading, Rules, Thing, TinyMode, View, World};
@@ -37,6 +37,33 @@ pub fn tid(t: Thing) -> Tid {
     let mut b = [0u8; 15];
     b[0] = t;
     Tid::from_bytes(b)
+}
+
+/// The key a record of `t` holds where it names no mint admin (hand inputs and model worlds alike).
+pub fn own(t: Tid) -> SignKey {
+    let mut b = [0xff; 32];
+    b[..15].copy_from_slice(t.as_bytes());
+    SignKey(b)
+}
+
+/// Model key `k` (`m::KEYS | t`): the key thing `t`'s record holds.
+pub fn key(k: Thing) -> SignKey {
+    own(tid(k & !m::KEYS))
+}
+
+/// A model holder: a thing, or a key.
+pub fn holder(h: Thing) -> Holder {
+    if m::is_key(h) { Holder::Key(key(h)) } else { Holder::Thing(tid(h)) }
+}
+
+/// Hand records: each of `mint` (thing, mint admin), and each of things 1 to 9 (`t`) naming no mint
+/// admin there holding its own key (`own`): a hand world's top things.
+pub fn hand_records(mint: impl IntoIterator<Item = (Tid, Tid)>) -> BTreeMap<Tid, Holder> {
+    let mut r: BTreeMap<Tid, Holder> = mint.into_iter().map(|(t, a)| (t, Holder::Thing(a))).collect();
+    for n in 1..=9 {
+        r.entry(t(n)).or_insert(Holder::Key(own(t(n))));
+    }
+    r
 }
 
 /// Thing `n` of a hand-built input (one the walk reads directly, not a model world's).
@@ -61,8 +88,9 @@ pub fn ms(n: u64) -> Ts {
     Ts::make(WallMs(n), 0).unwrap()
 }
 
+/// A commit signed as `signer` by its own key (`own`).
 pub fn commit(id: u64, ts: Ts, signer: u32, parts: Vec<Part>) -> Commit {
-    Commit { id: cid(id), ts, signer: t(signer), parts }
+    Commit { id: cid(id), ts, signer: t(signer), key: own(t(signer)), parts }
 }
 
 fn role(r: roles_model::Role) -> Option<Role> {
@@ -112,14 +140,21 @@ fn delta(w: &World, i: Id) -> Delta {
 /// A world as one node's input: its held parts, commits grouped by the model's commit ID, each
 /// part's frontier cut to the leaves the node sees; and the model part each `WriteId` is.
 pub struct Input {
-    pub records: BTreeMap<Tid, Tid>,
+    pub records: BTreeMap<Tid, Holder>,
     pub commits: Vec<Commit>,
     pub trust: BTreeSet<WriteId>,
     pub ids: BTreeMap<Id, WriteId>,
 }
 
 pub fn input(w: &World, v: &View) -> Input {
-    let records = w.records.iter().map(|&(a, t)| (tid(t), tid(a))).collect();
+    // each mint admin's record, and the record of each thing naming none whose key the world
+    // uses (signs by, or writes): it holds its own key (`m::own_key`)
+    let mut records: BTreeMap<Tid, Holder> = w.records.iter().map(|&(a, t)| (tid(t), Holder::Thing(tid(a)))).collect();
+    for e in (0..w.commits.len()).flat_map(|i| w.rests(i).iter().copied().chain(w.sets(i))) {
+        if m::is_key(e.0) && w.is_record(e) {
+            records.insert(tid(e.1), Holder::Key(key(e.0)));
+        }
+    }
     let mut by: BTreeMap<Id, Vec<Id>> = BTreeMap::new();
     for &i in &v.held {
         by.entry(w.cid(i)).or_default().push(i);
@@ -138,14 +173,14 @@ pub fn input(w: &World, v: &View) -> Input {
                     let value = role(*r).map(|v| Edge { role: v, until: until.map(|u| WallMs(u as u64)), may_grant: *may_grant, retain: false, floor: None });
                     let listed = frontier.iter().filter(|(t, _)| seen(t)).flat_map(|(t, l)| l.iter().map(|&j| (tid(*t), model_cid(w, j))));
                     let frontier = (!finalize).then(|| Arc::new(List::new(listed)));
-                    PartKind::Edge(EdgeWrite { holder: tid(*holder), value, frontier })
+                    PartKind::Edge(EdgeWrite { holder: self::holder(*holder), value, frontier })
                 }
                 _ => PartKind::Delta(delta(w, i)),
             };
             let direct = k.direct.iter().fold(0, |m, &j| m | 1 << j);
             out.push(Part { on: tid(k.on), path: k.path.iter().map(|&t| tid(t)).collect(), direct, kind });
         }
-        commits.push(Commit { id: cid(c as u64), ts: ms(first.ts as u64), signer: tid(first.signer), parts: out });
+        commits.push(Commit { id: cid(c as u64), ts: ms(first.ts as u64), signer: tid(first.signer), key: key(first.key), parts: out });
     }
     let trust = v.trust.iter().filter_map(|i| ids.get(i).copied()).collect();
     Input { records, commits, trust, ids }
@@ -230,19 +265,26 @@ fn compare(w: &World, v: &View, rules: &Rules, rd: &Reading, inp: &Input, p: &mu
         }
     }
     // histories: the applied writes on each edge, in key order
-    let mine: BTreeMap<(Tid, Tid), Vec<Id>> = p
+    let mine: BTreeMap<(Holder, Tid), Vec<Id>> = p
         .histories()
         .into_iter()
         .filter(|(_, h)| !h.is_empty())
         .map(|(e, h)| (e, h.iter().map(|(k, _)| back[&WriteId(k.commit, p_index(p, &inp.commits, k))]).collect()))
         .collect();
-    let model: BTreeMap<(Tid, Tid), Vec<Id>> = rd.hist.iter().filter(|(_, h)| !h.is_empty()).map(|(&(a, b), h)| ((tid(a), tid(b)), h.iter().map(|x| x.0 .2).collect())).collect();
+    let model: BTreeMap<(Holder, Tid), Vec<Id>> = rd.hist.iter().filter(|(_, h)| !h.is_empty()).map(|(&(a, b), h)| ((holder(a), tid(b)), h.iter().map(|x| x.0 .2).collect())).collect();
     if mine != model {
         return Some(format!("histories: model {model:?}, walk {mine:?}"));
     }
-    let finals: BTreeMap<(Tid, Tid), (Option<Role>, Option<Role>)> = rd.roles.iter().map(|(&(a, b), &r)| ((tid(a), tid(b)), (role(r), role(rd.grantable[&(a, b)])))).collect();
-    if finals != p.finals() {
-        return Some(format!("finals: model {finals:?}, walk {:?}", p.finals()));
+    let finals: BTreeMap<(Holder, Tid), (Option<Role>, Option<Role>)> = rd.roles.iter().map(|(&(a, b), &r)| ((holder(a), tid(b)), (role(r), role(rd.grantable[&(a, b)])))).collect();
+    let (keys, things): (BTreeMap<_, _>, BTreeMap<_, _>) = p.finals().into_iter().partition(|((h, _), _)| matches!(h, Holder::Key(_)));
+    if finals != things {
+        return Some(format!("finals: model {finals:?}, walk {things:?}"));
+    }
+    // the key hops' final roles (the model keeps those giving a role)
+    let model_keys: BTreeMap<(Holder, Tid), Option<Role>> = rd.keys.iter().map(|(&(a, b), &r)| ((holder(a), tid(b)), role(r))).collect();
+    let keys: BTreeMap<(Holder, Tid), Option<Role>> = keys.into_iter().filter(|(_, (r, _))| r.is_some()).map(|(e, (r, _))| (e, r)).collect();
+    if model_keys != keys {
+        return Some(format!("key hops: model {model_keys:?}, walk {keys:?}"));
     }
     let void: BTreeSet<WriteId> = rd.void.iter().map(|i| inp.ids[i]).collect();
     if void != p.void_trusted() {
@@ -340,7 +382,7 @@ pub fn may_grant_world() -> World {
     w
 }
 
-const MODES: [TinyMode; 9] = [
+const MODES: [TinyMode; 12] = [
     TinyMode { flags: false, detached: false, keys: false, honest: Honesty::None },
     TinyMode { flags: true, detached: false, keys: false, honest: Honesty::None },
     TinyMode { flags: false, detached: true, keys: false, honest: Honesty::None },
@@ -350,6 +392,9 @@ const MODES: [TinyMode; 9] = [
     TinyMode { flags: false, detached: false, keys: false, honest: Honesty::Writers },
     TinyMode { flags: true, detached: false, keys: false, honest: Honesty::Writers },
     TinyMode { flags: false, detached: true, keys: false, honest: Honesty::Writers },
+    TinyMode { flags: false, detached: false, keys: true, honest: Honesty::None },
+    TinyMode { flags: false, detached: false, keys: true, honest: Honesty::Lists },
+    TinyMode { flags: false, detached: false, keys: true, honest: Honesty::Writers },
 ];
 
 /// Tiny worlds `start..start + n` of every kind; the failures, at most three.
@@ -376,12 +421,6 @@ fn story_run(start: u64, n: u64, disputes: bool) -> Vec<String> {
     let mut fails = vec![];
     for i in start..start + n {
         let s = m::random_world(i, &Rules::fixed());
-        // Interim (issues/perm-walk-trails-model.md): the walk reads the key hop at A4; until then
-        // a world with an edge write on a key hop or a commit signed by a key other than its signer's own
-        // (moves 54, 55) is the model's alone
-        if (0..s.w.commits.len()).any(|j| s.w.key_write(j) || s.w.commits[j].key != m::own_key(s.w.commits[j].signer)) {
-            continue;
-        }
         for node in s.honest().into_iter().chain(s.untrusting()) {
             if !s.sync.contains_key(&node) {
                 continue;

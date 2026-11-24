@@ -6,15 +6,15 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 use super::{input, rules, MODES};
-use osis_base::{CommitId, Role, Tid};
+use osis_base::{CommitId, Holder, Role, Tid};
 use osis_perm::paths::{Changed, Commit, Content, History, Key, Paths, Right, Status, Store};
 use osis_perm::WriteId;
 use roles_model::paths as m;
 use roles_model::Rng;
 use std::collections::{BTreeMap, BTreeSet};
 
-type Finals = BTreeMap<(Tid, Tid), (Option<Role>, Option<Role>)>;
-pub(super) type Reading = (BTreeMap<WriteId, Status>, BTreeMap<(Tid, Tid), History>, Finals, BTreeMap<WriteId, Content>, BTreeSet<CommitId>, BTreeSet<WriteId>, BTreeMap<(Tid, Tid), [Option<Key>; 2]>, Purges);
+type Finals = BTreeMap<(Holder, Tid), (Option<Role>, Option<Role>)>;
+pub(super) type Reading = (BTreeMap<WriteId, Status>, BTreeMap<(Holder, Tid), History>, Finals, BTreeMap<WriteId, Content>, BTreeSet<CommitId>, BTreeSet<WriteId>, BTreeMap<(Holder, Tid), [Option<Key>; 2]>, Purges);
 /// The purged copies, each request's right.
 type Purges = (BTreeSet<CommitId>, BTreeMap<WriteId, Right>);
 
@@ -84,7 +84,7 @@ fn differs_by(ta: &Tracked, tb: &Tracked, ch: &Changed, renewed: &BTreeSet<Commi
         return Some(format!("{id:?} changed unreported: {ch:?}"));
     }
     let empty = vec![];
-    let edges: BTreeSet<&(Tid, Tid)> = ha.keys().chain(hb.keys()).collect();
+    let edges: BTreeSet<&(Holder, Tid)> = ha.keys().chain(hb.keys()).collect();
     for e in edges {
         let (x, y) = (ha.get(e).unwrap_or(&empty), hb.get(e).unwrap_or(&empty));
         let at = x.iter().zip(y).position(|(p, q)| p != q).unwrap_or(x.len().min(y.len()));
@@ -96,7 +96,7 @@ fn differs_by(ta: &Tracked, tb: &Tracked, ch: &Changed, renewed: &BTreeSet<Commi
             want.cuts.insert(*e, k);
         }
     }
-    let fin: BTreeSet<&(Tid, Tid)> = fa.keys().chain(fb.keys()).chain(xa.keys()).chain(xb.keys()).collect();
+    let fin: BTreeSet<&(Holder, Tid)> = fa.keys().chain(fb.keys()).chain(xa.keys()).chain(xb.keys()).collect();
     for e in fin {
         if fa.get(e).and_then(|f| f.0) != fb.get(e).and_then(|f| f.0) || xa.get(e).copied().unwrap_or_default() != xb.get(e).copied().unwrap_or_default() {
             want.regrant.insert(*e);
@@ -281,7 +281,7 @@ pub(super) fn every_order(w: &m::World) {
 /// Every arrival order of `commits`, from nothing held and trusting nothing (prefixes shared):
 /// each `Changed` exact; `end` reads each whole order.
 #[track_caller]
-pub(super) fn in_every_order(records: &BTreeMap<Tid, Tid>, commits: &[Commit], mut end: impl FnMut(&mut Tracked, &[usize])) {
+pub(super) fn in_every_order(records: &BTreeMap<Tid, Holder>, commits: &[Commit], mut end: impl FnMut(&mut Tracked, &[usize])) {
     let mut add = |t: &mut Tracked, order: &[usize], k: usize| {
         assert_eq!(t.step(|p| p.add(std::slice::from_ref(&commits[k]))), None, "order {order:?}, adding {k}");
     };

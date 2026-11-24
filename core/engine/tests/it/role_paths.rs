@@ -155,8 +155,8 @@ fn every_stated_role_path_is_a_chain_of_held_edges_spec_wire_4() {
             let listed = p.to(&t).to_vec();
             let end = listed.last().copied().unwrap_or(h.signer);
             let tl = e.core.timelines().get(&t);
-            let ops: Vec<(Tid, Option<osis_perm::Edge>)> = tl.map(|tl| tl.held_on(&t).filter(|(w, _, _)| w.0 == id).map(|(_, _, op)| (op.holder, op.edge)).collect()).unwrap_or_default();
-            let leave = !ops.is_empty() && ops.iter().any(|(m, _)| *m == end);
+            let ops: Vec<(osis_base::Holder, Option<osis_perm::Edge>)> = tl.map(|tl| tl.held_on(&t).filter(|(w, _, _)| w.0 == id).map(|(_, _, op)| (op.holder, op.edge)).collect()).unwrap_or_default();
+            let leave = !ops.is_empty() && ops.iter().any(|(m, _)| *m == osis_base::Holder::Thing(end));
             // a key actor writing itself: [S] (spec/permissions.md §1 Path)
             let members: Vec<Tid> = std::iter::once(h.signer).chain(listed.iter().copied()).chain((!leave && t != h.signer).then_some(t)).collect();
             let hops: Vec<(Role, Option<Role>)> = members.windows(2).enumerate().map(|(j, x)| hop(e, x[0], x[1], p.direct >> j & 1 == 1, point).unwrap_or_else(|| panic!("{id:?}: {:?} holds nothing on {:?} (path to {t:?}: {listed:?}; {:?}, effective {:?}, record {:?})", x[0], x[1], h.aspects.iter().map(|a| (a.tid, a.ak.as_str().to_string())).collect::<Vec<_>>(), e.core.timelines().role(&h.signer, &t, At::before(point)), e.core.created(&t)))).collect();
@@ -226,7 +226,7 @@ pub(crate) fn walk_afresh(e: &osis_engine::Engine) -> (osis_perm::paths::Paths, 
                 let mut ops: Vec<_> = tl.held_on(&t).filter(|(w, _, _)| w.0 == id).collect();
                 ops.sort_by_key(|(_, _, op)| op.holder);
                 for (w, c, op) in ops {
-                    named.insert(op.holder);
+                    named.extend(op.holder.thing());
                     let nid = osis_perm::WriteId(id, parts.len() as u32);
                     if tl.trust().contains(&w) {
                         trust.insert(nid);
@@ -242,15 +242,16 @@ pub(crate) fn walk_afresh(e: &osis_engine::Engine) -> (osis_perm::paths::Paths, 
             }
         }
         if !parts.is_empty() {
-            commits.push(Commit { id, ts: h.ts, signer: h.signer, parts });
+            commits.push(Commit { id, ts: h.ts, signer: h.signer, key: e.core.created(&h.signer).and_then(|r| r.key()).expect("a held commit's signer's record"), parts });
         }
     }
-    // every record up each named thing's chain
+    // every record up each named thing's chain, each record's holder
     let mut records = BTreeMap::new();
     let mut todo: Vec<Tid> = named.into_iter().collect();
     while let Some(t) = todo.pop() {
-        if let Some(a) = e.core.created(&t).and_then(|r| r.mint_admin())
+        if let Some(a) = e.core.created(&t).and_then(|r| r.holder())
             && records.insert(t, a).is_none()
+            && let osis_base::Holder::Thing(a) = a
         {
             todo.push(a);
         }
@@ -279,7 +280,7 @@ pub(crate) fn differs_from_afresh(e: &osis_engine::Engine) -> Vec<String> {
         let Some(tl) = e.core.timelines().get(&t) else { continue };
         let edges = tl.edges_at(None);
         let old: BTreeMap<Tid, Role> = edges.holders(&t).filter(|(_, x)| x.until.is_none()).map(|(m, x)| (*m, x.role)).collect();
-        let new: BTreeMap<Tid, Role> = finals.iter().filter(|(k, v)| k.1 == t && v.0.is_some()).map(|(k, v)| (k.0, v.0.unwrap())).collect();
+        let new: BTreeMap<Tid, Role> = finals.iter().filter(|(k, v)| k.1 == t && v.0.is_some()).filter_map(|(k, v)| Some((k.0.thing()?, v.0.unwrap()))).collect();
         if old != new {
             out.push(format!("roles on {t:?}: engine {old:?}, afresh {new:?}"));
         }
@@ -303,7 +304,7 @@ fn the_engine_judges_stated_role_paths_as_a_walk_afresh_does() {
 fn newest_write(lp: &LocalPeer, i: usize, t: Tid, holder: Tid) -> (std::sync::Arc<osis_commit::Header>, Option<osis_perm::paths::Status>) {
     let e = &lp.peers[i].engine;
     let tl = e.core.timelines().get(&t).unwrap();
-    let (w, _, _) = tl.held_on(&t).filter(|(_, _, op)| op.holder == holder).max_by_key(|(_, c, _)| c.ts).unwrap();
+    let (w, _, _) = tl.held_on(&t).filter(|(_, _, op)| op.holder == osis_base::Holder::Thing(holder)).max_by_key(|(_, c, _)| c.ts).unwrap();
     let (paths, ids) = walk_afresh(e);
     let nid = ids.iter().find(|(_, (x, _))| *x == w).map(|(n, _)| *n).unwrap();
     (e.header(&w.0).unwrap(), paths.status(&nid))

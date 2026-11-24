@@ -266,7 +266,7 @@ impl Timeline {
                         tl.w.authored(i, ix.min(path.things.len() + 1));
                     }
                     // held: a part of an applied commit; an edge write on a key actor applies
-                    // nothing (Interim: issues/perm-walk-trails-model.md), and a delta whose path leaves its
+                    // nothing (Interim: issues/held-model-key-actor-edges.md), and a delta whose path leaves its
                     // commit's purge author out holds nothing (§6)
                     let refused = if edge { tl.world.key_actor(thing) } else { author.is_none() };
                     if joined && !refused {

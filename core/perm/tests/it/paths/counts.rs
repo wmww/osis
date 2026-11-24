@@ -7,8 +7,8 @@
 //! spec: none (cost, notes/perm-paths.md; the rules are those of spec/permissions.md §5.1).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
-use super::{cid, t};
-use osis_base::{Ak, CommitId, PurgeBy, Role, Tid, Ts, WallMs};
+use super::{cid, own, t};
+use osis_base::{Ak, CommitId, Holder, PurgeBy, Role, Tid, Ts, WallMs};
 use osis_perm::paths::{By, Commit, Content, Counts, Delta, DeltaClass, EdgeWrite, Fact, List, Holding, Key, MemStore, NameKey, Names, Pair, Part, PartKind, Paths, Right, Status, Store};
 use std::cell::Cell;
 use std::ops::Bound;
@@ -28,16 +28,22 @@ fn holder(i: u32) -> u32 {
     1000 + i
 }
 
-fn records() -> BTreeMap<Tid, Tid> {
-    BTreeMap::from([(t(A), t(H)), (t(B), t(H)), (t(C), t(A))])
+/// The mint records, and the own key of every thing that may sign: the other things below 100,
+/// the holders, the chain's links.
+fn records() -> BTreeMap<Tid, Holder> {
+    let mut r = super::hand_records([(t(A), t(H)), (t(B), t(H)), (t(C), t(A))]);
+    for n in (1..100).chain((0..100).map(holder)).chain(3000..3200).chain(7000..7100) {
+        r.entry(t(n)).or_insert(Holder::Key(own(t(n))));
+    }
+    r
 }
 
 /// A commit of one edge write by `signer` at `ts` (whole ms) on `on` along `path`, setting
 /// `holder`'s edge to `role` (none: a removal listing nothing).
 fn write(id: u64, signer: u32, ts: u64, path: &[u32], on: u32, holder: u32, role: Option<Role>) -> Commit {
     let frontier = Some(Arc::new(List::default()));
-    let ew = EdgeWrite { holder: t(holder), value: role.map(Edge::new), frontier };
-    Commit { id: cid(id), ts: Ts::make(WallMs(ts), 0).unwrap(), signer: t(signer), parts: vec![Part { on: t(on), path: path.iter().map(|&x| t(x)).collect(), direct: 0, kind: PartKind::Edge(ew) }] }
+    let ew = EdgeWrite { holder: Holder::Thing(t(holder)), value: role.map(Edge::new), frontier };
+    Commit { id: cid(id), ts: Ts::make(WallMs(ts), 0).unwrap(), signer: t(signer), key: own(t(signer)), parts: vec![Part { on: t(on), path: path.iter().map(|&x| t(x)).collect(), direct: 0, kind: PartKind::Edge(ew) }] }
 }
 
 fn delta(a: Counts, b: Counts) -> Counts {
@@ -52,6 +58,13 @@ fn delta(a: Counts, b: Counts) -> Counts {
         addenda: b.addenda - a.addenda,
         merged: b.merged - a.merged,
     }
+}
+
+/// H rewrites its own record edge on `on` unchanged at ts 0 (a self-removal that lowers nothing):
+/// that edge is then set, so every later part by H on `on`, resting on it, joins one component.
+/// Parts resting on no edge a held part sets are components of their own.
+fn anchor(on: u32) -> Commit {
+    write(900_000 + on as u64, H, 0, &[], on, H, Some(Role::Admin))
 }
 
 /// H grants n holders admin on A, one commit each at ts 10..: a history of n parts.
@@ -87,13 +100,14 @@ fn an_appended_part_costs_its_own_step() {
 }
 
 // A backdated part replays its component from its key (issues/perm-eval-cost.md): H removes X
-// from A early, before n grants on A and X's m writes on C (minted with A) through [A]: itself
-// and the n + m parts after it; a grant on B, a component of its own, its own step.
+// from A early, before n grants on A (one component with it: `anchor`) and X's m writes on C
+// (minted with A) through [A]: itself and the n + m parts after it; a grant on B, a component of
+// its own, its own step.
 #[test]
 fn a_backdated_part_replays_its_component_from_its_key() {
     let m = 5u32;
     let base = |n: u32| {
-        let mut c = vec![write(1, H, 1, &[], A, X, Some(Role::Admin))];
+        let mut c = vec![anchor(A), write(1, H, 1, &[], A, X, Some(Role::Admin))];
         c.extend(history(n));
         c.extend((0..m).map(|i| write(50 + i as u64, X, 20 + n as u64 + i as u64, &[A], C, holder(9000 + i), Some(Role::Read))));
         c
@@ -108,15 +122,16 @@ fn a_backdated_part_replays_its_component_from_its_key() {
 }
 
 /// Things 100.. minted by H, `c` of them.
-fn many(c: u32) -> BTreeMap<Tid, Tid> {
+fn many(c: u32) -> BTreeMap<Tid, Holder> {
     let mut r = records();
-    r.extend((0..c).map(|i| (t(100 + i), t(H))));
+    r.extend((0..c).map(|i| (t(100 + i), Holder::Thing(t(H)))));
     r
 }
 
-/// H grants `k` holders admin on each of `c` things, at ts 10..: c components of k parts.
+/// H grants `k` holders admin on each of `c` things, at ts 10.., each thing `anchor`ed: c
+/// components of k + 1 parts.
 fn components(c: u32, k: u32) -> Vec<Commit> {
-    (0..c).flat_map(|i| (0..k).map(move |j| write(1_000_000 + (i * k + j) as u64, H, 10 + j as u64, &[], 100 + i, holder(j), Some(Role::Admin)))).collect()
+    (0..c).flat_map(|i| std::iter::once(anchor(100 + i)).chain((0..k).map(move |j| write(1_000_000 + (i * k + j) as u64, H, 10 + j as u64, &[], 100 + i, holder(j), Some(Role::Admin))))).collect()
 }
 
 // Components bound what an update walks again (notes/perm-paths.md, Components): among c
@@ -204,6 +219,7 @@ fn a_trusted_component_takes_an_appended_part_in_its_own_step() {
 fn a_forget_replays_its_component_from_the_parts_key() {
     for n in [100u32, 1000] {
         let mut base = writes(n);
+        base.extend([anchor(A), anchor(B)]);
         base.extend((0..n).map(|i| write(500_000 + i as u64, H, 10 + i as u64, &[], B, holder(i), Some(Role::Admin))));
         let mut p = Paths::evaluate(&records(), BTreeSet::new(), &base);
         let before = p.counts();
@@ -224,7 +240,7 @@ fn a_forget_replays_its_component_from_the_parts_key() {
 fn a_lowering_with_drops_restarts_once_from_its_earliest_drop() {
     let k = 5u32;
     for n in [100u32, 1000] {
-        let mut base = vec![write(1, H, 1, &[], A, X, Some(Role::Admin))];
+        let mut base = vec![anchor(A), write(1, H, 1, &[], A, X, Some(Role::Admin))];
         base.extend((0..k).map(|i| write(10 + i as u64, X, 2, &[], A, holder(5000 + i), Some(Role::Admin))));
         base.extend(history(n));
         let end = 10 + n as u64 + 5;
@@ -247,7 +263,7 @@ fn k_lowerings_with_drops_restart_k_times() {
     let mut per = vec![];
     for n in [100u32, 1000] {
         let y = |i: u32| 7000 + i;
-        let mut base: Vec<Commit> = (0..k).map(|i| write(20 + i as u64, H, 1, &[], A, y(i), Some(Role::Admin))).collect();
+        let mut base: Vec<Commit> = std::iter::once(anchor(A)).chain((0..k).map(|i| write(20 + i as u64, H, 1, &[], A, y(i), Some(Role::Admin)))).collect();
         base.extend((0..k).map(|i| write(40 + i as u64, y(i), 2, &[], A, holder(8000 + i), Some(Role::Admin))));
         base.extend(history(n));
         let end = 10 + n as u64 + 5;
@@ -319,12 +335,13 @@ fn a_void_check_reads_each_setter_once() {
     assert!(per[1] >= 9 * per[0] && per[1] <= 11 * per[0], "{per:?}");
 }
 
-// From scratch: one step per part (no lowering, no restart), so linear in the parts.
+// From scratch: one step per part (no lowering, no restart), so linear in the parts; one pass per
+// component (the history `anchor`ed: one).
 #[test]
 fn from_scratch_is_linear_in_the_parts() {
-    let small = Paths::evaluate(&records(), BTreeSet::new(), &history(100)).counts();
-    let large = Paths::evaluate(&records(), BTreeSet::new(), &history(1000)).counts();
-    assert_eq!((small.steps, small.passes, large.steps, large.passes), (100, 1, 1000, 1));
+    let run = |n: u32| Paths::evaluate(&records(), BTreeSet::new(), &[vec![anchor(A)], history(n)].concat()).counts();
+    let (small, large) = (run(100), run(1000));
+    assert_eq!((small.steps, small.passes, large.steps, large.passes), (101, 1, 1001, 1));
 }
 
 /// A content commit of one plain delta by `signer` on `on` along `path` (an addendum: `against`
@@ -336,7 +353,7 @@ fn content(id: u64, signer: u32, ts: u64, path: &[u32], on: u32, against: Option
     };
     let aspect = Ak::new(if against.is_some() { "addenda.0" } else { "doc.0" }).unwrap();
     let d = Delta { aspect, needs: Role::Write, purge_author: 0, purge_by: PurgeBy::AuthorOrAdmin, class };
-    Commit { id: cid(id), ts: Ts::make(WallMs(ts), 0).unwrap(), signer: t(signer), parts: vec![Part { on: t(on), path: path.iter().map(|&x| t(x)).collect(), direct: 0, kind: PartKind::Delta(d) }] }
+    Commit { id: cid(id), ts: Ts::make(WallMs(ts), 0).unwrap(), signer: t(signer), key: own(t(signer)), parts: vec![Part { on: t(on), path: path.iter().map(|&x| t(x)).collect(), direct: 0, kind: PartKind::Delta(d) }] }
 }
 
 /// H grants X admin on A at 1; X writes n deltas on C (minted with A) along [A] at 10..; the
@@ -382,7 +399,7 @@ fn a_removal_cutting_n_deltas_costs_nothing_per_delta() {
         let ch = p.add(&[r]);
         let d = delta(before, p.counts());
         assert_eq!((d.steps, d.content), (1, 0), "{d:?}");
-        assert_eq!(ch.cuts.keys().copied().collect::<Vec<_>>(), vec![(t(X), t(A))]);
+        assert_eq!(ch.cuts.keys().copied().collect::<Vec<_>>(), vec![(Holder::Thing(t(X)), t(A))]);
         assert!(ch.parts.len() == 1 && ch.named.is_empty(), "{ch:?}");
         let mut q = Counts::default();
         assert_eq!(p.content_counted(&WriteId(cid(200_000), 0), &mut q), Some(Content::Valid(By::Listed)));
@@ -462,7 +479,7 @@ fn a_delta_under_k_cuts_is_a_point_query() {
             c.push(write(11 + 2 * i, H, 11 + 2 * i, &[], A, X, Some(Role::Admin)));
         }
         let p = Paths::evaluate(&records(), BTreeSet::new(), &c);
-        assert_eq!(p.writes(&t(X), &t(A)).iter().filter(|w| w.cuts(Role::Write)).count() as u64, k);
+        assert_eq!(p.writes(&Holder::Thing(t(X)), &t(A)).iter().filter(|w| w.cuts(Role::Write)).count() as u64, k);
         let mut q = Counts::default();
         assert_eq!(p.content_counted(&WriteId(cid(9), 0), &mut q), Some(Content::Valid(By::Regranted)));
         per.push(q.content);

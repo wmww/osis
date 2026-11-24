@@ -125,7 +125,7 @@ pub(crate) fn removal_listed(core: &Core, a: &Tid, x: &Tid, view: &ActorEpochs, 
     let Some(on) = core.timelines().on(a) else { return BTreeSet::new() };
     let rm = on
         .applied()
-        .filter(|(c, o)| o.holder == *x && o.edge.is_none_or(|e| e.says_retain()) && before.is_none_or(|p| c.point() < p))
+        .filter(|(c, o)| o.holder == osis_base::Holder::Thing(*x) && o.edge.is_none_or(|e| e.says_retain()) && before.is_none_or(|p| c.point() < p))
         .max_by_key(|(c, _)| c.point())
         .map(|(c, _)| c.id);
     let Some(rm) = rm else { return BTreeSet::new() };

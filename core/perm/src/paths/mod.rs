@@ -16,18 +16,21 @@ mod path;
 mod walk;
 
 use crate::types::{Edge, Frontier, WriteId};
-use osis_base::{Ak, CommitId, PurgeBy, Role, Tid, Ts};
+use osis_base::{Ak, CommitId, Holder, PurgeBy, Role, SignKey, Tid, Ts};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 pub use content::{Fact, FactClass, Holding, MemStore, NameKey, Pair, Store};
 pub use walk::{Applied, Counts, History, Key, Way};
 
-/// The edges a part by `signer` on `on` along `path` (hops `direct` marked) rests on, key hop
-/// first, as the walk reads them (draft §1 Hops); `holder` for an edge write, `edge_class` for an
-/// edge-class part. None where its path is not well formed.
-pub fn hops(mint: &BTreeMap<Tid, Tid>, signer: Tid, path: &[Tid], direct: osis_base::format::PathMarks, on: Tid, holder: Option<Tid>, edge_class: bool) -> Vec<(Tid, Tid)> {
-    path::shape(mint, signer, path, direct, on, holder, edge_class).hops
+/// The edges a part signed by `key` as `signer` on `on` along `path` (hops `direct` marked) rests
+/// on, its key hop first, as the walk reads them (spec/permissions.md §1 Hops); `holder` for an
+/// edge write, `edge_class` for an edge-class part. None where its path is not well formed, and
+/// none for a key lowering its own grant. `mint` holds each known record's holder: its mint
+/// admin, or the key it holds.
+#[allow(clippy::too_many_arguments)]
+pub fn hops(mint: &BTreeMap<Tid, Holder>, key: SignKey, signer: Tid, path: &[Tid], direct: osis_base::format::PathMarks, on: Tid, holder: Option<Holder>, edge_class: bool) -> Vec<(Holder, Tid)> {
+    path::shape(mint, key, signer, path, direct, on, holder, edge_class).hops
 }
 
 /// A held commit's parts.
@@ -35,7 +38,10 @@ pub fn hops(mint: &BTreeMap<Tid, Tid>, signer: Tid, path: &[Tid], direct: osis_b
 pub struct Commit {
     pub id: CommitId,
     pub ts: Ts,
+    /// The thing it is signed as.
     pub signer: Tid,
+    /// The key that signed it: its key hop is (key, signer) (spec/permissions.md §1).
+    pub key: SignKey,
     /// In the header's order: a part's index here is its `WriteId` index.
     pub parts: Vec<Part>,
 }
@@ -100,10 +106,10 @@ impl List {
     }
 }
 
-/// A `roles.0` write on `holder`'s grant.
+/// A write on `holder`'s grant: a `roles.0` write, or a `signers.0` write on a key's.
 #[derive(Clone, Debug, PartialEq)]
 pub struct EdgeWrite {
-    pub holder: Tid,
+    pub holder: Holder,
     /// `None`: a removal.
     pub value: Option<Edge>,
     /// A removal of another holder's grant with none that is no self-removal is a finalize.
@@ -260,11 +266,11 @@ pub struct Changed {
     /// Edge-class parts whose status changed, every new part, addenda whose validity changed.
     pub parts: BTreeSet<WriteId>,
     /// Per edge (holder, target), the earliest key from which its history changed.
-    pub edges: BTreeMap<(Tid, Tid), Key>,
+    pub edges: BTreeMap<(Holder, Tid), Key>,
     /// Per edge, the latest key of a cut added or removed.
-    pub cuts: BTreeMap<(Tid, Tid), Key>,
+    pub cuts: BTreeMap<(Holder, Tid), Key>,
     /// Edges whose final role or first point (spec/permissions.md §5.2 Re-grant) changed.
-    pub regrant: BTreeSet<(Tid, Tid)>,
+    pub regrant: BTreeSet<(Holder, Tid)>,
     /// Commits whose namers changed: listed by a frontier or an addendum that went or was read
     /// further, carried by a snapshot a held list names that came, went or changed what it
     /// carries; an own cover a lowering of its signer lists whose status changed.
@@ -291,21 +297,21 @@ pub struct Paths<S: Store = MemStore> {
 }
 
 impl Paths<MemStore> {
-    /// An empty held set over `records` (thing to mint admin) and `trust`, delta facts in memory.
-    pub fn new(records: &BTreeMap<Tid, Tid>, trust: BTreeSet<WriteId>) -> Paths {
+    /// An empty held set over `records` (each thing to its record's holder: its mint admin or its key) and `trust`, delta facts in memory.
+    pub fn new(records: &BTreeMap<Tid, Holder>, trust: BTreeSet<WriteId>) -> Paths {
         Paths::with_store(records, trust, MemStore::default())
     }
 
     /// As `new`, every part walked in one component. A test mode: the walk by components must
     /// read exactly as this (notes/perm-paths.md, Components).
-    pub fn single(records: &BTreeMap<Tid, Tid>, trust: BTreeSet<WriteId>) -> Paths {
+    pub fn single(records: &BTreeMap<Tid, Holder>, trust: BTreeSet<WriteId>) -> Paths {
         let mut p = Paths::new(records, trust);
         p.timeline = walk::Walk::new(records, true);
         p
     }
 
     /// The settled walk of `commits` from scratch.
-    pub fn evaluate(records: &BTreeMap<Tid, Tid>, trust: BTreeSet<WriteId>, commits: &[Commit]) -> Paths {
+    pub fn evaluate(records: &BTreeMap<Tid, Holder>, trust: BTreeSet<WriteId>, commits: &[Commit]) -> Paths {
         let mut p = Paths::new(records, trust);
         p.add(commits);
         p
@@ -314,7 +320,7 @@ impl Paths<MemStore> {
 
 impl<S: Store> Paths<S> {
     /// An empty held set over `records` and `trust`, delta facts kept in `store`.
-    pub fn with_store(records: &BTreeMap<Tid, Tid>, trust: BTreeSet<WriteId>, store: S) -> Paths<S> {
+    pub fn with_store(records: &BTreeMap<Tid, Holder>, trust: BTreeSet<WriteId>, store: S) -> Paths<S> {
         Paths {
             timeline: walk::Walk::new(records, false),
             trust,
@@ -381,14 +387,14 @@ impl<S: Store> Paths<S> {
         self.finish(taken)
     }
 
-    /// One update of everything that moved: the records that came (thing, mint admin) and went
+    /// One update of everything that moved: the records that came (thing, its record's holder) and went
     /// (a held part whose hops read one is the caller's to give again: `through`), the
     /// commits no longer held, and the commits held now, each added or, where held already,
     /// replaced by the version given (`update`); then, per commit of `carriers`, the held
     /// snapshots carrying it are those given (none for one that went): a snapshot's reading lists
     /// the commits it carries among those held when it is read, and a carried commit that comes
     /// or goes later moves that list by itself alone.
-    pub fn sync(&mut self, records: &[(Tid, Tid)], records_gone: &[Tid], gone: &[CommitId], commits: &[Commit], carriers: &BTreeMap<CommitId, Vec<WriteId>>) -> Changed {
+    pub fn sync(&mut self, records: &[(Tid, Holder)], records_gone: &[Tid], gone: &[CommitId], commits: &[Commit], carriers: &BTreeMap<CommitId, Vec<WriteId>>) -> Changed {
         let mut seen = BTreeSet::new();
         let given: Vec<&Commit> = commits.iter().filter(|c| seen.insert(c.id)).collect();
         self.begin();
@@ -494,12 +500,12 @@ impl<S: Store> Paths<S> {
     }
 
     /// Applied part `id`: its edge and what it found there.
-    pub fn applied(&self, id: &WriteId) -> Option<((Tid, Tid), Applied)> {
+    pub fn applied(&self, id: &WriteId) -> Option<((Holder, Tid), Applied)> {
         self.timeline.applied_write(id)
     }
 
     /// The last applied write on (holder, target) before `key`.
-    pub fn last_before(&self, holder: &Tid, target: &Tid, key: &Key) -> Option<(WriteId, Applied)> {
+    pub fn last_before(&self, holder: &Holder, target: &Tid, key: &Key) -> Option<(WriteId, Applied)> {
         self.timeline.last_before(holder, target, key)
     }
 
@@ -521,12 +527,12 @@ impl<S: Store> Paths<S> {
 
     /// (holder, target) as restored after every applied write (spec/permissions.md §5.1): what
     /// it gives and what it lets grant.
-    pub fn restored(&self, holder: &Tid, target: &Tid) -> (Option<Role>, Option<Role>) {
+    pub fn restored(&self, holder: &Holder, target: &Tid) -> (Option<Role>, Option<Role>) {
         self.timeline.restored(holder, target)
     }
 
     /// The last applied write on (holder, target).
-    pub fn last(&self, holder: &Tid, target: &Tid) -> Option<(WriteId, Applied)> {
+    pub fn last(&self, holder: &Holder, target: &Tid) -> Option<(WriteId, Applied)> {
         self.timeline.last(holder, target)
     }
 
@@ -538,14 +544,14 @@ impl<S: Store> Paths<S> {
 
     /// The held commits resting on (holder, target) (spec/permissions.md §5.1 Frontier): those
     /// with an edge-class part resting on it or a delta stated along it.
-    pub fn resting(&self, holder: &Tid, target: &Tid) -> BTreeSet<CommitId> {
+    pub fn resting(&self, holder: &Holder, target: &Tid) -> BTreeSet<CommitId> {
         let mut out = self.timeline.resting(holder, target);
         out.extend(self.facts.store.through(&(*holder, *target), std::ops::Bound::Unbounded, std::ops::Bound::Unbounded).into_iter().map(|w| w.0));
         out
     }
 
     /// The held commits with a part resting on or setting (holder, target), or a delta along it.
-    pub fn through(&self, holder: &Tid, target: &Tid) -> BTreeSet<CommitId> {
+    pub fn through(&self, holder: &Holder, target: &Tid) -> BTreeSet<CommitId> {
         let mut out = self.timeline.through(holder, target);
         out.extend(self.facts.store.through(&(*holder, *target), std::ops::Bound::Unbounded, std::ops::Bound::Unbounded).into_iter().map(|w| w.0));
         out
@@ -642,13 +648,13 @@ impl<S: Store> Paths<S> {
 
     /// Per edge with one, its first points for write and for admin (spec/permissions.md §5.2
     /// Re-grant): the key of its first held write giving the role made by right.
-    pub fn first_points(&self) -> BTreeMap<(Tid, Tid), [Option<Key>; 2]> {
+    pub fn first_points(&self) -> BTreeMap<(Holder, Tid), [Option<Key>; 2]> {
         self.timeline.first_points()
     }
 
     /// A held delta's path edges and position (the start of its `ts`): where the engine indexes
     /// it to turn `Changed` into the deltas to judge again.
-    pub fn rests(&self, id: &WriteId) -> Option<(Vec<(Tid, Tid)>, Key)> {
+    pub fn rests(&self, id: &WriteId) -> Option<(Vec<(Holder, Tid)>, Key)> {
         self.facts.rests(id)
     }
 
@@ -664,30 +670,30 @@ impl<S: Store> Paths<S> {
     }
 
     /// The applied writes on (holder, target) in key order.
-    pub fn history(&self, holder: &Tid, target: &Tid) -> History {
+    pub fn history(&self, holder: &Holder, target: &Tid) -> History {
         self.timeline.history(holder, target)
     }
 
     /// The applied writes on (holder, target) with what each found there.
-    pub fn writes(&self, holder: &Tid, target: &Tid) -> Vec<Applied> {
+    pub fn writes(&self, holder: &Holder, target: &Tid) -> Vec<Applied> {
         self.timeline.writes(holder, target)
     }
 
     /// Every edge with an applied write, and every record edge, with its history (empty for a
     /// record edge nothing wrote).
-    pub fn histories(&self) -> BTreeMap<(Tid, Tid), History> {
+    pub fn histories(&self) -> BTreeMap<(Holder, Tid), History> {
         self.timeline.histories()
     }
 
     /// The value of (holder, target) just before `key`: the last applied write before it, else
     /// the record edge's admin, else none.
-    pub fn value_before(&self, holder: &Tid, target: &Tid, key: &Key) -> Option<Edge> {
+    pub fn value_before(&self, holder: &Holder, target: &Tid, key: &Key) -> Option<Edge> {
         self.timeline.value_before(holder, target, key)
     }
 
     /// The final role of each edge the settled walk set (and each record edge), every `until`
     /// counted removed, and what it lets grant.
-    pub fn finals(&self) -> BTreeMap<(Tid, Tid), (Option<Role>, Option<Role>)> {
+    pub fn finals(&self) -> BTreeMap<(Holder, Tid), (Option<Role>, Option<Role>)> {
         self.timeline.finals()
     }
 

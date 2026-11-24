@@ -88,7 +88,7 @@ pub(crate) fn note_changed(core: &mut Core, c: &osis_perm::Changed) {
 /// candidates are held deltas stated along R's edges.
 fn wake(core: &mut Core, c: &osis_perm::Changed) {
     let mut due: BTreeSet<CommitId> = BTreeSet::new();
-    let on = |core: &Core, (holder, target): (Tid, Tid), from: Ts, due: &mut BTreeSet<CommitId>, got: Option<osis_base::WallMs>| {
+    let on = |core: &Core, (holder, target): (osis_base::Holder, Tid), from: Ts, due: &mut BTreeSet<CommitId>, got: Option<osis_base::WallMs>| {
         osis_base::costs::count("addenda: wake lookups", 1);
         let lo = (target, holder, from, CommitId([0; 32]));
         let hi = (target, holder, Ts::MAX, CommitId([0xff; 32]));
@@ -100,7 +100,7 @@ fn wake(core: &mut Core, c: &osis_perm::Changed) {
     // a record edge coming or going moves every edge into its thing as restored
     for t in &c.created {
         osis_base::costs::count("addenda: wake lookups", 1);
-        let (lo, hi) = (Tid::from_bytes([0; osis_base::format::TID_LEN]), Tid::from_bytes([0xff; osis_base::format::TID_LEN]));
+        let (lo, hi) = (osis_base::Holder::Thing(Tid::from_bytes([0; osis_base::format::TID_LEN])), osis_base::Holder::Key(osis_base::SignKey([0xff; 32])));
         due.extend(core.ix.addenda_wake.range((*t, lo, Ts::ZERO, CommitId([0; 32]))..=(*t, hi, Ts::MAX, CommitId([0xff; 32]))).map(|x| x.3));
     }
     for w in &c.walk.parts {
@@ -121,7 +121,7 @@ fn wake(core: &mut Core, c: &osis_perm::Changed) {
 fn file_wake(core: &mut Core, r: &CommitId) {
     let Some(rc) = core.ix.held.edge_commit(r) else { return };
     let ts = rc.ts;
-    let edges: BTreeSet<(Tid, Tid)> = rc.ops.iter().map(|o| (o.target, o.holder)).collect();
+    let edges: BTreeSet<(Tid, osis_base::Holder)> = rc.ops.iter().map(|o| (o.target, o.holder)).collect();
     for (target, holder) in edges {
         if core.ix.addenda_wake.insert((target, holder, ts, *r)) {
             osis_base::costs::count("addenda: wake entries", 1);

@@ -10,13 +10,13 @@ use super::path::shape;
 use super::walk::{Counts, Key, Walk};
 use super::{By, Changed, Commit, Content, DeltaClass, List, Names, PartKind, Right, Scope, Stated};
 use crate::types::{Frontier, WriteId};
-use osis_base::{Ak, CommitId, PurgeBy, Role, Tid, Ts};
+use osis_base::{Ak, CommitId, Holder, PurgeBy, Role, Tid, Ts};
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Bound;
 use std::sync::Arc;
 
 /// An edge: (holder, target).
-pub type Pair = (Tid, Tid);
+pub type Pair = (Holder, Tid);
 
 /// A held delta's facts: everything content reads of it.
 #[derive(Clone, Debug, PartialEq)]
@@ -324,7 +324,7 @@ pub(super) struct CommitFacts {
 
 #[derive(Clone)]
 pub(super) struct Facts<S> {
-    mint: BTreeMap<Tid, Tid>,
+    mint: BTreeMap<Tid, Holder>,
     /// The held role commits (a commit with a role-class part).
     commits: BTreeMap<CommitId, CommitFacts>,
     /// Per (commit, thing), the frontiers (edge writes) whose leaf of the thing lists it; under
@@ -338,7 +338,7 @@ pub(super) struct Facts<S> {
 }
 
 impl<S: Store> Facts<S> {
-    pub(super) fn new(records: &BTreeMap<Tid, Tid>, store: S) -> Facts<S> {
+    pub(super) fn new(records: &BTreeMap<Tid, Holder>, store: S) -> Facts<S> {
         Facts { mint: records.clone(), commits: BTreeMap::new(), named: BTreeMap::new(), ever: BTreeMap::new(), store, counts: Counts::default() }
     }
 
@@ -348,8 +348,8 @@ impl<S: Store> Facts<S> {
         [Some(*on), None].into_iter().flat_map(move |t| self.named.get(&(c, t))).flatten().copied()
     }
 
-    /// A record that came: `t`'s mint admin.
-    pub(super) fn add_record(&mut self, t: Tid, admin: Tid) {
+    /// A record that came: `t`'s record holder.
+    pub(super) fn add_record(&mut self, t: Tid, admin: Holder) {
         self.mint.insert(t, admin);
     }
 
@@ -374,7 +374,7 @@ impl<S: Store> Facts<S> {
 
     /// The facts of delta `d`, part `p` of commit `c`, under ID `id`.
     fn fact(&self, c: &Commit, id: WriteId, p: &crate::paths::Part, d: &crate::paths::Delta) -> Fact {
-        let sh = shape(&self.mint, c.signer, &p.path, p.direct, p.on, None, false);
+        let sh = shape(&self.mint, c.key, c.signer, &p.path, p.direct, p.on, None, false);
         let chain: Vec<Tid> = std::iter::once(c.signer).chain(p.path.iter().copied()).collect();
         // a member of its path: the signer, a listed thing, or the thing written (§6 Purge author)
         let purge_author = usize::try_from(d.purge_author).ok().and_then(|i| chain.get(i).copied().or((i == chain.len()).then_some(p.on)));

@@ -11,7 +11,7 @@ use crate::graph::{Edges, EdgesAt, Need, Records, View, RECORD_EDGE};
 use crate::paths::{self, Key, MemStore, Paths, Status, Store, Way};
 use crate::types::{Edge, EdgeOp, Point, RoleCommit, WriteId};
 use osis_base::format::MAX_CHAIN_DEPTH;
-use osis_base::{CommitId, CreationRecord, RecordLink, Role, Tid, Ts, WallMs};
+use osis_base::{CommitId, CreationRecord, Holder, RecordLink, Role, SignKey, Tid, Ts, WallMs};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -20,7 +20,9 @@ use std::sync::Arc;
 pub struct Held {
     pub id: CommitId,
     pub ts: Ts,
+    /// The thing it is signed as, and the key that signed it.
     pub signer: Tid,
+    pub key: SignKey,
     /// Its parts but its edge writes, in the node's numbering (`WriteId(id, index)`): a delta, or
     /// `PartKind::None` where nothing is read.
     pub parts: Vec<paths::Part>,
@@ -37,7 +39,7 @@ pub struct Held {
 impl Held {
     /// Its parts but its edge writes, as the walk's input.
     pub fn deltas(self) -> paths::Commit {
-        paths::Commit { id: self.id, ts: self.ts, signer: self.signer, parts: self.parts }
+        paths::Commit { id: self.id, ts: self.ts, signer: self.signer, key: self.key, parts: self.parts }
     }
 
     /// Its parts and its edge writes as the walk's input: op k is part `parts.len() + k`, along
@@ -48,7 +50,7 @@ impl Held {
             let list = r.frontier.as_ref().map(|f| Arc::new(paths::List::whole((**f).clone())));
             parts.extend(r.ops.iter().map(|o| paths::Part { on: o.target, path: r.path_to(&o.target).to_vec(), direct: r.direct, kind: paths::PartKind::Edge(paths::EdgeWrite { holder: o.holder, value: o.edge, frontier: list.clone() }) }));
         }
-        paths::Commit { id: self.id, ts: self.ts, signer: self.signer, parts }
+        paths::Commit { id: self.id, ts: self.ts, signer: self.signer, key: self.key, parts }
     }
 }
 
@@ -120,10 +122,11 @@ pub struct Changed {
 }
 
 impl Changed {
-    /// The edges (holder, target) whose value at some key changed, a record edge that came or
-    /// went aside (`created`).
-    pub fn edges(&self) -> impl Iterator<Item = &(Tid, Tid)> {
-        self.walk.edges.keys()
+    /// The grants of things (holder, target) whose value at some key changed, a record edge
+    /// that came or went aside (`created`). Key grants are no part of a role (spec/permissions.md
+    /// §1 Effective role): what they change is the validity `reached` names.
+    pub fn edges(&self) -> impl Iterator<Item = (Tid, Tid)> + '_ {
+        self.walk.edges.keys().filter_map(|(h, t)| h.thing().map(|h| (h, *t)))
     }
 }
 
@@ -132,11 +135,11 @@ impl Changed {
 pub struct Timeline<S: Store = MemStore> {
     paths: Paths<S>,
     records: Records,
-    /// The edge state after every applied write.
+    /// The grants of things after every applied write (key grants are the walk's alone).
     now: Edges,
-    /// The applied writes in key order, each with its edge (holder, target).
+    /// The applied writes on grants of things in key order, each with its edge (holder, target).
     log: BTreeMap<Key, (Tid, Tid)>,
-    /// Per target, the holders whose edge on it a held edge write sets, applied or not.
+    /// Per target, the things whose grant on it a held edge write sets, applied or not.
     into: BTreeMap<Tid, BTreeSet<Tid>>,
     /// Per thing whose record is not held, the held commits with a path member whose record
     /// chain stops at it: given again when the record comes (their hops read the chain).
@@ -197,18 +200,19 @@ impl<S: Store> Timeline<S> {
                 (Some(rec), None) => {
                     self.records.insert(*t, &rec);
                     out.created.insert(*t);
-                    if let RecordLink::Admin(a) = rec.record_link() {
-                        came.push((*t, a));
+                    if let Some(h) = rec.holder() {
+                        came.push((*t, h));
                     }
                     forced.extend(self.waiting.remove(t).unwrap_or_default());
                 }
-                (None, Some(l)) => {
-                    // a part whose hops read the record edge loses it: given again
-                    if let RecordLink::Admin(a) = l {
-                        forced.extend(self.paths.through(&a, t));
-                        went.push((*t, a));
+                (None, Some(_)) => {
+                    // a part whose hops read the record edge (a mint admin's, or the record's
+                    // key's) loses it: given again
+                    if let Some(h) = self.records.holder(t) {
+                        forced.extend(self.paths.through(&h, t));
+                        went.push((*t, h));
                     }
-                    // a commit signed as a thing with no held key gives nothing
+                    // a commit signed as a thing whose record is not held gives nothing
                     forced.extend(held.signed_as(t));
                     self.records.remove(t);
                     out.created.insert(*t);
@@ -245,10 +249,9 @@ impl<S: Store> Timeline<S> {
                 }
             }
             match now {
-                // signed as a thing whose record holds no key here (not held, or naming a mint
-                // admin): nothing of it is read until that record comes (spec/permissions.md §1
-                // Key actor, Interim)
-                Some(h) if !self.records.is_key(&h.signer) => {
+                // signed as a thing whose record is not held: nothing of it is read until that
+                // record comes
+                Some(h) if self.records.link(&h.signer).is_none() => {
                     self.waiting.entry(h.signer).or_default().insert(*id);
                     carriers.insert(*id, Vec::new());
                     gone.push(*id);
@@ -268,8 +271,10 @@ impl<S: Store> Timeline<S> {
                         for o in &role.ops {
                             out.held.insert(o.target);
                             self.on.entry(o.target).or_default().insert(h.id);
-                            self.into.entry(o.target).or_default().insert(o.holder);
-                            self.holders.insert(o.holder);
+                            if let Some(holder) = o.holder.thing() {
+                                self.into.entry(o.target).or_default().insert(holder);
+                                self.holders.insert(holder);
+                            }
                         }
                         self.roles.insert(h.id, (role, h.parts));
                     }
@@ -305,8 +310,9 @@ impl<S: Store> Timeline<S> {
             }
         }
         // a record edge that came or went does so from the start
-        for (t, a) in came.iter().chain(&went) {
-            let last = self.paths.last(a, t).map(|(_, w)| w.value);
+        for (t, h) in came.iter().chain(&went) {
+            let Holder::Thing(a) = h else { continue };
+            let last = self.paths.last(h, t).map(|(_, w)| w.value);
             self.now.set(&self.records, *a, *t, last.unwrap_or(self.records.is_record_edge(a, t).then_some(RECORD_EDGE)));
         }
         self.follow(&mut out);
@@ -318,7 +324,7 @@ impl<S: Store> Timeline<S> {
     pub fn reads_now(&self, held: &dyn HeldSet, id: &CommitId) -> bool {
         match held.commit(id) {
             None => !self.paths.holds(id) && !self.roles.contains_key(id),
-            Some(h) if !self.records.is_key(&h.signer) => self.waiting.get(&h.signer).is_some_and(|s| s.contains(id)),
+            Some(h) if self.records.link(&h.signer).is_none() => self.waiting.get(&h.signer).is_some_and(|s| s.contains(id)),
             Some(h) => match self.roles.get(id) {
                 Some((role, parts)) => h.role.as_ref().is_some_and(|r| r == role) && h.parts == *parts,
                 None => h.role.is_none() && self.paths.reads(&h.commit(), &h.carriers),
@@ -377,14 +383,15 @@ impl<S: Store> Timeline<S> {
     /// fills what it reaches.
     fn follow(&mut self, out: &mut Changed) {
         for ((h, t), k) in &out.walk.edges {
+            let Holder::Thing(h) = h else { continue };
             let stale: Vec<Key> = self.log.range(*k..).filter(|(_, e)| **e == (*h, *t)).map(|(k, _)| *k).collect();
             for k in stale {
                 self.log.remove(&k);
             }
-            for (key, _) in self.paths.history(h, t).into_iter().filter(|(key, _)| key >= k) {
+            for (key, _) in self.paths.history(&Holder::Thing(*h), t).into_iter().filter(|(key, _)| key >= k) {
                 self.log.insert(key, (*h, *t));
             }
-            let last = self.paths.last(h, t).map(|(_, w)| w.value);
+            let last = self.paths.last(&Holder::Thing(*h), t).map(|(_, w)| w.value);
             let value = last.unwrap_or(self.records.is_record_edge(h, t).then_some(RECORD_EDGE));
             self.now.set(&self.records, *h, *t, value);
         }
@@ -413,7 +420,7 @@ impl<S: Store> Timeline<S> {
     }
 
     /// An edge write held here: its signer, holder and target.
-    pub fn edge_op(&self, w: &WriteId) -> Option<(Tid, Tid, Tid)> {
+    pub fn edge_op(&self, w: &WriteId) -> Option<(Tid, Holder, Tid)> {
         let c = self.role_commit(&w.0)?;
         let op = c.ops.get(usize::try_from(w.1).ok()?)?;
         Some((c.signer, op.holder, op.target))
@@ -481,7 +488,7 @@ impl<S: Store> Timeline<S> {
     /// The commit of the edge write in force on (`holder`, `target`): the last applied one, when
     /// it set a value (spec/permissions.md §2: the next edge write resets the entry it created).
     pub fn in_force(&self, holder: &Tid, target: &Tid) -> Option<CommitId> {
-        self.paths.last(holder, target).filter(|(_, a)| a.value.is_some()).map(|(w, _)| w.0)
+        self.paths.last(&Holder::Thing(*holder), target).filter(|(_, a)| a.value.is_some()).map(|(w, _)| w.0)
     }
 
     /// The verdict part `ix` of `h` (`Held::deltas`) has over what is held, whether `h` is held
@@ -511,7 +518,7 @@ impl<S: Store> Timeline<S> {
     pub fn lowered_unaudited(&self, holder: &Tid, target: &Tid) -> bool {
         let v = self.now.get(&self.records, holder, target);
         let (role, grant) = (v.map(|v| v.role), v.filter(|v| v.role == Role::Admin || v.may_grant).map(|v| v.role));
-        let (r, g) = self.paths.restored(holder, target);
+        let (r, g) = self.paths.restored(&Holder::Thing(*holder), target);
         r > role || g > grant
     }
 
@@ -520,7 +527,7 @@ impl<S: Store> Timeline<S> {
     pub fn audits(&self, holder: &Tid, target: &Tid, new: Option<Edge>, ts: Ts) -> bool {
         let role = new.filter(|v| v.alive_at(Some(ts))).map(|v| v.role);
         let grant = role.filter(|r| *r == Role::Admin || new.is_some_and(|v| v.may_grant));
-        let (r, g) = self.paths.restored(holder, target);
+        let (r, g) = self.paths.restored(&Holder::Thing(*holder), target);
         role < r || grant < g
     }
 
@@ -534,7 +541,7 @@ impl<S: Store> Timeline<S> {
         let mut seen = BTreeSet::new();
         for (_, (h, t)) in self.log.range(k..) {
             if seen.insert((*h, *t)) {
-                e.set(*h, *t, self.paths.value_before(h, t, &k));
+                e.set(*h, *t, self.paths.value_before(&Holder::Thing(*h), t, &k));
             }
         }
         e
@@ -546,7 +553,7 @@ impl<S: Store> Timeline<S> {
         let mut e = self.edges_at(None);
         for (t, hs) in &self.into {
             for h in hs {
-                if let Some((w, a)) = self.paths.last(h, t)
+                if let Some((w, a)) = self.paths.last(&Holder::Thing(*h), t)
                     && self.paths.way(&w) == Some(Way::Finalize)
                 {
                     e.set(*h, *t, a.before);
@@ -558,7 +565,7 @@ impl<S: Store> Timeline<S> {
 
     /// The applied writes on the edges into `thing`, in key order: (key, holder, value).
     fn writes_on(&self, thing: &Tid) -> Vec<(Key, Tid, Option<Edge>)> {
-        let mut out: Vec<(Key, Tid, Option<Edge>)> = self.into.get(thing).into_iter().flatten().flat_map(|h| self.paths.history(h, thing).into_iter().map(|(k, v)| (k, *h, v))).collect();
+        let mut out: Vec<(Key, Tid, Option<Edge>)> = self.into.get(thing).into_iter().flatten().flat_map(|h| self.paths.history(&Holder::Thing(*h), thing).into_iter().map(|(k, v)| (k, *h, v))).collect();
         out.sort_by_key(|x| x.0);
         out
     }
@@ -595,7 +602,7 @@ impl<S: Store> Timeline<S> {
         }
         let end = before.map(key_of);
         for (k, (h, t)) in self.log.iter().take_while(|(k, _)| end.is_none_or(|e| **k < e)) {
-            let v = self.paths.last_before(h, t, &Key { part: k.part.saturating_add(1), ..*k }).and_then(|(_, a)| a.value);
+            let v = self.paths.last_before(&Holder::Thing(*h), t, &Key { part: k.part.saturating_add(1), ..*k }).and_then(|(_, a)| a.value);
             let on = out.entry(*t).or_default();
             if v.is_some_and(|e| !e.says_retain()) {
                 on.entry(*h).or_insert(Some(point_of(*k)));
@@ -699,7 +706,7 @@ impl<S: Store> Timeline<S> {
         let mut ever = Edges::default();
         for (t, hs) in &self.into {
             for h in hs {
-                let best = self.paths.history(h, t).into_iter().filter_map(|(_, v)| v.filter(|e| !e.says_retain())).max_by_key(|e| e.role);
+                let best = self.paths.history(&Holder::Thing(*h), t).into_iter().filter_map(|(_, v)| v.filter(|e| !e.says_retain())).max_by_key(|e| e.role);
                 if let Some(e) = best {
                     ever.set(&self.records, *h, *t, Some(Edge { until: None, ..e }));
                 }

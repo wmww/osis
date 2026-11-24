@@ -556,9 +556,7 @@ impl Rules {
 pub const KEYS: Thing = 0x80;
 
 /// The key thing `t`'s record holds where it names no mint admin (K1): its key hop stands at
-/// admin from the start. Such a thing takes edge writes as any thing (the hand worlds on T): the
-/// design past A4. Interim (issues/perm-walk-trails-model.md): spec/permissions.md §1 and the
-/// walk refuse them until A4, so no generator writes one.
+/// admin from the start. Such a thing takes edge writes as any thing (the hand worlds on T).
 pub const fn own_key(t: Thing) -> Thing {
     KEYS | t
 }

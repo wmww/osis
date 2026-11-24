@@ -5,15 +5,15 @@
 //! drops) are kept in the order given; an update replays its component from the earliest key it
 //! touches, keeping the events given before any pass reached that key (`Walk::run`).
 //!
-//! The key hop (spec/permissions.md §1) keeps no edge until accounts are ordinary things
-//! (notes/redesign-plan.md A4): it gives admin where the signer's record holds its key and
-//! nothing elsewhere (`path::shape`); it becomes an edge like any, with the edge writes on it,
-//! there.
+//! The key hop (key, signer) (spec/permissions.md §1) is an edge like any, first on every path; a
+//! record holding a key gives it admin from the start as a mint admin's record edge does.
+//! Components join through the edges a held part sets: an edge none sets stands at its record
+//! value or none, so every commit resting on one signer's key hop shares no component for it.
 
 use super::path::shape;
 use super::{Changed, Commit, List, Part, PartKind, Status};
 use crate::types::{Edge, WriteId};
-use osis_base::{CommitId, Role, Tid, Ts};
+use osis_base::{CommitId, Holder, Role, Tid, Ts};
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Bound::{self, Excluded, Included, Unbounded};
 use std::sync::Arc;
@@ -256,7 +256,7 @@ impl Item {
 
 #[derive(Clone)]
 struct EdgeInfo {
-    name: (Tid, Tid),
+    name: (Holder, Tid),
     record: bool,
     /// Union-find over the edges: a root names its component.
     parent: E,
@@ -272,7 +272,7 @@ struct EdgeInfo {
 impl EdgeInfo {
     fn nil() -> EdgeInfo {
         let none = Tid::from_bytes([0; 15]);
-        EdgeInfo { name: (none, none), record: false, parent: E::MAX, hist: BTreeMap::new(), cuts: Default::default(), setters: BTreeSet::new(), resting: BTreeSet::new() }
+        EdgeInfo { name: (Holder::Thing(none), none), record: false, parent: E::MAX, hist: BTreeMap::new(), cuts: Default::default(), setters: BTreeSet::new(), resting: BTreeSet::new() }
     }
 }
 
@@ -306,10 +306,10 @@ struct Journal {
 
 #[derive(Clone)]
 pub(super) struct Walk {
-    mint: BTreeMap<Tid, Tid>,
+    mint: BTreeMap<Tid, Holder>,
     single: bool,
     edges: Tab<EdgeInfo>,
-    edge_ids: BTreeMap<(Tid, Tid), E>,
+    edge_ids: BTreeMap<(Holder, Tid), E>,
     items: Tab<Item>,
     free: Vec<Slot>,
     freed: Vec<Slot>,
@@ -324,7 +324,7 @@ pub(super) struct Walk {
 impl Walk {
     /// `single`: every edge in one component (a test mode: the walk by components must read
     /// exactly as it).
-    pub(super) fn new(records: &BTreeMap<Tid, Tid>, single: bool) -> Walk {
+    pub(super) fn new(records: &BTreeMap<Tid, Holder>, single: bool) -> Walk {
         let mut w = Walk {
             mint: records.clone(),
             single,
@@ -346,7 +346,7 @@ impl Walk {
         w
     }
 
-    fn intern(&mut self, name: (Tid, Tid)) -> E {
+    fn intern(&mut self, name: (Holder, Tid)) -> E {
         if let Some(&e) = self.edge_ids.get(&name) {
             return e;
         }
@@ -359,9 +359,10 @@ impl Walk {
         e
     }
 
-    /// A record that came: `t`'s mint admin, its record edge in force from the start. A held part
+    /// A record that came: `t`'s record holder (its mint admin, or the key it holds), its record
+    /// edge in force from the start. A held part
     /// whose shape read `t`'s record chain without it is the caller's to give again.
-    pub(super) fn add_record(&mut self, t: Tid, admin: Tid) {
+    pub(super) fn add_record(&mut self, t: Tid, admin: Holder) {
         self.mint.insert(t, admin);
         match self.edge_ids.get(&(admin, t)).copied() {
             Some(e) if !self.ed(e).record => {
@@ -369,6 +370,7 @@ impl Walk {
                 self.journal.finals.entry(e).or_insert(fin);
                 self.note_first(e);
                 self.edges[e].record = true;
+                self.join_resting(e, e);
                 self.touch(e, FIRST);
             }
             Some(_) => {}
@@ -386,23 +388,24 @@ impl Walk {
             self.journal.finals.entry(e).or_insert(fin);
             self.note_first(e);
             self.edges[e].record = false;
+            self.join_resting(e, e);
             self.touch(e, FIRST);
         }
     }
 
     /// The held commits with an edge-class part resting on (holder, target) (§5.1 Rests on).
-    pub(super) fn resting(&self, holder: &Tid, target: &Tid) -> BTreeSet<CommitId> {
+    pub(super) fn resting(&self, holder: &Holder, target: &Tid) -> BTreeSet<CommitId> {
         let Some(ed) = self.edge(holder, target) else { return BTreeSet::new() };
         ed.resting.iter().map(|&(_, s)| self.it(s).id.0).collect()
     }
 
     /// The held commits with an edge-class part setting or resting on (holder, target).
-    pub(super) fn through(&self, holder: &Tid, target: &Tid) -> BTreeSet<CommitId> {
+    pub(super) fn through(&self, holder: &Holder, target: &Tid) -> BTreeSet<CommitId> {
         let Some(ed) = self.edge(holder, target) else { return BTreeSet::new() };
         ed.setters.iter().chain(&ed.resting).map(|&(_, s)| self.it(s).id.0).collect()
     }
 
-    fn edge(&self, holder: &Tid, target: &Tid) -> Option<&EdgeInfo> {
+    fn edge(&self, holder: &Holder, target: &Tid) -> Option<&EdgeInfo> {
         self.edge_ids.get(&(*holder, *target)).map(|&e| self.ed(e))
     }
 
@@ -444,6 +447,16 @@ impl Walk {
         big
     }
 
+    /// Joins `e`'s component and `root` with the components of the parts resting on `e`.
+    fn join_resting(&mut self, e: E, root: E) -> E {
+        let mut root = self.union(root, e);
+        let resting: Vec<E> = self.ed(e).resting.iter().map(|&(_, s)| self.it(s).e).collect();
+        for r in resting {
+            root = self.union(root, r);
+        }
+        root
+    }
+
     fn touch(&mut self, e: E, k: Key) {
         let c = self.find(e);
         let d = &mut self.comps.entry(c).or_default().dirty;
@@ -453,16 +466,16 @@ impl Walk {
     /// A commit's edge-class parts as items, in the commit's order (§5.1 step 1): the parts on no
     /// hop of a path the commit states, then those on one; in each by thing, then holder.
     fn compile(&mut self, c: &Commit) -> Vec<Item> {
-        let mut own: BTreeSet<(Tid, Tid)> = BTreeSet::new();
-        let mut sets: BTreeSet<(Tid, Tid)> = BTreeSet::new();
+        let mut own: BTreeSet<(Holder, Tid)> = BTreeSet::new();
+        let mut sets: BTreeSet<(Holder, Tid)> = BTreeSet::new();
         let mut twice = false;
         for p in c.parts.iter().filter(|p| !matches!(p.kind, PartKind::None)) {
-            own.extend(shape(&self.mint, c.signer, &p.path, p.direct, p.on, None, true).hops);
+            own.extend(shape(&self.mint, c.key, c.signer, &p.path, p.direct, p.on, None, true).hops);
             if let PartKind::Edge(w) = &p.kind {
                 twice |= !sets.insert((w.holder, p.on));
             }
         }
-        let mut parts: Vec<(bool, Tid, Tid, u32)> = vec![];
+        let mut parts: Vec<(bool, Tid, Holder, u32)> = vec![];
         for (n, p) in c.parts.iter().enumerate() {
             if let PartKind::Edge(w) = &p.kind {
                 parts.push((own.contains(&(w.holder, p.on)), p.on, w.holder, n as u32));
@@ -472,7 +485,7 @@ impl Walk {
         let mut out = vec![];
         for (place, (_, on, holder, n)) in parts.into_iter().enumerate() {
             let Some(Part { path, direct, kind: PartKind::Edge(w), .. }) = c.parts.get(n as usize) else { continue };
-            let sh = shape(&self.mint, c.signer, path, *direct, on, Some(holder), true);
+            let sh = shape(&self.mint, c.key, c.signer, path, *direct, on, Some(holder), true);
             let well = sh.well && !twice;
             let hops = if well { sh.hops.iter().map(|&h| self.intern(h)).collect() } else { vec![] };
             out.push(Item {
@@ -488,7 +501,7 @@ impl Walk {
                 well,
                 leave: sh.leave,
                 // a removal of another holder's grant carrying no frontier, no self-removal (§2)
-                finalize: w.value.is_none() && w.frontier.is_none() && !sh.leave && holder != c.signer,
+                finalize: w.value.is_none() && w.frontier.is_none() && !sh.leave && holder != Holder::Thing(c.signer),
                 live: true,
                 verdict: None,
                 dropped: None,
@@ -519,14 +532,24 @@ impl Walk {
                 let it = self.it(s).clone();
                 self.journal.status.entry(it.id).or_insert(None);
                 self.ids.insert(it.id, s);
-                // a commit's parts on a thing fall together: one component
-                let mut root = *by_thing.entry(it.on).or_insert(it.e);
-                for h in it.rests().chain([it.e]) {
-                    root = self.union(root, h);
-                }
+                // a commit's parts on a thing fall together: one component, with the edges it
+                // sets and the edges it rests on that a held part sets. An edge no held part sets
+                // stands at its record value or none whatever else is held, so nothing is joined
+                // through it (every commit signed as a thing rests on its key hop); its first
+                // setter joins the parts resting on it.
+                let first = self.ed(it.e).setters.is_empty();
                 self.edges[it.e].setters.insert((it.key, s));
                 for h in it.rests() {
                     self.edges[h].resting.insert((it.key, s));
+                }
+                let mut root = *by_thing.entry(it.on).or_insert(it.e);
+                for h in it.rests().chain([it.e]).collect::<Vec<_>>() {
+                    if !self.ed(h).setters.is_empty() {
+                        root = self.union(root, h);
+                    }
+                }
+                if first {
+                    root = self.join_resting(it.e, root);
                 }
                 let root = self.find(root);
                 self.comps.entry(root).or_default().order.insert(it.key, s);
@@ -1097,48 +1120,48 @@ impl Walk {
         self.ids.get(id).map(|&s| self.it(s).key)
     }
 
-    fn entries(&self, holder: &Tid, target: &Tid) -> impl DoubleEndedIterator<Item = &Entry> + '_ {
+    fn entries(&self, holder: &Holder, target: &Tid) -> impl DoubleEndedIterator<Item = &Entry> + '_ {
         self.edge(holder, target).into_iter().flat_map(|e| e.hist.values())
     }
 
-    pub(super) fn history(&self, holder: &Tid, target: &Tid) -> History {
+    pub(super) fn history(&self, holder: &Holder, target: &Tid) -> History {
         self.entries(holder, target).map(|en| (en.a.key, en.a.value)).collect()
     }
 
-    pub(super) fn writes(&self, holder: &Tid, target: &Tid) -> Vec<Applied> {
+    pub(super) fn writes(&self, holder: &Holder, target: &Tid) -> Vec<Applied> {
         self.entries(holder, target).map(|en| en.a).collect()
     }
 
     /// Every edge with an applied write, and every record edge, with its history.
-    pub(super) fn histories(&self) -> BTreeMap<(Tid, Tid), History> {
+    pub(super) fn histories(&self) -> BTreeMap<(Holder, Tid), History> {
         self.edges.iter().filter(|e| e.record || !e.hist.is_empty()).map(|e| (e.name, e.hist.values().map(|en| (en.a.key, en.a.value)).collect())).collect()
     }
 
-    pub(super) fn value_before(&self, holder: &Tid, target: &Tid, key: &Key) -> Option<Edge> {
+    pub(super) fn value_before(&self, holder: &Holder, target: &Tid, key: &Key) -> Option<Edge> {
         self.edge_ids.get(&(*holder, *target)).and_then(|&e| self.value(e, *key))
     }
 
-    pub(super) fn role_before(&self, holder: &Tid, target: &Tid, key: &Key) -> Lvl {
+    pub(super) fn role_before(&self, holder: &Holder, target: &Tid, key: &Key) -> Lvl {
         alive(self.value_before(holder, target, key).as_ref(), key.ts)
     }
 
-    fn cuts(&self, holder: &Tid, target: &Tid, r: Role) -> Option<&BTreeSet<Key>> {
+    fn cuts(&self, holder: &Holder, target: &Tid, r: Role) -> Option<&BTreeSet<Key>> {
         self.edge(holder, target).and_then(|e| e.cuts.get(LEVELS.iter().position(|&l| l == r)?))
     }
 
     /// The key of the last cut of the edge below `r` (write or admin).
-    pub(super) fn last_cut(&self, holder: &Tid, target: &Tid, r: Role) -> Option<Key> {
+    pub(super) fn last_cut(&self, holder: &Holder, target: &Tid, r: Role) -> Option<Key> {
         self.cuts(holder, target, r)?.last().copied()
     }
 
     /// The cuts of the edge below `r` at or after `from`.
-    pub(super) fn cuts_from(&self, holder: &Tid, target: &Tid, r: Role, from: &Key) -> Vec<WriteId> {
+    pub(super) fn cuts_from(&self, holder: &Holder, target: &Tid, r: Role, from: &Key) -> Vec<WriteId> {
         let Some(e) = self.edge(holder, target) else { return vec![] };
         self.cuts(holder, target, r).into_iter().flat_map(|c| c.range(*from..)).filter_map(|k| e.hist.get(k)).map(|en| self.it(en.slot).id).collect()
     }
 
     /// The last applied write on the edge before `key`.
-    pub(super) fn last_before(&self, holder: &Tid, target: &Tid, key: &Key) -> Option<(WriteId, Applied)> {
+    pub(super) fn last_before(&self, holder: &Holder, target: &Tid, key: &Key) -> Option<(WriteId, Applied)> {
         self.edge(holder, target)?.hist.range(..*key).next_back().map(|(_, en)| (self.it(en.slot).id, en.a))
     }
 
@@ -1176,7 +1199,7 @@ impl Walk {
     }
 
     /// The edge as restored after every applied write (§5.1): what it gives and lets grant.
-    pub(super) fn restored(&self, holder: &Tid, target: &Tid) -> (Lvl, Lvl) {
+    pub(super) fn restored(&self, holder: &Holder, target: &Tid) -> (Lvl, Lvl) {
         let Some(ed) = self.edge(holder, target) else { return (None, None) };
         match ed.hist.values().next_back() {
             Some(en) => (en.restored, en.rgrant),
@@ -1186,12 +1209,12 @@ impl Walk {
     }
 
     /// The last applied write on the edge.
-    pub(super) fn last(&self, holder: &Tid, target: &Tid) -> Option<(WriteId, Applied)> {
+    pub(super) fn last(&self, holder: &Holder, target: &Tid) -> Option<(WriteId, Applied)> {
         self.edge(holder, target)?.hist.values().next_back().map(|en| (self.it(en.slot).id, en.a))
     }
 
     /// Applied part `id`: its edge and what it found.
-    pub(super) fn applied_write(&self, id: &WriteId) -> Option<((Tid, Tid), Applied)> {
+    pub(super) fn applied_write(&self, id: &WriteId) -> Option<((Holder, Tid), Applied)> {
         let it = self.it(*self.ids.get(id)?);
         let ed = self.ed(it.e);
         ed.hist.get(&it.key).map(|en| (ed.name, en.a))
@@ -1212,11 +1235,11 @@ impl Walk {
 
     /// The final role of each edge the settled walk set (and each record edge), and what it lets
     /// grant.
-    pub(super) fn finals(&self) -> BTreeMap<(Tid, Tid), (Lvl, Lvl)> {
+    pub(super) fn finals(&self) -> BTreeMap<(Holder, Tid), (Lvl, Lvl)> {
         (0..self.edges.len()).filter(|&e| self.ed(e).record || !self.ed(e).hist.is_empty()).map(|e| (self.ed(e).name, self.final_pair(e))).collect()
     }
 
-    pub(super) fn final_of(&self, holder: &Tid, target: &Tid) -> Lvl {
+    pub(super) fn final_of(&self, holder: &Holder, target: &Tid) -> Lvl {
         self.edge_ids.get(&(*holder, *target)).and_then(|&e| self.final_pair(e).0)
     }
 
@@ -1229,13 +1252,13 @@ impl Walk {
     }
 
     /// The edge's first point for `r` (write or admin).
-    pub(super) fn first_by_right(&self, holder: &Tid, target: &Tid, r: Role) -> Option<Key> {
+    pub(super) fn first_by_right(&self, holder: &Holder, target: &Tid, r: Role) -> Option<Key> {
         let e = *self.edge_ids.get(&(*holder, *target))?;
         self.firsts(e).into_iter().zip(LEVELS).find(|x| x.1 == r)?.0
     }
 
     /// Per edge with one, its first points for write and for admin.
-    pub(super) fn first_points(&self) -> BTreeMap<(Tid, Tid), [Option<Key>; 2]> {
+    pub(super) fn first_points(&self) -> BTreeMap<(Holder, Tid), [Option<Key>; 2]> {
         (0..self.edges.len()).map(|e| (self.ed(e).name, self.firsts(e))).filter(|(_, p)| p.iter().any(Option::is_some)).collect()
     }
 
@@ -1244,7 +1267,7 @@ impl Walk {
     /// drops include another lowering of another holder's edge (a reach-back candidate).
     pub(super) fn candidates(&mut self, trust: &BTreeSet<WriteId>) -> Vec<(WriteId, bool)> {
         let slots: Vec<Slot> = self.ids.values().copied().collect();
-        let contested = |w: &Self, s: Slot| w.it(s).lowering() && w.ed(w.it(s).e).name.0 != w.it(s).signer;
+        let contested = |w: &Self, s: Slot| w.it(s).lowering() && w.ed(w.it(s).e).name.0 != Holder::Thing(w.it(s).signer);
         let back: BTreeSet<Slot> = slots.iter().filter(|&&s| contested(self, s)).filter_map(|&s| self.it(s).dropped).collect();
         let mut out = vec![];
         for s in slots {

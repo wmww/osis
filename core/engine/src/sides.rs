@@ -126,7 +126,9 @@ pub(crate) fn after_update(core: &mut Core, c: &osis_perm::Changed) {
     let found = core.timelines_mut().aside().disputes();
     let mut trusts = false;
     for op in found {
-        let Some((author, holder, target)) = core.timelines().edge_op(&op) else { continue };
+        // Interim (notes/accounts-switch-brief.md): a dispute over a key's grant is told and
+        // chosen once `signers.0` writes are built
+        let Some((author, osis_base::Holder::Thing(holder), target)) = core.timelines().edge_op(&op) else { continue };
         if core.sides.get(op, holder).is_some() {
             continue;
         }
@@ -188,14 +190,14 @@ impl crate::engine::Engine {
         let open = tl.disputes();
         let left = open.len().saturating_sub(max);
         for op in open.into_iter().take(max) {
-            let Some((author, holder, target)) = tl.edge_op(&op) else { continue };
+            let Some((author, osis_base::Holder::Thing(holder), target)) = tl.edge_op(&op) else { continue };
             out.insert((op, holder), DisputeInfo { commit: op.0, op: op.1, holder, target, author, side: self.core.sides.get(op, holder) });
         }
         for ((op, holder), side) in self.core.sides.map.iter() {
             if out.contains_key(&(*op, *holder)) {
                 continue;
             }
-            if let Some((author, h, target)) = tl.edge_op(op).filter(|x| x.1 == *holder) {
+            if let Some((author, osis_base::Holder::Thing(h), target)) = tl.edge_op(op).filter(|x| x.1 == osis_base::Holder::Thing(*holder)) {
                 out.insert((*op, *holder), DisputeInfo { commit: op.0, op: op.1, holder: h, target, author, side: Some(*side) });
             }
         }
@@ -207,7 +209,7 @@ impl crate::engine::Engine {
     /// when no held edge write is that.
     pub fn choose(&mut self, commit: CommitId, op: u32, holder: Tid, trust: bool) -> Result<()> {
         let w = WriteId(commit, op);
-        if !self.core.timelines().edge_op(&w).is_some_and(|(_, h, _)| h == holder) {
+        if !self.core.timelines().edge_op(&w).is_some_and(|(_, h, _)| h == osis_base::Holder::Thing(holder)) {
             return Err(Error::UnknownCommit(commit));
         }
         self.run(|tx| {

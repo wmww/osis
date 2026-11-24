@@ -7,8 +7,8 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 use super::{agree, agree_all, all, cid, commit, may_grant_world, model_cid, ms, paired, t, verdict, walk};
-use osis_base::{Ak, PurgeBy, Role as R, Tid};
-use osis_perm::paths::{By, Commit, Content, Delta, DeltaClass, EdgeWrite, Part, PartKind, Paths, Status};
+use osis_base::{Ak, Holder, PurgeBy, Role as R, SignKey, Tid};
+use osis_perm::paths::{By, Commit, Content, Delta, DeltaClass, EdgeWrite, List, Part, PartKind, Paths, Status};
 use osis_perm::{Edge, Frontier, WriteId};
 use roles_model::paths::*;
 use roles_model::Role::{Admin, None as Gone, Write};
@@ -382,7 +382,7 @@ fn role_class(on: u32, path: &[u32]) -> Part {
 
 fn edge(on: u32, path: &[u32], holder: u32, value: Option<Edge>, listing: Option<&[u64]>) -> Part {
     let frontier = listing.map(|l| Arc::new(super::whole(&[KH, KX, KB, KA, KT, KS, KZ, KY, KG].map(t), l.iter().map(|&i| cid(i)))));
-    Part { on: t(on), path: path.iter().map(|&x| t(x)).collect(), direct: 0, kind: PartKind::Edge(EdgeWrite { holder: t(holder), value, frontier }) }
+    Part { on: t(on), path: path.iter().map(|&x| t(x)).collect(), direct: 0, kind: PartKind::Edge(EdgeWrite { holder: Holder::Thing(t(holder)), value, frontier }) }
 }
 
 const KH: u32 = 1;
@@ -392,32 +392,90 @@ const KA: u32 = 10;
 const KT: u32 = 13;
 const KS: u32 = 14;
 
-fn recs() -> BTreeMap<Tid, Tid> {
-    BTreeMap::from([(t(KA), t(KH)), (t(KT), t(KA)), (t(KS), t(KA))])
+fn recs() -> BTreeMap<Tid, Holder> {
+    super::hand_records([(t(KA), t(KH)), (t(KT), t(KA)), (t(KS), t(KA))])
 }
 
 fn admin() -> Option<Edge> {
     Some(Edge::new(R::Admin))
 }
 
-// spec/permissions.md §1: a commit by a key actor on itself has the members [S]: its delta on
-// itself along the empty path is valid with no edge read; along any other path it names S twice.
+// spec/permissions.md §1: a commit signed as S on S, nothing listed, has the members [S] and rests
+// on its key hop alone; along any other path it names S twice.
 #[test]
-fn a_key_actor_writes_on_itself_as_its_only_member() {
+fn a_thing_writes_on_itself_as_its_only_member() {
     let commits = [commit(1, ms(2), KX, vec![role_class(KX, &[])]), commit(2, ms(2), KX, vec![role_class(KX, &[KA])])];
     let p = Paths::evaluate(&recs(), BTreeSet::new(), &commits);
     assert_eq!(p.content(&WriteId(cid(1), 0)), Some(Content::Valid(By::Held)));
     assert_eq!(p.content(&WriteId(cid(2), 0)), Some(Content::Invalid));
 }
 
-// spec/permissions.md §1: no edge write targets a key actor: one on its own signer, a
-// self-removal of its grant on itself included, applies nowhere.
+// spec/permissions.md §1: a record coming late gives its edge from the start: KX's grants on KA
+// and KB (minted by KX) rest on KX's key hop and record edges, which no held part sets, so each is
+// a component of its own; KX's record (its key) and the mint records arriving reads them as from
+// scratch. Undone (the late record touching only its own edge's component), they stay unapplied.
 #[test]
-fn an_edge_write_on_its_signer_is_bad_input() {
-    let commits = [commit(1, ms(2), KX, vec![edge(KX, &[], KX, None, Some(&[]))]), commit(2, ms(2), KX, vec![edge(KX, &[], KB, admin(), Some(&[]))])];
-    let p = Paths::evaluate(&recs(), BTreeSet::new(), &commits);
+fn a_late_record_reaches_every_part_resting_on_its_edge() {
+    let commits = [commit(1, ms(2), KX, vec![edge(KA, &[], KB, admin(), Some(&[]))]), commit(2, ms(3), KX, vec![edge(KT, &[], KZ, admin(), Some(&[]))])];
+    let recs = super::hand_records([(t(KA), t(KX)), (t(KT), t(KX))]);
+    let mut p = Paths::new(&BTreeMap::new(), BTreeSet::new());
+    p.add(&commits);
     assert_eq!(p.status(&WriteId(cid(1), 0)), Some(Status::Unapplied));
-    assert_eq!(p.status(&WriteId(cid(2), 0)), Some(Status::Unapplied));
+    let came: Vec<(Tid, Holder)> = recs.iter().map(|(t, h)| (*t, *h)).collect();
+    p.sync(&came, &[], &[], &[], &BTreeMap::new());
+    let scratch = Paths::evaluate(&recs, BTreeSet::new(), &commits);
+    for c in [1, 2] {
+        assert_eq!(p.status(&WriteId(cid(c), 0)), Some(Status::Applied));
+        assert_eq!(p.status(&WriteId(cid(c), 0)), scratch.status(&WriteId(cid(c), 0)));
+    }
+}
+
+fn key_edge(on: u32, key: SignKey, value: Option<Edge>) -> Part {
+    Part { on: t(on), path: vec![], direct: 0, kind: PartKind::Edge(EdgeWrite { holder: Holder::Key(key), value, frontier: Some(Arc::new(List::default())) }) }
+}
+
+/// A plain delta on `on` by `on` itself, nothing listed.
+fn own_doc(on: u32) -> Part {
+    doc(on, &[], "doc.0", DeltaClass::Plain)
+}
+
+fn signed(id: u64, ts: u64, key: SignKey, signer: u32, parts: Vec<Part>) -> Commit {
+    Commit { key, ..commit(id, ms(ts), signer, parts) }
+}
+
+// spec/permissions.md §1, §2: the key hop is an edge like any (Keys K1 to K5 of
+// notes/write-path-design.md). A thing acting as itself writes its own roster and key grants by
+// its key hop alone, as any admin of it: KX's
+// record key grants KB admin on KX and a second key write; the second key signs content as KX
+// (write) but grants nothing (explicit, needs admin); the record key lowering its own grant, acting
+// as KX, is its self-removal (no hop), after which it signs nothing as KX.
+#[test]
+fn a_key_hop_is_an_edge_like_any() {
+    let k2 = SignKey([7; 32]);
+    let rk = super::own(t(KX));
+    let commits = [
+        commit(1, ms(2), KX, vec![edge(KX, &[], KB, admin(), Some(&[]))]),
+        commit(2, ms(3), KX, vec![key_edge(KX, k2, Some(Edge::new(R::Write)))]),
+        signed(3, 4, k2, KX, vec![role_class(KX, &[]), own_doc(KX)]),
+        signed(4, 5, k2, KX, vec![edge(KX, &[], KZ, admin(), Some(&[]))]),
+        signed(5, 6, rk, KX, vec![key_edge(KX, rk, None)]),
+        commit(6, ms(7), KX, vec![own_doc(KX)]),
+        // a stranger's key holds nothing
+        signed(7, 8, SignKey([9; 32]), KX, vec![own_doc(KX)]),
+    ];
+    let p = Paths::evaluate(&recs(), BTreeSet::new(), &commits);
+    assert_eq!(p.status(&WriteId(cid(1), 0)), Some(Status::Applied));
+    assert_eq!(p.status(&WriteId(cid(2), 0)), Some(Status::Applied));
+    assert_eq!(p.content(&WriteId(cid(3), 0)), Some(Content::Invalid), "admin-only by a write key");
+    assert_eq!(p.content(&WriteId(cid(3), 1)), Some(Content::Valid(By::Held)));
+    assert_eq!(p.status(&WriteId(cid(4), 0)), Some(Status::Unapplied));
+    assert_eq!(p.status(&WriteId(cid(5), 0)), Some(Status::Applied));
+    assert_eq!(p.finals().get(&(Holder::Key(rk), t(KX))).map(|f| f.0), Some(None));
+    assert_eq!(p.content(&WriteId(cid(6), 0)), Some(Content::Invalid));
+    assert_eq!(p.content(&WriteId(cid(7), 0)), Some(Content::Invalid));
+    // a thing's own grant on itself is still an edge write whose holder is its target
+    let own = [commit(8, ms(2), KX, vec![edge(KX, &[], KX, None, Some(&[]))])];
+    assert_eq!(Paths::evaluate(&recs(), BTreeSet::new(), &own).status(&WriteId(cid(8), 0)), Some(Status::Unapplied));
 }
 
 // spec/permissions.md §1: an edge write whose holder is its target is not applied, whoever
@@ -427,7 +485,7 @@ fn an_edge_write_whose_holder_is_its_target_is_not_applied() {
     let commits = [commit(1, ms(2), KH, vec![edge(KA, &[], KA, admin(), Some(&[]))])];
     let p = Paths::evaluate(&recs(), BTreeSet::new(), &commits);
     assert_eq!(p.status(&WriteId(cid(1), 0)), Some(Status::Unapplied));
-    assert!(p.history(&t(KA), &t(KA)).is_empty());
+    assert!(p.history(&Holder::Thing(t(KA)), &t(KA)).is_empty());
 }
 
 // spec/permissions.md §5.1: a removal saying retain (`until` 0, role read) restores read in the
@@ -441,7 +499,7 @@ fn a_retain_removal_restores_read_as_the_draft_reads_it() {
         commit(3, ms(6), KH, vec![edge(KA, &[], KX, None, Some(&[]))]),
     ];
     let p = Paths::evaluate(&recs(), BTreeSet::new(), &commits);
-    let w = p.writes(&t(KX), &t(KA));
+    let w = p.writes(&Holder::Thing(t(KX)), &t(KA));
     assert_eq!(w.len(), 3);
     assert_eq!((w[2].restored, w[2].explicit), (Some(R::Read), true), "{w:?}");
     assert!(!w[2].cuts(R::Write) && w[1].cuts(R::Write));

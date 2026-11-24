@@ -442,7 +442,7 @@ impl Engine {
         let audits = self.core.role_now(&who, &target) == Some(Role::Admin) && self.needs_frontier(&target, &holder, Some(edge));
         let frontier = match audits {
             true => {
-                let ops: Vec<osis_perm::EdgeOp> = std::iter::once((holder, new)).chain(leave.then_some((who, None))).map(|(holder, edge)| osis_perm::EdgeOp { target, holder, edge }).collect();
+                let ops: Vec<osis_perm::EdgeOp> = std::iter::once((holder, new)).chain(leave.then_some((who, None))).map(|(holder, edge)| osis_perm::EdgeOp { target, holder: osis_base::Holder::Thing(holder), edge }).collect();
                 self.demotion_frontier(target, ops)?
             }
             false => (None, Vec::new()),
@@ -497,7 +497,7 @@ impl Engine {
         if self.core.timelines().get(&target).is_none() {
             return Ok((None, Vec::new()));
         }
-        let edges: Vec<(Tid, Tid)> = ops.iter().map(|o| (o.holder, o.target)).collect();
+        let edges: Vec<(Tid, Tid)> = ops.iter().filter_map(|o| Some((o.holder.thing()?, o.target))).collect();
         let scope = crate::apply::receipt::scope_of(&self.core, &edges);
         let mut keep: BTreeSet<CommitId> = BTreeSet::new();
         let mut f = self.frontier_fitted(&scope, as_of, &keep)?;
@@ -550,7 +550,7 @@ impl Engine {
         };
         let audits = self.needs_frontier(&t, &d.holder, new.as_ref());
         let new = new.as_ref().map(perm_edge);
-        let ops: Vec<osis_perm::EdgeOp> = std::iter::once((d.holder, new)).chain(others.iter().map(|x| (*x, None))).map(|(holder, edge)| osis_perm::EdgeOp { target: t, holder, edge }).collect();
+        let ops: Vec<osis_perm::EdgeOp> = std::iter::once((d.holder, new)).chain(others.iter().map(|x| (*x, None))).map(|(holder, edge)| osis_perm::EdgeOp { target: t, holder: osis_base::Holder::Thing(holder), edge }).collect();
         let (frontier, covers) = if audits { self.demotion_frontier(t, ops)? } else { (None, Vec::new()) };
         let d = d.clone();
         let mut done = self.run(|tx| {

@@ -8,8 +8,8 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 use super::incremental::{reading, Reading, Tracked};
-use super::{cid, commit, ms, t};
-use osis_base::{Ak, PurgeBy, Role, Tid, Ts, WallMs};
+use super::{cid, commit, ms, own, t};
+use osis_base::{Ak, Holder, PurgeBy, Role, SignKey, Tid, Ts, WallMs};
 use osis_perm::paths::{Changed, Commit, Content, Delta, DeltaClass, EdgeWrite, List, Names, Part, PartKind, Paths, Status};
 use osis_perm::{Edge, Frontier, WriteId};
 use roles_model::Rng;
@@ -18,12 +18,12 @@ use std::sync::Arc;
 
 fn edge(on: u32, path: &[u32], holder: u32, value: Option<Edge>, frontier: Option<&[u64]>) -> Part {
     let frontier = frontier.map(|f| Arc::new(super::whole(&[H, Y, Z, A, LK, T1].map(t), f.iter().map(|&c| cid(c)))));
-    Part { on: t(on), path: path.iter().map(|&x| t(x)).collect(), direct: 0, kind: PartKind::Edge(EdgeWrite { holder: t(holder), value, frontier }) }
+    Part { on: t(on), path: path.iter().map(|&x| t(x)).collect(), direct: 0, kind: PartKind::Edge(EdgeWrite { holder: Holder::Thing(t(holder)), value, frontier }) }
 }
 
 /// Commits arriving one at a time in `order`: each `Changed` equals the readings' difference, and
 /// the end reads as `scratch`, the reading from scratch. The first difference, if any.
-fn arrive(records: &BTreeMap<Tid, Tid>, trust: &BTreeSet<WriteId>, commits: &[Commit], order: &[usize], scratch: &Reading) -> Option<String> {
+fn arrive(records: &BTreeMap<Tid, Holder>, trust: &BTreeSet<WriteId>, commits: &[Commit], order: &[usize], scratch: &Reading) -> Option<String> {
     let mut t = Tracked::new(Paths::new(records, trust.clone()));
     for &k in order {
         if let Some(d) = t.step(|p| p.add(std::slice::from_ref(&commits[k]))) {
@@ -36,7 +36,7 @@ fn arrive(records: &BTreeMap<Tid, Tid>, trust: &BTreeSet<WriteId>, commits: &[Co
 /// Every check of this module on one input: from scratch, arrival forward, backward and in a
 /// shuffled order, a switch to each single trusted write and back, the dispute set.
 #[track_caller]
-fn robust(records: &BTreeMap<Tid, Tid>, commits: &[Commit], rng: &mut Rng) -> Paths {
+fn robust(records: &BTreeMap<Tid, Holder>, commits: &[Commit], rng: &mut Rng) -> Paths {
     let none = BTreeSet::new();
     let n = commits.len();
     let fwd: Vec<usize> = (0..n).collect();
@@ -90,8 +90,8 @@ const LK: u32 = 11;
 const T1: u32 = 12;
 
 /// A minted by H, LK and T1 minted by A.
-fn records() -> BTreeMap<Tid, Tid> {
-    BTreeMap::from([(t(A), t(H)), (t(LK), t(A)), (t(T1), t(A))])
+fn records() -> BTreeMap<Tid, Holder> {
+    super::hand_records([(t(A), t(H)), (t(LK), t(A)), (t(T1), t(A))])
 }
 
 // spec/permissions.md §5.1 step 1 (draft): the part setting an edge of the commit's own path
@@ -156,7 +156,7 @@ fn hostile_shapes_judge_alike_without_panicking() {
     let p = robust(&records(), &[gy.clone(), rep], &mut rng);
     assert!((0..3).all(|i| p.status(&WriteId(cid(2), i)) == Some(Status::Unapplied)));
     // holders holding each other, and a record cycle (descent bounded by MAX_CHAIN_DEPTH)
-    let cyc = BTreeMap::from([(t(A), t(H)), (t(20), t(21)), (t(21), t(20))]);
+    let cyc = super::hand_records([(t(A), t(H)), (t(20), t(21)), (t(21), t(20))]);
     let holders = [
         gy.clone(),
         commit(2, ms(2), Y, vec![edge(A, &[], 20, admin, Some(&[]))]),
@@ -181,15 +181,24 @@ fn hostile_shapes_judge_alike_without_panicking() {
 /// A random soup of parts over 8 things: records with cycles, paths repeating things, any holder,
 /// value (`until`, may-grant, floor), frontier (naming any commit, held or not), deltas of every
 /// class; several parts per commit; ties in `ts` and signer.
-pub(super) fn soup(i: u64) -> (BTreeMap<Tid, Tid>, Vec<Commit>) {
+pub(super) fn soup(i: u64) -> (BTreeMap<Tid, Holder>, Vec<Commit>) {
     let mut r = Rng(i);
     let thing = |r: &mut Rng| 1 + r.below(8) as u32;
+    // a thing's record names a mint admin, or holds its own key; some things have none known
     let mut records = BTreeMap::new();
     for x in 1..=8 {
-        if r.below(3) > 0 {
-            records.insert(t(x), t(thing(&mut r)));
+        match r.below(4) {
+            0 => {}
+            1 => {
+                records.insert(t(x), Holder::Key(own(t(x))));
+            }
+            _ => {
+                records.insert(t(x), Holder::Thing(t(thing(&mut r))));
+            }
         }
     }
+    // a key: some thing's own, or a stranger's
+    let key = |r: &mut Rng| if r.below(4) == 0 { SignKey([0xaa; 32]) } else { own(t(thing(r))) };
     let n = 1 + r.below(10);
     let ids: Vec<u64> = (0..n).map(|_| r.below(40) as u64).collect::<BTreeSet<_>>().into_iter().collect();
     let role = |r: &mut Rng| [Role::Read, Role::Write, Role::Admin][r.below(3)];
@@ -220,11 +229,14 @@ pub(super) fn soup(i: u64) -> (BTreeMap<Tid, Tid>, Vec<Commit>) {
                     floor: (r.below(6) == 0).then(|| r.below(3) as u64),
                 });
                 let frontier = (r.below(4) > 0).then(|| Arc::new(List::new((0..r.below(4)).map(|_| (t(thing(&mut r)), cid(r.below(40) as u64))))));
-                PartKind::Edge(EdgeWrite { holder: t(thing(&mut r)), value, frontier })
+                let holder = if r.below(4) == 0 { Holder::Key(key(&mut r)) } else { Holder::Thing(t(thing(&mut r))) };
+                PartKind::Edge(EdgeWrite { holder, value, frontier })
             };
             parts.push(Part { on, path, direct: 0, kind });
         }
-        commits.push(Commit { id: cid(id), ts: ms(r.below(6) as u64), signer: t(thing(&mut r)), parts });
+        let signer = t(thing(&mut r));
+        let key = if r.below(3) == 0 { key(&mut r) } else { own(signer) };
+        commits.push(Commit { id: cid(id), ts: ms(r.below(6) as u64), signer, key, parts });
     }
     (records, commits)
 }

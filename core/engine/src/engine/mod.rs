@@ -805,7 +805,7 @@ indexes! {
     /// The removals judged by `flows::addenda`, by the edges their writes are on: (target,
     /// holder, the removal's `ts`, removal). A walk change naming such an edge at or before the
     /// removal, or a delta stated through it, makes it due again (`flows::addenda::wake`).
-    pub addenda_wake: JSet<(Tid, Tid, osis_base::Ts, CommitId)>,
+    pub addenda_wake: JSet<(Tid, osis_base::Holder, osis_base::Ts, CommitId)>,
     /// The earliest valid held commit writing an epoch's keyset in `keys.0` (its rotation):
     /// (actor, role, epoch) -> (`ts`, commit). Absent: unknown. What a box naming the keyset
     /// carries (spec/crypto.md §4, Carried) and a certificate of the actor's current keys.

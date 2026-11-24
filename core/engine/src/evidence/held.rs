@@ -10,7 +10,7 @@
 use super::{Config, CopyId, Del, Evidence, Kind, Level, Part, Step, Write};
 use crate::engine::{Core, Tx};
 use crate::error::Result;
-use osis_base::{CommitId, Role, Tid};
+use osis_base::{CommitId, Holder, Role, Tid};
 use osis_perm::paths::{Commit, Paths, PartKind};
 use osis_perm::WriteId;
 use std::collections::{BTreeMap, BTreeSet};
@@ -26,6 +26,20 @@ pub type Copies = BTreeMap<CopyId<CommitId, Tid>, Vec<Part<Tid, Key32>>>;
 pub(crate) fn mint(core: &Core) -> BTreeMap<Tid, Tid> {
     let held = &core.ix.held;
     held.things().filter_map(|t| Some((*t, held.created(t)?.mint_admin()?))).collect()
+}
+
+/// Things to their records' holders (mint admin or key), of every held creation record: the walk's
+/// records.
+fn records(core: &Core) -> BTreeMap<Tid, Holder> {
+    let held = &core.ix.held;
+    held.things().filter_map(|t| Some((*t, held.created(t)?.holder()?))).collect()
+}
+
+/// The hops of a part as the derivation takes them: grants of things alone. Interim
+/// (notes/accounts-switch-brief.md): a commit's key hop is its signer's record's until `signers.0`
+/// writes are built, and that record is evidence of every commit signed as it already.
+fn thing_hops(hops: Vec<(Holder, Tid)>) -> Vec<(Tid, Tid)> {
+    hops.into_iter().filter_map(|(h, t)| Some((h.thing()?, t))).collect()
 }
 
 /// Every held copy with its parts (`copy_parts` of each held commit).
@@ -60,23 +74,25 @@ pub(crate) fn copy_parts(tx: &mut Tx<'_>, id: &CommitId) -> Result<BTreeMap<Tid,
         let rc = core.ix.held.edge_commit(&id).cloned();
         // the mint admins a path's shape reads: up the chains of the signer, the path's members
         // and the thing written
-        let minted = |ts: &mut dyn Iterator<Item = Tid>| -> BTreeMap<Tid, Tid> {
+        let minted = |ts: &mut dyn Iterator<Item = Tid>| -> BTreeMap<Tid, Holder> {
             let mut out = BTreeMap::new();
             for t in ts {
                 let mut x = t;
-                while let Some(a) = core.ix.held.created(&x).and_then(|r| r.mint_admin()) {
+                while let Some(a) = core.ix.held.created(&x).and_then(|r| r.holder()) {
                     if out.insert(x, a).is_some() {
                         break;
                     }
+                    let Holder::Thing(a) = a else { break };
                     x = a;
                 }
             }
             out
         };
+        let key = crate::apply::validity::signing_key(core, &h.signer);
         let hops = |t: &Tid, holder: Option<Tid>, edge_class: bool| -> Option<Vec<(Tid, Tid)>> {
             let (along, direct, _) = crate::apply::validity::stated(&h, &m.view, t)?;
             let mint = minted(&mut along.iter().copied().chain([h.signer, *t]));
-            Some(osis_perm::paths::hops(&mint, h.signer, &along, direct, *t, holder, edge_class))
+            Some(thing_hops(osis_perm::paths::hops(&mint, key, h.signer, &along, direct, *t, holder.map(Holder::Thing), edge_class)))
         };
         for (ai, a) in h.aspects.iter().enumerate() {
             let t = a.tid;
@@ -94,12 +110,12 @@ pub(crate) fn copy_parts(tx: &mut Tx<'_>, id: &CommitId) -> Result<BTreeMap<Tid,
                 _ => Vec::new(),
             };
             if let (Some(rc), false) = (&rc, writes.is_empty()) {
-                for o in writes {
+                for (o, holder) in writes.into_iter().filter_map(|o| Some((o, o.holder.thing()?))) {
                     let path = rc.path_to(&t);
-                    let leave = o.holder == *path.last().unwrap_or(&rc.signer);
-                    let kind = Kind::Write(Write { holder: o.holder, gives_read: o.edge.is_some_and(|e| e.role >= Role::Read) && !leave });
+                    let leave = holder == *path.last().unwrap_or(&rc.signer);
+                    let kind = Kind::Write(Write { holder, gives_read: o.edge.is_some_and(|e| e.role >= Role::Read) && !leave });
                     let mint = minted(&mut path.iter().copied().chain([rc.signer, t]));
-                    let hops = osis_perm::paths::hops(&mint, rc.signer, path, rc.direct, t, Some(o.holder), true);
+                    let hops = thing_hops(osis_perm::paths::hops(&mint, rc.key, rc.signer, path, rc.direct, t, Some(o.holder), true));
                     on.push(Part { kind, hops: Some(hops), dels: dels.clone(), steps: vec![] });
                 }
                 continue;
@@ -265,7 +281,8 @@ impl crate::Engine {
                 back.join(s, *t);
             }
         }
-        let full = Paths::evaluate(&mint, BTreeSet::new(), &walk);
+        let recs = records(&self.core);
+        let full = Paths::evaluate(&recs, BTreeSet::new(), &walk);
         for t in &things {
             let req: BTreeSet<CopyId<CommitId, Tid>> = ev.required(t).map(|r| r.keys().copied().collect()).unwrap_or_default();
             let req_back: BTreeSet<CopyId<CommitId, Tid>> = back.required(t).map(|r| r.keys().copied().collect()).unwrap_or_default();
@@ -273,7 +290,7 @@ impl crate::Engine {
                 return Ok(Some(format!("{t:?}: copies taken in reverse order give {req_back:?}, in order {req:?}")));
             }
             let (held, ids) = reader_set(&walk, t, &req);
-            let reader = Paths::evaluate(&mint, BTreeSet::new(), &held);
+            let reader = Paths::evaluate(&recs, BTreeSet::new(), &held);
             for c in &walk {
                 for (i, p) in c.parts.iter().enumerate().filter(|(_, p)| p.on == *t) {
                     let w = WriteId(c.id, i as u32);

@@ -353,13 +353,14 @@ fn contested(core: &Core, k: &Tid) -> bool {
     let op = |mc: &osis_perm::RoleCommit, i: usize| osis_perm::WriteId(mc.id, i as u32);
     // the index of the redemption's self-removal
     let leave = |mc: &osis_perm::RoleCommit| {
-        let j = mc.ops.iter().position(|o| o.target == *k && o.holder == mc.signer && o.edge.is_none())?;
-        mc.ops.iter().any(|o| o.target == *k && o.holder != mc.signer && o.edge.is_some()).then_some(j)
+        let signer = osis_base::Holder::Thing(mc.signer);
+        let j = mc.ops.iter().position(|o| o.target == *k && o.holder == signer && o.edge.is_none())?;
+        mc.ops.iter().any(|o| o.target == *k && o.holder != signer && o.edge.is_some()).then_some(j)
     };
     let reds: Vec<_> = core.on_thing(k).filter_map(|c| tl.role_commit(&c)).filter_map(|mc| Some((mc, leave(mc)?))).collect();
     reds.iter().any(|(mc, j)| {
         tl.lowered_unaudited(&mc.signer, k)
-            && mc.ops.iter().enumerate().any(|(i, o)| i != *j && o.target == *k && o.edge.is_some() && ours(core, &o.holder) && !tl.is_applied(&op(mc, i)))
+            && mc.ops.iter().enumerate().any(|(i, o)| i != *j && o.target == *k && o.edge.is_some() && o.holder.thing().is_some_and(|h| ours(core, &h)) && !tl.is_applied(&op(mc, i)))
             && reds.iter().any(|(w, jw)| w.signer == mc.signer && w.id != mc.id && tl.is_applied(&op(w, *jw)))
     })
 }

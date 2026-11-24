@@ -1543,7 +1543,7 @@ fn a_late_removal_of_a_members_other_holder_makes_an_addendum_owed_spec_perm_5_2
     let through = |q: &Tid| {
         let core = &lp.peers[1].engine.core;
         let ai = core.ix.commits[&e].view.aspect(&t, "x:e.0").unwrap() as u32;
-        core.timelines().paths().rests(&osis_perm::WriteId(e, ai)).is_some_and(|(hops, _)| hops.iter().any(|h| h.0 == *q || h.1 == *q))
+        core.timelines().paths().rests(&osis_perm::WriteId(e, ai)).is_some_and(|(hops, _)| hops.iter().any(|h| h.0 == osis_base::Holder::Thing(*q) || h.1 == *q))
     };
     let (x, p) = if through(&holders[1]) { (holders[0], holders[1]) } else { (holders[1], holders[0]) };
     lp.sync(1, 2).unwrap();

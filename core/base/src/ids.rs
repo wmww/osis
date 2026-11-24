@@ -55,6 +55,41 @@ impl std::str::FromStr for Tid {
     }
 }
 
+/// A public signing key (spec/permissions.md §1 Signing key): a value with no tid, aspect or
+/// roster. It holds grants on the things it signs as; nothing is sealed to it.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SignKey(pub [u8; 32]);
+
+impl fmt::Debug for SignKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "SignKey({})", crate::base64url::encode(&self.0[..9]))
+    }
+}
+
+/// The holder of a grant (spec/permissions.md §1): a thing (`roles.0`), or a signing key
+/// (`signers.0`, a key grant). Keys order after things.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub enum Holder {
+    Thing(Tid),
+    Key(SignKey),
+}
+
+impl Holder {
+    /// The thing it is, where it is no key.
+    pub fn thing(&self) -> Option<Tid> {
+        match self {
+            Holder::Thing(t) => Some(*t),
+            Holder::Key(_) => None,
+        }
+    }
+}
+
+impl From<Tid> for Holder {
+    fn from(t: Tid) -> Holder {
+        Holder::Thing(t)
+    }
+}
+
 /// Text that is no tid.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TidParseError;
@@ -180,6 +215,18 @@ impl CreationRecord {
             CreationRecord::Thing { admin, .. } => Some(*admin),
             CreationRecord::KeyActor { .. } => None,
         }
+    }
+    /// The key the record holds (spec/permissions.md §1 Key grant), where it names no mint admin.
+    pub fn key(&self) -> Option<SignKey> {
+        match self {
+            CreationRecord::Thing { .. } => None,
+            CreationRecord::KeyActor { public_key, .. } => public_key.as_slice().try_into().ok().map(SignKey),
+        }
+    }
+    /// The holder of the record's admin edge from the start: its mint admin (the record edge) or
+    /// its key (the record's key). `None` only for a key of a case this build cannot read.
+    pub fn holder(&self) -> Option<Holder> {
+        self.mint_admin().map(Holder::Thing).or_else(|| self.key().map(Holder::Key))
     }
 }
 

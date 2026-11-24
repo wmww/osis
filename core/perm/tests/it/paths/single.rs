@@ -9,7 +9,7 @@ use super::incremental::{in_every_order, reading, Tracked};
 use super::{cid, commit, input, ms, rules, t, MODES};
 use crate::common::{seeded, sharded};
 use osis_base::Tid;
-use osis_base::{Ak, CommitId, PurgeBy, Role, Ts};
+use osis_base::{Ak, CommitId, Holder, PurgeBy, Role, Ts};
 use osis_perm::paths::{Commit, Delta, DeltaClass, EdgeWrite, Fact, Holding, Key, MemStore, NameKey, Names, Pair, Part, PartKind, Paths, Right, Status, Store};
 use std::ops::Bound;
 use osis_perm::{Edge, WriteId};
@@ -52,7 +52,7 @@ pub(super) fn differs(a: &mut Paths, b: &mut Paths, disputes: bool) -> Option<St
 
 /// `commits` from scratch, in a shuffled arrival, and with a shuffled half forgotten: the walk by
 /// components against the single walk of the same held set.
-pub(super) fn alike(records: &BTreeMap<Tid, Tid>, trust: &BTreeSet<WriteId>, commits: &[Commit], seed: u64, disputes: bool) -> Option<String> {
+pub(super) fn alike(records: &BTreeMap<Tid, Holder>, trust: &BTreeSet<WriteId>, commits: &[Commit], seed: u64, disputes: bool) -> Option<String> {
     let mut one = Paths::single(records, trust.clone());
     one.add(commits);
     let mut by = Paths::evaluate(records, trust.clone(), commits);
@@ -78,7 +78,7 @@ pub(super) fn alike(records: &BTreeMap<Tid, Tid>, trust: &BTreeSet<WriteId>, com
 
 /// A comparison of two walks over `(records, trust, commits, seed, disputes)`: the first
 /// difference.
-pub(super) type Alike = fn(&BTreeMap<Tid, Tid>, &BTreeSet<WriteId>, &[Commit], u64, bool) -> Option<String>;
+pub(super) type Alike = fn(&BTreeMap<Tid, Holder>, &BTreeSet<WriteId>, &[Commit], u64, bool) -> Option<String>;
 
 /// `alike` over tiny worlds of every kind, story worlds at every node, content worlds and soups
 /// from `start`: the failures, at most three.
@@ -240,7 +240,7 @@ fn any_lookup_order_reads_alike() {
 /// listing `list`.
 fn ew(on: u32, path: &[u32], holder: u32, role: Option<Role>, list: &[u64]) -> Part {
     let frontier = Some(Arc::new(super::whole(&[H, M, X, Y, Z, W, A, B, C, N].map(t), list.iter().map(|&c| cid(c)))));
-    Part { on: t(on), path: path.iter().map(|&x| t(x)).collect(), direct: 0, kind: PartKind::Edge(EdgeWrite { holder: t(holder), value: role.map(Edge::new), frontier }) }
+    Part { on: t(on), path: path.iter().map(|&x| t(x)).collect(), direct: 0, kind: PartKind::Edge(EdgeWrite { holder: Holder::Thing(t(holder)), value: role.map(Edge::new), frontier }) }
 }
 
 fn role_delta(on: u32, path: &[u32]) -> Part {
@@ -260,8 +260,8 @@ const B: u32 = 11;
 const C: u32 = 12;
 const N: u32 = 20;
 
-fn recs() -> BTreeMap<Tid, Tid> {
-    BTreeMap::from([(t(A), t(H)), (t(B), t(H)), (t(C), t(H)), (t(N), t(M))])
+fn recs() -> BTreeMap<Tid, Holder> {
+    super::hand_records([(t(A), t(H)), (t(B), t(H)), (t(C), t(H)), (t(N), t(M))])
 }
 
 /// A world of every forget case: a lowering with drops (5, dropping X's grant of Y), a lowering

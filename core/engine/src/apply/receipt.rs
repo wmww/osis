@@ -202,7 +202,7 @@ impl DemotionScope {
 pub(crate) fn scope_of(core: &Core, edges: &[(Tid, Tid)]) -> DemotionScope {
     let mut scope = DemotionScope::default();
     for (holder, target) in edges {
-        for c in core.timelines().paths().resting(holder, target) {
+        for c in core.timelines().paths().resting(&osis_base::Holder::Thing(*holder), target) {
             let Some(m) = core.ix.commits.get(&c) else { continue };
             let things: BTreeSet<Tid> = m.view.aspects.iter().map(|a| a.tid).collect();
             scope.roles.entry(m.view.signer).or_default().extend(things.iter().copied());

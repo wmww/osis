@@ -9,7 +9,7 @@
 
 use super::journal::Journaled;
 use osis_base::memo::{Stamps, UndoableStamps};
-use osis_base::{CommitId, CreationRecord, RecordLink, Role, Tid};
+use osis_base::{CommitId, CreationRecord, Holder, RecordLink, Role, Tid};
 use osis_perm::{Point, RoleCommit};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -72,8 +72,10 @@ enum Row<'a> {
     Id(&'a CommitId),
 }
 
+/// The grants of things a role commit writes, as (holder, target): key grants name no holder of
+/// a role (spec/permissions.md §1 Effective role).
 fn named(c: &RoleCommit) -> Vec<(Tid, Tid)> {
-    c.ops.iter().map(|o| (o.holder, o.target)).collect()
+    c.ops.iter().filter_map(|o| Some((o.holder.thing()?, o.target))).collect()
 }
 
 impl Held {
@@ -123,7 +125,7 @@ impl Held {
     /// Whether an edge write on `thing` (of any validity) names `holder`: `is_named` but for a
     /// creation record naming its mint admin alone. O(the edge commits on `thing`).
     pub fn named_by_write(&self, holder: &Tid, thing: &Tid) -> bool {
-        self.commits_on(thing).iter().any(|r| r.ops.iter().any(|o| o.target == *thing && o.holder == *holder))
+        self.commits_on(thing).iter().any(|r| r.ops.iter().any(|o| o.target == *thing && o.holder == Holder::Thing(*holder)))
     }
 
     /// Whether `holder` is named on `thing` by an edge write (`named_by_write`), not by `thing`'s
@@ -176,7 +178,7 @@ impl Held {
     /// Who named whom on `t` with `role` or above, as (signer, holder), of any validity and whatever
     /// followed, by edge writes.
     fn named_with(&self, t: &Tid, role: Role) -> impl Iterator<Item = (Tid, Tid)> {
-        self.commits_on(t).iter().flat_map(move |r| r.ops.iter().filter(move |o| o.target == *t && o.edge.as_ref().is_some_and(|e| e.role >= role)).map(|o| (r.signer, o.holder)))
+        self.commits_on(t).iter().flat_map(move |r| r.ops.iter().filter(move |o| o.target == *t && o.edge.as_ref().is_some_and(|e| e.role >= role)).filter_map(|o| Some((r.signer, o.holder.thing()?))))
     }
 
     /// `t`'s possible admins (spec/commits.md §4): the least set holding `t` and, with each member, its
@@ -323,9 +325,9 @@ impl Held {
     }
 
     fn count_writes(&mut self, c: &RoleCommit, add: bool) {
-        for o in &c.ops {
+        for (o, holder) in c.ops.iter().filter_map(|o| Some((o, o.holder.thing()?))) {
             let on = self.writes.entry(o.target).or_default();
-            let by = on.entry(o.holder).or_default();
+            let by = on.entry(holder).or_default();
             let n = by.entry(c.point()).or_default();
             if add {
                 *n += 1;
@@ -336,7 +338,7 @@ impl Held {
                 }
             }
             if by.is_empty() {
-                on.remove(&o.holder);
+                on.remove(&holder);
             }
             if on.is_empty() {
                 self.writes.remove(&o.target);
@@ -815,8 +817,8 @@ impl Timelines {
         for t in c.held.iter().chain(&stood) {
             self.stamps.wrote(&Read::Held(*t), true);
         }
-        for t in c.created.iter().chain(c.edges().map(|(_, t)| t)) {
-            self.stamps.wrote(&Read::Into(*t), true);
+        for t in c.created.iter().copied().chain(c.edges().map(|(_, t)| t)) {
+            self.stamps.wrote(&Read::Into(t), true);
         }
         // a thing is known by its record or an edge write on it: both are its held inputs
         for t in &c.known {
@@ -830,7 +832,7 @@ impl Timelines {
         // went other than a new leaf's (its record edge is in no cycle: it holds nothing)
         let records = self.of.records();
         let leaf = |t: &Tid| records.link(t).is_some() && records.mint_admin_of(t).is_empty() && !self.of.holds_edge(t);
-        if c.edges().any(|(h, _)| !records.is_key(h)) || c.created.iter().any(|t| !leaf(t)) {
+        if c.edges().any(|(h, _)| !records.is_key(&h)) || c.created.iter().any(|t| !leaf(t)) {
             self.rekey();
         }
     }
@@ -895,7 +897,7 @@ mod tests {
     fn grant(id: u64, by: Tid, on: Tid, to: Tid, role: Role) -> RoleCommit {
         let mut c = [0; 32];
         c[..8].copy_from_slice(&id.to_be_bytes());
-        RoleCommit { id: CommitId(c), ts: Ts::make(osis_base::WallMs(1), 0).unwrap(), signer: by, listed: Vec::new(), direct: 0, frontier: None, ops: vec![EdgeOp { target: on, holder: to, edge: Some(Edge::new(role)) }] }
+        RoleCommit { id: CommitId(c), ts: Ts::make(osis_base::WallMs(1), 0).unwrap(), signer: by, key: osis_base::SignKey([0; 32]), listed: Vec::new(), direct: 0, frontier: None, ops: vec![EdgeOp { target: on, holder: Holder::Thing(to), edge: Some(Edge::new(role)) }] }
     }
 
     /// The held set alone as the walk reads it: each counting edge commit along the empty path.
@@ -909,7 +911,10 @@ mod tests {
         }
         fn commit(&self, id: &CommitId) -> Option<osis_perm::Held> {
             let c = self.0.held_commit(id)?;
-            Some(osis_perm::Held { id: *id, ts: c.ts, signer: c.signer, parts: Vec::new(), role: Some(c), carriers: Vec::new() })
+            // signed by its signer's record's key (`grant` names none); the walk reads nothing of
+            // it until that record is held
+            let key = self.0.created(&c.signer).and_then(CreationRecord::key).unwrap_or(osis_base::SignKey([0; 32]));
+            Some(osis_perm::Held { id: *id, ts: c.ts, signer: c.signer, key, parts: Vec::new(), role: Some(c), carriers: Vec::new() })
         }
     }
 
@@ -936,7 +941,7 @@ mod tests {
                     next.insert(x);
                 }
                 for r in h.commits_on(c).iter().filter(|r| set.contains(&r.signer)) {
-                    next.extend(r.ops.iter().filter(|o| o.target == *c && o.edge.as_ref().is_some_and(|e| e.role >= Role::Admin)).map(|o| o.holder));
+                    next.extend(r.ops.iter().filter(|o| o.target == *c && o.edge.as_ref().is_some_and(|e| e.role >= Role::Admin)).filter_map(|o| o.holder.thing()));
                 }
             }
             if next == set {
@@ -1115,7 +1120,7 @@ mod tests {
                 1 => format!("{:?}", on().map(|o| o.roster(At::END))),
                 2 => format!("{:?}", on().map(|o| o.roster(now))),
                 3 => format!("{:?}", on().map(|o| o.standing_since())),
-                4 => format!("{:?}", on().map(|o| o.held().map(|(w, c, op)| (w, c.id, op.clone(), o.is_applied(&w), o.edge_at(&op.holder, Some(c.point())))).collect::<Vec<_>>())),
+                4 => format!("{:?}", on().map(|o| o.held().map(|(w, c, op)| (w, c.id, op.clone(), o.is_applied(&w), op.holder.thing().and_then(|h| o.edge_at(&h, Some(c.point()))))).collect::<Vec<_>>())),
                 5 => format!("{:?}", tl.roles_on(t, At::END, &BTreeSet::new())),
                 6 => format!("{:?}", tl.roles_on(t, At::KEYS, &BTreeSet::new())),
                 7 => format!("{:?}", tl.roles_on(t, now, &BTreeSet::new())),

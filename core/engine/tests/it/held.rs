@@ -530,8 +530,8 @@ fn convert(e: &mut Engine, hist: &History) -> Input {
                         // a delta naming no holder (a reset of an entry whose creation is not held)
                         parts.push(part(hm::Body::Held(hm::Delta::Edge(hm::EdgeWrite::role(NOBODY, None)))));
                     }
-                    for o in ops {
-                        parts.push(part(hm::Body::Held(hm::Delta::Edge(cv.edge(&o.holder, o.edge.as_ref())))));
+                    for (o, holder) in ops.into_iter().filter_map(|o| Some((o, o.holder.thing()?))) {
+                        parts.push(part(hm::Body::Held(hm::Delta::Edge(cv.edge(&holder, o.edge.as_ref())))));
                     }
                 }
                 // a setting, as the model reads it; one that is none reads as an empty write
