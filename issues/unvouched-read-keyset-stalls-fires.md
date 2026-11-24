@@ -4,5 +4,5 @@
 > Tags: security, sync, keys
 
 - Visible to the sender (pending, never "sent"), and no fire is lost; recovery is the lockout one (notes/keys.md Lockouts: the admin removes the writer, whose removal rotates read).
-- An automatic trigger would be: an admin that may rotate read and holds the keyset's commit whole, at the end of a complete pass, rotates read when it cannot vouch for the keyset's epoch (FireKey.tla `ARotUnv`, assumed fair in `FK_live`). Cost: a hostile writer can make the admin rotate at will, and an admin that has not heard of a removal then makes an unknowing fork (issues/outside-fire-fork-window.md).
+- An automatic trigger would be: an admin that may rotate read and holds the keyset's commit whole, at the end of a complete pass, rotates read when it cannot vouch for the keyset's epoch (FireKey.tla `ARotUnv`, assumed fair in `FK_live`). Cost: a hostile writer can make the admin rotate at will, and an admin that has not heard of a removal then makes an unknowing fork (notes/sync-inbox.md, What a fire is sealed to: accepted).
 - Open, same field: a writer holding no secret of the thing (a keyless grant) can copy an earlier epoch's keyset back into `keys.0`; until the admin's next step reaches the sender, the step naming that epoch is in force again. A writer holding the new epoch could hand the fires on anyway; a keyless one could not.
