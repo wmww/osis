@@ -8,4 +8,4 @@ Cost shapes and their count tests: notes/perm-paths.md (Cost shapes, Counts, The
 - A backdated or forgotten edge-class part, or a lowering applying with drops, replays its component from the earliest key touched; a walk by reach (only the parts whose step reads something that changed) is not built (Tess: simplest correct wins; a very large number of role changes being fast is no priority).
 - k void lowerings at the end of a chain of k grants cost k² setters read.
 - An open gives the walk every held commit again (`index::update_timelines_loaded`), decoding each header, until the walk's delta facts live in the engine's index.
-- The query layer's `edges_at(point)` reads every applied write at or after the point; `standing_since_all` and `roles_ever` read the whole log; chain certificates rebuild their index of chained writes per call.
+- The query layer's `edges_at(point)` reads every applied write at or after the point; `standing_since_all` and `roles_ever` read the whole log.

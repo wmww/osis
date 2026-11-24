@@ -12,7 +12,7 @@ Values no choice makes free; each is in the spec or should be. Listed with what 
 |---|---|---|
 | `MAX_DRIFT` 1 h | clock skew tolerated vs how far a commit's `ts` may lie ahead (and every bound measured from it) | wire §2 |
 | `ROLE_KEEP` 90 days | how long an offline node can return and sync cleanly vs replaced rotations and steps kept | wire §2 |
-| `INBOX_LIFETIME` 90 days | how long an inbox keeps fires (tickets, notices) for an offline recipient vs its holders' storage | wire §2 |
+| `INBOX_LIFETIME` 90 days | how long an inbox keeps fires (grant offers, stranded notices) for an offline recipient vs its holders' storage | wire §2 |
 | `TOMBSTONE_LIFETIME` 30 days (recommended) | a holder offline longer logs a deleted entry again (re-deleted by the next writer that judges it) vs tombstone storage | wire §2, sync-ids §5 |
 | `MAX_CLAIMS` 65 536 | most claim keys per step: caps the holders of a sync ID that can catch up by claim at one step vs claim-set size | wire §2 |
 | `MAX_READ` 1 GiB (node policy) | large values beyond 1 GiB stream only | `engine/large.rs` |
