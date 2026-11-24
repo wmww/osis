@@ -534,10 +534,25 @@ fn tally(f: &Fragment, seen: &mut BTreeSet<&'static str>) {
     }
 }
 
-/// One seed: the encodings its final state held.
+/// One seed: the encodings its final state held. With `OSIS_CRDT_SHRINK=1` a failing seed's deltas
+/// are shrunk (`osis_base::testenv::shrinking`) while the differential still fails.
 fn check(k: u64) -> BTreeSet<&'static str> {
-    let (r, c) = case(k);
-    check_case(r, &c)
+    const SHRINK: &str = "OSIS_CRDT_SHRINK";
+    let mut seen = BTreeSet::new();
+    let run = || {
+        let (r, c) = case(k);
+        let mut script = osis_base::testenv::Script::new("crdt_model", SHRINK, format!("OSIS_CRDT_START={k} OSIS_CRDT_SEEDS=1"));
+        for d in &c.deltas {
+            script.push(d.clone(), String::new());
+        }
+        seen = check_case(r, &c);
+    };
+    let replay = |deltas: &[(MFrag, Option<MWriter>)], _: bool| {
+        let (r, c) = case(k);
+        check_case(r, &Case { deltas: deltas.to_vec(), ..c });
+    };
+    osis_base::testenv::shrinking(SHRINK, run, replay, |_| vec![]);
+    seen
 }
 
 /// The differential over case `c`: the encodings its final state held.

@@ -1,7 +1,9 @@
 #!/bin/sh
 # tools/icount CMD...: CMD's user-space instruction count ("INSTR <n>" on stderr), for old-vs-new
 # comparisons that load on a shared box cannot skew (notes/test-harnesses.md, Measuring). Builds icount.c on first use.
+# Sets cargo's [env] (tools/cargo_env.sh), so a copied test binary counts what `cargo test` runs.
 set -e
+. "$(dirname "$0")/cargo_env.sh"
 src="$(cd "$(dirname "$0")" && pwd)/icount.c"
 bin="${XDG_CACHE_HOME:-$HOME/.cache}/osis/icount"
 if [ ! -x "$bin" ] || [ "$src" -nt "$bin" ]; then

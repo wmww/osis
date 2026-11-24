@@ -1,0 +1,12 @@
+#!/bin/sh
+# tools/logrun LOG CMD...: runs CMD with all its output to LOG (its directory made), then prints
+# LOG's verdict lines (libtest's `test result`, `FAILED`, `panicked`, `error`, a `policy:` or `gate`
+# line) and `logrun: exit N (LOG)`, exiting with CMD's status. The unpiped way to read a build or
+# test run: a `| grep` or `| tail` reports the pipe's exit and can cut the panic (notes/build.md, Footguns).
+[ $# -ge 2 ] || { echo "usage: tools/logrun LOG CMD..." >&2; exit 2; }
+log=$1; shift
+mkdir -p "$(dirname "$log")"
+rc=0; "$@" > "$log" 2>&1 < /dev/null || rc=$?
+grep -E '^test result:|^test .* FAILED$|panicked|^error|^policy:|^== gate|^gate=' "$log" | cut -c1-300
+echo "logrun: exit $rc ($log)"
+exit $rc
