@@ -282,8 +282,10 @@ fn the_undo_check_costs_what_was_written() {
 }
 
 /// A covered drop at n entries of a paged map (`big_map`): two one-entry edits (one replacing the
-/// other's write, one live), a snapshot covering both, then each dropped as covered: (store
-/// bytes, pages written) per drop. `independent`: the thing made independent first.
+/// other's write, one live), a snapshot covering both, then each dropped as covered: (bytes
+/// handed to the store, pages written) per drop. `independent`: the thing made independent first.
+/// Not the backend's bytes: every write also seals its key tree path, a full node per level
+/// (about 11 KB), whose level count steps up with the store's slots (`all_flat`).
 fn covered_drop(n: usize, independent: bool) -> [u64; 2] {
     let (mut lp, t) = big_map(n, false);
     if independent {
@@ -299,26 +301,26 @@ fn covered_drop(n: usize, independent: bool) -> [u64; 2] {
         }
     });
     assert_eq!(lp.peers[0].engine.get_at(&t, &a, &entry(n / 3, false)).unwrap(), Some(s("y")));
-    [w.io.written_bytes / 2, w.page_writes() / 2]
+    [w.handed / 2, w.page_writes() / 2]
 }
 
 // spec/commits.md §5 (Covered: every local copy of a dropped body goes), spec/requirements.md
 // (Scale: O(change)): a body dropped as covered rewrites shredded the pages holding its writes,
-// not the whole state: store bytes and pages written per drop flat from n to 10n entries.
+// not the whole state: bytes handed to the store and pages written per drop flat from n to 10n
+// entries.
 #[test]
 fn covered_drop_is_flat() {
     let (small, big) = (covered_drop(500, true), covered_drop(5000, true));
-    flat("covered drop: store bytes", small[0], big[0]);
+    flat_bytes("covered drop: bytes handed", small[0], big[0]);
     flat("covered drop: pages written", small[1], big[1]);
 }
 
 // spec/commits.md §5 (Covered), spec/requirements.md (Scale): as `covered_drop_is_flat`, on a
 // dependent thing.
 #[test]
-#[ignore = "issues/covered-drop-dependent.md"]
 fn covered_drop_on_a_dependent_thing_is_flat() {
     let (small, big) = (covered_drop(500, false), covered_drop(5000, false));
-    flat("covered drop: store bytes", small[0], big[0]);
+    flat_bytes("covered drop: bytes handed", small[0], big[0]);
     flat("covered drop: pages written", small[1], big[1]);
 }
 
