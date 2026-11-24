@@ -345,9 +345,9 @@ fn a_part_waiting_aside_is_purged_where_it_waits_spec_commits_5() {
     assert!(!crate::common::recoverable(&mut lp.peers[1], b"SECRET-W8a3"));
 }
 
-// spec/commits.md §5 (A waiting part past its expiry: goes at T, counts as never received, no
-// flag: its writes have no effect anywhere, spec/crdt.md §4.7), §4 (Examined again: the thing a part
-// waits on entering the node closure): commit `c`'s parts on W wait (`waiting_on_w`), aside or with
+// spec/commits.md §4 (Examined again: the thing a part waits on entering the node closure), §5 (A
+// waiting part past its expiry: goes at T, counts as never received, no flag: its writes have no
+// effect anywhere, spec/crdt.md §4.7): commit `c`'s parts on W wait (`waiting_on_w`), aside or with
 // `c` pending whole, every part expiring at T. Ticked past T or not, W then enters: the value is
 // nowhere and the node reads alike either way.
 #[test]
