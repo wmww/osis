@@ -78,3 +78,14 @@ impl Sid {
         &self.steps.last().unwrap().0
     }
 }
+
+/// `Store::take_register` of `steps` under `s`'s sync ID, with no endorsement, at monotonic 0.
+pub trait Register {
+    fn reg(&mut self, s: &Sid, steps: &[(&Step, Option<&ClaimSet>)]) -> osis_proto::Code;
+}
+
+impl Register for osis_sync::Store {
+    fn reg(&mut self, s: &Sid, steps: &[(&Step, Option<&ClaimSet>)]) -> osis_proto::Code {
+        self.take_register(&s.id, steps, None, osis_base::Mono(0)).unwrap()
+    }
+}

@@ -22,7 +22,7 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, VecDeque};
 use std::rc::Rc;
 use crate::harness::caps;
-use crate::harness::sid::{Sid, THING};
+use crate::harness::sid::{Register, Sid, THING};
 
 /// The one connection, as each side names it.
 const C: ConnId = ConnId(1);
@@ -455,8 +455,8 @@ trait OnSide {
 impl OnSide for Sid {
     /// A side keeping this sync ID unread, its genesis registered.
     fn keep(&self, side: &mut Side) {
-                side.hold(self.id, Holding::Unread);
-        assert_eq!(side.store.take_register(&self.id, &[(&self.genesis().0, Some(&self.genesis().1))], None, osis_base::Mono(0)).unwrap(), Code::OK);
+        side.hold(self.id, Holding::Unread);
+        assert_eq!(side.store.reg(self, &[(&self.genesis().0, Some(&self.genesis().1))]), Code::OK);
     }
 
     /// A stamped entry of a fresh blob taken into `side`'s store.
@@ -1160,7 +1160,7 @@ fn a_shredded_full_s_untells_full_spec_sync_streams_4() {
     assert!(p.a.streams.known().full(C, &k.id));
     p.b.store.shred(&k.id).unwrap();
     p.b.store.set_caps(&caps(&[("bytes", 1_000_000)]));
-    assert_eq!(p.b.store.take_register(&k.id, &[(&k.genesis().0, Some(&k.genesis().1))], None, osis_base::Mono(0)).unwrap(), Code::OK);
+    assert_eq!(p.b.store.reg(&k, &[(&k.genesis().0, Some(&k.genesis().1))]), Code::OK);
     p.run();
     assert!(!p.b.store.waits_room(&k.id));
     assert!(!p.a.streams.known().full(C, &k.id), "full false told after the shred");
@@ -1245,11 +1245,8 @@ fn full_ends_once_what_it_refused_left_its_source_spec_sync_streams_4() {
 #[test]
 fn a_listing_from_the_start_shows_what_it_refused_left_spec_sync_streams_4() {
     for deleted in [false, true] {
-        let mut p = Pair::new();
+        let (mut p, k) = Pair::kept();
         p.b.open.record = None;
-        let k = Sid::new(10);
-        k.keep(&mut p.a);
-        k.keep(&mut p.b);
         let x = k.stamped(&mut p.a, 3000, true);
         let y = k.stamped(&mut p.a, 3001, true);
         p.b.store.set_caps(&caps(&[("bytes", 4000)]));
@@ -1402,7 +1399,7 @@ fn a_head_move_while_dropped_keeps_the_fetch_anew_spec_sync_judgement_6() {
     p.b.store.set_unheld(&k.id, true).unwrap();
     // a step under the same write key: x verifies under it
     let one = k.child(&k.genesis().0, 1, 11);
-    assert_eq!(p.b.store.take_register(&k.id, &[(&one.0, Some(&one.1))], None, osis_base::Mono(0)).unwrap(), Code::OK);
+    assert_eq!(p.b.store.reg(&k, &[(&one.0, Some(&one.1))]), Code::OK);
     p.run();
     assert!(p.b.store.entry(&k.id, &x).unwrap().is_none(), "dropped");
     p.b.restart_all(7);
@@ -1499,7 +1496,7 @@ fn a_refusal_ends_with_its_ground_spec_sync_streams_4() {
     p.run();
     assert!(refused(&p, &k), "refused under its head");
     let one = k.child(&k.genesis().0, 1, 0xf0);
-    assert_eq!(p.b.store.take_register(&k.id, &[(&one.0, Some(&one.1))], None, osis_base::Mono(0)).unwrap(), Code::OK);
+    assert_eq!(p.b.store.reg(&k, &[(&one.0, Some(&one.1))]), Code::OK);
     p.run_with(|ab, m| !ab && m.kind() == 41);
     assert!(!refused(&p, &k), "b's head moved");
     assert!(p.a.streams.caught_up(C, &k.id));
@@ -1585,7 +1582,7 @@ fn a_moved_head_shows_a_refused_entry_again_spec_sync_streams_4() {
     assert_eq!(p.a.streams.known().refusal(p.a.src(), &k.id, &x), Some(Code::REFUSED));
     let pulls = p.sent_by_b(41).len();
     let one = k.child(&k.genesis().0, 1, 0xee);
-    assert_eq!(p.b.store.take_register(&k.id, &[(&one.0, Some(&one.1))], None, osis_base::Mono(0)).unwrap(), Code::OK);
+    assert_eq!(p.b.store.reg(&k, &[(&one.0, Some(&one.1))]), Code::OK);
     p.run();
     assert!(held(&p, &x), "taken once its head moved");
     assert_eq!(anew(&p, pulls), 1, "pulled again from the start once");
@@ -1594,7 +1591,7 @@ fn a_moved_head_shows_a_refused_entry_again_spec_sync_streams_4() {
     p.run();
     assert!(!held(&p, &y));
     let two = k.child(&one.0, 2, 0xf0);
-    assert_eq!(p.b.store.take_register(&k.id, &[(&two.0, Some(&two.1))], None, osis_base::Mono(0)).unwrap(), Code::OK);
+    assert_eq!(p.b.store.reg(&k, &[(&two.0, Some(&two.1))]), Code::OK);
     p.b.restart_all(7);
     p.a.streams.closed(C);
     p.join(k.id);
@@ -1602,7 +1599,7 @@ fn a_moved_head_shows_a_refused_entry_again_spec_sync_streams_4() {
     assert!(held(&p, &y), "taken after the restart");
     let pulls = p.sent_by_b(41).len();
     let three = k.child(&two.0, 3, 0xf1);
-    assert_eq!(p.b.store.take_register(&k.id, &[(&three.0, Some(&three.1))], None, osis_base::Mono(0)).unwrap(), Code::OK);
+    assert_eq!(p.b.store.reg(&k, &[(&three.0, Some(&three.1))]), Code::OK);
     p.run();
     assert_eq!(anew(&p, pulls), 0, "nothing refused under the head before: nothing pulled");
 }
@@ -1627,7 +1624,7 @@ fn places_after_head_moves(n: u8) -> usize {
     let mut parent = k.genesis().0.clone();
     for h in 1..4u64 {
         let next = k.child(&parent, h, 0xe0 + h as u8);
-        assert_eq!(p.b.store.take_register(&k.id, &[(&next.0, Some(&next.1))], None, osis_base::Mono(0)).unwrap(), Code::OK);
+        assert_eq!(p.b.store.reg(&k, &[(&next.0, Some(&next.1))]), Code::OK);
         p.run();
         parent = next.0;
     }
@@ -1652,7 +1649,7 @@ fn a_moved_head_pulls_nothing_anew_over_a_tombstone_refusal_spec_sync_streams_4(
     assert!(p.sent_by_b(43).iter().any(|m| matches!(m, Msg::Stream(st) if st.events.contains(&(k.id, Event::Refused(gone, Code::TOMBSTONED))))));
     let pulls = p.sent_by_b(41).len();
     let one = k.child(&k.genesis().0, 1, 0xee);
-    assert_eq!(p.b.store.take_register(&k.id, &[(&one.0, Some(&one.1))], None, osis_base::Mono(0)).unwrap(), Code::OK);
+    assert_eq!(p.b.store.reg(&k, &[(&one.0, Some(&one.1))]), Code::OK);
     p.run();
     let anew = p.sent_by_b(41).iter().skip(pulls).filter(|m| matches!(m, Msg::Pull(q) if q.joins == vec![(k.id, None)])).count();
     assert_eq!(anew, 0, "a tombstone refusal is no reason to pull S again");

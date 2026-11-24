@@ -586,16 +586,22 @@ fn complete_pass_with_no_source_waits_for_a_peer_to_be_waited_for() {
     assert_eq!(t.g.passes, vec![(S, 7), (S, 20), (S, 30)], "PASS_WAIT_MS");
 }
 
+/// S read, its record of peer B away, a pass wanted at monotonic 10 (the wall clock at `wall`).
+fn away_pass(wall: Option<u64>) -> T {
+    let mut t = T::new(&[(S, Holding::Read)]);
+    t.g.records.insert(S, [RB].into());
+    t.g.wall = wall;
+    t.at(10);
+    want(&mut t, S, 10);
+    t
+}
+
 // spec/sync-status.md §1 (PASS_WAIT_MS; the wait runs on the monotonic clock): a recorded peer
 // away holds a pass no longer than PASS_WAIT_MS, a wall clock frozen while the node runs
 // included; the node wakes for it.
 #[test]
 fn complete_pass_gives_up_on_away_peer() {
-    let mut t = T::new(&[(S, Holding::Read)]);
-    t.g.records.insert(S, [RB].into());
-    t.g.wall = Some(10);
-    t.at(10);
-    want(&mut t, S, 10);
+    let mut t = away_pass(Some(10));
     assert!(t.g.passes.is_empty());
     assert_eq!(t.st.next_wake(), Some(osis_base::Mono(10 + PASS_WAIT_MS)));
     t.at(10 + PASS_WAIT_MS - 1);
@@ -610,10 +616,7 @@ fn complete_pass_gives_up_on_away_peer() {
 // Fails with a pass's deadline counted from each start.
 #[test]
 fn a_pass_under_way_at_a_restart_ends_by_its_first_start_spec_sync_status_1() {
-    let mut t = T::new(&[(S, Holding::Read)]);
-    t.g.records.insert(S, [RB].into());
-    t.at(10);
-    want(&mut t, S, 10);
+    let mut t = away_pass(None);
     assert_eq!(t.g.begun, [(S, WallMs(10))].into(), "its start is kept");
     for k in 1..4 {
         t.st = Status::default();
@@ -631,10 +634,7 @@ fn a_pass_under_way_at_a_restart_ends_by_its_first_start_spec_sync_status_1() {
 // sync set takes its pass under way and its start row with it, at once (none left: no row left).
 #[test]
 fn a_sync_id_leaving_takes_its_pass_and_row_spec_sync_status_1() {
-    let mut t = T::new(&[(S, Holding::Read)]);
-    t.g.records.insert(S, [RB].into());
-    t.at(10);
-    want(&mut t, S, 10);
+    let mut t = away_pass(None);
     assert!(t.st.of(&S, &t.g).unwrap().pass_waits.is_some());
     t.g.set.insert((), Arc::new(SyncSet::default()));
     t.settle();
@@ -651,12 +651,8 @@ fn a_sync_id_leaving_takes_its_pass_and_row_spec_sync_status_1() {
 #[test]
 fn a_wall_clock_set_back_at_each_restart_still_ends_a_pass_spec_sync_status_1() {
     const Q: u64 = PASS_WAIT_MS / 4;
-    let mut t = T::new(&[(S, Holding::Read)]);
-    t.g.records.insert(S, [RB].into());
     let w0 = 10 * PASS_WAIT_MS;
-    t.g.wall = Some(w0);
-    t.at(10);
-    want(&mut t, S, 10);
+    let mut t = away_pass(Some(w0));
     assert_eq!(t.g.begun, [(S, WallMs(w0))].into());
     // the run waits a quarter; the clock is set back a half across the restart: ahead of the row
     let mut wall = w0 + Q - 2 * Q;
