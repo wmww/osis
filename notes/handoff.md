@@ -41,9 +41,8 @@ Beside the route: the two failing seeds; one cleanup always, a workflow job abou
 ## Waiting on Tess
 1. **To confirm**: a thing kit, the app or chat makes takes grants from outside by default; one made through the bare API takes none until its admin enables them.
 2. **Convergence clause** (requirements Decentralization): "at the latest once a writer of that data has synced with them" covered the purge divergence; check whether anything else needs it, then drop it?
-3. **An addendum and a removed node's honest delete**: notes/purge-model.md records her taking the fix; the spec (permissions §6) and the model still say an addendum vouches for no purge request. Which stands?
-4. **Requirements wording** (hers to edit): "which opaque sync units each item is in" → "each blob is in"; "an item's expiry" → "a blob's expiry"; "(an invitation, a reader leaving)" → "(a grant from outside, a reader leaving)".
-5. CLAUDE.md's GUI test command lacks `--no-fail-fast`; a smaller fixed setting for the KNOWN story search; the gate.checks CPU share raise (notes/time-limits.md).
+3. **Requirements wording** (hers to edit): "which opaque sync units each item is in" → "each blob is in"; "an item's expiry" → "a blob's expiry"; "(an invitation, a reader leaving)" → "(a grant from outside, a reader leaving)".
+4. CLAUDE.md's GUI test command lacks `--no-fail-fast`; a smaller fixed setting for the KNOWN story search; the gate.checks CPU share raise (notes/time-limits.md).
 
 ## Parked
 - `mizzen-snapshot-stream`: page-walking snapshot writer, unbounded memory on forged states; resume only with a per-source cursor (issues/durable-decode-bound.md).

@@ -16,3 +16,6 @@ Spec: spec/permissions.md §5.2 Addenda (Writing, admin-only), §5.1 Frontier. P
 ## Questions a builder would otherwise guess
 - **"Of its own"**: a node acts as its account; read "no addendum of its own vouching" as authored by its account, so sibling nodes do not each write one once one vouches. The node that wrote R is excluded, its siblings are not (the model has one node per account).
 - **The candidate list** per (R, N) (X's content in R's window, not in R's frontier) is fixed once R is held (a delta stated through R's edge applying after makes R due again, `addenda::wake`): receipt times are recorded per commit. Kept while R is held; growth is per removal per witness, as the addenda themselves.
+
+## An addendum vouches for a purge request as for content
+Tess: nothing argues for treating a purge specially (notes/principles.md, Deleting has no safe side). Modelled (notes/purge-model.md, Undoing an honest delete: roles-model `purge_addenda`, no honest loss, the thief's window as for content). Owed: spec/permissions.md §6 ("An addendum vouches for no purge request" goes), `purge_addenda` on in `Rules::fixed`, the walk and the engine's writing rule taking requests, the test citations of the old sentence.

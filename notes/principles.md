@@ -41,6 +41,7 @@ How osis is meant to be designed. Most fiddly bugs this project has had came fro
   - The same holds, more weakly, for performance: where test time goes is not where production time goes, different users differ, and no one number measures the whole system. A profile of tests is a clue, the count of work at n and 10n the evidence (Check scaling, not seconds).
   - Test time itself is real: it sets development speed, the gate's time can be measured and improved, and that work carries over to production only partly (overfitting tests can even work against it).
 - **Removing what a user can do is a requirements change**, whatever its measured rarity (a commit spanning things reached through different actors; acting as a thing): it goes to Tess before it is built, or is built so that reversing it is cheap and surfaced to her at once.
+- **Deleting has no safe side (Tess).** Failing to purge something promptly and for good is as much of a problem as deleting something that should stay. "Caution" names neither: it could as well mean making sure everything is gone as making sure nothing is lost. A rule that treats a purge specially, holds one back or lets one be undone "to be safe" needs its own argument, as a rule that drops data would.
 - **Forks are permanent.** Admin disputes are forks tolerated indefinitely; no rule may wait for one to be settled. Disputes get the simplest rule to build.
 
 **Testing**

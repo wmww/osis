@@ -24,7 +24,7 @@
 - An account's inbox is a thing of its own; any other independent thing is its own inbox (spec/sync-inbox.md §1). Rule 5 makes the first the rule for all.
 
 ## For the spec piece
-- Whether an inbox may be a dependent thing (a fire sealed to its independent's key and deposited under its independent's sync ID): an independent one costs about 15 KB, mostly keys. Nothing is known to need independence; not checked against the code.
+- An external signal enabled on a dependent thing works as on any, or makes it independent unseen: a difference an API caller can observe is a bug (issues/behaviour-depends-on-own-keys.md). Which of the two: a fire sealed to its independent's key and deposited under its independent's sync ID costs almost nothing; an independent inbox about 15 KB, mostly keys. Nothing is known to need independence; not checked against the code.
 - How a thing publishes which thing is its inbox.
 - A grant fire cut to the stub's data alone: today it carries the role commit's copy with its evidence because the engine holds no secret from a box it has not judged. A stub fetches the target's own role entries, which may judge the box instead; not checked.
 - Own boxes only (a node following a stub fetches the boxes it opens, not every holder's): not built, and a commit applies only with all its pages.

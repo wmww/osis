@@ -16,3 +16,6 @@ The mint admin staying special after it is removed (to study):
 - **The record names it for good**: the tid commits to the mint admin, so every holder of the record learns which admin the thing was minted with, after that admin is gone.
 
 Accounts being a special kind of thing (the birth-independence above is one symptom): issues/actors-one-mechanism.md.
+
+## External signals on a dependent thing
+The external signals are specified for independent things only (spec/sync-inbox.md §1: sealed to the thing's own keyset, deposited under its sync ID). Enabling one on a dependent thing must work, or make the thing independent without the caller seeing it; refusing or doing nothing is this issue's bug (Tess). What the engine does today is not checked. notes/stubs.md, For the spec piece, has the inbox's case.

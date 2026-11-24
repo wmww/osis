@@ -60,7 +60,7 @@ So the purge property has no pair of its own: no weaker promise is needed beyond
 
 ## Tess's answers
 Each a question about the model, in what a user observes.
-- **Undoing an honest delete** (finding 41): a witness's vouch keeps a delete a removed node made before its removal, as for messages (the fix). Taken; not yet in spec/permissions.md §6 ("An addendum vouches for no purge request") nor in `Rules::fixed` (`purge_addenda` off).
+- **Undoing an honest delete** (finding 41): a witness's vouch keeps a delete a removed node made before its removal, as for messages (the fix). Taken (Tess: nothing argues for treating a purge specially); owed (issues/s3-addenda-build.md): not yet in spec/permissions.md §6 ("An addendum vouches for no purge request") nor in `Rules::fixed` (`purge_addenda` off).
 - **Gone means gone, against a stolen key**: a delete whose author is later found stolen before it (its removal not listing it) is undone, and the content comes back from any node that kept it; nodes that had all applied it lose it for good. Confirmed by spec/requirements.md as written (a removed key erases nothing).
 - **The theft window**: between theft and removal a stolen admin key can delete anything it reaches, for good where every holder applied it first (no bin, by requirement). Accepted, as for writes.
 - **Stores**: a writer lowered to read can delete its own old writes at stores that cannot read and keep them out there until the sync ID's keys move (availability, not erasure): issues/demoted-writer-deletes-at-stores.md, Decided.
