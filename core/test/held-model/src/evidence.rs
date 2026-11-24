@@ -1,4 +1,4 @@
-//! Evidence completeness (notes/redesign-plan.md M2; notes/write-path-design.md §2, §6): a model
+//! Evidence completeness (notes/evidence-model-findings.md; notes/write-path-design.md §2, §6): a model
 //! of what each sync ID carries as evidence for the writes whose bodies it carries, and of whether
 //! a reader holding one sync ID alone judges those writes as a node holding everything does.
 //! Properties in tests/it/spec_evidence.rs, findings in notes/evidence-model-findings.md.

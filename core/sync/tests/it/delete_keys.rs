@@ -206,7 +206,7 @@ fn told(w: &mut World) {
 // with no purge: node 1 takes it. The holders log the body again once; node 2 deletes those too
 // and they stay deleted (a second delete stands until the head moves or a part falls), while every
 // reader still reads the write. A known weakness, pinned as today's behaviour
-// (issues/demoted-writer-deletes-at-stores.md, notes/purge-model.md For Tess 4): a writer lowered
+// (issues/demoted-writer-deletes-at-stores.md, notes/purge-model.md, Tess's answers): a writer lowered
 // to read, holding no author's right any more (spec/permissions.md §6), keeps its old writes out
 // of a store that cannot read, so a reader syncing only through that store lacks them; nothing is
 // erased while a holder keeps the body. The lowering rotated write (its write key is an earlier

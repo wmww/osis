@@ -8,7 +8,7 @@
 - **Honored**, judged from headers alone, when the named commit O:
   - is listed on the same `(t, ak)` and valid (a purge tombstone counts);
   - has no `replaces` itself (flat, no chains);
-  - has the same verified `actor`;
+  - has the same verified purge author;
   - sorts before the version by `(ts, ID)`.
 - **Otherwise** it is a fire of its own, at its own place. A forged edit is just the forger's own message.
 - **Read:** an original's part reads as its newest listed honored version by `CommitPos`, valid versions only (a node's own invalid part is marked and reads as itself). Stamp, place and order stay the original's, and honored versions are not listed separately.
@@ -31,7 +31,7 @@
 **Reused:**
 - register order (newest wins);
 - purge requests and tombstones;
-- validity (`actor`, key order), so removal needs no new work: an edit after a kick is invalid and not honored;
+- validity (the purge author, key order), so removal needs no new work: an edit after a kick is invalid and not honored;
 - purge-by and expiry per delta;
 - the listing rule and `on_fire`.
 
@@ -77,7 +77,7 @@ Totals are at n and 10n messages, with v versions on a message.
 | Quote | History since it | O(log n), one body |
 | Kick | Per surviving message and version | Same (the frontier is per commit) |
 
-Index: `originals` for paging (honored versions removed, so edits add no walk) and `versions` keyed `(t, ak, O, actor)`, valid only, so forged claims are never read. Both move on validity flips inside the existing rejudge, and O's arrival promotes matching versions.
+Index: `originals` for paging (honored versions removed, so edits add no walk) and `versions` keyed `(t, ak, O, purge author)`, valid only, so forged claims are never read. Both move on validity flips inside the existing rejudge, and O's arrival promotes matching versions.
 
 
 ## Engine
