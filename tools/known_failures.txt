@@ -18,7 +18,6 @@ osis-sync/sims::store_failures_plain OSIS_SYNC_START=0 issues/accounts-propertie
 osis-sync/sims::a_peer_refusing_role_entries_plain OSIS_SYNC_START=0 issues/accounts-properties-fail.md node \d+ reads thing \d+: .*, the model does not
 osis-sync/sims::crashes_and_restarts_in_place_plain OSIS_SYNC_START=0 issues/accounts-properties-fail.md node \d+ reads thing \d+: .*, the model does not
 osis-sync/sims::lost_and_repeated_messages_plain OSIS_SYNC_START=0 issues/accounts-properties-fail.md node \d+ reads thing \d+: .*, the model does not
-osis-sync/idle::a_commit_judges_one_stranding_and_time_passing_no_duty_per_thing_spec_sync_status_1 - issues/accounts-properties-fail.md duties judged: \d+ at n, \d+ at 10n
 osis-sim/scenarios::drift_parks_until_clock_catches_up - issues/accounts-properties-fail.md refuses a fire of node \d+: Bad
 osis-sim/scenarios::two_nodes_converge - issues/accounts-properties-fail.md refuses a fire of node \d+: Bad
 osis-sim/scenarios::three_nodes_random_delivery - issues/accounts-properties-fail.md refuses a fire of node \d+: Bad
