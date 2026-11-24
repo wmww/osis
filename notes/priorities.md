@@ -7,16 +7,12 @@
 - Update it when an item finishes (delete it), when a finding reshapes the order (say why in the commit), or when Tess sets direction. Keep each item to a few lines with pointers; detail lives in its issues and notes.
 - Cleanup and workflow jobs (Job mix) run beside this list, not from it.
 
-## First: main's failing properties
-A property failing on main is the next task (notes/coordination.md, Known failures). Found by the gate's random seeds and failing on main, each with its replay line and a line in tools/known_failures.txt:
+## Failing on main
+Found by random seeds, each with its issue and a line in tools/known_failures.txt. They run beside the primary work, not before it; each starts with a hand-written minimal reproducer (notes/principles.md, Never pin a seed):
 - A cold seq edit then move loses its placement (issues/seq-cold-edit-move-placement.md).
 - A holder with key access lacks a box after rotations (issues/rotation-holder-lacks-box.md, security).
 - held-model's P4-held generator gap (issues/held-model-p4-held-wide.md).
-- Deferred to stage A4, which deletes what they test: the custody model and differential (issues/custody-differential-failures.md).
-
-## Unlanded branches
-- `mizzen-snapshot-stream` (pushed): a page-walking snapshot writer, parked (issues/durable-decode-bound.md, Parked): byte-identical but unbounded memory on forged states; a one-key-per-dot rule may be the root fix.
-- `windlass-wiring-1`: an A1 debug shadow of the stated-path walk beside the walk A1's switch deleted, so nothing is left for it to shadow: to delete from GitHub.
+- The custody model and differential (issues/custody-differential-failures.md) go with the account machinery: leave them.
 
 ## Core, in order
 1. **Accounts on the ordinary rules, by the staged plan: notes/redesign-plan.md.** A1 and A2 (the sync rewrite) are built; next is A4, accounts as ordinary things, on main with no branch, then what A2 still owes (notes/sync-rewrite-state.md), then A3, A5, A6 (the route and its order: notes/handoff.md). An account becomes an ordinary independent thing whose members are things holding roles on it, a key that signs holds an ordinary grant on the thing it signs as, a commit states its actors and is judged along them, evidence travels per sync unit, profiles are public, core has no concept of an account (issues/actors-one-mechanism.md; notes/account-membership-design.md, notes/write-path-design.md). Stated for the built sync unit (notes/sync-unit-scope.md). The plan orders it and the work around it in stages, and says what every other item here does meanwhile. Realms are designed with it. Issues: actors-one-mechanism, behaviour-depends-on-own-keys, realms-design, external-signals-taken-by-default, readers-see-readers, sync-units-linked-at-rest. By stage: S3 role-vouch-contested (the notice), s3-addenda-build; A1 admin-fights-not-always-shown, dispute-scan-cost, perm-eval-cost; A2 engine-evidence-trails-model, cert-blob-hostile-delete; A3 removed-key-writes-show-far; parked: recovery-design.
