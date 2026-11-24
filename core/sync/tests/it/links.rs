@@ -22,7 +22,7 @@ fn redeemed() -> (World, ShareLink) {
 // head's entry box and the path): K, listed in the sharer's D, opens at node 1 by L's static entry, and node 1
 // takes K's read secret from the head's entry box.
 #[test]
-#[ignore = "accounts: keys"]
+#[ignore = "accounts: making an account"]
 fn a_link_opens_k_by_its_static_entry_spec_sync_inbox_6() {
     let (mut w, link) = redeemed();
     let s = link.k_sync_id;
@@ -52,7 +52,7 @@ fn learned_nothing(w: &mut World, s: &osis_base::SyncId) -> bool {
 // path, opens nothing; nor does the real box on a path of another sync ID; the real one opens the
 // head's sync key and learns nothing until `learn_grant`.
 #[test]
-#[ignore = "accounts: keys"]
+#[ignore = "accounts: making an account"]
 fn a_static_grant_is_verified_before_it_is_learned_spec_sync_opens_5() {
     use osis_crypto::{BoxSlot, EntryItem, Epoch, KeyActorKeys, Secret32, SeededRng};
     let (mut w, link) = followed();
@@ -86,7 +86,7 @@ fn a_static_grant_is_verified_before_it_is_learned_spec_sync_opens_5() {
 // naming a thing node 1 syncs as K, or naming that thing's sync ID as K's, changes nothing of how
 // node 1 syncs it.
 #[test]
-#[ignore = "accounts: keys"]
+#[ignore = "accounts: making an account"]
 fn a_link_text_never_moves_another_things_sync_id_spec_sync_set_2() {
     let mut w = two_nodes();
     let real = w.make_link(0, w.node(0).profile.unwrap(), Role::Read);
@@ -111,7 +111,7 @@ fn a_link_text_never_moves_another_things_sync_id_spec_sync_set_2() {
 // role history shows L's grant removed): a link finalized before it is redeemed answers `Never`
 // and keeps nothing.
 #[test]
-#[ignore = "accounts: keys"]
+#[ignore = "accounts: making an account"]
 fn an_ended_link_is_not_redeemed_spec_permissions_7() {
     let mut w = two_nodes();
     let p0 = w.node(0).profile.unwrap();
@@ -131,7 +131,7 @@ fn an_ended_link_is_not_redeemed_spec_permissions_7() {
 // mid-stream and L's grant (roster) arrives before K1's keyset (fetched last: wrapped under the
 // epoch it supersedes); the join waits for the keyset, never fails for want of it.
 #[test]
-#[ignore = "accounts: keys"]
+#[ignore = "accounts: making an account"]
 fn a_third_redeemer_sharing_another_link_joins_spec_permissions_7() {
     let mut w = World::new(0);
     for _ in 0..3 {
@@ -191,7 +191,7 @@ fn a_joiner_leaves_k_once_its_edge_on_the_target_expired_spec_permissions_7() {
 // healed node 1 holds K's edge alive and its account stays in K (a hostile ordering of the
 // removal and the re-grant removes no live join).
 #[test]
-#[ignore = "accounts: keys"]
+#[ignore = "accounts: making an account"]
 fn a_joiner_stays_when_k_was_granted_again_before_it_heard_spec_permissions_7() {
     let (mut w, link) = redeemed();
     let a1 = w.node(1).account.unwrap();
@@ -210,7 +210,7 @@ fn a_joiner_stays_when_k_was_granted_again_before_it_heard_spec_permissions_7() 
 // node's own clock): as above, but node 1 is cut off from node 0 once it holds the edge, so
 // nothing arrives: the `until` passing alone makes node 1's account leave K there.
 #[test]
-#[ignore = "accounts: keys"]
+#[ignore = "accounts: making an account"]
 fn a_joiner_leaves_k_by_its_clock_alone_spec_permissions_7() {
     let (mut w, link) = redeemed();
     let a1 = w.node(1).account.unwrap();
@@ -229,7 +229,7 @@ fn a_joiner_leaves_k_by_its_clock_alone_spec_permissions_7() {
 // joins K by node 0's read link, then node 1 redeems it: L's grant to node 1's account is
 // deposited and promoted. It verifies at node 2, which never held node 1's node card.
 #[test]
-#[ignore = "accounts: keys"]
+#[ignore = "accounts: making an account"]
 fn a_link_keys_promoted_grant_verifies_where_its_node_card_never_went_spec_sync_judgement_2() {
     let mut w = World::new(0);
     for _ in 0..3 {
@@ -260,7 +260,7 @@ fn a_link_keys_promoted_grant_verifies_where_its_node_card_never_went_spec_sync_
 // the redeem and its start; at the follow time the redeem is given up: not redeemed, K's sync ID
 // no longer followed, nothing kept across a restart, and node 0 no longer dialed.
 #[test]
-#[ignore = "accounts: keys"]
+#[ignore = "accounts: making an account"]
 fn a_link_whose_sharer_never_answers_is_given_up_spec_sync_inbox_6() {
     use osis_sync::types::FOLLOW_LINK_MS;
     let mut w = two_nodes();
@@ -301,7 +301,7 @@ fn a_link_whose_sharer_never_answers_is_given_up_spec_sync_inbox_6() {
 // spec/sync-inbox.md §6 (First contact): a sharer that answers within the follow time is joined
 // as ever: node 0 back just before it, node 1 joins.
 #[test]
-#[ignore = "accounts: keys"]
+#[ignore = "accounts: making an account"]
 fn a_sharer_answering_before_the_follow_time_is_joined_spec_sync_inbox_6() {
     use osis_sync::types::FOLLOW_LINK_MS;
     let mut w = two_nodes();
@@ -323,7 +323,7 @@ fn a_sharer_answering_before_the_follow_time_is_joined_spec_sync_inbox_6() {
 // past it (given up, the join could never reach a source, and redeeming again joins nothing);
 // with node 0 back, the join is held there and the link forgotten.
 #[test]
-#[ignore = "accounts: keys"]
+#[ignore = "accounts: making an account"]
 fn a_joined_redeem_is_followed_past_the_follow_time_until_its_join_is_held_spec_permissions_7() {
     use osis_sync::types::FOLLOW_LINK_MS;
     let mut w = two_nodes();
@@ -388,7 +388,7 @@ fn a_held_join_forgets_the_link_and_k_stays_synced_spec_permissions_7() {
 // link forgotten, node 0 stays a dial hint there, across a restart, until node 1's account
 // leaves K (K taken off the target), when it goes.
 #[test]
-#[ignore = "accounts: keys"]
+#[ignore = "accounts: making an account"]
 fn a_joined_links_peers_stay_dial_hints_while_it_holds_k_spec_permissions_7() {
     use osis_sync::driver::dials::Why;
     let (mut w, link) = redeemed();
@@ -415,7 +415,7 @@ fn a_joined_links_peers_stay_dial_hints_while_it_holds_k_spec_permissions_7() {
 // its section with the target's `created.0` sealed; once the secrets arrive it opens, the record
 // lets K1's grant on the target apply, and the join is written.
 #[test]
-#[ignore = "accounts: keys"]
+#[ignore = "accounts: making an account"]
 fn a_held_commits_sealed_part_opens_once_its_things_secrets_arrive_spec_sync_streams_4() {
     let mut w = World::new(0);
     for _ in 0..3 {
@@ -442,7 +442,7 @@ fn a_held_commits_sealed_part_opens_once_its_things_secrets_arrive_spec_sync_str
 // account keys, though the commit making the account also makes its profile, whose body under
 // the profile's sync ID the certificates join as one per-sync-ID copy.
 #[test]
-#[ignore = "accounts: keys"]
+#[ignore = "accounts: making an account"]
 fn a_card_importer_holds_the_accounts_keys_spec_sync_inbox_5() {
     let mut w = two_nodes();
     let (p0, a0) = (w.node(0).profile.unwrap(), w.node(0).account.unwrap());
