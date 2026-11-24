@@ -108,10 +108,6 @@ fn set_from(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, f: Option<From>) -> Result<()> 
         }
         None => {
             tx.core.ix.leave_from.remove(&k);
-            // its held writes go with its rows: built again if it is dated again
-            if !ak.signal() {
-                super::bounds::drop_index(tx, tid, ak)?;
-            }
             put(tx, ak, &key, None)
         }
     }
@@ -273,8 +269,7 @@ pub(crate) fn settings_changed(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()
         return if from.is_some() { walk(tx, tid, ak, &k, now) } else { Ok(()) };
     }
     match (from, k.dated()) {
-        // held writes built while it was dated, nothing replaced yet, go
-        (None, false) => super::bounds::drop_index(tx, tid, ak),
+        (None, false) => Ok(()),
         (None, true) => {
             tx.core.to_date.push(*tid, ak.clone(), true);
             set_from(tx, tid, ak, Some((u64::MAX, None)))
@@ -399,8 +394,8 @@ impl ToDate {
 }
 
 /// At a transaction's end: each dated aspect's rows follow its held set, so a row is its part's
-/// replaced-at (`bounds::held_date`), exact. The aspect's held writes are brought up to date
-/// with the commits the transaction changed (`bounds::settle_index`: each body joined or left
+/// replaced-at (`bounds::held_date`), exact. Every changed aspect's held writes, dated or not,
+/// are brought up to date with the commits the transaction changed (`bounds::settle_index`: each body joined or left
 /// costs its own writes and those whose death it moves), and the parts rowed again are the
 /// changed ones and those whose date that moved (`Core::dates_moved`): O(what the change
 /// supersedes), whatever the aspect's history. Where the aspect was rebuilt (`Core::to_date`: a
@@ -450,17 +445,15 @@ pub(crate) fn date_due(tx: &mut Tx<'_>) -> Result<()> {
             on.extend(core.ix.leaving.get(&key).into_iter().flatten().map(|p| p.1));
             on
         };
+        super::bounds::settle_index(tx, &tid, &ak)?;
         let on: BTreeSet<CommitId> = if !k.dated() {
             tx.core.ix.leaving.get(&key).into_iter().flatten().map(|p| p.1).collect()
+        } else if tell.is_some() {
+            every(tx.core)
         } else {
-            super::bounds::settle_index(tx, &tid, &ak)?;
-            if tell.is_some() {
-                every(tx.core)
-            } else {
-                let mut on = changed.remove(&key).unwrap_or_default();
-                on.extend(tx.core.dates_moved.iter().filter(|x| x.0 == tid && x.1 == ak).map(|x| x.2));
-                on
-            }
+            let mut on = changed.remove(&key).unwrap_or_default();
+            on.extend(tx.core.dates_moved.iter().filter(|x| x.0 == tid && x.1 == ak).map(|x| x.2));
+            on
         };
         for c in on {
             let old = tx.core.ix.dated.get(&(c, tid, ak.clone())).copied();
@@ -523,7 +516,8 @@ fn rows_exact_on(tx: &mut Tx<'_>, key: &(Tid, Ak), when: &str) -> Result<()> {
     let (tid, ak) = (&key.0, &key.1);
     let dated = history::of(tx.core, tid, ak).dated();
     // dates from the held bodies joined from nothing, not from the rows kept
-    let mut fresh = if dated { Some(super::bounds::index_exact(tx, tid, ak, when)?) } else { None };
+    let fresh = super::bounds::index_exact(tx, tid, ak, when)?;
+    let mut fresh = dated.then_some(fresh);
     let mut on: BTreeSet<CommitId> = tx.core.ix.by_aspect.get(key).into_iter().flatten().map(|x| x.1).collect();
     on.extend(tx.core.ix.leaving.get(key).into_iter().flatten().map(|p| p.1));
     for c in on {
@@ -592,15 +586,15 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
     Ok(())
 }
 
-/// Forgets the leaving rows of the aspects `keys` (those without a cursor are skipped); a part
-/// still held there is dated again at the transaction's end (`date_due`).
+/// Forgets the held writes and leaving rows of the aspects `keys` (rows of those without a
+/// cursor are skipped); a part still held there is dated again at the transaction's end
+/// (`date_due`).
 pub(crate) fn forget_aspects(tx: &mut Tx<'_>, keys: impl IntoIterator<Item = (Tid, Ak)>) -> Result<()> {
     for (tid, ak) in keys {
+        if !ak.signal() {
+            super::bounds::drop_index(tx, &tid, &ak)?;
+        }
         if !tx.core.ix.leave_from.contains_key(&(tid, ak.clone())) {
-            // held writes built with no row yet (nothing replaced) go too
-            if !ak.signal() {
-                super::bounds::drop_index(tx, &tid, &ak)?;
-            }
             continue;
         }
         #[cfg(debug_assertions)]

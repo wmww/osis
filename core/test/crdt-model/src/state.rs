@@ -914,7 +914,15 @@ impl Frag {
                         el.content = Content::None;
                     }
                 }
+                let had = el.pos.len();
                 el.pos.retain(|p| keep(origin(&p.0.dot)));
+                // a creation kept is a position write of the top 2 again where a removed one beat it (§5.7 `pos`)
+                if el.pos.len() < had {
+                    if let Some((s, a)) = &el.created {
+                        el.pos.push((s.clone(), a.clone(), None));
+                        el.pos = top2(std::mem::take(&mut el.pos));
+                    }
+                }
                 if !el.deleted.as_ref().is_some_and(|x| keep(origin(&x.0.dot))) {
                     el.deleted = None;
                     el.undel = None;

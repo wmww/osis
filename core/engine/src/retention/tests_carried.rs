@@ -291,7 +291,9 @@ fn a_dead_write_keeps_no_name_spec_commits_5() {
 // write by ID reaches its value wherever held, and only that write's, whether or not its node
 // forgot the commit. Differential: two runs of the same random writes, compactions and purges by
 // ID, one forgetting every covered commit at once and one forgetting nothing, read alike at every
-// node, and no node reads a purged value.
+// node, and no node reads a purged value; but a purged write that replaced a body brings it back
+// only where a body of it is held (spec/crdt.md §4.7): where the reads differ, the forgetting
+// run holds the write the other reads at no node (a holder would re-snapshot it to the rest).
 #[test]
 #[ignore = "property"]
 fn purge_by_id_reads_alike_forgotten_or_not_plain_spec_commits_5() {
@@ -368,7 +370,10 @@ fn purge_by_id_reads_alike_forgotten_or_not_plain_spec_commits_5() {
             for i in 0..3 {
                 for ak in &aks {
                     let got: Vec<Option<Value>> = runs.iter_mut().map(|lp| lp.peers[i].engine.get(&t, ak).unwrap()).collect();
-                    assert_eq!(got[0], got[1], "seed {seed} step {step}: node {i} {ak}, forgetting vs not");
+                    if got[0] != got[1] {
+                        let gone = written.iter().find(|w| got[1] == Some(Value::Int(w.2))).is_some_and(|w| (0..3).all(|j| super::held_part(&runs[0].peers[j].engine.core, &w.0[0], &t, ak).is_none()));
+                        assert!(gone, "seed {seed} step {step}: node {i} {ak}, forgetting {:?} vs not {:?}, the latter's write held in the forgetting run", got[0], got[1]);
+                    }
                     assert!(!purged.iter().any(|v| got[0] == Some(Value::Int(*v))), "seed {seed} step {step}: node {i} reads a purged value {:?}", got[0]);
                 }
             }

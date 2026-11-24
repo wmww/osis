@@ -153,6 +153,11 @@ pub(crate) fn carriers(core: &Core, c: &CommitId, v: &crate::engine::View) -> Ve
     out
 }
 
+/// Whether a held snapshot of `(tid, ak)` may carry a write of `own` (`Carried`).
+pub(crate) fn carried_meets(core: &Core, tid: &Tid, ak: &Ak, own: &[Owned]) -> bool {
+    core.ix.snapshots.get(&(*tid, ak.clone())).into_iter().flatten().any(|s| s.4.meets(own))
+}
+
 /// The state of `(tid, ak)` a snapshot of it carries: this node's state without every write whose
 /// lifetime ends (spec/crdt.md §4.7, §8: an unexpiring snapshot carries no write of a delta with
 /// an expiry, nor one it holds only from an expiring snapshot, so its copy never outlives the

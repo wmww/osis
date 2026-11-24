@@ -695,6 +695,8 @@ pub struct Held<R: Rows> {
     dated: BTreeMap<(CommitId, Ts), i64>,
     /// The bodies whose dates may have moved since `take_moved`.
     moved: BTreeSet<CommitId>,
+    /// Whether a held write's death went to none since `take_revived` (§4.8 Revival).
+    revived: bool,
 }
 
 fn inv(b: &[u8]) -> Vec<u8> {
@@ -746,7 +748,13 @@ fn can_supersede(s: Kind, w: Kind, same: bool) -> bool {
 
 impl<R: Rows> Held<R> {
     pub fn new(rows: R) -> Held<R> {
-        Held { rows, dated: BTreeMap::new(), moved: BTreeSet::new() }
+        Held { rows, dated: BTreeMap::new(), moved: BTreeSet::new(), revived: false }
+    }
+
+    /// Whether a write still held stopped being dead since the last call: a body leaving took
+    /// every write that superseded it (§4.8 Revival).
+    pub fn take_revived(&mut self) -> bool {
+        std::mem::take(&mut self.revived)
     }
 
     /// The bodies whose date (`date`) may have moved since the last call.
@@ -812,6 +820,9 @@ impl<R: Rows> Held<R> {
 
     /// Notes `n` writes going from (`old`'s holders, death) to `new`'s in the bodies' dates.
     fn redate(&mut self, old: Option<&Cell>, new: Option<&Cell>) {
+        if old.is_some_and(|c| c.death.is_some()) && new.is_some_and(|c| c.death.is_none() && !c.holders.is_empty()) {
+            self.revived = true;
+        }
         for (c, sign) in [(old, -1), (new, 1)] {
             let Some(c) = c else { continue };
             let Some(t) = c.death else { continue };

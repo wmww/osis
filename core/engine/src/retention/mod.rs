@@ -224,9 +224,20 @@ pub(crate) fn others_own_cover(core: &Core, s: &CommitId) -> bool {
 
 /// `drop_part`, saying why.
 fn drop_part_for(tx: &mut Tx<'_>, c: &CommitId, ai: usize, why: DropFor) -> Result<()> {
+    if drop_body(tx, c, ai, why)?.is_some()
+        && let Some(a) = tx.core.ix.commits.get(c).and_then(|m| m.header.aspects.get(ai).cloned())
+    {
+        crate::apply::rebuild(tx, &a.tid, &a.ak)?;
+    }
+    Ok(())
+}
+
+/// `drop_part_for` but the rebuild: whether the aspect's state is to be rebuilt (`Some`), and
+/// then whether the drop made parts missing again (`uncover`).
+fn drop_body(tx: &mut Tx<'_>, c: &CommitId, ai: usize, why: DropFor) -> Result<Option<bool>> {
     tx.core.touch();
-    let Some(mut m) = tx.core.ix.commits.get(c).cloned() else { return Ok(()) };
-    let Some(a) = m.header.aspects.get(ai).cloned() else { return Ok(()) };
+    let Some(mut m) = tx.core.ix.commits.get(c).cloned() else { return Ok(None) };
+    let Some(a) = m.header.aspects.get(ai).cloned() else { return Ok(None) };
     // a part judged invalid drops as invalid, whatever else asks (spec/permissions.md §6): it
     // stays at peers and comes back once valid. As covered, a memory one would be forgotten,
     // and a holder judging it valid again would find it gone for good
@@ -236,7 +247,7 @@ fn drop_part_for(tx: &mut Tx<'_>, c: &CommitId, ai: usize, why: DropFor) -> Resu
     // nothing; a signal's gives nothing ever, and goes at its keep bound
     let leftover = invalid || why == DropFor::Destroyed || why == DropFor::Cover && drops_as_covered(&m, ai, tx.now().0) || a.ak.signal();
     if m.is_dropped(ai) || (m.bare(ai) && !leftover) {
-        return Ok(());
+        return Ok(None);
     }
     // its keep-at-least bound, judged while it is held: peers delete it `MAX_DRIFT` past
     let keep = if why == DropFor::Cover { bounds::part_keep(tx, c, &a.tid, &a.ak)? } else { 0 };
@@ -251,7 +262,9 @@ fn drop_part_for(tx: &mut Tx<'_>, c: &CommitId, ai: usize, why: DropFor) -> Resu
     // the held valid snapshots covering it: their copies of its writes stay its writes
     // (an invalid body's writes are none of the state's, whatever carries copies of them)
     // (a plain commit counts only as its author's own whole replace: `snapshot::own_covers`)
-    let snaps: Vec<CommitId> = if invalid || why == DropFor::Destroyed { Vec::new() } else { tx.core.ix.snapshots.get(&k).into_iter().flatten().map(|x| x.1).chain(snapshot::own_covers(tx.core, c, &a.tid, &a.ak)).filter(|s| s != c).collect() };
+    // (a gone delta's writes no body carries: nothing covers it)
+    let gone = why == DropFor::Other && is_gone(tx.core, c, ai);
+    let snaps: Vec<CommitId> = if invalid || gone || why == DropFor::Destroyed { Vec::new() } else { tx.core.ix.snapshots.get(&k).into_iter().flatten().map(|x| x.1).chain(snapshot::own_covers(tx.core, c, &a.tid, &a.ak)).filter(|s| s != c).collect() };
     let mut covered_by = BTreeSet::new();
     let own_cover = m.whole(ai);
     for s in snaps {
@@ -261,7 +274,7 @@ fn drop_part_for(tx: &mut Tx<'_>, c: &CommitId, ai: usize, why: DropFor) -> Resu
     }
     // as covered only under a coverer, which carries its writes (an expired leftover too)
     if why == DropFor::Cover && covered_by.is_empty() {
-        return Ok(());
+        return Ok(None);
     }
     // a snapshot dropped other than as covered still settles suspect flags of what it was stamped
     // after (`receipt::settled`), held when it dropped or not (a part missing, as after a purge
@@ -320,12 +333,13 @@ fn drop_part_for(tx: &mut Tx<'_>, c: &CommitId, ai: usize, why: DropFor) -> Resu
     // An invalid part gave nothing (`apply::rebuilt`): its drop leaves the state as it is
     // unless it uncovered a part.
     if a.ak.signal() {
-        return crate::engine::refs::note(tx, &a.tid, &a.ak, Some(c), fire_refs);
+        crate::engine::refs::note(tx, &a.tid, &a.ak, Some(c), fire_refs)?;
+        return Ok(None);
     }
     if why == DropFor::Destroyed || (invalid && !uncovered) || in_place {
-        return Ok(());
+        return Ok(None);
     }
-    crate::apply::rebuild(tx, &a.tid, &a.ak)
+    Ok(Some(uncovered))
 }
 
 /// The covers dropped part `ai` of `c` (or forgotten coverer `c`) dropped under on `(tid, ak)`
@@ -768,6 +782,10 @@ pub(crate) fn reopen_late(tx: &mut Tx<'_>, c: &CommitId, ais: &BTreeSet<usize>) 
 /// (`apply::rebuild`: removal does not commute with join), which also holds each snapshot carrying
 /// such a write as its leftover. A copy of a write listed later goes on its join.
 ///
+/// `in_place` (an expiry of a held body): while no held snapshot may carry a write of `o`
+/// (`snapshot::carried_meets`), the state loses them in place (`gone_in_place`), O(the delta),
+/// unless one superseded a write still held.
+///
 /// The leftover is the body as held (whole, or a leftover already), `extra` (what a waiting part
 /// was stripped to, `pending::strip_purged`) or, dropped as covered, its held valid coverers'
 /// copies of its writes, each without the gone writes (`Fragment::remove_gone`: nothing of its
@@ -775,7 +793,7 @@ pub(crate) fn reopen_late(tx: &mut Tx<'_>, c: &CommitId, ais: &BTreeSet<usize>) 
 /// than as covered has none: the list alone holds it gone, and a copy joins without it
 /// (`takes_late`, `drop_gone`); one missing is dropped (a tombstone for a new node).
 /// The aspect, when anything changed.
-fn make_leftover(tx: &mut Tx<'_>, c: &CommitId, ai: usize, o: &[Owned], extra: &[Fragment]) -> Result<Option<(Tid, Ak)>> {
+fn make_leftover(tx: &mut Tx<'_>, c: &CommitId, ai: usize, o: &[Owned], extra: &[Fragment], in_place: bool) -> Result<Option<(Tid, Ak)>> {
     let Some(mut m) = tx.core.ix.commits.get(c).cloned() else { return Ok(None) };
     let Some(a) = m.header.aspects.get(ai).cloned() else { return Ok(None) };
     if o.is_empty() {
@@ -825,6 +843,14 @@ fn make_leftover(tx: &mut Tx<'_>, c: &CommitId, ai: usize, o: &[Owned], extra: &
         }
         return Ok(Some(k));
     };
+    // where its writes sit in the state, for a removal in place: the held writes, kept, are up
+    // to date before it leaves them
+    let asks = in_place && m.holds(ai) && !a.ak.signal() && !(tx.txn.is_memory() && !a.ak.ephemeral()) && !snapshot::carried_meets(tx.core, &a.tid, &a.ak, o) && (bounded(tx.core, &a.tid, &a.ak) || bounds::followed(tx, &a.tid, &a.ak)?);
+    if asks {
+        bounds::settle_index(tx, &a.tid, &a.ak)?;
+    }
+    let at = asks.then(|| body.clone());
+    let revivals = tx.core.revivals;
     // a fire has no state to strip: its references go with its values, O(the fire)
     let mut fire_refs = (a.ak.signal() && m.valid_at(ai) && crate::engine::refs::indexed(&a.ak)).then(crate::engine::refs::Delta::default);
     if let Some(d) = &mut fire_refs {
@@ -833,12 +859,12 @@ fn make_leftover(tx: &mut Tx<'_>, c: &CommitId, ai: usize, o: &[Owned], extra: &
     strip_leftover(tx.core, &m.header, ai, &mut body);
     // a delta left with no write (its own all gone, none carried) is nothing: dropped, as gone
     // (a held one, its fire's references with it; one dropped as covered stays so), the aspect
-    // rebuilt without it
+    // without it
     if gives.is_none() && body.is_empty() {
-        if m.holds(ai) {
-            drop_part_for(tx, c, ai, DropFor::Other)?;
-        } else {
-            crate::apply::rebuild(tx, &a.tid, &a.ak)?;
+        let uncovered = if m.holds(ai) { drop_body(tx, c, ai, DropFor::Other)?.unwrap_or(false) } else { false };
+        match at {
+            Some(at) if !uncovered => gone_in_place(tx, &a.tid, &a.ak, &at, o, revivals)?,
+            _ => crate::apply::rebuild(tx, &a.tid, &a.ak)?,
         }
         return Ok(Some(k));
     }
@@ -849,10 +875,28 @@ fn make_leftover(tx: &mut Tx<'_>, c: &CommitId, ai: usize, o: &[Owned], extra: &
     if let Some(d) = fire_refs {
         crate::engine::refs::note(tx, &a.tid, &a.ak, Some(c), d)?;
     }
-    // the state from the held bodies, the leftover among them, each without the listed writes,
-    // shredded (every local copy of the writes goes)
-    crate::apply::rebuild(tx, &a.tid, &a.ak)?;
+    match at {
+        Some(at) => gone_in_place(tx, &a.tid, &a.ak, &at, o, revivals)?,
+        // the state from the held bodies, the leftover among them, each without the listed
+        // writes, shredded (every local copy of the writes goes)
+        None => crate::apply::rebuild(tx, &a.tid, &a.ak)?,
+    }
     Ok(Some(k))
+}
+
+/// The writes of `o` left the held bodies of `(tid, ak)`; `at`, the body that held them, says
+/// where they sit in the state. Removing them from the state in place is the join of the held
+/// bodies (spec/crdt.md §4.7) unless one superseded a write still held, which is back there
+/// (§4.8 Revival): the held writes (kept from a dated aspect's first death, or from the aspect's
+/// first expiring part: `bounds::follow`), settled before they left and again now, say whether
+/// one revived since `revivals` (none kept on a dated aspect: no held write was dead). Else the
+/// state is rebuilt.
+fn gone_in_place(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, at: &Fragment, o: &[Owned], revivals: u64) -> Result<()> {
+    bounds::settle_index(tx, tid, ak)?;
+    if tx.core.revivals != revivals {
+        return crate::apply::rebuild(tx, tid, ak);
+    }
+    crate::apply::remove_in_place(tx, tid, ak, at, o)
 }
 
 /// Expiring snapshot part `ai` of `c` past its expiry (spec/crdt.md §4.7, §8): every node drops its
@@ -1006,7 +1050,7 @@ fn hold_gone(tx: &mut Tx<'_>, c: &CommitId, ai: usize, purged: bool, changed: &m
         changed.insert(k);
     }
     let own = writes_of(&m.header, c, ai);
-    if let Some(k) = make_leftover(tx, c, ai, &own, &[])? {
+    if let Some(k) = make_leftover(tx, c, ai, &own, &[], !purged)? {
         changed.insert(k);
     }
     // a memory commit's leftover may be superseded now (spec/sync-compaction.md §2), or covered by a
@@ -1040,7 +1084,7 @@ fn drop_gone(tx: &mut Tx<'_>, c: &CommitId, ai: usize, changed: &mut BTreeSet<(T
         return Ok(());
     }
     strip_pending(tx, c, ai)?;
-    if let Some(k) = make_leftover(tx, c, ai, &gone, &[])? {
+    if let Some(k) = make_leftover(tx, c, ai, &gone, &[], false)? {
         changed.insert(k);
     }
     Ok(())
@@ -1099,6 +1143,7 @@ fn on_parts(tx: &mut Tx<'_>, id: &CommitId, h: &Header, ais: BTreeSet<usize>, pu
     for &ai in &ais {
         let Some(a) = h.aspects.get(ai) else { continue };
         if let Some(t) = h.expires {
+            bounds::follow(tx, &a.tid, &a.ak)?;
             if t <= tx.now().0 {
                 hold_gone(tx, id, ai, false, purged)?;
             } else {

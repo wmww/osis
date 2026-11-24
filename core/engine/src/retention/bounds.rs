@@ -374,12 +374,15 @@ fn body_writes(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, x: &CommitId, f: Form) -> Re
     Ok(Some((osis_crdt::Body { c: *x, ts, snap }, osis_crdt::BodyWrites::of(&frag, !f.1))))
 }
 
-/// Brings the held writes of dated aspect `(tid, ak)` (`osis_crdt::Held`: every write its held
+/// Brings the held writes of value aspect `(tid, ak)` (`osis_crdt::Held`: every write its held
 /// valid bodies hold, by position, with when each died and each body's deaths by date; durable
 /// rows, so a session reads only the positions a change touches) up to date with what the
-/// running transaction changed.
+/// running transaction changed. What dates a dated aspect's bodies, and what tells an expired
+/// write that superseded nothing held (`retention::make_leftover`: removed from the state in
+/// place); an aspect holding an expiring part keeps them from then on (`follow`).
 ///
-/// An aspect keeps them from its first death: while no held write supersedes another, every
+/// A dated aspect keeps them from its first death, so none kept there means no held write is
+/// dead: while no held write supersedes another, every
 /// date is none and nothing is kept, so a join that supersedes nothing writes nothing (a thing's
 /// role aspects and an aspect only added to cost no row). A join that supersedes a write says so
 /// (`Core::died`, from the state's winners it killed or its own it brought dead:
@@ -413,16 +416,7 @@ pub(crate) fn settle_index(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
         if !died && !unsure {
             return Ok(());
         }
-        // built in memory from every held body, then written: a build reads no row
-        let _s = osis_base::costs::span("held writes");
-        let noted: Vec<(CommitId, Form)> = tx.core.ix.by_aspect.get(&k).into_iter().flatten().filter_map(|x| Some((x.1, form(tx.core, &x.1, tid, ak)?))).collect();
-        let mut fresh = Held::new(osis_crdt::MemRows::default());
-        for (c, f) in noted {
-            if let Some((b, w)) = body_writes(tx, tid, ak, &c, f)? {
-                fresh.place(&b, &w, &tag(f))?;
-            }
-        }
-        fresh.date_every()?;
+        let mut fresh = built_fresh(tx, tid, ak)?;
         // nothing dead: nothing to keep
         if !fresh.any_dead()? {
             return Ok(());
@@ -454,6 +448,8 @@ pub(crate) fn settle_index(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
             let mut ix = index(tx, tid, ak, Shred::Yes)?;
             ix.leave(&b)?;
             moved.extend(ix.take_moved());
+            let revived = ix.take_revived();
+            tx.core.revivals += u64::from(revived);
             left = true;
         }
         let joining = match is {
@@ -475,6 +471,52 @@ pub(crate) fn settle_index(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
     Ok(())
 }
 
+/// The held writes of `(tid, ak)` built in memory from every held valid body, dated: a build
+/// reads no row.
+fn built_fresh(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Held<osis_crdt::MemRows>> {
+    let _s = osis_base::costs::span("held writes");
+    let noted: Vec<(CommitId, Form)> = tx.core.ix.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().filter_map(|x| Some((x.1, form(tx.core, &x.1, tid, ak)?))).collect();
+    let mut fresh = Held::new(osis_crdt::MemRows::default());
+    for (c, f) in noted {
+        if let Some((b, w)) = body_writes(tx, tid, ak, &c, f)? {
+            fresh.place(&b, &w, &tag(f))?;
+        }
+    }
+    fresh.date_every()?;
+    Ok(fresh)
+}
+
+/// The row of an aspect whose held writes are kept though none is dead (`follow`): after every
+/// position's and body's rows (`osis_crdt::Held` keys start 0 or 1).
+const FOLLOWED: &[u8] = &[2];
+
+/// An expiring part of `(tid, ak)` is held: its held writes are kept from now on, built from the
+/// held bodies where none are (its first expiring part: O(the held bodies) once), so its expiry
+/// tells whether a write of it superseded one still held (`retention::make_leftover`). Kept until
+/// its last body leaves.
+pub(crate) fn follow(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
+    if ak.signal() || tx.txn.is_memory() && !ak.ephemeral() || followed(tx, tid, ak)? {
+        return Ok(());
+    }
+    settle_index(tx, tid, ak)?;
+    if followed(tx, tid, ak)? {
+        return Ok(());
+    }
+    let mut fresh = built_fresh(tx, tid, ak)?;
+    fresh.rows.0.insert(FOLLOWED.to_vec(), Vec::new());
+    let moved = fresh.take_moved();
+    index(tx, tid, ak, Shred::No)?.rows.fill(&fresh.rows.0)?;
+    tx.core.dates_moved.extend(moved.into_iter().map(|x| (*tid, ak.clone(), x)));
+    let now = (tx.core.ix.commits.changes_len(), tx.core.bodies_rewritten.len(), tx.core.died.len(), tx.core.to_date.pushes());
+    tx.core.index_settled.insert((*tid, ak.clone()), now);
+    Ok(())
+}
+
+/// Whether the held writes of `(tid, ak)` are kept (`settle_index` follows them).
+pub(crate) fn followed(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<bool> {
+    Ok(tx.txn.table(tid, ak, HELD_TABLE)?.is_some())
+}
+
 /// Forgets the held writes of `(tid, ak)` (it is dated no more, its rows were forgotten, or
 /// its last body left): the table, shredded.
 pub(crate) fn drop_index(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
@@ -487,8 +529,8 @@ pub(crate) fn drop_index(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
 /// Debug builds: the kept held writes of `(tid, ak)` are, row for row, those built from its
 /// held valid bodies at once, each write dated by the rows (`Held::place`, `Held::date_every`):
 /// so no join or leave was missed, every death and date moved with them, and the deaths kept
-/// are those the rows date. None kept yet (no transaction wrote the aspect since it is dated:
-/// the next builds them) is no fault. Gives the held writes built from nothing.
+/// are those the rows date; none kept on a dated aspect, no held write is dead. Gives the held
+/// writes built from nothing.
 #[cfg(debug_assertions)]
 pub(super) fn index_exact(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, when: &str) -> Result<Held<osis_crdt::MemRows>> {
     let mut fresh = Held::new(osis_crdt::MemRows::default());
@@ -502,9 +544,10 @@ pub(super) fn index_exact(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, when: &str) -> Re
     }
     fresh.date_every()?;
     if tx.txn.table(tid, ak, HELD_TABLE)?.is_none() {
+        assert!(!bounded(tx.core, tid, ak) || !fresh.any_dead()?, "{when}: dated {tid:?} {ak:?} keeps no held writes, yet a held write is dead");
         return Ok(fresh);
     }
-    let kept: std::collections::BTreeMap<Vec<u8>, Vec<u8>> = index(tx, tid, ak, Shred::No)?.rows.scan(&[], &[0xff; 2], usize::MAX)?.into_iter().collect();
+    let kept: std::collections::BTreeMap<Vec<u8>, Vec<u8>> = index(tx, tid, ak, Shred::No)?.rows.scan(&[], FOLLOWED, usize::MAX)?.into_iter().collect();
     let diff: Vec<String> = kept.keys().chain(fresh.rows.0.keys()).filter(|k| kept.get(*k) != fresh.rows.0.get(*k)).take(4).map(|k| format!("{:?}: kept {:?}, fresh {:?}", osis_base::hex::encode(k), kept.get(k).map(|v| osis_base::hex::encode(v)), fresh.rows.0.get(k).map(|v| osis_base::hex::encode(v)))).collect();
     assert!(diff.is_empty(), "{when}: the held writes of {tid:?} {ak:?} differ from those of its held bodies: {diff:?}");
     Ok(fresh)

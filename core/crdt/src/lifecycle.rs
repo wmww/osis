@@ -11,9 +11,10 @@ use std::collections::BTreeMap;
 impl Fragment {
     /// Removes the writes `gone` owns (expired, purged: §4.7), every write of their dots (resets,
     /// flags, positions and creations too), and gives canonical form: `remove_writes`, then prune.
-    /// What a node applies to every body it holds and every copy arriving; a state is rebuilt from
-    /// such bodies, never stripped in place (removing a write does not commute with join: what it
-    /// pruned is back only from a body). `gone` is asked about origin dots (never `Derived`).
+    /// What a node applies to every body it holds and every copy arriving. Removing writes does
+    /// not commute with join (what one superseded is back only from a body), so on a state it
+    /// equals the join of the bodies so changed only where none superseded a write a body holds
+    /// (§4.8 Revival). `gone` is asked about origin dots (never `Derived`).
     pub fn remove_gone(&mut self, gone: &dyn Fn(&Dot) -> bool) {
         self.remove_writes(gone);
         self.prune(None, &mut Changes::new());

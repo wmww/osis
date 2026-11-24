@@ -36,7 +36,7 @@ pub use memory::PART_OVERHEAD;
 pub(crate) use waits::Waits;
 #[cfg(debug_assertions)]
 pub(crate) use atomic::{check_rebuilt, check_states};
-pub(crate) use atomic::{apply_verified, carries_any, forget_snapshot, index_commit, note_carried, note_role_sigs, note_stands_in, ingest_secrets_keys, observe_state, rebuild, rejudged, run_batched, shred_covered, remove_gone_writes};
+pub(crate) use atomic::{apply_verified, carries_any, forget_snapshot, index_commit, note_carried, note_role_sigs, note_stands_in, ingest_secrets_keys, observe_state, rebuild, rejudged, remove_in_place, run_batched, shred_covered, remove_gone_writes};
 
 use crate::engine::blobs::TxBlobs;
 use crate::engine::{Engine, Meta, Step, Tx, decode_commit_record, records};

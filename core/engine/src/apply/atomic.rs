@@ -1244,6 +1244,44 @@ pub(crate) fn rebuild(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
     Ok(())
 }
 
+/// A gone delta's change to `(tid, ak)` in place (spec/crdt.md §4.7): the state without the
+/// writes `own` owns, `rebuild`'s result at O(the delta) where the held set changed only by those
+/// writes leaving and none of them superseded a write still held (no held write revived:
+/// `retention::make_leftover` asks the held writes). `at`, the delta's body before the removal,
+/// says where its writes sit (a paged state loads those pages). A rebuild asked in this batch
+/// already reads the bodies without them.
+pub(crate) fn remove_in_place(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, at: &Fragment, own: &[Owned]) -> Result<()> {
+    let k = (*tid, ak.clone());
+    if ak.signal() || tx.core.batched.as_ref().is_some_and(|b| b.contains_key(&k)) {
+        return Ok(());
+    }
+    let _s = osis_base::costs::span("gone: in place");
+    // the state changes: held purge-on-replace bodies are judged again (`retention::settle_none`)
+    if crate::retention::history::of(tx.core, tid, ak).purges() {
+        tx.core.none_due.insert(k.clone());
+    }
+    tx.load_lazy(tid, ak)?;
+    let touch = crate::engine::pages::touch_of(at, tx.core.pages.get(&k));
+    tx.ensure_touch(tid, ak, &touch)?;
+    let Some(mut st) = tx.core.states.get_mut(&k).and_then(Option::take) else { return Ok(()) };
+    tx.core.touch();
+    tx.core.wrote(k.clone());
+    let refs = crate::engine::refs::indexed(ak).then(|| crate::engine::refs::Delta::reach(&st, at));
+    let roots = crate::retention::compact::roots(ak, &st, at);
+    let set = OwnedSet::of(own);
+    st.remove_gone(&|d| set.owns(d));
+    let refs = refs.map(|(mut d, before)| {
+        d.after(&st, at, &before);
+        d
+    });
+    let after = crate::retention::compact::roots(ak, &st, at);
+    let st = tx.kept(tid, ak, st)?;
+    tx.set_state_touched(tid, ak, st, &touch, Shred::Yes)?;
+    crate::engine::refs::note(tx, tid, ak, None, refs.unwrap_or_default())?;
+    crate::retention::compact::Trigger::unlinked(tx, tid, ak, &roots, &after)?;
+    Ok(())
+}
+
 /// A covered drop's change to `(tid, ak)` (spec/commits.md §5 Covered): its coverer carries the
 /// writes of part `ai` of `c`, so the state keeps its value, and every local copy of the body
 /// goes. So the rows that held its writes are written again shredded, which makes their earlier

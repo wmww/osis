@@ -1119,6 +1119,7 @@ pub(crate) fn remove_writes(s: &mut Seq, pred: &dyn Fn(&Dot) -> bool) {
     elems.extend(crate::seq_span::expand(held));
     elems.retain(|d, el| {
         let theirs = pred(d.origin());
+        let had = el.pos.len();
         el.pos.retain(|p| !bad(&p.0));
         if el.deleted.as_ref().is_some_and(|x| bad(&x.0)) {
             el.deleted = None;
@@ -1129,6 +1130,14 @@ pub(crate) fn remove_writes(s: &mut Seq, pred: &dyn Fn(&Dot) -> bool) {
             if !matches!(el.content, SeqContent::Frag(_)) {
                 el.content = SeqContent::None;
             }
+        }
+        // a creation kept is a position write of the top 2 again where a removed one beat it
+        // (§5.7 `pos`)
+        if el.pos.len() < had
+            && let Some((st, a)) = &el.created
+        {
+            el.pos.push((st.clone(), a.clone(), None));
+            top2(&mut el.pos);
         }
         if let SeqContent::Frag(f) = &mut el.content {
             f.remove_writes(pred);

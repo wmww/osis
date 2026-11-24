@@ -161,14 +161,13 @@ fn verify_waiting(tx: &mut Tx<'_>, id: &CommitId, part: &osis_commit::Part, h: &
 }
 
 /// The part of aspect `ai` of pending commit `id` (in `blob`, header `h`) that a held purge
-/// request names: held value-less from now on (spec/commits.md §5). It is checked and decoded
-/// as `apply::examine` would, its value-carrying writes stripped (spec/crdt.md §4.7) and the
-/// result joined into the part's leftover (`records::LEFTOVER`); its slot in `blob` and the
-/// stored copy holds an empty delta (`emptied`). `examine` joins the leftover in its place, and
-/// `stripped_joined` holds the part as it once joined, as a purge holds an applied part. One with
-/// a page away, or parked (this build cannot read it), cannot be stripped: it goes, and its aspect
-/// is flagged, its non-value writes joining only through a copy or a snapshot, as those of a part
-/// missing when purged. One with its thing's record away cannot occur: no right can stand without
+/// request names: gone from now on (spec/commits.md §5). It is checked and decoded as
+/// `apply::examine` would, its writes removed (spec/crdt.md §4.7) and the result joined into the
+/// part's leftover (`records::LEFTOVER`); its slot in `blob` and the stored copy holds an empty
+/// delta (`emptied`). `examine` joins the leftover in its place, and `stripped_joined` holds the
+/// part as it once joined, as a purge holds an applied part. One with a page away, or parked
+/// (this build cannot read it), cannot be decoded: it goes, as a part missing when purged, which
+/// reads as one held and removed (its writes have no effect). One with its thing's record away cannot occur: no right can stand without
 /// it (`holds_right`), spec/commits.md §5 states the limit. A bad one is `examine`'s. A snapshot
 /// has no values of its own: kept whole, dropped once applied (`purge_one`).
 fn strip_purged(tx: &mut Tx<'_>, id: &CommitId, blob: &mut osis_commit::CommitBlob, h: &Header, ai: usize) -> Result<()> {
@@ -194,7 +193,6 @@ fn strip_purged(tx: &mut Tx<'_>, id: &CommitId, blob: &mut osis_commit::CommitBl
     };
     if !done {
         blob.parts.retain(|p| p.ai != ai);
-        suspect::raise(tx, &a.tid, &a.ak, suspect::Why::Uncovered, &[(*id, ai)])?;
     }
     tx.core.touch();
     // node-sync forgets the blobs holding it (`Engine::spent_copy`)
@@ -289,7 +287,7 @@ pub(crate) fn stripped_joined(tx: &mut Tx<'_>, id: &CommitId, joined: &[(usize, 
             continue;
         }
         let own = writes_of(&h, id, ai);
-        if let Some(k) = make_leftover(tx, id, ai, &own, &kept)? {
+        if let Some(k) = make_leftover(tx, id, ai, &own, &kept, false)? {
             changed.insert(k);
         }
         if let Some(a) = h.aspects.get(ai)

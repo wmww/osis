@@ -1382,9 +1382,9 @@ fn expiries(n: usize) -> ([Work; 2], Vec<usize>) {
     (out.try_into().unwrap(), bounds)
 }
 
-// spec/crdt.md §4.7, spec/requirements.md Scale: an expiry costs O(what expires): the state is
-// stripped in place (`apply::strip_state`), no body of the aspect read but the expiring one, its
-// pages alone loaded and written, at n and 10n held bodies. The debug build checks each against a
+// spec/crdt.md §4.7, spec/requirements.md Scale: an expiry costs O(what expires): its writes,
+// superseding nothing held, leave the state in place (`apply::remove_in_place`), no body of the
+// aspect read but the expiring one, its pages alone loaded and written, at n and 10n held bodies. The debug build checks each against a
 // rebuild (`check_rebuilt`). The bound each holder keeps of what the snapshot carries valued
 // (`retention::snapshot::Carried`) is one entry per source: one, at n and 10n valued writes.
 #[test]

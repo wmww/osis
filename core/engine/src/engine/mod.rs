@@ -1150,7 +1150,7 @@ pub struct Core {
     /// body whose bytes may have changed under an unchanged form, joined again in its aspect's
     /// held writes (`retention::bounds::settle_index`).
     pub(crate) bodies_rewritten: Vec<(Tid, Ak, CommitId)>,
-    /// Per dated aspect, how far the running transaction's changes are in its held writes
+    /// Per aspect, how far the running transaction's changes are in its held writes
     /// (`retention::bounds::settle_index`): the lengths of the commits log and of
     /// `bodies_rewritten` then. Emptied by a rollback (every change is looked at again).
     pub(crate) index_settled: BTreeMap<(Tid, Ak), (usize, usize, usize, usize)>,
@@ -1158,6 +1158,9 @@ pub struct Core {
     /// (`retention::mark_killed`): an aspect keeps held writes from its first death
     /// (`retention::bounds::settle_index`).
     pub(crate) died: Vec<(Tid, Ak)>,
+    /// How many settles of held writes revived a write (`osis_crdt::Held::take_revived`), ever:
+    /// a caller compares it before and after a change (an expiry stripping the state in place).
+    pub(crate) revivals: u64,
     /// Commits to deliver again (`Engine::take_redeliver`). Not journaled: naming one a rollback undid
     /// costs a look. A name goes with its commit (forgotten, or dropped from pending while not
     /// applied), so it holds at most one per commit held. Sync reads none of it.
@@ -1940,6 +1943,7 @@ impl Core {
             bodies_rewritten: _,
             index_settled: _,
             died: _,
+            revivals: _,
             wrote_on: _,
             written: _,
             accounts: _,
@@ -2310,6 +2314,7 @@ impl Core {
             bodies_rewritten: Vec::new(),
             index_settled: BTreeMap::new(),
             died: Vec::new(),
+            revivals: 0,
             redeliver: BTreeSet::new(),
             forge_bad: BTreeSet::new(),
             #[cfg(debug_assertions)]
