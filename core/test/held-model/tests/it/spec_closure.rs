@@ -32,7 +32,7 @@ fn role(on: T, g: T, r: Option<Role>) -> Commit {
     Commit { from: on, op: Op::Role(g, r), ephemeral: false }
 }
 /// A node whose root holds `roots`, its one own actor (a thing added to `w`) granted read on
-/// each of `read` and sync on each of `sync`: taken grants.
+/// each of `read` and sync on each of `sync`.
 fn node(w: &mut World, roots: &[T], read: &[T], sync: &[T]) -> NodeView {
     let a = w.kinds.len();
     w.kinds.push(K);

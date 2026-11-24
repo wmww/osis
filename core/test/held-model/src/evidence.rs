@@ -18,7 +18,7 @@
 //!   (`paths::evidence`: every held edge write on a seed's key hop and on an edge of
 //!   its path or on the remaining admin edge a lowering names, closed under the same for what it
 //!   adds: notes/write-path-design.md §2 E1) of the seeds: the bodies; the grants naming S's thing as holder (a holder's
-//!   grants travel under its sync ID: taken-ness is not modelled, every grant counts). What of it
+//!   grants travel under its sync ID: every grant counts). What of it
 //!   lies on things outside the unit is a copy, the rest bodies. A removal is in it only as
 //!   evidence of a body (notes/write-path-design.md §2, D1) or as Role changes travel puts it
 //!   (D3); nothing logs a removal anywhere for its own sake (lazy delivery).
@@ -53,7 +53,7 @@
 //!
 //! Left out: records (static, `paths::World::records`), keys and sealing (a keyset is a body that
 //! carries demotions, no more), `@` signals, covers, deposits other than D4's and their promotion
-//! as a step of its own, taken-ness of a grant, multi-thing role commits, how units are computed
+//! as a step of its own, multi-thing role commits, how units are computed
 //! (an input: `closure` checks the walk).
 
 use roles_model::paths::{self, Edge, Id, Kind, Rules, Set, Thing, Things, View};
