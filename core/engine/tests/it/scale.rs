@@ -154,7 +154,7 @@ fn snapshot_peak(n: usize, nested: bool) -> [u64; 3] {
     let b = lp.peers[0].backend.clone();
     lp.peers[0].restart(1).unwrap();
     let (_, w) = measured(&b, || lp.peers[0].engine.snapshot(&t, &big()).unwrap().unwrap());
-    [w.n("snapshot: state held"), w.n("snapshot page read"), w.n("paged state loaded whole")]
+    [w.n("snapshot: state held"), w.n("state page read"), w.n("paged state loaded whole")]
 }
 
 // spec/requirements.md (Scale: memory follows what is touched), spec/crdt.md §8, spec/sync-compaction.md §1:

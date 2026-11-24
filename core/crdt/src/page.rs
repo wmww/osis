@@ -109,6 +109,12 @@ impl PageWalk for Unpaged {
     fn keyed(&mut self, _: &[Step]) -> Result<KeyedPath, Error> {
         Err(Error::Mismatch("a whole state has no pages"))
     }
+    fn page_of(&mut self, _: &[Step], _: &crate::Dot) -> Result<StoredPage, Error> {
+        Err(Error::Mismatch("a whole state has no pages"))
+    }
+    fn dots_of(&mut self, _: &[Step], _: &osis_base::Value) -> Result<Vec<crate::Dot>, Error> {
+        Err(Error::Mismatch("a whole state has no pages"))
+    }
 }
 
 impl PageSource for Unpaged {
@@ -137,7 +143,8 @@ pub trait PageSource {
 }
 
 /// A state kept as a skeleton and pages of its large collections (the node's paged states,
-/// notes/engine-paged.md), as it is stored: what `Paged` reads a page at a time.
+/// notes/engine-paged.md), as it is stored: what `Paged` reads a page at a time. What the reader
+/// holds is what it asked for last: a store bounding a read charges each page served.
 pub trait PageWalk {
     /// How many pages the collection at `path` (steps from the root) is kept as.
     fn pages(&mut self, path: &[Step]) -> Result<usize, Error>;
@@ -148,6 +155,12 @@ pub trait PageWalk {
     /// The path to the collection at `path` with each entry step's key and creation
     /// (`Fragment::wrap`): what gives a record holding only paged content back.
     fn keyed(&mut self, path: &[Step]) -> Result<KeyedPath, Error>;
+    /// The page of the collection at `path` holding element `d` (the last whose first element is
+    /// at or below it), as `page` serves it.
+    fn page_of(&mut self, path: &[Step], d: &crate::Dot) -> Result<StoredPage, Error>;
+    /// The elements of the map or set at `path` found by key or value `k`
+    /// (`Fragment::index_values`): a superset, in any order.
+    fn dots_of(&mut self, path: &[Step], k: &osis_base::Value) -> Result<Vec<crate::Dot>, Error>;
 }
 
 /// A path with the keys and creations of its entry steps (`Fragment::wrap`).
@@ -161,10 +174,10 @@ pub struct StoredPage {
     pub frag: Fragment,
 }
 
-/// A stored state read for its snapshot a page at a time (`encode_paged_snapshot`,
-/// `page_view::View`): `skeleton`, the state with its collections at `paths` reduced
+/// A stored state read a page at a time (`page_view`: `encode_paged_snapshot`, `sweep_paged`,
+/// `each_piece`): `skeleton`, the state with its collections at `paths` reduced
 /// (`Fragment::reduced`), their pages, and the writes `gone` names (by origin dot), which the
-/// snapshot does not carry (spec/crdt.md §4.7, §8).
+/// reader leaves out (a snapshot does not carry them, spec/crdt.md §4.7, §8).
 pub struct Paged<'a> {
     pub skeleton: &'a Fragment,
     pub paths: &'a Paths,

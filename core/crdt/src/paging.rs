@@ -56,6 +56,18 @@ impl Fragment {
         }
     }
 
+    /// What a paged map or set's index finds element `d` by (`PageWalk::dots_of`): the keys of a
+    /// map's records of `d` holding content (a tombstone's key finds nothing live), the value of a
+    /// set element or the reference its value removal names (§5.5). Empty for a key-erased element
+    /// and other encodings.
+    pub fn index_values(&self, d: &Dot) -> Vec<Value> {
+        match self {
+            Fragment::Map(_) => self.entry_keys(d).into_iter().cloned().collect(),
+            Fragment::Set(_) => self.set_record_value(d).into_iter().collect(),
+            _ => Vec::new(),
+        }
+    }
+
     /// A set's record `d`: the tid its value removal names, or its element's value (hidden or
     /// not, §5.5); `None` for a tombstone or another encoding.
     pub fn set_record_value(&self, d: &Dot) -> Option<Value> {

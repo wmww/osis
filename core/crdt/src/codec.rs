@@ -540,14 +540,6 @@ pub fn sources_of(st: Paged<'_>, cx: &DeltaCtx) -> Result<BTreeSet<Source>, Erro
     Ok(enc.sources().cloned().collect())
 }
 
-/// Calls `each` with every piece of the state a stored paged state's snapshot carries
-/// (`Paged`): its skeleton, then each page, each with what it needs to be read alone (a page's
-/// records holding only paged content are there, as in the skeleton).
-pub fn each_snapshot_piece(st: Paged<'_>, each: &mut dyn FnMut(&Fragment)) -> Result<(), Error> {
-    let (mut view, skeleton) = View::new(st)?;
-    view.each_piece(&skeleton, each)
-}
-
 /// Encodes a delta (§3.2) against its header facts.
 pub fn encode_delta(d: &Delta, cx: &DeltaCtx, pages: Option<&mut dyn PageSink>) -> Result<Vec<u8>, Error> {
     #[cfg(test)]

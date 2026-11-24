@@ -110,6 +110,15 @@ impl PageWalk for Kept {
     fn keyed(&mut self, path: &[Step]) -> Result<KeyedPath, Error> {
         Ok(Kept::keyed(self, path))
     }
+    fn page_of(&mut self, path: &[Step], d: &Dot) -> Result<StoredPage, Error> {
+        let (lo, hi, frag) = self.rows(path).into_iter().rfind(|(lo, _, _)| lo.as_ref().is_none_or(|lo| lo <= d)).ok_or(Error::Mismatch("no such page"))?;
+        self.served += 1;
+        Ok(StoredPage { lo, hi, frag })
+    }
+    fn dots_of(&mut self, path: &[Step], k: &Value) -> Result<Vec<Dot>, Error> {
+        let Some(c) = self.whole.at_steps(path) else { return Ok(Vec::new()) };
+        Ok(c.elem_dots(None, None).into_iter().filter(|d| c.index_values(d).contains(k)).collect())
+    }
 }
 
 /// Small enough that most states page on the wire, some at several link levels.
@@ -145,11 +154,25 @@ fn agree(k: &mut Kept, gone: &dyn Fn(&Dot) -> bool, params: PageParams) -> Resul
     if s != t {
         return Err(format!("sources: whole {s:?}, paged {t:?}"));
     }
-    let mut w = std::collections::BTreeSet::new();
-    crate::each_snapshot_piece(Paged { skeleton: &skeleton, paths: &paths, pages: k, gone }, &mut |f| w.extend(f.writes())).map_err(|e| format!("pieces: {e:?}"))?;
-    let ww: std::collections::BTreeSet<_> = whole.writes().into_iter().collect();
-    if w != ww {
-        return Err(format!("the pieces' writes are not the stripped state's: extra {:?}, missing {:?}", w.difference(&ww).collect::<Vec<_>>(), ww.difference(&w).collect::<Vec<_>>()));
+    for keys in [false, true] {
+        let (mut w, mut present) = (std::collections::BTreeSet::new(), false);
+        let read = crate::each_piece(Paged { skeleton: &skeleton, paths: &paths, pages: k, gone }, keys, &mut |f| {
+            w.extend(f.writes());
+            present |= f.present();
+            false
+        });
+        match read.map_err(|e| format!("pieces: {e:?}"))? {
+            Some(false) => {}
+            None if keys => continue,
+            r => return Err(format!("pieces, keys {keys}: {r:?}")),
+        }
+        let ww: std::collections::BTreeSet<_> = whole.writes().into_iter().collect();
+        if w != ww {
+            return Err(format!("the pieces' writes are not the stripped state's (keys {keys}): extra {:?}, missing {:?}", w.difference(&ww).collect::<Vec<_>>(), ww.difference(&w).collect::<Vec<_>>()));
+        }
+        if present != whole.present() {
+            return Err(format!("a piece reads present {present}, the stripped state {}", whole.present()));
+        }
     }
     match both(k, gone, params) {
         (Ok((a, pa)), Ok((b, pb))) if a == b && pa.len() == pb.len() => Ok(true),

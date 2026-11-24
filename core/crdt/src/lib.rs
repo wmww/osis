@@ -81,7 +81,7 @@ pub use winners::{Kind, Place, Winners, Won};
 pub use held::{BUCKET, Body, BodyWrites, Corrupt, Held, HeldWrite, MemRows, Row, Rows};
 pub use row_pages::{PageCache, PagedRows};
 pub use copies::CopyIndex;
-pub use codec::{LinkTree, PageAt, TreePlace, decoded_bound, decode_delta, decode_snapshot, encode_delta, each_snapshot_piece, encode_paged_snapshot, encode_snapshot, page_array, page_items, sources_of};
+pub use codec::{LinkTree, PageAt, TreePlace, decoded_bound, decode_delta, decode_snapshot, encode_delta, encode_paged_snapshot, encode_snapshot, page_array, page_items, sources_of};
 pub use error::Error;
 pub use fragment::{BagKind, Bag, CaseWrite, Eid, Elem, Encoding, Entry, Key, Enum, Fragment, Map, Meta, RegWrite, Register, Set, Slots, Struct};
 pub use delta::{DeltaBuilder, out_of_profile};
@@ -91,6 +91,7 @@ pub use ops::{Op, PathOp, PathSeg, Writer, create, diff, diff_values, remove, re
 pub use undo::{Undone, restores, undo};
 pub use stream::{Checked, Head, Piece, Want, decode_checked, stream_checked, stream_checked_some, stream_delta, stream_snapshot};
 pub use lifecycle::sweep_paged;
+pub use page_view::each_piece;
 pub use page_index::{PageIndex, Wanted};
 pub use page::{MemoryPages, PageError, PageParams, PageSink, PageSource, KeyedPath, PageWalk, Paged, StoredPage, TestPages, Unpaged};
 pub use paging::{PagedTouch, Paths, Step};

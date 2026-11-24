@@ -496,24 +496,29 @@ impl Tx<'_> {
 
     /// The pieces of the state of `(tid, ak)` as a read sees each, within the running read's
     /// bound (`reading`): an unpaged or wholly loaded state is one piece, a paged one its skeleton,
-    /// then its pages one at a time, never joined into the cache (`pages::each_piece`; with `keys`
-    /// each reads as the whole does there, and a collection paged inside another's elements reads
-    /// whole, one piece). `each` returns whether to stop.
+    /// then its pages one at a time read from the store, never joined into the cache
+    /// (`osis_crdt::each_piece`; with `keys` each reads as the whole does there, and a collection
+    /// paged inside another's elements reads whole, one piece). `each` returns whether to stop.
     pub(crate) fn each_piece(&mut self, tid: &Tid, ak: &Ak, keys: bool, each: &mut dyn FnMut(&Fragment) -> Result<bool>) -> Result<()> {
         self.load_lazy(tid, ak)?;
         if self.held_in_part(tid, ak) {
             let k = (*tid, ak.clone());
-            let bound = self.bound.take();
-            let r = match (self.core.pages.get_mut(&k), self.core.states.get(&k)) {
-                (Some(idx), Some(Some(f))) => {
-                    idx.bound = bound;
-                    pages::each_piece(&mut self.txn, tid, ak, idx, f, keys, each)
+            if let (Some(idx), Some(Some(f))) = (self.core.pages.get(&k), self.core.states.get(&k)) {
+                let skeleton = f.reduced(idx.paths());
+                let mut err = None;
+                let mut w = pages::StoredPages::new(&mut self.txn, tid, ak, idx, self.bound)?;
+                let r = osis_crdt::each_piece(osis_crdt::Paged { skeleton: &skeleton, paths: idx.paths(), pages: &mut w, gone: &|_| false }, keys, &mut |f| {
+                    each(f).unwrap_or_else(|e| {
+                        err = Some(e);
+                        true
+                    })
+                });
+                if let Some(e) = err.or_else(|| w.take_err()) {
+                    return Err(e);
                 }
-                _ => Ok(None),
-            };
-            self.bound = bound;
-            if r?.is_some() {
-                return Ok(());
+                if r?.is_some() {
+                    return Ok(());
+                }
             }
         }
         if let Some(f) = self.state(tid, ak)? {

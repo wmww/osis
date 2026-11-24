@@ -229,7 +229,7 @@ impl SnapState {
         let Some(idx) = &self.pages else {
             return Ok(f(osis_crdt::Paged { skeleton: &self.skeleton, paths: &osis_crdt::Paths::default(), pages: &mut osis_crdt::Unpaged, gone: &gone })?);
         };
-        let mut w = crate::engine::pages::SnapshotPages::new(txn, tid, ak, idx)?;
+        let mut w = crate::engine::pages::StoredPages::new(txn, tid, ak, idx, None)?;
         let r = f(osis_crdt::Paged { skeleton: &self.skeleton, paths: idx.paths(), pages: &mut w, gone: &gone });
         if let Some(e) = w.take_err() {
             return Err(e);
@@ -260,10 +260,10 @@ impl SnapState {
         Ok(())
     }
 
-    /// Calls `each` with each piece of the state the snapshot carries: the skeleton, then every
-    /// page (`osis_crdt::each_snapshot_piece`).
-    pub fn each_piece(&self, tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, each: &mut dyn FnMut(&Fragment)) -> Result<()> {
-        self.walk(&mut tx.txn, tid, ak, |st| osis_crdt::each_snapshot_piece(st, each))
+    /// Calls `each` with each piece of the state the snapshot carries (`osis_crdt::each_piece`)
+    /// until it returns true.
+    pub fn each_piece(&self, tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, each: &mut dyn FnMut(&Fragment) -> bool) -> Result<()> {
+        self.walk(&mut tx.txn, tid, ak, |st| osis_crdt::each_piece(st, false, each).map(|_| ()))
     }
 }
 
@@ -374,7 +374,10 @@ pub(crate) fn write_expiring(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, owed: &BTreeSe
         }
         let Some(st) = SnapState::stored(tx, tid, ak, Carries::Only(own))? else { return Ok(out) };
         let mut any = false;
-        st.each_piece(tx, tid, ak, &mut |f| any = any || !f.writes().is_empty())?;
+        st.each_piece(tx, tid, ak, &mut |f| {
+            any = !f.writes().is_empty();
+            any
+        })?;
         if !any {
             continue;
         }
@@ -532,7 +535,10 @@ pub(crate) fn held_by_stamp(core: &Core, tid: &Tid, ak: &Ak, ts: Ts, src: &osis_
 /// carrying it states them. One neither gives (none should be) is left to `Fact::NARROWEST`.
 pub(crate) fn facts_of(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, st: &SnapState) -> Result<osis_crdt::Facts> {
     let mut carried = BTreeSet::new();
-    st.each_piece(tx, tid, ak, &mut |f| carried.extend(stamps_of(f)))?;
+    st.each_piece(tx, tid, ak, &mut |f| {
+        carried.extend(stamps_of(f));
+        false
+    })?;
     let mut out = osis_crdt::Facts::new();
     let mut rest = BTreeSet::new();
     for (ts, src) in carried {

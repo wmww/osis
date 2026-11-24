@@ -606,18 +606,31 @@ fn droppable(tx: &Tx<'_>, tid: &Tid, ak: &Ak) -> BTreeSet<CommitId> {
 }
 
 /// What a snapshot of `(tid, ak)` would cost as a held body: its state (without the expiring
-/// writes) encoded, weighed as a part plus `ENTRY_CHARGE`. `None`: no state.
+/// writes) encoded and paged as written, its root and pages weighed as a part (as `body_bytes`
+/// weighs a held one) plus `ENTRY_CHARGE`, the pages counted, not kept. `None`: no state.
 fn snapshot_cost(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, me: Tid) -> Result<Option<usize>> {
     let Some(st) = super::snapshot_state(tx, tid, ak)? else { return Ok(None) };
     let cx = osis_commit::writer_ctx(Form::Commit, osis_commit::Kind::ContentSnapshot, osis_base::Ts::default(), me, 0, 0);
-    let encoded = st.walk(&mut tx.txn, tid, ak, |p| osis_crdt::encode_paged_snapshot(&[0; osis_crdt::NONCE_LEN], p, &osis_crdt::Frontiers::default(), &BTreeMap::new(), &Default::default(), &cx, Some(&mut osis_crdt::Unpaged)));
+    let mut pages = Counted(0);
+    let encoded = st.walk(&mut tx.txn, tid, ak, |p| osis_crdt::encode_paged_snapshot(&[0; osis_crdt::NONCE_LEN], p, &osis_crdt::Frontiers::default(), &BTreeMap::new(), &Default::default(), &cx, Some(&mut pages)));
     let bytes = match encoded {
-        Ok(b) => b,
+        Ok(b) => b.len().saturating_add(pages.0),
         // encoding fails only on a malformed fragment: counted as nothing
-        Err(Error::Crdt(_)) => Vec::new(),
+        Err(Error::Crdt(_)) => 0,
         Err(e) => return Err(e),
     };
-    Ok(Some(part_weight(bytes.len()).saturating_add(ENTRY_CHARGE)))
+    Ok(Some(part_weight(bytes).saturating_add(ENTRY_CHARGE)))
+}
+
+/// A page sink keeping nothing: the bytes of the pages put (`snapshot_cost`).
+struct Counted(usize);
+
+impl osis_crdt::PageSink for Counted {
+    fn put(&mut self, plaintext: &[u8]) -> std::result::Result<Link, osis_crdt::PageError> {
+        self.0 = self.0.saturating_add(plaintext.len());
+        let hash = osis_base::hash::hash(plaintext);
+        Ok(Link { hash, blob: BlobId(hash), suite: 1, key: [0; 32], salt: [0; 16], del: osis_base::Del::NONE })
+    }
 }
 
 /// An aspect's load at this node (`Engine::compaction_load`): what the bodies held of it a

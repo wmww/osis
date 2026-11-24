@@ -313,19 +313,6 @@ fn parse_page_row(b: &[u8]) -> Result<(Range, Fragment)> {
     Ok(((opt_dot_of(lo)?, opt_dot_of(hi)?), decode(p)?))
 }
 
-/// What the index of a paged collection finds element `d` by: the keys of a map's records of
-/// `d` holding content (a tombstone's key finds nothing live), the value of a set element, the
-/// reference of a set's value removal. Empty for a key-erased element and other
-/// encodings.
-fn indexed(c: &Fragment, enc: Encoding, d: &Dot) -> Vec<Value> {
-    match enc {
-        Encoding::Map => c.entry_keys(d).into_iter().cloned().collect(),
-        // an element's value, hidden or not, or the reference a value removal names (§5.5)
-        Encoding::Set => c.set_record_value(d).into_iter().collect(),
-        _ => Vec::new(),
-    }
-}
-
 /// An index row of a paged map or set: set ID, the hash of the key or value (a link as its
 /// content hash's bytes: equal values give equal rows, spec/data-model.md §6), the element's
 /// dot.
@@ -416,58 +403,6 @@ pub fn load_all(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut StatePa
 /// Whether a collection is paged inside another's elements (its path runs through pages).
 fn nested(idx: &StatePages) -> bool {
     idx.sets.keys().any(|p| idx.sets.keys().any(|q| q.len() < p.len() && p.starts_with(q)))
-}
-
-/// The pieces of the paged state with skeleton `f`, as a read of the whole sees each, one at a
-/// time and never joined into `f`: the skeleton (`f` reduced), then each page below the
-/// skeleton's spine along its path (`Fragment::spine`: what pruning and an enum's case there
-/// depend on). With `keys`, a page of a map or set also holds the records of the keys or values
-/// its records hold that lie on other pages (a key reads as the join of its records, spec/crdt.md
-/// §5.6; a value's records hide each other, §5.5; found through the index), so each piece reads
-/// as the whole does there; `Ok(None)` when a collection is paged inside another's elements (a
-/// key's records then reach into pages below: the caller reads whole). Each page and what it
-/// pulls is charged against what `idx.bound` leaves, then dropped: the walk holds the skeleton,
-/// a page and its keys' records. `each` returns whether to stop; the result is whether it did.
-pub fn each_piece(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &StatePages, f: &Fragment, keys: bool, each: &mut dyn FnMut(&Fragment) -> Result<bool>) -> Result<Option<bool>> {
-    if keys && nested(idx) {
-        return Ok(None);
-    }
-    let s0 = f.reduced(&idx.paths);
-    if each(&s0)? {
-        return Ok(Some(true));
-    }
-    let t = table(txn, tid, ak)?;
-    for (p, set) in &idx.sets {
-        let spine = s0.spine(p, None);
-        for key in set_rows(txn, t, set)? {
-            let Some(row) = txn.table_get(t, &key)? else { continue };
-            let mut bound = idx.bound;
-            let (range, pg) = charge_row(&mut bound, &row)?;
-            let mut g = spine.clone();
-            if keys && is_keyed(set) {
-                let inside = |d: &Dot| range.0.as_ref().is_none_or(|lo| d >= lo) && range.1.as_ref().is_none_or(|hi| d < hi);
-                let vs: BTreeSet<Value> = pg.elem_dots(None, None).iter().flat_map(|d| indexed(&pg, set.enc, d)).collect();
-                for v in &vs {
-                    for d in key_dots(txn, tid, ak, set, v)?.into_iter().filter(|d| !inside(d)) {
-                        let (_, other) = row_below(txn, t, &set.past(&d))?;
-                        let mut b = bound;
-                        let o = charge(&mut b, other.len(), || Ok(parse_page_row(&other)?.1))?;
-                        if let Some(r) = o.key_records(&d, v) {
-                            let r = charge(&mut bound, 0, || Ok(r))?;
-                            g.join(Fragment::wrap(&set.path, r));
-                        }
-                    }
-                }
-            }
-            g.join(Fragment::wrap(&set.path, pg));
-            // counted: tests read the most a walk holds
-            osis_base::costs::peak("paged state: piece held", g.approx_bytes() as u64);
-            if each(&g)? {
-                return Ok(Some(true));
-            }
-        }
-    }
-    Ok(Some(false))
 }
 
 /// Loads the page of `set` holding `d` (the last row at or below it).
@@ -730,24 +665,31 @@ fn walk(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, t: Table, idx: &mut State
     Ok(at)
 }
 
-// ---- a state read for its snapshot (spec/crdt.md §8)
+// ---- a stored state read a page at a time (spec/crdt.md §8)
 
-/// A paged state's pages as stored, served a page at a time to the snapshot encoder
-/// (`osis_crdt::PageWalk`, which strips and reads them: `osis_crdt::encode_paged_snapshot`).
-/// Holds the row keys of each collection it read, never a page past the call that read it. A
-/// store error is kept for `take_err` (the encoder sees a page error).
-pub struct SnapshotPages<'t, 's> {
+/// A paged state's pages as stored, served a page at a time to `osis_crdt::page_view` (the
+/// snapshot encoder and sweep, `osis_crdt::each_piece`). Holds the row keys of each collection
+/// it read, never a page past the call that read it. Each page served is charged against what
+/// its bound leaves (`charge`): a page asked for by index starts a piece, one by dot (a key's
+/// records elsewhere, an outer collection's record) is charged to the piece under way. A store
+/// error is kept for `take_err` (the reader sees a page error).
+pub struct StoredPages<'t, 's> {
     txn: &'t mut Transaction<'s>,
+    tid: Tid,
+    ak: Ak,
     t: Table,
     idx: &'t StatePages,
     rows: BTreeMap<Vec<Step>, Vec<Vec<u8>>>,
+    bound: Bound,
+    piece: Bound,
     err: Option<Error>,
 }
 
-impl<'t, 's> SnapshotPages<'t, 's> {
-    pub fn new(txn: &'t mut Transaction<'s>, tid: &Tid, ak: &Ak, idx: &'t StatePages) -> Result<SnapshotPages<'t, 's>> {
+impl<'t, 's> StoredPages<'t, 's> {
+    /// The pages of `(tid, ak)`, each piece read within `bound`.
+    pub fn new(txn: &'t mut Transaction<'s>, tid: &Tid, ak: &Ak, idx: &'t StatePages, bound: Bound) -> Result<StoredPages<'t, 's>> {
         let t = table(txn, tid, ak)?;
-        Ok(SnapshotPages { txn, t, idx, rows: BTreeMap::new(), err: None })
+        Ok(StoredPages { txn, tid: *tid, ak: ak.clone(), t, idx, rows: BTreeMap::new(), bound, piece: bound, err: None })
     }
 
     /// The store error a failed call kept.
@@ -769,14 +711,31 @@ impl<'t, 's> SnapshotPages<'t, 's> {
         self.rows.get(p).ok_or(Error::Corrupt("state page set"))
     }
 
-    /// Page `i` of the collection at `p` as stored, with its range.
+    /// A stored page row, charged to the piece.
+    fn read(&mut self, row: &[u8]) -> Result<osis_crdt::StoredPage> {
+        // counted: scale tests read the pages a reader reads
+        let _s = osis_base::costs::span("state page read");
+        let ((lo, hi), frag) = charge_row(&mut self.piece, row)?;
+        Ok(osis_crdt::StoredPage { lo, hi, frag })
+    }
+
+    /// Page `i` of the collection at `p` as stored, with its range: a new piece.
     fn row(&mut self, p: &[Step], i: usize) -> Result<osis_crdt::StoredPage> {
         let key = self.rows(p)?.get(i).cloned().ok_or(Error::Corrupt("state page"))?;
         let row = self.txn.table_get(self.t, &key)?.ok_or(Error::Corrupt("state page"))?;
-        // counted: scale tests read the pages a snapshot's writer reads
-        let _s = osis_base::costs::span("snapshot page read");
-        let ((lo, hi), frag) = parse_page_row(&row)?;
-        Ok(osis_crdt::StoredPage { lo, hi, frag })
+        self.piece = self.bound;
+        self.read(&row)
+    }
+
+    /// The page of the collection at `p` holding `d`.
+    fn row_of(&mut self, p: &[Step], d: &Dot) -> Result<osis_crdt::StoredPage> {
+        let set = self.set(p)?;
+        let (key, prefix) = (set.past(d), set.prefix());
+        let (k, row) = row_below(self.txn, self.t, &key)?;
+        if !k.starts_with(&prefix) {
+            return Err(Error::Corrupt("state page missing"));
+        }
+        self.read(&row)
     }
 
     fn keep<T>(&mut self, r: Result<T>) -> std::result::Result<T, osis_crdt::Error> {
@@ -787,7 +746,7 @@ impl<'t, 's> SnapshotPages<'t, 's> {
     }
 }
 
-impl osis_crdt::PageWalk for SnapshotPages<'_, '_> {
+impl osis_crdt::PageWalk for StoredPages<'_, '_> {
     fn pages(&mut self, path: &[Step]) -> std::result::Result<usize, osis_crdt::Error> {
         let r = self.rows(path).map(Vec::len);
         self.keep(r)
@@ -798,6 +757,17 @@ impl osis_crdt::PageWalk for SnapshotPages<'_, '_> {
     }
     fn keyed(&mut self, path: &[Step]) -> std::result::Result<osis_crdt::KeyedPath, osis_crdt::Error> {
         let r = self.set(path).map(|s| s.path.clone());
+        self.keep(r)
+    }
+    fn page_of(&mut self, path: &[Step], d: &Dot) -> std::result::Result<osis_crdt::StoredPage, osis_crdt::Error> {
+        let r = self.row_of(path, d);
+        self.keep(r)
+    }
+    fn dots_of(&mut self, path: &[Step], k: &Value) -> std::result::Result<Vec<Dot>, osis_crdt::Error> {
+        let r = match self.idx.sets.get(path) {
+            Some(set) => key_dots(self.txn, &self.tid, &self.ak, set, k),
+            None => Err(Error::Corrupt("state page set")),
+        };
         self.keep(r)
     }
 }
@@ -1747,7 +1717,7 @@ fn index_keys(txn: &mut Transaction<'_>, kt: Table, set: &PageSet, c: &Fragment,
         return Ok(());
     }
     for d in dots {
-        for k in indexed(c, set.enc, d) {
+        for k in c.index_values(d) {
             // rows are never removed (a superset), so most are there already: a read, not a write
             let row = key_row(set, &k, Some(d));
             if fresh || txn.table_get(kt, &row)?.is_none() {
