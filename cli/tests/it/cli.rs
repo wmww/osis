@@ -648,7 +648,7 @@ fn serve_survives_a_bad_socket_dir() {
 // CLI `writes`, `fired`, `purge`: pages by place, each part in its line, a purged part, purge by
 // commit and by author; a signal's fires; `--follow`; a thing destroyed.
 #[test]
-#[ignore = "accounts: keys"]
+#[ignore = "issues/destroy-after-author-purge-leaves-a-row.md"]
 fn writes_and_purge_commands_plan_cli() {
     let s = S::mem();
     let t = s.kept_thing();
