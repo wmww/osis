@@ -13,4 +13,4 @@ Engine, commits packaged as `thing_cost::what_a_reader_costs` does: removing one
 ## Directions
 - A copy under the holder's sync ID cut to the boxes to that holder, fetched for the things a node enters (notes/holder-access-study.md, the edge piece).
 - A node that may not rotate a thing applies its rotation with the pages holding boxes it opens (unfetched pages are a may-hold state already, spec/sync-judgement.md §2); what a rotator, a re-sealer and the stale-box rules read of the other boxes decides how far this goes.
-Both are design work with a model first. The first is decided as part of holding holders for keys (notes/holder-access-study.md, direction 3: own boxes only) and owed by the sync rewrite (notes/sync-rewrite-state.md, Next); its cost at large rosters depends on both.
+Both are design work with a model first. The first is decided as part of holding holders for keys (notes/holder-access-study.md, The direction: own boxes only) and owed by the sync rewrite (notes/sync-rewrite-state.md, Next); its cost at large rosters depends on both.

@@ -1,5 +1,5 @@
 # Evidence derivation
-> Summary: Design and build state of `osis_engine::evidence`: the copies a sync ID requires, derived from a node's held copies and the sync ID's unit by spec/permissions.md §4 under E1 (every edge write on a stated path's edges and on the edges a member writes) with delete-key steps; the engine keeps one fed per commit (`evidence::kept`), read by `sync/certified.rs`; the engine's input and check (`evidence::held`), engine hand tests; inputs, output, what re-derives what and its cost; keys-open travel as an indexed graph; the differential against held-model `Stage::E1` (0 disagreements), hand worlds and counts; carried demotions (A3 design).
+> Summary: `osis_engine::evidence` as built: the copies a sync ID requires, derived from a node's held copies and the sync ID's unit by spec/permissions.md §4 under E1 (every edge write on a stated path's edges and on the edges a member writes) with delete-key steps; the engine keeps one fed per commit (`evidence::kept`), read by `sync/certified.rs`; the engine's input and check (`evidence::held`), engine hand tests; inputs, output, what re-derives what and its cost; keys-open travel as an indexed graph; the differential against held-model `Stage::E1` (0 disagreements), hand worlds and counts; carried demotions, added beside it.
 
 **Principle: a sync ID's evidence is a function of the copies the node holds and the sync ID's unit: the least set the spec's rules close over them. Nothing is logged once and remembered; a change re-derives exactly what it can move, and the incremental answer is the from-scratch answer by construction (same closure step, same seeds).**
 
@@ -13,10 +13,10 @@ Per held **copy** (commit ID, thing), held whole (a commit's edge writes on a th
 - **Record edges** (`add_record`, `remove_record`): each (mint admin, thing it minted), standing while the record is held: edges of the keys-open graph.
 - `Config::keys_open`: Role changes travel's keys-open half on or off (off: writes naming the actor alone).
 
-No validity, no order, no chained-ness: E1 takes every held write "whatever their validity or order", so the derivation needs no walk output at all.
+No validity, no order: E1 takes every held write "whatever their validity or order", so the derivation needs no walk output at all.
 
 ## Output
-`required(sid)`: every copy on a thing outside the unit in S's evidence, with one **reason** each (`Reason`: a write on an edge the set uses; a write naming a holder whose role changes travel under S; a write recording a step that places a listed key). Bodies (held copies on unit things) are S's sync unit blobs, not output. `from_scratch(sid)` the same from nothing. A copy is a whole (commit, thing), never keyed by commit alone (a role commit on two things is two copies). Records (members' creation records up their chains) are not output: brief 3 takes them from the bodies' and copies' paths.
+`required(sid)`: every copy on a thing outside the unit in S's evidence, with one **reason** each (`Reason`: a write on an edge the set uses; a write naming a holder whose role changes travel under S; a write recording a step that places a listed key). Bodies (held copies on unit things) are S's sync unit blobs, not output. `from_scratch(sid)` the same from nothing. A copy is a whole (commit, thing), never keyed by commit alone (a role commit on two things is two copies). Records (members' creation records up their record chains) are not output: `sync_ids/certs.rs` takes them from the bodies' and copies' paths.
 
 ## The rule (spec/permissions.md §4 under E1)
 S's evidence is the least set of copies holding:
@@ -61,8 +61,8 @@ Memory per sync ID: its used edges and keys, members and reasons, atom counts: O
 
 The module takes changes by call and does work in proportion to them. Its lookups are stamped (`Ix::stamps`, one key per `Row`: a copy's parts, the copies on an edge, the steps bearing a key, a held step, a sync ID's closure; any other read is of the whole), so a value derived from it (`osis_base::memo`: a read thing's certificates) is due exactly when a row it read was written. A sync ID's row is written where its closure moved (`extend` adding an edge or member, `reclose` ending on another closure), never by a body that only counts an atom.
 
-## Carried demotions (design for A3: not built)
-A removal reaches a thing other than its own by the evidence closure (wherever a node holds both it and a write on its edge it judges) and by **carried demotions** (spec/crypto.md §4): a keyset of M lists the explicit demotions below write or admin its rotator holds applied on M or below it, and is held only with those edge writes. At A3 the demotions a required keyset carries become a seed of the required set (notes/a3-spec/README.md Open 8): one copy identity per (removal commit, thing) with the closure's, one blob per sync ID. held-model's `Rule::keysets` has it; the derivation does not (issues/engine-evidence-trails-model.md).
+## Carried demotions
+A removal reaches a thing other than its own by the evidence closure (wherever a node holds both it and a write on its edge it judges) and by **carried demotions** (spec/crypto.md §4): a keyset of M lists the explicit demotions below write or admin its rotator holds applied on M or below it, and is held only with those edge writes. `sync_ids/certs.rs` adds the `roles.0` parts of the demotions a placed keyset carries (`carried_demotions`) beside the derivation's output; the derivation does not seed its closure with them, as held-model's `Rule::keysets` does (issues/engine-evidence-trails-model.md; notes/a3-spec/README.md Open 8 makes them a seed).
 
 ## The engine's input (`evidence::held`)
 `held::copies` reads every commit in `ix.commits` (any validity) into copies, from the index and the held `sync.0` bodies, nothing kept:

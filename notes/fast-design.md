@@ -1,10 +1,10 @@
-# Fast by construction: design
-> Summary: How the ergonomic way is the fast way across core, kit and app (Tess's rule in notes/api-design.md), as built: a render depends on exactly what it read through a tracking `osis::ReadOnly` handle, kit is a dependency graph of memo nodes, lists are windowed by construction, and a harness checks every view. Why, the design, and how it is held there.
+# Fast by construction
+> Summary: How the ergonomic way is the fast way across core, kit and app (Tess's rule in notes/api-design.md): a render depends on exactly what it read through a tracking `osis::ReadOnly` handle, kit is a dependency graph of memo nodes, lists are windowed by construction, and a harness checks every view. Why, the design, and how it is held there.
 
 Symbols: H things held, P messages on the page, W rows visible, S live listeners.
 
 ## 1. Why
-A view system where listening is declared apart from reading, every change re-renders the whole tree and lists build every row makes every view's cost grow with what is held (H) and the page (P), not with what is shown (W): one chat message cost about 12H engine reads plus every row of the page, and a status change or a typing pause paid the same.
+A view system where listening is declared apart from reading, every change re-renders the whole tree and lists build every row makes every view's cost grow with what is held (H) and the page (P), not with what is shown (W): one chat message costs about 12H engine reads plus every row of the page, and a status change or a typing pause the same.
 
 ## 2. Paths the design keeps closed
 1. Whole-tree refresh as the only update path, so every view inherits it.
@@ -18,7 +18,7 @@ A view system where listening is declared apart from reading, every change re-re
 ## 3. The design
 **Rule: a render depends on exactly what it read, and has no other way to read.** This completes the principle in notes/listener-design.md: every read has one listener at the same address, so a read can subscribe itself. No parallel system.
 
-**Core** (one new noun, no second read API)
+**Core** (one noun, no second read API)
 - `ReadSet::new(on_change)`, `db.tracking(&set) -> ReadOnly`, the read-only handle `Osis` derefs to, and `set.sweep()`.
 - On a tracking handle, every read subscribes as it reads, under the lock `subscribe` already takes. So there is no gap between read and listen, on any dispatcher.
 - It keeps listeners already in the set; `sweep` drops those not read since the last sweep.
@@ -49,7 +49,7 @@ A view system where listening is declared apart from reading, every change re-re
 **One message:** one matched listener, page memo reads O(W) commits, one node re-renders, one row is built. Things, favorites, rail and chrome are not touched.
 
 Why this passes the notes:
-- **notes/api-design.md:** one read API, one new concept, and compile-time rejection of writes in render.
+- **notes/api-design.md:** one read API, one concept (`ReadSet`), and compile-time rejection of writes in render.
 - **notes/app.md:** views stay data-driven, and memo and list are general concepts that name no feature.
 
 ## 4. Holding it there

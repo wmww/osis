@@ -91,10 +91,5 @@ Engine::wants  planned: issues/sync-unbuilt.md
 Try  rejected: notes/api.md (a timeout in the API)
 Value::Large  rejected: notes/api.md
 Missing::Forgot  rejected: notes/engine-lost-access.md
-Rule::listed  removed: a held-model evidence option its findings name (notes/evidence-model-findings.md)
-Leaves::Evidence  removed: a held-model evidence option its findings name
-Leaves::Unit  removed: a held-model evidence option its findings name
-Removals::Any  removed: a held-model evidence option its findings name
 Scope::Edge  removed: a held-model evidence option its findings name
-Far  removed: a held-model evidence option its findings name (`Home::Far`)
 RUSTC_BOOTSTRAP  third-party: rustc and cargo read it (unstable flags on stable)
