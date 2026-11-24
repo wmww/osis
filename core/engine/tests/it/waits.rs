@@ -1191,7 +1191,9 @@ fn creation_of(lp: &mut LocalPeer, i: usize, to: usize, t: Tid) -> osis_engine::
 }
 
 /// Peer 1, a node of peer 0's account, holds U; peer 0 makes X and commits C writing U and X:
-/// U, X, C, C's package and X's creation, none given to peer 1. Built once (`LocalPeer::cached`).
+/// U, X, C, C's package and X's creation, none given to peer 1, which holds the commit giving X
+/// its secrets and steps (C lists X's step keys, spec/crypto.md §7), waiting for X's record.
+/// Built once (`LocalPeer::cached`).
 fn record_away() -> (LocalPeer, (Tid, Tid, osis_base::CommitId, osis_engine::local_peer::Package, osis_engine::local_peer::Package)) {
     LocalPeer::cached("waits::record_away", || {
         let mut lp = net_one(2);
@@ -1199,6 +1201,11 @@ fn record_away() -> (LocalPeer, (Tid, Tid, osis_base::CommitId, osis_engine::loc
         sync(&mut lp, 0, 1);
         let x = new_shared(&mut lp, 0);
         let xc = creation_of(&mut lp, 0, 1, x);
+        for pk in packages_for(&mut lp, 0, 1) {
+            if lp.peers[0].engine.writes_keyset(&x, &pk.id) {
+                assert!(matches!(lp.peers[1].engine.ingest(&pk.bytes, Vec::new()).unwrap(), Ingested::Pending(..)), "X's steps wait for its record");
+            }
+        }
         let mut m = Mutation::new();
         m.set(u, &REG, &s("u")).unwrap();
         m.set(x, &REG, &s("x")).unwrap();

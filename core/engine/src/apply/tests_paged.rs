@@ -954,23 +954,6 @@ fn entry_creation_after_its_paged_content_spec_crdt_5_6() {
     }
 }
 
-/// Made-up delete keys and the thing's dedup secret, for hand-built commits.
-struct Forged(osis_base::CreationRecord);
-impl osis_commit::Secrets for Forged {
-    fn dedup(&self, _: &Tid) -> Option<osis_crypto::Secret32> {
-        Some(osis_crypto::dedup_secret(self.0.nonce()))
-    }
-    fn admin_key(&self, _: &Tid) -> Option<osis_crypto::VerifyingKey> {
-        Some(osis_crypto::DeleteSecret::write(&osis_crypto::Secret32::from_bytes([3; 32])).verifying_key())
-    }
-    fn purge_author_key(&self) -> Option<osis_crypto::VerifyingKey> {
-        Some(osis_crypto::DeleteSecret::write(&osis_crypto::Secret32::from_bytes([1; 32])).verifying_key())
-    }
-    fn write_key(&self, _: &Tid) -> Option<osis_crypto::VerifyingKey> {
-        Some(osis_crypto::DeleteSecret::write(&osis_crypto::Secret32::from_bytes([2; 32])).verifying_key())
-    }
-}
-
 /// Pages handed to a blob writer, each first changed by `mutate` (its index, its plaintext).
 struct Mutating<'a, 'b> {
     inner: osis_blob::BlobWriter<'a>,
@@ -1006,7 +989,7 @@ fn forge_snapshot_in(w: &mut World, by: usize, ak: &Ak, ts: osis_base::Ts, f: os
     use osis_commit::{AspectWrite, CommitBuilder, Form, Kind, writer_ctx};
     let t = w.t;
     let rec = w.lp.peers[0].engine.get_typed(&t, &ct::CREATED).unwrap().unwrap();
-    let sec = Forged(rec);
+    let sec = w.lp.peers[0].engine.hand_secrets(&[rec]);
     let author = w.lp.peers[by].engine.me();
     let purge_by = osis_commit::retention::snapshot_purge_by(ak.as_str());
     let keys = osis_commit::delete_keys(&sec, &t, &purge_by).unwrap();
@@ -1749,6 +1732,8 @@ fn hostile_link_trees_cost_rounds_by_pages_spec_wire_6() {
     };
     let map = |n: u64| Value::Map((0..n).map(|i| (Value::Int(i as i64), s(i, 0))).collect());
     let forge = |w: &mut World, n: u64, reroot: Option<Reroot<'_>>| {
+        // stamped after the write recording the step whose keys it lists (spec/crypto.md §7)
+        w.lp.advance(1);
         let now = osis_base::Ts::make(w.lp.peers[0].engine.now(), 0).unwrap();
         let mut wr = osis_crdt::Writer::new(now, made_up(0x80), 1 << 40);
         let f = osis_crdt::create(&mut wr, &osis_crdt::AnyView, &map(n)).unwrap();

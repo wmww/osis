@@ -288,23 +288,6 @@ impl Engine {
         self.core.keep_bodies = on;
     }
 
-    /// Interim (issues/delete-key-levels-unchecked.md): verdicts read the key check
-    /// (`Core::check_keys`); what is held is judged again by it.
-    #[doc(hidden)]
-    pub fn check_delete_keys(&mut self, on: bool) -> Result<()> {
-        self.core.check_keys = on;
-        self.run(|tx| {
-            let held: BTreeSet<CommitId> = tx.core.ix.miskeyed.iter().map(|(c, _)| *c).collect();
-            for c in held {
-                tx.core.stale_commits.insert(c);
-                if tx.core.ix.commits.get(&c).is_some_and(|m| m.view.kind.is_role()) {
-                    tx.core.ix.rekeyed.insert(c);
-                }
-            }
-            Ok(())
-        })
-    }
-
     /// Whether this node answers removals with addenda (spec/permissions.md §5.2): off for an
     /// oracle checking that reads are a function of the received commits alone (a witness's
     /// addendum depends on what it had received when the removal came).

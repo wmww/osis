@@ -33,6 +33,8 @@ pub mod write;
 
 #[doc(hidden)]
 pub use testing::{CommitDigest, IndexDigest, IndexField};
+#[doc(hidden)]
+pub use secrets::HandSecrets;
 #[cfg(debug_assertions)]
 #[doc(hidden)]
 pub use explain::Row;
@@ -1300,11 +1302,6 @@ pub struct Core {
     pub signing_due: bool,
     /// No purge-on-replace cover or drop (tests: an oracle holding every body, `Engine::keep_bodies`).
     pub keep_bodies: bool,
-    /// Interim (issues/delete-key-levels-unchecked.md): whether verdicts read the key check
-    /// (`Indexes::miskeyed`). Off until the steps placing a listed key ride with every copy as
-    /// its evidence: a node holding a copy without them cannot tell a wrong key from a base
-    /// whose `sync.0` it lacks (`Engine::check_delete_keys`, tests).
-    pub check_keys: bool,
     /// The list bound, `MAX_LIST_BYTES` (tests: `Engine::list_bound`): what `receipt::fit` fits a
     /// frontier to and each listing is cut to; a thing list, written inline only, fits the smaller
     /// of it and `CHUNK_THRESHOLD`.
@@ -2135,7 +2132,6 @@ impl Core {
             followed_links,
             account,
             keep_bodies,
-            check_keys,
             list_bound,
             sourced_elsewhere,
             // test hooks and debug bookkeeping, set and taken anywhere
@@ -2173,7 +2169,7 @@ impl Core {
             "{:?}",
             (
                 (id.tid(), detect, key_salt, addenda_on, skip_writer_rules, leave_adminless),
-                (commits_watched, refs_watched, commit_listeners.is_some(), forge_bad, keep_bodies, check_keys, list_bound, sourced_elsewhere),
+                (commits_watched, refs_watched, commit_listeners.is_some(), forge_bad, keep_bodies, list_bound, sourced_elsewhere),
                 (actors(&mut key_actors.keys()), actors(&mut held_keys.keys()), followed_links.all(), account.get()),
             )
         )
@@ -2406,7 +2402,6 @@ impl Core {
             signing_due: true,
             accounts: Default::default(),
             keep_bodies: false,
-            check_keys: false,
             list_bound: osis_commit::MAX_LIST_BYTES,
             gone_dirty: BTreeSet::new(),
             needs_due: BTreeSet::new(),
@@ -3726,7 +3721,6 @@ impl Engine {
             // a link followed is synced, so its grants count (`rotation::role_here`)
             fresh.followed_links = self.core.followed_links.clone();
             fresh.accounts = self.core.accounts.clone();
-            fresh.check_keys = self.core.check_keys;
             let mut rng = SeededRng::from_u64(0);
             let mut store_rng = SeededRng::from_u64(0);
             let load = || -> Result<Option<u64>> {

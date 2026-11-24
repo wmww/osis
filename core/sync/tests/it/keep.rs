@@ -90,11 +90,13 @@ fn a_head_move_restamps_own_entries_and_readers_deposit_nothing_spec_sync_judgem
     }
     assert_eq!(reader_deposits(&mut w), 0, "node 2 deposits nothing");
     // node 2, holding no write secret, registered the step only once node 1 held the write
-    // rotation, so node 1 took it as node 0 stamped it, never refused (code 9) nor deposited
+    // rotation, so node 1 took it as node 0 stamped it, never refused (code 9). (Node 2 may log
+    // an encryption of its own beside it: a rotation's parts are role parts, which any holder
+    // encrypts, spec/crypto.md §4 Roles secrets, and it holds the rotation from its offer before
+    // S's stream shows it, spec/permissions.md §4 Logging certificates.)
     for c in needs.iter() {
         let blobs = w.engine(0).commit_blobs(c).unwrap();
         assert!(blobs.iter().any(|b| w.store(1).entry(&s, b).unwrap().is_some_and(|e| e.stamp.is_some() && !e.deposited)), "rotation {c:?} taken stamped at node 1");
-        assert!(!blobs.iter().chain(w.engine(2).commit_blobs(c).unwrap().iter()).any(|b| w.store(2).entry(&s, b).unwrap().is_some_and(|e| e.own && e.deposited)), "node 2 deposits no rotation {c:?}");
     }
 }
 

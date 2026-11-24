@@ -996,9 +996,11 @@ fn edge_unreached(core: &crate::engine::Core, h: &Header, id: &CommitId, whole: 
 
 /// Whether part `ai` of an applied commit (`h`, its view `view`), held or not, cannot be judged
 /// here (spec/commits.md §4 Unjudgeable): what `examine` waits for, read from the held records
-/// (`header_wait`, `thing_wait`), or its thing's path opens nowhere here (a split commit's,
-/// spec/wire.md §4 `Split`). Its validity flag reads false meanwhile, but it is not judged
-/// invalid (`retention::drops_invalid`).
+/// (`header_wait`, `thing_wait`), its thing's path opens nowhere here (a split commit's,
+/// spec/wire.md §4 `Split`), or its commit lists for its thing a key no held step places
+/// (`Core::miskeyed`: a wrong key and a step whose `sync.0` write is not held read alike). Its
+/// validity flag reads false meanwhile, but it is not judged invalid
+/// (`retention::drops_invalid`).
 pub(crate) fn unjudgeable(core: &crate::engine::Core, id: &CommitId, h: &Header, view: &crate::engine::View, ai: usize) -> bool {
     let Some(a) = h.aspects.get(ai) else { return false };
     let held = |t: &Tid| core.created(t).cloned();
@@ -1006,7 +1008,7 @@ pub(crate) fn unjudgeable(core: &crate::engine::Core, id: &CommitId, h: &Header,
     header_wait(h, &held).is_err()
         || view.paths.as_deref().is_some_and(|p| !p.contains_key(&a.tid))
         || thing_wait(core, h, id, a, path.as_ref().map(|p| (p.0.as_slice(), p.1)), &held, &|t, core| core.created(t).cloned()).is_some()
-        || core.check_keys && core.awaits_steps(h, &a.tid)
+        || core.miskeyed(id, &a.tid)
 }
 
 /// Applies or stores one decoded commit blob.

@@ -711,6 +711,71 @@ impl crate::Engine {
     }
 }
 
+/// Secrets for a commit a test builds by hand (`Engine::hand_secrets`): each given thing's
+/// dedup secret, and the delete keys the engine asked lists for it, so a reader checking them
+/// (spec/crypto.md §7 Checked keys) judges the commit by what the test is about. Made-up keys
+/// where that engine can list none (it records no step of the thing's base) and at level 2,
+/// which no reader checks.
+#[doc(hidden)]
+#[derive(Clone, Default)]
+pub struct HandSecrets {
+    dedup: BTreeMap<Tid, Secret32>,
+    keys: BTreeMap<(Tid, Role), VerifyingKey>,
+    /// The dedup secret of a thing given no record (its part sent header only).
+    pub unknown: Option<Secret32>,
+}
+
+impl HandSecrets {
+    /// With no listed key: every level made up (a forger's own keys).
+    pub fn all_made_up(mut self) -> Self {
+        self.keys.clear();
+        self
+    }
+
+    fn made_up(n: u8) -> VerifyingKey {
+        DeleteSecret::write(&Secret32::from_bytes([n; 32])).verifying_key()
+    }
+}
+
+impl osis_commit::Secrets for HandSecrets {
+    fn dedup(&self, tid: &Tid) -> Option<Secret32> {
+        self.dedup.get(tid).or(self.unknown.as_ref()).cloned()
+    }
+    fn admin_key(&self, tid: &Tid) -> Option<VerifyingKey> {
+        Some(self.keys.get(&(*tid, Role::Admin)).copied().unwrap_or_else(|| Self::made_up(3)))
+    }
+    fn purge_author_key(&self) -> Option<VerifyingKey> {
+        Some(Self::made_up(1))
+    }
+    fn write_key(&self, tid: &Tid) -> Option<VerifyingKey> {
+        Some(self.keys.get(&(*tid, Role::Write)).copied().unwrap_or_else(|| Self::made_up(2)))
+    }
+}
+
+impl crate::Engine {
+    /// [`HandSecrets`] for the things of `records`, their delete keys as this engine lists them
+    /// (ask the thing's maker: a forging peer often records no step of its base). A record this
+    /// engine does not hold counts as created by the commit.
+    #[doc(hidden)]
+    pub fn hand_secrets(&self, records: &[CreationRecord]) -> HandSecrets {
+        let created: crate::engine::write::Creates = records.iter().filter(|r| self.core.created(&r.tid()).is_none()).map(|r| (r.tid(), r.clone())).collect();
+        let cache = KeyCache::default();
+        let published = BTreeMap::new();
+        let s = CommitSecrets::own(&self.core, &created, &published, &cache);
+        let mut out = HandSecrets::default();
+        for r in records {
+            let t = r.tid();
+            out.dedup.insert(t, dedup_secret(r.nonce()));
+            for role in [Role::Admin, Role::Write] {
+                if let Some(k) = s.key(&t, role) {
+                    out.keys.insert((t, role), k);
+                }
+            }
+        }
+        out
+    }
+}
+
 impl osis_commit::Secrets for CommitSecrets<'_> {
     fn dedup(&self, tid: &Tid) -> Option<Secret32> {
         self.core.dedup(tid).or_else(|| self.created.get(tid).map(|r| dedup_secret(r.nonce())))

@@ -992,22 +992,6 @@ mod tests {
     fn forge_role_commit(lp: &mut LocalPeer, by: usize, t: Tid, rec: &osis_base::CreationRecord, v: &Value) -> Vec<u8> {
         use osis_commit::{AspectWrite, CommitBuilder, Form, Kind, MemoryBlobs, writer_ctx};
         use osis_crdt::{Delta, Source, Writer, create, encode_delta};
-        struct Dedup(osis_base::CreationRecord);
-        impl osis_commit::Secrets for Dedup {
-            fn dedup(&self, _: &Tid) -> Option<Secret32> {
-                Some(osis_crypto::dedup_secret(self.0.nonce()))
-            }
-            // made-up delete keys (peers' business)
-            fn admin_key(&self, _: &Tid) -> Option<osis_crypto::VerifyingKey> {
-                Some(osis_crypto::DeleteSecret::write(&Secret32::from_bytes([3; 32])).verifying_key())
-            }
-            fn purge_author_key(&self) -> Option<osis_crypto::VerifyingKey> {
-                Some(osis_crypto::DeleteSecret::write(&Secret32::from_bytes([1; 32])).verifying_key())
-            }
-            fn write_key(&self, _: &Tid) -> Option<osis_crypto::VerifyingKey> {
-                Some(osis_crypto::DeleteSecret::write(&Secret32::from_bytes([2; 32])).verifying_key())
-            }
-        }
         let ak = osis_base::Ak::new("secrets.0").unwrap();
         let author = lp.peers[by].engine.me();
         lp.peers[by].clock.advance(1);
@@ -1023,7 +1007,7 @@ mod tests {
         aw.purge_by = osis_commit::retention::write_purge_by(ak.as_str(), None, None).unwrap();
         cb.aspects.push(aw);
         let forge_key = lp.peers[by].engine.sign_forged(&mut cb);
-        cb.build(&forge_key, &Dedup(rec.clone()), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(0)).unwrap().commit.encode()
+        cb.build(&forge_key, &lp.peers[0].engine.hand_secrets(std::slice::from_ref(rec)), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(0)).unwrap().commit.encode()
     }
 
     /// A pending commit by peer `by` boxing peer 1 a fresh read secret of `t`.

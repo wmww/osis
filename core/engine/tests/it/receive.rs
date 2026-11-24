@@ -7,7 +7,7 @@ use common::*;
 use osis_commit::{AspectWrite, CommitBlob, CommitBuilder, Kind, MemoryBlobs};
 use osis_base::Classified;
 use osis_base::{Role, Tid, Ts, Value, WallMs};
-use osis_crypto::{Secret32, SeededRng};
+use osis_crypto::SeededRng;
 use osis_engine::{Event, Ingested, Mutation, Origin, Reason};
 
 /// The index among `pks` of the commit creating `t`.
@@ -339,23 +339,6 @@ fn applies_what_is_held_and_late_delta_spec_commits_4() {
     assert!(lp.peers[1].engine.pending().is_empty());
 }
 
-/// Secrets for hand-built commits: dedup, and made-up delete keys (peers' business).
-pub(crate) struct Dedup(pub(crate) Vec<osis_base::CreationRecord>);
-impl osis_commit::Secrets for Dedup {
-    fn dedup(&self, tid: &Tid) -> Option<Secret32> {
-        self.0.iter().find(|r| r.tid() == *tid).map(|r| osis_crypto::dedup_secret(r.nonce()))
-    }
-    fn admin_key(&self, _: &Tid) -> Option<osis_crypto::VerifyingKey> {
-        Some(osis_crypto::DeleteSecret::write(&osis_crypto::Secret32::from_bytes([3; 32])).verifying_key())
-    }
-    fn purge_author_key(&self) -> Option<osis_crypto::VerifyingKey> {
-        Some(osis_crypto::DeleteSecret::write(&osis_crypto::Secret32::from_bytes([1; 32])).verifying_key())
-    }
-    fn write_key(&self, _: &Tid) -> Option<osis_crypto::VerifyingKey> {
-        Some(osis_crypto::DeleteSecret::write(&osis_crypto::Secret32::from_bytes([2; 32])).verifying_key())
-    }
-}
-
 // spec/versioning.md §2: an unknown encoding or format version parks the commit as bytes; it
 // is relayed and re-examined (after an upgrade), never rejected; others still apply.
 // spec/versioning.md §2 (park unknown)
@@ -374,7 +357,7 @@ fn parked_spec_versioning_2() {
     let mut b = CommitBuilder::new(Kind::Content, ts, e.me(), osis_commit::Path::default(), crate::common::forged_session(e.me()));
     b.aspects.push(w);
     let forge_key = e.sign_forged(&mut b);
-    let built = b.build(&forge_key, &Dedup(vec![rec]), &mut MemoryBlobs::default(), &mut SeededRng::from_u64(0)).unwrap();
+    let built = b.build(&forge_key, &e.hand_secrets(&[rec]), &mut MemoryBlobs::default(), &mut SeededRng::from_u64(0)).unwrap();
     let bytes = built.commit.encode();
     let r = lp.peers[1].receive(&bytes, Vec::new()).unwrap();
     assert!(matches!(r, Ingested::Applied(_)), "its header waits for no part: {r:?}");

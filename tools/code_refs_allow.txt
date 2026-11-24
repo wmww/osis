@@ -51,7 +51,6 @@ QUERY_PAGE  planned: issues/cli-proxy.md, notes/client-port.md
 MAX_QUERY_SUBS  planned: issues/cli-proxy.md, notes/client-port.md
 MAX_SCHEMA_BYTES  planned: notes/client-port.md (schemas over the port, not built)
 STREAM_CHUNK  planned: notes/client-port.md (streams over the port, not built)
-ForgedSecrets  planned: issues/test-consolidation.md
 recv_all  planned: issues/test-consolidation.md
 run_until_loaded  planned: issues/test-consolidation.md
 REALM  planned: notes/realms.md

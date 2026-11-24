@@ -62,9 +62,12 @@ pub fn newer_than_head(a: &ActorEpochs, head: [Option<Epoch>; 3]) -> bool {
 
 /// The aspects whose parts a writer seals, and whose blobs it wraps, under the roles secret of the
 /// epoch it chose (spec/crypto.md §4, Roles secrets): what a holder judges role commits and
-/// establishes epochs by. Every holder of the actor opens them, one with a floor included; their
-/// contents are public keys, sealed boxes and entries, and edges. Nothing else goes there.
-pub const UNDER_ROLES: [&str; 3] = ["roles.0", "keys.0", "secrets.0"];
+/// establishes epochs by, `sync.0` among them: its steps place the delete keys every part lists
+/// (spec/crypto.md §7 Checked keys), so whoever opens a thing's role parts opens the steps that
+/// judge them, in the same blobs. Every holder of the actor opens them, one with a floor
+/// included; their contents are public keys, sealed boxes and entries, steps and edges. Nothing
+/// else goes there.
+pub const UNDER_ROLES: [&str; 4] = ["roles.0", "keys.0", "secrets.0", "sync.0"];
 
 /// Whether a part on aspect `ak` is sealed under the roles secret (`UNDER_ROLES`).
 pub fn under_roles(ak: &str) -> bool {

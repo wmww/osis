@@ -100,7 +100,7 @@ Helpers are listed in (c). Per-test items:
 
 | helper | replaces | where |
 |---|---|---|
-| one `testing::ForgedSecrets(Vec<CreationRecord>)` | ~8 near-identical `osis_commit::Secrets` impls (dedup from records, fixed delete keys) | engine `it` `common::Keys`, `receive::Dedup`, `validity::Dedup`, `validity::Dedups`; engine `tests_paged::Forged`, `apply/keys.rs`, `apply/tests_account`, `rotation/tests_account`; also bench, commit verify, vectors |
+| `Engine::hand_secrets` (`HandSecrets`, built) for the remaining sites | 2 engine `osis_commit::Secrets` impls of their own (no engine holds their account at the build), and those outside the engine | engine `it` `account_commits::Dedup`, `rotation/tests_account::Dedup`; also bench, commit verify, vectors |
 | `common::forge(...)` commit builder | ~17 hand-built `CommitBuilder` sites | engine `it` validity 9, parts 6, receive 1, flows 1 |
 | `recv_all(&n, t)`; `arrive(..)`; `assert_eq!(check(..), None)` | 27, ~16 and 23 sites | perm scenarios/queries/content; incremental |
 | crdt `testutil::{via_snapshot, joined, node}`; `Pager::run_until_loaded` | ~13, 4 and ~100 sites; 9 loops | crdt test files |

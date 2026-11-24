@@ -504,25 +504,7 @@ pub fn forge_snapshot_bytes(lp: &mut LocalPeer, by: usize, t: Tid, a: &osis_base
     cb.aspects.push(aw);
     let rec = lp.peers[0].engine.get_typed(&t, &osis_schema::core_types::CREATED).unwrap().unwrap();
     let forge_key = lp.peers[by].engine.sign_forged(&mut cb);
-    cb.build(&forge_key, &Keys(rec), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(0)).unwrap().commit.encode()
-}
-
-/// Secrets for hand-built commits with `writer` purge-by: dedup, and made-up delete keys
-/// (peers' business).
-pub struct Keys(pub osis_base::CreationRecord);
-impl osis_commit::Secrets for Keys {
-    fn dedup(&self, _: &Tid) -> Option<osis_crypto::Secret32> {
-        Some(osis_crypto::dedup_secret(self.0.nonce()))
-    }
-    fn admin_key(&self, _: &Tid) -> Option<osis_crypto::VerifyingKey> {
-        Some(osis_crypto::DeleteSecret::write(&osis_crypto::Secret32::from_bytes([3; 32])).verifying_key())
-    }
-    fn purge_author_key(&self) -> Option<osis_crypto::VerifyingKey> {
-        Some(osis_crypto::DeleteSecret::write(&osis_crypto::Secret32::from_bytes([1; 32])).verifying_key())
-    }
-    fn write_key(&self, _: &Tid) -> Option<osis_crypto::VerifyingKey> {
-        Some(osis_crypto::DeleteSecret::write(&osis_crypto::Secret32::from_bytes([2; 32])).verifying_key())
-    }
+    cb.build(&forge_key, &lp.peers[0].engine.hand_secrets(&[rec]), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(0)).unwrap().commit.encode()
 }
 
 /// A session of `node` for hand-built commits (spec/crdt.md §2.1): one of its own, apart from

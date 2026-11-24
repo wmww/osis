@@ -109,11 +109,6 @@ impl Recorded {
         self.keys.contains_key(&(level, *key))
     }
 
-    /// Whether a genesis step is recorded before `ts`.
-    pub(crate) fn genesis_before(&self, ts: Ts) -> bool {
-        self.steps.values().any(|s| s.prev.is_none() && s.since < ts)
-    }
-
     /// The newest step of sync ID `id`: the deepest, ties by lowest step ID (spec/sync-ids.md §3
     /// head, as `sync_ids::actors::head_of` reads a forked tree).
     fn head(&self, id: &SyncId) -> Option<&Placed> {
@@ -180,9 +175,9 @@ impl Core {
         h.aspects.iter().map(per).collect::<Vec<_>>().join("; ")
     }
 
-    /// Whether commit `id` lists a wrong key for `t`, as verdicts read it (`Core::check_keys`).
+    /// Whether commit `id` lists a wrong key for `t`, as verdicts read it.
     pub(crate) fn miskeyed(&self, id: &CommitId, t: &Tid) -> bool {
-        self.check_keys && self.ix.miskeyed.contains(&(*id, *t))
+        self.ix.miskeyed.contains(&(*id, *t))
     }
 
     /// Takes the key verdict of commit `id` about to apply, header `h` (`Indexes::miskeyed`).
@@ -207,23 +202,10 @@ impl Core {
             return;
         }
         self.note_keys_of(id, &h);
-        // Interim (issues/delete-key-levels-unchecked.md): no verdict reads it while the check
-        // is off, so nothing is judged again
-        if !self.check_keys {
-            return;
-        }
         self.stale_commits.insert(*id);
         if role {
             self.ix.rekeyed.insert(*id);
         }
-    }
-
-    /// Whether a delta on `t` of a commit with header `h` listing a key that is not right waits
-    /// for a base's `sync.0` rather than being judged invalid for it (spec/commits.md §4
-    /// Unjudgeable): a thing on `t`'s record chain is independent here with no genesis step
-    /// recorded before the commit.
-    pub(crate) fn awaits_steps(&self, h: &Header, t: &Tid) -> bool {
-        self.wrong_keys(h).contains(t) && self.record_chain(t).filter_map(|s| s.thing()).any(|b| self.ix.independent.contains(&b) && !self.ix.steps.get(&b).is_some_and(|r| r.genesis_before(h.ts)))
     }
 
     /// The step whose keys a write lists for delete base `b` (spec/crypto.md §7 Header list): the
