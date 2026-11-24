@@ -1566,13 +1566,7 @@ mod tests {
     fn reset_judged_walks_parts_once_spec_commits_5() {
         let walks = |n: usize| {
             let mut lp = LocalPeer::fresh(1, WallMs(1_700_000_000_000));
-            let a = lp.peers[0].engine.me();
-            let x = Ak::new("x:m.0").unwrap();
-            let mut m = Mutation::new();
-            let t = lp.peers[0].engine.new_thing(&mut m, a);
-            m.set(t, &ct::RETENTION, &ct::RetentionSetting::of(x.clone(), osis_schema::History::Keep { until: None, after: Some(3_600_000) })).unwrap();
-            lp.peers[0].commit(m).unwrap();
-            lp.hold(t);
+            let (t, x) = kept_on(&mut lp);
             let mut m = Mutation::new();
             m.set(t, &x, &Value::Map((0..n).map(|i| (Value::Str(format!("k{i}")), Value::Int(i as i64))).collect())).unwrap();
             let fill = lp.peers[0].commit(m).unwrap().unwrap();
@@ -1599,22 +1593,10 @@ mod tests {
     // writes, it judges nothing; the body that write replaces is judged again.
     #[test]
     fn replaced_bound_judged_once_per_change_of_its_aspect_spec_commits_5() {
-        let mut lp = LocalPeer::new(1, 954, WallMs(1_700_000_000_000)).unwrap();
-        let a = lp.peers[0].engine.me();
-        let (x, y) = (Ak::new("x:m.0").unwrap(), Ak::new("x:n.0").unwrap());
-        let mut m = Mutation::new();
-        let t = lp.peers[0].engine.new_thing(&mut m, a);
-        m.set(t, &ct::RETENTION, &ct::RetentionSetting::of(x.clone(), osis_schema::History::Keep { until: None, after: Some(3_600_000) })).unwrap();
-        lp.peers[0].commit(m).unwrap();
-        lp.hold(t);
-        let write = |lp: &mut LocalPeer, ak: &Ak, v: i64| {
-            let mut m = Mutation::new();
-            m.set(t, ak, &Value::Int(v)).unwrap();
-            lp.advance(10);
-            lp.peers[0].commit(m).unwrap().unwrap()
-        };
-        let first = write(&mut lp, &x, 1);
-        let second = write(&mut lp, &x, 2);
+        let (mut lp, t, x) = kept_register(954);
+        let y = Ak::new("x:n.0").unwrap();
+        let first = write_x(&mut lp, t, &x, 1);
+        let second = write_x(&mut lp, t, &x, 2);
         let judged_of = |lp: &mut LocalPeer, c: &CommitId| {
             osis_base::costs::take();
             let k = lp.peers[0].engine.part_keeps(c).unwrap();
@@ -1626,20 +1608,37 @@ mod tests {
         let (k, n) = judged(&mut lp);
         assert!(n > 0 && k.iter().any(|k| *k > 0), "judged: {k:?}");
         assert_eq!(judged(&mut lp), (k.clone(), 0), "asked again");
-        write(&mut lp, &y, 1);
-        write(&mut lp, &y, 2);
+        write_x(&mut lp, t, &y, 1);
+        write_x(&mut lp, t, &y, 2);
         assert_eq!(judged(&mut lp), (k.clone(), 0), "writes on another aspect");
         let live = judged_of(&mut lp, &second);
-        write(&mut lp, &x, 3);
+        write_x(&mut lp, t, &x, 3);
         assert_eq!(judged(&mut lp), (k.clone(), 0), "a write on its aspect replacing another body");
         let (dated, n) = judged_of(&mut lp, &second);
         assert!(n > 0 && dated != live.0, "the body it replaces judged again: {live:?} then {dated:?}");
     }
 
-    /// One peer, a thing whose `x:m.0` keeps history an hour (so replaced bodies are dated), and
-    /// a write of `x:m.0` 10 ms after the last.
-    fn kept_register(seed: u64) -> (LocalPeer, osis_base::Tid, Ak) {
-        let mut lp = LocalPeer::new(1, seed, WallMs(1_700_000_000_000)).unwrap();
+    /// Three synced peers: admin 0 makes a thing (with `setting`, if any), grants peer 1 write
+    /// and peer 2 read on it.
+    pub(super) fn admin_writer_reader(setting: Option<ct::RetentionSetting>) -> (LocalPeer, osis_base::Tid) {
+        let mut lp = LocalPeer::fresh(3, WallMs(1_700_000_000_000));
+        lp.sync_all().unwrap();
+        let [a, w, r] = [0, 1, 2].map(|i| lp.peers[i].engine.me());
+        let mut m = Mutation::new();
+        let t = lp.peers[0].engine.new_thing(&mut m, a);
+        if let Some(s) = setting {
+            m.set(t, &ct::RETENTION, &s).unwrap();
+        }
+        lp.peers[0].commit(m).unwrap();
+        lp.hold(t);
+        for (who, role) in [(w, Role::Write), (r, Role::Read)] {
+            lp.peers[0].engine.grant(&t, &who, &ct::Edge { role, until: None, may_grant: false, retain: false, floor: None }).unwrap();
+        }
+        (lp, t)
+    }
+
+    /// A thing of peer 0 whose `x:m.0` keeps history an hour (so replaced bodies are dated).
+    fn kept_on(lp: &mut LocalPeer) -> (osis_base::Tid, Ak) {
         let a = lp.peers[0].engine.me();
         let x = Ak::new("x:m.0").unwrap();
         let mut m = Mutation::new();
@@ -1647,9 +1646,17 @@ mod tests {
         m.set(t, &ct::RETENTION, &ct::RetentionSetting::of(x.clone(), osis_schema::History::Keep { until: None, after: Some(3_600_000) })).unwrap();
         lp.peers[0].commit(m).unwrap();
         lp.hold(t);
+        (t, x)
+    }
+
+    /// One peer and `kept_on`.
+    fn kept_register(seed: u64) -> (LocalPeer, osis_base::Tid, Ak) {
+        let mut lp = LocalPeer::new(1, seed, WallMs(1_700_000_000_000)).unwrap();
+        let (t, x) = kept_on(&mut lp);
         (lp, t, x)
     }
 
+    /// A write of `x` 10 ms after the last.
     fn write_x(lp: &mut LocalPeer, t: osis_base::Tid, x: &Ak, v: i64) -> CommitId {
         let mut m = Mutation::new();
         m.set(t, x, &Value::Int(v)).unwrap();
@@ -1727,13 +1734,7 @@ mod tests {
     #[test]
     fn held_writes_over_an_invalid_part_are_those_of_the_held_bodies() {
         let mut lp = LocalPeer::new(4, 959, WallMs(1_700_000_000_000)).unwrap();
-        let a = lp.peers[0].engine.me();
-        let x = Ak::new("x:m.0").unwrap();
-        let mut m = Mutation::new();
-        let t = lp.peers[0].engine.new_thing(&mut m, a);
-        m.set(t, &ct::RETENTION, &ct::RetentionSetting::of(x.clone(), osis_schema::History::Keep { until: None, after: Some(3_600_000) })).unwrap();
-        lp.peers[0].commit(m).unwrap();
-        lp.hold(t);
+        let (t, x) = kept_on(&mut lp);
         lp.sync_all().unwrap();
         for (w, role) in [(1, Role::Write), (2, Role::Write), (3, Role::Read)] {
             let w = lp.peers[w].engine.me();
@@ -2172,18 +2173,9 @@ mod tests {
     // back to none (live again), its row with it.
     #[test]
     fn a_superseder_judged_invalid_later_moves_its_victims_date_back_spec_commits_5() {
-        let mut lp = LocalPeer::fresh(3, WallMs(1_700_000_000_000));
-        lp.sync_all().unwrap();
-        let (a, w, r) = (lp.peers[0].engine.me(), lp.peers[1].engine.me(), lp.peers[2].engine.me());
         let reg = Ak::new("x:a.0").unwrap();
-        let mut m = Mutation::new();
-        let t = lp.peers[0].engine.new_thing(&mut m, a);
-        m.set(t, &ct::RETENTION, &ct::RetentionSetting::of(reg.clone(), osis_schema::History::Keep { until: None, after: Some(3_600_000) })).unwrap();
-        lp.peers[0].commit(m).unwrap();
-        lp.hold(t);
-        let edge = |role| ct::Edge { role, until: None, may_grant: false, retain: false, floor: None };
-        lp.peers[0].engine.grant(&t, &w, &edge(Role::Write)).unwrap();
-        lp.peers[0].engine.grant(&t, &r, &edge(Role::Read)).unwrap();
+        let (mut lp, t) = admin_writer_reader(Some(ct::RetentionSetting::of(reg.clone(), osis_schema::History::Keep { until: None, after: Some(3_600_000) })));
+        let w = lp.peers[1].engine.me();
         let set = |lp: &mut LocalPeer, p: usize, v: i64| {
             lp.advance(10);
             let mut m = Mutation::new();
@@ -2220,18 +2212,10 @@ mod tests {
     // nothing is fetched.
     #[test]
     fn forgotten_coverer_keeps_its_covers_spec_permissions_5_2() {
-        let mut lp = LocalPeer::fresh(3, WallMs(1_700_000_000_000));
-        lp.sync_all().unwrap();
-        let (a, w, r) = (lp.peers[0].engine.me(), lp.peers[1].engine.me(), lp.peers[2].engine.me());
         let reg = Ak::new("x:a.0").unwrap();
-        let mut m = Mutation::new();
-        let t = lp.peers[0].engine.new_thing(&mut m, a);
-        lp.peers[0].commit(m).unwrap();
-        lp.hold(t);
-        let edge = |role| ct::Edge { role, until: None, may_grant: false, retain: false, floor: None };
-        lp.peers[0].engine.grant(&t, &w, &edge(Role::Write)).unwrap();
-        lp.peers[0].engine.grant(&t, &r, &edge(Role::Read)).unwrap();
+        let (mut lp, t) = admin_writer_reader(None);
         lp.sync_all().unwrap();
+        let w = lp.peers[1].engine.me();
         let set = |lp: &mut LocalPeer, p: usize, v: i64| {
             lp.advance(10);
             let mut m = Mutation::new();

@@ -12,11 +12,9 @@ use crdt_model::r#gen::{Rng, kitchen_sink};
 use crdt_model::ops::Ty;
 use crdt_model::stamp::Source as MSource;
 use crdt_model::state::Frag as MFrag;
-use osis_base::{Ak, Classified, CommitId, ErrorClass, Role, Tid, Ts, Value};
+use osis_base::{Ak, Classified, CommitId, ErrorClass, Tid, Ts, Value};
 use osis_crdt::{CounterRange, DeltaCtx, DeltaKind, Fragment, Interner};
 use osis_schema::core_types as ct;
-
-const T0: osis_base::WallMs = osis_base::WallMs(1_700_000_000_000);
 
 fn ak() -> Ak {
     Ak::new("x:f.0").unwrap()
@@ -26,18 +24,8 @@ fn ak() -> Ak {
 /// aspect's history (so deaths date bodies, `bounds::dated_replaced_at`).
 fn world() -> (LocalPeer, Tid) {
     LocalPeer::cached("retention::tests_forged::world", || {
-        let mut lp = LocalPeer::fresh(3, T0);
-        lp.sync_all().unwrap();
-        let (a, w, x) = (lp.peers[0].engine.me(), lp.peers[1].engine.me(), lp.peers[2].engine.me());
-        let mut m = Mutation::new();
-        let t = lp.peers[0].engine.new_thing(&mut m, a);
         let day = osis_schema::History::Keep { until: None, after: Some(86_400_000) };
-        m.set(t, &ct::RETENTION, &ct::RetentionSetting::of(ak(), day)).unwrap();
-        lp.peers[0].commit(m).unwrap();
-        lp.hold(t);
-        let edge = |role| ct::Edge { role, until: None, may_grant: false, retain: false, floor: None };
-        lp.peers[0].engine.grant(&t, &w, &edge(Role::Write)).unwrap();
-        lp.peers[0].engine.grant(&t, &x, &edge(Role::Read)).unwrap();
+        let (mut lp, t) = super::tests::admin_writer_reader(Some(ct::RetentionSetting::of(ak(), day)));
         lp.sync_all().unwrap();
         lp.advance(60_000);
         (lp, t)

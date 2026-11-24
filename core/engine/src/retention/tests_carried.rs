@@ -18,16 +18,7 @@ fn reg() -> Ak {
 /// Admin 0, writer 1 and reader 2 on a thing of 0.
 fn world() -> (LocalPeer, Tid) {
     LocalPeer::cached("retention::tests_carried::world", || {
-        let mut lp = LocalPeer::fresh(3, T0);
-        lp.sync_all().unwrap();
-        let (a, w, x) = (lp.peers[0].engine.me(), lp.peers[1].engine.me(), lp.peers[2].engine.me());
-        let mut m = Mutation::new();
-        let t = lp.peers[0].engine.new_thing(&mut m, a);
-        lp.peers[0].commit(m).unwrap();
-        lp.hold(t);
-        let edge = |role| ct::Edge { role, until: None, may_grant: false, retain: false, floor: None };
-        lp.peers[0].engine.grant(&t, &w, &edge(Role::Write)).unwrap();
-        lp.peers[0].engine.grant(&t, &x, &edge(Role::Read)).unwrap();
+        let (mut lp, t) = super::tests::admin_writer_reader(None);
         lp.sync_all().unwrap();
         lp.advance(60_000);
         (lp, t)
