@@ -1,7 +1,7 @@
 # Evidence derivation
 > Summary: Design and build state of `osis_engine::evidence`: the copies a sync ID requires, derived from a node's held copies and the sync ID's unit by spec/permissions.md §4 under E1 (every edge write on a stated path's edges and on the edges a member writes) with delete-key steps; the engine keeps one fed per commit (`evidence::kept`), read by `sync/certified.rs`; the engine's input and check (`evidence::held`), engine hand tests; inputs, output, what re-derives what and its cost; keys-open travel as an indexed graph; the differential against held-model `Stage::E1` (0 disagreements), hand worlds and counts; carried demotions (A3 design).
 
-**Principle: a sync ID's evidence is a function of the copies the node holds and the sync ID's unit: the least set the spec's rules close over them. Nothing is placed once and remembered; a change re-derives exactly what it can move, and the incremental answer is the from-scratch answer by construction (same closure step, same seeds).**
+**Principle: a sync ID's evidence is a function of the copies the node holds and the sync ID's unit: the least set the spec's rules close over them. Nothing is logged once and remembered; a change re-derives exactly what it can move, and the incremental answer is the from-scratch answer by construction (same closure step, same seeds).**
 
 ## Input
 Per held **copy** (commit ID, thing), held whole (a commit's edge writes on a thing are one `roles.0` delta, spec/crdt.md §2), its parts on that thing (`evidence::Part`), as the derivation's own structs (independent of header types):
