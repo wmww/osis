@@ -138,7 +138,7 @@ fn what_a_thing_costs() {
 fn what_a_reader_costs() {
     let (mut lp, ps) = people(2);
     let show = std::env::var_os("THING_COST").is_some();
-    let mut each = Vec::new();
+    let (mut each, mut rows) = (Vec::new(), String::new());
     for i in 0..2 {
         let e = &mut lp.peers[0].engine;
         let mut m = Mutation::new();
@@ -184,8 +184,9 @@ fn what_a_reader_costs() {
         e.settle_needs().unwrap();
         let rg = grown(&r0, &lp.peers[1].engine.census().unwrap());
         assert_eq!(lp.peers[1].engine.role_on(&t), Some(Role::Read), "the reader reads t past its offer");
+        rows = format!("  granter rows: {mg:?}\n  reader rows with the offer: {offered:?}\n  reader rows: {rg:?}");
         if show && i == 1 {
-            eprintln!("  granter rows: {mg:?}\n  reader rows with the offer: {offered:?}\n  reader rows: {rg:?}");
+            eprintln!("{rows}");
         }
         let sum = |x: &[(String, i64, i64)]| x.iter().map(|x| x.2).sum::<i64>();
         each.push((done.commits.len(), download, sum(&mg), sum(&rg), sum(&offered), maker_ops, reader_ops));
@@ -198,5 +199,5 @@ fn what_a_reader_costs() {
     // retention: a replaced one is kept `ROLE_KEEP` after replaced). The reader is measured past
     // the inbox lifetime, the offer's fire forgotten (36,067 B, 40 B of it a history cursor of t
     // the passing time writes, `hf/`: its last place out), and with the offer held (59,033 B)
-    assert!(*commits == 1 && *bytes < 4_000 && *reader < 36_200 && *offered < 59_200, "{:?}", each[1]);
+    assert!(*commits == 1 && *bytes < 4_000 && *reader < 36_200 && *offered < 59_200, "{:?}, rows by table:\n{rows}", each[1]);
 }

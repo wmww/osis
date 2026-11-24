@@ -524,6 +524,8 @@ pub struct World {
     liars: BTreeMap<usize, Liar>,
     /// Deliveries so far; past `cap` the world panics as a storm.
     pub deliveries: u64,
+    /// Deliveries so far by node (the storm panic names the busiest).
+    delivered: BTreeMap<usize, u64>,
     pub cap: u64,
     pub horizon_ms: u64,
     /// Records every delivery in `seen` while set, and each step's restarts and sends in
@@ -579,6 +581,7 @@ impl World {
             net,
             liars: BTreeMap::new(),
             deliveries: 0,
+            delivered: BTreeMap::new(),
             cap: RULE_CAP,
             horizon_ms: HORIZON_MS,
             trace: false,
@@ -810,6 +813,7 @@ impl World {
     /// Steps node `i` with `input` and carries out every output: the one place a node is stepped.
     pub fn deliver(&mut self, i: usize, input: Input) {
         self.deliveries += 1;
+        *self.delivered.entry(i).or_default() += 1;
         MOST.set(MOST.get().max(self.deliveries));
         if CANDIDATE_CAP.get().is_some_and(|c| self.deliveries > c && c < self.cap) {
             std::panic::panic_any(Capped);
@@ -817,9 +821,10 @@ impl World {
         if self.deliveries > self.cap {
             let flowing: Vec<Seen> = self.net.queue.iter().take(8).map(|(n, x)| Seen::of(*n, x, self.node(*n).clock.mono())).collect();
             let off: Vec<usize> = (0..self.net.online.len()).filter(|n| !self.online(*n)).collect();
+            let (busiest, most) = self.delivered.iter().max_by_key(|x| *x.1).map_or((0, 0), |(n, k)| (*n, *k));
             panic!(
-                "storm: past the cap of {} deliveries over this world's whole run (not one `run`: a long test or the dial ticks toward a partitioned or powered-off peer add up; `World::cap` raises it, `flush()` delivers without firing wakes); partitioned {:?}, powered off {off:?}; still flowing (first 8 of {}): {flowing:?}; wakes {:?}",
-                self.cap, self.net.cut_off, self.net.queue.len(), self.net.wakes
+                "storm: past the cap of {} deliveries over this world's whole run (not one `run`: a long test or the dial ticks toward a partitioned or powered-off peer add up; `World::cap` raises it, `flush()` delivers without firing wakes); node {busiest} stepped most ({most} deliveries), its wake {:?} at {:?}; partitioned {:?}, powered off {off:?}; still flowing (first 8 of {}): {flowing:?}; wakes {:?}",
+                self.cap, self.net.wakes.get(&busiest), self.now(), self.net.cut_off, self.net.queue.len(), self.net.wakes
             );
         }
         let seen = Seen::of(i, &input, self.node(i).clock.mono());
@@ -1364,6 +1369,7 @@ impl World {
             net: self.net.clone(),
             liars: self.liars.clone(),
             deliveries: 0,
+            delivered: BTreeMap::new(),
             cap: self.cap,
             horizon_ms: self.horizon_ms,
             trace: self.trace,

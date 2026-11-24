@@ -163,4 +163,5 @@ fn a_shrink_candidate_past_its_cap_does_not_fail() {
     let e = storm.expect_err("the world's own cap");
     let m = e.downcast_ref::<String>().expect("a message");
     assert!(m.contains("storm: past the cap of 2 deliveries over this world's whole run"), "{m}");
+    assert!(m.contains(" stepped most (2 deliveries), its wake "), "the busiest node and its wake against the clock: {m}");
 }
