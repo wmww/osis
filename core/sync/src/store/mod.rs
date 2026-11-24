@@ -24,6 +24,7 @@ mod entries;
 mod memory;
 mod path;
 pub(crate) mod rows;
+pub(crate) mod source;
 mod follow;
 
 pub use follow::Follow;
@@ -574,6 +575,17 @@ impl Store {
     /// which the modules owning other rows of it read them. Not inside an engine call.
     pub fn with_read<T>(&self, f: impl FnOnce(&mut Transaction<'_>) -> std::result::Result<T, osis_store::Error>) -> Result<T> {
         self.lock().read(|t, _| Ok(f(t)?))
+    }
+
+    /// `with_tx` in either part (`memory`): the memory part's for a source's memory rows
+    /// (`source`).
+    pub(crate) fn with_tx_in<T>(&mut self, memory: bool, f: impl FnOnce(&mut Transaction<'_>) -> std::result::Result<T, osis_store::Error>) -> Result<T> {
+        self.lock().write_in(memory, |t, _| Ok(f(t)?))
+    }
+
+    /// `with_read` in either part (`memory`).
+    pub(crate) fn with_read_in<T>(&self, memory: bool, f: impl FnOnce(&mut Transaction<'_>) -> std::result::Result<T, osis_store::Error>) -> Result<T> {
+        self.lock().read_in(memory, |t, _| Ok(f(t)?))
     }
 
     // Holdings and caps
@@ -1434,8 +1446,8 @@ impl Store {
         };
         g.write_in(true, |t, env| {
             empty(t, env)?;
-            // every connection's source rows of S
-            drop_conn_rows(t, rows::CONN_ROW, |_, x| x == s)
+            // every source's memory rows of S
+            Ok(source::forget_sync(t, s)?)
         })?;
         g.write(|t, env| {
             path::erase(t, env, s)?;
@@ -1663,14 +1675,11 @@ impl Store {
         Ok(evicted)
     }
 
-    /// `gone_from` in the memory part, and a connection's source rows go.
+    /// `gone_from` in the memory part, and the source's memory rows go.
     fn gone_memory(g: &mut Inner, src: Source) -> Result<()> {
         g.write_in(true, |t, env| {
             Self::gone_from(t, env, src)?;
-            match src {
-                Source::Conn(c) => drop_conn_rows(t, &[rows::CONN_ROW, &c.0.to_be_bytes()].concat(), |_, _| true),
-                Source::Record(_) => Ok(()),
-            }
+            Ok(source::forget_source(t, src)?)
         })
     }
 
@@ -1701,21 +1710,20 @@ impl Store {
 
     // What a source's record keeps for `read` (spec/sync-judgement.md §4)
 
-    /// Writes (or with `None` removes) the row `src` keeps of S, written at `at`: it ages out after
-    /// `TOMBSTONE_LIFETIME` (`settle_at`).
+    /// Writes (or with `None` removes) the row `src` keeps of S in its own part, written at `at`:
+    /// it ages out after `TOMBSTONE_LIFETIME` (`settle_at`).
     fn source_put(&mut self, src: Source, s: &SyncId, tag: u8, key: &[u8], val: Option<(WallMs, Vec<u8>)>) -> Result<()> {
-        self.lock().write_in(matches!(src, Source::Conn(_)), |t, _| {
-            let Some((at, v)) = val else { return drop_source_row(t, src, s, tag, key) };
-            match src {
-                Source::Record(rec) => t.record_put_row(&rec, tag, s, key, v)?,
-                Source::Conn(c) => t.put_local(&rows::conn_row_key(c, s, tag, key), &v, Shred::No)?,
+        self.lock().write_in(source::home(src), |t, _| {
+            match val {
+                Some((at, v)) => source::put_aging(t, src, tag, s, key, at, v)?,
+                None => source::drop_row(t, src, tag, s, key)?,
             }
-            Ok(t.put_local(&rows::aging_key(at, s, tag, key, src), &[], Shred::No)?)
+            Ok(())
         })
     }
 
     fn source_get(&self, src: Source, s: &SyncId, tag: u8, key: &[u8]) -> Result<Option<Vec<u8>>> {
-        self.lock().read_in(matches!(src, Source::Conn(_)), |t, _| source_row(t, src, s, tag, key))
+        self.lock().read_in(source::home(src), |t, _| Ok(source::get(t, src, tag, s, key)?))
     }
 
     /// The stand of "logged again once" for `body` at `src` (spec/sync-judgement.md §4).
@@ -1737,30 +1745,8 @@ impl Store {
     /// Every delete this node saw at a source within `TOMBSTONE_LIFETIME`, of every source: a
     /// start judges what each showed deleted as what each shows present. O(rows).
     pub fn deletes_seen_all(&self) -> Result<Vec<(Source, SyncId, BlobId)>> {
-        let mut g = self.lock();
-        let blob = |k: &[u8]| <[u8; 32]>::try_from(k).ok().map(BlobId);
-        let mut out = g.read_in(true, |t, _| {
-            let mut rows = Vec::new();
-            for (k, _) in t.scan_local(rows::CONN_ROW, b"", usize::MAX)? {
-                let mut r = R::new(k.get(rows::CONN_ROW.len()..).unwrap_or_default());
-                let (c, s, tag) = (crate::types::ConnId(r.u64()?), SyncId(r.array()?), r.u8()?);
-                if tag == SEEN {
-                    rows.extend(blob(r.rest()).map(|b| (Source::Conn(c), s, b)));
-                }
-            }
-            Ok(rows)
-        })?;
-        let recs = g.read(|t, _| {
-            let mut rows = Vec::new();
-            for r in t.records_all()? {
-                for (s, k, _) in t.record_tag_rows(&r.id, SEEN)? {
-                    rows.extend(blob(&k).map(|b| (Source::Record(r.id), s, b)));
-                }
-            }
-            Ok(rows)
-        })?;
-        out.extend(recs);
-        Ok(out)
+        let rows = self.lock().each(|t, _| Ok(source::tag_rows(t, SEEN)?))?;
+        Ok(rows.into_iter().flatten().filter_map(|(src, s, k)| Some((src, s, BlobId(k.try_into().ok()?)))).collect())
     }
 
     /// Whether this node saw entry `b` of S deleted at `src` within `TOMBSTONE_LIFETIME`.
@@ -1803,8 +1789,8 @@ impl Store {
                 let src = r.source()?.ok_or(crate::types::Error::Store(osis_store::Error::Corrupt("sync store aging row")))?;
                 t.remove_local(&k, Shred::No)?;
                 // a row written again since ages from its new time
-                if source_row(t, src, &s, tag, &key)?.is_some_and(|v| v.get(..8) == Some(&at.to_be_bytes()[..])) {
-                    drop_source_row(t, src, &s, tag, &key)?;
+                if source::get(t, src, tag, &s, &key)?.is_some_and(|v| v.get(..8) == Some(&at.to_be_bytes()[..])) {
+                    source::drop_row(t, src, tag, &s, &key)?;
                 }
                 acted = true;
             }
@@ -1853,44 +1839,6 @@ impl Store {
     pub fn test_copy(&self, clock: Arc<dyn osis_base::Clock>) -> Result<Store> {
         Ok(Store(osis_store::test_copy_shared(&self.0, clock)?))
     }
-}
-
-/// The row `src` keeps of S under `tag` and `key` (spec/sync-judgement.md §4): a record's in the
-/// record, durably (it goes with the record, and with S), a connection's in the memory part
-/// (`C/`: it goes with the connection, with S, and at a restart, when connection numbers start
-/// again).
-fn source_row(t: &mut Transaction<'_>, src: Source, s: &SyncId, tag: u8, key: &[u8]) -> Result<Option<Vec<u8>>> {
-    Ok(match src {
-        Source::Record(rec) => t.record_get_row(&rec, tag, s, key)?,
-        Source::Conn(c) => t.get_local(&rows::conn_row_key(c, s, tag, key))?,
-    })
-}
-
-/// Drops the row `src` keeps of S under `tag` and `key`, and its aging row (`w/`, keyed by the
-/// time its value starts with).
-fn drop_source_row(t: &mut Transaction<'_>, src: Source, s: &SyncId, tag: u8, key: &[u8]) -> Result<()> {
-    let Some(v) = source_row(t, src, s, tag, key)? else { return Ok(()) };
-    if let Some(at) = v.get(..8).and_then(|x| x.try_into().ok()) {
-        t.remove_local(&rows::aging_key(WallMs(u64::from_be_bytes(at)), s, tag, key, src), Shred::No)?;
-    }
-    match src {
-        Source::Record(rec) => drop(t.record_remove_row(&rec, tag, s, key)?),
-        Source::Conn(c) => drop(t.remove_local(&rows::conn_row_key(c, s, tag, key), Shred::No)?),
-    }
-    Ok(())
-}
-
-/// Drops each connection's source row under `prefix` (`C/ conn s tag key`) that `pick` names
-/// (by connection and sync ID), with its aging row.
-fn drop_conn_rows(t: &mut Transaction<'_>, prefix: &[u8], pick: impl Fn(crate::types::ConnId, &SyncId) -> bool) -> Result<()> {
-    for (k, _) in t.scan_local(prefix, b"", usize::MAX)? {
-        let mut r = R::new(k.get(rows::CONN_ROW.len()..).unwrap_or_default());
-        let (c, s, tag) = (crate::types::ConnId(r.u64()?), SyncId(r.array()?), r.u8()?);
-        if pick(c, &s) {
-            drop_source_row(t, Source::Conn(c), &s, tag, r.rest())?;
-        }
-    }
-    Ok(())
 }
 
 /// A page of the rows of time-ordered index `prefix` (keys `prefix || time || ...`) whose time

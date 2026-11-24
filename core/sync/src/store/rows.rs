@@ -2,8 +2,8 @@
 //! ciphertext store (`osis_store::Transaction::put_local`), keyed by a two-byte tag so each kind is
 //! its own stamp family; a memo reading one row moves only when that row (or a scan's prefix)
 //! is written. The memory part (`Inner::ram`) keeps the entry rows (`E X G W B T t Y x U u S`)
-//! of ephemeral entries alike, and a connection's source rows (`C w`); the rest are the durable
-//! store's alone.
+//! of ephemeral entries alike, and every source's memory rows (`store::source`: `C/`, `K/`) with
+//! their aging rows (`w`); the rest are the durable store's alone.
 //!
 //! - `E/ s b` an entry (`EntryRow`).
 //! - `X/ b s` the sync IDs whose entries name blob `b`: its bytes go once none does and the
@@ -20,9 +20,10 @@
 //!   `q/ at s i` claim sets by when they may go.
 //! - `H/ s` the length of S's path.
 //! - `U/ s` S's usage (`Usage`); `u/ !bytes s` sync IDs by bytes used, most first, for "the one using most".
-//! - `w/ at s tag key src` rows a source holds of S that age out (stands, deletes seen): a
-//!   record's in the record, a connection's `C/ conn s tag key` in the memory part (gone with
-//!   the connection; a record's go with the record).
+//! - `w/ at s tag key src` rows a source holds of S that age out (stands, deletes seen), in the
+//!   part of the row (`store::source`).
+//! - `C/ src s tag key` a source's row in the memory part, `K/ s tag len key src` its index
+//!   (`store::source`; a record's durable rows are its record's).
 //! - `S/ s b` a source showed holding entry `b` of S (spec/sync-status.md §2 Held elsewhere),
 //!   kept while the entry is; a row of its own so recording it moves no reader of the entry.
 //! - `N/ s` S is owed a pull from the start, gone once streams set the sources' places of S
@@ -65,7 +66,6 @@ pub(crate) const CLAIMS_DUE: &[u8] = b"q/";
 pub(crate) const USAGE: &[u8] = b"U/";
 pub(crate) const BY_USE: &[u8] = b"u/";
 pub(crate) const AGING: &[u8] = b"w/";
-pub(crate) const CONN_ROW: &[u8] = b"C/";
 pub(crate) const HEAD: &[u8] = b"H/";
 /// Deposited (unstamped) entries per sync ID: what promotion, clearing and offering read.
 pub(crate) const DEPOSITED: &[u8] = b"D/";
@@ -83,10 +83,10 @@ pub(crate) const ROOM_OWED: u8 = 1;
 pub(crate) const ROOM: &[u8] = b"R/";
 pub(crate) const FIRST: &[u8] = b"F/";
 
-/// The tags of the rows each module keeps in a peer's record (`osis_store::Transaction::
-/// record_put_row`, `record_put_wide_row` for a row about the record as a whole), one owner per
-/// tag (notes/sync-store.md). All go with the record (`RECORD_BUDGET`), a sync ID's also
-/// with their sync ID.
+/// The tags of the rows each module keeps of a source: in a peer's record (`osis_store::
+/// Transaction::record_put_row`, `record_put_wide_row` for a row about the record as a whole) or
+/// in the memory part (`store::source`), one owner per tag (notes/sync-store.md). All go with
+/// the source (a record's with the record, `RECORD_BUDGET`), a sync ID's also with their sync ID.
 pub(crate) mod tag {
     // store: the peer budget's charges (record-wide), stands, deletes seen; a room mark: the
     // source's place passed an entry of S refused for room (spec/sync-streams.md §4 Full), value
@@ -104,8 +104,9 @@ pub(crate) mod tag {
     // streams: the stream's cursor (record-wide), a member at it, where a member not at it
     // joins from (joining, or stopped where it left: one row, so a member leaving one connection
     // and joining another from where it stood writes nothing); what the source showed: an entry
-    // present, its head, a refusal standing, whether it keeps S unread as it last joined; the
-    // head this node last told it a refusal of S under
+    // present, its head, a refusal standing, whether it keeps S unread as it last joined, that
+    // it is full for S (told on a connection: a connection's row); the head this node last told
+    // it a refusal of S under
     pub(crate) const CURSOR: u8 = b'c';
     pub(crate) const AT_STREAM: u8 = b'a';
     pub(crate) const JOIN_FROM: u8 = b'j';
@@ -113,6 +114,7 @@ pub(crate) mod tag {
     pub(crate) const HEAD: u8 = b'h';
     pub(crate) const REFUSED: u8 = b'r';
     pub(crate) const KEPT: u8 = b'u';
+    pub(crate) const FULL: u8 = b'n';
     pub(crate) const TOLD: u8 = b't';
     // streams: a member closed on the connection up, its place kept while that connection lasts
     pub(crate) const CLOSED: u8 = b'l';
@@ -187,9 +189,6 @@ pub(crate) fn by_use_key(bytes: u64, s: &SyncId) -> Vec<u8> {
 }
 pub(crate) fn aging_key(at: WallMs, s: &SyncId, tag: u8, key: &[u8], src: Source) -> Vec<u8> {
     [AGING, &at.0.to_be_bytes(), &s.0, &[tag], &(key.len() as u32).to_be_bytes(), key, &source_bytes(src)].concat()
-}
-pub(crate) fn conn_row_key(c: crate::types::ConnId, s: &SyncId, tag: u8, key: &[u8]) -> Vec<u8> {
-    [CONN_ROW, &c.0.to_be_bytes(), &s.0, &[tag], key].concat()
 }
 
 /// A plain byte writer.

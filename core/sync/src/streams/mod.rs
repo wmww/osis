@@ -474,7 +474,8 @@ impl Streams {
             }
         }
         self.asked.retain(|_, (c, _)| *c != conn);
-        self.known.forget_source(Source::Conn(conn));
+        let r = self.known.forget_source(Source::Conn(conn));
+        self.failed(r);
         for set in self.holders.values_mut() {
             set.remove(&conn);
         }
@@ -504,7 +505,8 @@ impl Streams {
                 self.forget_stops(ctx, src, &ss);
             }
         }
-        self.known.settle();
+        let r = self.known.settle();
+        self.failed(r);
         let mut acted = self.send_relays(ctx)?;
         let roomy = ctx.store.room_grew()?;
         acted |= !roomy.is_empty();
@@ -522,8 +524,8 @@ impl Streams {
         Ok(acted)
     }
 
-    /// S left this node (spec/sync-set.md §3): what places and connections' sources hold of it
-    /// in memory goes (its rows went with the shred), so a later join reads it from the start.
+    /// S left this node (spec/sync-set.md §3): what places hold of it in memory goes (every
+    /// source's rows of it went with the shred), so a later join reads it from the start.
     /// Run before any place is read (`place`): a member leaving S later in the step of its shred
     /// must find no position to keep, else it writes S's rows back after the shred. S full
     /// (its wait went with the shred) is told full no longer on each connection still sharing it.
@@ -533,7 +535,6 @@ impl Streams {
             for place in self.places.values_mut() {
                 place.forget(s);
             }
-            self.known.forget_conns(s);
         }
         self.untell_full(&shredded);
     }

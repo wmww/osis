@@ -147,7 +147,7 @@ pub(super) fn forget_unkept(mut store: Store) -> crate::types::Result<()> {
                 for tag in [CLOSED, AT_STREAM, JOIN_FROM] {
                     t.record_remove_row(&rec.id, tag, &s, b"")?;
                 }
-                known::write(t, &rec.id, &Op::Forget(s))?;
+                known::write(t, Source::Record(rec.id), &Op::Forget(s))?;
             }
         }
         Ok(())
@@ -432,21 +432,20 @@ impl Streams {
     /// failure fails the step at its settle).
     pub(super) fn save(&mut self, ctx: &mut Ctx, src: Source, ss: &[SyncId], cursor: bool, ops: Vec<(Source, Op)>) -> bool {
         let (rec_ops, conn_ops): (Vec<_>, Vec<_>) = ops.into_iter().partition(|(at, _)| matches!(at, Source::Record(_)));
-        for (at, op) in conn_ops {
-            self.known.apply_conn(at, std::slice::from_ref(&op));
-            self.known.logged(at, &op);
+        let r = self.known.remember(&conn_ops);
+        if r.is_err() {
+            self.failed(r);
+            return false;
         }
         if rec_ops.is_empty() && (!matches!(src, Source::Record(_)) || (ss.is_empty() && !cursor)) {
             return true;
         }
-        // a record's head that moves ends its refusals kept in memory too (`Known::wrote_record`)
+        // a record's head that moves ends its memory refusals too (`known::memory_lift`)
         let moved: Vec<bool> = rec_ops.iter().map(|(at, op)| matches!(op, Op::Head(s, h) if self.known.head(*at, s).is_some_and(|old| old != *h))).collect();
         let place = self.places.get(&src);
         let r = ctx.store.with_tx(|t| {
             for (at, op) in &rec_ops {
-                if let Source::Record(rec) = at {
-                    known::write(t, rec, op)?;
-                }
+                known::write(t, *at, op)?;
             }
             if let (Source::Record(rec), Some(p)) = (src, place) {
                 for s in ss {
@@ -464,10 +463,12 @@ impl Streams {
         });
         let ok = r.is_ok();
         if ok {
-            for ((at, op), moved) in rec_ops.iter().zip(moved) {
+            for (at, op) in &rec_ops {
                 self.known.logged(*at, op);
-                self.known.wrote_record(*at, op, moved);
             }
+            let lifts: Vec<(Source, Op)> = rec_ops.iter().zip(moved).filter_map(|((at, op), moved)| Some((*at, known::memory_lift(op, moved)?))).collect();
+            let r = self.known.remember(&lifts);
+            self.failed(r);
             if let Some(p) = self.places.get_mut(&src) {
                 match cursor {
                     true => p.stale.clear(),
@@ -591,7 +592,8 @@ impl Streams {
         // `full` both ways is a fact of S on this connection: told again at a rejoin
         p.told_full.remove(&s);
         p.tell.retain(|(x, e)| *x != s || !matches!(e, Event::Full(_)));
-        self.known.apply_conn(Source::Conn(conn), &[Op::Full(s, false)]);
+        let r = self.known.remember(&[(Source::Conn(conn), Op::Full(s, false))]);
+        self.failed(r);
         let Some(p) = self.pull.get(&conn) else { return };
         let src = p.src;
         let held = ctx.store.holding(&s).is_some();
@@ -631,7 +633,8 @@ impl Streams {
     pub(super) fn forgot(&mut self, ctx: &mut Ctx, conn: ConnId, s: SyncId) {
         let Some(src) = self.pull.get(&conn).map(|p| p.src) else { return };
         self.forget_stops(ctx, src, &[s]);
-        self.known.apply_conn(Source::Conn(conn), &[Op::Forget(s)]);
+        let r = self.known.remember(&[(Source::Conn(conn), Op::Forget(s))]);
+        self.failed(r);
     }
 
     /// The stops `ss` of source `src` go with what it showed of them.
@@ -842,7 +845,10 @@ impl Streams {
                     }
                     // an ephemeral entry's refusal is kept in memory: it goes with the entry
                     Event::Refused(b, code) => match ctx.store.entry(&s, &b) {
-                        Ok(Some(e)) if e.class == Class::Ephemeral => self.known.refused_here(src, s, b, code),
+                        Ok(Some(e)) if e.class == Class::Ephemeral => {
+                            let r = self.known.remember(&[(src, Op::Refused(s, b, code))]);
+                            self.failed(r);
+                        }
                         Ok(Some(_)) => ops.push((src, Op::Refused(s, b, code))),
                         _ => {}
                     },

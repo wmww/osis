@@ -1924,7 +1924,8 @@ fn a_lying_source_leaves_nothing_held_spec_sync_streams_4() {
 
 // spec/sync-judgement.md §3 (`known`: only of entries held or tombstoned here), hostile source:
 // one listing n or 10n bodies it never gives, then deleting and refusing them as tombstoned,
-// leaves this side's state the same size: no presence, no deletion seen, no row more.
+// leaves this side's state the same size: no presence, no deletion seen, no row more in either
+// part (a connection's source rows are the memory part's).
 #[test]
 fn a_source_listing_what_it_never_gives_grows_nothing_spec_sync_judgement_3() {
     let flood = |n: usize| {
@@ -1953,11 +1954,11 @@ fn a_source_listing_what_it_never_gives_grows_nothing_spec_sync_judgement_3() {
         assert!(p.b.streams.caught_up(C, &s));
         assert!(x.iter().all(|b| !knows(&p.b, src, s, *b) && !p.b.store.seen_deleted(src, &s, b).unwrap()));
         assert!(p.b.table.opened.is_empty());
-        (p.b.streams.known().list(src, &s).unwrap().len(), p.b.backend.dump().len())
+        (p.b.streams.known().list(src, &s).unwrap().len(), p.b.backend.dump().len(), p.b.store.memory_held())
     };
     let (small, large) = (flood(4), flood(40));
     assert_eq!(small.0, 0);
-    assert_eq!(small, large, "presence rows, then every row of b's store");
+    assert_eq!(small, large, "presence rows, then every row of b's store, then what its memory part holds");
 }
 
 // spec/sync-streams.md §4 (Bodies: no body inline that the requester's stream showed present):
