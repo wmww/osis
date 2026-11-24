@@ -4395,7 +4395,7 @@ fn key_erased_copy_keeps_record_before_expiry_spec_crdt_4_6() {
     // the rule's point, inside the state: 1's value record stays
     for p in [&mut after, &mut before] {
         let st = format!("{:?}", p.engine.state(&played.things[0], &ak("t:map.0")).unwrap());
-        assert!(st.contains("value: Some(Int(5))"), "1's write is kept: {st}");
+        assert!(st.contains("value: Int(5)"), "1's write is kept: {st}");
     }
 }
 
