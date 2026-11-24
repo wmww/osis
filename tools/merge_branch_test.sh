@@ -141,4 +141,18 @@ check "check fails: not landed" "$rc $(tip)" "1 $before"
 check "check failed: land refused" "$rc $(tip)" "1 $before"
 "$mb" land t6 --fixed > /dev/null 2>&1 && rc=0 || rc=$?
 check "check failed, --fixed: landed" "$rc $(git --git-dir="$d/origin.git" log --format=%s -1 main)" "0 t6"
+rm -f "$CARGO_LOG"
+git fetch -q
+
+# the land's rebase stops on a conflict; finished by hand, the next land checks and lands it
+branch t8 core/y/f core/x/f
+"$mb" gate t8 > /dev/null 2>&1
+w=$(git worktree list | awk '$3 == "[t8]" { print $1 }')
+git checkout -q --detach origin/main && sed -i 1s/.*/other8/ core/y/f && git commit -qam other8 && git push -q origin HEAD:main && git fetch -q
+"$mb" land t8 > /dev/null 2> "$d/err" && rc=0 || rc=$?
+check "land conflict: stopped, files named" "$rc $(grep -c 'conflicts in: core/y/f' "$d/err")" "1 1"
+git -C "$w" checkout -q --theirs core/y/f && git -C "$w" add core/y/f && git -C "$w" -c core.editor=true rebase --continue > /dev/null 2>&1
+"$mb" land t8 > /dev/null 2> "$d/err" && rc=0 || rc=$?
+check "land conflict finished by hand: landed" "$rc $(git --git-dir="$d/origin.git" log --format=%s -1 main)" "0 t8"
+check "land conflict finished by hand: checks ran" "$(grep -c 'clippy --all-targets' "$CARGO_LOG")" "1"
 exit $fail

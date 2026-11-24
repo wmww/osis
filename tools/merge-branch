@@ -18,7 +18,8 @@ The task loop), every step checked and reported, run from any checkout of the re
       commits after the checked HEAD (refused if HEAD is no descendant of it); if origin/main moved
       past the checked base, rebases as gate does, then `cargo clippy --all-targets -- -D warnings`,
       the same with `-p` for each non-default package both sides changed, and `cargo test -p` each
-      package both sides changed (files changed base..HEAD and base..origin/main); `tools/land
+      package both sides changed (files changed base..HEAD and base..origin/main); a conflict
+      stops it, and once the rebase is finished by hand the next land checks and lands that; `tools/land
       --delete` the one pushed copy origin/*-NAME (plain `tools/land` with none); checks origin/main
       is HEAD; `wt release` of W; `git branch -D NAME`; removes LOGS/NAME. Exit 0 landed, 1 not.
 
@@ -266,8 +267,23 @@ def land(name, fixed):
         else:
             say(f"landing with --fixed after: {rec['failed']}")
     head = git("rev-parse", "HEAD", cwd=w)
-    if head != rec["head"]:
-        if run("git", "merge-base", "--is-ancestor", rec["head"], head, cwd=w, check=False).returncode:
+    ancestor = lambda a, b: run("git", "merge-base", "--is-ancestor", a, b, cwd=w, check=False).returncode == 0
+    # a land's rebase stopped on a conflict and finished by hand: HEAD is the rebased branch
+    rb = rec.get("rebasing")
+    resumed = rb is not None and rb["head"] == rec["head"] and head != rec["head"] and ancestor(rb["onto"], head)
+    if resumed:
+        say(f"finishing the land's rebase of {rb['head'][:9]} onto {rb['onto'][:9]}, completed by hand")
+        if main != rb["onto"]:
+            rebase(w, 1)
+        new = git("rev-parse", "HEAD", cwd=w)
+        ok = checks(w, rec["base"], rb["head"])
+        rec = dict(exit=0 if ok else 1, failed="checks after the land's rebase", head=new, base=main)
+        record(d, **rec)
+        if not ok:
+            stop("not landed: fix the failure in the branch, then land with --fixed", 1)
+        head = new
+    elif head != rec["head"]:
+        if not ancestor(rec["head"], head):
             stop(f"HEAD is no descendant of the checked {rec['head'][:9]}: rewritten since; gate it again", 1)
         say(f"commits after the checked HEAD:\n{git('log', '--oneline', rec['head'] + '..' + head, cwd=w)}")
     pushed = [r for r in git("for-each-ref", "--format=%(refname:short)", f"refs/remotes/origin/*-{name}", cwd=w).split() if r]
@@ -275,6 +291,8 @@ def land(name, fixed):
         stop(f"several pushed copies of {name}: {' '.join(pushed)}: delete the stale one first", 1)
     if main != rec["base"]:
         say(f"origin/main moved since the last check ({rec['base'][:9]} -> {main[:9]}): rebasing")
+        # a conflict stops here; the next land resumes from the rebase finished by hand
+        record(d, **dict(rec, rebasing=dict(head=head, onto=main)))
         rebase(w, 1)
         new = git("rev-parse", "HEAD", cwd=w)
         ok = checks(w, rec["base"], head)
