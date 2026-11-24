@@ -1,5 +1,5 @@
 # The node closure (engine)
-> Summary: How the engine holds spec/sync-set.md §1-§2: the node root, the closure as one spanning tree over (context, thing) vertices followed per edge, roles taken up, how a grant is learned, the making rule, work counts, fetching again at a new strong, and what carries a pending commit, with the state table of a thing outside the closure.
+> Summary: How the engine holds spec/sync-set.md §1-§2: the node root, the closure as one spanning tree over (context, thing) vertices followed per edge, the node's role, how a grant is learned, the making rule, work counts, fetching again at a new strong, and what carries a pending commit, with the state table of a thing outside the closure.
 
 Spec: spec/sync-set.md, spec/sync-inbox.md §5. Model: notes/closure-model.md (held-model `closure`). Code: core/engine/src/sync/units.rs (module doc: the structure and its costs), flows/roots.rs, sync/set.rs, retention/release.rs, apply/carriers.rs (module doc: the carrier invariant). Fires and deposits: notes/sync-inbox.md.
 
@@ -8,10 +8,10 @@ Spec: spec/sync-set.md, spec/sync-inbox.md §5. Model: notes/closure-model.md (h
 ## Design rules (Tess)
 - **A strong grants nothing.** It says the target belongs to this closure; anyone knowing a tid may write one. Permission is a separate act by someone who may grant, and removing a reference revokes nothing.
 - **A thing goes when its last reference goes** (spec/sync-set.md §3). That is the intended result, never a risk to design around: nothing is kept because a release might be a mistake.
-- **Core holds only what cannot be built correctly on top of it.** Home, which invitations to accept, contact lists and "what is on my other nodes" are the app's.
+- **Core holds only what cannot be built correctly on top of it.** Home, which offers to act on, contact lists and "what is on my other nodes" are the app's.
 - **Lean on osis for storing data.** Node and account state are ordinary things and aspects. No aspect is exempt from sync; what is local is local by where it sits.
 - **A weak keeps nothing.** What a node keeps outside its closure is only what held things need (spec/commits.md §5 What a held thing needs). A contact is a strong to its profile.
-- **Nothing grows only.** No set of everything ever seen, accepted or granted. Storage: issues/storage-owners.md.
+- **Nothing grows only.** No set of everything ever seen or granted. Storage: issues/storage-owners.md.
 
 Why a sync unit stops where its root has no read access: a closure granted read on a large thing carries just what it references of it, so one row of a table syncs without the table and without keys per cell (spec/requirements.md, no unit synced whole). So Alice's A, admin of T, references T; Bob, a reader of A, adds a strong to T from his B; Alice removes hers: B never carried T (Bob reads T, B does not), so T is gone for both, unless Alice shared T with Bob or with B (sync `holding::a_strong_grants_nothing_and_its_removal_revokes_nothing_*`).
 
@@ -40,7 +40,7 @@ spec/sync-set.md §2 Own actors. Oracle: held-model `closure` (`hc::closure`: th
 3. A role that grew opens the boxes kept out for want of it (`flows::retake`): after every re-judge, and as an offer is taken.
 4. Lost access keeps what that same role reads (`retention::forget::read_path`).
 5. Held for keys (spec/sync-set.md §2; `units::held_for_keys`, `named_up`, `Closure::keys`): each independent thing the closure does not read, of which the node holds a read secret of its own (`opened_holder`), that the grants of a thing the closure reads name, directly or through such holders. The node holds such a holder's certificates, nothing of its content, and its sync ID is in the sync set. A holder named up from no read thing any more is judged for what it still needs: it goes whole where nothing held needs it. What is not built: notes/sync-rewrite-state.md.
-- A thing that is no account is offered a grant by someone who does not write it only while its own setting enables `grant@~0` (the default never): a group, tag or other holder thing granted a role by another party's admin tells its readers nothing until then (the grant stands on its target either way). Kit, the app and chat enable the inbox signals on every thing they make for sharing (`osis_kit::store::start_setting`, `osis_chat::create`: `RetentionSetting::take_inbox_signals`), so a thing a user creates hears of grants from outside and its admins can turn that off; a thing made through the bare API does not until its admin writes the setting. Test fixtures enable it (`LocalPeer::takes_grants`).
+- A thing that is no account is offered a grant by someone who does not write it only while its own setting enables `grant@~0` (the default never): a shared space, tag or other holder thing granted a role by another party's admin tells its readers nothing until then (the grant stands on its target either way). Kit, the app and chat enable the inbox signals on every thing they make for sharing (`osis_kit::store::start_setting`, `osis_chat::create`: `RetentionSetting::take_inbox_signals`), so a thing a user creates hears of grants from outside and its admins can turn that off; a thing made through the bare API does not until its admin writes the setting. Test fixtures enable it (`LocalPeer::takes_grants`).
 
 ## Learning a grant
 - **By syncing the target**: a grant is the target's own data.
