@@ -43,6 +43,7 @@ prop_compose! {
         }
         let mut h = Header {
             signer,
+            key: None,
             // the split form (entries of each padded length, their key commitments distinct), or
             // the empty path or one through another thing in the clear
             path: match split {

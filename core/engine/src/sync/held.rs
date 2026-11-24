@@ -57,7 +57,7 @@ impl Cause {
 }
 
 /// The role aspects whose commits from elsewhere a complete pass must follow.
-const ROLE_ASPECTS: [&str; 3] = ["roles.0", "secrets.0", "keys.0"];
+const ROLE_ASPECTS: [&str; 4] = ["roles.0", "signers.0", "secrets.0", "keys.0"];
 
 /// Loads the waiting self-removals, the complete passes noted, the role arrivals and the causes
 /// judged (an open or reload); the pass place goes on from the highest stored.

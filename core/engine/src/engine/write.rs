@@ -10,7 +10,7 @@ use super::secrets::CommitSecrets;
 use super::{Core, Engine, Tx};
 use crate::error::{Error, Result};
 use osis_commit::{AspectWrite, CommitBuilder, Form, Kind, PurgeItem, writer_ctx};
-use osis_base::{Ak, ChainStep, CommitId, CreationRecord, Role, Tid, Ts, Value, WallMs, record_chain};
+use osis_base::{Ak, ChainStep, CommitId, CreationRecord, Holder, Role, Tid, Ts, Value, WallMs, record_chain};
 use osis_crdt::{AnyView, DeltaBuilder, CounterRange, Delta, Fragment, Op, PathOp, Source, View, Writer, encode_delta};
 use osis_blob::{BlobWriter, Framing};
 use osis_perm::At;
@@ -106,10 +106,11 @@ impl Mutation {
         self
     }
 
-    /// Signs as a key actor whose seed the node holds (`Engine::hold_key_actor`): a
-    /// key or link key (spec/crypto.md §2), in commit form (its holders share no counters).
-    pub fn sign_as(&mut self, key_actor: Tid) -> &mut Self {
-        self.signer = Some(key_actor);
+    /// Signs as `thing` by a key this node holds holding a grant on it (spec/permissions.md §1
+    /// Signed as; `Core::key_for`): its record's key, else a key granted on it, in commit form
+    /// (its key holders share no counters).
+    pub fn sign_as(&mut self, thing: Tid) -> &mut Self {
+        self.signer = Some(thing);
         self
     }
 
@@ -237,7 +238,7 @@ impl Mutation {
 /// (`secrets.0`, `keys.0`) and other content.
 pub(crate) fn required_role(ak: &str) -> Role {
     match ak {
-        "roles.0" | "sync.0" => Role::Admin,
+        "roles.0" | "signers.0" | "sync.0" => Role::Admin,
         _ if Ak::markers_of(ak).admin_only => Role::Admin,
         _ => Role::Write,
     }
@@ -417,7 +418,7 @@ pub(crate) enum Stated {
 /// so that one path serves all. A role commit states `role_path`. A commit where no path gives the role on a thing it writes states
 /// `plain_path` (a fire valid by its thing's setting); acting as a thing through which no path
 /// gives the role is refused. A path listing more than `MAX_PATH_THINGS` things is refused.
-pub(crate) fn stated_paths(core: &Core, plan: &CommitPlan, writes: &[AspectWrite], edges: &[(Tid, Tid, Option<osis_perm::Edge>)]) -> Result<Stated> {
+pub(crate) fn stated_paths(core: &Core, plan: &CommitPlan, writes: &[AspectWrite], edges: &[(Tid, Holder, Option<osis_perm::Edge>)]) -> Result<Stated> {
     let (node, actor) = (plan.signer, plan.actor);
     let fallback = Stated::One(plain_path(node, actor));
     if plan.kind.is_role() {
@@ -486,23 +487,29 @@ enum RoleWay {
     /// A self-removal of this holder's grant (every edge write on the thing lowers that grant, and
     /// it is the signer's own or the one the signer's admin on the thing rests on alone,
     /// `validity::self_removal`): the path ending at the holder, giving admin on it (§2
-    /// Self-removal; the empty path where the holder is the signer).
+    /// Self-removal; the empty path where the holder is the signer, or the key signing as it).
     Leave(Tid),
 }
 
 /// The way of `edges` (a role commit's edge writes, (target, holder, new edge)) on thing `t`.
-fn role_way(core: &Core, plan: &CommitPlan, t: &Tid, edges: &[(Tid, Tid, Option<osis_perm::Edge>)]) -> Option<RoleWay> {
-    let on: Vec<(Tid, Option<osis_perm::Edge>)> = edges.iter().filter(|(x, _, _)| x == t).map(|(_, h, e)| (*h, *e)).collect();
+fn role_way(core: &Core, plan: &CommitPlan, t: &Tid, edges: &[(Tid, Holder, Option<osis_perm::Edge>)]) -> Option<RoleWay> {
+    let on: Vec<(Holder, Option<osis_perm::Edge>)> = edges.iter().filter(|(x, _, _)| x == t).map(|(_, h, e)| (*h, *e)).collect();
     let (h, _) = on.first()?;
     let node = plan.signer;
-    let old = |m: &Tid| match core.timelines().get(t) {
-        Some(tl) => tl.edges_at(None).get(m, t).copied(),
-        None => (core.mint_admin(t) == Some(*m)).then(|| osis_perm::Edge::new(Role::Admin)),
+    let old = |m: &Holder| match (core.timelines().get(t), m) {
+        (Some(tl), Holder::Thing(m)) => tl.edges_at(None).get(m, t).copied(),
+        (_, Holder::Key(k)) => core.timelines().key_grant(k, t),
+        (None, Holder::Thing(m)) => (core.mint_admin(t) == Some(*m)).then(|| osis_perm::Edge::new(Role::Admin)),
     };
     // a removal of an absent grant lowers (spec/permissions.md §2 Self-removal)
     let lowers = on.iter().all(|(m, e)| m == h && osis_perm::types::lowers(e.as_ref(), old(m).as_ref()));
-    if lowers && (*h == node || crate::apply::validity::self_removal(core, &node, t, h, plan.ts)) {
-        return Some(RoleWay::Leave(*h));
+    // a key lowering its own grant on the thing it signs as states no thing (§2 Self-removal)
+    let signing = plan.key.or_else(|| plan.creates.get(&node).or_else(|| core.created(&node)).and_then(CreationRecord::key));
+    let own_key = |k: &osis_base::SignKey| *t == node && Some(*k) == signing;
+    match h {
+        Holder::Thing(h) if lowers && (*h == node || crate::apply::validity::self_removal(core, &node, t, h, plan.ts)) => return Some(RoleWay::Leave(*h)),
+        Holder::Key(k) if lowers && own_key(k) => return Some(RoleWay::Leave(node)),
+        _ => {}
     }
     let records: Records<'_> = &|x| plan.creates.get(x);
     let puts = on.iter().filter_map(|(_, e)| e.filter(|e| !e.says_retain()).map(|e| e.role)).max();
@@ -522,7 +529,7 @@ fn role_way(core: &Core, plan: &CommitPlan, t: &Tid, edges: &[(Tid, Tid, Option<
 /// (which would make it a self-removal): the path to the thing's mint admin, then the mint admin
 /// (its record edge the last hop). One `Path` serves every thing a role commit writes
 /// (`Path::one_of`). `None` where no path gives what a thing needs.
-fn role_path(core: &Core, plan: &CommitPlan, writes: &[AspectWrite], edges: &[(Tid, Tid, Option<osis_perm::Edge>)]) -> Result<Option<osis_commit::Path>> {
+fn role_path(core: &Core, plan: &CommitPlan, writes: &[AspectWrite], edges: &[(Tid, Holder, Option<osis_perm::Edge>)]) -> Result<Option<osis_commit::Path>> {
     let node = plan.signer;
     let records: Records<'_> = &|t| plan.creates.get(t);
     let things: BTreeSet<Tid> = writes.iter().map(|w| w.tid).collect();
@@ -539,7 +546,7 @@ fn role_path(core: &Core, plan: &CommitPlan, writes: &[AspectWrite], edges: &[(T
             None => {
                 let need = if plan.kind.is_compaction() { writes.iter().filter(|w| w.tid == t).map(|w| snapshot_role(w.ak.as_str())).max() } else { role_with(core, node, records, &t, plan.ts) };
                 let found = need.and_then(|r| path_with(core, node, records, &t, Need::Role(r), plan.ts));
-                let own = edges.iter().any(|(x, h, _)| *x == t && *h == node);
+                let own = edges.iter().any(|(x, h, _)| *x == t && *h == Holder::Thing(node));
                 match (found, plan.creates.get(&t).or_else(|| core.created(&t)).and_then(CreationRecord::mint_admin)) {
                     (Some((listed, _, _)), Some(m)) if own && listed.is_empty() && m != node => path_with(core, node, records, &m, Need::Role(Role::Admin), plan.ts).map(|(mut l, marks, _)| {
                         l.push(m);
@@ -734,8 +741,10 @@ pub(crate) struct CommitPlan {
     pub purge: Vec<PurgeItem>,
     pub undoes: Option<CommitId>,
     pub frontier: Option<osis_perm::Frontier>,
-    /// The signing key actor: the node, or a key actor it holds.
+    /// The thing it is signed as: the node, or a thing a key it holds holds a grant on.
     pub signer: Tid,
+    /// The key it is signed by where that is not `signer`'s record's (the header names it).
+    pub key: Option<osis_base::SignKey>,
     /// The header's blind (spec/crypto.md §7: the commit blob's; chunks and pages carry their
     /// own link blinds).
     pub blind: [u8; 16],
@@ -1002,7 +1011,12 @@ fn build(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Resolved>) -> Result<osi
         tx.rng.fill_bytes(&mut seed);
         let mut list_rng = osis_crypto::SeededRng::from_seed(seed);
         let mut sink = ListBlobs { blobs: TxBlobs::new(&mut tx.blobs, tx.txn.is_memory()), rng: &mut list_rng };
-        let signing = if node == core.id.tid() { &core.id.keys().signing } else { &core.key_actors.get(&node).ok_or(Error::Misuse("signer not held"))?.keys().signing };
+        // the key the plan was made for: the one `key_for` gives (its named key the header's)
+        let signing = match core.key_for(&node) {
+            Some((s, k)) if k == plan.key => s,
+            _ => return Err(Error::Misuse("no key held with a grant on the signer")),
+        };
+        b.name_key = plan.key.is_some();
         b.build(signing, &secrets, &mut sink, &mut *tx.rng)
     };
     let built = match built {
@@ -1096,15 +1110,14 @@ pub(crate) fn sealed_commit(tx: &mut Tx<'_>, mut m: Mutation) -> Result<osis_com
 /// `commit_in`, or for a sealed mutation the built commit, unapplied.
 pub(crate) fn commit_or_build(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<(CommitId, Option<osis_commit::CommitBlob>)>> {
     let sealed = m.sealed;
-    let node = match m.signer {
-        Some(k) if tx.core.key_actors.contains_key(&k) => k,
-        Some(_) => return Err(Error::Misuse("signer not held")),
+    let (node, key) = match m.signer {
+        Some(s) => (s, tx.core.key_for(&s).ok_or(Error::Misuse("no key held with a grant on the signer"))?.1),
         // a node writes its own thing as itself: nobody else has rights on it
         None if !(m.aspects.is_empty() && m.creates.is_empty()) && m.aspects.keys().map(|(t, _)| t).chain(m.creates.keys()).all(|t| tx.core.made_nodes_own(t, &m.creates)) => {
             m.actor = None;
-            tx.core.id.tid()
+            (tx.core.id.tid(), None)
         }
-        None => tx.core.me(),
+        None => (tx.core.me(), None),
     };
     if m.undoes.is_some() && !(m.creates.is_empty() && m.aspects.is_empty() && m.purge.is_empty() && m.purge_named.is_empty() && m.frontier.is_none()) {
         return Err(Error::Misuse("an undo mutation carries no other ops"));
@@ -1179,8 +1192,8 @@ pub(crate) fn commit_or_build(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option
         m.purge.push(item);
     }
     // under `Engine::leaving_adminless`, an edge write may carry the adminless mark (`build`)
-    let adminless = tx.core.leave_adminless && kind == Kind::Role && m.aspects.keys().any(|(_, ak)| ak.as_str() == "roles.0");
-    let base = CommitPlan { kind, ts, actor: m.actor.unwrap_or(node), form: Form::Commit, creates: std::mem::take(&mut m.creates), purge: std::mem::take(&mut m.purge), undoes: None, frontier: m.frontier.take(), signer: node, blind: m.blind.unwrap_or_else(|| draw_blind(&mut *tx.rng)), expires: None, restores: false, own_cover: false, adminless };
+    let adminless = tx.core.leave_adminless && kind == Kind::Role && m.aspects.keys().any(|(_, ak)| crate::apply::validity::edge_ak(ak.as_str()));
+    let base = CommitPlan { kind, ts, actor: m.actor.unwrap_or(node), form: Form::Commit, creates: std::mem::take(&mut m.creates), purge: std::mem::take(&mut m.purge), undoes: None, frontier: m.frontier.take(), signer: node, key, blind: m.blind.unwrap_or_else(|| draw_blind(&mut *tx.rng)), expires: None, restores: false, own_cover: false, adminless };
     if !m.unchecked {
         check_acts(tx.core, node, &|t| base.creates.get(t), &base.actor, ts)?;
     }

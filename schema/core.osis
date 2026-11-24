@@ -93,6 +93,10 @@ type edge = struct {
 /// Who holds which rights on the thing, by holder.
 aspect roles.0: map<weak, edge>;
 
+/// Which keys sign as the thing, with what grant (spec/permissions.md §1 Key grant): by key, its
+/// grant as `roles.0`'s (role, `until`, `may_grant`; never `retain` or `floor`).
+aspect signers.0: map<signing_key, edge>;
+
 /// A set of 32-byte commit IDs.
 type frontier = struct {
     commits 0: set<blob>,

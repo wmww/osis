@@ -1593,6 +1593,6 @@ fn a_lowerings_scope_holds_what_a_commit_just_applied_writes_spec_perm_5_1() {
     let pk = lp.peers[1].engine.package(&e).unwrap().unwrap();
     lp.deliver(0, &pk).unwrap();
     assert!(lp.peers[0].engine.core.ix.commits.contains_key(&e), "the commit applies");
-    let scope = crate::apply::receipt::scope_of(&lp.peers[0].engine.core, &[(bob, t)]);
+    let scope = crate::apply::receipt::scope_of(&lp.peers[0].engine.core, &[(bob.into(), t)]);
     assert!(scope.content.get(&bob).is_some_and(|s| s.contains(&u)), "{scope:?}");
 }

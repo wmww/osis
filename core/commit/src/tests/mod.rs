@@ -32,6 +32,7 @@ pub(crate) const SESSION: Form = Form::Session(NONCE);
 pub(crate) fn sample_header() -> Header {
     Header {
         signer: t(1),
+        key: None,
         path: Paths::One(Path::through(t(2))),
         kind: Kind::Content,
         ts: ts(1_000_000),
@@ -68,6 +69,28 @@ fn stored_header_reads_alike_spec_wire_4() {
     let b = h.encode();
     assert_eq!(Header::decode_stored(&b).unwrap(), Header::decode(&b).unwrap());
     assert_eq!(Header::decode_stored(&b).unwrap(), h);
+}
+
+// spec/wire.md §4 field 1: `[tid, signing_key]` names the signing key; it round-trips, is in the
+// commit ID, and anything else in that place (another arity, a key of another case or length)
+// is malformed
+#[test]
+fn second_signer_form_round_trips_spec_wire_4() {
+    let h = Header { key: Some(osis_base::SignKey([7; 32])), ..sample_header() };
+    let b = h.encode();
+    assert_eq!(Header::decode(&b).unwrap(), h);
+    assert_ne!(h.id(), sample_header().id());
+    let Value::List(items) = header_value(&h) else { unreachable!() };
+    let Value::List(signer) = &items[1] else { unreachable!("the second form is an array") };
+    let mutate = |x: Value| {
+        let mut it = items.clone();
+        it[1] = x;
+        Header::decode(&osis_base::encode(&Value::List(it))).unwrap_err()
+    };
+    let key = |case: u64, n: usize| Value::Enum(case, Some(Box::new(Value::Bytes(vec![7; n]))));
+    for bad in [vec![signer[0].clone()], vec![signer[0].clone(), key(1, 32), key(1, 32)], vec![signer[0].clone(), key(2, 32)], vec![signer[0].clone(), key(1, 31)], vec![signer[0].clone(), Value::Bytes(vec![7; 32])]] {
+        assert!(matches!(mutate(Value::List(bad)), Error::Malformed(_)));
+    }
 }
 
 /// A header's value tree, to edit into malformed headers.

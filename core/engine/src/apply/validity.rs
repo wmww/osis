@@ -42,9 +42,61 @@ pub(crate) fn header_frontier(h: &Header) -> Option<Arc<Frontier>> {
     h.frontier.clone().map(|ids| Arc::new(Frontier::of_sorted(ids)))
 }
 
-/// Whether `ak` holds edge writes (`roles.0`): perm reads them.
+/// Whether `ak` holds edge writes (`roles.0` of things, `signers.0` of keys): perm reads them.
 pub(crate) fn edge_ak(ak: &str) -> bool {
-    ak == "roles.0"
+    Grants::of(ak).is_some()
+}
+
+/// Which grants an edge aspect holds: things' (`roles.0`, keyed by a weak) or keys' (`signers.0`,
+/// keyed by a `signing_key` value). Its entries' dots are its own: a commit's two edge aspects on
+/// a thing may use the same counters, so an entry is named by its aspect too.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Grants {
+    Things,
+    Keys,
+}
+
+impl Grants {
+    pub(crate) fn of(ak: &str) -> Option<Grants> {
+        match ak {
+            "roles.0" => Some(Grants::Things),
+            "signers.0" => Some(Grants::Keys),
+            _ => None,
+        }
+    }
+    /// The aspect holding `h`'s grants.
+    pub(crate) fn of_holder(h: &Holder) -> Grants {
+        match h {
+            Holder::Thing(_) => Grants::Things,
+            Holder::Key(_) => Grants::Keys,
+        }
+    }
+    pub(crate) fn ak(self) -> &'static str {
+        match self {
+            Grants::Things => "roles.0",
+            Grants::Keys => "signers.0",
+        }
+    }
+    /// The holder an entry key names here; `None`: no holder (bad input as a created entry's key).
+    pub(crate) fn holder(self, k: &Value) -> Option<Holder> {
+        match (self, k) {
+            (Grants::Things, Value::Weak(m)) => Some(Holder::Thing(*m)),
+            (Grants::Keys, k) => SignKey::from_value(k).map(Holder::Key),
+            _ => None,
+        }
+    }
+    /// The entry key naming `h` here.
+    pub(crate) fn key(h: &Holder) -> Value {
+        match h {
+            Holder::Thing(m) => Value::Weak(*m),
+            Holder::Key(k) => k.to_value(),
+        }
+    }
+    /// Whether `e` is a grant this aspect may hold: a key's carries no `retain` and no `floor`, and
+    /// is no `until` 0 removal (spec/data-model.md §9 `signers.0`).
+    fn fits(self, e: &Edge) -> bool {
+        self == Grants::Things || !e.retain && e.floor.is_none() && e.until != Some(osis_base::WallMs(0))
+    }
 }
 
 /// Whether `ak`'s writes reach perm instead of a state: edge writes and creation records.
@@ -185,10 +237,10 @@ fn entries(f: &Fragment) -> Vec<(Dot, Option<Value>, Option<Fragment>)> {
     m.entries().map(|(d, _, k, f)| (d.clone(), k.cloned(), f.cloned())).collect()
 }
 
-/// A `roles.0` entry as perm's adaptation reads it: dot, the holder its key names (`None`: a
-/// key that is no tid), and the edge its fragment reads (`None`: no fragment, an entry reset; a
-/// fragment reading no edge is bad input, `check_holders_parts`).
-pub(crate) type Entry = (Dot, Option<Tid>, Option<Edge>);
+/// An edge aspect's entry as perm's adaptation reads it: dot, the holder its key names (`None`:
+/// a key naming no holder), and the edge its fragment reads (`None`: no fragment, an entry
+/// reset; a fragment reading no edge is bad input, `check_holders_parts`).
+pub(crate) type Entry = (Dot, Option<Holder>, Option<Edge>);
 
 /// What perm's adaptation reads of a role commit's held `roles.0` parts, by aspect index: a
 /// function of the commit record, persisted per commit in the index (`engine::index`,
@@ -203,18 +255,13 @@ impl PermParts {
         let mut out = PermParts::default();
         for (ai, d) in parts {
             let Some(a) = h.aspects.get(*ai) else { continue };
-            if !edge_ak(a.ak.as_str()) {
-                continue;
-            }
+            let Some(g) = Grants::of(a.ak.as_str()) else { continue };
             let es = entries(d.fragment())
                 .into_iter()
-                // a removal record keyed by no tid acts on no holder's entry (spec/crdt.md §5.6)
-                .filter(|(_, k, x)| x.is_some() || k.as_ref().is_none_or(|k| matches!(k, Value::Weak(_))))
+                // a removal record keyed by no holder acts on no holder's entry (spec/crdt.md §5.6)
+                .filter(|(_, k, x)| x.is_some() || k.as_ref().is_none_or(|k| g.holder(k).is_some()))
                 .filter_map(|(d, k, x)| {
-                    let m = match k {
-                        Some(Value::Weak(m)) => Some(m),
-                        _ => None,
-                    };
+                    let m = k.as_ref().and_then(|k| g.holder(k));
                     let edge = match x {
                         Some(x) => Some(x.read().as_ref().and_then(edge_of)?),
                         None => None,
@@ -230,17 +277,17 @@ impl PermParts {
     }
 }
 
-/// Records the holder of every `roles.0` entry these deltas create: (target, entry dot) ->
-/// holder. Only the delta carrying the entry's dot (`own`) creates it (a nested write into
-/// another's entry is bad input, `check_holders_parts`).
-fn note_keys(core: &mut Core, target: &Tid, es: &[Entry], own: Option<&Owned>) -> bool {
+/// Records the holder of every edge entry these deltas of aspect `g` create: (target, `g`, entry
+/// dot) -> holder. Only the delta carrying the entry's dot (`own`) creates it (a nested write
+/// into another's entry is bad input, `check_holders_parts`).
+fn note_keys(core: &mut Core, target: &Tid, g: Grants, es: &[Entry], own: Option<&Owned>) -> bool {
     let mut new = false;
     for (d, k, _) in es {
         if let Some(m) = k
             && own.is_some_and(|o| o.owns(d.origin()))
-            && core.ix.holder_keys.get(&(*target, d.clone())).is_none()
+            && core.ix.holder_keys.get(&(*target, g, d.clone())).is_none()
         {
-            core.ix.holder_keys.insert((*target, d.clone()), *m);
+            core.ix.holder_keys.insert((*target, g, d.clone()), *m);
             new = true;
         }
     }
@@ -255,8 +302,8 @@ fn note_keys(core: &mut Core, target: &Tid, es: &[Entry], own: Option<&Owned>) -
 /// it ends by the entries it resets, so each such reset's creation must be held; if not, the
 /// commit applies nothing yet (`add_role_commit`). A reset beside a put of a live edge for its
 /// key decides nothing: the put sets the edge whatever it replaces.
-fn edge_ops(core: &Core, target: &Tid, es: &[Entry], own: Option<&Owned>) -> (Vec<EdgeOp>, bool) {
-    let mut per: BTreeMap<Tid, Option<Edge>> = BTreeMap::new();
+fn edge_ops(core: &Core, target: &Tid, g: Grants, es: &[Entry], own: Option<&Owned>) -> (Vec<EdgeOp>, bool) {
+    let mut per: BTreeMap<Holder, Option<Edge>> = BTreeMap::new();
     for (d, k, v) in es {
         if let (Some(m), Some(e)) = (k, v)
             && own.is_some_and(|o| o.owns(d.origin()))
@@ -264,9 +311,9 @@ fn edge_ops(core: &Core, target: &Tid, es: &[Entry], own: Option<&Owned>) -> (Ve
             per.insert(*m, Some(*e));
         }
     }
-    let live_put = |m: &Tid| per.get(m).is_some_and(|e| e.is_some_and(|e| !e.says_retain()));
+    let live_put = |m: &Holder| per.get(m).is_some_and(|e| e.is_some_and(|e| !e.says_retain()));
     let mut known = true;
-    let mut removed: BTreeSet<Tid> = BTreeSet::new();
+    let mut removed: BTreeSet<Holder> = BTreeSet::new();
     for (d, k, v) in es {
         // a nested write into another's entry is no edge write (bad input on receipt)
         if v.is_some() {
@@ -275,7 +322,7 @@ fn edge_ops(core: &Core, target: &Tid, es: &[Entry], own: Option<&Owned>) -> (Ve
         // the entry's creation: one held, else this delta's own (`note_keys` records it so once
         // the commit is held)
         let own_key = || es.iter().find(|(x, m, _)| x == d && m.is_some() && own.is_some_and(|o| o.owns(x.origin()))).and_then(|x| x.1);
-        match core.ix.holder_keys.get(&(*target, d.clone())).copied().or_else(own_key) {
+        match core.ix.holder_keys.get(&(*target, g, d.clone())).copied().or_else(own_key) {
             Some(m) if k.is_some_and(|k| k != m) => {}
             Some(m) => {
                 removed.insert(m);
@@ -286,40 +333,42 @@ fn edge_ops(core: &Core, target: &Tid, es: &[Entry], own: Option<&Owned>) -> (Ve
     for m in removed {
         per.entry(m).or_insert(None);
     }
-    (per.into_iter().map(|(holder, edge)| EdgeOp { target: *target, holder: Holder::Thing(holder), edge }).collect(), known)
+    (per.into_iter().map(|(holder, edge)| EdgeOp { target: *target, holder, edge }).collect(), known)
 }
 
-/// Holders whose edge on `target` a `roles.0` delta writes: an entry it creates names its key,
-/// an entry reset the holder its creation keyed (known here or not named).
-pub(crate) fn edge_holders(core: &Core, target: &Tid, f: &Fragment) -> Vec<Tid> {
+/// Holders whose edge on `target` a delta of edge aspect `g` writes: an entry it creates names
+/// its key, an entry reset the holder its creation keyed (known here or not named).
+pub(crate) fn edge_holders(core: &Core, target: &Tid, g: Grants, f: &Fragment) -> Vec<Holder> {
     entries(f)
         .into_iter()
         .filter_map(|(d, k, v)| match (k, v) {
-            (Some(Value::Weak(m)), Some(_)) => Some(m),
-            (k, None) => core.ix.holder_keys.get(&(*target, d)).copied().filter(|m| k.as_ref().is_none_or(|k| *k == Value::Weak(*m))),
+            (Some(k), Some(_)) => g.holder(&k),
+            (k, None) => core.ix.holder_keys.get(&(*target, g, d)).copied().filter(|m| k.as_ref().is_none_or(|k| *k == Grants::key(m))),
             _ => None,
         })
         .collect()
 }
 
-/// A `roles.0` delta writing inside an entry it did not create is bad input (an edge change is
-/// remove + put, spec/permissions.md §2), and so is one holding a value that is no well-formed
-/// edge (§2): judged from the delta and its header alone,
-/// the one judgment of an edge's shape; perm never sees another.
+/// An edge aspect's delta (`roles.0`, `signers.0`) writing inside an entry it did not create is
+/// bad input (an edge change is remove + put, spec/permissions.md §2), and so is one holding a
+/// value that is no well-formed grant for it, or a `signers.0` entry it creates keyed by no
+/// `signing_key` value (spec/data-model.md §9): judged from the delta and its header alone, the
+/// one judgment of an edge's shape; perm never sees another.
 pub(crate) fn check_holders_parts(h: &Header, id: &CommitId, parts: &[(usize, Decoded)]) -> Result<()> {
     for (ai, d) in parts {
         let Some(a) = h.aspects.get(*ai) else { continue };
-        if a.ak.as_str() != "roles.0" {
-            continue;
-        }
+        let Some(g) = Grants::of(a.ak.as_str()) else { continue };
         let es = entries(d.fragment());
-        if es.iter().any(|(_, _, f)| f.as_ref().is_some_and(|f| f.read().as_ref().and_then(edge_of).is_none())) {
-            return Err(Error::BadInput("a roles.0 value that is no well-formed edge"));
+        if es.iter().any(|(_, _, f)| f.as_ref().is_some_and(|f| f.read().as_ref().and_then(edge_of).is_none_or(|e| !g.fits(&e)))) {
+            return Err(Error::BadInput("an edge aspect's value that is no well-formed grant for it"));
+        }
+        if es.iter().any(|(_, k, f)| f.is_some() && k.as_ref().is_none_or(|k| g.holder(k).is_none())) {
+            return Err(Error::BadInput("an edge aspect's entry keyed by no holder"));
         }
         if h.kind.has_own_writes() {
             let own = Owned::of(h, id, *ai);
             if es.iter().any(|(dot, _, f)| f.is_some() && !own.as_ref().is_some_and(|o| o.owns(dot.origin()))) {
-                return Err(Error::BadInput("a roles.0 write inside an entry the delta did not create"));
+                return Err(Error::BadInput("an edge aspect's write inside an entry the delta did not create"));
             }
         }
     }
@@ -343,8 +392,10 @@ pub(crate) fn add_role_commit(core: &mut Core, h: &View, path: &osis_commit::Pat
 pub(crate) fn hold_role_commit(core: &mut Core, h: &View, path: &osis_commit::Paths, id: &CommitId, parts: &PermParts) {
     core.stale_commits.insert(*id);
     for (ai, es) in &parts.edges {
-        if let Some(a) = h.aspects.get(*ai) {
-            note_keys(core, &a.tid, es, Owned::of_view(h, id, *ai).as_ref());
+        if let Some(a) = h.aspects.get(*ai)
+            && let Some(g) = Grants::of(a.ak.as_str())
+        {
+            note_keys(core, &a.tid, g, es, Owned::of_view(h, id, *ai).as_ref());
         }
     }
     let mut ops = Vec::new();
@@ -363,7 +414,8 @@ pub(crate) fn hold_role_commit(core: &mut Core, h: &View, path: &osis_commit::Pa
         if core.miskeyed(id, &a.tid) {
             continue;
         }
-        let (v, k) = edge_ops(core, &a.tid, es, Owned::of_view(h, id, *ai).as_ref());
+        let Some(g) = Grants::of(a.ak.as_str()) else { continue };
+        let (v, k) = edge_ops(core, &a.tid, g, es, Owned::of_view(h, id, *ai).as_ref());
         ops.extend(v);
         known &= k;
     }
@@ -386,7 +438,7 @@ pub(crate) fn hold_role_commit(core: &mut Core, h: &View, path: &osis_commit::Pa
             osis_commit::Paths::One(p) => (p.things.clone(), p.direct),
             osis_commit::Paths::Split(_) => return core.ix.held.remove(id),
         };
-        core.ix.held.add_commit(RoleCommit { id: *id, ts: h.ts, signer: h.signer, key: signing_key(core, &h.signer), listed, direct, frontier: h.frontier.clone(), ops });
+        core.ix.held.add_commit(RoleCommit { id: *id, ts: h.ts, signer: h.signer, key: signing_key(core, h), listed, direct, frontier: h.frontier.clone(), ops });
     }
 }
 
@@ -413,11 +465,12 @@ pub(crate) enum Place {
 /// path the commit states or not, then thing, then holder.
 pub(crate) type WritePlace = (bool, Tid, Holder);
 
-/// The key that signed held commit `signer`'s: the key its record holds (spec/wire.md §4 field 1,
-/// its first form). A commit is held only once its signer's record verified it; where that record
-/// is not held the zero key stands in, which no record holds and no grant names.
-pub(crate) fn signing_key(core: &Core, signer: &Tid) -> SignKey {
-    core.created(signer).and_then(CreationRecord::key).unwrap_or(SignKey([0; 32]))
+/// The key that signed held commit `h` (spec/wire.md §4 field 1): the one its header names, else
+/// its signer's record's: what `apply::commit_key` verified its signature with (its invariant).
+/// A commit is held only once that check passed; where the record is not held the zero key
+/// stands in, which no record holds and no grant names.
+pub(crate) fn signing_key(core: &Core, h: &View) -> SignKey {
+    h.key.or_else(|| core.created(&h.signer).and_then(CreationRecord::key)).unwrap_or(SignKey([0; 32]))
 }
 
 impl Place {
@@ -452,9 +505,10 @@ pub(crate) fn write_place(mint: &BTreeMap<Tid, Holder>, key: SignKey, signer: Ti
 /// judged as it is. `record`: the records held, or carried by the commit. No other path is read:
 /// one that would also lead to `t` judges nothing (§1).
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn unreached(core: &Core, signer: Tid, along: &[Tid], direct: osis_base::format::PathMarks, t: &Tid, edge_class: bool, leaves: bool, at: Place, record: &dyn Fn(&Tid) -> Option<CreationRecord>) -> bool {
-    let holder = leaves.then(|| along.last().copied().unwrap_or(signer));
-    let key = record(&signer).and_then(|r| r.key()).unwrap_or(SignKey([0; 32]));
+pub(crate) fn unreached(core: &Core, signer: Tid, key: Option<SignKey>, along: &[Tid], direct: osis_base::format::PathMarks, t: &Tid, edge_class: bool, leaves: bool, at: Place, record: &dyn Fn(&Tid) -> Option<CreationRecord>) -> bool {
+    let holder = leaves.then(|| Holder::Thing(along.last().copied().unwrap_or(signer)));
+    // the key its signature verified with (`apply::commit_key`)
+    let key = key.or_else(|| record(&signer).and_then(|r| r.key())).unwrap_or(SignKey([0; 32]));
     Reach::new(core, record).unreached(key, signer, along, direct, *t, edge_class, holder, at)
 }
 
@@ -467,7 +521,7 @@ struct Reach<'a> {
     record: &'a dyn Fn(&Tid) -> Option<CreationRecord>,
     /// Edge (holder, thing) -> its writes judged: the first not itself unjudgeable (`Ok`), or the
     /// last of those before it judged so far (`Err`), all unjudgeable.
-    first: BTreeMap<(Tid, Tid), std::result::Result<Point, Point>>,
+    first: BTreeMap<(Holder, Tid), std::result::Result<Point, Point>>,
 }
 
 /// The record chains of `members` (`record` the records read), each record's holder: what a
@@ -498,23 +552,18 @@ impl<'a> Reach<'a> {
     }
 
     /// Whether an edge of the path stated by `key`'s commit as `signer` has not arrived: one that
-    /// is no record edge with no held edge write before `at` (none is held on a key's grant).
+    /// is no record edge with no held edge write before `at`, the key hop among them (a key
+    /// granted on `signer` waits for its grant as any holder does).
     #[allow(clippy::too_many_arguments)]
-    fn unreached(&mut self, key: SignKey, signer: Tid, along: &[Tid], direct: osis_base::format::PathMarks, t: Tid, edge_class: bool, holder: Option<Tid>, at: Place) -> bool {
+    fn unreached(&mut self, key: SignKey, signer: Tid, along: &[Tid], direct: osis_base::format::PathMarks, t: Tid, edge_class: bool, holder: Option<Holder>, at: Place) -> bool {
         let mint = self.mint([signer, t].into_iter().chain(along.iter().copied()));
-        let hops = osis_perm::paths::hops(&mint, key, signer, along, direct, t, holder.map(Holder::Thing), edge_class);
-        hops.into_iter().any(|(p, q)| {
-            mint.get(&q) != Some(&p)
-                && match p {
-                    Holder::Thing(p) => !self.arrived(p, q, at),
-                    Holder::Key(_) => true,
-                }
-        })
+        let hops = osis_perm::paths::hops(&mint, key, signer, along, direct, t, holder, edge_class);
+        hops.into_iter().any(|(p, q)| mint.get(&q) != Some(&p) && !self.arrived(p, q, at))
     }
 
     /// Whether a held edge write on `p`'s edge on `q`, not itself unjudgeable, is ordered before
     /// `at`: whether the first such is.
-    fn arrived(&mut self, p: Tid, q: Tid, at: Place) -> bool {
+    fn arrived(&mut self, p: Holder, q: Tid, at: Place) -> bool {
         let core: &'a Core = self.core;
         loop {
             let after = match self.first.get(&(p, q)) {
@@ -522,7 +571,7 @@ impl<'a> Reach<'a> {
                 Some(Err(w)) => Some(*w),
                 None => None,
             };
-            let Some(&w) = core.ix.held.writes_on(&p, &q, after.as_ref()).next() else { return false };
+            let Some(&w) = core.ix.held.writes_on(p, &q, after.as_ref()).next() else { return false };
             let c = core.ix.held.edge_commit(&w.commit);
             // ascending: none past one not before `at` is before it
             if !self.before(c, &w, p, q, at) {
@@ -539,21 +588,31 @@ impl<'a> Reach<'a> {
     }
 
     /// Whether the write of `c` (held, at `w`) on `p`'s edge on `q` is ordered before `at`.
-    fn before(&self, c: Option<&RoleCommit>, w: &Point, p: Tid, q: Tid, at: Place) -> bool {
+    fn before(&self, c: Option<&RoleCommit>, w: &Point, p: Holder, q: Tid, at: Place) -> bool {
         at.after(w, || {
-            let Some(c) = c else { return (true, q, Holder::Thing(p)) };
+            let Some(c) = c else { return (true, q, p) };
             let along = c.path_to(&q);
-            write_place(&self.mint([c.signer, q].into_iter().chain(along.iter().copied())), c.key, c.signer, along, c.direct, q, Holder::Thing(p))
+            write_place(&self.mint([c.signer, q].into_iter().chain(along.iter().copied())), c.key, c.signer, along, c.direct, q, p)
         })
     }
 
     /// Whether the held edge write of `c` on `holder`'s edge on `target` is itself unjudgeable.
-    fn write_unreached(&mut self, c: &RoleCommit, holder: Tid, target: Tid) -> bool {
+    fn write_unreached(&mut self, c: &RoleCommit, holder: Holder, target: Tid) -> bool {
         let along = c.path_to(&target);
         let end = along.last().copied().unwrap_or(c.signer);
         let mint = self.mint([c.signer, target].into_iter().chain(along.iter().copied()));
-        let at = Place::Write(c.point(), Some(write_place(&mint, c.key, c.signer, along, c.direct, target, Holder::Thing(holder))));
-        self.unreached(c.key, c.signer, along, c.direct, target, true, (holder == end).then_some(holder), at)
+        let at = Place::Write(c.point(), Some(write_place(&mint, c.key, c.signer, along, c.direct, target, holder)));
+        self.unreached(c.key, c.signer, along, c.direct, target, true, Self::leaving(c.key, c.signer, &end, along, &holder), at)
+    }
+
+    /// The holder whose grant an edge write of `key`'s commit as `signer` on `holder`'s edge
+    /// leaves (its path ending at it, spec/permissions.md §2 Self-removal): a thing at the path's
+    /// end, or the signing key itself on the signer along the empty path (stating no hop).
+    fn leaving(key: SignKey, signer: Tid, end: &Tid, along: &[Tid], holder: &Holder) -> Option<Holder> {
+        match holder {
+            Holder::Thing(h) => (h == end).then_some(*holder),
+            Holder::Key(k) => (*k == key && along.is_empty() && *end == signer).then_some(*holder),
+        }
     }
 }
 
@@ -568,8 +627,13 @@ pub(crate) fn writes_unreached(core: &Core, h: &Header, id: &CommitId, ai: usize
     let along = p.to(&a.tid);
     let end = along.last().copied().unwrap_or(h.signer);
     let point = Point { ts: h.ts, node: h.signer, commit: *id };
-    let ops = if known && !too_deep(core, &a.tid) { edge_ops(core, &a.tid, es, Owned::of(h, id, ai).as_ref()).0 } else { Vec::new() };
-    let key = record(&h.signer).and_then(|r| r.key()).unwrap_or(SignKey([0; 32]));
+    let g = Grants::of(a.ak.as_str());
+    let ops = match g.filter(|_| known && !too_deep(core, &a.tid)) {
+        Some(g) => edge_ops(core, &a.tid, g, es, Owned::of(h, id, ai).as_ref()).0,
+        None => Vec::new(),
+    };
+    // the key its signature verified with (`apply::commit_key`)
+    let key = h.key.or_else(|| record(&h.signer).and_then(|r| r.key())).unwrap_or(SignKey([0; 32]));
     let mut reach = Reach::new(core, record);
     if ops.is_empty() {
         return reach.unreached(key, h.signer, along, p.direct, a.tid, true, None, Place::Write(point, None));
@@ -577,14 +641,14 @@ pub(crate) fn writes_unreached(core: &Core, h: &Header, id: &CommitId, ai: usize
     let mint = chains([h.signer, a.tid].into_iter().chain(along.iter().copied()), record);
     ops.iter().all(|o| {
         let at = Place::Write(point, Some(write_place(&mint, key, h.signer, along, p.direct, a.tid, o.holder)));
-        reach.unreached(key, h.signer, along, p.direct, a.tid, true, (o.holder == Holder::Thing(end)).then_some(end), at)
+        reach.unreached(key, h.signer, along, p.direct, a.tid, true, Reach::leaving(key, h.signer, &end, along, &o.holder), at)
     })
 }
 
 /// Whether every reset of the `roles.0` entries `es` of aspect `ai` of commit `id` names a write
 /// held here (`edge_ops`).
 pub(crate) fn resolved(core: &Core, h: &Header, id: &CommitId, ai: usize, es: &[Entry]) -> bool {
-    h.aspects.get(ai).is_none_or(|a| too_deep(core, &a.tid) || edge_ops(core, &a.tid, es, Owned::of(h, id, ai).as_ref()).1)
+    h.aspects.get(ai).is_none_or(|a| too_deep(core, &a.tid) || Grants::of(a.ak.as_str()).is_none_or(|g| edge_ops(core, &a.tid, g, es, Owned::of(h, id, ai).as_ref()).1))
 }
 
 /// The role a `keys.0` or `secrets.0` delta needs (spec/permissions.md §3). `keys.0`: a writer
@@ -675,7 +739,8 @@ pub(crate) fn note_required(core: &mut Core, h: &Header, id: &CommitId, read: &s
     for (ai, es) in &read.perm().edges {
         let Some(a) = h.aspects.get(*ai) else { continue };
         for (_, m, e) in es {
-            if let (Some(m), Some(e)) = (m, e) {
+            // a key's grant boxes nothing (spec/permissions.md §2 Key grants)
+            if let (Some(Holder::Thing(m)), Some(e)) = (m, e) {
                 granted.insert((a.tid, *m), e.role);
             }
         }
@@ -939,7 +1004,7 @@ fn read(core: &Core, id: &CommitId, h: &Header, view: &View, carries: bool) -> o
         }
     }
     let carriers = if void || !carries { Vec::new() } else { crate::retention::snapshot::carriers(core, id, view) };
-    osis_perm::Held { id: *id, ts: h.ts, signer: h.signer, key: signing_key(core, &h.signer), parts, role: core.ix.held.held_commit(id), carriers }
+    osis_perm::Held { id: *id, ts: h.ts, signer: h.signer, key: signing_key(core, view), parts, role: core.ix.held.held_commit(id), carriers }
 }
 
 /// [signer, the things `t` is written along] of the path commit `h` states for `t` (`stated`).
@@ -1357,17 +1422,15 @@ pub(crate) fn self_removal(core: &Core, author: &Tid, target: &Tid, holder: &Tid
 /// The edge writes of a role commit's parts `(thing, ak, fragment)`, each `(target, holder, new
 /// edge)` once (`None`: removed): a change is a reset and a put of one entry, the put the
 /// holder's new edge.
-pub(crate) fn edge_writes<'f>(core: &Core, parts: impl IntoIterator<Item = (Tid, &'f Ak, &'f Fragment)>) -> Vec<(Tid, Tid, Option<Edge>)> {
-    let mut changed: Vec<(Tid, Tid, Option<Edge>)> = Vec::new();
+pub(crate) fn edge_writes<'f>(core: &Core, parts: impl IntoIterator<Item = (Tid, &'f Ak, &'f Fragment)>) -> Vec<(Tid, Holder, Option<Edge>)> {
+    let mut changed: Vec<(Tid, Holder, Option<Edge>)> = Vec::new();
     for (t, ak, f) in parts {
-        if !edge_ak(ak.as_str()) {
-            continue;
-        }
+        let Some(g) = Grants::of(ak.as_str()) else { continue };
         for (dot, k, frag) in entries(f) {
-            match k {
-                Some(Value::Weak(m)) => changed.push((t, m, frag.and_then(|f| f.read()).as_ref().and_then(edge_of))),
-                _ => {
-                    if let Some(m) = core.ix.holder_keys.get(&(t, dot)) {
+            match k.as_ref().and_then(|k| g.holder(k)) {
+                Some(m) => changed.push((t, m, frag.and_then(|f| f.read()).as_ref().and_then(edge_of))),
+                None => {
+                    if let Some(m) = core.ix.holder_keys.get(&(t, g, dot)) {
                         changed.push((t, *m, None));
                     }
                 }
@@ -1375,7 +1438,7 @@ pub(crate) fn edge_writes<'f>(core: &Core, parts: impl IntoIterator<Item = (Tid,
         }
     }
     // a change is remove + put of one entry: the put is the holder's new edge
-    let mut net: BTreeMap<(Tid, Tid), Option<Edge>> = BTreeMap::new();
+    let mut net: BTreeMap<(Tid, Holder), Option<Edge>> = BTreeMap::new();
     for (t, m, e) in changed {
         let slot = net.entry((t, m)).or_insert(None);
         if e.is_some() {
@@ -1391,22 +1454,24 @@ pub(crate) fn edge_writes<'f>(core: &Core, parts: impl IntoIterator<Item = (Tid,
 /// has them. Reads `t`'s own edges alone: an audit a write makes drops none of the writes its
 /// writer holds (its frontier lists them, `Engine::demotion_frontier`), so it leaves no other
 /// thing so at the writer.
-pub(crate) fn leaves_no_admin(core: &Core, t: &Tid, writes: &[(Tid, Option<Edge>)]) -> bool {
+pub(crate) fn leaves_no_admin(core: &Core, t: &Tid, writes: &[(Holder, Option<Edge>)]) -> bool {
     let standing = |e: &Edge| e.role == Role::Admin && e.until.is_none();
-    let now: Vec<(Tid, Edge)> = match core.timelines().on(t) {
-        Some(on) => on.holders(),
-        None => core.mint_admin(t).map(|a| (a, Edge::new(Role::Admin))).into_iter().collect(),
+    // the things' grants and the keys' (a key's grant is a standing admin as any: §1)
+    let mut now: Vec<(Holder, Edge)> = match core.timelines().on(t) {
+        Some(on) => on.holders().into_iter().map(|(m, e)| (Holder::Thing(m), e)).collect(),
+        None => core.mint_admin(t).map(|a| (Holder::Thing(a), Edge::new(Role::Admin))).into_iter().collect(),
     };
-    let lowered = |m: &Tid| writes.iter().find(|(x, _)| x == m).map(|(_, e)| *e);
+    now.extend(core.timelines().key_grants(t, None).into_iter().map(|(k, e)| (Holder::Key(k), e)));
+    let lowered = |m: &Holder| writes.iter().find(|(x, _)| x == m).map(|(_, e)| *e);
     let after = now.iter().filter_map(|(m, e)| lowered(m).unwrap_or(Some(*e))).chain(writes.iter().filter_map(|(_, e)| *e));
     now.iter().any(|(_, e)| standing(e)) && !after.into_iter().any(|e| standing(&e))
 }
 
 /// The first thing edge writes `changed` leave with no standing admin (`leaves_no_admin`).
-fn left_adminless(core: &Core, changed: &[(Tid, Tid, Option<Edge>)]) -> Option<Tid> {
+fn left_adminless(core: &Core, changed: &[(Tid, Holder, Option<Edge>)]) -> Option<Tid> {
     let targets: BTreeSet<Tid> = changed.iter().map(|c| c.0).collect();
     targets.into_iter().find(|t| {
-        let writes: Vec<(Tid, Option<Edge>)> = changed.iter().filter(|c| c.0 == *t).map(|c| (c.1, c.2)).collect();
+        let writes: Vec<(Holder, Option<Edge>)> = changed.iter().filter(|c| c.0 == *t).map(|c| (c.1, c.2)).collect();
         leaves_no_admin(core, t, &writes)
     })
 }
@@ -1428,19 +1493,27 @@ pub(crate) fn check_content_rules(core: &Core, h: &Header, parts: &[(usize, Deco
     if !h.adminless && let Some(t) = left_adminless(core, &changed) {
         return Err(Error::LeavesNoAdmin(t));
     }
-    let mut holders: Vec<(Tid, Tid)> = changed.iter().map(|c| (c.0, c.1)).collect();
+    // the key it is signed by (`apply::commit_key`): a write on that key's grant on its signer is
+    // the key's self-removal
+    let key = h.key.or_else(|| core.created(&h.signer).and_then(CreationRecord::key));
+    let me = Holder::Thing(h.signer);
+    let selfr = |target: &Tid, m: &Holder| match m {
+        Holder::Thing(m) => self_removal(core, &h.signer, target, m, h.ts),
+        Holder::Key(k) => Some(*k) == key && *target == h.signer,
+    };
+    let mut holders: Vec<(Tid, Holder)> = changed.iter().map(|c| (c.0, c.1)).collect();
     holders.sort();
     holders.dedup();
     if holders.len() > 1 {
         // the one exception for edge writes in a plain role commit: a single-use
         // redemption (a grant plus the author key's own self-removal, both on K,
         // spec/permissions.md §7, spec/commits.md §2)
-        let redemption = holders.len() == 2 && holders.first().map(|m| m.0) == holders.last().map(|m| m.0) && changed.iter().any(|c| c.1 == h.signer && c.2.is_none()) && changed.iter().any(|c| c.1 != h.signer && c.2.is_some());
+        let redemption = holders.len() == 2 && holders.first().map(|m| m.0) == holders.last().map(|m| m.0) && changed.iter().any(|c| c.1 == me && c.2.is_none()) && changed.iter().any(|c| c.1 != me && c.2.is_some());
         // or a removal of several others' edges on one target under one rotation (a link joiner
         // with the link key, under one frontier; a finalize of several ended edges): no edge of
         // it a self-removal, each gone or saying retain
         let first = holders.first().map(|m| m.0);
-        let removal = changed.iter().all(|c| Some(c.0) == first && c.1 != h.signer && c.2.is_none_or(|e| e.says_retain()) && !self_removal(core, &h.signer, &c.0, &c.1, h.ts));
+        let removal = changed.iter().all(|c| Some(c.0) == first && c.1 != me && c.2.is_none_or(|e| e.says_retain()) && !selfr(&c.0, &c.1));
         if !redemption && !removal {
             return Err(Error::BadInput("a role commit changes more than one edge"));
         }
@@ -1458,9 +1531,12 @@ pub(crate) fn check_content_rules(core: &Core, h: &Header, parts: &[(usize, Deco
     if h.frontier.is_none() {
         for (target, m, new) in &changed {
             let Some(tl) = core.timelines().get(target) else { continue };
-            let old = tl.edges_at(None).get(m, target).copied();
-            let selfr = self_removal(core, &h.signer, target, m, h.ts);
-            let removes = *m != h.signer && new.as_ref().is_none_or(|e| e.says_retain()) && !selfr;
+            let old = match m {
+                Holder::Thing(m) => tl.edges_at(None).get(m, target).copied(),
+                Holder::Key(k) => tl.key_grant(k, target),
+            };
+            let selfr = selfr(target, m);
+            let removes = *m != me && new.as_ref().is_none_or(|e| e.says_retain()) && !selfr;
             if removes && old.is_some_and(|o| o.until.is_none() || o.alive_at(Some(h.ts))) {
                 return Err(Error::BadInput("a removal with no frontier of an edge not past its until"));
             }

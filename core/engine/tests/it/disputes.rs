@@ -88,12 +88,12 @@ fn the_dispute(f: &Fight, i: usize) -> osis_engine::sides::DisputeInfo {
     let (ds, left) = f.lp.peers[i].engine.disputes(64);
     assert_eq!((ds.len(), left), (1, 0), "{ds:?}");
     let d = ds[0].clone();
-    assert_eq!((d.holder, d.author, d.target), (f.a, f.lp.peers[1].engine.me(), f.t));
+    assert_eq!((d.holder, d.author, d.target), (f.a.into(), f.lp.peers[1].engine.me(), f.t));
     d
 }
 
 fn detected(lp: &LocalPeer, i: usize) -> Vec<(Tid, Tid, bool)> {
-    lp.peers[i].drain_events().into_iter().filter_map(|e| if let Event::DisputeDetected { holder, author, trust, .. } = e { Some((holder, author, trust)) } else { None }).collect()
+    lp.peers[i].drain_events().into_iter().filter_map(|e| if let Event::DisputeDetected { holder, author, trust, .. } = e { Some((holder.thing().unwrap(), author, trust)) } else { None }).collect()
 }
 
 // spec/permissions.md §5.1 Trust set; notes/disputes.md, Detection and sides (first received): a

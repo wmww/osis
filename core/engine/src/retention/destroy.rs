@@ -25,7 +25,6 @@ use osis_store::Shred;
 use std::collections::BTreeSet;
 
 const CREATED: &str = osis_commit::retention::CREATED;
-const ROLES: &str = "roles.0";
 
 /// Aspects whose parts a destroyed thing keeps and still takes (`thing_wait`), so its destruction is
 /// judged alike: its mintings, its role-class aspects (no content: its frozen edges, its keys and
@@ -39,7 +38,7 @@ pub(crate) fn judges_destruction(ak: &str) -> bool {
 /// any request's, by every held edge write (spec/commits.md §5 Destruction), so a removal stamped
 /// after it reads the same in every arrival order.
 pub(crate) fn kept_whole(ak: &str) -> bool {
-    ak == CREATED || ak == ROLES
+    ak == CREATED || crate::apply::validity::edge_ak(ak)
 }
 
 /// When a held minting is destroyed (spec/commits.md §5 Destruction): at its expiry `At(T, None)`,
@@ -266,7 +265,7 @@ fn reopen_destroyed(tx: &mut Tx<'_>, t: &Tid) -> Result<bool> {
 
 /// What reads differently once `t` reads as gone or back while its record stays held.
 fn reads_again(t: &Tid, changed: &mut BTreeSet<(Tid, Ak)>) {
-    for ak in [CREATED, ROLES] {
+    for ak in [CREATED, "roles.0", "signers.0"] {
         if let Ok(ak) = Ak::new(ak) {
             changed.insert((*t, ak));
         }

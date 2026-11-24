@@ -199,17 +199,23 @@ impl DemotionScope {
 /// grants and records, on whatever the target reaches. The frontier lists each signer's received
 /// commits on those things: every commit resting on the edges, and those of the same signers
 /// there along other paths, which a list names to no effect.
-pub(crate) fn scope_of(core: &Core, edges: &[(Tid, Tid)]) -> DemotionScope {
+///
+/// A key's grant (k, S) holds up only commits signed by k as S (its key hop): their signer is S.
+pub(crate) fn scope_of(core: &Core, edges: &[(osis_base::Holder, Tid)]) -> DemotionScope {
     let mut scope = DemotionScope::default();
     for (holder, target) in edges {
-        for c in core.timelines().paths().resting(&osis_base::Holder::Thing(*holder), target) {
+        for c in core.timelines().paths().resting(holder, target) {
             let Some(m) = core.ix.commits.get(&c) else { continue };
             let things: BTreeSet<Tid> = m.view.aspects.iter().map(|a| a.tid).collect();
             scope.roles.entry(m.view.signer).or_default().extend(things.iter().copied());
             scope.content.entry(m.view.signer).or_default().extend(things);
         }
         let below = core.ix.held.reach(&BTreeSet::from([*target]));
-        for signer in core.ix.held.upstream(&BTreeSet::from([*holder])) {
+        let signers = match holder {
+            osis_base::Holder::Thing(h) => core.ix.held.upstream(&BTreeSet::from([*h])),
+            osis_base::Holder::Key(_) => BTreeSet::from([*target]),
+        };
+        for signer in signers {
             scope.roles.entry(signer).or_default().extend(below.iter().copied());
             scope.content.entry(signer).or_default().extend(below.iter().copied());
         }

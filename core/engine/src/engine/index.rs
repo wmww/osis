@@ -75,6 +75,21 @@ impl Rec for Tid {
         }
     }
 }
+/// A thing by its 15 tid bytes, a key by its 32.
+impl Rec for osis_base::Holder {
+    fn to(&self) -> Value {
+        match self {
+            osis_base::Holder::Thing(t) => t.to(),
+            osis_base::Holder::Key(k) => Value::Bytes(k.0.to_vec()),
+        }
+    }
+    fn from(v: &Value) -> Option<Self> {
+        match v {
+            Value::Bytes(b) if b.len() == 32 => Some(osis_base::Holder::Key(osis_base::SignKey(b.as_slice().try_into().ok()?))),
+            v => Some(osis_base::Holder::Thing(Rec::from(v)?)),
+        }
+    }
+}
 impl Rec for usize {
     fn to(&self) -> Value {
         Value::uint(*self as u64)
@@ -680,7 +695,10 @@ pub(super) fn meta_row(core: &Core, id: &CommitId, m: &Meta) -> Vec<u8> {
         osis_commit::Form::Commit => w.u8(0),
         osis_commit::Form::Session(n) => w.u8(1).raw(&n),
     };
-    w = w.raw(v.signer.as_bytes()).u8(u8::from(v.linked) | (u8::from(v.memory) << 1) | (u8::from(v.purges) << 2) | (u8::from(v.own_cover) << 3) | (u8::from(v.paths.is_some()) << 4));
+    w = w.raw(v.signer.as_bytes()).u8(u8::from(v.linked) | (u8::from(v.memory) << 1) | (u8::from(v.purges) << 2) | (u8::from(v.own_cover) << 3) | (u8::from(v.paths.is_some()) << 4) | (u8::from(v.key.is_some()) << 5));
+    if let Some(k) = &v.key {
+        w = w.raw(&k.0);
+    }
     // its purge author; in a split commit, what is decided here of each thing's path
     w = w.raw(v.purge_author.as_bytes());
     if let Some(p) = &v.paths {
@@ -733,6 +751,7 @@ fn parse_meta_row(row: &[u8]) -> Result<(&[u8], super::View)> {
     };
     let signer = r.tid()?;
     let flags = r.u8()?;
+    let key = if flags & 32 != 0 { Some(osis_base::SignKey(r.arr()?)) } else { None };
     let purge_author = r.tid()?;
     let paths = if flags & 16 == 0 {
         None
@@ -770,7 +789,7 @@ fn parse_meta_row(row: &[u8]) -> Result<(&[u8], super::View)> {
         _ => return Err(Error::Corrupt("meta row frontier")),
     };
     r.end()?;
-    Ok((parts, super::View { ts, kind, form, signer, purge_author, paths, linked, memory, aspects, frontier, purges, own_cover }))
+    Ok((parts, super::View { ts, kind, form, signer, key, purge_author, paths, linked, memory, aspects, frontier, purges, own_cover }))
 }
 
 /// A commit record's head and its blob bytes.

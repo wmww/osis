@@ -11,7 +11,7 @@ use osis_base::{Ak, CommitId, CreationRecord, Ref, Role, SyncId, Ts, Value, Wall
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Role-class aspects (spec/data-model.md §9): fixed retention, spec/commits.md §2.
-pub const ROLE_CLASS: [&str; 4] = ["roles.0", "secrets.0", "keys.0", "sync.0"];
+pub const ROLE_CLASS: [&str; 5] = ["roles.0", "signers.0", "secrets.0", "keys.0", "sync.0"];
 
 pub fn is_role_class(ak: &str) -> bool {
     ROLE_CLASS.contains(&ak)
@@ -20,7 +20,7 @@ pub fn is_role_class(ak: &str) -> bool {
 /// Whether `ak` is never compaction-snapshotted (spec/commits.md §2): the role timeline walks
 /// every edge write.
 pub fn never_compacted(ak: &str) -> bool {
-    ak == "roles.0"
+    ak == "roles.0" || ak == "signers.0"
 }
 
 /// The addenda aspect (spec/permissions.md §5.2, Addenda).
@@ -361,6 +361,9 @@ pub type SyncIds = BTreeMap<SyncId, SyncEntry>;
 
 pub const CREATED: Aspect<CreationRecord> = Aspect::new("created.0", &CORE);
 pub const ROLES: Aspect<Holders> = Aspect::new("roles.0", &CORE);
+/// Key grants by key (spec/data-model.md §9 `signers.0`).
+pub type KeyGrants = BTreeMap<SigningKey, Edge>;
+pub const SIGNERS: Aspect<KeyGrants> = Aspect::new("signers.0", &CORE);
 /// Removal commit ID -> what the author vouches for (spec/permissions.md §5.2, Addenda).
 pub type Addenda = BTreeMap<Vec<u8>, Frontier>;
 pub const ADDENDA: Aspect<Addenda> = Aspect::new(ADDENDA_AK, &CORE);

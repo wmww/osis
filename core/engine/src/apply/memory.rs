@@ -94,7 +94,7 @@ pub(crate) fn memory_gate(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId,
     // only a commit its author signed is kept waiting (as `examine` keeps one): an author not
     // held makes it unjudgeable there, nothing kept
     let Some(author) = tx.core.created(&blob.header.signer).cloned() else { return Ok(None) };
-    let vk = super::author_key(&author)?;
+    let vk = super::commit_key(&blob.header, &author)?;
     *signed = Some(super::check_signature(tx, blob, id, &vk, *signed)?);
     if !blob.header.is_resolved() {
         // no dedup secret: examine finds it unjudgeable before it decodes anything

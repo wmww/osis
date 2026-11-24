@@ -141,6 +141,9 @@ pub struct Timeline<S: Store = MemStore> {
     log: BTreeMap<Key, (Tid, Tid)>,
     /// Per target, the things whose grant on it a held edge write sets, applied or not.
     into: BTreeMap<Tid, BTreeSet<Tid>>,
+    /// Per target, the keys whose grant on it a held edge write sets, applied or not (never
+    /// taken out).
+    keys_into: BTreeMap<Tid, BTreeSet<SignKey>>,
     /// Per thing whose record is not held, the held commits with a path member whose record
     /// chain stops at it: given again when the record comes (their hops read the chain).
     waiting: BTreeMap<Tid, BTreeSet<CommitId>>,
@@ -171,7 +174,7 @@ impl Timeline<MemStore> {
 
 impl<S: Store> Timeline<S> {
     pub fn with_store(trust: BTreeSet<WriteId>, store: S) -> Timeline<S> {
-        Timeline { paths: Paths::with_store(&BTreeMap::new(), BTreeSet::new(), store), records: Records::default(), now: Edges::default(), log: BTreeMap::new(), into: BTreeMap::new(), waiting: BTreeMap::new(), roles: BTreeMap::new(), on: BTreeMap::new(), trusted: trust.clone(), holders: BTreeSet::new() }
+        Timeline { paths: Paths::with_store(&BTreeMap::new(), BTreeSet::new(), store), records: Records::default(), now: Edges::default(), log: BTreeMap::new(), into: BTreeMap::new(), keys_into: BTreeMap::new(), waiting: BTreeMap::new(), roles: BTreeMap::new(), on: BTreeMap::new(), trusted: trust.clone(), holders: BTreeSet::new() }
     }
 
     /// The walk.
@@ -271,9 +274,14 @@ impl<S: Store> Timeline<S> {
                         for o in &role.ops {
                             out.held.insert(o.target);
                             self.on.entry(o.target).or_default().insert(h.id);
-                            if let Some(holder) = o.holder.thing() {
-                                self.into.entry(o.target).or_default().insert(holder);
-                                self.holders.insert(holder);
+                            match o.holder {
+                                Holder::Thing(holder) => {
+                                    self.into.entry(o.target).or_default().insert(holder);
+                                    self.holders.insert(holder);
+                                }
+                                Holder::Key(k) => {
+                                    self.keys_into.entry(o.target).or_default().insert(k);
+                                }
                             }
                         }
                         self.roles.insert(h.id, (role, h.parts));
@@ -487,14 +495,34 @@ impl<S: Store> Timeline<S> {
 
     /// The commit of the edge write in force on (`holder`, `target`): the last applied one, when
     /// it set a value (spec/permissions.md §2: the next edge write resets the entry it created).
-    pub fn in_force(&self, holder: &Tid, target: &Tid) -> Option<CommitId> {
-        self.paths.last(&Holder::Thing(*holder), target).filter(|(_, a)| a.value.is_some()).map(|(w, _)| w.0)
+    pub fn in_force(&self, holder: &Holder, target: &Tid) -> Option<CommitId> {
+        self.paths.last(holder, target).filter(|(_, a)| a.value.is_some()).map(|(w, _)| w.0)
     }
 
     /// The verdict part `ix` of `h` (`Held::deltas`) has over what is held, whether `h` is held
     /// or not (`Paths::judge`).
     pub fn judge(&self, h: &paths::Commit, ix: u32) -> Option<paths::Content> {
         self.paths.judge(h, ix)
+    }
+
+    /// The grant `key` holds on `thing` after every applied write (§1 Key grant): its last applied
+    /// write's value, else the record's key's admin from the start. `until` is not judged here.
+    pub fn key_grant(&self, key: &SignKey, thing: &Tid) -> Option<Edge> {
+        match self.paths.last(&Holder::Key(*key), thing) {
+            Some((_, a)) => a.value,
+            None => (self.records.holder(thing) == Some(Holder::Key(*key))).then_some(RECORD_EDGE),
+        }
+    }
+
+    /// The keys holding a grant on `thing` alive at `ts` (`None`: whatever its `until`), with it
+    /// (`key_grant`).
+    pub fn key_grants(&self, thing: &Tid, ts: Option<Ts>) -> BTreeMap<SignKey, Edge> {
+        let record = self.records.holder(thing).and_then(|h| match h {
+            Holder::Key(k) => Some(k),
+            Holder::Thing(_) => None,
+        });
+        let keys = self.keys_into.get(thing).into_iter().flatten().copied().chain(record);
+        keys.filter_map(|k| Some((k, self.key_grant(&k, thing).filter(|e| ts.is_none() || e.alive_at(ts))?))).collect()
     }
 
     /// Whether a held edge write names `t` as its holder.
@@ -524,10 +552,10 @@ impl<S: Store> Timeline<S> {
 
     /// Whether an explicit write of `new` on (`holder`, `target`) at `ts`, after every held
     /// write, takes the edge down (§5.1): the edge as restored gives or lets grant more.
-    pub fn audits(&self, holder: &Tid, target: &Tid, new: Option<Edge>, ts: Ts) -> bool {
+    pub fn audits(&self, holder: &Holder, target: &Tid, new: Option<Edge>, ts: Ts) -> bool {
         let role = new.filter(|v| v.alive_at(Some(ts))).map(|v| v.role);
         let grant = role.filter(|r| *r == Role::Admin || new.is_some_and(|v| v.may_grant));
-        let (r, g) = self.paths.restored(&Holder::Thing(*holder), target);
+        let (r, g) = self.paths.restored(holder, target);
         role < r || grant < g
     }
 

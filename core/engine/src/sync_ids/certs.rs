@@ -103,7 +103,8 @@ impl Engine {
         for (ai, d) in parts {
             let (Some(a), Decoded::Delta(d)) = (h.aspects.get(ai), &d) else { continue };
             let named: Vec<Tid> = match a.ak.as_str() {
-                "roles.0" => crate::apply::validity::edge_holders(&self.core, &a.tid, &d.fragment),
+                // a key's grant names no holder with a key part (nothing is sealed to a key)
+                "roles.0" => crate::apply::validity::edge_holders(&self.core, &a.tid, crate::apply::validity::Grants::Things, &d.fragment).into_iter().filter_map(|h| h.thing()).collect(),
                 _ => crate::apply::keys::secrets_write(&d.fragment).boxes.into_keys().map(|k| k.holder.0).collect(),
             };
             out.entry(ai).or_default().extend(named);
@@ -248,8 +249,7 @@ impl Engine {
         let needed = self.destroyed_upstream(g);
         for e in needed {
             out.records.insert(e);
-            let Ok(k) = osis_base::Ak::new("roles.0") else { continue };
-            let frozen: BTreeSet<(CommitId, Tid)> = self.core.ix.by_aspect.get(&(e, k)).into_iter().flatten().map(|(_, c)| (*c, e)).collect();
+            let frozen: BTreeSet<(CommitId, Tid)> = ["roles.0", "signers.0"].into_iter().filter_map(|k| osis_base::Ak::new(k).ok()).flat_map(|k| self.core.ix.by_aspect.get(&(e, k)).into_iter().flatten().map(|(_, c)| (*c, e)).collect::<Vec<_>>()).collect();
             for (c, x) in &frozen {
                 self.add_copy(c, x, out);
             }

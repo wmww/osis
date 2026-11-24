@@ -406,9 +406,10 @@ pub(crate) fn settle(tx: &mut Tx<'_>) -> Result<bool> {
         let parts = crate::apply::perm_parts(tx, id)?;
         for (ai, es) in &parts.edges {
             let Some(t) = m.view.aspects.get(*ai).map(|a| a.tid).filter(|t| gone.contains(t)) else { continue };
+            let Some(g) = m.view.aspects.get(*ai).and_then(|a| crate::apply::validity::Grants::of(a.ak.as_str())) else { continue };
             let own = crate::engine::Owned::of_view(&m.view, id, *ai);
             for (d, _, _) in es.iter().filter(|(d, _, _)| own.as_ref().is_some_and(|o| o.owns(d.origin()))) {
-                tx.core.ix.holder_keys.remove(&(t, d.clone()));
+                tx.core.ix.holder_keys.remove(&(t, g, d.clone()));
             }
         }
         for (ai, a) in m.header.aspects.iter().enumerate() {

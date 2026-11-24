@@ -30,9 +30,9 @@ pub struct Held {
     holders: BTreeMap<Tid, BTreeMap<Tid, usize>>,
     /// Thing -> holders named on it (the same pairs as `holders`).
     named: BTreeMap<Tid, BTreeSet<Tid>>,
-    /// Thing -> holder -> the points of the commits writing that edge (grants and removals), with
+    /// Thing -> holder (a thing or a key) -> the points of the commits writing that edge (grants and removals), with
     /// counts: what a part's path wait reads (`validity::unreached`).
-    writes: BTreeMap<Tid, BTreeMap<Tid, BTreeMap<Point, usize>>>,
+    writes: BTreeMap<Tid, BTreeMap<Holder, BTreeMap<Point, usize>>>,
     /// Mint admin -> the things whose creation record names it: the record chain's
     /// links down (spec/permissions.md §1).
     mint_admin_of: BTreeMap<Tid, BTreeSet<Tid>>,
@@ -148,11 +148,11 @@ impl Held {
 
     /// The points of the commits with an edge write (a grant or a removal, of any validity) on
     /// `holder`'s edge on `thing`, ascending, those after `after` alone where given.
-    pub fn writes_on(&self, holder: &Tid, thing: &Tid, after: Option<&Point>) -> impl Iterator<Item = &Point> {
+    pub fn writes_on(&self, holder: Holder, thing: &Tid, after: Option<&Point>) -> impl Iterator<Item = &Point> {
         use std::ops::Bound::{Excluded, Unbounded};
         self.rest.read(&Row::Writes(thing));
         let from = after.map_or(Unbounded, Excluded);
-        self.writes.get(thing).and_then(|m| m.get(holder)).into_iter().flat_map(move |m| m.range((from, Unbounded)).map(|(p, _)| p))
+        self.writes.get(thing).and_then(|m| m.get(&holder)).into_iter().flat_map(move |m| m.range((from, Unbounded)).map(|(p, _)| p))
     }
 
     /// `from` and everything authority flows to from them: what they own, the things they are
@@ -325,7 +325,8 @@ impl Held {
     }
 
     fn count_writes(&mut self, c: &RoleCommit, add: bool) {
-        for (o, holder) in c.ops.iter().filter_map(|o| Some((o, o.holder.thing()?))) {
+        for o in &c.ops {
+            let holder = o.holder;
             let on = self.writes.entry(o.target).or_default();
             let by = on.entry(holder).or_default();
             let n = by.entry(c.point()).or_default();
@@ -678,7 +679,7 @@ impl<'a> On<'a> {
     }
     /// The edge write on it in force for `holder` (`Timeline::in_force`).
     pub fn in_force(&self, holder: &Tid) -> Option<osis_base::CommitId> {
-        self.tl.in_force(holder, &self.thing)
+        self.tl.in_force(&osis_base::Holder::Thing(*holder), &self.thing)
     }
     /// The applied edge writes on it (`Timeline::applied_on`).
     pub fn applied(&self) -> impl Iterator<Item = (&'a RoleCommit, &'a osis_perm::EdgeOp)> + 'a {
@@ -970,7 +971,7 @@ mod tests {
                 1 => ids(&h.edge_commits(t)),
                 2 => tids(&mut h.holders_of(t)),
                 3 => tids(&mut h.named_on(t)),
-                4 => at.iter().flat_map(|x| h.writes_on(x, t, None)).map(|p| p.commit.0).collect(),
+                4 => at.iter().flat_map(|x| h.writes_on(Holder::Thing(*x), t, None)).map(|p| p.commit.0).collect(),
                 _ => tids(&mut h.mint_admin_of(t)),
             }
         };

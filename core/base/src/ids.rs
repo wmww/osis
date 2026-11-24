@@ -60,6 +60,23 @@ impl std::str::FromStr for Tid {
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SignKey(pub [u8; 32]);
 
+impl SignKey {
+    /// The `signing_key` value (spec/wire.md §3): `1617([1, h'...'])`, the ed25519 case.
+    pub fn to_value(&self) -> Value {
+        Value::Enum(SIGNING_KEY_ED25519, Some(Box::new(Value::Bytes(self.0.to_vec()))))
+    }
+    /// Reads a `signing_key` value of the ed25519 case, 32 bytes; `None` for anything else.
+    pub fn from_value(v: &Value) -> Option<SignKey> {
+        match v {
+            Value::Enum(SIGNING_KEY_ED25519, Some(p)) => match p.as_ref() {
+                Value::Bytes(b) => b.as_slice().try_into().ok().map(SignKey),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+}
+
 impl fmt::Debug for SignKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "SignKey({})", crate::base64url::encode(&self.0[..9]))

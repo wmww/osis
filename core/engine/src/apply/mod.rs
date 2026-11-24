@@ -300,11 +300,28 @@ pub(crate) fn carried_records(h: &Header, blob: &CommitBlob, id: &CommitId) -> B
     out
 }
 
-/// The key that signs a commit by `author` (spec/wire.md §4): a key actor's own. Bad input: an
-/// author that is no key actor.
-pub(crate) fn author_key(author: &CreationRecord) -> Result<VerifyingKey> {
-    let CreationRecord::KeyActor { public_key, .. } = author else { return Err(Error::BadInput("author is not a key actor")) };
-    Ok(VerifyingKey::from_slice(public_key)?)
+/// The key a commit with header `h` is signed by, its signer's record `author` (spec/wire.md §4
+/// field 1): the key the header names (its second form), else the record's. Bad input, the
+/// commit invalid whole at every reader alike: a second form naming the record's own key, or a
+/// first form on a thing whose record holds none.
+///
+/// Invariant: the one source of a commit's key. Its signature is checked under this key and
+/// the walk rests the commit on this key's hop (`validity::signing_key`), so the key a part's
+/// right is judged by is exactly the key its signature verified with. Who writes each input: the
+/// header is the commit's sender's (a forged second form names a key it holds no signature
+/// of, and fails the check); the record is fixed by the signer's tid.
+pub(crate) fn commit_key(h: &Header, author: &CreationRecord) -> Result<VerifyingKey> {
+    Ok(VerifyingKey::from_slice(&named_key(h.key, author)?.0)?)
+}
+
+/// `commit_key` of a header naming `named` (`None`: the first form).
+fn named_key(named: Option<osis_base::SignKey>, author: &CreationRecord) -> Result<osis_base::SignKey> {
+    Ok(match (named, author.key()) {
+        (Some(k), Some(r)) if k == r => return Err(Error::BadInput("a signer's second form naming its record's key")),
+        (Some(k), _) => k,
+        (None, Some(r)) => r,
+        (None, None) => return Err(Error::BadInput("a signer's first form on a thing whose record holds no key")),
+    })
 }
 
 /// Whether `sigs` are commit `id`'s signatures under `key` (spec/crypto.md §2): their verdict, or
@@ -327,17 +344,17 @@ pub(crate) fn signature(core: &crate::engine::Core, id: &CommitId, sigs: &osis_c
     osis_commit::verify_signature(id, sigs, key).ok()
 }
 
-/// Whether `sigs` are `author`'s for commit `id`, from what is held: `false` when that cannot
-/// be told.
-pub fn signed_at(core: &crate::engine::Core, id: &CommitId, author: &Tid, sigs: &osis_commit::Sigs) -> bool {
-    let Some(r) = core.created(author) else { return false };
-    author_key(r).is_ok_and(|vk| signature(core, id, sigs, &vk, None).is_some())
+/// Whether `sigs` are the signature of commit `id` (header `h`) by its key (`commit_key`), from
+/// what is held: `false` when that cannot be told.
+pub fn signed_at(core: &crate::engine::Core, id: &CommitId, h: &Header, sigs: &osis_commit::Sigs) -> bool {
+    let Some(r) = core.created(&h.signer) else { return false };
+    commit_key(h, r).is_ok_and(|vk| signature(core, id, sigs, &vk, None).is_some())
 }
 
-/// Whether `blob`'s signature is its author's (`author_key`), the author's record from `record`,
+/// Whether `blob`'s signature is by its key (`commit_key`), the signer's record from `record`,
 /// `known` a verdict kept for it (`signature`): `None` when that cannot be told yet (no record).
 pub(crate) fn signed_by_author(core: &crate::engine::Core, blob: &CommitBlob, id: &CommitId, record: Option<&CreationRecord>, known: Option<osis_commit::Signed>) -> Option<bool> {
-    match author_key(record?) {
+    match commit_key(&blob.header, record?) {
         Ok(vk) => Some(signature(core, id, &blob.sigs, &vk, known).is_some()),
         Err(_) => Some(false),
     }
@@ -590,7 +607,7 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
         // a held author's signature first: a false one costs no list. An author's record carried
         // by this commit waits for the lists: only the aspects say which part holds it
         if let Some(rec) = tx.core.created(&blob.header.signer).cloned()
-            && let Ok(vk) = author_key(&rec)
+            && let Ok(vk) = commit_key(&blob.header, &rec)
         {
             *known = Some(check_signature(tx, blob, id, &vk, *known)?);
         }
@@ -682,7 +699,7 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
     // the walks of parts no longer in it (junk, expired, stripped) go
     tx.core.walks.keep_parts(id, &blob.parts.iter().map(|p| p.ai).filter(|ai| !skip.contains(ai)).collect());
     let unjudgeable = unjudged.values().next().cloned().filter(|_| blob.parts.iter().all(|p| skip.contains(&p.ai) || unjudged.contains_key(&p.ai)));
-    let vk = author_key(&author)?;
+    let vk = commit_key(&blob.header, &author)?;
     let signed = check_signature(tx, blob, id, &vk, *known)?;
     *known = Some(signed);
     h.validate()?;
@@ -934,7 +951,7 @@ fn thing_wait(
     let (along, direct) = path.filter(|_| !a.ak.external())?;
     let edge = validity::edge_ak(a.ak.as_str());
     let at = if edge { validity::Place::Write(osis_perm::Point { ts: h.ts, node: h.signer, commit: *id }, None) } else { validity::Place::Start(h.ts) };
-    validity::unreached(core, h.signer, along, direct, &a.tid, edge, edge, at, &|t| chain_rec(t, core)).then_some(Reason::MissingChain(h.signer))
+    validity::unreached(core, h.signer, h.key, along, direct, &a.tid, edge, edge, at, &|t| chain_rec(t, core)).then_some(Reason::MissingChain(h.signer))
 }
 
 /// The decoded `roles.0` parts among `whole` whose every edge write is unjudgeable
@@ -1316,7 +1333,7 @@ fn with_pending(tx: &mut Tx<'_>, id: &CommitId, mut blob: CommitBlob) -> Result<
             let carried = carried_records(&merged.header, &merged, id);
             let author = tx.core.created(&merged.header.signer).cloned().or_else(|| carried.get(&merged.header.signer).cloned());
             if let Some(author) = author
-                && let Ok(vk) = author_key(&author)
+                && let Ok(vk) = commit_key(&merged.header, &author)
                 && let Some(s) = signature(tx.core, id, &sigs, &vk, None)
             {
                 merged.sigs = sigs;
@@ -2708,6 +2725,22 @@ pub struct Creation {
 
 #[cfg(test)]
 mod tests {
+    // spec/wire.md §4 field 1: the first form names the record's key, the second any other; a
+    // second form naming the record's key, or a first form on a record holding none, is invalid
+    // whole (two encodings of one signing, or none)
+    #[test]
+    fn a_signer_form_names_one_key_spec_wire_4() {
+        use osis_base::{CreationRecord, SignKey, Tid};
+        let keyed = CreationRecord::KeyActor { alg: 1, public_key: vec![3; 32], nonce: [0; 32] };
+        let minted = CreationRecord::Thing { admin: Tid::from_bytes([1; 15]), nonce: [0; 32], link: None, expires: None };
+        let (own, other) = (SignKey([3; 32]), SignKey([4; 32]));
+        assert_eq!(super::named_key(None, &keyed).ok(), Some(own));
+        assert_eq!(super::named_key(Some(other), &keyed).ok(), Some(other));
+        assert_eq!(super::named_key(Some(other), &minted).ok(), Some(other));
+        assert!(super::named_key(Some(own), &keyed).is_err(), "the record's key in the second form");
+        assert!(super::named_key(None, &minted).is_err(), "the first form with no record key");
+    }
+
     use crate::local_peer::LocalPeer;
     use crate::{Ingested, Mutation};
     use osis_base::{Ak, Role, Value, WallMs};
@@ -2885,7 +2918,7 @@ mod tests {
                 assert_eq!(lp.deliver(1, &pk).unwrap(), Ingested::Applied(*id));
                 let b = held(&mut lp, id);
                 assert_eq!(lp.peers[1].engine.parts_genuine(&b), Some(true));
-                assert!(super::signed_at(&lp.peers[1].engine.core, id, &b.header.signer, &b.sigs));
+                assert!(super::signed_at(&lp.peers[1].engine.core, id, &b.header, &b.sigs));
             }
             assert_eq!(verifies(), n as u64, "round {round}: one per commit at the receiver");
             ids.extend(new);
@@ -2904,9 +2937,10 @@ mod tests {
             forged.sigs.signature.0[0] ^= 1;
             let e = &mut lp.peers[1].engine;
             assert_eq!(e.parts_genuine(&forged), Some(false), "forged signature bytes");
-            assert!(!super::signed_at(&e.core, id, &genuine.header.signer, &forged.sigs));
-            assert!(super::signed_at(&e.core, id, &genuine.header.signer, &genuine.sigs));
-            assert!(!super::signed_at(&e.core, id, &other, &genuine.sigs), "the genuine bytes under another key");
+            assert!(!super::signed_at(&e.core, id, &genuine.header, &forged.sigs));
+            assert!(super::signed_at(&e.core, id, &genuine.header, &genuine.sigs));
+            let as_other = osis_commit::Header { signer: other, ..genuine.header.clone() };
+            assert!(!super::signed_at(&e.core, id, &as_other, &genuine.sigs), "the genuine bytes under another key");
         }
     }
 

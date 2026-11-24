@@ -6,7 +6,7 @@ use crate::cbor::item;
 use crate::path::{Paths, Split, ThingPath};
 use osis_base::cbor::{Item, MAJOR_TAG, head, put_array, put_bytes, put_link, put_map, put_text, put_uint};
 use osis_base::format::{CHUNK_THRESHOLD, DELETE_ADMIN, DELETE_WRITER, FORMAT_VERSION, MAX_BLOB, MAX_OBJECT_DEPTH, TAG_SET, TID_LEN};
-use osis_base::{Ak, CommitId, Limits, Link, Reader, Tid, Ts};
+use osis_base::{Ak, CommitId, Limits, Link, Reader, SignKey, Tid, Ts};
 use std::sync::Arc;
 use osis_crdt::DeltaKind;
 use osis_crypto::{Domain, Secret32, VerifyingKey};
@@ -288,8 +288,12 @@ impl Links {
 /// [`Header::resolve`](crate::Header::resolve) fills it; its link stays in `links`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Header {
-    /// The key actor whose key signs the commit (spec/wire.md §4 field 1): the commit is by it.
+    /// The thing the commit is signed as (spec/wire.md §4 field 1, `Signer`): the commit is by it.
     pub signer: Tid,
+    /// The key that signs it where it is not the one `signer`'s record holds: the second form
+    /// `[tid, signing_key]`. Which key verifies the signature is read with the record
+    /// (`osis_engine`'s `commit_key`): a decoder holds no record.
+    pub key: Option<SignKey>,
     /// The paths it states, one per thing it writes (spec/wire.md §4 field 2).
     pub path: Paths,
     pub kind: Kind,
@@ -482,7 +486,14 @@ impl Header {
         let flags = self.flags();
         put_array(out, 14 + usize::from(flags != 0));
         put_uint(out, FORMAT_VERSION);
-        put_tid_bytes(out, &self.signer);
+        match &self.key {
+            None => put_tid_bytes(out, &self.signer),
+            Some(k) => {
+                put_array(out, 2);
+                put_tid_bytes(out, &self.signer);
+                osis_base::cbor::encode_into(&k.to_value(), out);
+            }
+        }
         self.path.put(out);
         put_uint(out, self.kind.id());
         put_uint(out, self.ts.to_u64());
@@ -753,9 +764,16 @@ impl Header {
         let Some([_, signer, path, kind, ts, form, expires, aspects, purge, undoes, blind, keys, frontier, ephemeral]) = all.get(..14).and_then(|x| <[Item; 14]>::try_from(x).ok()) else {
             return Err(Error::Malformed("header arity"));
         };
-        let signer = item::tid(signer)?;
+        let (signer, key) = match signer.as_list() {
+            None => (item::tid(signer)?, None),
+            Some(l) => match (l.len(), l.first(), l.get(1)) {
+                (2, Some(t), Some(k)) => (item::tid(t)?, Some(SignKey::from_value(&k.to_value().map_err(|_| Error::Malformed("signer key"))?).ok_or(Error::Malformed("signer key: no ed25519 signing_key"))?)),
+                _ => return Err(Error::Malformed("signer")),
+            },
+        };
         let mut h = Header {
             signer,
+            key,
             path: Paths::read(path, &signer)?,
             kind: Kind::from_id(item::uint(kind)?).ok_or(Error::Malformed("kind"))?,
             ts: Ts::from_u64(item::uint(ts)?).ok_or(Error::Malformed("ts out of range"))?,

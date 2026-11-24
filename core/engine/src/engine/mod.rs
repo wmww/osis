@@ -264,6 +264,9 @@ pub struct View {
     pub kind: osis_commit::Kind,
     pub form: Form,
     pub signer: Tid,
+    /// The key it names as its signing key (`Header::key`, the second form); `None`: its
+    /// signer's record's.
+    pub key: Option<osis_base::SignKey>,
     /// Its one purge author (`Header::purge_author`), in the clear in either path form: a member
     /// of the path of every thing it writes.
     pub purge_author: Tid,
@@ -308,6 +311,7 @@ impl View {
             kind: h.kind,
             form: h.form,
             signer: h.signer,
+            key: h.key,
             purge_author: h.purge_author(),
             paths,
             linked: h.links != osis_commit::Links::default(),
@@ -454,6 +458,7 @@ pub(crate) fn decode_stored_header(id: &CommitId, bytes: &[u8]) -> Option<Header
 fn fallback_header(v: &View) -> Header {
     Header {
         signer: v.signer,
+        key: v.key,
         path: osis_commit::Paths::default(),
         kind: v.kind,
         ts: v.ts,
@@ -764,8 +769,8 @@ indexes! {
     /// Per thing with a `sync.0` state, the steps it places (`sync_ids::steps`, `Tx::derive`):
     /// what delete keys are listed from and checked against (spec/crypto.md §7).
     pub steps: JMap<Tid, Arc<crate::sync_ids::steps::Recorded>>,
-    /// Keyed `roles.0` entries seen: (target, entry dot) -> (holder, created value).
-    pub holder_keys: JMap<(Tid, Dot), Tid>,
+    /// Keyed edge entries seen: (target, edge aspect, entry dot) -> holder.
+    pub holder_keys: JMap<(Tid, crate::apply::validity::Grants, Dot), osis_base::Holder>,
     /// Role commits whose removed keys are not known yet.
     pub unresolved: JSet<CommitId>,
     /// Roles `secrets.0` and `keys.0` deltas need (by commit and aspect index).
@@ -2027,6 +2032,32 @@ impl Core {
     /// own things).
     pub(crate) fn me(&self) -> Tid {
         self.id.tid()
+    }
+
+    /// The key this node signs as `thing` by (spec/permissions.md §1 Signed as), with the key the
+    /// header names (`None`: `thing`'s record's, the first form): the record's key where this
+    /// node holds it, else the first held key holding a grant on `thing` that is alive now. The
+    /// walk judges what the grant gives; a key with none here is never used.
+    pub(crate) fn key_for(&self, thing: &Tid) -> Option<(&osis_crypto::SigningSecret, Option<osis_base::SignKey>)> {
+        let ids = || std::iter::once(&self.id).chain(self.key_actors.values().map(|i| &**i));
+        // a record this node made it holds before any commit carries it
+        if let Some(i) = ids().find(|i| i.tid() == *thing) {
+            return Some((&i.keys().signing, None));
+        }
+        let held = ids().map(|i| &i.keys().signing);
+        let record = self.created(thing).and_then(osis_base::CreationRecord::key);
+        let ts = crate::flows::now_ts(self);
+        let mut granted = None;
+        for s in held {
+            let k = osis_base::SignKey(s.verifying_key().to_bytes());
+            if Some(k) == record {
+                return Some((s, None));
+            }
+            if granted.is_none() && self.timelines().key_grants(thing, Some(ts)).contains_key(&k) {
+                granted = Some((s, Some(k)));
+            }
+        }
+        granted
     }
 
     /// Whether `t` is the node's own, written by it alone (spec/sync-set.md §1): its node thing,

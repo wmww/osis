@@ -70,7 +70,6 @@ Built: the walk (notes/perm-paths.md); settled readings: notes/a1-spec/README.md
 - the walk's store over the engine's index, and an open rebuilding the walk from every header (issues/perm-eval-cost.md);
 - the rest the engine reads short of the spec (notes/perm-paths.md, Read short of the spec);
 - vouches for purge requests, if notes/a1-spec/README.md Open 20 settles that way;
-- the spec ahead of the code: `signer` naming a key other than the record's (spec/wire.md §4 field 1) and key grants (`signers.0` is in no schema file and no code): A4.
 
 ### A2. Evidence per sync unit, grants with the thing granted: what is left
 Built, on main, unreviewed and ungated: notes/holder-access-study.md (grants belong to the thing granted, offers, held for keys), notes/evidence-derivation.md (certificate copies per (commit, thing), re-derived at every change), notes/delete-keys.md. What it owes, taken after A4: notes/sync-rewrite-state.md, Next. Open questions: notes/a2-spec/README.md. A4's "members enter what A holds roles on by its boxes under A's sync ID" is held for keys at a node's first hop.

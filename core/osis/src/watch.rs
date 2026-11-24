@@ -763,8 +763,10 @@ fn targets(sh: &Shared, seq: u64, m: &Msg) -> Vec<(Arc<Sub>, Pre)> {
         Msg::Status => due(&[Slot::Status], Delivery::Due),
         Msg::Event(Event::DisputeDetected { commit, op, holder, target, author, trust }) => {
             let side = osis_engine::sides::Side { trust: *trust, chosen: false };
-            let d = crate::Dispute::of(&osis_engine::sides::DisputeInfo { commit: *commit, op: *op, holder: *holder, target: *target, author: *author, side: Some(side) });
-            due(&[Slot::Disputes], Delivery::Dispute(d))
+            match crate::Dispute::of(&osis_engine::sides::DisputeInfo { commit: *commit, op: *op, holder: *holder, target: *target, author: *author, side: Some(side) }) {
+                Some(d) => due(&[Slot::Disputes], Delivery::Dispute(d)),
+                None => Vec::new(),
+            }
         }
         _ => Vec::new(),
     }

@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 /// Aspects read from the in-memory indexes, not from a state.
 fn synthetic_ak(ak: &str) -> bool {
-    matches!(ak, "aspects.0" | "roles.0")
+    matches!(ak, "aspects.0" | "roles.0" | "signers.0")
 }
 
 fn edge_value(e: &Edge) -> Value {
@@ -80,6 +80,11 @@ impl Engine {
             "roles.0" => {
                 let r = self.core.roster_of(&tid);
                 (!r.is_empty()).then(|| Value::Map(r.iter().map(|(m, e)| (Value::Weak(*m), edge_value(e))).collect()))
+            }
+            // the walk's key grants alive now, the record's key among them (spec/data-model.md §9)
+            "signers.0" => {
+                let g = self.core.timelines().key_grants(&tid, Some(crate::flows::now_ts(&self.core)));
+                (!g.is_empty()).then(|| Value::Map(g.iter().map(|(k, e)| (k.to_value(), edge_value(e))).collect()))
             }
             _ => self.read(|tx| tx.reading(&tid, &ak, max, |tx| Ok(tx.state(&tid, &ak)?.and_then(Fragment::read))))?,
         };

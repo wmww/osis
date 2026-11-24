@@ -84,7 +84,7 @@ pub enum Event {
     SyncStatus { sync_id: osis_base::SyncId, detail: String },
     /// An admin dispute was detected and a side taken by default (`crate::sides`): `author`'s
     /// edge write `op` of `commit` lowering `holder` on `target`, `trust`: this node sides with it.
-    DisputeDetected { commit: CommitId, op: u32, holder: Tid, target: Tid, author: Tid, trust: bool },
+    DisputeDetected { commit: CommitId, op: u32, holder: osis_base::Holder, target: Tid, author: Tid, trust: bool },
     Diagnostic(Diagnostic),
 }
 

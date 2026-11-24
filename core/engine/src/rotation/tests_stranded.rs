@@ -526,7 +526,7 @@ fn an_edge_write_fires_only_where_its_writer_may_not_write_the_holder_spec_permi
     let fired = |e0: &crate::Engine, c: CommitId| e0.core.ix.fires.values().any(|o| matches!(o.what, crate::flows::inbox::Fire::Grant { commit, .. } if commit == c));
     let grant = |e0: &mut crate::Engine, holder: Tid| {
         e0.grant(&x, &holder, &edge(Role::Read)).unwrap();
-        e0.core.timelines().in_force(&holder, &x).expect("the grant applied")
+        e0.core.timelines().in_force(&osis_base::Holder::Thing(holder), &x).expect("the grant applied")
     };
     let c = grant(e0, g);
     assert!(!fired(e0, c), "a grant by the holder's writer is fired nowhere");

@@ -9,7 +9,8 @@ use crate::error::{Error, Result};
 use crate::apply::validity::perm_edge;
 use crate::rotation;
 use crate::Mutation;
-use osis_base::{CommitId, Role, Tid, WallMs};
+use crate::apply::validity::Grants;
+use osis_base::{CommitId, Holder, Role, Tid, WallMs};
 use osis_keys::{Departure, ROLES, box_holder, roles_up_to};
 
 use osis_perm::{At, Edge as PermEdge};
@@ -215,19 +216,21 @@ pub(crate) fn grant_history(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, h
 /// walk created (spec/permissions.md §2), whatever the `roles.0` state says of it (a void
 /// finalize resets it in the state while the edge stands). At most one: a role commit creates
 /// one entry per holder.
-fn current_entry(tx: &Tx<'_>, target: &Tid, holder: &Tid) -> Option<(osis_crdt::Dot, osis_base::Value)> {
+fn current_entry(tx: &Tx<'_>, target: &Tid, holder: &Holder) -> Option<(osis_crdt::Dot, osis_base::Value)> {
     let c = tx.core.timelines().get(target)?.in_force(holder, target)?;
     let view = &tx.core.ix.commits.get(&c)?.view;
-    let ai = view.aspect(target, "roles.0")?;
+    let g = Grants::of_holder(holder);
+    let ai = view.aspect(target, g.ak())?;
     let own = crate::engine::Owned::of_view(view, &c, ai)?;
-    tx.core.ix.holder_keys.iter().find(|((t, d), m)| t == target && *m == holder && own.owns(d.origin())).map(|((_, d), m)| (d.clone(), osis_base::Value::Weak(*m)))
+    tx.core.ix.holder_keys.iter().find(|((t, x, d), m)| t == target && *x == g && *m == holder && own.owns(d.origin())).map(|((_, _, d), m)| (d.clone(), Grants::key(m)))
 }
 
 /// Resets `holder`'s current entry on `target` in `m`, if it has one (spec/permissions.md §2):
 /// every edge write does, so a holder's k-th write carries one reset, not k.
-pub(crate) fn reset_current(tx: &Tx<'_>, m: &mut Mutation, target: Tid, holder: Tid) -> Result<bool> {
+pub(crate) fn reset_current(tx: &Tx<'_>, m: &mut Mutation, target: Tid, holder: impl Into<Holder>) -> Result<bool> {
+    let holder = holder.into();
     let Some(e) = current_entry(tx, &target, &holder) else { return Ok(false) };
-    m.dead_resets.entry((target, super::ak("roles.0")?)).or_default().push(e);
+    m.dead_resets.entry((target, super::ak(Grants::of_holder(&holder).ak())?)).or_default().push(e);
     Ok(true)
 }
 
@@ -235,9 +238,10 @@ pub(crate) fn reset_current(tx: &Tx<'_>, m: &mut Mutation, target: Tid, holder: 
 /// with none (a mint admin's record edge, stored nowhere, or an edge already removed) gets an
 /// entry of this delta reset in it: a removal naming the holder whose creation every reader
 /// holds (spec/permissions.md §2), so it applies in any arrival order.
-pub(crate) fn removal(tx: &Tx<'_>, m: &mut Mutation, target: Tid, holder: Tid) -> Result<()> {
+pub(crate) fn removal(tx: &Tx<'_>, m: &mut Mutation, target: Tid, holder: impl Into<Holder>) -> Result<()> {
+    let holder = holder.into();
     if !reset_current(tx, m, target, holder)? {
-        m.fresh_resets.entry((target, super::ak("roles.0")?)).or_default().push(osis_base::Value::Weak(holder));
+        m.fresh_resets.entry((target, super::ak(Grants::of_holder(&holder).ak())?)).or_default().push(Grants::key(&holder));
     }
     Ok(())
 }
@@ -425,6 +429,57 @@ impl Engine {
         self.grant_signed(None, *target, *holder, edge, false, history)
     }
 
+    /// Writes `key`'s grant on `target` (spec/permissions.md §1 Key grant, §2 Key grants): `edge`
+    /// grants or changes it, `None` removes it. An edge write as any other, by this node as itself:
+    /// an admin's explicit write (a lowering of the grant as restored carrying its frontier: what
+    /// this node received of the commits signed as `target`, those `key` signed among them), or a
+    /// may-grant grant of a key holding none. Nothing is sealed to a key: no boxes, no rotation, no
+    /// delivery. `key` then signs as `target` (`Mutation::sign_as`) where its key store holds it.
+    pub fn grant_key(&mut self, target: &Tid, key: &osis_base::SignKey, edge: Option<&Edge>) -> Result<Done> {
+        if edge.is_some_and(|e| e.retain || e.floor.is_some() || e.until == Some(WallMs(0))) {
+            return Err(Error::Misuse("a key's grant carries no retain, no floor and no until 0"));
+        }
+        let (t, holder) = (*target, Holder::Key(*key));
+        let me = self.core.me();
+        let admin = self.core.role_now(&me, &t) == Some(Role::Admin);
+        let (frontier, covers) = match admin && self.needs_frontier_of(&t, &holder, edge) {
+            true => self.demotion_frontier(t, vec![osis_perm::EdgeOp { target: t, holder, edge: edge.map(perm_edge) }])?,
+            false => (None, Vec::new()),
+        };
+        let edge = edge.cloned();
+        let mut done = self.run(|tx| {
+            let admin = crate::engine::secrets::usable_role_now(tx, &me, &t)? == Some(Role::Admin);
+            // a may-grant grant: a new grant, up to the role the path gives may-grant at (§2)
+            if !admin {
+                let ts = now_ts(tx.core);
+                let may = tx.core.timelines().get(&t).and_then(|tl| tl.may_grant(&me, &t, At::now(ts)));
+                let fresh = tx.core.timelines().key_grant(key, &t).is_none_or(|e| !e.alive_at(Some(ts)));
+                if !edge.as_ref().is_some_and(|e| fresh && may.is_some_and(|r| e.role <= r)) {
+                    return Err(Error::Permission { tid: t, needs: Role::Admin });
+                }
+            }
+            let mut m = Mutation::new();
+            match &edge {
+                Some(e) => {
+                    reset_current(tx, &mut m, t, holder)?;
+                    put_edge(&mut m, t, holder, e)?;
+                }
+                None => removal(tx, &mut m, t, holder)?,
+            }
+            if let Some(f) = frontier {
+                m.frontier(f);
+            }
+            if !admin {
+                m.unchecked();
+            }
+            let mut done = Done::default();
+            done.add(Engine::commit_tx(tx, m)?);
+            Ok(done)
+        })?;
+        done.commits.splice(0..0, covers);
+        Ok(done)
+    }
+
     /// `grant_in` with the frontier of what this node received when the grant audits: an admin's
     /// grant below the edge as restored (spec/permissions.md §5.1 step 4), such as a may-grant taken
     /// away or a role below one the holder lost with no explicit write on the edge since. Invariant: an
@@ -467,6 +522,11 @@ impl Engine {
     /// (an `until` alive then takes nothing). The writer rule refuses either way of getting it
     /// wrong (`check_content_rules`).
     pub fn needs_frontier(&self, target: &Tid, holder: &Tid, edge: Option<&Edge>) -> bool {
+        self.needs_frontier_of(target, &Holder::Thing(*holder), edge)
+    }
+
+    /// `needs_frontier` of a thing's grant or a key's.
+    fn needs_frontier_of(&self, target: &Tid, holder: &Holder, edge: Option<&Edge>) -> bool {
         let new = edge.map(perm_edge);
         new.is_none() || self.core.timelines().get(target).is_some_and(|tl| tl.audits(holder, target, new, self.core.hlc.peek()))
     }
@@ -483,7 +543,7 @@ impl Engine {
     /// first when it wants the removal to keep more (spec/permissions.md §5.3).
     pub fn removal_scope(&self, target: &Tid, holder: &Tid, new: Option<&Edge>) -> BTreeSet<Tid> {
         let _ = new;
-        let scope = crate::apply::receipt::scope_of(&self.core, &[(*holder, *target)]);
+        let scope = crate::apply::receipt::scope_of(&self.core, &[(Holder::Thing(*holder), *target)]);
         scope.roles.values().chain(scope.content.values()).flatten().copied().collect()
     }
 
@@ -497,7 +557,7 @@ impl Engine {
         if self.core.timelines().get(&target).is_none() {
             return Ok((None, Vec::new()));
         }
-        let edges: Vec<(Tid, Tid)> = ops.iter().filter_map(|o| Some((o.holder.thing()?, o.target))).collect();
+        let edges: Vec<(Holder, Tid)> = ops.iter().map(|o| (o.holder, o.target)).collect();
         let scope = crate::apply::receipt::scope_of(&self.core, &edges);
         let mut keep: BTreeSet<CommitId> = BTreeSet::new();
         let mut f = self.frontier_fitted(&scope, as_of, &keep)?;
@@ -522,7 +582,7 @@ impl Engine {
     /// `target` with no standing admin here, so that it is refused unless marked
     /// (`leaving_adminless`): for a caller writing several commits that checks before the first.
     pub fn leaves_no_admin(&self, target: &Tid, holder: &Tid, new: Option<&Edge>) -> bool {
-        crate::apply::validity::leaves_no_admin(&self.core, target, &[(*holder, new.map(perm_edge))])
+        crate::apply::validity::leaves_no_admin(&self.core, target, &[(Holder::Thing(*holder), new.map(perm_edge))])
     }
 
     /// `f` with the edge writes it signs allowed to leave a thing with no standing admin

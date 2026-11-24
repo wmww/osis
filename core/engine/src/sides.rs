@@ -13,7 +13,8 @@ use crate::engine::journal::{JMap, Journaled};
 use crate::engine::{records, Core, Tx};
 use crate::error::{Error, Result};
 use crate::events::Event;
-use osis_base::{CommitId, Tid, Value};
+use osis_base::{CommitId, Holder, Tid, Value};
+use crate::engine::index::Rec;
 use osis_perm::WriteId;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -33,7 +34,8 @@ pub struct Side {
 pub struct DisputeInfo {
     pub commit: CommitId,
     pub op: u32,
-    pub holder: Tid,
+    /// A thing, or a key (a dispute over a key's grant, spec/permissions.md §2 Key grants).
+    pub holder: Holder,
     pub target: Tid,
     pub author: Tid,
     /// The side taken here, if any (none: the walk's, nothing recorded).
@@ -44,7 +46,7 @@ pub struct DisputeInfo {
 /// transaction changed any).
 #[derive(Clone, Default)]
 pub struct Sides {
-    map: JMap<(WriteId, Tid), Side>,
+    map: JMap<(WriteId, Holder), Side>,
 }
 
 impl Sides {
@@ -58,7 +60,7 @@ impl Sides {
                 [Value::Bytes(c), Value::Int(op), holder @ Value::Bytes(_), Value::Int(flags)] => {
                     let commit = CommitId(c.as_slice().try_into().map_err(|_| bad())?);
                     let op = u32::try_from(*op).map_err(|_| bad())?;
-                    let holder = Tid::from_bytes(holder.as_array().ok_or_else(bad)?);
+                    let holder = <Holder as Rec>::from(holder).ok_or_else(bad)?;
                     map.insert((WriteId(commit, op), holder), Side { trust: flags & 1 == 1, chosen: flags & 2 == 2 });
                 }
                 _ => return Err(bad()),
@@ -69,7 +71,7 @@ impl Sides {
     }
 
     fn encode(&self) -> Vec<u8> {
-        let items: Vec<Value> = self.map.iter().map(|((w, m), s)| Value::List(vec![Value::Bytes(w.0 .0.to_vec()), Value::Int(i64::from(w.1)), Value::bytes(m.as_bytes()), Value::Int(i64::from(s.trust) | i64::from(s.chosen) << 1)])).collect();
+        let items: Vec<Value> = self.map.iter().map(|((w, m), s)| Value::List(vec![Value::Bytes(w.0 .0.to_vec()), Value::Int(i64::from(w.1)), m.to(), Value::Int(i64::from(s.trust) | i64::from(s.chosen) << 1)])).collect();
         Value::List(items).to_bytes()
     }
 
@@ -78,11 +80,11 @@ impl Sides {
         self.map.iter().filter(|(_, s)| s.trust).map(|(k, _)| k.0).collect()
     }
 
-    pub(crate) fn get(&self, op: WriteId, holder: Tid) -> Option<Side> {
+    pub(crate) fn get(&self, op: WriteId, holder: Holder) -> Option<Side> {
         self.map.get(&(op, holder)).copied()
     }
 
-    fn set(&mut self, op: WriteId, holder: Tid, side: Side) {
+    fn set(&mut self, op: WriteId, holder: Holder, side: Side) {
         self.map.insert((op, holder), side);
     }
 
@@ -126,9 +128,7 @@ pub(crate) fn after_update(core: &mut Core, c: &osis_perm::Changed) {
     let found = core.timelines_mut().aside().disputes();
     let mut trusts = false;
     for op in found {
-        // Interim (notes/accounts-switch-brief.md): a dispute over a key's grant is told and
-        // chosen once `signers.0` writes are built
-        let Some((author, osis_base::Holder::Thing(holder), target)) = core.timelines().edge_op(&op) else { continue };
+        let Some((author, holder, target)) = core.timelines().edge_op(&op) else { continue };
         if core.sides.get(op, holder).is_some() {
             continue;
         }
@@ -185,19 +185,19 @@ impl crate::engine::Engine {
     /// side taken here; at most `max` open ones are listed: (disputes, those left out). Reads a
     /// copy of the timeline (each candidate's trust is switched on and back).
     pub fn disputes(&self, max: usize) -> (Vec<DisputeInfo>, usize) {
-        let mut out: BTreeMap<(WriteId, Tid), DisputeInfo> = BTreeMap::new();
+        let mut out: BTreeMap<(WriteId, Holder), DisputeInfo> = BTreeMap::new();
         let mut tl: osis_perm::Timeline = (**self.core.timelines()).clone();
         let open = tl.disputes();
         let left = open.len().saturating_sub(max);
         for op in open.into_iter().take(max) {
-            let Some((author, osis_base::Holder::Thing(holder), target)) = tl.edge_op(&op) else { continue };
+            let Some((author, holder, target)) = tl.edge_op(&op) else { continue };
             out.insert((op, holder), DisputeInfo { commit: op.0, op: op.1, holder, target, author, side: self.core.sides.get(op, holder) });
         }
         for ((op, holder), side) in self.core.sides.map.iter() {
             if out.contains_key(&(*op, *holder)) {
                 continue;
             }
-            if let Some((author, osis_base::Holder::Thing(h), target)) = tl.edge_op(op).filter(|x| x.1 == osis_base::Holder::Thing(*holder)) {
+            if let Some((author, h, target)) = tl.edge_op(op).filter(|x| x.1 == *holder) {
                 out.insert((*op, *holder), DisputeInfo { commit: op.0, op: op.1, holder: h, target, author, side: Some(*side) });
             }
         }
@@ -207,9 +207,9 @@ impl crate::engine::Engine {
     /// Takes a side in the dispute over edge write `op` of `commit` lowering `holder`: trust
     /// it (the author's side) or not (the walk's). Stays until chosen again. `UnknownCommit`
     /// when no held edge write is that.
-    pub fn choose(&mut self, commit: CommitId, op: u32, holder: Tid, trust: bool) -> Result<()> {
+    pub fn choose(&mut self, commit: CommitId, op: u32, holder: Holder, trust: bool) -> Result<()> {
         let w = WriteId(commit, op);
-        if !self.core.timelines().edge_op(&w).is_some_and(|(_, h, _)| h == osis_base::Holder::Thing(holder)) {
+        if !self.core.timelines().edge_op(&w).is_some_and(|(_, h, _)| h == holder) {
             return Err(Error::UnknownCommit(commit));
         }
         self.run(|tx| {

@@ -67,12 +67,15 @@ pub enum Dispute {
 const LIST_MAX: usize = 64;
 
 impl Dispute {
-    pub(crate) fn of(d: &DisputeInfo) -> Dispute {
+    /// Interim (notes/accounts-switch-brief.md, piece 6): `None` for a dispute over a key's grant,
+    /// until the API names keys.
+    pub(crate) fn of(d: &DisputeInfo) -> Option<Dispute> {
+        let osis_base::Holder::Thing(holder) = d.holder else { return None };
         let (side, chosen) = match d.side {
             Some(s) => (if s.trust { Side::Author } else { Side::Holder }, s.chosen),
             None => (Side::Holder, false),
         };
-        Dispute::Removal { id: DisputeId(Key::Removal { commit: d.commit, op: d.op, holder: d.holder }), target: d.target, author: d.author, holder: d.holder, commit: CommitId(d.commit), side, chosen }
+        Some(Dispute::Removal { id: DisputeId(Key::Removal { commit: d.commit, op: d.op, holder }), target: d.target, author: d.author, holder, commit: CommitId(d.commit), side, chosen })
     }
 
     /// Its name.
@@ -107,7 +110,7 @@ impl Osis {
         self.locked(|l| {
             let (ds, left) = l.engine().disputes(LIST_MAX);
             // over a thing this node reads: another's roster is not its to show (`grants`)
-            let out: Vec<Dispute> = ds.iter().filter(|d| l.engine().role_on(&d.target) >= Some(osis_base::Role::Read)).map(Dispute::of).collect();
+            let out: Vec<Dispute> = ds.iter().filter(|d| l.engine().role_on(&d.target) >= Some(osis_base::Role::Read)).filter_map(Dispute::of).collect();
             Ok((out, left))
         })
     }
@@ -134,6 +137,6 @@ impl Osis {
     pub fn choose_side(&self, id: DisputeId, side: Side) -> Result<()> {
         self.local("choose_side")?;
         let Key::Removal { commit, op, holder } = id.0;
-        self.locked(|l| Ok(l.engine().choose(commit, op, holder, side == Side::Author)?))
+        self.locked(|l| Ok(l.engine().choose(commit, op, osis_base::Holder::Thing(holder), side == Side::Author)?))
     }
 }

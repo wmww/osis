@@ -44,8 +44,7 @@ impl AspectWrite {
 pub struct CommitBuilder {
     pub kind: Kind,
     pub ts: Ts,
-    /// The signing key actor: an account, or a key actor other than an account signing as
-    /// itself.
+    /// The thing it is signed as (spec/wire.md §4 field 1).
     pub signer: Tid,
     /// The one path it states in the clear (spec/wire.md §4 field 2), where `split` is `None`.
     pub path: Path,
@@ -68,6 +67,9 @@ pub struct CommitBuilder {
     pub own_cover: bool,
     /// The adminless mark (`Header::adminless`).
     pub adminless: bool,
+    /// The header names the signing key (`Signer`'s second form): set where the key is not the
+    /// one `signer`'s record holds.
+    pub name_key: bool,
     /// The blob bound the commit is checked against: `MAX_BLOB` (tests shrink it).
     pub(crate) max_blob: usize,
 }
@@ -101,7 +103,7 @@ fn build_err(e: Error) -> Error {
 
 impl CommitBuilder {
     pub fn new(kind: Kind, ts: Ts, signer: Tid, path: Path, form: Form) -> CommitBuilder {
-        CommitBuilder { kind, ts, signer, path, split: None, form, expires: None, aspects: Vec::new(), purge: Vec::new(), undoes: None, frontier: None, blind: None, ephemeral: None, own_cover: false, adminless: false, max_blob: MAX_BLOB }
+        CommitBuilder { kind, ts, signer, path, split: None, form, expires: None, aspects: Vec::new(), purge: Vec::new(), undoes: None, frontier: None, blind: None, ephemeral: None, own_cover: false, adminless: false, name_key: false, max_blob: MAX_BLOB }
     }
 
     /// Builds the header (lists above `CHUNK_THRESHOLD` go by link through `sink`), signs it,
@@ -175,6 +177,8 @@ impl CommitBuilder {
 
         let mut header = Header {
             signer: self.signer,
+            // the key named is the one that signs: a writer never names another
+            key: self.name_key.then(|| osis_base::SignKey(key.verifying_key().to_bytes())),
             path,
             kind,
             ts: self.ts,

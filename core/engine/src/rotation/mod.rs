@@ -829,7 +829,9 @@ pub(crate) fn own_secrets_candidates(core: &Core, a: &Tid) -> Vec<Tid> {
     let plain = |t: &Tid| !core.is_independent(t) && !core.is_key_actor(t) && core.secret_actor(t) == Some(*a) && core.role_now(&me, t) == Some(Role::Admin);
     // a scan per call; only dependent targets and holders go further
     let mut out = BTreeSet::new();
-    for ((x, _), m) in core.ix.holder_keys.iter() {
+    // things' grants alone: a key holds no secret (spec/permissions.md §1 Signing key)
+    for ((x, _, _), m) in core.ix.holder_keys.iter() {
+        let osis_base::Holder::Thing(m) = m else { continue };
         if !out.contains(x) && plain(x) && core.key_holders(x).iter().any(|(h, _)| Some(*h) != core.mint_admin(x)) {
             out.insert(*x);
         }

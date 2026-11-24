@@ -36,8 +36,8 @@ fn records(core: &Core) -> BTreeMap<Tid, Holder> {
 }
 
 /// The hops of a part as the derivation takes them: grants of things alone. Interim
-/// (notes/accounts-switch-brief.md): a commit's key hop is its signer's record's until `signers.0`
-/// writes are built, and that record is evidence of every commit signed as it already.
+/// (notes/accounts-switch-brief.md): the derivation's edges are things' until it takes a holder
+/// type, so a key hop that is no record edge brings none of the `signers.0` writes on it.
 fn thing_hops(hops: Vec<(Holder, Tid)>) -> Vec<(Tid, Tid)> {
     hops.into_iter().filter_map(|(h, t)| Some((h.thing()?, t))).collect()
 }
@@ -88,7 +88,7 @@ pub(crate) fn copy_parts(tx: &mut Tx<'_>, id: &CommitId) -> Result<BTreeMap<Tid,
             }
             out
         };
-        let key = crate::apply::validity::signing_key(core, &h.signer);
+        let key = crate::apply::validity::signing_key(core, &m.view);
         let hops = |t: &Tid, holder: Option<Tid>, edge_class: bool| -> Option<Vec<(Tid, Tid)>> {
             let (along, direct, _) = crate::apply::validity::stated(&h, &m.view, t)?;
             let mint = minted(&mut along.iter().copied().chain([h.signer, *t]));
@@ -106,7 +106,8 @@ pub(crate) fn copy_parts(tx: &mut Tx<'_>, id: &CommitId) -> Result<BTreeMap<Tid,
                 .collect();
             let on = parts.entry(t).or_default();
             let writes: Vec<&osis_perm::EdgeOp> = match (&rc, a.ak.as_str()) {
-                (Some(rc), "roles.0") => rc.ops.iter().filter(|o| o.target == t).collect(),
+                (Some(rc), "roles.0") => rc.ops.iter().filter(|o| o.target == t && o.holder.thing().is_some()).collect(),
+                (Some(rc), "signers.0") => rc.ops.iter().filter(|o| o.target == t && o.holder.thing().is_none()).collect(),
                 _ => Vec::new(),
             };
             if let (Some(rc), false) = (&rc, writes.is_empty()) {
