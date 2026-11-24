@@ -22,7 +22,7 @@ instances=(
   "sync sync MC deposit.cfg pass"
   "sync sync MC kept.cfg pass"
   "sync sync MC kept_after.cfg pass"
-  "sync sync MC none_live.cfg pass"
+  "sync sync MC por_live.cfg pass"
   "sides sides MC kill_touch.cfg pass"           # notes/disputes.md, Storage under a fork
   "sides sides MC purge_touch.cfg pass"
   "sides sides MC place_touch.cfg pass"

@@ -4,7 +4,7 @@ EXTENDS SyncConvergence
 
 F(dom, c0, v0, dflt) == [c \in dom |-> IF c = c0 THEN v0 ELSE dflt]
 
-(* N: history `none`: w2's c2 kills d1 of w1's c1; every writer holding c1  *)
+(* N: purge on replace: w2's c2 kills d1 of w1's c1; every writer holding c1  *)
 (* owes a covering snapshot (s1 by w1, s2 by w2); c1 goes as covered.        *)
 N_Commits == {"c1", "c2", "s1", "s2"}
 N_Author == [c \in N_Commits |-> IF c \in {"c2", "s2"} THEN "w2" ELSE "w1"]
@@ -17,7 +17,7 @@ N_None == [c \in N_Commits |-> 99]
 N_Zero == [c \in N_Commits |-> 0]
 
 (* L: as N with a two-delta body: c2 kills d1 of c1 = {d1, e1}, e1 stays    *)
-(* live, carried by the covers (which are `none` too: they carry e1).        *)
+(* live, carried by the covers (which are under purge on replace too: they carry e1).        *)
 L_CD == [c \in N_Commits |-> CASE c = "c1" -> {"d1", "e1"} [] c = "c2" -> {"d2"} [] c = "s1" -> {"ds1"} [] c = "s2" -> {"ds2"}]
 L_Covers == [c \in N_Commits |-> IF c \in {"s1", "s2"} THEN {"d1", "e1", "d2"} ELSE {}]
 
@@ -34,7 +34,7 @@ P_None == [c \in P_Commits |-> 99]
 P_Zero == [c \in P_Commits |-> 0]
 
 (* D: a non-writer deposits a commit a writer promotes; an expiring write;  *)
-(* a reader relays; the host replays a stale entry.                          *)
+(* a reader logs a stamped entry; the store replays a stale one.                         *)
 D_Commits == {"cr", "c4"}
 D_Author == [c \in D_Commits |-> IF c = "cr" THEN "r" ELSE "w1"]
 D_Deps == [c \in D_Commits |-> {}]
