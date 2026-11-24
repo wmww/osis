@@ -18,4 +18,4 @@ Rejected: a witness's node making the write again unasked (modelled and dropped)
 A share, pairing or removal X made shortly before X's own removal, which the remover's node had not received, is undone until someone redoes it; grants made under such a share in between are lost; the redo shows as the redoer's. A node in sync when it removes lists the change, and nothing is lost.
 
 ## To do
-- **The notice** in the removal's result (notes/redesign-plan.md S3 brief 6).
+- **The notice** in the removal's result (notes/redesign-plan.md S3).

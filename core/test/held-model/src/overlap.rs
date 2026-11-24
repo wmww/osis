@@ -1,5 +1,5 @@
 //! The overlap rule (spec/commits.md §4: two commits of one session whose counter ranges on one
-//! aspect overlap are both invalid) and S3's question (notes/redesign-plan.md S3, brief 7): may
+//! aspect overlap are both invalid) and S3's question (notes/redesign-plan.md S3): may
 //! it count only commits otherwise valid? `Overlap` names the rules; `void_among` is the one
 //! judgment; `consistent` the verdicts a rule reading verdicts could settle on; `rule_inputs`
 //! the session-form commits carrying what another judgment reads. Worlds: thing 10 (mint admin

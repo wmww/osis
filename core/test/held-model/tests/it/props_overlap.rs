@@ -1,4 +1,4 @@
-//! Properties of S3's overlap rule (notes/redesign-plan.md S3, brief 7; spec/commits.md §4),
+//! Properties of S3's overlap rule (notes/redesign-plan.md S3; spec/commits.md §4),
 //! `Overlap::Valid`, over `held_model::overlap` worlds: the hand worlds and random ones, every
 //! subset of a world's events a held set. Each property has its negative control. Two fail as
 //! the rule stands, and are tests of that: the verdict reads itself where a void commit carries

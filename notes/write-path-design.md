@@ -164,7 +164,7 @@ The edge as restored; lists by commit ID with own covers (a list naming a cover 
 - **A writer cannot pick a path that survives a removal it should not** (argued; modelled for the story's thief): a removal audits every write through the hop it lowers, and a path naming a hop the reader holds no write for is unjudgeable, never valid (§2).
 
 ### osis-perm
-Validity of a write is a point query per hop of its path instead of a maximum over paths; the walk applies an edge-class part in O(hops); a lowering finds what it puts in question by an index hop → parts. `roles_on` and effective reach stay for keys, sync units and `holders`. The built walk (osis-perm `paths`, unused) and the call on it: notes/redesign-plan.md, D1 result.
+Validity of a write is a point query per hop of its path instead of a maximum over paths; the walk applies an edge-class part in O(hops); a lowering finds what it puts in question by an index hop → parts. `roles_on` and effective reach stay for keys, sync units and `holders`. The built walk (osis-perm `paths`, unused) and the call on it: notes/redesign-plan.md; stage D.
 
 ### Where the path sits
 Header: `signer` is the tid of the thing signed as, with the key that signed (the wire form is the spec brief's: the key or its hash); `path` in one of two forms: one path with its purge-author index, or the split form with each thing's path sealed under that thing's path key (built: notes/path-form.md).
