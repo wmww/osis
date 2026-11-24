@@ -20,7 +20,7 @@
 | what a good test is, what finds bugs, open test-system work | notes/test-design.md |
 
 ## Principles
-- The spec is the oracle: every MUST has a test that fails without it, and every test cites the spec section it checks, so `grep` (or notes/testing-map.md: notes/gate.md, Spec-to-test map) answers "what checks §X".
+- The spec is the oracle: every MUST has a test that fails without it, and every test cites the spec section it checks, so `grep` (or notes/gate.md, Spec-to-test map) answers "what checks §X".
 - Determinism: seeded randomness, injected clocks, in-process transport. A failure is a seed; a flake is a bug. The default tests never sleep, assert on wall time or touch the network.
 - Peer bytes never panic: every parser is fuzzed; decoders take limits.
 - Models are independent oracles: the implementation never depends on them and they are never patched to match it.
