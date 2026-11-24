@@ -562,11 +562,23 @@ fn key_dots(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, set: &PageSet, k: &Va
 }
 
 /// Loads what reading or writing at `path` (op path segments) needs: the pages of the map keys
-/// along it (through the key index), the element a sequence index steps into (`walk`), and at its end
-/// everything paged below. `Ok(false)`: not addressable that way (load whole).
-pub fn ensure_path(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut StatePages, f: &mut Fragment, path: &[PathSeg]) -> Result<bool> {
+/// along it (through the key index), the element a sequence index steps into (`walk`), and at its
+/// end everything paged below, or, not `below`, only the records of the key it ends at (an entry
+/// holding only paged collections is restored by the first page of one, `ensure_first`).
+/// `Ok(false)`: not addressable that way (load whole).
+pub fn ensure_path(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut StatePages, f: &mut Fragment, path: &[PathSeg], below: bool) -> Result<bool> {
     let t = table(txn, tid, ak)?;
     let at = walk(txn, tid, ak, t, idx, f, path)?;
+    if !below {
+        for p in at.iter().filter(|p| matches!(p.last(), Some(Step::Entry(_)))) {
+            if let Some(q) = idx.sets.keys().find(|k| k.starts_with(p)).cloned()
+                && let Some(set) = idx.sets.get_mut(&q)
+            {
+                ensure_first(txn, t, set, &mut idx.bound, f)?;
+            }
+        }
+        return Ok(true);
+    }
     // everything paged at or below the positions reached
     for p in at {
         let below: Vec<Vec<Step>> = idx.sets.keys().filter(|k| k.starts_with(&p)).cloned().collect();
@@ -1936,15 +1948,14 @@ pub enum Reset {
     Laid { state: Option<Fragment>, changes: Changes },
 }
 
-/// The pages of a paged collection, in order.
-fn set_pages(txn: &mut Transaction<'_>, t: Table, set: &PageSet) -> Result<Vec<Fragment>> {
-    let mut out = Vec::new();
+/// `g` on each page of a paged collection, in order, one held at a time.
+fn each_page(txn: &mut Transaction<'_>, t: Table, set: &PageSet, mut g: impl FnMut(Fragment)) -> Result<()> {
     for key in set_rows(txn, t, set)? {
         if let Some(row) = txn.table_get(t, &key)? {
-            out.push(parse_page_row(&row)?.1);
+            g(parse_page_row(&row)?.1);
         }
     }
-    Ok(out)
+    Ok(())
 }
 
 /// The row keys of a paged collection's pages, in order.
@@ -2002,6 +2013,10 @@ pub(crate) fn join_reset(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mu
             let mut g = spine.clone();
             // the state's own page under its own skeleton: nothing dies
             g.join(Fragment::wrap(&set.path, pg.clone()));
+            if osis_base::costs::on() {
+                // counted: scale tests read the most of a state a reset by pages holds at once
+                osis_base::costs::peak("reset: state held", (j.approx_bytes() + g.approx_bytes() + pg.approx_bytes() + d.approx_bytes()) as u64);
+            }
             // the page's elements as a load reads them (pruned by the skeleton), and after the join
             if let Some(x) = g.at_steps(p) {
                 moved.add(x, -1);
@@ -2062,9 +2077,12 @@ pub(crate) fn join_reset(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mu
     if relay || holds_large(&skeleton, unit.len())? || all && !kept && skeleton.is_empty() {
         let mut m = j;
         for set in idx.sets.values() {
-            for pg in set_pages(txn, t, set)? {
+            each_page(txn, t, set, |pg| {
+                if osis_base::costs::on() {
+                    osis_base::costs::peak("reset: state held", (m.approx_bytes() + pg.approx_bytes() + d.approx_bytes()) as u64);
+                }
                 m.join(Fragment::wrap(&set.path, pg));
-            }
+            })?;
         }
         return Ok(Reset::Laid { state: (!m.is_empty()).then_some(m), changes });
     }
@@ -2082,31 +2100,44 @@ pub fn stale_in_pages(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &State
     let mut n = 0;
     for (p, set) in &idx.sets {
         let spine = s0.spine(p, None);
-        for pg in set_pages(txn, t, set)? {
+        each_page(txn, t, set, |pg| {
             let (mut g, p) = (spine.clone(), Fragment::wrap(&set.path, pg));
             let held = p.winners();
             g.join(p);
             n += held.minus(&g.winners()).len();
-        }
+        })?;
     }
     Ok(n)
 }
 
-/// The paths of the ops of a mutation if each addresses map keys, fields or set values only (a
-/// write there reads only what it addresses; an add or remove by value addresses its value as
-/// a key step); `None` when one needs the whole position (a write of a whole collection, a
-/// sequence op).
+/// A position an op addresses (op path segments), and whether the op reads what lies below it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OpPath {
+    pub path: Vec<PathSeg>,
+    pub below: bool,
+}
+
+/// The positions the ops of a mutation address if each addresses map keys, fields or set values
+/// only, or replaces or removes a whole position: a `set` reads what lies below its position (it
+/// writes the difference), an add or remove by value addresses its value as a key step, a
+/// replace, put or removal of the aspect reads nothing below (its reset covers it: the apply
+/// joins it a page at a time, `join_reset`). `None` when one needs the whole state (a `set` of a
+/// whole aspect, a sequence op).
 /// `key`: the form a key or value is looked up by (a large one: its link).
-pub fn op_paths(ops: &[osis_crdt::PathOp], key: &mut dyn FnMut(&Value) -> Result<Value>) -> Result<Option<Vec<Vec<PathSeg>>>> {
+pub fn op_paths(ops: &[osis_crdt::PathOp], key: &mut dyn FnMut(&Value) -> Result<Value>) -> Result<Option<Vec<OpPath>>> {
     use osis_crdt::Op;
     let mut out = Vec::new();
     for o in ops {
         let mut path = o.path.clone();
-        match &o.op {
-            Op::Add(k) | Op::Remove(k) => path.push(PathSeg::Key(k.clone())),
-            Op::Set(_) | Op::Replace(_) | Op::Put(_) if matches!(o.path.last(), Some(PathSeg::Key(_) | PathSeg::Field(_))) => {}
+        let below = match &o.op {
+            Op::Add(k) | Op::Remove(k) => {
+                path.push(PathSeg::Key(k.clone()));
+                true
+            }
+            Op::Replace(_) | Op::Put(_) | Op::RemoveAspect => false,
+            Op::Set(_) if matches!(o.path.last(), Some(PathSeg::Key(_) | PathSeg::Field(_))) => true,
             _ => return Ok(None),
-        }
+        };
         for s in &mut path {
             match s {
                 PathSeg::Index(_) => return Ok(None),
@@ -2117,7 +2148,7 @@ pub fn op_paths(ops: &[osis_crdt::PathOp], key: &mut dyn FnMut(&Value) -> Result
                 _ => {}
             }
         }
-        out.push(path);
+        out.push(OpPath { path, below });
     }
     Ok(Some(out))
 }
@@ -2280,7 +2311,7 @@ mod tests {
         let (mut f, mut idx) = open(&unit, &SALT).unwrap();
         let op = PathOp { path: Vec::new(), op: Op::Remove(Value::Int(5)) };
         for p in op_paths(std::slice::from_ref(&op), &mut |v| Ok(v.clone())).unwrap().unwrap() {
-            assert!(ensure_path(&mut txn, &tid, &ak, &mut idx, &mut f, &p).unwrap());
+            assert!(ensure_path(&mut txn, &tid, &ak, &mut idx, &mut f, &p.path, p.below).unwrap());
         }
         assert!(!idx.whole());
         let mut b = DeltaBuilder::new(&f, Writer::new(Ts::from_u64(2 << 16).unwrap(), node.clone(), w.range().hi));
@@ -2367,7 +2398,7 @@ mod tests {
             }
             let (mut f, mut idx) = open(&unit, &SALT).unwrap();
             match op_paths(std::slice::from_ref(&op), &mut |v| Ok(v.clone())).unwrap() {
-                Some(paths) => for p in &paths { ensure_path(&mut txn, &tid, &ak, &mut idx, &mut f, p).unwrap(); },
+                Some(paths) => for p in &paths { ensure_path(&mut txn, &tid, &ak, &mut idx, &mut f, &p.path, p.below).unwrap(); },
                 None => load_all(&mut txn, &tid, &ak, &mut idx, &mut f).unwrap(),
             }
             let mut b = DeltaBuilder::new(&f, Writer::new(Ts::from_u64(ts).unwrap(), nodes[0].clone(), ctrs[0]));
@@ -2445,7 +2476,7 @@ mod tests {
             match op_paths(std::slice::from_ref(&op), &mut |v| Ok(v.clone())).unwrap() {
                 Some(paths) => {
                     for p in &paths {
-                        assert!(ensure_path(&mut txn, &tid, &ak, &mut idx, &mut f, p).unwrap());
+                        assert!(ensure_path(&mut txn, &tid, &ak, &mut idx, &mut f, &p.path, p.below).unwrap());
                     }
                     partial += usize::from(!idx.whole());
                 }
@@ -2473,12 +2504,63 @@ mod tests {
             // a read by key in a fresh session
             let k = PathSeg::Key(Value::Int(r(2600) as i64));
             let (mut f, mut idx) = open(&unit, &SALT).unwrap();
-            assert!(ensure_path(&mut txn, &tid, &ak, &mut idx, &mut f, &[key("big"), k.clone()]).unwrap());
+            assert!(ensure_path(&mut txn, &tid, &ak, &mut idx, &mut f, &[key("big"), k.clone()], true).unwrap());
             assert!(!idx.whole(), "one key loads a page or two");
             assert_eq!(f.at(&[key("big"), k.clone()]).and_then(|x| x.read()), st.at(&[key("big"), k]).and_then(|x| x.read()));
         }
         assert!(in_place >= 20, "{in_place} of 30 written in place");
         assert!(partial >= 10, "{partial} of 30 made over some pages only");
+    }
+
+    // spec/crdt.md §5.6, §8: a replace, put or removal of a whole position reads nothing below it
+    // (its reset covers it). Over the skeleton and the pages of the keys on its path alone
+    // (`op_paths`, `ensure_path` not below), each writes what it writes over the whole state, at
+    // the root, at an entry holding a paged collection, at a paged map's key and at a plain key.
+    #[test]
+    fn whole_position_writes_read_no_page_below_spec_crdt_8() {
+        let (mut store, mut rng) = store();
+        let (tid, ak) = (Tid::from_bytes([4; 15]), osis_base::Ak::new("app:whole.0").unwrap());
+        let node = sess(1);
+        let key = |s: &str| PathSeg::Key(Value::Str(s.into()));
+        let v = Value::Map(
+            [
+                (Value::Str("big".into()), ints(2500, 1)),
+                (Value::Str("tags".into()), Value::Set((0..2000).map(|i| Value::Str(format!("s{i}"))).collect())),
+                (Value::Str("x".into()), Value::Int(1)),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        let mut w = Writer::new(Ts::from_u64(1 << 16).unwrap(), node.clone(), 1);
+        let st = create(&mut w, &AnyView, &v).unwrap();
+        let mut txn = store.transaction(&mut rng).unwrap();
+        let (unit, idx) = write_full(&mut txn, &tid, &ak, Some(&st), false, &SALT).unwrap();
+        assert!(idx.unwrap().sets() >= 2);
+        let ops = [
+            PathOp { path: Vec::new(), op: Op::Replace(ints(2, 9)) },
+            PathOp { path: Vec::new(), op: Op::Replace(Value::Int(9)) },
+            PathOp { path: Vec::new(), op: Op::RemoveAspect },
+            PathOp { path: vec![key("big")], op: Op::Replace(ints(2, 9)) },
+            PathOp { path: vec![key("tags")], op: Op::Replace(Value::Int(9)) },
+            PathOp { path: vec![key("big"), PathSeg::Key(Value::Int(7))], op: Op::Replace(Value::Int(9)) },
+            PathOp { path: vec![key("big"), PathSeg::Key(Value::Int(9000))], op: Op::Put(Value::Int(9)) },
+            PathOp { path: vec![key("x")], op: Op::Replace(ints(2, 9)) },
+        ];
+        for op in ops {
+            let (mut f, mut idx) = open(&unit, &SALT).unwrap();
+            for p in op_paths(std::slice::from_ref(&op), &mut |v| Ok(v.clone())).unwrap().unwrap() {
+                assert!(!p.below, "{op:?}");
+                assert!(ensure_path(&mut txn, &tid, &ak, &mut idx, &mut f, &p.path, p.below).unwrap());
+            }
+            let loaded: usize = idx.sets.values().map(|s| s.loaded.len()).sum();
+            assert!(loaded <= 2, "{op:?}: {loaded} pages");
+            let at = |s: &Fragment| {
+                let mut b = DeltaBuilder::new(s, Writer::new(Ts::from_u64(2 << 16).unwrap(), node.clone(), w.range().hi));
+                b.apply(&op, &AnyView).unwrap();
+                b.finish().map(|x| x.0)
+            };
+            assert_eq!(at(&f), at(&st), "{op:?}");
+        }
     }
 
     /// A struct with a padding map (field 0) and a sequence (field 1): a text, or a list of strings.
@@ -2774,7 +2856,7 @@ mod tests {
                 let p = &[Step::Field(1)];
                 rebuilt += 1;
                 let (mut f, mut idx) = session.take().unwrap();
-                ensure_path(&mut txn, &tid, &ak, &mut idx, &mut f, &field()).unwrap();
+                ensure_path(&mut txn, &tid, &ak, &mut idx, &mut f, &field(), true).unwrap();
                 rebuild_placement(&mut txn, &tid, &ak, &mut idx, &mut f, p).unwrap();
                 session = Some((f, idx));
                 got = read_all(&mut txn, &unit);
@@ -3305,7 +3387,7 @@ mod tests {
             let path = vec![PathSeg::Field(1), PathSeg::Index(r(len + 2) as usize)];
             // a read inside an element (one past the end reads nothing)
             let (mut f, mut idx) = open(&unit, &SALT).unwrap();
-            assert!(ensure_path(&mut txn, &tid, &ak, &mut idx, &mut f, &path).unwrap());
+            assert!(ensure_path(&mut txn, &tid, &ak, &mut idx, &mut f, &path, true).unwrap());
             assert_eq!(f.at(&path).and_then(|x| x.read()), st.at(&path).and_then(|x| x.read()), "step {step}: read");
             let set = idx.sets.values().find(|s| is_seq(s)).unwrap();
             assert!(!set.whole, "step {step}");
@@ -3477,7 +3559,7 @@ mod tests {
                 txn.table_remove(pt, &place_key(&set, 1, b.unwrap().id as u64), Shred::No).unwrap();
             }
             assert_eq!(read(&mut txn, &unit), None, "damage {damage}");
-            ensure_path(&mut txn, &tid, &ak, &mut idx, &mut f, &field).unwrap();
+            ensure_path(&mut txn, &tid, &ak, &mut idx, &mut f, &field, true).unwrap();
             rebuild_placement(&mut txn, &tid, &ak, &mut idx, &mut f, &p).unwrap();
             assert_eq!(read(&mut txn, &unit).as_deref(), Some(&want[100..200]), "damage {damage}");
         }

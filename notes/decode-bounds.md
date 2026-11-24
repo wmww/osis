@@ -44,4 +44,4 @@
 
 ## Left
 - Total over connections: per-connection state grows with peers; no node-wide budget yet: issues/resource-limits.md.
-- A write replacing a whole position loads the state there whole; `covered` holds a body paged below a map entry whole; tree roots read a nested paged state whole: issues/durable-decode-bound.md.
+- `covered` holds a body paged below a map entry whole; tree roots read a nested paged state whole: issues/durable-decode-bound.md.

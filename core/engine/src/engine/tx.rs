@@ -302,15 +302,22 @@ impl Tx<'_> {
         Ok(())
     }
 
-    /// Loads what ops at `paths` (op path segments) read and write (`pages::ensure_path`).
+    /// Loads what reads at `paths` (op path segments) read: each position and all below it
+    /// (`pages::ensure_path`).
     pub fn ensure_paths(&mut self, tid: &Tid, ak: &Ak, paths: &[Vec<osis_crdt::PathSeg>]) -> Result<()> {
+        self.ensure_at(tid, ak, paths.iter().map(|p| (p.as_slice(), true)))
+    }
+
+    /// Loads what ops at `paths` (positions, and whether below each) read and write
+    /// (`pages::ensure_path`).
+    fn ensure_at<'p>(&mut self, tid: &Tid, ak: &Ak, paths: impl IntoIterator<Item = (&'p [osis_crdt::PathSeg], bool)>) -> Result<()> {
         self.load_lazy(tid, ak)?;
         if !self.held_in_part(tid, ak) {
             return Ok(());
         }
         let ok = self.with_pages(tid, ak, |txn, idx, f| {
-            for p in paths {
-                if !pages::ensure_path(txn, tid, ak, idx, f, p)? {
+            for (p, below) in paths {
+                if !pages::ensure_path(txn, tid, ak, idx, f, p, below)? {
                     return Ok(false);
                 }
             }
@@ -322,13 +329,13 @@ impl Tx<'_> {
         Ok(())
     }
 
-    /// Loads what `ops` on `(tid, ak)` read: the `paths` they address, else (ops by index into
-    /// paged sequences, `edits`) the pages they attach to through the stored placements
-    /// (`pages::attach_ops`; `new`: the first element the ops would create), else the whole
-    /// state. Whether they attached (`run_attached`).
-    pub(crate) fn load_for_ops(&mut self, tid: &Tid, ak: &Ak, paths: Option<Vec<Vec<osis_crdt::PathSeg>>>, ops: &[osis_crdt::PathOp], edits: &[Option<large::ListEdit>], new: &osis_crdt::Dot) -> Result<bool> {
+    /// Loads what `ops` on `(tid, ak)` read: the `paths` they address (`pages::op_paths`), else
+    /// (ops by index into paged sequences, `edits`) the pages they attach to through the stored
+    /// placements (`pages::attach_ops`; `new`: the first element the ops would create), else the
+    /// whole state. Whether they attached (`run_attached`).
+    pub(crate) fn load_for_ops(&mut self, tid: &Tid, ak: &Ak, paths: Option<Vec<pages::OpPath>>, ops: &[osis_crdt::PathOp], edits: &[Option<large::ListEdit>], new: &osis_crdt::Dot) -> Result<bool> {
         if let Some(paths) = paths {
-            self.ensure_paths(tid, ak, &paths)?;
+            self.ensure_at(tid, ak, paths.iter().map(|p| (p.path.as_slice(), p.below)))?;
             return Ok(false);
         }
         self.load_lazy(tid, ak)?;

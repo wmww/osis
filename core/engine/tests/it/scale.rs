@@ -171,6 +171,50 @@ fn snapshot_writer_memory_is_flat() {
     }
 }
 
+/// A whole-position write of the cases below.
+type WholeCase = (&'static str, bool, Vec<PathSeg>, Op, Option<Value>);
+
+/// A write replacing a whole position of `big_map`'s n entries in a new session (nothing of the
+/// state loaded): `op` at `path`, then the position reads `want`. The pages it joins into the
+/// cache (all the ops resolve against beside the skeleton), the most of the state its apply holds
+/// at once (decoded, `Fragment::approx_bytes`: the skeleton, a page and the delta), and the times
+/// it loads the state whole.
+fn replace_peak(n: usize, nested: bool, path: Vec<PathSeg>, op: Op, want: Option<Value>) -> [u64; 3] {
+    let (mut lp, t) = big_map(n, nested);
+    let b = lp.peers[0].backend.clone();
+    lp.peers[0].restart(1).unwrap();
+    let (_, w) = measured(&b, || {
+        let mut m = Mutation::new();
+        m.op(t, &big(), PathOp { path: path.clone(), op }).unwrap();
+        lp.peers[0].commit(m).unwrap().unwrap()
+    });
+    assert_eq!(lp.peers[0].engine.get_at(&t, &big(), &path).unwrap(), want);
+    [w.n("state page load"), w.n("reset: state held"), w.n("paged state loaded whole")]
+}
+
+// spec/requirements.md (Scale: memory follows what is touched), spec/crdt.md §8: replacing or
+// removing a whole position resets it, so its delta is the reset and the new value, whatever the
+// position held, and the apply joins the reset a page at a time. Replacing a paged map of n and
+// 10n entries with a small map or an int, removing the aspect, and replacing the map in a map
+// entry: the most held at once and the pages loaded flat, the state never loaded whole.
+#[test]
+fn replacing_a_whole_position_holds_a_page_at_a_time() {
+    let small = || Value::Map(osis_base::ValueMap::from([(s("a"), Value::Int(1))]));
+    let cases: [WholeCase; 4] = [
+        ("replace by a map", false, vec![], Op::Replace(small()), Some(small())),
+        ("replace by an int", false, vec![], Op::Replace(Value::Int(7)), Some(Value::Int(7))),
+        ("remove the aspect", false, vec![], Op::RemoveAspect, None),
+        ("replace a map entry's map", true, vec![PathSeg::Key(s("inner"))], Op::Replace(small()), Some(small())),
+    ];
+    for (what, nested, path, op, want) in cases {
+        let (a, z) = (replace_peak(500, nested, path.clone(), op.clone(), want.clone()), replace_peak(5000, nested, path, op, want));
+        flat(&format!("{what}: pages loaded"), a[0], z[0]);
+        flat(&format!("{what}: bytes held at once"), a[1], z[1]);
+        assert!(a[1] > 0, "{what}: joined a page at a time");
+        assert_eq!([a[2], z[2]], [0, 0], "{what}: the state loaded whole");
+    }
+}
+
 /// Debug builds' undo check (`memo::Undoable`) at n entries of a paged map (`big_map`): the
 /// writes it noted in an edit, and in a transaction writing 10 rows then rolled back.
 fn undo_check(n: usize) -> [u64; 2] {
