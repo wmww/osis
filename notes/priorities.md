@@ -7,6 +7,8 @@
 - Update it when an item finishes (delete it), when a finding reshapes the order (say why in the commit), or when Tess sets direction. Keep each item to a few lines with pointers; detail lives in its issues and notes.
 - Cleanup and workflow jobs (Job mix) run beside this list, not from it.
 
+**Structure first (Tess).** Get the code to the right shape as soon as possible; bugs and polish after. A fix in an area a structural piece will rewrite may be re-broken or fixed by it: leave it, or record it. Main need not work between pieces. Tests need not match what was there 1:1: a piece that reaches old tests or harnesses rewrites them slimmer. Combine or reshuffle work when it saves effort; non-colliding structural pieces run in parallel (two agents on the primary line).
+
 ## Failing on main
 Found by random seeds, each with its issue and a line in tools/known_failures.txt. They run beside the primary work, not before it; each starts with a hand-written minimal reproducer (notes/principles.md, Never pin a seed):
 - None.
