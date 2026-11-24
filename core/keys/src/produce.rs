@@ -237,8 +237,8 @@ fn removals(carried: &BTreeMap<Role, BTreeSet<Epoch>>, held_secrets: &Secrets) -
 /// `actor` the rotator holds), the keyset listing every current and unsuperseded epoch, and the removal of the role's boxes at the epochs whose
 /// secret is held. No current secret is needed: an epoch the rotator cannot open is superseded
 /// unread, and a holder of its secret adds it to the new epoch's history (`history_adds`).
-/// `held` is the rotator's established view of the actor (a dependent thing's derived epochs for the
-/// switch to secrets of its own); `held_secrets` the actor's `secrets.0`. Records no holder actor
+/// `held` is the rotator's established view of the actor (a dependent thing's derived epochs for its
+/// making independent); `held_secrets` the actor's `secrets.0`. Records no holder actor
 /// left out (`rotate_leaving_out`).
 pub fn rotate(actor: &Tid, roles: &BTreeSet<Role>, held: &ActorEpochs, held_secrets: &Secrets, holders: &[Recipient], names: &Names, rng: &mut dyn CryptoRngCore) -> Result<Rotation, Error> {
     rotate_leaving_out(actor, roles, held, held_secrets, holders, &LeftOut::new(), &Carried::default(), names, false, rng)

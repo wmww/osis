@@ -723,7 +723,7 @@ fn a_writer_promotes_a_deposit_spec_sync_inbox_4() {
         osis_sync::inbox::promotion(w.engine(0), &st, &s, &c, &b).unwrap()
     };
     assert_eq!(promotion(&mut w), Promotion::Yes);
-    let osis_engine::sync::Promote::Yes { chain: ev } = w.engine(0).promotable(&s, &c).unwrap() else { panic!("promotable") };
+    let osis_engine::sync::Promote::Yes { evidence: ev } = w.engine(0).promotable(&s, &c).unwrap() else { panic!("promotable") };
     let cc = *ev.commits.keys().find(|x| w.engine(0).sync_bodies(x).unwrap().keys().any(|k| k.0 == s)).expect("an evidence commit S carries");
     let mut gone = Vec::new();
     for x in w.engine(0).commit_blobs(&cc).unwrap().iter() {

@@ -18,7 +18,7 @@ fn s32(b: u8) -> Secret32 {
     Secret32::from_bytes([b; 32])
 }
 
-/// One group's sync ID: a genesis step and a child without rotation, each with a claim
+/// One thing's sync ID: a genesis step and a child without rotation, each with a claim
 /// set listing one DH reader and one key actor (entry box sealed to a KEM key from `b+6`).
 pub struct Fixture {
     pub sync_id: SyncId,
@@ -34,7 +34,7 @@ pub struct Fixture {
 }
 
 impl Fixture {
-    /// Group secrets from bytes `b..b+3`, deposit seed `b+3`; reader `b+4`; key actor `b+5`;
+    /// The thing's role secrets from bytes `b..b+3`, deposit seed `b+3`; reader `b+4`; key actor `b+5`;
     /// sync secret `b+8`.
     pub fn new(b: u8) -> Fixture {
         let (read, write, admin, dseed, sync) = (s32(b), s32(b + 1), s32(b + 2), s32(b + 3), s32(b + 8));
@@ -44,13 +44,13 @@ impl Fixture {
         let reader = X25519Secret::from_secret(&s32(b + 4));
         let key_actor = SigningSecret::from_seed(&s32(b + 5));
         let kem = KemSecret::derive(&s32(b + 6));
-        let group = osis_base::Tid::from_bytes([b; 15]);
-        let read_epoch = Epoch::derive(&group, osis_base::Role::Read, 1, &read).expect("small epoch");
-        let sync_epoch = Epoch::derive(&group, osis_base::Role::Sync, 1, &sync).expect("small epoch");
+        let thing = osis_base::Tid::from_bytes([b; 15]);
+        let read_epoch = Epoch::derive(&thing, osis_base::Role::Read, 1, &read).expect("small epoch");
+        let sync_epoch = Epoch::derive(&thing, osis_base::Role::Sync, 1, &sync).expect("small epoch");
         let readers = [Reader::Dh(reader.public()), Reader::Static { signing: key_actor.verifying_key(), kem: kem.public() }];
         let mut rng = SeededRng::from_seed([b + 7; 32]);
-        let (genesis, genesis_claims) = register(Parent::Genesis(&delete), keys, &readers, (&group, read_epoch, &read), (sync_epoch, &sync), &mut rng).expect("fixed genesis");
-        let (child, _) = register(Parent::Child { step: &genesis, delete: &delete }, keys, &readers, (&group, read_epoch, &read), (sync_epoch, &sync), &mut rng).expect("fixed child");
+        let (genesis, genesis_claims) = register(Parent::Genesis(&delete), keys, &readers, (&thing, read_epoch, &read), (sync_epoch, &sync), &mut rng).expect("fixed genesis");
+        let (child, _) = register(Parent::Child { step: &genesis, delete: &delete }, keys, &readers, (&thing, read_epoch, &read), (sync_epoch, &sync), &mut rng).expect("fixed child");
         Fixture {
             sync_id,
             genesis,

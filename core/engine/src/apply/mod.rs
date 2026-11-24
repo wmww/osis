@@ -936,8 +936,8 @@ fn header_wait(h: &Header, record: &dyn Fn(&Tid) -> Option<CreationRecord>) -> s
     record(&acting).map(|_| author).ok_or(Reason::UnknownCreated(acting))
 }
 
-/// What thing `a.tid` waits for: its `created.0` record, the record chain up to a key actor, the
-/// author's chain certificates (spec/permissions.md §4). A function of the thing, not of the part.
+/// What thing `a.tid` waits for: its `created.0` record, the record chain up to a key actor, an
+/// edge write on each edge of the path stated for it (spec/commits.md §4 Unjudgeable). A function of the thing, not of the part.
 fn thing_wait(
     core: &crate::engine::Core,
     h: &Header,
@@ -1646,16 +1646,16 @@ impl Engine {
     }
 
     /// A sealed fire's bundle taken whole or not at all (spec/sync-inbox.md §4 A sealed fire):
-    /// `records` and `chain` (its author's chain to its actor) then `fire`, in one transaction
+    /// `records` and `evidence` (spec/permissions.md §4) then `fire`, in one transaction
     /// kept only when the fire applies valid, or waits for the clock to reach its stamp
-    /// (`Pending(fire, Reason::Drift)`, as any commit ahead of the clock), and no chain commit
+    /// (`Pending(fire, Reason::Drift)`, as any commit ahead of the clock), and no evidence commit
     /// brought is parked or applies invalid; else nothing of it is written (`None`), so a
-    /// stranger's records and chain are learned only with a fire that checks out or waits. Decode errors of `fire` are the caller's. Its
+    /// stranger's records and evidence are learned only with a fire that checks out or waits. Decode errors of `fire` are the caller's. Its
     /// transaction failing for a fault of this node (`Error::is_fault`) keeps nothing either, and
     /// judges nothing: `Pending(fire, Reason::Fault)`, told to the app.
-    pub(crate) fn ingest_sealed_fire(&mut self, records: Vec<CreationRecord>, chain: &[Vec<u8>], fire: CommitBlob, pages: Vec<Vec<u8>>) -> Result<Option<Ingested>> {
+    pub(crate) fn ingest_sealed_fire(&mut self, records: Vec<CreationRecord>, evidence: &[Vec<u8>], fire: CommitBlob, pages: Vec<Vec<u8>>) -> Result<Option<Ingested>> {
         let mut blobs = Vec::new();
-        for c in chain {
+        for c in evidence {
             match CommitBlob::decode(c) {
                 Ok(b) if b.header.ephemeral.is_none() => blobs.push(b),
                 _ => return Ok(None),
@@ -2895,9 +2895,9 @@ mod tests {
         assert_eq!(lp.peers[1].engine.role_on(&t), Some(Role::Write));
     }
 
-    // spec/permissions.md §1 (record edge; record chain; max_chain_depth), §5: a writer creates A under X, B under A and C under B in one commit;
-    // the commit is valid wherever applied. Under a mint admin the writer may not write, the same
-    // tree fails the local check, as does a chain of new things past MAX_CHAIN_DEPTH.
+    // spec/permissions.md §1 (record edge; record chain; max_chain_depth), §5: a writer mints A with admin X, B with admin A and C with admin B in one
+    // commit; the commit is valid wherever applied. With a mint admin the writer may not write,
+    // the same chain fails the local check, as does a chain of new things past MAX_CHAIN_DEPTH.
     #[test]
     fn tree_created_in_one_commit_spec_perm_1() {
         let mut lp = LocalPeer::fresh(2, WallMs(1_700_000_000_000));
@@ -2961,7 +2961,7 @@ mod tests {
             m.op(cur, &ct::ROLES, PathOp { path: vec![PathSeg::Key(Value::Weak(a1))], op: Op::Set(adm.to_value()) }).unwrap();
             assert!(matches!(p1.commit(m), Err(crate::Error::Permission { .. })), "depth {depth}");
         }
-        // under Y (no role there) the tree is refused
+        // with admin Y (no role there) the chain is refused
         let p1 = &mut lp.peers[1];
         let mut m = Mutation::new();
         let a = p1.engine.new_thing(&mut m, y);

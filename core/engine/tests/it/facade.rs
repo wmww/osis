@@ -505,7 +505,7 @@ fn a_record_blob_of_another_prefix_is_bad_spec_crypto_7() {
     assert!(matches!(lp.peers[1].engine.open_entry(&ds, &id, &wrap, &blob, u64::MAX).unwrap(), osis_engine::sync::Opened::Records(_)));
 }
 
-// spec/wire.md §3 (creation record; Record blob), spec/permissions.md §4; Interim (issues/chains-retired.md);
+// spec/wire.md §3 (creation record; Record blob), spec/permissions.md §4;
 // spec/commits.md §4 (Pending storage): a record's tid is the hash of its encoding, records go raw
 // in a record blob. A reader of S framing a record blob cannot plant a false record for a thing it
 // names: a record altered to name another mint admin is a record of another tid, and the

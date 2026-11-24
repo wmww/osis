@@ -1,5 +1,4 @@
-//! Share links (spec/permissions.md §7, spec/wire.md §10): K an actor whose mint admin is the sharer's actor, with
-//! secrets of its own, a holder of the target with the link's role; L a key actor from the
+//! Share links (spec/permissions.md §7, spec/wire.md §10): K an independent thing whose mint admin is the sharer's actor, a holder of the target with the link's role; L a key actor from the
 //! link's seed with (r, may-grant) on K, listed in K's sync ID steps by static entry. Redeem (a
 //! may-grant grant signed as L, single use with L's self-removal in the same commit), bearer use,
 //! finalization and revoking a joiner are demotions by a sharer node.
@@ -53,7 +52,7 @@ pub struct LinkSpec {
 
 impl Engine {
     /// Creates a link to `spec.target` for actor `sharer` (an actor this node is admin of):
-    /// K (mint admin `sharer`, secrets of its own, its sync ID listing L by
+    /// K (mint admin `sharer`, independent, its sync ID listing L by
     /// static entry), L (key actor from a fresh seed, `created.0` and `keys.0` signed by itself),
     /// L's edge (r, may-grant, `until`) on K with its boxes, K's edge on the target, and a
     /// thing minted with the account root as admin keeping the seed. Returns the link and the seed thing.
@@ -116,9 +115,9 @@ impl Engine {
             return Err(Error::Misuse("K's grant on the link's target is not held here"));
         }
         let grant = Edge { role: edge.role, until: None, may_grant: false, retain: false, floor: None };
-        // L signs with its own role, so the grant deposits only below write; a redeem is an
-        // accept (spec/sync-set.md §4): strongs to K and the target in the account root, unless
-        // the node closure holds them, and so D's tickets for both (`inbox::write_account_ticket`)
+        // L signs with its own role, so the grant deposits only below write; a redeem holds K
+        // and the target (spec/sync-set.md §4): strongs to both in the account root, unless the
+        // node closure holds them
         let target = link.target;
         self.grant_signed_then(Some(l), k, grantee, &grant, single_use, crate::flows::edges::History::All, move |tx| {
             let Some((_, d)) = tx.core.account_and_root() else { return Ok(()) };

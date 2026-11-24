@@ -20,7 +20,7 @@ impl Engine {
     }
 
     /// The role `actor` holds on `t` now as this node acts by it: its effective role
-    /// (spec/permissions.md §1) over record edges and taken grants alone (§4 Taken grants).
+    /// (spec/permissions.md §1) over the held edge writes.
     pub fn actor_role(&self, actor: &Tid, t: &Tid) -> Option<Role> {
         self.core.role_now(actor, t)
     }

@@ -1,11 +1,10 @@
 # Purge-author indexes and waits along stated paths
-> Summary: The engine indexes a commit's purge author (where not its signer) as the one extra thing written as, and a commit waits for its signer's and purge author's records alone; spec/permissions.md §4 wants every listed thing of each stated path (its record needed and in the evidence). `Indexes::chains_on` and `acting_on` are written and read by nothing but each other: delete them. Stage A1's second branch.
+> Summary: The engine indexes a commit's purge author (where not its signer) as the one extra thing written as, and a commit waits for its signer's and purge author's records alone; spec/permissions.md §4 wants every listed thing of each stated path (its record needed and in the evidence). Stage A1's second branch.
 > Priority: normal
 > Tags: engine, permissions
 
 What stands in, each site marked `Interim (issues/stated-path-certificates.md)`:
-- `Indexes::by_actor` (the things this node has written as, `Core::acting`), filled in `apply::atomic::index_acting`, emptied in `apply::unindex`; `retention::needed` keeps by it each thing a held commit acts as.
-- `Indexes::chains_on` and `acting_on`: filled beside `by_actor`; nothing reads them, so they go whole.
+- `Indexes::by_actor`, filled in `apply::atomic::index_acting`, emptied in `apply::unindex`; `retention::needed` keeps by it each thing a held commit acts as.
 - `apply::header_wait`: a commit waits for its purge author's record, not for every listed thing's.
 - `write::check_acts`: the writer's check that it holds write on the thing it writes as.
 - osis-commit `Header::path_allowed`: a role commit's purge index is held to 0, a bad input spec/wire.md does not list.

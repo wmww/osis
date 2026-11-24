@@ -208,7 +208,7 @@ pub fn promotion(engine: &mut Engine, store: &Store, s: &SyncId, c: &CommitId, b
     let ev = match engine.promotable(s, c)? {
         Promote::Never => return Ok(Promotion::No),
         Promote::NotYet => return Ok(Promotion::Wait),
-        Promote::Yes { chain } => chain,
+        Promote::Yes { evidence } => evidence,
     };
     let need = engine.sync_bodies(c)?.get(&(*s, None)).map(|m| m.parts.clone()).unwrap_or_default();
     let judged = |o: Arc<osis_engine::sync::BlobOf>| Judged { parts: o.parts.clone(), sealed: o.sealed.clone() };

@@ -271,8 +271,8 @@ pub struct ReadFacts {
 /// Whether a writer may promote a deposited commit (spec/sync-inbox.md §4).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Promote {
-    /// Yes, with its author's chain to log beside it.
-    Yes { chain: Certs },
+    /// Yes, with its evidence to log beside it.
+    Yes { evidence: Certs },
     NotYet,
     Never,
 }
@@ -699,8 +699,8 @@ impl Engine {
         self.core.account.get().is_some()
     }
 
-    /// Sync ID `s`'s things here (`sync_things_of`): its owner by a held `sync.0`, or every
-    /// thing whose held tickets name it.
+    /// Sync ID `s`'s things here (`sync_things_of`): its owner by a held `sync.0`, or the
+    /// followed link's thing it names.
     pub fn sync_owners(&mut self, s: &SyncId) -> Result<Vec<Tid>> {
         self.sync_things_of(s)
     }
@@ -957,10 +957,9 @@ impl Engine {
     }
 
     /// The nodes this node may dial for S (spec/sync-opens.md §1 Whom to dial), each at the
-    /// address it is known by here: of S read, the nodes of each account holding a role on S's
-    /// thing by that account's dial list (`dial^.0` on its profile); of S kept unread, its ticket's
-    /// issuer (the ticket's profile, spec/data-model.md §8); either way this node's own other
-    /// nodes whose node closure holds S's thing, by their
+    /// address it is known by here: of S read or held for keys, the nodes of each account holding a
+    /// role on S's thing by that account's dial list (`dial^.0` on its profile); and this node's own
+    /// other nodes whose node closure holds S's thing, by their
     /// `reach.0` (the driver never dials its own key). A memo per sync ID; for dialing only, never
     /// proof.
     pub fn dial_peers(&mut self, s: &SyncId) -> Result<Arc<Vec<Address>>> {

@@ -131,7 +131,7 @@ fn path_forms_by_the_things_written() {
 fn one_path_reads_each_things_own() {
     let (s, d, x, y) = (t(1), t(2), t(3), t(4));
     let p = |things: Vec<Tid>| Path { purge: 0, things, direct: 0 };
-    // creation under a granted parent: D along [D], the new thing along [D] one hop past
+    // a creation with a granted mint admin: D along [D], the new thing along [D] one hop past
     let each = [(d, p(vec![d])), (x, p(vec![d]))];
     let q = Path::one_of(each.iter().map(|(a, b)| (a, b)), s, s).unwrap();
     assert_eq!(q, p(vec![d]));
@@ -142,7 +142,7 @@ fn one_path_reads_each_things_own() {
     // own things: the empty path
     let each = [(x, p(vec![])), (y, p(vec![]))];
     assert_eq!(Path::one_of(each.iter().map(|(a, b)| (a, b)), s, s), Some(Path::default()));
-    // an own thing and a thing under D: two paths
+    // an own thing and a thing minted with admin D: two paths
     let each = [(x, p(vec![])), (y, p(vec![d]))];
     assert_eq!(Path::one_of(each.iter().map(|(a, b)| (a, b)), s, s), None);
     // a purge author on no path

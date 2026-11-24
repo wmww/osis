@@ -330,8 +330,8 @@ fn an_offline_siblings_write_counts_by_its_listing_spec_permissions_5_5() {
     assert_eq!(read(&mut lp, 3, t), Some(Value::Str("offline".into())), "named by its author's listing");
 }
 
-// spec/permissions.md §5.5 (Listings), spec/sync-set.md §2 Writing: node 2 makes thing u under the
-// account (held through D's strong, made independent at the setup epoch) and writes it; the
+// spec/permissions.md §5.5 (Listings), spec/sync-set.md §2 Writing: node 2 makes thing u with the
+// account as mint admin (held through D's strong, made independent at the setup epoch) and writes it; the
 // rotator never received any of it. The rotation closes that epoch, so at node 2 u's keys and D's
 // strong to it count only once named, and u is out of the node closure until node 2's listings on
 // D and on u name them: the listings go (each leaves its thing held), and node 2 reads its write.
@@ -392,7 +392,7 @@ fn an_answer_undone_owes_no_holding_of_what_it_wrote_spec_sync_set_2() {
 fn a_listing_waits_for_its_things_delete_keys_spec_permissions_5_5() {
     let (mut lp, a, _) = world(4, 3);
     // the outsider's thing `u`: the account writes there by a raw edge write, then a grant by the
-    // flow gives `u` secrets of its own, its `keys.0` in that commit
+    // flow makes `u` independent, its `keys.0` in that commit
     let q = lp.peers[3].engine.me();
     let mut m = crate::Mutation::new();
     let u = lp.peers[3].engine.new_thing(&mut m, q);

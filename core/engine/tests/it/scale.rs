@@ -440,7 +440,7 @@ fn roster_removal(n: usize) -> (u64, usize, u64) {
         let keysets = [Role::Read, Role::Write].into_iter().map(|r| (r, vec![(ep, kem.clone())])).collect();
         holders.push(Recipient { holder: Tid::from_bytes(x), role: Role::Write, keys: HolderKeys::Actor { keysets, own: BTreeMap::new() }, floor: 0 });
     }
-    // secrets of its own are all three roles' (spec/crypto.md §3): the thing gets them first
+    // an independent thing's secrets are all three roles' (spec/crypto.md §3): the thing gets them first
     let all = BTreeSet::from(Role::ALL);
     let view = e.epochs(&a).unwrap();
     let r0 = rotate(&a, &all, &view, &Default::default(), &holders[..1], &osis_keys::Names::default(), &mut SeededRng::from_u64(2)).unwrap();

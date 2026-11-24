@@ -2,7 +2,7 @@
 //! over the differential worlds and soups (arrival in a shuffled order, half forgotten one at a
 //! time, an edge write trusted and put aside, disputes), written one line per world to
 //! `OSIS_DUMP`, so a build before a rewrite of the walk and the build after it can be diffed; the
-//! purged deltas, and the other purge readings with chained-ness, hash in columns of their own.
+//! purged deltas, and the other purge readings, hash in columns of their own.
 //! spec: none (test infrastructure: a comparison of two builds).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
@@ -18,7 +18,7 @@ use std::fmt::Write as _;
 use std::hash::{DefaultHasher, Hash, Hasher};
 
 /// A reading, as three strings: every reading but the purged deltas and the purge readings; the
-/// purged deltas; the purge readings (purged copies, requests' rights, parts' chained-ness).
+/// purged deltas; the purge readings (purged copies, requests' rights).
 fn full(p: &mut Paths, disputes: bool) -> [String; 3] {
     let (st, h, f, c, cp, pu, ch, more) = reading(p);
     let mut s = format!("{st:?}|{h:?}|{f:?}|{c:?}|{cp:?}|{ch:?}|{:?}", p.void_trusted());
@@ -28,9 +28,9 @@ fn full(p: &mut Paths, disputes: bool) -> [String; 3] {
     [s, format!("{pu:?}"), format!("{more:?}")]
 }
 
-/// What an update reported: of the readings `full` hashes first, and of purges and chained-ness.
+/// What an update reported: of the readings `full` hashes first, and of purges.
 fn changed(c: &Changed) -> [String; 3] {
-    [format!("{:?}{:?}{:?}{:?}{:?}", c.parts, c.edges, c.cuts, c.regrant, c.named.union(&c.carried).collect::<Vec<_>>()), String::new(), format!("{:?}{:?}", c.purges, c.chained)]
+    [format!("{:?}{:?}{:?}{:?}{:?}", c.parts, c.edges, c.cuts, c.regrant, c.named.union(&c.carried).collect::<Vec<_>>()), String::new(), format!("{:?}", c.purges)]
 }
 
 fn trace(records: &BTreeMap<Tid, Tid>, trust: &BTreeSet<WriteId>, commits: &[Commit], seed: u64, disputes: bool) -> [String; 3] {
@@ -66,7 +66,7 @@ fn trace(records: &BTreeMap<Tid, Tid>, trust: &BTreeSet<WriteId>, commits: &[Com
 
 /// One world's line: its name, the hash of every reading and `Changed` but the purge readings,
 /// the hash of the purged deltas, the hash of the other purge readings (and what `Changed` says
-/// of them and of chained-ness).
+/// of them).
 fn line(out: &mut String, what: String, t: [String; 3]) {
     let hash = |x: &str| {
         let mut h = DefaultHasher::new();

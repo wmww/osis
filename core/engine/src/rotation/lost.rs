@@ -248,8 +248,8 @@ impl Engine {
     /// Whether a `keys.0` write deciding `g`'s role keys is held but not applied: a pending
     /// commit (parked ones aside) writing the `keys.0` of the actor `g`'s secrets derive from,
     /// signed (`authentic`) by an admin of it now, or a held commit whose valid `keys.0` part on
-    /// a thing from `g` up to that actor is missing (its body to be fetched: it may give that
-    /// thing secrets of its own). A newer deposit seed, or another actor's, may be on its way
+    /// a thing from `g` up to that actor is missing (its body to be fetched: it may make that
+    /// thing independent). A newer deposit seed, or another actor's, may be on its way
     /// (node-sync holds back a deposit-only step meanwhile). Anyone can send a pending commit
     /// naming any aspect, so an unsigned one never counts: it would hold the step back for good.
     pub fn keys_write_unapplied(&mut self, g: &Tid) -> Result<bool> {
@@ -323,7 +323,7 @@ fn judge(core: &Core, cands: Vec<Tid>) -> Vec<Tid> {
     unread.into_iter().filter(|a| !kept(a)).collect()
 }
 
-/// This node's own self-removals (`departures_placing`) from `a` or from an actor holding a role
+/// This node's own self-removals (`departures_with_own`) from `a` or from an actor holding a role
 /// on it, transitively over the edges (`edge_holders`: a destroyed actor it left before the destruction
 /// included): what made it lose `a` (a node that left a holder actor loses what that actor reads).
 fn own_leaving(tx: &mut Tx<'_>, a: &Tid) -> Result<BTreeSet<osis_base::CommitId>> {
@@ -331,7 +331,7 @@ fn own_leaving(tx: &mut Tx<'_>, a: &Tid) -> Result<BTreeSet<osis_base::CommitId>
     let mut seen = BTreeSet::from([*a]);
     let mut work = vec![*a];
     while let Some(t) = work.pop() {
-        out.extend(super::departures_placing(tx, &t)?.into_iter().filter_map(|(_, c)| c));
+        out.extend(super::departures_with_own(tx, &t)?.into_iter().filter_map(|(_, c)| c));
         for (m, _) in tx.core.edge_holders(&t) {
             if !tx.core.is_key_actor(&m) && seen.insert(m) {
                 work.push(m);
@@ -488,8 +488,7 @@ fn drop_actors(tx: &mut Tx<'_>, mut lost: Vec<Tid>, dropped: &[Tid], rejudge: bo
     let lost: Vec<Tid> = lost.into_iter().chain(gone).collect();
     let held: BTreeMap<Tid, u64> = lost.iter().filter_map(|a| Some((*a, tx.core.ix.secrets.get(a)?.read.held().map(|(e, _)| e.n()).max()?))).collect();
     for a in &lost {
-        // lowered to sync: its sync secrets stay, so it is kept unread, and D's sync ticket for it
-        // follows (spec/sync-judgement.md §6 Read and unread move, spec/sync-set.md §1)
+        // lowered to sync: its sync secrets stay, so it is kept unread (spec/sync-judgement.md §6 Read and unread move, spec/sync-set.md §1)
         let sync = tx.core.ix.secrets.get(a).filter(|_| holds_at(tx.core, a, Role::Sync)).map(|e| e.role(Role::Sync).clone()).filter(|r| r.holds_any());
         #[cfg(debug_assertions)]
         osis_base::trace::note(|| {
@@ -687,7 +686,7 @@ impl Engine {
     }
 
     /// The held actors this node lost read access to with its own self-removals
-    /// (`departures_placing`) behind a departure from them. The trigger leaves them; node-sync
+    /// (`departures_with_own`) behind a departure from them. The trigger leaves them; node-sync
     /// drops each (`LostScope::Only`) once its self-removals are placed. From stored state only,
     /// so a restart between a self-removal and its drop finds them.
     pub fn lost_leaving(&mut self) -> Result<Leaving> {

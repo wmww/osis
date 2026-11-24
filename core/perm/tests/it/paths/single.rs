@@ -19,7 +19,7 @@ use roles_model::Rng;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Where the walk by components and the single walk read `commits` otherwise (statuses,
-/// histories, finals, verdicts, copies, purges, chained points, counting entries, void trusted
+/// histories, finals, verdicts, copies, purges, first points, counting entries, void trusted
 /// writes, and with `disputes` the dispute set): the first difference.
 pub(super) fn differs(a: &mut Paths, b: &mut Paths, disputes: bool) -> Option<String> {
     if reading(a) != reading(b) {
@@ -30,7 +30,7 @@ pub(super) fn differs(a: &mut Paths, b: &mut Paths, disputes: bool) -> Option<St
         } else if ra.3 != rb.3 {
             "verdicts".into()
         } else {
-            "histories, finals, copies, purges or chained points".into()
+            "histories, finals, copies, purges or first points".into()
         };
         return Some(what);
     }

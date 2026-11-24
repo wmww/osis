@@ -179,7 +179,7 @@ pub(crate) fn owned_in(tx: &mut Tx<'_>, t: &Tid) -> Result<ct::SyncIds> {
 }
 
 /// The sync IDs this node holds for `t` (`sync_ids::actors::held_sync_ids`): those its `sync.0`
-/// records that it owns, else a followed link's or its held tickets' hints.
+/// records that it owns, else a followed link's hint.
 pub(crate) fn held_in(tx: &mut Tx<'_>, t: &Tid) -> Result<Vec<SyncId>> {
     let m = tx.state(t, &ak("sync.0")?)?.and_then(Fragment::read).and_then(|v| ct::SYNC.decode(&v).ok()).unwrap_or_default();
     Ok(crate::sync_ids::actors::held_sync_ids(tx.core, t, &m).into_iter().map(|o| o.id).collect())

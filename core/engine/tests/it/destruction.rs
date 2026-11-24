@@ -41,7 +41,7 @@ fn keeps(lp: &mut LocalPeer, t: &Tid) -> bool {
 }
 
 /// A dependent thing minted with admin D with a value, held by a strong in D's `holds.0`.
-fn under_d(lp: &mut LocalPeer) -> Tid {
+fn dependent_of_d(lp: &mut LocalPeer) -> Tid {
     let e = &mut lp.peers[0].engine;
     let d = e.account_root().unwrap();
     let mut m = Mutation::new();
@@ -59,7 +59,7 @@ fn under_d(lp: &mut LocalPeer) -> Tid {
 #[test]
 fn a_destroyed_thing_is_held_and_released_as_any_thing_spec_commits_5() {
     let (mut lp, _) = people(1);
-    let (t, x) = (under_d(&mut lp), under_d(&mut lp));
+    let (t, x) = (dependent_of_d(&mut lp), dependent_of_d(&mut lp));
     let q = purge(&mut lp, t);
     past_floor(&mut lp);
     assert!(keeps(&mut lp, &t), "held: t keeps its record past the floor");

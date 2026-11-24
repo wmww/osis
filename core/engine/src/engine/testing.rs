@@ -28,7 +28,7 @@ pub(crate) fn family(k: &[u8]) -> &[u8] {
 impl Engine {
     /// Tests only: rotates `roles` of `a` boxing every holder this node would but `skip`, as a
     /// rotation that left them out (a holder left out of a rotation, spec/permissions.md §4
-    /// Stranded), firing its tickets to the holders boxed that cannot open it from the sync ID
+    /// Stranded), delivering it to the holders boxed that cannot open it from the sync ID
     /// (`rotation::unreached`). The commit made.
     #[doc(hidden)]
     pub fn rotate_leaving_out(&mut self, a: &Tid, roles: &[osis_base::Role], skip: &[Tid]) -> Result<Option<CommitId>> {
@@ -695,8 +695,6 @@ impl<T: std::fmt::Debug + PartialEq + 'static> Table for T {
 fn tables(ix: &super::Indexes) -> Vec<(&'static str, &dyn Table)> {
     vec![
         ("by_thing", &*ix.by_thing),
-        ("chains_on", &*ix.chains_on),
-        ("acting_on", &*ix.acting_on),
         ("paths_unknown", &*ix.paths_unknown),
         ("by_actor", &*ix.by_actor),
         ("role_on", &*ix.role_on),

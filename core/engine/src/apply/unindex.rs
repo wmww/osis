@@ -81,21 +81,6 @@ fn unindex(tx: &mut Tx<'_>, id: &CommitId, marks: bool) -> Result<()> {
         core.ix.by_thing.remove(&(a.tid, v.signer), id);
         core.ix.role_on.remove(&(a.tid, v.signer), id);
         core.ix.purges_on.remove(&a.tid, id);
-        let x = v.other_purge_author();
-        if let Some(x) = x {
-            core.ix.acting_on.remove(&(a.tid, v.signer, x), id);
-        }
-        // a chain goes once no held commit on the thing needs it (`Indexes::chains_on`)
-        // (`acting_on` lies within `by_thing`, so the chain to the thing goes with the last write)
-        if !core.ix.by_thing.contains_key(&(a.tid, v.signer)) {
-            core.ix.chains_on.remove(&a.tid, &(v.signer, a.tid));
-        }
-        if let Some(x) = x
-            && x != a.tid
-            && !core.ix.acting_on.contains_key(&(a.tid, v.signer, x))
-        {
-            core.ix.chains_on.remove(&a.tid, &(v.signer, x));
-        }
         if a.ak.as_str() == osis_commit::retention::RETENTION {
             super::validity::forget_setting(core, &a.tid, id);
         }

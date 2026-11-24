@@ -19,7 +19,7 @@ use osis_crypto::{CryptoRngCore, Epoch, KemPublicKey, KemSecret};
 pub struct SealedFire {
     pub copy: bool,
     pub commit: Value,
-    pub chain: Vec<Value>,
+    pub evidence: Vec<Value>,
     pub records: Vec<CreationRecord>,
     pub pages: Vec<Vec<u8>>,
 }
@@ -27,18 +27,18 @@ pub struct SealedFire {
 impl SealedFire {
     pub fn to_value(&self) -> Value {
         let pages = Value::List(self.pages.iter().map(|b| Value::Bytes(b.clone())).collect());
-        Value::List(vec![Value::Int(i64::from(self.copy)), self.commit.clone(), Value::List(self.chain.clone()), records_value(&self.records), pages])
+        Value::List(vec![Value::Int(i64::from(self.copy)), self.commit.clone(), Value::List(self.evidence.clone()), records_value(&self.records), pages])
     }
 
     pub fn from_value(v: Value) -> Result<SealedFire, Error> {
         let bad = || Error::Malformed("sealed fire");
         let Value::List(items) = v else { return Err(bad()) };
-        let Ok::<[Value; 5], _>([Value::Int(form @ (0 | 1)), commit @ Value::List(_), Value::List(chain), Value::List(records), Value::List(pages)]) = items.try_into() else { return Err(bad()) };
-        if !chain.iter().all(|c| matches!(c, Value::List(_))) {
+        let Ok::<[Value; 5], _>([Value::Int(form @ (0 | 1)), commit @ Value::List(_), Value::List(evidence), Value::List(records), Value::List(pages)]) = items.try_into() else { return Err(bad()) };
+        if !evidence.iter().all(|c| matches!(c, Value::List(_))) {
             return Err(bad());
         }
         let pages = pages.into_iter().map(|b| if let Value::Bytes(b) = b { Ok(b) } else { Err(bad()) }).collect::<Result<_, _>>()?;
-        Ok(SealedFire { copy: form == 1, commit, chain, records: records_from(&records)?, pages })
+        Ok(SealedFire { copy: form == 1, commit, evidence, records: records_from(&records)?, pages })
     }
 }
 
@@ -73,7 +73,7 @@ mod tests {
         let kem = KemSecret::derive(&Secret32::from_bytes([1; 32]));
         let (t, e) = (Tid::from_bytes([2; 15]), Epoch::new(3, [4; 32]).unwrap());
         let prefix = Prefix::new(Prefix::random_salt(&mut rng), None, vec![]).unwrap();
-        let fire = SealedFire { copy: false, commit: Value::List(vec![Value::Int(1)]), chain: vec![], records: vec![], pages: vec![] };
+        let fire = SealedFire { copy: false, commit: Value::List(vec![Value::Int(1)]), evidence: vec![], records: vec![], pages: vec![] };
         let blob = seal_fire(&prefix, &t, &e, kem.public(), &fire, &mut rng).unwrap();
         assert_eq!(open_fire(&blob, &t, &e, &kem).unwrap(), (prefix, fire));
         assert!(open_fire(&blob, &t, &e, &KemSecret::derive(&Secret32::from_bytes([9; 32]))).is_err(), "another key");

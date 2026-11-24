@@ -75,7 +75,7 @@ fn pull(lp: &mut LocalPeer) -> bool {
 
 // spec/commits.md §4 Outside the node closure (carried while the node cannot judge the thing's
 // sync units), spec/sync-judgement.md §3: writer peer 2 (granted write on X by peer 0)
-// makes M (mints W under X with X's strong to it, content on W) and D (more content on W). Peer 1
+// makes M (mints W with admin X and X's strong to it, content on W) and D (more content on W). Peer 1
 // takes M and D before peer 2's chain and grant: both pend whole (W's record unknown), kept across
 // a pass end, and apply whole once the grant comes.
 #[test]

@@ -308,8 +308,7 @@ impl Engine {
     /// (notes/test-harnesses.md, Why kept and row dumps): the role `rotation::role_here` gives and
     /// the role commits' (`rotation::role_here`); per identity of the node (account, itself, key
     /// actors) its role and the widest current path to `t` (direct, chain, account),
-    /// each edge by the role commit in force or the record edge; each held ticket's word and why
-    /// it counts or not; the secrets held of the actor `t`'s derive from, with that actor's role
+    /// each edge by the role commit in force or the record edge; the secrets held of the actor `t`'s derive from, with that actor's role
     /// when it is another, and `lost_due`'s clauses (without its side effects).
     #[doc(hidden)]
     pub fn why_role(&mut self, t: &Tid) -> String {

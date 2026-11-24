@@ -472,7 +472,7 @@ fn commit_form_order_spec_crdt_3_3() {
 }
 
 // spec/wire.md §4: spec/requirements.md, Permissions: every write is attributable and verifiable. A node cannot
-// sign a write claiming an actor whose write secret it does not hold (the author chain).
+// sign a write claiming an actor whose write secret it does not hold.
 #[test]
 fn foreign_actor_claim_refused_spec_wire_4() {
     let mut lp = net(3, 0);
@@ -656,7 +656,7 @@ pub(crate) fn forge_by(by: &osis_engine::Engine, secrets: &osis_engine::engine::
 fn void_grant_by_leaver_keeps_no_secrets_spec_perm_3() {
     let mut lp = net(3, 0);
     lp.sync_all().unwrap();
-    // minted with the account as admin: secrets of its own from its creation
+    // minted with the account as admin: independent from its creation
     let d = {
         let me = lp.peers[0].engine.me();
         let mut m = Mutation::new();
@@ -1132,7 +1132,7 @@ fn write_reg(lp: &mut LocalPeer, i: usize, t: Tid, v: &str) -> osis_engine::Resu
     lp.peers[i].commit(m)
 }
 
-// spec/permissions.md §1 (a path climbs role grants, record edges included), §4; Interim (issues/chains-retired.md): n0 is mint
+// spec/permissions.md §1 (a path climbs role grants, record edges included), §4: n0 is mint
 // admin of A, A writes B, B admin of C (n1 mint admin of B and C). n0's write on C applies at n0 and a receiver; a
 // node with no path may not write C. A fresh reader of C given n0's certificates for C but A's
 // raw record (the record-link step) holds nothing of the write until that record arrives.
@@ -4559,7 +4559,7 @@ fn a_stated_purge_author_acts_no_wider_than_its_stated_paths_spec_permissions_5_
 }
 
 // spec/wire.md §4 `Split` (an entry that opens nowhere leaves its thing's parts holding nothing),
-// spec/commits.md §5 (a thing is known by its creation record): Bob makes X under D beside a write of P,
+// spec/commits.md §5 (a thing is known by its creation record): Bob makes X with admin D beside a write of P,
 // X's entry forged. Alice, holding every section, holds no minting of X (X's section, its key
 // opening nothing, holds nothing): X is unknown there, nothing on it applies; D's strong to X and
 // P's write stand, as any write naming a thing never made.
@@ -4783,8 +4783,8 @@ fn split_commits_waiting_on_a_path_cost_an_unrelated_write_nothing_spec_commits_
 }
 
 // The owner's rule (notes/path-form.md), spec/wire.md §4 `Split`: a write making things beside
-// writes reached another way is one commit, never refused: Bob makes X under D (through H), Y
-// under his own root and Z under P, each beside a write reached another way. Alice (D's and P's
+// writes reached another way is one commit, never refused: Bob makes X with admin D (through H), Y
+// with his own root and Z with P, each beside a write reached another way. Alice (D's and P's
 // admin) reads each new thing from that commit; Carol, a reader of P, reads Z from it; granted D
 // after, she reads X from what she then syncs.
 #[test]
@@ -4792,15 +4792,15 @@ fn a_write_making_things_beside_writes_reached_another_way_is_one_commit_spec_wi
     let (mut lp, _, d, p) = two_paths_world();
     let root = lp.peers[1].engine.dependents_admin();
     let mut made = Vec::new();
-    for (n, (under, beside)) in [(d, p), (root, d), (p, d)].into_iter().enumerate() {
+    for (n, (admin, beside)) in [(d, p), (root, d), (p, d)].into_iter().enumerate() {
         let mut m = Mutation::new();
-        let x = lp.peers[1].engine.new_thing(&mut m, under);
+        let x = lp.peers[1].engine.new_thing(&mut m, admin);
         m.set(x, &REG, &s("made")).unwrap();
         m.set(beside, &REG, &s(&format!("beside {n}"))).unwrap();
         let before = lp.peers[1].engine.commit_ids().len();
         let id = lp.peers[1].commit(m).unwrap().unwrap();
         assert_eq!(lp.peers[1].engine.commit_ids().len(), before + 1, "one commit");
-        assert!(lp.peers[1].engine.header(&id).unwrap().is_split(), "{under:?}: split");
+        assert!(lp.peers[1].engine.header(&id).unwrap().is_split(), "{admin:?}: split");
         made.push(x);
     }
     lp.sync_all().unwrap();
@@ -4808,7 +4808,7 @@ fn a_write_making_things_beside_writes_reached_another_way_is_one_commit_spec_wi
     for x in [made[0], made[2]] {
         assert_eq!(reg(&mut lp, 0, x), Some(s("made")), "Alice reads {x:?}");
     }
-    assert_eq!(reg(&mut lp, 2, made[2]), Some(s("made")), "Carol reads Z under P");
+    assert_eq!(reg(&mut lp, 2, made[2]), Some(s("made")), "Carol reads Z, minted with admin P");
     assert_eq!(reg(&mut lp, 1, made[1]), Some(s("made")), "Bob reads Y");
     let c = lp.peers[2].engine.me();
     set_edge(&mut lp.peers[0].engine, d, c, Some(edge(Role::Read)), None);
@@ -4825,7 +4825,7 @@ fn a_write_making_things_beside_writes_reached_another_way_is_one_commit_spec_wi
 
 // spec/crypto.md §5 Path entry, spec/wire.md §4 `PathKey`: every encryption of a thing's parts
 // carries its path key, so a reader holding none of the roles secrets the entry is under opens it
-// from the encryption it reads: Bob makes X under D beside a write of P (X's entry under D's roles
+// from the encryption it reads: Bob makes X with admin D beside a write of P (X's entry under D's roles
 // secret); X is then granted to Carol, which makes X independent: she holds X's own epochs and its
 // derived ones by history, never D's, and reads X from the sections sync seals.
 #[test]
@@ -4851,7 +4851,7 @@ fn a_reader_holding_only_later_epochs_opens_the_path_from_its_section_spec_crypt
 
 // spec/wire.md §4 `PathKey` (a header-only copy of a split commit destroying things carries their
 // path keys), spec/commits.md §5 Destruction: Bob destroys his thing O in the commit that writes D
-// through H. Carol holds Q, made under O and granted to her (independent, so she holds no roles
+// through H. Carol holds Q, minted with admin O and granted to her (independent, so she holds no roles
 // secret of O): she needs O's destruction and takes it as the header-only copy carries it (no
 // part, O's path key alone), judging O destroyed.
 #[test]
@@ -5133,7 +5133,7 @@ fn the_engine_states_one_path_for_a_creation_spec_wire_4() {
     assert!(h.things().len() > 1, "a creation writes the thing and its holder");
     assert_eq!(h.path, osis_commit::Paths::One(osis_commit::Path::default()));
     assert_eq!(path_bytes(&h), 18);
-    // under a parent Bob holds by a grant
+    // with a mint admin Bob holds by a grant
     let b = lp.peers[1].engine.me();
     set_edge(&mut lp.peers[0].engine, t, b, Some(edge(Role::Admin)), None);
     lp.sync_all().unwrap();

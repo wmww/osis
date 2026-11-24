@@ -1,5 +1,5 @@
 //! Content (draft §5.2): a delta's validity derived at read from the walk's per-edge state,
-//! its chained points and what names the delta (notes/perm-paths.md, Step 3b design).
+//! its first points and what names the delta (notes/perm-paths.md, Step 3b design).
 //! Delta facts are read through the `Store` seam the engine backs with its store index
 //! (notes/perm-paths.md, The delta-facts seam); in memory stay only role commits' facts and the
 //! frontiers naming commits. Addenda validity (a least fixpoint) and purge requests' rights are

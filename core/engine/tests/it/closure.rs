@@ -435,7 +435,7 @@ fn a_thing_is_made_only_where_it_is_held_spec_sync_set_2() {
 
 // spec/sync-set.md §2 (Sync unit; T's keys open): nested sharing. X and Y are independent, X is granted read on Y,
 // and X -> Y -> B with B dependent on Y. A reader of X (account 1, holding X by a strong) holds Y and
-// B, with no ticket for Y, in X's sync unit, and has Y's sync ID in its sync set.
+// B in X's sync unit, and has Y's sync ID in its sync set.
 #[test]
 fn nested_sharing_holds_what_the_shared_thing_reads_spec_sync_set_2() {
     let (mut lp, ps) = people(2);
@@ -754,9 +754,9 @@ fn a_commit_waiting_for_a_part_keeps_what_it_is_on_spec_commits_5() {
     assert!(r.engine.core.created(&u).is_some(), "U's record");
 }
 
-/// Peer 1 reads and holds X, made by peer 0 under its account root D (outside peer 1's node
+/// Peer 1 reads and holds X, made by peer 0 with mint admin its account root D (outside peer 1's node
 /// closure, needed as X's mint admin), once a pass brought what peer 0 holds: the world and D.
-fn held_under_d() -> (LocalPeer, Tid) {
+fn held_minted_with_d() -> (LocalPeer, Tid) {
     let mut lp = crate::common::net(2, 0);
     let d = lp.peers[0].engine.account_root().unwrap();
     let x = crate::common::new_shared(&mut lp, 0);
@@ -771,7 +771,7 @@ fn held_under_d() -> (LocalPeer, Tid) {
 // would everything D holds.
 #[test]
 fn a_strong_from_outside_the_node_closure_needs_nothing_spec_commits_5() {
-    let (mut lp, d) = held_under_d();
+    let (mut lp, d) = held_minted_with_d();
     let b = make(&mut lp.peers[0].engine, d, d);
     lp.sync(0, 1).unwrap();
     let e1 = &mut lp.peers[1].engine;
@@ -784,7 +784,7 @@ fn a_strong_from_outside_the_node_closure_needs_nothing_spec_commits_5() {
 // on D: at the pass's end T goes.
 #[test]
 fn a_part_missing_outside_the_node_closure_keeps_nothing_spec_commits_5() {
-    let (mut lp, d) = held_under_d();
+    let (mut lp, d) = held_minted_with_d();
     let t = make(&mut lp.peers[0].engine, d, d);
     let c = *lp.peers[0].engine.commit_ids().last().unwrap();
     let pk = lp.peers[0].engine.package(&c).unwrap().unwrap();
@@ -1072,7 +1072,7 @@ fn a_release_keeps_the_leftover_of_a_commit_on_a_thing_still_held_spec_sync_set_
 }
 
 // spec/commits.md §5 What a held thing needs (held for itself: a retained copy), spec/sync-set.md
-// §3 Release: a retained copy stays once released. Peer 0 makes X, with Y under it (X's strong to
+// §3 Release: a retained copy stays once released. Peer 0 makes X, and Y with admin X (X's strong to
 // it), and grants peer 1 read on X, which peer 1 holds. Peer 0 removes peer 1 saying retain: peer
 // 1 drops X's secrets and keeps a copy, X leaves its node closure and is released; at the pass's
 // end X and Y still read as they did.
@@ -1219,7 +1219,7 @@ fn parts_held(e: &Engine, ids: &BTreeSet<osis_base::CommitId>) -> BTreeMap<osis_
 /// both; every commit reaches peer 1 (`n` things of its own held first), which holds X by its
 /// account root's strong, and Y too when `y_too`; the pass ends. Y outside peer 1's node closure
 /// is needed as X's mint admin.
-fn under_y(n: usize, y_too: bool) -> (LocalPeer, Tid, Tid) {
+fn minted_with_y(n: usize, y_too: bool) -> (LocalPeer, Tid, Tid) {
     let (mut lp, ps) = people(2);
     let d1 = lp.peers[1].engine.account_root().unwrap();
     for _ in 0..n {
@@ -1259,8 +1259,8 @@ fn under_y(n: usize, y_too: bool) -> (LocalPeer, Tid, Tid) {
 #[test]
 fn a_thing_once_in_the_node_closure_holds_as_one_never_in_it_spec_commits_5() {
     let reg = crate::common::ak("t:reg.0");
-    let (mut never, _, y) = under_y(0, false);
-    let (mut once, _, _) = under_y(0, true);
+    let (mut never, _, y) = minted_with_y(0, false);
+    let (mut once, _, _) = minted_with_y(0, true);
     assert_eq!(once.peers[1].engine.get(&y, &reg).unwrap(), Some(Value::Str("y".into())), "held, Y reads");
     let d1 = once.peers[1].engine.account_root().unwrap();
     strong(&mut once.peers[1].engine, d1, y, false);
@@ -1334,7 +1334,7 @@ fn a_thing_entering_again_with_its_record_held_is_pulled_anew_spec_sync_judgemen
 #[test]
 fn a_part_outside_the_node_closure_waits_beside_one_in_it_spec_commits_4() {
     let reg = crate::common::ak("t:reg.0");
-    let (mut lp, x, y) = under_y(0, false);
+    let (mut lp, x, y) = minted_with_y(0, false);
     let mut m = Mutation::new();
     m.set(y, &crate::common::REG, &Value::Str("y2".into())).unwrap();
     m.set(x, &crate::common::REG, &Value::Str("x2".into())).unwrap();
@@ -1366,7 +1366,7 @@ fn a_part_outside_the_node_closure_waits_beside_one_in_it_spec_commits_4() {
 #[test]
 fn waiting_and_pulling_anew_cost_the_thing_not_the_node_closure_spec_commits_5() {
     let work = |n: usize| {
-        let (mut lp, _, y) = under_y(n, false);
+        let (mut lp, _, y) = minted_with_y(n, false);
         let d1 = lp.peers[1].engine.account_root().unwrap();
         // a source whose view puts Y in a sync unit peer 1 syncs sends its writes whole
         let give = |lp: &mut LocalPeer, c: &osis_base::CommitId| {
@@ -1585,7 +1585,7 @@ fn a_commit_awaiting_its_record_is_kept_while_carried_and_no_longer_spec_commits
 // content (`holds.0`).
 #[test]
 fn a_needed_account_root_keeps_its_role_class_parts_alone_spec_commits_5() {
-    let (mut lp, d) = held_under_d();
+    let (mut lp, d) = held_minted_with_d();
     let [account, holds] = ["account.0", "holds.0"].map(|a| osis_base::Ak::new(a).unwrap());
     let theirs = lp.peers[0].engine.get(&d, &account).unwrap();
     assert!(theirs.is_some(), "D carries account.0");

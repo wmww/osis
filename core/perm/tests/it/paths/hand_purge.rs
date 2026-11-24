@@ -332,7 +332,7 @@ fn a_removed_partys_request_could_still_hold_a_strangers_could_not() {
 // X's request by aspect, cut by H's removal of X at 9 listing nothing, holds no right; H's
 // backdated removal at 5 listing it gives the right back (the removal at 9 then takes nothing:
 // no cut). In every arrival order, `Changed` reports the request's scope where its right moves
-// (here only a cut changes: no final role nor first chained point moves).
+// (here only a cut changes: no final role nor first point moves).
 #[test]
 fn a_backdated_cut_listing_a_request_gives_its_right_back() {
     let mut w = World::new(&[(H, A), (A, T1)]);

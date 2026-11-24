@@ -1875,7 +1875,7 @@ mod tests {
                 m.set(t, &x, &Value::Int(v)).unwrap().purge_by(t, &x, none).unwrap();
                 puts.push(lp.peers[0].commit(m).unwrap().unwrap());
             }
-            // a first holder by the flow gives `t` secrets of its own, its `keys.0` in that
+            // a first holder by the flow makes `t` independent, its `keys.0` in that
             // commit: bob gets the rest, then the two puts and the keys in either order
             lp.peers[0].engine.grant(&t, &carol, &edge(Role::Read)).unwrap();
             lp.peers[0].engine.grant(&t, &bob, &edge(Role::Write)).unwrap();
@@ -1917,7 +1917,7 @@ mod tests {
     // spec/sync-judgement.md §1 entitlement: a thing's independent is the nearest independent thing up its record
     // chain, through mint-admin links: a dependent thing's is its mint
     // admin's, and so is that of a thing below it; once a grant
-    // gives it secrets of its own, its own.
+    // makes it independent, its own.
     #[test]
     fn its_independent_up_the_record_chain_spec_sync_3() {
         let mut lp = LocalPeer::fresh(2, WallMs(1_700_000_000_000));
@@ -1934,7 +1934,7 @@ mod tests {
         assert_eq!(readers(&lp.peers[0].engine), [a; 4], "dependent: every independent is A");
         let e = &mut lp.peers[0].engine;
         e.grant(&p, &b, &ct::Edge { role: Role::Read, until: None, may_grant: false, retain: false, floor: None }).unwrap();
-        assert!(e.core.ix.independent.contains(&p), "the grant gave P secrets of its own");
+        assert!(e.core.ix.independent.contains(&p), "the grant made P independent");
         assert_eq!(readers(&lp.peers[0].engine), [p, p, p, a], "P's own, S still A's");
     }
 

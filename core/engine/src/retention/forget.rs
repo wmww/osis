@@ -80,7 +80,7 @@ pub(crate) fn read_path(core: &Core, t: &Tid) -> bool {
 
 /// `t` when the secrets of `lost` are dropped: forgotten when its secrets derive from a lost
 /// actor's and no held path reads it; one counting as dependent here whose own secrets went (a
-/// ticket's) loses what they read, its content, and keeps what a dependent thing keeps.
+/// box gave them) loses what they read, its content, and keeps what a dependent thing keeps.
 fn fate(core: &Core, scope: Scope<'_>, t: &Tid) -> Fate {
     let lost = match scope {
         Scope::Lost(l) => l,
@@ -99,7 +99,7 @@ fn fate(core: &Core, scope: Scope<'_>, t: &Tid) -> Fate {
 }
 
 /// The lost actor whose secrets read `t`: `t` itself, its own secrets dropped (held of a thing
-/// counting as dependent here, a ticket's among them), or the actor its secrets derive from.
+/// counting as dependent here, one a box gave among them), or the actor its secrets derive from.
 fn lost_reader(core: &Core, lost: &BTreeSet<Tid>, t: &Tid) -> Option<Tid> {
     if lost.contains(t) {
         return Some(*t);
@@ -146,9 +146,9 @@ fn lost_aspects<'a>(core: &Core, scope: Scope<'_>, aspects: impl Iterator<Item =
 }
 
 /// The things whose secrets derive from one of `actors` (`Core::secret_actor`): each actor and
-/// what lies below it down the record chains, to the next independent thing.
+/// each thing whose derivation chain reaches it before another independent thing.
 /// O(the things found).
-pub(crate) fn under(core: &Core, actors: &BTreeSet<Tid>) -> BTreeSet<Tid> {
+pub(crate) fn deriving_from(core: &Core, actors: &BTreeSet<Tid>) -> BTreeSet<Tid> {
     let mut out = BTreeSet::new();
     let mut todo: Vec<Tid> = actors.iter().copied().collect();
     while let Some(t) = todo.pop() {
@@ -221,7 +221,7 @@ pub(crate) fn forget(tx: &mut Tx<'_>, scope: Scope<'_>, held: &BTreeMap<Tid, u64
     // the things reached, found down the record chains (`under`), and their aspects forgotten,
     // held in states or in commits
     let cands: BTreeSet<Tid> = match scope {
-        Scope::Lost(lost) => under(tx.core, lost),
+        Scope::Lost(lost) => deriving_from(tx.core, lost),
         Scope::Local(ts) | Scope::Whole(ts) => ts.clone(),
     };
     // the things forgotten: reached and holding an aspect
@@ -261,7 +261,7 @@ pub(crate) fn forget(tx: &mut Tx<'_>, scope: Scope<'_>, held: &BTreeMap<Tid, u64
         let Some(m) = tx.core.ix.commits.get(&id).cloned() else { continue };
         let ais = lost_aspects(tx.core, scope, m.view.aspects.iter().map(|a| (&a.tid, &a.ak)), &mut memo);
         // lost access forgets what was read: a commit holding no part it forgets (a header alone,
-        // judged by its author's chain) keeps as it is
+        // judged by its evidence) keeps as it is
         if ais.is_empty() || (matches!(scope, Scope::Lost(_)) && !ais.iter().any(|ai| m.holds(*ai))) {
             continue;
         }

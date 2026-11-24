@@ -1,6 +1,6 @@
 //! One failed write with the device up (`Fault::Fail`) at any write of an operation: the node
 //! reads its store again as an open does (`Engine::reload_owed`), so the operation given again
-//! (a peer gives again what failed, a host steps again) and one tick end where a node that never
+//! (a peer gives again what failed, the driver steps again) and one tick end where a node that never
 //! failed ends. spec/commits.md §4 (a node applies in one storage transaction; every arrival that
 //! applies examines again what waits for it).
 #![allow(clippy::unwrap_used, clippy::indexing_slicing)]

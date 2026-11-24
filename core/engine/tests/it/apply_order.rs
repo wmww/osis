@@ -80,8 +80,8 @@ fn each_order(mut p: Peer, rest: &[Package], order: &mut Vec<usize>, check: &mut
 
 /// The shape of a history: B's writes (1-2), the frontier's point (0: before B's writes,
 /// backdated; 1 between them; the last: after them), the demoter (0: A, the mint admin; 2: C, an
-/// admin of G), the grandchild of G (0: none; 1: created in a later commit, so it can arrive
-/// late under a late parent; 2: in its parent's commit), and what follows the
+/// admin of G), the thing minted with admin one of G's dependents (0: none; 1: created in a later
+/// commit, so it can arrive late after a late mint admin; 2: in its mint admin's commit), and what follows the
 /// demotion (0 nothing, 1 B writes again unaware, 2 A grants B again, 3 A gives B read on the
 /// item: a commit naming a former leaf), and whether B's last write, which the demoter then
 /// has not received, carries the demotion's very `ts` (`tie`: an HLC tie, so concurrent).
@@ -95,8 +95,8 @@ struct Shape {
 }
 
 /// One history of `shape`, the rest random. Peer 0 (A) is mint admin of G, gives peer 1 (B) write,
-/// peer 2 (C) admin and peer 3 (D, which then receives nothing more) read; A creates two items under G in one commit, and maybe an item under the first
-/// (a grandchild of G) in that commit or the next; B writes on G or on one of them, the demoter receiving each at once or not
+/// peer 2 (C) admin and peer 3 (D, which then receives nothing more) read; A mints two things with admin G in one commit, and maybe one with admin the first
+/// in that commit or the next; B writes on G or on one of them, the demoter receiving each at once or not
 /// before the demotion; the demoter removes B with a frontier as of `shape.at`; then the tail.
 /// Returns how many orders ran.
 fn sample(shape: Shape) -> usize {

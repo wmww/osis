@@ -564,14 +564,14 @@ impl Engine {
             }
         };
         let h = &blob.header;
-        let (chain, records) = self.signer_evidence(&h.signer)?;
+        let (evidence, records) = self.signer_evidence(&h.signer)?;
         let ais: Vec<usize> = (0..h.aspects.len()).collect();
         let groups = osis_commit::prefix_groups(h, ais.iter().copied())?;
         let seed = self.run(|tx| Ok(osis_crypto::Secret32::random(&mut *tx.rng)))?;
         let mut rng = osis_crypto::SeededRng::from_seed(*seed.expose());
         let prefix = osis_blob::Prefix::for_delete_keys(osis_blob::Prefix::random_salt(&mut rng), &h.blind, osis_commit::prefix_expiry(h, &ais).map(osis_base::WallMs), &groups)?;
         let commit = osis_base::decode(&blob.encode(), &osis_base::Limits::new(osis_base::format::MAX_OBJECT_DEPTH, osis_base::format::MAX_BLOB)).map_err(|_| Error::Corrupt("commit blob"))?;
-        let fire = osis_blob::SealedFire { copy: false, commit, chain, records, pages: (*pages).clone() };
+        let fire = osis_blob::SealedFire { copy: false, commit, evidence, records, pages: (*pages).clone() };
         let sealed = osis_blob::seal_fire(&prefix, &o.thing, &epoch, &kem, &fire, &mut rng)?;
         Ok(Some(SealedFireOut { sync_id, thing: o.thing, to: o.to.clone(), blob: sealed }))
     }
@@ -677,10 +677,10 @@ impl Engine {
         {
             return Ok(Opened::Bad);
         }
-        // the author's records and chain to its actor with the fire, kept only if the fire applies
-        // valid (`ingest_sealed_fire`)
+        // the evidence and records with the fire, kept only if the fire applies valid
+        // (`ingest_sealed_fire`)
         let records: Vec<osis_base::CreationRecord> = fire.records.into_iter().filter(|r| self.core.created(&r.tid()).is_none()).collect();
-        let chain: Vec<Vec<u8>> = fire.chain.iter().map(osis_base::encode).collect();
+        let evidence: Vec<Vec<u8>> = fire.evidence.iter().map(osis_base::encode).collect();
         let id = commit.id();
         let parts: Vec<usize> = commit.parts.iter().map(|p| p.ai).collect();
         // a grant from outside: its carried commit is taken with the fire by every node holding
@@ -692,7 +692,7 @@ impl Engine {
         // its delta came under the keyset it is sealed to: an opening under that epoch, as a
         // section's (spec/crypto.md §5 Passing on)
         self.note_opened(&commit.header, &[(*t, under, commit.parts.iter().collect())]);
-        let Some(ingested) = self.ingest_sealed_fire(records, &chain, commit, fire.pages)? else { return Ok(Opened::Bad) };
+        let Some(ingested) = self.ingest_sealed_fire(records, &evidence, commit, fire.pages)? else { return Ok(Opened::Bad) };
         // a fault of this node's is no judgment of the blob: kept to open again
         if matches!(ingested, crate::Ingested::Pending(_, crate::Reason::Fault)) {
             return Ok(Opened::NotOpen);

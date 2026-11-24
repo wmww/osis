@@ -133,7 +133,7 @@ What the engine reads short of spec/permissions.md, each to finish against the m
 - `Timelines::get`/`path_now` stamp the whole timeline (coarser memo invalidation than per component).
 
 ## Left
-- Certificates and the indexes of a commit's purge author where that is not its signer: `Indexes::by_actor` and `acting_on` (its record and its signer's chain to it go with the commit: `retention::needed`, `sync_ids/certs`), `apply::header_wait`'s wait for its record, `write::check_acts`. What they stand in for is every listed thing of the path (its record needed, the chain along the stated path certified): issues/stated-path-certificates.md, its sites marked Interim. `engine/acting.rs` is the confined client port (`Mutation::confine`), not a check of the purge author.
+- Certificates and the indexes of a commit's purge author where that is not its signer: `Indexes::by_actor` (its record is needed while the commit is held: `retention::needed`), `apply::header_wait`'s wait for its record, `write::check_acts`. What they stand in for is every listed thing of the path (its record needed): issues/stated-path-certificates.md, its sites marked Interim. `engine/acting.rs` is the confined client port (`Mutation::confine`), not a check of the purge author.
 - `paths::Store` over the engine index in place of `MemStore` (about 0.5 KB a held delta in memory until then), and an open that decodes no header: issues/perm-eval-cost.md.
 - Parked engine properties, each with its issue: `evidence::a3::` (five, issues/engine-evidence-trails-model.md) and `order::settled_writers_fetch_what_their_first_side_dropped_before_compacting` (issues/settled-writers-dispute-script.md).
 

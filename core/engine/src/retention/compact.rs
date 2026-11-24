@@ -1020,7 +1020,7 @@ mod tests {
         assert_eq!(done, std::slice::from_ref(&y), "y compacted, the step not failed");
         assert_eq!(failed, 1);
         let reported: Vec<_> = rx.try_iter().filter_map(|e| if let crate::events::Event::Diagnostic(d) = e { Some(d) } else { None }).filter(|d| d.kind == crate::events::DiagnosticKind::OwnWriteFailed).collect();
-        assert!(reported.len() == 1 && reported[0].tids == [t] && reported[0].detail.contains("x:m.0"), "reported to the host: {reported:?}");
+        assert!(reported.len() == 1 && reported[0].tids == [t] && reported[0].detail.contains("x:m.0"), "reported to the app: {reported:?}");
         assert!(p.engine.compactions().unwrap().is_empty(), "nothing due until x's next body");
         let weighed = |p: &mut crate::local_peer::Peer, bodies: usize| {
             osis_base::costs::take();
@@ -1303,7 +1303,7 @@ mod tests {
             m.op(t, &m_ak, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(Value::Str(format!("k{i}")))], op: osis_crdt::Op::Set(Value::Int(1)) }).unwrap();
             lp.peers[1].commit(m).unwrap().unwrap();
         }
-        // a first holder by the flow gives `t` secrets of its own, its `keys.0` in that commit:
+        // a first holder by the flow makes `t` independent, its `keys.0` in that commit:
         // bob gets the rest first
         lp.peers[0].engine.grant(&t, &c, &edge(Role::Read)).unwrap();
         lp.peers[0].engine.grant(&t, &b, &edge(Role::Write)).unwrap();

@@ -6,7 +6,7 @@
 //! its `keys.0` commits, its inbox's) and a released thing's record and role-class state stay
 //! only while needed. Its certificates stay while a thing that needs it is kept: one in the node closure whose
 //! known references hold a strong to it (`refs::to`: its state, ephemeral aspects included, and
-//! held fires; a weak or ticket only points and needs nothing), an account by its `keys.0` (its inbox), one whose record names it mint admin, one
+//! held fires; a weak only points and needs nothing), an account by its `keys.0` (its inbox), one whose record names it mint admin, one
 //! whose held edge write names it holder (`Held::named_on`), an account root whose account's held
 //! chain names it a device (D bears no edge write), one a held commit acting as it writes on
 //! (`Indexes::by_actor`), one a pending commit it authored or acted
@@ -22,9 +22,7 @@
 //! Keys held here root nothing: the node itself is needed by its node root (its mint admin), and
 //! a link being redeemed keeps its sync ID in the sync set, so what a pass end drops of K comes
 //! again with the next pass, and the join is written once a pass brought what it needs
-//! (`Engine::redeemable`). A ticket roots nothing: a strong in the node closure
-//! with a ticket for its target needs it as any strong does, so what judges the ticket stays
-//! (spec/sync-set.md §2). Nothing is rooted by whose it is: this node's account is needed by its root
+//! (`Engine::redeemable`). Nothing is rooted by whose it is: this node's account is needed by its root
 //! (D's record names it), and a thing minted with the node or the account as admin goes as any once
 //! released. A pairing node takes the account up (`Engine::paired`) in the hold of the engine
 //! that applied what pairing sent, before any pass ends. Everything else goes whole, as never
@@ -169,8 +167,7 @@ pub(crate) fn applies_on(core: &Core, t: &Tid, ak: &osis_base::Ak, rec: &osis_ba
 /// content applies on a thing only where the node's roles read it now. Whatever blob carries a
 /// part, under whichever sync ID, opened by whichever held secret (a section a thing that became
 /// independent left under its mint admin's epochs, readable by that admin's readers after it no
-/// longer reads the thing), and whenever it arrives against a loss, a thing kept unread, on a
-/// ticket's word or outside the node closure takes none of its content.
+/// longer reads the thing), and whenever it arrives against a loss, a thing kept unread or outside the node closure takes none of its content.
 pub(crate) fn whole(core: &Core, t: &Tid) -> bool {
     core.ix.closure.reads(t) || super::forget::copy_of(core, t).is_some()
 }
@@ -310,7 +307,7 @@ pub(crate) fn needs(tx: &mut Tx<'_>, t: &Tid) -> Result<Vec<(Tid, Need)>> {
     // carries, held while the offer is
     let granted = crate::flows::inbox::granted_on(core, t).map(|(h, c)| (h, Need::Offered(c)));
     let mut out: Vec<(Tid, Need)> = core.ix.held.named_on(t).map(|x| (*x, Need::Holder)).chain(devices).chain(pending).chain(acting).chain(waiting).chain(holding).chain(granted).collect();
-    // a strong from a thing the node closure holds (a weak or ticket only points; one kept only
+    // a strong from a thing the node closure holds (a weak only points; one kept only
     // as a certificate needs nothing by what its state names), and an account's reference from
     // its `keys.0` (its inbox, part of its chain)
     let refs = crate::engine::refs::to(tx, t)?;

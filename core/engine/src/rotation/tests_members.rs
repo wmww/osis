@@ -1726,7 +1726,7 @@ fn keyless_route_is_no_rotator_spec_crypto_4() {
 }
 
 /// A destroyed holder actor's world (spec/crypto.md §4, Holder actors, Destroyed): peer 0 makes T,
-/// expiring at `T0 + 50 s` (mint admin peer 0, secrets of its own) and X (secrets of its own),
+/// expiring at `T0 + 50 s` (mint admin peer 0, independent) and X (independent),
 /// grants T read on X; peer 2 makes G and peer 0 grants G read on T; peer 1 reads T, and peer
 /// 3 reads G. Synced: T, X, G. Built once, copied (`LocalPeer::cached`).
 fn destroyed_world() -> (LocalPeer, Tid, Tid, Tid) {

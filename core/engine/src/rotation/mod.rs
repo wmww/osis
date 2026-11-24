@@ -2,8 +2,8 @@
 //! departures from the actor not covered, by any current epoch; stale
 //! boxes to holder actors; holders boxed through a keyless grant; an epoch no rotator can
 //! re-seal), the cascade
-//! (`ensure_rotated`: the holder actors this node may rotate first, then the actor), giving a
-//! thing secrets of its own, re-seals and history adds. Rotating needs only the right to rotate,
+//! (`ensure_rotated`: the holder actors this node may rotate first, then the actor), making a
+//! thing independent, re-seals and history adds. Rotating needs only the right to rotate,
 //! never a prior secret: a rotation supersedes every current epoch, held or not, and any holder
 //! of a superseded secret adds it to the new epoch's history (`add_history`). Departures from an
 //! actor: `departures`; holder actors (key access, keysets, sealing, staleness): `members`;
@@ -30,7 +30,7 @@ use osis_keys::{ActorEpochs, Departure, HistoryBoxes, ROLES, Rotation};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-pub use departures::{departures_placing, may_rotate};
+pub use departures::{departures_with_own, may_rotate};
 pub use lost::{Leaving, LostScope, TimedLoss, LOST_HEARD_WAIT_MS};
 pub(crate) use lost::{load_kept, without_frozen};
 #[cfg(debug_assertions)]
@@ -46,14 +46,14 @@ pub enum Walk {
     /// actor whose boxes this node holds, rights aside (what a departed party opens does not
     /// depend on who may rotate), a stale box at any epoch walked blocking.
     Encrypt,
-    /// For placing role commits and certificates under sync IDs (spec/sync-judgement.md §1): through the
+    /// For logging role commits and certificates under sync IDs (spec/sync-judgement.md §1): through the
     /// holder actors this node may rotate only, so a node that may not rotate an actor still
-    /// places the keysets and revokes that tell that actor's rotators (node-sync's pass).
-    Place,
+    /// logs the keysets and revokes that tell that actor's rotators (node-sync's pass).
+    Log,
 }
 
 /// The roles of `a` that `who` (this node, or a key actor it signs as) may not encrypt under
-/// (spec/crypto.md §4, encrypting under), or place under (`walk`): those whose newest held
+/// (spec/crypto.md §4, encrypting under), or log under (`walk`): those whose newest held
 /// current epoch is blocked (`blocked_epoch`, `deps` the departures from `a` counted).
 pub fn blocked_roles_of(tx: &mut Tx<'_>, who: &Tid, a: &Tid, deps: &[Departure], walk: Walk) -> Result<BTreeSet<Role>> {
     let Some(epochs) = tx.core.epochs(a) else { return Ok(BTreeSet::new()) };
@@ -81,13 +81,13 @@ pub fn blocked_roles_of(tx: &mut Tx<'_>, who: &Tid, a: &Tid, deps: &[Departure],
 /// boxing M at the old one). Keyless binds rotators only: it says a rotation is due, not that a
 /// departed party opens `e`. The box clause follows every box at an epoch whose secret this node
 /// holds (`Walk::Encrypt`: what a departed party opens does not depend on who may rotate), or for
-/// placing only those of actors it may rotate, stale boxes binding only those rotators
-/// (`Walk::Place`): a node that may not rotate places its chain certificates (and revokes) under
+/// logging only those of actors it may rotate, stale boxes binding only those rotators
+/// (`Walk::Log`): a node that may not rotate logs its certificates (and revokes) under
 /// the actor's sync IDs meanwhile, the holder actors' new `keys.0` among them, which is how the
 /// rotators learn of the staleness. Only epochs whose secret this node holds are
 /// walked past (it reads that actor's sync IDs, so it learns the actor's next keyset and re-seals
 /// it), and only other parties' departures count (`others`); past any other epoch (but for
-/// placing) only a box to this node's own account is judged, at any depth: an account epoch it
+/// logging) only a box to this node's own account is judged, at any depth: an account epoch it
 /// cannot show covers a removal from its account root it knows (`uncovered`) blocks the keyset
 /// boxing it, secret held or not (it learns its account's next epochs from its account root's
 /// sync IDs, and so re-seals once either moves).
@@ -163,7 +163,7 @@ fn walk_from(tx: &mut Tx<'_>, who: &Tid, a: &Tid, r: Role, root: (Tid, osis_cryp
                 Some(b) => b,
                 None => {
                     let b = match tx.core.me() {
-                        Some(p) if walk != Walk::Place => {
+                        Some(p) if walk != Walk::Log => {
                             let known = keyset_departures(tx, &p)?;
                             !others(tx.core, &p, known).is_empty()
                         }
@@ -178,10 +178,10 @@ fn walk_from(tx: &mut Tx<'_>, who: &Tid, a: &Tid, r: Role, root: (Tid, osis_cryp
             false
         } else {
             let rotator = may_rotate(tx.core, who, &x).contains(&r);
-            if rotator && ((walk == Walk::Place && members::stale_at(tx, &x, r, &k)?) || members::keyless_at(tx, &x, r, &k)?) {
+            if rotator && ((walk == Walk::Log && members::stale_at(tx, &x, r, &k)?) || members::keyless_at(tx, &x, r, &k)?) {
                 return Ok(Some(Block::Box));
             }
-            if !rotator && walk == Walk::Place {
+            if !rotator && walk == Walk::Log {
                 continue;
             }
             true
@@ -757,7 +757,7 @@ fn finalize_due(tx: &mut Tx<'_>, who: Tid, a: Tid, keep: Option<Keep<'_>>, done:
     flows::edges::finalize_in(tx, who, a, &ended, &Keep::kept(keep, &a), done)
 }
 
-/// Gives `t` secrets of its own (spec/permissions.md §3, spec/crypto.md §3): a rotation of all
+/// Makes `t` independent (spec/permissions.md §3, spec/crypto.md §3): a rotation of all
 /// three roles from its derived epochs (those of the next actor up its record chain: rotated
 /// first where this node can, the history boxes carry them), boxed to its current holders (its
 /// mint admin included; not one whose grant this node may finalize, `ended_holders`), with a
@@ -801,7 +801,7 @@ pub(crate) fn own_secrets_new(tx: &mut Tx<'_>, rec: osis_base::CreationRecord, a
     // as its commit would judge the creation, before anything is held of it
     let creates = BTreeMap::from([(t, rec.clone())]);
     crate::engine::write::check_authority(tx.core, tx.core.writer()?, &|x| creates.get(x), &t, osis_commit::retention::CREATED, tx.core.hlc.peek())?;
-    let Some((c, rot, to)) = own_secrets_rot(tx, t, Some(rec), also, done)? else { return Err(Error::Misuse("a new thing takes secrets of its own")) };
+    let Some((c, rot, to)) = own_secrets_rot(tx, t, Some(rec), also, done)? else { return Err(Error::Misuse("a new thing is made independent")) };
     recorded(tx, t, c, &rot, &to, done)?;
     Ok(t)
 }
@@ -844,7 +844,7 @@ fn own_secrets_rot(tx: &mut Tx<'_>, t: Tid, rec: Option<osis_base::CreationRecor
     }
     let rot = rotation_into(tx, &mut m, t, &ROLES.into_iter().collect(), &held, &holders, Departs::No)?;
     let deposit = fresh_deposit_seed(tx, &mut m, t)?;
-    // the rule (spec/sync-ids.md §2): role secrets of its own and its one sync ID, in this one
+    // the rule (spec/sync-ids.md §2): its own role secrets and its one sync ID, in this one
     // commit
     if crate::flows::sync_id_of(tx, &t)?.is_none() {
         let mut readers = Vec::new();
@@ -885,7 +885,7 @@ pub(crate) fn own_secrets_candidates(core: &Core, a: &Tid) -> Vec<Tid> {
 }
 
 /// `own_secrets` for a dependent thing with current holders, delivering the rotation by inbox to
-/// each holder it boxes (they hold no box at the derived epochs it wraps under) and placing it
+/// each holder it boxes (they hold no box at the derived epochs it wraps under) and logging it
 /// first under the sync IDs above the thing (its new `keys.0`).
 fn own_secrets_delivered(tx: &mut Tx<'_>, t: Tid) -> Result<Done> {
     let mut done = Done::default();
@@ -1252,7 +1252,7 @@ impl Engine {
         self.read(|tx| departures(tx, &a))
     }
 
-    /// Gives `thing` secrets of its own (spec/permissions.md §3), with its one sync ID in the same
+    /// Makes `thing` independent (spec/permissions.md §3), with its one sync ID in the same
     /// commit (spec/sync-ids.md §2): before its first holder other than its mint admin, or before it
     /// is made a holder of anything.
     pub fn make_independent(&mut self, thing: &Tid) -> Result<Done> {
@@ -1273,8 +1273,8 @@ impl Engine {
         own_secrets_candidates(&self.core, actor)
     }
 
-    /// Gives `t`, one of `own_secrets_candidates`, secrets of its own again, delivered to the
-    /// holders it boxes and placed under the sync IDs above it.
+    /// Gives `t`, one of `own_secrets_candidates`, new secrets of its own, delivered to the
+    /// holders it boxes and logged under the sync IDs above it.
     pub fn make_independent_again(&mut self, t: &Tid) -> Result<Done> {
         let t = *t;
         self.run(|tx| own_secrets_delivered(tx, t))

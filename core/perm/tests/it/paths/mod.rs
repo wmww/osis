@@ -8,7 +8,6 @@
 //! spec/permissions.md §5.1, §5.2.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
-mod chained;
 mod content;
 mod counts;
 mod dump;

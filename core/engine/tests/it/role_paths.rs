@@ -431,8 +431,8 @@ fn finding_a_may_grant_grants_path_does_not_grow_with_history_spec_wire_4() {
 }
 
 // spec/permissions.md §1 Path, Direct mark; spec/wire.md §4 `marks` (README Open 21): A
-// makes G and T under G, takes admin on T by its own grant and removes G's record edge there
-// (detaching T from its folder). A's later content and role writes on T state the empty path with
+// makes G and T with admin G, takes admin on T by its own grant and removes G's record edge there
+// (detaching T from G). A's later content and role writes on T state the empty path with
 // its one hop marked direct (A's own grant: the descent is cut, so no unmarked path gives the
 // role), and are applied by the engine and by a walk afresh alike: B, granted write, reads A's
 // value; no edge write's verdict or final role differs. Before its own grant, A's writes state the

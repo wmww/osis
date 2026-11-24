@@ -184,7 +184,7 @@ impl Engine {
     /// `write`): what it stamps under at that step. Kept per (sync ID, step) from its first ask
     /// (`Core::step_write_keys`, a `memo::Cutoff`, refreshed by `follow`): every entry of `s`
     /// judged reads it, while what it is derived from (the things opening `s`, their sync IDs
-    /// and epochs) moves at each ticket, link or key of theirs.
+    /// and epochs) moves at each link or key of theirs.
     pub fn step_write_key(&mut self, s: &SyncId, step: &StepId) -> Result<Option<SigningSecret>> {
         Ok(osis_base::memo::Cutoff::get_in(self, |e| &e.core.step_write_keys, &(*s, *step), |e, (s, step)| e.step_write_key_now(s, step))?.0)
     }
@@ -270,7 +270,7 @@ impl Engine {
     /// The thing whose recorded path `s` is (an entry of its `sync.0`, no hint), read here or by
     /// the read secrets of it still held (`opening_things`: a sync ID sync still syncs after it
     /// left the sync set), with that record. A rule reading S's steps or its actor's keys acts on
-    /// it alone; a sync ID only tickets name records no path, so none.
+    /// it alone; a sync ID only a followed link names records no path, so none.
     pub(crate) fn read_sync_id(&mut self, s: &SyncId) -> Result<Option<(Tid, OwnedSyncId)>> {
         for t in self.opening_things(s)? {
             if let Some(o) = self.owned_sync_ids(&t)?.iter().find(|o| o.id == *s && !o.hint) {
@@ -322,7 +322,7 @@ impl Engine {
     }
 
     /// The thing of `s`'s things whose `sync.0` records `s` (no hint), with that record: what a
-    /// rule reading S's steps acts on. A sync ID only tickets name records no path, so none.
+    /// rule reading S's steps acts on. A sync ID only a followed link names records no path, so none.
     pub(crate) fn recorded_owner(&mut self, s: &SyncId) -> Result<Option<(Tid, OwnedSyncId)>> {
         for t in self.sync_things_of(s)? {
             if let Some(o) = self.owned_sync_ids(&t)?.iter().find(|o| o.id == *s && !o.hint) {
@@ -388,11 +388,10 @@ impl std::fmt::Debug for WriteKey {
 
 /// The sync IDs synced for a thing owning `ids`: its sync ID, the greatest a held `sync.0` records
 /// (two admins giving it secrets at once made two, as `flows::sync_id_of`), and
-/// each its tickets name that no held `sync.0` records (their issuers' word, spec/sync-inbox.md §5
-/// Ticket sync IDs): a forged one beside the genuine keeps the genuine one fetched, and a node
-/// holding one admin's record reaches the other's. Empty when it owns none.
+/// the one a followed link names that no held `sync.0` records (the link text's word,
+/// `sync_ids::actors::followed`). Empty when it owns none.
 fn synced(ids: &[OwnedSyncId]) -> Vec<SyncId> {
-    let ticket = |o: &&OwnedSyncId| o.hint && o.path.steps.is_empty();
-    let own = ids.iter().filter(|o| !ticket(o)).map(|o| o.id).max();
-    own.into_iter().chain(ids.iter().filter(ticket).map(|o| o.id)).collect()
+    let linked = |o: &&OwnedSyncId| o.hint && o.path.steps.is_empty();
+    let own = ids.iter().filter(|o| !linked(o)).map(|o| o.id).max();
+    own.into_iter().chain(ids.iter().filter(linked).map(|o| o.id)).collect()
 }

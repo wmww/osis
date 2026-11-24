@@ -264,8 +264,8 @@ fn a_removed_partys_grant_the_removal_does_not_list_falls_where_it_was_held_spec
 }
 
 // spec/sync-set.md §3 Release, spec/commits.md §5 A released thing and Invalid,
-// spec/sync-judgement.md §3 Dropped bodies: `a`, past its backdated removal of `b`, mints Y under
-// `t` (the strong to Y on `t`'s `holds.0` and Y's record in one commit) and writes Y's content.
+// spec/sync-judgement.md §3 Dropped bodies: `a`, past its backdated removal of `b`, mints Y with
+// admin `t` (the strong to Y on `t`'s `holds.0` and Y's record in one commit) and writes Y's content.
 // Peer 3, given `b`'s removal first, sides with `b`: `a`'s writes are invalid, the pass ends and Y,
 // out of the node closure, is released. Taking `a`'s side then makes the minting's part on `t`
 // valid again: the node keeps that commit known through the release and fetches it again, and,
@@ -311,7 +311,7 @@ fn a_thing_released_while_its_minting_was_invalid_comes_back_whole_with_the_side
 }
 
 // spec/commits.md §4 Outside the node closure, §5 What a held thing needs, spec/sync-judgement.md
-// §3 Dropped bodies: `a`, past its backdated removal of `b`, mints W under its own account (a
+// §3 Dropped bodies: `a`, past its backdated removal of `b`, mints W with admin its own account (a
 // record valid on either side) with `t`'s strong to it, then writes W's content apart (D). Peer 3,
 // on `b`'s side, holds the minting with its part on `t` dropped while invalid: W is outside its
 // node closure with its minting held, so at the pass end D counts as never received, and W,
@@ -327,7 +327,7 @@ fn content_dropped_as_not_carried_comes_back_with_a_minting_valid_again_spec_syn
     let strong = |m: &mut osis_engine::Mutation, y: Tid| {
         m.op(t, &ct::HOLDS, osis_crdt::PathOp { path: vec![], op: osis_crdt::Op::Add(osis_base::Value::Strong(y)) }).unwrap();
     };
-    // Z under `t`, `a` granted write on it by `t`'s mint admin: a write of `a` on either side
+    // Z minted with admin `t`, `a` granted write on it by `t`'s mint admin: a write of `a` on either side
     let before = ids(&f.lp, 2);
     let e2 = &mut f.lp.peers[2].engine;
     let rec = e2.thing_record(t, None);

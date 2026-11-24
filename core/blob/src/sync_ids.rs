@@ -59,7 +59,7 @@ pub fn sync_endorsements(sync_id: &SyncEntry, steps: &BTreeMap<StepId, (Step, Op
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::step::tests::{Group, TG};
+    use crate::step::tests::{Secrets, THING};
     use crate::step::{Parent, register};
     use osis_crypto::{Epoch, SeededRng};
     use osis_schema::Codec;
@@ -69,11 +69,11 @@ mod tests {
     #[test]
     fn records() {
         let mut rng = SeededRng::from_u64(0);
-        let g = Group::new(10);
+        let g = Secrets::new(10);
         let e = Epoch::new(0, [0; 32]).unwrap();
-        let (s0, c0) = register(Parent::Genesis(&g.delete()), g.keys(), &[], (&TG, e, &g.read), g.sync_at(), &mut rng).unwrap();
-        let (s1, c1) = register(Parent::Child { step: &s0, delete: &g.delete() }, s0.keys, &[], (&TG, e, &g.read), g.sync_at(), &mut rng).unwrap();
-        let (s2, _) = register(Parent::Child { step: &s0, delete: &g.delete() }, s0.keys, &[], (&TG, e, &g.read), g.sync_at(), &mut rng).unwrap();
+        let (s0, c0) = register(Parent::Genesis(&g.delete()), g.keys(), &[], (&THING, e, &g.read), g.sync_at(), &mut rng).unwrap();
+        let (s1, c1) = register(Parent::Child { step: &s0, delete: &g.delete() }, s0.keys, &[], (&THING, e, &g.read), g.sync_at(), &mut rng).unwrap();
+        let (s2, _) = register(Parent::Child { step: &s0, delete: &g.delete() }, s0.keys, &[], (&THING, e, &g.read), g.sync_at(), &mut rng).unwrap();
         let mut sync_id = SyncEntry { steps: BTreeMap::new() };
         sync_id.steps.insert(s0.id().0, step_record(&s0, Some(&c0)));
         sync_id.steps.insert(s1.id().0, step_record(&s1, Some(&c1)));

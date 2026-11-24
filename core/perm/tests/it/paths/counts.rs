@@ -51,7 +51,6 @@ fn delta(a: Counts, b: Counts) -> Counts {
         content: b.content - a.content,
         addenda: b.addenda - a.addenda,
         merged: b.merged - a.merged,
-        chained: b.chained - a.chained,
     }
 }
 
@@ -101,11 +100,10 @@ fn a_backdated_part_replays_its_component_from_its_key() {
     };
     for n in [100u32, 1000] {
         let (d, p) = cost_of(&base(n), write(2, H, 5, &[], A, X, None));
-        // a removal sets no chained point: the chained pass judges it alone
-        assert_eq!((d.steps, d.passes, d.chained), ((n + m + 1) as u64, 1, 1), "on A at n {n}: {d:?}");
+        assert_eq!((d.steps, d.passes), ((n + m + 1) as u64, 1), "on A at n {n}: {d:?}");
         assert_eq!(p.status(&WriteId(cid(50), 0)), Some(Status::Unapplied));
         let (d, _) = cost_of(&base(n), write(3, H, 5, &[], B, X, Some(Role::Admin)));
-        assert_eq!((d.steps, d.passes, d.chained), (1, 1, 1), "on B at n {n}: {d:?}");
+        assert_eq!((d.steps, d.passes), (1, 1), "on B at n {n}: {d:?}");
     }
 }
 

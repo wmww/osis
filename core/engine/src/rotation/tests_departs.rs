@@ -302,7 +302,7 @@ fn holder_actor_demoted_by_its_own_admin_spec_crypto_4() {
 // no rotation) is a self-removal at every node: it applies. Likewise node N of account U removing
 // U's admin grant on A (U's only path to A); N has admin on U and no other authority on A.
 #[test]
-fn own_group_removal_is_a_self_removal_spec_permissions_2() {
+fn a_mint_admins_removal_of_its_holder_is_a_self_removal_spec_permissions_2() {
     for account in [false, true] {
         let mut lp = synced(2);
         let a = independent_thing(&mut lp, 0);

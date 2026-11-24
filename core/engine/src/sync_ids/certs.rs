@@ -1,5 +1,5 @@
 //! Certificates (spec/permissions.md §4; spec/sync-judgement.md §1): what a read thing's sync IDs
-//! carry beside bodies, as (commit, parts) to place, from the evidence derivation over the held
+//! carry beside bodies, as (commit, parts) to log, from the evidence derivation over the held
 //! set (`evidence::held`); partial bodies of a commit and the blobs its parts link.
 //! Sync IDs come with secrets of their own (`rotation::own_secrets`), steps by sync once their rotations are logged (`Engine::due_step`, `issue_due_step`).
 
@@ -305,7 +305,7 @@ impl Engine {
             self.add_closure(ev, &frozen, out);
         }
         // the cards of the key actors holding `g` that are neither node nor account (a link key:
-        // its writes under the sync ID verify by its card, which no evidence carries; a node places
+        // its writes under the sync ID verify by its card, which no evidence carries; a node logs
         // its own under D's sync ID alone; an account's goes with its signing chain)
         let keys: Vec<Tid> = self.core.roster_of(g).into_keys().filter(|k| self.core.is_key_actor(k) && !self.core.is_account(k)).collect();
         for k in keys.into_iter().filter(|k| self.latest_on(k, "node.0").is_none()) {

@@ -691,28 +691,19 @@ indexes! {
     pub own_replaces: JSetMap<(Tid, Ak, Tid), (Ts, CommitId)>,
     /// Held commits per thing they hold a delta of (re-judging a thing's deltas).
     pub by_thing: JSetMap<(Tid, Tid), CommitId>,
-    /// Per thing, the chains its held commits' authors' chains are made of (spec/permissions.md
-    /// §4, a commit's author's chain): (author, the thing) for each author of a commit with a
-    /// delta on it, (author, actor) for each such commit acting for another actor (`acting_on`).
-    /// Each goes under every sync ID carrying the thing (`Engine::sync_certificates`). Moves only
-    /// as a chain comes or goes.
-    pub chains_on: JSetMap<Tid, (Tid, Tid)>,
-    /// Held commits per (thing, author, actor) with a delta on the thing whose actor is not their
-    /// author: when the last goes, `chains_on` loses (author, actor).
-    /// Interim (issues/stated-path-certificates.md).
-    pub acting_on: JSetMap<(Tid, Tid, Tid), CommitId>,
     /// Held split commits with a thing whose path opens nowhere here yet (`View::paths`), opened
     /// again as role inputs move (`apply::paths::refresh`).
     pub paths_unknown: JSet<CommitId>,
     /// `by_thing` for role commits alone: what an account's chain reads of its role commits on
-    /// its account root (`Core::devices_read`), so a content write on D (its `holds.0`, its tickets) moves no account's chain.
+    /// its account root (`Core::devices_read`), so a content write on D (its `holds.0`) moves no account's chain.
     pub role_on: JSetMap<(Tid, Tid), CommitId>,
     /// Held commits carrying a purge request, per thing they have a delta on (a request has one
     /// on each thing it names, spec/commits.md §5): what finds a thing's requests
     /// (`retention::destroy`) without reading its other commits.
     pub purges_on: JSetMap<Tid, CommitId>,
-    /// Held commits per (purge author, signer), where those differ: the things this node has
-    /// written as (`Core::acting`). Interim (issues/stated-path-certificates.md).
+    /// Held commits per (purge author, signer), where those differ: each such thing is needed
+    /// while one is held (`retention::needed::Need::Acting`). Interim
+    /// (issues/stated-path-certificates.md).
     pub by_actor: JSetMap<(Tid, Tid), CommitId>,
     /// Node- and session-form ranges per (tid, ak, own source): (lo, commit) -> hi. Keyed by
     /// commit too: equivocating commits of one range are all held (spec/commits.md §4).
@@ -1091,8 +1082,6 @@ pub struct Core {
     /// Per actor, each holder for keys at its role and its role with key access
     /// (`rotation::members::key_roles`; `memo`): a walk of its holders through destroyed actors.
     pub(crate) key_roles: memo::Memo<Tid, Arc<crate::rotation::members::KeyRoles>>,
-    /// `Core::acting` (`memo`).
-    acting_of: memo::Memo<(), Arc<Vec<Tid>>>,
     /// `Engine::wrap_blocked` per (actor, walk) (`memo::Cutoff`), refreshed by `Engine::follow`.
     pub(crate) wrap_blocks: memo::Cutoff<(Tid, crate::rotation::Walk), bool>,
     /// `Engine::read_facts` per (sync ID, commit) (`memo::Cutoff`), refreshed by
@@ -1307,7 +1296,7 @@ pub struct Core {
     /// awaited record is judged then.
     pub pass_due: Option<BTreeSet<Tid>>,
     /// Things that lost a need (a reference to it gone, a commit it signed left pending,
-    /// a holder unnamed, an accepted ticket's strong gone): judged once the pass in flight ends,
+    /// a holder unnamed): judged once the pass in flight ends,
     /// or at once with none in flight (`Engine::settle_lost`).
     pub lost_due: BTreeSet<Tid>,
     /// Records learned in this transaction (`apply::atomic::learn_record`): a strong newly
@@ -1589,16 +1578,6 @@ impl Core {
         run_of(&self.ix.by_actor, *actor).flat_map(|(_, s)| s.iter().copied())
     }
 
-    /// The actors this node has acted for in a held commit: its chain certificates for them go
-    /// under every sync ID it places in (spec/permissions.md §4). O(`by_actor` keys) when the engine
-    /// moved, so a pass of a quiet node reads no index of every commit's author.
-    pub fn acting(&self) -> Arc<Vec<Tid>> {
-        self.acting_of.get(&(), || {
-            let me = self.me();
-            Arc::new(self.ix.by_actor.keys_held().filter(|(_, au)| Some(*au) == me).map(|(a, _)| *a).collect())
-        })
-    }
-
     /// The held valid keysets of actor `m`: (role, epoch, what is held of it) (`keyset`).
     pub(crate) fn keysets_of(&self, m: &Tid) -> impl Iterator<Item = (osis_base::Role, osis_crypto::Epoch, &HeldKeyset)> {
         self.keysets_noted(m).filter(|(_, _, v)| self.carried_held(v))
@@ -1746,8 +1725,6 @@ impl Core {
         let mut tl = std::mem::take(&mut self.timelines);
         let changed = tl.update(&*self, &commits, &touched);
         self.timelines = tl;
-        let ever = self.ix.held.take_ever();
-        self.timelines.ever_moved(&ever);
         Some(changed)
     }
 
@@ -2025,7 +2002,6 @@ impl Core {
             own_roles: _,
             read_facts: _,
             held_fates: _,
-            acting_of: _,
             sync_ids: _,
             sync_rows: _,
             pass_wanted: _,
@@ -2297,7 +2273,6 @@ impl Core {
             account_epochs_of: memo::Memo::new("account epochs"),
             epochs_judged_from: None,
             key_roles: memo::Memo::new("key roles"),
-            acting_of: memo::Memo::new("acting"),
             wrap_blocks: memo::Cutoff::new("wrap blocked"),
             read_facts: memo::Cutoff::new("sync: read facts"),
             held_fates: memo::Cutoff::new("sync: held fate"),

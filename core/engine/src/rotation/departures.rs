@@ -228,8 +228,8 @@ pub fn may_rotate(core: &Core, who: &Tid, a: &Tid) -> BTreeSet<Role> {
 
 /// The known departures of `a`, each with the commit that made it when that is this node's
 /// own self-removal (`own_leaving`): node-sync's cover check ignores such a departure until the
-/// commit is placed (spec/crypto.md §4).
-pub fn departures_placing(tx: &mut Tx<'_>, a: &Tid) -> Result<Vec<(Departure, Option<osis_base::CommitId>)>> {
+/// commit is logged (spec/crypto.md §4).
+pub fn departures_with_own(tx: &mut Tx<'_>, a: &Tid) -> Result<Vec<(Departure, Option<osis_base::CommitId>)>> {
     Ok(departures(tx, a)?.into_iter().map(|d| { let c = own_leaving(tx.core, a, &d); (d, c) }).collect())
 }
 

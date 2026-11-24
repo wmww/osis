@@ -18,7 +18,7 @@ mod tests {
     use super::thing;
 
     // spec/wire.md §4 field 2: the split form judges as the clear form does for the same write:
-    // a node writing its own thing, a thing made under it and a thing of another account it
+    // a node writing its own thing, a thing minted with it as admin and a thing of another account it
     // writes, once in each form (`engine::write::FORCE_SPLIT`), every other node reading what it
     // reads ends with the same values and the same verdicts; reopened, the same.
     #[test]

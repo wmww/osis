@@ -7,7 +7,7 @@
 //! yet called by the engine (A1 steps 2 and 3 wire it in).
 //!
 //! The input is plain structs, independent of the header's types; the output is per part
-//! (`Status`, `Content`, chained-ness), per delta and copy (purged), per request (its right,
+//! (`Status`, `Content`), per delta and copy (purged), per request (its right,
 //! what it could hold), per edge (history, point queries, final values), the trusted writes left
 //! void, the dispute set and, per update, `Changed`.
 
@@ -277,9 +277,6 @@ pub struct Changed {
     /// What the requests whose right changed, arrived holding one or went name (draft §6): a
     /// description, never a list of deltas.
     pub purges: BTreeSet<Scope>,
-    /// Edge-class parts whose chained-ness changed (draft §4), a held one turning chained on
-    /// arrival and a chained one forgotten included.
-    pub chained: BTreeSet<WriteId>,
     /// Of `parts`, the edge-class parts the walk applied before the update.
     pub was_applied: BTreeSet<WriteId>,
 }
@@ -654,18 +651,6 @@ impl<S: Store> Paths<S> {
         self.facts.could_hold(id, purge_by, author)
     }
 
-    /// Whether held edge-class part `id` is chained (Interim (issues/chains-retired.md); a self-removal by
-    /// admin on its path, a finalize by write).
-    pub fn is_chained(&self, id: &WriteId) -> Option<bool> {
-        self.timeline.is_chained(id)
-    }
-
-    /// Per edge a chained write set, the key of its first chained write giving write and giving
-    /// admin (Interim (issues/chains-retired.md)).
-    pub fn chained(&self) -> BTreeMap<(Tid, Tid), [Option<Key>; 2]> {
-        self.timeline.chained()
-    }
-
     /// Per edge with one, its first points for write and for admin (spec/permissions.md §5.2
     /// Re-grant): the key of its first held write giving the role made by right.
     pub fn first_points(&self) -> BTreeMap<(Tid, Tid), [Option<Key>; 2]> {
@@ -799,13 +784,13 @@ impl<S: Store> Paths<S> {
         (applied, finals, valid)
     }
 
-    /// Entries the walk keeps in memory (parts, edges, events, chain entries, histories,
+    /// Entries the walk keeps in memory (parts, edges, events, histories,
     /// readers): edge-class state alone (notes/perm-paths.md, The delta-facts seam).
     pub fn footprint(&self) -> u64 {
         self.timeline.footprint() + self.facts.footprint()
     }
 
-    /// Work done since construction: the walk, the chained pass and the addenda.
+    /// Work done since construction: the walk and the addenda.
     pub fn counts(&self) -> Counts {
         let mut c = self.timeline.counts;
         c.add(&self.facts.counts);

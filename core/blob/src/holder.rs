@@ -5,9 +5,8 @@ use crate::cbor::{records_from, records_value};
 use osis_base::{CreationRecord, Value};
 
 /// A stranded report's holder keys (spec/wire.md §11.2 Stranded): the holder's current `keys.0` commits, each
-/// projected to that delta, with their authors' chain certificates for them, as
-/// `CommitBlobPlaintext` values projected to their chain deltas, and the raw creation records of
-/// that chain, ascending by tid, distinct. A reader of the sync ID's actor that is gone from the
+/// projected to that delta, with their evidence, as certificate copies (`CommitBlobPlaintext`
+/// values), and that evidence's raw creation records, ascending by tid, distinct. A reader of the sync ID's actor that is gone from the
 /// holder seals it at its keyset and deposits under its inbox from these alone.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct HolderKeys {

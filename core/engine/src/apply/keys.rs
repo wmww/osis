@@ -789,7 +789,7 @@ fn pending_deltas(blob: &osis_commit::CommitBlob, id: &CommitId, keep: impl Fn(&
 
 impl crate::engine::Engine {
     /// Records a read or sync secret learned from an entry box (a link key opening
-    /// by static entry, spec/sync-ids.md §3) or a ticket (spec/sync-inbox.md §5) when it is the secret of epoch `e` of `g`'s role `r` (spec/crypto.md
+    /// by static entry, spec/sync-ids.md §3) when it is the secret of epoch `e` of `g`'s role `r` (spec/crypto.md
     /// §4; anyone holding the head's step key, a removed admin among them, can write the box, so
     /// it establishes nothing). False when it is not, or when the node lost `g` (`rotation::may_learn`,
     /// spec/permissions.md §3).
@@ -809,7 +809,7 @@ pub(crate) fn learn_secret_in(tx: &mut Tx<'_>, g: &Tid, r: Role, e: osis_crypto:
         return Ok(false);
     }
     tx.core.touch();
-    // a sync secret of a thing not read (a ticket's, spec/sync.md §3): held as its epoch's,
+    // a sync secret of a thing not read (a holder of sync alone's, spec/sync.md §3): held as its epoch's,
     // nothing of the thing opened by it
     if r == Role::Sync && !tx.core.epochs(&g).is_some_and(|x| x.role(Role::Read).holds_any()) {
         tx.core.ix.secrets.entry_or_default(g).role_mut(r).set_secret(e, secret);
@@ -1173,7 +1173,7 @@ mod tests {
     #[test]
     fn keys_write_unapplied_needs_an_admin_spec_perm_3() {
         let (mut lp, t) = removed_reader();
-        // a stranger's `keys.0` write on its own thing: its author's chain is unknown here
+        // a stranger's `keys.0` write on its own thing: nothing of its author is held here
         let mut m = Mutation::new();
         let me2 = lp.peers[2].engine.me();
         let t2 = lp.peers[2].engine.new_thing(&mut m, me2);
@@ -1340,12 +1340,12 @@ mod tests {
         }
     }
 
-    // spec/crypto.md §3 (secrets of its own): a thing is independent while a valid `keys.0` part wrote a
+    // spec/crypto.md §3 (independent): a thing is independent while a valid `keys.0` part wrote a
     // keyset, §4 (Reading-only secrets): secrets of an invalid commit are kept for reading only: admin A of G grants
     // X on G's dependent thing T (T's first `keys.0`, a rotation from derived epochs) after G's mint
     // admin removed A. Once A's grant is invalid, every node derives T from G again (encrypting under
     // G's epoch rotated past A, not A's), delete base G, open = rebuild; peer 3 had A's commit
-    // applied valid first (Y: a reader of G). The mint admin's own grant then gives T secrets of its own everywhere.
+    // applied valid first (Y: a reader of G). The mint admin's own grant then makes T independent everywhere.
     #[test]
     fn keyset_of_invalid_rotation_leaves_thing_dependent_spec_crypto_3() {
         let mut lp = LocalPeer::fresh(4, WallMs(1_700_000_000_000));

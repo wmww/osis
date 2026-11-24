@@ -561,7 +561,7 @@ impl Core {
     /// The account `d` is the account root of: its mint admin, an account, when that account
     /// wrote `account.0` on it. Only a commit signed as the account counts:
     /// any signer's header can name the aspect, and an account root reads as its account wherever
-    /// chains and lists are placed (`Engine::cert_reads_in`), so a thing another writer marked
+    /// lists are logged (`Engine::cert_reads_in`), so a thing another writer marked
     /// would carry the account's private lists to its own readers.
     pub(crate) fn account_of_root(&self, d: &Tid) -> Option<Tid> {
         let p = self.mint_admin(d).filter(|p| self.is_account(p))?;
@@ -1136,7 +1136,7 @@ fn first_kem(keys: Option<Keys>, signing: &VerifyingKey) -> Option<KemPublicKey>
 impl Engine {
     /// Creates an account (spec/permissions.md §1): the account at its first epoch (its creation
     /// nonce naming this node as its creation device, spec/crypto.md §3), its account root D
-    /// (secrets of its own boxed to this node, its sync ID, `account.0`) and its profile, one
+    /// (independent, its secrets boxed to this node, its sync ID, `account.0`) and its profile, one
     /// commit signed as the account.
     pub fn create_account(&mut self) -> Result<(CreatedAccount, Done)> {
         let (seed, nonce_d) = self.run(|tx| Ok((Secret32::random(&mut *tx.rng), thing_record(Tid::from_bytes([0; 15]), None, &mut *tx.rng))))?;

@@ -318,7 +318,7 @@ impl Engine {
     /// The things reading `s` here: those of `s`'s things (`sync_things_of`) whose
     /// `ThingSync::Read` lists it. What arrives under `s` is judged for each. Kept per sync ID
     /// from its first ask (`Core::read_things`, a `memo::Cutoff`): what it is derived from (the
-    /// things naming `s`, their sync IDs and holdings) moves at every ticket, link or `sync.0`
+    /// things naming `s`, their sync IDs and holdings) moves at every link or `sync.0`
     /// of them, its answer far less often, and every judgement at `s` reads it.
     pub(crate) fn read_things_of(&mut self, s: &SyncId) -> Result<Vec<Tid>> {
         Ok(osis_base::memo::Cutoff::get_in(self, |e| &e.core.read_things, s, |e, s| e.read_things_now(s))?.to_vec())
@@ -856,7 +856,7 @@ impl Engine {
         };
         let id = opened.commit.id();
         // spec/permissions.md §3 (Lost access): a copy carrying content of a thing the independent of S's thing
-        // may not read now (left by a revocation since it was placed) gives nothing: none of it is
+        // may not read now (left by a revocation since it was logged) gives nothing: none of it is
         // taken (its parts come from a body under their own thing's sync ID)
         if opened.copy && !self.copy_stale(&t, &opened.commit).is_empty() {
             return Ok(Opened::NotOpen);
@@ -929,8 +929,8 @@ impl Engine {
 
     /// Whether a writer may promote deposited commit `c` under `s` (spec/sync-inbox.md §4): only
     /// once it holds `c` applied, with a body `s` must hold, and its author held write on `s`'s
-    /// actor at `c`'s `ts` (as this node judges it), or it fires an external signal valid here; then with the author's chain for those parts
-    /// to log beside it (`NotYet` while that chain is not complete here). `Never` when `s` carries
+    /// actor at `c`'s `ts` (as this node judges it), or it fires an external signal valid here; then with the evidence for those parts
+    /// to log beside it (`NotYet` while that evidence is not complete here). `Never` when `s` carries
     /// nothing of `c` or its author lacked write then.
     pub fn promotable(&mut self, s: &SyncId, c: &CommitId) -> Result<Promote> {
         let Some(t) = self.body_thing(s, &BodyId::unit(*c))? else { return Ok(Promote::Never) };
@@ -949,7 +949,7 @@ impl Engine {
             return Ok(Promote::Never);
         }
         let parts: crate::sync_ids::Parts = b.parts.iter().copied().collect();
-        Ok(Promote::Yes { chain: self.evidence_of(c, &parts)? })
+        Ok(Promote::Yes { evidence: self.evidence_of(c, &parts)? })
     }
 }
 

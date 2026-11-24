@@ -1,5 +1,5 @@
 //! Certificate blobs under a sync ID (spec/sync-judgement.md §1): record blobs (spec/wire.md
-//! §3), the raw creation records a sync ID's chain certificates name that no closure body there
+//! §3), the raw creation records a sync ID's certificates name that no closure body there
 //! carries, and list blobs (spec/wire.md §4, List tree), the thing lists of one rotation for the
 //! things the sync ID carries lists of (`sync::listed`); each sealed as one blob of all the sync
 //! ID carries of its kind, committing to a writer delete key of the sync ID's thing (spec/crypto.md
@@ -358,8 +358,8 @@ impl Engine {
     /// Whether the readers of `ctx`'s sync unit open the section `x` was minted in: sealed under
     /// the secret `x` derived when minted, it lists `x`'s record chain up to the actor that
     /// secret derives from, and opens from a member they hold epochs of (spec/sync-judgement.md
-    /// §1): the unit's actor, or an independent thing of the unit. A thing minted under another
-    /// tree and reached by a strong or a grant (an account's profile under a contact) is minted
+    /// §1): the unit's actor, or an independent thing of the unit. A thing with another record
+    /// chain, reached by a strong or a grant (an account's profile reached through a contact), is minted
     /// where they open nothing, so its record goes as a certificate.
     fn minting_opens(&self, x: &Tid, ctx: &crate::sync_ids::BodyCtx) -> bool {
         let core = &self.core;

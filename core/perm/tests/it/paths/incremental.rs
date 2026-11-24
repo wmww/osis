@@ -15,13 +15,12 @@ use std::collections::{BTreeMap, BTreeSet};
 
 type Finals = BTreeMap<(Tid, Tid), (Option<Role>, Option<Role>)>;
 pub(super) type Reading = (BTreeMap<WriteId, Status>, BTreeMap<(Tid, Tid), History>, Finals, BTreeMap<WriteId, Content>, BTreeSet<CommitId>, BTreeSet<WriteId>, BTreeMap<(Tid, Tid), [Option<Key>; 2]>, Purges);
-/// The purged copies, each request's right, each edge-class part's chained-ness.
-type Purges = (BTreeSet<CommitId>, BTreeMap<WriteId, Right>, BTreeMap<WriteId, bool>);
+/// The purged copies, each request's right.
+type Purges = (BTreeSet<CommitId>, BTreeMap<WriteId, Right>);
 
 pub(super) fn reading<S: Store>(p: &Paths<S>) -> Reading {
     let rights = p.store().all().into_iter().filter_map(|id| Some((id, p.right(&id)?))).collect();
-    let chained = p.statuses().into_keys().filter_map(|id| Some((id, p.is_chained(&id)?))).collect();
-    (p.statuses(), p.histories(), p.finals(), p.contents(), p.copies(), p.purged(), p.first_points(), (p.purged_copies(), rights, chained))
+    (p.statuses(), p.histories(), p.finals(), p.contents(), p.copies(), p.purged(), p.first_points(), (p.purged_copies(), rights))
 }
 
 fn valid(c: Option<&Content>) -> bool {
@@ -68,8 +67,8 @@ impl Tracked {
 /// verdict or purge changed is reachable from `ch` by `Changed`'s rule. A part of a commit in
 /// `renewed` may be reported as new.
 fn differs_by(ta: &Tracked, tb: &Tracked, ch: &Changed, renewed: &BTreeSet<CommitId>) -> Option<String> {
-    let ((sa, ha, fa, ca, _, pa, xa, (_, ra, ka)), a) = (&ta.r, &ta.p);
-    let ((sb, hb, fb, cb, _, pb, xb, (_, rb, kb)), b) = (&tb.r, &tb.p);
+    let ((sa, ha, fa, ca, _, pa, xa, (_, ra)), a) = (&ta.r, &ta.p);
+    let ((sb, hb, fb, cb, _, pb, xb, (_, rb)), b) = (&tb.r, &tb.p);
     let mut want = Changed::default();
     for (id, s) in sb {
         if sa.get(id) != Some(s) {
@@ -105,16 +104,6 @@ fn differs_by(ta: &Tracked, tb: &Tracked, ch: &Changed, renewed: &BTreeSet<Commi
     }
     if (&ch.edges, &ch.cuts, &ch.regrant) != (&want.edges, &want.cuts, &want.regrant) {
         return Some(format!("reported {ch:?}, readings differ by {want:?}"));
-    }
-    // chained-ness: exactly the parts that flipped (a part of a commit updated in place may be
-    // reported as it leaves and comes back)
-    for id in sa.keys().chain(sb.keys()) {
-        if ka.get(id).copied().unwrap_or(false) != kb.get(id).copied().unwrap_or(false) {
-            want.chained.insert(*id);
-        }
-    }
-    if !want.chained.is_subset(&ch.chained) || ch.chained.iter().any(|id| !want.chained.contains(id) && !renewed.contains(&id.0)) {
-        return Some(format!("reported chained {:?}, flipped {:?}", ch.chained, want.chained));
     }
     // purges: exactly the scopes of the requests whose right changed (arrived or went holding
     // one), each request's stored right its right judged now

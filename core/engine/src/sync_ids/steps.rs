@@ -230,8 +230,8 @@ impl Core {
     ///
     /// Any base up the chain, not the nearest alone: a write made while `t` derived its secrets
     /// lists its former base's step, and so does a writer that has not yet received the commit
-    /// giving `t` secrets of its own; no header says which the writer knew. A key so accepted is
-    /// still one only an admin (level 1) or writer (level 3) of a thing `t` was made under held.
+    /// making `t` independent; no header says which the writer knew. A key so accepted is
+    /// still one only an admin (level 1) or writer (level 3) of a thing up `t`'s record chain held.
     pub(crate) fn key_right(&self, t: &Tid, level: u8, key: &[u8; 32], ts: Ts) -> bool {
         self.key_base(t, level, key, Some(ts)).is_some()
     }
@@ -273,8 +273,8 @@ mod tests {
     use crate::local_peer::LocalPeer;
     use osis_base::{Role, WallMs};
 
-    /// Alice's thing `g`, given secrets of its own and its sync ID by a grant to bob, and `t`
-    /// minted under it (dependent: `g` is its delete base).
+    /// Alice's thing `g`, made independent with its sync ID by a grant to bob, and `t`
+    /// minted with admin `g` (dependent: `g` is its delete base).
     fn world() -> (LocalPeer, Tid, Tid) {
         let mut lp = LocalPeer::fresh(2, WallMs(1_700_000_000_000));
         lp.sync_all().unwrap();

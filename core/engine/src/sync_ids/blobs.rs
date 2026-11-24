@@ -253,7 +253,7 @@ impl Engine {
 
     /// The epochs of each member of a section's derivation chain (`chain`, nearest first, no tid
     /// twice: spec/wire.md §4) held here, each derived down the nearer part of the chain to the
-    /// nearest member (a member given secrets of its own since the section was sealed holds the
+    /// nearest member (a member made independent since the section was sealed holds the
     /// derived epoch in its history). `last`: the previous chain of this blob opening and its
     /// answer (a commit's sections in one group share a chain: derived once, memory bounded).
     pub(super) fn chain_epochs(&self, chain: &[Tid], last: &mut Option<(Vec<Tid>, Vec<Arc<ActorEpochs>>)>) -> Vec<Arc<ActorEpochs>> {
@@ -292,7 +292,7 @@ impl Engine {
     /// the epoch's roles secret, spec/crypto.md §4 Roles secrets) among the commit's held parts that may go under
     /// an epoch of this node's choosing (`opened::passes_on`, spec/crypto.md §5 Passing on), each
     /// under that thing's read secret (a dependent thing's derives from its mint admin's by tid,
-    /// spec/crypto.md §3, so a thing given secrets of its own later opens its earlier sections by
+    /// spec/crypto.md §3, so a thing made independent later opens its earlier sections by
     /// its history; `wrap_secret`: the newest current epoch, a rotation's under the epoch it
     /// supersedes); for the other parts the sections of `extra` (held sections of the commit,
     /// opened or not) copied verbatim where none of their parts is held stripped or dropped; the
@@ -450,8 +450,7 @@ impl Engine {
     }
 
     /// How a section of a commit blob of header `h` opens here (spec/sync-judgement.md §1
-    /// Sealed sections): a role section, or one of a thing this node holds (in its node closure,
-    /// a ticket's word included) or of a key actor (never in a closure: its sections are certificate material), whole; one of
+    /// Sealed sections): a role section, or one of a thing this node holds (in its node closure) or of a key actor (never in a closure: its sections are certificate material), whole; one of
     /// a thing it does not hold stays sealed, but for the record minted there of a thing whose
     /// record it lacks (not destroyed here), which it needs to judge whether a held strong
     /// brings the thing in. Opening content only of held things keeps a purged part from being
@@ -521,7 +520,7 @@ impl Engine {
     /// (spec/sync-judgement.md §1: a sync ID carries the parts its thing's independent may read,
     /// and certificate copies of role-class parts on any thing): content (`is_content`) on a thing
     /// under an independent thing that `g`'s independent may not read now, left by a
-    /// revocation since the per-sync-ID copy was placed (spec/permissions.md §3). With any,
+    /// revocation since the per-sync-ID copy was logged (spec/permissions.md §3). With any,
     /// `open_entry` takes none of the copy (`Opened::NotOpen`): those parts come from a body under
     /// their own thing's sync ID, which read fetches as missing once this node may hold it.
     /// Invariant: no part taken from a copy gives a node anything of an actor it cannot read now.
@@ -552,10 +551,10 @@ impl Engine {
         self.core.may_read(actor, &self.core.reader_of(t))
     }
 
-    /// Whether the independent of sync unit `g`'s thing reads `t` as every node judges it, for placing chain
-    /// certificates alone (spec/sync-judgement.md §1: an account root reads as its account,
-    /// whichever node judges it): any account root reads what its account reads, so
-    /// the chains placed under a sync ID are the same at every node. Never an access, sealing,
+    /// Whether the independent of sync unit `g`'s thing reads `t` as every node judges it, for the
+    /// thing lists its sync IDs carry alone (spec/sync-judgement.md §1: an account root reads as
+    /// its account, whichever node judges it): any account root reads what its account reads, so
+    /// the lists logged under a sync ID are the same at every node. Never an access, sealing,
     /// boxing or opening decision: there `reads_in`.
     pub(crate) fn cert_reads_in(&self, g: &Tid, t: &Tid) -> bool {
         // counted: tests read how many (read thing, thing) pairs a change judges
@@ -566,8 +565,8 @@ impl Engine {
     }
 
     /// The parts of `h` a sync ID of `ctx`'s sync unit carries in its bodies (spec/sync-judgement.md
-    /// §1): those on things of the sync unit its independent may read. A chain certificate's part on any other thing goes
-    /// there as a certificate copy (spec/permissions.md §4).
+    /// §1): those on things of the sync unit its independent may read. A part on any other thing that
+    /// evidence needs goes there as a certificate copy (spec/permissions.md §4).
     pub fn body_carried(&self, ctx: &BodyCtx, h: &osis_commit::Header) -> std::collections::BTreeSet<usize> {
         h.aspects.iter().enumerate().filter(|(_, a)| ctx.holds(&self.core, &a.tid) && self.reads(ctx, &a.tid)).map(|(i, _)| i).collect()
     }
@@ -645,7 +644,7 @@ impl Engine {
     /// newest current read epoch held, except a commit giving read epochs of the actor `g`'s
     /// secrets derive from (a rotation, a grant, a re-seal), which goes under the newest epoch
     /// they supersede, never another (`giving_wrap_epoch`). `None`: no current secret held
-    /// (stranded: nothing is placed), none of the superseded epochs held, or a part of `c` it
+    /// (stranded: nothing is logged), none of the superseded epochs held, or a part of `c` it
     /// carries this node may not pass on under an epoch of its choosing (spec/crypto.md §5
     /// Passing on). A blob carrying a role part of that actor (`osis_keys::under_roles`) goes
     /// under the epoch's roles secret (spec/crypto.md §4, Roles secrets): every holder of the
@@ -711,8 +710,8 @@ impl Engine {
     }
 
     /// Whether read of `a` is blocked here for a wrap of commit `c` (spec/crypto.md §4 Encrypting
-    /// under): a role commit, which goes as a certificate or as this node's own, by the placing
-    /// walk (`Walk::Place`: through holder actors this node may rotate only, so a node that may
+    /// under): a role commit, which goes as a certificate or as this node's own, by the logging
+    /// walk (`Walk::Log`: through holder actors this node may rotate only, so a node that may
     /// not still logs what tells their rotators); anything else by the encrypting walk, and also
     /// while this node holds a grant on `a` it may finalize (spec/permissions.md §2 Finalize: the
     /// finalize goes before its next commit encrypting under `a`; the driver's role duties write
@@ -726,7 +725,7 @@ impl Engine {
         }
         let walk = match c.and_then(|c| self.header(c)) {
             Some(h) if !h.kind.is_role() => crate::rotation::Walk::Encrypt,
-            _ => crate::rotation::Walk::Place,
+            _ => crate::rotation::Walk::Log,
         };
         osis_base::memo::Cutoff::get_in(self, |e| &e.core.wrap_blocks, &(*a, walk), |e, (a, walk)| e.wrap_blocked_read(a, *walk))
     }
@@ -752,7 +751,7 @@ impl Engine {
     }
 
     /// Held read secrets of an independent thing, newest first; then those derived from its mint admin's (a
-    /// thing that got secrets of its own, or one under a key actor this node holds: the rotation
+    /// thing made independent, or one whose derivation chain ends at a key actor this node holds: the rotation
     /// that gave it its own is wrapped under the derived epoch, spec/crypto.md §5).
     /// Each epoch's roles secret follows its secret (spec/crypto.md §4, Roles secrets), and one
     /// held without its secret stands alone.
@@ -902,9 +901,9 @@ impl Engine {
         Some((ep, (checked && self.established(g, e, Role::Write, &ep)).then_some(s)))
     }
 
-    /// Whether `ep` of role `r` is established for `g`: in its own epochs, or, for a thing that
-    /// got secrets of its own, as the epoch derived from an established epoch of the base
-    /// actor it had before (spec/crypto.md §3-§4; the history box carries it without establishment).
+    /// Whether `ep` of role `r` is established for `g`: in its own epochs, or, for a thing made
+    /// independent, as the epoch derived from an established epoch of the mint admin
+    /// it derived from before (spec/crypto.md §3-§4; the history box carries it without establishment).
     fn established(&self, g: &Tid, e: &ActorEpochs, r: Role, ep: &Epoch) -> bool {
         if e.role(r).is_established(ep) {
             return true;

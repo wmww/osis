@@ -32,7 +32,7 @@ fn ids_of(keys: &osis_blob::HolderKeys) -> Vec<CommitId> {
 }
 
 // spec/permissions.md §4 (stranded), spec/crypto.md §4 (Reported): the receiver takes the holder
-// keys as chain certificates; a node gone from the holder learns its keyset only so. T rotates
+// keys as evidence; a node gone from the holder learns its keyset only so. T rotates
 // unseen by peer 0; the holder keys of T from peer 2 bring T's new keyset to peer 0.
 #[test]
 fn holder_keys_bring_the_holders_new_keyset_spec_permissions_4() {
@@ -482,7 +482,7 @@ fn a_sealed_fire_carries_its_chain_until_it_goes_spec_commits_4() {
     let mut rng = osis_crypto::SeededRng::from_seed([7; 32]);
     let prefix = osis_blob::Prefix::for_delete_keys(osis_blob::Prefix::random_salt(&mut rng), &h.blind, osis_commit::prefix_expiry(&h, &ais).map(osis_base::WallMs), &groups).unwrap();
     let commit = osis_base::decode(&fire.encode(), &limits).unwrap();
-    let blob = osis_blob::seal_fire(&prefix, &inbox, &epoch, &kem, &osis_blob::SealedFire { copy: false, commit, chain, records, pages: Vec::new() }, &mut rng).unwrap();
+    let blob = osis_blob::seal_fire(&prefix, &inbox, &epoch, &kem, &osis_blob::SealedFire { copy: false, commit, evidence: chain, records, pages: Vec::new() }, &mut rng).unwrap();
     let e1 = &mut lp.peers[1].engine;
     let f = match e1.open_entry(&sync_id, &osis_blob::blob_id(&blob), &[0; 57], &blob, u64::MAX).unwrap() {
         crate::sync::Opened::Commit(f, _) => f,

@@ -2655,7 +2655,7 @@ fn a_rotator_lacking_an_epoch_leaves_it_to_its_readers_spec_crypto_4() {
 }
 
 // spec/crypto.md §4 Current (a derived epoch written under): T is dependent, minted with admin F (independent; peer 0
-// its mint admin, peer 1 an admin). Peer 0 gives T secrets of its own by granting t1 (peer 2,
+// its mint admin, peer 1 an admin). Peer 0 makes T independent by granting t1 (peer 2,
 // no member of F) while peer 1 hears nothing; peer 1 rotates F (removing peer 3) and writes T,
 // its section sealed under the derived secret of F's new epoch, which T's own epochs' history
 // does not carry. Placed later under T's sync ID, a node reuses that blob, wrapped under T's

@@ -229,7 +229,7 @@ fn by_from_value(v: &Value) -> Result<Vec<(Level, Signature)>, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::step::tests::{Group, TG};
+    use crate::step::tests::{Secrets, THING};
     use crate::step::{Parent, register};
     use osis_crypto::{Epoch, SeededRng, Secret32, role_key};
     use proptest::prelude::*;
@@ -242,9 +242,9 @@ mod tests {
     // under their own key and domain only.
     #[test]
     fn entry_signatures() {
-        let g = Group::new(30);
+        let g = Secrets::new(30);
         let mut rng = SeededRng::from_u64(0);
-        let (s0, _) = register(Parent::Genesis(&g.delete()), g.keys(), &[], (&TG, epoch(0), &g.read), g.sync_at(), &mut rng).unwrap();
+        let (s0, _) = register(Parent::Genesis(&g.delete()), g.keys(), &[], (&THING, epoch(0), &g.read), g.sync_at(), &mut rng).unwrap();
         let (l, b, w) = (s0.sync_id, BlobId([1; 32]), [2u8; 49]);
         let write = role_key(RoleKey::Write, &g.write);
         let stamp = sign_stamp(&write, &l, &b, &w, false);
@@ -265,9 +265,9 @@ mod tests {
     // empty one.
     #[test]
     fn cover_levels_signs_what_the_store_takes() {
-        let g = Group::new(40);
+        let g = Secrets::new(40);
         let mut rng = SeededRng::from_u64(0);
-        let (s0, _) = register(Parent::Genesis(&g.delete()), g.keys(), &[], (&TG, epoch(0), &g.read), g.sync_at(), &mut rng).unwrap();
+        let (s0, _) = register(Parent::Genesis(&g.delete()), g.keys(), &[], (&THING, epoch(0), &g.read), g.sync_at(), &mut rng).unwrap();
         let l = s0.sync_id;
         let (sync, write) = (role_key(RoleKey::Sync, &g.sync), role_key(RoleKey::Write, &g.write));
         let dk = |b: u8| DeleteSecret::write(&Secret32::from_bytes([b; 32]));
@@ -322,9 +322,9 @@ mod tests {
     // missing commitment fail; layouts round trip.
     #[test]
     fn deletes() {
-        let g = Group::new(40);
+        let g = Secrets::new(40);
         let mut rng = SeededRng::from_u64(0);
-        let (s0, _) = register(Parent::Genesis(&g.delete()), g.keys(), &[], (&TG, epoch(0), &g.read), g.sync_at(), &mut rng).unwrap();
+        let (s0, _) = register(Parent::Genesis(&g.delete()), g.keys(), &[], (&THING, epoch(0), &g.read), g.sync_at(), &mut rng).unwrap();
         let l = s0.sync_id;
         let (sync, write) = (role_key(RoleKey::Sync, &g.sync), role_key(RoleKey::Write, &g.write));
         let salt = [5u8; 16];

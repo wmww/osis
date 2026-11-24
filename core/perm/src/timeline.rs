@@ -486,11 +486,6 @@ impl<S: Store> Timeline<S> {
         self.roles.values().flat_map(|(c, _)| (0u32..).zip(&c.ops).map(move |(k, _)| (WriteId(c.id, k), c.point())))
     }
 
-    /// Whether `w` is chained (Interim (issues/chains-retired.md)).
-    pub fn is_chained(&self, w: &WriteId) -> bool {
-        self.part_of(w).and_then(|p| self.paths.is_chained(&p)) == Some(true)
-    }
-
     /// The commit of the edge write in force on (`holder`, `target`): the last applied one, when
     /// it set a value (spec/permissions.md §2: the next edge write resets the entry it created).
     pub fn in_force(&self, holder: &Tid, target: &Tid) -> Option<CommitId> {
@@ -772,7 +767,6 @@ fn merge(w: &mut paths::Changed, o: paths::Changed) {
     w.carried.extend(o.carried);
     w.carried.retain(|c| !w.named.contains(c));
     w.purges.extend(o.purges);
-    w.chained.extend(o.chained);
     // applied before the first update: the second's reading before is the first's after
     w.was_applied.extend(o.was_applied.into_iter().filter(|p| !had.contains(p)));
 }

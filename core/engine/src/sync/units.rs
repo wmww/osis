@@ -707,7 +707,7 @@ impl Core {
 
     /// Whether `y` is independent here (spec/sync-set.md §2): by the role commits held of it, or by
     /// a secret of its own a held valid box gave (not one derived from its mint admin's, nor a
-    /// reading-only one): only a thing with role secrets of its own has boxes. Established or not:
+    /// reading-only one): only an independent thing has boxes. Established or not:
     /// a grantee holds the grant's box before it syncs `y`, where the rotation that made the
     /// epoch is (spec/permissions.md §4 Key part).
     pub(crate) fn counts_independent(&self, y: &Tid) -> bool {
@@ -716,7 +716,7 @@ impl Core {
 
     /// How the walk enters independent thing `y` at a strong from a context that does not
     /// follow it (spec/sync-set.md §2): read where the node holds a read secret of it, kept
-    /// unread where it holds a sync secret only, else not at all. Secrets of its own only, given
+    /// unread where it holds a sync secret only, else not at all. Its own secrets only, given
     /// it by a box: never the reading-only ones read through its mint admin's (`Core::epochs`), so
     /// a reader of the mint admin enters it by no secret of its own, whatever arrived first.
     pub(crate) fn enter(&self, y: &Tid) -> Option<Ctx> {

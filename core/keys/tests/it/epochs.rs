@@ -31,7 +31,7 @@ impl World {
     }
 }
 
-// spec/crypto.md §3: giving a dependent thing secrets of its own is a rotation of all three roles from
+// spec/crypto.md §3: making a dependent thing independent is a rotation of all three roles from
 // the derived epochs; the history boxes carry the derived secrets. §4 box forms: the mint admin gets
 // symmetric boxes, an actor holder sealed boxes naming its keyset, a key-actor holder sealed
 // boxes naming none; one box per (role, epoch) each.

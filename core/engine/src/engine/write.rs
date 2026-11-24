@@ -637,7 +637,7 @@ fn clear_tells_nothing(core: &Core, plan: &CommitPlan, q: &osis_commit::Path, ea
     each.iter().filter(|(t, _)| *t != end).all(|(t, (_, by_record))| each.keys().filter(|w| *w != t).all(|w| on_chain(t, w, true) || (*by_record && on_chain(w, t, false))))
 }
 
-/// Whether thing `t` reads by secrets of its own when a content commit applies: held as
+/// Whether thing `t` reads by its own secrets when a content commit applies: held as
 /// independent, or a key actor (spec/crypto.md §3). A thing a content commit makes is dependent
 /// in it: only a role commit writing its `keys.0` makes it independent, and a role commit states
 /// no split path (`stated_paths`).
@@ -1176,8 +1176,8 @@ pub(crate) fn commit_or_build(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option
     }
     let core_schema = Arc::new(osis_schema::core_schema().clone());
     let memory = tx.txn.is_memory();
-    // minted once: a record held ahead of its minting is the one the rotation giving it
-    // secrets of its own carries (`rotation::own_secrets_new`)
+    // minted once: a record held ahead of its minting is the one the rotation making it
+    // independent carries (`rotation::own_secrets_new`)
     for (t, rec) in &m.creates {
         if tx.core.created(t).is_some_and(|r| r != rec || tx.core.mintings(t).next().is_some()) && !tx.core.skip_writer_rules {
             return Err(Error::Misuse("thing already exists"));

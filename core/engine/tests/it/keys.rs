@@ -109,7 +109,7 @@ fn history_chain_from_state_spec_crypto_4() {
     read_by_1(&mut lp, a);
     let roles = BTreeSet::from([Role::Read]);
     let only0 = [rcpt(&mut lp, 0, Role::Admin)];
-    // secrets of its own are all three roles' (spec/crypto.md §3); then two read rotations
+    // an independent thing's secrets are all three roles' (spec/crypto.md §3); then two read rotations
     rotation_commit_to(&mut lp, a, 9, BTreeSet::from(Role::ALL), &only0, &Names::default());
     let (_, r1) = rotation_commit_to(&mut lp, a, 1, roles.clone(), &only0, &Names::default());
     let (_, r2) = rotation_commit_to(&mut lp, a, 2, roles.clone(), &only0, &Names::default());
@@ -167,7 +167,7 @@ fn late_keys_part_establishes_rotation_spec_crypto_4() {
     let mut lp = net(2, 0);
     lp.sync_all().unwrap();
     let a = new_thing(&mut lp, 0);
-    // by the flow: `a` gets secrets of its own with its sync ID (spec/sync-ids.md §2), whose
+    // by the flow: `a` is made independent with its sync ID (spec/sync-ids.md §2), whose
     // steps the hand-written rotations list their delete keys from
     read_by_1(&mut lp, a);
     let (_, r1) = rotation_commit(&mut lp, a, 1, BTreeSet::from(Role::ALL), &Names::default());

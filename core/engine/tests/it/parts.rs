@@ -26,7 +26,7 @@ fn histories() -> Vec<Played> {
     let content = play(0, &[NewTop { by: 0 }, tick(), Edge { by: 0, t: 1, holder: 1, role: Some(Role::Read) }, Sync { from: 0, to: 1 }, tick(), Two { by: 1, a: 0, b: 1, v: 1 }]);
     let role = play(0, &[NewTop { by: 0 }, tick(), Edge { by: 0, t: 1, holder: 2, role: Some(Role::Read) }, Sync { from: 0, to: 2 }, tick(), TwoEdges { by: 2, a: 0, b: 1, holder: 1, role: Role::Read }]);
     let three = play(0, &[NewTop { by: 0 }, NewTop { by: 0 }, tick(), Edge { by: 0, t: 1, holder: 1, role: Some(Role::Read) }, Edge { by: 0, t: 2, holder: 1, role: Some(Role::Write) }, Sync { from: 0, to: 1 }, tick(), Three { by: 1, a: 0, b: 1, c: 2, v: 1 }]);
-    let honest = play(0, &[New { by: 0, parent: 0, write: true }, tick(), Two { by: 0, a: 0, b: 1, v: 7 }]);
+    let honest = play(0, &[New { by: 0, admin: 0, write: true }, tick(), Two { by: 0, a: 0, b: 1, v: 7 }]);
     vec![content, role, three, honest]
 }
 
@@ -712,7 +712,7 @@ fn false_signature_refused_before_linked_lists() {
 #[test]
 fn bad_part_beside_a_waiting_part_alike_spec_commits_4() {
     use Step::*;
-    let played = play(0, &[New { by: 0, parent: 0, write: true }, New { by: 0, parent: 0, write: true }, Advance { who: None, ms: 1000 }, BadPart { by: 0, a: 1, b: 2, how: 0 }]);
+    let played = play(0, &[New { by: 0, admin: 0, write: true }, New { by: 0, admin: 0, write: true }, Advance { who: None, ms: 1000 }, BadPart { by: 0, a: 1, b: 2, how: 0 }]);
     let (hidden, last) = (played.base, played.packs.len() - 1);
     let (a, b) = (played.things[1], played.things[2]);
     let ids: std::collections::BTreeSet<_> = played.packs.iter().map(|x| x.id).collect();

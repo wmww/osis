@@ -46,9 +46,6 @@ pub struct Held {
     /// Commits whose reading by the walk (`validity::reading`) may have changed since
     /// `take_touched_commits`.
     touched_commits: BTreeSet<CommitId>,
-    /// Things whose edge writes (any validity) or record changed since `take_ever`: what a chain
-    /// walk reads of them (`Timelines::ever_moved`); `touched` also names a commit's author.
-    ever: BTreeSet<Tid>,
     /// The same, for `take_moved`.
     moved: BTreeSet<Tid>,
     /// Things whose creation record `create` added since `take_records`.
@@ -289,7 +286,6 @@ impl Held {
             self.count(now, true);
         }
         self.touched.insert(t);
-        self.ever.insert(t);
         self.moved.insert(t);
         old
     }
@@ -363,7 +359,6 @@ impl Held {
             self.rest.wrote(&Row::Commits(t), true);
         }
         self.moved.extend(targets.iter().copied());
-        self.ever.extend(targets.iter().copied());
         self.touched.extend(targets);
         self.touched.insert(c.signer);
         self.moved.insert(c.signer);
@@ -388,7 +383,6 @@ impl Held {
             }
             self.rest.wrote(&Row::Commits(&o.target), self.commits.contains_key(&o.target));
             self.touched.insert(o.target);
-            self.ever.insert(o.target);
             self.moved.insert(o.target);
         }
         self.count(named(&c), false);
@@ -457,8 +451,7 @@ impl Held {
             }
             let targets: Vec<Tid> = c.ops.iter().map(|o| o.target).chain([c.signer]).collect();
             self.moved.extend(targets.iter().copied());
-            self.ever.extend(targets.iter().copied());
-            self.touched.extend(targets);
+                self.touched.extend(targets);
         }
     }
 
@@ -521,10 +514,6 @@ impl Held {
         std::mem::take(&mut self.touched_commits)
     }
 
-    /// Things whose edge writes or record changed since the last call (`ever`).
-    pub fn take_ever(&mut self) -> BTreeSet<Tid> {
-        std::mem::take(&mut self.ever)
-    }
 }
 
 impl Journaled for Held {
@@ -620,7 +609,6 @@ struct TlStamps {
     whole: Stamps,
     into: Stamps,
     held: Stamps,
-    ever: Stamps,
     things: Stamps,
     known: Stamps,
     keyless: Stamps,
@@ -632,7 +620,6 @@ impl Default for TlStamps {
             whole: Stamps::named("timelines: whole"),
             into: Stamps::named("timelines: into"),
             held: Stamps::named("timelines: held"),
-            ever: Stamps::named("timelines: ever"),
             things: Stamps::named("timelines: things"),
             known: Stamps::named("timelines: known"),
             keyless: Stamps::named("timelines: keyless"),
@@ -646,14 +633,13 @@ impl TlStamps {
             Read::Whole => &self.whole,
             Read::Into(_) => &self.into,
             Read::Held(_) => &self.held,
-            Read::Ever(_) => &self.ever,
             Read::Things => &self.things,
             Read::Known(_) => &self.known,
             Read::Keyless => &self.keyless,
         }
     }
-    fn all(&self) -> [&Stamps; 7] {
-        [&self.whole, &self.into, &self.held, &self.ever, &self.things, &self.known, &self.keyless]
+    fn all(&self) -> [&Stamps; 6] {
+        [&self.whole, &self.into, &self.held, &self.things, &self.known, &self.keyless]
     }
     fn read(&self, r: &Read) {
         self.of(r).read(r);
@@ -680,9 +666,6 @@ enum Read {
     /// The edge writes held on a thing and whether each applies: moved by one coming or going
     /// (`osis_perm::Changed::held`) or changing its standing (`ops`).
     Held(Tid),
-    /// The edge writes held on a thing, any validity, and its record: what a chain walk reads of
-    /// it, moved by `ever_moved`.
-    Ever(Tid),
     /// The set of things known to the timeline.
     Things,
     /// Whether the timeline knows a thing (its record or an edge write on it held).
@@ -870,7 +853,7 @@ impl Timelines {
         // the whole of it as role state: a delta coming or going moves no edge write's
         // standing and no edge (what reads a delta's verdict is judged again by `Changed::reached`)
         let w = &c.walk;
-        if !c.ops.is_empty() || !c.created.is_empty() || !c.held.is_empty() || !w.edges.is_empty() || !w.cuts.is_empty() || !w.regrant.is_empty() || !w.chained.is_empty() {
+        if !c.ops.is_empty() || !c.created.is_empty() || !c.held.is_empty() || !w.edges.is_empty() || !w.cuts.is_empty() || !w.regrant.is_empty() {
             self.stamps.wrote(&Read::Whole, true);
         }
         if !c.created.is_empty() || c.edges().next().is_some() {
@@ -911,14 +894,6 @@ impl Timelines {
         }
     }
 
-    /// Stamps the things whose edge writes or record the last update was given changed
-    /// (`Held::take_ever`), once the timeline read them.
-    pub fn ever_moved(&mut self, things: &BTreeSet<Tid>) {
-        for t in things {
-            self.stamps.wrote(&Read::Ever(*t), true);
-        }
-    }
-
     /// Brings the timeline up to the held set (`osis_perm::Timeline::update`): `commits` whose
     /// reading may have changed, `touched` things whose held inputs did.
     pub fn update(&mut self, held: &dyn osis_perm::HeldSet, commits: &BTreeSet<osis_base::CommitId>, touched: &BTreeSet<Tid>) -> osis_perm::Changed {
@@ -935,17 +910,6 @@ impl Timelines {
         let out = f(&mut self.of);
         self.keyless = Arc::new(crate::rotation::members::keyless_in(&self.of));
         out
-    }
-
-    /// The timeline with no read stamped, for a reading that stamps what it reads itself
-    /// (`read_ever`: chain certificates).
-    pub fn unstamped(&self) -> &osis_perm::Timeline {
-        &self.of
-    }
-
-    /// Stamps a read of the edge writes held on `t`, of any validity, and its record (`Read::Ever`).
-    pub fn read_ever(&self, t: &Tid) {
-        self.stamps.read(&Read::Ever(*t));
     }
 
     /// The timeline for a reading that changes it and puts it back (`Timeline::disputes`).
@@ -1190,7 +1154,7 @@ mod tests {
 
     // spec: none (internal: notes/engine.md, Derived values). The same, differential: random
     // edge writes (grants, removals, retains, `until`s; authors with and without authority) over
-    // key actors and things under them and under each other, records created and forgotten,
+    // key actors and things minted with them or each other as admin, records created and forgotten,
     // commits removed, counted or not, and undos; after each update a memo of every read through
     // the timelines answers as a fresh read, and the keyless grants kept per component are those
     // of one evaluation of everything (`osis_keys::key_access` over all actor grants).

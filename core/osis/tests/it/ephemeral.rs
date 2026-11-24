@@ -327,22 +327,3 @@ fn dynamic_key_crossing_kinds_spec_data_model_2() {
     let left = db.at(t, log.clone()).fired(&osis::CommitQuery::default()).unwrap().commits;
     assert!(left.iter().all(|c| !matches!(c.at(t, log.clone()).map(|p| p.body), Some(osis::Body::Held(_)))), "{left:?}");
 }
-
-// spec/permissions.md §4: a memory commit acting for an actor counts among the actors this
-// node acts for (its chain certificates go under every sync ID it places in): the actors cache
-// keyed on the durable generation alone missed it, and the sync driver's check of it died
-#[test]
-fn ephemeral_write_counts_as_acting_spec_permissions_4() {
-    let (db, _c) = setup(0);
-    let state = db.aspect_key("win:state+.0").unwrap();
-    let before = db.engine(|e| e.core.acting());
-    // a record alone acts for its signer (spec/commits.md §2)
-    let win = db.commit_with(|w| w.create_held()).unwrap();
-    assert!(!before.contains(&win), "nothing acted for it yet: {before:?}");
-    let mut w = db.write();
-    w.act_as(win);
-    w.at(win, state.clone()).set(&Value::Map([(Value::Int(0), s("draft")), (Value::Int(1), Value::List(vec![]))].into())).unwrap();
-    w.commit().unwrap();
-    let after = db.engine(|e| e.core.acting());
-    assert!(after.contains(&win), "{after:?}");
-}

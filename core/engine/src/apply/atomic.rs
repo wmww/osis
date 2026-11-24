@@ -76,17 +76,12 @@ pub(crate) fn note_role_sigs(core: &mut Core, kind: osis_commit::Kind, at_epoch:
     }
 }
 
-/// Adds a commit whose purge author is not its signer to the indexes of that thing, a member of
-/// its path (`Indexes::acting_on`, `chains_on`, `by_actor`: its record and its signer's chain to
-/// it go with the commit), and a split commit with a path undecided here
-/// to `Indexes::paths_unknown`.
+/// Adds a commit whose purge author is not its signer to `Indexes::by_actor` (that thing, a
+/// member of its path, is needed while the commit is held), and a split commit with a path
+/// undecided here to `Indexes::paths_unknown`.
 fn index_acting(core: &mut Core, id: &CommitId, h: &crate::engine::View) {
-    // Interim (issues/stated-path-certificates.md): every listed thing of each stated path, its record needed and chain certified
+    // Interim (issues/stated-path-certificates.md): every listed thing of each stated path
     if let Some(x) = h.other_purge_author() {
-        for a in &h.aspects {
-            core.ix.acting_on.insert((a.tid, h.signer, x), *id);
-            core.ix.chains_on.insert(a.tid, (h.signer, x));
-        }
         core.ix.by_actor.insert((x, h.signer), *id);
     }
     if h.paths.as_ref().is_some_and(|p| h.aspects.iter().any(|a| !p.contains_key(&a.tid))) {
@@ -107,7 +102,6 @@ pub(crate) fn index_commit(core: &mut Core, id: &CommitId, h: &crate::engine::Vi
         if h.purges {
             core.ix.purges_on.insert(a.tid, *id);
         }
-        core.ix.chains_on.insert(a.tid, (h.signer, a.tid));
         if h.form.counted() && h.kind.has_own_writes() && a.lo < a.hi {
             core.ix.ranges.insert((a.tid, a.ak.clone(), h.form.own_source(h.signer, *id)), (a.lo, *id), a.hi);
         }

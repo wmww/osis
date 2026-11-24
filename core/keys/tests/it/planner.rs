@@ -74,10 +74,10 @@ fn jumped_person(b: u8) -> ActorEpochs {
 }
 
 // spec/crypto.md §3, §4, spec/sync-ids.md §6: past the cap derived epochs all sit at n 2^62 − 1 but
-// order as the mint admin's, so after P's rotation removing a node the dependent group U's head (its
+// order as the mint admin's, so after P's rotation removing a node the dependent thing U's head (its
 // epochs before) is stepped every time, not by nonce luck.
 #[test]
-fn jumped_mint_admin_rotation_steps_dependent_group() {
+fn jumped_mint_admin_rotation_steps_a_dependent_thing() {
     let (p, u) = (tid(2), tid(11));
     let s1 = Secret32::from_bytes([0x51; 32]);
     for b in 0..32u8 {

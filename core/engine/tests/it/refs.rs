@@ -601,7 +601,7 @@ fn core_aspects_hold_nothing_spec_data_model_8() {
     let mut m = Mutation::new();
     m.op(d, &ct::HOLDS, osis_crdt::PathOp { path: vec![], op: osis_crdt::Op::Remove(Value::Strong(g)) }).unwrap();
     e.commit(m).unwrap();
-    let core = |a: &str| !(a.starts_with("x:") || a.starts_with("t:") || a == "holds.0" || a == "tickets.0");
+    let core = |a: &str| !(a.starts_with("x:") || a.starts_with("t:") || a == "holds.0");
     for t in [x, y, g, d, e.me()] {
         for r in e.references_to(&t).unwrap().into_iter().filter(|r| core(r.ak.as_str())) {
             assert_eq!(r.kind, RefKind::Weak, "{r:?}");

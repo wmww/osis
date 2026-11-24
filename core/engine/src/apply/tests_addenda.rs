@@ -217,7 +217,7 @@ fn a_long_frontier_overflows_into_the_removers_addenda_spec_perm_5_1() {
     let (mut lp, t) = world(3, &[Role::Write, Role::Write]);
     let es: Vec<(String, CommitId)> = (0..6).map(|i| { let a = format!("x:e{i}.0"); let id = write(&mut lp, 1, t, &a, i); (a, id) }).collect();
     lp.sync(1, 0).unwrap();
-    // room for the chain certificates and a few of Bob's commits, not all
+    // room for the evidence and a few of Bob's commits, not all
     lp.peers[0].engine.list_bound(150);
     let r = remove(&mut lp, 0, t, 1);
     let f = lp.peers[0].engine.core.ix.commits.get(&r).unwrap().view.frontier.clone().unwrap();
@@ -1265,7 +1265,7 @@ fn admin_only_content_is_not_kept_by_a_writers_addendum_spec_perm_5_2() {
 }
 
 // spec/permissions.md §5.2 (addenda; writing), issues/s3-addenda-build.md (the trigger): Bob
-// mints t2 under t and writes on it; Carol receives the edit before t2's creation, so it waits
+// mints t2 with admin t and writes on it; Carol receives the edit before t2's creation, so it waits
 // there for the record, and Alice removes Bob from t (and so t2) without it. Carol judged the
 // removal with no candidate; once the creation arrives the edit applies, received before the
 // removal, and she writes her addendum on t2 then.
@@ -1326,7 +1326,7 @@ fn an_edit_applying_in_its_removals_round_is_vouched_for_spec_perm_5_2() {
     }
 }
 
-// spec/permissions.md §5.2 (addenda; writing), spec/sync-set.md §2 Writing: Bob mints t2 under t,
+// spec/permissions.md §5.2 (addenda; writing), spec/sync-set.md §2 Writing: Bob mints t2 with admin t,
 // held by a strong on t in a commit of his own, and writes on t2; Carol receives both, Alice
 // removes Bob from t (and so t2) without them. Applying the removal, Carol drops the strong, so t2
 // is outside her node closure and the addendum owed there waits; her addendum on t makes the

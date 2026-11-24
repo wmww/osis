@@ -75,7 +75,7 @@ fn fires_go(lp: &mut LocalPeer, fires: &[CommitId]) {
     pass_end(e);
 }
 
-/// Peer 0 mints W under X with X's strong to it (C) and writes W again (D): (W, C, D's bytes, D).
+/// Peer 0 mints W with admin X and X's strong to it (C) and writes W again (D): (W, C, D's bytes, D).
 fn minted(lp: &mut LocalPeer, x: Tid, v: &str) -> (Tid, CommitId, Vec<u8>, CommitId) {
     let e0 = &mut lp.peers[0].engine;
     let rec = e0.thing_record(x, None);
@@ -258,7 +258,7 @@ fn a_commit_that_waited_for_its_record_was_received_when_it_came_spec_commits_4(
     assert!(!e1.frontier(&scope, before).unwrap().commits.contains(&d));
 }
 
-/// Peer 0 mints W under X (C) and writes W's `REG` and `GONE` in one commit (D): (W, C, D's
+/// Peer 0 mints W with admin X (C) and writes W's `REG` and `GONE` in one commit (D): (W, C, D's
 /// bytes, D).
 fn minted_two(lp: &mut LocalPeer, x: Tid) -> (Tid, CommitId, Vec<u8>, CommitId) {
     let e0 = &mut lp.peers[0].engine;

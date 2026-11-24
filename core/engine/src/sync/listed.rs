@@ -1,7 +1,7 @@
 //! The thing lists each read thing's sync IDs carry (spec/sync-judgement.md §1 List blobs),
 //! kept per (read thing, rotation) (`Listed`): `certificate_lists(s, r)` reads one row. A read
-//! thing carries the lists of the things of its closure its actor reads as chain certificates
-//! place (`Engine::cert_reads_in`: a thing list is a chain certificate) and of the things whose
+//! thing carries the lists of the things of its closure its actor reads as every node judges it
+//! (`Engine::cert_reads_in`) and of the things whose
 //! records its certificates name (`Certified::namers`). Which read things carry a thing's lists
 //! is followed per thing (`Effects`; candidates from the closure's members, the read things and
 //! the records named, each by its feed), so a thing entering a sync unit judges itself alone,
@@ -96,8 +96,8 @@ impl Listed {
 
 impl Engine {
     /// The read things whose sync IDs carry thing `x`'s lists (spec/sync-judgement.md §1 List
-    /// blobs): those whose sync unit holds it and whose actor may read it as it places chain
-    /// certificates (`cert_reads_in`, a role at now on the memo clock, so they are the same at
+    /// blobs): those whose sync unit holds it and whose actor may read it as every node judges it
+    /// (`cert_reads_in`, a role at now on the memo clock, so they are the same at
     /// every node), and those whose certificates name its record. Reads per (read thing, `x`).
     fn carriers_of(&mut self, x: &Tid) -> Arc<BTreeSet<Tid>> {
         let read = |e: &Engine, t: &Tid| e.core.certified.read.contains(t);
@@ -113,7 +113,7 @@ impl Engine {
     }
 
     /// The things whose lists read thing `t`'s sync IDs carry, derived whole (`carriers_of` the
-    /// other way): its closure's things its actor reads as chain certificates place, and the
+    /// other way): its closure's things its actor reads as every node judges it, and the
     /// things whose records its certificates name; none once `t` is read no more.
     #[cfg(test)]
     fn carried_lists(&mut self, t: &Tid) -> Result<Arc<BTreeSet<Tid>>> {

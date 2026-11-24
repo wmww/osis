@@ -164,7 +164,7 @@ impl Core {
     }
 
     /// The delete base of `tid` (spec/crypto.md §7): the nearest actor in its record chain,
-    /// itself first, with secrets of its own (all three roles at once, spec/crypto.md §3), or the
+    /// itself first, that is independent (all three roles at once, spec/crypto.md §3), or the
     /// key actor the chain ends at.
     pub(crate) fn delete_base(&self, tid: &Tid) -> Option<DeleteBase> {
         for step in self.record_chain(tid) {
@@ -192,7 +192,7 @@ impl Core {
     }
 
     /// The delete secrets this node may hold along the record chain of `tid`, itself first: a
-    /// delete key a header lists for `tid` is one of them (a thing that got secrets of its own
+    /// delete key a header lists for `tid` is one of them (a thing made independent
     /// keeps content of its derived era under its former base's keys).
     pub(crate) fn delete_chain(&self, tid: &Tid) -> Vec<DeleteSource> {
         let mut out = Vec::new();
@@ -400,7 +400,7 @@ impl Core {
         Some(ActorEpochs::derived(&base, actor))
     }
 
-    /// A thing that got secrets of its own keeps its earlier derived epochs (by history box):
+    /// A thing made independent keeps its earlier derived epochs (by history box):
     /// those derived from an established epoch of the next actor up its record chain are
     /// established (spec/crypto.md §4), so the rotation from them establishes
     /// and sync IDs registered under them can be stepped, and supersede what they derive from the

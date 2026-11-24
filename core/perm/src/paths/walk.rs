@@ -104,8 +104,6 @@ pub struct Counts {
     pub addenda: u64,
     /// Parts and events moved by component merges.
     pub merged: u64,
-    /// Parts judged by the chained pass.
-    pub chained: u64,
 }
 
 impl Counts {
@@ -120,7 +118,6 @@ impl Counts {
             content: f(self.content, o.content),
             addenda: f(self.addenda, o.addenda),
             merged: f(self.merged, o.merged),
-            chained: f(self.chained, o.chained),
         }
     }
 
@@ -193,11 +190,6 @@ fn grantable(role: Lvl, flag: bool) -> Lvl {
     if role == ADMIN || flag { role } else { None }
 }
 
-/// A role's place in `Role::ALL`.
-fn ri(r: Role) -> usize {
-    Role::ALL.iter().position(|&x| x == r).unwrap_or(0)
-}
-
 /// An edge-class part, with what the walk holds of it.
 #[derive(Clone)]
 struct Item {
@@ -227,15 +219,13 @@ struct Item {
     how: Option<How>,
     /// Made by right in the walk as it stands before its key (§5.2 Re-grant).
     by_right: bool,
-    /// Chained (§4 Chained writes).
-    chained: bool,
 }
 
 impl Item {
     /// The item of a slot not in use.
     fn nil() -> Item {
         let none = Tid::from_bytes([0; 15]);
-        Item { key: FIRST, id: WriteId(CommitId([0; 32]), 0), ts: Ts::ZERO, signer: none, on: none, e: E::MAX, value: None, frontier: None, hops: vec![], well: false, leave: false, finalize: false, live: false, verdict: None, dropped: None, seeded: false, how: None, by_right: false, chained: false }
+        Item { key: FIRST, id: WriteId(CommitId([0; 32]), 0), ts: Ts::ZERO, signer: none, on: none, e: E::MAX, value: None, frontier: None, hops: vec![], well: false, leave: false, finalize: false, live: false, verdict: None, dropped: None, seeded: false, how: None, by_right: false }
     }
     fn after(&self) -> Lvl {
         alive(self.value.as_ref(), self.ts)
@@ -262,16 +252,7 @@ impl Item {
     fn rests_on(&self, e: E) -> bool {
         self.rests().any(|h| h == e)
     }
-    /// What the chained pass has it set (§4): its role and what it lets grant, `until`
-    /// disregarded.
-    fn chain_sets(&self) -> [Option<usize>; 2] {
-        let role = self.value.map(|v| v.role);
-        [role.map(ri), grantable(role, flag(self.value.as_ref())).map(|r| GRANT + ri(r))]
-    }
 }
-
-/// `EdgeInfo::chain`'s second half: the levels chained writes let grant.
-const GRANT: usize = 4;
 
 #[derive(Clone)]
 struct EdgeInfo {
@@ -286,15 +267,12 @@ struct EdgeInfo {
     /// The held parts setting it, and those resting on it.
     setters: BTreeSet<(Key, Slot)>,
     resting: BTreeSet<(Key, Slot)>,
-    /// The keys of the chained writes setting it at each role (`Role::ALL`'s order), then of those
-    /// letting grant each role.
-    chain: [BTreeSet<Key>; 8],
 }
 
 impl EdgeInfo {
     fn nil() -> EdgeInfo {
         let none = Tid::from_bytes([0; 15]);
-        EdgeInfo { name: (none, none), record: false, parent: E::MAX, hist: BTreeMap::new(), cuts: Default::default(), setters: BTreeSet::new(), resting: BTreeSet::new(), chain: Default::default() }
+        EdgeInfo { name: (none, none), record: false, parent: E::MAX, hist: BTreeMap::new(), cuts: Default::default(), setters: BTreeSet::new(), resting: BTreeSet::new() }
     }
 }
 
@@ -324,7 +302,6 @@ struct Journal {
     hist: BTreeMap<(E, Key), Option<Entry>>,
     finals: BTreeMap<E, Lvl>,
     firsts: BTreeMap<E, [Option<Key>; 2]>,
-    chained: BTreeSet<WriteId>,
 }
 
 #[derive(Clone)]
@@ -518,7 +495,6 @@ impl Walk {
                 seeded: false,
                 how: None,
                 by_right: false,
-                chained: false,
             });
         }
         out
@@ -526,7 +502,6 @@ impl Walk {
 
     /// Takes in commits not held: their parts join their components, each dirty from its key.
     pub(super) fn take(&mut self, commits: &[Commit]) {
-        let mut chain = BTreeSet::new();
         for c in commits {
             let mut slots = vec![];
             let mut by_thing: BTreeMap<Tid, E> = BTreeMap::new();
@@ -556,18 +531,15 @@ impl Walk {
                 let root = self.find(root);
                 self.comps.entry(root).or_default().order.insert(it.key, s);
                 self.touch(it.e, it.key);
-                chain.insert((it.key, s));
                 slots.push(s);
             }
             self.seed_new(&slots);
             self.commits.insert(c.id, slots);
         }
-        self.chain_fix(chain);
     }
 
     /// Forgets held commits: their parts leave their components, each dirty from its key.
     pub(super) fn forget(&mut self, commits: &[CommitId]) {
-        let mut chain = BTreeSet::new();
         for c in commits {
             for s in self.commits.remove(c).unwrap_or_default() {
                 let it = self.it(s).clone();
@@ -576,12 +548,6 @@ impl Walk {
                 self.void.remove(&it.id);
                 self.unapply(s);
                 self.note_first(it.e);
-                if it.chained {
-                    self.journal.chained.insert(it.id);
-                    if self.chain_put(s, false) {
-                        chain.extend(self.ed(it.e).resting.range((Excluded((it.key, s)), Unbounded)).copied());
-                    }
-                }
                 self.edges[it.e].setters.remove(&(it.key, s));
                 for h in it.rests() {
                     self.edges[h].resting.remove(&(it.key, s));
@@ -598,7 +564,6 @@ impl Walk {
                 self.freed.push(s);
             }
         }
-        self.chain_fix(chain);
     }
 
     pub(super) fn holds(&self, c: &CommitId) -> bool {
@@ -708,7 +673,6 @@ impl Walk {
                 ch.regrant.insert(self.ed(e).name);
             }
         }
-        ch.chained = j.chained;
         ch
     }
 
@@ -1107,69 +1071,6 @@ impl Walk {
         memo.get(&l).copied().unwrap_or(false)
     }
 
-    // ---- the chained pass (§4 Chained writes) ----
-
-    /// The highest of levels `base..base + 4` a chained write before `k` set on `e`.
-    fn chain_max(&self, e: E, base: usize, k: Key) -> Lvl {
-        let ed = self.ed(e);
-        if ed.record {
-            return ADMIN;
-        }
-        Role::ALL.into_iter().rev().find(|&r| ed.chain.get(base + ri(r)).and_then(BTreeSet::first).is_some_and(|x| *x < k))
-    }
-
-    fn chain_judge(&self, s: Slot) -> bool {
-        let it = self.it(s);
-        if !it.well {
-            return false;
-        }
-        let least = it.hops.iter().map(|&h| self.chain_max(h, 0, it.key)).min().unwrap_or(ADMIN);
-        if it.finalize || it.leave {
-            return least >= if it.finalize { Some(Role::Write) } else { ADMIN };
-        }
-        let flagged = || {
-            let (Some(r), Some((&last, before))) = (it.flag_grant(), it.hops.split_last()) else { return false };
-            self.chain_max(last, GRANT, it.key) >= Some(r) && before.iter().all(|&h| self.chain_max(h, 0, it.key) >= Some(r))
-        };
-        least == ADMIN || flagged()
-    }
-
-    /// Puts what chained part `s` sets in its edge's levels, or takes it out; whether it sets
-    /// anything.
-    fn chain_put(&mut self, s: Slot, on: bool) -> bool {
-        let it = self.it(s).clone();
-        let sets = if it.leave || it.finalize { [None; 2] } else { it.chain_sets() };
-        for i in sets.into_iter().flatten() {
-            if let Some(set) = self.edges[it.e].chain.get_mut(i) {
-                if on { set.insert(it.key) } else { set.remove(&it.key) };
-            }
-        }
-        sets != [None; 2]
-    }
-
-    /// Judges `todo` in key order, and after each part whose chained-ness moved the parts resting
-    /// on the edge it sets.
-    fn chain_fix(&mut self, mut todo: BTreeSet<(Key, Slot)>) {
-        while let Some((k, s)) = todo.pop_first() {
-            if !self.it(s).live || self.it(s).key != k {
-                continue;
-            }
-            self.counts.chained += 1;
-            let ch = self.chain_judge(s);
-            if ch == self.it(s).chained {
-                continue;
-            }
-            self.items[s].chained = ch;
-            let (id, e) = (self.it(s).id, self.it(s).e);
-            if !self.journal.chained.remove(&id) {
-                self.journal.chained.insert(id);
-            }
-            if self.chain_put(s, ch) {
-                todo.extend(self.ed(e).resting.range((Excluded((k, s)), Unbounded)).copied());
-            }
-        }
-    }
-
     // ---- readings ----
 
     fn status_of(&self, s: Slot) -> Option<Status> {
@@ -1194,10 +1095,6 @@ impl Walk {
 
     pub(super) fn key_of(&self, id: &WriteId) -> Option<Key> {
         self.ids.get(id).map(|&s| self.it(s).key)
-    }
-
-    pub(super) fn is_chained(&self, id: &WriteId) -> Option<bool> {
-        self.ids.get(id).map(|&s| self.it(s).chained)
     }
 
     fn entries(&self, holder: &Tid, target: &Tid) -> impl DoubleEndedIterator<Item = &Entry> + '_ {
@@ -1340,13 +1237,6 @@ impl Walk {
     /// Per edge with one, its first points for write and for admin.
     pub(super) fn first_points(&self) -> BTreeMap<(Tid, Tid), [Option<Key>; 2]> {
         (0..self.edges.len()).map(|e| (self.ed(e).name, self.firsts(e))).filter(|(_, p)| p.iter().any(Option::is_some)).collect()
-    }
-
-    /// Per edge a chained write set (§4 Chained writes), the key of its first chained write giving
-    /// write and giving admin, `until` disregarded.
-    pub(super) fn chained(&self) -> BTreeMap<(Tid, Tid), [Option<Key>; 2]> {
-        let first = |e: &EdgeInfo, r: Role| e.chain.iter().take(GRANT).skip(ri(r)).filter_map(BTreeSet::first).min().copied();
-        self.edges.iter().map(|e| (e.name, LEVELS.map(|r| first(e, r)))).filter(|(_, f)| f.iter().any(Option::is_some)).collect()
     }
 
     /// The dispute candidates (§5.1 Trust set): the held lowerings of another holder's edge,

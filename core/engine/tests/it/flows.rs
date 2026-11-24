@@ -1338,7 +1338,7 @@ fn inside_member_departure_leaves_holder_out_spec_perm_3() {
 }
 
 // spec/permissions.md §3, spec/crypto.md §4 (orphaned): a doc whose mint admin is a dependent thing T
-// in holder H gets secrets of its own on its first grant; T gets its own first, so the rotation
+// in holder H becomes independent on its first grant; T gets its own first, so the rotation
 // boxes T and H's writer reads and writes the doc. Left out (T has no keyset), the doc's write
 // epoch was orphaned at that writer, whose rotation was orphaned at the admin: they rotated it
 // back and forth for good.
@@ -2331,7 +2331,7 @@ fn chat_by_record_spec_perm_1() {
     assert_eq!(aks, BTreeSet::from(["created.0"]), "on O; beside it the account root's strong holding it");
     assert_eq!(lp.peers[0].engine.mint_admin(&o), Some(ps[0]));
     assert_eq!(lp.peers[0].engine.role_on(&o), Some(Role::Admin));
-    assert!(lp.peers[0].engine.get(&o, &ak("keys.0")).unwrap().is_some(), "secrets of its own at its creation");
+    assert!(lp.peers[0].engine.get(&o, &ak("keys.0")).unwrap().is_some(), "independent at its creation");
     for (p, r) in [(ps[1], Role::Admin), (ps[2], Role::Write), (ps[3], Role::Write)] {
         lp.peers[0].engine.grant(&o, &p, &edge_of(r)).unwrap();
     }
@@ -2414,8 +2414,8 @@ fn record_edge_removal_any_order_spec_perm_2() {
     }
 }
 
-// spec/permissions.md §3, spec/crypto.md §3: a dependent thing (here under account 0's root D)
-// derives from its mint admin; the first grant gives it secrets of its own first (its rotation
+// spec/permissions.md §3, spec/crypto.md §3: a dependent thing (here minted with admin account 0's root D)
+// derives from its mint admin; the first grant makes it independent first (its rotation
 // before the grant, history carrying the derived epochs), and once the mint admin is removed it
 // opens nothing written since.
 #[test]
@@ -2430,7 +2430,7 @@ fn first_grant_on_dependent_thing_rotates_first_spec_perm_3() {
     let aks = |c: &CommitId| lp.peers[0].engine.header(c).unwrap().aspects.iter().filter(|a| a.tid == o).map(|a| a.ak.as_str().to_string()).collect::<BTreeSet<String>>();
     let new: Vec<CommitId> = done.commits.iter().filter(|c| !before.contains(c)).copied().collect();
     assert_eq!(new.len(), 2, "the rotation, then the grant");
-    assert!(aks(&new[0]).contains("keys.0") && !aks(&new[0]).contains("roles.0"), "secrets of its own first");
+    assert!(aks(&new[0]).contains("keys.0") && !aks(&new[0]).contains("roles.0"), "made independent first");
     assert!(aks(&new[1]).contains("roles.0"));
     spread(&mut lp);
     assert_eq!(lp.peers[1].engine.get(&o, &ak("t:reg.0")).unwrap(), Some(s("derived")), "the grantee reads the derived write");
@@ -2630,7 +2630,7 @@ fn mint_admin_record_edge_removed_by_its_node_spec_permissions_2() {
 }
 
 // spec/permissions.md §1 (mint admin removable), notes/moves.md: a move is a grant then a
-// removal. T made in a content commit under account A (its mint admin); A grants holder B admin
+// removal. T minted in a content commit with admin account A; A grants holder B admin
 // on T, then B's admin removes A's record edge: T keeps its tid and content, B's nodes read and
 // write it, A's node opens nothing written since (the removal rotated T) and cannot write it.
 #[test]
