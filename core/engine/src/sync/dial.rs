@@ -13,7 +13,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 /// A node's URLs from its `reach.0` items: the one `peer://` URL listing them (what its `dial^.0`
-/// entry and its grants' dial hints carry).
+/// entry carries).
 pub(crate) fn urls_of(items: &[String]) -> Vec<String> {
     vec![peer_url(items)]
 }
