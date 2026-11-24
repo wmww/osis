@@ -16,6 +16,7 @@
 //! wants (`Net`), or, per sync ID, every commit the sender carries there (`Sync`).
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
+pub mod entry;
 pub mod keys;
 
 pub type T = usize;

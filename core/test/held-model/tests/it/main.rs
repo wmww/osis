@@ -19,6 +19,7 @@ mod spec_story;
 mod spec_reach;
 mod spec_gaps;
 mod spec_holders;
+mod spec_entry;
 mod spec_joint;
 mod spec_undo;
 mod spec_waits;
