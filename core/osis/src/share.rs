@@ -773,8 +773,7 @@ impl Osis {
         if let Some(at) = self.process_at("profile")? {
             return self.forward(&at, crate::port::method::PROFILE, ());
         }
-        // Interim (notes/accounts-switch-brief.md): no profile until making an account is built
-        let b = self.engine(|e| e.app_record(crate::handle::PROFILE))?.ok_or_else(|| Error::Unsupported("the account's profile: not built yet".into()))?;
+        let b = self.engine(|e| e.app_record(crate::handle::PROFILE))?.ok_or_else(|| Error::Storage("no profile record".into()))?;
         Ok(Tid::from_bytes(b.as_slice().try_into().map_err(|_| Error::Storage("profile record".into()))?))
     }
 
@@ -867,8 +866,9 @@ fn redeem_started<R>(db: &Osis, link: &osis_blob::ShareLink, started: &mut bool,
     if std::mem::replace(started, true) {
         return None;
     }
+    let joiner = db.account_root();
     let w = db.locked(|l| {
-        let w = l.node.redeem(link);
+        let w = l.node.redeem(link, joiner);
         l.handle(osis_sync::Input::Wrote);
         w
     });

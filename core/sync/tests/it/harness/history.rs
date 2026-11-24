@@ -306,9 +306,7 @@ fn strong_in(m: &mut Mutation, from: Tid, to: Tid, on: bool) -> osis_engine::Res
     Ok(())
 }
 
-fn root_of(e: &Engine) -> osis_engine::Result<Tid> {
-    e.node_root().ok_or(osis_engine::Error::Misuse("no node root"))
-}
+
 
 /// Plays one history write; a note of what came of it.
 pub fn step(w: &mut World, s: &Step) -> String {
@@ -418,12 +416,11 @@ fn make(w: &mut World, i: usize, mint_admin: Option<usize>) -> Result<String, St
         None => None,
     };
     let v = w.history.value();
+    let d = w.node(i).account.ok_or("no account")?;
     match w.write(i, |e| -> osis_engine::Result<_> {
-        // minted with the node thing (the node root is local: nothing shared is its dependent),
-        // held from the node root, or from the thing it is minted with
-        let d = root_of(e)?;
+        // minted with the account, held from it, or from the thing it is minted with
         let mut m = Mutation::new();
-        let t = m.create(e.thing_record(admin.unwrap_or(e.me()), None));
+        let t = m.create(e.thing_record(admin.unwrap_or(d), None));
         m.set(t, &value_ak(), &Value::Str(v.clone()))?;
         strong_in(&mut m, admin.unwrap_or(d), t, true)?;
         Ok((t, d, e.commit(m)?))
@@ -517,11 +514,9 @@ fn strong(w: &mut World, i: usize, from: Option<usize>, k: usize, on: bool) -> R
         },
         None => None,
     };
+    let account = w.node(i).account.ok_or("no account")?;
     w.write(i, |e| -> osis_engine::Result<_> {
-        let from = match from {
-            Some(f) => f,
-            None => root_of(e)?,
-        };
+        let from = from.unwrap_or(account);
         let mut m = Mutation::new();
         strong_in(&mut m, from, t, on)?;
         e.commit(m)
@@ -694,7 +689,7 @@ pub fn reference(w: &mut World, lost: &BTreeSet<CommitId>) -> Peer {
 /// (`reference`), and learns every read secret of each that a node holds and it does not.
 fn hold_all(w: &mut World, r: &mut Peer, held: &mut BTreeSet<Tid>) {
     let mut all: Vec<Tid> = w.history.things.iter().map(|x| x.0).collect();
-    all.extend((0..w.len()).filter_map(|i| w.engine(i).node_root()));
+    all.extend((0..w.len()).filter_map(|i| w.node(i).account));
     for t in &all {
         for i in 0..w.len() {
             let Some(es) = w.engine(i).epochs(t) else { continue };
@@ -746,7 +741,8 @@ impl Model {
                 && !accounts.contains(&a)
             {
                 accounts.push(a);
-                roots.push(w.engine(i).node_root().expect("a node root"));
+                // the account is its own root: home is the account (notes/accounts-switch-brief.md)
+                roots.push(a);
             }
         }
         let na = accounts.len();

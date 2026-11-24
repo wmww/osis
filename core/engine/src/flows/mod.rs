@@ -21,6 +21,7 @@ pub(crate) mod roots;
 
 pub use edges::{Demotion, Removal};
 pub use links::{HeldLink, LINK_SEED, LinkSpec};
+pub use roots::Account;
 
 use crate::engine::{Core, Engine, Tx};
 use crate::error::{Error, Result};

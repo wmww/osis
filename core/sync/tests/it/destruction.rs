@@ -53,7 +53,6 @@ fn gone(w: &mut World, i: usize, t: Tid) {
 // part on it), spec/sync-judgement.md §2:
 // node 0's purge of t's creation reaches node 2, which reads t absent, also after a restart.
 #[test]
-#[ignore = "accounts: making an account"]
 fn a_purged_creation_destroys_the_thing_at_every_node_spec_commits_5() {
     let (mut w, t, _) = three();
     purge_thing(&mut w, 0, t);
@@ -71,7 +70,6 @@ fn a_purged_creation_destroys_the_thing_at_every_node_spec_commits_5() {
 // after it is a part on an unknown thing): node 2, cut off, writes t after node 0 destroyed it;
 // back, its write is applied nowhere and t stays destroyed everywhere.
 #[test]
-#[ignore = "accounts: making an account"]
 fn a_write_after_the_destruction_counts_nowhere_spec_commits_5() {
     let (mut w, t, _) = three();
     w.partition(0, 2);
@@ -98,7 +96,6 @@ fn a_write_after_the_destruction_counts_nowhere_spec_commits_5() {
 // keeps the request under S, and node 2, away for all of it, learns the destruction from S once
 // back.
 #[test]
-#[ignore = "accounts: making an account"]
 fn a_node_away_past_the_floor_learns_the_destruction_spec_commits_5() {
     let (mut w, t, s) = three();
     w.power_off(2);

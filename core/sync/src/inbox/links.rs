@@ -49,6 +49,9 @@ struct Pending {
     link: ShareLink,
     /// When this node started redeeming it (node clock): its follow time runs from here.
     since: WallMs,
+    /// Whom the join grants K (spec/permissions.md §7 Redeem: an own thing or a thing its own
+    /// things administer, such as the node's account).
+    joiner: Tid,
     joined: Option<CommitId>,
 }
 
@@ -61,7 +64,7 @@ impl Pending {
     fn encode(&self) -> Result<Vec<u8>> {
         let text = self.link.to_text().map_err(|_| crate::types::Error::NotBuilt("link text"))?;
         let joined = self.joined.map_or(vec![0], |c| [&[1u8][..], &c.0].concat());
-        Ok([joined, self.since.0.to_be_bytes().to_vec(), text.into_bytes()].concat())
+        Ok([joined, self.since.0.to_be_bytes().to_vec(), self.joiner.as_bytes().to_vec(), text.into_bytes()].concat())
     }
     fn decode(v: &[u8]) -> Option<Pending> {
         let (joined, rest) = match v.first()? {
@@ -69,8 +72,9 @@ impl Pending {
             _ => (Some(CommitId(v.get(1..33)?.try_into().ok()?)), v.get(33..)?),
         };
         let since = WallMs(u64::from_be_bytes(rest.get(..8)?.try_into().ok()?));
-        let link = ShareLink::from_text(std::str::from_utf8(rest.get(8..)?).ok()?).ok()?;
-        Some(Pending { link, since, joined })
+        let joiner = Tid::from_bytes(rest.get(8..8 + osis_base::format::TID_LEN)?.try_into().ok()?);
+        let link = ShareLink::from_text(std::str::from_utf8(rest.get(8 + osis_base::format::TID_LEN..)?).ok()?).ok()?;
+        Some(Pending { link, since, joiner, joined })
     }
 }
 
@@ -155,7 +159,7 @@ impl Redemptions {
         Ok(())
     }
 
-    pub(super) fn redeem(&mut self, h: &mut Here<'_>, link: &ShareLink) -> Result<Waiting> {
+    pub(super) fn redeem(&mut self, h: &mut Here<'_>, link: &ShareLink, joiner: Tid) -> Result<Waiting> {
         // a redeem before this start's: the kept row, with its start
         if !self.pending.contains_key(&link.k)
             && let Some(p) = h.store.with_tx(|t| t.get_local(&row_key(&link.k)))?.as_deref().and_then(Pending::decode)
@@ -172,7 +176,7 @@ impl Redemptions {
         if h.engine.link_ended(link) {
             return Ok(Waiting::Never("the link has ended"));
         }
-        let p = Pending { link: link.clone(), since: h.now, joined: None };
+        let p = Pending { link: link.clone(), since: h.now, joiner, joined: None };
         let row = p.encode()?;
         h.store.with_tx(|t| t.put_local(&row_key(&link.k), &row, Shred::Yes))?;
         self.follow(h, link.k, p)?;
@@ -182,7 +186,7 @@ impl Redemptions {
     pub(super) fn settle(&mut self, h: &mut Here<'_>) -> Result<bool> {
         let mut acted = false;
         for k in self.ready.due() {
-            let Some((link, since)) = self.pending.get(&k).map(|p| (p.link.clone(), p.since)) else {
+            let Some((link, since, joiner)) = self.pending.get(&k).map(|p| (p.link.clone(), p.since, p.joiner)) else {
                 self.ready.unwant(&k);
                 continue;
             };
@@ -200,10 +204,9 @@ impl Redemptions {
             }
             // kept wanted until the join is written: a failed write is tried again at the next
             // change of what it read
-            let me = h.engine.me();
-            let Some(c) = h.engine.redeem(&link, &me, link.single_use)?.commits.first().copied() else { continue };
+            let Some(c) = h.engine.redeem(&link, &joiner, link.single_use)?.commits.first().copied() else { continue };
             self.ready.unwant(&k);
-            let p = Pending { link, since, joined: Some(c) };
+            let p = Pending { link, since, joiner, joined: Some(c) };
             let row = p.encode()?;
             h.store.with_tx(|t| t.put_local(&row_key(&k), &row, Shred::Yes))?;
             self.pending.insert(k, p);

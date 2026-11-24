@@ -111,7 +111,8 @@ fn a_script_plays_on_a_fixture() {
     let steps = [Step::Partition(0, 1), Step::Run, Step::PowerOff(1), Step::Advance(60_000), Step::PowerOn(1), Step::Heal, Step::Run];
     play(&mut w, &steps, "world::a_script_plays_on_a_fixture".into());
     assert_eq!((w.node(0).account, w.node(1).account), accounts);
-    assert_eq!(Some(w.engine(1).me()), accounts.1, "the reopened node acts as its own node thing");
+    let a1 = accounts.1.expect("an account");
+    assert!(w.engine(1).closure_holds(&a1) && w.engine(1).mint_admin(&a1) == Some(w.engine(1).me()), "the reopened node holds the account it minted");
 }
 
 // spec: none (test harness): a shrink finds a planted failure among real steps in few candidates
@@ -135,7 +136,6 @@ fn a_shrink_finds_a_planted_failure_in_few_candidates() {
 // failing (`capped`); under the cap it runs as ever, and a world's own lower cap still panics as
 // a storm, its message naming the cap and that it counts the world's whole run.
 #[test]
-#[ignore = "accounts: making an account"]
 fn a_shrink_candidate_past_its_cap_does_not_fail() {
     use crate::harness::{Step::*, capped, contacts, play};
     let steps = [PowerOff(1), PowerOn(1), Run];

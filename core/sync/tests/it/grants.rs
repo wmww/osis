@@ -16,8 +16,8 @@ fn ak() -> Ak {
 /// A thing node `i` mints with its account root as admin, which holds it, with value `v`.
 fn make(w: &mut World, i: usize, v: &str) -> Tid {
     let v = v.to_owned();
+    let d = w.node(i).account.unwrap();
     w.write(i, |e| {
-        let d = e.node_root().unwrap();
         let mut m = Mutation::new();
         let t = e.new_thing(&mut m, d);
         m.set(t, &ak(), &Value::Str(v)).unwrap();
@@ -43,7 +43,6 @@ fn granted() -> (World, Tid) {
 // spec/sync-inbox.md §5, spec/sync-set.md §2: Alice grants Bob read on T; Bob holds T by a strong
 // in his account root, syncs T's sync ID over real connections and reads T.
 #[test]
-#[ignore = "accounts: making an account"]
 fn a_granted_thing_held_by_a_strong_syncs_spec_sync_inbox_5() {
     let (mut w, t) = granted();
     root_strong(&mut w, 1, t, true);
@@ -130,12 +129,11 @@ fn a_card_made_after_pairing_carries_the_inbox_spec_sync_inbox_5() {
 // a granted thing (the write's outcome unknown) and restarts in place. With its strong, as the
 // store holds it or written again, it enters the thing and reads it.
 #[test]
-#[ignore = "accounts: making an account"]
 fn a_crash_after_holding_keeps_the_thing_entered_spec_sync_set_2() {
     let (mut w, t) = granted();
     w.disk_fault(1, 1, crate::harness::DiskFault::Crash);
+    let d = w.node(1).account.unwrap();
     let r = w.write(1, |e| {
-        let d = e.node_root().unwrap();
         let mut m = Mutation::new();
         m.op(d, &ct::HOLDS, PathOp { path: vec![], op: Op::Add(Value::Strong(t)) }).unwrap();
         e.commit(m).map(|_| ())
@@ -143,7 +141,7 @@ fn a_crash_after_holding_keeps_the_thing_entered_spec_sync_set_2() {
     assert!(r.is_err() && w.crashes == 1, "the strong's write crashed, its outcome unknown");
     w.run();
     // the store is the truth: a strong it lost is written again
-    let d = w.engine(1).node_root().unwrap();
+    let d = w.node(1).account.unwrap();
     if !w.engine(1).get_typed(&d, &ct::HOLDS).unwrap().unwrap_or_default().contains(&osis_base::Ref::Strong(osis_base::Strong(t))) {
         root_strong(&mut w, 1, t, true);
     }
@@ -163,8 +161,8 @@ fn held(role: Role) -> (World, Tid) {
 
 /// Node `i` adds (`on`) or removes its account root's strong to `t`; run.
 fn root_strong(w: &mut World, i: usize, t: Tid, on: bool) {
+    let d = w.node(i).account.unwrap();
     w.write(i, |e| {
-        let d = e.node_root().unwrap();
         let mut m = Mutation::new();
         let v = Value::Strong(t);
         m.op(d, &ct::HOLDS, PathOp { path: vec![], op: if on { Op::Add(v) } else { Op::Remove(v) } }).unwrap();
@@ -178,7 +176,6 @@ fn root_strong(w: &mut World, i: usize, t: Tid, on: bool) {
 // him to sync), then grants him read again; Bob, his strong kept, reads her next write: the new
 // grant reaches him, so the role commits he holds give read again.
 #[test]
-#[ignore = "accounts: making an account"]
 fn a_reader_granted_again_reads_again_spec_sync_set_2() {
     for lowered in [false, true] {
         let (mut w, t) = held(Role::Read);

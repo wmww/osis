@@ -422,13 +422,14 @@ impl Node {
         }
     }
 
-    /// Redeems a share link (spec/sync-inbox.md §6): first contact, kept until the join is held
-    /// elsewhere. `Done` once the join is written.
-    pub fn redeem(&mut self, link: &osis_blob::ShareLink) -> Waiting {
+    /// Redeems a share link (spec/sync-inbox.md §6) for `joiner` (an own thing or a thing its own
+    /// things administer, such as the node's account, spec/permissions.md §7): first contact,
+    /// kept until the join is held elsewhere. `Done` once the join is written.
+    pub fn redeem(&mut self, link: &osis_blob::ShareLink, joiner: osis_base::Tid) -> Waiting {
         // its follow time runs from now (`Policy::follow_link_ms`)
         self.read_clocks();
         let mut out = Vec::new();
-        let w = self.inbox.redeem(&mut cx!(self, &mut out), link);
+        let w = self.inbox.redeem(&mut cx!(self, &mut out), link, joiner);
         self.driver.pending.extend(out);
         w
     }

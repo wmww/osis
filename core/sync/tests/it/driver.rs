@@ -101,7 +101,6 @@ fn a_silent_dial_times_out_and_redials_spec_sync_opens_1() {
 // is the node's to keep whatever its wall clock does: with both nodes' clocks gone back an hour
 // while each waits to redial the other, they connect within a pause of the heal, not an hour on.
 #[test]
-#[ignore = "accounts: making an account"]
 fn a_clock_gone_back_delays_no_redial_spec_sync_opens_1() {
     let mut w = contacts();
     w.partition(0, 1);
@@ -317,7 +316,6 @@ fn a_store_failure_restarts_in_place_once_per_stretch() {
 // node's steps go on and it takes what comes after (else each step failed at that commit, and
 // restarted, for good).
 #[test]
-#[ignore = "accounts: making an account"]
 fn a_commit_faulting_on_apply_is_set_aside_and_sync_goes_on_spec_commits_4() {
     use crate::harness::history::{Gives, three, value_ak};
     use osis_base::{Ak, Value};

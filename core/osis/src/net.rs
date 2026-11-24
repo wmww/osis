@@ -7,7 +7,7 @@
 use crate::error::{Error, Result};
 use crate::handle::{Locked, WeakOsis};
 use crate::watch::lock;
-use osis_base::{Clock, ManualClock, Mono, WallMs};
+use osis_base::{Clock, ManualClock, Mono, Tid, WallMs};
 use osis_sync::{ConnId, Input, Links, Listening, NodeKey, Out, TransportLinks, apply};
 use osis_transport::{StaticSecret, Transport};
 use std::collections::{BTreeMap, VecDeque};
@@ -284,13 +284,14 @@ impl crate::Osis {
     }
 
     /// Publishes where this node is dialed after it listened under `key` at `addrs` (spec/sync-
-    /// transport.md §3, §5 Key change; spec/sync-set.md §1): its `reach.0`, listing each
-    /// `peer://` listener's global addresses (an unspecified one standing for `routes`) and
-    /// relays, and its entry in its profile's dial list. A failed write is published again at the
-    /// next listen.
+    /// transport.md §3, §5 Key change; spec/sync-set.md §1): its entry, listing each `peer://`
+    /// listener's global addresses (an unspecified one standing for `routes`) and relays, in the
+    /// dial lists of its node thing, its account and the account's profile. A failed write is
+    /// published again at the next listen.
     pub(crate) fn publish_reach(&self, key: [u8; 32], addrs: &[osis_blob::Address], routes: &[std::net::IpAddr]) {
         let items: Vec<String> = addrs.iter().flat_map(|a| osis_transport::p2p::reach_items(&a.url, routes)).collect();
-        let _ = self.engine(|e| e.publish_reach(key, items));
+        let also: Vec<Tid> = std::iter::once(self.inner.account_root).chain(self.profile().ok()).collect();
+        let _ = self.engine(|e| e.publish_reach(key, items, &also));
     }
 }
 

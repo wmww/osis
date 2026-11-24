@@ -127,10 +127,9 @@ pub struct WNode {
     pub store: Store,
     clock: Arc<NodeClock>,
     pub key: NodeKey,
-    /// The thing it acts as: its node thing (`Engine::me`).
+    /// Its account (spec/permissions.md §8): the thing it acts for, signing as its node thing.
     pub account: Option<Tid>,
-    /// Its account's profile thing: brought back by making an account
-    /// (notes/accounts-switch-brief.md).
+    /// Its account's profile thing.
     pub profile: Option<Tid>,
 }
 
@@ -623,13 +622,15 @@ impl World {
         self.rng.next_u64()
     }
 
-    /// A new node acting as its node thing, on LAN segment 0 with a public address, listening
-    /// under a fresh key and publishing where (`publish`). Settled once.
+    /// A new node with an account of its own (`Engine::make_account`, as the product's
+    /// `Osis::create`), on LAN segment 0 with a public address, listening under a fresh key and
+    /// publishing where (`publish`). Settled once.
     pub fn add_node(&mut self) -> usize {
         let i = self.add_bare_node();
-        let me = self.engine(i).me();
+        let (acc, _) = self.write(i, |e| e.make_account()).expect("an account");
         if let Some(n) = self.nodes.get_mut(i) {
-            n.account = Some(me);
+            n.account = Some(acc.thing);
+            n.profile = Some(acc.profile);
         }
         self.publish(i);
         i
@@ -641,11 +642,13 @@ impl World {
         unimplemented!("accounts: pairing")
     }
 
-    /// Node `i` publishes its address as it listens (`Engine::publish_reach`: its `reach.0` and
-    /// its profile's dial list entry), as the product's `listen` does; then it is stepped.
+    /// Node `i` publishes its address as it listens (`Engine::publish_reach`: its entry in the
+    /// dial lists of its node thing, its account and the profile), as the product's `listen`
+    /// does; then it is stepped.
     pub fn publish(&mut self, i: usize) {
         let (key, items) = (self.node(i).key.0, self.net.reach.items(i));
-        self.write(i, |e| e.publish_reach(key, items)).expect("publish reach");
+        let also: Vec<Tid> = self.node(i).account.into_iter().chain(self.node(i).profile).collect();
+        self.write(i, |e| e.publish_reach(key, items, &also)).expect("publish reach");
     }
 
     /// Node `i`'s read link to `target` as the product's `make_link` makes it (spec/wire.md §10:
@@ -659,7 +662,9 @@ impl World {
 
     /// Node `i` redeems `link` (`Node::redeem`), then it is stepped.
     pub fn redeem(&mut self, i: usize, link: &osis_blob::ShareLink) -> osis_sync::types::Waiting {
-        let w = self.nodes.get_mut(i).expect("no such node").node.redeem(link);
+        let n = self.nodes.get_mut(i).expect("no such node");
+        let joiner = n.account.unwrap_or_else(|| n.node.engine().me());
+        let w = n.node.redeem(link, joiner);
         self.deliver(i, Input::Wrote);
         w
     }

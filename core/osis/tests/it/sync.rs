@@ -298,16 +298,17 @@ fn a_revoked_links_joiner_stays_until_removed_spec_permissions_7() {
     a.revoke_link(id).unwrap();
     assert!(a.links().unwrap().is_empty(), "ended");
     a.revoke_link(id).unwrap();
-    let joined = |a: &Osis| a.holders(t).unwrap().into_iter().any(|h| h.actor == b.me());
+    // the joiner: b's account (spec/permissions.md §7 Redeem)
+    let joiner = b.account_root();
+    let joined = |a: &Osis| a.holders(t).unwrap().into_iter().any(|h| h.actor == joiner);
     assert!(joined(&a), "the joiner keeps its role");
-    a.set_role(t, b.me(), None, osis::SetRoleOpts::default()).unwrap();
+    a.set_role(t, joiner, None, osis::SetRoleOpts::default()).unwrap();
     assert!(!joined(&a), "removed");
 }
 
 // spec/sync-inbox.md §5 (contact card), spec/sync-set.md §4: importing a card gives the account,
 // whose keys are then here (a grant to it goes through).
 #[test]
-#[ignore = "accounts: making an account"]
 fn importing_a_card_gives_the_account_spec_sync_inbox_5() {
     let c = clock();
     let net = ManualNet::new(c.clone());
@@ -315,12 +316,12 @@ fn importing_a_card_gives_the_account_spec_sync_inbox_5() {
     a.listen(&["peer://127.0.0.1:1".parse().unwrap()]).unwrap();
     let b = on(&net, 51, &c);
     let who = drive(&net, b.import_contact(&a.contact_card().unwrap())).unwrap();
-    assert_eq!(who, a.me());
-    assert_eq!(b.profile_of(a.me()).unwrap(), Some(a.profile().unwrap()));
+    assert_eq!(who, a.account_root());
+    assert_eq!(b.profile_of(who).unwrap(), Some(a.profile().unwrap()));
     let mut w = b.write();
     let t = w.create_held().unwrap();
     w.commit().unwrap();
-    b.grant(t, a.me(), Role::Read, osis::GrantOpts::default()).unwrap();
+    b.grant(t, who, Role::Read, osis::GrantOpts::default()).unwrap();
 }
 
 // ---- leaving (spec/sync-set.md §3) ----

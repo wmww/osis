@@ -114,7 +114,6 @@ fn holds_as_sibling(w: &mut World, n: usize, sib: usize) {
 // history; node 1 holds t. Through sync alone it reads t's current value, holds no body carrying
 // an earlier write of it, and reads what node 0 writes next.
 #[test]
-#[ignore = "accounts: making an account"]
 fn a_from_now_grantee_reads_the_current_state_and_no_earlier_write_spec_crypto_4() {
     use crate::harness::Step::*;
     use crate::harness::history::{value_ak, world_of};
@@ -153,7 +152,6 @@ fn a_from_now_grantee_reads_the_current_state_and_no_earlier_write_spec_crypto_4
 // record blob, which node 1 learns for t's strong to p. A thing q made after the cut is minted
 // above it: its record goes in its minting alone.
 #[test]
-#[ignore = "accounts: making an account"]
 fn a_from_now_grantee_reads_a_dependent_thing_minted_with_it_spec_crypto_4() {
     use crate::harness::Step::*;
     use crate::harness::history::{value_ak, world_of};

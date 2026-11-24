@@ -117,11 +117,11 @@ impl Engine {
         }
         let grant = Edge { role: edge.role, until: None, may_grant: false, retain: false, floor: None };
         // L signs with its own role, so the grant deposits only below write; a redeem holds K
-        // and the target (spec/sync-set.md §4): strongs to both in the node root, unless the
-        // node closure holds them
+        // and the target (spec/sync-set.md §4): strongs to both in the joiner's `holds.0`,
+        // unless the node closure holds them
         let target = link.target;
         self.grant_signed_then(Some(l), k, grantee, &grant, single_use, crate::flows::edges::History::All, move |tx| {
-            let Some(d) = tx.core.node_root else { return Ok(()) };
+            let d = grantee;
             let mut m = Mutation::new();
             for t in [k, target].into_iter().filter(|t| !tx.core.ix.closure.holds(t)) {
                 m.op(d, &ct::HOLDS, PathOp { path: vec![], op: Op::Add(Value::Strong(t)) })?;
@@ -151,8 +151,8 @@ impl Engine {
         self.edge_gone(&link.k, &l) || self.edge_gone(&link.target, &link.k)
     }
 
-    /// Whether `k` is a link this account joined that has ended (spec/permissions.md §7, Joiner's
-    /// leave): it holds K by a grant (the sharer holds it by K's record), and the held role
+    /// Whether `k` is a link a joiner this node acts as joined that has ended (spec/permissions.md
+    /// §7, Joiner's leave): it holds K by a grant (`joiner_of`), and the held role
     /// history shows K's edge on the target K's record names removed or past `until`. The caller
     /// leaves K (`leave_link`): sync's duty follows it per thing (`osis_sync::life`). Only K's
     /// creator wrote that target, and it may remove any joiner anyway. Reads the clock up to the
@@ -163,23 +163,33 @@ impl Engine {
         self.joined_link(k) && self.edge_gone(&target, k)
     }
 
-    /// Whether this node holds link actor `k` by a live grant (a join; K's mint admin holds it
-    /// by K's record): a redeem of its link writes no other (spec/permissions.md §7). Reads the
-    /// clock up to that grant's `until`.
+    /// Whether a joiner this node acts as holds link actor `k` by a live grant (`joiner_of`): a
+    /// redeem of its link writes no other (spec/permissions.md §7). Reads the clock up to that
+    /// grant's `until`.
     pub fn joined_link(&mut self, k: &Tid) -> bool {
-        let me = self.core.me();
-        if self.mint_admin(k) == Some(me) {
-            return false;
-        }
-        let edge = self.core.timelines().get(k).and_then(|tl| tl.edges_at(None).get(&me, k).copied());
-        self.core.time.at(|now| (edge.is_some_and(|e| e.alive_at(Some(super::ts_at(now)))), edge.and_then(|e| e.until).map(|u| u.0)))
+        self.joiner_of(k).is_some()
     }
 
-    /// This node's leave of link actor `k` (`joined_link_ended`): a self-removal of its grant
-    /// on K. Idempotent: once a leave is here, the grant is gone.
-    pub fn leave_link(&mut self, k: &Tid) -> Result<Done> {
+    /// The joiner of link actor `k` this node acts as (spec/permissions.md §7 Redeem: an own thing
+    /// or a thing its own things administer, such as its account): a holder of `k` by a live
+    /// grant, neither K's mint admin (it holds K by K's record) nor a link key of K. Reads the
+    /// clock up to that grant's `until`.
+    pub fn joiner_of(&mut self, k: &Tid) -> Option<Tid> {
         let me = self.core.me();
-        self.demote(k, &crate::flows::Demotion { holder: me, new: None, retain: None })
+        let mint = self.mint_admin(k);
+        let edges: Vec<(Tid, osis_perm::Edge)> = self.core.timelines().get(k).map(|tl| tl.edges_at(None).holders(k).map(|(h, e)| (*h, *e)).collect()).unwrap_or_default();
+        let ours: Vec<(Tid, osis_perm::Edge)> = edges.into_iter().filter(|(h, _)| Some(*h) != mint && self.core.created(h).is_none_or(|r| r.link_target() != Some(*k)) && (*h == me || self.core.role_now(&me, h) == Some(Role::Admin))).collect();
+        self.core.time.at(|now| {
+            let alive = ours.iter().find(|(_, e)| e.alive_at(Some(super::ts_at(now)))).map(|(h, _)| *h);
+            (alive, ours.iter().filter_map(|(_, e)| e.until).map(|u| u.0).filter(|u| *u > now).min())
+        })
+    }
+
+    /// The leave of link actor `k` by the joiner this node acts as (`joined_link_ended`): a
+    /// self-removal of its grant on K. Idempotent: once a leave is here, the grant is gone.
+    pub fn leave_link(&mut self, k: &Tid) -> Result<Done> {
+        let Some(holder) = self.joiner_of(k) else { return Ok(Done::default()) };
+        self.demote(k, &crate::flows::Demotion { holder, new: None, retain: None })
     }
 
     /// Finalizes a link (spec/permissions.md §7): a sharer node's plain removal of L from K,
@@ -292,14 +302,14 @@ impl Engine {
 }
 
 /// A link ends with L's removal from K: the things keeping its seed, which serve only a working
-/// link, lose the node root's strong to them, so each goes as any thing whose last
-/// reference goes (spec/sync-set.md §3).
+/// link, lose their mint admin S's strong to them (spec/permissions.md §7), so each goes as any
+/// thing whose last reference goes (spec/sync-set.md §3).
 fn let_seeds_go(tx: &mut Tx<'_>, keeps: &[Tid]) -> Result<()> {
-    let Some(d) = tx.core.node_root else { return Ok(()) };
     let mut m = Mutation::new();
     for t in keeps {
-        if crate::engine::refs::strong_from(tx, &d, t)? {
-            m.op(d, &ct::HOLDS, PathOp { path: Vec::new(), op: Op::Remove(Value::Strong(*t)) })?;
+        let Some(s) = tx.core.mint_admin(t) else { continue };
+        if crate::engine::refs::strong_from(tx, &s, t)? {
+            m.op(s, &ct::HOLDS, PathOp { path: Vec::new(), op: Op::Remove(Value::Strong(*t)) })?;
         }
     }
     if !m.is_empty() {
@@ -348,14 +358,13 @@ fn create_link_in(tx: &mut Tx<'_>, sharer: Tid, spec: &LinkSpec, krec: osis_base
     let mut m = Mutation::new();
     m.op(k, &ct::HOLDS, PathOp { path: Vec::new(), op: Op::Add(Value::Strong(spec.target)) })?;
     done.add(Engine::commit_tx(tx, m)?);
-    // the seed on a thing minted with K's mint admin as admin (spec/permissions.md §7), held with
-    // K by strongs from the node root: the node holds the seed, may finalize and serves K's sync
-    // ID to redeemers
-    let d = tx.core.node_root.ok_or(Error::Misuse("no node root"))?;
+    // the seed on a thing minted with K's mint admin S as admin (spec/permissions.md §7), held
+    // with K by strongs from S's `holds.0`: every node holding S holds the seed, may finalize and
+    // serves K's sync ID to redeemers
     let mut m = Mutation::new();
     let keep = m.create(crate::identity::thing_record(sharer, None, &mut *tx.rng));
     for t in [keep, k] {
-        m.op(d, &ct::HOLDS, PathOp { path: Vec::new(), op: Op::Add(Value::Strong(t)) })?;
+        m.op(sharer, &ct::HOLDS, PathOp { path: Vec::new(), op: Op::Add(Value::Strong(t)) })?;
     }
     m.op(keep, &super::ak(LINK_SEED)?, PathOp { path: Vec::new(), op: Op::Set(Value::Map([(Value::Int(0), Value::Weak(k)), (Value::Int(1), Value::Bytes(seed.expose().to_vec())), (Value::Int(2), Value::Weak(spec.target)), (Value::Int(3), Value::Bool(spec.single_use))].into_iter().collect())) })?;
     done.add(Engine::commit_tx(tx, m)?);

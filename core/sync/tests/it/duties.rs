@@ -37,7 +37,6 @@ fn role_duties_judged(mut w: World) -> (u64, u64, u64) {
 // what a node owes is judged once per held actor at a start (no transaction: `role_duty_due`)
 // and not again while nothing it read moves, at n and 10n actors held.
 #[test]
-#[ignore = "accounts: making an account"]
 fn role_duties_are_judged_once_per_held_actor_at_a_start_spec_permissions_3() {
     let mut w = World::new(0);
     w.add_node();

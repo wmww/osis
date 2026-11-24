@@ -44,13 +44,20 @@ pub(crate) fn fire_copy(tx: &mut Tx<'_>, holder: Tid, c: CommitId, target: Tid) 
     save(tx, o)
 }
 
-/// Whom a fire on `holder`'s inbox is offered to where proven (spec/sync-inbox.md §3 Sending):
-/// the holder where a connection can prove it, and the things holding a role on it that one
-/// can, as this node judges them.
+/// Whom a fire on `holder`'s inbox is offered to where proven (spec/sync-inbox.md §3 Sending: a
+/// peer that proved a thing holding a role on it, as this node judges it): the holder and the
+/// things holding a role on it, directly or through the things holding it. Not cut to the things
+/// whose records say a key signs as them: the sender may hold an account's record (from its
+/// profile) and not its node things', which the proof brings.
 fn fire_to(tx: &mut Tx<'_>, holder: &Tid) -> BTreeSet<Tid> {
-    let mut out = tx.core.provable_holders_of(*holder);
-    if tx.core.provable(holder) {
-        out.insert(*holder);
+    let mut out = BTreeSet::from([*holder]);
+    let mut todo = vec![*holder];
+    while let Some(x) = todo.pop() {
+        for (m, _) in tx.core.key_holders(&x) {
+            if out.insert(m) {
+                todo.push(m);
+            }
+        }
     }
     out
 }

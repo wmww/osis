@@ -660,21 +660,25 @@ impl LocalPeer {
         }
     }
 
-    /// A fresh node of its own account (`Peer::new` at peer `admin`'s time, seeded `seed`) that
-    /// holds `t` and is granted read on it by peer `admin` through the flow, given the grant alone:
+    /// A fresh node with an account of its own (`Peer::new` at peer `admin`'s time, seeded
+    /// `seed`, `Engine::make_account`) whose account holds `t` and is granted read on it by peer
+    /// `admin` through the flow, given the grant's offer alone (a fire on the account's inbox):
     /// it keeps what it is then given of `t` in any order, as content waits until `t` enters its
-    /// node closure (spec/commits.md §4 Outside the node closure). Peer `admin` keeps its account.
+    /// node closure (spec/commits.md §4 Outside the node closure). Peer `admin` keeps the account.
     #[allow(clippy::panic, clippy::indexing_slicing)] // test harness: a setup that fails fails the test (and a peer index past the net)
     pub fn fresh_reader(&mut self, admin: usize, t: Tid, seed: u64) -> Peer {
         let mut p = Peer::new(seed, self.peers[admin].engine.now()).unwrap_or_else(|e| panic!("fresh node: {e}"));
-        self.peers[admin].know(&[p.engine.me()]).unwrap_or_else(|e| panic!("know: {e}"));
+        let (acc, _) = p.engine.make_account().unwrap_or_else(|e| panic!("account: {e}"));
+        self.peers[admin].know(&[acc.thing]).unwrap_or_else(|e| panic!("know: {e}"));
         for id in p.engine.commit_ids() {
             if let Some(pk) = p.engine.package(&id).unwrap_or_else(|e| panic!("package: {e}")) {
                 self.deliver(admin, &pk).unwrap_or_else(|e| panic!("deliver: {e}"));
             }
         }
-        p.engine.hold(osis_base::Strong(t)).unwrap_or_else(|e| panic!("hold {t:?}: {e}"));
-        let who = p.engine.me();
+        let mut m = Mutation::new();
+        m.op(acc.thing, &osis_schema::core_types::HOLDS, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Add(osis_base::Value::Strong(t)) }).unwrap_or_else(|e| panic!("hold {t:?}: {e}"));
+        p.commit(m).unwrap_or_else(|e| panic!("hold {t:?}: {e}"));
+        let who = acc.thing;
         let edge = osis_schema::core_types::Edge { role: osis_base::Role::Read, until: None, may_grant: false, retain: false, floor: None };
         let done = self.peers[admin].engine.grant(&t, &who, &edge).unwrap_or_else(|e| panic!("grant {t:?}: {e}"));
         self.pass_fires_to(admin, &mut p).unwrap_or_else(|e| panic!("grant fire to the reader: {e}"));

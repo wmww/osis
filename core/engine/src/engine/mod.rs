@@ -2041,6 +2041,12 @@ impl Core {
         self.id.tid()
     }
 
+    /// Whether `t` is an own thing of this node (spec/sync-set.md §2 Own things): its node thing,
+    /// a held link key.
+    pub(crate) fn is_own(&self, t: &Tid) -> bool {
+        *t == self.me() || self.link_keys.contains_key(t)
+    }
+
     /// The key this node signs as `thing` by (spec/permissions.md §1 Signed as), with the key the
     /// header names (`None`: `thing`'s record's, the first form): the record's key where this
     /// node holds it, else the first held key holding a grant on `thing` that is alive now. The

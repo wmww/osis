@@ -281,10 +281,10 @@ impl Inbox {
 
     /// First contact through a link (spec/sync-inbox.md §6): durable until the join is held
     /// elsewhere. `Done` once the join is written.
-    pub fn redeem(&mut self, cx: &mut Cx, link: &ShareLink) -> Waiting {
+    pub fn redeem(&mut self, cx: &mut Cx, link: &ShareLink, joiner: Tid) -> Waiting {
         let Cx { engine, store, now, mono, policy, .. } = cx;
         let mut here = Here { engine, status: None, store, now: *now, mono: *mono, policy };
-        self.links.redeem(&mut here, link).unwrap_or(Waiting::Never("the link could not be kept"))
+        self.links.redeem(&mut here, link, joiner).unwrap_or(Waiting::Never("the link could not be kept"))
     }
 
     /// Whether link K is being redeemed here: a redeem not joined and not ended, nor given up

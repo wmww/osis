@@ -90,9 +90,9 @@ fn need(core: &Core, x: &Tid, n: &Need) -> String {
         Need::Pending(c) => format!("pending commit c:{} on {x} is signed by it or awaits its record", short(c)),
         Need::Acting(c) => format!("held commit c:{} on {x} acts as it", short(c)),
         Need::Missing(c) => format!("held commit c:{} on it has a part missing on {x}", short(c)),
-        Need::Holding => format!("an edge write on it names {x} holder"),
         Need::Strong(ak) => format!("{x}'s {ak} holds a strong to it"),
         Need::Inbox => format!("{x}'s keys.0 names it (its inbox)"),
+        Need::Holding => format!("an edge write on it names {x} holder"),
         Need::Offered(c) => format!("a grant fire held on {x}'s inbox carries {c:?} on it"),
     }
 }

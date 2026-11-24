@@ -326,21 +326,19 @@ pub fn commit_with(db: &Osis, f: impl FnOnce(&mut osis::Write<'_>) -> osis::Resu
 pub trait Held {
     /// A thing minted with the account as admin, held by a strong in the account root's `holds.0`.
     fn create_held(&mut self) -> Result<Tid>;
-    /// A thing minted with admin `admin`, held where it lives: by `admin`'s `holds.0`, or the account root's
-    /// where `admin` is the account.
+    /// A thing minted with admin `admin`, held where it lives: by `admin`'s `holds.0`.
     fn create_held_with_admin(&mut self, admin: Tid) -> Result<Tid>;
 }
 
 impl Held for Write<'_> {
     fn create_held(&mut self) -> Result<Tid> {
-        let me = self.db().me();
-        self.create_held_with_admin(me)
+        let home = self.db().account_root();
+        self.create_held_with_admin(home)
     }
 
     fn create_held_with_admin(&mut self, admin: Tid) -> Result<Tid> {
         let t = self.create(admin, None)?;
-        let holder = if admin == self.db().me() { self.db().account_root() } else { admin };
-        self.hold(holder, t)?;
+        self.hold(admin, t)?;
         Ok(t)
     }
 }

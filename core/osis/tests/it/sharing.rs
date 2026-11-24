@@ -340,7 +340,8 @@ fn the_last_admin_is_refused_unless_meant_spec_perm_1() {
     let mut w = alice.write();
     let t = w.create_held().unwrap();
     w.commit().unwrap();
-    let me = alice.me();
+    // the thing's one admin: the account it was minted with
+    let me = alice.account_root();
     let no_admin = |r: osis::Result<()>| matches!(r, Err(Error::LeavesNoAdmin { tid }) if tid == t);
     assert!(no_admin(alice.set_role(t, me, None, SetRoleOpts::default())), "a removal");
     assert!(no_admin(alice.set_role(t, me, Some(Role::Write), SetRoleOpts::default())), "a lowering");

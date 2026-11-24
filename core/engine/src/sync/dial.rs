@@ -6,7 +6,7 @@ use super::{Holding, RosterHolders};
 use crate::engine::Engine;
 use crate::error::Result;
 use crate::Mutation;
-use osis_base::{Address, SyncId, peer_url};
+use osis_base::{Address, SyncId, Tid, peer_url};
 use osis_schema::core_types as ct;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -59,18 +59,31 @@ impl Engine {
     }
 
     /// Publishes where this node is dialed (spec/sync-transport.md §3, §5 Key change): its own
-    /// entry, dialable key `dialable` to the `peer://` URL of the items it listens at, in its node
-    /// thing's `dial.0` (spec/sync-set.md §1), in place of the one under its key before. Only
-    /// where it changed.
-    pub fn publish_reach(&mut self, dialable: [u8; 32], items: Vec<String>) -> Result<()> {
+    /// entry, dialable key `dialable` to the `peer://` URL of the items it listens at, in the
+    /// `dial.0` of its node thing and of each of `also` it may write (its account and the
+    /// account's profile, spec/sync-set.md §1), in place of its entries under its earlier keys
+    /// (those its node thing's list names: only this node writes there); other nodes' entries
+    /// stay. Only where it changed.
+    pub fn publish_reach(&mut self, dialable: [u8; 32], items: Vec<String>, also: &[Tid]) -> Result<()> {
         let me = self.core.me();
-        let mut list = self.get_typed(&me, &ct::DIAL)?.unwrap_or_default();
-        let old = list.clone();
-        list.retain(|k, _| k.as_slice() == dialable.as_slice());
-        list.insert(dialable.to_vec(), vec![peer_url(&items)]);
-        if list != old {
-            let mut m = Mutation::new();
-            m.set(me, &ct::DIAL, &list)?;
+        let mine: Vec<Vec<u8>> = self.get_typed(&me, &ct::DIAL)?.unwrap_or_default().into_keys().filter(|k| k.as_slice() != dialable.as_slice()).collect();
+        let url = vec![peer_url(&items)];
+        let mut m = Mutation::new();
+        for t in std::iter::once(me).chain(also.iter().copied()) {
+            if t != me && self.role_on(&t) < Some(osis_base::Role::Write) {
+                continue;
+            }
+            let mut list = self.get_typed(&t, &ct::DIAL)?.unwrap_or_default();
+            let old = list.clone();
+            for k in &mine {
+                list.remove(k);
+            }
+            list.insert(dialable.to_vec(), url.clone());
+            if list != old {
+                m.set(t, &ct::DIAL, &list)?;
+            }
+        }
+        if !m.is_empty() {
             self.commit(m)?;
         }
         Ok(())

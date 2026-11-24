@@ -192,7 +192,10 @@ fn cut_work(n: usize, m: usize, edit: impl Fn(&mut Engine, Tid, Tid)) -> u64 {
     for _ in 0..n {
         make(e, d, d);
     }
-    let a = make(e, d, d);
+    // minted with the node thing: the node enters it by its record edge's piece (a thing
+    // minted with the local node root would have no carrier, spec/sync-set.md §2 First entry)
+    let me = e.me();
+    let a = make(e, me, d);
     e.make_independent(&a).unwrap();
     for _ in 0..m {
         make(e, a, a);
@@ -246,7 +249,8 @@ fn a_sourced_thing_costs_what_is_below_it_spec_sync_set_5() {
     let (mut lp, d) = alone();
     let e = &mut lp.peers[0].engine;
     let x = make(e, d, d);
-    let a = make(e, d, d);
+    let me = e.me();
+    let a = make(e, me, d);
     e.make_independent(&a).unwrap();
     let y = make(e, a, a);
     e.set_sourced([a].into(), &Default::default()).unwrap();

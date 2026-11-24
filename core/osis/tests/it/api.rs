@@ -386,7 +386,7 @@ fn tree_in_one_commit_spec_permissions_1() {
     commit_with(&b, |w| w.hold(b.account_root(), x));
     deliver(&a, &b);
     for (i, t) in [x, y, z].into_iter().enumerate() {
-        assert_eq!(b.engine(|e| e.roster(&t)).get(&[a.me(), x, y][i]).map(|e| e.role), Some(Role::Admin), "its mint admin");
+        assert_eq!(b.engine(|e| e.roster(&t)).get(&[a.account_root(), x, y][i]).map(|e| e.role), Some(Role::Admin), "its mint admin");
         assert!(b.created(t).unwrap().is_some());
         assert_eq!(b.at(t, untyped("t:x.0")).get().unwrap(), Some(Value::Int(i as i64)));
     }
@@ -486,7 +486,7 @@ fn created_reads_through_run_time_key_spec_data_model_9() {
     let t = w.create_held().unwrap();
     w.commit().unwrap();
     let v = db.at(t, db.aspect_key("created.0").unwrap()).get().unwrap().unwrap();
-    assert!(matches!(&v, Value::Map(m) if m.get(&Value::Int(0)) == Some(&Value::Weak(db.me()))));
+    assert!(matches!(&v, Value::Map(m) if m.get(&Value::Int(0)) == Some(&Value::Weak(db.account_root()))));
 }
 
 // notes/api.md Large values, spec/data-model.md §6: a blob above the bound is read by stream

@@ -256,9 +256,19 @@ impl Engine {
         // redeemer, holding its seed alone, learns its record and keysets from `g`'s sync ID
         let keys: Vec<Tid> = self.core.roster_of(g).into_keys().filter(|k| self.core.is_independent(k)).collect();
         for k in keys {
-            out.records.insert(k);
-            if let Some(c) = self.latest_by(&k, "keys.0", None) {
-                out.add(c, self.parts_of(&c, &BTreeSet::from([k]), &["keys.0"]));
+            self.public_key_record_into(&k, out);
+        }
+    }
+
+    /// `k`'s public key record (spec/sync-inbox.md §1): its record and current `keys.0`, with its
+    /// inbox's where its `keys.0` names one, added to `out`: a holder of the sync ID can fire at
+    /// `k`'s inbox (seal to it and find its sync ID).
+    fn public_key_record_into(&mut self, k: &Tid, out: &mut Certs) {
+        let inbox = self.get_typed(k, &osis_schema::core_types::KEYS).ok().flatten().and_then(|x| x.inbox).map(Tid::from).filter(|i| i != k);
+        for t in std::iter::once(*k).chain(inbox) {
+            out.records.insert(t);
+            if let Some(c) = self.latest_by(&t, "keys.0", None) {
+                out.add(c, self.parts_of(&c, &BTreeSet::from([t]), &["keys.0"]));
             }
         }
     }

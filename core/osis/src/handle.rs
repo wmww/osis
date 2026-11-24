@@ -514,13 +514,25 @@ pub(crate) fn fresh_engine(store: &Store, cfg: &Config) -> Result<Fresh> {
 /// The app record holding the account's profile thing (`Osis::profile`).
 pub(crate) const PROFILE: &str = "profile";
 
+/// The app record holding the account this node acts for (spec/permissions.md §8).
+const ACCOUNT: &str = "account";
+
 /// The app record holding this node's dialable secret.
 const NODE_KEY: &str = "sync/node-key";
 
-/// What a node acts as and its account root. Interim (notes/accounts-switch-brief.md): its node
-/// thing and its node root, until making an account is built.
-fn acting(e: &Engine) -> Result<(Tid, Tid)> {
-    Ok((e.me(), e.node_root().ok_or_else(|| Error::Storage("no node root".into()))?))
+/// Makes this node's account (spec/permissions.md §8 Making) and records it and its profile.
+fn make_account(e: &mut Engine) -> Result<()> {
+    let (a, _) = e.make_account()?;
+    e.set_app_record(ACCOUNT, a.thing.as_bytes())?;
+    e.set_app_record(PROFILE, a.profile.as_bytes())?;
+    Ok(())
+}
+
+/// What a node acts as and the account it acts for: its node thing, and its account.
+fn acting(e: &mut Engine) -> Result<(Tid, Tid)> {
+    let b = e.app_record(ACCOUNT)?.ok_or_else(|| Error::Storage("no account record".into()))?;
+    let a = Tid::from_bytes(b.as_slice().try_into().map_err(|_| Error::Storage("account record".into()))?);
+    Ok((e.me(), a))
 }
 
 /// This node's dialable secret, made on first use.
@@ -546,12 +558,13 @@ pub(crate) fn sync_config(cfg: &Config, key: [u8; 32]) -> osis_sync::SyncConfig 
 }
 
 impl Osis {
-    /// Creates a node. Interim (notes/accounts-switch-brief.md): it acts as its node thing, its
-    /// node root the account root, until making an account is built.
+    /// Creates a node with an account of its own (spec/permissions.md §8 Making): it signs as
+    /// its node thing, acting for the account.
     pub fn create(store: Store, cfg: Config) -> Result<Osis> {
         cfg.check()?;
-        let Fresh { engine, clock, sync } = fresh_engine(&store, &cfg)?;
-        let (me, root) = acting(&engine)?;
+        let Fresh { mut engine, clock, sync } = fresh_engine(&store, &cfg)?;
+        make_account(&mut engine)?;
+        let (me, root) = acting(&mut engine)?;
         Osis::start(engine, sync, clock, store, &cfg, me, root, 0)
     }
 
@@ -562,8 +575,8 @@ impl Osis {
         let clock = clock(&cfg);
         let salt = open_salt(&store, &cfg)?;
         let sync = sync_store(&store, &cfg, salt)?;
-        let e = Engine::open(b, r, sync.cipher(), engine_cfg(), clock.clone(), rng(&cfg, salt))?;
-        let (me, root) = acting(&e)?;
+        let mut e = Engine::open(b, r, sync.cipher(), engine_cfg(), clock.clone(), rng(&cfg, salt))?;
+        let (me, root) = acting(&mut e)?;
         Osis::start(e, sync, clock, store, &cfg, me, root, salt)
     }
 

@@ -182,14 +182,14 @@ fn a_crash_restarts_the_node_in_place() {
     let to = w.address(1);
     w.apply_as(0, vec![Out::Dial(ConnId(1), to)]);
     w.flush();
-    let account = w.node(1).account;
+    let me = w.engine(1).me();
     w.trace = true;
     w.disk_fault(1, 0, DiskFault::Crash);
     assert!(set(&mut w, 1, "a").is_err());
     w.flush();
     assert_eq!(w.crashes, 1);
     assert!(w.online(1));
-    assert_eq!(Some(w.engine(1).me()), account, "reopened over its disks");
+    assert_eq!(w.engine(1).me(), me, "reopened over its disks");
     assert!(closed(&w.seen, 0), "its peer is told: {:?}", w.seen);
     assert!(set(&mut w, 1, "b").is_ok());
 }

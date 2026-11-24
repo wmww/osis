@@ -753,11 +753,41 @@ fn given_by(core: &Core, v: Vx, y: Tid) -> BTreeSet<Vx> {
     if follows {
         out.insert((c, y));
     }
-    if independent && Ctx::Read(y) != c && let Some(e) = core.enter(&y) {
+    if independent && Ctx::Read(y) != c && let Some(e) = core.enter(&y) && (core.is_own(&y) || edge_carries(core, v, &y) || piece_carries(core, &y)) {
         out.insert((e, y));
     }
     out
 }
+
+/// Whether held vertex `v`'s unit carries `y`, a target of its thing's strongs (spec/sync-set.md
+/// §2 First entry): `v` is in the read sync unit of a thing `u` other than `y` whose keys open
+/// `y` (whole) or whose effective role on `y` is sync or above (its stub). Local to the edge, so
+/// the tree founds it: an entry by `u`'s unit goes when `u`'s does, whatever `u` reaches back.
+/// Invariant: `y`'s own unit never carries it (`u != y`).
+fn edge_carries(core: &Core, v: Vx, y: &Tid) -> bool {
+    match v.0 {
+        Ctx::Read(u) if u != *y => core.keys_open(&u, y) || core.keyed_role_now(&u, y) >= Some(Role::Sync),
+        _ => false,
+    }
+}
+
+/// Whether an edge piece in the key part of an own thing or of a thing the node closure reads
+/// (each named holder on `y` by an edge write, of any validity, or by `y`'s record: its piece
+/// holds that edge's writes, a removal among them, spec/permissions.md §4 Key part), or
+/// an offer of `y` the node holds, carries `y` (spec/sync-set.md §2 First entry). Who writes
+/// each input: `y`'s grants, judged by the walk (an edge write by anyone without the right to it
+/// sets no edge); `y`'s record (its mint admin's edge); the offers, held only valid on an inbox
+/// the node reads. A holder held for keys alone carries nothing: an entry hanging on an
+/// unrelated reference would not be founded (notes/accounts-switch-brief.md, Models).
+/// Interim (issues/entry-founded-read-pieces.md): a read thing's piece is not checked for being
+/// read only through `y`.
+pub(crate) fn piece_carries(core: &Core, y: &Tid) -> bool {
+    if crate::flows::inbox::granted_on(core, y).next().is_some() {
+        return true;
+    }
+    core.ix.held.holders_of(y).any(|h| h != y && (core.is_own(h) || core.ix.closure.contexts(h).contains(&Ctx::Read(*h))))
+}
+
 
 /// Brings the node closure up to date with what moved since the last settle (module doc): at
 /// each transaction's end, and after an open.
