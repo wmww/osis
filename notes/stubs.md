@@ -18,7 +18,7 @@
 - **Staying current needs a source of the thing's role entries**: a node reaching none misses its key changes until it does.
 
 ## Against the built tree
-- The spec carries a stub only by rule 2's widening (spec/sync-set.md §2 Stub: a strong to a thing its unit holds sync or above on and does not open); a weak brings in nothing there yet. Not built.
+- The spec carries a stub only by rule 2's widening (spec/sync-set.md §2 Stub: a strong to a thing its unit holds sync or above on and does not open); a weak brings in nothing there yet. Built as certificate copies under the unit's sync ID (`Engine::stubs_of`, `sync_certificates`), uncut to the readers' boxes.
 - Held for keys (spec/sync-set.md §2) is the stub of a holder on a chain: the same state, entered there only for holders. A held grant fire keeps what it carried while it is held, as a snapshot nothing corrects.
 - The key part under a holder's sync ID (spec/permissions.md §4 Key part) carries an edge piece for every thing the holder holds a role on that a node syncs: rule 2 keeps only those on chains to things the unit carries.
 - Rule 4 is built for strongs in durable aspects the setting governs, fires included (spec/data-model.md §8 Held history, `refs::kept`). Not built: a weak in held history holding its target's stub (no stubs yet; the spec says weaks in history count for nothing), and held bodies of ephemeral aspects (memory bodies, notes/engine-refs.md History holds).

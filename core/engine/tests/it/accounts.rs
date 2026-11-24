@@ -164,3 +164,35 @@ fn a_sibling_writes_a_nodes_settings_and_cannot_sign_as_it_spec_sync_set_1() {
     assert!(lp.peers[1].commit(m).is_err(), "no key of node 1's holds a grant on node 0's thing");
     lp.peers[0].engine.check_closure();
 }
+
+// spec/sync-set.md §2 Stub, spec/sync-judgement.md §1 Certificate blobs: G's sync unit strongs X,
+// which G holds sync on and whose keys G's do not open: G's sync ID carries X's stub, its
+// role-class parts as copies, and none of X's content: a grant on X to another holder Z among
+// them, which no rule naming G carries. Granted nothing on X, G carries none of it.
+#[test]
+fn a_units_stub_is_carried_as_certificate_copies_spec_sync_set_2() {
+    use crate::common::edge;
+    let mut lp = crate::common::net(1, 0);
+    let [g, x, z] = [(); 3].map(|_| independent_of_0(&mut lp));
+    let e = &mut lp.peers[0].engine;
+    let mut m = osis_engine::Mutation::new();
+    m.set(x, &crate::common::REG, &crate::common::s("x")).unwrap();
+    let content = e.commit(m).unwrap().unwrap();
+    let mut m = osis_engine::Mutation::new();
+    m.op(g, &ct::HOLDS, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Add(osis_base::Value::Strong(x)) }).unwrap();
+    e.commit(m).unwrap();
+    let on_x = |e: &mut osis_engine::Engine| -> Vec<(osis_base::CommitId, Vec<String>)> {
+        let c = e.certificates(&g).unwrap();
+        c.commits.iter().filter_map(|(id, parts)| {
+            let h = e.header(id)?;
+            let aks: Vec<String> = parts.iter().filter_map(|ai| h.aspects.get(*ai)).filter(|a| a.tid == x).map(|a| a.ak.as_str().to_string()).collect();
+            (!aks.is_empty()).then_some((*id, aks))
+        }).collect()
+    };
+    let other = e.grant(&x, &z, &edge(Role::Read)).unwrap().commits;
+    assert_eq!(on_x(e), vec![], "no role on X: no stub");
+    e.grant(&x, &g, &edge(Role::Sync)).unwrap();
+    let stub = on_x(e);
+    assert!(other.iter().any(|c| stub.iter().any(|(s, aks)| s == c && aks.iter().any(|a| a == "roles.0"))), "Z's grant: {stub:?}");
+    assert!(stub.iter().all(|(c, aks)| *c != content && aks.iter().all(|a| ct::ROLE_CLASS.contains(&a.as_str()))), "role-class parts alone: {stub:?}");
+}

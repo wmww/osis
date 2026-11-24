@@ -148,8 +148,35 @@ impl Engine {
             self.add_copy(c, x, &mut out);
         }
         self.add_closure(ev, &key_part, &mut out);
+        // the stubs `g`'s sync unit carries (spec/sync-set.md §2 Stub): each one's role-class
+        // parts with their evidence, as copies; none of its content
+        let mut stubs = BTreeSet::new();
+        for x in self.stubs_of(g) {
+            let held: Vec<CommitId> = osis_schema::core_types::ROLE_CLASS.iter().filter_map(|k| Ak::new(*k).ok()).flat_map(|k| self.core.ix.by_aspect.get(&(x, k)).into_iter().flatten().map(|(_, c)| *c).collect::<Vec<_>>()).collect();
+            stubs.extend(held.into_iter().map(|c| (c, x)));
+        }
+        for (c, x) in &stubs {
+            self.add_copy(c, x, &mut out);
+        }
+        self.add_closure(ev, &stubs, &mut out);
         self.close_records(ev, &mut out);
         out
+    }
+
+    /// The things whose stub `g`'s sync unit carries (spec/sync-set.md §2 Stub): each independent
+    /// thing outside the unit a strong of it reaches, that `g`'s keys do not open and that `g`
+    /// holds sync or above on (its effective role, with key access). Invariant: no thing of the
+    /// unit and not `g` itself; who writes them: the unit's writers write the strongs, `x`'s
+    /// admins the role.
+    pub(crate) fn stubs_of(&mut self, g: &Tid) -> BTreeSet<Tid> {
+        let unit = self.sync_unit(g);
+        let mut targets = BTreeSet::new();
+        for t in unit.iter() {
+            let refs = self.read(|tx| crate::engine::refs::from(tx, t)).unwrap_or_default();
+            targets.extend(refs.into_iter().filter(|r| crate::engine::refs::holds_target(r.kind, &r.ak)).map(|r| r.target));
+        }
+        let core = &self.core;
+        targets.into_iter().filter(|y| y != g && !unit.contains(y) && core.counts_independent(y) && !core.keys_open(g, y) && core.keyed_role_now(g, y) >= Some(osis_base::Role::Sync)).collect()
     }
 
     /// What `g`'s sync IDs carry beside bodies (`sync_certificates`), whether or not this node
