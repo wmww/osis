@@ -683,6 +683,29 @@ mod tests {
         assert_eq!(cut.candidates, 4);
         assert_eq!(cut.steps.len(), 30);
     }
+
+    // a failure's kind drops which node, list or id found it; a shrink keeps to the original's
+    // kind: a candidate failing another check is not kept (spec: none, test infrastructure)
+    #[test]
+    fn shrink_keeps_to_the_failures_kind() {
+        assert_eq!(failure_class("node 2 reads thing 4 unlike the reference\n  left: 1"), "node # reads thing # unlike the reference");
+        assert_eq!(failure_class("stuck at quiet (node, S): [(1, S(7a))]"), "stuck at quiet …: …");
+        assert_ne!(failure_class("node 2 reads thing 4 unlike the reference"), failure_class("node 2 keeps 3 store entries"));
+        // 7 alone fails one way, 7 with 30 another; the original fails the first way
+        let replay = |h: &[u32], _: bool| {
+            if h.contains(&7) && h.contains(&30) {
+                panic!("node {} keeps entries", h.len());
+            }
+            if h.contains(&7) {
+                panic!("node {} reads unlike the reference", h.len());
+            }
+        };
+        let steps: Vec<u32> = (0..40).collect();
+        let s = shrink_failure("node 40 keeps entries", steps.clone(), replay, |_| Vec::new()).expect("shrinks");
+        assert_eq!(s.steps, vec![7, 30]);
+        let s = shrink_failure("node 40 reads unlike the reference", steps.into_iter().filter(|x| *x != 30).collect(), replay, |_| Vec::new()).expect("shrinks");
+        assert_eq!(s.steps, vec![7]);
+    }
 }
 
 thread_local! {
@@ -823,12 +846,42 @@ pub fn quiet() -> bool {
     QUIET.get()
 }
 
+/// A failure's kind: its message's first line with every word holding a digit as `#` and the
+/// contents of each outermost bracket as `…`, so which node, thing, commit or list found it does
+/// not count, only the check and what differed.
+pub fn failure_class(msg: &str) -> String {
+    let line = msg.lines().next().unwrap_or("");
+    let mut out = String::new();
+    let (mut depth, mut word) = (0usize, String::new());
+    let flush = |out: &mut String, word: &mut String| {
+        out.push_str(if word.chars().any(|c| c.is_ascii_digit()) { "#" } else { word });
+        word.clear();
+    };
+    for c in line.chars() {
+        match c {
+            '(' | '[' | '{' => {
+                flush(&mut out, &mut word);
+                if depth == 0 {
+                    out.push('…');
+                }
+                depth += 1;
+            }
+            ')' | ']' | '}' => depth = depth.saturating_sub(1),
+            _ if depth > 0 => {}
+            c if c.is_alphanumeric() || c == '_' => word.push(c),
+            c => {
+                flush(&mut out, &mut word);
+                out.push(c);
+            }
+        }
+    }
+    flush(&mut out, &mut word);
+    out
+}
+
 /// Runs `run`, which records its steps in a `Script<A>`; with `shrink_var` set nonzero, a failing
-/// run's script is shrunk (`shrink`, `SHRINK_CANDIDATES`) while `replay(steps, false)` still
-/// fails, each candidate replayed silent and once (`false`: the replay may skip checks of the run
-/// itself, such as playing it twice); each smaller failing script is printed as found, past
-/// libtest's capture. With `OSIS_SHRINK_MATCH` set, a run fails only when its panic message
-/// contains that text, so a seed failing two ways shrinks toward the one studied. Then the shrunk run is replayed with `replay(steps, true)` and fails as the
+/// run's script is shrunk (`shrink_failure`), each smaller failing script printed as found, past
+/// libtest's capture. Then the shrunk run is replayed with `replay(steps, true)` and fails as the
 /// original failure, printing its script.
 pub fn shrinking<A: std::fmt::Debug + Clone + 'static>(shrink_var: &str, run: impl FnOnce(), replay: impl Fn(&[A], bool), simpler: impl Fn(&A) -> Vec<A>) {
     use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
@@ -836,13 +889,36 @@ pub fn shrinking<A: std::fmt::Debug + Clone + 'static>(shrink_var: &str, run: im
         return run();
     }
     let Err(first) = catch_unwind(AssertUnwindSafe(run)) else { return };
-    let pattern = str_var("OSIS_SHRINK_MATCH");
-    let matches = |p: &(dyn std::any::Any + Send)| pattern.as_ref().is_none_or(|m| panic_message(p).contains(m.as_str()));
-    if !matches(&*first) {
-        eprintln!("shrink: the failure does not contain OSIS_SHRINK_MATCH={pattern:?}; not shrunk");
-        resume_unwind(first)
-    }
     let Some(steps) = FAILED.take().and_then(|b| b.downcast::<Vec<A>>().ok()).map(|b| *b) else { resume_unwind(first) };
+    let n = steps.len();
+    let Some(shrunk) = shrink_failure(panic_message(&*first), steps, &replay, simpler) else { resume_unwind(first) };
+    let cut = if shrunk.candidates >= SHRINK_CANDIDATES { " (budget spent: SHRINK_CANDIDATES)" } else { "" };
+    eprintln!("shrunk from {n} to {} steps in {} candidates{cut}; the shrunk run:", shrunk.steps.len(), shrunk.candidates);
+    replay(&shrunk.steps, true);
+    resume_unwind(first)
+}
+
+/// Shrinks `steps`, whose run failed with message `first` (`shrink`, `SHRINK_CANDIDATES`), while
+/// `replay(steps, false)` still fails the same way, each candidate replayed silent and once
+/// (`false`: the replay may skip checks of the run itself, such as playing it twice). A candidate
+/// fails the same way when its panic's kind is the original's (`failure_class`), so a seed failing
+/// one check never shrinks to another's; with `OSIS_SHRINK_MATCH` set, when its message contains
+/// that text instead; with `OSIS_SHRINK_ANY=1`, any panic. `None` when `first` does not contain
+/// `OSIS_SHRINK_MATCH` (said on stderr).
+pub fn shrink_failure<A: std::fmt::Debug + Clone>(first: &str, steps: Vec<A>, replay: impl Fn(&[A], bool), simpler: impl Fn(&A) -> Vec<A>) -> Option<Shrunk<A>> {
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+    let pattern = str_var("OSIS_SHRINK_MATCH");
+    let any = u64_var("OSIS_SHRINK_ANY").is_some_and(|n| n != 0);
+    let class = failure_class(first);
+    let matches = |m: &str| match &pattern {
+        Some(p) => m.contains(p.as_str()),
+        None => any || failure_class(m) == class,
+    };
+    if pattern.as_ref().is_some_and(|p| !first.contains(p.as_str())) {
+        eprintln!("shrink: the failure does not contain OSIS_SHRINK_MATCH={pattern:?}; not shrunk");
+        return None;
+    }
+    eprintln!("shrink: keeping to {}", pattern.as_ref().map_or(if any { "any failure".to_string() } else { format!("failures of the kind {class:?}") }, |p| format!("failures containing {p:?}")));
     // a hook that stays silent for a shrink's replays, installed once for the process
     static HOOK: std::sync::Once = std::sync::Once::new();
     HOOK.call_once(|| {
@@ -855,16 +931,11 @@ pub fn shrinking<A: std::fmt::Debug + Clone + 'static>(shrink_var: &str, run: im
     });
     let fails = |h: &[A]| {
         QUIET.set(true);
-        let failed = catch_unwind(AssertUnwindSafe(|| replay(h, false))).is_err_and(|p| matches(&*p));
+        let failed = catch_unwind(AssertUnwindSafe(|| replay(h, false))).is_err_and(|p| matches(panic_message(&*p)));
         QUIET.set(false);
         FAILED.take();
         failed
     };
-    let n = steps.len();
     let found = |h: &[A], tried: u64| visible(true, &format!("shrink: {} steps fail after {tried} candidates: {h:?}", h.len()));
-    let shrunk = shrink(steps, SHRINK_CANDIDATES, fails, simpler, found);
-    let cut = if shrunk.candidates >= SHRINK_CANDIDATES { " (budget spent: SHRINK_CANDIDATES)" } else { "" };
-    eprintln!("shrunk from {n} to {} steps in {} candidates{cut}; the shrunk run:", shrunk.steps.len(), shrunk.candidates);
-    replay(&shrunk.steps, true);
-    resume_unwind(first)
+    Some(shrink(steps, SHRINK_CANDIDATES, fails, simpler, found))
 }

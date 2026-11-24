@@ -3258,38 +3258,12 @@ thread_local! {
     static SHRINKING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-/// What kind of failure `err` is, for a shrink to keep to: its first line, every bracketed or
-/// parenthesized group as `…` and every word holding a digit as `#` (commit numbers, IDs, clocks,
-/// orders), without the order's preamble (`held … of # commits`, which order, `after # ingests`,
+/// What kind of failure `err` is, for a shrink to keep to: its kind (`testenv::failure_class`:
+/// numbers, IDs, clocks, orders and lists aside) without the order's preamble (`held … of # commits`, which order, `after # ingests`,
 /// `now`/`later`, `on the way to …`): the check that failed and what differed. A shrink redraws
 /// orders and held sets, so the same bug turns up under another preamble.
 fn failure_class(err: &str) -> String {
-    let line = err.lines().next().unwrap_or("");
-    let mut out = String::new();
-    let (mut depth, mut word) = (0usize, String::new());
-    let flush = |out: &mut String, word: &mut String| {
-        out.push_str(if word.chars().any(|c| c.is_ascii_digit()) { "#" } else { word });
-        word.clear();
-    };
-    for c in line.chars() {
-        match c {
-            '(' | '[' | '{' => {
-                flush(&mut out, &mut word);
-                if depth == 0 {
-                    out.push('…');
-                }
-                depth += 1;
-            }
-            ')' | ']' | '}' => depth = depth.saturating_sub(1),
-            _ if depth > 0 => {}
-            c if c.is_alphanumeric() || c == '_' => word.push(c),
-            c => {
-                flush(&mut out, &mut word);
-                out.push(c);
-            }
-        }
-    }
-    flush(&mut out, &mut word);
+    let out = osis_base::testenv::failure_class(err);
     let preamble = |seg: &str| seg.starts_with("held …") || seg.starts_with("held ") || seg.starts_with("on the way to") || seg.starts_with("order ") || seg.starts_with("after # ingests") || seg == "now" || seg == "later";
     let segs: Vec<&str> = out.split(": ").skip_while(|seg| preamble(seg)).collect();
     let rest = segs.join(": ");
