@@ -270,4 +270,3 @@ pub(super) fn floor_passed(tx: &mut Tx<'_>, c: &CommitId, ai: usize) {
         tx.core.none_due.insert((a.tid, a.ak.clone()));
     }
 }
-

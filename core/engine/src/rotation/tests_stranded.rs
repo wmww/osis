@@ -260,6 +260,45 @@ fn a_fire_sent_between_a_rotation_and_its_step_is_taken_spec_crypto_7() {
     assert!(matches!(opened, crate::sync::Opened::Commit(..)), "the admin takes the fire: {opened:?}");
 }
 
+// spec/permissions.md §3 (a `keys.0` delta touching a field other than the keysets a writer
+// rotates and box records needs admin), spec/crypto.md §7 Header list: a writer of g writing junk
+// step keys in g's `keys.0` changes nothing: its write is invalid, peer 2 (outside g) still lists
+// the recorded step's key in its fire, and the admin takes it. Fails if `step` needs only write
+// (every outside fire would then list keys no step places and apply nowhere, silently).
+#[test]
+fn a_writers_junk_step_keys_change_no_outside_fire_spec_permissions_3() {
+    use osis_base::{Ak, Value};
+    use osis_crdt::{Op, PathOp, PathSeg};
+    use osis_schema::core_types as ct;
+    use osis_schema::Codec;
+    let (mut lp, g, _) = granted(3, &[(1, Role::Write)]);
+    let f = Ak::new("x:f@~0").unwrap();
+    let keep = ct::RetentionEntry { history: Some(osis_schema::History::FOREVER), ..Default::default() };
+    let mut m = crate::Mutation::new();
+    m.set(g, &ct::RETENTION, &ct::RetentionSetting::from(std::collections::BTreeMap::from([(f.clone(), keep)]))).unwrap();
+    lp.peers[0].commit(m).unwrap().unwrap();
+    lp.sync_all().unwrap();
+    let head = lp.peers[0].engine.core.listed_step(&g).unwrap();
+    let junk = ct::StepKeys { delete: ct::SigningKey::Ed25519(vec![0x66; 32]), write: ct::SigningKey::Ed25519(vec![0x67; 32]) };
+    let mut m = crate::Mutation::new();
+    m.op(g, &ct::KEYS, PathOp { path: vec![PathSeg::Field(10)], op: Op::Set(Some(junk).to_value()) }).unwrap();
+    m.unchecked();
+    lp.peers[1].engine.core.skip_writer_rules = true;
+    lp.peers[1].commit(m).unwrap().unwrap();
+    lp.peers[1].engine.core.skip_writer_rules = false;
+    lp.sync_all().unwrap();
+    for i in [0, 2] {
+        let step = lp.peers[i].engine.get_typed(&g, &ct::KEYS).unwrap().and_then(|k| k.step).map(|s| s.delete);
+        assert_eq!(step, Some(ct::SigningKey::Ed25519(head.delete.to_vec())), "peer {i} keeps the step's keys");
+    }
+    let s = &mut lp.peers[2].engine;
+    s.fire_open(&g, f.as_str(), Value::Int(5)).unwrap();
+    let id = *s.fires_owed().first().expect("a sealed fire owed");
+    let out = s.sealed_fire(&id).unwrap().expect("sealed");
+    let opened = lp.peers[0].engine.open_entry(&out.sync_id, &osis_blob::blob_id(&out.blob), &[0; 57], &out.blob, u64::MAX).unwrap();
+    assert!(matches!(opened, crate::sync::Opened::Commit(..)), "the admin takes the fire: {opened:?}");
+}
+
 // spec/sync-inbox.md §4 (A sealed fire: one holding any delta but one fire of an external signal of
 // S's thing is not promoted): peer 1, holding g's public record and no secret of it, seals fires
 // to g's keyset; peer 0, a writer of g, takes the one holding one fire of an external signal of g and

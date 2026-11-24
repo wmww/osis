@@ -47,7 +47,7 @@
   - `sealed`: per box of the thing to a holder actor, keyed as the box, the keysets of the holder it names (§4, Stale), written with the box by whoever writes it.
   - For an independent thing, also its **sync ID** (spec/sync-ids.md §2) and **deposit seed** (32 random bytes): what an external fire on it goes under and is signed with (spec/sync-inbox.md §2); and its **step keys**, the delete and write keys of the step its `sync.0` records in the same commit, written in every commit recording a step (spec/sync-ids.md §6).
   - A role's entry is written by the node that rotates that role (spec/permissions.md §3).
-  - An admin writes the sync ID and deposit seed; it MAY refresh the deposit seed at any time and MUST write a fresh one in each rotation of the sync role it makes.
+  - An admin writes the sync ID, step keys and deposit seed; it MAY refresh the deposit seed at any time and MUST write a fresh one in each rotation of the sync role it makes.
   - `inbox`: the thing's inbox where it is another thing (spec/sync-inbox.md §1), written by an admin.
 - **Dedup secret** of a thing = `derive_key("osis v1 dedup", creation nonce)`.
 

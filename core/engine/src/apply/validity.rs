@@ -665,9 +665,12 @@ fn rotation_required(ak: &str, f: &Fragment) -> Option<Role> {
         return Some(Role::Admin);
     }
     let Some(osis_crdt::SlotRef::Frag(Fragment::Struct(st))) = f.slot(osis_crdt::Encoding::Struct) else { return Some(Role::Write) };
-    // the admin keyset, the inbox, the deposit seed and the sync ID need
-    // admin (spec/crypto.md §3: by an admin); sync, read and write keysets their rotator
-    if (2..=5).chain([9]).any(|id| st.field(id).is_some()) {
+    // a writer touches only the keysets it rotates (read 0, write 1, sync 7) and box records;
+    // every other field (the admin keyset, inbox, deposit seed, sync ID, step keys, and any
+    // field this list does not name) needs admin (spec/crypto.md §3: by an admin). Invariant:
+    // the step keys a writer holding no `sync.0` lists (`secrets::published_keys`) are an
+    // admin's, written with the step (`flows::sync_ids::put_step`), never a writer's.
+    if st.field_ids().any(|id| ![0, 1, 7, crate::flows::SEALED].contains(&id)) {
         return Some(Role::Admin);
     }
     let Some(field) = st.field(crate::flows::SEALED) else { return Some(Role::Write) };

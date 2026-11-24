@@ -174,7 +174,7 @@ aspect keys.0: struct {
     sync_id 9: option<blob>,
     /// The keys of the step its `sync.0` records in the same write: what a writer holding no
     /// `sync.0` of the actor lists, a fire from outside among them (spec/crypto.md §7 Header
-    /// list).
+    /// list). Written by an admin, with the step.
     step 10: option<step_keys>,
 };
 
