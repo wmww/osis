@@ -526,25 +526,101 @@ pub(crate) fn drop_index(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
     Ok(())
 }
 
+/// Debug builds: held writes built from nothing (`index_exact`), with each placed body's date.
+#[cfg(debug_assertions)]
+pub(super) struct Built {
+    pub(super) rows: osis_crdt::MemRows,
+    dates: std::collections::BTreeMap<CommitId, Ts>,
+    /// `Held::any_dead`.
+    any_dead: bool,
+}
+
+#[cfg(debug_assertions)]
+impl Built {
+    /// `Held::date` of body `c` (`None`: not placed, or nothing it dates is dead).
+    pub(super) fn date(&self, c: &CommitId) -> Option<Ts> {
+        self.dates.get(c).copied()
+    }
+}
+
+/// Debug builds: the held writes `index_exact` built, by what they are built of (each placed
+/// body, its writes and form; a 128-bit hash of their `Debug`), shared by the process's engines:
+/// the nodes holding one set of bodies (the order harness's orders of a held set, a synced
+/// world's peers) build it once, each still compared row for row. Cleared whole when it would
+/// pass `BUILT_BYTES` of rows: at 0 every check builds anew; with no bound a process keeps every
+/// set it ever checked (a rotation run's 100 worlds: about 160 MB, none read again).
+#[cfg(debug_assertions)]
+static BUILT: std::sync::Mutex<Option<BuiltSets>> = std::sync::Mutex::new(None);
+
+/// `BUILT`'s contents: the sets by key, and their rows' bytes.
+#[cfg(debug_assertions)]
+#[derive(Default)]
+struct BuiltSets {
+    bytes: usize,
+    sets: std::collections::HashMap<u128, Arc<Built>>,
+}
+
+/// `BUILT`'s bound: a few worlds' sets per thread at once (an order seed's are about 2 MB).
+#[cfg(debug_assertions)]
+const BUILT_BYTES: usize = 64 << 20;
+
 /// Debug builds: the kept held writes of `(tid, ak)` are, row for row, those built from its
 /// held valid bodies at once, each write dated by the rows (`Held::place`, `Held::date_every`):
 /// so no join or leave was missed, every death and date moved with them, and the deaths kept
 /// are those the rows date; none kept on a dated aspect, no held write is dead. Gives the held
-/// writes built from nothing.
+/// writes built from nothing (`BUILT`).
 #[cfg(debug_assertions)]
-pub(super) fn index_exact(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, when: &str) -> Result<Held<osis_crdt::MemRows>> {
-    let mut fresh = Held::new(osis_crdt::MemRows::default());
+pub(super) fn index_exact(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, when: &str) -> Result<Arc<Built>> {
+    use std::fmt::Write;
+    use std::hash::{Hash, Hasher};
     let bodies: Vec<CommitId> = tx.core.ix.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().map(|x| x.1).collect();
+    let mut placed = Vec::new();
+    let mut key = format!("{tid:?} {ak:?}");
     for c in bodies {
         if let Some(f) = form(tx.core, &c, tid, ak)
             && let Some((b, w)) = body_writes(tx, tid, ak, &c, f)?
         {
-            fresh.place(&b, &w, &tag(f))?;
+            let _ = write!(key, " {b:?} {w:?} {f:?}");
+            placed.push((b, w, tag(f)));
         }
     }
-    fresh.date_every()?;
+    let key = {
+        let (mut a, mut b) = (std::collections::hash_map::DefaultHasher::new(), std::collections::hash_map::DefaultHasher::new());
+        b.write_u8(1);
+        key.hash(&mut a);
+        key.hash(&mut b);
+        u128::from(a.finish()) << 64 | u128::from(b.finish())
+    };
+    let cached = BUILT.lock().unwrap_or_else(|e| e.into_inner()).as_ref().and_then(|m| m.sets.get(&key).cloned());
+    let fresh = match cached {
+        Some(f) => f,
+        None => {
+            let mut held = Held::new(osis_crdt::MemRows::default());
+            for (b, w, t) in &placed {
+                held.place(b, w, t)?;
+            }
+            held.date_every()?;
+            let mut dates = std::collections::BTreeMap::new();
+            for (b, ..) in &placed {
+                if let Some(t) = held.date(&b.c)? {
+                    dates.insert(b.c, t);
+                }
+            }
+            let any_dead = held.any_dead()?;
+            let f = Arc::new(Built { rows: held.rows, dates, any_dead });
+            let bytes: usize = f.rows.0.iter().map(|(k, v)| k.len() + v.len()).sum();
+            let mut g = BUILT.lock().unwrap_or_else(|e| e.into_inner());
+            let m = g.get_or_insert_default();
+            if m.bytes + bytes > BUILT_BYTES {
+                *m = BuiltSets::default();
+            }
+            m.bytes += bytes;
+            m.sets.insert(key, f.clone());
+            f
+        }
+    };
     if tx.txn.table(tid, ak, HELD_TABLE)?.is_none() {
-        assert!(!bounded(tx.core, tid, ak) || !fresh.any_dead()?, "{when}: dated {tid:?} {ak:?} keeps no held writes, yet a held write is dead");
+        assert!(!bounded(tx.core, tid, ak) || !fresh.any_dead, "{when}: dated {tid:?} {ak:?} keeps no held writes, yet a held write is dead");
         return Ok(fresh);
     }
     let kept: std::collections::BTreeMap<Vec<u8>, Vec<u8>> = index(tx, tid, ak, Shred::No)?.rows.scan(&[], FOLLOWED, usize::MAX)?.into_iter().collect();

@@ -555,6 +555,8 @@ fn edge_write(by: &osis_engine::Engine, t: Tid, holder: Tid, e: Option<osis_sche
 #[derive(Clone)]
 pub(crate) struct Played {
     pub(crate) packs: Vec<Package>,
+    /// Each pack's header expiry, read once (a copy held in part keeps its header).
+    expires: Vec<Option<u64>>,
     /// Each commit's author peer (3: none of the three).
     authors: Vec<usize>,
     /// How many of `packs` are the setup (identities, G, the first grants).
@@ -1575,7 +1577,8 @@ fn play_in(seed: u64, steps: &[Step], addenda: bool, written: bool) -> Played {
     let roots: BTreeSet<Tid> = [g].into_iter().chain(tops.iter().copied()).collect();
     let minted = parent.iter().filter_map(|(t, p)| made_by.get(t).map(|(_, id)| (*t, *p, *id))).chain(strong_in).collect();
     let walk = std::sync::Arc::new(crate::held::Walk { roots, minted });
-    Played { walk, access, packs, authors, base, things, now, tally, restored: Default::default(), judged: Default::default(), moved: Default::default(), dropped: Default::default(), steps_at, own_sets, settle_from: None, settled_last, withheld: 0, model: None, ingests: Default::default(), copies: Default::default(), reader: std::sync::Arc::new(std::sync::Mutex::new(reader)), setup }
+    let expires = packs.iter().map(|pk| osis_commit::CommitBlob::decode(&pk.bytes).ok().and_then(|b| b.header.expires)).collect();
+    Played { walk, access, packs, expires, authors, base, things, now, tally, restored: Default::default(), judged: Default::default(), moved: Default::default(), dropped: Default::default(), steps_at, own_sets, settle_from: None, settled_last, withheld: 0, model: None, ingests: Default::default(), copies: Default::default(), reader: std::sync::Arc::new(std::sync::Mutex::new(reader)), setup }
 }
 
 /// The node `build` makes, built once per process under `key` (`osis_base::copying::cached`):
@@ -1751,8 +1754,7 @@ fn give(played: &Played, p: &mut Peer, bytes: &[u8], blobs: Vec<(osis_base::Blob
         if !std::mem::take(&mut p.pulled_anew).is_empty() | joined {
             // a source keeps no commit past its expiry (spec/commits.md §6)
             let now = p.engine.now().0;
-            let live = |pk: &Package| osis_commit::CommitBlob::decode(&pk.bytes).is_ok_and(|b| b.header.expires.is_none_or(|t| t > now));
-            let again: Vec<&Package> = played.packs.iter().filter(|pk| p.given.contains(&pk.id) && live(pk)).collect();
+            let again: Vec<&Package> = played.packs.iter().zip(&played.expires).filter(|(pk, e)| p.given.contains(&pk.id) && e.is_none_or(|t| t > now)).map(|x| x.0).collect();
             for pk in again {
                 received(p, &pk.bytes, pk.blobs.clone());
             }

@@ -845,7 +845,7 @@ mod tests {
 
     /// `e` takes memory-class commit `b` as a sync entry brings it (`Engine::note_delivered`).
     fn take(e: &mut Engine, b: &[u8]) {
-        e.note_delivered(b);
+        e.note_delivered(&osis_commit::CommitBlob::decode(b).unwrap());
         e.ingest_memory(b, u64::MAX).unwrap();
     }
 

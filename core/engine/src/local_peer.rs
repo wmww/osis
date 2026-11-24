@@ -84,6 +84,8 @@ pub struct Peer {
 #[derive(Clone)]
 pub struct Discarded {
     bytes: Vec<u8>,
+    /// `bytes` decoded, once.
+    blob: Arc<CommitBlob>,
     blobs: Vec<(BlobId, Vec<u8>)>,
     pub commit: CommitId,
     /// A copy carrying a pending commit (or parts of an applied one), as node-sync keeps its
@@ -99,9 +101,9 @@ impl Discarded {
     }
 }
 
-/// Whether `bytes` carry a part applied commit `id` misses (decoded only then).
-fn misses(core: &crate::engine::Core, id: &CommitId, bytes: &[u8]) -> bool {
-    core.ix.commits.get(id).is_some_and(|m| m.missing_parts().next().is_some() && CommitBlob::decode(bytes).is_ok_and(|b| b.parts.iter().any(|p| m.missing(p.ai))))
+/// Whether `b` carries a part applied commit `id` misses.
+fn misses(core: &crate::engine::Core, id: &CommitId, b: &CommitBlob) -> bool {
+    core.ix.commits.get(id).is_some_and(|m| b.parts.iter().any(|p| m.missing(p.ai)))
 }
 
 impl Peer {
@@ -134,8 +136,10 @@ impl Peer {
 
     /// `receive` with the list blobs that came with it (`Engine::ingest_with_lists`).
     pub fn receive_with(&mut self, bytes: &[u8], blobs: Vec<(BlobId, Vec<u8>)>, lists: &[Vec<u8>]) -> Result<Ingested> {
-        self.engine.note_delivered(bytes);
-        if let Ok(b) = CommitBlob::decode(bytes) {
+        // decoded once for the harness's own bookkeeping (the engine decodes what it ingests)
+        let blob = CommitBlob::decode(bytes).ok().map(Arc::new);
+        if let Some(b) = &blob {
+            self.engine.note_delivered(b);
             self.given.insert(b.id());
         }
         let r = self.engine.ingest_with_lists(bytes, blobs.clone(), None, lists);
@@ -148,11 +152,13 @@ impl Peer {
         }
         if let Err(e) = &r
             && e.class() == osis_base::ErrorClass::BadInput
-            && let Ok(b) = CommitBlob::decode(bytes)
+            && let Some(b) = &blob
         {
             self.engine.forget_awaiting(&b.id())?;
         }
-        self.note(bytes, &blobs, &r);
+        if let Some(b) = blob {
+            self.note(bytes, b, &blobs, &r);
+        }
         self.wake()?;
         r
     }
@@ -172,22 +178,21 @@ impl Peer {
     /// Keeps what node-sync would keep or fetch again: a carrier of a pending commit, or a copy of
     /// a held one with a part of these bytes missing. Any earlier copy of the same bytes goes
     /// (only decodable bytes are kept, so only those match).
-    fn note(&mut self, bytes: &[u8], blobs: &[(BlobId, Vec<u8>)], r: &Result<Ingested>) {
+    fn note(&mut self, bytes: &[u8], blob: Arc<CommitBlob>, blobs: &[(BlobId, Vec<u8>)], r: &Result<Ingested>) {
         self.discarded.retain(|d| d.bytes != bytes);
         let Ok(i) = r else { return };
         let id = match i {
             Ingested::Applied(x) | Ingested::Duplicate(x) | Ingested::Pending(x, _) | Ingested::Parked(x) | Ingested::TooLarge(x) => *x,
         };
         if self.engine.core.ix.pending.contains_key(&id) {
-            self.discarded.push(Discarded { bytes: bytes.to_vec(), blobs: blobs.to_vec(), commit: id, carries: true });
+            self.discarded.push(Discarded { bytes: bytes.to_vec(), blob, blobs: blobs.to_vec(), commit: id, carries: true });
             return;
         }
-        // the blob decoded only where a held commit misses a part
-        if !misses(&self.engine.core, &id, bytes) {
+        if !misses(&self.engine.core, &id, &blob) {
             return;
         }
         self.discards += 1;
-        self.discarded.push(Discarded { bytes: bytes.to_vec(), blobs: blobs.to_vec(), commit: id, carries: false });
+        self.discarded.push(Discarded { bytes: bytes.to_vec(), blob, blobs: blobs.to_vec(), commit: id, carries: false });
     }
 
     fn wake(&mut self) -> Result<()> {
@@ -211,7 +216,7 @@ impl Peer {
                     return true;
                 }
                 d.carries = false;
-                misses(core, &d.commit, &d.bytes)
+                misses(core, &d.commit, &d.blob)
             });
             let due = |d: &Discarded| {
                 if d.carries {
@@ -228,12 +233,12 @@ impl Peer {
             let ingested: Vec<CommitId> = now.iter().map(|d| d.commit).collect();
             for d in now {
                 self.redelivered += u64::from(d.carries);
-                self.engine.note_delivered(&d.bytes);
+                self.engine.note_delivered(&d.blob);
                 let r = self.engine.ingest(&d.bytes, d.blobs.clone());
                 if matches!(&r, Err(e) if e.class() == osis_base::ErrorClass::BadInput) {
                     self.engine.forget_awaiting(&d.commit)?;
                 }
-                self.note(&d.bytes, &d.blobs, &r);
+                self.note(&d.bytes, d.blob, &d.blobs, &r);
             }
             for c in &again {
                 self.engine.redelivered(c)?;

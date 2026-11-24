@@ -517,12 +517,12 @@ fn rows_exact_on(tx: &mut Tx<'_>, key: &(Tid, Ak), when: &str) -> Result<()> {
     let dated = history::of(tx.core, tid, ak).dated();
     // dates from the held bodies joined from nothing, not from the rows kept
     let fresh = super::bounds::index_exact(tx, tid, ak, when)?;
-    let mut fresh = dated.then_some(fresh);
+    let fresh = dated.then_some(fresh);
     let mut on: BTreeSet<CommitId> = tx.core.ix.by_aspect.get(key).into_iter().flatten().map(|x| x.1).collect();
     on.extend(tx.core.ix.leaving.get(key).into_iter().flatten().map(|p| p.1));
     for c in on {
-        let want = match (&mut fresh, tx.core.ix.commits.get(&c).and_then(|m| Some((m, m.aspect(tid, ak)?)))) {
-            (Some(f), Some((m, ai))) if m.valid_at(ai) && m.holds(ai) && !m.own_gone(ai) => f.date(&c)?,
+        let want = match (&fresh, tx.core.ix.commits.get(&c).and_then(|m| Some((m, m.aspect(tid, ak)?)))) {
+            (Some(f), Some((m, ai))) if m.valid_at(ai) && m.holds(ai) && !m.own_gone(ai) => f.date(&c),
             (Some(_), Some((m, ai))) if m.valid_at(ai) => {
                 let h = m.header.clone();
                 super::purged_by(tx, &h, &c, ai)?.map(|_| h.ts)

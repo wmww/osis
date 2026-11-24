@@ -217,8 +217,7 @@ impl Engine {
     /// stricter): each part is noted opened under it (`sync_ids::opened`), as `open_commit` notes
     /// a section's. Nothing is noted for a thing with no read secret held.
     #[doc(hidden)]
-    pub fn note_delivered(&mut self, bytes: &[u8]) {
-        let Ok(b) = osis_commit::CommitBlob::decode(bytes) else { return };
+    pub fn note_delivered(&mut self, b: &osis_commit::CommitBlob) {
         let mut by: std::collections::BTreeMap<Tid, Vec<&osis_commit::Part>> = std::collections::BTreeMap::new();
         for p in &b.parts {
             if let Some(a) = b.header.aspects.get(p.ai) {
