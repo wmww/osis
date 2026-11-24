@@ -199,6 +199,7 @@ fn size(p: &Page) -> usize {
 }
 
 impl<R: Rows> PagedRows<R> {
+    #[cfg(test)]
     pub fn new(inner: R, key_max: usize) -> PagedRows<R> {
         PagedRows::with_cache(inner, key_max, PageCache::default())
     }

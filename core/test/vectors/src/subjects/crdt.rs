@@ -104,19 +104,9 @@ fn read_field(r: Record, v: Option<Value>) -> Record {
     }
 }
 
-fn pages_field(p: &[Vec<u8>]) -> String {
-    p.iter().map(|x| hex(x)).collect::<Vec<_>>().join(",")
-}
-
-/// Page plaintexts in the order they were written.
-#[derive(Default)]
-struct Pages(Vec<Vec<u8>>, MemoryPages);
-
-impl PageSink for Pages {
-    fn put(&mut self, plaintext: &[u8]) -> Result<osis_base::Link, osis_crdt::PageError> {
-        self.0.push(plaintext.to_vec());
-        self.1.put(plaintext)
-    }
+/// The page plaintexts in the order they were written.
+fn pages_field(p: &MemoryPages) -> String {
+    p.written.iter().map(|h| hex(&p.pages[h])).collect::<Vec<_>>().join(",")
 }
 
 /// A writer's delta case; checks it decodes back to itself.
@@ -143,12 +133,12 @@ fn snapshot_case(name: &str, spec: &str, state: &Fragment, frontiers: Frontiers,
     let w = writer(9, 100, 0);
     let cx = DeltaCtx { ts: w.ts, own: w.own.clone(), range: CounterRange::EMPTY, kind: DeltaKind::Snapshot };
     let snap = Snapshot { nonce: [3; 16], fragment: state.clone(), frontiers, absorbed, facts: Default::default() };
-    let mut pages = Pages::default();
+    let mut pages = MemoryPages::new();
     let bytes = encode_snapshot(&snap, &cx, Some(&mut pages)).unwrap();
-    let back = decode_snapshot(&bytes, &cx, &mut Interner::new(), Some(&mut pages.1)).unwrap();
+    let back = decode_snapshot(&bytes, &cx, &mut Interner::new(), Some(&mut pages)).unwrap();
     assert_eq!(back.fragment.read(), state.read(), "{name}");
     let r = head(name, spec, "snapshot", &w, None).with("delta", hex(&bytes));
-    let r = if pages.0.is_empty() { r } else { r.with("pages", pages_field(&pages.0)) };
+    let r = if pages.written.is_empty() { r } else { r.with("pages", pages_field(&pages)) };
     read_field(r, state.read())
 }
 

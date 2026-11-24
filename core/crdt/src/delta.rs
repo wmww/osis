@@ -257,6 +257,7 @@ impl<'s> DeltaBuilder<'s> {
     }
 
     /// The state as the delta sees it: the local state joined with the delta's writes.
+    #[cfg(test)]
     pub fn view(&self) -> Fragment {
         joined(Some(self.state), self.acc.as_ref(), None).unwrap_or_default()
     }
