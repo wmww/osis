@@ -768,15 +768,16 @@ impl World {
     fn own(&self, st: &State, n: usize) -> Set {
         st.written.iter().copied().filter(|&i| self.by[i] == n && !st.forgotten.contains(&i)).collect()
     }
-    /// What the thief logs under S: its own bodies there and the grants (no edge write giving
-    /// below write but its own) they rest on, read as if the lowerings it withholds (`takes_away`)
-    /// were never written: nothing only a withheld lowering brings, such as the creation of an
-    /// entry it resets.
+    /// What the thief logs under S: its own bodies there and the grants they rest on, read as if
+    /// what it withholds were never written: every edge write but its own that gives below write
+    /// (`removes`) or takes something away (`takes_away`). Nothing only a withheld write brings is
+    /// logged, such as the creation of an entry it resets, or what a withheld read grant rests on.
     fn thief_logs(&self, rule: &Rule, s: Sid, units: &BTreeMap<Sid, Things>, held: &Set, own: &Set) -> Set {
         let mine: Set = own.iter().copied().filter(|&i| units[&s].contains(&self.on(i))).collect();
+        let withheld = |i: Id| !own.contains(&i) && (self.takes_away(i) || self.removes(i).is_some());
         // it knows its own paths, opened or not
-        let known: Set = held.iter().chain(own.iter().filter_map(|i| self.opens.get(i)).filter(|&&o| o < self.by.len())).copied().filter(|&i| own.contains(&i) || !self.takes_away(i)).collect();
-        self.closure(rule, &mine, &known).into_iter().filter(|&i| held.contains(&i) && (own.contains(&i) || self.removes(i).is_none())).collect()
+        let known: Set = held.iter().chain(own.iter().filter_map(|i| self.opens.get(i)).filter(|&&o| o < self.by.len())).copied().filter(|&i| !withheld(i)).collect();
+        self.closure(rule, &mine, &known).into_iter().filter(|i| held.contains(i)).collect()
     }
     /// What node `n` delivers over `held` besides what it logs by its view: a grant naming a
     /// holder goes under the holder's sync ID by its granter (spec/permissions.md §4 Delivering

@@ -4,7 +4,6 @@
 # random seeds pass it most runs, and its summary says passing is expected); ISSUE: its issues/
 # file; PATTERN: a regex every failing unit of NAME (each seed line of its panic, or its whole
 # panic) must match (tools/gate_failures.py).
-held-model/spec_gaps::evidence_reach_and_generator_gaps_large rate:OSIS_HELD_START=662818812978 issues/held-model-p4-held-wide.md P4-held
 osis-engine/parts::forged_parts_beside_a_part_past_expiry_alike_plain_spec_commits_4 OSIS_FORGED_START=0 issues/accounts-properties-fail.md accounts: pairing
 osis-engine/parts::forged_parts_beside_a_part_past_expiry_alike_in_every_order_exhaustive_spec_commits_4 - issues/accounts-properties-fail.md accounts: pairing
 osis-engine/waits::every_part_given_once_joins_in_any_order_plain_spec_commits_4 - issues/accounts-properties-fail.md accounts: pairing

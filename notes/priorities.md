@@ -9,7 +9,7 @@
 
 ## Failing on main
 Found by random seeds, each with its issue and a line in tools/known_failures.txt. They run beside the primary work, not before it; each starts with a hand-written minimal reproducer (notes/principles.md, Never pin a seed):
-- held-model's P4-held generator gap (issues/held-model-p4-held-wide.md).
+- None.
 
 While the accounts pieces land, osis-sync worlds of two or more accounts give no sync IDs (their tests are ignored `accounts: ...`): brief no end-to-end world test there; test at the boundaries and list the world test owed in the issue.
 

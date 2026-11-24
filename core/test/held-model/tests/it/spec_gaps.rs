@@ -294,14 +294,38 @@ fn gaps_a_removal_on_a_path_through_a_read_hop_is_the_gap_once_it_decides() {
         assert_eq!(wr.closure(&rule, &wr.owed_bodies(&st, O), &all).contains(&r), any);
         assert!(!wr.req(&rule, O, &st.units, &st.entries[&O]).contains(&r));
         assert_eq!(wr.verdicts(&wr.full(&st, &Set::new()), &Set::from([c]))[&c], if any { Verdict::Invalid } else { Verdict::Pending });
+        // J1 is finding 23's: the thief, reading no grant on (A, O), logs none of K's grants,
+        // and O's reader, its path joined by W's read grant, pends on (K, A)
+        let pend = Fail { prop: "P1", step: 4, sid: O, id: c, reader: Some(Verdict::Pending), full: Some(Verdict::Invalid) };
         for s in Stage::ALL {
-            assert_eq!(gap_fails(&w, s, &[]), vec![], "{} {}", join.name(), s.name());
+            assert_eq!(gap_fails(&w, s, &[]), if any { vec![pend.clone()] } else { vec![] }, "{} {}", join.name(), s.name());
         }
     }
     let (w, _, c) = base(true);
     for s in Stage::ALL {
         assert_eq!(gap_fails(&w, s, &[]), vec![], "{}", s.name());
         assert!(stage_gaps(&w, s).iter().any(|f| f.sid == O && f.id == c && f.reader == Some(Verdict::Valid)), "{}", s.name());
+    }
+}
+
+/// The thief reads as never written what it withholds: the stolen K writes D through [A]; Q, an
+/// admin of A by X's grant, gives Z read there (a fresh grant below write, which the thief never
+/// logs); X makes K and Z admins in one commit, whose part on (Z, A) names the entry Q's grant
+/// created. The thief logs its write, X's grants to K and their commit, and not X's grant to Q:
+/// only Q's withheld grant brings it, so D's reader would hold it requiring nothing of it (P4).
+#[test]
+fn gaps_the_thief_logs_nothing_only_a_grant_it_withholds_brings() {
+    let pw = paths::World::new(&[(X, A), (Y, D)]);
+    let mut w = World::new(pw, &[A, D]);
+    let (x, y, q, k) = (w.node(true, &[A]), w.node(true, &[D]), w.node(true, &[A]), w.node(false, &[A, D]));
+    w.write(x, |p| p.edge(X, 1, &[], A, K, Role::Write, &[]));
+    w.write(x, |p| p.edge(X, 1, &[], A, Q, Role::Admin, &[]));
+    w.write(y, |p| p.edge(Y, 1, &[], D, A, Role::Write, &[]));
+    w.write(k, |p| p.content(K, 2, &[A], D));
+    w.write(q, |p| p.edge(Q, 3, &[], A, Z, Role::Read, &[]));
+    w.write_parts(x, |p| p.commit(X, 4, &[], A, vec![paths::Kind::set(K, Role::Admin), paths::Kind::set(Z, Role::Admin)]));
+    for s in Stage::ALL {
+        assert_eq!(gap_fails(&w, s, &[]), vec![], "{}", s.name());
     }
 }
 
@@ -312,8 +336,8 @@ fn gaps_a_removal_on_a_path_through_a_read_hop_is_the_gap_once_it_decides() {
 /// grant on (A, O). Under J1 (a hop joined by any chained grant) it pends: P1 fails at every
 /// stage. Under J2 (joined and pending by a grant giving the role the part
 /// needs) the node holding everything pends too; under J3 (a hop no grant joins judged invalid)
-/// the reader judges it invalid. Either holds P1 at every stage; J3 leaves X's grant to K, which
-/// the thief logs, held under R and required by no reader (P4).
+/// the reader judges it invalid. Either holds P1 at every stage. The thief, withholding W's grant,
+/// reads no grant on (A, O) and logs nothing beyond it: no copy of X's grant to K under R (P4).
 #[test]
 fn gaps_a_write_through_a_read_hop_pends_at_a_reader_lacking_the_read_grant() {
     let pw = paths::World::new(&[(X, A), (W, O), (Y, R)]);
@@ -329,11 +353,7 @@ fn gaps_a_write_through_a_read_hop_pends_at_a_reader_lacking_the_read_grant() {
             let f = stage_fails(&w, s);
             let pends = f.iter().any(|f| f.prop == "P1" && f.sid == R && f.id == c && f.reader == Some(Verdict::Pending) && f.full == Some(Verdict::Invalid));
             assert_eq!(pends, join == Join::Any, "{} {}: {f:?}", join.name(), s.name());
-            assert!(f.iter().all(|f| matches!(f.prop, "P1" | "P4-held")), "{} {}: {f:?}", join.name(), s.name());
-            // the thief logs X's grant to K under R, which R's reader requires only where it
-            // joins the path: never under J1 or J3 (no grant on (A, O) held)
-            let held = f.iter().any(|f| f.prop == "P4-held");
-            assert_eq!(held, join != Join::Needed, "{} {}: {f:?}", join.name(), s.name());
+            assert!(f.iter().all(|f| f.prop == "P1"), "{} {}: {f:?}", join.name(), s.name());
         }
     }
 }
