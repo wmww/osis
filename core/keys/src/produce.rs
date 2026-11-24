@@ -158,9 +158,9 @@ pub struct Carried {
 }
 
 /// Per rotated role, the holder actors a rotation leaves out of it, each with the keysets of it
-/// of that role its keyset records (spec/crypto.md §4, Left out): Seal at every node then seals
-/// that holder only at a keyset descending from each.
-pub type LeftOut = BTreeMap<Role, BTreeMap<Tid, BTreeSet<Epoch>>>;
+/// of that role its keyset records, each with its causes' commit IDs (spec/crypto.md §4, Left
+/// out): every node holding a cause that stands leaves that holder out at that keyset.
+pub type LeftOut = BTreeMap<Role, BTreeMap<Tid, BTreeMap<Epoch, BTreeSet<osis_base::CommitId>>>>;
 
 /// A rotation's writes (spec/crypto.md §4): one role commit carries them.
 #[derive(Clone, Debug)]
@@ -239,7 +239,7 @@ pub fn rotate(actor: &Tid, roles: &BTreeSet<Role>, held: &ActorEpochs, held_secr
 }
 
 /// `rotate`, each rotated role's keyset recording `left_out` (the holder actors the rotation
-/// leaves out of it, with the keysets of each it was left out at: `LeftOut`) and carrying
+/// leaves out of it, with the keysets of each it was left out at and their causes: `LeftOut`) and carrying
 /// `carried` (`Carried`). `cut`: a grant without history (spec/crypto.md §4, Floors): the read
 /// floor is its own n and its history box carries no earlier secret, so it removes no box.
 #[allow(clippy::too_many_arguments)]
@@ -294,7 +294,7 @@ pub fn rotate_leaving_out(actor: &Tid, roles: &BTreeSet<Role>, held: &ActorEpoch
         let listed: BTreeSet<Epoch> = current.iter().filter(|e| re.provenance(e) != Some(Provenance::Derived)).copied().collect();
         let mut ks = keyset(r, &epoch, &secret, &listed, names);
         for (m, out) in left_out.get(&r).into_iter().flatten() {
-            ks.left_out.insert((*m).into(), out.iter().map(to_schema).collect());
+            ks.left_out.insert((*m).into(), out.iter().map(|(x, causes)| (to_schema(x), causes.clone())).collect());
         }
         ks.demotions = carried.demotions.clone();
         ks.demotes = carried.demotes;

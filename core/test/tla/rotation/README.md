@@ -157,7 +157,7 @@ notes/holder-actors.md (Left out); spec/crypto.md §4 Left out. One holder actor
 | cfg | setting | result | distinct states | time |
 |---|---|---|---|---|
 | `LO_inv` | cause, c invalidated | pass | 931,184 | 48 s |
-| `LO_inv_old` | old, c invalidated | **fails** `Live`: w leaves M out on c, i reaches everyone, the record keeps M out (issues/rotation-holder-lacks-box.md) | 3,166 | 1 s |
+| `LO_inv_old` | old, c invalidated | **fails** `Live`: w leaves M out on c, i reaches everyone, the record keeps M out | 3,166 | 1 s |
 | `LO_ign` | cause, ignorant keyset, c valid | pass (by hand) | 1,447,080 | 27 s (12 workers) |
 | `LO_ign_old` | old, ignorant keyset | **fails** `Live`: r judges the recorded keyset by order and never re-keys | 3,688 | 1 s |
 | `LO_both` | cause, both | pass (by hand) | 68,789,844 | 19 min 52 s (12 workers) |

@@ -99,7 +99,7 @@ pub fn blocked_roles_of(tx: &mut Tx<'_>, who: &Tid, a: &Tid, deps: &[Departure],
 /// at a joint box, each (actor, epoch) once per walk (boxes may cycle).
 pub(crate) fn blocked_epoch(tx: &mut Tx<'_>, who: &Tid, a: &Tid, r: Role, e: &osis_crypto::Epoch, deps: &[Departure], walk: Walk) -> Result<bool> {
     let mut own = None;
-    Ok(walk_from(tx, who, a, r, (*a, *e, true), deps, walk, false, BTreeSet::new(), &mut own)?.is_some())
+    Ok(walk_from(tx, who, a, r, (*a, *e, true), deps, walk, false, BTreeSet::new(), &mut own, &mut BTreeSet::new())?.is_some())
 }
 
 /// Why `who` may not encrypt under an epoch (`blocking`).
@@ -108,47 +108,63 @@ pub(crate) enum Block {
     /// It misses a departure it must cover, here or at a keyset it boxes: the departed party may
     /// open it.
     Departure,
-    /// It, or an epoch it boxes, has a stale box or one past key access: its rotator re-keys,
-    /// whoever opens it.
+    /// It, or an epoch it boxes, has a stale box, one past key access, or one naming a keyset
+    /// the boxing actor records its holder left out at: its rotator re-keys, whoever opens it.
     Box,
 }
 
-/// `blocked_epoch`, with why: a box reason where any is found, else a missed departure.
-pub(crate) fn blocking(tx: &mut Tx<'_>, who: &Tid, a: &Tid, r: Role, e: &osis_crypto::Epoch, deps: &[Departure], walk: Walk) -> Result<Option<Block>> {
+/// `blocked_epoch`, with why (a box reason where any is found, else a missed departure) and the
+/// causes the judgement read (spec/crypto.md §4, Left out): each missed departure's newest edge
+/// write a covering epoch must name (`Departure::newest_needed`), each stale box's superseding
+/// keyset's rotation commit, each keyless grant's edge write, each counting record's causes. The
+/// whole walk is judged, so every cause is found. A departure no edge shows (a box or maker
+/// departure) has none: a keyset blocked by it alone records nothing.
+pub(crate) fn blocking(tx: &mut Tx<'_>, who: &Tid, a: &Tid, r: Role, e: &osis_crypto::Epoch, deps: &[Departure], walk: Walk) -> Result<Option<(Block, BTreeSet<osis_base::CommitId>)>> {
     let mut own = None;
-    walk_from(tx, who, a, r, (*a, *e, true), deps, walk, true, BTreeSet::new(), &mut own)
+    let mut causes = BTreeSet::new();
+    Ok(walk_from(tx, who, a, r, (*a, *e, true), deps, walk, true, BTreeSet::new(), &mut own, &mut causes)?.map(|b| (b, causes)))
 }
 
 /// Whether the keysets `why` judged (`blocking`) block a box naming `n` of them, one or jointly:
-/// any by a stale or keyless box, or every one by a missed departure. The keysets that leave the
-/// holder out (`members::left_out` records them), none when the box may be made.
+/// any by a box reason, or every one by a missed departure. The keysets that leave the holder
+/// out, none when the box may be made.
 pub(crate) fn joint_blocked(why: BTreeMap<osis_crypto::Epoch, Block>, n: usize) -> BTreeSet<osis_crypto::Epoch> {
     if why.len() == n || why.values().any(|b| *b == Block::Box) { why.into_keys().collect() } else { BTreeSet::new() }
 }
 
 /// `blocking` from `root` (an epoch of an actor, with whether every epoch above it on the walk is
 /// one whose secret this node holds), past the epochs in `seen`; `own`: whether this node knows a
-/// removal from its account root, found when first needed. `full`: on past a missed departure,
-/// for a box reason (else the first reason found).
+/// removal from its account root, found when first needed. `full`: the whole walk, its causes
+/// added to `causes` (else the first reason found).
 #[allow(clippy::too_many_arguments)]
-fn walk_from(tx: &mut Tx<'_>, who: &Tid, a: &Tid, r: Role, root: (Tid, osis_crypto::Epoch, bool), deps: &[Departure], walk: Walk, full: bool, mut seen: BTreeSet<(Tid, osis_crypto::Epoch)>, own: &mut Option<bool>) -> Result<Option<Block>> {
+fn walk_from(tx: &mut Tx<'_>, who: &Tid, a: &Tid, r: Role, root: (Tid, osis_crypto::Epoch, bool), deps: &[Departure], walk: Walk, full: bool, mut seen: BTreeSet<(Tid, osis_crypto::Epoch)>, own: &mut Option<bool>, causes: &mut BTreeSet<osis_base::CommitId>) -> Result<Option<Block>> {
     seen.insert((root.0, root.1));
     let mut todo = vec![root];
-    let mut missed = false;
+    let (mut missed, mut boxed) = (false, false);
     while let Some((x, k, read)) = todo.pop() {
-        if !missed && (read || tx.core.me() == x) {
+        if (full || !missed) && (read || tx.core.me() == x) {
             let known = if x == *a { deps.to_vec() } else { departures(tx, &x)? };
             let deps = others(tx.core, &x, known);
-            missed = uncovered(tx, &x, r, &k, &deps)?;
-            if missed && !full {
-                return Ok(Some(Block::Departure));
+            let un = uncovered_by(tx, &x, r, &k, &deps)?;
+            if !un.is_empty() {
+                missed = true;
+                causes.extend(un.iter().filter_map(|d| d.newest_needed(r)).map(|n| n.commit));
+                if !full {
+                    return Ok(Some(Block::Departure));
+                }
             }
         }
         // encrypting under an epoch that boxes, at any depth, a superseded keyset hands the secret
         // to what that keyset's departed party opens; the box and keysets are state, so judged
-        // without the epoch's secret
-        if read && walk == Walk::Encrypt && members::stale_at(tx, &x, r, &k)? {
-            return Ok(Some(Block::Box));
+        // without the epoch's secret; a keyset the actor records its holder left out at alike
+        if read && walk == Walk::Encrypt
+            && let Some(c) = members::box_blocked(tx, &x, r, &k)?
+        {
+            causes.extend(c);
+            if !full {
+                return Ok(Some(Block::Box));
+            }
+            boxed = true;
         }
         let next = if !read || !tx.core.epochs(&x).is_some_and(|ep| ep.role(r).is_established(&k) && ep.role(r).secret(&k).is_some()) {
             // past an epoch whose secret this node lacks: boxes to its own thing, at any depth
@@ -172,8 +188,16 @@ fn walk_from(tx: &mut Tx<'_>, who: &Tid, a: &Tid, r: Role, root: (Tid, osis_cryp
             false
         } else {
             let rotator = may_rotate(tx.core, who, &x).contains(&r);
-            if rotator && ((walk == Walk::Log && members::stale_at(tx, &x, r, &k)?) || members::keyless_at(tx, &x, r, &k)?) {
-                return Ok(Some(Block::Box));
+            if rotator {
+                let stale = if walk == Walk::Log { members::box_blocked(tx, &x, r, &k)? } else { None };
+                let keyless = members::keyless_at(tx, &x, r, &k)?;
+                if stale.is_some() || keyless.is_some() {
+                    causes.extend(stale.into_iter().chain(keyless).flatten());
+                    if !full {
+                        return Ok(Some(Block::Box));
+                    }
+                    boxed = true;
+                }
             }
             if !rotator && walk == Walk::Log {
                 continue;
@@ -192,38 +216,50 @@ fn walk_from(tx: &mut Tx<'_>, who: &Tid, a: &Tid, r: Role, root: (Tid, osis_cryp
             // walk judges it, and blocks for it whatever this box does. The keysets are not marked
             // seen: one reached alone by another box is still walked.
             let mut why = BTreeMap::new();
+            let mut found = BTreeSet::new();
             for j in js.iter().filter(|j| !seen.contains(&(m, **j))) {
-                if let Some(b) = walk_from(tx, who, a, r, (m, *j, next), deps, walk, true, seen.clone(), own)? {
+                if let Some(b) = walk_from(tx, who, a, r, (m, *j, next), deps, walk, true, seen.clone(), own, &mut found)? {
                     why.insert(*j, b);
                 }
             }
-            let boxed = why.values().any(|b| *b == Block::Box);
+            let by_box = why.values().any(|b| *b == Block::Box);
             if !joint_blocked(why, js.len()).is_empty() {
-                if boxed {
-                    return Ok(Some(Block::Box));
-                }
+                causes.extend(found);
                 if !full {
-                    return Ok(Some(Block::Departure));
+                    return Ok(Some(if by_box { Block::Box } else { Block::Departure }));
                 }
-                missed = true;
+                if by_box {
+                    boxed = true;
+                } else {
+                    missed = true;
+                }
             }
         }
     }
-    Ok(missed.then_some(Block::Departure))
+    Ok(if boxed { Some(Block::Box) } else { missed.then_some(Block::Departure) })
 }
 
 /// Whether epoch `k` of role `r` of `x` does not cover one of `deps` as this node can tell
+/// (`uncovered_by`).
+pub(crate) fn uncovered(tx: &mut Tx<'_>, x: &Tid, r: Role, k: &osis_crypto::Epoch, deps: &[Departure]) -> Result<bool> {
+    Ok(!uncovered_by(tx, x, r, k, deps)?.is_empty())
+}
+
+/// The departures of `deps` epoch `k` of role `r` of `x` does not cover as this node can tell
 /// (spec/crypto.md §4, Encrypting under): by its history entries where it holds `k`'s secret
 /// established; else by order: an epoch covers no departure ordered after its minting rotation
 /// (its rotator held none of them), read from the earliest held valid body of the keyset
 /// (`HeldKeyset::since`). A departure no keyset of `x` held is known to cover leaves `x` out
 /// until one is (a stranded report carries it, spec/permissions.md §4).
-pub(crate) fn uncovered(tx: &mut Tx<'_>, x: &Tid, r: Role, k: &osis_crypto::Epoch, deps: &[Departure]) -> Result<bool> {
+pub(crate) fn uncovered_by<'d>(tx: &mut Tx<'_>, x: &Tid, r: Role, k: &osis_crypto::Epoch, deps: &'d [Departure]) -> Result<Vec<&'d Departure>> {
     let point = |k: osis_keys::Key| osis_base::Ts::from_u64(k.ts).map(|ts| osis_perm::Point { ts, node: k.node, commit: k.commit });
     let core = &*tx.core;
     Ok(match core.epochs(x).filter(|ep| ep.role(r).is_established(k) && ep.role(r).secret(k).is_some()) {
-        Some(epochs) => !osis_keys::uncovered(&epochs, r, k, deps, &core.names_held(x)).is_empty(),
-        None => core.keyset(x, r, k).is_some_and(|held| deps.iter().any(|d| d.concerns(r) && d.newest_needed(r).and_then(point).is_some_and(|p| held.held_before(&p)))),
+        Some(epochs) => osis_keys::uncovered(&epochs, r, k, deps, &core.names_held(x)),
+        None => match core.keyset(x, r, k) {
+            Some(held) => deps.iter().filter(|d| d.concerns(r) && d.newest_needed(r).and_then(point).is_some_and(|p| held.held_before(&p))).collect(),
+            None => Vec::new(),
+        },
     })
 }
 
@@ -235,7 +271,7 @@ pub(crate) fn uncovered(tx: &mut Tx<'_>, x: &Tid, r: Role, k: &osis_crypto::Epoc
 /// actor it administers, a link key) while sync waits on it (`held_wait`, spec/crypto.md §4
 /// Exception): the self-removal carries no rotation, so counted it would keep the node from
 /// logging that very commit, and the wait it is held for would end with no peer told.
-fn others(core: &Core, x: &Tid, deps: Vec<Departure>) -> Vec<Departure> {
+pub(crate) fn others(core: &Core, x: &Tid, deps: Vec<Departure>) -> Vec<Departure> {
     let own = |d: &Departure| d.holder == core.me() || departures::own_leaving(core, x, d).is_some_and(|c| core.ix.held_wait.contains(&c));
     deps.into_iter().filter(|d| !own(d)).collect()
 }
@@ -265,8 +301,8 @@ enum Due {
 /// for current epochs whose secret this node lacks, where its new epoch boxes a rotator
 /// (`boxes_rotator`). With `Due::PassEnd` also when an unsuperseded epoch is not current here
 /// and `who` withdraws it, when a current read epoch's floor is below a holder's
-/// (`floors::low_floor_due`), or when `a` is a holder actor the pass's actor leaves out for good
-/// (`members::left_out_for_good`). A fork alone is due nothing else: it stands until the role next
+/// (`floors::low_floor_due`), or when the pass's actor leaves holder actor `a` out at a current
+/// keyset of `a` (`members::rekey_due`). A fork alone is due nothing else: it stands until the role next
 /// rotates (spec/crypto.md §4). No secret of the role is needed; the commit must be
 /// `wrappable`, else the rotation waits for a re-seal.
 fn rotation_due(tx: &mut Tx<'_>, who: &Tid, a: &Tid, mode: Due, kept: &BTreeSet<Role>) -> Result<BTreeSet<Role>> {
@@ -289,7 +325,7 @@ fn rotation_due(tx: &mut Tx<'_>, who: &Tid, a: &Tid, mode: Due, kept: &BTreeSet<
         let current: Vec<(osis_crypto::Epoch, Option<bool>)> = epochs.role(r).current().into_iter().map(|e| (e, epochs.role(r).secret(&e).map(|_| !osis_keys::uncovered(&epochs, r, &e, &deps, &held).is_empty()))).collect();
         let mut unread = false;
         for (e, uncovered_held) in current {
-            due = due || members::keyless_at(tx, a, r, &e)? || members::stale_at(tx, a, r, &e)?;
+            due = due || members::keyless_at(tx, a, r, &e)?.is_some() || members::box_blocked(tx, a, r, &e)?.is_some();
             match uncovered_held {
                 Some(u) => due = due || u,
                 None => unread = unread || uncovered(tx, a, r, &e, &deps)? || orphaned(tx, a, r, &e)?,
@@ -305,11 +341,11 @@ fn rotation_due(tx: &mut Tx<'_>, who: &Tid, a: &Tid, mode: Due, kept: &BTreeSet<
         due = due || matches!(mode, Due::PassEnd(_)) && epochs.role(r).unsuperseded().iter().any(|e| !current.contains(e) && maker(tx.core, who, a, r, e).is_none_or(|m| m.me || !m.may_rotate));
         // a current read epoch a holder's floor bars it from (spec/crypto.md §4, Floors)
         due = due || matches!(mode, Due::PassEnd(_)) && r == Role::Read && floors::low_floor_due(tx, who, a)?;
-        // the pass's actor records `a` left out with no keyset of it past the record
+        // the pass's actor leaves `a` out at a current keyset of `a` (spec/crypto.md §4, Re-key)
         if let Due::PassEnd(p) = mode
             && p != *a
         {
-            due = due || members::left_out_for_good(tx, &p, a, r)?;
+            due = due || members::rekey_due(tx, &p, a, r)?;
         }
         if due {
             out.insert(r);
@@ -378,8 +414,7 @@ pub(crate) fn recipients(tx: &mut Tx<'_>, who: &Tid, a: &Tid, skip: &[(Tid, Opti
             Some((_, None)) => continue,
             None => role,
         };
-        let (sealed, blocked) = members::sealing(tx, who, a, &m, role)?;
-        let boxed = match sealed {
+        let boxed = match members::sealed(tx, who, a, &m, role)? {
             Sealed::Boxed(r) => {
                 let top = r.role;
                 out.holders.push(r);
@@ -387,7 +422,7 @@ pub(crate) fn recipients(tx: &mut Tx<'_>, who: &Tid, a: &Tid, skip: &[(Tid, Opti
             }
             Sealed::Out => None,
         };
-        members::left_out(tx, a, &m, role, boxed, &blocked, &mut out.left_out)?;
+        members::left_out(tx, who, a, &m, role, boxed, &mut out.left_out)?;
     }
     Ok(out)
 }

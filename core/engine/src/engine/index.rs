@@ -122,13 +122,18 @@ impl Rec for Role {
 }
 impl Rec for super::HeldKeyset {
     fn to(&self) -> Value {
-        Value::List(vec![self.lists.to(), self.kem_in.to(), self.since.to(), self.names.to(), by_holder_to(&self.left_out), self.demotions.to()])
+        let left_out: Vec<(Tid, osis_crypto::Epoch, BTreeSet<CommitId>)> = self.left_out.iter().flat_map(|(m, xs)| xs.iter().map(|(x, c)| (*m, *x, c.clone()))).collect();
+        Value::List(vec![self.lists.to(), self.kem_in.to(), self.since.to(), self.names.to(), left_out.to(), self.demotions.to()])
     }
     fn from(v: &Value) -> Option<Self> {
         let Value::List(f) = v else { return None };
         let [lists, kem_in, since, names, left_out, demotions] = f.as_slice() else { return None };
         let (lists, kem_in, since, names, demotions) = (Rec::from(lists)?, Rec::from(kem_in)?, Rec::from(since)?, Rec::from(names)?, Rec::from(demotions)?);
-        Some(super::HeldKeyset { lists, kem_in, since, names, left_out: by_holder_from(left_out)?, demotions })
+        let mut out: BTreeMap<Tid, BTreeMap<osis_crypto::Epoch, BTreeSet<CommitId>>> = BTreeMap::new();
+        for (m, x, c) in <Vec<(Tid, osis_crypto::Epoch, BTreeSet<CommitId>)> as Rec>::from(left_out)? {
+            out.entry(m).or_default().insert(x, c);
+        }
+        Some(super::HeldKeyset { lists, kem_in, since, names, left_out: out, demotions })
     }
 }
 /// `[holder, epoch]` pairs of a by-holder set map.
@@ -655,8 +660,11 @@ pub(crate) fn record_head(m: &Meta) -> Vec<u8> {
                 None => w.u8(0),
             };
             w = w.raw(&k.names).u32(k.left_out.len() as u32);
-            for (m, x) in &k.left_out {
-                w = w.raw(m.as_bytes()).u64(x.n()).raw(x.nonce());
+            for (m, x, causes) in &k.left_out {
+                w = w.raw(m.as_bytes()).u64(x.n()).raw(x.nonce()).u32(causes.len() as u32);
+                for c in causes {
+                    w = w.raw(&c.0);
+                }
             }
             w = w.u32(k.demotions.len() as u32);
             for c in &k.demotions {
@@ -835,7 +843,12 @@ pub(crate) fn parse_head(v: &[u8]) -> Result<(RecordHead, &[u8])> {
             let mut left_out = Vec::new();
             for _ in 0..r.u32()? {
                 let m = Tid::from_bytes(r.arr()?);
-                left_out.push((m, osis_crypto::Epoch::new(r.u64()?, r.arr()?).map_err(|_| Error::Corrupt("dropped keyset epoch"))?));
+                let x = osis_crypto::Epoch::new(r.u64()?, r.arr()?).map_err(|_| Error::Corrupt("dropped keyset epoch"))?;
+                let mut causes = Vec::new();
+                for _ in 0..r.u32()? {
+                    causes.push(CommitId(r.arr()?));
+                }
+                left_out.push((m, x, causes));
             }
             let mut demotions = Vec::new();
             for _ in 0..r.u32()? {

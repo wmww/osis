@@ -141,8 +141,9 @@ type keyset = struct {
     /// 32-byte digest of the names this change of secrets records.
     names 5: blob,
     /// Per holder actor this change of secrets left out of the role, the keysets of it it was
-    /// left out at: nobody seals it at a keyset not past each (spec/crypto.md §4).
-    left_out 6: map<weak, set<epoch>>,
+    /// left out at, each with the 32-byte IDs of its causes' commits: it stays left out at a
+    /// keyset while a cause stands (spec/crypto.md §4, Left out).
+    left_out 6: map<weak, map<epoch, set<blob>>>,
     /// 32-byte IDs of other commits demoting a writer or admin of the actor or of an actor
     /// below it, which travel with the keyset (spec/crypto.md §4, Carried demotions).
     demotions 7: set<blob>,

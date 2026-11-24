@@ -382,22 +382,26 @@ impl Engine {
     }
 
     /// The demotions the keysets of `t` that commit `c` introduces carry (spec/crypto.md §4,
-    /// Carried demotions): each carried commit's `roles.0` parts (`c`'s own among them where a
-    /// keyset says `c` demotes) with their evidence, added to `out`: a receiver holds those
-    /// keysets only with them.
+    /// Carried demotions) and the left-out causes they record (Carried): each carried commit's
+    /// `roles.0` parts (`c`'s own among them where a keyset says `c` demotes) with their
+    /// evidence, a cause's `keys.0` parts beside them (a rotation commit making a box stale),
+    /// added to `out`: a receiver holds those keysets only with them.
     fn carried_demotions(&mut self, ev: &Ev, t: &Tid, c: &CommitId, out: &mut Certs) {
         let mut carried: BTreeSet<CommitId> = BTreeSet::new();
+        let mut causes: BTreeSet<CommitId> = BTreeSet::new();
         for (r, e, x) in self.core.keysets_noted(t) {
             if self.core.ix.epoch_intro.get(&(*t, r, e)).is_some_and(|i| i.1 == *c) {
                 carried.extend(x.demotions.iter().copied());
+                causes.extend(x.left_out.values().flat_map(|xs| xs.values().flatten().copied()));
             }
         }
-        for d in carried {
-            let Some(h) = self.header(&d) else { continue };
-            let things: BTreeSet<Tid> = h.aspects.iter().filter(|a| a.ak.as_str() == "roles.0").map(|a| a.tid).collect();
-            let parts = self.parts_of(&d, &things, &["roles.0"]);
-            out.add(d, parts);
-            let seeds: BTreeSet<(CommitId, Tid)> = things.into_iter().map(|x| (d, x)).collect();
+        for d in carried.iter().chain(&causes) {
+            let Some(h) = self.header(d) else { continue };
+            let aks: &[&str] = if causes.contains(d) { &["roles.0", "keys.0"] } else { &["roles.0"] };
+            let things: BTreeSet<Tid> = h.aspects.iter().filter(|a| aks.contains(&a.ak.as_str())).map(|a| a.tid).collect();
+            let parts = self.parts_of(d, &things, aks);
+            out.add(*d, parts);
+            let seeds: BTreeSet<(CommitId, Tid)> = things.into_iter().map(|x| (*d, x)).collect();
             self.add_closure(ev, &seeds, out);
         }
     }

@@ -5,7 +5,6 @@
 # file; PATTERN: a regex every failing unit of NAME (each seed line of its panic, or its whole
 # panic) must match (tools/gate_failures.py).
 held-model/spec_gaps::evidence_reach_and_generator_gaps_large rate:OSIS_HELD_START=662818812978 issues/held-model-p4-held-wide.md P4-held
-osis-engine/rotation::tests_property::rotation_holds_large_spec_crypto_4 rate:OSIS_ROTATION_START=96284297771,OSIS_ROTATION_SEEDS=1 issues/rotation-holder-lacks-box.md with key access lacks a box
 osis-engine/parts::forged_parts_beside_a_part_past_expiry_alike_plain_spec_commits_4 OSIS_FORGED_START=0 issues/accounts-properties-fail.md accounts: pairing
 osis-engine/parts::forged_parts_beside_a_part_past_expiry_alike_in_every_order_exhaustive_spec_commits_4 - issues/accounts-properties-fail.md accounts: pairing
 osis-engine/waits::every_part_given_once_joins_in_any_order_plain_spec_commits_4 - issues/accounts-properties-fail.md accounts: pairing

@@ -74,7 +74,7 @@ impl KeysBody {
                 let lists = ks.supersedes.iter().filter_map(|x| osis_keys::aspects::from_schema(x).ok()).collect();
                 let ct::KemKey::X25519MlKem768(b) = &ks.kem_key;
                 let kem = (ks.suite == osis_keys::SUITE).then(|| osis_crypto::KemPublicKey::from_slice(b).ok()).flatten();
-                let left_out = ks.left_out.iter().flat_map(|(m, xs)| xs.iter().filter_map(|x| Some((m.0, osis_keys::aspects::from_schema(x).ok()?)))).collect();
+                let left_out = ks.left_out.iter().flat_map(|(m, xs)| xs.iter().filter_map(|(x, causes)| Some((m.0, osis_keys::aspects::from_schema(x).ok()?, causes.iter().copied().collect())))).collect();
                 let mut demotions: Vec<CommitId> = ks.demotions.iter().copied().collect();
                 if ks.demotes {
                     // its rotation commit: the commit its write names (a role commit is commit
@@ -176,8 +176,8 @@ pub(crate) fn note_keysets(core: &mut Core, h: &Header, id: &CommitId, actor: &T
         }
         held.since = Some(held.since.map_or(at, |x| x.min(at)));
         held.names.insert((k.names, h.signer));
-        for (m, x) in &k.left_out {
-            held.left_out.entry(*m).or_default().insert(*x);
+        for (m, x, causes) in &k.left_out {
+            held.left_out.entry(*m).or_default().entry(*x).or_default().extend(causes.iter().copied());
         }
         held.demotions.extend(k.demotions.iter().copied());
         if held != before || !core.ix.keysets.contains_key(&key) {

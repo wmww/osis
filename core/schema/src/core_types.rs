@@ -148,7 +148,7 @@ codec_struct! {
     /// the demotions it carries: other commits', and whether its own commit is one
     /// (spec/crypto.md §3, §4, §7, §8).
     #[derive(Clone, Debug, PartialEq, Eq)]
-    pub struct Keyset { 0 epoch: Epoch, 1 kem_key: KemKey, 2 suite: u64, 3 delete_key: SigningKey, 4 supersedes: BTreeSet<Epoch>, 5 names: [u8; 32], 6 left_out: BTreeMap<Weak, BTreeSet<Epoch>>, 7 demotions: BTreeSet<CommitId>, 8 demotes: bool }
+    pub struct Keyset { 0 epoch: Epoch, 1 kem_key: KemKey, 2 suite: u64, 3 delete_key: SigningKey, 4 supersedes: BTreeSet<Epoch>, 5 names: [u8; 32], 6 left_out: BTreeMap<Weak, BTreeMap<Epoch, BTreeSet<CommitId>>>, 7 demotions: BTreeSet<CommitId>, 8 demotes: bool }
 }
 codec_struct! {
     #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]

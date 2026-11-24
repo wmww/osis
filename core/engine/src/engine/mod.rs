@@ -174,9 +174,9 @@ pub struct KeysetRec {
     pub kem: Option<osis_crypto::KemPublicKey>,
     /// The digest of the rotation's names it publishes (spec/crypto.md §4).
     pub names: osis_keys::NamesDigest,
-    /// The keysets of holder actors it records its rotation left them out at (spec/crypto.md §4,
-    /// Left out).
-    pub left_out: Vec<(Tid, osis_crypto::Epoch)>,
+    /// The keysets of holder actors it records its rotation left them out at, each with its
+    /// causes' commits (spec/crypto.md §4, Left out).
+    pub left_out: Vec<(Tid, osis_crypto::Epoch, Vec<CommitId>)>,
     /// The commits whose demotions it carries: those it lists, and its rotation commit where it
     /// `demotes` (the commit its write names, `KeysBody::of`).
     pub demotions: Vec<CommitId>,
@@ -190,9 +190,9 @@ pub struct KeysetRec {
 /// earliest body (Seal's order fallback and the order rule read it), the names digests they
 /// publish, each with its body's author (what binds a history entry to a rotator,
 /// spec/crypto.md §4: a forger's body binds entries to the forger), the left-out keysets they
-/// record, joined (Seal reads them at the actor's current epochs), and the demotions they carry,
-/// joined (spec/crypto.md §4, Carried demotions: its rotation commit among them where it demotes). Held
-/// only once those are (`Core::keyset`).
+/// record with their causes, joined (spec/crypto.md §4, Left out: read at the actor's current
+/// epochs), and the demotions they carry, joined (Carried demotions: its rotation commit among
+/// them where it demotes). Held only once those and the causes are (`Core::keyset`).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct HeldKeyset {
     pub lists: BTreeSet<osis_crypto::Epoch>,
@@ -200,7 +200,7 @@ pub struct HeldKeyset {
     /// The key of its earliest valid body; `None` only before one is noted.
     pub since: Option<osis_perm::Point>,
     pub names: BTreeSet<(osis_keys::NamesDigest, Tid)>,
-    pub left_out: BTreeMap<Tid, BTreeSet<osis_crypto::Epoch>>,
+    pub left_out: BTreeMap<Tid, BTreeMap<osis_crypto::Epoch, BTreeSet<CommitId>>>,
     pub demotions: BTreeSet<CommitId>,
 }
 
@@ -1472,18 +1472,24 @@ impl Core {
     }
 
     /// Held valid keyset `e` of role `r` of actor `m` (spec/crypto.md §4, Held keyset): a valid
-    /// body of it noted (`Indexes::keysets`), and the demotions it carries held here (Carried
-    /// demotions): until then it counts as not arrived, so nothing seals to it, finds a box
-    /// stale by it, or descends through it.
+    /// body of it noted (`Indexes::keysets`), and the demotions it carries and the causes it
+    /// records held here (Carried demotions, Carried): until then it counts as not arrived, so
+    /// nothing seals to it, finds a box stale by it, or descends through it.
     pub(crate) fn keyset(&self, m: &Tid, r: osis_base::Role, e: &osis_crypto::Epoch) -> Option<&HeldKeyset> {
         let k = (*m, r, *e);
         self.ix.keysets.get(&k).filter(|v| self.carried_held(v))
     }
 
-    /// Whether this node holds the demotions keyset `v` carries: the edge writes of each commit
-    /// it carries (`HeldKeyset::demotions`).
+    /// Whether this node holds the demotions keyset `v` carries (the edge writes of each commit
+    /// it carries, `HeldKeyset::demotions`) and the causes it records (`cause_held`).
     fn carried_held(&self, v: &HeldKeyset) -> bool {
-        v.demotions.iter().all(|c| self.ix.held.edge_commit(c).is_some())
+        v.demotions.iter().all(|c| self.ix.held.edge_commit(c).is_some()) && v.left_out.values().flat_map(|x| x.values().flatten()).all(|c| self.cause_held(c))
+    }
+
+    /// Whether this node holds left-out cause `c` (spec/crypto.md §4, Left out; Carried): its
+    /// edge writes (a departure's or a grant's), or a `keys.0` part of it (a rotation commit's).
+    pub(crate) fn cause_held(&self, c: &CommitId) -> bool {
+        self.ix.held.edge_commit(c).is_some() || self.ix.commits.get(c).is_some_and(|m| m.view.aspects.iter().enumerate().any(|(ai, a)| a.ak.as_str() == "keys.0" && (m.holds(ai) || m.is_dropped(ai))))
     }
 
     /// Bounds the clock (`Clock::bound`) at the first time after now that a grant's `until` or a
