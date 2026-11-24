@@ -24,7 +24,7 @@
 ## 2. Required set and judgement
 S's **required set** is its sync unit blobs (§1) plus what is logged there beside them, one rule for every blob whoever logged it, judged by each node from what it holds now (a function of the held commits and S's sync unit, never of what was once required):
 - S's **evidence** (spec/permissions.md §4 Evidence of a sync ID): a certificate copy is in it when its identity's parts are in S's evidence, judged by the deltas the blob holds, the same at every node; a record blob by its records; a list blob by its thing lists and a header-only copy of a rotation while S's evidence names its account (Interim); a destroyed thing's certificates (its frozen edges and requests' parts outside the sync unit, header-only copies of its mintings and requests anywhere) by the sync ID's things needing it (spec/commits.md §5 Destruction). A copy holding other parts than one thing's role-class parts of its commit is no certificate copy.
-- the **key part** of S's actor (spec/permissions.md §4 Key part): its role-class parts and the edge pieces of the grants it takes; on an account's D's and inbox's sync IDs, the account's (Interim).
+- the **key part** of S's actor (spec/permissions.md §4 Key part): its role-class parts and its edge pieces; on an account's D's and inbox's sync IDs, the account's (Interim).
 - role commits naming a holder whose keys S's actor's keys open (spec/permissions.md §4 Role changes travel), while held.
 - the cards of the key actors other than accounts holding S's thing, and under D's sync ID the cards of D's nodes (Interim, spec/permissions.md §4).
 - Each is applied before the deletes it causes (§3 Role entries first).
