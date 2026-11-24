@@ -158,7 +158,7 @@ fn foreign_rotation_supersedes_nothing_spec_crypto_4() {
 
 // spec/crypto.md §4 (Foreign: blocked, current), model `FR_m_exclude` (`Kept`): eP at Q is blocked
 // (nobody there encrypts under it) yet current: a grant there boxes the grantee at it, and Q's
-// next rotation's history box carries it (its keyset does not list it: ForkDepth `FD_fork_star`),
+// next rotation's history box carries it (its keyset does not list it: ForkDepth `FD_fork_list`),
 // so its content stays readable to Q's later holders.
 #[test]
 fn foreign_epoch_blocks_and_stays_current_spec_crypto_4() {
@@ -295,12 +295,14 @@ fn rounds_over(lp: &mut LocalPeer, things: &[Tid], max: usize) -> Vec<usize> {
     out
 }
 
-// spec/crypto.md §4 (Foreign: an epoch boxing a foreign keyset is foreign; above it, how a foreign
-// keyset counts), model `ForkDepth` (`FD_fork_*`): the fork on M two levels below G, but P
-// rotates A and G first and Q only once it holds them. Q's rotation of A lists P's (current at Q,
-// though foreign there); to G at P that list makes P's own keyset of A stale, so P leaves A out of
-// G and re-keys A, whose list makes Q's stale at Q in turn: the sides would rotate G and A in turn
-// for good. Rotations stop, and each side writes G under an epoch of its own boxing A.
+// spec/crypto.md §4 (Foreign: an epoch boxing a foreign keyset is foreign, and above its thing
+// a foreign keyset is sealed to nowhere; Seal), model `ForkDepth` (`FD_fork`; `FD_fork_builder`,
+// `FD_fork_list` its negative controls): the fork on M two levels below G, but P rotates A and G
+// first and Q only once it holds them. Were P's keyset of A an anchor or Seal candidate to G at
+// Q, or did Q's rotation of A list P's epoch (current at Q, foreign there), each side would find
+// its own keyset of A stale to G or seal A at the other's, leave A out of G and re-key A, making
+// the other side's stale in turn, for good. Rotations stop, and each side writes G under an epoch
+// of its own boxing A.
 #[test]
 fn fork_two_below_one_side_first_stops_rotating_spec_crypto_4() {
     let (mut lp, _m, a, g) = fork_below_g();

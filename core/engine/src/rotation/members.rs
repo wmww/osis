@@ -188,7 +188,7 @@ fn invalid_writers(core: &Core, m: &Tid, r: Role, k: &Epoch) -> BTreeSet<CommitI
 /// nothing and is sealed to nowhere (`sealing_at`; a stale keyset Seal then gives is blocked,
 /// `seal_blocked`): counted as any keyset there, or listed by rotations, a fork below x makes
 /// each side's keysets of x stale above x at the other, which leaves x out and re-keys it in
-/// turn for good (ForkDepth `FD_fork_builder`, `FD_fork_star`;
+/// turn for good (ForkDepth `FD_fork_builder`, `FD_fork_list`;
 /// `fork_two_below_one_side_first_stops_rotating_spec_crypto_4`). Who writes the inputs: a box record
 /// is written by the writer of `x`'s rotation commit (a party on the other side of a fork on a
 /// holder actor among them); a keyset is held invalid by this node's own walk (a removed party's

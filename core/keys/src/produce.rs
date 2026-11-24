@@ -290,7 +290,7 @@ pub fn rotate_leaving_out(actor: &Tid, roles: &BTreeSet<Role>, held: &ActorEpoch
         // the keyset lists its current epochs but derived ones (held only where the mint admin's
         // secret is: superseded through the history box) and foreign ones (spec/crypto.md §4
         // Holder actors, Foreign: its history box carries them; listed, the other side of a fork
-        // below would find its own keysets stale, ForkDepth `FD_fork_star`)
+        // below would find its own keysets stale, ForkDepth `FD_fork_list`)
         let listed: BTreeSet<Epoch> = current.iter().filter(|e| re.provenance(e) != Some(Provenance::Derived) && !re.is_foreign(e)).copied().collect();
         let mut ks = keyset(&epoch, &secret, &listed, names);
         // a keyset with no cause is never recorded (spec/wire.md §7 Left out: nonempty, a reader
