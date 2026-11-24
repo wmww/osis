@@ -430,6 +430,11 @@ impl Read {
                 self.pieces.settled(&k, now);
             }
         }
+        // what is logged together goes in its commits' `ts` order, so the own ones in the order
+        // they were made (spec/sync-judgement.md §3 Own store: a removal before what was
+        // written after it, spec/permissions.md §3)
+        let mut judged: Vec<_> = judged.into_iter().collect();
+        judged.sort_by_cached_key(|((s, c), _)| (g.ts(&c.commit), *s, *c));
         for ((s, c), (was, now)) in judged {
             acted = true;
             self.react(g, &s, c, &was.map(|w| w.acts).unwrap_or_default(), &now.acts)?;

@@ -193,6 +193,8 @@ struct Fake {
     next: u32,
     sent: Vec<Sent>,
     logged: Vec<(SyncId, CommitId, BlobId)>,
+    /// Each held commit's `ts` (`Ground::ts`; none: unknown).
+    made: BTreeMap<CommitId, osis_base::Ts>,
     /// Entries stamped in place.
     restamped: Vec<(SyncId, CommitId, BlobId)>,
     /// Peers' deposits not promoted (`Ground::promotion`; every other one is).
@@ -486,6 +488,9 @@ impl Ground for Fake {
     fn stand(&mut self, at: &Source, s: &SyncId, c: &BodyId) -> Result<Option<Stand>> {
         let c = &c.commit;
         Ok(self.stands.get(&(*at, *s, *c)).cloned())
+    }
+    fn ts(&mut self, c: &CommitId) -> Option<osis_base::Ts> {
+        self.made.get(c).copied()
     }
     fn log_own(&mut self, s: &SyncId, c: &BodyId, fresh: bool, _skip: &[BlobId]) -> Result<Option<BlobId>> {
         let c = &c.commit;
@@ -788,6 +793,27 @@ fn must_hold_is_logged_once_and_pulled() {
     w.exchange();
     assert_eq!(w.logs(S, cid(1)), 1);
     assert_eq!(w.at_k(S, cid(1)), 1);
+}
+
+// spec/sync-judgement.md §3 (own store: what is logged together goes in `ts` order),
+// spec/permissions.md §3 (removal logged in its sync): two own commits held at once, the one made
+// later with the smaller commit ID, are logged in the order made under each sync ID.
+#[test]
+fn what_is_logged_together_goes_in_the_order_made_spec_sync_judgement_3() {
+    let mut w = W::new();
+    for (c, ts) in [(cid(2), 1u64 << 16), (cid(1), 2 << 16)] {
+        for s in [S, S2] {
+            w.g.facts.insert((s, c), uncovered());
+        }
+        w.g.bodies.insert(c, Arc::new([(S, meta()), (S2, meta())].into()));
+        w.g.added.push(c);
+        w.g.made.insert(c, osis_base::Ts::from_u64(ts).unwrap());
+    }
+    w.settle();
+    for s in [S, S2] {
+        let order: Vec<CommitId> = w.g.logged.iter().filter(|(x, ..)| *x == s).map(|(_, c, _)| *c).collect();
+        assert_eq!(order, [cid(2), cid(1)], "logged under {s:?} in the order made");
+    }
 }
 
 // spec/sync-judgement.md §2 (must-not-hold): outside the required set or purged is must-not-hold;

@@ -28,32 +28,42 @@ fn a_raced_grant_is_resealed_at_a_complete_passs_end_spec_perm_3() {
     check(&mut w);
 }
 
-// spec/permissions.md §3 (removal logged first): a node that removes a holder logs the removal,
-// in the same sync and before anything else it logs, under every sync ID the removed party could
-// read. Node 0 writes t, then removes node 2's account from t, before its sync steps: the
-// removal's entry under S is logged before the write's.
+// spec/permissions.md §3 (removal logged in its sync),
+// spec/sync-judgement.md §3 (own store: what is logged together goes in `ts` order): node 0 writes
+// t, removes node 2's account from t, and writes t again several times, all before its sync
+// steps: one sync logs them all under S, in the order made. Enough writes that their commit IDs
+// do not sort in that order (asserted), so logging in ID order fails this.
 #[test]
-#[ignore = "issues/removal-not-logged-first.md"]
-fn repro_a_removal_is_logged_before_what_was_written_before_it_spec_permissions_3() {
+#[ignore = "accounts: keys"]
+fn a_removal_is_logged_before_what_was_written_after_it_spec_permissions_3() {
     use crate::harness::history::{Gives, three, value_ak};
     let (mut w, t, s) = three(Gives::Reads, 1);
     w.cap = 20_000;
     let a2 = w.node(2).account.unwrap();
-    // both written before node 0's sync next steps: one sync logs both
-    let (c, r) = w.write(0, |e| {
-        let mut m = Mutation::new();
-        m.set(t, &value_ak(), &Value::Str("before the removal".into())).unwrap();
-        let c = e.commit(m).unwrap().unwrap();
-        (c, e.demote(&t, &Demotion { holder: a2, new: None, retain: None }).unwrap().commits[0])
+    let made: Vec<osis_base::CommitId> = w.write(0, |e| {
+        let write = |e: &mut osis_engine::Engine, i: usize| {
+            let mut m = Mutation::new();
+            m.set(t, &value_ak(), &Value::Str(format!("write {i}"))).unwrap();
+            e.commit(m).unwrap().unwrap()
+        };
+        let mut made = vec![write(e, 0)];
+        made.push(e.demote(&t, &Demotion { holder: a2, new: None, retain: None }).unwrap().commits[0]);
+        for i in 1..6 {
+            made.push(write(e, i));
+        }
+        made
     });
+    let mut by_id = made.clone();
+    by_id.sort();
+    assert_ne!(by_id, made, "the commit IDs sort in the order made: this reaches nothing");
     w.run();
     let at = |w: &mut World, x: osis_base::CommitId| {
         let es = w.store(0).entries(&s).unwrap();
         let b = es.into_iter().find(|e| w.engine(0).blob_commit(&e.blob) == Some(x)).expect("an own entry under S").blob;
         w.store(0).first_logged(&s, &b).unwrap().expect("logged")
     };
-    let (pc, pr) = (at(&mut w, c), at(&mut w, r));
-    assert!(pr < pc, "the removal ({pr:?}) logged before the write ({pc:?})");
+    let logged: Vec<_> = made.iter().map(|c| at(&mut w, *c)).collect();
+    assert!(logged.windows(2).all(|p| p[0] < p[1]), "logged in the order made: {logged:?}");
 }
 
 // spec/sync-inbox.md §1, spec/permissions.md §1: a node paired to an account pairs another

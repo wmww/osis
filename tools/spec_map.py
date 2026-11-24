@@ -148,7 +148,7 @@ RULES = [
     ("spec/permissions.md", "2", "may-grant scope", "Holders by may-grant cannot change or remove any other edge"),
     ("spec/permissions.md", "3", "required rotation", "MUST do so before it next encrypts"),
     ("spec/permissions.md", "3", "holder actors", "boxes a holder actor M at the keysets Seal gives"),
-    ("spec/permissions.md", "3", "removal logged first", "MUST, in the same sync and before anything else it logs"),
+    ("spec/permissions.md", "3", "removal logged in its sync", "MUST, in the same sync, log the removal"),
     ("spec/permissions.md", "1", "the last admin", "MUST NOT sign a role commit that, in its own walk with the commit applied"),
     ("spec/permissions.md", "2", "finalize", "MUST write the finalize before its next commit encrypting under T"),
     ("spec/permissions.md", "3", "drop lost secrets", "MUST drop those role secrets"),

@@ -7,7 +7,7 @@
 use crate::store::{Source, Stand};
 use crate::session::RequestId;
 use crate::types::{ConnId, Entry, Result};
-use osis_base::{BlobId, CommitId, SyncId, Tid, WallMs};
+use osis_base::{BlobId, CommitId, SyncId, Tid, Ts, WallMs};
 use osis_engine::retention::Minting;
 use osis_engine::sync::{BodyFacts, BodyId, BodyMeta, Loss, PartSet, PieceLink, ReadCredentials, SealedSet, Strip};
 use osis_blob::StepId;
@@ -225,6 +225,8 @@ pub trait Ground {
     fn heard_out(&mut self, s: &SyncId) -> Result<bool>;
     fn stand(&mut self, at: &Source, s: &SyncId, c: &BodyId) -> Result<Option<Stand>>;
 
+    /// Held commit `c`'s `ts` (`Engine::commit_ts`): what is logged together goes in this order.
+    fn ts(&mut self, c: &CommitId) -> Option<Ts>;
     /// Logs `c`'s body under S in the own store; its blob, or `None` when it cannot be logged here.
     /// Not `fresh`: a held blob of it not tombstoned under S, verbatim under a wrap for S, else a
     /// fresh encryption. `fresh` (logged again once, §4): always a fresh encryption. A fresh

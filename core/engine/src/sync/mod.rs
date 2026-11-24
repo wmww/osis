@@ -839,6 +839,12 @@ impl Engine {
         h.kind.is_role() || self.core.ix.commits.get(c).is_some_and(|m| m.view.purges)
     }
 
+    /// Held commit `c`'s `ts` (spec/crdt.md §2.2): a node's own commits in the order it made them,
+    /// the order sync logs what it logs together (spec/sync-judgement.md §3 Own store).
+    pub fn commit_ts(&mut self, c: &CommitId) -> Option<osis_base::Ts> {
+        self.header(c).map(|h| h.ts)
+    }
+
     /// Whether held blob `b` under `s` is a role entry: a blob of a `role_commit`, or a record
     /// or list blob noted under `s`.
     pub fn role_entry(&mut self, s: &SyncId, b: &BlobId) -> bool {

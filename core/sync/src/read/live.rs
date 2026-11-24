@@ -513,6 +513,9 @@ impl Ground for Live<'_, '_> {
     fn stand(&mut self, at: &Source, s: &SyncId, c: &BodyId) -> Result<Option<Stand>> {
         self.cx.store.stand(*at, s, &stand_key(c))
     }
+    fn ts(&mut self, c: &CommitId) -> Option<osis_base::Ts> {
+        self.cx.engine.commit_ts(c)
+    }
     fn log_own(&mut self, s: &SyncId, c: &BodyId, fresh: bool, skip: &[BlobId]) -> Result<Option<BlobId>> {
         let class = if self.cx.engine.sync_body(s, c)?.is_some() { Class::Durable } else { return Ok(None) };
         if !fresh {
