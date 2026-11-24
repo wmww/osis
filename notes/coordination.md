@@ -24,7 +24,7 @@ How to run them:
 - Complexity-bound first, CPU second, not token-bound: heavy token use is a symptom of complexity.
 - **Park on a direction snag.** A job that hits something questioning the direction of what is being built (a second copy of an existing mechanism, an architecture nobody expected to need) is parked with the question written down, and other work runs.
 - A question for Tess never stalls work: pick the simpler option, note whether it is easily reversed and what depends on it, record it as a `tess-call` issue, keep going.
-- **Slots**: up to 3 agents at once, and only the coordinator spawns. Which model an agent runs on: CLAUDE.md, and nowhere else.
+- **Slots**: 3 or 4 agents at once, kept full (Tess), and only the coordinator spawns. Which model an agent runs on: CLAUDE.md, and nowhere else.
 
 **Working with Tess**
 - Ask one question at a time, with the trade-off and why users care, in plain words.
@@ -44,7 +44,7 @@ How to run them:
 - A change that adds a new kind of permanent data adds or updates a row in notes/growth.md.
 - App work (libs/kit/, app/) is planned with Tess in a separate UX session (notes/app.md); what kit or app needs from core becomes an issue tagged `core-ask`.
 - Names: each coordinator picks a name and pronouns once it knows the codebase, records both here and says them in chat.
-- Registry: **Lodestar**, she/her. **Tiller**, he/him. **Wren**, they/them. **Sorrel**, they/them. **Fathom**, they/them. **Kestrel**, they/them. **Petrel**, they/them. **Halyard**, they/them. **Bowline**, they/them (app). **Capstan**, they/them. **Sextant**, they/them (reference graph design). **Keel**, they/them. **Gimbal**, they/them (design session with Tess: studies and the terms pass). **Windlass**, they/them. **Mizzen**, they/them.
+- Registry: **Lodestar**, she/her. **Tiller**, he/him. **Wren**, they/them. **Sorrel**, they/them. **Fathom**, they/them. **Kestrel**, they/them. **Petrel**, they/them. **Halyard**, they/them. **Bowline**, they/them (app). **Capstan**, they/them. **Sextant**, they/them (reference graph design). **Keel**, they/them. **Gimbal**, they/them (design session with Tess: studies and the terms pass). **Windlass**, they/them. **Mizzen**, they/them. **Spar**, they/them.
 
 ## Test budget
 Seed breadth belongs to the release checks, not to jobs: reading and targeted new tests find most bugs, rerunning ranges almost none (notes/test-design.md, What finds bugs).

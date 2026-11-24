@@ -23,7 +23,7 @@ One list, in order. It stands in for every other list of what is next (the order
 2. **What the rewrite still owes**, after accounts: notes/sync-rewrite-state.md (Next, and the ignored tests by cause), issues/delete-key-levels-unchecked.md (Left), issues/models-read-chained-sets.md.
 3. **Then** what the plan has left: a removal as evidence (what A2 did not already build), public things and cards, core without accounts, clean-up. Cut each to what is still needed before starting.
 
-Beside the route: the failing seeds (notes/priorities.md; each starts with a hand-written minimal reproducer, never the pinned seed: notes/principles.md); one cleanup always, a workflow job about half the time (a tool that lists and runs the rewrite's ignores by name: three sessions wrote it in scratch).
+Beside the route: the failing seeds (notes/priorities.md; each starts with a hand-written minimal reproducer, never the pinned seed: notes/principles.md); one cleanup always, a workflow job about half the time (the rewrite's ignores by cause: `tools/ignores.py`).
 
 ## Old words and concepts
 - issues/deprecated-terms.md lists what is still in the repo though deprecated, each with what removing it takes, and what is gone. Most of what remains goes with accounts.
