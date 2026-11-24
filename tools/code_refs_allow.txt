@@ -49,7 +49,6 @@ MAX_QUERY_SUBS  planned: issues/cli-proxy.md, notes/client-port.md
 MAX_SCHEMA_BYTES  planned: notes/client-port.md (schemas over the port, not built)
 STREAM_CHUNK  planned: notes/client-port.md (streams over the port, not built)
 recv_all  planned: issues/test-consolidation.md
-run_until_loaded  planned: issues/test-consolidation.md
 REALM  planned: notes/realms.md
 create_realm  planned: notes/realms.md
 
@@ -82,7 +81,6 @@ stream_read  planned: notes/client-port.md (streams over the port, not built)
 Osis::open_link  planned: issues/api-deferred.md (bearer read)
 Tx::header  planned: issues/long-aspect-cost.md
 Config::relays  planned: issues/p2p-own.md
-Pager::run_until_loaded  planned: issues/test-consolidation.md
 Engine::wants  planned: issues/sync-unbuilt.md
 Try  rejected: notes/api.md (a timeout in the API)
 Value::Large  rejected: notes/api.md

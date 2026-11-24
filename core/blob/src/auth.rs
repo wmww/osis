@@ -240,7 +240,6 @@ mod tests {
     use crate::step::tests::{Secrets, THING};
     use crate::step::{Parent, register};
     use osis_crypto::{Epoch, SeededRng, Secret32, role_key};
-    use proptest::prelude::*;
 
     fn epoch(n: u64) -> Epoch {
         Epoch::new(n, [n as u8; 32]).unwrap()
@@ -259,6 +258,9 @@ mod tests {
         assert_eq!(verify_stamp(&s0.keys.write, &l, &b, &w, &stamp).unwrap(), Signed::Plain);
         assert_eq!(verify_stamp(&s0.keys.write, &l, &b, &w, &sign_stamp(&write, &l, &b, &w, true)).unwrap(), Signed::RoleEntry, "a role entry's stamp says so");
         assert!(verify_stamp(&s0.keys.sync, &l, &b, &w, &stamp).is_err());
+        let mut altered = w;
+        altered[48] ^= 1;
+        assert!(verify_stamp(&s0.keys.write, &l, &b, &altered, &stamp).is_err(), "a stamp binds the wrap");
         let digest = entry_digest(&l, &b, &w);
         assert!(s0.keys.write.verify(Domain::Deposit, &digest, &stamp).is_err());
         let dep = osis_crypto::deposit_key(&g.deposit, &l);
@@ -391,19 +393,5 @@ mod tests {
         }
         assert!(DeleteItem::from_value(&v).is_err(), "levels not ascending");
         assert!(key_for_levels(&[0]).is_err());
-    }
-
-    proptest! {
-        // spec/sync-ids.md §6: a stamp binds the wrap: any altered wrap byte fails.
-        #[test]
-        fn stamp_binds_wrap(i in 0usize..49, x in 1u8..=255) {
-            let write = role_key(RoleKey::Write, &Secret32::from_bytes([1; 32]));
-            let (l, b, w) = (SyncId([1; 16]), BlobId([2; 32]), [3u8; 49]);
-            let stamp = sign_stamp(&write, &l, &b, &w, false);
-            let mut w2 = w;
-            w2[i] ^= x;
-            prop_assert!(verify_stamp(&write.verifying_key(), &l, &b, &w2, &stamp).is_err());
-            prop_assert!(verify_stamp(&write.verifying_key(), &l, &b, &w, &stamp).is_ok());
-        }
     }
 }

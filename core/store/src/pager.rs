@@ -1563,17 +1563,19 @@ mod tests {
         assert_eq!(sealed(&unit, 0, &mut rng).len(), sealed(&unit, UNIT_MIN - 1, &mut rng).len(), "below the floor: one length");
         assert_eq!(sealed(&unit, 4200, &mut rng).len(), sealed(&unit, 4220, &mut rng).len(), "one class at 4 KB");
         assert!(sealed(&node, 1, &mut rng).len() < sealed(&unit, 1, &mut rng).len(), "no floor for tree nodes");
-        for row in [&unit, &node] {
+        // the class, from the rule: Padmé of the plaintext and its marker, units at least `UNIT_MIN`
+        let class = |floor: usize, len: usize| padme(len + 1).max(floor);
+        for (row, floor) in [(&unit, UNIT_MIN), (&node, 0)] {
             let mut lens: Vec<usize> = (0..=16).collect();
             for len in 0..9000 {
-                if padded_len(row, len) != padded_len(row, len + 1) {
+                if class(floor, len) != class(floor, len + 1) {
                     lens.extend([len, len + 1]);
                 }
             }
             for len in lens {
-                let plain: Vec<u8> = (0..len).map(|i| i as u8 | 1).collect();
+                let plain: Vec<u8> = (0..len).map(|i| (i % 3) as u8).collect();
                 let v = seal(&key, row, &plain, &mut rng).unwrap();
-                assert_eq!(v.len(), NONCE_LEN + padded_len(row, len) + aead::TAG_LEN);
+                assert_eq!(v.len(), NONCE_LEN + class(floor, len) + aead::TAG_LEN, "len {len}");
                 assert_eq!(open(&key, row, &v).unwrap(), plain, "len {len}");
             }
         }
@@ -1737,23 +1739,6 @@ mod tests {
                     prop_assert!(!has(m), "erased {} recoverable", String::from_utf8_lossy(m));
                 }
             }
-        }
-    }
-
-    proptest::proptest! {
-        // spec/commits.md §5, spec/wire.md §5; notes/local-store.md, Row padding: a sealed row's length is
-        // its Padmé class (units at least `UNIT_MIN`), nothing finer; every length round-trips.
-        #[test]
-        fn row_padding_classes(a in 0usize..6000, b in 0usize..6000, unit in proptest::bool::ANY) {
-            let key = Secret32::from_bytes([3; 32]);
-            let mut rng = SeededRng::from_u64(a as u64);
-            let row = if unit { unit_row(2, 4) } else { node_row(0, 1, 4) };
-            let (pa, pb): (Vec<u8>, Vec<u8>) = (vec![0x11; a], vec![0; b]);
-            let (va, vb) = (seal(&key, &row, &pa, &mut rng).unwrap(), seal(&key, &row, &pb, &mut rng).unwrap());
-            let class = |len: usize| NONCE_LEN + padme(len + 1).max(if unit { UNIT_MIN } else { 0 }) + aead::TAG_LEN;
-            proptest::prop_assert_eq!((va.len(), vb.len()), (class(a), class(b)));
-            proptest::prop_assert_eq!(open(&key, &row, &va).unwrap(), pa);
-            proptest::prop_assert_eq!(open(&key, &row, &vb).unwrap(), pb);
         }
     }
 }

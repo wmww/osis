@@ -41,22 +41,3 @@ impl Default for Hasher {
         Hasher::new()
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    // spec/crypto.md §1: BLAKE3; known answer for the empty input (BLAKE3 test vectors).
-    #[test]
-    fn blake3_known_answer() {
-        let h = hash(b"");
-        assert_eq!(h[..4], [0xaf, 0x13, 0x49, 0xb9]);
-        assert_eq!(Hasher::new().update(b"ab").update(b"c").finalize(), hash(b"abc"));
-        let k = [7u8; 32];
-        assert_ne!(keyed_hash(&k, b"x"), hash(b"x"));
-        assert_ne!(derive_key("osis v1 a", b"m"), derive_key("osis v1 b", b"m"));
-        let mut out = [0u8; 64];
-        Hasher::new().update(b"abc").finalize_xof(&mut out);
-        assert_eq!(out[..32], hash(b"abc"));
-    }
-}

@@ -7,7 +7,7 @@ use crate::ops::{Op, PathOp, Writer, create, diff, replace};
 use crate::page::{MemoryPages, PageParams, PageSink};
 use crate::seq::{Seq, SeqElem};
 use crate::stamp::{Dot, Interner, Source};
-use crate::testutil::{TyView, ctx_of, frag, history, joined, mapply, node, ostate, s, sink_no_seq, snap_cx, snapshot, source, struct_list, ts, wired, writer_cx};
+use crate::testutil::{TyView, ctx_of, frag, history, joined, node, s, sink_no_seq, snap_cx, snapshot, source, struct_list, ts, wired, writer_cx};
 use crate::view::AnyView;
 use crate::wire::{Delta, DeltaCtx, Frontiers, Snapshot};
 use crate::DeltaBuilder;
@@ -47,93 +47,19 @@ fn law_types() -> [Ty; 3] {
 }
 
 proptest! {
-    /// §4.7: removing gone writes equals the model's and is idempotent.
+    /// One random history per law type. §4.8, §8: a state without a set of commits' writes
+    /// (`remove_writes`) holds none of them, and joined with those commits reads as the state:
+    /// others' writes nested in their records stay. §8: a node bootstrapped from a snapshot and
+    /// then editing converges with the source node; frontiers cover every commit. (Un-merge and
+    /// expiry against the model: `tests_model`.)
     #[test]
-    fn expiry_laws_spec_4_7(seed in any::<u64>()) {
-        law_types().iter().for_each(|ty| expiry_laws(seed, ty));
-    }
-
-    /// One random history per law type, three laws over it. §4.6: un-merge of held bodies equals
-    /// the model's and is order-independent (texts and lists: created elements lose their
-    /// creations). §4.8, §8: a state without a set of commits' writes (`remove_writes`) holds none
-    /// of them, and joined with those commits reads as the state: others' writes nested in their
-    /// records stay. §8: a node bootstrapped from a snapshot and then editing converges with the
-    /// source node; frontiers cover every commit.
-    #[test]
-    fn unmerge_rejoin_and_bootstrap_spec_4_6(seed in any::<u64>()) {
+    fn rejoin_and_bootstrap_spec_8(seed in any::<u64>()) {
         for ty in &law_types() {
             let mut r = crate::testutil::rng(seed | 1);
             let commits = history(&mut r, std::slice::from_ref(ty), 3, 4);
-            unmerge_check(&commits);
             remove_writes_check(&mut r, &commits);
             bootstrap_check(&mut r, ty, &commits);
         }
-    }
-}
-
-/// §4.7 laws of `remove_gone` over three random states of type `ty`, each by its own writer.
-fn expiry_laws(seed: u64, ty: &Ty) {
-    let mut r = crate::testutil::rng(seed | 1);
-    let (mut s, mut m, mut ranges) = (Vec::new(), Vec::new(), Vec::new());
-    for i in 0..3u8 {
-        let mut w = crdt_model::ops::Writer::new(MSource::session(i + 1, 0), ((r.below(5) as u64 + 1) << 16) + i as u64, 1);
-        let mut st = None;
-        for k in 0..4 {
-            w.next_commit(w.ts + ((r.below(3) as u64) << 16) + 1 + k);
-            if let Some(d) = random_op(&mut r, &mut w, ty, st.as_ref()) {
-                mapply(&mut st, d);
-                ranges.push((w.source.clone(), w.lo, w.hi()));
-            }
-        }
-        s.push(ostate(&st));
-        m.push(st.unwrap_or_else(|| crdt_model::state::Frag::empty(0)));
-    }
-    let mut r = crate::testutil::rng(seed ^ 0x55);
-    let mexpired: Vec<(MSource, u64, u64)> = ranges.into_iter().filter(|_| r.chance(1, 2)).collect();
-    let expired: Vec<Range> = mexpired.iter().map(|(s, lo, hi)| (source(s), *lo, *hi)).collect();
-    let strip = |f: &Fragment| stripped(f, &in_ranges(&expired));
-    for (o, mo) in s.iter().zip(&m) {
-        let mut ms = mo.clone();
-        ms.remove_gone(&|d| mexpired.iter().any(|(src, lo, hi)| d.source == *src && (*lo..*hi).contains(&d.ctr)));
-        assert_eq!(strip(o), frag(&ms), "removal equals the model");
-        assert_eq!(strip(&strip(o)), strip(o), "idempotent");
-    }
-}
-
-/// §4.6 un-merge over a random history.
-fn unmerge_check(commits: &[crate::testutil::MCommit]) {
-    let bad = source(&MSource::session(2, 0));
-    let (mut model, mut whole, mut ours) = (None, None, Fragment::default());
-    for c in commits {
-        mapply(&mut whole, c.delta.clone());
-        let mut m = c.delta.clone();
-        m.unmerge(&|d| d.source == MSource::session(2, 0));
-        mapply(&mut model, m);
-        let mut b = frag(&c.delta);
-        b.remove_writes(&|d| d.src == bad);
-        ours.join(b);
-    }
-    assert_eq!(ours, ostate(&model), "un-merged bodies equal the model's");
-    // an author's writes (§4.6) and one delta's (spec/permissions.md §5.2): the join of the held
-    // bodies (and the whole state) each without them is order-independent
-    let held: Vec<Fragment> = commits.iter().map(|c| frag(&c.delta)).chain(std::iter::once(ostate(&whole))).collect();
-    type Pred = Box<dyn Fn(&Dot) -> bool>;
-    let mut preds: Vec<Pred> = vec![Box::new(move |d: &Dot| d.src == bad)];
-    for c in commits {
-        let (src, lo, hi) = (source(&c.w.source), c.w.lo, c.w.hi());
-        preds.push(Box::new(move |d: &Dot| d.src == src && lo <= d.ctr && d.ctr < hi));
-    }
-    for pred in &preds {
-        let unmerged = |bodies: &mut dyn Iterator<Item = &Fragment>| {
-            let mut out = Fragment::default();
-            for b in bodies {
-                let mut b = b.clone();
-                b.remove_writes(pred);
-                out.join(b);
-            }
-            out
-        };
-        assert_eq!(unmerged(&mut held.iter()), unmerged(&mut held.iter().rev()), "order-independent");
     }
 }
 

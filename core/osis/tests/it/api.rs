@@ -848,9 +848,10 @@ aspect t:rec.0: rec;
     assert_eq!(key.default_purge_by(), osis::PurgeBy::Admin);
 }
 
-// spec: none (API surface); notes/api.md Commits: a commit's and a place's text form names what it was made from, an entry's or a commit's, and anything else is `Invalid`
+// spec: none (API surface); notes/api.md Commits: a commit's and a place's text form names what it was made from, an entry's or a commit's, and anything else is `Invalid`; a time's place names no commit and comes before what was written then; a place past the last time there is names the end, whichever way a page goes
 #[test]
-fn commit_and_place_text_forms_api_design() {
+fn commit_places_and_text_forms_api_design() {
+    use osis::{CommitFrom as F, CommitPos as P, Time};
     let db = db(0);
     let k = db.aspect_key("t:x.0").unwrap();
     let mut w = db.write();
@@ -858,29 +859,33 @@ fn commit_and_place_text_forms_api_design() {
     w.at(t, k.clone()).set(&Value::Int(1)).unwrap();
     let done = w.commit().unwrap().unwrap();
     assert_eq!(done.stamp.id.to_string().parse::<osis::CommitId>().unwrap(), done.stamp.id);
-    let got = db.at(t, k.clone()).writes(&page(osis::CommitFrom::Newest, 1)).unwrap();
-    let pos = got.commits[0].pos();
+    let pages = |f: F| db.at(t, k.clone()).writes(&page(f, 10)).unwrap().commits;
+    let pos = pages(F::Newest)[0].pos();
     assert_eq!(pos, done.pos());
-    assert_eq!(pos.to_string().parse::<osis::CommitPos>().unwrap(), pos);
     assert_eq!(pos.commit(), Some(done.stamp.id));
     assert_eq!(pos.at(), done.stamp.written);
-    // a time's place comes before what was written then, and names no commit
-    let at = osis::CommitPos::time(done.stamp.written);
-    assert!(at < pos);
-    assert_eq!(at.commit(), None);
-    // texts sort as places do, a short time's too
-    let early = osis::CommitPos::time(osis::Time(1));
+    let (zero, at, end) = (P::time(Time(0)), P::time(done.stamp.written), P::time(Time(u64::MAX)));
+    assert!(zero < at && at < pos && pos < end);
+    assert_eq!((at.commit(), end.commit()), (None, None));
+    // texts round-trip and sort as places do, a short time's too
+    let early = P::time(Time(1));
     assert!(early.to_string() < at.to_string() && at.to_string() < pos.to_string(), "{early} {at} {pos}");
-    assert_eq!(db.at(t, k.clone()).writes(&page(osis::CommitFrom::After(at), 1)).unwrap().commits[0].pos(), pos);
-    // past the last moment a place can name: still a place, after everything
-    assert!(osis::CommitPos::time(osis::Time(u64::MAX)) > pos);
+    for p in [zero, at, end, pos] {
+        assert_eq!(p.to_string().parse::<P>().unwrap(), p);
+    }
+    let n = |f: F| pages(f).len();
+    assert_eq!((n(F::Before(end)), n(F::After(end))), (1, 0));
+    assert_eq!((n(F::Before(zero)), n(F::After(zero))), (0, 1));
+    assert_eq!(n(F::Before(at)), 0, "stamped at that moment: after its place");
+    assert_eq!(pages(F::After(at))[0].pos(), pos);
+    assert_eq!((n(F::Before(pos)), n(F::After(pos))), (0, 0), "neither bound counts itself");
     let m = w_ephemeral(&db, t);
     assert_eq!(m.to_string().parse::<osis::CommitId>().unwrap(), m);
     for bad in ["", "abc", "ephemeral:", "ephemeral:00:1", "ephemeral:zz:1"] {
         assert!(matches!(bad.parse::<osis::CommitId>(), Err(Error::Invalid(_))), "{bad}");
     }
     for bad in ["", "1", "x/y", "1/abc"] {
-        assert!(matches!(bad.parse::<osis::CommitPos>(), Err(Error::Invalid(_))), "{bad}");
+        assert!(matches!(bad.parse::<P>(), Err(Error::Invalid(_))), "{bad}");
     }
 }
 
@@ -935,34 +940,10 @@ aspect t:when.0: stamp;
 #[test]
 fn what_public_signatures_show_can_be_named_api_design() {
     let h = osis::History::Keep { until: osis::Time(0), after_replaced: std::time::Duration::ZERO };
-    let r = osis::core::RetentionEntry { history: Some(h), expires: None, refuse_replace: false };
-    assert_eq!(r.history, Some(h));
-    let e = osis::PathError::new(osis::Path::root(), osis::PathErrorKind::Mismatch { expected: "x" });
-    assert!(matches!(e.kind, osis::PathErrorKind::Mismatch { .. }));
+    let _: osis::core::RetentionEntry = osis::core::RetentionEntry { history: Some(h), expires: None, refuse_replace: false };
+    let _: osis::PathErrorKind = osis::PathError::new(osis::Path::root(), osis::PathErrorKind::Mismatch { expected: "x" }).kind;
     let _: Result<osis::Ak, osis::AkError> = osis::Ak::new("t:x.0");
     let _: Result<osis::Tid, osis::TidParseError> = osis::Tid::parse("nope");
-}
-
-// spec: none (API surface); notes/api.md Commits: a place past the last time there is names the end, whichever way a page goes; a place's text round-trips, a time's too, and a time's names no change
-#[test]
-fn commit_place_of_any_time_api_design() {
-    use osis::{CommitFrom as F, CommitPos as P, Time};
-    let db = db(0);
-    let k = untyped("t:x.0");
-    let t = db.commit_with(|w| w.create_held()).unwrap();
-    let c = commit_with(&db, |w| w.at(t, k.clone()).set(&Value::Int(1)));
-    let page = |f| db.at(t, k.clone()).writes(&page(f, 10)).unwrap().commits.len();
-    let (zero, end) = (P::time(Time(0)), P::time(Time(u64::MAX)));
-    assert!(zero < c.pos() && c.pos() < end);
-    assert_eq!((page(F::Before(end)), page(F::After(end))), (1, 0));
-    assert_eq!((page(F::Before(zero)), page(F::After(zero))), (0, 1));
-    assert_eq!(page(F::After(P::time(c.stamp.written))), 1, "from that moment on");
-    assert_eq!(page(F::Before(P::time(c.stamp.written))), 0, "stamped earlier");
-    assert_eq!((page(F::Before(c.pos())), page(F::After(c.pos()))), (0, 0), "neither bound counts itself");
-    for p in [zero, end, P::time(c.stamp.written), c.pos()] {
-        assert_eq!(p.to_string().parse::<P>().unwrap(), p);
-    }
-    assert_eq!((end.commit(), c.pos().commit()), (None, Some(c.stamp.id)));
 }
 
 // notes/api.md (`Reads`; spec/crypto.md §4 Floors): a grant without history reads back as such; a

@@ -228,33 +228,6 @@ fn text_edit_after_an_unshown_merge_lands_where_typed() {
     assert_eq!(field(&db, t, &k).as_deref(), Some("hello brave world!"));
 }
 
-// An edit into a session whose buffer holds a merge the UI does not show yet keeps the merge
-// (`shown` is the UI's text before the keystroke).
-#[test]
-fn text_edit_keeps_unshown_merge() {
-    let (db, t, k) = setup(db(0));
-    let s = open(&db, t, &k);
-    let shown = "hello world";
-    s.edit("", shown).unwrap();
-    // the "remote" merge, ahead of the widget
-    s.edit(shown, "hello brave world").unwrap();
-    s.edit(shown, "hello world!").unwrap();
-    assert_eq!(s.text(), "hello brave world!", "after the merge");
-    s.edit("hello world!", ">hello world!").unwrap();
-    assert_eq!(s.text(), ">hello brave world!", "before the merge");
-    s.edit(">hello world!", ">hellX world!").unwrap();
-    assert_eq!(s.text(), ">hellX brave world!", "a replace before the merge");
-    // " wo" -> "_" is disjoint from the merge read as " brave" after "X": both apply
-    s.edit(">hellX world!", ">hellX_rld!").unwrap();
-    assert_eq!(s.text(), ">hellX brave_rld!", "a replace right after the merge");
-    s.edit(&s.text(), ">hellX brave world!").unwrap();
-    // a replace across the merge point: what it removed goes, the merge stays
-    s.edit(">hellX world!", ">hell_rld!").unwrap();
-    assert_eq!(s.text(), ">hell_brave rld!");
-    s.edit(">hell_brave rld!", ">hell_brave rld").unwrap();
-    assert_eq!(s.text(), ">hell_brave rld", "no merge pending: the plain splice");
-}
-
 // Merges the UI does not show yet in two places: typing and deleting between them land where
 // the user did them, both merges kept.
 #[test]

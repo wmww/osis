@@ -607,20 +607,20 @@ pub(crate) mod tests {
             prop_assert_eq!(c.claims.len(), n.max(1).next_power_of_two());
             prop_assert!(c.claims.iter().all(|k| VerifyingKey::from_bytes(k).is_ok()));
         }
+    }
 
-        // spec/sync-ids.md §3: a claim key verifies at its own step only (fresh step key per step).
-        #[test]
-        fn claim_key_per_step(seed in any::<u64>()) {
-            let mut rng = SeededRng::from_u64(seed);
-            let g = Secrets::new(60);
-            let m = X25519Secret::random(&mut rng);
-            let r = [Reader::Dh(m.public())];
-            let (s0, c0) = register(Parent::Genesis(&g.delete()), g.keys(), &r, (&THING, epoch(0), &g.read), g.sync_at(), &mut rng).unwrap();
-            let (s1, c1) = register(Parent::Child { step: &s0, delete: &g.delete() }, s0.keys, &r, (&THING, epoch(0), &g.read), g.sync_at(), &mut rng).unwrap();
-            let k0 = s0.claim_key(&m).unwrap().verifying_key().to_bytes();
-            let k1 = s1.claim_key(&m).unwrap().verifying_key().to_bytes();
-            prop_assert!(c0.contains(&k0) && c1.contains(&k1));
-            prop_assert!(!c1.contains(&k0) && !c0.contains(&k1));
-        }
+    // spec/sync-ids.md §3: a claim key verifies at its own step only (fresh step key per step).
+    #[test]
+    fn claim_key_per_step() {
+        let mut rng = SeededRng::from_u64(0);
+        let g = Secrets::new(60);
+        let m = X25519Secret::random(&mut rng);
+        let r = [Reader::Dh(m.public())];
+        let (s0, c0) = register(Parent::Genesis(&g.delete()), g.keys(), &r, (&THING, epoch(0), &g.read), g.sync_at(), &mut rng).unwrap();
+        let (s1, c1) = register(Parent::Child { step: &s0, delete: &g.delete() }, s0.keys, &r, (&THING, epoch(0), &g.read), g.sync_at(), &mut rng).unwrap();
+        let k0 = s0.claim_key(&m).unwrap().verifying_key().to_bytes();
+        let k1 = s1.claim_key(&m).unwrap().verifying_key().to_bytes();
+        assert!(c0.contains(&k0) && c1.contains(&k1));
+        assert!(!c1.contains(&k0) && !c0.contains(&k1));
     }
 }

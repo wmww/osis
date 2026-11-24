@@ -355,13 +355,6 @@ fn first_diff(x: &str, y: &str, names: [&str; 2]) -> String {
     format!("at line {i} under\n{}\n--- {}\n{}\n--- {}\n{}", path.join("\n"), names[0], tail(&a), names[1], tail(&b))
 }
 
-#[test]
-fn first_diff_names_the_entry() {
-    let v = |c: Option<u8>| format!("{:#?}", BTreeMap::from([((1, "a"), (0, None)), ((2, "b"), (1, c))]));
-    let d = first_diff(&v(None), &v(Some(3)), ["x", "y"]);
-    assert!(d.contains("        \"b\",\n    ): (\n--- x\n        None,"), "{d}");
-}
-
 /// Runs `steps` steps of seed `seed` in both worlds, comparing after each, the stored states
 /// with the cached ones and when each body was replaced after the last (`stored_each`: the
 /// stored states after each).

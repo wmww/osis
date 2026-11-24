@@ -184,21 +184,15 @@ proptest! {
         check_mutation(&v, &ops)?;
     }
 
-    // §5: random bytes never panic; accepted ones are canonical.
-    #[test]
-    fn random_bytes(b in prop::collection::vec(any::<u8>(), 0..64)) {
-        if let Ok(w) = d(&b) {
-            prop_assert_eq!(encode(&w), b);
-        }
-    }
-
     // §5: an item's extent found by its heads alone is the extent decoding finds, followed by
-    // anything; on random bytes it never panics and agrees wherever decoding accepts.
+    // anything (`decode_prefix` returns the value and those bytes as received); on random bytes it
+    // never panics and agrees wherever decoding accepts.
     #[test]
     fn item_prefix_is_decoded_extent(v in value(), tail in prop::collection::vec(any::<u8>(), 0..8), b in prop::collection::vec(any::<u8>(), 0..64)) {
         let e = encode(&v);
         let with_tail = [e.as_slice(), &tail].concat();
         prop_assert_eq!(item_prefix(&with_tail, &Limits::DEFAULT), Ok(e.as_slice()));
+        prop_assert_eq!(decode_prefix(&with_tail, &Limits::DEFAULT), Ok((v, e.as_slice())));
         if let Ok((_, used)) = decode_prefix(&b, &Limits::DEFAULT) {
             prop_assert_eq!(item_prefix(&b, &Limits::DEFAULT), Ok(used));
         }
@@ -230,59 +224,13 @@ fn tag_head(t: u64) -> String {
     format!("d9{t:04x}")
 }
 
-// §5: known encodings of each kind.
+// §5: what cbor/values.vec does not pin: a link's depth counts its delete-key array; the reserved
+// STRUCT tag decodes as any unknown tag.
 #[test]
-fn known_encodings() {
-    let cases: Vec<(Value, &str)> = vec![
-        (Value::Int(0), "00"),
-        (Value::Int(23), "17"),
-        (Value::Int(24), "1818"),
-        (Value::Int(-1), "20"),
-        (Value::Int(-25), "3818"),
-        (Value::Int(256), "190100"),
-        (Value::Int(i64::MAX), "1b7fffffffffffffff"),
-        (Value::Int(i64::MIN), "3b7fffffffffffffff"),
-        (Value::float(1.0), "fb3ff0000000000000"),
-        (Value::float(-0.0), "fb8000000000000000"),
-        (Value::float(f64::NAN), "fb7ff8000000000000"),
-        (Value::Bool(false), "f4"),
-        (Value::Bool(true), "f5"),
-        (Value::Str("a".into()), "6161"),
-        (Value::Bytes(vec![1, 2]), "420102"),
-        (Value::List(vec![]), "80"),
-        (Value::Map(osis_base::ValueMap::from([(Value::Int(1), Value::Int(2)), (Value::Int(-1), Value::Int(0)), (Value::Str("a".into()), Value::Int(0))])), "a3 0102 2000 616100"),
-        (Value::Set(osis_base::ValueSet::from([Value::Int(10), Value::Int(1)])), "d90102 82 01 0a"),
-    ];
-    for (v, h) in cases {
-        assert_eq!(encode(&v), hex(h), "{v:?}");
-        assert_eq!(d(&hex(h)), Ok(v));
-    }
-    let t = Value::Strong(Tid::from_bytes([0xab; 15]));
-    assert_eq!(encode(&t), hex(&format!("{} 4f {}", tag_head(TAG_STRONG), "ab".repeat(15))));
-    let t = Value::Weak(Tid::from_bytes([0xab; 15]));
-    assert_eq!(encode(&t), hex(&format!("{} 4f {}", tag_head(TAG_WEAK), "ab".repeat(15))));
-    let e = Value::Enum(3, Some(Box::new(Value::Bool(true))));
-    assert_eq!(encode(&e), hex(&format!("{} 82 03 f5", tag_head(TAG_ENUM))));
-    assert_eq!(encode(&Value::Enum(0, None)), hex(&format!("{} 81 00", tag_head(TAG_ENUM))));
-    let del = osis_base::Del::from_keys([(1, [5; 32]), (2, [6; 32])]).unwrap();
-    let l = Value::link(Link { hash: [1; 32], blob: BlobId([2; 32]), suite: 1, key: [3; 32], salt: [4; 16], del });
-    let lh = format!("{} 85 5820{} 5820{} 5821 01{} 50{} 82 82 01 5820{} 82 02 5820{}", tag_head(TAG_LINK), "01".repeat(32), "02".repeat(32), "03".repeat(32), "04".repeat(16), "05".repeat(32), "06".repeat(32));
-    assert_eq!(encode(&l), hex(&lh));
-    assert!(matches!(d(&hex(&lh)), Ok(Value::Link(x)) if *x == Link { hash: [1; 32], blob: BlobId([2; 32]), suite: 1, key: [3; 32], salt: [4; 16], del }));
-    assert_eq!(l.depth(), 4);
-    // a link without delete keys: an empty Del array
-    let bare = Value::link(Link { hash: [1; 32], blob: BlobId([2; 32]), suite: 1, key: [3; 32], salt: [4; 16], del: osis_base::Del::NONE });
-    assert_eq!(encode(&bare), hex(&format!("{} 85 5820{} 5820{} 5821 01{} 50{} 80", tag_head(TAG_LINK), "01".repeat(32), "02".repeat(32), "03".repeat(32), "04".repeat(16))));
-    assert_eq!(bare.depth(), 3);
-    // §6: equality and order of links are by content hash, whatever the rest of the link
-    assert_eq!(bare, l);
-    assert_eq!(bare.cmp(&l), std::cmp::Ordering::Equal);
-    // §5: unknown tags keep tag and content.
-    let u = hex("c2 4101");
-    let v = d(&u).unwrap();
-    assert!(matches!(&v, Value::Unknown(x) if x.tag() == 2 && x.content().as_bytes() == [0x41, 0x01]));
-    assert_eq!(encode(&v), u);
-    // The reserved STRUCT tag is preserved like any unknown tag.
+fn link_depth_and_reserved_struct_tag() {
+    let link = |del| Value::link(Link { hash: [1; 32], blob: BlobId([2; 32]), suite: 1, key: [3; 32], salt: [4; 16], del });
+    assert_eq!(link(osis_base::Del::from_keys([(1, [5; 32]), (2, [6; 32])]).unwrap()).depth(), 4);
+    assert_eq!(link(osis_base::Del::NONE).depth(), 3);
     let s = hex(&format!("{} a0", tag_head(TAG_STRUCT_RESERVED)));
     assert!(matches!(d(&s), Ok(Value::Unknown(_))));
 }
@@ -457,15 +405,6 @@ fn limits() {
     // A huge claimed length is rejected before allocation.
     assert_eq!(d(&hex("9b 0000000100000000")), Err(DecodeError::Truncated));
     assert_eq!(d(&hex("bb 0000000100000000")), Err(DecodeError::Truncated));
-}
-
-// decode_prefix returns the consumed bytes as received.
-#[test]
-fn prefix() {
-    let b = hex("8201 02 ff ee");
-    let (v, used) = decode_prefix(&b, &Limits::DEFAULT).unwrap();
-    assert_eq!(v, Value::List(vec![Value::Int(1), Value::Int(2)]));
-    assert_eq!(used, &b[..3]);
 }
 
 // §5: NaN normalized at construction; -0.0 and 0.0 distinct.

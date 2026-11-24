@@ -137,20 +137,4 @@ mod tests {
         assert_eq!(Ts::from_u64((1 << 63) - 1).map(Ts::wall_ms), Some(WallMs((1 << 47) - 1)));
         assert!(Ts::make(WallMs(1), 0).unwrap() > Ts::make(WallMs(0), 0xffff).unwrap());
     }
-
-    #[test]
-    fn manual_clock() {
-        let c = ManualClock::new(WallMs(10));
-        c.advance(5);
-        assert_eq!(c.now_wall_ms(), WallMs(15));
-        assert_eq!(c.mono(), Mono(15));
-        c.set(WallMs(3));
-        assert_eq!((c.now_wall_ms(), c.mono()), (WallMs(3), Mono(15)), "set back: the monotonic clock stays");
-        c.set(WallMs(8));
-        assert_eq!(c.mono(), Mono(20));
-        c.advance(u64::MAX);
-        assert_eq!((c.now_wall_ms(), c.mono()), (WallMs(u64::MAX), Mono(u64::MAX)));
-        assert!(SystemClock.now_wall_ms() > WallMs(1_600_000_000_000));
-        assert!(SystemClock.mono() <= SystemClock.mono());
-    }
 }

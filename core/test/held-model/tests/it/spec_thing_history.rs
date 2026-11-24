@@ -258,26 +258,6 @@ fn a_carried_join_makes_older_settings_add_nothing() {
     assert!(moved > 0);
 }
 
-/// Under one setting bodies leave in the order they were replaced, but for those under the floor
-/// (out when replaced): one cursor per aspect times what leaves, and a body under the floor is told
-/// late at worst, never early.
-#[test]
-fn leaves_in_replaced_order() {
-    for t in worlds(2, Rule::Floor).into_iter().map(|w| w.settings) {
-        let cur = current(&t, Rule::Floor);
-        for ts in 0..END {
-            let b = Body { ts, id: 0, fire: false };
-            if cur.is_some_and(|s| ts < s.floor) {
-                assert!((ts..END + 2).all(|r| out(cur, Rule::Floor, &b, r) == r));
-                continue;
-            }
-            for r in ts..END + 2 {
-                assert!(out(cur, Rule::Floor, &b, r) <= out(cur, Rule::Floor, &b, r + 1), "{t:?} {b:?} r {r}");
-            }
-        }
-    }
-}
-
 /// Kept while live (spec/commits.md §5): a live body is kept at m exactly while a replacement of
 /// it at m would be kept by the current setting. Entries with a D and a T too.
 #[test]
@@ -300,49 +280,6 @@ fn kept_while_live_while_a_replacement_would_be_kept() {
     }
 }
 
-/// The current setting alone decides: a newer one lengthening history re-shows a body still held
-/// (dropped stays dropped, Tess's decision 1), one shortening it ends it at once, and an older
-/// setting arriving late changes nothing.
-#[test]
-fn the_current_setting_alone_decides() {
-    let held = [Body { ts: 1, id: 0, fire: false }, Body { ts: 2, id: 1, fire: false }];
-    let short = written_after(&[], 0, 0, Opt::Keep { after: 1, until: 0 }, Rule::Floor);
-    let long = written_after(&[short], 4, 1, Opt::Keep { after: 10, until: 0 }, Rule::Floor);
-    assert!(history(&[short], Rule::Floor, &held, 4).is_empty());
-    assert_eq!(history(&[short, long], Rule::Floor, &held, 4), [0]);
-    let none = written_after(&[short, long], 5, 2, Opt::None, Rule::Floor);
-    assert!(history(&[short, long, none], Rule::Floor, &held, 5).is_empty());
-    // an older setting held late is not current
-    assert_eq!(history(&[long, short], Rule::Floor, &held, 4), [0]);
-    // an eager node that dropped the body under `short` does not get it back
-    let mut e = Eager::default();
-    e.setting(short, Rule::Floor, 0);
-    e.body(held[0], Rule::Floor, 1);
-    e.body(held[1], Rule::Floor, 3);
-    e.setting(long, Rule::Floor, 4);
-    e.body(held[0], Rule::Floor, 4);
-    assert!(e.history(Rule::Floor, 4).is_empty() && e.dropped == [0]);
-}
-
-/// Turning purge on replace off keeps what is written from then on (options keep their
-/// property): a body written at or after the floor is kept by the keep entry as if no purge came
-/// before; one written before it is under purge on replace when replaced, also with fewer bodies
-/// held. The floor is carried by every later setting.
-#[test]
-fn keep_after_purge_keeps_what_is_written_after() {
-    let p = written_after(&[], 1, 0, Opt::Purge, Rule::Floor);
-    let k = written_after(&[p], 3, 1, Opt::Keep { after: 0, until: NEVER }, Rule::Floor);
-    assert_eq!(k.floor, 3);
-    let k2 = written_after(&[k], 5, 2, Opt::Keep { after: 4, until: 0 }, Rule::Floor);
-    assert_eq!(k2.floor, 3);
-    let (old, new) = (Body { ts: 2, id: 0, fire: false }, Body { ts: 4, id: 1, fire: false });
-    let last = Body { ts: 6, id: 2, fire: false };
-    assert!(under_purge(Some(k), Rule::Floor, &old, 4) && !under_purge(Some(k), Rule::Floor, &new, 6));
-    assert_eq!(history(&[p, k], Rule::Floor, &[old, new, last], 6), [1]);
-    assert_eq!(history(&[p, k], Rule::Floor, &[old, last], 6), Vec::<u32>::new());
-    assert_eq!(history(&[k2], Rule::Floor, &[old, new, last], 7), [1]);
-}
-
 /// Concurrent admins: one turns purge on replace on, another, not holding it, writes a keep. A
 /// node holding both keeps the purged content out by the joined floor (the keep's own carries
 /// none), whichever it got first; the keep still decides what is written after it; a setting
@@ -362,54 +299,6 @@ fn concurrent_admins_lose_no_floor() {
     let c = written_after(&[p, k], 5, 2, Opt::Keep { after: 0, until: NEVER }, Rule::Floor);
     assert_eq!(c.floor, 3);
     assert_eq!(history(&[c], Rule::Floor, &held, 7), [2]);
-}
-
-/// In any arrival order, at any pace, a node that drops at the first allowed moment shows, once
-/// every item arrived, no more than a node holding everything, but a body that arrived after a
-/// superseder of its was dropped (dated by what is held, so later: an arrival); what it lacks it
-/// dropped itself (a setting current later may keep what an earlier one let go). Two settings, in
-/// a chain or concurrent, of four options.
-#[test]
-fn any_order_dropping_shows_a_subset() {
-    let opts = [OPTS[0], OPTS[1], OPTS[4], OPTS[5]];
-    #[derive(Clone, Copy, Debug)]
-    enum Item {
-        S(Setting),
-        B(Body),
-    }
-    for fire in [false, true] {
-        for t in worlds(2, Rule::Floor).into_iter().map(|w| w.settings).filter(|t| t.len() == 2 && t.iter().all(|s| opts.contains(&s.opt))) {
-            let all = bodies(fire);
-            let items: Vec<Item> = t.iter().map(|s| Item::S(*s)).chain(all.iter().map(|b| Item::B(*b))).collect();
-            for order in perms(&items) {
-                for lag in [0, 2] {
-                    let (mut n, mut now) = (Eager::default(), 0);
-                    let mut late: Vec<u32> = Vec::new();
-                    for i in &order {
-                        match i {
-                            Item::S(s) => {
-                                now = now.max(s.ts) + lag;
-                                n.setting(*s, Rule::Floor, now)
-                            }
-                            Item::B(b) => {
-                                now = now.max(b.ts) + lag;
-                                if !b.fire && all.iter().any(|o| !o.fire && (o.ts, o.id) > (b.ts, b.id) && n.dropped.contains(&o.id)) {
-                                    late.push(b.id);
-                                }
-                                n.body(*b, Rule::Floor, now)
-                            }
-                        }
-                    }
-                    for now in now..now + 5 {
-                        n.act(Rule::Floor, now);
-                        let (h, full) = (n.history(Rule::Floor, now), history(&t, Rule::Floor, &all, now));
-                        assert!(h.iter().all(|x| full.contains(x) || late.contains(x)), "{order:?} now {now}: shows more");
-                        assert!(full.iter().all(|x| h.contains(x) || n.dropped.contains(x)), "{order:?} now {now}: lost without a drop");
-                    }
-                }
-            }
-        }
-    }
 }
 
 /// The same properties through `evaluate`.

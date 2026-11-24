@@ -411,6 +411,9 @@ fn snapshots(st: &MFrag, mfr: &[(MSource, u64)], gone: &Gone, honest: bool, twin
     let mut ours = frag(st);
     ours.remove_gone(&gone.ours());
     assert_eq!(ours, frag(&mst), "removal equals the model");
+    let mut again = ours.clone();
+    again.remove_gone(&gone.ours());
+    assert_eq!(again, ours, "removal is idempotent");
     ours.compact();
     assert_eq!(ours, frag(&mst), "compacting changes nothing");
     check(&mst, &[], "a without the gone writes");
@@ -467,6 +470,21 @@ fn unmerge_and_gone(c: &Case) {
     let ours = unmerged(&mut c.deltas.iter());
     assert_eq!(ours, ostate(&model), "un-merged bodies equal the model's");
     assert_eq!(ours, unmerged(&mut c.deltas.iter().rev()), "un-merge order-independent");
+    // one delta's writes (spec/permissions.md §5.2): the join of the bodies each without them is
+    // order-independent too
+    for w in c.deltas.iter().filter_map(|(_, w)| w.as_ref()) {
+        let (src, lo, hi) = (source(&w.source), w.lo, w.hi());
+        let without = |order: &mut dyn Iterator<Item = &(MFrag, Option<MWriter>)>| {
+            let mut out = Fragment::default();
+            for (d, _) in order {
+                let mut b = frag(d);
+                b.remove_writes(&|d| d.src == src && lo <= d.ctr && d.ctr < hi);
+                out.join(b);
+            }
+            out
+        };
+        assert_eq!(without(&mut c.deltas.iter()), without(&mut c.deltas.iter().rev()), "un-merge of one delta order-independent");
+    }
     // an invalid delta changes nothing (§4.6): where every body is a writer's own delta, holding
     // the invalid author's bodies un-merged equals never holding them
     if c.mode != Mode::Twins && c.deltas.iter().all(|(_, w)| w.is_some()) {

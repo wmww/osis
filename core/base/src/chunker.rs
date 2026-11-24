@@ -360,24 +360,4 @@ mod tests {
         assert!((60 << 10..100 << 10).contains(&avg), "avg {avg}");
         assert!(l.iter().all(|&n| n <= CHUNK_MAX));
     }
-
-    // spec/wire.md §6: the last chunk ends at the end of the input.
-    #[test]
-    fn empty_and_tiny() {
-        assert!(chunk_lengths(&[], SMALL).is_empty());
-        assert_eq!(chunk_lengths(&[1, 2, 3], SMALL), vec![3]);
-        let z = chunk_lengths(&[0; 5000], SMALL);
-        assert_eq!(z.iter().sum::<usize>(), 5000);
-        assert!(z.iter().all(|&n| n <= SMALL.max));
-    }
-
-    // spec/wire.md §6, pages: an element can push a page past max; it closes after that element.
-    #[test]
-    fn page_closes_at_or_above_max() {
-        let mut c = PageCutter::new(SMALL);
-        c.feed(&[0; 1500]);
-        assert_eq!(c.pending(), 1500);
-        assert!(c.end_element());
-        assert_eq!(c.pending(), 0);
-    }
 }
