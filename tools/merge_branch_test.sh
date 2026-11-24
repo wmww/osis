@@ -7,7 +7,8 @@
 # copy, releases the worktree and deletes the branch; refuses after a failed gate unless --fixed or
 # its kept summary, read again against main's known failures and cost lines, passes; when
 # main moved, rebases and runs clippy and the tests of the packages both sides changed only, a failure
-# stopping the landing. Exit 1 on a mismatch.
+# stopping the landing; the summary's KNOWN-BUT-PASSED and STALE-COST lines are applied in a commit
+# landed with it. Exit 1 on a mismatch.
 set -eu
 tools=$(cd "$(dirname "$0")" && pwd)
 d=$(mktemp -d)
@@ -46,7 +47,8 @@ mkdir -p tools notes core/x core/y
 cp "$tools/merge-branch" "$tools/claim" "$tools/land" "$tools/known_failures_merge.py" tools/
 printf 'import os, sys\nsys.exit(int(os.environ.get("POLICY_RC", "0")))\n' > tools/policy.py
 # GATE_KEEP=DIR: a failed gate keeps its files for the summary's re-read
-printf '%s\n' 'echo "== test stages: 1 run of 1, 0 failed"' 'echo "== gate exit ${GATE_RC:-0}"' \
+# GATE_STALE: summary lines to print (KNOWN-BUT-PASSED, STALE-COST)
+printf '%s\n' 'echo "== test stages: 1 run of 1, 0 failed"' 'printf "%b" "${GATE_STALE:-}"' 'echo "== gate exit ${GATE_RC:-0}"' \
     'if [ -n "${GATE_KEEP:-}" ]; then mkdir -p "$GATE_KEEP" && touch "$GATE_KEEP/sel" "$GATE_KEEP/sel.res"' \
     '  echo "== summary again (kept): python3 tools/gate_failures.py $GATE_KEEP/sel $GATE_KEEP/sel.res"; fi' \
     'exit "${GATE_RC:-0}"' > tools/gate.sh
@@ -174,4 +176,22 @@ git -C "$w" checkout -q --theirs core/y/f && git -C "$w" add core/y/f && git -C 
 "$mb" land t8 > /dev/null 2> "$d/err" && rc=0 || rc=$?
 check "land conflict finished by hand: landed" "$rc $(git --git-dir="$d/origin.git" log --format=%s -2 main | tr "\n" " ")" "0 fix8 t8 "
 check "land conflict finished by hand: checks ran" "$(grep -c 'clippy --all-targets' "$CARGO_LOG")" "1"
+
+# a passing gate's KNOWN-BUT-PASSED and STALE-COST lines: applied in a commit landed with the branch;
+# a `rate:` line, and a cost line main changed since the gate, kept
+git checkout -q --detach origin/main
+printf 'probe/x rate:1 issues/p.md fails\nprobe/m::k - issues/p.md fails\nprobe/m::k rate:1 issues/p.md other\nsim-sweep:s 3 issues/p.md fails\n' > tools/known_failures.txt
+printf 'probe/a 5\nprobe/b 3\nprobe/c 8\nprobe/d 9\nprobe/gone 4\n' > tools/test_cost.txt
+git commit -qam lists && git push -q origin HEAD:main && git fetch -q
+branch t9 core/x/f
+GATE_STALE='   KNOWN-BUT-PASSED: m::k (default-tests; issues/p.md)\n   KNOWN-BUT-PASSED: sim-sweep:s (gate.sim; issues/p.md)\n   STALE-COST: probe/c (default-tests; 1 G instructions, under its line 8 / 2: lower it to 1.5)\n   STALE-COST: probe/d (default-tests; 1 G instructions, under its line 9 / 2: lower it to 1.5)\n   STALE-COST: probe/gone (its crate ran, it did not: drop the line)\n' "$mb" gate t9 > /dev/null 2>&1
+git checkout -q --detach origin/main && sed -i 's/^probe\/d 9$/probe\/d 20/' tools/test_cost.txt && git commit -qam raised-d && git push -q origin HEAD:main && git fetch -q
+"$mb" land t9 > /dev/null 2> "$d/err" && rc=0 || rc=$?
+check "stale lines: landed with their commit" "$rc $(git --git-dir="$d/origin.git" log --format=%s -2 main | tr "\n" " ")" "0 land: the gate's stale known-failure and test-cost lines t9 "
+check "stale lines: known list" "$(git --git-dir="$d/origin.git" show main:tools/known_failures.txt)" "probe/x rate:1 issues/p.md fails
+probe/m::k rate:1 issues/p.md other"
+check "stale lines: cost list" "$(git --git-dir="$d/origin.git" show main:tools/test_cost.txt)" "probe/a 5
+probe/b 3
+probe/c 1.5
+probe/d 20"
 exit $fail

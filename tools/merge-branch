@@ -20,7 +20,10 @@ The task loop), every step checked and reported, run from any checkout of the re
       past the checked base, rebases as gate does, then `cargo clippy --all-targets -- -D warnings`,
       the same with `-p` for each non-default package both sides changed, and `cargo test -p` each
       package both sides changed (files changed base..HEAD and base..origin/main); a conflict
-      stops it, and once the rebase is finished by hand the next land checks and lands that; `tools/land
+      stops it, and once the rebase is finished by hand the next land checks and lands that; commits
+      the gate summary's KNOWN-BUT-PASSED lines removed from tools/known_failures.txt (but `rate:`
+      ones) and its STALE-COST lines lowered or dropped in tools/test_cost.txt (a line main changed
+      since kept); `tools/land
       --delete` the one pushed copy origin/*-NAME (plain `tools/land` with none); checks origin/main
       is HEAD; `wt release` of W; `git branch -D NAME`; removes LOGS/NAME. Exit 0 landed, 1 not.
 
@@ -270,6 +273,52 @@ def reread(w, rec, main):
     return r.returncode, r.stdout
 
 
+STALE_KNOWN = re.compile(r"^   KNOWN-BUT-PASSED: (\S+) \(", re.M)
+STALE_COST = re.compile(r"^   STALE-COST: (\S+) \((?:.*under its line (\S+) / .*: lower it to (\S+)|its crate ran, it did not: drop the line)\)$", re.M)
+
+
+def apply_stale(w, summary):
+    """Applies the summary's KNOWN-BUT-PASSED and STALE-COST lines to W's lists: each listed test's
+    lines removed but its `rate:` ones, each cost line lowered or dropped where it still reads as the
+    gate saw it. Commits the change; returns its lines (empty when nothing changed)."""
+    done, paths = [], []
+    gone = set(STALE_KNOWN.findall(summary))
+    p = os.path.join(w, KNOWN)
+    if gone and os.path.exists(p):
+        out = []
+        for line in open(p).read().splitlines(keepends=True):
+            f = line.split()
+            # a failure names a test by its libtest path, its crate dropped (gate_failures.test_path)
+            path = "" if not f else f[0] if f[0].startswith("sim-sweep:") else f[0].rpartition("/")[2]
+            if len(f) > 1 and not line.startswith("#") and path in gone and not f[1].startswith("rate:"):
+                done.append(f"{KNOWN}: removed (KNOWN-BUT-PASSED) {line.strip()}")
+                continue
+            out.append(line)
+        open(p, "w").write("".join(out))
+        paths.append(KNOWN)
+    costs = {m.group(1): (m.group(2), m.group(3)) for m in STALE_COST.finditer(summary)}
+    p = os.path.join(w, COST)
+    if costs and os.path.exists(p):
+        out = []
+        for line in open(p).read().splitlines(keepends=True):
+            f = line.split()
+            if len(f) == 2 and f[0] in costs:
+                had, to = costs[f[0]]
+                if to is None:
+                    done.append(f"{COST}: dropped (STALE-COST) {f[0]} {f[1]}")
+                    continue
+                if float(f[1]) == float(had):
+                    done.append(f"{COST}: lowered (STALE-COST) {f[0]} {f[1]} -> {to}")
+                    line = f"{f[0]} {to}\n"
+            out.append(line)
+        open(p, "w").write("".join(out))
+        paths.append(COST)
+    if done:
+        git("commit", "-qm", "land: the gate's stale known-failure and test-cost lines\n\n" + "\n".join(done),
+            "--", *paths, cwd=w)
+    return done
+
+
 def land(name, fixed):
     w = held(name)
     if not w:
@@ -282,8 +331,13 @@ def land(name, fixed):
         stop(f"no gate recorded for {name} ({d}): run `tools/merge-branch gate {name}`", 1)
     git("fetch", "-q", "--prune", "origin", cwd=w)
     main = git("rev-parse", "origin/main", cwd=w)
+    log = rec.get("log")
+    text = open(log, errors="replace").read() if log and os.path.exists(log) else ""
+    summary = text[text.rfind("== test stages:"):]
     if rec["exit"] not in (0, 3):
         again = None if fixed else reread(w, rec, main)
+        if again:
+            summary = again[1]
         if again and again[0] in (0, 3):
             say(f"the gate's summary read again against origin/main's known failures exits {again[0]}:\n{again[1].rstrip()}")
         elif not fixed:
@@ -301,7 +355,7 @@ def land(name, fixed):
             rebase(w, 1)
         new = git("rev-parse", "HEAD", cwd=w)
         ok = checks(w, rec["base"], rb["head"])
-        rec = dict(exit=0 if ok else 1, failed="checks after the land's rebase", head=new, base=main)
+        rec = dict(exit=0 if ok else 1, failed="checks after the land's rebase", head=new, base=main, log=rec.get("log"))
         record(d, **rec)
         if not ok:
             stop("not landed: fix the failure in the branch, then land with --fixed", 1)
@@ -320,11 +374,15 @@ def land(name, fixed):
         rebase(w, 1)
         new = git("rev-parse", "HEAD", cwd=w)
         ok = checks(w, rec["base"], head)
-        rec = dict(exit=0 if ok else 1, failed="checks after the land's rebase", head=new, base=main)
+        rec = dict(exit=0 if ok else 1, failed="checks after the land's rebase", head=new, base=main, log=rec.get("log"))
         record(d, **rec)
         if not ok:
             stop("not landed: fix the failure in the branch, then land with --fixed", 1)
         head = new
+    # the gate's KNOWN-BUT-PASSED and STALE-COST lines, applied to the tree being landed
+    for line in apply_stale(w, summary):
+        say(f"applied: {line}")
+    head = git("rev-parse", "HEAD", cwd=w)
     cmd = ["sh", "tools/land"] + (["--delete", pushed[0][len("origin/"):]] if pushed else [])
     if not pushed:
         say(f"no pushed copy origin/*-{name} to delete")

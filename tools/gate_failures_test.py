@@ -345,7 +345,7 @@ check("over its line or with none: NEW-COST", (rc, [l for l in out.split("\n") i
     "   NEW-COST default-tests  c/it: 1 G instructions, no line: add `c/it 1.5` to tools/test_cost.txt"], "== gate FAILED: 2 NEW, 0 KNOWN"))
 rc, out = costed("c/c 7\nc/it 2\nc/gone 1\n", [("default-tests", "0", COUNTED)])
 check("under half its line, or not run beside its crate: STALE-COST", (rc, out.split("\n")[-4:-1]), (0, [
-    "== STALE-COST (2): test-cost lines past their binaries' counts. Update each in tools/test_cost.txt in this landing",
+    "== STALE-COST (2): test-cost lines past their binaries' counts. tools/merge-branch land updates each in tools/test_cost.txt",
     "   STALE-COST: c/c (default-tests; 3 G instructions, under its line 7 / 2: lower it to 4.5)",
     "   STALE-COST: c/gone (its crate ran, it did not: drop the line)"]))
 rc, out = costed("c/c 4\nc/it 1.5\n", [("default-tests", "0", COUNTED.replace("INSTR 3000000000", "INSTR 1000000000")), ("gate.gui-tests", "0", COUNTED.replace("INSTR 3000000000", "INSTR 5000000000"))])

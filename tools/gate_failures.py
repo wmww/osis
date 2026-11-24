@@ -31,13 +31,13 @@ Each test binary the default-test stages ran (tools/test_count.sh: `gate: binary
 tools/icount's `INSTR <n>`; doctests aside) is held to its line in tools/test_cost.txt, `CRATE/NAME
 G` (G its budget in 10^9 user-space instructions, as many threads as it ran): over G, or with no
 line, it is NEW-COST, counted NEW, with the line to write (ROOM times its count); under G / BAND
-its line is stale (STALE-COST: lower it in the landing), as is a line naming a binary its crate's
+its line is stale (STALE-COST: tools/merge-branch land lowers it), as is a line naming a binary its crate's
 run lacked. A binary that reached its summary without a count is NEW: the runner did not apply,
 or perf counters are off (`INSTR unavailable`).
 
 A listed NAME that ran and passed in every stage that ran it (a `test NAME ... ok` line, a sim
-tally of 0 failed) and failed in none is listed under `KNOWN-BUT-PASSED`: its line is stale (the
-landing removes it) unless it fails at a rate; when every line of NAME is a `rate:` one, it says
+tally of 0 failed) and failed in none is listed under `KNOWN-BUT-PASSED`: its line is stale
+(tools/merge-branch land removes it) unless it fails at a rate; when every line of NAME is a `rate:` one, it says
 passing is expected instead. It changes no exit code: the exit-3 line counts them, and
 tools/gate.sh's pass line does from this output.
 
@@ -459,11 +459,11 @@ def main():
         else:
             stale.append(f"   KNOWN-BUT-PASSED: {name} ({stages}; {', '.join(dict.fromkeys(k.issue for k in names[name] if not k.rate))})")
     if stale:
-        print(f"== KNOWN-BUT-PASSED ({len(stale)}): listed, not `rate:`, passing in this run. Remove each line from {KNOWN} "
-              "in this landing (and its issue, if fixed), or mark it `rate:` if its issue shows it fails on some seeds only")
+        print(f"== KNOWN-BUT-PASSED ({len(stale)}): listed, not `rate:`, passing in this run. tools/merge-branch land removes "
+              "each but `rate:` lines from {KNOWN} (delete its issue if fixed; a test failing on some seeds only gets a `rate:` line first)")
         print("\n".join(stale))
     if stale_cost:
-        print(f"== STALE-COST ({len(stale_cost)}): test-cost lines past their binaries' counts. Update each in {COST} in this landing")
+        print(f"== STALE-COST ({len(stale_cost)}): test-cost lines past their binaries' counts. tools/merge-branch land updates each in {COST}")
         print("\n".join(stale_cost))
     tail = (f"; {len(stale)} KNOWN-BUT-PASSED to remove" if stale else "") + (f"; {len(stale_cost)} STALE-COST to lower" if stale_cost else "")
     new = sum(1 for k, _, _ in rows if k in ("NEW", "NEW-TEXT", "NEW-COUNTS", "NEW-COST"))

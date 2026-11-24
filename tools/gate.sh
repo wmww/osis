@@ -149,11 +149,11 @@ passed() {
       exit "$rc"
     fi
     # a known line whose test passed (stale unless `rate:`) or a stale test-cost line: the pass
-    # line (the one read) says so
+    # line (the one read) says so; `tools/merge-branch land` applies them
     n=$(grep -c '^   KNOWN-BUT-PASSED:' "$tmp/summary" || true)
-    [ "$n" = 0 ] || stale="; $n KNOWN-BUT-PASSED to remove (above)"
+    [ "$n" = 0 ] || stale="; $n KNOWN-BUT-PASSED to remove (above; the landing applies it)"
     n=$(grep -c '^   STALE-COST:' "$tmp/summary" || true)
-    [ "$n" = 0 ] || stale="$stale; $n STALE-COST to lower (above)"
+    [ "$n" = 0 ] || stale="$stale; $n STALE-COST to lower (above; the landing applies it)"
   fi
   echo "== gate passed$2 ($(( $(date +%s) - t0 ))s)$stale"
 }
