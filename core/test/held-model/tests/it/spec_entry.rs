@@ -108,7 +108,7 @@ fn far(last: Role) -> Net {
     net
 }
 
-// spec/sync-set.md §2 First entry with notes/stubs.md rule 2: A references C, which it holds read
+// spec/sync-set.md §2 First entry; notes/stubs.md rule 2. A references C, which it holds read
 // on through B: C is in A's unit, whole, at both nodes, with no record of B's grants anywhere.
 // Held sync alone through B, C is in no unit (A's keys do not open it) and B's key part is held
 // only once C is synced (keys are found up): neither node enters C, though A holding sync on C
