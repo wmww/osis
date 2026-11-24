@@ -865,7 +865,7 @@ fn judge_part(tx: &mut Tx<'_>, h: &Header, id: &CommitId, p: &osis_commit::Part,
         minted_record(h, id, p, &a.tid, interner)?;
     }
     let mut blobs = TxBlobs::new(&mut tx.blobs, tx.txn.is_memory());
-    let mut paged = BlobReader::new(dedup, &mut blobs);
+    let mut paged = BlobReader::judging(dedup, a.tid, &mut blobs);
     let reader: &mut dyn osis_crdt::PageSource = &mut paged;
     // a snapshot's carried writes stamped after the commit (spec/crdt.md §8: a node's next stamp
     // exceeds every stamp it holds, §2.2)

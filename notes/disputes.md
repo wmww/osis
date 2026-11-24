@@ -10,7 +10,7 @@ Principle: a side is an ordinary view. A node runs the ordinary rules over held 
 - Recovery: undesigned (issues/recovery-design.md).
 - Default side: conflicts should be very rare, so whatever keeps the code simplest (first received alone).
 - "Contained" means code complexity, not blast radius: a fight may do wide damage, but its handling must not spread through the code. Fix the design rather than work around oddities.
-- One side per party: everyone is on a side, and their writes go to that side; no write is kept valid on both sides because its writer holds rights on both (notes/write-path-design.md F6). Storage under a fork below still assumes otherwise in places (issues/delete-key-levels-unchecked.md lists them).
+- One side per party: everyone is on a side, and their writes go to that side; no write is kept valid on both sides because its writer holds rights on both (notes/write-path-design.md F6). Storage under a fork below still assumes otherwise in places (issues/disputes-storage-under-f6.md).
 - A fight decided by a write that ends up applying nowhere (notes/path-model-findings.md 34 to 36, 38) is reported as a dispute only where a node's trust decides the reading; where it does not there are no sides to choose, and nothing is built to show it. Every node holding the same writes and trusting the same side still agrees, and a node trusting the remover gives a removed party nothing.
 
 ## The coherence rule

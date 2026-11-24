@@ -301,14 +301,25 @@ impl Reuse {
 pub struct BlobReader<'a> {
     pub dedup: &'a Secret32,
     fetch: &'a mut dyn BlobFetch,
+    /// Judging a delta of this thing: each page's prefix must bear its link (`judging`).
+    judging: Option<Tid>,
 }
 
 impl<'a> BlobReader<'a> {
     pub fn new(dedup: &'a Secret32, fetch: &'a mut dyn BlobFetch) -> BlobReader<'a> {
-        BlobReader { dedup, fetch }
+        BlobReader { dedup, fetch, judging: None }
     }
 
-    fn open_link(&mut self, link: &Link) -> Result<Vec<u8>, Error> {
+    /// A reader of the pages of a delta on `thing` being judged (spec/crypto.md §7 Checked keys):
+    /// a page whose blob prefix does not bear its link's salt and delete keys under the link's
+    /// thing blind is `PageError::Keys`. Invariant: a page applies only where its blob's
+    /// commitments are the delete keys its link names, so what deletes it at stores is what the
+    /// key check judged. A part already judged is read again without it.
+    pub fn judging(dedup: &'a Secret32, thing: Tid, fetch: &'a mut dyn BlobFetch) -> BlobReader<'a> {
+        BlobReader { dedup, fetch, judging: Some(thing) }
+    }
+
+    fn open_link(&mut self, link: &Link) -> Result<(Prefix, Vec<u8>), Error> {
         if link.suite != SUITE_1 {
             return Err(Error::Crypto(osis_crypto::Error::UnknownSuite(u64::from(link.suite))));
         }
@@ -316,13 +327,13 @@ impl<'a> BlobReader<'a> {
         if crate::blob::blob_id(&blob) != link.blob {
             return Err(Error::Verify("blob id"));
         }
-        Ok(open(&blob, &Secret32::from_bytes(link.key))?.1)
+        Ok(open(&blob, &Secret32::from_bytes(link.key))?)
     }
 }
 
 impl LinkSource for BlobReader<'_> {
     fn plaintext(&mut self, link: &Link) -> Result<Vec<u8>, osis_commit::Error> {
-        self.open_link(link)
+        Ok(self.open_link(link)?.1)
     }
 }
 
@@ -330,9 +341,14 @@ impl PageSource for BlobReader<'_> {
     fn get(&mut self, link: &Link) -> Result<Vec<u8>, PageError> {
         // counted: tests read how many pages decodes and walks opened
         osis_base::costs::count("pages read", 1);
-        let pt = self.open_link(link)?;
+        let (prefix, pt) = self.open_link(link)?;
         if link_hash(self.dedup, &pt) != link.hash {
             return Err(PageError::Corrupt);
+        }
+        if let Some(thing) = self.judging
+            && (prefix.salt() != &link.salt || !bears(&prefix, &link.del, &thing_blind(&link_blind(&link.key), thing.as_bytes())))
+        {
+            return Err(PageError::Keys);
         }
         Ok(pt)
     }

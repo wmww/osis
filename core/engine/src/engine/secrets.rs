@@ -644,6 +644,8 @@ pub struct HandSecrets {
     keys: BTreeMap<(Tid, Role), VerifyingKey>,
     /// The dedup secret of a thing given no record (its part sent header only).
     pub unknown: Option<Secret32>,
+    /// The level-2 key listed: a node's own (`None`: made up).
+    pub purge_author: Option<VerifyingKey>,
 }
 
 impl HandSecrets {
@@ -666,7 +668,7 @@ impl osis_commit::Secrets for HandSecrets {
         Some(self.keys.get(&(*tid, Role::Admin)).copied().unwrap_or_else(|| Self::made_up(3)))
     }
     fn purge_author_key(&self) -> Option<VerifyingKey> {
-        Some(Self::made_up(1))
+        Some(self.purge_author.unwrap_or_else(|| Self::made_up(1)))
     }
     fn write_key(&self, tid: &Tid) -> Option<VerifyingKey> {
         Some(self.keys.get(&(*tid, Role::Write)).copied().unwrap_or_else(|| Self::made_up(2)))

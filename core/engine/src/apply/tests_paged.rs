@@ -919,14 +919,24 @@ type Reroot<'a> = &'a dyn Fn(&mut dyn FnMut(&[osis_base::Link]) -> osis_base::Li
 /// position's root list made by `reroot` if given.
 #[allow(clippy::too_many_arguments)]
 fn forge_snapshot_in(w: &mut World, by: usize, ak: &Ak, ts: osis_base::Ts, f: osis_crdt::Fragment, mutate: &dyn Fn(usize, &mut Vec<u8>), memory: bool, reroot: Option<Reroot<'_>>) -> Package {
-    use osis_commit::{AspectWrite, CommitBuilder, Form, Kind, writer_ctx};
+    let sec = hand(w);
+    forge_snapshot_sec(w, by, ak, ts, f, mutate, memory, reroot, sec)
+}
+
+/// The secrets a forger lists for `w.t`: its maker's delete keys, a made-up level-2 key.
+fn hand(w: &mut World) -> crate::engine::secrets::HandSecrets {
+    let rec = w.lp.peers[0].engine.get_typed(&w.t, &ct::CREATED).unwrap().unwrap();
+    w.lp.peers[0].engine.hand_secrets(&[rec])
+}
+
+/// `forge_snapshot_in` listing the keys of `sec`.
+#[allow(clippy::too_many_arguments)]
+fn forge_snapshot_sec(w: &mut World, by: usize, ak: &Ak, ts: osis_base::Ts, f: osis_crdt::Fragment, mutate: &dyn Fn(usize, &mut Vec<u8>), memory: bool, reroot: Option<Reroot<'_>>, sec: crate::engine::secrets::HandSecrets) -> Package {
+    use osis_commit::{Form, Kind, writer_ctx};
     let t = w.t;
-    let rec = w.lp.peers[0].engine.get_typed(&t, &ct::CREATED).unwrap().unwrap();
-    let sec = w.lp.peers[0].engine.hand_secrets(&[rec]);
     let author = w.lp.peers[by].engine.me();
     let purge_by = osis_commit::retention::snapshot_purge_by(ak.as_str());
     let keys = osis_commit::delete_keys(&sec, &t, &purge_by).unwrap();
-    let blind = [9u8; 16];
     let framing = osis_blob::Framing { thing: t, dedup: osis_commit::Secrets::dedup(&sec, &t).unwrap(), expiry: None, keys: keys.iter().map(|k| (k.level, k.verifying_key().unwrap())).collect(), class: if memory { osis_blob::Class::Ephemeral } else { osis_blob::Class::Durable } };
     let mut blobs = osis_blob::MemoryBlobs::default();
     let mut rng = osis_crypto::SeededRng::from_u64(0);
@@ -951,17 +961,94 @@ fn forge_snapshot_in(w: &mut World, by: usize, ak: &Ak, ts: osis_base::Ts, f: os
         }
         bytes
     };
-    let mut aw = AspectWrite::new(t, ak.clone(), 0, 0, bytes);
-    aw.purge_by = purge_by;
+    seal_snapshot(w, by, ak, ts, &sec, bytes, blobs, memory)
+}
+
+/// The content snapshot commit of `(w.t, ak)` by peer `by` at `ts` whose delta is `bytes`, its
+/// pages `blobs`, signed with `sec`'s keys.
+#[allow(clippy::too_many_arguments)]
+fn seal_snapshot(w: &mut World, by: usize, ak: &Ak, ts: osis_base::Ts, sec: &crate::engine::secrets::HandSecrets, bytes: Vec<u8>, blobs: osis_blob::MemoryBlobs, memory: bool) -> Package {
+    use osis_commit::{AspectWrite, CommitBuilder, Form, Kind};
+    let author = w.lp.peers[by].engine.me();
+    let mut aw = AspectWrite::new(w.t, ak.clone(), 0, 0, bytes);
+    aw.purge_by = osis_commit::retention::snapshot_purge_by(ak.as_str());
     let mut cb = CommitBuilder::new(Kind::ContentSnapshot, ts, author, osis_commit::Path::default(), Form::Commit);
     cb.aspects.push(aw);
-    cb.blind = Some(blind);
+    cb.blind = Some([9u8; 16]);
     if memory {
         cb.ephemeral = Some(osis_commit::EphClass::Plain);
     }
     let forge_key = w.lp.peers[by].engine.identity().signing().clone();
-    let c = cb.build(&forge_key, &sec, &mut osis_commit::MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(0)).unwrap().commit;
+    let c = cb.build(&forge_key, sec, &mut osis_commit::MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(0)).unwrap().commit;
     Package { id: c.id(), bytes: c.encode(), blobs: blobs.0.into_iter().collect() }
+}
+
+/// A page sink framing under one framing and handing back each link as `relink` makes it.
+struct Relinking<'a, 'b> {
+    inner: osis_blob::BlobWriter<'a>,
+    relink: &'b dyn Fn(osis_base::Link) -> osis_base::Link,
+}
+impl osis_crdt::PageSink for Relinking<'_, '_> {
+    fn put(&mut self, plaintext: &[u8]) -> std::result::Result<osis_base::Link, osis_crdt::PageError> {
+        Ok((self.relink)(self.inner.put(plaintext)?))
+    }
+    fn params(&self) -> osis_crdt::PageParams {
+        self.inner.params()
+    }
+}
+
+/// spec/crypto.md §7 Checked keys, spec/commits.md §4: a page's link names its delta's delete keys
+/// and its blob's prefix bears that link (salt and commitments). Node 0's paged snapshot whose
+/// pages are framed for another level-1 key (the link naming it too, or naming the delta's keys
+/// over a blob bearing the other), or whose links name another salt, is bad by itself at node 3,
+/// nothing of it kept waiting; framed for the delta's keys it applies. Who writes each input:
+/// the snapshot's writer, its pages and their links.
+#[test]
+fn page_framed_for_other_delete_keys_is_bad_spec_crypto_7() {
+    use osis_commit::{Form, Kind, writer_ctx};
+    let a = aks()[0].clone();
+    let other = osis_crypto::DeleteSecret::write(&osis_crypto::Secret32::from_bytes([0x77; 32])).verifying_key();
+    // (name, the blobs framed for another level-1 key, the links naming the delta's keys anyway,
+    // the links naming another salt, the outcome)
+    let cases = [
+        ("framed for the delta's keys", false, false, false, "Applied"),
+        ("link and blob name another key", true, false, false, "Page(Keys)"),
+        ("blob bears another key", true, true, false, "Page(Keys)"),
+        ("link names another salt", false, false, true, "Page(Keys)"),
+    ];
+    for (name, reframe, relink, resalt, want) in cases {
+        let mut w = world(false);
+        let (t, by) = (w.t, 0);
+        let now = osis_base::Ts::make(w.lp.peers[0].engine.now(), 0).unwrap();
+        let sec = hand(&mut w);
+        let keys = osis_commit::delete_keys(&sec, &t, &osis_commit::retention::snapshot_purge_by(a.as_str())).unwrap();
+        let framing = osis_blob::Framing { thing: t, dedup: osis_commit::Secrets::dedup(&sec, &t).unwrap(), expiry: None, keys: keys.iter().map(|k| (k.level, k.verifying_key().unwrap())).collect(), class: osis_blob::Class::Durable };
+        let mut framed = framing.clone();
+        if reframe {
+            framed.keys[0].1 = other;
+        }
+        let listed = framing.del().unwrap();
+        let fix = move |mut l: osis_base::Link| {
+            if relink {
+                l.del = listed;
+            }
+            if resalt {
+                l.salt[0] ^= 1;
+            }
+            l
+        };
+        let mut blobs = osis_blob::MemoryBlobs::default();
+        let mut rng = osis_crypto::SeededRng::from_u64(0);
+        let snap = osis_crdt::Snapshot { absorbed: Default::default(), facts: Default::default(), nonce: [7; 16], fragment: forged_map(now, ENTRIES, 0x80), frontiers: Default::default() };
+        let mut sink = Relinking { inner: osis_blob::BlobWriter::new(&framed, &mut blobs, &mut rng), relink: &fix };
+        let bytes = osis_crdt::encode_snapshot(&snap, &writer_ctx(Form::Commit, Kind::ContentSnapshot, now, w.lp.peers[by].engine.me(), 0, 0), Some(&mut sink)).unwrap();
+        drop(sink);
+        assert!(blobs.0.len() >= 2, "{name}: not paged");
+        let pk = seal_snapshot(&mut w, by, &a, now, &sec, bytes, blobs, false);
+        let out = deliver(&mut w.lp, 3, &pk);
+        assert!(out.contains(want), "{name}: {out}");
+        assert!(out.ends_with("waits None"), "{name}: nothing of it waits: {out}");
+    }
 }
 
 /// A session of a made-up node `src` (made-up sources sort by their bytes among the peers'
@@ -2244,17 +2331,19 @@ fn a_fill_goes_on_past_failed_writes_rounds_and_reloads_spec_commits_4() {
 /// spec/commits.md §4 (Examined again), notes/sync-facade.md (Blob waits): every hold of a blob a
 /// wait lacks wakes it, whatever path holds it. A commit waiting at node 3 for pages node 3 then
 /// holds by a write of its own (a forger's commit linking the pages that write makes: its root
-/// list taken from the same write in a copy of the world) is woken by that write, nothing
-/// delivered. Fails with an own write's holds not noted.
+/// list taken from the same write in a copy of the world, its delete keys those the write lists,
+/// spec/crypto.md §7 Page links) is woken by that write, nothing delivered. Fails with an own
+/// write's holds not noted.
 #[test]
 fn an_own_write_holding_a_wanted_page_ends_the_wait_spec_commits_4() {
     let params = small_pages();
     let _pages = osis_crdt::PageParams::set_test(Some(params));
     let a = aks()[1].clone();
     let map = |n: u64| Value::Map((0..n).map(|i| (Value::Int(i as i64), s(i, 0))).collect());
+    // purge-by `writer`, a snapshot's: the forger lists node 3's keys
     let own = |w: &mut World| {
         let t = w.t;
-        let c = w.commit(3, |m| { m.set(t, &a, &map(60)).unwrap(); });
+        let c = w.commit(3, |m| { m.set(t, &a, &map(60)).unwrap().purge_by(t, &a, PurgeBy::Writer).unwrap(); });
         w.lp.peers[3].engine.package(&c).unwrap().unwrap()
     };
     // node 3's write, made in a copy: its pages and root list
@@ -2274,7 +2363,10 @@ fn an_own_write_holding_a_wanted_page_ends_the_wait_spec_commits_4() {
     let mut wr = osis_crdt::Writer::new(now, made_up(0x80), 1 << 40);
     let f = osis_crdt::create(&mut wr, &osis_crdt::AnyView, &map(60)).unwrap();
     let same: Reroot<'_> = &|_, _| top.clone();
-    let y = forge_snapshot_in(&mut w, 0, &a, now, f, &|_, _| {}, false, Some(same));
+    let mut sec = hand(&mut w);
+    let h = osis_commit::CommitBlob::decode(&x.bytes).unwrap().header;
+    sec.purge_author = h.keys.iter().find(|k| k.level == osis_base::format::DELETE_AUTHOR).map(|k| k.verifying_key().unwrap());
+    let y = forge_snapshot_sec(&mut w, 0, &a, now, f, &|_, _| {}, false, Some(same), sec);
     let p = &mut w.lp.peers[3];
     p.engine.ingest(&y.bytes, Vec::new()).unwrap();
     assert!(p.engine.pending().iter().any(|x| x.0 == y.id), "waits for its pages");

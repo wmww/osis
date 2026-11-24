@@ -151,7 +151,8 @@ fn verify_waiting(tx: &mut Tx<'_>, id: &CommitId, part: &osis_commit::Part, h: &
     osis_base::costs::count("waiting snapshot: decoded", 1);
     let mut interner = osis_crdt::Interner::new();
     let mut blobs = crate::engine::blobs::TxBlobs::new(&mut tx.blobs, tx.txn.is_memory());
-    let mut paged = osis_blob::BlobReader::new(dedup, &mut blobs);
+    let thing = h.aspects.get(part.ai).map(|a| a.tid).ok_or(())?;
+    let mut paged = osis_blob::BlobReader::judging(dedup, thing, &mut blobs);
     let reader: &mut dyn osis_crdt::PageSource = &mut paged;
     match osis_commit::verify_part(h, id, part, dedup, &mut interner, Some(reader)) {
         Ok(d) => Ok(Some(d)),

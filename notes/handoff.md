@@ -20,7 +20,7 @@ One list, in order. It stands in for every other list of what is next (the order
    - It builds on notes/stubs.md: Tess's decisions on grants, stubs, references in history and the inbox. The spec is in and the old account machinery deleted; the pieces left, and the tests ignored for each, are in notes/accounts-switch-brief.md.
    - The key hop and the membership cases are modelled already (roles-model's paths); osis-perm's walk reads the key hop as an edge.
    - One piece a session, each ending pushed. The one review and gate come when accounts are in, over the rewrite and accounts together.
-2. **What the rewrite still owes**, after accounts: notes/sync-rewrite-state.md (Next, and the ignored tests by cause), issues/delete-key-levels-unchecked.md (Left), issues/models-read-chained-sets.md.
+2. **What the rewrite still owes**, after accounts: notes/sync-rewrite-state.md (Next, and the ignored tests by cause), issues/disputes-storage-under-f6.md, issues/models-read-chained-sets.md.
 3. **Then** what the plan has left: a removal as evidence (what A2 did not already build), public things and cards, core without accounts, clean-up. Cut each to what is still needed before starting.
 
 Beside the route: the failing seeds (notes/priorities.md; each starts with a hand-written minimal reproducer, never the pinned seed: notes/principles.md); one cleanup always, a workflow job about half the time (the rewrite's ignores by cause: `tools/ignores.py`).

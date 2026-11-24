@@ -9,7 +9,7 @@ Spec it rebuilt from: spec/permissions.md §4, spec/sync-set.md §2, spec/sync-i
 - **Own boxes only** for a holder held for keys: it fetches every `secrets.0` page a role entry links (notes/a2-spec/README.md Open 5).
 - **A copy's parts as exactly what S names**: a copy on one thing holding more parts than S names now (keys alone after the roles were named) stays S's log of it.
 - **Acting only after a complete pass.**
-- **The delete-key leftovers** (issues/delete-key-levels-unchecked.md).
+- **Storage under a fork under F6** (issues/disputes-storage-under-f6.md).
 - **Each ignore below**, probed for its own cause first (notes/handoff.md, Not to build on the way: no fix sized by its label).
 - **A reproducer of the wanted-blob handover** (issues/fixture-seed-luck.md).
 - **The models' chained sets out** (roles-model `paths::chained`, held-model `World::chained`): `Stage::E1`, the engine differential's oracle, still reads them for a reset's entry; a model change first (issues/models-read-chained-sets.md).

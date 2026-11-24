@@ -60,6 +60,36 @@ impl PageSource for NoPages {
     }
 }
 
+/// A delta's pages as its links name them, each link's delete keys checked against the delta's
+/// (spec/crypto.md §7 Checked keys). Invariant: a page applies only where its link names exactly
+/// the delete keys its delta lists. Pages are framed by their delta alone (never reused, spec/crdt.md §8), so
+/// any other keys are a writer framing a page outside what the key check judges: whoever holds
+/// them could delete it at stores. The blob's prefix bearing the link is the page source's
+/// (osis-blob's `BlobReader::judging`).
+struct Keyed<'a> {
+    inner: &'a mut dyn PageSource,
+    del: Option<osis_base::Del>,
+}
+
+impl PageSource for Keyed<'_> {
+    fn get(&mut self, link: &osis_base::Link) -> Result<Vec<u8>, osis_crdt::PageError> {
+        if self.del != Some(link.del) {
+            return Err(osis_crdt::PageError::Keys);
+        }
+        self.inner.get(link)
+    }
+    fn params(&self) -> osis_crdt::PageParams {
+        self.inner.params()
+    }
+}
+
+/// The delete keys header `h` lists for its aspect `ai`, as a link names them (`None`: two at one
+/// level, which no link names).
+fn listed_del(h: &Header, ai: usize) -> Option<osis_base::Del> {
+    let a = h.aspects.get(ai)?;
+    osis_base::Del::from_keys(a.keys.iter().map(|&i| h.keys.get(i).map(|k| (k.level, k.key))).collect::<Option<Vec<_>>>()?)
+}
+
 /// The aspect key and context of `part` once its delta hash checks under `dedup`.
 fn checked_ctx<'h>(h: &'h Header, id: &CommitId, part: &Part, dedup: &Secret32, interner: &mut Interner) -> Result<(&'h str, DeltaCtx), Error> {
     let a = h.aspects.get(part.ai).ok_or(Error::Malformed("part aspect index out of range"))?;
@@ -76,6 +106,8 @@ pub fn verify_part<'a>(h: &Header, id: &CommitId, part: &Part, dedup: &Secret32,
     let (ak, cx) = checked_ctx(h, id, part, dedup, interner)?;
     let mut none = NoPages;
     let pages: Option<&mut dyn PageSource> = if h.ephemeral == Some(EphClass::Relay) { Some(&mut none) } else { pages.map(|p| p as &mut dyn PageSource) };
+    let mut keyed = pages.map(|inner| Keyed { inner, del: listed_del(h, part.ai) });
+    let pages = keyed.as_mut().map(|k| k as &mut dyn PageSource);
     let d = match cx.kind {
         DeltaKind::Snapshot => Decoded::Snapshot(decode_snapshot(&part.delta, &cx, &mut *interner, pages)?),
         DeltaKind::Writer => Decoded::Delta(decode_delta(&part.delta, &cx, &mut *interner, pages)?),
@@ -91,6 +123,8 @@ pub fn stream_part<'a>(h: &Header, id: &CommitId, part: &Part, dedup: &Secret32,
     let (ak, cx) = checked_ctx(h, id, part, dedup, interner)?;
     let mut none = NoPages;
     let pages: Option<&mut dyn PageSource> = if h.ephemeral == Some(EphClass::Relay) { Some(&mut none) } else { pages.map(|p| p as &mut dyn PageSource) };
+    let mut keyed = pages.map(|inner| Keyed { inner, del: listed_del(h, part.ai) });
+    let pages = keyed.as_mut().map(|k| k as &mut dyn PageSource);
     // `check_fragment` holds of the whole iff of every piece (per record, per position); a bad
     // delta still streams to its end, so a decoding error wins as in `verify_part`
     let mut keyed = Ok(());
