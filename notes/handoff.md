@@ -10,7 +10,7 @@
 - **Nothing is running.** No agent, no task in flight; the worktrees under `.worktrees/` hold old finished branches.
 - **Main** builds, passes its default tests (3,849, none failing) and clippy, with the sync rewrite and the legacy clean-up in it. The seeds failing on it, unread: notes/priorities.md, Failing on main.
 - **The sync rewrite is on main**, as it stood on its branch: unreviewed, ungated, no property or sim run on it.
-  - 21 of its tests are ignored by cause (`rg -n 'sync rewrite: ' core/ libs/`); chat's join by a write link is one of them (fails at the redeem, "no holder answered", cause unknown).
+  - 20 of its tests are ignored by cause (`rg -n 'sync rewrite: ' core/ libs/`).
   - Its account is notes/sync-rewrite-state.md: what the tree is, the ignores by cause, what is owed, and a list of rulings marked "For review".
 
 ## The route

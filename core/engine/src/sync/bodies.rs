@@ -244,8 +244,8 @@ impl Engine {
     /// copy of the held parts on it `t`'s certificates name that the closure body does not
     /// carry; and the header-only copy its certificates name (a rotation, a request, a minting),
     /// which goes where no other body of the commit does. Only a commit with a part certificates
-    /// are made of (an edge write, keys, a card, a record) or a request has copies, so content
-    /// never reads the certificates.
+    /// are made of (a role-class part, `sync.0` steps placing listed delete keys among them; a
+    /// card; a record) or a request has copies, so content never reads the certificates.
     fn bodies_for(&mut self, t: &Tid, c: &CommitId) -> Result<ThingBodies> {
         let closure = match self.body_things(c).contains(t) {
             true => self.closure_body(t, c)?,
@@ -253,7 +253,7 @@ impl Engine {
         };
         let none = |closure| Ok((closure, Vec::new(), None));
         let Some(h) = self.header(c) else { return none(closure) };
-        if h.purge.is_empty() && !h.aspects.iter().any(|a| matches!(a.ak.as_str(), "roles.0" | "keys.0" | "node.0" | "reach.0" | "created.0")) {
+        if h.purge.is_empty() && !h.aspects.iter().any(|a| osis_schema::core_types::is_role_class(a.ak.as_str()) || matches!(a.ak.as_str(), "node.0" | "reach.0" | "created.0")) {
             return none(closure);
         }
         let Some(named) = self.certified_of(c, t)? else { return none(closure) };

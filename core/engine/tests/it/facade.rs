@@ -775,3 +775,34 @@ fn a_link_followed_enters_alone_spec_sync_set_2() {
     let (small, large) = (entered_by_one_more_link(2), entered_by_one_more_link(20));
     assert!(large <= small, "entered: {small} after 2 links, {large} after 20");
 }
+
+// spec/permissions.md §4 (Evidence of a sync ID: the `sync.0` writes recording the steps that
+// place a listed delete key; Copies: each entry on a thing outside the sync unit is a certificate
+// copy), spec/crypto.md §7 (Checked keys): G issues a second step (a commit writing G's `sync.0`
+// alone), then D is minted under G and granted, so D's writes list that step's keys. D's sync ID
+// carries the step's commit as a certificate copy on G, as it does every commit D's certificates
+// name: a reader of D alone (a link's redeemer) places the keys D's writes list.
+#[test]
+fn a_step_on_the_delete_base_travels_as_a_certificate_copy_spec_permissions_4() {
+    let (mut lp, ps) = people(2);
+    let g = thing_of(&mut lp, 0, ps[0]);
+    let gs = lp.peers[0].engine.sync_id_of(&g).unwrap().unwrap();
+    lp.advance(1000);
+    let before: BTreeSet<_> = lp.peers[0].engine.commit_ids().into_iter().collect();
+    lp.peers[0].engine.issue_step(&g, &gs, true).unwrap().unwrap();
+    let step: Vec<_> = lp.peers[0].engine.commit_ids().into_iter().filter(|c| !before.contains(c)).collect();
+    let [step] = step[..] else { panic!("one commit records the step: {step:?}") };
+    let d = thing_of(&mut lp, 0, g);
+    lp.peers[0].engine.grant(&d, &ps[1], &edge_of(Role::Write)).unwrap();
+    let e = &mut lp.peers[0].engine;
+    let ds = e.sync_id_of(&d).unwrap().unwrap();
+    assert_ne!(ds, gs, "D has a sync ID of its own");
+    let certs = e.certificates(&d).unwrap();
+    assert!(certs.commits.contains_key(&step), "D's certificates name the step's commit: {certs:?}");
+    for c in certs.commits.keys() {
+        let b = e.sync_bodies(c).unwrap();
+        assert!(b.keys().any(|(s, _)| *s == ds), "a commit D's certificates name is a body under D's sync ID: {c:?} {b:?}");
+    }
+    let b = e.sync_bodies(&step).unwrap();
+    assert!(b.iter().any(|((s, on), m)| *s == ds && *on == Some(g) && m.certificate && !m.parts.is_empty()), "the step as a certificate copy on G: {b:?}");
+}
