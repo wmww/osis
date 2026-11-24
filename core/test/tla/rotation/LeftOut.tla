@@ -8,7 +8,8 @@
 \* of M by its names) and c (holds none of M's secrets: judges by order) rotate
 \* and re-seal A; r rotates M, holding none of M's secrets unless RSec. An
 \* ignorant rotation of M made after c (Ignorant) is the adversary's one-shot
-\* step. Any delivery order; a rotation of A delivers the keysets it names and
+\* step. Seal anchors at the keysets A's current boxes name, jointly where they
+\* fork. Any delivery order; a rotation of A delivers the keysets it names and
 \* what it carries.
 \* Rule: "old" (a record counts whatever its cause; Seal takes only a keyset past
 \* it; M's rotator rotates where no recorded keyset is current and nothing is
@@ -28,9 +29,10 @@ CPos == 1     \* c's place in the order of making (M's initial keyset: 0)
 Events == IF HasInv THEN {"c", "i"} ELSE {"c"}
 
 VARIABLES mk,   \* M's keysets: [lists, knows (maker held c valid), pos, ht]
-          ak,   \* A's epochs: [lists, box (keyset of M, 0: left out), rec, cz, pos;
-                \* lo: the keyset its maker left M out at, a ghost]
-          rs,   \* re-seals: [e, k]
+          ak,   \* A's epochs: [lists, box (keysets of M: joint when two; {}:
+                \* left out), rec, cz, pos; lo: the keysets its maker left M
+                \* out at, a ghost]
+          rs,   \* re-seals: [e, ks]
           hm, ha, hr, hc,  \* per node: keysets, epochs, re-seals, causes held
           wr,   \* <<epoch, writer>>: content written knowing c
           t,    \* order of making
@@ -53,52 +55,62 @@ Recs(n) == UNION {ak[e].rec : e \in CurA(n)}
 Counts(n) == IF Rule = "old" THEN TRUE ELSE CV(n)
 RecBlocks(n, k) == Rule # "old" /\ \E q \in Recs(n) : q.k = k /\ Counts(n)
 BlockedK(n, k) == ~Covered(n, k) \/ StaleK(n, k) \/ RecBlocks(n, k)
+\* a joint box as a whole: by a box when any keyset is, by c when every one is
+BlockedS(n, S) == (\E k \in S : StaleK(n, k) \/ RecBlocks(n, k)) \/ \A k \in S : ~Covered(n, k)
 
-BoxK(n, e) == ((IF ak[e].box # 0 THEN {ak[e].box} ELSE {}) \cup
-               {s.k : s \in {s2 \in hr[n] : s2.e = e}}) \cap hm[n]
-Anchors(n) == UNION {BoxK(n, e) : e \in CurA(n)}
+\* the box sets of e n holds (each keyset held)
+Boxes(n, e) == {S \in {ak[e].box} \cup {s.ks : s \in {s2 \in hr[n] : s2.e = e}} : S # {} /\ S \subseteq hm[n]}
+Anchors(n) == UNION UNION {Boxes(n, e) : e \in CurA(n)}
 \* "old": past each record: descends from it, or (nothing held descends from
 \* it) made after the record
 Past(n, k) == \A q \in Recs(n) :
                 q.k \in Anc(n, k) \/ ((~\E j \in hm[n] : q.k \in Anc(n, j)) /\ mk[k].pos > q.at)
-Cands(n) == {k \in hm[n] : (\A a \in Anchors(n) : a = k \/ a \in Anc(n, k)) /\
-                           (Rule = "old" => Past(n, k))}
+Cands(n) == {k \in hm[n] : Rule = "old" => Past(n, k)}
 Newest(S) == CHOOSE k \in S : \A j \in S : mk[j].ht < mk[k].ht \/ (mk[j].ht = mk[k].ht /\ j <= k)
-SealK(n) == IF Cands(n) = {} THEN 0 ELSE Newest(Cands(n))
-SealOK(n) == SealK(n) # 0 /\ ~BlockedK(n, SealK(n))
+From(n, a) == {k \in Cands(n) : k = a \/ a \in Anc(n, k)}
+\* Seal: the newest candidate from every anchor, else jointly the newest from
+\* each (with none from some anchor: {}, left out)
+SealSet(n) ==
+  LET as == Anchors(n)
+      all == {k \in Cands(n) : \A a \in as : k = a \/ a \in Anc(n, k)}
+      tops == {a \in as : ~\E b \in as : a \in Anc(n, b)}
+  IN IF all # {} THEN {Newest(all)}
+     ELSE IF as = {} \/ \E a \in tops : From(n, a) = {} THEN {}
+     ELSE {Newest(From(n, a)) : a \in tops}
+SealOK(n) == SealSet(n) # {} /\ ~BlockedS(n, SealSet(n))
 
-EncBlocked(n, e) == \E k \in BoxK(n, e) : BlockedK(n, k)
+EncBlocked(n, e) == \E S \in Boxes(n, e) : BlockedS(n, S)
 
 RotADue(n) == \E e \in CurA(n) : EncBlocked(n, e)
 RotAOK(n) == RotADue(n) /\ Len(ak) <= MaxA
 RotA(n) ==
   LET out == ~SealOK(n)
-      new == SealK(n) # 0 /\ BlockedK(n, SealK(n)) /\ ~\E q \in Recs(n) : q.k = SealK(n)
+      new == {k \in SealSet(n) : BlockedK(n, k) /\ ~\E q \in Recs(n) : q.k = k}
   IN /\ RotAOK(n)
      /\ ak' = Append(ak, [lists |-> CurA(n),
-                          box |-> IF out THEN 0 ELSE SealK(n),
+                          box |-> IF out THEN {} ELSE SealSet(n),
                           rec |-> IF ~out \/ Rule = "nofact" THEN {} ELSE
-                                    Recs(n) \cup (IF new THEN {[k |-> SealK(n), at |-> t + 1]} ELSE {}),
-                          lo |-> IF out THEN SealK(n) ELSE 0,
+                                    Recs(n) \cup {[k |-> k, at |-> t + 1] : k \in new},
+                          lo |-> IF out THEN SealSet(n) ELSE {},
                           cz |-> IF out /\ Rule \in {"cause", "nofact", "nodue"} THEN hc[n] ELSE {},
                           pos |-> t + 1])
      /\ ha' = [ha EXCEPT ![n] = @ \cup {Len(ak) + 1}]
      /\ t' = t + 1
      /\ UNCHANGED <<mk, rs, hm, hr, hc, wr, ign>>
 
-ResealAt(n) == {e \in CurA(n) : BoxK(n, e) = {}}
+ResealAt(n) == {e \in CurA(n) : Boxes(n, e) = {}}
 ResealOK(n) == ResealAt(n) # {} /\ SealOK(n)
 Reseal(n) ==
   /\ ResealOK(n)
   /\ \E e \in ResealAt(n) :
-       /\ rs' = rs \cup {[e |-> e, k |-> SealK(n)]}
-       /\ hr' = [hr EXCEPT ![n] = @ \cup {[e |-> e, k |-> SealK(n)]}]
+       /\ rs' = rs \cup {[e |-> e, ks |-> SealSet(n)]}
+       /\ hr' = [hr EXCEPT ![n] = @ \cup {[e |-> e, ks |-> SealSet(n)]}]
   /\ UNCHANGED <<mk, ak, hm, ha, hc, wr, t, ign>>
 
 \* M's rotator: the knowing re-key, and the rule's own clause
 LeftOutForGood == /\ \E q \in Recs("r") : q.k \in hm["r"]
                   /\ \A q \in Recs("r") : q.k \notin CurM("r")
-                  /\ Cands("r") = {}
+                  /\ SealSet("r") = {}
 RotMDue == \/ \E k \in CurM("r") : ~Covered("r", k)
            \/ Rule = "old" /\ LeftOutForGood
            \/ Rule \in {"cause", "nocarry"} /\ \E q \in Recs("r") : q.k \in CurM("r") /\ Counts("r")
@@ -136,17 +148,17 @@ DeliverM(n) == \E k \in (1..Len(mk)) \ hm[n] :
 \* and, by rule, the causes it carries
 DeliverA(n) == \E e \in (1..Len(ak)) \ ha[n] :
   /\ ha' = [ha EXCEPT ![n] = @ \cup {e}]
-  /\ hm' = [hm EXCEPT ![n] = @ \cup ({ak[e].box} \ {0}) \cup {q.k : q \in ak[e].rec}]
+  /\ hm' = [hm EXCEPT ![n] = @ \cup ak[e].box \cup {q.k : q \in ak[e].rec}]
   /\ hc' = [hc EXCEPT ![n] = @ \cup ak[e].cz]
   /\ UNCHANGED <<mk, ak, rs, hr, wr, t, ign>>
 DeliverR(n) == \E s \in rs \ hr[n] :
   /\ hr' = [hr EXCEPT ![n] = @ \cup {s}]
-  /\ hm' = [hm EXCEPT ![n] = @ \cup {s.k}]
+  /\ hm' = [hm EXCEPT ![n] = @ \cup s.ks]
   /\ UNCHANGED <<mk, ak, rs, ha, hc, wr, t, ign>>
 
 Init ==
   /\ mk = <<[lists |-> {}, knows |-> FALSE, pos |-> 0, ht |-> 0]>>
-  /\ ak = <<[lists |-> {}, box |-> 1, rec |-> {}, lo |-> 0, cz |-> {}, pos |-> 0]>>
+  /\ ak = <<[lists |-> {}, box |-> {1}, rec |-> {}, lo |-> {}, cz |-> {}, pos |-> 0]>>
   /\ rs = {}
   /\ hm = [n \in Nodes |-> {1}]
   /\ ha = [n \in Nodes |-> {1}]
@@ -162,16 +174,17 @@ Next == \/ \E n \in Sealers : RotA(n) \/ Reseal(n) \/ Write(n)
 
 Spec == Init /\ [][Next]_vars
 
-\* x opens an epoch of A boxing M at a keyset made without knowing c, or one a
-\* later epoch it opens lists (history)
+\* x opens an epoch of A boxing M at keysets each made without knowing c, or one
+\* a later epoch it opens lists (history)
 RECURSIVE Opens(_)
 Opens(S) == LET T == S \cup UNION {ak[e].lists : e \in S} IN IF T = S THEN S ELSE Opens(T)
-BoxedAll(e) == ({ak[e].box} \ {0}) \cup {s.k : s \in {s2 \in rs : s2.e = e}}
-XOpensVia(P(_)) == Opens({e \in 1..Len(ak) : \E k \in BoxedAll(e) : ~mk[k].knows /\ P(k)})
+BoxedAll(e) == {S \in {ak[e].box} \cup {s.ks : s \in {s2 \in rs : s2.e = e}} : S # {}}
+XOpensVia(P(_)) == Opens({e \in 1..Len(ak) : \E S \in BoxedAll(e) : \A k \in S : ~mk[k].knows /\ P(k)})
 
 \* NoLeak (spec/crypto.md \S 4: the departed party opens A's epochs so sealed
 \* only through a keyset of M made after c without knowing it): content written
-\* knowing c is opened by x through no keyset made before c, while c is valid
+\* knowing c is opened by x through no box at keysets made before c, while c
+\* is valid
 NoLeak == ~HasInv => \A w \in wr : w[1] \notin XOpensVia(LAMBDA k : mk[k].pos < CPos)
 
 \* Live: once everything is held and no step is left, M is boxed at A's current
@@ -180,11 +193,11 @@ AllHeld == /\ \A n \in Nodes : hc[n] = Events /\ hm[n] = 1..Len(mk) /\ ha[n] = 1
            /\ Ignorant => ign
 \* (bounds aside: a state the bounds stop is no settled one)
 Due == \E n \in Sealers : RotADue(n) \/ ResealOK(n) \/ RotMDue
-Good == \A n \in Sealers : \A e \in CurA(n) : BoxK(n, e) # {} /\ ~EncBlocked(n, e)
+Good == \A n \in Sealers : \A e \in CurA(n) : Boxes(n, e) # {} /\ ~EncBlocked(n, e)
 Live == (AllHeld /\ ~Due) => Good
 
-\* NoUndo: while c is valid, no re-seal boxes M at the keyset an epoch's maker
+\* NoUndo: while c is valid, no re-seal boxes M at a keyset an epoch's maker
 \* left it out at (its maker would rotate A again: one rotation of A per
 \* re-seal, for good where no rotator of M re-keys)
-NoUndo == ~HasInv => \A s \in rs : ak[s.e].lo # s.k
+NoUndo == ~HasInv => \A s \in rs : s.ks \cap ak[s.e].lo = {}
 ====
