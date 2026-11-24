@@ -391,7 +391,7 @@ mod tests {
         assert_eq!(core.wrong_keys(&other), BTreeSet::from([n]), "another key signing as n is checked");
     }
 
-    // spec/crypto.md §7 (Header list, Checked keys): a may-grant writer's grant lists the step
+    // spec/crypto.md §7 (Header list; Checked keys): a may-grant writer's grant lists the step
     // keys of g's `sync.0`, right everywhere; listing instead a key of its own (the step's write
     // key at the admin level, or a key its write secret derives for that level) is wrong for g.
     #[test]

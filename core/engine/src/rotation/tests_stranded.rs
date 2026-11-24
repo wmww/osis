@@ -211,7 +211,7 @@ fn a_writer_taking_a_stranded_notice_reseals_its_holder_spec_sync_inbox_5() {
     assert!(lp.peers[1].engine.epochs(&g).unwrap().read.secret(&e).is_some(), "m holds the new epoch");
 }
 
-// spec/crypto.md §7 (Header list, Checked keys), spec/sync-inbox.md §2, spec/sync-ids.md §6
+// spec/crypto.md §7 (Header list; Checked keys), spec/sync-inbox.md §2, spec/sync-ids.md §6
 // Steps: a fire from outside lists the step keys g's `keys.0` publishes, written in the commit
 // recording that step. Peer 0, g's admin, rotates g's admin role; peer 1, holding g's public key
 // record and no secret of g, takes the rotation's keysets before the step registering them is
