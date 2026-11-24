@@ -521,18 +521,18 @@ fn collect(enc: &mut Enc, f: &Fragment) -> Result<(), Error> {
     Ok(())
 }
 
-/// The sources with a stamp, dot, anchor or sibling key in `f`'s canonical encoding (its
-/// `Sources` table, §3.3 rule 1), the own source aside: what a snapshot of `f` may list a
-/// frontier for (§8).
-pub fn sources_of(f: &Fragment, cx: &DeltaCtx) -> Result<BTreeSet<Source>, Error> {
+/// Tests: `sources_of` a whole state `f`.
+#[cfg(test)]
+pub(crate) fn whole_sources(f: &Fragment, cx: &DeltaCtx) -> Result<BTreeSet<Source>, Error> {
     let mut enc = Enc::new(cx, None);
     collect(&mut enc, f)?;
     Ok(enc.sources().cloned().collect())
 }
 
-/// `sources_of` the state a stored paged state's snapshot carries (`Paged`), read a page at a
-/// time.
-pub fn sources_of_paged(st: Paged<'_>, cx: &DeltaCtx) -> Result<BTreeSet<Source>, Error> {
+/// The sources with a stamp, dot, anchor or sibling key in the canonical encoding of the state a
+/// stored paged state's snapshot carries (`Paged`, read a page at a time; its `Sources` table,
+/// §3.3 rule 1), the own source aside: what that snapshot may list a frontier for (§8).
+pub fn sources_of(st: Paged<'_>, cx: &DeltaCtx) -> Result<BTreeSet<Source>, Error> {
     let (view, skeleton) = View::new(st)?;
     let mut enc = Enc::new(cx, None);
     enc.walk = Some(Walk { view, track: Track::new() });

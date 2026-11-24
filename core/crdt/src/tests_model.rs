@@ -439,7 +439,7 @@ fn wire(c: &Case) {
         assert_eq!(back, ours, "delta round trip");
         let mut fr = crdt_model::received::Received::default();
         fr.add(&w.source, 1, w.hi());
-        let traced = crate::sources_of(&frag(st), &snap_cx()).unwrap();
+        let traced = crate::codec::whole_sources(&frag(st), &snap_cx()).unwrap();
         let mfr: Vec<(MSource, u64)> = fr.frontiers().into_iter().filter(|(s, _)| traced.contains(&source(s))).collect();
         snapshots(st, &mfr, &c.gone, c.honest, c.mode == Mode::Twins);
     }

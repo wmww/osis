@@ -179,7 +179,7 @@ fn bootstrap_check(r: &mut crate::testutil::SeedRng, ty: &Ty, commits: &[crate::
     for (s, c) in received.frontiers() {
         fr.insert(&source(&s), c);
     }
-    fr.retain(&crate::sources_of(&a, &snap_cx()).unwrap());
+    fr.retain(&crate::codec::whole_sources(&a, &snap_cx()).unwrap());
     let bytes = encode_snapshot(&Snapshot { frontiers: fr.clone(), ..snapshot(&a) }, &snap_cx(), None).unwrap();
     let got = decode_snapshot(&bytes, &snap_cx(), &mut Interner::new(), None).unwrap();
     let mut b = joined(&Fragment::default(), &got.fragment);

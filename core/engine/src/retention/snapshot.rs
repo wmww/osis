@@ -1061,7 +1061,7 @@ fn snapshot_from_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, memory: bool, own_co
 pub(crate) fn build_snapshot(tx: &mut Tx<'_>, tid: Tid, ak: Ak, st: SnapState, ts: Ts, node: Tid, mut frontiers: Frontiers, mut absorbed: std::collections::BTreeMap<CommitId, Tid>, expires: Option<u64>, own_cover: bool) -> Result<CommitId> {
     let kind = if is_role_class(ak.as_str()) { Kind::RoleSnapshot } else { Kind::ContentSnapshot };
     let cx = osis_commit::writer_ctx(Form::Commit, kind, ts, node, 0, 0);
-    let mut listed = st.walk(&mut tx.txn, &tid, &ak, |p| osis_crdt::sources_of_paged(p, &cx))?;
+    let mut listed = st.walk(&mut tx.txn, &tid, &ak, |p| osis_crdt::sources_of(p, &cx))?;
     let held = held_sources(tx.core, &tid, &ak);
     for src in &held {
         if src.as_session().is_some() && !frontiers.lists(src) {

@@ -138,10 +138,10 @@ fn both(k: &mut Kept, gone: &dyn Fn(&Dot) -> bool, params: PageParams) -> (Encod
 fn agree(k: &mut Kept, gone: &dyn Fn(&Dot) -> bool, params: PageParams) -> Result<bool, String> {
     let mut whole = k.whole.clone();
     whole.remove_gone(gone);
-    let s = crate::sources_of(&whole, &snap_cx());
+    let s = crate::codec::whole_sources(&whole, &snap_cx());
     let skeleton = k.skeleton();
     let paths = k.paths.clone();
-    let t = crate::sources_of_paged(Paged { skeleton: &skeleton, paths: &paths, pages: k, gone }, &snap_cx());
+    let t = crate::sources_of(Paged { skeleton: &skeleton, paths: &paths, pages: k, gone }, &snap_cx());
     if s != t {
         return Err(format!("sources: whole {s:?}, paged {t:?}"));
     }

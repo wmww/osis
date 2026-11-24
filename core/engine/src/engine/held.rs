@@ -449,11 +449,6 @@ impl Held {
         std::mem::take(&mut self.unnamed)
     }
 
-    /// Things whose held inputs changed since the last `take_touched`.
-    pub fn touched(&self) -> &BTreeSet<Tid> {
-        &self.touched
-    }
-
     /// Things whose held inputs changed since the last call.
     pub fn take_touched(&mut self) -> BTreeSet<Tid> {
         std::mem::take(&mut self.touched)
@@ -666,10 +661,6 @@ impl<'a> On<'a> {
     /// Whether one of them applies (`Timeline::is_applied`).
     pub fn is_applied(&self, w: &osis_perm::WriteId) -> bool {
         self.tl.is_applied(w)
-    }
-    /// One of them as applied: what it found on its edge (`Timeline::applied`).
-    pub fn applied_write(&self, w: &osis_perm::WriteId) -> Option<osis_perm::paths::Applied> {
-        self.tl.applied(w)
     }
     /// `holder`'s edge on it just before `point` (`None`: now).
     pub fn edge_at(&self, holder: &Tid, point: Option<osis_perm::Point>) -> Option<osis_perm::Edge> {
