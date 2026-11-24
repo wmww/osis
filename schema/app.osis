@@ -4,8 +4,8 @@
 revision 1;
 
 // ---- Home ----
-// The app keeps one home per account (kit's home; see schema/ui.osis): made under the account
-// root and held by its `holds.0`, so it syncs, and so does what it holds. Nodes that started before
+// The app keeps one home per account (kit's home; see schema/ui.osis): minted with the account
+// root as admin and held by its `holds.0`, so it syncs, and so does what it holds. Nodes that started before
 // syncing each make one; all are read and writes go to the smallest tid.
 
 /// Marks the app's home among the account root's strongs: an app finds its own home by this scan,

@@ -508,7 +508,7 @@ fn a_socket_client_over_a_real_socket_spec_sync_transport_6() {
     drop(cl);
 }
 
-/// One write of every kind of op on `t` (and a creation under it), through `db`.
+/// One write of every kind of op on `t` (and a thing minted with admin `t`), through `db`.
 fn every_op(db: &Osis, t: Tid) -> Tid {
     let k = |a: &str| db.aspect_key(a).unwrap();
     let mut x = db.write();

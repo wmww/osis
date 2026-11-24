@@ -120,7 +120,7 @@ fn restart_forgets_ephemeral_spec_requirements_ephemeral() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// notes/ephemeral.md Rights: a node with no write on a thing can neither create one under it
+// notes/ephemeral.md Rights: a node with no write on a thing can neither mint one with it as admin
 // nor write ephemeral data on it; a new thing's role is its mint admin's. spec/permissions.md §1
 #[test]
 fn rights_through_mint_admin_spec_permissions_1() {

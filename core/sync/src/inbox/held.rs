@@ -189,7 +189,7 @@ pub fn adds_delta(need: &PartSet, mine: &Judged, stamped: &[Judged]) -> bool {
 pub enum Promotion {
     /// Stamped in place now.
     Yes,
-    /// Not yet: the commit is not applied here, or its author's chain is not under S.
+    /// Not yet: the commit is not applied here, or its evidence is not under S.
     Wait,
     /// Never as things stand: no writer here, its author lacked write, S carries nothing of it,
     /// or it adds no delta to the entries of `c` held stamped under S (`adds_delta`).
@@ -198,14 +198,14 @@ pub enum Promotion {
 
 /// spec/sync-inbox.md §4 Promotion: whether this node, a writer of S, promotes deposited entry
 /// `b` of commit `c`: the engine's word (`Engine::promotable`: applied, a body S must hold, its
-/// author held write at its `ts`), the deposit adds a delta (`adds_delta`), and the author's chain
-/// is under S (`chain_under`). The one judgement of it: read stamps by it, held keeps such a
+/// author held write at its `ts`), the deposit adds a delta (`adds_delta`), and the commit's
+/// evidence is under S (`evidence_under`). The one judgement of it: read stamps by it, held keeps such a
 /// deposit from clearing.
 pub fn promotion(engine: &mut Engine, store: &Store, s: &SyncId, c: &CommitId, b: &BlobId) -> Result<Promotion> {
     if !store.holding(s).is_some_and(Holding::opens) || engine.signers(s, None)?.stamp.is_none() {
         return Ok(Promotion::No);
     }
-    let chain = match engine.promotable(s, c)? {
+    let ev = match engine.promotable(s, c)? {
         Promote::Never => return Ok(Promotion::No),
         Promote::NotYet => return Ok(Promotion::Wait),
         Promote::Yes { chain } => chain,
@@ -224,18 +224,18 @@ pub fn promotion(engine: &mut Engine, store: &Store, s: &SyncId, c: &CommitId, b
     if !adds_delta(&need, &mine, &others) {
         return Ok(Promotion::No);
     }
-    Ok(if chain_under(engine, store, s, &chain)? { Promotion::Yes } else { Promotion::Wait })
+    Ok(if evidence_under(engine, store, s, &ev)? { Promotion::Yes } else { Promotion::Wait })
 }
 
-/// Whether the author's chain `chain` of a commit is under S as S carries it (spec/sync-inbox.md
-/// §4: a promoter completes the chain it holds, logging the missing deltas as its own certificate
-/// copies): of each chain commit S must hold a body of, the parts of that body the chain names
-/// are held by entries of S stamped or this node's own (never a deposit), and a header-only one
-/// by some such entry. What S carries of the chain is in its required set, so read logs it as
-/// any certificate (spec/sync-judgement.md §1); a part S does not carry is not waited for.
+/// Whether a commit's evidence `ev` is under S as S carries it (spec/sync-inbox.md §4: a
+/// promoter completes the evidence it holds, logging what S lacks of it as its own certificate
+/// copies): of each evidence commit S must hold a body of, the parts of that body the evidence
+/// names are held by entries of S stamped or this node's own (never a deposit), and a header-only
+/// one by some such entry. What S carries of the evidence is in its required set, so read logs it
+/// as any certificate (spec/sync-judgement.md §1); a part S does not carry is not waited for.
 /// Record blobs are read's certificate blobs, not waited for here.
-fn chain_under(engine: &mut Engine, store: &Store, s: &SyncId, chain: &osis_engine::sync_ids::Certs) -> Result<bool> {
-    let commits = chain.commits.iter().map(|(c, p)| (*c, Some(p))).chain(chain.headers.iter().map(|c| (*c, None)));
+fn evidence_under(engine: &mut Engine, store: &Store, s: &SyncId, ev: &osis_engine::sync_ids::Certs) -> Result<bool> {
+    let commits = ev.commits.iter().map(|(c, p)| (*c, Some(p))).chain(ev.headers.iter().map(|c| (*c, None)));
     for (c, parts) in commits {
         // what S carries of it, over its sync unit body and its certificate copies
         let bodies = engine.sync_bodies(&c)?;

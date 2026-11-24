@@ -362,7 +362,7 @@ fn commits_undo_redo_plan_cli_4() {
 #[test]
 fn sharing_commands_local_plan_cli_4() {
     let s = S::mem();
-    // under the account, so `me` reads it as its mint admin
+    // minted with the account as admin, so `me` reads it as its mint admin
     let g = s.ok(&["create", "--admin", "me", "t:made.0", "true"]).line().to_string();
     // spec/sync-inbox.md §6: `make_link` works on every node; the link names this node
     let link = s.ok(&["link", "make", &g, "write", "--single-use"]).line().to_string();
@@ -409,7 +409,7 @@ fn watch_initial_not_counted_plan_cli_4() {
     let o = s.call(&["--json", "--timeout", "50ms", "watch", &t, "--count", "1"], "");
     assert_eq!(o.code, 6, "{}", o.err);
     // the whole thing: one initial line per present aspect (`a:b.0`, `created.0`: a dependent thing
-    // under the account root), none counted
+    // minted with the account root as admin), none counted
     assert_eq!(o.out.lines().count(), 2, "{}", o.out);
     assert!(o.out.lines().all(|l| l.contains("\"origin\":\"initial\"")) && o.out.contains("\"value\":7}"), "{}", o.out);
     // a path inside the aspect, as `get` reads it

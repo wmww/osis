@@ -655,7 +655,7 @@ fn a_pass_under_way_at_a_restart_ends_by_its_first_start_spec_sync_status_1() {
 }
 
 // spec/sync-status.md §1 (PASS_WAIT_MS: a pass's start is dated durably): a sync ID leaving the
-// sync set takes its pass under way and its start row with it, at once (unsync all: no row left).
+// sync set takes its pass under way and its start row with it, at once (none left: no row left).
 #[test]
 fn a_sync_id_leaving_takes_its_pass_and_row_spec_sync_status_1() {
     let mut t = T::new(&[(S, Holding::Read)]);

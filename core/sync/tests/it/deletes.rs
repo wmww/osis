@@ -256,12 +256,10 @@ fn a_source_coming_back_judges_only_what_is_owed_there() {
     assert_eq!(few, many, "toward judged {few} with 2 entries shown, {many} with 6");
 }
 
-// spec/sync-set.md §2 (Sync set; kept unread): node 1 keeps
-// S unread by the ticket the grant fired on its inbox; a restart, which takes the account up
-// after the open's walk (the ticket opens to the account), enters it again, so S stays in its
-// sync set.
+// spec/sync-set.md §2 (Sync set; kept unread): node 1 keeps S unread by its sync grant; after
+// a restart S stays in its sync set.
 #[test]
-fn a_sync_id_kept_unread_by_ticket_stays_synced_across_a_restart_spec_sync_set_2() {
+fn a_sync_id_kept_unread_by_a_grant_stays_synced_across_a_restart_spec_sync_set_2() {
     let (mut w, t, s) = three();
     let unread = Some((std::collections::BTreeSet::from([t]), osis_engine::sync::Holding::Unread));
     assert_eq!(w.engine(1).sync_holder(&s).unwrap(), unread, "kept unread before");
@@ -435,7 +433,7 @@ fn set_value(w: &mut World, i: usize, t: Tid, v: &str) {
 // may be under purge on replace), spec/commits.md §5 (Covered): node 1 makes a thing with a value
 // (the making commit also holds its record and the strong from its account root), replaces the
 // value, and with its sibling node 2 replaces it again at once, after node 2 grants node 0's
-// account read; node 0 accepts. The making commit's value part is dropped as covered, its cover
+// account read; node 0 holds the thing. The making commit's value part is dropped as covered, its cover
 // covered in turn by a snapshot whose tables no longer name the part's session (no write of it
 // is left). A blob stripped of it would leave node 0 counting it never received with no source
 // for it; unstripped, node 0 receives the making commit whole (the harness checks every must-hold
@@ -505,7 +503,7 @@ fn make_held(w: &mut World) -> Tid {
 
 // spec/sync-judgement.md §1 (One blob per commit: a section a node cannot open goes into its
 // fresh encryption only where every held blob of the commit carries it), §2 (Per blob):
-// `Engine::held_sections`. Node 0's commit writes A, B and C, each under secrets of its own;
+// `Engine::held_sections`. Node 0's commit writes A, B and C, each independent;
 // node 1 writes A and C, node 2 B and C, node 3 C alone, each cut off from the others. Node 1
 // purges A's part and node 2 B's: each rewrites the blob without its own, the other's section
 // copied as it came. Node 3, opening neither, opens both rewrites, then holds the bytes of the

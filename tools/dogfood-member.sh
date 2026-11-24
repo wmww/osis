@@ -81,7 +81,7 @@ create)
 	;;
 accept)
 	pin=$1 c=$2 k=$3; s=$(short "$pin"); bin="$DF/bin/osis-$s"; dir="$DF/host-$s"
-	# holding the channel and K accepts the tickets their grants fired on this account's inbox
+	# holding the channel and K keeps each unread by the sync grant `chat relay` wrote this account
 	"$bin" --no-lan -s "$dir/store" hold "$c" "$k"
 	"$bin" --no-lan -s "$dir/store" status
 	;;

@@ -5,7 +5,7 @@
 //! closure) plus the scenario's stated outcome.
 //!
 //! The common start: node 0 makes thing 0, gives node 1's account write and node 2's sync, and
-//! both accept, so node 2 keeps the thing's sync ID unread; then it runs to quiet.
+//! both hold it, so node 2 keeps the thing's sync ID unread; then it runs to quiet.
 
 use crate::harness::Step::*;
 use crate::harness::history::{Gives, check, reads_as, reference, world_of};
@@ -48,9 +48,9 @@ fn sim(name: &str, variants: u64, body: impl Fn(u64) -> Vec<Step> + Sync, outcom
 }
 
 // spec/requirements.md (a node that cannot read is trusted for availability only), spec/sync.md
-// §3 (kept unread), spec/sync-set.md §2: a sync-only ticket stores the unit unread; a reader
-// away while the writer writes, back when the writer is gone, reads every write through the node
-// keeping the thing unread by its sync-only ticket alone.
+// §3 (kept unread), spec/sync-set.md §2: a sync grant stores the unit unread; a reader away
+// while the writer writes, back when the writer is gone, reads every write through the node
+// keeping the thing unread by its sync grant alone.
 #[test]
 #[ignore = "property"]
 fn a_reader_through_a_node_keeping_it_unread_plain() {

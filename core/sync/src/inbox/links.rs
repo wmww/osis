@@ -5,7 +5,7 @@
 //! set), so the node proves L, opens K by L's static entry (opens) and its boxes open; the
 //! link's peers are dial hints. Once the join can be written
 //! (`Engine::redeemable`: the target's roster lists K, K's lists L, K's keyset is held) it is
-//! written (`Engine::redeem`, which writes strongs to K and the target in D: a redeem is an accept, so
+//! written (`Engine::redeem`, which writes strongs to K and the target in D, so
 //! both sync by the sync set from then on, link or not), once; the link is kept, and L held at
 //! every start, until the join is held at a source of K's sync ID (status's view, spec/sync-
 //! status.md §2: the join is an own commit while L is followed, `Engine::own_commits`); then it

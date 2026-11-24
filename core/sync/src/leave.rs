@@ -15,7 +15,7 @@
 //!
 //! A thing that left the node closure (`Engine::left_closure`) is released the same way: once
 //! each sync ID that carried it when it left has had a complete pass begun after, or has no
-//! source; one that left the local part, at once. Its unsynced writes go with it.
+//! source; one that left the local part, at once. Its writes held nowhere else go with it.
 //!
 //! One derived value (`out`): the sync IDs out of the sync set that this node syncs or holds rows
 //! of, one `Effects` key each. The first settle wants every one stored (a start, or a restart of

@@ -54,8 +54,8 @@ const TWICE_EVERY: u64 = 4;
 // spec: none (property: spec/requirements.md Convergence; spec/sync-set.md §1-§4: a node holds
 // exactly its node closure): histories of minting things with the account root or other
 // things as admin, strongs added and removed from roots and things, grants of sync, read and write to
-// accounts and to things (chains), lowering, revoking, rotating, accepting by a strong (or
-// declining by none), pairing, and on every second seed power loss, partitions, lost, repeated
+// accounts and to things (chains), lowering, revoking, rotating, a grantee holding what it is
+// granted by a strong (or not), pairing, and on every second seed power loss, partitions, lost, repeated
 // and held-back messages, device faults and clock skew, healed and run to quiet (within the
 // storm cap): each node reads a thing exactly when held-model's node closure reads it, then as
 // the reference; its sync set and store hold what the model holds; no needed body is deleted
@@ -111,7 +111,8 @@ fn a_history_is_a_function_of_its_seed() {
     for (name, has) in [
         ("new", h.iter().any(|s| matches!(s, Step::New(..) | Step::NewIn(..)))),
         ("give", h.iter().any(|s| matches!(s, Step::Give(..)))),
-        ("accept", h.iter().any(|s| matches!(s, Step::Strong(_, None, _)))),
+        ("hold", h.iter()
+.any(|s| matches!(s, Step::Strong(_, None, _)))),
         ("fault", h.iter().any(|s| matches!(s, Step::Lossy(..) | Step::Disk(..) | Step::PowerOff(..)))),
     ] {
         assert!(has, "no {name} step");

@@ -113,7 +113,7 @@ fn holds_as_sibling(w: &mut World, n: usize, sib: usize) {
 
 // spec/crypto.md §4 (State at a cut), §5 (Passing on: floors), notes/history-less-grant.md (From
 // now means current state): node 0 writes t twice, then grants node 1's account read without
-// history; node 1 accepts. Through sync alone it reads t's current value, holds no body carrying
+// history; node 1 holds t. Through sync alone it reads t's current value, holds no body carrying
 // an earlier write of it, and reads what node 0 writes next.
 #[test]
 fn a_from_now_grantee_reads_the_current_state_and_no_earlier_write_spec_crypto_4() {

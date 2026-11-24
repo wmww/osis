@@ -801,11 +801,11 @@ fn a_watch_reads_as_its_acting_subscriber() {
 
 // notes/api.md Watching (a callback reads as its subscriber; a followed roster per thing and
 // reader), spec/permissions.md §2 (until): an `until` that ends only an
-// acting actor's way to a thing (its membership of a group holding the thing, at a node that
+// acting actor's way to a thing (its read on `grp`, a holder of the thing, at a node that
 // reads both but administers neither, so no commit on either follows) is told to that
 // actor's grants watch at its time. Invariant: the node's own watch hears nothing (its view did
 // not move). Differential: the actor's last word equals its handle's read, which then differs
-// from the node's. Inputs: alice grants the thing and the group; bob's clock passes.
+// from the node's. Inputs: alice grants the thing and `grp`; bob's clock passes.
 #[test]
 fn an_until_ending_an_actors_way_in_tells_its_roster_watch() {
     let c = clock();

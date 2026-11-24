@@ -146,7 +146,7 @@ fn a_crash_after_holding_keeps_the_thing_entered_spec_sync_set_2() {
 }
 
 /// Node 0 makes T and gives node 1's account `role` on it; node 1 holds it by a strong; run.
-fn accepted(role: Role) -> (World, Tid) {
+fn held(role: Role) -> (World, Tid) {
     let mut w = contacts();
     let t = make(&mut w, 0, "hi");
     let bob = w.node(1).account.unwrap();
@@ -175,7 +175,7 @@ fn root_strong(w: &mut World, i: usize, t: Tid, on: bool) {
 #[test]
 fn a_reader_granted_again_reads_again_spec_sync_set_2() {
     for lowered in [false, true] {
-        let (mut w, t) = accepted(Role::Read);
+        let (mut w, t) = held(Role::Read);
         let bob = w.node(1).account.unwrap();
         let new = lowered.then_some(edge(Role::Sync));
         w.write(0, |e| e.demote(&t, &osis_engine::flows::edges::Demotion { holder: bob, new, retain: None })).unwrap();

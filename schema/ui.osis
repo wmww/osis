@@ -7,7 +7,7 @@
 revision 1;
 
 // ---- Home: what a person decided, per account ----
-// Home is the thing an app keeps for one account, made under the account root and held by it (the
+// Home is the thing an app keeps for one account, minted with the account root as admin and held by it (the
 // app finds it and hands its tid to kit). These aspects live on it, sync to all of the account's
 // nodes, and survive restart. A value here is a viewer's decision, so it works on things that
 // person cannot write.
@@ -40,7 +40,7 @@ aspect ui:mode.0: enum {
 
 // ---- Windows: per device, where you are ----
 // A window is a thing per device. It is an ordinary thing: its raw view works, and another device
-// can show it given only its tid. Windows are made under home and held by its `ui:windows.0`, so
+// can show it given only its tid. Windows are minted with home as admin and held by its `ui:windows.0`, so
 // they sync with the account but are never among what home holds in `holds.0` (the universe).
 
 /// On home: each device's window (node tid to window thing), held by the strong. A device adds its

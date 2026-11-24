@@ -1407,7 +1407,7 @@ fn a_deposit_is_stamped_only_as_promoted_spec_sync_inbox_4() {
         assert_eq!(w.g.restamped.iter().filter(|x| x.2 == BlobId([66; 32])).count(), restamps, "{what}");
         assert_eq!(w.g.logged.len(), logs, "{what}");
     }
-    // one waiting is stamped once promoted (its author's chain came under S), never logged meanwhile
+    // one waiting is stamped once promoted (its evidence came under S), never logged meanwhile
     let mut w = W::new();
     w.g.creds.insert(S, creds(0, true, true));
     w.g.own.insert((S, cid(1)), vec![deposit(66)]);
@@ -1417,7 +1417,8 @@ fn a_deposit_is_stamped_only_as_promoted_spec_sync_inbox_4() {
     w.hold(cid(1), &[S], f);
     w.g.promotions.insert(BlobId([66; 32]), Promotion::Yes);
     w.settle();
-    assert_eq!((w.g.restamped.len(), w.g.logged.len()), (1, 0), "promoted once its chain is under S");
+    assert_eq!((w.g.restamped.len(), w.g.logged.len()), (1, 0), "promoted once its evidence is under S"
+);
 }
 
 /// A writer of S at head 0 holding `n` own must-hold bodies under S, each logged once, then S's

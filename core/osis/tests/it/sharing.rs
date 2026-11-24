@@ -328,7 +328,7 @@ fn the_owners_rule_one_write_through_different_actors_is_one_commit_spec_wire_4(
     w.at(g, k()).set(&s("on g")).unwrap();
     w.at(o, k()).set(&s("on o")).unwrap();
     let x = w.create_held_with_admin(g).unwrap();
-    w.at(x, k()).set(&s("under g")).unwrap();
+    w.at(x, k()).set(&s("of g")).unwrap();
     w.commit().unwrap().unwrap();
     let new: Vec<_> = bob.engine(|e| e.commit_ids()).into_iter().filter(|id| !before.contains(id)).collect();
     assert_eq!(new.len(), 1, "one commit");
@@ -336,7 +336,7 @@ fn the_owners_rule_one_write_through_different_actors_is_one_commit_spec_wire_4(
     mesh(&all);
     for (who, db) in [("carol", &carol), ("alice", &alice)] {
         assert_eq!(db.at(g, k()).get().unwrap(), Some(s("on g")), "{who} reads G");
-        assert_eq!(db.at(x, k()).get().unwrap(), Some(s("under g")), "{who} reads the thing made under G");
+        assert_eq!(db.at(x, k()).get().unwrap(), Some(s("of g")), "{who} reads the thing minted with admin G");
     }
     assert_eq!(carol.at(o, k()).get().unwrap(), Some(s("on o")), "carol reads O");
     assert_eq!(alice.at(o, k()).get().unwrap(), None, "alice reads no O");

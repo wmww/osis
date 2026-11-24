@@ -462,7 +462,7 @@ fn own_round(w: &mut World) {
     w.advance(1_000);
 }
 
-/// Node 0 snapshots its roots' `holds.0` and D's `tickets.0` (what the trigger leaves held moves
+/// Node 0 snapshots its roots' `holds.0` (what the trigger leaves held moves
 /// in a cycle; a snapshot ends it at the same place), then the tombstone lifetime and two days
 /// pass: what it holds then.
 fn aged(w: &mut World) -> Held {
@@ -597,7 +597,7 @@ fn fresh_node() -> (World, Held) {
 // Releasing everything, its own-things arm (issues/storage-owners.md), spec/sync-set.md §3 (Nothing of R stays): what a node mints with its account root as admin, its account
 // and its node root, written and then released, leaves its rows and blobs as a fresh node's of the
 // same account once tombstones have aged out, at 1 and 10 rounds: but the roots' set tombstones,
-// a few bytes per removal (three strongs and the independent thing's ticket a round), and `cv/` (flat).
+// a few bytes per removal (the round's strongs), and `cv/` (flat).
 // A mismatch prints the rows a fresh node lacks and why each thing they name is kept (`leaked`:
 // notes/test-harnesses.md, Why kept and row dumps).
 #[test]
@@ -731,12 +731,12 @@ fn grant_world() -> World {
 }
 
 /// Round `k`: node 0 mints a thing with its account root as admin, writes it, and gives node 1's
-/// account read on it: node 1 accepts (`accept`, a strong from its account root) or declines (no
-/// accept, the fire left in its inbox); node 0 writes again, removes node 1's account, and both
-/// let the thing go (node 0 its strong, node 1 its accept). The first by `redeem_round` with
+/// account read on it: node 1 holds it (`held`, a strong from its account root) or declines (no
+/// strong, the fire left in its inbox); node 0 writes again, removes node 1's account, and both
+/// let the thing go (each its strong). The first by `redeem_round` with
 /// `redeem`. 1 and 10 rounds (`one_and_ten`), each ended by `settled`, with read's work per round
 /// of the ten.
-fn grant_rounds(accept: bool, redeem: bool) -> ([(World, Vec<Held>); 2], Vec<Work>) {
+fn grant_rounds(held: bool, redeem: bool) -> ([(World, Vec<Held>); 2], Vec<Work>) {
     use crate::harness::history::Holder;
     let mut work = Vec::new();
     let round = |w: &mut World, k: usize| {
@@ -744,9 +744,9 @@ fn grant_rounds(accept: bool, redeem: bool) -> ([(World, Vec<Held>); 2], Vec<Wor
         if redeem && k == 0 {
             redeem_round(w);
         } else {
-            let give = if accept { Grant(0, k, 1, Gives::Reads) } else { Give(0, k, Holder::Node(1), Gives::Reads) };
+            let give = if held { Grant(0, k, 1, Gives::Reads) } else { Give(0, k, Holder::Node(1), Gives::Reads) };
             let mut steps = vec![New(0), Write(0, k), give, Run, Write(0, k), Run, Remove(0, k, 1), Run];
-            if accept {
+            if held {
                 steps.push(Unstrong(1, None, k));
             }
             steps.extend([Unstrong(0, None, k), Run]);
@@ -784,7 +784,7 @@ fn flat_work(work: &[Work], who: &str) {
     }
 }
 
-/// `grant_rounds`' first accepting round, by a link: node 0 makes thing 0, writes it and makes a
+/// `grant_rounds`' first holding round, by a link: node 0 makes thing 0, writes it and makes a
 /// read link to it, which node 1 redeems; node 0 writes again, ends the link (its seed thing goes
 /// with it) and takes K off the thing (node 1's account leaves K), and both let everything go:
 /// node 0 the thing and K, node 1 the strongs its redeem wrote to both (spec/sync-set.md §4:
@@ -836,37 +836,37 @@ fn redeem_round(w: &mut World) {
 /// `grant_rounds` at 1 and 10 rounds: each node as a fresh world's (`as_fresh`: `grant_world`
 /// `settled` at 0 rounds, the same for every arm, built once per process), each round's set
 /// removals at most `removals` a node.
-fn grants_as_fresh(accept: bool, redeem: bool, removals: usize) {
+fn grants_as_fresh(held: bool, redeem: bool, removals: usize) {
     let (mut wf, fresh) = fixture_with("growth grants fresh", || {
         let mut w = grant_world();
         let held = settled(&mut w);
         (w, held)
     });
-    let ([(mut wa, a), (mut wb, b)], work) = grant_rounds(accept, redeem);
-    // the redeem round's set removals: the link's seed thing's and K's strongs and tickets beside the thing's
+    let ([(mut wa, a), (mut wb, b)], work) = grant_rounds(held, redeem);
+    // the redeem round's set removals: the link's seed thing's and K's strongs beside the thing's
     let extra = if redeem { 4 } else { 0 };
     for (i, who) in ["the maker", "the grantee"].iter().enumerate() {
         as_fresh(&a[i], &fresh[i], removals + extra, &format!("{who}, 1 round"), &mut |f| leaked(&mut wa, i, &mut wf, i, f));
         as_fresh(&b[i], &fresh[i], 10 * removals + extra, &format!("{who}, 10 rounds"), &mut |f| leaked(&mut wb, i, &mut wf, i, f));
         assert_eq!(a[i].0.get("cv/"), b[i].0.get("cv/"), "{who}: cv/ flat");
     }
-    flat_work(&work, if accept { "accepted" } else { "declined" });
+    flat_work(&work, if held { "held" } else { "declined" });
 }
 
 /// The families a grant from outside leaves rows in while its fire is kept or owed: what a held
 /// fire carries (`gf/`) and the sealed fires owed (`node/`).
 const FIRE_ROWS: [&str; 2] = ["gf/", "node/"];
 
-/// `grant_rounds` at 1 and 10 cycles, the grant taken (`accept`) or left in the inbox: each side
+/// `grant_rounds` at 1 and 10 cycles, the grant held (`held`) or left in the inbox: each side
 /// holds at ten cycles what it holds at one (`as_fresh` against the one-cycle world), and of
 /// fires, kept or owed (`FIRE_ROWS`), what a world that never shared holds.
-fn cycles_grow_nothing(accept: bool) {
+fn cycles_grow_nothing(held: bool) {
     let (_, fresh) = fixture_with("growth grants fresh", || {
         let mut w = grant_world();
         let held = settled(&mut w);
         (w, held)
     });
-    let ([(_, a), (_, b)], _) = grant_rounds(accept, false);
+    let ([(_, a), (_, b)], _) = grant_rounds(held, false);
     for (i, who) in ["the maker", "the grantee"].iter().enumerate() {
         // the nine cycles more leave their set removals' tombstones in D's state (4 a cycle)
         as_fresh(&b[i], &a[i], 9 * 4, &format!("{who}, 10 cycles against 1"), &mut |_| String::new());
@@ -892,8 +892,8 @@ fn offered_and_withdrawn_grants_grow_nothing_spec_sync_inbox_5() {
     cycles_grow_nothing(false);
 }
 
-// Releasing everything, its grant, fire, accept and revoke arm (issues/storage-owners.md),
-// spec/sync-set.md §3: a thing granted to another account, its fire accepted, written,
+// Releasing everything, its grant, fire, hold and revoke arm (issues/storage-owners.md),
+// spec/sync-set.md §3: a thing granted to another account, held there, written,
 // the grantee removed and both sides letting it go, leaves each node as a fresh world's once the
 // inbox lifetime, the role keep and tombstones have passed, at 1 and 10 rounds. Storage is a fresh
 // world's, and read's judgements per round do not grow with the rounds played (`flat_work`).
@@ -904,8 +904,7 @@ fn a_granted_and_revoked_thing_returns_storage_to_a_fresh_worlds_spec_sync_set_3
 
 // Its redeem arm (spec/sync-set.md §4, §3 Nothing of R stays): as the
 // grant arm, the first round granting by a link redeemed and ended (`redeem_round`): the link's
-// seed thing goes with its end, the removal notice the sharer owes K's inbox once it holds
-// nothing of K.
+// seed thing goes with its end.
 #[test]
 fn a_redeemed_and_ended_link_returns_storage_to_a_fresh_worlds_spec_sync_set_3() {
     grants_as_fresh(true, true, 4);

@@ -156,7 +156,7 @@ pub struct Sim {
 /// from what any node sends.
 #[derive(Clone, Debug, Default)]
 pub struct History {
-    /// Thing -> (maker node, the thing it was made under, if any).
+    /// Thing -> (maker node, its mint admin, if any).
     made: BTreeMap<Tid, (usize, Option<Tid>)>,
     /// (thing, node) -> the role given it last (`grant`), `None` once removed (`revoke`).
     roles: BTreeMap<(Tid, usize), Option<Role>>,
@@ -169,7 +169,7 @@ pub struct History {
 
 impl History {
     /// Node `n`'s role on `t` by the history: its maker's admin, a role given it, or its role on
-    /// what `t` was made under (spec/permissions.md §1, the record chain).
+    /// `t`'s mint admin (spec/permissions.md §1, the record chain).
     fn role(&self, n: usize, t: &Tid) -> Option<Role> {
         let mut best = self.roles.get(&(*t, n)).copied().flatten();
         let mut at = *t;
@@ -785,8 +785,8 @@ impl Sim {
     }
 
     /// At quiet, what each node holds by the history alone (`History`), whatever any node sends:
-    /// each thing node `n` reads by it (made or given read or above, or reached through what it
-    /// was made under: spec/sync-set.md §1-§2, as `grant` and `create_thing` hold it), and on each
+    /// each thing node `n` reads by it (made or given read or above, or reached through its mint
+    /// admin: spec/sync-set.md §1-§2, as `grant` and `create_thing` hold it), and on each
     /// such thing every content commit the history played whose writer may write there and was
     /// never removed there (`History::kept`): `n` holds the commit, no part of it on that thing
     /// missing (spec/commits.md §4: every node is up and synced at quiet). The sender-defined

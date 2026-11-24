@@ -714,8 +714,8 @@ fn a_writer_promotes_a_deposit_spec_sync_inbox_4() {
     assert!(w.engine(0).holds_commit(&c), "node 0 took it from the deposit");
     assert!(entry(&w, 0).is_some_and(|e| e.stamp.is_some() && !e.deposited), "node 0 promoted it: {:?}", entry(&w, 0));
     assert!(entry(&w, 1).is_some_and(|e| e.stamp.is_some() && !e.deposited), "node 1 holds it stamped: {:?}", entry(&w, 1));
-    // the author's chain under S decides (`inbox::promotion`): with node 0's entries of a chain
-    // commit S carries gone, the entry waits; logged again, it is promoted
+    // the commit's evidence under S decides (`inbox::promotion`): with node 0's entries of an
+    // evidence commit S carries gone, the entry waits; logged again, it is promoted
     let b = blobs.iter().copied().find(|b| w.store(0).entry(&s, b).unwrap().is_some()).expect("node 0's entry");
     let mut st = w.store(0).clone();
     let promotion = |w: &mut crate::harness::World| {
@@ -723,8 +723,8 @@ fn a_writer_promotes_a_deposit_spec_sync_inbox_4() {
         osis_sync::inbox::promotion(w.engine(0), &st, &s, &c, &b).unwrap()
     };
     assert_eq!(promotion(&mut w), Promotion::Yes);
-    let osis_engine::sync::Promote::Yes { chain } = w.engine(0).promotable(&s, &c).unwrap() else { panic!("promotable") };
-    let cc = *chain.commits.keys().find(|x| w.engine(0).sync_bodies(x).unwrap().keys().any(|k| k.0 == s)).expect("a chain commit S carries");
+    let osis_engine::sync::Promote::Yes { chain: ev } = w.engine(0).promotable(&s, &c).unwrap() else { panic!("promotable") };
+    let cc = *ev.commits.keys().find(|x| w.engine(0).sync_bodies(x).unwrap().keys().any(|k| k.0 == s)).expect("an evidence commit S carries");
     let mut gone = Vec::new();
     for x in w.engine(0).commit_blobs(&cc).unwrap().iter() {
         if let Some(e) = st.entry(&s, x).unwrap() {
@@ -733,11 +733,12 @@ fn a_writer_promotes_a_deposit_spec_sync_inbox_4() {
         }
     }
     assert!(!gone.is_empty());
-    assert_eq!(promotion(&mut w), Promotion::Wait, "the chain is not under S");
+    assert_eq!(promotion(&mut w), Promotion::Wait, "the evidence is not under S");
     for (e, bytes) in gone {
         st.log(&s, e, bytes, None).unwrap();
     }
-    assert_eq!(promotion(&mut w), Promotion::Yes, "the chain under S again");
+    assert_eq!(promotion(&mut w), Promotion::Yes, "the evidence under S again"
+);
 }
 
 /// Node 1 (keeping S unread) goes away from both others, back once, and away again. With

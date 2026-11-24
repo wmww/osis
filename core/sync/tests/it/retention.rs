@@ -99,7 +99,7 @@ fn a_covered_body_leaves_by_time_alone_spec_commits_5() {
 
 // spec/sync-ids.md §2 (A thing's `sync.0` and `created.0` writes go where its other parts go),
 // spec/commits.md §5 (What a held thing needs): node 0 mints t, gives node 1's account read on
-// it, mints u under t, gives node 1 sync on u (u gets a sync ID, written to `sync.0` on u) and
+// it, mints u with admin t, gives node 1 sync on u (u gets a sync ID, written to `sync.0` on u) and
 // node 1 holds both. Node 0 then drops t's strong to u and forgets u whole; node 1, which still
 // holds u, carries u's `sync.0` write under u's sync ID only, never under t's, so the quiet
 // check (a caught-up reader of t's sync ID lacks no body a holder there must hold) passes.

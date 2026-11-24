@@ -357,8 +357,8 @@ impl<'d> Write<'d> {
         AspectWrite { w: self, tid, key, ix }
     }
 
-    /// Writes every op as one commit (two for what `Write` names; a thing made directly under an
-    /// account is recorded first, in commits of its own); `None` when it writes none (nothing
+    /// Writes every op as one commit (two for what `Write` names; a thing minted with an account
+    /// as admin is recorded first, in commits of its own); `None` when it writes none (nothing
     /// changes). Fails before anything applies
     /// with `Permission`, `UnknownThing`, or `Invalid` (also when the ops cannot share a commit:
     /// `Write`, or past 1024 ops through another node); `OutcomeUnknown`, only through another node,

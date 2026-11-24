@@ -1,6 +1,6 @@
 //! A first sync of many sync IDs (spec/sync-streams.md §4 Costs, Joining; spec/sync.md §2): node 0
-//! makes a root with `n` independent members (each minted under it, then given secrets of its
-//! own), node 1's account keeps the root unread; node 2's account is granted read on the root and
+//! makes a root with `n` independent members (each minted with the root as admin, then made
+//! independent), node 1's account keeps the root unread; node 2's account is granted read on the root and
 //! syncs the closure for the first time. Counted at n and 5n members, never timed.
 
 use crate::harness::Step::*;
@@ -14,7 +14,7 @@ const N: usize = 1;
 /// The larger size: growth shows at any size past n, and each member adds to the run.
 const LARGE: usize = 5 * N;
 
-/// Node 0 has made thing 0 (the root) and `n` members under it, each independent, node 1 keeps
+/// Node 0 has made thing 0 (the root) and `n` members minted with it as admin, each independent, node 1 keeps
 /// the root unread, quiet (built on the world of `N` members).
 fn closure(n: usize) -> World {
     fixture(&format!("first closure {n}"), || {

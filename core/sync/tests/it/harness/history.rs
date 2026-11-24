@@ -1,6 +1,6 @@
 //! The reference-graph differential (notes/test-properties.md): random
 //! histories of making, strongs added and removed, grants to accounts and to things (so chains
-//! occur), lowering, revoking, rotating, accepting, pairing and faults over a few nodes; at quiet
+//! occur), lowering, revoking, rotating, pairing and faults over a few nodes; at quiet
 //! each node holds what held-model `closure` says its node closure is, built from the history
 //! alone: it reads a thing exactly when the model reads it, then as the reference (a single
 //! engine handed every commit directly: sync's property is perfect delivery to whoever holds
@@ -10,7 +10,7 @@
 //!
 //! A history's writes are `Step`s played through the product's engine flows at one node, which
 //! sync then carries. Each commit a step writes is handed to the reference as it is written;
-//! what sync itself writes (rotations it makes due, addenda, tickets, account tickets) is handed
+//! what sync itself writes (rotations it makes due, addenda, the fires it sends) is handed
 //! at the check, from every node. The one excuse (a holder left out of an epoch, spec/permissions.md
 //! §3 Left out) is computed from the history's own record of what each node surely received,
 //! never from a node under test.
@@ -54,7 +54,7 @@ impl Gives {
     }
 }
 
-/// Who a grant names: node j's account, or thing k (a chain: thing k's readers hold through it).
+/// Who a grant names: node j's account, or thing k (thing k's readers hold the role through it).
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Holder {
     Node(usize),
@@ -344,7 +344,8 @@ pub fn step(w: &mut World, s: &Step) -> String {
             }
         }
         Step::Grant(_, k, j, g) => {
-            // a rule test's shorthand: the role given, then node j accepts
+            // a rule test's shorthand: the role given, then node j holds the thing from its
+            // account root
             let r = give(w, i, *k, Holder::Node(*j), *g);
             if r.is_ok() && w.online(*j) {
                 let _ = strong(w, *j, None, *k, true);
@@ -476,7 +477,7 @@ fn give(w: &mut World, i: usize, k: usize, h: Holder, g: Gives) -> Result<String
         let account = matches!(h, Holder::Node(_)).then_some(holder);
         let hist = &mut w.history;
         hist.independent[k] = true;
-        // a thing granted a role gets secrets of its own first (spec/permissions.md §3)
+        // a thing granted a role becomes independent first (spec/permissions.md §3)
         if let Holder::Thing(j) = h {
             hist.independent[j] = true;
         }
@@ -621,7 +622,7 @@ pub fn world_of(seed: u64, accounts: usize, nodes: usize) -> World {
 
 /// Every account becomes every other's contact by contact cards (spec/sync-inbox.md §5): each
 /// account's first node makes a read link to its profile, a node of every other account redeems
-/// it, the join holding the profile from that account's D (a redeem is an accept,
+/// it, the join holding the profile from that account's D (a redeem writes the strong,
 /// spec/sync-set.md §4). Before any history only; nothing is handed by hand.
 pub fn introduce(w: &mut World) {
     assert!(w.history.things.is_empty(), "introduce before any history only");
@@ -867,7 +868,7 @@ fn excused(w: &World, m: &Model, a: Tid, k: usize) -> bool {
 /// a thing it releases not yet held elsewhere go, and a release waits for no peer not connected):
 /// node i's write on thing k, after which i's account took a strong away or lowered a role (a step
 /// that may release k), that no other node surely received by then (`Made::froze`) whose account's
-/// node closure holds k at the end, and whose value no node holds at the check (i, accepting k
+/// node closure holds k at the end, and whose value no node holds at the check (i, holding k
 /// again, fetches what others hold). A thing's making is such a write: released before another
 /// node received it, its value is gone. The reference is not handed a lost value write alone (it
 /// changes no roster, so the model is the same either way); a lost making it is handed whole, for
@@ -1113,8 +1114,8 @@ pub fn size() -> (usize, usize, usize, u64) {
 /// A random history over `n` nodes of `accounts` accounts (node j's account is j's modulo
 /// `accounts`, as `world_of` pairs them) of `len` steps, mostly ones that apply (its player
 /// ends it at quiet). `faults`: whether it loses power, partitions, loses
-/// messages and fails disks. Accepting is a strong from the grantee's account root, drawn after a
-/// grant; declining is drawing none.
+/// messages and fails disks. A grantee holds what it is granted by a strong from its account
+/// root, drawn after a grant, or never.
 pub fn history(seed: u64, n: usize, accounts: usize, len: usize, faults: bool) -> Vec<Step> {
     let mut rng = SeededRng::from_u64(seed ^ 0x6869_7374);
     let mut pick = |m: usize| (rng.next_u64() % m.max(1) as u64) as usize;
@@ -1174,7 +1175,7 @@ pub fn history(seed: u64, n: usize, accounts: usize, len: usize, faults: bool) -
                 }
             }
             43..=58 => {
-                // accept: a node of a given account holds the thing from its account root
+                // a node of a given account holds the thing from its account root
                 let given: Vec<usize> = things[k].given.keys().filter_map(|h| if let Holder::Node(a) = h { Some(*a) } else { None }).collect();
                 let nodes: Vec<usize> = on.iter().copied().filter(|i| given.contains(&acct[*i])).collect();
                 if nodes.is_empty() {
