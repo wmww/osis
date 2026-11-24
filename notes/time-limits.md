@@ -12,6 +12,7 @@ Every timed run has a CPU limit (tight: other work barely moves CPU-s) and a wal
 |---|---|
 | fastbox-0 | 1.69 |
 | ostrich | 2.3 |
+| osprey | 1.82 |
 
 | limit | CPU (u) | wall (u) | share of | what (fastbox-0 unless named: CPU-s / wall at load) |
 |---|---|---|---|---|

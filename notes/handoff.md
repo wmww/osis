@@ -41,7 +41,6 @@ Nothing. Her decisions from the last session are in notes/stubs.md, notes/princi
 ## Parked
 - Old branches on GitHub with nothing to land: `mizzen-a2-switch` (the sync rewrite before its last rebase; main has it) and `windlass-wiring-1` (a debug shadow of a walk since deleted). Delete them when Tess says.
 - `mizzen-snapshot-stream`: page-walking snapshot writer, unbounded memory on forged states; resume only with a per-source cursor (issues/durable-decode-bound.md).
-- osprey box has no base unit in notes/time-limits.md: `tools/heavy tools/limits.py unit` before a gate runs there.
 - The held-writes dating is about a quarter of the rotation and deep-departure properties' cost: product cost worth a design pass (notes/time-limits.md, Investigations).
 
 ## Habits that saved time
