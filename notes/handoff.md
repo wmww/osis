@@ -1,44 +1,57 @@
 # Handoff
-> Summary: For the next coordinator (from Mizzen): what is in flight (branches, who owns what), what lands next, Tess's standing direction, and the open small items. Kept current as work moves.
+> Summary: For the next coordinator: where main and the unlanded sync rewrite stand, the one ordered route from here (land the rewrite, accounts as ordinary things, then what the rewrite still owes), what not to build on the way, what waits on Tess, and the open small items. Kept current as work moves.
 
 ## Tess's direction (standing)
 - Stay focused and moving; simple and correct. Modify plans and process freely.
-- A big change is one branch: delete the old code first, write the new, one review and gate at the end; no build-beside, scaffolding or spec-first jobs (notes/coordination.md, Rewriting an area). Main working is no value in itself; more than a little rebasing means something went wrong.
+- A big change is one line of work: delete the old code first, write the new, one review and gate at the end; no build-beside, scaffolding or spec-first jobs (notes/coordination.md, Rewriting an area). Main working is no value in itself; more than a little rebasing means something went wrong.
 - Talk to her in plain words: no stage/brief/Open numbers.
+- **No process spiral (Tess).** A large change bogs down in process, in problems of its intermediate states and in keeping branches rebased, and each of those breeds more of itself until nothing else happens. So: the primary work goes straight onto main, which may be broken for as long as it takes; nothing is fixed, tidied, reviewed or gated at a halfway point; a failure in an intermediate state is labelled and left unless it blocks the next piece. If a session is spending its time on anything but the change itself, stop and cut the thing demanding it.
 
-## Primary: the sync rewrite (branch `mizzen-a2-switch`)
-Sessions run out of room on it, so each session takes one piece and ends pushed with the sync-rewrite-state note (on the branch only) current: the successor starts there. The delete is done and the tree builds (tickets, accepting and chain certificates gone; certificates rebuilt from the evidence derivation each follow, Interim); 22 tests are ignored by the piece they wait for (`rg -n 'sync rewrite: ' core/`). Done since: holders' paths on role commits; takenness (a role counts only grants its holder takes: a write path stated to it, or a held `grant@~0` fire while its setting enables it); the key part carries no rotation (spec/permissions.md §4 Key part). Held for keys is built engine-side (holders read as ordinary sync IDs for now: the role-entries pull, own boxes and the osis-sync downward search are still owed), the node's own decisions read its taken role, and three fire bugs are fixed (grant fires that page, multi-rotation accounts, paged fire values). The delete-key check is on (branch at d0f1f721c, not rebased over the latest main): `sync.0` is a role part, and a part listing a key no held step places is unjudgeable, never invalid. 21 ignores by cause in the state note; first job for the next session: a write link's redeem in chat fails ("no holder answered"; the issue's item 0, critical). Also open there: an outside fire sent between a rotation and its step is refused for good (needs a rule decision); a role held without delete keys has no reachable setup. Then the seven copies ignores, deleting suspect repair, and accounts as ordinary things (notes/accounts-switch-brief.md). Behaviour change: the public role read returns the taken role. Then: held for keys; copies per (commit, thing) through osis-sync; the delete-key check on; acting after a complete pass.Then: fresh review, gate, land. Plan context: notes/redesign-plan.md A2 (How it is built), notes/a2-spec/README.md, notes/evidence-derivation.md, notes/delete-keys.md.
-- Parallel jobs stay out of its files (certificates, tickets, evidence, sync logging).
-- After it: a removal as evidence, accounts as ordinary things, public things and cards, core without accounts (notes/redesign-plan.md A3 to A6), each one branch, delete first; cut them to what is still needed before starting.
+## State
+- **Nothing is running.** No agent, no task in flight; the worktrees under `.worktrees/` hold old finished branches.
+- **Main** builds and passes its default tests. Two seeds fail on it unread, each with its issue and rate line: a cold seq edit-then-move (issues/seq-cold-edit-move-placement.md) and a holder with key access lacking a box after rotations (issues/rotation-holder-lacks-box.md, security). The custody failures go with the account machinery.
+- **The sync rewrite** is branch `mizzen-a2-switch` (pushed, at d0f1f721c: two commits on main's 463925bec; main has moved nine commits since, some in engine files it rewrites: retention, apply, the order and held tests). 278 files, about 2,000 lines fewer.
+  - Gone: tickets, chain certificates and the search over any path, accepting, removal notices.
+  - Built: a grant belongs to the thing granted (a node's role is by the grants of what it syncs or holds an offer of; a grant from outside arrives as an offer; holders are held for keys from the synced thing up, in engine and sync); a sync ID carries a commit's unit body and one certificate copy per thing outside the unit, read off the one evidence derivation; the delete-key check is on.
+  - It builds and its default tests pass, with 22 tests ignored by cause (`rg -n 'sync rewrite: ' core/ libs/`). It was never reviewed or gated, and no property or sim has run on it.
+  - Its own account is the sync-rewrite-state note, on the branch only (`git show` it from `origin/mizzen-a2-switch`, under notes, named sync-rewrite-state): what the tree is, the ignores by cause, and a list of rulings marked "For review".
 
-## In flight beside it
-In-flight lines name issues in words, not paths: a branch that closes its issue would fail policy on this note.
-- Gates count instructions per test binary (tools/test_cost.txt): NEW-COST fails, STALE-COST lowers its line in the landing.
+## The route
+One list, in order. It stands in for every other list of what is next (the state note's Next, the order of code briefs in notes/a2-spec/README.md); notes/redesign-plan.md holds the stages and their reasons.
 
-## Safe parallel work queue (outside the rewrite)
-- Failing on main, unassigned (next tasks when work resumes): a cold seq edit-then-move seed (engine pages) and a rotation seed where a holder with key access lacks a box (security); both have issues and rate lines.
-- The held-writes dating is about a quarter of the rotation and deep-departure properties' cost: product cost worth a design pass (notes/time-limits.md, Investigations).
-- After the sync rewrite lands: delete suspect repair whole (spec, wire message, sync, engine, notes): no divergence is left for it (purged writes have no effect, landed).
-- After the sync rewrite lands: the deprecated-terms rename pass ("edge" where a role grant is meant → grant, spec and code; issues/deprecated-terms.md).
-- Workflow agent about half the time; one cleanup always.
+1. **Put the sync rewrite on main as it stands**: rebase, check it builds, push. No review, no gate, no tidying of its ignores or notes first; its state note lands with it and stays the account of what is owed.
+2. **Accounts as ordinary things** (Tess: next, delete first), on main directly, no branch. Builder's brief with the delete list, sizes and order of work: notes/accounts-switch-brief.md; stage A4 of the plan.
+   - Before its spec piece: Tess's answer on issues/first-entry-through-holder.md; home as the account itself or a dependent of it (the design note argues the first, the plan says the second: settle in the spec piece).
+   - The key hop and the membership cases are modelled already (roles-model's paths; the walk reads the key hop as admin until this lands).
+   - One piece a session, each ending pushed. Main may be red: a test broken by the piece is ignored with the piece's label and left.
+   - The one review and gate come when accounts are in, over the rewrite and accounts together.
+3. **What the rewrite still owes**, after accounts: sealed copies in place of rotations delivered as grant fires; own boxes only for a holder held for keys; acting only after a complete pass; the offer cut to the bootstrap alone; the delete-key leftovers (issues/delete-key-levels-unchecked.md, Left); the ignores still standing, each probed for its own cause; the chained pass out of osis-perm and the models; the citations of the two retired-machinery issues; the deprecated-terms rename.
+4. **Then** what the plan has left: a removal as evidence (what A2 did not already build), public things and cards, core without accounts, clean-up. Cut each to what is still needed before starting.
 
-## Decided by Tess, for the sync rewrite
-- **Accounts become ordinary things now**, as the sync rewrite's next piece on the same branch (after the delete-key check), delete first: the account root, the interim key-part-under-D rule, signing chain, account epochs and custody flows go (notes/redesign-plan.md A4). Why: the key-part trouble (a new device couldn't open what its account was granted) comes from accounts not being ordinary things; with them ordinary, a thing's sync unit carries what its keys open and its references reach, references stay bare tids, and nothing keeps a grant list. The builder's brief is notes/accounts-switch-brief.md; one first-entry gap in it (reaching a thing through a holder you don't sync, with a bare-tid reference) needs Tess.
-- **Grants belong to the thing granted** (replaces "paths found by following grants down; roles are the account's data"): a thing's grants sync with it; references find what a node cares about. Flow: outside grant signal → reference → ordinary sync → permissions, the signal carrying only what bootstraps the reference and sync (an offer, kept as the signal's setting keeps it, 90 days default for outside grants). No account grant list, no taken grants, no fire as proof, no kept-fires rules; keys are found from the synced thing up (holders its grants name, their grant data fetched, up to the node's own actors). This dissolves the replay and finding-the-paths questions.
+Beside the route, any time after step 1: deleting suspect repair whole (spec, wire message, sync, engine, notes: purged writes have no effect, so nothing is left for it to repair); the two failing seeds; one cleanup always, a workflow job about half the time (a tool that lists and runs the rewrite's ignores by name: three sessions wrote it in scratch).
 
-## Small, waiting on Tess
-- **Convergence clause** (requirements Decentralization): "at the latest once a writer of that data has synced with them" covered the purge divergence; check whether anything else needs it, then drop it?
-- CLAUDE.md's GUI test command lacks `--no-fail-fast`; a smaller fixed setting for the KNOWN story search; the gate.checks CPU share raise (notes/time-limits.md).
+## Not to build on the way
+- **Nothing that accounts delete.** The account root, its key part, node cards, the signing chain, account epochs, custody and their tests go at step 2: an ignore or failure whose cause sits there is recorded and left (two of the 22 are in a test file on the delete list; the delete-key issue's account-epoch item goes the same way).
+- **No grant list with the holder**, no taken or accepted grant, no fire kept as proof, no path a role commit states for its holders: each was built and removed (the branch's copy of notes/holder-access-study.md says why not down from the account).
+- **No fix sized by its label.** Three times a class of failing tests labelled with one cause had three or more; one probe line per failing test (what it holds, which fire or box was refused) sizes a job in a session's first minutes. A cause written in a note says whether it was probed or guessed.
+
+## Waiting on Tess
+1. **First entry through a holder** (issues/first-entry-through-holder.md): needed before the accounts spec.
+2. **To confirm**: a thing kit, the app or chat makes takes grants from outside by default; one made through the bare API takes none until its admin enables them.
+3. **Convergence clause** (requirements Decentralization): "at the latest once a writer of that data has synced with them" covered the purge divergence; check whether anything else needs it, then drop it?
+4. CLAUDE.md's GUI test command lacks `--no-fail-fast`; a smaller fixed setting for the KNOWN story search; the gate.checks CPU share raise (notes/time-limits.md).
 
 ## Parked
 - `mizzen-snapshot-stream`: page-walking snapshot writer, unbounded memory on forged states; resume only with a per-source cursor (issues/durable-decode-bound.md).
 - osprey box has no base unit in notes/time-limits.md: `tools/heavy tools/limits.py unit` before a gate runs there.
+- The held-writes dating is about a quarter of the rotation and deep-departure properties' cost: product cost worth a design pass (notes/time-limits.md, Investigations).
 
 ## Habits that saved time
 - Gate and land with `tools/merge-branch gate NAME` (background, claudewait) and `tools/merge-branch land NAME`: claim, rebase, policy, gate, verify and clean-up in one checked tool (notes/gate.md).
+- Gates count instructions per test binary (tools/test_cost.txt): NEW-COST fails, STALE-COST lowers its line in the landing.
+- This note names issues a branch may close in words, not paths, and no code name in backticks: a branch that deletes either fails policy on this note.
 - Gate commands: `mkdir` the log dir and set `L=` in their own step, never after an `&&` chain that can fail first (a missing dir or an unset `L` means the gate never ran). After `tools/land`, check main moved before deleting the local branch.
-- Never `cd` into a worktree path by guess: `git worktree list`, then the path whose branch matches.
+- Never `cd` into a worktree path by guess: `git worktree list`, then the path whose branch matches. Name the claimed worktree explicitly; never a `cd` fallback.
 - Land only after `git merge-base --is-ancestor origin/main HEAD`; if main moved, test the crates both sides changed.
 - A gate NEW failure: replay on main's binary (`tools/bin-at origin/main`); failing there → issue + rate line on main, then land.
-- Name the claimed worktree explicitly; never a `cd` fallback.
 - A model change runs its consumers' differentials before its gate.
