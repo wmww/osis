@@ -1233,6 +1233,7 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
     let mut fell: BTreeMap<(Tid, Ak), Vec<(CommitId, usize)>> = BTreeMap::new();
     let mut secrets_flips: Vec<(CommitId, usize, bool)> = Vec::new();
     let mut keyset_flips: BTreeSet<Tid> = BTreeSet::new();
+    let mut rotation_flips: Vec<(CommitId, Tid, bool)> = Vec::new();
     let mut things = std::mem::take(&mut tx.core.stale_things);
     let authors = std::mem::take(&mut tx.core.stale_authors);
     let under = std::mem::take(&mut tx.core.stale_under);
@@ -1362,6 +1363,7 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
                 }
                 if x.ak.as_str() == "keys.0" {
                     keyset_flips.insert(x.tid);
+                    rotation_flips.push((id, x.tid, *b));
                 }
             }
         }
@@ -1442,6 +1444,9 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
         } else {
             super::keys::invalidated(tx, &c, ai)?;
         }
+    }
+    for (c, actor, now_valid) in rotation_flips {
+        super::keys::keyset_validity(tx, &c, actor, now_valid)?;
     }
     Ok(flipped.into_iter().collect())
 }

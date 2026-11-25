@@ -138,7 +138,7 @@ Terms in this section depend on each other; each is defined once, under its bold
 - **Established**: an epoch e of r is established at a node in any of three cases.
   - It is derived (§3) from an established epoch of the mint admin, or a first epoch of a thing minted with a key, its minting commit held valid.
   - All of these hold:
-    - the node holds a valid rotation commit of e (its own included) with its `keys.0` delta and the `secrets.0` piece holding e's history box on the thing (spec/wire.md §4 Pieces), or a compaction snapshot of `secrets.0` that keys a box or history box with e;
+    - the node holds a rotation commit of e (its own included) with its `keys.0` delta and the `secrets.0` piece holding e's history box on the thing (spec/wire.md §4 Pieces), both valid (a piece of history boxes alone needs only a history add's role; the keyset, write: spec/permissions.md §3 Who rotates), or a compaction snapshot of `secrets.0` that keys a box or history box with e;
     - e's n is at most 2^62, or the node holds another established epoch of r with n at least e's n − 1;
     - if the node holds e's secret (other than for reading only), some live entry of e's history box that opens under that secret has its names met.
   - At a node keeping a sync ID S of the thing unread (spec/sync.md §3), which reads none of its role commits: r is sync, the node holds e's secret, and a step of its stored path of S bears that secret's sync key; e is established under S alone.

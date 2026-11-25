@@ -569,9 +569,11 @@ pub(crate) fn before_join(tx: &mut Tx<'_>, h: &Header, id: &CommitId, parts: &su
         if !valid.get(*ai).copied().unwrap_or(false) {
             continue;
         }
+        // a rotation's keyset counts only valid: its history piece alone needs no more than a
+        // history add's role (`rotation_valid`)
         let keys = (parts.all().iter().enumerate())
             .find_map(|(i, (x, k))| match (h.aspects.get(*x), k) {
-                (Some(b), Decoded::Delta(_)) if b.tid == a.tid => parts.keys(i).map(|k| k.write.clone()),
+                (Some(b), Decoded::Delta(_)) if b.tid == a.tid && valid.get(*x).copied().unwrap_or(false) => parts.keys(i).map(|k| k.write.clone()),
                 _ => None,
             })
             .unwrap_or_default();
@@ -646,6 +648,28 @@ pub(crate) fn invalidated(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()
     }
     if let Some(Decoded::Delta(d)) = held {
         read_invalid(tx, c, author, a.tid, &d.fragment)?;
+    }
+    Ok(())
+}
+
+/// Held commit `c`'s `keys.0` part on `actor` turned valid (`now_valid`) or invalid: the
+/// rotation it makes with its valid history piece counts or no longer does. Invariant
+/// (security): a rotation counts only with its keyset valid (spec/permissions.md §3 Who
+/// rotates): a piece of history boxes alone needs only a history add's role, so without this a
+/// reader's rotation, its boxes invalid, would make an epoch current (spec/crypto.md §4
+/// Supersedes) that its holders hold for reading only.
+pub(crate) fn keyset_validity(tx: &mut Tx<'_>, c: &CommitId, actor: Tid, now_valid: bool) -> Result<()> {
+    let Some(m) = tx.core.ix.commits.get(c).cloned() else { return Ok(()) };
+    let Ok(ak) = osis_base::Ak::new("secrets.0") else { return Ok(()) };
+    tx.core.touch();
+    if !now_valid {
+        if let Some(e) = tx.core.ix.secrets.get_mut(&actor) {
+            e.invalidate(c);
+        }
+        return Ok(());
+    }
+    for ai in m.aspect_parts(&actor, &ak).filter(|ai| m.valid_at(*ai)) {
+        revalidated(tx, c, ai)?;
     }
     Ok(())
 }
@@ -751,6 +775,7 @@ pub(crate) fn revalidated(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()
     }
     let mut keys = KeysWrite::default();
     if let Some(ki) = h.aspect_index(&a.tid, "keys.0")
+        && tx.core.ix.commits.get(c).is_some_and(|m| m.valid_at(ki))
         && let Some(Decoded::Delta(d)) = super::held_part(tx, c, ki)?
     {
         keys = keys_write(&d.fragment);

@@ -1452,10 +1452,11 @@ fn kept_overwrite(n: usize) -> Work {
 // notes/engine-retention-dating.md Rows; spec/commits.md §5, spec/requirements.md Scale: an overwrite of a kept register dates
 // two bodies from the held writes, the one it replaces and itself (a date is the latest death of
 // the part's winners, so each is read for them), and notes only its own body in the held writes,
-// at n and 10n.
+// at n and 10n. n past where the held writes page (about 20 bodies): from one page to two levels
+// the pages written per overwrite go 1-2 to 3-5, the depth (log n), and stay so at 600.
 #[test]
 fn kept_overwrite_dates_what_it_replaces_spec_commits_5() {
-    let (a, b) = (kept_overwrite(20), kept_overwrite(200));
+    let (a, b) = (kept_overwrite(40), kept_overwrite(400));
     assert_eq!((a.n("deaths: a body"), b.n("deaths: a body")), (1, 1), "its own body noted");
     assert_eq!((a.n("replaced at"), b.n("replaced at")), (2, 2), "two bodies dated");
     all_flat("an overwrite of a kept register", &a, &b);

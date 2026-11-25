@@ -66,7 +66,8 @@ mod tests {
     }
     use crate::local_peer::LocalPeer;
     use crate::Mutation;
-    use osis_base::{Role, Value, WallMs};
+    use osis_base::{Role, Tid, Value, WallMs};
+    use std::collections::BTreeSet;
     use osis_schema::core_types as ct;
 
     // spec/permissions.md §1, §2: the role-class aspects are written only by admins, except
@@ -139,6 +140,82 @@ mod tests {
                 assert!(!osis_commit::is_piece(&j), "two pieces joined");
             }
         }
+    }
+    // spec/permissions.md §4 Copies, Key part: a grant's edge piece (its fire, sealed copy or
+    // offer) carries its grantee's `secrets.0` piece and, to a grantee of read or above, the rest
+    // piece (history boxes); to a grantee of sync alone, its piece only: the sync role's history
+    // box it would open names the thing's departed holders.
+    #[test]
+    fn an_edge_piece_carries_the_rest_only_to_a_reader_spec_permissions_4() {
+        let mut lp = LocalPeer::fresh(3, WallMs(1_700_000_000_000));
+        lp.sync_all().unwrap();
+        let (a, b, c) = (lp.peers[0].engine.me(), lp.peers[1].engine.me(), lp.peers[2].engine.me());
+        let t = thing(&mut lp, a);
+        let edge = |role| ct::Edge { role, until: None, may_grant: false, retain: false, floor: None };
+        let pieces = |lp: &mut LocalPeer, id: &osis_base::CommitId, h: Tid| {
+            let copy = lp.peers[0].engine.edge_piece_copy(id, &t, &h).unwrap().unwrap();
+            let blob = osis_commit::CommitBlob::decode(&copy).unwrap();
+            let named = lp.peers[0].engine.holders_named(id);
+            let mut out: Vec<BTreeSet<Tid>> = blob.parts.iter().filter(|p| blob.header.aspects[p.ai].tid == t && blob.header.aspects[p.ai].ak.as_str() == "secrets.0").map(|p| named[&p.ai].clone()).collect();
+            out.sort();
+            out
+        };
+        let gb = *lp.peers[0].engine.grant(&t, &b, &edge(Role::Read)).unwrap().commits.last().unwrap();
+        let gc = *lp.peers[0].engine.grant(&t, &c, &edge(Role::Sync)).unwrap().commits.last().unwrap();
+        assert_eq!(pieces(&mut lp, &gb, b), vec![BTreeSet::new(), BTreeSet::from([b])], "a reader: its piece and the rest");
+        assert_eq!(pieces(&mut lp, &gc, c), vec![BTreeSet::from([c])], "sync alone: its piece only");
+    }
+    // spec/permissions.md §3 Who rotates, spec/wire.md §4 Pieces: a reader rotating read (a
+    // hostile node) makes no rotation: its rest piece writes history boxes only, a history add's
+    // shape, yet beside its keyset it is a rotation, which needs write. Were it counted, the
+    // reader's epoch would supersede the one every holder reads under while their boxes to the
+    // new one, in pieces needing write, count for nothing.
+    #[test]
+    fn a_readers_rotation_rotates_nothing_spec_permissions_3() {
+        let mut lp = LocalPeer::fresh(3, WallMs(1_700_000_000_000));
+        lp.sync_all().unwrap();
+        let (a, b, c) = (lp.peers[0].engine.me(), lp.peers[1].engine.me(), lp.peers[2].engine.me());
+        let t = thing(&mut lp, a);
+        let read = ct::Edge { role: Role::Read, until: None, may_grant: false, retain: false, floor: None };
+        lp.peers[0].engine.grant(&t, &b, &read).unwrap();
+        lp.peers[0].engine.grant(&t, &c, &read).unwrap();
+        lp.sync_all().unwrap();
+        let before = lp.peers[0].engine.epochs(&t).unwrap().read.current();
+        lp.peers[1].engine.core.skip_writer_rules = true;
+        let id = lp.peers[1]
+            .engine
+            .run(|tx| {
+                let held = tx.core.epochs(&t).unwrap();
+                let holders = crate::rotation::recipients(tx, &b, &t, &[])?;
+                let mut m = Mutation::new();
+                m.unchecked();
+                let rot = crate::rotation::rotation_into(tx, &mut m, t, &[Role::Read].into_iter().collect(), &held, &holders, crate::rotation::Departs::No)?;
+                let c = crate::Engine::commit_tx(tx, m)?;
+                crate::rotation::record(tx, t, &rot)?;
+                Ok(c)
+            })
+            .unwrap()
+            .unwrap();
+        lp.peers[1].engine.core.skip_writer_rules = false;
+        let h = lp.peers[1].engine.header(&id).unwrap();
+        assert!(h.aspect_parts(&t, "secrets.0").count() >= 3, "pieces: each holder's and the rest");
+        lp.sync_all().unwrap();
+        for fresh in [false, true] {
+            for i in [0, 2] {
+                if fresh {
+                    lp.peers[i].restart(1).unwrap();
+                }
+                let e = lp.peers[i].engine.epochs(&t).unwrap();
+                assert!(e.read.epochs().all(|(_, x)| !x.rotations.contains_key(&id)), "peer {i} (fresh load {fresh}): the reader's commit makes no rotation");
+                assert_eq!(e.read.current(), before, "peer {i} (fresh load {fresh}): the current read epoch stays");
+            }
+        }
+        // control: the admin's rotation, the same commit shape, counts
+        let mine = lp.peers[0].engine.rotate_boxing_only(&[t], &[Role::Read], &[a, b, c]).unwrap().unwrap();
+        lp.sync_all().unwrap();
+        let e = lp.peers[2].engine.epochs(&t).unwrap();
+        assert!(e.read.epochs().any(|(_, x)| x.rotations.contains_key(&mine)), "the admin's rotation counts");
+        assert_ne!(e.read.current(), before);
     }
     // spec/permissions.md §2 (may-grant grant: its keys.0 only the records of its boxes), spec/crypto.md §4 (Stale: every box to a holder
     // actor is recorded beside it, whoever boxes): an may-grant holder granting an organization carries the

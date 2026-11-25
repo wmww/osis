@@ -1,8 +1,12 @@
 //! Boxes cut by holder (spec/wire.md §4 Pieces, spec/permissions.md §4 Copies): a commit's
 //! `secrets.0` write on a thing comes in pieces, one per holder its box records are keyed with
-//! (and the rest), each bound by its own hash and judged alone; an edge piece carries its holder's
-//! piece only, and a holder of sync alone's carries no header (its box proves itself by the step
-//! bearing its secret's sync key). Greenfield: the question is which boxes a reader of S, the
+//! (and the rest: history boxes, keyed with no holder), each bound by its own hash and judged
+//! alone; an edge piece carries its holder's piece and the rest, and a holder of sync alone's its
+//! piece only, with no header (its box proves itself by the step bearing its secret's sync key).
+//! A history box at (role, e) carries every earlier secret of the role and the rotation's names
+//! (the holders it saw removed): opened by a holder of e's secret, so it gives a grantee the
+//! epochs before its grant, and a holder of sync alone opening the sync role's would learn
+//! departed holders. Greenfield: the question is which boxes a reader of S, the
 //! sync ID of a holder T of X, takes and which of X's holders it learns.
 //!
 //! The world: X (mint admin XA) grants T (sync alone or read, per world), H and others, by XA or
@@ -60,6 +64,16 @@ pub struct Commit {
     /// a `sync.0` step registering the sync key of this epoch; `chain` whether it verifies from
     /// the genesis step (signed by an admin's delete key)
     pub step: Option<(u32, bool)>,
+    /// the rest piece: history boxes of these roles at this epoch, each carrying every earlier
+    /// epoch's secret of its role and these names
+    pub history: Option<History>,
+}
+
+#[derive(Clone, Debug)]
+pub struct History {
+    pub epoch: u32,
+    pub roles: Vec<Role>,
+    pub names: Vec<Id>,
 }
 
 impl Commit {
@@ -75,6 +89,8 @@ pub enum P {
     Roles,
     /// the `secrets.0` piece of this holder
     Piece(Id),
+    /// the `secrets.0` piece of the rest (history boxes)
+    Rest,
     Sync,
 }
 
@@ -90,7 +106,8 @@ pub struct World {
 /// Which copies R holds, and how it judges a `secrets.0` write.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Rule {
-    /// The spec: T's piece alone, each piece judged alone; no header for a holder of sync alone.
+    /// The spec: T's piece and the rest, each piece judged alone; a holder of sync alone its
+    /// piece only, no header.
     Spec,
     /// Control, today's copies: the whole `secrets.0` part beside T's box (every holder's piece),
     /// with its header, a holder of sync alone's included.
@@ -101,6 +118,10 @@ pub enum Rule {
     SyncHeader,
     /// Control: a holder of sync alone takes a box's secret without a step bearing its sync key.
     NoStepCheck,
+    /// Control: T's piece without the rest beside it.
+    NoRest,
+    /// Control: the rest beside a holder of sync alone's piece too.
+    RestToSync,
 }
 
 impl World {
@@ -132,7 +153,17 @@ impl World {
                 Rule::WholePart => c.holders().into_iter().collect(),
                 _ => c.holders().into_iter().filter(|h| *h == T).collect(),
             };
+            let rest = c.history.is_some()
+                && match rule {
+                    Rule::WholePart => true,
+                    Rule::NoRest => false,
+                    Rule::RestToSync => pieces.contains(&T),
+                    _ => pieces.contains(&T) && !self.t_sync_alone,
+                };
             held.extend(pieces.into_iter().map(|h| (c.id, P::Piece(h))));
+            if rest {
+                held.insert((c.id, P::Rest));
+            }
             if c.step.is_some() {
                 held.insert((c.id, P::Sync));
             }
@@ -173,6 +204,9 @@ impl World {
                 held.insert((c.id, P::Roles));
             }
             held.extend(c.holders().into_iter().map(|h| (c.id, P::Piece(h))));
+            if c.history.is_some() {
+                held.insert((c.id, P::Rest));
+            }
             if c.step.is_some() {
                 held.insert((c.id, P::Sync));
             }
@@ -226,7 +260,7 @@ pub fn judge(w: &World, held: &Held, rule: Rule) -> Seen {
                 out.learned.insert(h);
                 out.others_pieces += (h != T) as usize;
             }
-            P::Sync => {}
+            P::Rest | P::Sync => {}
         }
     }
     out.learned.remove(&T);
@@ -244,6 +278,11 @@ pub fn judge(w: &World, held: &Held, rule: Rule) -> Seen {
                 }
             }
         }
+        // it judges nothing and takes a secret from its box alone (spec/crypto.md §4
+        // Established); a rest piece it holds still opens under the sync secret it took
+        let mut opened = out.clone();
+        open_history(w, held, &mut opened, |_| true);
+        out.learned = opened.learned;
         return out;
     }
     let j = Judge::new(w, held);
@@ -262,7 +301,29 @@ pub fn judge(w: &World, held: &Held, rule: Rule) -> Seen {
             }
         }
     }
+    open_history(w, held, &mut out, |c| j.rest(c) == V::Valid);
     out
+}
+
+/// The history boxes of the rest pieces held that `valid` counts, opened to a fixpoint: one at
+/// (r, e) whose secret is taken gives every earlier secret of r and its names (`out.learned`
+/// keeps T and XA out).
+fn open_history(w: &World, held: &Held, out: &mut Seen, valid: impl Fn(&Commit) -> bool) {
+    let rests: Vec<&Commit> = w.commits.iter().filter(|c| held.contains(&(c.id, P::Rest)) && valid(c)).collect();
+    loop {
+        let before = out.taken.len();
+        for c in &rests {
+            let Some(h) = &c.history else { continue };
+            let opened: Vec<Role> = h.roles.iter().copied().filter(|r| out.taken.contains(&(*r, h.epoch))).collect();
+            for r in &opened {
+                out.taken.extend((0..h.epoch).map(|e| (*r, e)));
+                out.learned.extend(h.names.iter().filter(|n| **n != T && **n != XA));
+            }
+        }
+        if out.taken.len() == before {
+            return;
+        }
+    }
 }
 
 struct Judge<'a> {
@@ -351,6 +412,30 @@ impl<'a> Judge<'a> {
             V::Invalid
         }
     }
+
+    /// A rest piece: a may-grant grant's history boxes at or below its granted role, judged from
+    /// the commit alone; else, as a rotation's or a grant's (beside a keyset or boxes, never a
+    /// history add), at least write along the hop.
+    fn rest(&self, c: &Commit) -> V {
+        let Some(h) = &c.history else { return V::Invalid };
+        if !self.held.contains(&(c.id, P::Header)) {
+            return V::Pending;
+        }
+        if let (Some(es), Some(V::Valid)) = (&c.roles, self.roles.get(&c.id)) {
+            if self.held.contains(&(c.id, P::Roles)) && h.roles.iter().all(|r| es.iter().any(|e| e.role.is_some_and(|g| g >= *r))) {
+                return V::Valid;
+            }
+        }
+        if self.pending(self.w, c.signer) {
+            return V::Pending;
+        }
+        let need = h.roles.iter().copied().max().unwrap_or(Role::Write).max(Role::Write);
+        if self.state_before(c.ts).get(&c.signer).is_some_and(|(r, _)| *r >= need) {
+            V::Valid
+        } else {
+            V::Invalid
+        }
+    }
 }
 
 /// The boxes a holder of `role` gets at `epoch`: sync, and read where it reads.
@@ -371,11 +456,14 @@ pub fn world(seed: u64) -> World {
     let mut epoch: u32 = 0;
     let mut fake: u32 = 1000;
     let mut id: Cid = 0;
-    let mut push = |w: &mut World, signer: Id, roles: Option<Vec<Edge>>, boxes: Vec<BoxAt>, step: Option<(u32, bool)>| {
+    // the holders removed since the last rotation, and each epoch's names
+    let mut removed: Vec<Id> = Vec::new();
+    let mut names: BTreeMap<u32, Vec<Id>> = BTreeMap::from([(0, Vec::new())]);
+    let mut push = |w: &mut World, signer: Id, roles: Option<Vec<Edge>>, boxes: Vec<BoxAt>, step: Option<(u32, bool)>, history: Option<History>| {
         id += 1;
-        w.commits.push(Commit { id, signer, ts: id, roles, boxes, step });
+        w.commits.push(Commit { id, signer, ts: id, roles, boxes, step, history });
     };
-    push(&mut w, XA, None, Vec::new(), Some((0, true)));
+    push(&mut w, XA, None, Vec::new(), Some((0, true)), None);
     let others = [T, H, O1, O2];
     let events = 4 + r.below(11);
     for _ in 0..events {
@@ -397,6 +485,8 @@ pub fn world(seed: u64) -> World {
                 };
                 let mg = g != T && role >= Role::Read && r.chance(50);
                 let mut bs = boxes_for(g, role, epoch);
+                // the grant writes the history boxes of the roles it boxes again
+                let history = Some(History { epoch, roles: bs.iter().map(|b| b.role).collect(), names: names[&epoch].clone() });
                 if r.chance(25) {
                     // junk beside the grantee's: a box to a holder the commit grants nothing
                     let o = r.pick(&others);
@@ -404,7 +494,7 @@ pub fn world(seed: u64) -> World {
                         bs.push(BoxAt { holder: o, role: Role::Read, epoch });
                     }
                 }
-                push(&mut w, s, Some(vec![Edge { holder: g, role: Some(role), may_grant: mg }]), bs, None);
+                push(&mut w, s, Some(vec![Edge { holder: g, role: Some(role), may_grant: mg }]), bs, None, history);
                 if sr == Role::Admin || !x.contains_key(&g) {
                     x.insert(g, (role, mg));
                 }
@@ -415,9 +505,11 @@ pub fn world(seed: u64) -> World {
                 let s = r.pick(&rotators);
                 epoch += 1;
                 let bs: Vec<BoxAt> = x.iter().filter(|(n, _)| **n != s).flat_map(|(n, (ro, _))| boxes_for(*n, *ro, epoch)).collect();
-                push(&mut w, s, None, bs, None);
+                names.insert(epoch, std::mem::take(&mut removed));
+                let history = Some(History { epoch, roles: vec![Role::Sync, Role::Read], names: names[&epoch].clone() });
+                push(&mut w, s, None, bs, None, history);
                 if r.chance(80) {
-                    push(&mut w, XA, None, Vec::new(), Some((epoch, true)));
+                    push(&mut w, XA, None, Vec::new(), Some((epoch, true)), None);
                 }
             }
             6 => {
@@ -429,12 +521,12 @@ pub fn world(seed: u64) -> World {
                 } else {
                     epoch
                 };
-                push(&mut w, s, None, boxes_for(T, t_role, e), None);
+                push(&mut w, s, None, boxes_for(T, t_role, e), None, None);
             }
             7 => {
                 // a junk step by H: its chain does not verify
                 let e = if r.chance(50) { epoch } else { fake + 1 };
-                push(&mut w, H, None, Vec::new(), Some((e, false)));
+                push(&mut w, H, None, Vec::new(), Some((e, false)), None);
             }
             _ => {
                 // XA removes a holder (no rotation: the next rotation boxes those left)
@@ -443,8 +535,9 @@ pub fn world(seed: u64) -> World {
                     continue;
                 }
                 let g = r.pick(&hs);
-                push(&mut w, XA, Some(vec![Edge { holder: g, role: None, may_grant: false }]), Vec::new(), None);
+                push(&mut w, XA, Some(vec![Edge { holder: g, role: None, may_grant: false }]), Vec::new(), None, None);
                 x.remove(&g);
+                removed.push(g);
             }
         }
     }
