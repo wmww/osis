@@ -94,7 +94,7 @@ pub struct LeftAt {
     /// The record it left: where its rows live (a record kept nowhere: the connection).
     pub src: Source,
     /// Its reported position (spec/sync-opens.md §6 Lost), as it tells what the peer holds
-    /// (spec/sync-status.md §2): none for one ended for its departure, shown role entries alone.
+    /// (spec/sync-status.md §2): none for one ended for its departure, shown its notices alone.
     pub reported: Option<Position>,
     /// Its `until`, an ended member's.
     pub until: Option<Position>,
@@ -571,7 +571,7 @@ struct Adm {
     /// Where J is departed: the sync proofs of this side's recorded steps (`Creds::walk`, and
     /// the newest the Departed rule keeps out of `shows`), taken from a store only, and its read
     /// secrets at superseded epochs, shown in the filter: an open by one is ended at once, so this
-    /// side registers past a store's keys or serves a reader its role entries up to its departure
+    /// side registers past a store's keys or serves a reader the notices of its removals
     /// (spec/sync-opens.md §6), whether or not S was open there at the removal. Toward every peer, the lapsed
     /// read secrets (`Creds::lapsed`), taken from a reader or keys holder: ended at once likewise.
     walk: Vec<Shown>,
@@ -2560,7 +2560,7 @@ impl Opens {
     /// holds the record: J reader or sync holder stays; an open by a credential stays while it is
     /// admissible; one no longer admissible whose peer J judges neither holder nor departed is
     /// ended (`until`, judged now), and stays ended until it closes; one whose peer J judges
-    /// departed is ended too (`Member::departed`: served role entries alone; at a store source it
+    /// departed is ended too (`Member::departed`: served its notices alone; at a store source it
     /// closes on the peer's Lost alone), and closes at once once its peer is not; any other closes at once (with a Lost where a connection
     /// holds the record), as does any whose peer is no one once no connection holds the record.
     /// One that stays, not ended, closes keeping where it stopped once this side's class is not
@@ -2594,7 +2594,7 @@ impl Opens {
         let admissible = m.by != Credential::J
             && basis.is_some_and(|b| adm.shows.iter().any(|x| beacon_of(x.matched(), &s, &rr) == b) || adm.tests.iter().any(|t| beacon_of(&t.matched(&s), &s, &rr) == b));
         let stays = holder || admissible;
-        // a peer no longer departed: its stream skipped all but role entries, so its member closes
+        // a peer no longer departed: its stream skipped all but its notices, so its member closes
         // at once, naming no position (`close_member`)
         if m.departed.is_some() && adm.j != J::Departed {
             self.end_member(ctx, rid, conn, s, Close::AtOnce, moved);
@@ -2756,7 +2756,7 @@ impl Opens {
             let at = c.served.entry(s).or_insert(u);
             *at = (*at).max(u);
         }
-        // one ended for its departure was shown role entries alone: its position past the rest
+        // one ended for its departure was shown its notices alone: its position past the rest
         // names nothing it holds, so its peer rejoins from the start
         let cursor = match why {
             Close::Left => None,

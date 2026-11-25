@@ -1138,3 +1138,38 @@ fn no_step_after_the_one_past_a_removed_holder_reaches_it_spec_permissions_4() {
     lp.peers[0].engine.issue_step(&g, &s, true).unwrap().expect("a fresh step");
     assert_eq!(owed_to(&lp, 0, &new_owed(&lp, 0, &before), t), 0, "the step after it goes nowhere");
 }
+
+// spec/sync-hostile.md (a peer judged departed is served only the notices of its removals),
+// spec/sync-opens.md §6, spec/permissions.md §4 (Notices): peer 1 reads X through G alone. Peer 1
+// leaves G, so it reads X no more; later G is removed from X. That removal is past peer 1's
+// departure: a departed peer proving peer 1 is told nothing of it. Control: G removed while peer
+// 1 still reads through it, told. Fails with the removal of anything a proven thing ever held a
+// role on told, whenever made.
+#[test]
+fn a_departed_peer_is_told_no_removal_past_its_own_spec_sync_opens_6() {
+    for late in [false, true] {
+        let mut lp = synced(2);
+        let n = lp.peers[1].engine.tid();
+        let x = independent_thing(&mut lp, 0);
+        let g = independent_thing(&mut lp, 0);
+        lp.peers[0].engine.grant(&x, &g, &edge(Role::Read)).unwrap();
+        lp.peers[0].engine.grant(&g, &n, &edge(Role::Read)).unwrap();
+        lp.sync_all().unwrap();
+        if late {
+            lp.peers[0].engine.demote(&g, &super::Demotion { holder: n, new: None, retain: None }).unwrap();
+            lp.sync_all().unwrap();
+        }
+        lp.peers[0].engine.demote(&x, &super::Demotion { holder: g, new: None, retain: None }).unwrap();
+        lp.sync_all().unwrap();
+        let e = &mut lp.peers[0].engine;
+        let s = e.sync_id_of(&x).unwrap().expect("X's sync ID");
+        let mut rng = osis_crypto::SeededRng::from_u64(7);
+        let carried: Vec<[u8; 32]> = e.notices_carried(&s).unwrap().into_keys().collect();
+        assert!(!carried.is_empty(), "late {late}: G's removal has a notice");
+        for k in carried {
+            e.seal_notice(&s, &k, &mut rng).unwrap().expect("sealed");
+        }
+        let told = e.told(&s, &[n].into()).unwrap();
+        assert_eq!(told.is_empty(), late, "late {late}: peer 1 told G's removal only while it read X through G");
+    }
+}

@@ -601,8 +601,10 @@ pub fn opening(engine: &mut Engine, store: &crate::store::Store, s: &SyncId, e: 
         // is held, `Core::copies_speak`):
         // charged to its bringer unless stamped (spec/sync-ids.md §5 Peer budget)
         Ok(Opened::SyncCopy) => Ok(Opening::Held { gave: false }),
-        // a notice: its removal's copy taken, kept as any certificate blob is
-        Ok(Opened::Notice(..)) => Ok(Opening::Held { gave: true }),
+        // a notice: anyone holding its epoch seals one, so it is kept as its commit's blob is,
+        // charged to its bringer unless it gave the commit or is stamped (spec/sync-ids.md §5
+        // Peer budget)
+        Ok(Opened::Notice(_, i)) => Ok(Opening::Held { gave: !matches!(i, osis_engine::Ingested::Duplicate(_)) }),
         Ok(Opened::Linked) => Ok(Opening::Taken),
         Ok(Opened::NotOpen) => Ok(Opening::NotOpen),
         Ok(Opened::Bad) => Ok(Opening::Bad),

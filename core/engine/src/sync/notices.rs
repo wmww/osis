@@ -174,12 +174,14 @@ impl Engine {
         self.read_things_of(s).is_ok_and(|t| t.contains(&n.thing)) && self.tells(&n, proven)
     }
 
-    /// Whether notice `n`'s removal takes read from a holder among `proven`, or one a proven
-    /// thing ever held a role on.
+    /// Whether notice `n`'s removal takes read from a holder among `proven`, or from one a proven
+    /// thing held read or above on just before it.
+    /// Invariant (privacy; spec/sync-hostile.md): a departed peer is told no removal past its own:
+    /// one it read the thing through when made, never one of a holder it had left by then.
     fn tells(&self, n: &Notice, proven: &BTreeSet<Tid>) -> bool {
         let Some(tl) = self.core.timelines().get(&n.thing) else { return false };
-        let reached = |h: Tid| proven.iter().any(|p| *p == h || self.core.timelines().get(p).is_some_and(|x| x.roles_ever(p).contains_key(&h)));
-        tl.applied_on(&n.thing).filter(|(mc, _)| mc.id == n.commit).filter_map(|(_, o)| o.holder.thing()).any(reached)
+        let reached = |h: Tid, before: osis_perm::At| proven.contains(&h) || tl.roles_on(&h, before).iter().any(|(p, r)| proven.contains(p) && *r >= Role::Read);
+        tl.applied_on(&n.thing).filter(|(mc, _)| mc.id == n.commit).filter_map(|(mc, o)| Some((o.holder.thing()?, osis_perm::At::before(mc.point())))).any(|(h, at)| reached(h, at))
     }
 }
 
