@@ -7,23 +7,19 @@
 - Talk to her in plain words: no stage/brief/Open numbers.
 
 ## State
-- **Nothing is running.** No agent, no task in flight; the worktrees under `.worktrees/` hold old finished branches.
-- **Main** builds, passes its default tests (3,849, none failing) and clippy, with the sync rewrite and the legacy clean-up in it. The seeds failing on it, unread: notes/priorities.md, Failing on main.
-- **The sync rewrite is on main**, as it stood on its branch: unreviewed, ungated, no property or sim run on it.
-  - 20 of its tests are ignored by cause (`rg -n 'sync rewrite: ' core/ libs/`).
-  - Its account is notes/sync-rewrite-state.md: what the tree is, the ignores by cause, what is owed, and a list of rulings marked "For review".
+- **Coordinator**: Spar. Agents run on main (no kept branches); security changes go through a branch, a reviewer and the gate.
+- **The sync rewrite and accounts as ordinary things are on main**, unreviewed as a whole. Accounts: built through spec, delete, keys, making an account, pairing and removal, proofs, models (perm and sync side) and counting; state, ignores and what's left: notes/accounts-switch-brief.md. Accounts functions live in the osis-account library (libs/account).
+- **Public things, cards and the library (A5 with A6 folded in)** are in progress on main: notes/public-and-cards-brief.md (order of work; pieces 1-2 done, piece 3 the public in perm/keys running).
+- **The one review and gate** over the sync rewrite plus accounts come at the end of the public-and-cards stage, which rewrites the same machinery (Tess: structure first).
 
 ## The route
-One list, in order. It stands in for every other list of what is next (the order of the state note's Next, the order of code briefs in notes/a2-spec/README.md); notes/redesign-plan.md holds the stages and their reasons.
+One list, in order; notes/redesign-plan.md holds the stages and their reasons.
 
-1. **Accounts as ordinary things** (Tess: next, delete first), on main directly, no branch. Builder's brief with the delete list, sizes and order of work: notes/accounts-switch-brief.md; stage A4 of the plan.
-   - It builds on notes/stubs.md: Tess's decisions on grants, stubs, references in history and the inbox. The spec is in and the old account machinery deleted; the pieces left, and the tests ignored for each, are in notes/accounts-switch-brief.md.
-   - The key hop and the membership cases are modelled already (roles-model's paths); osis-perm's walk reads the key hop as an edge.
-   - One piece a session, each ending pushed. The one review and gate come when accounts are in, over the rewrite and accounts together.
-2. **What the rewrite still owes**, after accounts: notes/sync-rewrite-state.md (Next, and the ignored tests by cause), issues/disputes-storage-under-f6.md, issues/models-read-chained-sets.md.
-3. **Then** what the plan has left: a removal as evidence (what A2 did not already build), public things and cards, core without accounts, clean-up. Cut each to what is still needed before starting.
+1. **Public things, cards and the account library**: notes/public-and-cards-brief.md, pieces 3-8. Then the review and gate over everything since the sync rewrite.
+2. **What the rewrite still owes**: notes/sync-rewrite-state.md (Next), issues/disputes-storage-under-f6.md, issues/models-read-chained-sets.md.
+3. **Then** a removal as evidence (what A2 did not already build) and clean-up. Cut each to what is still needed before starting.
 
-Beside the route: the failing seeds (notes/priorities.md; each starts with a hand-written minimal reproducer, never the pinned seed: notes/principles.md); one cleanup always, a workflow job about half the time (the rewrite's ignores by cause: `tools/ignores.py`).
+Tess's direction (notes/priorities.md, Structure first): right shape first, fixes after; main need not work between pieces; tests rewritten slimmer, not ported; two agents on the primary line when their pieces don't collide.
 
 ## Old words and concepts
 - issues/deprecated-terms.md lists what is still in the repo though deprecated, each with what removing it takes, and what is gone. Most of what remains goes with accounts.
