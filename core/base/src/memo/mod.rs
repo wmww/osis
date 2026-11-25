@@ -1573,9 +1573,13 @@ impl<T: Ord + Hash + Clone + Send + Sync + 'static> StampedSet<T> {
     pub fn remove(&mut self, t: &T) -> bool {
         let removed = self.set.remove(t);
         if removed {
-            self.stamps.wrote(t, false);
+            self.stamps.wrote_removed(t);
         }
         removed
+    }
+    /// A reader's cursor over the items removed from now on (`Removals`).
+    pub fn removals(&self) -> Removals<T> {
+        self.stamps.removals()
     }
 }
 

@@ -13,6 +13,7 @@ pub(crate) mod facts;
 pub(crate) mod falls;
 pub(crate) mod held;
 pub(crate) mod own;
+pub use own::OwnFeed;
 pub(crate) mod rows;
 pub use rows::Held;
 pub(crate) mod pieces;

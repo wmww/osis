@@ -21,7 +21,7 @@ One rule, as read's (notes/sync-read.md, State): what status follows of a peer i
 | `up` (source → connection, account, own node) | `Moved::Taken`/`Released` (E); who the peer proved from sessions | connection | connections | the release, `record_gone` |
 | `lacking_fx`, `lacking` | (S, source) of a store member | record | store members | with the member |
 | `leaving` (S, connection → source, `LeftAt`) | a member closing on a connection (E), with P's reported position and its `until` | connection | members closing in one step | each settle; a release keeps none (the next connection's Pull reports again) |
-| `holding`, `own_fx`, `held_fx`, `unheld`, `by_commit`, `held`, `removals`, `release_fx` | E (the sync set, own commits, self-removals) | node | sync IDs held × own commits | S leaving the set, the commit no longer own |
+| `holding`, `own`, `own_feed`, `held_fx`, `held_pairs`, `unheld` (count per S), `by_commit`, `held`, `removals`, `release_fx` | E (the sync set, own commits by pair from `Engine::own_feed`, whole once per S read afresh; self-removals) | node | sync IDs held × own commits | S leaving the set, the commit no longer own |
 | `wanted_fx`, `passes`, `pass_fx`, `again`, `done`, `modules_fx` | read S (E, leave, read) | node | read S | the pass's end, S leaving |
 | pass start rows (durable, `Z/p/ s`: its wall time) | a pass of S beginning | node | passes under way | the pass's end; S leaving the sync set while no module wants its pass |
 | `stranding_fx`, `strandings` | read S | node | read S | S not read |
@@ -36,7 +36,8 @@ One rule, as read's (notes/sync-read.md, State): what status follows of a peer i
 The rule is mod.rs's; the waits come from `Engine::waiting_removals` (notes/engine-lost-access.md Self-removal drops), "no peer but its own node" is `Ground::waited` (`Opens::waited` skipping a peer whose proven things include this node's node thing; notes/sync-opens.md Peers to wait for), and `Engine::removal_done` drops each thing lost that no other waiting removal is behind.
 - The same rule as leaving (notes/sync-leave.md): it waits only while a peer could take it. Own nodes leave by the same commit, so counting them would leave two nodes of one account waiting on each other for good. Skipping them is safe because they learn the removal from this account's own sync IDs and inbox (spec/permissions.md §2), never only from S.
 - A peer that applies the removal judges this node departed and closes S: told and not sharing S, it is not waited for, which also ends the wait where the same-step report was lost (a restart between).
-- `by_commit` is a plain map: every change of it writes `unheld` of that S, which the judgement reads.
+- `by_commit` is a plain map: a pair leaving it leaves `held_pairs`, which the judgement reads per (S, commit).
+- Own commits come by pair (`Engine::own_feed`, each pair read as it stands with `own_has`), so one more own commit costs one pair, never the S's set (osis `making::*`, `status: own commits taken`).
 - Tests: status.rs `self_removal_*`, flows.rs `a_self_removal_*`, siblings.rs `a_siblings_self_removal_*`.
 
 ## Stranded

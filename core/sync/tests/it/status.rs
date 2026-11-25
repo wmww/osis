@@ -64,7 +64,7 @@ struct Fake {
     reported: Stamped<(ConnId, SyncId), Position>,
     until: Stamped<(ConnId, SyncId), Position>,
     records: Stamped<SyncId, BTreeSet<RecordId>>,
-    own: Stamped<SyncId, Arc<BTreeSet<CommitId>>>,
+    own: StampedSet<(SyncId, CommitId)>,
     removals: Stamped<(), Arc<BTreeSet<CommitId>>>,
     verdicts: Stamped<(SyncId, CommitId), Verdict>,
     entries: Stamped<(SyncId, CommitId), Vec<BlobId>>,
@@ -152,7 +152,16 @@ impl Ground for Fake {
         Ok(self.records.get(s).cloned().unwrap_or_default())
     }
     fn own_commits(&mut self, s: &SyncId) -> Result<Arc<BTreeSet<CommitId>>> {
-        Ok(self.own.get(s).cloned().unwrap_or_default())
+        Ok(Arc::new(self.own.iter().filter(|x| x.0 == *s).map(|x| x.1).collect()))
+    }
+    fn own_feed(&mut self) -> osis_engine::sync::OwnFeed {
+        (self.own.feed(), self.own.removals())
+    }
+    fn follow_own(&mut self) -> Result<()> {
+        Ok(())
+    }
+    fn own_has(&mut self, s: &SyncId, c: &CommitId) -> bool {
+        self.own.contains(&(*s, *c))
     }
     fn self_removals(&mut self) -> Arc<BTreeSet<CommitId>> {
         self.removals.get(&()).cloned().unwrap_or_default()
@@ -278,9 +287,7 @@ impl T {
         self.g.verdicts.insert((s, c), Verdict::Must);
         self.g.entries.insert((s, c), vec![b]);
         self.g.first.insert((s, b), pos);
-        let mut now = self.g.own.get(&s).map(|x| (**x).clone()).unwrap_or_default();
-        now.insert(c);
-        self.g.own.insert(s, Arc::new(now));
+        self.g.own.insert((s, c));
         self.settle();
     }
 }
@@ -838,7 +845,7 @@ fn removal_under(ids: &[SyncId], c: CommitId) -> T {
         t.g.verdicts.insert((*s, c), Verdict::Must);
         t.g.entries.insert((*s, c), vec![blob(1)]);
         t.g.first.insert((*s, blob(1)), 1);
-        t.g.own.insert(*s, Arc::new([c].into()));
+        t.g.own.insert((*s, c));
     }
     t
 }

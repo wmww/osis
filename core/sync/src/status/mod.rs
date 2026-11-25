@@ -196,8 +196,15 @@ pub trait Ground: Net {
     fn until(&self, conn: ConnId, s: &SyncId) -> Option<Position>;
     /// The records holding S as a member (opens).
     fn records_holding(&mut self, s: &SyncId) -> Result<BTreeSet<RecordId>>;
-    /// This node's commits and self-removals with a body under S (engine).
+    /// This node's commits and self-removals with a body under S (engine), whole: what a sync
+    /// ID read afresh starts from.
     fn own_commits(&mut self, s: &SyncId) -> Result<Arc<BTreeSet<CommitId>>>;
+    /// Cursors over the (S, own commit) pairs `own_commits` gains and loses from now on (engine).
+    fn own_feed(&mut self) -> osis_engine::sync::OwnFeed;
+    /// Brings what `own_feed` gives up to date (engine).
+    fn follow_own(&mut self) -> Result<()>;
+    /// Whether `c` is among `own_commits(s)` now (engine).
+    fn own_has(&mut self, s: &SyncId, c: &CommitId) -> bool;
     /// The self-removals whose secrets wait on being held elsewhere (engine).
     fn self_removals(&mut self) -> Arc<BTreeSet<CommitId>>;
     /// Read's verdict on `c`'s body under S.
@@ -312,14 +319,19 @@ pub struct Status {
     /// leaves the record (a record kept nowhere: until its connection ends).
     lacking_fx: Effects<(SyncId, Source), u64>,
     lacking: Stamped<(SyncId, Source), u64>,
-    own_fx: Effects<SyncId, Arc<BTreeSet<CommitId>>>,
+    /// The (S, own commit) pairs gained and lost since the last settle (`Ground::own_feed`).
+    own_feed: Option<osis_engine::sync::OwnFeed>,
+    /// Read sync IDs whose own commits are to be taken whole (followed afresh).
+    own_new: BTreeSet<SyncId>,
     held_fx: Effects<(SyncId, CommitId), Held>,
-    /// Per read S whose own commits are known: those not held elsewhere.
-    unheld: Stamped<SyncId, Arc<BTreeSet<CommitId>>>,
+    /// Each own commit under a read S held elsewhere there.
+    held_pairs: StampedSet<(SyncId, CommitId)>,
+    /// Per read S whose own commits are known: how many are not held elsewhere.
+    unheld: Stamped<SyncId, usize>,
     /// The read sync IDs each own commit has a body under.
     by_commit: BTreeMap<CommitId, BTreeSet<SyncId>>,
-    /// Per read S, its own commits as `by_commit` holds them (`own_fx`'s value last taken).
-    own: BTreeMap<SyncId, Arc<BTreeSet<CommitId>>>,
+    /// Per read S, its own commits as `by_commit` holds them.
+    own: BTreeMap<SyncId, BTreeSet<CommitId>>,
     /// Own commits held elsewhere under every sync ID they have a body under.
     held: StampedSet<CommitId>,
     removals_fx: Effects<(), Arc<BTreeSet<CommitId>>>,
@@ -359,8 +371,10 @@ impl Default for Status {
             up: Stamped::default(),
             lacking_fx: Effects::new("status: lacking"),
             lacking: Stamped::default(),
-            own_fx: Effects::new("status: own commits"),
+            own_feed: None,
+            own_new: BTreeSet::new(),
             held_fx: Effects::new("status: held elsewhere"),
+            held_pairs: StampedSet::default(),
             unheld: Stamped::default(),
             by_commit: BTreeMap::new(),
             own: BTreeMap::new(),
@@ -556,7 +570,6 @@ impl Status {
         for s in gone {
             self.holding.remove(&s);
             self.done.remove(&s);
-            self.own_fx.unwant(&s);
             self.wanted_fx.unwant(&s);
             self.forget_own(&s);
             self.unstrand(&s);
@@ -571,11 +584,10 @@ impl Status {
         for (s, (_, h)) in &set.ids {
             if self.holding.insert(*s, *h) != Some(*h) {
                 if h.opens() {
-                    self.own_fx.want(*s);
+                    self.own_new.insert(*s);
                     self.wanted_fx.want(*s);
                     self.stranding_fx.want(*s);
                 } else {
-                    self.own_fx.unwant(s);
                     self.wanted_fx.unwant(s);
                     self.forget_own(s);
                     self.unstrand(s);
@@ -633,12 +645,40 @@ impl Status {
     }
 
     fn forget_own(&mut self, s: &SyncId) {
+        self.own_new.remove(s);
         let Some(commits) = self.own.remove(s) else { return };
         self.unheld.remove(s);
-        for c in commits.iter().copied() {
+        for c in commits {
             self.held_fx.unwant(&(*s, c));
+            self.held_pairs.remove(&(*s, c));
             self.untrack(s, &c);
         }
+    }
+
+    /// Own commit `c` came under followed S (`add`) or left it: one pair, whatever S holds.
+    fn own_moved(&mut self, s: SyncId, c: CommitId, add: bool, moved: &mut BTreeSet<CommitId>) {
+        let Some(own) = self.own.get_mut(&s) else { return };
+        osis_base::costs::count("status: own commits taken", 1);
+        let mut n = self.unheld.get(&s).copied().unwrap_or(0);
+        if add {
+            if !own.insert(c) {
+                return;
+            }
+            self.by_commit.entry(c).or_default().insert(s);
+            self.held_fx.want((s, c));
+            n += 1;
+        } else {
+            if !own.remove(&c) {
+                return;
+            }
+            self.held_fx.unwant(&(s, c));
+            if !self.held_pairs.remove(&(s, c)) {
+                n = n.saturating_sub(1);
+            }
+            self.untrack(&s, &c);
+        }
+        self.unheld.insert(s, n);
+        moved.insert(c);
     }
 
     /// Lacking counts per (S, source keeping S unread): O(S's stamped entries) per change of
@@ -673,27 +713,28 @@ impl Status {
             }
         }
         let mut moved = BTreeSet::new();
-        for s in self.own_fx.due() {
-            let Some((_, now)) = self.own_fx.try_settle(&s, || g.own_commits(&s))? else { continue };
-            // by difference: one more own commit moves one entry
-            let before = self.own.insert(s, now.clone()).unwrap_or_default();
-            let was: Vec<CommitId> = before.difference(&now).copied().collect();
-            let came: Vec<CommitId> = now.difference(&before).copied().collect();
-            let mut unheld = self.unheld.get(&s).map(|x| (**x).clone()).unwrap_or_default();
-            for c in was {
-                self.held_fx.unwant(&(s, c));
-                unheld.remove(&c);
-                self.untrack(&s, &c);
-                moved.insert(c);
+        // the pairs that came or went since, each as it stands now, then the sync IDs followed
+        // afresh, whole: a pair both give is taken once
+        let feed = match self.own_feed.as_mut() {
+            Some(f) => f,
+            None => self.own_feed.insert(g.own_feed()),
+        };
+        g.follow_own()?;
+        let touched: BTreeSet<(SyncId, CommitId)> = feed.0.added().into_iter().chain(feed.1.removed()).collect();
+        for (s, c) in touched {
+            if self.own.contains_key(&s) {
+                let now = g.own_has(&s, &c);
+                self.own_moved(s, c, now, &mut moved);
             }
-            for c in came.iter() {
-                if self.by_commit.entry(*c).or_default().insert(s) {
-                    self.held_fx.want((s, *c));
-                    unheld.insert(*c);
-                    moved.insert(*c);
-                }
+        }
+        for s in std::mem::take(&mut self.own_new) {
+            let now = g.own_commits(&s)?;
+            if self.own.insert(s, BTreeSet::new()).is_none() {
+                self.unheld.insert(s, 0);
             }
-            self.unheld.insert(s, Arc::new(unheld));
+            for c in now.iter() {
+                self.own_moved(s, *c, true, &mut moved);
+            }
         }
         for (s, c) in self.held_fx.due() {
             self.work.commits += 1;
@@ -710,28 +751,29 @@ impl Status {
                 g.set_elsewhere(&s, &b)?;
                 acted = true;
             }
-            let mut unheld = self.unheld.get(&s).map(|x| (**x).clone()).unwrap_or_default();
-            let changed = if now == Held::No { unheld.insert(c) } else { unheld.remove(&c) };
+            let changed = if now == Held::No { self.held_pairs.remove(&(s, c)) } else { self.held_pairs.insert((s, c)) };
             if changed {
-                self.unheld.insert(s, Arc::new(unheld));
+                let n = self.unheld.get(&s).copied().unwrap_or(0);
+                self.unheld.insert(s, if now == Held::No { n + 1 } else { n.saturating_sub(1) });
                 moved.insert(c);
             }
         }
         for c in moved {
             let ids = self.by_commit.get(&c);
-            let held = ids.is_some_and(|ids| !ids.is_empty() && ids.iter().all(|s| self.unheld.get(s).is_some_and(|u| !u.contains(&c))));
+            let held = ids.is_some_and(|ids| !ids.is_empty() && ids.iter().all(|s| self.held_pairs.contains(&(*s, c))));
             if held {
                 self.held.insert(c);
             } else {
                 self.held.remove(&c);
             }
         }
-        // `by_commit` is no stamped read, but each change of it writes `unheld` of that sync ID,
-        // which the judgement reads (a sync ID added after a judgement can only keep it waiting)
+        // `by_commit` is no stamped read, but each change of a pair in it writes that pair of
+        // `held_pairs` or leaves it absent, which the judgement reads (a sync ID added after a
+        // judgement can only keep it waiting)
         for c in self.release_fx.due() {
             self.work.removals += 1;
-            let (by_commit, unheld) = (&self.by_commit, &self.unheld);
-            let r = self.release_fx.try_settle(&c, || removal_done(g, &c, by_commit.get(&c).into_iter().flatten(), unheld));
+            let (by_commit, held) = (&self.by_commit, &self.held_pairs);
+            let r = self.release_fx.try_settle(&c, || removal_done(g, &c, by_commit.get(&c).into_iter().flatten(), held));
             if let Some((_, true)) = r? {
                 g.removal_done(&c)?;
                 acted = true;
@@ -886,7 +928,7 @@ impl Status {
             })
             .collect();
         let unheld = match holding {
-            Some(Holding::Read | Holding::Keys) => self.unheld.get(s).map(|u| u.len()),
+            Some(Holding::Read | Holding::Keys) => self.unheld.get(s).copied(),
             _ => Some(0),
         };
         let pass_waits = self.passes.get(s).map(|p| p.waits.clone());
@@ -921,9 +963,9 @@ impl Status {
     }
 
     /// Whether own commit `c` is held elsewhere under read sync ID `s` (§2); false while it has
-    /// no body under `s` here. Stamped: `by_commit` changes for `s` write `unheld` of `s`.
+    /// no body under `s` here. Stamped: the pair is held only while `by_commit` holds it.
     pub fn held_under(&self, s: &SyncId, c: &CommitId) -> bool {
-        self.unheld.get(s).is_some_and(|u| !u.contains(c)) && self.by_commit.get(c).is_some_and(|ids| ids.contains(s))
+        self.held_pairs.contains(&(*s, *c))
     }
 
     /// Where a wait on `scope`'s sync IDs stands (§3): each heard out with its own commits held
@@ -1014,9 +1056,9 @@ fn held_at(g: &mut impl Ground, s: &SyncId, c: &CommitId, sources: impl FnOnce()
 /// each read S it has a body under (`ids`), held elsewhere or no peer but this account's own
 /// nodes (which leave by the same commit, §2) to wait for (`Opens::waited`). With no such S, done at once: no
 /// peer could take it.
-fn removal_done<'a>(g: &mut impl Ground, c: &CommitId, ids: impl Iterator<Item = &'a SyncId>, unheld: &Stamped<SyncId, Arc<BTreeSet<CommitId>>>) -> Result<bool> {
+fn removal_done<'a>(g: &mut impl Ground, c: &CommitId, ids: impl Iterator<Item = &'a SyncId>, held_pairs: &StampedSet<(SyncId, CommitId)>) -> Result<bool> {
     for s in ids {
-        let held = unheld.get(s).is_some_and(|u| !u.contains(c));
+        let held = held_pairs.contains(&(*s, *c));
         if !held && g.waited(s, false)? {
             return Ok(false);
         }

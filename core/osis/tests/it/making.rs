@@ -65,7 +65,8 @@ fn grown(small: &BTreeMap<&'static str, u64>, big: &BTreeMap<&'static str, u64>)
 // (`timelines: components moved`), what reaches its mint admin gains it without a walk
 // (`perm: chain reach walked`), and the account root's certificates derive the new record's
 // contribution alone (`certificates: record contributions derived`), finding stubs among the
-// strongs leaving the unit, not its every thing (`read`).
+// strongs leaving the unit, not its every thing (`read`), and status takes the one own commit
+// it made, not the account root's every one (`status: own commits taken`).
 #[test]
 fn making_a_dependent_thing_costs_what_it_changed_spec_sync_set_2() {
     let (small, big) = (next(80, true), next(400, true));

@@ -123,6 +123,15 @@ impl Ground for Live<'_, '_> {
     fn own_commits(&mut self, s: &SyncId) -> Result<Arc<BTreeSet<CommitId>>> {
         Ok(self.cx.engine.own_commits(s)?)
     }
+    fn own_feed(&mut self) -> osis_engine::sync::OwnFeed {
+        self.cx.engine.own_feed()
+    }
+    fn follow_own(&mut self) -> Result<()> {
+        Ok(self.cx.engine.follow_own()?)
+    }
+    fn own_has(&mut self, s: &SyncId, c: &CommitId) -> bool {
+        self.cx.engine.own_has(s, c)
+    }
     fn self_removals(&mut self) -> Arc<BTreeSet<CommitId>> {
         self.cx.engine.waiting_removals()
     }

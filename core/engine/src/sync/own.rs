@@ -1,11 +1,13 @@
 //! This node's own commits per read sync ID (spec/sync-status.md §2, `Engine::own_commits`),
 //! kept as rows moved by what changed: each (sync ID, commit) candidate is followed alone
 //! (`Effects`), new candidates come from the commits added and from things entering the sync
-//! ID's sync unit (`Feed`s), so a pass costs what moved, never every own commit again.
+//! ID's sync unit (`Feed`s), so a pass costs what moved, never every own commit again. The rows
+//! are (sync ID, commit) pairs with a feed of those that come and go (`Engine::own_feed`), so a
+//! reader follows one more own commit as one pair, never the sync ID's set handed over whole.
 
 use crate::Engine;
 use crate::error::Result;
-use osis_base::memo::{Effects, Feed, Quiet, Stamped, Unrecorded};
+use osis_base::memo::{Effects, Feed, Quiet, Removals, StampedSet, Unrecorded};
 use osis_base::{CommitId, SyncId, Tid};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -17,6 +19,9 @@ pub(crate) struct Scope {
     things: BTreeSet<Tid>,
     authors: BTreeSet<Tid>,
 }
+
+/// Cursors over the (sync ID, own commit) pairs that come (`Feed`) and go (`Removals`).
+pub type OwnFeed = (Feed<(SyncId, CommitId)>, Removals<(SyncId, CommitId)>);
 
 /// The commits held, the self-removals waiting and the sync unit members, each from now on.
 type Feeds = (Feed<CommitId>, Feed<CommitId>, Feed<(crate::sync::units::Ctx, Tid)>);
@@ -35,15 +40,15 @@ pub(crate) struct OwnCommits {
     /// Commits held, self-removals waiting and sync unit members from now on; `None` until the
     /// first follow.
     feeds: Option<Feeds>,
-    /// The rows: per followed sync ID, its own commits (read whole).
-    rows: Stamped<SyncId, Arc<BTreeSet<CommitId>>>,
+    /// The rows: each followed sync ID with each of its own commits.
+    rows: StampedSet<(SyncId, CommitId)>,
     /// The follow's fixed point.
     quiet: Quiet,
 }
 
 impl Default for OwnCommits {
     fn default() -> Self {
-        OwnCommits { scope: Effects::new("own: scope"), pairs: Effects::new("own: commits"), candidates: BTreeMap::new(), feeds: None, rows: Stamped::default(), quiet: Quiet::default() }
+        OwnCommits { scope: Effects::new("own: scope"), pairs: Effects::new("own: commits"), candidates: BTreeMap::new(), feeds: None, rows: StampedSet::default(), quiet: Quiet::default() }
     }
 }
 
@@ -58,10 +63,10 @@ impl OwnCommits {
 
     fn set(&mut self, s: &SyncId, c: &CommitId, own: bool) {
         let _u = Unrecorded::start();
-        let mut row = self.rows.get(s).cloned().unwrap_or_default();
-        let moved = if own { Arc::make_mut(&mut row).insert(*c) } else { Arc::make_mut(&mut row).remove(c) };
-        if moved {
-            self.rows.insert(*s, row);
+        if own {
+            self.rows.insert((*s, *c));
+        } else {
+            self.rows.remove(&(*s, *c));
         }
     }
 
@@ -75,8 +80,8 @@ impl OwnCommits {
     fn drop_sync_id(&mut self, s: &SyncId) {
         for c in self.candidates.remove(s).map(|x| x.1).unwrap_or_default() {
             self.pairs.unwant(&(*s, c));
+            self.rows.remove(&(*s, c));
         }
-        self.rows.remove(s);
     }
 
 }
@@ -124,7 +129,7 @@ impl Engine {
 
     /// Brings the own commits of each followed sync ID up to date: work in proportion to the
     /// commits added, the things entering a sync unit and the candidates whose reads moved.
-    pub(crate) fn follow_own(&mut self) -> Result<()> {
+    pub fn follow_own(&mut self) -> Result<()> {
         let o = &self.core.own_commits;
         if o.quiet.holds(o.scope.idle() && o.pairs.idle()) {
             return Ok(());
@@ -213,7 +218,7 @@ impl Engine {
     }
 
     /// This node's commits and the own self-removals sync waits on with a body under `s`
-    /// (spec/sync-status.md §2, `own_under`): a row per sync ID, from its first ask, moved by
+    /// (spec/sync-status.md §2, `own_under`): its pairs, followed from its first ask, moved by
     /// `follow_own` (here and at `Engine::follow`).
     pub fn own_commits(&mut self, s: &SyncId) -> Result<Arc<BTreeSet<CommitId>>> {
         {
@@ -227,7 +232,20 @@ impl Engine {
             }
         }
         self.follow_own()?;
-        Ok(self.core.own_commits.rows.get(s).cloned().unwrap_or_default())
+        let lo = (*s, CommitId([0; 32]));
+        Ok(Arc::new(self.core.own_commits.rows.range(lo..=(*s, CommitId([0xff; 32]))).map(|x| x.1).collect()))
+    }
+
+    /// Whether `c` is among `own_commits(s)` as last followed: a read of that pair alone.
+    pub fn own_has(&self, s: &SyncId, c: &CommitId) -> bool {
+        self.core.own_commits.rows.contains(&(*s, *c))
+    }
+
+    /// Cursors over the (sync ID, own commit) pairs that come and go from now on (`own_commits`'
+    /// rows, moved by `follow_own`): a reader follows each own commit by itself.
+    pub fn own_feed(&self) -> OwnFeed {
+        let r = &self.core.own_commits.rows;
+        (r.feed(), r.removals())
     }
 }
 
