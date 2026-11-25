@@ -14,15 +14,17 @@ fn seen(w: &World, rule: Rule, whole: bool) -> Seen {
 fn a_holder_takes_from_its_piece_what_it_takes_from_whole_copies_spec_permissions_4() {
     // and a holder of sync alone learns no holder of X, its removal included, and holds sync
     // exactly while X's newest step bears a secret its boxes give
-    let (mut taken, mut carried_before, mut sync_worlds, mut history, mut told, mut shown) = (0, 0, 0, 0, 0, 0);
+    let (mut taken, mut carried_before, mut sync_worlds, mut history, mut told, mut shown, mut forged) = (0, 0, 0, 0, 0, 0, 0);
     for s in 0..SEEDS {
         let w = world(s);
         let (wh, cu) = (seen(&w, Rule::Spec, true), seen(&w, Rule::Spec, false));
         assert_eq!(wh.taken, cu.taken, "seed {s}");
         assert_eq!(cu.others_pieces, 0, "seed {s}");
         history += (cu.taken != seen(&w, Rule::NoRest, false).taken) as u64;
-        if w.t_sync_alone {
+        if !w.reads(Rule::Spec) {
             sync_worlds += 1;
+            // a forged edge write naming T read turns nothing R receives into a header
+            forged += w.reads(Rule::AnyValidity) as u64;
             assert!(cu.learned.is_empty(), "seed {s}: a holder of sync alone learns {:?}", cu.learned);
             assert_eq!(cu.holds, w.t_holds(), "seed {s}: T's holding as its steps tell it");
             told += (!cu.holds && seen(&w, Rule::HolderKept, false).holds) as u64;
@@ -32,8 +34,16 @@ fn a_holder_takes_from_its_piece_what_it_takes_from_whole_copies_spec_permission
         carried_before += (judge(&w, &w.cut(Rule::WholePart), Rule::Spec).others_pieces > 0) as u64;
     }
     // the controls read otherwise somewhere: a removal told only by its step, a header naming its
-    // remover
-    assert!(taken > 0 && carried_before > 0 && sync_worlds > 0 && history > 0 && told > 0 && shown > 0, "taken {taken} carried {carried_before} sync {sync_worlds} history {history} told {told} shown {shown}");
+    // remover, a forged write giving read
+    assert!(
+        taken > 0 && carried_before > 0 && sync_worlds > 0 && history > 0 && told > 0 && shown > 0 && forged > 0,
+        "taken {taken} carried {carried_before} sync {sync_worlds} history {history} told {told} shown {shown} forged {forged}"
+    );
+    // X's admins' grant decides: where they grant T sync, T holds sync alone whatever is forged
+    for s in 0..SEEDS {
+        let w = world(s);
+        assert!(!w.t_sync_alone || !w.reads(Rule::Spec), "seed {s}");
+    }
 }
 
 fn rd(holder: Id, role: Role, epoch: u32) -> BoxAt {
@@ -182,4 +192,32 @@ fn a_removal_of_sync_alone_is_told_by_its_step_spec_sync_ids_2() {
     // before XA's step T holds epoch 0's secret, which nothing has replaced
     let before = World { commits: w.commits[..5].to_vec(), ..w.clone() };
     assert!(seen(&before, Rule::Spec, false).holds && before.t_holds());
+}
+
+/// XA grants H read with the may-grant flag and O1 read; H grants T sync; O1, neither admin nor
+/// may-grant, forges an edge write naming T read, and O2, holding no role, another (pending).
+fn forged_read() -> World {
+    let commits = vec![
+        Commit { id: 1, signer: XA, ts: 1, roles: None, boxes: vec![], step: Some((0, true)), history: None },
+        grant(2, XA, H, Role::Read, true, vec![rd(H, Role::Sync, 0), rd(H, Role::Read, 0)]),
+        grant(3, XA, O1, Role::Read, false, vec![rd(O1, Role::Sync, 0), rd(O1, Role::Read, 0)]),
+        grant(4, H, T, Role::Sync, false, vec![rd(T, Role::Sync, 0)]),
+        grant(5, O1, T, Role::Read, false, vec![]),
+        grant(6, O2, T, Role::Read, false, vec![]),
+    ];
+    World { commits, t_sync_alone: true }
+}
+
+/// An invalid or pending edge write giving T read changes nothing R receives: T reads X only by a
+/// valid one, so R takes T's sync secret and learns no holder of X (spec/sync-ids.md §2 What a
+/// sync holder learns; spec/permissions.md §4 Key part). Control: judged whatever their validity,
+/// the forged writes send T's pieces with headers and evidence, naming its granter H.
+#[test]
+fn a_forged_edge_write_giving_read_changes_nothing_a_sync_holder_learns_spec_sync_ids_2() {
+    let w = forged_read();
+    assert!(!w.reads(Rule::Spec) && w.reads(Rule::AnyValidity));
+    let s = seen(&w, Rule::Spec, false);
+    assert!(s.learned.is_empty() && s.taken.contains(&(Role::Sync, 0)) && s.holds, "{s:?}");
+    assert_eq!(s, seen(&World { commits: w.commits[..4].to_vec(), ..w.clone() }, Rule::Spec, false), "as without the forged writes");
+    assert!(judge(&w, &w.cut(Rule::AnyValidity), Rule::Spec).learned.contains(&H), "control: the granter shown");
 }

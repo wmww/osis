@@ -22,9 +22,10 @@
 //!   each edge its commit's edge writes on its thing set, closed under the same for what it adds:
 //!   spec/permissions.md §4 Evidence of a commit) of the seeds: the bodies; the edge writes naming
 //!   S's thing as holder (its key part: every grant counts), and under Role changes travel those
-//!   naming a thing S's keys open on an edge giving it read (a held write giving read, or its
-//!   record; an edge only ever giving sync goes as sync copies, no header, which this model has no
-//!   role for). What of it
+//!   naming a thing S's keys open on an edge giving it read (a held write giving read that the
+//!   node judges valid over what it holds, or its record: `World::read_edges`; an edge giving no
+//!   more than sync goes as sync copies, no header, which this model has no role for; held-model
+//!   `box_cut` judges what those carry). What of it
 //!   lies on things outside the unit is a copy, the rest bodies. A removal is in it only as
 //!   evidence of a body (notes/write-path-design.md §2, D1) or as Role changes travel puts it
 //!   (D3); nothing logs a removal anywhere for its own sake (lazy delivery).
@@ -321,12 +322,13 @@ impl World {
     fn seeds(&self, rule: &Rule, s: Sid, unit: &Things, h: &Set) -> Set {
         // the things whose holder roles travel under S: its own, and under Role changes travel
         // those S's thing holds read or above on, at any time
-        let open = self.opened(rule, s, h);
+        let reads = self.read_edges(h);
+        let open = self.opened_by(rule, s, &reads);
         // S's own thing's: its key part, every edge write naming it; another open thing's
-        // travel only on an edge that gives its holder read (a held write giving read or above,
-        // or the record): one only ever giving sync goes in the holder's key part alone, as sync
-        // copies (spec/permissions.md §4 Key part, Role changes travel)
-        let reads: BTreeSet<Edge> = h.iter().filter_map(|&i| self.gives_read(i)).collect();
+        // travel only on an edge that gives its holder read (a held write giving read or above
+        // valid over `h`, or the record): one giving no more than sync as `h` judges it goes in
+        // the holder's key part alone, as sync copies, whatever invalid or pending writes on it
+        // say (spec/permissions.md §4 Key part, Role changes travel)
         let travels = |i: Id, hd: Thing| hd == s || reads.contains(&(hd, self.on(i))) || self.w.is_record((hd, self.on(i)));
         let mut seed: Set = h.iter().copied().filter(|&i| unit.contains(&self.on(i)) || self.holder(i).is_some_and(|hd| open.contains(&hd) && travels(i, hd))).collect();
         if rule.keysets {
@@ -348,9 +350,12 @@ impl World {
     /// creation, ordered before every write (spec/crypto.md §4 Key access), and read at any time as
     /// grants are: a record edge removed later still opens (as a grant removed later does).
     pub fn opened(&self, rule: &Rule, s: Sid, h: &Set) -> Things {
+        self.opened_by(rule, s, &self.read_edges(h))
+    }
+    fn opened_by(&self, rule: &Rule, s: Sid, reads: &BTreeSet<Edge>) -> Things {
         let mut open = Things::from([s]);
         if rule.keys_open {
-            let edges: Vec<Edge> = self.records(rule).chain(h.iter().filter_map(|&i| self.gives_read(i))).collect();
+            let edges: Vec<Edge> = self.records(rule).chain(reads.iter().copied()).collect();
             loop {
                 let more: Vec<Thing> = edges.iter().filter(|e| open.contains(&e.0) && !open.contains(&e.1)).map(|e| e.1).collect();
                 if more.is_empty() {
@@ -366,12 +371,28 @@ impl World {
         let on = rule.records;
         self.w.records.iter().copied().filter(move |_| on)
     }
-    /// A held edge write giving read or above (any `until`): a link by which keys open.
+    /// An edge write giving read or above (any `until`): a link by which keys open, once valid.
     fn gives_read(&self, i: Id) -> Option<Edge> {
         match &self.w.commits[i].kind {
             Kind::Edge { holder, role, .. } if *role >= Role::Read && !self.w.leave(i) => Some((*holder, self.on(i))),
             _ => None,
         }
+    }
+    /// The read graph's grant edges over held set `h`: each set by a write of `h` giving read that
+    /// `h` judges valid (a node's own view, its lists whole), so no invalid or pending write
+    /// opens keys or carries a holder's role changes (spec/permissions.md §4 Role changes travel).
+    pub fn read_edges(&self, h: &Set) -> BTreeSet<Edge> {
+        self.reads_valid(h).into_iter().filter_map(|i| self.gives_read(i)).collect()
+    }
+    /// The writes of `h` giving read that `h` judges valid (`read_edges`).
+    pub fn reads_valid(&self, h: &Set) -> Set {
+        let ids: Set = h.iter().copied().filter(|&i| self.gives_read(i).is_some()).collect();
+        if ids.is_empty() {
+            return Set::new();
+        }
+        let trust = self.trust.intersection(h).copied().collect();
+        let seen = Seen { v: View { held: h.clone(), leaves: None, trust } };
+        self.verdicts(&seen, &ids).into_iter().filter(|(_, v)| *v == Verdict::Valid).map(|(i, _)| i).collect()
     }
     /// Part `i`'s stated path is not known over `h`: its entry opens late (`World::opens`) and
     /// `h` lacks what opens it.

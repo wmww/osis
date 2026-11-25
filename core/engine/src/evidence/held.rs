@@ -10,7 +10,7 @@
 use super::{Config, CopyId, Del, Evidence, Kind, Level, Part, Step, Write};
 use crate::engine::{Core, Tx};
 use crate::error::Result;
-use osis_base::{CommitId, Holder, Role, Tid};
+use osis_base::{CommitId, Holder, Tid};
 use osis_perm::paths::{Commit, Paths, PartKind};
 use osis_perm::WriteId;
 use std::collections::{BTreeMap, BTreeSet};
@@ -116,9 +116,9 @@ pub(crate) fn copy_parts(tx: &mut Tx<'_>, id: &CommitId) -> Result<CopyParts> {
             if let (Some(rc), false) = (&rc, writes.is_empty()) {
                 for o in writes {
                     let path = rc.path_to(&t);
-                    // a key's grant gives no read (nothing is sealed to a key)
-                    let leave = o.holder == Holder::Thing(*path.last().unwrap_or(&rc.signer));
-                    let gives_read = o.holder.thing().is_some() && o.edge.is_some_and(|e| e.role >= Role::Read) && !leave;
+                    // a key's grant gives no read (nothing is sealed to a key), nor does an invalid
+                    // or pending write
+                    let gives_read = core.edge_gives_read(rc, o);
                     let kind = Kind::Write(Write { holder: o.holder, gives_read });
                     let mint = minted(&mut path.iter().copied().chain([rc.signer, t]));
                     let hops = osis_perm::paths::hops(&mint, rc.key, rc.signer, path, rc.direct, t, Some(o.holder), true);

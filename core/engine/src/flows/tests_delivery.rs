@@ -710,3 +710,47 @@ fn a_sync_alone_holders_grant_lowered_travels_nowhere_spec_permissions_4() {
         }
     }
 }
+
+// spec/permissions.md §4 (Key part: sync alone, no held edge write valid here giving read; Role
+// changes travel: on an edge a valid held write giving read stands on), spec/sync-ids.md §2 (What
+// a sync holder learns): T holds sync alone on G; peer 0 (G's admin) and peer 1 read T. Peer 2, a
+// writer of G (no admin), signs an edge write on G naming T read, logged under G's sync ID, which
+// peer 0 holds and judges invalid. T still holds sync alone at peer 0: neither T's sync ID nor
+// peer 1's node's carries a certificate copy of a commit naming T on G, and T's key part carries
+// no header byte of G's. Fails with sync alone or the read graph judged over held writes
+// whatever their validity (the forged write turning T's pieces, and the real grant's header, to
+// certificate copies).
+#[test]
+fn a_forged_edge_write_giving_read_shows_a_sync_holder_nothing_spec_permissions_4() {
+    let (mut lp, g, t) = sync_holder();
+    let me0 = lp.peers[0].engine.tid();
+    lp.peers[2].engine.grant(&t, &me0, &edge(Role::Read)).unwrap();
+    reads_t(&mut lp, t);
+    let me1 = lp.peers[1].engine.tid();
+    let w = lp.peers[2].engine.tid();
+    lp.peers[0].engine.grant(&g, &w, &edge(Role::Write)).unwrap();
+    lp.sync_all().unwrap();
+    let c = lp.peers[2]
+        .engine
+        .run(|tx| {
+            let mut m = crate::Mutation::new();
+            crate::flows::put_edge(&mut m, g, t, &edge(Role::Read))?;
+            m.unchecked();
+            tx.core.skip_writer_rules = true;
+            let c = crate::engine::Engine::commit_tx(tx, m);
+            tx.core.skip_writer_rules = false;
+            Ok(c?.expect("built"))
+        })
+        .unwrap();
+    lp.sync_all().unwrap();
+    let e0 = &lp.peers[0].engine;
+    assert!(e0.header(&c).is_some() && e0.core.ix.held.edge_commits(&g).iter().any(|rc| rc.id == c), "peer 0 holds the forged write");
+    assert_ne!(e0.core.role_now(&t, &g), Some(Role::Read), "it gives T nothing");
+    assert!(e0.core.sync_alone_on(&t, &g), "T holds sync alone on G");
+    assert!(!certifies_on(&mut lp, 0, &t, &g, &t) && !certifies_on(&mut lp, 0, &me1, &g, &t), "no certificate copy of a commit naming T on G");
+    let s = lp.peers[0].engine.sync_id_of(&t).unwrap().unwrap();
+    let carried = lp.peers[0].engine.sync_copies_carried(&s).unwrap();
+    let forbidden = header_bytes(&lp, 0, &g);
+    assert!(carried.values().any(|(u, p)| *u == t && osis_commit::SyncCopy::decode(p).unwrap().thing == g), "T's key part carries G's sync copies");
+    assert!(carried.values().all(|(_, p)| !holds_any(p, &forbidden)), "no header byte in a logged sync copy");
+}

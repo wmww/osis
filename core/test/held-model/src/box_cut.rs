@@ -19,7 +19,10 @@
 //! steps, H junk ones; an admin removes holders. Sync and read
 //! share one epoch counter. R reads T's key part: T's edge piece on X as the rule cuts it,
 //! closed over evidence (the edge writes on each copied commit's hop (signer, X)), but for a
-//! holder of sync alone (no evidence, spec/permissions.md §4 Key part).
+//! holder of sync alone (no evidence, spec/permissions.md §4 Key part). Which T holds is the
+//! sender's judgement of what it holds (it holds every commit): T reads X where a valid edge write
+//! gives it read, so a forged edge write naming T read (by a holder neither admin nor may-grant,
+//! or by one holding no role: invalid or pending) changes nothing R receives.
 use crate::gen::Rng;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -103,7 +106,8 @@ pub type Held = BTreeSet<(Cid, P)>;
 #[derive(Clone, Debug, Default)]
 pub struct World {
     pub commits: Vec<Commit>,
-    /// T's grant role: sync alone, or read
+    /// The role X's admins grant T (the generator's): sync alone, or read. What R receives
+    /// follows `World::reads`, never this.
     pub t_sync_alone: bool,
 }
 
@@ -131,11 +135,25 @@ pub enum Rule {
     RemovalHeader,
     /// Control: a holder of sync alone holds sync while any box to it opens, the steps aside.
     HolderKept,
+    /// Control: T reads X where any held edge write gives it read, whatever its validity.
+    AnyValidity,
 }
 
 impl World {
     fn commit(&self, c: Cid) -> &Commit {
         self.commits.iter().find(|x| x.id == c).expect("commit")
+    }
+
+    /// Whether T reads X as the sender judges it holding every commit (spec/permissions.md §4 Key
+    /// part): a valid edge write gives T read (`Rule::AnyValidity`: any held one does). Else T
+    /// holds sync alone: its pieces go as sync copies.
+    pub fn reads(&self, rule: Rule) -> bool {
+        let all: Held = self.commits.iter().flat_map(|c| [(c.id, P::Header), (c.id, P::Roles)]).collect();
+        let j = Judge::new(self, &all);
+        self.commits.iter().any(|c| {
+            c.roles.as_ref().is_some_and(|es| es.iter().any(|e| e.holder == T && e.role >= Some(Role::Read)))
+                && (rule == Rule::AnyValidity || j.roles.get(&c.id) == Some(&V::Valid))
+        })
     }
 
     /// The edge writes setting the hop (s, X): evidence of a commit signed by s.
@@ -156,6 +174,7 @@ impl World {
 
     /// The parts a reader of T's key part holds under `rule`.
     pub fn cut(&self, rule: Rule) -> Held {
+        let sync_alone = !self.reads(rule);
         let mut held = Held::new();
         for c in self.named() {
             let pieces: Vec<Id> = match rule {
@@ -167,7 +186,7 @@ impl World {
                     Rule::WholePart => true,
                     Rule::NoRest => false,
                     Rule::RestToSync => pieces.contains(&T),
-                    _ => pieces.contains(&T) && !self.t_sync_alone,
+                    _ => pieces.contains(&T) && !sync_alone,
                 };
             held.extend(pieces.into_iter().map(|h| (c.id, P::Piece(h))));
             if rest {
@@ -176,7 +195,7 @@ impl World {
             if c.step.is_some() {
                 held.insert((c.id, P::Sync));
             }
-            if self.t_sync_alone {
+            if sync_alone {
                 // no edge write, no evidence; the header only where the rule keeps it
                 let removal = c.roles.as_ref().is_some_and(|es| es.iter().any(|e| e.holder == T && e.role.is_none()));
                 if matches!(rule, Rule::WholePart | Rule::SyncHeader) || (rule == Rule::RemovalHeader && removal) {
@@ -189,7 +208,7 @@ impl World {
                 held.insert((c.id, P::Roles));
             }
         }
-        if !self.t_sync_alone {
+        if !sync_alone {
             // closed over evidence
             let mut work: Vec<Cid> = held.iter().map(|(c, _)| *c).collect();
             while let Some(c) = work.pop() {
@@ -215,6 +234,7 @@ impl World {
     /// The reference: whole copies of every commit T's edge piece names (every part, header
     /// included), closed over evidence, but for a holder of sync alone (no evidence).
     pub fn whole(&self) -> Held {
+        let sync_alone = !self.reads(Rule::Spec);
         let mut held = Held::new();
         for c in self.named() {
             held.insert((c.id, P::Header));
@@ -229,7 +249,7 @@ impl World {
                 held.insert((c.id, P::Sync));
             }
         }
-        if !self.t_sync_alone {
+        if !sync_alone {
             let mut work: Vec<Cid> = held.iter().map(|(c, _)| *c).collect();
             while let Some(c) = work.pop() {
                 for d in self.evidence_of(self.commit(c)) {
@@ -286,7 +306,7 @@ pub fn judge(w: &World, held: &Held, rule: Rule) -> Seen {
     }
     out.learned.remove(&T);
     out.learned.remove(&XA);
-    if w.t_sync_alone {
+    if !w.reads(Rule::Spec) {
         // no judging: a box to T proves itself by a held step bearing its sync key
         let borne: BTreeSet<u32> = w.commits.iter().filter(|c| held.contains(&(c.id, P::Sync))).filter_map(|c| c.step).filter(|(_, chain)| *chain).map(|(e, _)| e).collect();
         for c in &w.commits {
@@ -494,7 +514,7 @@ pub fn world(seed: u64) -> World {
     let others = [T, H, O1, O2];
     let events = 4 + r.below(11);
     for _ in 0..events {
-        match r.below(10) {
+        match r.below(11) {
             0..=3 => {
                 // a grant, by XA or a may-grant holder
                 let granters: Vec<Id> = x.iter().filter(|(_, (ro, mg))| *ro == Role::Admin || *mg).map(|(n, _)| *n).collect();
@@ -554,6 +574,16 @@ pub fn world(seed: u64) -> World {
                 // a junk step by H: its chain does not verify
                 let e = if r.chance(50) { epoch } else { fake + 1 };
                 push(&mut w, H, None, Vec::new(), Some((e, false)), None);
+            }
+            8 => {
+                // a forged edge write naming T read, by one that may not grant it: a holder neither
+                // admin nor may-grant (invalid), or one holding no role (pending)
+                let forgers: Vec<Id> = [H, O1, O2].into_iter().filter(|n| x.get(n).is_none_or(|(ro, mg)| *ro != Role::Admin && !*mg)).collect();
+                if forgers.is_empty() {
+                    continue;
+                }
+                let s = r.pick(&forgers);
+                push(&mut w, s, Some(vec![Edge { holder: T, role: Some(Role::Read), may_grant: false }]), Vec::new(), None, None);
             }
             _ => {
                 // an admin removes a holder (no rotation: the next rotation boxes those left)

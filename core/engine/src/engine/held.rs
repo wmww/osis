@@ -683,6 +683,7 @@ impl<'a> On<'a> {
     }
     /// Whether one of them applies (`Timeline::is_applied`).
     pub fn is_applied(&self, w: &osis_perm::WriteId) -> bool {
+        self.stamps.read(&Read::Held(self.thing));
         self.tl.is_applied(w)
     }
     /// `holder`'s edge on it just before `point` (`None`: now).

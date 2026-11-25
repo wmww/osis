@@ -322,9 +322,11 @@ fn join_steps(a: &mut ct::SyncIds, b: &ct::SyncIds) {
 
 impl Core {
     /// Whether `h`'s edge pieces on `x` go as sync copies (spec/permissions.md §4 Key part): a
-    /// held edge write on `x` gives `h` a role, none gives it read or above (its own self-writes
-    /// aside) and `h` is not `x`'s mint admin, whatever their validity: no edge of the evidence's
-    /// read graph (`evidence::Write::gives_read`), so Role changes travel carries no write of it.
+    /// held edge write on `x` gives `h` a role, none valid here gives it read or above (its own
+    /// self-writes aside: `edge_gives_read`) and `h` is not `x`'s mint admin: no edge of the
+    /// evidence's read graph (`evidence::Write::gives_read`), so Role changes travel carries no
+    /// write of it. An invalid or pending write giving read (a writer of `h` or of `x` may sign
+    /// any) changes nothing: what `h`'s readers receive is decided by valid writes alone.
     /// A holder that read `x` keeps certificate copies after a lowering or removal: its readers
     /// hold `x`'s record and judge its role commits. A holder no held write gives a role (a
     /// removal by a node that never held its grant) goes as a reader does: its fire is the one
@@ -339,15 +341,27 @@ impl Core {
         }
         let mut role = false;
         for rc in self.ix.held.edge_commits(x).iter() {
-            let leave = osis_base::Holder::Thing(*rc.path_to(x).last().unwrap_or(&rc.signer));
-            for e in rc.ops.iter().filter(|o| o.target == *x && o.holder == hd).filter_map(|o| o.edge) {
-                if e.role >= Role::Read && hd != leave {
+            for o in rc.ops.iter().filter(|o| o.target == *x && o.holder == hd) {
+                if self.edge_gives_read(rc, o) {
                     return false;
                 }
-                role = true;
+                role |= o.edge.is_some();
             }
         }
         role
+    }
+
+    /// Whether edge write `o` of held role commit `rc` gives its holder read (spec/permissions.md
+    /// §4 Role changes travel): read or above, no self-write (its path ending at the holder), and
+    /// applied in the walk here (valid: not invalid, not pending). The one reading of a read
+    /// edge: the evidence derivation's (`evidence::held::copy_parts`) and `sync_alone_on`'s.
+    pub(crate) fn edge_gives_read(&self, rc: &osis_perm::RoleCommit, o: &osis_perm::EdgeOp) -> bool {
+        let leave = osis_base::Holder::Thing(*rc.path_to(&o.target).last().unwrap_or(&rc.signer));
+        let Some(i) = rc.ops.iter().position(|x| std::ptr::eq(x, o)).and_then(|i| u32::try_from(i).ok()) else { return false };
+        o.holder.thing().is_some()
+            && o.holder != leave
+            && o.edge.is_some_and(|e| e.role >= Role::Read)
+            && self.timelines().on(&o.target).is_some_and(|on| on.is_applied(&osis_perm::WriteId(rc.id, i)))
     }
 
     /// Whether `u` holds sync on `y` as the sync copies of `y` counting here tell (no grant of

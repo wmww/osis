@@ -35,11 +35,12 @@ fn e1(w: &mut World) -> Rule {
     derived()
 }
 
-/// Part `i` of the model's world as the derivation's input.
-fn part(w: &World, i: Id) -> Part<Thing, Key> {
+/// Part `i` of the model's world as the derivation's input, `reads` the writes giving read that
+/// the node holding it judges valid (`World::reads_valid`), as the engine feeds it.
+fn part(w: &World, i: Id, reads: &Set) -> Part<Thing, Key> {
     let pw = &w.w;
     let kind = match &pw.commits[i].kind {
-        paths::Kind::Edge { holder, role, .. } => Kind::Write(Write { holder: *holder, gives_read: *role >= Role::Read && !pw.leave(i) }),
+        paths::Kind::Edge { holder, role, .. } => Kind::Write(Write { holder: *holder, gives_read: *role >= Role::Read && !pw.leave(i) && reads.contains(&i) }),
         _ => Kind::Content,
     };
     Part::new(kind, Some(pw.hops(i).to_vec()))
@@ -88,7 +89,8 @@ impl Driver {
     /// Moves the derivation to held set `h` and units `units`: new copies, forgotten copies,
     /// retags.
     fn step(&mut self, w: &World, h: &Set, units: &BTreeMap<Thing, Things>) {
-        let now: HeldCopies = copies_of(w, h).into_iter().map(|(c, ids)| (c, ids.iter().map(|&i| part(w, i)).collect())).collect();
+        let reads = w.reads_valid(h);
+        let now: HeldCopies = copies_of(w, h).into_iter().map(|(c, ids)| (c, ids.iter().map(|&i| part(w, i, &reads)).collect())).collect();
         for (c, parts) in &now {
             // other parts held (the model's per-part events): taken again
             if self.held.get(c) != Some(parts) {

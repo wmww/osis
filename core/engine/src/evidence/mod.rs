@@ -13,7 +13,7 @@
 //! edge of its stated paths and on each edge it writes, whatever their validity or order, and the
 //! `sync.0` writes recording the steps that place the delete keys it lists. **Keys-open travel**
 //! (`Config::keys_open`) is a graph over things, kept as an index so a change reaches only the sync
-//! IDs it can move: edges of held writes giving read, and record edges (`add_record`, standing
+//! IDs it can move: edges of held writes giving read (valid ones: `Write::gives_read`), and record edges (`add_record`, standing
 //! while the record is held), from a sync ID's actor to the holders whose role changes travel under it.
 
 use osis_base::memo::Stamps;
@@ -57,11 +57,13 @@ pub type Stepped<C, T> = BTreeSet<CopyId<C, T>>;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Write<H> {
     pub holder: H,
-    /// It gives read or above (any `until`) and is no self-removal: a step by which keys open
-    /// (keys-open travel), and what makes every write on its edge travel (Role changes travel:
-    /// a write travels on an edge a held write giving read or a record stands on; one only ever
-    /// giving sync reaches its holder's readers as sync copies alone, no header,
-    /// spec/permissions.md §4 Key part).
+    /// It gives read or above (any `until`), is no self-removal and is valid at the node feeding
+    /// it: a step by which keys open (keys-open travel), and what makes every write on its edge
+    /// travel (Role changes travel: a write travels on an edge a valid held write giving read or
+    /// a record stands on; one giving no more than sync reaches its holder's readers as sync
+    /// copies alone, no header, spec/permissions.md §4 Key part). The derivation itself reads no
+    /// verdict: its feeder decides this one fact (`Core::edge_gives_read`), so an invalid write
+    /// opens no keys and turns no holder's pieces to certificate copies.
     pub gives_read: bool,
 }
 
