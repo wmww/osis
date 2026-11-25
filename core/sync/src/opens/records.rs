@@ -129,8 +129,14 @@ fn encode_member(m: &Member, basis: Option<&[u8; 32]>) -> Vec<u8> {
             w.extend_from_slice(&e.n().to_be_bytes());
             w.extend_from_slice(e.nonce());
         }
-        Credential::SyncKey => w.push(1),
-        Credential::SyncProof => w.push(2),
+        Credential::SyncKey(k) => {
+            w.push(1);
+            w.extend_from_slice(&k);
+        }
+        Credential::SyncProof(k) => {
+            w.push(2);
+            w.extend_from_slice(&k);
+        }
         Credential::Claim => w.push(3),
         Credential::Static(k) => {
             w.push(4);
@@ -159,8 +165,8 @@ fn decode_member(v: &[u8]) -> Res<(Member, Option<[u8; 32]>)> {
             let n = r.u64()?;
             Credential::ReadSecret(Epoch::new(n, r.a32()?).map_err(|_| corrupt())?)
         }
-        1 => Credential::SyncKey,
-        2 => Credential::SyncProof,
+        1 => Credential::SyncKey(r.a32()?),
+        2 => Credential::SyncProof(r.a32()?),
         3 => Credential::Claim,
         4 => Credential::Static(r.a32()?),
         5 => Credential::J,

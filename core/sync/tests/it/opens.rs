@@ -232,13 +232,13 @@ fn a_store_with_no_head_opens_by_its_grant_under_a_newer_box_spec_sync_opens_4()
     let mut r = Side::new(1);
     let mut k = Side::new(2);
     let mut rc = reader(&S, &read_secret(1, 0), &st, &[], &[], &[]);
-    rc.shows.retain(|(x, _)| !matches!(x, osis_sync::opens::cred::Shown::Proof(_)));
+    rc.shows.retain(|(x, _)| !matches!(x, osis_sync::opens::cred::Shown::Proof(..)));
     r.table.set(S, Some(rc));
     k.table.set(S, Some(store_no_head(&[&junk, &st])));
     let mut p = Pair::new(r, k, Proven::default(), Proven::default());
     p.run();
     assert!(p.a.open(p.ca, &S) && p.b.open(p.cb, &S), "open both ways");
-    assert_eq!(p.a.opens.members(p.ca)[&S].by, Credential::SyncKey);
+    assert_eq!(p.a.opens.members(p.ca)[&S].by, Credential::SyncKey(st.pk()));
 }
 
 // spec/sync-ids.md §6 (Walk: a refused Hit counts as none shown): a reader whose walk Hit at a
@@ -270,13 +270,13 @@ fn a_store_answers_a_hit_on_its_heads_sync_key_spec_sync_opens_5() {
     let mut r = Side::new(1);
     let mut k = Side::new(2);
     let mut rc = reader(&S, &read_secret(1, 0), &st, &[], &[], &[]);
-    rc.shows.retain(|(x, _)| !matches!(x, osis_sync::opens::cred::Shown::Proof(_)));
+    rc.shows.retain(|(x, _)| !matches!(x, osis_sync::opens::cred::Shown::Proof(..)));
     r.table.set(S, Some(rc));
     k.table.set(S, Some(store(&st)));
     let mut p = Pair::new(r, k, Proven::default(), Proven::default());
     p.run();
     assert!(p.a.open(p.ca, &S) && p.b.open(p.cb, &S));
-    assert_eq!(p.b.opens.members(p.cb)[&S].by, Credential::SyncKey);
+    assert_eq!(p.b.opens.members(p.cb)[&S].by, Credential::SyncKey(st.pk()));
 }
 
 // spec/sync-opens.md §5 (ByRole): J judging the peer a reader opens S with no credential in

@@ -1218,7 +1218,8 @@ fn at_check(w: &mut World, refs: &mut Refs, m: &Model) -> String {
 /// value of the thing only where the model reads it, and there reads as the reference (no value
 /// where the thing's making was lost and no later value stands, `lost_writes`); its sync set holds a
 /// independent thing read, for keys or kept unread exactly as the model does; it keeps no store entry
-/// under the sync ID of an independent thing the model has it neither read nor keep unread.
+/// under the sync ID of an independent thing the model has it neither read nor keep unread; its
+/// store of one it keeps unread stands at the head an online reader records.
 fn closure_clauses(w: &mut World, refs: &mut Refs, m: &Model, gone: &BTreeSet<String>) {
     let things = w.history.things.clone();
     let ids: Vec<Option<osis_base::SyncId>> = things.iter().map(|(t, _)| refs.all().find_map(|r| r.engine.sync_id_of(t).ok().flatten())).collect();
@@ -1268,6 +1269,19 @@ fn closure_clauses(w: &mut World, refs: &mut Refs, m: &Model, gone: &BTreeSet<St
                 if !excused && !stopped && held != want {
                     panic!("node {i}'s sync set holds thing {k} as {held:?}, the model {want:?}\n{}", why_role(w, i, t));
                 }
+                // a node keeping it unread stands where its readers do: moved along their recorded
+                // path to its head, or to a recorded sibling as deep (siblings stand: spec/sync-ids.md
+                // §6 Steps, Register), it takes what they log
+                if let Some(s) = &ids[k]
+                    && !excused
+                    && want == Some(Holding::Unread)
+                    && let Some((depth, recorded)) = recorded_steps(w, t, s)
+                {
+                    let path = w.store(i).path(s).expect("path").map(|p| p.steps.iter().map(|(st, _)| st.id()).collect::<Vec<_>>()).unwrap_or_default();
+                    if path.len() != depth || !path.last().is_some_and(|h| recorded.contains(h)) {
+                        panic!("node {i} keeps thing {k} unread at step {:?} ({} deep), its readers' head is {depth} deep\n{}", path.last(), path.len(), why_role(w, i, t));
+                    }
+                }
                 if let Some(s) = &ids[k]
                     && want.is_none()
                 {
@@ -1279,6 +1293,19 @@ fn closure_clauses(w: &mut World, refs: &mut Refs, m: &Model, gone: &BTreeSet<St
             }
         }
     }
+}
+
+/// The length of the path an online node reading `t` records for its sync ID `s`, with every
+/// step its `sync.0` records, when one does.
+fn recorded_steps(w: &mut World, t: &Tid, s: &osis_base::SyncId) -> Option<(usize, BTreeSet<osis_blob::StepId>)> {
+    let on: Vec<usize> = (0..w.len()).filter(|i| w.online(*i)).collect();
+    for i in on {
+        let reads = w.engine(i).sync_set().expect("sync set").ids.get(s).is_some_and(|(_, h)| *h == Holding::Read);
+        if reads && let Some(o) = w.engine(i).sync_ids(t).expect("sync ids").iter().find(|o| o.id == *s && !o.hint) {
+            return Some((o.path.steps.len(), o.tree.keys().copied().collect()));
+        }
+    }
+    None
 }
 
 /// `check`'s card clause (spec/sync-inbox.md §1 Card): each online node of an account takes every

@@ -221,6 +221,30 @@ fn a_sync_alone_holder_gets_no_header_spec_sync_ids_2() {
     assert!(copy.commit == rot && copy.thing == g && copy.piece.is_some(), "T's piece of the rotation");
 }
 
+// spec/wire.md §4 (sync copy: read for its boxes and steps), spec/sync-ids.md §4 (Owner): G's
+// sync role rotated, its next step recorded beside its genesis. The sync copies of G's `sync.0`
+// writes for T carry every step of G's path: a later step's write joins the entry its genesis
+// made, so a read of that delta alone shows no step. Fails reading the delta as a value (a holder
+// granted after the step holds no step bearing its secret: no sync ID, no head).
+#[test]
+fn sync_copies_carry_every_recorded_step_spec_wire_4() {
+    let (mut lp, g, t) = sync_holder();
+    lp.peers[0].engine.rotate_leaving_out(&g, &[Role::Sync], &[]).unwrap().unwrap();
+    let s = lp.peers[0].engine.sync_id_of(&g).unwrap().unwrap();
+    lp.peers[0].engine.issue_step(&g, &s, false).unwrap().expect("a step due");
+    let e = &mut lp.peers[0].engine;
+    let path: BTreeSet<[u8; 32]> = e.sync_ids(&g).unwrap().iter().flat_map(|o| o.path.steps.iter().map(|(st, _)| st.id().0)).collect();
+    assert!(path.len() >= 2, "a step past genesis recorded");
+    let writes: Vec<CommitId> = osis_base::Ak::new("sync.0").ok().and_then(|k| e.core.ix.by_aspect.get(&(g, k))).into_iter().flatten().map(|(_, x)| *x).collect();
+    let mut carried = BTreeSet::new();
+    for c in writes {
+        let Some((copy, _)) = e.sync_copy(&c, &g, &t).unwrap() else { continue };
+        let held = crate::sync_ids::unread::parse(t, false, &copy.encode()).expect("a sync copy");
+        carried.extend(held.steps.values().flat_map(|x| x.steps.keys().copied()));
+    }
+    assert_eq!(carried, path, "every step of G's path");
+}
+
 // spec/wire.md §4 (sync copy: one whose piece holds a record keyed with another holder is bad
 // input), spec/permissions.md §4 (Logging certificates: counts once its box opens to a secret a
 // step bears): T's sync copy of a rotation, sealed by anyone holding a keyset of another

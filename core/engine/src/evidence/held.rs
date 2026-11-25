@@ -153,37 +153,14 @@ fn level(l: u8) -> Option<Level> {
     }
 }
 
-/// The steps the held `sync.0` body of commit `id` (aspect `ai`) records: each step entry whose
-/// step it writes, in any sync ID's entry, created there or not (a step joins the entry its
-/// sync ID's genesis made, so a read of the delta alone shows none of it: spec/crdt.md §5.6). None
+/// The steps the held `sync.0` body of commit `id` (aspect `ai`) records (`written_steps`). None
 /// where the body is not held; a step that does not parse is none.
 fn recorded_steps(tx: &mut Tx<'_>, id: &CommitId, ai: usize) -> Result<Vec<Step<Key32>>> {
-    use osis_crdt::{Encoding, Fragment, SlotRef};
-    fn at(f: &Fragment, enc: Encoding) -> Option<&Fragment> {
-        match f.slot(enc)? {
-            SlotRef::Frag(x) => Some(x),
-            SlotRef::Reg(_) => None,
-        }
-    }
-    // map<sync ID, {0 steps: map<step ID, {0 step, ..}>}>
-    fn entries(f: &Fragment) -> Vec<&Fragment> {
-        match at(f, Encoding::Map) {
-            Some(Fragment::Map(m)) => m.entries().filter_map(|e| e.3).collect(),
-            _ => vec![],
-        }
-    }
-    fn field(f: &Fragment, id: u64) -> Option<&Fragment> {
-        match at(f, Encoding::Struct)? {
-            Fragment::Struct(s) => s.field(id),
-            _ => None,
-        }
-    }
     let Some(f) = crate::apply::held_fragment(tx, id, ai)? else { return Ok(vec![]) };
     let mut out = Vec::new();
-    for e in entries(&f) {
-        for r in field(e, 0).map(entries).unwrap_or_default() {
-            let Some(osis_base::Value::Bytes(b)) = field(r, 0).and_then(Fragment::read) else { continue };
-            let Ok(s) = osis_blob::step::Step::parse(&b) else { continue };
+    for e in crate::sync_ids::steps::written_steps(&f).values() {
+        for r in e.steps.values() {
+            let Ok(s) = osis_blob::step::Step::parse(&r.step) else { continue };
             out.push(Step { id: s.id().0, prev: s.prev.map(|p| p.0), delete: s.keys.delete.to_bytes(), write: s.keys.write.to_bytes() });
         }
     }

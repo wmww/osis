@@ -210,7 +210,7 @@ impl T {
     }
 
     fn join(&mut self, c: ConnId, s: SyncId, class: SourceClass) {
-        self.net.members.insert((c, s), Member { class, own: SourceClass::Reader, by: Credential::SyncKey, until: None, departed: false });
+        self.net.members.insert((c, s), Member { class, own: SourceClass::Reader, by: Credential::SyncKey([0; 32]), until: None, departed: false });
         let _ = Moved::Joined(c, s, osis_sync::opens::Rejoin::Held);
         self.offers.joined(c, &s, &self.net);
         self.settle();
@@ -502,8 +502,13 @@ fn plan_in(st: &Steps, tree: &BTreeMap<StepId, Step>, at: Option<StepId>, p: Pro
 
 /// As `plan_in`, `sync.0` recording endorsements `endorsed` too.
 fn plan_endorsed(st: &Steps, tree: &BTreeMap<StepId, Step>, endorsed: &BTreeMap<StepId, BTreeMap<[u8; 32], osis_crypto::Signature>>, at: Option<StepId>, p: Progress, held: &[StepId]) -> Plan {
+    plan_by(st, tree, endorsed, at, p, None, held)
+}
+
+/// As `plan_endorsed`, S open at the source by sync key `key`.
+fn plan_by(st: &Steps, tree: &BTreeMap<StepId, Step>, endorsed: &BTreeMap<StepId, BTreeMap<[u8; 32], osis_crypto::Signature>>, at: Option<StepId>, p: Progress, key: Option<[u8; 32]>, held: &[StepId]) -> Plan {
     let o = osis_engine::sync::OwnedSyncId { id: st.steps[0].0.sync_id, path: st.path(), tree: Arc::new(tree.clone()), endorsed: Arc::new(endorsed.clone()), hint: false };
-    plan(at, &o, &p, &mut |x: &StepId| Ok(held.contains(x))).unwrap()
+    plan(at, &o, &p, key, &mut |x: &StepId| Ok(held.contains(x))).unwrap()
 }
 
 /// The single step a plan sends.
@@ -548,6 +553,23 @@ fn a_source_holding_no_step_gets_genesis_first_spec_sync_ids_6() {
     let all = [st.id(0), st.id(1), st.id(2)];
     let at = Progress { at: Some(st.id(0)), ..Progress::default() };
     assert_eq!(sends(&plan_at(&st, None, at, &all)), Some(st.id(1)), "then the next");
+}
+
+// spec/sync-ids.md §6 (Steps), spec/sync-judgement.md §6 (Stops): a source on a step past its
+// keys (S open there by a sync key its step does not bear: a store granted after S's epochs moved
+// on, registered the genesis step) takes nothing, so it can show no role commit: each step goes at
+// once until it stands at a step bearing that key, then each waits on the role commits again.
+// Fails with the wait applied at a step past its keys (the store is never moved).
+#[test]
+fn a_source_past_its_keys_is_moved_at_once_spec_sync_ids_6() {
+    let st = Steps::new(4);
+    let k2 = Some(st.steps[2].0.keys.sync.to_bytes());
+    let by = |at: usize, p: Progress, key: Option<[u8; 32]>| plan_by(&st, &st.tree(&[]), &BTreeMap::new(), Some(st.id(at)), p, key, &[]);
+    assert_eq!(sends(&by(0, Progress::default(), k2)), Some(st.id(1)), "past its keys: at once");
+    let at1 = Progress { at: Some(st.id(1)), ..Progress::default() };
+    assert_eq!(sends(&by(0, at1, k2)), Some(st.id(2)), "still past them: at once");
+    assert_eq!(by(2, Progress::default(), k2), Plan::Wait, "at the step bearing its key: the role commits first");
+    assert_eq!(by(0, Progress::default(), Some(st.steps[0].0.keys.sync.to_bytes())), Plan::Wait, "open by its step's key: the role commits first");
 }
 
 // spec/sync-ids.md §6 (register: a branch): at a source on a recorded sibling of the recorded

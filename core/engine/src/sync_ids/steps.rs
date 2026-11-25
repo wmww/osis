@@ -19,7 +19,7 @@
 
 use crate::engine::Core;
 use osis_base::format::{DELETE_ADMIN, DELETE_AUTHOR, DELETE_WRITER};
-use osis_base::{CommitId, SyncId, Tid, Ts};
+use osis_base::{CommitId, SyncId, Tid, Ts, Value};
 use osis_commit::Header;
 use osis_blob::{Step, StepId};
 use osis_crdt::{Fragment, PathSeg};
@@ -27,6 +27,27 @@ use osis_schema::core_types as ct;
 use osis_schema::{Codec, RawKey};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
+
+/// The step records a `sync.0` delta `f` writes, per sync ID: each step entry it writes whole
+/// (its step bytes in it), in any sync ID's entry, created there or not. A step joins the entry
+/// its sync ID's genesis made, so a read of the delta alone shows none of it (spec/crdt.md §5.6):
+/// a commit is read for its steps by this, never by `read`.
+pub(crate) fn written_steps(f: &Fragment) -> ct::SyncIds {
+    use crate::apply::keys::{field, map};
+    let mut out = ct::SyncIds::new();
+    // map<sync ID, {0 steps: map<step ID, {0 step, ..}>}>, each map's entries live or not
+    for (_, _, k, e) in map(Some(f)).into_iter().flat_map(|m| m.entries()) {
+        let (Some(Ok(sync_id)), Some(e)) = (k.map(SyncId::from_value), e) else { continue };
+        for (_, _, sk, r) in map(field(e, 0)).into_iter().flat_map(|m| m.entries()) {
+            let (Some(Ok(id)), Some(Ok(rec))) = (sk.map(<[u8; 32]>::from_value), r.and_then(Fragment::read).map(|v| ct::StepRecord::from_value(&v))) else { continue };
+            if rec.step.is_empty() {
+                continue;
+            }
+            out.entry(sync_id).or_insert_with(|| ct::SyncEntry { steps: BTreeMap::new() }).steps.insert(id, rec);
+        }
+    }
+    out
+}
 
 /// A step on a verified path from its sync ID's genesis step.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -65,7 +86,7 @@ impl Recorded {
                 if s.id().0 != *id || s.sync_id != *sync_id {
                     continue;
                 }
-                let path = [PathSeg::Key(sync_id.to_value()), PathSeg::Field(0), PathSeg::Key(osis_base::Value::Bytes(id.to_vec())), PathSeg::Field(0)];
+                let path = [PathSeg::Key(sync_id.to_value()), PathSeg::Field(0), PathSeg::Key(Value::Bytes(id.to_vec())), PathSeg::Field(0)];
                 let Some(ts) = f.at(&path).and_then(|x| x.write_stamp().map(|s| s.ts)) else { continue };
                 steps.insert(StepId(*id), (s, ts));
             }

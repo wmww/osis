@@ -61,8 +61,10 @@ pub fn class_of(h: Holding) -> SourceClass {
 pub enum Credential {
     /// A read secret of this epoch shown on the connection.
     ReadSecret(Epoch),
-    SyncKey,
-    SyncProof,
+    /// A sync key, by itself (its public bytes).
+    SyncKey([u8; 32]),
+    /// The sync proof of this sync key.
+    SyncProof([u8; 32]),
     Claim,
     /// A static entry of S's roster.
     Static([u8; 32]),

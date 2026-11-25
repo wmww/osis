@@ -60,7 +60,7 @@ impl Creds {
         let mut c = Creds { holding: Some(Holding::Unread), ..Creds::default() };
         for (k, p) in &uc.keys {
             c.shows.push((Shown::SyncKey(k.verifying_key().to_bytes()), None));
-            c.shows.push((Shown::Proof(*p.expose()), None));
+            c.shows.push((Shown::Proof(*p.expose(), k.verifying_key().to_bytes()), None));
         }
         if let Some(d) = &uc.deposit {
             c.shows.push((Shown::Deposit(d.to_bytes()), None));
@@ -76,7 +76,7 @@ impl Creds {
         }
         for (k, p) in &uc.keys {
             c.tests.push((Tested::SyncKey { step: uc.step, key: k.clone() }, None));
-            c.tests.push((Tested::Proof(*p.expose()), None));
+            c.tests.push((Tested::Proof(*p.expose(), k.verifying_key().to_bytes()), None));
         }
         c.step = uc.keys.first().map(|(k, _)| (k.clone(), None));
         c
@@ -247,9 +247,9 @@ fn node_creds(cx: &mut Cx, unread: &Unread, s: &SyncId) -> Option<Arc<Creds>> {
             if let (Some(head), Some((id, p))) = (&rc.head, rc.proofs.first())
                 && head.id() == *id
             {
-                c.shows.push((Shown::Proof(*p), None));
+                c.shows.push((Shown::Proof(*p, head.keys.sync.to_bytes()), None));
             }
-            c.walk = rc.proofs.iter().filter(|(id, _)| rc.head.as_ref().is_none_or(|h| h.id() != *id)).map(|(_, p)| Shown::Proof(*p)).collect();
+            c.walk = rc.proofs.iter().filter(|(id, _)| rc.head.as_ref().is_none_or(|h| h.id() != *id)).filter_map(|(id, p)| Some(Shown::Proof(*p, rc.keys.get(id)?.sync.as_ref()?.verifying_key().to_bytes()))).collect();
             c.walk.extend(rc.old_read_secrets.iter().map(|(e, k)| Shown::Read(*e, *k.expose())));
             let path = path_of(cx, s).unwrap_or_default();
             c.tests.extend(walk_tests(&rc, &path, &mut |id| cx.engine.claim_key(s, id).ok().flatten()));

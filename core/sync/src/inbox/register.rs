@@ -4,7 +4,10 @@
 //! member of class `Store`), the steps its `sync.0` records after the source's step (the head its
 //! stream names), in order, one Register out at a time; each only once the source's stream showed
 //! every role commit the step's epochs depend on (`Engine::step_needs`, a blob of each present by
-//! `Net::present`). At a source whose step is not known (its stream named no head yet) the
+//! `Net::present`), but at once at a source that takes nothing: a departed peer's, and one on a
+//! step past its keys (S open there by a sync key, or the proof of one, its step does not bear: a
+//! store granted after S's epochs moved on stands at genesis holding a later key) until it stands
+//! at a step bearing that key. At a source whose step is not known (its stream named no head yet) the
 //! genesis step goes first, at once: a source holding no step takes it before anything it pulls
 //! (it can take no entry of S without a head), one holding a step refuses it (9) and waits for
 //! its head event, which comes with its first Pull reply. Ok moves on to the
@@ -31,7 +34,7 @@ use super::offers::backoff_ms;
 use super::{Here, Net};
 use crate::session::RequestId;
 use crate::store::Source;
-use crate::types::{ConnId, Result, SourceClass};
+use crate::types::{ConnId, Credential, Result, SourceClass};
 use osis_base::memo::{Effects, Stamped};
 use osis_base::{Mono, SyncId};
 use osis_engine::Engine;
@@ -205,7 +208,12 @@ fn judge(engine: &mut Engine, net: &impl Net, progress: &Stamped<Key, Progress>,
         }
         Ok(true)
     };
-    let plan = plan(net.head(*src, s), &o, &p, &mut needs_held)?;
+    // the sync key S opened there by: a store shows only its head's while it holds it
+    let key = match m.by {
+        Credential::SyncKey(k) | Credential::SyncProof(k) => Some(k),
+        _ => None,
+    };
+    let plan = plan(net.head(*src, s), &o, &p, key, &mut needs_held)?;
     // the connection is read only where a step is to go: up again, it goes
     Ok(match plan {
         Plan::Send(..) if net.conn_of(*src).is_none() => Plan::Wait,
@@ -223,17 +231,20 @@ fn judge(engine: &mut Engine, net: &impl Net, progress: &Stamped<Key, Progress>,
 /// endorsed by that key, with the endorsement; at a source whose step is not known, its genesis
 /// step, at once. Claim sets go while the message fits `MAX_MESSAGE`, the earliest dropped first;
 /// nothing goes when the steps alone do not fit.
-pub fn plan(source: Option<StepId>, o: &OwnedSyncId, p: &Progress, held: &mut dyn FnMut(&StepId) -> Result<bool>) -> Result<Plan> {
+pub fn plan(source: Option<StepId>, o: &OwnedSyncId, p: &Progress, key: Option<[u8; 32]>, held: &mut dyn FnMut(&StepId) -> Result<bool>) -> Result<Plan> {
     let (path, tree): (&Path, &BTreeMap<StepId, Step>) = (&o.path, &o.tree);
     if p.out || p.backoff.is_some() || p.stuck.is_some_and(|x| x == source) {
         return Ok(Plan::Wait);
     }
     let index = |id: &Option<StepId>| id.and_then(|id| path.steps.iter().position(|(st, _)| st.id() == id));
-    // the recorded steps `from..=to`, once the source holds what each depends on
-    let mut send = |from: usize, to: usize, endorsement: Option<Signature>| -> Result<Plan> {
+    // a source on a step past its keys: S opened there by a sync key that step does not bear
+    let past = |st: &Step| key.is_some_and(|k| st.keys.sync.to_bytes() != k);
+    // the recorded steps `from..=to`, once the source holds what each depends on; at once from a
+    // step past its keys, where it takes nothing, so holds nothing they depend on
+    let mut send = |from: usize, to: usize, endorsement: Option<Signature>, at_once: bool| -> Result<Plan> {
         let Some(steps) = path.steps.get(from..=to) else { return Ok(Plan::Nothing) };
         for (st, _) in steps {
-            if !held(&st.id())? {
+            if !at_once && !held(&st.id())? {
                 return Ok(Plan::Wait);
             }
         }
@@ -241,7 +252,8 @@ pub fn plan(source: Option<StepId>, o: &OwnedSyncId, p: &Progress, held: &mut dy
     };
     // the source's step: its head event's, or a later one this node registered there
     if let Some(i) = index(&source).max(index(&p.at)) {
-        return send(i + 1, i + 1, None);
+        let at_once = path.steps.get(i).is_some_and(|(st, _)| past(st));
+        return send(i + 1, i + 1, None, at_once);
     }
     let Some(at) = source else {
         return Ok(match path.steps.first() {
@@ -264,11 +276,11 @@ pub fn plan(source: Option<StepId>, o: &OwnedSyncId, p: &Progress, held: &mut dy
     // a store moves off a step bearing its head's delete key, or to a step that key endorsed
     let d = source_step.keys.delete;
     match path.steps.get(fork) {
-        Some((f, _)) if f.keys.delete == d => send(fork + 1, fork + up + 1, None),
+        Some((f, _)) if f.keys.delete == d => send(fork + 1, fork + up + 1, None, past(source_step)),
         Some(_) => {
             let endorsed = path.steps.iter().enumerate().skip(fork + up + 1).find_map(|(j, (st, _))| o.endorsed.get(&st.id()).and_then(|e| e.get(&d.to_bytes())).map(|e| (j, *e)));
             match endorsed {
-                Some((j, e)) => send(fork + 1, j, Some(e)),
+                Some((j, e)) => send(fork + 1, j, Some(e), past(source_step)),
                 None => Ok(Plan::Nothing),
             }
         }

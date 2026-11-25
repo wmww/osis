@@ -30,7 +30,6 @@ use osis_base::{BlobId, CommitId, Role, Tid};
 use osis_crypto::{Epoch, Secret32};
 use osis_schema::core_types as ct;
 use osis_schema::core_types::{BoxKey, SecretBox};
-use osis_schema::RawKey;
 use osis_store::Shred;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -88,24 +87,6 @@ fn read_headerless(bytes: &[u8], commit: &CommitId) -> Option<osis_crdt::Fragmen
     osis_crdt::decode_delta(bytes, &cx, &mut interner, None).ok().map(|d| d.fragment)
 }
 
-/// The step records a `sync.0` delta writes, as the delta alone gives them: a sync ID set whole
-/// (a genesis) and each step record set into one (a later step: its delta reads as nothing
-/// without the state it joins). A record that does not decode is no step.
-fn delta_steps(f: &osis_crdt::Fragment) -> ct::SyncIds {
-    use crate::apply::keys::{field, map};
-    use osis_schema::Codec;
-    let mut out: ct::SyncIds = f.read().and_then(|v| ct::SYNC.decode(&v).ok()).unwrap_or_default();
-    for (_, _, k, sub) in map(Some(f)).into_iter().flat_map(|m| m.entries()) {
-        let (Some(id), Some(sub)) = (k.and_then(|k| osis_base::SyncId::from_value(k).ok()), sub) else { continue };
-        for (_, _, sk, rf) in map(field(sub, 0)).into_iter().flat_map(|m| m.entries()) {
-            let Some(Ok(sk)) = sk.map(<[u8; 32]>::from_value) else { continue };
-            let Some(Ok(rec)) = rf.and_then(osis_crdt::Fragment::read).map(|v| ct::StepRecord::from_value(&v)) else { continue };
-            out.entry(id).or_insert_with(|| ct::SyncEntry { steps: BTreeMap::new() }).steps.entry(sk).or_insert(rec);
-        }
-    }
-    out
-}
-
 /// Reads sync copy `plain`, come under `under` (`sealed`: sealed to it): `None` when it is bad
 /// input (spec/wire.md §4: not a sync copy; a copy of `under` itself; its piece holding records
 /// keyed with two holders, or one keyed with none: a history box; a delta that does not decode).
@@ -128,7 +109,7 @@ pub(crate) fn parse(under: Tid, sealed: bool, plain: &[u8]) -> Option<HeldSyncCo
         return None;
     }
     let steps = match &copy.sync {
-        Some(s) => delta_steps(&read_headerless(s, &copy.commit)?),
+        Some(s) => super::steps::written_steps(&read_headerless(s, &copy.commit)?),
         None => ct::SyncIds::default(),
     };
     Some(HeldSyncCopy { under, holder, sealed, key: content_key(plain), copy, boxes, steps })

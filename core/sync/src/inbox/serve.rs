@@ -37,5 +37,5 @@ pub(super) fn request(h: &mut Here<'_>, net: &mut impl Net, conn: ConnId, id: Re
 /// proof is keyed by S's sync proof), a claim or a static entry (spec/sync-ids.md §6 Delete,
 /// spec/sync-opens.md §4).
 fn store_credential(c: Credential) -> bool {
-    matches!(c, Credential::SyncKey | Credential::SyncProof | Credential::Claim | Credential::Static(_))
+    matches!(c, Credential::SyncKey(_) | Credential::SyncProof(_) | Credential::Claim | Credential::Static(_))
 }

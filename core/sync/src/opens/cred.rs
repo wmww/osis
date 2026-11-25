@@ -83,7 +83,8 @@ pub fn beacon_of(m: &[u8; 32], s: &SyncId, r: &[u8; 32]) -> [u8; 32] {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Shown {
     Read(Epoch, [u8; 32]),
-    Proof([u8; 32]),
+    /// A sync proof, with the sync key it is of.
+    Proof([u8; 32], [u8; 32]),
     SyncKey([u8; 32]),
     Claim([u8; 32]),
     Static([u8; 32]),
@@ -98,7 +99,7 @@ impl Shown {
     /// The match value (spec/sync-opens.md §5 Beacon).
     pub fn matched(&self) -> &[u8; 32] {
         match self {
-            Shown::Read(_, m) | Shown::Proof(m) | Shown::SyncKey(m) | Shown::Claim(m) | Shown::Static(m) | Shown::Public(m) | Shown::Deposit(m) => m,
+            Shown::Read(_, m) | Shown::Proof(m, _) | Shown::SyncKey(m) | Shown::Claim(m) | Shown::Static(m) | Shown::Public(m) | Shown::Deposit(m) => m,
         }
     }
 
@@ -106,8 +107,8 @@ impl Shown {
     pub fn credential(&self) -> Option<Credential> {
         Some(match self {
             Shown::Read(e, _) => Credential::ReadSecret(*e),
-            Shown::Proof(_) => Credential::SyncProof,
-            Shown::SyncKey(_) => Credential::SyncKey,
+            Shown::Proof(_, k) => Credential::SyncProof(*k),
+            Shown::SyncKey(k) => Credential::SyncKey(*k),
             Shown::Claim(_) => Credential::Claim,
             Shown::Static(e) => Credential::Static(*e),
             Shown::Public(_) => Credential::Public,
@@ -120,7 +121,8 @@ impl Shown {
 #[derive(Clone, Debug)]
 pub enum Tested {
     Read(Epoch, Secret32),
-    Proof([u8; 32]),
+    /// A sync proof, with the sync key it is of.
+    Proof([u8; 32], [u8; 32]),
     /// A sync key (`step`'s, none at a node keeping S unread with no head) and its secret: the
     /// Hit carries an open signature by it.
     SyncKey { step: Option<StepId>, key: SigningSecret },
@@ -138,7 +140,7 @@ impl Tested {
     pub fn matched(&self, s: &SyncId) -> [u8; 32] {
         match self {
             Tested::Read(_, k) => *k.expose(),
-            Tested::Proof(p) => *p,
+            Tested::Proof(p, _) => *p,
             Tested::SyncKey { key, .. } | Tested::Claim { key, .. } => key.verifying_key().to_bytes(),
             Tested::Static { key, .. } => static_entry(s, &key.verifying_key()),
             Tested::Public => public_entry(s),
@@ -148,8 +150,8 @@ impl Tested {
     pub fn credential(&self, s: &SyncId) -> Credential {
         match self {
             Tested::Read(e, _) => Credential::ReadSecret(*e),
-            Tested::Proof(_) => Credential::SyncProof,
-            Tested::SyncKey { .. } => Credential::SyncKey,
+            Tested::Proof(_, k) => Credential::SyncProof(*k),
+            Tested::SyncKey { key, .. } => Credential::SyncKey(key.verifying_key().to_bytes()),
             Tested::Claim { .. } => Credential::Claim,
             Tested::Static { key, .. } => Credential::Static(static_entry(s, &key.verifying_key())),
             Tested::Public => Credential::Public,

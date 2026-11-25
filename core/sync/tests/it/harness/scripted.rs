@@ -62,7 +62,7 @@ pub fn link_key(n: u8) -> SigningSecret {
 pub fn reader(s: &SyncId, read: &(Epoch, Secret32), step: &StepKeys, older: &[StepKeys], roster_links: &[&SigningSecret], own_links: &[&SigningSecret]) -> Creds {
     let mut c = Creds { holding: Some(Holding::Read), ..Creds::default() };
     c.shows.push((Shown::Read(read.0, *read.1.expose()), Some(read.0)));
-    c.shows.push((Shown::Proof(step.proof), Some(step.epoch)));
+    c.shows.push((Shown::Proof(step.proof, step.pk()), Some(step.epoch)));
     c.shows.extend(roster_links.iter().map(|k| (Shown::Static(static_entry(s, &k.verifying_key())), None)));
     c.tests.push((Tested::Read(read.0, read.1.clone()), Some(read.0)));
     c.tests.extend(own_links.iter().map(|k| (Tested::Static { step: None, key: (*k).clone() }, None)));

@@ -2065,7 +2065,7 @@ impl Opens {
         let (shows, rest): (Vec<_>, Vec<_>) = creds.shows.iter().partition(|(_, e)| ok(e));
         let shows = shows.into_iter().map(|(x, _)| x.clone()).collect();
         let mut walk: Vec<Shown> = match j {
-            J::Departed => rest.into_iter().map(|(x, _)| x).filter(|x| matches!(x, Shown::Proof(_))).chain(creds.walk.iter()).cloned().collect(),
+            J::Departed => rest.into_iter().map(|(x, _)| x).filter(|x| matches!(x, Shown::Proof(..))).chain(creds.walk.iter()).cloned().collect(),
             _ => Vec::new(),
         };
         walk.extend(creds.lapsed.iter().cloned());
@@ -2125,7 +2125,7 @@ impl Opens {
                 items.push(match t {
                     Tested::SyncKey { key, .. } | Tested::Claim { key, .. } => OfferItem::Hit { hit: h, sig: Some(bind.sign(key, &s)), class },
                     Tested::Static { key, .. } => OfferItem::Static { hit: h, signing_pk: key.verifying_key().to_bytes(), sig: bind.sign(key, &s), class },
-                    Tested::Read(..) | Tested::Proof(_) | Tested::Public => OfferItem::Hit { hit: h, sig: None, class },
+                    Tested::Read(..) | Tested::Proof(..) | Tested::Public => OfferItem::Hit { hit: h, sig: None, class },
                 });
                 sent.push(Sent::Hit { s, cred: Box::new(t.clone()), beacon: b, own: adm.own });
                 hit = true;
@@ -2335,7 +2335,7 @@ impl Opens {
                 return ctx.holds.take_grant(s, &entry, g, &|k| bind.peer_signed(k, s, sig)) || by_j;
             }
             _ if by_j => return true,
-            Tested::Read(..) | Tested::Proof(_) => return true,
+            Tested::Read(..) | Tested::Proof(..) => return true,
             // The replier's step is the step hit: a step older than the one hit proves nothing.
             Tested::SyncKey { key, .. } => key.verifying_key().to_bytes(),
             Tested::Claim { sync, .. } => *sync,
@@ -2386,7 +2386,7 @@ impl Opens {
         // (or, by a lapsed read secret, any peer holding it up to that epoch's supersession)
         let walk = adm.walk.contains(&shown)
             && match shown {
-                Shown::Proof(_) => class == SourceClass::Store,
+                Shown::Proof(..) => class == SourceClass::Store,
                 // a store reads nothing: a read secret proves a reader
                 Shown::Read(..) => class != SourceClass::Store,
                 _ => false,
@@ -2397,7 +2397,7 @@ impl Opens {
         // A deposit key's Hit carries no proof and opens nothing.
         let Some(by) = shown.credential() else { return refuse };
         let proved = match (&shown, signing) {
-            (Shown::Read(..) | Shown::Proof(_), None) => true,
+            (Shown::Read(..) | Shown::Proof(..), None) => true,
             (Shown::SyncKey(k) | Shown::Claim(k), None) => sig.is_some_and(|g| bind.peer_signed(k, &s, g)),
             (Shown::Static(e), None) => proven_statics(&s, &proven).contains(e),
             (Shown::Static(e), Some(pk)) => osis_crypto::VerifyingKey::from_bytes(&pk).is_ok_and(|k| osis_crypto::static_entry(&s, &k) == *e) && sig.is_some_and(|g| bind.peer_signed(&pk, &s, g)),
@@ -2409,7 +2409,7 @@ impl Opens {
         if !proved {
             return refuse;
         }
-        let secret = matches!(shown, Shown::Read(..) | Shown::Proof(_));
+        let secret = matches!(shown, Shown::Read(..) | Shown::Proof(..));
         // A side accepts a Hit on a sync key, claim or static entry only while it holds the sync
         // secret of its step: its answer is signed by it.
         // A Hit on a sync key is answered by that key, one of this side's steps' (a node keeping

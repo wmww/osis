@@ -327,16 +327,29 @@ fn the_publics_read_through_a_holder_is_every_nodes_spec_sync_set_2() {
     holds_on(0, accounts, n, &script, String::new(), false);
 }
 
-// spec/sync-ids.md §6 (Steps: registering waits on the source holding the step's role commits),
-// spec/sync-judgement.md §6 (Stops): thing 0 is public and moves its epochs on (it is granted read
-// on thing 1), then node 1's account is given sync on it and holds it by a strong. Node 1's store
-// is registered thing 0's genesis step, whose sync key no secret it holds derives (it holds the
-// newest sync epoch alone): it takes nothing there, so it never shows the role commits the next
-// step depends on, and no reader registers further. It never reaches the step listing the public,
-// and keeps thing 0 unread where the reference reads it (issues/stranded-store-unmoved.md).
+// spec/sync-ids.md §6 (Steps: at a source on a step past its keys, at once), spec/sync-judgement.md
+// §6 (Stops): thing 0's sync epoch moves on (thing 1 is given sync on it and removed), then node
+// 1's account is given sync on it and holds it by a strong: node 1 holds the newest sync epoch
+// alone. Its store is registered the genesis step, whose sync key it does not hold: it takes
+// nothing there, so it never shows the role commits the next step depends on. Node 0 registers
+// at once while the store is past the keys S opened there by, and it stands at the readers' head
+// (failed without: it stayed at genesis for good, which the end check flags).
 #[test]
-#[ignore = "issues/stranded-store-unmoved.md"]
-fn repro_a_store_granted_past_genesis_is_moved() {
+fn a_store_granted_past_genesis_is_moved_spec_sync_ids_6() {
+    use crate::harness::history::{Gives, Holder};
+    let (n, accounts, ..) = size();
+    let script = [Step::New(0), Step::New(0), Step::Give(0, 0, Holder::Thing(1), Gives::Syncs), Step::Revoke(0, 0, Holder::Thing(1)), Step::Give(0, 0, Holder::Node(1), Gives::Syncs), Step::Run, Step::Strong(1, None, 0), Step::Write(0, 0), Step::Run];
+    holds_on(0, accounts, n, &script, String::new(), false);
+}
+
+// spec/sync-opens.md §4 (Admissible: a node keeping S unread takes its head's public entry): as
+// above with thing 0 public and its epochs moved on by its read grant on thing 1. Node 1's store is
+// moved to the head listing the public and reads thing 0 by its entry box; then, holding thing 0's
+// record and no applied `sync.0` write of it, it judges thing 0 dependent and drops it
+// (issues/public-reader-record-before-steps.md).
+#[test]
+#[ignore = "issues/public-reader-record-before-steps.md"]
+fn repro_a_store_granted_past_genesis_reads_it_public() {
     use crate::harness::history::{Gives, Holder};
     let (n, accounts, ..) = size();
     let script = [Step::New(0), Step::Give(0, 0, Holder::Public, Gives::Reads), Step::New(0), Step::Give(0, 1, Holder::Thing(0), Gives::Reads), Step::Give(0, 0, Holder::Node(1), Gives::Syncs), Step::Run, Step::Strong(1, None, 0), Step::Write(0, 0), Step::Run];
