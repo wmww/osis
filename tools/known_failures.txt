@@ -8,3 +8,4 @@
 osis-sync/differential::histories_hold_their_closure_plain rate:OSIS_SYNC_START=34,OSIS_SYNC_SEEDS=1 issues/public-key-record-evidence.md node \d+ reads thing \d+ unlike the reference
 osis-sync/differential::histories_hold_their_closure_plain rate:OSIS_SYNC_START=23,OSIS_SYNC_SEEDS=1 issues/differential-full-size-classes.md node \d+ reads thing \d+ unlike the reference
 osis-engine/retention::tests_carried::purge_by_id_reads_alike_forgotten_or_not_plain_spec_commits_5 rate:OSIS_PURGE_BY_ID_START=679952827408 issues/purge-by-id-forgetting.md forgetting vs not
+osis-engine/retention::tests_carried::purge_by_id_reads_alike_forgotten_or_not_plain_spec_commits_5 rate:OSIS_PURGE_BY_ID_START=347698118767 issues/purge-by-id-forgetting.md purges through a name: 0 over \d+ seeds
