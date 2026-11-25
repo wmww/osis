@@ -733,8 +733,8 @@ indexes! {
     pub sync_copy_on: JMap<osis_base::BlobId, Tid>,
     /// `sync_copies`' blobs per thing they came under: what a sync ID of it logs.
     pub sync_copies_under: JSetMap<Tid, osis_base::BlobId>,
-    /// The things whose `sync_copies` carry a step of each sync ID: what keeps a thing with no
-    /// record held among a sync ID's things (`Engine::sync_things_of`).
+    /// The things whose `sync_copies` carry a step of each sync ID: what keeps a thing whose copies
+    /// speak (`Core::copies_speak`) among a sync ID's things (`Engine::sync_things_of`).
     pub sync_copy_ids: JSetMap<SyncId, Tid>,
     /// Per holder, the things `sync_copies` hold a copy of it on (counted or not: readers ask
     /// `Unread::holders`).

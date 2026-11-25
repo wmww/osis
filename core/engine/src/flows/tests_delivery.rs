@@ -847,9 +847,9 @@ fn a_read_grant_dropped_turns_a_holder_back_to_sync_alone_spec_permissions_4() {
 // nothing: synced no more). Then G's admin grants the node read, its role commits waiting: a
 // reader judging by copies alone syncs a forged sync ID above G's own beside it, never in its
 // place (failed syncing the greatest alone: the forged one).
-#[test]
-fn a_record_alone_moves_no_copys_word_spec_sync_3() {
-    let (mut lp, g, t) = sync_holder();
+/// A fresh node reading T (granted by peer 2) holding G by T's sync copies on it alone, taken as
+/// a reader of T takes them.
+fn reader_by_copies(lp: &mut LocalPeer, g: Tid, t: Tid) -> crate::local_peer::Peer {
     let mut p = lp.fresh_reader(2, t, 11);
     p.engine.hold(osis_base::Strong(g)).unwrap();
     let mut copies = Vec::new();
@@ -862,6 +862,23 @@ fn a_record_alone_moves_no_copys_word_spec_sync_3() {
     for (i, copy) in copies.iter().enumerate() {
         assert!(p.engine.take_sync_copy(&t, &osis_base::BlobId([i as u8 + 1; 32]), &copy.encode(), false).unwrap(), "taken");
     }
+    p
+}
+
+/// Peer `i`'s role commits on `g` not in `skip`, as received by `p`.
+fn role_commits_to(lp: &mut LocalPeer, i: usize, g: Tid, skip: &BTreeSet<CommitId>, p: &mut crate::local_peer::Peer) {
+    for c in lp.peers[i].engine.commit_ids() {
+        let on_g = lp.peers[i].engine.core.ix.commits.get(&c).is_some_and(|m| m.view.kind.is_role() && m.view.aspects.iter().any(|a| a.tid == g));
+        if on_g && !skip.contains(&c) && let Some(pk) = lp.peers[i].engine.package(&c).unwrap() {
+            p.receive(&pk.bytes, pk.blobs.clone()).unwrap();
+        }
+    }
+}
+
+#[test]
+fn a_record_alone_moves_no_copys_word_spec_sync_3() {
+    let (mut lp, g, t) = sync_holder();
+    let mut p = reader_by_copies(&mut lp, g, t);
     let real = lp.peers[0].engine.sync_id_of(&g).unwrap().unwrap();
     let judged = |p: &mut crate::local_peer::Peer| {
         let ids: Vec<osis_base::SyncId> = p.engine.sync_ids(&g).unwrap().iter().map(|o| o.id).collect();
@@ -883,12 +900,7 @@ fn a_record_alone_moves_no_copys_word_spec_sync_3() {
     }
     let me = p.engine.tid();
     lp.peers[0].engine.grant(&g, &me, &edge(Role::Read)).unwrap();
-    for c in lp.peers[0].engine.commit_ids() {
-        let on_g = lp.peers[0].engine.core.ix.commits.get(&c).is_some_and(|m| m.view.kind.is_role() && m.view.aspects.iter().any(|a| a.tid == g));
-        if on_g && let Some(pk) = lp.peers[0].engine.package(&c).unwrap() {
-            p.receive(&pk.bytes, pk.blobs.clone()).unwrap();
-        }
-    }
+    role_commits_to(&mut lp, 0, g, &BTreeSet::new(), &mut p);
     assert!(p.engine.core.copies_speak(&g), "no admin's word held yet");
     assert_eq!(p.engine.thing_sync_now(&g).unwrap(), crate::sync::ThingSync::Read(vec![real]), "G read by its own sync ID");
     let id = |seed: u8| osis_blob::genesis_sync_id(&osis_crypto::Secret32::from_bytes([seed.wrapping_add(Role::Admin.id()); 32]));
@@ -899,4 +911,44 @@ fn a_record_alone_moves_no_copys_word_spec_sync_3() {
         crate::sync::ThingSync::Read(ids) => assert!(ids.contains(&real) && ids.contains(&forged), "the forged sync ID beside G's own, never in its place: {ids:?}"),
         other => panic!("G read: {other:?}"),
     }
+}
+
+
+// spec/sync.md §3 (Holders by copies: where the node holds a keyset part of T, a copy's steps
+// count only on a sync ID T's recorded steps place), spec/sync-set.md §2 (a box is any writer's
+// word, a step an admin's): P reads G by T's sync copies alone, holds G's record, and is granted
+// read on G, its role commits waiting. W, a writer of G (granted after P), rotates G's read role
+// past its writer rules (a `keys.0` part writing a keyset on G, invalid), and P receives W's grant
+// and the forgery. Neither silences the copies: no commit on G applies at P before its admins'
+// steps do (each awaits its chain), so G stays read by its own sync ID, at a fresh load too.
+// Fails if a keyset part on G counted at P while its commit waits (P then judges G by a `sync.0`
+// it holds none of: synced no more, cut off from the role commits that would decide).
+#[test]
+fn a_writers_keyset_moves_no_copys_word_spec_sync_3() {
+    let (mut lp, g, t) = sync_holder();
+    let mut p = reader_by_copies(&mut lp, g, t);
+    let real = lp.peers[0].engine.sync_id_of(&g).unwrap().unwrap();
+    let record = lp.peers[0].engine.core.created(&g).cloned().unwrap();
+    assert_eq!(p.engine.learn_records(vec![record]).unwrap(), 1, "G's record taken");
+    for c in p.engine.commit_ids() {
+        if let Some(pk) = p.engine.package(&c).unwrap() {
+            lp.deliver(0, &pk).unwrap();
+        }
+    }
+    let (me, w) = (p.engine.tid(), lp.peers[1].engine.tid());
+    lp.peers[0].engine.grant(&g, &me, &edge(Role::Read)).unwrap();
+    lp.peers[0].engine.grant(&g, &w, &edge(Role::Write)).unwrap();
+    lp.sync_all().unwrap();
+    role_commits_to(&mut lp, 0, g, &BTreeSet::new(), &mut p);
+    let want = crate::sync::ThingSync::Read(vec![real]);
+    assert_eq!(p.engine.thing_sync_now(&g).unwrap(), want, "G read by its own sync ID");
+    let before: BTreeSet<CommitId> = lp.peers[1].engine.commit_ids().into_iter().collect();
+    let (forged, _) = crate::rotation::tests::rotate_unchecked(&mut lp, 1, g, &[Role::Read].into());
+    assert!(lp.peers[1].engine.core.ix.keyset_parts.get(&g).is_some_and(|s| s.contains(&forged)), "W's forgery writes a keyset on G");
+    role_commits_to(&mut lp, 1, g, &before, &mut p);
+    assert!(p.engine.header(&forged).is_none(), "W's forgery waits at P");
+    assert!(p.engine.core.copies_speak(&g), "no admin's word held");
+    assert_eq!(p.engine.thing_sync_now(&g).unwrap(), want, "G read as before");
+    p.restart(7).unwrap();
+    assert_eq!(p.engine.thing_sync_now(&g).unwrap(), want, "G read as before at a fresh load");
 }

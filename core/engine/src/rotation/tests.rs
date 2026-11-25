@@ -1064,7 +1064,7 @@ pub(super) fn rotate_leaving_out(lp: &mut LocalPeer, i: usize, g: Tid, rot: &BTr
 
 /// Peer `i` rotates `rot` of `g` boxing every holder it can, past its own writer rules (a
 /// rotation its receivers judge): the commit and the epochs it made.
-pub(super) fn rotate_unchecked(lp: &mut LocalPeer, i: usize, g: Tid, rot: &BTreeSet<Role>) -> (osis_base::CommitId, BTreeSet<(Tid, Role, osis_crypto::Epoch)>) {
+pub(crate) fn rotate_unchecked(lp: &mut LocalPeer, i: usize, g: Tid, rot: &BTreeSet<Role>) -> (osis_base::CommitId, BTreeSet<(Tid, Role, osis_crypto::Epoch)>) {
     let before = commit_ids(lp, i);
     let made = lp.peers[i]
         .engine
