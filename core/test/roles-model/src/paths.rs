@@ -92,7 +92,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 pub type Thing = u8;
 pub type Id = usize;
 pub type Edge = (Thing, Thing);
-pub type Set = BTreeSet<Id>;
+pub type Set = crate::idset::IdSet;
 pub type Key = (u32, Thing, Id);
 pub type Things = BTreeSet<Thing>;
 /// An edge's value: its role and its `until`.

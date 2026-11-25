@@ -14,6 +14,7 @@
 //! - `shrink`: `without`, a move list less one move.
 //! Binary: `cargo run --bin roles-model -- [samples] [mode]`; `cargo test` runs the hand worlds.
 
+pub mod idset;
 pub mod leave;
 pub mod paths;
 pub mod shrink;
