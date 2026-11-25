@@ -107,14 +107,13 @@ fn range(s: &str) -> anyhow::Result<Range<usize>> {
 pub fn create(ctx: &mut Ctx<'_>, w: &mut osis::Write<'_>, a: &CreateArgs, did: &mut Did) -> anyhow::Result<()> {
     let admin = match &a.admin {
         Some(o) => ctx.tid(o)?,
-        None => ctx.db.account_root(),
+        None => ctx.me()?,
     };
     if !a.pairs.len().is_multiple_of(2) {
         return Err(usage("create takes AK VALUE pairs"));
     }
     let holder = match &a.in_ {
         Some(h) => ctx.tid(h)?,
-        None if admin == ctx.db.me() => ctx.db.account_root(),
         None => admin,
     };
     let expires = commit_expiry(ctx, w, did, expiry(&a.e)?)?;

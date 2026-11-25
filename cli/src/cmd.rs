@@ -242,13 +242,13 @@ pub fn dispatch(cli: Cli, store: Option<Store>, stdin: &mut dyn BufRead, out: &m
         Cmd::Pair(PairCmd::Join { offer }) => {
             // the app carries two messages: print the request, read the reply
             let cfg = crate::config(&g, crate::Network::Node)?;
-            let offer: osis::PairOffer = offer.parse()?;
-            let join = Osis::pair(sel.clone(), &offer, cfg)?;
+            let offer: osis_account::PairOffer = offer.parse()?;
+            let join = osis_account::pair(sel.clone(), &offer, cfg)?;
             writeln!(out, "{}", join.request())?;
             out.flush()?;
             let mut line = String::new();
             stdin.read_line(&mut line)?;
-            join.finish(&line.parse()?)?
+            join.finish(&line.parse()?)?.0
         }
         c => open(&sel, &g, network(c), !matches!(c, Cmd::Inspect(_) | Cmd::Serve { .. }))?,
     };
@@ -326,21 +326,21 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
         Cmd::Unhold { t } => t.iter().try_for_each(|x| Ok(db.unhold(ctx.tid(x)?)?)),
         Cmd::Pair(PairCmd::Offer) => {
             // print the offer, read the new node's request, print the reply and its node
-            let o = db.pair_offer()?;
-            ctx.one("offer", o)?;
+            let o = ctx.account()?.offer_pairing(&db)?;
+            ctx.one("offer", o.offer())?;
             let mut line = String::new();
             ctx.stdin.read_line(&mut line)?;
-            let (node, reply) = db.pair_accept(&line.parse()?)?;
+            let (node, reply) = o.accept(&db, &line.parse()?)?;
             ctx.emit(&[reply.to_string(), node.to_uri()], J::obj([("reply", J::str(reply.to_string())), ("node", J::tid(node))]))
         }
         Cmd::Node(NodeCmd::Ls) => {
-            let ds = db.nodes()?;
+            let ds = ctx.account()?.nodes(&db)?;
             ctx.emit(&ds.iter().map(|d| d.node.to_uri()).collect::<Vec<_>>(), J::Arr(ds.iter().map(|d| J::obj([("node", J::tid(d.node))])).collect()))
         }
         Cmd::Node(NodeCmd::Rm { node, d, end_links }) => {
             let n = ctx.tid(&node)?;
             let o = SetRoleOpts { retain_copy: d.retain_copy, ..SetRoleOpts::default() };
-            let open = db.remove_node(n, o)?;
+            let open = ctx.account()?.remove_node(&db, n, o)?;
             if end_links {
                 for l in &open {
                     db.revoke_link(l.id)?;
@@ -493,7 +493,7 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             }
         }
         Cmd::Leave { t, holder, leave_adminless } => {
-            let holder = holder.map_or(Ok(db.me()), |h| ctx.tid(&h))?;
+            let holder = holder.map_or_else(|| ctx.me(), |h| ctx.tid(&h))?;
             Ok(db.leave(holder, ctx.tid(&t)?, SetRoleOpts { leave_adminless, ..SetRoleOpts::default() })?)
         }
         Cmd::Retained { drop: Some(a) } => Ok(db.drop_retained_copy(ctx.tid(&a)?)?),
@@ -516,14 +516,17 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
         }
         Cmd::Card(CardCmd::Show) => {
             // a card is a read link to the profile
-            let c = db.contact_card()?;
+            let a = ctx.account()?;
+            let c = a.contact_card(&db)?;
             ctx.one("card", c)?;
-            delivered(ctx, &[db.profile()?])
+            let p = a.profile(&db)?.ok_or_else(|| exit(3, "the account's profile is not here yet"))?;
+            delivered(ctx, &[p])
         }
         Cmd::Card(CardCmd::Profile { account }) => {
+            let a = ctx.account()?;
             let p = match account {
-                Some(a) => db.profile_of(ctx.tid(&a)?)?,
-                None => Some(db.profile()?),
+                Some(x) => a.profile_of(&db, ctx.tid(&x)?)?,
+                None => a.profile(&db)?,
             };
             match p {
                 Some(p) => ctx.one("profile", p.to_uri()),
@@ -531,8 +534,9 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             }
         }
         Cmd::Card(CardCmd::Import { card }) => {
-            let c: osis::ContactCard = ctx.arg_text(&card)?.parse()?;
-            let a = confirm(ctx, db.import_contact(&c))?;
+            let c: osis_account::ContactCard = ctx.arg_text(&card)?.parse()?;
+            let account = ctx.account()?;
+            let a = confirm(ctx, account.import_contact(&db, &c))?;
             ctx.one("actor", a.to_uri())
         }
         Cmd::Disputes(DisputeCmd::Ls) => {
@@ -613,7 +617,8 @@ pub(crate) fn make_link(ctx: &mut Ctx<'_>, t: &str, role: &str, o: LinkOpts) -> 
 /// `link redeem` (and `chat join`): prints the thing joined.
 pub(crate) fn redeem(ctx: &mut Ctx<'_>, link: &str) -> anyhow::Result<()> {
     let l: osis::ShareLink = ctx.arg_text(link)?.parse()?;
-    let t = confirm(ctx, ctx.db.redeem(&l))?;
+    let joiner = ctx.me()?;
+    let t = confirm(ctx, ctx.db.redeem(&l, joiner))?;
     ctx.one("tid", t.to_uri())
 }
 
@@ -624,8 +629,9 @@ fn whoami(ctx: &mut Ctx<'_>) -> anyhow::Result<()> {
         Store::Memory(_) => "(memory)".into(),
     };
     let sw = format!("osis {}", env!("CARGO_PKG_VERSION"));
-    let lines = [format!("me\t{}", db.me().to_uri()), format!("node\t{}", db.node().to_uri()), format!("store\t{store}"), format!("software\t{sw}")];
-    ctx.emit(&lines, J::obj([("me", J::tid(db.me())), ("node", J::tid(db.node())), ("store", J::str(store)), ("software", J::str(sw))]))
+    let me = ctx.me()?;
+    let lines = [format!("me\t{}", me.to_uri()), format!("node\t{}", db.node().to_uri()), format!("store\t{store}"), format!("software\t{sw}")];
+    ctx.emit(&lines, J::obj([("me", J::tid(me)), ("node", J::tid(db.node())), ("store", J::str(store)), ("software", J::str(sw))]))
 }
 
 fn get(ctx: &mut Ctx<'_>, t: &str, ak: &str, path: Option<&str>, stream: bool, len: bool) -> anyhow::Result<()> {

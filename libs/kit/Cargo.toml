@@ -25,6 +25,7 @@ accessibility = ["masonry_winit/accessibility"]
 
 [dependencies]
 osis.workspace = true
+osis-account.workspace = true
 jiff.workspace = true
 tokio.workspace = true
 masonry.workspace = true

@@ -15,7 +15,7 @@ pub(crate) use serve::{Port, answer_all, serve};
 /// A client actor's rights), and is one API call, its arguments and result in `codec::Form`
 /// forms (`serve::row`, `ReadOnly::forward`), but the write rows, which carry a nonce.
 pub mod method {
-    /// `[] -> [me, node, account root]`: who this session acts as, at which node.
+    /// `[] -> [author, node, Opt(settings thing)]`: who this session acts as, at which node.
     pub const WHOAMI: u64 = 0;
     /// `[tid, ak, path] -> read result`: the value at `path` of an aspect, untyped (`[]`: the
     /// whole value).
@@ -62,20 +62,14 @@ pub mod method {
     pub const LISTING: u64 = 16;
     /// `[address, commit id] -> Opt(commit)` (`AspectRef::commit`)
     pub const LISTED_COMMIT: u64 = 17;
-    /// `[] -> card text` (`contact_card`)
-    pub const CONTACT_CARD: u64 = 18;
-    /// `[] -> tid` (`profile`)
-    pub const PROFILE: u64 = 23;
-    /// `[account] -> Opt(tid)` (`profile_of`)
-    pub const PROFILE_OF: u64 = 24;
+    /// `[tid, role, Opt(until), single_use] -> link text` (`make_link`)
+    pub const MAKE_LINK: u64 = 18;
 
     // Rows that wait: never a Call, only as a Sub `[filter::WAIT, method, [arg*]]`.
 
     /// `[sync scope] -> []` (`wait_synced`), scope `[0]` all, `[1, tid]`.
     pub const WAIT_SYNCED: u64 = 27;
-    /// `[card text] -> account` (`import_contact`)
-    pub const IMPORT_CONTACT: u64 = 28;
-    /// `[link text] -> tid` (`redeem`)
+    /// `[link text, joiner] -> tid` (`redeem`)
     pub const REDEEM: u64 = 29;
 
     /// Whether a client-actor session may call `m`: a row on things the actor may read. The

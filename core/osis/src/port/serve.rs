@@ -265,7 +265,7 @@ fn clients(db: &ReadOnly) -> BTreeMap<Tid, [u8; 32]> {
 
 /// The client actor of `current` whose secret hash is `hash` (compared in constant time).
 fn holder(current: &BTreeMap<Tid, [u8; 32]>, hash: &[u8; 32]) -> Option<Tid> {
-    current.iter().find(|(_, h)| crate::account::same(&h[..], hash)).map(|(a, _)| *a)
+    current.iter().find(|(_, h)| same(&h[..], hash)).map(|(a, _)| *a)
 }
 
 /// The client actor of the `clients^.0` entry whose secret hash is `hash`, its `until` not
@@ -353,7 +353,7 @@ fn on<A: Form, R: Form>(args: Value, f: impl FnOnce(A) -> Result<R>) -> Result<V
 /// reply at most `limit` bytes.
 fn row(h: &crate::Osis, method: u64, args: Value, limit: usize) -> Result<Value> {
     match method {
-        method::WHOAMI => on(args, |()| Ok((h.me(), h.node(), h.account_root()))),
+        method::WHOAMI => on(args, |()| Ok((h.author(), h.node(), h.settings_thing()?))),
         method::GET => on(args, |(t, k, p): (Tid, Ak, Path)| {
             here(h, t)?;
             Ok(h.read_local(|r| r.get_path(t, &crate::DynamicAspectKey::untyped(k), &p)))
@@ -385,9 +385,7 @@ fn row(h: &crate::Osis, method: u64, args: Value, limit: usize) -> Result<Value>
             here_all(h, &a.things())?;
             h.commit_told_here(&a, id, None)
         }),
-        method::CONTACT_CARD => on(args, |()| h.contact_card()),
-        method::PROFILE => on(args, |()| h.profile()),
-        method::PROFILE_OF => on(args, |(a,)| h.profile_of(a)),
+        method::MAKE_LINK => on(args, |(t, role, until, single_use): (Tid, crate::Role, Option<crate::Time>, bool)| h.make_link(t, role, crate::LinkOpts { until, single_use })),
         m => Err(Error::Unsupported(format!("unknown method {m}"))),
     }
 }
@@ -414,7 +412,7 @@ fn fitted(mut p: crate::CommitPage, limit: usize) -> crate::CommitPage {
 }
 
 /// A row that waits (`filter::WAIT`), as a future holding nothing of the node: the API call's
-/// own (`syncing`, `importing`, `redeeming`), run on `h`.
+/// own (`syncing`, `redeeming`), run on `h`.
 fn wait_row(h: &crate::Osis, method: u64, args: Value) -> Result<Pending> {
     fn boxed<R: Form>(f: impl std::future::Future<Output = Result<R>> + Send + 'static) -> Pending {
         Box::pin(async move { f.await.map(|r| r.to_wire()) })
@@ -424,13 +422,9 @@ fn wait_row(h: &crate::Osis, method: u64, args: Value) -> Result<Pending> {
             let (s,) = Form::from_wire(args)?;
             Ok(boxed(h.syncing(s)))
         }
-        method::IMPORT_CONTACT => {
-            let (c,): (crate::ContactCard,) = Form::from_wire(args)?;
-            Ok(boxed(h.importing(&c)?))
-        }
         method::REDEEM => {
-            let (l,): (crate::ShareLink,) = Form::from_wire(args)?;
-            Ok(boxed(h.redeeming(&l)?))
+            let (l, joiner): (crate::ShareLink, Tid) = Form::from_wire(args)?;
+            Ok(boxed(h.redeeming(&l, joiner)?))
         }
         m => Err(Error::Unsupported(format!("no row that waits {m}"))),
     }
@@ -821,4 +815,9 @@ pub(crate) fn answer_all(db: &ReadOnly, conn: ConnId, main: bool, msgs: Vec<Msg>
             got.unwrap_or_else(|| error(Code::UNSUPPORTED))
         })
         .collect()
+}
+
+/// Whether `a` equals `b`, compared in constant time.
+fn same(a: &[u8], b: &[u8]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }

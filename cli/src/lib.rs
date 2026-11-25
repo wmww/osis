@@ -280,7 +280,7 @@ pub(crate) fn listen(sel: &Store, db: &Osis) -> anyhow::Result<Option<PathBuf>> 
     }
 }
 
-/// Creates a store; refuses a non-empty directory.
+/// Creates a store, its node and the account it acts for; refuses a non-empty directory.
 fn create(sel: &Store, g: &Global) -> anyhow::Result<Osis> {
     if let Store::Dir(d) = sel
         && d.read_dir().is_ok_and(|mut r| r.next().is_some())
@@ -289,7 +289,9 @@ fn create(sel: &Store, g: &Global) -> anyhow::Result<Osis> {
     }
     // `init` runs sync only to reach the nodes it is told to dial
     let net = if g.dial.is_empty() { Network::None } else { Network::Sync };
-    Ok(Osis::create(sel.clone(), config(g, net)?)?)
+    let db = Osis::create(sel.clone(), config(g, net)?)?;
+    osis_account::Account::make(&db)?;
+    Ok(db)
 }
 
 /// Schema paths registered in `<store>/cli.toml`: `schemas = [ "path", ... ]`, one per line.
@@ -384,6 +386,20 @@ impl Ctx<'_> {
         wait_bound(&self.g)
     }
 
+    /// Who `me` is: the person's account this node acts for (osis-account); on a client with a
+    /// thing of its own, that thing; on a node acting for no account, its node thing.
+    pub fn me(&self) -> anyhow::Result<Tid> {
+        if self.db.author() != self.db.node() {
+            return Ok(self.db.author());
+        }
+        Ok(osis_account::Account::of(&self.db)?.map_or(self.db.node(), |a| a.thing()))
+    }
+
+    /// The account this node acts for (osis-account): `Invalid` on a node acting for none.
+    pub fn account(&self) -> anyhow::Result<osis_account::Account> {
+        osis_account::Account::of(&self.db)?.ok_or_else(|| exit(3, "this node acts for no account"))
+    }
+
     /// Resolves a tid argument: `osis://…`, bare, `me`, `node`, `$var`.
     pub fn tid(&self, s: &str) -> anyhow::Result<Tid> {
         self.alias(s).or_else(|| Tid::parse(s).ok()).ok_or_else(|| usage(format!("not a tid: {s}")))
@@ -391,7 +407,7 @@ impl Ctx<'_> {
 
     pub fn alias(&self, s: &str) -> Option<Tid> {
         match s {
-            "me" => Some(self.db.me()),
+            "me" => self.me().ok(),
             "node" => Some(self.db.node()),
             _ => s.strip_prefix('$').and_then(|v| self.vars.get(v).copied()),
         }

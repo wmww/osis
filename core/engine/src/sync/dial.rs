@@ -53,9 +53,23 @@ impl Engine {
     /// stay. Its node root's `dial.0` (local: read by nobody else) keeps its own entry, the
     /// record of which key it published last. Only where it changed.
     pub fn publish_reach(&mut self, dialable: [u8; 32], items: Vec<String>, on: &[Tid]) -> Result<()> {
+        self.write_reach(dialable, vec![peer_url(&items)], on)
+    }
+
+    /// `publish_reach` again with what this node published last (its node root's entry), on
+    /// `on`: where the things it keeps its entry on changed. Nothing before its first listen.
+    pub fn publish_reach_on(&mut self, on: &[Tid]) -> Result<()> {
+        let root = self.core.node_root.ok_or(crate::error::Error::Misuse("no node root"))?;
+        let last = self.get_typed(&root, &ct::DIAL)?.unwrap_or_default().into_iter().next();
+        let Some((key, url)) = last else { return Ok(()) };
+        let Ok(key) = <[u8; 32]>::try_from(key.as_slice()) else { return Ok(()) };
+        self.write_reach(key, url, on)
+    }
+
+    /// `publish_reach`'s writes: this node's entry `dialable` to `url`.
+    fn write_reach(&mut self, dialable: [u8; 32], url: Vec<String>, on: &[Tid]) -> Result<()> {
         let root = self.core.node_root.ok_or(crate::error::Error::Misuse("no node root"))?;
         let mine: Vec<Vec<u8>> = self.get_typed(&root, &ct::DIAL)?.unwrap_or_default().into_keys().filter(|k| k.as_slice() != dialable.as_slice()).collect();
-        let url = vec![peer_url(&items)];
         let mut m = Mutation::new();
         for t in std::iter::once(root).chain(on.iter().copied()) {
             if t != root && self.role_on(&t) < Some(osis_base::Role::Write) {

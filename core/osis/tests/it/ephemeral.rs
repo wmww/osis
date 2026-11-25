@@ -40,11 +40,11 @@ fn field(id: u64) -> osis::Path {
 fn write_and_watch_without_commit_spec_data_model_2() {
     let (db, _c) = setup(0);
     let state = db.aspect_key("win:state+.0").unwrap();
-    let made = commit_with(&db, |w| w.create_held_with_admin(db.account_root()).map(drop));
+    let made = commit_with(&db, |w| w.create_held_with_admin(crate::common::home(&db)).map(drop));
     let win = db.engine(|e| e.header(&made.stamp.id.raw())).unwrap().aspects.iter().find(|a| a.ak.as_str() == "created.0").unwrap().tid;
     let c = db.created(win).unwrap().unwrap();
     // a record alone acts for its signer (spec/commits.md §2)
-    assert_eq!((c.id, c.ts(), c.author), (made.stamp.id, made.ts(), db.me()), "a new thing is durable");
+    assert_eq!((c.id, c.ts(), c.author), (made.stamp.id, made.ts(), db.author()), "a new thing is durable");
     let before = durable_marks(&db);
     let mut w = db.write();
     w.at(win, state.clone()).set(&Value::Map([(Value::Int(0), s("draft")), (Value::Int(1), Value::List(vec![s("a")]))].into())).unwrap();
@@ -64,7 +64,7 @@ fn write_and_watch_without_commit_spec_data_model_2() {
     let done = w.commit().unwrap().unwrap();
     let ch = recv(&rx);
     match ch.origin {
-        Origin::Local(i) => assert_eq!((i.id, i.ts(), i.author), (done.stamp.id, done.ts(), db.me())),
+        Origin::Local(i) => assert_eq!((i.id, i.ts(), i.author), (done.stamp.id, done.ts(), db.author())),
         other => panic!("{other:?}"),
     }
     assert_eq!(db.at(win, state.clone()).path(field(1)).get::<Vec<String>>().unwrap(), Some(vec!["a".to_string(), "b".to_string()]));
@@ -73,10 +73,10 @@ fn write_and_watch_without_commit_spec_data_model_2() {
     assert_eq!(db.aspects(win).unwrap(), vec![osis::Ak::new("created.0").unwrap(), osis::Ak::new("win:state+.0").unwrap()]);
     // an ephemeral aspect of a durable thing
     let cur = ak("app:selection+.0");
-    db.commit_set(db.me(), osis::DynamicAspectKey::untyped(cur.clone()), &Value::Int(7)).unwrap();
-    assert_eq!(db.at(db.me(), osis::DynamicAspectKey::untyped(cur)).get().unwrap(), Some(Value::Int(7)));
+    db.commit_set(db.author(), osis::DynamicAspectKey::untyped(cur.clone()), &Value::Int(7)).unwrap();
+    assert_eq!(db.at(db.author(), osis::DynamicAspectKey::untyped(cur)).get().unwrap(), Some(Value::Int(7)));
     assert_eq!(durable_marks(&db), before);
-    assert!(db.aspects(db.me()).unwrap().contains(&ak("app:selection+.0")));
+    assert!(db.aspects(db.author()).unwrap().contains(&ak("app:selection+.0")));
 }
 
 // notes/ephemeral.md Restarts and lost access: on a `Dir` store, reopening forgets every
@@ -233,7 +233,7 @@ fn ephemeral_signal_fires_reach_history_listener_once_spec_data_model_2() {
                 assert_eq!(i, *id);
                 assert_eq!(c.stamp.id, *id);
                 let p = c.at(t, ring.clone()).unwrap();
-                assert_eq!((c.stamp.author, c.kind, p.valid), (db.me(), osis::CommitKind::Content, true));
+                assert_eq!((c.stamp.author, c.kind, p.valid), (db.author(), osis::CommitKind::Content, true));
                 assert_eq!(p.body, osis::Body::Held(Some(s("ding"))));
             }
             e => panic!("{e:?}"),

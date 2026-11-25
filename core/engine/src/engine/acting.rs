@@ -101,19 +101,37 @@ impl Engine {
         out
     }
 
-    /// Mints an independent actor whose mint admin is `admin` (with `keys.0`), as a link's K is
-    /// minted, and commits what `also` builds for it, all in one transaction: a crash or a
-    /// failure leaves both or neither (`flows::links` shares the shape).
-    pub fn mint_actor(&mut self, admin: &Tid, also: impl FnOnce(Tid) -> Result<Mutation>) -> Result<(Tid, Done)> {
-        let admin = *admin;
+    /// Mints independent things (spec/permissions.md §3), each with its mint admin (a thing, or one
+    /// minted before it here), then commits what `also` builds for them, in order, all in one
+    /// transaction: a crash or a failure leaves all or none (`flows::links` shares the shape). Their
+    /// tids, in `admins`' order.
+    pub fn mint_independent(&mut self, admins: &[MintAdmin], also: impl FnOnce(&[Tid]) -> Result<Vec<Mutation>>) -> Result<(Vec<Tid>, Done)> {
         self.run(|tx| {
             let mut done = Done::default();
-            let rec = crate::identity::thing_record(admin, None, &mut *tx.rng);
-            let a = rotation::own_secrets_new(tx, rec, &[], None, &mut done)?;
-            done.add(Engine::commit_tx(tx, also(a)?)?);
-            Ok((a, done))
+            let mut ts: Vec<Tid> = Vec::new();
+            for a in admins {
+                let admin = match a {
+                    MintAdmin::Thing(t) => *t,
+                    MintAdmin::Minted(i) => *ts.get(*i).ok_or(Error::Misuse("a mint admin minted later"))?,
+                };
+                let rec = crate::identity::thing_record(admin, None, &mut *tx.rng);
+                ts.push(rotation::own_secrets_new(tx, rec, &[], None, &mut done)?);
+            }
+            for m in also(&ts)? {
+                done.add(Engine::commit_tx(tx, m)?);
+            }
+            Ok((ts, done))
         })
     }
+}
+
+/// A mint admin of a thing `Engine::mint_independent` mints.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MintAdmin {
+    /// A thing that exists.
+    Thing(Tid),
+    /// The thing minted at this index of the same call.
+    Minted(usize),
 }
 
 /// A confined revert's durable writes, as `undo_in` is about to make them: `actor`'s rights on

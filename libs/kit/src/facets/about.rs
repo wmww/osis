@@ -32,7 +32,7 @@ fn live(e: &Grant, now: osis::Time) -> bool {
 
 /// Who can see `t`: its holders (its mint admin among them while that edge stands), through
 /// the things holding roles (shared tags, a home, an organization) down to people, the actors no one holds
-/// a role on; me, my nodes and my account root are "you". Grants with an `until` count until it
+/// a role on; the person (their account), what it holds roles on, and this node are "you". Grants with an `until` count until it
 /// passes.
 pub fn reach(cx: &Reader, t: Tid) -> Result<Reach> {
     Ok((*cx.memo(("reach", t), |r, &(_, t)| compute_reach(r, t))?).clone())
@@ -40,9 +40,9 @@ pub fn reach(cx: &Reader, t: Tid) -> Result<Reach> {
 
 fn compute_reach(cx: &Reader, t: Tid) -> Result<Reach> {
     let db = &cx.db;
-    let me = db.me();
+    let me = cx.person()?.map_or(db.node(), |a| a.thing());
     let now = cx.now()?;
-    let mine: BTreeSet<Tid> = db.grants(me)?.into_keys().chain([me, db.node(), db.account_root()]).collect();
+    let mine: BTreeSet<Tid> = db.grants(me)?.into_keys().chain([me, db.node()]).collect();
     let mut r = Reach::default();
     let mut seen = BTreeSet::new();
     let mut todo = vec![t];
@@ -89,7 +89,11 @@ fn standing_for(cx: &Reader) -> Result<Rc<BTreeMap<Tid, String>>> {
 /// profile, else a short id.
 pub fn account_name(cx: &Reader, p: Tid) -> Result<String> {
     let db = &cx.db;
-    if let Some(prof) = db.profile_of(p)? {
+    let prof = match cx.person()? {
+        Some(a) => a.profile_of(db, p)?,
+        None => None,
+    };
+    if let Some(prof) = prof {
         if let Some(n) = db.at(prof, NAME).get()?.filter(|n| !n.is_empty()) {
             return Ok(n);
         }

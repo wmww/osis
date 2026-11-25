@@ -18,9 +18,11 @@ fn two() -> (Data, Data) {
 fn two_clocked() -> (Data, Data, Arc<ManualClock>) {
     let clock = crate::common::clock();
     let a = crate::common::node(1, &clock);
-    let j = osis::internals::pair(cfg(2, &clock), &a.pair_offer().unwrap()).unwrap();
-    let (_, reply) = a.pair_accept(j.request()).unwrap();
-    let b = j.finish(&reply).unwrap();
+    let offering = osis_account::Account::of(&a).unwrap().unwrap().offer_pairing(&a).unwrap();
+    let o = cfg(2, &clock);
+    let j = osis_account::pair(o.store, offering.offer(), o.cfg).unwrap();
+    let (_, reply) = offering.accept(&a, j.request()).unwrap();
+    let b = j.finish(&reply).unwrap().0;
     (osis_app::store::data(a), osis_app::store::data(b), clock)
 }
 

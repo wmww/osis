@@ -5,6 +5,7 @@
 //! and evicts the states it wrote.
 
 pub(crate) mod acting;
+pub use acting::MintAdmin;
 pub(crate) mod blobs;
 pub(crate) mod clock;
 pub(crate) mod commits;

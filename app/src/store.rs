@@ -1,4 +1,4 @@
-//! The app's account: its home (marked `osis_app:app.0`) among what the account root holds, the
+//! The app's account: its home (marked `osis_app:app.0`) among what the account holds, the
 //! first-use seeds, and the registry of what the app adds to kit.
 
 use crate::facets;
@@ -25,11 +25,11 @@ fn seeds() -> Vec<(Collection, &'static str, &'static str)> {
 }
 
 impl Account for AppAccount {
-    /// The things marked as the app's home among the account root's strongs, smallest tid first.
+    /// The things marked as the app's home among the account's strongs, smallest tid first.
     /// Works around issues/app-home-helper.md (as does merging favorites, collections, look).
     fn homes(&self, db: &osis::ReadOnly) -> Result<Vec<Tid>> {
         let mut out = Vec::new();
-        for r in db.at(db.account_root(), HOLDS).get()?.unwrap_or_default() {
+        for r in db.at(account(db)?, HOLDS).get()?.unwrap_or_default() {
             if let Ref::Strong(s) = r
                 && db.at(s.0, APP).get()? == Some(true)
             {
@@ -44,9 +44,9 @@ impl Account for AppAccount {
             return Ok(*g);
         }
         let mut w = db.write();
-        // dependent, minted with the account root as admin and held by it: it and what it holds sync to every node
-        // of the account (spec/sync-set.md §1)
-        let root = db.account_root();
+        // dependent, minted with the account as admin and held by it: it and what it holds sync to
+        // every node of the account (spec/sync-set.md §1)
+        let root = account(db)?;
         let g = w.create(root, None)?;
         w.hold(root, g)?;
         start_setting(&mut w, g)?;
@@ -66,6 +66,11 @@ impl Account for AppAccount {
         w.commit()?;
         Ok(g)
     }
+}
+
+/// The account this node acts for (osis-account): the app runs as a person.
+pub fn account(db: &osis::ReadOnly) -> Result<Tid> {
+    Ok(osis_account::Account::of(db)?.ok_or_else(|| osis::Error::Invalid("this node acts for no account".into()))?.thing())
 }
 
 /// Kit's registry with the app's facets and view types.

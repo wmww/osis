@@ -29,7 +29,7 @@ fn thing(db: &Osis) -> Tid {
 /// `n` dependent things (`thing`), made in one commit.
 fn things(db: &Osis, n: usize) -> Vec<Tid> {
     let mut w = db.write();
-    let ts = (0..n).map(|_| w.create_held_with_admin(db.account_root()).unwrap()).collect();
+    let ts = (0..n).map(|_| w.create_held_with_admin(crate::common::home(db)).unwrap()).collect();
     w.commit().unwrap();
     db.settle();
     ts
@@ -184,7 +184,7 @@ fn tracked_path_reads_their_own_position() {
 // changed answer only.
 #[test]
 fn role_on_hears_roles_and_compares() {
-    let (a, b, _) = paired();
+    let (a, b, _) = shared();
     let t = a.commit_with(|w| w.create_held()).unwrap();
     let (_set, n, h) = tracked(&b);
     assert_eq!(h.role_on(t).unwrap(), None);
@@ -203,7 +203,6 @@ fn role_on_hears_roles_and_compares() {
 // with no commit (a reader cannot finalize it); a tracked `role_on` and `holders` hear it then (the
 // node wakes at the `until`), with no grants watch anywhere, and nothing before it.
 #[test]
-#[ignore = "accounts: osis/CLI/app"]
 fn an_until_passing_tells_tracked_role_reads_spec_permissions_2() {
     let c = clock();
     let net = osis::internals::ManualNet::new(c.clone());
@@ -215,17 +214,18 @@ fn an_until_passing_tells_tracked_role_reads_spec_permissions_2() {
     deliver(&bob, &alice);
     let g = thing(&alice);
     let until = osis::GrantOpts { until: Some(osis::Time(T0 + 60_000)), ..Default::default() };
-    alice.grant(g, bob.me(), osis::Role::Read, until).unwrap();
+    alice.grant(g, bob.author(), osis::Role::Read, until).unwrap();
     deliver(&alice, &bob);
+    bob.hold(g).unwrap();
     let ((_s1, roles, h1), (_s2, holders, h2)) = (tracked(&bob), tracked(&bob));
     assert_eq!(h1.role_on(g).unwrap(), Some(osis::Role::Read));
-    assert!(h2.holders(g).unwrap().iter().any(|x| x.actor == bob.me()));
+    assert!(h2.holders(g).unwrap().iter().any(|x| x.actor == bob.author()));
     net.advance(30_000);
     assert_eq!((fired(&bob, &roles), fired(&bob, &holders)), (0, 0), "nothing ended yet");
     net.advance(60_000);
     assert_eq!((fired(&bob, &roles), fired(&bob, &holders)), (1, 1), "the until passed");
     assert_eq!(h1.role_on(g).unwrap(), None);
-    assert!(!h2.holders(g).unwrap().iter().any(|x| x.actor == bob.me()));
+    assert!(!h2.holders(g).unwrap().iter().any(|x| x.actor == bob.author()));
 }
 
 // notes/api.md Backlinks: a tracked backlinks page hears a reference to its thing appear, and
@@ -235,7 +235,7 @@ fn tracked_backlinks_hear_their_thing() {
     let db = pumped(14);
     let (a, x, y) = (thing(&db), thing(&db), thing(&db));
     let (_set, n, h) = tracked(&db);
-    assert!(h.backlinks(x, &Default::default()).unwrap().backlinks.iter().all(|b| b.tid == db.account_root()), "the account root's strong alone");
+    assert!(h.backlinks(x, &Default::default()).unwrap().backlinks.iter().all(|b| b.tid == crate::common::home(&db)), "the account root's strong alone");
     db.commit_with(|w| w.at(a, untyped("t:a.0")).set(&Value::Weak(y))).unwrap();
     assert_eq!(fired(&db, &n), 0);
     db.commit_with(|w| w.at(a, untyped("t:b.0")).set(&Value::Weak(x))).unwrap();
@@ -364,7 +364,6 @@ fn read_counts_say_what_a_pass_read_twice() {
 // moved. At n and 10n tracked things, a grant on another thing calls none of their listeners
 // and reads none of them again.
 #[test]
-#[ignore = "accounts: osis/CLI/app"]
 fn tracked_role_reads_follow_their_thing_at_n_and_10n() {
     let other = db(9);
     let cost = |n: usize| {
@@ -382,7 +381,7 @@ fn tracked_role_reads_follow_their_thing_at_n_and_10n() {
         }
         a.settle();
         costs::take();
-        a.grant(x, other.me(), osis::Role::Read, Default::default()).unwrap();
+        a.grant(x, other.author(), osis::Role::Read, Default::default()).unwrap();
         a.settle();
         let cs = costs::take();
         assert_eq!(fired_n.swap(0, Ordering::SeqCst), 0, "their answers stand");
@@ -398,7 +397,7 @@ fn tracked_role_reads_follow_their_thing_at_n_and_10n() {
 fn tracked_holds_hears_its_element_at_n_and_10n() {
     let cost = |n: usize| {
         let a = pumped(0);
-        let root = a.account_root();
+        let root = crate::common::home(&a);
         let ts: Vec<Tid> = (0..n).map(|_| thing(&a)).collect();
         let (_set, fired_n, h) = tracked(&a);
         for t in &ts {

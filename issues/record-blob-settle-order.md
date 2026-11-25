@@ -1,5 +1,5 @@
 # Two readers' record blobs settle by arrival, not by the winning rule
-> Summary: osis-sync `keep::readers_logging_the_same_records_settle_on_one_record_blob_spec_permissions_4` fails when `Engine::make_account` writes the node root's strong to A and its `settings^.0` in one commit: node 1 keeps a record blob of a lower ID than the one the writer keeps, so they do not settle on one. The commit shape only moves the world's rng; the winning rule (spec/permissions.md §4 Logging certificates: more records, else lower blob ID) should hold for any IDs.
+> Summary: osis-sync `keep::readers_logging_the_same_records_settle_on_one_record_blob_spec_permissions_4` fails when account making (`osis_engine::local_peer::make_account`) writes the node root's strong to A and its `settings^.0` in one commit: node 1 keeps a record blob of a lower ID than the one the writer keeps, so they do not settle on one. The commit shape only moves the world's rng; the winning rule (spec/permissions.md §4 Logging certificates: more records, else lower blob ID) should hold for any IDs.
 > Priority: normal
 > Tags: sync, tests
 

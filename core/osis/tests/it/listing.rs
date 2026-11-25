@@ -70,7 +70,7 @@ fn page_and_listener() {
     let [CommitEvent::Commit { id, commit: Some(c) }] = got.as_slice() else { panic!("{got:?}") };
     assert_eq!(*id, a);
     let p = part(c, t, &msg());
-    assert_eq!((p.body, p.valid, c.stamp.author, c.kind), (Body::Held(Some(s("one"))), true, db.me(), CommitKind::Content));
+    assert_eq!((p.body, p.valid, c.stamp.author, c.kind), (Body::Held(Some(s("one"))), true, db.author(), CommitKind::Content));
     say(&db, t, "two");
     let got = db.at(t, untyped("t:msg.0")).writes(&page(CommitFrom::Newest, 10)).unwrap();
     assert_eq!(got.commits.iter().map(|c| part(c, t, &msg()).body).collect::<Vec<_>>(), vec![Body::Held(Some(s("two"))), Body::Held(Some(s("one")))]);
@@ -190,7 +190,7 @@ fn a_purge_lists_no_part_that_had_left_the_listing_spec_commits_7() {
     // b is live, but its keep counted from its own `ts` has passed: purged, it lists nowhere;
     // c, written now, lists as purged
     commit_with(&db, |w| w.at(t, kept(&db, &k)).set(&s("c")));
-    let me = db.me();
+    let me = db.author();
     commit_with(&db, |w| w.at(t, key(k.clone())).purge(osis::Purge::Author(me)));
     let got = bodies(&db, t, &k);
     assert!(got.len() == 1 && matches!(got[0], Body::Purged { .. }), "purged by author: c alone listed, as purged: {got:?}");
@@ -249,7 +249,7 @@ fn purge_commit_is_delete_for_everyone_spec_commits_5() {
     assert!(!got.commits.iter().any(|c| c.stamp.id == rq), "the request is not listed");
     let written: Vec<_> = got.commits.iter().filter(|c| c.kind == CommitKind::Content).collect();
     assert_eq!(written.iter().map(|c| c.stamp.id).collect::<Vec<_>>(), vec![a, b]);
-    assert_eq!(part(written[0], t, &msg()).body, Body::Purged { by: rq, author: Some(db.me()) });
+    assert_eq!(part(written[0], t, &msg()).body, Body::Purged { by: rq, author: Some(db.author()) });
     assert_eq!(part(written[1], t, &msg()).body, Body::Held(Some(s("next"))));
     assert_eq!(db.at(t, untyped("t:msg.0")).get().unwrap(), Some(s("next")));
     let evs = heard(&db, &rx);
@@ -356,7 +356,7 @@ fn purge_takes_no_setting_expiry_spec_commits_5() {
     w.at(t, untyped("t:msg.0")).purge(osis::Purge::Commit(a)).unwrap();
     let rq = w.commit().unwrap().unwrap().stamp.id;
     let got = db.at(t, untyped("t:msg.0")).writes(&page(CommitFrom::Oldest, 1)).unwrap();
-    assert_eq!(part(&got.commits[0], t, &msg()).body, Body::Purged { by: rq, author: Some(db.me()) });
+    assert_eq!(part(&got.commits[0], t, &msg()).body, Body::Purged { by: rq, author: Some(db.author()) });
     // beside a write of the thing, a request goes under it and takes its expiry: one commit
     let mut w = db.write();
     w.at(t, untyped("t:msg.0")).set(&s("y")).unwrap();
@@ -367,7 +367,7 @@ fn purge_takes_no_setting_expiry_spec_commits_5() {
     let done = w.commit().unwrap().unwrap();
     assert!(done.parts().all(|(_, ak, _)| ak.as_str() != "purge.0"), "no purge.0 write: {done:?}");
     let got = db.at(t, untyped("t:msg.0")).writes(&page(CommitFrom::Oldest, 8)).unwrap();
-    assert!(got.commits.iter().any(|k| k.stamp.id == b && part(k, t, &msg()).body == Body::Purged { by: done.stamp.id, author: Some(db.me()) }), "{got:?}");
+    assert!(got.commits.iter().any(|k| k.stamp.id == b && part(k, t, &msg()).body == Body::Purged { by: done.stamp.id, author: Some(db.author()) }), "{got:?}");
 }
 
 // spec: none (API surface); notes/api.md (the setting): `core::RETENTION` and the engine's `ct::RETENTION` are
@@ -419,7 +419,7 @@ fn purge_goes_under_its_thing_and_reaches_what_it_names_spec_commits_5() {
     let db = db(0);
     let t = thing(&db);
     let a = say(&db, t, "secret");
-    for what in [osis::Purge::Commit(a), osis::Purge::Author(db.me())] {
+    for what in [osis::Purge::Commit(a), osis::Purge::Author(db.author())] {
         let mut w = db.write();
         w.at(t, key(ak("t:other.0"))).set(&s("z")).unwrap();
         w.at(t, untyped("t:msg.0")).purge(what).unwrap();

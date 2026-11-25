@@ -10,6 +10,9 @@ pub use crate::value_type::of_schema;
 pub use osis_base::{Clock, CommitId as RawCommitId, CreationRecord, ManualClock, Ts};
 pub use osis_base::costs;
 pub use osis_engine as engine;
+pub use osis_base as base;
+pub use osis_crypto as crypto;
+pub use osis_crdt as crdt;
 pub use osis_schema as schema;
 pub use osis_schema::core_types;
 pub use osis_store::{Fault, Faults};
@@ -217,10 +220,6 @@ pub fn open(o: Opening) -> crate::Result<Osis> {
     Osis::open(o.store, o.cfg)
 }
 
-pub fn pair(o: Opening, offer: &crate::PairOffer) -> crate::Result<crate::Joining> {
-    Osis::pair(o.store, offer, o.cfg)
-}
-
 /// The client port's answers to `msgs` sent on connection `conn` (`main`: over the unix
 /// transport), as the node gives them, with no transport between.
 pub fn port_answers(db: &Osis, conn: u64, main: bool, msgs: Vec<osis_proto::Msg>) -> Vec<osis_proto::Msg> {
@@ -232,7 +231,7 @@ pub fn port_held(db: &Osis) -> (usize, usize) {
     db.locked(|l| l.port.held())
 }
 
-/// The rows that wait (`wait_synced`, `import_contact`, `redeem`) the port holds for clients.
+/// The rows that wait (`wait_synced`, `redeem`) the port holds for clients.
 pub fn port_waits(db: &Osis) -> usize {
     db.locked(|l| l.port.waits())
 }
@@ -253,8 +252,8 @@ pub mod checks {
     pub fn node() -> crate::Result<(crate::Osis, crate::Tid)> {
         let db = crate::Osis::create(crate::Store::Memory(crate::MemStore::new()), crate::Config::default())?;
         let mut w = db.write();
-        let t = w.create(db.account_root(), None)?;
-        w.hold(db.account_root(), t)?;
+        let t = w.create(db.node(), None)?;
+        w.hold(db.node(), t)?;
         w.commit()?;
         Ok((db, t))
     }

@@ -348,7 +348,7 @@ fn text_session_refused_commit_keeps_edits() {
     bob.register_schema("t.osis", SCHEMA).unwrap();
     let k = bob.aspect_key("n:body.0").unwrap();
     let role = |r: osis::Role| {
-        alice.set_role(t, bob.me(), Some(r), osis::SetRoleOpts::default()).unwrap();
+        alice.set_role(t, bob.author(), Some(r), osis::SetRoleOpts::default()).unwrap();
         deliver(&alice, &bob);
         bob.settle();
     };

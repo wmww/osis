@@ -14,7 +14,7 @@ use osis_schema::core_types as ct;
 #[test]
 fn making_an_account_spec_permissions_8() {
     let mut p = Peer::new(1, T0).unwrap();
-    let (acc, _) = p.engine.make_account().unwrap();
+    let (acc, _) = osis_engine::local_peer::make_account(&mut p.engine).unwrap();
     let e = &mut p.engine;
     let me = e.me();
     assert_eq!(e.mint_admin(&acc.thing), Some(me));
@@ -135,7 +135,7 @@ fn a_sibling_writes_a_nodes_settings_and_cannot_sign_as_it_spec_sync_set_1() {
     use crate::common::edge;
     use osis_schema::Codec;
     let mut lp = crate::common::net(3, 0);
-    let (acc, _) = lp.peers[0].engine.make_account().unwrap();
+    let (acc, _) = osis_engine::local_peer::make_account(&mut lp.peers[0].engine).unwrap();
     let a = acc.thing;
     let [n0, n1, n2] = [0, 1, 2].map(|i| lp.peers[i].engine.me());
     lp.peers[0].engine.grant(&a, &n1, &edge(Role::Admin)).unwrap();

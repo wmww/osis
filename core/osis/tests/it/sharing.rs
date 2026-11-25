@@ -25,7 +25,7 @@ fn alice_knows_bob() -> (osis::Osis, osis::Osis) {
 #[test]
 fn a_timed_grant_keeps_the_retain_it_was_written_with_spec_permissions_3() {
     let (alice, bob) = alice_knows_bob();
-    let b = bob.me();
+    let b = bob.author();
     let g = alice.commit_with(|w| w.create_held()).unwrap();
     let until = Some(osis::Time(T0 + 3_600_000));
     let retains = |db: &osis::Osis| db.grants(g).unwrap()[&b].retain_copy;
@@ -54,7 +54,7 @@ fn a_timed_grant_keeps_the_retain_it_was_written_with_spec_permissions_3() {
 #[test]
 fn grant_never_lowers_and_set_role_writes_only_changes() {
     let (alice, bob) = alice_knows_bob();
-    let b = bob.me();
+    let b = bob.author();
     let g = alice.commit_with(|w| w.create_held()).unwrap();
     let role = |db: &osis::Osis| db.grants(g).unwrap().get(&b).map(|x| x.role);
     alice.grant(g, b, Role::Write, Default::default()).unwrap();
@@ -83,7 +83,7 @@ fn grant_never_lowers_and_set_role_writes_only_changes() {
 #[test]
 fn holders_list_every_way_in_nearest_first() {
     let (alice, bob) = alice_knows_bob();
-    let b = bob.me();
+    let b = bob.author();
     let (g, org) = alice.commit_with(|w| Ok((w.create_held()?, w.create_held()?))).unwrap();
     alice.grant(org, b, Role::Admin, Default::default()).unwrap();
     alice.grant(g, org, Role::Read, Default::default()).unwrap();
@@ -122,7 +122,7 @@ fn leave_ends_only_own_ways_and_refuses_before_writing() {
     // bob's own thing, alice a writer of it who makes a link: her leave ends her role only
     deliver(&alice, &bob);
     let t = bob.commit_with(|w| w.create_held()).unwrap();
-    bob.grant(t, alice.me(), Role::Admin, Default::default()).unwrap();
+    bob.grant(t, alice.author(), Role::Admin, Default::default()).unwrap();
     alice.hold(t).unwrap();
     deliver(&bob, &alice);
     alice.make_link(t, Role::Read, Default::default()).unwrap();
@@ -130,9 +130,9 @@ fn leave_ends_only_own_ways_and_refuses_before_writing() {
     // the link's actor has her as its only admin: her leave of it is meant, or refused first
     let k = alice.links_of(t).unwrap()[0].id.actor();
     let n = commits(&alice);
-    assert!(matches!(alice.leave(alice.me(), t, SetRoleOpts::default()), Err(Error::LeavesNoAdmin { tid }) if tid == k));
+    assert!(matches!(alice.leave(alice.author(), t, SetRoleOpts::default()), Err(Error::LeavesNoAdmin { tid }) if tid == k));
     assert_eq!(commits(&alice), n, "refused before anything is written");
-    alice.leave(alice.me(), t, SetRoleOpts { leave_adminless: true, ..Default::default() }).unwrap();
+    alice.leave(alice.author(), t, SetRoleOpts { leave_adminless: true, ..Default::default() }).unwrap();
     assert_eq!(alice.role_on(t).unwrap(), None, "no way in is left");
     assert_eq!(alice.links_of(t).unwrap().len(), 1, "a leave ends no link");
 }
@@ -146,7 +146,7 @@ fn leave_ends_only_own_ways_and_refuses_before_writing() {
 fn purge_without_the_right_is_refused_spec_permissions_6() {
     let (alice, bob) = alice_knows_bob();
     let g = alice.commit_with(|w| w.create_held()).unwrap();
-    alice.grant(g, bob.me(), Role::Write, Default::default()).unwrap();
+    alice.grant(g, bob.author(), Role::Write, Default::default()).unwrap();
     bob.hold(g).unwrap();
     let k = || untyped("t:m.0");
     let hers = commit_with(&alice, |w| w.at(g, k()).set(&s("hers"))).stamp.id;
@@ -158,7 +158,7 @@ fn purge_without_the_right_is_refused_spec_permissions_6() {
         matches!(x.commit(), Err(Error::Permission { tid, needs: Role::Admin }) if tid == g) && commits(&bob) == n
     };
     assert!(refused(osis::Purge::Commit(hers)), "another's write by commit");
-    assert!(refused(osis::Purge::Author(alice.me())), "another's writes by author");
+    assert!(refused(osis::Purge::Author(alice.author())), "another's writes by author");
     let his = commit_with(&bob, |w| w.at(g, k()).set(&s("his, by default"))).stamp.id;
     assert!(refused(osis::Purge::Commit(his)), "his own, under the default");
     let mine = commit_with(&bob, |w| w.at(g, k()).purge_by(osis::PurgeBy::AuthorOrAdmin).set(&s("his"))).stamp.id;
@@ -182,20 +182,20 @@ fn purge_without_the_right_is_refused_spec_permissions_6() {
 // the sides are read from the one told. A dispute's id reads back from its text; a side of
 // another kind is `Invalid`.
 #[test]
-#[ignore = "accounts: osis/CLI/app"]
 fn disputes_listed_told_and_chosen_spec_permissions_5_1() {
     let (a, b, c) = (db(1), db(2), db(3));
     deliver(&b, &a);
     deliver(&c, &a);
     let g = a.commit_with(|w| w.create_held()).unwrap();
-    a.grant(g, b.me(), Role::Admin, Default::default()).unwrap();
-    a.grant(g, c.me(), Role::Read, Default::default()).unwrap();
+    a.grant(g, b.author(), Role::Admin, Default::default()).unwrap();
+    a.grant(g, c.author(), Role::Read, Default::default()).unwrap();
     deliver(&a, &b);
     deliver(&a, &c);
     // each writes only what it holds
     b.hold(g).unwrap();
-    b.set_role(g, a.me(), None, SetRoleOpts::default()).unwrap();
-    a.set_role(g, b.me(), None, SetRoleOpts::default()).unwrap();
+    c.hold(g).unwrap();
+    b.set_role(g, a.author(), None, SetRoleOpts::default()).unwrap();
+    a.set_role(g, b.author(), None, SetRoleOpts::default()).unwrap();
     let (tx, rx) = std::sync::mpsc::channel();
     let _sub = c.on_dispute(move |_, d| drop(tx.send(d))).unwrap();
     deliver(&b, &c);
@@ -204,24 +204,24 @@ fn disputes_listed_told_and_chosen_spec_permissions_5_1() {
     deliver(&b, &a);
     c.settle();
     let holds = |db: &osis::Osis, x: osis::Tid| db.grants(g).unwrap().contains_key(&x);
-    assert!(!holds(&c, a.me()) && holds(&c, b.me()), "b's removal was here first");
+    assert!(!holds(&c, a.author()) && holds(&c, b.author()), "b's removal was here first");
     let told = rx.try_iter().last().expect("told");
     let osis::Dispute::Removal { author, holder, side, chosen, .. } = told.clone();
-    assert!((author, holder) == (a.me(), b.me()) || (author, holder) == (b.me(), a.me()), "one of the two removals: {told:?}");
+    assert!((author, holder) == (a.author(), b.author()) || (author, holder) == (b.author(), a.author()), "one of the two removals: {told:?}");
     // the side a stands on: the author's of a's removal, the holder's of b's
-    let (a_side, b_side) = if author == a.me() { (osis::Side::Author, osis::Side::Holder) } else { (osis::Side::Holder, osis::Side::Author) };
+    let (a_side, b_side) = if author == a.author() { (osis::Side::Author, osis::Side::Holder) } else { (osis::Side::Holder, osis::Side::Author) };
     assert_eq!((side, chosen), (b_side, false), "b's side, by the removal held first");
     assert_eq!(c.disputes().unwrap(), (vec![told.clone()], 0));
     let id: osis::DisputeId = told.id().to_string().parse().unwrap();
     assert_eq!(id, told.id());
     c.choose_side(id, a_side).unwrap();
-    assert!(holds(&c, a.me()) && !holds(&c, b.me()), "a's side: b's removal of a does not count, a's of b does");
+    assert!(holds(&c, a.author()) && !holds(&c, b.author()), "a's side: b's removal of a does not count, a's of b does");
     let (ds, _) = c.disputes().unwrap();
     assert_eq!((ds[0].side(), ds[0].chosen()), (a_side, true));
     c.choose_side(id, b_side).unwrap();
-    assert!(!holds(&c, a.me()) && holds(&c, b.me()));
-    assert!(holds(&a, a.me()) && !holds(&a, b.me()), "each party stands with itself");
-    assert!(holds(&b, b.me()) && !holds(&b, a.me()));
+    assert!(!holds(&c, a.author()) && holds(&c, b.author()));
+    assert!(holds(&a, a.author()) && !holds(&a, b.author()), "each party stands with itself");
+    assert!(holds(&b, b.author()) && !holds(&b, a.author()));
 }
 
 // A write is never refused or split for its paths (notes/path-form.md; spec/wire.md §4 `Split`): one `Write` changing things its
@@ -234,11 +234,11 @@ fn the_owners_rule_one_write_through_different_actors_is_one_commit_spec_wire_4(
     let all = [&alice, &bob, &carol];
     mesh(&all);
     let (g, h) = alice.commit_with(|w| Ok((w.create_held()?, w.create_held()?))).unwrap();
-    alice.grant(h, bob.me(), Role::Write, Default::default()).unwrap();
+    alice.grant(h, bob.author(), Role::Write, Default::default()).unwrap();
     alice.grant(g, h, Role::Write, Default::default()).unwrap();
-    alice.grant(g, carol.me(), Role::Read, Default::default()).unwrap();
+    alice.grant(g, carol.author(), Role::Read, Default::default()).unwrap();
     let o = bob.commit_with(|w| w.create_held()).unwrap();
-    bob.grant(o, carol.me(), Role::Read, Default::default()).unwrap();
+    bob.grant(o, carol.author(), Role::Read, Default::default()).unwrap();
     mesh(&all);
     // Bob holds what he writes (spec/sync-set.md §2 Writing): H, which he acts through, and G
     bob.hold(h).unwrap();
@@ -287,29 +287,30 @@ fn mesh(dbs: &[&osis::Osis]) {
 // G's, and M's to Bob. Once Carol reads M her watch on M's grants hears its roster, and hears it
 // hidden once she reads it no more.
 #[test]
-#[ignore = "accounts: osis/CLI/app"]
 fn a_parents_reader_sees_no_roster_of_its_member_org_spec_crypto_4() {
     let (alice, bob, carol, erin) = (db(1), db(2), db(3), db(4));
     let all = [&alice, &bob, &carol, &erin];
     mesh(&all);
     let m = bob.commit_with(|w| w.create_held()).unwrap();
-    bob.grant(m, erin.me(), Role::Write, Default::default()).unwrap();
-    bob.grant(m, alice.me(), Role::Read, Default::default()).unwrap();
+    bob.grant(m, erin.author(), Role::Write, Default::default()).unwrap();
+    bob.grant(m, alice.author(), Role::Read, Default::default()).unwrap();
     mesh(&all);
     // alice holds the organization she reads
     alice.hold(m).unwrap();
     mesh(&all);
     let g = alice.commit_with(|w| w.create_held()).unwrap();
     alice.grant(g, m, Role::Write, Default::default()).unwrap();
-    alice.grant(g, carol.me(), Role::Read, Default::default()).unwrap();
+    alice.grant(g, carol.author(), Role::Read, Default::default()).unwrap();
+    mesh(&all);
+    carol.hold(g).unwrap();
     mesh(&all);
     assert!(carol.grants(g).unwrap().contains_key(&m), "G's roster shows to its reader");
     assert!(carol.grants(m).unwrap().is_empty(), "no roster of M");
-    bob.set_role(m, erin.me(), None, SetRoleOpts::default()).unwrap();
+    bob.set_role(m, erin.author(), None, SetRoleOpts::default()).unwrap();
     mesh(&all);
-    assert!(!bob.grants(m).unwrap().contains_key(&erin.me()), "Erin left M");
+    assert!(!bob.grants(m).unwrap().contains_key(&erin.author()), "Erin left M");
     assert!(carol.grants(m).unwrap().is_empty(), "no roster of M once Erin left");
-    assert!(carol.holders(g).unwrap().iter().all(|h| h.actor != erin.me()), "nor through G's holders");
+    assert!(carol.holders(g).unwrap().iter().all(|h| h.actor != erin.author()), "nor through G's holders");
     // once Carol reads M (a roster change on M's way in, not on M's), her watch on M's grants
     // hears its roster
     let t = bob.commit_with(|w| w.create_held()).unwrap();
@@ -318,13 +319,13 @@ fn a_parents_reader_sees_no_roster_of_its_member_org_spec_crypto_4() {
     let heard = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let h = heard.clone();
     let _sub = carol.on_grants_change(m, move |_, r| h.lock().unwrap().push(r.unwrap())).unwrap();
-    bob.grant(t, carol.me(), Role::Read, Default::default()).unwrap();
+    bob.grant(t, carol.author(), Role::Read, Default::default()).unwrap();
     mesh(&all);
     assert_eq!(carol.role_on(m).unwrap(), Some(Role::Read), "Carol reads M through T");
     assert!(carol.grants(m).unwrap().contains_key(&t), "M's roster shows to its reader");
     assert!(heard.lock().unwrap().last().is_some_and(|g| g.contains_key(&t)), "her watch heard it: {:?}", heard.lock().unwrap());
     // and once she no longer reads M (T's roster changed, M's not), it hears the roster hidden
-    bob.set_role(t, carol.me(), None, SetRoleOpts::default()).unwrap();
+    bob.set_role(t, carol.author(), None, SetRoleOpts::default()).unwrap();
     mesh(&all);
     assert_eq!(carol.role_on(m).unwrap(), None, "Carol left T");
     assert!(carol.grants(m).unwrap().is_empty(), "no roster of M");
@@ -341,7 +342,7 @@ fn the_last_admin_is_refused_unless_meant_spec_perm_1() {
     let t = w.create_held().unwrap();
     w.commit().unwrap();
     // the thing's one admin: the account it was minted with
-    let me = alice.account_root();
+    let me = crate::common::home(&alice);
     let no_admin = |r: osis::Result<()>| matches!(r, Err(Error::LeavesNoAdmin { tid }) if tid == t);
     assert!(no_admin(alice.set_role(t, me, None, SetRoleOpts::default())), "a removal");
     assert!(no_admin(alice.set_role(t, me, Some(Role::Write), SetRoleOpts::default())), "a lowering");

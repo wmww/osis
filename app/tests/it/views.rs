@@ -216,7 +216,7 @@ fn arrangement_on_what_i_cannot_write() {
     };
     sync();
     let t = create(&a, "tag").unwrap();
-    a.db.grant(t, b.db.account_root(), Role::Read, osis::GrantOpts::default()).unwrap();
+    a.db.grant(t, osis_app::store::account(&b.db).unwrap(), Role::Read, osis::GrantOpts::default()).unwrap();
     sync();
     b.set_arranged(t, &Arrange::Rows).unwrap();
     assert_eq!(b.arranged(t).unwrap(), Some(Arrange::Rows));
@@ -228,7 +228,7 @@ fn window_state_survives_reopening() {
     use osis::Store;
     let mem = osis::MemStore::new();
     let opening = || osis::internals::Opening::at(Store::Memory(mem.clone()));
-    let d = make(osis::internals::create(opening()).unwrap());
+    let d = make(crate::common::created(opening()));
     d.home().unwrap();
     let t = d.create_note().unwrap();
     let w = WindowState::default();
@@ -473,7 +473,7 @@ fn a_second_rename_undoes_back_to_the_first_after_reopen() {
     use osis::Store;
     let mem = osis::MemStore::new();
     let opening = || osis::internals::Opening::at(Store::Memory(mem.clone()));
-    let d = make(osis::internals::create(opening()).unwrap());
+    let d = make(crate::common::created(opening()));
     d.home().unwrap();
     let t = d.create_note().unwrap();
     let k = editor("e", t, "name.0", None);

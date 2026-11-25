@@ -251,7 +251,7 @@ impl Osis {
     }
 
     /// Makes a thin client of the nodes it logs in to, each dialed at its address, which pins the
-    /// node's key: every call goes to them, as the actor a login makes this program (`me()`).
+    /// node's key: every call goes to them, as the actor a login makes this program (`author()`).
     /// Several logins must make it one actor (`Invalid` otherwise); a thing goes to the first
     /// node holding it.
     pub async fn connect(logins: &[NodeLogin], cfg: AppConfig) -> Result<Osis> {
@@ -270,7 +270,7 @@ impl Osis {
         let mut who = None;
         for (a, s) in logins {
             let w = db.add_remote(a.clone(), s.clone()).await?;
-            if who.is_some_and(|x: crate::port::client::Thin| x.me != w.me) {
+            if who.is_some_and(|x: crate::port::client::Thin| x.author != w.author) {
                 return Err(Error::Invalid(format!("{a} makes this client another actor than the nodes before it")));
             }
             who.get_or_insert(w);
@@ -297,14 +297,14 @@ impl Osis {
     /// pass of each sync ID carrying the sync unit: at most `PASS_WAIT_MS` past a holder away); until
     /// then the sync unit stays read at its node, and a call dropped before it answers leaves it so,
     /// syncing here too until a restart (moving it again ends that). `Invalid` for a node not connected, for
-    /// the account root (it always syncs here), or when the sync unit moved away again before it caught up.
+    /// the node thing (it always syncs here), or when the sync unit moved away again before it caught up.
     pub async fn unit_source(&self, unit: Tid, to: UnitSource) -> Result<()> {
         self.local("unit_source")?;
         let moving_back = self.locked(|l| -> Result<bool> {
             match &to {
                 UnitSource::Node(a) if !l.remotes.iter().any(|r| r.addr == *a) => Err(Error::Invalid(format!("not connected to {a} (connect_node)"))),
-                // the node's own records live on the account root: it always syncs here
-                UnitSource::Node(_) if unit == self.account_root() => Err(Error::Invalid("the account root is never sourced at another node".into())),
+                // the node thing is this node's own: it always syncs here
+                UnitSource::Node(_) if unit == self.node() => Err(Error::Invalid("the node thing is never sourced at another node".into())),
                 UnitSource::Node(a) => {
                     l.unit_sources.insert(unit, a.clone());
                     l.moving_back.remove(&unit);

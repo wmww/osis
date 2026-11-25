@@ -110,9 +110,9 @@ pub struct Write<'d> {
 }
 
 impl Osis {
-    /// A new write acting as `me()`.
+    /// A new write acting as `author()`.
     pub fn write(&self) -> Write<'_> {
-        Write { db: self, ops: Vec::new(), keys: Vec::new(), key_ix: BTreeMap::new(), actor: self.me(), created: Vec::new(), expires: None, alive: None, refused: None }
+        Write { db: self, ops: Vec::new(), keys: Vec::new(), key_ix: BTreeMap::new(), actor: self.author(), created: Vec::new(), expires: None, alive: None, refused: None }
     }
 }
 
@@ -157,7 +157,7 @@ impl<'d> Write<'d> {
         self.db
     }
 
-    /// Writes as `actor` instead of `me()`; this node needs that actor's roles.
+    /// Writes as `actor` instead of `author()`; this node needs that actor's roles.
     pub fn act_as(&mut self, actor: Tid) -> &mut Self {
         self.actor = actor;
         self
@@ -286,11 +286,11 @@ impl<'d> Write<'d> {
     ///
     /// With a thing as admin (usually the one that holds it), whoever reads that thing reads it, and
     /// until it is first shared directly it may be up to ten times lighter to make and sync than one
-    /// with an account (`me()`) as admin. A thin client's own actor goes with the client, so it is
+    /// with a node thing (`node()`) or another thing that holds roles as admin. A thin client's own actor goes with the client, so it is
     /// refused as admin (`Invalid` at commit).
     ///
-    /// The same write must hold it: a strong to it from a thing this node holds (the account
-    /// root's `holds.0` for an account-wide thing), else the commit is `Invalid`. It syncs with
+    /// The same write must hold it: a strong to it from a thing this node holds (`hold`), else
+    /// the commit is `Invalid`. It syncs with
     /// what holds it.
     pub fn create(&mut self, admin: Tid, expires: Option<Expiry>) -> Result<Tid> {
         let admin = self.known(admin)?;
@@ -354,8 +354,7 @@ impl<'d> Write<'d> {
         AspectWrite { w: self, tid, key, ix }
     }
 
-    /// Writes every op as one commit (two for what `Write` names; a thing minted with an account
-    /// as admin is recorded first, in commits of its own); `None` when it writes none (nothing
+    /// Writes every op as one commit (two for what `Write` names); `None` when it writes none (nothing
     /// changes). Fails before anything applies
     /// with `Permission`, `UnknownThing`, or `Invalid` (also when the ops cannot share a commit:
     /// `Write`, or past 1024 ops through another node); `OutcomeUnknown`, only through another node,

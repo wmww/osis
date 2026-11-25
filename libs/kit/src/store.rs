@@ -23,14 +23,19 @@ use osis::{BacklinkQuery, Config, Address, Osis, ReadOnly, Ref, Result, Runtime,
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-/// Opens the store in `dir`, creating it when `dir` holds none, dialing the nodes `dial` names
-/// (`Config::dial`). Sync runs on osis's own runtime while the app runs. Watch callbacks run on the UI thread, in `db.settle()`: `wake` arranges for
+/// Opens the store in `dir`, creating it with an account of its own (osis-account) when `dir`
+/// holds none, dialing the nodes `dial` names (`Config::dial`). Sync runs on osis's own runtime while the app runs. Watch callbacks run on the UI thread, in `db.settle()`: `wake` arranges for
 /// one (`window::Waker`).
 pub fn open(dir: &Path, dial: Vec<Address>, wake: Arc<dyn Fn() + Send + Sync>) -> Result<Osis> {
     let mut cfg = Config { runtime: Runtime::Own, dial, ..Config::default() };
     cfg.app.dispatch = osis::Dispatcher::Pump(wake);
     let store = Store::Dir(dir.to_path_buf());
-    if dir.join("db.redb").exists() { Osis::open(store, cfg) } else { Osis::create(store, cfg) }
+    if dir.join("db.redb").exists() {
+        return Osis::open(store, cfg);
+    }
+    let db = Osis::create(store, cfg)?;
+    osis_account::Account::make(&db)?;
+    Ok(db)
 }
 
 /// The aspects that are the system's, not the user's: no view accounts for them, raw hides them.
@@ -175,7 +180,7 @@ impl Reader {
             if s.name.is_empty() {
                 s.name = r.name(t)?;
             }
-            if s.name.is_empty() && r.db.profile_of(r.db.me())? == Some(t) {
+            if s.name.is_empty() && r.you()? == Some(t) {
                 s.name = "You".into();
             }
             Ok(s)
@@ -223,9 +228,17 @@ impl Reader {
         Ok(self.homes()?.contains(&t))
     }
 
-    /// The account's profile thing, once it is made (`Osis::profile`).
+    /// The person this node acts for: its account (osis-account), if any.
+    pub fn person(&self) -> Result<Option<osis_account::Account>> {
+        osis_account::Account::of(&self.db)
+    }
+
+    /// The person's profile thing, once it is here (`osis_account::Account::profile`).
     pub fn you(&self) -> Result<Option<Tid>> {
-        self.db.profile_of(self.db.me())
+        match self.person()? {
+            Some(a) => a.profile(&self.db),
+            None => Ok(None),
+        }
     }
 
     /// Everything held: what the homes hold by strongs in `holds.0`, at any depth, and the profile.
@@ -723,8 +736,10 @@ impl Data {
     /// target this account already reaches for good at the link's role opens at once (`Osis::redeem`).
     pub fn redeem(&self, link: &str) -> Result<Tid> {
         let l: osis::ShareLink = link.trim().parse().map_err(|e| osis::Error::Invalid(format!("not a link: {e}")))?;
+        // the person joins (their account), else this node
+        let joiner = self.person()?.map_or(self.db.node(), |a| a.thing());
         let rt = tokio::runtime::Builder::new_current_thread().enable_time().build().map_err(|e| osis::Error::Network(e.to_string()))?;
-        let got = rt.block_on(async { tokio::time::timeout(JOIN_WAIT, self.db.redeem(&l)).await }).unwrap_or_else(|_| Err(osis::Error::Network("could not confirm this link yet; trying again is safe".into())))?;
+        let got = rt.block_on(async { tokio::time::timeout(JOIN_WAIT, self.db.redeem(&l, joiner)).await }).unwrap_or_else(|_| Err(osis::Error::Network("could not confirm this link yet; trying again is safe".into())))?;
         // home holds it, which brings it to the account's other nodes
         if !self.things()?.contains(&got) {
             let g = self.home()?;

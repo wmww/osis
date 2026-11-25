@@ -463,7 +463,7 @@ fn a_part_never_received_dropped_as_invalid_is_fetched_once_valid() {
 #[test]
 fn trust_records_reach_only_lowerings_on_the_account_spec_permissions_8() {
     let mut lp = osis_engine::local_peer::LocalPeer::apart(vec![osis_engine::local_peer::Peer::new(0, crate::common::T0).unwrap()], 0);
-    lp.peers[0].engine.make_account().unwrap();
+    osis_engine::local_peer::make_account(&mut lp.peers[0].engine).unwrap();
     let a = crate::common::account_of(&mut lp);
     let mut p = osis_engine::local_peer::Peer::new(1, crate::common::T0).unwrap();
     let (node, keys) = (p.engine.me(), p.engine.node_keys().unwrap());

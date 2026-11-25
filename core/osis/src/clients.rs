@@ -1,7 +1,7 @@
 //! Clients of this node by a secret (notes/client-port.md §3): `clients^.0` on the node root
 //! (spec/data-model.md §9, spec/sync-set.md §1) lists a client actor per client, by a weak, with
 //! the hash of its bearer secret
-//! and its end. The node mints the actor (an actor whose mint admin is the account, like a link's K) and
+//! and its end. The node mints the actor (a thing of its own whose mint admin is the node thing, like a link's K) and
 //! acts as it for the client's session (the client port, spec/wire.md §11.2); what the client may read and write is
 //! that actor's grants, nothing else. Only the node writes its node root: an entry makes the node
 //! sign as its node thing for the actor it names, so it is no setting a sibling writes (unlike
@@ -52,7 +52,7 @@ pub struct Client {
 }
 
 impl Osis {
-    /// Registers a client: a new actor of this account, which the account's nodes can grant to.
+    /// Registers a client: a new thing minted with this node thing as admin, which can be granted to.
     /// Returns the actor and the secret, shown only here. An `until` not in the future is `Invalid`. Grants decide what the
     /// client reaches (it starts with none).
     /// `Unsupported` on a client with its own actor.
@@ -64,16 +64,19 @@ impl Osis {
         }
         let secret = ClientSecret::generate();
         let entry = secret.entry(until);
-        let (me, root) = (self.me(), self.inner.node_root);
-        // the account root holds the actor by a strong, in the transaction minting it
+        let (me, root) = (self.author(), self.inner.node_root);
+        // the node root holds the actor by a strong, in the transaction minting it
         // (spec/sync-set.md §2 Making a thing)
-        let (actor, _) = self.engine(|e| {
+        let actor = self.engine(|e| {
             let d = e.node_root().ok_or(osis_engine::Error::Misuse("no node root"))?;
-            e.mint_actor(&me, |actor| {
+            let (ts, _) = e.mint_independent(&[osis_engine::MintAdmin::Thing(me)], |ts| {
                 let mut m = osis_engine::Mutation::new();
-                m.op(d, &ct::HOLDS, PathOp { path: vec![], op: Op::Add(Value::Strong(actor)) })?;
-                Ok(m)
-            })
+                for t in ts {
+                    m.op(d, &ct::HOLDS, PathOp { path: vec![], op: Op::Add(Value::Strong(*t)) })?;
+                }
+                Ok(vec![m])
+            })?;
+            ts.first().copied().ok_or(osis_engine::Error::Misuse("one minted"))
         })?;
         // a commit of the node's own: only it writes its node root (a crash before it leaves an
         // actor no client can reach, holding nothing)

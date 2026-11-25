@@ -39,9 +39,9 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 /// Who a thin client is (`Osis::connect`): its node's answer.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Thin {
-    pub me: Tid,
+    pub author: Tid,
     pub node: Tid,
-    pub account_root: Tid,
+    pub settings: Option<Tid>,
 }
 
 /// The wait before dialing again a node whose connection could not be made while a watch is
@@ -192,7 +192,7 @@ impl Cx<'_> {
     /// `r` is up as `w`: what waited goes, writes without an answer again (marked) and the live
     /// watches subscribe again.
     fn came_up(&mut self, r: &mut Remote, w: Thin) {
-        if r.who.is_some_and(|x| x.me != w.me) {
+        if r.who.is_some_and(|x| x.author != w.author) {
             let e = Error::Refused(format!("{} answers as another actor now", r.addr));
             return self.refused(r, e);
         }
@@ -385,8 +385,8 @@ pub(crate) fn reply(db: &ReadOnly, conn: ConnId, id: RequestId, m: Msg) {
 }
 
 fn who(v: Value) -> Result<Thin> {
-    let (me, node, account_root) = Form::from_wire(v)?;
-    Ok(Thin { me, node, account_root })
+    let (author, node, settings) = Form::from_wire(v)?;
+    Ok(Thin { author, node, settings })
 }
 
 /// A connection ended (or its dial failed): one that was up is dialed again at once; one that

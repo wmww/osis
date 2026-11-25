@@ -51,7 +51,7 @@ impl Default for Options {
     }
 }
 
-/// A new chat, minted with admin `holder` (its mint admin: the app's home, the account root) and held by
+/// A new chat, minted with admin `holder` (its mint admin: the app's home, such as the account) and held by
 /// it, its settings written before anyone is granted: every message kept for good (expiry ends a
 /// disappearing one), replacements refused when editing is off, who may delete a message, and its
 /// inbox signals enabled (a shared thing's readers reach it by them). One

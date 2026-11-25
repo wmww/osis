@@ -8,6 +8,7 @@ use crate::schema::{DRAFT, REPLY_TO};
 use osis::core::NAME;
 use osis::{Body, Commit, CommitFrom, CommitId, CommitKind, CommitPos, CommitQuery, Osis, ReadOnly, Result, Tid, Time};
 use osis_chat::schema::{MSG, SETTINGS};
+use std::collections::BTreeSet;
 
 pub struct LogFacet;
 pub static FACET: LogFacet = LogFacet;
@@ -61,7 +62,14 @@ pub fn name(db: &osis::ReadOnly, c: Tid) -> Result<String> {
 /// The name messages go out under: the profile's `name.0`, else `OSIS_CHAT_NAME`.
 pub fn my_name(db: &Osis) -> Result<Option<String>> {
     // a node paired a moment ago may not hold the profile yet: no name then
-    let own = db.at(db.profile()?, NAME).get()?.filter(|n| !n.trim().is_empty());
+    let profile = match osis_account::Account::of(db)? {
+        Some(a) => a.profile(db)?,
+        None => None,
+    };
+    let own = match profile {
+        Some(p) => db.at(p, NAME).get()?.filter(|n| !n.trim().is_empty()),
+        None => None,
+    };
     Ok(own.or_else(|| std::env::var("OSIS_CHAT_NAME").ok().filter(|n| !n.trim().is_empty())))
 }
 
@@ -110,7 +118,11 @@ fn quote_memo(r: &Reader, c: Tid, id: CommitId) -> Result<std::rc::Rc<Option<Str
 /// read: its cost is the page's, however long the chat.
 fn lines(db: &ReadOnly, c: Tid, from: CommitFrom, n: usize, mut quote: impl FnMut(CommitId) -> Result<Option<String>>) -> Result<Vec<Line>> {
     let page = db.at(c, MSG).fired(&CommitQuery { from, limit: Some(n), kinds: vec![CommitKind::Content], ..Default::default() })?;
-    let me = db.me();
+    // the person's: written by this node or another node of its account
+    let me: BTreeSet<Tid> = match osis_account::Account::of(db)? {
+        Some(a) => a.nodes(db)?.into_iter().map(|n| n.node).chain([db.author()]).collect(),
+        None => [db.author()].into(),
+    };
     let mut out = Vec::with_capacity(page.commits.len());
     for k in &page.commits {
         let Some(p) = k.at(c, MSG) else { continue };
@@ -122,7 +134,7 @@ fn lines(db: &ReadOnly, c: Tid, from: CommitFrom, n: usize, mut quote: impl FnMu
             Some(r) => Some((r, quote(r)?.unwrap_or_else(|| r.to_string()))),
             None => None,
         };
-        out.push(Line { id: k.stamp.id, pos: k.pos(), who: who(k, &p.body), time: k.stamp.shown().0, text: text_of(&p.body), reply_to, mine: k.stamp.author == me, edited: p.edited.is_some() });
+        out.push(Line { id: k.stamp.id, pos: k.pos(), who: who(k, &p.body), time: k.stamp.shown().0, text: text_of(&p.body), reply_to, mine: me.contains(&k.stamp.author), edited: p.edited.is_some() });
     }
     Ok(out)
 }

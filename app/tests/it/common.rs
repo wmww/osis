@@ -5,9 +5,16 @@ use osis::internals::ManualClock;
 use osis::{MemStore, Osis, Store};
 use std::sync::Arc;
 
+/// A new node in `o` with an account of its own (osis-account), as the app makes one.
+pub fn created(o: osis::internals::Opening) -> Osis {
+    let db = osis::internals::create(o).unwrap();
+    osis_account::Account::make(&db).unwrap();
+    db
+}
+
 /// The app's account over a fresh in-memory node, its home made.
 pub fn data() -> osis_kit::store::Data {
-    let d = osis_app::store::data(osis::internals::create(osis::internals::Opening::memory()).unwrap());
+    let d = osis_app::store::data(created(osis::internals::Opening::memory()));
     d.home().unwrap();
     d
 }
@@ -24,7 +31,7 @@ pub fn clock() -> Arc<ManualClock> {
 
 /// A fresh in-memory node of its own account, seeded `seed`, on `clock`.
 pub fn node(seed: u64, clock: &Arc<ManualClock>) -> Osis {
-    osis::internals::create(cfg(seed, clock)).unwrap()
+    created(cfg(seed, clock))
 }
 
 pub fn cfg(seed: u64, clock: &Arc<ManualClock>) -> osis::internals::Opening {
@@ -39,7 +46,8 @@ pub fn cfg(seed: u64, clock: &Arc<ManualClock>) -> osis::internals::Opening {
 /// account first (a strong from its `holds.0`), so what judges `from`'s writes stays at `to`
 /// (spec/commits.md §5 What a held thing needs) and a grant to it can box it.
 pub fn deliver(from: &Osis, to: &Osis) {
-    let (root, who) = (to.account_root(), from.account_root());
+    let account = |d: &Osis| osis_app::store::account(d).unwrap();
+    let (root, who) = (account(to), account(from));
     let other = who != root;
     if other && !to.holds(root, who).unwrap() {
         let mut w = to.write();

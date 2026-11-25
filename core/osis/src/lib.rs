@@ -6,21 +6,21 @@
 //! each one typed value under a name like `note:title.0`, so many apps can share one thing and each
 //! read the parts it understands. A thing references others in its values; a node holds what its
 //! node root reaches by strong references.
-//! A running osis with its own store is a **node**, and `Osis` is a handle to one. An **account** is
-//! an identity held by a set of nodes: a person's, an organization's, a bot's. Anything that can hold a role and
-//! act (an account, a node, a shared space) is an **actor**.
+//! A running osis with its own store is a **node**, and `Osis` is a handle to one. A node writes as
+//! its own thing, its **node thing** (`node()`), and holds roles as it. A person, an organization or
+//! a shared space is a thing like any other, holding roles on others; an account (a person's
+//! identity held by a set of nodes) is an arrangement of things a library makes (osis-account).
 //!
 //! # A first write
 //! A thing is minted with an admin, its mint admin, usually the thing it lives in: whoever reads that reads
 //! it. A thing is made only where something holds it: a strong reference from a thing this node
-//! holds, written in the same write. Here the account root (private to your account, `me()`) is
-//! both, so every node of the account holds it.
+//! holds, written in the same write. Here the node thing is both.
 //! ```
 //! use osis::{Config, MemStore, Osis, Store, Value};
 //! let db = Osis::create(Store::Memory(MemStore::new()), Config::default())?;
 //! let mut w = db.write();
-//! let note = w.create(db.account_root(), None)?;
-//! w.hold(db.account_root(), note)?;
+//! let note = w.create(db.node(), None)?;
+//! w.hold(db.node(), note)?;
 //! w.at(note, db.aspect_key("note:title.0")?).set(&Value::Str("Groceries".into()))?;
 //! w.commit()?;
 //! # Ok::<(), osis::Error>(())
@@ -35,8 +35,8 @@
 //! # let db = Osis::create(Store::Memory(MemStore::new()), Config::default())?;
 //! let title = db.aspect_key("note:title.0")?;
 //! let mut w = db.write();
-//! let t = w.create(db.account_root(), None)?;
-//! # w.hold(db.account_root(), t)?;
+//! let t = w.create(db.node(), None)?;
+//! # w.hold(db.node(), t)?;
 //! w.at(t, title.clone()).set(&Value::Str("Groceries".into()))?;
 //! w.commit()?;
 //! assert_eq!(db.at(t, title.clone()).get()?, Some(Value::Str("Groceries".into())));
@@ -62,8 +62,8 @@
 //! # let db = Osis::create(Store::Memory(MemStore::new()), Config::default())?;
 //! let tags = db.aspect_key("note:tags.0")?;
 //! let mut w = db.write();
-//! let t = w.create(db.account_root(), None)?;
-//! # w.hold(db.account_root(), t)?;
+//! let t = w.create(db.node(), None)?;
+//! # w.hold(db.node(), t)?;
 //! w.at(t, tags.clone()).path(p!["color"]).set(&"red".to_string())?;
 //! w.commit()?;
 //! let c: Option<String> = db.at(t, tags).path(p!["color"]).get()?;
@@ -84,8 +84,8 @@
 //! let form = db.aspect_key("app:form.0")?;
 //! let shown = Value::Map(ValueMap::from([(Value::Int(0), Value::Str("a".into())), (Value::Int(1), Value::Int(1))]));
 //! let mut w = db.write();
-//! let t = w.create(db.account_root(), None)?;
-//! # w.hold(db.account_root(), t)?;
+//! let t = w.create(db.node(), None)?;
+//! # w.hold(db.node(), t)?;
 //! w.at(t, form.clone()).set(&shown)?;
 //! w.commit()?;
 //! let mut edited = shown.clone();
@@ -106,8 +106,8 @@
 //! # let db = Osis::create(Store::Memory(MemStore::new()), Config::default())?;
 //! let (title, typing) = (db.aspect_key("app:title.0")?, db.aspect_key("app:typing+.0")?);
 //! let mut w = db.write();
-//! let t = w.create(db.account_root(), None)?;
-//! # w.hold(db.account_root(), t)?;
+//! let t = w.create(db.node(), None)?;
+//! # w.hold(db.node(), t)?;
 //! w.at(t, title.clone()).set(&Value::Str("note".into()))?;
 //! w.commit()?;
 //! // memory and disk are two commits: a peer could see one without the other
@@ -122,8 +122,8 @@
 //! w.commit()?;
 //! // a thing that expires goes whole at every node, and its commit with it
 //! let mut w = db.write();
-//! let brief = w.create(db.account_root(), Some(Expiry::In(std::time::Duration::from_secs(5))))?;
-//! # w.hold(db.account_root(), brief)?;
+//! let brief = w.create(db.node(), Some(Expiry::In(std::time::Duration::from_secs(5))))?;
+//! # w.hold(db.node(), brief)?;
 //! w.at(brief, title).set(&Value::Str("gone soon".into()))?;
 //! w.commit()?;
 //! # Ok::<(), osis::Error>(())
@@ -138,8 +138,8 @@
 //! # let db = Osis::create(Store::Memory(MemStore::new()), Config::default())?;
 //! let k = db.aspect_key("app:count.0")?;
 //! let mut w = db.write();
-//! let t = w.create(db.account_root(), None)?;
-//! # w.hold(db.account_root(), t)?;
+//! let t = w.create(db.node(), None)?;
+//! # w.hold(db.node(), t)?;
 //! w.commit()?;
 //! let (tx, rx) = std::sync::mpsc::channel();
 //! let sub = db.at(t, k.clone()).on_change(move |_db, c| { let _ = tx.send(c); })?;
@@ -161,8 +161,8 @@
 //! # let db = Osis::create(Store::Memory(MemStore::new()), Config::default())?;
 //! let k = db.aspect_key("app:scores.0")?;
 //! let mut w = db.write();
-//! let t = w.create(db.account_root(), None)?;
-//! # w.hold(db.account_root(), t)?;
+//! let t = w.create(db.node(), None)?;
+//! # w.hold(db.node(), t)?;
 //! w.commit()?;
 //! let (tx, rx) = std::sync::mpsc::channel();
 //! let _sub = db.at(t, k.clone()).path(p!["ann"]).on_change::<i64>(move |_db, c| { let _ = tx.send(c.value); })?;
@@ -181,8 +181,8 @@
 //! # let db = Osis::create(Store::Memory(MemStore::new()), Config::default())?;
 //! let k = db.aspect_key("app:count.0")?;
 //! let mut w = db.write();
-//! let t = w.create(db.account_root(), None)?;
-//! # w.hold(db.account_root(), t)?;
+//! let t = w.create(db.node(), None)?;
+//! # w.hold(db.node(), t)?;
 //! w.commit()?;
 //! let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
 //! let _sub = db.at(t, k.clone()).on_change(move |_db, c| { let _ = tx.send(c.value); })?;
@@ -203,8 +203,8 @@
 //! # let db = Osis::create(Store::Memory(MemStore::new()), Config::default())?;
 //! let k = db.aspect_key("app:count.0")?;
 //! let mut w = db.write();
-//! let t = w.create(db.account_root(), None)?;
-//! # w.hold(db.account_root(), t)?;
+//! let t = w.create(db.node(), None)?;
+//! # w.hold(db.node(), t)?;
 //! w.commit()?;
 //! let (tx, rx) = std::sync::mpsc::channel();
 //! let set = ReadSet::new(move |_db| { let _ = tx.send(()); });
@@ -230,15 +230,15 @@
 //! # let db = Osis::create(Store::Memory(MemStore::new()), Config::default())?;
 //! let link = db.aspect_key("note:link.0")?;
 //! let mut w = db.write();
-//! let (a, b) = (w.create(db.account_root(), None)?, w.create(db.account_root(), None)?);
-//! # w.hold(db.account_root(), a)?;
-//! # w.hold(db.account_root(), b)?;
+//! let (a, b) = (w.create(db.node(), None)?, w.create(db.node(), None)?);
+//! # w.hold(db.node(), a)?;
+//! # w.hold(db.node(), b)?;
 //! w.at(a, link.clone()).set(&Weak(b).into())?;
 //! w.commit()?;
 //! let page = db.backlinks(b, &BacklinkQuery::default())?;
 //! let found: Vec<_> = page.backlinks.iter().map(|l| (l.tid, l.ak.as_str(), l.kind)).collect();
 //! assert!(found.contains(&(a, "note:link.0", RefKind::Weak)));
-//! assert!(found.contains(&(db.account_root(), "holds.0", RefKind::Strong)), "what holds b");
+//! assert!(found.contains(&(db.node(), "holds.0", RefKind::Strong)), "what holds b");
 //! # Ok::<(), osis::Error>(())
 //! ```
 //!
@@ -256,8 +256,8 @@
 //! db.register_schema("app.osis", "revision 1; aspect app:x.0: int;")?;
 //! let k = db.aspect_key("app:x.0")?;
 //! let mut w = db.write();
-//! let t = w.create(db.account_root(), None)?;
-//! # w.hold(db.account_root(), t)?;
+//! let t = w.create(db.node(), None)?;
+//! # w.hold(db.node(), t)?;
 //! // what is replaced stays a day, so an undo can write it back
 //! let day = History::Keep { until: Time(0), after_replaced: Duration::from_secs(86_400) };
 //! let entry = RetentionEntry { history: Some(day), ..Default::default() };
@@ -309,15 +309,16 @@
 //! # use osis::{Config, GrantOpts, MemStore, Osis, Role, Store};
 //! let db = Osis::create(Store::Memory(MemStore::new()), Config::default())?;
 //! let mut w = db.write();
-//! let g = w.create(db.account_root(), None)?;
-//! # w.hold(db.account_root(), g)?;
+//! let (g, team) = (w.create(db.node(), None)?, w.create(db.node(), None)?);
+//! # w.hold(db.node(), g)?;
+//! # w.hold(db.node(), team)?;
 //! w.at(g, osis::core::NAME).set(&"Trip".to_string())?;
 //! w.commit()?;
 //! // grant, and later change or remove with `set_role`
-//! db.grant(g, db.node(), Role::Read, GrantOpts::default())?;
-//! assert_eq!(db.grants(g)?[&db.node()].role, Role::Read);
+//! db.grant(g, team, Role::Read, GrantOpts::default())?;
+//! assert_eq!(db.grants(g)?[&team].role, Role::Read);
 //! // who holds `g`, and who holds it through what
-//! assert!(db.holders(g)?.iter().any(|h| h.actor == db.node() && h.through.is_empty()));
+//! assert!(db.holders(g)?.iter().any(|h| h.actor == team && h.through.is_empty()));
 //! # Ok::<(), osis::Error>(())
 //! ```
 //!
@@ -337,22 +338,6 @@
 //! # Ok(()) }
 //! ```
 //!
-//! # A second node for an account
-//! Pairing needs no connection: your app carries the offer to the new node, its request back, and the
-//! reply to it (a QR code, the clipboard, a local socket). Not built yet (pairing answers
-//! `Unsupported`).
-//! ```no_run
-//! # use osis::{Config, MemStore, Osis, Store};
-//! let phone = Osis::create(Store::Memory(MemStore::new()), Config::default())?;
-//! let offer = phone.pair_offer()?;
-//! let joining = Osis::pair(Store::Memory(MemStore::new()), &offer, Config::default())?;
-//! let (node, reply) = phone.pair_accept(joining.request())?;
-//! let laptop = joining.finish(&reply)?;
-//! assert_eq!(laptop.me(), phone.me());
-//! assert!(phone.nodes()?.iter().any(|n| n.node == node));
-//! # Ok::<(), osis::Error>(())
-//! ```
-//!
 //! # Using a node from another program
 //! A client is a program using a node from outside its process. A thin client has no store of its
 //! own: `Osis::connect` and `Osis::connect_socket` make one, and it reads and writes at the node as if
@@ -363,7 +348,7 @@
 //! let (actor, secret) = node.add_client(None)?;
 //! // on the other program, given `addr` and `secret`:
 //! let client = Osis::connect(&[NodeLogin { addr, secret }], AppConfig::default()).await?;
-//! assert_eq!(client.me(), actor);
+//! assert_eq!(client.author(), actor);
 //! assert!(!client.has_store());
 //! # Ok(()) }
 //! ```
@@ -384,8 +369,8 @@
 //! # use osis::{Body, CommitEvent, Config, MemStore, Osis, Store, Value};
 //! let db = Osis::create(Store::Memory(MemStore::new()), Config::default())?;
 //! let mut w = db.write();
-//! let t = w.create(db.account_root(), None)?;
-//! # w.hold(db.account_root(), t)?;
+//! let t = w.create(db.node(), None)?;
+//! # w.hold(db.node(), t)?;
 //! w.commit()?;
 //! let ring = db.aspect_key("app:ring+~0")?;
 //! let (tx, rx) = std::sync::mpsc::channel();
@@ -411,8 +396,8 @@
 //! // the thing keeps its fires for good
 //! let keep = osis::core::RetentionEntry { history: Some(osis::History::FOREVER), ..Default::default() };
 //! let mut w = db.write();
-//! let t = w.create(db.account_root(), None)?;
-//! # w.hold(db.account_root(), t)?;
+//! let t = w.create(db.node(), None)?;
+//! # w.hold(db.node(), t)?;
 //! w.at(t, osis::core::RETENTION).set(&osis::core::RetentionSetting { default: Some(keep), ..Default::default() })?;
 //! w.commit()?;
 //! let say = db.aspect_key("app:say~0")?;
@@ -440,8 +425,8 @@
 //! let db = Osis::create(Store::Memory(MemStore::new()), Config::default())?;
 //! let k = db.aspect_key("app:body.0")?;
 //! let mut w = db.write();
-//! let t = w.create(db.account_root(), None)?;
-//! # w.hold(db.account_root(), t)?;
+//! let t = w.create(db.node(), None)?;
+//! # w.hold(db.node(), t)?;
 //! w.at(t, k.clone()).path(p![]).set_stream(&b"some bytes"[..])?;
 //! w.commit()?;
 //! let mut s = String::new();
@@ -465,7 +450,7 @@
 //! let a = Osis::create(Store::Memory(MemStore::new()), Config::default())?;
 //! let b = Osis::create(Store::Memory(MemStore::new()), Config::default())?;
 //! let mut w = a.write();
-//! w.at(b.account_root(), a.aspect_key("app:x.0")?).set(&osis::Value::Int(1))?;
+//! w.at(b.node(), a.aspect_key("app:x.0")?).set(&osis::Value::Int(1))?;
 //! assert!(matches!(w.commit(), Err(Error::UnknownThing { .. })));
 //! # Ok::<(), osis::Error>(())
 //! ```
@@ -485,7 +470,6 @@ mod keys;
 mod large;
 mod net;
 mod port;
-mod account;
 mod disputes;
 mod read;
 mod retention;
@@ -507,13 +491,12 @@ pub use diagnostic::Diagnostic;
 pub use disputes::{Dispute, DisputeId, Side};
 pub use handle::{Close, Config, AppConfig, MemStore, Osis, ReadOnly, Store, WeakOsis};
 pub use net::{Lan, Runtime};
-pub use account::{Joining, PairOffer, PairReply, PairRequest};
 pub use keep::KeepAlive;
 pub use keys::{DynamicAspectKey, core};
 pub use large::ValueStream;
 pub use read::{AspectRef, Grant, Grants, PathRef, Stamp};
 pub use retention::History;
-pub use share::{AccountNode, Address, ContactCard, GrantOpts, Holder, HolderKind, LinkId, LinkInfo, LinkOpts, Reads, SetRoleOpts, ShareLink, Url};
+pub use share::{Address, GrantOpts, Holder, HolderKind, LinkId, LinkInfo, LinkOpts, Reads, SetRoleOpts, ShareLink, Url};
 pub use syncing::{Status, SyncScope, SyncState, UnitSync};
 pub use sources::{UnitSource, NodeLogin};
 pub use text::{Splice, TextSession};

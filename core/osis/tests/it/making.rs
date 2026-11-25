@@ -19,7 +19,7 @@ fn pumped() -> Osis {
 fn make(db: &Osis, dependent: bool) {
     let mut w = db.write();
     match dependent {
-        true => drop(w.create_held_with_admin(db.account_root()).unwrap()),
+        true => drop(w.create_held_with_admin(crate::common::home(db)).unwrap()),
         false => drop(w.create_held().unwrap()),
     }
     w.commit().unwrap();

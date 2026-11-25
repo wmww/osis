@@ -111,45 +111,6 @@ fn sync2(a: &Osis, b: &Osis) {
     deliver(b, a);
 }
 
-// notes/api.md Commits: undo and redo act on the actor's commits, whichever node made them:
-// node B undoes A's change, A redoes B's undo, B undoes the redo; a revert made on one node
-// is found by the other with the same query; a new change on one node clears redo on both.
-#[test]
-#[ignore = "accounts: osis/CLI/app"]
-fn undo_redo_across_nodes_spec_commits_7() {
-    let (da, db, _) = paired();
-    typed_any(&da, &["t:x.0", "t:y.0"]);
-    typed_any(&db, &["t:x.0", "t:y.0"]);
-    let k = ak("t:x.0");
-    let t = da.commit_with(|w| { let t = w.create_held()?; keep_all(w, t); Ok(t) }).unwrap();
-    let c1 = commit_with(&da, |w| w.at(t, kept(&da, &k.clone())).set(&Value::Int(1)));
-    sync2(&da, &db);
-    let get = |d: &Osis| d.at(t, kept(&da, &k.clone())).get().unwrap();
-    assert_eq!(get(&db), Some(Value::Int(1)));
-    let scope = Scope::Thing(t);
-    let u = db.undo(&scope).unwrap().unwrap();
-    assert_eq!(get(&db), None);
-    sync2(&da, &db);
-    assert_eq!(get(&da), None);
-    let found = da.writes(&scope, &CommitQuery { reverts: Some(c1.stamp.id), ..Default::default() }).unwrap().commits;
-    assert_eq!(found.iter().map(|e| (e.stamp.id, e.stamp.author)).collect::<Vec<_>>(), vec![(u.stamp.id, db.me())]);
-    let r = da.redo(&scope).unwrap().unwrap();
-    assert_eq!(get(&da), Some(Value::Int(1)));
-    sync2(&da, &db);
-    assert_eq!(get(&db), Some(Value::Int(1)));
-    assert_eq!(db.writes(&scope, &CommitQuery { reverts: Some(u.stamp.id), ..Default::default() }).unwrap().commits[0].stamp.id, r.stamp.id);
-    assert_eq!(db.redo(&scope).unwrap(), None, "no undo in effect");
-    db.undo(&scope).unwrap().unwrap();
-    assert_eq!(get(&db), None);
-    sync2(&da, &db);
-    assert_eq!(get(&da), None);
-    // a new change on A clears redo on B too
-    commit_with(&da, |w| w.at(t, kept(&da, &ak("t:y.0"))).set(&Value::Int(3)));
-    sync2(&da, &db);
-    assert_eq!(db.redo(&scope).unwrap(), None);
-    assert_eq!(get(&db), None);
-}
-
 const DOC_SCHEMA: &str = "revision 1;\naspect x:doc.0: struct { name 0: string, tags 1: set<string>, extra 2: enum { none 0, some 1 (struct { notes 0: set<string> }) }, items 3: list<string> };\n";
 
 fn field(id: u64) -> osis::Step {
@@ -161,7 +122,7 @@ fn field(id: u64) -> osis::Step {
 // read equals the read before; another's write into it already held when undoing stays.
 #[test]
 fn exact_undo_spec_crdt_4_6() {
-    let (a, b, _) = paired();
+    let (a, b, _) = shared();
     for d in [&a, &b] {
         d.register_schema("doc.osis", DOC_SCHEMA).unwrap();
     }
@@ -297,13 +258,13 @@ fn purged_part_lists_until_its_expiry_spec_commits_7() {
 #[test]
 fn changes_on_as_many_things_spec_requirements_decentralization() {
     let n = 2_000;
-    let (a, b, _c) = paired();
+    let (a, b, _c) = shared();
     let mut things = Vec::new();
     while things.len() < n {
         let mut w = a.write();
         let k = (n - things.len()).min(500);
         // plain: minted with the account root as admin, whose keys they take
-        things.extend((0..k).map(|_| w.create_held_with_admin(a.account_root()).unwrap()));
+        things.extend((0..k).map(|_| w.create_held_with_admin(crate::common::home(&a)).unwrap()));
         w.commit().unwrap();
     }
     deliver(&a, &b);
@@ -311,7 +272,7 @@ fn changes_on_as_many_things_spec_requirements_decentralization() {
     let big: Vec<u8> = (0..osis_base::format::MAX_BLOB + 1).map(|i| (i % 251) as u8).collect();
     let before: std::collections::BTreeSet<_> = a.engine(|e| e.commit_ids()).into_iter().collect();
     let mut w = a.write();
-    let large = w.create_held_with_admin(a.account_root()).unwrap();
+    let large = w.create_held_with_admin(crate::common::home(&a)).unwrap();
     w.at(large, key.clone()).path(osis::p![]).set_stream(&big[..]).unwrap();
     for (i, t) in things.iter().enumerate() {
         w.at(*t, key.clone()).set(&Value::Int(i as i64)).unwrap();
@@ -356,7 +317,7 @@ fn commit_work_linear_in_things_spec_requirements_decentralization() {
 /// one commit with a change on each of them and of applying it on another node.
 fn commit_work(n: usize) -> std::collections::BTreeMap<String, u64> {
     use osis::internals::costs;
-    let (a, b, _c) = paired();
+    let (a, b, _c) = shared();
     let mut work = std::collections::BTreeMap::new();
     let mut add = |side: &str, cs: Vec<(&'static str, std::time::Duration, u64)>, reached: u64| {
         for (k, _, n) in cs {
@@ -369,7 +330,7 @@ fn commit_work(n: usize) -> std::collections::BTreeMap<String, u64> {
     let r0 = osis_perm::roles_reached();
     let mut w = a.write();
     // plain: minted with the account root as admin, whose keys they take
-    let things: Vec<_> = (0..n).map(|_| w.create_held_with_admin(a.account_root()).unwrap()).collect();
+    let things: Vec<_> = (0..n).map(|_| w.create_held_with_admin(crate::common::home(&a)).unwrap()).collect();
     w.commit().unwrap();
     deliver(&a, &b);
     add("create", costs::take(), osis_perm::roles_reached() - r0);

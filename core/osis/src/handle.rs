@@ -131,8 +131,6 @@ pub(crate) struct Locked {
     pub stepped: bool,
     /// This node's dialable secret (`rotate_peer_address` replaces it).
     pub secret: osis_transport::StaticSecret,
-    /// Pairing offers not yet used: secret, expiry (wall ms).
-    pub offers: Vec<([u8; 32], u64)>,
     /// The client port's sessions (`port`).
     pub port: crate::port::Port,
     /// The nodes this process is a client of (`Osis::connect`, `connect_node`), in the order
@@ -162,10 +160,8 @@ pub(crate) struct Inner {
     pub eng: Mutex<Locked>,
     pub dispatch: Dispatch,
     pub node: Tid,
-    /// The node root (spec/sync-set.md §1): this node's strongs and whom it acts for.
+    /// The node root (spec/sync-set.md §1): this node's strongs and settings.
     pub node_root: Tid,
-    pub me: Tid,
-    pub account_root: Tid,
     pub limit: usize,
     pub idle_commit: Duration,
     /// `Knobs::text_save`.
@@ -269,7 +265,7 @@ impl std::ops::Deref for Osis {
 /// # let r = db.tracking(&set);
 ///
 /// let _ = r.at(t, N).get().unwrap();
-/// let _ = r.me();
+/// let _ = r.author();
 /// ```
 ///
 /// writes:
@@ -366,7 +362,7 @@ pub struct ReadOnly {
     pub(crate) inner: Arc<Inner>,
     /// Counted in `Life` (an app's handle; internal short-lived ones are not).
     user: bool,
-    /// The actor this handle acts as (`act_as`): `me()`, and every read and write held to that
+    /// The actor this handle acts as (`act_as`): `author()`, and every read and write held to that
     /// actor's rights. `None`: this node's own.
     pub(crate) acting: Option<Tid>,
     /// The set this handle's reads are tracked in (`tracking`).
@@ -513,34 +509,8 @@ pub(crate) fn fresh_engine(store: &Store, cfg: &Config) -> Result<Fresh> {
     Ok(Fresh { engine, clock, sync })
 }
 
-/// The app record holding the account's profile thing (`Osis::profile`).
-pub(crate) const PROFILE: &str = "profile";
-
-/// The app record holding the account this node acts for (spec/permissions.md §8).
-const ACCOUNT: &str = "account";
-
 /// The app record holding this node's dialable secret.
 const NODE_KEY: &str = "sync/node-key";
-
-/// Makes this node's account (spec/permissions.md §8 Making) and records it and its profile.
-fn make_account(e: &mut Engine) -> Result<()> {
-    let (a, _) = e.make_account()?;
-    record_account(e, a.thing, a.profile)
-}
-
-/// Records the account this node acts for and its profile (made here, or paired into).
-pub(crate) fn record_account(e: &mut Engine, account: Tid, profile: Tid) -> Result<()> {
-    e.set_app_record(ACCOUNT, account.as_bytes())?;
-    e.set_app_record(PROFILE, profile.as_bytes())?;
-    Ok(())
-}
-
-/// What a node acts as and the account it acts for: its node thing, and its account.
-fn acting(e: &mut Engine) -> Result<(Tid, Tid)> {
-    let b = e.app_record(ACCOUNT)?.ok_or_else(|| Error::Storage("no account record".into()))?;
-    let a = Tid::from_bytes(b.as_slice().try_into().map_err(|_| Error::Storage("account record".into()))?);
-    Ok((e.me(), a))
-}
 
 /// This node's dialable secret, made on first use.
 fn node_secret(e: &mut Engine, cfg: &Config, salt: u64) -> Result<osis_transport::StaticSecret> {
@@ -565,14 +535,11 @@ pub(crate) fn sync_config(cfg: &Config, key: [u8; 32]) -> osis_sync::SyncConfig 
 }
 
 impl Osis {
-    /// Creates a node with an account of its own (spec/permissions.md §8 Making): it signs as
-    /// its node thing, acting for the account.
+    /// Creates a node: a new store, with the node's own thing (`node()`), which it writes as.
     pub fn create(store: Store, cfg: Config) -> Result<Osis> {
         cfg.check()?;
-        let Fresh { mut engine, clock, sync } = fresh_engine(&store, &cfg)?;
-        make_account(&mut engine)?;
-        let (me, root) = acting(&mut engine)?;
-        Osis::start(engine, sync, clock, store, &cfg, me, root, 0)
+        let Fresh { engine, clock, sync } = fresh_engine(&store, &cfg)?;
+        Osis::start(engine, sync, clock, store, &cfg, 0)
     }
 
     /// Opens an existing store.
@@ -582,13 +549,11 @@ impl Osis {
         let clock = clock(&cfg);
         let salt = open_salt(&store, &cfg)?;
         let sync = sync_store(&store, &cfg, salt)?;
-        let mut e = Engine::open(b, r, sync.cipher(), engine_cfg(), clock.clone(), rng(&cfg, salt))?;
-        let (me, root) = acting(&mut e)?;
-        Osis::start(e, sync, clock, store, &cfg, me, root, salt)
+        let e = Engine::open(b, r, sync.cipher(), engine_cfg(), clock.clone(), rng(&cfg, salt))?;
+        Osis::start(e, sync, clock, store, &cfg, salt)
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn start(mut engine: Engine, sync: osis_sync::Store, clock: Arc<dyn Clock>, store: Store, cfg: &Config, me: Tid, account_root: Tid, salt: u64) -> Result<Osis> {
+    pub(crate) fn start(mut engine: Engine, sync: osis_sync::Store, clock: Arc<dyn Clock>, store: Store, cfg: &Config, salt: u64) -> Result<Osis> {
         // store files open to group or others: tightened where possible (best effort), else
         // reported
         if let Store::Dir(p) = &store {
@@ -609,7 +574,7 @@ impl Osis {
         if let crate::net::Net::Manual { net: m, index } = &mut net {
             *index = m.join();
         }
-        let locked = Locked { node: sync, events, seq: 0, offers: Vec::new(), out: Vec::new(), wake: None, stepped: false, secret, port: Default::default(), remotes: Vec::new(), unit_sources: Default::default(), moving_back: Default::default() };
+        let locked = Locked { node: sync, events, seq: 0, out: Vec::new(), wake: None, stepped: false, secret, port: Default::default(), remotes: Vec::new(), unit_sources: Default::default(), moving_back: Default::default() };
         let store_dir = match &store {
             Store::Dir(p) => Some(p.clone()),
             Store::Memory(_) => None,
@@ -619,8 +584,6 @@ impl Osis {
             dispatch,
             node,
             node_root,
-            me,
-            account_root,
             limit: cfg.app.read_limit,
             idle_commit: cfg.app.idle_commit,
             text_save: cfg.app.internals.text_save.clone(),
@@ -654,7 +617,7 @@ impl Osis {
         Osis(ReadOnly { inner, user: false, acting, tracking: None })
     }
 
-    /// A handle acting as `actor`, an actor this node administers (notes/client-port.md §3): `me()`
+    /// A handle acting as `actor`, an actor this node administers (notes/client-port.md §3): `author()`
     /// is that actor, a read shows what it may read and nothing else (what it may not reads as a
     /// thing this node does not know), a write or revert needs its rights, not this node's. Calls
     /// on the tid-addressed read and write paths only: the sharing, sync and process-wide calls do
@@ -670,7 +633,7 @@ impl Osis {
     }
 
     /// Closes this handle. With no other handle left (clones, upgraded `WeakOsis`, value streams,
-    /// text sessions, a `Joining`), returns once the node is closed (every commit is already
+    /// text sessions), returns once the node is closed (every commit is already
     /// durable), so the store can be opened again at once; a callback still running ends first.
     /// While other handles keep it open, this one is closed and it returns
     /// `Close::StillOpen` at once. From a callback (the dispatcher, which holds the node while it
@@ -700,22 +663,27 @@ impl ReadOnly {
         ReadOnly { inner, user: true, acting: None, tracking: None }
     }
 
-    /// This node's own identity, an actor apart from its account (a thin client: its node's).
+    /// This node's own thing, the node thing: what it signs as and holds roles as (a thin client:
+    /// its node's).
     pub fn node(&self) -> Tid {
         self.inner.thin.get().map_or(self.inner.node, |t| t.node)
     }
 
-    /// The account this node belongs to (a thin client: the actor its node acts as for it): the
-    /// author of its writes and the holder of its roles.
-    pub fn me(&self) -> Tid {
-        self.acting.unwrap_or_else(|| self.inner.thin.get().map_or(self.inner.me, |t| t.me))
+    /// The thing this handle writes as: the author of its writes (`Stamp::author`) and the holder
+    /// whose roles they use. On a node, its node thing (`node()`); on a client with its own
+    /// thing, that thing.
+    pub fn author(&self) -> Tid {
+        self.acting.unwrap_or_else(|| self.inner.thin.get().map_or(self.inner.node, |t| t.author))
     }
 
-    /// The account root (spec/sync-set.md §1): the private thing beside the account that its
-    /// nodes read and hold. Account-wide things an app keeps are minted with it (`Write::create`)
-    /// and held by its `holds.0`. On a client with its own actor it is that actor.
-    pub fn account_root(&self) -> Tid {
-        self.acting.unwrap_or_else(|| self.inner.thin.get().map_or(self.inner.account_root, |t| t.account_root))
+    /// The thing this node keeps its settings on (its entry in that thing's `core::CAPS`, keyed
+    /// by `node()`), if it names one: written where the node comes to act for such a thing, as an
+    /// account library does when it makes or pairs into an account. On a thin client, its node's.
+    pub fn settings_thing(&self) -> Result<Option<Tid>> {
+        if let Some(t) = self.inner.thin.get() {
+            return Ok(t.settings);
+        }
+        Ok(self.engine(|e| e.settings_thing())?)
     }
 
     /// Runs `f` on the engine under the node lock, then queues its events for the

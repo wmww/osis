@@ -1,9 +1,9 @@
 [workspace]
 resolver = "2"
-members = ["core/*", "libs/chat", "core/test/sim", "core/test/crdt-model", "core/test/roles-model", "core/test/held-model", "core/test/vectors", "cli", "libs/kit", "app", "app/android"]
+members = ["core/*", "libs/chat", "libs/account", "core/test/sim", "core/test/crdt-model", "core/test/roles-model", "core/test/held-model", "core/test/vectors", "cli", "libs/kit", "app", "app/android"]
 # Core: what a bare `cargo build`/`test`/`clippy` selects. The GUI (libs/kit, app, app/android;
 # notes/app.md) builds only when named (`-p`, `--workspace`), sharing core's artifacts (notes/build.md).
-default-members = ["core/*", "libs/chat", "core/test/sim", "core/test/crdt-model", "core/test/roles-model", "core/test/held-model", "core/test/vectors", "cli"]
+default-members = ["core/*", "libs/chat", "libs/account", "core/test/sim", "core/test/crdt-model", "core/test/roles-model", "core/test/held-model", "core/test/vectors", "cli"]
 # libs/kit/patches: vendored crates, reached through [patch] only
 exclude = ["core/test", "libs/kit/patches"]
 
@@ -30,6 +30,7 @@ osis-engine = { path = "core/engine" }
 osis-sync = { path = "core/sync" }
 osis = { path = "core/osis" }
 osis-chat = { path = "libs/chat" }
+osis-account = { path = "libs/account" }
 osis-kit = { path = "libs/kit" }
 osis-app = { path = "app" }
 osis-sim = { path = "core/test/sim" }

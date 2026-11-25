@@ -36,7 +36,7 @@ fn on_change_initial_then_local() {
     let c = recv(&rx);
     assert_eq!((c.origin, c.value), (Origin::Initial, Ok(Some(Value::Int(1)))));
     let c = recv(&rx);
-    assert!(matches!(c.origin, Origin::Local(i) if i.author == db.me()));
+    assert!(matches!(c.origin, Origin::Local(i) if i.author == db.author()));
     assert_eq!(c.value, Ok(Some(Value::Int(2))));
     // the initial call runs on the dispatcher thread like every later one
     let (tx, rx) = channel();
@@ -207,7 +207,7 @@ fn two_nodes_remote_watch() {
     let t = thing(&a);
     // b reads t
     deliver(&b, &a);
-    a.grant(t, b.me(), Role::Read, Default::default()).unwrap();
+    a.grant(t, b.author(), Role::Read, Default::default()).unwrap();
     b.hold(t).unwrap();
     deliver(&a, &b);
     let (tx, rx) = channel();
@@ -217,7 +217,7 @@ fn two_nodes_remote_watch() {
     let done = commit_with(&a, |w| w.at(t, osis::DynamicAspectKey::untyped(k.clone())).set(&Value::Int(9)));
     deliver(&a, &b);
     let c = recv(&rx);
-    assert!(matches!(c.origin, Origin::Remote(i) if i.author == a.me() && i.id == done.stamp.id));
+    assert!(matches!(c.origin, Origin::Remote(i) if i.author == a.author() && i.id == done.stamp.id));
     assert_eq!(c.value, Ok(Some(Value::Int(9))));
     assert!(w.changed_timeout(Duration::from_secs(20)));
     assert_eq!(w.current().unwrap(), Some(Value::Int(9)));
@@ -228,7 +228,6 @@ fn two_nodes_remote_watch() {
 // wakes at the `until`), and a watched roster no `until` ends meanwhile is neither called nor
 // read again, nor one no longer watched.
 #[test]
-#[ignore = "accounts: osis/CLI/app"]
 fn an_until_passing_tells_a_roster_watcher_spec_permissions_2() {
     let c = clock();
     let net = osis::internals::ManualNet::new(c.clone());
@@ -240,12 +239,16 @@ fn an_until_passing_tells_a_roster_watcher_spec_permissions_2() {
     deliver(&carol, &alice);
     let (g, h, k) = (thing(&alice), thing(&alice), thing(&alice));
     let until = |ms| osis::GrantOpts { until: Some(osis::Time(T0 + ms)), ..Default::default() };
-    alice.grant(g, bob.me(), osis::Role::Read, until(60_000)).unwrap();
-    alice.grant(k, bob.me(), osis::Role::Read, until(120_000)).unwrap();
+    alice.grant(g, bob.author(), osis::Role::Read, until(60_000)).unwrap();
+    alice.grant(k, bob.author(), osis::Role::Read, until(120_000)).unwrap();
     for t in [g, h, k] {
-        alice.grant(t, carol.me(), osis::Role::Read, osis::GrantOpts::default()).unwrap();
+        alice.grant(t, carol.author(), osis::Role::Read, osis::GrantOpts::default()).unwrap();
     }
-    alice.grant(h, bob.me(), osis::Role::Read, osis::GrantOpts::default()).unwrap();
+    alice.grant(h, bob.author(), osis::Role::Read, osis::GrantOpts::default()).unwrap();
+    deliver(&alice, &carol);
+    for t in [g, h, k] {
+        carol.hold(t).unwrap();
+    }
     deliver(&alice, &carol);
     let (tx, rx) = channel();
     let mut subs: Vec<_> = [g, h, k]
@@ -258,7 +261,7 @@ fn an_until_passing_tells_a_roster_watcher_spec_permissions_2() {
     carol.settle();
     let first: Vec<_> = rx.try_iter().collect();
     assert_eq!(first.len(), 3, "{first:?}");
-    assert!(first.iter().all(|(_, r)| r.contains_key(&bob.me())));
+    assert!(first.iter().all(|(_, r)| r.contains_key(&bob.author())));
     osis::internals::costs::take();
     net.advance(30_000);
     carol.settle();
@@ -270,7 +273,7 @@ fn an_until_passing_tells_a_roster_watcher_spec_permissions_2() {
     let told: Vec<_> = rx.try_iter().collect();
     assert_eq!(told.len(), 1, "{told:?}");
     assert_eq!(told[0].0, g);
-    assert!(!told[0].1.contains_key(&bob.me()));
+    assert!(!told[0].1.contains_key(&bob.author()));
     assert_eq!(read(&osis::internals::costs::take()), 1, "the one roster the until ended");
     drop(subs.pop());
     net.advance(60_000);
@@ -417,7 +420,7 @@ fn pump_dispatcher_runs_callbacks_in_settle() {
     c.app.dispatch = osis::Dispatcher::Pump(Arc::new(move || {
         w2.fetch_add(1, Ordering::SeqCst);
         if let Some(db) = weak2.get().and_then(|w| w.upgrade()) {
-            let _ = db.has_content(db.me());
+            let _ = db.has_content(db.author());
         }
     }));
     let db = osis::internals::create(c).unwrap();
@@ -811,7 +814,6 @@ fn a_watch_reads_as_its_acting_subscriber() {
 // not move). Differential: the actor's last word equals its handle's read, which then differs
 // from the node's. Inputs: alice grants the thing and `grp`; bob's clock passes.
 #[test]
-#[ignore = "accounts: osis/CLI/app"]
 fn an_until_ending_an_actors_way_in_tells_its_roster_watch() {
     let c = clock();
     let net = osis::internals::ManualNet::new(c.clone());
@@ -826,9 +828,13 @@ fn an_until_ending_an_actors_way_in_tells_its_roster_watch() {
     alice.grant(grp, actor, Role::Read, osis::GrantOpts { until: Some(osis::Time(T0 + 60_000)), ..Default::default() }).unwrap();
     // bob reads both itself: the node's view stays
     for x in [grp, t] {
-        alice.grant(x, bob.me(), Role::Read, osis::GrantOpts::default()).unwrap();
+        alice.grant(x, bob.author(), Role::Read, osis::GrantOpts::default()).unwrap();
     }
     alice.grant(t, grp, Role::Read, osis::GrantOpts::default()).unwrap();
+    deliver(&alice, &bob);
+    for x in [grp, t] {
+        bob.hold(x).unwrap();
+    }
     deliver(&alice, &bob);
     let a = bob.acting_as(actor);
     assert!(a.grants(t).unwrap().contains_key(&grp), "the actor reads t's roster through grp");

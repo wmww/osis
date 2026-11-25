@@ -147,7 +147,7 @@ impl std::str::FromStr for LinkId {
     }
 }
 
-/// A link of this account (`links`).
+/// A link this node made (`links`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LinkInfo {
     /// What `revoke_link` takes.
@@ -200,7 +200,6 @@ macro_rules! secret_text {
     };
 }
 
-pub(crate) use secret_text;
 
 secret_text!(
     /// A share link (`osis://link/...`): whoever holds this text can redeem it, so hand it over as a
@@ -213,10 +212,6 @@ impl ShareLink {
         Ok(self.parse()?.target)
     }
 }
-secret_text!(
-    /// A contact card: a read link to an account's profile.
-    ContactCard, osis_blob::ShareLink, |s| osis_blob::ShareLink::from_text(s).map_err(bad("contact card"))
-);
 
 /// A transport URL, such as `quic://example.org:4040`: where something listens or is dialed.
 /// `FromStr` checks it; a `quic://` URL without a port gets `:4040` spelled out.
@@ -294,14 +289,6 @@ impl Address {
     pub fn key(&self) -> [u8; 32] {
         self.0.key
     }
-}
-
-/// A node of this account and its role on the account (`Osis::nodes`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[allow(missing_docs)]
-pub struct AccountNode {
-    pub node: Tid,
-    pub role: Role,
 }
 
 /// The edge `o` grants `role` with on `t`: a timed one retains as `o` says, else as `t`'s default
@@ -390,21 +377,6 @@ impl ReadOnly {
         self.local("unhold")?;
         Ok(self.engine(|e| e.unhold(t.into()))?)
     }
-
-    /// The profile thing of an account whose card this node imported, if any.
-    /// `Unsupported` on a client with its own actor.
-    pub fn profile_of(&self, account: Tid) -> Result<Option<Tid>> {
-        if let Some(at) = self.process_at("profile_of")? {
-            return self.forward(&at, crate::port::method::PROFILE_OF, (account,));
-        }
-        let key = format!("{PROFILE_OF}{account}");
-        // written only by `import_contact`: a tracking handle has nothing to listen to here
-        let b = self.engine(|e| e.app_record(&key))?;
-        let Some(b) = b else { return Ok(None) };
-        let t = String::from_utf8(b).map_err(|_| Error::Storage("profile record".into()))?;
-        t.parse().map(Some).map_err(|_| Error::Storage("profile record".into()))
-    }
-
 }
 
 impl Osis {
@@ -551,15 +523,13 @@ impl Osis {
     /// target's rotation, in one commit (spec/permissions.md §2, §3, §5).
     fn lower(&self, t: Tid, m: Tid, role: Option<Role>, o: SetRoleOpts) -> Result<()> {
         let new = self.lowered_edge(t, m, role)?;
-        // an account's default does not reach its nodes (spec/permissions.md §2)
-        let retain = o.retain_copy.or((t == self.inner.account_root).then_some(false));
-        let fd = flows::Demotion { holder: m, new, retain };
+        let fd = flows::Demotion { holder: m, new, retain: o.retain_copy };
         self.engine(|e| marked(e, o.leave_adminless, |e| e.demote(&t, &fd)))?;
         Ok(())
     }
 
     /// Ends `holder`'s ways in that exist for `target`: its own grant on it, and its join of any link
-    /// to it. `holder` is `me()`, or an organization or other actor this node is an admin of (as when an organization's
+    /// to it. `holder` is `author()`, or an organization or other actor this node is an admin of (as when an organization's
     /// admin drops a thing that was shared with it). The keys change when the target's next writer or
     /// admin writes, or at once when this node is an admin of `target` by another way. No way in at all
     /// writes nothing.
@@ -572,7 +542,7 @@ impl Osis {
     /// of `target` (`SetRoleOpts::leave_adminless` means it).
     pub fn leave(&self, holder: Tid, target: Tid, o: SetRoleOpts) -> Result<()> {
         self.local_at(target, "leave")?;
-        let own = holder == self.me();
+        let own = holder == self.author();
         // the flow below runs with the node's authority: a client ends only its own actor's role
         if self.acting.is_some() && !own {
             return Err(Error::Permission { tid: holder, needs: Role::Admin });
@@ -644,8 +614,11 @@ impl Osis {
     /// Makes a share link to `target` with `role` (read or above: `Invalid` below). Anyone
     /// holding the link can redeem it until `until` or `revoke_link`.
     pub fn make_link(&self, target: Tid, role: Role, opts: LinkOpts) -> Result<ShareLink> {
+        if let Some(at) = self.process_at("make_link")? {
+            return self.forward(&at, crate::port::method::MAKE_LINK, (target, role, opts.until, opts.single_use));
+        }
         self.local_at(target, "make_link")?;
-        let me = self.me();
+        let me = self.author();
         let peers = self.link_peers();
         let spec = flows::LinkSpec { target, role, until: opts.until.map(|t| osis_base::WallMs(t.0)), peers, single_use: opts.single_use };
         let (link, _, _) = self.engine(|e| e.create_link(&me, &spec))?;
@@ -658,22 +631,23 @@ impl Osis {
         self.locked(|l| osis_blob::link_peers(l.secret.public_key(), &[], &l.node.config().dial))
     }
 
-    /// Redeems a link: reaches what it names and joins it, returning the thing. Returns once
-    /// this account holds a role on the thing here; it waits for the link's node meanwhile, for
-    /// about an hour from the first call (this node's policy), then fails with `Network` and
-    /// keeps nothing: redeem it again to try again. A link this account already reaches the thing
-    /// by joins nothing. What the link holds is kept until the join is held elsewhere or the node
-    /// gives up, a dropped call included.
-    pub async fn redeem(&self, link: &ShareLink) -> Result<Tid> {
+    /// Redeems a link for `joiner`: reaches what it names and joins it, returning the thing.
+    /// `joiner` is the thing given the role and holding the thing by a strong from its `holds.0`
+    /// (`node()`, or a thing this node writes). Returns once this node holds a role on the thing
+    /// here; it waits for the link's node meanwhile, for about an hour from the first call (this
+    /// node's policy), then fails with `Network` and keeps nothing: redeem it again to try again. A
+    /// link to a thing this node already reaches joins nothing. What the link holds is kept until
+    /// the join is held elsewhere or the node gives up, a dropped call included.
+    pub async fn redeem(&self, link: &ShareLink, joiner: Tid) -> Result<Tid> {
         if let Some(at) = self.process_at("redeem")? {
-            return self.remote_wait(&at, crate::port::method::REDEEM, (link.clone(),))?.await;
+            return self.remote_wait(&at, crate::port::method::REDEEM, (link.clone(), joiner))?.await;
         }
-        self.redeeming(link)?.await
+        self.redeeming(link, joiner)?.await
     }
 
     /// `redeem` here, as a future holding nothing of the node (the port runs it for a main
     /// session).
-    pub(crate) fn redeeming(&self, link: &ShareLink) -> Result<impl std::future::Future<Output = Result<Tid>> + Send + 'static> {
+    pub(crate) fn redeeming(&self, link: &ShareLink, joiner: Tid) -> Result<impl std::future::Future<Output = Result<Tid>> + Send + 'static> {
         let link = link.parse()?;
         let target = link.target;
         let mut started = false;
@@ -681,12 +655,12 @@ impl Osis {
             if db.engine(|e| e.role_on(&target).is_some()) {
                 return Some(Ok(target));
             }
-            redeem_started(db, &link, &mut started, "link").or_else(|| redeem_over(db, &link, "link"))
+            redeem_started(db, &link, joiner, &mut started, "link").or_else(|| redeem_over(db, &link, "link"))
         }))
     }
 
-    /// The account's links that still work, whichever node made them (one that has not yet synced here
-    /// from the node that made it is not listed); filter by `LinkInfo::target`. `Unsupported` on
+    /// The links this node made that still work (each minted with its node thing); filter by
+    /// `LinkInfo::target`. `Unsupported` on
     /// a client with its own actor, which is also why a node connected with a client secret adds none.
     pub fn links(&self) -> Result<Vec<LinkInfo>> {
         self.local("links")?;
@@ -704,10 +678,10 @@ impl Osis {
             .collect())
     }
 
-    /// The links whose seed thing is the account's and whose K's mint admin it is (a co-reader can reference a
+    /// The links whose seed thing is this node thing's and whose K's mint admin it is (a co-reader can reference a
     /// seed thing from a shared thing: it names no link of ours).
     fn held_links(&self) -> Result<Vec<flows::HeldLink>> {
-        let me = self.me();
+        let me = self.author();
         self.engine(|e| account_links(e, me))
     }
 
@@ -716,10 +690,10 @@ impl Osis {
         Ok(self.held_links()?.iter().find(|h| h.k == k).map(|h| h.l))
     }
 
-    /// Whether `k` is a link actor of this account's to `target`, working or ended: its record names
-    /// the target, and the account is its mint admin.
+    /// Whether `k` is a link actor of this node's to `target`, working or ended: its record names
+    /// the target, and the node thing is its mint admin.
     fn own_link(&self, k: Tid, target: Tid) -> bool {
-        let me = self.me();
+        let me = self.author();
         self.engine(|e| e.core.created(&k).and_then(|r| r.link_target()) == Some(target) && e.mint_admin(&k) == Some(me))
     }
 
@@ -735,7 +709,7 @@ impl Osis {
             }
             // ended already: its seed went with its end
             None if self.engine(|e| e.core.created(&id.0).and_then(|r| r.link_target())).is_some_and(|t| self.own_link(id.0, t)) => Ok(()),
-            None => Err(Error::Invalid(format!("no link {} of this account", id.0))),
+            None => Err(Error::Invalid(format!("no link {} of this node", id.0))),
         }
     }
 
@@ -746,103 +720,6 @@ impl Osis {
         let l = self.link_key(k)?;
         self.engine(|e| marked(e, o.leave_adminless, |e| e.revoke_joiner(&k, l.as_ref(), &joiner, o.retain_copy)))?;
         Ok(())
-    }
-
-    /// This account's contact card: a read link to its profile, a thing that also carries what
-    /// others need to grant this account a role. Made once per node; later calls return the
-    /// same card.
-    pub fn contact_card(&self) -> Result<ContactCard> {
-        if let Some(at) = self.process_at("contact_card")? {
-            return self.forward(&at, crate::port::method::CONTACT_CARD, ());
-        }
-        if let Some(b) = self.engine(|e| e.app_record(CONTACT))? {
-            return Ok(ContactCard(String::from_utf8(b).map_err(|_| Error::Storage("contact record".into()))?));
-        }
-        let p = self.profile()?;
-        let link = self.make_link(p, Role::Read, LinkOpts::default())?;
-        let card = ContactCard(link.0);
-        self.engine(|e| e.set_app_record(CONTACT, card.0.as_bytes()))?;
-        Ok(card)
-    }
-
-    /// This account's profile thing, made with the account: the target of its contact card. The
-    /// account writes its profile aspects on it (`name.0`, `contact:*`); everyone holding the
-    /// card reads them. Every node of the account knows it (a new node from its pairing
-    /// offer), though a node paired a moment ago may not hold the thing yet.
-    pub fn profile(&self) -> Result<Tid> {
-        if let Some(at) = self.process_at("profile")? {
-            return self.forward(&at, crate::port::method::PROFILE, ());
-        }
-        let b = self.engine(|e| e.app_record(crate::handle::PROFILE))?.ok_or_else(|| Error::Storage("no profile record".into()))?;
-        Ok(Tid::from_bytes(b.as_slice().try_into().map_err(|_| Error::Storage("profile record".into()))?))
-    }
-
-    /// Imports a contact card: accepts the profile it names (spec/sync-set.md §4) and returns
-    /// the account once its keys are here, usable in `grant`. Waits for the card's node
-    /// meanwhile (wrap it in a timeout).
-    pub async fn import_contact(&self, card: &ContactCard) -> Result<Tid> {
-        if let Some(at) = self.process_at("import_contact")? {
-            return self.remote_wait(&at, crate::port::method::IMPORT_CONTACT, (card.clone(),))?.await;
-        }
-        self.importing(card)?.await
-    }
-
-    /// `import_contact` here, as a future holding nothing of the node (the port runs it for a
-    /// main session).
-    pub(crate) fn importing(&self, card: &ContactCard) -> Result<impl std::future::Future<Output = Result<Tid>> + Send + 'static> {
-        let link = card.parse()?;
-        let p = link.target;
-        let mut started = false;
-        Ok(self.waiting(move |db| {
-            let found = db.engine(|e| e.mint_admin(&p).filter(|a| e.get_typed(a, &ct::KEYS).ok().flatten().is_some()));
-            if let Some(a) = found {
-                return Some(db.engine(|e| e.set_app_record(&format!("{PROFILE_OF}{a}"), p.to_string().as_bytes())).map(|()| a).map_err(Into::into));
-            }
-            if let Some(e) = redeem_started(db, &link, &mut started, "contact card") {
-                return Some(e);
-            }
-            // joined: the account's keys come with the profile's sync
-            if db.engine(|e| e.role_on(&p).is_some()) {
-                return None;
-            }
-            redeem_over(db, &link, "contact card")
-        }))
-    }
-
-    /// This account's nodes: the things holding read or above on it (spec/permissions.md §8: an
-    /// account's nodes hold admin or write on it; a holder of sync alone keeps its inbox).
-    /// `Unsupported` on a client with its own actor.
-    pub fn nodes(&self) -> Result<Vec<AccountNode>> {
-        self.local("nodes")?;
-        let root = self.account_root();
-        self.engine(|e| -> Result<Vec<AccountNode>> { Ok(e.roster(&root).into_iter().filter(|(_, edge)| edge.role >= Role::Read).map(|(node, edge)| AccountNode { node, role: edge.role }).collect()) })
-    }
-
-    /// Removes a node from this account (spec/permissions.md §8 Removing): its role removed with
-    /// the account's rotation, erasing unless `o.retain_copy` says retain, and its entries on the
-    /// account and its profile (dial list, settings) dropped. It returns what is easy to forget:
-    /// this account's links still working. The node keeps
-    /// their keys, so whoever holds it can read and join through each until `revoke_link`, and
-    /// ending them is the caller's choice. None when `node` was not one of this account's.
-    /// `Unsupported` on a client with its own actor.
-    pub fn remove_node(&self, node: Tid, o: SetRoleOpts) -> Result<Vec<LinkInfo>> {
-        self.local("remove_node")?;
-        let (root, profile) = (self.account_root(), self.profile()?);
-        let was = self.grants(root)?.contains_key(&node);
-        if !was {
-            return Ok(Vec::new());
-        }
-        let retain = o.retain_copy.unwrap_or(false);
-        self.locked(|l| -> Result<()> {
-            let e = l.engine();
-            let r = match o.leave_adminless {
-                true => e.leaving_adminless(|e| e.remove_node(&root, &node, retain, &[profile])),
-                false => e.remove_node(&root, &node, retain, &[profile]),
-            };
-            l.handle(osis_sync::Input::Wrote);
-            r.map(drop).map_err(Into::into)
-        })?;
-        self.links()
     }
 }
 
@@ -860,19 +737,12 @@ fn account_links(e: &mut osis_engine::Engine, me: Tid) -> Result<Vec<flows::Held
     Ok(held.into_iter().filter(|h| h.mint_admin == me && e.mint_admin(&h.k) == Some(me)).collect())
 }
 
-/// App record prefix: `profile/<account tid>` -> profile tid text, written by `import_contact`.
-const PROFILE_OF: &str = "profile/";
-
-/// App record: this node's contact card text.
-const CONTACT: &str = "contact";
-
-/// Starts redeeming `link` on a redeem's first check (`redeem`, `import_contact`): an error when
-/// the node can never redeem it.
-fn redeem_started<R>(db: &Osis, link: &osis_blob::ShareLink, started: &mut bool, what: &str) -> Option<Result<R>> {
+/// Starts redeeming `link` for `joiner` on a redeem's first check: an error when the node can never
+/// redeem it.
+fn redeem_started<R>(db: &Osis, link: &osis_blob::ShareLink, joiner: Tid, started: &mut bool, what: &str) -> Option<Result<R>> {
     if std::mem::replace(started, true) {
         return None;
     }
-    let joiner = db.account_root();
     let w = db.locked(|l| {
         let w = l.node.redeem(link, joiner);
         l.handle(osis_sync::Input::Wrote);
@@ -884,7 +754,7 @@ fn redeem_started<R>(db: &Osis, link: &osis_blob::ShareLink, started: &mut bool,
     }
 }
 
-/// A redeem with no role on its target yet (`redeem`, `import_contact`) whose node stopped
+/// A redeem with no role on its target yet whose node stopped
 /// redeeming the link: it ended (`Invalid`), or the sharer never answered within the node's
 /// follow time (`Network`, `osis_sync::Policy::follow_link_ms`). `None` while it is redeemed.
 fn redeem_over<R>(db: &Osis, link: &osis_blob::ShareLink, what: &str) -> Option<Result<R>> {

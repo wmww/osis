@@ -404,11 +404,11 @@ fn a_thing_is_made_only_where_it_is_held_spec_sync_set_2() {
     let hold = |a: Tid| {
         let mut m = Mutation::new();
         m.op(d, &ct::HOLDS, PathOp { path: vec![], op: Op::Add(Value::Strong(a)) }).unwrap();
-        Ok(m)
+        Ok::<_, osis_engine::Error>(m)
     };
-    let (a, _) = e.mint_actor(&p, hold).unwrap();
+    let a = e.mint_independent(&[osis_engine::MintAdmin::Thing(p)], |ts| Ok(vec![hold(ts[0])?])).unwrap().0[0];
     assert!(e.closure_holds(&a), "held by the transaction's next commit");
-    let r = e.mint_actor(&p, |_| Ok(Mutation::new()));
+    let r = e.mint_independent(&[osis_engine::MintAdmin::Thing(p)], |_| Ok(vec![Mutation::new()]));
     assert!(matches!(r, Err(osis_engine::Error::NotHeld(_))), "{r:?}");
     let spec = osis_engine::flows::LinkSpec { target: x, role: osis_base::Role::Read, until: None, peers: vec![], single_use: false };
     e.create_link(&p, &spec).unwrap();
@@ -575,8 +575,8 @@ fn a_take_up_costs_what_the_opener_opens_spec_sync_set_2() {
 #[test]
 fn what_nothing_needs_goes_whatever_the_arrival_order_spec_commits_5() {
     let mut lp = LocalPeer::new_apart(2, 0, crate::common::T0).unwrap();
-    let p0 = lp.peers[0].engine.make_account().unwrap().0.thing;
-    let (qa, _) = lp.peers[1].engine.make_account().unwrap();
+    let p0 = osis_engine::local_peer::make_account(&mut lp.peers[0].engine).unwrap().0.thing;
+    let (qa, _) = osis_engine::local_peer::make_account(&mut lp.peers[1].engine).unwrap();
     let (q, profile) = (qa.thing, qa.profile);
     let mut end = |late: bool| {
         let mut lp = lp.copy().unwrap();

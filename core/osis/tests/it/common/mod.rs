@@ -241,12 +241,18 @@ pub fn recv<T>(rx: &Receiver<T>) -> T {
     rx.recv_timeout(Duration::from_secs(20)).expect("callback did not run")
 }
 
-/// `db`'s account keeps account `who` (a contact, a peer it grants): a strong in its account
-/// root's `holds.0`, so `who`'s chain stays once received (spec/commits.md §5 What a held thing
-/// needs). Nothing when it keeps it already.
+/// Where `db`'s tests make things (`Held::create_held`): the home `shared` gave it, else its node
+/// thing.
+pub fn home(db: &Osis) -> Tid {
+    db.settings_thing().unwrap().unwrap_or(db.node())
+}
+
+/// `db` keeps thing `who` (a peer it grants): a strong in its home's `holds.0`, so `who`'s chain
+/// stays once received (spec/commits.md §5 What a held thing needs). Nothing when it keeps it
+/// already.
 pub fn know(db: &Osis, who: Tid) {
-    let root = db.account_root();
-    if who == db.me() || db.holds(root, who).unwrap() {
+    let root = home(db);
+    if who == db.author() || who == root || db.holds(root, who).unwrap() {
         return;
     }
     db.commit_with(|w| w.hold(root, who)).unwrap();
@@ -255,7 +261,7 @@ pub fn know(db: &Osis, who: Tid) {
 /// Delivers every commit `from` holds to `to` (the engine-level path `LocalPeer` uses), `to`
 /// keeping `from`'s account (`know`).
 pub fn deliver(from: &Osis, to: &Osis) {
-    know(to, from.me());
+    know(to, from.author());
     let pks = from.engine(|e| {
         let ids = e.commit_ids();
         ids.iter().filter_map(|id| e.package(id).unwrap()).collect::<Vec<_>>()
@@ -271,13 +277,34 @@ pub fn fires(from: &Osis, to: &Osis) -> bool {
     osis::internals::pass_fires(from, to)
 }
 
-/// Two nodes of one account on one clock; commits travel by `deliver`.
-pub fn paired() -> (Osis, Osis, Arc<ManualClock>) {
+/// Two nodes sharing one home on one clock, commits travelling by `deliver`: `a` makes the home
+/// (minted with its node thing, held from it) and grants `b` admin on it; each holds it and keeps
+/// its settings on it, which makes it their `home`. The arrangement an account library makes, with
+/// no account.
+pub fn shared() -> (Osis, Osis, Arc<ManualClock>) {
+    shared_in(MemStore::new(), MemStore::new())
+}
+
+/// `shared` in stores `sa` and `sb`.
+pub fn shared_in(sa: MemStore, sb: MemStore) -> (Osis, Osis, Arc<ManualClock>) {
     let c = clock();
-    let a = osis::internals::create(cfg(1, MemStore::new(), &c)).unwrap();
-    let j = osis::internals::pair(cfg(2, MemStore::new(), &c), &a.pair_offer().unwrap()).unwrap();
-    let (_, reply) = a.pair_accept(j.request()).unwrap();
-    let b = j.finish(&reply).unwrap();
+    let a = osis::internals::create(cfg(1, sa, &c)).unwrap();
+    let b = osis::internals::create(cfg(2, sb, &c)).unwrap();
+    deliver(&b, &a);
+    let g = a.commit_with(|w| w.create_held_with_admin(a.node())).unwrap();
+    a.grant(g, b.node(), osis::Role::Admin, Default::default()).unwrap();
+    let settle_on = |d: &Osis| {
+        let root = d.engine(|e| e.node_root().unwrap());
+        d.engine(|e| {
+            let mut m = osis::internals::engine::Mutation::new();
+            m.set(root, &osis::internals::core_types::SETTINGS, &osis::Weak(g)).unwrap();
+            e.commit(m).unwrap();
+        });
+    };
+    settle_on(&a);
+    deliver(&a, &b);
+    b.hold(g).unwrap();
+    settle_on(&b);
     (a, b, c)
 }
 
@@ -324,7 +351,7 @@ pub fn commit_with(db: &Osis, f: impl FnOnce(&mut osis::Write<'_>) -> osis::Resu
 
 /// A thing made and held in one write (spec/sync-set.md §2 Making a thing).
 pub trait Held {
-    /// A thing minted with the account as admin, held by a strong in the account root's `holds.0`.
+    /// A thing minted with the home (`home`) as admin, held by a strong in its `holds.0`.
     fn create_held(&mut self) -> Result<Tid>;
     /// A thing minted with admin `admin`, held where it lives: by `admin`'s `holds.0`.
     fn create_held_with_admin(&mut self, admin: Tid) -> Result<Tid>;
@@ -332,7 +359,7 @@ pub trait Held {
 
 impl Held for Write<'_> {
     fn create_held(&mut self) -> Result<Tid> {
-        let home = self.db().account_root();
+        let home = home(self.db());
         self.create_held_with_admin(home)
     }
 

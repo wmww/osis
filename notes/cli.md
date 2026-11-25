@@ -20,7 +20,7 @@ Commands, flags and output are documented in `cli/src/args.rs` doc comments (`os
 - **Network**: a local command has no runtime. A command that stays up (`serve`, `pair`, `watch`, `status --watch`, `--follow`/`--watch` forms; `stays_up`) runs the LAN loop unless `--no-lan`; every other command that syncs (`needs_net`) runs with `Lan::Off`, gone too soon to announce. `--dial ADDR` (repeatable, global) adds dial candidates for the run, never stored.
 - **`-v`** copies the node's diagnostics to stderr, formatted as `diag --follow`, while a command with sync on runs; best effort; a no-op for `serve` and `diag --follow` (they print them on stdout). Local commands print none.
 - **Pairing** is two lines carried by the user: `pair offer` prints the offer, reads the request on stdin, prints the reply; `pair join OFFER` prints the request and reads the reply.
-- **Thin client**: `--node ADDR --client-secret FILE` on any command (no store; the file holds 64 hex digits); commands needing a store exit 2, process-wide ones are `Unsupported`. A thin client creates with `create --admin G`: its own actor (its account root) as mint admin is refused, as it goes with the client.
+- **Thin client**: `--node ADDR --client-secret FILE` on any command (no store; the file holds 64 hex digits); commands needing a store exit 2, process-wide ones are `Unsupported`. A thin client creates with `create --admin G`: its own actor as mint admin is refused, as it goes with the client.
 - **`inspect`**: `Debug` dumps over `osis::internals::Internals::engine`. Not stable.
 
 ## Value syntax
@@ -42,7 +42,7 @@ alias  := "me" | "node" | "$" name   (input only)
 typed  : timestamp := RFC 3339 (bare; `T` separator; real calendar dates; printed UTC, ms when nonzero; ints accepted)
          duration  := "-"? (digits ("d"|"h"|"m"|"s"|"ms"))+   (printed largest unit first; "0s")
 ```
-- `me` is the account (in `whoami`).
+- `me` is the person's account (osis-account; `whoami` prints it and `node`, the node thing): the default mint admin and holder of `create`, `leave`'s default holder, `link redeem`'s joiner. A client with a thing of its own: that thing; a node acting for no account: its node thing. `init` makes the node and its account.
 - A struct prints as a map with field names (unknown ids numbered); untyped it is a map with int keys. Option is `#none` / `#some(v)`. Timestamps outside years 0..=9999 print as ints.
 - Whitespace anywhere between tokens; trailing commas allowed; duplicate map keys or set elements are errors; `null` is not a value. JSON input works where unambiguous: string-keyed objects read as maps, or with a schema as the struct.
 - Paths: `.name`/`.id` field, `#name`/`#id` case payload, `[i]` list index, `[value]` map key, `{value}` set element; concatenated; empty = the aspect.

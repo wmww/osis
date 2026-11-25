@@ -74,7 +74,7 @@ fn holding(mut p: Peer, setup: &[osis_engine::local_peer::Package]) -> Peer {
 fn net2_one() -> LocalPeer {
     LocalPeer::cached("shred::net2_one", || {
         let mut lp = LocalPeer::apart(vec![peer(0)], 0);
-        lp.peers[0].engine.make_account().unwrap();
+        osis_engine::local_peer::make_account(&mut lp.peers[0].engine).unwrap();
         let mut p = peer(1);
         lp.pair_into(0, &mut p).unwrap();
         lp.peers.push(p);

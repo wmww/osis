@@ -305,7 +305,7 @@ fn large_value_round_trip_spec_data_model_6() {
 // reads that position absent, the rest of the value as written, and reports `Unreadable`.
 #[test]
 fn an_unreadable_link_fails_only_its_position_spec_data_model_6() {
-    let (a, b, _) = paired();
+    let (a, b, _) = shared();
     let k = untyped("t:doc.0");
     let big = Value::Bytes(vec![7u8; osis::internals::schema::osis_base::format::CHUNK_THRESHOLD + 1000]);
     let t = a.commit_with(|w| {
@@ -355,7 +355,7 @@ fn local_rights_check_spec_permissions_1() {
     assert_eq!(b.engine(|e| e.commit_ids().len()), before);
     // creating under someone else's actor
     let mut w = b.write();
-    w.create_held_with_admin(a.me()).unwrap();
+    w.create_held_with_admin(a.author()).unwrap();
     assert!(matches!(w.commit(), Err(Error::Permission { .. })));
     // signals need write too
     let mut w = b.write();
@@ -381,11 +381,11 @@ fn tree_in_one_commit_spec_permissions_1() {
     // b reads x, and so y and z in its unit, and holds it: content of a thing outside the node
     // closure waits (spec/commits.md §4 Outside the node closure)
     deliver(&b, &a);
-    a.grant(x, b.me(), Role::Read, Default::default()).unwrap();
-    commit_with(&b, |w| w.hold(b.account_root(), x));
+    a.grant(x, b.author(), Role::Read, Default::default()).unwrap();
+    commit_with(&b, |w| w.hold(crate::common::home(&b), x));
     deliver(&a, &b);
     for (i, t) in [x, y, z].into_iter().enumerate() {
-        assert_eq!(b.engine(|e| e.roster(&t)).get(&[a.account_root(), x, y][i]).map(|e| e.role), Some(Role::Admin), "its mint admin");
+        assert_eq!(b.engine(|e| e.roster(&t)).get(&[crate::common::home(&a), x, y][i]).map(|e| e.role), Some(Role::Admin), "its mint admin");
         assert!(b.created(t).unwrap().is_some());
         assert_eq!(b.at(t, untyped("t:x.0")).get().unwrap(), Some(Value::Int(i as i64)));
     }
@@ -471,7 +471,7 @@ fn act_as_spec_commits_1() {
     w.at(t, untyped("t:x.0")).set(&Value::Int(1)).unwrap();
     let c2 = w.commit().unwrap().unwrap();
     let actor = |c: osis::internals::RawCommitId| db.engine(|e| e.commit_purge_author(&c).unwrap());
-    assert_eq!((actor(c1.stamp.id.raw()), actor(c2.stamp.id.raw())), (db.me(), t));
+    assert_eq!((actor(c1.stamp.id.raw()), actor(c2.stamp.id.raw())), (db.author(), t));
     // an empty write commits nothing
     assert_eq!(db.write().commit().unwrap(), None);
 }
@@ -485,7 +485,7 @@ fn created_reads_through_run_time_key_spec_data_model_9() {
     let t = w.create_held().unwrap();
     w.commit().unwrap();
     let v = db.at(t, db.aspect_key("created.0").unwrap()).get().unwrap().unwrap();
-    assert!(matches!(&v, Value::Map(m) if m.get(&Value::Int(0)) == Some(&Value::Weak(db.account_root()))));
+    assert!(matches!(&v, Value::Map(m) if m.get(&Value::Int(0)) == Some(&Value::Weak(crate::common::home(&db)))));
 }
 
 // notes/api.md Large values, spec/data-model.md §6: a blob above the bound is read by stream
@@ -652,10 +652,10 @@ fn values_past_limits_huge_spec_data_model() {
 // commit; a node holding the snapshot without that commit reports none.
 #[test]
 fn created_not_a_snapshot_spec_commits_2() {
-    let (a, b, c) = paired();
+    let (a, b, c) = shared();
     let mut w = a.write();
     // plain: its creation is the write's own commit
-    let t = w.create_held_with_admin(a.account_root()).unwrap();
+    let t = w.create_held_with_admin(crate::common::home(&a)).unwrap();
     w.at(t, untyped("t:x.0")).set(&s("v")).unwrap();
     let done = w.commit().unwrap().unwrap();
     c.advance(60_000);
@@ -705,7 +705,7 @@ fn the_empty_path_is_the_whole_value() {
     let (k, l) = (ak("t:x.0"), ak("t:s.0"));
     // dependent, in the account root's sync unit
     let t = db.commit_with(|w| {
-        let t = w.create_held_with_admin(db.account_root())?;
+        let t = w.create_held_with_admin(crate::common::home(&db))?;
         w.at(t, osis::DynamicAspectKey::untyped(k.clone())).path(p![]).set(&Value::Int(1))?;
         Ok(t)
     }).unwrap();
@@ -784,12 +784,10 @@ fn edit_text_by_position() {
 #[test]
 fn waiting_calls_are_send() {
     fn send<T: Send>(_: T) {}
-    fn all(db: Osis, login: osis::NodeLogin, link: osis::ShareLink, card: osis::ContactCard, id: osis::LinkId, t: osis::Tid, o: osis::SetRoleOpts) {
+    fn all(db: Osis, login: osis::NodeLogin, link: osis::ShareLink, id: osis::LinkId, t: osis::Tid, o: osis::SetRoleOpts) {
         send(db.wait_synced(osis::SyncScope::All));
-        send(db.redeem(&link));
-        send(db.import_contact(&card));
+        send(db.redeem(&link, t));
         send(db.set_role(t, t, None, o));
-        send(db.remove_node(t, o));
         send(db.revoke_link(id));
         send(db.connect_node(&login));
         send(db.unit_source(t, osis::UnitSource::Local));
@@ -947,11 +945,9 @@ fn what_public_signatures_show_can_be_named_api_design() {
 // later grant keeps it unless it says `Reads::All` (never by default), and asking `FromNow` of a
 // holder that reads what came before is `Invalid`.
 #[test]
-#[ignore = "accounts: osis/CLI/app"]
 fn from_now_grant_is_kept_until_a_grant_shows_everything() {
     let db = common::db(41);
-    let g = db.commit_with(|w| w.create_held()).unwrap();
-    let n = db.node();
+    let (g, n) = db.commit_with(|w| Ok((w.create_held()?, w.create_held()?))).unwrap();
     let opts = |reads| osis::GrantOpts { reads, ..Default::default() };
     db.grant(g, n, Role::Read, opts(osis::Reads::FromNow)).unwrap();
     assert!(db.grants(g).unwrap()[&n].from_now, "granted from now");

@@ -570,6 +570,52 @@ pub(crate) fn holding(pk: &Package, b: &CommitBlob, parts: &BTreeSet<usize>) -> 
     out
 }
 
+/// An account as the account library arranges it (spec/permissions.md §8): no rule of core reads
+/// it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Account {
+    /// A: minted with the node thing as mint admin, independent at its minting.
+    pub thing: Tid,
+    /// A's inbox (spec/sync-inbox.md §1): minted with admin A, independent, named by A's `keys.0`.
+    pub inbox: Tid,
+    /// A's profile (spec/sync-inbox.md §5 Contact card): minted with admin A, independent.
+    pub profile: Tid,
+}
+
+/// Makes an account on `e` as the account library does (spec/permissions.md §8 Making), with the
+/// same engine calls, in one transaction: A minted with the node thing as mint admin, its inbox and
+/// profile minted with admin A, each independent, held by strongs from A's `holds.0`; the inbox's
+/// setting enabling both inbox signals; A's `keys.0` naming the inbox; the node root's strong to A
+/// and its `settings^.0` naming A.
+pub fn make_account(e: &mut Engine) -> Result<(Account, crate::flows::Done)> {
+    use osis_crdt::{Op, PathOp, PathSeg};
+    use osis_schema::core_types as ct;
+    let root = e.node_root().ok_or(crate::Error::Misuse("no node root"))?;
+    let admins = [crate::MintAdmin::Thing(e.me()), crate::MintAdmin::Minted(0), crate::MintAdmin::Minted(0)];
+    let (ts, done) = e.mint_independent(&admins, |ts| {
+        let [a, inbox, profile] = ts else { return Err(crate::Error::Misuse("three minted")) };
+        let mut held = Mutation::new();
+        for t in [inbox, profile] {
+            held.op(*a, &ct::HOLDS, PathOp { path: Vec::new(), op: Op::Add(osis_base::Value::Strong(*t)) })?;
+        }
+        let mut signals = Mutation::new();
+        let mut setting = ct::RetentionSetting::default();
+        setting.take_inbox_signals();
+        signals.set(*inbox, &ct::RETENTION, &setting)?;
+        // `keys.0` is role-class: a role commit of its own
+        let mut keys = Mutation::new();
+        keys.op(*a, &ct::KEYS, PathOp { path: vec![PathSeg::Field(4)], op: Op::Set(osis_schema::Codec::to_value(&Some(osis_base::Weak(*inbox)))) })?;
+        // the node root's in commits of their own: it is local, under no sync ID
+        let mut hold = Mutation::new();
+        hold.op(root, &ct::HOLDS, PathOp { path: Vec::new(), op: Op::Add(osis_base::Value::Strong(*a)) })?;
+        let mut settings = Mutation::new();
+        settings.set(root, &ct::SETTINGS, &osis_base::Weak(*a))?;
+        Ok(vec![held, signals, keys, hold, settings])
+    })?;
+    let [thing, inbox, profile] = ts.as_slice() else { return Err(crate::Error::Misuse("three minted")) };
+    Ok((Account { thing: *thing, inbox: *inbox, profile: *profile }, done))
+}
+
 impl LocalPeer {
     /// `n` fresh nodes, each its own account, seeds derived from `seed`, all at wall time `t`,
     /// each keeping the others' accounts (`of`).
@@ -578,7 +624,7 @@ impl LocalPeer {
         LocalPeer::of(peers, seed)
     }
 
-    /// `new` whose nodes each act for an account of their own (`Engine::make_account`), each
+    /// `new` whose nodes each act for an account of their own (`make_account`), each
     /// holding the others' accounts' commits and a strong to each account, as a contact's node
     /// does: the peers and the accounts.
     #[allow(clippy::indexing_slicing)] // i, j < n
@@ -586,7 +632,7 @@ impl LocalPeer {
         let mut lp = LocalPeer::new(n, seed, t)?;
         let mut ps = Vec::new();
         for p in lp.peers.iter_mut() {
-            ps.push(p.engine.make_account()?.0.thing);
+            ps.push(make_account(&mut p.engine)?.0.thing);
         }
         for (i, a) in ps.iter().enumerate() {
             let ids = lp.peers[i].engine.commit_ids();
@@ -606,11 +652,11 @@ impl LocalPeer {
     /// `n` nodes of one account (spec/permissions.md §8): peer 0 makes it, each other is paired
     /// in at admin by peer 0 (`pair_into`), then all sync: the peers and the account.
     #[allow(clippy::indexing_slicing)] // peer 0 of n ≥ 1
-    pub fn one_account(n: usize, seed: u64, t: WallMs) -> Result<(LocalPeer, crate::flows::Account)> {
+    pub fn one_account(n: usize, seed: u64, t: WallMs) -> Result<(LocalPeer, Account)> {
         let mut peers = (0..n).map(|i| Peer::new(seed.wrapping_mul(1000).wrapping_add(i as u64), t)).collect::<Result<Vec<_>>>()?;
         let rest = peers.split_off(1);
         let mut lp = LocalPeer::apart(peers, seed);
-        let (acc, _) = lp.peers[0].engine.make_account()?;
+        let (acc, _) = make_account(&mut lp.peers[0].engine)?;
         for mut p in rest {
             lp.pair_into(0, &mut p)?;
             lp.peers.push(p);
@@ -623,10 +669,10 @@ impl LocalPeer {
     /// it and every other peer hold each other's accounts' commits and a strong to each account.
     /// Its index and account.
     #[allow(clippy::indexing_slicing)] // indices of the net
-    pub fn add_account(&mut self, seed: u64) -> Result<(usize, crate::flows::Account)> {
+    pub fn add_account(&mut self, seed: u64) -> Result<(usize, Account)> {
         let t = self.peers.first().map_or(WallMs(0), |p| p.engine.now());
         let mut p = Peer::new(seed, t)?;
-        let (acc, _) = p.engine.make_account()?;
+        let (acc, _) = make_account(&mut p.engine)?;
         self.peers.push(p);
         let n = self.peers.len() - 1;
         let accounts: Vec<Option<osis_base::Tid>> = self.peers.iter_mut().map(|p| p.engine.settings_thing()).collect::<Result<_>>()?;
@@ -741,14 +787,14 @@ impl LocalPeer {
     }
 
     /// A fresh node with an account of its own (`Peer::new` at peer `admin`'s time, seeded
-    /// `seed`, `Engine::make_account`) whose account holds `t` and is granted read on it by peer
+    /// `seed`, `make_account`) whose account holds `t` and is granted read on it by peer
     /// `admin` through the flow, given the grant's offer alone (a fire on the account's inbox):
     /// it keeps what it is then given of `t` in any order, as content waits until `t` enters its
     /// node closure (spec/commits.md §4 Outside the node closure). Peer `admin` keeps the account.
     #[allow(clippy::panic, clippy::indexing_slicing)] // test harness: a setup that fails fails the test (and a peer index past the net)
     pub fn fresh_reader(&mut self, admin: usize, t: Tid, seed: u64) -> Peer {
         let mut p = Peer::new(seed, self.peers[admin].engine.now()).unwrap_or_else(|e| panic!("fresh node: {e}"));
-        let (acc, _) = p.engine.make_account().unwrap_or_else(|e| panic!("account: {e}"));
+        let (acc, _) = make_account(&mut p.engine).unwrap_or_else(|e| panic!("account: {e}"));
         self.peers[admin].know(&[acc.thing]).unwrap_or_else(|e| panic!("know: {e}"));
         for id in p.engine.commit_ids() {
             if let Some(pk) = p.engine.package(&id).unwrap_or_else(|e| panic!("package: {e}")) {

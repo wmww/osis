@@ -622,12 +622,12 @@ impl World {
         self.rng.next_u64()
     }
 
-    /// A new node with an account of its own (`Engine::make_account`, as the product's
+    /// A new node with an account of its own (`osis_engine::local_peer::make_account`, as the account library's
     /// `Osis::create`), on LAN segment 0 with a public address, listening under a fresh key and
     /// publishing where (`publish`). Settled once.
     pub fn add_node(&mut self) -> usize {
         let i = self.add_bare_node();
-        let (acc, _) = self.write(i, |e| e.make_account()).expect("an account");
+        let (acc, _) = self.write(i, osis_engine::local_peer::make_account).expect("an account");
         if let Some(n) = self.nodes.get_mut(i) {
             n.account = Some(acc.thing);
             n.profile = Some(acc.profile);
@@ -637,7 +637,7 @@ impl World {
     }
 
     /// A new node paired at admin as a node of node `i`'s account (spec/permissions.md §8
-    /// Pairing, as the product's `pair_offer`/`pair_accept`): it shows its node thing's public
+    /// Pairing, as osis-account's `Account::offer_pairing`/`Offering::accept`): it shows its node thing's public
     /// key record, node `i` grants it and hands back the offer with where it is dialed, which it
     /// takes; then it publishes where it is dialed.
     pub fn pair(&mut self, i: usize) -> usize {

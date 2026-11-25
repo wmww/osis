@@ -96,8 +96,9 @@ pub mod core {
     /// sets it, at any time.
     pub const RETENTION: osis_schema::Aspect<RetentionSetting> = osis_schema::Aspect::new("retention^.0", &osis_schema::CORE);
     /// Each node's limits on what other nodes may make it store of what it keeps for them
-    /// unread, by its node (`node()`), on its account (`me()`): an admin node of the account
-    /// sets any node's, `at(me, CAPS).path(p![Weak(node)])`. Absent: the defaults.
+    /// unread, by its node (`node()`), on the thing it keeps its settings on (`settings_thing()`):
+    /// that thing's admins set any node's, `at(s, CAPS).path(p![Weak(node)])`. Absent: the
+    /// defaults.
     pub use osis_schema::core_types::CAPS;
     pub use osis_schema::core_types::{Caps, ThingCaps};
 }

@@ -45,7 +45,7 @@ fn a_paired_node_holds_and_writes_the_account_spec_permissions_8() {
 #[test]
 fn only_an_admin_of_the_account_pairs_spec_permissions_8() {
     let mut lp = LocalPeer::apart(vec![Peer::new(0, T0).unwrap()], 0);
-    lp.peers[0].engine.make_account().unwrap();
+    osis_engine::local_peer::make_account(&mut lp.peers[0].engine).unwrap();
     let a = crate::common::account_of(&mut lp);
     let mut w = Peer::new(1, T0).unwrap();
     let (node, keys) = (w.engine.me(), w.engine.node_keys().unwrap());
@@ -67,7 +67,7 @@ fn only_an_admin_of_the_account_pairs_spec_permissions_8() {
 #[test]
 fn an_offer_for_another_node_is_refused_spec_permissions_8() {
     let mut lp = LocalPeer::apart(vec![Peer::new(0, T0).unwrap()], 0);
-    lp.peers[0].engine.make_account().unwrap();
+    osis_engine::local_peer::make_account(&mut lp.peers[0].engine).unwrap();
     let a = crate::common::account_of(&mut lp);
     let mut meant = Peer::new(1, T0).unwrap();
     let mut other = Peer::new(2, T0).unwrap();

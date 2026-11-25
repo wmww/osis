@@ -260,6 +260,10 @@ aspect dial.0: map<blob, list<string>>;
 /// On a node root: the thing holding this node's settings, its node thing's entries there.
 admin aspect settings^.0: weak;
 
+/// On a node root: the things this node keeps its dial entry on, besides the node root
+/// (spec/sync-set.md §1).
+admin aspect dial_on^.0: set<weak>;
+
 /// Limits on what the node stores of one thing it keeps unread.
 type thing_caps = struct {
     entries 0: int,

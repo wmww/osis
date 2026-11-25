@@ -33,18 +33,21 @@ pub fn on(net: &ManualNet, seed: u64, c: &Arc<ManualClock>) -> Osis {
     osis::internals::create(o).unwrap()
 }
 
-/// Two paired nodes of one account on `net`, the second dialing the first (listening).
-pub fn paired(net: &ManualNet, c: &Arc<ManualClock>, seed: u64) -> (Osis, Osis) {
+/// Two paired nodes of one account on `net`, the second dialing the first (listening), and the
+/// account.
+pub fn paired(net: &ManualNet, c: &Arc<ManualClock>, seed: u64) -> (Osis, Osis, osis::Tid) {
     let a = on(net, seed, c);
+    let acc = osis_account::Account::make(&a).unwrap();
     let addr = a.listen(&["peer://127.0.0.1:1".parse().unwrap()]).unwrap().remove(0);
     let mut o = osis::internals::Opening::at(Store::Memory(MemStore::new()));
     o.app.internals.seed = Some(seed + 1);
     o.app.internals.clock = Some(c.clone());
     o.app.internals.net = Some(net.clone());
     o.cfg.dial = vec![addr];
-    let join = osis::internals::pair(o, &a.pair_offer().unwrap()).unwrap();
-    let (_, reply) = a.pair_accept(join.request()).unwrap();
-    (a, join.finish(&reply).unwrap())
+    let offering = acc.offer_pairing(&a).unwrap();
+    let join = osis_account::pair(o.store, offering.offer(), o.cfg).unwrap();
+    let (_, reply) = offering.accept(&a, join.request()).unwrap();
+    (a, join.finish(&reply).unwrap().0, acc.thing())
 }
 
 /// Runs `f` to its end, running `net` between polls.
@@ -59,11 +62,11 @@ pub fn drive<T>(net: &ManualNet, f: impl std::future::Future<Output = T>) -> T {
     panic!("did not resolve");
 }
 
-/// Delivers every commit `from` holds to `to`, `to`'s account keeping `from`'s (a strong in its
-/// account root's `holds.0`: spec/commits.md §5 What a held thing needs).
+/// Delivers every commit `from` holds to `to`, `to`'s node thing keeping `from`'s (a strong in
+/// its `holds.0`: spec/commits.md §5 What a held thing needs).
 pub fn deliver(from: &Osis, to: &Osis) {
-    let (root, who) = (to.account_root(), from.me());
-    if who != to.me() && !to.holds(root, who).unwrap() {
+    let (root, who) = (to.node(), from.author());
+    if who != to.author() && !to.holds(root, who).unwrap() {
         let mut w = to.write();
         w.hold(root, who).unwrap();
         w.commit().unwrap();

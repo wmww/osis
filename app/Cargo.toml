@@ -25,6 +25,7 @@ accessibility = ["osis-kit/accessibility"]
 
 [dependencies]
 osis.workspace = true
+osis-account.workspace = true
 osis-chat.workspace = true
 osis-kit.workspace = true
 jiff.workspace = true

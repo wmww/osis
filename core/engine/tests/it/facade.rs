@@ -43,7 +43,7 @@ fn caps_read_from_the_nodes_entry_spec_sync_ids_5() {
     let (mut lp, _) = people(1);
     let e = &mut lp.peers[0].engine;
     assert!(e.caps().unwrap().things.is_empty(), "no settings thing: the defaults");
-    let (acc, _) = e.make_account().unwrap();
+    let (acc, _) = osis_engine::local_peer::make_account(e).unwrap();
     assert_eq!(e.settings_thing().unwrap(), Some(acc.thing), "the account, from its making");
     assert!(e.caps().unwrap().things.is_empty(), "no entry: the defaults");
     let t = Tid::from_bytes([9; 15]);
@@ -285,9 +285,9 @@ fn a_step_needs_its_epochs_rotations_spec_sync_ids_6() {
     let hold = |a: Tid| {
         let mut m = Mutation::new();
         m.op(root, &ct::HOLDS, osis_crdt::PathOp { path: vec![], op: osis_crdt::Op::Add(osis_base::Value::Strong(a)) }).unwrap();
-        Ok(m)
+        Ok::<_, osis_engine::Error>(m)
     };
-    let (d, _) = e.mint_actor(&me, hold).unwrap();
+    let d = e.mint_independent(&[osis_engine::MintAdmin::Thing(me)], |ts| Ok(vec![hold(ts[0])?])).unwrap().0[0];
     let ids = e.sync_ids(&d).unwrap();
     let step = ids[0].path.steps[0].0.id();
     let needs = e.step_needs(&ids[0].id, &step).unwrap();

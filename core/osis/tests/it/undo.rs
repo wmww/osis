@@ -59,10 +59,9 @@ fn sets(db: &Osis, t: osis::Tid, name: &str, vs: &[i64]) -> osis::CommitId {
 
 // spec/commits.md §7 (kept history only), Tess's decision: on an aspect no setting keeps, no
 // write is undone, a first set and an insert (which take nothing back) included: refused at once,
-// its body held, by `undo_target`, `undo` and `revert` alike, nothing written; the same from a
-// second node of the account holding the commits, and after a reopen; ephemeral writes alike.
+// its body held, by `undo_target`, `undo` and `revert` alike, nothing written; the same by
+// `revert` from a second node holding the commits, and after a reopen; ephemeral writes alike.
 #[test]
-#[ignore = "accounts: osis/CLI/app"]
 fn no_history_no_undo_spec_commits_7() {
     let c = clock();
     let store = MemStore::new();
@@ -87,7 +86,7 @@ fn no_history_no_undo_spec_commits_7() {
     let db = osis::internals::open(cfg(2, store, &c)).unwrap();
     assert_eq!(db.undo(&Scope::Aspects(vec![(t, ak("app:n.0"))])), Err(gone(first)), "after a reopen");
     // a second node
-    let (a, b, _) = paired();
+    let (a, b, _) = shared();
     for n in [&a, &b] {
         n.register_schema("undo.osis", SCHEMA).unwrap();
     }
@@ -96,16 +95,15 @@ fn no_history_no_undo_spec_commits_7() {
     deliver(&a, &b);
     assert_eq!(b.at(t, key(&b, "app:n.0")).get().unwrap(), int(1), "b holds it");
     let scope = Scope::Aspects(vec![(t, ak("app:n.0"))]);
-    assert_eq!(b.undo_target(&scope), Err(gone(x)), "from a second node");
-    assert_eq!(b.revert(x), Err(gone(x)));
+    assert_eq!(b.undo_target(&scope), Ok(None), "undo is its author's: b wrote nothing there");
+    assert_eq!(b.revert(x), Err(gone(x)), "from a second node");
 }
 
 // spec/crdt.md §4.6 (undo needs kept history): with history kept the replaced value comes back
-// from it: after a reopen, and from a second node of the account that holds the commits; past the
-// keep bound of the value it replaced (the undone set itself kept while live) it is `NotUndoable`
-// by age.
+// from it: after a reopen, and by `revert` from a second node that holds the commits (undo is
+// its author's: the other node's writes are not its to undo); past the keep bound of the value it
+// replaced (the undone set itself kept while live) it is `NotUndoable` by age.
 #[test]
-#[ignore = "accounts: osis/CLI/app"]
 fn register_with_history_undoes_anywhere_spec_crdt_4_6() {
     let c = clock();
     let store = MemStore::new();
@@ -120,14 +118,15 @@ fn register_with_history_undoes_anywhere_spec_crdt_4_6() {
     db.undo(&scope).unwrap().unwrap();
     assert_eq!(db.at(t, key(&db, "app:k.0")).get().unwrap(), int(2), "after a reopen");
     // a second node
-    let (a, b, c) = paired();
+    let (a, b, c) = shared();
     for n in [&a, &b] {
         n.register_schema("undo.osis", SCHEMA).unwrap();
     }
     let t = kept_thing(&a);
-    sets(&a, t, "app:k.0", &[1, 2]);
+    let x = sets(&a, t, "app:k.0", &[1, 2]);
     deliver(&a, &b);
-    b.undo(&scope_of(t)).unwrap().unwrap();
+    assert_eq!(b.undo_target(&scope_of(t)), Ok(None), "b wrote nothing there");
+    b.revert(x).unwrap();
     assert_eq!(b.at(t, key(&b, "app:k.0")).get().unwrap(), int(1), "from a second node");
     deliver(&b, &a);
     assert_eq!(a.at(t, key(&a, "app:k.0")).get().unwrap(), int(1));

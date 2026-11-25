@@ -98,7 +98,7 @@ fn edits_are_well_typed() {
 fn a_tile_tells_of_emails_it_cannot_read() {
     let mut cfg = osis::internals::Opening::memory();
     cfg.app.read_limit = 1000;
-    let d = osis_app::store::data(osis::internals::create(cfg).unwrap());
+    let d = osis_app::store::data(crate::common::created(cfg));
     let c = osis_kit::facets::create(&d, "person").unwrap();
     let many = (0..100).map(|i| (format!("someone{i}@example.org"), osis_app::contact::Labeled { label: String::new(), pref: false })).collect();
     let mut w = d.db.write();
@@ -113,7 +113,7 @@ fn a_tile_tells_of_emails_it_cannot_read() {
 fn a_value_too_large_to_read_is_no_empty_row() {
     let mut cfg = osis::internals::Opening::memory();
     cfg.app.read_limit = 1000;
-    let d = osis_app::store::data(osis::internals::create(cfg).unwrap());
+    let d = osis_app::store::data(crate::common::created(cfg));
     let n = osis_kit::facets::create(&d, "note").unwrap();
     let mut w = d.db.write();
     w.at(n, osis::core::BODY).set(&"x".repeat(2000)).unwrap();

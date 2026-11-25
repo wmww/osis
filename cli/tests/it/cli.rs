@@ -62,6 +62,10 @@ impl S {
         self.ok(&["whoami"]).out.lines().find_map(|l| l.strip_prefix("me\t")).unwrap().to_string()
     }
 
+    fn node(&self) -> String {
+        self.ok(&["whoami"]).out.lines().find_map(|l| l.strip_prefix("node\t")).unwrap().to_string()
+    }
+
     fn thing(&self) -> String {
         self.ok(&["create", "t:made.0", "true"]).line().to_string()
     }
@@ -213,9 +217,10 @@ fn commands_run_through_the_daemon_plan_cli() {
     // the card's link may be taken by whoever holds it: its wait runs to the timeout
     let card = s.call(&["--timeout", "1s", "card", "show"], "");
     assert_eq!(card.code, 6, "{}", card.err);
-    assert_eq!(card.line(), held.contact_card().unwrap().to_string());
-    assert_eq!(ok(&["card", "profile"]).trim(), held.profile().unwrap().to_uri());
-    assert_eq!(ok(&["card", "import", card.line(), "--timeout", "60s"]).trim(), held.account_root().to_uri());
+    let acc = osis_account::Account::of(&held).unwrap().unwrap();
+    assert_eq!(card.line(), acc.contact_card(&held).unwrap().to_string());
+    assert_eq!(ok(&["card", "profile"]).trim(), acc.profile(&held).unwrap().unwrap().to_uri());
+    assert_eq!(ok(&["card", "import", card.line(), "--timeout", "60s"]).trim(), acc.thing().to_uri());
     ok(&["diag"]);
     drop(held);
     let _ = std::fs::remove_dir_all(&d);
@@ -369,8 +374,9 @@ fn sharing_commands_local_plan_cli_4() {
     let g = s.thing();
     let grants = s.ok(&["grants", &g]).out;
     let account = grants.strip_suffix(" admin -\n").expect("the account alone").to_string();
-    assert_ne!(account, s.me(), "the account is not the node");
-    assert_eq!(s.ok(&["node", "ls"]).line(), s.me(), "this node alone");
+    assert_eq!(account, s.me(), "me: the account");
+    assert_ne!(account, s.node(), "the account is not the node");
+    assert_eq!(s.ok(&["node", "ls"]).line(), s.node(), "this node alone");
     // spec/sync-inbox.md §6: `make_link` works on every node; the link names this node
     let l = s.thing();
     let o = s.call(&["--timeout", "10ms", "link", "make", &l, "write", "--single-use"], "");
@@ -396,13 +402,12 @@ fn sharing_commands_local_plan_cli_4() {
     // CLI `source T`: shows where T's sync unit's calls go
     assert_eq!(s.ok(&["source", &g]).out, "local\n");
     assert_eq!(s.ok(&["--json", "source", &g]).line(), "{\"source\":\"local\"}");
-    // spec/permissions.md §1 (The last admin), notes/cli.md Exit codes: the node leaves its own
-    // grant; the account is then g's only admin
-    s.ok(&["leave", &g]);
-    let o = s.call(&["leave", &g, "--holder", &account], "");
+    // spec/permissions.md §1 (The last admin), notes/cli.md Exit codes: `leave` leaves as me,
+    // the account, g's only admin
+    let o = s.call(&["leave", &g], "");
     assert_eq!(o.code, 7, "{}", o.err);
     assert!(o.err.contains("no admin"), "{}", o.err);
-    let o = s.call(&["leave", &g, "--holder", &account, "--leave-adminless"], "");
+    let o = s.call(&["leave", &g, "--leave-adminless"], "");
     assert_eq!(o.code, 0, "{}", o.err);
 }
 
@@ -564,7 +569,8 @@ fn chat_commands_plan_cli() {
     let again = s.ok(&["chat", "read", &c, "--after", &cursor2]).out;
     assert!(again.contains(&format!("{two} ")) && again.contains("two!!") && again.lines().count() == 2, "{again}");
     s.ok(&["chat", "delete", &c, &one]);
-    let me = s.me();
+    // the deleting node, as its commits are signed and authored
+    let me = s.node();
     assert!(s.ok(&["chat", "read", &c]).out.contains(&format!("<deleted by {me}>")));
     assert!(s.ok(&["--json", "chat", "read", &c]).out.contains(&format!("\"deleted_by\":\"{me}\"")));
     assert_ne!(s.code(&["chat", "resend", &c, &two]), 0, "delivered: nothing to send again");

@@ -2,7 +2,7 @@
 //! `keep_alive`, and the client port's node side; nodes on one in-process test network
 //! (`internals::ManualNet`) with one manual clock, or with no network at all.
 
-use crate::common::Held as _;
+use crate::common::{Held as _, TestWrites as _};
 use crate::common::{cfg, clock, db};
 use osis::internals::proto::Msg;
 use osis::internals::proto::api::{ApiCode, Outcome};
@@ -39,8 +39,9 @@ fn listening_needs_a_network_and_a_socket_a_directory_spec_sync_transport_5() {
 }
 
 // spec/sync-transport.md §3 (each time it starts listening), §5 (key change), spec/sync-set.md §1
-// (dial list: each node keeping its own entry, on its account and profile): listening publishes
-// the node's entry under its key, its global addresses only; a new key replaces its entry.
+// (dial list: each node keeping its own entry, on the things it chooses): naming a thing publishes
+// the node's entry there at once, listening publishes it under its key, its global addresses only;
+// a new key replaces its entry.
 #[test]
 fn listening_publishes_where_the_node_is_dialed_spec_sync_transport_3() {
     use osis::internals::Internals;
@@ -48,14 +49,17 @@ fn listening_publishes_where_the_node_is_dialed_spec_sync_transport_3() {
     let c = clock();
     let net = ManualNet::new(c.clone());
     let a = on(&net, 9, &c);
+    let (t, u) = a.commit_with(|w| Ok((w.create_held()?, w.create_held()?))).unwrap();
+    a.publish_dial_on(&[t]).unwrap();
     let key = a.listen(&["peer://203.0.113.5:4040".parse().unwrap(), "peer://127.0.0.1:1".parse().unwrap()]).unwrap()[0].key();
-    for t in [a.account_root(), a.profile().unwrap()] {
-        let list = a.engine(|e| e.get_typed(&t, &ct::DIAL).unwrap());
-        assert_eq!(list.unwrap(), [(key.to_vec(), vec!["peer://203.0.113.5:4040".to_string()])].into(), "global addresses only");
-    }
+    let list = |t| a.engine(|e| e.get_typed(&t, &ct::DIAL).unwrap()).unwrap_or_default();
+    assert_eq!(list(t), [(key.to_vec(), vec!["peer://203.0.113.5:4040".to_string()])].into(), "global addresses only");
+    assert!(list(u).is_empty(), "a thing not named");
+    a.publish_dial_on(&[t, u]).unwrap();
+    assert_eq!(list(u), list(t), "named after the listen: published at once");
     a.rotate_peer_address().unwrap();
-    for t in [a.account_root(), a.profile().unwrap()] {
-        let list = a.engine(|e| e.get_typed(&t, &ct::DIAL).unwrap()).unwrap();
+    for t in [t, u] {
+        let list = list(t);
         assert_eq!(list.len(), 1);
         assert!(!list.contains_key(key.as_slice()), "the old key's entry gone");
     }
@@ -272,7 +276,7 @@ fn a_redeem_whose_sharer_never_answers_fails_at_the_follow_time_spec_sync_inbox_
     w.commit().unwrap();
     let link = a.make_link(t, Role::Read, LinkOpts::default()).unwrap();
     net.set_online(0, false);
-    let mut f = std::pin::pin!(b.redeem(&link));
+    let mut f = std::pin::pin!(b.redeem(&link, b.node()));
     let mut poll = || f.as_mut().poll(&mut std::task::Context::from_waker(std::task::Waker::noop()));
     assert!(poll().is_pending());
     net.advance(FOLLOW_LINK_MS - 60_000);
@@ -296,35 +300,17 @@ fn a_revoked_links_joiner_stays_until_removed_spec_permissions_7() {
     let t = w.create_held().unwrap();
     w.commit().unwrap();
     let link = a.make_link(t, Role::Read, LinkOpts::default()).unwrap();
-    assert_eq!(drive(&net, b.redeem(&link)).unwrap(), t);
+    assert_eq!(drive(&net, b.redeem(&link, b.node())).unwrap(), t);
     let id = a.links().unwrap().into_iter().find(|l| l.target == t).unwrap().id;
     a.revoke_link(id).unwrap();
     assert!(a.links().unwrap().is_empty(), "ended");
     a.revoke_link(id).unwrap();
-    // the joiner: b's account (spec/permissions.md §7 Redeem)
-    let joiner = b.account_root();
+    // the joiner: b's node thing, as it named (spec/permissions.md §7 Redeem)
+    let joiner = b.node();
     let joined = |a: &Osis| a.holders(t).unwrap().into_iter().any(|h| h.actor == joiner);
     assert!(joined(&a), "the joiner keeps its role");
     a.set_role(t, joiner, None, osis::SetRoleOpts::default()).unwrap();
     assert!(!joined(&a), "removed");
-}
-
-// spec/sync-inbox.md §5 (contact card), spec/sync-set.md §4: importing a card gives the account,
-// whose keys are then here (a grant to it goes through).
-#[test]
-fn importing_a_card_gives_the_account_spec_sync_inbox_5() {
-    let c = clock();
-    let net = ManualNet::new(c.clone());
-    let a = on(&net, 50, &c);
-    a.listen(&["peer://127.0.0.1:1".parse().unwrap()]).unwrap();
-    let b = on(&net, 51, &c);
-    let who = drive(&net, b.import_contact(&a.contact_card().unwrap())).unwrap();
-    assert_eq!(who, a.account_root());
-    assert_eq!(b.profile_of(who).unwrap(), Some(a.profile().unwrap()));
-    let mut w = b.write();
-    let t = w.create_held().unwrap();
-    w.commit().unwrap();
-    b.grant(t, who, Role::Read, osis::GrantOpts::default()).unwrap();
 }
 
 // ---- leaving (spec/sync-set.md §3) ----

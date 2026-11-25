@@ -62,7 +62,7 @@ fn make(a: &Node, b: &Node, home: Tid, independent: bool, label: &str, show: boo
     let before: std::collections::BTreeSet<_> = a.db.engine(|e| e.commit_ids()).into_iter().collect();
     costs::take();
     let mut w = a.db.write();
-    let t = if independent { w.create(a.db.me(), None).unwrap() } else { w.create(home, None).unwrap() };
+    let t = if independent { w.create(a.db.author(), None).unwrap() } else { w.create(home, None).unwrap() };
     keep_all(&mut w, t);
     w.hold(home, t).unwrap();
     w.commit().unwrap();
@@ -108,14 +108,10 @@ fn make(a: &Node, b: &Node, home: Tid, independent: bool, label: &str, show: boo
 #[test]
 #[ignore = "sync rewrite: copies per (commit, thing)"]
 fn what_a_thing_costs_as_the_app_makes_it() {
-    let c = clock();
     let (sa, sb) = (MemStore::new(), MemStore::new());
-    let a = osis::internals::create(cfg(1, sa.clone(), &c)).unwrap();
-    let j = osis::internals::pair(cfg(2, sb.clone(), &c), &a.pair_offer().unwrap()).unwrap();
-    let (_, reply) = a.pair_accept(j.request()).unwrap();
-    let b = j.finish(&reply).unwrap();
+    let (a, b, _) = crate::common::shared_in(sa.clone(), sb.clone());
     let (a, b) = (Node { db: a, store: sa }, Node { db: b, store: sb });
-    let root = a.db.account_root();
+    let root = crate::common::home(&a.db);
     let mut w = a.db.write();
     let home = w.create(root, None).unwrap();
     w.hold(root, home).unwrap();

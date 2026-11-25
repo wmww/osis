@@ -335,7 +335,7 @@ fn a_write_failing_past_the_closures_settle_leaves_it_followed() {
     use osis_schema::core_types as ct;
     let dev = Dev::new();
     let mut e = dev.create();
-    let d = e.make_account().unwrap().0.thing;
+    let d = osis_engine::local_peer::make_account(&mut e).unwrap().0.thing;
     let holds = |from: Tid, to: Tid, on: bool| {
         let mut m = Mutation::new();
         let v = Value::Strong(to);

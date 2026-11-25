@@ -7,7 +7,7 @@
 - Chat: `libs/chat` (osis-chat: creation and edit rules), `osis chat`: design E on primitives, `schema/chat.osis` (a message is one typed write; notes/chat.md).
 - Be very careful with dates and times: milliseconds since the epoch are right for many things and wrong for the rest, and the rest gets complex fast.
 - Events are shared with read or write like anything else; no attendee or RSVP machinery (link people in `body.0`, or an app-level aspect later).
-- Avoid API convenience functions that only save calling existing ones; the one addition here is `Osis::profile()` and `profile_of(account)`, because the profile thing is the API's own creation.
+- Avoid API convenience functions that only save calling existing ones. The profile is the account library's (libs/account, osis-account), not the API's.
 
 ## Time (spec/data-model.md §3)
 Four kinds, three types:
@@ -21,7 +21,7 @@ Four kinds, three types:
 ## Contact (schema/contact.osis)
 The schema says what each aspect holds; the reasons:
 - Many small aspects, so a thing with only emails is a contact.
-- A **profile** is the same aspects on the account's profile thing (`Osis::profile()`: the contact card's target, an independent thing with its own sync ID), so everyone holding the card reads it and keeps receiving changes (the import is a redeem, spec/sync-set.md §4). `Osis::profile_of(account)` gives the profile a card import brought. The override is field by field.
+- A **profile** is the same aspects on the account's profile thing (osis-account's `Account::profile`: the contact card's target, an independent thing with its own sync ID), so everyone holding the card reads it and keeps receiving changes (the import is a redeem, spec/sync-set.md §4). `Account::profile_of(account)` gives the profile a card import brought, recorded on the importing account (`account:contacts.0`). The override is field by field.
 - Entries are keyed maps, not lists: concurrent additions merge and one entry's label is editable alone.
 - Left out of vCard on purpose: photo (a file type later), gender, language, timezone, geo, keys, sound, logo, categories (tags), and UID and revision bookkeeping, which belongs to the importing app.
 

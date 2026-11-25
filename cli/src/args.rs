@@ -399,11 +399,11 @@ pub enum Cmd {
 
 #[derive(Args, Debug, Clone)]
 pub struct CreateArgs {
-    /// Mint admin (default: the account root). With a thing as admin it is read by that thing's
-    /// readers, and until first shared directly may be up to ten times lighter than with an account (`me`)
+    /// Mint admin (default: `me`, the account). Its readers read the new thing, and until first
+    /// shared directly it costs less than a thing of its own
     #[arg(long, value_name = "A")]
     pub admin: Option<String>,
-    /// The thing whose holds.0 holds it by a strong (default: the --admin thing; the account root for `me`)
+    /// The thing whose holds.0 holds it by a strong (default: the --admin thing)
     #[arg(long = "in", value_name = "H")]
     pub in_: Option<String>,
     /// Bind $NAME to the new tid (write scripts)

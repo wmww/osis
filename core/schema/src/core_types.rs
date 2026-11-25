@@ -386,6 +386,8 @@ pub type DialList = BTreeMap<Vec<u8>, Vec<String>>;
 pub const DIAL: Aspect<DialList> = Aspect::new("dial.0", &CORE);
 /// `settings^.0` on a node root: the thing holding the node's settings (spec/sync-set.md §1).
 pub const SETTINGS: Aspect<Weak> = Aspect::new("settings^.0", &CORE);
+/// `dial_on^.0` on a node root: the things the node keeps its dial entry on (spec/sync-set.md §1).
+pub const DIAL_ON: Aspect<BTreeSet<Weak>> = Aspect::new("dial_on^.0", &CORE);
 /// `caps^.0`: each node's caps, by its node thing.
 pub const CAPS: Aspect<BTreeMap<Weak, Caps>> = Aspect::new("caps^.0", &CORE);
 /// `clients^.0`: by client actor, a strong (the node root holds each client's actor).

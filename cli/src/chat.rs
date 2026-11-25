@@ -142,7 +142,7 @@ pub(crate) fn run(ctx: &mut Ctx<'_>, c: ChatCmd) -> anyhow::Result<()> {
                 x => return Err(usage(format!("--edit: purge, keep or off, not {x:?}"))),
             };
             let o = Options { name, purge_by, edit, disappear: disappear.as_deref().map(parse_dur).transpose()?, retain_copies: !no_retain_copy };
-            let t = osis_chat::create(&db, &o, db.account_root())?;
+            let t = osis_chat::create(&db, &o, ctx.me()?)?;
             ctx.one("tid", t.to_uri())
         }
         ChatCmd::Add { chat, account, role } => {
@@ -267,7 +267,7 @@ pub(crate) fn run(ctx: &mut Ctx<'_>, c: ChatCmd) -> anyhow::Result<()> {
             let k = find(ctx, t, &i)?;
             let Some(part) = k.at(t, MSG) else { return Err(exit(3, format!("no message {i}"))) };
             let Body::Held(Some(body)) = part.body else { return Err(exit(1, "its text is not here")) };
-            if part.valid || k.stamp.author != db.me() {
+            if part.valid || k.stamp.author != db.author() {
                 return Err(exit(1, "only one's own undelivered message is sent again"));
             }
             let new = osis_chat::send(&db, t, &body)?;
@@ -283,7 +283,7 @@ pub(crate) fn run(ctx: &mut Ctx<'_>, c: ChatCmd) -> anyhow::Result<()> {
             Ok(())
         }
         ChatCmd::Leave { chat } => {
-            db.leave(db.me(), ctx.tid(&chat)?, SetRoleOpts::default())?;
+            db.leave(ctx.me()?, ctx.tid(&chat)?, SetRoleOpts::default())?;
             Ok(())
         }
         ChatCmd::Participants { chat } => {

@@ -7,7 +7,7 @@ use crate::commit_id::{CommitFrom, CommitId, CommitPos};
 use crate::commits::{Address, Body, Commit, CommitEvent, CommitKind, CommitPage, CommitQuery, NotUndoableReason, Part, Scope};
 use crate::error::{Error, Result};
 use crate::read::{Grant, Grants, Stamp};
-use crate::share::{ContactCard, Holder, HolderKind, ShareLink};
+use crate::share::{Holder, HolderKind, ShareLink};
 use crate::syncing::{Status, SyncScope, SyncState, UnitSync};
 use crate::watch::{DerivedFrom, Origin};
 use crate::write::{Expiry, WriteOp};
@@ -764,7 +764,7 @@ macro_rules! form_text {
         }
     )+};
 }
-form_text!(ContactCard, ShareLink);
+form_text!(ShareLink);
 
 /// `[0]` all, `[1, tid]` a thing.
 impl Form for SyncScope {

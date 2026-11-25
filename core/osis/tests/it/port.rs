@@ -115,7 +115,7 @@ fn a_thin_client_creates_under_a_thing_it_writes_notes_client_port() {
     let w = world(Some(Role::Admin));
     let cl = connect(&w.net, &w.c, &w.addr, &w.secret).unwrap();
     let mut x = cl.write();
-    x.create(cl.me(), None).unwrap();
+    x.create(cl.author(), None).unwrap();
     assert!(matches!(x.commit(), Err(Error::Invalid(_))));
     let mut x = cl.write();
     let n = x.create_held_with_admin(w.t).unwrap();
@@ -161,7 +161,7 @@ fn a_watch_through_a_thin_client_spec_sync_transport_6() {
     cl.settle();
     let ch = rx.try_recv().unwrap();
     assert_eq!(ch.value, Ok(Some(Value::Int(6))));
-    assert!(matches!(ch.origin, Origin::Local(s) if s.author == w.a.me()), "{:?}", ch.origin);
+    assert!(matches!(ch.origin, Origin::Local(s) if s.author == w.a.author()), "{:?}", ch.origin);
     let mut x = cl.write();
     x.at(w.t, v()).set(&Value::Int(7)).unwrap();
     x.commit().unwrap();
@@ -210,11 +210,9 @@ fn a_thin_client_answers_nothing_of_its_own_notes_client_port() {
     u(cl.clients().map(drop));
     u(cl.grant(t, w.actor, Role::Read, osis::GrantOpts::default()));
     u(cl.on_diagnostic(|_, _| {}).map(drop));
-    u(cl.contact_card().map(drop));
-    u(cl.profile().map(drop));
-    u(cl.nodes().map(drop));
+    u(cl.make_link(t, Role::Read, Default::default()).map(drop));
+    u(cl.publish_dial_on(&[t]));
     u(cl.links().map(drop));
-    u(cl.pair_offer().map(drop));
     u(cl.listen(&[]).map(drop));
     u(cl.at(t, v()).path(osis::p![]).edit_text().map(drop));
     u(ready(cl.connect_node(&NodeLogin { addr: w.addr.clone(), secret: w.secret.clone() })));
@@ -265,7 +263,7 @@ fn error_code(m: &Msg) -> Option<u64> {
 #[test]
 fn write_nonces_spec_wire_11() {
     let w = world(None);
-    let (a, t, me) = (&w.a, w.t, w.a.me());
+    let (a, t, me) = (&w.a, w.t, w.a.author());
     let r = osis::internals::port_answers(a, 1, true, vec![auth_as(None, 1), write_call(1, me, t, 10), write_call(1 | RESENT, me, t, 11)]);
     assert!(matches!(outcome(&r[1]), Outcome::Ok { .. }));
     assert_eq!(r[1], r[2], "the first outcome, not run again");
@@ -495,7 +493,7 @@ fn a_socket_client_over_a_real_socket_spec_sync_transport_6() {
     })
     .unwrap();
     let cl = crate::common::block_on(Osis::connect_socket(&dir.0, AppConfig::default())).unwrap();
-    assert_eq!(cl.me(), a.me());
+    assert_eq!(cl.author(), a.author());
     assert_eq!(cl.at(t, v()).get().unwrap(), Some(Value::Int(5)));
     let (_sub, rx) = changes(&cl, t);
     assert_eq!(rx.recv_timeout(std::time::Duration::from_secs(60)).unwrap().value, Ok(Some(Value::Int(5))));
@@ -558,7 +556,7 @@ fn every_op_reads_alike_through_a_thin_client_notes_client_port() {
 #[test]
 fn write_outcomes_are_bounded_spec_wire_11() {
     let w = world(None);
-    let (a, t, me) = (&w.a, w.t, w.a.me());
+    let (a, t, me) = (&w.a, w.t, w.a.author());
     let mut msgs = vec![auth_as(None, 1)];
     msgs.extend((1..=65).map(|n| write_call(n, me, t, n as i64)));
     msgs.push(write_call(2 | RESENT, me, t, 0));
@@ -678,7 +676,7 @@ fn a_hidden_thing_notifies_nothing_spec_wire_11() {
         assert_eq!(read.try_recv().unwrap().value, Ok(Some(Value::Int(n))));
         let c = thing_read.try_recv().unwrap();
         assert_eq!((c.ak, c.value), (ak("x:v.0"), Ok(Some(Value::Int(n)))));
-        assert!(matches!(c.origin, Origin::Local(s) if s.author == w.a.me()), "{:?}", c.origin);
+        assert!(matches!(c.origin, Origin::Local(s) if s.author == w.a.author()), "{:?}", c.origin);
     }
     assert!(hidden.try_recv().is_err() && unknown.try_recv().is_err());
     assert!(thing_hidden.try_recv().is_err() && thing_unknown.try_recv().is_err());

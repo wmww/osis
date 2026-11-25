@@ -324,7 +324,7 @@ Steps and claim sets (§8) and `entry_box` (a `box` value, §7) are their canoni
 
     | method | row | args -> value |
     |---|---|---|
-    | 0 | whoami | `[] -> [me, node, root]`: the thing the session acts as, its node thing and node root (spec/sync-set.md §1) |
+    | 0 | whoami | `[] -> [author, node, Opt(settings)]`: the thing the session acts as, its node thing, and the thing its node root's `settings^.0` names (spec/sync-set.md §1) |
     | 1 | get | `[tid, ak, path] -> read result` |
     | 2 | aspects | `[tid] -> [ak*]` |
     | 3 | has content | `[tid] -> bool` |
@@ -342,16 +342,13 @@ Steps and claim sets (§8) and `entry_box` (a `box` value, §7) are their canoni
     | 15 | redo target | `[scope] -> Opt(commit)` |
     | 16 | listing | `[address, query] -> [[commit*], more, complete]`, address `[0, scope]` a scope's writes, `[1, tid, ak]` a signal's fires, `[2, tid, ak, commit id]` a fire's versions; query `[from, Opt(limit), [author*], [kind*], Opt(reverts), Opt(reverted_by), Opt(in_effect)]`, from `[0]` newest, `[1]` oldest, `[2, position]` before, `[3, position]` after; kind 0 content, 1 revert, 2 role, 3 snapshot; at most what fits `max_reply`, `more` set when cut |
     | 17 | listed commit | `[address, commit id] -> Opt(commit)` |
-    | 18 | contact card | `[] -> text`; main only |
+    | 18 | make link | `[tid, role, Opt(until), single_use] -> link text`; main only |
     | 19 | settle | `[] -> []`, after every Notify for changes before it |
     | 20 | now | `[] -> wall ms` |
     | 21 | status | `[] -> [connected, [[tid, state, not_taking, leaving]*], [kept tid*]]`, state 0 synced, 1 syncing, 2 not connected, 3 stranded; kept: things held and synced no more (retained copies, spec/permissions.md §3 Retain); for a client actor only the things it may read, `connected` the connections with one of them open |
     | 22 | holders | `[tid] -> [[actor, kind, role, Opt(until), [through*]]*]`, kind 0 actor, 1 link, 2 key; nothing behind a holder the actor may not read |
-    | 23 | profile | `[] -> tid`; main only |
-    | 24 | profile of | `[tid] -> Opt(tid)`; main only |
     | 27 | wait synced | `[scope] -> []`, scope `[0]` all, `[1, tid]` a thing; waits; main only |
-    | 28 | import contact | `[card text] -> tid`; waits; main only |
-    | 29 | redeem | `[link text] -> tid`; waits; main only |
+    | 29 | redeem | `[link text, joiner] -> tid`; waits; main only |
 
     A row that waits is a Sub with filter 5, never a Call (a Call naming one is code 11).
 

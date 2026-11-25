@@ -408,7 +408,7 @@ fn a_renders_db_is_the_read_only_handle() {
     let d = data();
     let w = WindowState::default();
     let cx = Cx::new(&d, &w, false);
-    assert_eq!(read_only(&cx).me(), d.db.me());
+    assert_eq!(read_only(&cx).author(), d.db.author());
 }
 
 /// A read does not make the profile: it is made at open, or never without a peer.

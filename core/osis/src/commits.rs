@@ -500,7 +500,7 @@ impl Osis {
 
     /// The revert of `target`, or why there is none (never a partial revert).
     fn revert_one(&self, target: CommitId) -> Result<Commit> {
-        let me = self.me();
+        let me = self.author();
         let blocked = |reason| Error::NotUndoable { commit: target, reason };
         let ra = self.read_as();
         let c = self.locked(|l| {
@@ -799,7 +799,7 @@ impl crate::handle::ReadOnly {
     /// effect (a redo counts as a commit); for redo its newest undo in effect, unless a new commit
     /// of this actor came after it.
     fn pick(&self, found: Vec<Found>, redo: bool) -> Option<Found> {
-        let me = self.me();
+        let me = self.author();
         let mut mine = found.into_iter().filter(|f| f.author == me && matches!(f.kind, CommitKind::Content | CommitKind::Revert));
         if redo {
             mine.take_while(|f| f.depth > 0).find(|f| f.in_effect && f.depth % 2 == 1)

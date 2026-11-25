@@ -21,7 +21,7 @@ impl Account for Small {
             return Ok(t);
         }
         let mut w = db.write();
-        let root = db.account_root();
+        let root = db.node();
         let t = w.create(root, None)?;
         // its strongs are what undoing a delete writes back
         start_setting(&mut w, t)?;
