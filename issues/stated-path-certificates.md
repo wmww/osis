@@ -9,4 +9,6 @@ What stands in, each site marked `Interim (issues/stated-path-certificates.md)`:
 - `write::check_acts`: the writer's check that it holds write on the thing it writes as.
 - osis-commit `Header::path_allowed`: a role commit's purge index is held to 0, a bad input spec/wire.md does not list.
 
+Suspect, untested: a part whose hop to a listed thing A is neither a record edge known here nor reached by a held edge write waits as `MissingChain(signer)`, which wakes on held role inputs moving, not on A's record arriving: a record blob carrying A's record alone keeps it loose and wakes nothing. Waiting by `UnknownCreated` for every listed thing (and up its chain) closes it, and `Need::Acting` then becomes the spec's "every listed thing".
+
 What else the engine reads short of the spec (snapshot carries, `addenda.0` entries, by-commit purge items, the list's frontier, epoch addenda, sides): notes/perm-paths.md, Read short of the spec.

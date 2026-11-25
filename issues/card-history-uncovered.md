@@ -1,0 +1,18 @@
+# `card.0` is never snapshotted: a floored reader misses cards, and card history never drops
+> Summary: spec/commits.md §2 forbids compaction snapshots of `card.0` (each entry counts only along its own write's path), while spec/crypto.md §4 State at a cut says each aspect's state reaches a holder granted without history as a snapshot. So a floored reader of C sees no card written before its cut until A's nodes rewrite it, and every replaced card write (one per refresh of A's or its inbox's `keys.0`) stays held for good with no cover to drop it.
+> Priority: normal
+> Tags: retention, engine, spec
+
+Property violated: a reader granted without history reads the current state (spec/crypto.md §4 State at a cut, notes/history-less-grant.md); every drop but expiry and purge is a cover, and a replaced body out of history drops under one (spec/commits.md §5). `card.0` has neither: it is the one content aspect outside both (a carve-out, `retention::snapshot::compacted`, `Engine::snapshot`'s `Misuse("card.0 is never compacted")`).
+
+Minimal world: A's card on C (written by a node of A along a path through A). Admin of C grants N on C without history. N's cut writes snapshots of C's aspects but `card.0`; N cannot open the card write (under an epoch below its floor), so N reads no card of A on C, cannot seal a grant to A or fire at A's inbox from C, until A's keys rotate and a node of A rewrites the card. Separately: each rotation of A rewrites A's card on every host; on each host every older card write is replaced and never covered, so card history grows with A's rotations for a value of constant size, at every node holding the host.
+
+Cause: a snapshot's validity is per commit path; a card entry's is per entry (keyed by a member of its write's stated path, spec/permissions.md §5.2). A snapshot by one writer carrying several things' cards is off-path for all but one.
+
+Options:
+1. **Judge every `card.0` delta per entry, snapshots included** (the one rule): a snapshot of `card.0` stating a path through A may carry A's entry alone (more entries: invalid, as a write's). A's nodes compact A's card writes on a host by such a snapshot acting as A; a cut writes one per card the granter may write through, and stale-card refresh gains "the host's read floor passed the card's write" so A's nodes write the rest. Needs snapshots of part of an aspect (one map key), judged by the ordinary covered test.
+2. **Make `card.0` role-class** (it mirrors A's `keys.0`, itself role-class): read under the roles secret, so floored readers read its history as they read role commits. Fixes the floored reader; history growth is then issues/role-class-bodies-never-compacted.md's (spec allows `keys.0`/`secrets.0`/`sync.0` snapshots, none is written), and cards move from writers' to role commits (validity, kinds, who may write).
+3. As now, stated: a floored reader sees a card only once rewritten; card history grows with rotations. Contradicts State at a cut, so the spec would have to except `card.0` there (a second carve-out).
+4. **One aspect per card**, its AK naming A, written whole (a register): the per-entry rule becomes the per-aspect one, so a snapshot stating a path through A is valid by the ordinary check (no partial-map snapshot), and a node's own refreshes are whole replaces, dropped by Own replaces with no snapshot. Needs an AK form naming a thing (the grammar's `:<tid>:` prefix; its meaning a spec question). As with option 1, a cut granter off A's path still cannot write A's card, so the refresh rule gains "the host's read floor passed the card's write".
+
+Leaning: option 1 or 4 (one validity rule, ordinary covers, no exception in State at a cut).
