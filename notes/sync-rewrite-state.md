@@ -1,5 +1,5 @@
 # Sync rewrite: what it owes
-> Summary: What the sync rewrite (on main, unreviewed and ungated) still owes, the 14 tests it ignores by cause, and its rulings for the review. What it built is in the area notes: notes/holder-access-study.md and notes/node-closure.md (grants with the thing granted, offers, held for keys), notes/evidence-derivation.md and notes/sync-facade.md (copies per (commit, thing), the kept derivation), notes/delete-keys.md (the delete-key check), notes/sync.md (held for keys in osis-sync).
+> Summary: What the sync rewrite still owes, the 14 tests it ignores by cause, and its rulings for the review. What it built is in the area notes: notes/holder-access-study.md and notes/node-closure.md (grants with the thing granted, offers, held for keys), notes/evidence-derivation.md and notes/sync-facade.md (copies per (commit, thing), the kept derivation), notes/delete-keys.md (the delete-key check), notes/sync.md (held for keys in osis-sync).
 
 Spec it rebuilt from: spec/permissions.md §4, spec/sync-set.md §2, spec/sync-inbox.md §2 and §5, spec/sync-judgement.md, spec/crypto.md §7. When each item is taken up: notes/handoff.md, The route.
 

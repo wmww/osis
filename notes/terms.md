@@ -1,5 +1,5 @@
 # Terms
-> Summary: The one set of words for osis's concepts (Tess): each word, what it means and what it is never used for; which concepts are built and which are the design being moved to; how to write about them. Read before writing any spec, note, issue, comment or API doc.
+> Summary: The one set of words for osis's concepts (Tess): each word, what it means and what it is never used for; accounts, signing and paths as built; how to write about them. Read before writing any spec, note, issue, comment or API doc.
 
 The concepts and their properties are spec/requirements.md (Concepts). This note fixes the words. Old words, those still in the repo with what removing each takes and those gone: issues/deprecated-terms.md.
 
@@ -32,14 +32,12 @@ The `osis` API's names for the concepts above (notes/api-design.md: one word per
 - A **client's thing** (`Client::thing`): the thing `add_client` mints, which the node acts as for the client in a **client session**; a **main session** (the node's unix socket) acts as **the node itself**. Neither is an actor.
 - `act_as`, "the thing a handle acts as": "actor" in its commit sense (Words, Actor) fits the acting thing; the API says "thing" for it in docs.
 
-## Built, and being moved to
-Some concepts in the repo are what is built today and are being redesigned (issues/actors-one-mechanism.md, designed in notes/account-membership-design.md and notes/write-path-design.md; first on notes/priorities.md). Until that lands: the spec states the design moved to (spec/permissions.md §8); the code is the built one.
-- **Built**: a node signs as its node thing, an ordinary thing minted with its key (accounts and pairing: osis-account, notes/accounts-switch-brief.md); a commit header names its `signer` (the thing signed as) and states, per thing it writes, a path from the signer through each thing whose role it uses, and is judged along that path alone; its evidence is certificate copies per (commit, thing) under the sync IDs that need them (notes/evidence-derivation.md).
-- **Moving to**: an account is an ordinary independent thing whose members are things holding roles on it (a node's **node thing**, minted with the node's key, among them; the node's strongs sit on its local **node root**, a dependent of the node thing: spec/sync-set.md §1); a node's **own things** are those its keys hold grants on; a commit is signed as a thing by a key holding a grant on it, that grant the first hop of the path it states; a thing is public by a grant to the public, a holder that is no thing; a thing is opened to messages and grants from strangers by its admins.
-- **Never call an old concept by a new name** (Tess): where the built thing is still the old concept, keep its word, and make only the edits that are right looking forward. A section may be marked for deletion or rewriting once a named change lands; that is allowed, not required.
+## Accounts, signing and paths
+An account is an ordinary independent thing whose members are things holding roles on it, made by a library (osis-account, notes/accounts-switch-brief.md; spec/permissions.md §8): a node's **node thing**, minted with the node's key, among them; the node's strongs sit on its local **node root** (spec/sync-set.md §1). A node's **own things** are those its keys hold grants on. A commit is signed as a thing by a key holding a grant on it, that grant the first hop of the path it states; its header names its `signer` (the thing signed as) and states, per thing it writes, a path from the signer through each thing whose role it uses, and it is judged along that path alone; its evidence is certificate copies per (commit, thing) under the sync IDs that need them (notes/evidence-derivation.md). A thing is public by a grant to the public, a holder that is no thing (notes/public-and-cards-brief.md); a thing is opened to messages and grants from strangers by its admins.
 
 ## Writing about them
 - A rename reads as if the text was written that way: no aliases, no "formerly X", no "(was Y)".
+- **Never call an old concept by a new name** (Tess): where code still builds an old concept, keep its word until the change lands.
 - No **Limit** items, in the requirements or anywhere (Tess): a fact that makes a stated property untrue means the property is the weaker one, so state that; a fact that contradicts nothing is stated plainly as what holds, or dropped where it is nobody's concern. Keep every fact a subsystem spec needs; lose only the framing.
 - Requirements state concepts and properties, never the build (notes/principles.md, Requirements state concepts and properties).
 - API docs state a cost only where it matters to the reader's choice, hedged and comparative, in what the reader can see (notes/api-design.md, Public docs).
