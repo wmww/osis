@@ -817,8 +817,8 @@ pub struct Model {
     edges: hc::Edges,
     /// The grants (holder, target) whose holder's readers were never offered them (`Made::unoffered`).
     unoffered: BTreeSet<(usize, usize)>,
-    /// What each account's node closure carries into another's unit (`entry::Net::bridged`).
-    bridged: hc::Edges,
+    /// What the accounts' node closures log under the sync IDs they read: bridges and stubs (`entry::Net::logged`).
+    logged: hc::Edges,
 }
 
 impl Model {
@@ -905,18 +905,18 @@ impl Model {
         for r in refs.all() {
             keyless.extend(r.engine.keyless_grants().iter().filter_map(|(t, g)| Some((index(g)?, index(t)?))));
         }
-        let mut m = Model { accounts, world: hc::World { kinds, grants, keyless }, edges, unoffered, bridged: hc::Edges::new() };
-        // the bridges, to their least fixpoint over the accounts (`entry::Net::held_all`)
+        let mut m = Model { accounts, world: hc::World { kinds, grants, keyless }, edges, unoffered, logged: hc::Edges::new() };
+        // what the closures log, to their least fixpoint over the accounts (`entry::Net::held_all`)
         loop {
-            let mut more = m.bridged.clone();
+            let mut more = m.logged.clone();
             for a in 0..m.accounts.len() {
                 let (net, held) = m.entry(a);
-                more.extend(net.bridges(held_model::closure::entry::Rule::SPEC, &held));
+                more.extend(net.logs(held_model::closure::entry::Rule::SPEC, &held));
             }
-            if more == m.bridged {
+            if more == m.logged {
                 return m;
             }
-            m.bridged = more;
+            m.logged = more;
         }
     }
 
@@ -928,8 +928,8 @@ impl Model {
     /// counts once the node reads the target by another way, and opens nothing before (no node of
     /// the holder's learns the target's sync ID or box by it). The least such closure, as
     /// `hc::Closure` (`carried`: what its read units and the units of what it keeps unread carry;
-    /// `for_keys`: holders held for keys alone) and the keys of what it reads, with the bridges
-    /// every account's closure makes (`Model::bridged`, spec/sync-set.md §2 Carriers).
+    /// `for_keys`: holders held for keys alone) and the keys of what it reads, with what
+    /// every account's closure logs (`Model::logged`, spec/sync-set.md §2 Carriers).
     fn closure(&self, a: usize) -> (hc::Closure, hc::Set) {
         use held_model::closure::entry;
         let (net, held) = self.entry(a);
@@ -944,7 +944,7 @@ impl Model {
         (c, keys)
     }
 
-    /// Account `a`'s first-entry world (`closure`) with the bridges, and what its node holds.
+    /// Account `a`'s first-entry world (`closure`) with what is logged, and what its node holds.
     fn entry(&self, a: usize) -> (held_model::closure::entry::Net, held_model::closure::entry::Held) {
         use held_model::closure::entry;
         let n = self.world.kinds.len();
@@ -962,7 +962,7 @@ impl Model {
                 nodes.push(entry::Node { thing, root, offers: hc::Set::new() });
             }
             let records = (0..self.accounts.len()).map(|b| (n + 2 * b, b)).collect();
-            let net = entry::Net { w, records, strongs, nodes, bridged: self.bridged.clone() };
+            let net = entry::Net { w, records, strongs, nodes, logged: self.logged.clone() };
             let held = net.held_alone(a, entry::Rule::SPEC);
             if held.s.read.is_subset(&known) {
                 return (net, held);

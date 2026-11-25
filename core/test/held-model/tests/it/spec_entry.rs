@@ -108,30 +108,39 @@ fn far(last: Role) -> Net {
     net
 }
 
-// spec/sync-set.md §2 First entry; notes/stubs.md rule 2. A references C, which it holds read
-// on through B: C is in A's unit, whole, at both nodes, with no record of B's grants anywhere.
-// Held sync alone through B, C is in no unit (A's keys do not open it) and B's key part is held
-// only once C is synced (keys are found up): neither node enters C, though A holding sync on C
-// directly enters it at both by A's own edge piece. A unit carrying the stub of what its thing
-// holds sync on enters C either way.
+// spec/sync-set.md §2 First entry, Stub, Carriers; notes/stubs.md rule 2. A references C, which
+// it holds read on through B: C is in A's unit, whole, at both nodes, with no record of B's grants
+// anywhere. Held sync alone through B, C is in no unit (A's keys do not open it); A holding sync on
+// C directly enters it at both by A's own edge piece. Through B, C's stub is B's piece on C, and
+// B's key part is held only once C is synced (keys are found up): no node reading A holds the
+// piece, so nobody logs the stub and neither node enters C (with ideal delivery, the control, both
+// do). Node 1's root referencing B, node 1 reads B, enters C by B's piece and logs C's stub under
+// A: node 2, syncing A alone, keeps C unread by it; without stubs at sync, or without what node 1
+// logs, node 2 never enters C.
 #[test]
-fn hole_a_far_thing_held_sync_through_a_holder_is_never_entered() {
+fn a_far_thing_held_sync_through_a_holder_is_entered_by_its_carried_stub() {
     let fix_records = Rule { record_pieces: true, ..Rule::DRAFT };
     let net = far(Role::Read);
     for i in 0..2 {
         let h = net.held(i, fix_records);
         assert!(h.s.read.contains(&C) && !h.s.read.contains(&B), "C whole in A's unit, B held for keys: {h:?}");
     }
-    let net = far(Role::Sync);
+    let mut net = far(Role::Sync);
     let mut direct = account(Some(Role::Admin), 2);
     direct.w.grants.insert((A, C), Role::Sync);
     direct.strongs.insert((A, C));
     for i in 0..2 {
         assert!(!held(&net, i, fix_records).contains(&C), "the draft: never entered");
         assert!(held(&direct, i, fix_records).contains(&C), "direct: entered by A's piece");
-        let h = net.held(i, Rule::SPEC);
-        assert!(h.s.kept.contains(&C) && h.held.contains(&C), "stub at sync: kept unread {h:?}");
+        assert!(!held(&net, i, Rule::SPEC).contains(&C), "no node reading A holds B's piece");
+        assert!(held(&net, i, Rule { carriers: false, ..Rule::SPEC }).contains(&C), "control: ideal delivery");
     }
+    net.strongs.insert((R1, B));
+    assert!(net.held(0, Rule::SPEC).s.read.contains(&B) && held(&net, 0, Rule::SPEC).contains(&C), "node 1 reads B");
+    let h = net.held(1, Rule::SPEC);
+    assert!(h.s.kept.contains(&C) && !h.s.read.contains(&B), "node 2 keeps C unread by the stub node 1 logs: {h:?}");
+    assert!(!held(&net, 1, Rule { stubs_at_sync: false, ..Rule::SPEC }).contains(&C), "control: no stubs at sync");
+    assert!(!net.held_alone(1, Rule::SPEC).held.contains(&C), "control: nothing logged");
 }
 
 // The node root's strongs are no unit: a far thing (A read on B, B read on C) referenced only from
@@ -235,15 +244,24 @@ fn check(net: &Net, rule: Rule) -> Vec<&'static str> {
         out.push("symmetry");
     }
     let e = net.edges(rule);
+    let all: Vec<Held> = (0..2).map(|i| net.held(i, rule)).collect();
     for i in 0..2 {
-        let h = net.held(i, rule);
-        // By role: a strong in a read unit to a thing outside it its thing holds sync or above on
-        // is held, as a direct grant of that role would be.
+        let h = &all[i];
+        // By role: a strong from a held thing of a read unit to a thing X outside it that the
+        // unit's thing T holds sync or above on is held wherever T's sync ID carries one of X's
+        // stub pieces (the edge pieces on X of T and of each holder T holds sync or above on):
+        // T's own, in T's key part, or one another node reading T holds (it holds the holder's
+        // key part, or reads X).
         for &t in &h.s.read {
             let u = unit(&net.w, t, &e);
             let roles = net.w.roles_from(t);
+            let stub_holder = |g: T| roles.get(&g).is_some_and(|&r| r >= Role::Sync);
+            let carried = |x: T| {
+                net.w.grants.contains_key(&(t, x))
+                    || all.iter().enumerate().any(|(j, o)| j != i && o.s.read.contains(&t) && (o.s.read.contains(&x) || o.s.keyparts.iter().any(|&g| stub_holder(g) && net.w.grants.contains_key(&(g, x)))))
+            };
             for &(m, x) in &e {
-                if u.contains(&m) && !u.contains(&x) && net.w.independent(x) && roles.get(&x).is_some_and(|&r| r >= Role::Sync) && !h.held.contains(&x) {
+                if h.held.contains(&m) && u.contains(&m) && !u.contains(&x) && net.w.independent(x) && stub_holder(x) && carried(x) && !h.held.contains(&x) {
                     out.push("by role");
                 }
             }
@@ -291,7 +309,8 @@ fn sweep(rule: Rule, worlds: u64, more: usize) -> std::collections::BTreeMap<&'s
 
 // The design (`Rule::SPEC`) keeps every property over random worlds but "history", the hazard of
 // following changes (no rule: an engine must recompute founded support); each rule weakened fails
-// its property: record pieces off fails making and symmetry, stubs at sync off fails by role, first
+// its property: record pieces off fails making and symmetry, stubs at sync off fails by role (a
+// stub another node logs), first
 // entry off or the greatest fixpoint fails first entry (founded pieces off: the hand world below).
 #[test]
 fn entry_rules_over_random_worlds() {
@@ -308,11 +327,11 @@ fn entry_rules_over_random_worlds() {
     }
 }
 
-// The spec's first entry takes an edge piece from any key part the node holds: A holds read on H,
-// H sync on Y and on X; A references Y (kept unread, by the stub at sync), so H is held for keys,
-// and H's piece on X enters X, which only the node root references. Without the strong to Y, X is
-// not entered: entry by what else the node syncs. Taking pieces only from own and read things' key
-// parts (notes/stubs.md rule 2's cut, `founded_pieces`) enters X in neither.
+// The spec's first entry takes an edge piece from any key part the node holds: A holds read on H
+// and sync on Y, H sync on Y and on X; A references Y (kept unread, by A's piece), so H is held for
+// keys, and H's piece on X enters X, which only the node root references. Without the strong to Y,
+// X is not entered: entry by what else the node syncs. Taking pieces only from own and read things'
+// key parts (notes/stubs.md rule 2's cut, `founded_pieces`) enters X in neither.
 #[test]
 fn incidental_entry_through_a_holder_held_for_another_thing() {
     const H: T = 8;
@@ -320,6 +339,7 @@ fn incidental_entry_through_a_holder_held_for_another_thing() {
     const X: T = 10;
     let mut net = account(Some(Role::Admin), 3);
     net.w.grants.insert((A, H), Role::Read);
+    net.w.grants.insert((A, Y), Role::Sync);
     net.w.grants.insert((H, Y), Role::Sync);
     net.w.grants.insert((H, X), Role::Sync);
     net.strongs.insert((R1, X));
