@@ -9,4 +9,3 @@ osis-engine/retention::tests_carried::purge_by_id_reads_alike_forgotten_or_not_p
 osis-engine/retention::tests_carried::purge_by_id_reads_alike_forgotten_or_not_plain_spec_commits_5 rate:OSIS_PURGE_BY_ID_START=347698118767 issues/purge-by-id-forgetting.md purges through a name: 0 over \d+ seeds
 osis-engine/retention::tests_carried::purge_by_id_reads_alike_forgotten_or_not_plain_spec_commits_5 rate:OSIS_PURGE_BY_ID_START=532945376426 issues/purge-by-id-forgetting.md purges through a name: 1 over \d+ seeds
 osis-sync/differential::histories_hold_their_closure_plain rate:OSIS_SYNC_START=65054997954,OSIS_SYNC_SEEDS=1 issues/public-pieces-unheld.md panicked: node \d+ reads thing \d+ unlike the reference
-osis-sync/differential::histories_hold_their_closure_plain rate:OSIS_SYNC_START=392779649692,OSIS_SYNC_SEEDS=1 issues/differential-full-size-classes.md panicked: node-sync settle loop \(Node::settle\): \d+ rounds, past its bound
