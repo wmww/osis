@@ -19,8 +19,8 @@ osis-cli/osis_cli 0.098
 osis-commit/osis_commit 26
 osis-crdt/osis_crdt 82
 osis-crypto/osis_crypto 4.5
-osis-engine/it 2400
-osis-engine/osis_engine 1900
+osis-engine/it 2100
+osis-engine/osis_engine 1700
 osis-keys/it 5.5
 osis-keys/osis_keys 2.4
 osis-kit/it 150
