@@ -306,8 +306,12 @@ struct WalkState {
     known: Vec<osis_blob::Step>,
     /// Steps a Behind was refused on, this walk.
     refused: BTreeSet<Option<StepId>>,
-    /// A Hit on a walk credential refused (a false positive of the filter): it asks Behind.
+    /// A Hit on a walk credential refused: S is tested again.
     missed: bool,
+    /// The walk credentials whose Hit was refused (a false positive of the filter, or a beacon
+    /// the peer no longer shows: nothing leaves a stored filter), by match value: each counts
+    /// as not shown until S opens here (spec/sync-ids.md §6 Walk).
+    unshown: BTreeSet<[u8; 32]>,
     /// Behind answers refused for now (4) in a row: the next ask waits `inbox::backoff_ms` of
     /// it (`Conn::retries`).
     backoffs: u32,
@@ -1277,6 +1281,18 @@ impl Opens {
         // the start
         let shreds = self.shreds.get_or_insert_with(|| ctx.store.shred_feed()).added();
         for s in shreds {
+            // it stopped holding S (spec/sync-opens.md §6 Where it stopped), even when synced
+            // again before this tick saw it leave: members on a connection close and each stop
+            // kept is told, so a peer keeps nothing of what this node showed of S (its head
+            // among it) and joins and registers from the start
+            let on: Vec<ConnId> = self.conns.keys().copied().filter(|c| self.members_unstamped(*c).contains_key(&s)).collect();
+            for c in on {
+                self.close_member(ctx, c, s, Close::Left, moved);
+            }
+            let kept: Vec<ConnId> = self.conns.iter().filter(|(_, k)| k.rec.and_then(|r| self.records.get(&r)).is_some_and(|r| r.stopped.contains_key(&s))).map(|(c, _)| *c).collect();
+            for c in kept {
+                self.send_lost(ctx, c, vec![(s, None)]);
+            }
             for r in self.records.values_mut() {
                 r.stopped.remove(&s);
                 r.basis.remove(&s);
@@ -2099,11 +2115,12 @@ impl Opens {
         let mut items = Vec::new();
         let mut cut = false;
         for s in pending {
-            // a refused walk Hit counts as none shown, once
-            let missed = self.conns.get_mut(&conn).and_then(|c| c.walks.get_mut(&s)).is_some_and(|w| {
+            // a refused walk Hit counts as that credential not shown
+            let unshown = self.conns.get_mut(&conn).and_then(|c| c.walks.get_mut(&s)).map(|w| {
                 w.retry = false;
-                std::mem::take(&mut w.missed)
-            });
+                w.missed = false;
+                w.unshown.clone()
+            }).unwrap_or_default();
             if self.member(conn, &s).is_some() {
                 continue;
             }
@@ -2111,10 +2128,10 @@ impl Opens {
             self.work.tested += 1;
             let mut hit = false;
             for t in &adm.tests {
-                if missed && t.step().is_some() {
+                let m = t.matched(&s);
+                if t.step().is_some() && unshown.contains(&m) {
                     continue;
                 }
-                let m = t.matched(&s);
                 let b = beacon_of(&m, &s, &rr);
                 self.work.beacons += 1;
                 if !pf.values.contains(beacon_value(&b, pf.f)) {
@@ -2232,14 +2249,17 @@ impl Opens {
         for (i, x) in sent.into_iter().enumerate() {
             let a = items.get(i).cloned().unwrap_or(SharedItem::code(Code::DECLINED));
             match x {
-                // A refused Hit on a walk credential (a false positive of the filter) counts as
-                // none shown: S asks Behind in the next Offer (spec/sync-ids.md §6 Walk).
+                // A refused Hit on a walk credential counts as that credential not shown: S is
+                // tested again with the rest, asking Behind once none is shown (spec/sync-ids.md
+                // §6 Walk).
                 Sent::Hit { s, cred, .. } if a.code != Code::OK => {
                     if cred.step().is_some()
                         && self.member(conn, &s).is_none()
                         && let Some(c) = self.conns.get_mut(&conn)
                     {
-                        c.walks.entry(s).or_default().missed = true;
+                        let w = c.walks.entry(s).or_default();
+                        w.missed = true;
+                        w.unshown.insert(cred.matched(&s));
                     }
                 }
                 Sent::Hit { s, cred, beacon, own } => {
@@ -2502,6 +2522,10 @@ impl Opens {
         r.members.insert(s, m);
         r.basis.insert(s, beacon);
         if let Some(c) = self.conns.get_mut(&conn) {
+            // the walk ends: a credential refused before may be the source's step later
+            if let Some(w) = c.walks.get_mut(&s) {
+                w.unshown.clear();
+            }
             c.reported.opened(s);
         }
         let rejoin = r.stopped.remove(&s).unwrap_or(Rejoin::From(None));

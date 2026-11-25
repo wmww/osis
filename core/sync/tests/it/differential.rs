@@ -517,3 +517,19 @@ fn the_public_granted_again_is_read_again_spec_permissions_3() {
         assert!(reads(w.engine(0), &t).value.is_some(), "node 0 reads thing 0 by the public again (quiet run between: {quiet})");
     }
 }
+
+// spec/sync-opens.md §6 (Where it stopped: a node that stops holding S tells each stop kept),
+// spec/sync-ids.md §6 (Walk: a Hit refused counts as that credential not shown): node 1 grants
+// node 0's account sync on thing 0, a thing made in thing 0 beside it; node 0 holds thing 0 and
+// removes its account's other node, so node 1 rotates thing 0's sync role and issues a step.
+// Node 0 takes the step's sealed copy before the box under it, judges itself past its keys, stops
+// S (its store shredded) and syncs it again before its sync modules see it leave. Node 0 keeps
+// thing 0 unread at its readers' head. Failed without either rule: node 1 kept node 0's old head
+// and registered onto an empty path (13), or tested the newest step's key first forever, a beacon
+// node 0's filter keeps showing.
+#[test]
+fn a_store_that_stops_and_syncs_again_is_registered_from_genesis_spec_sync_opens_6() {
+    use crate::harness::script::*;
+    let script = [New(1), Give(1, 0, Holder::Node(0), Syncs), NewIn(1, 0), Run, Strong(0, None, 0), Unpair(0, 3)];
+    holds_on(0, 3, 4, &script, String::new(), false);
+}
