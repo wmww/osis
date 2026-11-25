@@ -1,5 +1,5 @@
 # Stubs
-> Summary: The design for how a node comes to hold, and keeps, what it needs to sync a thing without its content (Tess; decided, not built): a sync unit carries each thing whole or as a stub; strongs bring things in whole, weaks bring in stubs; references in held history follow one rule, fires included; an inbox is a thing of its own; a grant fire carries the data to make a stub and a weak reference, its only special treatment. With what it replaces in the built tree and the questions left for the spec.
+> Summary: The design for how a node comes to hold, and keeps, what it needs to sync a thing without its content (Tess; decided, partly built: Against the built tree): a sync unit carries each thing whole or as a stub; strongs bring things in whole, weaks bring in stubs; references in held history follow one rule, fires included; an inbox is a thing of its own; a grant fire carries the data to make a stub and a weak reference, its only special treatment. With what it replaces in the built tree and the questions left for the spec.
 
 **Principle: a grant is a property of the thing granted, never of its holder (Tess).** A holder may be granted a role and have no way to the thing, or not know of it: nobody can make another track, remember or sync what they granted. A notice of a grant is a notice: it expires, and with it what the holder knew. No list of grants is kept with a holder, and nothing below needs one.
 
@@ -18,11 +18,11 @@
 - **Staying current needs a source of the thing's role entries**: a node reaching none misses its key changes until it does.
 
 ## Against the built tree
-- The spec carries a stub only by rule 2's widening (spec/sync-set.md §2 Stub: a strong to a thing its unit holds sync or above on and does not open); a weak brings in nothing there yet. Built as certificate copies under the unit's sync ID (`Engine::stubs_of`, `sync_certificates`), whole role-class parts: the spec's cut (spec/permissions.md §4 Copies: the `secrets.0` parts holding a box the unit's readers open) is not built (issues/account-evidence-per-unit.md).
+- The spec carries a stub only by rule 2's widening (spec/sync-set.md §2 Stub: a strong to a thing its unit holds sync or above on and does not open); a weak brings in nothing there yet. Built as certificate copies under the unit's sync ID (`Engine::stubs_of`, `sync_certificates`), role-class parts cut as spec/permissions.md §4 Copies says (`Engine::cut_parts`: the holder's `secrets.0` piece and the rest piece, never another holder's).
 - Held for keys (spec/sync-set.md §2) is the stub of a holder on a chain: the same state, entered there only for holders. A held grant fire keeps what it carried while it is held, as a snapshot nothing corrects.
 - The key part under a holder's sync ID (spec/permissions.md §4 Key part) carries an edge piece for every thing the holder holds a role on that a node syncs: rule 2 keeps only those on chains to things the unit carries.
 - Rule 4 is built for strongs in durable aspects the setting governs, fires included (spec/data-model.md §8 Held history, `refs::kept`). Not built: a weak in held history holding its target's stub (no stubs yet; the spec says weaks in history count for nothing), and held bodies of ephemeral aspects (memory bodies, notes/engine-refs.md History holds).
-- An account's inbox is a thing of its own; any other independent thing is its own inbox (spec/sync-inbox.md §1). Rule 5 makes the first the rule for all.
+- A thing's inbox is the thing its card names, else itself where independent (spec/sync-inbox.md §1); an account's is a thing of its own, named by its card. Rule 5 would make a separate inbox the rule for all.
 
 ## For the spec piece
 - An external signal enabled on a dependent thing works as on any, or makes it independent unseen: a difference an API caller can observe is a bug (issues/behaviour-depends-on-own-keys.md). Which of the two: a fire sealed to its independent's key and deposited under its independent's sync ID costs almost nothing; an independent inbox about 15 KB, mostly keys. Nothing is known to need independence; not checked against the code.
