@@ -43,16 +43,23 @@ pub fn cfg(seed: u64, clock: &Arc<ManualClock>) -> osis::internals::Opening {
 
 /// Every commit `from` holds that `to` takes (another account's private commits it cannot use
 /// are refused; one account's own all apply). Of another account, `to`'s account holds `from`'s
-/// account first (a strong from its `holds.0`), so what judges `from`'s writes stays at `to`
-/// (spec/commits.md §5 What a held thing needs) and a grant to it can box it.
+/// account and its profile first (strongs from its `holds.0`, as importing its contact card
+/// would): what judges `from`'s writes stays at `to` (spec/commits.md §5 What a held thing
+/// needs), and the profile's card gives the account's keys and inbox, so a grant to it boxes it
+/// and fires at that inbox.
 pub fn deliver(from: &Osis, to: &Osis) {
-    let account = |d: &Osis| osis_app::store::account(d).unwrap();
+    let account = |d: &Osis| osis_account::Account::of(d).unwrap().unwrap();
     let (root, who) = (account(to), account(from));
     let other = who != root;
-    if other && !to.holds(root, who).unwrap() {
-        let mut w = to.write();
-        w.hold(root, who).unwrap();
-        w.commit().unwrap();
+    if other {
+        let profile = who.profile(from).unwrap().unwrap();
+        for t in [who.thing(), profile] {
+            if !to.holds(root.thing(), t).unwrap() {
+                let mut w = to.write();
+                w.hold(root.thing(), t).unwrap();
+                w.commit().unwrap();
+            }
+        }
     }
     let pks = from.engine(|e| e.commit_ids().iter().filter_map(|id| e.package(id).unwrap()).collect::<Vec<_>>());
     for pk in pks {
