@@ -1,10 +1,7 @@
 # Path form
 > Summary: How a commit states the path each thing it writes is judged along (built; spec/wire.md §4 field 2, spec/crypto.md §5 Path entry): one path in the clear where every thing's own path is read off it and it tells no reader a roster fact it could not read; else the split form, one purge author in the clear and each thing's path sealed under its independent's read roles secret, each entry committing to its key, the key in every encryption of the thing's parts (padded entries). Who reads a path, per consumer; the engine's choice; the clear-form rule and its argument; padding and what stays visible; `act_as` (Open 16); bytes; where a write fails on its paths; what is left; what is decided.
 
-**Principle: a thing's path is header data, readable exactly by the nodes that judge that thing's parts.** A write is never refused or split for its paths (Tess, notes/a1-spec/README.md Open 17): one commit may write things its signer reaches through different holders.
-
-## Ahead of the code
-The spec lets `signer` name a key other than its thing's record's; osis-commit writes a bare tid until accounts are ordinary things (notes/redesign-plan.md, A4). The purge-author index 0 is the thing signed as.
+**Principle: a thing's path is header data, readable exactly by the nodes that judge that thing's parts.** A write is never refused or split for its paths (Tess, notes/a1-spec/README.md Open 17): one commit may write things its signer reaches through different holders. The purge-author index 0 is the thing signed as.
 
 ## Who reads a path
 A thing T's path is read by every node that judges T's parts: T's holders, who hold the read roles secrets of T's independent (spec/crypto.md §3, §4: derived, boxed, or below a floor from history entries). A node holding the header but no secret of T's independent at the entry's epoch and no encryption of T's parts never needs T's path: T's content applies nothing there (spec/commits.md §4 Outside the node closure).

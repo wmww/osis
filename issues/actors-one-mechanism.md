@@ -1,5 +1,5 @@
 # Actors, signing and forks as one mechanism
-> Summary: Tess's direction and answers for accounts as ordinary things (who sees who acted, visible and hidden modes, forks, profiles, identities managed through another) that the design notes (notes/account-membership-design.md, notes/write-path-design.md) do not restate, and what is still open. The build: notes/accounts-switch-brief.md pieces.
+> Summary: Tess's direction and answers for accounts as ordinary things (who sees who acted, visible and hidden modes, forks, profiles, identities managed through another) that the design notes (notes/account-membership-design.md, notes/write-path-design.md) do not restate, and what is still open. The build: notes/accounts-switch-brief.md.
 > Priority: normal
 > Tags: perm, crypto, keys, spec
 
@@ -34,4 +34,4 @@ Not features to build: a check on the design, each an account thing with some ar
 - The nestable hiding rule (Direction): offered generally and paid for where used, or not at all.
 - Which mode is the default, and whether the other is opt-in, a toggle, or unexposed to end users.
 - A thought, not for building (Tess): a writer minting a dependent of a realm is not its admin, so cannot set its admin-only aspects; perhaps creation carries arbitrary data, admin-only included, which only admins change afterwards; likely the answer is per use (a member makes a sub-realm, grants the main realm a role on it, and mints documents with the sub-realm as admin).
-- **The build**: notes/accounts-switch-brief.md (code pieces), notes/redesign-plan.md A5, A6.
+- **The build**: notes/accounts-switch-brief.md (How it is built, Left), notes/public-and-cards-brief.md.

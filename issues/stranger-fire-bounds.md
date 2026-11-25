@@ -3,4 +3,4 @@
 > Priority: normal
 > Tags: engine, sync, security
 
-notes/sync-inbox.md accepts no rate limit; issues/storage-owners.md (Releasing everything) lists inbox fires as bounded by the history setting alone. Stage A5 (notes/redesign-plan.md: externally grantable things and cards) changes what a stranger may fire; take it after.
+notes/sync-inbox.md accepts no rate limit; issues/storage-owners.md (Releasing everything) lists inbox fires as bounded by the history setting alone. What a stranger may fire: cards and external signals on any thing (notes/public-and-cards-brief.md).

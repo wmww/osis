@@ -34,7 +34,7 @@ One root: **a dependent thing has no address of its own.** Its tid says nothing 
 A flat list at the root (every inner unit carries its own list, so the tree can be put together anyway); peers telling the node which units to keep while it counts references (it knows the counts and not the edges, readers the edges and not the counts, so neither can release what a dropped unit referenced, and a cycle never reaches zero); the same per root computed by readers of the root (only they can update it, so a promotion by someone who reads only an inner unit waits for one); handles cut to what the referrer can itself sync (reads roles the unit does not carry, so readers split); handles in the clear or as store operations (Tess: no). Tess's two mitigation ideas (a closure synced as one encrypted bag; a closure of dependents only) are moot: the built model is the first already.
 
 ## What the work found that stands whatever the unit is
-- The cost defects of many sync IDs: issues/many-sync-ids-cost.md (stage S1 of notes/redesign-plan.md).
+- The cost defects of many sync IDs: issues/many-sync-ids-cost.md (notes/redesign-plan.md, S1).
 - Attaching a thing costs in the size of what it is attached to: issues/attach-cost.md.
 - The cost per enclosing unit per commit beyond its entry: issues/enclosing-unit-commit-cost.md.
 - A reference from a thing holding only sync on its target should bring it (Tess): issues/sync-only-reference.md.

@@ -7,4 +7,4 @@
 - **An add at a node**: loads several pages of `secrets.0` (`ingest_secrets_keys`).
 - **Store per member at every node**: a member needs only its record's `created.0` and `keys.0` at a reader, but every node keeps its first commit, its add and its `keys.0` states, and each again as a blob under the sync ID (one commit stored twice: notes/thing-cost.md, Survey).
 
-Fix by recounting at n and 10n members once accounts' counting piece is in (notes/accounts-switch-brief.md, piece 8), then cutting what scales with members and is not needed.
+Fix by recounting at n and 10n members (counting: notes/accounts-switch-brief.md, Left), then cutting what scales with members and is not needed.

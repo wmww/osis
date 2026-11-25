@@ -8,7 +8,7 @@ Everything below is **deprecated**: never build on it, never add a use. Where a 
 ## Still in the repo
 | Term or concept | Where it remains | Why | Removing takes |
 |---|---|---|---|
-| The account machinery: **custody**, account **thing lists** and listings | notes/account-membership-design.md §1 (its audit of the removed system), notes/redesign-plan.md's brief list, notes/time-limits.md's log | history kept on purpose | nothing; its other words are refused (Gone) |
+| The account machinery: **custody**, account **thing lists** and listings | notes/account-membership-design.md §1 (its audit of the removed system), notes/time-limits.md's log | history kept on purpose | nothing; its other words are refused (Gone) |
 | **holder actor** (a thing holding a role on another, as a part keys are boxed to) | spec/crypto.md §4 Holder actors and its citations (commits, permissions, sync-ids, wire), about 20 notes, engine rotation and secrets, keys, the models | the spec's name for the built key mechanism; "actor" is a part in a commit (notes/terms.md) | the accounts work, which redefines actors; then "holder" alone |
 | **signer** for a thing (the thing a commit is signed as) | spec prose and spec/wire.md §4 field 1; code | the header field is named `signer`, naming the thing signed as | the accounts work, then one spec pass: "the thing it is signed as", or the key |
 | Rule words where a role is meant: **edge**, **rights**, **demotion**, **revocation** | spec rule text, engine `Edge`, perm | older words of the rule text | issues/grant-rename-multi-actor.md (edge); the rest where A1 rewrites spec/permissions.md §5 |

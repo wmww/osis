@@ -3,7 +3,7 @@
 > Priority: low
 > Tags: sync, transport, security
 
-Dialing changes with accounts piece 5 (`dial.0` dialing, notes/accounts-switch-brief.md) and A6 (notes/redesign-plan.md); take it after.
+Dialing is by `dial.0` on any thing (notes/accounts-switch-brief.md, What the spec says).
 
 - **An empty `peer://` URL** (a sharer's hint from a node with no relay and no global listener, a node listening on loopback) is dialed every `REDIAL_MS`, failing at once (`unreachable: peer://`), and tried first for a peer known at both. "None means LAN only" (spec/sync-transport.md §3), so with LAN off it names no route: a URL with no route is no dial candidate, or ranks after any URL with one.
 - **Own entry written only at listen**: `Engine::publish_reach` runs after a listen and at `rotate_peer_address`. Where another writer may write the list (an account's `dial.0`, which every node of it writes), a dropped own entry stays dropped until the next listen. Fix: the node follows its own entry (an `Effects` over the lists it keeps an entry in) and writes it back when missing.

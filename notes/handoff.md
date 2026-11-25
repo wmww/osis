@@ -12,7 +12,7 @@
 
 ## The route (Tess)
 Target: osis basically works, the big pieces in place, the architecture sensible and mostly settled; what is left is fixes, tweaks and verification. In order:
-1. **The design changes in flight**: destroying a thing ends access through it, may-grant to the public, grant box records dropped, removal notices sealed to the removed party, steps' needs (their issues).
+1. **The design changes in flight**: destroying a thing ends access through it (issue destroyed-holder-timed-edge), may-grant to the public (issue public-holder-requirements), grant box records dropped, steps' needs.
 2. **The final review and gate** over everything since the sync rewrite (notes/gate.md: a big change on main is gated from a fresh claim with `--base`), fixes on main. It marks the turn from bringing the implementation in line with the design to optimizing it; from then on every job is reviewed and gated.
 3. **Architectural slimming before dogfooding** (notes/priorities.md Slimmer things): it may churn the set of unknown issues, so it goes first. Philosophically sound changes that also work; usually less code.
 4. **A light local dogfood pass** (chat between accounts, pairing, removing a node): testing finds problems; fix each at its level (mistake, architecture, or the model), never a workaround; where building it right is unclear, a design pass or a question for Tess. Many QA passes come later, before release.
@@ -21,7 +21,7 @@ Target: osis basically works, the big pieces in place, the architecture sensible
 Two agents on workflow and cleanup throughout (notes/coordination.md, Job mix).
 
 ## Old words and concepts
-- issues/deprecated-terms.md lists what is still in the repo though deprecated, each with what removing it takes, and what is gone. Most of what remains goes with accounts.
+- issues/deprecated-terms.md lists what is still in the repo though deprecated, each with what removing it takes, and what is gone.
 - An old design the test models still carry, a design step and no clean-up: per-thing leaves of a removal's list (issues/models-read-list-leaves.md).
 - A word met in git history or in a brief that the tree does not use is dead until the tree says otherwise: read notes/terms.md, never build on it.
 
@@ -30,7 +30,8 @@ Two agents on workflow and cleanup throughout (notes/coordination.md, Job mix).
 - **No fix sized by its label.** Three times a class of failing tests labelled with one cause had three or more; one probe line per failing test (what it holds, which fire or box was refused) sizes a job in a session's first minutes. A cause written in a note says whether it was probed or guessed.
 
 ## Waiting on Tess
-Nothing.
+- Whether writes through a destroyed holder stamped after its destruction stay valid (issue destroyed-holder-write-authority, tess-call).
+- The rest of the tess-call issues: notes/priorities.md, Parked on Tess.
 
 ## Parked
 - Old branches on GitHub with nothing to land: `mizzen-a2-switch` (the sync rewrite before its last rebase; main has it) and `windlass-wiring-1` (a debug shadow of a walk since deleted). Delete them when Tess says.
