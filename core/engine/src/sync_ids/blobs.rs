@@ -9,7 +9,7 @@ use osis_base::{BlobId, CommitId, Role, Tid, WallMs};
 use osis_crypto::{CryptoRngCore, Epoch, RoleKey, Secret32, SigningSecret, deposit_key};
 use osis_keys::ActorEpochs;
 use osis_blob::Step;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 /// A held commit as one blob (spec/sync-judgement.md §1): every held part, each sealed to its thing's
@@ -168,11 +168,41 @@ impl std::fmt::Debug for HeadKeys {
     }
 }
 
-/// The held epoch of role key `l`'s role whose key is `pk`, with that key and
-/// whether that secret may be encrypted under (not reading-only, spec/crypto.md §4).
-fn matching(e: &ActorEpochs, l: RoleKey, pk: &osis_crypto::VerifyingKey) -> Option<(Epoch, SigningSecret, bool)> {
-    let (ep, k) = osis_keys::registered_key(e, l, pk)?;
-    Some((ep, k, e.role(l.role()).secret(&ep).is_some()))
+/// The held epoch of role key `l`'s role whose key is `pk` (`keys`: `key_epochs` of `e`), with
+/// that key and whether that secret may be encrypted under (not reading-only, spec/crypto.md §4).
+fn matching(keys: &BTreeMap<[u8; 32], Epoch>, e: &ActorEpochs, l: RoleKey, pk: &osis_crypto::VerifyingKey) -> Option<(Epoch, SigningSecret, bool)> {
+    let ep = *keys.get(&pk.to_bytes())?;
+    let r = e.role(l.role());
+    Some((ep, osis_crypto::role_key(l, r.reading_secret(&ep)?), r.secret(&ep).is_some()))
+}
+
+/// The epoch of each secret of role key `l`'s role held in `e` (reading-only included) by the key
+/// it derives, the newest where two derive one (`osis_keys::registered_key`, found by lookup).
+pub(crate) fn key_epochs(e: &ActorEpochs, l: RoleKey) -> BTreeMap<[u8; 32], Epoch> {
+    let mut out = BTreeMap::new();
+    for (ep, s) in e.role(l.role()).held_newest_first() {
+        out.entry(osis_crypto::role_key(l, s).verifying_key().to_bytes()).or_insert(ep);
+    }
+    out
+}
+
+/// `key_epochs` of a thing's epochs per role key.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct RoleKeyEpochs {
+    sync: BTreeMap<[u8; 32], Epoch>,
+    write: BTreeMap<[u8; 32], Epoch>,
+    delete: BTreeMap<[u8; 32], Epoch>,
+}
+
+impl crate::engine::Core {
+    /// `key_epochs` of `g`'s epochs per role key: a derivation per held secret once per change of
+    /// `g`'s epochs (`memo`), not per head asked of it.
+    pub(crate) fn role_key_epochs(&self, g: &Tid) -> Arc<RoleKeyEpochs> {
+        self.role_key_epochs.get(g, || {
+            let Some(e) = self.epochs(g) else { return Arc::default() };
+            Arc::new(RoleKeyEpochs { sync: key_epochs(&e, RoleKey::Sync), write: key_epochs(&e, RoleKey::Write), delete: key_epochs(&e, RoleKey::Delete) })
+        })
+    }
 }
 
 impl Engine {
@@ -830,7 +860,8 @@ impl Engine {
     fn head_keys_derived(&mut self, g: &Tid, head: &Step) -> Result<HeadKeys> {
         let mut k = HeadKeys::default();
         if let Some(e) = self.epochs(g) {
-            if let Some((ep, s, _)) = matching(&e, RoleKey::Sync, &head.keys.sync) {
+            let keys = self.core.role_key_epochs(g);
+            if let Some((ep, s, _)) = matching(&keys.sync, &e, RoleKey::Sync, &head.keys.sync) {
                 k.sync = Some(s);
                 k.sync_established = self.established(g, &e, Role::Sync, &ep);
                 k.epochs[0] = Some(ep);
@@ -839,7 +870,7 @@ impl Engine {
                 k.write = w;
                 k.epochs[1] = Some(ep);
             }
-            if let Some((ep, s, checked)) = matching(&e, RoleKey::Delete, &head.keys.delete) {
+            if let Some((ep, s, checked)) = matching(&keys.delete, &e, RoleKey::Delete, &head.keys.delete) {
                 if checked && self.established(g, &e, Role::Admin, &ep) {
                     k.delete = Some(s);
                 }
@@ -875,7 +906,7 @@ impl Engine {
     /// stamps under it: stamps and deletes are encrypting under, never from a reading-only
     /// secret, and only in an established epoch.
     fn head_write(&self, g: &Tid, e: &ActorEpochs, head: &Step) -> Option<(Epoch, Option<SigningSecret>)> {
-        let (ep, s, checked) = matching(e, RoleKey::Write, &head.keys.write)?;
+        let (ep, s, checked) = matching(&self.core.role_key_epochs(g).write, e, RoleKey::Write, &head.keys.write)?;
         Some((ep, (checked && self.established(g, e, Role::Write, &ep)).then_some(s)))
     }
 
@@ -955,9 +986,9 @@ mod tests {
         a.write.set_reading_secret(e, s.clone(), osis_keys::Unchecked { author: Tid::from_bytes([1; 15]), commit: CommitId([1; 32]) });
         a.write.set_established(e, osis_keys::Provenance::Rotated);
         let pk = osis_crypto::role_key(RoleKey::Write, &s).verifying_key();
-        let (ep, got, checked) = matching(&a, RoleKey::Write, &pk).unwrap();
+        let (ep, got, checked) = matching(&key_epochs(&a, RoleKey::Write), &a, RoleKey::Write, &pk).unwrap();
         assert_eq!((ep, got.verifying_key(), checked), (e, pk, false));
         a.write.set_secret(e, s.clone());
-        assert!(matching(&a, RoleKey::Write, &pk).unwrap().2);
+        assert!(matching(&key_epochs(&a, RoleKey::Write), &a, RoleKey::Write, &pk).unwrap().2);
     }
 }

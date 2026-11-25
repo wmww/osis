@@ -255,12 +255,8 @@ fn borne(steps: &ct::SyncIds) -> BTreeSet<[u8; 32]> {
     let mut out = BTreeSet::new();
     for (id, e) in steps {
         let Ok(st) = osis_blob::sync_steps(e) else { continue };
-        let plain: BTreeMap<osis_blob::StepId, osis_blob::Step> = st.iter().map(|(k, (s, _))| (*k, s.clone())).collect();
-        for (k, (s, _)) in &st {
-            if osis_blob::path_to(&plain, k).is_ok_and(|p| p.first().is_some_and(|g| g.sync_id == *id)) {
-                out.insert(s.keys.sync.to_bytes());
-            }
-        }
+        let depth = crate::sync_ids::actors::verified_depths(&st);
+        out.extend(st.iter().filter(|(k, (s, _))| s.sync_id == *id && depth.contains_key(k)).map(|(_, (s, _))| s.keys.sync.to_bytes()));
     }
     out
 }
@@ -282,14 +278,10 @@ fn head_keys(steps: &ct::SyncIds, recorded: Option<&crate::sync_ids::steps::Reco
         }
         let Ok(mut st) = osis_blob::sync_steps(e) else { continue };
         st.retain(|_, (s, _)| s.sync_id == *id);
-        let Some(h) = crate::sync_ids::actors::head_of(&st) else { continue };
-        let plain: BTreeMap<osis_blob::StepId, osis_blob::Step> = st.iter().map(|(k, (s, _))| (*k, s.clone())).collect();
-        let Ok(path) = osis_blob::path_to(&plain, &h) else { continue };
-        if path.first().is_none_or(|g| g.sync_id != *id) {
-            continue;
-        }
+        // every step kept is of `id`: a verified path's genesis is too (`Step::verify_child`)
+        let Some((h, depth)) = crate::sync_ids::actors::head_at(&st) else { continue };
         let Some((s, _)) = st.get(&h) else { continue };
-        let at = (u32::try_from(path.len().saturating_sub(1)).unwrap_or(u32::MAX), Reverse(h), s.keys.sync.to_bytes());
+        let at = (u32::try_from(depth).unwrap_or(u32::MAX), Reverse(h), s.keys.sync.to_bytes());
         let b = best.entry(*id).or_insert(at);
         if (at.0, at.1) > (b.0, b.1) {
             *b = at;
@@ -303,8 +295,8 @@ fn verified(steps: &ct::SyncIds) -> BTreeSet<[u8; 32]> {
     let mut out = BTreeSet::new();
     for (id, e) in steps {
         let Ok(st) = osis_blob::sync_steps(e) else { continue };
-        let plain: BTreeMap<osis_blob::StepId, osis_blob::Step> = st.iter().map(|(k, (s, _))| (*k, s.clone())).collect();
-        out.extend(st.keys().filter(|k| osis_blob::path_to(&plain, k).is_ok_and(|p| p.first().is_some_and(|g| g.sync_id == *id))).map(|k| k.0));
+        let depth = crate::sync_ids::actors::verified_depths(&st);
+        out.extend(st.iter().filter(|(k, (s, _))| s.sync_id == *id && depth.contains_key(k)).map(|(k, _)| k.0));
     }
     out
 }

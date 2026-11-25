@@ -27,14 +27,16 @@ use std::sync::Arc;
 /// secrets, which no step bears) the entries are hints (`OwnedSyncId::hint`).
 pub(crate) fn owns(held: &BTreeSet<[u8; 32]>, id: &SyncId, steps: &BTreeMap<StepId, (Step, Option<ClaimSet>)>) -> bool {
     // the genesis first (every holder holds the older secrets, so usually it bears one): one
-    // step verified, not a path per bearing step
-    let mut bearing: Vec<(bool, &StepId)> = steps.iter().filter(|(_, (s, _))| held.contains(&s.keys.sync.to_bytes())).map(|(k, (s, _))| (s.prev.is_some(), k)).collect();
-    if bearing.is_empty() {
+    // step verified; else the tree verified once (`verified_depths`), not a path per bearing step
+    let (genesis, deeper): (Vec<(&StepId, &Step)>, Vec<_>) = steps.iter().map(|(k, (s, _))| (k, s)).filter(|(_, s)| held.contains(&s.keys.sync.to_bytes())).partition(|(_, s)| s.prev.is_none());
+    if genesis.iter().any(|(k, s)| s.id() == **k && s.sync_id == *id && s.verify_genesis().is_ok()) {
+        return true;
+    }
+    if deeper.is_empty() {
         return false;
     }
-    bearing.sort();
-    let plain: BTreeMap<StepId, Step> = steps.iter().map(|(k, (s, _))| (*k, s.clone())).collect();
-    bearing.into_iter().any(|(_, k)| osis_blob::path_to(&plain, k).is_ok_and(|p| p.first().is_some_and(|g| g.sync_id == *id)))
+    let depth = verified_depths(steps);
+    deeper.iter().any(|(k, s)| s.sync_id == *id && depth.contains_key(k))
 }
 
 /// The recorded path of a sync ID from its steps (spec/sync-ids.md §5 Path): genesis to head, the
@@ -56,15 +58,20 @@ pub(crate) fn recorded_path(steps: &BTreeMap<StepId, (Step, Option<ClaimSet>)>) 
 /// stepping at once) by lowest step ID. The spec names no order for a forked tree: this is its
 /// simplest reading.
 pub(crate) fn head_of(steps: &BTreeMap<StepId, (Step, Option<ClaimSet>)>) -> Option<StepId> {
+    head_at(steps).map(|(k, _)| k)
+}
+
+/// `head_of` with its depth (its path's steps after the genesis).
+pub(crate) fn head_at(steps: &BTreeMap<StepId, (Step, Option<ClaimSet>)>) -> Option<(StepId, usize)> {
     let parents: BTreeSet<StepId> = steps.values().filter_map(|(s, _)| s.prev).collect();
     let depth = verified_depths(steps);
-    steps.keys().filter(|k| !parents.contains(k)).filter_map(|k| Some((*depth.get(k)?, *k))).min_by_key(|(n, k)| (std::cmp::Reverse(*n), *k)).map(|(_, k)| k)
+    steps.keys().filter(|k| !parents.contains(k)).filter_map(|k| Some((*k, *depth.get(k)?))).min_by_key(|(k, n)| (std::cmp::Reverse(*n), *k))
 }
 
 /// The depth of each step whose path from its genesis step verifies (`osis_blob::verify_path`:
 /// each step under its own ID, the genesis by its own delete key, each child by its parent's),
 /// each signature checked once, from the genesis steps down.
-fn verified_depths(steps: &BTreeMap<StepId, (Step, Option<ClaimSet>)>) -> BTreeMap<StepId, usize> {
+pub(crate) fn verified_depths(steps: &BTreeMap<StepId, (Step, Option<ClaimSet>)>) -> BTreeMap<StepId, usize> {
     let mut children: BTreeMap<StepId, Vec<StepId>> = BTreeMap::new();
     let mut todo: Vec<(StepId, usize)> = Vec::new();
     for (id, (s, _)) in steps {
@@ -247,15 +254,15 @@ impl Engine {
 
     /// The sync IDs `g` owns as its `sync.0` records them (`owns`), each with its recorded path;
     /// hints while this node holds no sync secret of `g`'s own (`held_sync_ids`). Decoded once
-    /// per write of the `sync.0` (`Core::sync_ids`), a destroyed thing's too. A `sync.0` the store
-    /// refuses to read is the error, read again at the next ask.
+    /// per write of the `sync.0` or of what its copies carry (`Core::sync_ids`), a destroyed
+    /// thing's too. A `sync.0` the store refuses to read is the error, read again at the next ask.
     pub(crate) fn owned_sync_ids(&mut self, g: &Tid) -> Result<Arc<Vec<OwnedSyncId>>> {
-        // none of `g`'s admins' word held (spec/sync-ids.md §2: a sync holder learns none): the
-        // steps its sync copies carry alone (`Core::copies_speak`)
-        if self.core.copies_speak(g) {
-            return Ok(Arc::new(held_sync_ids(&self.core, g, &self.core.unread(g).steps)));
-        }
         Memo::get_in(self, |e| &e.core.sync_ids, g, |e| {
+            // none of `g`'s admins' word held (spec/sync-ids.md §2: a sync holder learns none):
+            // the steps its sync copies carry alone (`Core::copies_speak`)
+            if e.core.copies_speak(g) {
+                return Ok(Arc::new(held_sync_ids(&e.core, g, &e.core.unread(g).steps)));
+            }
             use osis_schema::RawKey;
             // a destroyed thing's too: its `sync.0` stays (`retention::destroy`), read past `exists`
             let ak = crate::flows::ak(ct::SYNC.ak())?;

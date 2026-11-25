@@ -1034,6 +1034,8 @@ pub struct Core {
     pub(crate) epochs_of: memo::Memo<Tid, Option<Arc<osis_keys::ActorEpochs>>>,
     /// `Core::held_sync_keys` per thing (`memo`).
     pub(crate) held_sync_keys: memo::Memo<Tid, Arc<BTreeSet<[u8; 32]>>>,
+    /// `Core::role_key_epochs` per thing (`memo`).
+    pub(crate) role_key_epochs: memo::Memo<Tid, Arc<crate::sync_ids::RoleKeyEpochs>>,
     /// `Core::own_epochs` per thing (`memo`).
     pub(crate) own_epochs_of: memo::Memo<Tid, Option<Arc<osis_keys::ActorEpochs>>>,
     pub(crate) unread_of: memo::Memo<Tid, Arc<crate::sync_ids::unread::Unread>>,
@@ -1913,6 +1915,7 @@ impl Core {
             // rollback restores move
             epochs_of: _,
             held_sync_keys: _,
+            role_key_epochs: _,
             own_epochs_of: _,
             unread_of: _,
             listed_keys: _,
@@ -2281,6 +2284,7 @@ impl Core {
             followed_links: Default::default(),
             epochs_of: memo::Memo::new("epochs"),
             held_sync_keys: memo::Memo::new("held sync keys"),
+            role_key_epochs: memo::Memo::new("role key epochs"),
             own_epochs_of: memo::Memo::new("own epochs"),
             unread_of: memo::Memo::new("unread"),
             listed_keys: memo::Memo::new("listed keys"),
