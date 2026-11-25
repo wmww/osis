@@ -307,8 +307,17 @@ pub(crate) fn step_due(tx: &mut Tx<'_>, g: &Tid, l: &SyncId, fresh: bool) -> Res
     let read_moved = read_key_in_force(tx, g)?.is_none() && vouched(&epochs, keyset.as_ref()).is_some();
     // the public reads `g` and the head does not list it: a stranger holding a public link opens
     // the sync ID only by the public entry (spec/permissions.md §3), so a step is due. Its
-    // removal or lowering rotates read, which makes one due anyway.
-    let unlisted = claims.is_some_and(|c| !c.lists_public(l)) && tx.core.roster_of(g).get(&Tid::PUBLIC).is_some_and(|e| e.role >= Role::Read);
+    // removal or lowering rotates read, which makes one due anyway. Due only where a step lists
+    // it, as a reader of the newest read epoch (`readers`): the public left out of that epoch
+    // (spec/permissions.md §3 Left out) is listed once re-sealed, and a step before then, listing
+    // it no more than the head does, would be due again at once, a step per settle round.
+    let unlisted = claims.is_some_and(|c| !c.lists_public(l)) && tx.core.roster_of(g).get(&Tid::PUBLIC).is_some_and(|e| e.role >= Role::Read) && {
+        let read = epochs.role(Role::Read).newest();
+        match read {
+            Some(re) => readers(tx, g, &re)?.iter().any(|r| matches!(r, ReaderKey::Public)),
+            None => false,
+        }
+    };
     let read_moved = read_moved || unlisted;
     let Some(head_admin) = due_at(&epochs, &head, &deposit, read_moved, fresh) else { return Ok(None) };
     // a deposit-only step waits for a newer seed held but not applied (spec/permissions.md §3):

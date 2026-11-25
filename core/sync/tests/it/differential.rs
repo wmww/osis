@@ -280,3 +280,16 @@ fn a_taken_deposit_whose_commit_goes_is_not_taken_again_spec_sync_inbox_3() {
     let script = [Step::New(1), Step::Cut(0, 1), Step::Unpair(0, 2), Step::Give(1, 0, Holder::Node(0), Gives::Syncs), Step::Revoke(1, 0, Holder::Node(0)), Step::Run];
     holds_on(0, 2, 3, &script, String::new(), false);
 }
+
+// spec/permissions.md §3 (a step is due for the public where a step lists it; Left out): node 1
+// grants thing 1 read on its thing 0 while node 0, the admin of thing 1, makes thing 1 public;
+// node 1, a writer of thing 1, rotates its read keys for the grant before seeing the public's,
+// so the public is left out of thing 1's newest read epoch. Every node settles (failed: thing 1's
+// admin issued a step per settle round, due for the public that no step could list before its
+// re-seal, past the settle loop's bound).
+#[test]
+fn a_public_left_out_of_a_rotation_is_listed_once_re_sealed_spec_permissions_3() {
+    use crate::harness::history::{Gives, Holder};
+    let script = [Step::New(1), Step::New(0), Step::Give(0, 1, Holder::Node(1), Gives::Writes), Step::Strong(1, None, 1), Step::Run, Step::Give(1, 0, Holder::Thing(1), Gives::Reads), Step::Give(0, 1, Holder::Public, Gives::Reads)];
+    holds_on(0, 2, 3, &script, String::new(), false);
+}
