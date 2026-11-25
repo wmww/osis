@@ -305,7 +305,7 @@ fn kept_after_miskeyed(k: u64) -> usize {
     kept(&mut lp.peers[0].engine) - before
 }
 
-// spec/commits.md §4 (Unjudgeable, Pending storage), spec/crypto.md §7 (Checked keys): a commit
+// spec/commits.md §4 (Unjudgeable; Pending storage), spec/crypto.md §7 (Checked keys): a commit
 // whose every part lists a key no held step places pends, kept only while an entry carries it
 // (so within the bounds on unvouched input), never held as a body: a reader pushing n or 10n
 // such writes leaves nothing once their entries go.
