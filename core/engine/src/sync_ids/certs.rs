@@ -231,8 +231,10 @@ impl Engine {
             Some(x) => self.key_part_on(h, x).into_iter().map(|c| (c, *x)).collect(),
             None => self.key_part(h),
         };
+        // judged once per thing: it walks the thing's edge commits
+        let mut alone: BTreeMap<Tid, bool> = BTreeMap::new();
         for (c, x) in part {
-            if sync_alone || self.core.sync_alone_on(h, &x) {
+            if sync_alone || *alone.entry(x).or_insert_with(|| self.core.sync_alone_on(h, &x)) {
                 out.sync_copies.insert((c, x, *h));
             } else {
                 self.add_cut(&c, &x, Cut::EdgePiece(*h), out);

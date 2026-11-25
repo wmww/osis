@@ -340,24 +340,33 @@ fn join_steps(a: &mut ct::SyncIds, b: &ct::SyncIds) {
 }
 
 impl Core {
-    /// Whether `h`'s edge pieces on `x` go as sync copies (spec/permissions.md §4 Key part): no
-    /// held edge write on `x` gives `h` read or above (its own self-writes aside) and `h` is not
-    /// `x`'s mint admin, whatever their validity: the evidence's read edges
-    /// (`evidence::Write::gives_read`), so Role changes travel carries a write on the edge
-    /// exactly where this is false. A holder that read `x` keeps certificate copies after a
-    /// lowering or removal: its readers hold `x`'s record and judge its role commits.
+    /// Whether `h`'s edge pieces on `x` go as sync copies (spec/permissions.md §4 Key part): a
+    /// held edge write on `x` gives `h` a role, none gives it read or above (its own self-writes
+    /// aside) and `h` is not `x`'s mint admin, whatever their validity: no edge of the evidence's
+    /// read graph (`evidence::Write::gives_read`), so Role changes travel carries no write of it.
+    /// A holder that read `x` keeps certificate copies after a lowering or removal: its readers
+    /// hold `x`'s record and judge its role commits. A holder no held write gives a role (a
+    /// removal by a node that never held its grant) goes as a reader does: its fire is the one
+    /// way a removed reader hears of it from a blind remover.
     /// Invariant (security; spec/sync-ids.md §2 What a sync holder learns): every path a commit
-    /// of `x` naming `h` takes to `h`'s readers (key part, sealed copy, fire, offer, travel) reads
-    /// this one predicate, so none carries a header where another carries a sync copy.
+    /// of `x` naming `h` takes to `h`'s readers (key part, sealed copy, fire, offer) reads this
+    /// one predicate, so none carries a header where another carries a sync copy.
     pub(crate) fn sync_alone_on(&self, h: &Tid, x: &Tid) -> bool {
         let hd = osis_base::Holder::Thing(*h);
         if self.ix.held.created(x).is_some_and(|r| r.holder() == hd) {
             return false;
         }
-        !self.ix.held.edge_commits(x).iter().any(|rc| {
+        let mut role = false;
+        for rc in self.ix.held.edge_commits(x).iter() {
             let leave = osis_base::Holder::Thing(*rc.path_to(x).last().unwrap_or(&rc.signer));
-            rc.ops.iter().any(|o| o.target == *x && o.holder == hd && hd != leave && o.edge.is_some_and(|e| e.role >= Role::Read))
-        })
+            for e in rc.ops.iter().filter(|o| o.target == *x && o.holder == hd).filter_map(|o| o.edge) {
+                if e.role >= Role::Read && hd != leave {
+                    return false;
+                }
+                role = true;
+            }
+        }
+        role
     }
 
     /// Whether `u` holds sync on `y` as the sync copies of `y` counting here tell (no grant of

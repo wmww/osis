@@ -36,7 +36,7 @@ pub(crate) fn deliver_copy(tx: &mut Tx<'_>, holder: Tid, c: CommitId, target: Ti
     // that read the target goes as one (`sync_alone_on`): it loses read by the edge write alone
     // (spec/permissions.md §3 Lost access)
     if tx.core.sync_alone_on(&holder, &target) {
-        if tx.core.roster_of(&target).get(&holder).is_some() {
+        if tx.core.roster_of(&target).contains_key(&holder) {
             deliver_with_steps(tx, holder, c, target)?;
         }
         return Ok(());
@@ -64,7 +64,7 @@ fn deliver_with_steps(tx: &mut Tx<'_>, holder: Tid, c: CommitId, target: Tid) ->
 /// no more (`Unread::holders`). A later step goes to it no more.
 pub(crate) fn deliver_step(tx: &mut Tx<'_>, target: Tid, c: CommitId, parent: osis_base::Ts) -> Result<()> {
     let roster = tx.core.roster_of(&target);
-    let removed: BTreeSet<Tid> = tx.core.ix.held.holders_of(&target).copied().filter(|h| roster.get(h).is_none() && tx.core.sync_alone_on(h, &target)).collect();
+    let removed: BTreeSet<Tid> = tx.core.ix.held.holders_of(&target).copied().filter(|h| !roster.contains_key(h) && tx.core.sync_alone_on(h, &target)).collect();
     if removed.is_empty() {
         return Ok(());
     }
