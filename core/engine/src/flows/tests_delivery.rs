@@ -576,7 +576,7 @@ fn certifies_on(lp: &mut LocalPeer, i: usize, g: &Tid, x: &Tid, h: &Tid) -> bool
 
 // spec/sync-ids.md §2 (What a sync holder learns: no header, signer or path, its removal
 // included), spec/sync-judgement.md §6 (Stops: a step past its keys is its removal),
-// spec/permissions.md §4 (Key part, Role changes travel, Delivering an edge piece): T holds sync
+// spec/permissions.md §4 (Key part; Role changes travel; Delivering an edge piece): T holds sync
 // alone on G; peer 0 (G's admin, may not write T) and peer 1 read T. Peer 0 removes T from G: no
 // `grant@~0` fire is owed, and neither T's sync ID nor peer 1's node's (whose keys open T: Role
 // changes travel) carries a certificate copy of a commit naming T on G, before or after. The step peer 0 issues next, past T's keys, goes to T
