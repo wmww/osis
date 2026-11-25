@@ -150,8 +150,8 @@ fn a_forged_offer_gives_no_role_spec_sync_inbox_5() {
     assert_ne!(lp.peers[1].engine.core.role_now(&t, &g), Some(Role::Admin), "T is no admin of G");
 }
 
-// spec/sync-inbox.md §2 (Sealed copy: taken as a sealed fire's commit is), spec/permissions.md §2
-// (a role is by the target's grants): a sealed copy is bytes anyone who once read T may send
+// spec/sync-inbox.md §2 (Sealed copy: taken as a sealed fire's commit is), spec/permissions.md §2:
+// a role is by the target's grants. A sealed copy is bytes anyone who once read T may send
 // again, sealed to a keyset of T it held. After G removes T, an old rotation's copy (the very
 // blob, kept) is offered to peer 2 again: it is the old commit it was, held already, and changes
 // nothing: T holds no role on G, and G's sync epochs at peer 2 stay as they were. Fails if a
@@ -174,7 +174,7 @@ fn a_replayed_rotation_copy_gives_back_nothing_spec_sync_inbox_2() {
     assert_eq!(sync_current(&lp, 2, &g), epochs, "G's sync epochs at peer 2 unchanged");
 }
 
-// spec/sync-inbox.md §2 (Sealed copy: never promoted; H's writers log what it carries in H's key
+// spec/sync-inbox.md §2 (Sealed copy: never promoted, H's writers log what it carries in H's key
 // part as their own certificate copies), spec/permissions.md §4 (Key part: each commit boxing H
 // in a thing's `secrets.0`): peer 2, T's writer, takes the rotation's sealed copy; the rotation
 // is then in T's key part at peer 2, which it logs under T's sync ID by the rule for any piece
