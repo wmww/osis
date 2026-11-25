@@ -162,18 +162,32 @@ fn public_epochs_explore() {
 }
 
 // Who hears the public's grant changes (held_model::closure::public_epochs, Heard; spec/sync-opens.md
-// §4, §6; spec/sync-set.md §5). P reads X by the public alone, offline while the public is removed:
-// a reader still showing the public entry of a recorded step (lapsed) opens X toward it ended at
-// once, served up to the removal, so P holds it and releases X. Control (`lapsed` off): shown only while
-// its newest step lists it, nothing opens toward P and it keeps reading X for good.
+// §4, §6; spec/sync-set.md §5). P reads X by the public alone, offline while the public is removed
+// (and, second, across a rotation boxing the public before it): a reader showing its superseded
+// read secrets (lapsed) opens X toward it ended at once, served up to each epoch's supersession,
+// so P walks to the removal within one sync and releases X. Control (`lapsed` off): nothing opens
+// toward P and it keeps reading X for good.
 #[test]
 fn a_reader_by_the_public_offline_at_its_removal_hears_it() {
     use held_model::closure::public_epochs::{Ev, Heard, Step, World};
+    for h in [[Step::X(Ev::Grant), Step::SyncP, Step::X(Ev::Remove), Step::X(Ev::Rot)], [Step::X(Ev::Grant), Step::SyncP, Step::X(Ev::Rot), Step::X(Ev::Remove)]] {
+        assert_eq!(World::heard(&h, Heard::SPEC), Default::default(), "{h:?}");
+        assert!(World::heard(&h, Heard { lapsed: false, ..Heard::SPEC }).agree, "newest only: P never hears");
+    }
+    // served whole on the lapsed secret, P gets the rotation written past the removal
     let h = [Step::X(Ev::Grant), Step::SyncP, Step::X(Ev::Remove), Step::X(Ev::Rot)];
-    assert_eq!(World::heard(&h, Heard::SPEC), Default::default());
-    assert!(World::heard(&h, Heard { lapsed: false, ..Heard::SPEC }).agree, "newest only: P never hears");
-    // served whole on the lapsed entry, P gets the rotation written past the removal
     assert!(World::heard(&h, Heard { ended: false, ..Heard::SPEC }).sealed, "whole: served past the removal");
+}
+
+// P first syncs after the public's removal (a public link found later): it holds no epoch of X,
+// hits no lapsed read secret and is served nothing. Control (`secret` off: the lapsed credential is
+// the public entry, which any party hits): P is served X up to the removal.
+#[test]
+fn a_stranger_after_the_public_removal_is_served_nothing() {
+    use held_model::closure::public_epochs::{Ev, Heard, Step, World};
+    let h = [Step::X(Ev::Grant), Step::X(Ev::Rot), Step::X(Ev::Remove), Step::SyncP];
+    assert_eq!(World::heard(&h, Heard::SPEC), Default::default());
+    assert!(World::heard(&h, Heard { secret: false, ..Heard::SPEC }).stranger, "public entry: served the stranger");
 }
 
 // P offline across a rotation while the public still reads X: it tests the public entry while it
@@ -207,21 +221,24 @@ fn heard_explore() {
         ("spec", Heard::SPEC),
         ("newest", Heard { lapsed: false, ..Heard::SPEC }),
         ("whole", Heard { ended: false, ..Heard::SPEC }),
+        ("public entry", Heard { secret: false, ..Heard::SPEC }),
         ("redeem only", Heard { tests: false, ..Heard::SPEC }),
         ("store blind", Heard { store: false, ..Heard::SPEC }),
     ];
-    let mut found = [(0usize, 0usize, 0usize); 5];
+    let mut found = [(0usize, 0usize, 0usize, 0usize); 6];
     for h in histories(6) {
         for (i, &(_, rule)) in rules.iter().enumerate() {
             let b = World::heard(&h, rule);
             found[i].0 += b.agree as usize;
             found[i].1 += b.reads as usize;
             found[i].2 += b.sealed as usize;
+            found[i].3 += b.stranger as usize;
         }
     }
-    assert_eq!(found[0], (0, 0, 0), "spec");
+    assert_eq!(found[0], (0, 0, 0, 0), "spec");
     assert!(found[1].0 > 0, "newest: agree");
     assert!(found[2].2 > 0, "whole: sealed");
-    assert!(found[3].1 > 0, "redeem only: reads");
-    assert!(found[4].0 > 0, "store blind: agree");
+    assert!(found[3].3 > 0, "public entry: stranger");
+    assert!(found[4].1 > 0, "redeem only: reads");
+    assert!(found[5].0 > 0, "store blind: agree");
 }

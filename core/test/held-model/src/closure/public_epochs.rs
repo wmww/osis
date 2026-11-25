@@ -187,12 +187,15 @@ pub fn all(n: usize) -> Vec<World> {
 /// The open rule under test. `Rule::SPEC` is the spec; each control drops or widens one clause.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Heard {
-    /// A reader shows S's public entry while a recorded step lists it, not only its newest: a Hit
-    /// on it past the newest step listing it opens a member ended at once (off: only while its
-    /// newest step lists it, a control).
+    /// Once the public's removal is held, a reader shows a lapsed credential, a Hit on which
+    /// opens a member ended at once (off: nothing past the newest step listing the public entry,
+    /// a control).
     pub lapsed: bool,
-    /// A member opened on a lapsed public entry is ended at once, served up to the rotation
-    /// superseding the newest listing step's epoch (off: served whole, a control).
+    /// The lapsed credential is a superseded read secret, which only a party holding that epoch
+    /// hits, served up to the rotation superseding it (off: the public entry, which any party
+    /// hits, served up to the removal: a control).
+    pub secret: bool,
+    /// A lapsed open is ended at once (off: served whole, a control).
     pub ended: bool,
     /// A node reading X by the public tests the public entry while it holds the public's grant,
     /// not only while it redeems (off: a control).
@@ -203,7 +206,7 @@ pub struct Heard {
 }
 
 impl Heard {
-    pub const SPEC: Heard = Heard { lapsed: true, ended: true, tests: true, store: true };
+    pub const SPEC: Heard = Heard { lapsed: true, secret: true, ended: true, tests: true, store: true };
 }
 
 /// One step of a history: an event on X, or a sync of one party with R.
@@ -227,12 +230,14 @@ pub struct Party {
 /// Whether some property broke: `agree` (a party still holding X counts it public exactly when it
 /// is, after a final sync), `reads` (where public, it holds X's current epoch then), `sealed` (no
 /// commit written past the public's removal, while it does not read X, is served to a party that
-/// holds no role).
+/// holds no role), `stranger` (a party holding no epoch of X is served nothing once the public is
+/// removed: it never read X).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Broke {
     pub agree: bool,
     pub reads: bool,
     pub sealed: bool,
+    pub stranger: bool,
 }
 
 impl World {
@@ -262,19 +267,48 @@ impl World {
         (public, held)
     }
 
-    /// R opens S toward a party testing the public entry after `k` events: `Some(full)` where it
-    /// shows it (full: its newest step lists it), the commits it serves.
+    /// R opens S toward a party testing the public entry after `k` events: where its newest step
+    /// lists it, or (control `secret` off) a lapsed public entry, the commits it serves.
     fn public_open(&self, rule: Heard, k: usize) -> Option<BTreeSet<usize>> {
         let listing = (0..=k).rev().find(|&j| self.step(j).0)?;
-        if listing != k && !rule.lapsed {
+        if listing == k {
+            return Some((0..k).collect());
+        }
+        if !rule.lapsed || rule.secret {
             return None;
         }
-        if listing == k || !rule.ended {
+        if !rule.ended {
             return Some((0..k).collect());
         }
         // ended at once: up to the rotation superseding the listing step's epoch (the removal)
         let until = (listing..k).find(|&i| self.evs[i] == Ev::Remove).unwrap_or(k - 1);
         Some((0..=until).collect())
+    }
+
+    /// R's lapsed read secrets after `k` events, the public removed: each superseded epoch P
+    /// holds opens a member served up to the rotation superseding it (whole, `ended` off); P,
+    /// learning the next epoch there, hits again within the sync. The commits served.
+    fn lapsed_opens(&self, rule: Heard, p: &Party, k: usize) -> BTreeSet<usize> {
+        let mut out = BTreeSet::new();
+        let ever = self.evs[..k].contains(&Ev::Grant);
+        if !rule.lapsed || !rule.secret || !ever || self.step(k).0 {
+            return out;
+        }
+        let (commits, epoch) = (self.commits(k), self.step(k).1);
+        let mut q = p.clone();
+        while let (_, Some(h)) = self.view(&q, k) {
+            if h >= epoch {
+                break;
+            }
+            let until = if rule.ended { commits.iter().find(|c| c.epoch > h).map_or(k - 1, |c| c.i) } else { k - 1 };
+            let before = q.served.len();
+            q.served.extend(0..=until);
+            out.extend(0..=until);
+            if q.served.len() == before {
+                break;
+            }
+        }
+        out
     }
 
     fn sync_p(&self, rule: Heard, p: &mut Party, k: usize, broke: &mut Broke) {
@@ -284,7 +318,7 @@ impl World {
         let (counts, held) = self.view(p, k);
         let (listed, epoch) = self.step(k);
         let tests_public = !p.entered || (rule.tests && counts);
-        let mut served = BTreeSet::new();
+        let mut served = self.lapsed_opens(rule, p, k);
         if let Some(s) = self.public_open(rule, k).filter(|_| tests_public) {
             served.extend(s);
             if listed {
@@ -298,6 +332,7 @@ impl World {
         if !listed {
             let last_remove = (0..k).rev().find(|&i| self.evs[i] == Ev::Remove);
             broke.sealed |= served.iter().any(|&i| last_remove.is_some_and(|r| i > r));
+            broke.stranger |= last_remove.is_some() && held.is_none() && !served.is_empty();
         }
         p.served.extend(served);
         let (counts, _) = self.view(p, k);

@@ -41,9 +41,13 @@ pub struct Creds {
     /// Hit on its step and a departed reader's on the epoch it holds, opening S ended
     /// (spec/sync-opens.md §4 Admissible, §6).
     pub walk: Vec<Shown>,
-    /// At a reader, S's public entry while the public is named on S's thing and reads it no
-    /// more: shown to every peer, an open by it ended at once, served up to the public's removal
-    /// (spec/sync-opens.md §4 Admissible, §6).
+    /// At a reader, while the public is named on S's thing and reads it no more, its read
+    /// secrets at superseded epochs: shown to every peer, an open by one ended at once, served up
+    /// to that epoch's supersession (spec/sync-opens.md §4 Admissible, §6).
+    /// Invariant (security): only secrets, never a public value (the public entry): a party that
+    /// never held the epoch's secret (one that read S while the public did, or a former reader)
+    /// hits none, so learns nothing of who holds S and is served nothing once the public is
+    /// removed.
     pub lapsed: Vec<Shown>,
 }
 
@@ -226,13 +230,13 @@ fn node_creds(cx: &mut Cx, unread: &Unread, s: &SyncId) -> Option<Arc<Creds>> {
             for k in &rc.acting {
                 c.tests.push((Tested::Static { key: k.clone(), step: None }, None));
             }
-            // S's public entry: shown where the public reads S's thing, lapsed where its removal
-            // is held; tested where it reads it or this node redeems a public link to it
-            // (spec/sync-opens.md §4)
+            // S's public entry: shown where the public reads S's thing, tested where this node
+            // redeems a public link to it; once the public's removal is held, the superseded read
+            // secrets lapsed instead (spec/sync-opens.md §4)
             if rc.shows_public {
                 c.shows.push((Shown::Public(osis_crypto::public_entry(s)), None));
             } else if rc.lapsed_public {
-                c.lapsed.push(Shown::Public(osis_crypto::public_entry(s)));
+                c.lapsed = rc.old_read_secrets.iter().map(|(e, k)| Shown::Read(*e, *k.expose())).collect();
             }
             if rc.tests_public {
                 c.tests.push((Tested::Public, None));
@@ -293,24 +297,18 @@ pub fn walk_tests(rc: &ReadCredentials, path: &Path, claim: &mut dyn FnMut(&Step
 }
 
 /// An ended member's `until` (spec/sync-opens.md §6): kept unread, the position of S's head
-/// event; read and opened by a read secret, the highest position at which an entry in S of a
-/// rotation superseding its epoch was first logged; else (or none such) the log's end. A
-/// credential with no epoch here (a sync key, claim, proof, static entry or deposit key at a
+/// event; read and opened by a read secret (a lapsed one too), the highest position at which an
+/// entry in S of a rotation superseding its epoch was first logged; by the public entry, of a
+/// commit of the public's edge on S's thing (the public's read since removed: judged at the
+/// removal's arrival, before it is logged here, so the log's end would leave it out); else (or
+/// none such) the log's end. A credential with no epoch here (a sync key, claim, proof, static entry or deposit key at a
 /// reader) ends at the log's end.
 pub(crate) fn member_until(cx: &mut Cx, s: &SyncId, by: &Credential) -> crate::types::Result<Position> {
     let end = cx.store.log_bounds()?.0;
     match (cx.store.synced(s), by) {
         (Some((_, Holding::Unread)), _) => Ok(cx.store.head_at(s)?.unwrap_or(end)),
-        // the public entry: up to the public's edge on S's thing, its removal last
-        (Some((_, Holding::Read | Holding::Keys)), Credential::Public) => {
-            let mut at = None;
-            for c in cx.engine.public_edge(s)? {
-                for b in cx.engine.commit_blobs(&c)?.iter() {
-                    at = at.max(cx.store.first_logged(s, b)?);
-                }
-            }
-            Ok(at.unwrap_or(end))
-        }
+        // the public entry, the public's read since removed: up to its edge, the removal last
+        (Some((_, Holding::Read | Holding::Keys)), Credential::Public) => Ok(public_removed_at(cx, s)?.unwrap_or(end)),
         (Some((_, Holding::Read | Holding::Keys)), Credential::ReadSecret(e)) => Ok(superseded_at(cx, s, e)?.unwrap_or(end)),
         _ => Ok(end),
     }
@@ -331,6 +329,18 @@ pub(crate) fn departure_until(cx: &mut Cx, s: &SyncId, by: &Credential) -> crate
 
 /// The highest position at which an entry in S of a rotation superseding read epoch `e` was
 /// first logged.
+/// The highest position at which an entry in S of a commit of the public's edge on S's thing
+/// (`Engine::public_edge`) was first logged.
+fn public_removed_at(cx: &mut Cx, s: &SyncId) -> crate::types::Result<Option<Position>> {
+    let mut at = None;
+    for c in cx.engine.public_edge(s)? {
+        for b in cx.engine.commit_blobs(&c)?.iter() {
+            at = at.max(cx.store.first_logged(s, b)?);
+        }
+    }
+    Ok(at)
+}
+
 fn superseded_at(cx: &mut Cx, s: &SyncId, e: &Epoch) -> crate::types::Result<Option<Position>> {
     let mut at = None;
     for c in cx.engine.rotations_superseding(s, e)? {
@@ -431,20 +441,12 @@ impl Holds for NodeHolds<'_, '_> {
             (_, Holding::Unread) => self.cx.store.path(s).ok()??.steps.clone(),
         };
         let (_, claims) = steps.last()?;
-        let entry_box = claims.as_ref().and_then(|c| c.entries.get(entry)).cloned();
-        // a lapsed public entry (spec/sync-opens.md §5): the path alone, which the answer's `sig`
-        // is checked by
-        if entry_box.is_none() && *entry != osis_crypto::public_entry(s) {
-            return None;
-        }
-        Some(Grant { entry_box, steps: steps.into_iter().map(|(st, _)| st).collect() })
+        let entry_box = claims.as_ref()?.entries.get(entry)?.clone();
+        Some(Grant { entry_box: Some(entry_box), steps: steps.into_iter().map(|(st, _)| st).collect() })
     }
 
     fn take_grant(&mut self, s: &SyncId, entry: &[u8; 32], grant: &Grant, signed: &dyn Fn(&[u8; 32]) -> bool) -> bool {
-        let Some(b) = grant.entry_box.as_ref() else {
-            // a lapsed public entry: the replier proved by its head's sync key, nothing learned
-            return *entry == osis_crypto::public_entry(s) && self.cx.engine.lapsed_public_key(s, &grant.steps).ok().flatten().is_some_and(|k| signed(&k));
-        };
+        let Some(b) = grant.entry_box.as_ref() else { return false };
         let Ok(Some(g)) = self.cx.engine.open_grant(s, entry, &grant.steps, b) else { return false };
         // verify first, learn after (spec/sync-opens.md §5)
         signed(&g.key) && self.cx.engine.learn_grant(&g).is_ok()

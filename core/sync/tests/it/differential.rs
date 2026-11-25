@@ -173,11 +173,11 @@ fn an_inbox_moved_takes_grants_from_outside_spec_sync_inbox_1() {
     assert_eq!(w.engine(1).inbox_of(&a).unwrap(), w.node(0).inbox, "control: a card on a thing moves no inbox");
 }
 
-// spec/sync-opens.md §4 (lapsed public entry), §6 (A reader serves a public reader up to the
-// public's removal): node 0 makes
-// a thing public, node 1 of another account redeems a public link to it, then node 0 removes the
-// public and writes again while node 1 is off. Node 1 holds the removal and reads the thing no more
-// (fails without the lapsed entry: no reader opens the thing's sync ID toward it again).
+// spec/sync-opens.md §4 (lapsed secrets), §6 (A reader tells a public reader the public's removal):
+// node 0 makes a thing public, node 1 of another account redeems a public link to it, then node 0
+// removes the public and writes again while node 1 is off. Node 1 holds the removal and reads the
+// thing no more (fails without the lapsed read secrets: no reader opens the thing's sync ID toward
+// it again).
 #[test]
 fn a_redeemer_hears_the_public_removed_spec_sync_opens_6() {
     use crate::harness::history::{Gives, Holder, reads};
@@ -186,6 +186,62 @@ fn a_redeemer_hears_the_public_removed_spec_sync_opens_6() {
     let mut w = holds_on(0, accounts, n, &script, String::new(), false);
     let t = w.history.things[0].0;
     assert!(reads(w.engine(1), &t).value.is_none(), "node 1 reads the thing no more");
+}
+
+// spec/sync-opens.md §6 (A reader tells a public reader the public's removal): as above, but while
+// node 1 is off node 0 first removes another reader (thing 1), rotating the thing's read keys with
+// the public boxed again, and writes. Node 1 should hear the removal; it stays at the epoch it held,
+// reading v1 (issues/public-removal-after-rotation.md).
+#[test]
+#[ignore = "issues/public-removal-after-rotation.md"]
+fn repro_a_redeemer_misses_a_rotation_and_the_public_removed() {
+    use crate::harness::history::{Gives, Holder};
+    let (n, accounts, ..) = size();
+    let script = [
+        Step::New(0),
+        Step::Give(0, 0, Holder::Public, Gives::Reads),
+        Step::Run,
+        Step::Redeem(1, 0),
+        Step::Run,
+        Step::PowerOff(1),
+        Step::New(0),
+        Step::Give(0, 0, Holder::Thing(1), Gives::Reads),
+        Step::Revoke(0, 0, Holder::Thing(1)),
+        Step::Write(0, 0),
+        Step::Revoke(0, 0, Holder::Public),
+        Step::Write(0, 0),
+        Step::Run,
+    ];
+    holds_on(0, accounts, n, &script, String::new(), false);
+}
+
+// spec/sync-opens.md §4 (lapsed secrets), spec/sync-hostile.md §2: a public link made while
+// the public read a thing, redeemed by a stranger (node 1) only after the public's removal, opens
+// nothing: holding no read secret of the thing, node 1 hits nothing, and no store entry of the thing
+// reaches it (failed with a lapsed public entry, which every holder of the sync ID hits: node 1 was
+// served the thing up to the removal, the public's open boxes with it). Control: with the public
+// not removed, the same redeem is served the thing.
+#[test]
+fn a_public_link_redeemed_after_the_removal_opens_nothing_spec_sync_opens_4() {
+    use crate::harness::history::{Gives, Holder};
+    let (n, accounts, ..) = size();
+    for removed in [true, false] {
+        let mut w = world_of(0, accounts, n);
+        w.cap = crate::harness::STORM_CAP;
+        play(&mut w, &[Step::New(0), Step::Give(0, 0, Holder::Public, Gives::Reads), Step::Run], String::new());
+        let t = w.history.things[0].0;
+        let s = w.engine(0).sync_id_of(&t).unwrap().expect("a sync ID");
+        let link = w.public_link(0, t).expect("the public reads it");
+        if removed {
+            play(&mut w, &[Step::Revoke(0, 0, Holder::Public), Step::Write(0, 0), Step::Run], String::new());
+        }
+        w.redeem_any(1, &link);
+        let mut most = 0;
+        while w.step_or_wake() {
+            most = most.max(w.store(1).entries(&s).unwrap().len());
+        }
+        assert_eq!(most == 0, removed, "node 1 held {most} entries of the thing (removed: {removed})");
+    }
 }
 
 // spec/sync-set.md §2 (T's keys open): node 1's account holds thing 0 at

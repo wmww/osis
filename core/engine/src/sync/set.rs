@@ -220,8 +220,8 @@ impl Engine {
         for k in self.static_listed(t)? {
             c.statics.insert(osis_crypto::static_entry(s, &k));
         }
-        // the public entry: shown and tested while the public reads S's thing; shown lapsed while
-        // its removal is held (spec/sync-opens.md §4)
+        // the public entry shown and tested while the public reads S's thing; once its removal is
+        // held, the superseded read secrets lapsed (spec/sync-opens.md §4)
         let public = self.core.public_reads(t);
         c.shows_public |= public;
         c.tests_public |= public;
@@ -282,8 +282,8 @@ impl Engine {
     }
 
     /// The commits of the public's edge on `s`'s things (its grants, removals and the rotations
-    /// boxing it, spec/permissions.md §4 Key part, steps aside): a member opened on S's lapsed
-    /// public entry is served up to the last of them logged (spec/sync-opens.md §6).
+    /// boxing it, spec/permissions.md §4 Key part, steps aside): a member opened on S's public entry
+    /// is served up to the last of them logged (spec/sync-opens.md §6).
     pub fn public_edge(&mut self, s: &SyncId) -> Result<BTreeSet<CommitId>> {
         let mut out = BTreeSet::new();
         for t in self.opening_things(s)? {

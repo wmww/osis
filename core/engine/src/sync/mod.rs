@@ -371,8 +371,9 @@ pub struct ReadCredentials {
     /// The public reads S's thing as held here, or this node redeems a public link to it: its
     /// public entry is tested.
     pub tests_public: bool,
-    /// The public is named on S's thing and reads it no more (its removal held): its public entry
-    /// is shown lapsed, opening a member ended at once (spec/sync-opens.md §4, §6).
+    /// The public is named on S's thing and reads it no more (its removal held): its read secrets
+    /// at superseded epochs are shown lapsed, to every peer, each opening a member ended at once
+    /// (spec/sync-opens.md §4, §6).
     pub lapsed_public: bool,
     /// The sync proof (spec/sync-ids.md §2) of each recorded step whose sync key this node holds,
     /// deepest first: the head's is what a reader shows, the rest what the walk tests
@@ -741,23 +742,6 @@ impl Engine {
             return Ok(None);
         }
         Ok(Some(OpenedGrant { thing, key, secrets: EntryBoxSecrets { read: (item.epoch, item.secret), superseded: item.earlier, sync: item.sync } }))
-    }
-
-    /// The key a lapsed public entry's answer is signed under (spec/sync-opens.md §5: no entry
-    /// box, the path to the replier's head): the head's sync key, where `steps` verify from S's
-    /// genesis step and pass through the newest step of S recorded here, and this node tests S's
-    /// public entry. Nothing is learned: the open alone serves this node what it is owed up to the
-    /// public's removal.
-    pub fn lapsed_public_key(&mut self, s: &SyncId, steps: &[Step]) -> Result<Option<[u8; 32]>> {
-        if osis_blob::verify_path(s, steps).is_err() {
-            return Ok(None);
-        }
-        let Some(head) = steps.last() else { return Ok(None) };
-        let Some(c) = self.read_credentials(s)? else { return Ok(None) };
-        if !c.tests_public || c.head.as_ref().is_some_and(|known| !steps.iter().any(|st| st.id() == known.id())) {
-            return Ok(None);
-        }
-        Ok(Some(head.keys.sync.to_bytes()))
     }
 
     /// Learns an opened grant's secrets (`learn_secret`), once its answer's signature verified.

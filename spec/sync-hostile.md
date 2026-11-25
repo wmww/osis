@@ -24,7 +24,7 @@
 
 ## 2. Stated limits
 - A node removed from an account still proves its node thing and claims its path through the account; a verifier not yet holding the removal counts the claim (spec/sync-opens.md §2).
-- A thing the public reads (spec/permissions.md §1) is read by every party that holds its sync ID or a unit carrying it, stores included; its claim set's public entry shows it to anyone holding the sync ID. Once the public is removed, a reader holding the removal shows the lapsed public entry for good (spec/sync-opens.md §4): anyone holding the sync ID learns that it holds S, and is served S up to the removal, as it could have pulled while the public read.
+- A thing the public reads (spec/permissions.md §1) is read by every party that holds its sync ID or a unit carrying it, stores included; its claim set's public entry shows it to anyone holding the sync ID. Once the public is removed, a reader holding the removal shows its superseded read secrets to every peer (spec/sync-opens.md §4, lapsed secrets): anyone holding one (a party that read S's thing while the public did, or a former reader) learns that it holds S, and is served S up to that epoch's supersession, what that secret reads.
 - A node keeping S unread shows that it keeps S to anyone holding S's public values (its filter goes to every connection).
 - A depositor holding a thing's `keys.0` but not its roster learns from 0 against 14 whether a node holds the thing's sync ID (whether a thing that node proved is among its holders).
 - A peer showing a thing's deposit key (anyone holding its public key record) is offered the sealed fires a connected node sends that thing (spec/sync-inbox.md §3): it learns that this connection's node fires there, when, and the blobs' padded sizes.

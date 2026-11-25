@@ -568,9 +568,8 @@ struct Adm {
     /// the newest the Departed rule keeps out of `shows`), taken from a store only, and its read
     /// secrets at superseded epochs, shown in the filter: an open by one is ended at once, so this
     /// side registers past a store's keys or serves a reader its role entries up to its departure
-    /// (spec/sync-opens.md §6), whether or not S was open there at the removal. Toward every peer, a lapsed
-    /// public entry (`Creds::lapsed`), taken from any: ended at once likewise, served up to the
-    /// public's removal.
+    /// (spec/sync-opens.md §6), whether or not S was open there at the removal. Toward every peer, the lapsed
+    /// read secrets (`Creds::lapsed`), taken from a reader or keys holder: ended at once likewise.
     walk: Vec<Shown>,
     step: Option<osis_crypto::SigningSecret>,
 }
@@ -2383,14 +2382,13 @@ impl Opens {
         // Judged on what this side holds now: a credential no longer shown proves nothing.
         let Some(adm) = self.admissible(ctx, conn, &s) else { return refuse };
         // a departed peer's Hit on its step (a store) or on a superseded epoch it reads at: opened
-        // only ended, a store to be moved past its keys, a reader to be served up to its departure;
-        // any peer's on a lapsed public entry, to be served up to the public's removal
+        // only ended, a store to be moved past its keys, a reader to be served up to its departure
+        // (or, by a lapsed read secret, any peer holding it up to that epoch's supersession)
         let walk = adm.walk.contains(&shown)
             && match shown {
                 Shown::Proof(_) => class == SourceClass::Store,
                 // a store reads nothing: a read secret proves a reader
                 Shown::Read(..) => class != SourceClass::Store,
-                Shown::Public(_) => true,
                 _ => false,
             };
         if !adm.shows.contains(&shown) && !walk {
@@ -2580,7 +2578,7 @@ impl Opens {
             self.end_member(ctx, rid, conn, s, Close::AtOnce, moved);
         } else if m.until.is_none() {
             let until = ctx.holds.until(&s, &m.by);
-            self.set_until(rid, &s, until, moved);
+                self.set_until(rid, &s, until, moved);
             if let Some(c) = conn {
                 self.close_if_reached(ctx, c, s, moved);
             }

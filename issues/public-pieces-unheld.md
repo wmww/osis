@@ -5,7 +5,7 @@
 
 Repro: osis-sync `differential::repro_a_sync_holder_reads_a_thing_made_public` (node 1's account holds thing 0 at sync and strongs it; node 0 makes it public and writes; node 1 keeps it unread). The full-size differential's class "node N reads thing N unlike the reference, its value none where the reference's roster lists the public" (issues/differential-full-size-classes.md).
 
-The redeemer's half (a node reading X by the public alone never heard its removal) is fixed: the lapsed public entry (spec/sync-opens.md §4, §6; notes/public-and-cards-brief.md, Who hears).
+The redeemer's half (a node reading X by the public alone never heard its removal) is fixed: the lapsed read secrets (spec/sync-opens.md §4, §6; notes/public-and-cards-brief.md, Who hears).
 
 **Design, modelled** (held-model `closure::public_epochs` `Heard`, the `store` clause; control: it off): a node keeping S unread whose head lists S's public entry takes the head's public entry box (open form: every party's, spec/sync-ids.md §3), as a public link's redeemer takes it from an answer; holding a read secret it syncs S read, takes the public's grant and its role follows. No fan-out: readers already register the step at every store.
 
