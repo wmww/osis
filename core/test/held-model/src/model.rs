@@ -59,7 +59,7 @@ pub enum DropWhy {
     /// known (notes/expiry-creation-design.md §3 Wait, don't judge).
     Unknown,
     /// On a destroyed thing (every creation of it joined is expired or purged): the node forgets the
-    /// thing whole (notes/expiry-creation-design.md §3 Destruction).
+    /// thing but its gone creations and `roles.0` (spec/commits.md §5 Destruction).
     Destroyed,
 }
 
@@ -645,16 +645,17 @@ pub fn timeline(h: &Held) -> Timeline {
     judged(h).1
 }
 
-/// Whether a destroyed thing keeps this part: its creation and `roles.0` while a purge request's
-/// part on it is held, as the destruction is judged from them (spec/commits.md §5 Destruction).
-fn kept_when_destroyed(h: &Held, p: &Part) -> bool {
-    (p.aspect == Aspect::ROLES || p.aspect == Aspect::CREATED) && h.commits.iter().flat_map(|c| &c.parts).any(|q| q.thing == p.thing && q.aspect == crate::gen::PURGE)
+/// Whether a destroyed thing keeps this part: its gone creations (headers) and `roles.0`, however
+/// it was destroyed: the destruction is judged from them, and authority that passed through the
+/// thing stands as its edge writes say (spec/commits.md §5 Destruction).
+fn kept_when_destroyed(p: &Part) -> bool {
+    p.aspect == Aspect::ROLES || p.aspect == Aspect::CREATED
 }
 
 /// `h` with every part on `things` counting as never received, but what a destruction keeps.
 fn forget(h: &Held, things: &BTreeSet<ThingId>) -> Held {
     let mut n = h.clone();
-    for p in n.commits.iter_mut().flat_map(|c| c.parts.iter_mut()).filter(|p| things.contains(&p.thing) && !kept_when_destroyed(h, p)) {
+    for p in n.commits.iter_mut().flat_map(|c| c.parts.iter_mut()).filter(|p| things.contains(&p.thing) && !kept_when_destroyed(p)) {
         p.body = Body::Missing;
         p.stripped.clear();
     }
@@ -717,7 +718,7 @@ pub fn judged_with(h: &Held, ov: &Overlap) -> (Outcome, Timeline) {
     let (_, mut o, tl) = forgotten(h, ov);
     for c in &h.commits {
         for (i, p) in c.parts.iter().enumerate() {
-            if o.destroyed.contains(&p.thing) && matches!(p.body, Body::Held(_) | Body::Parked) && !kept_when_destroyed(h, p) {
+            if o.destroyed.contains(&p.thing) && matches!(p.body, Body::Held(_) | Body::Parked) && !kept_when_destroyed(p) {
                 o.fates.insert((c.id, i), Fate::MustDrop(DropWhy::Destroyed));
             }
         }

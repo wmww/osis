@@ -4,7 +4,7 @@
 //! forgets it; what relies on a destroyed thing lives on. spec/commits.md §4, §5, §6;
 //! spec/permissions.md §1.
 use crate::util::*;
-use held_model::gen::{creation, ACCOUNT, CREATION_ID, REG};
+use held_model::gen::{creation, ACCOUNT, CREATION_ID, LINK_K, REG};
 use held_model::*;
 
 /// T's creation by its mint admin at hour 0, `admin` with no history promised, expiring at
@@ -50,12 +50,36 @@ fn expired_creation_destroys_the_thing_spec_commits_6() {
     let o = evaluate(&h(3));
     assert_eq!(o.destroyed, [T].into());
     assert_eq!(o.fates[&(10, 0)], Fate::MustDrop(DropWhy::Destroyed), "kept for good, it goes with its thing");
-    assert_eq!(o.fates[&(CREATION_ID + T, 0)], Fate::MustDrop(DropWhy::Destroyed));
+    assert_eq!(o.fates[&(CREATION_ID + T, 0)], Fate::Leftover(LeftoverWhy::Expired), "its gone creation stays, a header");
     assert_eq!(read(&h(3), REG), None);
     let next = act(&h(3), &o, None);
-    assert!(next.commits.iter().flat_map(|c| c.parts.iter()).filter(|p| p.thing == T).all(|p| p.body == Body::Missing));
+    assert!(next.commits.iter().flat_map(|c| c.parts.iter()).filter(|p| p.thing == T && p.aspect != Aspect::CREATED).all(|p| p.body == Body::Missing));
     assert_eq!(evaluate(&next).reads, o.reads);
-    assert!(evaluate(&next).destroyed.is_empty(), "nothing of it held: it is unknown, not destroyed");
+    assert_eq!(evaluate(&next).destroyed, [T].into(), "still destroyed, not unknown");
+}
+
+// spec/commits.md §5 (Destruction): authority that passed through a destroyed thing stands as its
+// held edge writes say, its gone creations and role-class parts staying however it was destroyed: a
+// write on T along [K], made before K expired, reads on once the node has dropped what K's
+// destruction drops
+#[test]
+fn authority_through_an_expired_thing_stands_spec_commits_5() {
+    let k = creation(LINK_K, RecordLink::Admin(MINT_ADMIN), MINT_ADMIN, ts(0), PurgeBy::Admin, Some(at(3)));
+    let h = held(5, vec![
+        k,
+        edge_on(5, MINT_ADMIN, 0, T, EdgeWrite::role(LINK_K, Some(Role::Write)), None),
+        edge_on(6, MINT_ADMIN, 0, LINK_K, EdgeWrite::role(3, Some(Role::Write)), None),
+        reg(10, 3, 1, REG, PurgeBy::AuthorOrAdmin, 7).along(&[LINK_K]),
+    ]);
+    let o = evaluate(&h);
+    assert_eq!(o.destroyed, [LINK_K].into());
+    assert!(o.valid[&(10, 0)]);
+    assert_eq!(read(&h, REG), int(7));
+    let next = act(&h, &o, None);
+    let on = evaluate(&next);
+    assert_eq!(on.destroyed, [LINK_K].into());
+    assert!(on.valid[&(10, 0)], "the path through K still judges");
+    assert_eq!(on.reads, o.reads);
 }
 
 // spec/commits.md §5 (Purge): a purge of the creation by a right holder destroys the thing; one by a
@@ -120,10 +144,10 @@ fn write_after_the_destruction_is_ignored_spec_commits_6() {
     assert_eq!(read(&hd, REG), None);
     let mut next = act(&hd, &o, None);
     assert_eq!(read(&next, REG), None);
-    // the creation forgotten, a write arriving later is to an unknown thing
+    // a write arriving after the node dropped what the destruction drops is never read either
     next.commits.push(reg(11, MINT_ADMIN, 4, REG, PurgeBy::AuthorOrAdmin, 3));
     let o = evaluate(&next);
-    assert_eq!(o.revisit, [11].into());
+    assert_eq!(o.fates[&(11, 0)], Fate::MustDrop(DropWhy::Destroyed));
     assert_eq!(read(&next, REG), None);
 }
 
@@ -174,7 +198,7 @@ fn a_kept_record_does_not_bring_a_destroyed_thing_back_spec_permissions_1() {
     assert!(next.records.iter().any(|r| r.id == ACCOUNT), "held as a chain proof");
     next.commits.push(w(11, 4));
     let o = evaluate(&next);
-    assert_eq!(o.fates[&(11, 0)], Fate::MustDrop(DropWhy::Unknown));
-    assert_eq!(o.revisit, [11].into());
+    assert_eq!(o.destroyed, [ACCOUNT].into(), "its gone creation stays beside the record");
+    assert_eq!(o.fates[&(11, 0)], Fate::MustDrop(DropWhy::Destroyed));
     assert_eq!(o.reads.get(&(ACCOUNT, REG)).cloned().flatten(), None);
 }
