@@ -86,11 +86,16 @@ pub struct Rule {
     /// A read unit's thing or stub held only where its sync ID carries it (`logged`; off: every
     /// thing and stub of the unit, ideal delivery, the control).
     pub carriers: bool,
+    /// At a strong from a held thing of read unit T to a dependent D of another independent thing
+    /// X that T's keys open (through X's grants: the public's, or T's role on X), the walk enters
+    /// X's unit, read: X's sync ID carries D where X's unit holds it, with no bridge (off: D only
+    /// as a bridge logs it under T, the control).
+    pub dep_entry: bool,
 }
 
 impl Rule {
-    pub const DRAFT: Rule = Rule { fix: Fix::Least, first_entry: true, record_pieces: false, stubs_at_sync: false, founded_pieces: false, merged: false, carriers: false };
-    pub const SPEC: Rule = Rule { record_pieces: true, stubs_at_sync: true, founded_pieces: true, carriers: true, ..Rule::DRAFT };
+    pub const DRAFT: Rule = Rule { fix: Fix::Least, first_entry: true, record_pieces: false, stubs_at_sync: false, founded_pieces: false, merged: false, carriers: false, dep_entry: false };
+    pub const SPEC: Rule = Rule { record_pieces: true, stubs_at_sync: true, founded_pieces: true, carriers: true, dep_entry: true, ..Rule::DRAFT };
 }
 
 /// A node's state: the independent things it reads, keeps unread, and whose key parts it holds.
@@ -265,19 +270,32 @@ impl Net {
             todo.extend(targets(&e, x).filter(|&y| w.independent(y)));
         }
         let mut done = Set::new();
+        // the independents entered at a strong to a dependent of theirs (`dep_entry`): by the
+        // unit's keys, which open them
+        let mut by_dep = Set::new();
         while let Some(t) = todo.pop() {
             if !done.insert(t) {
                 continue;
             }
             let own = t == n.thing;
-            if !own && !(at(t, Role::Sync) && (!rule.first_entry || carried(t))) {
+            if !own && !by_dep.contains(&t) && !(at(t, Role::Sync) && (!rule.first_entry || carried(t))) {
                 continue;
             }
-            if own || at(t, Role::Read) {
+            if own || by_dep.contains(&t) || at(t, Role::Read) {
                 let u = self.held_unit(rule, t, &e);
                 out.read.extend(u.iter().copied().filter(|&x| w.independent(x)));
+                let whole = unit(w, t, &e);
                 for &m in &u {
                     todo.extend(targets(&e, m).filter(|&y| w.independent(y) && !u.contains(&y)));
+                    if rule.dep_entry {
+                        for y in targets(&e, m).filter(|y| whole.contains(y)) {
+                            let Kind::Dependent(x) = w.kinds[y] else { continue };
+                            if x != t && w.independent(x) && by_dep.insert(x) {
+                                done.remove(&x);
+                                todo.push(x);
+                            }
+                        }
+                    }
                 }
             } else {
                 out.kept.insert(t);

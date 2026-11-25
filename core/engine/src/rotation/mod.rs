@@ -241,6 +241,17 @@ pub(crate) fn uncovered(tx: &mut Tx<'_>, x: &Tid, r: Role, k: &osis_crypto::Epoc
     Ok(!uncovered_by(tx, x, r, k, deps)?.is_empty())
 }
 
+/// Whether epoch `k` of role `r` of `x` covers every departure from `x` known here, as this node
+/// can tell (`uncovered_by`; spec/crypto.md §4): the one rule both sides of a departed party's
+/// open judge by (spec/sync-opens.md §4 Departed: what the source shows it; spec/permissions.md §3
+/// No secret taken back: what the party takes and keeps). An epoch of no held keyset covers by
+/// it: what the party takes so is an entry box's, which every party holding the step's entry
+/// opens, and judged again by its keyset once the role entries it opens apply.
+pub(crate) fn covers_known(tx: &mut Tx<'_>, x: &Tid, r: Role, k: &osis_crypto::Epoch) -> Result<bool> {
+    let deps = departures(tx, x)?;
+    Ok(!uncovered(tx, x, r, k, &deps)?)
+}
+
 /// The departures of `deps` epoch `k` of role `r` of `x` does not cover as this node can tell
 /// (spec/crypto.md §4, Encrypting under): by its history entries where it holds `k`'s secret
 /// established; else by order: an epoch covers no departure ordered after its minting rotation

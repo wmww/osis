@@ -272,6 +272,9 @@ impl RoleEpochs {
         let info = self.observe(e);
         info.secret = Some(secret.into());
         info.reading.clear();
+        // the roles secret derives from it
+        info.roles = None;
+        info.roles_reading.clear();
     }
 
     /// Sets `e`'s roles secret, from a history entry opened under a secret not reading-only.

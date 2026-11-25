@@ -150,6 +150,13 @@ pub struct Closure {
     /// Each such edge whose entry gives no role either: `pieced`, or resting on a piece kept only
     /// while a loss is carried out (`founded` for the role).
     loose: JSet<(Vx, Vx)>,
+    /// Per out-list edge (vertex, entry vertex) a Dependent entry gives (`given`), the targets of
+    /// the vertex's strongs giving it: several dependents of one thing, or the thing itself beside
+    /// them, give one entry, which goes with the last of them.
+    deps: JSetMap<(Vx, Vx), Tid>,
+    /// Per (vertex, target) whose edge gives a Dependent entry, that entry (`deps` read back: the
+    /// thing a target's secrets derive from may change as it becomes independent).
+    dep_of: JMap<(Vx, Tid), Vx>,
 }
 
 impl Default for Closure {
@@ -170,6 +177,8 @@ impl Default for Closure {
             keys: JSet::default(),
             pieced: JSet::default(),
             loose: JSet::default(),
+            deps: JSetMap::default(),
+            dep_of: JMap::default(),
         }
     }
 }
@@ -219,7 +228,7 @@ impl Follow {
 }
 
 impl Journaled for Closure {
-    type Mark = ([usize; 4], [usize; 4], [usize; 13]);
+    type Mark = ([usize; 4], [usize; 4], [usize; 15]);
     fn commit(&mut self) {
         self.targeted.commit();
         self.beyond.commit();
@@ -236,9 +245,11 @@ impl Journaled for Closure {
         self.keys.commit();
         self.pieced.commit();
         self.loose.commit();
+        self.deps.commit();
+        self.dep_of.commit();
     }
     fn mark(&mut self) -> Self::Mark {
-        (self.tree.mark(), self.synced.mark(), [self.out.mark(), self.inn.mark(), self.moved.mark(), self.rows.mark(), self.members.mark(), self.left.mark(), self.cut.mark(), self.unknown.mark(), self.targeted.mark(), self.keys.mark(), self.pieced.mark(), self.loose.mark(), self.beyond.mark()])
+        (self.tree.mark(), self.synced.mark(), [self.out.mark(), self.inn.mark(), self.moved.mark(), self.rows.mark(), self.members.mark(), self.left.mark(), self.cut.mark(), self.unknown.mark(), self.targeted.mark(), self.keys.mark(), self.pieced.mark(), self.loose.mark(), self.beyond.mark(), self.deps.mark(), self.dep_of.mark()])
     }
     fn rollback_to(&mut self, (t, s, m): Self::Mark) {
         self.tree.rollback_to(t);
@@ -256,6 +267,8 @@ impl Journaled for Closure {
         self.pieced.rollback_to(m[10]);
         self.loose.rollback_to(m[11]);
         self.beyond.rollback_to(m[12]);
+        self.deps.rollback_to(m[13]);
+        self.dep_of.rollback_to(m[14]);
     }
     fn name(&mut self, _name: &'static str) {
         self.tree.name("index: closure held");
@@ -651,6 +664,20 @@ impl Closure {
         self.out.remove(&v, &w);
         self.inn.remove(&w, &v);
         self.moved.insert((v, w));
+        for y in self.deps.get(&(v, w)).cloned().unwrap_or_default() {
+            self.deps.remove(&(v, w), &y);
+            self.dep_of.remove(&(v, y));
+        }
+    }
+
+    /// Links `v`'s out-list to `w`, given by its edge to `y`: an entry of another thing than `y`
+    /// is a Dependent entry's (`deps`).
+    fn link_given(&mut self, v: Vx, w: Vx, y: Tid) {
+        if w.1 != y {
+            self.deps.insert((v, w), y);
+            self.dep_of.insert((v, y), w);
+        }
+        self.link(v, w);
     }
 
     /// `x` held, hanging from `p` (none: the root), with no out-list yet.
@@ -859,6 +886,17 @@ fn given(core: &Core, v: Vx, y: Tid) -> (BTreeSet<Vx>, Carry) {
     };
     if follows {
         out.insert((c, y));
+        // Dependent entry (spec/sync-set.md §2): a dependent of another independent thing that
+        // `t`'s keys open enters that thing's unit, read, whose sync ID carries it with no bridge
+        if let Ctx::Read(t) = c
+            && !independent
+            && let Some(a) = core.secret_actor(&y)
+            && a != t
+            && a != y
+            && core.enter(&a) == Some(Ctx::Read(a))
+        {
+            out.insert((Ctx::Read(a), a));
+        }
     }
     let mut how = Carry::Plain;
     if independent && Ctx::Read(y) != c && let Some(e) = core.enter(&y) {
@@ -1310,20 +1348,36 @@ fn set_targeted(tx: &mut Tx<'_>, y: Tid, v: Vx, on: bool) {
 /// Sets what held vertex `v`'s edge to `y` gives to `now`, moving the tree.
 fn apply(tx: &mut Tx<'_>, f: &mut Follow, rv: Vx, v: Vx, y: Tid, now: BTreeSet<Vx>) -> Result<()> {
     let cl = &mut tx.core.ix.closure;
-    let old = cl.given(&v, &y);
+    let mut old = cl.given(&v, &y);
+    // a Dependent entry this edge gave
+    old.extend(cl.dep_of.get(&(v, y)).copied());
     if old == now {
         return Ok(());
     }
     let mut fresh = Vec::new();
     for w in now.difference(&old) {
-        cl.link(v, *w);
+        cl.link_given(v, *w, y);
         if !cl.is_held(w) {
             fresh.push((*w, v));
         }
     }
-    let gone: Vec<Vx> = old.difference(&now).copied().collect();
+    let mut gone: Vec<Vx> = Vec::new();
+    for w in old.difference(&now).copied().collect::<Vec<_>>() {
+        // an entry another edge of `v` still gives stays: a Dependent entry by another dependent,
+        // or the thing's own strong beside it
+        let cl = &mut tx.core.ix.closure;
+        cl.deps.remove(&(v, w), &y);
+        if cl.dep_of.get(&(v, y)) == Some(&w) {
+            cl.dep_of.remove(&(v, y));
+        }
+        let by_deps = tx.core.ix.closure.deps.get(&(v, w)).is_some_and(|s| !s.is_empty());
+        let direct = w.1 != y && w.0 == Ctx::Read(w.1) && strong_to(tx, &v.1, &w.1)? && given_by(tx.core, v, w.1).contains(&w);
+        if !by_deps && !direct {
+            gone.push(w);
+        }
+    }
     for w in &gone {
-        cl.unlink(v, *w);
+        tx.core.ix.closure.unlink(v, *w);
     }
     for w in gone {
         if tx.core.ix.closure.tree.parent.get(&w) == Some(&v) {
@@ -1359,7 +1413,7 @@ impl Grow for GrowClosure<'_, '_> {
         }
         for y in strongs_from(self.0, &x.1)? {
             for w in judge(self.0, self.1, x, y)? {
-                self.0.core.ix.closure.link(x, w);
+                self.0.core.ix.closure.link_given(x, w, y);
                 out.push(w);
             }
         }

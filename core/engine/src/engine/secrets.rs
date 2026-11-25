@@ -301,7 +301,18 @@ impl Core {
                 if new.epochs().chain(was.epochs()).any(|(e, _)| (new.secret(e).is_some() || was.secret(e).is_some()) && new.get(e) != was.get(e)) {
                     untaken.insert(r);
                 }
-                *epochs.role_mut(r) = was;
+                // a roles secret is no secret of the thing: it opens the role parts alone, which
+                // every holder opens (spec/crypto.md §4 Roles secrets), so a history entry opened
+                // under a secret the node holds of `r` gives it whatever the node's roles (an
+                // entry box's redeemer reads the role commits that show it the public's grant);
+                // a node that lost `r`'s secrets opens no history and keeps none
+                let roles: Vec<(Epoch, osis_crypto::Secret32)> = new.epochs().filter(|(e, _)| was.get(e).is_none_or(|w| w.checked_roles().is_none())).filter_map(|(e, i)| Some((*e, i.checked_roles()?))).collect();
+                let opener = was.epochs().any(|(_, i)| i.checked().is_some());
+                let mut kept = was;
+                for (e, s) in roles.into_iter().filter(|_| opener) {
+                    kept.set_roles(e, s);
+                }
+                *epochs.role_mut(r) = kept;
             }
         }
         let held_any = epochs.holds_any();

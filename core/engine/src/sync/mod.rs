@@ -767,10 +767,9 @@ impl Engine {
         use osis_base::Role;
         for t in self.sync_things_of(s)? {
             let a = self.core.reader_of(&t);
-            let deps = self.departures(&a)?;
             // an epoch is of one role: the other finds it uncovering nothing
-            let uncovered = |tx: &mut crate::engine::Tx<'_>, r: Role| crate::rotation::uncovered(tx, &a, r, &epoch, &deps);
-            if !self.read(|tx| Ok(uncovered(tx, Role::Read)? || uncovered(tx, Role::Sync)?))? {
+            let covers = |tx: &mut crate::engine::Tx<'_>, r: Role| crate::rotation::covers_known(tx, &a, r, &epoch);
+            if self.read(|tx| Ok(covers(tx, Role::Read)? && covers(tx, Role::Sync)?))? {
                 return Ok(true);
             }
         }

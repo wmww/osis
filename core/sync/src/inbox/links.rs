@@ -299,7 +299,11 @@ impl Redemptions {
             self.public_ready.unwant(&t);
             self.public.remove(&t);
             self.hints.remove(&t);
-            h.engine.unfollow_link(&t);
+            // the independent it follows, unless another public link being redeemed follows it
+            let f = p.link.followed();
+            if !self.public.values().any(|o| o.link.followed() == f) {
+                h.engine.unfollow_link(&f);
+            }
             h.store.with_tx(|x| x.remove_local(&row_key(&t), Shred::No))?;
             acted = true;
         }

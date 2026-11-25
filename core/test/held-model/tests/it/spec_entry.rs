@@ -266,6 +266,17 @@ fn check(net: &Net, rule: Rule) -> Vec<&'static str> {
                 }
             }
         }
+        // Dependents: a dependent D of X in a read unit T (T's keys open it through X's grants)
+        // that X's unit holds is held, and X's sync ID is synced, so D's later writes, X's
+        // rotations and removals reach the node whoever else reads T.
+        for &t in &h.s.read {
+            for y in unit(&net.w, t, &e) {
+                let Kind::Dependent(x) = net.w.kinds[y] else { continue };
+                if x != t && net.w.independent(x) && unit(&net.w, x, &e).contains(&y) && !(h.held.contains(&y) && h.sync_set.contains(&x)) {
+                    out.push("dependents");
+                }
+            }
+        }
         // First entry: a thing reached from the root alone, no offer held, is held only if a read
         // unit of another thing carries it (whole or by a strong from it) or an own or read thing holds an edge on
         // it. Held through the edge piece of a holder held for keys for some other synced thing
@@ -274,7 +285,10 @@ fn check(net: &Net, rule: Rule) -> Vec<&'static str> {
         let founded = net.held(i, Rule { fix: Fix::Least, ..rule }).s;
         for &(r, x) in &e {
             if r == net.nodes[i].root && net.w.independent(x) && x != net.nodes[i].thing && h.held.contains(&x) {
-                let by_unit = h.s.read.iter().filter(|&&t| t != x).any(|&t| unit(&net.w, t, &e).contains(&x) || unit(&net.w, t, &e).iter().any(|&m| e.contains(&(m, x))));
+                // a read unit carries it whole, by a strong from it, or by a strong to a dependent of
+                // it the unit's keys open (`dep_entry`)
+                let dep = |u: &Set| rule.dep_entry && u.iter().any(|&m| e.iter().any(|&(f, y)| f == m && net.w.kinds[y] == Kind::Dependent(x) && u.contains(&y)));
+                let by_unit = h.s.read.iter().filter(|&&t| t != x).any(|&t| { let u = unit(&net.w, t, &e); u.contains(&x) || u.iter().any(|&m| e.contains(&(m, x))) || dep(&u) });
                 let edge_from = |hs: &Set| hs.iter().any(|&g| net.w.grants.contains_key(&(g, x)));
                 if by_unit || edge_from(&h.s.read) {
                 } else if edge_from(&founded.keyparts) {
@@ -321,6 +335,7 @@ fn entry_rules_over_random_worlds() {
         (Rule { stubs_at_sync: false, ..Rule::SPEC }, "by role"),
         (Rule { first_entry: false, ..Rule::SPEC }, "first entry"),
         (Rule { fix: Fix::Greatest, ..Rule::SPEC }, "first entry"),
+        (Rule { dep_entry: false, ..Rule::SPEC }, "dependents"),
     ] {
         let f = sweep(rule, 1000, 5);
         assert!(f.contains_key(prop), "{rule:?} should fail {prop}: {f:?}");
@@ -350,28 +365,33 @@ fn incidental_entry_through_a_holder_held_for_another_thing() {
     assert!(held(&net, 0, Rule::SPEC).contains(&Y) && !held(&net, 0, Rule::SPEC).contains(&X));
 }
 
-// spec/sync-set.md §2 What a sync ID carries: A holds admin on B and no strong to it; B holds X, a
-// dependent of B; D, A's dependent, holds X. X is in A's unit (A's keys open it through B), but
-// nothing A's nodes sync carries it: no node reading A holds X, and B's sync ID is synced by none of
-// them. With node 1's root holding B (it reads B's unit, X with it), node 1 is a bridge: it logs X
-// under A's sync ID and node 2, syncing A alone, holds X. The control (ideal delivery, `carriers`
-// off) holds X with no bridge; with bridges left out (`held_alone`) node 2 never holds it.
+// spec/sync-set.md §2 What a sync ID carries, Dependent entry: A holds admin on B and no strong to
+// it; B holds X, a dependent of B; D, A's dependent, holds X. X is in A's unit (A's keys open it
+// through B), and no node reading A holds X otherwise: at D's strong to X each node enters B's
+// unit, read, and holds X from B's sync ID. Without the entry (`dep_entry` off) X is carried only
+// by a bridge: none holds it until node 1's root holds B (it reads B's unit, X with it) and logs X
+// under A's sync ID, which node 2, syncing A alone, then holds; with bridges left out
+// (`held_alone`) node 2 never holds it. The control (ideal delivery, `carriers` off) holds X with
+// neither.
 #[test]
-fn a_dependent_of_another_thing_is_carried_only_by_a_bridge() {
+fn a_dependent_of_another_thing_is_carried_by_its_independent_or_a_bridge() {
     const X: T = 9;
     let mut net = account(Some(Role::Admin), 2);
     net.w.kinds[X] = Kind::Dependent(B);
     net.w.grants.insert((A, B), Role::Admin);
     net.records.insert((A, B));
     net.strongs.extend([(B, X), (D, X)]);
+    let off = Rule { dep_entry: false, ..Rule::SPEC };
     for i in 0..2 {
-        assert!(!held(&net, i, Rule::SPEC).contains(&X), "node {} holds nothing nobody carries", i + 1);
-        assert!(held(&net, i, Rule { carriers: false, ..Rule::SPEC }).contains(&X), "control: ideal delivery");
+        let h = net.held(i, Rule::SPEC);
+        assert!(h.held.contains(&X) && h.sync_set.contains(&B), "node {} enters B at the strong to X", i + 1);
+        assert!(!held(&net, i, off).contains(&X), "node {} holds nothing nobody carries", i + 1);
+        assert!(held(&net, i, Rule { carriers: false, ..off }).contains(&X), "control: ideal delivery");
     }
     net.strongs.insert((R1, B));
-    assert!(held(&net, 0, Rule::SPEC).contains(&X), "node 1 reads B's unit");
-    assert!(held(&net, 1, Rule::SPEC).contains(&X), "node 2 holds what node 1 logs under A");
-    assert!(!net.held_alone(1, Rule::SPEC).held.contains(&X), "control: no bridge");
+    assert!(held(&net, 0, off).contains(&X), "node 1 reads B's unit");
+    assert!(held(&net, 1, off).contains(&X), "node 2 holds what node 1 logs under A");
+    assert!(!net.held_alone(1, off).held.contains(&X), "control: no bridge");
 }
 
 // By hand: OSIS_ENTRY_WORLDS random worlds (default 20000) of OSIS_ENTRY_MORE further things
@@ -390,6 +410,7 @@ fn entry_explore() {
         ("no first entry", Rule { first_entry: false, ..Rule::SPEC }),
         ("greatest", Rule { fix: Fix::Greatest, ..Rule::SPEC }),
         ("ideal delivery", Rule { carriers: false, ..Rule::SPEC }),
+        ("no dependent entry", Rule { dep_entry: false, ..Rule::SPEC }),
     ] {
         println!("{name}: {:?}", sweep(rule, n, more));
     }
@@ -455,4 +476,29 @@ fn a_strong_to_a_public_thing_brings_it_into_the_unit() {
     net.w.public.clear();
     let h = net.held(0, Rule::SPEC);
     assert!(!h.held.contains(&B) && !h.held.contains(&C), "control: B not public, not held: {h:?}");
+}
+
+// spec/sync-set.md §2 (Dependent entry): B, another node's
+// thing, made public, strongs its dependent C; node 1's account strongs C alone (a public link to
+// C redeemed). C is in A's unit by the public's grant on B, but no node reading A holds it
+// otherwise: at the strong to C the walk enters B's unit, read, so node 1 holds C under B's sync
+// ID and syncs it (C's later writes, B's rotations and the public's removal reach it there).
+// Control (`dep_entry` off): nothing carries C, as with no bridge.
+#[test]
+fn a_strong_to_a_public_things_dependent_enters_its_independent() {
+    let mut net = account(None, 2);
+    net.w.kinds[C] = Kind::Dependent(B);
+    net.w.grants.insert((N2, B), Role::Admin);
+    net.records.insert((N2, B));
+    net.strongs.extend([(A, C), (B, C)]);
+    net.w.public.insert(B);
+    let h = net.held(0, Rule::SPEC);
+    assert!(h.held.contains(&C) && h.sync_set.contains(&B), "C held, B's sync ID synced: {h:?}");
+    let off = net.held(0, Rule { dep_entry: false, ..Rule::SPEC });
+    assert!(!off.held.contains(&C) && !off.sync_set.contains(&B), "control: {off:?}");
+    // B's unit holding no C (B strongs it not): B's sync ID carries no C, and entering B holds
+    // nothing of it (the spec's Carriers: a dependent nobody reading A holds brings in nothing)
+    net.strongs.remove(&(B, C));
+    let h = net.held(0, Rule::SPEC);
+    assert!(!h.held.contains(&C), "{h:?}");
 }

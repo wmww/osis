@@ -2325,20 +2325,20 @@ impl Opens {
     /// open signature by the sync key of the step hit; for a static or the public entry, the
     /// grant's head sync key, the grant taken once it verifies.
     fn replier_proved(&mut self, ctx: &mut Ctx, bind: &Bind, s: &SyncId, cred: &Tested, a: &SharedItem, j: J) -> bool {
-        if matches!(j, J::Reader | J::SyncHolder) {
-            return true;
-        }
+        let by_j = matches!(j, J::Reader | J::SyncHolder);
         let key = match cred {
+            // the grant's secrets are taken once `sig` verifies under its head's sync key, whatever
+            // J says; J alone may count the replier proved
+            Tested::Static { .. } | Tested::Public => {
+                let entry = cred.matched(s);
+                let (Some(sig), Some(g)) = (&a.sig, a.grant.as_ref()) else { return by_j };
+                return ctx.holds.take_grant(s, &entry, g, &|k| bind.peer_signed(k, s, sig)) || by_j;
+            }
+            _ if by_j => return true,
             Tested::Read(..) | Tested::Proof(_) => return true,
             // The replier's step is the step hit: a step older than the one hit proves nothing.
             Tested::SyncKey { key, .. } => key.verifying_key().to_bytes(),
             Tested::Claim { sync, .. } => *sync,
-            // the grant's secrets are taken only once `sig` verifies under its head's sync key
-            Tested::Static { .. } | Tested::Public => {
-                let entry = cred.matched(s);
-                let (Some(sig), Some(g)) = (&a.sig, a.grant.as_ref()) else { return false };
-                return ctx.holds.take_grant(s, &entry, g, &|k| bind.peer_signed(k, s, sig));
-            }
         };
         a.sig.as_ref().is_some_and(|sig| bind.peer_signed(&key, s, sig))
     }

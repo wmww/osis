@@ -914,7 +914,7 @@ impl crate::engine::Engine {
 
 /// `Engine::learn_secret` in a transaction.
 pub(crate) fn learn_secret_in(tx: &mut Tx<'_>, g: &Tid, r: Role, e: osis_crypto::Epoch, secret: osis_crypto::Secret32) -> Result<bool> {
-    if !e.names(g, r, &secret) || !crate::rotation::may_learn(tx.core, g, r) {
+    if !e.names(g, r, &secret) || !crate::rotation::may_learn(tx, g, r, &e)? {
         return Ok(false);
     }
     let g = *g;

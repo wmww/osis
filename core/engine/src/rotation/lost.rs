@@ -183,13 +183,24 @@ pub(crate) fn may_take_role(core: &Core, a: &Tid, r: Role) -> bool {
     may_take(core, a) || r == Role::Sync && holds_at(core, a, Role::Sync)
 }
 
-/// Whether an entry box may give this node `a`'s secret of role `r`
+/// Whether an entry box may give this node `a`'s secret of role `r` at epoch `e`
 /// (spec/sync-ids.md §3): as a box may (`may_take_role`), or while nothing held says the node lost
-/// `a`: no ended edge on it of the node, a held link key or a thing it reads (a link's redeemer
-/// opens the sync ID before it holds the grant to its key; the trigger judges `a` once role
-/// commits on it apply).
-pub(crate) fn may_learn(core: &Core, a: &Tid, r: Role) -> bool {
-    may_take_role(core, a, r) || core.timelines().get(a).is_none_or(|tl| !tl.ended(a, now_ts(core)).keys().any(|h| was_ours(core, h)))
+/// `a` (`ended_ours`: a link's redeemer opens the sync ID before it holds the grant to its key;
+/// the trigger judges `a` once role commits on it apply), or at an epoch covering every departure
+/// from `a` known here (`covers_known`: the tester's side of spec/sync-opens.md §4 Departed). What
+/// the last gives is the step's entry box's, which every holder of its entry opens (the public's:
+/// every party), and the trigger judges it once the role entries it opens apply, keeping it only
+/// where a role (the public's) gives it.
+pub(crate) fn may_learn(tx: &mut Tx<'_>, a: &Tid, r: Role, e: &osis_crypto::Epoch) -> Result<bool> {
+    if may_take_role(tx.core, a, r) || !ended_ours(tx.core, a) {
+        return Ok(true);
+    }
+    super::covers_known(tx, a, r, e)
+}
+
+/// Whether an edge on `a` of the node, a held link key or a thing it reads ended or lowered.
+fn ended_ours(core: &Core, a: &Tid) -> bool {
+    core.timelines().get(a).is_some_and(|tl| tl.ended(a, now_ts(core)).keys().any(|h| was_ours(core, h)))
 }
 
 /// Whether the node holds secrets of `a` no current role of its there covers (lost access): a

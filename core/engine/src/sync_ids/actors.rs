@@ -388,7 +388,7 @@ impl FollowedLinks {
 fn followed(core: &Core, k: &Tid) -> Option<OwnedSyncId> {
     let (s, _) = core.followed_links.get(k)?;
     let ix = &core.ix;
-    let elsewhere = ix.sync_recorders.get(&s).is_some_and(|x| !x.is_empty())
+    let elsewhere = ix.sync_recorders.get(&s).is_some_and(|x| x.iter().any(|t| t != k))
         || core.followed_links.naming(&s).iter().any(|t| t != k);
     (followable(core, k) && !elsewhere).then(|| OwnedSyncId { id: s, path: Arc::new(crate::sync::Path::default()), tree: Arc::default(), endorsed: Arc::default(), hint: true })
 }

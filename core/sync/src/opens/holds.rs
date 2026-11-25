@@ -230,11 +230,13 @@ fn node_creds(cx: &mut Cx, unread: &Unread, s: &SyncId) -> Option<Arc<Creds>> {
             for k in &rc.acting {
                 c.tests.push((Tested::Static { key: k.clone(), step: None }, None));
             }
-            // S's public entry: shown where the public reads S's thing, tested where this node
-            // redeems a public link to it; once the public's removal is held, the superseded read
-            // secrets lapsed instead (spec/sync-opens.md §4)
+            // S's public entry: shown where the public reads S's thing, at the newest read epoch
+            // held (the epoch of the box it gives, so Departed judges it as any credential),
+            // tested where this node redeems a public link to it; once the public's removal is
+            // held, the superseded read secrets lapsed instead (spec/sync-opens.md §4)
             if rc.shows_public {
-                c.shows.push((Shown::Public(osis_crypto::public_entry(s)), None));
+                let newest = rc.read_secrets.iter().map(|(e, _)| *e).max();
+                c.shows.push((Shown::Public(osis_crypto::public_entry(s)), newest));
             } else if rc.lapsed_public {
                 c.lapsed = rc.old_read_secrets.iter().map(|(e, k)| Shown::Read(*e, *k.expose())).collect();
             }

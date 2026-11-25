@@ -177,28 +177,47 @@ impl Link {
     }
 }
 
-/// `Link := [2, target, target_sync_id, [peer*]]` (spec/wire.md §10): a thing the public reads,
-/// its sync ID and the nodes to dial; no secret. Its redeemer opens the sync ID by its public
-/// entry (spec/sync-opens.md §4).
+/// `Link := [2, target, target_sync_id, [peer*], ? independent]` (spec/wire.md §10): a thing the
+/// public reads, its independent's sync ID and the nodes to dial; no secret; `independent` the
+/// thing the sync ID is of where the target is a dependent of it. Its redeemer opens the sync ID by
+/// its public entry (spec/sync-opens.md §4).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PublicLink {
     pub target: Tid,
     pub sync_id: SyncId,
     pub peers: Vec<DialHint>,
+    /// The thing the sync ID is of, where it is not the target (a dependent target's independent).
+    pub independent: Option<Tid>,
 }
 
 impl PublicLink {
+    /// The thing whose sync ID the redeemer follows: the target's independent.
+    pub fn followed(&self) -> Tid {
+        self.independent.unwrap_or(self.target)
+    }
+
     pub fn to_value(&self) -> Result<Value, Error> {
-        Ok(Value::List(vec![Value::Int(PUBLIC_FORMAT), tid(&self.target), Value::bytes(&self.sync_id.0), peers_value(&self.peers)?]))
+        let mut v = vec![Value::Int(PUBLIC_FORMAT), tid(&self.target), Value::bytes(&self.sync_id.0), peers_value(&self.peers)?];
+        v.extend(self.independent.as_ref().map(tid));
+        Ok(Value::List(v))
     }
 
     pub fn from_value(v: &Value) -> Result<PublicLink, Error> {
         let Value::List(items) = v else { return Err(Error::Malformed("link")) };
-        let [f, target, sync_id, Value::List(peers)] = items.as_slice() else { return Err(Error::Malformed("link")) };
+        let (f, target, sync_id, peers, independent) = match items.as_slice() {
+            [f, t, s, Value::List(p)] => (f, t, s, p, None),
+            [f, t, s, Value::List(p), i] => (f, t, s, p, Some(i)),
+            _ => return Err(Error::Malformed("link")),
+        };
         if format_of(f)? != 2 {
             return Err(Error::Malformed("not a public link"));
         }
-        Ok(PublicLink { target: get_tid(target, "link target")?, sync_id: SyncId(get_bytes(sync_id, "link sync ID")?), peers: peers_from(peers)? })
+        let target = get_tid(target, "link target")?;
+        let independent = independent.map(|i| get_tid(i, "link independent")).transpose()?;
+        if independent == Some(target) {
+            return Err(Error::Malformed("link independent is its target"));
+        }
+        Ok(PublicLink { target, sync_id: SyncId(get_bytes(sync_id, "link sync ID")?), peers: peers_from(peers)?, independent })
     }
 
     pub fn to_text(&self) -> Result<String, Error> {
@@ -349,18 +368,26 @@ pub(crate) mod tests {
         assert!(ShareLink::from_text("osis://link/!!").is_err());
     }
 
-    // spec/wire.md §10 (public link): format 2, target, its sync ID and peers, no seed; read as
-    // a public link only, its text round trips.
+    // spec/wire.md §10 (public link): format 2, target, its sync ID and peers, no seed, and a
+    // dependent target's independent; read as a public link only, its text round trips.
     #[test]
     fn public_links() {
         let l = link();
-        let p = PublicLink { target: l.target, sync_id: l.k_sync_id, peers: l.peers.clone() };
+        let k = l.k;
+        let p = PublicLink { target: l.target, sync_id: l.k_sync_id, peers: l.peers.clone(), independent: None };
         let t = p.to_text().unwrap();
         assert_eq!(Link::from_text(&t).unwrap(), Link::Public(p.clone()));
         assert_eq!(Link::from_text(&l.to_text().unwrap()).unwrap(), Link::Share(l));
         assert!(ShareLink::from_text(&t).is_err(), "a public link is no share link");
         let Value::List(mut items) = p.to_value().unwrap() else { panic!() };
         items.push(Value::Int(1));
-        assert!(Link::from_value(&Value::List(items)).is_err(), "no flags");
+        assert!(Link::from_value(&Value::List(items.clone())).is_err(), "no flags");
+        let d = PublicLink { independent: Some(k), ..p.clone() };
+        assert_eq!(Link::from_text(&d.to_text().unwrap()).unwrap(), Link::Public(d.clone()), "a dependent target names its independent");
+        let same = PublicLink { independent: Some(p.target), ..p };
+        assert!(Link::from_text(&same.to_text().unwrap()).is_err(), "an independent target names none");
+        let Value::List(mut items) = d.to_value().unwrap() else { panic!() };
+        items.push(Value::Int(1));
+        assert!(Link::from_value(&Value::List(items)).is_err(), "nothing past the independent");
     }
 }

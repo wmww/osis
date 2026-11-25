@@ -375,12 +375,13 @@ impl Engine {
         Ok(l)
     }
 
-    /// Follows a public link being redeemed (spec/sync-set.md §4, §5): keeps its target's sync ID
-    /// from the link text in the sync set, read, testing the public entry (spec/sync-opens.md §4),
-    /// until `unfollow_link` of its target. The link text is untrusted: its sync ID counts only
-    /// where nothing held records the target's or another's (`sync_ids::actors::followed`).
+    /// Follows a public link being redeemed (spec/sync-set.md §4, §5): keeps the sync ID of its
+    /// target's independent (`PublicLink::followed`) from the link text in the sync set, read,
+    /// testing the public entry (spec/sync-opens.md §4), until `unfollow_link` of that thing. The
+    /// link text is untrusted: its sync ID counts only where nothing held records another's
+    /// (`sync_ids::actors::followed`).
     pub fn follow_public(&mut self, link: &osis_blob::PublicLink) {
-        self.core.followed_links.insert(link.target, link.sync_id, None);
+        self.core.followed_links.insert(link.followed(), link.sync_id, None);
     }
 
     /// Stops following link K (its join is held elsewhere), or a public link's target; a share
