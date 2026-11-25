@@ -21,9 +21,10 @@
 //!   (`paths::evidence`: every held edge write on a seed's key hop, on an edge of its path and on
 //!   each edge its commit's edge writes on its thing set, closed under the same for what it adds:
 //!   spec/permissions.md §4 Evidence of a commit) of the seeds: the bodies; the edge writes naming
-//!   S's thing as holder on an edge giving it read (a held write giving read, or its record: a
-//!   holder's grants travel under its sync ID, every grant counts; an edge only ever giving sync
-//!   travels as sync copies, no header, which this model has no role for). What of it
+//!   S's thing as holder (its key part: every grant counts), and under Role changes travel those
+//!   naming a thing S's keys open on an edge giving it read (a held write giving read, or its
+//!   record; an edge only ever giving sync goes as sync copies, no header, which this model has no
+//!   role for). What of it
 //!   lies on things outside the unit is a copy, the rest bodies. A removal is in it only as
 //!   evidence of a body (notes/write-path-design.md §2, D1) or as Role changes travel puts it
 //!   (D3); nothing logs a removal anywhere for its own sake (lazy delivery).
@@ -321,11 +322,12 @@ impl World {
         // the things whose holder roles travel under S: its own, and under Role changes travel
         // those S's thing holds read or above on, at any time
         let open = self.opened(rule, s, h);
-        // a write travels only on an edge that gives its holder read (a held write giving read
-        // or above, or the record): one only ever giving sync goes in the holder's key part alone,
-        // as sync copies (spec/permissions.md §4 Role changes travel)
+        // S's own thing's: its key part, every edge write naming it; another open thing's
+        // travel only on an edge that gives its holder read (a held write giving read or above,
+        // or the record): one only ever giving sync goes in the holder's key part alone, as sync
+        // copies (spec/permissions.md §4 Key part, Role changes travel)
         let reads: BTreeSet<Edge> = h.iter().filter_map(|&i| self.gives_read(i)).collect();
-        let travels = |i: Id, hd: Thing| reads.contains(&(hd, self.on(i))) || self.w.is_record((hd, self.on(i)));
+        let travels = |i: Id, hd: Thing| hd == s || reads.contains(&(hd, self.on(i))) || self.w.is_record((hd, self.on(i)));
         let mut seed: Set = h.iter().copied().filter(|&i| unit.contains(&self.on(i)) || self.holder(i).is_some_and(|hd| open.contains(&hd) && travels(i, hd))).collect();
         if rule.keysets {
             // a held keyset's carried demotions are evidence of it, each whole
