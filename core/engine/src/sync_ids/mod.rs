@@ -9,6 +9,7 @@ pub(crate) use certs::{Cut, judged_valid};
 mod statics;
 pub(crate) mod opened;
 pub(crate) mod steps;
+pub(crate) mod unread;
 
 pub use blobs::{Body, HeadKeys, OpenedBlob, Sealed, fetch_order, frame_envelope};
 pub use blobs::BodyCtx;

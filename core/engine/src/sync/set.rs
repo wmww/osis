@@ -120,7 +120,11 @@ impl Engine {
         }
         // kept unread: in the node closure by a sync secret alone (spec/sync.md §3)
         if self.kept_unread(t) {
-            let ids = synced(&self.owned_sync_ids(t)?);
+            // every sync ID kept for it (spec/sync.md §3): one a forged copy names never
+            // displaces the thing's own (`sync_ids::unread`)
+            // every sync ID kept for it (spec/sync.md §3): one a forged copy names never
+            // displaces the thing's own (`sync_ids::unread`)
+            let ids: Vec<SyncId> = self.owned_sync_ids(t)?.iter().filter(|o| !o.hint).map(|o| o.id).collect();
             if !ids.is_empty() {
                 return Ok(ThingSync::Unread(ids));
             }
@@ -365,7 +369,12 @@ impl Engine {
             if let Some(e) = self.core.epochs(&t) {
                 out.extend(e.role(osis_base::Role::Sync).held_newest_first().into_iter().map(|(ep, x)| (ep, x.clone())));
             }
+            // those its sync copies gave (`sync_ids::unread`), judged by the caller against the
+            // steps registered with this node
+            out.extend(self.core.unread(&t).candidates.iter().rev().map(|(e, x)| (*e, x.clone())));
         }
+        out.sort_by_key(|x| std::cmp::Reverse(x.0));
+        out.dedup_by(|a, b| a.0 == b.0);
         out
     }
 

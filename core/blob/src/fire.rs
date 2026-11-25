@@ -11,6 +11,34 @@ use osis_base::cbor::{decode, encode};
 use osis_base::{CreationRecord, Tid, Value};
 use osis_crypto::{CryptoRngCore, Epoch, KemPublicKey, KemSecret};
 
+/// A sealed payload (spec/wire.md §9 `Sealed`): a fire or certificate copy with what it rests on,
+/// or (form 2) a sync copy alone, `[2, SyncCopyPlaintext]`: no evidence, records or blobs
+/// (spec/wire.md §4; osis-commit parses its bytes).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Sealed {
+    Fire(SealedFire),
+    SyncCopy(Vec<u8>),
+}
+
+impl Sealed {
+    pub fn to_value(&self) -> Result<Value, Error> {
+        Ok(match self {
+            Sealed::Fire(f) => f.to_value(),
+            Sealed::SyncCopy(b) => Value::List(vec![Value::Int(2), decode(b, &OBJECT_LIMITS)?]),
+        })
+    }
+
+    pub fn from_value(v: Value) -> Result<Sealed, Error> {
+        match v {
+            Value::List(items) if matches!(items.first(), Some(Value::Int(2))) => {
+                let Ok::<[Value; 2], _>([_, c @ Value::List(_)]) = items.try_into() else { return Err(Error::Malformed("sealed sync copy")) };
+                Ok(Sealed::SyncCopy(encode(&c)))
+            }
+            v => Ok(Sealed::Fire(SealedFire::from_value(v)?)),
+        }
+    }
+}
+
 /// `Sealed := [form, CommitBlobPlaintext, [CommitBlobPlaintext*], [creation*], [blob*]]`
 /// (spec/wire.md §9): `form` 0 a sealed fire, 1 a sealed copy (`copy`); the fire's commit or the
 /// certificate copy; its evidence as certificate copies; their creation records, ascending by
@@ -44,19 +72,19 @@ impl SealedFire {
 
 /// Seals `fire` behind `prefix` (its commit's encryption prefix, spec/wire.md §5) to `thing`'s
 /// read KEM key `kem` of read epoch `epoch`: the blob a deposit carries.
-pub fn seal_fire(prefix: &Prefix, thing: &Tid, epoch: &Epoch, kem: &KemPublicKey, fire: &SealedFire, rng: &mut dyn CryptoRngCore) -> Result<Vec<u8>, Error> {
-    osis_crypto::seal_fire(&prefix.to_bytes(), thing, epoch, kem, &encode(&fire.to_value()), rng).map_err(|e| match e {
+pub fn seal_fire(prefix: &Prefix, thing: &Tid, epoch: &Epoch, kem: &KemPublicKey, fire: &Sealed, rng: &mut dyn CryptoRngCore) -> Result<Vec<u8>, Error> {
+    osis_crypto::seal_fire(&prefix.to_bytes(), thing, epoch, kem, &encode(&fire.to_value()?), rng).map_err(|e| match e {
         osis_crypto::Error::TooLarge => Error::TooLarge("sealed fire above MAX_BLOB"),
         e => Error::Crypto(e),
     })
 }
 
 /// Opens a sealed fire on `thing` with the read KEM secret of its keyset at `epoch`.
-pub fn open_fire(blob: &[u8], thing: &Tid, epoch: &Epoch, kem: &KemSecret) -> Result<(Prefix, SealedFire), Error> {
+pub fn open_fire(blob: &[u8], thing: &Tid, epoch: &Epoch, kem: &KemSecret) -> Result<(Prefix, Sealed), Error> {
     crate::blob::check_size(blob)?;
     let prefix = Prefix::parse(blob)?;
     let pt = osis_crypto::open_fire(blob, prefix.len(), thing, epoch, kem)?;
-    Ok((prefix, SealedFire::from_value(decode(&pt, &OBJECT_LIMITS)?)?))
+    Ok((prefix, Sealed::from_value(decode(&pt, &OBJECT_LIMITS)?)?))
 }
 
 #[cfg(test)]
@@ -73,9 +101,13 @@ mod tests {
         let kem = KemSecret::derive(&Secret32::from_bytes([1; 32]));
         let (t, e) = (Tid::from_bytes([2; 15]), Epoch::new(3, [4; 32]).unwrap());
         let prefix = Prefix::new(Prefix::random_salt(&mut rng), None, vec![]).unwrap();
-        let fire = SealedFire { copy: false, commit: Value::List(vec![Value::Int(1)]), evidence: vec![], records: vec![], pages: vec![] };
+        let fire = Sealed::Fire(SealedFire { copy: false, commit: Value::List(vec![Value::Int(1)]), evidence: vec![], records: vec![], pages: vec![] });
         let blob = seal_fire(&prefix, &t, &e, kem.public(), &fire, &mut rng).unwrap();
-        assert_eq!(open_fire(&blob, &t, &e, &kem).unwrap(), (prefix, fire));
+        assert_eq!(open_fire(&blob, &t, &e, &kem).unwrap(), (prefix.clone(), fire));
+        // form 2: a sync copy alone
+        let sync = Sealed::SyncCopy(encode(&Value::List(vec![Value::Bytes(vec![1; 32]), Value::Bytes(vec![2; 15]), Value::List(vec![]), Value::List(vec![Value::List(vec![])])])));
+        let blob = seal_fire(&prefix, &t, &e, kem.public(), &sync, &mut rng).unwrap();
+        assert_eq!(open_fire(&blob, &t, &e, &kem).unwrap().1, sync);
         assert!(open_fire(&blob, &t, &e, &KemSecret::derive(&Secret32::from_bytes([9; 32]))).is_err(), "another key");
     }
 }

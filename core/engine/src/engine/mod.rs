@@ -726,6 +726,9 @@ indexes! {
     pub blob_parts: JMap<osis_base::BlobId, Arc<crate::sync::BlobOf>>,
     /// `blob_parts`' blobs per commit: they go with it (`sync::bodies::forget`).
     pub commit_blobs: JSetMap<CommitId, osis_base::BlobId>,
+    /// The sync copies taken here per thing (`sync_ids::unread`, rows `su/`): what a node keeping
+    /// the thing unread keeps it by.
+    pub sync_copies: JMap<Tid, Arc<crate::sync_ids::unread::SyncCopies>>,
     /// The certificate blobs sealed here per sync ID, each with what it carries
     /// (`sync::certblobs`).
     pub cert_blobs: JMap<SyncId, Arc<crate::sync::CertBlobs>>,
@@ -1020,6 +1023,7 @@ pub struct Core {
     pub(crate) held_sync_keys: memo::Memo<Tid, Arc<BTreeSet<[u8; 32]>>>,
     /// `Core::own_epochs` per thing (`memo`).
     pub(crate) own_epochs_of: memo::Memo<Tid, Option<Arc<osis_keys::ActorEpochs>>>,
+    pub(crate) unread_of: memo::Memo<Tid, Arc<crate::sync_ids::unread::Unread>>,
     /// `Core::listed_keys` per base (`memo`).
     pub(crate) listed_keys: memo::Memo<Tid, Option<[Option<osis_crypto::VerifyingKey>; 2]>>,
     /// The pass place (`sync::held`): one strictly increasing count that both stamps a role
@@ -1897,6 +1901,7 @@ impl Core {
             epochs_of: _,
             held_sync_keys: _,
             own_epochs_of: _,
+            unread_of: _,
             listed_keys: _,
             live_bodies: _,
             covers: _,
@@ -2264,6 +2269,7 @@ impl Core {
             epochs_of: memo::Memo::new("epochs"),
             held_sync_keys: memo::Memo::new("held sync keys"),
             own_epochs_of: memo::Memo::new("own epochs"),
+            unread_of: memo::Memo::new("unread"),
             listed_keys: memo::Memo::new("listed keys"),
             store_rows,
             time: Default::default(),

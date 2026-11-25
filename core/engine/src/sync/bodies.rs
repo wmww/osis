@@ -888,6 +888,11 @@ impl Engine {
                 // of the own store under `s` (`certblobs`): one any node logged counts as this
                 // node's own; its prefix a certificate blob's (`CertBlob::of`), else bad input
                 let Ok((_, pt)) = osis_blob::open(bytes, &key) else { return Ok(Opened::Bad) };
+                // a sync copy in `t`'s key part (spec/wire.md §4): taken as `t`'s, for its box and
+                // steps alone (`sync_ids::unread`)
+                if osis_commit::SyncCopy::is_shaped(&pt) {
+                    return Ok(if self.take_sync_copy(&t, blob, &pt)? { Opened::SyncCopy } else { Opened::Bad });
+                }
                 if super::certblobs::CertBlob::of(bytes, &key, BTreeSet::new()).is_none() {
                     return Ok(Opened::Bad);
                 }

@@ -2220,6 +2220,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
     carriers::load(tx)?;
     crate::flows::inbox::load_carried(tx)?;
     crate::sync::certblobs::load(tx)?;
+    crate::sync_ids::unread::load(tx)?;
     crate::sync_ids::opened::load(tx)?;
     crate::rotation::merge::load(tx)?;
     crate::retention::load_owed(tx)?;

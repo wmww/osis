@@ -586,7 +586,7 @@ fn open_these(engine: &mut Engine, store: &mut Store, parked: &mut Parked, creds
         if pends(engine, &b, &o) {
             continue;
         }
-        if matches!(o, Opened::Commit(..) | Opened::Linked | Opened::Records(_)) {
+        if matches!(o, Opened::Commit(..) | Opened::Linked | Opened::Records(_) | Opened::SyncCopy) {
             store.uncharge(&s, &b)?;
             opened = true;
         }

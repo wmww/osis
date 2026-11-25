@@ -94,7 +94,7 @@ impl Engine {
     }
 
     /// The parts of commit `c` on `(tid, ak)` for any of `aks`.
-    fn parts_of(&self, c: &CommitId, tids: &BTreeSet<Tid>, aks: &[&str]) -> Parts {
+    pub(crate) fn parts_of(&self, c: &CommitId, tids: &BTreeSet<Tid>, aks: &[&str]) -> Parts {
         let Some(h) = self.header(c) else { return Parts::new() };
         h.aspects
             .iter()
@@ -208,7 +208,7 @@ impl Engine {
     /// admins the role.
     pub(crate) fn stubs_of(&mut self, g: &Tid) -> BTreeSet<Tid> {
         let core = &self.core;
-        core.ix.closure.beyond(g).into_iter().filter(|y| y != g && !core.ix.closure.unit_holds(g, y) && core.counts_independent(y) && !core.keys_open(g, y) && core.keyed_role_now(g, y) >= Some(osis_base::Role::Sync)).collect()
+        core.ix.closure.beyond(g).into_iter().filter(|y| y != g && !core.ix.closure.unit_holds(g, y) && core.counts_independent(y) && !core.keys_open(g, y) && (core.keyed_role_now(g, y) >= Some(osis_base::Role::Sync) || core.unread(y).holders.contains(g))).collect()
     }
 
     /// `h`'s edge pieces (spec/permissions.md §4 Key part), on `only` or on every thing `h` holds

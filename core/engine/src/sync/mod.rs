@@ -127,6 +127,8 @@ pub enum Opened {
     Linked,
     /// A record blob (spec/wire.md §3): its records learned.
     Records(BTreeSet<Tid>),
+    /// A sync copy (spec/wire.md §4): taken for its box and steps (`sync_ids::unread`).
+    SyncCopy,
     /// No held secret opens it (or nothing held links it).
     NotOpen,
     /// It opened and is bad (its sender is to blame).

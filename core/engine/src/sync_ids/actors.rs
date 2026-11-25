@@ -157,7 +157,7 @@ impl Core {
     /// Whether this node holds a sync secret of `g`'s own (`owns` judges `g`'s `sync.0` by it;
     /// without one its entries are hints).
     pub(crate) fn holds_own_sync(&self, g: &Tid) -> bool {
-        self.own_record(g).is_some_and(|e| e.sync.holds_any())
+        self.own_record(g).is_some_and(|e| e.sync.holds_any()) || self.unread(g).holds_any()
     }
 
     /// Whether `g` owns sync ID `id` here (`owns`): judged once this node holds a sync secret of
@@ -171,7 +171,10 @@ impl Core {
     pub(crate) fn held_sync_keys(&self, g: &Tid) -> Arc<BTreeSet<[u8; 32]>> {
         self.held_sync_keys.get(g, || {
             let e = self.epochs(g);
-            Arc::new(e.iter().flat_map(|e| e.sync.held_newest_first()).map(|(_, s)| role_key(RoleKey::Sync, s).verifying_key().to_bytes()).collect())
+            let mut out: BTreeSet<[u8; 32]> = e.iter().flat_map(|e| e.sync.held_newest_first()).map(|(_, s)| role_key(RoleKey::Sync, s).verifying_key().to_bytes()).collect();
+            // kept unread: the sync secrets a step bears (`sync_ids::unread`)
+            out.extend(self.unread(g).secrets.values().map(crate::sync_ids::unread::sync_key));
+            Arc::new(out)
         })
     }
 
@@ -247,18 +250,23 @@ impl Engine {
     /// per write of the `sync.0` (`Core::sync_ids`), a destroyed thing's too. A `sync.0` the store
     /// refuses to read is the error, read again at the next ask.
     pub(crate) fn owned_sync_ids(&mut self, g: &Tid) -> Result<Arc<Vec<OwnedSyncId>>> {
+        // kept unread with no record (spec/sync-ids.md §2: a sync holder learns none): the steps
+        // its sync copies carry alone (`sync_ids::unread`)
         if self.core.created(g).is_none() {
-            return Ok(Arc::new(held_sync_ids(&self.core, g, &ct::SyncIds::default())));
+            return Ok(Arc::new(held_sync_ids(&self.core, g, &self.core.unread(g).steps)));
         }
         Memo::get_in(self, |e| &e.core.sync_ids, g, |e| {
             use osis_schema::RawKey;
             // a destroyed thing's too: its `sync.0` stays (`retention::destroy`), read past `exists`
             let ak = crate::flows::ak(ct::SYNC.ak())?;
             let v = e.read(|tx| Ok(tx.state(g, &ak)?.and_then(osis_crdt::Fragment::read)))?;
-            let m = match v {
+            let mut m = match v {
                 Some(v) => ct::SYNC.decode(&v)?,
                 None => Default::default(),
             };
+            // beside the state, the steps of the sync copies on `g` (`sync_ids::unread`): owned
+            // only where a held secret's sync key is borne, as any entry
+            crate::sync_ids::unread::join_steps(&mut m, &e.core.unread(g).steps);
             Ok::<_, crate::error::Error>(Arc::new(held_sync_ids(&e.core, g, &m)))
         })
     }

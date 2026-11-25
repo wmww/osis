@@ -595,6 +595,17 @@ impl Engine {
         let Some((epoch, kem, sync_id)) = self.fire_keys(&o.thing)? else { return Ok(None) };
         let limits = osis_base::Limits::new(osis_base::format::MAX_OBJECT_DEPTH, osis_base::format::MAX_BLOB);
         let as_value = |b: &[u8]| osis_base::decode(b, &limits).map_err(|_| Error::Corrupt("commit blob"));
+        // a holder of sync alone's sealed copy: its sync copy alone (spec/wire.md §9 form 2), behind
+        // the prefix of its commit's parts it carries; never the header, records or evidence
+        if let Fire::Copy { commit, target } = &o.what
+            && self.core.roster_of(target).get(&o.thing).is_some_and(|e| e.role == Role::Sync)
+        {
+            let Some((copy, ais)) = self.sync_copy(commit, target, &o.thing)? else { return Ok(None) };
+            let Some(h) = self.header(commit) else { return Ok(None) };
+            let fire = osis_blob::Sealed::SyncCopy(copy.encode());
+            let sealed = self.seal_payload(&h, &ais, &o.thing, &epoch, &kem, &fire)?;
+            return Ok(Some(SealedFireOut { sync_id, thing: o.thing, to: o.to.clone(), blob: sealed }));
+        }
         // a sealed copy: the piece, behind its copy's prefix (spec/sync-inbox.md §2 Sealed copy)
         let (blob, fire) = if let Fire::Copy { commit, target } = &o.what {
             let Some(p) = self.edge_piece(commit, target, crate::sync_ids::Cut::EdgePiece(o.thing))? else { return Ok(None) };
@@ -618,14 +629,19 @@ impl Engine {
             let fire = osis_blob::SealedFire { copy: false, commit: as_value(&blob.encode())?, evidence, records, pages };
             (blob, fire)
         };
-        let h = &blob.header;
         let ais = sealed_ais(&blob, fire.copy);
+        let sealed = self.seal_payload(&blob.header, &ais, &o.thing, &epoch, &kem, &osis_blob::Sealed::Fire(fire))?;
+        Ok(Some(SealedFireOut { sync_id, thing: o.thing, to: o.to.clone(), blob: sealed }))
+    }
+
+    /// Seals `fire` to `thing`'s read KEM key `kem` at `epoch`, behind the prefix of header `h`'s
+    /// encryption of parts `ais` (spec/wire.md §9).
+    fn seal_payload(&mut self, h: &osis_commit::Header, ais: &[usize], thing: &Tid, epoch: &osis_crypto::Epoch, kem: &osis_crypto::KemPublicKey, fire: &osis_blob::Sealed) -> Result<Vec<u8>> {
         let groups = osis_commit::prefix_groups(h, ais.iter().copied())?;
         let seed = self.run(|tx| Ok(osis_crypto::Secret32::random(&mut *tx.rng)))?;
         let mut rng = osis_crypto::SeededRng::from_seed(*seed.expose());
-        let prefix = osis_blob::Prefix::for_delete_keys(osis_blob::Prefix::random_salt(&mut rng), &h.blind, osis_commit::prefix_expiry(h, &ais).map(osis_base::WallMs), &groups)?;
-        let sealed = osis_blob::seal_fire(&prefix, &o.thing, &epoch, &kem, &fire, &mut rng)?;
-        Ok(Some(SealedFireOut { sync_id, thing: o.thing, to: o.to.clone(), blob: sealed }))
+        let prefix = osis_blob::Prefix::for_delete_keys(osis_blob::Prefix::random_salt(&mut rng), &h.blind, osis_commit::prefix_expiry(h, ais).map(osis_base::WallMs), &groups)?;
+        Ok(osis_blob::seal_fire(&prefix, thing, epoch, kem, fire, &mut rng)?)
     }
 
     /// Builds owed fire `o`'s commit (by this node's account, one delta: the fire) and keeps it
@@ -842,6 +858,12 @@ impl Engine {
             }
         }
         let Some((under, (prefix, fire))) = found else { return Ok(Opened::NotOpen) };
+        // a holder of sync alone's sync copy (form 2): taken for its box and steps alone
+        // (`sync_ids::unread`), judged by nothing but its bytes
+        let fire = match fire {
+            osis_blob::Sealed::SyncCopy(plain) => return Ok(if self.take_sync_copy(t, b, &plain)? { Opened::SyncCopy } else { Opened::Bad }),
+            osis_blob::Sealed::Fire(f) => f,
+        };
         let Ok(commit) = osis_commit::CommitBlob::decode(&osis_base::encode(&fire.commit)) else { return Ok(Opened::Bad) };
         let h = &commit.header;
         // a sealed fire: one delta, a fire of an external signal of `t`; a sealed copy: a

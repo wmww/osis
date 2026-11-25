@@ -846,6 +846,15 @@ impl Engine {
                 k.epochs[2] = Some(ep);
             }
         }
+        // kept unread: a sync secret a sync copy gave, the head bearing its key, is established
+        // under S (spec/crypto.md §4 Established)
+        if k.sync.is_none()
+            && let Some((ep, s)) = self.core.unread(g).candidates.iter().find(|(_, s)| crate::sync_ids::unread::sync_key(s) == head.keys.sync.to_bytes())
+        {
+            k.sync = Some(osis_crypto::role_key(RoleKey::Sync, s));
+            k.sync_established = true;
+            k.epochs[0] = Some(*ep);
+        }
         if let Some(seed) = self.deposit_seed(g)? {
             let d = deposit_key(&seed, &head.sync_id);
             if d.verifying_key() == head.keys.deposit {

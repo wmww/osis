@@ -40,9 +40,13 @@ fn open(lp: &mut LocalPeer, i: usize, out: &super::inbox::SealedFireOut) -> Open
     lp.peers[i].engine.open_entry(&out.sync_id, &osis_blob::blob_id(&out.blob), &[0; 57], &out.blob, u64::MAX).unwrap()
 }
 
-/// The sync secrets of `g` peer `i` holds.
+/// The sync secrets of `g` peer `i` holds: by role commits applied, or kept unread by its sync
+/// copies (`sync_ids::unread`).
 fn sync_held(lp: &LocalPeer, i: usize, g: &Tid) -> BTreeSet<osis_crypto::Epoch> {
-    lp.peers[i].engine.epochs(g).map(|e| e.role(Role::Sync).held().map(|x| x.0).collect()).unwrap_or_default()
+    let e = &lp.peers[i].engine;
+    let mut out: BTreeSet<osis_crypto::Epoch> = e.epochs(g).map(|e| e.role(Role::Sync).held().map(|x| x.0).collect()).unwrap_or_default();
+    out.extend(e.core.unread(g).secrets.keys().copied());
+    out
 }
 
 // spec/permissions.md §4 (Delivering an edge piece: a rotation boxing a holder of sync alone goes
@@ -65,9 +69,18 @@ fn a_rotation_reaches_a_holder_of_sync_alone_as_a_sealed_copy_spec_permissions_4
     assert!(o.thing == t && o.ak.is_none() && o.what == Fire::Copy { commit: rot, target: g }, "a sealed copy to T itself: {o:?}");
     let out = lp.peers[0].engine.sealed_fire(&owed[0]).unwrap().expect("sealed to T's read key");
     assert_eq!(Some(out.sync_id), lp.peers[2].engine.sync_id_of(&t).unwrap(), "under T's own sync ID");
-    assert!(matches!(open(&mut lp, 2, &out), Opened::Commit(c, _) if c == rot), "opened as the rotation");
+    assert!(matches!(open(&mut lp, 2, &out), Opened::SyncCopy), "opened as the rotation's sync copy");
+    // its box opens, but no step bears the secret yet: kept for nothing (spec/sync.md §3)
+    let copies = lp.peers[2].engine.sync_copies_of(&g);
+    assert!(copies.len() == 1 && copies[0].1.holder == t && !copies[0].2, "taken as T's, not counted: {copies:?}");
+    assert_eq!(sync_held(&lp, 2, &g), was, "no step bears it yet");
+    // G's admin issues the step: the secret is kept and the copy counts
+    let s = lp.peers[0].engine.sync_id_of(&g).unwrap().unwrap();
+    lp.peers[0].engine.issue_step(&g, &s, false).unwrap().expect("a step due");
+    lp.sync_all().unwrap();
     let now = sync_held(&lp, 2, &g);
     assert!(now.len() > was.len() && now.is_superset(&was), "G's new sync secret held: {was:?} -> {now:?}");
+    assert!(lp.peers[2].engine.sync_copies_of(&g).iter().all(|c| c.2), "counted once a step bears it");
 }
 
 /// Peer 2 forges a role commit on G making T an admin (it holds write there, no admin: the writer
@@ -77,6 +90,8 @@ fn a_rotation_reaches_a_holder_of_sync_alone_as_a_sealed_copy_spec_permissions_4
 fn forged_copy(lp: &mut LocalPeer, g: Tid, t: Tid) -> (CommitId, super::inbox::SealedFireOut) {
     let w = lp.peers[2].engine.me();
     lp.peers[0].engine.grant(&g, &w, &edge(Role::Write)).unwrap();
+    // T reads G: a sealed copy to it is a certificate copy (form 1), not a sync copy
+    lp.peers[0].engine.grant(&g, &t, &edge(Role::Read)).unwrap();
     lp.sync_all().unwrap();
     let e2 = &mut lp.peers[2].engine;
     let before = e2.fires_owed();
@@ -163,10 +178,11 @@ fn a_forged_offer_gives_no_role_spec_sync_inbox_5() {
 fn a_replayed_rotation_copy_gives_back_nothing_spec_sync_inbox_2() {
     let (mut lp, g, t) = sync_holder();
     let before = lp.peers[0].engine.fires_owed();
-    let rot = lp.peers[0].engine.rotate_leaving_out(&g, &[Role::Sync], &[]).unwrap().unwrap();
+    lp.peers[0].engine.rotate_leaving_out(&g, &[Role::Sync], &[]).unwrap().unwrap();
     let owed = new_owed(&lp, 0, &before);
     let out = lp.peers[0].engine.sealed_fire(&owed[0]).unwrap().expect("sealed to T's read key");
-    assert!(matches!(open(&mut lp, 2, &out), Opened::Commit(c, _) if c == rot), "taken once");
+    assert!(matches!(open(&mut lp, 2, &out), Opened::SyncCopy), "taken once");
+    lp.sync_all().unwrap();
     lp.peers[0].engine.remove_holders(&g, &t, &[]).unwrap();
     lp.sync_all().unwrap();
     let role = lp.peers[2].engine.core.role_now(&t, &g);
@@ -177,22 +193,74 @@ fn a_replayed_rotation_copy_gives_back_nothing_spec_sync_inbox_2() {
     assert_eq!(sync_held(&lp, 2, &g), epochs, "G's sync epochs at peer 2 unchanged");
 }
 
-// spec/sync-inbox.md §2 (Sealed copy: never promoted, H's writers log what it carries in H's key
-// part as their own certificate copies), spec/permissions.md §4 (Key part: each commit boxing H
-// in a thing's `secrets.0`): peer 2, T's writer, takes the rotation's sealed copy; the rotation
-// is then in T's key part at peer 2, which it logs under T's sync ID by the rule for any piece
-// it holds. Fails if a taken sealed copy is not held as the role commit it is (kept as an entry
-// alone, or dropped for want of a held thing needing it).
+// spec/wire.md §4 (sync copy: no header), §9 (form 2), spec/sync-ids.md §2 (What a sync holder
+// learns: no signer, path or other holder's box key): peer 0 rotates G's sync role, boxing T
+// (sync alone) and peer 1 (granted read on G). What reaches T's readers is T's sync copy alone:
+// its payload is form 2, and no byte of it names the rotator or the other holder, nor carries
+// the commit's header. Fails with the copy sent as a certificate copy (form 1: header, signer,
+// records).
 #[test]
-fn a_taken_sealed_copy_is_in_the_holders_key_part_spec_sync_inbox_2() {
+fn a_sync_alone_holder_gets_no_header_spec_sync_ids_2() {
     let (mut lp, g, t) = sync_holder();
+    let other = lp.peers[1].engine.me();
+    lp.peers[0].engine.grant(&g, &other, &edge(Role::Read)).unwrap();
+    lp.sync_all().unwrap();
     let before = lp.peers[0].engine.fires_owed();
     let rot = lp.peers[0].engine.rotate_leaving_out(&g, &[Role::Sync], &[]).unwrap().unwrap();
     let owed = new_owed(&lp, 0, &before);
     let out = lp.peers[0].engine.sealed_fire(&owed[0]).unwrap().expect("sealed to T's read key");
-    assert!(!lp.peers[2].engine.key_part(&t).contains(&(rot, g)), "not before");
-    assert!(matches!(open(&mut lp, 2, &out), Opened::Commit(c, _) if c == rot), "peer 2 takes it");
-    assert!(lp.peers[2].engine.key_part(&t).contains(&(rot, g)), "in T's key part at T's writer");
+    let e2 = &lp.peers[2].engine;
+    let (prefix, sealed) = e2.read_epochs(&t, &[]).into_iter().find_map(|(e, x)| osis_blob::open_fire(&out.blob, &t, &e, &osis_crypto::role_kem(&x)).ok()).expect("opens at T's reader");
+    let osis_blob::Sealed::SyncCopy(plain) = sealed else { panic!("form 2") };
+    let h = lp.peers[0].engine.header(&rot).unwrap();
+    let names = |b: &[u8], x: &[u8]| b.windows(x.len()).any(|w| w == x);
+    for (what, x) in [("the rotator", h.signer.as_bytes().to_vec()), ("the other holder", other.as_bytes().to_vec()), ("the header (its blind)", h.blind.to_vec())] {
+        assert!(!names(&plain, &x) && !names(&prefix.to_bytes(), &x), "{what} in the bytes T's readers get");
+    }
+    let copy = osis_commit::SyncCopy::decode(&plain).unwrap();
+    assert!(copy.commit == rot && copy.thing == g && copy.piece.is_some(), "T's piece of the rotation");
+}
+
+// spec/wire.md §4 (sync copy: one whose piece holds a record keyed with another holder is bad
+// input), spec/permissions.md §4 (Logging certificates: counts once its box opens to a secret a
+// step bears): T's sync copy of a rotation, sealed by anyone holding a keyset of another
+// independent thing U to U, is refused at U's reader: nothing taken. And a copy whose secret no
+// step bears is taken but keeps nothing: a holder of sync alone takes no secret on a box's word.
+// Fails without the holder check, or with a box kept unborne.
+#[test]
+fn a_sync_copy_of_another_holder_is_refused_spec_wire_4() {
+    let (mut lp, g, t) = sync_holder();
+    let u = crate::rotation::tests::independent_thing(&mut lp, 1);
+    lp.sync_all().unwrap();
+    let rot = lp.peers[0].engine.rotate_leaving_out(&g, &[Role::Sync], &[]).unwrap().unwrap();
+    let (copy, _) = lp.peers[0].engine.sync_copy(&rot, &g, &t).unwrap().expect("T's sync copy");
+    let plain = copy.encode();
+    let b = osis_base::BlobId([9; 32]);
+    assert!(!lp.peers[1].engine.take_sync_copy(&u, &b, &plain).unwrap(), "T's piece is no copy of U's");
+    assert!(lp.peers[1].engine.sync_copies_of(&g).is_empty(), "nothing taken");
+    let was = sync_held(&lp, 2, &g);
+    assert!(lp.peers[2].engine.take_sync_copy(&t, &b, &plain).unwrap(), "T's own");
+    assert_eq!(sync_held(&lp, 2, &g), was, "no step bears it: kept for nothing");
+}
+
+// spec/wire.md §4 (sync copy: a delta that does not decode is bad input), spec/permissions.md §4
+// (of two sync copies of one commit, thing and holder: one counts): a copy logged under T's
+// sync ID with garbage for its piece is refused and not held; the real copy taken again under
+// another blob moves nothing; G's sync ID at T's reader stays G's own. Fails if garbage is held
+// or takes the real copy's place.
+#[test]
+fn garbage_does_not_take_the_real_copys_place_spec_sync_3() {
+    let (mut lp, g, t) = sync_holder();
+    let before = lp.peers[2].engine.sync_id_of(&g).unwrap();
+    let rot = lp.peers[0].engine.rotate_leaving_out(&g, &[Role::Sync], &[]).unwrap().unwrap();
+    let (copy, _) = lp.peers[0].engine.sync_copy(&rot, &g, &t).unwrap().expect("T's sync copy");
+    let junk = osis_commit::SyncCopy { piece: Some(vec![0x81, 0x01]), ..copy.clone() };
+    assert!(!lp.peers[2].engine.take_sync_copy(&t, &osis_base::BlobId([1; 32]), &junk.encode()).unwrap(), "garbage: bad input");
+    let other = lp.peers[0].engine.sync_copy(&rot, &g, &t).unwrap().unwrap().0;
+    lp.peers[2].engine.take_sync_copy(&t, &osis_base::BlobId([2; 32]), &other.encode()).unwrap();
+    lp.sync_all().unwrap();
+    assert_eq!(lp.peers[2].engine.sync_id_of(&g).unwrap(), before, "G's sync ID unmoved");
+    assert!(lp.peers[2].engine.sync_copies_of(&g).iter().filter(|c| c.0 == osis_base::BlobId([1; 32])).count() == 0, "the garbage is not held");
 }
 
 // spec/wire.md §9 (Payload: every blob its commits' deltas link travels with it, a blob none

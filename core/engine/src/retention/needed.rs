@@ -444,6 +444,7 @@ pub(crate) fn settle(tx: &mut Tx<'_>) -> Result<bool> {
         }
         tx.core.ix.independent.remove(t);
         tx.core.ix.secrets.remove(t);
+        crate::sync_ids::unread::forget(tx, t)?;
         crate::sync::stranded::drop_asks(tx, t, |_| false)?;
         crate::sync::held::forget_actor(tx, t)?;
         crate::flows::inbox::drop_fires_on(tx, t)?;

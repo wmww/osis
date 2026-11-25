@@ -769,7 +769,7 @@ impl Core {
     /// one). Established or not: a grantee holds the grant's box before it syncs `y`, where the
     /// rotation that made the epoch is (spec/permissions.md §4 Key part).
     pub(crate) fn counts_independent(&self, y: &Tid) -> bool {
-        self.is_independent(y) || self.own_record(y).is_some_and(|e| Role::ALL.iter().any(|r| e.role(*r).held().next().is_some()))
+        self.is_independent(y) || self.own_record(y).is_some_and(|e| Role::ALL.iter().any(|r| e.role(*r).held().next().is_some())) || self.unread(y).holds_any()
     }
 
     /// How the walk enters independent thing `y` at a strong from a context that does not
@@ -778,11 +778,12 @@ impl Core {
     /// it by a box: never the reading-only ones read through its mint admin's (`Core::epochs`), so
     /// a reader of the mint admin enters it by no secret of its own, whatever arrived first.
     pub(crate) fn enter(&self, y: &Tid) -> Option<Ctx> {
-        self.own_record(y)?;
-        let e = self.epochs(y)?;
-        if e.role(Role::Read).holds_any() {
+        let e = self.own_record(y).and_then(|_| self.epochs(y));
+        if e.as_ref().is_some_and(|e| e.role(Role::Read).holds_any()) {
             Some(Ctx::Read(*y))
-        } else if e.role(Role::Sync).holds_any() {
+        } else if e.as_ref().is_some_and(|e| e.role(Role::Sync).holds_any()) || self.unread(y).holds_any() {
+            // kept unread: a sync secret alone, given by a box applied or a sync copy
+            // (`sync_ids::unread`)
             Some(Ctx::Unread(*y))
         } else {
             None
