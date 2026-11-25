@@ -33,7 +33,7 @@ pub use lists::{BlobSink, BlobSource, MemoryBlobs, read_list};
 use lists::write_list;
 pub use osis_base::format::MAX_LIST_BYTES;
 pub use error::Error;
-pub use header::{AspectEntry, aspect_position, aspects_on, DeleteKey, EphClass, FOREVER, Form, Header, frontier_ids, put_frontier, Kind, Links, ListField, PurgeItem, Signed, verify_signature};
+pub use header::{AspectEntry, PIECED, aspect_position, aspect_range, aspects_on, DeleteKey, EphClass, FOREVER, Form, Header, frontier_ids, put_frontier, Kind, Links, ListField, PurgeItem, Signed, verify_signature};
 pub use keys::{Prefix, Secrets, delete_keys};
 pub use path::{COMMITMENT_LEN, ENTRY_CLASSES, Marks, Path, Paths, Split, ThingPath, entry_len, key_commitment, marks_bytes, path_key};
 pub use verify::{Decoded, delta_ctx, read_part, read_part_whole, stream_part, verify_blob, verify_part, writer_ctx};

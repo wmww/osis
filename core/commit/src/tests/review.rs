@@ -68,7 +68,7 @@ fn snapshot_never_carries_record_spec_commits_2() {
 }
 
 // spec/wire.md §5: one prefix group per distinct delete-key set among the blob's aspects, in
-// order of first aspect; an aspect index past the header is bad input.
+// order of first aspect; an part index past the header is bad input.
 #[test]
 fn prefix_groups_by_key_set() {
     use osis_base::{Classified, ErrorClass};

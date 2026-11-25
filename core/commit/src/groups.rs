@@ -15,7 +15,7 @@ pub fn prefix_groups(h: &Header, ais: impl IntoIterator<Item = usize>) -> Result
     let mut sets: Vec<&Vec<usize>> = Vec::new();
     let ais: std::collections::BTreeSet<usize> = ais.into_iter().collect();
     for ai in ais {
-        let a = h.aspects.get(ai).ok_or(Error::Malformed("part aspect index out of range"))?;
+        let a = h.aspects.get(ai).ok_or(Error::Malformed("part index out of range"))?;
         if sets.contains(&&a.keys) {
             continue;
         }

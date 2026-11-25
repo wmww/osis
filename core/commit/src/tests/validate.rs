@@ -406,3 +406,68 @@ fn sort_orders_match_canonical_bytes() {
         }
     }
 }
+
+// spec/wire.md §4 Pieces: a `secrets.0` written in pieces is one wire aspect listing each piece's
+// hash, ascending and distinct, read back as one entry per piece (each its own part index); a
+// hash list anywhere else, of one hash, or out of order is bad input; in-memory pieces share
+// every field but the hash.
+#[test]
+fn pieced_secrets_aspect_spec_wire_4() {
+    let mut h = sample_header();
+    h.kind = Kind::Role;
+    h.form = Form::Commit;
+    h.expires = None;
+    h.undoes = None;
+    h.keys = vec![dkey(1, 1)];
+    h.path = Paths::One(Path::default());
+    let piece = |hash: u8| AspectEntry { tid: t(3), ak: Ak::new("secrets.0").unwrap(), lo: 1, hi: 4, purge_by: crate::retention::ROLE_PURGE_BY, keys: vec![0], hash: [hash; 32], replaces: None, original_floor: 0 };
+    h.aspects = vec![piece(1), piece(2), piece(7)];
+    h.validate().unwrap();
+    let b = h.encode();
+    let back = Header::decode(&b).unwrap();
+    assert_eq!(back, h);
+    assert_eq!(back.aspect_parts(&t(3), "secrets.0"), 0..3);
+    assert_eq!(back.wire_aspects().count(), 1);
+    // each piece of one wire aspect
+    let mut one = h.clone();
+    one.aspects.truncate(1);
+    assert_eq!(Header::decode(&one.encode()).unwrap().aspects.len(), 1);
+    // out of order, repeated, or differing in another field: not pieces
+    let mut x = h.clone();
+    x.aspects.swap(0, 1);
+    assert!(matches!(invalid(&x), Error::Malformed(_)));
+    let mut x = h.clone();
+    x.aspects[1].hash = [1; 32];
+    assert!(matches!(invalid(&x), Error::Malformed(_)));
+    let mut x = h.clone();
+    x.aspects[2].hi = 5;
+    assert!(matches!(invalid(&x), Error::Malformed(_)));
+    // pieces of any other aspect
+    let mut x = h.clone();
+    for a in &mut x.aspects {
+        a.ak = Ak::new("keys.0").unwrap();
+    }
+    assert!(matches!(invalid(&x), Error::Malformed(_)));
+    assert!(Header::decode(&x.encode()).is_err(), "a hash list on keys.0");
+    // a wire list of one hash, or descending: bad input
+    let list = |hs: &[u8]| {
+        let mut out = Vec::new();
+        osis_base::cbor::put_array(&mut out, hs.len());
+        for x in hs {
+            osis_base::cbor::put_bytes(&mut out, &[*x; 32]);
+        }
+        out
+    };
+    let mut single = h.clone();
+    single.aspects.truncate(1);
+    let b1 = single.encode();
+    let one_hash = { let mut v = Vec::new(); osis_base::cbor::put_bytes(&mut v, &[1; 32]); v };
+    let swap = |from: &[u8], to: &[u8]| {
+        let i = b1.windows(from.len()).position(|w| w == from).unwrap();
+        [&b1[..i], to, &b1[i + from.len()..]].concat()
+    };
+    assert!(Header::decode(&swap(&one_hash, &list(&[1]))).is_err(), "a list of one hash");
+    assert!(Header::decode(&swap(&one_hash, &list(&[2, 1]))).is_err(), "hashes descending");
+    assert!(Header::decode(&swap(&one_hash, &list(&[1, 1]))).is_err(), "a hash twice");
+    assert_eq!(Header::decode(&swap(&one_hash, &list(&[1, 2]))).unwrap().aspects.len(), 2);
+}

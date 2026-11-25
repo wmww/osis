@@ -50,7 +50,7 @@ use std::sync::Arc;
 /// An entry's wrap, or a random filler (spec/sync-ids.md §5).
 pub type Wrap = [u8; WRAP_LEN];
 
-/// The parts (aspect indexes) a blob holds.
+/// The parts (part indexes) a blob holds.
 pub type PartSet = BTreeSet<usize>;
 
 /// The sections of a blob this node did not open, each by its digest (`Section::digest`): all a
@@ -888,9 +888,9 @@ impl Engine {
         }
         let actors: BTreeSet<Tid> = h.aspects.iter().filter(|a| a.ak.as_str() == "secrets.0").map(|a| a.tid).collect();
         for a in actors {
-            let (Some(si), ki) = (h.aspect_index(&a, "secrets.0"), h.aspect_index(&a, "keys.0")) else { continue };
+            let (si, ki) = (h.aspect_parts(&a, "secrets.0"), h.aspect_index(&a, "keys.0"));
             let (w, k) = self.read(|tx| {
-                let w = crate::apply::held_fragment(tx, &id, si)?.map(|f| crate::apply::keys::secrets_write(&f));
+                let w = crate::apply::held_joined(tx, &id, si)?.map(|f| crate::apply::keys::secrets_write(&f));
                 let k = match ki {
                     Some(ki) => crate::apply::held_fragment(tx, &id, ki)?.map(|f| crate::apply::keys::keys_write(&f)),
                     None => None,

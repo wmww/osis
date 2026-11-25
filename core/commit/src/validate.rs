@@ -1,7 +1,7 @@
 //! Structural validation of a resolved header (spec/wire.md §4, spec/commits.md §2, §5, §6).
 
 use crate::cbor::strictly_ascending;
-use crate::header::{EphClass, FOREVER, Form, Header, Kind, Links, ListField, PurgeItem, aspect_order, purge_bytes};
+use crate::header::{AspectEntry, EphClass, FOREVER, Form, Header, Kind, Links, ListField, PIECED, PurgeItem, aspect_order, purge_bytes};
 use crate::path::{Path, Paths};
 use osis_base::format::DELETE_AUTHOR;
 use crate::retention::{CREATED, EPHEMERAL_PURGE_BY, delete_levels, fixed_purge_by};
@@ -19,7 +19,17 @@ impl Header {
         }
         let ord = |ok: bool, what: &'static str| if ok { Ok(()) } else { Err(Error::Malformed(what)) };
         ord(!self.aspects.is_empty(), "no aspects")?;
-        ord(self.aspects.is_sorted_by(|a, b| aspect_order(&a.tid, a.ak.as_str()) < aspect_order(&b.tid, b.ak.as_str())), "aspects not sorted and distinct")?;
+        // aspects sorted and distinct; an aspect in pieces (`secrets.0` alone) is consecutive
+        // entries sharing every field but the hash, ascending by it (spec/wire.md §4 Pieces)
+        let piece = |a: &AspectEntry, b: &AspectEntry| a.tid == b.tid && a.ak == b.ak;
+        let same_but_hash = |a: &AspectEntry, b: &AspectEntry| (a.lo, a.hi, a.purge_by, &a.keys, a.replaces, a.original_floor) == (b.lo, b.hi, b.purge_by, &b.keys, b.replaces, b.original_floor);
+        ord(
+            self.aspects.is_sorted_by(|a, b| match piece(a, b) {
+                true => a.ak.as_str() == PIECED && same_but_hash(a, b) && a.hash < b.hash,
+                false => aspect_order(&a.tid, a.ak.as_str()) < aspect_order(&b.tid, b.ak.as_str()),
+            }),
+            "aspects not sorted and distinct",
+        )?;
         ord(strictly_ascending(&self.purge, purge_bytes), "purge not sorted and distinct")?;
         ord(strictly_ascending(&self.keys, |k| *k), "delete keys not sorted and distinct")?;
         // a linked list's blobs commit to no delete key (spec/wire.md §5): its links name none

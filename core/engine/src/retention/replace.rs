@@ -58,7 +58,7 @@ pub(super) fn replaced(tx: &mut Tx<'_>, c: &CommitId, ai: usize, tid: &Tid, ak: 
     }
     let own = (m.header.expires.is_some() && !super::is_gone(tx.core, c, ai)).then(|| super::writes_of(&m.header, c, ai));
     let mut out = false;
-    crate::apply::each_held_piece(tx, c, ai, &mut |tx, f| {
+    super::each_body_piece(tx, c, ai, &mut |tx, f| {
         if out {
             return Ok(());
         }

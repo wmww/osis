@@ -661,7 +661,7 @@ fn stamps_of(f: &Fragment) -> BTreeSet<(Ts, osis_crdt::Source)> {
 
 /// The held commit on `(tid, ak)` stamped `ts` whose own writes are `src`'s (spec/crdt.md §2.1:
 /// one commit per `ts` and source on an aspect; equivocating ones are all held), with its
-/// aspect index.
+/// part index.
 pub(crate) fn held_by_stamp(core: &Core, tid: &Tid, ak: &Ak, ts: Ts, src: &osis_crdt::Source) -> Vec<(CommitId, usize)> {
     let lo = (ts, CommitId([0; 32]));
     let hi = (ts, CommitId([0xff; 32]));
@@ -1006,7 +1006,10 @@ fn covered_body(tx: &mut Tx<'_>, s: &CommitId, sai: usize, c: &CommitId, cai: us
         }
         f
     };
-    let body_gives = crate::apply::each_held_page(tx, c, cai, None, &mut |tx, p| {
+    // a body in pieces (`retention::body_parts`: a role commit's `secrets.0`, unpaged pieces)
+    // is judged joined, in one group
+    let pieced = super::body_parts(tx.core, c, cai).len() > 1;
+    let body_gives = if pieced { None } else { crate::apply::each_held_page(tx, c, cai, None, &mut |tx, p| {
         let f = match p {
             osis_crdt::Piece::Skeleton(f) => f,
             osis_crdt::Piece::Page { path, fragment, .. } => {
@@ -1033,9 +1036,20 @@ fn covered_body(tx: &mut Tx<'_>, s: &CommitId, sai: usize, c: &CommitId, cai: us
             }
         }
         Ok(())
-    })?;
+    })? };
     out.held = body_gives.is_some();
     out.facts = body_gives.flatten().map(|(_, abs, facts)| (facts, abs.into_iter().collect()));
+    let pieced_body = match pieced {
+        true => {
+            let body = super::body_fragment(tx, c, cai)?.map(|f| read(tx, f));
+            out.held = body.is_some();
+            let body = body.unwrap_or_default();
+            ix.extend(body.copy_index());
+            out.stamps.extend(stamps_of(&body));
+            Some(body)
+        }
+        false => None,
+    };
     let judge = |tx: &mut Tx<'_>, out: &mut CoveredBody, group: Fragment| -> Result<()> {
         let (mut part, gives) = crate::apply::held_part_at(tx, s, sai, &group)?;
         osis_base::costs::peak("covered: body group held", group.approx_bytes() as u64);
@@ -1050,6 +1064,10 @@ fn covered_body(tx: &mut Tx<'_>, s: &CommitId, sai: usize, c: &CommitId, cai: us
         out.unchanged &= crate::engine::state::encode(&part)? == before;
         Ok(())
     };
+    if let Some(body) = pieced_body {
+        judge(tx, &mut out, body)?;
+        return Ok(out);
+    }
     if fits {
         judge(tx, &mut out, whole)?;
         return Ok(out);

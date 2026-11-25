@@ -242,7 +242,7 @@ fn entries(f: &Fragment) -> Vec<(Dot, Option<Value>, Option<Fragment>)> {
 /// reset; a fragment reading no edge is bad input, `check_holders_parts`).
 pub(crate) type Entry = (Dot, Option<Holder>, Option<Edge>);
 
-/// What perm's adaptation reads of a role commit's held `roles.0` parts, by aspect index: a
+/// What perm's adaptation reads of a role commit's held `roles.0` parts, by part index: a
 /// function of the commit record, persisted per commit in the index (`engine::index`,
 /// `PERM_PARTS`) so an open decodes no role body.
 #[derive(Clone, Debug, PartialEq, Default)]
@@ -768,7 +768,7 @@ pub(crate) fn note_required(core: &mut Core, h: &Header, id: &CommitId, read: &s
     }
 }
 
-/// Notes the `card.0` parts among `parts` (each an aspect index and its delta or snapshot, read
+/// Notes the `card.0` parts among `parts` (each an part index and its delta or snapshot, read
 /// with view `view`) that put an entry keyed by a thing not among the members their commit
 /// states for the thing they are on (spec/permissions.md §5.2): invalid (`Indexes::overreach`).
 /// A reset alone puts nothing (removing a card is a writer's power, as removing data is). A part

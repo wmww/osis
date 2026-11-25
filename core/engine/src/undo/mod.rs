@@ -41,7 +41,7 @@ fn keeps_now(core: &Core, h: &Header, a: &osis_commit::AspectEntry, now: u64) ->
 }
 
 /// The valid parts of `(tid, ak)` ordered before `at` whose headers are held, oldest first, each
-/// as `(ts, commit, aspect index)`.
+/// as `(ts, commit, part index)`.
 fn parts_before(core: &Core, tid: &Tid, ak: &Ak, at: (Ts, CommitId)) -> Vec<(Ts, CommitId, usize)> {
     let ids = core.ix.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().filter(|x| **x < at);
     ids.filter_map(|(ts, c)| core.ix.commits.get(c).and_then(|m| m.aspect(tid, ak).filter(|ci| m.valid_at(*ci))).map(|ci| (*ts, *c, ci))).collect()

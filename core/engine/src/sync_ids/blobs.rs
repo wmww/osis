@@ -89,7 +89,7 @@ pub(crate) enum SectionOpens {
 }
 
 impl OpenedBlob {
-    /// The aspect indices of the opened parts.
+    /// The part indices of the opened parts.
     pub fn parts(&self) -> Vec<usize> {
         self.commit.parts.iter().map(|p| p.ai).collect()
     }
@@ -772,9 +772,21 @@ impl Engine {
         let id = *c;
         let mut given = BTreeSet::new();
         let mut rotation = false;
+        // each of `a`'s parts, held; of a `secrets.0` in pieces (spec/wire.md §4 Pieces), each
+        // these deltas carry and any other held
+        let mut reads = Vec::new();
         for ak in ["secrets.0", "keys.0"] {
-            let Some(ai) = h.aspect_index(&a, ak) else { continue };
-            let Some(f) = self.read(|tx| crate::apply::held_fragment(tx, &id, ai))? else { return Ok(GivingWrap::Lacking) };
+            let pieces = h.aspect_parts(&a, ak);
+            let one = pieces.len() == 1;
+            for ai in pieces {
+                match self.read(|tx| crate::apply::held_fragment(tx, &id, ai))? {
+                    Some(f) => reads.push((ak, f)),
+                    None if one || parts.contains(&ai) => return Ok(GivingWrap::Lacking),
+                    None => {}
+                }
+            }
+        }
+        for (ak, f) in reads {
             let epochs: Vec<std::result::Result<Epoch, osis_keys::Error>> = if ak == "keys.0" {
                 let ks = crate::apply::keys::keys_write(&f).keysets.remove(&Role::Read);
                 rotation = ks.is_some();

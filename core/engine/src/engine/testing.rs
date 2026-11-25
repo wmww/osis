@@ -299,6 +299,14 @@ impl Engine {
     pub fn body_valid(&self, c: &CommitId, tid: &Tid, ak: &Ak) -> Option<bool> {
         let m = self.core.ix.commits.get(c)?;
         let ai = m.aspect(tid, ak)?;
+        self.part_valid(c, ai)
+    }
+
+    /// Whether part `ai` of `c` is valid here (a piece of a `secrets.0` judged alone,
+    /// spec/wire.md §4 Pieces).
+    #[doc(hidden)]
+    pub fn part_valid(&self, c: &CommitId, ai: usize) -> Option<bool> {
+        let m = self.core.ix.commits.get(c)?;
         Some(m.valid().get(ai).copied().unwrap_or(true))
     }
 
@@ -404,7 +412,7 @@ impl Engine {
         Ok(None)
     }
 
-    /// The aspect indexes of the parts waiting commit `c`'s stored copy holds, gone ones
+    /// The part indexes of the parts waiting commit `c`'s stored copy holds, gone ones
     /// included (`None`: not waiting). Tests: the held-model adapter (`tests/it/held.rs`).
     #[doc(hidden)]
     pub fn pending_parts(&mut self, c: &CommitId) -> Result<Option<std::collections::BTreeSet<usize>>> {

@@ -220,7 +220,7 @@ pub(crate) fn rebuild(tx: &mut Tx<'_>) -> Result<()> {
 }
 
 /// What original `c` part `ai` reads as: its newest listed honored version with its body here, as
-/// `(commit, aspect index, place, what is here)`; `None`: no version, or `c` not one (invalid).
+/// `(commit, part index, place, what is here)`; `None`: no version, or `c` not one (invalid).
 pub(super) fn newest_version(tx: &mut Tx<'_>, c: &CommitId, ai: usize, tid: &Tid, ak: &Ak, valid: bool) -> Result<Option<(CommitId, usize, CommitPos, Here)>> {
     if !valid || !durable_signal(ak) {
         return Ok(None);

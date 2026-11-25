@@ -25,7 +25,7 @@ pub const ASPECTS: &[u8] = b"a/";
 pub const GONE: &[u8] = b"v/";
 /// The leftover of a part whose values went (expired, purged; `Hold::Leftover`): its body with
 /// the writes gone here removed (spec/crdt.md §4.7), read as the held body
-/// (`apply::each_held_piece`): `w/` + aspect key + commit ID + aspect index (4 bytes). A waiting
+/// (`apply::each_held_piece`): `w/` + aspect key + commit ID + part index (4 bytes). A waiting
 /// part a held purge request names keeps what was stripped of it here too, its pending copy's
 /// slot holding an empty delta (`retention::emptied`) until it joins (`retention::leftover`).
 pub const LEFTOVER: &[u8] = b"w/";
@@ -55,9 +55,9 @@ pub const FREED: &[u8] = b"fl/";
 /// Each freed link again by its thing: `ft/` + tid + blob ID, empty, in its row's class (a
 /// forgetting finds its things' rows by prefix).
 pub const FREED_OF: &[u8] = b"ft/";
-/// Timers: `x/` + T (8 bytes, big endian) + commit ID + aspect index (4 bytes), the kind.
+/// Timers: `x/` + T (8 bytes, big endian) + commit ID + part index (4 bytes), the kind.
 pub const TIMER: &[u8] = b"x/";
-/// Each timer again by its part: `xc/` + commit ID + aspect index + T, empty (a forgetting finds
+/// Each timer again by its part: `xc/` + commit ID + part index + T, empty (a forgetting finds
 /// its parts' timers by prefix).
 pub const TIMER_OF: &[u8] = b"xc/";
 /// History rows (`Indexes::leaving`): `hr/` + aspect key + replaced-at (`Ts`, 8 bytes) +
@@ -67,7 +67,7 @@ pub const LEAVING: &[u8] = b"hr/";
 /// 0, or 1 + the last place out (`Ts`, commit ID).
 pub const LEAVE_FROM: &[u8] = b"hf/";
 /// A paged part's page index (`osis_crdt::PageIndex::to_bytes`, `apply::held_part_at`): `pi/` +
-/// commit ID + aspect index (4 bytes), in its commit's class; written when the part is applied,
+/// commit ID + part index (4 bytes), in its commit's class; written when the part is applied,
 /// gone with the part.
 pub const PAGE_INDEX: &[u8] = b"pi/";
 /// Things held destroyed (`Indexes::destroyed`): `dt/` + tid, empty.
@@ -83,7 +83,7 @@ pub const OWN_SECRETS: &[u8] = b"g/";
 pub const DERIVED_WRITTEN: &[u8] = b"dw/";
 /// The epochs sections of commits another wrote opened under, per part, and those this node's own
 /// content parts were made under where their floor is above 0 (`sync_ids::opened`):
-/// `ou/` + commit ID + aspect index (4 bytes, big endian) + the epoch's n (8 bytes, big endian)
+/// `ou/` + commit ID + part index (4 bytes, big endian) + the epoch's n (8 bytes, big endian)
 /// + nonce; the value a byte (1: the delta checked against its header) and the delta's hash.
 pub const OPENED_UNDER: &[u8] = b"ou/";
 /// The read floor up to which this node owed the state at a cut of an actor's content

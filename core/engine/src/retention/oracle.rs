@@ -25,7 +25,7 @@ pub(crate) fn covered(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Tid, ak
         return Ok(None);
     }
     let part = crate::apply::held_part(tx, s, sai)?;
-    let held = crate::apply::held_fragment(tx, c, cai)?;
+    let held = super::body_fragment(tx, c, cai)?;
     // a body with an expiry neither held nor gone: not covered, whether or not the
     // snapshot is held (as `covered_join` judges it before reading the snapshot)
     if held.is_none() && tx.core.ix.commits.get(c).is_some_and(|m| m.header.aspects.get(cai).is_some() && m.header.expires.is_some()) && !super::is_gone(tx.core, c, cai) {
@@ -71,7 +71,7 @@ pub(crate) fn live(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<bool> {
 
 fn snapshot_live(tx: &mut Tx<'_>, h: &Header, c: &CommitId, ai: usize) -> Result<bool> {
     let Some(a) = h.aspects.get(ai) else { return Ok(false) };
-    let part = crate::apply::held_fragment(tx, c, ai)?;
+    let part = super::body_fragment(tx, c, ai)?;
     let Some(st) = tx.state(&a.tid, &a.ak)? else { return Ok(false) };
     let writes = st.live_writes();
     let Some(f) = part else {
@@ -83,7 +83,7 @@ fn snapshot_live(tx: &mut Tx<'_>, h: &Header, c: &CommitId, ai: usize) -> Result
 
 /// The writes `bounds::deaths` finds: the held part whole joined into the whole state.
 pub(crate) fn deaths(tx: &mut Tx<'_>, c: &CommitId, ai: usize, tid: &Tid, ak: &Ak) -> Result<BTreeSet<osis_crdt::Won>> {
-    let (Some(f), Some(mut st)) = (crate::apply::held_fragment(tx, c, ai)?, tx.state(tid, ak)?.cloned()) else { return Ok(BTreeSet::new()) };
+    let (Some(f), Some(mut st)) = (super::body_fragment(tx, c, ai)?, tx.state(tid, ak)?.cloned()) else { return Ok(BTreeSet::new()) };
     let mine = f.winners();
     st.join(f);
     Ok(mine.minus(&st.winners()))

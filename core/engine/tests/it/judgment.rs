@@ -255,17 +255,23 @@ pub(crate) fn observe(e: &mut osis_engine::Engine, ids: &BTreeSet<CommitId>) -> 
     let mut aspects = BTreeSet::new();
     for (_, c) in &held {
         let h = e.header(c).unwrap();
-        for a in &h.aspects {
+        for (ai, a) in h.aspects.iter().enumerate() {
             things.insert(a.tid);
             aspects.insert((a.tid, a.ak.clone()));
             // an edge write has no content verdict: it applies in the walk or not (§5.1)
             let valid = match a.ak.as_str() {
                 "roles.0" if e.edge_write_applied(&a.tid, c) => "applied",
                 "roles.0" => "unapplied",
-                _ if e.body_valid(c, &a.tid, &a.ak).unwrap() => "valid",
+                _ if e.part_valid(c, ai).unwrap() => "valid",
                 _ => "invalid",
             };
-            out.push((format!("body {} {} {}", hex(c), a.tid, a.ak.as_str()), valid.to_string()));
+            // a piece by its place among its aspect's (spec/wire.md §4 Pieces)
+            let pieces = h.aspect_parts(&a.tid, a.ak.as_str());
+            let name = match pieces.len() {
+                1 => format!("body {} {} {}", hex(c), a.tid, a.ak.as_str()),
+                _ => format!("body {} {} {} {}", hex(c), a.tid, a.ak.as_str(), ai - pieces.start),
+            };
+            out.push((name, valid.to_string()));
         }
     }
     for t in &things {

@@ -348,7 +348,7 @@ impl Engine {
     /// (spec/permissions.md §4 Logging certificates).
     fn minted_dependent(&self, x: &Tid) -> bool {
         let Ok(secrets) = osis_base::Ak::new("secrets.0") else { return true };
-        !self.core.mintings(x).any(|(c, _)| self.core.ix.commits.get(&c).is_some_and(|m| m.aspect(x, &secrets).is_some()))
+        !self.core.mintings(x).any(|(c, _)| self.core.ix.commits.get(&c).is_some_and(|m| !m.aspect_parts(x, &secrets).is_empty()))
     }
 
     /// Whether a record blob can be sealed under `s` now (a current read epoch of its thing to

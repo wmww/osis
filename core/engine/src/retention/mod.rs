@@ -146,12 +146,12 @@ pub(crate) fn decode_owned(b: &[u8]) -> Result<Vec<Owned>> {
     Ok(out)
 }
 
-/// The aspect index of `(tid, ak)` in known commit `c`.
+/// The part index of `(tid, ak)` in known commit `c`.
 fn aspect_index(core: &Core, c: &CommitId, tid: &Tid, ak: &Ak) -> Option<usize> {
     core.ix.commits.get(c)?.aspect(tid, ak)
 }
 
-/// The aspect index of `(tid, ak)` in known commit `c` and its header (`UnknownCommit`: not
+/// The part index of `(tid, ak)` in known commit `c` and its header (`UnknownCommit`: not
 /// known with that aspect).
 fn known_part(core: &Core, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<(usize, crate::engine::LazyHeader)> {
     let m = core.ix.commits.get(c).ok_or(Error::UnknownCommit(*c))?;
@@ -164,11 +164,47 @@ pub(crate) fn bounded(core: &Core, tid: &Tid, ak: &Ak) -> bool {
     history::of(core, tid, ak).dated()
 }
 
-/// The aspect index of `(tid, ak)` in held commit `c`, if that part is held (`Meta::holds`: a
-/// late part still to arrive is not).
+/// The part of `(tid, ak)` in held commit `c` that stands for its body there, if held
+/// (`Meta::holds`: a late part still to arrive is not): its one part, or of a `secrets.0` in
+/// pieces the first held valid piece, else the first held (`body_parts`).
 pub(crate) fn held_part(core: &Core, c: &CommitId, tid: &Tid, ak: &Ak) -> Option<usize> {
     let m = core.ix.commits.get(c)?;
-    m.aspect(tid, ak).filter(|ai| m.holds(*ai))
+    let mut held = m.aspect_parts(tid, ak).filter(|ai| m.holds(*ai));
+    let first = held.next()?;
+    Some(std::iter::once(first).chain(held).find(|ai| m.valid_at(*ai)).unwrap_or(first))
+}
+
+/// The parts of `c`'s body on the aspect of part `ai`: the held parts there judged as `ai` is
+/// (valid or not). A commit's `secrets.0` pieces join as its one delta on the aspect
+/// (spec/wire.md §4 Pieces), so retention dates, keeps and drops them as one body; validity
+/// and holding stay per piece. Every other aspect: `ai` alone.
+pub(crate) fn body_parts(core: &Core, c: &CommitId, ai: usize) -> Vec<usize> {
+    let Some(m) = core.ix.commits.get(c) else { return vec![ai] };
+    let Some(a) = m.view.aspects.get(ai) else { return vec![ai] };
+    let valid = m.valid_at(ai);
+    let parts = m.aspect_parts(&a.tid, &a.ak);
+    if parts.len() == 1 {
+        return vec![ai];
+    }
+    parts.filter(|x| *x == ai || (m.holds(*x) && m.valid_at(*x) == valid)).collect()
+}
+
+/// The fragment of `c`'s body on the aspect of part `ai` (`body_parts`, joined).
+pub(crate) fn body_fragment(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Option<Fragment>> {
+    let parts = body_parts(tx.core, c, ai);
+    crate::apply::held_joined(tx, c, parts)
+}
+
+/// `apply::each_held_piece` over each part of `c`'s body on the aspect of part `ai`
+/// (`body_parts`): what the last held one gives.
+pub(crate) fn each_body_piece(tx: &mut Tx<'_>, c: &CommitId, ai: usize, f: &mut dyn FnMut(&mut Tx<'_>, Fragment) -> Result<()>) -> Result<Option<Option<crate::engine::Gives>>> {
+    let mut out = None;
+    for x in body_parts(tx.core, c, ai) {
+        if let Some(g) = crate::apply::each_held_piece(tx, c, x, f)? {
+            out = Some(g);
+        }
+    }
+    Ok(out)
 }
 
 /// Drops the delta of aspect `ai` of `c` from its body (spec/commits.md §5): the commit is kept
@@ -222,10 +258,14 @@ pub(crate) fn others_own_cover(core: &Core, s: &CommitId) -> bool {
 }
 
 /// `drop_part`, saying why.
+/// A body drops whole (`body_parts`), but as invalid: validity is per piece.
 fn drop_part_for(tx: &mut Tx<'_>, c: &CommitId, ai: usize, why: DropFor) -> Result<()> {
-    if drop_body(tx, c, ai, why)?.is_some()
-        && let Some(a) = tx.core.ix.commits.get(c).and_then(|m| m.header.aspects.get(ai).cloned())
-    {
+    let parts = if why == DropFor::Invalid { vec![ai] } else { body_parts(tx.core, c, ai) };
+    let mut dropped = false;
+    for x in parts {
+        dropped |= drop_body(tx, c, x, why)?.is_some();
+    }
+    if dropped && let Some(a) = tx.core.ix.commits.get(c).and_then(|m| m.header.aspects.get(ai).cloned()) {
         crate::apply::rebuild(tx, &a.tid, &a.ak)?;
     }
     Ok(())
@@ -1201,7 +1241,7 @@ fn purged_changed(tx: &mut Tx<'_>, purged: BTreeSet<(Tid, Ak)>, changed: &mut BT
     }
 }
 
-/// A due timer: its time, commit, aspect index and kind (`T_EXPIRY`, `T_FLOOR`, `T_KEPT`).
+/// A due timer: its time, commit, part index and kind (`T_EXPIRY`, `T_FLOOR`, `T_KEPT`).
 type Due = (u64, CommitId, usize, u8);
 
 /// The timers due by the wall clock, and when the first of the others is (`u64::MAX`: none).

@@ -71,7 +71,7 @@ pub struct Meta {
     signed: osis_commit::Signed,
     /// Validity per aspect (spec/permissions.md §5.2).
     valid: Vec<bool>,
-    /// What this node holds of each part, by aspect index (`Hold`).
+    /// What this node holds of each part, by part index (`Hold`).
     hold: Vec<Hold>,
     rec: Rec,
 }
@@ -92,9 +92,14 @@ impl Meta {
     pub fn parts(&self) -> usize {
         self.hold.len()
     }
-    /// The index of aspect `(tid, ak)` in the commit.
+    /// The index of aspect `(tid, ak)`'s part in the commit, the first of its pieces
+    /// (`View::aspect`).
     pub(crate) fn aspect(&self, tid: &Tid, ak: &Ak) -> Option<usize> {
         self.view.aspect(tid, ak.as_str())
+    }
+    /// The indexes of its parts on aspect `(tid, ak)` (`View::aspect_parts`).
+    pub(crate) fn aspect_parts(&self, tid: &Tid, ak: &Ak) -> std::ops::Range<usize> {
+        self.view.aspect_parts(tid, ak.as_str())
     }
     /// The blobs a repair encrypted afresh, if a repair wrote it.
     pub fn repair(&self) -> Option<&Arc<BTreeSet<BlobId>>> {
@@ -198,18 +203,18 @@ impl Meta {
     pub fn is_dropped(&self, ai: usize) -> bool {
         self.dropped(ai).is_some()
     }
-    /// The dropped parts, by aspect index.
+    /// The dropped parts, by part index.
     pub fn dropped_parts(&self) -> impl Iterator<Item = (usize, &Dropped)> + '_ {
         self.hold_all().iter().enumerate().filter_map(|(ai, h)| match h {
             Hold::Dropped(d) => Some((ai, d)),
             _ => None,
         })
     }
-    /// The missing parts, by aspect index.
+    /// The missing parts, by part index.
     pub fn missing_parts(&self) -> impl Iterator<Item = usize> + '_ {
         self.hold_all().iter().enumerate().filter(|(_, h)| matches!(h, Hold::Missing(_))).map(|(ai, _)| ai)
     }
-    /// The parts held as their leftover, by aspect index.
+    /// The parts held as their leftover, by part index.
     pub fn stripped_parts(&self) -> impl Iterator<Item = usize> + '_ {
         self.hold_all().iter().enumerate().filter(|(_, h)| matches!(h, Hold::Leftover { .. })).map(|(ai, _)| ai)
     }

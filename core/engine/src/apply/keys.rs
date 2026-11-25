@@ -162,13 +162,14 @@ pub(crate) fn forget_dropped(tx: &mut Tx<'_>, h: &Header, ai: usize, bodies: &[F
     let ids: Vec<CommitId> = tx.core.ix.by_aspect.get(&(a.tid, a.ak.clone())).into_iter().flatten().map(|x| x.1).collect();
     for id in ids {
         let Some(m) = tx.core.ix.commits.get(&id).cloned() else { continue };
-        let Some(xi) = m.aspect(&a.tid, &a.ak) else { continue };
         if m.header.kind != Kind::Role {
             continue;
         }
-        if let Some(Decoded::Delta(d)) = super::held_part(tx, &id, xi)? {
-            for (bk, k) in written_boxes(&d.fragment) {
-                gone.remove(&(bk.holder.0, k.clone()));
+        for xi in m.aspect_parts(&a.tid, &a.ak) {
+            if let Some(Decoded::Delta(d)) = super::held_part(tx, &id, xi)? {
+                for (bk, k) in written_boxes(&d.fragment) {
+                    gone.remove(&(bk.holder.0, k.clone()));
+                }
             }
         }
     }
@@ -659,10 +660,9 @@ fn read_invalid_delta(tx: &mut Tx<'_>, id: &CommitId, author: Tid, actor: Tid, d
 pub(crate) fn reread_invalid(tx: &mut Tx<'_>, actor: &Tid) -> Result<bool> {
     let ak = osis_base::Ak::new("secrets.0").map_err(|_| crate::Error::Misuse("ak"))?;
     let ids: Vec<(CommitId, usize, Tid)> = (tx.core.ix.invalid.get(&(*actor, ak.clone())).into_iter().flatten())
-        .filter_map(|c| {
-            let m = tx.core.ix.commits.get(c)?;
-            let ai = m.aspect(actor, &ak)?;
-            (m.header.kind == Kind::Role && !m.valid_at(ai) && m.holds(ai)).then_some((*c, ai, m.view.signer))
+        .flat_map(|c| {
+            let m = tx.core.ix.commits.get(c).filter(|m| m.header.kind == Kind::Role);
+            m.map(|m| m.aspect_parts(actor, &ak).filter(|ai| !m.valid_at(*ai) && m.holds(*ai)).map(|ai| (*c, ai, m.view.signer)).collect::<Vec<_>>()).unwrap_or_default()
         })
         .collect();
     let mut learned = false;
@@ -806,7 +806,7 @@ pub(crate) fn forget_unchecked(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
     }
     let actors: Vec<Tid> = tx.core.ix.secrets.iter().filter(|(_, e)| ROLES.iter().any(|r| e.role(*r).epochs().any(|(_, i)| i.sources().any(|u| u.commit == *id)))).map(|(t, _)| *t).collect();
     let invalid_on = |core: &crate::engine::Core, a: &Tid| {
-        core.ix.commits.get(id).is_some_and(|m| m.header.kind == Kind::Role && m.header.aspect_index(a, "secrets.0").is_some_and(|ai| !m.valid_at(ai) && m.holds(ai)))
+        core.ix.commits.get(id).is_some_and(|m| m.header.kind == Kind::Role && m.header.aspect_parts(a, "secrets.0").any(|ai| !m.valid_at(ai) && m.holds(ai)))
     };
     let (kept, actors): (Vec<Tid>, Vec<Tid>) = actors.into_iter().partition(|a| invalid_on(tx.core, a));
     let mut lost = Vec::new();

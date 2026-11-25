@@ -177,14 +177,31 @@ impl Tx<'_> {
                 Some(f)
             }
             state::Stored::Body(c) => {
-                let ai = self.core.ix.commits.get(&c).and_then(|m| m.aspect(tid, ak)).ok_or(Error::Corrupt("state body"))?;
-                let len = self.get_commit(&c)?.and_then(|r| r.part(ai).map(|p| p.delta.len())).unwrap_or(0);
-                Some(pages::charge(&mut bound, len, || crate::apply::stored_fragment(self, &c, ai)?.ok_or(Error::Corrupt("state body")))?)
+                // its parts on the aspect, joined: one, or its pieces (spec/wire.md §4 Pieces)
+                let ais = self.core.ix.commits.get(&c).map(|m| m.aspect_parts(tid, ak)).filter(|r| !r.is_empty()).ok_or(Error::Corrupt("state body"))?;
+                let len = self.get_commit(&c)?.map(|r| ais.clone().filter_map(|ai| r.part(ai).map(|p| p.delta.len())).sum()).unwrap_or(0);
+                Some(pages::charge(&mut bound, len, || self.stored_body(&c, ais)?.ok_or(Error::Corrupt("state body")))?)
             }
         };
         self.bound = bound;
         self.core.states.insert(k, f);
         Ok(())
+    }
+
+    /// The fragments of parts `ais` of commit `id` its record holds, joined (`apply::stored_fragment`):
+    /// what a state stored as that body reads. `None` where one is not held.
+    fn stored_body(&mut self, id: &CommitId, ais: std::ops::Range<usize>) -> Result<Option<Fragment>> {
+        let mut out: Option<Fragment> = None;
+        for ai in ais {
+            let Some(f) = crate::apply::stored_fragment(self, id, ai)? else { return Ok(None) };
+            match &mut out {
+                Some(o) => {
+                    o.join(f);
+                }
+                None => out = Some(f),
+            }
+        }
+        Ok(out)
     }
 
     /// Before parts `ais` of commit `id` leave its record: each state stored as one of them
@@ -243,8 +260,9 @@ impl Tx<'_> {
             let newest = self.core.ix.by_aspect.get(&k).and_then(|s| s.iter().next_back()).map(|x| x.1);
             let mut same = None;
             for c in now.into_iter().chain(newest.filter(|c| Some(*c) != now)) {
-                let Some(ai) = self.core.ix.commits.get(&c).and_then(|m| m.aspect(tid, ak).filter(|ai| m.valid_at(*ai) && m.holds(*ai) && !m.stripped(*ai))) else { continue };
-                if crate::apply::stored_fragment(self, &c, ai)?.is_some_and(|f| f == st) {
+                // every part of it on the aspect held whole and valid (one, or its pieces)
+                let Some(ais) = self.core.ix.commits.get(&c).map(|m| m.aspect_parts(tid, ak)).filter(|r| !r.is_empty() && self.core.ix.commits.get(&c).is_some_and(|m| r.clone().all(|ai| m.valid_at(ai) && m.holds(ai) && !m.stripped(ai)))) else { continue };
+                if self.stored_body(&c, ais)?.is_some_and(|f| f == st) {
                     same = Some(c);
                     break;
                 }

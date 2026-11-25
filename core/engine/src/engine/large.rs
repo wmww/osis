@@ -697,7 +697,7 @@ impl Engine {
         // forgotten (spec/commits.md §5 Forgetting), the snapshot then the only own linker
         let commits: Vec<CommitId> = self.core.ix.by_aspect.get(&(*tid, ak.clone())).map(|s| s.iter().rev().map(|x| x.1).filter(|c| self.core.ix.commits.get(c).is_some_and(|m| matches!(m.header.kind, osis_commit::Kind::Content | osis_commit::Kind::ContentSnapshot))).collect()).unwrap_or_default();
         let (k, held2) = ((*tid, ak.clone()), held.clone());
-        // (newest linking commit and its aspect index, whether an own commit links one)
+        // (newest linking commit and its part index, whether an own commit links one)
         let found = self.read(|tx| {
             let Some(dedup) = tx.core.dedup(&k.0) else { return Ok((None, false)) };
             let mut newest = None;

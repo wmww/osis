@@ -341,9 +341,17 @@ impl View {
         self.paths.as_ref().is_none_or(|p| p.get(t).is_some_and(Option::is_some))
     }
 
-    /// The index of aspect `(tid, ak)` (`osis_commit::aspect_position`).
+    /// The index of aspect `(tid, ak)`'s part, the first of its pieces
+    /// (`osis_commit::aspect_position`): for its header fields, which pieces share; what is held
+    /// or valid of each piece is per piece (`aspect_parts`).
     pub fn aspect(&self, tid: &Tid, ak: &str) -> Option<usize> {
         osis_commit::aspect_position(&self.aspects, tid, ak, |a| (&a.tid, a.ak.as_str()))
+    }
+
+    /// The indexes of its parts on aspect `(tid, ak)`: one, or its pieces (spec/wire.md §4
+    /// Pieces); empty where it writes none.
+    pub fn aspect_parts(&self, tid: &Tid, ak: &str) -> std::ops::Range<usize> {
+        osis_commit::aspect_range(&self.aspects, tid, ak, |a| (&a.tid, a.ak.as_str()))
     }
 
     /// The indexes of its aspects on `tid` (`osis_commit::aspects_on`).
@@ -788,7 +796,7 @@ indexes! {
     pub holder_keys: JMap<(Tid, crate::apply::validity::Grants, Dot), osis_base::Holder>,
     /// Role commits whose removed keys are not known yet.
     pub unresolved: JSet<CommitId>,
-    /// Roles `secrets.0` and `keys.0` deltas need (by commit and aspect index).
+    /// Roles `secrets.0` and `keys.0` deltas need (by commit and part index).
     pub rotation_role: JMap<(CommitId, usize), osis_base::Role>,
     /// Per value aspect whose bodies leave history in order (`retention::leaving`): each held
     /// valid part replaced there, by (replaced-at, commit), in history or not. Persisted
@@ -1232,7 +1240,7 @@ pub struct Core {
     pub batched: Option<BTreeMap<(Tid, Ak), Batched>>,
     /// Per aspect undo has checked, which held parts write each position (`undo::touch`).
     pub(crate) touches: crate::undo::touch::Touches,
-    /// What a waiting snapshot part carries, per (commit, aspect index), as a held snapshot's
+    /// What a waiting snapshot part carries, per (commit, part index), as a held snapshot's
     /// bound (`retention::snapshot::Carried`; `None`: no snapshot it can join): decoded once while
     /// its commit waits (`retention::pending`, `memo`).
     pub(crate) waiting_carried: memo::Memo<(CommitId, usize), Option<crate::retention::snapshot::Carried>>,

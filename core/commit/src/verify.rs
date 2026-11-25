@@ -33,7 +33,7 @@ impl Decoded {
 
 /// The header facts a delta of aspect `ai` is read against.
 pub fn delta_ctx(h: &Header, id: &CommitId, ai: usize, interner: &mut Interner) -> Result<DeltaCtx, Error> {
-    let a = h.aspects.get(ai).ok_or(Error::Malformed("aspect index out of range"))?;
+    let a = h.aspects.get(ai).ok_or(Error::Malformed("part index out of range"))?;
     let own = match h.form {
         Form::Commit => interner.commit(*id),
         Form::Session(nonce) => interner.session(osis_crdt::Session { node: h.signer, nonce }),
@@ -92,7 +92,7 @@ fn listed_del(h: &Header, ai: usize) -> Option<osis_base::Del> {
 
 /// The aspect key and context of `part` once its delta hash checks under `dedup`.
 fn checked_ctx<'h>(h: &'h Header, id: &CommitId, part: &Part, dedup: &Secret32, interner: &mut Interner) -> Result<(&'h str, DeltaCtx), Error> {
-    let a = h.aspects.get(part.ai).ok_or(Error::Malformed("part aspect index out of range"))?;
+    let a = h.aspects.get(part.ai).ok_or(Error::Malformed("part index out of range"))?;
     if delta_hash(dedup, &part.delta) != a.hash {
         return Err(Error::DeltaHash { ai: part.ai });
     }
@@ -219,7 +219,7 @@ pub fn verify_blob(
     let mut interner = Interner::new();
     let mut out = Vec::with_capacity(blob.parts.len());
     for p in &blob.parts {
-        let a = blob.header.aspects.get(p.ai).ok_or(Error::Malformed("part aspect index out of range"))?;
+        let a = blob.header.aspects.get(p.ai).ok_or(Error::Malformed("part index out of range"))?;
         let d = dedup(&a.tid).ok_or(Error::Build("dedup secret not supplied"))?;
         let pg: Option<&mut dyn PageSource> = match &mut pages {
             Some(p) => Some(&mut **p),

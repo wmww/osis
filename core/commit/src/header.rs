@@ -114,7 +114,11 @@ impl Form {
     }
 }
 
-/// One touched `(tid, ak)` (spec/wire.md §4 `Aspect`).
+/// One part's entry: the touched `(tid, ak)` it is on (spec/wire.md §4 `Aspect`) and its delta
+/// hash. An aspect written in pieces (spec/wire.md §4 Pieces) has one entry per piece,
+/// consecutive and ascending by hash, sharing every other field; on the wire they are one
+/// `Aspect` listing the hashes. An entry's index among the header's is its part's index
+/// (`Part::ai`, `Section::ais`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AspectEntry {
     pub tid: Tid,
@@ -125,7 +129,7 @@ pub struct AspectEntry {
     pub purge_by: PurgeBy,
     /// Ascending indices into the header's delete keys.
     pub keys: Vec<usize>,
-    /// The delta hash of the aspect's one delta.
+    /// The delta hash of the part's delta.
     pub hash: [u8; 32],
     /// The fire this delta claims to replace (a durable signal's, spec/commits.md §5 Signals).
     pub replaces: Option<CommitId>,
@@ -165,17 +169,24 @@ pub enum PurgeItem {
     Author { tid: Tid, ak: Ak, author: Tid },
 }
 
-/// The index of the entry on `(tid, ak)` in `items`, sorted and distinct as a header's aspects
-/// are (spec/wire.md §4: by the canonical bytes of `[tid, ak]`, which order by tid, then by the
-/// key's length, then its bytes): a search.
-pub fn aspect_position<T>(items: &[T], tid: &Tid, ak: &str, key: impl Fn(&T) -> (&Tid, &str)) -> Option<usize> {
+/// The indexes of the entries on `(tid, ak)` in `items`, sorted as a header's aspects are
+/// (spec/wire.md §4: by the canonical bytes of `[tid, ak]`, which order by tid, then by the key's
+/// length, then its bytes), an aspect's pieces consecutive: a search. Empty where none is.
+pub fn aspect_range<T>(items: &[T], tid: &Tid, ak: &str, key: impl Fn(&T) -> (&Tid, &str)) -> std::ops::Range<usize> {
     let want = aspect_order(tid, ak);
-    items
-        .binary_search_by(|x| {
-            let (t, a) = key(x);
-            aspect_order(t, a).cmp(&want)
-        })
-        .ok()
+    let cmp = |x: &T| {
+        let (t, a) = key(x);
+        aspect_order(t, a).cmp(&want)
+    };
+    items.partition_point(|x| cmp(x).is_lt())..items.partition_point(|x| cmp(x).is_le())
+}
+
+/// The index of the first entry on `(tid, ak)` in `items` (`aspect_range`): the aspect's one
+/// part, or the first of its pieces, whose header fields they share (what a part holds, its
+/// state here, is per piece: `aspect_range` names them).
+pub fn aspect_position<T>(items: &[T], tid: &Tid, ak: &str, key: impl Fn(&T) -> (&Tid, &str)) -> Option<usize> {
+    let r = aspect_range(items, tid, ak, key);
+    (!r.is_empty()).then_some(r.start)
 }
 
 /// The aspect sort key: orders as the canonical bytes of `[tid, ak]` do.
@@ -189,9 +200,28 @@ pub fn aspects_on<T>(items: &[T], tid: &Tid, key: impl Fn(&T) -> &Tid) -> std::o
 }
 
 impl Header {
-    /// The index of its aspect `(tid, ak)` (`aspect_position`).
+    /// The index of its aspect `(tid, ak)`'s part, the first of its pieces (`aspect_position`).
     pub fn aspect_index(&self, tid: &Tid, ak: &str) -> Option<usize> {
         aspect_position(&self.aspects, tid, ak, |a| (&a.tid, a.ak.as_str()))
+    }
+
+    /// The indexes of its parts on aspect `(tid, ak)`: one, or its pieces (`aspect_range`).
+    pub fn aspect_parts(&self, tid: &Tid, ak: &str) -> std::ops::Range<usize> {
+        aspect_range(&self.aspects, tid, ak, |a| (&a.tid, a.ak.as_str()))
+    }
+
+    /// Its aspects as the wire lists them: each part's entry, an aspect in pieces once (its
+    /// first piece's), with the range of its parts.
+    pub fn wire_aspects(&self) -> impl Iterator<Item = (&AspectEntry, std::ops::Range<usize>)> + '_ {
+        let mut i = 0;
+        std::iter::from_fn(move || {
+            let a = self.aspects.get(i)?;
+            let start = i;
+            while self.aspects.get(i).is_some_and(|b| b.tid == a.tid && b.ak == a.ak) {
+                i += 1;
+            }
+            Some((a, start..i))
+        })
     }
 
     /// The things it writes, distinct, in the order of its aspects (that of a split path's
@@ -333,7 +363,10 @@ fn put_idxs(out: &mut Vec<u8>, v: &[usize]) {
     v.iter().for_each(|i| put_uint(out, *i as u64));
 }
 
-fn put_aspect(out: &mut Vec<u8>, a: &AspectEntry) {
+/// An aspect on the wire: `pieces` its parts' entries (one, or its pieces), the first's fields
+/// with every hash (spec/wire.md §4 Pieces).
+fn put_aspect(out: &mut Vec<u8>, pieces: &[AspectEntry]) {
+    let Some(a) = pieces.first() else { return };
     put_array(out, 8);
     put_tid_bytes(out, &a.tid);
     put_text(out, a.ak.as_str());
@@ -341,7 +374,12 @@ fn put_aspect(out: &mut Vec<u8>, a: &AspectEntry) {
     put_uint(out, a.hi);
     put_uint(out, a.purge_by as u64);
     put_idxs(out, &a.keys);
-    put_bytes(out, &a.hash);
+    if let [one] = pieces {
+        put_bytes(out, &one.hash);
+    } else {
+        put_array(out, pieces.len());
+        pieces.iter().for_each(|p| put_bytes(out, &p.hash));
+    }
     // `[]`, `[id]`, or `[id, floor]` with the floor above 0 (spec/wire.md §4)
     match a.replaces {
         None => put_array(out, 0),
@@ -409,8 +447,9 @@ impl Header {
     fn put_list(&self, out: &mut Vec<u8>, f: ListField) -> bool {
         match f {
             ListField::Aspects => {
-                put_array(out, self.aspects.len());
-                self.aspects.iter().for_each(|a| put_aspect(out, a));
+                let wire: Vec<std::ops::Range<usize>> = self.wire_aspects().map(|(_, r)| r).collect();
+                put_array(out, wire.len());
+                wire.into_iter().for_each(|r| put_aspect(out, self.aspects.get(r).unwrap_or_default()));
             }
             ListField::Purge => {
                 put_array(out, self.purge.len());
@@ -623,13 +662,32 @@ fn read_purge_by(r: &mut Reader<'_>) -> Result<PurgeBy, Error> {
     Ok(by)
 }
 
-fn read_aspect(r: &mut Reader<'_>) -> Result<AspectEntry, Error> {
+/// A wire aspect: its entry, one per hash (spec/wire.md §4 Pieces: a list of two or more, ascending
+/// and distinct, on `secrets.0` alone).
+fn read_aspect(r: &mut Reader<'_>) -> Result<Vec<AspectEntry>, Error> {
     if r.array()? != 8 {
         return Err(Error::Malformed("aspect arity"));
     }
     let (tid, ak, lo, hi) = (read_tid(r)?, read_ak(r)?, r.uint()?, r.uint()?);
     let (purge_by, keys) = (read_purge_by(r)?, read_idxs(r)?);
-    let hash = r.fixed::<32>()?;
+    let hashes = match r.peek_major() {
+        Some(osis_base::cbor::MAJOR_ARRAY) => {
+            let n = r.array()?;
+            if n < 2 || ak.as_str() != PIECED {
+                return Err(Error::Malformed("aspect hash list"));
+            }
+            let mut hs: Vec<[u8; 32]> = Vec::with_capacity(n.min(r.remaining() / 33));
+            for _ in 0..n {
+                let h = r.fixed::<32>()?;
+                if hs.last().is_some_and(|p| *p >= h) {
+                    return Err(Error::Malformed("aspect hashes not ascending and distinct"));
+                }
+                hs.push(h);
+            }
+            hs
+        }
+        _ => vec![r.fixed::<32>()?],
+    };
     let (replaces, original_floor) = match r.array()? {
         0 => (None, 0),
         1 => (Some(CommitId(r.fixed::<32>()?)), 0),
@@ -642,8 +700,11 @@ fn read_aspect(r: &mut Reader<'_>) -> Result<AspectEntry, Error> {
         }
         _ => return Err(Error::Malformed("aspect replaces arity")),
     };
-    Ok(AspectEntry { tid, ak, lo, hi, purge_by, keys, hash, replaces, original_floor })
+    Ok(hashes.into_iter().map(|hash| AspectEntry { tid, ak: ak.clone(), lo, hi, purge_by, keys: keys.clone(), hash, replaces, original_floor }).collect())
 }
+
+/// The one aspect a commit may write in pieces (spec/wire.md §4 Pieces).
+pub const PIECED: &str = "secrets.0";
 
 fn read_key(r: &mut Reader<'_>, check: bool) -> Result<DeleteKey, Error> {
     if r.array()? != 2 {
@@ -711,7 +772,7 @@ impl Header {
         }
         let r = &mut Reader::new(bytes);
         match f {
-            ListField::Aspects => self.aspects = read_items(r, MIN_ASPECT, read_aspect)?,
+            ListField::Aspects => self.aspects = read_items(r, MIN_ASPECT, read_aspect)?.into_iter().flatten().collect(),
             ListField::Purge => self.purge = read_items(r, MIN_PURGE, read_purge)?,
             ListField::Keys => self.keys = read_items(r, MIN_KEY, |r| read_key(r, check))?,
             ListField::Frontier => {}

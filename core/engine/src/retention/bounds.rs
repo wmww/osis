@@ -141,7 +141,7 @@ fn at_clock(core: &Core, (k, last): (u64, u64)) -> u64 {
     if last > k && core.time.until(Some(last)) < last { last } else { k }
 }
 
-/// `part_bounds` of every part of `c`, by aspect index (`Engine::part_keeps`). A memo
+/// `part_bounds` of every part of `c`, by part index (`Engine::part_keeps`). A memo
 /// (`Core::part_bounds`): the clock is read after it, so a bound holds while what it read does.
 fn commit_bounds(tx: &mut Tx<'_>, c: &CommitId) -> Result<Arc<Vec<(u64, u64)>>> {
     let h = tx.core.ix.commits.get(c).ok_or(Error::UnknownCommit(*c))?.header.clone();
@@ -368,7 +368,7 @@ fn tag(f: Form) -> [u8; 2] {
 fn body_writes(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, x: &CommitId, f: Form) -> Result<Option<(osis_crdt::Body, osis_crdt::BodyWrites)>> {
     let Some(xai) = held_part(tx.core, x, tid, ak) else { return Ok(None) };
     let Some((ts, snap)) = tx.core.ix.commits.get(x).map(|m| (m.view.ts, m.header.kind.is_compaction())) else { return Ok(None) };
-    let Some(frag) = crate::apply::held_fragment(tx, x, xai)? else { return Ok(None) };
+    let Some(frag) = super::body_fragment(tx, x, xai)? else { return Ok(None) };
     drop(osis_base::costs::span("deaths: a body"));
     tx.core.death_walks += 1;
     Ok(Some((osis_crdt::Body { c: *x, ts, snap }, osis_crdt::BodyWrites::of(&frag, !f.1))))
@@ -438,7 +438,10 @@ pub(crate) fn settle_index(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
     for c in commits {
         let is = form(tx.core, &c, tid, ak);
         let was = index(tx, tid, ak, Shred::No)?.joined(&c)?;
-        if was.as_deref() == is.map(tag).as_ref().map(|t| t.as_slice()) && !rewritten.contains(&c) {
+        // a body in pieces (`body_parts`) joins again at any change of its commit: a piece
+        // held or judged anew moves its writes, not its form
+        let pieced = tx.core.ix.commits.get(&c).is_some_and(|m| m.aspect_parts(tid, ak).len() > 1);
+        if was.as_deref() == is.map(tag).as_ref().map(|t| t.as_slice()) && !rewritten.contains(&c) && !pieced {
             continue;
         }
         let mut moved = BTreeSet::new();
@@ -577,16 +580,18 @@ fn built_of(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, bodies: &[CommitId]) -> Result<
     field(&mut h, format!("{tid:?} {ak:?}").as_bytes());
     for c in bodies {
         let Some(f) = form(tx.core, c, tid, ak) else { continue };
-        let Some(ai) = held_part(tx.core, c, tid, ak) else { continue };
-        let Some((ts, snap, stripped)) = tx.core.ix.commits.get(c).map(|m| (m.view.ts, m.header.kind.is_compaction(), m.stripped(ai))) else { continue };
-        field(&mut h, &c.0);
-        field(&mut h, format!("{ai} {ts:?} {snap} {f:?} {stripped}").as_bytes());
-        if stripped {
-            let l = tx.txn.get_local(&crate::engine::records::leftover_key(tid, ak, c, ai))?;
-            field(&mut h, l.as_deref().unwrap_or(b"none"));
-        } else {
-            let blob = tx.get_commit(c)?;
-            field(&mut h, blob.as_ref().and_then(|b| b.part(ai)).map_or(b"none".as_slice(), |p| p.delta.as_slice()));
+        let Some(first) = held_part(tx.core, c, tid, ak) else { continue };
+        for ai in super::body_parts(tx.core, c, first) {
+            let Some((ts, snap, stripped)) = tx.core.ix.commits.get(c).map(|m| (m.view.ts, m.header.kind.is_compaction(), m.stripped(ai))) else { continue };
+            field(&mut h, &c.0);
+            field(&mut h, format!("{ai} {ts:?} {snap} {f:?} {stripped}").as_bytes());
+            if stripped {
+                let l = tx.txn.get_local(&crate::engine::records::leftover_key(tid, ak, c, ai))?;
+                field(&mut h, l.as_deref().unwrap_or(b"none"));
+            } else {
+                let blob = tx.get_commit(c)?;
+                field(&mut h, blob.as_ref().and_then(|b| b.part(ai)).map_or(b"none".as_slice(), |p| p.delta.as_slice()));
+            }
         }
     }
     Ok(h.finalize())
@@ -651,7 +656,7 @@ pub(super) fn index_exact(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, when: &str) -> Re
 /// winners that do not win once it joins, whole, a copy of the state at its positions
 /// (`Tx::state_part_at`: O(part), whatever the state's size).
 fn deaths(tx: &mut Tx<'_>, c: &CommitId, ai: usize, tid: &Tid, ak: &Ak) -> Result<BTreeSet<Won>> {
-    let Some(f) = crate::apply::held_fragment(tx, c, ai)? else { return Ok(Default::default()) };
+    let Some(f) = super::body_fragment(tx, c, ai)? else { return Ok(Default::default()) };
     let Some(mut st) = tx.state_part_at(tid, ak, &f)? else { return Ok(Default::default()) };
     let mine = winners_of(tx, &f);
     st.join(f);
@@ -740,7 +745,7 @@ pub(super) fn live(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<bool> {
     // the stream stops at the first piece holding a live write: a part with one costs the
     // pages up to it, not every page
     let mut live = false;
-    let held = match crate::apply::each_held_piece(tx, c, ai, &mut |tx, f| {
+    let held = match super::each_body_piece(tx, c, ai, &mut |tx, f| {
         live = tx.state_part_at(&a.tid, &a.ak, &f)?.as_ref().is_some_and(owns);
         if live { Err(Error::Misuse("live: stream stopped")) } else { Ok(()) }
     }) {
@@ -785,7 +790,7 @@ pub(super) fn snapshot_live(tx: &mut Tx<'_>, h: &Header, c: &CommitId, ai: usize
 }
 
 impl Engine {
-    /// Keep-at-least bound (wall ms, 0: none) of each part of known commit `c`, by aspect index
+    /// Keep-at-least bound (wall ms, 0: none) of each part of known commit `c`, by part index
     /// (`part_keep`): a commit's judgment costs O(parts) death reads.
     pub fn part_keeps(&mut self, c: &CommitId) -> Result<Vec<u64>> {
         let b = osis_base::memo::Memo::get_in(self, |e| &e.core.part_bounds, c, |e| e.read(|tx| commit_bounds(tx, c)))?;
@@ -841,7 +846,7 @@ impl Engine {
         self.read(|tx| {
             let Some(ai) = aspect_index(tx.core, &c, &tid, &ak) else { return Ok(None) };
             let mut min = None;
-            crate::apply::each_held_piece(tx, &c, ai, &mut |_, f| {
+            super::each_body_piece(tx, &c, ai, &mut |_, f| {
                 min = f.writes().into_iter().filter_map(|(_, t)| t).chain(min).min();
                 Ok(())
             })?;

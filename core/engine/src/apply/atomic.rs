@@ -1073,13 +1073,14 @@ pub(crate) fn check_states(tx: &mut Tx<'_>, aspects: BTreeSet<(Tid, Ak)>) -> Res
         let list = tx.core.ix.gone.get(&k).cloned().unwrap_or_default();
         for c in tx.core.ix.by_aspect.get(&k).map(|s| s.iter().map(|(_, c)| *c).collect::<Vec<_>>()).unwrap_or_default() {
             let Some(m) = tx.core.ix.commits.get(&c) else { continue };
-            let Some(ai) = m.aspect(&tid, &ak) else { continue };
+            for ai in m.aspect_parts(&tid, &ak) {
             let own = crate::retention::writes_of(&m.header, &c, ai);
             let on = own.iter().filter(|o| list.binary_search(o).is_ok()).count();
             if m.own_gone(ai) {
                 debug_assert_eq!(on, own.len(), "{c:?} on {tid:?} {ak:?}: held as an own-gone leftover, its writes not all gone");
             } else if m.holds(ai) {
                 debug_assert_eq!(on, 0, "{c:?} on {tid:?} {ak:?}: held with its own writes live, its writes gone");
+            }
             }
         }
         // every held snapshot is indexed with bounds holding each write its body holds
@@ -1321,15 +1322,19 @@ pub(crate) fn rebuilt(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, mut carrying: Option<
     // newest first (a join does not depend on the order), for `Fragment::settled_above`
     let held: Vec<(osis_base::Ts, CommitId)> = tx.core.ix.by_aspect.get(&(*tid, ak.clone())).map(|s| s.iter().rev().copied().collect()).unwrap_or_default();
     let snapshots = tx.core.ix.snapshots.get(&(*tid, ak.clone())).is_some_and(|v| !v.is_empty());
-    // the part of `c` that may join, with whether it is a snapshot's and valid
-    let joining = |tx: &mut Tx<'_>, c: &CommitId| -> Result<Option<(usize, bool, bool)>> {
-        let Some(ai) = tx.core.ix.commits.get(c).and_then(|m| m.aspect(tid, ak)) else { return Ok(None) };
-        // stored: a commit being applied joins once stored
-        if !super::stores_part(tx, c, ai)? {
-            return Ok(None);
+    // the parts of `c` that may join (one, or its pieces), each with whether it is a
+    // snapshot's and valid
+    let joining = |tx: &mut Tx<'_>, c: &CommitId| -> Result<Vec<(usize, bool, bool)>> {
+        let mut out = Vec::new();
+        for ai in tx.core.ix.commits.get(c).map(|m| m.aspect_parts(tid, ak)).unwrap_or_default() {
+            // stored: a commit being applied joins once stored
+            if !super::stores_part(tx, c, ai)? {
+                continue;
+            }
+            let Some(m) = tx.core.ix.commits.get(c) else { continue };
+            out.push((ai, m.header.kind.is_compaction(), m.valid_at(ai)));
         }
-        let Some(m) = tx.core.ix.commits.get(c) else { return Ok(None) };
-        Ok(Some((ai, m.header.kind.is_compaction(), m.valid_at(ai))))
+        Ok(out)
     };
     let mut st = Fragment::default();
     let mut ch = Changes::new();
@@ -1352,7 +1357,7 @@ pub(crate) fn rebuilt(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, mut carrying: Option<
         if settled && !cfg!(debug_assertions) {
             break;
         }
-        let Some((ai, snap, valid)) = joining(tx, c)? else { continue };
+        for (ai, snap, valid) in joining(tx, c)? {
         let _s = (!settled).then(|| osis_base::costs::span("rebuild: body"));
         debug_assert!(snapshots || !snap, "snapshot {c:?} of {tid:?} {ak:?} held and stored, not in `ix.snapshots`");
         // an invalid part joins nothing, but its body is held: un-merge takes exactly an invalid
@@ -1384,6 +1389,7 @@ pub(crate) fn rebuilt(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, mut carrying: Option<
         if carries && let Some((_, out)) = &mut carrying {
             out.push((*c, ai));
         }
+        }
     }
     debug_assert!(fast.as_ref().is_none_or(|x| *x == st), "a rebuild of {tid:?} {ak:?} stopped early: {fast:?}, all bodies {st:?}");
     // written whole: its dead sequence records a few bytes each
@@ -1397,17 +1403,18 @@ pub(crate) fn each_held_valid_piece(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, f: &mut
     let held: Vec<CommitId> = tx.core.ix.by_aspect.get(&(*tid, ak.clone())).map(|s| s.iter().map(|x| x.1).collect()).unwrap_or_default();
     let gone = tx.core.ix.gone.get(&(*tid, ak.clone())).filter(|v| !v.is_empty()).cloned();
     for c in &held {
-        let Some(ai) = tx.core.ix.commits.get(c).and_then(|m| m.aspect(tid, ak)) else { continue };
-        if !super::stores_part(tx, c, ai)? || !tx.core.ix.commits.get(c).is_some_and(|m| m.valid_at(ai)) {
-            continue;
-        }
-        super::each_held_piece(tx, c, ai, &mut |_, mut p| {
-            if let Some(v) = &gone {
-                p.remove_gone(&|d| crate::retention::sorted_owns(v, d));
+        for ai in tx.core.ix.commits.get(c).map(|m| m.aspect_parts(tid, ak)).unwrap_or_default() {
+            if !super::stores_part(tx, c, ai)? || !tx.core.ix.commits.get(c).is_some_and(|m| m.valid_at(ai)) {
+                continue;
             }
-            f(p);
-            Ok(())
-        })?;
+            super::each_held_piece(tx, c, ai, &mut |_, mut p| {
+                if let Some(v) = &gone {
+                    p.remove_gone(&|d| crate::retention::sorted_owns(v, d));
+                }
+                f(p);
+                Ok(())
+            })?;
+        }
     }
     Ok(())
 }

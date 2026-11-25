@@ -13,7 +13,7 @@ use osis_base::{Ak, CommitId, Tid};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-/// Parts of a commit, by aspect index.
+/// Parts of a commit, by part index.
 pub type Parts = BTreeSet<usize>;
 
 /// What a certificate copy's cut is for (spec/permissions.md §4 Copies): what S carries names
@@ -89,7 +89,7 @@ impl Engine {
         let held = self.core.ix.by_aspect.get(&(*tid, k))?;
         held.iter().rev().map(|(_, c)| *c).find(|c| {
             let Some(m) = self.core.ix.commits.get(c) else { return false };
-            !self.core.ix.pending.contains_key(c) && keep(c) && m.view.aspect(tid, ak).is_some_and(|i| m.valid_at(i))
+            !self.core.ix.pending.contains_key(c) && keep(c) && m.view.aspect_parts(tid, ak).any(|i| m.valid_at(i))
         })
     }
 
@@ -275,8 +275,9 @@ impl Engine {
             let cs: Vec<CommitId> = self.core.ix.by_aspect.get(&(*x, k)).into_iter().flatten().map(|(_, c)| *c).collect();
             for c in cs {
                 let named = ak == "sync.0" || {
-                    let Some(ai) = self.header(&c).and_then(|h| h.aspect_index(x, ak)) else { continue };
-                    self.holders_named(&c).get(&ai).is_some_and(|hs| hs.contains(g))
+                    let parts = self.header(&c).map(|h| h.aspect_parts(x, ak)).unwrap_or_default();
+                    let named = self.holders_named(&c);
+                    parts.into_iter().any(|ai| named.get(&ai).is_some_and(|hs| hs.contains(g)))
                 };
                 if named {
                     out.insert(c);

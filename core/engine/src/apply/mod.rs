@@ -173,7 +173,7 @@ impl<'a> PartsRead<'a> {
         PartsRead { h: self.h, parts: self.parts.get(..n).unwrap_or(self.parts), keys: Cow::Borrowed(self.keys.get(..n).unwrap_or(&self.keys)), perm: OnceCell::new() }
     }
 
-    /// The parts: aspect index and decoded delta or snapshot.
+    /// The parts: part index and decoded delta or snapshot.
     pub(crate) fn all(&self) -> &'a [(usize, Decoded)] {
         self.parts
     }
@@ -2589,6 +2589,22 @@ pub(crate) fn held_fragment(tx: &mut Tx<'_>, id: &CommitId, ai: usize) -> Result
     Ok(held_part(tx, id, ai)?.map(Decoded::into_fragment))
 }
 
+/// The join of the held parts of commit `id` among `ais` (an aspect's pieces, spec/wire.md §4
+/// Pieces: they join as its one delta); `None` where none is held.
+pub(crate) fn held_joined(tx: &mut Tx<'_>, id: &CommitId, ais: impl IntoIterator<Item = usize>) -> Result<Option<osis_crdt::Fragment>> {
+    let mut out: Option<osis_crdt::Fragment> = None;
+    for ai in ais {
+        let Some(f) = held_fragment(tx, id, ai)? else { continue };
+        match &mut out {
+            Some(o) => {
+                o.join(f);
+            }
+            None => out = Some(f),
+        }
+    }
+    Ok(out)
+}
+
 /// The fragment of the part of commit `id` on aspect `ai` its record holds (never a leftover):
 /// what a state stored as that body reads (`engine::state::Stored::Body`).
 pub(crate) fn stored_fragment(tx: &mut Tx<'_>, id: &CommitId, ai: usize) -> Result<Option<osis_crdt::Fragment>> {
@@ -2731,7 +2747,7 @@ pub(crate) fn stores_part(tx: &mut Tx<'_>, id: &CommitId, ai: usize) -> Result<b
     Ok(tx.get_commit(id)?.is_some_and(|b| b.part(ai).is_some()))
 }
 
-/// Decoded parts of a held commit on the aspects `keep` selects, with their aspect indexes (a
+/// Decoded parts of a held commit on the aspects `keep` selects, with their part indexes (a
 /// stripped part as its leftover).
 pub(crate) fn held_parts_at(tx: &mut Tx<'_>, id: &CommitId, keep: &dyn Fn(usize) -> bool) -> Result<Vec<(usize, Decoded)>> {
     let Some(stored) = tx.commit_for_parts(id, keep)? else { return Ok(Vec::new()) };

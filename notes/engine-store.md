@@ -28,7 +28,7 @@ Layouts in `engine/records.rs` (and the module named); all are `*_local` store r
 | `sides` | sides taken in admin disputes (`sides.rs`): per (edge write, holder) trusted and chosen flags |
 | `i/v` | the persisted index's rules tag |
 | `hr/`+aspect+replaced-at+commit, `hf/`+aspect | history rows and cursors (`retention/leaving.rs`, notes/engine-retention-dating.md Rows) |
-| `pi/`+commit+aspect index | a paged part's page index (`apply::held_part_at`), written when the part is applied, gone with it |
+| `pi/`+commit+part index | a paged part's page index (`apply::held_part_at`), written when the part is applied, gone with it |
 | `sy/`, `ow/`, `iw/`, `ih/`, `cp/`, `ra/`, `hw/`, `fm/`, `bp/` | the tables the engine keeps for sync (notes/sync-facade.md) |
 
 Other store kinds (osis-store's catalog):

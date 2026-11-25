@@ -293,7 +293,7 @@ fn decode_parts(pv: Item) -> Result<Vec<Part>, Error> {
 }
 
 /// One section of a commit blob `[[ai+], [chain*], wrap, ciphertext]` (spec/wire.md §4): the
-/// aspect indices of its parts (ascending, distinct, each with a part inside), the derivation chain
+/// part indices of its parts (ascending, distinct, each with a part inside), the derivation chain
 /// of their thing up to the actor its read secret derives from (a reader derives the secret
 /// through it without the thing's record), the section key wrapped under that read secret,
 /// the parts sealed under that key.
@@ -424,7 +424,7 @@ impl Section {
 }
 
 /// A commit blob's plaintext as the wire carries it: header, signature, sections sorted by
-/// their first aspect index, no aspect in two sections.
+/// their first part index, no aspect in two sections.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Envelope {
     pub header: Header,
@@ -448,7 +448,7 @@ impl Envelope {
         out
     }
 
-    /// Decodes a commit blob plaintext. Linked header lists stay unresolved; aspect indices
+    /// Decodes a commit blob plaintext. Linked header lists stay unresolved; part indices
     /// are checked against the header once resolved (`prefix_groups`).
     pub fn decode(b: &[u8]) -> Result<Envelope, Error> {
         let Some([hv, sv, ss]) = item::list(Item::parse(b, &LIMITS)?)?.tuple() else { return Err(Error::Malformed("commit blob arity")) };
@@ -473,7 +473,7 @@ impl Envelope {
         Ok(e)
     }
 
-    /// Every aspect index any section lists, ascending.
+    /// Every part index any section lists, ascending.
     pub fn ais(&self) -> Vec<usize> {
         self.sections.iter().flat_map(|s| s.ais.iter().copied()).collect()
     }
@@ -582,7 +582,7 @@ pub fn seal_commit<K: Ord + Clone>(c: &CommitBlob, resolved: &Header, section_of
 fn path_keys_of(c: &CommitBlob, resolved: &Header, things: &[Tid], ais: &[usize]) -> Result<BTreeMap<usize, [u8; 32]>, Error> {
     ais.iter()
         .map(|ai| {
-            let i = resolved.aspects.get(*ai).and_then(|a| things.iter().position(|t| *t == a.tid)).ok_or(Error::Malformed("part aspect index out of range"))?;
+            let i = resolved.aspects.get(*ai).and_then(|a| things.iter().position(|t| *t == a.tid)).ok_or(Error::Malformed("part index out of range"))?;
             Ok((i, *c.keys.get(&i).ok_or(Error::Malformed("a part without its thing's path key"))?))
         })
         .collect()

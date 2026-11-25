@@ -13,7 +13,8 @@ use osis_schema::PurgeBy;
 use crate::path::{Path, Paths, Split};
 use std::collections::{BTreeMap, BTreeSet};
 
-/// The writes of one `(tid, ak)` in a commit.
+/// The writes of one `(tid, ak)` in a commit: one part, or one piece of a `secrets.0` written in
+/// pieces (spec/wire.md §4 Pieces: several writes of it, sharing every field but the delta).
 #[derive(Clone, Debug)]
 pub struct AspectWrite {
     pub tid: Tid,
@@ -116,14 +117,18 @@ impl CommitBuilder {
             b
         });
 
-        // aspects in canonical order, with their delete keys and delta hashes
-        self.aspects.sort_by(|a, b| aspect_order(&a.tid, a.ak.as_str()).cmp(&aspect_order(&b.tid, b.ak.as_str())));
-        let mut aspect_keys = Vec::with_capacity(self.aspects.len());
-        let mut entries = Vec::with_capacity(self.aspects.len());
-        let mut deltas = Vec::with_capacity(self.aspects.len());
+        // parts in canonical order (an aspect's pieces by hash), with their delete keys and
+        // delta hashes
+        let mut hashed = Vec::with_capacity(self.aspects.len());
         for a in std::mem::take(&mut self.aspects) {
             let dedup = secrets.dedup(&a.tid).ok_or(Error::Build("dedup secret not supplied"))?;
-            let hash = delta_hash(&dedup, &a.delta);
+            hashed.push((delta_hash(&dedup, &a.delta), a));
+        }
+        hashed.sort_by(|(h, a), (g, b)| (aspect_order(&a.tid, a.ak.as_str()), h).cmp(&(aspect_order(&b.tid, b.ak.as_str()), g)));
+        let mut aspect_keys = Vec::with_capacity(hashed.len());
+        let mut entries = Vec::with_capacity(hashed.len());
+        let mut deltas = Vec::with_capacity(hashed.len());
+        for (hash, a) in hashed {
             let (lo, hi) = if kind.has_own_writes() { (a.lo, a.hi) } else { (0, 0) };
             aspect_keys.push(delete_keys(secrets, &a.tid, &a.purge_by)?);
             entries.push(AspectEntry {
