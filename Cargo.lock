@@ -2898,6 +2898,7 @@ name = "osis-sim"
 version = "0.1.0"
 dependencies = [
  "osis-base",
+ "osis-blob",
  "osis-commit",
  "osis-crdt",
  "osis-crypto",

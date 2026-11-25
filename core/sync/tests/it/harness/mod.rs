@@ -131,6 +131,8 @@ pub struct WNode {
     pub account: Option<Tid>,
     /// Its account's profile thing.
     pub profile: Option<Tid>,
+    /// The inbox its account was made with.
+    pub inbox: Option<Tid>,
 }
 
 /// One delivery, as `World::trace` records it.
@@ -631,6 +633,7 @@ impl World {
         if let Some(n) = self.nodes.get_mut(i) {
             n.account = Some(acc.thing);
             n.profile = Some(acc.profile);
+            n.inbox = Some(acc.inbox);
         }
         self.publish(i);
         i
@@ -642,7 +645,7 @@ impl World {
     /// takes; then it publishes where it is dialed.
     pub fn pair(&mut self, i: usize) -> usize {
         let j = self.add_bare_node();
-        let (acc, profile) = (self.node(i).account.expect("an account"), self.node(i).profile);
+        let (acc, profile, inbox) = (self.node(i).account.expect("an account"), self.node(i).profile, self.node(i).inbox);
         let (node, keys) = self.write(j, |e| (e.me(), e.node_keys().expect("node keys")));
         let pair = |e: &mut Engine| e.pair(&acc, &node, &keys, osis_base::Role::Admin);
         let offer = match self.write(i, pair) {
@@ -654,6 +657,7 @@ impl World {
         if let Some(n) = self.nodes.get_mut(j) {
             n.account = Some(acc);
             n.profile = profile;
+            n.inbox = inbox;
         }
         self.publish(j);
         // the pairing channel also carries where the pairer is dialed, as a link carries its
@@ -678,6 +682,14 @@ impl World {
         let peers = osis_blob::link_peers(self.node(i).key.0, &self.net.reach.items(i), &self.node(i).node.config().dial);
         let spec = osis_engine::flows::LinkSpec { target, role, until: None, peers, single_use: false };
         self.write(i, |e| e.create_link(&me, &spec)).expect("a link").0
+    }
+
+    /// Node `i`'s public link to `target` (`Engine::public_link`, as the product's `public_link`
+    /// makes it: the node's dialable key and where it is reached, as first-contact hints); `None`
+    /// unless the public reads `target` at node `i`.
+    pub fn public_link(&mut self, i: usize, target: Tid) -> Option<osis_blob::Link> {
+        let peers = osis_blob::link_peers(self.node(i).key.0, &self.net.reach.items(i), &self.node(i).node.config().dial);
+        self.write(i, |e| e.public_link(&target, peers)).expect("a public link").map(osis_blob::Link::Public)
     }
 
     /// Node `i` redeems `link` (`Node::redeem`), then it is stepped.
@@ -716,7 +728,7 @@ impl World {
         self.net.reach.listen(i, key.0);
         self.net.online.push(true);
         self.net.accepted.push(0);
-        self.nodes.push(WNode { node, disks, store, clock, key, account: None, profile: None });
+        self.nodes.push(WNode { node, disks, store, clock, key, account: None, profile: None, inbox: None });
         self.tick(i);
         i
     }
@@ -1393,7 +1405,7 @@ impl World {
                     let dc: Arc<dyn Clock> = c.clone();
                     let node = n.node.test_copy(dc.clone()).expect("node copy");
                     let store = n.store.test_copy(dc).expect("store copy");
-                    WNode { node, disks: n.disks.test_copy(), store, clock: c, key: n.key, account: n.account, profile: n.profile }
+                    WNode { node, disks: n.disks.test_copy(), store, clock: c, key: n.key, account: n.account, profile: n.profile, inbox: n.inbox }
                 })
                 .collect()
         });
@@ -1550,6 +1562,16 @@ pub enum Step {
     Unstrong(usize, Option<usize>, usize),
     Pair(usize),
     Unpair(usize, usize),
+    /// Node i redeems a public link to thing k for its account (`Node::redeem`), the link made at
+    /// an online node where the public reads it, preferably the thing's maker.
+    Redeem(usize, usize),
+    /// Node i writes its account's card on thing k (spec/sync-inbox.md §1 Card), naming the
+    /// account's inbox as node i reads it.
+    Card(usize, usize),
+    /// Node i moves its account's inbox (spec/sync-inbox.md §1): to thing k, its setting first
+    /// taking both inbox signals, or back to the inbox the account was made with (`None`): the
+    /// card on the profile written with a `since` above every card of the account node i holds.
+    Inbox(usize, Option<usize>),
 }
 
 /// Every name a printed script uses.
@@ -1639,7 +1661,7 @@ fn step_of(w: &mut World, s: &Step) -> String {
         Step::Disk(i, n, f) => w.disk_fault(*i, *n, *f),
         Step::Lies(i, l) => w.lie(*i, Some(*l)),
         Step::Truth(i) => w.lie(*i, None),
-        Step::New(..) | Step::NewIn(..) | Step::Write(..) | Step::Give(..) | Step::Grant(..) | Step::Lower(..) | Step::Remove(..) | Step::Revoke(..) | Step::Rotate(..) | Step::Strong(..) | Step::Unstrong(..) | Step::Pair(..) | Step::Unpair(..) => return history::step(w, s),
+        Step::New(..) | Step::NewIn(..) | Step::Write(..) | Step::Give(..) | Step::Grant(..) | Step::Lower(..) | Step::Remove(..) | Step::Revoke(..) | Step::Rotate(..) | Step::Strong(..) | Step::Unstrong(..) | Step::Pair(..) | Step::Unpair(..) | Step::Redeem(..) | Step::Card(..) | Step::Inbox(..) => return history::step(w, s),
     }
     String::new()
 }

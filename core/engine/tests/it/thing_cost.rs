@@ -321,3 +321,62 @@ fn an_independent_thing_nobody_seals_to_carries_no_kem_key() {
     assert!(small.1 < 4_864 && big.1 <= small.1, "{small:?} {big:?}");
     assert!(big.0 <= small.0 + 256, "stored per thing grows with n: {small:?} {big:?}");
 }
+
+/// What a commit on a public thing costs per referring unit (spec/sync-set.md §2 T's keys open:
+/// a strong to a public thing brings it whole into the referrer's unit): an account's public
+/// profile P referenced by strongs from `n` independent things of the account, each a unit of its
+/// own as an importer's account is. Then, at the maker: the bodies (entries, one per sync ID
+/// logging it) of a small value write on P and of the account's card on P written again (its
+/// keys refreshed after a rotation of A), with each commit's bytes, and the card's own bytes.
+#[derive(Debug, PartialEq, Eq)]
+struct PublicCost {
+    value_entries: usize,
+    value_bytes: usize,
+    card_entries: usize,
+    card_bytes: usize,
+    card_value: usize,
+}
+
+fn public_referenced(n: usize) -> PublicCost {
+    let (mut lp, acc) = LocalPeer::one_account(1, 0, crate::common::T0).unwrap();
+    let (a, p) = (acc.thing, acc.profile);
+    let e = &mut lp.peers[0].engine;
+    assert!(e.public_reads(&p), "the profile is public");
+    for _ in 0..n {
+        let t = an_independent(e, a);
+        let mut m = Mutation::new();
+        m.op(t, &ct::HOLDS, PathOp { path: Vec::new(), op: Op::Add(Value::Strong(p)) }).unwrap();
+        e.commit(m).unwrap();
+    }
+    let unit_bodies = |e: &mut Engine, c: &CommitId| e.sync_bodies(c).unwrap().keys().filter(|(_, on)| on.is_none()).count();
+    let bytes = |e: &mut Engine, c: &CommitId| e.package(c).unwrap().map_or(0, |pk| pk.bytes.len() + pk.blobs.iter().map(|b| b.1.len()).sum::<usize>());
+    let mut m = Mutation::new();
+    m.set(p, &REG, &s("hello")).unwrap();
+    let v = e.commit(m).unwrap().unwrap();
+    // A's keys move (a rotation), so the card on P is stale and written again
+    e.rotate_leaving_out(&a, &[Role::Read], &[]).unwrap().expect("a rotation");
+    let before: std::collections::BTreeSet<CommitId> = e.commit_ids().into_iter().collect();
+    assert!(e.refresh_cards().unwrap(), "the card is rewritten");
+    let card = e.commit_ids().into_iter().find(|c| !before.contains(c)).expect("the card's commit");
+    let card_value = e.get_typed(&p, &ct::CARD).unwrap().and_then(|cs| cs.get(&osis_base::Weak(a)).map(|c| osis_base::encode(&osis_schema::codec::Codec::to_value(c)).len())).unwrap();
+    PublicCost { value_entries: unit_bodies(e, &v), value_bytes: bytes(e, &v), card_entries: unit_bodies(e, &card), card_bytes: bytes(e, &card), card_value }
+}
+
+// spec/sync-set.md §2 (T's keys open: a strong to a public thing brings it into the referrer's
+// unit whole), notes/thing-cost.md: a commit on a public thing is logged once under its own
+// sync ID, once under its maker's account's, and once more under each unit referring to it, the
+// accepted cost of the built unit: exactly one entry per referrer at n and 10n, the commit's
+// bytes the same whatever the referrers. The account's card on its public profile alike (its
+// bytes: A's and the inbox's `keys.0` commits with their evidence).
+#[test]
+fn a_commit_on_a_public_thing_costs_an_entry_per_referring_unit() {
+    let (small, big) = (public_referenced(2), public_referenced(20));
+    if std::env::var_os("THING_COST").is_some() {
+        eprintln!("a public profile referenced by n units: n {small:?}, 10n {big:?}");
+    }
+    assert_eq!(small.value_entries, 2 + 2, "its own sync ID, the account's and one per referrer: {small:?}");
+    assert_eq!(big.value_entries - small.value_entries, 18, "one entry more per referrer: {small:?} {big:?}");
+    assert_eq!(big.card_entries - small.card_entries, 18, "{small:?} {big:?}");
+    assert_eq!((small.value_bytes, small.card_value), (big.value_bytes, big.card_value), "a commit's bytes do not grow with referrers");
+    assert!(big.card_bytes <= small.card_bytes + 64, "{small:?} {big:?}");
+}

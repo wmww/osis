@@ -117,8 +117,80 @@ fn a_history_is_a_function_of_its_seed() {
         ("hold", drawn(&|s| matches!(s, Step::Strong(_, None, _)))),
         ("pair", drawn(&|s| matches!(s, Step::Pair(..)))),
         ("unpair", drawn(&|s| matches!(s, Step::Unpair(..)))),
+        ("public", drawn(&|s| matches!(s, Step::Give(_, _, crate::harness::history::Holder::Public, _)))),
+        ("redeem", drawn(&|s| matches!(s, Step::Redeem(..)))),
+        ("card", drawn(&|s| matches!(s, Step::Card(..)))),
+        ("inbox", drawn(&|s| matches!(s, Step::Inbox(_, Some(_))))),
         ("fault", drawn(&|s| matches!(s, Step::Lossy(..) | Step::Disk(..) | Step::PowerOff(..)))),
     ] {
         assert!(has, "no {name} step");
     }
+}
+
+// spec/sync-set.md §2 (T's keys open: what the public reads), §4 (Redeeming a public link: the
+// strong): node 0 makes a thing public; node 1, of another account holding no role on it,
+// redeems a public link to it and reads it as the reference does, as held-model's closure says.
+// Control: never made public, the redeem writes nothing and node 1 reads nothing.
+#[test]
+fn a_public_thing_redeemed_is_read_until_the_public_goes_spec_sync_set_4() {
+    use crate::harness::history::{Gives, Holder, reads};
+    let (n, accounts, ..) = size();
+    let script = [Step::New(0), Step::Give(0, 0, Holder::Public, Gives::Reads), Step::Run, Step::Redeem(1, 0), Step::Run];
+    let mut w = holds_on(0, accounts, n, &script, String::new(), false);
+    let t = w.history.things[0].0;
+    assert!(reads(w.engine(1), &t).value.is_some(), "node 1 reads the public thing it redeemed");
+    let control = [Step::New(0), Step::Run, Step::Redeem(1, 0), Step::Run];
+    let mut w = holds_on(0, accounts, n, &control, String::new(), false);
+    assert!(reads(w.engine(1), &t).value.is_none(), "control: not public, not read");
+}
+
+// spec/sync-inbox.md §1 (Card: a move writes a `since` above every card; inbox: the one the card
+// with the greatest `since` names), §5 (Grant from outside): node 0 moves its
+// account's inbox to a thing of its own and back again; node 1, a contact, takes each move from the
+// profile's card, and its grant from outside reaches node 0's account at the inbox the card names
+// (the oracle's card clause: every node takes every inbox as the reference does). Control: a
+// card on a thing node 0 writes changes no inbox.
+#[test]
+fn an_inbox_moved_takes_grants_from_outside_spec_sync_inbox_1() {
+    use crate::harness::history::{Gives, Holder, reads};
+    let (n, accounts, ..) = size();
+    for back in [false, true] {
+        let mut script = vec![Step::New(0), Step::Inbox(0, Some(0)), Step::Run];
+        if back {
+            script.extend([Step::Inbox(0, None), Step::Run]);
+        }
+        script.extend([Step::New(1), Step::Give(1, 1, Holder::Node(0), Gives::Reads), Step::Strong(0, None, 1), Step::Run]);
+        let mut w = holds_on(0, accounts, n, &script, String::new(), false);
+        let (a, moved) = (w.node(0).account.unwrap(), w.history.things[0].0);
+        let want = if back { w.node(0).inbox.unwrap() } else { moved };
+        assert_eq!(w.engine(1).inbox_of(&a).unwrap(), Some(want), "node 1 takes the move (back: {back})");
+        let granted = w.history.things[1].0;
+        assert!(reads(w.engine(0), &granted).value.is_some(), "the grant from outside reached the account (back: {back})");
+    }
+    let control = [Step::New(0), Step::Card(0, 0), Step::Run];
+    let mut w = holds_on(0, accounts, n, &control, String::new(), false);
+    let a = w.node(0).account.unwrap();
+    assert_eq!(w.engine(1).inbox_of(&a).unwrap(), w.node(0).inbox, "control: a card on a thing moves no inbox");
+}
+
+// spec/sync-set.md §2 (Public pieces: a removal's piece tells T's readers the public no longer
+// reads X): as above, then node 0 removes the public and writes again. Node 1 should stop reading
+// the thing; it never learns the removal (issues/public-removal-unheard.md).
+#[test]
+#[ignore = "issues/public-removal-unheard.md"]
+fn repro_a_redeemer_learns_the_public_removed() {
+    use crate::harness::history::{Gives, Holder};
+    let (n, accounts, ..) = size();
+    let script = [Step::New(0), Step::Give(0, 0, Holder::Public, Gives::Reads), Step::Run, Step::Redeem(1, 0), Step::Run, Step::Revoke(0, 0, Holder::Public), Step::Write(0, 0), Step::Run];
+    holds_on(0, accounts, n, &script, String::new(), false);
+}
+
+// spec/permissions.md §8 (Removing: erasing), spec/sync-inbox.md §5 (a removal from outside goes
+// as a grant does): node 0 removes node 2 from their account; node 2 should learn it and hold
+// nothing of the history. It is told by no rule (issues/removed-node-never-told.md).
+#[test]
+#[ignore = "issues/removed-node-never-told.md"]
+fn repro_a_removed_node_learns_its_removal() {
+    let (n, accounts, ..) = size();
+    holds_on(0, accounts, n, &[Step::New(0), Step::Run, Step::Unpair(0, 2), Step::Run], String::new(), false);
 }

@@ -342,7 +342,7 @@ fn sync_units_are_the_models_plain_spec_sync_set_2() {
                 _ => continue,
             }
             e.check_closure();
-            let w = hc::World { kinds: kinds.clone(), grants: grants.clone(), keyless: hc::keyless_of(&order) };
+            let w = hc::World { kinds: kinds.clone(), grants: grants.clone(), keyless: hc::keyless_of(&order), ..hc::World::default() };
             for (k, kt) in tids.iter().enumerate().take(3) {
                 let got: BTreeSet<usize> = e.sync_unit(kt).iter().filter_map(ix).collect();
                 assert_eq!(got, hc::unit(&w, k, &edges), "seed {seed} step {step}: the sync unit of {k}");

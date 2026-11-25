@@ -103,9 +103,7 @@ fn a_stranger_opens_a_public_thing_by_a_public_link_spec_wire_10() {
     let p = make(&mut w, 0, a, "p1");
     w.write(0, |e| e.grant(&p, &Tid::PUBLIC, &edge(Role::Read))).unwrap();
     w.run();
-    let sync_id = w.engine(0).sync_id_of(&p).unwrap().unwrap();
-    let peers = osis_blob::link_peers(w.node(0).key.0, &w.net.reach.items(0), &w.node(0).node.config().dial);
-    let link = osis_blob::Link::Public(osis_blob::PublicLink { target: p, sync_id, peers });
+    let link = w.public_link(0, p).expect("P is public");
     assert_eq!(reads(&mut w, 1, &p), None, "a stranger to P");
     assert_eq!(w.redeem_any(1, &link), osis_sync::types::Waiting::Pending);
     w.run();

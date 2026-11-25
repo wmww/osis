@@ -239,27 +239,28 @@ impl Sim {
             let (made, _) = osis_engine::local_peer::make_account(&mut peer.engine).map_err(|e| s.fail(format!("node {i} account: {e}")))?;
             s.nodes.push(Node { peer, account: made.thing, profile: made.profile, faults, clock, up: true });
         }
-        // each node keeps the others' accounts and profiles, as a contact's node does: each
-        // profile granted read to the others' nodes (standing in for a contact card, as
-        // `LocalPeer::shows_profile` does), a strong to each (`Peer::know`), their commits by the
-        // first sync; a grant from outside then fires at the inbox the profile's card names
-        let all: Vec<(Tid, Tid)> = s.nodes.iter().map(|n| (n.account, n.profile)).collect();
-        let read = ct::Edge { role: Role::Read, until: None, may_grant: false, retain: false, floor: None };
-        for (i, &(_, profile)) in all.iter().enumerate() {
-            for j in (0..all.len()).filter(|j| *j != i) {
-                let n = s.engine(j)?.me();
-                let keys = s.engine(j)?.holder_keys(&n);
-                let e = s.engine(i)?;
-                let r = keys.and_then(|k| e.take_holder_keys(&n, &k, None)).and_then(|_| e.grant(&profile, &n, &read));
-                r.map_err(|e| s.fail(format!("node {i} shows its profile to node {j}: {e}")))?;
-            }
-        }
+        // each account is every other's contact (spec/sync-inbox.md §5): its profile is public and
+        // its contact card a public link to it, which each other node follows until the profile
+        // is here, then redeems (a strong from its account, spec/sync-set.md §4); the profile
+        // carries the account's card, so a grant from outside fires at the inbox it names
+        let mut links = Vec::new();
         for i in 0..s.nodes.len() {
-            let own = s.node(i)?.account;
-            let others: Vec<Tid> = all.iter().filter(|a| a.0 != own).flat_map(|a| [a.0, a.1]).collect();
-            let r = s.node(i)?.peer.know(&others);
-            r.map_err(|e| s.fail(format!("node {i} know: {e}")))?;
-            s.drain(i)?;
+            let profile = s.node(i)?.profile;
+            let l = s.engine(i)?.public_link(&profile, Vec::new());
+            links.push(l.map_err(|e| s.fail(format!("node {i} contact card: {e}")))?.ok_or_else(|| s.fail(format!("node {i}'s profile is not public")))?);
+        }
+        let pairs: Vec<(usize, usize, osis_blob::PublicLink)> = (0..links.len()).flat_map(|j| links.iter().enumerate().filter(move |(i, _)| *i != j).map(move |(i, l)| (j, i, l.clone()))).collect();
+        for (j, _, l) in &pairs {
+            s.engine(*j)?.follow_public(l);
+        }
+        s.sync_all()?;
+        for (j, i, l) in &pairs {
+            let a = s.account(*j)?;
+            let e = s.engine(*j)?;
+            let r = e.redeem_public(l, &a).and_then(|_| e.take_carried());
+            r.map_err(|e| s.fail(format!("node {j} imports node {i}'s contact card: {e}")))?;
+            s.engine(*j)?.unfollow_link(&l.target);
+            s.drain(*j)?;
         }
         s.sync_all()?;
         Ok(s)
@@ -464,7 +465,7 @@ impl Sim {
     /// Sending, as a sync's fire step does, apart from its commits), and owes one no more once
     /// taken: a grant from outside reaches its holder as its `grant@~0` fire (spec/sync-inbox.md §5
     /// Grant from outside). A fire refused fails the run: every fire offered here is on an
-    /// account's inbox (a profile shown to a node fires at the node thing, owed to no account).
+    /// account's inbox.
     pub fn fires(&mut self, from: usize, to: usize) -> Res<()> {
         if !self.node(from)?.up || !self.node(to)?.up {
             return Ok(());

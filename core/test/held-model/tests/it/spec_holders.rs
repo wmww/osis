@@ -7,7 +7,7 @@ use held_model::closure::{keyless_of, Edges, Kind, NodeView, Role, Set, World, T
 /// A world of `n` independent things with `grants` written in order, the account thing 0.
 fn world(n: usize, grants: &[(T, T, Role)]) -> World {
     let order: Vec<(T, T)> = grants.iter().map(|g| (g.0, g.1)).collect();
-    World { kinds: vec![Kind::Independent; n], grants: grants.iter().map(|g| ((g.0, g.1), g.2)).collect(), keyless: keyless_of(&order) }
+    World { kinds: vec![Kind::Independent; n], grants: grants.iter().map(|g| ((g.0, g.1), g.2)).collect(), keyless: keyless_of(&order), ..World::default() }
 }
 
 /// The account's node, its root strongs to `roots`.

@@ -54,11 +54,13 @@ impl Gives {
     }
 }
 
-/// Who a grant names: node j's account, or thing k (thing k's readers hold the role through it).
+/// Who a grant names: node j's account, thing k (thing k's readers hold the role through it),
+/// or the public (spec/permissions.md §1: every party reads by it, at most read).
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Holder {
     Node(usize),
     Thing(usize),
+    Public,
 }
 
 /// Printed as a script names it (`Holder::Node(1)`), so a printed step pastes into a test.
@@ -67,6 +69,7 @@ impl std::fmt::Debug for Holder {
         match self {
             Holder::Node(j) => write!(f, "Holder::Node({j})"),
             Holder::Thing(k) => write!(f, "Holder::Thing({k})"),
+            Holder::Public => write!(f, "Holder::Public"),
         }
     }
 }
@@ -118,9 +121,13 @@ pub struct Made {
     record_gone: BTreeSet<usize>,
     /// (thing, holder thing) edges standing that the holder's readers were never offered
     /// (spec/permissions.md §4 Delivering an edge piece): no write of the edge since it last began
-    /// was by a node writing the holder (which logs it in the holder's key part), and no history
-    /// thing enables `grant@~0`. An account is offered every grant: its inbox enables the signal.
+    /// was by a node writing the holder (which logs it in the holder's key part), and the holder
+    /// did not take `grant@~0` when it was written (`inboxes`). An account is offered every grant:
+    /// its inbox enables the signal.
     unoffered: BTreeSet<(usize, Tid)>,
+    /// History things made an account's inbox (`Step::Inbox`): their setting takes both inbox
+    /// signals from then on.
+    inboxes: BTreeSet<usize>,
     /// Grants to accounts and changes of keys, in the order made.
     events: Vec<Event>,
     /// Per node, the events it surely received: its own, and each held by a node it shared a run
@@ -369,7 +376,7 @@ fn strong_in(m: &mut Mutation, from: Tid, to: Tid, on: bool) -> osis_engine::Res
 /// The node a history write is made by.
 fn writer(s: &Step) -> Option<usize> {
     match s {
-        Step::New(i) | Step::NewIn(i, _) | Step::Write(i, _) | Step::Grant(i, ..) | Step::Give(i, ..) | Step::Lower(i, ..) | Step::Remove(i, ..) | Step::Revoke(i, ..) | Step::Rotate(i, _) | Step::Strong(i, ..) | Step::Unstrong(i, ..) | Step::Pair(i) | Step::Unpair(i, _) => Some(*i),
+        Step::New(i) | Step::NewIn(i, _) | Step::Write(i, _) | Step::Grant(i, ..) | Step::Give(i, ..) | Step::Lower(i, ..) | Step::Remove(i, ..) | Step::Revoke(i, ..) | Step::Rotate(i, _) | Step::Strong(i, ..) | Step::Unstrong(i, ..) | Step::Pair(i) | Step::Unpair(i, _) | Step::Redeem(i, _) | Step::Card(i, _) | Step::Inbox(i, _) => Some(*i),
         _ => None,
     }
 }
@@ -434,6 +441,9 @@ pub fn step(w: &mut World, s: &Step) -> String {
             Ok(format!("node {n}"))
         }
         Step::Unpair(_, j) => unpair(w, i, *j),
+        Step::Redeem(_, k) => redeem(w, i, *k),
+        Step::Card(_, k) => card(w, i, *k),
+        Step::Inbox(_, k) => inbox(w, i, *k),
         _ => return String::new(),
     };
     if r.is_ok() && matches!(s, Step::Unstrong(..) | Step::Lower(..) | Step::Remove(..) | Step::Revoke(..)) {
@@ -488,7 +498,82 @@ fn holder_tid(w: &World, h: Holder) -> Option<Tid> {
     match h {
         Holder::Node(j) => (j < w.len()).then(|| w.node(j).account).flatten(),
         Holder::Thing(k) => thing(w, k),
+        Holder::Public => Some(Tid::PUBLIC),
     }
+}
+
+/// Node `i` redeems a public link to thing `k` for its account (spec/sync-set.md §4): the link
+/// made at an online node where the public reads `k`, its maker first. It writes the strong once
+/// the public's grant is held here, else gives up after its follow time (`Node::redeem`).
+fn redeem(w: &mut World, i: usize, k: usize) -> Result<String, String> {
+    let Some(t) = thing(w, k) else { return Ok("skipped: no such thing".into()) };
+    let maker = w.history.things[k].1;
+    let at = std::iter::once(maker).chain(0..w.len()).find(|&m| m < w.len() && w.online(m) && w.engine(m).public_reads(&t));
+    let Some(link) = at.and_then(|m| w.public_link(m, t)) else { return Ok("skipped: the public reads it at no online node".into()) };
+    Ok(format!("{:?}", w.redeem_any(i, &link)))
+}
+
+/// Node `i` writes its account's card on thing `k`, naming the account's inbox as node `i` reads
+/// it (spec/sync-inbox.md §1 Card: valid only where node `i` writes `k` along a path through the
+/// account, refused otherwise).
+fn card(w: &mut World, i: usize, k: usize) -> Result<String, String> {
+    let Some(t) = thing(w, k) else { return Ok("skipped: no such thing".into()) };
+    let a = w.node(i).account.ok_or("no account")?;
+    w.write(i, |e| -> osis_engine::Result<bool> {
+        let inbox = e.inbox_of(&a)?.filter(|x| *x != a);
+        let since = e.cards_of(&a)?.into_iter().find(|(_, c)| c.inbox.map(|x| x.0) == inbox).map(|(_, c)| c.since);
+        e.write_card(t, a, inbox, since)
+    })
+    .map(|wrote| if wrote { String::new() } else { "nothing to carry".into() })
+    .map_err(|e| e.to_string())
+}
+
+/// Node `i` moves its account's inbox to thing `k` (made independent first where it is not, as a
+/// fire goes under the inbox's own sync ID sealed to its keys, spec/sync-inbox.md §2; then its
+/// setting taking both inbox signals) or back to the one the account was made with (`None`): its
+/// card on the profile names it, with a `since` above every card of the account node `i` holds
+/// (spec/sync-inbox.md §1).
+fn inbox(w: &mut World, i: usize, k: Option<usize>) -> Result<String, String> {
+    let a = w.node(i).account.ok_or("no account")?;
+    let profile = w.node(i).profile.ok_or("no profile")?;
+    let to = match k {
+        Some(k) => match thing(w, k) {
+            Some(t) => Some(t),
+            None => return Ok("skipped: no such thing".into()),
+        },
+        None => None,
+    };
+    let made = w.node(i).inbox.ok_or("no inbox")?;
+    if let (Some(k), Some(t)) = (k, to)
+        && !w.history.independent[k]
+    {
+        w.write(i, |e| e.make_independent_again(&t)).map_err(|e| e.to_string())?;
+        w.history.independent[k] = true;
+        w.history.event(k, None, i);
+    }
+    let r = w.write(i, |e| -> osis_engine::Result<bool> {
+        let to = match to {
+            Some(t) => {
+                let mut setting: ct::RetentionSetting = e.get_typed(&t, &ct::RETENTION)?.unwrap_or_default();
+                setting.take_inbox_signals();
+                let mut m = Mutation::new();
+                m.set(t, &ct::RETENTION, &setting)?;
+                e.commit(m)?;
+                t
+            }
+            None => made,
+        };
+        e.write_card(profile, a, (to != a).then_some(to), None)
+    });
+    // the setting's commit stands even where the card's was refused
+    if let Some(k) = k
+        && w.online(i)
+        && let Some(t) = thing(w, k)
+        && w.engine(i).get_typed(&t, &ct::RETENTION).ok().flatten().is_some_and(|s: ct::RetentionSetting| s.enables(&Ak::new("grant@~0").expect("an external signal")))
+    {
+        w.history.inboxes.insert(k);
+    }
+    r.map(|_| String::new()).map_err(|e| e.to_string())
 }
 
 /// Node `i` mints a thing with its account (`None`) or thing `k` as admin, held there by a
@@ -532,10 +617,11 @@ fn make(w: &mut World, i: usize, mint_admin: Option<usize>) -> Result<String, St
 /// holder it reaches the holder's readers; from outside it stays as it was, unoffered where it
 /// begins the edge.
 fn note_offered(w: &mut World, k: usize, h: Holder, holder: Tid, on_holder: Option<Role>, stood: bool) {
-    if matches!(h, Holder::Node(_)) {
+    if matches!(h, Holder::Node(_) | Holder::Public) {
         return;
     }
-    if on_holder >= Some(Role::Write) {
+    // a holder taking `grant@~0` is offered a grant from outside at itself (spec/sync-inbox.md §5)
+    if on_holder >= Some(Role::Write) || matches!(h, Holder::Thing(j) if w.history.inboxes.contains(&j)) {
         w.history.unoffered.remove(&(k, holder));
     } else if !stood {
         w.history.unoffered.insert((k, holder));
@@ -706,9 +792,9 @@ pub fn world_of(seed: u64, accounts: usize, nodes: usize) -> World {
 }
 
 /// Every account becomes every other's contact by contact cards (spec/sync-inbox.md §5): each
-/// account's first node makes a read link to its profile, a node of every other account redeems
-/// it, the join holding the profile from that account's D (a redeem writes the strong,
-/// spec/sync-set.md §4). Before any history only; nothing is handed by hand.
+/// account's first node makes a public link to its profile (public from its making), a node of
+/// every other account redeems it, holding the profile from that account (a redeem writes the
+/// strong, spec/sync-set.md §4). Before any history only; nothing is handed by hand.
 pub fn introduce(w: &mut World) {
     assert!(w.history.things.is_empty(), "introduce before any history only");
     let n = w.len();
@@ -719,17 +805,17 @@ pub fn introduce(w: &mut World) {
         }
     }
     let ones: Vec<usize> = first.values().copied().collect();
-    let cards: BTreeMap<usize, osis_blob::ShareLink> = ones.iter().filter_map(|&i| w.node(i).profile.map(|p| (i, w.make_link(i, p, Role::Read)))).collect();
+    let cards: BTreeMap<usize, osis_blob::Link> = ones.iter().filter_map(|&i| w.public_link(i, w.node(i).profile?).map(|l| (i, l))).collect();
     let pairs: Vec<(usize, usize)> = ones.iter().flat_map(|&j| ones.iter().map(move |&i| (j, i))).filter(|(j, i)| j != i).collect();
     for &(j, i) in &pairs {
         if let Some(c) = cards.get(&i) {
-            w.redeem(j, c);
+            w.redeem_any(j, c);
         }
     }
     w.run();
     for &(j, i) in &pairs {
         if let Some(c) = cards.get(&i) {
-            assert_eq!(w.redeem(j, c), osis_sync::types::Waiting::Done, "{j} redeems {i}'s card");
+            assert_eq!(w.redeem_any(j, c), osis_sync::types::Waiting::Done, "{j} redeems {i}'s card");
         }
     }
 }
@@ -863,6 +949,7 @@ impl Model {
         }
         let mut grants = BTreeMap::new();
         let mut unoffered = BTreeSet::new();
+        let mut public = hc::Set::new();
         let mut edges = hc::Edges::new();
         for (k, t) in things.iter().enumerate() {
             // the record edge stands at admin until an edge write lowers it, which the roster then
@@ -872,6 +959,13 @@ impl Model {
                 grants.insert((mint_admin(k), na + k), hc::Role::Admin);
             }
             for (holder, e) in roster {
+                // the public reads by its own grant on the thing (spec/permissions.md §1)
+                if holder == Tid::PUBLIC {
+                    if e.role >= Role::Read {
+                        public.insert(na + k);
+                    }
+                    continue;
+                }
                 if let Some(g) = index(&holder) {
                     if h.unoffered.contains(&(k, holder)) {
                         unoffered.insert((g, na + k));
@@ -905,7 +999,7 @@ impl Model {
         for r in refs.all() {
             keyless.extend(r.engine.keyless_grants().iter().filter_map(|(t, g)| Some((index(g)?, index(t)?))));
         }
-        let mut m = Model { accounts, world: hc::World { kinds, grants, keyless }, edges, unoffered, logged: hc::Edges::new() };
+        let mut m = Model { accounts, world: hc::World { kinds, grants, keyless, public }, edges, unoffered, logged: hc::Edges::new() };
         // what the closures log, to their least fixpoint over the accounts (`entry::Net::held_all`)
         loop {
             let mut more = m.logged.clone();
@@ -1079,6 +1173,7 @@ pub fn check(w: &mut World) {
         // the values of the lost makings (`lost_writes`): gone, the reference's as none
         let gone: BTreeSet<String> = w.history.values.iter().filter(|(_, c)| unmade.contains(*c)).map(|(v, _)| v.clone()).collect();
         closure_clauses(w, &mut r, &m, &gone);
+        card_clauses(w, &mut r, &m);
         body_clauses(w, &mut r, &m, &gone);
         invalid_clauses(w);
     }));
@@ -1186,6 +1281,21 @@ fn closure_clauses(w: &mut World, refs: &mut Refs, m: &Model, gone: &BTreeSet<St
     }
 }
 
+/// `check`'s card clause (spec/sync-inbox.md §1 Card): each online node of an account takes every
+/// account's inbox as its account's reference does (handed every commit: the cards and their
+/// `since` alike), so an inbox move spreads to every card read and no keys refresh undoes it.
+fn card_clauses(w: &mut World, refs: &mut Refs, m: &Model) {
+    let on: Vec<usize> = (0..w.len()).filter(|i| w.online(*i)).collect();
+    for i in on {
+        let Some(acct) = w.node(i).account else { continue };
+        for b in &m.accounts {
+            let got = w.engine(i).inbox_of(b).expect("inbox");
+            let want = refs.of(&acct).engine.inbox_of(b).expect("reference inbox");
+            assert_eq!(got, want, "node {i} takes account {b}'s inbox unlike the reference");
+        }
+    }
+}
+
 /// Debug builds: node `i`'s role on `t` and its secrets (`World::why_role`), for a role or read
 /// clause that fails.
 fn why_role(w: &mut World, i: usize, t: &Tid) -> String {
@@ -1270,6 +1380,8 @@ pub fn history(seed: u64, n: usize, accounts: usize, len: usize, faults: bool) -
     /// A sketch of a thing: its maker's account, whether it is independent, the roles given.
     struct Sketch {
         account: usize,
+        /// Minted with its maker's account (`New`), held from it for good.
+        root: bool,
         independent: bool,
         given: BTreeMap<Holder, Gives>,
     }
@@ -1299,10 +1411,10 @@ pub fn history(seed: u64, n: usize, accounts: usize, len: usize, faults: bool) -
                 let ws = if things.is_empty() { Vec::new() } else { writers(&things, k) };
                 if !ws.is_empty() && pick(3) == 0 {
                     let i = ws[pick(ws.len())];
-                    things.push(Sketch { account: acct[i], independent: false, given: BTreeMap::new() });
+                    things.push(Sketch { account: acct[i], root: false, independent: false, given: BTreeMap::new() });
                     Step::NewIn(i, k)
                 } else {
-                    things.push(Sketch { account: acct[node], independent: false, given: BTreeMap::new() });
+                    things.push(Sketch { account: acct[node], root: true, independent: false, given: BTreeMap::new() });
                     Step::New(node)
                 }
             }
@@ -1310,7 +1422,8 @@ pub fn history(seed: u64, n: usize, accounts: usize, len: usize, faults: bool) -
                 let ws = writers(&things, k);
                 // now and then a node that may not write
                 let i = if pick(10) == 0 || ws.is_empty() { node } else { ws[pick(ws.len())] };
-                Step::Write(i, k)
+                // now and then its account's card on the thing in place of a value
+                if pick(8) == 0 { Step::Card(i, k) } else { Step::Write(i, k) }
             }
             25..=42 => {
                 let ad = admins(&things, k);
@@ -1321,11 +1434,26 @@ pub fn history(seed: u64, n: usize, accounts: usize, len: usize, faults: bool) -
                     let g = [Gives::Syncs, Gives::Reads, Gives::Writes][pick(3)];
                     let others: Vec<usize> = (0..accounts).filter(|a| *a != things[k].account).collect();
                     let independent: Vec<usize> = (0..things.len()).filter(|x| *x != k && things[*x].independent).collect();
-                    let h = if !independent.is_empty() && (others.is_empty() || pick(4) == 0) { Holder::Thing(independent[pick(independent.len())]) } else if others.is_empty() { Holder::Node(i) } else { Holder::Node(others[pick(others.len())]) };
+                    let h = if pick(6) == 0 {
+                        Holder::Public
+                    } else if !independent.is_empty() && (others.is_empty() || pick(4) == 0) {
+                        Holder::Thing(independent[pick(independent.len())])
+                    } else if others.is_empty() {
+                        Holder::Node(i)
+                    } else {
+                        Holder::Node(others[pick(others.len())])
+                    };
+                    // the public at most read (spec/permissions.md §2)
+                    let g = if h == Holder::Public { g.min(Gives::Reads) } else { g };
                     things[k].independent = true;
                     things[k].given.insert(h, g);
                     Step::Give(i, k, h, g)
                 }
+            }
+            43..=58 if things[k].given.get(&Holder::Public) == Some(&Gives::Reads) && pick(3) == 0 => {
+                // any node redeems a public link to it for its account
+                strongs.push((None, k, node));
+                Step::Redeem(node, k)
             }
             43..=58 => {
                 // a node of a given account holds the thing from its account
@@ -1391,6 +1519,9 @@ pub fn history(seed: u64, n: usize, accounts: usize, len: usize, faults: bool) -
                         doomed = None;
                         Step::Unpair(by[pick(by.len())], j)
                     }
+                    // an account's inbox moved to a thing its node made from it, or back
+                    _ if things[k].root && things[k].account == acct[node] && pick(2) == 0 => Step::Inbox(node, Some(k)),
+                    _ if pick(3) == 0 => Step::Inbox(node, None),
                     _ => Step::Run,
                 }
             }

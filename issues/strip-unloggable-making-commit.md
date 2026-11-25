@@ -1,0 +1,8 @@
+# A stripped making commit is not loggable at its maker
+> Summary: A node that strips a commit's covered part (purge on replace) before its siblings fetched the commit judges the stripped body must-hold but not loggable under S and deletes its entry: the siblings never get the commit, so never the thing's record.
+> Priority: normal
+> Tags: sync, engine, tests
+
+`deletes::a_reader_counts_a_stripped_part_covered_by_its_covers_cover_spec_crdt_8` (siblings fixture, public profiles): node 1 makes t (record, `u:v.0` under purge on replace, the strong from its account) and replaces the value at once. Before node 2 (node 1's sibling) fetches the making commit, node 1's compaction covers v0 and strips the making commit's `u:v.0` part; read then judges the making commit `Must -> May (must-hold but not loggable here)` (`Engine::may_log` false for the stripped body) and node 1 deletes its entry (`Deleted(B..)` streamed before node 2's Fetch, answered `entry: None`). Node 2 never receives the commit, so it never holds t's record: t is outside node 2's unit of the account though the account's `holds.0` strongs it, and the snapshot on t node 2 does fetch is judged `MustNot(OutsideRequired)` and deleted (the quiet check's "must-hold bodies a caught-up reader lacks").
+
+On main before public profiles the sibling fetched the making commit before the strip (timing only: the contact profiles in the account's unit move the deliveries). Expected: a stripped body is re-logged (a fresh encryption of the parts held, spec/sync-judgement.md §2 Loggable) wherever its unstripped one was loggable; `may_log`'s fresh-encryption path refuses it here (look at `section_secret` over a section whose stripped part is no longer held).

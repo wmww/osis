@@ -288,7 +288,10 @@ fn a_register_lost_with_its_connection_goes_again_at_the_reconnect_spec_sync_ids
 // the account's inbox; node 0, a contact, then grants the account read on a thing of its own and
 // node 1 holds it: node 1 reads it, node 0 having taken the inbox's newer `keys.0` copies with
 // the `sync.0` steps placing their keys (without them it judges them miskeyed and seals the
-// grant fire with the old deposit seed, which node 1 refuses under its new head).
+// grant fire with the old deposit seed, which node 1 refuses under its new head). They reach
+// node 0 in the account's card on the public profile, which node 1 rewrites once its own
+// rotations end with no pass in flight (spec/sync-inbox.md §1 Card; fails if cards are
+// refreshed only at a pass's end).
 #[test]
 fn a_grant_from_outside_reaches_an_account_that_removed_a_node() {
     use crate::harness::Step::*;

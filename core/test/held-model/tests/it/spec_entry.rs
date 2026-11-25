@@ -436,3 +436,23 @@ fn entry_family() {
     println!("{worlds} worlds: {fails:?}");
     assert!(fails.keys().all(|&f| f == "history"), "{fails:?}");
 }
+
+// spec/sync-set.md §2 (T's keys open: what the public reads), §4 (Redeeming a public link: a
+// strong to its target): B, another node's thing, made public, with a dependent C; node 1's
+// account strongs B (a redeem) and C. Node 1 holds no role on B, yet reads B and C by A's keys,
+// both in A's unit; once the public no longer reads B, neither (control: not public).
+#[test]
+fn a_strong_to_a_public_thing_brings_it_into_the_unit() {
+    let mut net = account(None, 2);
+    net.w.kinds[C] = Kind::Dependent(B);
+    net.w.grants.insert((N2, B), Role::Admin);
+    net.records.insert((N2, B));
+    net.strongs.extend([(A, B), (A, C), (B, C)]);
+    net.w.public.insert(B);
+    let h = net.held(0, Rule::SPEC);
+    assert!(h.held.is_superset(&set(&[B, C])) && h.s.read.contains(&B), "B and C read through A's unit: {h:?}");
+    assert!(unit(&net.w, A, &net.edges(Rule::SPEC)).is_superset(&set(&[B, C])));
+    net.w.public.clear();
+    let h = net.held(0, Rule::SPEC);
+    assert!(!h.held.contains(&B) && !h.held.contains(&C), "control: B not public, not held: {h:?}");
+}

@@ -52,6 +52,10 @@ pub struct World {
     /// The keyless grants `(g, t)` (spec/crypto.md §4 Key access, `keyless_of`): a role all the
     /// same, but read nothing through it.
     pub keyless: BTreeSet<(T, T)>,
+    /// The independent things the public reads, by its own grant of read on each
+    /// (spec/permissions.md §1 The public): every thing's keys open them (`keys_of`), never
+    /// through holders (`closure::public`'s `chains`), and no role comes of it.
+    pub public: Set,
 }
 
 /// The keyless grants among actor grants `(g, t)` (holder `g` on target `t`) taken in `order`
@@ -109,9 +113,10 @@ impl World {
             }
         }
     }
-    /// The keys of `t`: the independent things `t` holds read or above on, itself included.
+    /// The keys of `t`: the independent things `t` holds read or above on, itself included, and
+    /// what the public reads (spec/sync-set.md §2 T's keys open).
     pub fn keys_of(&self, t: T) -> Set {
-        self.roles_from(t).into_iter().filter(|&(_, r)| r >= Role::Read).map(|(u, _)| u).collect()
+        self.roles_from(t).into_iter().filter(|&(_, r)| r >= Role::Read).map(|(u, _)| u).chain(self.public.iter().copied()).collect()
     }
     /// What a node reading every thing in `reads` holds keys for.
     pub fn ring(&self, reads: &Set) -> Set {
