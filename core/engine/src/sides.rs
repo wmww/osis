@@ -296,7 +296,7 @@ mod tests {
     /// Admins H (peer 1) and X (peer 2) of g (peer 0's); X removes H, every peer holding it.
     fn removed_h() -> (LocalPeer, Tid, Vec<Tid>) {
         let mut lp = synced(3);
-        let tids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.me()).collect();
+        let tids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.tid()).collect();
         let g = target_thing(&mut lp, 0);
         for i in [1, 2] {
             lp.peers[0].engine.grant(&g, &tids[i], &edge(Role::Admin)).unwrap();

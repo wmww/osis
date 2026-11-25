@@ -60,7 +60,7 @@ One line each: the ruling, its state on main (dd5c0a3e4), where to look. "Applie
 
 Other findings:
 - Spec: Encrypting under excepted "an own thing's" departure; a link key's other redeemers hold its keys, so only the node thing's (as the code does). Crypto §4 Reading-only kept a box the node's roles do not give "for reading"; permissions §3 and the code take nothing. Both fixed in f88ffb28c, with comment remnants of the removed account machinery.
-- `rotation::walk_from` past an epoch whose secret is lacking followed boxes to the node thing (an account-root remnant): deleted in spar-fix-rotation.
+- `rotation::walk_from` past an epoch whose secret is lacking followed boxes to the node thing (a remnant of the removed account machinery): deleted in spar-fix-rotation.
 - Sides: the spec's own-lowering-trusted clause and "no order, no side": built in spar-fix-rotation (`sides::after_update`); the writer's check still refuses a removed admin's counter-removal (notes/perm-paths.md, Read short of the spec).
 - Low, no issue: a step's `since` (`sync_ids::steps` `Recorded::of`) is the current write's stamp, so an admin re-putting a step entry later makes commits stamped in between miskeyed for good (hostile admin only).
 - For (c): the Interim on `apply::header_wait` (apply/mod.rs ~913) says it waits for every listed thing's record, which is what the spec wants; `thing_wait` already does so per part. Recheck what issues/stated-path-certificates.md still owes.

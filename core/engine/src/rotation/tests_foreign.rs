@@ -332,7 +332,7 @@ const R: usize = 4;
 fn fork_with_one_role_rotators() -> (LocalPeer, Tid, Tid, Tid, Epoch) {
     let (lp, (m, a, g, eq)) = LocalPeer::cached("rotation::tests_foreign::fork_with_one_role_rotators", || {
         let mut lp = synced(5);
-        let ids: Vec<Tid> = (0..5).map(|i| lp.peers[i].engine.me()).collect();
+        let ids: Vec<Tid> = (0..5).map(|i| lp.peers[i].engine.tid()).collect();
         let (m, a, g) = (independent_thing(&mut lp, 2), independent_thing(&mut lp, 2), independent_thing(&mut lp, 2));
         for t in [m, a, g] {
             for i in [P, Q] {
