@@ -1,0 +1,7 @@
+# Sync-alone removal: a blind remover's header, a step past the holder unsent
+> Summary: two gaps in telling a holder of sync alone its removal by steps (notes/certificates.md Removal told by its step): a remover that never held H's grant fires the removal with its header; a removal whose sync rotation is blocked sends H only a step still bearing its key.
+> Priority: normal
+> Tags: security, engine, permissions
+
+- **Blind remover**: `sync_alone_on` is false where no held write gives H a role (only the removal held, e.g. `holding::a_removal_its_writer_made_blind_*`), so `deliver_copy` fires the removal with its header, signer and path to H's readers. If H held sync alone that leaks X's remover to them. The outbox reads the predicate at send time (`sealed_fire`), so a fire still owed when the grant arrives goes headerless; one sent before does not. Open: whether a blind remover's fire is needed at all (a removed reader also learns its departure by X's sync ID, spec/sync-opens.md §4 Departed); if not, a blind remover sends nothing and the predicate needs no "no role held" case.
+- **Blocked sync rotation**: `inbox::deliver_step` sends H the first step recorded after its removal only. If the removal's sync rotation is blocked and a step is issued before it, that step still bears H's key and the step past it is never sent: H's readers keep naming H holder (the store side is told by Register). A fix sends steps while the parent step bears a sync key H was boxed, read from X's `secrets.0` boxes to H.

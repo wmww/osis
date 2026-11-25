@@ -649,3 +649,40 @@ fn a_sync_alone_holders_removal_in_its_key_part_is_its_step_spec_sync_ids_2() {
     let un = lp.peers[2].engine.core.unread(&g);
     assert!(!un.holders.contains(&t) && !lp.peers[2].engine.core.syncs_by_copies(&t, &g), "T holds sync on G no more: {un:?}");
 }
+
+// spec/permissions.md §4 (Role changes travel: only on an edge giving read; Key part: sync
+// alone, whatever the write), spec/sync-ids.md §2: T holds sync alone on G; peer 0 (G's admin)
+// and peer 1 read T. Peer 0 raises T's grant on G to sync with may-grant, then lowers it back (an
+// explicit lowering: its frontier the edge's writes). Neither T's sync ID nor peer 1's node's
+// carries a certificate copy of a commit naming T on G, and both are owed to T as sealed sync copies
+// (one carrying nothing of T's sent as nothing), no fire on an inbox, no header byte. Fails with a lowering on an edge only ever giving sync
+// travelling (Role changes travel by the write being a lowering, not by the edge giving read) or
+// delivered as a fire.
+#[test]
+fn a_sync_alone_holders_grant_lowered_travels_nowhere_spec_permissions_4() {
+    let (mut lp, g, t) = sync_holder();
+    let me0 = lp.peers[0].engine.tid();
+    lp.peers[2].engine.grant(&t, &me0, &edge(Role::Read)).unwrap();
+    lp.sync_all().unwrap();
+    reads_t(&mut lp, t);
+    let me1 = lp.peers[1].engine.tid();
+    let before = lp.peers[0].engine.fires_owed();
+    lp.peers[0].engine.grant(&g, &t, &osis_schema::core_types::Edge { may_grant: true, ..edge(Role::Sync) }).unwrap();
+    lp.peers[0].engine.demote(&g, &super::Demotion { holder: t, new: Some(edge(Role::Sync)), retain: None }).unwrap();
+    let on = lp.peers[0].engine.edge_on(&t, &g, false);
+    let e0 = &lp.peers[0].engine;
+    assert!(on.iter().any(|c| e0.core.timelines().role_commit(c).is_some_and(|rc| rc.frontier.is_some())), "a lowering: its frontier stated");
+    assert!(e0.core.sync_alone_on(&t, &g), "T holds sync alone on G");
+    assert!(!certifies_on(&mut lp, 0, &t, &g, &t) && !certifies_on(&mut lp, 0, &me1, &g, &t), "no certificate copy of a commit naming T on G");
+    let owed = new_owed(&lp, 0, &before);
+    assert!(!owed.is_empty(), "the change and the lowering are owed to T");
+    let forbidden = header_bytes(&lp, 0, &g);
+    for id in &owed {
+        let o = lp.peers[0].engine.core.ix.fires.get(id).cloned().unwrap();
+        assert!(o.thing == t && o.ak.is_none() && matches!(o.what, Fire::Copy { .. }), "a sealed copy to T: {o:?}");
+        // a copy carrying nothing of T's (no box, no step) is owed no more
+        if let Some(out) = lp.peers[0].engine.sealed_fire(id).unwrap() {
+            assert!(!holds_any(&out.blob, &forbidden), "no header byte");
+        }
+    }
+}
