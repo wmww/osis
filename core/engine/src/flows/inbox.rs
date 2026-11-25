@@ -568,7 +568,8 @@ impl Engine {
     pub(crate) fn fire_keys(&mut self, t: &Tid) -> Result<Option<(osis_crypto::Epoch, osis_crypto::KemPublicKey, osis_base::SyncId)>> {
         let t = *t;
         let Some((rk, s)) = self.read(|tx| Ok(super::sync_ids::read_key_in_force(tx, &t)?.zip(crate::engine::Core::keys_in(tx, &t)?.and_then(|k| k.sync_id))))? else { return Ok(None) };
-        let ct::KemKey::X25519MlKem768(b) = &rk.kem_key;
+        // none beside a KEM-less read keyset: nothing from outside is sealed to it
+        let Some(ct::KemKey::X25519MlKem768(b)) = &rk.kem_key else { return Ok(None) };
         let (Ok(e), Ok(kem)) = (osis_keys::aspects::from_schema(&rk.epoch), osis_crypto::KemPublicKey::from_slice(b)) else { return Ok(None) };
         Ok(Some((e, kem, s)))
     }

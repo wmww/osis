@@ -302,6 +302,8 @@ fn a_grant_from_outside_is_an_offer_and_the_grant_stands_without_it_spec_sync_in
     let (mut lp, ps) = people(2);
     let g = crate::flows::thing_of(&mut lp, 1, ps[1]);
     let x = crate::flows::thing_of(&mut lp, 0, ps[0]);
+    // G the mint admin of a thing, so a holder: its keysets carry KEM keys (spec/crypto.md §3)
+    crate::flows::thing_of(&mut lp, 1, g);
     // G independent: it has an inbox of its own
     lp.peers[1].engine.grant(&g, &ps[0], &edge_of(Role::Sync)).unwrap();
     crate::flows::spread(&mut lp);

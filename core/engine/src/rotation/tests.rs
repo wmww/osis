@@ -153,15 +153,16 @@ fn rotation_missing_again_binds_nothing_spec_crypto_4() {
     assert!(blocked_at(&mut lp, 3, t).is_empty(), "covered by its own rotation");
 }
 
-/// An independent thing of peer `i`'s, taking grants from outside (`LocalPeer::takes_grants`): a
-/// holder other peers grant roles to.
+/// An independent thing of peer `i`'s, taking grants from outside (`LocalPeer::takes_grants`,
+/// set before it is made independent, so its keysets carry KEM keys from the first): a holder
+/// other peers grant roles to.
 pub(crate) fn independent_thing(lp: &mut LocalPeer, i: usize) -> Tid {
     let me = lp.peers[i].engine.me();
     let mut m = Mutation::new();
     let g = lp.peers[i].engine.new_thing(&mut m, me);
     lp.peers[i].commit(m).unwrap();
-    lp.peers[i].engine.make_independent(&g).unwrap();
     lp.takes_grants(i, g);
+    lp.peers[i].engine.make_independent(&g).unwrap();
     lp.hold(g);
     g
 }
@@ -783,7 +784,7 @@ fn forge_rotation(lp: &mut LocalPeer, w: usize, g: Tid, s: osis_crypto::Epoch, h
         .engine
         .run(|tx| {
             let held = tx.core.epochs(&g).unwrap();
-            let ks = osis_keys::keyset(&s, held.read.secret(&s).unwrap(), &Default::default(), &Default::default());
+            let ks = osis_keys::keyset(&s, held.read.secret(&s).unwrap(), &Default::default(), &Default::default(), true);
             let state = crate::flows::secrets_in(tx, &g)?;
             let at = ct::Epoch { n: s.n(), nonce: *s.nonce() };
             let key = ct::HistoryKey { role: Role::Read, epoch: at.clone() };
@@ -929,7 +930,7 @@ fn writer_rotation_skips(list_s: bool) {
             let mut rot = osis_keys::rotate(&g, &[Role::Read].into(), &held, &secrets, &holders.holders, &osis_keys::Names::default(), &mut *tx.rng).unwrap();
             let r = &rot.rotated[0];
             let list: BTreeSet<osis_crypto::Epoch> = if list_s { [s].into() } else { BTreeSet::new() };
-            rot.keys.keysets.insert(Role::Read, osis_keys::keyset(&r.epoch, &r.secret, &list, &rot.names));
+            rot.keys.keysets.insert(Role::Read, osis_keys::keyset(&r.epoch, &r.secret, &list, &rot.names, true));
             crate::flows::put_secrets(&mut m, g, &rot.secrets, false)?;
             crate::flows::put_keysets(&mut m, g, &rot.keys)?;
             crate::engine::Engine::commit_tx(tx, m)?;

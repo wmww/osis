@@ -2036,6 +2036,7 @@ fn vandal_with_second_path_recovered_spec_perm_3() {
     let (mut lp, ps) = people(3);
     let d = thing_of(&mut lp, 0, ps[0]);
     let t = thing_of(&mut lp, 1, ps[1]);
+    lp.takes_grants(1, t);
     lp.peers[1].engine.make_independent(&t).unwrap();
     spread(&mut lp);
     for p in [ps[1], ps[2], t] {

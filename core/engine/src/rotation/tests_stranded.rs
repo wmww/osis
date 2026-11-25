@@ -180,6 +180,9 @@ fn whether_a_body_wraps_moves_at_a_grants_until_spec_crypto_4() {
 fn a_writer_taking_a_stranded_notice_reseals_its_holder_spec_sync_inbox_5() {
     let (mut lp, g, tids) = granted(2, &[(1, Role::Read)]);
     let m = tids[1];
+    // g a holder (read on h), so its read keysets carry KEM keys whatever its setting (spec/crypto.md §3)
+    let h = super::tests::independent_thing(&mut lp, 0);
+    lp.peers[0].engine.grant(&h, &g, &super::tests::edge(Role::Read)).unwrap();
     // g's admin enables no external signal
     let mut x = crate::Mutation::new();
     x.set(g, &osis_schema::core_types::RETENTION, &osis_schema::core_types::RetentionSetting::default()).unwrap();
@@ -282,7 +285,7 @@ fn a_writers_junk_step_keys_change_no_outside_fire_spec_permissions_3() {
     let head = lp.peers[0].engine.core.listed_step(&g).unwrap();
     let mut read = lp.peers[0].engine.get_typed(&g, &ct::KEYS).unwrap().unwrap().step.unwrap().read;
     if let Some(r) = read.as_mut() {
-        r.kem_key = ct::KemKey::X25519MlKem768(vec![0x68; 1216]);
+        r.kem_key = Some(ct::KemKey::X25519MlKem768(vec![0x68; 1216]));
     }
     let junk = ct::StepKeys { delete: ct::SigningKey::Ed25519(vec![0x66; 32]), write: ct::SigningKey::Ed25519(vec![0x67; 32]), read };
     let mut m = crate::Mutation::new();
@@ -371,7 +374,7 @@ fn a_writers_junk_read_keyset_swallows_no_outside_fire_spec_crypto_3() {
     let f = fires_kept(&mut lp, g);
     let e = super::tests::newest_read(&lp, 0, g).unwrap();
     let mine = osis_crypto::Epoch::new(e.n() + 1, [0x77; 32]).unwrap();
-    let junk = osis_keys::keyset(&mine, &osis_crypto::Secret32::from_bytes([0x66; 32]), &Default::default(), &Default::default());
+    let junk = osis_keys::keyset(&mine, &osis_crypto::Secret32::from_bytes([0x66; 32]), &Default::default(), &Default::default(), true);
     write_read_keyset(&mut lp, g, &junk);
     assert_eq!(lp.peers[2].engine.get_typed(&g, &ct::KEYS).unwrap().unwrap().read, Some(junk), "the writer's keyset applied, valid");
     assert!(outside_fire(&mut lp, 2, g, &f, 5).is_none(), "no read key in force: the fire waits");
@@ -401,7 +404,7 @@ fn a_junk_kem_key_at_the_steps_epoch_holds_no_fire_back_spec_crypto_3() {
     let (mut lp, g, _) = granted(3, &[(1, Role::Write)]);
     let f = fires_kept(&mut lp, g);
     let e = super::tests::newest_read(&lp, 0, g).unwrap();
-    let junk = osis_keys::keyset(&e, &osis_crypto::Secret32::from_bytes([0x66; 32]), &Default::default(), &Default::default());
+    let junk = osis_keys::keyset(&e, &osis_crypto::Secret32::from_bytes([0x66; 32]), &Default::default(), &Default::default(), true);
     write_read_keyset(&mut lp, g, &junk);
     let out = outside_fire(&mut lp, 2, g, &f, 5).expect("the read key stays in force");
     sealed_to(&mut lp, &out, e, &[0, 1]);
@@ -430,7 +433,7 @@ fn a_removed_writers_keyset_holds_no_fire_back_spec_crypto_3() {
     assert!(lp.peers[1].engine.epochs(&g).is_none_or(|x| x.read.secret(&e).is_none()), "peer 1 left out of the removal's epoch");
     let held = lp.peers[2].engine.get_typed(&g, &ct::KEYS).unwrap().unwrap().read;
     let mine = osis_crypto::Epoch::new(e.n() + 1, [0x77; 32]).unwrap();
-    let junk = osis_keys::keyset(&mine, &osis_crypto::Secret32::from_bytes([0x66; 32]), &Default::default(), &Default::default());
+    let junk = osis_keys::keyset(&mine, &osis_crypto::Secret32::from_bytes([0x66; 32]), &Default::default(), &Default::default(), true);
     write_read_keyset(&mut lp, g, &junk);
     assert_eq!(lp.peers[2].engine.get_typed(&g, &ct::KEYS).unwrap().unwrap().read, held, "the removed writer's keyset applies nothing");
     let out = outside_fire(&mut lp, 2, g, &f, 5).expect("the read key stays in force");

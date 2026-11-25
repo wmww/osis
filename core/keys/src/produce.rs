@@ -25,7 +25,7 @@ pub struct HolderKeys {
 }
 
 impl HolderKeys {
-    /// From the holder's `keys.0`: its keysets.
+    /// From the holder's `keys.0`: its keysets carrying a KEM key.
     pub fn from_keys(k: &Keys) -> Result<HolderKeys, Error> {
         let mut keysets = BTreeMap::new();
         for r in ROLES {
@@ -33,7 +33,8 @@ impl HolderKeys {
                 if ks.suite != SUITE {
                     return Err(Error::UnknownSuite(ks.suite));
                 }
-                let KemKey::X25519MlKem768(b) = &ks.kem_key;
+                // a keyset without a KEM key is sealed to nowhere (spec/crypto.md §3)
+                let Some(KemKey::X25519MlKem768(b)) = &ks.kem_key else { continue };
                 keysets.insert(r, vec![(from_schema(&ks.epoch)?, KemPublicKey::from_slice(b)?)]);
             }
         }
@@ -240,7 +241,7 @@ fn removals(carried: &BTreeMap<Role, BTreeSet<Epoch>>, held_secrets: &Secrets) -
 /// making independent); `held_secrets` the actor's `secrets.0`. Records no holder actor
 /// left out (`rotate_leaving_out`).
 pub fn rotate(actor: &Tid, roles: &BTreeSet<Role>, held: &ActorEpochs, held_secrets: &Secrets, holders: &[Recipient], names: &Names, rng: &mut dyn CryptoRngCore) -> Result<Rotation, Error> {
-    rotate_leaving_out(actor, roles, held, held_secrets, holders, &LeftOut::new(), &Carried::default(), names, false, None, rng)
+    rotate_leaving_out(actor, roles, held, held_secrets, holders, &LeftOut::new(), &Carried::default(), &BTreeSet::new(), names, false, None, rng)
 }
 
 /// `rotate`, each rotated role's keyset recording `left_out` (the holder actors the rotation
@@ -250,8 +251,10 @@ pub fn rotate(actor: &Tid, roles: &BTreeSet<Role>, held: &ActorEpochs, held_secr
 /// floor is its own n and its history box carries no earlier secret, so it removes no box.
 /// `seed`: a link key's minting, a rotation from none whose secrets are the seed's
 /// `kdf("role <role>", seed)`, not random (spec/crypto.md §3); refused for any other rotation.
+/// `bare`: the rotated roles whose keysets carry no KEM key (spec/crypto.md §3, Published KEM
+/// keys: the rotator decides).
 #[allow(clippy::too_many_arguments)]
-pub fn rotate_leaving_out(actor: &Tid, roles: &BTreeSet<Role>, held: &ActorEpochs, held_secrets: &Secrets, holders: &[Recipient], left_out: &LeftOut, carried: &Carried, names: &Names, cut: bool, seed: Option<&Secret32>, rng: &mut dyn CryptoRngCore) -> Result<Rotation, Error> {
+pub fn rotate_leaving_out(actor: &Tid, roles: &BTreeSet<Role>, held: &ActorEpochs, held_secrets: &Secrets, holders: &[Recipient], left_out: &LeftOut, carried: &Carried, bare: &BTreeSet<Role>, names: &Names, cut: bool, seed: Option<&Secret32>, rng: &mut dyn CryptoRngCore) -> Result<Rotation, Error> {
     if seed.is_some() && ROLES.iter().any(|q| held.role(*q).epochs().next().is_some()) {
         return Err(Error::Mismatch("only a rotation from none takes a link key's seed"));
     }
@@ -308,7 +311,7 @@ pub fn rotate_leaving_out(actor: &Tid, roles: &BTreeSet<Role>, held: &ActorEpoch
         // Holder actors, Foreign: its history box carries them; listed, the other side of a fork
         // below would find its own keysets stale, ForkDepth `FD_fork_list`)
         let listed: BTreeSet<Epoch> = current.iter().filter(|e| re.provenance(e) != Some(Provenance::Derived) && !re.is_foreign(e)).copied().collect();
-        let mut ks = keyset(&epoch, &secret, &listed, names);
+        let mut ks = keyset(&epoch, &secret, &listed, names, !bare.contains(&r));
         // a keyset with no cause is never recorded (spec/wire.md §7 Left out: nonempty, a reader
         // takes such a body as bad input); it would count for nothing (spec/crypto.md §4 Left
         // out: every block has a cause), and M stays unboxed all the same

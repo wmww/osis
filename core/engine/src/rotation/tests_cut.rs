@@ -256,7 +256,7 @@ fn hostile_rotation(lp: &mut LocalPeer, i: usize, g: Tid, lists: &BTreeSet<Epoch
             // a view whose own floor lets nothing in: its history box carries nothing
             held.read.set_floors(Default::default(), u64::MAX);
             let names = super::departures::names(tx.core, &g, None);
-            let mut rot = osis_keys::rotate_leaving_out(&g, &BTreeSet::from(READ), &held, &secrets, &boxing.holders, &Default::default(), &Default::default(), &names, false, None, &mut *tx.rng)?;
+            let mut rot = osis_keys::rotate_leaving_out(&g, &BTreeSet::from(READ), &held, &secrets, &boxing.holders, &Default::default(), &Default::default(), &Default::default(), &names, false, None, &mut *tx.rng)?;
             let ks = rot.keys.keysets.get_mut(&Role::Read).unwrap();
             ks.supersedes = lists.iter().map(osis_keys::aspects::to_schema).collect();
             let x = &rot.rotated[0];
@@ -624,7 +624,7 @@ fn forged_floor_on_a_fork_beside_the_cut_carries_nothing_spec_crypto_4() {
         .run(|tx| {
             let names = super::departures::names(tx.core, &g, None);
             let made_up = osis_crypto::Secret32::random(&mut *tx.rng);
-            let ks = osis_keys::aspects::keyset(&fork, &made_up, &BTreeSet::from([cut]), &names);
+            let ks = osis_keys::aspects::keyset(&fork, &made_up, &BTreeSet::from([cut]), &names, true);
             let w = osis_keys::aspects::KeysWrite { keysets: std::collections::BTreeMap::from([(Role::Read, ks)]) };
             let mut m = crate::Mutation::new();
             crate::flows::put_keysets(&mut m, g, &w)?;

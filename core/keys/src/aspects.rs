@@ -25,13 +25,14 @@ pub fn history_key(role: Role, epoch: &Epoch) -> HistoryKey {
     HistoryKey { role, epoch: to_schema(epoch) }
 }
 
-/// The keyset of an epoch: its KEM public key `kdf("kem", secret)` (spec/crypto.md §3),
-/// listing `supersedes` and the digest of the rotation's `names` (§4), with no left-out keysets
-/// or carried demotions yet (`produce::rotate` adds them).
-pub fn keyset(epoch: &Epoch, secret: &Secret32, supersedes: &BTreeSet<Epoch>, names: &Names) -> Keyset {
+/// The keyset of an epoch: where `kem`, its KEM public key `kdf("kem", secret)` (spec/crypto.md
+/// §3; the rotator decides by Published KEM keys), listing `supersedes` and the digest of the
+/// rotation's `names` (§4), with no left-out keysets or carried demotions yet (`produce::rotate`
+/// adds them).
+pub fn keyset(epoch: &Epoch, secret: &Secret32, supersedes: &BTreeSet<Epoch>, names: &Names, kem: bool) -> Keyset {
     Keyset {
         epoch: to_schema(epoch),
-        kem_key: KemKey::X25519MlKem768(role_kem(secret).public().as_bytes().to_vec()),
+        kem_key: kem.then(|| KemKey::X25519MlKem768(role_kem(secret).public().as_bytes().to_vec())),
         suite: SUITE,
         supersedes: supersedes.iter().map(to_schema).collect(),
         names: names.digest(),

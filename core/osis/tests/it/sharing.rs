@@ -292,6 +292,10 @@ fn a_parents_reader_sees_no_roster_of_its_member_org_spec_crypto_4() {
     let all = [&alice, &bob, &carol, &erin];
     mesh(&all);
     let m = bob.commit_with(|w| w.create_held()).unwrap();
+    // M a writer of something, so a holder whose keysets up to write carry KEM keys (spec/crypto.md
+    // §3): alice, no writer of M, may grant it
+    let o = bob.commit_with(|w| w.create_held()).unwrap();
+    bob.grant(o, m, Role::Write, Default::default()).unwrap();
     bob.grant(m, erin.author(), Role::Write, Default::default()).unwrap();
     bob.grant(m, alice.author(), Role::Read, Default::default()).unwrap();
     mesh(&all);

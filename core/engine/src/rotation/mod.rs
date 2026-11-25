@@ -11,6 +11,7 @@
 
 pub(crate) mod departures;
 pub(crate) mod floors;
+pub(crate) mod kem;
 mod lost;
 pub(crate) mod members;
 pub(crate) mod merge;
@@ -332,7 +333,8 @@ pub(crate) enum Due {
 /// (`boxes_rotator`). With `Due::PassEnd` also when an unsuperseded epoch is not current here
 /// and `who` withdraws it, when a current read epoch's floor is below a holder's
 /// (`floors::low_floor_due`), or when the pass's actor leaves holder actor `a` out at a current
-/// keyset of `a` (`members::rekey_due`). A fork alone is due nothing else: it stands until the role next
+/// keyset of `a` (`members::rekey_due`), or when a current keyset lacks a KEM key the rule gives
+/// (`kem::due`). A fork alone is due nothing else: it stands until the role next
 /// rotates (spec/crypto.md §4). No secret of the role is needed; the commit must be
 /// `wrappable`, else the rotation waits for a re-seal. A memo (`Core::rotations_due`): every
 /// cascade (`rotate_below`) asks it of each actor below the one it enters, so a chain of n
@@ -385,6 +387,11 @@ fn rotation_due_now(tx: &mut Tx<'_>, who: &Tid, a: &Tid, mode: Due, kept: &BTree
         due = due || matches!(mode, Due::PassEnd(_)) && epochs.role(r).unsuperseded().iter().any(|e| !current.contains(e) && maker(tx.core, who, a, r, e).is_none_or(|m| m.me || !m.may_rotate));
         // a current read epoch a holder's floor bars it from (spec/crypto.md §4, Floors)
         due = due || matches!(mode, Due::PassEnd(_)) && r == Role::Read && floors::low_floor_due(tx, who, a)?;
+        // a current keyset of `a` lacks a KEM key the rule now gives (spec/crypto.md §3, KEM key
+        // due): it came to hold a role, a card or a signal after the keyset was written, and a
+        // granter that sealed to an older keyset of it finds that one stale; nothing else ever
+        // rotates it (KemKeys.tla `KK_written`)
+        due = due || matches!(mode, Due::PassEnd(_)) && kem::due(tx, a, r);
         // the pass's actor leaves `a` out at a current keyset of `a` (spec/crypto.md §4, Re-key)
         if let Due::PassEnd(p) = mode
             && p != *a
@@ -530,7 +537,8 @@ pub(crate) fn cut_into(tx: &mut Tx<'_>, m: &mut Mutation, a: Tid, roles: &BTreeS
     };
     let names = departures::names(tx.core, &a, own);
     let carried = osis_keys::Carried { demotions: departures::carried(tx.core, &a), demotes: departs == Departs::Demoting };
-    let rot = osis_keys::rotate_leaving_out(&a, roles, held, &secrets, &boxing.holders, &boxing.left_out, &carried, &names, cut, seed, &mut *tx.rng)?;
+    let bare = kem::bare(tx, &a, roles);
+    let rot = osis_keys::rotate_leaving_out(&a, roles, held, &secrets, &boxing.holders, &boxing.left_out, &carried, &bare, &names, cut, seed, &mut *tx.rng)?;
     put_secrets(m, a, &rot.secrets, false)?;
     flows::unseal(tx, m, a, &rot.secrets.removed)?;
     put_keysets(m, a, &rot.keys)?;
@@ -1479,3 +1487,5 @@ mod tests_stranded;
 mod tests_foreign;
 #[cfg(test)]
 mod tests_public;
+#[cfg(test)]
+mod tests_kem;

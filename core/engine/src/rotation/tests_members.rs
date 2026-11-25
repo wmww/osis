@@ -233,6 +233,9 @@ fn grant_on_mint_admin_keyless_until_record_edge_goes_spec_crypto_4() {
     assert!(lp.peers[1].engine.reseal_after_pass(&x).unwrap().commits.is_empty(), "nothing to re-seal while the record edge stands");
     lp.peers[1].clock.advance(1);
     removal(&mut lp, 1, t, x);
+    // T's removal rotation was judged with its grant keyless: no KEM key in its read keyset; KEM
+    // key due at T's pass end writes one (spec/crypto.md §3)
+    lp.peers[1].engine.reseal_after_pass(&t).unwrap();
     lp.sync(1, 0).unwrap();
     assert!(!lp.peers[0].engine.roster(&t).contains_key(&x), "X's record edge is gone");
     let done = lp.peers[0].engine.reseal_after_pass(&x).unwrap();
@@ -673,7 +676,7 @@ fn forged_keyset_invalid_where_removal_arrived_spec_crypto_4() {
     send_skipping(&mut lp, 1, 0, &c_m);
     let s_d = osis_crypto::Secret32::from_bytes([79; 32]);
     let x_d = Epoch::derive(&m, Role::Read, kk.n() + 1, &s_d).unwrap();
-    let forged = osis_keys::keyset(&x_d, &s_d, &BTreeSet::from([k0, kk]), &Default::default());
+    let forged = osis_keys::keyset(&x_d, &s_d, &BTreeSet::from([k0, kk]), &Default::default(), true);
     let mut mu = Mutation::new();
     mu.op(m, &ct::KEYS, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Field(0)], op: osis_crdt::Op::Replace(osis_schema::Codec::to_value(&Some(forged))) }).unwrap();
     mu.unchecked();
@@ -2546,7 +2549,7 @@ fn a_record_with_no_cause_is_bad_input_spec_crypto_4() {
                 let boxing = super::recipients(tx, &h, &a, &[(m, None)])?;
                 let secrets = crate::flows::secrets_in(tx, &a)?;
                 let names = super::departures::names(tx.core, &a, None);
-                let mut rot = osis_keys::rotate_leaving_out(&a, &BTreeSet::from([Role::Read]), &held, &secrets, &boxing.holders, &boxing.left_out, &osis_keys::Carried::default(), &names, false, None, &mut *tx.rng).unwrap();
+                let mut rot = osis_keys::rotate_leaving_out(&a, &BTreeSet::from([Role::Read]), &held, &secrets, &boxing.holders, &boxing.left_out, &osis_keys::Carried::default(), &BTreeSet::new(), &names, false, None, &mut *tx.rng).unwrap();
                 // written raw, past the writer's rules: the writer records no causeless keyset
                 let ks = rot.keys.keysets.get_mut(&Role::Read).unwrap();
                 ks.left_out.insert(m.into(), [(osis_keys::aspects::to_schema(&k), causes.clone())].into());

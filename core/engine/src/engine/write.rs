@@ -149,6 +149,15 @@ impl Mutation {
         Ok(self)
     }
 
+    /// The setting of `t` this mutation writes whole, if it does.
+    pub(crate) fn setting_of(&self, t: &Tid) -> Option<ct::RetentionSetting> {
+        let a = self.aspects.get(&(*t, ak_of(&ct::RETENTION).ok()?))?;
+        match a.ops.iter().rev().find(|o| o.path.is_empty()) {
+            Some(PathOp { op: Op::Set(v) | Op::Replace(v), .. }) => ct::RETENTION.decode(v).ok(),
+            _ => None,
+        }
+    }
+
     /// Makes the aspect read `v` (structural diff, spec/crdt.md §9).
     pub fn set<K: RawKey>(&mut self, tid: Tid, key: &K, v: &K::T) -> Result<&mut Self> {
         let v = key.encode(v);

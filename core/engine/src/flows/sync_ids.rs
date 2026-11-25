@@ -57,10 +57,12 @@ pub(crate) fn readers(tx: &mut Tx<'_>, t: &Tid, e: &Epoch) -> Result<Vec<ReaderK
 /// Reader `m` of `t`'s sync ID as the registrar lists it (`readers`): by its newest read keyset
 /// held here; a link key of `t` (its record names `t` as its K) by its static entry, the one
 /// reader so listed (spec/sync-ids.md §3: a bearer secret opens `t` from a store with nothing
-/// else). None while no keyset of it is held.
+/// else). None while no keyset of it is held, or that keyset carries no KEM key (spec/crypto.md
+/// §3: nothing is sealed to it; its claim key is unpublished).
 pub(crate) fn reader_key(tx: &mut Tx<'_>, t: &Tid, m: &Tid) -> Result<Option<ReaderKey>> {
     let Some(ks) = Core::keys_in(tx, m)?.and_then(|k| k.read) else { return Ok(None) };
-    let kem = kem_of(&ks.kem_key)?;
+    let Some(kem) = ks.kem_key.as_ref() else { return Ok(None) };
+    let kem = kem_of(kem)?;
     Ok(Some(match tx.core.created(m).filter(|r| r.link_key_of() == Some(*t)).and_then(osis_base::CreationRecord::key) {
         Some(k) => ReaderKey::Static(VerifyingKey::from_bytes(&k.0)?, kem),
         None => ReaderKey::Dh(kem.x25519()),
@@ -119,7 +121,9 @@ pub(crate) fn issue(tx: &mut Tx<'_>, t: &Tid, epochs: &ActorEpochs, parent: Opti
         None => Parent::Genesis(&del),
         Some((step, _)) => Parent::Child { step, delete: &del },
     };
-    let read = vouched(epochs, keyset).map(|(e, s)| ct::ReadKey { epoch: osis_keys::aspects::to_schema(&e), kem_key: KemKey::X25519MlKem768(osis_crypto::role_kem(s).public().as_bytes().to_vec()) });
+    // its KEM key only beside a read keyset carrying one (spec/crypto.md §3, Published KEM keys)
+    let kem = keyset.is_some_and(|k| k.kem_key.is_some());
+    let read = vouched(epochs, keyset).map(|(e, s)| ct::ReadKey { epoch: osis_keys::aspects::to_schema(&e), kem_key: kem.then(|| KemKey::X25519MlKem768(osis_crypto::role_kem(s).public().as_bytes().to_vec())) });
     let (step, set) = register_with(p, keys, &rk, (t, re, rs), (se, ss), epochs.read.wrapped_under([&re], |s| epochs.read.secret(s).is_some()).and_then(|s| epochs.read.secret(&s).map(|x| (s, x))), &mut *tx.rng)?;
     Ok(Issued { step, set, read })
 }

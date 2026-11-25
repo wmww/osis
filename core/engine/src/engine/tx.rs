@@ -24,6 +24,11 @@ pub struct Tx<'a> {
     /// Per aspect, the held-writes pages this transaction read (`retention::bounds::index`,
     /// `osis_crdt::PageCache`), with the table they were read from; emptied by a rollback.
     pub(crate) held_pages: std::collections::BTreeMap<(Tid, Ak), (Option<osis_store::Table>, osis_crdt::PageCache)>,
+    /// Things whose keysets written in this transaction carry KEM keys up to the role given
+    /// (spec/crypto.md §3, Published KEM keys, judged at the transaction's end: "or is granted it
+    /// in the same transaction"): a grant's holder, a mint admin of a thing minted after it, a
+    /// minted thing whose setting the transaction enables a signal in (`rotation::kem`).
+    pub(crate) publishing: Vec<(Tid, osis_base::Role)>,
 }
 
 impl Tx<'_> {

@@ -1475,6 +1475,7 @@ fn a_cut_of_the_stated_path_owes_an_addendum_whatever_another_path_gives_spec_pe
     let q = lp.peers[3].engine.new_thing(&mut m, dave);
     lp.peers[3].commit(m).unwrap();
     lp.hold(q);
+    lp.takes_grants(3, q);
     lp.sync_all().unwrap();
     lp.peers[3].engine.grant(&q, &bob, &edge(Role::Admin)).unwrap();
     // Alice holds Q's keys by reading it
@@ -1523,6 +1524,7 @@ fn a_late_removal_of_a_members_other_holder_makes_an_addendum_owed_spec_perm_5_2
         let mut m = Mutation::new();
         let q = lp.peers[1].engine.new_thing(&mut m, yan);
         lp.peers[1].commit(m).unwrap();
+        lp.takes_grants(1, q);
         holders.push(q);
     }
     lp.sync_all().unwrap();

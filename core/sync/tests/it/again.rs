@@ -55,7 +55,10 @@ fn encryptions(w: &mut World, c: &CommitId) -> usize {
 fn grant_reader(w: &mut World, t: Tid) -> Tid {
     w.write(0, |e| {
         let mut m = Mutation::new();
-        let x = e.new_thing(&mut m, t);
+        // minted by the node, not by `t`: a thing of `t`'s made independent makes `t` a holder,
+        // due a rotation for KEM keys (spec/crypto.md §3), a second encryption of everything
+        let me = e.me();
+        let x = e.new_thing(&mut m, me);
         e.commit(m).unwrap();
         e.grant(&t, &x, &edge(Role::Read)).unwrap();
         x

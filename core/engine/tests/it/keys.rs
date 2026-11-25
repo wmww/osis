@@ -177,7 +177,7 @@ fn a_link_keys_keysets_are_its_seeds_spec_permissions_7() {
     let rec = lp.peers[0].engine.get_typed(&l.tid(), &ct::CREATED).unwrap().unwrap();
     assert_eq!((rec.link_key_of(), rec.key().map(|k| k.0)), (Some(link.k), Some(l.signing().verifying_key().to_bytes())), "its record names K and holds its key");
     let keys = lp.peers[0].engine.get_typed(&l.tid(), &ct::KEYS).unwrap().unwrap();
-    let ct::KemKey::X25519MlKem768(published) = keys.read.unwrap().kem_key;
+    let Some(ct::KemKey::X25519MlKem768(published)) = keys.read.unwrap().kem_key else { panic!("a link key publishes its KEM key") };
     assert_eq!(published, l.link_read_kem().unwrap().public().as_bytes().to_vec(), "its read keyset is the seed's");
     let seeded = l.link_epochs().unwrap();
     for r in osis_keys::ROLES {

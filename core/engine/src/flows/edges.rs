@@ -96,6 +96,11 @@ pub(crate) fn grant_history(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, h
     if history == History::None && tx.core.key_holders(&target).iter().any(|(m, _)| *m == holder) {
         return Err(Error::Misuse("a grant without history is for a holder that holds no role on the target"));
     }
+    // the granter's check (spec/permissions.md §2), first half: write on the holder or a card
+    // of it; the public needs neither
+    if !holder.is_public() {
+        rotation::kem::grant_holder(tx, holder, edge.role)?;
+    }
     let mut done = Done::default();
     // a thing is made a holder only once independent; a target gets them on its first
     // holder other than its mint admin (spec/permissions.md §3)
@@ -116,6 +121,9 @@ pub(crate) fn grant_history(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, h
     let me = tx.core.me();
     if !holder.is_public() {
         rotation::ensure_rotated(tx, me, holder, &mut done)?;
+        // the granter's check (spec/permissions.md §2), second half: KEM keys at every role the
+        // grant boxes it at, rotated in here where missing
+        rotation::kem::grant_keys(tx, holder, edge.role, &mut done)?;
     }
     let mut roles = roles_up_to(edge.role);
     // a renewal of an ended edge is not finalized first: the grant writes it anew

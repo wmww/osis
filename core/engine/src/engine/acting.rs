@@ -108,16 +108,31 @@ impl Engine {
     pub fn mint_independent(&mut self, admins: &[MintAdmin], also: impl FnOnce(&[Tid]) -> Result<Vec<Mutation>>) -> Result<(Vec<Tid>, Done)> {
         self.run(|tx| {
             let mut done = Done::default();
-            let mut ts: Vec<Tid> = Vec::new();
+            let mut recs: Vec<osis_base::CreationRecord> = Vec::new();
             for a in admins {
                 let admin = match a {
                     MintAdmin::Thing(t) => *t,
-                    MintAdmin::Minted(i) => *ts.get(*i).ok_or(Error::Misuse("a mint admin minted later"))?,
+                    MintAdmin::Minted(i) => recs.get(*i).ok_or(Error::Misuse("a mint admin minted later"))?.tid(),
                 };
-                let rec = crate::identity::thing_record(admin, None, &mut *tx.rng);
-                ts.push(rotation::own_secrets_new(tx, rec, &[], None, &mut done)?);
+                recs.push(crate::identity::thing_record(admin, None, &mut *tx.rng));
             }
-            for m in also(&ts)? {
+            let ts: Vec<Tid> = recs.iter().map(osis_base::CreationRecord::tid).collect();
+            let muts = also(&ts)?;
+            // what the transaction gives each minted thing that a keyset written now carries a
+            // KEM key for (spec/crypto.md §3, Published KEM keys): admin on a thing minted after
+            // it (its record edge), a setting enabling a signal (`rotation::kem::by_setting`)
+            for (i, t) in ts.iter().enumerate() {
+                if admins.iter().skip(i + 1).any(|x| *x == MintAdmin::Minted(i)) {
+                    tx.publishing.push((*t, Role::Admin));
+                }
+                if let Some(r) = muts.iter().rev().find_map(|m| m.setting_of(t)).and_then(|s| rotation::kem::by_setting(&s)) {
+                    tx.publishing.push((*t, r));
+                }
+            }
+            for rec in recs {
+                rotation::own_secrets_new(tx, rec, &[], None, &mut done)?;
+            }
+            for m in muts {
                 done.add(Engine::commit_tx(tx, m)?);
             }
             Ok((ts, done))

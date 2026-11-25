@@ -128,10 +128,11 @@ type epoch = struct {
     nonce 1: blob,
 };
 
-/// The public keys of one role's secret at one epoch (spec/crypto.md §4).
+/// The public keys of one role's secret at one epoch (spec/crypto.md §4). `kem_key`: only where
+/// something may seal to it (spec/crypto.md §3, Published KEM keys).
 type keyset = struct {
     epoch 0: epoch,
-    kem_key 1: kem_key,
+    kem_key 1: option<kem_key>,
     /// Which set of algorithms the secret is used with.
     suite 2: int,
     /// The earlier epochs this one replaces.
@@ -149,10 +150,11 @@ type keyset = struct {
     demotes 7: bool,
 };
 
-/// A read epoch with its read-role KEM key, derived from its secret by whoever wrote it.
+/// A read epoch with its read-role KEM key, derived from its secret by whoever wrote it; none
+/// beside a read keyset carrying none (spec/crypto.md §3, Published KEM keys).
 type read_key = struct {
     epoch 0: epoch,
-    kem_key 1: kem_key,
+    kem_key 1: option<kem_key>,
 };
 
 /// The delete and write keys of a step of an actor's sync ID (spec/sync-ids.md §2), and the read

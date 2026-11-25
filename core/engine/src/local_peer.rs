@@ -1041,6 +1041,11 @@ impl LocalPeer {
         let mut m = Mutation::new();
         m.set(t, &osis_schema::core_types::RETENTION, &setting).unwrap_or_else(|e| panic!("setting of {t:?}: {e}"));
         self.peers[i].commit(m).unwrap_or_else(|e| panic!("setting of {t:?}: {e}"));
+        // keysets written before the setting carry no KEM key it gives (spec/crypto.md §3): KEM
+        // key due rotates them, here at once rather than at a pass's end
+        if self.peers[i].engine.core.is_independent(&t) {
+            self.peers[i].engine.kem_key_due(&t).unwrap_or_else(|e| panic!("KEM keys of {t:?}: {e}"));
+        }
     }
 
     /// `pass_fires` from peer `from` to `p`, a peer outside the net, every fire each call on a

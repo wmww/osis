@@ -115,6 +115,7 @@ mod tests {
         let holder = lp.peers[2].engine.new_thing(&mut m, c);
         lp.peers[2].commit(m).unwrap();
         lp.hold(holder);
+        lp.takes_grants(2, holder);
         lp.peers[2].engine.make_independent(&holder).unwrap();
         lp.sync_all().unwrap();
         let done = lp.peers[1].engine.grant(&t, &holder, &read).unwrap();

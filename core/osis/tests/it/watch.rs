@@ -822,6 +822,9 @@ fn an_until_ending_an_actors_way_in_tells_its_roster_watch() {
     let bob = osis::internals::create(o).unwrap();
     let alice = osis::internals::create(cfg(1, MemStore::new(), &c)).unwrap();
     let (actor, _) = bob.add_client(None).unwrap();
+    // the client a reader of a thing of bob's, so its read keysets carry KEM keys (spec/crypto.md
+    // §3): alice may grant it
+    bob.grant(thing(&bob), actor, Role::Read, Default::default()).unwrap();
     deliver(&bob, &alice);
     alice.hold(actor).unwrap();
     let (grp, t) = (thing(&alice), thing(&alice));

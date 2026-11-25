@@ -148,12 +148,12 @@ codec_struct! {
     /// the demotions it carries: other commits', and whether its own commit is one
     /// (spec/crypto.md §3, §4, §8).
     #[derive(Clone, Debug, PartialEq, Eq)]
-    pub struct Keyset { 0 epoch: Epoch, 1 kem_key: KemKey, 2 suite: u64, 3 supersedes: BTreeSet<Epoch>, 4 names: [u8; 32], 5 left_out: BTreeMap<Weak, BTreeMap<Epoch, BTreeSet<CommitId>>>, 6 demotions: BTreeSet<CommitId>, 7 demotes: bool }
+    pub struct Keyset { 0 epoch: Epoch, 1 kem_key: Option<KemKey>, 2 suite: u64, 3 supersedes: BTreeSet<Epoch>, 4 names: [u8; 32], 5 left_out: BTreeMap<Weak, BTreeMap<Epoch, BTreeSet<CommitId>>>, 6 demotions: BTreeSet<CommitId>, 7 demotes: bool }
 }
 codec_struct! {
     /// A read epoch and its read-role KEM key (spec/crypto.md §3).
     #[derive(Clone, Debug, PartialEq, Eq)]
-    pub struct ReadKey { 0 epoch: Epoch, 1 kem_key: KemKey }
+    pub struct ReadKey { 0 epoch: Epoch, 1 kem_key: Option<KemKey> }
 }
 codec_struct! {
     /// The delete and write keys of a step (spec/sync-ids.md §2) and the read epoch it registers

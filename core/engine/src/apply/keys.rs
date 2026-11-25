@@ -72,8 +72,10 @@ impl KeysBody {
             .filter_map(|(role, ks)| {
                 let epoch = osis_keys::aspects::from_schema(&ks.epoch).ok()?;
                 let lists = ks.supersedes.iter().filter_map(|x| osis_keys::aspects::from_schema(x).ok()).collect();
-                let ct::KemKey::X25519MlKem768(b) = &ks.kem_key;
-                let kem = (ks.suite == osis_keys::SUITE).then(|| osis_crypto::KemPublicKey::from_slice(b).ok()).flatten();
+                let kem = match &ks.kem_key {
+                    Some(ct::KemKey::X25519MlKem768(b)) if ks.suite == osis_keys::SUITE => osis_crypto::KemPublicKey::from_slice(b).ok(),
+                    _ => None,
+                };
                 let left_out = ks.left_out.iter().flat_map(|(m, xs)| xs.iter().filter_map(|(x, causes)| Some((m.0, osis_keys::aspects::from_schema(x).ok()?, causes.iter().copied().collect())))).collect();
                 let mut demotions: Vec<CommitId> = ks.demotions.iter().copied().collect();
                 if ks.demotes {
@@ -1185,7 +1187,7 @@ mod tests {
             let genuine = e0.read.secret(&e).cloned().unwrap();
             lp.sync(0, 1).unwrap();
             // the writer's `keys.0`: E's keyset with another secret's keys
-            let junk = osis_keys::keyset(&e, &Secret32::from_bytes([0x66; 32]), &Default::default(), &Default::default());
+            let junk = osis_keys::keyset(&e, &Secret32::from_bytes([0x66; 32]), &Default::default(), &Default::default(), true);
             let mut mu = Mutation::new();
             mu.op(t, &ct::KEYS, PathOp { path: vec![PathSeg::Field(0)], op: Op::Set(Some(junk.clone()).to_value()) }).unwrap();
             mu.unchecked();

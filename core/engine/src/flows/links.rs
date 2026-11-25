@@ -328,6 +328,9 @@ fn create_link_in(tx: &mut Tx<'_>, sharer: Tid, spec: &LinkSpec, krec: osis_base
     // by static entry with an entry box sealed to L's first read keyset (spec/sync-ids.md §3)
     let lid = crate::identity::Identity::link_key(seed.clone(), krec.tid());
     let lread = lid.link_read_kem().ok_or(Error::Misuse("L's read keyset"))?.public().clone();
+    // K is granted the link's role on the target below, in this transaction: its keysets up to
+    // it carry KEM keys from its minting (spec/crypto.md §3, Published KEM keys)
+    tx.publishing.push((krec.tid(), spec.role));
     let k = rotation::own_secrets_new(tx, krec, &[ReaderKey::Static(lid.signing().verifying_key(), lread)], None, &mut done)?;
     // L: minted with the seed's key, its secrets the seed's, signed by that key as L
     rotation::own_secrets_new(tx, lid.record().clone(), &[], Some(seed), &mut done)?;

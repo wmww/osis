@@ -148,10 +148,9 @@ fn what_a_thing_costs() {
     assert_eq!((dependent.commits, independent.commits), (1, 2), "its rotation carrying its record, then what the dependent one writes");
     assert!(dependent.maker_rows < 1_500 && dependent.reader_rows < 1_500 && dependent.download < 600, "{dependent:?}");
     assert_eq!(dependent.maker_ops.get("sign"), Some(&1), "the commit's signature alone");
-    assert!(independent.maker_rows < 16_100 && independent.reader_rows < 16_200 && independent.download < 10_400, "{independent:?}");
-    // a KEM key per role, and the step keys' read key derived again from the read secret (spec/crypto.md
-    // §3 step keys: the issuer derives it, never copies it from the keyset)
-    assert_eq!(independent.maker_ops.get("kem: keygen"), Some(&5), "a KEM key per role and the step's read key");
+    assert!(independent.maker_rows < 9_800 && independent.reader_rows < 9_900 && independent.download < 4_300, "{independent:?}");
+    // it holds nothing and takes no signal: no KEM key (spec/crypto.md §3 Published KEM keys)
+    assert_eq!(independent.maker_ops.get("kem: keygen"), None, "no KEM key made");
     assert!(!independent.reader_ops.keys().any(|k| k.starts_with("kem")), "the account's node opens symmetric boxes");
 }
 
@@ -285,4 +284,40 @@ fn what_a_small_commit_costs() {
     assert_eq!(by_key[3], 40, "{by_key:?}");
     assert_eq!(by_key[0] - by_admin[0], 40 - 18, "the signer's second form and the commit form: {by_admin:?} {by_key:?}");
     assert!(by_minter[0] < 420 && by_minter[4] < 520, "{by_minter:?}");
+}
+
+/// Per independent thing nobody seals to (`an_independent`: holding no role, no card, no
+/// signal): what `n` of them cost the maker, averaged: (stored bytes, bytes its commits
+/// download as, ML-KEM keygens).
+fn independent_each(n: usize) -> (i64, usize, u64) {
+    let (mut lp, a) = account_two_nodes();
+    let make = |lp: &mut LocalPeer| {
+        an_independent(&mut lp.peers[0].engine, a);
+    };
+    // the first thing made pays once for what every later one shares
+    make(&mut lp);
+    let census = |lp: &mut LocalPeer| lp.peers[0].engine.census().unwrap().values().map(|x| x.1 as i64).sum::<i64>() + blob_bytes(lp, 0);
+    let (c0, before) = (census(&mut lp), lp.peers[0].engine.commit_ids().into_iter().collect::<std::collections::BTreeSet<_>>());
+    costs::take();
+    for _ in 0..n {
+        make(&mut lp);
+    }
+    let keygens = ops().get("kem: keygen").copied().unwrap_or(0);
+    let new: Vec<CommitId> = lp.peers[0].engine.commit_ids().into_iter().filter(|c| !before.contains(c)).collect();
+    let download: usize = new.iter().map(|c| lp.peers[0].engine.package(c).unwrap().map_or(0, |pk| pk.bytes.len() + pk.blobs.iter().map(|b| b.1.len()).sum::<usize>())).sum();
+    ((census(&mut lp) - c0) / n as i64, download / n, keygens / n as u64)
+}
+
+// notes/thing-cost.md, spec/crypto.md §3 (Published KEM keys): an independent thing nobody seals
+// to carries no KEM key: no ML-KEM keygen, and its commits download in well under the 4864 B four
+// KEM keys alone took; its cost per thing is the same at n and 10n.
+#[test]
+fn an_independent_thing_nobody_seals_to_carries_no_kem_key() {
+    let (small, big) = (independent_each(2), independent_each(20));
+    if std::env::var_os("THING_COST").is_some() {
+        eprintln!("per independent thing (stored, download, keygens): n {small:?}, 10n {big:?}");
+    }
+    assert_eq!((small.2, big.2), (0, 0), "no KEM key made");
+    assert!(small.1 < 4_864 && big.1 <= small.1, "{small:?} {big:?}");
+    assert!(big.0 <= small.0 + 256, "stored per thing grows with n: {small:?} {big:?}");
 }

@@ -451,7 +451,11 @@ fn sealing_at(tx: &mut Tx<'_>, who: &Tid, a: &Tid, m: &Tid, role: Role) -> Resul
         let mut foreign = Foreign::default();
         let foreign: BTreeSet<Epoch> = held.valid.keys().filter(|k| foreign.is(tx.core, m, r, k)).copied().collect();
         let anchors: BTreeSet<Epoch> = anchors(tx, a, m, r)?.difference(&foreign).copied().collect();
-        let skip: BTreeSet<Epoch> = tainted(tx, m, r)?.union(&foreign).copied().collect();
+        // a candidate carries a KEM key or its secret is held here (spec/crypto.md §4 Seal): a
+        // newer KEM-less keyset leaves the older ones stale, so Seal gives a stale one and `m` is
+        // left out (blocked by a box), never sealed at a keyset a party removed since may hold
+        let bare: BTreeSet<Epoch> = held.valid.keys().filter(|k| tx.core.keyset(m, r, k).is_none_or(|x| x.kem_in.is_none()) && own.as_ref().is_none_or(|e| !e.role(r).is_established(k) || e.role(r).secret(k).is_none())).copied().collect();
+        let skip: BTreeSet<Epoch> = tainted(tx, m, r)?.union(&foreign).chain(&bare).copied().collect();
         let Seal::At(ks) = osis_keys::seal_keyset(&held, &anchors, &skip) else { break };
         if !seal_blocked(tx, who, a, m, r, &ks, &deps)?.is_empty() {
             break;

@@ -192,7 +192,7 @@ fn removed_with(s: &mut Shape, who: usize, carry: Carry, again: usize, order: Op
                     let holders = super::recipients(tx, &b, &x1, &[])?;
                     let secrets = crate::flows::secrets_in(tx, &x1)?;
                     let names = super::departures::names(tx.core, &x1, None);
-                    let rot = osis_keys::rotate_leaving_out(&x1, &roles, &held, &secrets, &holders.holders, &holders.left_out, &osis_keys::Carried::default(), &names, false, None, &mut *tx.rng).unwrap();
+                    let rot = osis_keys::rotate_leaving_out(&x1, &roles, &held, &secrets, &holders.holders, &holders.left_out, &osis_keys::Carried::default(), &BTreeSet::new(), &names, false, None, &mut *tx.rng).unwrap();
                     let mut m = Mutation::new();
                     crate::flows::put_secrets(&mut m, x1, &rot.secrets, false)?;
                     crate::flows::put_keysets(&mut m, x1, &rot.keys)?;
