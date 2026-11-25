@@ -241,6 +241,11 @@ impl Streams {
                 serve.applied = Some(pos);
                 ctx.reported.push(Reported::Stream(conn, pos, c.as_bytes().to_vec()));
             }
+            // a member open here and not joining in it stands at its cursor (a whole one reads
+            // every member from the start)
+            for s in members.keys().filter(|s| whole || !joins.iter().any(|(j, ..)| j == *s)) {
+                ctx.reported.push(Reported::Merged(conn, *s));
+            }
         }
         if !whole {
             for (s, c, pos) in &joins {
@@ -621,15 +626,15 @@ impl Streams {
         }
     }
 
-    /// A member joined, as server: one opened after the first Pull has no reported position
-    /// until a join names it, and is not caught up until a reply reads it for the peer.
+    /// A member joined, as server: one opened after the first Pull is not caught up until a
+    /// reply reads it for the peer (it has no reported position until a join names it:
+    /// `Positions::opened`).
     pub(super) fn served_joined(&mut self, ctx: &mut Ctx, conn: ConnId, s: SyncId) {
         if let Some(serve) = self.serve.get_mut(&conn)
             && serve.pulled
         {
             serve.own.insert(s);
             serve.unjoined.insert(s);
-            ctx.reported.push(Reported::Member(conn, s, None));
         }
         self.served_ending(ctx, conn, s);
     }

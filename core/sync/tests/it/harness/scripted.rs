@@ -348,6 +348,13 @@ impl Side {
         self.settle();
     }
 
+    /// Member S follows the peer's stream (its join merged, or the first Pull did not name it).
+    pub fn merged(&mut self, conn: ConnId, s: SyncId) {
+        let mut ctx = Ctx { holds: &mut self.table, wire: &mut self.pipe, store: &mut self.store, mono: self.mono };
+        self.opens.reported(&mut ctx, Reported::Merged(conn, s), &mut self.moved);
+        self.settle();
+    }
+
     /// The peer's stream stands at `pos` (an Applied): every member at the stream stands there.
     pub fn reported_stream(&mut self, conn: ConnId, pos: Position) {
         let mut ctx = Ctx { holds: &mut self.table, wire: &mut self.pipe, store: &mut self.store, mono: self.mono };

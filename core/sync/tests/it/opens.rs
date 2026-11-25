@@ -789,8 +789,9 @@ fn a_sync_key_open_ends_when_the_head_moves_spec_sync_opens_6() {
     assert!(matches!(&lost[..], [Msg::Lost { items, .. }] if items[0].0 == S && items[0].1.is_some()));
 }
 
-// spec/sync-opens.md §6 (reported positions): an Applied moves every member at the stream; an
-// ended member there closes with a Lost naming `until` once the stream passes it, and not before.
+// spec/sync-opens.md §6 (reported positions): an Applied moves every member at the stream (its
+// join merged); an ended member there closes with a Lost naming `until` once the stream passes
+// it, and not before.
 #[test]
 fn an_ended_member_closes_when_the_stream_passes_until_spec_sync_opens_6() {
     let (s0, s1) = (StepKeys::new(1, 0), StepKeys::new(1, 1));
@@ -800,6 +801,7 @@ fn an_ended_member_closes_when_the_stream_passes_until_spec_sync_opens_6() {
     k.settle();
     let until = k.table.until;
     assert!(k.moved.contains(&Moved::Until(adv.peer, S)));
+    k.merged(adv.peer, S);
     k.reported_stream(adv.peer, until - 1);
     assert!(k.open(adv.peer, &S));
     k.sent();
@@ -1305,6 +1307,7 @@ fn an_ended_member_admissible_again_stays_ended_spec_sync_opens_6() {
     k.settle();
     assert_eq!(k.opens.members(adv.peer)[&S].until, Some(until), "still ended");
     k.sent();
+    k.merged(adv.peer, S);
     k.reported_stream(adv.peer, until + 5);
     assert!(!k.open(adv.peer, &S));
     assert!(matches!(&of_kind(&k.sent(), 38)[..], [Msg::Lost { items, .. }] if items[0] == (S, osis_proto::Cursor::new(until.to_be_bytes().to_vec()).ok())));
