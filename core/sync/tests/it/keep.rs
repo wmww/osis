@@ -103,6 +103,56 @@ fn a_head_move_restamps_own_entries_and_readers_deposit_nothing_spec_sync_judgem
     }
 }
 
+// spec/sync-ids.md §6 (Steps: each role commit a recorded step depends on is waited on by one
+// step, stamped under its parent): node 0 rotates t's write secret twice while node 1, keeping
+// t's sync ID S unread, is off, issuing two steps; the second's write epoch supersedes the
+// first's. In every node's view the steps wait on disjoint commits, each stamped under the
+// parent of the step waiting on it, and the second does not wait on the first's rotation; node
+// 1, moved one step at a time, holds every commit each step it passed waits on, stamped. Fails
+// on spar-step-needs 08dcc425a: node 2 (no write secret) waits on the write rotations only at the
+// step that brought the newest write key, so it registers the first step at once and node 1 never
+// takes its rotation (stamped by node 0 under genesis); passes with node 2 off, and on main.
+#[test]
+fn a_store_moved_step_by_step_holds_what_each_step_waits_on_spec_sync_ids_6() {
+    use crate::harness::history::{Gives, three};
+    let (mut w, t, s) = three(Gives::Reads, 2);
+    w.cap = 20_000;
+    let path = |w: &mut World| w.engine(0).sync_ids(&t).unwrap().iter().find(|o| o.id == s).unwrap().path.clone();
+    let before = path(&mut w).steps.len();
+    w.power_off(1);
+    let a0 = w.node(0).account.unwrap();
+    for _ in 0..2 {
+        w.write(0, |e| e.rotate_boxing_only(&[t], &[Role::Write], &[a0])).unwrap().expect("a rotation");
+        w.run();
+    }
+    let p = path(&mut w);
+    assert_eq!(p.steps.len(), before + 2, "a step per rotation");
+    w.power_on(1);
+    w.run();
+    assert_eq!(w.store(1).head(&s).unwrap().map(|h| h.id()), p.steps.last().map(|(st, _)| st.id()));
+    for i in [0, 2] {
+        let mut seen = std::collections::BTreeSet::new();
+        for (k, (st, _)) in p.steps.iter().enumerate() {
+            for c in w.engine(i).step_needs(&s, &st.id()).unwrap().iter() {
+                assert!(seen.insert(*c), "node {i}: {c:?} waited on by two steps");
+                let parent = w.engine(i).step_parent(&s, c).unwrap().map(|x| x.id());
+                assert_eq!(parent, k.checked_sub(1).map(|j| p.steps[j].0.id()), "node {i}: {c:?} under step {k}'s parent");
+            }
+        }
+    }
+    let (first, second) = (p.steps[before].0.id(), p.steps[before + 1].0.id());
+    let firsts = w.engine(0).step_needs(&s, &first).unwrap();
+    assert!(!firsts.is_empty() && !w.engine(0).step_needs(&s, &second).unwrap().is_empty());
+    for (k, (st, _)) in p.steps.iter().enumerate().skip(1) {
+        for c in w.engine(0).step_needs(&s, &st.id()).unwrap().iter() {
+            let blobs = w.engine(0).commit_blobs(c).unwrap();
+            let held: Vec<_> = blobs.iter().map(|b| w.store(1).entry(&s, b).unwrap()).collect();
+            let own: Vec<_> = blobs.iter().map(|b| w.store(0).entry(&s, b).unwrap()).collect();
+            assert!(blobs.iter().any(|b| w.store(1).entry(&s, b).unwrap().is_some_and(|e| e.stamp.is_some() && !e.deposited)), "{c:?} of step {k} of {} taken stamped at node 1: {held:?} node 0 {own:?}", p.steps.len());
+        }
+    }
+}
+
 // spec/sync-opens.md §6 (whose peer J judges departed is ended too; this side registers there
 // the recorded steps after the source's step), spec/sync-judgement.md §6 (Stops): node 1 keeps t's sync ID S
 // unread and node 2 reads it. Node 0 removes node 1's account while cut off from node 1, so only
