@@ -202,7 +202,7 @@ mod tests {
     use osis_blob::{Parent, Reader, StepKeys, genesis_sync_id, register};
     use osis_crypto::{Epoch, RoleKey, Secret32, SeededRng, role_key};
 
-    // spec/sync-opens.md §4 (Admissible, keeping S unread: the head bears a sync epoch no held one
+    // spec/sync-opens.md §4 (Admissible: keeping S unread, the head bears a sync epoch no held one
     // is later than): concurrent rotations give two sync epochs of one number; a head listing the
     // public that bears either is taken (failed with the newest by full epoch order: a head bearing
     // the lesser nonce was taken nowhere, waiting on a rotation nothing owes). One held epoch of a
