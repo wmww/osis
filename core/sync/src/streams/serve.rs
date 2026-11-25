@@ -241,18 +241,14 @@ impl Streams {
                 serve.applied = Some(pos);
                 ctx.reported.push(Reported::Stream(conn, pos, c.as_bytes().to_vec()));
             }
-            // a member open here and not joining in it stands at its cursor (a whole one reads
-            // every member from the start)
-            for s in members.keys().filter(|s| whole || !joins.iter().any(|(j, ..)| j == *s)) {
-                ctx.reported.push(Reported::Merged(conn, *s));
-            }
         }
-        if !whole {
-            for (s, c, pos) in &joins {
-                if members.contains_key(s) && serve.named.insert(*s) {
-                    serve.own.insert(*s);
-                    ctx.reported.push(Reported::Member(conn, *s, pos.flatten().zip(c.clone())));
-                }
+        // each join's position in the first Pull naming it (a whole one reads it from the start:
+        // none, and it follows the stream once the reply is covered)
+        for (s, c, pos) in &joins {
+            if members.contains_key(s) && serve.named.insert(*s) {
+                serve.own.insert(*s);
+                let at = if whole { None } else { pos.flatten().zip(c.clone()) };
+                ctx.reported.push(Reported::Member(conn, *s, at));
             }
         }
         if p.ephemeral {

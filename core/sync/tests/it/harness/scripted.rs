@@ -348,9 +348,10 @@ impl Side {
         self.settle();
     }
 
-    /// Member S follows the peer's stream (its join merged, or the first Pull did not name it).
-    pub fn merged(&mut self, conn: ConnId, s: SyncId) {
+    /// The peer joined S from the start and the join merged: S follows the peer's stream.
+    pub fn join_merged(&mut self, conn: ConnId, s: SyncId) {
         let mut ctx = Ctx { holds: &mut self.table, wire: &mut self.pipe, store: &mut self.store, mono: self.mono };
+        self.opens.reported(&mut ctx, Reported::Member(conn, s, None), &mut self.moved);
         self.opens.reported(&mut ctx, Reported::Merged(conn, s), &mut self.moved);
         self.settle();
     }

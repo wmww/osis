@@ -5,7 +5,7 @@
 
 use crate::types::{ConnId, Cursor, Position};
 use osis_base::SyncId;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Where a member that joins a connection's stream reads the peer's log from (opens decides: it
 /// saw the peer's Lost and the digest; spec/sync-opens.md §6 Where it stopped).
@@ -22,9 +22,10 @@ pub enum Rejoin {
 pub enum Reported {
     /// The peer's stream stands at this position: every member at the stream stands there.
     Stream(ConnId, Position, Cursor),
-    /// A member joining stands at its own position (none: from the start, or not named yet).
+    /// A member joining stands at its own position (none: from the start).
     Member(ConnId, SyncId, Option<(Position, Cursor)>),
-    /// The member's join merged into the stream and the peer stored it: it follows `Stream`.
+    /// The member's join merged into the stream and the peer stored it: it follows `Stream` (one
+    /// opened on the connection and not named by a join yet stays at none).
     Merged(ConnId, SyncId),
 }
 
@@ -43,6 +44,10 @@ impl Reported {
 pub struct Positions {
     stream: Option<(Position, Cursor)>,
     own: BTreeMap<SyncId, Option<(Position, Cursor)>>,
+    /// Members opened on the connection whose join the peer has not named yet: none of the
+    /// peer's reports before its join can speak for them (it may not have known them open), so
+    /// a merge does not move them to the stream.
+    unnamed: BTreeSet<SyncId>,
 }
 
 impl Positions {
@@ -56,25 +61,31 @@ impl Positions {
                 None
             }
             Reported::Member(_, s, at) => {
+                self.unnamed.remove(&s);
                 self.own.insert(s, at);
                 Some(s)
             }
             Reported::Merged(_, s) => {
-                self.own.remove(&s);
+                if !self.unnamed.contains(&s) {
+                    self.own.remove(&s);
+                }
                 Some(s)
             }
         }
     }
 
     /// Member S opened on this connection: it has no position until the peer's join names it
-    /// (the stream's says nothing of a member the peer had not opened when it reported it).
+    /// (the stream's, a Pull's cursor included, says nothing of a member the peer had not opened
+    /// when it reported it).
     pub fn opened(&mut self, s: SyncId) {
         self.own.insert(s, None);
+        self.unnamed.insert(s);
     }
 
     /// The member S left: a later join reports afresh.
     pub fn forget(&mut self, s: &SyncId) {
         self.own.remove(s);
+        self.unnamed.remove(s);
     }
 
     /// Member S's reported position.

@@ -801,7 +801,7 @@ fn an_ended_member_closes_when_the_stream_passes_until_spec_sync_opens_6() {
     k.settle();
     let until = k.table.until;
     assert!(k.moved.contains(&Moved::Until(adv.peer, S)));
-    k.merged(adv.peer, S);
+    k.join_merged(adv.peer, S);
     k.reported_stream(adv.peer, until - 1);
     assert!(k.open(adv.peer, &S));
     k.sent();
@@ -1307,7 +1307,7 @@ fn an_ended_member_admissible_again_stays_ended_spec_sync_opens_6() {
     k.settle();
     assert_eq!(k.opens.members(adv.peer)[&S].until, Some(until), "still ended");
     k.sent();
-    k.merged(adv.peer, S);
+    k.join_merged(adv.peer, S);
     k.reported_stream(adv.peer, until + 5);
     assert!(!k.open(adv.peer, &S));
     assert!(matches!(&of_kind(&k.sent(), 38)[..], [Msg::Lost { items, .. }] if items[0] == (S, osis_proto::Cursor::new(until.to_be_bytes().to_vec()).ok())));

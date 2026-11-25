@@ -339,6 +339,14 @@ impl Pair {
         self.b.join(self.now, s);
     }
 
+    /// A reconnect: each side's connection takes its record again, its members kept.
+    fn take_again(&mut self) {
+        for side in [&mut self.a, &mut self.b] {
+            let rec = side.open.record.unwrap();
+            side.with(self.now, |st, ctx| st.member_moved(ctx, Moved::Taken(C, rec, false)));
+        }
+    }
+
     /// Delivers until nothing moves, settling both sides between deliveries; `drop` loses a frame
     /// (a to b when its flag is true).
     fn run_with(&mut self, mut drop: impl FnMut(bool, &Msg) -> bool) {
@@ -699,6 +707,41 @@ fn absence_is_no_deletion_but_from_the_start_spec_sync_streams_4() {
     assert!(!knows(&p.b, p.b.src(), s, x), "a trimmed listing replaced what a holds");
     assert!(p.b.store.entry(&s, &own).unwrap().is_some(), "nothing of b's own store goes");
     assert!(p.b.store.entry(&s, &x).unwrap().is_some(), "not what the source showed and lost either");
+}
+
+// spec/sync-opens.md §6 (Lost: a member opened on the connection has no reported position until a
+// join names it), spec/sync-streams.md §4 (Joining: a member newly open joins): b's stream stands
+// past S's entry (taken on another connection while S was not shared); on a new connection a opens
+// S before b's first Pull, which crosses the open and does not name S. Its cursor names no position
+// for S (failed: the first Pull's cursor stood for every member it did not join, past an entry b
+// never received, so an ended member there closed at once with a Lost and b never got it). Once b
+// opens S too it joins, and S stands where that join is read to.
+#[test]
+fn a_first_pull_crossing_an_open_names_no_position_for_it_spec_sync_opens_6() {
+    const C2: ConnId = ConnId(2);
+    let mut p = Pair::new();
+    let (s, t) = (sid(1), sid(2));
+    for x in [s, t] {
+        p.a.hold(x, Holding::Read);
+        p.b.hold(x, Holding::Read);
+    }
+    let x = p.a.log(s, 100);
+    p.a.log(t, 200);
+    p.join(t);
+    p.run();
+    assert!(!p.b.table.opened_under.contains(&(s, x)), "S not shared on C");
+    p.a.open.positions.entry(C2).or_default().opened(s);
+    p.a.join_on(p.now, C2, s, Rejoin::Held);
+    p.a.join_on(p.now, C2, t, Rejoin::Held);
+    p.b.join_on(p.now, C2, t, Rejoin::Held);
+    p.run_on(&[C2], |_, _, _| false);
+    assert!(p.sent_by_b(41).iter().any(|m| matches!(m, Msg::Pull(pl) if pl.cursor.is_some())), "b's first Pull on C2 names its cursor");
+    assert_eq!(Shared::reported(&p.a.open, C2, &s), None, "no position for S, unnamed");
+    assert!(Shared::reported(&p.a.open, C2, &t).is_some(), "T's is the stream's");
+    p.b.join_on(p.now, C2, s, Rejoin::Held);
+    p.run_on(&[C2], |_, _, _| false);
+    assert!(p.b.table.opened_under.contains(&(s, x)), "b joined S and was served its entry");
+    assert!(Shared::reported(&p.a.open, C2, &s).is_some(), "S's position, its join named");
 }
 
 // spec/sync-streams.md §4 (Joining: a join in pages keeps its own position), SN_joindur, and
@@ -2752,7 +2795,7 @@ fn a_restart_pulls_from_the_stored_cursor_spec_sync_streams_3() {
     p.a.streams.closed(C);
     assert!(knows(&p.b, p.b.src(), s, x), "known is durable");
     let y = p.a.log(s, 101);
-    p.shared_read(s);
+    p.take_again();
     p.seen.clear();
     p.run();
     let pulls = p.sent_by_b(41);
@@ -2807,8 +2850,8 @@ fn a_restart_at_any_write_of_a_pull_loses_nothing_spec_sync_streams_3() {
     }
 }
 
-/// Both sides read `n` sync IDs with an entry each and are synced; `b` restarts and both rejoin
-/// every member over a new connection. The bytes and the Pulls of the reconnect's streams.
+/// Both sides read `n` sync IDs with an entry each and are synced; `b` restarts and both take
+/// their records again over a new connection, every member kept. The bytes and the Pulls of the reconnect's streams.
 fn restart_reconnect_streams(n: u8) -> (usize, usize, u64) {
     let mut p = Pair::new();
     for i in 1..=n {
@@ -2818,10 +2861,7 @@ fn restart_reconnect_streams(n: u8) -> (usize, usize, u64) {
     p.run();
     p.b.restart_all(7);
     p.a.streams.closed(C);
-    for i in 1..=n {
-        p.a.join(p.now, sid(i));
-        p.b.join(p.now, sid(i));
-    }
+    p.take_again();
     p.seen.clear();
     let before = p.a.store.committed() + p.b.store.committed();
     p.run();

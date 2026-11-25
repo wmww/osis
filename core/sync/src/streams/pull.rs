@@ -484,7 +484,8 @@ impl Streams {
     }
 
     /// A member joined: from where opens says, else where this side's record holds it, else from
-    /// the start; none for a member at the stream's cursor (spec/sync-streams.md §4 Joining).
+    /// the start; one at the stream's cursor joins from it, as the server takes no position for
+    /// a member opened on the connection until a join names it (spec/sync-streams.md §4 Joining).
     pub(super) fn joined(&mut self, ctx: &mut Ctx, conn: ConnId, s: SyncId, rejoin: Rejoin) {
         let src = self.source(ctx.shared, conn);
         let cursor = self.place(ctx.store, src).cursor.clone();
@@ -496,7 +497,7 @@ impl Streams {
         if self.known.kept(src, &s) != kept {
             self.save(ctx, src, &[], false, vec![(src, Op::Kept(s, kept))]);
         }
-        self.join_member(ctx, conn, s, rejoin);
+        self.join_member(ctx, conn, s, rejoin, true);
     }
 
     /// Kept record `rid` is connected on `conn` (spec/sync-streams.md §4 Joining: a connection
@@ -513,7 +514,7 @@ impl Streams {
         for s in members {
             self.holders.entry(s).or_default().insert(conn);
             self.served_joined(ctx, conn, s);
-            self.join_member(ctx, conn, s, Rejoin::Held);
+            self.join_member(ctx, conn, s, Rejoin::Held, false);
         }
         // its members gained a source: every stream asks inline 0 again where one has two
         for p in self.pull.values_mut() {
@@ -522,8 +523,9 @@ impl Streams {
     }
 
     /// Member S stands on `conn`'s stream: full told if S is, joined from where `rejoin` says,
-    /// else where the place holds it, else from the start; none at the stream's cursor.
-    fn join_member(&mut self, ctx: &mut Ctx, conn: ConnId, s: SyncId, rejoin: Rejoin) {
+    /// else where the place holds it, else from the start; at the stream's cursor, joined from it
+    /// when it `opened` on the connection, else no join.
+    fn join_member(&mut self, ctx: &mut Ctx, conn: ConnId, s: SyncId, rejoin: Rejoin, opened: bool) {
         let src = self.source(ctx.shared, conn);
         // full for S: told on each connection S joins
         if ctx.store.waits_room(&s) {
@@ -544,7 +546,7 @@ impl Streams {
                     Some(c.clone())
                 } else if place.at_stream.contains(&s) || place.stopped.contains_key(&s) {
                     // at the stream, or stopped at the first Pull's cursor
-                    None
+                    opened.then(|| place.cursor.clone())
                 } else {
                     Some(None)
                 }
