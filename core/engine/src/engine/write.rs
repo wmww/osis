@@ -755,6 +755,24 @@ pub(crate) struct Resolved {
 }
 
 /// A snapshot delta (spec/crdt.md §8): its state, read a page at a time as it is encoded.
+/// Tests: a hostile writer's `secrets.0` snapshot, whole (`Core::whole_secrets_snapshots`).
+fn whole_snapshots(core: &Core) -> bool {
+    #[cfg(test)]
+    return core.whole_secrets_snapshots;
+    #[cfg(not(test))]
+    {
+        let _ = core;
+        false
+    }
+}
+
+/// One delta of an aspect's write as encoded: a writer's delta or a snapshot (a `secrets.0`
+/// write: one of its pieces, spec/wire.md §4 Pieces).
+enum Piece {
+    Delta(Fragment),
+    Snapshot(SnapshotPart),
+}
+
 pub(crate) struct SnapshotPart {
     pub state: crate::retention::snapshot::SnapState,
     pub frontiers: osis_crdt::Frontiers,
@@ -971,7 +989,7 @@ fn build(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Resolved>) -> Result<osi
     let adminless = plan.adminless && crate::apply::validity::needs_adminless_mark(tx.core, deltas.iter().map(|d| (d.tid, &d.ak, &d.fragment)));
     let edges = if plan.kind == Kind::Role { crate::apply::validity::edge_writes(tx.core, deltas.iter().map(|d| (d.tid, &d.ak, &d.fragment))) } else { Vec::new() };
     let mut writes = Vec::with_capacity(deltas.len());
-    for d in deltas {
+    for mut d in deltas {
         let (purge_by, expires) = settle(tx.core, tx.txn.is_memory(), plan.kind, plan.ts, &d.tid, &d.ak, d.schema.as_deref(), d.replaces.is_some(), d.purge_by, d.expires)?;
         // one expiry per commit (spec/commits.md §6): `one_commit` saw to it
         if expires != plan.expires && !plan.restores {
@@ -983,22 +1001,25 @@ fn build(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Resolved>) -> Result<osi
         if let Some(s) = &d.snapshot {
             osis_base::costs::paused(|| s.state.check_whole(tx, &d.tid, &d.ak, s, &cx))?;
         }
-        // a role commit's `secrets.0` delta goes in pieces, one per holder its records are keyed
-        // with and one of the rest (spec/wire.md §4 Pieces); every other delta whole
-        let pieces: Vec<Fragment> = match (&d.snapshot, plan.kind == Kind::Role && d.ak.as_str() == osis_commit::PIECED) {
-            (None, true) => crate::apply::keys::secrets_pieces(&d.fragment),
-            (None, false) => vec![d.fragment],
-            (Some(_), _) => vec![Fragment::default()],
+        // a role commit's `secrets.0` delta, or a role compaction snapshot of it, goes in pieces,
+        // one per holder its records are keyed with and one of the rest (spec/wire.md §4
+        // Pieces); every other delta whole
+        let pieced = d.ak.as_str() == osis_commit::PIECED;
+        let pieces: Vec<Piece> = match d.snapshot.take() {
+            None if pieced && plan.kind == Kind::Role => crate::apply::keys::secrets_pieces(&d.fragment).into_iter().map(Piece::Delta).collect(),
+            None => vec![Piece::Delta(std::mem::take(&mut d.fragment))],
+            Some(s) if pieced && plan.kind == Kind::RoleSnapshot && !whole_snapshots(tx.core) => crate::retention::snapshot::secrets_pieces(tx, &d.tid, &d.ak, s, &cx)?.into_iter().map(Piece::Snapshot).collect(),
+            Some(s) => vec![Piece::Snapshot(s)],
         };
         let mut deltas = Vec::with_capacity(pieces.len());
-        for fragment in pieces {
+        for piece in pieces {
             let mut blobs = TxBlobs::new(&mut tx.blobs, tx.txn.is_memory());
             let mut nonce = [0u8; osis_crdt::NONCE_LEN];
             tx.rng.fill_bytes(&mut nonce);
             let mut bw = BlobWriter::new(&framing, &mut blobs, &mut *tx.rng);
-            let bytes = match &d.snapshot {
-                Some(s) => s.state.walk(&mut tx.txn, &d.tid, &d.ak, |st| osis_crdt::encode_paged_snapshot(&nonce, st, &s.frontiers, &s.absorbed, &s.facts, &cx, Some(&mut bw)))?,
-                None => encode_delta(&Delta { nonce, fragment }, &cx, Some(&mut bw))?,
+            let bytes = match piece {
+                Piece::Snapshot(s) => s.state.walk(&mut tx.txn, &d.tid, &d.ak, |st| osis_crdt::encode_paged_snapshot(&nonce, st, &s.frontiers, &s.absorbed, &s.facts, &cx, Some(&mut bw)))?,
+                Piece::Delta(fragment) => encode_delta(&Delta { nonce, fragment }, &cx, Some(&mut bw))?,
             };
             drop(bw);
             deltas.push(bytes);

@@ -241,6 +241,47 @@ mod tests {
         let (held, c) = run(Role::Sync, true);
         assert!(held.iter().all(|n| *n == BTreeSet::from([c])), "removed: no other holder's piece, no rest: {held:?}");
     }
+    // spec/wire.md §4 Pieces (a `secrets.0` snapshot pieced alike), spec/commits.md §5 Covered:
+    // a compaction of `secrets.0` holding several holders' boxes is written in pieces, each
+    // holding one holder's records or none; a holder's edge piece of it carries its piece and the
+    // rest, never another holder's; and there, its piece and the rest cover the grant it holds
+    // as the whole snapshot does at the admin (the rest states the snapshot's tables whole).
+    #[test]
+    fn a_secrets_snapshot_travels_in_pieces_spec_wire_4() {
+        let mut lp = LocalPeer::fresh(3, WallMs(1_700_000_000_000));
+        lp.sync_all().unwrap();
+        let (a, b, c) = (lp.peers[0].engine.me(), lp.peers[1].engine.me(), lp.peers[2].engine.me());
+        let t = thing(&mut lp, a);
+        let secrets = osis_base::Ak::new("secrets.0").unwrap();
+        let read = ct::Edge { role: Role::Read, until: None, may_grant: false, retain: false, floor: None };
+        let gb = *lp.peers[0].engine.grant(&t, &b, &read).unwrap().commits.last().unwrap();
+        lp.peers[0].engine.grant(&t, &c, &read).unwrap();
+        let s = lp.peers[0].engine.snapshot(&t, &secrets).unwrap().unwrap();
+        let named = lp.peers[0].engine.holders_named(&s);
+        let parts: Vec<usize> = lp.peers[0].engine.core.ix.commits[&s].aspect_parts(&t, &secrets).collect();
+        let pieces: Vec<BTreeSet<Tid>> = parts.iter().map(|ai| named.get(ai).cloned().unwrap_or_default()).collect();
+        assert!(pieces.iter().all(|n| n.len() <= 1), "one holder a piece: {pieces:?}");
+        for h in [b, c] {
+            assert!(pieces.contains(&BTreeSet::from([h])), "{h:?}'s piece: {pieces:?}");
+        }
+        assert!(pieces.contains(&BTreeSet::new()), "the rest, always: {pieces:?}");
+        for x in [gb, s] {
+            let p = lp.peers[0].engine.edge_piece(&x, &t, crate::sync_ids::Cut::EdgePiece(b)).unwrap().unwrap();
+            lp.peers[1].engine.take_edge_piece(&p, None).unwrap();
+        }
+        let m = lp.peers[1].engine.core.ix.commits[&s].clone();
+        let mut held: Vec<BTreeSet<Tid>> = parts.iter().filter(|ai| m.holds(**ai)).map(|ai| named[ai].clone()).collect();
+        held.sort();
+        assert_eq!(held, vec![BTreeSet::new(), BTreeSet::from([b])], "b's piece and the rest");
+        let at_a = lp.peers[0].engine.covered(&s, &gb, &t, &secrets).unwrap();
+        assert_eq!(at_a, Some(true), "the snapshot covers the grant");
+        assert_eq!(lp.peers[1].engine.covered(&s, &gb, &t, &secrets).unwrap(), at_a, "b's pieces cover as the whole does");
+        // a snapshot written whole (b's and c's boxes in one piece, a hostile admin's) holds
+        // nothing: its piece fails the shape check every receiver runs, its writer's own first
+        lp.peers[0].engine.core.whole_secrets_snapshots = true;
+        let w = lp.peers[0].engine.snapshot(&t, &secrets);
+        assert!(matches!(w, Err(crate::Error::Data(osis_commit::Error::DeltaHash { .. }))), "a whole snapshot holds nothing: {w:?}");
+    }
     // spec/commits.md §5 Bodies and deaths, spec/wire.md §4 Pieces: a piece held without its
     // siblings is the commit's body there, dated as any. A holder of sync alone takes its
     // grant's edge piece (its piece, no rest); its removal supersedes its box, so the piece it

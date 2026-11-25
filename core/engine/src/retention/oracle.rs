@@ -24,7 +24,23 @@ pub(crate) fn covered(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Tid, ak
     if tx.core.ix.commits.get(c).is_some_and(|m| m.view.kind.is_compaction() && m.missing(cai)) {
         return Ok(None);
     }
-    let part = crate::apply::held_part(tx, s, sai)?;
+    // a pieced snapshot: its held pieces joined, their tables joined (spec/wire.md §4 Pieces)
+    let mut part: Option<Decoded> = None;
+    for ai in super::body_parts(tx.core, s, sai) {
+        let Some(p) = crate::apply::held_part(tx, s, ai)? else { continue };
+        part = Some(match (part, p) {
+            (Some(Decoded::Snapshot(mut a)), Decoded::Snapshot(b)) => {
+                a.fragment.join(b.fragment);
+                for (x, c) in b.frontiers.sessions {
+                    let e = a.frontiers.sessions.entry(x).or_default();
+                    *e = (*e).max(c);
+                }
+                a.absorbed.extend(b.absorbed);
+                Decoded::Snapshot(a)
+            }
+            (_, p) => p,
+        });
+    }
     let held = super::body_fragment(tx, c, cai)?;
     // a body with an expiry neither held nor gone: not covered, whether or not the
     // snapshot is held (as `covered_join` judges it before reading the snapshot)

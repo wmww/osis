@@ -1013,8 +1013,10 @@ fn read(core: &Core, id: &CommitId, h: &Header, view: &View, carries: bool) -> o
         };
         let class = if h.kind.is_compaction() {
             // a list naming it names the held commits it carries (spec/permissions.md §5.2
-            // Copies); what it states of them is not read here
-            let carries = if carries { Frontier::new(crate::retention::snapshot::carried(core, id, &a.tid, &a.ak)) } else { Frontier::default() };
+            // Copies); what it states of them is not read here. A pieced snapshot (`secrets.0`,
+            // spec/wire.md §4 Pieces) carries by its body, the pieces joined: listed on the one
+            // part standing for it (`View::aspect`, as `carriers` names it)
+            let carries = if carries && view.aspect(&a.tid, ak) == Some(ai) { Frontier::new(crate::retention::snapshot::carried(core, id, &a.tid, &a.ak)) } else { Frontier::default() };
             DeltaClass::Snapshot { carries, stated: BTreeMap::new(), own: h.own_cover }
         } else if ct::is_addenda(ak) && h.kind == Kind::Content {
             // one entry is read (a node writes one per thing and removal, spec/permissions.md

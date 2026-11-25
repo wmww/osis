@@ -2377,7 +2377,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
                 .flatten()
                 {
                     atomic::note_snapshot(tx.core, &a.tid, &a.ak, blob.header.ts, &id, g);
-                    atomic::note_carried(tx.core, &a.tid, &a.ak, &id, carried);
+                    atomic::note_carried(tx.core, &a.tid, &a.ak, &id, ai, carried);
                 }
             }
         }

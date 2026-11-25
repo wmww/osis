@@ -233,6 +233,21 @@ impl Rec for crate::retention::snapshot::Carried {
         Some(crate::retention::snapshot::Carried::of(Rec::from(v)?))
     }
 }
+impl Rec for crate::retention::snapshot::PartsCarried {
+    fn to(&self) -> Value {
+        Value::List(self.0.iter().map(|(ai, c)| Value::List(vec![Value::uint(*ai as u64), c.to()])).collect())
+    }
+    fn from(v: &Value) -> Option<Self> {
+        let Value::List(x) = v else { return None };
+        let mut out = std::collections::BTreeMap::new();
+        for e in x {
+            let Value::List(p) = e else { return None };
+            let [ai, c] = p.as_slice() else { return None };
+            out.insert(<usize as Rec>::from(ai)?, Rec::from(c)?);
+        }
+        Some(crate::retention::snapshot::PartsCarried(out))
+    }
+}
 impl Rec for osis_crdt::Facts {
     fn to(&self) -> Value {
         let row = |((ts, src), f): (&(Ts, osis_crdt::Source), &osis_crdt::Fact)| Value::List(vec![ts.to(), src.to(), Value::uint(f.by as u64), f.purge_author.to()]);

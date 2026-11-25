@@ -18,27 +18,38 @@ use std::sync::Arc;
 use crate::engine::Gives;
 use crate::retention::snapshot::Carried;
 
-/// Notes a held compaction snapshot of `(tid, ak)` with its frontiers and `Absorbed`; what its
-/// body carries is noted once read (`note_carried`).
+/// Notes a held compaction snapshot of `(tid, ak)` with the frontiers and `Absorbed` a part of it
+/// gives, joined with its other parts' (a `secrets.0` snapshot's pieces: their tables join as
+/// the snapshot's, spec/wire.md §4 Pieces); what its body carries is noted once read
+/// (`note_carried`).
 pub(crate) fn note_snapshot(core: &mut Core, tid: &Tid, ak: &Ak, ts: osis_base::Ts, id: &CommitId, (fr, abs, _): Gives) {
     // kept in (`ts`, ID) order, so arrival order (a rebuild's is the store's) does not show
     let v = core.ix.snapshots.entry_or_default((*tid, ak.clone()));
-    if !v.iter().any(|x| x.1 == *id) {
-        let at = v.partition_point(|x| (x.0, x.1) < (ts, *id));
-        v.insert(at, (ts, *id, fr, abs, Carried::default()));
+    match v.iter_mut().find(|x| x.1 == *id) {
+        Some(x) => {
+            for (s, c) in fr.sessions {
+                let e = x.2.sessions.entry(s).or_default();
+                *e = (*e).max(c);
+            }
+            x.3.extend(abs);
+            x.3.sort();
+            x.3.dedup();
+        }
+        None => {
+            let at = v.partition_point(|x| (x.0, x.1) < (ts, *id));
+            v.insert(at, (ts, *id, fr, abs, Default::default()));
+        }
     }
 }
 
-/// Notes `c`, what held snapshot `id` of `(tid, ak)` carries, from its body as held (joined, or
-/// its leftover): `retention::snapshot::Carried`. Where the writes it holds moved, so did the
-/// commits it carries: the walk reads it again (`validity::reading`).
-pub(crate) fn note_carried(core: &mut Core, tid: &Tid, ak: &Ak, id: &CommitId, c: Carried) {
+/// Notes `c`, what part `ai` of held snapshot `id` of `(tid, ak)` carries, from that part as held
+/// (or its leftover): `retention::snapshot::Carried`. Where the writes it holds moved, so did
+/// the commits it carries: the walk reads it again (`validity::reading`).
+pub(crate) fn note_carried(core: &mut Core, tid: &Tid, ak: &Ak, id: &CommitId, ai: usize, c: Carried) {
     let k = (*tid, ak.clone());
-    if !core.ix.snapshots.get(&k).is_some_and(|v| v.iter().any(|x| x.1 == *id && x.4 != c)) {
+    let Some(x) = core.ix.snapshots.get_mut(&k).and_then(|v| v.iter_mut().find(|x| x.1 == *id)) else { return };
+    if !x.4.set(ai, c) {
         return;
-    }
-    if let Some(x) = core.ix.snapshots.get_mut(&k).and_then(|v| v.iter_mut().find(|x| x.1 == *id)) {
-        x.4 = c;
     }
     core.ix.held.touch_commit(*id);
     core.update_timelines();
@@ -404,7 +415,7 @@ fn join_part(tx: &mut Tx<'_>, h: &Header, id: &CommitId, blob: &CommitBlob, ai: 
         j.whole.push(ai);
     }
     if snap {
-        note_carried(tx.core, &tid, &ak, id, carried);
+        note_carried(tx.core, &tid, &ak, id, ai, carried);
     }
     if !v {
         return Ok(());
@@ -1086,17 +1097,19 @@ pub(crate) fn check_states(tx: &mut Tx<'_>, aspects: BTreeSet<(Tid, Ak)>) -> Res
         // every held snapshot is indexed with bounds holding each write its body holds
         // (`retention::snapshot::Carried`): a write missed would expire in place past its copy
         for c in tx.core.ix.by_aspect.get(&k).map(|s| s.iter().map(|(_, c)| *c).collect::<Vec<_>>()).unwrap_or_default() {
-            let Some(ai) = tx.core.ix.commits.get(&c).filter(|m| !m.header.kind.has_own_writes()).and_then(|m| m.aspect(&tid, &ak)) else { continue };
-            let mut held = Carried::default();
-            let gives = osis_base::costs::paused(|| super::each_held_piece(tx, &c, ai, &mut |_, f| {
-                held.add(&f);
-                Ok(())
-            }))?;
-            if !matches!(gives, Some(Some(_))) {
-                continue;
+            let ais: Vec<usize> = tx.core.ix.commits.get(&c).filter(|m| !m.header.kind.has_own_writes()).map(|m| m.aspect_parts(&tid, &ak).collect()).unwrap_or_default();
+            for ai in ais {
+                let mut held = Carried::default();
+                let gives = osis_base::costs::paused(|| super::each_held_piece(tx, &c, ai, &mut |_, f| {
+                    held.add(&f);
+                    Ok(())
+                }))?;
+                if !matches!(gives, Some(Some(_))) {
+                    continue;
+                }
+                let bound = tx.core.ix.snapshots.get(&k).and_then(|v| v.iter().find(|x| x.1 == c)).map(|x| x.4.clone());
+                debug_assert!(bound.is_some_and(|b| b.holds(&held)), "held snapshot {c:?} on {tid:?} {ak:?}: its carried bounds miss a write it holds");
             }
-            let bound = tx.core.ix.snapshots.get(&k).and_then(|v| v.iter().find(|x| x.1 == c)).map(|x| x.4.clone());
-            debug_assert!(bound.is_some_and(|b| b.holds(&held)), "held snapshot {c:?} on {tid:?} {ak:?}: its carried bounds miss a write it holds");
         }
         // the state as stored, through the one reader (`Tx::load_lazy`), not the cache
         let cached = (tx.core.states.remove(&k), tx.core.pages.remove(&k));

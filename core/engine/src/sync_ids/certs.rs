@@ -8,7 +8,6 @@ use crate::evidence::held::Ev;
 use osis_base::memo::Memo;
 use crate::engine::Engine;
 use crate::error::Result;
-use osis_commit::Decoded;
 use osis_base::{Ak, CommitId, Tid};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -124,13 +123,14 @@ impl Engine {
         let keep = |ai: usize| h.aspects.get(ai).is_some_and(|a| matches!(a.ak.as_str(), "roles.0" | "secrets.0"));
         let parts = self.read(|tx| crate::apply::held_parts_at(tx, &id, &keep))?;
         for (ai, d) in parts {
-            let (Some(a), Decoded::Delta(d)) = (h.aspects.get(ai), &d) else { continue };
+            let Some(a) = h.aspects.get(ai) else { continue };
+            let f = d.fragment();
             let named: Vec<Tid> = match a.ak.as_str() {
                 // a key's grant names no holder with a key part (nothing is sealed to a key)
-                "roles.0" => crate::apply::validity::edge_holders(&self.core, &a.tid, crate::apply::validity::Grants::Things, &d.fragment).into_iter().filter_map(|h| h.thing()).collect(),
+                "roles.0" => crate::apply::validity::edge_holders(&self.core, &a.tid, crate::apply::validity::Grants::Things, f).into_iter().filter_map(|h| h.thing()).collect(),
                 // the holders its records are keyed with, puts and removals: of a piece, its
                 // holder (spec/wire.md §4 Pieces)
-                _ => d.fragment.field_keys(0).into_iter().filter_map(osis_commit::box_holder).collect(),
+                _ => f.field_keys(0).into_iter().filter_map(osis_commit::box_holder).collect(),
             };
             out.entry(ai).or_default().extend(named);
         }

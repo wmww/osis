@@ -941,8 +941,9 @@ pub(crate) struct CoreMark {
 }
 
 /// A held compaction snapshot of an aspect: `ts`, ID, frontiers, `Absorbed` (commit, signer),
-/// and the bounds of what its held body carries (`retention::snapshot::Carried`).
-pub(crate) type HeldSnapshot = (Ts, CommitId, osis_crdt::Frontiers, Vec<(CommitId, Tid)>, crate::retention::snapshot::Carried);
+/// joined over its held parts (a `secrets.0` snapshot's pieces), and the bounds of what each
+/// held part carries (`retention::snapshot::PartsCarried`).
+pub(crate) type HeldSnapshot = (Ts, CommitId, osis_crdt::Frontiers, Vec<(CommitId, Tid)>, crate::retention::snapshot::PartsCarried);
 
 /// A decoded commit record: its head (received, origin, dropped parts) and blob.
 pub(crate) type CommitRecord = (index::RecordHead, CommitBlob);
@@ -1190,6 +1191,10 @@ pub struct Core {
     /// hostile granter's junk.
     #[cfg(test)]
     pub(crate) junk_boxes: Option<osis_keys::SecretsWrite>,
+    /// Tests: this node's `secrets.0` snapshots are written whole, not in pieces: a hostile
+    /// writer's (`retention::snapshot::secrets_pieces`).
+    #[cfg(test)]
+    pub(crate) whole_secrets_snapshots: bool,
     /// Link keys whose seed this node holds for now: they sign commits (`Mutation::sign_as`) and
     /// open their boxes by their seed's secrets. Derived: each is held exactly while
     /// `held_link_keys` or a followed link names it (`Engine::settle_link_key`). In memory only.
@@ -2043,6 +2048,8 @@ impl Core {
             lie_floor: _,
             #[cfg(test)]
             junk_boxes: _,
+            #[cfg(test)]
+            whole_secrets_snapshots: _,
         } = c;
         let actors = |m: &mut dyn Iterator<Item = &Tid>| m.copied().collect::<Vec<_>>();
         format!(
@@ -2249,6 +2256,8 @@ impl Core {
             lie_floor: None,
             #[cfg(test)]
             junk_boxes: None,
+            #[cfg(test)]
+            whole_secrets_snapshots: false,
             link_keys: Default::default(),
             held_link_keys: Default::default(),
             followed_links: Default::default(),

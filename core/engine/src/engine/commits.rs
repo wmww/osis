@@ -94,17 +94,19 @@ impl Meta {
     }
     /// The part standing for the commit's body on aspect `(tid, ak)`: its one part, or of a
     /// `secrets.0` in pieces (spec/wire.md §4 Pieces) the first held valid piece, else the first
-    /// held, else the first. A piece held without its siblings is the body here, as a whole
-    /// part is: what a node holds of a commit on an aspect is never judged by a piece it lacks
-    /// (another holder's, or the rest, which a holder of sync alone never gets).
+    /// held, else the first dropped, else the first. A piece held without its siblings is the
+    /// body here, as a whole part is, and once dropped (as covered by a pieced snapshot's piece,
+    /// spec/commits.md §5 Covered) it still is: what a node holds or held of a commit on an
+    /// aspect is never judged by a piece it never got (another holder's, or the rest, which a
+    /// holder of sync alone never gets), which reads as still to arrive.
     pub(crate) fn aspect(&self, tid: &Tid, ak: &Ak) -> Option<usize> {
-        let mut parts = self.aspect_parts(tid, ak);
-        let first = parts.next()?;
-        if parts.is_empty() {
+        let parts = self.aspect_parts(tid, ak);
+        let first = parts.clone().next()?;
+        if parts.len() == 1 {
             return Some(first);
         }
-        let mut held = std::iter::once(first).chain(parts).filter(|ai| self.holds(*ai));
-        let Some(h) = held.next() else { return Some(first) };
+        let mut held = parts.clone().filter(|ai| self.holds(*ai));
+        let Some(h) = held.next() else { return Some(parts.clone().find(|ai| self.is_dropped(*ai)).unwrap_or(first)) };
         Some(std::iter::once(h).chain(held).find(|ai| self.valid_at(*ai)).unwrap_or(h))
     }
     /// The indexes of its parts on aspect `(tid, ak)` (`View::aspect_parts`).
@@ -498,6 +500,32 @@ mod tests {
         let meta = lp.peers[0].engine.core.ix.commits.get(&id).unwrap().clone();
         assert_eq!(meta.parts(), 2);
         (id, meta)
+    }
+
+    /// spec/wire.md §4 Pieces: a commit's `secrets.0` in pieces, of which a holder held its own
+    /// alone and dropped it, the others never got: its dropped piece stands for the body, never
+    /// one still to arrive (which would read as a body not dropped).
+    #[test]
+    fn a_dropped_piece_stands_for_its_body_spec_wire_4() {
+        let mut lp = LocalPeer::fresh(3, WallMs(1_700_000_000_000));
+        lp.sync_all().unwrap();
+        let (a, b, c) = (lp.peers[0].engine.me(), lp.peers[1].engine.me(), lp.peers[2].engine.me());
+        let mut m = Mutation::new();
+        let t = lp.peers[0].engine.new_thing(&mut m, a);
+        lp.peers[0].commit(m).unwrap();
+        let read = osis_schema::core_types::Edge { role: osis_base::Role::Read, until: None, may_grant: false, retain: false, floor: None };
+        lp.peers[0].engine.grant(&t, &b, &read).unwrap();
+        let g = *lp.peers[0].engine.grant(&t, &c, &read).unwrap().commits.last().unwrap();
+        let secrets = Ak::new("secrets.0").unwrap();
+        let mut meta = lp.peers[0].engine.core.ix.commits.get(&g).unwrap().clone();
+        let parts: Vec<usize> = meta.aspect_parts(&t, &secrets).collect();
+        assert!(parts.len() > 1, "in pieces");
+        let last = *parts.last().unwrap();
+        for ai in &parts {
+            let h = if *ai == last { Hold::Dropped(Dropped::default()) } else { Hold::Missing(Default::default()) };
+            meta.set_hold(*ai, h);
+        }
+        assert_eq!(meta.aspect(&t, &secrets), Some(last));
     }
 
     /// Settles every due key of `fx` (0: part 0's hold, 1: part 1's, 2: the fixed facts, 3: every

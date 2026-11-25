@@ -77,11 +77,6 @@ impl Carried {
     pub(crate) fn meets(&self, own: &[Owned]) -> bool {
         self.0.meets_owned(own)
     }
-    /// Whether it holds every write `o` does.
-    #[cfg(debug_assertions)]
-    pub(crate) fn holds(&self, o: &Carried) -> bool {
-        self.0.holds(&o.0)
-    }
     /// The runs of its writes (its memory).
     pub(crate) fn len(&self) -> usize {
         self.0.0.values().map(Vec::len).sum()
@@ -91,6 +86,39 @@ impl Carried {
     }
     pub(crate) fn of(writes: Spans) -> Carried {
         Carried(writes)
+    }
+}
+
+/// What a held snapshot's body carries, per held part: a `secrets.0` snapshot's body is its held
+/// pieces (spec/wire.md §4 Pieces, `retention::body_parts`), each noted as read; any other, one part.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PartsCarried(pub(crate) BTreeMap<usize, Carried>);
+
+impl PartsCarried {
+    /// Notes part `ai`'s; whether that changed anything.
+    pub(crate) fn set(&mut self, ai: usize, c: Carried) -> bool {
+        self.0.insert(ai, c.clone()).is_none_or(|old| old != c)
+    }
+    /// Whether some part holds a write of `own`.
+    pub(crate) fn meets(&self, own: &[Owned]) -> bool {
+        self.0.values().any(|c| c.meets(own))
+    }
+    /// Whether some part's runs `f` accepts.
+    fn any(&self, f: impl Fn(&Spans) -> bool) -> bool {
+        self.0.values().any(|c| f(&c.0))
+    }
+    /// The runs of every part, joined.
+    fn spans(&self) -> Spans {
+        Spans::of(self.0.values().flat_map(|c| c.0.entries().map(|(s, lo, hi)| (s.clone(), lo, hi))).collect::<Vec<_>>())
+    }
+    /// Whether the parts hold every write `o` does.
+    #[cfg(debug_assertions)]
+    pub(crate) fn holds(&self, o: &Carried) -> bool {
+        self.spans().holds(&o.0)
+    }
+    /// The runs of its writes (its memory).
+    pub(crate) fn len(&self) -> usize {
+        self.0.values().map(Carried::len).sum()
     }
 }
 
@@ -104,7 +132,7 @@ pub(crate) fn carried(core: &Core, s: &CommitId, tid: &Tid, ak: &Ak) -> Vec<Comm
     let Some(row) = core.ix.snapshots.get(&(*tid, ak.clone())).and_then(|v| v.iter().find(|x| x.1 == *s)) else { return Vec::new() };
     let zero = CommitId([0; 32]);
     let mut out = Vec::new();
-    for (src, runs) in &row.4.0.0 {
+    for (src, runs) in &row.4.spans().0 {
         match src.kind() {
             osis_crdt::SourceKind::Commit(c) => out.extend(core.ix.commits.get(c).filter(|m| by_id(m.view.kind, m.view.form) && m.view.aspect(tid, ak.as_str()).is_some()).map(|_| *c)),
             osis_crdt::SourceKind::Session(_) => {
@@ -132,7 +160,7 @@ pub(crate) fn carriers(core: &Core, c: &CommitId, v: &crate::engine::View) -> Ve
     let mut out = Vec::new();
     for a in &v.aspects {
         let meets = |w: &Spans| if v.form.counted() { a.lo < a.hi && w.meets(&src, a.lo, a.hi) } else { by_id(v.kind, v.form) && w.0.contains_key(&src) };
-        for x in core.ix.snapshots.get(&(a.tid, a.ak.clone())).into_iter().flatten().filter(|x| x.1 != *c && meets(&x.4.0)) {
+        for x in core.ix.snapshots.get(&(a.tid, a.ak.clone())).into_iter().flatten().filter(|x| x.1 != *c && x.4.any(&meets)) {
             out.extend(core.ix.commits.get(&x.1).and_then(|m| m.view.aspect(&a.tid, a.ak.as_str())).map(|sai| osis_perm::WriteId(x.1, sai as u32)));
         }
     }
@@ -1051,7 +1079,7 @@ fn covered_body(tx: &mut Tx<'_>, s: &CommitId, sai: usize, c: &CommitId, cai: us
         false => None,
     };
     let judge = |tx: &mut Tx<'_>, out: &mut CoveredBody, group: Fragment| -> Result<()> {
-        let (mut part, gives) = crate::apply::held_part_at(tx, s, sai, &group)?;
+        let (mut part, gives) = snapshot_at(tx, s, sai, &group)?;
         osis_base::costs::peak("covered: body group held", group.approx_bytes() as u64);
         out.part_bytes = out.part_bytes.saturating_add(part.approx_bytes() as u64);
         out.part_stamps.extend(stamps_of(&part));
@@ -1092,6 +1120,26 @@ fn covered_body(tx: &mut Tx<'_>, s: &CommitId, sai: usize, c: &CommitId, cai: us
         judge(tx, &mut out, group)?;
     }
     Ok(out)
+}
+
+/// Held snapshot `s`'s body on the aspect of part `sai` at `at`'s positions
+/// (`apply::held_part_at`): its held pieces (`retention::body_parts`) joined, what they give
+/// joined (`join_gives`): covering is judged against the join of the pieces a node holds
+/// (spec/wire.md §4 Pieces, spec/commits.md §5 Covered).
+fn snapshot_at(tx: &mut Tx<'_>, s: &CommitId, sai: usize, at: &Fragment) -> Result<(Fragment, Option<Option<crate::engine::Gives>>)> {
+    let parts = super::body_parts(tx.core, s, sai);
+    if parts.len() == 1 {
+        return crate::apply::held_part_at(tx, s, sai, at);
+    }
+    let (mut part, mut gives) = (Fragment::default(), None);
+    for ai in parts {
+        let (p, g) = crate::apply::held_part_at(tx, s, ai, at)?;
+        if g.is_some() {
+            part.join(p);
+        }
+        super::join_gives(&mut gives, g);
+    }
+    Ok((part, gives))
 }
 
 /// Whether the state of `(tid, ak)` holds a live write of a node `of` picks that stands only
@@ -1215,6 +1263,28 @@ fn snapshot_from_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, memory: bool, own_co
         }
     }
     build_snapshot(tx, tid, ak, st, ts, node, frontiers, absorbed, None, own_cover).map(Some)
+}
+
+/// Snapshot `s` of `secrets.0` in pieces (spec/wire.md §4 Pieces): one per holder its records
+/// are keyed with, each stating the tables of its own fragment (`Absorbed`: the commits whose
+/// source occurs in it), and the rest, always, stating the snapshot's tables whole (spec/crdt.md
+/// §8), so the pieces' tables join as the snapshot's. Invariant (security): a holder's piece
+/// carries no other holder's record nor any table entry not occurring in it, so the copy a holder
+/// is cut (its piece, spec/permissions.md §4 Copies) shows nothing of another holder.
+pub(crate) fn secrets_pieces(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, s: crate::engine::write::SnapshotPart, cx: &osis_crdt::DeltaCtx) -> Result<Vec<crate::engine::write::SnapshotPart>> {
+    let whole = s.state.whole(tx, tid, ak)?;
+    let (pieces, rest) = whole.split_by_key(0, osis_commit::box_holder);
+    let mut out = Vec::with_capacity(pieces.len() + 1);
+    for f in pieces.into_values() {
+        let state = SnapState::from(f);
+        let occurs = state.walk(&mut tx.txn, tid, ak, |p| osis_crdt::sources_of(p, cx))?;
+        let mut frontiers = s.frontiers.clone();
+        frontiers.retain(&occurs);
+        let absorbed = s.absorbed.iter().filter(|(c, _)| occurs.contains(&osis_crdt::Source::commit(**c))).map(|(c, t)| (*c, *t)).collect();
+        out.push(crate::engine::write::SnapshotPart { state, frontiers, absorbed, facts: s.facts.clone() });
+    }
+    out.push(crate::engine::write::SnapshotPart { state: SnapState::from(rest), frontiers: s.frontiers, absorbed: s.absorbed, facts: s.facts });
+    Ok(out)
 }
 
 /// Writes and applies by `node` at `ts` the snapshot of `(tid, ak)` carrying `st`, its tables

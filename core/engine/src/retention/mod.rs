@@ -193,15 +193,39 @@ pub(crate) fn body_fragment(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<
 }
 
 /// `apply::each_held_piece` over each part of `c`'s body on the aspect of part `ai`
-/// (`body_parts`): what the last held one gives.
+/// (`body_parts`): what the held ones give, joined (`join_gives`).
 pub(crate) fn each_body_piece(tx: &mut Tx<'_>, c: &CommitId, ai: usize, f: &mut dyn FnMut(&mut Tx<'_>, Fragment) -> Result<()>) -> Result<Option<Option<crate::engine::Gives>>> {
     let mut out = None;
     for x in body_parts(tx.core, c, ai) {
-        if let Some(g) = crate::apply::each_held_piece(tx, c, x, f)? {
-            out = Some(g);
-        }
+        let g = crate::apply::each_held_piece(tx, c, x, f)?;
+        join_gives(&mut out, g);
     }
     Ok(out)
+}
+
+/// Joins `b`, what a held part gives (`None`: not held; `Some(None)`: a writer's delta), into
+/// `a`: a snapshot's pieces' tables join as the snapshot's (spec/wire.md §4 Pieces, spec/crdt.md
+/// §8): frontiers by the greatest counter, `Absorbed` and facts by union.
+pub(crate) fn join_gives(a: &mut Option<Option<crate::engine::Gives>>, b: Option<Option<crate::engine::Gives>>) {
+    let Some(b) = b else { return };
+    let Some(a) = a else {
+        *a = Some(b);
+        return;
+    };
+    match (a, b) {
+        (Some((fr, abs, facts)), Some((bfr, babs, bfacts))) => {
+            for (s, c) in bfr.sessions {
+                let e = fr.sessions.entry(s).or_default();
+                *e = (*e).max(c);
+            }
+            abs.extend(babs);
+            abs.sort();
+            abs.dedup();
+            facts.extend(bfacts);
+        }
+        (a @ None, b) => *a = b,
+        (Some(_), None) => {}
+    }
 }
 
 /// Drops the delta of aspect `ai` of `c` from its body (spec/commits.md §5): the commit is kept
@@ -1004,7 +1028,7 @@ fn put_leftover(tx: &mut Tx<'_>, c: &CommitId, ai: usize, mut m: crate::engine::
     if gives.is_some() {
         let mut carried = snapshot::Carried::default();
         carried.add(&body);
-        crate::apply::note_carried(tx.core, &a.tid, &a.ak, c, carried);
+        crate::apply::note_carried(tx.core, &a.tid, &a.ak, c, ai, carried);
     }
     // a held body keeps what it was judged; one held again (dropped as covered, missing) is a
     // whole replace by its leftover, as a load from the commit records reads it

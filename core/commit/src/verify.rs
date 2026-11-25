@@ -113,7 +113,7 @@ pub fn verify_part<'a>(h: &Header, id: &CommitId, part: &Part, dedup: &Secret32,
         DeltaKind::Writer => Decoded::Delta(decode_delta(&part.delta, &cx, &mut *interner, pages)?),
     };
     check_fragment(ak, d.fragment())?;
-    if pieced(h, ak, cx.kind) {
+    if pieced(h, ak) {
         PieceShape::of(d.fragment()).check(part.ai)?;
     }
     Ok(d)
@@ -131,7 +131,7 @@ pub fn stream_part<'a>(h: &Header, id: &CommitId, part: &Part, dedup: &Secret32,
     // `check_fragment` holds of the whole iff of every piece (per record, per position); a bad
     // delta still streams to its end, so a decoding error wins as in `verify_part`
     let mut keyed = Ok(());
-    let mut shape = pieced(h, ak, cx.kind).then(PieceShape::default);
+    let mut shape = pieced(h, ak).then(PieceShape::default);
     let mut each = |p: Piece| {
         let f = match p {
             Piece::Skeleton(f) | Piece::Page { fragment: f, .. } => f,
@@ -177,10 +177,10 @@ pub fn read_part_whole<'a>(h: &Header, id: &CommitId, ai: usize, delta: Checked<
 }
 
 /// The rules a delta's fragment answers to by itself (spec/commits.md §4), per record and position.
-/// Whether a delta of kind `kind` on `ak` in `h` is a `secrets.0` piece, held to `PieceShape`: a
-/// role commit's (a snapshot's is whole).
-fn pieced(h: &Header, ak: &str, kind: DeltaKind) -> bool {
-    h.kind == crate::Kind::Role && ak == crate::header::PIECED && kind == DeltaKind::Writer
+/// Whether a delta of `ak` in `h` is a `secrets.0` piece, held to `PieceShape`: a role commit's
+/// or a role compaction snapshot's (spec/wire.md §4 Pieces: pieced alike).
+fn pieced(h: &Header, ak: &str) -> bool {
+    matches!(h.kind, crate::Kind::Role | crate::Kind::RoleSnapshot) && ak == crate::header::PIECED
 }
 
 /// The holder a `secrets.0` box record's key names (`None`: no box key).
