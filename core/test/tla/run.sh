@@ -147,6 +147,7 @@ instances=(
   "forkdepth rotation ForkDepth FD_fork_builder.cfg fail:Live"    # negative control: a foreign keyset any valid keyset above (anchor, candidate): a side leaves U out of T for good (or the sides rotate in turn)
   "forkdepth rotation ForkDepth FD_fork_builder_nl.cfg fail:Live" # ... though rotations list no foreign epoch
   "forkdepth rotation ForkDepth FD_fork_list.cfg fail:Live"       # negative control: no anchor or candidate, but rotations list foreign epochs: the other side's list makes a side's own keyset stale above
+  "forkdepth rotation ForkDepth FD_race_u_rekeylists.cfg fail:Quiet" # negative control: U's rotator reads current for the re-key by lists alone: a foreign keyset left out stays current, U re-keyed at every turn
   "planted rotation Planted P_leaveout.cfg pass"    # a secrets.0 snapshot leaves out records at epochs its writer has not verified (spec/crypto.md §4)
   "planted rotation Planted P_wait.cfg fail"        # negative control: waiting for every keyed epoch stops compaction for good
   "planted rotation Planted P_all.cfg fail"         # negative control: carrying everything bases a planted epoch

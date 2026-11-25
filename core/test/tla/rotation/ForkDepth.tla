@@ -24,9 +24,13 @@
 \* commits). Every node holds every secret of T; U's rotators U's. Commits
 \* arrive in causal order (a rotation after what it lists), an epoch of T or
 \* a re-seal with the keysets of U it names and their history (Carried).
+\* RekeyLists: U's rotator judges which keysets of U are current for the
+\* re-key (Left out) by the lists of keysets not foreign alone (TRUE: a
+\* foreign keyset, listed nowhere, stays current for good), or as CurU, its
+\* history boxes counted at a holder of their secret (FALSE, the rule).
 EXTENDS Naturals, FiniteSets
 
-CONSTANTS Scen, Above, ListForeign, MaxU, MaxT, QU, QT
+CONSTANTS Scen, Above, ListForeign, RekeyLists, MaxU, MaxT, QU, QT
 
 Nodes == IF Scen = "fork" THEN {"p", "q"} ELSE {"m", "w"}
 RotU == IF Scen = "fork" THEN {"p", "q"} ELSE {"m"}
@@ -103,9 +107,10 @@ SealOK(s) == SealSet(s) # {} /\ \A k \in SealSet(s) : ~BlkAbove(s, k)
 ResealAt(s) == {e \in CurT(s) : BoxesT(s, e) = {}}
 CanReseal(s) == SealOK(s) /\ \E e \in ResealAt(s) : [e |-> e, ks |-> SealSet(s), by |-> s] \notin rs
 
+CurUL(s) == {k \in hu[s] : ~\E j \in hu[s] : ~ForU(s, j) /\ k \in u[j].lists}
 RotUDue(s) == \/ \E k \in CurU(s) : ~ForU(s, k) /\ BlkU(s, k)
               \/ \A k \in CurU(s) : BlkU(s, k)
-              \/ \E k \in CurU(s) : LeftU(s, k)
+              \/ \E k \in IF RekeyLists THEN CurUL(s) ELSE CurU(s) : LeftU(s, k)
 
 Lists(cur, foreign(_)) == IF ListForeign THEN cur ELSE {x \in cur : ~foreign(x)}
 

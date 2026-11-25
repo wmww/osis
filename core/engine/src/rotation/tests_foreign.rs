@@ -320,3 +320,71 @@ fn fork_two_below_one_side_first_stops_rotating_spec_crypto_4() {
         assert_eq!(boxed_at(&mut lp, i, g, eg, a), Some(ea), "peer {i}: G boxes A at its newest");
     }
 }
+
+const W: usize = 3;
+const R: usize = 4;
+
+/// The fork on M (P against Q, as `fork_below_g`) below A below G, with W (peer 3) a writer of G
+/// alone and R (peer 4) a writer of A and a reader of G: each may rotate one of the two. Q
+/// rotates A for the fork (eQ, boxing M at Q's keyset), then everyone syncs: W and R, holding
+/// both removals with no order, take the walk's side, P's (Q's removal of P is stamped after P's
+/// of Q), where eQ is foreign.
+fn fork_with_one_role_rotators() -> (LocalPeer, Tid, Tid, Tid, Epoch) {
+    let (lp, (m, a, g, eq)) = LocalPeer::cached("rotation::tests_foreign::fork_with_one_role_rotators", || {
+        let mut lp = synced(5);
+        let ids: Vec<Tid> = (0..5).map(|i| lp.peers[i].engine.me()).collect();
+        let (m, a, g) = (independent_thing(&mut lp, 2), independent_thing(&mut lp, 2), independent_thing(&mut lp, 2));
+        for t in [m, a, g] {
+            for i in [P, Q] {
+                lp.peers[2].engine.grant(&t, &ids[i], &edge(Role::Admin)).unwrap();
+            }
+        }
+        lp.peers[2].engine.grant(&g, &ids[W], &edge(Role::Write)).unwrap();
+        lp.peers[2].engine.grant(&a, &ids[R], &edge(Role::Write)).unwrap();
+        lp.peers[2].engine.grant(&g, &ids[R], &edge(Role::Read)).unwrap();
+        lp.sync_all().unwrap();
+        lp.peers[2].engine.grant(&a, &m, &edge(Role::Read)).unwrap();
+        lp.peers[2].engine.grant(&g, &a, &edge(Role::Read)).unwrap();
+        lp.sync_all().unwrap();
+        lp.advance(1000);
+        lp.peers[Q].clock.advance(5000);
+        lp.peers[Q].engine.demote(&m, &Demotion { holder: ids[P], new: None, retain: None }).unwrap();
+        lp.peers[P].engine.demote(&m, &Demotion { holder: ids[Q], new: None, retain: None }).unwrap();
+        exchange(&mut lp);
+        lp.peers[Q].engine.ensure_rotated(&a).unwrap();
+        let eq = newest_read(&lp, Q, a).unwrap();
+        lp.sync_all().unwrap();
+        (lp, (m, a, g, eq))
+    });
+    (lp, m, a, g, eq)
+}
+
+// spec/crypto.md §4 (Foreign; Left out, Re-key: at most one rotation of M per rotator of M):
+// on P's side Q's epoch eQ of A is foreign, current and blocked, and lists A's first epoch, which
+// it keeps stale. W rotates G: Seal gives that stale keyset, so W leaves A out of G, recording
+// eQ with causes that stand for good. R re-keys A at G's pass end; its rotation carries
+// eQ in its history box, superseding it at R (its maker, holding the secret), so eQ is no current
+// keyset of A there and the record no longer leaves A out: five more pass ends of G, W
+// re-sealing and nobody rotating G, rotate A no more.
+#[test]
+fn a_foreign_keyset_left_out_is_rekeyed_once_spec_crypto_4() {
+    let (mut lp, _m, a, g, eq) = fork_with_one_role_rotators();
+    assert!(lp.peers[R].engine.epochs(&a).unwrap().read.is_foreign(&eq), "eQ foreign at R");
+    lp.advance(1000);
+    rotate_as(&mut lp, W, g, &[Role::Read].into(), &[]).unwrap();
+    lp.sync_all().unwrap();
+    let eg = newest_read(&lp, W, g).unwrap();
+    let rec = lp.peers[R].engine.core.ix.keysets.get(&(g, Role::Read, eg)).and_then(|k| k.left_out.get(&a).cloned()).unwrap_or_default();
+    assert!(rec.contains_key(&eq), "W's rotation of G leaves A out at eQ: {rec:?}");
+    let mut rekeys = Vec::new();
+    for _ in 0..6 {
+        lp.advance(1000);
+        let before = newest_read(&lp, R, a);
+        lp.peers[R].engine.pass_end_rotations(&g).unwrap();
+        rekeys.push(newest_read(&lp, R, a) != before);
+        lp.sync_all().unwrap();
+        lp.peers[W].engine.reseal_after_pass(&g).unwrap();
+        lp.sync_all().unwrap();
+    }
+    assert_eq!(rekeys.iter().filter(|x| **x).count(), 1, "A re-keyed once: {rekeys:?}");
+}

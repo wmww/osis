@@ -375,7 +375,9 @@ fn writes_keyset(core: &Core, c: &CommitId) -> bool {
 
 /// Re-key (spec/crypto.md §4, Left out): whether `a` leaves its holder actor `m`, holding `r` or
 /// more on `a` for keys with key access, out of `r` at a current keyset of `m` (a held valid one
-/// no other held valid keyset lists: judged as a node lacking `m`'s secrets judges it). A node
+/// no other held valid keyset that is not foreign lists, and none this node's view of `m`
+/// holds superseded: a foreign keyset is listed nowhere, superseded by the history box of the
+/// rotation carrying it, so the re-key's maker holds it superseded). A node
 /// that may rotate `r` of `m` rotates it at the end of a complete pass of `a`'s sync IDs: the
 /// fresh keyset is recorded nowhere, so `a` re-seals `m` there.
 ///
@@ -395,7 +397,11 @@ pub(crate) fn rekey_due(tx: &mut Tx<'_>, a: &Tid, m: &Tid, r: Role) -> Result<bo
     // a foreign keyset supersedes nothing (spec/crypto.md §4 Holder actors, Foreign)
     let mut foreign = Foreign::default();
     let listing: Vec<&BTreeSet<Epoch>> = held.valid.iter().filter(|(k, _)| !foreign.is(tx.core, m, r, k)).map(|(_, l)| l).collect();
-    let current = |q: &Epoch| held.valid.contains_key(q) && !listing.iter().any(|l| l.contains(q));
+    // and none this node's view of `m` holds superseded: a foreign keyset is listed nowhere, its
+    // supersession read from the history box of the rotation carrying it, at a node holding its
+    // secret (spec/crypto.md §4 Supersedes; the re-key's maker does)
+    let view = tx.core.epochs(m);
+    let current = |q: &Epoch| held.valid.contains_key(q) && !listing.iter().any(|l| l.contains(q)) && !view.as_ref().is_some_and(|v| v.role(r).superseded(q));
     if !out.keys().any(current) {
         return Ok(false);
     }
@@ -534,7 +540,10 @@ pub(crate) fn left_out(tx: &mut Tx<'_>, who: &Tid, a: &Tid, m: &Tid, role: Role,
             }
         }
         let held = keysets_of(tx, m, r, None)?;
-        let current: Vec<Epoch> = held.valid.keys().filter(|q| !held.valid.values().any(|l| l.contains(q))).copied().collect();
+        // current as `rekey_due` reads it: a foreign keyset a rotation carries is superseded
+        // where this node holds that rotation's secret
+        let view = tx.core.epochs(m);
+        let current: Vec<Epoch> = held.valid.keys().filter(|q| !held.valid.values().any(|l| l.contains(q)) && !view.as_ref().is_some_and(|v| v.role(r).superseded(q))).copied().collect();
         for k in current {
             if let Some((_, causes)) = super::blocking(tx, who, m, r, &k, &deps, super::Walk::Encrypt)? {
                 ks.entry(k).or_default().extend(causes);
