@@ -208,3 +208,26 @@ fn a_stranger_redeems_a_public_link_after_a_rotation_spec_crypto_4() {
     w.run();
     assert_eq!(reads(&mut w, 1, &p), Some(Value::Str("p1".into())), "read by the public link");
 }
+
+// spec/wire.md §10, spec/sync-set.md §4: the link text is untrusted. A crafted public link to D,
+// a dependent of X that the public does not read, names Y (another thing the public reads) as
+// D's independent with Y's sync ID: node 1 follows Y and opens it, but D's record says its
+// independent is X, whose public grant is never held, so it writes no strong to D and reads
+// nothing of it.
+#[test]
+fn a_public_link_naming_another_independent_reads_nothing_of_its_target_spec_wire_10() {
+    let mut w = two_nodes();
+    let a = w.node(0).account.unwrap();
+    let x = make(&mut w, 0, a, "x1");
+    let d = make(&mut w, 0, x, "d1");
+    let y = make(&mut w, 0, a, "y1");
+    w.write(0, |e| e.grant(&y, &Tid::PUBLIC, &edge(Role::Read))).unwrap();
+    w.run();
+    let Some(osis_blob::Link::Public(ly)) = w.public_link(0, y) else { panic!("Y is public") };
+    assert!(w.public_link(0, d).is_none(), "D is not public");
+    let crafted = osis_blob::Link::Public(osis_blob::PublicLink { target: d, independent: Some(y), ..ly });
+    assert_eq!(w.redeem_any(1, &crafted), osis_sync::types::Waiting::Pending);
+    w.run();
+    assert_eq!(reads(&mut w, 1, &d), None, "D read by a link naming another independent");
+    assert_eq!(reads(&mut w, 1, &x), None);
+}

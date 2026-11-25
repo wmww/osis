@@ -1178,6 +1178,36 @@ mod tests {
         lp.peers[1].engine.check_index();
     }
 
+    // spec/permissions.md §3 No secret taken back, spec/crypto.md §4 Roles secrets: node 1, removed
+    // from t by peer 0, its loss not carried out (t's read secrets still held), gets a rotation
+    // concurrent with the removal by peer 2, an admin that had not seen it, boxing it a new epoch:
+    // it takes neither that epoch's secret nor its roles secret, which no history entry opened
+    // under a secret it holds carries (else it reads the role parts of later commits wrapped
+    // under that epoch).
+    #[test]
+    fn a_removed_node_takes_no_roles_secret_from_a_concurrent_box_spec_permissions_3() {
+        let (mut lp, t) = removed_reader();
+        let (a, b, c) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
+        lp.sync(2, 0).unwrap();
+        let admin = ct::Edge { role: Role::Admin, until: None, may_grant: false, retain: false, floor: None };
+        lp.peers[0].engine.grant(&t, &c, &admin).unwrap();
+        lp.sync(0, 2).unwrap();
+        lp.sync(1, 2).unwrap();
+        lp.peers[0].engine.demote(&t, &Demotion { holder: b, new: None, retain: None }).unwrap();
+        lp.peers[2].engine.rotate_boxing_only(&[t], &[Role::Read], &[a, b, c]).unwrap().expect("rotated");
+        let e2 = lp.peers[2].engine.epochs(&t).unwrap().read.newest().unwrap();
+        for from in [0, 2] {
+            for pk in lp.packages_to(from, 1).unwrap() {
+                lp.deliver(1, &pk).unwrap();
+            }
+        }
+        let e1 = lp.peers[1].engine.epochs(&t).unwrap();
+        assert!(e1.read.held().next().is_some(), "its loss is not carried out yet");
+        let i = e1.read.get(&e2);
+        assert!(i.is_some(), "the box arrived");
+        assert!(i.is_none_or(|i| i.secret.is_none() && i.checked_roles().is_none()), "{i:?}");
+    }
+
     // spec/crypto.md §4, spec/sync-ids.md §3: a read secret from a sync ID's entry box (written by
     // whoever holds the head's step key: a removed admin before the remover re-registers) is
     // held only when it is the secret of the epoch it names; it establishes nothing, so the

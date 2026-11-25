@@ -304,13 +304,19 @@ impl Core {
                 // a roles secret is no secret of the thing: it opens the role parts alone, which
                 // every holder opens (spec/crypto.md §4 Roles secrets), so a history entry opened
                 // under a secret the node holds of `r` gives it whatever the node's roles (an
-                // entry box's redeemer reads the role commits that show it the public's grant);
-                // a node that lost `r`'s secrets opens no history and keeps none
-                let roles: Vec<(Epoch, osis_crypto::Secret32)> = new.epochs().filter(|(e, _)| was.get(e).is_none_or(|w| w.checked_roles().is_none())).filter_map(|(e, i)| Some((*e, i.checked_roles()?))).collect();
-                let opener = was.epochs().any(|(_, i)| i.checked().is_some());
+                // entry box's redeemer reads the role commits that show it the public's grant).
+                // Opened from `was` alone: a secret this ingest gave and the role does not keep
+                // (a box concurrent with the node's removal) gives no roles secret either, else a
+                // removed node opens the role parts of later commits wrapped under that epoch; a
+                // node that lost `r`'s secrets opens no history and keeps none
+                let mut opened = ActorEpochs::default();
+                *opened.role_mut(r) = was.clone();
+                let _ = osis_keys::open_histories(actor, secrets, alts, &mut opened, None);
                 let mut kept = was;
-                for (e, s) in roles.into_iter().filter(|_| opener) {
-                    kept.set_roles(e, s);
+                for (e, i) in opened.role(r).epochs() {
+                    if let (None, Some(s)) = (kept.get(e).and_then(|w| w.checked_roles()), i.checked_roles()) {
+                        kept.set_roles(*e, s);
+                    }
                 }
                 *epochs.role_mut(r) = kept;
             }
