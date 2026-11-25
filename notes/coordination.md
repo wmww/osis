@@ -12,11 +12,11 @@ Large changes have repeatedly bogged down in process, in the problems of their i
 - **Main may be broken** for as long as a big change takes: nobody depends on it (dogfood runs a pinned build, notes/dogfood.md).
 - **Delete and disable freely.** Old code goes first. A test the change breaks is deleted if it tests what is going, else ignored with a label naming the piece that brings it back, and left. Nothing of an intermediate state is fixed, tidied, reviewed or gated unless it blocks the next piece.
 - **Build the end state directly.** What exists only to get from one state to the next (an adapter, a compatibility path, a second copy beside the first, a plan of stages each kept working) is not built. An end state that cannot be built directly is a design question for Tess, not a staging plan.
-- **One review and one gate per big change, at its end.** Small independent jobs land on their crates' tests and clippy.
+- **One review and one gate per big change, at its end.** Outside a big change in progress, every job is reviewed and gated (Tess): the default once the final gate over the sync rewrite and accounts is through (notes/handoff.md, The route).
 - **When process costs more than the change, cut the process.** A check, tool, failing test or rule of this note that is not about the change and is eating a session is skipped or deleted, and the report says so.
 
 ## Job mix (Tess)
-Agents split about evenly between two kinds of work:
+Two agents on each of two kinds of work (Tess):
 - **Forward progress**: mostly the primary workstream (the route in the handoff; notes/priorities.md), with miscellaneous fixes here and there. A bug is worth fixing when it threatens the design, slows or masks tests, or goes away with a complication a cleanup removes; a special-case fix can hide a design flaw, and no bug is urgent before a release.
 - **Workflow and cleanup**: the watchdog, test speed, refactoring and slimming code, simplifying notes, deleting redundant tests (Standing jobs). osis should ship with less code than it has.
 
