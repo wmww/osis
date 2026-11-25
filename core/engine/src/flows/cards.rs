@@ -3,8 +3,8 @@
 //! where it is another thing, when that inbox was chosen (`since`), and A's and that inbox's
 //! current `keys.0` commits in the holder keys form. A node reading C takes those commits as
 //! holder keys (`Engine::take_cards`); at a pass's end a node that may write C along a path
-//! through A rewrites the card when it holds newer `keys.0` commits of A or its inbox, or a card
-//! of A with a greater `since`. A card aspect is retained, snapshotted and covered as any content
+//! through A rewrites the card when a rewrite would carry newer `keys.0` parts on A or its
+//! inbox, or a card of A with a greater `since`. A card aspect is retained, snapshotted and covered as any content
 //! aspect: its snapshots, as its writes, state a path through A.
 //!
 //! Invariant: a card counts only written along a path through A (`apply::validity::note_cards`),
@@ -148,17 +148,21 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
     Ok(())
 }
 
+/// A card's `keys` and `records` (spec/wire.md §9 Holder keys).
+type KeyLists = (Vec<Vec<u8>>, Vec<Vec<u8>>);
+
 /// The commits a card carries, as holder keys (spec/wire.md §9).
-fn certificates(c: &ct::Card) -> Option<osis_blob::Certificates> {
+fn certificates(keys: &[Vec<u8>], records: &[Vec<u8>]) -> Option<osis_blob::Certificates> {
     let limits = osis_base::Limits::new(osis_base::format::MAX_OBJECT_DEPTH, osis_base::format::MAX_BLOB);
     let values = |l: &[Vec<u8>]| l.iter().map(|b| osis_base::decode(b, &limits).ok()).collect::<Option<Vec<Value>>>();
-    osis_blob::Certificates::from_values(&Value::List(values(&c.keys)?), &Value::List(values(&c.records)?), usize::MAX).ok()
+    osis_blob::Certificates::from_values(&Value::List(values(keys)?), &Value::List(values(records)?), usize::MAX).ok()
 }
 
-/// Per thing, the newest `ts` of the `keys.0` commits on it a card carries.
-fn carried(c: &ct::Card) -> BTreeMap<Tid, osis_base::Ts> {
+/// Per thing, the newest `ts` of the `keys.0` parts on it among a card's commits (`keys`,
+/// with its `records`).
+fn carried(keys: &[Vec<u8>], records: &[Vec<u8>]) -> BTreeMap<Tid, osis_base::Ts> {
     let mut out: BTreeMap<Tid, osis_base::Ts> = BTreeMap::new();
-    for v in certificates(c).map(|k| k.commits).unwrap_or_default() {
+    for v in certificates(keys, records).map(|k| k.commits).unwrap_or_default() {
         let Ok(b) = osis_commit::CommitBlob::decode(&osis_base::encode(&v)) else { continue };
         for a in b.parts.iter().filter_map(|p| b.header.aspects.get(p.ai)).filter(|a| a.ak.as_str() == "keys.0") {
             let e = out.entry(a.tid).or_insert(b.header.ts);
@@ -180,7 +184,7 @@ impl Engine {
         }
         let cards = self.cards_naming(&due)?;
         for ((_, a), c) in &cards {
-            if let Some(k) = certificates(c) {
+            if let Some(k) = certificates(&c.keys, &c.records) {
                 self.take_holder_keys(a, &k, None)?;
                 let inbox = named(a, c);
                 if inbox != *a {
@@ -218,8 +222,8 @@ impl Engine {
     /// At a pass's end, once this node holds what the pass brought (`settle_needs`): rewrites
     /// the cards due a refresh (`Indexes::cards_stale`) that are stale and this node may
     /// (spec/sync-inbox.md §1 Card): where it may write the card's host along a path through A
-    /// and holds `keys.0` commits of A or A's inbox newer than the card carries, or a card of A
-    /// with a greater `since` and inbox, the card written again: A's inbox here with its
+    /// and a rewrite would carry newer `keys.0` parts on A or A's inbox than the card does, or a
+    /// card of A with a greater `since` and inbox, the card written again: A's inbox here with its
     /// `since`, and the holder keys of A and that inbox held here. Whether any card moved.
     pub fn refresh_cards(&mut self) -> Result<bool> {
         let mut moved = false;
@@ -246,21 +250,48 @@ impl Engine {
     }
 
     /// Writes `a`'s card on `host` (`card`, as held) again where it is stale and this node may
-    /// (`take_cards`): whether it did.
+    /// (`take_cards`): whether it did. Stale by what a rewrite would carry (`card_keys`), never by
+    /// what is merely known here, so a rewrite is not stale again by construction: a `keys.0`
+    /// commit whose header is held but whose `keys.0` part is not cannot be carried.
     fn refresh_card(&mut self, host: &Tid, a: &Tid, card: &ct::Card) -> Result<bool> {
         if !self.core.ix.closure.holds(host) {
             return Ok(false);
         }
         let (a, host) = (*a, *host);
         let Some((inbox, since)) = self.read(|tx| inbox_of(tx, &a))? else { return Ok(false) };
-        // newer `keys.0` commits held here than the card carries, of `a` or its inbox
-        let carried = carried(card);
-        let newer = |t: &Tid| self.current_keys(t).iter().filter_map(|c| self.header(c)).any(|h| carried.get(t).is_none_or(|x| h.ts > *x));
-        let stale = (card.since, named(&a, card)) < (since, inbox) || newer(&a) || (inbox != a && newer(&inbox));
-        if !stale || !may_write_through(&self.core, &a, &host) {
+        if !may_write_through(&self.core, &a, &host) {
             return Ok(false);
         }
+        let moved = (card.since, named(&a, card)) < (since, inbox);
+        // newer `keys.0` parts on `a` or its inbox among what a rewrite carries than the card's
+        if !moved {
+            let Some((keys, records)) = self.card_keys(&a, &inbox)? else { return Ok(false) };
+            let have = carried(&card.keys, &card.records);
+            if !carried(&keys, &records).iter().any(|(t, ts)| (*t == a || *t == inbox) && have.get(t).is_none_or(|x| ts > x)) {
+                return Ok(false);
+            }
+        }
         self.write_card(host, a, (inbox != a).then_some(inbox), Some(since))
+    }
+
+    /// What a card of `a` naming `named` written here carries (spec/wire.md §9 Holder keys): the
+    /// holder keys of `a` and of `named` held here, commits distinct, records ascending by tid
+    /// and distinct. `None` with no `keys.0` of `a` held.
+    fn card_keys(&mut self, a: &Tid, named: &Tid) -> Result<Option<KeyLists>> {
+        let mut keys = self.holder_keys(a)?;
+        if keys.commits.is_empty() {
+            return Ok(None);
+        }
+        if named != a {
+            let more = self.holder_keys(named)?;
+            keys.commits.extend(more.commits);
+            keys.records.extend(more.records);
+        }
+        let mut seen = BTreeSet::new();
+        let commits: Vec<Vec<u8>> = keys.commits.iter().map(osis_base::encode).filter(|b| seen.insert(b.clone())).collect();
+        let recs: BTreeMap<Tid, &osis_base::CreationRecord> = keys.records.iter().map(|r| (r.tid(), r)).collect();
+        let records: Vec<Vec<u8>> = recs.values().map(|r| osis_base::encode(&r.to_value())).collect();
+        Ok(Some((commits, records)))
     }
 
     /// Writes `a`'s card on `host` naming `inbox` (`None`: `a` itself) as of what this node holds
@@ -283,20 +314,7 @@ impl Engine {
                 })?;
             }
         }
-        let mut keys = self.holder_keys(&a)?;
-        if keys.commits.is_empty() {
-            return Ok(false);
-        }
-        if named != a {
-            let more = self.holder_keys(&named)?;
-            keys.commits.extend(more.commits);
-            keys.records.extend(more.records);
-        }
-        let mut seen = BTreeSet::new();
-        let commits: Vec<Vec<u8>> = keys.commits.iter().map(osis_base::encode).filter(|b| seen.insert(b.clone())).collect();
-        // ascending by tid, distinct (spec/wire.md §9 Holder keys)
-        let recs: BTreeMap<Tid, &osis_base::CreationRecord> = keys.records.iter().map(|r| (r.tid(), r)).collect();
-        let records: Vec<Vec<u8>> = recs.values().map(|r| osis_base::encode(&r.to_value())).collect();
+        let Some((commits, records)) = self.card_keys(&a, &named)? else { return Ok(false) };
         let now = self.now();
         self.run(|tx| {
             let since = match since {

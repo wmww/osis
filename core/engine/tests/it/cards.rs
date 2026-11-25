@@ -201,3 +201,36 @@ fn a_card_snapshot_off_its_path_is_invalid_spec_permissions_5_2() {
     assert_eq!(lp.peers[0].engine.part_valid(&removed, 0), Some(true), "a removal's snapshot: any writer's");
     assert!(!lp.peers[0].engine.cards_of(&accs[0]).unwrap().iter().any(|(h, _)| *h == c), "the card is gone at node 0");
 }
+
+// spec/sync-inbox.md §1 (Card): a fresh node paired into A holds the pairing grant (a
+// `keys.0` commit of A) as its offer carries it, without its `keys.0` part, so no card it writes
+// carries that commit. A's card on the profile reaching it first, staleness is judged by what a
+// rewrite would carry: the paired node rewrites the card once and settles, not due again each
+// round. Control: once the grant itself arrives, the card is rewritten carrying it.
+#[test]
+fn a_card_rewrite_settles_on_a_keys_commit_held_by_header_spec_sync_inbox_1() {
+    let (mut lp, acc) = LocalPeer::one_account(1, 0, T0).unwrap();
+    let mut p = osis_engine::local_peer::Peer::new(7, lp.peers[0].engine.now()).unwrap();
+    let (node, keys) = (p.engine.tid(), p.engine.node_keys().unwrap());
+    let (offer, done) = lp.peers[0].engine.pair(&acc.thing, &node, &keys, Role::Admin).unwrap();
+    p.engine.take_pairing(&offer).unwrap();
+    p.know(&[acc.thing, acc.profile]).unwrap();
+    let carries = |e: &mut Engine, c: &osis_base::CommitId| e.cards_of(&acc.thing).unwrap().iter().all(|(_, card)| card.keys.iter().filter_map(|b| osis_commit::CommitBlob::decode(b).ok()).any(|b| b.id() == *c));
+    let grant = *done.commits.first().unwrap();
+    for id in lp.peers[0].engine.commit_ids() {
+        if !done.commits.contains(&id) {
+            let pk = lp.peers[0].engine.package(&id).unwrap().unwrap();
+            p.engine.ingest(&pk.bytes, pk.blobs).unwrap();
+        }
+    }
+    p.engine.refresh_cards().unwrap();
+    assert!(!p.engine.refresh_cards().unwrap(), "settled: nothing left to rewrite");
+    assert!(!carries(&mut p.engine, &grant), "the grant, held by its header alone, is not carried");
+    for id in &done.commits {
+        let pk = lp.peers[0].engine.package(id).unwrap().unwrap();
+        p.engine.ingest(&pk.bytes, pk.blobs).unwrap();
+    }
+    assert!(p.engine.refresh_cards().unwrap(), "the grant held whole: the card is rewritten");
+    assert!(carries(&mut p.engine, &grant), "carrying the grant");
+    assert_eq!(p.engine.inbox_of(&acc.thing).unwrap(), Some(acc.inbox));
+}
