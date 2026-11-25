@@ -6,5 +6,6 @@
 Found by the spar-review-prep baseline (`tools/gate.sh --all` on origin/main dd5c0a3e4). Replay: `OSIS_ORDER_SEED=<seed> cargo test -p osis-engine --test it -- --ignored --exact order::held_set_decides_plain`. Listed in tools/known_failures.txt (rate). Fix each with a hand-written reproducer (notes/principles.md, Never pin a seed).
 
 - **PartsAway** (532945376429, both sizes): `tests/it/order.rs` `owed_fires` takes `fire_commit(&id).unwrap()` for every fire `sealed_fire` returns. A `Fire::Copy` keeps no commit of its own (`flows/inbox.rs` `sealed_fire` builds it from `edge_piece`), so `fire_commit` is `None`. Either `fire_commit` names the copy's commit for a sealed copy, or the harness takes it from the sealed fire; decide by what a receiver's clock check needs (the copy's stamp).
+- **Addenda** (977638812335, plain): the same `owed_fires` unwrap as PartsAway. Replays on main.
 - **Settled** (532945376430, plain): `settled: shows other than the node keeping every body`, `t:text.0` want `Some(Str("x"))`, got `None` at the settled check. Unshrunk (`OSIS_ORDER_SHRINK=1`).
 - **Settled, closure wait** (755979868238, plain): on the way to `Order(0, 1)`, `Engine::run (what waits for things entering the node closure): 4 rounds, past its bound of 2 (0 pending)`, progress `[36, 3, 1, 1]`. Found by the kept-unread gate; replays on main 6310c22f6.
