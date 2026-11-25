@@ -147,6 +147,12 @@ pub(crate) fn after_update(core: &mut Core, c: &osis_perm::Changed) {
         if core.sides.get(op, holder).is_some() {
             continue;
         }
+        // Invariant: only `apply::apply_local` (a commit this engine built) gives `Local`, and it
+        // is kept in the commit's record, so a reopened node reads its own alike; a copy of
+        // its commit reaching it from outside is another party's (Its own). Read lazily, it
+        // stands for a record made when R was made only while nothing drops an unchosen record
+        // ("cannot stand beside", not read: notes/perm-paths.md); once that is built, record own
+        // lowerings at commit instead.
         let own = core.ix.commits.get(&op.0).is_some_and(|m| m.origin == Origin::Local);
         let trust = own || held_first(core, c, op);
         let told = core.sides.told(op, holder);

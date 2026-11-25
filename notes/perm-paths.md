@@ -127,7 +127,7 @@ What the engine reads short of spec/permissions.md, each to finish against the m
 - an `addenda.0` delta's first entry alone is read;
 - a by-commit purge item is read as naming nothing (the engine names its own targets; only the request's right is the walk's), `signers_could` reads possible admins and writers, not `Paths::could_hold`;
 - the list (§5.1): the frontier leaves out no commit with edge-class parts that would end the lowering's authority, and the writer's check (`flows::edges::demote_in`, `usable_role_now`) reads the walk without the lowering trusted, so a removed admin cannot write its counter-removal (sides record its own lowering trusted all the same: `sides::tests`);
-- sides: "cannot stand beside" and "the counter-removal is told" are not read; `Engine::disputes` clones the timeline per call;
+- sides: "cannot stand beside" and "the counter-removal is told" are not read; held first is judged only for the update's disputes (issues/held-first-only-at-disputes.md); `Engine::disputes` clones the timeline per call;
 - `rotation::members::keyless_in` runs over the whole timeline at every edge change;
 - `Timelines::get`/`path_now` stamp the whole timeline (coarser memo invalidation than per component).
 

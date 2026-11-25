@@ -123,3 +123,41 @@ fn an_ignored_box_to_the_public_is_resealed_over() {
     assert_eq!(current_read_sync(&lp, 0, g), current, "a re-seal, no rotation");
     assert_eq!(opened_by_anyone(&mut lp, g), current);
 }
+
+// An open box to the public replayed from an earlier epoch: well formed and opening, but its
+// secret names the earlier epoch, not its key's (spec/crypto.md §4 Boxes), so the trigger reads it
+// as none and re-seals over it once; the re-seal's own box is one, so the trigger then settles
+// (no re-seal at every pass end).
+#[test]
+fn a_replayed_open_box_is_resealed_over_once() {
+    use osis_crdt::{Op, PathOp, PathSeg};
+    use osis_schema::Codec;
+    let (mut lp, g, tids) = granted(3, &[(1, Role::Write), (2, Role::Read)]);
+    lp.peers[0].engine.grant(&g, &Tid::PUBLIC, &edge(Role::Read)).unwrap();
+    lp.sync_all().unwrap();
+    let old = current_read_sync(&lp, 0, g);
+    let s = lp.peers[0].engine.get_typed(&g, &ct::SECRETS).unwrap().unwrap();
+    let (_, eo) = *old.iter().find(|x| x.0 == Role::Read).unwrap();
+    let replay = s.boxes[&osis_keys::aspects::box_key(Tid::PUBLIC, Role::Read, &eo)].clone();
+    lp.peers[0].engine.demote(&g, &Demotion { holder: tids[2], new: None, retain: None }).unwrap();
+    lp.sync_all().unwrap();
+    let current = current_read_sync(&lp, 0, g);
+    let (_, en) = *current.iter().find(|x| x.0 == Role::Read && !old.contains(x)).unwrap();
+    let key = osis_keys::aspects::box_key(Tid::PUBLIC, Role::Read, &en);
+    let mut m = crate::Mutation::new();
+    m.op(g, &ct::SECRETS, PathOp { path: vec![PathSeg::Field(0), PathSeg::Key(key.to_value())], op: Op::Set(replay.to_value()) }).unwrap();
+    m.unchecked();
+    lp.peers[1].engine.core.skip_writer_rules = true;
+    lp.peers[1].commit(m).unwrap().unwrap();
+    lp.peers[1].engine.core.skip_writer_rules = false;
+    lp.sync_all().unwrap();
+    let s = lp.peers[0].engine.get_typed(&g, &ct::SECRETS).unwrap().unwrap();
+    assert_eq!(s.boxes.get(&key), Some(&replay), "the replay applied");
+    assert!(!osis_keys::has_box(&g, &s, &key), "a replayed box is ignored");
+    assert!(!lp.peers[0].engine.reseal_after_pass(&g).unwrap().commits.is_empty(), "the trigger re-seals the public");
+    lp.sync_all().unwrap();
+    assert_eq!(opened_by_anyone(&mut lp, g), current, "anyone opens the current epochs again");
+    for i in [0, 1] {
+        assert!(lp.peers[i].engine.reseal_after_pass(&g).unwrap().commits.is_empty(), "peer {i}: the trigger settles");
+    }
+}
