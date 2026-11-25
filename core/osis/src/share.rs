@@ -624,16 +624,19 @@ impl Osis {
     }
 
     /// Makes a share link to `target` with `role` (read or above: `Invalid` below). Anyone
-    /// holding the link can redeem it until `until` or `revoke_link`.
-    pub fn make_link(&self, target: Tid, role: Role, opts: LinkOpts) -> Result<Link> {
+    /// holding the link can redeem it until `until` or `revoke_link`. The link's actor is minted
+    /// with admin `admin` (as `Write::create`'s), a thing this node is an admin of (`Permission`
+    /// otherwise): every node holding `admin` holds the link, and any of its admins lists and
+    /// ends it (`links`, `revoke_link`). A person's links take their account, so each of its
+    /// nodes sees and ends them.
+    pub fn make_link(&self, target: Tid, role: Role, admin: Tid, opts: LinkOpts) -> Result<Link> {
         if let Some(at) = self.process_at("make_link")? {
-            return self.forward(&at, crate::port::method::MAKE_LINK, (target, role, opts.until, opts.single_use));
+            return self.forward(&at, crate::port::method::MAKE_LINK, (target, role, admin, opts.until, opts.single_use));
         }
         self.local_at(target, "make_link")?;
-        let me = self.author();
         let peers = self.link_peers();
         let spec = flows::LinkSpec { target, role, until: opts.until.map(|t| osis_base::WallMs(t.0)), peers, single_use: opts.single_use };
-        let (link, _, _) = self.engine(|e| e.create_link(&me, &spec))?;
+        let (link, _, _) = self.engine(|e| e.create_link(&admin, &spec))?;
         Ok(Link(link.to_text().map_err(bad("link"))?))
     }
 
@@ -719,9 +722,10 @@ impl Osis {
         }))
     }
 
-    /// The links this node made that still work (each minted with its node thing); filter by
-    /// `LinkInfo::target`. `Unsupported` on
-    /// a client with its own actor, which is also why a node connected with a client secret adds none.
+    /// The links that still work made with an `admin` (`make_link`) this node holds, whichever
+    /// node made them: an admin of that `admin` ends them (`revoke_link`). Filter by
+    /// `LinkInfo::target`. `Unsupported` on a client with its own actor, which is also why a node
+    /// connected with a client secret adds none.
     pub fn links(&self) -> Result<Vec<LinkInfo>> {
         self.local("links")?;
         self.live_links()
@@ -738,11 +742,10 @@ impl Osis {
             .collect())
     }
 
-    /// The links whose seed thing is this node thing's and whose K's mint admin it is (a co-reader can reference a
-    /// seed thing from a shared thing: it names no link of ours).
+    /// The links whose seed this node holds: on a thing minted with K's mint admin S as admin,
+    /// so held by S's readers alone (spec/permissions.md §7).
     fn held_links(&self) -> Result<Vec<flows::HeldLink>> {
-        let me = self.author();
-        self.engine(|e| account_links(e, me))
+        Ok(self.engine(|e| e.held_links())?.to_vec())
     }
 
     /// Link actor `k`'s key L while its link works (`held_links`: its seed goes with its end).
@@ -750,16 +753,19 @@ impl Osis {
         Ok(self.held_links()?.iter().find(|h| h.k == k).map(|h| h.l))
     }
 
-    /// Whether `k` is a link actor of this node's to `target`, working or ended: its record names
-    /// the target, and the node thing is its mint admin.
+    /// Whether `k` is a link actor to `target` this node may end, working or ended: its record
+    /// names the target, and this node is an admin of it (by its mint admin, spec/permissions.md
+    /// §7). Invariant (security): only an admin of K removes L or a joiner from it
+    /// (`finalize_link`, `revoke_joiner`; any other node's removal is judged invalid wherever it
+    /// lands): a reader of K's mint admin lists the link (`links`) and ends nothing.
     fn own_link(&self, k: Tid, target: Tid) -> bool {
-        let me = self.author();
-        self.engine(|e| e.core.created(&k).and_then(|r| r.link_target()) == Some(target) && e.mint_admin(&k) == Some(me))
+        self.engine(|e| e.core.created(&k).and_then(|r| r.link_target()) == Some(target) && e.role_on(&k) == Some(Role::Admin))
     }
 
     /// Ends a link: nobody can use it from now on. Those who joined by it keep their role; to remove
     /// one, `set_role`. Writes at once: a join this node has not received yet is undone (one another
-    /// writer received stands, as `set_role` says). `Unsupported` on a client with its own actor.
+    /// writer received stands, as `set_role` says). `Permission` unless this node is an admin of
+    /// the link's `admin` (`make_link`); `Unsupported` on a client with its own actor.
     pub fn revoke_link(&self, id: LinkId) -> Result<()> {
         self.local("revoke_link")?;
         match self.link_key(id.0)? {
@@ -769,7 +775,7 @@ impl Osis {
             }
             // ended already: its seed went with its end
             None if self.engine(|e| e.core.created(&id.0).and_then(|r| r.link_target())).is_some_and(|t| self.own_link(id.0, t)) => Ok(()),
-            None => Err(Error::Invalid(format!("no link {} of this node", id.0))),
+            None => Err(Error::Invalid(format!("no link {} here", id.0))),
         }
     }
 
@@ -791,11 +797,6 @@ fn retain_only_on_removal(role: Option<Role>, o: SetRoleOpts) -> Result<()> {
     Ok(())
 }
 
-/// `Osis::held_links`, on this engine.
-fn account_links(e: &mut osis_engine::Engine, me: Tid) -> Result<Vec<flows::HeldLink>> {
-    let held = e.held_links()?.to_vec();
-    Ok(held.into_iter().filter(|h| h.mint_admin == me && e.mint_admin(&h.k) == Some(me)).collect())
-}
 
 /// Starts redeeming `link` for `joiner` on a redeem's first check: an error when the node can never
 /// redeem it.

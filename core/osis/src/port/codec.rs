@@ -631,6 +631,7 @@ form_tuple!(1; A a);
 form_tuple!(2; A a, B b);
 form_tuple!(3; A a, B b, C c);
 form_tuple!(4; A a, B b, C c, D d);
+form_tuple!(5; A a, B b, C c, D d, E e);
 
 /// A listing's address: `[0, scope]` a scope's writes, `[1, tid, ak]` a signal's fires, `[2,
 /// tid, ak, commit id]` a fire's versions.

@@ -210,7 +210,7 @@ fn a_thin_client_answers_nothing_of_its_own_notes_client_port() {
     u(cl.clients().map(drop));
     u(cl.grant(t, w.actor, Role::Read, osis::GrantOpts::default()));
     u(cl.on_diagnostic(|_, _| {}).map(drop));
-    u(cl.make_link(t, Role::Read, Default::default()).map(drop));
+    u(cl.make_link(t, Role::Read, cl.author(), Default::default()).map(drop));
     u(cl.publish_dial_on(&[t]));
     u(cl.links().map(drop));
     u(cl.listen(&[]).map(drop));

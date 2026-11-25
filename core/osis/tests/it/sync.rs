@@ -145,13 +145,13 @@ fn a_link_names_its_target_and_this_node_spec_wire_10() {
     let mut w = a.write();
     let t = w.create_held().unwrap();
     w.commit().unwrap();
-    let l = a.make_link(t, Role::Read, LinkOpts::default()).unwrap();
+    let l = a.make_link(t, Role::Read, a.node(), LinkOpts::default()).unwrap();
     assert_eq!(l.target().unwrap(), t);
     let text = l.to_string();
     let parsed = osis::internals::blob::ShareLink::from_text(&text).unwrap();
     assert_eq!(parsed.peers.first().map(|p| p.dialable), Some(addr.key()));
     assert!(a.links().unwrap().iter().any(|x| x.target == t && x.role == Role::Read));
-    assert!(matches!(a.make_link(t, Role::Sync, LinkOpts::default()), Err(Error::Invalid(_))));
+    assert!(matches!(a.make_link(t, Role::Sync, a.node(), LinkOpts::default()), Err(Error::Invalid(_))));
 }
 
 // spec/commits.md §6 (expiry), spec/requirements.md (Ephemeral data: a value that lives while its author is there):
@@ -274,7 +274,7 @@ fn a_redeem_whose_sharer_never_answers_fails_at_the_follow_time_spec_sync_inbox_
     let mut w = a.write();
     let t = w.create_held().unwrap();
     w.commit().unwrap();
-    let link = a.make_link(t, Role::Read, LinkOpts::default()).unwrap();
+    let link = a.make_link(t, Role::Read, a.node(), LinkOpts::default()).unwrap();
     net.set_online(0, false);
     let mut f = std::pin::pin!(b.redeem(&link, b.node()));
     let mut poll = || f.as_mut().poll(&mut std::task::Context::from_waker(std::task::Waker::noop()));
@@ -299,7 +299,7 @@ fn a_revoked_links_joiner_stays_until_removed_spec_permissions_7() {
     let mut w = a.write();
     let t = w.create_held().unwrap();
     w.commit().unwrap();
-    let link = a.make_link(t, Role::Read, LinkOpts::default()).unwrap();
+    let link = a.make_link(t, Role::Read, a.node(), LinkOpts::default()).unwrap();
     assert_eq!(drive(&net, b.redeem(&link, b.node())).unwrap(), t);
     let id = a.links().unwrap().into_iter().find(|l| l.target == t).unwrap().id;
     a.revoke_link(id).unwrap();

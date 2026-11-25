@@ -122,7 +122,7 @@ fn reading_the_name_writes_nothing() {
 #[test]
 fn join_held_chat_opens_it() {
     let (clock, a, b, c) = shared(&osis_chat::Options::default());
-    let link = a.make_link(c, Role::Write, LinkOpts { until: None, single_use: false }).unwrap().to_string();
+    let link = a.make_link(c, Role::Write, osis_app::store::account(&a).unwrap(), LinkOpts { until: None, single_use: false }).unwrap().to_string();
     sync(&a, &b);
     for db in [a, b] {
         // the peer never answers: a held thing opens at once

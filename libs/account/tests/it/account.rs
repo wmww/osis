@@ -104,3 +104,28 @@ fn a_stranger_importing_a_card_grants_its_account_spec_sync_inbox_5() {
     bob.grant(t, who, Role::Read, GrantOpts::default()).unwrap();
     assert!(bob.grants(t).unwrap().contains_key(&who));
 }
+
+// spec/permissions.md §7, §8 Making: a link made with the account as admin is the account's:
+// another node of it lists and ends it, and a node leaving its own grant on the target leaves
+// the link to the account, which stays its admin.
+#[test]
+fn links_are_the_accounts_spec_permissions_7() {
+    let c = clock();
+    let net = ManualNet::new(c.clone());
+    let first = person(&net, 1, &c);
+    let (db, a, _) = &first;
+    let b = pair(&net, &first, 2, &c);
+    let t = make(db, a, "linked");
+    db.grant(t, db.node(), Role::Admin, GrantOpts::default()).unwrap();
+    db.make_link(t, Role::Read, a.thing(), osis::LinkOpts::default()).unwrap();
+    let id = db.links().unwrap()[0].id;
+    db.leave(db.node(), t, SetRoleOpts::default()).unwrap();
+    assert_eq!(db.links().unwrap().len(), 1, "the account's link stays");
+    // the link's actor waits for its key's holder: the account alone is waited on
+    let account = SyncScope::Thing(a.thing());
+    drive(&net, db.wait_synced(account.clone())).unwrap();
+    drive(&net, b.wait_synced(account)).unwrap();
+    assert_eq!(b.links().unwrap().iter().map(|l| l.id).collect::<Vec<_>>(), [id], "listed on the other node");
+    b.revoke_link(id).unwrap();
+    assert!(b.links().unwrap().is_empty());
+}

@@ -193,7 +193,7 @@ fn a_chat_made_and_joined_syncs_spec_sync_set_4() {
     let c = create(&alice, &Options { name: "room".into(), ..Options::default() }, account).unwrap();
     drive(&net, alice.wait_synced(SyncScope::Thing(c))).unwrap();
     assert_eq!(alice2.at(c, SETTINGS).get().unwrap().map(|s| s.name).as_deref(), Some("room"), "the maker's other node");
-    let link = alice.make_link(c, Role::Write, LinkOpts::default()).unwrap();
+    let link = alice.make_link(c, Role::Write, account, LinkOpts::default()).unwrap();
     assert_eq!(drive(&net, bob.redeem(&link, bob.node())).unwrap(), c);
     post(&bob, c, "hi from bob");
     drive(&net, bob.wait_synced(SyncScope::Thing(c))).unwrap();

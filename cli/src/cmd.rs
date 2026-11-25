@@ -618,7 +618,7 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
 /// `link make` (and `chat link`): prints the link, then waits until it works.
 pub(crate) fn make_link(ctx: &mut Ctx<'_>, t: &str, role: &str, o: LinkOpts) -> anyhow::Result<()> {
     let t = ctx.tid(t)?;
-    let l = ctx.db.make_link(t, parse_role(role)?, o)?;
+    let l = ctx.db.make_link(t, parse_role(role)?, ctx.me()?, o)?;
     ctx.one("link", l)?;
     delivered(ctx, &[t])
 }

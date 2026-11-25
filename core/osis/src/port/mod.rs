@@ -62,7 +62,7 @@ pub mod method {
     pub const LISTING: u64 = 16;
     /// `[address, commit id] -> Opt(commit)` (`AspectRef::commit`)
     pub const LISTED_COMMIT: u64 = 17;
-    /// `[tid, role, Opt(until), single_use] -> link text` (`make_link`)
+    /// `[tid, role, admin, Opt(until), single_use] -> link text` (`make_link`)
     pub const MAKE_LINK: u64 = 18;
     /// `[tid] -> link text` (`public_link`)
     pub const PUBLIC_LINK: u64 = 23;

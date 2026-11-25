@@ -112,7 +112,7 @@ fn leave_ends_only_own_ways_and_refuses_before_writing() {
     alice.leave(org, g, SetRoleOpts::default()).unwrap();
     assert_eq!(commits(&alice), n, "no way in: nothing written");
     alice.grant(g, org, Role::Write, Default::default()).unwrap();
-    alice.make_link(g, Role::Write, Default::default()).unwrap();
+    alice.make_link(g, Role::Write, alice.node(), Default::default()).unwrap();
     let k = alice.links_of(g).unwrap()[0].id.actor();
     alice.grant(k, org, Role::Read, Default::default()).unwrap();
     let n = commits(&alice);
@@ -125,7 +125,7 @@ fn leave_ends_only_own_ways_and_refuses_before_writing() {
     bob.grant(t, alice.author(), Role::Admin, Default::default()).unwrap();
     alice.hold(t).unwrap();
     deliver(&bob, &alice);
-    alice.make_link(t, Role::Read, Default::default()).unwrap();
+    alice.make_link(t, Role::Read, alice.node(), Default::default()).unwrap();
     assert_eq!(alice.role_on(t).unwrap(), Some(Role::Admin));
     // the link's actor has her as its only admin: her leave of it is meant, or refused first
     let k = alice.links_of(t).unwrap()[0].id.actor();
