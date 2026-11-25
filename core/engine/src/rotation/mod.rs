@@ -97,10 +97,8 @@ pub fn blocked_roles_of(tx: &mut Tx<'_>, who: &Tid, a: &Tid, walk: Walk) -> Resu
 /// the actor's sync IDs meanwhile, the holder actors' new `keys.0` among them, which is how the
 /// rotators learn of the staleness. Only epochs whose secret this node holds are
 /// walked past (it reads that actor's sync IDs, so it learns the actor's next keyset and re-seals
-/// it), and only other parties' departures count (`others`); past any other epoch (but for
-/// logging) only a box to this node's own node thing is judged, at any depth: an epoch of it that
-/// cannot show it covers a removal from it this node knows (`uncovered`) blocks the keyset
-/// boxing it, secret held or not.
+/// it), and only other parties' departures count (`others`); an epoch whose secret it lacks is
+/// judged by order and its stale boxes alone, its boxes not followed (spec/crypto.md §4).
 ///
 /// A joint box (several keysets) is judged as a whole: blocked by a departure only when every
 /// keyset it names is (it opens only for a holder of every one, so for no party, alone or pooled
@@ -114,8 +112,7 @@ pub fn blocked_roles_of(tx: &mut Tx<'_>, who: &Tid, a: &Tid, walk: Walk) -> Resu
 /// `NoLeakAbove`). Walked over the boxes without recursion (chains have no depth bound) but
 /// at a joint box, each (actor, epoch) once per walk (boxes may cycle).
 pub(crate) fn blocked_epoch(tx: &mut Tx<'_>, who: &Tid, a: &Tid, r: Role, e: &osis_crypto::Epoch, deps: &[Departure], walk: Walk) -> Result<bool> {
-    let mut own = None;
-    Ok(walk_from(tx, who, a, r, (*a, *e, true), deps, walk, false, BTreeSet::new(), &mut own, &mut BTreeSet::new())?.is_some())
+    Ok(walk_from(tx, who, a, r, (*a, *e), deps, walk, false, BTreeSet::new(), &mut BTreeSet::new())?.is_some())
 }
 
 /// Why `who` may not encrypt under an epoch (`blocking`).
@@ -137,9 +134,8 @@ pub(crate) enum Block {
 /// (`departures::departure_causes`). The whole walk is judged, so every cause is found: every
 /// block has one.
 pub(crate) fn blocking(tx: &mut Tx<'_>, who: &Tid, a: &Tid, r: Role, e: &osis_crypto::Epoch, deps: &[Departure], walk: Walk) -> Result<Option<(Block, BTreeSet<osis_base::CommitId>)>> {
-    let mut own = None;
     let mut causes = BTreeSet::new();
-    Ok(walk_from(tx, who, a, r, (*a, *e, true), deps, walk, true, BTreeSet::new(), &mut own, &mut causes)?.map(|b| (b, causes)))
+    Ok(walk_from(tx, who, a, r, (*a, *e), deps, walk, true, BTreeSet::new(), &mut causes)?.map(|b| (b, causes)))
 }
 
 /// Whether the keysets `why` judged (`blocking`) block a box naming `n` of them, one or jointly:
@@ -149,18 +145,16 @@ pub(crate) fn joint_blocked(why: BTreeMap<osis_crypto::Epoch, Block>, n: usize) 
     if why.len() == n || why.values().any(|b| *b == Block::Box) { why.into_keys().collect() } else { BTreeSet::new() }
 }
 
-/// `blocking` from `root` (an epoch of an actor, with whether every epoch above it on the walk is
-/// one whose secret this node holds), past the epochs in `seen`; `own`: whether this node knows a
-/// removal from its node thing, found when first needed. `full`: the whole walk, its causes
-/// added to `causes` (else the first reason found).
+/// `blocking` from `root` (an epoch of an actor), past the epochs in `seen`. `full`: the whole
+/// walk, its causes added to `causes` (else the first reason found).
 #[allow(clippy::too_many_arguments)]
-fn walk_from(tx: &mut Tx<'_>, who: &Tid, a: &Tid, r: Role, root: (Tid, osis_crypto::Epoch, bool), deps: &[Departure], walk: Walk, full: bool, mut seen: BTreeSet<(Tid, osis_crypto::Epoch)>, own: &mut Option<bool>, causes: &mut BTreeSet<osis_base::CommitId>) -> Result<Option<Block>> {
-    seen.insert((root.0, root.1));
+fn walk_from(tx: &mut Tx<'_>, who: &Tid, a: &Tid, r: Role, root: (Tid, osis_crypto::Epoch), deps: &[Departure], walk: Walk, full: bool, mut seen: BTreeSet<(Tid, osis_crypto::Epoch)>, causes: &mut BTreeSet<osis_base::CommitId>) -> Result<Option<Block>> {
+    seen.insert(root);
     let mut todo = vec![root];
     let (mut missed, mut boxed) = (false, false);
-    while let Some((x, k, read)) = todo.pop() {
+    while let Some((x, k)) = todo.pop() {
         osis_base::costs::count("rotation: keysets walked", 1);
-        if (full || !missed) && (read || tx.core.tid() == x) {
+        if full || !missed {
             let known = if x == *a { deps.to_vec() } else { departures(tx, &x)? };
             let deps = others(tx.core, &x, Some(r), known);
             let un = uncovered_by(tx, &x, r, &k, &deps)?;
@@ -177,7 +171,7 @@ fn walk_from(tx: &mut Tx<'_>, who: &Tid, a: &Tid, r: Role, root: (Tid, osis_cryp
         // encrypting under an epoch that boxes, at any depth, a superseded keyset hands the secret
         // to what that keyset's departed party opens; the box and keysets are state, so judged
         // without the epoch's secret; a keyset the actor records its holder left out at alike
-        if read && walk == Walk::Encrypt
+        if walk == Walk::Encrypt
             && let Some(c) = members::box_blocked(tx, &x, r, &k)?
         {
             causes.extend(c);
@@ -186,48 +180,30 @@ fn walk_from(tx: &mut Tx<'_>, who: &Tid, a: &Tid, r: Role, root: (Tid, osis_cryp
             }
             boxed = true;
         }
-        let next = if !read || !tx.core.epochs(&x).is_some_and(|ep| ep.role(r).is_established(&k) && ep.role(r).secret(&k).is_some()) {
-            // past an epoch whose secret this node lacks: boxes to its own thing, at any depth
-            let mine = match *own {
-                Some(b) => b,
-                None => {
-                    let p = tx.core.tid();
-                    let b = match walk != Walk::Log {
-                        true => {
-                            let known = departures(tx, &p)?;
-                            !others(tx.core, &p, Some(r), known).is_empty()
-                        }
-                        false => false,
-                    };
-                    *own.insert(b)
+        // past an epoch whose secret this node lacks, judged by order and its stale boxes alone
+        // (spec/crypto.md §4 Encrypting under): its boxes are not followed
+        if !tx.core.epochs(&x).is_some_and(|ep| ep.role(r).is_established(&k) && ep.role(r).secret(&k).is_some()) {
+            continue;
+        }
+        let rotator = may_rotate(tx.core, who, &x).contains(&r);
+        if rotator {
+            let stale = if walk == Walk::Log { members::box_blocked(tx, &x, r, &k)? } else { None };
+            let keyless = members::keyless_at(tx, &x, r, &k)?;
+            if stale.is_some() || keyless.is_some() {
+                causes.extend(stale.into_iter().chain(keyless).flatten());
+                if !full {
+                    return Ok(Some(Block::Box));
                 }
-            };
-            if !mine {
-                continue;
+                boxed = true;
             }
-            false
-        } else {
-            let rotator = may_rotate(tx.core, who, &x).contains(&r);
-            if rotator {
-                let stale = if walk == Walk::Log { members::box_blocked(tx, &x, r, &k)? } else { None };
-                let keyless = members::keyless_at(tx, &x, r, &k)?;
-                if stale.is_some() || keyless.is_some() {
-                    causes.extend(stale.into_iter().chain(keyless).flatten());
-                    if !full {
-                        return Ok(Some(Block::Box));
-                    }
-                    boxed = true;
-                }
-            }
-            if !rotator && walk == Walk::Log {
-                continue;
-            }
-            true
-        };
+        }
+        if !rotator && walk == Walk::Log {
+            continue;
+        }
         for (m, js) in members::boxed_keysets(tx, &x, r, &k)? {
             if let [j] = js.as_slice() {
                 if seen.insert((m, *j)) {
-                    todo.push((m, *j, next));
+                    todo.push((m, *j));
                 }
                 continue;
             }
@@ -238,7 +214,7 @@ fn walk_from(tx: &mut Tx<'_>, who: &Tid, a: &Tid, r: Role, root: (Tid, osis_cryp
             let mut why = BTreeMap::new();
             let mut found = BTreeSet::new();
             for j in js.iter().filter(|j| !seen.contains(&(m, **j))) {
-                if let Some(b) = walk_from(tx, who, a, r, (m, *j, next), deps, walk, true, seen.clone(), own, &mut found)? {
+                if let Some(b) = walk_from(tx, who, a, r, (m, *j), deps, walk, true, seen.clone(), &mut found)? {
                     why.insert(*j, b);
                 }
             }
