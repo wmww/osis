@@ -156,6 +156,14 @@ impl Engine {
         Ok(done)
     }
 
+    /// A public link to `t` naming `peers` (spec/wire.md §10): its sync ID that of `t`'s
+    /// independent, which the redeemer opens by the public entry. `None` unless the public reads
+    /// `t` here (`public_reads`).
+    pub fn public_link(&mut self, t: &Tid, peers: Vec<osis_blob::DialHint>) -> Result<Option<osis_blob::PublicLink>> {
+        let Some(a) = self.core.secret_actor(t).filter(|a| self.core.public_reads(a)) else { return Ok(None) };
+        Ok(self.sync_id_of(&a)?.map(|sync_id| osis_blob::PublicLink { target: *t, sync_id, peers }))
+    }
+
     /// Whether the public reads `t`'s independent by its own grant there, as held here
     /// (spec/permissions.md §1, `Core::public_reads`): a public link to `t` can be redeemed.
     pub fn public_reads(&self, t: &Tid) -> bool {

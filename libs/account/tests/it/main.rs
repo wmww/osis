@@ -33,9 +33,10 @@ pub fn person(net: &ManualNet, seed: u64, c: &Arc<ManualClock>) -> (Osis, Accoun
     (db, a, addr)
 }
 
-/// A new node `seed` paired into `a`'s account at `db` (listening at `addr`), dialing it; synced.
-pub fn pair(net: &ManualNet, (db, a, addr): &(Osis, Account, osis::Address), seed: u64, c: &Arc<ManualClock>) -> Osis {
-    let o = opening(net, seed, c, vec![addr.clone()]);
+/// A new node `seed` paired into `a`'s account at `db`, configured to dial nothing: it reaches
+/// `db` as the offer says; synced.
+pub fn pair(net: &ManualNet, (db, a, _): &(Osis, Account, osis::Address), seed: u64, c: &Arc<ManualClock>) -> Osis {
+    let o = opening(net, seed, c, Vec::new());
     let offering = a.offer_pairing(db).unwrap();
     let join = osis_account::pair(o.store, offering.offer(), o.cfg).unwrap();
     let (node, reply) = offering.accept(db, join.request()).unwrap();

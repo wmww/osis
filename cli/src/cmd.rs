@@ -183,9 +183,10 @@ fn needs_net(c: &Cmd) -> bool {
             | Cmd::SetRole { .. }
             | Cmd::Grant { .. }
             | Cmd::Link(LinkCmd::Make { .. })
-            | Cmd::Card(CardCmd::Show)
+            | Cmd::Link(LinkCmd::Public { .. })
+            | Cmd::Contact(ContactCmd::Show)
             | Cmd::Link(LinkCmd::Redeem { .. } | LinkCmd::Revoke { .. })
-            | Cmd::Card(CardCmd::Import { .. })
+            | Cmd::Contact(ContactCmd::Import { .. })
             | Cmd::Chat(_)
             | Cmd::Status { .. }
             | Cmd::Sync { .. }
@@ -500,6 +501,12 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
         Cmd::Retained { drop: None } => ctx.list(&db.retained_copies()?.iter().map(Tid::to_uri).collect::<Vec<_>>()),
         Cmd::Chat(c) => crate::chat::run(ctx, c),
         Cmd::Link(LinkCmd::Make { t, role, until, single_use }) => make_link(ctx, &t, &role, LinkOpts { until: opt_ts(&until)?, single_use }),
+        Cmd::Link(LinkCmd::Public { t }) => {
+            let t = ctx.tid(&t)?;
+            let l = db.public_link(t)?;
+            ctx.one("link", l)?;
+            delivered(ctx, &[t])
+        }
         Cmd::Link(LinkCmd::Redeem { link }) => redeem(ctx, &link),
         Cmd::Link(LinkCmd::Ls { t }) => {
             let mut ls = db.links()?;
@@ -514,15 +521,17 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             let id: osis::LinkId = id.parse()?;
             Ok(db.revoke_link(id)?)
         }
-        Cmd::Card(CardCmd::Show) => {
-            // a card is a read link to the profile
+        Cmd::Card(CardCmd::Set { on, of, inbox }) => Ok(db.set_card(ctx.tid(&on)?, ctx.tid(&of)?, Some(ctx.tid(&inbox)?))?),
+        Cmd::Card(CardCmd::Rm { on, of }) => Ok(db.set_card(ctx.tid(&on)?, ctx.tid(&of)?, None)?),
+        Cmd::Contact(ContactCmd::Show) => {
+            // a contact card is a public link to the profile
             let a = ctx.account()?;
             let c = a.contact_card(&db)?;
             ctx.one("card", c)?;
             let p = a.profile(&db)?.ok_or_else(|| exit(3, "the account's profile is not here yet"))?;
             delivered(ctx, &[p])
         }
-        Cmd::Card(CardCmd::Profile { account }) => {
+        Cmd::Contact(ContactCmd::Profile { account }) => {
             let a = ctx.account()?;
             let p = match account {
                 Some(x) => a.profile_of(&db, ctx.tid(&x)?)?,
@@ -533,8 +542,8 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
                 None => Err(exit(3, "no profile known for that account")),
             }
         }
-        Cmd::Card(CardCmd::Import { card }) => {
-            let c: osis_account::ContactCard = ctx.arg_text(&card)?.parse()?;
+        Cmd::Contact(ContactCmd::Import { card }) => {
+            let c: osis::Link = ctx.arg_text(&card)?.parse()?;
             let account = ctx.account()?;
             let a = confirm(ctx, account.import_contact(&db, &c))?;
             ctx.one("actor", a.to_uri())
@@ -616,7 +625,7 @@ pub(crate) fn make_link(ctx: &mut Ctx<'_>, t: &str, role: &str, o: LinkOpts) -> 
 
 /// `link redeem` (and `chat join`): prints the thing joined.
 pub(crate) fn redeem(ctx: &mut Ctx<'_>, link: &str) -> anyhow::Result<()> {
-    let l: osis::ShareLink = ctx.arg_text(link)?.parse()?;
+    let l: osis::Link = ctx.arg_text(link)?.parse()?;
     let joiner = ctx.me()?;
     let t = confirm(ctx, ctx.db.redeem(&l, joiner))?;
     ctx.one("tid", t.to_uri())
@@ -1342,7 +1351,7 @@ mod tests {
             (&["osis", "link", "make", "t", "read"], Sync),
             (&["osis", "grant", "t", "h", "read"], Sync),
             (&["osis", "set-role", "t", "h", "none"], Sync),
-            (&["osis", "card", "show"], Sync),
+            (&["osis", "contact", "show"], Sync),
             (&["osis", "chat", "relay", "c", "a"], Sync),
             (&["osis", "leave", "t"], None),
             (&["osis", "sync"], Sync),

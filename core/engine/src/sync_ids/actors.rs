@@ -220,12 +220,12 @@ impl Core {
 
     /// Whether actor `x` may read thing `t` now: `t`'s secrets derive from `x`'s, or `x` holds
     /// read or above on the actor they derive from (spec/sync-judgement.md §1, entitlement),
-    /// through grants with key access (`reads_now`). An actor up the record chain of an
-    /// independent thing reads it only by its role there: a record edge lowered or removed
-    /// takes that role (spec/permissions.md §1).
+    /// through grants with key access (`reads_now`), or the public reads it by its own grant
+    /// there (`public_reads`). An actor up the record chain of an independent thing reads it only
+    /// by its role there: a record edge lowered or removed takes that role (spec/permissions.md §1).
     pub fn may_read(&self, x: &Tid, t: &Tid) -> bool {
         let Some(a) = self.secret_actor(t) else { return false };
-        a == *x || self.reads_now(x, &a)
+        a == *x || self.reads_now(x, &a) || self.public_reads(&a)
     }
 }
 

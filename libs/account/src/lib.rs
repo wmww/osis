@@ -1,26 +1,26 @@
 //! A person's account over osis (spec/permissions.md §8): an arrangement of ordinary things, read
 //! by no rule of core. The account is a thing its nodes hold admin (pair, remove) or write on, each
-//! writing as its own node thing through it; it holds its profile (what others read about the
-//! person, the target of its contact card) and its inbox (where grants and requests from others
-//! arrive). Things made for the person are minted with the account as admin and held from its
+//! writing as its own node thing through it; it holds its profile (what everyone may read about
+//! the person, the target of its contact card, carrying the account's card) and its inbox (where
+//! grants and requests from others arrive). Things made for the person are minted with the account as admin and held from its
 //! `holds.0`, so every node of the account holds them. "Me", for a person, is the account
 //! (`Account::thing`); a node itself is its node thing (`Osis::node`).
 //!
 //! Pairing a new node is transport-agnostic: the app carries three texts between the nodes (a QR
 //! code, the clipboard, a local socket), the pairing channel of spec/permissions.md §8: the offer
-//! (the account, its profile and a one-time secret), the new node's request (its node thing's
-//! public key record) and the existing node's reply (the account's offer and its trust records),
-//! the last two authenticated by the offer's secret.
+//! (the account, its profile, where to reach the offering node and a one-time secret), the new
+//! node's request (its node thing's public key record) and the existing node's reply (the
+//! account's offer and its trust records), the last two authenticated by the offer's secret.
 
 #![forbid(unsafe_code)]
 
-// Interim (notes/public-and-cards-brief.md, piece 7): making, pairing and removing a node go
-// through the engine (`osis::internals`) until the `osis` API has the calls they need (minting a
-// thing with keys of its own in a transaction, the offer of a grant handed over by hand).
+// Interim (notes/public-and-cards-brief.md, Left): making, pairing and removing a node go through
+// the engine (`osis::internals`) until the `osis` API has the calls they need (minting things with
+// keys of their own in one transaction, the offer of a grant handed over by hand).
 use osis::internals::Internals as _;
 use osis::internals::engine as eng;
 use osis::internals::{base, core_types as ct, crypto};
-use osis::{Error, LinkInfo, LinkOpts, Osis, ReadOnly, Result, Role, SetRoleOpts, ShareLink, Store, Tid, Time, Value, Weak};
+use osis::{Address, Error, GrantOpts, Link, LinkInfo, Osis, ReadOnly, Result, Role, SetRoleOpts, Store, Tid, Value, Weak};
 
 /// Typed keys of schema/account.osis.
 #[allow(dead_code, clippy::all)]
@@ -29,7 +29,7 @@ pub mod schema {
     include!(concat!(env!("OUT_DIR"), "/account.rs"));
 }
 
-use schema::{CARD, CONTACTS, OF, PROFILE};
+use schema::{CONTACTS, OF, PROFILE};
 
 /// A person's account (spec/permissions.md §8).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -47,9 +47,9 @@ pub struct AccountNode {
 }
 
 impl Account {
-    /// Makes an account on `db`, a node acting for none yet, with its inbox and profile: the
-    /// node becomes its first admin node. `Invalid` on a node that acts for an account already;
-    /// `Unsupported` through a connection.
+    /// Makes an account on `db`, a node acting for none yet, with its inbox and its profile,
+    /// which everyone may read: the node becomes its first admin node. `Invalid` on a node that
+    /// acts for an account already; `Unsupported` through a connection.
     pub fn make(db: &Osis) -> Result<Account> {
         if !db.has_store() {
             return Err(Error::Unsupported("making an account: not through a connection to a node".into()));
@@ -59,7 +59,9 @@ impl Account {
         }
         let (a, profile) = db.engine(make)?;
         db.publish_dial_on(&[a, profile])?;
-        Ok(Account { thing: a })
+        let a = Account { thing: a };
+        a.publish_profile(db, profile)?;
+        Ok(a)
     }
 
     /// The account `db`'s node acts for, if any: the thing it keeps its settings on.
@@ -74,9 +76,9 @@ impl Account {
         self.thing
     }
 
-    /// The account's profile: everyone holding its contact card reads it, so the person writes
-    /// what others may know of them there (`name.0`, `contact:*`). `None` on a node paired a moment
-    /// ago that holds none of the account yet.
+    /// The account's profile: everyone may read it, so the person writes what others may know of
+    /// them there (`name.0`, `contact:*`). `None` on a node paired a moment ago that holds none of
+    /// the account yet.
     pub fn profile(&self, db: &ReadOnly) -> Result<Option<Tid>> {
         Ok(db.at(self.thing, PROFILE).get()?.map(|w| w.0))
     }
@@ -108,25 +110,28 @@ impl Account {
         db.links()
     }
 
-    /// The account's contact card: a read link to its profile, made once for the account (every
-    /// node of it hands out the same card once it has synced).
-    pub fn contact_card(&self, db: &Osis) -> Result<ContactCard> {
-        if let Some(c) = db.at(self.thing, CARD).get()? {
-            return c.parse();
-        }
+    /// The account's contact card: a public link to its profile, naming this node to reach it
+    /// (`Osis::public_link`). Whoever imports it can grant the account roles.
+    pub fn contact_card(&self, db: &Osis) -> Result<Link> {
         let p = self.profile(db)?.ok_or_else(|| Error::Invalid("the account's profile is not here yet".into()))?;
-        let card = ContactCard(db.make_link(p, Role::Read, LinkOpts::default())?);
-        let mut w = db.write();
-        w.at(self.thing, CARD).set(&card.to_string())?;
-        w.commit()?;
-        Ok(card)
+        self.publish_profile(db, p)?;
+        db.public_link(p)
     }
 
-    /// Imports a contact card into the account: joins the profile it names, records it, and
+    /// Makes profile `p` public, unless it is (`make` does; a node stopped between its two
+    /// transactions left it to the first contact card).
+    fn publish_profile(&self, db: &Osis, p: Tid) -> Result<()> {
+        if !db.grants(p)?.contains_key(&Tid::PUBLIC) {
+            db.grant(p, Tid::PUBLIC, Role::Read, GrantOpts::default())?;
+        }
+        Ok(())
+    }
+
+    /// Imports a contact card into the account: holds the profile it names, records it, and
     /// returns the card's account once its keys are here, usable in `grant`. Waits for the card's
     /// node meanwhile (wrap it in a timeout).
-    pub async fn import_contact(&self, db: &Osis, card: &ContactCard) -> Result<Tid> {
-        let p = db.redeem(&card.0, self.thing).await?;
+    pub async fn import_contact(&self, db: &Osis, card: &Link) -> Result<Tid> {
+        let p = db.redeem(card, self.thing).await?;
         // the profile's content comes with its sync, once joined
         if db.at(p, OF).get()?.is_none() {
             db.wait_synced(osis::SyncScope::Thing(p)).await?;
@@ -143,16 +148,17 @@ impl Account {
         Ok(db.at(self.thing, CONTACTS).get()?.and_then(|m| m.get(&Weak(account)).map(|w| w.0)))
     }
 
-    /// An offer to pair a new node, good once and for 10 minutes: the new node runs `pair` with
-    /// it and the app carries its request back to `Offering::accept`. Whoever holds the offer can
-    /// make their node a full admin node of the account until then: show it only to the new node.
+    /// An offer to pair a new node, good once while the `Offering` is kept: the new node runs
+    /// `pair` with it and the app carries its request back to `Offering::accept`. Whoever holds
+    /// the offer can make their node a full admin node of the account until then: show it only to
+    /// the new node, and drop the `Offering` once the pairing is given up.
     pub fn offer_pairing(&self, db: &Osis) -> Result<Offering> {
         let profile = self.profile(db)?.ok_or_else(|| Error::Invalid("the account's profile is not here yet".into()))?;
         let mut secret = [0u8; 32];
         crypto::RngCore::fill_bytes(&mut crypto::OsRng, &mut secret);
-        let until = Time(db.now()?.0.saturating_add(OFFER_LIFETIME_MS));
-        let offer = PairOffer(pack(OFFER, &Value::List(vec![Value::Int(1), Value::bytes(self.thing.as_bytes()), Value::bytes(profile.as_bytes()), Value::Bytes(secret.to_vec())])));
-        Ok(Offering { account: *self, offer, secret, until })
+        let reach = db.dial_hints()?.iter().map(|a| Value::Str(a.to_string())).collect();
+        let offer = PairOffer(pack(OFFER, &Value::List(vec![Value::Int(1), Value::bytes(self.thing.as_bytes()), Value::bytes(profile.as_bytes()), Value::List(reach), Value::Bytes(secret.to_vec())])));
+        Ok(Offering { account: *self, offer, secret })
     }
 }
 
@@ -193,10 +199,6 @@ fn make(e: &mut eng::Engine) -> Result<(Tid, Tid)> {
     }
 }
 
-/// How long a pairing offer can be accepted: the time for a user to carry it to the new node and
-/// back. At 0 no offer is ever accepted; at infinity an offer shown once pairs any node for good.
-const OFFER_LIFETIME_MS: u64 = 10 * 60_000;
-
 const OFFER: &str = "osis://pair/";
 const REQUEST: &str = "osis://pair-request/";
 const REPLY: &str = "osis://pair-reply/";
@@ -226,10 +228,6 @@ macro_rules! secret_text {
     };
 }
 
-secret_text!(
-    /// A contact card: a read link to an account's profile. Whoever holds it reads the profile.
-    ContactCard, ShareLink, |s: &str| s.parse::<ShareLink>().map_err(|e| Error::Invalid(format!("contact card: {e}")))
-);
 secret_text!(
     /// A short-lived offer to pair a new node, made on an existing one (holds a one-time
     /// secret: show it only to the new node).
@@ -290,7 +288,6 @@ pub struct Offering {
     account: Account,
     offer: PairOffer,
     secret: [u8; 32],
-    until: Time,
 }
 
 impl std::fmt::Debug for Offering {
@@ -306,8 +303,8 @@ impl Offering {
     }
 
     /// Accepts the new node's request to this offer: makes it an admin node of the account and
-    /// returns its node thing with the reply to carry back. The offer is used up. `Invalid` past
-    /// its 10 minutes or for a request to another offer; `Unsupported` through a connection.
+    /// returns its node thing with the reply to carry back. The offer is used up. `Invalid` for a
+    /// request to another offer; `Unsupported` through a connection.
     pub fn accept(self, db: &Osis, req: &PairRequest) -> Result<(Tid, PairReply)> {
         if !db.has_store() {
             return Err(Error::Unsupported("pairing: not through a connection to a node".into()));
@@ -315,7 +312,7 @@ impl Offering {
         let items = unpack(&req.0, REQUEST)?;
         let malformed = || Error::Invalid("malformed pairing request".into());
         let [_, node, commits, records, Value::Bytes(_)] = items.as_slice() else { return Err(malformed()) };
-        if db.now()? >= self.until || !tag_ok(&self.secret, "osis pair request", &items) {
+        if !tag_ok(&self.secret, "osis pair request", &items) {
             return Err(Error::Invalid("pairing request matches no open offer".into()));
         }
         let node = tid(node).ok_or_else(malformed)?;
@@ -342,13 +339,23 @@ impl std::fmt::Debug for Joining {
 }
 
 /// Starts pairing a fresh store as a new node of the account that made `offer`: returns the
-/// request to carry to the offering node and, with its reply, `Joining::finish`.
-pub fn pair(store: Store, offer: &PairOffer, cfg: osis::Config) -> Result<Joining> {
+/// request to carry to the offering node and, with its reply, `Joining::finish`. Online, the new
+/// node dials the offering node, as the offer names it, beside `cfg.dial`, until it holds the
+/// account's own list of where its nodes are (a restart before that drops it: pair again, or
+/// configure an address).
+pub fn pair(store: Store, offer: &PairOffer, mut cfg: osis::Config) -> Result<Joining> {
     let items = unpack(&offer.0, OFFER)?;
     let malformed = || Error::Invalid("malformed pairing offer".into());
-    let [_, account, profile, Value::Bytes(secret)] = items.as_slice() else { return Err(malformed()) };
+    let [_, account, profile, Value::List(reach), Value::Bytes(secret)] = items.as_slice() else { return Err(malformed()) };
     let (account, profile) = (tid(account).ok_or_else(malformed)?, tid(profile).ok_or_else(malformed)?);
     let secret: [u8; 32] = secret.as_slice().try_into().map_err(|_| malformed())?;
+    for a in reach {
+        let Value::Str(a) = a else { return Err(malformed()) };
+        let a: Address = a.parse().map_err(|_| malformed())?;
+        if cfg.online() && !cfg.dial.contains(&a) {
+            cfg.dial.push(a);
+        }
+    }
     let db = Osis::create(store, cfg)?;
     let keys = db.engine(|e| e.node_keys())?;
     let [commits, records] = keys.to_values();

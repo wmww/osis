@@ -7,7 +7,7 @@ use crate::commit_id::{CommitFrom, CommitId, CommitPos};
 use crate::commits::{Address, Body, Commit, CommitEvent, CommitKind, CommitPage, CommitQuery, NotUndoableReason, Part, Scope};
 use crate::error::{Error, Result};
 use crate::read::{Grant, Grants, Stamp};
-use crate::share::{Holder, HolderKind, ShareLink};
+use crate::share::{Holder, HolderKind, Link};
 use crate::syncing::{Status, SyncScope, SyncState, UnitSync};
 use crate::watch::{DerivedFrom, Origin};
 use crate::write::{Expiry, WriteOp};
@@ -389,10 +389,10 @@ impl Form for Grants {
     }
 }
 
-const HOLDER_KINDS: [HolderKind; 3] = [HolderKind::Actor, HolderKind::Link, HolderKind::Key];
+const HOLDER_KINDS: [HolderKind; 4] = [HolderKind::Actor, HolderKind::Link, HolderKind::Key, HolderKind::Public];
 
 /// A holder (`holders`): `[actor, kind, role, Opt(until), [through*]]`, kind 0 an actor, 1 a
-/// link's, 2 a key.
+/// link's, 2 a key, 3 the public.
 impl Form for Holder {
     fn to_wire(&self) -> Value {
         Value::List(vec![tid_to(&self.actor), place_to(&HOLDER_KINDS, &self.kind), role_to(self.role), time_to(self.until), tids_to(&self.through)])
@@ -764,7 +764,7 @@ macro_rules! form_text {
         }
     )+};
 }
-form_text!(ShareLink);
+form_text!(Link);
 
 /// `[0]` all, `[1, tid]` a thing.
 impl Form for SyncScope {

@@ -303,8 +303,10 @@
 //!
 //! # Sharing
 //! A role says who may; sync says where the data goes. `grant` gives an actor a role on a thing and
-//! needs the actor's keys (a contact card, a shared thing). `set_role` changes or removes a role.
-//! A link needs no keys.
+//! needs the actor's keys (a card of it, a shared thing). `set_role` changes or removes a role.
+//! A link needs no keys. A grant to `Tid::PUBLIC` lets everyone read the thing, and
+//! `public_link` hands out a way to it; `set_card` puts a thing's card on another, so whoever
+//! reads that one can grant to it.
 //! ```
 //! # use osis::{Config, GrantOpts, MemStore, Osis, Role, Store};
 //! let db = Osis::create(Store::Memory(MemStore::new()), Config::default())?;
@@ -496,7 +498,7 @@ pub use keys::{DynamicAspectKey, core};
 pub use large::ValueStream;
 pub use read::{AspectRef, Grant, Grants, PathRef, Stamp};
 pub use retention::History;
-pub use share::{Address, GrantOpts, Holder, HolderKind, LinkId, LinkInfo, LinkOpts, Reads, SetRoleOpts, ShareLink, Url};
+pub use share::{Address, GrantOpts, Holder, HolderKind, LinkId, LinkInfo, Link, LinkOpts, Reads, SetRoleOpts, Url};
 pub use syncing::{Status, SyncScope, SyncState, UnitSync};
 pub use sources::{UnitSource, NodeLogin};
 pub use text::{Splice, TextSession};

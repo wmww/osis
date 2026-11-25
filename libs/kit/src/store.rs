@@ -735,7 +735,7 @@ impl Data {
     /// link is confirmed or `JOIN_WAIT` passes, which says so: nothing is left half done. A
     /// target this account already reaches for good at the link's role opens at once (`Osis::redeem`).
     pub fn redeem(&self, link: &str) -> Result<Tid> {
-        let l: osis::ShareLink = link.trim().parse().map_err(|e| osis::Error::Invalid(format!("not a link: {e}")))?;
+        let l: osis::Link = link.trim().parse().map_err(|e| osis::Error::Invalid(format!("not a link: {e}")))?;
         // the person joins (their account), else this node
         let joiner = self.person()?.map_or(self.db.node(), |a| a.thing());
         let rt = tokio::runtime::Builder::new_current_thread().enable_time().build().map_err(|e| osis::Error::Network(e.to_string()))?;

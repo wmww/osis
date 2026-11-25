@@ -71,8 +71,9 @@ impl Default for Config {
 }
 
 impl Config {
-    /// Whether this config has a network: a runtime, or a test's.
-    fn online(&self) -> bool {
+    /// Whether a node made with this config reaches other nodes (it has a runtime): without,
+    /// `dial` is `Invalid`.
+    pub fn online(&self) -> bool {
         !matches!(self.runtime, Runtime::None) || self.app.internals.net.is_some()
     }
 

@@ -290,6 +290,14 @@ impl Engine {
         })
     }
 
+    /// Removes `a`'s card from `host`: any writer of `host` may (spec/sync-inbox.md §1 Card).
+    pub fn remove_card(&mut self, host: Tid, a: Tid) -> Result<()> {
+        let mut m = Mutation::new();
+        m.op(host, &ct::CARD, PathOp { path: vec![], op: Op::Remove(Value::Weak(a)) })?;
+        self.commit(m)?;
+        Ok(())
+    }
+
     /// `a`'s inbox at this node (spec/sync-inbox.md §1): the thing its card held here with the
     /// greatest `since` names, else `a` itself where independent here.
     pub fn inbox_of(&mut self, a: &Tid) -> Result<Option<Tid>> {

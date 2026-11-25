@@ -190,7 +190,7 @@ fn store_dir_init_lock_plan_cli_2() {
 
 // notes/cli.md Design (daemon), notes/client-port.md §2: beside a node serving the store's
 // socket, commands run there as its main actor: chat read and watch (listings and a commit
-// listener), card show, profile and import (a row that waits), sync (a wait timing out), diag.
+// listener), contact show, profile and import (a row that waits), sync (a wait timing out), diag.
 #[test]
 fn commands_run_through_the_daemon_plan_cli() {
     let d = tmp("daemon");
@@ -212,15 +212,16 @@ fn commands_run_through_the_daemon_plan_cli() {
     assert!(after.contains(&format!("{two} ")) && !after.contains(": one"), "{after}");
     let watched = ok(&["chat", "watch", &c, "--after", &cursor, "--count", "1", "--timeout", "60s"]);
     assert!(watched.contains(": two"), "{watched}");
-    // a one-node account with no link: nothing it holds is held by another node (spec/sync-status.md §3)
-    ok(&["sync", "--timeout", "60s"]);
-    // the card's link may be taken by whoever holds it: its wait runs to the timeout
-    let card = s.call(&["--timeout", "1s", "card", "show"], "");
+    // a one-node account's chat: nothing of it is held by another node (spec/sync-status.md §3);
+    // its public profile may be, by anyone (the contact card's wait, below)
+    ok(&["sync", "--thing", &c, "--timeout", "60s"]);
+    // the profile is public, so anyone may hold it: the card's wait runs to the timeout
+    let card = s.call(&["--timeout", "1s", "contact", "show"], "");
     assert_eq!(card.code, 6, "{}", card.err);
     let acc = osis_account::Account::of(&held).unwrap().unwrap();
     assert_eq!(card.line(), acc.contact_card(&held).unwrap().to_string());
-    assert_eq!(ok(&["card", "profile"]).trim(), acc.profile(&held).unwrap().unwrap().to_uri());
-    assert_eq!(ok(&["card", "import", card.line(), "--timeout", "60s"]).trim(), acc.thing().to_uri());
+    assert_eq!(ok(&["contact", "profile"]).trim(), acc.profile(&held).unwrap().unwrap().to_uri());
+    assert_eq!(ok(&["contact", "import", card.line(), "--timeout", "60s"]).trim(), acc.thing().to_uri());
     ok(&["diag"]);
     drop(held);
     let _ = std::fs::remove_dir_all(&d);
@@ -383,7 +384,7 @@ fn sharing_commands_local_plan_cli_4() {
     assert_eq!(o.code, 6, "{}", o.err);
     assert!(o.line().starts_with("osis://link/"), "{}", o.out);
     assert!(s.ok(&["--json", "link", "ls", &l]).line().contains("\"single_use\":true"));
-    let o = s.call(&["--timeout", "10ms", "card", "show"], "");
+    let o = s.call(&["--timeout", "10ms", "contact", "show"], "");
     assert!(o.code == 6 && o.line().starts_with("osis://link/"), "{}", o.err);
     let stranger = S::mem().me();
     assert_eq!(s.code(&["grant", &g, &stranger, "read"]), 3, "keys unknown: import a card first");

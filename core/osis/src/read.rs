@@ -336,6 +336,9 @@ impl Reader<'_> {
 
     /// What actor `t` is, from its creation record.
     pub(crate) fn holder_kind(&self, t: Tid) -> crate::HolderKind {
+        if t.is_public() {
+            return crate::HolderKind::Public;
+        }
         match self.e.core.created(&t) {
             Some(r) if r.is_link() => crate::HolderKind::Link,
             Some(r) if r.key().is_some() => crate::HolderKind::Key,

@@ -784,7 +784,7 @@ fn edit_text_by_position() {
 #[test]
 fn waiting_calls_are_send() {
     fn send<T: Send>(_: T) {}
-    fn all(db: Osis, login: osis::NodeLogin, link: osis::ShareLink, id: osis::LinkId, t: osis::Tid, o: osis::SetRoleOpts) {
+    fn all(db: Osis, login: osis::NodeLogin, link: osis::Link, id: osis::LinkId, t: osis::Tid, o: osis::SetRoleOpts) {
         send(db.wait_synced(osis::SyncScope::All));
         send(db.redeem(&link, t));
         send(db.set_role(t, t, None, o));

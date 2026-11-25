@@ -61,6 +61,8 @@ pub enum HolderKind {
     /// A thing minted with a key: a node thing, or a share link's key, which holds that link's
     /// actor until the link ends.
     Key,
+    /// The public (`Tid::PUBLIC`): everyone, a node or not, holding nothing; read at most.
+    Public,
 }
 
 /// `f` on the engine, its edge writes allowed to leave a thing with no admin when `adminless`.
@@ -202,12 +204,13 @@ macro_rules! secret_text {
 
 
 secret_text!(
-    /// A link (`osis://link/...`): a share link, which whoever holds this text can redeem, so hand
-    /// it over as a secret; or a public link to a thing anyone may read.
-    ShareLink, osis_blob::Link, |s| osis_blob::Link::from_text(s).map_err(bad("link"))
+    /// A link (`osis://link/...`) that `Osis::redeem` takes: a share link (`Osis::make_link`),
+    /// which whoever holds this text can redeem, so hand it over as a secret; or a public link
+    /// (`Osis::public_link`) to a thing everyone reads, which is no secret.
+    Link, osis_blob::Link, |s| osis_blob::Link::from_text(s).map_err(bad("link"))
 );
-impl ShareLink {
-    /// The thing the link shares.
+impl Link {
+    /// The thing the link leads to.
     pub fn target(&self) -> Result<Tid> {
         Ok(self.parse()?.target())
     }
@@ -308,9 +311,12 @@ fn below_held(e: &osis_engine::Engine, t: &Tid, h: &Tid, role: Role) -> bool {
     e.role_on(t) == Some(Role::Admin) && e.key_role(t, h).is_some_and(|r| role < r)
 }
 
-/// `UnknownActor` unless `h` is known here as a thing a grant can box: one with a mint admin, or
-/// one minted with a key (a node thing or a link key) whose `keys.0` is held.
+/// `UnknownActor` unless `h` is the public or known here as a thing a grant can box: one with a
+/// mint admin, or one minted with a key (a node thing or a link key) whose `keys.0` is held.
 fn known_actor(e: &mut osis_engine::Engine, h: Tid) -> Result<()> {
+    if h.is_public() {
+        return Ok(());
+    }
     if !e.knows(&h) || (e.mint_admin(&h).is_none() && e.get_typed(&h, &ct::KEYS)?.is_none()) {
         return Err(Error::UnknownActor { tid: h });
     }
@@ -397,12 +403,18 @@ impl Osis {
     /// holder of a role on it can read it.
     ///
     /// A grant to a thing as holder reaches that thing's readers through it; from a node that does
-    /// not read the holder it goes as a grant fire the holder takes only once its setting enables
-    /// its inbox signals (`core::RetentionSetting::enable_inbox_signals`), waiting until then.
+    /// not read the holder it goes as a grant fire to the holder's inbox (the one its card names,
+    /// `set_card`, else the holder itself), taken only once that thing's setting enables its inbox
+    /// signals (`core::RetentionSetting::enable_inbox_signals`), waiting until then.
+    ///
+    /// `Tid::PUBLIC` as holder makes `target` public: everyone may read it, from any node holding
+    /// it (`public_link`); a thing it holds by a strong is read with it. Read at most, no
+    /// `may_grant` (`Invalid`); `set_role(target, Tid::PUBLIC, None, ..)` makes it private again,
+    /// for what is written from then on.
     ///
     /// Needs admin on the target (or `may_grant` with a role of at least `role`, for someone with no grant yet;
     /// a grant that ended above `role` counts as one until an admin takes it away), else `Permission`,
-    /// and the holder's keys here (a contact card, a shared thing, pairing), else `UnknownActor`.
+    /// and the holder's keys here (a card of it, a shared thing, pairing), else `UnknownActor`.
     /// Each grant costs about 2.6 KB of keys: to share with many, grant one thing they all hold a role on. `Unsupported` on
     /// a client with its own actor. An `until` on the last admin whose grant has none is
     /// `LeavesNoAdmin` unless `GrantOpts::leave_adminless` says it is meant (`set_role`).
@@ -613,7 +625,7 @@ impl Osis {
 
     /// Makes a share link to `target` with `role` (read or above: `Invalid` below). Anyone
     /// holding the link can redeem it until `until` or `revoke_link`.
-    pub fn make_link(&self, target: Tid, role: Role, opts: LinkOpts) -> Result<ShareLink> {
+    pub fn make_link(&self, target: Tid, role: Role, opts: LinkOpts) -> Result<Link> {
         if let Some(at) = self.process_at("make_link")? {
             return self.forward(&at, crate::port::method::MAKE_LINK, (target, role, opts.until, opts.single_use));
         }
@@ -622,7 +634,31 @@ impl Osis {
         let peers = self.link_peers();
         let spec = flows::LinkSpec { target, role, until: opts.until.map(|t| osis_base::WallMs(t.0)), peers, single_use: opts.single_use };
         let (link, _, _) = self.engine(|e| e.create_link(&me, &spec))?;
-        Ok(ShareLink(link.to_text().map_err(bad("link"))?))
+        Ok(Link(link.to_text().map_err(bad("link"))?))
+    }
+
+    /// A link to `target`, which everyone reads by the public's grant (`grant` to
+    /// `Tid::PUBLIC`): whoever holds it can `redeem` it and read `target` and what it holds by
+    /// strongs, as long as it stays public. It holds no secret and names the nodes `make_link`'s
+    /// would. `Invalid` while the public does not read `target`.
+    pub fn public_link(&self, target: Tid) -> Result<Link> {
+        if let Some(at) = self.process_at("public_link")? {
+            return self.forward(&at, crate::port::method::PUBLIC_LINK, (target,));
+        }
+        self.local_at(target, "public_link")?;
+        let peers = self.link_peers();
+        let link = self.engine(|e| e.public_link(&target, peers))?;
+        let link = link.ok_or_else(|| Error::Invalid(format!("{target} is not public")))?;
+        Ok(Link(link.to_text().map_err(bad("link"))?))
+    }
+
+    /// Where another node can reach this one, as a link made now names it: this node by its key,
+    /// then the nodes it dials (`Config::dial`). For a node that holds nothing yet of what it will
+    /// share with this one (a node being paired puts them in its `Config::dial`); anything it holds
+    /// tells it where to dial from then on.
+    pub fn dial_hints(&self) -> Result<Vec<Address>> {
+        self.local("dial_hints")?;
+        Ok(self.link_peers().into_iter().flat_map(|p| p.urls.into_iter().map(move |url| Address(osis_blob::Address { url, key: p.dialable }))).collect())
     }
 
     /// A link's first-contact peers (spec/wire.md §10): this node by its dialable key,
@@ -631,14 +667,38 @@ impl Osis {
         self.locked(|l| osis_blob::link_peers(l.secret.public_key(), &[], &l.node.config().dial))
     }
 
+    /// Puts `of`'s card on `on` naming `inbox` (`of` itself, or another thing whose setting
+    /// enables its inbox signals), or with `None` removes it. A card lets whoever reads `on` grant
+    /// `of` roles and reach its inbox (`grant`): `of`'s keys go with it, and this node keeps
+    /// them current. A card naming another inbox moves `of`'s inbox, on every card of it.
+    /// Putting one needs write on `on` through `of` (`Write::act_as`) and `of`'s keys here, else
+    /// `Permission` or `UnknownActor`; removing one, write on `on`. `Unsupported` on a client with
+    /// its own actor.
+    pub fn set_card(&self, on: Tid, of: Tid, inbox: Option<Tid>) -> Result<()> {
+        self.local_at(on, "set_card")?;
+        if !self.has_record(on) {
+            return Err(Error::UnknownThing { tid: on });
+        }
+        let Some(inbox) = inbox else {
+            return Ok(self.engine(|e| e.remove_card(on, of))?);
+        };
+        let wrote = self.engine(|e| e.write_card(on, of, (inbox != of).then_some(inbox), None))?;
+        if !wrote {
+            return Err(Error::UnknownActor { tid: of });
+        }
+        Ok(())
+    }
+
     /// Redeems a link for `joiner`: reaches what it names and joins it, returning the thing.
     /// `joiner` is the thing given the role and holding the thing by a strong from its `holds.0`
     /// (`node()`, or a thing this node writes). Returns once this node holds a role on the thing
     /// here; it waits for the link's node meanwhile, for about an hour from the first call (this
     /// node's policy), then fails with `Network` and keeps nothing: redeem it again to try again. A
-    /// link to a thing this node already reaches joins nothing. What the link holds is kept until
-    /// the join is held elsewhere or the node gives up, a dropped call included.
-    pub async fn redeem(&self, link: &ShareLink, joiner: Tid) -> Result<Tid> {
+    /// link to a thing this node already reaches joins nothing. What a share link holds is kept
+    /// until the join is held elsewhere or the node gives up, a dropped call included. A public
+    /// link joins nothing: `joiner` holds the thing by its strong, written once the thing is
+    /// found public; until then a dropped call or a restart leaves nothing behind.
+    pub async fn redeem(&self, link: &Link, joiner: Tid) -> Result<Tid> {
         if let Some(at) = self.process_at("redeem")? {
             return self.remote_wait(&at, crate::port::method::REDEEM, (link.clone(), joiner))?.await;
         }
@@ -647,7 +707,7 @@ impl Osis {
 
     /// `redeem` here, as a future holding nothing of the node (the port runs it for a main
     /// session).
-    pub(crate) fn redeeming(&self, link: &ShareLink, joiner: Tid) -> Result<impl std::future::Future<Output = Result<Tid>> + Send + 'static> {
+    pub(crate) fn redeeming(&self, link: &Link, joiner: Tid) -> Result<impl std::future::Future<Output = Result<Tid>> + Send + 'static> {
         let link = link.parse()?;
         let target = link.target();
         let mut started = false;

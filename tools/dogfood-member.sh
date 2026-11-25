@@ -52,7 +52,7 @@ host)
 	printf %s "$listen" > "$dir/listen"
 	"$bin" --no-lan -s "$dir/store" init >/dev/null
 	"$bin" --no-lan -s "$dir/store" whoami | awk '$1 == "me" { print $2 }' > "$dir/account"
-	"$bin" --no-lan -s "$dir/store" card show > "$dir/card"
+	"$bin" --no-lan -s "$dir/store" contact show > "$dir/card"
 	host_daemon "$s" "$bin" "$dir"
 	# its first line is the address, once it listens
 	i=0
@@ -69,7 +69,7 @@ create)
 	printf %s "$addr" > "$dir/address"
 	o() { "$bin" --no-lan -s "$dir/store" --dial "$addr" --timeout 60s "$@"; }
 	o init >/dev/null
-	o card import "$(cat "$host/card")" >/dev/null
+	o contact import "$(cat "$host/card")" >/dev/null
 	o chat create --name channel > "$dir/chat"
 	c=$(cat "$dir/chat")
 	o chat link "$c" > "$dir/link"

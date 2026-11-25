@@ -386,6 +386,7 @@ fn row(h: &crate::Osis, method: u64, args: Value, limit: usize) -> Result<Value>
             h.commit_told_here(&a, id, None)
         }),
         method::MAKE_LINK => on(args, |(t, role, until, single_use): (Tid, crate::Role, Option<crate::Time>, bool)| h.make_link(t, role, crate::LinkOpts { until, single_use })),
+        method::PUBLIC_LINK => on(args, |(t,): (Tid,)| h.public_link(t)),
         m => Err(Error::Unsupported(format!("unknown method {m}"))),
     }
 }
@@ -423,7 +424,7 @@ fn wait_row(h: &crate::Osis, method: u64, args: Value) -> Result<Pending> {
             Ok(boxed(h.syncing(s)))
         }
         method::REDEEM => {
-            let (l, joiner): (crate::ShareLink, Tid) = Form::from_wire(args)?;
+            let (l, joiner): (crate::Link, Tid) = Form::from_wire(args)?;
             Ok(boxed(h.redeeming(&l, joiner)?))
         }
         m => Err(Error::Unsupported(format!("no row that waits {m}"))),

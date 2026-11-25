@@ -259,7 +259,7 @@ Checked in the named files; the right-hand side argued.
 | `Write::act_as`: one actor in place of `author()` (core/osis/src/write.rs) | a write states its path and purge author in place of the session's defaults |
 | siblings to sync with (engine `dial_peers`, core/engine/src/sync/dial.rs; spec/sync-set.md §1) | no sibling rule: a node dials what the dial aspect of any thing it holds lists (§3) |
 | inbox delivery by the account's card naming its inbox (`card.0`, `Engine::inbox_of`) | the card (§3): any thing's inbox, named by its writers through it |
-| `profile`, `profile_of`, `contact_card`, `import_contact` (core/osis/src/share.rs) | the schema library: a profile is a public thing; a contact card is a link to the contact-only thing with a reference to the profile |
+| `profile`, `profile_of`, `contact_card`, `import_contact` (osis-account, libs/account) | the schema library: a profile is a public thing; a contact card is a link to the contact-only thing with a reference to the profile |
 | thin clients acting as a thing minted with the account (core/osis/src/clients.rs) | stays core's, a node's policy: a client session's configured path |
 | connection proofs of an account (spec/permissions.md §4 Stranded, spec/sync-opens.md §2) | a proof of a key of a thing, with the path it claims as evidence |
 | CLI `me`, `pair`, `create --admin me`, `contact` (cli/src) | `me` prints the session's path; `--admin` defaults to the path's last thing; `pair` and `contact` call the library |

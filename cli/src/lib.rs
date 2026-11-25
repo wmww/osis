@@ -409,6 +409,7 @@ impl Ctx<'_> {
         match s {
             "me" => self.me().ok(),
             "node" => Some(self.db.node()),
+            "public" => Some(Tid::PUBLIC),
             _ => s.strip_prefix('$').and_then(|v| self.vars.get(v).copied()),
         }
     }

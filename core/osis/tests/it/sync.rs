@@ -313,6 +313,74 @@ fn a_revoked_links_joiner_stays_until_removed_spec_permissions_7() {
     assert!(!joined(&a), "removed");
 }
 
+// spec/permissions.md §1, §2 (the public), spec/wire.md §10 (public link), spec/sync-judgement.md
+// §1 (entitlement): a grant to the public lets every party read: a client actor of the node
+// granted nothing, and a stranger node by a public link, which a private thing has none of. The
+// public holds read at most, and removing its grant makes the thing private again.
+#[test]
+fn the_publics_grant_round_trip_spec_permissions_1() {
+    use osis::{GrantOpts, HolderKind, Tid};
+    let c = clock();
+    let net = ManualNet::new(c.clone());
+    let a = on(&net, 48, &c);
+    a.listen(&["peer://127.0.0.1:1".parse().unwrap()]).unwrap();
+    let b = on(&net, 49, &c);
+    let mut w = a.write();
+    let t = w.create_held().unwrap();
+    w.at(t, osis::core::NAME).set(&"open".to_string()).unwrap();
+    w.commit().unwrap();
+    let (actor, _) = a.add_client(None).unwrap();
+    let client = osis::internals::Internals::acting_as(&a, actor);
+    assert_eq!(client.at(t, osis::core::NAME).get().unwrap(), None, "a client granted nothing");
+    assert!(matches!(a.public_link(t), Err(Error::Invalid(_))), "not public");
+    assert!(matches!(a.grant(t, Tid::PUBLIC, Role::Write, GrantOpts::default()), Err(Error::Invalid(_))), "read at most");
+    assert!(matches!(a.grant(t, Tid::PUBLIC, Role::Read, GrantOpts { may_grant: true, ..GrantOpts::default() }), Err(Error::Invalid(_))));
+    a.grant(t, Tid::PUBLIC, Role::Read, GrantOpts::default()).unwrap();
+    assert!(a.holders(t).unwrap().iter().any(|h| h.actor == Tid::PUBLIC && h.kind == HolderKind::Public && h.role == Role::Read));
+    assert_eq!(client.at(t, osis::core::NAME).get().unwrap().as_deref(), Some("open"), "every party reads it");
+    let link = a.public_link(t).unwrap();
+    assert_eq!(link.target().unwrap(), t);
+    assert_eq!(drive(&net, b.redeem(&link, b.node())).unwrap(), t);
+    assert_eq!(b.at(t, osis::core::NAME).get().unwrap().as_deref(), Some("open"), "a stranger reads it by the link");
+    a.set_role(t, Tid::PUBLIC, None, osis::SetRoleOpts::default()).unwrap();
+    assert!(!a.grants(t).unwrap().contains_key(&Tid::PUBLIC));
+    assert_eq!(client.at(t, osis::core::NAME).get().unwrap(), None, "private again");
+    assert!(matches!(a.public_link(t), Err(Error::Invalid(_))));
+}
+
+// spec/sync-inbox.md §1 (Card): putting a thing's card needs its keys here and write on the host
+// through it; a stranger reading the host then holds its keys and grants it a
+// role. Removing a card needs write on the host.
+#[test]
+fn set_card_needs_keys_and_a_path_through_the_thing_spec_sync_inbox_1() {
+    use osis::{GrantOpts, Tid};
+    let c = clock();
+    let net = ManualNet::new(c.clone());
+    let a = on(&net, 50, &c);
+    a.listen(&["peer://127.0.0.1:1".parse().unwrap()]).unwrap();
+    let mut w = a.write();
+    let g = w.create_held().unwrap();
+    let p = w.create(g, None).unwrap();
+    w.hold(g, p).unwrap();
+    let elsewhere = w.create_held().unwrap();
+    w.commit().unwrap();
+    // g independent, with keys of its own: by a grant (here to a client actor)
+    let (actor, _) = a.add_client(None).unwrap();
+    a.grant(g, actor, Role::Read, GrantOpts::default()).unwrap();
+    let unknown = Tid::from_bytes([7; 15]);
+    assert!(matches!(a.set_card(p, unknown, Some(unknown)), Err(Error::UnknownActor { .. })), "no keys of it here");
+    assert!(matches!(a.set_card(elsewhere, g, Some(g)), Err(Error::Permission { .. })), "g does not write it");
+    a.set_card(p, g, Some(g)).unwrap();
+    a.grant(p, Tid::PUBLIC, Role::Read, GrantOpts::default()).unwrap();
+    let b = on(&net, 51, &c);
+    assert_eq!(drive(&net, b.redeem(&a.public_link(p).unwrap(), b.node())).unwrap(), p);
+    let mut w = b.write();
+    let t = w.create_held().unwrap();
+    w.commit().unwrap();
+    b.grant(t, g, Role::Read, GrantOpts::default()).unwrap();
+    a.set_card(p, g, None).unwrap();
+}
+
 // ---- leaving (spec/sync-set.md §3) ----
 
 // ---- sync unit sources: the hand-off (spec/sync-set.md §5) ----

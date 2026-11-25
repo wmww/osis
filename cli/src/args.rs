@@ -360,7 +360,11 @@ pub enum Cmd {
     /// Share links
     #[command(subcommand)]
     Link(LinkCmd),
-    /// Contact cards
+    /// Contact cards: a public link to an account's profile, which gives its keys
+    #[command(subcommand)]
+    Contact(ContactCmd),
+    /// Cards: a thing's keys and inbox put on another thing, so whoever reads that one can grant
+    /// it roles
     #[command(subcommand)]
     Card(CardCmd),
     /// Group chat
@@ -530,6 +534,9 @@ pub enum LinkCmd {
         #[arg(long)]
         single_use: bool,
     },
+    /// A public link to T, which the public reads (`grant T public read`); prints it, then waits
+    /// as `make` does
+    Public { t: String },
     /// Join what LINK names; prints the thing
     Redeem { link: String },
     /// The account's working links (of thing T)
@@ -557,7 +564,7 @@ pub enum ChatCmd {
         #[arg(long)]
         no_retain_copy: bool,
     },
-    /// Adds an account (a tid from `card import`); waits as `grant` does
+    /// Adds an account (a tid from `contact import`); waits as `grant` does
     Add {
         chat: String,
         account: String,
@@ -642,13 +649,23 @@ pub enum ChatCmd {
 }
 
 #[derive(Subcommand, Debug)]
-pub enum CardCmd {
-    /// This account's card (a read link to its profile): prints it, then waits as `link make`
-    /// does on the profile
+pub enum ContactCmd {
+    /// This account's contact card (a public link to its profile): prints it, then waits as
+    /// `link make` does on the profile
     Show,
+    /// Imports a contact card: prints its account, which can then be granted roles
     Import { card: String },
-    /// This account's profile thing, or the profile a card import brought for ACCOUNT
+    /// This account's profile thing, or the profile a contact import brought for ACCOUNT
     Profile { account: Option<String> },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum CardCmd {
+    /// Puts OF's card on ON naming INBOX (OF itself, or a thing taking its inbox signals); needs
+    /// write on ON through OF
+    Set { on: String, of: String, inbox: String },
+    /// Removes OF's card from ON
+    Rm { on: String, of: String },
 }
 
 #[derive(Subcommand, Debug)]
