@@ -9,3 +9,4 @@ osis-engine/retention::tests_carried::purge_by_id_reads_alike_forgotten_or_not_p
 osis-engine/retention::tests_carried::purge_by_id_reads_alike_forgotten_or_not_plain_spec_commits_5 rate:OSIS_PURGE_BY_ID_START=347698118767 issues/purge-by-id-forgetting.md purges through a name: 0 over \d+ seeds
 osis-engine/retention::tests_carried::purge_by_id_reads_alike_forgotten_or_not_plain_spec_commits_5 rate:OSIS_PURGE_BY_ID_START=532945376426 issues/purge-by-id-forgetting.md purges through a name: 1 over \d+ seeds
 osis-sync/differential::histories_hold_their_closure_plain rate:OSIS_SYNC_START=773223939837,OSIS_SYNC_SEEDS=1 issues/differential-full-size-classes.md panicked: must-hold bodies a caught-up reader lacks at quiet
+osis-sync/sims::a_peer_refusing_role_entries_plain rate:OSIS_SYNC_START=749306945350,OSIS_SYNC_SEEDS=1 issues/sim-lying-peer-unread-step-behind.md keeps thing \d+ unread at step .* its readers' head is \d+ deep
