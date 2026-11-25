@@ -124,6 +124,12 @@ pub struct Rule {
     /// D4, the reader's deposit on sight (notes/write-path-design.md §2): a node syncing S that
     /// cannot stamp it deposits the removal copies S's required set takes over its holdings.
     pub deposit: bool,
+    /// S's own thing's edge writes are all seeds of S (its key part), whatever its edge there
+    /// gives it. False: only on an edge giving it read, as the engine's derivation takes them
+    /// (`osis_engine::evidence`): one where S holds sync alone goes in its key part as sync copies
+    /// (spec/permissions.md §4 Key part), cut outside the derivation, which this model has no
+    /// role for.
+    pub key_part_whole: bool,
 }
 
 impl Rule {
@@ -131,7 +137,7 @@ impl Rule {
     /// edge write on a stated path's edges and on the edges its commit sets, lazy delivery, Role
     /// changes travel whole, lists whole; the engine's derivation (`osis_engine::evidence`).
     pub fn fixed() -> Rule {
-        Rule { placement: Placement::Function, keys_open: true, commit_edges: true, records: true, lists: Lists::Whole, keysets: true, deposit: false }
+        Rule { placement: Placement::Function, keys_open: true, commit_edges: true, records: true, lists: Lists::Whole, keysets: true, deposit: false, key_part_whole: true }
     }
     /// The control of Role changes travel's keys-open half: the actor seed alone (finding 19).
     pub fn actor_seed() -> Rule {
@@ -323,12 +329,13 @@ impl World {
         // the things whose holder roles travel under S: its own, and under Role changes travel
         // those S's thing holds read or above on, at any time
         let open = self.opened_by(rule, s, reads);
-        // S's own thing's: its key part, every edge write naming it; another open thing's
+        // S's own thing's: its key part, every edge write naming it (`Rule::key_part_whole`);
+        // another open thing's
         // travel only on an edge that gives its holder read (a held write giving read or above
         // valid over `h`, or the record): one giving no more than sync as `h` judges it goes in
         // the holder's key part alone, as sync copies, whatever invalid or pending writes on it
         // say (spec/permissions.md §4 Key part, Role changes travel)
-        let travels = |i: Id, hd: Thing| hd == s || reads.contains(&(hd, self.on(i))) || self.w.is_record((hd, self.on(i)));
+        let travels = |i: Id, hd: Thing| (hd == s && rule.key_part_whole) || reads.contains(&(hd, self.on(i))) || self.w.is_record((hd, self.on(i)));
         let mut seed: Set = h.iter().copied().filter(|&i| unit.contains(&self.on(i)) || self.holder(i).is_some_and(|hd| open.contains(&hd) && travels(i, hd))).collect();
         if rule.keysets {
             // a held keyset's carried demotions are evidence of it, each whole
