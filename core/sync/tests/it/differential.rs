@@ -175,9 +175,9 @@ fn an_inbox_moved_takes_grants_from_outside_spec_sync_inbox_1() {
 
 // spec/sync-set.md §2 (Public pieces: a removal's piece tells T's readers the public no longer
 // reads X): as above, then node 0 removes the public and writes again. Node 1 should stop reading
-// the thing; it never learns the removal (issues/public-removal-unheard.md).
+// the thing; it never learns the removal (issues/public-pieces-unheld.md).
 #[test]
-#[ignore = "issues/public-removal-unheard.md"]
+#[ignore = "issues/public-pieces-unheld.md"]
 fn repro_a_redeemer_learns_the_public_removed() {
     use crate::harness::history::{Gives, Holder};
     let (n, accounts, ..) = size();
