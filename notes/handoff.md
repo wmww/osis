@@ -8,18 +8,17 @@
 
 ## State
 - **Coordinator**: Spar. Agents run on main (no kept branches); security changes go through a branch, a reviewer and the gate.
-- **The sync rewrite and accounts as ordinary things are on main**, unreviewed as a whole. Accounts: built through spec, delete, keys, making an account, pairing and removal, proofs, models (perm and sync side) and counting; state, ignores and what's left: notes/accounts-switch-brief.md. Accounts functions live in the osis-account library (libs/account).
-- **Public things, cards and the library (A5 with A6 folded in)** are in progress on main: notes/public-and-cards-brief.md (order of work; pieces 1-2 done, piece 3 the public in perm/keys running).
-- **The one review and gate** over the sync rewrite plus accounts come at the end of the public-and-cards stage, which rewrites the same machinery (Tess: structure first).
+- **Built on main, unreviewed as a whole**: the sync rewrite, accounts as ordinary things, public things, cards and the account library (osis-account, libs/account). The big review over them is done; its fix wave is nearly through (issues/differential-full-size-classes.md holds what the full-size differential still finds).
 
-## The route
-One list, in order; notes/redesign-plan.md holds the stages and their reasons.
+## The route (Tess)
+Target: osis basically works, the big pieces in place, the architecture sensible and mostly settled; what is left is fixes, tweaks and verification. In order:
+1. **The design changes in flight**: destroying a thing ends access through it, may-grant to the public, grant box records dropped, removal notices sealed to the removed party, steps' needs (their issues).
+2. **Architectural slimming before dogfooding** (notes/priorities.md Slimmer things): it may churn the set of unknown issues, so it goes first. Philosophically sound changes that also work; usually less code.
+3. **The final review and gate** over everything since the sync rewrite (notes/gate.md: a big change on main is gated from a fresh claim with `--base`), fixes on main.
+4. **A light local dogfood pass** (chat between accounts, pairing, removing a node): testing finds problems; fix each at its level (mistake, architecture, or the model), never a workaround; where building it right is unclear, a design pass or a question for Tess. Many QA passes come later, before release.
+5. Then known issues, more dogfooding, and simplification beside them.
 
-1. **Public things, cards and the account library**: notes/public-and-cards-brief.md, pieces 3-8. Then the review and gate over everything since the sync rewrite.
-2. **What the rewrite still owes**: notes/sync-rewrite-state.md (Next), issues/disputes-storage-under-f6.md.
-3. **Then** a removal as evidence (what A2 did not already build) and clean-up. Cut each to what is still needed before starting.
-
-Tess's direction (notes/priorities.md, Structure first): right shape first, fixes after; main need not work between pieces; tests rewritten slimmer, not ported; two agents on the primary line when their pieces don't collide.
+Workflow and cleanup stay half the agents throughout (notes/coordination.md, Job mix).
 
 ## Old words and concepts
 - issues/deprecated-terms.md lists what is still in the repo though deprecated, each with what removing it takes, and what is gone. Most of what remains goes with accounts.
@@ -31,7 +30,7 @@ Tess's direction (notes/priorities.md, Structure first): right shape first, fixe
 - **No fix sized by its label.** Three times a class of failing tests labelled with one cause had three or more; one probe line per failing test (what it holds, which fire or box was refused) sizes a job in a session's first minutes. A cause written in a note says whether it was probed or guessed.
 
 ## Waiting on Tess
-Nothing. Her decisions from the last session are in notes/stubs.md, notes/principles.md (Deleting has no safe side) and the issues they touched.
+Nothing.
 
 ## Parked
 - Old branches on GitHub with nothing to land: `mizzen-a2-switch` (the sync rewrite before its last rebase; main has it) and `windlass-wiring-1` (a debug shadow of a walk since deleted). Delete them when Tess says.
