@@ -277,8 +277,13 @@ impl RoleEpochs {
         info.roles_reading.clear();
     }
 
-    /// Sets `e`'s roles secret, from a history entry opened under a secret not reading-only.
+    /// Sets `e`'s roles secret, from a history entry opened under a secret not reading-only. One
+    /// whose checked secret is held keeps none apart (it derives from the secret), as when the
+    /// secret came second (`set_secret`): the record is the same in either order.
     pub fn set_roles(&mut self, e: Epoch, roles: Secret32) {
+        if self.map.get(&e).is_some_and(|i| i.checked().is_some()) {
+            return;
+        }
         let info = self.observe(e);
         info.roles = Some(roles);
         info.roles_reading.clear();
@@ -940,6 +945,25 @@ mod tests {
             assert!(live.drop_reading_from(&u.commit));
             assert_eq!(live, rebuilt, "pending first: {pending_first}");
         }
+    }
+
+    // spec/crypto.md §4 (Roles secrets): an epoch's roles secret derives from its secret, so a
+    // node holding the checked secret keeps no roles secret apart, whichever came first: a live
+    // index that took the secret (a box) before a history entry carrying the roles secret is the
+    // record its store rebuilds, taking them the other way round.
+    #[test]
+    fn a_roles_secret_beside_its_checked_secret_is_kept_alike_in_either_order() {
+        let e = ep(3, 3);
+        let s = Secret32::from_bytes([1; 32]);
+        let rs = osis_crypto::roles_secret(&s);
+        let mut live = RoleEpochs::default();
+        live.set_secret(e, s.clone());
+        live.set_roles(e, rs.clone());
+        let mut rebuilt = RoleEpochs::default();
+        rebuilt.set_roles(e, rs.clone());
+        rebuilt.set_secret(e, s);
+        assert_eq!(live, rebuilt);
+        assert_eq!(live.checked_roles(&e), Some(rs));
     }
 
     #[test]

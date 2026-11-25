@@ -532,6 +532,9 @@ pub struct World {
     pub net: Net,
     /// Hostile nodes: each one's frames pass through its lie.
     liars: BTreeMap<usize, Liar>,
+    /// Nodes that lied in their own log (`Lie::Withhold`, `Lie::Forget`) at some point: what
+    /// their peers recorded of their logs stays as told after they tell the truth again.
+    pub(crate) lied_log: BTreeSet<usize>,
     /// Deliveries so far; past `cap` the world panics as a storm.
     pub deliveries: u64,
     /// Deliveries so far by node (the storm panic names the busiest).
@@ -590,6 +593,7 @@ impl World {
             nodes: Vec::new(),
             net,
             liars: BTreeMap::new(),
+            lied_log: BTreeSet::new(),
             deliveries: 0,
             delivered: BTreeMap::new(),
             cap: RULE_CAP,
@@ -1381,6 +1385,9 @@ impl World {
 
     /// Node `i`'s frames pass through `lie` from now on (`None`: it tells the truth again).
     pub fn lie(&mut self, i: usize, lie: Option<Lie>) {
+        if matches!(lie, Some(Lie::Withhold | Lie::Forget)) {
+            self.lied_log.insert(i);
+        }
         match lie {
             Some(l) => self.liars.insert(i, Liar::new(l)),
             None => self.liars.remove(&i),
@@ -1452,6 +1459,7 @@ impl World {
             nodes,
             net: self.net.clone(),
             liars: self.liars.clone(),
+            lied_log: self.lied_log.clone(),
             deliveries: 0,
             delivered: BTreeMap::new(),
             cap: self.cap,

@@ -1332,9 +1332,14 @@ fn closure_clauses(w: &mut World, refs: &mut Refs, m: &Model, gone: &BTreeSet<St
                 }
                 // a node keeping it unread stands where its readers do: moved along their recorded
                 // path to its head, or to a recorded sibling as deep (siblings stand: spec/sync-ids.md
-                // §6 Steps, Register), it takes what they log
+                // §6 Steps, Register), it takes what they log. Not a node that lied in its own log:
+                // its readers never saw it hold the rotation commits a step needs, so none
+                // registers the step there (spec/sync-ids.md §6 Steps; spec/sync.md §4, a peer's
+                // word changes only what that peer holds)
+                let hides_log = w.lied_log.contains(&i);
                 if let Some(s) = &ids[k]
                     && !excused
+                    && !hides_log
                     && want == Some(Holding::Unread)
                     && let Some((depth, recorded)) = recorded_steps(w, t, s)
                 {
