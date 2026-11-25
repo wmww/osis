@@ -117,7 +117,7 @@ impl Incoming {
             Incoming::Reply(to, ..) => Some(*to),
             Incoming::Request(_, m) | Incoming::Push(m) => match m.kind() {
                 34 | 36 | 37 | 38 | 40 | 45 | 46 => Some(To::Opens),
-                19 | 41 | 43 | 44 => Some(To::Streams),
+                19 | 41 | 43 | 44 | 47 => Some(To::Streams),
                 7 | 14 | 30 => Some(To::Inbox),
                 24 | 25 | 27 | 28 if matches!(self, Incoming::Request(..)) => Some(To::Port),
                 29 if matches!(self, Incoming::Push(..)) => Some(To::Port),
@@ -592,7 +592,7 @@ impl Session {
         if kind == 40 {
             return NO_RECORD_ID;
         }
-        let top = matches!(kind, 19 | 36..=41);
+        let top = osis_proto::msg::top_bit_kind(kind);
         loop {
             let id = if top {
                 self.next_top = if self.next_top >= MAX_ID as RequestId { TOP_BIT + 1 } else { self.next_top + 1 };

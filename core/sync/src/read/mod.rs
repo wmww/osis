@@ -318,6 +318,15 @@ impl Read {
                 g.forget_cert_blobs(&s, &now.gone)?;
                 acted = true;
             }
+            // a winner the own store lacks, fetched where shown (spec/permissions.md §4)
+            let before = was.as_ref().map(|w| w.fetch.clone()).unwrap_or_default();
+            for (at, blob) in before.difference(&now.fetch) {
+                self.owed.remove(&(s, None, Act::Fetch { at: *at, blob: *blob }));
+            }
+            for (at, blob) in now.fetch.difference(&before).copied().collect::<Vec<_>>() {
+                self.act(g, &s, None, Act::Fetch { at, blob })?;
+                acted = true;
+            }
             let before = was.map(|w| w.deletes.clone()).unwrap_or_default();
             for (at, head, blob) in before.difference(&now.deletes) {
                 self.owed.remove(&(s, None, Act::Delete { at: *at, head: *head, blob: *blob, full: false }));

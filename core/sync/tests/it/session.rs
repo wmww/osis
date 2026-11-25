@@ -308,11 +308,12 @@ fn request_ids_spec_wire_11_2() {
     let b = p.ds.request(To::Streams, Msg::Fetch { id: 0, max_reply: SMALL_REPLY as u64, ids: vec![(osis_base::SyncId([1; 16]), vec![osis_base::BlobId([2; 32])])] });
     let c = p.ds.request(To::Opens, Msg::NoRecord { id: 0 });
     let d = p.ds.request(To::Inbox, Msg::Ping { id: 0, wall_ms: 0 });
-    assert!(a & TOP_BIT != 0 && b & TOP_BIT != 0 && a != b && a != NO_RECORD_ID);
+    let w = p.ds.request(To::Streams, Msg::Want { id: 0, max_reply: SMALL_REPLY as u64, ids: vec![(osis_base::SyncId([1; 16]), vec![osis_base::CommitId([3; 32])])] });
+    assert!(a & TOP_BIT != 0 && b & TOP_BIT != 0 && w & TOP_BIT != 0 && a != b && a != NO_RECORD_ID);
     assert_eq!(c, NO_RECORD_ID);
     assert!(d != 0 && d & TOP_BIT == 0);
     let (_, ms) = frames(&p.ds.take_bytes(), false);
-    assert_eq!(ms.iter().map(Msg::id).collect::<Vec<_>>(), [a, b, c, d], "sent in the order made, each with its id");
+    assert_eq!(ms.iter().map(Msg::id).collect::<Vec<_>>(), [a, b, c, d, w], "sent in the order made, each with its id");
 }
 
 // spec/sync-streams.md §1 (flow control): at most `WINDOW` in flight, a request counting its frame and
@@ -372,6 +373,8 @@ fn routing_by_kind() {
     assert_eq!(req(Msg::Resume { id: 1, nonce: [0; 32], tags: Vec::new() }), Some(To::Opens));
     assert_eq!(req(Msg::NoRecord { id: NO_RECORD_ID }), Some(To::Opens));
     assert_eq!(req(pull(SMALL_REPLY as u64)), Some(To::Streams));
+    assert_eq!(req(Msg::Fetch { id: 1, max_reply: SMALL_REPLY as u64, ids: vec![(s, vec![osis_base::BlobId([2; 32])])] }), Some(To::Streams));
+    assert_eq!(req(Msg::Want { id: 1, max_reply: SMALL_REPLY as u64, ids: vec![(s, vec![osis_base::CommitId([3; 32])])] }), Some(To::Streams));
     assert_eq!(req(Msg::Delete { id: 1, sync_id: s, items: Vec::new() }), Some(To::Inbox));
     assert_eq!(req(Msg::Unsub { id: 1, sub_id: 2 }), Some(To::Port));
     assert_eq!(req(Msg::Auth { id: 1, secret: None, session_id: [0; 16] }), Some(To::Port));

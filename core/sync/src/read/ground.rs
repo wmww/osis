@@ -471,9 +471,12 @@ pub struct CertBlobsMissing {
     /// head write key where this node holds it (`Ground::stands`): stamped in place.
     pub stale: BTreeSet<osis_base::BlobId>,
     /// Certificate blobs of the kind the own store holds under S that carry nothing S carries
-    /// now, or lose to another there (all it carries of S's, and more, or the same with fewer
-    /// others, or the same under a lower ID): they leave it (`Ground::unlog`).
+    /// now, or lose to another counted (held here or shown at a source: all it carries of S's,
+    /// and more, or the same with fewer others, or the same under a lower ID): they leave it
+    /// (`Ground::unlog`).
     pub unneeded: BTreeSet<osis_base::BlobId>,
+    /// Winners the own store lacks, each at every source showing it: fetched there and kept.
+    pub fetch: BTreeSet<(Source, osis_base::BlobId)>,
     /// Deletes owed at sources keeping S unread, once S's sources are heard out: each blob there
     /// losing to another blob there (spec/sync-ids.md §6 Delete).
     pub deletes: BTreeSet<(Source, StepId, osis_base::BlobId)>,

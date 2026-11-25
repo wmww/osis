@@ -483,6 +483,12 @@ impl Net {
         let held = self.delayed.keys().next().map(|k| k.0);
         [wake, held].into_iter().flatten().min().filter(|at| *at <= until)
     }
+
+    /// `next_due`, else the earliest held-back input past `until`: quiet is no input in flight,
+    /// so one a node sent near the horizon still arrives (a timer's write at the horizon edge).
+    fn next_quiet(&self, until: WallMs) -> Option<WallMs> {
+        self.next_due(until).or_else(|| self.delayed.keys().next().map(|k| k.0))
+    }
 }
 
 /// The `Links` of one node: its outputs into the network.
@@ -1063,7 +1069,7 @@ impl World {
             return true;
         }
         let horizon = WallMs(self.now().0.saturating_add(self.horizon_ms));
-        let Some(at) = self.net.next_due(horizon) else { return false };
+        let Some(at) = self.net.next_quiet(horizon) else { return false };
         self.fire(at);
         true
     }
@@ -1089,15 +1095,15 @@ impl World {
         }
     }
 
-    /// Runs to quiet: delivers everything in flight, then jumps the clock to the earliest wake or
-    /// held-back input within `horizon_ms`, until neither is left. A complete pass still under way
+    /// Runs to quiet: delivers everything in flight, then jumps the clock to the earliest wake
+    /// within `horizon_ms` or held-back input (at any time), until neither is left. A complete pass still under way
     /// there ends within `PASS_WAIT_MS` (spec/sync-status.md §1): quiet waits it out, once.
     pub fn run(&mut self) {
         let mut horizon = WallMs(self.now().0.saturating_add(self.horizon_ms));
         let mut waited = false;
         loop {
             self.flush();
-            match self.net.next_due(horizon) {
+            match self.net.next_quiet(horizon) {
                 Some(at) => self.fire(at),
                 None if !waited && self.passes_under_way() => {
                     waited = true;

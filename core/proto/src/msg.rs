@@ -343,7 +343,7 @@ pub fn answers(request: u64, reply: u64) -> bool {
 
 /// Kinds whose id has its top bit set: the shared set's and the stream's requests and their
 /// answers, Fetch and FetchReply among them (spec/wire.md §11.2 Shared-set request ids).
-fn top_bit_kind(kind: u64) -> bool {
+pub fn top_bit_kind(kind: u64) -> bool {
     matches!(kind, 19 | 20 | 36..=42 | 47 | 48)
 }
 

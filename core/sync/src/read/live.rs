@@ -611,26 +611,35 @@ impl Ground for Live<'_, '_> {
         let at = |b: &BlobId| of.get(b).unwrap_or(&none);
         let all = |b: &BlobId| rows.get(b).map_or(0, |c| c.tids.len());
         let beats = |o: &BlobId, b: &BlobId| o != b && at(o).is_superset(at(b)) && (at(o).len(), std::cmp::Reverse(all(o)), std::cmp::Reverse(*o)) > (at(b).len(), std::cmp::Reverse(all(b)), std::cmp::Reverse(*b));
+        // counted: held in the own store or shown at a source; noted and neither, its row goes
         let mut held: BTreeMap<BlobId, Entry> = BTreeMap::new();
+        let mut counted = BTreeSet::new();
         for b in rows.keys() {
             match self.cx.store.entry(s, b)? {
-                Some(e) => drop(held.insert(*b, e)),
-                None if !self.streams.known().shown(s, b) => drop(out.gone.insert(*b)),
-                None => {}
+                Some(e) => {
+                    counted.insert(*b);
+                    held.insert(*b, e);
+                }
+                None if self.streams.known().shown(s, b) => drop(counted.insert(*b)),
+                None => drop(out.gone.insert(*b)),
             }
         }
-        // the own store: one carrying all S carries and nothing else, and none beside it
-        let mut whole = false;
+        let wins = |b: &BlobId| !at(b).is_empty() && !counted.iter().any(|o| beats(o, b));
+        // the own store holds the winners alone: one losing to any counted leaves it
         for (b, e) in &held {
-            let beaten = held.keys().any(|o| beats(o, b));
-            if at(b).is_empty() || beaten {
+            if !wins(b) {
                 out.unneeded.insert(*b);
-                continue;
-            }
-            if !self.under_head(s, e)? {
+            } else if !self.under_head(s, e)? {
                 out.stale.insert(*b);
             }
+        }
+        // a winner the own store lacks is fetched where shown, and stands as the log once kept
+        let mut whole = false;
+        for b in counted.iter().filter(|b| wins(b)) {
             whole |= rows.get(b).is_some_and(|c| c.tids == carried);
+            if !held.contains_key(b) {
+                out.fetch.extend(self.streams.known().shown_at(s, b).into_iter().map(|at| (at, *b)));
+            }
         }
         // nothing can be sealed under S yet (a rotation owed before encrypting): what is missing
         // is told once it can, so the effect acts then
