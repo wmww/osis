@@ -110,38 +110,44 @@ pub fn held(e: &Engine) -> Held {
     e.commit_parts_missing()
 }
 
-/// A node's held set and reads, at the engine (its restart count) and read point
-/// (`Engine::point`: a read repeats while it stands) they were taken at.
+/// A node's held set and reads (taken once it shares its held set with another node), at the
+/// engine (its restart count) and read point (`Engine::point`: a read repeats while it stands)
+/// they were taken at.
 pub struct View {
     at: (u64, osis_engine::engine::ReadPoint),
     held: Held,
-    reads: Reads,
+    reads: Option<Reads>,
 }
 
 /// spec/requirements.md (convergence): within every group of nodes holding the same parts of
 /// the same commits, reads agree. `nodes` are (index, restart count, engine) of the nodes that
-/// are up. A node's held set and reads are taken again only when its engine or read point moved
-/// since `views` saw it: the same judgment as reading every node at every check.
+/// are up. A node's held set is taken again only when its engine or read point moved since
+/// `views` saw it, and its reads only then and while another node holds what it holds: the same
+/// judgment as reading every node at every check.
 pub fn convergence(nodes: &mut [(usize, u64, &mut Engine)], views: &mut BTreeMap<usize, View>) -> std::result::Result<(), String> {
     for (i, restarts, e) in nodes.iter_mut() {
         let at = (*restarts, e.point());
         if views.get(i).is_some_and(|v| v.at == at) {
             continue;
         }
-        let held = held(e);
-        let reads = reads(e).map_err(|x| format!("node {i}: read failed: {x}"))?;
-        views.insert(*i, View { at, held, reads });
+        views.insert(*i, View { at, held: held(e), reads: None });
     }
-    let mut groups: BTreeMap<&Held, Vec<usize>> = BTreeMap::new();
+    let mut groups: BTreeMap<Held, Vec<usize>> = BTreeMap::new();
     for (i, _, _) in nodes.iter() {
         let v = views.get(i).ok_or_else(|| format!("node {i}: no view"))?;
-        groups.entry(&v.held).or_default().push(*i);
+        groups.entry(v.held.clone()).or_default().push(*i);
+    }
+    for (i, _, e) in nodes.iter_mut() {
+        let shared = groups.values().any(|g| g.len() > 1 && g.contains(i));
+        if let Some(v) = views.get_mut(i).filter(|v| shared && v.reads.is_none()) {
+            v.reads = Some(reads(e).map_err(|x| format!("node {i}: read failed: {x}"))?);
+        }
     }
     for holders in groups.values() {
         let Some((j, rest)) = holders.split_first() else { continue };
-        let first = views.get(j).map(|v| &v.reads);
-        let Some(&i) = rest.iter().find(|i| views.get(i).map(|v| &v.reads) != first) else { continue };
-        let (f, r) = (first.cloned().unwrap_or_default(), views.get(&i).map(|v| v.reads.clone()).unwrap_or_default());
+        let first = views.get(j).and_then(|v| v.reads.as_ref());
+        let Some(&i) = rest.iter().find(|i| views.get(i).and_then(|v| v.reads.as_ref()) != first) else { continue };
+        let (f, r) = (first.cloned().unwrap_or_default(), views.get(&i).and_then(|v| v.reads.clone()).unwrap_or_default());
         let (d, key) = diff(&f, &r);
         // divergence dump: the differing aspect's parts and state on each of them
         let mut dump = String::new();
