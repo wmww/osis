@@ -160,3 +160,68 @@ fn public_epochs_explore() {
     assert!(found[1].1 > 0, "grant only: reads");
     assert!(found[2].0 > 0, "while read: agree");
 }
+
+// Who hears the public's grant changes (held_model::closure::public_epochs, Heard; spec/sync-opens.md
+// §4, §6; spec/sync-set.md §5). P reads X by the public alone, offline while the public is removed:
+// a reader still showing the public entry of a recorded step (lapsed) opens X toward it ended at
+// once, served up to the removal, so P holds it and releases X. Control `Newest`: shown only while
+// its newest step lists it, nothing opens toward P and it keeps reading X for good.
+#[test]
+fn a_reader_by_the_public_offline_at_its_removal_hears_it() {
+    use held_model::closure::public_epochs::{Ev, Heard, Step, World};
+    let h = [Step::X(Ev::Grant), Step::SyncP, Step::X(Ev::Remove), Step::X(Ev::Rot)];
+    assert_eq!(World::heard(&h, Heard::SPEC), Default::default());
+    assert!(World::heard(&h, Heard { lapsed: false, ..Heard::SPEC }).agree, "newest only: P never hears");
+    // served whole on the lapsed entry, P gets the rotation written past the removal
+    assert!(World::heard(&h, Heard { ended: false, ..Heard::SPEC }).sealed, "whole: served past the removal");
+}
+
+// P offline across a rotation while the public still reads X: it tests the public entry while it
+// holds the public's grant, and the answer's entry box gives the new epoch. Control `RedeemOnly`
+// (tested only while redeeming): R shows its new read secret, P holds the old, and P reads nothing
+// written since.
+#[test]
+fn a_reader_by_the_public_offline_at_a_rotation_takes_the_new_epoch() {
+    use held_model::closure::public_epochs::{Ev, Heard, Step, World};
+    let h = [Step::X(Ev::Grant), Step::SyncP, Step::X(Ev::Rot)];
+    assert_eq!(World::heard(&h, Heard::SPEC), Default::default());
+    assert!(World::heard(&h, Heard { tests: false, ..Heard::SPEC }).reads);
+}
+
+// K keeps X unread when X is made public: its head lists the public entry, and it reads X by it as
+// a redeemer does. Control `StoreBlind`: no commit it is served opens, and it never counts X public.
+#[test]
+fn a_sync_holder_hears_the_public_granted() {
+    use held_model::closure::public_epochs::{Ev, Heard, Step, World};
+    let h = [Step::SyncK, Step::X(Ev::Grant)];
+    assert_eq!(World::heard(&h, Heard::SPEC), Default::default());
+    assert!(World::heard(&h, Heard { store: false, ..Heard::SPEC }).agree);
+}
+
+// Every history of up to six events and syncs: the spec breaks no property; each control breaks
+// its own.
+#[test]
+fn heard_explore() {
+    use held_model::closure::public_epochs::{histories, Heard, World};
+    let rules = [
+        ("spec", Heard::SPEC),
+        ("newest", Heard { lapsed: false, ..Heard::SPEC }),
+        ("whole", Heard { ended: false, ..Heard::SPEC }),
+        ("redeem only", Heard { tests: false, ..Heard::SPEC }),
+        ("store blind", Heard { store: false, ..Heard::SPEC }),
+    ];
+    let mut found = [(0usize, 0usize, 0usize); 5];
+    for h in histories(6) {
+        for (i, &(_, rule)) in rules.iter().enumerate() {
+            let b = World::heard(&h, rule);
+            found[i].0 += b.agree as usize;
+            found[i].1 += b.reads as usize;
+            found[i].2 += b.sealed as usize;
+        }
+    }
+    assert_eq!(found[0], (0, 0, 0), "spec");
+    assert!(found[1].0 > 0, "newest: agree");
+    assert!(found[2].2 > 0, "whole: sealed");
+    assert!(found[3].1 > 0, "redeem only: reads");
+    assert!(found[4].0 > 0, "store blind: agree");
+}

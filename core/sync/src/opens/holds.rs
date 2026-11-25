@@ -41,6 +41,10 @@ pub struct Creds {
     /// Hit on its step and a departed reader's on the epoch it holds, opening S ended
     /// (spec/sync-opens.md §4 Admissible, §6).
     pub walk: Vec<Shown>,
+    /// At a reader, S's public entry while the public is named on S's thing and reads it no
+    /// more: shown to every peer, an open by it ended at once, served up to the public's removal
+    /// (spec/sync-opens.md §4 Admissible, §6).
+    pub lapsed: Vec<Shown>,
 }
 
 impl Creds {
@@ -87,6 +91,9 @@ impl Creds {
         }
         if let Some((k, e)) = &self.step {
             h.update(b"k").update(&k.verifying_key().to_bytes()).update(&epoch_bytes(e));
+        }
+        for c in &self.lapsed {
+            h.update(b"l").update(c.matched());
         }
         h.finalize()
     }
@@ -219,10 +226,13 @@ fn node_creds(cx: &mut Cx, unread: &Unread, s: &SyncId) -> Option<Arc<Creds>> {
             for k in &rc.acting {
                 c.tests.push((Tested::Static { key: k.clone(), step: None }, None));
             }
-            // S's public entry: shown where the public reads S's thing, tested where this node
-            // redeems a public link to it (spec/sync-opens.md §4)
+            // S's public entry: shown where the public reads S's thing, lapsed where its removal
+            // is held; tested where it reads it or this node redeems a public link to it
+            // (spec/sync-opens.md §4)
             if rc.shows_public {
                 c.shows.push((Shown::Public(osis_crypto::public_entry(s)), None));
+            } else if rc.lapsed_public {
+                c.lapsed.push(Shown::Public(osis_crypto::public_entry(s)));
             }
             if rc.tests_public {
                 c.tests.push((Tested::Public, None));
@@ -291,6 +301,16 @@ pub(crate) fn member_until(cx: &mut Cx, s: &SyncId, by: &Credential) -> crate::t
     let end = cx.store.log_bounds()?.0;
     match (cx.store.synced(s), by) {
         (Some((_, Holding::Unread)), _) => Ok(cx.store.head_at(s)?.unwrap_or(end)),
+        // the public entry: up to the public's edge on S's thing, its removal last
+        (Some((_, Holding::Read | Holding::Keys)), Credential::Public) => {
+            let mut at = None;
+            for c in cx.engine.public_edge(s)? {
+                for b in cx.engine.commit_blobs(&c)?.iter() {
+                    at = at.max(cx.store.first_logged(s, b)?);
+                }
+            }
+            Ok(at.unwrap_or(end))
+        }
         (Some((_, Holding::Read | Holding::Keys)), Credential::ReadSecret(e)) => Ok(superseded_at(cx, s, e)?.unwrap_or(end)),
         _ => Ok(end),
     }
@@ -411,12 +431,20 @@ impl Holds for NodeHolds<'_, '_> {
             (_, Holding::Unread) => self.cx.store.path(s).ok()??.steps.clone(),
         };
         let (_, claims) = steps.last()?;
-        let entry_box = claims.as_ref()?.entries.get(entry)?.clone();
-        Some(Grant { entry_box: Some(entry_box), steps: steps.into_iter().map(|(st, _)| st).collect() })
+        let entry_box = claims.as_ref().and_then(|c| c.entries.get(entry)).cloned();
+        // a lapsed public entry (spec/sync-opens.md §5): the path alone, which the answer's `sig`
+        // is checked by
+        if entry_box.is_none() && *entry != osis_crypto::public_entry(s) {
+            return None;
+        }
+        Some(Grant { entry_box, steps: steps.into_iter().map(|(st, _)| st).collect() })
     }
 
     fn take_grant(&mut self, s: &SyncId, entry: &[u8; 32], grant: &Grant, signed: &dyn Fn(&[u8; 32]) -> bool) -> bool {
-        let Some(b) = grant.entry_box.as_ref() else { return false };
+        let Some(b) = grant.entry_box.as_ref() else {
+            // a lapsed public entry: the replier proved by its head's sync key, nothing learned
+            return *entry == osis_crypto::public_entry(s) && self.cx.engine.lapsed_public_key(s, &grant.steps).ok().flatten().is_some_and(|k| signed(&k));
+        };
         let Ok(Some(g)) = self.cx.engine.open_grant(s, entry, &grant.steps, b) else { return false };
         // verify first, learn after (spec/sync-opens.md §5)
         signed(&g.key) && self.cx.engine.learn_grant(&g).is_ok()

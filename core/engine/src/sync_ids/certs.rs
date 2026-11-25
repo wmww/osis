@@ -274,11 +274,18 @@ impl Engine {
     /// `g`'s edge piece on `x` (`key_part`): the commits writing `g`'s edge on `x`, boxing `g` in
     /// `x`'s `secrets.0`, or writing `x`'s `sync.0`, while `g` is named on `x`.
     pub(crate) fn key_part_on(&mut self, g: &Tid, x: &Tid) -> BTreeSet<CommitId> {
+        self.edge_on(g, x, true)
+    }
+
+    /// The commits writing `g`'s edge on `x` or boxing `g` there (`key_part_on` without `x`'s
+    /// `sync.0` writes).
+    pub(crate) fn edge_on(&mut self, g: &Tid, x: &Tid, steps: bool) -> BTreeSet<CommitId> {
         let mut out = BTreeSet::new();
         if !self.core.ix.held.is_named(g, x) {
             return out;
         }
-        for ak in ["roles.0", "secrets.0", "sync.0"] {
+        let aks: &[&str] = if steps { &["roles.0", "secrets.0", "sync.0"] } else { &["roles.0", "secrets.0"] };
+        for &ak in aks {
             let Ok(k) = osis_base::Ak::new(ak) else { continue };
             let cs: Vec<CommitId> = self.core.ix.by_aspect.get(&(*x, k)).into_iter().flatten().map(|(_, c)| *c).collect();
             for c in cs {

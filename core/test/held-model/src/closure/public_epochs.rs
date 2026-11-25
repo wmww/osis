@@ -164,3 +164,193 @@ pub fn all(n: usize) -> Vec<World> {
     }
     out
 }
+
+// ---- Who hears the public's grant changes (spec/sync-opens.md §4 the public entry, §6 Ending
+// opens; spec/sync-set.md §5 Source) ----
+//
+// The pieces above assume a logger of T holding X. Nodes that read or hold X only through the
+// public have no such logger: they hear X's role commits from X's own sync ID, at a source that
+// reads X (here `R`, holding every commit and step) and opens it toward them by some credential.
+// A history interleaves X's events with syncs of one party with R:
+// - `P` reads X by the public alone: a public link's redeemer (it tests the public entry while it
+//   redeems, entering X once it holds the public's grant), or a reader of a unit carrying X (or a
+//   dependent of X) by the public's grant (it syncs X's sync ID, served X's role commits): the same
+//   party to this model. It releases X, syncing it no more, once it holds a removal of the public.
+// - `K` keeps X unread (an account holding sync on X, a strong to it): R opens X toward it by J
+//   (sync holder), registers its steps there and serves it every entry, which K reads only under
+//   the epochs it holds.
+// Every event writes a step (spec/permissions.md §3: a step is due as the public's read starts and
+// at each read rotation); it lists the public entry exactly while the public reads X, and its entry
+// box for the public (open) holds its epoch. No per-reader record: R knows nothing of P or K but
+// what they show.
+
+/// The open rule under test. `Rule::SPEC` is the spec; each control drops or widens one clause.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Heard {
+    /// A reader shows S's public entry while a recorded step lists it, not only its newest: a Hit
+    /// on it past the newest step listing it opens a member ended at once (off: only while its
+    /// newest step lists it, the control `Newest`).
+    pub lapsed: bool,
+    /// A member opened on a lapsed public entry is ended at once, served up to the rotation
+    /// superseding the newest listing step's epoch (off: served whole, the control `Whole`).
+    pub ended: bool,
+    /// A node reading X by the public tests the public entry while it holds the public's grant,
+    /// not only while it redeems (off: the control `RedeemOnly`).
+    pub tests: bool,
+    /// A node keeping S unread whose head lists the public entry reads S by it, as a redeemer
+    /// does (off: the control `StoreBlind`).
+    pub store: bool,
+}
+
+impl Heard {
+    pub const SPEC: Heard = Heard { lapsed: true, ended: true, tests: true, store: true };
+}
+
+/// One step of a history: an event on X, or a sync of one party with R.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Step {
+    X(Ev),
+    SyncP,
+    SyncK,
+}
+
+/// What a party holds: the commits served it, the newest epoch an entry box gave it, whether it
+/// entered X (P: it holds the public's grant) or released it.
+#[derive(Clone, Debug, Default)]
+pub struct Party {
+    pub served: BTreeSet<usize>,
+    pub entry: Option<usize>,
+    pub entered: bool,
+    pub gone: bool,
+}
+
+/// Whether some property broke: `agree` (a party still holding X counts it public exactly when it
+/// is, after a final sync), `reads` (where public, it holds X's current epoch then), `sealed` (no
+/// commit written past the public's removal, while it does not read X, is served to a party that
+/// holds no role).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Broke {
+    pub agree: bool,
+    pub reads: bool,
+    pub sealed: bool,
+}
+
+impl World {
+    /// Whether the step written after the first `k` events lists the public entry, and its epoch.
+    fn step(&self, k: usize) -> (bool, usize) {
+        self.state(k)
+    }
+
+    /// The newest epoch a party holds and whether it counts X public, from the commits served it
+    /// it can open (each under the epoch before the one it gives) and its entry boxes.
+    pub fn view(&self, p: &Party, k: usize) -> (bool, Option<usize>) {
+        let commits = self.commits(k);
+        let mut held = p.entry;
+        loop {
+            let before = held;
+            for c in &commits {
+                if c.boxes_public && p.served.contains(&c.i) && held.is_some_and(|h| h >= c.under) {
+                    held = Some(held.map_or(c.epoch, |h| h.max(c.epoch)));
+                }
+            }
+            if held == before {
+                break;
+            }
+        }
+        let open = |c: &Rc| p.served.contains(&c.i) && held.is_some_and(|h| h >= c.under);
+        let public = commits.iter().rev().filter(|c| open(c)).map(|c| self.evs[c.i]).find(|e| *e != Ev::Rot).is_some_and(|e| e == Ev::Grant);
+        (public, held)
+    }
+
+    /// R opens S toward a party testing the public entry after `k` events: `Some(full)` where it
+    /// shows it (full: its newest step lists it), the commits it serves.
+    fn public_open(&self, rule: Heard, k: usize) -> Option<BTreeSet<usize>> {
+        let listing = (0..=k).rev().find(|&j| self.step(j).0)?;
+        if listing != k && !rule.lapsed {
+            return None;
+        }
+        if listing == k || !rule.ended {
+            return Some((0..k).collect());
+        }
+        // ended at once: up to the rotation superseding the listing step's epoch (the removal)
+        let until = (listing..k).find(|&i| self.evs[i] == Ev::Remove).unwrap_or(k - 1);
+        Some((0..=until).collect())
+    }
+
+    fn sync_p(&self, rule: Heard, p: &mut Party, k: usize, broke: &mut Broke) {
+        if p.gone {
+            return;
+        }
+        let (counts, held) = self.view(p, k);
+        let (listed, epoch) = self.step(k);
+        let tests_public = !p.entered || (rule.tests && counts);
+        let mut served = BTreeSet::new();
+        if let Some(s) = self.public_open(rule, k).filter(|_| tests_public) {
+            served.extend(s);
+            if listed {
+                p.entry = p.entry.max(Some(epoch));
+            }
+        }
+        // R shows its current read secret; P tests those it holds
+        if held == Some(epoch) {
+            served.extend(0..k);
+        }
+        if !listed {
+            let last_remove = (0..k).rev().find(|&i| self.evs[i] == Ev::Remove);
+            broke.sealed |= served.iter().any(|&i| last_remove.is_some_and(|r| i > r));
+        }
+        p.served.extend(served);
+        let (counts, _) = self.view(p, k);
+        if !p.entered && counts {
+            p.entered = true;
+        } else if p.entered && !counts {
+            p.gone = true;
+        }
+    }
+
+    fn sync_k(&self, rule: Heard, q: &mut Party, k: usize) {
+        // J: a sync holder; R registers its steps (K's head is R's newest) and serves it all
+        q.served.extend(0..k);
+        let (listed, epoch) = self.step(k);
+        if rule.store && listed {
+            // K reads S by the public entry its head lists: the answer's entry box
+            q.entry = q.entry.max(Some(epoch));
+        }
+    }
+
+    /// Runs `steps` (events on X among them: `self.evs` is ignored), then a final sync of each
+    /// party, and judges the properties.
+    pub fn heard(steps: &[Step], rule: Heard) -> Broke {
+        let evs: Vec<Ev> = steps.iter().filter_map(|s| if let Step::X(e) = s { Some(*e) } else { None }).collect();
+        let w = World { evs, to_dep: false };
+        let (mut p, mut q, mut broke, mut k) = (Party::default(), Party::default(), Broke::default(), 0);
+        for s in steps.iter().chain(&[Step::SyncP, Step::SyncK]) {
+            match s {
+                Step::X(_) => k += 1,
+                Step::SyncP => w.sync_p(rule, &mut p, k, &mut broke),
+                Step::SyncK => w.sync_k(rule, &mut q, k),
+            }
+        }
+        let (public, epoch) = w.state(k);
+        for (party, holds) in [(&p, !p.gone), (&q, true)] {
+            let (counts, held) = w.view(party, k);
+            if holds {
+                broke.agree |= counts != public;
+                broke.reads |= public && held != Some(epoch);
+            }
+        }
+        broke
+    }
+}
+
+/// Every history of up to `n` steps.
+pub fn histories(n: usize) -> Vec<Vec<Step>> {
+    let all = [Step::X(Ev::Grant), Step::X(Ev::Rot), Step::X(Ev::Remove), Step::SyncP, Step::SyncK];
+    let mut out: Vec<Vec<Step>> = vec![vec![]];
+    let mut last = out.clone();
+    for _ in 0..n {
+        last = last.iter().flat_map(|h| all.iter().map(|s| [h.clone(), vec![*s]].concat())).collect();
+        out.extend(last.iter().cloned());
+    }
+    out
+}

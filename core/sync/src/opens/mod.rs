@@ -568,7 +568,9 @@ struct Adm {
     /// the newest the Departed rule keeps out of `shows`), taken from a store only, and its read
     /// secrets at superseded epochs, shown in the filter: an open by one is ended at once, so this
     /// side registers past a store's keys or serves a reader its role entries up to its departure
-    /// (spec/sync-opens.md §6), whether or not S was open there at the removal.
+    /// (spec/sync-opens.md §6), whether or not S was open there at the removal. Toward every peer, a lapsed
+    /// public entry (`Creds::lapsed`), taken from any: ended at once likewise, served up to the
+    /// public's removal.
     walk: Vec<Shown>,
     step: Option<osis_crypto::SigningSecret>,
 }
@@ -2063,10 +2065,11 @@ impl Opens {
         let mut ok = |e: &Option<osis_crypto::Epoch>| j != J::Departed || e.as_ref().is_some_and(|e| ctx.holds.covers_departures(s, e));
         let (shows, rest): (Vec<_>, Vec<_>) = creds.shows.iter().partition(|(_, e)| ok(e));
         let shows = shows.into_iter().map(|(x, _)| x.clone()).collect();
-        let walk = match j {
+        let mut walk: Vec<Shown> = match j {
             J::Departed => rest.into_iter().map(|(x, _)| x).filter(|x| matches!(x, Shown::Proof(_))).chain(creds.walk.iter()).cloned().collect(),
             _ => Vec::new(),
         };
+        walk.extend(creds.lapsed.iter().cloned());
         let tests = creds.tests.iter().filter(|(_, e)| ok(e)).map(|(x, _)| x.clone()).collect();
         let step = creds.step.as_ref().filter(|(_, e)| ok(e)).map(|(k, _)| k.clone());
         let own = crate::types::class_of(creds.holding?);
@@ -2380,12 +2383,14 @@ impl Opens {
         // Judged on what this side holds now: a credential no longer shown proves nothing.
         let Some(adm) = self.admissible(ctx, conn, &s) else { return refuse };
         // a departed peer's Hit on its step (a store) or on a superseded epoch it reads at: opened
-        // only ended, a store to be moved past its keys, a reader to be served up to its departure
+        // only ended, a store to be moved past its keys, a reader to be served up to its departure;
+        // any peer's on a lapsed public entry, to be served up to the public's removal
         let walk = adm.walk.contains(&shown)
             && match shown {
                 Shown::Proof(_) => class == SourceClass::Store,
                 // a store reads nothing: a read secret proves a reader
                 Shown::Read(..) => class != SourceClass::Store,
+                Shown::Public(_) => true,
                 _ => false,
             };
         if !adm.shows.contains(&shown) && !walk {

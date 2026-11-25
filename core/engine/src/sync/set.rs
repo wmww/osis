@@ -220,7 +220,12 @@ impl Engine {
         for k in self.static_listed(t)? {
             c.statics.insert(osis_crypto::static_entry(s, &k));
         }
-        c.shows_public |= self.core.public_reads(t);
+        // the public entry: shown and tested while the public reads S's thing; shown lapsed while
+        // its removal is held (spec/sync-opens.md §4)
+        let public = self.core.public_reads(t);
+        c.shows_public |= public;
+        c.tests_public |= public;
+        c.lapsed_public |= !public && self.core.ix.held.is_named(&Tid::PUBLIC, t);
         if let Some((fs, l)) = self.core.followed_links.get(t)
             && fs == *s
         {
@@ -272,6 +277,17 @@ impl Engine {
             let Some(ep) = self.core.epochs(&t) else { continue };
             let read = ep.role(Role::Read);
             out.extend(read.epochs().filter(|(_, i)| i.established.is_some() && i.superseded_epochs().contains(e)).flat_map(|(_, i)| i.rotations.keys().copied()));
+        }
+        Ok(out)
+    }
+
+    /// The commits of the public's edge on `s`'s things (its grants, removals and the rotations
+    /// boxing it, spec/permissions.md §4 Key part, steps aside): a member opened on S's lapsed
+    /// public entry is served up to the last of them logged (spec/sync-opens.md §6).
+    pub fn public_edge(&mut self, s: &SyncId) -> Result<BTreeSet<CommitId>> {
+        let mut out = BTreeSet::new();
+        for t in self.opening_things(s)? {
+            out.extend(self.edge_on(&Tid::PUBLIC, &t, false));
         }
         Ok(out)
     }
