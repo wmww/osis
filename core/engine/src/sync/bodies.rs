@@ -365,7 +365,10 @@ impl Engine {
         // dropped here: no part of the body held (a part dropped beside a held one leaves the
         // body judged by what is held)
         let dropped = if b.parts.iter().all(|ai| m.dropped(*ai).is_some()) { b.parts.iter().find_map(|ai| m.dropped(*ai).map(|d| d.why)) } else { None };
-        let bad = |ai: usize| m.dropped_invalid(ai) || (m.holds(ai) && !m.valid_at(ai));
+        // Invariant: a part judged on missing evidence (unjudgeable: a record, an edge write or
+        // the step placing a listed delete key not held) is never judged invalid for it
+        // (spec/commits.md §4 Unjudgeable): held so, it waits, and its body stays logged
+        let bad = |ai: usize| m.dropped_invalid(ai) || (m.holds(ai) && !m.valid_at(ai) && !crate::apply::unjudgeable(&self.core, c, &h, &m.view, ai));
         // a request holding a right over some delta is in force whatever its parts are
         // (`Engine::forgettable`): a re-grant gives it force with its parts still invalid
         let invalid = !m.view.kind.is_role() && b.parts.iter().any(|ai| bad(*ai)) && b.parts.iter().all(|ai| bad(*ai) || m.dropped(*ai).is_some_and(|d| d.why == DropFor::Cover)) && (!m.view.purges || crate::retention::purge::drops_nothing(&self.core, c, &h));

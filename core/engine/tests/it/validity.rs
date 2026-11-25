@@ -262,6 +262,28 @@ fn a_delta_listing_a_key_no_step_bears_applies_nowhere_spec_crypto_7() {
     }
 }
 
+// spec/commits.md §4 (Unjudgeable: a commit judged on missing evidence is never judged invalid
+// for it), spec/sync-judgement.md §2 (Judged invalid): a delta listing a key no held step
+// places waits for the step (the reader cannot tell a wrong key from a `sync.0` write it lacks),
+// so its body under the thing's sync ID is not judged invalid: judged so, the reader would unlog
+// it, perhaps its last carrier, while the step that places it is on its way.
+#[test]
+fn a_body_listing_an_unplaced_key_is_not_judged_invalid_spec_commits_4() {
+    let (mut lp, d, _, _) = setup();
+    let x = ak("x:other.0");
+    let first = put(&mut lp, 1, d, &x, &s("first"));
+    sync(&mut lp, 1, 0);
+    let h = lp.peers[1].engine.header(&first).unwrap();
+    let ts = osis_base::Ts::make(WallMs(h.ts.wall_ms().0 + 5), 0).unwrap();
+    let forged = forge_reg_keyed(&mut lp, d, &x, h.aspects[0].hi, ts, "forged", false);
+    let id = osis_commit::CommitBlob::decode(&forged).unwrap().id();
+    lp.peers[0].receive(&forged, Vec::new()).unwrap();
+    assert_eq!(lp.peers[0].engine.get(&d, &x).unwrap(), Some(s("first")), "the delta waits");
+    let e = &mut lp.peers[0].engine;
+    let sd = e.sync_id_of(&d).unwrap().unwrap();
+    assert!(!e.body_facts(&sd, &osis_engine::sync::BodyId::unit(id)).unwrap().invalid, "unjudgeable, not invalid");
+}
+
 /// The ID of an applied ingest.
 fn applied(r: Ingested) -> osis_base::CommitId {
     match r {
@@ -2922,12 +2944,13 @@ fn inflated_snapshot_claims_count_nothing_spec_crdt_8() {
 /// A content commit signed by peer `by`'s key carrying only `created.0` of `rec`'s thing at `ts`,
 /// its delta `ops` run from counter `lo` (the record's view, else untyped), purgeable by `admin`.
 fn forge_created(lp: &mut LocalPeer, by: usize, rec: &osis_base::CreationRecord, ts: osis_base::Ts, lo: u64, ops: &[osis_crdt::PathOp], typed: bool) -> Result<Vec<u8>, String> {
-    forge_minting(lp, by, rec, ts, lo, ops, typed, osis_schema::PurgeBy::default(), rec.expires())
+    forge_minting(lp, by, rec, ts, lo, ops, typed, osis_schema::PurgeBy::default(), rec.expires(), true)
 }
 
-/// `forge_created` with purge-by `purge_by`, in a commit expiring at `expires`.
+/// `forge_created` with purge-by `purge_by`, in a commit expiring at `expires`, listing the
+/// delete keys the record's maker lists (`listed`) or made-up ones.
 #[allow(clippy::too_many_arguments)]
-fn forge_minting(lp: &mut LocalPeer, by: usize, rec: &osis_base::CreationRecord, ts: osis_base::Ts, lo: u64, ops: &[osis_crdt::PathOp], typed: bool, purge_by: osis_schema::PurgeBy, expires: Option<u64>) -> Result<Vec<u8>, String> {
+fn forge_minting(lp: &mut LocalPeer, by: usize, rec: &osis_base::CreationRecord, ts: osis_base::Ts, lo: u64, ops: &[osis_crdt::PathOp], typed: bool, purge_by: osis_schema::PurgeBy, expires: Option<u64>, listed: bool) -> Result<Vec<u8>, String> {
     use osis_commit::{AspectWrite, CommitBuilder, Kind, MemoryBlobs, writer_ctx};
     use osis_crdt::{DeltaBuilder, Delta, Writer, encode_delta};
     let view = osis_schema::core_schema().view("created.0").unwrap();
@@ -2951,7 +2974,9 @@ fn forge_minting(lp: &mut LocalPeer, by: usize, rec: &osis_base::CreationRecord,
     cb.aspects.push(aw);
     cb.expires = expires;
     let forge_key = lp.peers[by].engine.identity().signing().clone();
-    Ok(cb.build(&forge_key, &lp.peers[0].engine.hand_secrets(std::slice::from_ref(rec)), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(0)).map_err(|e| format!("{e:?}"))?.commit.encode())
+    let secrets = lp.peers[0].engine.hand_secrets(std::slice::from_ref(rec));
+    let secrets = if listed { secrets } else { secrets.all_made_up() };
+    Ok(cb.build(&forge_key, &secrets, &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(0)).map_err(|e| format!("{e:?}"))?.commit.encode())
 }
 
 /// Bob's minting of `rec` at peer 1, stamped `k` ms from now: one write setting the record,
@@ -2959,7 +2984,7 @@ fn forge_minting(lp: &mut LocalPeer, by: usize, rec: &osis_base::CreationRecord,
 fn reminting(lp: &mut LocalPeer, rec: &osis_base::CreationRecord, k: u64, lo: u64, by: osis_base::PurgeBy, expires: Option<u64>) -> Vec<u8> {
     use osis_crdt::{Op, PathOp};
     let ts = osis_base::Ts::make(WallMs(lp.peers[1].engine.now().0 + k), 0).unwrap();
-    forge_minting(lp, 1, rec, ts, lo, &[PathOp { path: Vec::new(), op: Op::Set(rec.to_value()) }], true, by, expires).unwrap()
+    forge_minting(lp, 1, rec, ts, lo, &[PathOp { path: Vec::new(), op: Op::Set(rec.to_value()) }], true, by, expires, true).unwrap()
 }
 
 /// Peer 0's purge of `x`'s creation.
@@ -3126,6 +3151,30 @@ fn padded_durable_created_refused_spec_commits_2() {
     assert_eq!(lp.peers[0].engine.get(&x, &ak("t:reg.0")).unwrap(), Some(s("x")));
     assert_eq!(created(&mut lp), Some(rec));
     assert!(matches!(lp.peers[0].engine.snapshot(&x, &ak("created.0")), Err(osis_engine::Error::Misuse(_))));
+}
+
+// spec/crypto.md §7 (Checked keys: `created.0` excepted), spec/permissions.md §1 (a record needs
+// no authority): Bob's minting of x listing made-up delete keys leaves every other delta of it
+// unjudgeable, but its `created.0` hashes to x's tid and applies: x exists at Alice's node.
+#[test]
+fn a_minting_listing_unplaced_keys_still_creates_spec_crypto_7() {
+    use osis_crdt::{Op, PathOp};
+    let (mut lp, d, b, _) = setup();
+    lp.peers[0].engine.grant(&d, &b, &edge(Role::Write)).unwrap();
+    lp.sync_all().unwrap();
+    lp.peers[1].engine.hold(osis_base::Strong(d)).unwrap();
+    let mut m = Mutation::new();
+    let x = lp.peers[1].engine.new_thing(&mut m, d);
+    m.set(x, &REG, &s("x")).unwrap();
+    lp.peers[1].commit(m).unwrap().unwrap();
+    lp.hold(x);
+    let rec = lp.peers[1].engine.get_typed(&x, &osis_schema::core_types::CREATED).unwrap().unwrap();
+    let ts = osis_base::Ts::make(WallMs(lp.peers[1].engine.now().0 + 1), 0).unwrap();
+    let forged = forge_minting(&mut lp, 1, &rec, ts, 5000, &[PathOp { path: Vec::new(), op: Op::Set(rec.to_value()) }], true, osis_schema::PurgeBy::default(), rec.expires(), false).unwrap();
+    let id = osis_commit::CommitBlob::decode(&forged).unwrap().id();
+    lp.peers[0].receive(&forged, Vec::new()).unwrap();
+    assert_eq!(lp.peers[0].engine.get_typed(&x, &osis_schema::core_types::CREATED).unwrap(), Some(rec));
+    assert_eq!(lp.peers[0].engine.creation(&x).map(|c| c.commit), Some(id), "the minting creates x");
 }
 
 // spec/crdt.md §8 (frontiers and absorbed are no receipts), spec/permissions.md §5.2 (a valid s vouches for every write it carries): Bob's tags are compacted into Carol's snapshot S
