@@ -77,7 +77,7 @@ pub(super) fn all_boxed(lp: &mut LocalPeer, i: usize, actors: &[Tid]) -> bool {
         let s = lp.peers[i].engine.get_typed(t, &ct::SECRETS).unwrap().unwrap();
         let core = &mut lp.peers[i].engine.core;
         let ms: Vec<osis_keys::Holder> = core.key_holders(t).into_iter().filter_map(|(holder, role)| Some(osis_keys::Holder { holder, role: super::members::keyed_role(core, t, &holder, role)? })).collect();
-        osis_keys::reseal_needed(&s, &e, &ms).is_empty()
+        osis_keys::reseal_needed(t, &s, &e, &ms).is_empty()
     })
 }
 

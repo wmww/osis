@@ -207,7 +207,7 @@ fn reorder_holding_e2_without_e1() {
         Holder { holder: w.a2, role: Role::Admin },
         Holder { holder: w.m1, role: Role::Read },
     ];
-    assert!(reseal_needed(&s2, &a2v, &holders).is_empty());
+    assert!(reseal_needed(&w.a, &s2, &a2v, &holders).is_empty());
     let out = box_holder(&w.a, &a2v, &hist(&w.a, &a2v, &s2), &w.rcpt(w.m1), &roles(&[Role::Read]), &mut w.rng).unwrap().unwrap();
     assert!(!out.boxes.contains_key(&box_key(w.m1, Role::Read, &e2)));
     assert!(!out.history.contains_key(&history_key(Role::Read, &e2)));
@@ -255,7 +255,7 @@ fn snapshot_established_needs_departure() {
     assert_eq!(v.read.current(), vec![e1]);
     assert!(unvouched(&s1, &v).unwrap().is_empty());
     // a reader lacks sync boxes too (the test boxes read alone)
-    assert_eq!(reseal_needed(&s1, &v, &holders), vec![(g, [Role::Sync, Role::Read].into_iter().collect())]);
+    assert_eq!(reseal_needed(&w.a, &s1, &v, &holders), vec![(g, [Role::Sync, Role::Read].into_iter().collect())]);
     assert!(box_holder(&w.a, &v, &hist(&w.a, &v, &s1), &rc, &roles(&[Role::Read]), &mut w.rng).unwrap().is_some());
 }
 

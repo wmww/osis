@@ -998,7 +998,7 @@ fn reseal_scan(tx: &mut Tx<'_>, a: &Tid) -> Result<Vec<(Tid, BTreeSet<Role>)>> {
     let Some(epochs) = tx.core.epochs(a) else { return Ok(Vec::new()) };
     let secrets = secrets_in(tx, a)?;
     let holders: Vec<osis_keys::Holder> = tx.core.key_holders(a).into_iter().map(|(holder, role)| osis_keys::Holder { holder, role }).collect();
-    let due = osis_keys::reseal_needed(&secrets, &epochs, &holders);
+    let due = osis_keys::reseal_needed(a, &secrets, &epochs, &holders);
     let ended = ended_holders(tx.core, &me, a);
     let mut out = Vec::new();
     for (m, roles) in due.into_iter().filter(|(m, _)| !ended.contains(m)) {
@@ -1009,7 +1009,7 @@ fn reseal_scan(tx: &mut Tx<'_>, a: &Tid) -> Result<Vec<(Tid, BTreeSet<Role>)>> {
         // so the trigger settles.
         // and only at an epoch the holder's floor allows (spec/crypto.md §4, the boxing rule)
         let floor = floors::holder_floor(tx.core, a, &m);
-        let mut keep: BTreeSet<Role> = roles.into_iter().filter(|r| may.contains(r) && osis_keys::reseal_missing(&secrets, &epochs, &m, *r).iter().any(|e| epochs.role(*r).secret(e).is_some() && epochs.role(*r).allows(e, floor))).collect();
+        let mut keep: BTreeSet<Role> = roles.into_iter().filter(|r| may.contains(r) && osis_keys::reseal_missing(a, &secrets, &epochs, &m, *r).iter().any(|e| epochs.role(*r).secret(e).is_some() && epochs.role(*r).allows(e, floor))).collect();
         let Some(role) = holders.iter().find(|h| h.holder == m).map(|h| h.role) else { continue };
         if keep.is_empty() {
             continue;
@@ -1078,7 +1078,7 @@ pub(crate) fn reseal_one_into(tx: &mut Tx<'_>, a: Tid, holder: Tid, roles: &BTre
         Sealed::Boxed(r) => r,
         Sealed::Out => return Err(Error::Misuse("the holder has no key access or no keyset this node may seal it to")),
     };
-    let missing = |r: Role| osis_keys::reseal_missing(&secrets, &epochs, &holder, r).iter().any(|e| epochs.role(r).secret(e).is_some());
+    let missing = |r: Role| osis_keys::reseal_missing(&a, &secrets, &epochs, &holder, r).iter().any(|e| epochs.role(r).secret(e).is_some());
     let held = |r: Role| epochs.role(r).current().iter().any(|e| epochs.role(r).secret(e).is_some());
     let roles: BTreeSet<Role> = roles
         .iter()

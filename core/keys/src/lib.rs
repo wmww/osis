@@ -22,7 +22,7 @@ pub use aspects::{KeysWrite, SecretsWrite, keyset, observe_secrets, snapshot_key
 pub use epoch::{ActorEpochs, EpochInfo, MAX_FREE_N, MAX_READING, MAX_READING_PER_AUTHOR, Provenance, ROLES, RoleEpochs, SUITE, UNKNOWN_AUTHOR, Unchecked, is_newer, newest_of};
 pub use names::{AllHeld, Held, Key, Name, Names, NamesDigest, Own};
 pub use error::Error;
-pub use open::{HistoryAlts, Opened, Opener, ingest, ingest_held, ingest_with, open_boxes, open_histories};
+pub use open::{HistoryAlts, has_box, Opened, Opener, ingest, ingest_held, ingest_with, open_boxes, open_histories};
 pub use osis_crypto::Epoch;
 pub use delete::delete_candidates;
 pub use wrap::{UNDER_ROLES, newer_than_head, registered_epoch, registered_key, registration_epochs, under_roles, wrap_epoch};

@@ -5,7 +5,7 @@
 use crate::aspects::{KeysWrite, SecretsWrite, box_key, from_schema, history_key, keyset, keyset_of, to_schema};
 use crate::epoch::{ActorEpochs, Provenance, ROLES, SUITE, is_newer, newest_of};
 use crate::names::{Held, Names};
-use crate::open::HistoryAlts;
+use crate::open::{HistoryAlts, has_box};
 use crate::Error;
 use osis_base::{Role, Tid};
 use osis_crypto::{
@@ -491,7 +491,7 @@ fn dropped_items<'a>(held: &'a ActorEpochs, rcpt: &Recipient, epochs: impl IntoI
 }
 
 /// The re-seal the trigger asks for (`reseal_needed`): `box_holder` at only the current epochs
-/// `rcpt` has no box at in `boxed` (`reseal_missing`), so it puts boxes and replaces none;
+/// `rcpt` has no box at in `boxed` (`reseal_missing`), so it puts boxes and replaces only ignored ones;
 /// `Error::NoSecret` when a role
 /// has no such epoch held.
 pub fn reseal_holder(
@@ -503,7 +503,7 @@ pub fn reseal_holder(
     roles: &BTreeSet<Role>,
     rng: &mut dyn CryptoRngCore,
 ) -> Result<Option<SecretsWrite>, Error> {
-    box_at(actor, held, hist, rcpt, roles, &|r, e| !boxed.boxes.contains_key(&box_key(rcpt.holder, r, e)), rng)
+    box_at(actor, held, hist, rcpt, roles, &|r, e| !has_box(actor, boxed, &box_key(rcpt.holder, r, e)), rng)
 }
 
 /// `box_holder` at the current epochs `want` names.

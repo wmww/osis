@@ -137,8 +137,8 @@ fn rotation_keeps_other_roles_boxes() {
     want.sort();
     assert_eq!(s.boxes.keys().filter(|b| b.holder == osis_base::Weak(k)).cloned().collect::<Vec<_>>(), want);
     let holders = [Holder { holder: k, role: Role::Write }];
-    assert!(reseal_missing(&s, &v, &k, Role::Read).is_empty());
-    assert!(reseal_needed(&s, &v, &holders).is_empty());
+    assert!(reseal_missing(&f.a, &s, &v, &k, Role::Read).is_empty());
+    assert!(reseal_needed(&f.a, &s, &v, &holders).is_empty());
     let mut kv = ActorEpochs::default();
     ingest(&f.a, &s, &Opener { holder: k, epochs: &ke }, &mut kv, None).unwrap();
     assert!(f.forks.iter().all(|e| kv.read.secret(e).is_some()), "both read forks held");

@@ -90,3 +90,36 @@ fn the_public_is_granted_at_most_read_without_may_grant() {
     let sync: BTreeSet<_> = current_read_sync(&lp, 0, g).into_iter().filter(|x| x.0 == Role::Sync).collect();
     assert_eq!(open_boxes(&mut lp, 0, g), sync, "a sync grant boxes the sync secret alone");
 }
+
+// A box to the public of another form than open, or an open box whose secret does not name its
+// key's epoch, is ignored (spec/crypto.md §4 Boxes), so it is no box to the re-seal trigger
+// (spec/permissions.md §3 Re-seal): a writer's junk at the public's keys is re-sealed over and
+// anyone opens g's current read and sync epochs again.
+#[test]
+fn an_ignored_box_to_the_public_is_resealed_over() {
+    use osis_crdt::{Op, PathOp, PathSeg};
+    use osis_schema::Codec;
+    let (mut lp, g, _) = granted(2, &[(1, Role::Write)]);
+    lp.peers[0].engine.grant(&g, &Tid::PUBLIC, &edge(Role::Read)).unwrap();
+    lp.sync_all().unwrap();
+    let current = current_read_sync(&lp, 0, g);
+    let mut m = crate::Mutation::new();
+    for (r, e) in &current {
+        let junk = match r {
+            Role::Read => ct::SecretBox::Sealed(ct::SealedBox { keyset: None, suite: 1, sealed: ct::Sealed::X25519MlKem768(vec![0x66; 64]) }),
+            _ => ct::SecretBox::Open(vec![0x66; 40]),
+        };
+        let key = osis_keys::aspects::box_key(Tid::PUBLIC, *r, e);
+        m.op(g, &ct::SECRETS, PathOp { path: vec![PathSeg::Field(0), PathSeg::Key(key.to_value())], op: Op::Set(junk.to_value()) }).unwrap();
+    }
+    m.unchecked();
+    lp.peers[1].engine.core.skip_writer_rules = true;
+    lp.peers[1].commit(m).unwrap().unwrap();
+    lp.peers[1].engine.core.skip_writer_rules = false;
+    lp.sync_all().unwrap();
+    let s = lp.peers[0].engine.get_typed(&g, &ct::SECRETS).unwrap().unwrap();
+    assert!(current.iter().all(|(r, e)| !osis_keys::has_box(&g, &s, &osis_keys::aspects::box_key(Tid::PUBLIC, *r, e))), "the junk applied, ignored");
+    assert!(!lp.peers[0].engine.reseal_after_pass(&g).unwrap().commits.is_empty(), "the trigger re-seals the public");
+    assert_eq!(current_read_sync(&lp, 0, g), current, "a re-seal, no rotation");
+    assert_eq!(opened_by_anyone(&mut lp, g), current);
+}

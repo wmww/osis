@@ -5,6 +5,7 @@
 
 use crate::aspects::box_key;
 use crate::epoch::{ActorEpochs, ROLES};
+use crate::open::has_box;
 use crate::names::{Held, Key, Name, Names};
 use osis_base::{Role, Tid};
 use osis_crypto::Epoch;
@@ -193,10 +194,10 @@ pub struct Holder {
 /// Re-seal trigger (spec/permissions.md §3): holders lacking a box at a current epoch of a role
 /// they hold, with the roles to re-seal (`box_holder`). The caller decides after a sync pass of
 /// the actor's sync IDs that fetched everything, and only for roles it may rotate.
-pub fn reseal_needed(secrets: &Secrets, epochs: &ActorEpochs, holders: &[Holder]) -> Vec<(Tid, BTreeSet<Role>)> {
+pub fn reseal_needed(actor: &Tid, secrets: &Secrets, epochs: &ActorEpochs, holders: &[Holder]) -> Vec<(Tid, BTreeSet<Role>)> {
     let mut out = Vec::new();
     for m in holders {
-        let roles: BTreeSet<Role> = ROLES.into_iter().filter(|r| *r <= m.role).filter(|r| !reseal_missing(secrets, epochs, &m.holder, *r).is_empty()).collect();
+        let roles: BTreeSet<Role> = ROLES.into_iter().filter(|r| *r <= m.role).filter(|r| !reseal_missing(actor, secrets, epochs, &m.holder, *r).is_empty()).collect();
         if !roles.is_empty() {
             out.push((m.holder, roles));
         }
@@ -204,10 +205,10 @@ pub fn reseal_needed(secrets: &Secrets, epochs: &ActorEpochs, holders: &[Holder]
     out
 }
 
-/// The current epochs of `r` at which the re-seal trigger finds `holder` without a box
-/// (`reseal_needed`).
-pub fn reseal_missing(secrets: &Secrets, epochs: &ActorEpochs, holder: &Tid, r: Role) -> Vec<Epoch> {
-    epochs.role(r).current().into_iter().filter(|e| !secrets.boxes.contains_key(&box_key(*holder, r, e))).collect()
+/// The current epochs of `r` of `actor` at which the re-seal trigger finds `holder` without a box
+/// (`reseal_needed`): an ignored box is none (`has_box`).
+pub fn reseal_missing(actor: &Tid, secrets: &Secrets, epochs: &ActorEpochs, holder: &Tid, r: Role) -> Vec<Epoch> {
+    epochs.role(r).current().into_iter().filter(|e| !has_box(actor, secrets, &box_key(*holder, r, e))).collect()
 }
 
 #[cfg(test)]

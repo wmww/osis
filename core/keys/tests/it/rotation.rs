@@ -38,10 +38,10 @@ fn grant_raced_by_read_rotation() {
     v = rot.preview(&v).unwrap();
     let er2 = rot.role(Role::Read).unwrap().epoch;
     let holders = [Holder { holder: k, role: Role::Write }];
-    assert_eq!(reseal_needed(&s, &v, &holders), vec![(k, roles(&[Role::Read]))]);
+    assert_eq!(reseal_needed(&a, &s, &v, &holders), vec![(k, roles(&[Role::Read]))]);
     let w = box_holder(&a, &v, &hist(&a, &v, &s), &actor_rcpt(k, Role::Write, &ke), &roles(&[Role::Read]), &mut *rg).unwrap().unwrap();
     w.apply(&mut s);
-    assert!(reseal_needed(&s, &v, &holders).is_empty());
+    assert!(reseal_needed(&a, &s, &v, &holders).is_empty());
     let mut kv = ActorEpochs::default();
     ingest(&a, &s, &Opener { holder: k, epochs: &ke }, &mut kv, None).unwrap();
     assert!(kv.read.secret(&er2).is_some());

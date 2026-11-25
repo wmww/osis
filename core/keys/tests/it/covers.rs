@@ -58,10 +58,10 @@ fn grant_raced_by_rotation() {
     let mut v = view.clone();
     v = rot.preview(&v).unwrap();
     let holders = [Holder { holder: p, role: Role::Admin }, Holder { holder: g, role: Role::Read }];
-    assert_eq!(reseal_needed(&s, &v, &holders), vec![(g, read())]);
+    assert_eq!(reseal_needed(&a, &s, &v, &holders), vec![(g, read())]);
     let reseal = osis_keys::box_holder(&a, &v, &hist(&a, &v, &s), &actor_rcpt(g, Role::Read, &ge), &read(), &mut *rg).unwrap().unwrap();
     reseal.apply(&mut s);
-    assert!(reseal_needed(&s, &v, &holders).is_empty());
+    assert!(reseal_needed(&a, &s, &v, &holders).is_empty());
     let mut gv = ActorEpochs::default();
     ingest(&a, &s, &Opener { holder: g, epochs: &ge }, &mut gv, None).unwrap();
     assert!(gv.read.secret(&v.read.newest().unwrap()).is_some());
@@ -114,7 +114,7 @@ fn rotation_held_before_the_removal() {
     w.apply(&mut s);
     let kdep = [removal(k, 10).0];
     assert!(!uncovered(&v, Role::Read, &e3, &kdep, &AllHeld).is_empty());
-    assert!(reseal_needed(&s, &v, &[Holder { holder: k, role: Role::Write }]).is_empty());
+    assert!(reseal_needed(&a, &s, &v, &[Holder { holder: k, role: Role::Write }]).is_empty());
 }
 
 // spec/crypto.md §4 (Boxes decide nothing), study C2: an epoch whose rotation left M unboxed

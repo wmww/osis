@@ -51,6 +51,20 @@ fn open_boxes_where(actor: &Tid, secrets: &Secrets, opener: &Opener, try_key: im
     (out, failed)
 }
 
+/// Whether `secrets` holds a box at `k` that is not ignored as far as its bytes show
+/// (spec/crypto.md §4 Boxes): to the public an open box naming its key's epoch, to a thing a box
+/// of another form (whose secret only its holder can check).
+pub fn has_box(actor: &Tid, secrets: &Secrets, k: &BoxKey) -> bool {
+    let Some(b) = secrets.boxes.get(k) else { return false };
+    match b {
+        SecretBox::Open(payload) => {
+            k.holder.0.is_public()
+                && from_schema(&k.epoch).is_ok_and(|epoch| read_open_box(&BoxSlot::Secrets { actor: *actor, holder: k.holder.0, role: k.role, epoch }, payload).is_ok())
+        }
+        _ => !k.holder.0.is_public(),
+    }
+}
+
 /// `Ok(None)`: the opener holds no key for this box.
 fn open_one(actor: &Tid, k: &BoxKey, b: &SecretBox, opener: &Opener) -> Result<Option<Opened>, Error> {
     let epoch = from_schema(&k.epoch)?;
