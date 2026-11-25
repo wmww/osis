@@ -93,7 +93,8 @@ pub enum Moved {
 pub struct LeftAt {
     /// The record it left: where its rows live (a record kept nowhere: the connection).
     pub src: Source,
-    /// Its reported position (spec/sync-opens.md §6 Lost).
+    /// Its reported position (spec/sync-opens.md §6 Lost), as it tells what the peer holds
+    /// (spec/sync-status.md §2): none for one ended for its departure, shown role entries alone.
     pub reported: Option<Position>,
     /// Its `until`, an ended member's.
     pub until: Option<Position>,
@@ -1175,7 +1176,7 @@ impl Opens {
             self.member_stamps.wrote(&(conn, *s), false);
             self.peers.wrote(s, true);
             if let Source::Conn(_) = src {
-                moved.push(Moved::Left(conn, *s, LeftAt { src, reported: c.reported.get(s).map(|(p, _)| *p), until: m.until, how: Leaving::Kept }));
+                moved.push(Moved::Left(conn, *s, LeftAt { src, reported: c.reported.get(s).filter(|_| !m.departed).map(|(p, _)| *p), until: m.until, how: Leaving::Kept }));
             }
         }
         // where members closed on this connection stopped lasts the connection
@@ -2380,7 +2381,13 @@ impl Opens {
         let Some(adm) = self.admissible(ctx, conn, &s) else { return refuse };
         // a departed peer's Hit on its step (a store) or on a superseded epoch it reads at: opened
         // only ended, a store to be moved past its keys, a reader to be served up to its departure
-        let walk = adm.walk.contains(&shown) && (class == SourceClass::Store || matches!(shown, Shown::Read(..)));
+        let walk = adm.walk.contains(&shown)
+            && match shown {
+                Shown::Proof(_) => class == SourceClass::Store,
+                // a store reads nothing: a read secret proves a reader
+                Shown::Read(..) => class != SourceClass::Store,
+                _ => false,
+            };
         if !adm.shows.contains(&shown) && !walk {
             return refuse;
         }
@@ -2500,7 +2507,7 @@ impl Opens {
     /// admissible; one no longer admissible whose peer J judges neither holder nor departed is
     /// ended (`until`, judged now), and stays ended until it closes; one whose peer J judges
     /// departed is ended too (`Member::departed`: served role entries alone; at a store source it
-    /// closes on the peer's Lost alone); any other closes at once (with a Lost where a connection
+    /// closes on the peer's Lost alone), and closes at once once its peer is not; any other closes at once (with a Lost where a connection
     /// holds the record), as does any whose peer is no one once no connection holds the record.
     /// One that stays, not ended, closes keeping where it stopped once this side's class is not
     /// the one it declared opening S (an ended one opens again past its `until` anyway).
@@ -2533,15 +2540,11 @@ impl Opens {
         let admissible = m.by != Credential::J
             && basis.is_some_and(|b| adm.shows.iter().any(|x| beacon_of(x.matched(), &s, &rr) == b) || adm.tests.iter().any(|t| beacon_of(&t.matched(&s), &s, &rr) == b));
         let stays = holder || admissible;
-        // a peer no longer departed: its member ends at `until` as any ended one
+        // a peer no longer departed: its stream skipped all but role entries, so its member closes
+        // at once, naming no position (`close_member`)
         if m.departed && adm.j != J::Departed {
-            self.set_departed(rid, &s, false);
-            if let Some(c) = conn {
-                self.close_if_reached(ctx, c, s, moved);
-                if self.member(c, &s).is_none() {
-                    return;
-                }
-            }
+            self.end_member(ctx, rid, conn, s, Close::AtOnce, moved);
+            return;
         }
         // An ended member judged holder or admissible again stays ended: the peer's stream may be
         // past `until` already (S's entries since skipped), so it closes there and opens again.
@@ -2563,7 +2566,7 @@ impl Opens {
                 if let Some(u) = until {
                     self.set_until(rid, &s, u, moved);
                 }
-                self.set_departed(rid, &s, true);
+                self.set_departed(rid, &s);
                 if let Some(c) = conn {
                     self.close_if_reached(ctx, c, s, moved);
                 }
@@ -2637,24 +2640,18 @@ impl Opens {
         }
     }
 
-    /// Marks ended member S of record `rid` as ended for its peer's departure, or not
-    /// (`Member::departed`).
-    fn set_departed(&mut self, rid: RecordId, s: &SyncId, on: bool) {
+    /// Marks ended member S of record `rid` as ended for its peer's departure (`Member::departed`):
+    /// it takes its `until` at a report (`close_if_reached`).
+    fn set_departed(&mut self, rid: RecordId, s: &SyncId) {
         let Some(m) = self.records.get_mut(&rid).and_then(|r| r.members.get_mut(s)) else { return };
-        if m.departed == on {
+        if m.departed {
             return;
         }
-        m.departed = on;
-        let ended = m.until.is_some();
-        // a departed member takes its `until` at a report (`close_if_reached`)
+        m.departed = true;
         if let Some(c) = self.conn_on(rid)
             && let Some(k) = self.conns.get_mut(&c)
         {
-            if on {
-                k.ending.insert(*s);
-            } else if !ended {
-                k.ending.remove(s);
-            }
+            k.ending.insert(*s);
         }
         self.member_changed(rid, s);
     }
@@ -2695,8 +2692,11 @@ impl Opens {
         if let (Close::Until, true, Some(u), Some(c)) = (why, m.departed, m.until, self.conns.get_mut(&conn)) {
             c.served.insert(s, u);
         }
+        // one ended for its departure was shown role entries alone: its position past the rest
+        // names nothing it holds, so its peer rejoins from the start
         let cursor = match why {
             Close::Left => None,
+            _ if m.departed => None,
             _ => self.stopped_for_peer(ctx, conn, &s, m.until),
         };
         self.drop_member(conn, s, matches!(why, Close::Until | Close::Class).then_some(Rejoin::Held), moved);
@@ -2727,7 +2727,7 @@ impl Opens {
         if self.followed.get_mut(&rid).is_some_and(|f| f.remove(&s) && f.is_empty()) {
             self.followed.remove(&rid);
         }
-        let at = LeftAt { src, reported: c.reported.get(&s).map(|(p, _)| *p), until: m.until, how: if stop.is_some() { Leaving::Kept } else { Leaving::Forgot } };
+        let at = LeftAt { src, reported: c.reported.get(&s).filter(|_| !m.departed).map(|(p, _)| *p), until: m.until, how: if stop.is_some() { Leaving::Kept } else { Leaving::Forgot } };
         c.reported.forget(&s);
         self.reports.wrote(&conn, true);
         c.ending.remove(&s);

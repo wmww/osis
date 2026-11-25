@@ -144,7 +144,7 @@ fn encode_member(m: &Member, basis: Option<&[u8; 32]>) -> Vec<u8> {
             w.push(if m.departed { 2 } else { 1 });
             w.extend_from_slice(&p.to_be_bytes());
         }
-        None => w.push(0),
+        None => w.push(if m.departed { 3 } else { 0 }),
     }
     opt32(&mut w, basis);
     w
@@ -171,6 +171,7 @@ fn decode_member(v: &[u8]) -> Res<(Member, Option<[u8; 32]>)> {
         0 => (None, false),
         1 => (Some(r.u64()?), false),
         2 => (Some(r.u64()?), true),
+        3 => (None, true),
         _ => return Err(corrupt()),
     };
     let basis = r.opt32()?;

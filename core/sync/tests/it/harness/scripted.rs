@@ -104,6 +104,8 @@ pub struct Table {
     /// Epochs covering every departure, per S.
     pub covering: BTreeSet<(SyncId, Epoch)>,
     pub until: Position,
+    /// Whether a departure's rotation is logged (`Holds::departure_until`: `until`, else none).
+    pub departure_logged: bool,
     /// What `take_grant` gives: the head's sync key, per S.
     pub grants: BTreeMap<SyncId, [u8; 32]>,
     pub gives_grant: bool,
@@ -121,7 +123,7 @@ pub struct Table {
 
 impl Table {
     pub fn new(seed: u64) -> Table {
-        Table { rng: SeededRng::from_u64(seed), creds: BTreeMap::new(), due: BTreeSet::new(), j: BTreeMap::new(), covering: BTreeSet::new(), until: 100, grants: BTreeMap::new(), gives_grant: false, taken: BTreeSet::new(), recorded: BTreeMap::new(), followed: BTreeMap::new(), standing_due: BTreeSet::new(), no_one: BTreeSet::new() }
+        Table { rng: SeededRng::from_u64(seed), creds: BTreeMap::new(), due: BTreeSet::new(), j: BTreeMap::new(), covering: BTreeSet::new(), until: 100, departure_logged: true, grants: BTreeMap::new(), gives_grant: false, taken: BTreeSet::new(), recorded: BTreeMap::new(), followed: BTreeMap::new(), standing_due: BTreeSet::new(), no_one: BTreeSet::new() }
     }
 
     /// S's credentials are now `c` (none: S left the sync set).
@@ -199,7 +201,7 @@ impl Holds for Table {
         self.until
     }
     fn departure_until(&mut self, _s: &SyncId, _by: &Credential) -> Option<Position> {
-        Some(self.until)
+        self.departure_logged.then_some(self.until)
     }
     fn cursor_at(&mut self, pos: Position) -> Option<Cursor> {
         Some(pos.to_be_bytes().to_vec())

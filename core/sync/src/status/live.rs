@@ -112,6 +112,10 @@ impl Ground for Live<'_, '_> {
         self.streams.knows(at, self.opens.conn_of(at), s, b)
     }
     fn reported(&self, conn: ConnId, s: &SyncId) -> Option<Position> {
+        // a member ended for its departure is shown role entries alone: its position tells nothing
+        if self.opens.member(conn, s).is_some_and(|m| m.departed) {
+            return None;
+        }
         self.opens.reported_at(conn, s).map(|(p, _)| *p)
     }
     fn until(&self, conn: ConnId, s: &SyncId) -> Option<Position> {

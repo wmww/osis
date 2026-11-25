@@ -43,9 +43,10 @@ fn rotated(side: &mut Side, n: u8) {
     side.table.set(S, Some(reader(&S, &rs, &StepKeys::new(1, 0), &[], &[], &[])));
 }
 
-/// `a` removes `b`'s account with its rotation; `b` is granted again later.
-fn departs(p: &mut Pair) {
-    p.a.table.judge_as(S, tid(2), J::Departed);
+/// `a` rotates while J judges `b` unknown (its account's key revoked): `b`'s credential no
+/// longer admissible, its member is ended at `until`; `b` is granted again later.
+fn ends(p: &mut Pair) {
+    p.a.table.judge_as(S, tid(2), J::Unknown);
     rotated(&mut p.a, 1);
     p.a.settle();
 }
@@ -347,16 +348,40 @@ fn a_departed_reader_opens_ended_on_its_superseded_epoch_spec_sync_opens_6() {
     }
 }
 
+// spec/sync-opens.md §6 (Judged holder or not departed again, it closes at once, naming no
+// position): b, judged departed before any rotation is logged here, is ended with no `until` and
+// shown S's role entries alone; its stream moves past the rest. Granted again (judged a reader),
+// it closes at once with a Lost naming no position, and b rejoins from the start: a member kept
+// open, or one closing at a position, would leave b past entries it was never shown.
+#[test]
+fn a_departed_reader_granted_again_rejoins_from_the_start_spec_sync_opens_6() {
+    let mut p = readers();
+    p.a.reported(p.ca, S, 7);
+    p.a.table.departure_logged = false;
+    p.a.table.judge_as(S, tid(2), J::Departed);
+    p.a.settle();
+    let m = p.a.opens.members(p.ca)[&S].clone();
+    assert!(m.departed && m.until.is_none(), "ended for its departure, no rotation logged: {m:?}");
+    p.a.table.judge_as(S, tid(2), J::Reader);
+    p.a.settle();
+    assert!(!p.a.open(p.ca, &S), "closed at once");
+    p.b.moved.clear();
+    p.run();
+    assert!(p.log.iter().any(|(by_a, m)| *by_a && matches!(m, Msg::Lost { items, .. } if items[0] == (S, None))), "its Lost names no position: {:?}", p.log);
+    assert!(p.a.open(p.ca, &S) && p.b.open(p.cb, &S), "opened again");
+    assert!(p.b.moved.contains(&Moved::Joined(p.cb, S, Rejoin::From(None))), "from the start: {:?}", p.b.moved);
+}
+
 // spec/sync-opens.md §6 (Where it stopped): the receiver keeps the Lost's cursor (where the member
 // stopped for it, in the sender's log) and its rejoin on that connection reads from there; a
 // member left with its connection rejoins from where its own stream holds it.
 #[test]
 fn a_rejoin_reads_from_the_losts_cursor_spec_sync_opens_6() {
     let mut p = readers();
-    // b stored a's log at 7 for S (a learns it from b's Applied), the position of its departure
+    // b stored a's log at 7 for S (a learns it from b's Applied), its `until`
     p.a.reported(p.ca, S, 7);
     p.a.table.until = 7;
-    departs(&mut p);
+    ends(&mut p);
     p.run();
     assert!(!p.b.open(p.cb, &S));
     assert!(p.b.moved.iter().any(|m| matches!(m, Moved::Left(c, s, at) if *c == p.cb && *s == S && at.how == Leaving::Kept)), "{:?}", p.b.moved);
@@ -2119,7 +2144,7 @@ fn a_kept_stop_goes_with_its_connection_spec_sync_opens_6() {
     let mut p = readers();
     p.a.reported(p.ca, S, 7);
     p.a.table.until = 7;
-    departs(&mut p);
+    ends(&mut p);
     p.run();
     assert_eq!(left_how(&p.b.moved, p.cb, S), Some(Leaving::Kept));
     p.b.moved.clear();
@@ -2277,9 +2302,9 @@ fn an_answer_after_the_testers_class_moved_opens_nothing_at_the_old_class_spec_s
 
 // spec/sync-opens.md §6 (A member whose peer J judges departed is ended too), spec/sync-ids.md
 // §6 (Register): what inbox's register plan reads of a member
-// (`Opens::member`) moves when only its departure flips. A reader's store peer, judged departed,
-// then a sync holder (still ended at its `until`), is judged departed again: `departed` alone
-// moves, and a judgement that read the member is due.
+// (`Opens::member`) moves when only its departure flips. A reader's store peer, ended at its
+// `until` (its step left behind, J unknown), is judged departed: `departed` alone moves, and a
+// judgement that read the member is due.
 #[test]
 fn a_departure_alone_moves_what_read_the_member_spec_sync_opens_6() {
     let st = StepKeys::new(1, 0);
@@ -2289,9 +2314,9 @@ fn a_departure_alone_moves_what_read_the_member_spec_sync_opens_6() {
     k.table.set(S, Some(store(&st)));
     let mut p = Pair::new(r, k, account(1), account(2));
     p.run();
-    p.a.table.judge_as(S, tid(2), J::Departed);
-    p.a.settle();
-    p.a.table.judge_as(S, tid(2), J::SyncHolder);
+    // the reader's step moves on: the store's sync key no longer admissible, J unknown
+    p.a.table.judge_as(S, tid(2), J::Unknown);
+    p.a.table.set(S, Some(reader(&S, &read_secret(1, 0), &StepKeys::new(1, 1), &[], &[], &[])));
     p.a.settle();
     let was = p.a.opens.member(p.ca, &S).cloned().expect("ended, open");
     assert!(was.until.is_some() && !was.departed);
@@ -2309,13 +2334,12 @@ fn a_departure_alone_moves_what_read_the_member_spec_sync_opens_6() {
 }
 
 // spec/sync-opens.md §6 (whose peer J judges departed is ended too; closes only on the peer's Lost)
-// and (Judged holder or not departed again, it is an ended member like any other): a reader
-// judges its store peer departed, then a sync holder again (granted anew). Its
-// stream already past `until`, the member closes with a Lost naming `until` without waiting for
-// the peer's: the store, served nothing past `until` and moved by no Register while the reader
-// waits for it to hold the step's role commits, would otherwise never send one.
+// and (Judged holder or not departed again, it closes at once, naming no position): a reader
+// judges its store peer departed, then a sync holder again (granted anew). Its stream, shown role
+// entries alone, is past what it skipped: the member closes without waiting for the peer's Lost,
+// with a Lost naming no position, so the store rejoins from the start.
 #[test]
-fn a_departed_store_granted_again_closes_at_its_until_spec_sync_opens_6() {
+fn a_departed_store_granted_again_closes_at_once_naming_nothing_spec_sync_opens_6() {
     let st = StepKeys::new(1, 0);
     let mut r = Side::new(1);
     let mut k = Side::new(2);
@@ -2334,7 +2358,7 @@ fn a_departed_store_granted_again_closes_at_its_until_spec_sync_opens_6() {
     p.a.table.judge_as(S, tid(2), J::SyncHolder);
     p.a.settle();
     assert!(!p.a.open(p.ca, &S));
-    assert!(matches!(&of_kind(&p.a.sent(), 38)[..], [Msg::Lost { items, .. }] if items[0] == (S, osis_proto::Cursor::new(until.to_be_bytes().to_vec()).ok())));
+    assert!(matches!(&of_kind(&p.a.sent(), 38)[..], [Msg::Lost { items, .. }] if items[0] == (S, None)));
 }
 
 /// The entries of S node `at` holds.
@@ -2525,6 +2549,33 @@ fn a_peer_departed_after_a_restart_stays_a_member_ended_spec_sync_judgement_3() 
     assert!(shown > 0 && member, "away across a restart, a member keeps what it showed");
     removed(&mut w, t);
     assert!(ended_departed(&w, rid, &s), "departed: ended, kept a member");
+}
+
+// spec/sync-status.md §2 (Held elsewhere: a source shown role entries alone counts by its stream
+// alone), spec/sync-opens.md §6: node 0 writes t while away from both, then removes node 2; node 2
+// meets node 0 alone, is ended for its departure and served S's role entries alone up to the
+// removal's rotation, logged after the write. Its report reaches past the write, which it was never
+// served: node 0 counts the write held at no source.
+#[test]
+fn a_departed_peers_report_holds_nothing_elsewhere_spec_sync_status_2() {
+    let (mut w, (t, s)) = away_and_back(crate::harness::history::Gives::Reads);
+    w.partition(0, 1);
+    w.partition(0, 2);
+    w.partition(1, 2);
+    w.advance(1000);
+    let write = write_value(&mut w, t, &s, 3);
+    removed(&mut w, t);
+    assert!(write.is_subset(&held_of(&w, 0, &s)), "node 0 logged its write");
+    w.rejoin(0, 2);
+    let (start, mut served) = (w.now().0, false);
+    while w.step_or_wake() && w.now().0 < start + 3_600_000 {
+        served |= !write.is_disjoint(&held_of(&w, 2, &s));
+    }
+    w.advance(60_000);
+    w.run();
+    assert!(w.engine(2).role_on(&t).is_none() && w.store(2).holding(&s).is_none(), "node 2 learned its removal");
+    assert!(!served, "node 2 was served none of the write");
+    assert!(write.iter().all(|b| !w.store(0).elsewhere(&s, b).unwrap()), "held at no source");
 }
 
 // spec/sync-opens.md §4 Departed, §6 (at each change of J of its peer): node 2's account
