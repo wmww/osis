@@ -163,17 +163,19 @@ impl Engine {
         self.read_things_of(s).is_ok_and(|t| t.contains(&n.thing)) && self.tells(&n, proven)
     }
 
-    /// Whether notice `n`'s holder is among `proven`, or a proven thing held read or above on it
-    /// just before its removal: a peer that opens it (by the holder's read keys).
+    /// Whether notice `n`'s commit applies a write leaving its holder below read, and that holder
+    /// is among `proven` or a proven thing held read or above on it just before: a peer that
+    /// opens it (by the holder's read keys).
     /// Invariant (privacy; spec/sync-hostile.md): a departed peer is told no removal past its own:
-    /// one it read the thing through when made, never one of a holder it had left by then.
+    /// one it read the thing through when made, never one of a holder it had left by then. The
+    /// holder a notice names is its sealer's word (any reader of the thing may seal one), so it
+    /// counts only where the commit removes that holder: a notice naming M on another holder's
+    /// removal tells M nothing, nor sets M's `until`.
     fn tells(&self, n: &Notice, proven: &BTreeSet<Tid>) -> bool {
-        if proven.contains(&n.holder) {
-            return true;
-        }
         let Some(tl) = self.core.timelines().get(&n.thing) else { return false };
-        let Some(at) = tl.applied_on(&n.thing).find(|(mc, _)| mc.id == n.commit).map(|(mc, _)| osis_perm::At::before(mc.point())) else { return false };
-        tl.roles_on(&n.holder, at).iter().any(|(p, r)| proven.contains(p) && *r >= Role::Read)
+        let removes = |o: &osis_perm::EdgeOp| o.holder.thing() == Some(n.holder) && o.edge.as_ref().is_none_or(|e| e.role < Role::Read);
+        let Some(at) = tl.applied_on(&n.thing).find(|(mc, o)| mc.id == n.commit && removes(o)).map(|(mc, _)| osis_perm::At::before(mc.point())) else { return false };
+        proven.contains(&n.holder) || tl.roles_on(&n.holder, at).iter().any(|(p, r)| proven.contains(p) && *r >= Role::Read)
     }
 }
 

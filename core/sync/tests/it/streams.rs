@@ -540,11 +540,16 @@ fn listed_then_pushed_spec_sync_streams_4() {
 // a role entry, a plain entry, a notice of another party's removal, one of the peer's, and the
 // deletion of another entry. Toward a departed peer a lists the peer's notice alone: no role
 // entry (served up to a rotation's `until`, a role commit made knowing the removal leaked), no
-// other party's notice, and no `Deleted` (when S deletes); toward a member, the deletion goes.
+// other party's notice, no `Deleted` (when S deletes) and no head event (when S's sync ID steps);
+// toward a member, the deletion and the head go.
 #[test]
 fn a_departed_peer_is_served_its_notices_alone_spec_sync_opens_6() {
     let mut p = Pair::new();
-    let s = sid(1);
+    let k = Sid::new(10);
+    let s = k.id;
+    // S's genesis registered (a head event in a's log), then read
+    k.keep(&mut p.a);
+    p.a.hold(s, Holding::Read);
     let (peer, other) = (osis_base::Tid::from_bytes([1; 15]), osis_base::Tid::from_bytes([2; 15]));
     let role = p.a.log(s, 100);
     p.a.log(s, 101);
@@ -555,14 +560,16 @@ fn a_departed_peer_is_served_its_notices_alone_spec_sync_opens_6() {
     p.a.table.role.insert(role);
     p.a.table.notices.insert(theirs, other);
     p.a.table.notices.insert(mine, peer);
-    p.a.hold(s, Holding::Read);
+    let head = |r: &osis_proto::PullReply| r.events.iter().any(|(x, e)| *x == s && matches!(e, Event::Head(_)));
     p.a.open.members.entry(C).or_default().insert(s, Member { departed: Some(std::sync::Arc::new([peer].into())), ..member() });
     let r = pull_at(&mut p.a, 0, plain_pull(None, vec![], 1 << 20));
     assert_eq!(added(&r.events), [mine], "the peer's notice alone");
     assert!(!r.events.contains(&(s, Event::Deleted(gone))), "no deletion");
+    assert!(!head(&r), "no head");
     p.a.open.members.entry(C).or_default().insert(s, member());
     let r = pull_at(&mut p.a, 1, plain_pull(None, vec![], 1 << 20));
     assert!(r.events.contains(&(s, Event::Deleted(gone))), "a member is told the deletion");
+    assert!(head(&r), "a member is told the head");
 }
 
 // spec/sync-streams.md §4 (Stream: both sides pull), SN_bothpull: whoever dialed, each side pulls

@@ -1033,6 +1033,10 @@ impl Engine {
     /// The blob key of notice `bytes` under `t`'s sync ID that a read KEM secret held here of a
     /// holder of `t` for keys opens: a departed holder learns its removal so, holding no epoch of
     /// `t` its notice's wrap is under.
+    /// Cost: tried on every entry under `t`'s sync ID no wrap opens here (anyone may put one there,
+    /// within its bringer's budget: kept unopened, charged as any), one decapsulation per read
+    /// epoch held of each holder of `t` whose epochs this node holds, beside `open_fire_in`'s one
+    /// per epoch of `t`: of the same order, and nothing a bringer's bytes choose.
     fn notice_key_held(&mut self, t: &Tid, bytes: &[u8]) -> Result<Option<osis_crypto::Secret32>> {
         let holders: Vec<Tid> = self.core.key_holders(t).into_iter().map(|(h, _)| h).filter(|h| h != t && !h.is_public()).collect();
         for h in holders {
