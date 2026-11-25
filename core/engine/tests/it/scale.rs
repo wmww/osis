@@ -76,6 +76,13 @@ fn long(i: usize) -> Value {
     s(&format!("{i:08}{}", "v".repeat(192)))
 }
 
+/// Peer 0 in a new session for `(t, a)`: neither its state nor its pages loaded
+/// (`Engine::forget_cached`: a restart would check the whole history again; the test's end
+/// checks it once).
+fn new_session(lp: &mut LocalPeer, t: Tid, a: &Ak) {
+    lp.peers[0].engine.forget_cached(&t, a);
+}
+
 /// One node holding a new thing of its own (`new_thing` on `net(1, 0)`): built once.
 fn one_thing() -> (LocalPeer, Tid) {
     LocalPeer::cached("scale::one_thing", || {
@@ -123,10 +130,10 @@ fn map_edit(n: usize, nested: bool) -> [u64; 5] {
     let (mut lp, t) = big_map(n, nested);
     let (b, a) = (lp.peers[0].backend.clone(), big());
     let (_, w0) = measured(&b, || edit_entry(&mut lp, t, n / 2, nested, "x"));
-    lp.peers[0].restart(1).unwrap();
+    new_session(&mut lp, t, &a);
     let (got, read) = measured(&b, || lp.peers[0].engine.get_at(&t, &a, &entry(n / 3, nested)).unwrap());
     assert_eq!(got, Some(long(n / 3)));
-    lp.peers[0].restart(2).unwrap();
+    new_session(&mut lp, t, &a);
     let (_, first) = measured(&b, || edit_entry(&mut lp, t, n / 4, nested, "y"));
     assert_eq!(lp.peers[0].engine.get_at(&t, &a, &entry(n / 4, nested)).unwrap(), Some(s("y")));
     [w0.io.written_bytes, read.loads(), first.loads(), first.page_writes(), first.io.written_bytes]
@@ -152,7 +159,7 @@ fn map_edit_is_flat() {
 fn snapshot_peak(n: usize, nested: bool) -> [u64; 3] {
     let (mut lp, t) = big_map(n, nested);
     let b = lp.peers[0].backend.clone();
-    lp.peers[0].restart(1).unwrap();
+    new_session(&mut lp, t, &big());
     let (_, w) = measured(&b, || lp.peers[0].engine.snapshot(&t, &big()).unwrap().unwrap());
     [w.n("snapshot: state held"), w.n("state page read"), w.n("paged state loaded whole")]
 }
@@ -186,7 +193,7 @@ fn expiring_snapshot_peak(n: usize) -> [u64; 4] {
         m.expires(t, &big(), at).unwrap();
         lp.peers[0].commit(m).unwrap().unwrap();
     }
-    lp.peers[0].restart(1).unwrap();
+    new_session(&mut lp, t, &big());
     let (_, w) = measured(&b, || lp.peers[0].engine.snapshot(&t, &big()).unwrap().unwrap());
     [w.n("snapshot: state held"), w.n("snapshot: overlay held"), w.n("paged state loaded whole"), w.n("snapshot: stored state read whole")]
 }
@@ -217,7 +224,7 @@ type WholeCase = (&'static str, bool, Vec<PathSeg>, Op, Option<Value>);
 fn replace_peak(n: usize, nested: bool, path: Vec<PathSeg>, op: Op, want: Option<Value>) -> [u64; 3] {
     let (mut lp, t) = big_map(n, nested);
     let b = lp.peers[0].backend.clone();
-    lp.peers[0].restart(1).unwrap();
+    new_session(&mut lp, t, &big());
     let (_, w) = measured(&b, || {
         let mut m = Mutation::new();
         m.op(t, &big(), PathOp { path: path.clone(), op }).unwrap();
@@ -335,8 +342,8 @@ fn set_ops(n: usize) -> Vec<(u64, u64)> {
     lp.peers[0].commit(m).unwrap().unwrap();
     let ops = [(Op::Add(s("x")), true), (Op::Add(e(n / 2)), false), (Op::Remove(e(n / 3)), true), (Op::Remove(s("y")), false)];
     let mut out = Vec::new();
-    for (k, (op, writes)) in ops.into_iter().enumerate() {
-        lp.peers[0].restart(k as u64).unwrap();
+    for (op, writes) in ops {
+        new_session(&mut lp, t, &ak("t:tags.0"));
         let (c, w) = measured(&b, || {
             let mut m = Mutation::new();
             m.op(t, &a, PathOp { path: vec![], op }).unwrap();
@@ -376,8 +383,8 @@ fn tid_removals(n: usize) -> Vec<(u64, u64, u64)> {
     m.set(x, &REFS, &Value::Set((0..n).map(t).collect())).unwrap();
     lp.peers[0].commit(m).unwrap().unwrap();
     let mut out = Vec::new();
-    for (k, op) in [Op::Remove(t(n / 3)), Op::Add(t(n / 3))].into_iter().enumerate() {
-        lp.peers[0].restart(k as u64).unwrap();
+    for op in [Op::Remove(t(n / 3)), Op::Add(t(n / 3))] {
+        new_session(&mut lp, x, &ak("t:refs.0"));
         let (c, w) = measured(&b, || {
             let mut m = Mutation::new();
             m.op(x, &REFS, PathOp { path: vec![], op }).unwrap();

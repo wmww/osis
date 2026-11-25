@@ -543,8 +543,8 @@ impl Built {
     }
 }
 
-/// Debug builds: the held writes `index_exact` built, by what they are built of (each placed
-/// body, its writes and form; a 128-bit hash of their `Debug`), shared by the process's engines:
+/// Debug builds: the held writes `index_exact` built, by what they are built of (`built_of`),
+/// shared by the process's engines:
 /// the nodes holding one set of bodies (the order harness's orders of a held set, a synced
 /// world's peers) build it once, each still compared row for row. Cleared whole when it would
 /// pass `BUILT_BYTES` of rows: at 0 every check builds anew; with no bound a process keeps every
@@ -557,12 +557,40 @@ static BUILT: std::sync::Mutex<Option<BuiltSets>> = std::sync::Mutex::new(None);
 #[derive(Default)]
 struct BuiltSets {
     bytes: usize,
-    sets: std::collections::HashMap<u128, Arc<Built>>,
+    sets: std::collections::HashMap<[u8; 32], Arc<Built>>,
 }
 
 /// `BUILT`'s bound: a few worlds' sets per thread at once (an order seed's are about 2 MB).
 #[cfg(debug_assertions)]
 const BUILT_BYTES: usize = 64 << 20;
+
+/// Debug builds: what `index_exact` builds the held writes of `(tid, ak)` from, hashed: per body
+/// of `bodies` placed (`form`, `body_writes`), its commit, part, `ts`, kind and form, and the
+/// bytes its writes decode from (the stored part, or its leftover where stripped: a decode is a
+/// function of its bytes), so a check of a set built before reads no part.
+#[cfg(debug_assertions)]
+fn built_of(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, bodies: &[CommitId]) -> Result<[u8; 32]> {
+    let mut h = osis_base::hash::Hasher::new();
+    let field = |h: &mut osis_base::hash::Hasher, b: &[u8]| {
+        h.update(&(b.len() as u64).to_be_bytes()).update(b);
+    };
+    field(&mut h, format!("{tid:?} {ak:?}").as_bytes());
+    for c in bodies {
+        let Some(f) = form(tx.core, c, tid, ak) else { continue };
+        let Some(ai) = held_part(tx.core, c, tid, ak) else { continue };
+        let Some((ts, snap, stripped)) = tx.core.ix.commits.get(c).map(|m| (m.view.ts, m.header.kind.is_compaction(), m.stripped(ai))) else { continue };
+        field(&mut h, &c.0);
+        field(&mut h, format!("{ai} {ts:?} {snap} {f:?} {stripped}").as_bytes());
+        if stripped {
+            let l = tx.txn.get_local(&crate::engine::records::leftover_key(tid, ak, c, ai))?;
+            field(&mut h, l.as_deref().unwrap_or(b"none"));
+        } else {
+            let blob = tx.get_commit(c)?;
+            field(&mut h, blob.as_ref().and_then(|b| b.part(ai)).map_or(b"none".as_slice(), |p| p.delta.as_slice()));
+        }
+    }
+    Ok(h.finalize())
+}
 
 /// Debug builds: the kept held writes of `(tid, ak)` are, row for row, those built from its
 /// held valid bodies at once, each write dated by the rows (`Held::place`, `Held::date_every`):
@@ -571,30 +599,20 @@ const BUILT_BYTES: usize = 64 << 20;
 /// writes built from nothing (`BUILT`).
 #[cfg(debug_assertions)]
 pub(super) fn index_exact(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, when: &str) -> Result<Arc<Built>> {
-    use std::fmt::Write;
-    use std::hash::{Hash, Hasher};
     let bodies: Vec<CommitId> = tx.core.ix.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().map(|x| x.1).collect();
-    let mut placed = Vec::new();
-    let mut key = format!("{tid:?} {ak:?}");
-    for c in bodies {
-        if let Some(f) = form(tx.core, &c, tid, ak)
-            && let Some((b, w)) = body_writes(tx, tid, ak, &c, f)?
-        {
-            let _ = write!(key, " {b:?} {w:?} {f:?}");
-            placed.push((b, w, tag(f)));
-        }
-    }
-    let key = {
-        let (mut a, mut b) = (std::collections::hash_map::DefaultHasher::new(), std::collections::hash_map::DefaultHasher::new());
-        b.write_u8(1);
-        key.hash(&mut a);
-        key.hash(&mut b);
-        u128::from(a.finish()) << 64 | u128::from(b.finish())
-    };
+    let key = built_of(tx, tid, ak, &bodies)?;
     let cached = BUILT.lock().unwrap_or_else(|e| e.into_inner()).as_ref().and_then(|m| m.sets.get(&key).cloned());
     let fresh = match cached {
         Some(f) => f,
         None => {
+            let mut placed = Vec::new();
+            for c in bodies {
+                if let Some(f) = form(tx.core, &c, tid, ak)
+                    && let Some((b, w)) = body_writes(tx, tid, ak, &c, f)?
+                {
+                    placed.push((b, w, tag(f)));
+                }
+            }
             let mut held = Held::new(osis_crdt::MemRows::default());
             for (b, w, t) in &placed {
                 held.place(b, w, t)?;
