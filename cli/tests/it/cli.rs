@@ -188,7 +188,6 @@ fn store_dir_init_lock_plan_cli_2() {
 // socket, commands run there as its main actor: chat read and watch (listings and a commit
 // listener), card show, profile and import (a row that waits), sync (a wait timing out), diag.
 #[test]
-#[ignore = "accounts: making an account"]
 fn commands_run_through_the_daemon_plan_cli() {
     let d = tmp("daemon");
     let s = S::dir(&d);
@@ -209,12 +208,14 @@ fn commands_run_through_the_daemon_plan_cli() {
     assert!(after.contains(&format!("{two} ")) && !after.contains(": one"), "{after}");
     let watched = ok(&["chat", "watch", &c, "--after", &cursor, "--count", "1", "--timeout", "60s"]);
     assert!(watched.contains(": two"), "{watched}");
-    let card = ok(&["card", "show"]);
-    assert_eq!(card.trim(), held.contact_card().unwrap().to_string());
-    assert_eq!(ok(&["card", "profile"]).trim(), held.profile().unwrap().to_uri());
-    assert_eq!(ok(&["card", "import", card.trim(), "--timeout", "60s"]).trim(), held.me().to_uri());
-    // a one-node account: nothing it holds is held by another node (spec/sync-status.md §3)
+    // a one-node account with no link: nothing it holds is held by another node (spec/sync-status.md §3)
     ok(&["sync", "--timeout", "60s"]);
+    // the card's link may be taken by whoever holds it: its wait runs to the timeout
+    let card = s.call(&["--timeout", "1s", "card", "show"], "");
+    assert_eq!(card.code, 6, "{}", card.err);
+    assert_eq!(card.line(), held.contact_card().unwrap().to_string());
+    assert_eq!(ok(&["card", "profile"]).trim(), held.profile().unwrap().to_uri());
+    assert_eq!(ok(&["card", "import", card.line(), "--timeout", "60s"]).trim(), held.account_root().to_uri());
     ok(&["diag"]);
     drop(held);
     let _ = std::fs::remove_dir_all(&d);
@@ -359,19 +360,25 @@ fn commits_undo_redo_plan_cli_4() {
 
 // CLI Sharing and roles, Sync, Identity and nodes: the local half of the
 // sharing commands on one store (nobody to dial): links, cards, nodes, grants by error
-// category, status. The delivering ones (notes/cli.md) wait on nothing on a node alone.
+// category, status. A link's wait runs to `--timeout` on a node alone: whoever holds the link
+// may take its thing (spec/sync-status.md §3).
 #[test]
-#[ignore = "accounts: osis/CLI/app"]
 fn sharing_commands_local_plan_cli_4() {
     let s = S::mem();
-    // minted with the account as admin, so `me` reads it as its mint admin
-    let g = s.ok(&["create", "--admin", "me", "t:made.0", "true"]).line().to_string();
+    // minted with the account as admin, its one holder
+    let g = s.thing();
+    let grants = s.ok(&["grants", &g]).out;
+    let account = grants.strip_suffix(" admin -\n").expect("the account alone").to_string();
+    assert_ne!(account, s.me(), "the account is not the node");
+    assert_eq!(s.ok(&["node", "ls"]).line(), s.me(), "this node alone");
     // spec/sync-inbox.md §6: `make_link` works on every node; the link names this node
-    let link = s.ok(&["link", "make", &g, "write", "--single-use"]).line().to_string();
-    assert!(link.starts_with("osis://link/"), "{link}");
-    assert!(s.ok(&["--json", "link", "ls", &g]).line().contains("\"single_use\":true"));
-    assert!(s.ok(&["card", "show"]).line().starts_with("osis://link/"));
-    assert_eq!(s.ok(&["node", "ls"]).out.lines().count(), 1);
+    let l = s.thing();
+    let o = s.call(&["--timeout", "10ms", "link", "make", &l, "write", "--single-use"], "");
+    assert_eq!(o.code, 6, "{}", o.err);
+    assert!(o.line().starts_with("osis://link/"), "{}", o.out);
+    assert!(s.ok(&["--json", "link", "ls", &l]).line().contains("\"single_use\":true"));
+    let o = s.call(&["--timeout", "10ms", "card", "show"], "");
+    assert!(o.code == 6 && o.line().starts_with("osis://link/"), "{}", o.err);
     let stranger = S::mem().me();
     assert_eq!(s.code(&["grant", &g, &stranger, "read"]), 3, "keys unknown: import a card first");
     // `chat relay` (notes/dogfood.md) grants as `grant` does
@@ -379,10 +386,8 @@ fn sharing_commands_local_plan_cli_4() {
     assert_eq!(s.code(&["chat", "relay", &c, &stranger]), 3, "keys unknown: import a card first");
     assert_eq!(s.code(&["node", "rm", &stranger]), 0, "no node of this account: nothing to do");
     assert_eq!(s.code(&["grant", &g, "me", "superuser"]), 2);
-    // `--reads` (`osis::Reads`): from-now or all; from-now on a holder reading what came before
-    // is Invalid; all, or none given, keeps the grant reading everything
+    // `--reads` (`osis::Reads`): from-now or all; all, or none given, keeps the grant reading everything
     assert_eq!(s.code(&["grant", &g, "me", "admin", "--reads", "sometimes"]), 2);
-    assert_eq!(s.code(&["grant", &g, "me", "admin", "--reads", "from-now"]), 7);
     assert_eq!(s.code(&["grant", &g, "me", "admin", "--reads", "all"]), 0);
     assert!(!s.ok(&["grants", &g]).out.contains("from-now"));
     let st = s.ok(&["--json", "status"]).line().to_string();
@@ -391,12 +396,13 @@ fn sharing_commands_local_plan_cli_4() {
     // CLI `source T`: shows where T's sync unit's calls go
     assert_eq!(s.ok(&["source", &g]).out, "local\n");
     assert_eq!(s.ok(&["--json", "source", &g]).line(), "{\"source\":\"local\"}");
-    // spec/permissions.md §1 (The last admin), notes/cli.md Exit codes: `me` is g's only admin
-    // (and its link's actor's)
-    let o = s.call(&["leave", &g], "");
+    // spec/permissions.md §1 (The last admin), notes/cli.md Exit codes: the node leaves its own
+    // grant; the account is then g's only admin
+    s.ok(&["leave", &g]);
+    let o = s.call(&["leave", &g, "--holder", &account], "");
     assert_eq!(o.code, 7, "{}", o.err);
     assert!(o.err.contains("no admin"), "{}", o.err);
-    let o = s.call(&["leave", &g, "--leave-adminless"], "");
+    let o = s.call(&["leave", &g, "--holder", &account, "--leave-adminless"], "");
     assert_eq!(o.code, 0, "{}", o.err);
 }
 
@@ -526,13 +532,13 @@ fn inspect_and_diag_plan_cli_4() {
 
 // CLI `chat`, notes/chat.md: a local chat through the commands: post and read, the JSON, a cursor, edit (the id stays; kept history in `earlier`), delete, editing off, bad arguments
 #[test]
-#[ignore = "accounts: osis/CLI/app"]
 fn chat_commands_plan_cli() {
     let s = S::mem();
     let c = s.ok(&["chat", "create", "--name", "room"]).line().to_string();
     // spec/permissions.md §7, notes/cli.md Delivering commands: with no peer to dial a chat link
-    // is made, and its wait ends at once on a node alone
-    assert!(s.ok(&["chat", "link", &c]).line().starts_with("osis://link/"));
+    // is made; its wait runs to `--timeout`, as whoever holds the link may take the chat
+    let o = s.call(&["--timeout", "10ms", "chat", "link", &c], "");
+    assert!(o.code == 6 && o.line().starts_with("osis://link/"), "{}", o.err);
     // an empty chat's cursor is null; given back empty, everything is after it
     assert!(s.ok(&["--json", "chat", "read", &c]).out.contains("\"cursor\":null"));
     let one = s.ok(&["chat", "post", &c, "--from", "ann", "--subject", "head", "body"]).line().to_string();

@@ -35,12 +35,13 @@ pub fn cfg(seed: u64, clock: &Arc<ManualClock>) -> osis::internals::Opening {
 }
 
 /// Every commit `from` holds that `to` takes (another account's private commits it cannot use
-/// are refused; one account's own all apply). Of another account, `to`'s account holds `from`'s first (a strong in its account
-/// root, as importing a contact does), so what judges `from`'s writes stays at `to` (spec/commits.md
-/// §5 What a held thing needs) and a grant to it can box it.
+/// are refused; one account's own all apply). Of another account, `to`'s account holds `from`'s
+/// account first (a strong from its `holds.0`), so what judges `from`'s writes stays at `to`
+/// (spec/commits.md §5 What a held thing needs) and a grant to it can box it.
 pub fn deliver(from: &Osis, to: &Osis) {
-    let (root, who) = (to.account_root(), from.me());
-    if who != to.me() && !to.holds(root, who).unwrap() {
+    let (root, who) = (to.account_root(), from.account_root());
+    let other = who != root;
+    if other && !to.holds(root, who).unwrap() {
         let mut w = to.write();
         w.hold(root, who).unwrap();
         w.commit().unwrap();
@@ -48,7 +49,7 @@ pub fn deliver(from: &Osis, to: &Osis) {
     let pks = from.engine(|e| e.commit_ids().iter().filter_map(|id| e.package(id).unwrap()).collect::<Vec<_>>());
     for pk in pks {
         let r = to.engine(|e| e.ingest(&pk.bytes, pk.blobs.clone()));
-        assert!(r.is_ok() || who != to.me(), "{r:?}");
+        assert!(r.is_ok() || other, "{r:?}");
     }
     // a grant from outside reaches its holder as an offer, its fire (spec/sync-inbox.md §5 Grant from outside)
     osis::internals::pass_fires(from, to);

@@ -40,7 +40,7 @@ fn hold(d: &Data, t: osis::Tid) {
 /// A tag Alice made in the app and shared with Bob (`role`).
 fn shared_tag(a: &Data, b: &Data, role: Role) -> osis::Tid {
     let tag = osis_kit::facets::create(a, "tag").unwrap();
-    a.db.grant(tag, b.db.me(), role, GrantOpts::default()).unwrap();
+    a.db.grant(tag, b.db.account_root(), role, GrantOpts::default()).unwrap();
     tag
 }
 
@@ -64,7 +64,6 @@ fn tagging_shares_nothing() {
 /// note in Alice's tag names Alice (the tag's mint admin); Alice's note shared with Bob names her
 /// (its mint admin).
 #[test]
-#[ignore = "accounts: making an account"]
 fn reach_through_someone_elses_tag() {
     let (a, b) = two_people();
     let tag = shared_tag(&a, &b, Role::Write);
@@ -77,7 +76,7 @@ fn reach_through_someone_elses_tag() {
     assert_eq!((r.people.len(), r.via.clone()), (1, vec![tag]), "{r:?}");
     assert_ne!(r.who(), "Only you");
     let na = osis_kit::facets::create(&a, "note").unwrap();
-    a.db.grant(na, b.db.me(), Role::Read, GrantOpts::default()).unwrap();
+    a.db.grant(na, b.db.account_root(), Role::Read, GrantOpts::default()).unwrap();
     sync(&a, &b);
     assert_eq!(reach(&b, na).unwrap().people.len(), 1, "Alice, its mint admin");
 }
@@ -88,7 +87,7 @@ fn reach_counts_an_edge_until_it_ends() {
     let (a, b) = two_people();
     let tag = osis_kit::facets::create(&a, "tag").unwrap();
     let until = Time(a.db.now().unwrap().0 + 86_400_000);
-    a.db.grant(tag, b.db.me(), Role::Read, GrantOpts { until: Some(until), retain_copy: None, may_grant: false, reads: osis::Reads::Kept, leave_adminless: false }).unwrap();
+    a.db.grant(tag, b.db.account_root(), Role::Read, GrantOpts { until: Some(until), retain_copy: None, may_grant: false, reads: osis::Reads::Kept, leave_adminless: false }).unwrap();
     assert_eq!(reach(&a, tag).unwrap().people.len(), 1);
 }
 
