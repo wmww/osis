@@ -1050,9 +1050,6 @@ pub struct Core {
     /// commit's arrival from elsewhere and begins a complete pass, so the two never tie. Never
     /// rolled back; an open takes the highest place stored.
     pub place: u64,
-    /// Per actor, each holder for keys at its role and its role with key access
-    /// (`rotation::members::key_roles`; `memo`): a walk of its holders through destroyed actors.
-    pub(crate) key_roles: memo::Memo<Tid, Arc<crate::rotation::members::KeyRoles>>,
     /// `Engine::wrap_blocked` per (actor, walk) (`memo::Cutoff`), refreshed by `Engine::follow`.
     pub(crate) wrap_blocks: memo::Cutoff<(Tid, crate::rotation::Walk), bool>,
     /// `Engine::read_facts` per (sync ID, commit) (`memo::Cutoff`), refreshed by
@@ -1950,7 +1947,6 @@ impl Core {
             certified: _,
             evidence: _,
             cert_records: _,
-            key_roles: _,
             wrap_blocks: _,
             own_roles: _,
             read_facts: _,
@@ -2206,7 +2202,6 @@ impl Core {
             rotations_due: memo::Memo::new("rotation due"),
             reseal_scans: memo::Memo::new("reseal: scan"),
             place: 0,
-            key_roles: memo::Memo::new("key roles"),
             wrap_blocks: memo::Cutoff::new("wrap blocked"),
             read_facts: memo::Cutoff::new("sync: read facts"),
             held_fates: memo::Cutoff::new("sync: held fate"),

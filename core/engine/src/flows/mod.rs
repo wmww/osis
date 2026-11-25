@@ -35,7 +35,7 @@ use osis_keys::{KeysWrite, HolderKeys, Recipient, SecretsWrite};
 use osis_perm::At;
 use osis_schema::core_types::{self as ct, Keys, Secrets};
 use osis_schema::{RawKey, Codec};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 /// A flow's result: the commits written. What travels is derived from them: inbox deliveries
@@ -179,38 +179,20 @@ impl Core {
     /// The holders of `actor` for keys (spec/crypto.md §4): every holder of an edge on it by
     /// `rotation::key_role` (its record edge included while it stands), every held applied
     /// write in effect and `until` disregarded: keys read no clock, so an edge past its `until`
-    /// stays until it is finalized (spec/permissions.md §2).
-    /// A destroyed actor holds no keys: in its place come its frozen holders (by its held edge
-    /// writes, late ones included: honest nodes write it no more), each at the lesser of its role there and
-    /// the destroyed actor's here, and so on through destroyed actors among them, a holder reached
-    /// more than one way at the greatest (spec/crypto.md §4, Holder actors, Destroyed); `actor`
-    /// itself never.
+    /// stays until it is finalized (spec/permissions.md §2). A destroyed thing is none: it holds
+    /// no keys and nobody stands in for it (spec/crypto.md §4, Holder actors, Destroyed).
     pub fn key_holders(&self, actor: &Tid) -> Vec<(Tid, Role)> {
-        expand_destroyed(actor, |t| self.edge_holders(t), |m| self.destroyed_actor(m))
+        self.edge_holders(actor).into_iter().filter(|(m, _)| !self.destroyed(m)).collect()
     }
 
-    /// The holders of `actor` for keys with key access to it, each at its role so (spec/crypto.md
-    /// §4, Key access, Destroyed), `keyless` the keyless grants (`rotation::members::key_access`):
-    /// `key_holders` walked over grants with key access only, so a destroyed actor's frozen holder
-    /// has it only when every grant on some path to it does, at the greatest role over such paths.
-    pub(crate) fn keyed_holders(&self, actor: &Tid, keyless: &BTreeSet<(Tid, Tid)>) -> BTreeMap<Tid, Role> {
-        let edges = |t: &Tid| self.edge_holders(t).into_iter().filter(|(m, _)| !keyless.contains(&(*t, *m))).collect();
-        expand_destroyed(actor, edges, |m| self.destroyed_actor(m)).into_iter().collect()
-    }
-
-    /// The direct holders of `actor` for keys (`key_holders` without the destroyed actors' frozen
-    /// holders in their place): every edge on it by `rotation::key_role`, its record edge
-    /// included while it stands.
+    /// The direct holders of `actor` for keys with destroyed things among them (`key_holders`
+    /// keeps them out): every edge on it by `rotation::key_role`, its record edge included while
+    /// it stands.
     pub(crate) fn edge_holders(&self, actor: &Tid) -> Vec<(Tid, Role)> {
         match self.timelines().on(actor) {
             Some(on) => on.holders().into_iter().filter_map(|(m, e)| Some((m, crate::rotation::key_role(Some(&e))?))).collect(),
             None => self.mint_admin(actor).map(|a| (a, Role::Admin)).into_iter().collect(),
         }
-    }
-
-    /// Whether `m` is a destroyed thing (spec/crypto.md §4 Destroyed: it holds no keys).
-    pub(crate) fn destroyed_actor(&self, m: &Tid) -> bool {
-        self.destroyed(m)
     }
 
     /// Whether `tid` is independent (else a dependent thing derives its role secrets from its mint
@@ -439,66 +421,5 @@ impl Engine {
     }
 }
 
-/// `key_holders`' walk over `edges` (an actor's direct holders for keys) with `destroyed` actors
-/// replaced by their own holders, each at the lesser role along the way and the greatest over
-/// the ways: a destroyed actor is entered again only at a greater role than before, so each at
-/// most once per role.
-fn expand_destroyed(actor: &Tid, edges: impl Fn(&Tid) -> Vec<(Tid, Role)>, destroyed: impl Fn(&Tid) -> bool) -> Vec<(Tid, Role)> {
-    let mut out: BTreeMap<Tid, Role> = BTreeMap::new();
-    let mut entered: BTreeMap<Tid, Role> = BTreeMap::from([(*actor, Role::Admin)]);
-    let mut work = vec![(*actor, Role::Admin)];
-    while let Some((t, cap)) = work.pop() {
-        for (m, r) in edges(&t) {
-            let r = r.min(cap);
-            if m == *actor {
-                continue;
-            }
-            let into = if destroyed(&m) { &mut entered } else { &mut out };
-            if into.get(&m).is_some_and(|x| *x >= r) {
-                continue;
-            }
-            into.insert(m, r);
-            if destroyed(&m) {
-                work.push((m, r));
-            }
-        }
-    }
-    out.into_iter().collect()
-}
-
 #[cfg(test)]
 mod tests_delivery;
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn tid(n: u8) -> Tid {
-        Tid::from_bytes([n; 15])
-    }
-
-    // spec/crypto.md §4 (Holders for keys; Destroyed): a destroyed actor reached at a lesser role first
-    // and at a greater one later puts its holders at the greater, whatever the walk's order
-    #[test]
-    fn destroyed_holder_reached_two_ways_takes_the_greater_role_spec_crypto_4() {
-        let (a, t, u, v, m) = (tid(1), tid(2), tid(3), tid(4), tid(5));
-        for (lo, hi) in [(t, u), (u, t)] {
-            // a: lo (destroyed, read), hi (destroyed, admin); lo and hi: v (destroyed, admin); v: m (admin)
-            let edges = |x: &Tid| -> Vec<(Tid, Role)> {
-                let mut e = if *x == a {
-                    vec![(lo, Role::Read), (hi, Role::Admin)]
-                } else if *x == lo || *x == hi {
-                    vec![(v, Role::Admin)]
-                } else if *x == v {
-                    vec![(m, Role::Admin), (a, Role::Admin)]
-                } else {
-                    vec![]
-                };
-                e.sort();
-                e
-            };
-            let destroyed = |x: &Tid| [t, u, v].contains(x);
-            assert_eq!(expand_destroyed(&a, edges, destroyed), vec![(m, Role::Admin)], "lo {lo:?}");
-        }
-    }
-}

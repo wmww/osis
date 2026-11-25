@@ -212,12 +212,12 @@ impl Core {
     }
 
     /// Actor `x`'s role on actor `a` now as far as grants with key access give it (spec/crypto.md
-    /// §4 Holds, Key access: a keyless grant, one closing a cycle of actor grants, reads nothing
-    /// through it): what gives, takes and opens `a`'s secrets. Read on the memo clock
-    /// (`role_now`).
+    /// §4 Holds, Key access, Destroyed: a keyless grant, one closing a cycle of actor grants, and
+    /// a destroyed thing read nothing through them): what gives, takes and opens `a`'s secrets.
+    /// Read on the memo clock (`role_now`).
     pub(crate) fn keyed_role_now(&self, x: &Tid, a: &Tid) -> Option<Role> {
         let role = self.role_now(x, a);
-        if role.is_none() || self.timelines().keyless().is_empty() {
+        if role.is_none() || crate::rotation::members::key_skip(self).is_empty() {
             return role;
         }
         role.min(crate::rotation::members::role_for_keys(self, x, a))

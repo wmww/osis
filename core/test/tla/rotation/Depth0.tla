@@ -231,19 +231,12 @@ Notice == TRUE
 \* and whose bodies all precede a departure it knows is blocked (Before);
 \* FALSE: an epoch whose secret the node lacks is not judged (the limit)
 Order == TRUE
-\* spec/crypto.md \S 4 Holder actors, Destroyed: boxing to a destroyed holder actor
-\* boxes its frozen holders instead (recursively), and a box at a current
-\* epoch to a holder neither current nor direct (a destroyed actor, a frozen
-\* holder since removed) is a departure; FALSE: a destroyed actor is boxed as any
-\* other (the negative control: a newcomer reading it
-\* through its holders never reads)
-Expand == TRUE
-\* spec/crypto.md \S 4 Holder actors, Destroyed: a frozen holder stands in a
-\* destroyed actor's place with key access only through grants with key
-\* access, every grant on its path keyed; FALSE: through any grant (a frozen
-\* holder reached through a keyless grant is boxed as keyed, the negative
-\* control: it closes the key cycle the keyless grant broke)
-KeyedPath == TRUE
+\* spec/crypto.md \S 4 Holder actors, Destroyed: a destroyed actor holds no
+\* keys and nobody stands in its place: no node boxes it, and a box to it at a
+\* current epoch is a departure (a rotation follows, as at a removal); FALSE: a
+\* destroyed actor is boxed as any other (the negative control: its holders
+\* keep reading what it held a role on)
+NoKeys == TRUE
 
 DK(d) == [t |-> "d", d |-> d, k |-> 0]
 KK(k) == [t |-> "k", d |-> "", k |-> k]
@@ -267,16 +260,9 @@ VARIABLES ep,     \* epochs: [act, n, par, by, bx, hist, knows, forged, race, ou
           evd,    \* Eager pairs, Forgers, Bogus and Rogue used
           nw
 vars == <<ep, rs, ha, kn, krs, wr, kg, pl, kpl, done, evd, nw, dst>>
-\* the true key holders (every grant held; removed actor edges end theirs),
-\* for the properties
-KeyAct(a) == KeyIn(GNow(done), a) \cap Acts
-\* the true key holders of a with destroyed actors' holders added (Expand)
-TExp(a) == IF ~Expand THEN KeyIn(GNow(done), a) ELSE
-  Fix(LAMBDA S : S \cup UNION {KeyIn(GNow(done), t) : t \in S \cap dst}, KeyIn(GNow(done), a))
-\* the destroyed actors whose frozen holders are a's holders (through destroyed ones)
-DestroyedIn(a) == Fix(LAMBDA S : S \cup (dst \cap UNION {Holders(t) : t \in S}), dst \cap Holders(a))
-\* the holder actors of a for keys: its frozen ones in a destroyed actor's place
-FrozenAct(a) == IF Expand THEN (TExp(a) \cap Acts) \ (dst \cup {a}) ELSE KeyAct(a)
+\* the true key holders (every grant held; removed actor edges end theirs; a
+\* destroyed actor none), for the properties
+KeyAct(a) == (KeyIn(GNow(done), a) \cap Acts) \ dst
 KClos(h) == Fix(LAMBDA S : S \cup UNION {KeyAct(b) : b \in S}, KeyAct(h))
 
 Ids == DOMAIN ep
@@ -327,25 +313,15 @@ NewestV(x, a) == Newest(Cur(x, a))
 \* key access over the grants x holds, less actor edges x knows removed
 KH(x, a) == KeyIn(kg[x] \ {<<dp[2], dp[1]>> : dp \in {q \in Known(x) : ActDep(q)}}, a)
 MemD(x, a, extra) == KH(x, a) \ {dp[1] : dp \in {q \in Known(x) \cup extra : q[2] = a}}
-\* the holders x boxes for a: a destroyed one replaced by its frozen holders as x
-\* sees them, and so on (Expand); a itself never
-\* (~KeyedPath: a destroyed actor's frozen holders through any grant, keyless
-\* ones included)
-RmD(x, a, extra) == Holders(a) \ {dp[1] : dp \in {q \in Known(x) \cup extra : q[2] = a}}
-MemV(x, a, extra) == IF ~Expand THEN MemD(x, a, extra) ELSE IF KeyedPath THEN
-  Fix(LAMBDA S : S \cup UNION {MemD(x, t, {}) : t \in S \cap dst}, MemD(x, a, extra)) \ (dst \cup {a})
-  ELSE Fix(LAMBDA S : S \cup UNION {RmD(x, t, {}) : t \in S \cap dst},
-           MemD(x, a, extra) \cup (dst \cap RmD(x, a, extra))) \ (dst \cup {a})
+\* the holders x boxes for a: no destroyed one (NoKeys)
+MemV(x, a, extra) == IF NoKeys THEN MemD(x, a, extra) \ dst ELSE MemD(x, a, extra)
 
 RsBox(r) == [h |-> r.h, key |-> r.key, by |-> r.by]
 BoxesAt(x, e) == IF <<x, ep[e].act>> \in BoxBlind THEN {} ELSE
                     ep[e].bx \cup {RsBox(r) : r \in {q \in krs[x] : q.e = e}}
 AllBoxesAt(e) == ep[e].bx \cup {RsBox(r) : r \in {q \in rs : q.e = e}}
-\* a box of a's epoch to b.h, neither a current holder of a as x sees it
-\* nor a direct holder still boxed (one removed: a departure x covers or
-\* not, Covers): a destroyed actor, or a frozen holder x since knows removed
-GoneBox(x, k) == Expand /\ \E b \in BoxesAt(x, k) :
-  b.h \notin MemV(x, ep[k].act, {}) /\ (b.h \in dst \/ b.h \notin Holders(ep[k].act))
+\* a box of a's epoch to a destroyed actor: a departure no epoch covers (NoKeys)
+GoneBox(x, k) == NoKeys /\ \E b \in BoxesAt(x, k) : b.h \in dst
 
 \* epochs whose secret node d gets from boxes BX over commits ids and the
 \* history adds H
@@ -427,9 +403,9 @@ Forked(x, a, h) == Anchors(x, a, h) # {} /\ ~\E k \in KOf(x, h) : \A q \in Ancho
 SealK(x, a, h) == IF SealSet(x, a, h) = {} THEN 0 ELSE Newest(SealSet(x, a, h))
 
 \* boxes of a to holders hs add blind ones only within MaxBlind
-Blinds == UNION {{<<e, b.h>> : b \in {c \in AllBoxesAt(e) : c.h \in Acts \ TExp(ep[e].act)}} :
+Blinds == UNION {{<<e, b.h>> : b \in {c \in AllBoxesAt(e) : c.h \in Acts \ KeyIn(GNow(done), ep[e].act)}} :
                  e \in Ids}
-BlindOK(a, hs) == (hs \cap Acts) \ TExp(a) # {} => Cardinality(Blinds) < MaxBlind
+BlindOK(a, hs) == (hs \cap Acts) \ KeyIn(GNow(done), a) # {} => Cardinality(Blinds) < MaxBlind
 
 \* a rotation of a by x would box an actor whose anchors fork (the build seals
 \* it jointly, Joint.tla; not made here: a subset of the build's behaviours)
@@ -797,9 +773,9 @@ Write(x, a) ==
                                             /\ {f \in Ids : ep[f].act = c /\ Honest(f)} \subseteq Sec(x)
                                             /\ Judged(x, c)}
                                   ELSE {},
-                           p9 |-> {dp \in Known(x) : dp[2] \in FrozenAct(a) /\ dp[1] # x /\
+                           p9 |-> {dp \in Known(x) : dp[2] \in KeyAct(a) \ {a} /\ dp[1] # x /\
                                      \A k \in Ids : (ep[k].act = dp[2] /\ Honest(k) /\ dp \in ep[k].at) => dp \in ep[k].knows},
-                           p10 |-> {dp \in Known(x) : dp[2] \in DestroyedIn(a) /\ dp[1] # x},
+                           p10 |-> dst \cap Holders(a),
                            p11 |-> IF {r \in rs : r.e = e} \subseteq krs[x]
                                    THEN {dp \in done : dp[1] # x /\ dp[2] \in HClos(a) /\
                                            \A h \in KeyAct(a) : (dp[2] = h \/ dp[2] \in HClos(h)) =>
@@ -907,11 +883,13 @@ NoLeakAbove == \A c \in wr : \A dp \in c.p8 : ~Opens(RD(dp[1], c.a), c)
 \* ignorant rotation: the limit; Order)
 NoLeakOrder == \A c \in wr : \A dp \in c.p9 : ~Opens(RD(dp[1], c.a), c)
 
-\* a node removed from a destroyed actor whose frozen holders stand in its
-\* place among a's (through destroyed ones) reads no content of a written by a
-\* writer that knew the removal (Expand); a departure deeper (below a live
-\* actor) is the depth-0 limit, as without a destruction
-NoLeakDestroyed == \A c \in wr : \A dp \in c.p10 : ~Opens(RD(dp[1], c.a), c)
+\* a node below a destroyed holder actor t of a (any depth, removed or not)
+\* that no longer reads a another way reads no content of a written after t's
+\* destruction: access through t ends (NoKeys); one below a destroyed actor
+\* deeper (below a live one) is the depth-0 limit, as at a removal there
+DNodes(t) == UNION {Holders(b) \ Acts : b \in {t} \cup HClos(t)}
+NoLeakDestroyed == \A c \in wr : \A t \in c.p10 :
+                     ~Opens(UNION {ReachD(d) : d \in DNodes(t) \ CurNodes(c.a)}, c)
 
 \* eventually every writer's next epoch is closed to every removed node
 \* that no longer reaches the actor (any depth, cycles included)

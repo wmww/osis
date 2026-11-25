@@ -162,7 +162,7 @@ fn direct_departures(tx: &mut Tx<'_>, a: &Tid) -> Result<BTreeSet<Departure>> {
     let mut out = BTreeSet::new();
     if let Some(on) = tx.core.timelines().on(a) {
         for (m, log) in edge_logs(tx.core, &on, a) {
-            // what the edge holds it at now, or more by another path (a destroyed actor's stand-in)
+            // the greater of what the edge holds it at now and what it holds for keys now
             let from = above_role(current.get(&m).copied().max(log.now()));
             if let (Some(from), Some(upto)) = (from, log.most())
                 && from <= upto
@@ -239,19 +239,19 @@ pub(crate) fn departures(tx: &mut Tx<'_>, a: &Tid) -> Result<Vec<Departure>> {
 
 /// The roles of `a` that `who` (its node thing, a link key it signs as, or a holder actor) may
 /// rotate now (spec/permissions.md §3, Who rotates): write and above rotates its role and below,
-/// over grants with key access only. A role through a keyless grant is a role (a rotation by it
-/// is valid), but its holder never gets the secret of the holder actor it reaches `a` through,
-/// so holds none of `a`'s epochs to judge a rotation due by: it leaves rotating to those that do
-/// (spec/crypto.md §4, Key access).
+/// over grants with key access only (`members::key_skip`). A role through a keyless grant or a
+/// destroyed thing is a role (a write by it is valid), but its holder never gets the secrets
+/// of `a` it reaches through them, so holds none of `a`'s epochs to judge a rotation due by: it
+/// leaves rotating to those that do (spec/crypto.md §4, Key access, Destroyed).
 pub fn may_rotate(core: &Core, who: &Tid, a: &Tid) -> BTreeSet<Role> {
     let at = At::now(now_ts(core));
-    let keyless = super::members::key_access(core);
+    let skip = super::members::key_skip(core);
     // the role read back from `a` (`Timelines::role`): moved by the edges into what reaches it
-    let role = match keyless.is_empty() {
+    let role = match skip.is_empty() {
         true => core.timelines().role(who, a, at),
         false => {
             let Some(tl) = core.timelines().get(a) else { return BTreeSet::new() };
-            tl.roles_without(who, at, &keyless).get(a).copied()
+            tl.roles_without(who, at, &skip).get(a).copied()
         }
     };
     osis_keys::ROLES.into_iter().filter(|r| role >= Some(Role::Write) && Some(*r) <= role).collect()

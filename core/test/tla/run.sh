@@ -74,10 +74,10 @@ instances=(
   "depth0 rotation Depth0MC D0_gone_live.cfg pass" # a node's own departure blocks nothing (spec/crypto.md §4)
   "depth0 rotation Depth0MC D0_gone_role.cfg fail" # negative control: judging a holder actor only while in it re-seals into a leave-out
   "depth0 rotation Depth0MC D0_order.cfg pass"   # a keyset whose secret the node lacks is judged by order (spec/crypto.md §4)
-  "depth0 rotation Depth0MC D0_destroyed_live.cfg pass" # a destroyed holder actor's frozen holders boxed in its place (spec/crypto.md §4 Destroyed)
-  "depth0 rotation Depth0MC D0_destroyed_off.cfg fail"  # negative control: a destroyed actor boxed as any other strands a newcomer
-  "depth0 rotation Depth0MC D0_destroyed_cycle.cfg pass" # a frozen holder keyed only through keyed grants (spec/crypto.md §4 Destroyed)
-  "depth0 rotation Depth0MC D0_destroyed_cycle_old.cfg fail" # negative control: a frozen holder always keyed closes the key cycle
+  "depth0 rotation Depth0MC D0_destroyed.cfg pass"      # nobody below a destroyed holder actor reads what is written after (spec/crypto.md §4 Destroyed)
+  "depth0 rotation Depth0MC D0_destroyed_rec.cfg pass"  # ... two destroyed, one below the other
+  "depth0 rotation Depth0MC D0_destroyed_live.cfg pass" # a destroyed holder actor: one rotation without it, no lockout (spec/crypto.md §4 Destroyed)
+  "depth0 rotation Depth0MC D0_destroyed_off.cfg fail:NoLeakDestroyed" # negative control: a destroyed actor boxed as any other keeps reading through it
   "lockout rotation Lockout L_rogue.cfg pass"    # notes/keys.md (Lockouts)
   "lockout rotation Lockout L_none.cfg fail"     # negative control: no re-key
   "cut rotation Cut X_names.cfg pass"            # history cuts (notes/history-less-grant.md)

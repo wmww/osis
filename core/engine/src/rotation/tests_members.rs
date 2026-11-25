@@ -1732,16 +1732,8 @@ fn keyless_route_is_no_rotator_spec_crypto_4() {
 /// A destroyed holder actor's world (spec/crypto.md §4, Holder actors, Destroyed): peer 0 makes T,
 /// expiring at `T0 + 50 s` (mint admin peer 0, independent) and X (independent),
 /// grants T read on X; peer 2 makes G and peer 0 grants G read on T; peer 1 reads T, and peer
-/// 3 reads G. Synced: T, X, G. Built once, copied (`LocalPeer::cached`).
-fn destroyed_world() -> (LocalPeer, Tid, Tid, Tid) {
-    let (lp, (t, x, g)) = LocalPeer::cached("rotation::destroyed_world", || {
-        let (lp, t, x, g) = build_destroyed_world();
-        (lp, (t, x, g))
-    });
-    (lp, t, x, g)
-}
-
-fn build_destroyed_world() -> (LocalPeer, Tid, Tid, Tid) {
+/// 3 reads G; D is dependent, T its mint admin. Synced: T, X, G.
+fn destroyed_world() -> (LocalPeer, Tid, Tid, Tid, Tid) {
     let mut lp = LocalPeer::new(4, 0, T0).unwrap();
     let me = lp.peers[0].engine.tid();
     let mut m = Mutation::new();
@@ -1751,6 +1743,9 @@ fn build_destroyed_world() -> (LocalPeer, Tid, Tid, Tid) {
     lp.peers[0].commit(m).unwrap();
     lp.hold(t);
     lp.peers[0].engine.make_independent(&t).unwrap();
+    let mut m = Mutation::new();
+    let d = lp.peers[0].engine.new_thing(&mut m, t);
+    lp.peers[0].commit(m).unwrap();
     let x = independent_thing(&mut lp, 0);
     let g = independent_thing(&mut lp, 2);
     // the granters keep the nodes they grant (a strong from the node root): nothing else
@@ -1764,143 +1759,47 @@ fn build_destroyed_world() -> (LocalPeer, Tid, Tid, Tid) {
     lp.peers[0].engine.grant(&t, &n1, &edge(Role::Read)).unwrap();
     lp.peers[2].engine.grant(&g, &n3, &edge(Role::Read)).unwrap();
     lp.sync_all().unwrap();
-    (lp, t, x, g)
+    (lp, t, x, g, d)
 }
 
 const T0: WallMs = WallMs(1_700_000_000_000);
 
-/// T expires (so is destroyed): time passes it and every peer ticks, synced.
-fn expire_t(lp: &mut LocalPeer, t: Tid) {
+// spec/crypto.md §4 (Holder actors, Destroyed): a destroyed thing holds no keys and nobody stands
+// in its place. Once T expires, X's admin rotates X (its box to T is a departure) boxing neither
+// T nor G, T's holder: peers 1 and 3, reading X only through T, open nothing of X's new epoch
+// from every secret they held and hold X for keys no more, while their roles through T stand
+// for judging writes (spec/commits.md §5 Destruction). Nobody holds D, T's dependent, for keys
+#[test]
+fn destroying_a_holder_actor_ends_access_through_it_spec_crypto_4() {
+    let (mut lp, t, x, g, d) = destroyed_world();
+    let (n0, n1, n3) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid(), lp.peers[3].engine.tid());
+    assert_eq!(lp.peers[0].engine.core.keyed_role_now(&n0, &d), Some(Role::Admin), "peer 0 holds D through T");
+    let start: Opened = held_by(&lp, 1, &[t, x]).into_iter().chain(held_by(&lp, 3, &[t, x, g])).collect();
+    assert!(held_by(&lp, 3, &[x]).iter().any(|k| k.0 == x), "peer 3 reads X through G and T");
+    let before = newest_read(&lp, 0, x);
     lp.advance(100_000);
     for i in 0..lp.peers.len() {
         lp.peers[i].tick().unwrap();
     }
     lp.sync_all().unwrap();
-    for i in 0..lp.peers.len() {
-        assert!(lp.peers[i].engine.core.destroyed(&t) || lp.peers[i].engine.core.created(&t).is_none(), "peer {i}: T destroyed");
+    assert!(lp.peers[0].engine.core.destroyed(&t), "T destroyed");
+    let core = &lp.peers[0].engine.core;
+    assert!(!core.key_holders(&x).iter().any(|h| h.0 == t || h.0 == g), "nobody in T's place: {:?}", core.key_holders(&x));
+    for n in [n1, n3] {
+        assert_eq!(super::members::role_for_keys(core, &n, &x), None, "no role for keys through T");
+        assert!(core.timelines().role(&n, &x, osis_perm::At::KEYS).is_some(), "the role through T stands for writes");
     }
-}
-
-// spec/crypto.md §4 (Holder actors, Destroyed): a destroyed actor holds no keys, so X's admin, once T
-// is destroyed, rotates X (its box to T is a departure) boxing T's frozen holders in T's place: G
-// and itself, never peer 1, removed from T before the destruction. Peer 1 opens none of X's new epoch from
-// every secret it held; peer 3, reading X only through G and T, reads it
-#[test]
-fn destroyed_holder_actor_boxes_its_frozen_holders_never_one_removed_before_spec_crypto_4() {
-    let (mut lp, t, x, g) = destroyed_world();
-    let n1 = lp.peers[1].engine.tid();
-    let start = held_by(&lp, 1, &[t, x]);
-    assert!(start.iter().any(|k| k.0 == x), "peer 1 reads X through T");
-    lp.peers[0].engine.demote(&t, &Demotion { holder: n1, new: None, retain: None }).unwrap();
-    lp.sync_all().unwrap();
-    expire_t(&mut lp, t);
-    let holders = lp.peers[0].engine.core.key_holders(&x);
-    assert!(holders.iter().any(|h| h.0 == g) && !holders.iter().any(|h| h.0 == t || h.0 == n1), "T's frozen holders in its place: {holders:?}");
-    let before = newest_read(&lp, 0, x);
+    assert_eq!(core.keyed_role_now(&n0, &d), None, "nobody holds D through T");
+    assert!(super::may_rotate(core, &n0, &d).is_empty(), "nobody rotates D through T");
     settle(&mut lp, &[0], &[x]);
     let w = newest_read(&lp, 0, x).unwrap();
     assert_ne!(Some(w), before, "X rotated past its box to T");
-    assert!(boxes(&mut lp, 0, x, g), "G boxed on X");
-    assert!(!openable(&mut lp, 0, &[t, x, g], n1, start).contains(&(x, Role::Read, w)), "peer 1 opens nothing of X's new epoch");
+    assert!(!boxes(&mut lp, 0, x, t) && !boxes(&mut lp, 0, x, g), "X boxes neither T nor G");
+    for n in [n1, n3] {
+        assert!(!openable(&mut lp, 0, &[t, x, g], n, start.clone()).contains(&(x, Role::Read, w)), "{n:?} opens nothing of X's new epoch");
+    }
     assert!(all_boxed(&mut lp, 0, &[x]), "every holder of X boxed");
-    assert_eq!(newest_read(&lp, 3, x), Some(w), "peer 3 reads X through G");
 }
-
-// spec/crypto.md §4 (Holder actors, Destroyed; Stale): X's rotation after T's destruction boxes T's frozen
-// holder G at its current keyset as any holder actor: G's admin removes peer 3 from G, so X's box
-// to G goes stale and X rotates onto G's new keyset, which peer 3 opens nothing of
-#[test]
-fn rotation_after_a_destruction_seals_a_frozen_holder_at_its_current_keyset_spec_crypto_4() {
-    let (mut lp, t, x, g) = destroyed_world();
-    expire_t(&mut lp, t);
-    settle(&mut lp, &[0], &[x]);
-    assert!(boxes(&mut lp, 0, x, g), "G boxed on X");
-    let n3 = lp.peers[3].engine.tid();
-    let start = held_by(&lp, 3, &[g, x]);
-    assert!(start.iter().any(|k| k.0 == x), "peer 3 reads X through G");
-    lp.peers[2].engine.demote(&g, &Demotion { holder: n3, new: None, retain: None }).unwrap();
-    lp.sync_all().unwrap();
-    let gk = newest_read(&lp, 2, g).unwrap();
-    settle(&mut lp, &[0, 2], &[g, x]);
-    assert_eq!(sealed_at(&mut lp, 0, x, g), Some(gk), "X sealed at G's keyset past the removal");
-    let w = newest_read(&lp, 0, x).unwrap();
-    assert!(!openable(&mut lp, 0, &[t, x, g], n3, start).contains(&(x, Role::Read, w)), "peer 3 opens nothing of X's new epoch");
-}
-
-// spec/crypto.md §4 (Holder actors, Destroyed; Key access): a destroyed actor's frozen holder
-// has key access only through grants that have it. X holds G, then G holds T, then T holds X:
-// keyless (X's key yields T's). Once T is destroyed, G stands in T's place among X's holders,
-// on a path through that keyless grant: X's admin boxes it nothing, else X -> G -> X would be the
-// key cycle the keyless grant broke
-#[test]
-fn frozen_holder_through_a_keyless_grant_is_boxed_nothing_spec_crypto_4() {
-    let mut lp = LocalPeer::new(2, 0, T0).unwrap();
-    let me = lp.peers[0].engine.tid();
-    let mut m = Mutation::new();
-    let t = lp.peers[0].engine.new_expiring_thing(&mut m, me, Some(WallMs(T0.0 + 50_000)));
-    m.set(t, &osis_base::Ak::new("x:a.0").unwrap(), &osis_base::Value::Int(0)).unwrap();
-    m.expires_all(WallMs(T0.0 + 50_000));
-    lp.peers[0].commit(m).unwrap();
-    lp.hold(t);
-    lp.peers[0].engine.make_independent(&t).unwrap();
-    let (x, g) = (independent_thing(&mut lp, 0), independent_thing(&mut lp, 1));
-    lp.sync_all().unwrap();
-    lp.peers[1].engine.grant(&g, &x, &edge(Role::Read)).unwrap();
-    lp.sync_all().unwrap();
-    lp.peers[0].engine.grant(&t, &g, &edge(Role::Read)).unwrap();
-    lp.sync_all().unwrap();
-    lp.peers[0].engine.grant(&x, &t, &edge(Role::Read)).unwrap();
-    lp.sync_all().unwrap();
-    assert!(lp.peers[0].engine.run(|tx| Ok(super::members::key_access(tx.core).contains(&(x, t)))).unwrap(), "T's grant on X is keyless");
-    expire_t(&mut lp, t);
-    assert!(lp.peers[0].engine.core.key_holders(&x).iter().any(|h| h.0 == g), "G holds X in T's place");
-    settle(&mut lp, &[0], &[x]);
-    assert!(!boxes(&mut lp, 0, x, g), "X boxes G: a key cycle");
-    assert!(boxes(&mut lp, 1, g, x), "G boxes X");
-}
-
-// spec/crypto.md §4 (Holders for keys; Destroyed; Key access): a frozen holder's role for keys
-// with key access is the greatest over paths with key access at every grant, the lesser role
-// along the way. M holds X read through T and admin through T2 and U, where U's grant on T2 is
-// keyless (T2 holds U first); once all three are destroyed, X's admin boxes M read alone: the
-// admin path never gave M's members X's admin secret, and its destruction gives them nothing
-#[test]
-#[ignore = "issues/node-root-independent.md"]
-fn frozen_holder_keyed_at_the_role_of_its_keyed_paths_spec_crypto_4() {
-    let mut lp = LocalPeer::new(2, 0, T0).unwrap();
-    let me = lp.peers[0].engine.tid();
-    let mut m = Mutation::new();
-    let [t, t2, u] = [(); 3].map(|_| lp.peers[0].engine.new_expiring_thing(&mut m, me, Some(WallMs(T0.0 + 50_000))));
-    for x in [t, t2, u] {
-        m.set(x, &osis_base::Ak::new("x:a.0").unwrap(), &osis_base::Value::Int(0)).unwrap();
-    }
-    m.expires_all(WallMs(T0.0 + 50_000));
-    lp.peers[0].commit(m).unwrap();
-    for x in [t, t2, u] {
-        lp.peers[0].engine.make_independent(&x).unwrap();
-    }
-    let (x, mm) = (independent_thing(&mut lp, 0), independent_thing(&mut lp, 1));
-    lp.sync_all().unwrap();
-    lp.peers[0].engine.grant(&x, &t, &edge(Role::Read)).unwrap();
-    lp.peers[0].engine.grant(&x, &t2, &edge(Role::Admin)).unwrap();
-    lp.peers[0].engine.grant(&u, &t2, &edge(Role::Admin)).unwrap();
-    lp.peers[0].engine.grant(&t2, &u, &edge(Role::Admin)).unwrap();
-    lp.sync_all().unwrap();
-    lp.peers[0].engine.grant(&t, &mm, &edge(Role::Admin)).unwrap();
-    lp.peers[0].engine.grant(&u, &mm, &edge(Role::Admin)).unwrap();
-    lp.sync_all().unwrap();
-    assert!(lp.peers[0].engine.run(|tx| Ok(super::members::key_access(tx.core).contains(&(t2, u)))).unwrap(), "U's grant on T2 is keyless");
-    expire_t(&mut lp, t);
-    assert!([t2, u].iter().all(|y| lp.peers[0].engine.core.destroyed(y)));
-    assert!(lp.peers[0].engine.core.key_holders(&x).contains(&(mm, Role::Admin)), "M holds X admin in T2's place");
-    settle(&mut lp, &[0], &[x]);
-    let roles: BTreeSet<Role> = lp.peers[0].engine.get_typed(&x, &ct::SECRETS).unwrap().unwrap().boxes.keys().filter(|k| k.holder == osis_base::Weak(mm)).map(|k| k.role).collect();
-    assert!(roles.contains(&Role::Read) && roles.iter().all(|r| *r <= Role::Read), "X boxes M read and below alone: {roles:?}");
-    // taint per role: a box to M of X's admin goes past M's key access, one of its read does not
-    let core = &lp.peers[0].engine.core;
-    assert!(super::members::keyless_holders(core, &x, Role::Admin).contains(&mm) && !super::members::keyless_holders(core, &x, Role::Read).contains(&mm));
-}
-
 
 /// Every box of `a`'s `secrets.0` state at peer `boxer` to a holder actor, at an epoch current
 /// there, missing from the box records peer `other` noted (`Indexes::sealed`): (holder, role,

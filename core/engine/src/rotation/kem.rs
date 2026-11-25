@@ -38,7 +38,7 @@ pub(crate) fn publishes(tx: &mut Tx<'_>, t: &Tid, r: Role) -> Result<bool> {
 /// edge, `Core::edge_holders`: every `until` disregarded, as keys read no clock).
 fn holds_for_keys(core: &Core, t: &Tid, r: Role) -> bool {
     let on: Vec<Tid> = core.ix.held.named_on(t).copied().collect();
-    on.iter().any(|y| core.edge_holders(y).into_iter().any(|(h, role)| h == *t && members::keyed_role(core, y, t, role).is_some_and(|k| k >= r)))
+    on.iter().any(|y| core.edge_holders(y).into_iter().any(|(h, role)| h == *t && role >= r && members::keyed(core, y, t)))
 }
 
 /// The greatest role whose keysets setting `s` of a thing makes carry KEM keys: read where it
