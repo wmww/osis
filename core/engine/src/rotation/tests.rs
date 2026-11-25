@@ -255,15 +255,30 @@ pub(super) enum Via {
 
 /// `opens_in`, each secret opened with the first way found to it.
 pub(super) fn opens_by(lp: &LocalPeer, states: &[(Tid, ct::Secrets)], secrets: &BTreeMap<Key, osis_crypto::Secret32>, party: Tid, known: BTreeSet<Key>, skip: &BTreeSet<(Tid, Role, osis_crypto::Epoch, Tid)>) -> BTreeMap<Key, Via> {
-    use osis_keys::aspects::from_schema;
-    let mut out: BTreeMap<Key, Via> = known.into_iter().map(|k| (k, Via::Known)).collect();
-    // boxes to the party itself (a node thing, its secrets its node's own)
+    opens_from(states, secrets, party, known, &self_opened(lp, states, party), skip)
+}
+
+/// The secrets of `states` boxed to `party` itself (a node thing, its secrets its node's own),
+/// as its node opens them: the KEM opens of `opens_by`, which a caller asking of one party
+/// several times computes once (`opens_from`).
+pub(super) fn self_opened(lp: &LocalPeer, states: &[(Tid, ct::Secrets)], party: Tid) -> Vec<(Key, Via)> {
+    let mut out = Vec::new();
     if let Some(e) = lp.peers.iter().find(|p| p.engine.me() == party).and_then(|p| p.engine.core.epochs(&party)) {
         for (a, s) in states {
             for o in osis_keys::open_boxes(a, s, &osis_keys::Opener { holder: party, epochs: &e }).0 {
-                out.entry((*a, o.role, o.epoch)).or_insert(Via::Box(*a, o.role, o.epoch, party, vec![]));
+                out.push(((*a, o.role, o.epoch), Via::Box(*a, o.role, o.epoch, party, vec![])));
             }
         }
+    }
+    out
+}
+
+/// `opens_by`, given what `self_opened` opens of the same `states` to `party`.
+pub(super) fn opens_from(states: &[(Tid, ct::Secrets)], secrets: &BTreeMap<Key, osis_crypto::Secret32>, party: Tid, known: BTreeSet<Key>, own: &[(Key, Via)], skip: &BTreeSet<(Tid, Role, osis_crypto::Epoch, Tid)>) -> BTreeMap<Key, Via> {
+    use osis_keys::aspects::from_schema;
+    let mut out: BTreeMap<Key, Via> = known.into_iter().map(|k| (k, Via::Known)).collect();
+    for (k, v) in own {
+        out.entry(*k).or_insert_with(|| v.clone());
     }
     loop {
         let n = out.len();

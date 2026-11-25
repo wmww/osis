@@ -11,7 +11,7 @@
 //! forks, departures, forgeries, cycles); every feature stays on its own draws.
 
 #![allow(clippy::unwrap_used)]
-use super::tests::{Key, Rng, Via, edge, independent_thing, openable, opens_by, opens_in, synced};
+use super::tests::{Key, Rng, Via, edge, independent_thing, openable, opens_by, opens_from, opens_in, self_opened, synced};
 use super::tests_departs::{Forge, leave};
 use crate::flows::Demotion;
 use crate::local_peer::LocalPeer;
@@ -761,6 +761,9 @@ fn access_at(run: &Run, at: usize, d: usize, t: Tid, r: Role, point: Option<osis
 /// blocked, every holder boxed, and nothing leaked.
 fn check(run: &mut Run, seed: u64, rotated: bool) {
     let all = run.all();
+    // what each party's own node opens of the states met (`self_opened`): the check reads it for
+    // every actor and role
+    let mut own_opened: BTreeMap<usize, Vec<(Key, Via)>> = BTreeMap::new();
     for (t, o) in run.actors.clone() {
         let direct: Vec<(usize, Role)> = (0..N).filter(|p| !run.hostile.contains(p)).filter_map(|p| run.key_role(o, &t, p).map(|r| (p, r))).collect();
         let role = |p: usize| direct.iter().find(|x| x.0 == p).map(|x| x.1);
@@ -850,8 +853,9 @@ fn check(run: &mut Run, seed: u64, rotated: bool) {
                 // state met opens with and without them
                 let base: BTreeSet<Key> = own.iter().filter(|k| !run.made.get(k).is_some_and(|m| m.below.contains(&d))).copied().collect();
                 let settled = super::tests::openable_but(&mut run.lp, o, &all, run.tids[d], base.clone(), &limit);
-                let met = opens_in(&run.lp, &run.states, &run.secrets, run.tids[d], base.clone(), &BTreeSet::new());
-                let met_unlimited = opens_in(&run.lp, &run.states, &run.secrets, run.tids[d], base, &limit);
+                let mine = own_opened.entry(d).or_insert_with(|| self_opened(&run.lp, &run.states, run.tids[d]));
+                let met: BTreeSet<Key> = opens_from(&run.states, &run.secrets, run.tids[d], base.clone(), mine, &BTreeSet::new()).into_keys().collect();
+                let met_unlimited: BTreeSet<Key> = opens_from(&run.states, &run.secrets, run.tids[d], base, mine, &limit).into_keys().collect();
                 let leaks = run.made.iter().filter(|((mt, mr, e), Made { held, below, .. })| *mt == t && *mr == r && below.contains(&d) && !holder_at.contains(e) && lost.iter().any(|c| held.contains(c)) && !regained(e));
                 // excused only when boxes within the limit were its one way to it: a leak if the
                 // settled boxes open it without them, or it holds it and no state met opens it,
