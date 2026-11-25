@@ -102,7 +102,10 @@ fn holds_as_sibling(w: &mut World, n: usize, sib: usize) {
     let ts: Vec<Tid> = ts.into_iter().filter(|t| *t != own && !link_key(w, t)).collect();
     for t in ts {
         assert!(has.contains(&t), "{t:?} lacks a `sync.0` at the new node");
-        let (a, b) = (w.engine(sib).epochs(&t).unwrap(), w.engine(n).epochs(&t).unwrap());
+        // a `sync.0` held as evidence alone (steps placing listed keys, spec/permissions.md §4
+        // Copies) comes with no secret
+        let Some(a) = w.engine(sib).epochs(&t) else { continue };
+        let b = w.engine(n).epochs(&t).unwrap();
         for r in [Role::Sync, Role::Read] {
             for e in a.role(r).current().into_iter().filter(|e| a.role(r).secret(e).is_some()) {
                 assert!(b.role(r).secret(&e).is_some(), "{t:?} {r:?} {} lacks its secret at the new node", e.n());

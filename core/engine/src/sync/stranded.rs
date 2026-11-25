@@ -179,26 +179,23 @@ impl Engine {
     }
 
     /// A stranded report's holder keys of `holder` (spec/wire.md §11.2 Stranded): its current
-    /// `keys.0` commits each projected to that delta, with their evidence (projected, no `keys.0`
-    /// but each commit's signer's own) and its records.
+    /// `keys.0` commits each cut to keys on it (spec/permissions.md §4 Copies), with their
+    /// evidence (cut to evidence) and its records.
     pub fn holder_keys(&mut self, holder: &Tid) -> Result<Certificates> {
         let ev = self.evidence_now()?;
         let mut evidence = Certs::default();
         let mut own = Certs::default();
         for k in self.current_keys(holder) {
             let Some(h) = self.header(&k) else { continue };
-            let Some(ai) = h.aspect_index(holder, "keys.0") else { continue };
-            own.commits.entry(k).or_default().insert(ai);
+            if h.aspect_index(holder, "keys.0").is_none() {
+                continue;
+            }
+            own.commits.entry(k).or_default().extend(self.cut_parts(&k, holder, crate::sync_ids::Cut::Keys));
             evidence.records.insert(h.signer);
             self.add_closure(&ev, &BTreeSet::from([(k, *holder)]), &mut evidence);
         }
         evidence.records.insert(*holder);
         self.close_records(&ev, &mut evidence);
-        for (x, ps) in evidence.commits.iter_mut() {
-            let Some(hx) = self.header(x) else { continue };
-            ps.retain(|i| hx.aspects.get(*i).is_some_and(|a| a.ak.as_str() != "keys.0" || a.tid == hx.signer));
-        }
-        evidence.commits.retain(|_, p| !p.is_empty());
         let mut certs = own;
         certs.extend(evidence);
         let (commits, records) = self.certs_values(&certs)?;

@@ -40,21 +40,24 @@ fn open(lp: &mut LocalPeer, i: usize, out: &super::inbox::SealedFireOut) -> Open
     lp.peers[i].engine.open_entry(&out.sync_id, &osis_blob::blob_id(&out.blob), &[0; 57], &out.blob, u64::MAX).unwrap()
 }
 
-fn sync_current(lp: &LocalPeer, i: usize, g: &Tid) -> BTreeSet<osis_crypto::Epoch> {
-    lp.peers[i].engine.epochs(g).map(|e| e.role(Role::Sync).current().into_iter().collect()).unwrap_or_default()
+/// The sync secrets of `g` peer `i` holds.
+fn sync_held(lp: &LocalPeer, i: usize, g: &Tid) -> BTreeSet<osis_crypto::Epoch> {
+    lp.peers[i].engine.epochs(g).map(|e| e.role(Role::Sync).held().map(|x| x.0).collect()).unwrap_or_default()
 }
 
 // spec/permissions.md §4 (Delivering an edge piece: a rotation boxing a holder of sync alone goes
 // as a sealed copy), spec/sync-inbox.md §2 (Sealed copy: under H's own sync ID, taken as a sealed
 // fire's commit is): peer 0 rotates G's sync role. T holds sync alone, so no box at the epoch
 // the commit is wrapped under, and peer 0 may not write T: it owes one sealed copy to T, no fire
-// on an inbox. Peer 2 opens it as the rotation commit itself and holds G's new sync epoch.
-// Fails with the rotation sent as a `grant@~0` fire, or not sent.
+// on an inbox. Peer 2 opens it as the rotation commit itself and holds G's new sync secret (it
+// establishes the epoch by G's steps, spec/crypto.md §4 Established: the copy carries no
+// `keys.0`, spec/permissions.md §4 Copies). Fails with the rotation sent as a `grant@~0` fire,
+// or not sent.
 #[test]
 fn a_rotation_reaches_a_holder_of_sync_alone_as_a_sealed_copy_spec_permissions_4() {
     let (mut lp, g, t) = sync_holder();
     let before = lp.peers[0].engine.fires_owed();
-    let was = sync_current(&lp, 2, &g);
+    let was = sync_held(&lp, 2, &g);
     let rot = lp.peers[0].engine.rotate_leaving_out(&g, &[Role::Sync], &[]).unwrap().unwrap();
     let owed = new_owed(&lp, 0, &before);
     assert_eq!(owed.len(), 1, "one delivery owed");
@@ -63,8 +66,8 @@ fn a_rotation_reaches_a_holder_of_sync_alone_as_a_sealed_copy_spec_permissions_4
     let out = lp.peers[0].engine.sealed_fire(&owed[0]).unwrap().expect("sealed to T's read key");
     assert_eq!(Some(out.sync_id), lp.peers[2].engine.sync_id_of(&t).unwrap(), "under T's own sync ID");
     assert!(matches!(open(&mut lp, 2, &out), Opened::Commit(c, _) if c == rot), "opened as the rotation");
-    let now = sync_current(&lp, 2, &g);
-    assert!(!now.is_empty() && now != was, "G's new sync epoch held: {was:?} -> {now:?}");
+    let now = sync_held(&lp, 2, &g);
+    assert!(now.len() > was.len() && now.is_superset(&was), "G's new sync secret held: {was:?} -> {now:?}");
 }
 
 /// Peer 2 forges a role commit on G making T an admin (it holds write there, no admin: the writer
@@ -141,7 +144,7 @@ fn a_forged_offer_gives_no_role_spec_sync_inbox_5() {
     let (mut lp, g, t) = sync_holder();
     reads_t(&mut lp, t);
     let (c, _) = forged_copy(&mut lp, g, t);
-    let p = lp.peers[2].engine.edge_piece(&c, &g).unwrap().expect("the forger's piece");
+    let p = lp.peers[2].engine.edge_piece(&c, &g, Some(t)).unwrap().expect("the forger's piece");
     let piece = EdgePiece::from_value(&p.to_value()).expect("round-trips");
     assert_eq!(piece, p);
     let taken = lp.peers[1].engine.take_edge_piece(&piece, None).unwrap();
@@ -168,10 +171,10 @@ fn a_replayed_rotation_copy_gives_back_nothing_spec_sync_inbox_2() {
     lp.sync_all().unwrap();
     let role = lp.peers[2].engine.core.role_now(&t, &g);
     assert_eq!(role, None, "peer 2 learns T's removal from G");
-    let epochs = sync_current(&lp, 2, &g);
+    let epochs = sync_held(&lp, 2, &g);
     open(&mut lp, 2, &out);
     assert_eq!(lp.peers[2].engine.core.role_now(&t, &g), None, "T holds no role on G");
-    assert_eq!(sync_current(&lp, 2, &g), epochs, "G's sync epochs at peer 2 unchanged");
+    assert_eq!(sync_held(&lp, 2, &g), epochs, "G's sync epochs at peer 2 unchanged");
 }
 
 // spec/sync-inbox.md §2 (Sealed copy: never promoted, H's writers log what it carries in H's key
@@ -211,7 +214,7 @@ fn a_pieces_evidence_takes_its_own_pages_spec_wire_9() {
     m.set(t, &ak, &big).unwrap();
     let content = lp.peers[2].commit(m).unwrap().unwrap();
     let rot = lp.peers[0].engine.rotate_leaving_out(&g, &[Role::Sync], &[]).unwrap().unwrap();
-    let mut p = lp.peers[0].engine.edge_piece(&rot, &g).unwrap().unwrap();
+    let mut p = lp.peers[0].engine.edge_piece(&rot, &g, Some(t)).unwrap().unwrap();
     let c = lp.peers[2].engine.read(|tx| tx.get_commit(&content)).unwrap().unwrap().encode();
     let pages = lp.peers[2].engine.run(|tx| super::inbox::held_pages(tx, &[c.as_slice()])).unwrap();
     assert!(!pages.is_empty(), "the content commit pages");

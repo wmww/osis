@@ -101,8 +101,10 @@ impl Engine {
     /// How this node syncs thing `t` of `sync_things`: its sync ID read while a read secret
     /// of it is held; an independent thing and none is unsyncable; a dependent thing has none of its own. Reads only `t`'s keys.
     pub(crate) fn thing_sync_now(&mut self, t: &Tid) -> Result<ThingSync> {
-        // read: by its own secrets
-        if self.core.is_independent(t) && self.holds_read(t) {
+        // read: by its own secrets, independent by a box alone (spec/permissions.md §4 Key part:
+        // an edge piece holds no rotation that made a granted epoch current, which is a body
+        // under the sync ID it opens)
+        if self.core.counts_independent(t) && self.holds_read(t) {
             let ids = synced(&self.owned_sync_ids(t)?);
             if !ids.is_empty() {
                 return Ok(ThingSync::Read(ids));

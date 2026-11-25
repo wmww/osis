@@ -2040,6 +2040,7 @@ fn pairing_a_node_spec_permissions_8() {
     for (i, what) in ["offer bytes", "offer: the grant's evidence", "offer: records", "offer: sync.0 copies", "offer: trust records"].into_iter().enumerate() {
         flat(&format!("pairing: {what}"), small.offer[i], big.offer[i]);
     }
+    println!("pairing: offer (bytes, evidence, records, sync.0 copies, trust): {:?} at n, {:?} at 10n", small.offer, big.offer);
     assert_eq!(small.offer[3], 0, "A's minting, its one sync.0 write, rides as the grant's evidence alone");
     all_flat("pairing: the new node taking the offer", &small.taker, &big.taker);
     all_linear("pairing: the pairer", &small.pairer, &big.pairer);

@@ -518,11 +518,13 @@ impl Ground for Live<'_, '_> {
         self.cx.engine.commit_ts(c)
     }
     fn log_own(&mut self, s: &SyncId, c: &BodyId, fresh: bool, skip: &[BlobId]) -> Result<Option<BlobId>> {
-        let class = if self.cx.engine.sync_body(s, c)?.is_some() { Class::Durable } else { return Ok(None) };
+        let Some(meta) = self.cx.engine.sync_body(s, c)? else { return Ok(None) };
+        let class = Class::Durable;
         if !fresh {
-            // a held blob of the commit not tombstoned under S, verbatim under a wrap for S
+            // a held blob of the commit not tombstoned under S, verbatim under a wrap for S: one
+            // holding the body (a certificate copy exactly S's cut, spec/permissions.md §4 Copies)
             for b in self.cx.engine.commit_blobs(&c.commit)?.iter() {
-                if self.cx.store.tombstone(s, b)?.is_some() || self.cx.store.blob_len(b)?.is_none() || self.cx.engine.blob_gone(b) || skip.contains(b) {
+                if self.cx.store.tombstone(s, b)?.is_some() || self.cx.store.blob_len(b)?.is_none() || self.cx.engine.blob_gone(b) || skip.contains(b) || (meta.certificate && !self.cx.engine.body_held_by(&meta, b)) {
                     continue;
                 }
                 for from in &self.body_ids_naming(b)? {

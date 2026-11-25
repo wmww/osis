@@ -165,10 +165,11 @@ fn a_sibling_writes_a_nodes_settings_and_cannot_sign_as_it_spec_sync_set_1() {
     lp.peers[0].engine.check_closure();
 }
 
-// spec/sync-set.md §2 Stub, spec/sync-judgement.md §1 Certificate blobs: G's sync unit strongs X,
-// which G holds sync on and whose keys G's do not open: G's sync ID carries X's stub, its
-// role-class parts as copies, and none of X's content: a grant on X to another holder Z among
-// them, which no rule naming G carries. Granted nothing on X, G carries none of it.
+// spec/sync-set.md §2 Stub, spec/permissions.md §4 Copies: G's sync unit strongs X, which G
+// holds sync alone on and whose keys G's do not open: G's sync ID carries X's stub, G's edge
+// piece on X as G's cut names it (boxes and `sync.0`), and none of X's content, nor a grant on X
+// to another holder Z (a holder G may not learn). Granted nothing on X, G carries
+// none of it.
 #[test]
 fn a_units_stub_is_carried_as_certificate_copies_spec_sync_set_2() {
     use crate::common::edge;
@@ -193,6 +194,8 @@ fn a_units_stub_is_carried_as_certificate_copies_spec_sync_set_2() {
     assert_eq!(on_x(e), vec![], "no role on X: no stub");
     e.grant(&x, &g, &edge(Role::Sync)).unwrap();
     let stub = on_x(e);
-    assert!(other.iter().any(|c| stub.iter().any(|(s, aks)| s == c && aks.iter().any(|a| a == "roles.0"))), "Z's grant: {stub:?}");
+    assert!(stub.iter().any(|(_, aks)| aks.iter().any(|a| a == "secrets.0")), "G's boxes: {stub:?}");
+    assert!(!other.iter().any(|c| stub.iter().any(|(s, _)| s == c)), "nothing of Z's grant: {stub:?}");
+    // G's own grant also travels under G's sync ID (spec/permissions.md §4 Role changes travel)
     assert!(stub.iter().all(|(c, aks)| *c != content && aks.iter().all(|a| ct::ROLE_CLASS.contains(&a.as_str()))), "role-class parts alone: {stub:?}");
 }

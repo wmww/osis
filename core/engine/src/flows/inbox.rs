@@ -596,7 +596,7 @@ impl Engine {
         let as_value = |b: &[u8]| osis_base::decode(b, &limits).map_err(|_| Error::Corrupt("commit blob"));
         // a sealed copy: the piece, behind its copy's prefix (spec/sync-inbox.md §2 Sealed copy)
         let (blob, fire) = if let Fire::Copy { commit, target } = &o.what {
-            let Some(p) = self.edge_piece(commit, target)? else { return Ok(None) };
+            let Some(p) = self.edge_piece(commit, target, Some(o.thing))? else { return Ok(None) };
             let copy = osis_commit::CommitBlob::decode(&p.copy)?;
             let evidence = p.evidence.iter().map(|c| as_value(c)).collect::<Result<Vec<_>>>()?;
             let fire = osis_blob::SealedFire { copy: true, commit: as_value(&p.copy)?, evidence, records: p.records, pages: p.pages };
@@ -635,7 +635,7 @@ impl Engine {
         let (value, expires) = match &o.what {
             Fire::Value(v) => (v.clone(), None),
             Fire::Expiring(v, t) => (v.clone(), Some(osis_base::WallMs(*t))),
-            Fire::Grant { commit, target } => match self.edge_piece(commit, target)? {
+            Fire::Grant { commit, target } => match self.edge_piece(commit, target, None)? {
                 Some(p) => (p.to_value(), None),
                 None => return Ok(None),
             },
@@ -720,12 +720,21 @@ impl Engine {
     }
 
     /// Role commit `c`'s piece on `target` (`EdgePiece`): its certificate copy there (its header and
-    /// role-class parts there), the copies of its evidence, their creation records and the blobs
+    /// its edge piece's cut there, `Cut::EdgePiece`), the copies of its evidence, their creation records and the blobs
     /// their deltas link (`held_pages`). `None` while `c` is not applied here.
-    pub(crate) fn edge_piece(&mut self, c: &CommitId, target: &Tid) -> Result<Option<EdgePiece>> {
+    pub(crate) fn edge_piece(&mut self, c: &CommitId, target: &Tid, holder: Option<Tid>) -> Result<Option<EdgePiece>> {
         let id = *c;
         let Some(full) = self.read(|tx| tx.get_commit(&id))? else { return Ok(None) };
-        let parts: BTreeSet<usize> = full.header.aspects.iter().enumerate().filter(|(_, a)| a.tid == *target && ct::ROLE_CLASS.contains(&a.ak.as_str())).map(|(i, _)| i).collect();
+        // the edge piece's cut (spec/permissions.md §4 Copies): of `holder`, else of each holder
+        // the commit writes an edge or boxes there (a grant fire's)
+        let holders: BTreeSet<Tid> = match holder {
+            Some(h) => BTreeSet::from([h]),
+            None => full.header.aspects.iter().enumerate().filter(|(_, a)| a.tid == *target).flat_map(|(ai, _)| self.holders_named(&id).get(&ai).cloned().unwrap_or_default()).collect(),
+        };
+        let mut parts = BTreeSet::new();
+        for h in holders {
+            parts.extend(self.cut_parts(&id, target, crate::sync_ids::Cut::EdgePiece(h)));
+        }
         let (evidence, records) = self.copy_evidence(&(id, *target))?;
         let copy = osis_commit::rewrite(&full, |ai| !parts.contains(&ai));
         let (copy, evidence): (Vec<u8>, Vec<Vec<u8>>) = (copy.encode(), evidence.iter().map(osis_base::encode).collect());

@@ -16,6 +16,18 @@ use std::sync::Arc;
 /// Parts of a commit, by aspect index.
 pub type Parts = BTreeSet<usize>;
 
+/// What a certificate copy's cut is for (spec/permissions.md §4 Copies): what S carries names
+/// the parts S's readers read there (`Engine::cut_parts`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Cut {
+    /// S's evidence; `step`: the copy records a step placing a listed key.
+    Evidence { step: bool },
+    /// An edge piece of this holder: S's actor's key part, a stub.
+    EdgePiece(Tid),
+    /// Keys: a public key record, a carried cause, holder keys.
+    Keys,
+}
+
 /// Chain material a verifier needs (spec/permissions.md §4): parts of commits to copy, commits
 /// to copy as headers alone (the requests destroying things whose records go), the held
 /// mintings of things whose records go (each with those things: a header-only copy of each is
@@ -133,8 +145,9 @@ impl Engine {
     pub(crate) fn sync_certificates(&mut self, ev: &Ev, g: &Tid) -> Certs {
         let mut out = Certs::default();
         let req: BTreeSet<(CommitId, Tid)> = ev.required(g).map(|r| r.keys().copied().collect()).unwrap_or_default();
+        let stepped = ev.stepped(g).cloned().unwrap_or_default();
         for (c, x) in &req {
-            self.add_copy(c, x, &mut out);
+            self.add_cut(c, x, Cut::Evidence { step: stepped.contains(&(*c, *x)) }, &mut out);
         }
         // a key has no record: its edge's target's is the one read
         for (a, b) in ev.edges(g).into_iter().flatten() {
@@ -145,37 +158,20 @@ impl Engine {
         // the public key records of `g`'s holders (spec/permissions.md §4): every admin can seal
         // to and list them; a link key's redeemer, holding its seed alone, learns its record and
         // keysets from `g`'s sync ID
-        let holders: Vec<Tid> = self.core.roster_of(g).into_keys().collect();
+        // its mint admin holds admin by its record edge, on no roster
+        let holders: BTreeSet<Tid> = self.core.roster_of(g).into_keys().chain(self.core.mint_admin(g)).collect();
         for h in &holders {
             self.public_key_record_into(ev, h, &mut out);
         }
-        // a holder of sync alone on a target gets that target's boxes and `sync.0` parts and
-        // nothing else of it: no roster, no edge write, no evidence of either (spec/permissions.md
-        // §4 Key part)
-        let mut key_part = BTreeSet::new();
-        for (c, x) in self.key_part(g) {
-            if self.core.roster_of(&x).get(g).is_some_and(|e| e.role == osis_base::Role::Sync) {
-                out.add(c, self.parts_of(&c, &BTreeSet::from([x]), &["secrets.0", "sync.0"]));
-                out.records.insert(x);
-            } else {
-                key_part.insert((c, x));
+        self.edge_pieces_into(ev, g, None, &mut out);
+        // the stubs `g`'s sync unit carries (spec/sync-set.md §2 Stub): each one's edge pieces of
+        // the holders `g` holds its role there through, as `g`'s cut names them; none of its
+        // content
+        for x in self.stubs_of(g) {
+            for h in self.stub_holders(g, &x) {
+                self.edge_pieces_into(ev, &h, Some(&x), &mut out);
             }
         }
-        for (c, x) in &key_part {
-            self.add_copy(c, x, &mut out);
-        }
-        self.add_closure(ev, &key_part, &mut out);
-        // the stubs `g`'s sync unit carries (spec/sync-set.md §2 Stub): each one's role-class
-        // parts with their evidence, as copies; none of its content
-        let mut stubs = BTreeSet::new();
-        for x in self.stubs_of(g) {
-            let held: Vec<CommitId> = osis_schema::core_types::ROLE_CLASS.iter().filter_map(|k| Ak::new(*k).ok()).flat_map(|k| self.core.ix.by_aspect.get(&(x, k)).into_iter().flatten().map(|(_, c)| *c).collect::<Vec<_>>()).collect();
-            stubs.extend(held.into_iter().map(|c| (c, x)));
-        }
-        for (c, x) in &stubs {
-            self.add_copy(c, x, &mut out);
-        }
-        self.add_closure(ev, &stubs, &mut out);
         self.close_records(ev, &mut out);
         out
     }
@@ -188,6 +184,35 @@ impl Engine {
     pub(crate) fn stubs_of(&mut self, g: &Tid) -> BTreeSet<Tid> {
         let core = &self.core;
         core.ix.closure.beyond(g).into_iter().filter(|y| y != g && !core.ix.closure.unit_holds(g, y) && core.counts_independent(y) && !core.keys_open(g, y) && core.keyed_role_now(g, y) >= Some(osis_base::Role::Sync)).collect()
+    }
+
+    /// `h`'s edge pieces (spec/permissions.md §4 Key part), on `only` or on every thing `h` holds
+    /// an edge on, added to `out`: each copy cut to the piece (`Cut::EdgePiece`) with its
+    /// evidence; where `h` holds sync alone, its boxes and `sync.0` parts and nothing else: no
+    /// roster, no edge write, no evidence of either. Interim (issues/account-evidence-per-unit.md,
+    /// Boxes travel per holder): the whole `secrets.0` part, not `h`'s piece, and with its header.
+    fn edge_pieces_into(&mut self, ev: &Ev, h: &Tid, only: Option<&Tid>, out: &mut Certs) {
+        let mut pieces = BTreeSet::new();
+        for (c, x) in self.key_part(h).into_iter().filter(|(_, x)| only.is_none_or(|o| o == x)) {
+            if self.core.roster_of(&x).get(h).is_some_and(|e| e.role == osis_base::Role::Sync) {
+                out.add(c, self.parts_of(&c, &BTreeSet::from([x]), &["secrets.0", "sync.0"]));
+                out.records.insert(x);
+            } else {
+                self.add_cut(&c, &x, Cut::EdgePiece(*h), out);
+                pieces.insert((c, x));
+            }
+        }
+        self.add_closure(ev, &pieces, out);
+    }
+
+    /// The holders of stub `x` of `g`'s unit (`stubs_of`) whose edge pieces it is: `g` itself and
+    /// every holder on `x`'s roster `g` holds sync or above on (with key access), the chain `g`
+    /// holds its role on `x` through.
+    fn stub_holders(&self, g: &Tid, x: &Tid) -> BTreeSet<Tid> {
+        let core = &self.core;
+        // its mint admin holds by its record edge, on no roster
+        let admin = core.mint_admin(x);
+        core.roster_of(x).into_keys().chain(admin).filter(|h| h == g || core.keyed_role_now(g, h) >= Some(osis_base::Role::Sync)).collect()
     }
 
     /// What `g`'s sync IDs carry beside bodies (`sync_certificates`), whether or not this node
@@ -249,24 +274,64 @@ impl Engine {
         Ok(out)
     }
 
-    /// Copy (`c`, `x`): `c`'s role-class parts on `x` (spec/permissions.md §4 Copies), with the
-    /// records of `x` and of `c`'s signer, added to `out`.
-    fn add_copy(&mut self, c: &CommitId, x: &Tid, out: &mut Certs) {
+    /// `cut`'s parts of commit `c` on thing `x` (spec/permissions.md §4 Copies: S's cut, each
+    /// part whole): evidence, its edge-class parts and, recording a step placing a listed key, its
+    /// `sync.0`; holder H's edge piece, its `roles.0` writing H's edge, its `secrets.0` boxing H
+    /// and its `sync.0`; keys, its `keys.0`. Beside a `secrets.0` or `keys.0` part, the commit's
+    /// edge-class parts on `x`, which that part's verdict reads (a may-grant grant's boxes and
+    /// records are judged from its commit's `roles.0` alone, `validity::rotation_required`,
+    /// `note_required`). Invariant: nothing outside `x`; a box part only beside its edge-class
+    /// parts. Interim (issues/account-evidence-per-unit.md, Boxes travel per holder): `secrets.0`
+    /// whole, every holder's boxes, until its write comes in pieces.
+    pub(crate) fn cut_parts(&mut self, c: &CommitId, x: &Tid, cut: Cut) -> Parts {
+        let Some(h) = self.header(c) else { return Parts::new() };
+        let named = match cut {
+            Cut::EdgePiece(_) => self.holders_named(c),
+            _ => Arc::default(),
+        };
+        let edge = |ak: &str| crate::apply::validity::edge_ak(ak);
+        let mut out = Parts::new();
+        let mut boxes = false;
+        for (i, a) in h.aspects.iter().enumerate().filter(|(_, a)| a.tid == *x) {
+            let ak = a.ak.as_str();
+            let take = match cut {
+                Cut::Evidence { step } => edge(ak) || (step && ak == "sync.0"),
+                Cut::EdgePiece(holder) => ak == "sync.0" || (matches!(ak, "roles.0" | "secrets.0") && named.get(&i).is_some_and(|hs| hs.contains(&holder))),
+                Cut::Keys => ak == "keys.0",
+            };
+            if take {
+                boxes |= matches!(ak, "secrets.0" | "keys.0");
+                out.insert(i);
+            }
+        }
+        if boxes {
+            out.extend(h.aspects.iter().enumerate().filter(|(_, a)| a.tid == *x && edge(a.ak.as_str())).map(|(i, _)| i));
+        }
+        out
+    }
+
+    /// `cut`'s parts of `c` on `x` (`cut_parts`), with the records of `x` and of `c`'s signer,
+    /// added to `out`.
+    pub(crate) fn add_cut(&mut self, c: &CommitId, x: &Tid, cut: Cut, out: &mut Certs) {
         let Some(h) = self.header(c) else { return };
-        out.add(*c, self.parts_of(c, &BTreeSet::from([*x]), &osis_schema::core_types::ROLE_CLASS));
+        out.add(*c, self.cut_parts(c, x, cut));
         out.records.insert(*x);
         out.records.insert(h.signer);
     }
 
-    /// The copies `ev` closes `seeds` over (`Evidence::closure_of`, seeds not included), added
-    /// to `out`.
+    /// The evidence `ev` closes `seeds` over (`Evidence::closure_of`, seeds not included), each
+    /// copy cut to evidence, added to `out`; a seed recording a step another places gets its
+    /// `sync.0` part too.
     pub(crate) fn add_closure(&mut self, ev: &Ev, seeds: &BTreeSet<(CommitId, Tid)>, out: &mut Certs) {
         if seeds.is_empty() {
             return;
         }
-        let closure: Vec<(CommitId, Tid)> = ev.closure_of(seeds).into_keys().collect();
-        for (c, x) in &closure {
-            self.add_copy(c, x, out);
+        let (members, stepped) = ev.closure_of(seeds);
+        for (c, x) in members.keys() {
+            self.add_cut(c, x, Cut::Evidence { step: stepped.contains(&(*c, *x)) }, out);
+        }
+        for (c, x) in stepped.iter().filter(|s| seeds.contains(*s)) {
+            out.add(*c, self.parts_of(c, &BTreeSet::from([*x]), &["sync.0"]));
         }
     }
 
@@ -284,7 +349,7 @@ impl Engine {
             out.records.insert(e);
             let frozen: BTreeSet<(CommitId, Tid)> = ["roles.0", "signers.0"].into_iter().filter_map(|k| osis_base::Ak::new(k).ok()).flat_map(|k| self.core.ix.by_aspect.get(&(e, k)).into_iter().flatten().map(|(_, c)| (*c, e)).collect::<Vec<_>>()).collect();
             for (c, x) in &frozen {
-                self.add_copy(c, x, out);
+                self.add_cut(c, x, Cut::Evidence { step: false }, out);
             }
             self.add_closure(ev, &frozen, out);
         }
@@ -424,7 +489,7 @@ impl Engine {
         out.records.insert(*t);
         let mut seeds = BTreeSet::new();
         for c in self.current_keys(t) {
-            out.add(c, self.parts_of(&c, &BTreeSet::from([*t]), &["keys.0"]));
+            out.add(c, self.cut_parts(&c, t, Cut::Keys));
             self.carried_demotions(ev, t, &c, out);
             seeds.insert((c, *t));
         }
@@ -449,8 +514,13 @@ impl Engine {
             let Some(h) = self.header(d) else { continue };
             let aks: &[&str] = if causes.contains(d) { &["roles.0", "keys.0"] } else { &["roles.0"] };
             let things: BTreeSet<Tid> = h.aspects.iter().filter(|a| aks.contains(&a.ak.as_str())).map(|a| a.tid).collect();
-            let parts = self.parts_of(d, &things, aks);
-            out.add(*d, parts);
+            for x in &things {
+                let mut parts = self.cut_parts(d, x, Cut::Evidence { step: false });
+                if causes.contains(d) {
+                    parts.extend(self.cut_parts(d, x, Cut::Keys));
+                }
+                out.add(*d, parts);
+            }
             let seeds: BTreeSet<(CommitId, Tid)> = things.into_iter().map(|x| (*d, x)).collect();
             self.add_closure(ev, &seeds, out);
         }
@@ -545,5 +615,45 @@ mod tests {
         assert!(e.header(&bad).is_some_and(|h| h.ts > e.header(&good).unwrap().ts), "the reader's write is held, later");
         assert_eq!(e.latest_by(&t, "x:a.0", None), Some(good));
         assert_eq!(e.latest_by(&t, "x:a.0", Some(&b)), None);
+    }
+
+    // spec/permissions.md §4 Copies (keys: beside a `keys.0` part, its commit's edge-class parts
+    // on the thing), §2 (May-grant grant: its boxes and records judged from its commit alone):
+    // peer 1, a may-grant reader of A, grants peer 2 on A, recording its box in A's `keys.0`. T,
+    // which A reads, carries A's public key record to peer 3, a reader of T that reads nothing of
+    // A: peer 3 holds the grant's records judged as its granter does. Fails with the keys copy
+    // cut to `keys.0` alone (the records judged an overreach there: no grant beside them).
+    #[test]
+    fn a_may_grant_grants_records_count_beside_its_grant_spec_permissions_4() {
+        use crate::rotation::tests::{edge, independent_thing, synced};
+        use std::collections::BTreeSet;
+        let mut lp = synced(4);
+        let (p1, p2, p3) = (lp.peers[1].engine.me(), lp.peers[2].engine.me(), lp.peers[3].engine.me());
+        let a = independent_thing(&mut lp, 0);
+        lp.peers[0].engine.grant(&a, &p1, &ct::Edge { may_grant: true, ..edge(Role::Read) }).unwrap();
+        lp.sync(0, 1).unwrap();
+        let g = *lp.peers[1].engine.grant(&a, &p2, &edge(Role::Read)).unwrap().commits.last().unwrap();
+        lp.sync(1, 0).unwrap();
+        let t = independent_thing(&mut lp, 0);
+        lp.peers[0].engine.grant(&t, &a, &edge(Role::Read)).unwrap();
+        lp.peers[0].engine.grant(&t, &p3, &edge(Role::Read)).unwrap();
+        let ai = lp.peers[0].engine.header(&g).unwrap().aspect_index(&a, "keys.0").expect("the grant records its box in A's keys.0");
+        assert!(lp.peers[0].engine.judged_valid(&g, &[ai]), "valid at T's admin");
+        assert!(lp.peers[0].engine.certificates(&t).unwrap().commits.get(&g).is_some_and(|p| p.contains(&ai)), "A's public key record under T carries the grant's records");
+        // T's own commits, whole: its unit's bodies
+        let on_t: Vec<_> = lp.peers[0].engine.commit_ids().into_iter().filter(|c| lp.peers[0].engine.header(c).is_some_and(|h| h.aspects.iter().any(|x| x.tid == t))).collect();
+        for c in on_t {
+            let pk = lp.peers[0].engine.package(&c).unwrap().unwrap();
+            lp.deliver(3, &pk).unwrap();
+        }
+        lp.send_certificates(0, 3, &t).unwrap();
+        // A's record, as the record blob under T carries it
+        let e0 = &mut lp.peers[0].engine;
+        let minting = e0.mintings_of(&a)[0].commit;
+        let created = e0.header(&minting).unwrap().aspect_index(&a, "created.0").unwrap();
+        let pk = e0.package_of_parts(&minting, &BTreeSet::from([created])).unwrap().unwrap();
+        lp.deliver(3, &pk).unwrap();
+        // held and valid (cut to `keys.0` alone, invalid there: the copy is not even kept)
+        assert!(lp.peers[3].engine.judged_valid(&g, &[ai]), "the records count at a reader outside A");
     }
 }

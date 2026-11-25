@@ -187,7 +187,9 @@ impl Core {
     pub fn secret_actor(&self, t: &Tid) -> Option<Tid> {
         for step in self.record_chain(t) {
             let cur = step.thing()?;
-            if self.ix.independent.contains(&cur) {
+            // independent by its role commits or by a box of its own alone (`counts_independent`:
+            // an edge piece carries no rotation that made a granted epoch current)
+            if self.counts_independent(&cur) {
                 return Some(cur);
             }
             match step {

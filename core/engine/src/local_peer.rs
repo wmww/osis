@@ -14,7 +14,7 @@ use osis_base::{BlobId, Classified, Clock, CommitId, Link, ManualClock, Tid, Wal
 use osis_commit::CommitBlob;
 use osis_crypto::SeededRng;
 use osis_store::{MemoryBackend, MemoryRoot};
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::Arc;
 use std::sync::mpsc::Receiver;
@@ -977,18 +977,22 @@ impl LocalPeer {
         Ok(holding(pk, &CommitBlob::decode(&pk.bytes)?, &parts))
     }
 
-    /// Delivers to `to`, whole, the commits of `from`'s certificates for `t`
-    /// (`Engine::certificates`): what `t`'s sync ID carries beside its bodies (its evidence,
-    /// spec/permissions.md §4). A test handing `to` a commit on `t` by hand sends this first: a
-    /// pass end drops what nothing held needs, so a thing is judged only with its certificates
-    /// delivered again, as a sync of `t` brings it.
+    /// Delivers to `to` the commits of `from`'s certificates for `t` (`Engine::certificates`),
+    /// each holding the parts they name (its cut, spec/permissions.md §4 Copies; a header alone
+    /// for a header the certificates name alone): what `t`'s sync ID carries beside its bodies
+    /// but its record blobs and mintings. A test handing `to` a
+    /// commit on `t` by hand sends this first: a pass end drops what nothing held needs, so a
+    /// thing is judged only with its certificates delivered again, as a sync of `t` brings it.
     pub fn send_certificates(&mut self, from: usize, to: usize, t: &Tid) -> Result<()> {
         let Some(p) = self.peers.get_mut(from) else { return Ok(()) };
         let certs = p.engine.certificates(t)?;
-        let ids: BTreeSet<CommitId> = certs.commits.keys().chain(&certs.headers).copied().collect();
+        let mut cut: BTreeMap<CommitId, BTreeSet<usize>> = certs.commits.clone();
+        for id in &certs.headers {
+            cut.entry(*id).or_default();
+        }
         let mut pks = Vec::new();
-        for id in ids {
-            pks.extend(p.engine.package(&id)?);
+        for (id, parts) in &cut {
+            pks.extend(p.engine.package_of_parts(id, parts)?);
         }
         for pk in pks {
             self.deliver(to, &pk)?;

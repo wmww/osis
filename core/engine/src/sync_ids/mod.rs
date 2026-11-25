@@ -5,7 +5,7 @@
 pub(crate) mod actors;
 mod blobs;
 mod certs;
-pub(crate) use certs::judged_valid;
+pub(crate) use certs::{Cut, judged_valid};
 mod statics;
 pub(crate) mod opened;
 pub(crate) mod steps;

@@ -50,6 +50,9 @@ type BodyAtoms<T, S, H> = (Vec<Edge<T, H>>, Vec<Del<T, S>>);
 /// A sync ID's evidence: each copy with the reason it is in it.
 pub type Required<C, T, S, H = T> = BTreeMap<CopyId<C, T>, Reason<T, S, H>>;
 
+/// Copies recording a step that places a listed key (`Evidence::stepped`).
+pub type Stepped<C, T> = BTreeSet<CopyId<C, T>>;
+
 /// An edge write's facts (its edge is (holder, the copy's thing)).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Write<H> {
@@ -299,11 +302,15 @@ struct Closure<C, T, S, H> {
     members: Required<C, T, S, H>,
     edges: BTreeSet<Edge<T, H>>,
     dels: BTreeSet<Del<T, S>>,
+    /// The members recording a step on a path placing a listed key, whatever reason they
+    /// entered by: their `sync.0` part is in the cut (spec/permissions.md §4 Copies). A subset of
+    /// `members`.
+    stepped: BTreeSet<CopyId<C, T>>,
 }
 
 impl<C, T, S, H> Default for Closure<C, T, S, H> {
     fn default() -> Self {
-        Closure { members: BTreeMap::new(), edges: BTreeSet::new(), dels: BTreeSet::new() }
+        Closure { members: BTreeMap::new(), edges: BTreeSet::new(), dels: BTreeSet::new(), stepped: BTreeSet::new() }
     }
 }
 
@@ -447,6 +454,13 @@ where
         self.sids.get(sid).map(|s| &s.closure.members)
     }
 
+    /// The copies of S's evidence recording a step that places a listed key (`Reason::Step`,
+    /// whatever reason each entered by): those whose `sync.0` part S's cut holds.
+    pub fn stepped(&self, sid: &T) -> Option<&BTreeSet<CopyId<C, T>>> {
+        self.ix.read(Row::Sid(sid));
+        self.sids.get(sid).map(|s| &s.closure.stepped)
+    }
+
     /// The edges S's evidence uses.
     pub fn edges(&self, sid: &T) -> Option<&BTreeSet<Edge<T, H>>> {
         self.ix.read(Row::Sid(sid));
@@ -471,24 +485,36 @@ where
 
     /// `from_scratch` with the work it did.
     pub fn from_scratch_counted(&self, sid: &T) -> Option<(Required<C, T, S, H>, Counts)> {
+        let mut counts = Counts::default();
+        let cl = self.closed_counted(sid, &mut counts)?;
+        Some((cl.members, counts))
+    }
+
+    /// S's closure from nothing.
+    fn closed_from_scratch(&self, sid: &T) -> Option<Closure<C, T, S, H>> {
+        self.closed_counted(sid, &mut Counts::default())
+    }
+
+    fn closed_counted(&self, sid: &T, counts: &mut Counts) -> Option<Closure<C, T, S, H>> {
         self.read_all();
         let s = self.sids.get(sid)?;
-        let mut counts = Counts::default();
-        let atoms = self.atoms_of(&s.unit, &mut counts);
+        let atoms = self.atoms_of(&s.unit, counts);
         let mut work: Vec<Item<C, T, S, H>> = atoms.edges.keys().map(|e| Item::Edge(*e)).collect();
         work.extend(atoms.dels.keys().map(|d| Item::Del(*d)));
-        let travel = self.travel_of(s.actor, &mut counts);
+        let travel = self.travel_of(s.actor, counts);
         work.extend(travel.seeds.iter().map(|(c, r)| Item::Copy(*c, *r)));
         let mut cl = Closure::default();
-        close(&self.ix, &s.unit, &mut cl, work, &mut counts);
-        Some((cl.members, counts))
+        close(&self.ix, &s.unit, &mut cl, work, counts);
+        Some(cl)
     }
 
     /// The evidence of copies `seeds` alone (spec/permissions.md §4 Evidence of a commit): the
     /// closure from what each brings (its parts' known path edges, the edges its edge writes set,
     /// the delete keys it lists), the seeds left out. What a fire, a sealed copy or an edge piece
     /// carries beside its copy.
-    pub fn closure_of(&self, seeds: &BTreeSet<CopyId<C, T>>) -> Required<C, T, S, H> {
+    /// Beside the members, the copies recording a step placing a listed key (`stepped`), seeds
+    /// included: a seed may record a step another places.
+    pub fn closure_of(&self, seeds: &BTreeSet<CopyId<C, T>>) -> (Required<C, T, S, H>, Stepped<C, T>) {
         let mut work = Vec::new();
         for c in seeds {
             self.ix.read(Row::Copy(c));
@@ -500,7 +526,7 @@ where
         let mut cl = Closure::default();
         close(&self.ix, &BTreeSet::new(), &mut cl, work, &mut Counts::default());
         cl.members.retain(|c, _| !seeds.contains(c));
-        cl.members
+        (cl.members, cl.stepped)
     }
 
     /// What the bodies on `unit`'s things bring, from nothing.
@@ -551,9 +577,9 @@ where
         let mut base_sids: BTreeMap<T, BTreeSet<T>> = BTreeMap::new();
         for (sid, s) in &self.sids {
             // the same copies (each with the first reason found, which may differ)
-            let scratch = self.from_scratch(sid).unwrap_or_default();
-            if scratch.keys().ne(s.closure.members.keys()) {
-                return Err(format!("sid {sid:?}: incremental {:?} from scratch {scratch:?}", s.closure.members));
+            let scratch = self.closed_from_scratch(sid).map(|c| (c.members, c.stepped)).unwrap_or_default();
+            if scratch.0.keys().ne(s.closure.members.keys()) || scratch.1 != s.closure.stepped {
+                return Err(format!("sid {sid:?}: incremental {:?} from scratch {scratch:?}", (&s.closure.members, &s.closure.stepped)));
             }
             let atoms = self.atoms_of(&s.unit, &mut Counts::default());
             if atoms != s.atoms {
@@ -981,7 +1007,7 @@ where
     fn extend(&mut self, sid: &T, work: Vec<Item<C, T, S, H>>) {
         let Some(s) = self.sids.get_mut(sid) else { return };
         let added = close(&self.ix, &s.unit, &mut s.closure, work, &mut self.counts);
-        if !added.edges.is_empty() || !added.members.is_empty() {
+        if !added.edges.is_empty() || !added.members.is_empty() || added.stepped {
             self.ix.wrote(Row::Sid(sid));
         }
         for e in added.edges {
@@ -1052,6 +1078,8 @@ struct Added<C, T, H> {
     edges: Vec<Edge<T, H>>,
     members: Vec<CopyId<C, T>>,
     bases: Vec<T>,
+    /// Whether a copy joined `Closure::stepped`.
+    stepped: bool,
 }
 
 /// The closure step (spec/permissions.md §4 Evidence of a commit), from `work` over the held
@@ -1065,7 +1093,7 @@ where
     S: Ord + Copy + Hash,
     H: Ord + Copy + Hash,
 {
-    let mut added = Added { edges: vec![], members: vec![], bases: vec![] };
+    let mut added = Added { edges: vec![], members: vec![], bases: vec![], stepped: false };
     while let Some(item) = work.pop() {
         match item {
             Item::Edge(e) => {
@@ -1099,7 +1127,17 @@ where
             }
             Item::Copy(c, why) => {
                 counts.visits += 1;
-                if unit.contains(&c.1) || cl.members.contains_key(&c) {
+                if unit.contains(&c.1) {
+                    continue;
+                }
+                if matches!(why, Reason::Step(..)) && !cl.stepped.contains(&c) {
+                    ix.read(Row::Copy(&c));
+                    if ix.copies.contains_key(&c) {
+                        cl.stepped.insert(c);
+                        added.stepped = true;
+                    }
+                }
+                if cl.members.contains_key(&c) {
                     continue;
                 }
                 ix.read(Row::Copy(&c));

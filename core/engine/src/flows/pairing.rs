@@ -105,21 +105,21 @@ impl Engine {
         // the offer goes over the channel in place of the fire the grant owes
         let (n, a2) = (*node, *a);
         self.run(|tx| crate::flows::inbox::unowe_grant(tx, n, grant, a2))?;
-        let grant_v = self.edge_piece(&grant, a)?.ok_or(Error::Misuse("pairing: the grant is not applied"))?;
+        let grant_v = self.edge_piece(&grant, a, Some(*node))?.ok_or(Error::Misuse("pairing: the grant is not applied"))?;
         let ak = ct::SYNC.name();
         let syncs: Vec<CommitId> = self.core.on_thing(a).filter(|c| self.core.ix.commits.get(c).is_some_and(|m| m.header.aspects.iter().enumerate().any(|(ai, x)| x.tid == *a && x.ak == ak && m.holds(ai)))).collect();
         // each copy once: a `sync.0` write the grant's evidence carries already (A's minting, at
         // least) is not handed over again
         let mut sync = Vec::new();
         for c in syncs.iter().filter(|c| **c != grant) {
-            sync.extend(self.edge_piece(c, a)?.filter(|p| !grant_v.evidence.contains(&p.copy)));
+            sync.extend(self.edge_piece(c, a, Some(*node))?.filter(|p| !grant_v.evidence.contains(&p.copy)));
         }
         let mut trust = Vec::new();
         for (w, holder) in self.core.sides.trusted() {
             if self.core.timelines().edge_op(&w).is_none_or(|(_, _, t)| t != *a) {
                 continue;
             }
-            if let Some(copy) = self.edge_piece(&w.0, a)? {
+            if let Some(copy) = self.edge_piece(&w.0, a, None)? {
                 trust.push(Trusted { commit: w.0, op: w.1, holder, copy });
             }
         }
