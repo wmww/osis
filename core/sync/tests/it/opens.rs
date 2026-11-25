@@ -2275,8 +2275,8 @@ fn an_answer_after_the_testers_class_moved_opens_nothing_at_the_old_class_spec_s
     }
 }
 
-// spec/sync-opens.md §6 (A member at a store source (§4 Source) whose peer J judges departed is
-// ended too), spec/sync-ids.md §6 (Register): what inbox's register plan reads of a member
+// spec/sync-opens.md §6 (A member whose peer J judges departed is ended too), spec/sync-ids.md
+// §6 (Register): what inbox's register plan reads of a member
 // (`Opens::member`) moves when only its departure flips. A reader's store peer, judged departed,
 // then a sync holder (still ended at its `until`), is judged departed again: `departed` alone
 // moves, and a judgement that read the member is due.
