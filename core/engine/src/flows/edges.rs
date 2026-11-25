@@ -67,6 +67,12 @@ pub(crate) fn grant_history(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, h
     if edge.until == Some(osis_base::WallMs(0)) {
         return Err(Error::Misuse("`until` 0 is a removal's saying retain"));
     }
+    // the writer's check on a grant to the public (spec/permissions.md §2; no validity rule):
+    // at most read, never may-grant. Nothing acts through the public, and every party opens its
+    // boxes, so a write secret boxed to it would hand every party the secret for nothing
+    if holder.is_public() && (edge.role > Role::Read || edge.may_grant) {
+        return Err(Error::Misuse("the public is granted at most read, without may-grant"));
+    }
     let role = tx.core.role_now(&who, &target);
     let admin = crate::engine::secrets::usable_role(tx, &target, role)? == Some(Role::Admin);
     // a non-writer of the target's sync ID deposits its may-grant grant (spec/sync-judgement.md §1)
@@ -93,7 +99,8 @@ pub(crate) fn grant_history(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, h
     let mut done = Done::default();
     // a thing is made a holder only once independent; a target gets them on its first
     // holder other than its mint admin (spec/permissions.md §3)
-    if !tx.core.is_independent(&holder) {
+    // (the public is no thing: it has no secrets of its own to get or rotate)
+    if !holder.is_public() && !tx.core.is_independent(&holder) {
         rotation::own_secrets(tx, holder, &mut done)?;
     }
     if !tx.core.is_independent(&target) {
@@ -107,7 +114,9 @@ pub(crate) fn grant_history(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, h
     // is encrypted under its recipient's key, not under that epoch (spec/crypto.md §4,
     // Encrypting under; `rotation::reseal_one` alike)
     let me = tx.core.me();
-    rotation::ensure_rotated(tx, me, holder, &mut done)?;
+    if !holder.is_public() {
+        rotation::ensure_rotated(tx, me, holder, &mut done)?;
+    }
     let mut roles = roles_up_to(edge.role);
     // a renewal of an ended edge is not finalized first: the grant writes it anew
     rotation::ensure_rotated_but(tx, who, target, &[holder], &BTreeSet::new(), &mut done)?;

@@ -181,9 +181,10 @@ codec_struct! {
 }
 
 codec_enum! {
-    /// `box = enum { sealed 0 (..), symmetric 1 (..), joint 2 (..) }` (spec/crypto.md §4).
+    /// `box = enum { sealed 0 (..), symmetric 1 (..), joint 2 (..), open 3 (blob) }` (spec/crypto.md
+    /// §4): `Open` the payload in clear, the public's form.
     #[derive(Clone, Debug, PartialEq, Eq)]
-    pub enum SecretBox { 0 Sealed(b: SealedBox), 1 Symmetric(b: SymmetricBox), 2 Joint(b: JointBox) }
+    pub enum SecretBox { 0 Sealed(b: SealedBox), 1 Symmetric(b: SymmetricBox), 2 Joint(b: JointBox), 3 Open(b: Vec<u8>) }
 }
 codec_struct! {
     #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]

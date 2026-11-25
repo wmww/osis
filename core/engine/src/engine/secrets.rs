@@ -258,7 +258,10 @@ impl Core {
         }
         // only a holder with a box here opens anything: not O(actors known) per ingest
         let holders: std::collections::BTreeSet<Tid> = secrets.boxes.keys().map(|k| k.holder.0).filter(|t| t != actor).collect();
-        let openers: Vec<(Tid, &ActorEpochs)> = holders.iter().filter_map(|t| Some((*t, self.ix.secrets.get(t)?))).collect();
+        // the public's boxes are open: every node reads them, holding nothing (spec/crypto.md §4
+        // Boxes), as far as `may_take_role` below lets the public's role give them
+        let open = ActorEpochs::default();
+        let openers: Vec<(Tid, &ActorEpochs)> = holders.iter().filter_map(|t| Some((*t, if t.is_public() { &open } else { self.ix.secrets.get(t)? }))).collect();
         // a held link key opens by its seed's secrets, held nowhere else
         let links: Vec<(Tid, ActorEpochs)> = holders.iter().filter_map(|t| Some((*t, self.link_key_epochs(t)?))).collect();
         for (m, e) in openers.iter().map(|(m, e)| (m, *e)).chain(links.iter().map(|(m, e)| (m, e))) {

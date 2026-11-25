@@ -274,6 +274,21 @@ pub fn open_joint_box(kems: &[&KemSecret], slot: &BoxSlot, keysets: &[Epoch], su
     box_item(slot, &payload)
 }
 
+/// Open form (spec/crypto.md §4 Boxes: the public's): the payload `[role, n, secret]` in clear,
+/// checked against `slot` as a sealed box's. Anyone reading the box reads the secret: only a box
+/// to the public is of this form.
+pub fn open_form_box(slot: &BoxSlot, item: &BoxItem) -> Result<Vec<u8>, Error> {
+    Ok(box_payload(slot, item)?.to_vec())
+}
+
+/// Reads an open-form box at `slot`: its item must name the slot's (role, epoch).
+pub fn read_open_box(slot: &BoxSlot, payload: &[u8]) -> Result<BoxItem, Error> {
+    if slot.key().is_none() {
+        return Err(Error::Malformed("an entry box is read by its own rule"));
+    }
+    box_item(slot, payload)
+}
+
 /// Whether `keysets` fit a joint box: at least two, ascending.
 fn joint_keysets(keysets: &[Epoch]) -> bool {
     keysets.len() >= 2 && keysets.iter().zip(keysets.iter().skip(1)).all(|(a, b)| a < b)
@@ -527,6 +542,19 @@ mod tests {
         assert!(open_box(&k1, &at, BoxForm::Sealed { keyset: Some(e1), suite: 1 }, &b).is_err(), "not a sealed box to one keyset");
         assert!(seal_joint_box(&[(e2, k2.public()), (e1, k1.public())], &at, &item, &mut rng).is_err(), "keysets ascending");
         assert!(seal_joint_box(&[(e1, k1.public())], &at, &item, &mut rng).is_err(), "at least two");
+    }
+
+    // spec/crypto.md §4 Boxes: an open box reads back with nothing held, only at its own key's
+    // (role, epoch); an item its key does not name is not written.
+    #[test]
+    fn open_box_form() {
+        let ew = ep(Role::Read, 4, 9);
+        let at = slot(1, 0, Role::Read, ew);
+        let item = BoxItem { role: Role::Read, epoch: ew, secret: sec(9) };
+        let b = open_form_box(&at, &item).unwrap();
+        assert_eq!(read_open_box(&at, &b).unwrap(), item);
+        assert!(read_open_box(&slot(1, 0, Role::Read, ep(Role::Read, 5, 9)), &b).is_err(), "another key's epoch");
+        assert!(open_form_box(&at, &BoxItem { secret: sec(7), ..item }).is_err(), "a secret not naming the epoch");
     }
 
     // spec/wire.md §7: sealed secrets.0 box round trip; AD binds actor, holder, role, epoch, form;

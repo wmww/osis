@@ -13,6 +13,16 @@ use std::fmt;
 pub struct Tid([u8; TID_LEN]);
 
 impl Tid {
+    /// The zero tid: the public (spec/permissions.md §1), a holder that is no thing, standing for
+    /// every party. No creation record hashes to it, so nothing signs as it, holds a role on it or
+    /// lists it on a path.
+    pub const PUBLIC: Tid = Tid([0; TID_LEN]);
+
+    /// Whether this names the public.
+    pub fn is_public(&self) -> bool {
+        *self == Tid::PUBLIC
+    }
+
     /// From its 15 bytes. Any bytes are a valid reference, perhaps to nothing.
     pub const fn from_bytes(b: [u8; TID_LEN]) -> Tid {
         Tid(b)

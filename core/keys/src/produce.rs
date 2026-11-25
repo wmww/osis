@@ -9,7 +9,7 @@ use crate::open::HistoryAlts;
 use crate::Error;
 use osis_base::{Role, Tid};
 use osis_crypto::{
-    BoxItem, BoxSlot, CryptoRngCore, Epoch, KemPublicKey, Secret32, open_history, seal_box, seal_history, HistoryEntry, seal_joint_box, wrap_symmetric_box,
+    BoxItem, BoxSlot, CryptoRngCore, Epoch, KemPublicKey, Secret32, open_form_box, open_history, seal_box, seal_history, HistoryEntry, seal_joint_box, wrap_symmetric_box,
 };
 use osis_schema::core_types::{BoxKey, JointBox, KemKey, Keys, Sealed, SealedBox, SecretBox, Secrets, SymmetricBox};
 use std::collections::{BTreeMap, BTreeSet};
@@ -52,13 +52,21 @@ impl HolderKeys {
 }
 
 /// A holder to box: its tid, its role on the actor, its keys, and its floor on the actor (spec/crypto.md
-/// §4, Floors: boxed only at read epochs whose floor is at least it).
+/// §4, Floors: boxed only at read epochs whose floor is at least it). The public (`Tid::PUBLIC`)
+/// has no keys: it is boxed in the open form (`Recipient::public`).
 #[derive(Clone, Debug)]
 pub struct Recipient {
     pub holder: Tid,
     pub role: Role,
     pub keys: HolderKeys,
     pub floor: u64,
+}
+
+impl Recipient {
+    /// The public at `role` from `floor`: boxed in clear.
+    pub fn public(role: Role, floor: u64) -> Recipient {
+        Recipient { holder: Tid::PUBLIC, role, keys: HolderKeys::default(), floor }
+    }
 }
 
 /// One role secret to box.
@@ -74,6 +82,15 @@ fn box_items(actor: &Tid, rcpt: &Recipient, items: &[Item], rng: &mut dyn Crypto
     let holder = rcpt.holder;
     for i in items {
         let slot = BoxSlot::Secrets { actor: *actor, holder, role: i.role, epoch: i.epoch };
+        let key = box_key(holder, i.role, &i.epoch);
+        // the public: the secret in clear, and no record (it is no holder actor, spec/crypto.md
+        // §4 Boxes). Invariant: the open form is written only to the zero tid, so a secret is
+        // in clear only where its thing's grants give the public that role
+        if holder.is_public() {
+            let item = BoxItem { role: i.role, epoch: i.epoch, secret: i.secret.clone() };
+            out.boxes.insert(key, SecretBox::Open(open_form_box(&slot, &item)?));
+            continue;
+        }
         let HolderKeys { keysets, own } = &rcpt.keys;
         let b = match keysets.get(&i.role).map(Vec::as_slice) {
             Some(joint @ [_, _, ..]) => self::joint(joint, &slot, i, rng)?,
@@ -85,7 +102,6 @@ fn box_items(actor: &Tid, rcpt: &Recipient, items: &[Item], rng: &mut dyn Crypto
                 }
             },
         };
-        let key = box_key(holder, i.role, &i.epoch);
         // a holder actor's keysets the box names, recorded beside it in `keys.0` where every
         // node holding the actor's keysets reads them (spec/crypto.md §4, Stale): a node holding
         // none of the actor's boxes judges its epochs stale by them
@@ -530,6 +546,7 @@ pub fn box_keysets(b: &SecretBox) -> Vec<Epoch> {
         SecretBox::Sealed(x) => x.keyset.iter().filter_map(|e| from_schema(e).ok()).collect(),
         SecretBox::Symmetric(x) => from_schema(&x.epoch).into_iter().collect(),
         SecretBox::Joint(x) => x.keysets.iter().filter_map(|e| from_schema(e).ok()).collect(),
+        SecretBox::Open(_) => Vec::new(),
     }
 }
 

@@ -6,7 +6,7 @@ use crate::epoch::{ActorEpochs, Unchecked};
 use crate::names::Names;
 use crate::Error;
 use osis_base::{Role, Tid};
-use osis_crypto::{BoxForm, BoxSlot, Epoch, Secret32, open_box, open_history, open_joint_box, open_symmetric_box, role_kem};
+use osis_crypto::{BoxForm, BoxSlot, Epoch, Secret32, open_box, open_history, open_joint_box, open_symmetric_box, read_open_box, role_kem};
 use osis_schema::core_types::{BoxKey, HistoryKey, Sealed, SecretBox, Secrets};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -55,7 +55,16 @@ fn open_boxes_where(actor: &Tid, secrets: &Secrets, opener: &Opener, try_key: im
 fn open_one(actor: &Tid, k: &BoxKey, b: &SecretBox, opener: &Opener) -> Result<Option<Opened>, Error> {
     let epoch = from_schema(&k.epoch)?;
     let slot = BoxSlot::Secrets { actor: *actor, holder: k.holder.0, role: k.role, epoch };
+    // the open form is the public's alone, and the public's boxes are of it alone (spec/crypto.md
+    // §4 Boxes): any other pairing is ignored
+    if k.holder.0.is_public() != matches!(b, SecretBox::Open(_)) {
+        return Ok(None);
+    }
     match b {
+        SecretBox::Open(payload) => {
+            let i = read_open_box(&slot, payload)?;
+            Ok(Some(Opened { role: i.role, epoch: i.epoch, secret: i.secret }))
+        }
         SecretBox::Sealed(sb) => {
             let keyset = sb.keyset.as_ref().map(from_schema).transpose()?;
             let role;

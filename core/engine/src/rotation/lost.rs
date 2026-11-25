@@ -85,14 +85,16 @@ fn holds_at(core: &Core, a: &Tid, min: Role) -> bool {
 }
 
 /// The node's role on `a` (spec/sync-set.md §2 Own things): the best its own things (itself, a
-/// held link key) hold on `a` now by `a`'s grants as the node holds them, by paths
-/// with key access, `until` honoured (`Core::keyed_role_now`), where those grants count
-/// (`grants_count`); none where they do not.
+/// held link key) and the public (its grant gives every party its role, spec/permissions.md §1)
+/// hold on `a` now by `a`'s grants as the node holds them, by paths with key access, `until`
+/// honoured (`Core::keyed_role_now`), where those grants count (`grants_count`); none where they
+/// do not. A role through the public is one of secrets: no path lists the public, so it lets the
+/// node write nothing.
 pub(crate) fn role_here(core: &Core, a: &Tid) -> Option<Role> {
     if !grants_count(core, a) {
         return None;
     }
-    own_actors(core).iter().map(|m| core.keyed_role_now(m, a)).max().flatten()
+    own_actors(core).iter().chain([&Tid::PUBLIC]).map(|m| core.keyed_role_now(m, a)).max().flatten()
 }
 
 /// Whether the grants the node holds of `a` count for its role (spec/sync-set.md §2 Own things:

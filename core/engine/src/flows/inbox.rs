@@ -24,7 +24,9 @@ pub const STRANDED_FIRE: &str = ct::INBOX_SIGNALS[1];
 /// (`fire_copy`; spec/sync-inbox.md §5 Grant from outside).
 pub(crate) fn deliver_copy(tx: &mut Tx<'_>, holder: Tid, c: CommitId, target: Tid) -> Result<()> {
     let me = tx.core.me();
-    if tx.core.role_now(&me, &holder) >= Some(Role::Write) {
+    // an edge piece naming the public is delivered nowhere (spec/permissions.md §4): it has no
+    // inbox, and every party reads its boxes where it reads the target
+    if holder.is_public() || tx.core.role_now(&me, &holder) >= Some(Role::Write) {
         return Ok(());
     }
     fire_copy(tx, holder, c, target)

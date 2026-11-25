@@ -436,6 +436,11 @@ pub(crate) fn sealed_granted(tx: &mut Tx<'_>, who: &Tid, a: &Tid, m: &Tid, role:
 
 /// `sealed` at `role` as given (key access judged by the caller), the recipient's floor 0.
 fn sealing_at(tx: &mut Tx<'_>, who: &Tid, a: &Tid, m: &Tid, role: Role) -> Result<Sealed> {
+    // the public holds no keys and is no holder actor: boxed in clear at every role it holds,
+    // with no keyset, block or left-out record (spec/crypto.md §4 Boxes, Holder actors)
+    if m.is_public() {
+        return Ok(Sealed::Boxed(Recipient::public(role, 0)));
+    }
     let own = tx.core.own_epochs(m);
     let deps = super::departures(tx, m)?;
     let (mut keysets, mut secrets, mut top) = (BTreeMap::new(), BTreeMap::new(), None);
@@ -509,6 +514,10 @@ pub(crate) struct Boxing {
 /// judgement read, so at a node holding them they block what they blocked at the rotator, and
 /// stop where that node can show what they showed is gone (`stands`).
 pub(crate) fn left_out(tx: &mut Tx<'_>, who: &Tid, a: &Tid, m: &Tid, role: Role, boxed: Option<Role>, out: &mut osis_keys::LeftOut) -> Result<()> {
+    // the public is no holder actor: never left out (`sealing_at` boxes it whole)
+    if m.is_public() {
+        return Ok(());
+    }
     let deps = super::departures(tx, m)?;
     for r in ROLES.into_iter().filter(|r| *r <= role && Some(*r) > boxed) {
         let mut ks: BTreeMap<Epoch, BTreeSet<CommitId>> = BTreeMap::new();
