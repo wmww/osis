@@ -131,7 +131,7 @@ pub fn undel(h: u64, c: CommitId, e: CommitId, v: u8) -> Frag {
 }
 
 pub fn part(aspect: Aspect, purge_by: PurgeBy, ws: Vec<Frag>) -> Part {
-    Part { thing: T, aspect, purge_by, body: Body::Held(Delta::Writes(join(ws))), stripped: Default::default(), replaces: None }
+    Part { thing: T, aspect, purge_by, body: Body::Held(Delta::Writes(join(ws))), stripped: Default::default(), replaces: None, keys: Default::default() }
 }
 pub fn content(id: CommitId, author: NodeId, h: u64, parts: Vec<Part>) -> Commit {
     Commit { id, signer: author, author: author, paths: Default::default(), ts: ts(h), expires: None, kind: CommitKind::Content, parts, purge: vec![], frontier: None, undoes: None, own_cover: false, boxes: vec![] }
@@ -146,7 +146,7 @@ pub fn edge(id: CommitId, author: NodeId, h: u64, holder: NodeId, role: Option<R
 /// A role commit writing one edge on `thing`.
 pub fn edge_on(id: CommitId, author: NodeId, h: u64, thing: ThingId, e: EdgeWrite, frontier: Option<Vec<CommitId>>) -> Commit {
     let body = Body::Held(Delta::Edge(e));
-    let part = Part { thing, aspect: Aspect::ROLES, purge_by: PurgeBy::Admin, body, stripped: Default::default(), replaces: None };
+    let part = Part { thing, aspect: Aspect::ROLES, purge_by: PurgeBy::Admin, body, stripped: Default::default(), replaces: None, keys: Default::default() };
     Commit { kind: CommitKind::Role, frontier, ..content(id, author, h, vec![part]) }
 }
 pub fn snap(id: CommitId, author: NodeId, h: u64, a: Aspect, r: PurgeBy, ws: Vec<Frag>) -> Commit {
@@ -184,7 +184,7 @@ pub fn fate(h: &Held, c: CommitId) -> Fate {
 }
 /// A `retention^.0` setting `x` on `T` by `author` at hour `h`.
 pub fn setting_by(id: CommitId, author: NodeId, h: u64, x: Setting) -> Commit {
-    let p = Part { thing: T, aspect: Aspect::RETENTION, purge_by: PurgeBy::Admin, body: Body::Held(Delta::Retention(x)), stripped: Default::default(), replaces: None };
+    let p = Part { thing: T, aspect: Aspect::RETENTION, purge_by: PurgeBy::Admin, body: Body::Held(Delta::Retention(x)), stripped: Default::default(), replaces: None, keys: Default::default() };
     content(id, author, h, vec![p])
 }
 /// The mint admin's setting at hour `h` giving aspect `a` the entry `opt`.

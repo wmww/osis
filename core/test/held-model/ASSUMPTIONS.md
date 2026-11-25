@@ -2,7 +2,7 @@
 > Summary: What held-model leaves out or simplifies, so a mismatch against the engine in these areas is not a finding.
 
 **Model shape**
-- One node's view, no network: no sync scope (every thing counts as synced), sync IDs, peers, must-hold, lasting headers, header-only blobs, delete keys or logging. The covering snapshot a writer owes is reported (`Outcome::owed`) and written only by the caller (`cover`); nothing fetches a body again, the caller does from what `Outcome::uncovered` and `Fate::NeverReceived` name.
+- One node's view, no network: no sync scope (every thing counts as synced), sync IDs, peers, must-hold, lasting headers, header-only blobs or logging. Delete keys only as spec/crypto.md §7 Checked keys reads them (`Part::keys`): a key is an identity, a step's signature is taken as verifying (no forged step), and a part listing no key is not checked. The covering snapshot a writer owes is reported (`Outcome::owed`) and written only by the caller (`cover`); nothing fetches a body again, the caller does from what `Outcome::uncovered` and `Fate::NeverReceived` name.
 - A body is one part (one delta): each drops alone (spec/commits.md §5), so the blob holding a commit's deltas is not modelled.
 - `history()` is the set of replaced writes of kept bodies (stamp and carrying commit), not an API shape; what it shows for a write replaced several times, or exposes of a snapshot's copies, is not modeled.
 - A local drop as covered needs no right of the node's own (the snapshot's commit holds it): the spec's "the node itself holds it now" binds compaction's deletion at peers, not modeled.
@@ -16,7 +16,7 @@
 - Unknown encodings exist only as `Body::Parked` (a part as a whole); no links, pages, chunks or list-by-link waits.
 
 **Permissions**
-- Holders and mint admins are actors (nodes, things); effective roles are widest paths over alive edges and record edges. No `MAX_CHAIN_DEPTH`, keys, secrets, rotation, certificates, `tied` edges, `keyset`, retain or erase (Keep copies), `LOST_HEARD_WAIT_MS`, or role-class aspects other than `roles.0`.
+- Holders and mint admins are actors (nodes, things); effective roles are widest paths over alive edges and record edges. No `MAX_CHAIN_DEPTH`, keys, secrets, rotation, certificates, `tied` edges, `keyset`, retain or erase (Keep copies), `LOST_HEARD_WAIT_MS`; a role commit's parts off `roles.0` (`keys.0`, `secrets.0`, `sync.0`) are plain deltas judged by their aspect, a `sync.0` one carrying the steps it records.
 - Records as writes and destruction are modeled from notes/expiry-creation-design.md §3 and spec/commits.md §4 Unjudgeable: a part on a thing whose record is not held, or that is destroyed, is not held.
 - A `created.0` part is one `Delta::Created` write; a second minting of a thing is never generated. `Held::records` are raw records from wherever they came.
 - Edge as restored: the join over the written edge only; a demoter's kept standing is not modeled beyond "R never demotes its own author" (its author is never audited by it).

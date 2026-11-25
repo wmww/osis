@@ -206,7 +206,7 @@ fn a_later_cut_needs_its_own_answer_spec_permissions_5_2() {
 /// An addendum on T by `author` at hour `h` naming `removal` and listing `lists`.
 fn addendum(id: CommitId, author: NodeId, h: u64, removal: CommitId, lists: Vec<CommitId>) -> Commit {
     let body = Body::Held(Delta::Addenda(vec![(removal, lists)]));
-    content(id, author, h, vec![Part { thing: T, aspect: Aspect::ADDENDA, purge_by: PurgeBy::Admin, body, stripped: Default::default(), replaces: None }])
+    content(id, author, h, vec![Part { thing: T, aspect: Aspect::ADDENDA, purge_by: PurgeBy::Admin, body, stripped: Default::default(), replaces: None, keys: Default::default() }])
 }
 
 // spec/permissions.md §5.2 (Addenda): a writer's addendum after the removal vouches for the

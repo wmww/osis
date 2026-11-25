@@ -23,6 +23,7 @@ mod spec_entry;
 mod spec_public;
 mod spec_cards;
 mod spec_joint;
+mod spec_keys;
 mod spec_undo;
 mod spec_waits;
 mod props;

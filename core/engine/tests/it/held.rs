@@ -275,9 +275,26 @@ struct Conv<'h> {
     /// Commits outside the history (a frontier naming one), by ID or by stamp and source.
     extra: BTreeMap<Result<CommitId, String>, u32>,
     aspects: BTreeMap<String, u32>,
+    /// Delete keys and step IDs, by their bytes.
+    keys: BTreeMap<[u8; 32], hm::KeyId>,
 }
 
 impl Conv<'_> {
+    fn key(&mut self, k: &[u8; 32]) -> hm::KeyId {
+        let n = self.keys.len() as hm::KeyId;
+        *self.keys.entry(*k).or_insert(n)
+    }
+
+    /// The level-1 and level-3 keys header `h` lists for aspect entry `a` (spec/crypto.md §7).
+    fn listed(&mut self, h: &Header, a: &osis_commit::AspectEntry) -> Vec<(hm::KeyLevel, hm::KeyId)> {
+        let levels = a.keys.iter().filter_map(|k| h.keys.get(*k)).filter_map(|k| match k.level {
+            osis_base::format::DELETE_ADMIN => Some((hm::KeyLevel::Admin, k.key)),
+            osis_base::format::DELETE_WRITER => Some((hm::KeyLevel::Writer, k.key)),
+            _ => None,
+        });
+        levels.collect::<Vec<_>>().into_iter().map(|(l, k)| (l, self.key(&k))).collect()
+    }
+
     fn id(&mut self, t: &Tid) -> hm::NodeId {
         let n = self.ids.len() as u32;
         *self.ids.entry(*t).or_insert(n)
@@ -439,7 +456,7 @@ fn convert(e: &mut Engine, hist: &History) -> Input {
     };
     let named: BTreeSet<Tid> = hist.headers.values().flat_map(|h| [h.signer].into_iter().chain(h.aspects.iter().map(|a| a.tid)).chain(stated(h))).chain([e.me()]).collect();
     let ids = named.into_iter().enumerate().map(|(i, t)| (t, i as u32)).collect();
-    let mut cv = Conv { hist, ids, extra: BTreeMap::new(), aspects: BTreeMap::new() };
+    let mut cv = Conv { hist, ids, extra: BTreeMap::new(), aspects: BTreeMap::new(), keys: BTreeMap::new() };
     let applied: Vec<CommitId> = e.commit_ids();
     let mut held: Vec<(CommitId, Arc<Header>, bool)> = applied.iter().filter_map(|id| Some((*id, e.header(id)?, true))).collect();
     // an applied commit with a part waiting alone (spec/commits.md §4) is listed once, as applied:
@@ -483,7 +500,9 @@ fn convert(e: &mut Engine, hist: &History) -> Input {
         sync_ids.insert(sync_id, (*id, *applied));
         let meta = e.core.ix.commits.get(id).cloned();
         let waiting = if *applied { None } else { e.pending_parts(id).unwrap() };
-        let edges = if *applied && h.kind == Kind::Role { e.core.ix.held.edge_commit(id).cloned() } else { None };
+        // its edge writes whatever the keys it lists: a miskeyed commit's apply nowhere here, which
+        // the model judges from the steps it is given
+        let edges = if *applied && h.kind == Kind::Role { Some(e.edge_writes(id).unwrap()) } else { None };
         let mut parts = Vec::new();
         for (ai, a) in h.aspects.iter().enumerate() {
             let thing = cv.id(&a.tid);
@@ -494,7 +513,8 @@ fn convert(e: &mut Engine, hist: &History) -> Input {
             }
             let purge_by = purge_by(&a.purge_by);
             let replaces = a.replaces.map(|o| cv.commit(&o));
-            let part = |body| hm::Part { thing, aspect, purge_by, body, stripped: BTreeSet::new(), replaces };
+            let listed = cv.listed(h, a);
+            let part = |body| hm::Part { thing, aspect, purge_by, body, stripped: BTreeSet::new(), replaces, keys: hm::Keys { listed: listed.clone(), steps: vec![] } };
             let state = match &meta {
                 Some(m) if m.missing(ai) => Some(hm::Body::Missing),
                 Some(m) if m.is_dropped(ai) => {
@@ -523,9 +543,17 @@ fn convert(e: &mut Engine, hist: &History) -> Input {
                 _ if aspect == hm::Aspect::CREATED => parts.push(part(created(e, &mut cv, id, &a.tid))),
                 // a role commit's parts off `roles.0` (`keys.0`, `secrets.0`, `sync.0`) change no
                 // role: placeholders
-                Kind::Role if a.ak.as_str() != "roles.0" => parts.push(part(hm::Body::Held(hm::Delta::Writes(hm::Frag::empty(0))))),
+                // `sync.0` with the steps it records (spec/crypto.md §7 Checked keys)
+                Kind::Role if a.ak.as_str() != "roles.0" => {
+                    let mut p = part(hm::Body::Held(hm::Delta::Writes(hm::Frag::empty(0))));
+                    if a.ak.as_str() == "sync.0" {
+                        let steps = e.recorded_steps(id, ai).unwrap();
+                        p.keys.steps = steps.iter().map(|s| hm::StepRec { id: cv.key(&s.id), parent: s.prev.map(|x| cv.key(&x)), delete: cv.key(&s.delete), write: cv.key(&s.write) }).collect();
+                    }
+                    parts.push(p);
+                }
                 Kind::Role => {
-                    let ops: Vec<_> = edges.iter().flat_map(|c| c.ops.iter()).filter(|o| o.target == a.tid).collect();
+                    let ops: Vec<_> = edges.iter().flatten().filter(|o| o.target == a.tid).collect();
                     if ops.is_empty() {
                         // a delta naming no holder (a reset of an entry whose creation is not held)
                         parts.push(part(hm::Body::Held(hm::Delta::Edge(hm::EdgeWrite::role(NOBODY, None)))));

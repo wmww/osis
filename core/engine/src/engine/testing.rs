@@ -26,6 +26,20 @@ pub(crate) fn family(k: &[u8]) -> &[u8] {
 }
 
 impl Engine {
+    /// The edge writes held role commit `id` makes, whatever the delete keys it lists (none while
+    /// a reset names a write not held, `validity::edge_writes_of`, nor for a split commit): the
+    /// applied ones (`ix.held`) less a miskeyed commit's left out.
+    #[doc(hidden)]
+    pub fn edge_writes(&mut self, id: &CommitId) -> Result<Vec<osis_perm::EdgeOp>> {
+        let id = *id;
+        self.read(|tx| {
+            let Some(v) = tx.core.ix.commits.get(&id).filter(|m| matches!(m.header.path, osis_commit::Paths::One(_))).map(|m| m.view.clone()) else { return Ok(Vec::new()) };
+            let parts = crate::apply::perm_parts(tx, &id)?;
+            let per = crate::apply::validity::edge_writes_of(tx.core, &v, &id, &parts);
+            Ok(if per.iter().all(|x| x.2) { per.into_iter().flat_map(|x| x.1).collect() } else { Vec::new() })
+        })
+    }
+
     /// Tests only: rotates `roles` of `a` boxing every holder this node would but `skip`, as a
     /// rotation that left them out (a holder left out of a rotation, spec/permissions.md §4
     /// Stranded), delivering it to the holders boxed that cannot open it from the sync ID

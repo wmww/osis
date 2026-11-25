@@ -216,6 +216,13 @@ impl crate::Engine {
         osis_base::costs::paused(|| osis_perm::uncounted(|| osis_base::memo::unrecorded(|| self.read(copies))))
     }
 
+    /// The steps the held `sync.0` body of commit `id`'s aspect `ai` records (tests).
+    #[doc(hidden)]
+    pub fn recorded_steps(&mut self, id: &CommitId, ai: usize) -> Result<Vec<Step<Key32>>> {
+        let id = *id;
+        osis_base::costs::paused(|| osis_perm::uncounted(|| osis_base::memo::unrecorded(|| self.read(|tx| recorded_steps(tx, &id, ai)))))
+    }
+
     /// Things to their mint admins, of the held creation records (tests).
     #[doc(hidden)]
     pub fn evidence_mint(&self) -> BTreeMap<Tid, Tid> {

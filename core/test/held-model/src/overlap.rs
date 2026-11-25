@@ -93,7 +93,7 @@ fn commit(id: CommitId, author: NodeId, h: u64, kind: CommitKind, parts: Vec<Par
 
 fn part(aspect: Aspect, body: Body) -> Part {
     let purge_by = if aspect.fixed() || aspect == Aspect::RETENTION { PurgeBy::Admin } else { PurgeBy::AuthorOrAdmin };
-    Part { thing: THING, aspect, purge_by, body, stripped: Default::default(), replaces: None }
+    Part { thing: THING, aspect, purge_by, body, stripped: Default::default(), replaces: None, keys: Default::default() }
 }
 
 /// A session-form content commit: per aspect its body and range in `src`.

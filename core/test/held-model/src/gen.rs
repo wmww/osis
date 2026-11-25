@@ -115,7 +115,7 @@ pub const CREATION_ID: CommitId = 2_000_000;
 
 /// Thing `t`'s creation commit (one `created.0` part), by `author` at `ts`.
 pub fn creation(t: ThingId, link: RecordLink, author: NodeId, ts: u64, purge_by: PurgeBy, expires: Option<u64>) -> Commit {
-    let part = Part { thing: t, aspect: Aspect::CREATED, purge_by, body: Body::Held(Delta::Created(link)), stripped: Default::default(), replaces: None };
+    let part = Part { thing: t, aspect: Aspect::CREATED, purge_by, body: Body::Held(Delta::Created(link)), stripped: Default::default(), replaces: None, keys: Default::default() };
     Commit { id: CREATION_ID + t, signer: author, author: author, paths: Default::default(), ts, expires, kind: CommitKind::Content, parts: vec![part], purge: vec![], frontier: None, undoes: None, own_cover: false, boxes: vec![] }
 }
 
@@ -205,11 +205,11 @@ fn newest_entry(commits: &[Commit], thing: ThingId, aspect: Aspect, ts: u64) -> 
 }
 
 fn role_part(thing: ThingId, e: EdgeWrite) -> Part {
-    Part { thing, aspect: Aspect::ROLES, purge_by: PurgeBy::Admin, body: Body::Held(Delta::Edge(e)), stripped: Default::default(), replaces: None }
+    Part { thing, aspect: Aspect::ROLES, purge_by: PurgeBy::Admin, body: Body::Held(Delta::Edge(e)), stripped: Default::default(), replaces: None, keys: Default::default() }
 }
 
 fn plain_part(thing: ThingId, aspect: Aspect, purge_by: PurgeBy, d: Delta) -> Part {
-    Part { thing, aspect, purge_by, body: Body::Held(d), stripped: Default::default(), replaces: None }
+    Part { thing, aspect, purge_by, body: Body::Held(d), stripped: Default::default(), replaces: None, keys: Default::default() }
 }
 
 /// A random history of `n` commits on the `CREATIONS` things, after their creations (plus the

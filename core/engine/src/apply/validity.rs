@@ -400,22 +400,9 @@ pub(crate) fn hold_role_commit(core: &mut Core, h: &View, path: &osis_commit::Pa
     }
     let mut ops = Vec::new();
     let mut known = true;
-    for (ai, es) in &parts.edges {
-        let Some(a) = h.aspects.get(*ai) else { continue };
-        // nothing written on a thing too deep applies (spec/permissions.md §1); its record chain is
-        // held whole at apply (`apply::thing_wait`) and a record goes only with every part on its
-        // thing, once nothing held needs it, a thing it minted included (`retention::needed`), so
-        // this never changes while the part is held
-        if too_deep(core, &a.tid) {
-            continue;
-        }
-        // nor do the edge writes of a commit listing a wrong delete key for the thing
-        // (spec/crypto.md §7 Checked keys; `Core::rekey` reads them again where that moves)
-        if core.miskeyed(id, &a.tid) {
-            continue;
-        }
-        let Some(g) = Grants::of(a.ak.as_str()) else { continue };
-        let (v, k) = edge_ops(core, &a.tid, g, es, Owned::of_view(h, id, *ai).as_ref());
+    // nor do the edge writes of a commit listing a wrong delete key for the thing apply
+    // (spec/crypto.md §7 Checked keys; `Core::rekey` reads them again where that moves)
+    for (_, v, k) in edge_writes_of(core, h, id, parts).into_iter().filter(|(t, _, _)| !core.miskeyed(id, t)) {
         ops.extend(v);
         known &= k;
     }
@@ -440,6 +427,26 @@ pub(crate) fn hold_role_commit(core: &mut Core, h: &View, path: &osis_commit::Pa
         };
         core.ix.held.add_commit(RoleCommit { id: *id, ts: h.ts, signer: h.signer, key: signing_key(core, h), listed, direct, frontier: h.frontier.clone(), ops });
     }
+}
+
+/// The edge writes the edge parts `parts` of commit `id` (view `h`) make, per thing they are on,
+/// whatever the keys it lists, and whether every reset there names a held write (`edge_ops`).
+/// Nothing written on a thing too deep applies (spec/permissions.md §1): none there. Its record
+/// chain is held whole at apply (`apply::thing_wait`) and a record goes only with every part on
+/// its thing, once nothing held needs it, a thing it minted included (`retention::needed`), so
+/// this never changes while the part is held.
+pub(crate) fn edge_writes_of(core: &Core, h: &View, id: &CommitId, parts: &PermParts) -> Vec<(Tid, Vec<EdgeOp>, bool)> {
+    let mut out = Vec::new();
+    for (ai, es) in &parts.edges {
+        let Some(a) = h.aspects.get(*ai) else { continue };
+        if too_deep(core, &a.tid) {
+            continue;
+        }
+        let Some(g) = Grants::of(a.ak.as_str()) else { continue };
+        let (v, k) = edge_ops(core, &a.tid, g, es, Owned::of_view(h, id, *ai).as_ref());
+        out.push((a.tid, v, k));
+    }
+    out
 }
 
 /// Notes commit `id` (header `h`, parts judged `valid`) for taking (`Indexes::fires_due`) when a

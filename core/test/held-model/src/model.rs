@@ -347,9 +347,13 @@ struct Joined<'a> {
     /// Commits void for every judgment (`Overlap::Held`, `Overlap::Given`); none under `Valid`,
     /// whose voids no judgment reads.
     void: BTreeSet<CommitId>,
+    /// The things each commit lists a key for that no held step places (`miskeyed`).
+    miskeyed: BTreeSet<(CommitId, ThingId)>,
 }
 
-fn join_held<'a>(h: &'a Held, parked: &BTreeSet<CommitId>, ov: &Overlap, dots: &Dots) -> Joined<'a> {
+/// `recording`: the `sync.0` parts whose steps may place keys (`judge` takes out those judged
+/// invalid).
+fn join_held<'a>(h: &'a Held, parked: &BTreeSet<CommitId>, ov: &Overlap, dots: &Dots, recording: &BTreeSet<PartRef>) -> Joined<'a> {
     let world = records(h, parked);
     let mut live: Vec<&Commit> = h.commits.iter().filter(|c| !parked.contains(&c.id)).collect();
     live.sort_by_key(|c| c.id);
@@ -359,6 +363,7 @@ fn join_held<'a>(h: &'a Held, parked: &BTreeSet<CommitId>, ov: &Overlap, dots: &
     let mut applied: BTreeSet<CommitId> = BTreeSet::new();
     let mut waiting: BTreeSet<PartRef> = BTreeSet::new();
     let mut thrown: BTreeSet<PartRef> = BTreeSet::new();
+    let mut keyed: BTreeSet<(CommitId, ThingId)> = BTreeSet::new();
     let held = |p: &Part| matches!(p.body, Body::Held(_) | Body::Parked | Body::Dropped(_));
     let view = loop {
         let out: BTreeSet<PartRef> = waiting.union(&thrown).copied().collect();
@@ -369,20 +374,29 @@ fn join_held<'a>(h: &'a Held, parked: &BTreeSet<CommitId>, ov: &Overlap, dots: &
         let listed: BTreeSet<ThingId> = live.iter().flat_map(|c| c.parts.iter()).filter(|p| p.aspect == Aspect::CREATED).map(|p| p.thing).collect();
         let exists: BTreeSet<ThingId> = view.iter().flat_map(|c| c.parts.iter()).filter(|p| creation(p).is_some()).map(|p| p.thing).chain(world.links.keys().copied().filter(|t| !listed.contains(t))).collect();
         let parts = || live.iter().flat_map(|c| c.parts.iter().enumerate().map(move |(i, p)| (c, i, p))).filter(|(_, _, p)| held(p));
+        // the steps the recording parts that join place, and the things each commit lists a key
+        // for that none places
+        let placed = StepKeys::of(&live, &applied, &out, recording);
+        let miskeyed: BTreeSet<(CommitId, ThingId)> = live.iter().flat_map(|c| miskeyed(&world, &placed, c).into_iter().map(|t| (c.id, t))).collect();
         // a part the node cannot judge (notes/expiry-creation-design.md §3 Unjudgeable): not held
         let t: BTreeSet<PartRef> = parts()
             .filter(|(c, i, p)| unknown(&world, &exists, c, p) || (matches!(p.body, Body::Held(_)) && unreached(&edges, c, *i, &world)))
             .map(|(c, i, _)| (c.id, i))
             .collect();
-        // parked parts wait; nothing else does
-        let w: BTreeSet<PartRef> = parts().filter(|(c, i, p)| !t.contains(&(c.id, *i)) && p.body == Body::Parked).map(|(c, i, _)| (c.id, i)).collect();
+        // parked parts wait, and those whose commit lists a key no held step places (held, judged
+        // again as steps arrive; a creation hashes to its thing and needs no key); nothing else does
+        let w: BTreeSet<PartRef> = parts()
+            .filter(|(c, i, p)| !t.contains(&(c.id, *i)) && (p.body == Body::Parked || (p.aspect != Aspect::CREATED && miskeyed.contains(&(c.id, p.thing)))))
+            .map(|(c, i, _)| (c.id, i))
+            .collect();
         let a: BTreeSet<CommitId> = live.iter().filter(|c| applies(c, &t, &world)).map(|c| c.id).collect();
-        if a == applied && w == waiting && t == thrown {
+        if a == applied && w == waiting && t == thrown && miskeyed == keyed {
             break view;
         }
         applied = a;
         waiting = w;
         thrown = t;
+        keyed = miskeyed;
     };
     // thrown out whole: nothing of it held but parts the node does not hold
     let revisit = live
@@ -401,7 +415,7 @@ fn join_held<'a>(h: &'a Held, parked: &BTreeSet<CommitId>, ov: &Overlap, dots: &
     // nothing. A snapshot carries the commits its held body has writes of.
     let carries = |_: &Commit, p: &Part| body(p).map_or_else(BTreeSet::new, |f| dots.commits(p.thing, p.aspect, f));
     let tl = Timeline::judge(world, &roles::Joined { live: &live, view: &view, void: &void, carries: &carries, me: h.me });
-    Joined { live, applied, waiting, thrown, revisit, view, tl, void }
+    Joined { live, applied, waiting, thrown, revisit, view, tl, void, miskeyed: keyed }
 }
 
 /// Whether a fire of external signal `a` in `c` by a party holding no write is valid under
@@ -435,6 +449,94 @@ fn unknown(world: &World, exists: &BTreeSet<ThingId>, c: &Commit, p: &Part) -> b
         return true;
     }
     creation(p).is_none() && !exists.contains(&p.thing)
+}
+
+/// The steps placed on each thing (spec/crypto.md §7 Checked keys): those on a path from a
+/// genesis step every step of which a recording part on the thing joined records, with the stamp
+/// from which the whole path is recorded; per (thing, level, key) the earliest such stamp.
+struct StepKeys {
+    keys: BTreeMap<(ThingId, KeyLevel, KeyId), u64>,
+}
+
+impl StepKeys {
+    /// From the held bodies of parts in `recording` of `applied` commits, not `out` (waiting or
+    /// thrown).
+    fn of(live: &[&Commit], applied: &BTreeSet<CommitId>, out: &BTreeSet<PartRef>, recording: &BTreeSet<PartRef>) -> StepKeys {
+        // per thing, each step with the earliest stamp recording it
+        let mut recorded: BTreeMap<ThingId, BTreeMap<u64, (StepRec, u64)>> = BTreeMap::new();
+        for c in live.iter().filter(|c| applied.contains(&c.id)) {
+            for (i, p) in c.parts.iter().enumerate() {
+                if !recording.contains(&(c.id, i)) || out.contains(&(c.id, i)) || !matches!(p.body, Body::Held(_)) {
+                    continue;
+                }
+                for s in &p.keys.steps {
+                    let e = recorded.entry(p.thing).or_default().entry(s.id).or_insert((*s, c.ts));
+                    e.1 = e.1.min(c.ts);
+                }
+            }
+        }
+        let mut keys: BTreeMap<(ThingId, KeyLevel, KeyId), u64> = BTreeMap::new();
+        for (t, steps) in &recorded {
+            // from the genesis steps down: a step's path is recorded from the latest stamp on it
+            let mut since: BTreeMap<u64, u64> = BTreeMap::new();
+            let mut todo: Vec<(u64, u64)> = steps.values().filter(|(s, _)| s.parent.is_none()).map(|(s, ts)| (s.id, *ts)).collect();
+            while let Some((id, at)) = todo.pop() {
+                if since.get(&id).is_some_and(|x| *x <= at) {
+                    continue;
+                }
+                since.insert(id, at);
+                todo.extend(steps.values().filter(|(s, _)| s.parent == Some(id)).map(|(s, ts)| (s.id, at.max(*ts))));
+            }
+            for (id, at) in since {
+                let s = steps[&id].0;
+                for level in [KeyLevel::Admin, KeyLevel::Writer] {
+                    let e = keys.entry((*t, level, s.bears(level))).or_insert(at);
+                    *e = (*e).min(at);
+                }
+            }
+        }
+        StepKeys { keys }
+    }
+
+    /// Whether a step on `t` bears `key` at `level` with its path recorded before `ts`.
+    fn places(&self, t: ThingId, level: KeyLevel, key: KeyId, ts: u64) -> bool {
+        self.keys.get(&(t, level, key)).is_some_and(|at| *at < ts)
+    }
+
+    /// Whether a step on `t` is recorded before `ts`.
+    fn any_before(&self, t: ThingId, ts: u64) -> bool {
+        self.keys.iter().any(|((x, _, _), at)| *x == t && *at < ts)
+    }
+}
+
+/// spec/crypto.md §7 Checked keys, spec/commits.md §4 Unjudgeable: the things for which `c` lists
+/// a level-1 or level-3 key that is not right: for no thing on the record chain of the part's
+/// thing (itself first) does a step bear it recorded before `c`. A thing whose record chain is not
+/// known to a thing minted with a key is not judged (its parts are unjudgeable anyway); nor one
+/// whose first steps `c` records (First steps).
+fn miskeyed(world: &World, placed: &StepKeys, c: &Commit) -> BTreeSet<ThingId> {
+    let mut out = BTreeSet::new();
+    for p in c.parts.iter().filter(|p| !p.keys.listed.is_empty()) {
+        let t = p.thing;
+        if out.contains(&t) {
+            continue;
+        }
+        let chain: Vec<ThingId> = std::iter::once(t).chain(world.chain_above(t)).collect();
+        if !chain.last().is_some_and(|x| world.minted_with_key(*x)) || first_steps(world, placed, c, t, &chain) {
+            continue;
+        }
+        if p.keys.listed.iter().any(|&(level, k)| !chain.iter().any(|&x| placed.places(x, level, k, c.ts))) {
+            out.insert(t);
+        }
+    }
+    out
+}
+
+/// spec/crypto.md §7 First steps: `c` is `t`'s minting by its record's key (it carries `t`'s
+/// `created.0`, `t` is minted with a key and `c` is signed as `t`: no key grant is modelled), and
+/// no step on `t`'s record chain is recorded before it.
+fn first_steps(world: &World, placed: &StepKeys, c: &Commit, t: ThingId, chain: &[ThingId]) -> bool {
+    c.signer == t && world.minted_with_key(t) && c.parts.iter().any(|p| p.thing == t && p.aspect == Aspect::CREATED) && !chain.iter().any(|&x| placed.any_before(x, c.ts))
 }
 
 /// spec/commits.md §4 Unjudgeable: a commit is unjudgeable while the record of the thing it is
@@ -560,12 +662,17 @@ fn forget(h: &Held, things: &BTreeSet<ThingId>) -> Held {
 /// node closure, every thing not in `closure` (spec/commits.md §5 What a held thing needs): its
 /// certificates alone, never content, whether or not it was ever in the node closure. `h` with
 /// every content part on such a thing counting as never received: all but its creation and its
-/// `roles.0` (role-class; `retention^.0` is content).
+/// role commits' parts (role-class: `roles.0`, and the `sync.0` steps place keys by; `retention^.0`
+/// is content).
 pub fn at_quiet(h: &Held, closure: &BTreeSet<ThingId>) -> Held {
     let mut n = h.clone();
-    for p in n.commits.iter_mut().flat_map(|c| c.parts.iter_mut()) {
-        let certificate = [Aspect::CREATED, Aspect::ROLES].contains(&p.aspect);
-        if !closure.contains(&p.thing) && !certificate && matches!(p.body, Body::Held(_) | Body::Parked) {
+    for c in n.commits.iter_mut() {
+        let role = c.is_role();
+        for p in c.parts.iter_mut() {
+            let certificate = role || [Aspect::CREATED, Aspect::ROLES].contains(&p.aspect);
+            if closure.contains(&p.thing) || certificate || !matches!(p.body, Body::Held(_) | Body::Parked) {
+                continue;
+            }
             p.body = Body::Missing;
             p.stripped.clear();
         }
@@ -615,6 +722,19 @@ pub fn judged_with(h: &Held, ov: &Overlap) -> (Outcome, Timeline) {
     (o, tl)
 }
 
+/// Validity of part `i` of applied commit `c` by its authority, before any overlap: a record
+/// needs none (spec/permissions.md §1); an edge write, whether it applied; any other part (a role
+/// commit's `sync.0` among them), whether its delta is valid; no validity depends on a setting
+/// but an external fire's (`judge`).
+fn part_valid(tl: &Timeline, c: &Commit, i: usize) -> bool {
+    match &c.parts[i].body {
+        _ if c.parts[i].aspect == Aspect::CREATED => true,
+        Body::Held(Delta::Edge(_)) if c.is_role() => tl.applied_part(c.id, i),
+        _ if c.is_role() && c.parts[i].aspect == Aspect::ROLES => tl.applied_part(c.id, i),
+        _ => tl.valid_part(c.id, i),
+    }
+}
+
 /// The judgment of a held set with no thing forgotten, and its role timeline;
 /// `Outcome::destroyed` is the things it destroys.
 fn judge(h: &Held, ov: &Overlap) -> (Outcome, Timeline) {
@@ -623,7 +743,25 @@ fn judge(h: &Held, ov: &Overlap) -> (Outcome, Timeline) {
     let mut o = Outcome::default();
     o.parked = parked(h);
     let dots = Dots::new(h);
-    let Joined { live, applied, waiting, thrown, revisit, view, tl, void } = join_held(h, &o.parked, ov, &dots);
+    // spec/crypto.md §7 Checked keys: steps are placed by valid `sync.0` writes alone. Every
+    // recording part may place at first; one that joins and is judged invalid is taken out and
+    // the held set joined again, until every recording part that joins is valid.
+    let mut recording: BTreeSet<PartRef> = h.commits.iter().flat_map(|c| c.parts.iter().enumerate().filter(|(_, p)| !p.keys.steps.is_empty()).map(|(i, _)| (c.id, i))).collect();
+    let Joined { live, applied, waiting, thrown, revisit, view, tl, void, miskeyed } = loop {
+        let j = join_held(h, &o.parked, ov, &dots, &recording);
+        let fell: Vec<PartRef> = recording
+            .iter()
+            .filter(|r| j.applied.contains(&r.0) && !j.waiting.contains(r) && !j.thrown.contains(r))
+            .filter(|r| j.live.iter().find(|c| c.id == r.0).is_some_and(|c| !part_valid(&j.tl, c, r.1) || j.void.contains(&c.id)))
+            .copied()
+            .collect();
+        if fell.is_empty() {
+            break j;
+        }
+        for r in fell {
+            recording.remove(&r);
+        }
+    };
     o.revisit = revisit;
     o.applied = applied.clone();
     let is_applied = |c: &Commit| applied.contains(&c.id);
@@ -631,13 +769,9 @@ fn judge(h: &Held, ov: &Overlap) -> (Outcome, Timeline) {
     // Validity of every part of an applied commit.
     for c in live.iter().filter(|c| is_applied(c)) {
         for (i, p) in c.parts.iter().enumerate() {
-            // a record needs no authority (spec/permissions.md §1)
-            let v = match c.kind {
-                _ if p.aspect == Aspect::CREATED => true,
-                CommitKind::Role => tl.applied_part(c.id, i),
-                // no validity depends on a setting but an external fire's (below)
-                _ => tl.valid_part(c.id, i),
-            };
+            // a part whose commit lists a key no held step places is not judged meanwhile, held
+            // or not (spec/commits.md §4 Unjudgeable)
+            let v = part_valid(&tl, c, i) && (p.aspect == Aspect::CREATED || !miskeyed.contains(&(c.id, p.thing)));
             o.otherwise.insert((c.id, i), v);
             o.valid.insert((c.id, i), v && (p.aspect == Aspect::CREATED || !void.contains(&c.id)));
         }
@@ -1098,7 +1232,7 @@ fn fate(
 /// compact. A snapshot carries no write of an expiring delta (spec/crdt.md §8).
 pub fn cover(h: &Held, o: &Outcome, thing: ThingId, aspect: Aspect, id: CommitId, ts: u64) -> Commit {
     let f = snapshot_state(o, thing, aspect);
-    let part = Part { thing, aspect, purge_by: PurgeBy::Writer, body: Body::Held(Delta::Writes(f)), stripped: Default::default(), replaces: None };
+    let part = Part { thing, aspect, purge_by: PurgeBy::Writer, body: Body::Held(Delta::Writes(f)), stripped: Default::default(), replaces: None, keys: Default::default() };
     // along a path holding the right over what it owes there, else one giving `me` write
     let path = o.cover_along.get(&(thing, aspect)).or(o.my_paths.get(&thing)).cloned().unwrap_or_default();
     Commit { id, signer: h.me, author: h.me, paths: [(thing, path)].into(), ts, expires: None, kind: CommitKind::Snapshot, parts: vec![part], purge: vec![], frontier: None, undoes: None, own_cover: false, boxes: vec![] }

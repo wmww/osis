@@ -255,6 +255,47 @@ pub struct Part {
     pub stripped: std::collections::BTreeSet<CommitId>,
     /// A signal edit's claim (`edits::listing`, notes/signal-edits-design.md): the fire this part replaces.
     pub replaces: Option<CommitId>,
+    /// The delete keys its commit lists for it and the steps it records (spec/crypto.md §7).
+    pub keys: Keys,
+}
+
+/// A delete key, by identity (spec/crypto.md §7).
+pub type KeyId = u64;
+
+/// A listed key's level: 1, a step's delete key; 3, its write key (level 2 is not checked).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum KeyLevel {
+    Admin,
+    Writer,
+}
+
+/// A step a `sync.0` body records (spec/sync-ids.md §2): its ID, its parent's (none for a
+/// genesis step) and the keys it bears. Its signature is taken as verifying under its parent's
+/// delete key: no forged step is modelled.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct StepRec {
+    pub id: u64,
+    pub parent: Option<u64>,
+    pub delete: KeyId,
+    pub write: KeyId,
+}
+
+impl StepRec {
+    pub fn bears(&self, level: KeyLevel) -> KeyId {
+        match level {
+            KeyLevel::Admin => self.delete,
+            KeyLevel::Writer => self.write,
+        }
+    }
+}
+
+/// A part's delete keys (spec/crypto.md §7 Checked keys): the level-1 and level-3 keys its commit
+/// lists for its delta, and, on a `sync.0` part, the steps its body records. A part listing none
+/// is not checked.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Keys {
+    pub listed: Vec<(KeyLevel, KeyId)>,
+    pub steps: Vec<StepRec>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]

@@ -252,3 +252,48 @@ fn a_write_costs_the_kept_derivation_what_it_moved_at_n_and_10n_spec_permissions
     assert_eq!(small, large, "after 10 writes and after 100");
     assert!(small.iter().all(|(c, read)| c.bodies == 1 && c.closes == 0 && (1..=2).contains(read)), "each node read the write, took one body and closed nothing again: {small:?}");
 }
+
+// spec/crypto.md §7 Checked keys, spec/permissions.md §4 Evidence of a commit: node N's write on
+// G while G is N's dependent lists N's step keys; G made independent, G's evidence holds N's
+// copy recording that step (`Reason::Step`). A reader handed G's commits and N's record but not
+// N's minting holds the write unjudgeable (not valid, kept); given the minting, it is valid.
+#[test]
+fn a_write_listing_its_mint_admins_step_requires_that_step_spec_crypto_7() {
+    use osis_engine::evidence::Reason;
+    let mut lp = LocalPeer::new(1, 0, crate::common::T0).unwrap();
+    // the reader, apart: it holds none of N's commits
+    let mut reader = osis_engine::local_peer::Peer::new(7, crate::common::T0).unwrap();
+    let r = reader.engine.me();
+    lp.peers[0].know(&[r]).unwrap();
+    for id in reader.engine.commit_ids() {
+        let pk = reader.engine.package(&id).unwrap().unwrap();
+        lp.deliver(0, &pk).unwrap();
+    }
+    lp.peers.push(reader);
+    let n = lp.peers[0].engine.me();
+    let mut m = Mutation::new();
+    let g = m.create(lp.peers[0].engine.held_record(n).unwrap());
+    m.set(g, &REG, &s("g")).unwrap();
+    let w = lp.peers[0].engine.commit(m).unwrap().unwrap();
+    lp.hold(g);
+    lp.peers[0].engine.make_independent(&g).unwrap();
+    lp.peers[0].engine.grant(&g, &r, &edge_of(Role::Read)).unwrap();
+    let e = &mut lp.peers[0].engine;
+    let copies = e.evidence_copies().unwrap();
+    let minting = copies.keys().find(|k| k.1 == n && copies[*k].iter().any(|p| !p.steps.is_empty())).expect("N's minting records its genesis step").0;
+    let req = e.evidence(&[(g, g, vec![g])]).unwrap().required(&g).unwrap().clone();
+    assert!(matches!(req.get(&(minting, n)), Some(Reason::Step(b, _)) if *b == n), "{req:?}");
+    // G's commits, in the order made, and N's record: not N's minting
+    let mut on_g: Vec<CommitId> = copies.keys().filter(|k| k.1 == g).map(|k| k.0).collect::<BTreeSet<_>>().into_iter().collect();
+    on_g.sort_by_key(|c| lp.peers[0].engine.header(c).unwrap().ts);
+    let rec = lp.peers[0].engine.core.created(&n).cloned().unwrap();
+    lp.peers[1].engine.learn_records(vec![rec]).unwrap();
+    hand(&mut lp, 0, 1, &on_g);
+    let reg = Ak::new("t:reg.0").unwrap();
+    let x = &lp.peers[1].engine;
+    assert!(x.core.ix.commits.contains_key(&w), "the write is kept");
+    assert_ne!(x.body_valid(&w, &g, &reg), Some(true), "no held step places N's keys");
+    hand(&mut lp, 0, 1, &[minting]);
+    let x = &lp.peers[1].engine;
+    assert_eq!(x.body_valid(&w, &g, &reg), Some(true), "N's minting places the keys");
+}
