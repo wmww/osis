@@ -98,6 +98,8 @@ impl Default for Config {
 /// One simulated node.
 pub struct Node {
     pub peer: Peer,
+    /// The account it acts for (spec/permissions.md §8), made at its start.
+    pub account: Tid,
     pub faults: Faults,
     pub clock: ClockSpec,
     pub up: bool,
@@ -231,14 +233,17 @@ impl Sim {
         };
         for i in 0..s.cfg.nodes {
             let clock = s.cfg.clocks.get(i).copied().unwrap_or_default();
-            let (peer, faults) = boot(s.dice.u64(), WallMs(wall_of(clock, 0))).map_err(|e| s.fail(format!("node {i} create: {e}")))?;
-            s.nodes.push(Node { peer, faults, clock, up: true });
+            let (mut peer, faults) = boot(s.dice.u64(), WallMs(wall_of(clock, 0))).map_err(|e| s.fail(format!("node {i} create: {e}")))?;
+            let made = osis_engine::local_peer::make_account(&mut peer.engine).map_err(|e| s.fail(format!("node {i} account: {e}")))?;
+            s.nodes.push(Node { peer, account: made.0.thing, faults, clock, up: true });
         }
-        // each account keeps the others' chains, which it then has: a node it grants or is
-        // granted by (`Peer::know`)
-        let all: Vec<Tid> = s.nodes.iter().map(|n| n.peer.engine.me()).collect();
+        // each node keeps the others' accounts, as a contact's node does: a strong to each
+        // (`Peer::know`), their commits by the first sync
+        let all: Vec<Tid> = s.nodes.iter().map(|n| n.account).collect();
         for i in 0..s.nodes.len() {
-            let r = s.node(i)?.peer.know(&all);
+            let own = s.node(i)?.account;
+            let others: Vec<Tid> = all.iter().copied().filter(|a| *a != own).collect();
+            let r = s.node(i)?.peer.know(&others);
             r.map_err(|e| s.fail(format!("node {i} know: {e}")))?;
             s.drain(i)?;
         }
@@ -280,8 +285,9 @@ impl Sim {
         r.map_err(|e| self.fail(format!("node {i} read: {e}")))
     }
 
-    pub fn tid(&mut self, i: usize) -> Res<Tid> {
-        Ok(self.engine(i)?.me())
+    /// The account node `i` acts for: what it grants, is granted and makes things in.
+    pub fn account(&mut self, i: usize) -> Res<Tid> {
+        Ok(self.node(i)?.account)
     }
 
     /// An engine error on node `i`: a crash takes it down; a planned failed write this step
@@ -347,10 +353,10 @@ impl Sim {
         Ok(())
     }
 
-    /// Node `i` creates a thing whose mint admin is `admin` (default: itself) and adds it to the write
-    /// targets.
+    /// Node `i` creates a thing whose mint admin is `admin` (default: its account) and adds it to
+    /// the write targets.
     pub fn create_thing(&mut self, i: usize, admin: Option<Tid>) -> Res<Tid> {
-        let me = self.tid(i)?;
+        let me = self.account(i)?;
         let mut m = Mutation::new();
         let t = self.engine(i)?.new_thing(&mut m, admin.unwrap_or(me));
         m.set(t, &workload::REG, &Value::Str("new".into())).map_err(|e| self.fail(e.to_string()))?;
@@ -360,10 +366,11 @@ impl Sim {
         Ok(t)
     }
 
-    /// Node `i` writes node `j`'s edge on `thing` (spec/permissions.md §2); node `j` holds `thing`
-    /// from its node root, as a node keeps and writes only what it holds (spec/sync-set.md §2).
+    /// Node `i` writes the edge of node `j`'s account on `thing` (spec/permissions.md §2); node `j`
+    /// holds `thing` from its node root, as a node keeps and writes only what it holds
+    /// (spec/sync-set.md §2).
     pub fn grant(&mut self, i: usize, thing: Tid, j: usize, role: Role) -> Res<CommitId> {
-        let holder = self.tid(j)?;
+        let holder = self.account(j)?;
         let edge = ct::Edge { role, until: None, may_grant: false, retain: false, floor: None };
         let r = self.engine(i)?.grant(&thing, &holder, &edge);
         let done = r.map_err(|e| self.fail(format!("node {i} grant: {e}")))?;
@@ -377,9 +384,9 @@ impl Sim {
         done.commits.last().copied().ok_or_else(|| self.fail("grant changed nothing"))
     }
 
-    /// Node `i` removes node `j`'s edge on `thing` (spec/permissions.md §5).
+    /// Node `i` removes the edge of node `j`'s account on `thing` (spec/permissions.md §5).
     pub fn revoke(&mut self, i: usize, thing: Tid, j: usize) -> Res<CommitId> {
-        let holder = self.tid(j)?;
+        let holder = self.account(j)?;
         let mut m = Mutation::new();
         m.op(thing, &ct::ROLES, PathOp { path: Vec::new(), op: Op::Remove(Value::Weak(holder)) }).map_err(|e| self.fail(e.to_string()))?;
         // an explicit removal: with no frontier it would be a finalize (spec/permissions.md §2)
@@ -447,7 +454,7 @@ impl Sim {
         if !self.node(from)?.up || !self.node(to)?.up {
             return Ok(());
         }
-        let account = self.tid(to)?;
+        let account = self.account(to)?;
         for id in self.engine(from)?.fires_owed() {
             let out = match self.engine(from)?.sealed_fire(&id) {
                 Ok(out) => out,
@@ -594,7 +601,8 @@ impl Sim {
     }
 
     /// A random up node writes 1..=3 random ops on things it holds and may write (a node writes
-    /// only what it holds, spec/sync-set.md §2 Writing).
+    /// only what it holds, spec/sync-set.md §2 Writing). One its offer gave a role on before its
+    /// minting arrived is refused (`UnknownThing`), as the API refuses it.
     fn random_write(&mut self) -> Res<()> {
         let ups = self.up_nodes();
         let Some(&i) = self.dice.pick(&ups) else { return Ok(()) };
@@ -618,6 +626,7 @@ impl Sim {
                     self.wrote(i, id)?;
                 }
             }
+            Err(osis_engine::Error::UnknownThing(t)) => self.note(format!("node {i} write refused: {t} not arrived")),
             Err(e) => self.engine_err(i, "write", e)?,
         }
         self.drain(i)

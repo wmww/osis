@@ -281,3 +281,21 @@ fn a_register_lost_with_its_connection_goes_again_at_the_reconnect_spec_sync_ids
     w.run();
     assert_eq!(at1(&w), Some(head), "registered once they met again");
 }
+
+// spec/sync-inbox.md §1 (Public key record), §3 (Who takes it: a Deposit item signed by S's
+// head's deposit key), spec/crypto.md §7 (Checked keys: the steps placing a listed key ride as the commit's
+// evidence): node 1 removes its sibling, node 2 (spec/permissions.md §8 Removing), which rotates
+// the account's inbox; node 0, a contact, then grants the account read on a thing of its own and
+// node 1 holds it: node 1 reads it. Fails: node 0 holds the inbox's newer `keys.0` copies
+// without the `sync.0` steps placing their keys, judges them miskeyed, and seals the grant fire
+// with the old deposit seed, which node 1 refuses (14) under its new head.
+#[test]
+#[ignore = "issues/public-key-record-evidence.md"]
+fn repro_a_grant_from_outside_reaches_an_account_that_removed_a_node() {
+    use crate::harness::Step::*;
+    use crate::harness::history::{Gives, Holder, reads};
+    let mut w = crate::harness::siblings();
+    let _ = crate::harness::play(&mut w, &[Unpair(1, 2), Run, New(0), Give(0, 0, Holder::Node(1), Gives::Reads), Strong(1, None, 0), Run], String::new());
+    let t = w.history.things[0].0;
+    assert!(reads(w.engine(1), &t).value.is_some(), "node 1 reads the thing granted to its account");
+}

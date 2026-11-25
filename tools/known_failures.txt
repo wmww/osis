@@ -5,25 +5,6 @@
 # `rate:VAR=VAL,...` or `rate:SEED` REPRO and reports one passing, STALE-RATE); ISSUE: its issues/
 # file; PATTERN: a regex every failing unit of NAME (each seed line of its panic, or its whole
 # panic) must match (tools/gate_failures.py).
-osis-engine/parts::forged_parts_beside_a_part_past_expiry_alike_plain_spec_commits_4 OSIS_FORGED_START=0 issues/accounts-properties-fail.md accounts: pairing
-osis-engine/parts::forged_parts_beside_a_part_past_expiry_alike_in_every_order_exhaustive_spec_commits_4 - issues/accounts-properties-fail.md accounts: pairing
-osis-engine/waits::every_part_given_once_joins_in_any_order_plain_spec_commits_4 - issues/accounts-properties-fail.md accounts: pairing
-osis-engine/shred::purged_permanent_alike_plain_spec_commits_5 - issues/accounts-properties-fail.md accounts: pairing
-osis-engine/shred::purged_permanent_alike_in_every_order_exhaustive_spec_commits_5 - issues/accounts-properties-fail.md accounts: pairing
-osis-sync/differential::histories_hold_their_closure_plain OSIS_SYNC_START=0 issues/accounts-properties-fail.md accounts: pairing
-osis-sync/sims::a_reader_through_a_node_keeping_it_unread_plain OSIS_SYNC_START=0 issues/accounts-properties-fail.md reads thing 0 unlike the reference
-osis-sync/sims::lost_and_repeated_messages_plain OSIS_SYNC_START=0 issues/accounts-properties-fail.md w\.net\.faulted != \(0, 0, 0\)
-osis-sync/sims::store_failures_plain OSIS_SYNC_START=0 issues/accounts-properties-fail.md node \d+ reads thing \d+: .*, the model does not
-osis-sync/sims::a_peer_refusing_role_entries_plain OSIS_SYNC_START=0 issues/accounts-properties-fail.md node \d+ reads thing \d+: .*, the model does not
-osis-sync/sims::crashes_and_restarts_in_place_plain OSIS_SYNC_START=0 issues/accounts-properties-fail.md node \d+ reads thing \d+: .*, the model does not
-osis-sync/sims::lost_and_repeated_messages_plain OSIS_SYNC_START=0 issues/accounts-properties-fail.md node \d+ reads thing \d+: .*, the model does not
-osis-sim/scenarios::drift_parks_until_clock_catches_up - issues/accounts-properties-fail.md refuses a fire of node \d+: Bad
-osis-sim/scenarios::two_nodes_converge - issues/accounts-properties-fail.md refuses a fire of node \d+: Bad
-osis-sim/scenarios::three_nodes_random_delivery - issues/accounts-properties-fail.md refuses a fire of node \d+: Bad
-osis-sim/scenarios::partial_relay_gets_its_rest_spec_commits_4 - issues/accounts-properties-fail.md refuses a fire of node \d+: Bad
-sim-sweep:crash_restart 0 issues/accounts-properties-fail.md refuses a fire of node \d+: Bad
-sim-sweep:drift_parks 0 issues/accounts-properties-fail.md refuses a fire of node \d+: Bad
-sim-sweep:revoke_while_writing 0 issues/accounts-properties-fail.md refuses a fire of node \d+: Bad
-sim-sweep:three_random 0 issues/accounts-properties-fail.md refuses a fire of node \d+: Bad
-sim-sweep:two_nodes 0 issues/accounts-properties-fail.md refuses a fire of node \d+: Bad
+osis-sync/differential::histories_hold_their_closure_plain rate:OSIS_SYNC_START=34,OSIS_SYNC_SEEDS=1 issues/public-key-record-evidence.md node \d+ reads thing \d+ unlike the reference
+osis-sync/differential::histories_hold_their_closure_plain rate:OSIS_SYNC_START=23,OSIS_SYNC_SEEDS=1 issues/differential-full-size-classes.md node \d+ reads thing \d+ unlike the reference
 osis-engine/retention::tests_carried::purge_by_id_reads_alike_forgotten_or_not_plain_spec_commits_5 rate:OSIS_PURGE_BY_ID_START=679952827408 issues/purge-by-id-forgetting.md forgetting vs not

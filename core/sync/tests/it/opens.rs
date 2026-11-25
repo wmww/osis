@@ -2182,8 +2182,9 @@ fn a_sources_class_is_its_declaration_whichever_hit_opens_spec_sync_opens_4() {
 }
 
 /// The classes node `i` gives the sources of S proved by node `j`.
-fn classes(w: &crate::harness::World, i: usize, j: usize, s: &SyncId) -> Vec<SourceClass> {
-    let a = w.node(j).account;
+fn classes(w: &mut crate::harness::World, i: usize, j: usize, s: &SyncId) -> Vec<SourceClass> {
+    // a source is a node, named by its node thing
+    let a = Some(w.engine(j).me());
     w.status(i).get(s).map(|st| st.sources.values().filter(|x| x.src.node == a).map(|x| x.src.class).collect()).unwrap_or_default()
 }
 
@@ -2194,25 +2195,24 @@ fn classes(w: &crate::harness::World, i: usize, j: usize, s: &SyncId) -> Vec<Sou
 // node 1 a store and nodes 0 and 1 class node 2 a reader, after a reconnect and a restart too;
 // and node 2's purge of its own write deletes it at node 1.
 #[test]
-#[ignore = "accounts: making an account"]
 fn a_sources_class_follows_what_the_peer_holds_spec_sync_opens_4() {
     use crate::harness::Step::*;
     use crate::harness::history::{Gives, three, value_ak};
     use osis_engine::Mutation;
     use SourceClass::{Reader, Store};
     let (mut w, t, s) = three(Gives::Syncs, 3);
-    let all = |w: &crate::harness::World| [(0, 1), (0, 2), (1, 0), (1, 2), (2, 0), (2, 1)].map(|(i, j)| ((i, j), classes(w, i, j, &s)));
+    let all = |w: &mut crate::harness::World| [(0, 1), (0, 2), (1, 0), (1, 2), (2, 0), (2, 1)].map(|(i, j)| ((i, j), classes(w, i, j, &s)));
     let want = |two: SourceClass| [((0, 1), vec![Store]), ((0, 2), vec![two]), ((1, 0), vec![Reader]), ((1, 2), vec![two]), ((2, 0), vec![Reader]), ((2, 1), vec![Store])];
-    assert_eq!(all(&w), want(Store), "both keep S unread");
+    assert_eq!(all(&mut w), want(Store), "both keep S unread");
     let _ = crate::harness::play(&mut w, &[Grant(0, 0, 2, Gives::Writes), Run], String::new());
-    assert_eq!(all(&w), want(Reader), "node 2 reads S");
+    assert_eq!(all(&mut w), want(Reader), "node 2 reads S");
     w.cut(1, 2);
     w.run();
-    assert_eq!(all(&w), want(Reader), "after a reconnect");
+    assert_eq!(all(&mut w), want(Reader), "after a reconnect");
     w.power_off(2);
     w.power_on(2);
     w.run();
-    assert_eq!(all(&w), want(Reader), "after node 2 restarts");
+    assert_eq!(all(&mut w), want(Reader), "after node 2 restarts");
     // node 2's purge of its own write deletes it at node 1, node 0 away
     let c = w.write(2, |e| {
         let mut m = Mutation::new();

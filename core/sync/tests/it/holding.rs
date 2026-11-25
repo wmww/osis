@@ -197,11 +197,11 @@ fn nothing_is_fetched_before_the_strong_spec_sync_inbox_5() {
 // writes Bob's inbox, seals the grant fire; Bob's nodes, its writers, hold it stamped under the
 // inbox's sync ID.
 #[test]
-#[ignore = "accounts: pairing"]
 fn the_accounts_nodes_follow_what_it_holds_spec_sync_set_1() {
     let mut w = siblings();
     let t = make(&mut w, 0, None, "hi");
-    let (alice, bob) = (w.node(0).account.unwrap(), w.node(1).account.unwrap());
+    // Alice's node signs her fire as its node thing (spec/permissions.md §1)
+    let (alice, bob) = (w.engine(0).me(), w.node(1).account.unwrap());
     w.write(0, |e| e.grant(&t, &bob, &edge(Role::Read))).unwrap();
     w.run();
     let inbox = w.engine(1).inbox_thing(&bob).unwrap();
@@ -686,25 +686,25 @@ fn a_reader_by_a_chain_through_a_holder_thing_reads_spec_sync_judgement_2() {
     assert_eq!(holding(&mut w, 1, &t), Some(Holding::Read));
 }
 
-// spec/sync-inbox.md §5 (Grant from outside), §1, spec/sync-judgement.md §2 (the key part of S's actor);
-// Bob's T1 holds T0 by a strong; Alice, who knows T1's public key record but neither reads nor
-// syncs T1 (she reads T4, holder on T3 minted with admin T1), grants T1 read on T0, an offer on
-// T1's inbox. T1 takes no grants from outside, so Bob, T1's reader, does not read T0; once T1's
-// admin enables its inbox signals (as chat and kit do at creation: spec/permissions.md §5.2
-// External fires), the offer Alice sent is valid and Bob reads T0 through T1.
+// spec/sync-inbox.md §5 (Grant from outside), §1 (Public key record: under the sync ID of each
+// thing it holds a role on); Bob's T1 holds T0 by a strong; Alice, who knows T1's public key
+// record but neither reads nor syncs T1 (she reads T4, on which T1 holds read), grants T1 read on
+// T0, an offer on T1's inbox. T1 takes no grants from outside, so Bob, T1's reader, does not read
+// T0; once T1's admin enables its inbox signals (as chat and kit do at creation:
+// spec/permissions.md §5.2 External fires), the offer Alice sent is valid and Bob reads T0 through
+// T1.
 #[test]
-#[ignore = "accounts: pairing"]
 fn a_grant_to_a_holder_its_granter_does_not_sync_reaches_its_readers_spec_sync_inbox_5() {
     let mut w = contacts();
     let alice = w.node(0).account.unwrap();
     let t1 = make(&mut w, 1, None, "t1");
-    let t3 = make(&mut w, 1, Some(t1), "t3");
     let t4 = make(&mut w, 1, None, "t4");
     w.write(1, |e| e.grant(&t4, &alice, &edge(Role::Read))).unwrap();
-    w.write(1, |e| e.grant(&t3, &t4, &edge(Role::Read))).unwrap();
+    w.write(1, |e| e.grant(&t4, &t1, &edge(Role::Read))).unwrap();
     strong(&mut w, 0, None, t4, true);
     w.run();
     assert_eq!(value(&mut w, 0, &t4), Some(Value::Str("t4".into())), "Alice reads T4");
+    assert!(w.engine(0).knows(&t1) && value(&mut w, 0, &t1).is_none(), "Alice holds T1's record, not T1");
     let t0 = make(&mut w, 0, None, "t0");
     strong(&mut w, 1, Some(t1), t0, true);
     w.write(0, |e| e.grant(&t0, &t1, &edge(Role::Read))).unwrap();
@@ -721,12 +721,6 @@ fn a_grant_to_a_holder_its_granter_does_not_sync_reaches_its_readers_spec_sync_i
     w.run();
     assert_eq!(value(&mut w, 1, &t0), Some(Value::Str("t0".into())), "enabled: Bob reads T0 through T1");
     assert_eq!(holding(&mut w, 1, &t0), Some(Holding::Read));
-    // T3's chain was needed by T4 alone (spec/commits.md §5 What a held thing needs): released
-    // with it
-    assert!(w.engine(0).mint_admin(&t3).is_some(), "Alice holds T3's record while T4 is held");
-    strong(&mut w, 0, None, t4, false);
-    w.run();
-    assert_eq!(w.engine(0).mint_admin(&t3), None, "T3's record goes with T4");
 }
 
 // spec/permissions.md §4 (Role changes travel), spec/sync-judgement.md §2 (the key part of S's actor: a later
@@ -1173,7 +1167,7 @@ fn a_mint_admins_readers_read_a_thing_no_more_once_its_record_edge_goes_spec_syn
 // whatever T0's sync ID still carries (Bob's node 2 files its entries again). Bob grants T0 read on
 // T2 again: she reads T2 again, and only then.
 #[test]
-#[ignore = "accounts: pairing"]
+#[ignore = "issues/paired-node-grant-to-its-account.md"]
 fn a_mint_admins_readers_read_a_thing_again_once_granted_again_spec_permissions_3() {
     let (mut w, (_, bob, t0)) = alice_reads_t0();
     let t2 = make_in(&mut w, 2, t0, "t2");
@@ -1195,6 +1189,25 @@ fn a_mint_admins_readers_read_a_thing_again_once_granted_again_spec_permissions_
     w.advance(osis_proto::limits::PASS_WAIT_MS);
     w.run();
     assert_eq!(value(&mut w, 0, &t2), Some(Value::Str("t2".into())), "Alice reads T2 again");
+}
+
+// spec/permissions.md §2 (Granting), §8 (Pairing: a paired node acts for the account at admin):
+// Bob's node 1 mints T0 with admin his account and T with admin T0; his paired node 2 grants his
+// account admin on T: the grant stands (T's roster lists it), as it does when node 1 writes it.
+// Fails: node 2's grant is valid at both nodes but left out of T's roster.
+#[test]
+#[ignore = "issues/paired-node-grant-to-its-account.md"]
+fn repro_a_paired_nodes_grant_to_its_account_stands() {
+    let mut w = siblings();
+    let bob = w.node(1).account.unwrap();
+    let t0 = w.write(1, |e| e.create_with_admin(&bob).unwrap().0);
+    let t = w.write(1, |e| e.create_with_admin(&t0).unwrap().0);
+    w.run();
+    w.write(2, |e| e.grant(&t, &bob, &edge(Role::Admin))).unwrap();
+    w.run();
+    for i in [1, 2] {
+        assert!(w.engine(i).roster(&t).contains_key(&bob), "node {i}: Bob's grant on T stands");
+    }
 }
 
 /// Bob's node 1 makes T0 and grants Alice read on it; Alice holds T0. Node 1 mints T1 with admin T0
@@ -1336,7 +1349,6 @@ fn a_grantee_reads_the_minting_value_of_a_dependent_made_independent_spec_sync_j
 // so T2 stays kept unread, and T1, read by his closure no more and named holder on a thing he
 // syncs, is held for keys: its content goes.
 #[test]
-#[ignore = "accounts: pairing"]
 fn a_holder_dropped_on_a_chain_is_held_for_keys_and_its_target_stays_spec_sync_set_2() {
     let mut w = contacts();
     let bob = w.node(1).account.unwrap();
@@ -1376,7 +1388,7 @@ fn a_keyless_grant_keeps_no_copy_spec_permissions_3() {
 // his own, the grant with key access) and Alice read on T1 only; she holds both. Bob removes her from T1
 // saying retain: she keeps a copy of T1, and of T0 by T1's live grant.
 #[test]
-#[ignore = "accounts: making an account"]
+#[ignore = "issues/kept-copy-through-a-holder.md"]
 fn a_keyed_live_grant_from_a_kept_holder_keeps_a_copy_spec_permissions_3() {
     let (mut w, (alice, t0, t1)) = keyed_way();
     assert_eq!(value(&mut w, 0, &t0), Some(Value::Str("t0".into())), "Alice reads T0 through T1");
@@ -1535,9 +1547,9 @@ fn an_ended_keyless_grant_keeps_no_copy_spec_permissions_3() {
 
 /// Node `i` writes its account's inbox setting with `grant@~0` enabled as at creation, or not.
 fn inbox_grants(w: &mut World, i: usize, enabled: bool) {
+    let account = w.node(i).account.unwrap();
     w.write(i, |e| {
-        let me = e.me();
-        let inbox = e.inbox_thing(&me).unwrap();
+        let inbox = e.inbox_thing(&account).unwrap();
         let mut x = e.get_typed(&inbox, &ct::RETENTION).unwrap().unwrap();
         let keep = ct::RetentionEntry { history: Some(osis_schema::History::FOREVER), ..Default::default() };
         if enabled {
@@ -1556,7 +1568,6 @@ fn inbox_grants(w: &mut World, i: usize, enabled: bool) {
 // Bob's node, which refuses it. Writes of Bob's own elsewhere open the refused deposit no more
 // often for being ten times as many; Bob enabling grant fires takes it: the grant is his.
 #[test]
-#[ignore = "accounts: making an account"]
 fn a_refused_sealed_fire_is_opened_again_only_when_what_refused_it_moves_spec_sync_inbox_4() {
     let mut w = contacts();
     inbox_grants(&mut w, 1, false);
@@ -1620,3 +1631,4 @@ fn a_reader_opens_a_deposit_it_takes_spec_sync_inbox_3() {
         assert_eq!(fires, [Some(Value::Str("ping".into()))], "node {i} reads Bob's fire");
     }
 }
+

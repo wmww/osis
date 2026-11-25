@@ -2,7 +2,7 @@
 //! carried by hand after the contact exchange (`introduce`).
 
 use crate::harness::{World, edge};
-use osis_base::{Role, Value};
+use osis_base::{Role, Tid, Value};
 use osis_engine::Mutation;
 use osis_engine::flows::Demotion;
 
@@ -13,7 +13,6 @@ use osis_engine::flows::Demotion;
 // rotation); once healed node 2 has no box at node 1's epoch, and an admin re-seals it at the end
 // of the complete pass a role commit from elsewhere began, so node 2 reads a write under it.
 #[test]
-#[ignore = "accounts: making an account"]
 fn a_raced_grant_is_resealed_at_a_complete_passs_end_spec_perm_3() {
     use crate::harness::Step::*;
     use crate::harness::history::{Gives, check, world_of};
@@ -30,20 +29,19 @@ fn a_raced_grant_is_resealed_at_a_complete_passs_end_spec_perm_3() {
 
 // spec/permissions.md §3 (removal logged in its sync),
 // spec/sync-judgement.md §3 (own store: what is logged together goes in `ts` order): node 0 writes
-// t, removes node 2's account from t, and writes t again several times, all before its sync
-// steps: one sync logs them all under S, in the order made. Enough writes that their commit IDs
+// an aspect of t, removes node 2's account from t, and writes other aspects of t (none covering
+// another), all before its sync steps: one sync logs them all under S, in the order made. Enough writes that their commit IDs
 // do not sort in that order (asserted), so logging in ID order fails this.
 #[test]
-#[ignore = "accounts: making an account"]
 fn a_removal_is_logged_before_what_was_written_after_it_spec_permissions_3() {
-    use crate::harness::history::{Gives, three, value_ak};
+    use crate::harness::history::{Gives, three};
     let (mut w, t, s) = three(Gives::Reads, 1);
     w.cap = 20_000;
     let a2 = w.node(2).account.unwrap();
     let made: Vec<osis_base::CommitId> = w.write(0, |e| {
         let write = |e: &mut osis_engine::Engine, i: usize| {
             let mut m = Mutation::new();
-            m.set(t, &value_ak(), &Value::Str(format!("write {i}"))).unwrap();
+            m.set(t, &osis_base::Ak::new(format!("u:w{i}.0")).unwrap(), &Value::Str(format!("write {i}"))).unwrap();
             e.commit(m).unwrap().unwrap()
         };
         let mut made = vec![write(e, 0)];
@@ -83,7 +81,6 @@ fn a_paired_node_pairs_another_spec_sync_inbox_1() {
 // under D's sync ID: the profile and inbox its account minted, and the contact's card link K,
 // which the account was granted from outside.
 #[test]
-#[ignore = "accounts: pairing"]
 fn a_node_paired_past_the_inbox_lifetime_holds_its_siblings_secrets_spec_sync_judgement_2() {
     let mut w = crate::harness::contacts();
     w.advance(2 * osis_base::format::INBOX_LIFETIME_MS);
@@ -93,17 +90,21 @@ fn a_node_paired_past_the_inbox_lifetime_holds_its_siblings_secrets_spec_sync_ju
     holds_as_sibling(&mut w, n, 1);
 }
 
-/// New node `n` holds every thing with a sync ID its sibling `sib` holds but `sib`'s node thing,
-/// with its current sync and read secrets.
+/// New node `n` holds every thing with a sync ID its sibling `sib` holds but `sib`'s own things,
+/// with the current sync and read secrets `sib` holds.
 fn holds_as_sibling(w: &mut World, n: usize, sib: usize) {
     let has = w.engine(n).things_with_sync_ids();
-    // the sibling's node thing is its own alone (spec/sync-set.md §1)
+    // the sibling's node thing and the link keys it redeemed by are its own alone
+    // (spec/sync-set.md §1, §2 Own things)
     let own = w.engine(sib).me();
-    for t in w.engine(sib).things_with_sync_ids().into_iter().filter(|t| *t != own) {
+    let link_key = |w: &mut World, t: &Tid| w.engine(sib).core.created(t).is_some_and(|r| r.link_key_of().is_some());
+    let ts: Vec<Tid> = w.engine(sib).things_with_sync_ids().into_iter().collect();
+    let ts: Vec<Tid> = ts.into_iter().filter(|t| *t != own && !link_key(w, t)).collect();
+    for t in ts {
         assert!(has.contains(&t), "{t:?} lacks a `sync.0` at the new node");
         let (a, b) = (w.engine(sib).epochs(&t).unwrap(), w.engine(n).epochs(&t).unwrap());
         for r in [Role::Sync, Role::Read] {
-            for e in a.role(r).current() {
+            for e in a.role(r).current().into_iter().filter(|e| a.role(r).secret(e).is_some()) {
                 assert!(b.role(r).secret(&e).is_some(), "{t:?} {r:?} {} lacks its secret at the new node", e.n());
             }
         }
@@ -179,3 +180,5 @@ fn a_from_now_grantee_reads_a_dependent_thing_minted_with_it_spec_crypto_4() {
     let records = w.engine(0).certificate_records(&s).unwrap();
     assert!(records.contains(&p) && !records.contains(&q), "p's record goes as a certificate, q's in its minting");
 }
+
+

@@ -55,11 +55,12 @@ const TWICE_EVERY: u64 = 4;
 // exactly its node closure): histories of minting things with the account root or other
 // things as admin, strongs added and removed from roots and things, grants of sync, read and write to
 // accounts and to things (chains), lowering, revoking, rotating, a grantee holding what it is
-// granted by a strong (or not), pairing, and on every second seed power loss, partitions, lost, repeated
-// and held-back messages, device faults and clock skew, healed and run to quiet (within the
-// storm cap): each node reads a thing exactly when held-model's node closure reads it, then as
-// the reference; its sync set and store hold what the model holds; no needed body is deleted
-// everywhere.
+// granted by a strong (or not), pairing and removing a node, and on every second seed power loss,
+// partitions, lost, repeated and held-back messages, device faults and clock skew, healed and run
+// to quiet (within the storm cap): each node of an account reads a thing exactly when held-model's
+// node closure of the account reads it, then as the reference; its sync set and store hold what
+// the model holds; a removed node reads and keeps nothing of the history; no needed body is
+// deleted everywhere.
 #[test]
 #[ignore = "property"]
 fn histories_hold_their_closure_plain() {
@@ -96,25 +97,27 @@ pub(crate) fn worlds(name: &str, steps_of: impl Fn(u64) -> Vec<Step> + Sync) {
 // at no node, and the oracle counts it lost: a run gives a node a value write only where its
 // account's node closure held the thing then (`harness::history::ran`).
 #[test]
-#[ignore = "accounts: models"]
 fn a_making_released_before_a_grantee_held_it_is_lost_spec_sync_set_3() {
     use crate::harness::history::{Gives, Holder};
     let script = [Step::New(1), Step::NewIn(1, 0), Step::Give(1, 1, Holder::Node(0), Gives::Reads), Step::Run, Step::Strong(2, None, 1), Step::Unstrong(1, Some(0), 1)];
     holds_on(0, 2, 3, &script, String::new(), false);
 }
 
-// spec: none (test harness): a history is a function of its seed, faults included, and draws
-// every kind of step the oracle judges.
+// spec: none (test harness): a history is a function of its seed, faults included, and the
+// property's seeds at small size draw every kind of step the oracle judges.
 #[test]
 fn a_history_is_a_function_of_its_seed() {
-    let h = history(0, 3, 2, 60, true);
-    assert_eq!(h, history(0, 3, 2, 60, true));
+    let (n, accounts, len, seeds) = size();
+    assert_eq!(history(0, n, accounts, len, true), history(0, n, accounts, len, true));
+    let hs: Vec<Vec<Step>> = (0..seeds).map(|seed| history(seed, n, accounts, len, seed % 2 == 1)).collect();
+    let drawn = |f: &dyn Fn(&Step) -> bool| hs.iter().flatten().any(f);
     for (name, has) in [
-        ("new", h.iter().any(|s| matches!(s, Step::New(..) | Step::NewIn(..)))),
-        ("give", h.iter().any(|s| matches!(s, Step::Give(..)))),
-        ("hold", h.iter()
-.any(|s| matches!(s, Step::Strong(_, None, _)))),
-        ("fault", h.iter().any(|s| matches!(s, Step::Lossy(..) | Step::Disk(..) | Step::PowerOff(..)))),
+        ("new", drawn(&|s| matches!(s, Step::New(..) | Step::NewIn(..)))),
+        ("give", drawn(&|s| matches!(s, Step::Give(..)))),
+        ("hold", drawn(&|s| matches!(s, Step::Strong(_, None, _)))),
+        ("pair", drawn(&|s| matches!(s, Step::Pair(..)))),
+        ("unpair", drawn(&|s| matches!(s, Step::Unpair(..)))),
+        ("fault", drawn(&|s| matches!(s, Step::Lossy(..) | Step::Disk(..) | Step::PowerOff(..)))),
     ] {
         assert!(has, "no {name} step");
     }

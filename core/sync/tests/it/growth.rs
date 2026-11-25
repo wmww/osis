@@ -863,7 +863,7 @@ fn grants_as_fresh(held: bool, redeem: bool, removals: usize) {
 // for it), the role keep and tombstones have passed, at 1 and 10 rounds. Storage is a fresh
 // world's, and read's judgements per round do not grow with the rounds played (`flat_work`).
 #[test]
-#[ignore = "accounts: making an account"]
+#[ignore = "issues/storage-owners.md"]
 fn a_granted_and_revoked_thing_returns_storage_to_a_fresh_worlds_spec_sync_set_3() {
     grants_as_fresh(true, false, 4);
 }
@@ -871,11 +871,8 @@ fn a_granted_and_revoked_thing_returns_storage_to_a_fresh_worlds_spec_sync_set_3
 // Its redeem arm (spec/sync-set.md §4, §3 Nothing of R stays): as the
 // grant arm, the first round granting by a link redeemed and ended (`redeem_round`): the link's
 // seed thing goes with its end.
-// Ignored: the round's first commit writes the node root's strong and the thing together, so
-// its root section is sealed under the thing's sync ID once a link makes the thing independent
-// (a `dw/` row of the root stays: issues/node-root-independent.md).
 #[test]
-#[ignore = "accounts: making an account"]
+#[ignore = "issues/storage-owners.md"]
 fn a_redeemed_and_ended_link_returns_storage_to_a_fresh_worlds_spec_sync_set_3() {
     grants_as_fresh(true, true, 4);
 }
@@ -885,7 +882,7 @@ fn a_redeemed_and_ended_link_returns_storage_to_a_fresh_worlds_spec_sync_set_3()
 // account root: what its fire carried (the thing's edge piece, spec/commits.md §5 What a held
 // thing needs) goes with the fire.
 #[test]
-#[ignore = "accounts: making an account"]
+#[ignore = "issues/storage-owners.md"]
 fn a_declined_grant_returns_storage_to_a_fresh_worlds_spec_sync_set_3() {
     grants_as_fresh(false, false, 4);
 }
@@ -897,18 +894,16 @@ fn a_declined_grant_returns_storage_to_a_fresh_worlds_spec_sync_set_3() {
 // there as a grant naming the account, spec/sync-judgement.md §2, until nothing held needs the
 // thing).
 #[test]
-#[ignore = "accounts: making an account"]
 fn a_released_things_forgotten_commits_leave_no_own_entry_spec_sync_judgement_3() {
     use osis_schema::core_types::HOLDS;
     let mut w = world_of(0, 1, 1);
     let d = w.node(0).account.unwrap();
-    let p = w.engine(0).me();
     let t = w.write(0, |e| {
-        let t = e.create_with_admin(&p).unwrap().0;
+        let t = e.create_with_admin(&d).unwrap().0;
         let mut m = Mutation::new();
         m.set(t, &value_ak(), &Value::Str("new".into())).unwrap();
         e.commit(m).unwrap();
-        e.grant(&t, &p, &edge(Role::Admin)).unwrap();
+        e.grant(&t, &d, &edge(Role::Admin)).unwrap();
         t
     });
     w.run();

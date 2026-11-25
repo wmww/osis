@@ -1522,13 +1522,14 @@ pub enum Step {
     /// A node tells the truth again.
     Truth(usize),
     /// The differential's writes (`history`), each by node i: mints a thing with its account as admin
-    /// root (`New`) or with thing k as admin (`NewIn`), a value written, held by a strong from where it
+    /// (`New`) or with thing k as admin (`NewIn`), a value written, held by a strong from where it
     /// was made; writes thing k; gives a holder a role on thing k (`Give`: nothing more);
     /// `Grant`, a rule test's shorthand: gives node j's account the role and node j holds the
-    /// thing from its account root; lowers a holder to a role; removes node j's account (`Remove`)
+    /// thing from its account; lowers a holder to a role; removes node j's account (`Remove`)
     /// or any holder (`Revoke`); rotates thing k's secrets; adds or removes a strong from its
-    /// account root (`None`) or from a thing to thing k; pairs a new node to its account (the next
-    /// index).
+    /// account (`None`) or from a thing to thing k; pairs a new node to its account (the next
+    /// index); removes node j from its account (`Unpair`: erasing, spec/permissions.md §8
+    /// Removing; node j acts for no account from then on).
     New(usize),
     NewIn(usize, usize),
     Write(usize, usize),
@@ -1541,6 +1542,7 @@ pub enum Step {
     Strong(usize, Option<usize>, usize),
     Unstrong(usize, Option<usize>, usize),
     Pair(usize),
+    Unpair(usize, usize),
 }
 
 /// Every name a printed script uses.
@@ -1630,7 +1632,7 @@ fn step_of(w: &mut World, s: &Step) -> String {
         Step::Disk(i, n, f) => w.disk_fault(*i, *n, *f),
         Step::Lies(i, l) => w.lie(*i, Some(*l)),
         Step::Truth(i) => w.lie(*i, None),
-        Step::New(..) | Step::NewIn(..) | Step::Write(..) | Step::Give(..) | Step::Grant(..) | Step::Lower(..) | Step::Remove(..) | Step::Revoke(..) | Step::Rotate(..) | Step::Strong(..) | Step::Unstrong(..) | Step::Pair(..) => return history::step(w, s),
+        Step::New(..) | Step::NewIn(..) | Step::Write(..) | Step::Give(..) | Step::Grant(..) | Step::Lower(..) | Step::Remove(..) | Step::Revoke(..) | Step::Rotate(..) | Step::Strong(..) | Step::Unstrong(..) | Step::Pair(..) | Step::Unpair(..) => return history::step(w, s),
     }
     String::new()
 }

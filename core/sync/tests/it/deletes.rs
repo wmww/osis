@@ -409,10 +409,11 @@ fn a_purged_or_replaced_part_is_unrecoverable_from_the_sync_store_spec_commits_5
 // strip left out counts missing for good. (That no store it reads holds the part is
 // `a_purged_or_replaced_part_is_unrecoverable_from_the_sync_store_spec_commits_5`.)
 #[test]
-#[ignore = "accounts: pairing"]
 fn a_new_reader_of_a_cover_stripped_commit_misses_nothing_spec_commits_5() {
     let (mut w, t, c, _) = replaced_beside_a_kept_part();
-    let s = w.engine(0).sync_id_of(&t).unwrap().unwrap();
+    // t is a dependent of the account: its sync unit's sync ID is the account's
+    let a = w.node(0).account.unwrap();
+    let s = w.engine(0).sync_id_of(&a).unwrap().unwrap();
     let n = w.pair(0);
     w.run();
     assert!(w.engine(n).holds_commit(&c), "the new node holds the commit");

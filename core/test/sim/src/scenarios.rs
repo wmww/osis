@@ -108,7 +108,7 @@ pub fn revoke_while_writing(seed: u64) -> Res<Report> {
     sim.grant(0, a, 2, Role::Write)?;
     sim.run(100)?;
     sim.revoke(0, a, 2)?;
-    let gone = sim.tid(2)?;
+    let gone = sim.account(2)?;
     sim.run(150)?;
     sim.run_until_quiescent(50)?;
     for i in 0..3 {
