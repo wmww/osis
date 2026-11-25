@@ -180,8 +180,8 @@ impl Core {
     /// `rotation::key_role` (its record edge included while it stands), every held applied
     /// write in effect and `until` disregarded: keys read no clock, so an edge past its `until`
     /// stays until it is finalized (spec/permissions.md §2).
-    /// A destroyed actor holds no keys: in its place come its frozen holders (its edges as they
-    /// stood at its destruction: nobody writes it after), each at the lesser of its role there and
+    /// A destroyed actor holds no keys: in its place come its frozen holders (by its held edge
+    /// writes, late ones included: honest nodes write it no more), each at the lesser of its role there and
     /// the destroyed actor's here, and so on through destroyed actors among them, a holder reached
     /// more than one way at the greatest (spec/crypto.md §4, Holder actors, Destroyed); `actor`
     /// itself never.
