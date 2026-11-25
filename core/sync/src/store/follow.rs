@@ -518,8 +518,8 @@ fn charge_unvouched(engine: &mut Engine, store: &mut Store, s: &SyncId) -> Resul
 /// What entry `e` of S waits for: S's read secrets when its commit is neither held nor pending
 /// here (it did not open, what it opened to was thrown out, or, an own log, the commit was
 /// forgotten with lost access and opens again when access returns); the read secrets of each
-/// thing a section of its blob did not open on while that part counts missing
-/// (`Engine::blob_awaits_secrets`: a sibling's account rotation, its seed under a D epoch
+/// thing a section of its blob did not open on, held from another blob or not (one held may be
+/// dropped later with no move of the entry: `Engine::blob_awaits_secrets`; a sibling's account rotation, its seed under a D epoch
 /// established only once the rotation's header and list count; a commit held from a certificate
 /// copy, the rest of which opens once its thing's secrets arrive). An own entry naming no commit
 /// (a certificate blob sealed here from what is held) waits for nothing.

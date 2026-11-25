@@ -374,3 +374,35 @@ fn an_edge_piece_reaches_only_readers_syncing_its_target_spec_permissions_4() {
     assert!(piece(&mut w, 1) > 0, "node 1 carries thing 0's edge piece on thing 1");
     assert_eq!(piece(&mut w, 0), 0, "node 0 syncs no thing 1: none of the piece");
 }
+
+// spec/sync-streams.md §4 (Fill order: an entry waits for the read secrets that open it):
+// node 0's thing 0 holds by a strong thing 1, which node 1 made public and holds from its
+// thing 2 that node 0 reads; node 1 then removes the public. Node 2, of node 0's account, held
+// thing 1's minting whole while the public read it, part of it from another blob; the removal
+// drops that part, so the minting's blob it holds waits for thing 1's read secrets. Every entry
+// waiting for a read secret is parked under it (failed: what a blob waited for was judged on the
+// parts missing at its opening, and a part dropped later parked nothing).
+#[test]
+fn an_entry_waits_for_a_part_dropped_after_its_opening_spec_sync_streams_4() {
+    use crate::harness::history::{Gives, Holder};
+    let script = [
+        Step::New(0),
+        Step::New(1),
+        Step::NewIn(1, 1),
+        Step::Give(1, 2, Holder::Node(0), Gives::Reads),
+        Step::Strong(0, None, 2),
+        Step::Strong(1, Some(2), 1),
+        Step::Give(1, 1, Holder::Public, Gives::Reads),
+        Step::Run,
+        Step::New(0),
+        Step::Strong(0, Some(0), 1),
+        Step::Revoke(1, 1, Holder::Public),
+    ];
+    let mut w = world_of(0, 2, 3);
+    w.cap = crate::harness::STORM_CAP;
+    w.parks = true;
+    play(&mut w, &script, String::new());
+    for s in [Step::Heal, Step::Run] {
+        crate::harness::step(&mut w, &s);
+    }
+}

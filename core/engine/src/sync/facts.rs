@@ -35,16 +35,18 @@ impl Engine {
     }
 
     /// The things whose read secrets may open what opened blob `b` holds sealed here: the thing
-    /// of each part it carries in a section not opened (`BlobOf::parts` lacks it) that counts
-    /// missing (`body_missing`), whether or not a read secret of it is held yet. Any part, not
-    /// only those of a sync ID's body: a commit held
-    /// from a certificate copy has its other parts' sections opened from a blob under another
-    /// sync ID, once their thing's secrets arrive. Reads no record: the meta's view and missing
-    /// parts.
+    /// of each part it carries in a section not opened (`BlobOf::parts` lacks it) and not sealed
+    /// below this node's floor (it never opens here), whether or not a read secret of it is held
+    /// yet. Any part, not only those of a sync ID's body: a commit held from a certificate copy
+    /// has its other parts' sections opened from a blob under another sync ID, once their
+    /// thing's secrets arrive. Held or missing alike: a part held from another blob goes missing
+    /// with no move of `b` (dropped as access is lost), so what `b` waits for is fixed at its
+    /// opening. Reads no record: the meta's view.
     pub fn blob_awaits_secrets(&mut self, b: &BlobId) -> BTreeSet<Tid> {
         let Some(o) = self.blob_of(b).filter(|o| !o.sealed.is_empty()) else { return BTreeSet::new() };
         let Some(m) = self.core.ix.commits.get(&o.commit).cloned() else { return BTreeSet::new() };
-        o.ais.iter().filter(|ai| !o.parts.contains(ai) && self.body_missing(&o.commit, &m, [**ai]).0).filter_map(|ai| m.view.aspects.get(*ai).map(|a| a.tid)).collect()
+        let below = |ai: usize| m.view.aspects.get(ai).is_some_and(|a| crate::rotation::floors::sealed_below_floor(&self.core, &o.commit, &a.tid, a.ak.as_str()));
+        o.ais.iter().filter(|ai| !o.parts.contains(ai) && !below(**ai)).filter_map(|ai| m.view.aspects.get(*ai).map(|a| a.tid)).collect()
     }
 
     /// spec/sync-judgement.md §2 must-not-hold (the clauses only the engine judges), §3 Role
