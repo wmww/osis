@@ -97,7 +97,7 @@ mod tests {
         let id = lp.peers[0].commit(m).unwrap().unwrap();
         let h = lp.peers[0].engine.header(&id).unwrap();
         let ai = h.aspects.iter().position(|a| a.ak.as_str() == "secrets.0").unwrap();
-        assert!(lp.peers[0].engine.core.ix.grant_overreach.contains(&(id, ai)));
+        assert!(lp.peers[0].engine.core.ix.overreach.contains(&(id, ai)));
     }
     // spec/permissions.md §2 (may-grant grant: its keys.0 only the records of its boxes), spec/crypto.md §4 (Stale: every box to a holder
     // actor is recorded beside it, whoever boxes): an may-grant holder granting an organization carries the
@@ -195,7 +195,7 @@ mod tests {
         lp.deliver(3, &pk).unwrap();
         let m = lp.peers[3].engine.core.ix.commits.get(&id).unwrap();
         assert!(!m.valid()[si], "the late overreaching part is invalid");
-        assert!(lp.peers[3].engine.core.ix.grant_overreach.contains(&(id, si)));
+        assert!(lp.peers[3].engine.core.ix.overreach.contains(&(id, si)));
     }
     // spec/permissions.md §2: a may-grant grant's `secrets.0` delta carries only puts of its
     // grantees' boxes. One that also resets a box entry (here one the receiver has not seen yet)
@@ -589,9 +589,9 @@ mod keys_tests {
     use osis_schema::core_types as ct;
     use osis_schema::Codec;
 
-    // spec/crypto.md §3: the inbox and deposit seed are an admin's to write. A writer's `keys.0`
-    // write of either is invalid: otherwise a writer (kept valid by its demoter's frontier after
-    // removal) named the thing's inbox, and every later grant to it went there.
+    // spec/crypto.md §3: the deposit seed is an admin's to write. A writer's `keys.0` write of it
+    // is invalid: otherwise a writer (kept valid by its demoter's frontier after removal) chose
+    // the key every deposit to the thing is signed with.
     #[test]
     fn writer_cannot_write_admin_keys_fields_spec_crypto_3() {
         let mut lp = LocalPeer::fresh(2, WallMs(1_700_000_000_000));
@@ -603,14 +603,12 @@ mod keys_tests {
         lp.sync_all().unwrap();
         assert_eq!(lp.peers[1].engine.role_on(&t), Some(Role::Write));
         let before = lp.peers[0].engine.get_typed(&t, &ct::KEYS).unwrap().unwrap();
-        for (field, v) in [(5u64, Some([9u8; 32]).to_value()), (4, Some(osis_base::Weak(w)).to_value())] {
-            let mut m = Mutation::new();
-            m.op(t, &ct::KEYS, PathOp { path: vec![PathSeg::Field(field)], op: Op::Set(v) }).unwrap();
-            assert!(lp.peers[1].commit(m.clone()).is_err(), "refused writer-side");
-            lp.peers[1].engine.core.skip_writer_rules = true;
-            lp.peers[1].commit(m).unwrap().unwrap();
-            lp.peers[1].engine.core.skip_writer_rules = false;
-        }
+        let mut m = Mutation::new();
+        m.op(t, &ct::KEYS, PathOp { path: vec![PathSeg::Field(5)], op: Op::Set(Some([9u8; 32]).to_value()) }).unwrap();
+        assert!(lp.peers[1].commit(m.clone()).is_err(), "refused writer-side");
+        lp.peers[1].engine.core.skip_writer_rules = true;
+        lp.peers[1].commit(m).unwrap().unwrap();
+        lp.peers[1].engine.core.skip_writer_rules = false;
         lp.sync_all().unwrap();
         assert_eq!(lp.peers[0].engine.get_typed(&t, &ct::KEYS).unwrap().unwrap(), before);
         // spec/permissions.md §3: a writer rotates read and write only; an admin history box is

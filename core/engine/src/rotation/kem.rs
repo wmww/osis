@@ -9,7 +9,8 @@
 //! KEM-less keyset leaves the holder out rather than sealing at an older one, which a party
 //! removed since may hold).
 //! Who writes each input: the grants are their writers' (judged by the timelines, with key
-//! access); the setting is the thing's own; the creation record the minter's. A writer that may
+//! access); the setting is the thing's own; the creation record the minter's; a card a writer's
+//! of its host along a path through the thing (`flows::cards`). A writer that may
 //! grant H a role makes H's keysets due for KEM keys, nothing more (one rotation by H's rotator).
 
 use super::{members, may_rotate};
@@ -21,13 +22,16 @@ use osis_schema::core_types as ct;
 use std::collections::BTreeSet;
 
 /// Whether a keyset of role `r` of `t` written now carries its KEM key (spec/crypto.md §3,
-/// Published KEM keys), judged by what this node holds and `publishing` (what the transaction
-/// gives things, `Tx::publishing`).
-pub(crate) fn publishes(core: &Core, publishing: &[(Tid, Role)], t: &Tid, r: Role) -> bool {
-    core.created(t).is_some_and(|c| c.key().is_some())
-        || publishing.iter().any(|(h, role)| h == t && *role >= r)
+/// Published KEM keys), judged by what this node holds and what the transaction gives things
+/// (`Tx::publishing`): minted with a key, holding `r` or above for keys, a card of it standing
+/// here (`flows::cards`), or for read a setting enabling an external signal.
+pub(crate) fn publishes(tx: &mut Tx<'_>, t: &Tid, r: Role) -> Result<bool> {
+    let core = &*tx.core;
+    let cheap = core.created(t).is_some_and(|c| c.key().is_some())
+        || tx.publishing.iter().any(|(h, role)| h == t && *role >= r)
         || holds_for_keys(core, t, r)
-        || crate::apply::validity::setting_now(core, t).and_then(|s| by_setting(&s)).is_some_and(|x| x >= r)
+        || crate::apply::validity::setting_now(core, t).and_then(|s| by_setting(&s)).is_some_and(|x| x >= r);
+    Ok(cheap || crate::flows::cards::stands(tx, t)?)
 }
 
 /// Whether `t` holds `r` or above on some thing for keys, with key access (an edge or a record
@@ -38,29 +42,29 @@ fn holds_for_keys(core: &Core, t: &Tid, r: Role) -> bool {
 }
 
 /// The greatest role whose keysets setting `s` of a thing makes carry KEM keys: read where it
-/// enables an external signal (spec/sync-inbox.md §1). Interim (notes/public-and-cards-brief.md
-/// piece 6, cards): every role where it enables `grant@~0`, as the card a thing taking grants
-/// from outside will have makes them.
+/// enables an external signal (spec/sync-inbox.md §1).
 pub(crate) fn by_setting(s: &ct::RetentionSetting) -> Option<Role> {
-    let grants = osis_base::Ak::new("grant@~0").is_ok_and(|k| s.enables(&k));
-    match grants {
-        true => Some(Role::Admin),
-        false => s.rules.keys().any(|k| s.enables(k)).then_some(Role::Read),
-    }
+    s.rules.keys().any(|k| s.enables(k)).then_some(Role::Read)
 }
 
 /// The roles of `roles` a rotation of `a` now writes without a KEM key (`publishes`).
-pub(crate) fn bare(tx: &Tx<'_>, a: &Tid, roles: &BTreeSet<Role>) -> BTreeSet<Role> {
-    roles.iter().copied().filter(|r| !publishes(tx.core, &tx.publishing, a, *r)).collect()
+pub(crate) fn bare(tx: &mut Tx<'_>, a: &Tid, roles: &BTreeSet<Role>) -> Result<BTreeSet<Role>> {
+    let mut out = BTreeSet::new();
+    for r in roles {
+        if !publishes(tx, a, *r)? {
+            out.insert(*r);
+        }
+    }
+    Ok(out)
 }
 
 /// Whether `a`'s current keyset of role `r` lacks a KEM key `publishes` gives one written now
 /// (spec/crypto.md §3, KEM key due): a current epoch of `r`, not foreign, whose held keyset
 /// carries none. An epoch whose keyset is not held is judged once it is.
-pub(crate) fn due(tx: &Tx<'_>, a: &Tid, r: Role) -> bool {
-    let Some(epochs) = tx.core.epochs(a) else { return false };
+pub(crate) fn due(tx: &mut Tx<'_>, a: &Tid, r: Role) -> Result<bool> {
+    let Some(epochs) = tx.core.epochs(a) else { return Ok(false) };
     let lacking = epochs.role(r).current().into_iter().filter(|e| !epochs.role(r).is_foreign(e)).any(|e| tx.core.keyset(a, r, &e).is_some_and(|k| k.kem_in.is_none()));
-    lacking && publishes(tx.core, &tx.publishing, a, r)
+    Ok(lacking && publishes(tx, a, r)?)
 }
 
 /// The rotation KEM key due makes (`due`) of the roles of `a` this node may rotate, made now
@@ -68,7 +72,12 @@ pub(crate) fn due(tx: &Tx<'_>, a: &Tid, r: Role) -> bool {
 fn rotate_due(tx: &mut Tx<'_>, a: Tid, done: &mut crate::flows::Done) -> Result<()> {
     let me = tx.core.me();
     let may = may_rotate(tx.core, &me, &a);
-    let roles: BTreeSet<Role> = ROLES.into_iter().filter(|r| may.contains(r) && due(tx, &a, *r)).collect();
+    let mut roles = BTreeSet::new();
+    for r in ROLES.into_iter().filter(|r| may.contains(r)) {
+        if due(tx, &a, r)? {
+            roles.insert(r);
+        }
+    }
     if roles.is_empty() {
         return Ok(());
     }
@@ -97,12 +106,13 @@ fn carries(tx: &mut Tx<'_>, a: &Tid, r: Role) -> Result<bool> {
 }
 
 /// The granter's check (spec/permissions.md §2 Granting to a thing) for a grant or change of
-/// `role` naming holder `h`, a thing, by this node, first half: it may write `h` or holds a card
-/// of it; else refused. From here the transaction's keysets of `h` up to `role` carry KEM keys
+/// `role` naming holder `h`, a thing, by this node, first half: it may write `h` or holds `h`'s
+/// keys (a card of `h` brings them, as `h`'s public key record does a fellow holder); else
+/// refused. From here the transaction's keysets of `h` up to `role` carry KEM keys
 /// (`publishing`), its making independent among them. Run before anything of the grant is made.
 pub(crate) fn grant_holder(tx: &mut Tx<'_>, h: Tid, role: Role) -> Result<()> {
     let me = tx.core.me();
-    if tx.core.role_now(&me, &h) < Some(Role::Write) && !card_held(tx, &h)? {
+    if tx.core.role_now(&me, &h) < Some(Role::Write) && crate::engine::Core::keys_in(tx, &h)?.is_none() {
         return Err(Error::Permission { tid: h, needs: Role::Write });
     }
     tx.publishing.push((h, role));
@@ -134,9 +144,3 @@ pub(crate) fn grant_keys(tx: &mut Tx<'_>, h: Tid, role: Role, done: &mut crate::
     super::rotate_alone(tx, me, h, &lacking, done)
 }
 
-/// Whether this node holds a card of `h` (spec/sync-inbox.md §1 Card). Interim (piece 6 of
-/// notes/public-and-cards-brief.md): `h`'s `keys.0` held here, which its public key record
-/// brings, stands for its card.
-fn card_held(tx: &mut Tx<'_>, h: &Tid) -> Result<bool> {
-    Ok(crate::engine::Core::keys_in(tx, h)?.is_some())
-}

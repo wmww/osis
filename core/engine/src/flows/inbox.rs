@@ -1,6 +1,6 @@
-//! The inbox thing and its external signals (spec/sync-inbox.md §1, §2, §5): `grant@~0` and
-//! `stranded@~0`, fired sealed by anyone holding the inbox's public key record,
-//! promoted by a writer.
+//! External signals (spec/sync-inbox.md §1, §2, §5): `grant@~0` and `stranded@~0` on any thing
+//! that enables them, fired sealed by anyone holding the thing's keys (a card naming it its
+//! inbox, or as a fellow holder), promoted by a writer.
 
 use crate::engine::{Engine, Tx};
 use crate::error::{Error, Result};
@@ -53,10 +53,10 @@ pub(crate) fn deliver_sealed(tx: &mut Tx<'_>, holder: Tid, c: CommitId, target: 
 
 /// Fires `grant@~0` on `holder`'s inbox carrying role commit `c`'s piece on `target`: the fire's
 /// value (`Engine::edge_piece`) is made when the fire is first sealed, `c` applied by then. One
-/// already owed stays as it is. A holder with no inbox here (not independent here) is fired
-/// nothing.
+/// already owed stays as it is. A holder with no inbox here (no card of it held, and not
+/// independent here) is fired nothing.
 pub(crate) fn fire_copy(tx: &mut Tx<'_>, holder: Tid, c: CommitId, target: Tid) -> Result<()> {
-    let Some(inbox) = inbox_in(tx, &holder)? else { return Ok(()) };
+    let Some(inbox) = super::cards::inbox_in(tx, &holder)? else { return Ok(()) };
     let to = fire_to(tx, &holder);
     let o = OwedFire { thing: inbox, ak: Some(super::ak(GRANT_FIRE)?), what: Fire::Grant { commit: c, target }, to, commit: None, pages: Default::default() };
     if tx.core.ix.fires.contains_key(&o.id()) {
@@ -68,7 +68,7 @@ pub(crate) fn fire_copy(tx: &mut Tx<'_>, holder: Tid, c: CommitId, target: Tid) 
 /// The `grant@~0` fire owed on `holder`'s inbox for role commit `c` on `target` is owed no more:
 /// its offer went another way (a pairing channel, spec/permissions.md §8 Pairing).
 pub(crate) fn unowe_grant(tx: &mut Tx<'_>, holder: Tid, c: CommitId, target: Tid) -> Result<()> {
-    let Some(inbox) = inbox_in(tx, &holder)? else { return Ok(()) };
+    let Some(inbox) = super::cards::inbox_in(tx, &holder)? else { return Ok(()) };
     let ids: Vec<FireId> = tx.core.ix.fires_on.get(&inbox).into_iter().flatten().copied().filter(|id| tx.core.ix.fires.get(id).is_some_and(|o| o.what == Fire::Grant { commit: c, target })).collect();
     for id in ids {
         drop_fire(tx, &id)?;
@@ -94,31 +94,19 @@ fn fire_to(tx: &mut Tx<'_>, holder: &Tid) -> BTreeSet<Tid> {
     out
 }
 
-/// `Engine::inbox_thing` in a transaction.
-pub(crate) fn inbox_in(tx: &mut Tx<'_>, a: &Tid) -> Result<Option<Tid>> {
-    let named = crate::engine::Core::keys_in(tx, a)?.and_then(|k| k.inbox).map(Tid::from);
-    Ok(named.or_else(|| tx.core.is_independent(a).then_some(*a)))
-}
-
 impl Engine {
-    /// `a`'s inbox thing (spec/sync-inbox.md §1): the thing its `keys.0` names, else `a` itself
-    /// where independent.
-    pub fn inbox_thing(&mut self, a: &Tid) -> Option<Tid> {
-        let named = self.get_typed(a, &ct::KEYS).ok().flatten().and_then(|k| k.inbox).map(Tid::from);
-        named.or_else(|| self.core.is_independent(a).then_some(*a))
-    }
-
     /// What each `grant@~0` fire held valid here carries (`Carried`).
     pub fn grant_fires_held(&self) -> Vec<Carried> {
         self.core.ix.grant_fires.iter().filter(|(f, _)| held_valid(&self.core, f, GRANT_FIRE)).map(|(_, c)| *c).collect()
     }
 
-    /// Takes what each due fire carries (`Indexes::fires_due`, `take_fire`): whether any was
-    /// due.
+    /// Takes what each due fire carries (`Indexes::fires_due`, `take_fire`) and what each card
+    /// due a look does (`take_cards`): whether any was due.
     pub fn take_carried(&mut self) -> Result<bool> {
+        let cards = self.take_cards()?;
         let due: Vec<CommitId> = self.core.ix.fires_due.iter().copied().collect();
         if due.is_empty() {
-            return Ok(false);
+            return Ok(cards);
         }
         self.bringing(|e| e.take_due(&due))
     }
@@ -166,7 +154,7 @@ impl Engine {
         let Some(copy) = osis_commit::CommitBlob::decode(&piece.copy).ok() else { return Ok(()) };
         let Some(target) = EdgePiece::target(&copy) else { return Ok(()) };
         // what the offer carries is needed from before it is taken (`granted_on`)
-        if let Some(holder) = self.fired_at(&id) {
+        if let Some(holder) = self.offered_to(&piece, &copy, &target) {
             self.run(|tx| note_carried(tx, id, Carried { commit: copy.id(), holder, target }))?;
         }
         self.take_edge_piece(&piece, Some(crate::apply::carriers::Carrier::Fire(id)))?;
@@ -175,13 +163,26 @@ impl Engine {
         self.run(|tx| crate::flows::retake(tx).map(drop))
     }
 
-    /// The holder whose inbox held `grant@~0` fire `fire` is on: an account up the fire's thing's
-    /// record chain whose `keys.0` names that thing its inbox, else the thing itself
-    /// (`inbox_thing`).
-    fn fired_at(&mut self, fire: &CommitId) -> Option<Tid> {
-        let on = self.core.ix.commits.get(fire)?.header.aspects.iter().find(|a| a.ak.as_str() == GRANT_FIRE)?.tid;
-        let up: Vec<Tid> = self.core.record_chain(&on).filter_map(|s| s.thing()).filter(|h| *h != on).chain([on]).collect();
-        up.into_iter().find(|h| self.inbox_thing(h) == Some(on))
+    /// The holder offer `piece` (copy `copy` on `target`) is to, as its copy names it
+    /// (spec/sync-inbox.md §5: an offer names its holder in its copy): a holder its `roles.0`
+    /// parts on `target` write an entry of that this node acts for or may write, else the first
+    /// they write. `None` where they name none or do not verify.
+    fn offered_to(&self, piece: &EdgePiece, copy: &osis_commit::CommitBlob, target: &Tid) -> Option<Tid> {
+        let dedup = self.core.dedup(target).or_else(|| piece.records.iter().find(|r| r.tid() == *target).map(|r| osis_crypto::dedup_secret(r.nonce())))?;
+        let h = &copy.header;
+        let mut holders = Vec::new();
+        for p in &copy.parts {
+            if !h.aspects.get(p.ai).is_some_and(|a| a.tid == *target && a.ak.as_str() == "roles.0") {
+                continue;
+            }
+            let mut interner = osis_crdt::Interner::new();
+            let f = osis_commit::verify_part(h, &copy.id(), p, &dedup, &mut interner, None).ok()?.into_fragment();
+            if let Some(osis_crdt::SlotRef::Frag(osis_crdt::Fragment::Map(m))) = f.slot(osis_crdt::Encoding::Map) {
+                holders.extend(m.entries().filter_map(|(_, _, k, _)| if let Some(Value::Weak(t)) = k { Some(*t) } else { None }));
+            }
+        }
+        let me = self.core.me();
+        holders.iter().copied().find(|x| *x == me || self.core.role_now(&me, x) >= Some(Role::Write)).or_else(|| holders.first().copied())
     }
 
     /// Takes piece `p` (spec/sync-inbox.md §5 Carried commits; spec/permissions.md §8 Pairing):

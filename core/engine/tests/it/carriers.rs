@@ -38,7 +38,7 @@ fn base() -> (LocalPeer, Tid, Tid) {
     let all = lp.peers[0].engine.commit_ids();
     crate::flows::send_carried(&mut lp, 0, 1, &all);
     crate::flows::send_carried(&mut lp, 0, 1, &all);
-    let inbox = lp.peers[1].engine.inbox_thing(&ps[1]).unwrap();
+    let inbox = lp.peers[1].engine.inbox_of(&ps[1]).unwrap().unwrap();
     let mut s = lp.peers[1].engine.get_typed(&inbox, &ct::RETENTION).unwrap().unwrap();
     s.rules.insert(ak(NOTE), ct::RetentionEntry { history: Some(osis_schema::History::Keep { until: None, after: Some(HOUR_MS) }), ..Default::default() });
     set_setting(&mut lp, 1, inbox, &s);

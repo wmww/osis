@@ -595,6 +595,7 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, o
     }
     index_commit(tx.core, &id, &view);
     validity::note_addenda(tx.core, &h, &id, &parts.whole);
+    validity::note_cards(tx.core, &h, &view, &id, &parts.whole);
     // an explicit demotion: this node judges what addenda it owes (`flows::addenda`)
     if h.kind.is_role() && view.frontier.is_some() {
         crate::flows::addenda::note_due(tx.core, &id);
@@ -764,6 +765,16 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
     // role another part needs (`validity::add_role_commit`)
     let perm = h.kind.is_role() && late.iter().any(|ai| h.aspects.get(*ai).is_some_and(|a| osis_schema::core_types::is_role_class(a.ak.as_str())));
     validity::note_addenda(tx.core, &h, id, &parts.whole);
+    // a card part is judged by its body and its stated path: a late body, or every held one where
+    // a path was learned (`validity::note_cards`)
+    validity::note_cards(tx.core, &h, &meta.view, id, &parts.whole);
+    if learned {
+        let cards: Vec<usize> = h.aspects.iter().enumerate().filter(|(ai, a)| a.ak.as_str() == "card.0" && !late.contains(ai)).map(|(ai, _)| ai).collect();
+        for ai in cards {
+            let held: Vec<(usize, osis_commit::Decoded)> = super::held_part(tx, id, ai)?.into_iter().map(|d| (ai, d)).collect();
+            validity::note_cards(tx.core, &h, &meta.view, id, &held);
+        }
+    }
     if edges && meta.view.frontier.is_some() {
         crate::flows::addenda::note_due(tx.core, id);
     }
@@ -968,10 +979,17 @@ fn observe_secrets_keys(tx: &mut Tx<'_>, actor: &Tid, boxes: &[Value], history: 
     Ok(())
 }
 
-/// Keeps the indexes derived from states current: secrets opened from `secrets.0`.
+/// Keeps the indexes derived from states current: secrets opened from `secrets.0`; the cards
+/// due a look (`flows::cards`) as a `card.0` or `keys.0` state moves.
 pub(crate) fn observe_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
-    if ak.as_str() != "secrets.0" {
-        return Ok(());
+    match ak.as_str() {
+        "card.0" => return crate::flows::cards::state_moved(tx, tid),
+        "keys.0" => {
+            crate::flows::cards::note_due(tx.core, *tid);
+            return Ok(());
+        }
+        "secrets.0" => {}
+        _ => return Ok(()),
     }
     let v = tx.state(tid, ak)?.and_then(Fragment::read);
     let alts = tx.state(tid, ak)?.map(crate::engine::secrets::history_alts).unwrap_or_default();

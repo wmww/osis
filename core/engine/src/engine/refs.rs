@@ -419,9 +419,9 @@ fn note_rows(tx: &mut Tx<'_>, source: &Tid, ak: &Ak, d: Delta) -> Result<()> {
                 tx.txn.table_remove(from, &fk, Shred::Yes)?;
                 tx.txn.table_remove(to, &tk, Shred::Yes)?;
                 moved.push((target, ak.clone()));
-                // a need of the target went (a strong, or an account's `keys.0`): judged once the
-                // pass ends (`retention::needed`)
-                if kind == RefKind::Strong || ak.as_str() == "keys.0" {
+                // a need of the target went (a strong, or a card): judged once the pass ends
+                // (`retention::needed`)
+                if kind == RefKind::Strong || ak.as_str() == "card.0" {
                     tx.core.note_lost(target);
                 }
                 if kind == RefKind::Strong {

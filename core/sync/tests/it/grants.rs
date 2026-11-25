@@ -113,7 +113,7 @@ fn a_card_made_after_pairing_carries_the_inbox_spec_sync_inbox_5() {
     crate::harness::history::introduce(&mut w);
     w.run();
     let a0 = w.node(0).account.unwrap();
-    assert!(w.engine(1).inbox_thing(&a0).is_some(), "node 1 knows account 0's inbox");
+    assert!(w.engine(1).inbox_of(&a0).unwrap().is_some(), "node 1 knows account 0's inbox");
     let t = make(&mut w, 1, "hi");
     w.write(1, |e| e.grant(&t, &a0, &edge(Role::Read))).unwrap();
     w.run();

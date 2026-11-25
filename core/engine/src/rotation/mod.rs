@@ -391,7 +391,7 @@ fn rotation_due_now(tx: &mut Tx<'_>, who: &Tid, a: &Tid, mode: Due, kept: &BTree
         // due): it came to hold a role, a card or a signal after the keyset was written, and a
         // granter that sealed to an older keyset of it finds that one stale; nothing else ever
         // rotates it (KemKeys.tla `KK_written`)
-        due = due || matches!(mode, Due::PassEnd(_)) && kem::due(tx, a, r);
+        due = due || matches!(mode, Due::PassEnd(_)) && kem::due(tx, a, r)?;
         // the pass's actor leaves `a` out at a current keyset of `a` (spec/crypto.md §4, Re-key)
         if let Due::PassEnd(p) = mode
             && p != *a
@@ -537,7 +537,7 @@ pub(crate) fn cut_into(tx: &mut Tx<'_>, m: &mut Mutation, a: Tid, roles: &BTreeS
     };
     let names = departures::names(tx.core, &a, own);
     let carried = osis_keys::Carried { demotions: departures::carried(tx.core, &a), demotes: departs == Departs::Demoting };
-    let bare = kem::bare(tx, &a, roles);
+    let bare = kem::bare(tx, &a, roles)?;
     let rot = osis_keys::rotate_leaving_out(&a, roles, held, &secrets, &boxing.holders, &boxing.left_out, &carried, &bare, &names, cut, seed, &mut *tx.rng)?;
     put_secrets(m, a, &rot.secrets, false)?;
     flows::unseal(tx, m, a, &rot.secrets.removed)?;

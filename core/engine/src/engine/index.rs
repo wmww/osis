@@ -28,7 +28,7 @@ use std::sync::Arc;
 pub(super) const VERSION_KEY: &[u8] = b"i/v";
 const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "/", env!("OSIS_INDEX_RULES"));
 /// Per commit (`meta_row`): one byte per part (bit 0 valid, bits 1-2 the rotation role it
-/// needs: 0 none, 1 read, 2 write, 3 admin; bit 3 a grant's overreach), then its header's
+/// needs: 0 none, 1 read, 2 write, 3 admin; bit 3 an overreach), then its header's
 /// `View` (a role commit's frontier with it), so an open indexes and adapts the commit
 /// without decoding its header.
 pub(super) const METAS: &[u8] = b"node/metas";
@@ -696,7 +696,7 @@ pub(super) fn meta_row(core: &Core, id: &CommitId, m: &Meta) -> Vec<u8> {
     out.extend_from_slice(&(m.parts() as u32).to_be_bytes());
     for (ai, v) in m.valid().iter().enumerate() {
         let role = core.ix.rotation_role.get(&(*id, ai)).map_or(0, |r| 1 + *r as u8);
-        out.push(u8::from(*v) | (role << 1) | (u8::from(core.ix.grant_overreach.contains(&(*id, ai))) << 4) | (u8::from(m.missing(ai)) << 5) | (u8::from(m.whole(ai)) << 6) | (u8::from(m.view.aspects.get(ai).is_some_and(|a| core.ix.miskeyed.contains(&(*id, a.tid)))) << 7));
+        out.push(u8::from(*v) | (role << 1) | (u8::from(core.ix.overreach.contains(&(*id, ai))) << 4) | (u8::from(m.missing(ai)) << 5) | (u8::from(m.whole(ai)) << 6) | (u8::from(m.view.aspects.get(ai).is_some_and(|a| core.ix.miskeyed.contains(&(*id, a.tid)))) << 7));
     }
     let v = &m.view;
     let mut w = records::Wr(out).u64(v.ts.to_u64()).u8(v.kind.id() as u8);
@@ -881,13 +881,13 @@ pub(crate) fn parse_head(v: &[u8]) -> Result<(RecordHead, &[u8])> {
 fn write(tx: &mut Tx<'_>, all: bool) -> Result<()> {
     let c = &*tx.core;
     let txn = &mut tx.txn;
-    // a commit's parts row carries their validity, rotation roles and grant overreach
+    // a commit's parts row carries their validity, rotation roles and overreach
     let ids: Vec<CommitId> = if all {
         c.ix.commits.keys().copied().collect()
     } else {
         let mut s: BTreeSet<CommitId> = c.ix.commits.logged().into_iter().collect();
         s.extend(c.ix.rotation_role.logged().into_iter().map(|k| k.0));
-        s.extend(c.ix.grant_overreach.logged().into_iter().map(|k| k.0));
+        s.extend(c.ix.overreach.logged().into_iter().map(|k| k.0));
         s.extend(c.ix.miskeyed.logged().into_iter().map(|k| k.0));
         s.into_iter().collect()
     };
@@ -1054,7 +1054,7 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
                 tx.core.ix.rotation_role.insert((id, ai), *r);
             }
             if p & 16 != 0 {
-                tx.core.ix.grant_overreach.insert((id, ai));
+                tx.core.ix.overreach.insert((id, ai));
             }
             if p & 128 != 0
                 && let Some(a) = view.aspects.get(ai)

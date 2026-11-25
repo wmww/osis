@@ -45,7 +45,7 @@ fn the_node_closure_follows_strongs_spec_sync_set_2() {
     let (mut lp, ps) = crate::flows::accounts(1);
     let e = &mut lp.peers[0].engine;
     let (root, d) = (e.node_root().unwrap(), ps[0]);
-    let inbox = e.inbox_thing(&d).unwrap();
+    let inbox = e.inbox_of(&d).unwrap().unwrap();
     for t in [root, d, inbox] {
         assert!(e.closure_holds(&t), "{t:?}");
     }

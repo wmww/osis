@@ -760,10 +760,38 @@ pub(crate) fn note_required(core: &mut Core, h: &Header, id: &CommitId, read: &s
         let Some(a) = h.aspects.get(*ai) else { continue };
         if matches!(a.ak.as_str(), "secrets.0" | "keys.0") {
             if crate::engine::Owned::of(h, id, *ai).is_some_and(|own| grantee_boxes_only(&a.tid, a.ak.as_str(), d.fragment(), &granted, &own)) {
-                core.ix.grant_overreach.remove(&(*id, *ai));
+                core.ix.overreach.remove(&(*id, *ai));
             } else {
-                core.ix.grant_overreach.insert((*id, *ai));
+                core.ix.overreach.insert((*id, *ai));
             }
+        }
+    }
+}
+
+/// Notes the `card.0` parts among `parts` (each an aspect index and its delta or snapshot, read
+/// with view `view`) that put an entry keyed by a thing not among the members their commit
+/// states for the thing they are on (spec/permissions.md §5.2): invalid (`Indexes::overreach`).
+/// A reset alone puts nothing (removing a card is a writer's power, as removing data is). A part
+/// whose path is not known here is judged invalid until it is (`Judge::part`), then noted again.
+/// Invariant (security): a card of A counts only written along a path through A, so only A's
+/// writers name A's inbox or A's keys in it; judged from the part and its header alone, so every
+/// node judges it alike whatever it holds.
+pub(crate) fn note_cards(core: &mut Core, h: &Header, view: &View, id: &CommitId, parts: &[(usize, Decoded)]) {
+    for (ai, d) in parts {
+        let Some(a) = h.aspects.get(*ai).filter(|a| a.ak.as_str() == "card.0") else { continue };
+        let Some(members) = chain(h, view, &a.tid) else { continue };
+        let on = |k: &Value| matches!(k, Value::Weak(t) if *t == a.tid || members.contains(t));
+        let off = match d.fragment().slot(osis_crdt::Encoding::Map) {
+            Some(osis_crdt::SlotRef::Frag(Fragment::Map(m))) => m.entries().any(|(_, _, k, f)| f.is_some() && !k.is_some_and(on)),
+            _ => false,
+        };
+        let was = core.ix.overreach.contains(&(*id, *ai));
+        if off != was {
+            match off {
+                true => core.ix.overreach.insert((*id, *ai)),
+                false => core.ix.overreach.remove(&(*id, *ai)),
+            };
+            core.stale_commits.insert(*id);
         }
     }
 }
@@ -1086,6 +1114,10 @@ impl<'a> Judge<'a> {
         // signal. Invariant: the setting is admin-only (its own validity reads no fire), and the
         // current one is a function of the held valid settings alone; every move of it re-judges
         // the thing's external fires (`setting_moved`).
+        // a card put off its stated path (`note_cards`)
+        if ak == "card.0" && core.ix.overreach.contains(&(*id, ai)) {
+            return false;
+        }
         if a.ak.external() {
             return self.by_path(h, view, id, ai, a) || self.settings.entry(a.tid).or_insert_with(|| setting_now(core, &a.tid)).as_ref().is_some_and(|s| s.enables(&a.ak));
         }
@@ -1107,10 +1139,10 @@ impl<'a> Judge<'a> {
             return true;
         }
         // an applied may-grant grant carries the grantee's boxes (spec/permissions.md §2): every
-        // put on the thing applied as a may-grant grant (`grant_overreach` checked the boxes
+        // put on the thing applied as a may-grant grant (`overreach` checked the boxes
         // against all of them), so a self-removal beside a failing put exempts nothing
         if matches!(ak, "secrets.0" | "keys.0")
-            && !core.ix.grant_overreach.contains(&(*id, ai))
+            && !core.ix.overreach.contains(&(*id, ai))
             && let Some(c) = core.timelines().role_commit(id)
         {
             let grant = |i: usize| core.timelines().way(&WriteId(*id, i as u32)) == Some(Way::MayGrant);

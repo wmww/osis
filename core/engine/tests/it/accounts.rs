@@ -8,7 +8,7 @@ use osis_schema::core_types as ct;
 
 // spec/permissions.md §8 Making, spec/sync-inbox.md §1: A is minted with the node thing as mint
 // admin, independent; its inbox and profile are minted with admin A, independent, held by strongs
-// from A; A's `keys.0` names the inbox, whose setting takes both inbox signals; the node holds A
+// from A; A's card on the profile names the inbox, whose setting takes both inbox signals; the node holds A
 // (a strong from its root) and reads all three, the inbox and profile in A's sync unit, with
 // admin on each by A's record edge.
 #[test]
@@ -28,7 +28,7 @@ fn making_an_account_spec_permissions_8() {
     }
     assert!(e.closure_holds(&acc.thing));
     assert_eq!(e.role_on(&acc.thing), Some(Role::Admin));
-    assert_eq!(e.inbox_thing(&acc.thing), Some(acc.inbox));
+    assert_eq!(e.inbox_of(&acc.thing).unwrap(), Some(acc.inbox));
     let x = e.get_typed(&acc.inbox, &ct::RETENTION).unwrap().unwrap();
     for s in ct::INBOX_SIGNALS {
         assert!(x.rules.contains_key(&osis_base::Ak::new(s).unwrap()), "{s} enabled");

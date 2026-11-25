@@ -158,12 +158,13 @@ impl Account {
 
 /// Makes the account on `e` (spec/permissions.md §8 Making), in one transaction: A minted with the
 /// node thing as mint admin, its inbox and profile minted with admin A, each independent, held by
-/// strongs from A's `holds.0`; the inbox's setting enabling both inbox signals; A's `keys.0` naming
-/// the inbox; the node root's strong to A, its settings on A and its dial entry on A and the
+/// strongs from A's `holds.0`; the inbox's setting enabling both inbox signals; A's card on the
+/// profile naming the inbox; the node root's strong to A, its settings on A and its dial entry on A and the
 /// profile. A and the profile.
 fn make(e: &mut eng::Engine) -> Result<(Tid, Tid)> {
     let root = e.node_root().ok_or_else(|| Error::Storage("no node root".into()))?;
     let admins = [eng::MintAdmin::Thing(e.me()), eng::MintAdmin::Minted(0), eng::MintAdmin::Minted(0)];
+    let now = e.now();
     let (ts, _) = e.mint_independent(&admins, |ts| {
         let [a, inbox, profile] = *ts else { return Err(eng::Error::Misuse("three minted")) };
         let add = |v| osis::internals::crdt::PathOp { path: Vec::new(), op: osis::internals::crdt::Op::Add(v) };
@@ -174,17 +175,18 @@ fn make(e: &mut eng::Engine) -> Result<(Tid, Tid)> {
         let mut setting = ct::RetentionSetting::default();
         setting.take_inbox_signals();
         signals.set(inbox, &ct::RETENTION, &setting)?;
-        // `keys.0` is role-class: a role commit of its own. Interim (piece 6): cards name the inbox
-        let mut keys = eng::Mutation::new();
-        let inbox_field = osis::internals::crdt::PathOp { path: vec![osis::internals::crdt::PathSeg::Field(4)], op: osis::internals::crdt::Op::Set(osis::Codec::to_value(&Some(Weak(inbox)))) };
-        keys.op(a, &ct::KEYS, inbox_field)?;
+        // A's card on the profile naming the inbox, acting as A (spec/sync-inbox.md §1 Card): its
+        // keys are filled in as A's `keys.0` is written (`Engine::take_cards`)
+        let card = eng::flows::cards::put(profile, a, &eng::flows::cards::naming(Some(inbox), now))?;
         // the node root's in commits of their own: it is local, under no sync ID
         let mut hold = eng::Mutation::new();
         hold.op(root, &ct::HOLDS, add(Value::Strong(a)))?;
         let mut settings = eng::Mutation::new();
         settings.set(root, &ct::SETTINGS, &Weak(a))?.set(root, &ct::DIAL_ON, &[Weak(a), Weak(profile)].into_iter().collect())?;
-        Ok(vec![held, signals, keys, hold, settings])
+        Ok(vec![held, signals, card, hold, settings])
     })?;
+    // the card carries A's keys and the inbox's
+    e.refresh_cards()?;
     match ts.as_slice() {
         [a, _, profile] => Ok((*a, *profile)),
         _ => Err(Error::Storage("account making minted otherwise".into())),

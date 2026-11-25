@@ -243,9 +243,10 @@ fn fits_part(a: &osis_commit::AspectEntry, memory: bool, snapshot: bool) -> bool
     fits_class(&a.ak, memory) && !(a.ak.signal() && snapshot) && (a.replaces.is_none() || (!memory && !snapshot && crate::engine::edits::durable_signal(&a.ak)))
 }
 
-/// Whether a part of aspect `ak` is decoded whole (`Parts`).
+/// Whether a part of aspect `ak` is decoded whole (`Parts`): a `card.0` part is judged by its body
+/// (`validity::note_cards`).
 fn whole_part(ak: &str) -> bool {
-    osis_schema::core_types::is_role_class(ak) || osis_schema::core_types::is_addenda(ak) || ak == osis_commit::retention::CREATED
+    osis_schema::core_types::is_role_class(ak) || osis_schema::core_types::is_addenda(ak) || ak == osis_commit::retention::CREATED || ak == "card.0"
 }
 
 /// Commit ID of a blob whose header this build cannot decode: BLAKE3 of the header value.
@@ -2344,7 +2345,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
                     tx.core.ix.rotation_role.insert((id, ai), r);
                 }
                 if d.overreach {
-                    tx.core.ix.grant_overreach.insert((id, ai));
+                    tx.core.ix.overreach.insert((id, ai));
                 }
             }
             atomic::index_commit(tx.core, &id, &m.view);
@@ -2353,7 +2354,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
             if blob.header.kind.is_compaction() {
                 snaps.push(blob.clone());
             }
-            if blob.header.kind.is_role() || blob.header.aspects.iter().any(|a| a.ak.as_str() == osis_commit::retention::RETENTION || osis_schema::core_types::is_addenda(a.ak.as_str())) {
+            if blob.header.kind.is_role() || blob.header.aspects.iter().any(|a| a.ak.as_str() == osis_commit::retention::RETENTION || a.ak.as_str() == "card.0" || osis_schema::core_types::is_addenda(a.ak.as_str())) {
                 bodies.push(blob);
             }
         }
@@ -2402,6 +2403,9 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
             }
             let read = PartsRead::of(&b.header, &parts);
             validity::note_required(tx.core, &b.header, &id, &read);
+            if let Some(view) = tx.core.ix.commits.get(&id).map(|m| m.view.clone()) {
+                validity::note_cards(tx.core, &b.header, &view, &id, &parts);
+            }
             validity::note_settings(tx.core, &b.header, &id, &parts);
             validity::note_addenda(tx.core, &b.header, &id, &parts);
             if !b.header.kind.is_role() {

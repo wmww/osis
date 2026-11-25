@@ -207,13 +207,13 @@ codec_struct! {
     pub struct SyncEntry { 0 steps: BTreeMap<[u8; 32], StepRecord> }
 }
 codec_struct! {
-    /// `keys.0`: keysets per role, the thing's inbox, 32-byte deposit seed, an actor's sync ID,
+    /// `keys.0`: keysets per role, 32-byte deposit seed, an actor's sync ID,
     /// per box to a holder actor, keyed as that box, the holder's keysets it names (spec/crypto.md
     /// §4, Stale), and the keys of the step its `sync.0` records in the same write (§7).
     #[derive(Clone, Debug, Default, PartialEq, Eq)]
     pub struct Keys {
         0 read: Option<Keyset>, 1 write: Option<Keyset>, 2 admin: Option<Keyset>,
-        4 inbox: Option<Weak>, 5 deposit_seed: Option<[u8; 32]>,
+        5 deposit_seed: Option<[u8; 32]>,
         7 sync: Option<Keyset>, 8 sealed: BTreeMap<BoxKey, BTreeSet<Epoch>>, 9 sync_id: Option<SyncId>,
         10 step: Option<StepKeys>,
     }
@@ -385,6 +385,17 @@ pub const SYNC: Aspect<SyncIds> = Aspect::new("sync.0", &CORE);
 /// `dial.0` on any thing: each node's 32-byte dialable key to its URLs (spec/sync-set.md §1).
 pub type DialList = BTreeMap<Vec<u8>, Vec<String>>;
 pub const DIAL: Aspect<DialList> = Aspect::new("dial.0", &CORE);
+codec_struct! {
+    /// A thing's card (`card.0`, spec/sync-inbox.md §1 Card): its inbox where it is another
+    /// thing, the wall ms that inbox was chosen (`since`), and its and that inbox's current
+    /// `keys.0` commits in the holder keys form (`keys` `CommitBlobPlaintext` bytes, `records`
+    /// `creation` bytes, spec/wire.md §9).
+    #[derive(Clone, Debug, Default, PartialEq, Eq)]
+    pub struct Card { 0 inbox: Option<Weak>, 1 keys: Vec<Vec<u8>>, 2 records: Vec<Vec<u8>>, 3 since: WallMs }
+}
+/// `card.0` on any thing: cards by the thing each is of (spec/data-model.md §9).
+pub type Cards = BTreeMap<Weak, Card>;
+pub const CARD: Aspect<Cards> = Aspect::new("card.0", &CORE);
 /// `settings^.0` on a node root: the thing holding the node's settings (spec/sync-set.md §1).
 pub const SETTINGS: Aspect<Weak> = Aspect::new("settings^.0", &CORE);
 /// `dial_on^.0` on a node root: the things the node keeps its dial entry on (spec/sync-set.md §1).

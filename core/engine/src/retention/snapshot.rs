@@ -1243,10 +1243,12 @@ fn held_sources(core: &Core, tid: &Tid, ak: &Ak) -> BTreeSet<osis_crdt::Source> 
 }
 
 /// Whether `ak` is ever compacted (spec/commits.md §2): not role-class, `created.0`,
-/// `addenda.0` or a signal (no state).
+/// `addenda.0`, `card.0` (each card counts only along its own write's path, so a snapshot by one
+/// writer of the cards of several things is invalid, spec/permissions.md §5.2) or a signal (no
+/// state).
 pub(crate) fn compacted(ak: &Ak) -> bool {
     let a = ak.as_str();
-    !is_role_class(a) && a != "created.0" && !osis_schema::core_types::is_addenda(a) && !ak.signal()
+    !is_role_class(a) && a != "created.0" && a != "card.0" && !osis_schema::core_types::is_addenda(a) && !ak.signal()
 }
 
 /// The re-snapshot owed on `(tid, ak)` (`Indexes::resnapshots_owed`), in `tx`: one this node may
@@ -1344,6 +1346,10 @@ impl Engine {
         }
         if ak.as_str() == "created.0" {
             return Err(Error::Misuse("created.0 is never compacted"));
+        }
+        // each card counts only along its own write's path (spec/permissions.md §5.2)
+        if ak.as_str() == "card.0" {
+            return Err(Error::Misuse("card.0 is never compacted"));
         }
         // the judgment reads every addendum delta (spec/permissions.md §5.2)
         if osis_schema::core_types::is_addenda(ak.as_str()) {

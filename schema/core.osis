@@ -172,8 +172,6 @@ aspect keys.0: struct {
     read 0: option<keyset>,
     write 1: option<keyset>,
     admin 2: option<keyset>,
-    /// The thing's inbox, where it is another thing (spec/sync-inbox.md §1).
-    inbox 4: option<weak>,
     /// 32 bytes. Lets others add data for the actor at nodes keeping it unread without being able to read it
     /// (spec/sync-ids.md §2).
     deposit_seed 5: option<blob>,
@@ -254,6 +252,20 @@ aspect sync.0: map<blob, sync_entry>;
 /// The thing's dial list: each node's 32-byte dialable key to the URLs it is dialed at
 /// (spec/sync-set.md §1), each node keeping its own entry. Its readers dial them, for dialing only.
 aspect dial.0: map<blob, list<string>>;
+
+/// A thing's card (spec/sync-inbox.md §1 Card): its inbox where it is another thing, when that
+/// inbox was chosen (ms), and its and the inbox's current `keys.0` commits in the holder keys form
+/// (spec/wire.md §9).
+type card = struct {
+    inbox 0: option<weak>,
+    keys 1: list<blob>,
+    records 2: list<blob>,
+    since 3: timestamp,
+};
+
+/// The cards of things on this one, by thing (spec/data-model.md §9): an entry keyed by A counts
+/// only written along a path through A (spec/permissions.md §5.2).
+aspect card.0: map<weak, card>;
 
 // ---- Nodes ----
 // A node's settings (spec/sync-set.md §1): its entries, keyed by its node thing, on the thing its

@@ -576,7 +576,8 @@ pub(crate) fn holding(pk: &Package, b: &CommitBlob, parts: &BTreeSet<usize>) -> 
 pub struct Account {
     /// A: minted with the node thing as mint admin, independent at its minting.
     pub thing: Tid,
-    /// A's inbox (spec/sync-inbox.md §1): minted with admin A, independent, named by A's `keys.0`.
+    /// A's inbox (spec/sync-inbox.md §1): minted with admin A, independent, named by A's card on
+    /// the profile.
     pub inbox: Tid,
     /// A's profile (spec/sync-inbox.md §5 Contact card): minted with admin A, independent.
     pub profile: Tid,
@@ -585,13 +586,14 @@ pub struct Account {
 /// Makes an account on `e` as the account library does (spec/permissions.md §8 Making), with the
 /// same engine calls, in one transaction: A minted with the node thing as mint admin, its inbox and
 /// profile minted with admin A, each independent, held by strongs from A's `holds.0`; the inbox's
-/// setting enabling both inbox signals; A's `keys.0` naming the inbox; the node root's strong to A
+/// setting enabling both inbox signals; A's card on the profile naming the inbox; the node root's strong to A
 /// and its `settings^.0` naming A.
 pub fn make_account(e: &mut Engine) -> Result<(Account, crate::flows::Done)> {
-    use osis_crdt::{Op, PathOp, PathSeg};
+    use osis_crdt::{Op, PathOp};
     use osis_schema::core_types as ct;
     let root = e.node_root().ok_or(crate::Error::Misuse("no node root"))?;
     let admins = [crate::MintAdmin::Thing(e.me()), crate::MintAdmin::Minted(0), crate::MintAdmin::Minted(0)];
+    let now = e.now();
     let (ts, done) = e.mint_independent(&admins, |ts| {
         let [a, inbox, profile] = ts else { return Err(crate::Error::Misuse("three minted")) };
         let mut held = Mutation::new();
@@ -602,17 +604,19 @@ pub fn make_account(e: &mut Engine) -> Result<(Account, crate::flows::Done)> {
         let mut setting = ct::RetentionSetting::default();
         setting.take_inbox_signals();
         signals.set(*inbox, &ct::RETENTION, &setting)?;
-        // `keys.0` is role-class: a role commit of its own
-        let mut keys = Mutation::new();
-        keys.op(*a, &ct::KEYS, PathOp { path: vec![PathSeg::Field(4)], op: Op::Set(osis_schema::Codec::to_value(&Some(osis_base::Weak(*inbox)))) })?;
+        // A's card on the profile naming the inbox, acting as A; its keys filled in as A's
+        // `keys.0` is written (`Engine::take_cards`)
+        let card = crate::flows::cards::put(*profile, *a, &crate::flows::cards::naming(Some(*inbox), now))?;
         // the node root's in commits of their own: it is local, under no sync ID
         let mut hold = Mutation::new();
         hold.op(root, &ct::HOLDS, PathOp { path: Vec::new(), op: Op::Add(osis_base::Value::Strong(*a)) })?;
         let mut settings = Mutation::new();
         settings.set(root, &ct::SETTINGS, &osis_base::Weak(*a))?;
-        Ok(vec![held, signals, keys, hold, settings])
+        Ok(vec![held, signals, card, hold, settings])
     })?;
     let [thing, inbox, profile] = ts.as_slice() else { return Err(crate::Error::Misuse("three minted")) };
+    // the card carries A's keys and the inbox's
+    e.refresh_cards()?;
     Ok((Account { thing: *thing, inbox: *inbox, profile: *profile }, done))
 }
 
@@ -625,19 +629,26 @@ impl LocalPeer {
     }
 
     /// `new` whose nodes each act for an account of their own (`make_account`), each
-    /// holding the others' accounts' commits and a strong to each account, as a contact's node
-    /// does: the peers and the accounts.
+    /// holding the others' accounts' commits and a strong to each account and its profile, read
+    /// (as a contact card gives it: the account's card is held), as a contact's node does: the
+    /// peers and the accounts.
     #[allow(clippy::indexing_slicing)] // i, j < n
     pub fn accounts(n: usize, seed: u64, t: WallMs) -> Result<(LocalPeer, Vec<osis_base::Tid>)> {
         let mut lp = LocalPeer::new(n, seed, t)?;
-        let mut ps = Vec::new();
+        let mut accs = Vec::new();
         for p in lp.peers.iter_mut() {
-            ps.push(make_account(&mut p.engine)?.0.thing);
+            accs.push(make_account(&mut p.engine)?.0);
         }
-        for (i, a) in ps.iter().enumerate() {
+        let ps: Vec<osis_base::Tid> = accs.iter().map(|a| a.thing).collect();
+        for (i, a) in accs.iter().enumerate() {
+            for j in (0..n).filter(|j| *j != i) {
+                lp.shows_profile(i, a.profile, j)?;
+            }
+        }
+        for (i, a) in accs.iter().enumerate() {
             let ids = lp.peers[i].engine.commit_ids();
             for j in (0..n).filter(|j| *j != i) {
-                lp.peers[j].know(&[*a])?;
+                lp.peers[j].know(&[a.thing, a.profile])?;
                 for id in &ids {
                     if let Some(pk) = lp.peers[i].engine.package(id)? {
                         lp.deliver(j, &pk)?;
@@ -647,6 +658,19 @@ impl LocalPeer {
         }
         lp.sync_all()?;
         Ok((lp, ps))
+    }
+
+    /// Peer `i` grants peer `j`'s node thing read on `profile`, `j`'s keys shown by hand: what
+    /// redeeming a contact card gives `j` (spec/sync-inbox.md §5), the cards there held once `j`
+    /// holds the profile.
+    #[allow(clippy::indexing_slicing)] // test harness: indices of the net
+    pub fn shows_profile(&mut self, i: usize, profile: osis_base::Tid, j: usize) -> Result<()> {
+        let n = self.peers[j].engine.me();
+        let keys = self.peers[j].engine.holder_keys(&n)?;
+        self.peers[i].engine.take_holder_keys(&n, &keys, None)?;
+        let read = osis_schema::core_types::Edge { role: osis_base::Role::Read, until: None, may_grant: false, retain: false, floor: None };
+        self.peers[i].engine.grant(&profile, &n, &read)?;
+        Ok(())
     }
 
     /// `n` nodes of one account (spec/permissions.md §8): peer 0 makes it, each other is paired
@@ -790,17 +814,24 @@ impl LocalPeer {
     /// `seed`, `make_account`) whose account holds `t` and is granted read on it by peer
     /// `admin` through the flow, given the grant's offer alone (a fire on the account's inbox):
     /// it keeps what it is then given of `t` in any order, as content waits until `t` enters its
-    /// node closure (spec/commits.md §4 Outside the node closure). Peer `admin` keeps the account.
+    /// node closure (spec/commits.md §4 Outside the node closure). Peer `admin` keeps the account
+    /// and reads its profile, granted it as a contact card gives it: it holds the account's card.
     #[allow(clippy::panic, clippy::indexing_slicing)] // test harness: a setup that fails fails the test (and a peer index past the net)
     pub fn fresh_reader(&mut self, admin: usize, t: Tid, seed: u64) -> Peer {
         let mut p = Peer::new(seed, self.peers[admin].engine.now()).unwrap_or_else(|e| panic!("fresh node: {e}"));
         let (acc, _) = make_account(&mut p.engine).unwrap_or_else(|e| panic!("account: {e}"));
-        self.peers[admin].know(&[acc.thing]).unwrap_or_else(|e| panic!("know: {e}"));
+        let a = self.peers[admin].engine.me();
+        let keys = self.peers[admin].engine.holder_keys(&a).unwrap_or_else(|e| panic!("keys: {e}"));
+        p.engine.take_holder_keys(&a, &keys, None).unwrap_or_else(|e| panic!("keys: {e}"));
+        let read = osis_schema::core_types::Edge { role: osis_base::Role::Read, until: None, may_grant: false, retain: false, floor: None };
+        p.engine.grant(&acc.profile, &a, &read).unwrap_or_else(|e| panic!("profile: {e}"));
+        self.peers[admin].know(&[acc.thing, acc.profile]).unwrap_or_else(|e| panic!("know: {e}"));
         for id in p.engine.commit_ids() {
             if let Some(pk) = p.engine.package(&id).unwrap_or_else(|e| panic!("package: {e}")) {
                 self.deliver(admin, &pk).unwrap_or_else(|e| panic!("deliver: {e}"));
             }
         }
+        self.peers[admin].engine.take_carried().unwrap_or_else(|e| panic!("the account's card: {e}"));
         let mut m = Mutation::new();
         m.op(acc.thing, &osis_schema::core_types::HOLDS, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Add(osis_base::Value::Strong(t)) }).unwrap_or_else(|e| panic!("hold {t:?}: {e}"));
         p.commit(m).unwrap_or_else(|e| panic!("hold {t:?}: {e}"));
@@ -1032,8 +1063,8 @@ impl LocalPeer {
     }
 
     /// Peer `i`, an admin of thing `t`, writes `t`'s setting enabling its inbox signals as an
-    /// account's inbox has them (spec/sync-inbox.md §1): `t`, a holder, is offered grants from outside
-    /// (spec/sync-inbox.md §5 Grant from outside).
+    /// account's inbox has them and `t`'s card on `t` itself (spec/sync-inbox.md §1): `t`, a holder,
+    /// is offered grants from outside (spec/sync-inbox.md §5 Grant from outside).
     #[allow(clippy::panic, clippy::indexing_slicing)] // test harness: a setup that fails fails the test
     pub fn takes_grants(&mut self, i: usize, t: Tid) {
         let mut setting = osis_schema::core_types::RetentionSetting::default();
@@ -1041,8 +1072,12 @@ impl LocalPeer {
         let mut m = Mutation::new();
         m.set(t, &osis_schema::core_types::RETENTION, &setting).unwrap_or_else(|e| panic!("setting of {t:?}: {e}"));
         self.peers[i].commit(m).unwrap_or_else(|e| panic!("setting of {t:?}: {e}"));
-        // keysets written before the setting carry no KEM key it gives (spec/crypto.md §3): KEM
-        // key due rotates them, here at once rather than at a pass's end
+        // its card, its keys filled in once it has them (`Engine::take_cards`)
+        let now = self.peers[i].engine.now();
+        let card = crate::flows::cards::put(t, t, &crate::flows::cards::naming(None, now)).unwrap_or_else(|e| panic!("card of {t:?}: {e}"));
+        self.peers[i].commit(card).unwrap_or_else(|e| panic!("card of {t:?}: {e}"));
+        // keysets written before the card carry no KEM key it gives (spec/crypto.md §3): KEM key
+        // due rotates them, here at once rather than at a pass's end
         if self.peers[i].engine.core.is_independent(&t) {
             self.peers[i].engine.kem_key_due(&t).unwrap_or_else(|e| panic!("KEM keys of {t:?}: {e}"));
         }

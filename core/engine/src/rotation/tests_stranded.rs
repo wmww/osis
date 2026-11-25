@@ -718,7 +718,7 @@ const HOUR_MS: u64 = 3_600_000;
 fn keeps_fires_an_hour(lp: &mut LocalPeer, fire: &osis_base::Ak) -> (Tid, Tid) {
     let bob = lp.peers[1].engine.me();
     let e1 = &mut lp.peers[1].engine;
-    let inbox = e1.inbox_thing(&bob).unwrap();
+    let inbox = bob;
     let mut s = e1.get_typed(&inbox, &osis_schema::core_types::RETENTION).unwrap().unwrap_or_default();
     s.rules.insert(fire.clone(), osis_schema::core_types::RetentionEntry { history: Some(osis_schema::History::Keep { until: None, after: Some(HOUR_MS) }), ..Default::default() });
     let mut m = crate::Mutation::new();

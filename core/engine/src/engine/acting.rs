@@ -120,9 +120,10 @@ impl Engine {
             let muts = also(&ts)?;
             // what the transaction gives each minted thing that a keyset written now carries a
             // KEM key for (spec/crypto.md §3, Published KEM keys): admin on a thing minted after
-            // it (its record edge), a setting enabling a signal (`rotation::kem::by_setting`)
+            // it (its record edge), a card of it (every role), a setting enabling a signal
+            // (`rotation::kem::by_setting`)
             for (i, t) in ts.iter().enumerate() {
-                if admins.iter().skip(i + 1).any(|x| *x == MintAdmin::Minted(i)) {
+                if admins.iter().skip(i + 1).any(|x| *x == MintAdmin::Minted(i)) || muts.iter().any(|m| m.writes_card_of(t)) {
                     tx.publishing.push((*t, Role::Admin));
                 }
                 if let Some(r) = muts.iter().rev().find_map(|m| m.setting_of(t)).and_then(|s| rotation::kem::by_setting(&s)) {

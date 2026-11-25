@@ -20,7 +20,7 @@ fn strangers(n: usize) -> (LocalPeer, Tid) {
     let mut lp = LocalPeer::new_apart(n + 1, 0, crate::common::T0).unwrap();
     let accounts: Vec<Tid> = lp.peers.iter_mut().map(|p| osis_engine::local_peer::make_account(&mut p.engine).unwrap().0.thing).collect();
     let p0 = accounts[0];
-    let inbox = lp.peers[0].engine.inbox_thing(&p0).unwrap();
+    let inbox = lp.peers[0].engine.inbox_of(&p0).unwrap().unwrap();
     let mut x = lp.peers[0].engine.get_typed(&inbox, &ct::RETENTION).unwrap().unwrap();
     x.rules.insert(ak(NOTE), ct::RetentionEntry { history: Some(osis_schema::History::Keep { until: None, after: Some(HOUR_MS) }), ..Default::default() });
     x.default = Some(ct::RetentionEntry { history: Some(osis_schema::History::FOREVER), ..Default::default() });

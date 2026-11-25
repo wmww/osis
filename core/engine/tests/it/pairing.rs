@@ -28,7 +28,7 @@ fn a_paired_node_holds_and_writes_the_account_spec_permissions_8() {
     assert_eq!(e1.settings_thing().unwrap(), Some(a));
     assert_eq!(e1.role_on(&a), Some(Role::Admin));
     assert!(e1.closure_holds(&a));
-    let inbox = e1.inbox_thing(&a).unwrap();
+    let inbox = e1.inbox_of(&a).unwrap().unwrap();
     assert!(e1.closure_holds(&inbox), "A's inbox comes with A's sync unit");
     assert_eq!(lp.peers[0].engine.roster(&a).get(&n1).map(|x| x.role), Some(Role::Admin));
     write(&mut lp, 1, a, "from 1");

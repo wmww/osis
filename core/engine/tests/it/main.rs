@@ -38,6 +38,7 @@ mod destruction;
 mod refs;
 mod role_paths;
 mod strangers;
+mod cards;
 mod external;
 mod thing_cost;
 mod copies;

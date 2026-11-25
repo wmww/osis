@@ -22,13 +22,13 @@ pub(crate) fn synced(n: usize) -> LocalPeer {
     .0
 }
 
-/// `synced(n)` and `g`, an independent thing of peer 0's, granting each of `grants` (peer, role), synced: built
+/// `synced(n)` and `g`, an independent thing of peer 0's taking no grant from outside (`target_thing`), granting each of `grants` (peer, role), synced: built
 /// once per shape, a copy each call. Returns the peers, `g` and every peer's tid.
 pub(super) fn granted(n: usize, grants: &[(usize, Role)]) -> (LocalPeer, Tid, Vec<Tid>) {
     let (lp, (g, tids)) = LocalPeer::cached(&format!("rotation::granted/{n}/{grants:?}"), || {
         let mut lp = synced(n);
         let tids: Vec<Tid> = (0..n).map(|i| lp.peers[i].engine.me()).collect();
-        let g = independent_thing(&mut lp, 0);
+        let g = target_thing(&mut lp, 0);
         for (i, r) in grants {
             lp.peers[0].engine.grant(&g, &tids[*i], &edge(*r)).unwrap();
         }
@@ -162,6 +162,21 @@ pub(crate) fn independent_thing(lp: &mut LocalPeer, i: usize) -> Tid {
     let g = lp.peers[i].engine.new_thing(&mut m, me);
     lp.peers[i].commit(m).unwrap();
     lp.takes_grants(i, g);
+    lp.peers[i].engine.make_independent(&g).unwrap();
+    lp.hold(g);
+    g
+}
+
+/// `independent_thing` that takes no grant from outside: its signals enabled (fires reach it),
+/// no card of it.
+pub(crate) fn target_thing(lp: &mut LocalPeer, i: usize) -> Tid {
+    let me = lp.peers[i].engine.me();
+    let mut m = Mutation::new();
+    let g = lp.peers[i].engine.new_thing(&mut m, me);
+    let mut setting = ct::RetentionSetting::default();
+    setting.take_inbox_signals();
+    m.set(g, &ct::RETENTION, &setting).unwrap();
+    lp.peers[i].commit(m).unwrap();
     lp.peers[i].engine.make_independent(&g).unwrap();
     lp.hold(g);
     g
@@ -2516,7 +2531,8 @@ fn applied_name_void_elsewhere_through_holder_actor_spec_crypto_4() {
 fn through_holder_actor() -> (LocalPeer, Vec<Tid>, Tid, BTreeSet<osis_base::CommitId>) {
     let mut lp = synced(6);
     let tids: Vec<Tid> = (0..6).map(|i| lp.peers[i].engine.me()).collect();
-    let g = independent_thing(&mut lp, 0);
+    // g takes no grant from outside: no card of it carries D to V as evidence
+    let g = target_thing(&mut lp, 0);
     let k = independent_thing(&mut lp, 5);
     lp.peers[5].engine.grant(&k, &tids[3], &edge(Role::Admin)).unwrap();
     lp.sync_all().unwrap();
@@ -2527,6 +2543,8 @@ fn through_holder_actor() -> (LocalPeer, Vec<Tid>, Tid, BTreeSet<osis_base::Comm
     lp.sync_all().unwrap();
     let before = commit_ids(&mut lp, 5);
     lp.peers[5].engine.demote(&k, &Demotion { holder: tids[3], new: Some(edge(Role::Write)), retain: None }).unwrap();
+    // k's card refreshed with D's rotation: it carries D, so it goes with D
+    lp.peers[5].engine.refresh_cards().unwrap();
     let dem: BTreeSet<_> = commit_ids(&mut lp, 5).difference(&before).copied().collect();
     lp.sync(5, 0).unwrap();
     (lp, tids, g, dem)

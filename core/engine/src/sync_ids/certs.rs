@@ -144,15 +144,10 @@ impl Engine {
         self.shared_certificates(ev, g, &mut out);
         // the public key records of `g`'s holders (spec/permissions.md §4): every admin can seal
         // to and list them; a link key's redeemer, holding its seed alone, learns its record and
-        // keysets from `g`'s sync ID. Interim (notes/public-and-cards-brief.md piece 6, cards): with
-        // the inbox's a holder's `keys.0` names, so a holder of the sync ID can fire there.
+        // keysets from `g`'s sync ID
         let holders: Vec<Tid> = self.core.roster_of(g).into_keys().collect();
         for h in &holders {
             self.public_key_record_into(ev, h, &mut out);
-            let inbox = self.get_typed(h, &osis_schema::core_types::KEYS).ok().flatten().and_then(|x| x.inbox).map(Tid::from).filter(|i| i != h);
-            if let Some(i) = inbox {
-                self.public_key_record_into(ev, &i, &mut out);
-            }
         }
         // a holder of sync alone on a target gets that target's boxes and `sync.0` parts and
         // nothing else of it: no roster, no edge write, no evidence of either (spec/permissions.md
@@ -393,7 +388,7 @@ impl Engine {
     /// The commits of `t`'s current `keys.0` (spec/permissions.md §4): the newest, the rotation
     /// commits of its newest keyset per role, forks included, and the commits recording boxes
     /// at those keysets' epochs (spec/crypto.md §4, Stale: a grant's or re-seal's to a holder
-    /// actor). The newest may be an inbox write carrying no keyset, and a rotation of what `t`
+    /// actor). The newest may be a write carrying no keyset (a deposit seed), and a rotation of what `t`
     /// holds names `t`'s keyset (spec/crypto.md §4).
     pub fn current_keys(&self, t: &Tid) -> BTreeSet<CommitId> {
         // per role: the newest n, its keysets' rotation commits, the commits recording boxes there
@@ -415,7 +410,7 @@ impl Engine {
         let rotations: BTreeSet<CommitId> = newest.values().flat_map(|x| x.1.iter().copied()).collect();
         let records: BTreeSet<CommitId> = newest.values().flat_map(|x| x.2.iter().copied()).collect();
         // the newest but one writing only box records (a grant's or re-seal's, at any epoch): what
-        // carries the inbox and deposit seed
+        // carries the deposit seed
         let recorders: BTreeSet<CommitId> = self.core.sealed_noted(t).flat_map(|x| x.2.by.iter().copied()).collect();
         let card = self.latest_where(t, "keys.0", |c| intros.contains(c) || !recorders.contains(c));
         rotations.iter().chain(&records).copied().chain(card).collect()

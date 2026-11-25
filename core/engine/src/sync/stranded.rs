@@ -260,7 +260,8 @@ impl Engine {
     /// what is on the holder's authority chain as judged while taking them (the holder, then
     /// each one's mint admin and current holders, transitively, judged again as what is taken
     /// extends it): records of chain things, `keys.0` deltas on the holder and on the authors of
-    /// the holder's `keys.0` commits carried (their cards), `roles.0` deltas on chain things; each
+    /// the holder's `keys.0` commits carried (their cards), `sync.0` deltas on the holder (the
+    /// steps placing its keys), `roles.0` deltas on chain things; each
     /// commit, projected to those deltas, kept only if judged valid with every edge write it makes
     /// applied (`ingest_valid`), carried by `from` while it pends. Everything else is ignored.
     /// Returns the commits taken.
@@ -287,6 +288,8 @@ impl Engine {
                 let on = |ai: usize| {
                     b.header.aspects.get(ai).is_some_and(|a| match a.ak.as_str() {
                         "keys.0" => a.tid == *holder || chain.contains(&a.tid) && cards.contains(&a.tid),
+                        // the steps placing the holder's keys: without them its keys are miskeyed
+                        "sync.0" => a.tid == *holder,
                         "roles.0" => chain.contains(&a.tid),
                         _ => false,
                     })

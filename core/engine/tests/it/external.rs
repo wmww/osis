@@ -115,7 +115,7 @@ fn a_removed_writers_unlisted_fire_is_judged_as_a_strangers_spec_permissions_5_2
 
 /// Peer `i` writes its account's inbox setting with `signal` enabled as at creation, or not.
 fn inbox_signal(lp: &mut LocalPeer, i: usize, me: Tid, signal: &str, enabled: bool) {
-    let inbox = lp.peers[i].engine.inbox_thing(&me).unwrap();
+    let inbox = lp.peers[i].engine.inbox_of(&me).unwrap().unwrap();
     let mut x = lp.peers[i].engine.get_typed(&inbox, &ct::RETENTION).unwrap().unwrap();
     let mut created = ct::RetentionSetting::default();
     created.take_inbox_signals();

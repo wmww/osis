@@ -158,6 +158,11 @@ impl Mutation {
         }
     }
 
+    /// Whether this mutation puts a card of `t` on some thing (`flows::cards::put`).
+    pub(crate) fn writes_card_of(&self, t: &Tid) -> bool {
+        self.aspects.iter().any(|((_, ak), a)| ak.as_str() == "card.0" && a.ops.iter().any(|o| o.path.first() == Some(&osis_crdt::PathSeg::Key(Value::Weak(*t)))))
+    }
+
     /// Makes the aspect read `v` (structural diff, spec/crdt.md §9).
     pub fn set<K: RawKey>(&mut self, tid: Tid, key: &K, v: &K::T) -> Result<&mut Self> {
         let v = key.encode(v);

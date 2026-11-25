@@ -204,7 +204,7 @@ fn the_accounts_nodes_follow_what_it_holds_spec_sync_set_1() {
     let (alice, bob) = (w.engine(0).me(), w.node(1).account.unwrap());
     w.write(0, |e| e.grant(&t, &bob, &edge(Role::Read))).unwrap();
     w.run();
-    let inbox = w.engine(1).inbox_thing(&bob).unwrap();
+    let inbox = w.engine(1).inbox_of(&bob).unwrap().unwrap();
     let s = w.engine(1).sync_id_of(&inbox).unwrap().unwrap();
     for i in [1, 2] {
         let stamped = w.store(i).entries(&s).unwrap().into_iter().filter(|e| e.stamp.is_some() && !e.deposited);
@@ -1414,6 +1414,8 @@ fn a_keyed_live_grant_from_a_kept_holder_keeps_a_copy_spec_permissions_3() {
 #[test]
 fn an_ended_way_found_keyless_drops_its_copy_spec_permissions_3() {
     let mut w = siblings();
+    // the partitioned sibling dials its peers every 30 s while the test runs (hours of its time)
+    w.cap = 3000;
     let alice = w.node(0).account.unwrap();
     let t0 = make(&mut w, 1, None, "t0");
     let t1 = make(&mut w, 1, None, "t1");
@@ -1549,7 +1551,7 @@ fn an_ended_keyless_grant_keeps_no_copy_spec_permissions_3() {
 fn inbox_grants(w: &mut World, i: usize, enabled: bool) {
     let account = w.node(i).account.unwrap();
     w.write(i, |e| {
-        let inbox = e.inbox_thing(&account).unwrap();
+        let inbox = e.inbox_of(&account).unwrap().unwrap();
         let mut x = e.get_typed(&inbox, &ct::RETENTION).unwrap().unwrap();
         let keep = ct::RetentionEntry { history: Some(osis_schema::History::FOREVER), ..Default::default() };
         if enabled {
@@ -1576,7 +1578,7 @@ fn a_refused_sealed_fire_is_opened_again_only_when_what_refused_it_moves_spec_sy
     let bob = w.node(1).account.unwrap();
     w.write(0, |e| e.grant(&t, &bob, &edge(Role::Read))).unwrap();
     w.run();
-    let inbox = w.engine(1).inbox_thing(&bob).unwrap();
+    let inbox = w.engine(1).inbox_of(&bob).unwrap().unwrap();
     let s = w.engine(1).sync_id_of(&inbox).unwrap().unwrap();
     assert!(w.store(1).entries(&s).unwrap().iter().any(|e| e.deposited && !e.own), "Alice's fire deposited at Bob's node");
     assert_eq!(w.engine(1).role_on(&t), None, "refused: no grant taken");
