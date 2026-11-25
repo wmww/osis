@@ -1,0 +1,30 @@
+//! Realms, as the account library (osis-account) makes them. A realm is a thing whose holders are
+//! its members, each at a role: read sees what is in it, write takes part (chats, documents) and
+//! adds to it, admin also manages its members and details. In it is what it is mint admin of
+//! (made in it: stays when its maker leaves) and what it holds a grant on (shared into it).
+//! Nesting, overlap and roles inside a realm are grants between realms.
+//!
+//! A person's account is a realm whose members are the person's nodes, each writing as its node
+//! thing through it; each node names it in its node root's `settings^.0`. It is the person's
+//! home: what they make is minted with it as admin and held from its `holds.0`, and their own
+//! state in apps (schema/ui.osis) is on it.
+revision 1;
+
+/// Marks a realm users see, with the details only its admins change. Its name is `name.0`.
+admin aspect realm:realm^.0: struct {
+    /// `#rrggbb`.
+    color 0: option<string>,
+};
+
+/// On a realm: its profile, what everyone may read about it (`name.0`, `contact:*`). Held by the
+/// realm, public, naming the realm in `realm:of.0` and carrying the realm's card, which names
+/// where grants to the realm from outside arrive: whoever holds the profile may grant the realm
+/// roles. Every account has one.
+aspect realm:profile.0: weak;
+
+/// On a profile: the realm it is the profile of.
+aspect realm:of.0: weak;
+
+/// On a realm: the profiles of other realms it imported by their contact cards (each held by
+/// the realm), by realm.
+aspect realm:contacts.0: map<weak, weak>;

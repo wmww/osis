@@ -204,7 +204,7 @@ Cells: `yes`/`no` forced; `opt` app's clean choice; `opt*` a modified client def
 | Is protection per message, at once, rather than after a window? | yes | no! core j |
 | Can a chat have forward secrecy at all? | yes | core m |
 
-## Realms (parked: notes/realms.md, issues/realms-design.md)
+## Realms (notes/realms.md)
 Nothing here is designed: each answer is what today's core would give if servers, organizations and roles were realms as notes/realms.md proposes (a channel a chat a realm holds write on).
 
 | case | want | chat |

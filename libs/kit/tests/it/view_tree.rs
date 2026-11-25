@@ -1,41 +1,20 @@
 //! The view tree with kit alone: a small app's home, no app facets.
 use osis::core::NAME;
-use osis::{Osis, Result, Tid};
+use osis::Tid;
 use osis_kit::facets::create;
-use osis_kit::store::{Account, Data, Registry, start_setting};
+use osis_kit::store::{Data, Registry, start_setting};
 use osis_kit::view::{Block, Cx, WindowState};
 use osis_kit::views::page;
-use std::sync::{Arc, Mutex};
 
-/// One home, made on first use.
-#[derive(Default)]
-pub(crate) struct Small(Mutex<Option<Tid>>);
-
-impl Account for Small {
-    fn homes(&self, _: &osis::ReadOnly) -> Result<Vec<Tid>> {
-        Ok(self.0.lock().unwrap().iter().copied().collect())
-    }
-    fn home(&self, db: &Osis) -> Result<Tid> {
-        let mut g = self.0.lock().unwrap();
-        if let Some(t) = *g {
-            return Ok(t);
-        }
-        let mut w = db.write();
-        let root = db.node();
-        let t = w.create(root, None)?;
-        // its strongs are what undoing a delete writes back
-        start_setting(&mut w, t)?;
-        w.hold(root, t)?;
-        w.commit()?;
-        *g = Some(t);
-        Ok(t)
-    }
-}
-
+/// A fresh node with an account, home taking kit's setting.
 pub(crate) fn data() -> Data {
-    let d = Data::new(osis::internals::create(osis::internals::Opening::memory()).unwrap(), Arc::new(Small::default()), Registry::kit());
-    d.home().unwrap();
-    d
+    let db = osis::internals::create(osis::internals::Opening::memory()).unwrap();
+    let home = osis_account::Account::make(&db).unwrap().thing();
+    // home's strongs are what undoing a delete writes back
+    let mut w = db.write();
+    start_setting(&mut w, home).unwrap();
+    w.commit().unwrap();
+    Data::new(db, Registry::kit())
 }
 
 /// Names `t` `n`, in a commit of its own.

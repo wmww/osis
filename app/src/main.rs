@@ -51,7 +51,7 @@ fn run() -> Result<(), String> {
     let app = App::new().map_err(|e| e.to_string())?;
     // the look flags and demo data go into whichever store opens: this one, or a fresh one
     let data = move |db| {
-        let data = app_store::data(db);
+        let data = app_store::data(db).map_err(|e| e.to_string())?;
         if let Some(t) = &theme {
             data.set_theme(t).map_err(|e| e.to_string())?;
         }

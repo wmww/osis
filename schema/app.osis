@@ -4,13 +4,7 @@
 revision 1;
 
 // ---- Home ----
-// The app keeps one home per account (kit's home; see schema/ui.osis): minted with the account
-// root as admin and held by its `holds.0`, so it syncs, and so does what it holds. Nodes that started before
-// syncing each make one; all are read and writes go to the smallest tid.
-
-/// Marks the app's home among the account root's strongs: an app finds its own home by this scan,
-/// because a tid depends on who made it first.
-aspect osis_app:app.0: bool;
+// Home is the person's account (schema/realm.osis); the app seeds its collections there.
 
 /// On home: this account already received the demo data (`--demo`), so a second node
 /// or run adds none.

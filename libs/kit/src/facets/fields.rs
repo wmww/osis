@@ -42,7 +42,7 @@ impl crate::store::Reader {
     /// The fallback view's rows for `t`, by aspect key.
     pub fn field_rows(&self, t: Tid) -> Result<Vec<Row>> {
         let mut aks: Vec<String> = self.db.aspects(t)?.into_iter().map(|a| a.as_str().to_string()).collect();
-        aks.retain(|a| !crate::store::SYSTEM.contains(&a.as_str()));
+        aks.retain(|a| !crate::store::system(a));
         aks.sort();
         let mut rows = Vec::new();
         // an aspect shown as one read-only row

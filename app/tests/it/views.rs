@@ -216,7 +216,7 @@ fn arrangement_on_what_i_cannot_write() {
     };
     sync();
     let t = create(&a, "tag").unwrap();
-    a.db.grant(t, osis_app::store::account(&b.db).unwrap(), Role::Read, osis::GrantOpts::default()).unwrap();
+    a.db.grant(t, crate::common::account(&b.db).unwrap(), Role::Read, osis::GrantOpts::default()).unwrap();
     sync();
     b.set_arranged(t, &Arrange::Rows).unwrap();
     assert_eq!(b.arranged(t).unwrap(), Some(Arrange::Rows));
@@ -228,7 +228,7 @@ fn window_state_survives_reopening() {
     use osis::Store;
     let mem = osis::MemStore::new();
     let opening = || osis::internals::Opening::at(Store::Memory(mem.clone()));
-    let d = make(crate::common::created(opening()));
+    let d = make(crate::common::created(opening())).unwrap();
     d.home().unwrap();
     let t = d.create_note().unwrap();
     let w = WindowState::default();
@@ -238,7 +238,7 @@ fn window_state_survives_reopening() {
     let win = d.window().unwrap();
     drop(cx);
     drop(d);
-    let d = make(osis::internals::open(opening()).unwrap());
+    let d = make(osis::internals::open(opening()).unwrap()).unwrap();
     assert_eq!(d.opened().unwrap(), Some(t));
     assert_eq!(d.window().unwrap(), win);
     let cx = Cx::new(&d, &w, false);
@@ -473,7 +473,7 @@ fn a_second_rename_undoes_back_to_the_first_after_reopen() {
     use osis::Store;
     let mem = osis::MemStore::new();
     let opening = || osis::internals::Opening::at(Store::Memory(mem.clone()));
-    let d = make(crate::common::created(opening()));
+    let d = make(crate::common::created(opening())).unwrap();
     d.home().unwrap();
     let t = d.create_note().unwrap();
     let k = editor("e", t, "name.0", None);
@@ -486,7 +486,7 @@ fn a_second_rename_undoes_back_to_the_first_after_reopen() {
     }
     assert_eq!(d.name(t).unwrap(), "second", "a closed editor commits");
     drop(d);
-    let d = make(osis::internals::open(opening()).unwrap());
+    let d = make(osis::internals::open(opening()).unwrap()).unwrap();
     let w = WindowState::default();
     assert_eq!(w.sessions.show(&d, &k).unwrap(), "second");
     press_undo(&d, &w, t);

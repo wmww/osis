@@ -21,8 +21,8 @@ fn sync(a: &Data, b: &Data) {
 /// Alice and Bob, two accounts, each with a home; each holds the other's commits.
 fn two_people() -> (Data, Data) {
     let clock = clock();
-    let a = osis_app::store::data(node(1, &clock));
-    let b = osis_app::store::data(node(2, &clock));
+    let a = osis_app::store::data(node(1, &clock)).unwrap();
+    let b = osis_app::store::data(node(2, &clock)).unwrap();
     a.home().unwrap();
     b.home().unwrap();
     sync(&a, &b);
@@ -40,7 +40,7 @@ fn hold(d: &Data, t: osis::Tid) {
 /// A tag Alice made in the app and shared with Bob (`role`).
 fn shared_tag(a: &Data, b: &Data, role: Role) -> osis::Tid {
     let tag = osis_kit::facets::create(a, "tag").unwrap();
-    a.db.grant(tag, osis_app::store::account(&b.db).unwrap(), role, GrantOpts::default()).unwrap();
+    a.db.grant(tag, crate::common::account(&b.db).unwrap(), role, GrantOpts::default()).unwrap();
     tag
 }
 
@@ -76,7 +76,7 @@ fn reach_through_someone_elses_tag() {
     assert_eq!((r.people.len(), r.via.clone()), (1, vec![tag]), "{r:?}");
     assert_ne!(r.who(), "Only you");
     let na = osis_kit::facets::create(&a, "note").unwrap();
-    a.db.grant(na, osis_app::store::account(&b.db).unwrap(), Role::Read, GrantOpts::default()).unwrap();
+    a.db.grant(na, crate::common::account(&b.db).unwrap(), Role::Read, GrantOpts::default()).unwrap();
     sync(&a, &b);
     assert_eq!(reach(&b, na).unwrap().people.len(), 1, "Alice, its mint admin");
 }
@@ -87,7 +87,7 @@ fn reach_counts_an_edge_until_it_ends() {
     let (a, b) = two_people();
     let tag = osis_kit::facets::create(&a, "tag").unwrap();
     let until = Time(a.db.now().unwrap().0 + 86_400_000);
-    a.db.grant(tag, osis_app::store::account(&b.db).unwrap(), Role::Read, GrantOpts { until: Some(until), retain_copy: None, may_grant: false, reads: osis::Reads::Kept, leave_adminless: false }).unwrap();
+    a.db.grant(tag, crate::common::account(&b.db).unwrap(), Role::Read, GrantOpts { until: Some(until), retain_copy: None, may_grant: false, reads: osis::Reads::Kept, leave_adminless: false }).unwrap();
     assert_eq!(reach(&a, tag).unwrap().people.len(), 1);
 }
 

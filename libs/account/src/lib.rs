@@ -1,10 +1,11 @@
-//! A person's account over osis (spec/permissions.md §8): an arrangement of ordinary things, read
-//! by no rule of core. The account is a thing its nodes hold admin (pair, remove) or write on, each
-//! writing as its own node thing through it; it holds its profile (what everyone may read about
-//! the person, the target of its contact card, carrying the account's card) and its inbox (where
-//! grants and requests from others arrive). Things made for the person are minted with the account as admin and held from its
-//! `holds.0`, so every node of the account holds them. "Me", for a person, is the account
-//! (`Account::thing`); a node itself is its node thing (`Osis::node`).
+//! Realms and accounts over osis (schema/realm.osis): arrangements of ordinary things, read by no
+//! rule of core. A realm is a thing whose holders are its members (`Realm`); what is made in it is
+//! minted with it as admin and held from its `holds.0`. A person's account (spec/permissions.md §8)
+//! is a realm its nodes hold admin (pair, remove) or write on, each writing as its own node thing
+//! through it: the person's home. It holds its profile (what everyone may read about the person,
+//! the target of its contact card, carrying the account's card) and its inbox (where grants and
+//! requests from others arrive). "Me", for a person, is the account (`Account::thing`); a node
+//! itself is its node thing (`Osis::node`).
 //!
 //! Pairing a new node is transport-agnostic: the app carries three texts between the nodes (a QR
 //! code, the clipboard, a local socket), the pairing channel of spec/permissions.md §8: the offer
@@ -16,19 +17,102 @@
 
 use osis_base as base;
 use osis_crypto as crypto;
-use osis::core::{CAPS, DIAL, HOLDS, RETENTION, RetentionSetting, SETTINGS};
+use osis::core::{CAPS, DIAL, HOLDS, NAME, RETENTION, RetentionSetting, SETTINGS};
 use osis::{Address, Error, GrantOpts, Keys, Link, LinkInfo, Offer, Osis, ReadOnly, Result, Role, SetRoleOpts, Store, Tid, Value, Weak};
 
-/// Typed keys of schema/account.osis.
+/// Typed keys of schema/realm.osis.
 #[allow(dead_code, clippy::all)]
 pub mod schema {
     use osis::generated as osis_schema;
-    include!(concat!(env!("OUT_DIR"), "/account.rs"));
+    include!(concat!(env!("OUT_DIR"), "/realm.rs"));
 }
 
-use schema::{CONTACTS, OF, PROFILE};
+use schema::{CONTACTS, OF, PROFILE, REALM};
 
-/// A person's account (spec/permissions.md §8).
+/// A realm (schema/realm.osis): a thing whose holders are its members, at their roles. Members
+/// are added by `Osis::grant` or a link, changed and removed by `Osis::set_role`; a thing is
+/// shared into it by a grant to it. Its admins are equals: its mint admin's edge is removed like
+/// any. An account is one (`Account::realm`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Realm {
+    thing: Tid,
+}
+
+impl Realm {
+    /// The realm `thing` is (marked `realm:realm^.0`, or an account).
+    pub fn at(thing: Tid) -> Realm {
+        Realm { thing }
+    }
+
+    /// Makes a realm named `name` in `within` (a realm or the person's account): minted with
+    /// `within` as admin, so `within`'s members are its first, and held from its `holds.0`. A
+    /// member removed keeps a read-only copy of what they could read unless their remover says
+    /// otherwise.
+    pub fn make(db: &Osis, within: Realm, name: &str) -> Result<Realm> {
+        let mut w = db.write();
+        // keys of its own: it holds roles on what is shared into it from the start
+        let r = w.create_with_keys(within.thing)?;
+        w.hold(within.thing, r)?;
+        w.at(r, REALM).set(&schema::Realm { color: None })?;
+        w.at(r, NAME).set(&name.to_string())?;
+        w.at(r, RETENTION).set(&RetentionSetting { retain_copies: true, ..RetentionSetting::default() })?;
+        w.commit()?;
+        Ok(Realm { thing: r })
+    }
+
+    /// The realm itself, as holder of roles: grant it a role on a thing to share the thing into
+    /// it; mint with it as admin to make a thing in it.
+    pub fn thing(&self) -> Tid {
+        self.thing
+    }
+
+    /// The realm's profile: everyone may read it, so its admins write what others may know of
+    /// the realm there (`name.0`, `contact:*`). `None` where it has none, or on a node paired a
+    /// moment ago that holds none of the account yet.
+    pub fn profile(&self, db: &ReadOnly) -> Result<Option<Tid>> {
+        Ok(db.at(self.thing, PROFILE).get()?.map(|w| w.0))
+    }
+
+    /// The realm's contact card: a public link to its profile, naming this node to reach it
+    /// (`Osis::public_link`). Whoever imports it can grant the realm roles.
+    pub fn contact_card(&self, db: &Osis) -> Result<Link> {
+        let p = self.profile(db)?.ok_or_else(|| Error::Invalid("the realm's profile is not here yet".into()))?;
+        publish_profile(db, p)?;
+        db.public_link(p)
+    }
+
+    /// Imports a contact card into the realm: holds the profile it names, records it, and returns
+    /// the card's realm (an account, for a person's card) once its keys are here, usable in
+    /// `grant`. Waits for the card's node meanwhile (wrap it in a timeout).
+    pub async fn import_contact(&self, db: &Osis, card: &Link) -> Result<Tid> {
+        let p = db.redeem(card, self.thing).await?;
+        // the profile's content comes with its sync, once joined
+        if db.at(p, OF).get()?.is_none() {
+            db.wait_synced(osis::SyncScope::Thing(p)).await?;
+        }
+        let who = db.at(p, OF).get()?.ok_or_else(|| Error::Invalid("contact card: its profile names no realm".into()))?.0;
+        let mut w = db.write();
+        w.at(self.thing, CONTACTS).path(osis::p![Weak(who)]).set(&Weak(p))?;
+        w.commit()?;
+        Ok(who)
+    }
+
+    /// The profile of a realm whose contact card this realm imported, if any.
+    pub fn profile_of(&self, db: &ReadOnly, realm: Tid) -> Result<Option<Tid>> {
+        Ok(db.at(self.thing, CONTACTS).get()?.and_then(|m| m.get(&Weak(realm)).map(|w| w.0)))
+    }
+}
+
+/// Makes profile `p` public, unless it is (`Account::make` does; a node stopped between its two
+/// transactions left it to the first contact card).
+fn publish_profile(db: &Osis, p: Tid) -> Result<()> {
+    if !db.grants(p)?.contains_key(&Tid::PUBLIC) {
+        db.grant(p, Tid::PUBLIC, Role::Read, GrantOpts::default())?;
+    }
+    Ok(())
+}
+
+/// A person's account (spec/permissions.md §8): a realm, the person's home.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Account {
     thing: Tid,
@@ -51,7 +135,7 @@ impl Account {
         if let Some(a) = db.settings_thing()? {
             // one made by a node stopped before its last step is finished; one made, refused
             let a = Account { thing: a };
-            return match a.profile(db)? {
+            return match a.realm().profile(db)? {
                 Some(p) if !db.grants(p)?.contains_key(&Tid::PUBLIC) => {
                     // nothing else is made for A before `make` returns: its other strong is the inbox
                     let inbox = db.at(a.thing, HOLDS).get()?.unwrap_or_default().into_iter().find_map(|r| match r {
@@ -72,6 +156,7 @@ impl Account {
         let (inbox, profile) = (w.create_with_keys(a)?, w.create_with_keys(a)?);
         w.hold(root, a)?;
         w.at(root, SETTINGS).set(&Weak(a))?;
+        w.at(a, REALM).set(&schema::Realm { color: None })?;
         w.hold(a, inbox)?;
         w.hold(a, profile)?;
         w.at(a, PROFILE).set(&Weak(profile))?;
@@ -91,7 +176,7 @@ impl Account {
     fn finish(&self, db: &Osis, profile: Tid, inbox: Tid) -> Result<()> {
         db.set_card(profile, self.thing, Some(inbox))?;
         db.publish_dial_on(&[self.thing, profile])?;
-        self.publish_profile(db, profile)
+        publish_profile(db, profile)
     }
 
     /// The account `db`'s node acts for, if any: the thing it keeps its settings on.
@@ -99,18 +184,16 @@ impl Account {
         Ok(db.settings_thing()?.map(|thing| Account { thing }))
     }
 
-    /// The account itself: what a person is, as holder of roles ("me" for a person). Grant it
-    /// what the person may reach from every node; mint what the person makes with it as admin and
-    /// hold it from its `holds.0`.
+    /// The account itself: what a person is, as holder of roles ("me" for a person), and their
+    /// home. Grant it what the person may reach from every node; mint what the person makes with
+    /// it as admin and hold it from its `holds.0`.
     pub fn thing(&self) -> Tid {
         self.thing
     }
 
-    /// The account's profile: everyone may read it, so the person writes what others may know of
-    /// them there (`name.0`, `contact:*`). `None` on a node paired a moment ago that holds none of
-    /// the account yet.
-    pub fn profile(&self, db: &ReadOnly) -> Result<Option<Tid>> {
-        Ok(db.at(self.thing, PROFILE).get()?.map(|w| w.0))
+    /// The account as a realm: its profile, contact card and contacts.
+    pub fn realm(&self) -> Realm {
+        Realm { thing: self.thing }
     }
 
     /// The account's nodes: its holders of write or admin.
@@ -132,7 +215,7 @@ impl Account {
         let a = self.thing;
         db.set_role(a, node, None, SetRoleOpts { retain_copy: Some(o.retain_copy.unwrap_or(false)), ..o })?;
         let mut w = db.write();
-        for t in std::iter::once(a).chain(self.profile(db)?) {
+        for t in std::iter::once(a).chain(self.realm().profile(db)?) {
             if db.at(t, DIAL).get()?.is_some_and(|d| d.contains_key(&Weak(node))) {
                 w.at(t, DIAL).path(osis::p![Weak(node)]).remove()?;
             }
@@ -144,50 +227,12 @@ impl Account {
         db.links()
     }
 
-    /// The account's contact card: a public link to its profile, naming this node to reach it
-    /// (`Osis::public_link`). Whoever imports it can grant the account roles.
-    pub fn contact_card(&self, db: &Osis) -> Result<Link> {
-        let p = self.profile(db)?.ok_or_else(|| Error::Invalid("the account's profile is not here yet".into()))?;
-        self.publish_profile(db, p)?;
-        db.public_link(p)
-    }
-
-    /// Makes profile `p` public, unless it is (`make` does; a node stopped between its two
-    /// transactions left it to the first contact card).
-    fn publish_profile(&self, db: &Osis, p: Tid) -> Result<()> {
-        if !db.grants(p)?.contains_key(&Tid::PUBLIC) {
-            db.grant(p, Tid::PUBLIC, Role::Read, GrantOpts::default())?;
-        }
-        Ok(())
-    }
-
-    /// Imports a contact card into the account: holds the profile it names, records it, and
-    /// returns the card's account once its keys are here, usable in `grant`. Waits for the card's
-    /// node meanwhile (wrap it in a timeout).
-    pub async fn import_contact(&self, db: &Osis, card: &Link) -> Result<Tid> {
-        let p = db.redeem(card, self.thing).await?;
-        // the profile's content comes with its sync, once joined
-        if db.at(p, OF).get()?.is_none() {
-            db.wait_synced(osis::SyncScope::Thing(p)).await?;
-        }
-        let who = db.at(p, OF).get()?.ok_or_else(|| Error::Invalid("contact card: its profile names no account".into()))?.0;
-        let mut w = db.write();
-        w.at(self.thing, CONTACTS).path(osis::p![Weak(who)]).set(&Weak(p))?;
-        w.commit()?;
-        Ok(who)
-    }
-
-    /// The profile of an account whose contact card this account imported, if any.
-    pub fn profile_of(&self, db: &ReadOnly, account: Tid) -> Result<Option<Tid>> {
-        Ok(db.at(self.thing, CONTACTS).get()?.and_then(|m| m.get(&Weak(account)).map(|w| w.0)))
-    }
-
     /// An offer to pair a new node, good once while the `Offering` is kept: the new node runs
     /// `pair` with it and the app carries its request back to `Offering::accept`. Whoever holds
     /// the offer can make their node a full admin node of the account until then: show it only to
     /// the new node, and drop the `Offering` once the pairing is given up.
     pub fn offer_pairing(&self, db: &Osis) -> Result<Offering> {
-        let profile = self.profile(db)?.ok_or_else(|| Error::Invalid("the account's profile is not here yet".into()))?;
+        let profile = self.realm().profile(db)?.ok_or_else(|| Error::Invalid("the account's profile is not here yet".into()))?;
         let mut secret = [0u8; 32];
         crypto::RngCore::fill_bytes(&mut crypto::OsRng, &mut secret);
         let reach = db.dial_hints()?.iter().map(|a| Value::Str(a.to_string())).collect();

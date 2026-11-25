@@ -218,7 +218,7 @@ fn commands_run_through_the_daemon_plan_cli() {
     // the profile is public, so anyone may hold it: the card's wait runs to the timeout
     let card = s.call(&["--timeout", "1s", "contact", "show"], "");
     assert_eq!(card.code, 6, "{}", card.err);
-    let acc = osis_account::Account::of(&held).unwrap().unwrap();
+    let acc = osis_account::Account::of(&held).unwrap().unwrap().realm();
     assert_eq!(card.line(), acc.contact_card(&held).unwrap().to_string());
     assert_eq!(ok(&["contact", "profile"]).trim(), acc.profile(&held).unwrap().unwrap().to_uri());
     assert_eq!(ok(&["contact", "import", card.line(), "--timeout", "60s"]).trim(), acc.thing().to_uri());

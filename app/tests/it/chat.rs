@@ -10,7 +10,7 @@ use crate::common::{clock, deliver, node};
 
 /// Sets the profile's name.
 fn set_name(db: &Osis, name: &str) -> osis::Result<()> {
-    let p = osis_account::Account::of(db)?.and_then(|a| a.profile(db).transpose()).transpose()?.ok_or(osis::Error::Invalid("no profile".into()))?;
+    let p = osis_account::Account::of(db)?.and_then(|a| a.realm().profile(db).transpose()).transpose()?.ok_or(osis::Error::Invalid("no profile".into()))?;
     let mut w = db.write();
     w.at(p, osis::core::NAME).set(&name.to_string())?;
     w.commit()?;
@@ -35,8 +35,8 @@ fn shared(opts: &osis_chat::Options) -> (Arc<ManualClock>, Osis, Osis, Tid) {
     let clock = clock();
     let (a, b) = (node(1, &clock), node(2, &clock));
     sync(&a, &b);
-    let c = osis_chat::create(&a, opts, osis_app::store::account(&a).unwrap()).unwrap();
-    a.grant(c, osis_app::store::account(&b).unwrap(), Role::Write, GrantOpts::default()).unwrap();
+    let c = osis_chat::create(&a, opts, crate::common::account(&a).unwrap()).unwrap();
+    a.grant(c, crate::common::account(&b).unwrap(), Role::Write, GrantOpts::default()).unwrap();
     { let mut w = b.write(); w.hold(b.node_root().unwrap(), c).unwrap(); w.commit().unwrap(); }
     (clock, a, b, c)
 }
@@ -107,7 +107,7 @@ fn edited_deleted_and_nameless() {
 #[test]
 fn reading_the_name_writes_nothing() {
     let a = node(0, &clock());
-    let c = osis_chat::create(&a, &osis_chat::Options::default(), osis_app::store::account(&a).unwrap()).unwrap();
+    let c = osis_chat::create(&a, &osis_chat::Options::default(), crate::common::account(&a).unwrap()).unwrap();
     let before = a.engine(|e| e.commit_ids().len());
     chat::my_name(&a).unwrap();
     assert_eq!(a.engine(|e| e.commit_ids().len()), before);
@@ -122,20 +122,20 @@ fn reading_the_name_writes_nothing() {
 #[test]
 fn join_held_chat_opens_it() {
     let (clock, a, b, c) = shared(&osis_chat::Options::default());
-    let link = a.make_link(c, Role::Write, osis_app::store::account(&a).unwrap(), LinkOpts { until: None, single_use: false }).unwrap().to_string();
+    let link = a.make_link(c, Role::Write, crate::common::account(&a).unwrap(), LinkOpts { until: None, single_use: false }).unwrap().to_string();
     sync(&a, &b);
     for db in [a, b] {
         // the peer never answers: a held thing opens at once
         let (tx, rx) = std::sync::mpsc::channel();
         let l = link.clone();
         std::thread::spawn(move || {
-            let d = osis_app::store::data(db);
+            let d = osis_app::store::data(db).unwrap();
             tx.send(d.redeem(&format!(" {l}\n")).map_err(|e| e.to_string()))
         });
         assert_eq!(rx.recv_timeout(std::time::Duration::from_secs(20)).expect("redeem returns at once"), Ok(c));
     }
     let a = node(3, &clock);
-    assert!(osis_app::store::data(a).redeem("osis://nonsense").unwrap_err().to_string().contains("not a link"));
+    assert!(osis_app::store::data(a).unwrap().redeem("osis://nonsense").unwrap_err().to_string().contains("not a link"));
 }
 
 /// A quote costs one commit read, however far back the quoted message is and however often it
@@ -148,7 +148,7 @@ fn quotes_read_flat_in_history() {
     let reads = |n: usize| -> (Vec<(&'static str, u64)>, Vec<chat::Line>) {
         let clock = clock();
         let a = node(0, &clock);
-        let c = osis_chat::create(&a, &osis_chat::Options::default(), osis_app::store::account(&a).unwrap()).unwrap();
+        let c = osis_chat::create(&a, &osis_chat::Options::default(), crate::common::account(&a).unwrap()).unwrap();
         let first = chat::send(&a, c, "", "typo", None).unwrap();
         for i in 0..n {
             clock.advance(1);

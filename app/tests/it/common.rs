@@ -12,11 +12,14 @@ pub fn created(o: osis::internals::Opening) -> Osis {
     db
 }
 
-/// The app's account over a fresh in-memory node, its home made.
+/// The app's account over a fresh in-memory node, its home seeded.
 pub fn data() -> osis_kit::store::Data {
-    let d = osis_app::store::data(created(osis::internals::Opening::memory()));
-    d.home().unwrap();
-    d
+    osis_app::store::data(created(osis::internals::Opening::memory())).unwrap()
+}
+
+/// The account `db` acts for: the person, and home.
+pub fn account(db: &Osis) -> osis::Result<osis::Tid> {
+    Ok(osis_account::Account::of(db)?.ok_or_else(|| osis::Error::Invalid("this node acts for no account".into()))?.thing())
 }
 
 /// Saves `text` in a form row, as Enter or leaving its field does.
@@ -52,7 +55,7 @@ pub fn deliver(from: &Osis, to: &Osis) {
     let (root, who) = (account(to), account(from));
     let other = who != root;
     if other {
-        let profile = who.profile(from).unwrap().unwrap();
+        let profile = who.realm().profile(from).unwrap().unwrap();
         for t in [who.thing(), profile] {
             if !to.holds(root.thing(), t).unwrap() {
                 let mut w = to.write();

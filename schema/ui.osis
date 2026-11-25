@@ -7,14 +7,13 @@
 revision 1;
 
 // ---- Home: what a person decided, per account ----
-// Home is the thing an app keeps for one account, minted with the account root as admin and held by it (the
-// app finds it and hands its tid to kit). These aspects live on it, sync to all of the account's
-// nodes, and survive restart. A value here is a viewer's decision, so it works on things that
+// Home is the person's account (schema/realm.osis), one per person whatever the app. These aspects
+// live on it, sync to all of the account's nodes, and survive restart. A value here is a viewer's decision, so it works on things that
 // person cannot write.
 
 /// The account's favorites, in order: the source of the home collection and the rail. Written when
 /// the viewer favorites, unfavorites or reorders; reordering is a sequence move, so a concurrent
-/// unfavorite wins. Nodes that raced on two homes keep their own list; readers take the union.
+/// unfavorite wins.
 aspect ui:favorites.0: list<weak>;
 
 /// How the viewer places a collection: by thing, the arrangement that beats the thing's stored one.

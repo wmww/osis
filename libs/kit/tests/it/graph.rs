@@ -112,8 +112,9 @@ fn collections_of_everything_summarize() {
         w.hold(g, x).unwrap();
     }
     w.commit().unwrap();
-    assert_eq!(d.summary(a).unwrap().sub, "1 item");
-    assert_eq!(d.summary(b).unwrap().sub, "1 item");
+    // each: the other and the profile
+    assert_eq!(d.summary(a).unwrap().sub, "2 items");
+    assert_eq!(d.summary(b).unwrap().sub, "2 items");
     let win = WindowState::default();
     let n = page(&Cx::new(&d, &win, false), a).unwrap();
     assert!(!n.walk().is_empty());
@@ -411,15 +412,6 @@ fn a_renders_db_is_the_read_only_handle() {
     assert_eq!(read_only(&cx).author(), d.db.author());
 }
 
-/// A read does not make the profile: it is made at open, or never without a peer.
-#[test]
-fn reading_makes_no_profile() {
-    let d = data();
-    let w = WindowState::default();
-    let cx = Cx::new(&d, &w, false);
-    assert_eq!(cx.you().unwrap(), None);
-}
-
 /// Views made for what a parent passes and for failing: a `Registry` beside kit's.
 mod flaky {
     use osis_kit::view::{Block, Cx, Local, Section, ViewSpec};
@@ -474,10 +466,10 @@ mod flaky {
 
 fn flaky_data() -> osis_kit::store::Data {
     let d = data();
-    let (db, account, _) = d.parts();
+    let (db, _) = d.parts();
     let mut reg = osis_kit::store::Registry::kit();
     reg.views.extend([&flaky::FAILING, &flaky::HANDLING, &flaky::GOOD, &flaky::PAIR, &flaky::PARENT, &flaky::CHILD]);
-    osis_kit::store::Data::new(db, account, reg)
+    osis_kit::store::Data::new(db, reg)
 }
 
 /// The flaky view `view` shown on home at `v`: its window, tree, screen and whether it showed.

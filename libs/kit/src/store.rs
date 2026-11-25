@@ -1,12 +1,10 @@
 //! The account's own state (notes/app.md Layers), toolkit-free: its home, favorites, the look, the
 //! open thing, and the universe of things.
 //!
-//! Home (found by the app: `Account`) is a dependent thing minted with the account root as admin and held by
-//! its `holds.0`, so it syncs to the account's nodes (favorites, the collections). Every thing the
-//! app makes is minted with home as admin (its mint admin, whose keys it takes) and held by home's
-//! `holds.0`; a tag holds what it tags in its own `holds.0`. Nodes that start before syncing each
-//! make one: every home the app reports is read, and writes go to the smallest tid (notes/app.md
-//! kit and app).
+//! Home is the person's account (osis-account, schema/realm.osis): favorites, the collections and
+//! the look are on it, so they reach every node of the account. Every thing the app makes is
+//! minted with home as admin (its mint admin, whose keys it takes) and held by home's `holds.0`;
+//! a tag holds what it tags in its own `holds.0`.
 
 use std::any::Any;
 use std::fmt::Debug;
@@ -38,24 +36,20 @@ pub fn open(dir: &Path, dial: Vec<Address>, wake: Arc<dyn Fn() + Send + Sync>) -
     Ok(db)
 }
 
-/// The aspects that are the system's, not the user's: no view accounts for them, raw hides them.
-pub const SYSTEM: [&str; 9] = ["created.0", "holds.0", "roles.0", "keys.0", "secrets.0", "sync.0", "reach.0", "node.0", "retention^.0"];
+/// Whether aspect `ak` is the system's, not the user's: a core aspect but the content ones (`name.0`,
+/// `body.0`, `tag.0`). No view accounts for one, raw hides them, and a thing carrying nothing else
+/// (an account's inbox, a link's thing) is no thing of the person's.
+pub fn system(ak: &str) -> bool {
+    !ak.contains(':') && !matches!(ak, "name.0" | "body.0" | "tag.0")
+}
 
 /// The registry of what a Data knows: its facets and view types.
 pub use crate::view::registry::Registry;
 
-/// What an app supplies: its homes (an app-level concept: kit takes the tids).
-pub trait Account: Send + Sync {
-    /// The account's homes, the main one first.
-    fn homes(&self, db: &ReadOnly) -> Result<Vec<Tid>>;
-    /// The home writes go to, made on first use.
-    fn home(&self, db: &Osis) -> Result<Tid>;
-}
-
 /// Every read of the view system: what a render, an action or a test asks of a store. It holds
 /// `osis::ReadOnly`, which has no write; `Data` adds those (`Deref`). A render's `Reader` is
-/// `tracking`, so what it reads is what it depends on; `things`, `favorites`, `homes`, `summary`
-/// and `aspects` are shared memos then.
+/// `tracking`, so what it reads is what it depends on; `things`, `favorites`, `summary` and
+/// `aspects` are shared memos then.
 #[derive(Clone)]
 pub struct Reader {
     pub db: ReadOnly,
@@ -63,7 +57,6 @@ pub struct Reader {
     pub(crate) scope: Option<Scope>,
     /// What a read of the time and tracked handles come from. Private: a render has no writes.
     clock: Osis,
-    pub account: Arc<dyn Account>,
     pub registry: Arc<Registry>,
 }
 
@@ -83,34 +76,29 @@ impl Deref for Data {
 
 impl Data {
     /// Registers the kit's schema, so `db.aspect_key` types its aspects (the raw view).
-    pub fn new(db: Osis, account: Arc<dyn Account>, registry: Registry) -> Data {
+    pub fn new(db: Osis, registry: Registry) -> Data {
         // a store error here shows again at the first write
         if let Err(e) = db.register_schema(crate::schema::SCHEMA.file(), crate::schema::SCHEMA.source()) {
             eprintln!("osis-kit: schema: {e}");
         }
-        Data::from_parts((db, account, Arc::new(registry)))
+        Data::from_parts((db, Arc::new(registry)))
     }
 
     /// What another thread may hold (`Data` carries the UI thread's graph handles).
-    pub fn parts(&self) -> (Osis, Arc<dyn Account>, Arc<Registry>) {
-        (self.db.clone(), self.account.clone(), self.registry.clone())
+    pub fn parts(&self) -> (Osis, Arc<Registry>) {
+        (self.db.clone(), self.registry.clone())
     }
 
     /// `Data` again, on another thread.
-    pub fn from_parts((db, account, registry): (Osis, Arc<dyn Account>, Arc<Registry>)) -> Data {
-        Data { reader: Reader { db: ReadOnly::clone(&db), scope: None, clock: db.clone(), account, registry }, db }
-    }
-
-    /// The home writes go to, made on first use.
-    pub fn home(&self) -> Result<Tid> {
-        self.account.home(&self.db)
+    pub fn from_parts((db, registry): (Osis, Arc<Registry>)) -> Data {
+        Data { reader: Reader { db: ReadOnly::clone(&db), scope: None, clock: db.clone(), registry }, db }
     }
 }
 
 impl Reader {
     /// This reader, its reads tracked in `set` under `scope`.
     pub(crate) fn scoped(&self, set: &ReadSet, scope: Scope) -> Reader {
-        Reader { db: self.clock.tracking(set), scope: Some(scope), clock: self.clock.clone(), account: self.account.clone(), registry: self.registry.clone() }
+        Reader { db: self.clock.tracking(set), scope: Some(scope), clock: self.clock.clone(), registry: self.registry.clone() }
     }
 
     /// `f`, remembered under `key` and re-run only when what it read differs (equal output stops
@@ -191,7 +179,7 @@ impl Reader {
     /// The aspect names `t` carries, the system's left out.
     pub fn aspects(&self, t: Tid) -> Result<Rc<Vec<String>>> {
         self.memo(("aspects", t), |r, &(_, t)| {
-            Ok(r.db.aspects(t)?.into_iter().map(|a| a.as_str().to_string()).filter(|a| !SYSTEM.contains(&a.as_str())).collect())
+            Ok(r.db.aspects(t)?.into_iter().map(|a| a.as_str().to_string()).filter(|a| !system(a)).collect())
         })
     }
 
@@ -218,14 +206,14 @@ impl Reader {
         Ok(self.state(key, node)?.unwrap_or(false))
     }
 
-    /// The account's homes, the main one first.
-    pub fn homes(&self) -> Result<Vec<Tid>> {
-        Ok((*self.memo(("homes", ()), |r, _| r.account.homes(&r.db))?).clone())
+    /// Home: the person's account, which every node of it shares.
+    pub fn home(&self) -> Result<Tid> {
+        Ok(self.person()?.ok_or_else(|| osis::Error::Invalid("this node acts for no account".into()))?.thing())
     }
 
-    /// Whether `t` is one of the app's homes.
+    /// Whether `t` is home.
     pub fn is_home(&self, t: Tid) -> Result<bool> {
-        Ok(self.homes()?.contains(&t))
+        Ok(self.home()? == t)
     }
 
     /// The person this node acts for: its account (osis-account), if any.
@@ -236,30 +224,36 @@ impl Reader {
     /// The person's profile thing, once it is here (`osis_account::Account::profile`).
     pub fn you(&self) -> Result<Option<Tid>> {
         match self.person()? {
-            Some(a) => a.profile(&self.db),
+            Some(a) => a.realm().profile(&self.db),
             None => Ok(None),
         }
     }
 
-    /// Everything held: what the homes hold by strongs in `holds.0`, at any depth, and the profile.
-    /// Racing nodes' seed views count once (equal `(collection.0, name.0)`, the smallest tid).
+    /// Everything held: what home holds by strongs in `holds.0`, at any depth, but what carries
+    /// only the system's aspects. Seed views two nodes made before they synced count once (equal
+    /// `(collection.0, name.0)`, the smallest tid).
     pub fn things(&self) -> Result<Rc<BTreeSet<Tid>>> {
         self.memo(("things", ()), |r, _| r.compute_things())
     }
 
     fn compute_things(&self) -> Result<BTreeSet<Tid>> {
-        let homes = self.homes()?;
+        let home = self.home()?;
         let mut seen = BTreeSet::new();
-        let mut todo: Vec<Tid> = Vec::new();
-        for h in &homes {
-            todo.extend(self.strongs(*h)?.iter().copied());
-        }
-        todo.extend(self.you()?);
+        let mut todo: Vec<Tid> = self.strongs(home)?.to_vec();
         while let Some(t) = todo.pop() {
-            if homes.contains(&t) || !seen.insert(t) {
+            if t == home || !seen.insert(t) {
                 continue;
             }
             todo.extend(self.strongs(t)?.iter().copied().filter(|x| !seen.contains(x)));
+        }
+        let mut bare = Vec::new();
+        for t in &seen {
+            if self.aspects(*t)?.is_empty() {
+                bare.push(*t);
+            }
+        }
+        for t in bare {
+            seen.remove(&t);
         }
         let mut keep: BTreeMap<(Collection, String), Tid> = BTreeMap::new();
         let mut dup = Vec::new();
@@ -409,22 +403,17 @@ impl Reader {
 
     /// The viewer's arrangement of `t` (`None`: its own).
     pub fn arranged(&self, t: Tid) -> Result<Option<Arrange>> {
-        self.on_homes(ARRANGED, t)
+        self.on_home(ARRANGED, t)
     }
 
     /// Which thing view the viewer chose for `t` (`None`: the default).
     pub fn viewed_as(&self, t: Tid) -> Result<Option<String>> {
-        self.on_homes(VIEWED_AS, t)
+        self.on_home(VIEWED_AS, t)
     }
 
-    /// `key`'s entry for `t` on the homes, the main home's first.
-    fn on_homes<T: osis::Codec + 'static>(&self, key: osis::generated::Aspect<BTreeMap<Weak, T>>, t: Tid) -> Result<Option<T>> {
-        for g in self.homes()? {
-            if let Some(v) = self.db.at(g, key).path(p![Weak(t)]).get()? {
-                return Ok(Some(v));
-            }
-        }
-        Ok(None)
+    /// `key`'s entry for `t` on home.
+    fn on_home<T: osis::Codec + 'static>(&self, key: osis::generated::Aspect<BTreeMap<Weak, T>>, t: Tid) -> Result<Option<T>> {
+        self.db.at(self.home()?, key).path(p![Weak(t)]).get()
     }
 
     /// Whether `undo(t)` has a commit to undo; `NotUndoable` when that commit cannot be undone.
@@ -447,9 +436,8 @@ impl Reader {
 
     // ---- favorites
 
-    /// The favorites in order: the main home's list, then any others' extras; things gone are
-    /// skipped, a duplicate view stands for the one `views` keeps.
-    /// Works around issues/app-home-helper.md.
+    /// The favorites in order: home's list, things gone skipped, a duplicate view standing for
+    /// the one `views` keeps.
     pub fn favorites(&self) -> Result<Vec<Tid>> {
         Ok((*self.memo(("favorites", ()), |r, _| r.compute_favorites())?).clone())
     }
@@ -458,12 +446,10 @@ impl Reader {
         let mut out: Vec<Tid> = Vec::new();
         let all = self.things()?;
         let views = self.view_map()?;
-        for g in self.homes()? {
-            for t in self.db.at(g, FAVORITES).get()?.unwrap_or_default() {
-                let t = self.shown_as(&views, t.0)?;
-                if !out.contains(&t) && all.contains(&t) {
-                    out.push(t);
-                }
+        for t in self.db.at(self.home()?, FAVORITES).get()?.unwrap_or_default() {
+            let t = self.shown_as(&views, t.0)?;
+            if !out.contains(&t) && all.contains(&t) {
+                out.push(t);
             }
         }
         Ok(out)
@@ -489,20 +475,15 @@ impl Reader {
 
     /// The chosen theme id (`None`: the default) and mode.
     pub fn look(&self) -> Result<(Option<String>, Mode)> {
-        let mut theme = None;
-        let mut mode = None;
-        for g in self.homes()? {
-            theme = theme.or(self.db.at(g, THEME).get()?);
-            mode = mode.or(self.db.at(g, MODE).get()?);
-        }
-        Ok((theme, mode.unwrap_or(Mode::Auto)))
+        let g = self.home()?;
+        Ok((self.db.at(g, THEME).get()?, self.db.at(g, MODE).get()?.unwrap_or(Mode::Auto)))
     }
 
-    // ---- navigation (per-window state, the window held by the main home)
+    // ---- navigation (per-window state, the window held by home)
 
-    /// This node's window, if it has one (the main home's first).
+    /// This node's window, if it has one.
     pub fn window_opt(&self) -> Result<Option<Tid>> {
-        Ok(*self.memo(("window_opt", ()), |r, _| Ok(r.on_homes(WINDOWS, r.db.node())?.map(|w| w.0)))?)
+        Ok(*self.memo(("window_opt", ()), |r, _| Ok(r.on_home(WINDOWS, r.db.node())?.map(|w| w.0)))?)
     }
 
     /// The thing this window has open; `None`: home (also when it is held no more).
@@ -548,39 +529,28 @@ impl Data {
         }
         Ok(self.db.undo(&osis::Scope::Thing(t))?.is_some())
     }
-    /// Adds `t` at the end of the main home's favorites, or removes it from every home's list.
-    /// Entries stay in the home holding them: copying another home's entries into the main
-    /// list would bring back one that a node removes meanwhile.
+    /// Adds `t` at the end of the favorites, or removes every entry showing it.
     pub fn toggle_favorite(&self, t: Tid) -> Result<()> {
-        let mut edits = Vec::new();
+        let g = self.home()?;
+        let base = self.db.at(g, FAVORITES).get()?.unwrap_or_default();
+        let mut new = Vec::with_capacity(base.len() + 1);
         if self.is_favorite(t)? {
             let views = self.view_map()?;
-            for g in self.homes()? {
-                let base = self.db.at(g, FAVORITES).get()?.unwrap_or_default();
-                let mut new = Vec::with_capacity(base.len());
-                for x in &base {
-                    if self.shown_as(&views, x.0)? != t {
-                        new.push(*x);
-                    }
-                }
-                if new != base {
-                    edits.push((g, base, new));
+            for x in &base {
+                if self.shown_as(&views, x.0)? != t {
+                    new.push(*x);
                 }
             }
         } else {
-            let g = self.home()?;
-            let base = self.db.at(g, FAVORITES).get()?.unwrap_or_default();
-            let mut new = base.clone();
+            new.extend(base.iter().copied());
             new.push(Weak(t));
-            edits.push((g, base, new));
         }
-        self.commit(|w| edits.iter().try_for_each(|(g, base, new)| w.at(*g, FAVORITES).edit(base, new)))
+        self.commit(|w| w.at(g, FAVORITES).edit(&base, &new))
     }
-    /// Moves the favorite at `from` to `to` (indices into `favorites()`), by a sequence move
-    /// inside the list that holds it: a node removing it meanwhile wins (a move never brings
-    /// back a deleted element, where delete-and-insert would), and nothing is copied between
-    /// homes. An entry moves among its own home's entries only: placed before the first of
-    /// them that follows it in the new order, else after their last.
+    /// Moves the favorite at `from` to `to` (indices into `favorites()`), by a sequence move: a
+    /// node removing it meanwhile wins (a move never brings back a deleted element, where
+    /// delete-and-insert would). Placed before the first entry that follows it in the new order
+    /// (entries of things gone stay where they are), else after the last.
     pub fn move_favorite(&self, from: usize, to: usize) -> Result<()> {
         let mut favs = self.favorites()?;
         if from >= favs.len() || to >= favs.len() || from == to {
@@ -589,34 +559,32 @@ impl Data {
         let x = favs.remove(from);
         favs.insert(to, x);
         let views = self.view_map()?;
-        for g in self.homes()? {
-            let list = self.db.at(g, FAVORITES).get()?.unwrap_or_default();
-            let mut shown = Vec::with_capacity(list.len());
-            for e in &list {
-                shown.push(self.shown_as(&views, e.0)?);
-            }
-            // every entry showing `x` (two nodes favoriting it at once leave two): the first
-            // moves, the others go in the same write, so `x` lands where it was dropped
-            let at: Vec<usize> = shown.iter().enumerate().filter(|(_, t)| **t == x).map(|(k, _)| k).collect();
-            let Some(&i) = at.first() else { continue };
-            // the first entry of this list that comes after `x` in the new order
-            let after: Vec<Tid> = favs.iter().skip(to + 1).copied().collect();
-            let rest: Vec<Tid> = shown.iter().filter(|t| **t != x).copied().collect();
-            let dest = after.iter().find_map(|a| rest.iter().position(|t| t == a)).unwrap_or(rest.len());
-            if dest == i && at.len() == 1 {
-                return Ok(());
-            }
-            return self.commit(|w| {
-                for &j in at.iter().skip(1).rev() {
-                    w.at(g, FAVORITES).path(p![]).splice(j..j + 1, ())?;
-                }
-                if dest != i {
-                    w.at(g, FAVORITES).path(p![]).move_range(i..i + 1, dest)?;
-                }
-                Ok(())
-            });
+        let g = self.home()?;
+        let list = self.db.at(g, FAVORITES).get()?.unwrap_or_default();
+        let mut shown = Vec::with_capacity(list.len());
+        for e in &list {
+            shown.push(self.shown_as(&views, e.0)?);
         }
-        Ok(())
+        // every entry showing `x` (two nodes favoriting it at once leave two): the first moves,
+        // the others go in the same write, so `x` lands where it was dropped
+        let at: Vec<usize> = shown.iter().enumerate().filter(|(_, t)| **t == x).map(|(k, _)| k).collect();
+        let Some(&i) = at.first() else { return Ok(()) };
+        // the first entry of the list that comes after `x` in the new order
+        let after: Vec<Tid> = favs.iter().skip(to + 1).copied().collect();
+        let rest: Vec<Tid> = shown.iter().filter(|t| **t != x).copied().collect();
+        let dest = after.iter().find_map(|a| rest.iter().position(|t| t == a)).unwrap_or(rest.len());
+        if dest == i && at.len() == 1 {
+            return Ok(());
+        }
+        self.commit(|w| {
+            for &j in at.iter().skip(1).rev() {
+                w.at(g, FAVORITES).path(p![]).splice(j..j + 1, ())?;
+            }
+            if dest != i {
+                w.at(g, FAVORITES).path(p![]).move_range(i..i + 1, dest)?;
+            }
+            Ok(())
+        })
     }
     pub fn set_theme(&self, id: &str) -> Result<()> {
         self.set_look(THEME, id.to_string())

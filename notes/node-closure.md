@@ -8,7 +8,7 @@ Spec: spec/sync-set.md, spec/sync-inbox.md §5. Model: notes/closure-model.md (h
 ## Design rules (Tess)
 - **A strong grants nothing.** It says the target belongs to this closure; anyone knowing a tid may write one. Permission is a separate act by someone who may grant, and removing a reference revokes nothing.
 - **A thing goes when its last reference goes** (spec/sync-set.md §3). That is the intended result, never a risk to design around: nothing is kept because a release might be a mistake.
-- **Core holds only what cannot be built correctly on top of it.** Home, which offers to act on, contact lists and "what is on my other nodes" are the app's.
+- **Core holds only what cannot be built correctly on top of it.** Home (the account, a schema-level realm: notes/realms.md), which offers to act on, contact lists and "what is on my other nodes" are built above it.
 - **Lean on osis for storing data.** Node and account state are ordinary things and aspects. No aspect is exempt from sync; what is local is local by where it sits.
 - **A weak keeps nothing.** What a node keeps outside its closure is only what held things need (spec/commits.md §5 What a held thing needs). A contact is a strong to its profile.
 - **Nothing grows only.** No set of everything ever seen or granted. Every stored row has an owner (Storage owners, below).

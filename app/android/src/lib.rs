@@ -163,7 +163,7 @@ fn native_create<'l>(env: &mut Env<'l>, this: JObject<'l>, dir: JString<'l>, den
     gestures.get_region(env, 0, &mut g)?;
     let (ms, px) = (|i: jint| Duration::from_millis(u64::try_from(i).unwrap_or(0)), |i: jint| f64::from(i) / f64::from(density).max(0.1));
     let thresholds = Thresholds { double_tap: ms(g[0]), double_tap_slop: px(g[1]), long_press: ms(g[2]), touch_slop: px(g[3]) };
-    let start = Start { dir, dial: Vec::new(), waker: Waker::new(wake_view), data: Box::new(|db| Ok(app_store::data(db))) };
+    let start = Start { dir, dial: Vec::new(), waker: Waker::new(wake_view), data: Box::new(|db| app_store::data(db).map_err(|e| e.to_string())) };
     let ui = start.open();
     if let Some(e) = ui.error() {
         log::error!("osis-app: {e}");

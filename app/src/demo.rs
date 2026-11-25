@@ -81,12 +81,10 @@ impl Ctx<'_, '_> {
 
 /// Adds the demo data unless this account has it already; returns whether it added it.
 pub fn add(data: &Data) -> Result<bool> {
-    for g in data.homes()? {
-        if data.db.at(g, DEMO).get()? == Some(true) {
-            return Ok(false);
-        }
-    }
     let home = data.home()?;
+    if data.db.at(home, DEMO).get()? == Some(true) {
+        return Ok(false);
+    }
     let db = &data.db;
     let monday = crate::time::monday_of(data.now_local()?);
     let views: Vec<Tid> = data.collections()?.into_iter().map(|(_, t)| t).collect();

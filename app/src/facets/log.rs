@@ -63,7 +63,7 @@ pub fn name(db: &osis::ReadOnly, c: Tid) -> Result<String> {
 pub fn my_name(db: &Osis) -> Result<Option<String>> {
     // a node paired a moment ago may not hold the profile yet: no name then
     let profile = match osis_account::Account::of(db)? {
-        Some(a) => a.profile(db)?,
+        Some(a) => a.realm().profile(db)?,
         None => None,
     };
     let own = match profile {

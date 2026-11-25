@@ -1,8 +1,8 @@
 use crate::{clock, drive, opening, pair, person};
 use osis::internals::ManualNet;
 use osis::{Error, GrantOpts, Osis, Role, SetRoleOpts, SyncScope, Tid, Weak};
-use osis_account::schema::OF;
-use osis_account::{Account, AccountNode};
+use osis_account::schema::{OF, REALM};
+use osis_account::{Account, AccountNode, Realm};
 
 /// The nodes with a dial entry on `t` at `db` (spec/sync-set.md §1).
 fn dials(db: &Osis, t: Tid) -> Vec<Weak> {
@@ -31,7 +31,7 @@ fn making_an_account_spec_permissions_8() {
     assert_ne!(a.thing(), db.node(), "the account is not the node");
     assert_eq!(db.settings_thing().unwrap(), Some(a.thing()));
     assert_eq!(a.nodes(&db).unwrap(), [AccountNode { node: db.node(), role: Role::Admin }]);
-    let p = a.profile(&db).unwrap().expect("a profile");
+    let p = a.realm().profile(&db).unwrap().expect("a profile");
     assert_eq!(db.at(p, OF).get().unwrap(), Some(Weak(a.thing())));
     assert_eq!(db.grants(p).unwrap().get(&Tid::PUBLIC).map(|g| g.role), Some(Role::Read), "the profile is public");
     let key = dials(&db, a.thing());
@@ -90,14 +90,14 @@ fn a_stranger_importing_a_card_grants_its_account_spec_sync_inbox_5() {
     let net = ManualNet::new(c.clone());
     let (alice, aa, _) = person(&net, 1, &c);
     let (bob, ba, _) = person(&net, 2, &c);
-    let p = aa.profile(&alice).unwrap().unwrap();
+    let p = aa.realm().profile(&alice).unwrap().unwrap();
     let mut w = alice.write();
     w.at(p, osis::core::NAME).set(&"Alice".to_string()).unwrap();
     w.commit().unwrap();
-    let card = aa.contact_card(&alice).unwrap();
-    let who = drive(&net, ba.import_contact(&bob, &card)).unwrap();
+    let card = aa.realm().contact_card(&alice).unwrap();
+    let who = drive(&net, ba.realm().import_contact(&bob, &card)).unwrap();
     assert_eq!(who, aa.thing());
-    assert_eq!(ba.profile_of(&bob, who).unwrap(), Some(p));
+    assert_eq!(ba.realm().profile_of(&bob, who).unwrap(), Some(p));
     assert_eq!(bob.at(p, osis::core::NAME).get().unwrap().as_deref(), Some("Alice"), "the profile read");
     let t = make(&bob, &ba, "for alice");
     bob.grant(t, who, Role::Read, GrantOpts::default()).unwrap();
@@ -127,4 +127,20 @@ fn links_are_the_accounts_spec_permissions_7() {
     assert_eq!(b.links().unwrap().iter().map(|l| l.id).collect::<Vec<_>>(), [id], "listed on the other node");
     b.revoke_link(id).unwrap();
     assert!(b.links().unwrap().is_empty());
+}
+
+// notes/realms.md: an account is a realm, and a realm made in it is marked and named, held from
+// the account, administered through it, and keeps a removed member's copy by default.
+#[test]
+fn a_realm_made_in_the_account() {
+    let c = clock();
+    let net = ManualNet::new(c.clone());
+    let (db, a, _) = person(&net, 1, &c);
+    assert!(db.at(a.thing(), REALM).get().unwrap().is_some(), "the account is a realm");
+    let r = Realm::make(&db, a.realm(), "Climbing").unwrap().thing();
+    assert!(db.at(r, REALM).get().unwrap().is_some());
+    assert_eq!(db.at(r, osis::core::NAME).get().unwrap().as_deref(), Some("Climbing"));
+    assert!(db.holds(a.thing(), r).unwrap());
+    assert_eq!(db.role_on(r).unwrap(), Some(Role::Admin), "through the account");
+    assert!(db.at(r, osis::core::RETENTION).get().unwrap().unwrap().retain_copies);
 }

@@ -19,15 +19,12 @@ pub fn found(d: &Data, q: &str) -> osis_kit::view::search::Found {
     search(&Cx::new(d, &w, false), q).unwrap()
 }
 
-/// One home, held by the account root's strong, with no `tag.0`, holding the four seeds, which
-/// start as the favorites.
+/// Home is the account, with no `tag.0`, holding the four seeds, which start as the favorites.
 #[test]
 fn home_and_seeds() {
     let d = data();
     let g = d.home().unwrap();
-    assert_eq!(d.home().unwrap(), g);
-    let root = d.db.at(osis_app::store::account(&d.db).unwrap(), osis::core::HOLDS).get().unwrap().unwrap();
-    assert!(root.contains(&osis::Ref::Strong(osis::Strong(g))));
+    assert_eq!(g, crate::common::account(&d.db).unwrap());
     assert_eq!(d.db.at(g, TAG).get().unwrap(), None);
     assert_eq!(d.collections().unwrap().len(), 4);
     let favs: Vec<String> = d.favorites().unwrap().iter().map(|t| d.name(*t).unwrap()).collect();

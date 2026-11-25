@@ -1,4 +1,4 @@
-//! osis-account at the osis API: making an account, pairing and removing a node, contact cards.
+//! osis-account at the osis API: making an account, pairing and removing a node, contact cards, realms.
 //! Nodes in memory on one manual clock, over an in-process test network (`ManualNet`, `drive`).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 

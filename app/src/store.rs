@@ -1,17 +1,12 @@
-//! The app's account: its home (marked `osis_app:app.0`) among what the account holds, the
-//! first-use seeds, and the registry of what the app adds to kit.
+//! The app's account: the seeds its home starts with, and the registry of what the app adds to
+//! kit.
 
 use crate::facets;
-use crate::schema::{APP, COLOR};
+use crate::schema::COLOR;
 use osis::core::NAME;
-use osis::core::HOLDS;
-use osis::{Osis, Ref, Result, Tid, Weak};
+use osis::{Result, Role, Weak};
 use osis_kit::schema::{Arrange, COLLECTION, Collection, CollectionOrder as Order, CollectionSource as Source, FAVORITES};
-use osis_kit::store::{Account, Data, Registry, start_setting};
-use std::sync::Arc;
-
-/// Finds or makes the app's home.
-pub struct AppAccount;
+use osis_kit::store::{Data, Registry, start_setting};
 
 /// The collections every home offers: config, name, colour.
 fn seeds() -> Vec<(Collection, &'static str, &'static str)> {
@@ -24,53 +19,34 @@ fn seeds() -> Vec<(Collection, &'static str, &'static str)> {
     ]
 }
 
-impl Account for AppAccount {
-    /// The things marked as the app's home among the account's strongs, smallest tid first.
-    /// Works around issues/app-home-helper.md (as does merging favorites, collections, look).
-    fn homes(&self, db: &osis::ReadOnly) -> Result<Vec<Tid>> {
-        let mut out = Vec::new();
-        for r in db.at(account(db)?, HOLDS).get()?.unwrap_or_default() {
-            if let Ref::Strong(s) = r
-                && db.at(s.0, APP).get()? == Some(true)
-            {
-                out.push(s.0);
-            }
-        }
-        Ok(out)
+/// Seeds home (the account) where it is here and has no collection yet: its collection of the
+/// favorites, the seeded views among them and, by an admin node, the setting kit's things start
+/// with. A node paired a moment ago holds none of the account yet and seeds nothing: the
+/// account's seeds reach it.
+fn seed(d: &Data) -> Result<()> {
+    let g = d.home()?;
+    if osis_account::Realm::at(g).profile(&d.db)?.is_none() || d.db.at(g, COLLECTION).get()?.is_some() {
+        return Ok(());
     }
-
-    fn home(&self, db: &Osis) -> Result<Tid> {
-        if let Some(g) = self.homes(db)?.first() {
-            return Ok(*g);
-        }
-        let mut w = db.write();
-        // dependent, minted with the account as admin and held by it: it and what it holds sync to
-        // every node of the account (spec/sync-set.md §1)
-        let root = account(db)?;
-        let g = w.create(root, None)?;
-        w.hold(root, g)?;
+    let mut w = d.db.write();
+    if d.db.role_on(g)? == Some(Role::Admin) {
         start_setting(&mut w, g)?;
-        w.at(g, APP).set(&true)?;
-        w.at(g, COLLECTION).set(&Collection { source: Source::Favorites, having: Default::default(), order: Order::Own, arrange: Arrange::Cards, element: None })?;
-        let mut favs = Vec::new();
-        for (v, name, color) in seeds() {
-            let t = w.create(g, None)?;
-            start_setting(&mut w, t)?;
-            w.at(t, COLLECTION).set(&v)?;
-            w.at(t, NAME).set(&name.to_string())?;
-            w.at(t, COLOR).set(&color.to_string())?;
-            w.hold(g, t)?;
-            favs.push(Weak(t));
-        }
-        w.at(g, FAVORITES).set(&favs)?;
-        w.commit()?;
-        Ok(g)
     }
-}
-
-/// The account this node acts for (osis-account): the app runs as a person.
-pub fn account(db: &osis::ReadOnly) -> Result<Tid> {
-    Ok(osis_account::Account::of(db)?.ok_or_else(|| osis::Error::Invalid("this node acts for no account".into()))?.thing())
+    w.at(g, COLLECTION).set(&Collection { source: Source::Favorites, having: Default::default(), order: Order::Own, arrange: Arrange::Cards, element: None })?;
+    let mut favs = Vec::new();
+    for (v, name, color) in seeds() {
+        let t = w.create(g, None)?;
+        start_setting(&mut w, t)?;
+        w.at(t, COLLECTION).set(&v)?;
+        w.at(t, NAME).set(&name.to_string())?;
+        w.at(t, COLOR).set(&color.to_string())?;
+        w.hold(g, t)?;
+        favs.push(Weak(t));
+    }
+    // an edit, not a set: a favorite another node adds meanwhile stays
+    w.at(g, FAVORITES).edit(&Vec::new(), &favs)?;
+    w.commit()?;
+    Ok(())
 }
 
 /// Kit's registry with the app's facets and view types.
@@ -86,14 +62,15 @@ pub fn registry() -> Registry {
         .with_view_before("note", &crate::views::PERSON)
 }
 
-/// The app's `Data` over `db`.
-pub fn data(db: Osis) -> Data {
-    let d = Data::new(db, Arc::new(AppAccount), registry());
+/// The app's `Data` over `db`, a node acting for an account, its home seeded.
+pub fn data(db: osis::Osis) -> Result<Data> {
+    let d = Data::new(db, registry());
     for s in [&crate::schema::SCHEMA, &crate::event::SCHEMA, &crate::contact::SCHEMA] {
         // a store error here shows again at the first write
         if let Err(e) = d.db.register_schema(s.file(), s.source()) {
             eprintln!("osis-app: schema: {e}");
         }
     }
-    d
+    seed(&d)?;
+    Ok(d)
 }

@@ -90,7 +90,7 @@ fn standing_for(cx: &Reader) -> Result<Rc<BTreeMap<Tid, String>>> {
 pub fn account_name(cx: &Reader, p: Tid) -> Result<String> {
     let db = &cx.db;
     let prof = match cx.person()? {
-        Some(a) => a.profile_of(db, p)?,
+        Some(a) => a.realm().profile_of(db, p)?,
         None => None,
     };
     if let Some(prof) = prof {

@@ -533,14 +533,14 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
         Cmd::Card(CardCmd::Rm { on, of }) => Ok(db.set_card(ctx.tid(&on)?, ctx.tid(&of)?, None)?),
         Cmd::Contact(ContactCmd::Show) => {
             // a contact card is a public link to the profile
-            let a = ctx.account()?;
+            let a = ctx.account()?.realm();
             let c = a.contact_card(&db)?;
             ctx.one("card", c)?;
             let p = a.profile(&db)?.ok_or_else(|| exit(3, "the account's profile is not here yet"))?;
             delivered(ctx, &[p])
         }
         Cmd::Contact(ContactCmd::Profile { account }) => {
-            let a = ctx.account()?;
+            let a = ctx.account()?.realm();
             let p = match account {
                 Some(x) => a.profile_of(&db, ctx.tid(&x)?)?,
                 None => a.profile(&db)?,
@@ -553,7 +553,7 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
         Cmd::Contact(ContactCmd::Import { card }) => {
             let c: osis::Link = ctx.arg_text(&card)?.parse()?;
             let account = ctx.account()?;
-            let a = confirm(ctx, account.import_contact(&db, &c))?;
+            let a = confirm(ctx, account.realm().import_contact(&db, &c))?;
             ctx.one("actor", a.to_uri())
         }
         Cmd::Disputes(DisputeCmd::Ls) => {

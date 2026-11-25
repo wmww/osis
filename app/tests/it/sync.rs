@@ -23,7 +23,7 @@ fn two_clocked() -> (Data, Data, Arc<ManualClock>) {
     let j = osis_account::pair(o.store, offering.offer(), o.cfg).unwrap();
     let (_, reply) = offering.accept(&a, j.request()).unwrap();
     let b = j.finish(&reply).unwrap().0;
-    (osis_app::store::data(a), osis_app::store::data(b), clock)
+    (osis_app::store::data(a).unwrap(), osis_app::store::data(b).unwrap(), clock)
 }
 
 fn sync(a: &Data, b: &Data) {
@@ -40,21 +40,16 @@ fn found(d: &Data, q: &str) -> osis_kit::view::search::Found {
     osis_kit::view::search::search(&osis_kit::view::Cx::new(d, &w, false), q).unwrap()
 }
 
-/// Both nodes make a home before they sync: afterwards both write to the same one, the
-/// views and favorites are not doubled, and a favorite made in the other home can be removed.
+/// A node paired a moment ago writes home before it holds any of it: it seeds nothing, and once
+/// synced both nodes show the account's views once each and its favorite, which either may
+/// remove or move.
 #[test]
-fn two_nodes_race_home() {
+fn a_paired_node_writes_home_before_it_syncs() {
     let (a, b) = two();
-    let ga = a.home().unwrap();
-    let gb = b.home().unwrap();
-    assert_ne!(ga, gb);
+    assert_eq!(a.home().unwrap(), b.home().unwrap(), "home is the account");
     let n = b.create_note().unwrap();
     b.toggle_favorite(n).unwrap();
     sync(&a, &b);
-    assert_eq!(a.homes().unwrap(), b.homes().unwrap());
-    assert_eq!(a.homes().unwrap().len(), 2);
-    assert_eq!(a.home().unwrap(), ga.min(gb));
-    assert_eq!(b.home().unwrap(), ga.min(gb));
     for d in [&a, &b] {
         assert_eq!(d.collections().unwrap().len(), 4);
         let favs = d.favorites().unwrap();
@@ -62,13 +57,12 @@ fn two_nodes_race_home() {
         assert!(favs.contains(&n));
         assert_eq!(found(d, "calendar").scopes.len(), 1, "one Calendar scope");
     }
-    // everything the app shows is held from a home, so it syncs to every node of the account
+    // everything the app shows is held from home, so it syncs to every node of the account
     assert_eq!(a.things().unwrap(), b.things().unwrap());
     a.toggle_favorite(n).unwrap();
-    assert!(!a.is_favorite(n).unwrap(), "unfavorite a favorite kept in the other home");
+    assert!(!a.is_favorite(n).unwrap());
     sync(&a, &b);
     assert!(!b.is_favorite(n).unwrap());
-    // a reorder after the merge keeps one of each
     let len = a.favorites().unwrap().len();
     a.move_favorite(0, len - 1).unwrap();
     sync(&a, &b);
@@ -81,7 +75,6 @@ fn two_nodes_race_home() {
 #[test]
 fn concurrent_reorder_and_delete() {
     let (a, b) = two();
-    a.home().unwrap();
     let ns: Vec<Tid> = (0..3).map(|_| a.create_note().unwrap()).collect();
     for n in &ns {
         a.toggle_favorite(*n).unwrap();
@@ -106,19 +99,16 @@ fn concurrent_reorder_and_delete() {
     assert_eq!(fa.len(), len - 2);
 }
 
-/// This node's open thing stays open when the other node's home (smaller tid) arrives.
+/// The open thing of a node paired a moment ago stays open when the account's home arrives.
 #[test]
-fn open_survives_a_merged_home() {
+fn open_survives_the_home_arriving() {
     let (a, b) = two();
-    let ga = a.home().unwrap();
-    let gb = b.home().unwrap();
-    let (late, _) = if ga > gb { (&a, &b) } else { (&b, &a) };
-    let n = late.create_note().unwrap();
-    assert_eq!(late.opened().unwrap(), Some(n));
+    let n = b.create_note().unwrap();
+    assert_eq!(b.opened().unwrap(), Some(n));
     sync(&a, &b);
-    assert_eq!(late.opened().unwrap(), Some(n), "still open after the merge");
-    late.set_open(None).unwrap();
-    assert_eq!(late.opened().unwrap(), None, "home clears it everywhere");
+    assert_eq!(b.opened().unwrap(), Some(n), "still open once synced");
+    b.set_open(None).unwrap();
+    assert_eq!(b.opened().unwrap(), None);
 }
 
 /// Demo data once per account: a second node sees it and adds none; existing favorites stay.
@@ -153,7 +143,6 @@ fn deleted_tag_is_gone() {
 #[test]
 fn remote_delete_of_the_open_thing() {
     let (a, b) = two();
-    a.home().unwrap();
     let n = a.create_note().unwrap();
     let s = a.db.at(n, BODY).path(osis::p![]).edit_text().unwrap();
     s.edit("", "hello").unwrap();
@@ -216,38 +205,10 @@ fn malformed_aspects_do_not_break_reads() {
     assert!(!a.holds(g).unwrap().is_empty());
 }
 
-/// One node empties the other's home into the main one while that node, not yet knowing
-/// the main home, favorites something in its own: nothing is lost.
+/// Concurrent favorites, before the first sync and after: both nodes settle on one list.
 #[test]
-fn emptying_a_home_keeps_a_concurrent_favorite() {
+fn concurrent_favorites_converge() {
     let (a, b) = two();
-    let ga = a.home().unwrap();
-    let gb = b.home().unwrap();
-    // `big` is the node whose home loses; it learns of the other home only at the end
-    let (small, big) = if ga < gb { (&a, &b) } else { (&b, &a) };
-    let x = big.create_note().unwrap();
-    big.toggle_favorite(x).unwrap();
-    deliver(&big.db, &small.db);
-    let m = small.create_note().unwrap();
-    small.toggle_favorite(m).unwrap();
-    assert!(small.is_favorite(x).unwrap());
-    let y = big.create_note().unwrap();
-    big.toggle_favorite(y).unwrap();
-    sync(&a, &b);
-    for d in [&a, &b] {
-        let f = d.favorites().unwrap();
-        assert!(f.contains(&x) && f.contains(&y) && f.contains(&m), "{f:?}");
-        assert_eq!(views_in(d, &f).len(), 4);
-    }
-    assert_eq!(a.favorites().unwrap(), b.favorites().unwrap());
-}
-
-/// Concurrent first writes after the merge: both nodes settle on one list.
-#[test]
-fn concurrent_writes_after_the_merge_converge() {
-    let (a, b) = two();
-    a.home().unwrap();
-    b.home().unwrap();
     let na = a.create_note().unwrap();
     let nb = b.create_note().unwrap();
     a.toggle_favorite(na).unwrap();
@@ -270,14 +231,11 @@ fn concurrent_writes_after_the_merge_converge() {
     assert_eq!(a.db.engine(|e| e.commit_ids().len()), before);
 }
 
-/// One node unfavorites a thing still held in the other home while the other node, also
-/// writing for the first time since the merge, favorites something else.
+/// One node unfavorites a thing the other favorited while the other favorites something else.
 #[test]
-fn unfavorite_survives_a_concurrent_first_write() {
+fn unfavorite_survives_a_concurrent_favorite() {
     let (a, b) = two();
-    let ga = a.home().unwrap();
-    let gb = b.home().unwrap();
-    let (small, big) = if ga < gb { (&a, &b) } else { (&b, &a) };
+    let (small, big) = (&a, &b);
     let n = big.create_note().unwrap();
     big.toggle_favorite(n).unwrap();
     sync(&a, &b);
@@ -292,30 +250,25 @@ fn unfavorite_survives_a_concurrent_first_write() {
     assert!(!f.contains(&n), "unfavorite lost: {f:?}");
 }
 
-/// The look across two nodes' racing homes and over malformed synced values: both read
-/// one choice, a value of another shape or an unknown mode reads as unset, an unknown theme id
-/// is only a string (the UI falls back to the default theme).
+/// The look across two nodes and over malformed synced values: both read one choice, a value of
+/// another shape or an unknown mode reads as unset, an unknown theme id is only a string (the UI
+/// falls back to the default theme).
 #[test]
 fn look_merges_and_tolerates_odd_values() {
     use osis_kit::schema::Mode;
     let (a, b) = two();
-    let ga = a.home().unwrap();
-    let gb = b.home().unwrap();
     a.set_theme("velocity").unwrap();
     b.set_theme("slate").unwrap();
     b.set_mode(Mode::Dark).unwrap();
     sync(&a, &b);
     assert_eq!(a.look().unwrap(), b.look().unwrap());
-    let want = if ga < gb { "velocity" } else { "slate" };
-    assert_eq!(a.look().unwrap(), (Some(want.into()), Mode::Dark), "the main home's theme, the other's mode");
-    let main = a.home().unwrap();
+    assert_eq!(a.look().unwrap().1, Mode::Dark);
+    let home = a.home().unwrap();
     let mut w = a.db.write();
-    w.at(main, osis::DynamicAspectKey::untyped(Ak::new("ui:theme.0").unwrap())).set(&Value::Int(3)).unwrap();
-    w.at(main, osis::DynamicAspectKey::untyped(Ak::new("ui:mode.0").unwrap())).set(&Value::Enum(7, None)).unwrap();
+    w.at(home, osis::DynamicAspectKey::untyped(Ak::new("ui:theme.0").unwrap())).set(&Value::Int(3)).unwrap();
+    w.at(home, osis::DynamicAspectKey::untyped(Ak::new("ui:mode.0").unwrap())).set(&Value::Enum(7, None)).unwrap();
     w.commit().unwrap();
-    // the other home's choice shows through (b's mode lived on gb)
-    let other = if main == ga { (Some("slate".into()), Mode::Dark) } else { (Some("velocity".into()), Mode::Auto) };
-    assert_eq!(a.look().unwrap(), other, "odd values on the main home read as unset");
+    assert_eq!(a.look().unwrap(), (None, Mode::Auto), "odd values read as unset");
     a.set_theme("no-such-theme").unwrap();
     assert_eq!(a.look().unwrap().0.as_deref(), Some("no-such-theme"));
 }
@@ -325,7 +278,6 @@ fn look_merges_and_tolerates_odd_values() {
 #[test]
 fn reorder_against_concurrent_unfavorite() {
     let (a, b) = two();
-    a.home().unwrap();
     let n1 = a.create_note().unwrap();
     let n2 = a.create_note().unwrap();
     a.toggle_favorite(n1).unwrap();
@@ -359,8 +311,7 @@ fn contact_fields_of_an_absent_struct_race() {
     use osis_app::facets::contact::contact_form;
     for later_is_b in [false, true] {
         let (a, b, clock) = two_clocked();
-        a.home().unwrap();
-        let c = osis_kit::facets::create(&a, "person").unwrap();
+            let c = osis_kit::facets::create(&a, "person").unwrap();
         let mut w = a.db.write();
         w.at(c, NAMES).remove().unwrap();
         w.commit().unwrap();
@@ -391,7 +342,6 @@ fn email_rename_against_concurrent_edits() {
     use crate::common::save;
     use osis_app::facets::contact::contact_form;
     let (a, b, clock) = two_clocked();
-    a.home().unwrap();
     let c = osis_kit::facets::create(&a, "person").unwrap();
     let add = |d: &Data| contact_form(d, c).unwrap().into_iter().find(|r| r.placeholder == "Add an email").unwrap();
     let email = |d: &Data, v: &str| contact_form(d, c).unwrap().into_iter().find(|r| r.value == v).unwrap();
@@ -420,7 +370,6 @@ fn email_rename_against_concurrent_edits() {
 fn field_edit_and_nudge_merge() {
     use osis_app::event::{START, Start};
     let (a, b, clock) = two_clocked();
-    a.home().unwrap();
     let e = osis_kit::facets::create(&a, "event").unwrap();
     sync(&a, &b);
     let Some(Start::At(w0)) = a.db.at(e, START).get().unwrap() else { panic!() };
@@ -437,15 +386,13 @@ fn field_edit_and_nudge_merge() {
 }
 
 /// Adversarial favorites interleavings: concurrent moves of one entry, a move against a
-/// remove-and-re-add, moves onto entries held in the other home's list. Both nodes end with
-/// one order, without duplicates, and a removal is never undone by a move.
+/// remove-and-re-add, moves onto entries the other node added. Both nodes end with one order,
+/// without duplicates, and a removal is never undone by a move.
 #[test]
 fn favorites_moves_adversarial() {
     for round in 0..4 {
         let (a, b, clock) = two_clocked();
-        let ga = a.home().unwrap();
-        let gb = b.home().unwrap();
-        // entries in both homes' lists
+        // entries each node added before the first sync
         let na: Vec<Tid> = (0..3).map(|_| a.create_note().unwrap()).collect();
         let nb: Vec<Tid> = (0..3).map(|_| b.create_note().unwrap()).collect();
         for n in &na {
@@ -455,7 +402,6 @@ fn favorites_moves_adversarial() {
             b.toggle_favorite(*n).unwrap();
         }
         sync(&a, &b);
-        assert_ne!(ga, gb);
         let f = a.favorites().unwrap();
         assert_eq!(f, b.favorites().unwrap());
         let len = f.len();
@@ -501,37 +447,13 @@ fn favorites_moves_adversarial() {
             3 => assert!(!fa.contains(&na[1]) && !fa.contains(&na[2]), "removals win"),
             _ => assert_eq!(fa.len(), len, "round {round}"),
         }
-        // the moved order is reachable: moving an entry to the very front puts it there (when
-        // it is in the main home's list, which shows first)
-        let main = a.home().unwrap();
-        let own = if main == ga { na[0] } else { nb[0] };
+        // the moved order is reachable: moving an entry to the very front puts it there
+        let own = na[0];
         if fa.contains(&own) {
             a.move_favorite(pos(&a, own), 0).unwrap();
             assert_eq!(a.favorites().unwrap()[0], own, "round {round}");
         }
     }
-}
-
-/// A favorite held in the other home's list cannot move ahead of the main home's entries:
-/// the move is limited to its own list (no copying between homes). The order stays put
-/// rather than jumping somewhere unasked.
-#[test]
-fn favorite_from_the_other_home_moves_within_its_list() {
-    let (a, b) = two();
-    let ga = a.home().unwrap();
-    let gb = b.home().unwrap();
-    let (small, big) = if ga < gb { (&a, &b) } else { (&b, &a) };
-    let m = small.create_note().unwrap();
-    small.toggle_favorite(m).unwrap();
-    let n = big.create_note().unwrap();
-    big.toggle_favorite(n).unwrap();
-    sync(&a, &b);
-    let f = a.favorites().unwrap();
-    let i = f.iter().position(|x| *x == n).unwrap();
-    assert!(i > f.iter().position(|x| *x == m).unwrap(), "the other home's extras follow");
-    a.move_favorite(i, 0).unwrap();
-    let after = a.favorites().unwrap();
-    assert_eq!(after.len(), f.len());
 }
 
 /// A form saved on focus loss after its thing was deleted (here, or concurrently on the other
@@ -541,7 +463,6 @@ fn form_save_after_a_delete() {
     use crate::common::save;
     use osis_app::facets::contact::contact_form;
     let (a, b) = two();
-    a.home().unwrap();
     let c = osis_kit::facets::create(&a, "person").unwrap();
     sync(&a, &b);
     let title = |d: &Data, c| contact_form(d, c).unwrap().into_iter().find(|r| r.label == "Title").unwrap();
@@ -568,7 +489,6 @@ fn windows_do_not_interfere() {
     use osis_kit::schema::WEEK;
     use osis_kit::view::{Act, Cx, WindowState};
     let (a, b) = two();
-    a.home().unwrap();
     sync(&a, &b);
     let n = a.create_note().unwrap();
     let m = b.create_note().unwrap();

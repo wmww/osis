@@ -1,6 +1,5 @@
 //! Starting over a store that cannot open (as every shell does, through `Start`): the window says
 //! why, with the error; start fresh moves the store aside, keeping it on disk, and opens a new one.
-use crate::view_tree::Small;
 use osis_kit::masonry::app::{RenderRoot, RenderRootSignal};
 use osis_kit::masonry::core::{PointerButton, PointerButtonEvent, PointerEvent, PointerId, PointerInfo, PointerState, PointerType, Widget, WidgetId, WidgetRef, WindowEvent};
 use osis_kit::masonry::dpi::PhysicalPosition;
@@ -21,7 +20,7 @@ struct Window {
 
 impl Window {
     fn open(dir: &Path) -> Window {
-        Window::open_with(dir, Box::new(|db| Ok(Data::new(db, Arc::new(Small::default()), Registry::kit()))))
+        Window::open_with(dir, Box::new(|db| Ok(Data::new(db, Registry::kit()))))
     }
 
     fn open_with(dir: &Path, data: Box<dyn Fn(osis::Osis) -> Result<Data, String>>) -> Window {
