@@ -19,8 +19,8 @@ The task loop), every step checked and reported, run from any checkout of the re
       commits after the checked HEAD (refused if HEAD is no descendant of it); if origin/main moved
       past the checked base, rebases as gate does, then `cargo clippy --all-targets -- -D warnings`,
       the same with `-p` for each non-default package both sides changed, and `cargo test -p` each
-      package both sides changed (files changed base..HEAD and base..origin/main); a conflict
-      stops it, and once the rebase is finished by hand the next land checks and lands that; commits
+      package both sides changed (files changed base..HEAD and base..origin/main), again while
+      main moves meanwhile (each round against the last); a conflict stops it, and once the rebase is finished by hand the next land checks and lands that; commits
       the gate summary's KNOWN-BUT-PASSED lines removed from tools/known_failures.txt (but `rate:`
       ones), its STALE-RATE lines (a `rate:` line whose REPRO passed) removed, and its STALE-COST lines lowered or dropped in tools/test_cost.txt (a line main changed
       since kept); `tools/land
@@ -373,7 +373,8 @@ def land(name, fixed):
     pushed = [r for r in git("for-each-ref", "--format=%(refname:short)", f"refs/remotes/origin/*-{name}", cwd=w).split() if r]
     if len(pushed) > 1:
         stop(f"several pushed copies of {name}: {' '.join(pushed)}: delete the stale one first", 1)
-    if main != rec["base"]:
+    # again while main moves during the checks: each round checks only what main changed since the last
+    while main != rec["base"]:
         say(f"origin/main moved since the last check ({rec['base'][:9]} -> {main[:9]}): rebasing")
         # a conflict stops here; the next land resumes from the rebase finished by hand
         record(d, **dict(rec, rebasing=dict(head=head, onto=main)))
@@ -385,6 +386,8 @@ def land(name, fixed):
         if not ok:
             stop("not landed: fix the failure in the branch, then land with --fixed", 1)
         head = new
+        git("fetch", "-q", "origin", "main", cwd=w)
+        main = git("rev-parse", "origin/main", cwd=w)
     # the gate's KNOWN-BUT-PASSED, STALE-RATE and STALE-COST lines, applied to the tree being landed
     for line in apply_stale(w, summary):
         say(f"applied: {line}")

@@ -219,7 +219,7 @@ def jsonl(paths, since=0):
 
 
 def stamp(t):
-    return time.strftime("%Y-%m-%d %H:%M", time.gmtime(t))
+    return time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(t))
 
 
 def hit_line(o):

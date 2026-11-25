@@ -10,10 +10,10 @@ One row per agent: total time (idle spells after it ended a turn or hit a usage 
 foreground tool running: thinking and writing) and minutes per kind of work, as columns for the
 kinds that took most time over all agents. A command counts from its call to its result, or for a
 background one to its completion notice, so background and parallel work overlap and a row need
-not add up to its total. A shell command is charged to its weightiest part: gate, sim-sweep,
-oracle (--ignored, _large, seed ranges), bench, default tests (an unfiltered cargo test),
-tests (filtered), clippy, tla, profile, android, build, gui, script (by its file's text), git, wt,
-shell. Waiting (claudewait, poll loops) is no kind: the job waited on is counted instead. The
+not add up to its total. A shell command is charged to its weightiest part: gate, land (`merge-branch land`,
+its re-tests after a rebase), sim-sweep, oracle (--ignored, _large, seed ranges), bench, default tests
+(an unfiltered cargo test), tests (filtered), clippy, tla, profile, android, build, gui, script (by its
+file's text), git, wt, shell; tools/heavy, tools/logrun and `sh -c` count as what they run. Waiting (claudewait, poll loops) is no kind: the job waited on is counted instead. The
 footer covers only agents started in the last 24 h: it totals each kind (runs, median and longest
 run) and names agents that wrote wait loops. Then, from tools/heavy's log, each agent's heavy-lock use:
 its waits and holds, and the CPU-s and cores its locked runs used (a run is charged to the agent whose
@@ -78,17 +78,35 @@ def session_dir():
     return os.path.dirname(max(subs, key=os.path.getmtime))
 
 
-RANK = ["gate", "sim-sweep", "oracle", "bench", "default tests", "tests", "clippy", "tla", "profile", "android", "build", "gui",
+RANK = ["gate", "land", "sim-sweep", "oracle", "bench", "default tests", "tests", "clippy", "tla", "profile", "android", "build", "gui",
         "cargo other", "script", "git", "wt", "shell"]
 WRAP = {"do", "then", "else", "time", "nice", "ionice", "timeout", "env", "exec", "nohup", "!", "{", "(", "sudo"}
 
 
+def unwrap(words):
+    """A simple command's words without the wrappers before what it runs (env, time, tools/heavy, tools/logrun)."""
+    while words:
+        w0 = os.path.basename(words[0])
+        if words[0] in WRAP or re.fullmatch(r"\w+=\S*", words[0]) or re.fullmatch(r"-n|-?\d+[smh]?", words[0]):
+            words = words[1:]
+        elif w0 == "logrun":
+            words = words[2:]
+        elif w0 == "heavy":
+            words = words[1:]
+            while words and words[0].startswith("--"):
+                words = words[1 if words[0] == "--short" else 2:]
+        else:
+            break
+    return words
+
+
 def segkind(words, c):
     """Kind of one simple command (its words, c the whole command for context)."""
-    while words and (words[0] in WRAP or re.fullmatch(r"\w+=\S*", words[0]) or re.fullmatch(r"-n|-?\d+[smh]?", words[0])):
-        words = words[1:]
+    words = unwrap(words)
     if not words:
         return None
+    if os.path.basename(words[0]) == "merge-branch":
+        return "land" if words[1:2] == ["land"] else "gate"
     p, rest = os.path.basename(words[0]), " ".join(words[1:])
     if p in ("bash", "sh", "python3", "python") and words[1:] and not words[1].startswith("-"):
         p, rest = os.path.basename(words[1]), " ".join(words[2:])
@@ -162,17 +180,18 @@ def kind(cmd):
     """What kind of work a shell command is (its weightiest part); None when it only waits."""
     bodies = "\n".join(b for _, b in re.findall(HEREDOC, cmd, flags=re.S))
     c = re.sub(HEREDOC, "", cmd, flags=re.S)
-    if "claudewait" in code(cmd) or is_loop(cmd):
+    if re.search(r"(?:^|[\s;&|(])claudewait\b(?!/)", code(cmd)) or is_loop(cmd):  # the word, not the plugin's PATH dir
         return None
     env = dict(re.findall(r"(?:^|[\s;&(])(\w+)=([^\s;&|()'\"]+)", c))
     c = re.sub(r"\$\{?(\w+)\}?", lambda m: env.get(m.group(1), m.group(0)), c)
+    c = re.sub(r"\b(?:ba)?sh -c (?:\"([^\"]*)\"|'([^']*)')", r"(\1\2)", c)  # a shell's command string: commands run
     c = re.sub(r"\"[^\"]*\"|'[^']*'", "''", c)
     c = re.sub(r"\d*(>>?|<)&?\s*(\d\b|[^\s;&|()]+)", " ", c)  # redirections
     ks, waits = [], False
     for seg in re.split(r"&&|\|\||[;|&\n()`]|\$\(", c):
         k = segkind(seg.split(), c)
         if k == "script":
-            words = [w for w in seg.split() if "/" in w or w.endswith(".sh")]
+            words = [w for w in unwrap(seg.split()) if "/" in w or w.endswith(".sh")]
             try:
                 text = open(os.path.expanduser(words[0]), "rb").read(100000) if words else b""
                 k = "tests" if b"\0" in text else loose(text.decode(errors="replace")) if text else k  # binary: a copied test binary
@@ -409,13 +428,13 @@ def heavy_runs():
 
 
 def charge(runs):
-    """Each run's agent: one whose Bash command naming tools/heavy or gate.sh was running when the run
+    """Each run's agent: one whose Bash command naming tools/heavy, gate.sh or `merge-branch gate` was running when the run
     asked for the lock; the run's worktree in the command breaks ties."""
     per, lost = {}, 0
     for a, r in runs:
         asked = dt.datetime.fromtimestamp(a["t"] - a["wait"], dt.timezone.utc)
         cands = [(row, cmd) for row in rows for s, e, cmd in row["bash"]
-                 if s <= asked <= e + dt.timedelta(seconds=5) and re.search(r"\bheavy\b|gate\.sh", cmd)]
+                 if s <= asked <= e + dt.timedelta(seconds=5) and re.search(r"\bheavy\b|gate\.sh|merge-branch gate", cmd)]
         if not cands:
             lost += 1
             continue

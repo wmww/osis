@@ -6,8 +6,8 @@
 # does a policy failure; the gate's exit, log and summary come back. land: lands, deletes the pushed
 # copy, releases the worktree and deletes the branch; refuses after a failed gate unless --fixed or
 # its kept summary, read again against main's known failures and cost lines, passes; when
-# main moved, rebases and runs clippy and the tests of the packages both sides changed only, a failure
-# stopping the landing; the summary's KNOWN-BUT-PASSED and STALE-COST lines are applied in a commit
+# main moved, rebases and runs clippy and the tests of the packages both sides changed only (again
+# while main moves during them), a failure stopping the landing; the summary's KNOWN-BUT-PASSED and STALE-COST lines are applied in a commit
 # landed with it (STALE-RATE too). Exit 1 on a mismatch.
 set -eu
 tools=$(cd "$(dirname "$0")" && pwd)
@@ -32,6 +32,8 @@ EOF
 cat > "$d/bin/cargo" <<'EOF'
 #!/bin/sh
 echo "$*" >> "$CARGO_LOG"
+# CARGO_HOOK: a command run at the first call (main moving during a land's checks)
+if [ -n "${CARGO_HOOK:-}" ] && [ ! -e "$CARGO_LOG.hooked" ]; then touch "$CARGO_LOG.hooked"; sh -c "$CARGO_HOOK" > /dev/null 2>&1; fi
 exit "${CARGO_RC:-0}"
 EOF
 chmod +x "$d/bin/wt" "$d/bin/cargo"
@@ -148,6 +150,20 @@ check "moved: landed" "$rc $(git --git-dir="$d/origin.git" log --format=%s -1 ma
 check "moved: checks of x only" "$(cat "$CARGO_LOG")" "clippy --all-targets -- -D warnings
 test -p x"
 rm "$CARGO_LOG"
+git fetch -q
+
+# main moves again during the land's checks: rebased again, and the second round checks only what
+# main changed since the first (y)
+git clone -q "$d/origin.git" "$d/c" 2> /dev/null
+git -C "$d/c" config user.email t@t && git -C "$d/c" config user.name t
+branch t5 core/x/f core/y/f
+"$mb" gate t5 > /dev/null 2>&1
+main core/x/g
+CARGO_HOOK="cd $d/c && git pull -q && sed -i 5s/.*/moved/ core/y/g && git commit -qam moved && git push -q origin HEAD:main" \
+    "$mb" land t5 > /dev/null 2> "$d/err" && rc=0 || rc=$?
+check "moved during checks: landed" "$rc $(git --git-dir="$d/origin.git" log --format=%s -2 main | tr "\n" " ")" "0 t5 moved "
+check "moved during checks: x, then y" "$(grep '^test' "$CARGO_LOG" | tr "\n" " ")" "test -p x test -p y "
+rm -f "$CARGO_LOG" "$CARGO_LOG.hooked"
 git fetch -q
 
 # a failing check after the land's rebase stops it; the rerun needs --fixed
