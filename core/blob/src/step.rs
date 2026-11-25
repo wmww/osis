@@ -199,28 +199,6 @@ pub fn verify_path(sync_id: &SyncId, path: &[Step]) -> Result<(), Error> {
     Ok(())
 }
 
-/// The verified path from the genesis step to `head` through a set of steps (the tree by
-/// `prev`, as `sync.0` holds it).
-pub fn path_to(steps: &BTreeMap<StepId, Step>, head: &StepId) -> Result<Vec<Step>, Error> {
-    let mut path = Vec::new();
-    let mut at = Some(*head);
-    while let Some(id) = at {
-        if path.len() > steps.len() {
-            return Err(Error::Verify("step cycle"));
-        }
-        let s = steps.get(&id).ok_or(Error::Verify("step missing on the path"))?;
-        if s.id() != id {
-            return Err(Error::Verify("step ID"));
-        }
-        at = s.prev;
-        path.push(s.clone());
-    }
-    path.reverse();
-    let sync_id = path.first().map(|s| s.sync_id).ok_or(Error::Verify("empty path"))?;
-    verify_path(&sync_id, &path)?;
-    Ok(path)
-}
-
 /// A step's claim set: claims (claim keys and static entries, power-of-two count) and the entry
 /// boxes keyed by static entry (spec/wire.md §8).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -498,8 +476,6 @@ pub(crate) mod tests {
         assert!(verify_path(&s0.sync_id, &[s0.clone(), s2.clone()]).is_err());
         assert!(verify_path(&s0.sync_id, std::slice::from_ref(&s1)).is_err());
         assert!(verify_path(&SyncId([0; 16]), std::slice::from_ref(&s0)).is_err());
-        let map: BTreeMap<StepId, Step> = [&s0, &s1, &s2].into_iter().map(|s| (s.id(), s.clone())).collect();
-        assert_eq!(path_to(&map, &s2.id()).unwrap(), vec![s0.clone(), s1.clone(), s2.clone()]);
         // Signer checks.
         assert!(register(Parent::Child { step: &s1, delete: &g.delete() }, s1.keys, &[], (&THING, epoch(1), &g2.read), g2.sync_at(), &mut rng).is_err());
         assert!(register(Parent::Genesis(&g2.delete()), g.keys(), &[], (&THING, epoch(0), &g.read), g.sync_at(), &mut rng).is_err());
