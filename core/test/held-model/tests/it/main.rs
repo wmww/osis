@@ -14,7 +14,7 @@ mod spec_strip;
 mod spec_thing_history;
 mod spec_edits;
 mod spec_evidence;
-mod spec_variants;
+mod spec_edges;
 mod spec_story;
 mod spec_reach;
 mod spec_gaps;

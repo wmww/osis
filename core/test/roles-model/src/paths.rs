@@ -1644,47 +1644,6 @@ fn grantable_at(w: &World, p: &Pass, e: Edge, pos: Key) -> Role {
     })
 }
 
-/// The chained writes of `held` (held-model `evidence`: its closure variants, an entry's
-/// creation, P9 and P10): in key order, each whose
-/// author has, along every hop it rests on (`World::rests`, its key hop first), over record edges
-/// and record key hops and the edges chained writes earlier set (applied or not, each at the
-/// highest role and may-grant role it let its holder grant, `until` disregarded): admin on its
-/// target; may-grant on its target for a may-grant grant (`flag_grant`);
-/// admin on its holder for a self-removal; write on its target for a finalize. Only the first two
-/// set an edge. Grows with `held`; every write any walk over `held` applies is in it.
-pub fn chained(w: &World, held: &Set) -> Set {
-    let mut max: BTreeMap<Edge, Role> = w.record_hops().into_iter().map(|e| (e, Role::Admin)).collect();
-    let mut grants = max.clone();
-    let get = |m: &BTreeMap<Edge, Role>, e: &Edge| m.get(e).copied().unwrap_or(Role::None);
-    let mut out = Set::new();
-    for i in order(w, held) {
-        let rests = w.rests(i);
-        let (Some(e), Kind::Edge { role, may_grant, finalize, .. }) = (w.sets(i), &w.commits[i].kind) else { continue };
-        if !w.well(i) {
-            continue;
-        }
-        let least = rests.iter().map(|h| get(&max, h)).min().unwrap_or(Role::Admin);
-        if *finalize || w.leave(i) {
-            // sets no edge here
-            if least >= if *finalize { Role::Write } else { Role::Admin } {
-                out.insert(i);
-            }
-            continue;
-        }
-        let admin = least == Role::Admin;
-        let flagged = flag_grant(w, i).is_some_and(|r| rests.split_last().is_some_and(|(l, b)| get(&grants, l) >= r && b.iter().all(|h| get(&max, h) >= r)));
-        if !admin && !flagged {
-            continue;
-        }
-        out.insert(i);
-        let m = max.entry(e).or_insert(Role::None);
-        *m = (*m).max(*role);
-        let m = grants.entry(e).or_insert(Role::None);
-        *m = (*m).max(grantable(*role, *may_grant));
-    }
-    out
-}
-
 /// The final role of each edge, every `until` counted removed.
 fn finals(p: &Pass) -> BTreeMap<Edge, Role> {
     p.state.iter().map(|(&e, &(r, u))| (e, if u.is_some() { Role::None } else { r })).collect()

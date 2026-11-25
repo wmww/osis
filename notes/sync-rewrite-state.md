@@ -10,7 +10,6 @@ Spec it rebuilt from: spec/permissions.md §4, spec/sync-set.md §2, spec/sync-i
 - **Storage under a fork under F6** (issues/disputes-storage-under-f6.md).
 - **Each ignore below**, probed for its own cause first (notes/handoff.md, Not to build on the way: no fix sized by its label).
 - **A reproducer of the wanted-blob handover** (issues/fixture-seed-luck.md).
-- **The models' chained sets out** (roles-model `paths::chained`, held-model `World::chained`): `Stage::E1`, the engine differential's oracle, still reads them for a reset's entry; a model change first (issues/models-read-chained-sets.md).
 - **Untested**: a sealed copy or offer whose evidence is a role commit that pages (a removal with its rotation on a thing of some 50 holders: its boxes pass `PAGE_TARGET`; the receiver's split is tested with a content commit as evidence, `tests_delivery::a_pieces_evidence_takes_its_own_pages`, the sender's `held_pages` only through it); a sealed copy stamped ahead of the receiver's clock (it waits carried by its entry, judged when the clock reaches it, then held only as a held thing needs it); a holder of sync alone on a target gets that target's `secrets.0` and `sync.0` parts alone in its key part, no evidence of them; whether a node keeping the target unread needs its own grant's edge write for the lost-access rule; what osis-sync's promotion does with a sealed fire that opens pending for drift (`Opened::Commit(_, Pending(_, Reason::Drift))`: the spec says it waits as any commit; whether it is stamped before it applies is open).
 
 ## Ignored tests

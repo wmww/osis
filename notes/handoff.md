@@ -16,14 +16,14 @@
 One list, in order; notes/redesign-plan.md holds the stages and their reasons.
 
 1. **Public things, cards and the account library**: notes/public-and-cards-brief.md, pieces 3-8. Then the review and gate over everything since the sync rewrite.
-2. **What the rewrite still owes**: notes/sync-rewrite-state.md (Next), issues/disputes-storage-under-f6.md, issues/models-read-chained-sets.md.
+2. **What the rewrite still owes**: notes/sync-rewrite-state.md (Next), issues/disputes-storage-under-f6.md.
 3. **Then** a removal as evidence (what A2 did not already build) and clean-up. Cut each to what is still needed before starting.
 
 Tess's direction (notes/priorities.md, Structure first): right shape first, fixes after; main need not work between pieces; tests rewritten slimmer, not ported; two agents on the primary line when their pieces don't collide.
 
 ## Old words and concepts
 - issues/deprecated-terms.md lists what is still in the repo though deprecated, each with what removing it takes, and what is gone. Most of what remains goes with accounts.
-- Old designs the test models still carry, each a design step and no clean-up: the chained sets (issues/models-read-chained-sets.md) and per-thing leaves of a removal's list (issues/models-read-list-leaves.md).
+- An old design the test models still carry, a design step and no clean-up: per-thing leaves of a removal's list (issues/models-read-list-leaves.md).
 - A word met in git history or in a brief that the tree does not use is dead until the tree says otherwise: read notes/terms.md, never build on it.
 
 ## Not to build on the way

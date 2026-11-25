@@ -1,18 +1,26 @@
 //! Evidence completeness (held_model::evidence; notes/evidence-model-findings.md): hand worlds
 //! for each finding and named risk, a slice of the family as a default test, and the sampled
-//! searches (`_plain`, `_large`). `explore` prints every rule variant's failures (by hand).
+//! searches (`_plain`, `_large`). `explore` prints the failures under each control (by hand).
 use held_model::evidence::names::*;
 use held_model::evidence::*;
 use roles_model::paths::{Id, Set};
 use roles_model::Role;
 use std::collections::BTreeMap;
 
-/// Every check at every step, and the arrival-order check at the end: the failures.
-fn fails(w: &World, rule: &Rule) -> Vec<Fail> {
+/// Every check at every step, and the order, forgetting and promotion checks at the end: the
+/// failures.
+pub fn fails(w: &World, rule: &Rule) -> Vec<Fail> {
+    fails_at(w, rule, &(1..=w.events.len()).collect())
+}
+
+/// `fails`, the per-step checks at the steps `at` (the state after that many events).
+pub fn fails_at(w: &World, rule: &Rule, at: &std::collections::BTreeSet<usize>) -> Vec<Fail> {
     let mut out = vec![];
     let st = w.run(rule, |st| {
-        out.extend(w.p1(rule, st));
-        out.extend(w.p11_keysets(rule, st));
+        if at.contains(&st.step) {
+            out.extend(w.p1(rule, st));
+            out.extend(w.p11_keysets(rule, st));
+        }
     });
     assert!(!st.unsettled, "logging settles");
     out.extend(w.p4(rule, &st, true));

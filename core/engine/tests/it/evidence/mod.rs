@@ -1,11 +1,11 @@
 //! The evidence derivation (`osis_engine::evidence`, notes/evidence-derivation.md;
-//! spec/permissions.md §4) against held-model `evidence` (`World::req` under `Stage::E1`: the
-//! drafted closure, pending on any write, keys-open travel on), the oracle: at every step of a
+//! spec/permissions.md §4) against held-model `evidence` (`World::req` under `Rule::fixed`: every
+//! edge write on a stated path's edges, keys-open travel on), the oracle: at every step of a
 //! world, for every node's held set and every sync ID's held entries, under every sync ID, the
 //! copies the derivation keeps incrementally and computes from scratch equal the model's required
 //! copies. Hand worlds per model test naming a rule or finding (keys-open travel's in
 //! `travel.rs`); the derivation's own (a waiting path entry, delete-key steps); count tests.
-use held_model::evidence::{self as hm, Rule, Shape, Stage, World};
+use held_model::evidence::{self as hm, Rule, Shape, World};
 use osis_engine::evidence::{Config, CopyId, Evidence, Kind, Part, Write};
 use roles_model::paths::{self, Id, Key, Rules, Set, Thing, Things};
 use roles_model::Role;
@@ -29,10 +29,10 @@ fn derived() -> Rule {
     Rule { keysets: false, ..Rule::fixed() }
 }
 
-/// `w` set to the spec's rule (`Stage::E1`).
+/// `w` set to the spec's rule (`Rule::fixed`, as the derivation is built).
 fn e1(w: &mut World) -> Rule {
     w.rules = Rules::fixed();
-    Stage::E1.set(w, derived())
+    derived()
 }
 
 /// Part `i` of the model's world as the derivation's input.

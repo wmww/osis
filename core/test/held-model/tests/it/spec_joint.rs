@@ -1,14 +1,14 @@
 //! The joint property (notes/holder-access-study.md, With A2; held_model::evidence `joint`): a
 //! node acting as a signer and holding one sync ID plus its paths' key parts judges and acts as
-//! the node holding everything. Over the evidence family, random and wide worlds under the design
-//! (`Stage::A2`), with a control per check. spec: none (modelled before any spec).
+//! the node holding everything. Over the evidence family, random and wide worlds under the spec's
+//! rule (`Rule::fixed`), with a control per check. spec: none (modelled before any spec).
 use crate::util::{env, par_map};
 use held_model::evidence::*;
 use std::collections::BTreeMap;
 
 /// The failures over `w` at every step.
-fn joint(mut w: World, j: Joint) -> Vec<Fail> {
-    let rule = Stage::A2.set(&mut w, Rule::fixed());
+fn joint(w: World, j: Joint) -> Vec<Fail> {
+    let rule = Rule::fixed();
     let mut out = vec![];
     w.run(&rule, |st| out.extend(w.joint(&rule, st, j)));
     out

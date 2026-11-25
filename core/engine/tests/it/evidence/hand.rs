@@ -23,7 +23,7 @@ fn reader_of(w: &World, s: Thing) -> BTreeMap<CopyId<Id, Thing>, Reason<Thing, K
     d.ev.required(&s).cloned().unwrap_or_default()
 }
 
-/// spec_variants's base: X mints A (K, Q writers), Y mints D (A writes it); X syncs A, Y syncs D,
+/// held-model `spec_edges`'s base: X mints A (K, Q writers), Y mints D (A writes it); X syncs A, Y syncs D,
 /// Q syncs A, K (no admin) is hostile.
 fn base() -> (World, [usize; 4]) {
     let pw = paths::World::new(&[(X, A), (Y, D)]);
@@ -34,7 +34,7 @@ fn base() -> (World, [usize; 4]) {
     (w, n)
 }
 
-/// Finding 9 (`f9_a_removal_of_two_holders_waits_for_each_creation`): X removes K and Q from A in
+/// Finding 9 (`f9_a_removal_of_two_holders_waits_for_each_creation_spec_permissions_2`): X removes K and Q from A in
 /// one commit C; K writes D after it. C is on K's edge; the creation of Q's entry (X's grant to Q),
 /// on no stated path, is in D's evidence: a copy brings every edge write on the edges it writes.
 #[test]
@@ -54,10 +54,9 @@ const M1: Thing = 30;
 const M2: Thing = 31;
 const V: Thing = 32;
 
-/// Finding 11 (b) (`f11_a_stated_path_no_grant_joins_leaks_a_roster_unless_paths_must_be_joined`):
-/// K states [M1, M2, A] for its write on D, M2 holding nothing on A: under E1 the path's edges bring
-/// their writes whatever joins them, so V's grant of M1 on M2 is a copy under D at U (the roster
-/// leak P9 that E1 accepts: notes/a2-spec/README.md Open 2).
+/// Finding 11 (b): K states [M1, M2, A] for its write on D, M2 holding nothing on A: the path's
+/// edges bring their writes whatever joins them, so V's grant of M1 on M2 is a copy under D at U
+/// (the roster leak spec/sync-hostile.md §2 states).
 #[test]
 fn f11_an_unjoined_path_still_brings_its_edges_writes_spec_permissions_4() {
     let pw = paths::World::new(&[(X, A), (Y, D), (V, M1), (V, M2)]);
@@ -72,11 +71,10 @@ fn f11_an_unjoined_path_still_brings_its_edges_writes_spec_permissions_4() {
     assert_eq!(d.ev.required(&D).unwrap().get(&(gm, M2)), Some(&Reason::Edge((M1, M2))));
 }
 
-/// Finding 13 (`f13_a_path_set_only_by_junk_waits_at_the_reader_where_the_draft_refuses`): Q writes
-/// D through [A] where (Q, A) holds only K's junk grant: under E1 the junk is a copy (P10, Open 2),
-/// and with it its own evidence, X's grant to K on the junk's path.
+/// Q writes D through [A] where (Q, A) holds only K's junk grant: the junk is a copy (finding 11,
+/// spec/sync-hostile.md §2), and with it its own evidence, X's grant to K on the junk's path.
 #[test]
-fn f13_junk_on_a_path_edge_is_a_copy_spec_permissions_4() {
+fn junk_on_a_path_edge_is_a_copy_spec_permissions_4() {
     let pw = paths::World::new(&[(X, A), (Y, D)]);
     let mut w = World::new(pw, &[A, D]);
     let [x, y, k, q] = [w.node(true, &[A]), w.node(true, &[D]), w.node(false, &[A]), w.node(true, &[A])];
@@ -84,16 +82,15 @@ fn f13_junk_on_a_path_edge_is_a_copy_spec_permissions_4() {
     w.write(y, |p| p.edge(Y, 1, &[], D, A, Role::Write, &[]));
     let junk = w.write(k, |p| p.edge(K, 2, &[], A, Q, Role::Admin, &[]));
     w.write(q, |p| p.content(Q, 3, &[A], D));
-    assert_agrees("f13", &w);
+    assert_agrees("junk", &w);
     let (d, _) = at_end(&w, |st| st.held[q].iter().chain(&st.held[y]).chain(&st.held[k]).copied().collect());
     assert_eq!(d.ev.required(&D).unwrap().keys().copied().collect::<Copies>(), Copies::from([(junk, A), (gk, A)]));
 }
 
-/// Finding 14 (`f14_a_dropped_grant_is_read_by_the_regrant_so_applied_only_strands_a_write`): Q's
-/// grant to K (g1), dropped by X's removal of Q: D's evidence holds it (the re-grant reads it), on
-/// the edge K's write uses.
+/// Q's grant to K (g1), dropped by X's removal of Q: D's evidence holds it (the re-grant reads it,
+/// spec/permissions.md §5.2), on the edge K's write uses.
 #[test]
-fn f14_a_dropped_grant_is_evidence_spec_permissions_4() {
+fn a_dropped_grant_is_evidence_spec_permissions_4() {
     let pw = paths::World::new(&[(X, A), (Y, D)]);
     let mut w = World::new(pw, &[A, D]);
     let (x, y, q, k) = (w.node(true, &[A]), w.node(true, &[D]), w.node(true, &[A]), w.node(true, &[A]));
@@ -103,16 +100,15 @@ fn f14_a_dropped_grant_is_evidence_spec_permissions_4() {
     w.write(k, |p| p.content(K, 2, &[A], D));
     w.write(x, |p| p.edge(X, 3, &[], A, Q, Role::None, &[]));
     let rg = w.write(x, |p| p.edge(X, 5, &[], A, K, Role::Write, &[]));
-    assert_agrees("f14", &w);
+    assert_agrees("dropped", &w);
     let req = reader_of(&w, D);
     assert!(req.contains_key(&(g1, A)), "{req:?}");
     assert!(req.contains_key(&(rg, A)));
 }
 
-/// Finding 15 (`f15_a_writers_finalizes_and_a_may_grant_holders_grants_are_chained_and_copied`): a
-/// writer's finalizes on a used edge are each a copy (27 more for 27 more); a may-grant holder's
-/// grants likewise; under E1 a non-admin's junk too (`variants_junk_by_a_non_admin_adds_no_copy_but_under_the_draft`,
-/// P10, Open 2), and an admin's writes (`variants_an_admins_writes_on_a_used_edge_are_copies_in_every_variant`).
+/// Finding 15 (`every_edge_write_on_a_used_edge_is_a_copy_spec_permissions_4`): a writer's
+/// finalizes on a used edge are each a copy (27 more for 27 more); a may-grant holder's grants
+/// likewise; a non-admin's junk too, and an admin's writes.
 #[test]
 fn f15_what_a_non_admin_and_an_admin_force_on_a_used_edge_spec_permissions_4() {
     let copies = |w: &World| reader_of(w, D).len();
@@ -340,8 +336,8 @@ fn a_removal_is_evidence_only_where_a_body_rests_on_its_edge_spec_permissions_4(
     assert_eq!(req32(&ev), Copies32::from([(2, A), (5, A)]));
 }
 
-/// Finding 23 (held-model `gaps_a_write_through_a_read_hop_pends_at_a_reader_lacking_the_read_grant`):
-/// the stolen K writes R through [A, O], A holding only read on O. Under E1 the path's edges bring
+/// Finding 23 (held-model `gaps_a_write_through_a_read_hop_pends_at_a_reader_no_source_brings_the_read_grant`):
+/// the stolen K writes R through [A, O], A holding only read on O. The path's edges bring
 /// their writes whatever they give: X's grant to K and W's read grant are both copies.
 #[test]
 fn f23_a_read_hop_brings_its_writes_spec_permissions_4() {
