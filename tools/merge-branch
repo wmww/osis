@@ -198,10 +198,11 @@ def checks(w, base, head):
     changed; files outside any package are named. True when every one passed."""
     ours = set(git("diff", "--name-only", f"{base}..{head}", cwd=w).split())
     theirs = set(git("diff", "--name-only", f"{base}..origin/main", cwd=w).split())
-    both = sorted(ours & theirs)
     pkgs = packages(w)
-    hit = sorted({p for f in both if (p := package_of(f, pkgs))})
-    loose = [f for f in both if not package_of(f, pkgs)]
+    of = lambda files: {p for f in files if (p := package_of(f, pkgs))}
+    # a package counts when each side changed any file of it, not only the same file
+    hit = sorted(of(ours) & of(theirs))
+    loose = [f for f in sorted(ours & theirs) if not package_of(f, pkgs)]
     if loose:
         say(f"files both sides changed outside any package (no check here; read them): {' '.join(loose)}")
     say(f"packages both sides changed: {' '.join(n for n, _ in hit) or 'none'}")

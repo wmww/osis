@@ -57,7 +57,7 @@ printf '%s\n' 'echo "== test stages: 1 run of 1, 0 failed"' 'printf "%b" "${GATE
 printf '%s\n' 'import re, sys' 'r = sys.argv[3] + "/tools/"' 'b = re.findall(r"^probe/b (\S+)$", open(r + "test_cost.txt").read(), re.M)' \
     'sys.exit(3 if "probe/x " in open(r + "known_failures.txt").read() and all(float(g) >= 2 for g in b) else 1)' > tools/gate_failures.py
 printf '[workspace]\nmembers = ["core/*"]\ndefault-members = ["core/*"]\n' > Cargo.toml
-for p in x y; do printf '[package]\nname = "%s"\n' $p > core/$p/Cargo.toml; printf '1\n2\n3\n4\n5\n' > core/$p/f; done
+for p in x y; do printf '[package]\nname = "%s"\n' $p > core/$p/Cargo.toml; printf '1\n2\n3\n4\n5\n' > core/$p/f; cp core/$p/f core/$p/g; done
 echo base > notes/handoff.md
 git add -A && git commit -qm base && git push -q origin HEAD:main
 mb="$d/a/tools/merge-branch"
@@ -138,10 +138,11 @@ check "failed gate, cost raised on main since: landed" "$rc $(git --git-dir="$d/
 rm -f "$CARGO_LOG"
 git fetch -q
 
-# land after main moved: rebased, clippy and the tests of the package both sides changed (x, not y)
+# land after main moved: rebased, clippy and the tests of the package both sides changed (x, not
+# y), each side in another file of it
 branch t4 core/x/f core/y/f
 "$mb" gate t4 > /dev/null 2>&1
-main core/x/f
+main core/x/g
 "$mb" land t4 > /dev/null 2> "$d/err" && rc=0 || rc=$?
 check "moved: landed" "$rc $(git --git-dir="$d/origin.git" log --format=%s -1 main)" "0 t4"
 check "moved: checks of x only" "$(cat "$CARGO_LOG")" "clippy --all-targets -- -D warnings
