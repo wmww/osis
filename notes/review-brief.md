@@ -41,6 +41,30 @@ One line each: the ruling, its state on main (dd5c0a3e4), where to look. "Applie
 - Seal skipping KEM-less keysets has no test of its own; a removal's own rotation may write a KEM-less keyset, fixed by KEM key due next pass: applies. `rotation/kem.rs`; KemKeys.tla `KK_fallback`.
 - Link keys keep seed-derived secrets and the static entry, "the one special case" (source calls it a smell): applies. notes/accounts-switch-brief.md, Decisions and why.
 
+**Findings (a)** (spar-review-a). Rulings, in order:
+1. `created.0` excepted: agree. Its exception in `apply::unjudgeable` is dead (the one caller checks `!valid_at` first; `created.0` is always valid) but harmless. The key-placement half had no test: `validity::a_minting_listing_unplaced_keys_still_creates_spec_crypto_7` (ae9708ca4, fails with the exception moved below `miskeyed`).
+2. Granter's check: agree.
+3. The public's role wherever held: agree (the public is every party). Unproven caveat: `role_here` feeds `may_take`/`readable` for the node's own sealed boxes too, so a public grant whose removal the node lacks (issues/public-pieces-unheld.md) could keep a removed reader's sealed secrets; a role through the public giving only open boxes would make the ruling harmless.
+4. Dependent-box: demotion after the plant behaves as the spec says (the `sync.0` write judged at its point stays valid). Open: no rule reconciles boxed and unboxed nodes (the planted epochs are never established, so nothing re-seals); untested.
+5. Left-out causes: agree (LO_rot). No test fails if the edge check runs before `writes_keyset`.
+6. Foreign at depth: agree on finding, anchoring, sealing, superseding. Re-key may repeat: issues/rekey-foreign-unlisted.md. `Foreign`'s doc wrongly said no writer can make a node's own keyset foreign (f88ffb28c).
+7. Permanent fork, held first: agree.
+8. Miskeyed never invalid: agree in validity, but the sync judgement judged such bodies invalid and unlogged them: fixed ae9708ca4 (`sync/bodies.rs`, test `validity::a_body_listing_an_unplaced_key_is_not_judged_invalid_spec_commits_4`). They also sit outside Pending storage, unbounded: issues/miskeyed-parts-unbounded.md.
+9. Remover sealing to an ignorant fork: agree (accepted). The names-digest option proves knowing only on a match with the departure, ignorance only on a match without; any other set the rotator held matches neither and proves nothing.
+10. Destroyed holder with a passed `until`: applies as spec'd; the spec rule over-extends a timed grant: issues/destroyed-holder-timed-edge.md (judge `until` at the destruction point, no clock read).
+11. Box records dropped by an admin snapshot: agree (hostile admins not defended).
+12. Invalidated left-out cause: agree (`left_out_on_an_invalidated_rotation_ends_with_one_rekey`).
+13. Wrong-form box to the public: spec says ignored, the trigger counts it present: issues/public-ignored-box-blocks-reseal.md (low).
+14. Seal skipping KEM-less keysets: agree; still no test of its own (extend `tests_kem::kem_key_due_ends_a_lockout`: before KEM key due, a rotation leaves M out, never seals at the older keyset).
+15. Link keys: agree. Justified by the link requirement (a bearer secret opens K with nothing else) and the record being the one origin fact; the seed-derived first secrets are the mint-with-key rotation with fixed randomness.
+
+Other findings:
+- Spec: Encrypting under excepted "an own thing's" departure; a link key's other redeemers hold its keys, so only the node thing's (as the code does). Crypto §4 Reading-only kept a box the node's roles do not give "for reading"; permissions §3 and the code take nothing. Both fixed in f88ffb28c, with comment remnants of the account root, account epochs, custody and chain writes.
+- Open, no issue: `rotation::walk_from` past an epoch whose secret is lacking follows boxes to the node thing and judges departures from it; no spec clause states this (the spec judges such epochs by stale boxes and order alone). Spec it or delete it.
+- Sides: the spec's own-lowering-trusted clause is not built; "no order, no side" records an untrusted side: issues/own-counter-removal-side.md (low).
+- Low, no issue: a step's `since` (`sync_ids::steps` `Recorded::of`) is the current write's stamp, so an admin re-putting a step entry later makes commits stamped in between miskeyed for good (hostile admin only).
+- For (c): the Interim on `apply::header_wait` (apply/mod.rs ~913) says it waits for every listed thing's record, which is what the spec wants; `thing_wait` already does so per part. Recheck what issues/stated-path-certificates.md still owes.
+
 **(b) Sync** (20)
 - Removal-told metadata (count, size, timing of later sealed role entries) shown to a departed node in two timing cases (newest superseded epoch past the removal; no `until` before the rotation is logged): applies; stated in spec/sync-hostile.md §2 (done, spar-review-tidy) and notes/sync-opens.md (Departed peers). `opens/holds.rs` `departure_until`, `opens/mod.rs` `close_if_reached`; spec/sync-opens.md §6.
 - `sync.0` is a role part; a floored holder sees steps below its floor; any holder encrypts a `sync.0` part under a roles secret it holds: applies. spec/sync-ids.md §4-5.
