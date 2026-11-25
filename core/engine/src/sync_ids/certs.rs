@@ -351,12 +351,8 @@ impl Engine {
         // beside H's piece, the rest (history boxes): H opens them by the epochs its box gives,
         // and the commit's body under x's sync ID is wrapped under an epoch they supersede, one
         // a new holder lacks (spec/crypto.md §5 Who wraps under what). They are keyed with no
-        // holder: no other holder's box or key travels with them. Not to a holder of sync
-        // alone (spec/permissions.md §4 Key part, its sync copy): it reads nothing of x, and the
-        // sync role's history box it opens names x's departed holders (spec/crypto.md §4 Names)
-        if let Cut::EdgePiece(holder) = cut
-            && !self.core.roster_of(x).get(&holder).is_some_and(|e| e.role == osis_base::Role::Sync)
-        {
+        // holder: no other holder's box or key travels with them
+        if let Cut::EdgePiece(_) = cut {
             let pieces: Vec<usize> = h.aspect_parts(x, "secrets.0").collect();
             if pieces.iter().any(|i| out.contains(i)) {
                 out.extend(pieces.into_iter().filter(|i| named.get(i).is_some_and(BTreeSet::is_empty)));

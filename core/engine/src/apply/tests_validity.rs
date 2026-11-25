@@ -66,8 +66,7 @@ mod tests {
     }
     use crate::local_peer::LocalPeer;
     use crate::Mutation;
-    use osis_base::{Role, Tid, Value, WallMs};
-    use std::collections::BTreeSet;
+    use osis_base::{Role, Value, WallMs};
     use osis_schema::core_types as ct;
 
     // spec/permissions.md §1, §2: the role-class aspects are written only by admins, except
@@ -140,30 +139,6 @@ mod tests {
                 assert!(!osis_commit::is_piece(&j), "two pieces joined");
             }
         }
-    }
-    // spec/permissions.md §4 Copies, Key part: a grant's edge piece (its fire, sealed copy or
-    // offer) carries its grantee's `secrets.0` piece and, to a grantee of read or above, the rest
-    // piece (history boxes); to a grantee of sync alone, its piece only: the sync role's history
-    // box it would open names the thing's departed holders.
-    #[test]
-    fn an_edge_piece_carries_the_rest_only_to_a_reader_spec_permissions_4() {
-        let mut lp = LocalPeer::fresh(3, WallMs(1_700_000_000_000));
-        lp.sync_all().unwrap();
-        let (a, b, c) = (lp.peers[0].engine.me(), lp.peers[1].engine.me(), lp.peers[2].engine.me());
-        let t = thing(&mut lp, a);
-        let edge = |role| ct::Edge { role, until: None, may_grant: false, retain: false, floor: None };
-        let pieces = |lp: &mut LocalPeer, id: &osis_base::CommitId, h: Tid| {
-            let copy = lp.peers[0].engine.edge_piece_copy(id, &t, &h).unwrap().unwrap();
-            let blob = osis_commit::CommitBlob::decode(&copy).unwrap();
-            let named = lp.peers[0].engine.holders_named(id);
-            let mut out: Vec<BTreeSet<Tid>> = blob.parts.iter().filter(|p| blob.header.aspects[p.ai].tid == t && blob.header.aspects[p.ai].ak.as_str() == "secrets.0").map(|p| named[&p.ai].clone()).collect();
-            out.sort();
-            out
-        };
-        let gb = *lp.peers[0].engine.grant(&t, &b, &edge(Role::Read)).unwrap().commits.last().unwrap();
-        let gc = *lp.peers[0].engine.grant(&t, &c, &edge(Role::Sync)).unwrap().commits.last().unwrap();
-        assert_eq!(pieces(&mut lp, &gb, b), vec![BTreeSet::new(), BTreeSet::from([b])], "a reader: its piece and the rest");
-        assert_eq!(pieces(&mut lp, &gc, c), vec![BTreeSet::from([c])], "sync alone: its piece only");
     }
     // spec/permissions.md §3 Who rotates, spec/wire.md §4 Pieces: a reader rotating read (a
     // hostile node) makes no rotation: its rest piece writes history boxes only, a history add's
