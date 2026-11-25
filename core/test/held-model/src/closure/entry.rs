@@ -15,8 +15,16 @@
 //! brings in: a walk down the key parts of everything the node opens) and `settle` from an earlier
 //! state (a node following changes and keeping what still supports itself) are the other readings.
 //!
+//! Carriers (`Rule::carriers`, spec/sync-set.md §2 What a sync ID carries): a node reading T holds
+//! a thing of T's sync unit only where T's sync ID carries it in fact: an independent thing (its
+//! own sync ID carries it), a dependent of T (made by a reader of T), or a dependent of another
+//! independent thing that a node reading T holds otherwise (a bridge, which logs it under T:
+//! `Net::bridged`, the least fixpoint over every node, `Net::held_all`). The walk goes on only
+//! from a thing held.
+//!
 //! Abstracted: every edge piece the spec indexes is logged under its holder's sync ID (ideal
-//! delivery); grants sit on independent things; a box exists for every keyed edge; validity,
+//! delivery), as is what a carrier holds (a bridge's carriage stands while it does: carriage that
+//! outlived its bridge is history, not modelled); grants sit on independent things; a box exists for every keyed edge; validity,
 //! rotation, timing and the wire are left out. An edge piece is the current grant's: a removal's
 //! piece carries nothing, since a loss is carried out at once here (the engine's carries until
 //! the node's read secrets go, spec/sync-set.md §2 First entry).
@@ -42,6 +50,9 @@ pub struct Net {
     /// Every strong, the node roots' among them (a root's strongs are read only by its node).
     pub strongs: Edges,
     pub nodes: Vec<Node>,
+    /// `(t, x)`: dependent `x` of another independent thing than `t`, held by a node reading `t`
+    /// otherwise than through `t`'s sync ID, which so carries it (`held_all` computes them).
+    pub bridged: Edges,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -69,11 +80,14 @@ pub struct Rule {
     pub founded_pieces: bool,
     /// The node root's strongs on the node thing itself (the split undone: a control).
     pub merged: bool,
+    /// A read unit's thing held only where its sync ID carries it (`bridged`; off: every thing
+    /// of the unit, ideal delivery, the control).
+    pub carriers: bool,
 }
 
 impl Rule {
-    pub const DRAFT: Rule = Rule { fix: Fix::Least, first_entry: true, record_pieces: false, stubs_at_sync: false, founded_pieces: false, merged: false };
-    pub const SPEC: Rule = Rule { record_pieces: true, stubs_at_sync: true, founded_pieces: true, ..Rule::DRAFT };
+    pub const DRAFT: Rule = Rule { fix: Fix::Least, first_entry: true, record_pieces: false, stubs_at_sync: false, founded_pieces: false, merged: false, carriers: false };
+    pub const SPEC: Rule = Rule { record_pieces: true, stubs_at_sync: true, founded_pieces: true, carriers: true, ..Rule::DRAFT };
 }
 
 /// A node's state: the independent things it reads, keeps unread, and whose key parts it holds.
@@ -104,6 +118,60 @@ impl Net {
         }
         let root_of: BTreeMap<T, T> = self.nodes.iter().map(|n| (n.root, n.thing)).collect();
         self.strongs.iter().map(|&(x, y)| (root_of.get(&x).copied().unwrap_or(x), y)).collect()
+    }
+
+    /// What a node reading `t` holds of `t`'s sync unit: with `carriers`, the walk from `t` over
+    /// the unit's things its sync ID carries (an independent thing, a dependent of `t`, a bridged
+    /// one), going on only from those; else the unit.
+    pub fn held_unit(&self, rule: Rule, t: T, e: &Edges) -> Set {
+        let u = unit(&self.w, t, e);
+        if !rule.carriers {
+            return u;
+        }
+        let carried = |x: T| match self.w.kinds[x] {
+            Kind::Independent => true,
+            Kind::Dependent(k) => k == t || self.bridged.contains(&(t, x)),
+        };
+        let mut seen = Set::from([t]);
+        let mut stack = vec![t];
+        while let Some(x) = stack.pop() {
+            for y in targets(e, x) {
+                if u.contains(&y) && carried(y) && seen.insert(y) {
+                    stack.push(y);
+                }
+            }
+        }
+        seen
+    }
+
+    /// Every node's held set under `rule`, with the bridges they make (`bridged`): the least
+    /// fixpoint, from `self.bridged`. A node reading `t` and holding a dependent `x` of another
+    /// independent thing in `t`'s unit through another unit bridges `(t, x)`.
+    pub fn held_all(&self, rule: Rule) -> (Vec<Held>, Edges) {
+        let mut net = self.clone();
+        loop {
+            let held: Vec<Held> = (0..net.nodes.len()).map(|i| net.held_alone(i, rule)).collect();
+            let mut more = net.bridged.clone();
+            for h in &held {
+                more.extend(net.bridges(rule, h));
+            }
+            if more == net.bridged {
+                return (held, more);
+            }
+            net.bridged = more;
+        }
+    }
+
+    /// The bridges a node holding `h` makes: `(t, x)` for each thing `t` it reads and dependent `x`
+    /// of another independent thing in `t`'s unit that it holds.
+    pub fn bridges(&self, rule: Rule, h: &Held) -> Edges {
+        let e = self.edges(rule);
+        let mut out = Edges::new();
+        for &t in &h.s.read {
+            let u = unit(&self.w, t, &e);
+            out.extend(h.held.iter().filter(|&&x| u.contains(&x) && matches!(self.w.kinds[x], Kind::Dependent(k) if k != t)).map(|&x| (t, x)));
+        }
+        out
     }
 
     /// The best role `from` holds on each thing over the grants whose target is in `counting`.
@@ -157,11 +225,11 @@ impl Net {
         // Whether a unit the node syncs carries `x`, or the node holds an offer of it.
         let carried = |x: T| {
             n.offers.contains(&x)
-                || s.read.iter().any(|&t| unit(w, t, &e).contains(&x))
+                || s.read.iter().any(|&t| self.held_unit(rule, t, &e).contains(&x))
                 || s.keyparts.iter().any(|&h| (!rule.founded_pieces || h == n.thing || s.read.contains(&h)) && self.piece(rule, h, x))
                 || rule.stubs_at_sync
                     && s.read.iter().any(|&t| {
-                        let u = unit(w, t, &e);
+                        let u = self.held_unit(rule, t, &e);
                         u.iter().any(|&m| e.contains(&(m, x))) && w.roles_from(t).get(&x).is_some_and(|&r| r >= Role::Sync)
                     })
         };
@@ -195,7 +263,7 @@ impl Net {
                 continue;
             }
             if own || at(t, Role::Read) {
-                let u = unit(w, t, &e);
+                let u = self.held_unit(rule, t, &e);
                 out.read.extend(u.iter().copied().filter(|&x| w.independent(x)));
                 for &m in &u {
                     todo.extend(targets(&e, m).filter(|&y| w.independent(y) && !u.contains(&y)));
@@ -237,8 +305,18 @@ impl Net {
         panic!("node {i} does not settle under {rule:?}");
     }
 
-    /// What node `i` holds under `rule`.
+    /// What node `i` holds under `rule`: with `carriers`, as every node's bridges leave it
+    /// (`held_all`).
     pub fn held(&self, i: usize, rule: Rule) -> Held {
+        if !rule.carriers {
+            return self.held_alone(i, rule);
+        }
+        let (mut all, _) = self.held_all(rule);
+        all.swap_remove(i)
+    }
+
+    /// What node `i` holds under `rule`, the bridges `self.bridged`.
+    pub fn held_alone(&self, i: usize, rule: Rule) -> Held {
         let start = match rule.fix {
             Fix::Least => S::default(),
             Fix::Greatest => self.top(),
@@ -253,7 +331,7 @@ impl Net {
         let e = self.edges(rule);
         let mut held = self.local(rule, n, &e);
         for &t in &s.read {
-            held.extend(unit(&self.w, t, &e));
+            held.extend(self.held_unit(rule, t, &e));
         }
         held.extend(&s.kept);
         let sync_set = s.read.iter().chain(&s.kept).chain(&s.keyparts).copied().collect();

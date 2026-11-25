@@ -817,6 +817,8 @@ pub struct Model {
     edges: hc::Edges,
     /// The grants (holder, target) whose holder's readers were never offered them (`Made::unoffered`).
     unoffered: BTreeSet<(usize, usize)>,
+    /// What each account's node closure carries into another's unit (`entry::Net::bridged`).
+    bridged: hc::Edges,
 }
 
 impl Model {
@@ -903,7 +905,19 @@ impl Model {
         for r in refs.all() {
             keyless.extend(r.engine.keyless_grants().iter().filter_map(|(t, g)| Some((index(g)?, index(t)?))));
         }
-        Model { accounts, world: hc::World { kinds, grants, keyless }, edges, unoffered }
+        let mut m = Model { accounts, world: hc::World { kinds, grants, keyless }, edges, unoffered, bridged: hc::Edges::new() };
+        // the bridges, to their least fixpoint over the accounts (`entry::Net::held_all`)
+        loop {
+            let mut more = m.bridged.clone();
+            for a in 0..m.accounts.len() {
+                let (net, held) = m.entry(a);
+                more.extend(net.bridges(held_model::closure::entry::Rule::SPEC, &held));
+            }
+            if more == m.bridged {
+                return m;
+            }
+            m.bridged = more;
+        }
     }
 
     /// Account `a`'s node closure and the keys it reads with (spec/sync-set.md §2): held-model's
@@ -914,8 +928,24 @@ impl Model {
     /// counts once the node reads the target by another way, and opens nothing before (no node of
     /// the holder's learns the target's sync ID or box by it). The least such closure, as
     /// `hc::Closure` (`carried`: what its read units and the units of what it keeps unread carry;
-    /// `for_keys`: holders held for keys alone) and the keys of what it reads.
+    /// `for_keys`: holders held for keys alone) and the keys of what it reads, with the bridges
+    /// every account's closure makes (`Model::bridged`, spec/sync-set.md §2 Carriers).
     fn closure(&self, a: usize) -> (hc::Closure, hc::Set) {
+        use held_model::closure::entry;
+        let (net, held) = self.entry(a);
+        let e = net.edges(entry::Rule::SPEC);
+        let keys = net.w.ring(&held.s.read);
+        let mut carried = held.held.clone();
+        for &t in &held.s.kept {
+            carried.extend(hc::unit(&net.w, t, &e));
+        }
+        let for_keys = held.s.keyparts.iter().copied().filter(|x| !held.s.read.contains(x) && !held.s.kept.contains(x)).collect();
+        let c = hc::Closure { read: held.s.read, stored: held.s.kept, held: held.held, carried, keys: keys.clone(), synced: hc::Set::new(), for_keys };
+        (c, keys)
+    }
+
+    /// Account `a`'s first-entry world (`closure`) with the bridges, and what its node holds.
+    fn entry(&self, a: usize) -> (held_model::closure::entry::Net, held_model::closure::entry::Held) {
         use held_model::closure::entry;
         let n = self.world.kinds.len();
         let mut known = hc::Set::new();
@@ -932,18 +962,10 @@ impl Model {
                 nodes.push(entry::Node { thing, root, offers: hc::Set::new() });
             }
             let records = (0..self.accounts.len()).map(|b| (n + 2 * b, b)).collect();
-            let net = entry::Net { w, records, strongs, nodes };
-            let held = net.held(a, entry::Rule::SPEC);
+            let net = entry::Net { w, records, strongs, nodes, bridged: self.bridged.clone() };
+            let held = net.held_alone(a, entry::Rule::SPEC);
             if held.s.read.is_subset(&known) {
-                let e = net.edges(entry::Rule::SPEC);
-                let keys = net.w.ring(&held.s.read);
-                let mut carried = held.held.clone();
-                for &t in &held.s.kept {
-                    carried.extend(hc::unit(&net.w, t, &e));
-                }
-                let for_keys = held.s.keyparts.iter().copied().filter(|x| !held.s.read.contains(x) && !held.s.kept.contains(x)).collect();
-                let c = hc::Closure { read: held.s.read, stored: held.s.kept, held: held.held, carried, keys: keys.clone(), synced: hc::Set::new(), for_keys };
-                return (c, keys);
+                return (net, held);
             }
             known.extend(held.s.read.iter().copied());
         }

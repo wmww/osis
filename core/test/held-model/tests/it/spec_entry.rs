@@ -330,6 +330,30 @@ fn incidental_entry_through_a_holder_held_for_another_thing() {
     assert!(held(&net, 0, Rule::SPEC).contains(&Y) && !held(&net, 0, Rule::SPEC).contains(&X));
 }
 
+// spec/sync-set.md §2 What a sync ID carries: A holds admin on B and no strong to it; B holds X, a
+// dependent of B; D, A's dependent, holds X. X is in A's unit (A's keys open it through B), but
+// nothing A's nodes sync carries it: no node reading A holds X, and B's sync ID is synced by none of
+// them. With node 1's root holding B (it reads B's unit, X with it), node 1 is a bridge: it logs X
+// under A's sync ID and node 2, syncing A alone, holds X. The control (ideal delivery, `carriers`
+// off) holds X with no bridge; with bridges left out (`held_alone`) node 2 never holds it.
+#[test]
+fn a_dependent_of_another_thing_is_carried_only_by_a_bridge() {
+    const X: T = 9;
+    let mut net = account(Some(Role::Admin), 2);
+    net.w.kinds[X] = Kind::Dependent(B);
+    net.w.grants.insert((A, B), Role::Admin);
+    net.records.insert((A, B));
+    net.strongs.extend([(B, X), (D, X)]);
+    for i in 0..2 {
+        assert!(!held(&net, i, Rule::SPEC).contains(&X), "node {} holds nothing nobody carries", i + 1);
+        assert!(held(&net, i, Rule { carriers: false, ..Rule::SPEC }).contains(&X), "control: ideal delivery");
+    }
+    net.strongs.insert((R1, B));
+    assert!(held(&net, 0, Rule::SPEC).contains(&X), "node 1 reads B's unit");
+    assert!(held(&net, 1, Rule::SPEC).contains(&X), "node 2 holds what node 1 logs under A");
+    assert!(!net.held_alone(1, Rule::SPEC).held.contains(&X), "control: no bridge");
+}
+
 // By hand: OSIS_ENTRY_WORLDS random worlds (default 20000) of OSIS_ENTRY_MORE further things
 // (default 5) under each rule, printing the failures per property.
 #[test]
@@ -345,6 +369,7 @@ fn entry_explore() {
         ("pieces of held-for-keys holders", Rule { founded_pieces: false, ..Rule::SPEC }),
         ("no first entry", Rule { first_entry: false, ..Rule::SPEC }),
         ("greatest", Rule { fix: Fix::Greatest, ..Rule::SPEC }),
+        ("ideal delivery", Rule { carriers: false, ..Rule::SPEC }),
     ] {
         println!("{name}: {:?}", sweep(rule, n, more));
     }

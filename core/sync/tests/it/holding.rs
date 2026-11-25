@@ -1632,3 +1632,30 @@ fn a_reader_opens_a_deposit_it_takes_spec_sync_inbox_3() {
     }
 }
 
+
+// spec/sync-set.md §2 Carriers: Bob makes T0 and T1 (minted with admin T0, held from T0) and gives
+// Alice's account write on T0, which it holds no strong to; Alice makes T2 and writes T2 -> T1.
+// T1 is in her account's unit (its keys open T1 through T0), but no node reading the account holds
+// T1 and none of Alice's syncs T0: nothing carries it, and Alice reads nothing of it.
+#[test]
+fn a_dependent_nobody_carries_into_a_unit_is_not_held_spec_sync_set_2() {
+    use crate::harness::script::*;
+    let mut w = contacts();
+    let _ = crate::harness::play(&mut w, &[New(0), NewIn(0, 0), Give(0, 0, Holder::Node(1), Writes), New(1), Strong(1, Some(2), 1), Run], String::new());
+    let t1 = w.history.things[1].0;
+    assert!(crate::harness::history::reads(w.engine(0), &t1).value.is_some(), "Bob reads T1");
+    assert!(crate::harness::history::reads(w.engine(1), &t1).value.is_none(), "nothing carries T1 to Alice");
+}
+
+// spec/sync-set.md §2 Carriers: as above with U, Alice's thing Bob reads and holds, granted write
+// on T0 (U holding write on Alice's T3 first, so its keysets carry the KEM keys a granter seals to), and U -> T1 written by Alice before she holds anything of T1. Bob reads U and holds T1
+// through T0: a bridge, logging T1 under U's sync ID, from which Alice reads it.
+#[test]
+fn a_bridge_carries_a_dependent_into_another_unit_spec_sync_set_2() {
+    use crate::harness::script::*;
+    let mut w = contacts();
+    let steps = [New(0), NewIn(0, 0), New(1), Give(1, 2, Holder::Node(0), Reads), Strong(0, None, 2), New(1), Give(1, 3, Holder::Thing(2), Writes), Run, Give(0, 0, Holder::Thing(2), Writes), Strong(1, Some(2), 1), Run];
+    let _ = crate::harness::play(&mut w, &steps, String::new());
+    let t1 = w.history.things[1].0;
+    assert!(crate::harness::history::reads(w.engine(1), &t1).value.is_some(), "Alice reads T1 through Bob's bridge");
+}
