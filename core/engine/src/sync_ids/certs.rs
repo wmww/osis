@@ -315,13 +315,14 @@ impl Engine {
     /// `cut`'s parts of commit `c` on thing `x` (spec/permissions.md §4 Copies: S's cut, each
     /// part whole): evidence, its edge-class parts and, recording a step placing a listed key, its
     /// `sync.0`; holder H's edge piece, its `roles.0` writing H's edge, its `secrets.0` piece of
-    /// H (spec/wire.md §4 Pieces: the part whose box records are keyed with H) with, beside it,
-    /// the rest piece (the history boxes), and its `sync.0`; keys, its `keys.0`. Beside a
-    /// `secrets.0` or `keys.0` part, the commit's edge-class parts on `x`, which that part's
+    /// H (spec/wire.md §4 Pieces: the part whose box records are keyed with H) with, beside it
+    /// where H reads `x`, the rest piece (the history boxes), and its `sync.0`; keys, its
+    /// `keys.0`. Beside a `secrets.0` or `keys.0` part, the commit's edge-class parts on `x`, which that part's
     /// verdict reads (a may-grant grant's boxes and records are judged from its commit's
     /// `roles.0` alone, `validity::rotation_required`, `note_required`).
     /// Invariant (security): nothing outside `x`; a box part only beside its edge-class parts;
-    /// of `secrets.0` H's piece and the rest, never another holder's: a piece holding another
+    /// of `secrets.0` H's piece and, only where H reads `x`, the rest (its history boxes name
+    /// `x`'s departed holders), never another holder's: a piece holding another
     /// holder's record, or the rest holding one, holds nothing at any receiver (`osis_commit`'s
     /// piece check), so a writer cannot make H's copy carry another holder's box.
     pub(crate) fn cut_parts(&mut self, c: &CommitId, x: &Tid, cut: Cut) -> Parts {
@@ -351,8 +352,13 @@ impl Engine {
         // beside H's piece, the rest (history boxes): H opens them by the epochs its box gives,
         // and the commit's body under x's sync ID is wrapped under an epoch they supersede, one
         // a new holder lacks (spec/crypto.md §5 Who wraps under what). They are keyed with no
-        // holder: no other holder's box or key travels with them
-        if let Cut::EdgePiece(_) = cut {
+        // holder: no other holder's box or key travels with them. Only to a holder reading x:
+        // one of sync alone (spec/permissions.md §4 Key part, its sync copy) reads nothing of x,
+        // and the sync role's history box it would open names x's departed holders
+        // (spec/crypto.md §4 Names); one removed opens none
+        if let Cut::EdgePiece(holder) = cut
+            && self.core.roster_of(x).get(&holder).is_some_and(|e| e.role >= osis_base::Role::Read)
+        {
             let pieces: Vec<usize> = h.aspect_parts(x, "secrets.0").collect();
             if pieces.iter().any(|i| out.contains(i)) {
                 out.extend(pieces.into_iter().filter(|i| named.get(i).is_some_and(BTreeSet::is_empty)));

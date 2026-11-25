@@ -92,10 +92,20 @@ impl Meta {
     pub fn parts(&self) -> usize {
         self.hold.len()
     }
-    /// The index of aspect `(tid, ak)`'s part in the commit, the first of its pieces
-    /// (`View::aspect`).
+    /// The part standing for the commit's body on aspect `(tid, ak)`: its one part, or of a
+    /// `secrets.0` in pieces (spec/wire.md §4 Pieces) the first held valid piece, else the first
+    /// held, else the first. A piece held without its siblings is the body here, as a whole
+    /// part is: what a node holds of a commit on an aspect is never judged by a piece it lacks
+    /// (another holder's, or the rest, which a holder of sync alone never gets).
     pub(crate) fn aspect(&self, tid: &Tid, ak: &Ak) -> Option<usize> {
-        self.view.aspect(tid, ak.as_str())
+        let mut parts = self.aspect_parts(tid, ak);
+        let first = parts.next()?;
+        if parts.is_empty() {
+            return Some(first);
+        }
+        let mut held = std::iter::once(first).chain(parts).filter(|ai| self.holds(*ai));
+        let Some(h) = held.next() else { return Some(first) };
+        Some(std::iter::once(h).chain(held).find(|ai| self.valid_at(*ai)).unwrap_or(h))
     }
     /// The indexes of its parts on aspect `(tid, ak)` (`View::aspect_parts`).
     pub(crate) fn aspect_parts(&self, tid: &Tid, ak: &Ak) -> std::ops::Range<usize> {

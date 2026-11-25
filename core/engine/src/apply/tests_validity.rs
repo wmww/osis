@@ -66,8 +66,9 @@ mod tests {
     }
     use crate::local_peer::LocalPeer;
     use crate::Mutation;
-    use osis_base::{Role, Value, WallMs};
+    use osis_base::{Role, Tid, Value, WallMs};
     use osis_schema::core_types as ct;
+    use std::collections::BTreeSet;
 
     // spec/permissions.md §1, §2: the role-class aspects are written only by admins, except
     // may-grant grants, which "carry the grantee's boxes for those roles". A grant's `secrets.0` part
@@ -139,6 +140,108 @@ mod tests {
                 assert!(!osis_commit::is_piece(&j), "two pieces joined");
             }
         }
+    }
+    // spec/permissions.md §4 Copies, Key part: a grant's edge piece (its fire, sealed copy or
+    // offer) carries its grantee's `secrets.0` piece and, to a grantee reading the thing, the rest
+    // piece (history boxes); to a grantee of sync alone, or one removed, its piece only: the sync
+    // role's history box it would open names the thing's departed holders.
+    #[test]
+    fn an_edge_piece_carries_the_rest_only_to_a_reader_spec_permissions_4() {
+        let mut lp = LocalPeer::fresh(3, WallMs(1_700_000_000_000));
+        lp.sync_all().unwrap();
+        let (a, b, c) = (lp.peers[0].engine.me(), lp.peers[1].engine.me(), lp.peers[2].engine.me());
+        let t = thing(&mut lp, a);
+        let edge = |role| ct::Edge { role, until: None, may_grant: false, retain: false, floor: None };
+        let pieces = |lp: &mut LocalPeer, id: &osis_base::CommitId, h: Tid| {
+            let copy = lp.peers[0].engine.edge_piece_copy(id, &t, &h).unwrap().unwrap();
+            let blob = osis_commit::CommitBlob::decode(&copy).unwrap();
+            let named = lp.peers[0].engine.holders_named(id);
+            let mut out: Vec<BTreeSet<Tid>> = blob.parts.iter().filter(|p| blob.header.aspects[p.ai].tid == t && blob.header.aspects[p.ai].ak.as_str() == "secrets.0").map(|p| named[&p.ai].clone()).collect();
+            out.sort();
+            out
+        };
+        let gb = *lp.peers[0].engine.grant(&t, &b, &edge(Role::Read)).unwrap().commits.last().unwrap();
+        let gc = *lp.peers[0].engine.grant(&t, &c, &edge(Role::Sync)).unwrap().commits.last().unwrap();
+        assert_eq!(pieces(&mut lp, &gb, b), vec![BTreeSet::new(), BTreeSet::from([b])], "a reader: its piece and the rest");
+        assert_eq!(pieces(&mut lp, &gc, c), vec![BTreeSet::from([c])], "sync alone: its piece only");
+        let rb = *lp.peers[0].engine.demote(&t, &crate::flows::edges::Demotion { holder: b, new: None, retain: None }).unwrap().commits.last().unwrap();
+        assert!(pieces(&mut lp, &rb, b).iter().all(|n| !n.is_empty()), "removed: no rest");
+    }
+    // spec/permissions.md §4 Copies (held-model `box_cut` `granted_after_a_removal`): o is
+    // granted read and removed (the rotation's history boxes name it), then t is granted read with
+    // history: t's edge piece alone (its piece and the rest) gives it the read epoch before its
+    // grant, by the history box its own epoch opens; without the rest, not. Granted sync alone, t's
+    // piece comes without the rest, though the grant writes one.
+    #[test]
+    fn a_grantee_reads_its_history_by_the_rest_spec_permissions_4() {
+        let run = |role: Role, rest: bool| {
+            let mut lp = LocalPeer::fresh(3, WallMs(1_700_000_000_000));
+            lp.sync_all().unwrap();
+            let (a, o, t) = (lp.peers[0].engine.me(), lp.peers[1].engine.me(), lp.peers[2].engine.me());
+            let x = thing(&mut lp, a);
+            let edge = |role| ct::Edge { role, until: None, may_grant: false, retain: false, floor: None };
+            lp.peers[0].engine.grant(&x, &o, &edge(Role::Read)).unwrap();
+            lp.peers[0].engine.demote(&x, &crate::flows::edges::Demotion { holder: o, new: None, retain: None }).unwrap();
+            let g = *lp.peers[0].engine.grant(&x, &t, &edge(role)).unwrap().commits.last().unwrap();
+            let named = lp.peers[0].engine.holders_named(&g);
+            let secrets = osis_base::Ak::new("secrets.0").unwrap();
+            let parts: Vec<usize> = lp.peers[0].engine.core.ix.commits[&g].aspect_parts(&x, &secrets).collect();
+            assert!(parts.iter().any(|ai| named[ai].is_empty()), "the grant writes a rest piece");
+            let mut p = lp.peers[0].engine.edge_piece(&g, &x, Some(t)).unwrap().unwrap();
+            let blob = osis_commit::CommitBlob::decode(&p.copy).unwrap();
+            let carried = blob.parts.iter().any(|q| parts.contains(&q.ai) && named[&q.ai].is_empty());
+            assert_eq!(carried, role >= Role::Read, "the rest beside t's piece only where t reads x");
+            if !rest {
+                p.copy = osis_commit::rewrite(&blob, |ai| named.get(&ai).is_some_and(BTreeSet::is_empty)).encode();
+            }
+            lp.peers[2].engine.take_edge_piece(&p, None).unwrap();
+            let held = |e: &crate::Engine, r: Role| -> Vec<u64> { e.epochs(&x).map(|s| s.role(r).epochs().filter(|(_, i)| i.secret.is_some()).map(|(ep, _)| ep.n()).collect()).unwrap_or_default() };
+            let at_a = held(&lp.peers[0].engine, Role::Read);
+            assert!(at_a.len() > 1, "the removal rotated read: {at_a:?}");
+            (held(&lp.peers[2].engine, Role::Read), at_a)
+        };
+        let (read, at_a) = run(Role::Read, true);
+        assert_eq!(read, at_a, "a reader takes every read epoch from its piece and the rest");
+        let (no_rest, _) = run(Role::Read, false);
+        assert!(!no_rest.contains(&at_a[0]) && !no_rest.is_empty(), "control: without the rest, no epoch before the grant: {no_rest:?}");
+        assert!(run(Role::Sync, true).0.is_empty(), "sync alone: no read epoch");
+    }
+    // spec/commits.md §5 Bodies and deaths, spec/wire.md §4 Pieces: a piece held without its
+    // siblings is the commit's body there, dated as any. A holder of sync alone takes its
+    // grant's edge piece (its piece, no rest); its removal supersedes its box, so the piece it
+    // holds is replaced at the removal, as at the admin holding every piece (failed with the
+    // body judged by its first piece, the rest it lacks: never dated, its held writes dropped
+    // at its lost access and not built again).
+    #[test]
+    fn a_piece_held_without_its_siblings_is_dated_spec_commits_5() {
+        let mut lp = LocalPeer::fresh(2, WallMs(1_700_000_000_000));
+        lp.sync_all().unwrap();
+        let (a, b) = (lp.peers[0].engine.me(), lp.peers[1].engine.me());
+        let secrets = osis_base::Ak::new("secrets.0").unwrap();
+        let edge = ct::Edge { role: Role::Sync, until: None, may_grant: false, retain: false, floor: None };
+        // a grant whose first piece is not b's (pieces lie in hash order)
+        let (t, g) = (0..32)
+            .find_map(|_| {
+                let t = thing(&mut lp, a);
+                let g = *lp.peers[0].engine.grant(&t, &b, &edge).unwrap().commits.last().unwrap();
+                let first = lp.peers[0].engine.core.ix.commits[&g].aspect_parts(&t, &secrets).next().unwrap();
+                (!lp.peers[0].engine.holders_named(&g)[&first].contains(&b)).then_some((t, g))
+            })
+            .unwrap();
+        let give = |lp: &mut LocalPeer, c: &osis_base::CommitId| {
+            let p = lp.peers[0].engine.edge_piece(c, &t, Some(b)).unwrap().unwrap();
+            lp.peers[1].engine.take_edge_piece(&p, None).unwrap();
+        };
+        give(&mut lp, &g);
+        let m = lp.peers[1].engine.core.ix.commits[&g].clone();
+        let held: Vec<bool> = m.aspect_parts(&t, &secrets).map(|ai| m.holds(ai)).collect();
+        assert_eq!(held.iter().filter(|h| **h).count(), 1, "its piece alone: {held:?}");
+        assert!(held.len() > 1, "the grant is in pieces");
+        let r = *lp.peers[0].engine.demote(&t, &crate::flows::edges::Demotion { holder: b, new: None, retain: None }).unwrap().commits.last().unwrap();
+        give(&mut lp, &r);
+        let at_a = lp.peers[0].engine.replaced_at(&g, &t, &secrets).unwrap();
+        assert!(at_a.is_some());
+        assert_eq!(lp.peers[1].engine.replaced_at(&g, &t, &secrets).unwrap(), at_a);
     }
     // spec/permissions.md §3 Who rotates, spec/wire.md §4 Pieces: a reader rotating read (a
     // hostile node) makes no rotation: its rest piece writes history boxes only, a history add's

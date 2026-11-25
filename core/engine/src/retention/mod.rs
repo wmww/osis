@@ -164,14 +164,11 @@ pub(crate) fn bounded(core: &Core, tid: &Tid, ak: &Ak) -> bool {
     history::of(core, tid, ak).dated()
 }
 
-/// The part of `(tid, ak)` in held commit `c` that stands for its body there, if held
-/// (`Meta::holds`: a late part still to arrive is not): its one part, or of a `secrets.0` in
-/// pieces the first held valid piece, else the first held (`body_parts`).
+/// The part of `(tid, ak)` in held commit `c` that stands for its body there (`Meta::aspect`),
+/// if held (`Meta::holds`: a late part still to arrive is not).
 pub(crate) fn held_part(core: &Core, c: &CommitId, tid: &Tid, ak: &Ak) -> Option<usize> {
     let m = core.ix.commits.get(c)?;
-    let mut held = m.aspect_parts(tid, ak).filter(|ai| m.holds(*ai));
-    let first = held.next()?;
-    Some(std::iter::once(first).chain(held).find(|ai| m.valid_at(*ai)).unwrap_or(first))
+    m.aspect(tid, ak).filter(|ai| m.holds(*ai))
 }
 
 /// The parts of `c`'s body on the aspect of part `ai`: the held parts there judged as `ai` is
