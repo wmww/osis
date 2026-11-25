@@ -62,10 +62,11 @@ pub struct Kept {
     pub stranded: bool,
     /// `None` when it shows no sync key.
     pub credentials: Option<Arc<UnreadCredentials>>,
-    /// Its head with its claim set, where the set lists S's public entry and the head bears the
-    /// newest sync epoch held: the node reads S by that entry's open box (spec/sync-opens.md §4
-    /// Admissible). A head behind a newer sync epoch held is one it knows superseded and proves
-    /// nothing (a public's removal since included): it waits for the Register moving it.
+    /// Its head with its claim set, where the set lists S's public entry and the head bears a sync
+    /// epoch of the latest number held: the node reads S by that entry's open box
+    /// (spec/sync-opens.md §4 Admissible). A head behind a later sync epoch held is one it knows
+    /// superseded and proves nothing (a public's removal since included): it waits for the
+    /// Register moving it.
     pub public: Option<(Step, ClaimSet)>,
 }
 
@@ -86,7 +87,10 @@ pub fn judge(j: &Judged) -> Kept {
     secrets.sort_by(|a, b| b.0.cmp(a.0));
     let mut seen = BTreeSet::new();
     secrets.retain(|(_, x)| seen.insert(*x.expose()));
-    let newest = secrets.first().map(|(_, x)| role_key(RoleKey::Sync, x).verifying_key());
+    // the sync keys of the latest sync epoch number held: concurrent rotations give several, and
+    // a head bearing any is superseded by none held (no order among them decides)
+    let latest = secrets.first().map(|(e, _)| e.n());
+    let current: Vec<_> = secrets.iter().filter(|(e, _)| Some(e.n()) == latest).map(|(_, x)| role_key(RoleKey::Sync, x).verifying_key()).collect();
     let held: Vec<(SigningSecret, Secret32)> = secrets.into_iter().map(|(_, x)| (role_key(RoleKey::Sync, x), Secret32::from_bytes(sync_proof(&role_key_seed(RoleKey::Sync, x))))).collect();
     let keep = |stranded: bool, credentials: Option<UnreadCredentials>| Kept { stranded, credentials: credentials.map(Arc::new), public: None };
     let Some(head) = j.steps.last() else {
@@ -96,7 +100,7 @@ pub fn judge(j: &Judged) -> Kept {
         return keep(false, (!held.is_empty()).then(|| UnreadCredentials { step: None, keys: held, deposit: None, claims: None }));
     };
     if let Some(k) = held.iter().find(|(k, _)| k.verifying_key() == head.0.keys.sync) {
-        let public = head.1.as_ref().filter(|c| c.lists_public(j.s) && newest == Some(head.0.keys.sync)).map(|c| (head.0.clone(), c.clone()));
+        let public = head.1.as_ref().filter(|c| c.lists_public(j.s) && current.contains(&head.0.keys.sync)).map(|c| (head.0.clone(), c.clone()));
         let mut kept = keep(false, Some(UnreadCredentials { step: Some(head.0.id()), keys: vec![k.clone()], deposit: Some(head.0.keys.deposit), claims: head.1.clone() }));
         kept.public = public;
         return kept;
@@ -188,4 +192,35 @@ fn judge_s(cx: &mut Cx, s: &SyncId) -> Result<Kept> {
     let secrets = cx.engine.kept_sync_secrets(s);
     let path = cx.store.path(s)?;
     Ok(judge(&Judged { s, secrets: &secrets, steps: path.as_ref().map(|p| p.steps.as_slice()).unwrap_or_default() }))
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+    use super::{Judged, judge};
+    use osis_base::{Role, Tid};
+    use osis_blob::{Parent, Reader, StepKeys, genesis_sync_id, register};
+    use osis_crypto::{Epoch, RoleKey, Secret32, SeededRng, role_key};
+
+    // spec/sync-opens.md §4 (Admissible, keeping S unread: the head bears a sync epoch no held one
+    // is later than): concurrent rotations give two sync epochs of one number; a head listing the
+    // public that bears either is taken (failed with the newest by full epoch order: a head bearing
+    // the lesser nonce was taken nowhere, waiting on a rotation nothing owes). One held epoch of a
+    // later number makes both heads superseded.
+    #[test]
+    fn a_head_at_either_concurrent_sync_epoch_gives_its_public_entry() {
+        let t = Tid::from_bytes([7; 15]);
+        let sec = |b: u8| Secret32::from_bytes([b; 32]);
+        let (admin, write, deposit, read) = (sec(1), sec(2), sec(3), sec(4));
+        let held: Vec<(Epoch, Secret32)> = [(3, 10), (3, 11), (4, 12)].into_iter().map(|(n, b)| (Epoch::derive(&t, Role::Sync, n, &sec(b)).unwrap(), sec(b))).collect();
+        let s = genesis_sync_id(&admin);
+        for (i, (e, x)) in held.iter().take(2).enumerate() {
+            let keys = StepKeys::derive(x, &write, &admin, &deposit, &s);
+            let read_at = (&t, Epoch::derive(&t, Role::Read, 3, &read).unwrap(), &read);
+            let step = register(Parent::Genesis(&role_key(RoleKey::Delete, &admin)), keys, &[Reader::Public], read_at, (*e, x), &mut SeededRng::from_u64(0)).unwrap();
+            let steps = [(step.0, Some(step.1))];
+            assert!(judge(&Judged { s: &s, secrets: &held[..2], steps: &steps }).public.is_some(), "head at concurrent epoch {i}");
+            assert!(judge(&Judged { s: &s, secrets: &held, steps: &steps }).public.is_none(), "head at {i} behind a later epoch");
+        }
+    }
 }

@@ -760,7 +760,7 @@ impl Engine {
     /// A node keeping `s` unread takes the public entry's box of `head`, its store's head (spec/sync-opens.md
     /// §4 Admissible, keeping S unread): the open box's secrets, once its sync secret derives the
     /// head's sync key. Whether it learned anything. The caller judges that `head` is current
-    /// (its sync key a held secret's, of the newest sync epoch held).
+    /// (its sync key a held secret's, no held sync epoch of a later number).
     pub fn take_public_entry(&mut self, s: &SyncId, head: &Step, claims: &osis_blob::ClaimSet) -> Result<bool> {
         let Some(b) = claims.entries.get(&osis_crypto::public_entry(s)) else { return Ok(false) };
         for t in self.sync_things_of(s)? {

@@ -289,42 +289,30 @@ impl Core {
         // wherever the state says otherwise: a box may apply before the grant that makes it ours,
         // or after the lowering to sync it survives, and a held epoch's history may change
         // meanwhile (an entry stripped, another opened).
+        // Invariant: a history entry gives only earlier epochs of its own role, each naming its
+        // epoch (osis-crypto refuses a later one), so what the history of a secret held before
+        // this ingest gives is taken whatever the node's roles: a holder of that secret was given
+        // every earlier epoch and roles secret its history lists (an entry box's newest epochs,
+        // taken before the role commits under earlier ones that give the role are read).
+        // Opened from those alone: a secret this ingest gave and the role does not keep (a box
+        // concurrent with the node's removal) opens nothing, else a removed node takes the epochs
+        // it was never boxed. A node that lost the role's secrets holds none to open from.
         let mut untaken = std::collections::BTreeSet::new();
         if unchecked.is_none() {
             for r in ROLES.into_iter().filter(|r| !crate::rotation::may_take_role(self, actor, *r)) {
-                let was = before.as_ref().map(|b| b.role(r).clone()).unwrap_or_default();
+                let mut held = ActorEpochs::default();
+                *held.role_mut(r) = before.as_ref().map(|b| b.role(r).clone()).unwrap_or_default();
+                let _ = osis_keys::open_histories(actor, secrets, alts, &mut held, None);
+                let kept = std::mem::take(held.role_mut(r));
                 // listed only where an epoch whose secret either holds differs (epochs observed
                 // without one are no access, and listing them would list every actor the node
                 // cannot read); a secret a pending read gave for reading only is not held, and
                 // goes once that commit is judged, so it counts as absent
                 let new = epochs.role(r);
-                if new.epochs().chain(was.epochs()).any(|(e, _)| (new.secret(e).is_some() || was.secret(e).is_some()) && new.get(e) != was.get(e)) {
+                if new.epochs().chain(kept.epochs()).any(|(e, _)| (new.secret(e).is_some() || kept.secret(e).is_some()) && new.get(e) != kept.get(e)) {
                     untaken.insert(r);
                 }
-                // a roles secret is no secret of the thing: it opens the role parts alone, which
-                // every holder opens (spec/crypto.md §4 Roles secrets), so a history entry opened
-                // under a secret the node holds of `r` gives it whatever the node's roles (an
-                // entry box's redeemer reads the role commits that show it the public's grant).
-                // Opened from `was` alone: a secret this ingest gave and the role does not keep
-                // (a box concurrent with the node's removal) gives no roles secret either, else a
-                // removed node opens the role parts of later commits wrapped under that epoch; a
-                // node that lost `r`'s secrets opens no history and keeps none
-                let mut opened = ActorEpochs::default();
-                *opened.role_mut(r) = was.clone();
-                let _ = osis_keys::open_histories(actor, secrets, alts, &mut opened, None);
-                let mut kept = was;
-                for (e, i) in opened.role(r).epochs() {
-                    if let (None, Some(s)) = (kept.get(e).and_then(|w| w.checked_roles()), i.checked_roles()) {
-                        kept.set_roles(*e, s);
-                    }
-                }
                 *epochs.role_mut(r) = kept;
-            }
-            // a held epoch gives every earlier one its history boxes give, whatever the node's
-            // roles: they reach nothing the held secret's holder was not given (an entry box's
-            // epoch, taken before the role commits that give the role are read)
-            if !untaken.is_empty() {
-                let _ = osis_keys::ingest_held(actor, secrets, alts, &mut epochs, None);
             }
         }
         let held_any = epochs.holds_any();
