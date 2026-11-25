@@ -281,7 +281,7 @@ fn a_taken_deposit_whose_commit_goes_is_not_taken_again_spec_sync_inbox_3() {
     holds_on(0, 2, 3, &script, String::new(), false);
 }
 
-// spec/permissions.md §3 (a step is due for the public where a step lists it; Left out): node 1
+// spec/permissions.md §3 (Sync ID role keys: a step due for the public; Left out): node 1
 // grants thing 1 read on its thing 0 while node 0, the admin of thing 1, makes thing 1 public;
 // node 1, a writer of thing 1, rotates its read keys for the grant before seeing the public's,
 // so the public is left out of thing 1's newest read epoch. Every node settles (failed: thing 1's
