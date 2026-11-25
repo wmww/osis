@@ -1,12 +1,12 @@
 //! `schema/`: canonical encodings of core aspect values written through their typed keys
-//! (spec/data-model.md §9). Generated.
+//! (spec/data-model.md §9). Generated; each sample is checked against the core schema as it goes.
 
 use super::generated_header;
 use crate::file::{Record, VecFile};
 use crate::hex;
-use osis_base::{CommitId, CreationRecord, SyncId, Role, Tid, Value, WallMs, encode};
+use osis_base::{CommitId, CreationRecord, Limits, SyncId, Role, Tid, Value, WallMs, decode, encode};
 use osis_schema::core_types::*;
-use osis_schema::{RawKey, core_schema};
+use osis_schema::{RawKey, Schema, Type, core_schema, validate_write};
 use std::collections::{BTreeMap, BTreeSet};
 
 const SPEC: &str = "spec/data-model.md §9";
@@ -51,7 +51,49 @@ fn samples() -> Vec<(&'static str, &'static str, Value)> {
         ("name", "name.0", NAME.encode(&"Trip".to_string())),
         ("body", "body.0", BODY.encode(&"# Plan\n".to_string())),
         ("tag", "tag.0", TAG.encode(&Tag { color: Some("#ff8800".into()) })),
+        ("dial", "dial.0", DIAL.encode(&BTreeMap::from([(tid(36).into(), Dial { key: vec![36; 32], urls: vec!["peer://203.0.113.7:4040".to_string()] })]))),
+        ("settings", "settings^.0", SETTINGS.encode(&tid(37).into())),
+        ("caps", "caps^.0", CAPS.encode(&BTreeMap::from([(tid(38).into(), Caps { policy: BTreeMap::from([("cap_bytes".to_string(), 1000)]), things: BTreeMap::from([(tid(33).into(), ThingCaps { entries: 5, bytes: 6 })]) })]))),
+        ("clients", "clients^.0", CLIENTS.encode(&BTreeMap::from([(tid(34).into(), Client { secret_hash: [35; 32], until: Some(WallMs(1_700_000_000_000)) })]))),
     ]
+}
+
+/// `v` decoded and re-encoded through the typed key of `ak`.
+fn through_key(ak: &str, v: &Value) -> Value {
+    match ak {
+        "created.0" => CREATED.encode(&CREATED.decode(v).unwrap()),
+        "roles.0" => ROLES.encode(&ROLES.decode(v).unwrap()),
+        "keys.0" => KEYS.encode(&KEYS.decode(v).unwrap()),
+        "secrets.0" => SECRETS.encode(&SECRETS.decode(v).unwrap()),
+        "sync.0" => SYNC.encode(&SYNC.decode(v).unwrap()),
+        "name.0" => NAME.encode(&NAME.decode(v).unwrap()),
+        "body.0" => BODY.encode(&BODY.decode(v).unwrap()),
+        "tag.0" => TAG.encode(&TAG.decode(v).unwrap()),
+        "dial.0" => DIAL.encode(&DIAL.decode(v).unwrap()),
+        "settings^.0" => SETTINGS.encode(&SETTINGS.decode(v).unwrap()),
+        "caps^.0" => CAPS.encode(&CAPS.decode(v).unwrap()),
+        "clients^.0" => CLIENTS.encode(&CLIENTS.decode(v).unwrap()),
+        _ => panic!("{ak}: no typed key here"),
+    }
+}
+
+/// Every struct in `v` (a Rust type's encoding, which writes every field) has exactly the field
+/// IDs its schema type `ty` declares: schema/core.osis and core_types are written apart, so a
+/// field one lacks fails here.
+fn same_fields(sc: &Schema, v: &Value, ty: &Type, name: &str) {
+    match (sc.expand(ty).unwrap().as_ref(), v) {
+        (Type::Struct(st), Value::Map(m)) => {
+            let ids: BTreeSet<Value> = st.fields.keys().map(|i| Value::Int(*i as i64)).collect();
+            assert_eq!(m.keys().cloned().collect::<BTreeSet<_>>(), ids, "{name}: struct fields");
+            for (i, f) in &st.fields {
+                same_fields(sc, m.get(&Value::Int(*i as i64)).unwrap(), &f.ty, name);
+            }
+        }
+        (Type::Map(_, t), Value::Map(m)) => m.values().for_each(|x| same_fields(sc, x, t, name)),
+        (Type::List(t), Value::List(l)) => l.iter().for_each(|x| same_fields(sc, x, t, name)),
+        (Type::Set(t), Value::Set(l)) => l.iter().for_each(|x| same_fields(sc, x, t, name)),
+        _ => {}
+    }
 }
 
 /// One case per core aspect sample.
@@ -59,8 +101,15 @@ pub fn core() -> VecFile {
     let s = core_schema();
     let mut cases = Vec::new();
     for (name, ak, v) in samples() {
-        let typ = s.aspects.get(ak).map(|a| &a.ty);
-        assert!(ak == "created.0" || typ.is_some_and(|t| osis_schema::validate_write(s, &v, t).is_ok()), "{name}: not a valid write");
+        // a valid write of its aspect's type, with exactly its struct fields...
+        if ak != "created.0" {
+            let t = &s.aspects[ak].ty;
+            validate_write(s, &v, t).unwrap_or_else(|e| panic!("{name}: {e}"));
+            same_fields(s, &v, t, name);
+        }
+        // ...that survives the canonical round trip and its typed key
+        assert_eq!(decode(&encode(&v), &Limits::DEFAULT).unwrap(), v, "{name}");
+        assert_eq!(through_key(ak, &v), v, "{name}");
         cases.push(Record::new().with("case", name).with("spec", SPEC).with("ak", ak).with("value", hex(&encode(&v))));
     }
     VecFile { header: generated_header("schema", SPEC), cases }
