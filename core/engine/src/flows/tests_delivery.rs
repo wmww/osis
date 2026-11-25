@@ -67,9 +67,14 @@ fn a_rotation_reaches_a_holder_of_sync_alone_as_a_sealed_copy_spec_permissions_4
     assert!(!now.is_empty() && now != was, "G's new sync epoch held: {was:?} -> {now:?}");
 }
 
-/// Peer 2 forges a rotation-shaped role commit on G (it holds no admin there: the writer rules
-/// skipped) and owes it as a sealed copy to T. (the forged commit, the sealed copy)
+/// Peer 2 forges a role commit on G making T an admin (it holds write there, no admin: the writer
+/// rules skipped), and owes it as a sealed copy to T. A writer of G, so its commit has a chain
+/// and applies, invalid, wherever it is taken: not one that pends unjudged. (the forged commit,
+/// the sealed copy)
 fn forged_copy(lp: &mut LocalPeer, g: Tid, t: Tid) -> (CommitId, super::inbox::SealedFireOut) {
+    let w = lp.peers[2].engine.me();
+    lp.peers[0].engine.grant(&g, &w, &edge(Role::Write)).unwrap();
+    lp.sync_all().unwrap();
     let e2 = &mut lp.peers[2].engine;
     let before = e2.fires_owed();
     let c = e2
@@ -143,4 +148,80 @@ fn a_forged_offer_gives_no_role_spec_sync_inbox_5() {
     assert_eq!(taken, Some((c, g)), "a copy on G");
     assert!(lp.peers[1].engine.header(&c).is_none(), "the forged commit is not kept");
     assert_ne!(lp.peers[1].engine.core.role_now(&t, &g), Some(Role::Admin), "T is no admin of G");
+}
+
+// spec/sync-inbox.md §2 (Sealed copy: taken as a sealed fire's commit is), spec/permissions.md §2
+// (a role is by the target's grants): a sealed copy is bytes anyone who once read T may send
+// again, sealed to a keyset of T it held. After G removes T, an old rotation's copy (the very
+// blob, kept) is offered to peer 2 again: it is the old commit it was, held already, and changes
+// nothing: T holds no role on G, and G's sync epochs at peer 2 stay as they were. Fails if a
+// replayed copy reinstates the role or the epochs it gave.
+#[test]
+fn a_replayed_rotation_copy_gives_back_nothing_spec_sync_inbox_2() {
+    let (mut lp, g, t) = sync_holder();
+    let before = lp.peers[0].engine.fires_owed();
+    let rot = lp.peers[0].engine.rotate_leaving_out(&g, &[Role::Sync], &[]).unwrap().unwrap();
+    let owed = new_owed(&lp, 0, &before);
+    let out = lp.peers[0].engine.sealed_fire(&owed[0]).unwrap().expect("sealed to T's read key");
+    assert!(matches!(open(&mut lp, 2, &out), Opened::Commit(c, _) if c == rot), "taken once");
+    lp.peers[0].engine.remove_holders(&g, &t, &[]).unwrap();
+    lp.sync_all().unwrap();
+    let role = lp.peers[2].engine.core.role_now(&t, &g);
+    assert_eq!(role, None, "peer 2 learns T's removal from G");
+    let epochs = sync_current(&lp, 2, &g);
+    open(&mut lp, 2, &out);
+    assert_eq!(lp.peers[2].engine.core.role_now(&t, &g), None, "T holds no role on G");
+    assert_eq!(sync_current(&lp, 2, &g), epochs, "G's sync epochs at peer 2 unchanged");
+}
+
+// spec/sync-inbox.md §2 (Sealed copy: never promoted; H's writers log what it carries in H's key
+// part as their own certificate copies), spec/permissions.md §4 (Key part: each commit boxing H
+// in a thing's `secrets.0`): peer 2, T's writer, takes the rotation's sealed copy; the rotation
+// is then in T's key part at peer 2, which it logs under T's sync ID by the rule for any piece
+// it holds. Fails if a taken sealed copy is not held as the role commit it is (kept as an entry
+// alone, or dropped for want of a held thing needing it).
+#[test]
+fn a_taken_sealed_copy_is_in_the_holders_key_part_spec_sync_inbox_2() {
+    let (mut lp, g, t) = sync_holder();
+    let before = lp.peers[0].engine.fires_owed();
+    let rot = lp.peers[0].engine.rotate_leaving_out(&g, &[Role::Sync], &[]).unwrap().unwrap();
+    let owed = new_owed(&lp, 0, &before);
+    let out = lp.peers[0].engine.sealed_fire(&owed[0]).unwrap().expect("sealed to T's read key");
+    assert!(!lp.peers[2].engine.key_part(&t).contains(&(rot, g)), "not before");
+    assert!(matches!(open(&mut lp, 2, &out), Opened::Commit(c, _) if c == rot), "peer 2 takes it");
+    assert!(lp.peers[2].engine.key_part(&t).contains(&(rot, g)), "in T's key part at T's writer");
+}
+
+// spec/wire.md §9 (Payload: every blob its commits' deltas link travels with it, a blob none
+// links bad input), spec/sync-inbox.md §5 (Carried commits): a piece's evidence is taken with
+// the pages its own deltas link, whatever commit carries them. Peer 2 writes a content commit on
+// T whose delta pages, peer 0 rotates G; peer 1, a reader of T, has neither. A piece of the
+// rotation carrying the
+// content commit as evidence with its pages: both taken, the paged value read whole. The same
+// piece with a blob no delta of it links: nothing taken. Fails if a piece's pages go to its copy
+// alone (the evidence waits for its pages, the copy is refused for pages it does not link), or
+// a stray blob is kept or ignored.
+#[test]
+fn a_pieces_evidence_takes_its_own_pages_spec_wire_9() {
+    let (mut lp, g, t) = sync_holder();
+    reads_t(&mut lp, t);
+    let ak = osis_base::Ak::new("t:big.0").unwrap();
+    let big = osis_base::Value::Map((0..2500).map(|i| (osis_base::Value::Int(i), osis_base::Value::Str(format!("value-{i:08}-padding-padding")))).collect());
+    let mut m = crate::Mutation::new();
+    m.set(t, &ak, &big).unwrap();
+    let content = lp.peers[2].commit(m).unwrap().unwrap();
+    let rot = lp.peers[0].engine.rotate_leaving_out(&g, &[Role::Sync], &[]).unwrap().unwrap();
+    let mut p = lp.peers[0].engine.edge_piece(&rot, &g).unwrap().unwrap();
+    let c = lp.peers[2].engine.read(|tx| tx.get_commit(&content)).unwrap().unwrap().encode();
+    let pages = lp.peers[2].engine.run(|tx| super::inbox::held_pages(tx, &[c.as_slice()])).unwrap();
+    assert!(!pages.is_empty(), "the content commit pages");
+    p.evidence.push(c);
+    p.pages.extend(pages);
+    let mut stray = p.clone();
+    stray.pages.push(b"no page of the piece".to_vec());
+    assert_eq!(lp.peers[1].engine.take_edge_piece(&stray, None).unwrap(), None, "a stray blob: nothing taken");
+    assert!(lp.peers[1].engine.header(&rot).is_none() && lp.peers[1].engine.header(&content).is_none(), "nothing of it held");
+    assert_eq!(lp.peers[1].engine.take_edge_piece(&p, None).unwrap(), Some((rot, g)));
+    assert!(lp.peers[1].engine.header(&rot).is_some(), "the rotation taken");
+    assert_eq!(lp.peers[1].engine.get(&t, &ak).unwrap(), Some(big), "the paged evidence taken whole");
 }

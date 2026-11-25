@@ -1628,7 +1628,8 @@ impl Engine {
     }
 
     /// A sealed fire's bundle taken whole or not at all (spec/sync-inbox.md §4 A sealed fire):
-    /// `records` and `evidence` (spec/permissions.md §4) then `fire`, in one transaction
+    /// `records` and `evidence` (spec/permissions.md §4) then `fire`, each with the pages of
+    /// `pages` its deltas link (`split_pages`; one linked by none refuses it all), in one transaction
     /// kept only when the fire applies valid, or waits for the clock to reach its stamp
     /// (`Pending(fire, Reason::Drift)`, as any commit ahead of the clock), and no evidence commit
     /// brought is parked or applies invalid; else nothing of it is written (`None`), so a
@@ -1650,7 +1651,18 @@ impl Engine {
         let mut applied = false;
         let r = self.run(|tx| {
             learn_records_in(tx, records)?;
-            for b in blobs {
+            // the pages travel with the commits linking them, the evidence's included
+            let all: Vec<&CommitBlob> = blobs.iter().chain([&fire]).collect();
+            let Some(mut split) = split_pages(tx, &all, pages)? else {
+                refused = true;
+                return Err(Error::Misuse("refused"));
+            };
+            let fire_pages = split.pop().unwrap_or_default();
+            for (b, pages) in blobs.into_iter().zip(split) {
+                if !pages.is_empty() && !store_pages(tx, &b, &pages)? {
+                    refused = true;
+                    return Err(Error::Misuse("refused"));
+                }
                 let (c, parts): (CommitId, Vec<usize>) = (b.id(), b.parts.iter().map(|p| p.ai).collect());
                 match arrive(tx, &c, b, false) {
                     Ok(Ingested::Parked(_)) => refused = true,
@@ -1664,7 +1676,7 @@ impl Engine {
                     return Err(Error::Misuse("refused"));
                 }
             }
-            if !store_pages(tx, &fire, pages)? {
+            if !fire_pages.is_empty() && !store_pages(tx, &fire, &fire_pages)? {
                 refused = true;
                 return Err(Error::Misuse("refused"));
             }
@@ -2774,6 +2786,43 @@ fn store_pages(tx: &mut Tx<'_>, b: &CommitBlob, pages: &[Vec<u8>]) -> Result<boo
         crate::engine::large::tree_blobs(tx, &dedup, &crate::engine::large::delta_roots(&p.delta), &mut linked)?;
     }
     Ok(given.is_subset(&linked.blobs))
+}
+
+/// `pages`, a piece's or a sealed fire's (spec/wire.md §9: every blob its commits' deltas link),
+/// split among `commits` (`commits[i]` gets the pages its deltas link, reached through `pages`
+/// and the blobs held, the order given), so each is taken with its own. `None` where a page is
+/// linked by none of them (bad input: nothing of the payload is taken). Records of the things
+/// they write are learned by then (a link's content hash is keyed by the thing's dedup secret).
+/// Invariant (security): the payload is anyone's to make; a blob is kept only as a page of a
+/// commit kept with it (`store_pages` per commit, rolled back with it), never on its own.
+pub(crate) fn split_pages(tx: &mut Tx<'_>, commits: &[&CommitBlob], pages: &[Vec<u8>]) -> Result<Option<Vec<Vec<Vec<u8>>>>> {
+    let given: BTreeMap<BlobId, &Vec<u8>> = pages.iter().map(|p| (osis_blob::blob_id(p), p)).collect();
+    let mut out = Vec::new();
+    let mut linked = BTreeSet::new();
+    for b in commits {
+        let mut reached = BTreeSet::new();
+        for p in &b.parts {
+            let Some(dedup) = b.header.aspects.get(p.ai).and_then(|a| tx.core.dedup(&a.tid)) else { continue };
+            let mut stack: Vec<(osis_base::Link, bool)> = crate::engine::large::delta_roots(&p.delta).into_iter().map(|l| (l, false)).collect();
+            let mut held = TxBlobs::new(&mut tx.blobs, tx.txn.is_memory());
+            while let Some((l, leaf)) = stack.pop() {
+                if !reached.insert(l.blob) || leaf {
+                    continue;
+                }
+                let o = crate::engine::large::opens(&l);
+                let below = match given.get(&l.blob) {
+                    Some(bytes) => crate::engine::large::kids_of(Some(&dedup), &o, bytes),
+                    None => crate::engine::large::below(&mut held, &dedup, &o).ok().flatten(),
+                };
+                if let Some((chunks, kids)) = below {
+                    stack.extend(kids.into_iter().map(|k| (k, chunks)));
+                }
+            }
+        }
+        out.push(pages.iter().filter(|p| reached.contains(&osis_blob::blob_id(p))).cloned().collect());
+        linked.extend(reached);
+    }
+    Ok(given.keys().all(|id| linked.contains(id)).then_some(out))
 }
 
 #[cfg(test)]

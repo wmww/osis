@@ -184,10 +184,12 @@ impl Engine {
     }
 
     /// Takes piece `p` (spec/sync-inbox.md §5 Carried commits; spec/permissions.md §8 Pairing):
-    /// its records, then its evidence and its copy with its pages, each kept only where judged
+    /// its records, then its evidence and its copy, each with the pages its deltas link
+    /// (`split_pages`; nothing taken where a page is linked by none), each kept only where judged
     /// valid (`ingest_valid`), pending on what it lacks while `from` carries it, in rounds until
     /// none more applies (an evidence commit judged on one carried after it). The copy's (commit,
-    /// target), or `None` with nothing taken where the copy is no certificate copy (`EdgePiece::target`).
+    /// target), or `None` with nothing taken where the copy is no certificate copy (`EdgePiece::target`)
+    /// or a commit of it or a page is bad input.
     /// Invariant (security): a piece is anyone's to make (any party holding a card of the holder
     /// fires one); what it carries counts only as judged here, so it gives no box, role or sync
     /// ID that the commits it carries do not, valid, give.
@@ -199,14 +201,24 @@ impl Engine {
             self.learn_records(records)?;
         }
         let copy = blob.id();
-        // the evidence, then the copy with its pages
-        let all: Vec<(&[u8], &[Vec<u8>])> = p.evidence.iter().map(|c| (c.as_slice(), &[][..])).chain([(p.copy.as_slice(), p.pages.as_slice())]).collect();
+        // the evidence, then the copy, each with the pages its deltas link
+        let mut blobs = Vec::new();
+        for c in &p.evidence {
+            match osis_commit::CommitBlob::decode(c) {
+                Ok(b) => blobs.push(b),
+                Err(_) => return Ok(None),
+            }
+        }
+        blobs.push(blob);
+        let refs: Vec<&osis_commit::CommitBlob> = blobs.iter().collect();
+        let Some(split) = self.read(|tx| crate::apply::split_pages(tx, &refs, &p.pages))? else { return Ok(None) };
+        let all: Vec<(&[u8], Vec<Vec<u8>>)> = p.evidence.iter().map(Vec::as_slice).chain([p.copy.as_slice()]).zip(split).collect();
         let mut left = all;
         loop {
             let before = left.len();
             let mut rest = Vec::new();
             for (c, pages) in std::mem::take(&mut left) {
-                if self.ingest_valid_paged(c, pages, from)?.is_none() {
+                if self.ingest_valid_paged(c, &pages, from)?.is_none() {
                     rest.push((c, pages));
                 }
             }
@@ -595,7 +607,11 @@ impl Engine {
                 },
             };
             let (evidence, records) = self.signer_evidence(&blob.header.signer)?;
-            let fire = osis_blob::SealedFire { copy: false, commit: as_value(&blob.encode())?, evidence, records, pages: (*pages).clone() };
+            // the fire's own pages, then its evidence's
+            let ev: Vec<Vec<u8>> = evidence.iter().map(osis_base::encode).collect();
+            let ev_pages = self.run(|tx| held_pages(tx, &ev.iter().map(Vec::as_slice).collect::<Vec<_>>()))?;
+            let pages = pages.iter().cloned().chain(ev_pages).collect();
+            let fire = osis_blob::SealedFire { copy: false, commit: as_value(&blob.encode())?, evidence, records, pages };
             (blob, fire)
         };
         let h = &blob.header;
@@ -702,21 +718,23 @@ impl Engine {
 
     /// Role commit `c`'s piece on `target` (`EdgePiece`): its certificate copy there (its header and
     /// role-class parts there), the copies of its evidence, their creation records and the blobs
-    /// the copy's deltas link. `None` while `c` is not applied here.
+    /// their deltas link (`held_pages`). `None` while `c` is not applied here.
     pub(crate) fn edge_piece(&mut self, c: &CommitId, target: &Tid) -> Result<Option<EdgePiece>> {
         let id = *c;
         let Some(full) = self.read(|tx| tx.get_commit(&id))? else { return Ok(None) };
         let parts: BTreeSet<usize> = full.header.aspects.iter().enumerate().filter(|(_, a)| a.tid == *target && ct::ROLE_CLASS.contains(&a.ak.as_str())).map(|(i, _)| i).collect();
         let (evidence, records) = self.copy_evidence(&(id, *target))?;
         let copy = osis_commit::rewrite(&full, |ai| !parts.contains(&ai));
-        let pages = self.run(|tx| linked_pages(tx, &copy))?;
-        Ok(Some(EdgePiece { copy: copy.encode(), evidence: evidence.iter().map(osis_base::encode).collect(), records, pages }))
+        let (copy, evidence): (Vec<u8>, Vec<Vec<u8>>) = (copy.encode(), evidence.iter().map(osis_base::encode).collect());
+        let all: Vec<&[u8]> = [copy.as_slice()].into_iter().chain(evidence.iter().map(Vec::as_slice)).collect();
+        let pages = self.run(|tx| held_pages(tx, &all))?;
+        Ok(Some(EdgePiece { copy, evidence, records, pages }))
     }
 }
 
 /// Role commit `c`'s piece on a thing X, as it travels from outside a holder H of X
 /// (spec/permissions.md §4 Delivering an edge piece): the commit's certificate copy on X, the
-/// copies of its evidence, their creation records and the blobs the copy's deltas link. One
+/// copies of its evidence, their creation records and the blobs their deltas link. One
 /// value for each way it travels: a `grant@~0` fire's value (spec/data-model.md §9), a sealed
 /// copy's payload (spec/wire.md §9), and a pairing channel's offer (spec/permissions.md §8).
 /// It is the bootstrap of X at H's nodes (the thing, its sync ID, H's boxes), held only as the
@@ -770,12 +788,18 @@ fn sealed_ais(b: &osis_commit::CommitBlob, copy: bool) -> Vec<usize> {
     }
 }
 
-/// The blobs the deltas of `b`, a held commit or a copy of one, link (its pages), as held.
-fn linked_pages(tx: &mut Tx<'_>, b: &osis_commit::CommitBlob) -> Result<Vec<Vec<u8>>> {
+/// The blobs the deltas of `commits` (held commits or copies of them: a piece's copy and its
+/// evidence, a fire's evidence, as `CommitBlobPlaintext` bytes) link, as held: what travels with
+/// them (spec/wire.md §9), so a receiver holding none of the things they write applies each
+/// (`apply::split_pages`).
+pub(crate) fn held_pages(tx: &mut Tx<'_>, commits: &[&[u8]]) -> Result<Vec<Vec<u8>>> {
     let mut trees = crate::engine::large::Trees::default();
-    for p in &b.parts {
-        let Some(dedup) = b.header.aspects.get(p.ai).and_then(|a| tx.core.dedup(&a.tid)) else { continue };
-        crate::engine::large::tree_blobs(tx, &dedup, &crate::engine::large::delta_roots(&p.delta), &mut trees)?;
+    for c in commits {
+        let b = osis_commit::CommitBlob::decode(c).map_err(|_| Error::Corrupt("a held commit's copy"))?;
+        for p in &b.parts {
+            let Some(dedup) = b.header.aspects.get(p.ai).and_then(|a| tx.core.dedup(&a.tid)) else { continue };
+            crate::engine::large::tree_blobs(tx, &dedup, &crate::engine::large::delta_roots(&p.delta), &mut trees)?;
+        }
     }
     trees.blobs.iter().map(|id| tx.blobs.get(id)?.ok_or(Error::Corrupt("a held commit's page"))).collect()
 }
@@ -785,8 +809,13 @@ impl Engine {
     /// A sealed fire): with the read secret of each keyset of `t` held, newest first; takes the
     /// commit, which holds one delta: a fire of an external signal of `t` whose hash and prefix agree
     /// with its header, with the author's records and its chain's commits it carries as
-    /// certificates, all or nothing: `Bad` unless the fire applies valid. `NotOpen` when no held
-    /// key opens it.
+    /// certificates, all or nothing: `Bad` unless the fire applies valid. A sealed copy (form 1,
+    /// §2) likewise, its commit a certificate copy on a thing other than `t`. `NotOpen` when no
+    /// held key opens it.
+    /// Invariant (security): anyone holding a keyset of `t`'s (its card, or old keys of a reader
+    /// removed since) seals one; what it carries counts only as judged valid here
+    /// (`ingest_sealed_fire`), so a forged copy gives no role, box or sync ID, and a replayed one
+    /// is the old commit it was, held as any commit (spec/commits.md §5).
     pub(crate) fn open_sealed_fire(&mut self, t: &Tid, b: &osis_base::BlobId, bytes: &[u8]) -> Result<crate::sync::Opened> {
         self.bringing(|e| e.open_fire_in(t, b, bytes))
     }
