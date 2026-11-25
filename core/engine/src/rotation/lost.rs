@@ -200,7 +200,7 @@ pub(crate) fn may_learn(tx: &mut Tx<'_>, a: &Tid, r: Role, e: &osis_crypto::Epoc
 
 /// Whether an edge on `a` of the node, a held link key or a thing it reads ended or lowered.
 fn ended_ours(core: &Core, a: &Tid) -> bool {
-    core.timelines().get(a).is_some_and(|tl| tl.ended(a, now_ts(core)).keys().any(|h| was_ours(core, h)))
+    core.timelines().get(a).is_some_and(|tl| tl.ended(a, now_ts(core)).keys().any(|h| *h == Tid::PUBLIC || was_ours(core, h)))
 }
 
 /// Whether the node holds secrets of `a` no current role of its there covers (lost access): a
@@ -607,8 +607,9 @@ fn reaching(core: &Core, a: &Tid) -> BTreeSet<Tid> {
 }
 
 /// Whether what this node holds says it lost `a` (spec/permissions.md §3: a node that learns it
-/// lost read access): an edge of it, a held link key or a thing it reads ended or lowered on an actor whose
-/// roles reach `a` (`reaching`), or reading-only secrets of it outlived their source commit, or
+/// lost read access): an edge of it, a held link key, a thing it reads or the public (every
+/// party's, so this node's too: spec/permissions.md §1) ended or lowered on an actor whose roles
+/// reach `a` (`reaching`), or reading-only secrets of it outlived their source commit, or
 /// its role commits show it a role on `a` (`role_here`: they show what it may hold).
 /// Secrets taken with no role yet (an entry box a link's redeemer opens before its grant
 /// applies, `may_learn`) are no loss until such an edge ends or lowers, or a role shows.
@@ -617,8 +618,9 @@ fn loss_seen(core: &Core, a: &Tid) -> bool {
     // reading-only secrets whose source commit is judged no more (dropped as bad input): what
     // made them readable is gone
     let stale = core.ix.secrets.get(a).is_some_and(|e| ROLES.iter().any(|r| e.role(*r).epochs().any(|(_, i)| i.sources().any(|u| !core.waits.read_any(&u.commit)))));
-    // an edge of ours ended, or lowered (to sync: it stays alive) on an actor reaching `a`
-    stale || role_here(core, a).is_some() || reaching(core, a).iter().any(|x| core.timelines().on(x).is_some_and(|on| on.holders_gone(ts).keys().chain(on.holders_lowered(ts).iter()).any(|h| was_ours(core, h))))
+    // an edge of ours or the public's ended, or lowered (to sync: it stays alive) on an actor
+    // reaching `a`
+    stale || role_here(core, a).is_some() || reaching(core, a).iter().any(|x| core.timelines().on(x).is_some_and(|on| on.holders_gone(ts).keys().chain(on.holders_lowered(ts).iter()).any(|h| *h == Tid::PUBLIC || was_ours(core, h))))
 }
 
 /// Whether held actor `a` is lost and its drop is this trigger's (spec/permissions.md §3): lost

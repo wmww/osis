@@ -446,3 +446,23 @@ fn a_public_piece_outlives_its_carrier_spec_sync_set_2() {
         assert!(reads(w.engine(1), &t).value.is_some(), "node 1 reads the thing by its account's public piece (quiet run between: {quiet})");
     }
 }
+
+// spec/permissions.md §3 (Lost access), spec/sync-set.md §2 (Held for keys): node 0's account
+// reads thing 1, made in node 1's thing 0, and thing 1 strongs thing 0, which is made public:
+// node 0 reads thing 0 by its public piece. The public's read then removed, node 0 has lost thing
+// 0 (its role there was the public's): it drops the secrets the public's box gave it and does not
+// hold thing 0 for keys as thing 1's record-edge holder (it opens thing 0 by no box of its own).
+// Control: the public's read kept, node 0 reads thing 0.
+#[test]
+fn the_publics_removal_is_a_loss_for_every_node_spec_permissions_3() {
+    use crate::harness::history::{Gives, Holder, reads};
+    let (n, accounts, ..) = size();
+    let start = [Step::New(1), Step::NewIn(1, 0), Step::Give(1, 1, Holder::Node(0), Gives::Reads), Step::Strong(0, None, 1), Step::Strong(1, Some(1), 0), Step::Give(1, 0, Holder::Public, Gives::Reads)];
+    let mut w = holds_on(0, accounts, n, &start, String::new(), false);
+    let t = w.history.things[0].0;
+    assert!(reads(w.engine(0), &t).value.is_some(), "control: node 0 reads thing 0 by the public");
+    let script: Vec<Step> = start.iter().cloned().chain([Step::Revoke(1, 0, Holder::Public)]).collect();
+    let mut w = holds_on(0, accounts, n, &script, String::new(), false);
+    let set = w.engine(0).sync_set().expect("sync set");
+    assert!(!set.ids.values().any(|(ts, _)| ts.contains(&t)), "node 0 syncs thing 0 after the public's removal: {set:?}");
+}
