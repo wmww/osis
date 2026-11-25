@@ -348,6 +348,44 @@ fn a_departed_reader_opens_ended_on_its_superseded_epoch_spec_sync_opens_6() {
     }
 }
 
+// spec/sync-opens.md §6 (Lost: a member opened after the first Pull has no reported position
+// until a join names it; A reader tells a public reader the public's removal; A reader tells a
+// removed reader its departure): b's stream already stands past S's `until` (it took a's log
+// there while S was closed) when it hits a superseded read secret a shows, lapsed or toward a
+// departed peer. The member opens ended and closes only once b's join names a position at or past
+// `until`, never on the stream's: b never held S's entries the stream passed (failed: closed at
+// once with a Lost at `until`, b served nothing it lacked). Closed there, b's next Hit on it
+// opens nothing on that connection, lapsed as departed.
+#[test]
+fn an_ended_member_closes_on_its_join_not_the_streams_position_spec_sync_opens_6() {
+    for departed in [true, false] {
+        let mut p = reader_pair(account(1), account(2));
+        p.a.reported_stream(p.ca, 20);
+        p.a.table.judge_as(S, tid(2), if departed { J::Departed } else { J::Unknown });
+        let (old, new) = (read_secret(1, 0), read_secret(1, 1));
+        p.a.table.covering.insert((S, new.0));
+        p.a.table.until = 7;
+        let mut c = reader(&S, &new, &StepKeys::new(1, 0), &[], &[], &[]);
+        let shown = osis_sync::opens::cred::Shown::Read(old.0, *old.1.expose());
+        if departed {
+            c.walk.push(shown);
+        } else {
+            c.lapsed.push(shown);
+        }
+        p.a.table.set(S, Some(c));
+        p.a.settle();
+        p.run();
+        let m = p.a.opens.members(p.ca)[&S].clone();
+        assert!(m.until == Some(7) && m.departed == departed && m.by == Credential::ReadSecret(old.0), "ended at once (departed: {departed}): {m:?}");
+        assert!(p.b.open(p.cb, &S), "open past the stream's position, its join not named (departed: {departed})");
+        p.a.reported(p.ca, S, 5);
+        assert!(p.a.open(p.ca, &S), "joined below its until (departed: {departed})");
+        p.a.reported(p.ca, S, 7);
+        p.run();
+        assert!(!p.a.open(p.ca, &S) && !p.b.open(p.cb, &S), "closed at its until, and not opened again on this connection (departed: {departed})");
+    }
+}
+
 // spec/sync-opens.md §6 (A member whose peer J judges departed is ended too; Lost): b, judged
 // departed before any rotation is logged here, is ended with no `until` and
 // shown S's role entries alone; its stream moves past the rest. Granted again (judged a reader),

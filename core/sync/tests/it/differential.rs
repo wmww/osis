@@ -188,13 +188,14 @@ fn a_redeemer_hears_the_public_removed_spec_sync_opens_6() {
     assert!(reads(w.engine(1), &t).value.is_none(), "node 1 reads the thing no more");
 }
 
-// spec/sync-opens.md §6 (A reader tells a public reader the public's removal): as above, but while
-// node 1 is off node 0 first removes another reader (thing 1), rotating the thing's read keys with
-// the public boxed again, and writes. Node 1 should hear the removal; it stays at the epoch it held,
-// reading v1 (issues/public-removal-after-rotation.md).
+// spec/sync-opens.md §6 (A reader tells a public reader the public's removal; Lost: a member
+// opened after the first Pull has no reported position until a join names it): as above, but
+// while node 1 is off node 0 first removes another reader (thing 1), rotating the thing's read
+// keys with the public boxed again, and writes. Node 1 hears the removal: the member opened on its
+// lapsed secret is served from where the public entry's member stopped (failed: closed at once on
+// the stream's position, past both, node 1 reading v1 for good).
 #[test]
-#[ignore = "issues/public-removal-after-rotation.md"]
-fn repro_a_redeemer_misses_a_rotation_and_the_public_removed() {
+fn a_redeemer_misses_a_rotation_and_hears_the_public_removed_spec_sync_opens_6() {
     use crate::harness::history::{Gives, Holder};
     let (n, accounts, ..) = size();
     let script = [

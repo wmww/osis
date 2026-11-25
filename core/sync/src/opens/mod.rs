@@ -353,8 +353,8 @@ struct Conn {
     /// It lost its record to this connection (spec/sync-opens.md §1 One connection per pair):
     /// it closes, and acts on nothing meanwhile.
     lost_to: Option<ConnId>,
-    /// Per S, the `until` a member ended for the peer's departure reached on this connection: a
-    /// departed peer's Hit opens S again here only for a later one (spec/sync-opens.md §6).
+    /// Per S, the highest `until` an ended member reached on this connection: a Hit on a lapsed
+    /// or superseded read secret opens S again here only for a later one (spec/sync-opens.md §6).
     served: BTreeMap<SyncId, Position>,
 }
 
@@ -2430,7 +2430,7 @@ impl Opens {
             Shown::Static(e) | Shown::Public(e) => ctx.holds.grant(&s, e),
             _ => None,
         };
-        // served its departure here already: nothing more to serve it
+        // served up to its `until` here already: nothing more to serve it
         if walk && matches!(shown, Shown::Read(..)) && self.conns.get(&conn).and_then(|c| c.served.get(&s)).is_some_and(|u| *u >= ctx.holds.until(&s, &by)) {
             return refuse;
         }
@@ -2487,6 +2487,9 @@ impl Opens {
         let Some(r) = self.records.get_mut(&rid) else { return false };
         r.members.insert(s, m);
         r.basis.insert(s, beacon);
+        if let Some(c) = self.conns.get_mut(&conn) {
+            c.reported.opened(s);
+        }
         let rejoin = r.stopped.remove(&s).unwrap_or(Rejoin::From(None));
         self.dirty(rid).members.insert(s);
         self.member_moved(conn, &s, true);
@@ -2692,8 +2695,9 @@ impl Opens {
     /// where it stopped this side keeps.
     fn close_member(&mut self, ctx: &mut Ctx, conn: ConnId, s: SyncId, why: Close, moved: &mut Vec<Moved>) {
         let Some(m) = self.member(conn, &s).cloned() else { return };
-        if let (Close::Until, true, Some(u), Some(c)) = (why, m.departed, m.until, self.conns.get_mut(&conn)) {
-            c.served.insert(s, u);
+        if let (Close::Until, Some(u), Some(c)) = (why, m.until, self.conns.get_mut(&conn)) {
+            let at = c.served.entry(s).or_insert(u);
+            *at = (*at).max(u);
         }
         // one ended for its departure was shown role entries alone: its position past the rest
         // names nothing it holds, so its peer rejoins from the start

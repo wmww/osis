@@ -66,6 +66,12 @@ impl Positions {
         }
     }
 
+    /// Member S opened on this connection: it has no position until the peer's join names it
+    /// (the stream's says nothing of a member the peer had not opened when it reported it).
+    pub fn opened(&mut self, s: SyncId) {
+        self.own.insert(s, None);
+    }
+
     /// The member S left: a later join reports afresh.
     pub fn forget(&mut self, s: &SyncId) {
         self.own.remove(s);
