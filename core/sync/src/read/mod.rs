@@ -360,6 +360,10 @@ impl Read {
                 g.unlog(&s, b)?;
                 acted = true;
             }
+            for b in &now.logged_deposits {
+                g.drop_blob(&s, b)?;
+                acted = true;
+            }
             for b in &now.stale {
                 g.restamp(&s, b)?;
                 acted = true;

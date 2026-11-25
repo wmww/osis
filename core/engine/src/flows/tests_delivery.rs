@@ -902,6 +902,80 @@ fn a_step_past_a_removed_holder_reaches_it_after_a_step_bearing_its_key_spec_syn
     assert!(!un.holders.contains(&t) && !lp.peers[2].engine.core.syncs_by_copies(&t, &g), "T holds sync on G no more: {un:?}");
 }
 
+/// The sealed copies to `t` peer 0 owes beyond `before`, by commit.
+fn copies_to(lp: &LocalPeer, t: Tid, before: &[FireId]) -> Vec<(FireId, CommitId)> {
+    new_owed(lp, 0, before).into_iter().filter_map(|id| match lp.peers[0].engine.core.ix.fires.get(&id).map(|o| (o.thing, o.what.clone())) {
+        Some((h, Fire::Copy { commit, .. })) if h == t => Some((id, commit)),
+        _ => None,
+    }).collect()
+}
+
+/// G's `sync.0` writes peer `i` holds.
+fn sync_writes(lp: &LocalPeer, i: usize, g: Tid) -> BTreeSet<CommitId> {
+    let k = osis_base::Ak::new("sync.0").unwrap();
+    lp.peers[i].engine.core.ix.by_aspect.get(&(g, k)).into_iter().flatten().map(|(_, c)| *c).collect()
+}
+
+// spec/permissions.md §4 (Delivering an edge piece: a step goes to a holder of sync alone with
+// the target's `sync.0` writes held not sent it before), notes/principles.md (count work): T
+// holds sync alone on G; peer 0 rotates G's sync role and issues its step, round after round,
+// each copy taken at T's node as it comes (its fire then owed no more). Each round sends T the
+// rotation and the new `sync.0` write, nothing else, at the tenth round as at the first. Fails
+// with each step's whole path sent again: round k sends k more.
+#[test]
+fn each_sync_write_reaches_a_holder_of_sync_alone_once_spec_permissions_4() {
+    let (mut lp, g, t) = sync_holder();
+    let s = lp.peers[0].engine.sync_id_of(&g).unwrap().unwrap();
+    for round in 0..10 {
+        let (before, held) = (lp.peers[0].engine.fires_owed(), sync_writes(&lp, 0, g));
+        let rot = lp.peers[0].engine.rotate_leaving_out(&g, &[Role::Sync], &[]).unwrap().expect("a rotation");
+        lp.peers[0].engine.issue_step(&g, &s, false).unwrap().expect("a step due");
+        let copies = copies_to(&lp, t, &before);
+        let mut new: BTreeSet<CommitId> = sync_writes(&lp, 0, g).difference(&held).copied().collect();
+        new.insert(rot);
+        assert_eq!(copies.len(), new.len(), "round {round}: one copy each");
+        assert_eq!(copies.iter().map(|(_, c)| *c).collect::<BTreeSet<_>>(), new, "round {round}: T is sent the rotation and the step alone");
+        let ids: Vec<FireId> = copies.iter().map(|(id, _)| *id).collect();
+        open_owed(&mut lp, t, &ids);
+        for id in &ids {
+            lp.peers[0].engine.fire_taken(id).unwrap();
+        }
+    }
+}
+
+// spec/permissions.md §4 (Delivering an edge piece: with a step, the target's `sync.0` writes held
+// not sent the holder before): peers 0 and 1 are G's admins. Peer 1 issues a step; peer 0, not
+// holding it yet, grants T sync alone, its copies carrying the `sync.0` writes it holds. Peer 1
+// never sends T its step (issued before T's grant). Once peer 0 holds it, peer 0's next step, a
+// child of it, goes to T with it, so T's readers verify the new step's path. Fails with the step
+// sent alone.
+#[test]
+fn a_step_goes_with_another_admins_step_its_holder_lacks_spec_permissions_4() {
+    let mut lp = synced(3);
+    let t = independent_thing(&mut lp, 2);
+    lp.sync_all().unwrap();
+    let g = independent_thing(&mut lp, 0);
+    let me1 = lp.peers[1].engine.tid();
+    lp.peers[0].engine.grant(&g, &me1, &edge(Role::Admin)).unwrap();
+    lp.sync_all().unwrap();
+    let s = lp.peers[0].engine.sync_id_of(&g).unwrap().unwrap();
+    let held = sync_writes(&lp, 1, g);
+    lp.peers[1].engine.issue_step(&g, &s, true).unwrap().expect("a fresh step at peer 1");
+    let theirs: Vec<CommitId> = sync_writes(&lp, 1, g).difference(&held).copied().collect();
+    assert_eq!(theirs.len(), 1, "peer 1's step");
+    let before = lp.peers[0].engine.fires_owed();
+    lp.peers[0].engine.grant(&g, &t, &edge(Role::Sync)).unwrap();
+    let granted = copies_to(&lp, t, &before);
+    assert!(!granted.iter().any(|(_, c)| *c == theirs[0]), "peer 0 holds no step of peer 1's yet");
+    lp.sync(1, 0).unwrap();
+    assert!(sync_writes(&lp, 0, g).contains(&theirs[0]), "peer 0 holds peer 1's step");
+    let before = lp.peers[0].engine.fires_owed();
+    lp.peers[0].engine.issue_step(&g, &s, true).unwrap().expect("a fresh step at peer 0");
+    let stepped = copies_to(&lp, t, &before);
+    assert_eq!(stepped.len(), 2, "peer 0's step and peer 1's: {stepped:?}");
+    assert!(stepped.iter().any(|(_, c)| *c == theirs[0]), "peer 1's step goes to T with peer 0's");
+}
+
 // spec/sync.md §3 (Holders by copies: a record alone is none of the admins' word), spec/sync-set.md
 // §2 (Counts as independent): a fresh node reading T holds G (T holds sync on G) by T's sync
 // copies alone, then takes G's record, as a node reading G by its public entry takes it under G's

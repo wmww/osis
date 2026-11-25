@@ -2460,6 +2460,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
     crate::rotation::load_lost(tx)?;
     crate::rotation::load_kept(tx)?;
     crate::flows::inbox::load(tx)?;
+    crate::flows::inbox::load_sent(tx)?;
     crate::retention::leaving::load(tx)?;
     let mut pend = Vec::new();
     tx.each_pending(|id, p| pend.push((id, p.kind)))?;

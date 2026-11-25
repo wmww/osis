@@ -160,15 +160,20 @@ fn card_rewrites_grow_nothing_spec_commits_5() {
     flat(&n, &n10);
 }
 
-/// `n` rotations of every role of thing 0 by node 0, its admin, a second apart; then `ROLE_KEEP`
+/// `n` rotations of every role of thing 0 by node 0, its admin, a second apart, node 1 keeping
+/// each sync secret as it comes (its sealed copies past `DEPOSITS_WAITING`: a sealed copy logged
+/// leaves the deposits waiting, so clearing never drops one not yet taken); then `ROLE_KEEP`
 /// passes (a replaced role-class body's keep bound): the `keys.0` bodies of thing 0 each node
 /// holds then.
 fn keysets_after_rotations(w: &mut World, n: usize) -> Vec<usize> {
     let t = w.history.things[0].0;
-    for _ in 0..n {
+    let s = w.engine(0).sync_id_of(&t).unwrap().unwrap();
+    let kept = w.engine(1).kept_sync_secrets(&s).len();
+    for i in 1..=n {
         w.write(0, |e| e.rotate_leaving_out(&t, &[Role::Sync, Role::Read, Role::Write, Role::Admin], &[])).unwrap().expect("a rotation");
         w.run();
         w.advance(1_000);
+        assert_eq!(w.engine(1).kept_sync_secrets(&s).len(), kept + i, "node 1 keeps each new sync secret of thing 0");
     }
     w.advance(osis_base::format::ROLE_KEEP_MS);
     w.run();

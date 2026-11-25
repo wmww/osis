@@ -350,8 +350,8 @@ pub trait Ground {
         let _ = t;
         Ok(BTreeSet::new())
     }
-    /// The own store's entry `b` under S, of a blob naming no commit, leaves: a freed link's
-    /// piece.
+    /// The own store's entry `b` under S, of a blob naming no commit, leaves, a tombstone kept:
+    /// a freed link's piece, a sealed copy logged.
     fn drop_blob(&mut self, s: &SyncId, b: &BlobId) -> Result<()> {
         let _ = (s, b);
         Ok(())
@@ -454,6 +454,9 @@ pub struct SyncCopiesDue {
     /// Entries that leave the own store, no tombstone: one of a carried content beside its
     /// log (a lower blob ID of the same bytes), an own one carrying nothing S carries now.
     pub unneeded: BTreeSet<osis_base::BlobId>,
+    /// Sealed copies deposited under S whose content has its log here: dropped, a tombstone
+    /// kept (`drop_blob`).
+    pub logged_deposits: BTreeSet<osis_base::BlobId>,
     /// What is missing waits for S's first sync here, or a complete pass begun after this place.
     pub wait: Option<u64>,
 }

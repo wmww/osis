@@ -891,6 +891,9 @@ indexes! {
     /// The fires of `fires` by the thing each fires on (its inbox): what goes as that thing is
     /// forgotten whole (`flows::inbox::drop_fires_on`). Loaded with `fires`.
     pub fires_on: JSetMap<Tid, crate::flows::inbox::FireId>,
+    /// Per `sync.0` write, the holders of sync alone it went to as a sealed copy
+    /// (`flows::inbox::deliver_with_steps`): durable (`flows::inbox::SYNC_SENT`).
+    pub sync_sent: JSetMap<CommitId, Tid>,
 }
 
 /// The steps run inside a transaction, each applied fully or not at all (`Tx::step`).

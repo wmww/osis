@@ -30,8 +30,8 @@ pub(crate) fn deliver_copy(tx: &mut Tx<'_>, holder: Tid, c: CommitId, target: Ti
         return Ok(());
     }
     // a holder of sync alone gets no header (spec/wire.md §4 Sync copy): the commit goes as its
-    // sealed sync copy, with those of the target's `sync.0` writes held (its sync IDs, by whose
-    // steps the box it carries counts), never as a `grant@~0` fire's certificate copy; removed, it
+    // sealed sync copy, with those of the target's `sync.0` writes held not sent it before (its
+    // sync IDs, by whose steps the box it carries counts), never as a `grant@~0` fire's certificate copy; removed, it
     // is told by the step past its keys (`deliver_step`), so its removal goes nowhere. A holder
     // that read the target goes as one (`sync_alone_on`): it loses read by the edge write alone
     // (spec/permissions.md §3 Lost access)
@@ -44,13 +44,55 @@ pub(crate) fn deliver_copy(tx: &mut Tx<'_>, holder: Tid, c: CommitId, target: Ti
     fire_copy(tx, holder, c, target)
 }
 
-/// Commit `c` of `target` to `holder` as a sealed copy (`deliver_sealed`), with every `sync.0`
-/// write of the target held: the steps by which its box counts.
+/// Commit `c` of `target` to `holder` as a sealed copy (`deliver_sealed`), with each `sync.0`
+/// write of the target held that this node has not yet sent it (`SYNC_SENT`): the steps by which
+/// its box counts, each once. Its readers keep what they took (rows of `su/`, logged under its
+/// sync ID), so a write sent again gives them nothing.
 fn deliver_with_steps(tx: &mut Tx<'_>, holder: Tid, c: CommitId, target: Tid) -> Result<()> {
-    deliver_sealed(tx, holder, c, target)?;
-    let steps: Vec<CommitId> = Ak::new("sync.0").ok().and_then(|k| tx.core.ix.by_aspect.get(&(target, k))).into_iter().flatten().map(|(_, x)| *x).filter(|x| *x != c).collect();
+    if !tx.core.ix.sync_sent.contains(&c, &holder) {
+        deliver_sealed(tx, holder, c, target)?;
+    }
+    let steps: Vec<CommitId> = Ak::new("sync.0").ok().and_then(|k| tx.core.ix.by_aspect.get(&(target, k))).into_iter().flatten().map(|(_, x)| *x).filter(|x| !tx.core.ix.sync_sent.contains(x, &holder)).collect();
     for x in steps {
-        deliver_sealed(tx, holder, x, target)?;
+        if x != c {
+            deliver_sealed(tx, holder, x, target)?;
+        }
+        tx.core.ix.sync_sent.insert(x, holder);
+        tx.txn.put_local(&sent_key(&x, &holder), &[], Shred::No)?;
+    }
+    Ok(())
+}
+
+/// `node/sync_sent/` + commit ID + holder: a `sync.0` write sent to a holder of sync alone as a
+/// sealed copy (`deliver_with_steps`), so none goes to it twice. Rows go with their commit
+/// (`sent_gone`).
+const SYNC_SENT: &[u8] = b"node/sync_sent/";
+
+fn sent_key(c: &CommitId, holder: &Tid) -> Vec<u8> {
+    [SYNC_SENT, &c.0[..], holder.as_bytes()].concat()
+}
+
+/// Loads the `sync.0` writes sent (an open).
+pub(crate) fn load_sent(tx: &mut Tx<'_>) -> Result<()> {
+    let bad = || Error::Corrupt("sync sent row");
+    let mut rows = Vec::new();
+    tx.scan(SYNC_SENT, |k, _| {
+        let (c, h) = k.split_at_checked(32).ok_or_else(bad)?;
+        rows.push((CommitId(c.try_into().map_err(|_| bad())?), Tid::from_bytes(h.try_into().map_err(|_| bad())?)));
+        Ok(())
+    })?;
+    for (c, h) in rows {
+        tx.core.ix.sync_sent.insert(c, h);
+    }
+    Ok(())
+}
+
+/// Commit `id` is forgotten: the record of its sending goes.
+pub(crate) fn sent_gone(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
+    let holders: Vec<Tid> = tx.core.ix.sync_sent.get(id).into_iter().flatten().copied().collect();
+    for h in holders {
+        tx.core.ix.sync_sent.remove(id, &h);
+        tx.txn.remove_local(&sent_key(id, &h), Shred::No)?;
     }
     Ok(())
 }
@@ -59,8 +101,9 @@ fn deliver_with_steps(tx: &mut Tx<'_>, holder: Tid, c: CommitId, target: Tid) ->
 /// `parent` (spec/sync-ids.md §2 What a sync holder learns, spec/sync-judgement.md §6 Stops):
 /// each holder of sync alone on `target` (`sync_alone_on`) an applied edge write here gave a
 /// role (on the roster or removed), one of whose sync keys (`sync_boxed`: of a secret
-/// `target`'s `secrets.0` boxes to it) either bears, is sent it as sealed copies of `c` and the
-/// target's other `sync.0` writes held (its path), no header. A step bearing its key is how its
+/// `target`'s `secrets.0` boxes to it) either bears, is sent it as sealed copies of `c` and of
+/// the target's other `sync.0` writes held not sent it before (`deliver_with_steps`: the rest of
+/// its path, a step another admin issued among them), no header. A step bearing its key is how its
 /// box counts (a box at an epoch whose step comes later); the first past its keys is its
 /// removal, by which its readers judge it holding sync no more (`Unread::holders`), whatever
 /// rotation was blocked or step issued between. A step past that goes to it no more.

@@ -15,6 +15,7 @@ Spec: spec/sync-inbox.md, spec/sync-judgement.md §1, §3, spec/sync-ids.md §6 
 ## Clearing (spec/sync-inbox.md §4 Clearing deposits)
 - **One rule, every sync ID**, for all a stranger (an inbox) or a reader (any sync ID) can put in the budget: junk, fires, sealed commits that open but are invalid, pending or parked commits, record blobs, far or no expiry. No "this is junk" verdict: a blob sealed to a key this node lacks yet looks like junk and stays while under the bound, and what stays blocks nothing, half the recommended budget being free.
 - Cost: under a validity fork (permanent) a clearing node may clear what a writer on the other side would promote, only past the bound; so too an honest deposit pending at the clearing node. A reader's own must-hold body is not lost: it deposits afresh at each judgement finding the source lacks it, so past the bound it cycles until judged.
+- **A sealed sync copy goes once logged** (osis-sync `SyncCopiesDue::logged_deposits`): its readers keep what it gives only while an entry of its blob stands (`su/` rows), so a writer logs each as its own; left waiting, the logged ones filled the window and clearing dropped the next sealed copy before its log (notes/certificates.md, Removal told by its step). Never promoted, so nothing else takes it off the budget.
 - Rejected: **age-out** of unstamped entries: at 0 nothing waits for a writer, at infinity the hole stays.
 
 ## Promotion (spec/sync-inbox.md §4 Promotion)

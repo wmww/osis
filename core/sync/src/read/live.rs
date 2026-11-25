@@ -676,8 +676,10 @@ impl Ground for Live<'_, '_> {
         // Keyed by content, so a forged copy of the same commit (another box) never displaces
         // the real one's log
         let mut logs: BTreeMap<[u8; 32], BlobId> = BTreeMap::new();
+        let mut sealed_rows = Vec::new();
         for (b, (k, sealed)) in rows.iter() {
             if *sealed {
+                sealed_rows.push((*b, *k));
                 continue;
             }
             let Some(e) = self.cx.store.entry(s, b)? else { continue };
@@ -698,6 +700,10 @@ impl Ground for Live<'_, '_> {
                 out.stale.insert(*b);
             }
         }
+        // a sealed copy whose content has its log here gives nothing more: it leaves the
+        // deposits waiting (spec/sync-inbox.md §4 Clearing deposits), so clearing never takes one
+        // not yet logged in its place
+        out.logged_deposits = sealed_rows.into_iter().filter(|(_, k)| logs.contains_key(k)).map(|(b, _)| b).collect();
         if self.cx.engine.cert_wrap(s)? {
             out.missing = carried.keys().filter(|k| !logs.contains_key(*k)).copied().collect();
         }
