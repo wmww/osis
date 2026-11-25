@@ -192,9 +192,10 @@ fn invalid_writers(core: &Core, m: &Tid, r: Role, k: &Epoch) -> BTreeSet<CommitI
 /// `fork_two_below_one_side_first_stops_rotating_spec_crypto_4`). Who writes the inputs: a box record
 /// is written by the writer of `x`'s rotation commit (a party on the other side of a fork on a
 /// holder actor among them); a keyset is held invalid by this node's own walk (a removed party's
-/// forgery, the other side's rotations, a keyset planted at some nodes only). None of them can
-/// make an epoch the node itself made, or any epoch boxing only keysets valid here, foreign; a
-/// foreign epoch of another's only stops superseding, so what it listed stays current here and is
+/// forgery, the other side's rotations, a keyset planted at some nodes only). A writer of `x`
+/// may re-write any keyset of `x`, one this node made included, beside a record naming a keyset
+/// held invalid here, making it foreign (spec/crypto.md §4 Foreign reads any commit writing the
+/// keyset): that costs a rotation, never a leak, as a foreign epoch only stops superseding, so what it listed stays current here and is
 /// judged by the ordinary rules (an uncovered departure there is due as ever).
 #[derive(Default)]
 pub(crate) struct Foreign {

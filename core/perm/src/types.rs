@@ -76,7 +76,7 @@ pub fn lowers(new: Option<&Edge>, old: Option<&Edge>) -> bool {
 }
 
 /// What a demoter had received (spec/permissions.md §5.1; spec/data-model.md §9 `frontier`):
-/// commit IDs of the demoted nodes' commits the demoter received, and of its chain writes,
+/// commit IDs of the commits resting on the lowered hop that the demoter received,
 /// ascending and distinct (shared with the header that carried them: 32 B an ID).
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct Frontier(Arc<[CommitId]>);

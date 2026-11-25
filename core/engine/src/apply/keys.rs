@@ -675,7 +675,7 @@ pub(crate) fn keyset_validity(tx: &mut Tx<'_>, c: &CommitId, actor: Tid, now_val
 }
 
 /// Opens, for reading only, the boxes and history boxes of held role commit `id`'s invalid
-/// `secrets.0` delta on `actor` (spec/crypto.md §4 Reading-only secrets; custody follows holding:
+/// `secrets.0` delta on `actor` (spec/crypto.md §4 Reading-only secrets: a box proves itself by what it opens,
 /// a box opens whether or not its commit counts), then what that opens in turn
 /// (`flows::reopen_dependents`: the history boxes of `actor`'s other invalid commits, the boxes
 /// sealed to `actor`). What it gives is never encrypted under, and goes with the commit

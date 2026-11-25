@@ -54,8 +54,8 @@ impl Provenance {
 /// What a node knows of one epoch.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct EpochInfo {
-    /// Epochs the live entries of its history box list, opened under its secret (an account's
-    /// or derived epoch's: what its source supersedes). With its rotation commits' lists
+    /// Epochs the live entries of its history box list, opened under its secret (a derived
+    /// epoch's: what its source supersedes). With its rotation commits' lists
     /// (`superseded_epochs`), what it supersedes; counts only once established. Set whole with
     /// `names` (`RoleEpochs::set_history`): a function of the entries live now, so an entry that
     /// leaves the state (stripped as invalid, overwritten) leaves nothing behind.

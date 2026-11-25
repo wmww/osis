@@ -124,7 +124,7 @@ pub(crate) fn grants_count(core: &Core, a: &Tid) -> bool {
     false
 }
 
-/// Whether the node syncs `t` or holds an offer of it: an own actor or the own account's root,
+/// Whether the node syncs `t` or holds an offer of it: an own thing,
 /// a thing the node closure holds within the local part or another thing's sync unit, or a held
 /// strong reaches where First entry carries it (`sync::units::reached_carried`: what the node
 /// asked to sync, before a box lets the walk enter it; a strong alone counts nothing), each on a

@@ -275,7 +275,7 @@ pub(crate) fn reopen_dependents(tx: &mut Tx<'_>, learned: Tid) -> Result<()> {
         }
         for (a, keys) in per {
             let learned = crate::apply::ingest_secrets_keys(tx, &a, &keys, &[])?;
-            // boxes of commits invalid here open for reading too (custody follows holding)
+            // boxes of commits invalid here open for reading too (a box proves itself by what it opens)
             if crate::apply::keys::reread_invalid(tx, &a)? | learned {
                 work.push(a);
             }

@@ -98,10 +98,9 @@ pub fn blocked_roles_of(tx: &mut Tx<'_>, who: &Tid, a: &Tid, walk: Walk) -> Resu
 /// rotators learn of the staleness. Only epochs whose secret this node holds are
 /// walked past (it reads that actor's sync IDs, so it learns the actor's next keyset and re-seals
 /// it), and only other parties' departures count (`others`); past any other epoch (but for
-/// logging) only a box to this node's own account is judged, at any depth: an account epoch it
-/// cannot show covers a removal from its account root it knows (`uncovered`) blocks the keyset
-/// boxing it, secret held or not (it learns its account's next epochs from its account root's
-/// sync IDs, and so re-seals once either moves).
+/// logging) only a box to this node's own node thing is judged, at any depth: an epoch of it that
+/// cannot show it covers a removal from it this node knows (`uncovered`) blocks the keyset
+/// boxing it, secret held or not.
 ///
 /// A joint box (several keysets) is judged as a whole: blocked by a departure only when every
 /// keyset it names is (it opens only for a holder of every one, so for no party, alone or pooled
@@ -152,7 +151,7 @@ pub(crate) fn joint_blocked(why: BTreeMap<osis_crypto::Epoch, Block>, n: usize) 
 
 /// `blocking` from `root` (an epoch of an actor, with whether every epoch above it on the walk is
 /// one whose secret this node holds), past the epochs in `seen`; `own`: whether this node knows a
-/// removal from its account root, found when first needed. `full`: the whole walk, its causes
+/// removal from its node thing, found when first needed. `full`: the whole walk, its causes
 /// added to `causes` (else the first reason found).
 #[allow(clippy::too_many_arguments)]
 fn walk_from(tx: &mut Tx<'_>, who: &Tid, a: &Tid, r: Role, root: (Tid, osis_crypto::Epoch, bool), deps: &[Departure], walk: Walk, full: bool, mut seen: BTreeSet<(Tid, osis_crypto::Epoch)>, own: &mut Option<bool>, causes: &mut BTreeSet<osis_base::CommitId>) -> Result<Option<Block>> {
@@ -284,7 +283,7 @@ pub(crate) fn uncovered_by<'d>(tx: &mut Tx<'_>, x: &Tid, r: Role, k: &osis_crypt
     })
 }
 
-/// `deps` from `x` less this node's own departures (its account's or its own): the departed party
+/// `deps` from `x` less this node's own departures (its node thing's): the departed party
 /// is the node itself, which holds the epoch already, so its own removal holds back none of its
 /// encrypting (spec/crypto.md §4, Encrypting under). Counted, a node removed from holder actor M
 /// before M's new keyset reached it left M out of what it rotated and, gone from M, could never
