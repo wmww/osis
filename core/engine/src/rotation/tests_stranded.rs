@@ -534,7 +534,7 @@ fn a_sealed_fire_is_one_fire_of_its_thing_spec_sync_inbox_4() {
             m.sealed = true;
             m.commit_form().unchecked();
             let b = crate::engine::write::commit_or_build(tx, m)?.and_then(|x| x.1).expect("built");
-            save(tx, OwedFire { thing: g, ak: f.clone(), what: Fire::Value(Value::Int(n as i64)), to: BTreeSet::new(), commit: Some(std::sync::Arc::new(b.encode())), pages: Default::default() })
+            save(tx, OwedFire { thing: g, ak: Some(f.clone()), what: Fire::Value(Value::Int(n as i64)), to: BTreeSet::new(), commit: Some(std::sync::Arc::new(b.encode())), pages: Default::default() })
         })
         .unwrap();
         let id = *e1.fires_owed().iter().find(|x| !before.contains(x)).expect("owed");
@@ -673,8 +673,8 @@ fn a_grant_fire_carries_what_it_brings_until_it_goes_spec_commits_4() {
             let c = c?.expect("built");
             let full = tx.get_commit(&c)?.expect("held");
             let on_w = osis_commit::rewrite(&full, |ai| full.header.aspects.get(ai).is_none_or(|a| a.tid != w));
-            let v = osis_schema::codec::rt::struct_value(vec![(0, osis_base::Value::Bytes(on_w.encode())), (1, osis_base::Value::List(Vec::new())), (2, osis_base::Value::List(Vec::new()))]);
-            save(tx, OwedFire { thing: inbox, ak: grant.clone(), what: Fire::Value(v), to: BTreeSet::new(), commit: None, pages: Default::default() })?;
+            let v = crate::flows::inbox::EdgePiece { copy: on_w.encode(), evidence: Vec::new(), records: Vec::new(), pages: Vec::new() }.to_value();
+            save(tx, OwedFire { thing: inbox, ak: Some(grant.clone()), what: Fire::Value(v), to: BTreeSet::new(), commit: None, pages: Default::default() })?;
             Ok(c)
         })
         .unwrap();

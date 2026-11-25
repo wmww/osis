@@ -6,9 +6,9 @@
 //! Invariants (security):
 //! - Only an admin of A pairs or removes a node (`pair`, `remove_node` refuse otherwise; any other
 //!   node's grant or removal is judged invalid wherever it lands, spec/permissions.md §2).
-//! - What a pairer hands over gives the new node nothing it could not get by syncing A: the offer's
-//!   copy holds role-class parts on A alone and is taken only where judged valid; its evidence and
-//!   records only where they judge it (`take_parts`). Its trust records reach only lowerings on A
+//! - What a pairer hands over gives the new node nothing it could not get by syncing A: each of
+//!   the offer's edge pieces is a copy of role-class parts on A alone, taken only where judged
+//!   valid with its evidence and records (`Engine::take_edge_piece`). Its trust records reach only lowerings on A
 //!   it carries (`take_offer`). A pairer that is not an admin of A gives the new node no role.
 //! - A removed node keeps nothing it reads by A once its loss is carried out: the removal rotates
 //!   A (and what A reads, as its keysets go stale), says erase unless told otherwise, and drops
@@ -16,9 +16,10 @@
 
 use crate::engine::{Engine, Tx};
 use crate::error::{Error, Result};
+use crate::flows::inbox::EdgePiece;
 use crate::flows::{Demotion, Done};
 use crate::Mutation;
-use osis_base::{CommitId, CreationRecord, Holder, Role, Tid, Value, Weak};
+use osis_base::{CommitId, Holder, Role, Tid, Value, Weak};
 use osis_blob::Certificates;
 use osis_crdt::{Op, PathOp, PathSeg};
 use osis_schema::core_types as ct;
@@ -26,33 +27,33 @@ use osis_schema::Codec;
 use std::collections::BTreeSet;
 
 /// What a pairer hands the new node over the pairing channel (spec/permissions.md §8 Pairing):
-/// an offer of account `account` (the grant's certificate copy with its evidence and records, as
-/// a `grant@~0` fire carries one: `Engine::grant_value`) and its trust records on A, each a
-/// trusted lowering's write ID with its copy on A.
+/// an offer of account `account` (the grant's edge piece, as a `grant@~0` fire carries one:
+/// `EdgePiece`) and its trust records on A, each a trusted lowering's write ID with its piece on
+/// A.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Offer {
     pub account: Tid,
-    pub grant: Value,
-    /// The copies of A's `sync.0` writes held (the rest of the new node thing's edge piece on A,
+    pub grant: EdgePiece,
+    /// The pieces of A's `sync.0` writes held (the rest of the new node thing's edge piece on A,
     /// spec/permissions.md §4 Key part): A's sync IDs, which the new node syncs A by.
-    pub sync: Vec<Value>,
+    pub sync: Vec<EdgePiece>,
     pub trust: Vec<Trusted>,
 }
 
 /// A trust record on A (spec/permissions.md §5.1 Sides): edge write `op` of `commit`, lowering
-/// `holder`, recorded as trusted, with its copy on A (`Engine::grant_value`).
+/// `holder`, recorded as trusted, with its piece on A (`Engine::edge_piece`).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Trusted {
     pub commit: CommitId,
     pub op: u32,
     pub holder: Holder,
-    pub copy: Value,
+    pub copy: EdgePiece,
 }
 
 impl Offer {
     pub fn to_value(&self) -> Value {
-        let trust = self.trust.iter().map(|t| Value::List(vec![Value::Bytes(t.commit.0.to_vec()), Value::Int(i64::from(t.op)), crate::engine::index::Rec::to(&t.holder), t.copy.clone()])).collect();
-        Value::List(vec![Value::Bytes(self.account.as_bytes().to_vec()), self.grant.clone(), Value::List(self.sync.clone()), Value::List(trust)])
+        let trust = self.trust.iter().map(|t| Value::List(vec![Value::Bytes(t.commit.0.to_vec()), Value::Int(i64::from(t.op)), crate::engine::index::Rec::to(&t.holder), t.copy.to_value()])).collect();
+        Value::List(vec![Value::Bytes(self.account.as_bytes().to_vec()), self.grant.to_value(), Value::List(self.sync.iter().map(EdgePiece::to_value).collect()), Value::List(trust)])
     }
 
     pub fn from_value(v: &Value) -> Option<Offer> {
@@ -61,9 +62,10 @@ impl Offer {
         let trust = trust.iter().map(|t| {
             let Value::List(x) = t else { return None };
             let [Value::Bytes(c), Value::Int(op), holder, copy] = x.as_slice() else { return None };
-            Some(Trusted { commit: CommitId(c.as_slice().try_into().ok()?), op: u32::try_from(*op).ok()?, holder: <Holder as crate::engine::index::Rec>::from(holder)?, copy: copy.clone() })
+            Some(Trusted { commit: CommitId(c.as_slice().try_into().ok()?), op: u32::try_from(*op).ok()?, holder: <Holder as crate::engine::index::Rec>::from(holder)?, copy: EdgePiece::from_value(copy)? })
         }).collect::<Option<Vec<_>>>()?;
-        Some(Offer { account: Tid::from_bytes(a.as_slice().try_into().ok()?), grant: grant.clone(), sync: sync.clone(), trust })
+        let sync = sync.iter().map(EdgePiece::from_value).collect::<Option<Vec<_>>>()?;
+        Some(Offer { account: Tid::from_bytes(a.as_slice().try_into().ok()?), grant: EdgePiece::from_value(grant)?, sync, trust })
     }
 }
 
@@ -102,19 +104,19 @@ impl Engine {
         // the offer goes over the channel in place of the fire the grant owes
         let (n, a2) = (*node, *a);
         self.run(|tx| crate::flows::inbox::unowe_grant(tx, n, grant, a2))?;
-        let grant_v = self.grant_value(&grant, a)?.ok_or(Error::Misuse("pairing: the grant is not applied"))?;
+        let grant_v = self.edge_piece(&grant, a)?.ok_or(Error::Misuse("pairing: the grant is not applied"))?;
         let ak = ct::SYNC.name();
         let syncs: Vec<CommitId> = self.core.on_thing(a).filter(|c| self.core.ix.commits.get(c).is_some_and(|m| m.header.aspects.iter().enumerate().any(|(ai, x)| x.tid == *a && x.ak == ak && m.holds(ai)))).collect();
         let mut sync = Vec::new();
         for c in syncs.iter().filter(|c| **c != grant) {
-            sync.extend(self.grant_value(c, a)?);
+            sync.extend(self.edge_piece(c, a)?);
         }
         let mut trust = Vec::new();
         for (w, holder) in self.core.sides.trusted() {
             if self.core.timelines().edge_op(&w).is_none_or(|(_, _, t)| t != *a) {
                 continue;
             }
-            if let Some(copy) = self.grant_value(&w.0, a)? {
+            if let Some(copy) = self.edge_piece(&w.0, a)? {
                 trust.push(Trusted { commit: w.0, op: w.1, holder, copy });
             }
         }
@@ -131,8 +133,8 @@ impl Engine {
     pub fn take_offer(&mut self, o: &Offer) -> Result<Done> {
         let (me, a) = (self.core.me(), o.account);
         self.take_parts(&o.grant, &a)?;
-        for v in &o.sync {
-            self.take_parts(v, &a)?;
+        for p in &o.sync {
+            self.take_parts(p, &a)?;
         }
         if !self.core.key_holders(&a).iter().any(|(h, r)| *h == me && *r >= Role::Write) {
             return Err(Error::BadInput("pairing: the offer makes this node no node of its account"));
@@ -167,41 +169,15 @@ impl Engine {
         Ok(done)
     }
 
-    /// Takes role commit copy `v` (`grant_value`) on `target`: its records, then its evidence and
-    /// the copy, each kept only where judged valid (`ingest_valid`), in rounds until none more
-    /// applies (an evidence commit judged on one carried after it). The copy's parts must all be
-    /// role-class parts on `target`, else nothing is taken.
-    fn take_parts(&mut self, v: &Value, target: &Tid) -> Result<()> {
-        let Value::Map(m) = v else { return Err(Error::BadInput("pairing: a malformed copy")) };
-        let bytes = |k: i64| match m.get(&Value::Int(k)) {
-            Some(Value::Bytes(b)) => vec![b.clone()],
-            Some(Value::List(l)) => l.iter().filter_map(|x| if let Value::Bytes(b) = x { Some(b.clone()) } else { None }).collect(),
-            _ => Vec::new(),
-        };
-        let commit = bytes(0).into_iter().next().ok_or(Error::BadInput("pairing: a copy without its commit"))?;
-        let blob = osis_commit::CommitBlob::decode(&commit).map_err(|_| Error::BadInput("pairing: a malformed copy"))?;
-        if blob.parts.is_empty() || blob.parts.iter().any(|p| blob.header.aspects.get(p.ai).is_none_or(|x| x.tid != *target || !crate::flows::inbox::GRANT_PARTS.contains(&x.ak.as_str()))) {
+    /// Takes edge piece `p` on `target` (`take_edge_piece`), carried by nothing: `BadInput`
+    /// (nothing taken) unless its copy is of role-class parts on `target` alone.
+    fn take_parts(&mut self, p: &EdgePiece, target: &Tid) -> Result<()> {
+        let on = osis_commit::CommitBlob::decode(&p.copy).ok().and_then(|b| EdgePiece::target(&b));
+        if on != Some(*target) {
             return Err(Error::BadInput("pairing: a copy of other than role-class parts on the account"));
         }
-        let limits = osis_base::Limits::new(osis_base::format::MAX_OBJECT_DEPTH, osis_base::format::MAX_BLOB);
-        let records: Vec<CreationRecord> = bytes(2).iter().filter_map(|b| osis_base::decode(b, &limits).ok()).filter_map(|v| CreationRecord::from_value(&v)).filter(|r| self.core.created(&r.tid()).is_none()).collect();
-        if !records.is_empty() {
-            self.learn_records(records)?;
-        }
-        let mut left: Vec<Vec<u8>> = bytes(1).into_iter().chain([commit]).collect();
-        loop {
-            let before = left.len();
-            let mut rest = Vec::new();
-            for c in std::mem::take(&mut left) {
-                if self.ingest_valid(&c, None)?.is_none() {
-                    rest.push(c);
-                }
-            }
-            if rest.is_empty() || rest.len() == before {
-                return Ok(());
-            }
-            left = rest;
-        }
+        self.take_edge_piece(p, None)?;
+        Ok(())
     }
 
     /// Removes node thing `node` from account `a` (spec/permissions.md §8 Removing): the explicit

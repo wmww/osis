@@ -14,6 +14,7 @@ pub mod keys;
 pub(crate) mod receipt;
 pub(crate) mod validity;
 pub(crate) mod paths;
+
 #[cfg(test)]
 mod tests_validity;
 #[cfg(test)]
@@ -1609,6 +1610,13 @@ impl Engine {
         self.ingest_class(bytes, blobs, None, None)
     }
 
+    /// `ingest_valid` of a commit with `pages`, the blobs its deltas link that travel with it
+    /// (a piece's, spec/wire.md §9): none of them kept unless the commit is, nothing kept where
+    /// one is no blob its deltas link.
+    pub(crate) fn ingest_valid_paged(&mut self, bytes: &[u8], pages: &[Vec<u8>], from: Option<carriers::Carrier>) -> Result<Option<Ingested>> {
+        self.ingest_kept_paged(bytes, pages, from, |core, id, ais, out| matches!(out, Ingested::Parked(_)) || (matches!(out, Ingested::Applied(_)) && !crate::sync_ids::judged_valid(core, id, ais)))
+    }
+
     /// `ingest` of a commit taken only for what it proves here (a fire's carried commit, a
     /// stranded report's holder keys, spec/permissions.md §4), carried by `from` while it pends
     /// (`carriers`; `None`: by nothing, so nothing of it pends past this transaction): one that
@@ -1627,7 +1635,7 @@ impl Engine {
     /// stranger's records and evidence are learned only with a fire that checks out or waits. Decode errors of `fire` are the caller's. Its
     /// transaction failing for a fault of this node (`Error::is_fault`) keeps nothing either, and
     /// judges nothing: `Pending(fire, Reason::Fault)`, told to the app.
-    pub(crate) fn ingest_sealed_fire(&mut self, records: Vec<CreationRecord>, evidence: &[Vec<u8>], fire: CommitBlob, pages: Vec<Vec<u8>>) -> Result<Option<Ingested>> {
+    pub(crate) fn ingest_sealed_fire(&mut self, records: Vec<CreationRecord>, evidence: &[Vec<u8>], fire: CommitBlob, pages: &[Vec<u8>]) -> Result<Option<Ingested>> {
         let mut blobs = Vec::new();
         for c in evidence {
             match CommitBlob::decode(c) {
@@ -1656,16 +1664,7 @@ impl Engine {
                     return Err(Error::Misuse("refused"));
                 }
             }
-            // its pages come with it (spec/wire.md §9): each a blob its deltas link, else refused
-            let pages: Vec<(osis_base::BlobId, Vec<u8>)> = pages.into_iter().map(|b| (osis_blob::blob_id(&b), b)).collect();
-            let given: BTreeSet<osis_base::BlobId> = pages.iter().map(|p| p.0).collect();
-            tx.store_blobs(pages)?;
-            let mut linked = crate::engine::large::Trees::default();
-            for p in &fire.parts {
-                let Some(dedup) = fire.header.aspects.get(p.ai).and_then(|a| tx.core.dedup(&a.tid)) else { continue };
-                crate::engine::large::tree_blobs(tx, &dedup, &crate::engine::large::delta_roots(&p.delta), &mut linked)?;
-            }
-            if !given.is_subset(&linked.blobs) {
+            if !store_pages(tx, &fire, pages)? {
                 refused = true;
                 return Err(Error::Misuse("refused"));
             }
@@ -1741,6 +1740,10 @@ impl Engine {
     /// `ingest` keeping nothing of a commit `refuse` objects to (its outcome, judged in the
     /// transaction, which is then rolled back): `None` for those. One kept is carried by `from`.
     fn ingest_kept(&mut self, bytes: &[u8], from: Option<carriers::Carrier>, refuse: impl Fn(&crate::engine::Core, &CommitId, &[usize], &Ingested) -> bool) -> Result<Option<Ingested>> {
+        self.ingest_kept_paged(bytes, &[], from, refuse)
+    }
+
+    fn ingest_kept_paged(&mut self, bytes: &[u8], pages: &[Vec<u8>], from: Option<carriers::Carrier>, refuse: impl Fn(&crate::engine::Core, &CommitId, &[usize], &Ingested) -> bool) -> Result<Option<Ingested>> {
         let blob = match CommitBlob::decode(bytes) {
             Ok(b) if b.header.ephemeral.is_none() => b,
             Ok(_) => return Err(Error::BadInput("an ephemeral commit on the durable path")),
@@ -1751,6 +1754,10 @@ impl Engine {
         let ais: Vec<usize> = blob.parts.iter().map(|p| p.ai).collect();
         let mut refused = false;
         let r = self.run(|tx| {
+            if !pages.is_empty() && !store_pages(tx, &blob, pages)? {
+                refused = true;
+                return Err(Error::Misuse("refused"));
+            }
             let out = arrive(tx, &id, blob, false)?;
             refused = refuse(tx.core, &id, &ais, &out);
             if refused {
@@ -2752,6 +2759,21 @@ pub struct Creation {
     pub node: Tid,
     pub purge_author: Tid,
     pub received: WallMs,
+}
+
+/// Stores `pages`, the blobs commit `b`'s deltas link that travel with it (a sealed fire's or a
+/// piece's, spec/wire.md §9): `false` where one is no blob its deltas link (bad input: the caller
+/// rolls the transaction back, keeping none of them).
+fn store_pages(tx: &mut Tx<'_>, b: &CommitBlob, pages: &[Vec<u8>]) -> Result<bool> {
+    let pages: Vec<(osis_base::BlobId, Vec<u8>)> = pages.iter().map(|p| (osis_blob::blob_id(p), p.clone())).collect();
+    let given: BTreeSet<osis_base::BlobId> = pages.iter().map(|p| p.0).collect();
+    tx.store_blobs(pages)?;
+    let mut linked = crate::engine::large::Trees::default();
+    for p in &b.parts {
+        let Some(dedup) = b.header.aspects.get(p.ai).and_then(|a| tx.core.dedup(&a.tid)) else { continue };
+        crate::engine::large::tree_blobs(tx, &dedup, &crate::engine::large::delta_roots(&p.delta), &mut linked)?;
+    }
+    Ok(given.is_subset(&linked.blobs))
 }
 
 #[cfg(test)]

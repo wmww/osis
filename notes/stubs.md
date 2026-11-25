@@ -26,7 +26,7 @@
 
 ## For the spec piece
 - An external signal enabled on a dependent thing works as on any, or makes it independent unseen: a difference an API caller can observe is a bug (issues/behaviour-depends-on-own-keys.md). Which of the two: a fire sealed to its independent's key and deposited under its independent's sync ID costs almost nothing; an independent inbox about 15 KB, mostly keys. Nothing is known to need independence; not checked against the code.
-- A grant fire cut to the stub's data alone: today it carries the role commit's copy with its evidence because the engine holds no secret from a box it has not judged. A stub fetches the target's own role entries, which may judge the box instead; not checked.
+- A grant fire carries the stub's data as one edge piece (the role commit's copy on the target with its evidence, `EdgePiece`, the sealed copy's payload too), never a bare box: X's own role entries open only under X's secrets, so the evidence is what judges the first box, and a stranger may fire (notes/sync-rewrite-state.md, For review).
 - Own boxes only (a node following a stub fetches the boxes it opens, not every holder's): not built, and a commit applies only with all its pages.
 - A box is trusted only with the evidence that judges its commit, so a stub in a unit is its boxes plus that evidence.
 - Each stub is one more sync ID a node follows (issues/many-sync-ids-cost.md).

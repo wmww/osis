@@ -540,8 +540,8 @@ pub(crate) fn cut_into(tx: &mut Tx<'_>, m: &mut Mutation, a: Tid, roles: &BTreeS
 /// Holders a rotation `rot` of `a` boxes that hold no box at a current read epoch before it: its
 /// commit is wrapped under that epoch, so they cannot open it from the sync ID (a grant this node
 /// learned of after an epoch that left it out, the single-use link race's winner); while `a`
-/// owns several sync IDs here (a fork), every holder it boxes. They get it by inbox
-/// (spec/permissions.md §3; as grant fires: Interim (notes/sync-rewrite-state.md, Delivery)).
+/// owns several sync IDs here (a fork), every holder it boxes. They get it as a sealed copy
+/// (spec/permissions.md §3, §4 Delivering an edge piece).
 /// Called before the rotation is committed.
 pub(crate) fn unreached(tx: &mut Tx<'_>, a: &Tid, rot: &Rotation) -> Result<Vec<Tid>> {
     let Some(epochs) = tx.core.epochs(a) else { return Ok(Vec::new()) };
@@ -566,12 +566,12 @@ pub(crate) fn unreached(tx: &mut Tx<'_>, a: &Tid, rot: &Rotation) -> Result<Vec<
     Ok(out)
 }
 
-/// Rotation commit `c` of `a` to `holders` that take it by inbox (spec/sync-inbox.md §5).
-/// Interim (notes/sync-rewrite-state.md, Delivery): as a `grant@~0` fire, not a sealed copy.
+/// Rotation commit `c` of `a` to `holders` that cannot open it from `a`'s sync ID: each as a
+/// sealed copy (spec/permissions.md §4 Delivering an edge piece).
 pub(crate) fn deliver_rotation(tx: &mut Tx<'_>, a: Tid, c: Option<osis_base::CommitId>, holders: &[Tid]) -> Result<()> {
     if let Some(c) = c {
         for m in holders {
-            flows::inbox::deliver_copy(tx, *m, c, a)?;
+            flows::inbox::deliver_sealed(tx, *m, c, a)?;
         }
     }
     Ok(())
@@ -1104,10 +1104,10 @@ pub(crate) fn reseal_one_into(tx: &mut Tx<'_>, a: Tid, holder: Tid, roles: &BTre
     let c = Engine::commit_tx(tx, m)?;
     done.add(c);
     if let Some(c) = c {
-        // an account's own nodes read it under the sync ID it is written to
-        // Interim (notes/sync-rewrite-state.md, Delivery): as a `grant@~0` fire, not a sealed copy
+        // the holder holds no box at the epoch it is wrapped under: a sealed copy
+        // (spec/permissions.md §4 Delivering an edge piece)
         if holder != me {
-            flows::inbox::deliver_copy(tx, holder, c, a)?;
+            flows::inbox::deliver_sealed(tx, holder, c, a)?;
         }
     }
     Ok(())

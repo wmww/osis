@@ -994,13 +994,16 @@ impl LocalPeer {
                     continue;
                 }
                 // one `to` refused is offered again once the thing's setting enables its signal there
-                if self.memo.refused.contains(&(from, id, to)) && !crate::apply::validity::enabled(&self.peers[to].engine.core, &o.thing).contains(&o.ak) {
+                let enabled = |e: &crate::Engine| o.ak.as_ref().is_some_and(|ak| crate::apply::validity::enabled(&e.core, &o.thing).contains(ak));
+                if self.memo.refused.contains(&(from, id, to)) && !enabled(&self.peers[to].engine) {
                     continue;
                 }
                 let Some(out) = self.peers[from].engine.sealed_fire(&id)? else { continue };
                 match self.peers[to].engine.offer_fire(&out)? {
+                    // a sealed copy that does not apply valid there (yet): offered again
+                    crate::sync::Opened::Bad if o.ak.is_none() => {}
                     crate::sync::Opened::Bad => {
-                        assert!(!crate::apply::validity::enabled(&self.peers[to].engine.core, &o.thing).contains(&o.ak), "peer {to} refused peer {from}'s {} fire on {:?}, which its setting enables", o.ak.as_str(), o.thing);
+                        assert!(!enabled(&self.peers[to].engine), "peer {to} refused peer {from}'s {:?} fire on {:?}, which its setting enables", o.ak, o.thing);
                         self.memo.refused.insert((from, id, to));
                     }
                     // sealed to a keyset `to` does not hold yet: offered again
@@ -1052,7 +1055,8 @@ impl LocalPeer {
             }
             let Some(out) = self.peers[from].engine.sealed_fire(&id)? else { continue };
             let opened = p.engine.offer_fire(&out)?;
-            assert!(!matches!(opened, crate::sync::Opened::Bad) || !crate::apply::validity::enabled(&p.engine.core, &o.thing).contains(&o.ak), "the peer refused peer {from}'s {} fire on {:?}, which its setting enables", o.ak.as_str(), o.thing);
+            let enabled = o.ak.as_ref().is_some_and(|ak| crate::apply::validity::enabled(&p.engine.core, &o.thing).contains(ak));
+            assert!(!matches!(opened, crate::sync::Opened::Bad) || !enabled, "the peer refused peer {from}'s {:?} fire on {:?}, which its setting enables", o.ak, o.thing);
         }
         Ok(())
     }

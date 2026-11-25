@@ -13,7 +13,7 @@ pub(super) const T0: WallMs = WallMs(1_700_000_000_000);
 
 /// `n` fresh peers (`LocalPeer::new`, seed 0, at `T0`), synced: built once per test process, each
 /// caller handed a copy (notes/test-harnesses.md, Copied worlds).
-pub(super) fn synced(n: usize) -> LocalPeer {
+pub(crate) fn synced(n: usize) -> LocalPeer {
     LocalPeer::cached(&format!("rotation::synced/{n}"), || {
         let mut lp = LocalPeer::new(n, 0, T0).unwrap();
         lp.sync_all().unwrap();
@@ -155,7 +155,7 @@ fn rotation_missing_again_binds_nothing_spec_crypto_4() {
 
 /// An independent thing of peer `i`'s, taking grants from outside (`LocalPeer::takes_grants`): a
 /// holder other peers grant roles to.
-pub(super) fn independent_thing(lp: &mut LocalPeer, i: usize) -> Tid {
+pub(crate) fn independent_thing(lp: &mut LocalPeer, i: usize) -> Tid {
     let me = lp.peers[i].engine.me();
     let mut m = Mutation::new();
     let g = lp.peers[i].engine.new_thing(&mut m, me);

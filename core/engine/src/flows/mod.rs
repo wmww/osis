@@ -457,6 +457,9 @@ fn expand_destroyed(actor: &Tid, edges: impl Fn(&Tid) -> Vec<(Tid, Role)>, destr
 }
 
 #[cfg(test)]
+mod tests_delivery;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
