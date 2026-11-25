@@ -99,15 +99,18 @@ impl Engine {
     /// thing's edge piece on the target, which carries it from then on, spec/sync-set.md §2 First
     /// entry), and its trust records on the target; then a strong to the target in `holder`'s
     /// `holds.0` (a thing this node holds, or its node root), so this node holds it.
-    /// `BadInput` (nothing written) unless it gives this node's node thing a role on the target.
+    /// `BadInput` unless it gives a role on the target to this node's node thing or a thing it
+    /// may write.
     pub fn take_offer(&mut self, o: &Offer, holder: &Tid) -> Result<Done> {
         let t = o.target;
         self.take_parts(&o.grant, &t)?;
         for p in &o.sync {
             self.take_parts(p, &t)?;
         }
+        // the offer is to a node of its holder (spec/sync-inbox.md §5 By hand): the node thing,
+        // or a thing it may write (an account), as `offered_to` reads a fire's
         let me = self.core.me();
-        if !self.core.key_holders(&t).iter().any(|(h, _)| *h == me) {
+        if !self.core.key_holders(&t).iter().any(|(h, _)| *h == me || self.core.role_now(&me, h) >= Some(osis_base::Role::Write)) {
             return Err(Error::BadInput("the offer gives this node no role"));
         }
         // trust records reach only lowerings on the target (an edge write carrying a frontier

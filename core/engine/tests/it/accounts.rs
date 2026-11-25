@@ -199,3 +199,22 @@ fn a_units_stub_is_carried_as_certificate_copies_spec_sync_set_2() {
     // G's own grant also travels under G's sync ID (spec/permissions.md §4 Role changes travel)
     assert!(stub.iter().all(|(c, aks)| *c != content && aks.iter().all(|a| ct::ROLE_CLASS.contains(&a.as_str()))), "role-class parts alone: {stub:?}");
 }
+
+// spec/sync-inbox.md §5 By hand: an offer of a grant to account A, handed to a node of A (one
+// holding write on A), is taken there: the node holds the target at the role A's grant gives.
+#[test]
+fn an_offer_to_the_account_is_taken_by_its_node_spec_sync_inbox_5() {
+    let mut lp = crate::common::net_one(2);
+    let a = crate::common::account_of(&mut lp);
+    let mut m = osis_engine::Mutation::new();
+    let me = lp.peers[0].engine.me();
+    let t = lp.peers[0].engine.new_thing(&mut m, me);
+    lp.peers[0].commit(m).unwrap();
+    lp.peers[0].engine.make_independent(&t).unwrap();
+    lp.hold_at(0, t);
+    let edge = ct::Edge { role: Role::Read, until: None, may_grant: false, retain: false, floor: None };
+    lp.peers[0].engine.grant(&t, &a, &edge).unwrap();
+    let offer = lp.peers[0].engine.offer(&t, &a).unwrap();
+    lp.peers[1].engine.take_offer(&offer, &a).unwrap();
+    assert_eq!(lp.peers[1].engine.role_on(&t), Some(Role::Read));
+}
