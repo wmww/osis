@@ -579,7 +579,7 @@ impl Engine {
             return self.seal_certificate(&t, c, meta, rng);
         }
         let ctx = self.body_ctx(&t);
-        let Some(b) = self.commit_bodies_under(&ctx, c)?.into_iter().next() else { return Ok(None) };
+        let Some(mut b) = self.commit_bodies_under(&ctx, c)?.into_iter().next() else { return Ok(None) };
         let class = match self.core.ix.commits.get(c).is_some_and(|m| m.view.memory) {
             true => osis_blob::Class::Ephemeral,
             false => osis_blob::Class::Durable,
@@ -588,6 +588,13 @@ impl Engine {
             true => (self.seal_to(&b, class, rng)?, SealedSet::new()),
             false => {
                 let (sections, unopened) = self.held_sections(c, held);
+                // the body's parts held only in a held blob (dropped here stripping nothing) are
+                // sealed from it as the ones held as bodies are
+                let m = self.core.ix.commits.get(c);
+                let want: BTreeSet<usize> = meta.iter().flat_map(|x| x.parts.iter().copied()).filter(|ai| !m.is_some_and(|m| matches!(m.hold(*ai), Some(crate::engine::Hold::Body { .. })))).collect();
+                if !want.is_empty() {
+                    b.plaintext = self.with_blob_parts(&b, held, &want)?;
+                }
                 (self.seal(&b, class, &sections, rng)?, unopened)
             }
         };
@@ -616,7 +623,8 @@ impl Engine {
     /// what read's must-hold reads, so a judgement moves when it does), as the sync store's log
     /// would: a held blob of `c` passed on verbatim under a wrap for `s` (`rewrap`), else a
     /// fresh encryption (`seal_body`): a copy or certificate of parts all held, or each
-    /// part of the body sealed here (`section_secret`) or carried by a held genuine section; in
+    /// part of the body (held as its body, or opened in a held genuine blob) sealed here
+    /// (`section_secret`) or carried by a held genuine section none of whose parts strips; in
     /// each case wrapped for `s` as `wrap_secret` says for the parts the blob carries. Only the
     /// blobs of `held` (bytes in the sync store) count as passed on or carried.
     pub fn may_log(&mut self, s: &SyncId, id: &BodyId, held_blobs: &[BlobId]) -> Result<bool> {
@@ -627,7 +635,6 @@ impl Engine {
         if !self.core.ix.commits.contains_key(c) {
             return Ok(false);
         }
-        let held_here = |e: &Engine, ai: &usize| e.core.ix.commits.get(c).is_some_and(|m| matches!(m.hold(*ai), Some(crate::engine::Hold::Body { .. })));
         // the body's parts whose bodies are not gone here: a strip logs the rest
         let body: Vec<usize> = match self.core.ix.commits.get(c) {
             Some(m) => meta.parts.iter().copied().filter(|ai| !strips(&self.core, c, m, *ai)).collect(),
@@ -635,14 +642,31 @@ impl Engine {
         };
         // verbatim: a held genuine blob (a certificate copy of exactly the body's parts for a
         // certificate), never for a per-sync-ID copy's body
+        // a fresh encryption's parts beside those held as bodies: the body's parts a held genuine
+        // blob opened here (`with_blob_parts`); `carried`: those in a section of one that goes as
+        // it came, none of its parts stripping (`seal`'s held sections)
+        let mut opened = BTreeSet::new();
         let mut carried = BTreeSet::new();
         for b in held_blobs {
             let Some(row) = self.core.ix.blob_parts.get(b).filter(|x| x.commit == *c).cloned() else { continue };
-            if self.blob_gone(b) || self.loses_among(s, b, held_blobs)? {
+            if self.loses_among(s, b, held_blobs)? {
                 continue;
             }
             if !row.copy {
-                carried.extend(row.parts.iter().copied().filter(|ai| held_here(self, ai)));
+                let m = self.core.ix.commits.get(c);
+                let strip = |ai: &usize| m.is_some_and(|m| strips(&self.core, c, m, *ai));
+                opened.extend(row.parts.iter().copied().filter(|ai| meta.parts.contains(ai) && !strip(ai)));
+                let mut sections: BTreeMap<(Tid, bool), Vec<usize>> = BTreeMap::new();
+                for ai in &row.parts {
+                    let Some(a) = h.aspects.get(*ai) else { continue };
+                    sections.entry((a.tid, osis_keys::under_roles(a.ak.as_str()))).or_default().push(*ai);
+                }
+                for parts in sections.values().filter(|ps| !ps.iter().any(strip)) {
+                    carried.extend(parts.iter().copied());
+                }
+            }
+            if self.blob_gone(b) {
+                continue;
             }
             let fits = (meta.certificate && row.copy && row.parts == meta.parts) || (!row.copy && !meta.copy);
             let parts: Vec<usize> = row.parts.iter().copied().collect();
@@ -650,9 +674,9 @@ impl Engine {
                 return Ok(true);
             }
         }
-        // a fresh encryption: of every part held, whatever the body
+        // a fresh encryption: of every part held, as its body or in a held blob, whatever the body
         let held: BTreeSet<usize> = match self.core.ix.commits.get(c) {
-            Some(m) => m.hold_all().iter().enumerate().filter(|(_, x)| matches!(x, crate::engine::Hold::Body { .. })).map(|(ai, _)| ai).collect(),
+            Some(m) => m.hold_all().iter().enumerate().filter(|(_, x)| matches!(x, crate::engine::Hold::Body { .. })).map(|(ai, _)| ai).chain(opened).collect(),
             None => return Ok(false),
         };
         let ctx = self.body_ctx(&t);
@@ -686,6 +710,38 @@ impl Engine {
             return Ok(false);
         }
         Ok(self.wrap_secret(&t, Some((c, &sealed)))?.is_some())
+    }
+
+    /// Body `b`'s plaintext with the parts of `want` that a held genuine blob of its commit
+    /// among `held` opens here (`open_commit`): what this node holds of them, in blob bytes.
+    fn with_blob_parts(&mut self, b: &crate::sync_ids::Body, held: &[HeldBlob], want: &BTreeSet<usize>) -> Result<Vec<u8>> {
+        let pt = self.body_plaintext(b)?;
+        if pt.is_empty() {
+            return Ok(pt);
+        }
+        let mut cb = osis_commit::CommitBlob::decode_stored(&pt)?;
+        for h in held {
+            let id = osis_blob::blob_id(&h.bytes);
+            if !self.core.ix.blob_parts.get(&id).is_some_and(|x| x.commit == b.commit && !x.copy) {
+                continue;
+            }
+            let Ok(things) = self.read_things_of(&h.sync_id) else { continue };
+            let Some((_, key)) = things.iter().find_map(|t| osis_blob::unwrap_any(self.read_secrets(t).iter(), &id, &h.wrap)) else { continue };
+            let Ok(o) = self.open_commit(&h.bytes, &key) else { continue };
+            if o.commit.id() != b.commit {
+                continue;
+            }
+            for p in o.commit.parts {
+                if want.contains(&p.ai) && !cb.parts.iter().any(|x| x.ai == p.ai) {
+                    cb.parts.push(p);
+                }
+            }
+            for (i, k) in o.commit.keys {
+                cb.keys.entry(i).or_insert(k);
+            }
+        }
+        cb.parts.sort_by_key(|p| p.ai);
+        Ok(cb.encode())
     }
 
     /// The sections of commit `c`'s held genuine blobs among `held` (each opened by its entry's

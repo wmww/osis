@@ -569,3 +569,37 @@ fn strips_of_two_parts_by_nodes_apart_meet_at_a_node_reading_neither_spec_sync_j
     assert!(!sealed.ais.contains(&ai(a)) && !sealed.ais.contains(&ai(b)), "node 3's fresh encryption keeps a purged section: {:?}", sealed.ais);
     assert!(sealed.ais.contains(&ai(c)), "it carries C's part");
 }
+
+// spec/sync-judgement.md §2 (Loggable; Per blob: the rewrite is the rest of the body, a fresh
+// encryption where no held blob is it): node 1 makes a thing (its record, a value under purge on
+// replace, the strong from its account root in the same commit) and replaces the value while cut
+// off from its sibling, node 2. Node 1 strips the value from the making commit and drops the
+// account's `holds.0` part as covered, which strips nothing. The rest is still must-hold and
+// loggable at node 1: its fresh encryption takes the covered part from the held blob it opened.
+// Rejoined, node 2 receives the making commit, so the thing's record. Fails if a part dropped
+// here that strips nothing makes the rest unloggable.
+#[test]
+fn a_making_commit_stripped_before_a_siblings_fetch_reaches_the_sibling_spec_sync_judgement_2() {
+    let mut w = crate::harness::siblings();
+    w.partition(1, 2);
+    let d = w.node(1).account.unwrap();
+    let (t, c) = w.write(1, |e| {
+        let mut m = Mutation::new();
+        let t = m.create(e.thing_record(d, None));
+        let x: ct::RetentionSetting = [(value_ak(), ct::RetentionEntry { history: Some(osis_schema::History::PurgeOnReplace), ..Default::default() })].into_iter().collect();
+        m.set(t, &ct::RETENTION, &x).unwrap();
+        m.set(t, &value_ak(), &Value::Str("v0".into())).unwrap();
+        m.op(d, &ct::HOLDS, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Add(Value::Strong(t)) }).unwrap();
+        (t, e.commit(m).unwrap().unwrap())
+    });
+    set_value(&mut w, 1, t, "v1");
+    w.run();
+    // t is a dependent of the account: its sync unit's sync ID is the account's
+    let s = w.engine(1).sync_id_of(&d).unwrap().unwrap();
+    assert!(!w.engine(2).holds_commit(&c), "node 2 is cut off");
+    w.heal();
+    w.run();
+    assert!(w.engine(2).holds_commit(&c), "node 2 holds the making commit");
+    assert!(!w.engine(2).read_facts(&s, &osis_engine::sync::BodyId::unit(c)).unwrap().missing, "no part of it counts missing");
+    assert_eq!(w.engine(2).get(&t, &value_ak()).unwrap(), Some(Value::Str("v1".into())));
+}

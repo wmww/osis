@@ -8,4 +8,3 @@
 osis-engine/retention::tests_carried::purge_by_id_reads_alike_forgotten_or_not_plain_spec_commits_5 rate:OSIS_PURGE_BY_ID_START=679952827408 issues/purge-by-id-forgetting.md forgetting vs not
 osis-engine/retention::tests_carried::purge_by_id_reads_alike_forgotten_or_not_plain_spec_commits_5 rate:OSIS_PURGE_BY_ID_START=347698118767 issues/purge-by-id-forgetting.md purges through a name: 0 over \d+ seeds
 osis-sync/differential::histories_hold_their_closure_plain rate:OSIS_SYNC_START=149236181493,OSIS_SYNC_SEEDS=1 issues/differential-reads-unlike-reference.md node \d+ reads thing \d+ unlike the reference
-osis-sync/deletes::a_reader_counts_a_stripped_part_covered_by_its_covers_cover_spec_crdt_8 - issues/strip-unloggable-making-commit.md must-hold bodies a caught-up reader lacks at quiet

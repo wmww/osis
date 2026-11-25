@@ -312,11 +312,11 @@ impl Engine {
         let things: Vec<Tid> = resolved.aspects.iter().map(|a| a.tid).collect();
         let roles: Vec<bool> = resolved.aspects.iter().map(|a| osis_keys::under_roles(a.ak.as_str())).collect();
         let id = c.id();
-        // a held section goes as it came only where it carries what this node holds of it: none
-        // of its parts held stripped or dropped (a purge's or an expiry's leftover)
+        // a held section goes as it came only where none of its parts strips here (a purge's or
+        // an expiry's leftover, one dropped as covered under purge on replace: `bodies::strips`)
         let whole: Vec<Section> = {
             let m = self.core.ix.commits.get(&id);
-            extra.iter().filter(|s| s.ais.iter().all(|ai| m.is_none_or(|m| matches!(m.hold(*ai), None | Some(crate::engine::Hold::Body { .. } | crate::engine::Hold::Missing(_)))))).cloned().collect()
+            extra.iter().filter(|s| s.ais.iter().all(|ai| m.is_none_or(|m| !crate::sync::bodies::strips(&self.core, &id, m, *ai)))).cloned().collect()
         };
         // per thing, every part of it here: its sections' epoch is chosen from them all (a
         // rotation's roles.0 section goes under the epoch it supersedes too)
