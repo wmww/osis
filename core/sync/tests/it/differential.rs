@@ -266,3 +266,17 @@ fn a_removed_node_learns_its_removal_spec_sync_opens_6() {
     let (n, accounts, ..) = size();
     holds_on(0, accounts, n, &[Step::New(0), Step::Run, Step::Unpair(0, 2), Step::Run], String::new(), false);
 }
+
+// spec/sync-inbox.md §2 (Sealed copy: held as any role commit), §3 (a node reading S opens a
+// deposit it takes): node 0 removes node 2 from their account, cut off from node 1, which grants
+// the account sync on its thing and revokes it. Node 0 takes the sealed copies deposited in its
+// inbox; nothing it holds needs the grant's, so it forgets it. It settles: a deposit taken is
+// opened again only as any entry of a read sync ID (its read secrets moving), never as its
+// commit goes (failed: the inbox opened the deposit again at every settle round, retention
+// forgetting what it took, past the settle loop's bound).
+#[test]
+fn a_taken_deposit_whose_commit_goes_is_not_taken_again_spec_sync_inbox_3() {
+    use crate::harness::history::{Gives, Holder};
+    let script = [Step::New(1), Step::Cut(0, 1), Step::Unpair(0, 2), Step::Give(1, 0, Holder::Node(0), Gives::Syncs), Step::Revoke(1, 0, Holder::Node(0)), Step::Run];
+    holds_on(0, 2, 3, &script, String::new(), false);
+}

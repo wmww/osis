@@ -48,13 +48,17 @@ pub(super) struct Held {
     feed: Option<Feed<Key>>,
     judged: Effects<Key, Act>,
     acts: BTreeMap<Key, Act>,
+    /// Peers' deposits opened here to a commit (`deposit_commit`): taken, so opened again only
+    /// as any entry is, by the store's follow (its read secrets moving), never as their commit
+    /// goes. Bounded by the deposits held.
+    taken: BTreeSet<Key>,
     /// Sync IDs a deposit of which changed: clearing judges them again.
     clear_due: BTreeSet<SyncId>,
 }
 
 impl Default for Held {
     fn default() -> Self {
-        Held { feed: None, judged: Effects::new("inbox: held"), acts: BTreeMap::new(), clear_due: BTreeSet::new() }
+        Held { feed: None, judged: Effects::new("inbox: held"), acts: BTreeMap::new(), taken: BTreeSet::new(), clear_due: BTreeSet::new() }
     }
 }
 
@@ -78,8 +82,8 @@ impl Held {
         }
         for k in self.judged.due() {
             let moved = {
-                let (engine, store) = (&mut *h.engine, &*h.store);
-                self.judged.try_settle(&k, || judge(engine, store, &k))?
+                let (engine, store, taken) = (&mut *h.engine, &*h.store, &mut self.taken);
+                self.judged.try_settle(&k, || judge(engine, store, taken, &k))?
             };
             let Some((was, now)) = moved else { continue };
             acted = true;
@@ -101,6 +105,7 @@ impl Held {
         }
         match now {
             Act::Gone | Act::Nothing => {
+                self.taken.remove(k);
                 self.judged.unwant(k);
                 self.acts.remove(k);
                 return;
@@ -263,22 +268,31 @@ fn evidence_under(engine: &mut Engine, store: &Store, s: &SyncId, ev: &osis_engi
 }
 
 /// The commit deposit `b` of S holds: as opened or sealed here, else opened now (a deposit a
-/// peer left, under a read S). One refused (a sealed fire applying invalid, or with a part
-/// waiting) is opened again only when what its rolled-back ingest read moves (`judge`'s
-/// `Effects` key, `memo::Undoable`), never for the ingest's own undone writes.
-fn deposit_commit(engine: &mut Engine, store: &Store, s: &SyncId, e: &Entry) -> Result<Option<CommitId>> {
+/// peer left, under a read S) unless it was `taken` before. One refused (a sealed fire applying
+/// invalid, or with a part waiting) is opened again only when what its rolled-back ingest read
+/// moves (`judge`'s `Effects` key, `memo::Undoable`), never for the ingest's own undone writes.
+/// One taken whose commit went since (forgotten as nothing held needs it, spec/commits.md §5) is
+/// parked as any entry of a read S (`store::Follow`): opening it again here would take what
+/// retention lets go at every settle round, never settling.
+fn deposit_commit(engine: &mut Engine, store: &Store, taken: &mut BTreeSet<Key>, s: &SyncId, e: &Entry) -> Result<Option<CommitId>> {
     if let Some(c) = engine.blob_commit(&e.blob) {
         return Ok(Some(c));
+    }
+    if taken.contains(&(*s, e.blob)) {
+        return Ok(None);
     }
     let Some(bytes) = store.bytes(&e.blob)? else { return Ok(None) };
     osis_base::costs::count("inbox: deposit opened", 1);
     Ok(match crate::store::open_entry(engine, store, s, &e.blob, &e.wrap, &bytes)? {
-        Opened::Commit(c, _) => Some(c),
+        Opened::Commit(c, _) => {
+            taken.insert((*s, e.blob));
+            Some(c)
+        }
         _ => None,
     })
 }
 
-fn judge(engine: &mut Engine, store: &Store, k: &Key) -> Result<Act> {
+fn judge(engine: &mut Engine, store: &Store, taken: &mut BTreeSet<Key>, k: &Key) -> Result<Act> {
     osis_base::costs::count("inbox: held judged", 1);
     let (s, b) = k;
     let Some(e) = store.entry(s, b)? else { return Ok(Act::Gone) };
@@ -294,7 +308,7 @@ fn judge(engine: &mut Engine, store: &Store, k: &Key) -> Result<Act> {
     // takes, whether or not this node writes S (spec/sync-inbox.md §3 Who takes it: a stamp
     // arriving later for its bytes fetches nothing); where it writes S, whether read promotes it
     if holding.is_some_and(Holding::opens)
-        && let Some(c) = deposit_commit(engine, store, s, &e)?
+        && let Some(c) = deposit_commit(engine, store, taken, s, &e)?
         && promotion(engine, store, s, &c, b)? == Promotion::Yes
     {
         return Ok(Act::Promote);
