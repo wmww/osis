@@ -55,33 +55,22 @@ fn deliver_with_steps(tx: &mut Tx<'_>, holder: Tid, c: CommitId, target: Tid) ->
     Ok(())
 }
 
-/// Step commit `c` of `target`, issued as a child of a step recorded from `parent` on
-/// (`steps::Placed::since`; spec/sync-ids.md §2 What a sync holder learns, spec/sync-judgement.md
-/// §6 Stops): each holder of sync alone on `target` (`sync_alone_on`) holding no role there now,
-/// removed after that, is told its removal by it, the first step recorded after its removal,
-/// which bears none of its keys (the removal rotates sync): sealed copies of `c` and the
-/// target's other `sync.0` writes held (its path), no header. Its readers judge it holding sync
-/// no more (`Unread::holders`). A later step goes to it no more.
-pub(crate) fn deliver_step(tx: &mut Tx<'_>, target: Tid, c: CommitId, parent: osis_base::Ts) -> Result<()> {
-    let roster = tx.core.roster_of(&target);
-    let removed: BTreeSet<Tid> = tx.core.ix.held.holders_of(&target).copied().filter(|h| !roster.contains_key(h) && tx.core.sync_alone_on(h, &target)).collect();
-    if removed.is_empty() {
-        return Ok(());
-    }
-    // the removals of those holders recorded after the parent
-    let mut told = BTreeSet::new();
-    for rc in tx.core.ix.held.edge_commits(&target) {
-        for o in rc.ops.iter().filter(|o| o.target == target && o.edge.is_none()) {
-            if let osis_base::Holder::Thing(h) = o.holder
-                && removed.contains(&h)
-                && rc.ts > parent
-            {
-                told.insert(h);
-            }
+/// Step commit `c` of `target`, bearing sync key `key`, issued as a child of a step bearing
+/// `parent` (spec/sync-ids.md §2 What a sync holder learns, spec/sync-judgement.md §6 Stops):
+/// each holder of sync alone on `target` (`sync_alone_on`) one of whose sync keys
+/// (`sync_boxed`: of a secret `target`'s `secrets.0` boxes to it) either bears is sent it as
+/// sealed copies of `c` and the target's other `sync.0` writes held (its path), no header. A
+/// step bearing its key is how its box counts (a box at an epoch whose step comes later); the
+/// first past its keys is its removal, by which its readers judge it holding sync no more
+/// (`Unread::holders`), whatever rotation was blocked or step issued between. A step past that
+/// goes to it no more.
+pub(crate) fn deliver_step(tx: &mut Tx<'_>, target: Tid, c: CommitId, key: &[u8; 32], parent: Option<&[u8; 32]>) -> Result<()> {
+    let holders: Vec<Tid> = tx.core.ix.held.holders_of(&target).copied().filter(|h| tx.core.sync_alone_on(h, &target)).collect();
+    for h in holders {
+        let keys = crate::apply::keys::sync_boxed(tx.core, &target, &h);
+        if keys.contains(key) || parent.is_some_and(|p| keys.contains(p)) {
+            deliver_with_steps(tx, h, c, target)?;
         }
-    }
-    for h in told {
-        deliver_with_steps(tx, h, c, target)?;
     }
     Ok(())
 }

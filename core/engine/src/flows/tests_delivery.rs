@@ -836,6 +836,69 @@ fn a_read_grant_dropped_turns_a_holder_back_to_sync_alone_spec_permissions_4() {
     assert!(e1.core.sync_alone_on(&t, &g), "T holds sync alone again");
     assert!(!travels(&mut lp), "B travels no more");
     assert_eq!(lp.peers[1].engine.check_evidence().unwrap(), None);
+
+/// Opens each fire `ids` of peer 0 owed to T at peer 2 (T's node), in order.
+fn open_owed(lp: &mut LocalPeer, t: Tid, ids: &[FireId]) {
+    for id in ids {
+        let o = lp.peers[0].engine.core.ix.fires.get(id).cloned().unwrap();
+        assert!(o.thing == t && o.ak.is_none() && matches!(o.what, Fire::Copy { .. }), "a sealed copy to T: {o:?}");
+        if let Some(out) = lp.peers[0].engine.sealed_fire(id).unwrap() {
+            assert!(matches!(open(lp, 2, &out), Opened::SyncCopy), "taken as a sync copy");
+        }
+    }
+}
+
+// spec/permissions.md §4 (Delivering an edge piece: a holder of sync alone is sent each step
+// bearing a sync key of a secret boxed to it), spec/crypto.md §4 (Established: a box counts by a
+// step bearing its sync key): T holds sync alone on G; peer 0 rotates G's sync role (T boxed at
+// the new epoch by a sealed copy) and issues the step for it later, as a separate commit. That
+// step goes to T too, a sealed sync copy with no header byte, which T's node takes. Fails with
+// the step sent only to removed holders: a reader of T that does not sync G never holds a step
+// bearing the new epoch's key, so the box never counts there.
+#[test]
+fn a_step_after_a_rotation_reaches_a_holder_of_sync_alone_spec_permissions_4() {
+    let (mut lp, g, t) = sync_holder();
+    let before = lp.peers[0].engine.fires_owed();
+    let rot = lp.peers[0].engine.rotate_leaving_out(&g, &[Role::Sync], &[]).unwrap().unwrap();
+    let s = lp.peers[0].engine.sync_id_of(&g).unwrap().unwrap();
+    lp.peers[0].engine.issue_step(&g, &s, false).unwrap().expect("a step due");
+    let owed = new_owed(&lp, 0, &before);
+    let forbidden = header_bytes(&lp, 0, &g);
+    let steps: Vec<FireId> = owed.iter().copied().filter(|id| lp.peers[0].engine.core.ix.fires.get(id).is_some_and(|o| o.thing == t && matches!(o.what, Fire::Copy { commit, .. } if commit != rot))).collect();
+    assert_eq!(steps.len(), 1, "the step is sent to T");
+    let out = lp.peers[0].engine.sealed_fire(&steps[0]).unwrap().expect("sealed to T's read key");
+    assert!(!holds_any(&out.blob, &forbidden), "no header byte");
+    assert!(matches!(open(&mut lp, 2, &out), Opened::SyncCopy), "taken as a sync copy");
+}
+
+// spec/permissions.md §4 (Delivering an edge piece: each step bearing its keys, then the first
+// past them), spec/sync-judgement.md §6 (Stops): T holds sync alone on G; peers 0 and 1 are G's
+// admins. Peer 0 removes T; peer 1, not yet holding the removal, issues a step still bearing T's
+// key. Once both hold everything, peer 0 issues the step past T's keys, a child of peer 1's step
+// recorded after the removal: it goes to T, and T's node judges T holding sync on G no more.
+// Fails with only the first step recorded after the removal sent (peer 1's, bearing T's key):
+// T's readers name it holder for good.
+#[test]
+fn a_step_past_a_removed_holder_reaches_it_after_a_step_bearing_its_key_spec_sync_judgement_6() {
+    let (mut lp, g, t) = sync_holder();
+    let me1 = lp.peers[1].engine.tid();
+    lp.peers[0].engine.grant(&g, &me1, &edge(Role::Admin)).unwrap();
+    lp.sync_all().unwrap();
+    let s = lp.peers[0].engine.sync_id_of(&g).unwrap().unwrap();
+    lp.peers[0].engine.issue_step(&g, &s, true).unwrap();
+    lp.sync_all().unwrap();
+    assert!(lp.peers[2].engine.core.unread(&g).holders.contains(&t), "T holds sync on G");
+    let before = lp.peers[0].engine.fires_owed();
+    lp.peers[0].engine.demote(&g, &super::Demotion { holder: t, new: None, retain: None }).unwrap();
+    lp.peers[1].engine.issue_step(&g, &s, true).unwrap().expect("a fresh step at peer 1");
+    // peer 1's step reaches peer 0 and T's node; peer 0's removal reaches peer 1
+    lp.sync_all().unwrap();
+    lp.peers[0].engine.issue_step(&g, &s, false).unwrap().expect("the step past T's keys");
+    let owed = new_owed(&lp, 0, &before);
+    assert!(!owed.is_empty(), "the step past T's keys is sent to T");
+    open_owed(&mut lp, t, &owed);
+    let un = lp.peers[2].engine.core.unread(&g);
+    assert!(!un.holders.contains(&t) && !lp.peers[2].engine.core.syncs_by_copies(&t, &g), "T holds sync on G no more: {un:?}");
 }
 
 // spec/sync.md §3 (Holders by copies: a record alone is none of the admins' word), spec/sync-set.md
