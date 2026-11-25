@@ -1089,7 +1089,7 @@ fn held_for_keys(core: &Core, t: &Tid) -> bool {
 }
 
 /// Whether `t` is a holder the node opens without reading it in the node closure: an independent
-/// thing of which the node holds a read secret of its own (a box to an own actor
+/// thing of which the node holds a read secret of its own (a box to an own thing
 /// or to a holder it opens gave it; the lost-access rule keeps it only while the node's role
 /// reads `t`, `rotation::lost`).
 fn opened_holder(core: &Core, t: &Tid) -> bool {
@@ -1226,7 +1226,7 @@ fn judge(tx: &mut Tx<'_>, f: &mut Follow, v: Vx, y: Tid) -> Result<BTreeSet<Vx>>
 fn refetch_holders(tx: &mut Tx<'_>) -> Result<()> {
     let core = &*tx.core;
     let mut hs: BTreeSet<Tid> = core.ix.closure.tree.parent.keys().filter_map(|(c, t)| matches!(c, Ctx::Read(u) if u == t).then_some(*t)).collect();
-    hs.insert(core.me());
+    hs.insert(core.tid());
     hs.extend(core.link_keys.keys().copied());
     for h in hs {
         crate::flows::sync_ids::pull_anew(tx, &h)?;

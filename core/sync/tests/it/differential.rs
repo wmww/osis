@@ -52,7 +52,7 @@ fn holds_on(seed: u64, accounts: usize, n: usize, steps: &[Step], replay: String
 const TWICE_EVERY: u64 = 4;
 
 // spec: none (property: spec/requirements.md Convergence; spec/sync-set.md §1-§4: a node holds
-// exactly its node closure): histories of minting things with the account root or other
+// exactly its node closure): histories of minting things with the account or other
 // things as admin, strongs added and removed from roots and things, grants of sync, read and write to
 // accounts and to things (chains), lowering, revoking, rotating, a grantee holding what it is
 // granted by a strong (or not), pairing and removing a node, and on every second seed power loss,

@@ -31,7 +31,7 @@ fn add(from: T, to: T) -> Commit {
 fn role(on: T, g: T, r: Option<Role>) -> Commit {
     Commit { from: on, op: Op::Role(g, r), ephemeral: false }
 }
-/// A node whose root holds `roots`, its one own actor (a thing added to `w`) granted read on
+/// A node whose root holds `roots`, its one own thing (a thing added to `w`) granted read on
 /// each of `read` and sync on each of `sync`.
 fn node(w: &mut World, roots: &[T], read: &[T], sync: &[T]) -> NodeView {
     let a = w.kinds.len();
@@ -517,7 +517,7 @@ fn p3_worlds() -> Vec<(World, Edges, NodeView)> {
                         for t1 in tk {
                             let mut w = w.clone();
                             let n = node(&mut w, &roots, &[], &[]);
-                            let a = *n.own.first().expect("an own actor");
+                            let a = *n.own.first().expect("an own thing");
                             w.grants.extend([(0, t0), (1, t1)].into_iter().filter_map(|(k, t)| t.map(|t| ((a, k), t))));
                             out.push((w, es(&e), n));
                         }

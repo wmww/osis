@@ -107,7 +107,7 @@ pub(crate) fn people(n: usize) -> (LocalPeer, Vec<Tid>) {
         let mut lp = net(n, 0);
         let mut ps = Vec::new();
         for i in 0..n {
-            ps.push(lp.peers[i].engine.me());
+            ps.push(lp.peers[i].engine.tid());
         }
         spread(&mut lp);
         (lp, ps)
@@ -216,7 +216,7 @@ const SEALED_MARK: &str = "SEALED-MARK-9c41";
 #[test]
 fn a_section_of_a_thing_not_held_leaves_nothing_on_disk_spec_sync_judgement_1() {
     let mut lp = LocalPeer::of(vec![forensic_peer(0, &osis_store::Faults::new()), forensic_peer(1, &osis_store::Faults::new())], 0).unwrap();
-    let pa = lp.peers[0].engine.me();
+    let pa = lp.peers[0].engine.tid();
     spread(&mut lp);
     let d = lp.peers[1].engine.node_root().unwrap();
     // a thing minted with admin `admin` held from `from`, its value `v`, beside `also` written "x2"
@@ -231,7 +231,7 @@ fn a_section_of_a_thing_not_held_leaves_nothing_on_disk_spec_sync_judgement_1() 
         }
         (t, lp.peers[1].commit(m).unwrap().unwrap())
     };
-    let pb = lp.peers[1].engine.me();
+    let pb = lp.peers[1].engine.tid();
     let (t, _) = make(&mut lp, pb, d, "t", None);
     let (x, _) = make(&mut lp, t, t, "x", None);
     lp.peers[1].engine.grant(&t, &pa, &edge_of(Role::Read)).unwrap();
@@ -284,8 +284,8 @@ fn lost_setup_from(from_e: bool) -> Lost {
 fn lost_built(from_e: bool) -> (LocalPeer, (Tid, Tid, Tid, Tid)) {
     let faults = osis_store::Faults::new();
     let mut lp = LocalPeer::of(vec![forensic_peer(0, &osis_store::Faults::new()), forensic_peer(1, &faults)], 0).unwrap();
-    let pa = lp.peers[0].engine.me();
-    let pb = lp.peers[1].engine.me();
+    let pa = lp.peers[0].engine.tid();
+    let pb = lp.peers[1].engine.tid();
     spread(&mut lp);
     let d = thing_of(&mut lp, 0, pa);
     lp.peers[0].engine.grant(&d, &pb, &edge_of(Role::Read)).unwrap();
@@ -504,8 +504,8 @@ fn dropped_pending_grant_drops_reading_secrets_spec_crypto_4() {
     // bob never met alice: her node thing, the grant's signer, is unknown to him
     let peer = |seed| osis_engine::local_peer::Peer::new(seed, crate::common::T0).unwrap();
     let mut lp = LocalPeer::apart(vec![peer(1), peer(2)], 0);
-    let pa = lp.peers[0].engine.me();
-    let pb = lp.peers[1].engine.me();
+    let pa = lp.peers[0].engine.tid();
+    let pb = lp.peers[1].engine.tid();
     lp.peers[0].know(&[pb]).unwrap();
     let bobs: Vec<CommitId> = lp.peers[1].engine.commit_ids();
     send_carried(&mut lp, 1, 0, &bobs);
@@ -622,12 +622,12 @@ fn mutual_removal_spec_perm_5_1() {
     assert!(!r.contains_key(&pa) && r.contains_key(&pb), "peer 1: {r:?}");
 }
 
-// spec/permissions.md §5.1 Frontier: the remover's frontier lists its chain writes by commit
-// ID. C grants D (Bob never gets it), then grants Bob admin (Bob gets only that, so C's
+// spec/permissions.md §5.1 Frontier: the remover's frontier lists the writes on its own path by
+// commit ID. C grants D (Bob never gets it), then grants Bob admin (Bob gets only that, so C's
 // counters are not contiguous at Bob); Bob removes C: his own grant stays covered, so the
 // removal stands, while C's grant of D drops.
 #[test]
-fn remover_lists_chain_writes_spec_perm_5_1() {
+fn remover_lists_its_own_path_writes_spec_perm_5_1() {
     let (mut lp, ps, t) = granted(4, &[(2, Role::Admin)]);
     let (pb, pc, pd) = (ps[1], ps[2], ps[3]);
     let before: BTreeSet<CommitId> = lp.peers[2].engine.commit_ids().into_iter().collect();
@@ -666,7 +666,7 @@ fn frontier_ids(lp: &mut LocalPeer, i: usize, c: &CommitId) -> BTreeSet<CommitId
     h.frontier.as_deref().expect("a frontier").iter().copied().collect()
 }
 
-// spec/permissions.md §5.1 Frontier (chain-write forgery): C granted Bob admin; Bob removes C
+// spec/permissions.md §5.1 Frontier (forging a write on the remover's path): C granted Bob admin; Bob removes C
 // without having received anything else of C's; C, with a lagging clock, then writes Bob's
 // edge with an `until` stamped before the removal. Bob's frontier lists his grant but not the
 // forgery: it drops, Bob keeps admin and C stays removed.
@@ -905,7 +905,7 @@ fn commit_form_redemption_canonical_spec_crdt_3_2() {
         let (mut lp, ps) = people(2);
         let (pa, ps1) = (ps[0], ps[1]);
         let d = thing_of(&mut lp, 0, pa);
-        let sharer = lp.peers[0].engine.me();
+        let sharer = lp.peers[0].engine.tid();
         // links until one whose L sorts as wanted against the sharer node
         let link = loop {
             let (link, _, _) = lp.peers[0].engine.create_link(&pa, &link_spec(d, Role::Write, None)).unwrap();
@@ -974,7 +974,7 @@ fn read_link_followed() -> (LocalPeer, [Tid; 3], Tid, osis_blob::ShareLink) {
 }
 
 // spec/permissions.md §7: a stranger redeems a read link: signing as L it grants its
-// own actor to K (deposited: read), single use removes L's edge in the same commit, so a
+// own thing to K (deposited: read), single use removes L's edge in the same commit, so a
 // second redeemer finds no link; the redeemer reads the target through K.
 #[test]
 fn link_redeem_single_use_spec_perm_7() {
@@ -1114,7 +1114,7 @@ fn until_link_backdated_grant_void_spec_perm_7() {
     let (mut lp, p) = account_two_nodes();
     let mut more = net(3, 1);
     lp.peers.append(&mut more.peers);
-    let ps: Vec<Tid> = (2..5).map(|i| lp.peers[i].engine.me()).collect();
+    let ps: Vec<Tid> = (2..5).map(|i| lp.peers[i].engine.tid()).collect();
     let (joiner, forger) = (ps[0], ps[1]);
     spread(&mut lp);
     let d = thing_of(&mut lp, 0, p);
@@ -1348,7 +1348,7 @@ fn registration_step_after_rotation_spec_sync_5() {
 #[test]
 fn removal_refreshes_deposit_seed_spec_crypto_3() {
     let (mut lp, p, pa, _) = nodes_and_alice();
-    let pp = lp.peers[1].engine.me();
+    let pp = lp.peers[1].engine.tid();
     let t = thing_of(&mut lp, 2, pa);
     lp.peers[2].engine.grant(&t, &pp, &edge_of(Role::Read)).unwrap();
     lp.peers[2].engine.make_independent(&t).unwrap();
@@ -1564,7 +1564,7 @@ fn issue_step_after_inside_removal_spec_sync_5() {
 fn raced_grant_read_box_after_until_spec_crypto_4() {
     let (mut lp, ps) = people(4);
     let (pa, pb, pc) = (ps[0], ps[1], ps[2]);
-    let n3 = lp.peers[3].engine.me();
+    let n3 = lp.peers[3].engine.tid();
     let t = thing_of(&mut lp, 0, pa);
     lp.peers[0].engine.grant(&t, &pb, &edge_of(Role::Admin)).unwrap();
     lp.peers[0].engine.grant(&t, &pc, &edge_of(Role::Write)).unwrap();
@@ -1612,7 +1612,7 @@ fn link_key_writes_commit_form_spec_commits_3() {
 fn linked_frontier_spec_perm_5_1() {
     let mut lp = net(3, 0);
     let t = new_shared(&mut lp, 0);
-    let x = lp.peers[1].engine.me();
+    let x = lp.peers[1].engine.tid();
     set_edge(&mut lp.peers[0].engine, t, x, Some(edge(Role::Write)), None);
     sync(&mut lp, 0, 1);
     add_tag(&mut lp, 1, t, "by x");
@@ -1728,7 +1728,7 @@ fn frontier_lists_commit_ids_spec_perm_5_1() {
     add_tag(&mut lp, 2, t, "c");
     let e = new_ids(&lp, 2, &before);
     spread(&mut lp);
-    let nc = lp.peers[2].engine.me();
+    let nc = lp.peers[2].engine.tid();
     let scope = osis_engine::DemotionScope { roles: [(nc, [t].into())].into(), content: [(nc, [t].into())].into() };
     let now = lp.peers[0].engine.now();
     let f = lp.peers[0].engine.frontier(&scope, now).unwrap();
@@ -1768,7 +1768,7 @@ fn rotation_within_role_keep_listed_spec_perm_5_1() {
         }
     }
     lp.advance(1_000);
-    let x = lp.peers[1].engine.me();
+    let x = lp.peers[1].engine.tid();
     let things = BTreeSet::from([t]);
     let scope = osis_engine::DemotionScope { roles: [(x, things.clone())].into(), content: [(x, things)].into() };
     let now = lp.peers[0].engine.now();
@@ -2029,7 +2029,7 @@ fn concurrent_rekeys_fork_spec_perm_3() {
 }
 
 // spec/crypto.md §4 (rotating needs only the right to rotate), spec/permissions.md §3: the vandal also holds
-// write on `d` through its own actor `t`. Removing `t` rotates over the vandal's epoch but boxes
+// write on `d` through its own thing `t`. Removing `t` rotates over the vandal's epoch but boxes
 // the vandal, a writer still; removing the vandal rotates again, and it reads nothing after.
 #[test]
 fn vandal_with_second_path_recovered_spec_perm_3() {
@@ -2221,7 +2221,7 @@ fn frontier_lists_covered_deltas_of_every_purge_by_spec_perm_5_1() {
         spread(&mut lp);
         assert_eq!(lp.peers[0].engine.covered(&snap, &c, &t, &reg).unwrap(), Some(true));
         lp.advance(osis_base::format::MAX_DRIFT_MS + 1_000);
-        let x = lp.peers[1].engine.me();
+        let x = lp.peers[1].engine.tid();
         let things = BTreeSet::from([t]);
         let scope = osis_engine::DemotionScope { roles: [(x, things.clone())].into(), content: [(x, things)].into() };
         let now = lp.peers[0].engine.now();
@@ -2249,7 +2249,7 @@ fn chat_by_record_spec_perm_1() {
     assert_eq!(done.commits.len(), 1);
     let h = lp.peers[0].engine.header(&done.commits[0]).unwrap();
     let aks: BTreeSet<&str> = h.aspects.iter().filter(|a| a.tid == o).map(|a| a.ak.as_str()).collect();
-    assert_eq!(aks, BTreeSet::from(["created.0"]), "on O; beside it the account root's strong holding it");
+    assert_eq!(aks, BTreeSet::from(["created.0"]), "on O; beside it the account's strong holding it");
     assert_eq!(lp.peers[0].engine.mint_admin(&o), Some(ps[0]));
     assert_eq!(lp.peers[0].engine.role_on(&o), Some(Role::Admin));
     assert!(lp.peers[0].engine.get(&o, &ak("keys.0")).unwrap().is_none(), "A's dependent until its first grant");
@@ -2342,7 +2342,7 @@ fn record_edge_removal_any_order_spec_perm_2() {
 #[test]
 fn first_grant_on_dependent_thing_rotates_first_spec_perm_3() {
     let (mut lp, ps) = people(3);
-    let d = lp.peers[0].engine.me();
+    let d = lp.peers[0].engine.tid();
     let (o, _) = lp.peers[0].engine.create_with_admin(&d).unwrap();
     lp.hold(o);
     put(&mut lp, 0, o, &REG, &s("derived"));
@@ -2380,14 +2380,14 @@ fn timed_admin(lp: &LocalPeer, i: usize) -> ct::Edge {
 
 // spec/permissions.md §1 (The last admin): every write taking the last standing admin's edge to
 // anything else is refused at its writer, on an independent thing (minted with an account) and a
-// dependent one (minted with the node's account root) alike: a removal (here the admin's own),
+// dependent one (minted with the node thing) alike: a removal (here the admin's own),
 // a lowering below admin, an `until` by a demotion or by a grant. Refused, nothing is written.
 #[test]
 fn the_last_standing_admin_is_kept_spec_perm_1() {
     let (mut lp, ps) = people(1);
     let p = ps[0];
     let t = thing_of(&mut lp, 0, p);
-    let d = lp.peers[0].engine.me();
+    let d = lp.peers[0].engine.tid();
     let (o, _) = lp.peers[0].engine.create_with_admin(&d).unwrap();
     lp.hold(o);
     let before = lp.peers[0].engine.commit_ids().len();
@@ -2462,7 +2462,7 @@ fn the_mark_lets_a_thing_go_adminless_spec_perm_1() {
 #[test]
 fn a_dependent_thing_marked_adminless_stays_dependent_spec_perm_1() {
     let (mut lp, _) = people(2);
-    let n = lp.peers[0].engine.me();
+    let n = lp.peers[0].engine.tid();
     let (o, _) = lp.peers[0].engine.create_with_admin(&n).unwrap();
     lp.hold(o);
     put(&mut lp, 0, o, &REG, &s("v"));
@@ -2613,7 +2613,7 @@ fn a_fork_by_two_siblings_ends_quiet_spec_crypto_4() {
     let (mut lp, _) = account_two_nodes();
     let mut more = net(2, 1);
     lp.peers.append(&mut more.peers);
-    let (x, y) = (lp.peers[2].engine.me(), lp.peers[3].engine.me());
+    let (x, y) = (lp.peers[2].engine.tid(), lp.peers[3].engine.tid());
     spread(&mut lp);
     let p = lp.peers[0].engine.settings_thing().unwrap().unwrap();
     let t = thing_of(&mut lp, 0, p);

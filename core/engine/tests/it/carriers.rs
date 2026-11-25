@@ -249,7 +249,7 @@ fn a_commit_that_waited_for_its_record_was_received_when_it_came_spec_commits_4(
     lp.advance(10_000);
     crate::flows::send_carried(&mut lp, 0, 1, &[c]);
     pass_end(&mut lp.peers[1].engine);
-    let author = lp.peers[0].engine.me();
+    let author = lp.peers[0].engine.tid();
     let e1 = &mut lp.peers[1].engine;
     assert!(!e1.pends(&d) && e1.header(&d).is_some(), "D applied");
     let scope = osis_engine::DemotionScope { roles: std::collections::BTreeMap::from([(author, BTreeSet::from([w]))]), content: std::collections::BTreeMap::from([(author, BTreeSet::from([w]))]) };
@@ -355,7 +355,7 @@ fn a_pending_commit_handed_again_costs_a_lookup_unless_it_brings_something_spec_
     assert!(lp.peers[1].engine.pends(&d), "kept by its entry");
     crate::flows::send_carried(&mut lp, 0, 1, &[c]);
     pass_end(&mut lp.peers[1].engine);
-    let author = lp.peers[0].engine.me();
+    let author = lp.peers[0].engine.tid();
     let e1 = &mut lp.peers[1].engine;
     assert!(!e1.pends(&d) && e1.header(&d).is_some(), "D applied");
     assert_eq!(e1.get(&w, &ak("t:reg.0")).unwrap(), Some(Value::Str("d".into())), "the stored part, not the forged one");

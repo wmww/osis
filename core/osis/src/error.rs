@@ -13,12 +13,12 @@ use osis_schema::{Path, PathError};
 pub enum Error {
     /// A write or call names a thing not known here.
     UnknownThing { tid: Tid },
-    /// An actor whose keys are not known here (grants need them: a contact card, a shared thing).
-    UnknownActor { tid: Tid },
-    /// The acting actor lacks `needs` on `tid`, or this node cannot write `tid` yet (`role_on`
+    /// A thing whose keys are not known here (grants to it need them: a contact card, a shared thing).
+    UnknownKeys { tid: Tid },
+    /// The thing acting lacks `needs` on `tid`, or this node cannot write `tid` yet (`role_on`
     /// reads `Read` meanwhile). Checked locally before signing.
     Permission { tid: Tid, needs: Role },
-    /// A fire of external signal `signal` (an `@` key) on `tid` by an actor holding no write
+    /// A fire of external signal `signal` (an `@` key) on `tid` by a thing holding no write
     /// there, while `tid`'s setting (`core::RETENTION`) has no entry for the signal: until an
     /// admin gives it one, only `tid`'s writers fire it.
     NotEnabled { tid: Tid, signal: Ak },
@@ -51,7 +51,7 @@ pub enum Error {
     /// cannot tell). Repeating it is a new write: read first, repeat only if it is not there.
     OutcomeUnknown,
     /// This kind of handle does not carry this call: a handle with no store asked for what needs
-    /// its process to be the node, or a client with its own actor for what only the node
+    /// its process to be the node, or a client with a thing of its own for what only the node
     /// may do. Trying again will not help.
     Unsupported(String),
     /// The node at the other end will not take this session: it refused the client secret or the
@@ -66,7 +66,7 @@ pub enum Error {
 
 osis_base::impl_error!(Error {
     UnknownThing { tid } => ("unknown thing {tid}"),
-    UnknownActor { tid } => ("unknown actor {tid}"),
+    UnknownKeys { tid } => ("no keys of {tid} known here"),
     Permission { tid, needs } => ("needs {needs:?} on {tid} (or what writing it needs has not synced here yet)"),
     NotEnabled { tid, signal } => ("{tid} takes {signal} only from its writers: its retention setting has no entry for it"),
     Type { path, reason } => ("type error at {path}: {reason}"),

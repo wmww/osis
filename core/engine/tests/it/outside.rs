@@ -34,7 +34,7 @@ fn give_parts(lp: &mut LocalPeer, c: &CommitId, keep: impl Fn(Tid) -> bool) {
     lp.peers[1].receive(&bytes, pk.blobs.clone()).unwrap();
 }
 
-/// Peer 0 makes X and grants peer 1 read on it; peer 1 holds X by its account root.
+/// Peer 0 makes X and grants peer 1 read on it; peer 1 holds X by its node root.
 fn base() -> (LocalPeer, Tid) {
     base_n(2).0
 }
@@ -310,7 +310,7 @@ fn waiting_on_w(expiring: bool, aside: bool) -> (LocalPeer, Tid, Tid, CommitId, 
     (lp, x, w, c, exp)
 }
 
-/// Peer 1 holds W from its account root: W enters its node closure, what it pulls anew given.
+/// Peer 1 holds W from its node root: W enters its node closure, what it pulls anew given.
 fn enter(lp: &mut LocalPeer, w: Tid) {
     let d1 = lp.peers[1].engine.node_root().unwrap();
     let mut m = Mutation::new();

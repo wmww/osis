@@ -13,7 +13,7 @@ fn ak() -> Ak {
     Ak::new("x:v.0").unwrap()
 }
 
-/// A thing node `i` mints with its account root as admin, which holds it, with value `v`.
+/// A thing node `i` mints with its account as admin, which holds it, with value `v`.
 fn make(w: &mut World, i: usize, v: &str) -> Tid {
     let v = v.to_owned();
     let d = w.node(i).account.unwrap();
@@ -41,7 +41,7 @@ fn granted() -> (World, Tid) {
 }
 
 // spec/sync-inbox.md §5, spec/sync-set.md §2: Alice grants Bob read on T; Bob holds T by a strong
-// in his account root, syncs T's sync ID over real connections and reads T.
+// in his account, syncs T's sync ID over real connections and reads T.
 #[test]
 fn a_granted_thing_held_by_a_strong_syncs_spec_sync_inbox_5() {
     let (mut w, t) = granted();
@@ -156,7 +156,7 @@ fn held(role: Role) -> (World, Tid) {
     (w, t)
 }
 
-/// Node `i` adds (`on`) or removes its account root's strong to `t`; run.
+/// Node `i` adds (`on`) or removes its account's strong to `t`; run.
 fn root_strong(w: &mut World, i: usize, t: Tid, on: bool) {
     let d = w.node(i).account.unwrap();
     w.write(i, |e| {

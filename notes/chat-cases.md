@@ -252,7 +252,7 @@ Nothing here is designed: each answer is what today's core would give if servers
 - **j** Per-sender key chains (Signal sender keys): per-message erasure, at the cost of a per-sender state per node and either a per-sender marker the nodes keeping the chat unread can link or trial decryption.
 - **m** Erasable per-node KEM keys with per-node boxes (MLS-sized): what real member forward secrecy would need; against spec/crypto.md §3 and spec/requirements.md, Cost.
 - **o** A node that stops fetching short of old messages (issues/partial-history-fetch.md); fetch is newest first (spec/sync-judgement.md §2).
-- **r** Pure readers place nothing under big sync IDs: no certificate copies or node card from a reader unless asked (realms past a few thousand members).
+- **r** Pure readers place nothing under big sync IDs: no certificate copies from a reader unless asked (realms past a few thousand members).
 
 ## Footnotes
 

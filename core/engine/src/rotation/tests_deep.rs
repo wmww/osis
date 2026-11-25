@@ -35,7 +35,7 @@ struct World {
 fn world(seed: u64) -> World {
     let mut rng = Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
     let mut lp = synced(V + 1);
-    let tids: Vec<Tid> = (0..=V).map(|i| lp.peers[i].engine.me()).collect();
+    let tids: Vec<Tid> = (0..=V).map(|i| lp.peers[i].engine.tid()).collect();
     let depth = 2 + rng.next(2) as usize;
     let adm: Vec<usize> = (0..=depth).map(|_| rng.next(V as u64) as usize).collect();
     let xs: Vec<Tid> = adm.iter().map(|&a| independent_thing(&mut lp, a)).collect();
@@ -89,7 +89,7 @@ fn opened(w: &mut World) -> BTreeSet<Key> {
         }
         secrets.extend(super::tests::held_secrets(&w.lp.peers[p], &w.xs));
     }
-    opens_in(&w.lp, &states, &secrets, w.lp.peers[V].engine.me(), w.kept.clone(), &BTreeSet::new())
+    opens_in(&w.lp, &states, &secrets, w.lp.peers[V].engine.tid(), w.kept.clone(), &BTreeSet::new())
 }
 
 /// Writer `h` of G pulls every commit the others hold, rotates what is due, and would write: G's
@@ -188,7 +188,7 @@ fn churn_below_rotates_g_once_per_rotation_below_spec_crypto_4() {
     for lag in [0, 2] {
         let (mut lp, (tids, [g, a, m])) = LocalPeer::cached("rotation::tests_deep::churn", || {
             let mut lp = synced(6);
-            let tids: Vec<Tid> = (0..6).map(|i| lp.peers[i].engine.me()).collect();
+            let tids: Vec<Tid> = (0..6).map(|i| lp.peers[i].engine.tid()).collect();
             let [g, a, m] = [0, 2, 3].map(|i| independent_thing(&mut lp, i));
             lp.peers[0].engine.grant(&g, &tids[1], &edge(Role::Write)).unwrap();
             for t in &tids[4..6] {

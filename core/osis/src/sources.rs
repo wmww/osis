@@ -29,7 +29,7 @@ use std::path::Path;
 use std::sync::atomic::Ordering;
 
 /// How to log in to a node (`Osis::connect`, `Osis::connect_node`): where it is and what proves
-/// who this client is there. The node says which actor that makes it (`Osis::author`).
+/// who this client is there. The node says which thing that makes it (`Osis::author`).
 #[derive(Clone, Debug)]
 pub struct NodeLogin {
     /// Where it is.
@@ -161,7 +161,7 @@ impl ReadOnly {
     }
 
     /// Where a process-wide call (`what`) goes: `None` here, in the process holding the store; on
-    /// a thin client its node, which answers it for a main session alone (a client actor's is
+    /// a thin client its node, which answers it for a main session alone (a client session's is
     /// `Unsupported` there). A thin client of several nodes has no one node to ask: `Unsupported`.
     pub(crate) fn process_at(&self, what: &str) -> Result<Option<Address>> {
         if self.has_store() {
@@ -242,7 +242,7 @@ fn scratch(mut cfg: AppConfig) -> Result<Osis> {
 
 impl Osis {
     /// Makes a thin client of the node running on the store at `store_dir`, over its unix socket
-    /// (`Osis::listen_socket`), acting as the node's main actor.
+    /// (`Osis::listen_socket`), acting as the node itself.
     pub async fn connect_socket(store_dir: &Path, cfg: AppConfig) -> Result<Osis> {
         let url = osis_transport::unix::url_of(&socket_path(store_dir)?);
         let uid = osis_transport::unix::own_uid().map_err(|e| Error::Network(e.to_string()))?;
@@ -251,8 +251,8 @@ impl Osis {
     }
 
     /// Makes a thin client of the nodes it logs in to, each dialed at its address, which pins the
-    /// node's key: every call goes to them, as the actor a login makes this program (`author()`).
-    /// Several logins must make it one actor (`Invalid` otherwise); a thing goes to the first
+    /// node's key: every call goes to them, as the thing a login makes this program act as (`author()`).
+    /// Several logins must make it one thing (`Invalid` otherwise); a thing goes to the first
     /// node holding it.
     pub async fn connect(logins: &[NodeLogin], cfg: AppConfig) -> Result<Osis> {
         if logins.is_empty() {
@@ -271,7 +271,7 @@ impl Osis {
         for (a, s) in logins {
             let w = db.add_remote(a.clone(), s.clone()).await?;
             if who.is_some_and(|x: crate::port::client::Thin| x.author != w.author) {
-                return Err(Error::Invalid(format!("{a} makes this client another actor than the nodes before it")));
+                return Err(Error::Invalid(format!("{a} makes this client another thing than the nodes before it")));
             }
             who.get_or_insert(w);
         }

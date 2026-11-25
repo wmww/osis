@@ -453,7 +453,7 @@ mod tests {
     /// `three_replaces` of a value of `n` bytes.
     fn replaces_of(n: usize) -> (LocalPeer, Tid, Ak, Vec<CommitId>) {
         let mut lp = LocalPeer::fresh(1, osis_base::WallMs(1_700_000_000_000));
-        let me = lp.peers[0].engine.me();
+        let me = lp.peers[0].engine.tid();
         let mut m = Mutation::new();
         let t = lp.peers[0].engine.new_thing(&mut m, me);
         lp.peers[0].commit(m).unwrap();
@@ -628,7 +628,7 @@ mod tests {
     fn a_link_copied_from_another_thing_frees_nothing_spec_crypto_7() {
         let (mut lp, t2, a, _) = three_replaces();
         let e = &mut lp.peers[0].engine;
-        let me = e.me();
+        let me = e.tid();
         let mut m = Mutation::new();
         let t1 = e.new_thing(&mut m, me);
         lp.peers[0].commit(m).unwrap();
@@ -698,7 +698,7 @@ mod tests {
         use osis_schema::core_types::Edge;
         let mut lp = LocalPeer::fresh(2, osis_base::WallMs(1_700_000_000_000));
         lp.sync_all().unwrap();
-        let (me, v) = (lp.peers[0].engine.me(), lp.peers[1].engine.me());
+        let (me, v) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
         let mut m = Mutation::new();
         let t1 = lp.peers[0].engine.new_thing(&mut m, me);
         let t2 = lp.peers[0].engine.new_thing(&mut m, me);

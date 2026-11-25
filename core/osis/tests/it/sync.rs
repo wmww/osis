@@ -190,12 +190,12 @@ fn port_node() -> (Osis, osis::Tid, osis::Tid, [u8; 32]) {
     let t = w.create_held().unwrap();
     w.at(t, osis::DynamicAspectKey::untyped(crate::common::ak("x:v.0"))).set(&Value::Int(5)).unwrap();
     w.commit().unwrap();
-    let (actor, secret) = db.add_client(db.node(), None).unwrap();
-    (db, t, actor, *secret.expose())
+    let (client, secret) = db.add_client(db.node(), None).unwrap();
+    (db, t, client, *secret.expose())
 }
 
 // spec/wire.md §11.2 (Auth): a main session on the unix transport sends no secret, and then
-// reads as the node's main actor.
+// reads as the node itself.
 #[test]
 fn a_main_session_authenticates_without_a_secret_spec_wire_11() {
     let (db, t, _, _) = port_node();
@@ -205,7 +205,7 @@ fn a_main_session_authenticates_without_a_secret_spec_wire_11() {
 }
 
 // spec/wire.md §11.2 (Auth): any other Auth is Error 1: no secret on a keyed transport, a secret
-// on the unix transport, a secret matching no entry, a second Auth of a client-actor session;
+// on the unix transport, a secret matching no entry, a second Auth of a client session;
 // and a Call before an Auth answered by Reply is Error 1.
 #[test]
 fn other_auths_and_calls_before_auth_are_refused_spec_wire_11() {
@@ -218,18 +218,18 @@ fn other_auths_and_calls_before_auth_are_refused_spec_wire_11() {
     assert!(ok_reply(&r[0]) && refused(&r[1]), "{r:?}");
 }
 
-// spec/wire.md §11.2 (A client actor's rights): a thing the actor may not read answers as a
+// spec/wire.md §11.2 (A client's rights): a thing the client's thing may not read answers as a
 // thing the node does not know (a GET of an unknown tid reads absent); an unknown method is
 // `[1, 11, text]`.
 #[test]
-fn a_client_actor_reads_only_what_it_may_spec_wire_11() {
-    let (db, t, actor, secret) = port_node();
+fn a_clients_thing_reads_only_what_it_may_spec_wire_11() {
+    let (db, t, client, secret) = port_node();
     let unknown = osis::Tid::from_bytes([3; 15]);
     let r = osis::internals::port_answers(&db, 1, false, vec![auth(Some(secret)), get(t, "x:v.0"), get(unknown, "x:v.0"), Msg::Call { id: 3, max_reply: 4096, method: 999, args: vec![] }]);
     assert!(ok_reply(&r[0]));
     assert_eq!(r[1], r[2], "as unknown");
     assert!(matches!(&r[3], Msg::Reply { outcome: Outcome::Err { code, .. }, .. } if *code == ApiCode::UNSUPPORTED), "{r:?}");
-    db.grant(t, actor, Role::Read, osis::GrantOpts::default()).unwrap();
+    db.grant(t, client, Role::Read, osis::GrantOpts::default()).unwrap();
     let r = osis::internals::port_answers(&db, 1, false, vec![get(t, "x:v.0")]);
     assert!(matches!(&r[0], Msg::Reply { outcome: Outcome::Ok { value: Value::List(v) }, .. } if v == &vec![Value::uint(0), Value::List(vec![Value::Int(5)])]), "granted: {r:?}");
 }
@@ -288,7 +288,7 @@ fn a_redeem_whose_sharer_never_answers_fails_at_the_follow_time_spec_sync_inbox_
 
 // spec/permissions.md §7 (Finalized; the seed thing goes): a revoked link is listed no more and
 // revoking it again changes nothing; its joiner keeps its role until set_role removes it,
-// through the link's actor.
+// through the link's thing.
 #[test]
 fn a_revoked_links_joiner_stays_until_removed_spec_permissions_7() {
     let c = clock();
@@ -307,14 +307,14 @@ fn a_revoked_links_joiner_stays_until_removed_spec_permissions_7() {
     a.revoke_link(id).unwrap();
     // the joiner: b's node thing, as it named (spec/permissions.md §7 Redeem)
     let joiner = b.node();
-    let joined = |a: &Osis| a.holders(t).unwrap().into_iter().any(|h| h.actor == joiner);
+    let joined = |a: &Osis| a.holders(t).unwrap().into_iter().any(|h| h.thing == joiner);
     assert!(joined(&a), "the joiner keeps its role");
     a.set_role(t, joiner, None, osis::SetRoleOpts::default()).unwrap();
     assert!(!joined(&a), "removed");
 }
 
 // spec/permissions.md §1, §2 (the public), spec/wire.md §10 (public link), spec/sync-judgement.md
-// §1 (entitlement): a grant to the public lets every party read: a client actor of the node
+// §1 (entitlement): a grant to the public lets every party read: a client's thing of the node
 // granted nothing, and a stranger node by a public link, which a private thing has none of. The
 // public holds read at most, and removing its grant makes the thing private again.
 #[test]
@@ -329,14 +329,14 @@ fn the_publics_grant_round_trip_spec_permissions_1() {
     let t = w.create_held().unwrap();
     w.at(t, osis::core::NAME).set(&"open".to_string()).unwrap();
     w.commit().unwrap();
-    let (actor, _) = a.add_client(a.node(), None).unwrap();
-    let client = osis::internals::Internals::acting_as(&a, actor);
+    let (client, _) = a.add_client(a.node(), None).unwrap();
+    let client = osis::internals::Internals::acting_as(&a, client);
     assert_eq!(client.at(t, osis::core::NAME).get().unwrap(), None, "a client granted nothing");
     assert!(matches!(a.public_link(t), Err(Error::Invalid(_))), "not public");
     assert!(matches!(a.grant(t, Tid::PUBLIC, Role::Write, GrantOpts::default()), Err(Error::Invalid(_))), "read at most");
     assert!(matches!(a.grant(t, Tid::PUBLIC, Role::Read, GrantOpts { may_grant: true, ..GrantOpts::default() }), Err(Error::Invalid(_))));
     a.grant(t, Tid::PUBLIC, Role::Read, GrantOpts::default()).unwrap();
-    assert!(a.holders(t).unwrap().iter().any(|h| h.actor == Tid::PUBLIC && h.kind == HolderKind::Public && h.role == Role::Read));
+    assert!(a.holders(t).unwrap().iter().any(|h| h.thing == Tid::PUBLIC && h.kind == HolderKind::Public && h.role == Role::Read));
     assert_eq!(client.at(t, osis::core::NAME).get().unwrap().as_deref(), Some("open"), "every party reads it");
     let link = a.public_link(t).unwrap();
     assert_eq!(link.target().unwrap(), t);
@@ -364,11 +364,11 @@ fn set_card_needs_keys_and_a_path_through_the_thing_spec_sync_inbox_1() {
     w.hold(g, p).unwrap();
     let elsewhere = w.create_held().unwrap();
     w.commit().unwrap();
-    // g independent, with keys of its own: by a grant (here to a client actor)
-    let (actor, _) = a.add_client(a.node(), None).unwrap();
-    a.grant(g, actor, Role::Read, GrantOpts::default()).unwrap();
+    // g with its keys: by a grant (here to a client's thing)
+    let (client, _) = a.add_client(a.node(), None).unwrap();
+    a.grant(g, client, Role::Read, GrantOpts::default()).unwrap();
     let unknown = Tid::from_bytes([7; 15]);
-    assert!(matches!(a.set_card(p, unknown, Some(unknown)), Err(Error::UnknownActor { .. })), "no keys of it here");
+    assert!(matches!(a.set_card(p, unknown, Some(unknown)), Err(Error::UnknownKeys { .. })), "no keys of it here");
     assert!(matches!(a.set_card(elsewhere, g, Some(g)), Err(Error::Permission { .. })), "g does not write it");
     a.set_card(p, g, Some(g)).unwrap();
     a.grant(p, Tid::PUBLIC, Role::Read, GrantOpts::default()).unwrap();

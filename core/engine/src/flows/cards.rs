@@ -90,7 +90,7 @@ fn since_for(tx: &mut Tx<'_>, a: &Tid, inbox: &Tid, now: WallMs) -> Result<WallM
 /// Whether this node may write `host` along a path through `a` (spec/sync-inbox.md §1): a path
 /// from it to `a`, then from `a` to `host`, each giving write.
 pub(crate) fn may_write_through(core: &crate::engine::Core, a: &Tid, host: &Tid) -> bool {
-    let me = core.me();
+    let me = core.tid();
     let ts = core.hlc.peek();
     let none: crate::engine::write::Records<'_> = &|_| None;
     crate::engine::write::path_with(core, me, none, a, Need::Role(Role::Write), ts).is_some() && crate::engine::write::path_with(core, *a, none, host, Need::Role(Role::Write), ts).is_some()

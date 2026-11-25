@@ -189,7 +189,7 @@ fn store_dir_init_lock_plan_cli_2() {
 }
 
 // notes/cli.md Design (daemon), notes/client-port.md §2: beside a node serving the store's
-// socket, commands run there as its main actor: chat read and watch (listings and a commit
+// socket, commands run there as the node itself: chat read and watch (listings and a commit
 // listener), contact show, profile and import (a row that waits), sync (a wait timing out), diag.
 #[test]
 fn commands_run_through_the_daemon_plan_cli() {
@@ -423,7 +423,7 @@ fn watch_initial_not_counted_plan_cli_4() {
     let o = s.call(&["--json", "--timeout", "50ms", "watch", &t, "--count", "1"], "");
     assert_eq!(o.code, 6, "{}", o.err);
     // the whole thing: one initial line per present aspect (`a:b.0`, `created.0`: a dependent thing
-    // minted with the account root as admin), none counted
+    // minted with the account as admin), none counted
     assert_eq!(o.out.lines().count(), 2, "{}", o.out);
     assert!(o.out.lines().all(|l| l.contains("\"origin\":\"initial\"")) && o.out.contains("\"value\":7}"), "{}", o.out);
     // a path inside the aspect, as `get` reads it
@@ -591,23 +591,23 @@ fn chat_commands_plan_cli() {
     assert!(s.ok(&["chat", "read", &off]).out.contains(": fixed"));
 }
 
-// CLI `clients`, notes/client-port.md §3: `add` prints the actor and the secret once (only the hash stays), `ls` lists them, `rotate` prints a new secret, `rm` removes (again: exit 3); an until not in the future is refused; `--node` needs `--client-secret` and a readable secret file
+// CLI `clients`, notes/client-port.md §3: `add` prints the thing and the secret once (only the hash stays), `ls` lists them, `rotate` prints a new secret, `rm` removes (again: exit 3); an until not in the future is refused; `--node` needs `--client-secret` and a readable secret file
 #[test]
 fn clients_commands_plan_cli() {
     let s = S::mem();
     let add = s.ok(&["clients", "add", "--until", "1900000000000"]);
-    let (actor, secret) = add.line().split_once(' ').unwrap();
+    let (thing, secret) = add.line().split_once(' ').unwrap();
     assert_eq!(secret.len(), 64);
-    assert_eq!(s.ok(&["clients", "ls"]).out, format!("{actor} 1900000000000\n"));
+    assert_eq!(s.ok(&["clients", "ls"]).out, format!("{thing} 1900000000000\n"));
     assert!(s.ok(&["--json", "clients", "ls"]).out.contains("1900000000000"));
-    let rotated = s.ok(&["clients", "rotate", actor]).line().to_string();
+    let rotated = s.ok(&["clients", "rotate", thing]).line().to_string();
     assert_eq!(rotated.len(), 64);
     assert_ne!(rotated, secret);
     assert_ne!(s.code(&["clients", "add", "--until", "1"]), 0);
-    s.ok(&["clients", "rm", actor]);
+    s.ok(&["clients", "rm", thing]);
     assert_eq!(s.ok(&["clients", "ls"]).out, "");
-    assert_eq!(s.code(&["clients", "rm", actor]), 3);
-    assert_eq!(s.code(&["clients", "rotate", actor]), 7);
+    assert_eq!(s.code(&["clients", "rm", thing]), 3);
+    assert_eq!(s.code(&["clients", "rotate", thing]), 7);
     // thin arguments
     assert_eq!(s.code(&["--node", "quic://127.0.0.1:1#00", "whoami"]), 2);
     assert_eq!(s.code(&["--client-secret", "/nonexistent", "whoami"]), 2);

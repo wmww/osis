@@ -28,7 +28,7 @@ fn setup() -> (LocalPeer, Tid) {
 fn setup_seeded(seed: u64) -> (LocalPeer, Tid) {
     let mut lp = net(3, seed);
     let mut m = Mutation::new();
-    let ids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.me()).collect();
+    let ids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.tid()).collect();
     let d = lp.peers[0].engine.new_thing(&mut m, ids[0]);
     lp.peers[0].commit(m).unwrap().unwrap();
     lp.hold(d);
@@ -37,12 +37,12 @@ fn setup_seeded(seed: u64) -> (LocalPeer, Tid) {
     // the fresh node's account, granted read on D: what it is handed of D applies (content of a
     // thing outside its node closure waits, spec/commits.md §4 Outside the node closure)
     let mut f = fresh_account();
-    lp.peers[0].know(&[f.engine.me()]).unwrap();
+    lp.peers[0].know(&[f.engine.tid()]).unwrap();
     for id in f.engine.commit_ids() {
         let pk = f.engine.package(&id).unwrap().unwrap();
         lp.deliver(0, &pk).unwrap();
     }
-    set_edge(&mut lp.peers[0].engine, d, f.engine.me(), Some(edge(Role::Read)), None);
+    set_edge(&mut lp.peers[0].engine, d, f.engine.tid(), Some(edge(Role::Read)), None);
     lp.sync_all().unwrap();
     lp.advance(1_000);
     (lp, d)
@@ -678,7 +678,7 @@ fn vouched_copy_dates_at_its_write_spec_crdt_4_8() {
     lp.sync_all().unwrap();
     let b = lp.peers[0].engine.snapshot(&d, &ak(A)).unwrap().unwrap();
     lp.advance(1_000);
-    let bob = lp.peers[1].engine.me();
+    let bob = lp.peers[1].engine.tid();
     set_edge(&mut lp.peers[0].engine, d, bob, None, Some(ct::Frontier::default()));
     lp.advance(1_000);
     let e = &mut lp.peers[0].engine;
@@ -736,7 +736,7 @@ fn covered_drops_history(seed: u64) -> usize {
         lp.peers[i].engine.write_addenda(false);
     }
     set(&mut lp, 0, d, &setting(&[(A, keep(10 * 60_000))]));
-    let bob = lp.peers[1].engine.me();
+    let bob = lp.peers[1].engine.tid();
     let mut removed = false;
     for i in 0..16 {
         match below(10) {

@@ -118,7 +118,7 @@ impl Engine {
             }
             let ts: Vec<Tid> = recs.iter().map(osis_base::CreationRecord::tid).collect();
             let muts = also(&ts)?;
-            mint_with_keys(tx, recs, &muts, &mut done)?;
+            mint_independent_in(tx, recs, &muts, &mut done)?;
             for m in muts {
                 done.add(Engine::commit_tx(tx, m)?);
             }
@@ -132,7 +132,7 @@ impl Engine {
 /// What the transaction gives each that a keyset written now carries a KEM key for (spec/crypto.md
 /// §3, Published KEM keys): admin on a thing minted after it (its record edge), a card of it
 /// (every role), a setting enabling a signal (`rotation::kem::by_setting`).
-pub(crate) fn mint_with_keys(tx: &mut Tx<'_>, recs: Vec<osis_base::CreationRecord>, muts: &[Mutation], done: &mut Done) -> Result<()> {
+pub(crate) fn mint_independent_in(tx: &mut Tx<'_>, recs: Vec<osis_base::CreationRecord>, muts: &[Mutation], done: &mut Done) -> Result<()> {
     for (i, t) in recs.iter().map(osis_base::CreationRecord::tid).enumerate() {
         if recs.iter().skip(i + 1).any(|r| r.mint_admin() == Some(t)) || muts.iter().any(|m| m.writes_card_of(&t)) {
             tx.publishing.push((t, Role::Admin));

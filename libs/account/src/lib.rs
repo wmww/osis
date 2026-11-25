@@ -50,7 +50,7 @@ impl Realm {
     /// otherwise.
     pub fn make(db: &Osis, within: Realm, name: &str) -> Result<Realm> {
         let mut w = db.write();
-        // keys of its own: it holds roles on what is shared into it from the start
+        // with its keys: it holds roles on what is shared into it from the start
         let r = w.create_with_keys(within.thing)?;
         w.hold(within.thing, r)?;
         w.at(r, REALM).set(&schema::Realm { color: None })?;
@@ -151,7 +151,7 @@ impl Account {
         // A, its inbox and profile, held: A by the node root, naming A its settings thing, the
         // others by A, in one transaction (spec/permissions.md §8 Making)
         let mut w = db.write();
-        // keys of their own: a node paired in or a contact learns of each with its role entries
+        // with their keys: a node paired in or a contact learns of each with its role entries
         let a = w.create_with_keys(db.node())?;
         let (inbox, profile) = (w.create_with_keys(a)?, w.create_with_keys(a)?);
         w.hold(root, a)?;

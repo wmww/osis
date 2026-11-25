@@ -154,7 +154,7 @@ impl Engine {
     /// it holds none, then its held link keys by ascending tid; and as copies the edge writes on
     /// those claimed edges, with their evidence and records.
     pub fn proving(&mut self) -> Result<Proving> {
-        let me = self.core.me();
+        let me = self.core.tid();
         let targets: BTreeSet<Tid> = self.core.timelines().edges_at(None).targets(&me).copied().collect();
         let node = |path: Vec<Tid>| Prover { key: self.core.id.signing().clone(), record: self.core.id.record().clone(), path };
         let mut provers: Vec<Prover> = if targets.is_empty() { vec![node(Vec::new())] } else { targets.iter().map(|t| node(vec![*t])).collect() };

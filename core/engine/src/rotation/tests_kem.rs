@@ -15,7 +15,7 @@ use std::collections::BTreeSet;
 /// A thing of peer `i`'s made independent, holding no role anywhere, no signal enabled: nobody
 /// seals to it. Held at `at`.
 fn plain(lp: &mut LocalPeer, i: usize, at: &[usize]) -> Tid {
-    let me = lp.peers[i].engine.me();
+    let me = lp.peers[i].engine.tid();
     let mut m = Mutation::new();
     let t = lp.peers[i].engine.new_thing(&mut m, me);
     lp.peers[i].commit(m).unwrap();
@@ -50,7 +50,7 @@ fn a_thing_nobody_seals_to_publishes_no_kem_key_spec_crypto_3() {
     let h = plain(&mut lp, 0, &[0]);
     assert_eq!(kem_roles(&mut lp, 0, h), BTreeSet::new());
     assert!(keys(&mut lp, 0, h).step.unwrap().read.unwrap().kem_key.is_none(), "no read KEM key in its step keys");
-    let me = lp.peers[0].engine.me();
+    let me = lp.peers[0].engine.tid();
     assert_eq!(kem_roles(&mut lp, 0, me), ROLES.into_iter().collect());
 }
 
@@ -72,7 +72,7 @@ fn a_grant_rotates_the_holders_roles_first_spec_permissions_2() {
 #[test]
 fn a_granter_that_may_not_rotate_the_holder_is_refused_spec_permissions_2() {
     let mut lp = synced(2);
-    let p1 = lp.peers[1].engine.me();
+    let p1 = lp.peers[1].engine.tid();
     let h = plain(&mut lp, 0, &[0, 1]);
     lp.peers[0].engine.grant(&h, &p1, &edge(Role::Write)).unwrap();
     let g = plain(&mut lp, 1, &[0, 1]);
@@ -102,7 +102,7 @@ fn a_granter_without_card_or_write_is_refused_spec_permissions_2() {
 #[test]
 fn kem_key_due_ends_a_lockout_spec_crypto_3() {
     let mut lp = synced(2);
-    let p1 = lp.peers[1].engine.me();
+    let p1 = lp.peers[1].engine.tid();
     let m = plain(&mut lp, 0, &[0, 1]);
     let x = plain(&mut lp, 0, &[0]);
     lp.peers[0].engine.grant(&x, &m, &edge(Role::Read)).unwrap();
@@ -130,7 +130,7 @@ fn kem_key_due_ends_a_lockout_spec_crypto_3() {
 #[test]
 fn a_reader_holding_the_holders_current_keys_grants_spec_permissions_2() {
     let mut lp = synced(2);
-    let p1 = lp.peers[1].engine.me();
+    let p1 = lp.peers[1].engine.tid();
     let h = plain(&mut lp, 0, &[0, 1]);
     let x = plain(&mut lp, 0, &[0]);
     lp.peers[0].engine.grant(&x, &h, &edge(Role::Read)).unwrap();

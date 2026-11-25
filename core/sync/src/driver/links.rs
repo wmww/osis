@@ -65,7 +65,7 @@ impl Drop for Live {
 /// by its own owner, never by another's listen.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Listening {
-    /// Direct sync's dialable listener (`peer://`), what the node publishes in `reach.0`.
+    /// Direct sync's dialable listener (`peer://`), what the node publishes in its `dial.0` entries.
     Dialable,
     /// The URLs the app listens at (`Osis::listen`).
     Urls,

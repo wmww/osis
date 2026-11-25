@@ -291,7 +291,7 @@ pub(crate) struct Due {
 /// derives another deposit key than the head's (or `fresh`). The step is a child of the recorded head, never of a step it has not
 /// recorded.
 pub(crate) fn step_due(tx: &mut Tx<'_>, g: &Tid, l: &SyncId, fresh: bool) -> Result<Option<Due>> {
-    let me = tx.core.me();
+    let me = tx.core.tid();
     if tx.core.role_now(&me, g) != Some(Role::Admin) {
         return Ok(None);
     }
@@ -341,7 +341,7 @@ pub(crate) fn endorsers(tx: &mut Tx<'_>, g: &Tid, o: &crate::sync::OwnedSyncId) 
     if owed.is_empty() {
         return Ok(Vec::new());
     }
-    let me = tx.core.me();
+    let me = tx.core.tid();
     if tx.core.role_now(&me, g) != Some(Role::Admin) {
         return Ok(Vec::new());
     }
@@ -381,7 +381,7 @@ impl Engine {
     pub fn issue_step(&mut self, t: &Tid, sync_id: &SyncId, fresh: bool) -> Result<Option<(Step, ClaimSet)>> {
         let (g, l) = (*t, *sync_id);
         self.run(|tx| {
-            let me = tx.core.me();
+            let me = tx.core.tid();
             if !rotation::blocked_roles(tx, &me, &g)?.is_empty() {
                 return Ok(None);
             }

@@ -723,10 +723,10 @@ impl Engine {
             // the roles at now it reads (`finalizable`, `may_rotate`) hold until the clock
             // reaches the next `until` or role commit in the components of `a` and this
             // node's account
-            let _horizon = tx.core.bound_to_horizon(std::iter::once(a).chain(Some(tx.core.me())));
+            let _horizon = tx.core.bound_to_horizon(std::iter::once(a).chain(Some(tx.core.tid())));
             // a node removed from its account wraps nothing as it (it may still hold the read
             // secrets through the pass its drop waits for)
-            let who = tx.core.me();
+            let who = tx.core.tid();
             if encrypt && !crate::flows::edges::finalizable(tx.core, &who, &a).is_empty() {
                 return Ok(true);
             }
@@ -930,7 +930,7 @@ mod tests {
         use crate::Mutation;
         let mut lp = crate::local_peer::LocalPeer::fresh(1, WallMs(1_700_000_000_000));
         let e = &mut lp.peers[0].engine;
-        let me = e.me();
+        let me = e.tid();
         let (o, _) = e.create_with_admin(&me).unwrap();
         let mut m = Mutation::new();
         let t = e.new_thing(&mut m, o);

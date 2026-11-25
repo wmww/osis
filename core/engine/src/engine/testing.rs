@@ -50,7 +50,7 @@ impl Engine {
         let skip: Vec<(Tid, Option<osis_base::Role>)> = skip.iter().map(|t| (*t, None)).collect();
         self.run(|tx| {
             let held = tx.core.epochs(&a).ok_or(Error::Misuse("no secrets held for the actor"))?;
-            let me = tx.core.me();
+            let me = tx.core.tid();
             let holders = crate::rotation::recipients(tx, &me, &a, &skip)?;
             let mut m = crate::Mutation::new();
             let r = crate::rotation::rotation_into(tx, &mut m, a, &roles, &held, &holders, crate::rotation::Departs::No)?;
@@ -154,7 +154,7 @@ impl Engine {
             let mut rots = Vec::new();
             for a in actors {
                 let held = tx.core.epochs(a).ok_or(Error::Misuse("no secrets held for the actor"))?;
-                let mut holders = crate::rotation::recipients(tx, &tx.core.me(), a, &[])?;
+                let mut holders = crate::rotation::recipients(tx, &tx.core.tid(), a, &[])?;
                 holders.holders.retain(|r| boxed.contains(&r.holder));
                 rots.push((*a, crate::rotation::rotation_into(tx, &mut m, *a, &roles, &held, &holders, crate::rotation::Departs::No)?));
             }
@@ -1048,7 +1048,7 @@ mod tests {
         use osis_base::{Value, WallMs};
         let mut lp = crate::local_peer::LocalPeer::fresh(1, WallMs(1_700_000_000_000));
         let e = &mut lp.peers[0].engine;
-        let me = e.me();
+        let me = e.tid();
         let mut m = crate::Mutation::new();
         let (one, many) = (e.new_thing(&mut m, me), e.new_thing(&mut m, me));
         m.set(one, &Ak::new("x:a.0").unwrap(), &Value::Str("PLANTED-ONE".into())).unwrap();
@@ -1089,7 +1089,7 @@ mod tests {
         use osis_base::{Value, WallMs};
         let mut lp = crate::local_peer::LocalPeer::fresh(1, WallMs(1_700_000_000_000));
         let e = &mut lp.peers[0].engine;
-        let me = e.me();
+        let me = e.tid();
         let mut m = crate::Mutation::new();
         let t = e.new_thing(&mut m, me);
         m.set(t, &Ak::new("x:a.0").unwrap(), &Value::Str("RESEALED".into())).unwrap();

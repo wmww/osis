@@ -20,7 +20,7 @@ fn read_epochs(lp: &LocalPeer, g: Tid) -> BTreeSet<Epoch> {
 /// The read epochs of `g` party `x` reaches: those its own node holds and those it opens from the
 /// `secrets.0` state peer `i` holds (what a new node of it opens).
 fn reaches(lp: &mut LocalPeer, i: usize, g: Tid, x: Tid) -> BTreeSet<Epoch> {
-    let own: BTreeSet<Epoch> = lp.peers.iter().filter(|p| p.engine.me() == x).flat_map(|p| p.engine.epochs(&g).map(|e| e.read.held().map(|y| y.0).collect::<Vec<_>>()).unwrap_or_default()).collect();
+    let own: BTreeSet<Epoch> = lp.peers.iter().filter(|p| p.engine.tid() == x).flat_map(|p| p.engine.epochs(&g).map(|e| e.read.held().map(|y| y.0).collect::<Vec<_>>()).unwrap_or_default()).collect();
     let opened: BTreeSet<Epoch> = openable(lp, i, &[g], x, BTreeSet::new()).into_iter().filter(|k: &Key| k.1 == Role::Read).map(|k| k.2).collect();
     own.into_iter().chain(opened).collect()
 }
@@ -247,7 +247,7 @@ fn hostile_rotation(lp: &mut LocalPeer, i: usize, g: Tid, lists: &BTreeSet<Epoch
     lp.peers[i]
         .engine
         .run(|tx| {
-            let me = tx.core.me();
+            let me = tx.core.tid();
             let mut held = (*tx.core.epochs(&g).unwrap()).clone();
             let secrets = crate::flows::secrets_in(tx, &g)?;
             let mut boxing = super::recipients(tx, &me, &g, &[])?;
@@ -567,7 +567,7 @@ fn compacted_cut_keeps_its_floors_spec_crypto_4() {
 /// The read epochs of `g` that `x` opens from peer `i`'s states of `actors` (through holder
 /// actors among them) or holds on its own node.
 fn reaches_via(lp: &mut LocalPeer, i: usize, actors: &[Tid], g: Tid, x: Tid) -> BTreeSet<Epoch> {
-    let own: BTreeSet<Epoch> = lp.peers.iter().filter(|p| p.engine.me() == x).flat_map(|p| p.engine.epochs(&g).map(|e| e.read.held().map(|y| y.0).collect::<Vec<_>>()).unwrap_or_default()).collect();
+    let own: BTreeSet<Epoch> = lp.peers.iter().filter(|p| p.engine.tid() == x).flat_map(|p| p.engine.epochs(&g).map(|e| e.read.held().map(|y| y.0).collect::<Vec<_>>()).unwrap_or_default()).collect();
     let opened = openable(lp, i, actors, x, BTreeSet::new()).into_iter().filter(|k: &Key| k.0 == g && k.1 == Role::Read).map(|k| k.2);
     own.into_iter().chain(opened).collect()
 }
@@ -755,7 +755,7 @@ fn cut_state_cost_does_not_grow_with_history_spec_crypto_4() {
 /// The compaction snapshots peer `i` wrote itself.
 fn own_snapshots(lp: &LocalPeer, i: usize) -> usize {
     let e = &lp.peers[i].engine;
-    let me = e.me();
+    let me = e.tid();
     e.core.ix.commits.values().filter(|m| m.header.kind.is_compaction() && m.view.signer == me).count()
 }
 
@@ -919,7 +919,7 @@ fn forged_expiring_snapshot_ends_no_lasting_value_spec_commits_5() {
         .engine
         .run(|tx| {
             let st = tx.state(&g, &ak)?.cloned().unwrap();
-            let (ts, node) = (tx.core.hlc.next(), tx.core.me());
+            let (ts, node) = (tx.core.hlc.next(), tx.core.tid());
             crate::retention::snapshot::build_snapshot(tx, g, ak.clone(), st.into(), ts, node, Default::default(), Default::default(), Some(t), false)
         })
         .unwrap();
@@ -1093,7 +1093,7 @@ fn expiring_snapshots_read_alike_whatever_arrives_and_is_covered_plain_spec_crdt
                         .engine
                         .run(|tx| {
                             let Some(st) = tx.state(&g, ak)?.cloned() else { return Ok(None) };
-                            let (ts, node) = (tx.core.hlc.next(), tx.core.me());
+                            let (ts, node) = (tx.core.hlc.next(), tx.core.tid());
                             let ends = ends.filter(|e| *e > ts.wall_ms().0);
                             crate::retention::snapshot::build_snapshot(tx, g, ak.clone(), st.into(), ts, node, Default::default(), Default::default(), ends, false).map(Some)
                         })

@@ -26,7 +26,7 @@ fn write_all(m: &mut Mutation, t: osis_base::Tid, n: i64, tag: &str) {
 fn every_encoding_converges_spec_crdt_5() {
     let mut lp = net(2, 0);
     let t = new_thing(&mut lp, 0);
-    let b = lp.peers[1].engine.me();
+    let b = lp.peers[1].engine.tid();
     set_edge(&mut lp.peers[0].engine, t, b, Some(edge(Role::Write)), None);
     sync(&mut lp, 0, 1);
     assert_eq!(lp.peers[1].engine.role_on(&t), Some(Role::Write));
@@ -67,7 +67,7 @@ fn every_encoding_converges_spec_crdt_5() {
 fn sequences_converge_spec_crdt_5_7() {
     let mut lp = net(2, 0);
     let t = new_thing(&mut lp, 0);
-    let b = lp.peers[1].engine.me();
+    let b = lp.peers[1].engine.tid();
     set_edge(&mut lp.peers[0].engine, t, b, Some(edge(Role::Write)), None);
     let mut m = Mutation::new();
     m.set(t, &LIST, &Value::List(vec![s("a"), s("b"), s("c")])).unwrap();
@@ -166,7 +166,7 @@ fn large_values_of_a_writer_pass_the_reader_spec_dm_6() {
 fn paged_struct_field_converges() {
     let mut lp = net(2, 0);
     let t = new_thing(&mut lp, 0);
-    let b = lp.peers[1].engine.me();
+    let b = lp.peers[1].engine.tid();
     set_edge(&mut lp.peers[0].engine, t, b, Some(edge(Role::Write)), None);
     let pad = "y".repeat(40);
     let mut model: osis_base::ValueMap = (0..3000).map(|i| (s(&format!("k{i}")), s(&format!("{pad}{i}")))).collect();
@@ -212,7 +212,7 @@ fn paged_struct_field_converges() {
 fn range_delta_rewrites_its_pages_spec_crdt_8() {
     let mut lp = net(2, 0);
     let t = new_thing(&mut lp, 0);
-    let b = lp.peers[1].engine.me();
+    let b = lp.peers[1].engine.tid();
     set_edge(&mut lp.peers[0].engine, t, b, Some(edge(Role::Write)), None);
     let text: String = (0..70_000u32).map(|i| char::from(b'a' + (i % 26) as u8)).collect();
     let mut m = Mutation::new();
@@ -246,7 +246,7 @@ fn range_delta_rewrites_its_pages_spec_crdt_8() {
 fn range_reads_by_index_spec_crdt_5_7() {
     let mut lp = net(2, 0);
     let t = new_thing(&mut lp, 0);
-    let b = lp.peers[1].engine.me();
+    let b = lp.peers[1].engine.tid();
     set_edge(&mut lp.peers[0].engine, t, b, Some(edge(Role::Write)), None);
     let items: Vec<Value> = (0..2500).map(|i| s(&format!("item-{i:06}-padding-padding"))).collect();
     let mut m = Mutation::new();

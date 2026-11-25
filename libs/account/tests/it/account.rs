@@ -120,7 +120,7 @@ fn links_are_the_accounts_spec_permissions_7() {
     let id = db.links().unwrap()[0].id;
     db.leave(db.node(), t, SetRoleOpts::default()).unwrap();
     assert_eq!(db.links().unwrap().len(), 1, "the account's link stays");
-    // the link's actor waits for its key's holder: the account alone is waited on
+    // the link's thing waits for its key's holder: the account alone is waited on
     let account = SyncScope::Thing(a.thing());
     drive(&net, db.wait_synced(account)).unwrap();
     drive(&net, b.wait_synced(account)).unwrap();
@@ -161,10 +161,10 @@ fn a_node_removing_itself_drops_its_entries_spec_permissions_8() {
     assert_eq!(dials(&b, a.thing()), [Weak(db.node())], "its entry gone");
 }
 
-// spec/permissions.md §8 Removing, notes/client-port.md §3: a client actor is the account's
+// spec/permissions.md §8 Removing, notes/client-port.md §3: a client's thing is the account's
 // (`add_client` with the account as admin), so a removed node no longer acts for the account
 // through its client: what it writes as the client after the removal holds at no other node.
-// Minting the actor writes its keys and steps, so naming the account takes administering it: a
+// Minting the thing writes its keys and steps, so naming the account takes administering it: a
 // node lowered to writing the account is told so up front (`Permission` on the account).
 #[test]
 fn a_removed_node_no_longer_acts_through_its_client_spec_permissions_8() {
@@ -192,7 +192,7 @@ fn a_removed_node_no_longer_acts_through_its_client_spec_permissions_8() {
     let mut w = b.write();
     w.act_as(client).at(t, osis::core::NAME).set(&"after removal".to_string()).unwrap();
     let _ = w.commit();
-    // one run takes the write to db where the node administers the actor
+    // one run takes the write to db where the node administers the thing
     for _ in 0..2 {
         net.run();
     }

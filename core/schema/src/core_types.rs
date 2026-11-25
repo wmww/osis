@@ -419,7 +419,7 @@ pub const SETTINGS: Aspect<Weak> = Aspect::new("settings^.0", &CORE);
 pub const DIAL_ON: Aspect<BTreeSet<Weak>> = Aspect::new("dial_on^.0", &CORE);
 /// `caps^.0`: each node's caps, by its node thing.
 pub const CAPS: Aspect<BTreeMap<Weak, Caps>> = Aspect::new("caps^.0", &CORE);
-/// `clients^.0`: by client actor, a strong (the node root holds each client's actor).
+/// `clients^.0`: by client's thing, a strong (the node root holds each client's actor).
 pub const CLIENTS: Aspect<BTreeMap<Weak, Client>> = Aspect::new("clients^.0", &CORE);
 /// `retention^.0`: what the thing keeps of replaced content (spec/commits.md §5); fixed retention.
 pub const RETENTION: Aspect<RetentionSetting> = Aspect::new("retention^.0", &CORE);

@@ -483,7 +483,7 @@ fn one_and_ten<T>(mut w: World, mut round: impl FnMut(&mut World, usize), end: i
 fn own_round(w: &mut World) {
     use osis_schema::core_types::HOLDS;
     let (root, d) = (w.engine(0).node_root().unwrap(), w.node(0).account.unwrap());
-    let p = w.engine(0).me();
+    let p = w.engine(0).tid();
     let strong = |m: &mut Mutation, from: Tid, to: Tid, on: bool| {
         let v = Value::Strong(to);
         let op = if on { osis_crdt::Op::Add(v) } else { osis_crdt::Op::Remove(v) };
@@ -534,7 +534,7 @@ fn aged(w: &mut World) -> Held {
     held(w, 0)
 }
 
-/// Node `i` snapshots its node root's and account root's `holds.0`.
+/// Node `i` snapshots its node root's and account's `holds.0`.
 fn snapshot_roots(w: &mut World, i: usize) {
     use osis_schema::core_types::HOLDS;
     let (root, d) = (w.engine(i).node_root().unwrap(), w.node(i).account.unwrap());
@@ -657,7 +657,7 @@ fn fresh_node() -> (World, Held) {
     })
 }
 
-// Releasing everything, its own-things arm (issues/storage-owners.md), spec/sync-set.md §3 (Nothing of R stays): what a node mints with its account root as admin, its account
+// Releasing everything, its own-things arm (issues/storage-owners.md), spec/sync-set.md §3 (Nothing of R stays): what a node mints with its account as admin, its account
 // and its node root, written and then released, leaves its rows and blobs as a fresh node's of the
 // same account once tombstones have aged out, at 1 and 10 rounds: but the roots' set tombstones,
 // a few bytes per removal (the round's strongs), and `cv/` (flat).
@@ -672,7 +672,7 @@ fn releasing_own_things_returns_storage_to_a_fresh_nodes_spec_sync_set_3() {
     assert_eq!(a.0.get("cv/"), b.0.get("cv/"), "cv/ flat");
 }
 
-/// A round: node 0 mints a thing with its account root D as admin expiring a second later, held
+/// A round: node 0 mints a thing with its account as admin expiring a second later, held
 /// from D and written in the same commit (a disappearing message), and lets it expire.
 fn expiry_round(w: &mut World) {
     use osis_schema::core_types::HOLDS;
@@ -707,7 +707,7 @@ fn expired_things_return_storage_to_a_fresh_nodes_spec_commits_5() {
     as_fresh(&b, &fresh, 0, "10 rounds", &mut |f| leaked(&mut wb, 0, &mut wf, 0, f));
 }
 
-/// A round: node 0 mints A with its account root as admin, keeping 10 minutes of history whose
+/// A round: node 0 mints A with its account as admin, keeping 10 minutes of history whose
 /// strongs hold their targets (`history_holds_targets`), and B, held by A alone: A's strong to B
 /// is removed (B held by A's history), then the root's to A.
 fn history_round(w: &mut World) {
@@ -793,8 +793,8 @@ fn grant_world() -> World {
     w
 }
 
-/// Round `k`: node 0 mints a thing with its account root as admin, writes it, and gives node 1's
-/// account read on it: node 1 holds it (`held`, a strong from its account root) or declines (no
+/// Round `k`: node 0 mints a thing with its account as admin, writes it, and gives node 1's
+/// account read on it: node 1 holds it (`held`, a strong from its account) or declines (no
 /// strong, the fire left in its inbox); node 0 writes again, removes node 1's account, and both
 /// let the thing go (each its strong). The first by `redeem_round` with
 /// `redeem`. 1 and 10 rounds (`one_and_ten`), each ended by `settled`, with read's work per round
@@ -940,7 +940,7 @@ fn a_redeemed_and_ended_link_returns_storage_to_a_fresh_worlds_spec_sync_set_3()
 
 // S1, its decline arm (spec/sync-set.md §4 (nothing else makes a node hold a thing it is granted a
 // role on), spec/sync-inbox.md §5): as the grant arm, the grant never held from the grantee's
-// account root: what its fire carried (the thing's edge piece, spec/commits.md §5 What a held
+// account: what its fire carried (the thing's edge piece, spec/commits.md §5 What a held
 // thing needs) goes with the fire.
 #[test]
 #[ignore = "issues/storage-owners.md"]

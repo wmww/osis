@@ -49,7 +49,7 @@ Not format constants (§11). Per-message caps: §11.2.
 | `SMALL_REPLY` | 16 KiB (16 384 bytes): the smallest `max_reply` (§11.2) and the reply allowance of every kind without its own (spec/sync-streams.md §1) |
 | `WINDOW` | 16 MiB (16 777 216 bytes) a requester keeps in flight per connection (spec/sync-streams.md §1) |
 | `MAX_SUBS` | 4096 live subscriptions per connection (§11.2) |
-| `MAX_CONNS_PER_CLIENT` | 8 authenticated sessions of one client actor (§11.2) |
+| `MAX_CONNS_PER_CLIENT` | 8 authenticated sessions of one client's thing (§11.2) |
 | `MAX_PROOFS` | 256 proofs in one Prove or Proved (§11.2) |
 | `MAX_PROOF_COPIES` | 256 certificate copies in one Prove or Proved (§11.2) |
 | `MAX_RESUME_TAGS` | ⌊(`MAX_MESSAGE` − 64) / 34⌋ tags in one Resume (§11.2; a tag's encoding is 34 bytes) |
@@ -304,12 +304,12 @@ Steps and claim sets (§8) and `entry_box` (a `box` value, §7) are their canoni
 - **Client port** (kinds 24-29): served on every connection of a node, at every listener and on those it dialed (spec/sync-transport.md §5, One key). `session_id` is 16 bytes; `secret` is exactly 32 bytes.
   - **Auth**: answered Reply `[0, []]`.
     - A main session (the unix transport, spec/sync-transport.md §6) sends Auth without `secret`.
-    - A client-actor session, on a keyed transport, sends it with its bearer secret (spec/data-model.md §9), which binds the session to the client actor of the `clients^.0` entry whose `secret_hash` is its BLAKE3, compared in constant time, `until` not passed.
-    - Any other Auth is answered Error 1: no matching entry, no secret on a keyed transport, a secret on the unix transport, a second Auth of a client-actor session.
+    - A client session, on a keyed transport, sends it with its bearer secret (spec/data-model.md §9), which binds the session to the client's thing of the `clients^.0` entry whose `secret_hash` is its BLAKE3, compared in constant time, `until` not passed.
+    - Any other Auth is answered Error 1: no matching entry, no secret on a keyed transport, a secret on the unix transport, a second Auth of a client session.
     - Past `MAX_CONNS_PER_CLIENT` authenticated sessions of one client or `max_clients` of all clients: Error 4. An ended session (below) counts toward neither.
     - A Call or Sub before an Auth answered by Reply is answered Error 1.
-  - **End of a client-actor session**: it ends when its entry goes, its `secret_hash` changes or its `until` passes. Each request is checked at the time it runs and does not run if any of those holds.
-  - **A client actor's rights**: every method of a client-actor session runs as its client actor, by that actor's rights at that time.
+  - **End of a client session**: it ends when its entry goes, its `secret_hash` changes or its `until` passes. Each request is checked at the time it runs and does not run if any of those holds.
+  - **A client's rights**: every method of a client session runs as its client's thing, by that thing's rights at that time.
     - A thing the actor may not read (spec/sync-judgement.md §1, and not a kept copy it reads, spec/permissions.md §3) answers every method as a thing the node does not know.
     - A write the actor may not make is code 3, a `link` value anywhere in its write code 8.
     - A revert needs the actor's rights on every write it makes and on everything the reverted commit touched, and lists nothing the actor may not read (code 3).
@@ -348,7 +348,7 @@ Steps and claim sets (§8) and `entry_box` (a `box` value, §7) are their canoni
     | 18 | make link | `[tid, role, Opt(until), single_use] -> link text`; main only |
     | 19 | settle | `[] -> []`, after every Notify for changes before it |
     | 20 | now | `[] -> wall ms` |
-    | 21 | status | `[] -> [connected, [[tid, state, not_taking, leaving]*], [kept tid*]]`, state 0 synced, 1 syncing, 2 not connected, 3 stranded; kept: things held and synced no more (retained copies, spec/permissions.md §3 Retain); for a client actor only the things it may read, `connected` the connections with one of them open |
+    | 21 | status | `[] -> [connected, [[tid, state, not_taking, leaving]*], [kept tid*]]`, state 0 synced, 1 syncing, 2 not connected, 3 stranded; kept: things held and synced no more (retained copies, spec/permissions.md §3 Retain); for a client's thing only the things it may read, `connected` the connections with one of them open |
     | 22 | holders | `[tid] -> [[actor, kind, role, Opt(until), [through*]]*]`, kind 0 actor, 1 link, 2 key; nothing behind a holder the actor may not read |
     | 27 | wait synced | `[scope] -> []`, scope `[0]` all, `[1, tid]` a thing; waits; main only |
     | 29 | redeem | `[link text, joiner] -> tid`; waits; main only |
@@ -365,7 +365,7 @@ Steps and claim sets (§8) and `entry_box` (a `box` value, §7) are their canoni
     | `[5, method, [arg*]]` | `[]` | `[0, value]` or `[1, code, detail*]`: the row's outcome, once, whatever the room; an Unsub or the connection's end cancels it; main only |
     | `[6, address]` | `[]` | `[0, commit id, Opt(commit)]` a commit reading otherwise at the address (as row 17 reads it then), `[1]` read the address again, `[2, code, detail*]` ended |
 
-    A Notify of filters 0-3 goes only when its value reads otherwise than the last one sent (an error read always goes); every Notify is read as the actor when it is sent. A Sub of a filter marked main only, from a client-actor session, is answered `[1, 11, text]`.
+    A Notify of filters 0-3 goes only when its value reads otherwise than the last one sent (an error read always goes); every Notify is read as the actor when it is sent. A Sub of a filter marked main only, from a client session, is answered `[1, 11, text]`.
   - **Outcome error codes**: an unknown method is `[1, 11, text]`.
 
     | code | meaning | detail |

@@ -535,7 +535,7 @@ pub(crate) fn write_expiring(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, owed: &BTreeSe
         st.join_in(tx, tid, ak, ends, over)?;
         snaps.push((*t, st));
     }
-    let node = tx.core.me();
+    let node = tx.core.tid();
     let mut out = Vec::new();
     for (t, snap) in snaps {
         // stamped at or past its expiry (this node's clock ahead of its wall clock: a peer's
@@ -1169,7 +1169,7 @@ pub(crate) fn carried_only(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, of: &dyn Fn(&Tid
 /// receiver judges invalid). `write_snapshot`'s check, so what a purge-on-replace cover asks
 /// (`replace::settle_none`).
 pub(crate) fn may_snapshot(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, memory: bool, ts: Ts) -> Result<MayWrite> {
-    let node = tx.core.me();
+    let node = tx.core.tid();
     if snapshot_actor(tx, tid, ak)?.is_none() && !tx.core.skip_writer_rules {
         return Ok(MayWrite::No);
     }
@@ -1190,7 +1190,7 @@ pub(crate) fn may_snapshot(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, memory: bool, ts
 /// else this node only while the state carries no card (a removal is any writer's). `None`: this
 /// node may write no snapshot of it.
 pub(crate) fn snapshot_actor(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Option<Tid>> {
-    let node = tx.core.me();
+    let node = tx.core.tid();
     let Some(a) = osis_schema::core_types::card_of(ak.as_str()) else { return Ok(Some(node)) };
     if a == *tid || crate::flows::cards::may_write_through(tx.core, &a, tid) {
         return Ok(Some(if a == *tid { node } else { a }));
@@ -1203,8 +1203,8 @@ pub(crate) fn snapshot_actor(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Opti
 /// established here waits for that epoch (its withheld removal arriving) or stays uncompacted.
 /// A body none of whose writes lives in the state gives the snapshot nothing (spec/crypto.md §5
 /// Passing on binds the writes a snapshot carries): a writer granted later holds the maker's
-/// first writes under epochs it reads but never establishes (derived from the maker's account
-/// root), and their replacement leaves them nothing to pass on. A snapshot carries state, not
+/// first writes under epochs it reads but never establishes (derived from the maker's
+/// secrets), and their replacement leaves them nothing to pass on. A snapshot carries state, not
 /// the commits: the floor clause binds it not, so one written after a cut carries the state
 /// written before it to the cut's holder (spec/crypto.md §4, State at a cut).
 pub(crate) fn carried_passes_on(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<bool> {
@@ -1256,7 +1256,7 @@ fn snapshot_from_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, memory: bool, own_co
     if may_snapshot(tx, &tid, &ak, memory, ts)? != MayWrite::Yes {
         return Err(Error::Permission { tid, needs: osis_base::Role::Write });
     }
-    let node = tx.core.me();
+    let node = tx.core.tid();
     let Some(mut st) = snapshot_state(tx, &tid, &ak)? else { return Ok(None) };
     // what a `secrets.0` snapshot leaves out reads its value whole: a roster's keys, not a large state
     let left_out = if ak.as_str() == "secrets.0" {

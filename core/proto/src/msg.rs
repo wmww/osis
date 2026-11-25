@@ -270,7 +270,7 @@ pub enum Msg {
     Want { id: Id, max_reply: u64, ids: Vec<(SyncId, Vec<CommitId>)> },
     /// One item per commit asked, in request order, a prefix of them.
     Wanted { id: Id, items: Vec<WantedItem> },
-    /// A main session sends no secret; a client-actor session its bearer secret.
+    /// A main session sends no secret; a client session its bearer secret.
     Auth { id: Id, secret: Option<osis_crypto::Secret32>, session_id: [u8; SESSION_ID_LEN] },
     Call { id: Id, max_reply: u64, method: u64, args: Vec<Value> },
     Reply { id: Id, outcome: Outcome },

@@ -291,8 +291,8 @@ pub(crate) fn run(ctx: &mut Ctx<'_>, c: ChatCmd) -> anyhow::Result<()> {
             let ways = db.holders(t)?;
             let (m, links) = people_and_links(&ways);
             let name = db.at(t, SETTINGS).get()?.map(|s| s.name).unwrap_or_default();
-            // through an actor, or none: a joiner's `via` is its link's actor
-            let via = |p: Tid| ways.iter().find(|h| h.actor == p).and_then(|h| match h.through.as_slice() {
+            // through a thing, or none: a joiner's `via` is its link's thing
+            let via = |p: Tid| ways.iter().find(|h| h.thing == p).and_then(|h| match h.through.as_slice() {
                 [k] => Some(*k),
                 _ => None,
             });
@@ -319,19 +319,19 @@ pub(crate) fn run(ctx: &mut Ctx<'_>, c: ChatCmd) -> anyhow::Result<()> {
     }
 }
 
-/// A chat's share view from its holders: the actors holding it directly and those who joined by a
-/// link (each at its best role), and the links that work (a link's key still holds its actor).
+/// A chat's share view from its holders: the things holding it directly and those who joined by a
+/// link (each at its best role), and the links that work (a link's key still holds the link's thing).
 fn people_and_links(ways: &[osis::Holder]) -> (BTreeMap<Tid, Role>, BTreeMap<Tid, Role>) {
-    let is_link = |k: &Tid| ways.iter().any(|h| h.actor == *k && h.kind == HolderKind::Link && h.through.is_empty());
+    let is_link = |k: &Tid| ways.iter().any(|h| h.thing == *k && h.kind == HolderKind::Link && h.through.is_empty());
     let mut people = BTreeMap::new();
     let mut links = BTreeMap::new();
     for h in ways {
         match (h.kind, h.through.as_slice()) {
-            (HolderKind::Link, []) if ways.iter().any(|x| x.kind == HolderKind::Key && x.through == [h.actor]) => {
-                links.insert(h.actor, h.role);
+            (HolderKind::Link, []) if ways.iter().any(|x| x.kind == HolderKind::Key && x.through == [h.thing]) => {
+                links.insert(h.thing, h.role);
             }
-            (HolderKind::Actor, through) if through.is_empty() || matches!(through, [k] if is_link(k)) => {
-                let r = people.entry(h.actor).or_insert(h.role);
+            (HolderKind::Thing, through) if through.is_empty() || matches!(through, [k] if is_link(k)) => {
+                let r = people.entry(h.thing).or_insert(h.role);
                 *r = h.role.max(*r);
             }
             _ => {}

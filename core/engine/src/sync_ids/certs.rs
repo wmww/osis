@@ -656,8 +656,8 @@ mod tests {
     fn invalid_later_write_never_newest_spec_permissions_4() {
         let mut lp = LocalPeer::fresh(3, WallMs(1_700_000_000_000));
         lp.sync_all().unwrap();
-        let me = lp.peers[0].engine.me();
-        let b = lp.peers[1].engine.me();
+        let me = lp.peers[0].engine.tid();
+        let b = lp.peers[1].engine.tid();
         let ak = Ak::new("x:a.0").unwrap();
         let mut m = Mutation::new();
         let t = lp.peers[0].engine.new_thing(&mut m, me);
@@ -666,7 +666,7 @@ mod tests {
         lp.hold(t);
         let edge = ct::Edge { role: Role::Read, until: None, may_grant: false, retain: false, floor: None };
         lp.peers[0].engine.grant(&t, &b, &edge).unwrap();
-        let c = lp.peers[2].engine.me();
+        let c = lp.peers[2].engine.tid();
         lp.peers[0].engine.grant(&t, &c, &edge).unwrap();
         lp.sync_all().unwrap();
         lp.advance(60_000);
@@ -693,7 +693,7 @@ mod tests {
         use crate::rotation::tests::{edge, independent_thing, synced};
         use std::collections::BTreeSet;
         let mut lp = synced(4);
-        let (p1, p2, p3) = (lp.peers[1].engine.me(), lp.peers[2].engine.me(), lp.peers[3].engine.me());
+        let (p1, p2, p3) = (lp.peers[1].engine.tid(), lp.peers[2].engine.tid(), lp.peers[3].engine.tid());
         let a = independent_thing(&mut lp, 0);
         lp.peers[0].engine.grant(&a, &p1, &ct::Edge { may_grant: true, ..edge(Role::Read) }).unwrap();
         lp.sync(0, 1).unwrap();
@@ -733,7 +733,7 @@ mod tests {
     fn under_a_rotated_by_another() -> (LocalPeer, Tid, Tid, osis_crypto::Epoch, osis_base::CommitId) {
         use crate::rotation::tests::{edge, independent_thing, synced};
         let mut lp = synced(3);
-        let p1 = lp.peers[1].engine.me();
+        let p1 = lp.peers[1].engine.tid();
         let a = independent_thing(&mut lp, 0);
         lp.peers[0].engine.grant(&a, &p1, &edge(Role::Admin)).unwrap();
         lp.sync(0, 1).unwrap();
@@ -769,7 +769,7 @@ mod tests {
         use crate::rotation::tests::edge;
         use std::collections::BTreeSet;
         let (mut lp, a, t, k, _) = under_a_rotated_by_another();
-        let p2 = lp.peers[2].engine.me();
+        let p2 = lp.peers[2].engine.tid();
         lp.hold_at(2, t);
         lp.peers[0].engine.grant(&t, &p2, &edge(Role::Write)).unwrap();
         let e0 = lp.peers[0].engine.epochs(&t).unwrap().read.newest_held().unwrap().0;
@@ -803,7 +803,7 @@ mod tests {
         use crate::rotation::tests::edge;
         let (mut lp, a, t, _, rot) = under_a_rotated_by_another();
         assert!(carries_keys_of(&mut lp, 0, &t, &a, &rot), "A's keys under T, no edge write on T");
-        let p1 = lp.peers[1].engine.me();
+        let p1 = lp.peers[1].engine.tid();
         lp.peers[0].engine.grant(&t, &p1, &edge(Role::Admin)).unwrap();
         assert!(carries_keys_of(&mut lp, 0, &t, &a, &rot), "A's keys under T beside a grant");
         lp.sync(0, 1).unwrap();

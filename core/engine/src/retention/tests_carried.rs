@@ -68,7 +68,7 @@ fn snapshot_and_request_alone_take_the_copy_spec_commits_5() {
                 let (c, s) = written(&mut lp, t, class);
                 let item = match author {
                     false => lp.peers[0].engine.purge_item(&c, t, reg()).unwrap(),
-                    true => PurgeItem::Author { tid: t, ak: reg(), author: lp.peers[1].engine.me() },
+                    true => PurgeItem::Author { tid: t, ak: reg(), author: lp.peers[1].engine.tid() },
                 };
                 let p = request(&mut lp, by, t, item);
                 let (sp, pp) = (lp.peers[1].engine.package(&s).unwrap().unwrap(), lp.peers[by].engine.package(&p).unwrap().unwrap());
@@ -99,7 +99,7 @@ fn a_wider_fact_never_covers_spec_commits_5() {
     let (mut lp, t) = LocalPeer::cached("retention::tests_carried::four", || {
         let mut lp = LocalPeer::fresh(4, T0);
         lp.sync_all().unwrap();
-        let me = |lp: &LocalPeer, i: usize| lp.peers[i].engine.me();
+        let me = |lp: &LocalPeer, i: usize| lp.peers[i].engine.tid();
         let mut m = Mutation::new();
         let a = me(&lp, 0);
         let t = lp.peers[0].engine.new_thing(&mut m, a);
@@ -404,12 +404,12 @@ fn an_expiring_purge_of_a_forgotten_write_is_refused_spec_commits_5() {
 /// admin 0's snapshot.
 fn written_as_x(lp: &mut LocalPeer, t: Tid) -> (Tid, CommitId, CommitId) {
     let mut m = Mutation::new();
-    let me = lp.peers[0].engine.me();
+    let me = lp.peers[0].engine.tid();
     let x = lp.peers[0].engine.new_thing(&mut m, me);
     lp.peers[0].commit(m).unwrap();
     lp.hold(x);
     let edge = ct::Edge { role: Role::Write, until: None, may_grant: false, retain: false, floor: None };
-    let w = lp.peers[1].engine.me();
+    let w = lp.peers[1].engine.tid();
     lp.peers[0].engine.grant(&x, &w, &edge).unwrap();
     lp.peers[0].engine.grant(&t, &x, &edge).unwrap();
     lp.sync_all().unwrap();
@@ -451,7 +451,7 @@ fn a_snapshot_states_each_carried_writes_own_purge_author_spec_crdt_8() {
     for (by_x, takes) in [(true, true), (false, false)] {
         let (mut lp, t) = world();
         let (x, c, s) = written_as_x(&mut lp, t);
-        let author = if by_x { x } else { lp.peers[1].engine.me() };
+        let author = if by_x { x } else { lp.peers[1].engine.tid() };
         assert_eq!(!reads_after(&mut lp, t, c, &[(0, s)], author), takes, "by author X {by_x}");
     }
 }
@@ -468,7 +468,7 @@ fn a_snapshot_states_each_carried_writes_own_purge_author_spec_crdt_8() {
 fn a_misnamed_purge_author_misleads_only_a_node_holding_no_honest_snapshot_spec_commits_5() {
     for honest_too in [false, true] {
         let (mut lp, t) = world();
-        let me = lp.peers[1].engine.me();
+        let me = lp.peers[1].engine.tid();
         let (_, c, _) = written_as_x(&mut lp, t);
         let honest = lp.peers[1].engine.snapshot(&t, &reg()).unwrap().unwrap();
         let item = lp.peers[0].engine.purge_item(&c, t, reg()).unwrap();
@@ -503,7 +503,7 @@ fn a_writers_misnamed_fact_lets_it_erase_an_admins_write_at_a_snapshot_only_node
     let c = lp.peers[0].commit(m).unwrap().unwrap();
     lp.advance(1_000);
     lp.sync(0, 1).unwrap();
-    let forger = lp.peers[1].engine.me();
+    let forger = lp.peers[1].engine.tid();
     let item = lp.peers[1].engine.purge_item(&c, t, reg()).unwrap();
     let PurgeItem::Commit { ts, src, .. } = item else { unreachable!() };
     lp.peers[1].engine.core.lie_facts = Some([((ts, src), osis_crdt::Fact { by: PurgeBy::AuthorOrAdmin, purge_author: Some(forger) })].into());

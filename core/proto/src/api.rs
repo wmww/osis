@@ -104,7 +104,7 @@ impl ApiCode {
     /// `[tid]`
     pub const UNKNOWN_THING: u64 = 1;
     /// `[tid]`
-    pub const UNKNOWN_ACTOR: u64 = 2;
+    pub const UNKNOWN_KEYS: u64 = 2;
     /// `[tid, role]`
     pub const PERMISSION: u64 = 3;
     /// `[path, text]`

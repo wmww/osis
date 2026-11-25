@@ -454,7 +454,7 @@ fn convert(e: &mut Engine, hist: &History) -> Input {
         osis_commit::Paths::One(p) => p.things.clone(),
         osis_commit::Paths::Split(_) => Vec::new(),
     };
-    let named: BTreeSet<Tid> = hist.headers.values().flat_map(|h| [h.signer].into_iter().chain(h.aspects.iter().map(|a| a.tid)).chain(stated(h))).chain([e.me()]).collect();
+    let named: BTreeSet<Tid> = hist.headers.values().flat_map(|h| [h.signer].into_iter().chain(h.aspects.iter().map(|a| a.tid)).chain(stated(h))).chain([e.tid()]).collect();
     let ids = named.into_iter().enumerate().map(|(i, t)| (t, i as u32)).collect();
     let mut cv = Conv { hist, ids, extra: BTreeMap::new(), aspects: BTreeMap::new(), keys: BTreeMap::new() };
     let applied: Vec<CommitId> = e.commit_ids();
@@ -627,7 +627,7 @@ fn convert(e: &mut Engine, hist: &History) -> Input {
         let undoes = h.undoes.as_ref().map(|c| cv.commit(c));
         commits.push(hm::Commit { id: sync_id, signer, author, paths, ts: h.ts.to_u64(), expires: h.expires, kind, parts, purge, frontier, undoes, own_cover: h.own_cover, boxes: vec![] });
     }
-    let me = cv.id(&e.me());
+    let me = cv.id(&e.tid());
     // every record the node holds of an id named, mint admins naming more
     let mut records = Vec::new();
     let mut done = BTreeSet::new();

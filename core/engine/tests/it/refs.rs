@@ -18,7 +18,7 @@ fn rows(lp: &mut LocalPeer, i: usize, target: &Tid) -> Vec<(Tid, String, RefKind
 #[test]
 fn rows_carry_the_kind_spec_data_model_8() {
     let mut lp = net(1, 0);
-    let me = lp.peers[0].engine.me();
+    let me = lp.peers[0].engine.tid();
     let mut m = Mutation::new();
     let (t, x) = (lp.peers[0].engine.new_thing(&mut m, me), lp.peers[0].engine.new_thing(&mut m, me));
     m.set(t, &REFS, &Value::Set([Value::Strong(x), Value::Weak(x)].into_iter().collect())).unwrap();
@@ -89,7 +89,7 @@ fn a_reference_in_a_chunked_element_counts_as_one_inline_spec_data_model_6() {
         let s = new_thing(&mut lp, 0);
         lp.share(0, s);
         lp.sync_all().unwrap();
-        let reader = lp.peers[1].engine.me();
+        let reader = lp.peers[1].engine.tid();
         let had = lp.commit_ids(0);
         let e = &mut lp.peers[0].engine;
         let mut m = Mutation::new();
@@ -155,7 +155,7 @@ fn a_strong_in_a_chunked_element_of_held_history_holds_its_target_spec_data_mode
     lp.peers[0].commit(m).unwrap().unwrap();
     lp.share(0, s);
     lp.sync_all().unwrap();
-    let reader = lp.peers[1].engine.me();
+    let reader = lp.peers[1].engine.tid();
     let had = lp.commit_ids(0);
     let e = &mut lp.peers[0].engine;
     let mut m = Mutation::new();
@@ -369,7 +369,7 @@ fn r2_world() -> (LocalPeer, Vec<Tid>) {
             lp.peers[0].commit(m).unwrap();
         }
         for j in 1..3 {
-            let who = lp.peers[j].engine.me();
+            let who = lp.peers[j].engine.tid();
             lp.peers[0].engine.grant(&things[0], &who, &edge(osis_base::Role::Write)).unwrap();
         }
         lp.sync_all().unwrap();
@@ -396,8 +396,8 @@ fn known_references_are_a_scan_of_held_values_plain_spec_data_model_8() {
         |seed| {
         let mut rng = crate::order::Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
         let (mut lp, things) = r2_world();
-        let ids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.me()).collect();
-        // targets: the things, an account root, one tid never got
+        let ids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.tid()).collect();
+        // targets: the things, a node root, one tid never got
         let mut targets = things.clone();
         targets.extend([lp.peers[0].engine.node_root().unwrap(), Tid::from_bytes([3; 15])]);
         let reference = |rng: &mut crate::order::Rng| {
@@ -582,7 +582,7 @@ fn known_references_are_a_scan_of_held_values_plain_spec_data_model_8() {
 }
 
 // spec/data-model.md §8 What counts: core aspects name things by weaks, so none of
-// them holds anything. Y is minted with admin X and both are held by the account root; G, an independent thing
+// them holds anything. X is minted with the node root as admin, Y with admin X, and Y is held by the node root; G, an independent thing
 // nothing holds, is granted read on X. Every reference a core aspect holds is a weak, and
 // removing the strong to X takes X out of the node closure though Y's `created.0` names it, and G
 // is held by none though X's roster and boxes name it.
@@ -595,7 +595,7 @@ fn core_aspects_hold_nothing_spec_data_model_8() {
     let x = e.new_thing(&mut m, d);
     let y = e.new_thing(&mut m, x);
     m.op(d, &ct::HOLDS, osis_crdt::PathOp { path: vec![], op: osis_crdt::Op::Add(Value::Strong(y)) }).unwrap();
-    let g = e.new_thing(&mut m, e.me());
+    let g = e.new_thing(&mut m, e.tid());
     e.commit(m).unwrap();
     e.make_independent(&x).unwrap();
     e.grant(&x, &g, &ct::Edge { role: osis_base::Role::Read, until: None, may_grant: false, retain: false, floor: None }).unwrap();
@@ -603,7 +603,7 @@ fn core_aspects_hold_nothing_spec_data_model_8() {
     m.op(d, &ct::HOLDS, osis_crdt::PathOp { path: vec![], op: osis_crdt::Op::Remove(Value::Strong(g)) }).unwrap();
     e.commit(m).unwrap();
     let core = |a: &str| !(a.starts_with("x:") || a.starts_with("t:") || a == "holds.0");
-    for t in [x, y, g, d, e.me()] {
+    for t in [x, y, g, d, e.tid()] {
         for r in e.references_to(&t).unwrap().into_iter().filter(|r| core(r.ak.as_str())) {
             assert_eq!(r.kind, RefKind::Weak, "{r:?}");
         }
@@ -662,7 +662,7 @@ fn a_hidden_write_holds_no_reference_spec_data_model_8() {
     use osis_crdt::{Op, PathOp, PathSeg};
     let mut lp = net(2, 0);
     let t = new_thing(&mut lp, 0);
-    let w = lp.peers[1].engine.me();
+    let w = lp.peers[1].engine.tid();
     lp.peers[0].engine.grant(&t, &w, &edge(osis_base::Role::Write)).unwrap();
     // a map entry, an enum and a list element, each with a strong written inside it later, unseen
     let (map, en, list) = (ak("x:a.0"), ak("x:b.0"), ak("x:c.0"));

@@ -44,7 +44,7 @@ fn node_identity_spec_dm_1() {
 #[test]
 fn write_and_read_spec_crdt_4_5() {
     let mut p = peer(0);
-    let me = p.engine.me();
+    let me = p.engine.tid();
     p.drain_events();
     let mut m = Mutation::new();
     let t = p.engine.new_thing(&mut m, me);
@@ -80,7 +80,7 @@ fn write_and_read_spec_crdt_4_5() {
 #[test]
 fn counters_contiguous_spec_crdt_2_3() {
     let mut p = peer(0);
-    let me = p.engine.me();
+    let me = p.engine.tid();
     let mut m = Mutation::new();
     let t = p.engine.new_thing(&mut m, me);
     m.set(t, &ak("app:n.0"), &Value::Int(0)).unwrap();
@@ -101,7 +101,7 @@ fn counters_contiguous_spec_crdt_2_3() {
 #[test]
 fn commit_form_spec_commits_3() {
     let mut p = peer(0);
-    let me = p.engine.me();
+    let me = p.engine.tid();
     let mut m = Mutation::new();
     let t = p.engine.new_thing(&mut m, me);
     m.commit_form();
@@ -117,7 +117,7 @@ fn authority_checked_before_signing_spec_perm_1() {
     let mut a = peer(0);
     let mut b = peer(1);
     let ta = {
-        let me = a.engine.me();
+        let me = a.engine.tid();
         let mut m = Mutation::new();
         let t = a.engine.new_thing(&mut m, me);
         m.set(t, &ak("app:x.0"), &Value::Int(1)).unwrap();
@@ -133,8 +133,8 @@ fn authority_checked_before_signing_spec_perm_1() {
         let pk = b.engine.package(&id).unwrap().unwrap();
         a.engine.ingest(&pk.bytes, pk.blobs).unwrap();
     }
-    a.know(&[b.engine.me()]).unwrap();
-    a.engine.grant(&ta, &b.engine.me(), &crate::common::edge(osis_base::Role::Read)).unwrap();
+    a.know(&[b.engine.tid()]).unwrap();
+    a.engine.grant(&ta, &b.engine.tid(), &crate::common::edge(osis_base::Role::Read)).unwrap();
     b.engine.hold(osis_base::Strong(ta)).unwrap();
     for id in a.engine.commit_ids() {
         let pk = a.engine.package(&id).unwrap().unwrap();
@@ -153,14 +153,14 @@ fn authority_checked_before_signing_spec_perm_1() {
 #[test]
 fn restart_keeps_state() {
     let mut p = peer(0);
-    let me = p.engine.me();
+    let me = p.engine.tid();
     let mut m = Mutation::new();
     let t = p.engine.new_thing(&mut m, me);
     m.set(t, &ak("app:x.0"), &Value::Str("kept".into())).unwrap();
     p.commit(m).unwrap();
     let n = p.engine.commit_ids().len();
     p.restart(70).unwrap();
-    assert_eq!(p.engine.me(), me);
+    assert_eq!(p.engine.tid(), me);
     assert_eq!(p.engine.commit_ids().len(), n);
     assert_eq!(p.engine.get(&t, &ak("app:x.0")).unwrap(), Some(Value::Str("kept".into())));
     let mut m = Mutation::new();
@@ -181,7 +181,7 @@ fn restart_keeps_state() {
 #[test]
 fn paged_state_edits_and_restart() {
     let mut p = peer(0);
-    let me = p.engine.me();
+    let me = p.engine.tid();
     let mut m = Mutation::new();
     let t = p.engine.new_thing(&mut m, me);
     let (am, aset) = (ak("app:big.0"), ak("app:bigset.0"));
@@ -289,7 +289,7 @@ fn new_chunk_bytes(old: &[u8], new: &[u8]) -> usize {
 #[test]
 fn large_edit_reuses_chunks_spec_sync_1() {
     let mut p = peer(0);
-    let me = p.engine.me();
+    let me = p.engine.tid();
     let a = ak("app:file.0");
     let mut m = Mutation::new();
     let t = p.engine.new_thing(&mut m, me);
@@ -331,7 +331,7 @@ fn large_edit_reuses_chunks_spec_sync_1() {
 #[test]
 fn large_list_insert_chunked_spec_dm_6() {
     let mut p = peer(0);
-    let me = p.engine.me();
+    let me = p.engine.tid();
     let (key, a) = (&common::LIST, ak("t:list.0"));
     let mut m = Mutation::new();
     let t = p.engine.new_thing(&mut m, me);
@@ -368,7 +368,7 @@ const WIDE_AK: osis_schema::Aspect<Value> = osis_schema::Aspect::new("w:wide.0",
 fn wide_struct_paged_fits_spec_commits_1() {
     use osis_base::format::{CHUNK_THRESHOLD, MAX_BLOB};
     let mut p = peer(0);
-    let me = p.engine.me();
+    let me = p.engine.tid();
     let mut m = Mutation::new();
     let t = p.engine.new_thing(&mut m, me);
     m.set(t, &ak("app:x.0"), &Value::Int(1)).unwrap();
@@ -390,7 +390,7 @@ fn wide_struct_paged_fits_spec_commits_1() {
 #[test]
 fn large_list_edit_chunked_spec_dm_6() {
     let mut p = peer(0);
-    let me = p.engine.me();
+    let me = p.engine.tid();
     let (key, a) = (&common::LIST, ak("t:list.0"));
     let mut m = Mutation::new();
     let t = p.engine.new_thing(&mut m, me);
@@ -443,7 +443,7 @@ fn list_edits_match_whole(with_large: bool) {
     let big = |id: usize| if with_large { Value::Str(format!("L{id}:{}", "x".repeat(osis_base::format::CHUNK_THRESHOLD + 10))) } else { Value::Str(format!("item {id} (not large)")) };
     let (key, a) = (&common::LIST, ak("t:list.0"));
     let (mut cold, mut whole) = (peer(0), peer(0));
-    let me = cold.engine.me();
+    let me = cold.engine.tid();
     let mut model: Vec<Value> = (0..3000).map(small).collect();
     for (k, i) in [40, 700, 1500, 2100, 2990].into_iter().enumerate() {
         model[i] = big(k);
@@ -525,7 +525,7 @@ fn list_edits_match_whole(with_large: bool) {
 #[test]
 fn edit_of_gone_item_links_nothing_spec_dm_6() {
     let mut p = peer(0);
-    let me = p.engine.me();
+    let me = p.engine.tid();
     let (key, a) = (&common::LIST, ak("t:list.0"));
     let mut m = Mutation::new();
     let t = p.engine.new_thing(&mut m, me);
@@ -564,7 +564,7 @@ fn large_values_by_value_spec_crdt_5_5() {
     };
     for n in [10i64, 2000] {
         let mut p = peer(0);
-        let me = p.engine.me();
+        let me = p.engine.tid();
         let a = ak("app:set.0");
         let mut m = Mutation::new();
         let t = p.engine.new_thing(&mut m, me);
@@ -611,7 +611,7 @@ const TEXT_AK: osis_schema::Aspect<Value> = osis_schema::Aspect::new("w:text.0",
 #[test]
 fn paged_text_edits_by_index_and_undo_spec_crdt_6_1() {
     let mut p = peer(0);
-    let me = p.engine.me();
+    let me = p.engine.tid();
     let a = ak("w:text.0");
     let mut m = Mutation::new();
     let t = p.engine.new_thing(&mut m, me);
@@ -694,7 +694,7 @@ fn paged_text_edits_by_index_and_undo_spec_crdt_6_1() {
 #[test]
 fn paged_text_reset_then_edits_by_index_spec_crdt_5_7() {
     let mut p = peer(0);
-    let me = p.engine.me();
+    let me = p.engine.tid();
     let a = ak("w:text.0");
     let text = |n: u32, off: u32| -> Vec<char> { (0..n).map(|i| char::from_u32(0x1F600 + (i + off) % 64).unwrap()).collect() };
     let mut m = Mutation::new();
@@ -779,7 +779,7 @@ fn paged_text_reset_then_edits_by_index_spec_crdt_5_7() {
 #[test]
 fn undo_into_paged_field_keeps_later_entries_spec_crdt_4_6() {
     let mut p = peer(0);
-    let me = p.engine.me();
+    let me = p.engine.tid();
     let (key, a) = (&common::BOOK, ak("t:book.0"));
     let mut m = Mutation::new();
     let t = p.engine.new_thing(&mut m, me);

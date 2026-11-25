@@ -27,7 +27,7 @@ fn sync_holder() -> (LocalPeer, Tid, Tid) {
 
 /// Peer 1 reads T (granted by peer 2): it opens what is sealed to T.
 fn reads_t(lp: &mut LocalPeer, t: Tid) {
-    let me = lp.peers[1].engine.me();
+    let me = lp.peers[1].engine.tid();
     lp.peers[2].engine.grant(&t, &me, &edge(Role::Read)).unwrap();
     lp.sync_all().unwrap();
 }
@@ -88,7 +88,7 @@ fn a_rotation_reaches_a_holder_of_sync_alone_as_a_sealed_copy_spec_permissions_4
 /// and applies, invalid, wherever it is taken: not one that pends unjudged. (the forged commit,
 /// the sealed copy)
 fn forged_copy(lp: &mut LocalPeer, g: Tid, t: Tid) -> (CommitId, super::inbox::SealedFireOut) {
-    let w = lp.peers[2].engine.me();
+    let w = lp.peers[2].engine.tid();
     lp.peers[0].engine.grant(&g, &w, &edge(Role::Write)).unwrap();
     // T reads G: a sealed copy to it is a certificate copy (form 1), not a sync copy
     lp.peers[0].engine.grant(&g, &t, &edge(Role::Read)).unwrap();
@@ -202,7 +202,7 @@ fn a_replayed_rotation_copy_gives_back_nothing_spec_sync_inbox_2() {
 #[test]
 fn a_sync_alone_holder_gets_no_header_spec_sync_ids_2() {
     let (mut lp, g, t) = sync_holder();
-    let other = lp.peers[1].engine.me();
+    let other = lp.peers[1].engine.tid();
     lp.peers[0].engine.grant(&g, &other, &edge(Role::Read)).unwrap();
     lp.sync_all().unwrap();
     let before = lp.peers[0].engine.fires_owed();
@@ -343,7 +343,7 @@ fn a_forged_genesis_in_a_sync_copy_takes_nothing_spec_sync_ids_2() {
         if reader {
             // peer 2 reads G too: a reader syncs G's greatest sync ID, which a forged one must
             // not become
-            let me = lp.peers[2].engine.me();
+            let me = lp.peers[2].engine.tid();
             lp.peers[0].engine.grant(&g, &me, &edge(Role::Read)).unwrap();
             lp.sync_all().unwrap();
         }

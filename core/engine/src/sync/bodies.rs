@@ -253,7 +253,7 @@ impl Engine {
         };
         let none = |closure| Ok((closure, Vec::new(), None));
         let Some(h) = self.header(c) else { return none(closure) };
-        if h.purge.is_empty() && !h.aspects.iter().any(|a| osis_schema::core_types::is_role_class(a.ak.as_str()) || matches!(a.ak.as_str(), "node.0" | "reach.0" | "created.0")) {
+        if h.purge.is_empty() && !h.aspects.iter().any(|a| osis_schema::core_types::is_role_class(a.ak.as_str()) || a.ak.as_str() == "created.0") {
             return none(closure);
         }
         let Some(named) = self.certified_of(c, t)? else { return none(closure) };

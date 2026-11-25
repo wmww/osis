@@ -60,7 +60,7 @@ impl Engine {
     /// `on`: where the things it keeps its entry on changed. Nothing before its first listen.
     pub fn publish_reach_on(&mut self, on: &[Tid]) -> Result<()> {
         let root = self.core.node_root.ok_or(crate::error::Error::Misuse("no node root"))?;
-        let me = Weak(self.core.me());
+        let me = Weak(self.core.tid());
         let Some(last) = self.get_typed(&root, &ct::DIAL)?.unwrap_or_default().remove(&me) else { return Ok(()) };
         self.write_reach(last, on)
     }
@@ -80,7 +80,7 @@ impl Engine {
     /// `publish_reach`'s writes: this node's entry `d`.
     fn write_reach(&mut self, d: ct::Dial, on: &[Tid]) -> Result<()> {
         let root = self.core.node_root.ok_or(crate::error::Error::Misuse("no node root"))?;
-        let me = Weak(self.core.me());
+        let me = Weak(self.core.tid());
         let mut m = Mutation::new();
         for t in std::iter::once(root).chain(on.iter().copied()) {
             // a node writes only what it holds: a thing not here yet (an account just paired

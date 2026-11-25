@@ -301,7 +301,7 @@ mod tests {
     fn world() -> (LocalPeer, Tid, Tid) {
         let mut lp = LocalPeer::fresh(2, WallMs(1_700_000_000_000));
         lp.sync_all().unwrap();
-        let (alice, bob) = (lp.peers[0].engine.me(), lp.peers[1].engine.me());
+        let (alice, bob) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
         let mut m = Mutation::new();
         let g = lp.peers[0].engine.new_thing(&mut m, alice);
         lp.peers[0].commit(m).unwrap();
@@ -339,7 +339,7 @@ mod tests {
             assert!(!core.key_right(&t, DELETE_ADMIN, &s.write, Ts::MAX) && !core.key_right(&t, DELETE_WRITER, &s.delete, Ts::MAX));
             assert!(!core.key_right(&t, DELETE_ADMIN, &[7; 32], Ts::MAX));
             // a thing not under g finds nothing in g's steps
-            let me = core.me();
+            let me = core.tid();
             assert!(!core.key_right(&me, DELETE_ADMIN, &s.delete, Ts::MAX));
         }
         // the step keys are the role keys of g's secrets (alice holds admin; bob, a writer, the
@@ -382,7 +382,7 @@ mod tests {
     fn only_a_things_first_steps_are_listed_unchecked_spec_crypto_7() {
         let (lp, _, _) = world();
         let core = &lp.peers[0].engine.core;
-        let n = core.me();
+        let n = core.tid();
         assert!(core.created(&n).is_some_and(|r| r.key().is_some()), "the node thing is minted with a key");
         let (c, _) = core.mintings(&n).next().unwrap();
         let minting = (*core.ix.commits.get(&c).unwrap().header).clone();
@@ -408,7 +408,7 @@ mod tests {
     #[test]
     fn a_may_grant_writers_grant_listing_its_own_key_is_wrong_spec_crypto_7() {
         let (mut lp, g, _) = world();
-        let bob = lp.peers[1].engine.me();
+        let bob = lp.peers[1].engine.tid();
         lp.peers[0].engine.grant(&g, &bob, &ct::Edge { role: Role::Write, until: None, may_grant: true, retain: false, floor: None }).unwrap();
         lp.sync_all().unwrap();
         let mut m = Mutation::new();
@@ -481,7 +481,7 @@ mod tests {
     #[test]
     fn a_part_listing_a_step_not_here_waits_alone_spec_commits_4() {
         let (mut lp, g, _) = world();
-        let (alice, bob) = (lp.peers[0].engine.me(), lp.peers[1].engine.me());
+        let (alice, bob) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
         let mut m = Mutation::new();
         let h = lp.peers[0].engine.new_thing(&mut m, alice);
         lp.peers[0].commit(m).unwrap();

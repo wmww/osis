@@ -26,7 +26,7 @@ const X: usize = 2;
 fn shape(w_role: Role) -> (LocalPeer, Tid, Vec<Tid>) {
     let (lp, (g, tids)) = LocalPeer::cached(&format!("rotation::tests_departs::shape/{w_role:?}"), || {
         let mut lp = synced(3);
-        let tids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.me()).collect();
+        let tids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.tid()).collect();
         let g = independent_thing(&mut lp, A);
         lp.peers[A].engine.grant(&g, &tids[W], &edge(w_role)).unwrap();
         lp.peers[A].engine.grant(&g, &tids[X], &edge(Role::Admin)).unwrap();
@@ -74,7 +74,7 @@ pub(super) enum Forge {
 /// held or made (`Rotating`'s and `Backdated`'s are in no record of its own).
 pub(super) fn leave(lp: &mut LocalPeer, i: usize, g: Tid, how: Forge) -> crate::Result<BTreeSet<(Role, Epoch)>> {
     lp.peers[i].engine.run(|tx| {
-        let me = tx.core.me();
+        let me = tx.core.tid();
         let held = tx.core.epochs(&g).unwrap_or_default();
         let mut out: BTreeSet<(Role, Epoch)> = osis_keys::ROLES.into_iter().flat_map(|r| held.role(r).epochs().filter(|(_, x)| x.secret.is_some()).map(move |(e, _)| (r, *e)).collect::<Vec<_>>()).collect();
         let t1 = tx.core.hlc.next();
@@ -188,7 +188,7 @@ fn self_removal_uncovered_spec_crypto_4() {
 #[test]
 fn leaver_through_keyless_grant_spec_crypto_4() {
     let mut lp = synced(3);
-    let tids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.me()).collect();
+    let tids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.tid()).collect();
     let g = independent_thing(&mut lp, A);
     lp.peers[A].engine.grant(&g, &tids[W], &edge(Role::Write)).unwrap();
     lp.peers[A].engine.grant(&g, &tids[X], &edge(Role::Admin)).unwrap();
@@ -220,7 +220,7 @@ fn dropped_lowering_takes_nothing_spec_crypto_4() {
     let (o, p1, p4, q) = (0, 1, 2, 3);
     let none = BTreeSet::new();
     let mut lp = synced(4);
-    let tids: Vec<Tid> = (0..4).map(|i| lp.peers[i].engine.me()).collect();
+    let tids: Vec<Tid> = (0..4).map(|i| lp.peers[i].engine.tid()).collect();
     let g = independent_thing(&mut lp, o);
     for t in &tids[1..] {
         lp.peers[o].engine.grant(&g, t, &edge(Role::Admin)).unwrap();
@@ -263,7 +263,7 @@ fn dropped_lowering_takes_nothing_spec_crypto_4() {
 #[test]
 fn holder_actor_demoted_by_its_own_admin_spec_crypto_4() {
     let mut lp = synced(3);
-    let p2 = lp.peers[2].engine.me();
+    let p2 = lp.peers[2].engine.tid();
     let a = independent_thing(&mut lp, 0);
     let m = independent_thing(&mut lp, 1);
     lp.sync_all().unwrap();
@@ -274,7 +274,7 @@ fn holder_actor_demoted_by_its_own_admin_spec_crypto_4() {
         .engine
         .run(|tx| {
             let held = tx.core.epochs(&a).unwrap();
-            let me = tx.core.me();
+            let me = tx.core.tid();
             let mut m_ = Mutation::new();
             m_.ts = Some(tx.core.hlc.next());
             crate::flows::put_edge(&mut m_, a, m, &edge(Role::Write))?;
@@ -306,7 +306,7 @@ fn a_mint_admins_removal_of_its_holder_is_a_self_removal_spec_permissions_2() {
     for account in [false, true] {
         let mut lp = synced(2);
         let a = independent_thing(&mut lp, 0);
-        let m = if account { lp.peers[1].engine.me() } else { independent_thing(&mut lp, 1) };
+        let m = if account { lp.peers[1].engine.tid() } else { independent_thing(&mut lp, 1) };
         lp.sync_all().unwrap();
         lp.peers[0].engine.grant(&a, &m, &edge(Role::Admin)).unwrap();
         lp.sync_all().unwrap();
@@ -393,7 +393,7 @@ fn a_sync_epoch_covers_a_departure_only_once_rotated_spec_sync_opens_4() {
 #[test]
 fn a_removal_of_ones_own_absent_grant_states_the_empty_path_spec_permissions_2() {
     let mut lp = synced(3);
-    let tids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.me()).collect();
+    let tids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.tid()).collect();
     let g = independent_thing(&mut lp, A);
     let h = independent_thing(&mut lp, A);
     lp.peers[A].engine.grant(&g, &h, &edge(Role::Write)).unwrap();

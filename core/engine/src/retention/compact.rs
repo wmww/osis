@@ -760,7 +760,7 @@ impl Engine {
         if !self.run(|tx| owe_unwritable(tx, k))? {
             return Ok(());
         }
-        let me = self.core.me();
+        let me = self.core.tid();
         // counted: tests read how often the trigger weighs and fires per write
         osis_base::costs::count("compact: aspects weighed", 1);
         let Some((l, stops)) = Load::of(self, &tid, &ak, me)? else {
@@ -813,7 +813,7 @@ impl Engine {
             if self.core.created(&tid).is_none() || !compactable(&ak) {
                 continue;
             }
-            let me = self.core.me();
+            let me = self.core.tid();
             let Some((l, _)) = Load::of(self, &tid, &ak, me)? else { continue };
             if l.bodies == 0 {
                 continue;
@@ -836,7 +836,7 @@ impl Engine {
             if self.core.created(&tid).is_none() {
                 continue;
             }
-            let me = self.core.me();
+            let me = self.core.tid();
             if let Some((l, _)) = Load::of(self, &tid, &ak, me)? {
                 out.push(l);
             }
@@ -886,7 +886,7 @@ mod tests {
     fn restarted(n: usize, snap: bool, keep: Option<osis_schema::History>) -> (LocalPeer, Option<Vec<u8>>, Vec<Vec<u8>>) {
         let mut lp = LocalPeer::fresh(1, osis_base::WallMs(1_700_000_000_000));
         let p = &mut lp.peers[0];
-        let me = p.engine.me();
+        let me = p.engine.tid();
         let mut m = Mutation::new();
         let t = p.engine.new_thing(&mut m, me);
         if let Some(h) = keep {
@@ -978,7 +978,7 @@ mod tests {
         for n in 0.. {
             let mut lp = LocalPeer::fresh(1, osis_base::WallMs(1_700_000_000_000));
             let p = &mut lp.peers[0];
-            let me = p.engine.me();
+            let me = p.engine.tid();
             let mut m = Mutation::new();
             let t = p.engine.new_thing(&mut m, me);
             m.set(t, &x, &Value::Map(Default::default())).unwrap();
@@ -1013,7 +1013,7 @@ mod tests {
         let (x, y) = (Ak::new("x:m.0").unwrap(), Ak::new("y:m.0").unwrap());
         let mut lp = LocalPeer::fresh(1, osis_base::WallMs(1_700_000_000_000));
         let p = &mut lp.peers[0];
-        let me = p.engine.me();
+        let me = p.engine.tid();
         let mut m = Mutation::new();
         let t = p.engine.new_thing(&mut m, me);
         m.set(t, &x, &Value::Map(Default::default())).unwrap();
@@ -1097,7 +1097,7 @@ mod tests {
         let run = |rounds: usize, held_back: usize| {
             let mut lp = LocalPeer::fresh(3, osis_base::WallMs(1_700_000_000_000));
             lp.sync_all().unwrap();
-            let [a, b, x] = [0, 1, 2].map(|i| lp.peers[i].engine.me());
+            let [a, b, x] = [0, 1, 2].map(|i| lp.peers[i].engine.tid());
             let (t, _) = lp.peers[0].engine.create_with_admin(&a).unwrap();
             lp.hold(t);
             for w in [b, x] {
@@ -1160,7 +1160,7 @@ mod tests {
         use osis_schema::core_types as ct;
         let mut lp = LocalPeer::fresh(2, osis_base::WallMs(1_700_000_000_000));
         lp.sync_all().unwrap();
-        let [a, b] = [0, 1].map(|i| lp.peers[i].engine.me());
+        let [a, b] = [0, 1].map(|i| lp.peers[i].engine.tid());
         let (t, _) = lp.peers[0].engine.create_with_admin(&a).unwrap();
         lp.hold(t);
         lp.peers[0].engine.grant(&t, &b, &ct::Edge { role: Role::Write, until: None, may_grant: false, retain: false, floor: None }).unwrap();
@@ -1184,7 +1184,7 @@ mod tests {
     /// ephemeral aspect `x:cur+.0` holds that value's link: (peer, thing, the tree's blobs).
     fn linked(n: usize) -> (LocalPeer, Tid, usize) {
         let mut lp = LocalPeer::fresh(1, osis_base::WallMs(1_700_000_000_000));
-        let me = lp.peers[0].engine.me();
+        let me = lp.peers[0].engine.tid();
         let mut m = Mutation::new();
         let t = lp.peers[0].engine.new_thing(&mut m, me);
         lp.peers[0].commit(m).unwrap();
@@ -1207,7 +1207,7 @@ mod tests {
     fn cost(lp: &mut LocalPeer, t: Tid, ak: &str) -> usize {
         let ak = Ak::new(ak).unwrap();
         let e = &mut lp.peers[0].engine;
-        let me = e.core.me();
+        let me = e.core.tid();
         e.run(|tx| {
             if ak.ephemeral() {
                 tx.set_memory();
@@ -1242,7 +1242,7 @@ mod tests {
         for restart in [false, true] {
             let mut lp = LocalPeer::fresh(2, osis_base::WallMs(1_700_000_000_000));
             lp.sync_all().unwrap();
-            let [a, b] = [0, 1].map(|i| lp.peers[i].engine.me());
+            let [a, b] = [0, 1].map(|i| lp.peers[i].engine.tid());
             let (t, _) = lp.peers[0].engine.create_with_admin(&a).unwrap();
             lp.hold(t);
             let edge = |role| ct::Edge { role, until: None, may_grant: false, retain: false, floor: None };

@@ -316,7 +316,7 @@ impl Engine {
         let listed: BTreeSet<[u8; 32]> = claims.claims.iter().copied().collect();
         let mut keys: Vec<X25519Secret> = Vec::new();
         let reader = self.core.reader_of(&t);
-        let me = self.core.me();
+        let me = self.core.tid();
         for m in std::iter::once(me).chain(self.core.key_holders(&reader).into_iter().map(|(m, _)| m).filter(|m| *m != me)) {
             if let Some(e) = self.core.epochs(&m) {
                 keys.extend(e.role(Role::Read).held_newest_first().into_iter().map(|(_, s)| s.kem().x25519().clone()));
@@ -402,7 +402,7 @@ impl Engine {
     /// policy). That thing's admins write the entry; what it may set is storage limits alone.
     pub fn caps(&mut self) -> Result<Arc<Caps>> {
         let Some(s) = self.settings_thing()? else { return Ok(Arc::default()) };
-        let me = osis_schema::Codec::to_value(&osis_base::Weak(self.core.me()));
+        let me = osis_schema::Codec::to_value(&osis_base::Weak(self.core.tid()));
         let c = match self.get_at(&s, &ct::CAPS.name(), &[osis_crdt::PathSeg::Key(me)])? {
             Some(v) => <ct::Caps as osis_schema::Codec>::from_value(&v).unwrap_or_default(),
             None => ct::Caps::default(),

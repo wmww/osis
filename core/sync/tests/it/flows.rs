@@ -96,7 +96,7 @@ fn holds_as_sibling(w: &mut World, n: usize, sib: usize) {
     let has = w.engine(n).things_with_sync_ids();
     // the sibling's node thing and the link keys it redeemed by are its own alone
     // (spec/sync-set.md §1, §2 Own things)
-    let own = w.engine(sib).me();
+    let own = w.engine(sib).tid();
     let link_key = |w: &mut World, t: &Tid| w.engine(sib).core.created(t).is_some_and(|r| r.link_key_of().is_some());
     let ts: Vec<Tid> = w.engine(sib).things_with_sync_ids().into_iter().collect();
     let ts: Vec<Tid> = ts.into_iter().filter(|t| *t != own && !link_key(w, t)).collect();

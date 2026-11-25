@@ -105,7 +105,7 @@ fn frontier_gap_covers_what_joins_unchanged_spec_commits_5() {
     let mut lp = net(2, 0);
     lp.sync_all().unwrap();
     let t = new_thing(&mut lp, 0);
-    let w = lp.peers[1].engine.me();
+    let w = lp.peers[1].engine.tid();
     set_edge(&mut lp.peers[0].engine, t, w, Some(edge(Role::Write)), None);
     lp.sync_all().unwrap();
     let tag = |lp: &mut LocalPeer, v: &str| {
@@ -149,7 +149,7 @@ fn snapshot_covers_one_reaching_further_spec_commits_5() {
     let mut lp = net(2, 0);
     lp.sync_all().unwrap();
     let t = new_thing(&mut lp, 0);
-    let w = lp.peers[1].engine.me();
+    let w = lp.peers[1].engine.tid();
     set_edge(&mut lp.peers[0].engine, t, w, Some(edge(Role::Write)), None);
     lp.sync_all().unwrap();
     let tags = ak("t:tags.0");
@@ -187,7 +187,7 @@ fn untraced_session_part_joins_late_spec_commits_4() {
     lp.sync_all().unwrap();
     let t = new_thing(&mut lp, 0);
     share(&mut lp, 0, t);
-    let w = lp.peers[2].engine.me();
+    let w = lp.peers[2].engine.tid();
     set_edge(&mut lp.peers[0].engine, t, w, Some(edge(Role::Write)), None);
     lp.sync_all().unwrap();
     let mut m = Mutation::new();
@@ -299,7 +299,7 @@ fn frontier_entries_are_the_tables_sessions_spec_crdt_8() {
     sync(&mut lp, 0, 1);
     lp.advance(1_000);
     let now = osis_base::Ts::make(lp.peers[0].engine.now(), 0).unwrap();
-    let author = lp.peers[0].engine.me();
+    let author = lp.peers[0].engine.tid();
     let f = lp.peers[0].engine.state(&t, &reg).unwrap().unwrap().clone();
     let cx = osis_commit::writer_ctx(osis_commit::Form::Commit, osis_commit::Kind::ContentSnapshot, now, author, 0, 0);
     let sound = osis_crdt::encode_snapshot(&osis_crdt::Snapshot { absorbed: Default::default(), facts: Default::default(), nonce: [7; 16], fragment: f, frontiers: Default::default() }, &cx, None).unwrap();
@@ -309,7 +309,7 @@ fn frontier_entries_are_the_tables_sessions_spec_crdt_8() {
         osis_base::encode(&Value::List(top))
     };
     // a session not in the fragment, listed with a frontier
-    let other = osis_crdt::Session { node: lp.peers[1].engine.me(), nonce: [9; 16] };
+    let other = osis_crdt::Session { node: lp.peers[1].engine.tid(), nonce: [9; 16] };
     let extra = tamper(&|top| {
         let Value::List(srcs) = &mut top[1] else { panic!() };
         srcs.push(Value::Bytes(other.to_bytes().to_vec()));
@@ -337,7 +337,7 @@ fn snapshot_not_covered_by_an_earlier_equal_spec_commits_4() {
     let t = new_thing(&mut lp, 0);
     share(&mut lp, 0, t);
     for p in [2, 3] {
-        let w = lp.peers[p].engine.me();
+        let w = lp.peers[p].engine.tid();
         set_edge(&mut lp.peers[0].engine, t, w, Some(edge(Role::Write)), None);
     }
     lp.sync_all().unwrap();
@@ -391,7 +391,7 @@ fn equal_stamped_snapshots_cover_each_other_spec_sync_7() {
     lp.sync_all().unwrap();
     let t = new_shared(&mut lp, 0);
     for p in [2, 3] {
-        let w = lp.peers[p].engine.me();
+        let w = lp.peers[p].engine.tid();
         set_edge(&mut lp.peers[0].engine, t, w, Some(edge(Role::Write)), None);
     }
     lp.sync_all().unwrap();
@@ -441,7 +441,7 @@ fn invalid_or_lagging_later_snapshot_stays_and_stands_in_spec_commits_5() {
     let mut lp = net(4, 0);
     lp.sync_all().unwrap();
     let t = new_shared(&mut lp, 0);
-    let (w, y) = (lp.peers[2].engine.me(), lp.peers[3].engine.me());
+    let (w, y) = (lp.peers[2].engine.tid(), lp.peers[3].engine.tid());
     set_edge(&mut lp.peers[0].engine, t, w, Some(edge(Role::Write)), None);
     set_edge(&mut lp.peers[0].engine, t, y, Some(edge(Role::Write)), None);
     lp.sync_all().unwrap();

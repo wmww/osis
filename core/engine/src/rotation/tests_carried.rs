@@ -48,8 +48,8 @@ impl Shape {
     fn all(&self) -> Vec<Tid> {
         std::iter::once(self.g).chain(self.xs.iter().copied()).collect()
     }
-    fn me(&self, i: usize) -> Tid {
-        self.lp.peers[i].engine.me()
+    fn node(&self, i: usize) -> Tid {
+        self.lp.peers[i].engine.tid()
     }
 }
 
@@ -58,7 +58,7 @@ impl Shape {
 fn shape(d: usize) -> Shape {
     let (lp, (g, xs)) = LocalPeer::cached(&format!("rotation::tests_carried::shape/{d}"), || {
         let mut lp = synced(4);
-        let (w, r) = (lp.peers[W].engine.me(), lp.peers[R].engine.me());
+        let (w, r) = (lp.peers[W].engine.tid(), lp.peers[R].engine.tid());
         let mut xs: Vec<Tid> = (0..d).map(|_| independent_thing(&mut lp, B)).collect();
         lp.sync_all().unwrap();
         let xd = *xs.last().unwrap();
@@ -165,7 +165,7 @@ fn shape_removed(d: usize, who: usize, carry: Carry) -> (Shape, Removal) {
 /// made), or bare (`None`, as for `Carry::Nothing`: the keyset alone, its carried commits not).
 fn removed_with(s: &mut Shape, who: usize, carry: Carry, again: usize, order: Option<Option<&mut super::tests::Rng>>) -> Removal {
     let start = held_by(&s.lp, W, &s.all());
-    let (x, xd, x1) = (s.me(who), s.xd(), s.x1());
+    let (x, xd, x1) = (s.node(who), s.xd(), s.x1());
     // later than every grant by more than the backdating (`Attack::Backdated`)
     s.lp.advance(1000);
     let before = commit_ids(&mut s.lp, B);
@@ -175,7 +175,7 @@ fn removed_with(s: &mut Shape, who: usize, carry: Carry, again: usize, order: Op
     for i in (1..s.xs.len()).rev() {
         s.lp.peers[B].engine.ensure_rotated(&s.xs[i]).unwrap();
     }
-    let b = s.me(B);
+    let b = s.node(B);
     let roles: BTreeSet<Role> = if who == W { [Role::Read, Role::Write].into() } else { [Role::Read].into() };
     let mut x1_rot = None;
     for _ in 0..=again {
@@ -244,7 +244,7 @@ const ATTACKS: [Attack; 5] = [Attack::Plain, Attack::Rogue, Attack::MadeUp, Atta
 /// holder its engine would, holder actor `m` at `to` (its keyset) instead, signed past its own
 /// writer rules, stamped `ts` when given. The commit and the epochs it made.
 fn forged(s: &mut Shape, a: Tid, m: Tid, to: Option<(Epoch, osis_crypto::KemPublicKey)>, ts: Option<Ts>) -> (CommitId, BTreeSet<Key>) {
-    let w = s.me(W);
+    let w = s.node(W);
     let before = commit_ids(&mut s.lp, W);
     let made = s.lp.peers[W]
         .engine
@@ -320,7 +320,7 @@ fn attack(s: &mut Shape, how: Attack, rm: &Removal) -> BTreeSet<Key> {
                 .engine
                 .run(|tx| {
                     let held = tx.core.epochs(&g).unwrap();
-                    let hist = super::history_boxes(tx, &tx.core.me(), &g)?;
+                    let hist = super::history_boxes(tx, &tx.core.tid(), &g)?;
                     let keys = HolderKeys { keysets: [Role::Read, Role::Write].into_iter().map(|r| (r, vec![(k, kem.clone())])).collect(), own: Default::default() };
                     let rcpt = Recipient { holder: x1, role: Role::Write, keys, floor: 0 };
                     // (none where W holds no current epoch of G: B's cascade rotated G past it)
@@ -346,7 +346,7 @@ fn attack(s: &mut Shape, how: Attack, rm: &Removal) -> BTreeSet<Key> {
 fn a_writes_opened(s: &mut Shape, known: BTreeSet<Key>) -> bool {
     let (_, still) = s.lp.peers[A].engine.ensure_rotated(&s.g).unwrap();
     assert!(still.is_empty(), "A blocked on G: {still:?}");
-    let w = s.me(W);
+    let w = s.node(W);
     let all = s.all();
     let opened = openable(&mut s.lp, A, &all, w, known);
     let e = newest_read(&s.lp, A, s.g).unwrap();
@@ -361,7 +361,7 @@ fn removed_member_reads_nothing_after_the_knowing_keyset_spec_crypto_4() {
     for d in [1, 3] {
         for how in ATTACKS {
             let (mut s, rm) = shape_removed(d, W, Carry::Honest);
-            let w = s.me(W);
+            let w = s.node(W);
             assert_eq!(s.lp.peers[A].engine.core.role_now(&w, &s.g), None, "depth {d}: A holds W's removal with X1's keyset");
             let known = attack(&mut s, how, &rm);
             assert!(!a_writes_opened(&mut s, known), "depth {d}, {how:?}: W opens what A writes");
@@ -378,7 +378,7 @@ fn removed_member_reads_nothing_after_the_knowing_keyset_spec_crypto_4() {
 fn keyset_carrying_nothing_leaks_spec_crypto_4() {
     for how in ATTACKS.into_iter().filter(|x| *x != Attack::Reseal) {
         let (mut s, rm) = shape_removed(2, W, Carry::Nothing);
-        let w = s.me(W);
+        let w = s.node(W);
         assert_eq!(s.lp.peers[A].engine.core.role_now(&w, &s.g), Some(Role::Write), "A does not know W left");
         let known = attack(&mut s, how, &rm);
         assert!(a_writes_opened(&mut s, known), "{how:?}: the planted fault is seen");
@@ -422,7 +422,7 @@ fn keyset_held_only_with_its_demotions_spec_crypto_4() {
 #[test]
 fn reader_removal_stays_below_spec_crypto_4() {
     let mut s = shape(2);
-    let (r, xd, x1) = (s.me(R), s.xd(), s.x1());
+    let (r, xd, x1) = (s.node(R), s.xd(), s.x1());
     let before: BTreeSet<CommitId> = s.lp.peers[A].engine.core.ix.held.commits_on(&xd).iter().map(|c| c.id).collect();
     let rm = removed(&mut s, R, Carry::Honest);
     // (A may hold the removal commit's `keys.0` part: Xd's keyset on a chain)
@@ -465,7 +465,7 @@ fn rotation_removing_its_own_route_leaks_nothing_spec_crypto_4() {
     let made = lp.peers[2]
         .engine
         .run(|tx| {
-            let me = tx.core.me();
+            let me = tx.core.tid();
             let held = tx.core.epochs(&m).unwrap();
             let holders = super::recipients(tx, &me, &m, &[(s, None)])?;
             let mut mu = Mutation::new();
@@ -489,7 +489,7 @@ fn rotation_removing_its_own_route_leaks_nothing_spec_crypto_4() {
     let (_, still) = lp.peers[0].engine.ensure_rotated(&a).unwrap();
     assert!(still.is_empty(), "a1 blocked on A: {still:?}");
     known.extend(held_by(&lp, 2, &[a]));
-    let f = lp.peers[2].engine.me();
+    let f = lp.peers[2].engine.tid();
     let (e, em) = (newest_read(&lp, 0, a).unwrap(), newest_read(&lp, 1, m).unwrap());
     assert!(!openable(&mut lp, 0, &[a, m], f, known.clone()).contains(&(a, Role::Read, e)), "f opens a1's newest epoch of A");
     assert!(!openable(&mut lp, 1, &[m], f, known).contains(&(m, Role::Read, em)), "f opens m1's newest epoch of M");
@@ -502,7 +502,7 @@ fn rotation_removing_its_own_route_leaks_nothing_spec_crypto_4() {
 #[test]
 fn demoted_member_writes_nothing_after_the_knowing_keyset_spec_crypto_4() {
     let mut s = shape(2);
-    let (w, g, x1, xd, b) = (s.me(W), s.g, s.x1(), s.xd(), s.me(B));
+    let (w, g, x1, xd, b) = (s.node(W), s.g, s.x1(), s.xd(), s.node(B));
     let mut known = held_by(&s.lp, W, &s.all());
     s.lp.advance(1000);
     let before = commit_ids(&mut s.lp, B);
@@ -533,7 +533,7 @@ fn demoted_member_writes_nothing_after_the_knowing_keyset_spec_crypto_4() {
 fn w_removed_from_x1() -> (Shape, CommitId) {
     let (lp, (g, xs, rm)) = LocalPeer::cached("rotation::tests_carried::w_removed_from_x1", || {
         let mut s = shape(1);
-        let (x1, w) = (s.x1(), s.me(W));
+        let (x1, w) = (s.x1(), s.node(W));
         s.lp.advance(1000);
         let before = commit_ids(&mut s.lp, B);
         s.lp.peers[B].engine.demote(&x1, &Demotion { holder: w, new: None, retain: None }).unwrap();
@@ -550,7 +550,7 @@ fn newcomer(s: &mut Shape, from: usize, t: Tid, seed: u64, order: Option<&mut su
     let now = s.lp.peers[from].engine.now();
     s.lp.peers.push(crate::local_peer::Peer::new(seed, now).unwrap());
     s.lp.sync(x, from).unwrap();
-    let xt = s.lp.peers[x].engine.me();
+    let xt = s.lp.peers[x].engine.tid();
     s.lp.peers[from].engine.grant(&t, &xt, &edge(Role::Read)).unwrap();
     let mut pks = s.lp.packages_to(from, x).unwrap();
     if let Some(rng) = order {
@@ -605,7 +605,7 @@ fn rotation_judged_alike_by_a_node_joining_after_compaction_plain_spec_crypto_4(
     for seed in 0..8u64 {
         let mut rng = super::tests::Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) ^ 0x2545_f491_4f6c_dd1d);
         let mut s = shape(1);
-        let (g, w) = (s.g, s.me(W));
+        let (g, w) = (s.g, s.node(W));
         let before = commit_ids(&mut s.lp, W);
         s.lp.peers[W].engine.run(|tx| super::rotate_now(tx, w, g, &BTreeSet::from([Role::Read, Role::Write]))).unwrap();
         let c = *commit_ids(&mut s.lp, W).difference(&before).next().unwrap();
@@ -616,7 +616,7 @@ fn rotation_judged_alike_by_a_node_joining_after_compaction_plain_spec_crypto_4(
         }
         for _ in 0..=rng.next(2) {
             s.lp.advance(1 + rng.next(1000));
-            let a = s.me(A);
+            let a = s.node(A);
             s.lp.peers[A].engine.run(|tx| super::rotate_now(tx, a, g, &BTreeSet::from([Role::Read, Role::Write]))).unwrap();
         }
         s.lp.advance(1000);
@@ -662,7 +662,7 @@ fn rotation_judged_alike_by_a_node_joining_after_compaction_plain_spec_crypto_4(
 #[test]
 fn own_demotion_keyset_held_from_a_snapshot_after_read_rotated_spec_crypto_4() {
     let (mut s, rm) = w_removed_from_x1();
-    let (x1, b) = (s.x1(), s.me(B));
+    let (x1, b) = (s.x1(), s.node(B));
     // the removal's keysets still current after read rotates: all but read's (`keys.0` holds the
     // current ones only)
     let kept: Vec<_> = s.lp.peers[B].engine.core.keysets_of(&x1).filter(|x| x.0 != Role::Read && x.2.since.is_some_and(|p| p.commit == rm)).map(|x| (x.0, x.1)).collect();
@@ -738,7 +738,7 @@ fn own_demotion_keyset_held_by_a_node_joining_after_compaction_plain_spec_crypto
         s.lp.advance(1000);
         // read alone rotated again: the other roles' keysets stay the removal's
         if rng.next(2) == 0 {
-            let b = s.me(B);
+            let b = s.node(B);
             s.lp.peers[B].engine.run(|tx| super::rotate_now(tx, b, x1, &BTreeSet::from([Role::Read]))).unwrap();
             s.lp.advance(1000);
             demotes.retain(|(r, _)| *r != Role::Read);

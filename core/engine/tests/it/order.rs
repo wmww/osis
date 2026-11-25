@@ -758,7 +758,7 @@ fn grant_fresh(lp: &mut LocalPeer, by: usize, g: Tid) -> Vec<CommitId> {
     let (reader, pks) = {
         let mut b = fresh_base();
         let pks: Vec<Package> = b.engine.commit_ids().iter().map(|id| b.engine.package(id).unwrap().unwrap()).collect();
-        (b.engine.me(), pks)
+        (b.engine.tid(), pks)
     };
     for p in &mut lp.peers {
         p.know(&[reader]).unwrap();
@@ -792,7 +792,7 @@ fn local_peer_off(n: usize, seed: u64, t: WallMs) -> LocalPeer {
 fn setup(seed: u64, addenda: bool) -> (LocalPeer, (Vec<Tid>, Tid)) {
     let mut lp = if addenda { LocalPeer::new(3, seed, T0).unwrap() } else { local_peer_off(3, seed, T0) };
     lp.sync_all().unwrap();
-    let ids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.me()).collect();
+    let ids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.tid()).collect();
     // G's holding strong on the node root in a commit of its own: the root is local (spec/sync-set.md §1)
     let mut m = Mutation::new();
     let g = m.create(lp.peers[0].engine.held_record(ids[0]).unwrap());
@@ -821,11 +821,11 @@ fn setup(seed: u64, addenda: bool) -> (LocalPeer, (Vec<Tid>, Tid)) {
 
 /// Plays `steps` on three peers: 0 is G's mint admin and gives 1 write and 2 admin on it. The
 /// peers write no addenda (`play_with` for histories carrying them).
-/// A new dependent thing's record at peer `by`, held by the account root's strong in a commit of its
+/// A new dependent thing's record at peer `by`, held by the node root's strong in a commit of its
 /// own (spec/sync-set.md §2 Making a thing), so the commit making it is on it alone. That commit
-/// is on the peer's account root, which no other account syncs: marked `seen`, never played.
+/// is on the peer's node root, which no other node syncs: marked `seen`, never played.
 fn held_record(lp: &mut LocalPeer, by: usize, seen: &mut BTreeSet<CommitId>) -> osis_base::CreationRecord {
-    let me = lp.peers[by].engine.me();
+    let me = lp.peers[by].engine.tid();
     held_record_of(lp, by, me, seen)
 }
 
@@ -838,8 +838,8 @@ fn held_record_of(lp: &mut LocalPeer, by: usize, admin: Tid, seen: &mut BTreeSet
     rec
 }
 
-/// Peer `by`'s new thing `t` outside G (its mint admin `by`'s account or account
-/// root) shared as G is: every other peer and the nodes under test (`reader`, `Played::reader`)
+/// Peer `by`'s new thing `t` outside G (its mint admin `by`'s account or node
+/// thing) shared as G is: every other peer and the nodes under test (`reader`, `Played::reader`)
 /// hold it and read it, granted through the flow (`write`: that peer granted write instead).
 /// Each peer's hold is on its node root, which no other node syncs: marked `seen`, never played;
 /// the grants are marked `seen` too, as the setup's: each node under test takes them before the
@@ -847,7 +847,7 @@ fn held_record_of(lp: &mut LocalPeer, by: usize, admin: Tid, seen: &mut BTreeSet
 /// fetches it. The grants, which the peers sync among them.
 #[allow(clippy::too_many_arguments)]
 fn share_top(lp: &mut LocalPeer, by: usize, t: Tid, reader: Tid, write: Option<usize>, seen: &mut BTreeSet<CommitId>, access: &mut Vec<(Tid, Package)>) -> Vec<CommitId> {
-    let ids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.me()).collect();
+    let ids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.tid()).collect();
     for j in (0..3).filter(|j| *j != by) {
         let before: BTreeSet<CommitId> = lp.peers[j].engine.commit_ids().into_iter().collect();
         lp.hold_at(j, t);
@@ -894,7 +894,7 @@ pub(crate) fn play_with(seed: u64, steps: &[Step], addenda: bool) -> Played {
 fn play_in(seed: u64, steps: &[Step], addenda: bool, written: bool) -> Played {
     let (mut lp, (ids, g)) = LocalPeer::cached(&format!("order::play/{seed}/{addenda}"), || setup(seed, addenda));
     let mut reader = lp.peers.pop().unwrap();
-    let reader_id = reader.engine.me();
+    let reader_id = reader.engine.tid();
     // things outside G (`share_top`), and what the nodes under test take first of them
     let mut tops: Vec<Tid> = Vec::new();
     let mut access: Vec<(Tid, Package)> = Vec::new();
@@ -1060,7 +1060,7 @@ fn play_in(seed: u64, steps: &[Step], addenda: bool, written: bool) -> Played {
                 // held from the node root (local: in a commit of its own, never played), else
                 // from its admin beside its creation
                 let e = &lp.peers[by].engine;
-                let t = if admin == e.me() || !e.closure_holds(&admin) { m.create(held_record_of(&mut lp, by, admin, &mut seen)) } else { lp.peers[by].engine.new_thing(&mut m, admin) };
+                let t = if admin == e.tid() || !e.closure_holds(&admin) { m.create(held_record_of(&mut lp, by, admin, &mut seen)) } else { lp.peers[by].engine.new_thing(&mut m, admin) };
                 if write {
                     m.set(t, &REG, &s("n")).unwrap();
                 }
@@ -1152,7 +1152,7 @@ fn play_in(seed: u64, steps: &[Step], addenda: bool, written: bool) -> Played {
                 Some(by)
             }
             Step::PurgeAuthor { by, t, of } => {
-                let (t, author) = (th(t), lp.peers[of].engine.me());
+                let (t, author) = (th(t), lp.peers[of].engine.tid());
                 let mut m = Mutation::new();
                 let now = lp.peers[by].engine.now();
                 m.set(t, &osis_schema::core_types::PURGE, &now).unwrap();
@@ -1479,7 +1479,7 @@ fn play_in(seed: u64, steps: &[Step], addenda: bool, written: bool) -> Played {
                 sent.push(one(&mut lp, by, &TEXT, po(vec![], Op::Insert { at: 0, items: vec![s("abcd")] })));
                 sent.extend(share_top(&mut lp, by, t, reader_id, Some(other), &mut seen, &mut access));
                 tops.push(t);
-                // its record chain first, as certificates bring it (`by`'s account root's record)
+                // its record chain first, as certificates bring it (`by`'s node thing's record)
                 give_chain(&mut lp, by, other, t);
                 for id in sent {
                     let pk = lp.peers[by].engine.package(&id).unwrap().unwrap();
@@ -4050,7 +4050,7 @@ fn live_write_outlives_its_body_at_the_bound_spec_commits_5() {
 #[test]
 fn register_death_skips_a_purged_killer_spec_crdt_4_8() {
     let mut lp = local_peer_off(1, 0, T0);
-    let me = lp.peers[0].engine.me();
+    let me = lp.peers[0].engine.tid();
     let mut m = Mutation::new();
     let t = lp.peers[0].engine.new_thing(&mut m, me);
     m.set(t, &REG, &s("g")).unwrap();
@@ -4178,7 +4178,7 @@ fn snapshot_dropped_by_earlier_stamped_kill_joins_again_spec_commits_5() {
 fn purged_covered_write_reads_alike_through_unmerge_spec_crdt_4_6() {
     let mut lp = local_peer_off(3, 0, T0);
     lp.sync_all().unwrap();
-    let ids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.me()).collect();
+    let ids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.tid()).collect();
     let mut m = Mutation::new();
     let g = lp.peers[0].engine.new_thing(&mut m, ids[0]);
     m.set(g, &KEPT, &s("k")).unwrap();
@@ -4267,7 +4267,7 @@ fn purged_covered_write_reads_alike_through_unmerge_spec_crdt_4_6() {
 fn purged_covered_write_stays_gone_when_its_cover_falls_spec_perm_5_2() {
     let mut lp = local_peer_off(3, 0, T0);
     lp.sync_all().unwrap();
-    let ids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.me()).collect();
+    let ids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.tid()).collect();
     let mut m = Mutation::new();
     let g = lp.peers[0].engine.new_thing(&mut m, ids[0]);
     m.set(g, &KEPT, &s("k")).unwrap();
@@ -4338,7 +4338,7 @@ fn purged_covered_write_stays_gone_when_its_cover_falls_spec_perm_5_2() {
 fn expired_late_part_reads_alike_spec_crdt_4_7() {
     let mut lp = local_peer_off(2, 0, T0);
     lp.sync_all().unwrap();
-    let ids: Vec<Tid> = (0..2).map(|i| lp.peers[i].engine.me()).collect();
+    let ids: Vec<Tid> = (0..2).map(|i| lp.peers[i].engine.tid()).collect();
     let mut m = Mutation::new();
     let g = lp.peers[0].engine.new_thing(&mut m, ids[0]);
     lp.peers[0].commit(m).unwrap();

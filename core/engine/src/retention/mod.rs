@@ -502,7 +502,7 @@ fn goes_invalid(core: &Core, c: &CommitId, m: &crate::engine::Meta, ai: usize) -
 /// Unjudgeable: `apply::unjudgeable`), and neither a role commit's nor this node's own
 /// (`goes_invalid`).
 fn drops_invalid(core: &Core, c: &CommitId, m: &crate::engine::Meta, ai: usize) -> bool {
-    !m.valid_at(ai) && m.view.signer != core.me() && !m.view.kind.is_role() && !crate::apply::unjudgeable(core, c, &m.header, &m.view, ai)
+    !m.valid_at(ai) && m.view.signer != core.tid() && !m.view.kind.is_role() && !crate::apply::unjudgeable(core, c, &m.header, &m.view, ai)
 }
 
 /// Whether part `ai` of `m` goes once judged invalid, held or missing (`drop_invalid`).
@@ -1711,7 +1711,7 @@ mod tests {
     pub(super) fn admin_writer_reader(setting: Option<ct::RetentionSetting>) -> (LocalPeer, osis_base::Tid) {
         let mut lp = LocalPeer::fresh(3, WallMs(1_700_000_000_000));
         lp.sync_all().unwrap();
-        let [a, w, r] = [0, 1, 2].map(|i| lp.peers[i].engine.me());
+        let [a, w, r] = [0, 1, 2].map(|i| lp.peers[i].engine.tid());
         let mut m = Mutation::new();
         let t = lp.peers[0].engine.new_thing(&mut m, a);
         if let Some(s) = setting {
@@ -1727,7 +1727,7 @@ mod tests {
 
     /// A thing of peer 0 whose `x:m.0` keeps history an hour (so replaced bodies are dated).
     fn kept_on(lp: &mut LocalPeer) -> (osis_base::Tid, Ak) {
-        let a = lp.peers[0].engine.me();
+        let a = lp.peers[0].engine.tid();
         let x = Ak::new("x:m.0").unwrap();
         let mut m = Mutation::new();
         let t = lp.peers[0].engine.new_thing(&mut m, a);
@@ -1825,7 +1825,7 @@ mod tests {
         let (t, x) = kept_on(&mut lp);
         lp.sync_all().unwrap();
         for (w, role) in [(1, Role::Write), (2, Role::Write), (3, Role::Read)] {
-            let w = lp.peers[w].engine.me();
+            let w = lp.peers[w].engine.tid();
             lp.peers[0].engine.grant(&t, &w, &ct::Edge { role, until: None, may_grant: false, retain: false, floor: None }).unwrap();
         }
         lp.sync_all().unwrap();
@@ -1847,7 +1847,7 @@ mod tests {
         lp.advance(10);
         let inside = lp.peers[1].commit(m).unwrap().unwrap();
         let inside = lp.peers[1].engine.package(&inside).unwrap().unwrap();
-        let r = lp.peers[2].engine.me();
+        let r = lp.peers[2].engine.tid();
         use std::collections::{BTreeMap, BTreeSet};
         let scope = crate::apply::receipt::DemotionScope { roles: BTreeMap::from([(r, BTreeSet::from([t]))]), content: BTreeMap::from([(r, BTreeSet::from([t]))]) };
         let f = lp.peers[0].engine.frontier(&scope, WallMs(1_700_000_000_000)).unwrap();
@@ -1889,7 +1889,7 @@ mod tests {
         use osis_base::memo::Memo;
         use crate::error::Error;
         let mut lp = LocalPeer::new(1, 956, WallMs(1_700_000_000_000)).unwrap();
-        let a = lp.peers[0].engine.me();
+        let a = lp.peers[0].engine.tid();
         let x = Ak::new("x:m.0").unwrap();
         let mut m = Mutation::new();
         let t = lp.peers[0].engine.new_thing(&mut m, a);
@@ -1936,7 +1936,7 @@ mod tests {
         let end = |keys_first: bool| {
             let mut lp = LocalPeer::fresh(3, WallMs(1_700_000_000_000));
             lp.sync_all().unwrap();
-            let (alice, bob, carol) = (lp.peers[0].engine.me(), lp.peers[1].engine.me(), lp.peers[2].engine.me());
+            let (alice, bob, carol) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
             let x = Ak::new("x:v.0").unwrap();
             let none = osis_schema::PurgeBy::Writer;
             let edge = |role| ct::Edge { role, until: None, may_grant: false, retain: false, floor: None };
@@ -2008,7 +2008,7 @@ mod tests {
     fn its_independent_up_the_record_chain_spec_sync_3() {
         let mut lp = LocalPeer::fresh(2, WallMs(1_700_000_000_000));
         lp.sync_all().unwrap();
-        let (a, b) = (lp.peers[0].engine.me(), lp.peers[1].engine.me());
+        let (a, b) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
         let e = &mut lp.peers[0].engine;
         let p = e.create_with_admin(&a).unwrap().0;
         let r = e.create_with_admin(&p).unwrap().0;
@@ -2031,7 +2031,7 @@ mod tests {
     fn delta_live_follows_validity_spec_sync_7() {
         let mut lp = LocalPeer::fresh(3, WallMs(1_700_000_000_000));
         lp.sync_all().unwrap();
-        let (a, w, x) = (lp.peers[0].engine.me(), lp.peers[1].engine.me(), lp.peers[2].engine.me());
+        let (a, w, x) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
         let ak = Ak::new("x:a.0").unwrap();
         let mut m = Mutation::new();
         let t = lp.peers[0].engine.new_thing(&mut m, a);
@@ -2074,7 +2074,7 @@ mod tests {
         let ak = Ak::new("k:s.0").unwrap();
         let mut lp = LocalPeer::fresh(2, WallMs(1_700_000_000_000));
         lp.sync_all().unwrap();
-        let [a, c] = [0, 1].map(|i| lp.peers[i].engine.me());
+        let [a, c] = [0, 1].map(|i| lp.peers[i].engine.tid());
         let (t, _) = lp.peers[0].engine.create_with_admin(&a).unwrap();
         lp.hold(t);
         lp.peers[0].engine.grant(&t, &c, &ct::Edge { role: Role::Write, until: None, may_grant: false, retain: false, floor: None }).unwrap();
@@ -2108,7 +2108,7 @@ mod tests {
     #[test]
     fn gone_write_reads_what_it_replaced_spec_crdt_4_7() {
         let mut lp = LocalPeer::fresh(1, WallMs(1_700_000_000_000));
-        let a = lp.peers[0].engine.me();
+        let a = lp.peers[0].engine.tid();
         let (reg, other) = (Ak::new("x:a.0").unwrap(), Ak::new("x:b.0").unwrap());
         let mut m = Mutation::new();
         let t = lp.peers[0].engine.new_thing(&mut m, a);
@@ -2181,7 +2181,7 @@ mod tests {
     fn purger_and_writer() -> (LocalPeer, osis_base::Tid, osis_base::Tid, osis_base::Tid, Ak, Ak) {
         let mut lp = LocalPeer::fresh(3, WallMs(1_700_000_000_000));
         lp.sync_all().unwrap();
-        let (a, x, w) = (lp.peers[0].engine.me(), lp.peers[1].engine.me(), lp.peers[2].engine.me());
+        let (a, x, w) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
         let (reg, other) = (Ak::new("x:a.0").unwrap(), Ak::new("x:b.0").unwrap());
         let mut m = Mutation::new();
         let t = lp.peers[0].engine.new_thing(&mut m, a);
@@ -2260,7 +2260,7 @@ mod tests {
     fn a_superseder_judged_invalid_later_moves_its_victims_date_back_spec_commits_5() {
         let reg = Ak::new("x:a.0").unwrap();
         let (mut lp, t) = admin_writer_reader(Some(ct::RetentionSetting::of(reg.clone(), osis_schema::History::Keep { until: None, after: Some(3_600_000) })));
-        let w = lp.peers[1].engine.me();
+        let w = lp.peers[1].engine.tid();
         let set = |lp: &mut LocalPeer, p: usize, v: i64| {
             lp.advance(10);
             let mut m = Mutation::new();
@@ -2300,7 +2300,7 @@ mod tests {
         let reg = Ak::new("x:a.0").unwrap();
         let (mut lp, t) = admin_writer_reader(None);
         lp.sync_all().unwrap();
-        let w = lp.peers[1].engine.me();
+        let w = lp.peers[1].engine.tid();
         let set = |lp: &mut LocalPeer, p: usize, v: i64| {
             lp.advance(10);
             let mut m = Mutation::new();
@@ -2350,7 +2350,7 @@ mod tests {
         let work = |n: i64| {
             let mut lp = LocalPeer::fresh(1, WallMs(1_700_000_000_000));
             let e = &mut lp.peers[0].engine;
-            let me = e.me();
+            let me = e.tid();
             let reg = Ak::new("x:a.0").unwrap();
             let mut m = Mutation::new();
             let t = e.new_thing(&mut m, me);
@@ -2393,7 +2393,7 @@ mod tests {
         let mut lp = LocalPeer::fresh(1, WallMs(1_700_000_000_000));
         let reg = Ak::new("x:a.0").unwrap();
         let e = &mut lp.peers[0].engine;
-        let me = e.me();
+        let me = e.tid();
         let mut m = Mutation::new();
         let t = e.new_thing(&mut m, me);
         e.commit(m).unwrap();
@@ -2437,7 +2437,7 @@ mod tests {
     #[test]
     fn a_purged_commit_wakes_its_reader_at_its_expiry_spec_commits_5() {
         let mut lp = LocalPeer::new(1, 955, WallMs(1_700_000_000_000)).unwrap();
-        let a = lp.peers[0].engine.me();
+        let a = lp.peers[0].engine.tid();
         let x = Ak::new("x:m.0").unwrap();
         let mut m = Mutation::new();
         let t = lp.peers[0].engine.new_thing(&mut m, a);
@@ -2465,7 +2465,7 @@ mod tests {
     #[test]
     fn a_purged_commit_goes_at_once_spec_commits_5() {
         let mut lp = LocalPeer::new(1, 956, WallMs(1_700_000_000_000)).unwrap();
-        let a = lp.peers[0].engine.me();
+        let a = lp.peers[0].engine.tid();
         let x = Ak::new("x:m.0").unwrap();
         let mut m = Mutation::new();
         let t = lp.peers[0].engine.new_thing(&mut m, a);
@@ -2500,8 +2500,8 @@ mod tests {
     fn lowered_writer() -> (LocalPeer, osis_base::Tid, osis_base::Tid, osis_base::Tid) {
         let mut lp = LocalPeer::fresh(2, WallMs(1_700_000_000_000));
         lp.sync_all().unwrap();
-        let a = lp.peers[0].engine.me();
-        let r = lp.peers[1].engine.me();
+        let a = lp.peers[0].engine.tid();
+        let r = lp.peers[1].engine.tid();
         let (t, _) = lp.peers[0].engine.create_with_admin(&a).unwrap();
         lp.hold(t);
         let (u, _) = lp.peers[0].engine.create_with_admin(&a).unwrap();
@@ -2635,13 +2635,13 @@ mod tests {
     fn an_invalid_write_whose_purge_falls_stays_dropped_as_invalid_spec_perm_6() {
         let mut lp = LocalPeer::fresh(3, WallMs(1_700_000_000_000));
         lp.sync_all().unwrap();
-        let a = lp.peers[0].engine.me();
-        let r = lp.peers[1].engine.me();
+        let a = lp.peers[0].engine.tid();
+        let r = lp.peers[1].engine.tid();
         let (t, _) = lp.peers[0].engine.create_with_admin(&a).unwrap();
         lp.hold(t);
         let edge = |role| ct::Edge { role, until: None, may_grant: false, retain: false, floor: None };
         lp.peers[0].engine.grant(&t, &r, &edge(Role::Write)).unwrap();
-        let r2 = lp.peers[2].engine.me();
+        let r2 = lp.peers[2].engine.tid();
         lp.peers[0].engine.grant(&t, &r2, &edge(Role::Read)).unwrap();
         lp.sync_all().unwrap();
         lp.advance(10);

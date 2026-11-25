@@ -104,7 +104,7 @@ fn sample(shape: Shape) -> usize {
     let (mut lp, (g, base)) = LocalPeer::cached("apply::tests_order::sample", || {
         let mut lp = LocalPeer::fresh(4, T0);
         lp.sync_all().unwrap();
-        let (a, b, c, d) = (lp.peers[0].engine.me(), lp.peers[1].engine.me(), lp.peers[2].engine.me(), lp.peers[3].engine.me());
+        let (a, b, c, d) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid(), lp.peers[2].engine.tid(), lp.peers[3].engine.tid());
         let mut m = Mutation::new();
         let g = lp.peers[0].engine.new_thing(&mut m, a);
         m.set(g, &reg(), &Value::Str("g".into())).unwrap();
@@ -120,7 +120,7 @@ fn sample(shape: Shape) -> usize {
     });
     // a node apart from A, B and C, a reader of G holding it, as of the base
     let mut fresh = lp.peers.pop().unwrap();
-    let b = lp.peers[1].engine.me();
+    let b = lp.peers[1].engine.tid();
     lp.advance(1_000);
     let mut m = Mutation::new();
     let item = lp.peers[0].engine.new_thing(&mut m, g);

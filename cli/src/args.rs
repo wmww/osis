@@ -157,7 +157,7 @@ pub enum Cmd {
     /// This account's nodes
     #[command(subcommand)]
     Node(NodeCmd),
-    /// Thin clients of this node, each with an actor of its own
+    /// Thin clients of this node, each with a thing of its own
     #[command(subcommand)]
     Clients(ClientsCmd),
     /// Keep the store open: sync, print diagnostics
@@ -269,7 +269,7 @@ pub enum Cmd {
         #[arg(long, value_name = "C", conflicts_with = "follow")]
         versions_of: Option<String>,
     },
-    /// Purge an aspect's history, one commit's write or an author's writes, each where this actor
+    /// Purge an aspect's history, one commit's write or an author's writes, each where this node
     /// may; with no AK, destroy T for everyone (an admin; not undoable)
     Purge {
         t: String,
@@ -304,8 +304,8 @@ pub enum Cmd {
     },
     /// This node's role on T
     Role { t: String },
-    /// Everyone holding a role on T, directly or through another actor: actor, role, when it ends,
-    /// and the actors in between, one line per grant that makes it a holder
+    /// Everyone holding a role on T, directly or through another thing: holder, kind, role, when it
+    /// ends, and the things in between, one line per grant that makes it a holder
     Holders { t: String },
     /// This node's clock
     Now,
@@ -342,19 +342,19 @@ pub enum Cmd {
         #[arg(long = "leave-adminless")]
         leave_adminless: bool,
     },
-    /// Remove this account's own grant on T, or with --holder that of an actor this node is an
+    /// Remove this account's own grant on T, or with --holder that of a thing this node is an
     /// admin of (no catching up)
     Leave {
         t: String,
-        #[arg(long, value_name = "ACTOR")]
+        #[arg(long, value_name = "HOLDER")]
         holder: Option<String>,
         /// Allow leaving T with no admin, for good: nobody can change its grants again
         #[arg(long = "leave-adminless")]
         leave_adminless: bool,
     },
-    /// List this node's read-only copies of what it was removed from, or erase ACTOR's
+    /// List this node's read-only copies of what it was removed from, or erase THING's
     Retained {
-        #[arg(long, value_name = "ACTOR")]
+        #[arg(long, value_name = "THING")]
         drop: Option<String>,
     },
     /// Share links
@@ -503,10 +503,10 @@ pub enum NodeCmd {
 
 #[derive(Subcommand, Debug)]
 pub enum ClientsCmd {
-    /// Registers a client: prints `ACTOR SECRET`, the secret (64 hex digits) only here. Grant
-    /// the actor what it may reach
+    /// Registers a client: prints `THING SECRET`, the secret (64 hex digits) only here. Grant
+    /// the thing what it may reach
     Add {
-        /// The actor's admin (default: `me`, the account): the client acts for it, through this
+        /// The thing's admin (default: `me`, the account): the client acts for it, through this
         /// node, while this node administers it
         #[arg(long, value_name = "A")]
         admin: Option<String>,
@@ -514,13 +514,13 @@ pub enum ClientsCmd {
         #[arg(long)]
         until: Option<String>,
     },
-    /// List them: `ACTOR UNTIL|-`
+    /// List them: `THING UNTIL|-`
     Ls,
     /// Remove one: closes its connections, removes its grants and its
     /// entry (none: exit 3)
-    Rm { actor: String },
+    Rm { thing: String },
     /// A new secret for one (printed only here); the old one and its connections end
-    Rotate { actor: String },
+    Rotate { thing: String },
 }
 
 #[derive(Subcommand, Debug)]

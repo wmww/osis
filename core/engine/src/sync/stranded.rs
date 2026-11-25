@@ -161,7 +161,7 @@ impl Engine {
         let actor = self.core.reader_of(&t);
         let holder = self.own_holder(&actor);
         let step = step.unwrap_or_else(|| o.path.steps.last().map_or([0; 32], |(st, _)| st.keys.sync.to_bytes()));
-        let me = self.core.me();
+        let me = self.core.tid();
         let admins = self.core.key_holders(&actor).into_iter().filter(|(m, r)| *r == Role::Admin && *m != me).map(|(m, _)| m).collect();
         Ok(Some(Stranding { actor, holder, step, keys: self.current_keys(&holder), admins }))
     }
@@ -170,7 +170,7 @@ impl Engine {
     /// its node thing when that holds `a`, else a holder of `a` that its node thing holds a role
     /// on (an organization); its node thing when it judges none.
     fn own_holder(&self, a: &Tid) -> Tid {
-        let me = self.core.me();
+        let me = self.core.tid();
         let holders: Vec<Tid> = self.core.key_holders(a).into_iter().map(|x| x.0).collect();
         if holders.contains(&me) {
             return me;
@@ -249,7 +249,7 @@ impl Engine {
     /// `m` is a current holder of `a` and this node may rotate a role of `a` at or below `m`'s.
     fn may_reseal(&self, a: &Tid, m: &Tid) -> bool {
         let Some(role) = self.core.key_holders(a).into_iter().find(|(x, _)| x == m).map(|x| x.1) else { return false };
-        let me = self.core.me();
+        let me = self.core.tid();
         crate::rotation::may_rotate(&self.core, &me, a).iter().any(|r| *r <= role)
     }
 

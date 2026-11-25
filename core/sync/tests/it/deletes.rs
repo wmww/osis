@@ -433,7 +433,7 @@ fn set_value(w: &mut World, i: usize, t: Tid, v: &str) {
 
 // spec/sync-judgement.md §2 (Per blob: a delta dropped as covered strips only where its aspect
 // may be under purge on replace), spec/commits.md §5 (Covered): node 1 makes a thing with a value
-// (the making commit also holds its record and the strong from its account root), replaces the
+// (the making commit also holds its record and the strong from its account), replaces the
 // value, and with its sibling node 2 replaces it again at once, after node 2 grants node 0's
 // account read; node 0 holds the thing. The making commit's value part is dropped as covered, its cover
 // covered in turn by a snapshot whose tables no longer name the part's session (no write of it
@@ -491,7 +491,7 @@ fn covers_cover(purge_on_replace: bool) {
     assert!(w.engine(0).get(&t, &value_ak()).unwrap().is_some(), "the reader reads the value");
 }
 
-/// A thing node 0 mints with its account root as admin, held there.
+/// A thing node 0 mints with its account as admin, held there.
 fn make_held(w: &mut World) -> Tid {
     let d = w.node(0).account.unwrap();
     w.write(0, |e| {
@@ -572,7 +572,7 @@ fn strips_of_two_parts_by_nodes_apart_meet_at_a_node_reading_neither_spec_sync_j
 
 // spec/sync-judgement.md §2 (Loggable; Per blob: the rewrite is the rest of the body, a fresh
 // encryption where no held blob is it): node 1 makes a thing (its record, a value under purge on
-// replace, the strong from its account root in the same commit) and replaces the value while cut
+// replace, the strong from its account in the same commit) and replaces the value while cut
 // off from its sibling, node 2. Node 1 strips the value from the making commit and drops the
 // account's `holds.0` part as covered, which strips nothing. The rest is still must-hold and
 // loggable at node 1: its fresh encryption takes the covered part from the held blob it opened.

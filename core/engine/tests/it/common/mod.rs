@@ -197,7 +197,7 @@ pub fn new_thing(lp: &mut LocalPeer, i: usize) -> Tid {
 /// `new_thing` whose setting also keeps `extra` (each AK's history beside `test_setting`'s).
 pub fn new_thing_keeping(lp: &mut LocalPeer, i: usize, extra: &[(&str, osis_schema::History)]) -> Tid {
     let p = lp.peer(i).unwrap();
-    let admin = p.engine.settings_thing().unwrap().unwrap_or_else(|| p.engine.me());
+    let admin = p.engine.settings_thing().unwrap().unwrap_or_else(|| p.engine.tid());
     let mut m = Mutation::new();
     let t = p.engine.new_thing(&mut m, admin);
     m.set(t, &REG, &s("new")).unwrap();
@@ -247,7 +247,7 @@ pub fn new_shared(lp: &mut LocalPeer, i: usize) -> Tid {
 /// `admin`, an admin of it: each keeps what it receives of `t`.
 pub fn share(lp: &mut LocalPeer, admin: usize, t: Tid) {
     for j in (0..lp.peers.len()).filter(|j| *j != admin) {
-        let who = lp.peers[j].engine.me();
+        let who = lp.peers[j].engine.tid();
         if lp.peers[admin].engine.key_role(&t, &who).is_none() {
             lp.peers[admin].engine.grant(&t, &who, &edge(Role::Read)).unwrap();
         }
@@ -298,13 +298,13 @@ pub fn edge_write(e: &mut Engine, thing: Tid, holder: Tid, edge: Option<ct::Edge
 /// node, given what the test gives it.
 pub fn reader(lp: &mut LocalPeer, admin: usize, t: Tid, seed: u64) -> osis_engine::local_peer::Peer {
     let mut p = osis_engine::local_peer::Peer::new(seed, lp.peers[admin].engine.now()).unwrap();
-    lp.peers[admin].know(&[p.engine.me()]).unwrap();
+    lp.peers[admin].know(&[p.engine.tid()]).unwrap();
     for id in p.engine.commit_ids() {
         let pk = p.engine.package(&id).unwrap().unwrap();
         lp.deliver(admin, &pk).unwrap();
     }
     p.engine.hold(osis_base::Strong(t)).unwrap();
-    let me = p.engine.me();
+    let me = p.engine.tid();
     lp.peers[admin].engine.grant(&t, &me, &edge(Role::Read)).unwrap();
     // what `admin` sends it: the grant's fire, certificates (the grant among them), then what
     // the sync IDs it then syncs carry
@@ -466,7 +466,7 @@ pub fn forge_snapshot_with(lp: &mut LocalPeer, by: usize, t: Tid, a: &osis_base:
 #[allow(clippy::too_many_arguments)]
 pub fn forge_snapshot_absorbing(lp: &mut LocalPeer, by: usize, t: Tid, a: &osis_base::Ak, ts: osis_base::Ts, f: osis_crdt::Fragment, frontiers: osis_crdt::Frontiers, absorbed: std::collections::BTreeMap<osis_base::CommitId, Tid>) -> Vec<u8> {
     use osis_commit::{Form, Kind, writer_ctx};
-    let author = lp.peers[by].engine.me();
+    let author = lp.peers[by].engine.tid();
     let snap = osis_crdt::Snapshot { absorbed, facts: Default::default(), nonce: [7; 16], fragment: f, frontiers };
     let bytes = osis_crdt::encode_snapshot(&snap, &writer_ctx(Form::Commit, Kind::ContentSnapshot, ts, author, 0, 0), None).unwrap();
     forge_snapshot_bytes(lp, by, t, a, ts, bytes)
@@ -476,7 +476,7 @@ pub fn forge_snapshot_absorbing(lp: &mut LocalPeer, by: usize, t: Tid, a: &osis_
 /// given (hand-built, unchecked: bad input reaches the receiver's decoder).
 pub fn forge_snapshot_bytes(lp: &mut LocalPeer, by: usize, t: Tid, a: &osis_base::Ak, ts: osis_base::Ts, bytes: Vec<u8>) -> Vec<u8> {
     use osis_commit::{AspectWrite, CommitBuilder, Form, Kind, MemoryBlobs};
-    let author = lp.peers[by].engine.me();
+    let author = lp.peers[by].engine.tid();
     let mut aw = AspectWrite::new(t, a.clone(), 0, 0, bytes);
     aw.purge_by = osis_commit::retention::snapshot_purge_by(a.as_str());
     let mut cb = CommitBuilder::new(Kind::ContentSnapshot, ts, author, osis_commit::Path::default(), Form::Commit);
@@ -500,7 +500,7 @@ pub fn session_of(lp: &LocalPeer, i: usize) -> osis_commit::Form {
 
 /// Node `e` as a reader to box a secret to.
 pub fn read_recipient(e: &mut Engine) -> osis_keys::Recipient {
-    let me = e.me();
+    let me = e.tid();
     e.recipient_for(&me, Role::Read).unwrap()
 }
 

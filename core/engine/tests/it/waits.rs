@@ -66,7 +66,7 @@ fn reg_only(p: &osis_engine::local_peer::Package) -> Vec<u8> {
 fn forged_purge_on_replace_class_gives_no_rights_spec_commits_4() {
     let mut lp = net(3, 0);
     let t = new_shared(&mut lp, 0);
-    let w = lp.peers[2].engine.me();
+    let w = lp.peers[2].engine.tid();
     set_edge(&mut lp.peers[0].engine, t, w, Some(edge(osis_base::Role::Write)), None);
     sync(&mut lp, 0, 1);
     sync(&mut lp, 0, 2);
@@ -143,7 +143,7 @@ fn hello_synced() -> (LocalPeer, Tid) {
 
 /// Gives peer `to` of `lp` write on `t` and every commit of peer 0.
 fn writer(lp: &mut LocalPeer, t: Tid, to: usize) {
-    let w = lp.peers[to].engine.me();
+    let w = lp.peers[to].engine.tid();
     set_edge(&mut lp.peers[0].engine, t, w, Some(edge(osis_base::Role::Write)), None);
     sync(lp, 0, to);
 }
@@ -174,7 +174,7 @@ fn expiring_part_stays_to_join_past_snapshot_spec_commits_5() {
     for holders in [true, false] {
         let map = ak("t:gonemap.0");
         let (mut lp, t, c) = carrierless(vec![put("a", true, true), put("b", false, false)]);
-        let w = lp.peers[1].engine.me();
+        let w = lp.peers[1].engine.tid();
         set_edge(&mut lp.peers[0].engine, t, w, Some(edge(osis_base::Role::Write)), None);
         // the grant with its secrets, not the writes (what t's sync ID carries)
         for pg in lp.packages_of(0, &t).unwrap().into_iter().filter(|p| c.iter().all(|x| x.id != p.id)) {
@@ -249,7 +249,7 @@ fn expired_entry_takes_nested_write_alike_spec_crdt_4_7() {
 fn creation_record_applies_alone_spec_commits_4() {
     let mut lp = net(2, 0);
     let mut m = Mutation::new();
-    let me = lp.peers[0].engine.me();
+    let me = lp.peers[0].engine.tid();
     let t = lp.peers[0].engine.new_thing(&mut m, me);
     m.set(t, &REG, &s("first")).unwrap();
     let c1 = lp.peers[0].commit(m).unwrap().unwrap();
@@ -271,7 +271,7 @@ fn creation_record_applies_alone_spec_commits_4() {
     e.ingest(&pks.iter().find(|p| p.id == c2).unwrap().bytes, Vec::new()).unwrap();
     assert!(e.get(&t, &ak("t:tags.0")).unwrap().is_some(), "the next commit shows");
     assert_eq!(e.get(&t, &ak("t:reg.0")).unwrap(), None);
-    // the rest of it on t joins when it comes (t's sync ID carries no part on peer 0's account
+    // the rest of it on t joins when it comes (t's sync ID carries no part on peer 0's node
     // root)
     lp.peers[1].receive(&only(&pk1.bytes, &h, |x, _| x == t), Vec::new()).unwrap();
     let e = &mut lp.peers[1].engine;
@@ -286,7 +286,7 @@ fn creation_record_then_the_rest_join_spec_commits_4() {
     let mut lp = net(2, 0);
     let u = new_shared(&mut lp, 0);
     let mut m = Mutation::new();
-    let me = lp.peers[0].engine.me();
+    let me = lp.peers[0].engine.tid();
     let t = lp.peers[0].engine.new_thing(&mut m, me);
     m.set(t, &REG, &s("t")).unwrap();
     m.set(u, &REG, &s("u")).unwrap();
@@ -429,7 +429,7 @@ fn purged_list_element_takes_edit_in_any_order_spec_crdt_4_7() {
     let k = ak("t:list.0");
     let mut lp = net(3, 0);
     let t = new_shared(&mut lp, 0);
-    let w = lp.peers[1].engine.me();
+    let w = lp.peers[1].engine.tid();
     set_edge(&mut lp.peers[0].engine, t, w, Some(edge(osis_base::Role::Write)), None);
     lp.sync_all().unwrap();
     lp.advance(5);
@@ -486,7 +486,7 @@ fn expired_list_element_stays_gone_through_unmerge_spec_crdt_4_6() {
     lp.sync_all().unwrap();
     lp.advance(10);
     // a writer about to go, not told it has: its write is un-merged past T
-    let x = lp.peers[2].engine.me();
+    let x = lp.peers[2].engine.tid();
     let d = set_edge(&mut lp.peers[0].engine, t, x, None, None);
     lp.advance(10);
     let mut m = Mutation::new();
@@ -1002,8 +1002,8 @@ fn record_work(n: usize) -> (u64, usize) {
             let r = lp.deliver(1, &pk).unwrap();
             assert!(matches!(r, Ingested::Pending(_, Reason::MissingChain(_) | Reason::UnknownCreated(_))), "{r:?}");
         }
-        let me = lp.peers[k].engine.me();
-        recs.push([me, lp.peers[k].engine.me(), t].iter().filter_map(|x| lp.peers[k].engine.core.created(x).cloned()).collect::<Vec<_>>());
+        let me = lp.peers[k].engine.tid();
+        recs.push([me, lp.peers[k].engine.tid(), t].iter().filter_map(|x| lp.peers[k].engine.core.created(x).cloned()).collect::<Vec<_>>());
     }
     let e0 = lp.peers[1].engine.examined();
     lp.peers[1].engine.learn_records(recs.swap_remove(0)).unwrap();
@@ -1031,11 +1031,11 @@ fn record_and_reach(x_below: bool) -> (Reason, Tid, Option<Value>) {
     use osis_base::Role;
     use osis_schema::core_types::Edge;
     let mut lp = net(3, 0);
-    let a = lp.peers[0].engine.me();
+    let a = lp.peers[0].engine.tid();
     sync(&mut lp, 0, 1);
     let y = new_thing(&mut lp, 1);
     // 2 reads y
-    let r = lp.peers[2].engine.me();
+    let r = lp.peers[2].engine.tid();
     lp.peers[1].engine.grant(&y, &r, &Edge { role: Role::Read, until: None, may_grant: false, retain: false, floor: None }).unwrap();
     sync(&mut lp, 1, 0);
     let grant = *lp.peers[1].engine.grant(&y, &a, &Edge { role: Role::Write, until: None, may_grant: false, retain: false, floor: None }).unwrap().commits.last().unwrap();
@@ -1043,7 +1043,7 @@ fn record_and_reach(x_below: bool) -> (Reason, Tid, Option<Value>) {
     sync(&mut lp, 1, 0);
     // 2 reads x too: else no sync ID it syncs carries the commit's part on x
     let x = loop {
-        let admin = lp.peers[0].engine.me();
+        let admin = lp.peers[0].engine.tid();
         let mut m = Mutation::new();
         let x = lp.peers[0].engine.new_thing(&mut m, admin);
         if (x < y) == x_below {
@@ -1350,7 +1350,7 @@ fn a_failed_write_in_a_waking_arrival_leaves_the_wait_due_spec_commits_4() {
         for n in 0.. {
             let mut lp = net(3, 0);
             let t = new_thing(&mut lp, 0);
-            let (w, r) = (lp.peers[1].engine.me(), lp.peers[2].engine.me());
+            let (w, r) = (lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
             set_edge(&mut lp.peers[0].engine, t, r, Some(edge(osis_base::Role::Read)), None);
             sync(&mut lp, 0, 2);
             let g = set_edge(&mut lp.peers[0].engine, t, w, Some(edge(osis_base::Role::Write)), None);

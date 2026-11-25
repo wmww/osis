@@ -22,14 +22,14 @@ fn world(n: usize, roles: &[Role]) -> (LocalPeer, Tid) {
 fn build(n: usize, roles: &[Role]) -> (LocalPeer, Tid) {
     let mut lp = LocalPeer::fresh(n, T0);
     lp.sync_all().unwrap();
-    let me = lp.peers[0].engine.me();
+    let me = lp.peers[0].engine.tid();
     let mut m = Mutation::new();
     let t = lp.peers[0].engine.new_thing(&mut m, me);
     m.set(t, &ak("x:a.0"), &Value::Int(0)).unwrap();
     lp.peers[0].commit(m).unwrap();
     lp.hold(t);
     for (i, r) in roles.iter().enumerate() {
-        let who = lp.peers[i + 1].engine.me();
+        let who = lp.peers[i + 1].engine.tid();
         lp.peers[0].engine.grant(&t, &who, &edge(*r)).unwrap();
     }
     lp.sync_all().unwrap();
@@ -49,7 +49,7 @@ fn write(lp: &mut LocalPeer, by: usize, t: Tid, a: &str, v: i64) -> CommitId {
 /// received before its `ts`.
 fn remove(lp: &mut LocalPeer, by: usize, t: Tid, holder: usize) -> CommitId {
     lp.advance(1000);
-    let h = lp.peers[holder].engine.me();
+    let h = lp.peers[holder].engine.tid();
     let d = Demotion { holder: h, new: None, retain: None };
     let id = *lp.peers[by].engine.demote(&t, &d).unwrap().commits.last().unwrap();
     lp.advance(1000);
@@ -119,7 +119,7 @@ fn unsynced_removal_witnessed_by_a_writer_spec_perm_5_2() {
             assert_eq!(valid(&lp, p, &e, t, "x:e.0"), carol_saw, "peer {p}, carol saw {carol_saw}");
             assert_eq!(reads(&mut lp, p, t, "x:e.0"), carol_saw.then_some(Value::Int(7)), "peer {p}");
         }
-        let carol = lp.peers[2].engine.me();
+        let carol = lp.peers[2].engine.tid();
         let by_carol = addenda(&lp, 0, t).into_iter().filter(|(a, _)| *a == carol).count();
         assert_eq!(by_carol, usize::from(carol_saw), "Carol vouches iff she received it in time");
         assert!(addenda(&lp, 0, t).iter().all(|(a, _)| *a == carol), "nobody else saw it: no other addendum");
@@ -169,14 +169,14 @@ fn a_fallen_addendum_is_vouched_for_in_turn_spec_perm_5_2() {
     lp.sync(1, 2).unwrap();
     remove(&mut lp, 0, t, 1);
     lp.sync(0, 2).unwrap();
-    let carol = lp.peers[2].engine.me();
+    let carol = lp.peers[2].engine.tid();
     let (_, a) = addenda(&lp, 2, t).into_iter().find(|(x, _)| *x == carol).unwrap();
     // Dave receives Carol's addendum (and the edit), Alice does not
     lp.sync(2, 3).unwrap();
     lp.advance(1000);
     remove(&mut lp, 0, t, 2);
     lp.sync_all().unwrap();
-    let dave = lp.peers[3].engine.me();
+    let dave = lp.peers[3].engine.tid();
     assert!(addenda(&lp, 0, t).iter().any(|(x, _)| *x == dave), "Dave vouches for Carol's addendum");
     for p in [0, 2, 3] {
         assert!(valid(&lp, p, &a, t, ct::ADDENDA_AK), "peer {p}: Carol's addendum counts again");
@@ -223,7 +223,7 @@ fn a_long_frontier_overflows_into_the_removers_addenda_spec_perm_5_1() {
     let f = lp.peers[0].engine.core.ix.commits.get(&r).unwrap().view.frontier.clone().unwrap();
     let listed = es.iter().filter(|(_, id)| f.covers(id)).count();
     assert!(listed < es.len(), "the frontier left some out: {listed}");
-    let alice = lp.peers[0].engine.me();
+    let alice = lp.peers[0].engine.tid();
     assert!(addenda(&lp, 0, t).iter().any(|(x, _)| *x == alice), "the remover's addendum carries the rest");
     lp.sync_all().unwrap();
     for p in [0, 2] {
@@ -246,7 +246,7 @@ fn regrant_restores_what_no_writer_saw_spec_perm_5_2() {
     lp.sync(0, 2).unwrap();
     assert!(!valid(&lp, 2, &e, t, "x:e.0"));
     assert_eq!(reads(&mut lp, 2, t, "x:e.0"), None);
-    let bob = lp.peers[1].engine.me();
+    let bob = lp.peers[1].engine.tid();
     lp.peers[0].engine.grant(&t, &bob, &edge(Role::Write)).unwrap();
     lp.advance(1000);
     lp.sync_all().unwrap();
@@ -295,7 +295,7 @@ fn holder_world() -> (LocalPeer, Tid, Tid, CommitId, CommitId) {
 
 fn build_holder() -> (LocalPeer, Tid, Tid, CommitId, CommitId) {
     let (mut lp, n) = build(4, &[Role::Read, Role::Write]);
-    let (bob, me3) = (lp.peers[1].engine.me(), lp.peers[3].engine.me());
+    let (bob, me3) = (lp.peers[1].engine.tid(), lp.peers[3].engine.tid());
     let mut m = Mutation::new();
     let holder = lp.peers[3].engine.new_thing(&mut m, me3);
     lp.peers[3].commit(m).unwrap();
@@ -363,7 +363,7 @@ fn a_second_writer_answers_beside_the_first_once_spec_perm_5_2() {
     lp.sync(1, 3).unwrap();
     let r = remove(&mut lp, 0, t, 1);
     lp.sync(0, 2).unwrap();
-    let (carol, dave) = (lp.peers[2].engine.me(), lp.peers[3].engine.me());
+    let (carol, dave) = (lp.peers[2].engine.tid(), lp.peers[3].engine.tid());
     let (_, a) = addenda(&lp, 2, t).into_iter().find(|(x, _)| *x == carol).unwrap();
     // Dave gets Carol's addendum before the removal it answers
     let pk = lp.peers[2].engine.package(&a).unwrap().unwrap();
@@ -397,7 +397,7 @@ fn a_bodiless_addendum_is_judged_by_its_header_spec_perm_5_2() {
     lp.sync(1, 2).unwrap();
     remove(&mut lp, 0, t, 1);
     lp.sync(0, 2).unwrap();
-    let carol = lp.peers[2].engine.me();
+    let carol = lp.peers[2].engine.tid();
     let (_, a) = addenda(&lp, 2, t).into_iter().find(|(x, _)| *x == carol).unwrap();
     remove(&mut lp, 0, t, 2);
     lp.sync(0, 3).unwrap();
@@ -479,7 +479,7 @@ fn a_removed_writers_invalid_commits_are_forgotten_spec_commits_5() {
     let (mut lp, t, edits, b) = removed_writer_writes(30);
     let bytes = |c: &Census| c.values().map(|v| v.1).sum::<usize>();
     assert!(b.iter().all(|(k, v)| v.0 <= a.get(k).map_or(0, |x| x.0)) && bytes(&b) <= bytes(&a) + 64, "rows by kind {a:?} at n, {b:?} at 10n");
-    let bob = lp.peers[1].engine.me();
+    let bob = lp.peers[1].engine.tid();
     lp.peers[0].engine.grant(&t, &bob, &edge(Role::Write)).unwrap();
     lp.advance(1000);
     lp.sync_all().unwrap();
@@ -499,7 +499,7 @@ fn a_regrant_after_everyone_judged_them_invalid_brings_them_back_spec_perm_6() {
     let last = *edits.last().unwrap();
     assert!(!valid(&lp, 1, &last, t, "x:e.0"), "Bob judges his edit invalid too");
     assert!(lp.peers[1].engine.commit_bytes(&last).unwrap().is_some(), "Bob keeps his own body");
-    let bob = lp.peers[1].engine.me();
+    let bob = lp.peers[1].engine.tid();
     lp.peers[0].engine.grant(&t, &bob, &edge(Role::Write)).unwrap();
     lp.advance(1000);
     lp.sync_all().unwrap();
@@ -564,14 +564,14 @@ fn removed_writers_writes(seed: u64) -> (usize, bool) {
     let [a, b, c] = p;
     let mut lp = LocalPeer::fresh(3, T0);
     lp.sync_all().unwrap();
-    let alice = lp.peers[a].engine.me();
+    let alice = lp.peers[a].engine.tid();
     let mut m = Mutation::new();
     let t = lp.peers[a].engine.new_thing(&mut m, alice);
     m.set(t, &ak("x:v.0"), &Value::Int(0)).unwrap();
     lp.peers[a].commit(m).unwrap();
     lp.hold(t);
     for i in [b, c] {
-        let who = lp.peers[i].engine.me();
+        let who = lp.peers[i].engine.tid();
         lp.peers[a].engine.grant(&t, &who, &edge(Role::Write)).unwrap();
     }
     lp.sync_all().unwrap();
@@ -609,7 +609,7 @@ fn removed_writers_writes(seed: u64) -> (usize, bool) {
     if tie == 0 {
         lp.advance(1);
     }
-    let bob = lp.peers[b].engine.me();
+    let bob = lp.peers[b].engine.tid();
     let r = *lp.peers[a].engine.demote(&t, &Demotion { holder: bob, new: None, retain: None }).unwrap().commits.last().unwrap();
     let r_ts = lp.peers[a].engine.header(&r).unwrap().ts;
     if tie == 2 {
@@ -672,13 +672,13 @@ fn a_compaction_around_a_write_at_its_removals_ts_reads_alike_spec_perm_5_2() {
         for bob_compacts in [false, true] {
             let mut lp = LocalPeer::fresh(3, T0);
             lp.sync_all().unwrap();
-            let alice = lp.peers[a].engine.me();
+            let alice = lp.peers[a].engine.tid();
             let mut m = Mutation::new();
             let t = lp.peers[a].engine.new_thing(&mut m, alice);
             m.set(t, &ak("x:v.0"), &Value::Int(0)).unwrap();
             lp.peers[a].commit(m).unwrap();
             lp.hold(t);
-            let (bob, carol) = (lp.peers[b].engine.me(), lp.peers[c].engine.me());
+            let (bob, carol) = (lp.peers[b].engine.tid(), lp.peers[c].engine.tid());
             for who in [bob, carol] {
                 lp.peers[a].engine.grant(&t, &who, &edge(Role::Write)).unwrap();
             }
@@ -747,13 +747,13 @@ fn a_write_at_its_authors_grants_ts_is_before_the_grant_spec_perm_5_2() {
     for [a, b] in [[0, 1], [1, 0]] {
         let mut lp = LocalPeer::fresh(2, T0);
         lp.sync_all().unwrap();
-        let alice = lp.peers[a].engine.me();
+        let alice = lp.peers[a].engine.tid();
         let mut m = Mutation::new();
         let t = lp.peers[a].engine.new_thing(&mut m, alice);
         m.set(t, &ak("x:v.0"), &Value::Int(0)).unwrap();
         lp.peers[a].commit(m).unwrap();
         lp.hold(t);
-        let bob = lp.peers[b].engine.me();
+        let bob = lp.peers[b].engine.tid();
         lp.peers[a].engine.grant(&t, &bob, &edge(Role::Read)).unwrap();
         lp.sync_all().unwrap();
         lp.advance(1000);
@@ -789,15 +789,15 @@ fn an_addendum_at_its_authors_removals_ts_counts_when_vouched_for_spec_perm_5_2(
     for [a, b, c, d] in [[0, 1, 2, 3], [2, 1, 0, 3]] {
         let mut lp = LocalPeer::fresh(4, T0);
         lp.sync_all().unwrap();
-        let alice = lp.peers[a].engine.me();
+        let alice = lp.peers[a].engine.tid();
         let mut m = Mutation::new();
         let t = lp.peers[a].engine.new_thing(&mut m, alice);
         m.set(t, &ak("x:a.0"), &Value::Int(0)).unwrap();
         lp.peers[a].commit(m).unwrap();
         lp.hold(t);
-        let (bob, carol) = (lp.peers[b].engine.me(), lp.peers[c].engine.me());
+        let (bob, carol) = (lp.peers[b].engine.tid(), lp.peers[c].engine.tid());
         for i in [b, c, d] {
-            let who = lp.peers[i].engine.me();
+            let who = lp.peers[i].engine.tid();
             lp.peers[a].engine.grant(&t, &who, &edge(Role::Write)).unwrap();
         }
         lp.sync_all().unwrap();
@@ -858,7 +858,7 @@ fn a_removed_writers_later_snapshot_drops_nothing_spec_commits_5() {
 /// `author` there that it covers (spec/commits.md §5 Forgetting): what a list can no longer name.
 fn forget_under_own_snapshot(lp: &mut LocalPeer, p: usize, author: usize, t: Tid, a: &str) -> CommitId {
     let a = ak(a);
-    let x = lp.peers[author].engine.me();
+    let x = lp.peers[author].engine.tid();
     let s = lp.peers[p].engine.snapshot(&t, &a).unwrap().unwrap();
     let e = &mut lp.peers[p].engine;
     let mine: Vec<CommitId> = e.core.held_on(&(t, a.clone())).filter(|c| e.core.ix.commits.get(c).is_some_and(|m| m.view.signer == x)).collect();
@@ -984,7 +984,7 @@ fn a_voided_removal_leaves_holders_as_they_were_spec_perm_5_1() {
     let d = &mut lp.peers[3].engine;
     assert_eq!(d.covered(&own[0], &e, &t, &a).unwrap(), Some(true), "the own cover covers Dave's copy");
     assert!(d.own_kept_under(&own[0], &e, &t, &a).unwrap(), "Dave keeps it: only Alice drops under her own cover");
-    let dave = lp.peers[3].engine.me();
+    let dave = lp.peers[3].engine.tid();
     let by_dave: Vec<CommitId> = addenda(&lp, 3, t).into_iter().filter(|(x, _)| *x == dave).map(|(_, c)| c).collect();
     assert_eq!(by_dave.len(), 1, "Dave answers the removal");
     let lists = lp.peers[3].engine.core.ix.addenda.get(&(t, by_dave[0])).unwrap().clone();
@@ -1187,7 +1187,7 @@ fn a_witness_granted_write_after_the_removal_writes_its_addendum_then_spec_perm_
     remove(&mut lp, 0, t, 1);
     lp.sync(0, 2).unwrap();
     assert!(addenda(&lp, 2, t).is_empty(), "a reader writes none");
-    let carol = lp.peers[2].engine.me();
+    let carol = lp.peers[2].engine.tid();
     lp.peers[0].engine.grant(&t, &carol, &edge(Role::Write)).unwrap();
     lp.advance(1000);
     lp.sync(0, 2).unwrap();
@@ -1202,7 +1202,7 @@ fn a_witness_granted_write_after_the_removal_writes_its_addendum_then_spec_perm_
 /// after everything so far.
 fn demote_to(lp: &mut LocalPeer, t: Tid, to: Option<Role>) -> CommitId {
     lp.advance(1000);
-    let bob = lp.peers[1].engine.me();
+    let bob = lp.peers[1].engine.tid();
     let d = Demotion { holder: bob, new: to.map(edge), retain: None };
     let id = *lp.peers[0].engine.demote(&t, &d).unwrap().commits.last().unwrap();
     lp.advance(1000);
@@ -1224,7 +1224,7 @@ fn admin_only_content_is_kept_by_an_admin_witness_spec_perm_5_2() {
         lp.advance(1);
         demote_to(&mut lp, t, to);
         lp.sync_all().unwrap();
-        let (carol, dave) = (lp.peers[2].engine.me(), lp.peers[3].engine.me());
+        let (carol, dave) = (lp.peers[2].engine.tid(), lp.peers[3].engine.tid());
         let by: Vec<Tid> = addenda(&lp, 0, t).into_iter().map(|(a, _)| a).collect();
         assert!(by.contains(&carol), "Carol, an admin, writes one ({to:?})");
         assert!(!by.contains(&dave), "Dave, a writer, owes none ({to:?})");
@@ -1288,7 +1288,7 @@ fn an_edit_received_in_time_that_applies_late_is_vouched_for_spec_perm_5_2() {
     lp.hold_at(2, t2);
     lp.peers[2].reexamine().unwrap();
     assert!(lp.peers[2].engine.core.ix.commits.contains_key(&e), "the edit applies at Carol");
-    let carol = lp.peers[2].engine.me();
+    let carol = lp.peers[2].engine.tid();
     assert_eq!(addenda(&lp, 2, t2).iter().filter(|(a, _)| *a == carol).count(), 1, "Carol vouches once it applies");
 }
 
@@ -1314,7 +1314,7 @@ fn an_edit_applying_in_its_removals_round_is_vouched_for_spec_perm_5_2() {
     lp.peers[2].clock.advance(ahead);
     lp.peers[2].reexamine().unwrap();
     assert!([e, r].iter().all(|c| lp.peers[2].engine.core.ix.commits.contains_key(c)), "both apply at Carol");
-    let carol = lp.peers[2].engine.me();
+    let carol = lp.peers[2].engine.tid();
     assert_eq!(addenda(&lp, 2, t).iter().filter(|(a, _)| *a == carol).count(), 1, "Carol vouches for the edit");
     lp.sync_all().unwrap();
     for p in 0..3 {
@@ -1337,7 +1337,7 @@ fn a_thing_an_addendum_brings_into_the_closure_gets_its_addendum_then_spec_perm_
     lp.advance(1);
     remove(&mut lp, 0, t, 1);
     lp.sync(0, 2).unwrap();
-    let carol = lp.peers[2].engine.me();
+    let carol = lp.peers[2].engine.tid();
     let by_carol = |lp: &LocalPeer, x: Tid| addenda(lp, 2, x).iter().filter(|(a, _)| *a == carol).count();
     assert_eq!(by_carol(&lp, t), 1, "Carol vouches for the strong on t");
     assert!(lp.peers[2].engine.closure_holds(&t2), "the strong counts: t2 is in Carol's node closure");
@@ -1363,7 +1363,7 @@ fn an_addendum_owed_across_a_restart_is_written_spec_perm_5_2() {
     assert!(addenda(&lp, 2, t).is_empty(), "nothing written while off");
     lp.peers[2].restart(7).unwrap();
     let mut m = Mutation::new();
-    let me = lp.peers[2].engine.me();
+    let me = lp.peers[2].engine.tid();
     lp.peers[2].engine.new_thing(&mut m, me);
     lp.peers[2].commit(m).unwrap();
     assert_eq!(addenda(&lp, 2, t).iter().filter(|(a, _)| *a == me).count(), 1, "written after the restart");
@@ -1386,9 +1386,9 @@ fn elsewhere_cost(n: usize) -> (u64, u64) {
     lp.advance(1);
     remove(&mut lp, 0, t, 1);
     lp.sync(0, 2).unwrap();
-    let carol = lp.peers[2].engine.me();
+    let carol = lp.peers[2].engine.tid();
     assert_eq!(addenda(&lp, 2, t).iter().filter(|(a, _)| *a == carol).count(), 1, "Carol answers");
-    let dave = lp.peers[3].engine.me();
+    let dave = lp.peers[3].engine.tid();
     lp.peers[0].engine.grant(&t, &dave, &edge(Role::Write)).unwrap();
     lp.advance(1000);
     osis_base::costs::take();
@@ -1417,7 +1417,7 @@ fn a_role_change_elsewhere_rescans_no_candidates_spec_perm_5_2() {
 fn rows_after_answers(k: usize) -> (usize, usize, usize) {
     let mut lp = LocalPeer::fresh(3, T0);
     lp.sync_all().unwrap();
-    let alice = lp.peers[0].engine.me();
+    let alice = lp.peers[0].engine.tid();
     let mut ts = Vec::new();
     for _ in 0..k {
         let mut m = Mutation::new();
@@ -1426,7 +1426,7 @@ fn rows_after_answers(k: usize) -> (usize, usize, usize) {
         lp.peers[0].commit(m).unwrap();
         lp.hold(t);
         for i in 1..3 {
-            let who = lp.peers[i].engine.me();
+            let who = lp.peers[i].engine.tid();
             lp.peers[0].engine.grant(&t, &who, &edge(Role::Write)).unwrap();
         }
         ts.push(t);
@@ -1442,7 +1442,7 @@ fn rows_after_answers(k: usize) -> (usize, usize, usize) {
         remove(&mut lp, 0, *t, 1);
     }
     lp.sync(0, 2).unwrap();
-    let carol = lp.peers[2].engine.me();
+    let carol = lp.peers[2].engine.tid();
     let wrote = ts.iter().map(|t| addenda(&lp, 2, *t).iter().filter(|(a, _)| *a == carol).count()).sum();
     (before, crate::flows::addenda::rows_held(&lp.peers[2].engine.core), wrote)
 }
@@ -1470,7 +1470,7 @@ fn answered_removals_hold_no_role_rows() {
 #[test]
 fn a_cut_of_the_stated_path_owes_an_addendum_whatever_another_path_gives_spec_perm_5_2() {
     let (mut lp, t) = world(4, &[Role::Write, Role::Write, Role::Admin]);
-    let (bob, dave) = (lp.peers[1].engine.me(), lp.peers[3].engine.me());
+    let (bob, dave) = (lp.peers[1].engine.tid(), lp.peers[3].engine.tid());
     let mut m = Mutation::new();
     let q = lp.peers[3].engine.new_thing(&mut m, dave);
     lp.peers[3].commit(m).unwrap();
@@ -1494,7 +1494,7 @@ fn a_cut_of_the_stated_path_owes_an_addendum_whatever_another_path_gives_spec_pe
     lp.deliver(2, &pk).unwrap();
     lp.advance(1000);
     lp.peers[2].tick().unwrap();
-    let carol = lp.peers[2].engine.me();
+    let carol = lp.peers[2].engine.tid();
     assert_eq!(lp.peers[2].engine.core.timelines().role(&bob, &t, osis_perm::At::END), Some(Role::Write), "Bob keeps write through Q");
     assert_eq!(addenda(&lp, 2, t).iter().filter(|(a, _)| *a == carol).count(), 1, "Carol answers R: e rests on Bob's own grant, whatever Q gives");
     let pk = lp.peers[3].engine.package(&r1).unwrap().unwrap();
@@ -1518,7 +1518,7 @@ fn a_cut_of_the_stated_path_owes_an_addendum_whatever_another_path_gives_spec_pe
 #[test]
 fn a_late_removal_of_a_members_other_holder_makes_an_addendum_owed_spec_perm_5_2() {
     let (mut lp, t) = world(4, &[Role::Read, Role::Write, Role::Admin]);
-    let yan = lp.peers[1].engine.me();
+    let yan = lp.peers[1].engine.tid();
     let mut holders = Vec::new();
     for _ in 0..2 {
         let mut m = Mutation::new();
@@ -1557,7 +1557,7 @@ fn a_late_removal_of_a_members_other_holder_makes_an_addendum_owed_spec_perm_5_2
     lp.deliver(2, &pk).unwrap();
     lp.advance(1000);
     lp.peers[2].tick().unwrap();
-    let carol = lp.peers[2].engine.me();
+    let carol = lp.peers[2].engine.tid();
     assert_eq!(lp.peers[2].engine.core.timelines().role(&yan, &t, osis_perm::At::END), Some(Role::Write), "Yan keeps write through P");
     assert!(addenda(&lp, 2, t).iter().all(|(a, _)| *a != carol), "nothing owed while Yan keeps write");
     let pk = lp.peers[3].engine.package(&r1).unwrap().unwrap();
@@ -1579,7 +1579,7 @@ fn a_late_removal_of_a_members_other_holder_makes_an_addendum_owed_spec_perm_5_2
 #[test]
 fn a_lowerings_scope_holds_what_a_commit_just_applied_writes_spec_perm_5_1() {
     let (mut lp, t) = world(2, &[Role::Write]);
-    let (alice, bob) = (lp.peers[0].engine.me(), lp.peers[1].engine.me());
+    let (alice, bob) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
     let mut m = Mutation::new();
     let u = lp.peers[0].engine.new_thing(&mut m, alice);
     lp.peers[0].commit(m).unwrap();

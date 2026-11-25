@@ -1,7 +1,7 @@
 //! The client port, node side (spec/wire.md §11.2 kinds 24-29, spec/sync-transport.md §6): sync
 //! carries Auth, Call, Sub and Unsub on its sessions (`osis_sync::PortEvent`) and the handle
-//! answers them here, off the node lock, as ordinary calls on itself or, for a client-actor
-//! session, on a handle acting as the client's actor (notes/client-port.md §3). One request at a
+//! answers them here, off the node lock, as ordinary calls on itself or, for a client
+//! session, on a handle acting as the client's thing (notes/client-port.md §3). One request at a
 //! time, in order: the one loop feeding the node's inputs serves them (`ReadOnly::step`).
 //!
 //! State, in `Locked` (memory only: a restart forgets it, and a client resending a write then
@@ -32,18 +32,18 @@ pub(crate) const RESENT: u64 = 1 << 62;
 /// Who a session acts as.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum Who {
-    /// The node's main actor (a unix session).
+    /// The node itself (a main session, on the unix socket).
     Main,
-    /// A client actor, by the hash of the secret its Auth sent.
-    Client { actor: Tid, hash: [u8; 32] },
+    /// A client's thing, by the hash of the secret its Auth sent.
+    Client { thing: Tid, hash: [u8; 32] },
 }
 
 impl Who {
-    /// Whose write nonces these are: a client's sessions share its actor's.
+    /// Whose write nonces these are: a client's sessions share its thing's.
     fn ident(self) -> Option<Tid> {
         match self {
             Who::Main => None,
-            Who::Client { actor, .. } => Some(actor),
+            Who::Client { thing, .. } => Some(thing),
         }
     }
 }
@@ -117,13 +117,13 @@ impl Port {
         self.sessions.remove(&conn)
     }
 
-    /// Drops the sessions that ended (`current`: the clients that authenticate now, by actor)
+    /// Drops the sessions that ended (`current`: the clients that authenticate now, by thing)
     /// and the write outcomes of every client not among them; returns the sessions, to drop off
     /// the lock (their subscriptions).
     fn prune(&mut self, current: &BTreeMap<Tid, [u8; 32]>) -> Vec<Session> {
         let live = |w: Who| match w {
             Who::Main => true,
-            Who::Client { actor, hash } => current.get(&actor) == Some(&hash),
+            Who::Client { thing, hash } => current.get(&thing) == Some(&hash),
         };
         let ended: Vec<ConnId> = self.sessions.iter().filter(|(_, s)| !live(s.who)).map(|(c, _)| *c).collect();
         self.nonces.retain(|(ident, _), _| ident.is_none_or(|a| current.contains_key(&a)));
@@ -225,7 +225,7 @@ fn respond(db: &ReadOnly, conn: ConnId, id: osis_sync::session::RequestId, m: Ms
 }
 
 /// Auth (spec/wire.md §11.2): a main session on the unix transport without a secret; a
-/// client-actor session elsewhere with its bearer secret, once; at most `MAX_CONNS_PER_CLIENT`
+/// client session elsewhere with its bearer secret, once; at most `MAX_CONNS_PER_CLIENT`
 /// sessions of one client and `MAX_CLIENTS` of all. Ended sessions go first: they hold no slot,
 /// and a client that can no longer authenticate keeps no write outcomes, so what the port holds
 /// is bounded by the clients that can (no timer needed: every later request of an ended
@@ -239,15 +239,15 @@ fn auth(db: &ReadOnly, conn: ConnId, secret: Option<[u8; 32]>, id: [u8; 16]) -> 
         (None, true) => Who::Main,
         (Some(s), false) if !matches!(had, Some(Who::Client { .. })) => {
             let hash = osis_base::hash::hash(&s);
-            let Some(actor) = holder(&current, &hash) else { return error(Code::REFUSED) };
+            let Some(thing) = holder(&current, &hash) else { return error(Code::REFUSED) };
             let (mine, all) = db.locked(|l| {
                 let clients = || l.port.sessions.iter().filter(|(c, _)| **c != conn).filter_map(|(_, s)| s.who.ident());
-                (clients().filter(|a| *a == actor).count(), clients().count())
+                (clients().filter(|a| *a == thing).count(), clients().count())
             });
             if mine >= MAX_CONNS_PER_CLIENT || all >= MAX_CLIENTS {
                 return error(Code::RATE_LIMITED);
             }
-            Who::Client { actor, hash }
+            Who::Client { thing, hash }
         }
         _ => return error(Code::REFUSED),
     };
@@ -255,7 +255,7 @@ fn auth(db: &ReadOnly, conn: ConnId, secret: Option<[u8; 32]>, id: [u8; 16]) -> 
     reply(Outcome::Ok { value: Value::List(Vec::new()) })
 }
 
-/// The `clients^.0` entries that authenticate now (`until` not passed): actor to secret hash.
+/// The `clients^.0` entries that authenticate now (`until` not passed): thing to secret hash.
 /// The node's own read, whatever `db` acts as (a session's callback checks it).
 fn clients(db: &ReadOnly) -> BTreeMap<Tid, [u8; 32]> {
     let now = db.inner.clock.now_wall_ms();
@@ -263,23 +263,23 @@ fn clients(db: &ReadOnly) -> BTreeMap<Tid, [u8; 32]> {
     entries.into_iter().filter(|(_, c)| c.until.is_none_or(|u| u.0 > now.0)).map(|(a, c)| (a.0, c.secret_hash)).collect()
 }
 
-/// The client actor of `current` whose secret hash is `hash` (compared in constant time).
+/// The client's thing of `current` whose secret hash is `hash` (compared in constant time).
 fn holder(current: &BTreeMap<Tid, [u8; 32]>, hash: &[u8; 32]) -> Option<Tid> {
     current.iter().find(|(_, h)| same(&h[..], hash)).map(|(a, _)| *a)
 }
 
-/// The client actor of the `clients^.0` entry whose secret hash is `hash`, its `until` not
+/// The client's thing of the `clients^.0` entry whose secret hash is `hash`, its `until` not
 /// passed.
 fn client_of(db: &ReadOnly, hash: &[u8; 32]) -> Option<Tid> {
     holder(&clients(db), hash)
 }
 
-/// The session on `conn`, checked now: a client-actor session ends when its entry goes, its
-/// secret hash changes or its `until` passes (spec/wire.md §11.2 End of a client-actor session).
+/// The session on `conn`, checked now: a client session ends when its entry goes, its
+/// secret hash changes or its `until` passes (spec/wire.md §11.2 End of a client session).
 fn session(db: &ReadOnly, conn: ConnId) -> Option<(Who, [u8; 16])> {
     let (who, id) = db.locked(|l| l.port.sessions.get(&conn).map(|s| (s.who, s.id)))?;
-    if let Who::Client { actor, hash } = who
-        && client_of(db, &hash) != Some(actor)
+    if let Who::Client { thing, hash } = who
+        && client_of(db, &hash) != Some(thing)
     {
         let gone = db.locked(|l| l.port.sessions.remove(&conn));
         drop(gone);
@@ -292,11 +292,11 @@ fn session(db: &ReadOnly, conn: ConnId) -> Option<(Who, [u8; 16])> {
 fn handle(db: &ReadOnly, who: Who) -> crate::Osis {
     match who {
         Who::Main => crate::Osis::internal(db.inner.clone(), None),
-        Who::Client { actor, .. } => crate::Osis::internal(db.inner.clone(), Some(actor)),
+        Who::Client { thing, .. } => crate::Osis::internal(db.inner.clone(), Some(thing)),
     }
 }
 
-/// A Call: run as the session's actor, its reply within `max_reply`.
+/// A Call: run as the session's thing, its reply within `max_reply`.
 fn call(db: &ReadOnly, conn: ConnId, max_reply: u64, method: u64, args: Vec<Value>) -> Msg {
     let Some((who, id)) = session(db, conn) else { return error(Code::REFUSED) };
     let h = handle(db, who);
@@ -316,7 +316,7 @@ fn call(db: &ReadOnly, conn: ConnId, max_reply: u64, method: u64, args: Vec<Valu
 
 /// A thing a row names: one this node reads at another node is no answer of its own (the port
 /// never waits on another node, notes/client-port.md §8): a main session's row is
-/// `Unsupported`; a client actor reads it as unknown (`readable_by` denies it).
+/// `Unsupported`; a client's thing reads it as unknown (`readable_by` denies it).
 fn here(h: &crate::Osis, t: Tid) -> Result<Tid> {
     match h.source(t)? {
         crate::sources::Source::Node(_) if h.acting.is_none() => Err(Error::Unsupported("a thing this node reads at another node: not through its port".into())),
@@ -324,10 +324,10 @@ fn here(h: &crate::Osis, t: Tid) -> Result<Tid> {
     }
 }
 
-/// What a client-actor session asking for a row of the node's own state hears (spec/wire.md
+/// What a client session asking for a row of the node's own state hears (spec/wire.md
 /// §11.2: code 11).
 fn main_only() -> Error {
-    Error::Unsupported("not for a client actor: the node's own state".into())
+    Error::Unsupported("not for a client's thing: the node's own state".into())
 }
 
 /// `here` for each of `things`.
@@ -335,7 +335,7 @@ fn here_all(h: &crate::Osis, things: &[Tid]) -> Result<()> {
     things.iter().try_for_each(|t| here(h, *t).map(drop))
 }
 
-/// Runs `f` on the thing `args` names (`here`), read as the session's actor.
+/// Runs `f` on the thing `args` names (`here`), read as the session's thing.
 fn thing<R: Form>(h: &crate::Osis, args: Value, f: impl FnOnce(&mut Reader<'_>, Tid) -> Result<R>) -> Result<Value> {
     on(args, |(t,)| {
         let t = here(h, t)?;
@@ -585,7 +585,7 @@ fn told_on_change(first: &Value, source: Value, when: fn(&Delivery) -> bool, mut
 }
 
 /// `t`'s `ak` read as `db` reads, as a Notify of a thing filter when it reads otherwise than
-/// `last` (absent when never told: a thing the actor may not read tells nothing).
+/// `last` (absent when never told: a thing the session's thing may not read tells nothing).
 fn aspect_told(db: &ReadOnly, last: &mut BTreeMap<Ak, Option<Digest>>, t: Tid, ak: Ak, origin: &crate::Origin, limit: Value) -> Option<(Value, Value)> {
     let value = db.read_as().read(db, |r| r.value(t, &ak));
     let now = digest(&value);
@@ -706,7 +706,7 @@ fn run_write(h: &crate::Osis, method: u64, args: Vec<Value>) -> Result<Value> {
 }
 
 /// A Sub: the filter's value now in its Reply and a Notify each time it reads otherwise, read
-/// as the session's actor at each send (notes/client-port.md §2 Subscriptions as pushes).
+/// as the session's thing at each send (notes/client-port.md §2 Subscriptions as pushes).
 fn sub(db: &ReadOnly, conn: ConnId, id: osis_sync::session::RequestId, max_reply: u64, f: Value, answer: &mut dyn FnMut(&mut Locked, Msg)) {
     let mut refuse = |m: Msg| db.locked(|l| answer(l, m));
     let Some((who, _)) = session(db, conn) else { return refuse(error(Code::REFUSED)) };

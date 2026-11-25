@@ -469,9 +469,9 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             let raw = ctx.g.raw;
             let lines: Vec<String> = hs.iter().map(|h| {
                 let via = if h.through.is_empty() { String::new() } else { format!(" via {}", h.through.iter().map(|t| t.to_uri()).collect::<Vec<_>>().join(",")) };
-                format!("{} {:?} {} {}{via}", h.actor.to_uri(), h.kind, role_text(h.role), h.until.map_or("-".into(), |u| ts_text(raw, u.0)))
+                format!("{} {:?} {} {}{via}", h.thing.to_uri(), h.kind, role_text(h.role), h.until.map_or("-".into(), |u| ts_text(raw, u.0)))
             }).collect();
-            let j = J::Arr(hs.iter().map(|h| J::obj([("actor", J::tid(h.actor)), ("kind", J::str(format!("{:?}", h.kind))), ("role", J::str(role_text(h.role))), ("until", J::opt(h.until.map(|u| J::int(u.0)))), ("through", J::tids(&h.through))])).collect());
+            let j = J::Arr(hs.iter().map(|h| J::obj([("thing", J::tid(h.thing)), ("kind", J::str(format!("{:?}", h.kind))), ("role", J::str(role_text(h.role))), ("until", J::opt(h.until.map(|u| J::int(u.0)))), ("through", J::tids(&h.through))])).collect());
             ctx.emit(&lines, j)
         }
         Cmd::Now => {
@@ -554,7 +554,7 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             let c: osis::Link = ctx.arg_text(&card)?.parse()?;
             let account = ctx.account()?;
             let a = confirm(ctx, account.realm().import_contact(&db, &c))?;
-            ctx.one("actor", a.to_uri())
+            ctx.one("thing", a.to_uri())
         }
         Cmd::Disputes(DisputeCmd::Ls) => {
             let (ds, left) = db.disputes()?;
@@ -1061,7 +1061,7 @@ fn grants_out(r: &osis::Grants, raw: bool) -> (Vec<String>, J) {
         let until = e.until.map_or("-".into(), |u| ts_text(raw, u.0));
         format!("{} {} {}{}{}", m.to_uri(), role_text(e.role), until, if e.may_grant { " may-grant" } else { "" }, if e.from_now { " from-now" } else { "" })
     });
-    let j = r.iter().map(|(m, e)| J::obj([("actor", J::tid(*m)), ("role", J::str(role_text(e.role))), ("until", J::opt(e.until.map(|u| J::int(u.0)))), ("may_grant", J::Bool(e.may_grant)), ("from_now", J::Bool(e.from_now))]));
+    let j = r.iter().map(|(m, e)| J::obj([("holder", J::tid(*m)), ("role", J::str(role_text(e.role))), ("until", J::opt(e.until.map(|u| J::int(u.0)))), ("may_grant", J::Bool(e.may_grant)), ("from_now", J::Bool(e.from_now))]));
     (lines.collect(), J::Arr(j.collect()))
 }
 
@@ -1080,7 +1080,7 @@ fn diag_line(d: &osis::Diagnostic, json: bool) -> String {
         D::OwnWriteInvalid { commit, things, detail } => ("OwnWriteInvalid", things.clone(), Some(*commit), None, detail),
         D::Mismatch { thing, detail } => ("Mismatch", vec![*thing], None, None, detail),
         D::Unreadable { thing, detail } => ("Unreadable", vec![*thing], None, None, detail),
-        D::LostAccess { actor, detail } => ("LostAccess", vec![*actor], None, None, detail),
+        D::LostAccess { thing, detail } => ("LostAccess", vec![*thing], None, None, detail),
         D::NotCarried { thing, target, detail } => ("NotCarried", vec![*thing, *target], None, None, detail),
         D::Stranded { thing, detail } => ("Stranded", vec![*thing], None, None, detail),
         D::EphemeralRefused { things, detail } => ("EphemeralRefused", things.clone(), None, None, detail),
@@ -1257,22 +1257,22 @@ fn clients(ctx: &mut Ctx<'_>, c: &ClientsCmd) -> anyhow::Result<()> {
                 Some(a) => ctx.tid(a)?,
                 None => ctx.me()?,
             };
-            let (actor, secret) = ctx.db.add_client(admin, opt_ts(until)?)?;
+            let (thing, secret) = ctx.db.add_client(admin, opt_ts(until)?)?;
             let s = hex::encode(secret.expose());
-            ctx.emit(&[format!("{} {s}", actor.to_uri())], J::obj([("actor", J::tid(actor)), ("secret", J::str(s.clone()))]))
+            ctx.emit(&[format!("{} {s}", thing.to_uri())], J::obj([("thing", J::tid(thing)), ("secret", J::str(s.clone()))]))
         }
         ClientsCmd::Ls => {
             let cs = ctx.db.clients()?;
-            let lines = cs.iter().map(|c| format!("{} {}", c.actor.to_uri(), c.until.map_or("-".to_string(), |u| u.0.to_string()))).collect::<Vec<_>>();
-            let j = J::Arr(cs.iter().map(|c| J::obj([("actor", J::tid(c.actor)), ("until", c.until.map_or(J::Null, |u| J::int(u.0)))])).collect());
+            let lines = cs.iter().map(|c| format!("{} {}", c.thing.to_uri(), c.until.map_or("-".to_string(), |u| u.0.to_string()))).collect::<Vec<_>>();
+            let j = J::Arr(cs.iter().map(|c| J::obj([("thing", J::tid(c.thing)), ("until", c.until.map_or(J::Null, |u| J::int(u.0)))])).collect());
             ctx.emit(&lines, j)
         }
-        ClientsCmd::Rm { actor } => {
-            let a = ctx.tid(actor)?;
+        ClientsCmd::Rm { thing } => {
+            let a = ctx.tid(thing)?;
             if ctx.db.remove_client(a)? { Ok(()) } else { Err(exit(3, "no such client")) }
         }
-        ClientsCmd::Rotate { actor } => {
-            let a = ctx.tid(actor)?;
+        ClientsCmd::Rotate { thing } => {
+            let a = ctx.tid(thing)?;
             let s = hex::encode(ctx.db.rotate_client_secret(a)?.expose());
             ctx.emit(std::slice::from_ref(&s), J::str(s.clone()))
         }

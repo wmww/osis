@@ -988,18 +988,18 @@ fn relay_busy_spec_sync_10() {
 // to, an unspecified IP standing for the routes' local addresses of the families it serves,
 // then its relays; local, loopback and carrier-NAT addresses are not listed.
 #[test]
-fn reach_items_global_addresses_spec_sync_10() {
-    use osis_transport::p2p::reach_items;
+fn peer_url_items_global_addresses_spec_sync_10() {
+    use osis_transport::p2p::peer_url_items;
     let relay = Relay { key: [7; 32], addr: sa("192.0.2.1:4040") }.item();
     let routes = [ip("192.168.1.5"), ip("2001:db8::5")];
     let wide = [ip("203.0.113.7"), ip("2001:db8::5")];
-    assert_eq!(reach_items(&peer_url(&["[::]:47381".into(), relay.clone()]), &wide), vec!["203.0.113.7:47381".to_owned(), "[2001:db8::5]:47381".into(), relay.clone()]);
-    assert_eq!(reach_items(&peer_url(&["[::]:47381".into(), relay.clone()]), &routes), vec!["[2001:db8::5]:47381".to_owned(), relay.clone()]);
-    assert_eq!(reach_items(&peer_url(&["0.0.0.0:9".into()]), &wide), vec!["203.0.113.7:9".to_owned()]);
-    assert_eq!(reach_items(&peer_url(&["0.0.0.0:9".into()]), &[ip("100.64.0.9"), ip("10.0.0.2")]), Vec::<String>::new());
-    assert_eq!(reach_items(&peer_url(&["127.0.0.1:9".into(), "[fd00::1]:9".into(), "[fe80::1]:9".into()]), &wide), Vec::<String>::new());
-    assert_eq!(reach_items(&peer_url(&["203.0.113.8:9".into()]), &[]), vec!["203.0.113.8:9".to_owned()]);
-    assert_eq!(reach_items("mem://a", &wide), Vec::<String>::new());
+    assert_eq!(peer_url_items(&peer_url(&["[::]:47381".into(), relay.clone()]), &wide), vec!["203.0.113.7:47381".to_owned(), "[2001:db8::5]:47381".into(), relay.clone()]);
+    assert_eq!(peer_url_items(&peer_url(&["[::]:47381".into(), relay.clone()]), &routes), vec!["[2001:db8::5]:47381".to_owned(), relay.clone()]);
+    assert_eq!(peer_url_items(&peer_url(&["0.0.0.0:9".into()]), &wide), vec!["203.0.113.7:9".to_owned()]);
+    assert_eq!(peer_url_items(&peer_url(&["0.0.0.0:9".into()]), &[ip("100.64.0.9"), ip("10.0.0.2")]), Vec::<String>::new());
+    assert_eq!(peer_url_items(&peer_url(&["127.0.0.1:9".into(), "[fd00::1]:9".into(), "[fe80::1]:9".into()]), &wide), Vec::<String>::new());
+    assert_eq!(peer_url_items(&peer_url(&["203.0.113.8:9".into()]), &[]), vec!["203.0.113.8:9".to_owned()]);
+    assert_eq!(peer_url_items("mem://a", &wide), Vec::<String>::new());
 }
 
 // spec/sync-transport.md §3 (relaying): a key the relay stops allowing loses its registration at its next

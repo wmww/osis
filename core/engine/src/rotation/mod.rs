@@ -160,7 +160,7 @@ fn walk_from(tx: &mut Tx<'_>, who: &Tid, a: &Tid, r: Role, root: (Tid, osis_cryp
     let (mut missed, mut boxed) = (false, false);
     while let Some((x, k, read)) = todo.pop() {
         osis_base::costs::count("rotation: keysets walked", 1);
-        if (full || !missed) && (read || tx.core.me() == x) {
+        if (full || !missed) && (read || tx.core.tid() == x) {
             let known = if x == *a { deps.to_vec() } else { departures(tx, &x)? };
             let deps = others(tx.core, &x, Some(r), known);
             let un = uncovered_by(tx, &x, r, &k, &deps)?;
@@ -191,7 +191,7 @@ fn walk_from(tx: &mut Tx<'_>, who: &Tid, a: &Tid, r: Role, root: (Tid, osis_cryp
             let mine = match *own {
                 Some(b) => b,
                 None => {
-                    let p = tx.core.me();
+                    let p = tx.core.tid();
                     let b = match walk != Walk::Log {
                         true => {
                             let known = departures(tx, &p)?;
@@ -297,7 +297,7 @@ pub(crate) fn uncovered_by<'d>(tx: &mut Tx<'_>, x: &Tid, r: Role, k: &osis_crypt
 /// new epoch, so what it writes after the leave is never sealed to the party that left
 /// (spec/crypto.md §4 Exception; roles-model `leave`, control `-rotating`).
 pub(crate) fn others(core: &Core, x: &Tid, r: Option<Role>, deps: Vec<Departure>) -> Vec<Departure> {
-    let me = core.me();
+    let me = core.tid();
     let rot = may_rotate(core, &me, x);
     let may_not = |d: &Departure| match r {
         Some(r) => !rot.contains(&r),
@@ -528,7 +528,7 @@ pub(crate) fn cut_into(tx: &mut Tx<'_>, m: &mut Mutation, a: Tid, roles: &BTreeS
         let blind = *m.blind.get_or_insert_with(|| crate::engine::write::draw_blind(&mut *tx.rng));
         let author = match m.signer {
             Some(s) => s,
-            None => tx.core.me(),
+            None => tx.core.tid(),
         };
         Some(osis_keys::Own { ts: ts.to_u64(), author, blind })
     } else {
@@ -553,7 +553,7 @@ pub(crate) fn cut_into(tx: &mut Tx<'_>, m: &mut Mutation, a: Tid, roles: &BTreeS
 pub(crate) fn unreached(tx: &mut Tx<'_>, a: &Tid, rot: &Rotation) -> Result<Vec<Tid>> {
     let Some(epochs) = tx.core.epochs(a) else { return Ok(Vec::new()) };
     let secrets = secrets_in(tx, a)?;
-    let me = tx.core.me();
+    let me = tx.core.tid();
     let mut out: Vec<Tid> = rot.secrets.boxes.keys().map(|k| k.holder.0).filter(|m| *m != me).collect();
     out.sort();
     out.dedup();
@@ -609,7 +609,7 @@ pub(crate) fn rotate_now(tx: &mut Tx<'_>, who: Tid, a: Tid, roles: &BTreeSet<Rol
 /// Rotates `roles` of `a` in a commit of its own, signed by `who`, boxing every holder.
 fn rotate_alone(tx: &mut Tx<'_>, who: Tid, a: Tid, roles: &BTreeSet<Role>, done: &mut Done) -> Result<()> {
     let mut m = Mutation::new();
-    if who != tx.core.me() {
+    if who != tx.core.tid() {
         m.sign_as(who);
     }
     commit_rotating(tx, m, who, a, roles, &[], Departs::No, done).map(|_| ())
@@ -851,7 +851,7 @@ pub(crate) fn own_secrets_new(tx: &mut Tx<'_>, rec: osis_base::CreationRecord, a
     // as its commit would judge the creation, before anything is held of it: signed by the key
     // it is minted with as it, else by this node
     let creates = BTreeMap::from([(t, rec.clone())]);
-    let signer = if rec.key().is_some() { t } else { tx.core.me() };
+    let signer = if rec.key().is_some() { t } else { tx.core.tid() };
     crate::engine::write::check_authority(tx.core, signer, &|x| creates.get(x), &t, osis_commit::retention::CREATED, tx.core.hlc.peek())?;
     let Some((c, rot, to)) = own_secrets_rot(tx, t, Some(rec), also, seed, done)? else { return Err(Error::Misuse("a new thing is made independent")) };
     recorded(tx, t, c, &rot, &to, done)?;
@@ -880,7 +880,7 @@ fn own_secrets_rot(tx: &mut Tx<'_>, t: Tid, rec: Option<osis_base::CreationRecor
     if !key && tx.core.created(&t).is_some_and(|r| r.key().is_some()) {
         return Err(Error::Misuse("the keysets of a thing minted with a key are not held here"));
     }
-    let who = if key { t } else { tx.core.me() };
+    let who = if key { t } else { tx.core.tid() };
     // its boxes make its mint admin a holder actor of `t`, which is made independent first, as
     // a grant's holder does (spec/permissions.md §3): a dependent one has no keyset to be sealed at, so
     // it is left out and its holders lose `t` (where this node administers it). Up the record
@@ -907,7 +907,7 @@ fn own_secrets_rot(tx: &mut Tx<'_>, t: Tid, rec: Option<osis_base::CreationRecor
     if let Some(r) = rec {
         m.create(r);
     }
-    if key && t != tx.core.me() {
+    if key && t != tx.core.tid() {
         m.sign_as(t);
     }
     let rot = cut_into(tx, &mut m, t, &ROLES.into_iter().collect(), &held, &holders, Departs::No, false, seed)?;
@@ -938,7 +938,7 @@ fn own_secrets_rot(tx: &mut Tx<'_>, t: Tid, rec: Option<osis_base::CreationRecor
 /// be sealed at, so no rotation of what it holds a role on boxes it: its members read nothing new
 /// there, and rotators reaching it only through it hold no epoch there (`boxes_rotator`).
 pub(crate) fn own_secrets_candidates(core: &Core, a: &Tid) -> Vec<Tid> {
-    let me = core.me();
+    let me = core.tid();
     // only a thing minted with a mint admin is ever dependent
     let plain = |t: &Tid| !core.is_independent(t) && core.mint_admin(t).is_some() && core.secret_actor(t) == Some(*a) && core.role_now(&me, t) == Some(Role::Admin);
     // a scan per call; only dependent targets and holders go further
@@ -990,7 +990,7 @@ fn reseal_scan(tx: &mut Tx<'_>, a: &Tid) -> Result<Vec<(Tid, BTreeSet<Role>)>> {
     // the roles at now it reads (`may_rotate`, `ended_holders`) hold until the clock reaches the
     // next `until` or role commit in `a`'s component, which holds its holders
     let _horizon = tx.core.bound_to_horizon(std::iter::once(*a));
-    let me = tx.core.me();
+    let me = tx.core.tid();
     let may = may_rotate(tx.core, &me, a);
     if may.is_empty() {
         return Ok(Vec::new());
@@ -1063,7 +1063,7 @@ pub(crate) fn reseal_one_into(tx: &mut Tx<'_>, a: Tid, holder: Tid, roles: &BTre
     // encrypted under its recipient's key (`members::sealed` leaves out a blocked keyset of a
     // holder actor), not under the epoch it carries (spec/crypto.md §4, Encrypting under), so
     // nobody new reads under a blocked epoch
-    let me = tx.core.me();
+    let me = tx.core.tid();
     let before = done.commits.len();
     ensure_rotated(tx, me, a, done)?;
     let epochs = tx.core.epochs(&a).ok_or(Error::Misuse("no secrets held for the actor"))?;
@@ -1152,7 +1152,7 @@ pub(crate) fn history_boxes(tx: &mut Tx<'_>, who: &Tid, a: &Tid) -> Result<Histo
 pub(crate) fn add_history(tx: &mut Tx<'_>, a: Tid) -> Result<Done> {
     let mut done = Done::default();
     let Some(epochs) = tx.core.epochs(&a) else { return Ok(done) };
-    let me = tx.core.me();
+    let me = tx.core.tid();
     let Some(role) = tx.core.role_now(&me, &a) else { return Ok(done) };
     // only at roles held: an add needs the role its keys name (a holder lowered still holds
     // the higher role's secrets, and its own departure does not block it)
@@ -1182,7 +1182,7 @@ pub(crate) fn tip_add(tx: &mut Tx<'_>, a: Tid) -> Result<Done> {
     // no floors: nothing is dropped and nobody re-added without history
     let Some(epochs) = tx.core.epochs(&a).filter(|e| e.read.has_floors()) else { return Ok(done) };
     let dropped: BTreeSet<osis_crypto::Epoch> = epochs.read.dropped().into_iter().collect();
-    let me = tx.core.me();
+    let me = tx.core.tid();
     if !may_rotate(tx.core, &me, &a).contains(&Role::Read) {
         return Ok(done);
     }
@@ -1245,7 +1245,7 @@ impl Engine {
         let a = *actor;
         self.run(|tx| {
             let mut done = Done::default();
-            let me = tx.core.me();
+            let me = tx.core.tid();
             let still = ensure_rotated(tx, me, a, &mut done)?;
             Ok((done, still))
         })
@@ -1260,7 +1260,7 @@ impl Engine {
         let mut out = None;
         let r = self.run(|tx| {
             let mut done = Done::default();
-            let me = tx.core.me();
+            let me = tx.core.tid();
             let still = ensure_rotated(tx, me, a, &mut done)?;
             if done.commits.is_empty() {
                 out = Some(still);
@@ -1313,7 +1313,7 @@ impl Engine {
         // next `until` or role commit on what reaches `a` and the actor it follows
         let _horizon = self.core.bound_to_horizon(std::iter::once(a).chain(secret_actor_up(&self.core, &a)));
         let owed = self.read(|tx| {
-            let me = tx.core.me();
+            let me = tx.core.tid();
             owed_below(tx, me, a)
         })?;
         // the judgement is what a run would write (its own reads apart)
@@ -1389,7 +1389,7 @@ impl Engine {
             let mut done = Done::default();
             // a node removed from its account writes nothing as it (it may still hold the read
             // secrets through the pass its drop waits for)
-            let me = tx.core.me();
+            let me = tx.core.tid();
             pass_end_rotations(tx, me, a, &mut done)?;
             let mut due = reseal_candidates(tx, &a)?;
             if !due.is_empty() {
@@ -1397,7 +1397,7 @@ impl Engine {
                 // (`reseal_one` would make them before its re-seal): the candidates are read from
                 // the state they leave, where a holder a rotation boxed or left out is none (an
                 // ended holder is none either way, `ended_holders`)
-                let me = tx.core.me();
+                let me = tx.core.tid();
                 ensure_rotated(tx, me, a, &mut done)?;
                 due = reseal_candidates(tx, &a)?;
             }
@@ -1441,7 +1441,7 @@ impl Engine {
             let mut done = Done::default();
             // a node removed from its account writes nothing as it (it may still hold the read
             // secrets through the pass its drop waits for)
-            let me = tx.core.me();
+            let me = tx.core.tid();
             pass_end_rotations(tx, me, a, &mut done)?;
             Ok(done)
         })
@@ -1454,7 +1454,7 @@ impl Engine {
         let (a, m) = (*actor, *holder);
         self.run(|tx| {
             let role = tx.core.key_holders(&a).into_iter().find(|(x, _)| *x == m).map(|x| x.1).ok_or(Error::Misuse("not a current holder"))?;
-            let me = tx.core.me();
+            let me = tx.core.tid();
             let may = may_rotate(tx.core, &me, &a);
             let roles: BTreeSet<Role> = ROLES.into_iter().filter(|r| *r <= role && may.contains(r)).collect();
             if roles.is_empty() {

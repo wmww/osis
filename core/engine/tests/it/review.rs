@@ -29,7 +29,7 @@ fn nested_write_under_invalid_entry_spec_crdt_4_6() {
     let mut lp = net_off(3, 0);
     lp.sync_all().unwrap();
     let t = new_thing(&mut lp, 0);
-    let (b, c) = (lp.peers[1].engine.me(), lp.peers[2].engine.me());
+    let (b, c) = (lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
     set_edge(&mut lp.peers[0].engine, t, b, Some(edge(Role::Write)), None);
     set_edge(&mut lp.peers[0].engine, t, c, Some(edge(Role::Write)), None);
     lp.sync_all().unwrap();
@@ -231,7 +231,7 @@ fn snapshot_frontier_valid_only_spec_crdt_8() {
     let mut lp = net(2, 0);
     lp.sync_all().unwrap();
     let t = new_shared(&mut lp, 0);
-    let b = lp.peers[1].engine.me();
+    let b = lp.peers[1].engine.tid();
     set_edge(&mut lp.peers[0].engine, t, b, Some(edge(Role::Write)), None);
     sync(&mut lp, 0, 1);
     let scope = DemotionScope { roles: [(b, [t].into())].into(), content: [(b, [t].into())].into() };

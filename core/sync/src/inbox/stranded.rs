@@ -307,9 +307,9 @@ mod tests {
         use osis_engine::local_peer::LocalPeer;
         let mut lp = LocalPeer::new(2, 0, WallMs(1_000_000)).unwrap();
         lp.sync_all().unwrap();
-        let m = lp.peers[1].engine.me();
+        let m = lp.peers[1].engine.tid();
         let mut mu = osis_engine::Mutation::new();
-        let me = lp.peers[0].engine.me();
+        let me = lp.peers[0].engine.tid();
         let g = lp.peers[0].engine.new_thing(&mut mu, me);
         lp.peers[0].commit(mu).unwrap();
         lp.peers[0].engine.make_independent(&g).unwrap();

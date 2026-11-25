@@ -1,5 +1,5 @@
 # Client credentials name what they act as
-> Summary: Default policy (Tess): a unix socket opens unauthenticated as the node's main actor; a localhost or network listener lets a client act only as things it has cryptographically authenticated for. Today the transport decides (socket: main actor; secret: a client actor minted for it). Build credentials that name what the client acts as.
+> Summary: Default policy (Tess): a unix socket opens unauthenticated as the node itself; a localhost or network listener lets a client act only as things it has cryptographically authenticated for. Today the transport decides (socket: node itself; secret: a client's thing minted for it). Build credentials that name what the client acts as.
 > Priority: low
 > Tags: api, osis, security, tess-call
 

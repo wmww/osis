@@ -222,7 +222,7 @@ pub(crate) fn write_owed(tx: &mut Tx<'_>) -> Result<()> {
     if !tx.core.addenda_on {
         return Ok(());
     }
-    let me = tx.core.me();
+    let me = tx.core.tid();
     let mut ds = std::mem::take(&mut tx.core.addenda_owed);
     let due: Vec<CommitId> = tx.core.ix.addenda_due.iter().copied().collect();
     for r in due {
@@ -329,7 +329,7 @@ fn report(tx: &mut Tx<'_>, r: CommitId, e: &crate::Error) {
 /// a thing entering the node closure, its minting or keys arriving.
 fn decide(tx: &mut Tx<'_>, r: &CommitId) -> Result<(Owes, BTreeSet<Tid>)> {
     let (mut out, mut read) = (BTreeMap::new(), BTreeSet::new());
-    let me = tx.core.me();
+    let me = tx.core.tid();
     if !tx.core.ix.commits.contains_key(r) {
         return Ok((Arc::new(out), read));
     }
@@ -357,7 +357,7 @@ fn own_role(core: &mut Core, n: Tid) -> Option<Role> {
 
 /// `Core::own_roles`' derivation.
 fn own_role_now(core: &mut Core, n: &Tid) -> std::result::Result<Option<Role>, std::convert::Infallible> {
-    Ok(core.role_now(&core.me(), n))
+    Ok(core.role_now(&core.tid(), n))
 }
 
 /// Brings `Core::own_roles` up to date.
@@ -387,7 +387,7 @@ pub(crate) fn missed(tx: &mut Tx<'_>) -> Result<Option<String>> {
     if !tx.core.addenda_on {
         return Ok(None);
     }
-    let me = tx.core.me();
+    let me = tx.core.tid();
     // the decides read the rows as last refreshed: refreshed as the next judgement does
     refresh_roles(tx.core);
     let rs: Vec<CommitId> = tx.core.ix.commits.iter().filter(|(id, m)| m.view.kind.is_role() && m.view.frontier.is_some() && !tx.core.ix.addenda_due.contains(id)).map(|(id, _)| *id).collect();

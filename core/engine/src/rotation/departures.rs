@@ -298,7 +298,7 @@ fn own_author(core: &Core, c: &osis_base::CommitId, signer: &Tid) -> bool {
 /// Whether this node's own things administer `h` (its account): a self-removal of `h` is the
 /// node's own, whichever of `h`'s nodes made it (spec/crypto.md §4 Exception).
 fn administered(core: &Core, h: &Tid) -> bool {
-    core.is_own(h) || core.role_now(&core.me(), h) == Some(Role::Admin)
+    core.is_own(h) || core.role_now(&core.tid(), h) == Some(Role::Admin)
 }
 
 /// Whether applied role commit `c` is an own self-removal (`own_removal_on`) on one of

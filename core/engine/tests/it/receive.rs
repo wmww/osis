@@ -67,7 +67,7 @@ fn dedup_and_events_spec_commits_4() {
     });
     let (origin, changed, author) = last.unwrap();
     assert_eq!(origin, Origin::Remote);
-    assert_eq!(author, lp.peers[0].engine.me());
+    assert_eq!(author, lp.peers[0].engine.tid());
     assert!(changed.contains(&(t, ak("t:reg.0"))));
 }
 
@@ -79,7 +79,7 @@ fn pending_until_created_spec_commits_4() {
     // 1 reads t; it holds nothing of 0's
     sync(&mut lp, 1, 0);
     let t = new_thing(&mut lp, 0);
-    let r = lp.peers[1].engine.me();
+    let r = lp.peers[1].engine.tid();
     set_edge(&mut lp.peers[0].engine, t, r, Some(edge(Role::Read)), None);
     let mut m = Mutation::new();
     m.set(t, &REG, &s("second")).unwrap();
@@ -89,7 +89,7 @@ fn pending_until_created_spec_commits_4() {
     lp.hold_fires(true);
     let r = lp.deliver(1, pks.last().unwrap()).unwrap();
     assert!(matches!(r, Ingested::Pending(_, Reason::MissingChain(_))), "{r:?}");
-    let me = lp.peers[0].engine.me();
+    let me = lp.peers[0].engine.tid();
     let scope = osis_engine::DemotionScope { roles: Default::default(), content: [(me, [t].into())].into() };
     let now = lp.peers[1].engine.now();
     assert!(!lp.peers[1].engine.frontier(&scope, now).unwrap().commits.contains(&pks.last().unwrap().id), "not judged: not received");
@@ -132,12 +132,12 @@ fn a_removal_ordered_before_a_part_is_evidence_spec_commits_4() {
     use osis_schema::Codec;
     use osis_schema::core_types::{Edge, ROLES};
     let mut lp = net_apart(3, 0);
-    let a = lp.peers[0].engine.me();
+    let a = lp.peers[0].engine.tid();
     sync(&mut lp, 0, 1);
     sync(&mut lp, 2, 1);
     let t = new_thing(&mut lp, 1);
     // 2 reads t
-    let r = lp.peers[2].engine.me();
+    let r = lp.peers[2].engine.tid();
     set_edge(&mut lp.peers[1].engine, t, r, Some(edge(Role::Read)), None);
     let mut m = Mutation::new();
     let u = lp.peers[1].engine.new_thing(&mut m, t);
@@ -268,7 +268,7 @@ fn drift_parks_spec_crdt_2_2() {
     assert!(lp.peers[1].engine.pending().is_empty());
     assert_eq!(lp.peers[1].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("future")));
     // the HLC moved past the received ts
-    let me = lp.peers[1].engine.me();
+    let me = lp.peers[1].engine.tid();
     let mut m = Mutation::new();
     let t2 = lp.peers[1].engine.new_thing(&mut m, me);
     m.set(t2, &REG, &s("x")).unwrap();
@@ -354,7 +354,7 @@ fn parked_spec_versioning_2() {
     let delta = osis_base::encode(&Value::List(vec![Value::Bytes(vec![0; 16]), Value::List(vec![]), Value::List(vec![]), Value::List(vec![Value::Int(99)])]));
     let mut w = AspectWrite::new(t, ak("t:future.0"), 100, 101, delta);
     w.purge_by = osis_base::PurgeBy::Writer;
-    let mut b = CommitBuilder::new(Kind::Content, ts, e.me(), osis_commit::Path::default(), crate::common::forged_session(e.me()));
+    let mut b = CommitBuilder::new(Kind::Content, ts, e.tid(), osis_commit::Path::default(), crate::common::forged_session(e.tid()));
     b.aspects.push(w);
     let forge_key = e.identity().signing().clone();
     let built = b.build(&forge_key, &e.hand_secrets(&[rec]), &mut MemoryBlobs::default(), &mut SeededRng::from_u64(0)).unwrap();
@@ -389,12 +389,12 @@ fn parked_spec_versioning_2() {
 fn a_pending_commit_keeps_its_evidence_spec_commits_5() {
     let mut lp = net(3, 0);
     let t = new_thing(&mut lp, 0);
-    let r = lp.peers[2].engine.me();
+    let r = lp.peers[2].engine.tid();
     set_edge(&mut lp.peers[0].engine, t, r, Some(edge(Role::Read)), None);
     for pk in packages_to(&mut lp, 0, 2) {
         lp.deliver(2, &pk).unwrap();
     }
-    let b = lp.peers[1].engine.me();
+    let b = lp.peers[1].engine.tid();
     set_edge(&mut lp.peers[0].engine, t, b, Some(edge(Role::Write)), None);
     sync(&mut lp, 0, 1);
     let w = ["one", "two"].map(|v| {
@@ -429,12 +429,12 @@ fn grantee_waits_for_grant_spec_commits_4() {
     let mut lp = net(3, 0);
     let t = new_thing(&mut lp, 0);
     // peer 2 reads t first
-    let r = lp.peers[2].engine.me();
+    let r = lp.peers[2].engine.tid();
     set_edge(&mut lp.peers[0].engine, t, r, Some(edge(Role::Read)), None);
     for pk in packages_to(&mut lp, 0, 2) {
         lp.deliver(2, &pk).unwrap();
     }
-    let b = lp.peers[1].engine.me();
+    let b = lp.peers[1].engine.tid();
     set_edge(&mut lp.peers[0].engine, t, b, Some(edge(Role::Write)), None);
     sync(&mut lp, 0, 1);
     let mut m = Mutation::new();

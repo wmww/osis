@@ -55,7 +55,7 @@ struct World {
 fn build(seed: u64) -> (LocalPeer, Tid) {
     let mut lp = LocalPeer::new(NODES, seed, T0).unwrap();
     lp.sync_all().unwrap();
-    let a = lp.peers[0].engine.me();
+    let a = lp.peers[0].engine.tid();
     let (t, _) = lp.peers[0].engine.create_with_admin(&a).unwrap();
     let mut m = Mutation::new();
     // a relative bound on `big` and `mix` (when replaced is judged), purge on replace on `reg`
@@ -66,7 +66,7 @@ fn build(seed: u64) -> (LocalPeer, Tid) {
     lp.peers[0].commit(m).unwrap();
     lp.hold(t);
     for w in [1, 2, 3] {
-        let w = lp.peers[w].engine.me();
+        let w = lp.peers[w].engine.tid();
         lp.peers[0].engine.grant(&t, &w, &ct::Edge { role: Role::Write, until: None, may_grant: false, retain: false, floor: None }).unwrap();
     }
     lp.sync_all().unwrap();
@@ -178,7 +178,7 @@ fn edited(v: Option<Value>, r: &mut Rng, g: u64) -> Value {
 
 /// Node 0 removes writer `who` with a frontier before all its writes: the removal's commit.
 fn demote_peer(w: &mut World, who: usize) -> CommitId {
-    let (t, x) = (w.t, w.lp.peers[who].engine.me());
+    let (t, x) = (w.t, w.lp.peers[who].engine.tid());
     let scope = crate::apply::receipt::DemotionScope { roles: BTreeMap::from([(x, std::collections::BTreeSet::from([t]))]), content: BTreeMap::from([(x, std::collections::BTreeSet::from([t]))]) };
     let f = w.lp.peers[0].engine.frontier(&scope, T0).unwrap();
     let mut m = Mutation::new();
@@ -854,7 +854,7 @@ fn own_replace_passes_hole_whole_or_paged_spec_crdt_8() {
     let pks = script(&mut w);
     w.lp.deliver(3, &pks[0]).unwrap();
     let e = &w.lp.peers[3].engine;
-    let me = e.me();
+    let me = e.tid();
     let held = e.core.ix.snapshots.get(&(w.t, aks()[3].clone())).cloned().unwrap_or_default();
     let cover = held.iter().find(|(_, c, _, _, _)| e.core.ix.commits.get(c).is_some_and(|m| m.view.signer == me)).expect("node 3 covers its replaced write");
     assert!(cover.2.sources().any(|(_, f)| f == 2), "the cover passes the hole below node 1's replace: {:?}", cover.2);
@@ -936,7 +936,7 @@ fn hand(w: &mut World) -> crate::engine::secrets::HandSecrets {
 fn forge_snapshot_sec(w: &mut World, by: usize, ak: &Ak, ts: osis_base::Ts, f: osis_crdt::Fragment, mutate: &dyn Fn(usize, &mut Vec<u8>), memory: bool, reroot: Option<Reroot<'_>>, sec: crate::engine::secrets::HandSecrets) -> Package {
     use osis_commit::{Form, Kind, writer_ctx};
     let t = w.t;
-    let author = w.lp.peers[by].engine.me();
+    let author = w.lp.peers[by].engine.tid();
     let purge_by = osis_commit::retention::snapshot_purge_by(ak.as_str());
     let keys = osis_commit::delete_keys(&sec, &t, &purge_by).unwrap();
     let framing = osis_blob::Framing { thing: t, dedup: osis_commit::Secrets::dedup(&sec, &t).unwrap(), expiry: None, keys: keys.iter().map(|k| (k.level, k.verifying_key().unwrap())).collect(), class: if memory { osis_blob::Class::Ephemeral } else { osis_blob::Class::Durable } };
@@ -971,7 +971,7 @@ fn forge_snapshot_sec(w: &mut World, by: usize, ak: &Ak, ts: osis_base::Ts, f: o
 #[allow(clippy::too_many_arguments)]
 fn seal_snapshot(w: &mut World, by: usize, ak: &Ak, ts: osis_base::Ts, sec: &crate::engine::secrets::HandSecrets, bytes: Vec<u8>, blobs: osis_blob::MemoryBlobs, memory: bool) -> Package {
     use osis_commit::{AspectWrite, CommitBuilder, Form, Kind};
-    let author = w.lp.peers[by].engine.me();
+    let author = w.lp.peers[by].engine.tid();
     let mut aw = AspectWrite::new(w.t, ak.clone(), 0, 0, bytes);
     aw.purge_by = osis_commit::retention::snapshot_purge_by(ak.as_str());
     let mut cb = CommitBuilder::new(Kind::ContentSnapshot, ts, author, osis_commit::Path::default(), Form::Commit);
@@ -1063,7 +1063,7 @@ fn page_not_framed_for_its_delta_is_bad_spec_crypto_7() {
         let mut blobs = osis_blob::MemoryBlobs::default();
         let snap = osis_crdt::Snapshot { absorbed: Default::default(), facts: Default::default(), nonce: [7; 16], fragment: forged_map(now, ENTRIES, 0x80), frontiers: Default::default() };
         let mut sink = Reframing { framing: framed, split, blobs: &mut blobs, rng: osis_crypto::SeededRng::from_u64(0), relink: &fix };
-        let bytes = osis_crdt::encode_snapshot(&snap, &writer_ctx(Form::Commit, Kind::ContentSnapshot, now, w.lp.peers[by].engine.me(), 0, 0), Some(&mut sink)).unwrap();
+        let bytes = osis_crdt::encode_snapshot(&snap, &writer_ctx(Form::Commit, Kind::ContentSnapshot, now, w.lp.peers[by].engine.tid(), 0, 0), Some(&mut sink)).unwrap();
         drop(sink);
         assert!(blobs.0.len() >= 2, "{name}: not paged");
         let pk = seal_snapshot(&mut w, by, &a, now, &sec, bytes, blobs, false);
@@ -1227,7 +1227,7 @@ fn paged_snapshot_differing_copies_match_whole_spec_perm_5_2() {
     for (name, changed, late) in [("faithful", 0u64, false), ("differs in the last entries", 5, false), ("differs, late", 5, true)] {
         let (c, outs) = both(|w| {
             let t = w.t;
-            let b = w.lp.peers[1].engine.me();
+            let b = w.lp.peers[1].engine.tid();
             let n = ENTRIES;
             let v = |g: u64| fat_map(n, g);
             let fill = w.commit(1, |m| { m.set(t, &a, &v(0)).unwrap(); });
@@ -1465,7 +1465,7 @@ fn unmerge_leaving_empty_first_page_leaves_none_spec_perm_5_2() {
     let (c, _) = both(|w| {
         let (t, set) = (w.t, aks()[2].clone());
         let mut ws = [1usize, 2, 3];
-        ws.sort_by_key(|i| w.lp.peers[*i].engine.me());
+        ws.sort_by_key(|i| w.lp.peers[*i].engine.tid());
         let (x, y) = (ws[0], ws[2]);
         let mut fills = Vec::new();
         for (by, g) in [(x, 0), (y, 1)] {

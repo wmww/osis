@@ -39,7 +39,7 @@ impl Engine {
     /// The form this node's own session commits write under: for tests forging one.
     #[doc(hidden)]
     pub fn own_session_form(&self) -> osis_commit::Form {
-        osis_commit::Form::Session(self.core.nonce_as(&self.me(), self.core.session.nonce))
+        osis_commit::Form::Session(self.core.nonce_as(&self.tid(), self.core.session.nonce))
     }
 
     /// Writes `m` as one commit, durable or memory. `Clash` when the ops ask for both (a new
@@ -49,7 +49,7 @@ impl Engine {
     /// a thing the node holds from its root is made in one transaction with its strong. When the
     /// commit or any op fails, nothing applies. `None` when no commit is written.
     pub fn write(&mut self, mut m: Mutation) -> Result<Option<Written>> {
-        let node = self.core.me();
+        let node = self.core.tid();
         let actor = m.actor.unwrap_or(node);
         if m.confined {
             self.check_confined(&m, &actor)?;
@@ -68,10 +68,10 @@ impl Engine {
         }
         if eph_ops.is_empty() {
             let local = self.core.node_root.and_then(|r| local_part(&mut m, r));
-            let keyed = std::mem::take(&mut m.keyed);
+            let independent = std::mem::take(&mut m.independent);
             let id = self.run(|tx| {
-                if !keyed.is_empty() {
-                    crate::engine::acting::mint_with_keys(tx, keyed, std::slice::from_ref(&m), &mut crate::flows::Done::default())?;
+                if !independent.is_empty() {
+                    crate::engine::acting::mint_independent_in(tx, independent, std::slice::from_ref(&m), &mut crate::flows::Done::default())?;
                 }
                 let id = commit_in(tx, m)?;
                 Ok(match local {
@@ -84,7 +84,7 @@ impl Engine {
         // a memory commit's writes and a durable commit's are not one (spec/commits.md §2)
         // a purge request is durable whatever it names (its `purge.0` delta is no write of the app's)
         let durable = (!m.purge.is_empty()).then(|| "a purge".to_string());
-        let durable = durable.or_else(|| m.aspects.keys().next().map(|(t, k)| format!("{t} {k}"))).or_else(|| m.creates.keys().copied().chain(m.keyed.iter().map(|r| r.tid())).next().map(|t| format!("the creation of {t}")));
+        let durable = durable.or_else(|| m.aspects.keys().next().map(|(t, k)| format!("{t} {k}"))).or_else(|| m.creates.keys().copied().chain(m.independent.iter().map(|r| r.tid())).next().map(|t| format!("the creation of {t}")));
         let durable = durable.or_else(|| (!(m.dead_resets.is_empty() && m.fresh_resets.is_empty() && m.undoes.is_none())).then(|| "the rest".to_string()));
         if let (Some(d), Some((t, k, _))) = (&durable, eph_ops.first()) {
             return Err(Error::Clash(format!("a commit is durable or ephemeral, and this write is both: {t} {k} is ephemeral, {d} is not. Write them as separate commits")));

@@ -57,7 +57,7 @@ fn grant_reader(w: &mut World, t: Tid) -> Tid {
         let mut m = Mutation::new();
         // minted by the node, not by `t`: a thing of `t`'s made independent makes `t` a holder,
         // due a rotation for KEM keys (spec/crypto.md §3), a second encryption of everything
-        let me = e.me();
+        let me = e.tid();
         let x = e.new_thing(&mut m, me);
         e.commit(m).unwrap();
         e.grant(&t, &x, &edge(Role::Read)).unwrap();

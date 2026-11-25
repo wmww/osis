@@ -732,7 +732,7 @@ impl osis_commit::Secrets for CommitSecrets<'_> {
 impl<'c> CommitSecrets<'c> {
     /// A build as this node writes.
     fn own(core: &'c Core, created: &'c crate::engine::write::Creates, minted: &'c crate::engine::write::Minted, published: &'c BTreeMap<(Tid, Role), VerifyingKey>, keys: &'c KeyCache) -> Self {
-        CommitSecrets { core, purge_author: core.me(), created, minted, published, keys }
+        CommitSecrets { core, purge_author: core.tid(), created, minted, published, keys }
     }
 
     /// The delete key of role `r` of `tid`'s delete base (spec/crypto.md §7 Header list): that
@@ -974,7 +974,7 @@ mod tests {
         // a thing the node reads (its mint admin): boxes give it secrets (`rotation::may_take`)
         let e = &mut lp.peers[0].engine;
         let mut m = crate::Mutation::new();
-        let me = e.me();
+        let me = e.tid();
         let actor = e.new_thing(&mut m, me);
         m.set(actor, &osis_base::Ak::new("x:a.0").unwrap(), &osis_base::Value::Int(1)).unwrap();
         e.commit(m).unwrap().unwrap();

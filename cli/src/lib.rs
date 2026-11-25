@@ -46,7 +46,7 @@ pub(crate) fn usage(m: impl Into<String>) -> anyhow::Error {
 pub fn category(e: &Error) -> (i32, &'static str) {
     match e {
         Error::UnknownThing { .. } => (3, "UnknownThing"),
-        Error::UnknownActor { .. } => (3, "UnknownActor"),
+        Error::UnknownKeys { .. } => (3, "UnknownKeys"),
         Error::Permission { .. } => (4, "Permission"),
         Error::NotEnabled { .. } => (4, "NotEnabled"),
         Error::Refused(_) => (4, "Refused"),
@@ -116,7 +116,7 @@ fn report(e: &anyhow::Error, json: bool, err: &mut dyn Write) -> i32 {
     } else if let Some(a) = e.downcast_ref::<Error>() {
         let (c, k) = category(a);
         let (tid, needs) = match a {
-            Error::UnknownThing { tid } | Error::UnknownActor { tid } | Error::NotEnabled { tid, .. } | Error::LeavesNoAdmin { tid } => (Some(*tid), None),
+            Error::UnknownThing { tid } | Error::UnknownKeys { tid } | Error::NotEnabled { tid, .. } | Error::LeavesNoAdmin { tid } => (Some(*tid), None),
             Error::Permission { tid, needs } => (Some(*tid), Some(cmd::role_text(*needs))),
             _ => (None, None),
         };

@@ -16,7 +16,7 @@ fn making_an_account_spec_permissions_8() {
     let mut p = Peer::new(1, T0).unwrap();
     let (acc, _) = osis_engine::local_peer::make_account(&mut p.engine).unwrap();
     let e = &mut p.engine;
-    let me = e.me();
+    let me = e.tid();
     assert_eq!(e.mint_admin(&acc.thing), Some(me));
     for t in [acc.inbox, acc.profile] {
         assert_eq!(e.mint_admin(&t), Some(acc.thing));
@@ -39,7 +39,7 @@ fn making_an_account_spec_permissions_8() {
 /// A thing peer 0 mints with its node thing, held from its own root alone, made independent.
 fn independent_of_0(lp: &mut osis_engine::local_peer::LocalPeer) -> osis_base::Tid {
     let e = &mut lp.peers[0].engine;
-    let me = e.me();
+    let me = e.tid();
     let (t, _) = e.create_with_admin(&me).unwrap();
     e.make_independent(&t).unwrap();
     t
@@ -53,7 +53,7 @@ fn independent_of_0(lp: &mut osis_engine::local_peer::LocalPeer) -> osis_base::T
 fn a_strong_enters_only_what_a_unit_piece_or_offer_carries_spec_sync_set_2() {
     let mut lp = crate::common::net(2, 0);
     let (g, x) = (independent_of_0(&mut lp), independent_of_0(&mut lp));
-    let n1 = lp.peers[1].engine.me();
+    let n1 = lp.peers[1].engine.tid();
     lp.peers[0].engine.grant(&g, &n1, &crate::common::edge(Role::Read)).unwrap();
     lp.peers[0].engine.grant(&x, &g, &crate::common::edge(Role::Read)).unwrap();
     lp.hold_at(1, x);
@@ -79,7 +79,7 @@ fn a_strong_enters_only_what_a_unit_piece_or_offer_carries_spec_sync_set_2() {
 fn a_removals_piece_carries_nothing_once_the_loss_is_carried_out_spec_sync_set_2() {
     let mut lp = crate::common::net(2, 0);
     let (g, x) = (independent_of_0(&mut lp), independent_of_0(&mut lp));
-    let n1 = lp.peers[1].engine.me();
+    let n1 = lp.peers[1].engine.tid();
     lp.peers[0].engine.grant(&g, &n1, &crate::common::edge(Role::Read)).unwrap();
     lp.peers[0].engine.grant(&x, &g, &crate::common::edge(Role::Sync)).unwrap();
     lp.peers[0].engine.grant(&x, &n1, &crate::common::edge(Role::Read)).unwrap();
@@ -104,7 +104,7 @@ fn a_read_things_piece_carries_nothing_it_is_read_only_through_spec_sync_set_2()
     use crate::common::edge;
     let mut lp = crate::common::net(2, 0);
     let [u, y, h, g] = [(); 4].map(|_| independent_of_0(&mut lp));
-    let n1 = lp.peers[1].engine.me();
+    let n1 = lp.peers[1].engine.tid();
     let e0 = &mut lp.peers[0].engine;
     for (t, holder) in [(u, n1), (g, n1), (y, g), (y, u), (h, y), (y, h)] {
         e0.grant(&t, &holder, &edge(Role::Read)).unwrap();
@@ -137,7 +137,7 @@ fn a_sibling_writes_a_nodes_settings_and_cannot_sign_as_it_spec_sync_set_1() {
     let mut lp = crate::common::net(3, 0);
     let (acc, _) = osis_engine::local_peer::make_account(&mut lp.peers[0].engine).unwrap();
     let a = acc.thing;
-    let [n0, n1, n2] = [0, 1, 2].map(|i| lp.peers[i].engine.me());
+    let [n0, n1, n2] = [0, 1, 2].map(|i| lp.peers[i].engine.tid());
     lp.peers[0].engine.grant(&a, &n1, &edge(Role::Admin)).unwrap();
     lp.peers[0].engine.grant(&a, &n2, &edge(Role::Write)).unwrap();
     lp.hold_at(1, a);
@@ -207,7 +207,7 @@ fn an_offer_to_the_account_is_taken_by_its_node_spec_sync_inbox_5() {
     let mut lp = crate::common::net_one(2);
     let a = crate::common::account_of(&mut lp);
     let mut m = osis_engine::Mutation::new();
-    let me = lp.peers[0].engine.me();
+    let me = lp.peers[0].engine.tid();
     let t = lp.peers[0].engine.new_thing(&mut m, me);
     lp.peers[0].commit(m).unwrap();
     lp.peers[0].engine.make_independent(&t).unwrap();

@@ -10,7 +10,7 @@ use osis_engine::{Engine, Mutation};
 use osis_schema::core_types as ct;
 
 /// Writes (`on`) or removes a strong from `from`'s `holds.0` to `to`.
-/// One person's node (`people(1)`) and its account root D.
+/// One person's node (`people(1)`) and its node root D.
 fn alone() -> (LocalPeer, Tid) {
     let (lp, _) = people(1);
     let d = lp.peers[0].engine.node_root().unwrap();
@@ -37,8 +37,8 @@ fn make(e: &mut Engine, admin: Tid, from: Tid) -> Tid {
 }
 
 // spec/sync-set.md §1, §2: a new account's node holds its node root, its node thing (by the node
-// root's strong), the account root, the profile and the inbox. A dependent thing under the
-// account root referenced from it is held in its sync unit; removing the strong takes it out and
+// root's strong), the account, the profile and the inbox. A dependent thing minted with the
+// account as admin and referenced from it is held in its sync unit; removing the strong takes it out and
 // notes it as left with the sync unit it was in.
 #[test]
 fn the_node_closure_follows_strongs_spec_sync_set_2() {
@@ -141,7 +141,7 @@ fn removal_costs_what_it_held_spec_sync_set_2() {
 fn a_thing_leaving_two_units_at_once_notes_both_spec_sync_set_3() {
     let (mut lp, d) = alone();
     let e = &mut lp.peers[0].engine;
-    let me = e.me();
+    let me = e.tid();
     let g = make(e, me, d);
     e.make_independent(&g).unwrap();
     let a = make(e, g, g);
@@ -192,7 +192,7 @@ fn cut_work(n: usize, m: usize, edit: impl Fn(&mut Engine, Tid, Tid)) -> u64 {
     }
     // minted with the node thing: the node enters it by its record edge's piece (a thing
     // minted with the local node root would have no carrier, spec/sync-set.md §2 First entry)
-    let me = e.me();
+    let me = e.tid();
     let a = make(e, me, d);
     e.make_independent(&a).unwrap();
     for _ in 0..m {
@@ -247,7 +247,7 @@ fn a_sourced_thing_costs_what_is_below_it_spec_sync_set_5() {
     let (mut lp, d) = alone();
     let e = &mut lp.peers[0].engine;
     let x = make(e, d, d);
-    let me = e.me();
+    let me = e.tid();
     let a = make(e, me, d);
     e.make_independent(&a).unwrap();
     let y = make(e, a, a);
@@ -281,7 +281,7 @@ fn sync_units_are_the_models_plain_spec_sync_set_2() {
         let mut rng = crate::order::Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
         let (mut lp, _) = people(1);
         let e = &mut lp.peers[0].engine;
-        let (d, p) = (e.node_root().unwrap(), e.me());
+        let (d, p) = (e.node_root().unwrap(), e.tid());
         // model things 0..3 independent (minted with the node thing as admin and made independent, held by D), 3..7 dependent, minted with admin independent i % 3
         let mut tids: Vec<Tid> = (0..3).map(|_| make(e, p, d)).collect();
         for t in &tids {
@@ -387,7 +387,7 @@ fn try_make(e: &mut Engine, admin: Tid, from: Option<Tid>) -> osis_engine::Resul
 fn a_thing_is_made_only_where_it_is_held_spec_sync_set_2() {
     let (mut lp, _) = people(1);
     let e = &mut lp.peers[0].engine;
-    let (d, p) = (e.node_root().unwrap(), e.me());
+    let (d, p) = (e.node_root().unwrap(), e.tid());
     assert!(e.closure_holds(&d), "the node root");
     let (x, u) = (make(e, p, d), make(e, p, d));
     for t in [x, u] {
@@ -421,7 +421,7 @@ fn a_thing_is_made_only_where_it_is_held_spec_sync_set_2() {
 fn nested_sharing_holds_what_the_shared_thing_reads_spec_sync_set_2() {
     let (mut lp, ps) = people(2);
     let e = &mut lp.peers[0].engine;
-    let (d, p) = (e.node_root().unwrap(), e.me());
+    let (d, p) = (e.node_root().unwrap(), e.tid());
     let x = make(e, p, d);
     let y = make(e, p, x);
     let b = make(e, y, y);
@@ -438,7 +438,7 @@ fn nested_sharing_holds_what_the_shared_thing_reads_spec_sync_set_2() {
     assert!(e1.in_sync_things(&y).unwrap(), "Y's sync ID synced");
 }
 
-// spec/sync-set.md §2 Cost: adding a thing costs the same whatever else the account
+// spec/sync-set.md §2 Cost: adding a thing costs the same whatever else the node
 // root holds (n and 10n things beside it), and a cycle cut off from the node closure is released
 // whole.
 #[test]
@@ -501,7 +501,7 @@ fn a_released_thing_goes_with_its_writes_spec_sync_set_3() {
 fn lowered_to_sync_a_thing_is_kept_unread_spec_sync_set_3() {
     let (mut lp, ps) = people(2);
     let e = &mut lp.peers[0].engine;
-    let (d, p) = (e.node_root().unwrap(), e.me());
+    let (d, p) = (e.node_root().unwrap(), e.tid());
     let x = make(e, p, d);
     let reg = crate::common::REG;
     let put = |e: &mut Engine, v: &str| {
@@ -547,7 +547,7 @@ fn a_take_up_costs_what_the_opener_opens_spec_sync_set_2() {
     let work = |n: usize| {
         let (mut lp, _) = people(1);
         let e = &mut lp.peers[0].engine;
-        let (d, p) = (e.node_root().unwrap(), e.me());
+        let (d, p) = (e.node_root().unwrap(), e.tid());
         let things: Vec<Tid> = (0..n).map(|_| make(e, p, d)).collect();
         let counted = |e: &mut Engine, f: &dyn Fn(&mut Engine)| {
             osis_base::costs::take();
@@ -654,7 +654,7 @@ fn a_commit_waiting_for_a_part_keeps_what_it_is_on_spec_commits_5() {
     assert!(r.engine.core.created(&u).is_some(), "U's record");
 }
 
-/// Peer 1 reads and holds X, made by peer 0 with mint admin its account root D (outside peer 1's node
+/// Peer 1 reads and holds X, made by peer 0 with mint admin its account D (outside peer 1's node
 /// closure, needed as X's mint admin), once a pass brought what peer 0 holds: the world and D.
 fn held_minted_with_d() -> (LocalPeer, Tid) {
     let (mut lp, ps) = crate::flows::accounts(2);
@@ -710,7 +710,7 @@ fn a_commit_needs_the_thing_it_acts_as_spec_commits_5() {
     let d = lp.peers[0].engine.node_root().unwrap();
     let x = crate::common::new_shared(&mut lp, 0);
     let e0 = &mut lp.peers[0].engine;
-    let me = e0.me();
+    let me = e0.tid();
     let t = make(e0, me, d);
     let mut m = Mutation::new();
     m.set(x, &crate::common::REG, &crate::common::s("as t")).unwrap();
@@ -751,31 +751,29 @@ fn a_node_writes_only_what_it_holds_spec_sync_set_2() {
 }
 
 // spec/sync-set.md §3 (Nothing of R stays), spec/commits.md §5 (What a held thing needs): a node's
-// own things are released whole as another's are. A dependent thing minted with the account root as admin, an
-// independent thing minted with the account as admin and a dependent thing minted with the node root as admin, each written and then
-// released, keep no record, secret or part here: their record chains topping at this node or
-// its account keep nothing of them.
+// own things are released whole as another's are. Dependent things minted with the node thing and
+// with the node root as admin, each written and then released, keep no
+// record, secret or part here: their record chains topping at this node keep nothing of them.
 #[test]
 fn own_things_are_released_whole_spec_sync_set_3() {
     let (mut lp, _) = people(1);
     let e = &mut lp.peers[0].engine;
-    let (root, d) = (e.node_root().unwrap(), e.node_root().unwrap());
-    let p = e.me();
-    let (a, c) = (make(e, d, d), make(e, root, root));
+    let root = e.node_root().unwrap();
+    let p = e.tid();
+    let c = make(e, root, root);
     let b = e.create_with_admin(&p).unwrap().0;
-    for t in [a, b, c] {
+    for t in [b, c] {
         let mut m = Mutation::new();
         m.set(t, &crate::common::REG, &crate::common::s("new")).unwrap();
         e.commit(m).unwrap();
     }
-    strong(e, d, a, false);
-    strong(e, d, b, false);
+    strong(e, root, b, false);
     strong(e, root, c, false);
-    e.released(&[a, b, c].into()).unwrap();
-    for t in [a, b, c] {
+    e.released(&[b, c].into()).unwrap();
+    for t in [b, c] {
         assert!(e.core.created(&t).is_none(), "{t:?}: its record");
         assert!(!e.held_actors_has(&t), "{t:?}: its secrets");
-        // a commit with a part held elsewhere (the strong's, on D) keeps its header alone
+        // a commit with a part held elsewhere (the strong's, on the node root) keeps its header alone
         let held = e.core.on_thing(&t).filter(|c| e.core.ix.commits.get(c).is_some_and(|m| m.view.aspects.iter().enumerate().any(|(i, x)| x.tid == t && m.holds(i)))).count();
         assert_eq!(held, 0, "{t:?}: its parts");
     }
@@ -861,11 +859,11 @@ fn a_strong_in_held_history_holds_its_target_while_the_body_is_held_spec_data_mo
 
 // spec/commits.md §5 What a held thing needs: a strong in an ephemeral aspect needs its target as a
 // durable one does, and going loses that need alike. Peer 0 keeps account Q (peer 1) by such a
-// strong on its account root alone; the aspect removed, Q's chain goes at the pass's end.
+// strong on its node root alone; the aspect removed, Q's chain goes at the pass's end.
 #[test]
 fn an_ephemeral_strong_going_lets_its_target_go_spec_commits_5() {
     let mut lp = LocalPeer::new_apart(2, 0, crate::common::T0).unwrap();
-    let q = lp.peers[1].engine.me();
+    let q = lp.peers[1].engine.tid();
     let theirs: Vec<_> = lp.peers[1].engine.commit_ids();
     crate::flows::send_carried(&mut lp, 1, 0, &theirs);
     let e0 = &mut lp.peers[0].engine;
@@ -931,7 +929,7 @@ fn an_ephemeral_strong_holds_while_a_peer_holds_its_value_spec_data_model_8() {
 #[test]
 fn a_strong_in_held_history_needs_its_target_spec_commits_5() {
     let mut lp = LocalPeer::new_apart(2, 0, crate::common::T0).unwrap();
-    let q = lp.peers[1].engine.me();
+    let q = lp.peers[1].engine.tid();
     let theirs: Vec<_> = lp.peers[1].engine.commit_ids();
     crate::flows::send_carried(&mut lp, 1, 0, &theirs);
     let e0 = &mut lp.peers[0].engine;
@@ -1083,7 +1081,7 @@ fn parts_held(e: &Engine, ids: &BTreeSet<osis_base::CommitId>) -> BTreeMap<osis_
 
 /// Peer 0 makes Y (register "y") and X with mint admin Y (register "x"), and grants peer 1 read on
 /// both; every commit reaches peer 1 (`n` things of its own held first), which holds X by its
-/// account root's strong, and Y too when `y_too`; the pass ends. Y outside peer 1's node closure
+/// node root's strong, and Y too when `y_too`; the pass ends. Y outside peer 1's node closure
 /// is needed as X's mint admin.
 fn minted_with_y(n: usize, y_too: bool) -> (LocalPeer, Tid, Tid) {
     let (mut lp, ps) = people(2);

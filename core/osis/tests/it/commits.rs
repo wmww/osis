@@ -263,7 +263,7 @@ fn changes_on_as_many_things_spec_requirements_decentralization() {
     while things.len() < n {
         let mut w = a.write();
         let k = (n - things.len()).min(500);
-        // plain: minted with the account root as admin, whose keys they take
+        // plain: minted with the account as admin, whose keys they take
         things.extend((0..k).map(|_| w.create_held_with_admin(crate::common::home(&a)).unwrap()));
         w.commit().unwrap();
     }
@@ -329,7 +329,7 @@ fn commit_work(n: usize) -> std::collections::BTreeMap<String, u64> {
     costs::take();
     let r0 = osis_perm::roles_reached();
     let mut w = a.write();
-    // plain: minted with the account root as admin, whose keys they take
+    // plain: minted with the account as admin, whose keys they take
     let things: Vec<_> = (0..n).map(|_| w.create_held_with_admin(crate::common::home(&a)).unwrap()).collect();
     w.commit().unwrap();
     deliver(&a, &b);

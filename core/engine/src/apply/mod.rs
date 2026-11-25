@@ -739,7 +739,7 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
     let mut out = Parts { signed, whole: Vec::new(), streamed: Vec::new(), waiting: None, bad: None, stripped: Vec::new() };
     let mut interner = Interner::new();
     // tests let a local writer break the writer rules, to test receivers
-    let rules = !(tx.core.skip_writer_rules && h.signer == tx.core.me());
+    let rules = !(tx.core.skip_writer_rules && h.signer == tx.core.tid());
     let mut bad: Vec<usize> = Vec::new();
     for p in &blob.parts {
         if skip.contains(&p.ai) || unjudged.contains_key(&p.ai) {
@@ -2895,12 +2895,12 @@ mod tests {
         let mut lp = LocalPeer::fresh(2, WallMs(1_700_000_000_000));
         lp.sync_all().unwrap();
         let p0 = &mut lp.peers[0];
-        let me = p0.engine.me();
+        let me = p0.engine.tid();
         let mut m = Mutation::new();
         let t = p0.engine.new_thing(&mut m, me);
         m.set(t, &Ak::new("x:a.0").unwrap(), &Value::Int(1)).unwrap();
         p0.commit(m).unwrap();
-        let b = lp.peers[1].engine.me();
+        let b = lp.peers[1].engine.tid();
         let c = osis_base::Tid::from_bytes([7; 15]);
         let mut m = Mutation::new();
         for x in [b, c] {
@@ -2931,7 +2931,7 @@ mod tests {
     fn tree_created_in_one_commit_spec_perm_1() {
         let mut lp = LocalPeer::fresh(2, WallMs(1_700_000_000_000));
         lp.sync_all().unwrap();
-        let (a0, a1) = (lp.peers[0].engine.me(), lp.peers[1].engine.me());
+        let (a0, a1) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
         let reg = Ak::new("x:a.0").unwrap();
         let mut things = Vec::new();
         for _ in 0..2 {
@@ -3008,7 +3008,7 @@ mod tests {
             let before = p0.engine.commit_ids().len();
             let mut m = Mutation::new();
             // from the account: its root would be a step of the chain
-            let mut cur = p0.engine.me();
+            let mut cur = p0.engine.tid();
             for _ in 0..osis_base::format::MAX_CHAIN_DEPTH + extra {
                 cur = p0.engine.new_thing(&mut m, cur);
             }
@@ -3032,7 +3032,7 @@ mod tests {
     fn a_commit_signature_is_checked_once_per_node_spec_crypto_2() {
         let mut lp = LocalPeer::fresh(2, WallMs(1_700_000_000_000));
         lp.sync_all().unwrap();
-        let me = lp.peers[0].engine.me();
+        let me = lp.peers[0].engine.tid();
         let ak = Ak::new("x:a.0").unwrap();
         let mut m = Mutation::new();
         let t = lp.peers[0].engine.new_thing(&mut m, me);
@@ -3068,7 +3068,7 @@ mod tests {
             assert_eq!(lp.peers[1].engine.parts_genuine(&b), Some(true));
         }
         assert_eq!(verifies(), 0, "kept with the record across a restart");
-        let other = lp.peers[1].engine.me();
+        let other = lp.peers[1].engine.tid();
         for id in &ids {
             let genuine = held(&mut lp, id);
             let mut forged = genuine.clone();
@@ -3091,7 +3091,7 @@ mod tests {
         use osis_commit::CommitBlob;
         let mut lp = LocalPeer::fresh(2, WallMs(1_700_000_000_000));
         lp.sync_all().unwrap();
-        let me = lp.peers[0].engine.me();
+        let me = lp.peers[0].engine.tid();
         let ak = Ak::new("x:a.0").unwrap();
         let mut m = Mutation::new();
         let t = lp.peers[0].engine.new_thing(&mut m, me);
@@ -3133,7 +3133,7 @@ mod tests {
     fn failed_lazy_header_is_corrupt() {
         let mut lp = LocalPeer::fresh(1, WallMs(1_700_000_000_000));
         let p0 = &mut lp.peers[0];
-        let me = p0.engine.me();
+        let me = p0.engine.tid();
         let mut m = Mutation::new();
         let t = p0.engine.new_thing(&mut m, me);
         m.set(t, &Ak::new("x:a.0").unwrap(), &Value::Int(1)).unwrap();

@@ -2118,16 +2118,16 @@ impl Core {
         n[..8] == now[..8] && nonce_count(&now).wrapping_sub(nonce_count(n)) <= self.later_sessions
     }
 
-    /// The thing this node writes as and holds roles as: its node thing (spec/permissions.md §1,
-    /// own things).
-    pub(crate) fn me(&self) -> Tid {
+    /// This node's tid: its node thing, which it writes as and holds roles as
+    /// (spec/permissions.md §1, own things).
+    pub(crate) fn tid(&self) -> Tid {
         self.id.tid()
     }
 
     /// Whether `t` is an own thing of this node (spec/sync-set.md §2 Own things): its node thing,
     /// a held link key.
     pub(crate) fn is_own(&self, t: &Tid) -> bool {
-        *t == self.me() || self.link_keys.contains_key(t)
+        *t == self.tid() || self.link_keys.contains_key(t)
     }
 
     /// The key this node signs as `thing` by (spec/permissions.md §1 Signed as), with the key the
@@ -3144,14 +3144,9 @@ impl Engine {
         self.core.mint_admin(tid)
     }
 
-    /// This node's tid.
+    /// This node's tid: its node thing, which it writes as.
     pub fn tid(&self) -> Tid {
-        self.core.id.tid()
-    }
-
-    /// The thing this node writes as: its node thing.
-    pub fn me(&self) -> Tid {
-        self.core.me()
+        self.core.tid()
     }
 
     pub fn identity(&self) -> &Identity {
@@ -3735,7 +3730,7 @@ mod tests {
     fn each_part_state_answers_alone() {
         use super::{Dropped, Hold, Missing};
         let mut lp = LocalPeer::fresh(1, WallMs(1_700_000_000_000));
-        let a = lp.peers[0].engine.me();
+        let a = lp.peers[0].engine.tid();
         let mut m = Mutation::new();
         lp.peers[0].engine.new_thing(&mut m, a);
         let id = lp.peers[0].commit(m).unwrap().unwrap();
@@ -3803,7 +3798,7 @@ mod tests {
     fn a_read_that_writes_is_caught() {
         let mut lp = LocalPeer::fresh(1, WallMs(1_700_000_000_000));
         let p = &mut lp.peers[0];
-        let a = p.engine.me();
+        let a = p.engine.tid();
         let mut m = Mutation::new();
         let t = p.engine.new_thing(&mut m, a);
         p.engine.commit(m).unwrap();
@@ -3821,7 +3816,7 @@ mod tests {
     fn failed_transaction_restores_indexes_spec_commits_4() {
         let mut lp = LocalPeer::fresh(3, WallMs(1_700_000_000_000));
         lp.sync_all().unwrap();
-        let (a, b, c) = (lp.peers[0].engine.me(), lp.peers[1].engine.me(), lp.peers[2].engine.me());
+        let (a, b, c) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
         let mut failed = 0;
         let new_thing = |e: &mut super::Engine, admin: Tid| {
             let mut m = Mutation::new();
@@ -3874,7 +3869,7 @@ mod tests {
         use osis_schema::{PurgeBy};
         let mut lp = LocalPeer::fresh(3, WallMs(1_700_000_000_000));
         lp.sync_all().unwrap();
-        let (a, b) = (lp.peers[0].engine.me(), lp.peers[1].engine.me());
+        let (a, b) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
         let (reg, kept) = (Ak::new("t:reg.0").unwrap(), Ak::new("t:kept.0").unwrap());
         let mut failed = 0;
         let g = failing(&mut lp.peers[0], &mut failed, |e| {
@@ -3886,7 +3881,7 @@ mod tests {
             e.commit(m).map(|_| t)
         });
         lp.hold(g);
-        let c = lp.peers[2].engine.me();
+        let c = lp.peers[2].engine.tid();
         failing(&mut lp.peers[0], &mut failed, |e| e.grant(&g, &b, &edge(Role::Write)));
         failing(&mut lp.peers[0], &mut failed, |e| e.grant(&g, &c, &edge(Role::Read)));
         lp.sync(0, 1).unwrap();

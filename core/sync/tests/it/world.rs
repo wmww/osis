@@ -112,7 +112,7 @@ fn a_script_plays_on_a_fixture() {
     play(&mut w, &steps, "world::a_script_plays_on_a_fixture".into());
     assert_eq!((w.node(0).account, w.node(1).account), accounts);
     let a1 = accounts.1.expect("an account");
-    assert!(w.engine(1).closure_holds(&a1) && w.engine(1).mint_admin(&a1) == Some(w.engine(1).me()), "the reopened node holds the account it minted");
+    assert!(w.engine(1).closure_holds(&a1) && w.engine(1).mint_admin(&a1) == Some(w.engine(1).tid()), "the reopened node holds the account it minted");
 }
 
 // spec: none (test harness): a shrink finds a planted failure among real steps in few candidates

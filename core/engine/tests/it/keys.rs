@@ -16,14 +16,14 @@ use std::collections::BTreeSet;
 
 fn rcpt(lp: &mut LocalPeer, i: usize, role: Role) -> Recipient {
     let e = &mut lp.peers[i].engine;
-    let holder = e.me();
+    let holder = e.tid();
     e.recipient_for(&holder, role).unwrap()
 }
 
 /// Node 0 grants node 1 read on `a`: its boxes then give node 1 `a`'s secrets
 /// (spec/permissions.md §3: a node holds no secret of an actor it cannot read).
 fn read_by_1(lp: &mut LocalPeer, a: Tid) {
-    let b = lp.peers[1].engine.me();
+    let b = lp.peers[1].engine.tid();
     lp.peers[0].engine.grant(&a, &b, &edge(Role::Read)).unwrap();
 }
 
@@ -142,7 +142,7 @@ fn history_chain_from_state_spec_crypto_4() {
 fn a_node_things_secrets_are_its_nodes_alone_spec_permissions_3() {
     let mut lp = net(2, 0);
     lp.sync_all().unwrap();
-    let n0 = lp.peers[0].engine.me();
+    let n0 = lp.peers[0].engine.tid();
     // `secrets.0` field 0, its boxes: never written
     let Some(Value::Map(s)) = lp.peers[0].engine.get(&n0, &ak("secrets.0")).unwrap() else { panic!("N's secrets.0") };
     assert!(s.get(&Value::Int(0)).is_none_or(|b| matches!(b, Value::Map(m) if m.is_empty())), "its minting boxes nobody");
@@ -169,7 +169,7 @@ fn a_node_things_secrets_are_its_nodes_alone_spec_permissions_3() {
 #[test]
 fn a_link_keys_keysets_are_its_seeds_spec_permissions_7() {
     let mut lp = net(1, 0);
-    let me = lp.peers[0].engine.me();
+    let me = lp.peers[0].engine.tid();
     let target = new_thing(&mut lp, 0);
     let spec = osis_engine::flows::LinkSpec { target, role: Role::Read, until: None, peers: Vec::new(), single_use: false };
     let (link, _, _) = lp.peers[0].engine.create_link(&me, &spec).unwrap();

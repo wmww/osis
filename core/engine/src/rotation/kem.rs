@@ -70,7 +70,7 @@ pub(crate) fn due(tx: &mut Tx<'_>, a: &Tid, r: Role) -> Result<bool> {
 /// The rotation KEM key due makes (`due`) of the roles of `a` this node may rotate, made now
 /// rather than at the next pass's end (spec/permissions.md §3: it may rotate eagerly).
 fn rotate_due(tx: &mut Tx<'_>, a: Tid, done: &mut crate::flows::Done) -> Result<()> {
-    let me = tx.core.me();
+    let me = tx.core.tid();
     let may = may_rotate(tx.core, &me, &a);
     let mut roles = BTreeSet::new();
     for r in ROLES.into_iter().filter(|r| may.contains(r)) {
@@ -111,7 +111,7 @@ fn carries(tx: &mut Tx<'_>, a: &Tid, r: Role) -> Result<bool> {
 /// does a fellow holder); else refused. From here the transaction's keysets of `h` up to `role` carry KEM keys
 /// (`publishing`), its making independent among them. Run before anything of the grant is made.
 pub(crate) fn grant_holder(tx: &mut Tx<'_>, h: Tid, role: Role) -> Result<()> {
-    let me = tx.core.me();
+    let me = tx.core.tid();
     if tx.core.role_now(&me, &h) < Some(Role::Write) && crate::engine::Core::keys_in(tx, &h)?.is_none() {
         return Err(Error::Permission { tid: h, needs: Role::Write });
     }
@@ -128,7 +128,7 @@ pub(crate) fn grant_holder(tx: &mut Tx<'_>, h: Tid, role: Role) -> Result<()> {
 /// holder is never left out for want of a KEM key by the granter's own doing; a co-writer's
 /// rotation of `h` made before it learns the grant still may, and KEM key due ends that.
 pub(crate) fn grant_keys(tx: &mut Tx<'_>, h: Tid, role: Role, done: &mut crate::flows::Done) -> Result<()> {
-    let me = tx.core.me();
+    let me = tx.core.tid();
     let mut lacking = BTreeSet::new();
     for r in ROLES.into_iter().filter(|r| *r <= role) {
         if !carries(tx, &h, r)? {

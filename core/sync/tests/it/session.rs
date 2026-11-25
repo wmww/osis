@@ -36,7 +36,7 @@ impl End {
     }
 
     fn node(&self) -> Option<Tid> {
-        Some(self.engine.me())
+        Some(self.engine.tid())
     }
 }
 

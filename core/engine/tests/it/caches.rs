@@ -98,7 +98,7 @@ fn reload_never_takes_generation_back() {
     let mut lp = net(1, 0);
     let e = &mut lp.peers[0].engine;
     let mut m = Mutation::new();
-    let me = e.me();
+    let me = e.tid();
     let t = e.new_thing(&mut m, me);
     e.commit(m).unwrap();
     for i in 0..10u8 {
@@ -122,7 +122,7 @@ fn reload_never_takes_generation_back() {
 fn new_things_between_opens_read_alike() {
     let mut lp = net(1, 0);
     let e = &mut lp.peers[0].engine;
-    let me = e.me();
+    let me = e.tid();
     let mut m = Mutation::new();
     let t = e.new_thing(&mut m, me);
     e.commit(m).unwrap();
@@ -164,7 +164,7 @@ fn crash_at_every_write_keeps_caches_exact() {
             Ok(e)
         };
         let mut e = open(true, 0).unwrap();
-        let me = e.me();
+        let me = e.tid();
         let mut m = Mutation::new();
         let t = e.new_thing(&mut m, me);
         m.set(t, &REG, &s("one")).unwrap();

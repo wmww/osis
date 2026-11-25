@@ -1,10 +1,10 @@
 //! Clients of this node by a secret (notes/client-port.md §3): `clients^.0` on the node root
-//! (spec/data-model.md §9, spec/sync-set.md §1) lists a client actor per client, by a weak, with
+//! (spec/data-model.md §9, spec/sync-set.md §1) lists a thing per client, by a weak, with
 //! the hash of its bearer secret
-//! and its end. The node mints the actor (minted with the admin `add_client` names, the account where
+//! and its end. The node mints the thing (minted with the admin `add_client` names, the account where
 //! the node acts for one, like a link's K) and acts as it for the client's session (the client port, spec/wire.md §11.2); what the client may read and write is
-//! that actor's grants, nothing else. Only the node writes its node root: an entry makes the node
-//! sign as its node thing for the actor it names, so it is no setting a sibling writes (unlike
+//! that thing's grants, nothing else. Only the node writes its node root: an entry makes the node
+//! sign as its node thing for the thing it names, so it is no setting a sibling writes (unlike
 //! `caps^.0`, spec/sync-set.md §1: a sibling naming the node thing, or another account of the
 //! node, would sign as the node).
 
@@ -42,26 +42,26 @@ impl ClientSecret {
     }
 }
 
-/// A client with an actor of its own (`Osis::add_client`).
+/// A client with a thing of its own (`Osis::add_client`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Client {
-    /// The actor the node acts as for it: grant it what the client may reach.
-    pub actor: Tid,
+    /// The thing the node acts as for it: grant it what the client may reach.
+    pub thing: Tid,
     /// When its sessions end (none: they do not).
     pub until: Option<Time>,
 }
 
 impl Osis {
     /// Registers a client: a new thing minted with admin `admin`, which can be granted to.
-    /// Returns the actor and the secret, shown only here. Grants decide what the client reaches
+    /// Returns the thing and the secret, shown only here. Grants decide what the client reaches
     /// (it starts with none).
     ///
     /// This node acts as the client only through `admin`, so the client acts for whoever
     /// administers `admin` and no longer than this node administers it: name the account this
     /// node acts for, and removing the node from the account ends what its clients do there.
-    /// `Permission` unless this node administers `admin` (minting the actor writes its keys and
+    /// `Permission` unless this node administers `admin` (minting the thing writes its keys and
     /// steps, admin-only); an `until` not in the future is `Invalid`.
-    /// `Unsupported` on a client with its own actor.
+    /// `Unsupported` on a client with a thing of its own.
     pub fn add_client(&self, admin: Tid, until: Option<Time>) -> Result<(Tid, ClientSecret)> {
         self.local("add_client")?;
         let now = self.now()?;
@@ -74,13 +74,13 @@ impl Osis {
         let secret = ClientSecret::generate();
         let entry = secret.entry(until);
         let root = self.inner.node_root;
-        // Invariant: the node reaches the actor only through `admin` (its path to it, then the
-        // actor's record edge: spec/permissions.md §1 Path), never by an edge of its own, so the
-        // actor acts for `admin` no longer than the node may (a node removed from the account,
+        // Invariant: the node reaches the thing only through `admin` (its path to it, then the
+        // thing's record edge: spec/permissions.md §1 Path), never by an edge of its own, so the
+        // thing acts for `admin` no longer than the node may (a node removed from the account,
         // spec/permissions.md §8 Removing, loses its clients' roles there by the ordinary rules).
-        // The node root holds the actor by a strong, in the transaction minting it
+        // The node root holds the thing by a strong, in the transaction minting it
         // (spec/sync-set.md §2 Making a thing)
-        let actor = self.engine(|e| {
+        let thing = self.engine(|e| {
             let d = e.node_root().ok_or(osis_engine::Error::Misuse("no node root"))?;
             let (ts, _) = e.mint_independent(&[osis_engine::MintAdmin::Thing(admin)], |ts| {
                 let mut m = osis_engine::Mutation::new();
@@ -91,64 +91,64 @@ impl Osis {
             })?;
             ts.first().copied().ok_or(osis_engine::Error::Misuse("one minted"))
         })?;
-        // a commit of the node's own: only it writes its node root (a crash before it leaves an
-        // actor no client can reach, holding nothing)
+        // a commit of the node's own: only it writes its node root (a crash before it leaves a
+        // thing no client can reach, holding nothing)
         self.engine(|e| {
             let mut m = osis_engine::Mutation::new();
-            m.op(root, &ct::CLIENTS, PathOp { path: vec![PathSeg::Key(Value::Weak(actor))], op: Op::Set(entry.to_value()) })?;
+            m.op(root, &ct::CLIENTS, PathOp { path: vec![PathSeg::Key(Value::Weak(thing))], op: Op::Set(entry.to_value()) })?;
             e.commit(m)
         })?;
-        Ok((actor, secret))
+        Ok((thing, secret))
     }
 
     /// The clients registered with `add_client`.
-    /// `Unsupported` on a client with its own actor.
+    /// `Unsupported` on a client with a thing of its own.
     pub fn clients(&self) -> Result<Vec<Client>> {
         self.local("clients")?;
-        Ok(self.at(self.inner.node_root, ct::CLIENTS).get()?.unwrap_or_default().into_iter().map(|(actor, c)| Client { actor: actor.into(), until: c.until }).collect())
+        Ok(self.at(self.inner.node_root, ct::CLIENTS).get()?.unwrap_or_default().into_iter().map(|(thing, c)| Client { thing: thing.into(), until: c.until }).collect())
     }
 
-    /// Removes a client: its sessions end at once, its actor loses every role it holds, then
+    /// Removes a client: its sessions end at once, its thing loses every role it holds, then
     /// the entry goes. `false` when there is no entry. The entry stays, ended, until every role is
     /// gone, so a failure or a crash halfway is retried by calling this again.
     ///
     /// Unlike `set_role` and `remove_node`, this takes no options and never waits: all a client
     /// wrote went through this node, so there is nothing elsewhere to catch up on, and a client's
-    /// actor has no node to keep a copy. A role this node may not remove fails here, as does one
+    /// thing has no node to keep a copy. A role this node may not remove fails here, as does one
     /// on a thing this node reads at another node (`Unsupported`, the sessions ended, the entry
     /// staying: move its sync unit back here and call this again).
-    /// `Unsupported` on a client with its own actor.
-    pub fn remove_client(&self, actor: Tid) -> Result<bool> {
+    /// `Unsupported` on a client with a thing of its own.
+    pub fn remove_client(&self, thing: Tid) -> Result<bool> {
         self.local("remove_client")?;
         let node = self.inner.node_root;
-        let Some(e) = self.at(node, ct::CLIENTS).get()?.unwrap_or_default().remove(&osis_base::Weak(actor)) else { return Ok(false) };
+        let Some(e) = self.at(node, ct::CLIENTS).get()?.unwrap_or_default().remove(&osis_base::Weak(thing)) else { return Ok(false) };
         // ended under any clock: one moved back revives no half-removed client
         let ended = Some(Time(0));
         if e.until != ended {
             let mut w = self.write();
-            w.at(node, ct::CLIENTS).path(p![osis_base::Weak(actor)]).set(&ct::Client { until: ended, ..e })?;
+            w.at(node, ct::CLIENTS).path(p![osis_base::Weak(thing)]).set(&ct::Client { until: ended, ..e })?;
             w.commit()?;
         }
-        for t in self.engine(|x| x.grants_of(&actor)) {
-            self.engine(|x| x.demote(&t, &Demotion { holder: actor, new: None, retain: None }))?;
+        for t in self.engine(|x| x.grants_of(&thing)) {
+            self.engine(|x| x.demote(&t, &Demotion { holder: thing, new: None, retain: None }))?;
         }
         let mut w = self.write();
-        w.at(node, ct::CLIENTS).path(p![osis_base::Weak(actor)]).remove()?;
+        w.at(node, ct::CLIENTS).path(p![osis_base::Weak(thing)]).remove()?;
         w.commit()?;
         Ok(true)
     }
 
     /// A new bearer secret for a client: the old one stops working, and its live connections end; the
-    /// actor and its grants stay. `Invalid` when there is no entry.
-    /// `Unsupported` on a client with its own actor.
-    pub fn rotate_client_secret(&self, actor: Tid) -> Result<ClientSecret> {
+    /// thing and its grants stay. `Invalid` when there is no entry.
+    /// `Unsupported` on a client with a thing of its own.
+    pub fn rotate_client_secret(&self, thing: Tid) -> Result<ClientSecret> {
         self.local("rotate_client_secret")?;
         let node = self.inner.node_root;
-        let e = self.at(node, ct::CLIENTS).get()?.unwrap_or_default().remove(&osis_base::Weak(actor)).ok_or_else(|| Error::Invalid(format!("no client {actor}")))?;
+        let e = self.at(node, ct::CLIENTS).get()?.unwrap_or_default().remove(&osis_base::Weak(thing)).ok_or_else(|| Error::Invalid(format!("no client {thing}")))?;
         let secret = ClientSecret::generate();
         let entry = secret.entry(e.until);
         let mut w = self.write();
-        w.at(node, ct::CLIENTS).path(p![osis_base::Weak(actor)]).set(&entry)?;
+        w.at(node, ct::CLIENTS).path(p![osis_base::Weak(thing)]).set(&entry)?;
         w.commit()?;
         Ok(secret)
     }

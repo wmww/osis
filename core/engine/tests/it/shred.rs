@@ -84,7 +84,7 @@ fn net2_one() -> LocalPeer {
     .0
 }
 
-/// Two peers (seeds 0 and 1), each holding the other's account chain (synced once), so either
+/// Two peers (seeds 0 and 1), each holding the other's node thing (synced once), so either
 /// may grant the other: built once (`LocalPeer::cached`).
 fn net2() -> LocalPeer {
     LocalPeer::cached("shred::net2", || {
@@ -100,7 +100,7 @@ fn net2() -> LocalPeer {
 fn writable_by_0() -> (LocalPeer, Tid) {
     LocalPeer::cached("shred::writable_by_0", || {
         let mut lp = net2();
-        let a = lp.peers[0].engine.me();
+        let a = lp.peers[0].engine.tid();
         let t = new_thing(&mut lp, 1);
         lp.peers[1].engine.grant(&t, &a, &edge(osis_base::Role::Write)).unwrap();
         lp.sync(1, 0).unwrap();
@@ -986,7 +986,7 @@ fn fallen_snapshot_rig() -> Fallen {
     let mut lp = LocalPeer::of(vec![peer(0), peer(1), peer(2)], 0).unwrap();
     lp.sync_all().unwrap();
     let t = new_shared(&mut lp, 0);
-    let x = lp.peers[2].engine.me();
+    let x = lp.peers[2].engine.tid();
     lp.peers[0].engine.grant(&t, &x, &edge(Role::Admin)).unwrap();
     lp.sync_all().unwrap();
     let k = ak("t:big.0");
@@ -1205,7 +1205,7 @@ fn undelete_chars_are_their_own_values_spec_crdt_4_7() {
 fn undo_revives_no_purged_value_spec_crdt_4_6() {
     let mut lp = net2();
     let mut m = Mutation::new();
-    let me = lp.peers[0].engine.me();
+    let me = lp.peers[0].engine.tid();
     let t = lp.peers[0].engine.new_thing(&mut m, me);
     keep_in(&mut m, t, &setting(&[("t:reg.0", DAY)]));
     lp.peers[0].commit(m).unwrap();
@@ -1244,7 +1244,7 @@ fn purge_spares_other_values_of_a_carrier_spec_commits_5() {
     use osis_crdt::{Op, PathOp, PathSeg};
     let mut lp = net(2, 0);
     let t = new_thing(&mut lp, 0);
-    let b = lp.peers[1].engine.me();
+    let b = lp.peers[1].engine.tid();
     set_edge(&mut lp.peers[0].engine, t, b, Some(edge(osis_base::Role::Write)), None);
     lp.sync(0, 1).unwrap();
     let k = ak("t:map.0");

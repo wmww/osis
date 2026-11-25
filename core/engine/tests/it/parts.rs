@@ -45,7 +45,7 @@ fn deliver(played: &Played, order: &[Tok]) -> Peer {
     for t in &played.things {
         p.engine.hold(osis_base::Strong(*t)).unwrap();
     }
-    let me = p.engine.me();
+    let me = p.engine.tid();
     let grants = |pk: &osis_engine::local_peer::Package| CommitBlob::decode(&pk.bytes).unwrap().header.aspects.iter().any(|a| a.ak.to_string() == "roles.0");
     let mine: Vec<_> = played.access.iter().filter(|(h, pk)| *h == me || !grants(pk)).collect();
     assert_eq!(mine.iter().filter(|(_, pk)| grants(pk)).count(), played.things.len() - 1, "a grant to the node under test per thing outside G");
@@ -201,7 +201,7 @@ fn parked_part_waits_alone_spec_versioning_2() {
     lp.peers[0].clock.advance(10);
     let e = &mut lp.peers[0].engine;
     let recs = vec![e.get_typed(&g, &osis_schema::core_types::CREATED).unwrap().unwrap(), e.get_typed(&h, &osis_schema::core_types::CREATED).unwrap().unwrap()];
-    let author = e.me();
+    let author = e.tid();
     let ts = osis_base::Ts::make(e.now(), 0).unwrap();
     let form = crate::common::forged_session(author);
     let mut w = Writer::new(ts, form.own_source(author, osis_base::CommitId([0; 32])), 1000);
@@ -259,7 +259,7 @@ fn waiting_parts_boxes_are_read_in_either_order_spec_crypto_4() {
     let rot = osis_keys::rotate(&h, &[Role::Read].into(), &held, &ct::Secrets::default(), &[rcpt], &osis_keys::Names::default(), &mut osis_crypto::SeededRng::from_u64(0)).unwrap();
     let boxed = ct::Secrets { boxes: rot.secrets.boxes, history: rot.secrets.history.into_iter().collect() }.to_value();
     let secrets = osis_base::Ak::new("secrets.0").unwrap();
-    let author = e.me();
+    let author = e.tid();
     // after the steps whose keys it lists (notes/delete-keys.md, Tests)
     let ts = osis_base::Ts::make(osis_base::WallMs(e.now().0 + 1), 0).unwrap();
     let view = osis_schema::core_schema().view(secrets.as_str()).unwrap();
@@ -352,7 +352,7 @@ fn bad_part_beside_good_ones_holds_nothing_back_spec_commits_4() {
     lp.peers[0].clock.advance(10);
     let e = &mut lp.peers[0].engine;
     let recs = vec![e.get_typed(&g, &osis_schema::core_types::CREATED).unwrap().unwrap()];
-    let author = e.me();
+    let author = e.tid();
     let ts = osis_base::Ts::make(e.now(), 0).unwrap();
     let form = crate::common::forged_session(author);
     let own = form.own_source(author, osis_base::CommitId([0; 32]));
@@ -748,7 +748,7 @@ fn true_record_replaces_junk_under_a_linked_header_spec_commits_4() {
     let known = packages_for(&mut lp, 0, 1);
     let e = &mut lp.peers[0].engine;
     let mut m = Mutation::new();
-    let t = e.new_thing(&mut m, e.me());
+    let t = e.new_thing(&mut m, e.tid());
     link_aspects(&mut m, t);
     let id = e.commit(m).unwrap().unwrap();
     assert!(e.header(&id).unwrap().links.aspects.is_some(), "the aspect list goes by link");
@@ -829,7 +829,7 @@ fn forge_with(f: &mut Forge, parts: &[(Tid, &str, Made, Option<u64>)], purge: Ve
     f.lp.peers[0].clock.advance(10);
     let e = &mut f.lp.peers[0].engine;
     let recs = [f.x, f.y, f.z].iter().map(|t| e.get_typed(t, &osis_schema::core_types::CREATED).unwrap().unwrap()).collect::<Vec<_>>();
-    let author = e.me();
+    let author = e.tid();
     let ts = osis_base::Ts::make(e.now(), 0).unwrap();
     let form = crate::common::forged_session(author);
     let own = form.own_source(author, osis_base::CommitId([0; 32]));
@@ -923,7 +923,7 @@ fn purge_whose_only_part_is_parked_applies_spec_commits_4() {
         m.set(x, &REG, &s("ok")).unwrap();
         let w = f.lp.peers[0].commit(m).unwrap().unwrap();
         let w = f.lp.peers[0].engine.package(&w).unwrap().unwrap();
-        let me = f.lp.peers[0].engine.me();
+        let me = f.lp.peers[0].engine.tid();
         let b = forge_with(&mut f, &[(x, "t:future.0", Made::Parked, None)], vec![osis_commit::PurgeItem::Author { tid: x, ak: ak("t:reg.0"), author: me }]);
         // a node holding x, granted read on it: it keeps what it is given of x
         let mut p = f.lp.fresh_reader(0, x, FRESH);

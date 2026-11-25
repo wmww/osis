@@ -20,7 +20,7 @@ const Q: usize = 1;
 fn fork_on_m() -> (LocalPeer, Tid, Tid, Epoch, Epoch) {
     let (lp, (m, a, kp, kq)) = LocalPeer::cached("rotation::tests_foreign::fork_on_m", || {
         let mut lp = synced(3);
-        let (p, q) = (lp.peers[P].engine.me(), lp.peers[Q].engine.me());
+        let (p, q) = (lp.peers[P].engine.tid(), lp.peers[Q].engine.tid());
         let m = independent_thing(&mut lp, 2);
         let a = independent_thing(&mut lp, 2);
         for t in [m, a] {
@@ -165,7 +165,7 @@ fn foreign_epoch_blocks_and_stays_current_spec_crypto_4() {
     let (mut lp, _, a, ep, _) = concurrent_epochs();
     let blocked = lp.peers[Q].engine.run(|tx| {
         let deps = super::departures(tx, &a)?;
-        super::blocked_epoch(tx, &tx.core.me(), &a, Role::Read, &ep, &deps, super::Walk::Encrypt)
+        super::blocked_epoch(tx, &tx.core.tid(), &a, Role::Read, &ep, &deps, super::Walk::Encrypt)
     });
     assert!(blocked.unwrap(), "eP is blocked at Q");
     let x = independent_thing(&mut lp, Q);
@@ -216,7 +216,7 @@ fn reseal_into_a_shared_epoch_costs_one_rotation_spec_crypto_4() {
 fn fork_below_g() -> (LocalPeer, Tid, Tid, Tid) {
     let (lp, (m, a, g)) = LocalPeer::cached("rotation::tests_foreign::fork_below_g", || {
         let mut lp = synced(3);
-        let (p, q) = (lp.peers[P].engine.me(), lp.peers[Q].engine.me());
+        let (p, q) = (lp.peers[P].engine.tid(), lp.peers[Q].engine.tid());
         let m = independent_thing(&mut lp, 2);
         let a = independent_thing(&mut lp, 2);
         let g = independent_thing(&mut lp, 2);

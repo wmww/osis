@@ -1,4 +1,4 @@
-//! Chat's shared rules (notes/chat.md): a chat is one actor C, participants hold write on it, a
+//! Chat's shared rules (notes/chat.md): a chat is one thing C, participants hold write on it, a
 //! message is one fire of C's `chat:msg~0`, its sender the commit's verified author, an edit its
 //! sender's `replace` of it. Reading and writing are plain `osis` calls on the keys in `schema`;
 //! this crate holds what every chat writer must do alike: create a chat under its retention setting,
@@ -82,7 +82,7 @@ pub fn create(db: &Osis, o: &Options, holder: Tid) -> Result<Tid> {
 /// holds a strong to each; a link made later needs `relay` again.
 /// Returns the things granted.
 pub fn relay(db: &Osis, c: Tid, account: Tid) -> Result<Vec<Tid>> {
-    let ks = db.links()?.into_iter().filter(|l| l.target == c).map(|l| l.id.actor());
+    let ks = db.links()?.into_iter().filter(|l| l.target == c).map(|l| l.id.thing());
     let mut granted = Vec::new();
     for t in std::iter::once(c).chain(ks) {
         if !db.grants(t)?.contains_key(&account) {

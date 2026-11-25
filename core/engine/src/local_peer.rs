@@ -251,7 +251,7 @@ impl Peer {
         let root = self.engine.node_root().ok_or(crate::error::Error::Misuse("no node root"))?;
         let kept: BTreeSet<osis_base::Tid> = self.engine.references_from(&root)?.into_iter().filter(|r| r.kind == osis_base::RefKind::Strong && r.ak.as_str() == "holds.0").map(|r| r.target).collect();
         let mut m = Mutation::new();
-        for t in who.iter().filter(|t| **t != self.engine.me() && !kept.contains(*t)) {
+        for t in who.iter().filter(|t| **t != self.engine.tid() && !kept.contains(*t)) {
             m.op(root, &osis_schema::core_types::HOLDS, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Add(osis_base::Value::Strong(*t)) })?;
         }
         if !m.is_empty() {
@@ -265,7 +265,7 @@ impl Peer {
     /// it acts for none) that redeeming writes (`Engine::redeem_public`), then what the profile
     /// carries taken (its cards).
     pub fn import_contact(&mut self, link: &osis_blob::PublicLink) -> Result<()> {
-        let joiner = self.engine.settings_thing()?.unwrap_or_else(|| self.engine.me());
+        let joiner = self.engine.settings_thing()?.unwrap_or_else(|| self.engine.tid());
         self.engine.redeem_public(link, &joiner)?;
         self.engine.take_carried()?;
         Ok(())
@@ -444,7 +444,7 @@ impl Engine {
         let Some(s) = self.seal(&b, osis_blob::Class::of_marker(self.header(id).and_then(|h| h.ephemeral)), &[], rng)? else { return Ok(None) };
         let mut wraps = Vec::new();
         for a in self.independents(id) {
-            if self.run(|tx| crate::rotation::blocked_roles_of(tx, &tx.core.me(), &a, crate::rotation::Walk::Log))?.contains(&osis_base::Role::Read) {
+            if self.run(|tx| crate::rotation::blocked_roles_of(tx, &tx.core.tid(), &a, crate::rotation::Walk::Log))?.contains(&osis_base::Role::Read) {
                 continue;
             }
             let Some(secret) = self.wrap_secret(&a, Some((id, &b.parts)))? else { continue };
@@ -603,7 +603,7 @@ pub fn make_account(e: &mut Engine) -> Result<(Account, crate::flows::Done)> {
     use osis_crdt::{Op, PathOp};
     use osis_schema::core_types as ct;
     let root = e.node_root().ok_or(crate::Error::Misuse("no node root"))?;
-    let admins = [crate::MintAdmin::Thing(e.me()), crate::MintAdmin::Minted(0), crate::MintAdmin::Minted(0)];
+    let admins = [crate::MintAdmin::Thing(e.tid()), crate::MintAdmin::Minted(0), crate::MintAdmin::Minted(0)];
     let now = e.now();
     let (ts, done) = e.mint_independent(&admins, |ts| {
         let [a, inbox, profile] = ts else { return Err(crate::Error::Misuse("three minted")) };
@@ -719,7 +719,7 @@ impl LocalPeer {
     #[allow(clippy::indexing_slicing)] // test harness: a peer index past the net panics
     pub fn pair_into(&mut self, by: usize, p: &mut Peer) -> Result<osis_base::Tid> {
         let a = self.peers[by].engine.settings_thing()?.ok_or(crate::error::Error::Misuse("the pairer acts for no account"))?;
-        let (node, keys) = (p.engine.me(), p.engine.node_keys()?);
+        let (node, keys) = (p.engine.tid(), p.engine.node_keys()?);
         let (offer, _) = self.peers[by].engine.pair(&a, &node, &keys, osis_base::Role::Admin)?;
         p.engine.take_pairing(&offer)?;
         Ok(a)
@@ -733,7 +733,7 @@ impl LocalPeer {
 
     /// Every peer keeps every other peer (`Peer::know`).
     pub fn know_all(&mut self) -> Result<()> {
-        let all: Vec<osis_base::Tid> = self.peers.iter().map(|p| p.engine.me()).collect();
+        let all: Vec<osis_base::Tid> = self.peers.iter().map(|p| p.engine.tid()).collect();
         for p in self.peers.iter_mut() {
             p.know(&all)?;
         }
@@ -790,7 +790,7 @@ impl LocalPeer {
     pub fn share(&mut self, admin: usize, t: Tid) {
         let mut given = Vec::new();
         for j in (0..self.peers.len()).filter(|j| *j != admin) {
-            let who = self.peers[j].engine.me();
+            let who = self.peers[j].engine.tid();
             if self.peers[admin].engine.key_role(&t, &who).is_none() {
                 let edge = osis_schema::core_types::Edge { role: osis_base::Role::Read, until: None, may_grant: false, retain: false, floor: None };
                 let done = self.peers[admin].engine.grant(&t, &who, &edge).unwrap_or_else(|e| panic!("grant {t:?}: {e}"));
@@ -1342,7 +1342,7 @@ impl LocalPeer {
 impl Engine {
     /// What a new node shows the pairing node: its node thing's public key record.
     pub fn node_keys(&mut self) -> Result<osis_blob::Certificates> {
-        let me = self.core.me();
+        let me = self.core.tid();
         self.holder_keys(&me)
     }
 
@@ -1350,7 +1350,7 @@ impl Engine {
     /// grant on A and the offer to hand over (`Engine::offer`). `Permission` unless this node
     /// holds admin on A; `BadInput` unless `keys` show `node`'s keys.
     pub fn pair(&mut self, a: &Tid, node: &Tid, keys: &osis_blob::Certificates, role: osis_base::Role) -> Result<(crate::flows::offers::Offer, crate::flows::Done)> {
-        let me = self.core.me();
+        let me = self.core.tid();
         if self.core.role_now(&me, a) != Some(osis_base::Role::Admin) {
             return Err(crate::error::Error::Permission { tid: *a, needs: osis_base::Role::Admin });
         }
@@ -1379,7 +1379,7 @@ impl Engine {
     /// profile) and its `caps^.0` entry on A. `Permission` unless this node holds admin on A.
     pub fn remove_node(&mut self, a: &Tid, node: &Tid, retain: bool, also: &[Tid]) -> Result<crate::flows::Done> {
         use osis_schema::core_types as ct;
-        let me = self.core.me();
+        let me = self.core.tid();
         if self.core.role_now(&me, a) != Some(osis_base::Role::Admin) {
             return Err(crate::error::Error::Permission { tid: *a, needs: osis_base::Role::Admin });
         }

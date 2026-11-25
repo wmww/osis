@@ -136,7 +136,7 @@ impl Reach {
         self.keys.get(key).copied()
     }
 
-    /// What node `n` lists in `reach.0`, as `p2p::reach_items` does: its public address, then its
+    /// What node `n`'s `peer://` URL lists, as `p2p::peer_url_items` does: its public address, then its
     /// relays. A LAN address is announced, never listed.
     pub fn items(&self, n: usize) -> Vec<String> {
         let Some(p) = self.places.get(&n) else { return Vec::new() };

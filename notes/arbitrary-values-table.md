@@ -88,7 +88,7 @@ Each only made a bug unlikely (class X); the code ends by a fixpoint, a window o
 | value | class | 0 / ∞ |
 |---|---|---|
 | `DEPOSITS_WAITING` 32, `DEPOSITS_WAITING_BYTES` 1 MiB (base `format`) | R (deposits an admin leaves waiting under any sync ID: half the recommended minimum deposit budget; past it what is no request goes first, then the requests earliest to expire) | nobody unconnected can invite, a deposit not judged yet may go / a stranger (inbox) or reader (any sync ID) holds the budget for good |
-| `MAX_CLIENTS` 64 (spec/wire.md §11.2; client port (b), (c)) | R (connections authenticated as client actors: a further Auth is Error 4; also the nonce sessions kept for the main session) | no client served / clients take every connection |
+| `MAX_CLIENTS` 64 (spec/wire.md §11.2; client port (b), (c)) | R (connections authenticated as clients' things: a further Auth is Error 4; also the nonce sessions kept for the main session) | no client served / clients take every connection |
 | `MAX_CONNS_PER_CLIENT` 8 (spec/wire.md §11.2; client port (c)) | R (a further Auth of that client is Error 4; also the nonce sessions kept per client) | no client served / one client takes the whole `max_clients` pool |
 | `WRITE_NONCES` 64 (`osis::port`, spec/wire.md §11.2 Write nonces) | M (a client resends only what it had no answer to, within one window) | every resend is `OutcomeUnknown` / a session's memory grows with every write |
 | `MAX_WRITE_OPS` 1024 (`osis::port`, notes/client-port.md §2) | R (an app splits a larger write into several commits) | nothing is written through a node / one client's write stalls the node's other clients as long as it likes |

@@ -53,7 +53,7 @@ fn set(e: &mut Engine, t: Tid, v: &str) -> osis_base::CommitId {
 fn setup(dev: &Dev) -> (Engine, Tid, osis_base::CommitId) {
     let mut e = dev.create();
     let mut m = Mutation::new();
-    let me = e.me();
+    let me = e.tid();
     let t = e.new_thing(&mut m, me);
     m.set(t, &REG, &s("one")).unwrap();
     e.commit(m).unwrap();
@@ -215,7 +215,7 @@ fn two_live_copies_of_one_store_converge_spec_crdt_2_1() {
     let dev = Dev::new();
     let mut e = dev.create();
     let mut m = Mutation::new();
-    let me = e.me();
+    let me = e.tid();
     let t = e.new_thing(&mut m, me);
     m.set(t, &REG, &s("one")).unwrap();
     e.commit(m).unwrap();

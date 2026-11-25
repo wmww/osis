@@ -20,13 +20,13 @@ fn world(n: usize) -> (LocalPeer, Tid) {
     LocalPeer::cached(&format!("apply::tests_failed_writes::world/{n}"), || {
         let mut lp = LocalPeer::fresh(n, T0);
         lp.sync_all().unwrap();
-        let me = lp.peers[0].engine.me();
+        let me = lp.peers[0].engine.tid();
         let mut m = Mutation::new();
         let t = lp.peers[0].engine.new_thing(&mut m, me);
         lp.peers[0].commit(m).unwrap();
         lp.hold(t);
         for i in [1, 2] {
-            let who = lp.peers[i].engine.me();
+            let who = lp.peers[i].engine.tid();
             lp.peers[0].engine.grant(&t, &who, &edge(Role::Admin)).unwrap();
         }
         lp.sync_all().unwrap();
@@ -37,7 +37,7 @@ fn world(n: usize) -> (LocalPeer, Tid) {
 
 /// Peer `by` grants peer `to` `role` on `t`: the grant's commit.
 fn grant(lp: &mut LocalPeer, by: usize, t: Tid, to: usize, role: Role) -> CommitId {
-    let who = lp.peers[to].engine.me();
+    let who = lp.peers[to].engine.tid();
     let id = *lp.peers[by].engine.grant(&t, &who, &edge(role)).unwrap().commits.last().unwrap();
     lp.advance(1000);
     id
@@ -46,7 +46,7 @@ fn grant(lp: &mut LocalPeer, by: usize, t: Tid, to: usize, role: Role) -> Commit
 /// Peer `by` removes peer `holder` from `t`, a second after everything so far.
 fn remove(lp: &mut LocalPeer, by: usize, t: Tid, holder: usize) -> CommitId {
     lp.advance(1000);
-    let h = lp.peers[holder].engine.me();
+    let h = lp.peers[holder].engine.tid();
     let id = *lp.peers[by].engine.demote(&t, &Demotion { holder: h, new: None, retain: None }).unwrap().commits.last().unwrap();
     lp.advance(1000);
     id
@@ -131,7 +131,7 @@ fn a_removal_owing_an_addendum() {
         2,
         |lp, _| lp.sync(0, 2),
         |lp, t| {
-            let w = lp.peers[2].engine.me();
+            let w = lp.peers[2].engine.tid();
             let mine = lp.peers[2].engine.core.ix.addenda.iter().filter(|((on, _), a)| on == t && a.point.node == w).count();
             format!("{:?} addenda {mine} {:?}", pending(lp, 2), lp.peers[2].engine.get(t, &Ak::new(X).unwrap()).unwrap())
         },
@@ -143,7 +143,7 @@ fn a_removal_owing_an_addendum() {
 fn a_step_with_compactions_due() {
     let make = || {
         let mut lp = LocalPeer::fresh(1, osis_base::WallMs(1_700_000_000_000));
-        let me = lp.peers[0].engine.me();
+        let me = lp.peers[0].engine.tid();
         let mut m = Mutation::new();
         let t = lp.peers[0].engine.new_thing(&mut m, me);
         lp.peers[0].commit(m).unwrap();

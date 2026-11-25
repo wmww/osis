@@ -182,14 +182,14 @@ fn a_crash_restarts_the_node_in_place() {
     let to = w.address(1);
     w.apply_as(0, vec![Out::Dial(ConnId(1), to)]);
     w.flush();
-    let me = w.engine(1).me();
+    let me = w.engine(1).tid();
     w.trace = true;
     w.disk_fault(1, 0, DiskFault::Crash);
     assert!(set(&mut w, 1, "a").is_err());
     w.flush();
     assert_eq!(w.crashes, 1);
     assert!(w.online(1));
-    assert_eq!(w.engine(1).me(), me, "reopened over its disks");
+    assert_eq!(w.engine(1).tid(), me, "reopened over its disks");
     assert!(closed(&w.seen, 0), "its peer is told: {:?}", w.seen);
     assert!(set(&mut w, 1, "b").is_ok());
 }
@@ -207,7 +207,7 @@ fn a_pairing_hit_by_a_store_failure_pairs_when_tried_again() {
         let n = w.pair(0);
         assert!(w.store_faults(0).writes() > 0, "{f:?}: the planned write came");
         assert_eq!(w.engine(n).settings_thing().unwrap(), account, "{f:?}");
-        assert!(w.engine(0).roster(&account.unwrap()).contains_key(&w.engine(n).me()), "{f:?}: granted");
+        assert!(w.engine(0).roster(&account.unwrap()).contains_key(&w.engine(n).tid()), "{f:?}: granted");
     }
 }
 

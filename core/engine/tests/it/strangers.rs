@@ -128,7 +128,7 @@ fn strangers_fires_leave_no_row_spec_sync_inbox_4() {
         let mut fires = Vec::new();
         for i in 1..=n {
             // a fire naming its sender's account by a weak, which needs nothing
-            let me = lp.peers[i].engine.me();
+            let me = lp.peers[i].engine.tid();
             fires.push(fire_value(&mut lp, i, inbox, NOTE, osis_base::Value::Weak(me)));
             refused(&mut lp, i, inbox, JUNK);
         }
@@ -177,7 +177,7 @@ fn a_fire_flood_leaves_no_row_past_its_setting_spec_sync_inbox_1() {
 #[test]
 fn a_kept_fire_keeps_nothing_of_its_sender_spec_commits_5() {
     let (mut lp, inbox) = strangers(1);
-    let p1 = lp.peers[1].engine.me();
+    let p1 = lp.peers[1].engine.tid();
     let note = fire(&mut lp, 1, inbox, NOTE, "note");
     assert!(lp.peers[0].engine.core.created(&p1).is_some(), "its record came with the fire");
     lp.peers[0].engine.settle_needs().unwrap();

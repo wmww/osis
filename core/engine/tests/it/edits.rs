@@ -34,7 +34,7 @@ fn net_with(n: usize) -> (LocalPeer, Tid, Vec<Tid>) {
 
 fn net_with_built(n: usize) -> (LocalPeer, Tid, Vec<Tid>) {
     let mut lp = net(n, 0);
-    let ids: Vec<Tid> = (0..n).map(|i| lp.peers[i].engine.me()).collect();
+    let ids: Vec<Tid> = (0..n).map(|i| lp.peers[i].engine.tid()).collect();
     let mut m = Mutation::new();
     let d = lp.peers[0].engine.new_thing(&mut m, ids[0]);
     // the thing keeps its signal's fires for good
@@ -178,7 +178,7 @@ fn an_edit_after_a_kick_is_not_honored_spec_commits_5() {
 #[test]
 fn a_valid_edit_of_an_invalid_original_stands_alone_spec_commits_5() {
     let mut lp = net(2, 0);
-    let ids = [0, 1].map(|i| lp.peers[i].engine.me());
+    let ids = [0, 1].map(|i| lp.peers[i].engine.tid());
     let mut m = Mutation::new();
     let d = lp.peers[0].engine.new_thing(&mut m, ids[0]);
     keep_in(&mut m, d, &setting(&[(log().as_str(), History::FOREVER)]));

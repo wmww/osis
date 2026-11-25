@@ -34,7 +34,7 @@ pub struct Row {
 fn label(core: &Core, t: &Tid) -> String {
     let what = if core.node_root == Some(*t) {
         " (node root)"
-    } else if core.me() == *t {
+    } else if core.tid() == *t {
         " (node thing)"
     } else if core.link_keys.contains_key(t) {
         " (a held link key)"
@@ -118,7 +118,7 @@ fn held_of(core: &Core, t: &Tid) -> String {
 /// The things whose roles are the node's (`rotation::role_here`): its node thing, its held link
 /// keys, each named.
 fn ours(core: &Core) -> Vec<(Tid, &'static str)> {
-    let mut out: Vec<(Tid, &'static str)> = vec![(core.me(), "node thing")];
+    let mut out: Vec<(Tid, &'static str)> = vec![(core.tid(), "node thing")];
     out.extend(core.link_keys.keys().map(|k| (*k, "link key")));
     out
 }

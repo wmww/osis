@@ -53,7 +53,7 @@ struct World {
     a: Osis,
     addr: osis::Address,
     t: Tid,
-    actor: Tid,
+    client: Tid,
     secret: ClientSecret,
 }
 
@@ -65,11 +65,11 @@ fn world(role: Option<Role>) -> World {
     let t = w.create_held().unwrap();
     w.at(t, v()).set(&Value::Int(5)).unwrap();
     w.commit().unwrap();
-    let (actor, secret) = a.add_client(a.node(), None).unwrap();
+    let (client, secret) = a.add_client(a.node(), None).unwrap();
     if let Some(r) = role {
-        a.grant(t, actor, r, osis::GrantOpts::default()).unwrap();
+        a.grant(t, client, r, osis::GrantOpts::default()).unwrap();
     }
-    World { net, c, a, addr, t, actor, secret }
+    World { net, c, a, addr, t, client, secret }
 }
 
 fn changes(db: &Osis, t: Tid) -> (osis::Subscription, Receiver<osis::Change<Value>>) {
@@ -78,7 +78,7 @@ fn changes(db: &Osis, t: Tid) -> (osis::Subscription, Receiver<osis::Change<Valu
     (s, rx)
 }
 
-// spec/wire.md §11.2 (A client actor's rights): a thing the actor may not read answers every
+// spec/wire.md §11.2 (A client's rights): a thing the client's thing may not read answers every
 // method as a thing the node does not know, writes included.
 #[test]
 fn a_hidden_thing_reads_as_unknown_through_a_thin_client_spec_wire_11() {
@@ -96,7 +96,7 @@ fn a_hidden_thing_reads_as_unknown_through_a_thin_client_spec_wire_11() {
     assert_eq!(w.a.at(w.t, v()).get().unwrap(), Some(Value::Int(5)));
 }
 
-// spec/wire.md §11.2 (A client actor's rights): a write the actor may not make is code 3.
+// spec/wire.md §11.2 (A client's rights): a write the client's thing may not make is code 3.
 #[test]
 fn a_reader_writes_nothing_spec_wire_11() {
     let w = world(Some(Role::Read));
@@ -108,8 +108,8 @@ fn a_reader_writes_nothing_spec_wire_11() {
     assert_eq!(w.a.at(w.t, v()).get().unwrap(), Some(Value::Int(5)));
 }
 
-// notes/client-port.md §3: a client's actor goes with the client, so what it makes names a
-// mint admin that stays; one under its own actor is `Invalid`.
+// notes/client-port.md §3: a client's thing goes with the client, so what it makes names a
+// mint admin that stays; one under its own thing is `Invalid`.
 #[test]
 fn a_thin_client_creates_under_a_thing_it_writes_notes_client_port() {
     let w = world(Some(Role::Admin));
@@ -167,7 +167,7 @@ fn a_watch_through_a_thin_client_spec_sync_transport_6() {
     x.commit().unwrap();
     cl.settle();
     let ch = rx.try_recv().unwrap();
-    assert!(matches!(ch.origin, Origin::Local(s) if s.author == w.actor), "{:?}", ch.origin);
+    assert!(matches!(ch.origin, Origin::Local(s) if s.author == w.client), "{:?}", ch.origin);
     assert!(rx.try_recv().is_err(), "an unchanged value is not told again");
     assert_eq!(w.a.watches(), before + 1);
     drop(sub);
@@ -178,7 +178,7 @@ fn a_watch_through_a_thin_client_spec_sync_transport_6() {
     assert_eq!(w.a.watches(), before, "unsubscribed at the node");
 }
 
-// spec/wire.md §11.2 (End of a client-actor session): removing the client ends its session:
+// spec/wire.md §11.2 (End of a client session): removing the client ends its session:
 // every later call is refused, and its watches hear nothing more.
 #[test]
 fn a_removed_client_is_refused_spec_wire_11() {
@@ -187,7 +187,7 @@ fn a_removed_client_is_refused_spec_wire_11() {
     let (_sub, rx) = changes(&cl, w.t);
     cl.settle();
     rx.try_recv().unwrap();
-    assert!(w.a.remove_client(w.actor).unwrap());
+    assert!(w.a.remove_client(w.client).unwrap());
     // no request in between: the Notify's own check ends it
     crate::common::commit_with(&w.a, |x| x.at(w.t, v()).set(&Value::Int(6)));
     w.a.settle();
@@ -208,7 +208,7 @@ fn a_thin_client_answers_nothing_of_its_own_notes_client_port() {
     let t = w.t;
     u(cl.add_client(cl.node(), None).map(drop));
     u(cl.clients().map(drop));
-    u(cl.grant(t, w.actor, Role::Read, osis::GrantOpts::default()));
+    u(cl.grant(t, w.client, Role::Read, osis::GrantOpts::default()));
     u(cl.on_diagnostic(|_, _| {}).map(drop));
     u(cl.make_link(t, Role::Read, cl.author(), Default::default()).map(drop));
     u(cl.publish_dial_on(&[t]));
@@ -229,9 +229,9 @@ fn auth_as(secret: Option<&ClientSecret>, session: u8) -> Msg {
 }
 
 /// A WRITE of nonce `nonce` overwriting `t`'s `x:v.0` with `n` (an overwrite always writes).
-fn write_call(nonce: u64, actor: Tid, t: Tid, n: i64) -> Msg {
+fn write_call(nonce: u64, thing: Tid, t: Tid, n: i64) -> Msg {
     let op = Value::List(vec![Value::uint(2), Value::bytes(t.as_bytes()), Value::uint(0), Value::List(vec![Value::List(vec![]), Value::List(vec![Value::uint(1), Value::Int(n)])])]);
-    let args = vec![Value::uint(nonce), Value::bytes(actor.as_bytes()), Value::List(vec![Value::Str("x:v.0".into())]), Value::List(vec![op]), Value::List(vec![])];
+    let args = vec![Value::uint(nonce), Value::bytes(thing.as_bytes()), Value::List(vec![Value::Str("x:v.0".into())]), Value::List(vec![op]), Value::List(vec![])];
     Msg::Call { id: 3, max_reply: 1 << 20, method: osis::internals::port_method::WRITE, args }
 }
 
@@ -304,14 +304,14 @@ fn ended_sessions_hold_nothing_spec_wire_11() {
     let until = osis::Time(w.a.now().unwrap().0 + 60_000);
     let mut clients: Vec<(Tid, ClientSecret)> = (0..7).map(|_| w.a.add_client(w.a.node(), None).unwrap()).collect();
     clients.push(w.a.add_client(w.a.node(), Some(until)).unwrap());
-    for (actor, _) in &clients {
-        w.a.grant(w.t, *actor, Role::Write, osis::GrantOpts::default()).unwrap();
+    for (thing, _) in &clients {
+        w.a.grant(w.t, *thing, Role::Write, osis::GrantOpts::default()).unwrap();
     }
     let mut conn = 100;
-    for (i, (actor, s)) in clients.iter().enumerate() {
+    for (i, (thing, s)) in clients.iter().enumerate() {
         for k in 0..8u8 {
             conn += 1;
-            let r = osis::internals::port_answers(&w.a, conn, false, vec![auth_as(Some(s), k), write_call(1, *actor, w.t, (i * 8) as i64 + k as i64)]);
+            let r = osis::internals::port_answers(&w.a, conn, false, vec![auth_as(Some(s), k), write_call(1, *thing, w.t, (i * 8) as i64 + k as i64)]);
             assert!(matches!(outcome(&r[1]), Outcome::Ok { .. }), "{r:?}");
         }
     }
@@ -326,7 +326,7 @@ fn ended_sessions_hold_nothing_spec_wire_11() {
     assert_eq!(osis::internals::port_held(&w.a), (49, 48), "the removed and the expired client's sessions and outcomes went");
 }
 
-// spec/wire.md §11.2 (Auth): past `max_clients` (64) authenticated client-actor sessions of all
+// spec/wire.md §11.2 (Auth): past `max_clients` (64) authenticated client sessions of all
 // clients, Error 4.
 #[test]
 fn clients_together_are_bounded_spec_wire_11() {
@@ -362,7 +362,7 @@ fn subscriptions_per_connection_are_bounded_spec_wire_11() {
     assert_eq!(error_code(&r[4098]), Some(4), "past the cap");
 }
 
-// spec/sync-transport.md §6 (Client-actor session): a client's secret goes over a keyed
+// spec/sync-transport.md §6 (Client session): a client's secret goes over a keyed
 // transport only: `connect` refuses a socket address.
 #[test]
 fn a_secret_never_goes_to_a_socket_spec_sync_transport_6() {
@@ -371,7 +371,7 @@ fn a_secret_never_goes_to_a_socket_spec_sync_transport_6() {
     assert!(matches!(connect(&w.net, &w.c, &sock, &w.secret), Err(Error::Invalid(_))));
 }
 
-// spec/sync-transport.md §6 (Client-actor session), as notes/client-port.md Reconnect has it: a
+// spec/sync-transport.md §6 (Client session), as notes/client-port.md Reconnect has it: a
 // lost connection is `Network` to calls and to watches; once the node is back, a call dials
 // again, and the watch hears the value again.
 #[test]
@@ -405,7 +405,7 @@ fn login(w: &World) -> NodeLogin {
 }
 
 // spec/sync-set.md §5: a sync unit sourced at another node is read and written there as this
-// node's client actor; this node's own identity and process-wide calls stay its own; a read
+// node's client's thing; this node's own identity and process-wide calls stay its own; a read
 // this port does not carry is `Unsupported`; moved back, it reads this node's copy again.
 #[test]
 fn a_group_read_at_another_node_spec_sync_set_5() {
@@ -419,13 +419,13 @@ fn a_group_read_at_another_node_spec_sync_set_5() {
     assert_eq!(b.at(w.t, v()).get().unwrap(), Some(Value::Int(5)));
     let mut x = b.write();
     x.at(w.t, v()).set(&Value::Int(6)).unwrap();
-    assert_eq!(x.commit().unwrap().unwrap().stamp.author, w.actor);
+    assert_eq!(x.commit().unwrap().unwrap().stamp.author, w.client);
     assert_eq!(w.a.at(w.t, v()).get().unwrap(), Some(Value::Int(6)));
     assert_eq!(b.grants(w.t).unwrap(), w.a.grants(w.t).unwrap(), "read at the source");
     {
         use osis::internals::Internals as _;
         let q = osis::CommitQuery::default();
-        assert_eq!(b.writes(&osis::Scope::Thing(w.t), &q), w.a.acting_as(w.actor).writes(&osis::Scope::Thing(w.t), &q), "listed at the source");
+        assert_eq!(b.writes(&osis::Scope::Thing(w.t), &q), w.a.acting_as(w.client).writes(&osis::Scope::Thing(w.t), &q), "listed at the source");
     }
     assert!(b.has_store());
     b.status().unwrap();
@@ -457,7 +457,7 @@ fn unit_sources_are_kept_notes_client_port() {
     assert_eq!(b.at(w.t, v()).get().unwrap(), Some(Value::Int(5)));
 }
 
-// spec/sync-transport.md §6 (Client-actor session), spec/wire.md §11.2 (Write nonces): a write
+// spec/sync-transport.md §6 (Client session), spec/wire.md §11.2 (Write nonces): a write
 // whose answer was lost is sent again, marked, once the connection is back, and the node
 // answers it with its first outcome: it applied once.
 #[test]
@@ -476,7 +476,7 @@ fn a_write_whose_answer_was_lost_applies_once_spec_sync_transport_6() {
 }
 
 // spec/sync-transport.md §6 (`unix:///path`), over the product's transports: a socket client
-// of a node on its own runtime reads, writes and watches as the main actor, and a watch hears
+// of a node on its own runtime reads, writes and watches as the node itself, and a watch hears
 // a change made at the node.
 #[test]
 fn a_socket_client_over_a_real_socket_spec_sync_transport_6() {
@@ -536,7 +536,7 @@ fn every_op_reads_alike_through_a_thin_client_notes_client_port() {
     let w = world(Some(Role::Admin));
     w.a.register_schema("t.osis", "revision 1;\naspect x:l.0: list<int>;\n").unwrap();
     let here = w.a.commit_with(|x| x.create_held_with_admin(w.t)).unwrap();
-    w.a.grant(here, w.actor, Role::Admin, osis::GrantOpts::default()).unwrap();
+    w.a.grant(here, w.client, Role::Admin, osis::GrantOpts::default()).unwrap();
     let cl = connect(&w.net, &w.c, &w.addr, &w.secret).unwrap();
     let n_here = every_op(&w.a, here);
     let n_there = every_op(&cl, w.t);
@@ -551,7 +551,7 @@ fn every_op_reads_alike_through_a_thin_client_notes_client_port() {
 
 // spec/wire.md §11.2 (Write nonces), notes/client-port.md Writes: a node keeps the last
 // `WRITE_NONCES` (64) outcomes of a session, and per identity as many sessions as its
-// connection cap (the main actor's: `max_clients`, 64), least recently used going; a resend of
+// connection cap (the node's: `max_clients`, 64), least recently used going; a resend of
 // what it forgot is code 12, never run again.
 #[test]
 fn write_outcomes_are_bounded_spec_wire_11() {
@@ -579,7 +579,7 @@ fn write_outcomes_are_bounded_spec_wire_11() {
 // ---- sharing, stamps, status and their watches through a connection ----
 
 // notes/client-port.md §3 (Revert and undo), spec/wire.md §11.2 (Write nonces): undo, redo and
-// revert through a thin client run at the node as its actor, each a write row under a nonce;
+// revert through a thin client run at the node as its thing, each a write row under a nonce;
 // what it would undo reads alike; a commit it did not make is not its to undo.
 #[test]
 fn undo_through_a_thin_client_spec_wire_11() {
@@ -593,7 +593,7 @@ fn undo_through_a_thin_client_spec_wire_11() {
     let made = x.commit().unwrap().unwrap();
     assert_eq!(cl.undo_target(&scope).unwrap().map(|c| c.stamp.id), Some(made.stamp.id));
     let undone = cl.undo(&scope).unwrap().expect("undone");
-    assert_eq!(undone.stamp.author, w.actor);
+    assert_eq!(undone.stamp.author, w.client);
     assert_eq!(cl.at(w.t, v()).get().unwrap(), Some(Value::Int(5)));
     assert_eq!(cl.redo_target(&scope).unwrap().map(|c| c.stamp.id), Some(undone.stamp.id));
     cl.redo(&scope).unwrap().expect("redone");
@@ -612,7 +612,7 @@ fn undo_resends_run_once_spec_wire_11() {
     let scope = Value::List(vec![Value::uint(0), Value::bytes(w.t.as_bytes())]);
     let row = |nonce: u64, method: u64, arg: Value| Msg::Call { id: 3, max_reply: 1 << 20, method, args: vec![Value::uint(nonce), arg] };
     let (undo, redo, revert) = (osis::internals::port_method::UNDO, osis::internals::port_method::REDO, osis::internals::port_method::REVERT);
-    let r = osis::internals::port_answers(&w.a, 1, false, vec![auth_as(Some(&w.secret), 1), write_call(1, w.actor, w.t, 6), write_call(2, w.actor, w.t, 7)]);
+    let r = osis::internals::port_answers(&w.a, 1, false, vec![auth_as(Some(&w.secret), 1), write_call(1, w.client, w.t, 6), write_call(2, w.client, w.t, 7)]);
     let six = made_id(&r[1]);
     let r = osis::internals::port_answers(&w.a, 1, false, vec![auth_as(Some(&w.secret), 1), row(3, undo, scope.clone()), row(3 | RESENT, undo, scope.clone())]);
     assert!(matches!(outcome(&r[1]), Outcome::Ok { value: Value::List(c) } if c.len() == 1), "{r:?}");
@@ -638,9 +638,9 @@ fn thing_changes(db: &Osis, t: Tid) -> (osis::Subscription, Receiver<osis::Chang
     (s, rx)
 }
 
-// notes/client-port.md §1 (Watches), spec/wire.md §11.2 (A client actor's rights): a watch
+// notes/client-port.md §1 (Watches), spec/wire.md §11.2 (A client's rights): a watch
 // through a thin client, of a value (`on_change`) or of a thing (`on_thing_change`), hears the
-// first value, then each change; one on a thing the actor may not read hears what one on a
+// first value, then each change; one on a thing the client's thing may not read hears what one on a
 // never-known thing hears: nothing when the thing changes.
 #[test]
 fn a_hidden_thing_notifies_nothing_spec_wire_11() {
@@ -649,7 +649,7 @@ fn a_hidden_thing_notifies_nothing_spec_wire_11() {
     let seen = x.create_held().unwrap();
     x.at(seen, v()).set(&Value::Int(1)).unwrap();
     x.commit().unwrap();
-    w.a.grant(seen, w.actor, Role::Read, osis::GrantOpts::default()).unwrap();
+    w.a.grant(seen, w.client, Role::Read, osis::GrantOpts::default()).unwrap();
     let cl = connect(&w.net, &w.c, &w.addr, &w.secret).unwrap();
     let never = Tid::from_bytes([9; 15]);
     let (_a, hidden) = changes(&cl, w.t);
@@ -688,9 +688,9 @@ fn a_hidden_thing_notifies_nothing_spec_wire_11() {
     assert!(thing_hidden.try_recv().is_err() && thing_unknown.try_recv().is_err(), "nothing told, nothing lost");
 }
 
-// notes/client-port.md §1 (Watches), spec/wire.md §11.2 (A client actor's rights):
+// notes/client-port.md §1 (Watches), spec/wire.md §11.2 (A client's rights):
 // `on_grants_change` through a thin client hears the grants, then each change; one on a thing
-// the actor may not read hears what one on a never-known thing hears: the empty grants, once.
+// the client's thing may not read hears what one on a never-known thing hears: the empty grants, once.
 #[test]
 fn a_grants_watch_through_a_thin_client_spec_wire_11() {
     let w = world(Some(Role::Read));
@@ -728,7 +728,7 @@ fn a_grants_watch_through_a_thin_client_spec_wire_11() {
 // ---- the API's rows that are one call each (notes/client-port.md §2) ----
 
 /// A node on a store directory, at `net`'s `peer://` address and on its own socket, and a client
-/// of it over the socket (the node's main actor, as the CLI beside `osis serve`).
+/// of it over the socket (the node itself, as the CLI beside `osis serve`).
 fn daemon(net: &ManualNet, c: &Arc<ManualClock>, seed: u64, name: &str) -> (Dir, Osis, Osis) {
     let dir = Dir::new(name);
     let mut o = osis::internals::Opening::at(osis::Store::Dir(dir.0.clone()));

@@ -334,7 +334,7 @@ impl Reader<'_> {
         Ok(self.e.aspects_within(&tid, Some(self.limit))?)
     }
 
-    /// What actor `t` is, from its creation record.
+    /// What kind of holder `t` is, from its creation record.
     pub(crate) fn holder_kind(&self, t: Tid) -> crate::HolderKind {
         if t.is_public() {
             return crate::HolderKind::Public;
@@ -342,7 +342,7 @@ impl Reader<'_> {
         match self.e.core.created(&t) {
             Some(r) if r.is_link() => crate::HolderKind::Link,
             Some(r) if r.key().is_some() => crate::HolderKind::Key,
-            _ => crate::HolderKind::Actor,
+            _ => crate::HolderKind::Thing,
         }
     }
 
@@ -354,8 +354,8 @@ impl Reader<'_> {
         self.e.roster(&thing).into_iter().map(|(m, e)| (m, Grant { role: e.role, until: e.until, retain_copy: e.until.is_some() && e.retain, may_grant: e.may_grant, from_now: e.floor.is_some() })).collect()
     }
 
-    /// Whether `thing`'s roster is shown here: to a reader of it, or of the target a link's actor
-    /// stands for (its joiners are the target's). A node holds edge writes of actors it does not
+    /// Whether `thing`'s roster is shown here: to a reader of it, or of the target of a link's thing
+    /// (its joiners are the target's). A node holds edge writes of things it does not
     /// read (its holders' chains, the demotions their keysets carry, spec/crypto.md §4), which are
     /// not its to show.
     pub(crate) fn shows_roster(&self, thing: Tid) -> bool {
@@ -383,7 +383,7 @@ impl Reader<'_> {
 
     /// Whether the thing is here with content: its creation is held and some aspect a `Write`
     /// sets is present. `false` for an unknown thing and for one with no content, never written
-    /// or cleared (a thing just created, an actor carrying only role data).
+    /// or cleared (a thing just created, a thing carrying only role data).
     pub fn knows(&mut self, tid: Tid) -> Result<bool> {
         if self.hidden(tid) {
             return Ok(false);
@@ -470,7 +470,7 @@ impl ReadOnly {
     }
 
     /// The roles granted on `thing`, by holder; empty unless this node reads `thing` (or the
-    /// thing a link's actor stands for): a node holds others' grants it is not entitled to show.
+    /// target of a link's thing): a node holds others' grants it is not entitled to show.
     /// Whoever holds through those: `holders`.
     pub fn grants(&self, thing: Tid) -> Result<Grants> {
         self.thing_read(thing, "grants", crate::port::method::GRANTS, Filter::Grants(thing), move |r| Ok(r.grants(thing)))

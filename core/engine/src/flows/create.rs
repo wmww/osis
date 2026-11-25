@@ -13,7 +13,7 @@ impl Engine {
     /// a commit carrying its `created.0` and the strong that holds it (`hold_where_it_lives`).
     pub fn create_with_admin(&mut self, admin: &Tid) -> Result<(Tid, Done)> {
         let a = *admin;
-        if a != self.core.me() && self.role_on(&a) < Some(Role::Write) {
+        if a != self.core.tid() && self.role_on(&a) < Some(Role::Write) {
             return Err(Error::Permission { tid: a, needs: Role::Write });
         }
         let mut m = Mutation::new();

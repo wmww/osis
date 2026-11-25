@@ -244,7 +244,7 @@
 //!
 //! # Commits, undo, redo, revert
 //! `writes` lists the commits in a scope, anyone's, each with its parts: those still in the read or
-//! kept by history (`fired` lists a signal's). `undo` and `redo` revert this actor's own newest
+//! kept by history (`fired` lists a signal's). `undo` and `redo` revert this handle's own newest
 //! commit or undo in a scope; `revert` reverts any commit. Only a commit in kept history is undone
 //! (the thing's setting, `core::RETENTION`, set by its admins), and only from kept history is
 //! anything written back: without a setting keeping it, any undo is `NotUndoable`, on every node.
@@ -302,8 +302,8 @@
 //! ```
 //!
 //! # Sharing
-//! A role says who may; sync says where the data goes. `grant` gives an actor a role on a thing and
-//! needs the actor's keys (a card of it, a shared thing). `set_role` changes or removes a role.
+//! A role says who may; sync says where the data goes. `grant` gives a thing a role on another and
+//! needs the holder's keys (a card of it, a shared thing). `set_role` changes or removes a role.
 //! A link needs no keys. A grant to `Tid::PUBLIC` lets everyone read the thing, and
 //! `public_link` hands out a way to it; `set_card` puts a thing's card on another, so whoever
 //! reads that one can grant to it.
@@ -320,7 +320,7 @@
 //! db.grant(g, team, Role::Read, GrantOpts::default())?;
 //! assert_eq!(db.grants(g)?[&team].role, Role::Read);
 //! // who holds `g`, and who holds it through what
-//! assert!(db.holders(g)?.iter().any(|h| h.actor == team && h.through.is_empty()));
+//! assert!(db.holders(g)?.iter().any(|h| h.thing == team && h.through.is_empty()));
 //! # Ok::<(), osis::Error>(())
 //! ```
 //!
@@ -347,10 +347,10 @@
 //! ```no_run
 //! # use osis::{AppConfig, NodeLogin, Osis};
 //! # async fn demo(node: &Osis, addr: osis::Address) -> osis::Result<()> {
-//! let (actor, secret) = node.add_client(node.node(), None)?;
+//! let (thing, secret) = node.add_client(node.node(), None)?;
 //! // on the other program, given `addr` and `secret`:
 //! let client = Osis::connect(&[NodeLogin { addr, secret }], AppConfig::default()).await?;
-//! assert_eq!(client.author(), actor);
+//! assert_eq!(client.author(), thing);
 //! assert!(!client.has_store());
 //! # Ok(()) }
 //! ```

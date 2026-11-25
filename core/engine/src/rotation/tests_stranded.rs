@@ -52,7 +52,7 @@ fn holder_keys_bring_the_holders_new_keyset_spec_permissions_4() {
 #[test]
 fn holder_keys_reach_a_receiver_knowing_nothing_of_the_chain_spec_permissions_4() {
     let mut lp = crate::local_peer::LocalPeer::new_apart(2, 0, super::tests::T0).unwrap();
-    let me = lp.peers[0].engine.me();
+    let me = lp.peers[0].engine.tid();
     let mut m = crate::Mutation::new();
     let t = lp.peers[0].engine.new_thing(&mut m, me);
     lp.peers[0].commit(m).unwrap();
@@ -103,7 +103,7 @@ fn holder_keys_take_no_edge_write_off_the_chain_spec_permissions_4() {
     let (mut lp, _, t) = holder_on_g();
     let x = independent_thing(&mut lp, 2);
     lp.sync_all().unwrap();
-    let p1 = lp.peers[1].engine.me();
+    let p1 = lp.peers[1].engine.tid();
     let c = lp.peers[2].engine.grant(&x, &p1, &edge(Role::Read)).unwrap().commits[0];
     let limits = osis_base::Limits::new(osis_base::format::MAX_OBJECT_DEPTH, osis_base::format::MAX_BLOB);
     let v = osis_base::decode(&lp.peers[2].engine.run(|tx| tx.get_commit(&c)).unwrap().unwrap().encode(), &limits).unwrap();
@@ -152,7 +152,7 @@ fn a_met_ask_goes_with_its_holder_spec_permissions_4() {
 fn until_granted() -> (LocalPeer, Tid, Vec<Tid>) {
     let (lp, (g, tids)) = LocalPeer::cached("rotation::tests_stranded::until_granted", || {
         let mut lp = synced(2);
-        let tids: Vec<Tid> = (0..2).map(|i| lp.peers[i].engine.me()).collect();
+        let tids: Vec<Tid> = (0..2).map(|i| lp.peers[i].engine.tid()).collect();
         let g = independent_thing(&mut lp, 0);
         let until = lp.peers[0].engine.now().0 + 1_000;
         lp.peers[0].engine.grant(&g, &tids[1], &osis_schema::core_types::Edge { until: Some(osis_base::WallMs(until)), ..edge(Role::Read) }).unwrap();
@@ -735,7 +735,7 @@ const HOUR_MS: u64 = 3_600_000;
 /// Bob (peer 1) keeps `fire` signals on his inbox an hour, synced; peer 2 then mints W, which
 /// it never sends. (Bob's inbox, W)
 fn keeps_fires_an_hour(lp: &mut LocalPeer, fire: &osis_base::Ak) -> (Tid, Tid) {
-    let bob = lp.peers[1].engine.me();
+    let bob = lp.peers[1].engine.tid();
     let e1 = &mut lp.peers[1].engine;
     let inbox = bob;
     let mut s = e1.get_typed(&inbox, &osis_schema::core_types::RETENTION).unwrap().unwrap_or_default();
@@ -745,7 +745,7 @@ fn keeps_fires_an_hour(lp: &mut LocalPeer, fire: &osis_base::Ak) -> (Tid, Tid) {
     lp.peers[1].commit(m).unwrap().unwrap();
     lp.sync_all().unwrap();
     let e2 = &mut lp.peers[2].engine;
-    let me2 = e2.me();
+    let me2 = e2.tid();
     let mut m = crate::Mutation::new();
     let w = e2.new_thing(&mut m, me2);
     e2.commit(m).unwrap().unwrap();
@@ -817,7 +817,7 @@ fn a_sealed_fire_carries_its_chain_until_it_goes_spec_commits_4() {
 #[test]
 fn an_edge_write_fires_only_where_its_writer_may_not_write_the_holder_spec_permissions_4() {
     let mut lp = synced(2);
-    let (alice, bob) = (lp.peers[0].engine.me(), lp.peers[1].engine.me());
+    let (alice, bob) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
     let a = independent_thing(&mut lp, 1);
     let mut m = crate::Mutation::new();
     let h = lp.peers[1].engine.new_thing(&mut m, a);

@@ -263,14 +263,14 @@ fn a_write_listing_its_mint_admins_step_requires_that_step_spec_crypto_7() {
     let mut lp = LocalPeer::new(1, 0, crate::common::T0).unwrap();
     // the reader, apart: it holds none of N's commits
     let mut reader = osis_engine::local_peer::Peer::new(7, crate::common::T0).unwrap();
-    let r = reader.engine.me();
+    let r = reader.engine.tid();
     lp.peers[0].know(&[r]).unwrap();
     for id in reader.engine.commit_ids() {
         let pk = reader.engine.package(&id).unwrap().unwrap();
         lp.deliver(0, &pk).unwrap();
     }
     lp.peers.push(reader);
-    let n = lp.peers[0].engine.me();
+    let n = lp.peers[0].engine.tid();
     let mut m = Mutation::new();
     let g = m.create(lp.peers[0].engine.held_record(n).unwrap());
     m.set(g, &REG, &s("g")).unwrap();

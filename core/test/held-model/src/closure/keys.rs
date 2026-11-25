@@ -22,7 +22,7 @@ pub fn roles_of(w: &World, own: &Set) -> BTreeMap<T, Role> {
     out
 }
 
-/// Whether the node holds `h` for keys once named: no own actor, not read in the node closure,
+/// Whether the node holds `h` for keys once named: no own thing, not read in the node closure,
 /// and opened (its roles read it).
 fn holdable(c: &Closure, n: &NodeView, h: T) -> bool {
     !n.own.contains(&h) && !c.read.contains(&h) && c.keys.contains(&h)
@@ -46,11 +46,11 @@ pub fn for_keys(w: &World, e: &Edges, n: &NodeView) -> Set {
     out
 }
 
-/// The oracle, by paths: every holder on a path of grants from an own actor to a thing the node
-/// syncs along which the node can act, other than an own actor or a thing read. Such a
+/// The oracle, by paths: every holder on a path of grants from an own thing to a thing the node
+/// syncs along which the node can act, other than an own thing or a thing read. Such a
 /// path runs by hops with key access, each giving read or above (it opens the next thing's keys)
-/// but the last, any role on the read thing, through no second own actor.
-/// Enumerated as simple paths from each own actor, apart from `for_keys`'s walk.
+/// but the last, any role on the read thing, through no second own thing.
+/// Enumerated as simple paths from each own thing, apart from `for_keys`'s walk.
 pub fn on_paths(w: &World, e: &Edges, n: &NodeView) -> Set {
     let c = closure(w, e, n, Walk::Units);
     let mut out = Set::new();
@@ -67,7 +67,7 @@ fn extend(w: &World, n: &NodeView, c: &Closure, path: &mut Vec<T>, out: &mut Set
             continue;
         }
         if c.read.contains(&t) || c.stored.contains(&t) {
-            // a path ends at the first read thing it meets: its holders since the last own actor
+            // a path ends at the first read thing it meets: its holders since the last own thing
             // or read thing are the ones acted through
             out.extend(path.iter().copied().filter(|x| !n.own.contains(x) && !c.read.contains(x)));
         }

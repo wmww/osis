@@ -488,7 +488,7 @@ mod tests {
     /// A held commit's meta with a part on each of two things.
     fn two_parts() -> (CommitId, Meta) {
         let mut lp = LocalPeer::fresh(1, WallMs(1_700_000_000_000));
-        let a = lp.peers[0].engine.me();
+        let a = lp.peers[0].engine.tid();
         let mut m = Mutation::new();
         let (t, u) = (lp.peers[0].engine.new_thing(&mut m, a), lp.peers[0].engine.new_thing(&mut m, a));
         lp.peers[0].commit(m).unwrap();
@@ -509,7 +509,7 @@ mod tests {
     fn a_dropped_piece_stands_for_its_body_spec_wire_4() {
         let mut lp = LocalPeer::fresh(3, WallMs(1_700_000_000_000));
         lp.sync_all().unwrap();
-        let (a, b, c) = (lp.peers[0].engine.me(), lp.peers[1].engine.me(), lp.peers[2].engine.me());
+        let (a, b, c) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
         let mut m = Mutation::new();
         let t = lp.peers[0].engine.new_thing(&mut m, a);
         lp.peers[0].commit(m).unwrap();
@@ -553,7 +553,7 @@ mod tests {
     #[test]
     fn a_part_read_while_its_record_disagrees_moves_with_the_record() {
         let mut lp = LocalPeer::fresh(1, WallMs(1_700_000_000_000));
-        let a = lp.peers[0].engine.me();
+        let a = lp.peers[0].engine.tid();
         let mut m = Mutation::new();
         let t = lp.peers[0].engine.new_thing(&mut m, a);
         lp.peers[0].commit(m).unwrap();

@@ -83,7 +83,7 @@ pub(crate) fn set(core: &Core, a: &Tid, view: &mut ActorEpochs) {
         };
         makers.insert(*e, f);
     }
-    let own = party_floor(core, a, &core.me());
+    let own = party_floor(core, a, &core.tid());
     view.role_mut(Role::Read).set_floors(makers, own);
 }
 

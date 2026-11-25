@@ -353,7 +353,7 @@ fn local_rights_check_spec_permissions_1() {
     w.at(t, untyped("t:x.0")).set(&Value::Int(2)).unwrap();
     assert_eq!(w.commit(), Err(Error::Permission { tid: t, needs: Role::Write }));
     assert_eq!(b.engine(|e| e.commit_ids().len()), before);
-    // creating under someone else's actor
+    // minting with someone else's thing as admin
     let mut w = b.write();
     w.create_held_with_admin(a.author()).unwrap();
     assert!(matches!(w.commit(), Err(Error::Permission { .. })));
@@ -457,7 +457,7 @@ fn expiry_purge_by_and_purge_spec_commits_5_6() {
     assert_eq!(db.at(t, osis::DynamicAspectKey::untyped(r.clone())).get().unwrap(), None);
 }
 
-// notes/api.md Writes: `act_as` changes the thing the header's path acts on; the default is `me()`.
+// notes/api.md Writes: `act_as` changes the thing the header's path acts on; the default is `author()`.
 // spec/commits.md §1
 #[test]
 fn act_as_spec_commits_1() {
@@ -470,8 +470,8 @@ fn act_as_spec_commits_1() {
     w.act_as(t);
     w.at(t, untyped("t:x.0")).set(&Value::Int(1)).unwrap();
     let c2 = w.commit().unwrap().unwrap();
-    let actor = |c: osis::internals::RawCommitId| db.engine(|e| e.commit_purge_author(&c).unwrap());
-    assert_eq!((actor(c1.stamp.id.raw()), actor(c2.stamp.id.raw())), (db.author(), t));
+    let purge_author = |c: osis::internals::RawCommitId| db.engine(|e| e.commit_purge_author(&c).unwrap());
+    assert_eq!((purge_author(c1.stamp.id.raw()), purge_author(c2.stamp.id.raw())), (db.author(), t));
     // an empty write commits nothing
     assert_eq!(db.write().commit().unwrap(), None);
 }
@@ -703,7 +703,7 @@ fn aspects_agrees_with_reads_after_a_purge() {
 fn the_empty_path_is_the_whole_value() {
     let db = db(0);
     let (k, l) = (ak("t:x.0"), ak("t:s.0"));
-    // dependent, in the account root's sync unit
+    // dependent, in the account's sync unit
     let t = db.commit_with(|w| {
         let t = w.create_held_with_admin(crate::common::home(&db))?;
         w.at(t, osis::DynamicAspectKey::untyped(k.clone())).path(p![]).set(&Value::Int(1))?;

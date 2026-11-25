@@ -152,7 +152,7 @@ fn a_card_alone_lets_a_stranger_grant_spec_permissions_2() {
     let mut lp = LocalPeer::new_apart(2, 0, T0).unwrap();
     let (acc, _) = osis_engine::local_peer::make_account(&mut lp.peers[0].engine).unwrap();
     lp.peers[0].engine.refresh_cards().unwrap();
-    let me1 = lp.peers[1].engine.me();
+    let me1 = lp.peers[1].engine.tid();
     let t = thing(&mut lp, 1, me1, true);
     assert!(lp.peers[1].engine.grant(&t, &acc.thing, &ct::Edge { role: Role::Read, until: None, may_grant: false, retain: false, floor: None }).is_err(), "no card, no keys: refused");
     // node 0 grants node 1 read on the profile (node 1's keys shown by hand)

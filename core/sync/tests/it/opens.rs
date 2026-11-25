@@ -2265,7 +2265,7 @@ fn a_sources_class_is_its_declaration_whichever_hit_opens_spec_sync_opens_4() {
 /// The classes node `i` gives the sources of S proved by node `j`.
 fn classes(w: &mut crate::harness::World, i: usize, j: usize, s: &SyncId) -> Vec<SourceClass> {
     // a source is a node, named by its node thing
-    let a = Some(w.engine(j).me());
+    let a = Some(w.engine(j).tid());
     w.status(i).get(s).map(|st| st.sources.values().filter(|x| x.src.node == a).map(|x| x.src.class).collect()).unwrap_or_default()
 }
 

@@ -88,7 +88,7 @@ fn the_dispute(f: &Fight, i: usize) -> osis_engine::sides::DisputeInfo {
     let (ds, left) = f.lp.peers[i].engine.disputes(64);
     assert_eq!((ds.len(), left), (1, 0), "{ds:?}");
     let d = ds[0].clone();
-    assert_eq!((d.holder, d.author, d.target), (f.a.into(), f.lp.peers[1].engine.me(), f.t));
+    assert_eq!((d.holder, d.author, d.target), (f.a.into(), f.lp.peers[1].engine.tid(), f.t));
     d
 }
 
@@ -110,7 +110,7 @@ fn backdated_removal_loses_where_the_honest_one_was_first_spec_permissions_5_1()
     f.lp.peers[2].drain_events();
     send_carried(&mut f.lp, 0, 2, &r);
     assert_eq!(admins(&f, 2), (false, true), "the side it had stays");
-    assert_eq!(detected(&f.lp, 2), vec![(f.a, f.lp.peers[1].engine.me(), true)]);
+    assert_eq!(detected(&f.lp, 2), vec![(f.a, f.lp.peers[1].engine.tid(), true)]);
     let d = the_dispute(&f, 2);
     assert_eq!(d.side.map(|s| (s.trust, s.chosen)), Some((true, false)));
     // peer 3: the backdated one first
@@ -119,7 +119,7 @@ fn backdated_removal_loses_where_the_honest_one_was_first_spec_permissions_5_1()
     f.lp.peers[3].drain_events();
     send_carried(&mut f.lp, 1, 3, &w);
     assert_eq!(admins(&f, 3), (true, false), "first received: the thief's side, warned");
-    assert_eq!(detected(&f.lp, 3), vec![(f.a, f.lp.peers[1].engine.me(), false)]);
+    assert_eq!(detected(&f.lp, 3), vec![(f.a, f.lp.peers[1].engine.tid(), false)]);
     let d = the_dispute(&f, 3);
     assert_eq!(d.side.map(|s| (s.trust, s.chosen)), Some((false, false)));
     // each party sides with itself
@@ -139,7 +139,7 @@ fn backdated_removal_loses_where_the_honest_one_was_first_spec_permissions_5_1()
 fn choose_switches_sides_and_persists_spec_permissions_5_1() {
     let mut f = fight(3);
     let (w, r) = (f.w.clone(), f.r.clone());
-    let c = f.lp.peers[2].engine.me();
+    let c = f.lp.peers[2].engine.tid();
     let other = thing_of(&mut f.lp, 2, c);
     f.lp.peers[2].engine.grant(&other, &f.a, &edge_of(Role::Write)).unwrap();
     send_carried(&mut f.lp, 1, 2, &w);
@@ -466,7 +466,7 @@ fn trust_records_reach_only_lowerings_on_the_account_spec_permissions_8() {
     osis_engine::local_peer::make_account(&mut lp.peers[0].engine).unwrap();
     let a = crate::common::account_of(&mut lp);
     let mut p = osis_engine::local_peer::Peer::new(1, crate::common::T0).unwrap();
-    let (node, keys) = (p.engine.me(), p.engine.node_keys().unwrap());
+    let (node, keys) = (p.engine.tid(), p.engine.node_keys().unwrap());
     let (mut offer, _) = lp.peers[0].engine.pair(&a, &node, &keys, osis_base::Role::Admin).unwrap();
     // a record naming the grant's own write, its copy on A: no lowering, nothing to adopt
     let grant = osis_engine::flows::offers::Trusted { commit: lp.peers[0].engine.commit_ids().into_iter().last().unwrap(), op: 0, holder: osis_base::Holder::Thing(node), copy: offer.grant.clone() };

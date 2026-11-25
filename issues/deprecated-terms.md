@@ -8,7 +8,7 @@ Everything below is **deprecated**: never build on it, never add a use. Where a 
 ## Still in the repo
 | Term or concept | Where it remains | Why | Removing takes |
 |---|---|---|---|
-| The account machinery: `actor` in identifiers and fields (client actor), the **signing chain**, account **epochs**, **custody**, account **sides**, **thing lists** and listings | notes (the code and spec have none of it but the client actor) | notes not yet reread | stage Z (notes/redesign-plan.md) |
+| The account machinery: **custody**, account **thing lists** and listings | notes/account-membership-design.md §1 (its audit of the removed system), notes/redesign-plan.md's brief list, notes/time-limits.md's log | history kept on purpose | nothing; its other words are refused (Gone) |
 | **holder actor** (a thing holding a role on another, as a part keys are boxed to) | spec/crypto.md §4 Holder actors and its citations (commits, permissions, sync-ids, wire), about 20 notes, engine rotation and secrets, keys, the models | the spec's name for the built key mechanism; "actor" is a part in a commit (notes/terms.md) | the accounts work, which redefines actors; then "holder" alone |
 | **signer** for a thing (the thing a commit is signed as) | spec prose and spec/wire.md §4 field 1; code | the header field is named `signer`, naming the thing signed as | the accounts work, then one spec pass: "the thing it is signed as", or the key |
 | Rule words where a role is meant: **edge**, **rights**, **demotion**, **revocation** | spec rule text, engine `Edge`, perm | older words of the rule text | issues/grant-rename-multi-actor.md (edge); the rest where A1 rewrites spec/permissions.md §5 |
@@ -21,7 +21,13 @@ Everything below is **deprecated**: never build on it, never add a use. Where a 
 ## Gone
 Nothing searches for these: a word here may come back with a new, legitimate sense (a word with no other sense goes in `tools/policy.py` `DEAD_WORDS` instead, and is refused). What stands in each one's place:
 - **key actor** (refused by `tools/policy.py` `dead_words`): a thing minted with a key, independent from its minting (spec/permissions.md §3), an ordinary thing; a link key keeps seed-derived first secrets and its static entry.
-- **account root**: an account is an ordinary thing the account library makes (osis-account); a node's strongs sit on its node root.
+- **account root** (refused): an account is an ordinary thing the account library makes (osis-account); a node's strongs sit on its node root.
+- **client actor**, **main actor**, a client's **own actor** (refused): a client's thing (`Client::thing`) in a client session; the node itself in a main session. **Own actors** (refused): a node's own things (spec/sync-set.md §2). **Link actor** (refused): a link's thing.
+- `UnknownActor` (refused), the Actor holder kind, and `actor` for a holder, a link's thing and a lost thing (HolderKind, Holder, LinkId, LostAccess): `UnknownKeys`, `HolderKind::Thing`, `Holder::thing`, `LinkId::thing`, `LostAccess::thing` (notes/terms.md, API words).
+- **node card** and `reach.0` (refused), `node.0`: a node's entries in `dial.0` lists; its `peer://` URL is computed from listeners and relays (spec/sync-transport.md §3).
+- **chain write** (refused): a write on the writer's own path (spec/permissions.md §5.1 Frontier).
+- **signing chain**, account **epochs** and **sides** (refused): a node signs as its node thing; a removal is an ordinary role change (spec/permissions.md §8).
+- `Engine::me`: `Engine::tid`, the node thing.
 - **device** for a node: a node (one machine may run many nodes); its node thing, node root, the node's key.
 - **ticket** (the reference kind, the tickets aspect, key-change tickets), `ticket@~0`: grants belong to the thing granted and sync with it; a grant from outside reaches its holder as an offer (a `grant@~0` fire) that proves nothing. TLS session tickets are another sense.
 - **removal notice**, `removal@~0`: a removal is evidence wherever a held write's path uses the removed hop; nothing delivers it elsewhere.

@@ -22,7 +22,7 @@ fn world() -> (LocalPeer, (Tid, CommitId, CommitId)) {
     LocalPeer::cached("apply::tests_faults::world", || {
         let mut lp = LocalPeer::fresh(2, T0);
         lp.sync_all().unwrap();
-        let me = lp.peers[0].engine.me();
+        let me = lp.peers[0].engine.tid();
         let mut m = Mutation::new();
         let t = lp.peers[0].engine.new_thing(&mut m, me);
         m.set(t, &ak("x:a.0"), &Value::Int(1)).unwrap();

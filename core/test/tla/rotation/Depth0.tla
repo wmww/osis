@@ -166,7 +166,7 @@ AsOf == FALSE
 \* a keyset carries the removals of writers through holder actors (Via
 \* nodes) and of admins from its actor or an actor below it that its
 \* rotator held (kw), and a node holds a keyset only with what it carries;
-\* FALSE (negative control): a keyset carries only its own actor's names,
+\* FALSE (negative control): a keyset carries only its own thing's names,
 \* judged by nobody above
 Travel == TRUE
 \* the rejected possession rule (negative control): a writer through holder

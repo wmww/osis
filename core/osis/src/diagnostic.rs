@@ -21,8 +21,8 @@ pub enum Diagnostic {
     Mismatch { thing: Tid, detail: String },
     /// A large value could not be read (not fetched yet, or failing verification), and read as absent.
     Unreadable { thing: Tid, detail: String },
-    /// This node lost read access to `actor` and dropped its secrets (a copy may stay: `retained_copies`).
-    LostAccess { actor: Tid, detail: String },
+    /// This node lost read access to `thing` and dropped its secrets (a copy may stay: `retained_copies`).
+    LostAccess { thing: Tid, detail: String },
     /// `thing` holds a strong whose target `target` is neither in its sync unit nor held otherwise:
     /// it reaches no other node by it (spec/sync-set.md §2 Not carried).
     NotCarried { thing: Tid, target: Tid, detail: String },
@@ -69,7 +69,7 @@ impl From<osis_engine::Diagnostic> for Diagnostic {
             (K::OwnWriteInvalid, _, _, Some(c)) => Diagnostic::OwnWriteInvalid { commit: c.into(), things: tids, detail },
             (K::Mismatch, Some(thing), ..) => Diagnostic::Mismatch { thing, detail },
             (K::Unreadable, Some(thing), ..) => Diagnostic::Unreadable { thing, detail },
-            (K::Removed, Some(actor), ..) => Diagnostic::LostAccess { actor, detail },
+            (K::Removed, Some(thing), ..) => Diagnostic::LostAccess { thing, detail },
             (K::NotCarried, Some(thing), Some(target), _) => Diagnostic::NotCarried { thing, target, detail },
             (K::Stranded, Some(thing), ..) => Diagnostic::Stranded { thing, detail },
             (K::EphemeralRefused, ..) => Diagnostic::EphemeralRefused { things: tids, detail },

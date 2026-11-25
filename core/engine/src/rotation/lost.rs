@@ -98,7 +98,7 @@ pub(crate) fn role_here(core: &Core, a: &Tid) -> Option<Role> {
     if !grants_count(core, a) {
         return public;
     }
-    own_actors(core).iter().map(|m| core.keyed_role_now(m, a)).chain([public]).max().flatten()
+    own_things(core).iter().map(|m| core.keyed_role_now(m, a)).chain([public]).max().flatten()
 }
 
 /// Whether the grants the node holds of `a` count for its role (spec/sync-set.md §2 Own things:
@@ -136,14 +136,14 @@ pub(crate) fn grants_count(core: &Core, a: &Tid) -> bool {
 /// actor's sync IDs).
 fn syncs(core: &Core, t: &Tid) -> bool {
     let cl = &core.ix.closure;
-    let own = own_actors(core);
+    let own = own_things(core);
     let one = |t: &Tid| own.contains(t) || crate::sync::units::holds_within(core, t) || crate::sync::units::reached_carried(core, t) || cl.for_keys(t) || core.followed_links.contains(t) || crate::flows::inbox::granted_on(core, t).next().is_some();
     one(t) || core.secret_actor(t).is_some_and(|a| a != *t && one(&a))
 }
 
 /// The node's own things: its node thing, each held link key.
-fn own_actors(core: &Core) -> Vec<Tid> {
-    std::iter::once(core.me()).chain(core.link_keys.keys().copied()).collect()
+fn own_things(core: &Core) -> Vec<Tid> {
+    std::iter::once(core.tid()).chain(core.link_keys.keys().copied()).collect()
 }
 
 /// Whether the node (`holds_at`) reads `a` now: read or above.
@@ -205,7 +205,7 @@ pub(super) fn lost_by_time(core: &Core, a: &Tid) -> bool {
     let reads = core.ix.secrets.get(a).is_some_and(|e| ROLES.iter().any(|r| *r != Role::Sync && e.role(*r).holds_any()));
     let need = if reads { Role::Read } else { Role::Sync };
     let role = |x: &Tid| tl.role_unfinalized(x, a, ts).is_some_and(|r| r >= need);
-    role(&core.me()) || core.link_keys.keys().any(role)
+    role(&core.tid()) || core.link_keys.keys().any(role)
 }
 
 /// How long an actor lost by the time alone waits for node-sync to hear its sync IDs out before
@@ -219,15 +219,15 @@ pub const LOST_HEARD_WAIT_MS: u64 = osis_base::format::ROLE_KEEP_MS;
 
 /// Whether box recipient `m` is this node, a held link key or a thing it holds and reads now.
 fn ours(core: &Core, m: &Tid) -> bool {
-    *m == core.me() || core.link_keys.contains_key(m) || (core.ix.secrets.contains_key(m) && readable(core, m))
+    *m == core.tid() || core.link_keys.contains_key(m) || (core.ix.secrets.contains_key(m) && readable(core, m))
 }
 
 /// Whether an edge of holder `h` that ended or lowered was one of the node's ways: `h` is an own
-/// actor, or one an own actor reads by the grants held. Read without `grants_count`: a holder is
+/// thing, or one an own thing reads by the grants held. Read without `grants_count`: a holder is
 /// found from the thing its edge names up, so once that edge ended nothing finds it, its own
 /// secrets go, and the loss it brings would be seen by no rule that asks whether it still counts.
 fn was_ours(core: &Core, h: &Tid) -> bool {
-    let own = own_actors(core);
+    let own = own_things(core);
     own.contains(h) || own.iter().any(|m| core.keyed_role_now(m, h) >= Some(Role::Read))
 }
 
@@ -419,7 +419,7 @@ fn ways(core: &Core, actors: &BTreeSet<Tid>) -> BTreeMap<Tid, BTreeMap<Tid, Way>
 /// only on the timeline's word: the edge's end now says erase. Least fixpoint, so holders
 /// cannot keep each other.
 fn keeps(core: &Core, lost: &BTreeSet<Tid>, marks: &BTreeMap<Tid, BTreeSet<Tid>>) -> BTreeMap<Tid, BTreeSet<Tid>> {
-    let me = core.me();
+    let me = core.tid();
     let own = |h: &Tid| *h == me || core.link_keys.contains_key(h);
     let all: BTreeSet<Tid> = lost.iter().chain(marks.keys()).copied().collect();
     let ways = ways(core, &all);

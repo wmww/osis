@@ -867,7 +867,7 @@ pub struct Address {
 /// single spaces). The key is `Address::key`.
 pub const PEER_SCHEME: &str = "peer";
 
-/// The `peer://` URL listing `items` (`reach.0`'s, spec/sync-transport.md §3).
+/// The `peer://` URL listing `items` (spec/sync-transport.md §3).
 pub fn peer_url(items: &[String]) -> String {
     format!("{PEER_SCHEME}://{}", items.join(" "))
 }

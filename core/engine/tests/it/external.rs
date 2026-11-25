@@ -99,7 +99,7 @@ fn a_fire_counts_only_while_its_signal_is_enabled_spec_permissions_5_2() {
 #[test]
 fn a_removed_writers_unlisted_fire_is_judged_as_a_strangers_spec_permissions_5_2() {
     let (mut lp, g) = three();
-    let p1 = lp.peers[1].engine.me();
+    let p1 = lp.peers[1].engine.tid();
     let s1 = set_setting(&mut lp, 0, g, &setting(true));
     let up = set_edge(&mut lp.peers[0].engine, g, p1, Some(edge(Role::Write)), None);
     send_carried(&mut lp, 0, 1, &[s1, up]);
@@ -228,7 +228,7 @@ fn a_fire_follows_its_settings_validity_spec_commits_5() {
     let mut lp = crate::common::net(4, 0);
     let g = new_shared(&mut lp, 0);
     lp.sync_all().unwrap();
-    let p2 = lp.peers[2].engine.me();
+    let p2 = lp.peers[2].engine.tid();
     let up = set_edge(&mut lp.peers[0].engine, g, p2, Some(edge(Role::Admin)), None);
     send_carried(&mut lp, 0, 2, &[up]);
     let s1 = set_setting(&mut lp, 2, g, &setting(true));
@@ -292,7 +292,7 @@ fn a_grant_by_the_holders_writer_goes_with_no_fire_spec_permissions_4() {
 }
 
 // spec/sync-inbox.md §5 Grant from outside (an offer; the grant is the target's own data), spec/
-// sync-set.md §2 Own actors (the node's role is by the thing's grants as the node holds them):
+// sync-set.md §2 Own things (the node's role is by the thing's grants as the node holds them):
 // Bob makes a group G; Alice, who holds no role on G, grants G read on her X. G's setting
 // enables no `grant@~0`: her fire is refused and Bob learns nothing of X. Once Bob enables the
 // signal on G the same fire is held, an offer of X, and Bob reads X through G. Disabled again,
@@ -437,7 +437,7 @@ fn an_offer_past_its_keep_is_never_taken_spec_sync_inbox_5() {
     assert_eq!(carried_on(&lp, 1, &x), Vec::new(), "no offer of X is held");
     let _ = open(&mut lp, 1, &grant);
     assert_eq!(carried_on(&lp, 1, &x), Vec::new(), "the late copy is no offer");
-    assert!(!lp.peers[1].engine.roster(&x).contains_key(&lp.peers[1].engine.me()), "the ended grant is not standing at Bob again");
+    assert!(!lp.peers[1].engine.roster(&x).contains_key(&lp.peers[1].engine.tid()), "the ended grant is not standing at Bob again");
     assert_eq!(lp.peers[1].engine.role_on(&x), None, "and gives him nothing");
 }
 

@@ -200,7 +200,7 @@ fn withdrawn_epoch_content_never_resealed_spec_crypto_5() {
         if !d_first {
             lp.sync(A, V).unwrap();
         }
-        assert!(lp.peers[V].engine.core.role_now(&lp.peers[M].engine.me(), &g).is_some(), "M reads on at V");
+        assert!(lp.peers[V].engine.core.role_now(&lp.peers[M].engine.tid(), &g).is_some(), "M reads on at V");
         assert!(!lp.peers[V].engine.epochs(&g).unwrap().read.is_established(&e_r), "e_R unmet at V");
         assert!(reads(&mut lp, V, g, "w"), "V reads w by e_R's box");
         let (_, leak) = v_reseals_to_m(&mut lp, g, w);
@@ -568,7 +568,7 @@ fn facade_copy_read_content_withheld_without_the_removal_spec_crypto_5() {
 fn cross_thing_copy_content_never_resealed_spec_crypto_5() {
     let (mut lp, g, w_commits, e_r, w, entry) = shape(false);
     let h = super::tests::independent_thing(&mut lp, R);
-    let v_tid = lp.peers[V].engine.me();
+    let v_tid = lp.peers[V].engine.tid();
     lp.peers[R].engine.grant(&h, &v_tid, &edge(Role::Admin)).unwrap();
     // h's actor reads g, so h's sync ID may carry w as a copy (spec/permissions.md §3: a copy of
     // content its independent may not read is not taken)
@@ -691,7 +691,7 @@ fn copy_opening_of_a_pending_write_survives_a_restart_spec_crypto_5() {
 #[test]
 fn copy_read_below_a_cut_keeps_its_floor_spec_crypto_5() {
     let mut lp = super::tests::synced(3);
-    let tids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.me()).collect();
+    let tids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.tid()).collect();
     let (a, p, n) = (0, 1, 2);
     let g = super::tests::independent_thing(&mut lp, a);
     lp.peers[a].engine.grant(&g, &tids[p], &edge(Role::Admin)).unwrap();

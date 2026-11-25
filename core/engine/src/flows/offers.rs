@@ -109,7 +109,7 @@ impl Engine {
         }
         // the offer is to a node of its holder (spec/sync-inbox.md §5 By hand): the node thing,
         // or a thing it may write (an account), as `offered_to` reads a fire's
-        let me = self.core.me();
+        let me = self.core.tid();
         if !self.core.key_holders(&t).iter().any(|(h, _)| *h == me || self.core.role_now(&me, h) >= Some(osis_base::Role::Write)) {
             return Err(Error::BadInput("the offer gives this node no role"));
         }

@@ -20,7 +20,7 @@ use std::collections::BTreeSet;
 fn read_credentials_and_claim_key_spec_sync_ids_3() {
     let (mut lp, _) = people(1);
     let e = &mut lp.peers[0].engine;
-    let d = e.me();
+    let d = e.tid();
     let ds = e.sync_id_of(&d).unwrap().unwrap();
     let ids = e.sync_ids(&d).unwrap();
     assert_eq!(ids.len(), 1);
@@ -54,7 +54,7 @@ fn caps_read_from_the_nodes_entry_spec_sync_ids_5() {
     e.commit(m).unwrap().unwrap();
     assert!(e.caps().unwrap().things.is_empty(), "another node's entry");
     let mut m = Mutation::new();
-    let me = osis_base::Weak(e.me()).to_value();
+    let me = osis_base::Weak(e.tid()).to_value();
     m.op(acc.thing, &ct::CAPS, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(me)], op: osis_crdt::Op::Set(caps.to_value()) }).unwrap();
     e.commit(m).unwrap().unwrap();
     let c = e.caps().unwrap();
@@ -197,7 +197,7 @@ fn all_done(lp: &mut LocalPeer, i: usize) {
 #[test]
 fn only_an_own_self_removal_waits_and_done_drops_only_the_lost_spec_perm_3() {
     let (mut lp, a, t) = siblings_granted();
-    let b = lp.peers[2].engine.me();
+    let b = lp.peers[2].engine.tid();
     let g = thing_of(&mut lp, 2, b);
     lp.peers[2].engine.grant(&g, &a, &edge_of(Role::Read)).unwrap();
     lp.peers[2].engine.grant(&t, &g, &edge_of(Role::Read)).unwrap();
@@ -281,7 +281,7 @@ fn a_crash_between_drop_and_clear_is_done_again_spec_perm_3() {
 fn a_step_needs_its_epochs_rotations_spec_sync_ids_6() {
     let (mut lp, _) = people(1);
     let e = &mut lp.peers[0].engine;
-    let (me, root) = (e.me(), e.node_root().unwrap());
+    let (me, root) = (e.tid(), e.node_root().unwrap());
     let hold = |a: Tid| {
         let mut m = Mutation::new();
         m.op(root, &ct::HOLDS, osis_crdt::PathOp { path: vec![], op: osis_crdt::Op::Add(osis_base::Value::Strong(a)) }).unwrap();
@@ -297,7 +297,7 @@ fn a_step_needs_its_epochs_rotations_spec_sync_ids_6() {
 
 /// The link keys `e` proves as besides its node thing (`proving`: what it acts for on the wire).
 fn link_keys_held(e: &mut osis_engine::Engine) -> BTreeSet<Tid> {
-    let me = e.me();
+    let me = e.tid();
     e.proving().unwrap().provers.iter().map(|p| p.record.tid()).filter(|t| *t != me).collect()
 }
 
@@ -362,7 +362,7 @@ fn following_a_link_again_under_another_seed_lets_its_old_key_go_spec_permission
 fn history_completes_with_a_pass_spec_sync_status_3() {
     let (mut lp, _) = people(1);
     let e = &mut lp.peers[0].engine;
-    let d = e.me();
+    let d = e.tid();
     let ds = e.sync_id_of(&d).unwrap().unwrap();
     assert_eq!(e.passes_wanted().unwrap().get(&ds), Some(&0), "one pass, whenever");
     assert!(!e.history_complete(&d).unwrap());
@@ -414,7 +414,7 @@ fn record_blob_framed(lp: &mut LocalPeer, i: usize, t: &Tid, records: &[osis_bas
 fn a_record_blob_of_another_prefix_is_bad_spec_crypto_7() {
     let (mut lp, d) = crate::flows::account_two_nodes();
     let ds = lp.peers[0].engine.sync_id_of(&d).unwrap().unwrap();
-    let a = lp.peers[0].engine.me();
+    let a = lp.peers[0].engine.tid();
     let u = thing_of(&mut lp, 0, a);
     let real = lp.peers[0].engine.core.created(&u).cloned().unwrap();
     let dk = osis_crypto::DeleteSecret::write(&osis_crypto::Secret32::from_bytes([9; 32])).verifying_key();
@@ -540,8 +540,8 @@ fn a_loose_author_record_is_learned_when_its_commit_comes_spec_commits_4() {
     let mut lp = crate::common::net(1, 5);
     // the author: a node peer 0 never met
     let mut p = osis_engine::local_peer::Peer::new(77, lp.peers[0].engine.now()).unwrap();
-    let a = lp.peers[0].engine.me();
-    let b = p.engine.me();
+    let a = lp.peers[0].engine.tid();
+    let b = p.engine.tid();
     let t = thing_of(&mut lp, 0, a);
     lp.peers[0].engine.make_independent(&t).unwrap();
     let s0 = lp.peers[0].engine.sync_id_of(&t).unwrap().unwrap();
@@ -565,8 +565,8 @@ fn a_loose_author_record_is_learned_when_its_commit_comes_spec_commits_4() {
 fn a_loose_record_awaited_after_another_arrives_is_learned_spec_commits_4() {
     for loose_author in [false, true] {
         let mut lp = crate::common::net(2, 5);
-        let a = lp.peers[0].engine.me();
-        let b = lp.peers[1].engine.me();
+        let a = lp.peers[0].engine.tid();
+        let b = lp.peers[1].engine.tid();
         let t = thing_of(&mut lp, 0, a);
         lp.peers[0].engine.make_independent(&t).unwrap();
         let s0 = lp.peers[0].engine.sync_id_of(&t).unwrap().unwrap();
@@ -602,7 +602,7 @@ fn a_loose_record_awaited_after_another_arrives_is_learned_spec_commits_4() {
 fn own_secrets_and_the_sync_id_come_in_one_commit_spec_sync_ids_2() {
     for by_grant in [false, true] {
         let (mut lp, ps) = people(2);
-        let admin = lp.peers[0].engine.me();
+        let admin = lp.peers[0].engine.tid();
         let t = thing_of(&mut lp, 0, admin);
         let e = &mut lp.peers[0].engine;
         assert_eq!(e.sync_id_of(&t).unwrap(), None, "a dependent thing has none");

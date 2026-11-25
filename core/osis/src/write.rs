@@ -56,7 +56,7 @@ pub enum Purge {
 pub(crate) enum WriteOp {
     /// A new thing; its record fixes its tid.
     Create(CreationRecord),
-    /// A new thing minted with keys of its own (`Write::create_with_keys`).
+    /// A new thing minted with its keys (`Write::create_with_keys`).
     CreateWithKeys(CreationRecord),
     /// An op at a path of a value aspect (whole-value ops at the root).
     Path { tid: Tid, key: u32, op: PathOp },
@@ -288,7 +288,7 @@ impl<'d> Write<'d> {
     ///
     /// With a thing as admin (usually the one that holds it), whoever reads that thing reads it, and
     /// until it is first shared directly it may be up to ten times lighter to make and sync than one
-    /// with a node thing (`node()`) or another thing that holds roles as admin. A thin client's own actor goes with the client, so it is
+    /// with a node thing (`node()`) or another thing that holds roles as admin. A thin client's thing goes with the client, so it is
     /// refused as admin (`Invalid` at commit).
     ///
     /// The same write must hold it: a strong to it from a thing this node holds or from its
@@ -304,11 +304,11 @@ impl<'d> Write<'d> {
         Ok(t)
     }
 
-    /// As `create` (with no expiry), the thing minted with keys of its own: whoever learns of
-    /// its role or of the roles granted it (a grant to it or on it, `Osis::offer`) learns of it
-    /// with them, before it syncs the thing, and `Osis::keys` shows them at once. Make so a thing
-    /// that is to hold roles or be granted from outside at once (an account, its inbox); a thing
-    /// made with `create` gets keys of its own at its first grant. Its minting is a commit of its
+    /// As `create` (with no expiry), the thing minted with its keys: whoever learns of its role or
+    /// of the roles granted it (a grant to it or on it, `Osis::offer`) learns its keys with them,
+    /// before it syncs the thing, and `Osis::keys` shows them at once. Make so a thing that is to
+    /// hold roles or be granted from outside at once (an account, its inbox); a thing made with
+    /// `create` gets its keys at its first grant or card. Its minting is a commit of its
     /// own ahead of this write's, in the same transaction.
     pub fn create_with_keys(&mut self, admin: Tid) -> Result<Tid> {
         let admin = self.known(admin)?;
@@ -456,7 +456,7 @@ impl<'d> Write<'d> {
                     m.create(rec);
                 }
                 WriteOp::CreateWithKeys(rec) => {
-                    m.create_with_keys(rec);
+                    m.create_independent(rec);
                 }
                 WriteOp::PurgeThing(_) if expires.is_some() => return Err(Error::Invalid("a purge of a thing does not expire: this write has an expiry, so write it as a commit of its own".into())),
                 // a dynamic key's kind is known only now: a write of the other kind never

@@ -70,7 +70,7 @@ fn grant_never_lowers_and_set_role_writes_only_changes() {
     assert!(matches!(alice.set_role(g, b, Some(Role::Write), SetRoleOpts { retain_copy: Some(true), ..Default::default() }), Err(Error::Invalid(_))), "retain with a role");
     alice.set_role(g, b, None, SetRoleOpts::default()).unwrap();
     assert_eq!(role(&alice), None);
-    assert!(!alice.holders(g).unwrap().iter().any(|h| h.actor == b));
+    assert!(!alice.holders(g).unwrap().iter().any(|h| h.thing == b));
     let n = commits(&alice);
     alice.set_role(g, b, None, SetRoleOpts::default()).unwrap();
     assert_eq!(commits(&alice), n, "no role, nothing to remove");
@@ -88,20 +88,20 @@ fn holders_list_every_way_in_nearest_first() {
     alice.grant(org, b, Role::Admin, Default::default()).unwrap();
     alice.grant(g, org, Role::Read, Default::default()).unwrap();
     let hs = alice.holders(g).unwrap();
-    let pos = |actor, through: &[osis::Tid]| hs.iter().position(|h| h.actor == actor && h.through == through).unwrap_or_else(|| panic!("{hs:?}"));
+    let pos = |thing, through: &[osis::Tid]| hs.iter().position(|h| h.thing == thing && h.through == through).unwrap_or_else(|| panic!("{hs:?}"));
     assert!(pos(org, &[]) < pos(b, &[org]), "nearest first: {hs:?}");
     assert_eq!(hs[pos(b, &[org])].role, Role::Read, "the least along the way");
-    assert_eq!(hs[pos(org, &[])].kind, osis::HolderKind::Actor);
+    assert_eq!(hs[pos(org, &[])].kind, osis::HolderKind::Thing);
     alice.grant(g, b, Role::Write, Default::default()).unwrap();
     let hs = alice.holders(g).unwrap();
-    let ways: Vec<_> = hs.iter().filter(|h| h.actor == b).map(|h| (h.role, h.through.clone())).collect();
+    let ways: Vec<_> = hs.iter().filter(|h| h.thing == b).map(|h| (h.role, h.through.clone())).collect();
     assert_eq!(ways.len(), 2, "{hs:?}");
     assert!(ways.contains(&(Role::Write, vec![])) && ways.contains(&(Role::Read, vec![org])));
 }
 
 // notes/api.md Sharing and roles (`leave`): leaving with no way in writes nothing; this node,
-// an admin of the target, leaving for another actor is `Invalid` (that is `set_role`'s) and
-// writes nothing, a link's join of the same actor included; a holder's own leave ends its role
+// an admin of the target, leaving for another holder is `Invalid` (that is `set_role`'s) and
+// writes nothing, a link's join of the same holder included; a holder's own leave ends its role
 // at once, and a link it made goes on.
 // spec: none (API surface, notes/api.md)
 #[test]
@@ -113,7 +113,7 @@ fn leave_ends_only_own_ways_and_refuses_before_writing() {
     assert_eq!(commits(&alice), n, "no way in: nothing written");
     alice.grant(g, org, Role::Write, Default::default()).unwrap();
     alice.make_link(g, Role::Write, alice.node(), Default::default()).unwrap();
-    let k = alice.links_of(g).unwrap()[0].id.actor();
+    let k = alice.links_of(g).unwrap()[0].id.thing();
     alice.grant(k, org, Role::Read, Default::default()).unwrap();
     let n = commits(&alice);
     assert!(matches!(alice.leave(org, g, SetRoleOpts::default()), Err(Error::Invalid(_))));
@@ -127,8 +127,8 @@ fn leave_ends_only_own_ways_and_refuses_before_writing() {
     deliver(&bob, &alice);
     alice.make_link(t, Role::Read, alice.node(), Default::default()).unwrap();
     assert_eq!(alice.role_on(t).unwrap(), Some(Role::Admin));
-    // the link's actor has her as its only admin: her leave of it is meant, or refused first
-    let k = alice.links_of(t).unwrap()[0].id.actor();
+    // the link's thing has her as its only admin: her leave of it is meant, or refused first
+    let k = alice.links_of(t).unwrap()[0].id.thing();
     let n = commits(&alice);
     assert!(matches!(alice.leave(alice.author(), t, SetRoleOpts::default()), Err(Error::LeavesNoAdmin { tid }) if tid == k));
     assert_eq!(commits(&alice), n, "refused before anything is written");
@@ -314,7 +314,7 @@ fn a_parents_reader_sees_no_roster_of_its_member_org_spec_crypto_4() {
     mesh(&all);
     assert!(!bob.grants(m).unwrap().contains_key(&erin.author()), "Erin left M");
     assert!(carol.grants(m).unwrap().is_empty(), "no roster of M once Erin left");
-    assert!(carol.holders(g).unwrap().iter().all(|h| h.actor != erin.author()), "nor through G's holders");
+    assert!(carol.holders(g).unwrap().iter().all(|h| h.thing != erin.author()), "nor through G's holders");
     // once Carol reads M (a roster change on M's way in, not on M's), her watch on M's grants
     // hears its roster
     let t = bob.commit_with(|w| w.create_held()).unwrap();

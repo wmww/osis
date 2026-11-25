@@ -222,7 +222,7 @@ impl crate::Osis {
     }
 
     /// Serves clients on this store's own unix socket: processes of this uid that connect
-    /// (`Osis::connect_socket` with this store's directory) act as this node's main actor, with
+    /// (`Osis::connect_socket` with this store's directory) act as this node itself, with
     /// no authentication (there is no security boundary between them); the kernel refuses
     /// others. `Invalid` for a store in memory (no directory names it); `Storage` when the
     /// socket's directory is not safely this user's; `Network` without a runtime. Returns the
@@ -238,7 +238,7 @@ impl crate::Osis {
     }
 
     /// Listens at `urls` (`quic://example.org:4040`) under this node's one key: other nodes sync
-    /// with it there, and clients use it as actors they authenticate for (`add_client`). Returns
+    /// with it there, and clients use it as the things they authenticate for (`add_client`). Returns
     /// each address (with its real port) to hand out. Replaces the listeners of an earlier call;
     /// no URL stops them. Direct sync's own listener and the client socket are not this call's:
     /// they stay. Needs a runtime. Listening does not last past this process: call it at each
@@ -308,7 +308,7 @@ impl crate::Osis {
     /// dial lists of the things its node root's `dial_on^.0` names. A failed write is
     /// published again at the next listen.
     pub(crate) fn publish_reach(&self, key: [u8; 32], addrs: &[osis_blob::Address], routes: &[std::net::IpAddr]) {
-        let items: Vec<String> = addrs.iter().flat_map(|a| osis_transport::p2p::reach_items(&a.url, routes)).collect();
+        let items: Vec<String> = addrs.iter().flat_map(|a| osis_transport::p2p::peer_url_items(&a.url, routes)).collect();
         let root = self.inner.node_root;
         let _ = self.engine(|e| {
             let on: Vec<Tid> = e.get_typed(&root, &osis_schema::core_types::DIAL_ON)?.unwrap_or_default().into_iter().map(|w| w.0).collect();

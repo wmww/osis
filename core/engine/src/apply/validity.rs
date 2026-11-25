@@ -1336,7 +1336,7 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
             }
         }
     }
-    let me = tx.core.me();
+    let me = tx.core.tid();
     let mut own_fell: Vec<(CommitId, Vec<Tid>)> = Vec::new();
     // parts dropped while invalid that turn valid: missing again, fetched
     let mut back: Vec<(CommitId, usize)> = Vec::new();

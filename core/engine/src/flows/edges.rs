@@ -63,7 +63,7 @@ pub enum History {
 /// `grant_in`, handing `history`.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn grant_history(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, holder: Tid, edge: &Edge, leave: bool, frontier: Option<osis_perm::Frontier>, history: History) -> Result<Done> {
-    let who = signer.unwrap_or(tx.core.me());
+    let who = signer.unwrap_or(tx.core.tid());
     if edge.until == Some(osis_base::WallMs(0)) {
         return Err(Error::Misuse("`until` 0 is a removal's saying retain"));
     }
@@ -118,7 +118,7 @@ pub(crate) fn grant_history(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, h
     // box the holder at the current epochs held, blocked ones included: a box carrying a secret
     // is encrypted under its recipient's key, not under that epoch (spec/crypto.md §4,
     // Encrypting under; `rotation::reseal_one` alike)
-    let me = tx.core.me();
+    let me = tx.core.tid();
     if !holder.is_public() {
         rotation::ensure_rotated(tx, me, holder, &mut done)?;
         // the granter's check (spec/permissions.md §2), second half: KEM keys at every role the
@@ -278,7 +278,7 @@ pub(crate) fn removal(tx: &Tx<'_>, m: &mut Mutation, target: Tid, holder: impl I
 /// inbox copy to each holder, logged before any other entry under every sync ID the removed
 /// parties could read.
 pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &Demotion, others: &[Tid], frontier: Option<osis_perm::Frontier>) -> Result<Done> {
-    let who = signer.unwrap_or(tx.core.me());
+    let who = signer.unwrap_or(tx.core.tid());
     let holder = d.holder;
     let ts = now_ts(tx.core);
     let tl = tx.core.timelines().get(&target).ok_or(Error::UnknownThing(target))?;
@@ -398,7 +398,7 @@ pub(crate) fn finalizable(core: &crate::engine::Core, who: &Tid, target: &Tid) -
 /// `target` is the caller's (`rotation::ensure_rotated`).
 pub(crate) fn finalize_in(tx: &mut Tx<'_>, who: Tid, target: Tid, ended: &[(Tid, PermEdge, bool)], kept: &BTreeSet<Role>, done: &mut Done) -> Result<()> {
     let mut m = Mutation::new();
-    if who != tx.core.me() {
+    if who != tx.core.tid() {
         m.sign_as(who);
     }
     let mut left: BTreeSet<Role> = BTreeSet::new();
@@ -459,7 +459,7 @@ impl Engine {
             return Err(Error::Misuse("a key's grant carries no retain, no floor and no until 0"));
         }
         let (t, holder) = (*target, Holder::Key(*key));
-        let me = self.core.me();
+        let me = self.core.tid();
         let admin = self.core.role_now(&me, &t) == Some(Role::Admin);
         let (frontier, covers) = match admin && self.needs_frontier_of(&t, &holder, edge) {
             true => self.demotion_frontier(t, vec![osis_perm::EdgeOp { target: t, holder, edge: edge.map(perm_edge) }])?,
@@ -511,7 +511,7 @@ impl Engine {
     /// `grant_signed`, then `then` in the same transaction.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn grant_signed_then(&mut self, signer: Option<Tid>, target: Tid, holder: Tid, edge: &Edge, leave: bool, history: History, then: impl FnOnce(&mut Tx<'_>) -> Result<()>) -> Result<Done> {
-        let who = signer.unwrap_or(self.core.me());
+        let who = signer.unwrap_or(self.core.tid());
         let new = Some(perm_edge(edge));
         let audits = self.core.role_now(&who, &target) == Some(Role::Admin) && self.needs_frontier(&target, &holder, Some(edge));
         let frontier = match audits {
@@ -658,7 +658,7 @@ impl Engine {
     /// `until` or role commit of the target's and the holder's components (an authority ending by
     /// time alone moves it).
     pub fn may_remove(&mut self, target: &Tid, holder: &Tid) -> Result<Option<Removal>> {
-        let me = self.core.me();
+        let me = self.core.tid();
         let _horizon = self.core.bound_to_horizon([*target, *holder].into_iter());
         if crate::apply::validity::self_removal(&self.core, &me, target, holder, now_ts(&self.core)) {
             return Ok(Some(Removal::SelfRemoval));

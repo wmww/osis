@@ -26,7 +26,7 @@ mod tests {
         let run = |split: bool| {
             let mut lp = LocalPeer::fresh(3, WallMs(1_700_000_000_000));
             lp.sync_all().unwrap();
-            let (me, b) = (lp.peers[0].engine.me(), lp.peers[1].engine.me());
+            let (me, b) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
             let (t, g) = (thing(&mut lp, me), thing(&mut lp, me));
             let edge = ct::Edge { role: Role::Write, until: None, may_grant: false, retain: false, floor: None };
             lp.peers[0].engine.grant(&g, &b, &edge).unwrap();
@@ -77,8 +77,8 @@ mod tests {
     fn may_grant_grant_secrets_limited_to_grantee_spec_perm_2() {
         let mut lp = LocalPeer::fresh(3, WallMs(1_700_000_000_000));
         lp.sync_all().unwrap();
-        let me = lp.peers[0].engine.me();
-        let (b, c) = (lp.peers[1].engine.me(), lp.peers[2].engine.me());
+        let me = lp.peers[0].engine.tid();
+        let (b, c) = (lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
         let t = thing(&mut lp, me);
         let edge = ct::Edge { role: Role::Read, until: None, may_grant: false, retain: false, floor: None };
         let done = lp.peers[0].engine.grant(&t, &b, &edge).unwrap();
@@ -108,7 +108,7 @@ mod tests {
     fn a_grantees_box_stands_beside_a_junk_box_spec_wire_4() {
         let mut lp = LocalPeer::fresh(3, WallMs(1_700_000_000_000));
         lp.sync_all().unwrap();
-        let (a, b, c) = (lp.peers[0].engine.me(), lp.peers[1].engine.me(), lp.peers[2].engine.me());
+        let (a, b, c) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
         let t = thing(&mut lp, a);
         let read = ct::Edge { role: Role::Read, until: None, may_grant: false, retain: false, floor: None };
         lp.peers[0].engine.grant(&t, &b, &ct::Edge { may_grant: true, ..read.clone() }).unwrap();
@@ -149,7 +149,7 @@ mod tests {
     fn an_edge_piece_carries_the_rest_only_to_a_reader_spec_permissions_4() {
         let mut lp = LocalPeer::fresh(3, WallMs(1_700_000_000_000));
         lp.sync_all().unwrap();
-        let (a, b, c) = (lp.peers[0].engine.me(), lp.peers[1].engine.me(), lp.peers[2].engine.me());
+        let (a, b, c) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
         let t = thing(&mut lp, a);
         let edge = |role| ct::Edge { role, until: None, may_grant: false, retain: false, floor: None };
         let pieces = |lp: &mut LocalPeer, id: &osis_base::CommitId, h: Tid| {
@@ -177,7 +177,7 @@ mod tests {
         let run = |role: Role, rest: bool| {
             let mut lp = LocalPeer::fresh(3, WallMs(1_700_000_000_000));
             lp.sync_all().unwrap();
-            let (a, o, t) = (lp.peers[0].engine.me(), lp.peers[1].engine.me(), lp.peers[2].engine.me());
+            let (a, o, t) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
             let x = thing(&mut lp, a);
             let edge = |role| ct::Edge { role, until: None, may_grant: false, retain: false, floor: None };
             lp.peers[0].engine.grant(&x, &o, &edge(Role::Read)).unwrap();
@@ -215,7 +215,7 @@ mod tests {
         let run = |c_role: Role, remove: bool| {
             let mut lp = LocalPeer::fresh(3, WallMs(1_700_000_000_000));
             lp.sync_all().unwrap();
-            let (a, b, c) = (lp.peers[0].engine.me(), lp.peers[1].engine.me(), lp.peers[2].engine.me());
+            let (a, b, c) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
             lp.takes_grants(2, c);
             lp.sync_all().unwrap();
             let x = thing(&mut lp, a);
@@ -250,7 +250,7 @@ mod tests {
     fn a_secrets_snapshot_travels_in_pieces_spec_wire_4() {
         let mut lp = LocalPeer::fresh(3, WallMs(1_700_000_000_000));
         lp.sync_all().unwrap();
-        let (a, b, c) = (lp.peers[0].engine.me(), lp.peers[1].engine.me(), lp.peers[2].engine.me());
+        let (a, b, c) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
         let t = thing(&mut lp, a);
         let secrets = osis_base::Ak::new("secrets.0").unwrap();
         let read = ct::Edge { role: Role::Read, until: None, may_grant: false, retain: false, floor: None };
@@ -290,7 +290,7 @@ mod tests {
     fn a_rest_piece_over_claiming_covers_nothing_spec_commits_5() {
         let mut lp = LocalPeer::fresh(3, WallMs(1_700_000_000_000));
         lp.sync_all().unwrap();
-        let (a, b, c) = (lp.peers[0].engine.me(), lp.peers[1].engine.me(), lp.peers[2].engine.me());
+        let (a, b, c) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
         let t = thing(&mut lp, a);
         let secrets = osis_base::Ak::new("secrets.0").unwrap();
         let read = ct::Edge { role: Role::Read, until: None, may_grant: false, retain: false, floor: None };
@@ -309,7 +309,7 @@ mod tests {
                     st.join(p);
                 }
                 let absorbed = [(gb, a), (gc, a)].into_iter().collect();
-                let (ts, node) = (tx.core.hlc.next(), tx.core.me());
+                let (ts, node) = (tx.core.hlc.next(), tx.core.tid());
                 crate::retention::snapshot::build_snapshot(tx, t, k.clone(), st.into(), ts, node, Default::default(), absorbed, None, false)
             })
             .unwrap();
@@ -346,7 +346,7 @@ mod tests {
     fn a_piece_held_without_its_siblings_is_dated_spec_commits_5() {
         let mut lp = LocalPeer::fresh(2, WallMs(1_700_000_000_000));
         lp.sync_all().unwrap();
-        let (a, b) = (lp.peers[0].engine.me(), lp.peers[1].engine.me());
+        let (a, b) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
         let secrets = osis_base::Ak::new("secrets.0").unwrap();
         let edge = ct::Edge { role: Role::Sync, until: None, may_grant: false, retain: false, floor: None };
         // a grant whose first piece is not b's (pieces lie in hash order)
@@ -382,7 +382,7 @@ mod tests {
     fn a_readers_rotation_rotates_nothing_spec_permissions_3() {
         let mut lp = LocalPeer::fresh(3, WallMs(1_700_000_000_000));
         lp.sync_all().unwrap();
-        let (a, b, c) = (lp.peers[0].engine.me(), lp.peers[1].engine.me(), lp.peers[2].engine.me());
+        let (a, b, c) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
         let t = thing(&mut lp, a);
         let read = ct::Edge { role: Role::Read, until: None, may_grant: false, retain: false, floor: None };
         lp.peers[0].engine.grant(&t, &b, &read).unwrap();
@@ -433,7 +433,7 @@ mod tests {
     fn may_grant_grant_records_its_grantees_boxes_spec_perm_2() {
         let mut lp = LocalPeer::fresh(4, WallMs(1_700_000_000_000));
         lp.sync_all().unwrap();
-        let (a, b, c) = (lp.peers[0].engine.me(), lp.peers[1].engine.me(), lp.peers[2].engine.me());
+        let (a, b, c) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
         let t = thing(&mut lp, a);
         let read = ct::Edge { role: Role::Read, until: None, may_grant: false, retain: false, floor: None };
         lp.peers[0].engine.grant(&t, &b, &ct::Edge { may_grant: true, ..read.clone() }).unwrap();
@@ -473,7 +473,7 @@ mod tests {
     fn nested_holders_write_is_bad_input_spec_perm_2() {
         let mut lp = LocalPeer::fresh(2, WallMs(1_700_000_000_000));
         lp.sync_all().unwrap();
-        let (a, b) = (lp.peers[0].engine.me(), lp.peers[1].engine.me());
+        let (a, b) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
         let t = thing(&mut lp, a);
         let mut m = Mutation::new();
         crate::flows::put_edge(&mut m, t, b, &ct::Edge { role: Role::Write, until: Some(WallMs(1_700_000_100_000)), may_grant: false, retain: false, floor: None }).unwrap();
@@ -496,7 +496,7 @@ mod tests {
     fn overreaching_grant_late_secrets_invalid_spec_perm_2() {
         let mut lp = LocalPeer::fresh(4, WallMs(1_700_000_000_000));
         lp.sync_all().unwrap();
-        let tid = |lp: &mut LocalPeer, i: usize| lp.peers[i].engine.me();
+        let tid = |lp: &mut LocalPeer, i: usize| lp.peers[i].engine.tid();
         let (a, b, c) = (tid(&mut lp, 0), tid(&mut lp, 1), tid(&mut lp, 2));
         let t = thing(&mut lp, a);
         let read = ct::Edge { role: Role::Read, until: None, may_grant: false, retain: false, floor: None };
@@ -534,7 +534,7 @@ mod tests {
         let mut lp = LocalPeer::fresh(6, WallMs(1_700_000_000_000));
         lp.sync_all().unwrap();
         // 0 admin, 1 may-grant holder, 2 grantee, 3 and 4 receivers, 5 a holder whose box is reset
-        let tid = |lp: &mut LocalPeer, i: usize| lp.peers[i].engine.me();
+        let tid = |lp: &mut LocalPeer, i: usize| lp.peers[i].engine.tid();
         let (a, c, e) = (tid(&mut lp, 0), tid(&mut lp, 2), tid(&mut lp, 5));
         let b = tid(&mut lp, 1);
         let t = thing(&mut lp, a);
@@ -576,7 +576,7 @@ mod tests {
         let mut lp = LocalPeer::fresh(5, WallMs(1_700_000_000_000));
         lp.sync_all().unwrap();
         // 0 admin, 1 may-grant holder, 2 grantee, 3 and 4 receivers
-        let (a, b, e) = (lp.peers[0].engine.me(), lp.peers[1].engine.me(), lp.peers[2].engine.me());
+        let (a, b, e) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
         let t = thing(&mut lp, a);
         let read = ct::Edge { role: Role::Read, until: None, may_grant: false, retain: false, floor: None };
         lp.peers[0].engine.grant(&t, &b, &ct::Edge { may_grant: true, ..read.clone() }).unwrap();
@@ -607,7 +607,7 @@ mod tests {
         let mut lp = LocalPeer::fresh(5, WallMs(1_700_000_000_000));
         lp.sync_all().unwrap();
         // 0 admin, 1 may-grant holder, 2 holder, 3 and 4 readers receiving
-        let (a, b, h) = (lp.peers[0].engine.me(), lp.peers[1].engine.me(), lp.peers[2].engine.me());
+        let (a, b, h) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
         let ak = osis_base::Ak::new("x:a.0").unwrap();
         let mut m = Mutation::new();
         let t = lp.peers[0].engine.new_thing(&mut m, a);
@@ -618,7 +618,7 @@ mod tests {
         lp.peers[0].engine.grant(&t, &b, &ct::Edge { may_grant: true, ..read.clone() }).unwrap();
         lp.peers[0].engine.grant(&t, &h, &ct::Edge { role: Role::Write, ..read.clone() }).unwrap();
         for r in [3, 4] {
-            let who = lp.peers[r].engine.me();
+            let who = lp.peers[r].engine.tid();
             lp.peers[0].engine.grant(&t, &who, &read).unwrap();
         }
         lp.hold(t);
@@ -674,7 +674,7 @@ mod tests {
         }
         let mut lp = LocalPeer::fresh(3, WallMs(1_700_000_000_000));
         lp.sync_all().unwrap();
-        let (a, b, g) = (lp.peers[0].engine.me(), lp.peers[1].engine.me(), lp.peers[2].engine.me());
+        let (a, b, g) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
         let t = thing(&mut lp, a);
         let read = ct::Edge { role: Role::Read, until: None, may_grant: true, retain: false, floor: None };
         lp.peers[0].engine.grant(&t, &b, &read).unwrap();
@@ -710,7 +710,7 @@ mod tests {
         let mut lp = LocalPeer::fresh(3, WallMs(1_700_000_000_000));
         lp.sync_all().unwrap();
         let x = osis_base::Ak::new("x:a.0").unwrap();
-        let mut up = lp.peers[0].engine.me();
+        let mut up = lp.peers[0].engine.tid();
         let mut shallow = up;
         for i in 0..MAX_CHAIN_DEPTH {
             let mut m = Mutation::new();
@@ -728,7 +728,7 @@ mod tests {
         // its certificates alone (spec/commits.md §5 What a held thing needs)
         let read = ct::Edge { role: Role::Read, until: None, may_grant: false, retain: false, floor: None };
         for r in [1, 2] {
-            let who = lp.peers[r].engine.me();
+            let who = lp.peers[r].engine.tid();
             lp.peers[0].engine.grant(&shallow, &who, &read).unwrap();
         }
         lp.sync_all().unwrap();
@@ -760,7 +760,7 @@ mod tests {
         let mut lp = LocalPeer::fresh(2, WallMs(1_700_000_000_000));
         lp.sync_all().unwrap();
         let x = osis_base::Ak::new("x:a.0").unwrap();
-        let mut up = lp.peers[0].engine.me();
+        let mut up = lp.peers[0].engine.tid();
         let mut top = up;
         for i in 0..MAX_CHAIN_DEPTH {
             let t = if i % 4 == 0 {
@@ -783,7 +783,7 @@ mod tests {
             up = t;
         }
         // peer 1 reads the chain (`record_chain_deeper_than_cap_invalid_spec_permissions_1`)
-        let who = lp.peers[1].engine.me();
+        let who = lp.peers[1].engine.tid();
         lp.peers[0].engine.grant(&top, &who, &ct::Edge { role: Role::Read, until: None, may_grant: false, retain: false, floor: None }).unwrap();
         lp.hold_at(1, top);
         lp.sync_all().unwrap();
@@ -810,8 +810,8 @@ mod tests {
         use osis_schema::Codec;
         let mut lp = LocalPeer::fresh(2, WallMs(1_700_000_000_000));
         lp.sync_all().unwrap();
-        let me = lp.peers[0].engine.me();
-        let x = lp.peers[1].engine.me();
+        let me = lp.peers[0].engine.tid();
+        let x = lp.peers[1].engine.tid();
         let mut up = me;
         for i in 0..MAX_CHAIN_DEPTH {
             let mut m = Mutation::new();
@@ -863,7 +863,7 @@ mod tests {
         use osis_crdt::{Op, PathOp};
         let mut lp = LocalPeer::fresh(4, WallMs(1_700_000_000_000));
         lp.sync_all().unwrap();
-        let tid = |lp: &mut LocalPeer, i: usize| lp.peers[i].engine.me();
+        let tid = |lp: &mut LocalPeer, i: usize| lp.peers[i].engine.tid();
         let (a, r, z, g) = (tid(&mut lp, 0), tid(&mut lp, 1), tid(&mut lp, 2), tid(&mut lp, 3));
         let t = thing(&mut lp, a);
         let read = ct::Edge { role: Role::Read, until: None, may_grant: false, retain: false, floor: None };
@@ -875,7 +875,7 @@ mod tests {
         let hk = ct::HistoryKey { role: Role::Admin, epoch: rk.epoch.clone() };
         let commit = |lp: &mut LocalPeer, who: Tid, edge: ct::Edge, i: usize| {
             let mut m = Mutation::new();
-            m.op(t, &ct::ROLES, PathOp { path: Vec::new(), op: Op::Remove(Value::Weak(lp.peers[i].engine.me())) }).unwrap();
+            m.op(t, &ct::ROLES, PathOp { path: Vec::new(), op: Op::Remove(Value::Weak(lp.peers[i].engine.tid())) }).unwrap();
             crate::flows::put_edge(&mut m, t, who, &edge).unwrap();
             let k = ct::BoxKey { holder: osis_base::Weak(who), role: edge.role, ..zk.clone() };
             let h = ct::HistoryKey { role: edge.role, ..hk.clone() };
@@ -922,8 +922,8 @@ mod keys_tests {
     fn writer_cannot_write_admin_keys_fields_spec_crypto_3() {
         let mut lp = LocalPeer::fresh(2, WallMs(1_700_000_000_000));
         lp.sync_all().unwrap();
-        let me = lp.peers[0].engine.me();
-        let w = lp.peers[1].engine.me();
+        let me = lp.peers[0].engine.tid();
+        let w = lp.peers[1].engine.tid();
         let t = thing(&mut lp, me);
         lp.peers[0].engine.grant(&t, &w, &ct::Edge { role: Role::Write, until: None, may_grant: false, retain: false, floor: None }).unwrap();
         lp.sync_all().unwrap();
@@ -968,8 +968,8 @@ mod keys_tests {
     fn writer_cannot_replace_keys_or_secrets_spec_perm_3() {
         let mut lp = LocalPeer::fresh(2, WallMs(1_700_000_000_000));
         lp.sync_all().unwrap();
-        let me = lp.peers[0].engine.me();
-        let w = lp.peers[1].engine.me();
+        let me = lp.peers[0].engine.tid();
+        let w = lp.peers[1].engine.tid();
         let t = thing(&mut lp, me);
         lp.peers[0].engine.grant(&t, &w, &ct::Edge { role: Role::Write, until: None, may_grant: false, retain: false, floor: None }).unwrap();
         lp.sync_all().unwrap();
@@ -1000,8 +1000,8 @@ mod keys_tests {
         use osis_crdt::{DeltaBuilder, Source, Writer};
         let mut lp = LocalPeer::fresh(2, WallMs(1_700_000_000_000));
         lp.sync_all().unwrap();
-        let me = lp.peers[0].engine.me();
-        let w = lp.peers[1].engine.me();
+        let me = lp.peers[0].engine.tid();
+        let w = lp.peers[1].engine.tid();
         let t = thing(&mut lp, me);
         lp.peers[0].engine.grant(&t, &w, &ct::Edge { role: Role::Write, until: None, may_grant: false, retain: false, floor: None }).unwrap();
         lp.sync_all().unwrap();
@@ -1046,7 +1046,7 @@ mod keys_tests {
     fn secrets_removal_dropped_creation_open_equals_rebuild() {
         let mut lp = LocalPeer::fresh(4, WallMs(1_700_000_000_000));
         lp.sync_all().unwrap();
-        let tid = |lp: &mut LocalPeer, i: usize| lp.peers[i].engine.me();
+        let tid = |lp: &mut LocalPeer, i: usize| lp.peers[i].engine.tid();
         let (me, w1, w2, r) = (tid(&mut lp, 0), tid(&mut lp, 1), tid(&mut lp, 2), tid(&mut lp, 3));
         let t = thing(&mut lp, me);
         let we = ct::Edge { role: Role::Write, until: None, may_grant: false, retain: false, floor: None };
@@ -1093,7 +1093,7 @@ mod keys_tests {
     fn dropped_rotation_keeps_its_epoch_intro_spec_crypto_4() {
         let mut lp = LocalPeer::fresh(4, WallMs(1_700_000_000_000));
         lp.sync_all().unwrap();
-        let tid = |lp: &mut LocalPeer, i: usize| lp.peers[i].engine.me();
+        let tid = |lp: &mut LocalPeer, i: usize| lp.peers[i].engine.tid();
         let (me, p, r, x) = (tid(&mut lp, 0), tid(&mut lp, 1), tid(&mut lp, 2), tid(&mut lp, 3));
         let t = thing(&mut lp, me);
         let e = |role| ct::Edge { role, until: None, may_grant: false, retain: false, floor: None };
@@ -1135,7 +1135,7 @@ mod keys_tests {
     fn writer_cannot_remove_admin_boxes_spec_perm_3() {
         let mut lp = LocalPeer::fresh(4, WallMs(1_700_000_000_000));
         lp.sync_all().unwrap();
-        let tid = |lp: &mut LocalPeer, i: usize| lp.peers[i].engine.me();
+        let tid = |lp: &mut LocalPeer, i: usize| lp.peers[i].engine.tid();
         let (me, w, r) = (tid(&mut lp, 0), tid(&mut lp, 1), tid(&mut lp, 3));
         let t = thing(&mut lp, me);
         lp.peers[0].engine.grant(&t, &w, &ct::Edge { role: Role::Write, until: None, may_grant: false, retain: false, floor: None }).unwrap();
@@ -1182,14 +1182,14 @@ mod keys_tests {
     fn secrets_removal_role_from_its_key_spec_perm_3() {
         let mut lp = LocalPeer::fresh(2, WallMs(1_700_000_000_000));
         lp.sync_all().unwrap();
-        let me = lp.peers[0].engine.me();
+        let me = lp.peers[0].engine.tid();
         let t = thing(&mut lp, me);
-        let wt = lp.peers[1].engine.me();
+        let wt = lp.peers[1].engine.tid();
         lp.peers[0].engine.grant(&t, &wt, &ct::Edge { role: Role::Write, until: None, may_grant: false, retain: false, floor: None }).unwrap();
         let s = lp.peers[0].engine.get_typed(&t, &ct::SECRETS).unwrap().unwrap();
         let admin = s.boxes.keys().find(|k| k.role == Role::Admin).unwrap().clone();
         let read = ct::BoxKey { role: Role::Read, ..admin.clone() };
-        let src = osis_crdt::Source::session(osis_crdt::Session { node: lp.peers[1].engine.me(), nonce: [0; osis_crdt::SESSION_NONCE_LEN] });
+        let src = osis_crdt::Source::session(osis_crdt::Session { node: lp.peers[1].engine.tid(), nonce: [0; osis_crdt::SESSION_NONCE_LEN] });
         let w = osis_crdt::Writer::new(osis_base::Ts::make(WallMs(1_700_000_000_000), 0).unwrap(), src.clone(), 1).keyed_removals(true);
         let dot = osis_crdt::Dot::new(osis_crdt::Source::session(osis_crdt::Session { node: me, nonce: [0; osis_crdt::SESSION_NONCE_LEN] }), 3);
         let rm = |k: Option<&ct::BoxKey>| {
@@ -1214,8 +1214,8 @@ mod keys_tests {
     fn may_grant_grant_cannot_replace_secrets_spec_perm_2() {
         let mut lp = LocalPeer::fresh(3, WallMs(1_700_000_000_000));
         lp.sync_all().unwrap();
-        let me = lp.peers[0].engine.me();
-        let (b, c) = (lp.peers[1].engine.me(), lp.peers[2].engine.me());
+        let me = lp.peers[0].engine.tid();
+        let (b, c) = (lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
         let t = thing(&mut lp, me);
         lp.peers[0].engine.grant(&t, &b, &ct::Edge { role: Role::Read, until: None, may_grant: true, retain: false, floor: None }).unwrap();
         lp.sync_all().unwrap();

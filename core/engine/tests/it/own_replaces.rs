@@ -15,7 +15,7 @@ fn thing() -> (LocalPeer, Tid) {
 fn thing_build() -> (LocalPeer, Tid) {
     let mut lp = LocalPeer::fresh(2, T0);
     lp.sync_all().unwrap();
-    let me = lp.peers[0].engine.me();
+    let me = lp.peers[0].engine.tid();
     let mut m = Mutation::new();
     let t = lp.peers[0].engine.new_thing(&mut m, me);
     lp.peers[0].commit(m).unwrap();
@@ -114,7 +114,7 @@ fn forgotten_survives_restart_spec_commits_5() {
 fn forgotten_goes_with_its_thing_spec_commits_5() {
     let mut lp = LocalPeer::fresh(1, T0);
     let e = &mut lp.peers[0].engine;
-    let me = e.me();
+    let me = e.tid();
     let mut m = Mutation::new();
     // the creating commit's expiry is its thing's (spec/commits.md §5 Destruction)
     let t = e.new_expiring_thing(&mut m, me, Some(osis_base::WallMs(T0.0 + 100_000)));
@@ -144,14 +144,14 @@ fn forgotten_goes_with_its_thing_spec_commits_5() {
 fn invalid_own_replaces_give_back_what_they_covered_spec_commits_5() {
     let mut lp = LocalPeer::fresh(3, T0);
     lp.sync_all().unwrap();
-    let me = lp.peers[0].engine.me();
+    let me = lp.peers[0].engine.tid();
     let mut m = Mutation::new();
     let t = lp.peers[0].engine.new_thing(&mut m, me);
     lp.peers[0].commit(m).unwrap();
     lp.hold(t);
     let edge = |role| osis_schema::core_types::Edge { role, until: None, may_grant: false, retain: false, floor: None };
     for (p, r) in [(1, osis_base::Role::Write), (2, osis_base::Role::Read)] {
-        let who = lp.peers[p].engine.me();
+        let who = lp.peers[p].engine.tid();
         lp.peers[0].engine.grant(&t, &who, &edge(r)).unwrap();
     }
     lp.sync_all().unwrap();
@@ -170,7 +170,7 @@ fn invalid_own_replaces_give_back_what_they_covered_spec_commits_5() {
     lp.peers[2].engine.drop_body(&c, &t, &a).unwrap();
     assert_eq!(lp.peers[2].engine.get(&t, &a).unwrap(), Some(Value::Int(7)));
     lp.advance(1000);
-    let bob = lp.peers[1].engine.me();
+    let bob = lp.peers[1].engine.tid();
     lp.peers[0].engine.demote(&t, &osis_engine::flows::Demotion { holder: bob, new: None, retain: None }).unwrap();
     lp.advance(1000);
     lp.sync(0, 2).unwrap();
@@ -192,14 +192,14 @@ fn invalid_own_replaces_give_back_what_they_covered_spec_commits_5() {
 fn one_own_replace_left_covers_nothing_spec_commits_5() {
     let mut lp = LocalPeer::fresh(3, T0);
     lp.sync_all().unwrap();
-    let me = lp.peers[0].engine.me();
+    let me = lp.peers[0].engine.tid();
     let mut m = Mutation::new();
     let t = lp.peers[0].engine.new_thing(&mut m, me);
     lp.peers[0].commit(m).unwrap();
     lp.hold(t);
     let edge = |role| osis_schema::core_types::Edge { role, until: None, may_grant: false, retain: false, floor: None };
     for (p, r) in [(1, osis_base::Role::Write), (2, osis_base::Role::Read)] {
-        let who = lp.peers[p].engine.me();
+        let who = lp.peers[p].engine.tid();
         lp.peers[0].engine.grant(&t, &who, &edge(r)).unwrap();
     }
     lp.sync_all().unwrap();
@@ -217,7 +217,7 @@ fn one_own_replace_left_covers_nothing_spec_commits_5() {
     lp.sync(1, 2).unwrap();
     lp.peers[2].engine.drop_body(&c, &t, &a).unwrap();
     lp.advance(1000);
-    let bob = lp.peers[1].engine.me();
+    let bob = lp.peers[1].engine.tid();
     lp.peers[0].engine.demote(&t, &osis_engine::flows::Demotion { holder: bob, new: None, retain: None }).unwrap();
     lp.advance(1000);
     lp.sync(0, 2).unwrap();
@@ -258,14 +258,14 @@ fn delta_live_is_the_deltas_own_spec_sync_7() {
 fn any_two_held_own_replaces_keep_a_drop_spec_commits_5() {
     let mut lp = LocalPeer::fresh(3, T0);
     lp.sync_all().unwrap();
-    let me = lp.peers[0].engine.me();
+    let me = lp.peers[0].engine.tid();
     let mut m = Mutation::new();
     let t = lp.peers[0].engine.new_thing(&mut m, me);
     lp.peers[0].commit(m).unwrap();
     lp.hold(t);
     let edge = |role| osis_schema::core_types::Edge { role, until: None, may_grant: false, retain: false, floor: None };
     for (p, r) in [(1, osis_base::Role::Write), (2, osis_base::Role::Read)] {
-        let who = lp.peers[p].engine.me();
+        let who = lp.peers[p].engine.tid();
         lp.peers[0].engine.grant(&t, &who, &edge(r)).unwrap();
     }
     lp.sync_all().unwrap();
@@ -284,7 +284,7 @@ fn any_two_held_own_replaces_keep_a_drop_spec_commits_5() {
     lp.sync(1, 2).unwrap();
     lp.peers[2].engine.drop_body(&c, &t, &a).unwrap();
     lp.advance(1000);
-    let bob = lp.peers[1].engine.me();
+    let bob = lp.peers[1].engine.tid();
     lp.peers[0].engine.demote(&t, &osis_engine::flows::Demotion { holder: bob, new: None, retain: None }).unwrap();
     lp.advance(1000);
     lp.sync(0, 2).unwrap();

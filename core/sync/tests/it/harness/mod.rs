@@ -646,7 +646,7 @@ impl World {
     pub fn pair(&mut self, i: usize) -> usize {
         let j = self.add_bare_node();
         let (acc, profile, inbox) = (self.node(i).account.expect("an account"), self.node(i).profile, self.node(i).inbox);
-        let (node, keys) = self.write(j, |e| (e.me(), e.node_keys().expect("node keys")));
+        let (node, keys) = self.write(j, |e| (e.tid(), e.node_keys().expect("node keys")));
         let pair = |e: &mut Engine| e.pair(&acc, &node, &keys, osis_base::Role::Admin);
         let offer = match self.write(i, pair) {
             Err(osis_engine::Error::Store(_)) => self.write(i, pair).expect("pairing again after a store failure"),
@@ -700,7 +700,7 @@ impl World {
     /// Node `i` redeems a link of either format for its account (else its node thing).
     pub fn redeem_any(&mut self, i: usize, link: &osis_blob::Link) -> osis_sync::types::Waiting {
         let n = self.nodes.get_mut(i).expect("no such node");
-        let joiner = n.account.unwrap_or_else(|| n.node.engine().me());
+        let joiner = n.account.unwrap_or_else(|| n.node.engine().tid());
         let w = n.node.redeem(link, joiner);
         self.deliver(i, Input::Wrote);
         w
@@ -844,7 +844,7 @@ impl World {
         self.node(i).node.status()
     }
 
-    /// Node `i`'s address: its dialable key and what it lists in `reach.0`.
+    /// Node `i`'s address: its dialable key and what its `peer://` URL lists.
     pub fn address(&self, i: usize) -> Address {
         Address { url: osis_transport::peer_url(&self.net.reach.items(i)), key: self.node(i).key.0 }
     }

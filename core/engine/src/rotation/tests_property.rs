@@ -128,7 +128,7 @@ impl Drop for Run {
 
 impl Run {
     fn new(lp: LocalPeer, actors: Vec<(Tid, usize)>, rng: Rng) -> Run {
-        let tids: Vec<Tid> = (0..N).map(|i| lp.peers[i].engine.me()).collect();
+        let tids: Vec<Tid> = (0..N).map(|i| lp.peers[i].engine.tid()).collect();
         let mut run = Run { lp, tids, actors, ever: vec![BTreeSet::new(); N], handed: vec![BTreeMap::new(); N], made: BTreeMap::new(), resealed: Vec::new(), boxed: BTreeMap::new(), states: Vec::new(), state_step: Vec::new(), stale: BTreeSet::new(), secrets: BTreeMap::new(), rng, hostile: BTreeSet::new(), log: Vec::new(), first: BTreeMap::new(), holder_rotated: false };
         run.log.push(format!("actors {:?} (owners), peers {:?}", run.actors, run.tids));
         run.note();
@@ -388,7 +388,7 @@ impl Run {
         // refused (a rotated role's secret not held, Seal waiting) changes nothing
         self.lp.peers[i].engine.run(|tx| {
             let held = tx.core.epochs(&t).unwrap_or_default();
-            let holders = super::recipients(tx, &tx.core.me(), &t, &skip)?;
+            let holders = super::recipients(tx, &tx.core.tid(), &t, &skip)?;
             let mut m = Mutation::new();
             let r = super::rotation_into(tx, &mut m, t, rot, &held, &holders, crate::rotation::Departs::No)?;
             crate::engine::Engine::commit_tx(tx, m)?;
@@ -419,7 +419,7 @@ fn rotation_history(seed: u64) -> Reached {
     let mut rng = Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
     let mut lp = LocalPeer::new(N, seed, WallMs(1_700_000_000_000)).unwrap();
     lp.sync_all().unwrap();
-    let tids: Vec<Tid> = (0..N).map(|i| lp.peers[i].engine.me()).collect();
+    let tids: Vec<Tid> = (0..N).map(|i| lp.peers[i].engine.tid()).collect();
     // actors: G (peer 0's); with holder actors, one or two more, some of peer 2's, granted
     // roles on each other around a cycle
     let mut actors = vec![(independent_thing(&mut lp, 0), 0)];
@@ -1086,7 +1086,7 @@ fn step(run: &mut Run, i: usize, f: impl FnOnce(&mut Run)) {
 #[test]
 fn handed_keyset_opens_boxes_its_author_never_received_spec_crypto_4() {
     let mut lp = synced(N);
-    let (a, d) = (lp.peers[1].engine.me(), lp.peers[2].engine.me());
+    let (a, d) = (lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
     let g = independent_thing(&mut lp, 0);
     let m = independent_thing(&mut lp, 0);
     lp.peers[0].engine.grant(&g, &m, &edge(Role::Admin)).unwrap();
@@ -1145,7 +1145,7 @@ fn removal_rotates_once(run: &mut Run, g: Tid, role: Role, holder: Tid, at: u64,
 #[test]
 fn a_removal_boxes_none_it_removes_spec_permissions_3() {
     let mut lp = synced(N);
-    let (d, a) = (lp.peers[2].engine.me(), lp.peers[3].engine.me());
+    let (d, a) = (lp.peers[2].engine.tid(), lp.peers[3].engine.tid());
     let g = independent_thing(&mut lp, 0);
     let m = independent_thing(&mut lp, 1);
     lp.sync_all().unwrap();
@@ -1181,7 +1181,7 @@ fn a_removal_boxes_none_it_removes_spec_permissions_3() {
 #[test]
 fn a_removal_boxes_none_it_removes_through_the_upward_cascade_spec_permissions_3() {
     let mut lp = synced(N);
-    let (x, m) = (lp.peers[2].engine.me(), lp.peers[3].engine.me());
+    let (x, m) = (lp.peers[2].engine.tid(), lp.peers[3].engine.tid());
     let g = independent_thing(&mut lp, 0);
     let h = independent_thing(&mut lp, 0);
     let y = independent_thing(&mut lp, 0);
@@ -1211,7 +1211,7 @@ fn a_removal_boxes_none_it_removes_through_the_upward_cascade_spec_permissions_3
 #[test]
 fn a_removal_boxes_none_it_removes_through_a_finalize_first_spec_permissions_3() {
     let mut lp = synced(N);
-    let (e, m) = (lp.peers[2].engine.me(), lp.peers[3].engine.me());
+    let (e, m) = (lp.peers[2].engine.tid(), lp.peers[3].engine.tid());
     let g = independent_thing(&mut lp, 0);
     lp.sync_all().unwrap();
     lp.peers[0].engine.grant(&g, &e, &edge(Role::Read)).unwrap();
@@ -1237,7 +1237,7 @@ fn a_removal_boxes_none_it_removes_through_a_finalize_first_spec_permissions_3()
 fn a_grant_concurrent_with_a_rotation_entitles_its_grantee_spec_crypto_4() {
     for after in [false, true] {
         let mut lp = synced(N);
-        let (w, d) = (lp.peers[1].engine.me(), lp.peers[2].engine.me());
+        let (w, d) = (lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
         let g = independent_thing(&mut lp, 0);
         let m = independent_thing(&mut lp, 0);
         lp.peers[0].engine.grant(&g, &m, &edge(Role::Read)).unwrap();
@@ -1316,7 +1316,7 @@ fn demoted_granter(first: bool) -> (Run, Tid, Tid, Tid) {
 
 fn demoted_granter_built(first: bool) -> (Run, Tid, Tid, Tid) {
     let mut lp = synced(N);
-    let (a, x) = (lp.peers[1].engine.me(), lp.peers[2].engine.me());
+    let (a, x) = (lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
     let g = independent_thing(&mut lp, 0);
     let m = independent_thing(&mut lp, 0);
     lp.peers[0].engine.grant(&g, &m, &edge(Role::Read)).unwrap();

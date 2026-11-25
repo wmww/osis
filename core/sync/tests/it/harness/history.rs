@@ -478,7 +478,7 @@ fn unpair(w: &mut World, i: usize, j: usize) -> Result<String, String> {
     if j >= w.len() || j == i || j < w.history.twins.as_ref().map_or(0, |t| t.0.lock().unwrap().len()) || w.node(j).account != Some(a) {
         return Ok("skipped: not another removable node of the account".into());
     }
-    let node = w.nodes[j].node.engine().me();
+    let node = w.nodes[j].node.engine().tid();
     let also: Vec<Tid> = w.node(i).profile.into_iter().collect();
     let r = w.write(i, |e| e.remove_node(&a, &node, false, &also)).map(|_| String::new()).map_err(|e| e.to_string());
     // a removal refused with its outcome unknown may have applied (`stands`)
@@ -1372,8 +1372,8 @@ pub fn size() -> (usize, usize, usize, u64) {
 /// A random history over `n` nodes of `accounts` accounts (node j's account is j's modulo
 /// `accounts`, as `world_of` pairs them) of `len` steps, mostly ones that apply (its player
 /// ends it at quiet). `faults`: whether it loses power, partitions, loses
-/// messages and fails disks. A grantee holds what it is granted by a strong from its account
-/// root, drawn after a grant, or never.
+/// messages and fails disks. A grantee holds what it is granted by a strong from its
+/// account, drawn after a grant, or never.
 pub fn history(seed: u64, n: usize, accounts: usize, len: usize, faults: bool) -> Vec<Step> {
     let mut rng = SeededRng::from_u64(seed ^ 0x6869_7374);
     let mut pick = |m: usize| (rng.next_u64() % m.max(1) as u64) as usize;

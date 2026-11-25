@@ -33,7 +33,7 @@ fn plant_history(lp: &mut LocalPeer, i: usize, g: Tid, e: &Epoch, s: &Secret32) 
 
 /// Writer `i`'s box at (read, e) sealed to itself: valid (a box needs write).
 fn plant_box(lp: &mut LocalPeer, i: usize, g: Tid, e: &Epoch, s: &Secret32) -> CommitId {
-    let me = lp.peers[i].engine.me();
+    let me = lp.peers[i].engine.tid();
     let mut fake = osis_keys::ActorEpochs::default();
     fake.role_mut(Role::Read).set_secret(*e, s.clone());
     fake.role_mut(Role::Read).set_established(*e, osis_keys::Provenance::Fixed);
@@ -286,7 +286,7 @@ fn a_grantee_counts_its_target_independent_before_the_keyset_spec_permissions_4(
     let mut lp = super::tests::synced(2);
     let g = super::tests::target_thing(&mut lp, 0);
     put_on(&mut lp, 0, g, "k", 1);
-    let gr = lp.peers[1].engine.me();
+    let gr = lp.peers[1].engine.tid();
     lp.peers[0].engine.grant(&g, &gr, &edge(Role::Read)).unwrap();
     let keys = Ak::new("keys.0").unwrap();
     for pk in lp.packages_to(0, 1).unwrap() {

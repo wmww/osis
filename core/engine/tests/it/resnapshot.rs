@@ -16,7 +16,7 @@ fn world() -> (LocalPeer, Tid) {
     LocalPeer::cached("retention::tests_resnapshot::world", || {
         let mut lp = LocalPeer::fresh(2, T0);
         lp.sync_all().unwrap();
-        let (a, w) = (lp.peers[0].engine.me(), lp.peers[1].engine.me());
+        let (a, w) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
         let mut m = Mutation::new();
         let t = lp.peers[0].engine.new_thing(&mut m, a);
         lp.peers[0].commit(m).unwrap();
@@ -90,7 +90,7 @@ fn purged(lp: &mut LocalPeer, t: Tid, secret: Secret) {
 /// The snapshots of `(t, reg)` writer 1 wrote.
 fn own_snapshots(lp: &LocalPeer, t: Tid) -> usize {
     let e = &lp.peers[1].engine;
-    let me = e.me();
+    let me = e.tid();
     e.core.ix.snapshots.get(&(t, reg())).into_iter().flatten().filter(|x| e.header(&x.1).is_some_and(|h| h.signer == me)).count()
 }
 

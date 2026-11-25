@@ -1,6 +1,6 @@
 //! The client port (spec/wire.md §11.2 kinds 24-29, spec/sync-transport.md §6,
 //! notes/client-port.md): the `osis` API over a sync connection. `serve`: a node answers the
-//! requests its connections carry, as itself for a main session or as a client actor;
+//! requests its connections carry, as itself for a main session or as a client's thing;
 //! `client`: a process uses a node it is a client of (a thin client, `Osis::connect`, or a
 //! node's sync unit source, `Osis::connect_node`); `codec`: the values both sides exchange.
 
@@ -12,7 +12,7 @@ pub(crate) use serve::{Port, answer_all, serve};
 
 /// The method table (notes/client-port.md §2): each row's arguments and result. A method not
 /// listed is answered `Unsupported`. Every row runs as the session's actor (spec/wire.md §11.2
-/// A client actor's rights), and is one API call, its arguments and result in `codec::Form`
+/// A client's rights), and is one API call, its arguments and result in `codec::Form`
 /// forms (`serve::row`, `ReadOnly::forward`), but the write rows, which carry a nonce.
 pub mod method {
     /// `[] -> [author, node, Opt(settings thing)]`: who this session acts as, at which node.
@@ -51,10 +51,10 @@ pub mod method {
     pub const SETTLE: u64 = 19;
     /// `[] -> wall ms`
     pub const NOW: u64 = 20;
-    /// `[] -> [connected, [[tid, state, not_taking, leaving]*]]`: for a client actor, the things
+    /// `[] -> [connected, [[tid, state, not_taking, leaving]*]]`: for a client's thing, the things
     /// it may read and the connections with one of them open.
     pub const STATUS: u64 = 21;
-    /// `[tid] -> [[actor, kind, role, Opt(until), [through*]]*]`
+    /// `[tid] -> [[thing, kind, role, Opt(until), [through*]]*]`
     pub const HOLDERS: u64 = 22;
 
     /// `[address, query] -> page` (`writes`, `fired`, `versions`): at most what fits the Call's
@@ -74,7 +74,7 @@ pub mod method {
     /// `[link text, joiner] -> tid` (`redeem`)
     pub const REDEEM: u64 = 29;
 
-    /// Whether a client-actor session may call `m`: a row on things the actor may read. The
+    /// Whether a client session may call `m`: a row on things the actor may read. The
     /// others carry the node's own state (spec/wire.md §11.2), so a new row is main only unless
     /// listed here.
     pub fn for_client(m: u64) -> bool {
@@ -120,7 +120,7 @@ pub(crate) const MAX_WRITE_OPS: usize = 1024;
 /// every write it makes.
 pub(crate) const WRITE_NONCES: usize = 64;
 
-/// Client-actor sessions a node serves at once, all clients together (spec/wire.md §11.2 Auth:
+/// Client sessions a node serves at once, all clients together (spec/wire.md §11.2 Auth:
 /// past it Error 4); also the main session's nonce sessions kept. Restrictive: at 0 no client is
 /// served; at infinity clients take every connection.
 pub(crate) const MAX_CLIENTS: usize = 64;

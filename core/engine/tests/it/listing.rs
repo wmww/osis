@@ -29,7 +29,7 @@ fn setup() -> (LocalPeer, Tid, [Tid; 4]) {
 
 fn setup_built() -> (LocalPeer, Tid, [Tid; 4]) {
     let mut lp = net(4, 0);
-    let ids = [0, 1, 2, 3].map(|i| lp.peers[i].engine.me());
+    let ids = [0, 1, 2, 3].map(|i| lp.peers[i].engine.tid());
     let mut m = Mutation::new();
     let d = lp.peers[0].engine.new_thing(&mut m, ids[0]);
     lp.peers[0].commit(m).unwrap().unwrap();
@@ -40,12 +40,12 @@ fn setup_built() -> (LocalPeer, Tid, [Tid; 4]) {
     // the fresh node's account, granted read on D: what it is handed of D applies (content of a
     // thing outside its node closure waits, spec/commits.md §4 Outside the node closure)
     let mut f = fresh_account();
-    lp.peers[0].know(&[f.engine.me()]).unwrap();
+    lp.peers[0].know(&[f.engine.tid()]).unwrap();
     for id in f.engine.commit_ids() {
         let pk = f.engine.package(&id).unwrap().unwrap();
         lp.deliver(0, &pk).unwrap();
     }
-    set_edge(&mut lp.peers[0].engine, d, f.engine.me(), Some(edge(Role::Read)), None);
+    set_edge(&mut lp.peers[0].engine, d, f.engine.tid(), Some(edge(Role::Read)), None);
     lp.sync_all().unwrap();
     lp.advance(1_000);
     (lp, d, ids)
@@ -294,7 +294,7 @@ fn not_fetched_part_reads_so_and_late_body_tells_the_watch() {
     let e = lp.peers[0].engine.new_thing(&mut m, ids[0]);
     lp.peers[0].commit(m).unwrap().unwrap();
     lp.hold(e);
-    let f = fresh_account().engine.me();
+    let f = fresh_account().engine.tid();
     set_edge(&mut lp.peers[0].engine, e, f, Some(edge(Role::Read)), None);
     lp.advance(1_000);
     lp.sync_all().unwrap();

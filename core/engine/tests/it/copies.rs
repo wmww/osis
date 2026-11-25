@@ -22,7 +22,7 @@ fn history() -> (LocalPeer, Tid, Ak) {
     let mut lp = LocalPeer::new(3, 0, WallMs(1_700_000_000_000)).unwrap();
     lp.sync_all().unwrap();
     let x = Ak::new("x:m.0").unwrap();
-    let me = lp.peers[0].engine.me();
+    let me = lp.peers[0].engine.tid();
     let (t, _) = lp.peers[0].engine.create_with_admin(&me).unwrap();
     lp.hold(t);
     // history kept, so the further steps' undo has a kept write to revert
@@ -30,7 +30,7 @@ fn history() -> (LocalPeer, Tid, Ak) {
     let mut m = Mutation::new();
     m.set(t, &ct::RETENTION, &ct::RetentionSetting::of(x.clone(), day)).unwrap();
     lp.peers[0].commit(m).unwrap();
-    let (w, a) = (lp.peers[1].engine.me(), lp.peers[2].engine.me());
+    let (w, a) = (lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
     lp.peers[0].engine.grant(&t, &w, &edge(Role::Write)).unwrap();
     lp.peers[0].engine.grant(&t, &a, &edge(Role::Admin)).unwrap();
     lp.sync_all().unwrap();
@@ -48,7 +48,7 @@ fn history() -> (LocalPeer, Tid, Ak) {
 /// The same further steps: writes, a grant, an undo, a tick, syncs. The commit IDs they made.
 fn further(lp: &mut LocalPeer, t: Tid, x: &Ak) -> Vec<Option<CommitId>> {
     let mut ids = vec![put(lp, 0, t, x, "e", 5), put(lp, 2, t, x, "a", 6)];
-    let w = lp.peers[1].engine.me();
+    let w = lp.peers[1].engine.tid();
     ids.extend(lp.peers[2].engine.grant(&t, &w, &edge(Role::Read)).unwrap().commits.into_iter().map(Some));
     lp.sync_all().unwrap();
     if let Some(c) = ids[0] {

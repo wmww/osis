@@ -23,7 +23,7 @@ pub const STRANDED_FIRE: &str = ct::INBOX_SIGNALS[1];
 /// node may write has it in its key part, logged under its own sync ID; any other is offered it
 /// by a `grant@~0` fire (`fire_copy`; spec/sync-inbox.md §5 Grant from outside).
 pub(crate) fn deliver_copy(tx: &mut Tx<'_>, holder: Tid, c: CommitId, target: Tid) -> Result<()> {
-    let me = tx.core.me();
+    let me = tx.core.tid();
     // an edge piece naming the public is delivered nowhere (spec/permissions.md §4): it has no
     // inbox, and every party reads its boxes where it reads the target
     if holder.is_public() || tx.core.role_now(&me, &holder) >= Some(Role::Write) {
@@ -38,7 +38,7 @@ pub(crate) fn deliver_copy(tx: &mut Tx<'_>, holder: Tid, c: CommitId, target: Ti
 /// sync ID (spec/sync-inbox.md §2 Sealed copy), which its readers take as judged. One already
 /// owed stays as it is.
 pub(crate) fn deliver_sealed(tx: &mut Tx<'_>, holder: Tid, c: CommitId, target: Tid) -> Result<()> {
-    let me = tx.core.me();
+    let me = tx.core.tid();
     // the public, as in `deliver_copy`: no sync ID, its boxes read wherever the target is
     if holder.is_public() || tx.core.role_now(&me, &holder) >= Some(Role::Write) {
         return Ok(());
@@ -181,7 +181,7 @@ impl Engine {
                 holders.extend(m.entries().filter_map(|(_, _, k, _)| if let Some(Value::Weak(t)) = k { Some(*t) } else { None }));
             }
         }
-        let me = self.core.me();
+        let me = self.core.tid();
         holders.iter().copied().find(|x| *x == me || self.core.role_now(&me, x) >= Some(Role::Write)).or_else(|| holders.first().copied())
     }
 
@@ -485,7 +485,7 @@ pub(crate) fn fire(tx: &mut Tx<'_>, thing: Tid, ak: &str, value: Value, to: BTre
         return save(tx, OwedFire { thing, ak: Some(ak), what: Fire::Value(value), to, commit: None, pages: Default::default() });
     }
     if !keeps_fire(tx.core, &thing, &ak) {
-        let me = tx.core.me();
+        let me = tx.core.tid();
         let writes = tx.core.role_now(&me, &thing) >= Some(Role::Write);
         let enabled = crate::apply::validity::setting_now(tx.core, &thing).is_some_and(|s| s.enables(&ak));
         return Err(match writes || enabled {

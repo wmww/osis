@@ -179,7 +179,7 @@ fn listed_part(tx: &mut Tx<'_>, c: &CommitId, ai: usize, budget: usize, itself: 
 /// body and so the deaths of its writes are gone (its own `ts` is never later than its death, so
 /// a purge never lists a part retention no longer kept).
 pub(crate) fn listed(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Option<(bool, Here)>> {
-    let me = tx.core.me();
+    let me = tx.core.tid();
     let Some(m) = tx.core.ix.commits.get(c) else { return Ok(None) };
     let Some(a) = m.view.aspects.get(ai) else { return Ok(None) };
     let (tid, ak, valid, own) = (a.tid, a.ak.clone(), m.valid_at(ai), m.view.signer == me);

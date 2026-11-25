@@ -489,13 +489,28 @@ def spec_anchors():
 
 
 # issues/deprecated-terms.md (Gone): a fully removed concept whose word has no other sense, so no
-# text may use it again. The registry itself and history logs are exempt.
-DEAD_WORDS = {"key actor": re.compile(r"(?i)\bkey[ _-]?actors?\b")}
+# text may use it again. The registry itself, history logs and the kept audit of the removed
+# account system (notes/account-membership-design.md §1) are exempt.
+DEAD_WORDS = {w: re.compile(p) for w, p in {
+    "key actor": r"(?i)\bkey[ _-]?actors?\b",
+    "account root": r"(?i)\baccount[ _-]?roots?\b",
+    "account side": r"(?i)\baccount[ _-]?sides?\b",
+    "account epoch": r"(?i)\baccount[ _-]?epochs?\b",
+    "signing chain": r"(?i)\bsigning[ _-]?chains?\b",
+    "chain write": r"(?i)\bchain[ _-]?writes?\b",
+    "node card": r"(?i)\bnode[ _-]?cards?\b",
+    "reach.0": r"\breach\.0\b",
+    "client actor": r"(?i)\bclient[ _-]?actors?\b",
+    "main actor": r"(?i)\bmain[ _-]?actors?\b",
+    "own actor": r"(?i)\bown[ _-]?actors?\b",
+    "link actor": r"(?i)\blink[ _-]?actors?\b",
+    "UnknownActor": r"\bUnknownActor\b|\bUNKNOWN_ACTOR\b",
+}.items()}
 
 
 def dead_words():
     tracked = subprocess.run(["git", "ls-files"], cwd=ROOT, capture_output=True, text=True, check=True).stdout.split("\n")
-    skip = ("docs/", "notes/complaints/", "libs/kit/patches/", "issues/deprecated-terms.md", "tools/policy.py")
+    skip = ("docs/", "notes/complaints/", "libs/kit/patches/", "issues/deprecated-terms.md", "tools/policy.py", "notes/account-membership-design.md")
     for rel in tracked:
         if not rel or rel.startswith(skip):
             continue

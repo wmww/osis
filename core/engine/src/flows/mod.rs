@@ -403,7 +403,7 @@ impl Engine {
     /// (spec/crypto.md §3), for tests.
     #[doc(hidden)]
     pub fn node_read_kem(&self) -> Option<osis_crypto::KemSecret> {
-        let e = self.core.epochs(&self.core.me())?;
+        let e = self.core.epochs(&self.core.tid())?;
         e.read.newest_held().map(|(_, s)| s.kem().clone())
     }
 

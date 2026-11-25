@@ -200,19 +200,19 @@ impl Engine {
         self.joined_link(k) && self.edge_gone(&target, k)
     }
 
-    /// Whether a joiner this node acts as holds link actor `k` by a live grant (`joiner_of`): a
+    /// Whether a joiner this node acts as holds link's thing `k` by a live grant (`joiner_of`): a
     /// redeem of its link writes no other (spec/permissions.md §7). Reads the clock up to that
     /// grant's `until`.
     pub fn joined_link(&mut self, k: &Tid) -> bool {
         self.joiner_of(k).is_some()
     }
 
-    /// The joiner of link actor `k` this node acts as (spec/permissions.md §7 Redeem: an own thing
+    /// The joiner of link's thing `k` this node acts as (spec/permissions.md §7 Redeem: an own thing
     /// or a thing its own things administer, such as its account): a holder of `k` by a live
     /// grant, neither K's mint admin (it holds K by K's record) nor a link key of K. Reads the
     /// clock up to that grant's `until`.
     pub fn joiner_of(&mut self, k: &Tid) -> Option<Tid> {
-        let me = self.core.me();
+        let me = self.core.tid();
         let mint = self.mint_admin(k);
         let edges: Vec<(Tid, osis_perm::Edge)> = self.core.timelines().get(k).map(|tl| tl.edges_at(None).holders(k).map(|(h, e)| (*h, *e)).collect()).unwrap_or_default();
         let ours: Vec<(Tid, osis_perm::Edge)> = edges.into_iter().filter(|(h, _)| Some(*h) != mint && self.core.created(h).is_none_or(|r| r.link_target() != Some(*k)) && (*h == me || self.core.role_now(&me, h) == Some(Role::Admin))).collect();
@@ -222,7 +222,7 @@ impl Engine {
         })
     }
 
-    /// The leave of link actor `k` by the joiner this node acts as (`joined_link_ended`): a
+    /// The leave of link's thing `k` by the joiner this node acts as (`joined_link_ended`): a
     /// self-removal of its grant on K. Idempotent: once a leave is here, the grant is gone.
     pub fn leave_link(&mut self, k: &Tid) -> Result<Done> {
         let Some(holder) = self.joiner_of(k) else { return Ok(Done::default()) };
@@ -279,7 +279,7 @@ impl Engine {
     /// worked that reached them. Idempotent across nodes: a finalization by any of them is
     /// that explicit write.
     pub fn links_due(&mut self) -> Result<Vec<(HeldLink, Option<WallMs>)>> {
-        let me = self.core.me();
+        let me = self.core.tid();
         let ts = super::now_ts(&self.core);
         let mut out = Vec::new();
         for h in self.held_links()?.iter() {
@@ -301,7 +301,7 @@ impl Engine {
     /// When the next link this node may finalize expires (wall ms): the earliest
     /// `until` of a live L edge on a K it is admin of.
     pub fn next_link_expiry(&mut self) -> Result<Option<u64>> {
-        let me = self.core.me();
+        let me = self.core.tid();
         let ts = super::now_ts(&self.core);
         let mut next: Option<u64> = None;
         for h in self.held_links()?.iter() {
@@ -356,7 +356,7 @@ fn let_seeds_go(tx: &mut Tx<'_>, keeps: &[Tid]) -> Result<()> {
 }
 
 fn create_link_in(tx: &mut Tx<'_>, sharer: Tid, spec: &LinkSpec, krec: osis_base::CreationRecord, l: Tid, seed: &Secret32) -> Result<(Tid, osis_base::SyncId, Tid, Done)> {
-    let me = tx.core.me();
+    let me = tx.core.tid();
     if crate::engine::secrets::usable_role_now(tx, &me, &sharer)? != Some(Role::Admin) {
         return Err(Error::Permission { tid: sharer, needs: Role::Admin });
     }

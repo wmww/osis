@@ -1137,7 +1137,7 @@ mod tests {
     #[test]
     fn every_part_state_reads_back_as_stored() {
         let mut lp = LocalPeer::fresh(1, WallMs(1_700_000_000_000));
-        let a = lp.peers[0].engine.me();
+        let a = lp.peers[0].engine.tid();
         let mut m = Mutation::new();
         let t = lp.peers[0].engine.new_thing(&mut m, a);
         let c = lp.peers[0].commit(m).unwrap().unwrap();

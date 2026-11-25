@@ -197,7 +197,7 @@ mod tests {
     fn a_stored_commit_is_decoded_once_per_record_write() {
         let mut lp = crate::local_peer::LocalPeer::fresh(1, WallMs(1_700_000_000_000));
         let e = &mut lp.peers[0].engine;
-        let me = e.me();
+        let me = e.tid();
         let ak = Ak::new("x:a.0").unwrap();
         let mut m = Mutation::new();
         let t = e.new_thing(&mut m, me);
@@ -247,7 +247,7 @@ mod tests {
         let judge = |n: i64| -> (u64, u64, u64, u64, usize, u64) {
             let mut lp = crate::local_peer::LocalPeer::fresh(1, WallMs(1_700_000_000_000));
             let e = &mut lp.peers[0].engine;
-            let me = e.me();
+            let me = e.tid();
             let ak = Ak::new("x:m.0").unwrap();
             let mut m = Mutation::new();
             let t = e.new_thing(&mut m, me);

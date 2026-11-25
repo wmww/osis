@@ -220,9 +220,9 @@ fn a_joiner_leaves_k_by_its_clock_alone_spec_permissions_7() {
 // spec/sync-judgement.md §2 (required set: certificates the same at every node),
 // spec/permissions.md §7 (Redeem): a reader through a link key alone logs nothing of its own under K. Node 2
 // joins K by node 0's read link, then node 1 redeems it: L's grant to node 1's account is
-// deposited and promoted. It verifies at node 2, which never held node 1's node card.
+// deposited and promoted. It verifies at node 2, which does not hold node 1's node thing.
 #[test]
-fn a_link_keys_promoted_grant_verifies_where_its_node_card_never_went_spec_sync_judgement_2() {
+fn a_link_keys_promoted_grant_verifies_where_the_redeemers_node_is_not_held_spec_sync_judgement_2() {
     let mut w = World::new(0);
     for _ in 0..3 {
         w.add_node();
@@ -241,10 +241,7 @@ fn a_link_keys_promoted_grant_verifies_where_its_node_card_never_went_spec_sync_
     for i in [0, 2] {
         assert!(w.engine(i).roster(&link.k).contains_key(&a1), "node 1's join verified at node {i}");
     }
-    for ak in ["node.0", "reach.0"] {
-        let k = (n1, osis_base::Ak::new(ak).unwrap());
-        assert_eq!(w.engine(2).core.held_on(&k).count(), 0, "node 1's {ak} never reached node 2");
-    }
+    assert!(!w.engine(2).closure_holds(&n1), "node 1's node thing is not held at node 2");
 }
 
 // spec/sync-inbox.md §6 (First contact: a node may stop following a link after a time of its

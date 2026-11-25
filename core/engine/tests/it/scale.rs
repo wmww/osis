@@ -552,7 +552,7 @@ fn roster_removal(n: usize) -> (u64, usize, u64) {
     let mut lp = net(1, 0);
     let b = lp.peers[0].backend.clone();
     let e = &mut lp.peers[0].engine;
-    let me = e.me();
+    let me = e.tid();
     let mut m = Mutation::new();
     let a = e.new_thing(&mut m, me);
     e.commit(m).unwrap().unwrap();
@@ -668,7 +668,7 @@ fn shared_thing(n: usize, roles: &[Role]) -> (LocalPeer, Tid) {
         let mut lp = net(n, 0);
         let t = new_thing(&mut lp, 0);
         for (i, r) in roles.iter().enumerate() {
-            let x = lp.peers[i + 1].engine.me();
+            let x = lp.peers[i + 1].engine.tid();
             set_edge(&mut lp.peers[0].engine, t, x, Some(edge(*r)), None);
         }
         lp.sync_all().unwrap();
@@ -776,7 +776,7 @@ fn validity_flip(n: usize) -> [Work; 2] {
     for p in &mut lp.peers {
         p.engine.write_addenda(false);
     }
-    let (b, k) = (lp.peers[1].engine.me(), ak("t:tags.0"));
+    let (b, k) = (lp.peers[1].engine.tid(), ak("t:tags.0"));
     for i in 0..n {
         add(&mut lp, 0, t, &TAGS, format!("e{i}"));
     }
@@ -945,7 +945,7 @@ fn addenda_rejudge(n: usize, with: bool) -> Work {
     let (mut lp, (t, holder, ids)) = LocalPeer::cached(&format!("scale::addenda_rejudge/{n}"), || {
         use crate::common::TAGS;
         let (mut lp, t) = shared_thing(5, &[Role::Write, Role::Write, Role::Write]);
-        let ids: Vec<Tid> = (0..5).map(|i| lp.peers[i].engine.me()).collect();
+        let ids: Vec<Tid> = (0..5).map(|i| lp.peers[i].engine.tid()).collect();
         let holder = new_thing(&mut lp, 0);
         set_edge(&mut lp.peers[0].engine, holder, ids[3], Some(edge(Role::Admin)), None);
         set_edge(&mut lp.peers[0].engine, t, holder, Some(edge(Role::Write)), None);
@@ -993,7 +993,7 @@ fn addenda_rejudge_spec_permissions_5_2() {
 fn addenda_wake(k: usize) -> Work {
     use crate::common::TAGS;
     let (mut lp, t) = shared_thing(3, &[Role::Write, Role::Write]);
-    let (alice, bob) = (lp.peers[0].engine.me(), lp.peers[1].engine.me());
+    let (alice, bob) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
     let mut mine = Vec::new();
     for _ in 0..k {
         let q = new_thing(&mut lp, 1);
@@ -1160,7 +1160,7 @@ fn purge_rejudge(n: usize) -> [Work; 3] {
     let r = n / 10;
     let (mut lp, t) = shared_thing(4, &[Role::Admin]);
     let k = ak("l:msg.0");
-    let x = lp.peers[1].engine.me();
+    let x = lp.peers[1].engine.tid();
     let mut ids = Vec::new();
     for i in 0..n {
         let mut m = Mutation::new();
@@ -1179,7 +1179,7 @@ fn purge_rejudge(n: usize) -> [Work; 3] {
     for p in &pks {
         lp.deliver(0, p).unwrap();
     }
-    let z = lp.peers[2].engine.me();
+    let z = lp.peers[2].engine.tid();
     let step = |lp: &mut LocalPeer, who: Tid, e: Option<Role>| measured_at(lp, 0, |lp| set_edge(&mut lp.peers[0].engine, t, who, e.map(edge), None)).1;
     [step(&mut lp, z, Some(Role::Write)), step(&mut lp, x, None), step(&mut lp, x, Some(Role::Admin))]
 }
@@ -1205,7 +1205,7 @@ fn purge_rejudge_is_linear_in_requests_spec_permissions_6() {
 /// admin, in listed commits and encoded bytes.
 fn dropped_frontier(k: usize) -> (usize, usize) {
     let (mut lp, t) = shared_thing(2, &[Role::Write]);
-    let me = lp.peers[0].engine.me();
+    let me = lp.peers[0].engine.tid();
     let key = ak("t:gonemap.0");
     for i in 0..k {
         for j in 0..2 {
@@ -1286,7 +1286,7 @@ fn long_aspect(n: usize) -> [Work; 3] {
     let (c, one) = measured_at(&mut lp, 1, |lp| w(lp, 1, n));
     let pk = lp.peers[1].engine.package(&c).unwrap().unwrap();
     let (_, recv) = measured_at(&mut lp, 0, |lp| lp.deliver(0, &pk).unwrap());
-    let x = lp.peers[2].engine.me();
+    let x = lp.peers[2].engine.tid();
     let (_, fall) = measured_at(&mut lp, 0, |lp| {
         let d = osis_engine::flows::Demotion { holder: x, new: None, retain: None };
         lp.peers[0].engine.demote(&t, &d).unwrap()
@@ -1677,8 +1677,8 @@ fn an_open_decodes_no_role_commit_record() {
     flat("open: commit records decoded", a, b);
 }
 
-/// The work of `K` one-element adds, a commit each, to a set of `n` elements (as the account
-/// root's `holds.0` gains a strong per made thing), compactions included.
+/// The work of `K` one-element adds, a commit each, to a set of `n` elements (as the account's
+/// `holds.0` gains a strong per made thing), compactions included.
 fn set_adds(n: usize) -> Work {
     const K: usize = 10;
     let (mut lp, t) = one_thing();
@@ -1865,7 +1865,7 @@ fn expired_log_charge(n: usize) -> [u64; 2] {
 fn expired_charge(n: usize, map: bool) -> [u64; 2] {
     let mut lp = net(2, 0);
     let t = new_thing(&mut lp, 0);
-    let b = lp.peers[1].engine.me();
+    let b = lp.peers[1].engine.tid();
     set_edge(&mut lp.peers[0].engine, t, b, Some(edge(Role::Write)), None);
     lp.sync_all().unwrap();
     let mut taken = BTreeSet::new();
@@ -1932,7 +1932,7 @@ fn expired_map_keys_charge_near_nothing() {
 /// above it first, top down): the work of `make_independent`.
 fn deep_independence(d: usize) -> Work {
     let mut lp = net(1, 0);
-    let mut up = lp.peers[0].engine.me();
+    let mut up = lp.peers[0].engine.tid();
     for _ in 0..d {
         let mut m = Mutation::new();
         up = lp.peers[0].engine.new_thing(&mut m, up);
@@ -2013,7 +2013,7 @@ fn pairing(n: usize) -> Pairing {
     let (mut lp, acc) = account_nodes(n);
     let a = acc.thing;
     let mut p = osis_engine::local_peer::Peer::new(9_000, lp.peers[0].engine.now()).unwrap();
-    let (node, keys) = (p.engine.me(), p.engine.node_keys().unwrap());
+    let (node, keys) = (p.engine.tid(), p.engine.node_keys().unwrap());
     let ((offer, done), pairer) = measured_at(&mut lp, 0, |lp| lp.peers[0].engine.pair(&a, &node, &keys, Role::Admin).unwrap());
     let (pks, bytes) = bytes_of(&mut lp, 0, &done.commits);
     let o = [osis_base::encode(&offer.to_value()).len() as u64, offer.grant.evidence.len() as u64, offer.grant.records.len() as u64, offer.sync.len() as u64, offer.trust.len() as u64];
@@ -2082,10 +2082,10 @@ struct Removal {
 
 fn removal(n: usize) -> Removal {
     let (mut lp, acc) = account_nodes(n);
-    let node = lp.peers[n - 1].engine.me();
+    let node = lp.peers[n - 1].engine.tid();
     let (done, remover) = measured_at(&mut lp, 0, |lp| lp.peers[0].engine.remove_node(&acc.thing, &node, false, &[acc.profile]).unwrap());
     let (pks, bytes) = bytes_of(&mut lp, 0, &done.commits);
-    let sib = lp.peers[1].engine.me();
+    let sib = lp.peers[1].engine.tid();
     let mut piece = 0;
     for c in &done.commits {
         let Some(copy) = lp.peers[0].engine.edge_piece_copy(c, &acc.thing, &sib).unwrap() else { continue };

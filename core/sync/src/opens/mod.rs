@@ -954,7 +954,7 @@ impl Opens {
     /// peer proving this node's own thing counts (a self-removal skips it, spec/sync-status.md
     /// §2). A failed read counts the peer.
     pub fn waited(&self, engine: &mut osis_engine::Engine, store: &Store, s: &SyncId, own: bool) -> Result<bool> {
-        let me = engine.me();
+        let me = engine.tid();
         let none = osis_blob::Certificates::default();
         self.wait_for(store, s, |named| {
             if !own && named.things().contains(&me) {

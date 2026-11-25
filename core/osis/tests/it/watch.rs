@@ -717,8 +717,8 @@ fn a_commit_found_landed_after_a_failed_sync_reaches_watches() {
     assert!(landed > 0, "some write's failed sync leaves a landed commit answered Err");
 }
 
-// notes/api.md Watching (a callback reads as its subscriber), spec/wire.md §11.2 (A client
-// actor's rights): every local watch taken on a handle acting as an actor tells what that actor
+// notes/api.md Watching (a callback reads as its subscriber), spec/wire.md §11.2 (A client's
+// rights): every local watch taken on a handle acting as a thing tells what that thing
 // reads and nothing else. Invariant: after the node writes a thing the actor may not read and
 // changes its roster, no watch on it tells anything past its first call (absent, no grants).
 // Differential: each watch's last word equals the acting handle's own read, which on the hidden

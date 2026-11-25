@@ -193,7 +193,7 @@ impl Cx<'_> {
     /// watches subscribe again.
     fn came_up(&mut self, r: &mut Remote, w: Thin) {
         if r.who.is_some_and(|x| x.author != w.author) {
-            let e = Error::Refused(format!("{} answers as another actor now", r.addr));
+            let e = Error::Refused(format!("{} answers as another thing now", r.addr));
             return self.refused(r, e);
         }
         r.who = Some(w);
@@ -528,7 +528,7 @@ impl ReadOnly {
         self.locked(|l| l.remotes.iter().find(|r| r.addr == *at).and_then(|r| r.who))
     }
 
-    /// Connects to the node at `addr` (`secret`: as a client actor; none: a main session), and
+    /// Connects to the node at `addr` (`secret`: as a client's thing; none: a main session), and
     /// waits until it is up or refused.
     pub(crate) async fn add_remote(&self, addr: Address, secret: Option<crate::ClientSecret>) -> Result<Thin> {
         let (tx, mut rx) = tokio::sync::oneshot::channel();

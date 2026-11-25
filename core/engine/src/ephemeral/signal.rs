@@ -70,7 +70,7 @@ impl Engine {
         if synced {
             self.eph.signals.push(c);
         }
-        let (node, received) = (self.core.me(), self.now());
+        let (node, received) = (self.core.tid(), self.now());
         let fired = fired(signals, id, node, actor, ts, received);
         self.core.commits_fired(fired);
         Ok(Written { id, ts })
@@ -83,7 +83,7 @@ impl Engine {
 
     /// Builds and signs one relay-only commit of `deltas` for `actor` at `ts`.
     pub(crate) fn build_relay(&mut self, actor: Tid, ts: Ts, deltas: Vec<Signal>) -> Result<EphCommit> {
-        let me = self.core.me();
+        let me = self.core.tid();
         self.run(|tx| {
             let cx = osis_commit::writer_ctx(Form::Commit, Kind::ContentSnapshot, ts, me, 0, 0);
             let (creates, minted) = (Creates::new(), Default::default());

@@ -21,7 +21,7 @@ fn pumped(seed: u64) -> Osis {
     pumped_at(seed, &clock())
 }
 
-/// A dependent thing in the account root's sync unit: many of them add no sync IDs.
+/// A dependent thing in the account's sync unit: many of them add no sync IDs.
 fn thing(db: &Osis) -> Tid {
     things(db, 1)[0]
 }
@@ -219,13 +219,13 @@ fn an_until_passing_tells_tracked_role_reads_spec_permissions_2() {
     { let mut w = bob.write(); w.hold(bob.node_root().unwrap(), g).unwrap(); w.commit().unwrap(); }
     let ((_s1, roles, h1), (_s2, holders, h2)) = (tracked(&bob), tracked(&bob));
     assert_eq!(h1.role_on(g).unwrap(), Some(osis::Role::Read));
-    assert!(h2.holders(g).unwrap().iter().any(|x| x.actor == bob.author()));
+    assert!(h2.holders(g).unwrap().iter().any(|x| x.thing == bob.author()));
     net.advance(30_000);
     assert_eq!((fired(&bob, &roles), fired(&bob, &holders)), (0, 0), "nothing ended yet");
     net.advance(60_000);
     assert_eq!((fired(&bob, &roles), fired(&bob, &holders)), (1, 1), "the until passed");
     assert_eq!(h1.role_on(g).unwrap(), None);
-    assert!(!h2.holders(g).unwrap().iter().any(|x| x.actor == bob.author()));
+    assert!(!h2.holders(g).unwrap().iter().any(|x| x.thing == bob.author()));
 }
 
 // notes/api.md Backlinks: a tracked backlinks page hears a reference to its thing appear, and
@@ -235,7 +235,7 @@ fn tracked_backlinks_hear_their_thing() {
     let db = pumped(14);
     let (a, x, y) = (thing(&db), thing(&db), thing(&db));
     let (_set, n, h) = tracked(&db);
-    assert!(h.backlinks(x, &Default::default()).unwrap().backlinks.iter().all(|b| b.tid == crate::common::home(&db)), "the account root's strong alone");
+    assert!(h.backlinks(x, &Default::default()).unwrap().backlinks.iter().all(|b| b.tid == crate::common::home(&db)), "the account's strong alone");
     db.commit_with(|w| w.at(a, untyped("t:a.0")).set(&Value::Weak(y))).unwrap();
     assert_eq!(fired(&db, &n), 0);
     db.commit_with(|w| w.at(a, untyped("t:b.0")).set(&Value::Weak(x))).unwrap();
@@ -391,7 +391,7 @@ fn tracked_role_reads_follow_their_thing_at_n_and_10n() {
 }
 
 // notes/api.md Tracked reads: `holds(h, t)` hears a reference to `t` in a `holds.0` alone. At n and
-// 10n tracked memberships of things the account root holds, holding one more calls and reads
+// 10n tracked memberships of things the account holds, holding one more calls and reads
 // again none of them; taking one out calls its own.
 #[test]
 fn tracked_holds_hears_its_element_at_n_and_10n() {

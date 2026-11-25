@@ -133,7 +133,7 @@ pub(crate) fn settle_none(tx: &mut Tx<'_>) -> Result<()> {
             _ => {}
         }
         if may == MayWrite::Yes {
-            let me = tx.core.me();
+            let me = tx.core.tid();
             for (c, ai) in &uncovered {
                 if !under_purge(tx, c, *ai, &tid, &ak, &kept)? {
                     continue;

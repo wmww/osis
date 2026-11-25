@@ -96,7 +96,7 @@ impl Engine {
             return Ok(None);
         }
         let links = self.core.followed_links.all().values().filter_map(|(_, l)| *l);
-        let authors = std::iter::once(self.core.me()).chain(links).collect();
+        let authors = std::iter::once(self.core.tid()).chain(links).collect();
         Ok(Some(Scope { things: things.into_iter().collect(), authors }))
     }
 
@@ -112,7 +112,7 @@ impl Engine {
                 let core = &self.core;
                 core.ix.commits.get(c).is_some_and(|m| {
                     let a = &m.view.signer;
-                    m.origin == crate::events::Origin::Local && (core.me() == *a || core.followed_links.is_key(a)) && m.view.aspects.iter().any(|x| ctx.holds(core, &x.tid))
+                    m.origin == crate::events::Origin::Local && (core.tid() == *a || core.followed_links.is_key(a)) && m.view.aspects.iter().any(|x| ctx.holds(core, &x.tid))
                 })
             };
             if own && !self.commit_bodies_under(&ctx, c)?.is_empty() {

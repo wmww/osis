@@ -229,11 +229,11 @@ pub fn items(url: &str) -> Result<Items, Error> {
     Ok(out)
 }
 
-/// What a node lists in `reach.0` for its listener at `listener` (the listener's `peer://`
-/// address): each socket address it is bound to that `lan::is_global` passes, an unspecified IP
+/// What a node's `peer://` URL lists for its listener at `listener` (the listener's `peer://`
+/// address, spec/sync-transport.md §3): each socket address it is bound to that `lan::is_global` passes, an unspecified IP
 /// standing for `routes` of the families it serves (the routes' local addresses,
 /// `lan::route_ips`; `[::]` serves both), then its relays. Another scheme lists nothing.
-pub fn reach_items(listener: &str, routes: &[IpAddr]) -> Vec<String> {
+pub fn peer_url_items(listener: &str, routes: &[IpAddr]) -> Vec<String> {
     let Ok(it) = items(listener) else { return Vec::new() };
     let mut direct: Vec<SocketAddr> = Vec::new();
     for a in it.direct {

@@ -34,7 +34,7 @@ fn opened(lp: &mut LocalPeer, i: usize, b: u8, c: &CommitId, parts: &[usize], co
 fn two_nodes() -> (LocalPeer, Tid) {
     LocalPeer::cached("sync::tests_facts::two_nodes", || {
         let mut lp = LocalPeer::new(2, 0, T0).unwrap();
-        let me = lp.peers[0].engine.me();
+        let me = lp.peers[0].engine.tid();
         let mut m = Mutation::new();
         let d = lp.peers[0].engine.new_thing(&mut m, me);
         lp.peers[0].commit(m).unwrap();
@@ -52,7 +52,7 @@ fn two_nodes() -> (LocalPeer, Tid) {
 #[test]
 fn a_blob_under_another_expiry_is_refused_spec_sync_ids_1() {
     let mut lp = LocalPeer::new(1, 0, T0).unwrap();
-    let d = lp.peers[0].engine.me();
+    let d = lp.peers[0].engine.tid();
     let e = &mut lp.peers[0].engine;
     let mut m = Mutation::new();
     let t = e.new_thing(&mut m, d);

@@ -16,7 +16,7 @@ pub const SMALL_REPLY: usize = 16 * KIB;
 pub const WINDOW: usize = 16 * MIB;
 /// Live subscriptions per connection (spec/wire.md §2).
 pub const MAX_SUBS: usize = 4096;
-/// Authenticated sessions of one client actor (spec/wire.md §2).
+/// Authenticated sessions of one client's thing (spec/wire.md §2).
 pub const MAX_CONNS_PER_CLIENT: usize = 8;
 /// Proofs in one Prove or Proved (spec/wire.md §2).
 pub const MAX_PROOFS: usize = 256;

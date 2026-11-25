@@ -324,7 +324,7 @@ pub(crate) fn copy_expiry(copies: &Copies) -> Result<Option<u64>> {
 pub(crate) fn undo_in(tx: &mut Tx<'_>, target: CommitId, actor: Tid, ts: Option<Ts>, confined: bool) -> Result<CommitId> {
     let ts = ts.unwrap_or_else(|| tx.core.hlc.next());
     let Some((deltas, nonce)) = undo_writes(tx, target, ts)? else { return Err(Error::Misuse("nothing to undo")) };
-    let node = tx.core.me();
+    let node = tx.core.tid();
     // rights: its own commit applies only if valid here, as at every receiver (`apply_local`)
     check_acts(tx.core, node, &|_| None, &actor, ts)?;
     if confined {
@@ -447,7 +447,7 @@ struct Undoing {
 /// The undo's deltas of `parts`, stamped under session
 /// `nonce`, with the expiries of what they copy back.
 fn inverse(tx: &mut Tx<'_>, parts: &[Undoing], ts: Ts, nonce: [u8; osis_crdt::SESSION_NONCE_LEN]) -> Result<(Vec<Resolved>, Copies)> {
-    let own = Form::Session(nonce).own_source(tx.core.me(), CommitId([0; 32]));
+    let own = Form::Session(nonce).own_source(tx.core.tid(), CommitId([0; 32]));
     let mut deltas = Vec::new();
     let mut copies = Copies::new();
     for p in parts {
@@ -521,7 +521,7 @@ impl Engine {
     /// there is nothing to write; `NotKept` (`Error`) when a part is not in kept history or
     /// its inverse needs content no kept history holds; `Clash` if its writes cannot share a commit.
     pub fn revert(&mut self, target: &CommitId) -> Result<Option<CommitId>> {
-        let me = self.core.me();
+        let me = self.core.tid();
         match self.revert_commit(*target, me)? {
             Reverted::Written(w) => Ok(Some(w.id)),
             Reverted::Superseded => Ok(None),
@@ -534,7 +534,7 @@ impl Engine {
     /// part is not in kept history or its inverse writes back content no kept history holds). Computes
     /// the revert's writes in a transaction rolled back after.
     pub fn check_revertible(&mut self, c: &CommitId) -> Result<bool> {
-        self.core.me();
+        self.core.tid();
         self.check_revert(*c)
     }
 
@@ -625,7 +625,7 @@ mod tests {
             lp.advance(10);
             lp.peers[i].commit(m).unwrap().unwrap()
         };
-        let a = lp.peers[0].engine.me();
+        let a = lp.peers[0].engine.tid();
         // held by a strong committed first: the commit making `n` writes nothing else
         let mut m = Mutation::new();
         let n = m.create(lp.peers[0].engine.held_record(a).unwrap());
@@ -668,7 +668,7 @@ mod tests {
         let history = if shape == "whole" { osis_schema::History::Keep { until: Some(4_000_000_000_000), after: None } } else { osis_schema::History::Keep { until: None, after: Some(86_400_000) } };
         let keep = osis_schema::PurgeBy::Writer;
         let mut lp = LocalPeer::fresh(1, WallMs(1_700_000_000_000));
-        let a = lp.peers[0].engine.me();
+        let a = lp.peers[0].engine.tid();
         let (t, _) = lp.peers[0].engine.create_with_admin(&a).unwrap();
         lp.hold(t);
         let mut m = Mutation::new();
@@ -767,7 +767,7 @@ mod tests {
         let k = || Value::Str("k".into());
         for removed_k in [false, true] {
             let mut lp = LocalPeer::fresh(1, WallMs(1_700_000_000_000));
-            let me = lp.peers[0].engine.me();
+            let me = lp.peers[0].engine.tid();
             let (t, _) = lp.peers[0].engine.create_with_admin(&me).unwrap();
             lp.hold(t);
             let mut m = Mutation::new();
@@ -852,7 +852,7 @@ mod tests {
                 }
                 _ => {
                     // not seen by the demoter, so not vouched for
-                    let c = lp.peers[1].engine.me();
+                    let c = lp.peers[1].engine.tid();
                     lp.peers[0].engine.demote(&t, &crate::flows::Demotion { holder: c, new: None, retain: None }).unwrap();
                 }
             }
@@ -881,7 +881,7 @@ mod tests {
     fn two_build() -> (LocalPeer, osis_base::Tid, Ak, osis_schema::PurgeBy) {
         let mut lp = LocalPeer::fresh(2, WallMs(1_700_000_000_000));
         lp.sync_all().unwrap();
-        let [a, c] = [0, 1].map(|i| lp.peers[i].engine.me());
+        let [a, c] = [0, 1].map(|i| lp.peers[i].engine.tid());
         let keep = osis_schema::PurgeBy::Writer;
         let (t, _) = lp.peers[0].engine.create_with_admin(&a).unwrap();
         lp.hold(t);
@@ -975,11 +975,11 @@ mod tests {
     fn invalid_commit_blocks_no_undo_spec_crdt_4_6() {
         let mut lp = LocalPeer::fresh(2, WallMs(1_700_000_000_000));
         lp.sync_all().unwrap();
-        let a = lp.peers[0].engine.me();
+        let a = lp.peers[0].engine.tid();
         let keep = osis_schema::PurgeBy::Writer;
         let (t, _) = lp.peers[0].engine.create_with_admin(&a).unwrap();
         lp.hold(t);
-        let r = lp.peers[1].engine.me();
+        let r = lp.peers[1].engine.tid();
         lp.peers[0].engine.grant(&t, &r, &ct::Edge { role: Role::Read, until: None, may_grant: false, retain: false, floor: None }).unwrap();
         let x = Ak::new("x:m.0").unwrap();
         let day = osis_schema::History::Keep { until: None, after: Some(86_400_000) };
@@ -1028,7 +1028,7 @@ mod tests {
     fn writable_build(n: usize) -> (LocalPeer, Vec<osis_base::Tid>, Ak, Ak) {
         let mut lp = LocalPeer::fresh(2, WallMs(1_700_000_000_000));
         lp.sync_all().unwrap();
-        let [a, b] = [0, 1].map(|i| lp.peers[i].engine.me());
+        let [a, b] = [0, 1].map(|i| lp.peers[i].engine.tid());
         let ts: Vec<_> = (0..n).map(|_| lp.peers[0].engine.create_with_admin(&a).unwrap().0).collect();
         for t in &ts {
             lp.hold(*t);

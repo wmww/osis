@@ -62,7 +62,7 @@ Runs, output chunks and console requests each need a default: kept for a duratio
 One outpost, local backend, one box. Requests `exec`, `input`, `cancel`. Specs and vitals. A control CLI to fire requests and follow runs (maybe just `osis` commands). No first-class tools, no other backends, no UI.
 
 ## Open
-- How outpost reaches osis: a client of the local `osis serve` daemon over its socket (notes/cli.md) with its own client actor (notes/client-port.md), or its own store.
+- How outpost reaches osis: a client of the local `osis serve` daemon over its socket (notes/cli.md) with its own client's thing (notes/client-port.md), or its own store.
 - Who may fire what: write on the console is the only grant. Does outpost apply per-sender rules on top (some senders `exec`, others later kinds only), or is that more boxes too?
 - Removing a queued request: purge by its sender (needs the request's purge-by to allow it) or an edit to a withdrawn form.
 - Output: chunk size and flush interval; whether live output should also go ephemeral for low-latency tailing, with durable chunks for the record.

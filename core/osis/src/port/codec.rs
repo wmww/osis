@@ -391,17 +391,17 @@ impl Form for Grants {
     }
 }
 
-const HOLDER_KINDS: [HolderKind; 4] = [HolderKind::Actor, HolderKind::Link, HolderKind::Key, HolderKind::Public];
+const HOLDER_KINDS: [HolderKind; 4] = [HolderKind::Thing, HolderKind::Link, HolderKind::Key, HolderKind::Public];
 
-/// A holder (`holders`): `[actor, kind, role, Opt(until), [through*]]`, kind 0 an actor, 1 a
+/// A holder (`holders`): `[thing, kind, role, Opt(until), [through*]]`, kind 0 a thing, 1 a
 /// link's, 2 a key, 3 the public.
 impl Form for Holder {
     fn to_wire(&self) -> Value {
-        Value::List(vec![tid_to(&self.actor), place_to(&HOLDER_KINDS, &self.kind), role_to(self.role), time_to(self.until), tids_to(&self.through)])
+        Value::List(vec![tid_to(&self.thing), place_to(&HOLDER_KINDS, &self.kind), role_to(self.role), time_to(self.until), tids_to(&self.through)])
     }
     fn from_wire(v: Value) -> Result<Holder> {
-        let [actor, kind, role, until, through] = fixed(v, "holder")?;
-        Ok(Holder { actor: tid(&actor)?, kind: place_from(&HOLDER_KINDS, &kind, "holder kind")?, role: role_from(&role)?, until: time_from(until, "holder")?, through: tids_from(through, "holder")? })
+        let [thing, kind, role, until, through] = fixed(v, "holder")?;
+        Ok(Holder { thing: tid(&thing)?, kind: place_from(&HOLDER_KINDS, &kind, "holder kind")?, role: role_from(&role)?, until: time_from(until, "holder")?, through: tids_from(through, "holder")? })
     }
 }
 
@@ -464,7 +464,7 @@ pub(crate) fn outcome_of(e: &Error) -> Outcome {
     let text = |s: &str| vec![Value::Str(s.to_string())];
     let (code, detail) = match e {
         Error::UnknownThing { tid } => (ApiCode::UNKNOWN_THING, vec![tid_to(tid)]),
-        Error::UnknownActor { tid } => (ApiCode::UNKNOWN_ACTOR, vec![tid_to(tid)]),
+        Error::UnknownKeys { tid } => (ApiCode::UNKNOWN_KEYS, vec![tid_to(tid)]),
         Error::Permission { tid, needs } => (ApiCode::PERMISSION, vec![tid_to(tid), role_to(*needs)]),
         Error::NotEnabled { tid, signal } => (ApiCode::NOT_ENABLED, vec![tid_to(tid), ak_to(signal)]),
         Error::LeavesNoAdmin { tid } => (ApiCode::LEAVES_NO_ADMIN, vec![tid_to(tid)]),
@@ -494,7 +494,7 @@ pub(crate) fn error_of(code: u64, detail: &[Value]) -> Error {
     let second = || detail.get(1).ok_or_else(|| bad("detail"));
     let decoded = match code {
         ApiCode::UNKNOWN_THING => t().map(|tid| Error::UnknownThing { tid }),
-        ApiCode::UNKNOWN_ACTOR => t().map(|tid| Error::UnknownActor { tid }),
+        ApiCode::UNKNOWN_KEYS => t().map(|tid| Error::UnknownKeys { tid }),
         ApiCode::LEAVES_NO_ADMIN => t().map(|tid| Error::LeavesNoAdmin { tid }),
         ApiCode::PERMISSION => t().zip(second().and_then(role_from).ok()).map(|(tid, needs)| Error::Permission { tid, needs }),
         ApiCode::NOT_ENABLED => t().zip(second().and_then(ak).ok()).map(|(tid, signal)| Error::NotEnabled { tid, signal }),

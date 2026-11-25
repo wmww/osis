@@ -49,17 +49,17 @@ pub enum Reads {
     All,
 }
 
-/// What a holder is, as its creator declared: an actor's creation fixes this, so it reads alike on
+/// What a holder is, as its creator declared: a thing's creation fixes this, so it reads alike on
 /// every node and never changes, and nothing checks it. A holder whose creation has not reached
-/// this node reads as `Actor`.
+/// this node reads as `Thing`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HolderKind {
-    /// An account, organization or other actor.
-    Actor,
-    /// The actor of a share link: those who joined by the link hold through it.
+    /// Any other thing: an account, an organization, a realm.
+    Thing,
+    /// A share link's thing: those who joined by the link hold through it.
     Link,
     /// A thing minted with a key: a node thing, or a share link's key, which holds that link's
-    /// actor until the link ends.
+    /// thing until the link ends.
     Key,
     /// The public (`Tid::PUBLIC`): everyone, a node or not, holding nothing; read at most.
     Public,
@@ -82,19 +82,19 @@ fn leave_allowed(e: &mut osis_engine::Engine, holder: Tid, t: Tid, own: bool) ->
     }
 }
 
-/// One way an actor holds a role on a thing (`Osis::holders`).
+/// One way a thing holds a role on another (`Osis::holders`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Holder {
-    /// The actor holding the role.
-    pub actor: Tid,
-    /// What the actor is.
+    /// The thing holding the role.
+    pub thing: Tid,
+    /// What that thing is.
     pub kind: HolderKind,
     /// The role this way gives: the least along it.
     pub role: Role,
     /// When this way ends: the earliest end along it. One that has ended is not listed.
     pub until: Option<Time>,
-    /// The actors between the thing and this holder, nearest the thing first: empty for a grant
-    /// on the thing itself, the link's actor for someone who joined by a link, an organization for its
+    /// The things between the thing held and this holder, nearest the thing held first: empty for
+    /// a grant on it itself, the link's thing for someone who joined by a link, an organization for its
     /// members.
     pub through: Vec<Tid>,
 }
@@ -112,7 +112,7 @@ pub struct SetRoleOpts {
 
 /// How a link made by `Osis::make_link` ends. The link names the node that made it (by its key),
 /// and the nodes it dials by `Config::dial`, so a redeemer reaches the thing at any of them that
-/// holds the link's actor: anyone holding the link can dial them, also after the link ends (this
+/// holds the link's thing: anyone holding the link can dial them, also after the link ends (this
 /// node until `Osis::rotate_peer_address`); dialing opens nothing the link no longer grants.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct LinkOpts {
@@ -128,9 +128,9 @@ pub struct LinkOpts {
 pub struct LinkId(pub(crate) Tid);
 
 impl LinkId {
-    /// The actor those who joined by this link hold through: `Holder::through` names it, and
+    /// The thing those who joined by this link hold through: `Holder::through` names it, and
     /// `Osis::holders` of it lists them.
-    pub fn actor(&self) -> Tid {
+    pub fn thing(&self) -> Tid {
         self.0
     }
 }
@@ -387,44 +387,44 @@ fn below_held(e: &osis_engine::Engine, t: &Tid, h: &Tid, role: Role) -> bool {
     e.role_on(t) == Some(Role::Admin) && e.key_role(t, h).is_some_and(|r| role < r)
 }
 
-/// `UnknownActor` unless `h` is the public or known here as a thing a grant can box: one with a
+/// `UnknownKeys` unless `h` is the public or known here as a thing a grant can box: one with a
 /// mint admin, or one minted with a key (a node thing or a link key) whose `keys.0` is held.
-fn known_actor(e: &mut osis_engine::Engine, h: Tid) -> Result<()> {
+fn known_holder(e: &mut osis_engine::Engine, h: Tid) -> Result<()> {
     if h.is_public() {
         return Ok(());
     }
     if !e.knows(&h) || (e.mint_admin(&h).is_none() && e.get_typed(&h, &ct::KEYS)?.is_none()) {
-        return Err(Error::UnknownActor { tid: h });
+        return Err(Error::UnknownKeys { tid: h });
     }
     Ok(())
 }
 
-/// `ReadOnly::holders`, read by `r` (as its actor: nothing behind an actor it may not read).
+/// `ReadOnly::holders`, read by `r` (as the thing it acts as: nothing behind a thing it may not read).
 pub(crate) fn holders_in(r: &crate::read::Reader<'_>, target: Tid) -> Vec<Holder> {
     let mut out: Vec<Holder> = Vec::new();
-    // the ways looked behind so far, per actor: a way none of them beats goes behind it too,
-    // else a member's role through a nested actor is that of the actor's first way in
+    // the ways looked behind so far, per holder: a way none of them beats goes behind it too,
+    // else a member's role through a nested holder is that of the holder's first way in
     let mut seen: BTreeMap<Tid, Vec<(Role, Option<Time>)>> = BTreeMap::new();
     let mut queue = std::collections::VecDeque::<(Tid, Option<Role>, Option<Time>, Vec<Tid>)>::from([(target, None, None, Vec::new())]);
     while let Some((at, role, until, through)) = queue.pop_front() {
-        for (actor, g) in r.grants(at) {
-            if actor == target || through.contains(&actor) {
+        for (thing, g) in r.grants(at) {
+            if thing == target || through.contains(&thing) {
                 continue;
             }
             let way = Holder {
-                actor,
-                kind: r.holder_kind(actor),
+                thing,
+                kind: r.holder_kind(thing),
                 role: role.map_or(g.role, |x| x.min(g.role)),
                 until: [until, g.until].into_iter().flatten().min(),
                 through: through.clone(),
             };
-            let ways = seen.entry(actor).or_default();
+            let ways = seen.entry(thing).or_default();
             let beaten = ways.iter().any(|(r, u)| *r >= way.role && (u.is_none() || way.until.is_some_and(|w| Some(w) <= *u)));
             if !beaten {
                 ways.push((way.role, way.until));
                 let mut on = way.through.clone();
-                on.push(actor);
-                queue.push_back((actor, Some(way.role), way.until, on));
+                on.push(thing);
+                queue.push_back((thing, Some(way.role), way.until, on));
             }
             out.push(way);
         }
@@ -433,13 +433,13 @@ pub(crate) fn holders_in(r: &crate::read::Reader<'_>, target: Tid) -> Vec<Holder
 }
 
 impl ReadOnly {
-    /// Everyone who holds a role on `target`, directly or through an actor that holds one (an account
-    /// through an organization, a joiner through a link), nearest first. An actor with several ways in is
+    /// Everyone who holds a role on `target`, directly or through a thing that holds one (an account
+    /// through an organization, a joiner through a link), nearest first. A holder with several ways in is
     /// listed once per way: the shortest to each grant it holds them by, and a longer one when it
-    /// gives more, so its best role and latest end are among its entries. Who holds through an actor:
-    /// `holders` of that actor, or those here with it in `through`. Grants one level down, with
-    /// `may_grant` and whether a grant goes with a membership: `grants`. Nothing behind an actor
-    /// this node (on a client with its own actor, that actor) does not read: its roster is not
+    /// gives more, so its best role and latest end are among its entries. Who holds through a thing:
+    /// `holders` of that thing, or those here with it in `through`. Grants one level down, with
+    /// `may_grant` and whether a grant goes with a membership: `grants`. Nothing behind a thing
+    /// this node (on a client with a thing of its own, that thing) does not read: its roster is not
     /// shown here (`grants`).
     pub fn holders(&self, target: Tid) -> Result<Vec<Holder>> {
         self.thing_read(target, "holders", crate::port::method::HOLDERS, crate::watch::Filter::Due(crate::watch::Watch::RoleGraph), move |r| Ok(holders_in(r, target)))
@@ -471,7 +471,7 @@ impl Osis {
     /// (it left, or its grant ended and was removed) undoes what it wrote with that role that this
     /// node had not received.
     ///
-    /// A thing's first grant to anyone but its mint admin also gives it keys of its own, so every
+    /// A thing's first grant to anyone but its mint admin also gives it its keys, so every
     /// holder of a role on it can read it.
     ///
     /// A grant to a thing as holder reaches that thing's readers through it; from a node that does
@@ -486,9 +486,9 @@ impl Osis {
     ///
     /// Needs admin on the target (or `may_grant` with a role of at least `role`, for someone with no grant yet;
     /// a grant that ended above `role` counts as one until an admin takes it away), else `Permission`,
-    /// and the holder's keys here (a card of it, a shared thing, pairing), else `UnknownActor`.
+    /// and the holder's keys here (a card of it, a shared thing, pairing), else `UnknownKeys`.
     /// Each grant costs about 2.6 KB of keys: to share with many, grant one thing they all hold a role on. `Unsupported` on
-    /// a client with its own actor. An `until` on the last admin whose grant has none is
+    /// a client with a thing of its own. An `until` on the last admin whose grant has none is
     /// `LeavesNoAdmin` unless `GrantOpts::leave_adminless` says it is meant (`set_role`).
     pub fn grant(&self, target: Tid, holder: Tid, role: Role, opts: GrantOpts) -> Result<()> {
         self.local_at(target, "grant")?;
@@ -497,7 +497,7 @@ impl Osis {
         }
         self.locked(|l| {
             let e = l.engine();
-            known_actor(e, holder)?;
+            known_holder(e, holder)?;
             let cur = e.roster(&target).get(&holder).copied();
             if cur.is_some_and(|x| role < x.role) || below_held(e, &target, &holder, role) {
                 return Err(Error::Invalid("a lower role takes set_role".into()));
@@ -538,7 +538,7 @@ impl Osis {
     /// it may have kept the link's text. The link then stops working for anyone who has not used
     /// it yet (make a new one), and its other joiners stay. A joiner's role cannot be changed, only
     /// removed (`Invalid`; `grant` gives it a role of its own). Nor can this call reach through
-    /// another actor (a realm, a link this node does not administer): `Invalid`, naming the actor to set
+    /// another holder (a realm, a link this node does not administer): `Invalid`, naming the holder to set
     /// the role on.
     ///
     /// A writer that changed the keys so only it can read locks the others out; removing it (or
@@ -550,7 +550,7 @@ impl Osis {
     /// leaving) is `LeavesNoAdmin` unless `SetRoleOpts::leave_adminless` says it is meant: nobody
     /// can change the grants of such a thing again, nor delete it; its holders keep their roles.
     ///
-    /// `Unsupported` on a client with its own actor, and on a thing this node reads at another node: move its sync unit
+    /// `Unsupported` on a client with a thing of its own, and on a thing this node reads at another node: move its sync unit
     /// back here first. A removal written to the copy here would never leave it.
     pub fn set_role(&self, target: Tid, holder: Tid, role: Option<Role>, o: SetRoleOpts) -> Result<()> {
         self.local_at(target, "set_role")?;
@@ -562,7 +562,7 @@ impl Osis {
     fn change_role(&self, target: Tid, holder: Tid, role: Option<Role>, o: SetRoleOpts) -> Result<()> {
         // each round removes one way in; the bound only guards against grants that never settle
         for _ in 0..16 {
-            let Some(way) = self.holders(target)?.into_iter().find(|h| h.actor == holder) else {
+            let Some(way) = self.holders(target)?.into_iter().find(|h| h.thing == holder) else {
                 let Some(r) = role else { return Ok(()) };
                 // a grant ended above `r`, still on record: its removal first
                 if self.engine(|e| below_held(e, &target, &holder, r)) {
@@ -613,27 +613,27 @@ impl Osis {
     }
 
     /// Ends `holder`'s ways in that exist for `target`: its own grant on it, and its join of any link
-    /// to it. `holder` is `author()`, or an organization or other actor this node is an admin of (as when an organization's
+    /// to it. `holder` is `author()`, or an organization or other thing this node is an admin of (as when an organization's
     /// admin drops a thing that was shared with it). The keys change when the target's next writer or
     /// admin writes, or at once when this node is an admin of `target` by another way. No way in at all
     /// writes nothing.
     ///
-    /// An organization or other actor the holder reaches `target` through stays: `Invalid` when that is all it
-    /// has, naming the actor, as leaving it is what ends the role. `Invalid` for another
-    /// actor when this node is an admin of `target`: taking that role away is `set_role`'s.
-    /// `Permission` when this node is no admin of `holder`; on a client with its own
-    /// actor, for any `holder` but that actor. `LeavesNoAdmin` when `holder` is the last admin
+    /// An organization or other thing the holder reaches `target` through stays: `Invalid` when that is all it
+    /// has, naming that thing, as leaving it is what ends the role. `Invalid` for another
+    /// holder when this node is an admin of `target`: taking that role away is `set_role`'s.
+    /// `Permission` when this node is no admin of `holder`; on a client with a thing of its
+    /// own, for any `holder` but that thing. `LeavesNoAdmin` when `holder` is the last admin
     /// of `target` (`SetRoleOpts::leave_adminless` means it).
     pub fn leave(&self, holder: Tid, target: Tid, o: SetRoleOpts) -> Result<()> {
         self.local_at(target, "leave")?;
         let own = holder == self.author();
-        // the flow below runs with the node's authority: a client ends only its own actor's role
+        // the flow below runs with the node's authority: a client ends only its own thing's role
         if self.acting.is_some() && !own {
             return Err(Error::Permission { tid: holder, needs: Role::Admin });
         }
         let holders = self.holders(target)?;
-        let links: BTreeSet<Tid> = holders.iter().filter(|h| h.kind == HolderKind::Link && h.through.is_empty()).map(|h| h.actor).collect();
-        let ways: Vec<&Holder> = holders.iter().filter(|h| h.actor == holder).collect();
+        let links: BTreeSet<Tid> = holders.iter().filter(|h| h.kind == HolderKind::Link && h.through.is_empty()).map(|h| h.thing).collect();
+        let ways: Vec<&Holder> = holders.iter().filter(|h| h.thing == holder).collect();
         let mut on: BTreeSet<Tid> = ways.iter().filter_map(|h| match h.through.as_slice() {
             [k] if links.contains(k) => Some(*k),
             _ => None,
@@ -673,14 +673,14 @@ impl Osis {
         Ok(())
     }
 
-    /// The actors this node retains a read-only copy of after being removed from them (for a client
-    /// with its own actor, those it reads). A copy reads as before, and nothing syncs or writes it.
+    /// The things this node retains a read-only copy of after being removed from them (for a client
+    /// with a thing of its own, those it reads). A copy reads as before, and nothing syncs or writes it.
     /// `drop_retained_copy` erases one.
     pub fn retained_copies(&self) -> Result<Vec<Tid>> {
         self.local("retained_copies")?;
         Ok(self.engine(|e| {
             let mut v = e.kept_copies();
-            // acting as an actor: the copies it reads
+            // acting as a thing: the copies it reads
             if let Some(a) = self.acting {
                 v.retain(|x| e.copy_readable_by(&a, x));
             }
@@ -688,15 +688,15 @@ impl Osis {
         }))
     }
 
-    /// Erases the retained copy of `actor`, and what only it retained: its disk space is this user's.
-    pub fn drop_retained_copy(&self, actor: Tid) -> Result<()> {
+    /// Erases the retained copy of `thing`, and what only it retained: its disk space is this user's.
+    pub fn drop_retained_copy(&self, thing: Tid) -> Result<()> {
         self.local("drop_retained_copy")?;
-        self.engine(|e| e.forget_lost(osis_engine::rotation::LostScope::Kept(&[actor])))?;
+        self.engine(|e| e.forget_lost(osis_engine::rotation::LostScope::Kept(&[thing])))?;
         Ok(())
     }
 
     /// Makes a share link to `target` with `role` (read or above: `Invalid` below). Anyone
-    /// holding the link can redeem it until `until` or `revoke_link`. The link's actor is minted
+    /// holding the link can redeem it until `until` or `revoke_link`. The link's thing is minted
     /// with admin `admin` (as `Write::create`'s), a thing this node is an admin of (`Permission`
     /// otherwise): every node holding `admin` holds the link, and any of its admins lists and
     /// ends it (`links`, `revoke_link`). A person's links take their account, so each of its
@@ -742,14 +742,14 @@ impl Osis {
         self.locked(|l| osis_blob::link_peers(l.secret.public_key(), &[], &l.node.config().dial))
     }
 
-    /// `t`'s public keys as held here, to show by hand (`Keys`). `UnknownActor` when none are
-    /// held: `t` has no keys of its own yet (`Write::create_with_keys` makes it with them; a `grant` to it or `set_card` of it gives it some).
+    /// `t`'s public keys as held here, to show by hand (`Keys`). `UnknownKeys` when none are
+    /// held: `t` has no keys yet (`Write::create_with_keys` makes it with them; a `grant` to it or `set_card` of it gives it some).
     /// `Unsupported` through a connection.
     pub fn keys(&self, t: Tid) -> Result<Keys> {
         self.local("keys")?;
         let certs = self.engine(|e| e.holder_keys(&t))?;
         if certs.commits.is_empty() {
-            return Err(Error::UnknownActor { tid: t });
+            return Err(Error::UnknownKeys { tid: t });
         }
         Ok(Keys { thing: t, certs })
     }
@@ -791,8 +791,8 @@ impl Osis {
     /// `of` roles and reach its inbox (`grant`): `of`'s keys go with it, and this node keeps
     /// them current. A card naming another inbox moves `of`'s inbox, on every card of it.
     /// Putting one needs write on `on` through `of` (`Write::act_as`) and `of`'s keys here, else
-    /// `Permission` or `UnknownActor`; removing one, write on `on`. `Unsupported` on a client with
-    /// its own actor.
+    /// `Permission` or `UnknownKeys`; removing one, write on `on`. `Unsupported` on a client with
+    /// a thing of its own.
     pub fn set_card(&self, on: Tid, of: Tid, inbox: Option<Tid>) -> Result<()> {
         self.local_at(on, "set_card")?;
         if !self.has_record(on) {
@@ -803,7 +803,7 @@ impl Osis {
         };
         let wrote = self.engine(|e| e.write_card(on, of, (inbox != of).then_some(inbox), None))?;
         if !wrote {
-            return Err(Error::UnknownActor { tid: of });
+            return Err(Error::UnknownKeys { tid: of });
         }
         Ok(())
     }
@@ -840,7 +840,7 @@ impl Osis {
 
     /// The links that still work made with an `admin` (`make_link`) this node holds, whichever
     /// node made them: an admin of that `admin` ends them (`revoke_link`). Filter by
-    /// `LinkInfo::target`. `Unsupported` on a client with its own actor, which is also why a node
+    /// `LinkInfo::target`. `Unsupported` on a client with a thing of its own, which is also why a node
     /// connected with a client secret adds none.
     pub fn links(&self) -> Result<Vec<LinkInfo>> {
         self.local("links")?;
@@ -864,12 +864,12 @@ impl Osis {
         Ok(self.engine(|e| e.held_links())?.to_vec())
     }
 
-    /// Link actor `k`'s key L while its link works (`held_links`: its seed goes with its end).
+    /// The key L of link's thing `k` while its link works (`held_links`: its seed goes with its end).
     fn link_key(&self, k: Tid) -> Result<Option<Tid>> {
         Ok(self.held_links()?.iter().find(|h| h.k == k).map(|h| h.l))
     }
 
-    /// Whether `k` is a link actor to `target` this node may end, working or ended: its record
+    /// Whether `k` is the thing of a link to `target` this node may end, working or ended: its record
     /// names the target, and this node is an admin of it (by its mint admin, spec/permissions.md
     /// §7). Invariant (security): only an admin of K removes L or a joiner from it
     /// (`finalize_link`, `revoke_joiner`; any other node's removal is judged invalid wherever it
@@ -881,7 +881,7 @@ impl Osis {
     /// Ends a link: nobody can use it from now on. Those who joined by it keep their role; to remove
     /// one, `set_role`. Writes at once: a join this node has not received yet is undone (one another
     /// writer received stands, as `set_role` says). `Permission` unless this node is an admin of
-    /// the link's `admin` (`make_link`); `Unsupported` on a client with its own actor.
+    /// the link's `admin` (`make_link`); `Unsupported` on a client with a thing of its own.
     pub fn revoke_link(&self, id: LinkId) -> Result<()> {
         self.local("revoke_link")?;
         match self.link_key(id.0)? {
@@ -895,7 +895,7 @@ impl Osis {
         }
     }
 
-    /// Removes `joiner` from link actor `k` and ends the link in the same commit, under one rotation
+    /// Removes `joiner` from the link's thing `k` and ends the link in the same commit, under one rotation
     /// (spec/permissions.md §7: a joiner may keep the seed); the other joiners stay holders of K and
     /// need a new link to add anyone.
     fn remove_joiner(&self, k: Tid, joiner: Tid, o: SetRoleOpts) -> Result<()> {

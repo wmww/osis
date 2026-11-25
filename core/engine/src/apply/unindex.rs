@@ -202,7 +202,7 @@ mod tests {
     fn forget_equals_never_indexed() {
         let mut lp = LocalPeer::fresh(1, WallMs(1_700_000_000_000));
         let e = &mut lp.peers[0].engine;
-        let me = e.me();
+        let me = e.tid();
         let mut m = Mutation::new();
         let g = e.new_thing(&mut m, me);
         m.set(g, &ak("t:reg.0"), &Value::Str("g".into())).unwrap();
@@ -234,7 +234,7 @@ mod tests {
     #[test]
     fn forgotten_void_commit_leaves_no_void_row_spec_commits_4() {
         let mut lp = LocalPeer::fresh(1, WallMs(1_700_000_000_000));
-        let me = lp.peers[0].engine.me();
+        let me = lp.peers[0].engine.tid();
         let mut m = Mutation::new();
         let g = lp.peers[0].engine.new_thing(&mut m, me);
         m.set(g, &ak("t:reg.0"), &Value::Str("g".into())).unwrap();
@@ -270,7 +270,7 @@ mod tests {
     fn short_expiry_behind_hlc_is_raised_spec_commits_6() {
         let mut lp = LocalPeer::fresh(1, WallMs(1_700_000_000_000));
         let e = &mut lp.peers[0].engine;
-        let me = e.me();
+        let me = e.tid();
         let mut m = Mutation::new();
         let g = e.new_thing(&mut m, me);
         m.set(g, &ak("t:reg.0"), &Value::Str("g".into())).unwrap();
@@ -298,7 +298,7 @@ mod tests {
     fn memory_purge_on_replace_drops_the_replaced_part_spec_commits_5() {
         let mut lp = LocalPeer::fresh(1, WallMs(1_700_000_000_000));
         let e = &mut lp.peers[0].engine;
-        let me = e.me();
+        let me = e.tid();
         let mut m = Mutation::new();
         let g = e.new_thing(&mut m, me);
         m.set(g, &ak("t:reg.0"), &Value::Str("g".into())).unwrap();
@@ -334,7 +334,7 @@ mod tests {
     fn memory_state_row_follows_key() {
         let mut lp = LocalPeer::fresh(1, WallMs(1_700_000_000_000));
         let e = &mut lp.peers[0].engine;
-        let me = e.me();
+        let me = e.tid();
         let mut m = Mutation::new();
         let g = e.new_thing(&mut m, me);
         m.set(g, &ak("t:reg.0"), &Value::Str("g".into())).unwrap();

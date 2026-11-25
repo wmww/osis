@@ -24,9 +24,17 @@ The concepts and their properties are spec/requirements.md (Concepts). This note
 - No **team**: it is not a term and names no kind of thing. For an example say "an organization" or "a shared space"; for the concept, a holder, or a realm.
 - Sync words (sync unit, sync ID, closure, held for keys, key part, release, store, peer, source): spec/requirements.md Concepts and spec/sync-set.md.
 
+## API words
+The `osis` API's names for the concepts above (notes/api-design.md: one word per concept):
+- A thing holding a role is a **holder**; the API names it as a thing: `Holder::thing`, `HolderKind::Thing` (any thing but a link's thing, a key or the public), `LinkId::thing`.
+- A link's **thing** K: the thing a link's joiners hold through (spec/permissions.md §7), never an actor.
+- **Keys** (`Osis::keys`, `Keys`): a thing's public keys, which a grant to it needs. A thing gets them at its first grant or card, or at its minting by `Write::create_with_keys`; a thing that has none known here is `Error::UnknownKeys`. Never "keys of its own": that is independence, an internal word.
+- A **client's thing** (`Client::thing`): the thing `add_client` mints, which the node acts as for the client in a **client session**; a **main session** (the node's unix socket) acts as **the node itself**. Neither is an actor.
+- `act_as`, "the thing a handle acts as": "actor" in its commit sense (Words, Actor) fits the acting thing; the API says "thing" for it in docs.
+
 ## Built, and being moved to
 Some concepts in the repo are what is built today and are being redesigned (issues/actors-one-mechanism.md, designed in notes/account-membership-design.md and notes/write-path-design.md; first on notes/priorities.md). Until that lands: the spec states the design moved to (spec/permissions.md §8); the code is the built one.
-- **Built**: a node signs as its node thing, an ordinary thing minted with its key (accounts and pairing are not built: notes/accounts-switch-brief.md); a commit header names its `signer` (the thing signed as) and states, per thing it writes, a path from the signer through each thing whose role it uses, and is judged along that path alone; its evidence is certificate copies per (commit, thing) under the sync IDs that need them (notes/evidence-derivation.md).
+- **Built**: a node signs as its node thing, an ordinary thing minted with its key (accounts and pairing: osis-account, notes/accounts-switch-brief.md); a commit header names its `signer` (the thing signed as) and states, per thing it writes, a path from the signer through each thing whose role it uses, and is judged along that path alone; its evidence is certificate copies per (commit, thing) under the sync IDs that need them (notes/evidence-derivation.md).
 - **Moving to**: an account is an ordinary independent thing whose members are things holding roles on it (a node's **node thing**, minted with the node's key, among them; the node's strongs sit on its local **node root**, a dependent of the node thing: spec/sync-set.md §1); a node's **own things** are those its keys hold grants on; a commit is signed as a thing by a key holding a grant on it, that grant the first hop of the path it states; a thing is public by a grant to the public, a holder that is no thing; a thing is opened to messages and grants from strangers by its admins.
 - **Never call an old concept by a new name** (Tess): where the built thing is still the old concept, keep its word, and make only the edits that are right looking forward. A section may be marked for deletion or rewriting once a named change lands; that is allowed, not required.
 

@@ -38,7 +38,7 @@ fn shown(db: &Osis, c: Tid, id: CommitId) -> (String, bool) {
 // setting), spec/permissions.md §3: a chat is one commit holding its record, its settings, its
 // `retention^.0` (messages kept for good, the disappearing expiry, replacements refused when
 // editing is off, the retain default) and its holder's strong; dependent, minted with its holder, until its
-// first grant gives it keys of its own; this account its admin.
+// first grant gives it its keys; this account its admin.
 #[test]
 fn create_is_one_whole_commit_spec_commits_2() {
     let db = node(1, &clock());
@@ -62,7 +62,7 @@ fn create_is_one_whole_commit_spec_commits_2() {
     let other = node(2, &clock());
     deliver(&other, &db);
     db.grant(c, other.author(), Role::Read, Default::default()).unwrap();
-    assert!(keys(&db, c), "its first grant gives it keys of its own");
+    assert!(keys(&db, c), "its first grant gives it its keys");
 }
 
 // notes/chat.md Edit, spec/permissions.md §5.2: an edit keeps the message's id and reads its

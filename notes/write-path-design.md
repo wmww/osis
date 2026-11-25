@@ -235,7 +235,7 @@ A grant naming holder A reaches A's nodes, its granter holding nothing on A, by 
 ## 5. Core without accounts
 **Rule: core has things, signing keys, roles and paths; an account is an arrangement of them a library makes.**
 
-### No account root
+### Home is the account
 With the account an ordinary independent thing A, it has a roster (its members), a unit, data and dependents, and rotates as any thing. So home is A, and the account's private things are A's dependents (argued).
 - **To write down**: a role on A reaches everything A holds a role on anywhere (spec/requirements.md Permissions). Granting anyone a role on home grants all of the account's access, so a space to share is another realm.
 - **A thing minted with A is a dependent of A like any** (issues/behaviour-depends-on-own-keys.md).

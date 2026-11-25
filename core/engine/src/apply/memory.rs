@@ -178,7 +178,7 @@ impl Engine {
     /// Held memory commits: id, how many of its parts are held, whether this node authored it
     /// (tests, diagnostics).
     pub fn memory_commits(&self) -> Vec<(CommitId, usize, bool)> {
-        let me = self.core.me();
+        let me = self.core.tid();
         self.core.ix.commits.iter().filter(|(_, m)| m.view.memory).map(|(id, m)| (*id, (0..m.view.aspects.len()).filter(|ai| m.holds(*ai)).count(), m.view.signer == me)).collect()
     }
 
