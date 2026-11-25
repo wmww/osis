@@ -770,7 +770,7 @@ fn whole_snapshots(core: &Core) -> bool {
 /// write: one of its pieces, spec/wire.md §4 Pieces).
 enum Piece {
     Delta(Fragment),
-    Snapshot(SnapshotPart),
+    Snapshot(Box<SnapshotPart>),
 }
 
 pub(crate) struct SnapshotPart {
@@ -1008,8 +1008,8 @@ fn build(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Resolved>) -> Result<osi
         let pieces: Vec<Piece> = match d.snapshot.take() {
             None if pieced && plan.kind == Kind::Role => crate::apply::keys::secrets_pieces(&d.fragment).into_iter().map(Piece::Delta).collect(),
             None => vec![Piece::Delta(std::mem::take(&mut d.fragment))],
-            Some(s) if pieced && plan.kind == Kind::RoleSnapshot && !whole_snapshots(tx.core) => crate::retention::snapshot::secrets_pieces(tx, &d.tid, &d.ak, s, &cx)?.into_iter().map(Piece::Snapshot).collect(),
-            Some(s) => vec![Piece::Snapshot(s)],
+            Some(s) if pieced && plan.kind == Kind::RoleSnapshot && !whole_snapshots(tx.core) => crate::retention::snapshot::secrets_pieces(tx, &d.tid, &d.ak, s, &cx)?.into_iter().map(|s| Piece::Snapshot(Box::new(s))).collect(),
+            Some(s) => vec![Piece::Snapshot(Box::new(s))],
         };
         let mut deltas = Vec::with_capacity(pieces.len());
         for piece in pieces {

@@ -160,7 +160,7 @@ pub(crate) fn carriers(core: &Core, c: &CommitId, v: &crate::engine::View) -> Ve
     let mut out = Vec::new();
     for a in &v.aspects {
         let meets = |w: &Spans| if v.form.counted() { a.lo < a.hi && w.meets(&src, a.lo, a.hi) } else { by_id(v.kind, v.form) && w.0.contains_key(&src) };
-        for x in core.ix.snapshots.get(&(a.tid, a.ak.clone())).into_iter().flatten().filter(|x| x.1 != *c && x.4.any(&meets)) {
+        for x in core.ix.snapshots.get(&(a.tid, a.ak.clone())).into_iter().flatten().filter(|x| x.1 != *c && x.4.any(meets)) {
             out.extend(core.ix.commits.get(&x.1).and_then(|m| m.view.aspect(&a.tid, a.ak.as_str())).map(|sai| osis_perm::WriteId(x.1, sai as u32)));
         }
     }
