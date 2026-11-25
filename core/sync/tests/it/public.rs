@@ -92,6 +92,25 @@ fn removing_the_public_ends_what_a_reader_of_the_referrer_reads_spec_sync_set_2(
     assert_ne!(reads(&mut w, 2, &p), Some(Value::Str("p2".into())), "nothing written since the removal");
 }
 
+// spec/sync-set.md §4 (Redeeming a public link), spec/permissions.md §1 (The public: every
+// party's role), spec/sync-opens.md §4 (Departed), §5 (a public entry's grant): node 1 grants node
+// 0's account write on X, which node 0 never holds, then makes X public and removes that grant;
+// node 0 then redeems a public link to X and should read it. It stays pending until its follow
+// time (issues/departed-redeem-stalls.md).
+#[test]
+#[ignore = "issues/departed-redeem-stalls.md"]
+fn a_removed_grantee_redeems_a_public_link_spec_sync_set_4() {
+    use crate::harness::Step::*;
+    use crate::harness::history::Holder;
+    let mut w = crate::harness::contacts();
+    let _ = crate::harness::play(&mut w, &[New(1), Give(1, 0, Holder::Node(0), Gives::Writes), Run, Give(1, 0, Holder::Public, Gives::Reads), Revoke(1, 0, Holder::Node(0)), Run], String::new());
+    let t = w.history.things[0].0;
+    let link = w.public_link(1, t).expect("X is public");
+    assert_eq!(w.redeem_any(0, &link), osis_sync::types::Waiting::Pending);
+    w.run();
+    assert!(reads(&mut w, 0, &t).is_some(), "node 0 reads X by the public link");
+}
+
 // spec/sync-inbox.md §6 (First contact; a redeem goes on until joined or given up): node 1
 // redeems a public link to P while node 0 is unreachable and restarts: the redeem goes on from its
 // kept row (as a share link's), and once node 0 is back node 1 reads P.

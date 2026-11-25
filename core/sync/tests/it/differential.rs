@@ -258,19 +258,6 @@ fn repro_a_sync_holder_reads_a_thing_made_public() {
     holds_on(0, accounts, n, &script, String::new(), false);
 }
 
-// spec/sync-set.md §4 (Redeeming a public link), spec/permissions.md §1 (The public): node 1 makes a thing public and removes node 0's account, a writer of it,
-// in one run; node 0 then redeems a public link to it and should read it as the reference does.
-// Its lost-access rule drops the secret the public entry's box gave before it holds the public's
-// grant, and the redeem stays pending (issues/departed-redeem-stalls.md).
-#[test]
-#[ignore = "issues/departed-redeem-stalls.md"]
-fn repro_a_departed_node_redeems_a_public_link() {
-    use crate::harness::history::{Gives, Holder};
-    let (n, accounts, ..) = size();
-    let script = [Step::New(1), Step::Give(1, 0, Holder::Node(0), Gives::Writes), Step::Strong(0, None, 0), Step::Run, Step::Give(1, 0, Holder::Public, Gives::Reads), Step::Revoke(1, 0, Holder::Node(0)), Step::Run, Step::Redeem(0, 0), Step::Run];
-    holds_on(0, accounts, n, &script, String::new(), false);
-}
-
 // spec/permissions.md §8 (Removing: erasing), spec/sync-inbox.md §5 (a removal from outside goes
 // as a grant does): node 0 removes node 2 from their account; node 2 should learn it and hold
 // nothing of the history: node 0 serves it its departure (spec/sync-opens.md §6).
@@ -279,4 +266,3 @@ fn a_removed_node_learns_its_removal_spec_sync_opens_6() {
     let (n, accounts, ..) = size();
     holds_on(0, accounts, n, &[Step::New(0), Step::Run, Step::Unpair(0, 2), Step::Run], String::new(), false);
 }
-
