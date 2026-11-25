@@ -2111,6 +2111,37 @@ fn an_ephemeral_push_lists_only_what_moved_spec_sync_streams_4() {
     assert_eq!(listed(5), listed(50));
 }
 
+// spec/sync-streams.md §4 (Reports: no Applied while a listing from the start is under way),
+// spec/sync-status.md §1 (caught up): T, joined from the start, leaves the shared set before the
+// reply listing it is applied; its listing ends with it, so b reports a's later push of S applied
+// and a holds b caught up on S. Control: T kept, its listing read to its end.
+#[test]
+fn a_member_gone_mid_listing_holds_back_no_applied_spec_sync_streams_4() {
+    for gone in [true, false] {
+        let mut p = Pair::new();
+        let (s, t) = (sid(1), sid(2));
+        p.shared_read(s);
+        p.a.log(s, 100);
+        p.run();
+        p.a.hold(t, Holding::Read);
+        p.b.hold(t, Holding::Read);
+        p.a.log(t, 200);
+        p.join(t);
+        // a's reply listing T held back
+        p.run_with(|ab, m| ab && matches!(m, Msg::PullReply(r) if r.events.iter().any(|(x, _)| *x == t)));
+        assert!(!p.held.is_empty(), "the listing's reply held back");
+        if gone {
+            p.a.leave(p.now, t);
+            p.b.leave(p.now, t);
+        }
+        p.release();
+        p.run();
+        p.a.log(s, 101);
+        p.run();
+        assert!(p.a.streams.caught_up(C, &s), "b reported a's push of S applied (T gone: {gone})");
+    }
+}
+
 // spec/sync-status.md §1 (caught up): a source is caught up once this side applied its stream to
 // the end and it reported every message served to it applied: an Applied lost on the way denies
 // it until a later one covers it.

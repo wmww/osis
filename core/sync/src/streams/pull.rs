@@ -593,6 +593,8 @@ impl Streams {
     pub(super) fn left(&mut self, ctx: &mut Ctx, conn: ConnId, s: SyncId, how: Leaving) {
         let Some(p) = self.pull.get_mut(&conn) else { return };
         p.joins.remove(&s);
+        // its listing from the start ends with it: an Applied waits on no member gone
+        p.join_listing.remove(&s);
         p.rejoin_at.remove(&s);
         // `full` both ways is a fact of S on this connection: told again at a rejoin
         p.told_full.remove(&s);
