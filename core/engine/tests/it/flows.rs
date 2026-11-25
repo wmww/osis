@@ -182,7 +182,7 @@ pub(crate) fn forensic_peer(seed: u64, faults: &osis_store::Faults) -> osis_engi
     let c: std::sync::Arc<dyn osis_base::Clock> = clock.clone();
     let mut engine = osis_engine::Engine::create(Box::new(backend.clone()), Box::new(root.clone()), osis_engine::local_peer::blob_area(&blob_disk, seed).unwrap(), forensic_cfg(), c, Box::new(osis_crypto::SeededRng::from_u64(seed))).unwrap();
     let events = engine.subscribe();
-    osis_engine::local_peer::Peer { engine, clock, backend, root, blob_disk, events, restarts: 0, discarded: Vec::new(), discards: 0, redelivered: 0, pulled_anew: Default::default(), given: Default::default() }
+    osis_engine::local_peer::Peer { engine, clock, backend, root, blob_disk, events, restarts: 0, discarded: Vec::new(), discards: 0, redelivered: 0, pulled_anew: Default::default(), given: Default::default(), offers: Default::default() }
 }
 
 fn forensic_cfg() -> osis_engine::Config {

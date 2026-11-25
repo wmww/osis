@@ -75,6 +75,20 @@ pub struct Peer {
     /// The commits of every package `receive` was given: what its sources would list again on a
     /// pull from the start (a test's to deliver).
     pub given: BTreeSet<CommitId>,
+    /// The sealed fires offered here (`offer_fires`).
+    pub offers: FireOffers,
+}
+
+/// Per sealed fire offered (`Peer::offer_fires`), by the commit it carries: whether it is held,
+/// with what its last judgement read, as node-sync's inbox keys a deposit (osis-sync
+/// `inbox::held`). An engine of its own (a restart, a fork) starts with none.
+#[derive(Clone)]
+pub struct FireOffers(osis_base::memo::Effects<CommitId, bool>);
+
+impl Default for FireOffers {
+    fn default() -> Self {
+        FireOffers(osis_base::memo::Effects::new("peer: fires offered"))
+    }
 }
 
 /// A package this peer's engine threw out, as peers keep it: fetched again as node-sync does
@@ -280,7 +294,7 @@ impl Peer {
         let mut engine = Engine::create(Box::new(backend.clone()), Box::new(root.clone()), blob_area(&blob_disk, seed)?, Config::default(), c, Box::new(SeededRng::from_u64(seed)))?;
         engine.take_wakes();
         let events = engine.subscribe();
-        Ok(Peer { engine, clock, backend, root, blob_disk, events, restarts: 0, discarded: Vec::new(), discards: 0, redelivered: 0, pulled_anew: BTreeSet::new(), given: BTreeSet::new() })
+        Ok(Peer { engine, clock, backend, root, blob_disk, events, restarts: 0, discarded: Vec::new(), discards: 0, redelivered: 0, pulled_anew: BTreeSet::new(), given: BTreeSet::new(), offers: FireOffers::default() })
     }
 
     /// Drops the engine and opens it again over the same durable state.
@@ -297,6 +311,7 @@ impl Peer {
         self.events = engine.subscribe();
         engine.take_wakes();
         self.engine = engine;
+        self.offers = FireOffers::default();
         self.fetch_discarded()
     }
 
@@ -311,7 +326,7 @@ impl Peer {
         let mut engine = Engine::open(Box::new(backend.clone()), Box::new(root.clone()), blob_area(&blob_disk, seed)?, Config::default(), c, Box::new(SeededRng::from_u64(seed)))?;
         let events = engine.subscribe();
         engine.take_wakes();
-        let mut p = Peer { engine, clock, backend, root, blob_disk, events, restarts: self.restarts + 1, discarded: self.discarded.clone(), discards: self.discards, redelivered: self.redelivered, pulled_anew: self.pulled_anew.clone(), given: self.given.clone() };
+        let mut p = Peer { engine, clock, backend, root, blob_disk, events, restarts: self.restarts + 1, discarded: self.discarded.clone(), discards: self.discards, redelivered: self.redelivered, pulled_anew: self.pulled_anew.clone(), given: self.given.clone(), offers: FireOffers::default() };
         p.fetch_discarded()?;
         Ok(p)
     }
@@ -330,8 +345,33 @@ impl Peer {
             let events = engine.test_subscribe_with(pending);
             let (backend, root) = (self.backend.test_copy(), self.root.test_copy());
             let blob_disk = (self.blob_disk.0.test_copy(), self.blob_disk.1.test_copy());
-            Ok(Peer { engine, clock, backend, root, blob_disk, events, restarts: self.restarts, discarded: self.discarded.clone(), discards: self.discards, redelivered: self.redelivered, pulled_anew: self.pulled_anew.clone(), given: self.given.clone() })
+            Ok(Peer { engine, clock, backend, root, blob_disk, events, restarts: self.restarts, discarded: self.discarded.clone(), discards: self.discards, redelivered: self.redelivered, pulled_anew: self.pulled_anew.clone(), given: self.given.clone(), offers: self.offers.clone() })
         })
+    }
+
+    /// Offers each of `fires` (`Engine::offer_fire`), with the commit it carries, as node-sync's
+    /// inbox judges a deposit (osis-sync `inbox::held`): a fire not held is offered when first
+    /// given and again only once something its last offer read moved (a refused offer stands
+    /// until what refused it changes). The offers made, with what each opened to.
+    pub fn offer_fires<'a>(&mut self, fires: impl IntoIterator<Item = (&'a CommitId, &'a crate::sync::SealedFireOut)>) -> Result<Vec<(&'a crate::sync::SealedFireOut, crate::sync::Opened)>> {
+        let given: BTreeMap<CommitId, &crate::sync::SealedFireOut> = fires.into_iter().map(|(c, f)| (*c, f)).collect();
+        for c in given.keys() {
+            self.offers.0.want(*c);
+        }
+        let mut out = Vec::new();
+        // a key due that this call does not give stays due for the call that does
+        for c in self.offers.0.due() {
+            let Some(f) = given.get(&c) else { continue };
+            let (engine, mut opened) = (&mut self.engine, None);
+            self.offers.0.try_settle(&c, || -> Result<bool> {
+                if engine.header(&c).is_none() {
+                    opened = Some(engine.offer_fire(f)?);
+                }
+                Ok(engine.header(&c).is_some())
+            })?;
+            out.extend(opened.map(|o| (*f, o)));
+        }
+        Ok(out)
     }
 
     /// What node-sync does at a start: every awaiting entry is fetched again.

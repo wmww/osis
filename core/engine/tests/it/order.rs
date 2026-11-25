@@ -720,16 +720,13 @@ pub(crate) fn judge_at(now: WallMs) -> Peer {
     under_test(fresh_base().fork(FRESH).unwrap(), now)
 }
 
-/// `p` is offered each of `fires` (`Played::fires`) it does not hold, and takes those it opens
-/// (one stamped ahead of its clock waits there as any commit does). A grant fire on a thing
-/// whose setting enables no `grant@~0` (a node thing's) is refused as invalid
+/// `p` is offered each of `fires` (`Played::fires`) it does not hold, again only once what its
+/// last offer read moved, as node-sync offers a deposit (`Peer::offer_fires`), and takes those it
+/// opens (one stamped ahead of its clock waits there as any commit does). A grant fire on a
+/// thing whose setting enables no `grant@~0` (a node thing's) is refused as invalid
 /// (spec/sync-inbox.md §1).
 pub(crate) fn take_fires(p: &mut Peer, fires: &[(CommitId, WallMs, osis_engine::sync::SealedFireOut)]) {
-    for (c, _, f) in fires {
-        if p.engine.header(c).is_some() {
-            continue;
-        }
-        let opened = p.engine.offer_fire(f).unwrap();
+    for (f, opened) in p.offer_fires(fires.iter().map(|(c, _, f)| (c, f))).unwrap() {
         let enabled = p.engine.enables(&f.thing, osis_schema::core_types::INBOX_SIGNALS[0]);
         assert!(!enabled || !matches!(opened, osis_engine::sync::Opened::Bad), "a fire refused");
     }

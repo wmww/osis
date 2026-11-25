@@ -212,7 +212,7 @@ fn boot(seed: u64, t: WallMs) -> osis_engine::Result<(Peer, Faults)> {
     let mut engine = Engine::create(Box::new(backend.clone()), Box::new(root.clone()), osis_engine::local_peer::blob_area(&blob_disk, seed)?, osis_engine::Config::default(), c, Box::new(SeededRng::from_u64(seed)))?;
     engine.take_wakes();
     let events = engine.subscribe();
-    Ok((Peer { engine, clock, backend, root, blob_disk, events, restarts: 0, discarded: Vec::new(), discards: 0, redelivered: 0, pulled_anew: Default::default(), given: Default::default() }, faults))
+    Ok((Peer { engine, clock, backend, root, blob_disk, events, restarts: 0, discarded: Vec::new(), discards: 0, redelivered: 0, pulled_anew: Default::default(), given: Default::default(), offers: Default::default() }, faults))
 }
 
 impl Sim {
