@@ -567,10 +567,15 @@ impl Engine {
         self.core.ix.fires.values().any(|o| !matches!(o.what, Fire::Expiring(_, t) if now >= t))
     }
 
-    /// Owed fire `id`'s commit once built (`sealed_fire`): its ID and the wall time it is
-    /// stamped, which a receiver's clock must have reached but for `MAX_DRIFT`.
+    /// Owed fire `id`'s commit once built (`sealed_fire`), or a sealed copy's copied commit: its
+    /// ID and the wall time it is stamped, which a receiver's clock must have reached but for
+    /// `MAX_DRIFT`.
     pub fn fire_commit(&self, id: &FireId) -> Option<(CommitId, osis_base::WallMs)> {
-        let b = osis_commit::CommitBlob::decode(self.core.ix.fires.get(id)?.commit.as_ref()?).ok()?;
+        let o = self.core.ix.fires.get(id)?;
+        if let Fire::Copy { commit, .. } = &o.what {
+            return self.header(commit).map(|h| (*commit, h.ts.wall_ms()));
+        }
+        let b = osis_commit::CommitBlob::decode(o.commit.as_ref()?).ok()?;
         Some((b.id(), b.header.ts.wall_ms()))
     }
 

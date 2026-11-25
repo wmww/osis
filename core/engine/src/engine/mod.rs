@@ -2818,13 +2818,14 @@ fn end_flows<T>(tx: &mut Tx<'_>, mut r: Result<T>) -> Result<T> {
         // what waits to see a thing enter the node closure joins as it enters
         // (spec/commits.md §4 Outside the node closure), the closure settled again
         let mut guard = osis_base::loop_guard::LoopGuard::new("Engine::run (what waits for things entering the node closure)");
+        // each round wakes what things newly entered hold back, a thing entering as a commit
+        // pending at the start applies: rounds by those, not by what is left pending
+        let pending = tx.core.ix.pending.len() as u64;
         while r.is_ok() {
             match crate::apply::wake_entered(tx) {
                 Ok(0) => break,
                 Ok(n) => {
-                    // each round wakes what things newly entered hold back
-                    let pending = tx.core.ix.pending.len() as u64;
-                    guard.round(n, || (pending + 2, format!("{pending} pending")));
+                    guard.round(n, || (pending + 2, format!("{pending} pending at the start")));
                     r = then(r, || crate::sync::units::settle(tx));
                 }
                 Err(e) => r = Err(e),

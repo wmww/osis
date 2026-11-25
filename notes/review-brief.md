@@ -168,7 +168,6 @@ On dd5c0a3e4 (`tools/merge-branch gate spar-review-prep --all`, ostrich, offset 
 - **Default tests**: all pass (37 binaries, 4,580 G instructions, every binary within tools/test_cost.txt). Ignored on purpose: 14 `sync rewrite:` ignores (notes/sync-rewrite-state.md, Ignored tests) and 10 tied to issues (`rg '#\[ignore = "issues/'`).
 - **Sim**: 5 scenarios at 15 seeds, none failing.
 - **Properties** (107 selected), failing only as listed in tools/known_failures.txt:
-  - osis-engine `order::held_set_decides_plain`/`_exhaustive`: PartsAway at 532945376429 (the harness unwraps `fire_commit` for an owed sealed copy) and Settled at 532945376430 (a `t:text.0` read none after settling): issues/held-set-decides-on-main.md.
   - osis-engine `retention::tests_carried::purge_by_id_reads_alike_forgotten_or_not_plain_spec_commits_5`: its coverage floor at this offset (1 purge through a name over 8 seeds), and both earlier `rate:` replays still fail as listed: issues/purge-by-id-forgetting.md.
 - **Full-size sync differential** (200 seeds, `OSIS_FULL=1`, four holds of 50): 60 fail, none hang. By first panic: must-hold bodies with no entry at quiet 18; unlike the reference with the public in its roster 17 (issues/public-pieces-unheld.md); a caught-up reader lacking must-hold bodies 6; settle loop past its bound 5; older reads classes 9; sync set unlike the model 4; entries waiting for a read secret 1. Seeds per class: issues/differential-full-size-classes.md. Not gate tests: no known lines.
 

@@ -100,17 +100,17 @@ fn settle(mut h: Held, full: Option<&Held>, seed: u64, seen: &mut Seen) -> Held 
         if let Some(full) = full {
             // a body dropped as invalid is missing from then on, so fetched again once it turns
             // valid (spec/permissions.md §6), and one thrown out as unknown once it is known
-            // (notes/expiry-creation-design.md §3): a part `full` holds of any held commit, valid
-            // where its commit applied, unless held it would go again (expired, purged past its
-            // bound, covered, still unknown)
+            // (notes/expiry-creation-design.md §3): a part `full` holds of any held commit, unless
+            // held it would go again (invalid, expired, purged past its bound, covered, still
+            // unknown), judged with its body put back (a role part's validity is its edge's, and a
+            // role delta is kept at any validity)
             let mut again = again;
             for c in &h.commits {
                 // the covers `settle` wrote are not in `full`, and never missing
                 let Some(fc) = full.commits.iter().find(|x| x.id == c.id) else { continue };
                 for (i, p) in c.parts.iter().enumerate() {
                     let src = &fc.parts[i];
-                    let valid = !o.applied.contains(&c.id) || o.valid.get(&(c.id, i)) == Some(&true);
-                    if p.body == Body::Missing && matches!(src.body, Body::Held(_) | Body::Parked) && valid {
+                    if p.body == Body::Missing && matches!(src.body, Body::Held(_) | Body::Parked) {
                         let mut t = h.clone();
                         t.commits.iter_mut().find(|x| x.id == c.id).unwrap().parts[i].body = src.body.clone();
                         if !matches!(evaluate(&t).fates.get(&(c.id, i)), Some(Fate::MustDrop(_) | Fate::NeverReceived)) {

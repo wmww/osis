@@ -585,7 +585,8 @@ pub(crate) struct Played {
     settle_from: Option<usize>,
     /// The aspects some writer compacted (or could, nothing having changed) after the last commit
     /// of another step, keyed as `shown` keys them: in a `settled` history, those settled. An
-    /// aspect no writer is left to compact, or the tail does not compact, is not.
+    /// aspect no writer is left to compact, or the tail does not compact, is not, nor any on a
+    /// thing held only through `holds.0`s not settled.
     settled_last: BTreeSet<(String, String)>,
     /// Commits `withhold` gives in part for good.
     withheld: u64,
@@ -1582,7 +1583,7 @@ fn play_in(seed: u64, steps: &[Step], addenda: bool, written: bool) -> Played {
         }
     }
     tally.commits = (packs.len() - base) as u64;
-    let settled_last = compacted_last.into_iter().filter(|x| x.1).map(|x| x.0).collect();
+    let mut settled_last: BTreeSet<(String, String)> = compacted_last.into_iter().filter(|x| x.1).map(|x| x.0).collect();
     // the fresh nodes' clock: the latest of the writers' (nothing parks for drift)
     let now = lp.peers.iter().map(|p| p.engine.now()).max().unwrap();
     for pk in &mut packs {
@@ -1632,7 +1633,19 @@ fn play_in(seed: u64, steps: &[Step], addenda: bool, written: bool) -> Played {
     }).collect();
     // G and the things outside it the nodes under test hold, and the things minted with them as admin
     let roots: BTreeSet<Tid> = [g].into_iter().chain(tops.iter().copied()).collect();
-    let minted = mint_admin.iter().filter_map(|(t, p)| made_by.get(t).map(|(_, id)| (*t, *p, *id))).chain(strong_in).collect();
+    let minted: Vec<(Tid, Tid, CommitId)> = mint_admin.iter().filter_map(|(t, p)| made_by.get(t).map(|(_, id)| (*t, *p, *id))).chain(strong_in).collect();
+    // a thing held only through strongs in `holds.0`s not settled is not: a node that dropped
+    // such a strong while invalid holds the thing again only once it fetches it
+    let mut apart: BTreeSet<Tid> = BTreeSet::new();
+    loop {
+        let unsettled = |p: &Tid| apart.contains(p) || !settled_last.contains(&(format!("{p:?}"), "holds.0".to_string()));
+        let more: Vec<Tid> = minted.iter().map(|x| x.0).filter(|t| !apart.contains(t) && minted.iter().filter(|x| x.0 == *t).all(|x| unsettled(&x.1))).collect();
+        if more.is_empty() {
+            break;
+        }
+        apart.extend(more);
+    }
+    settled_last.retain(|k| !apart.iter().any(|t| format!("{t:?}") == k.0));
     let walk = std::sync::Arc::new(crate::held::Walk { roots, minted });
     let expires = packs.iter().map(|pk| osis_commit::CommitBlob::decode(&pk.bytes).ok().and_then(|b| b.header.expires)).collect();
     Played { walk, access, fires, packs, expires, authors, base, things, now, tally, restored: Default::default(), judged: Default::default(), moved: Default::default(), dropped: Default::default(), steps_at, own_sets, settle_from: None, settled_last, withheld: 0, model: None, ingests: Default::default(), copies: Default::default(), reader: std::sync::Arc::new(std::sync::Mutex::new(reader)), setup }
@@ -3977,6 +3990,43 @@ fn settled_writers_fetch_what_their_first_side_dropped_before_compacting() {
     order_checks(&played, &order).unwrap();
 }
 
+// spec/commits.md §4 Outside the node closure: 0 mints things whose mint admins are things of
+// the history, a chain of holders. A node given them in a settled history's order takes in the chain a thing per
+// round of the wake for things entering its node closure, each round applying commits pending
+// when the wake began: the rounds stay within that bound (`Engine::run`'s loop guard).
+#[test]
+fn wake_for_a_chain_entering_the_node_closure_stays_in_bound_spec_commits_4() {
+    use Step::*;
+    let aim = |x: Step| Aim(Box::new(x));
+    let h = settled(vec![aim(New { by: 0, admin: 5, write: false }), aim(RecordOnly { by: 0, admin: Some(0) }), aim(New { by: 0, admin: 2, write: false }), aim(New { by: 0, admin: 7, write: true })]);
+    check(0, &h, Cfg { settled: true, ..NAMED }).unwrap();
+}
+
+// spec/commits.md §5 Invalid, spec/sync-set.md §2: 2 mints a thing held from G and writes its
+// text ("x") while 0 and 2 dispute their roles on G, then 2 leaves G: no writer is left to compact
+// G's `holds.0`. A node given the history newest first sees 0's lowering of 2 first, drops 2's
+// strong while invalid, and on the walk's side holds it missing, the thing outside its node
+// closure until it fetches the strong: the settled check spares that thing's text, though a writer
+// of it compacted it last, and the node reads "x" after its sync exchange.
+#[test]
+fn settled_check_spares_things_held_through_unsettled_holds_spec_commits_5() {
+    use Step::*;
+    let aim = |x: Step| Aim(Box::new(x));
+    let h = settled(vec![aim(RemoveFlow { by: 2, t: 4, holder: 0, lower: false }), aim(Demote { by: 2, t: 6, holder: 1, at: 1, to_read: false }), aim(New { by: 2, admin: 5, write: false }), aim(Demote { by: 0, t: 4, holder: 2, at: 4, to_read: true }), aim(Typed { by: 2, t: 1, op: 24, k: 0, v: 3 }), Forged { by: 2, a: 1, b: 7, how: 2, op: 26, k: 2, v: 5 }, aim(Leave { by: 2, t: 2 })]);
+    let played = settling(play(0, &h), &h);
+    let holds = (format!("{:?}", played.things[0]), "holds.0".to_string());
+    let text = (format!("{:?}", played.things[1]), "t:text.0".to_string());
+    assert!(!played.settled_last.contains(&holds) && !played.settled_last.contains(&text), "G's holds unsettled, so the thing's text: {:?}", played.tally);
+    let all: Vec<usize> = (0..played.packs.len()).collect();
+    assert_eq!(oracle(&played, &all).now[&text], "Ok(Some(Str(\"x\")))");
+    let f = played.settle_from.unwrap();
+    let order: Vec<usize> = (0..f).rev().chain(f..played.packs.len()).collect();
+    // the case: before its exchange the node does not hold the thing's text
+    let mut p = deliver(&played, &order);
+    assert_eq!(shown(&mut p, &played.things).get(&text), None, "the strong is missing at the node");
+    order_checks(&played, &order).unwrap();
+}
+
 // spec/commits.md §5 Invalid, spec/sync-compaction.md §1: a body dropped while invalid and valid again is
 // missing until a copy arrives or a writer next compacts. 1 writes G's register and 0 lowers 1
 // to read (keeping the write), then 2 and itself: no writer is left to compact G, so the settled
@@ -5086,4 +5136,6 @@ fn a_delete_splitting_a_held_range_delete_kills_nothing_of_its_other_elements_sp
     let h = vec![Typed { by: 0, t: 0, op: 10, k: 0, v: 0 }, Typed { by: 0, t: 0, op: 10, k: 0, v: 1 }, Typed { by: 0, t: 0, op: 11, k: 0, v: 0 }, Undo { by: 0, back: 1 }];
     check(0, &h, NAMED).unwrap();
 }
+
+
 
