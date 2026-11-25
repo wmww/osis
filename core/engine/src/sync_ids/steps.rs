@@ -471,4 +471,52 @@ mod tests {
         assert!(e.holds_commit(&c) && !e.core.miskeyed(&c, &g), "right once the step is recorded");
         assert_eq!(e.get(&g, &x).unwrap(), Some(osis_base::Value::Int(1)));
     }
+
+    // spec/commits.md §4 (Unjudgeable; Apply: a waiting part waits alone), spec/crypto.md §7
+    // (Checked keys: the commit's deltas on other things are judged by their own keys): a commit
+    // whose part on g lists a step bob does not hold yet applies its part on h, under a base bob
+    // holds the steps of; the part on g waits, the commit pending for it, and applies once the
+    // step arrives (`Wake::Steps` of an applied commit's waiting part), with no wake left for a
+    // full scan, and bob opened again reads the same.
+    #[test]
+    fn a_part_listing_a_step_not_here_waits_alone_spec_commits_4() {
+        let (mut lp, g, _) = world();
+        let (alice, bob) = (lp.peers[0].engine.me(), lp.peers[1].engine.me());
+        let mut m = Mutation::new();
+        let h = lp.peers[0].engine.new_thing(&mut m, alice);
+        lp.peers[0].commit(m).unwrap();
+        lp.hold(h);
+        lp.peers[0].engine.grant(&h, &bob, &ct::Edge { role: Role::Read, until: None, may_grant: false, retain: false, floor: None }).unwrap();
+        lp.sync_all().unwrap();
+        let x = osis_base::Ak::new("x:v.0").unwrap();
+        let sync_id = lp.peers[0].engine.core.listed_step(&g).unwrap().sync_id;
+        let rot = lp.peers[0].engine.rotate_leaving_out(&g, &[Role::Admin], &[]).unwrap().expect("rotated");
+        lp.advance(1_000);
+        let before = lp.commit_ids(0);
+        lp.peers[0].engine.issue_step(&g, &sync_id, false).unwrap().expect("the step is due");
+        let step = *lp.commit_ids(0).difference(&before).next().expect("the step's commit");
+        lp.advance(1_000);
+        let mut m = Mutation::new();
+        m.set(g, &x, &osis_base::Value::Int(1)).unwrap();
+        m.set(h, &x, &osis_base::Value::Int(2)).unwrap();
+        let c = lp.peers[0].commit(m).unwrap().unwrap();
+        for id in [rot, c] {
+            let pk = lp.peers[0].engine.package(&id).unwrap().unwrap();
+            lp.deliver(1, &pk).unwrap();
+        }
+        let e = &mut lp.peers[1].engine;
+        assert!(e.holds_commit(&c) && e.pends(&c), "applied, its part on g waiting");
+        assert_eq!(e.get(&h, &x).unwrap(), Some(osis_base::Value::Int(2)), "the part on h is judged by h's keys");
+        assert_ne!(e.get(&g, &x).unwrap(), Some(osis_base::Value::Int(1)));
+        let pk = lp.peers[0].engine.package(&step).unwrap().unwrap();
+        lp.deliver(1, &pk).unwrap();
+        let e = &mut lp.peers[1].engine;
+        assert_eq!(e.get(&g, &x).unwrap(), Some(osis_base::Value::Int(1)), "applies once the step is recorded");
+        assert!(!e.pends(&c) && !e.core.miskeyed(&c, &g));
+        assert_eq!(e.lost_wakes().unwrap(), Vec::new());
+        lp.peers[1].restart(7).unwrap();
+        let e = &mut lp.peers[1].engine;
+        assert_eq!((e.get(&g, &x).unwrap(), e.get(&h, &x).unwrap()), (Some(osis_base::Value::Int(1)), Some(osis_base::Value::Int(2))), "opened again alike");
+        assert!(!e.pends(&c));
+    }
 }
