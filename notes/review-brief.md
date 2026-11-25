@@ -163,9 +163,6 @@ Other findings:
 - (c) issues/backdated-replace-cuts-history.md (spec wording still "erases nothing"); issues/purge-floor-exact-ts-ties.md; issues/revoke-link-before-its-seed.md; issues/forged-copy-undetected.md; issues/durable-decode-bound.md; issues/eph-node-cost-bounds.md; issues/client-auth.md; issues/cli-proxy.md; issues/root-key-erasure-tier.md.
 - The issue on external signals taken by default: closed (spar-review-tidy); what is left is issues/held-set-external-fires.md.
 
-## Overlap for spar-redeem-rules
-`Core::ingest_view` (core/engine/src/engine/secrets.rs) and spec/permissions.md §3 No secret taken back hold one rule on main: for a role the node's roles do not give, it keeps what it held before the ingest plus everything a history entry opened under those secrets lists (earlier epochs and roles secrets), whatever its roles; a secret the same ingest gave opens nothing. spar-redeem-rules' roles-secret block (history under `was` of role r, roles secrets only) is a narrower case of it: rebasing, drop that block and its spec sentence ("A roles secret a history entry opened ... is taken whatever its roles"), keep the rest and check its removed-node test (engine apply::keys, a box concurrent with the removal) still passes.
-
 ## Baseline on main
 On dd5c0a3e4 (`tools/merge-branch gate spar-review-prep --all`, ostrich, offset 532945376426; log under gate-logs/ until removed). A reviewer's failure not listed here is theirs to explain.
 - **Default tests**: all pass (37 binaries, 4,580 G instructions, every binary within tools/test_cost.txt). Ignored on purpose: 14 `sync rewrite:` ignores (notes/sync-rewrite-state.md, Ignored tests) and 10 tied to issues (`rg '#\[ignore = "issues/'`).
