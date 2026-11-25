@@ -3,9 +3,9 @@
 //! A record's blob and each of its decoded parts are functions of the record's bytes alone (a
 //! part also of its header and its thing's dedup secret, both fixed by the commit's ID, and of
 //! the pages its links name, fixed by each link's blob ID and hash), so they are kept with the
-//! record row's change stamp (`Transaction::local_stamp`) and hold while it stands: a write, a
-//! removal or an undo of the record (a savepoint rolled back, an abort) moves it, so nothing
-//! drops an entry by hand.
+//! record row's change stamp (`Transaction::local_stamp`) and hold while it stands: a write or
+//! a removal of the record moves it, a transaction rolled back restores it with the record
+//! (`memo::Undoable`), so nothing drops an entry by hand.
 //!
 //! Debug builds keep with each entry the bytes it was decoded from and compare them with the
 //! bytes read now: the part in the record read at every hit, the record's stored bytes at its
@@ -191,8 +191,8 @@ mod tests {
     use osis_base::{Ak, Value, WallMs};
 
     // A stored commit's record and parts are decoded once per change of the record: reading it
-    // again, other commits arriving and its record written again with the same bytes decode
-    // nothing of it; a removal leaves nothing to read, and undone decodes again.
+    // again, other commits arriving, its record written again with the same bytes and a removal
+    // rolled back decode nothing of it; a removal leaves nothing to read.
     #[test]
     fn a_stored_commit_is_decoded_once_per_record_write() {
         let mut lp = crate::local_peer::LocalPeer::fresh(1, WallMs(1_700_000_000_000));
@@ -230,7 +230,7 @@ mod tests {
             Err::<(), _>(crate::Error::Misuse("rolled back"))
         });
         assert!(failed.is_err());
-        assert_eq!(decodes(e), (1, 1), "a removal rolled back decodes again");
+        assert_eq!(decodes(e), (0, 0), "a removal rolled back restores the record's stamp");
     }
 
     // A cover judgment reads of a snapshot its root and the pages holding the body's positions

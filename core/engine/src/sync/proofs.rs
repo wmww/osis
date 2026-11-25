@@ -239,22 +239,11 @@ impl Engine {
         if blobs.is_empty() && records.is_empty() {
             return Ok(self.core.time.at(|now| judge(&self.core, now)));
         }
-        let trial = |e: &mut Engine, now, records, blobs| {
-            let own = e.core.applied_lowerings();
-            e.trial(records, blobs, |core| if core.undoes(&own) { (Vec::new(), None) } else { judge(core, now) })
-        };
-        if !blobs.is_empty() {
-            // the copies applied judge by roles at the time: read whole
-            let now = self.core.time.now();
-            return Ok(trial(self, now, records, blobs)?.0);
-        }
-        // records alone: the trial's reading is the timelines (read whole) with them, at the
-        // clock, so it is judged unrecorded: its own writes and their undo would move every
-        // reader of the timelines, this answer too, which then never holds
+        // judged at the clock, holding until the first `until` a hop read alive passes; what the
+        // trial itself reads of the clock (a copy's arrival) it reads as any reader does
         let now = self.core.time.until(None);
-        let (out, until) = osis_base::memo::unrecorded(|| trial(self, now, records, Vec::new()))?;
-        // past the trial's own writes and their undo, which moved it
-        let _ = std::ops::Deref::deref(self.core.timelines());
+        let own = self.core.applied_lowerings();
+        let (out, until) = self.trial(records, blobs, |core| if core.undoes(&own) { (Vec::new(), None) } else { judge(core, now) })?;
         self.core.time.until(until);
         Ok(out)
     }

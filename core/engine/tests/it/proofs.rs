@@ -140,3 +140,49 @@ fn copies_are_judged_with_the_sides_their_receipt_records_spec_sync_opens_2() {
     let e = &mut f.lp.peers[3].engine;
     assert_eq!(role_of(&e.proven(&[c4], &copies).unwrap(), &t), Some(Role::Read));
 }
+
+/// Runs of `Engine::proven`'s judgement since the last `costs::take`.
+fn proven_runs() -> u64 {
+    osis_base::costs::take().into_iter().filter(|(k, _, _)| *k == "sync: proven").map(|(_, _, n)| n).sum()
+}
+
+/// `k` proofs (one per connection) peer 3 judges, each peer 0's node claiming its grant on a
+/// thing of its own with a copy of that grant, which peer 3 lacks: each a trial.
+fn proofs(k: usize) -> (LocalPeer, Vec<(Claim, osis_blob::Certificates)>) {
+    let (mut lp, ps) = people(4);
+    let mut out = Vec::new();
+    let mut grants = Vec::new();
+    for _ in 0..k {
+        let t = thing_of(&mut lp, 2, ps[2]);
+        let before: std::collections::BTreeSet<_> = lp.peers[2].engine.commit_ids().into_iter().collect();
+        lp.peers[2].engine.grant(&t, &ps[0], &edge_of(Role::Write)).unwrap();
+        grants.push((t, lp.peers[2].engine.commit_ids().into_iter().filter(|c| !before.contains(c)).collect::<Vec<_>>()));
+    }
+    lp.sync(2, 0).unwrap();
+    for (t, cs) in grants {
+        let c = claim(&mut lp, 0, &[t]);
+        let copies = lp.peers[0].engine.copies_of(&cs.iter().map(|x| (*x, t)).collect::<Vec<_>>(), &[ps[0]]).unwrap();
+        assert!(!copies.commits.is_empty());
+        out.push((c, copies));
+    }
+    (lp, out)
+}
+
+// spec: none (internal: notes/engine.md, Derived values; spec/sync-opens.md §2 trials). A trial
+// leaves no mark on what reads the node's state: each connection's proof, judged with copies
+// the verifier lacks, is judged once however often each is asked, at k and 10k connections, and
+// no trial moves another's answer.
+#[test]
+fn a_proofs_trial_moves_no_proofs_answer() {
+    for k in [2, 20] {
+        let (mut lp, ps) = proofs(k);
+        let e = &mut lp.peers[3].engine;
+        proven_runs();
+        for _ in 0..3 {
+            for (c, copies) in &ps {
+                assert_eq!(role_of(&e.proven(std::slice::from_ref(c), copies).unwrap(), &c.path[0]), Some(Role::Write));
+            }
+        }
+        assert_eq!(proven_runs(), k as u64, "each of {k} proofs judged once");
+    }
+}

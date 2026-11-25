@@ -405,7 +405,7 @@ impl<K: Hash + Eq + Clone + std::fmt::Debug, V: Clone + PartialEq + std::fmt::De
         for d in deps {
             let ix = self.tables.entry(Arc::as_ptr(&d.table) as usize).or_insert_with(|| {
                 let mut t = lock(&d.table);
-                let at = t.ver;
+                let at = t.seq;
                 t.mark(at);
                 Indexed { table: d.table.clone(), at, whole: HashSet::new(), keys: HashMap::default(), buckets: HashMap::default(), reads: 0 }
             });
@@ -553,7 +553,7 @@ impl<K: Clone + 'static> Feed<K> {
     pub(super) fn new(table: Arc<Mutex<Table>>) -> Feed<K> {
         let at = {
             let mut t = lock(&table);
-            let at = t.ver;
+            let at = t.seq;
             t.mark(at);
             at
         };

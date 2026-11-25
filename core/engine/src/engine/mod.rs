@@ -1797,11 +1797,14 @@ impl Core {
         self.ix.rollback_to(m.ix);
         self.schemas.rollback_to(m.schemas);
         // the timelines follow the restored held set: back to what they were at the mark, which
-        // took every change before it (`mark`); validity flags are restored with `commits`
-        self.walk_held();
-        if sides_back {
-            crate::sides::restored(self);
-        }
+        // took every change before it (`mark`); validity flags are restored with `commits`. The
+        // walk's undo of the transaction's moves (its stamps are undoable)
+        memo::undoing(|| {
+            self.walk_held();
+            if sides_back {
+                crate::sides::restored(self);
+            }
+        });
         (self.stale_things, self.stale_authors, self.stale_under, self.stale_commits, self.stale_all) = m.stale;
         self.events.truncate(m.events);
         self.commits_named.truncate(m.commits_named);

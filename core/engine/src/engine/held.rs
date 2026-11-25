@@ -580,7 +580,7 @@ impl<K: Ord, V: Clone> Now<K, V> {
     }
 }
 
-/// `Timelines`' stamps, a table per kind of read (`Read`), each named for it (`Effects` causes).
+/// `Timelines`' stamps, a table per kind of read (`Read`), each named for it (`Effects` causes); undoable: a rollback brings the walk back to the restored held set (`Core::rollback_to`).
 #[derive(Clone)]
 struct TlStamps {
     whole: Stamps,
@@ -594,12 +594,12 @@ struct TlStamps {
 impl Default for TlStamps {
     fn default() -> Self {
         TlStamps {
-            whole: Stamps::named("timelines: whole"),
-            into: Stamps::named("timelines: into"),
-            held: Stamps::named("timelines: held"),
-            things: Stamps::named("timelines: things"),
-            known: Stamps::named("timelines: known"),
-            keyless: Stamps::named("timelines: keyless"),
+            whole: Stamps::named("timelines: whole").undoable(),
+            into: Stamps::named("timelines: into").undoable(),
+            held: Stamps::named("timelines: held").undoable(),
+            things: Stamps::named("timelines: things").undoable(),
+            known: Stamps::named("timelines: known").undoable(),
+            keyless: Stamps::named("timelines: keyless").undoable(),
         }
     }
 }
