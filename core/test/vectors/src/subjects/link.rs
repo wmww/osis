@@ -51,8 +51,8 @@ pub fn links() -> VecFile {
         assert!(ShareLink::from_value(&osis_base::decode(&b, &osis_base::Limits::DEFAULT).unwrap()).is_err());
         cases.push(case(name, SPEC).with("bytes", hex(&b)).with("reject", "link-flags"));
     }
-    let f2 = with(0, Value::Int(2));
-    assert_eq!(ShareLink::from_value(&osis_base::decode(&f2, &osis_base::Limits::DEFAULT).unwrap()), Err(Error::UnknownVersion(2)));
-    cases.push(case("link format 2", SPEC).with("bytes", hex(&f2)).with("parked", "format"));
+    let f3 = with(0, Value::Int(3));
+    assert_eq!(ShareLink::from_value(&osis_base::decode(&f3, &osis_base::Limits::DEFAULT).unwrap()), Err(Error::UnknownVersion(3)));
+    cases.push(case("link format 3", SPEC).with("bytes", hex(&f3)).with("parked", "format"));
     VecFile { header: generated_header("link", SPEC), cases }
 }
