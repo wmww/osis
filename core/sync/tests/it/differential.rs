@@ -187,10 +187,10 @@ fn repro_a_redeemer_learns_the_public_removed() {
 
 // spec/permissions.md §8 (Removing: erasing), spec/sync-inbox.md §5 (a removal from outside goes
 // as a grant does): node 0 removes node 2 from their account; node 2 should learn it and hold
-// nothing of the history. It is told by no rule (issues/removed-node-never-told.md).
+// nothing of the history: node 0 serves it its departure (spec/sync-opens.md §6).
 #[test]
-#[ignore = "issues/removed-node-never-told.md"]
-fn repro_a_removed_node_learns_its_removal() {
+fn a_removed_node_learns_its_removal_spec_sync_opens_6() {
     let (n, accounts, ..) = size();
     holds_on(0, accounts, n, &[Step::New(0), Step::Run, Step::Unpair(0, 2), Step::Run], String::new(), false);
 }
+

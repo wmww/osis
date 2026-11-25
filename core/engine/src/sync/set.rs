@@ -211,7 +211,12 @@ impl Engine {
         for (step, _) in &o.path.steps {
             c.keys.insert(step.id(), self.head_keys(t, step)?);
         }
-        c.read_secrets.extend(self.current_read_secrets(t));
+        let current = self.current_read_secrets(t);
+        if let Some(e) = self.core.epochs(t) {
+            let read = e.role(Role::Read);
+            c.old_read_secrets.extend(read.held_newest_first().into_iter().filter(|(ep, _)| !current.iter().any(|(x, _)| x == ep)).map(|(ep, x)| (ep, x.clone())));
+        }
+        c.read_secrets.extend(current);
         for k in self.static_listed(t)? {
             c.statics.insert(osis_crypto::static_entry(s, &k));
         }

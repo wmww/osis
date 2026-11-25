@@ -56,8 +56,9 @@ pub struct Member {
     pub by: Credential,
     /// Being ended: served up to this position.
     pub until: Option<Position>,
-    /// Ended for its peer's departure at a store source (spec/sync-opens.md §6): it closes on the
-    /// peer's Lost alone, and registering there waits on no role commit.
+    /// Ended for its peer's departure (spec/sync-opens.md §6): served S's role entries alone; at a
+    /// store source it closes on the peer's Lost alone, and registering there waits on no role
+    /// commit.
     pub departed: bool,
 }
 
@@ -351,6 +352,9 @@ struct Conn {
     /// It lost its record to this connection (spec/sync-opens.md §1 One connection per pair):
     /// it closes, and acts on nothing meanwhile.
     lost_to: Option<ConnId>,
+    /// Per S, the `until` a member ended for the peer's departure reached on this connection: a
+    /// departed peer's Hit opens S again here only for a later one (spec/sync-opens.md §6).
+    served: BTreeMap<SyncId, Position>,
 }
 
 /// `changed_at` (spec/sync-opens.md §3): per S a position of this node's own sequence, with the
@@ -560,8 +564,9 @@ struct Adm {
     shows: Vec<Shown>,
     tests: Vec<Tested>,
     /// Where J is departed: the sync proofs of this side's recorded steps (`Creds::walk`, and
-    /// the newest the Departed rule keeps out of `shows`), shown in the filter and taken from a
-    /// store only: an open by one is ended at once, so this side registers past the store's keys
+    /// the newest the Departed rule keeps out of `shows`), taken from a store only, and its read
+    /// secrets at superseded epochs, shown in the filter: an open by one is ended at once, so this
+    /// side registers past a store's keys or serves a reader its role entries up to its departure
     /// (spec/sync-opens.md §6), whether or not S was open there at the removal.
     walk: Vec<Shown>,
     step: Option<osis_crypto::SigningSecret>,
@@ -1022,9 +1027,20 @@ impl Opens {
     }
 
     /// An ended member whose reported position is at or past its `until` closes with a Lost; one
-    /// ended for its peer's departure waits for the peer's.
+    /// at a store source ended for its peer's departure waits for the peer's. One ended for its
+    /// peer's departure at a reader source takes its `until` once its departure is logged here.
     fn close_if_reached(&mut self, ctx: &mut Ctx, conn: ConnId, s: SyncId, moved: &mut Vec<Moved>) {
-        let Some(until) = self.member(conn, &s).filter(|m| !m.departed).and_then(|m| m.until) else { return };
+        let Some(m) = self.member(conn, &s).filter(|m| !(m.departed && m.class == SourceClass::Store)).cloned() else { return };
+        let until = match m.until {
+            Some(u) => u,
+            None if m.departed => {
+                let Some(u) = ctx.holds.departure_until(&s, &m.by) else { return };
+                let Some(rid) = self.conns.get(&conn).and_then(|c| c.rec) else { return };
+                self.set_until(rid, &s, u, moved);
+                u
+            }
+            None => return,
+        };
         if self.reported_at(conn, &s).is_some_and(|(p, _)| *p >= until) {
             self.close_member(ctx, conn, s, Close::Until, moved);
         }
@@ -1455,6 +1471,7 @@ impl Opens {
             walks: BTreeMap::new(),
             retries: BTreeSet::new(),
             lost_to: None,
+            served: BTreeMap::new(),
         };
         if bind.dialer {
             if !c.named.is_empty() {
@@ -1592,7 +1609,7 @@ impl Opens {
         }
         let members: Vec<SyncId> = r.members.keys().copied().collect();
         // ended members close on this connection's reported positions
-        c.ending = r.members.iter().filter(|(_, m)| m.until.is_some()).map(|(s, _)| *s).collect();
+        c.ending = r.members.iter().filter(|(_, m)| m.until.is_some() || m.departed).map(|(s, _)| *s).collect();
         let walk: Vec<(SyncId, Stop)> = r.walk.iter().map(|(s, x)| (*s, *x)).collect();
         if core {
             self.dirty(id).core = true;
@@ -2361,8 +2378,9 @@ impl Opens {
         let (bind, proven) = (c.bind, c.proven.clone());
         // Judged on what this side holds now: a credential no longer shown proves nothing.
         let Some(adm) = self.admissible(ctx, conn, &s) else { return refuse };
-        // a departed store's Hit on its step: opened only to be moved past its keys
-        let walk = class == SourceClass::Store && adm.walk.contains(&shown);
+        // a departed peer's Hit on its step (a store) or on a superseded epoch it reads at: opened
+        // only ended, a store to be moved past its keys, a reader to be served up to its departure
+        let walk = adm.walk.contains(&shown) && (class == SourceClass::Store || matches!(shown, Shown::Read(..)));
         if !adm.shows.contains(&shown) && !walk {
             return refuse;
         }
@@ -2402,6 +2420,10 @@ impl Opens {
             Shown::Static(e) | Shown::Public(e) => ctx.holds.grant(&s, e),
             _ => None,
         };
+        // served its departure here already: nothing more to serve it
+        if walk && matches!(shown, Shown::Read(..)) && self.conns.get(&conn).and_then(|c| c.served.get(&s)).is_some_and(|u| *u >= ctx.holds.until(&s, &by)) {
+            return refuse;
+        }
         let m = Member { class, own: adm.own, by, until: None, departed: false };
         if self.open(ctx, conn, s, m, Some(beacon), moved) && walk {
             self.rejudge(ctx, conn, s, moved);
@@ -2476,11 +2498,12 @@ impl Opens {
     /// Judges member S of record `rid` again (spec/sync-opens.md §6), whether or not a connection
     /// holds the record: J reader or sync holder stays; an open by a credential stays while it is
     /// admissible; one no longer admissible whose peer J judges neither holder nor departed is
-    /// ended (`until`, judged now), and stays ended until it closes; one at a store source whose
-    /// peer J judges departed is ended too and closes on the peer's Lost alone
-    /// (`Member::departed`); any other closes at once (with a Lost where a connection holds the
-    /// record), as does any whose peer is no one once no connection holds the record. One that stays, not ended, closes keeping where it stopped once this side's class
-    /// is not the one it declared opening S (an ended one opens again past its `until` anyway).
+    /// ended (`until`, judged now), and stays ended until it closes; one whose peer J judges
+    /// departed is ended too (`Member::departed`: served role entries alone; at a store source it
+    /// closes on the peer's Lost alone); any other closes at once (with a Lost where a connection
+    /// holds the record), as does any whose peer is no one once no connection holds the record.
+    /// One that stays, not ended, closes keeping where it stopped once this side's class is not
+    /// the one it declared opening S (an ended one opens again past its `until` anyway).
     fn judge(&mut self, ctx: &mut Ctx, rid: RecordId, s: SyncId, moved: &mut Vec<Moved>) {
         let Some(r) = self.records.get(&rid) else { return };
         let Some(m) = r.members.get(&s).cloned() else { return };
@@ -2526,15 +2549,26 @@ impl Opens {
             if m.own != adm.own && m.until.is_none() {
                 self.end_member(ctx, rid, conn, s, Close::Class, moved);
             }
-        } else if adm.j == J::Departed && m.class == SourceClass::Store {
-            // the peer keeps S unread and learns its removal only by a Register: ended, it stays
-            // while this side registers past its keys, until its own Lost
+        } else if adm.j == J::Departed {
+            // ended for its departure: served S's role entries up to it (a reader learns its
+            // removal there); a store learns it only by a Register, so it stays while this side
+            // registers past its keys, until its own Lost
             if !m.departed {
-                let until = m.until.unwrap_or_else(|| ctx.holds.until(&s, &m.by));
-                self.set_until(rid, &s, until, moved);
+                // at a store the position of its head's event; at a reader the departure as
+                // logged here, once it is (a remover judges its own removal before logging it)
+                let until = match m.class {
+                    SourceClass::Store => Some(m.until.unwrap_or_else(|| ctx.holds.until(&s, &m.by))),
+                    _ => m.until.or_else(|| ctx.holds.departure_until(&s, &m.by)),
+                };
+                if let Some(u) = until {
+                    self.set_until(rid, &s, u, moved);
+                }
                 self.set_departed(rid, &s, true);
+                if let Some(c) = conn {
+                    self.close_if_reached(ctx, c, s, moved);
+                }
             }
-        } else if m.by == Credential::J || adm.j == J::Departed {
+        } else if m.by == Credential::J {
             self.end_member(ctx, rid, conn, s, Close::AtOnce, moved);
         } else if m.until.is_none() {
             let until = ctx.holds.until(&s, &m.by);
@@ -2611,6 +2645,17 @@ impl Opens {
             return;
         }
         m.departed = on;
+        let ended = m.until.is_some();
+        // a departed member takes its `until` at a report (`close_if_reached`)
+        if let Some(c) = self.conn_on(rid)
+            && let Some(k) = self.conns.get_mut(&c)
+        {
+            if on {
+                k.ending.insert(*s);
+            } else if !ended {
+                k.ending.remove(s);
+            }
+        }
         self.member_changed(rid, s);
     }
 
@@ -2647,6 +2692,9 @@ impl Opens {
     /// where it stopped this side keeps.
     fn close_member(&mut self, ctx: &mut Ctx, conn: ConnId, s: SyncId, why: Close, moved: &mut Vec<Moved>) {
         let Some(m) = self.member(conn, &s).cloned() else { return };
+        if let (Close::Until, true, Some(u), Some(c)) = (why, m.departed, m.until, self.conns.get_mut(&conn)) {
+            c.served.insert(s, u);
+        }
         let cursor = match why {
             Close::Left => None,
             _ => self.stopped_for_peer(ctx, conn, &s, m.until),

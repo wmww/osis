@@ -9,12 +9,15 @@
 //!   `proofs`, `proofs-exh`.
 //! - `leave`: the own self-removal exception of Encrypting under (spec/crypto.md §4) and held
 //!   elsewhere for a self-removal (spec/sync-status.md §2). Searches `leave`, `leave-exh`.
+//! - `told`: a removed node learns its removal from any member (spec/sync-opens.md §4 Departed,
+//!   §6). Searches `told`, `told-exh`.
 //! - `shrink`: `without`, a move list less one move.
 //! Binary: `cargo run --bin roles-model -- [samples] [mode]`; `cargo test` runs the hand worlds.
 
 pub mod leave;
 pub mod paths;
 pub mod shrink;
+pub mod told;
 
 /// Roles, `None` below read. The build's sync role (below read) is not modelled: §5.1 judges it as
 /// read (neither writes nor audits).

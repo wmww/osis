@@ -36,9 +36,10 @@ pub struct Creds {
     /// The sync key of this node's step (its step kept unread, its newest recorded step read)
     /// and its epoch: what answers a Hit on a sync key, claim or static entry.
     pub step: Option<(osis_crypto::SigningSecret, Option<Epoch>)>,
-    /// At a reader, the sync proofs of its recorded steps but the newest: shown to a peer J
-    /// judges departed only, they answer a departed store's Hit on its step (spec/sync-opens.md §4
-    /// Admissible, §6).
+    /// At a reader, the sync proofs of its recorded steps but the newest and its read secrets at
+    /// superseded epochs: shown to a peer J judges departed only, they answer a departed store's
+    /// Hit on its step and a departed reader's on the epoch it holds, opening S ended
+    /// (spec/sync-opens.md §4 Admissible, §6).
     pub walk: Vec<Shown>,
 }
 
@@ -131,6 +132,10 @@ pub trait Holds {
     /// in S of a rotation superseding `by`'s epoch was first logged, else the node log's end; at
     /// a node keeping S unread the position of its head's event.
     fn until(&mut self, s: &SyncId, by: &Credential) -> Position;
+    /// A member ended for its peer's departure at a reader: the highest position at which an
+    /// entry in S of a rotation superseding `by`'s epoch (opened by J, the newest epoch
+    /// superseded here) was first logged; none while none is logged here.
+    fn departure_until(&mut self, s: &SyncId, by: &Credential) -> Option<Position>;
     /// The cursor naming `pos` of this node's log, for a Lost.
     fn cursor_at(&mut self, pos: Position) -> Option<Cursor>;
     /// The grant a static entry's answer carries (spec/sync-opens.md §5): the head's entry box
@@ -229,6 +234,7 @@ fn node_creds(cx: &mut Cx, unread: &Unread, s: &SyncId) -> Option<Arc<Creds>> {
                 c.shows.push((Shown::Proof(*p), None));
             }
             c.walk = rc.proofs.iter().filter(|(id, _)| rc.head.as_ref().is_none_or(|h| h.id() != *id)).map(|(_, p)| Shown::Proof(*p)).collect();
+            c.walk.extend(rc.old_read_secrets.iter().map(|(e, k)| Shown::Read(*e, *k.expose())));
             let path = path_of(cx, s).unwrap_or_default();
             c.tests.extend(walk_tests(&rc, &path, &mut |id| cx.engine.claim_key(s, id).ok().flatten()));
             if let Some(head) = &rc.head {
@@ -285,17 +291,34 @@ pub(crate) fn member_until(cx: &mut Cx, s: &SyncId, by: &Credential) -> crate::t
     let end = cx.store.log_bounds()?.0;
     match (cx.store.synced(s), by) {
         (Some((_, Holding::Unread)), _) => Ok(cx.store.head_at(s)?.unwrap_or(end)),
-        (Some((_, Holding::Read | Holding::Keys)), Credential::ReadSecret(e)) => {
-            let mut at = None;
-            for c in cx.engine.rotations_superseding(s, e)? {
-                for b in cx.engine.commit_blobs(&c)?.iter() {
-                    at = at.max(cx.store.first_logged(s, b)?);
-                }
-            }
-            Ok(at.unwrap_or(end))
-        }
+        (Some((_, Holding::Read | Holding::Keys)), Credential::ReadSecret(e)) => Ok(superseded_at(cx, s, e)?.unwrap_or(end)),
         _ => Ok(end),
     }
+}
+
+/// `Holds::departure_until`.
+pub(crate) fn departure_until(cx: &mut Cx, s: &SyncId, by: &Credential) -> crate::types::Result<Option<Position>> {
+    let e = match by {
+        Credential::ReadSecret(e) => *e,
+        Credential::J => match cx.engine.read_credentials(s)?.and_then(|c| c.old_read_secrets.first().map(|(e, _)| *e)) {
+            Some(e) => e,
+            None => return Ok(None),
+        },
+        _ => return Ok(None),
+    };
+    superseded_at(cx, s, &e)
+}
+
+/// The highest position at which an entry in S of a rotation superseding read epoch `e` was
+/// first logged.
+fn superseded_at(cx: &mut Cx, s: &SyncId, e: &Epoch) -> crate::types::Result<Option<Position>> {
+    let mut at = None;
+    for c in cx.engine.rotations_superseding(s, e)? {
+        for b in cx.engine.commit_blobs(&c)?.iter() {
+            at = at.max(cx.store.first_logged(s, b)?);
+        }
+    }
+    Ok(at)
 }
 
 impl Holds for NodeHolds<'_, '_> {
@@ -371,6 +394,10 @@ impl Holds for NodeHolds<'_, '_> {
     fn until(&mut self, s: &SyncId, by: &Credential) -> Position {
         // a store failure ends the member at the log's end read before it (0: nothing served)
         member_until(self.cx, s, by).unwrap_or(0)
+    }
+
+    fn departure_until(&mut self, s: &SyncId, by: &Credential) -> Option<Position> {
+        departure_until(self.cx, s, by).ok().flatten()
     }
 
     fn cursor_at(&mut self, pos: Position) -> Option<Cursor> {

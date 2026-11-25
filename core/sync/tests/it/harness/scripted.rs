@@ -198,6 +198,9 @@ impl Holds for Table {
     fn until(&mut self, _s: &SyncId, _by: &Credential) -> Position {
         self.until
     }
+    fn departure_until(&mut self, _s: &SyncId, _by: &Credential) -> Option<Position> {
+        Some(self.until)
+    }
     fn cursor_at(&mut self, pos: Position) -> Option<Cursor> {
         Some(pos.to_be_bytes().to_vec())
     }

@@ -161,11 +161,11 @@ impl Page {
     }
 }
 
-/// Whether the peer on `conn` holds S's thing for keys, as it declared opening S
-/// (spec/sync-opens.md §4 Source): it is shown S's role entries alone (spec/sync-ids.md §6 Role
-/// entries).
+/// Whether the peer on `conn` is shown S's role entries alone (spec/sync-ids.md §6 Role entries):
+/// it holds S's thing for keys, as it declared opening S (spec/sync-opens.md §4 Source), or its
+/// member is ended for its departure (§6).
 pub(super) fn for_keys(ctx: &Ctx, conn: ConnId, s: &SyncId) -> bool {
-    ctx.shared.members(conn).get(s).is_some_and(|m| m.class == SourceClass::Keys)
+    ctx.shared.members(conn).get(s).is_some_and(|m| m.class == SourceClass::Keys || m.departed)
 }
 
 /// Whether entry `e` of S is a role entry: by its stamp or deposit signature where this node

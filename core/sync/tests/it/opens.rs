@@ -316,14 +316,46 @@ fn a_digest_difference_closes_one_sided_members_spec_sync_opens_3() {
     assert!(p.b.moved.contains(&Moved::Joined(p.cb, S, Rejoin::From(None))), "rejoined from the start: {:?}", p.b.moved);
 }
 
+// spec/sync-opens.md §4 Admissible, §6 (A reader tells a removed reader its departure): b, away
+// at its removal, comes back holding the read secret of the epoch a's rotation superseded. a shows
+// it toward b alone (J departed): b's Hit opens S ended at once, served up to its `until`; closed
+// there, b's next Hit on it opens nothing on that connection. Control: a peer a judges unknown,
+// holding the same secret, opens nothing.
+#[test]
+fn a_departed_reader_opens_ended_on_its_superseded_epoch_spec_sync_opens_6() {
+    for j in [J::Departed, J::Unknown] {
+        let mut p = reader_pair(account(1), account(2));
+        p.a.table.judge_as(S, tid(2), j);
+        let (old, new) = (read_secret(1, 0), read_secret(1, 1));
+        p.a.table.covering.insert((S, new.0));
+        let mut c = reader(&S, &new, &StepKeys::new(1, 0), &[], &[], &[]);
+        c.walk.push(osis_sync::opens::cred::Shown::Read(old.0, *old.1.expose()));
+        p.a.table.set(S, Some(c));
+        p.a.settle();
+        p.run();
+        if j == J::Unknown {
+            assert!(!p.a.open(p.ca, &S) && !p.b.open(p.cb, &S), "control: nothing opens toward a peer not departed");
+            continue;
+        }
+        let m = p.a.opens.members(p.ca)[&S].clone();
+        assert!(m.departed && m.until == Some(p.a.table.until) && m.by == Credential::ReadSecret(old.0), "ended at once: {m:?}");
+        assert!(p.b.open(p.cb, &S), "b opens on a's answer");
+        let until = p.a.table.until;
+        p.a.reported(p.ca, S, until);
+        p.run();
+        assert!(!p.a.open(p.ca, &S) && !p.b.open(p.cb, &S), "closed at its until, and not opened again on this connection");
+    }
+}
+
 // spec/sync-opens.md §6 (Where it stopped): the receiver keeps the Lost's cursor (where the member
 // stopped for it, in the sender's log) and its rejoin on that connection reads from there; a
 // member left with its connection rejoins from where its own stream holds it.
 #[test]
 fn a_rejoin_reads_from_the_losts_cursor_spec_sync_opens_6() {
     let mut p = readers();
-    // b stored a's log at 7 for S (a learns it from b's Applied)
+    // b stored a's log at 7 for S (a learns it from b's Applied), the position of its departure
     p.a.reported(p.ca, S, 7);
+    p.a.table.until = 7;
     departs(&mut p);
     p.run();
     assert!(!p.b.open(p.cb, &S));
@@ -787,11 +819,12 @@ fn j_is_judged_on_the_roster_held_now_spec_sync_opens_4() {
 }
 
 // ON_endj, ON_peermoves (spec/sync-opens.md §6): an open by J closes at once with a Lost when
-// its peer's standing moves, with no credential of S moving: J judging it departed (its removal
-// held), or unknown (its account's key revoked); one demoted to sync holder stays.
+// its peer's standing moves to unknown (its account's key revoked), with no credential of S
+// moving; one demoted to sync holder stays; one judged departed (its removal held) is ended, its
+// Lost going once the peer reports its `until`.
 #[test]
 fn a_j_open_closes_when_its_peer_stops_counting_spec_sync_opens_6() {
-    for (j, stays) in [(J::Departed, false), (J::Unknown, false), (J::SyncHolder, true)] {
+    for (j, stays) in [(J::Departed, true), (J::Unknown, false), (J::SyncHolder, true)] {
         let (mut r, mut adv) = reader_judging(J::Reader);
         assert_eq!(adv.offer(&mut r, vec![OfferItem::ByRole { sync_id: S, hits: Vec::new(), class: osis_proto::SourceClass::Reader }])[0].code, Code::OK);
         assert!(r.open(adv.peer, &S));
@@ -800,35 +833,44 @@ fn a_j_open_closes_when_its_peer_stops_counting_spec_sync_opens_6() {
         r.settle();
         assert_eq!(r.open(adv.peer, &S), stays, "{j:?}");
         assert_eq!(of_kind(&r.sent(), 38).len(), usize::from(!stays), "{j:?}: a Lost");
+        if j == J::Departed {
+            let m = &r.opens.members(adv.peer)[&S];
+            assert!(m.departed && m.until == Some(r.table.until), "ended for its departure: {m:?}");
+            r.reported(adv.peer, S, r.table.until);
+            assert!(!r.open(adv.peer, &S) && of_kind(&r.sent(), 38).len() == 1, "closed at its until with a Lost");
+        }
     }
 }
 
 // ON_peermoves (spec/sync-opens.md §4 Departed, §6): a peer removed while connected, its removal
-// held here before any rotation (no credential of S moves), is no longer served S: its open by
-// S's read secret, at an epoch not covering its departure, closes at once at both ends. Across a
-// restart the record's next connection opens nothing either.
+// held here before any rotation (no credential of S moves), is ended: served S's role entries
+// alone up to its departure, it closes once it reports that position, and its Hit on the read
+// secret it holds, at an epoch not covering its departure, opens nothing again. Across a restart
+// the record keeps the member ended, and the next connection closes it at its `until`.
 #[test]
-fn a_removal_held_here_closes_a_credential_open_at_once_spec_sync_opens_6() {
+fn a_removal_held_here_ends_a_credential_open_spec_sync_opens_6() {
     let mut p = readers();
     p.a.table.judge_as(S, tid(2), J::Departed);
     p.a.settle();
-    assert!(!p.a.open(p.ca, &S), "closed at once, before any rotation");
+    let m = p.a.opens.members(p.ca)[&S].clone();
+    assert!(m.departed && m.until == Some(p.a.table.until), "ended, before any rotation: {m:?}");
+    let until = p.a.table.until;
+    p.a.reported(p.ca, S, until);
     p.run();
-    assert!(!p.a.open(p.ca, &S) && !p.b.open(p.cb, &S), "b's Hit refused: a judges it departed");
-    // held while away (the record keeps the member), then a restart: the reconnect re-judges it
+    assert!(!p.a.open(p.ca, &S) && !p.b.open(p.cb, &S), "closed at its until; b's Hit refused: a judges it departed");
+    // held while away (the record keeps the member), then a restart: the reconnect closes it
     let mut p = readers();
+    let at = osis_sync::store::Source::Record(p.a.opens.record(p.ca).unwrap());
     p.close();
     p.a.table.judge_as(S, tid(2), J::Departed);
     p.a.restart();
-    p.connect(2, account(1), account(2));
-    p.run();
-    assert!(!p.a.open(p.ca, &S) && !p.b.open(p.cb, &S));
+    assert!(p.a.opens.member_at(at, &S).is_some_and(|m| m.departed && m.until.is_some()), "kept ended across the restart");
 }
 
 // spec/sync-opens.md §6 (whether or not a connection holds its record; a connection taking a
 // record re-judges nothing that did not change): a member's J is followed per record, across its
 // connections, so a reconnect judges nothing of it again; a move while no connection holds the
-// record is judged in its step: b, removed while away, is no member of the record from then.
+// record is judged in its step: b, removed while away, is ended from then.
 #[test]
 fn standing_is_followed_per_record_across_connections_spec_sync_opens_6() {
     let mut p = readers();
@@ -842,10 +884,7 @@ fn standing_is_followed_per_record_across_connections_spec_sync_opens_6() {
     assert!(p.a.opens.member_at(at, &S).is_some() && p.a.opens.conn_of(at).is_none(), "the record keeps its member, connected nowhere");
     p.a.table.judge_as(S, tid(2), J::Departed);
     p.a.settle();
-    assert!(!followed(&p) && p.a.opens.member_at(at, &S).is_none(), "moved while away: closed in its step");
-    p.connect(2, account(1), account(2));
-    p.run();
-    assert!(!p.a.open(p.ca, &S) && !p.b.open(p.cb, &S), "closed at the reconnect too");
+    assert!(p.a.opens.member_at(at, &S).is_some_and(|m| m.departed && m.until == Some(p.a.table.until)), "moved while away: ended in its step");
 }
 
 // spec/sync-opens.md §6 (closes once no connection holds its record; while one does, that
@@ -2060,31 +2099,6 @@ fn a_member_closed_at_its_until_rejoins_from_the_peers_lost_spec_sync_opens_6() 
     }
 }
 
-// spec/sync-opens.md §6 (Where it stopped): a side that closed a member at once (J departed)
-// keeps nothing, whatever Lost follows: what its source showed goes and its rejoin is from the
-// start; the side receiving that Lost keeps the position it names.
-#[test]
-fn a_close_for_a_departure_keeps_nothing_here_spec_sync_opens_6() {
-    let mut p = readers();
-    p.b.reported(p.cb, S, 4);
-    p.a.reported(p.ca, S, 7);
-    departs(&mut p);
-    p.run();
-    assert_eq!(left_how(&p.a.moved, p.ca, S), Some(Leaving::Forgot));
-    assert_eq!(left_how(&p.b.moved, p.cb, S), Some(Leaving::Kept));
-    // b answered with its own Lost naming 4: a keeps nothing still
-    assert!(p.log.iter().any(|(by_a, m)| !*by_a && matches!(m, Msg::Lost { items, .. } if items[0] == (S, cursor(4)))), "b answers");
-    // the Lost re-marked S at b: tested again (its Hit refused while a judges b departed)
-    let after = p.log.iter().position(|(by_a, m)| *by_a && matches!(m, Msg::Lost { .. })).unwrap();
-    assert!(p.log[after..].iter().any(|(by_a, m)| !*by_a && matches!(m, Msg::Offer { .. })), "b tests S again");
-    p.a.moved.clear();
-    p.b.moved.clear();
-    regranted(&mut p);
-    p.run();
-    assert!(p.a.moved.contains(&Moved::Joined(p.ca, S, Rejoin::From(None))), "{:?}", p.a.moved);
-    assert!(p.b.moved.contains(&Moved::Joined(p.cb, S, Rejoin::From(Some(7u64.to_be_bytes().to_vec())))), "{:?}", p.b.moved);
-}
-
 // spec/sync-opens.md §6 (Lost; Where it stopped): a Lost for S that left the sender's sync set
 // names no position, and its receiver keeps nothing of where S stopped.
 #[test]
@@ -2104,6 +2118,7 @@ fn a_lost_for_s_that_left_the_senders_sync_set_names_none_spec_sync_opens_6() {
 fn a_kept_stop_goes_with_its_connection_spec_sync_opens_6() {
     let mut p = readers();
     p.a.reported(p.ca, S, 7);
+    p.a.table.until = 7;
     departs(&mut p);
     p.run();
     assert_eq!(left_how(&p.b.moved, p.cb, S), Some(Leaving::Kept));
@@ -2473,10 +2488,14 @@ fn shown_rows(w: &crate::harness::World, rid: osis_sync::types::RecordId, s: &Sy
         .unwrap()
 }
 
-// The same for a peer judged departed (§6: at a reader source it closes at once): node 2,
-// away, is removed from t.
+fn ended_departed(w: &crate::harness::World, rid: osis_sync::types::RecordId, s: &SyncId) -> bool {
+    w.node(1).node.opens().member_at(osis_sync::store::Source::Record(rid), s).is_some_and(|m| m.departed && m.until.is_some())
+}
+
+// The same for a peer judged departed (§6: it is ended, served its role entries up to its
+// departure): node 2, away, is removed from t; the record keeps it a member, ended.
 #[test]
-fn a_departed_peer_keeps_nothing_it_showed_spec_sync_judgement_3() {
+fn a_departed_peer_stays_a_member_ended_spec_sync_judgement_3() {
     let (mut w, (t, s)) = away_and_back(crate::harness::history::Gives::Reads);
     let conn = w.links_of(1).into_iter().find(|(_, j)| *j == 2).expect("node 2 is connected to node 1").0;
     let rid = w.node(1).node.opens().record(conn).expect("node 2's record");
@@ -2486,13 +2505,13 @@ fn a_departed_peer_keeps_nothing_it_showed_spec_sync_judgement_3() {
     let (shown, member) = shown_rows(&w, rid, &s);
     assert!(shown > 0 && member, "away, a member keeps what it showed");
     removed(&mut w, t);
-    assert_eq!(shown_rows(&w, rid, &s), (0, false), "departed: nothing of what it showed, no member");
+    assert!(ended_departed(&w, rid, &s), "departed: ended, kept a member");
 }
 
 // The same where node 1 restarted while node 2 was away (§6: re-judged whether or not a
 // connection holds its record, a restart's records included).
 #[test]
-fn a_peer_departed_after_a_restart_keeps_nothing_it_showed_spec_sync_judgement_3() {
+fn a_peer_departed_after_a_restart_stays_a_member_ended_spec_sync_judgement_3() {
     let (mut w, (t, s)) = away_and_back(crate::harness::history::Gives::Reads);
     let conn = w.links_of(1).into_iter().find(|(_, j)| *j == 2).expect("node 2 is connected to node 1").0;
     let rid = w.node(1).node.opens().record(conn).expect("node 2's record");
@@ -2505,17 +2524,17 @@ fn a_peer_departed_after_a_restart_keeps_nothing_it_showed_spec_sync_judgement_3
     let (shown, member) = shown_rows(&w, rid, &s);
     assert!(shown > 0 && member, "away across a restart, a member keeps what it showed");
     removed(&mut w, t);
-    assert_eq!(shown_rows(&w, rid, &s), (0, false), "departed: nothing of what it showed, no member");
+    assert!(ended_departed(&w, rid, &s), "departed: ended, kept a member");
 }
 
 // spec/sync-opens.md §4 Departed, §6 (at each change of J of its peer): node 2's account
 // self-removes from t by its other node while node 2 is away, reaching node 1 alone. A
 // self-removal carries no rotation (spec/permissions.md §3) and node 1 may rotate nothing, so
-// node 1's credentials of S stay as they were
-// and only J of node 2's record moves, to departed at an epoch that covers nothing: node 1 opens
-// nothing of S toward node 2 again, so node 2 is served neither what node 1 took meanwhile nor the
-// self-removal, and still holds S. Node 2 goes away and back once after the pairing, so the record
-// names its account's new key and the reconnect's take re-judges nothing.
+// node 1's credentials of S stay as they were and only J of node 2's record moves, to departed:
+// the member is ended there, served S's role entries alone up to the self-removal, so node 2 is
+// served nothing node 1 took meanwhile and learns the self-removal. Node 2 goes away and back
+// once after the pairing, so the record names its account's new key and the reconnect's take
+// re-judges nothing.
 #[test]
 fn a_self_removal_alone_ends_what_is_served_spec_sync_opens_6() {
     let (mut w, (t, s, n)) = paired_away_and_back();
@@ -2538,7 +2557,7 @@ fn a_self_removal_alone_ends_what_is_served_spec_sync_opens_6() {
     w.run();
     assert!(w.engine(1).holds_commit(&left), "node 1 took the self-removal");
     assert!(!served_at_reconnect(&mut w, &s, &before), "nothing node 1 took meanwhile");
-    assert!(!w.engine(2).holds_commit(&left) && w.store(2).holding(&s).is_some(), "nor the self-removal");
+    assert!(w.engine(2).holds_commit(&left), "but the self-removal");
 }
 
 // spec/sync-opens.md §3 (a node that stops holding S drops S from every record in the step that

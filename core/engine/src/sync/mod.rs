@@ -358,6 +358,9 @@ pub struct ReadCredentials {
     pub keys: BTreeMap<StepId, HeadKeys>,
     /// Current read secrets (the engine's history-less floors).
     pub read_secrets: Vec<(Epoch, Secret32)>,
+    /// The read secrets held at superseded epochs: shown to a peer J judges departed alone, they
+    /// open S toward it ended (spec/sync-opens.md §4 Admissible, §6).
+    pub old_read_secrets: Vec<(Epoch, Secret32)>,
     /// Static entries of S's roster (link keys).
     pub statics: BTreeSet<[u8; 32]>,
     /// The signing keys of the link keys this node acts for on S (the link it redeems): their
@@ -376,7 +379,7 @@ pub struct ReadCredentials {
     pub sync_keys: Vec<(Epoch, SigningSecret)>,
 }
 
-type PublicCredentials<'a> = (Option<StepId>, &'a BTreeMap<StepId, HeadKeys>, &'a [(Epoch, Secret32)], &'a BTreeSet<[u8; 32]>, Vec<osis_crypto::VerifyingKey>, &'a [(StepId, [u8; 32])], Vec<(Epoch, osis_crypto::VerifyingKey)>, (bool, bool));
+type PublicCredentials<'a> = (Option<StepId>, &'a BTreeMap<StepId, HeadKeys>, [&'a [(Epoch, Secret32)]; 2], &'a BTreeSet<[u8; 32]>, Vec<osis_crypto::VerifyingKey>, &'a [(StepId, [u8; 32])], Vec<(Epoch, osis_crypto::VerifyingKey)>, (bool, bool));
 
 impl ReadCredentials {
     /// What tells two apart (`Engine::read_credentials` is a memo): signing keys by their public
@@ -384,7 +387,7 @@ impl ReadCredentials {
     fn public(&self) -> PublicCredentials<'_> {
         let acting = self.acting.iter().map(SigningSecret::verifying_key).collect();
         let sync_keys = self.sync_keys.iter().map(|(e, k)| (*e, k.verifying_key())).collect();
-        (self.head.as_ref().map(Step::id), &self.keys, &self.read_secrets, &self.statics, acting, &self.proofs, sync_keys, (self.shows_public, self.tests_public))
+        (self.head.as_ref().map(Step::id), &self.keys, [&self.read_secrets, &self.old_read_secrets], &self.statics, acting, &self.proofs, sync_keys, (self.shows_public, self.tests_public))
     }
 }
 
