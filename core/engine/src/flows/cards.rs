@@ -261,9 +261,22 @@ impl Engine {
     /// (spec/sync-inbox.md §1 Card): `since` as given, else kept where it names `a`'s inbox here
     /// and above every card of `a` held here where it moves it; the holder keys of `a` and of the
     /// inbox held here. Acting as `a`: refused where this node may not write `host` along a path
-    /// through `a`. Whether it wrote (nothing to carry yet: no `keys.0` of `a` held).
+    /// through `a`. `a` and the inbox, where dependent and this node an admin of each, are made
+    /// independent first (spec/permissions.md §3: a card carries keys of their own), `a`'s
+    /// keysets carrying KEM keys for every role as its card stands. Whether it wrote (nothing to
+    /// carry: no `keys.0` of `a` held).
     pub fn write_card(&mut self, host: Tid, a: Tid, inbox: Option<Tid>, since: Option<WallMs>) -> Result<bool> {
         let named = inbox.unwrap_or(a);
+        for t in [a, named] {
+            if !self.core.is_independent(&t) && self.role_on(&t) == Some(Role::Admin) {
+                self.run(|tx| {
+                    if t == a {
+                        tx.publishing.push((a, Role::Admin));
+                    }
+                    crate::rotation::own_secrets(tx, t, &mut crate::flows::Done::default())
+                })?;
+            }
+        }
         let mut keys = self.holder_keys(&a)?;
         if keys.commits.is_empty() {
             return Ok(false);

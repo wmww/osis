@@ -353,7 +353,7 @@ fn text_session_refused_commit_keeps_edits() {
         bob.settle();
     };
     role(osis::Role::Read);
-    bob.hold(t).unwrap();
+    { let mut w = bob.write(); w.hold(bob.node_root().unwrap(), t).unwrap(); w.commit().unwrap(); }
     let s = open(&bob, t, &k);
     s.edit("", "kept").unwrap();
     assert!(matches!(s.commit(), Err(osis::Error::Permission { .. })));

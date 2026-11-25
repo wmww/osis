@@ -198,6 +198,7 @@ pub(crate) fn write_op_to(o: &WriteOp) -> Result<Value> {
     let k = |k: &u32| u(u64::from(*k));
     Ok(Value::List(match o {
         WriteOp::Create(rec) => vec![u(0), rec.to_value()],
+        WriteOp::CreateWithKeys(rec) => vec![u(1), rec.to_value()],
         WriteOp::Path { tid, key, op } => vec![u(2), tid_to(tid), k(key), path_op_to(op)?],
         WriteOp::Fire { tid, key, v, replaces } => vec![u(3), tid_to(tid), k(key), v.clone(), opt(replaces.as_ref().map(commit_id_to))],
         WriteOp::PurgeBy { tid, key, by } => vec![u(4), tid_to(tid), k(key), u(*by as u64)],
@@ -213,6 +214,7 @@ pub(crate) fn write_op_from(v: Value) -> Result<WriteOp> {
     let k = |v: &Value| u32::try_from(uint(v, "key index")?).map_err(|_| bad("key index"));
     Ok(match (case, a.as_slice()) {
         (0, [r]) => WriteOp::Create(CreationRecord::from_value(r).ok_or_else(|| bad("creation record"))?),
+        (1, [r]) => WriteOp::CreateWithKeys(CreationRecord::from_value(r).ok_or_else(|| bad("creation record"))?),
         (2, [t, key, op]) => WriteOp::Path { tid: tid(t)?, key: k(key)?, op: path_op_from(op.clone())? },
         (3, [t, key, v, replaces]) => {
             let replaces = opt_from(replaces.clone(), "replaces")?.map(|c| commit_id_from(&c)).transpose()?;

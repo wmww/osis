@@ -100,6 +100,12 @@ pub mod core {
     /// that thing's admins set any node's, `at(s, CAPS).path(p![Weak(node)])`. Absent: the
     /// defaults.
     pub use osis_schema::core_types::CAPS;
+    /// Where each node is dialed, by its node thing: its entry written by `publish_dial_on`, kept
+    /// by it alone; an admin drops the entry of a node that is no longer one of the thing's.
+    pub use osis_schema::core_types::{DIAL, Dial};
+    /// On a node root (`node_root()`): the thing this node keeps its settings on
+    /// (`settings_thing()`).
+    pub use osis_schema::core_types::SETTINGS;
     pub use osis_schema::core_types::{Caps, ThingCaps};
 }
 

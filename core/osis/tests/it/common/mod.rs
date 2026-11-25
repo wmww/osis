@@ -303,7 +303,7 @@ pub fn shared_in(sa: MemStore, sb: MemStore) -> (Osis, Osis, Arc<ManualClock>) {
     };
     settle_on(&a);
     deliver(&a, &b);
-    b.hold(g).unwrap();
+    { let mut w = b.write(); w.hold(b.node_root().unwrap(), g).unwrap(); w.commit().unwrap(); }
     settle_on(&b);
     (a, b, c)
 }

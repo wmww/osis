@@ -4,10 +4,9 @@ use osis::{Error, GrantOpts, Osis, Role, SetRoleOpts, SyncScope, Tid, Weak};
 use osis_account::schema::OF;
 use osis_account::{Account, AccountNode};
 
-/// `t`'s dial list keys at `db` (spec/sync-set.md §1).
-fn dials(db: &Osis, t: Tid) -> Vec<Vec<u8>> {
-    use osis::internals::Internals as _;
-    db.engine(|e| e.get_typed(&t, &osis::internals::core_types::DIAL).unwrap()).unwrap_or_default().into_keys().collect()
+/// The nodes with a dial entry on `t` at `db` (spec/sync-set.md §1).
+fn dials(db: &Osis, t: Tid) -> Vec<Weak> {
+    db.at(t, osis::core::DIAL).get().unwrap().unwrap_or_default().into_keys().collect()
 }
 
 /// A thing minted with the account as admin and held from its `holds.0`, named `name`.
@@ -123,7 +122,7 @@ fn links_are_the_accounts_spec_permissions_7() {
     assert_eq!(db.links().unwrap().len(), 1, "the account's link stays");
     // the link's actor waits for its key's holder: the account alone is waited on
     let account = SyncScope::Thing(a.thing());
-    drive(&net, db.wait_synced(account.clone())).unwrap();
+    drive(&net, db.wait_synced(account)).unwrap();
     drive(&net, b.wait_synced(account)).unwrap();
     assert_eq!(b.links().unwrap().iter().map(|l| l.id).collect::<Vec<_>>(), [id], "listed on the other node");
     b.revoke_link(id).unwrap();

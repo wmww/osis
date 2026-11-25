@@ -2017,7 +2017,7 @@ fn pairing(n: usize) -> Pairing {
     let (pks, bytes) = bytes_of(&mut lp, 0, &done.commits);
     let o = [osis_base::encode(&offer.to_value()).len() as u64, offer.grant.evidence.len() as u64, offer.grant.records.len() as u64, offer.sync.len() as u64, offer.trust.len() as u64];
     let pb = p.backend.clone();
-    let (_, taker) = measured(&pb, || p.engine.take_offer(&offer).unwrap());
+    let (_, taker) = measured(&pb, || p.engine.take_pairing(&offer).unwrap());
     let (_, sibling) = measured_at(&mut lp, 1, |lp| {
         for pk in &pks {
             lp.deliver(1, pk).unwrap();

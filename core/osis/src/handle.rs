@@ -678,8 +678,9 @@ impl ReadOnly {
     }
 
     /// The thing this node keeps its settings on (its entry in that thing's `core::CAPS`, keyed
-    /// by `node()`), if it names one: written where the node comes to act for such a thing, as an
-    /// account library does when it makes or pairs into an account. On a thin client, its node's.
+    /// by `node()`), if it names one: `core::SETTINGS` on `node_root()`, written where the node
+    /// comes to act for such a thing, as an account library does when it makes or pairs into an
+    /// account. On a thin client, its node's (which `node_root` does not reach).
     pub fn settings_thing(&self) -> Result<Option<Tid>> {
         if let Some(t) = self.inner.thin.get() {
             return Ok(t.settings);

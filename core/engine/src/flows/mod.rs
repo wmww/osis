@@ -18,7 +18,7 @@ pub(crate) mod links;
 mod create;
 pub(crate) mod inbox;
 pub(crate) mod roots;
-pub mod pairing;
+pub mod offers;
 
 
 pub use edges::{Demotion, Removal};

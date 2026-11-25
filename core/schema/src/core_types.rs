@@ -382,8 +382,13 @@ pub const ADDENDA: Aspect<Addenda> = Aspect::new(ADDENDA_AK, &CORE);
 pub const KEYS: Aspect<Keys> = Aspect::new("keys.0", &CORE);
 pub const SECRETS: Aspect<Secrets> = Aspect::new("secrets.0", &CORE);
 pub const SYNC: Aspect<SyncIds> = Aspect::new("sync.0", &CORE);
-/// `dial.0` on any thing: each node's 32-byte dialable key to its URLs (spec/sync-set.md §1).
-pub type DialList = BTreeMap<Vec<u8>, Vec<String>>;
+codec_struct! {
+    /// A node's dial entry (`dial.0`): its 32-byte dialable key and its URLs.
+    #[derive(Clone, Debug, Default, PartialEq, Eq)]
+    pub struct Dial { 0 key: Vec<u8>, 1 urls: Vec<String> }
+}
+/// `dial.0` on any thing: each node's dial entry, by its node thing (spec/sync-set.md §1).
+pub type DialList = BTreeMap<Weak, Dial>;
 pub const DIAL: Aspect<DialList> = Aspect::new("dial.0", &CORE);
 codec_struct! {
     /// A thing's card (`card.0`, spec/sync-inbox.md §1 Card): its inbox where it is another

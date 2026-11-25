@@ -44,8 +44,10 @@ impl Engine {
 
     /// Writes `m` as one commit, durable or memory. `Clash` when the ops ask for both (a new
     /// thing's record is durable, so a `+` write on a thing created in the same mutation is one), or
-    /// signals beside either. When the commit or any op fails, nothing applies. `None` when no
-    /// commit is written.
+    /// signals beside either. Its writes on the node root beside others go in a commit of their
+    /// own in the same transaction (the root is local: under no sync ID, spec/sync-set.md §1), so
+    /// a thing the node holds from its root is made in one transaction with its strong. When the
+    /// commit or any op fails, nothing applies. `None` when no commit is written.
     pub fn write(&mut self, mut m: Mutation) -> Result<Option<Written>> {
         let node = self.core.me();
         let actor = m.actor.unwrap_or(node);
@@ -65,13 +67,24 @@ impl Engine {
             }
         }
         if eph_ops.is_empty() {
-            let id = self.run(|tx| commit_in(tx, m))?;
+            let local = self.core.node_root.and_then(|r| local_part(&mut m, r));
+            let keyed = std::mem::take(&mut m.keyed);
+            let id = self.run(|tx| {
+                if !keyed.is_empty() {
+                    crate::engine::acting::mint_with_keys(tx, keyed, std::slice::from_ref(&m), &mut crate::flows::Done::default())?;
+                }
+                let id = commit_in(tx, m)?;
+                Ok(match local {
+                    Some(l) => id.or(commit_in(tx, l)?),
+                    None => id,
+                })
+            })?;
             return Ok(id.map(|id| self.written(id)));
         }
         // a memory commit's writes and a durable commit's are not one (spec/commits.md §2)
         // a purge request is durable whatever it names (its `purge.0` delta is no write of the app's)
         let durable = (!m.purge.is_empty()).then(|| "a purge".to_string());
-        let durable = durable.or_else(|| m.aspects.keys().next().map(|(t, k)| format!("{t} {k}"))).or_else(|| m.creates.keys().next().map(|t| format!("the creation of {t}")));
+        let durable = durable.or_else(|| m.aspects.keys().next().map(|(t, k)| format!("{t} {k}"))).or_else(|| m.creates.keys().copied().chain(m.keyed.iter().map(|r| r.tid())).next().map(|t| format!("the creation of {t}")));
         let durable = durable.or_else(|| (!(m.dead_resets.is_empty() && m.fresh_resets.is_empty() && m.undoes.is_none())).then(|| "the rest".to_string()));
         if let (Some(d), Some((t, k, _))) = (&durable, eph_ops.first()) {
             return Err(Error::Clash(format!("a commit is durable or ephemeral, and this write is both: {t} {k} is ephemeral, {d} is not. Write them as separate commits")));
@@ -162,4 +175,24 @@ impl Engine {
             commit_in(tx, m)
         })
     }
+}
+
+/// The writes of `m` on node root `root`, taken out into a mutation of their own where `m` writes
+/// anything else too (`Engine::write`).
+fn local_part(m: &mut Mutation, root: Tid) -> Option<Mutation> {
+    let on_root = |k: &(Tid, Ak)| k.0 == root;
+    let others = !m.creates.is_empty() || !m.purge.is_empty() || m.aspects.keys().any(|k| !on_root(k));
+    if !others || !m.aspects.keys().any(on_root) {
+        return None;
+    }
+    let mut l = Mutation::new();
+    l.actor = m.actor;
+    l.confined = m.confined;
+    let keys: Vec<(Tid, Ak)> = m.aspects.keys().filter(|k| on_root(k)).cloned().collect();
+    for k in keys {
+        if let Some(a) = m.aspects.remove(&k) {
+            l.aspects.insert(k, a);
+        }
+    }
+    Some(l)
 }

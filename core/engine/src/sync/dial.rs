@@ -6,7 +6,7 @@ use super::Holding;
 use crate::engine::Engine;
 use crate::error::Result;
 use crate::Mutation;
-use osis_base::{Address, SyncId, Tid, Value, peer_url};
+use osis_base::{Address, SyncId, Tid, Value, Weak, peer_url};
 use osis_crdt::{Op, PathOp, PathSeg};
 use osis_schema::core_types as ct;
 use std::collections::{BTreeMap, BTreeSet};
@@ -24,8 +24,8 @@ impl Engine {
         let mut out: BTreeMap<[u8; 32], Address> = BTreeMap::new();
         if holding != Holding::Unread {
             for t in &things {
-                for (k, urls) in self.get_typed(t, &ct::DIAL)?.unwrap_or_default() {
-                    if let Some(x) = address(&k, &urls) {
+                for d in self.get_typed(t, &ct::DIAL)?.unwrap_or_default().into_values() {
+                    if let Some(x) = address(&d.key, &d.urls) {
                         out.entry(x.key).or_insert(x);
                     }
                 }
@@ -47,42 +47,49 @@ impl Engine {
     }
 
     /// Publishes where this node is dialed (spec/sync-transport.md §3, §5 Key change;
-    /// spec/sync-set.md §1): its own entry, dialable key `dialable` to the `peer://` URL of the
-    /// items it listens at, in the `dial.0` of each of `on` it may write (its account and the
-    /// account's profile), in place of its entry under an earlier key; other nodes' entries
-    /// stay. Its node root's `dial.0` (local: read by nobody else) keeps its own entry, the
-    /// record of which key it published last. Only where it changed.
+    /// spec/sync-set.md §1): its own entry, keyed by its node thing, dialable key `dialable` to
+    /// the `peer://` URL of the items it listens at, in the `dial.0` of each of `on` it may write
+    /// (its account and the account's profile); other nodes' entries stay. Its node root's
+    /// `dial.0` (local: read by nobody else) keeps its own entry, the record of what it published
+    /// last. Only where it changed.
     pub fn publish_reach(&mut self, dialable: [u8; 32], items: Vec<String>, on: &[Tid]) -> Result<()> {
-        self.write_reach(dialable, vec![peer_url(&items)], on)
+        self.write_reach(ct::Dial { key: dialable.to_vec(), urls: vec![peer_url(&items)] }, on)
     }
 
     /// `publish_reach` again with what this node published last (its node root's entry), on
     /// `on`: where the things it keeps its entry on changed. Nothing before its first listen.
     pub fn publish_reach_on(&mut self, on: &[Tid]) -> Result<()> {
         let root = self.core.node_root.ok_or(crate::error::Error::Misuse("no node root"))?;
-        let last = self.get_typed(&root, &ct::DIAL)?.unwrap_or_default().into_iter().next();
-        let Some((key, url)) = last else { return Ok(()) };
-        let Ok(key) = <[u8; 32]>::try_from(key.as_slice()) else { return Ok(()) };
-        self.write_reach(key, url, on)
+        let me = Weak(self.core.me());
+        let Some(last) = self.get_typed(&root, &ct::DIAL)?.unwrap_or_default().remove(&me) else { return Ok(()) };
+        self.write_reach(last, on)
     }
 
-    /// `publish_reach`'s writes: this node's entry `dialable` to `url`.
-    fn write_reach(&mut self, dialable: [u8; 32], url: Vec<String>, on: &[Tid]) -> Result<()> {
+    /// `publish_reach_on` the things its node root's `dial_on^.0` names: each such thing
+    /// writable here since (an account's, arriving after its pairing) gets the entry it lacks.
+    /// O(the things named).
+    pub fn refresh_reach(&mut self) -> Result<()> {
+        let Some(root) = self.core.node_root else { return Ok(()) };
+        let on: Vec<Tid> = self.get_typed(&root, &ct::DIAL_ON)?.unwrap_or_default().into_iter().map(|w| w.0).collect();
+        if on.is_empty() {
+            return Ok(());
+        }
+        self.publish_reach_on(&on)
+    }
+
+    /// `publish_reach`'s writes: this node's entry `d`.
+    fn write_reach(&mut self, d: ct::Dial, on: &[Tid]) -> Result<()> {
         let root = self.core.node_root.ok_or(crate::error::Error::Misuse("no node root"))?;
-        let mine: Vec<Vec<u8>> = self.get_typed(&root, &ct::DIAL)?.unwrap_or_default().into_keys().filter(|k| k.as_slice() != dialable.as_slice()).collect();
+        let me = Weak(self.core.me());
         let mut m = Mutation::new();
         for t in std::iter::once(root).chain(on.iter().copied()) {
-            if t != root && self.role_on(&t) < Some(osis_base::Role::Write) {
+            // a node writes only what it holds: a thing not here yet (an account just paired
+            // into) gets the entry at the next listen
+            if t != root && (self.role_on(&t) < Some(osis_base::Role::Write) || !self.core.writable(&t)) {
                 continue;
             }
-            // its own entries alone, so each entry's writer is the node it is of (a remover drops a
-            // removed node's by who wrote them, spec/permissions.md §8 Removing)
-            let list = self.get_typed(&t, &ct::DIAL)?.unwrap_or_default();
-            for k in mine.iter().filter(|k| list.contains_key(*k)) {
-                m.op(t, &ct::DIAL, PathOp { path: Vec::new(), op: Op::Remove(Value::Bytes(k.clone())) })?;
-            }
-            if list.get(dialable.as_slice()) != Some(&url) {
-                m.op(t, &ct::DIAL, PathOp { path: vec![PathSeg::Key(Value::Bytes(dialable.to_vec()))], op: Op::Set(osis_schema::Codec::to_value(&url)) })?;
+            if self.get_typed(&t, &ct::DIAL)?.unwrap_or_default().get(&me) != Some(&d) {
+                m.op(t, &ct::DIAL, PathOp { path: vec![PathSeg::Key(Value::Weak(me.0))], op: Op::Set(osis_schema::Codec::to_value(&d)) })?;
             }
         }
         if !m.is_empty() {

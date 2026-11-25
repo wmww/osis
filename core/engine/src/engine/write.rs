@@ -47,6 +47,9 @@ pub(crate) type Minted = BTreeMap<Tid, osis_keys::ActorEpochs>;
 #[derive(Clone, Debug)]
 pub struct Mutation {
     pub(crate) creates: Creates,
+    /// New things minted with keys of their own, in order, ahead of the commit
+    /// (`Mutation::create_with_keys`, `Engine::write`).
+    pub(crate) keyed: Vec<CreationRecord>,
     pub(crate) minted: Minted,
     pub(crate) aspects: BTreeMap<(Tid, Ak), AspectMut>,
     pub(crate) actor: Option<Tid>,
@@ -95,7 +98,7 @@ fn ak_of<K: RawKey>(key: &K) -> Result<Ak> {
 
 impl Mutation {
     pub fn new() -> Mutation {
-        Mutation { creates: Creates::new(), minted: Minted::new(), aspects: BTreeMap::new(), actor: None, confined: false, commit_form: false, purge: Vec::new(), purge_named: Vec::new(), undoes: None, frontier: None, unchecked: false, signer: None, dead_resets: BTreeMap::new(), fresh_resets: BTreeMap::new(), sweeps: BTreeSet::new(), fresh: Default::default(), ts: None, blind: None, sealed: false }
+        Mutation { creates: Creates::new(), keyed: Vec::new(), minted: Minted::new(), aspects: BTreeMap::new(), actor: None, confined: false, commit_form: false, purge: Vec::new(), purge_named: Vec::new(), undoes: None, frontier: None, unchecked: false, signer: None, dead_resets: BTreeMap::new(), fresh_resets: BTreeMap::new(), sweeps: BTreeSet::new(), fresh: Default::default(), ts: None, blind: None, sealed: false }
     }
 
     /// The actor this node acts for (header field 2); default the node itself.
@@ -124,6 +127,15 @@ impl Mutation {
     pub fn commit_form(&mut self) -> &mut Self {
         self.commit_form = true;
         self
+    }
+
+    /// Records a new thing minted with keys of its own (spec/permissions.md §3): independent at
+    /// its minting, its record in its own-secrets rotation, a commit ahead of this one in the same
+    /// transaction (`Engine::write` alone writes it).
+    pub fn create_with_keys(&mut self, record: CreationRecord) -> Tid {
+        let t = record.tid();
+        self.keyed.push(record);
+        t
     }
 
     /// Records a new thing; its `created.0` goes into this commit.
@@ -1106,6 +1118,9 @@ impl Engine {
 pub(crate) fn commit_in(tx: &mut Tx<'_>, m: Mutation) -> Result<Option<CommitId>> {
     if m.sealed {
         return Err(Error::Misuse("a sealed fire is built by `sealed_commit`"));
+    }
+    if !m.keyed.is_empty() {
+        return Err(Error::Misuse("a thing minted with keys of its own is written by `Engine::write`"));
     }
     Ok(commit_or_build(tx, m)?.map(|(id, _)| id))
 }

@@ -53,7 +53,7 @@ fn listening_publishes_where_the_node_is_dialed_spec_sync_transport_3() {
     a.publish_dial_on(&[t]).unwrap();
     let key = a.listen(&["peer://203.0.113.5:4040".parse().unwrap(), "peer://127.0.0.1:1".parse().unwrap()]).unwrap()[0].key();
     let list = |t| a.engine(|e| e.get_typed(&t, &ct::DIAL).unwrap()).unwrap_or_default();
-    assert_eq!(list(t), [(key.to_vec(), vec!["peer://203.0.113.5:4040".to_string()])].into(), "global addresses only");
+    assert_eq!(list(t), [(osis::Weak(a.node()), ct::Dial { key: key.to_vec(), urls: vec!["peer://203.0.113.5:4040".to_string()] })].into(), "global addresses only");
     assert!(list(u).is_empty(), "a thing not named");
     a.publish_dial_on(&[t, u]).unwrap();
     assert_eq!(list(u), list(t), "named after the listen: published at once");
@@ -61,7 +61,7 @@ fn listening_publishes_where_the_node_is_dialed_spec_sync_transport_3() {
     for t in [t, u] {
         let list = list(t);
         assert_eq!(list.len(), 1);
-        assert!(!list.contains_key(key.as_slice()), "the old key's entry gone");
+        assert!(list.values().all(|d| d.key != key.to_vec()), "the old key's entry replaced");
     }
 }
 

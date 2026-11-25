@@ -249,9 +249,15 @@ type sync_entry = struct {
 /// A thing's sync IDs, by 16-byte sync ID (spec/sync-ids.md §4).
 aspect sync.0: map<blob, sync_entry>;
 
-/// The thing's dial list: each node's 32-byte dialable key to the URLs it is dialed at
-/// (spec/sync-set.md §1), each node keeping its own entry. Its readers dial them, for dialing only.
-aspect dial.0: map<blob, list<string>>;
+/// A node's dial entry: its 32-byte dialable key and the URLs it is dialed at.
+type dial = struct {
+    key 0: blob,
+    urls 1: list<string>,
+};
+
+/// The thing's dial list: each node's dial entry, by its node thing (spec/sync-set.md §1), each
+/// node keeping its own. Its readers dial them, for dialing only.
+aspect dial.0: map<weak, dial>;
 
 /// A thing's card (spec/sync-inbox.md §1 Card): its inbox where it is another thing, when that
 /// inbox was chosen (ms), and its and the inbox's current `keys.0` commits in the holder keys form

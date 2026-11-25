@@ -14,13 +14,10 @@
 
 #![forbid(unsafe_code)]
 
-// Interim (notes/public-and-cards-brief.md, Left): making, pairing and removing a node go through
-// the engine (`osis::internals`) until the `osis` API has the calls they need (minting things with
-// keys of their own in one transaction, the offer of a grant handed over by hand).
-use osis::internals::Internals as _;
-use osis::internals::engine as eng;
-use osis::internals::{base, core_types as ct, crypto};
-use osis::{Address, Error, GrantOpts, Link, LinkInfo, Osis, ReadOnly, Result, Role, SetRoleOpts, Store, Tid, Value, Weak};
+use osis_base as base;
+use osis_crypto as crypto;
+use osis::core::{CAPS, DIAL, HOLDS, RETENTION, RetentionSetting, SETTINGS};
+use osis::{Address, Error, GrantOpts, Keys, Link, LinkInfo, Offer, Osis, ReadOnly, Result, Role, SetRoleOpts, Store, Tid, Value, Weak};
 
 /// Typed keys of schema/account.osis.
 #[allow(dead_code, clippy::all)]
@@ -51,17 +48,50 @@ impl Account {
     /// which everyone may read: the node becomes its first admin node. `Invalid` on a node that
     /// acts for an account already; `Unsupported` through a connection.
     pub fn make(db: &Osis) -> Result<Account> {
-        if !db.has_store() {
-            return Err(Error::Unsupported("making an account: not through a connection to a node".into()));
-        }
         if let Some(a) = db.settings_thing()? {
-            return Err(Error::Invalid(format!("this node acts for {a} already")));
+            // one made by a node stopped before its last step is finished; one made, refused
+            let a = Account { thing: a };
+            return match a.profile(db)? {
+                Some(p) if !db.grants(p)?.contains_key(&Tid::PUBLIC) => {
+                    // nothing else is made for A before `make` returns: its other strong is the inbox
+                    let inbox = db.at(a.thing, HOLDS).get()?.unwrap_or_default().into_iter().find_map(|r| match r {
+                        osis::Ref::Strong(s) if s.0 != p => Some(s.0),
+                        _ => None,
+                    });
+                    a.finish(db, p, inbox.ok_or_else(|| Error::Invalid("the account's inbox is not here".into()))?).map(|()| a)
+                }
+                _ => Err(Error::Invalid(format!("this node acts for {} already", a.thing))),
+            };
         }
-        let (a, profile) = db.engine(make)?;
-        db.publish_dial_on(&[a, profile])?;
+        let root = db.node_root()?;
+        // A, its inbox and profile, held: A by the node root, naming A its settings thing, the
+        // others by A, in one transaction (spec/permissions.md §8 Making)
+        let mut w = db.write();
+        // keys of their own: a node paired in or a contact learns of each with its role entries
+        let a = w.create_with_keys(db.node())?;
+        let (inbox, profile) = (w.create_with_keys(a)?, w.create_with_keys(a)?);
+        w.hold(root, a)?;
+        w.at(root, SETTINGS).set(&Weak(a))?;
+        w.hold(a, inbox)?;
+        w.hold(a, profile)?;
+        w.at(a, PROFILE).set(&Weak(profile))?;
+        w.at(profile, OF).set(&Weak(a))?;
+        let mut setting = RetentionSetting::default();
+        setting.enable_inbox_signals();
+        w.at(inbox, RETENTION).set(&setting)?;
+        w.commit()?;
         let a = Account { thing: a };
-        a.publish_profile(db, profile)?;
+        a.finish(db, profile, inbox)?;
         Ok(a)
+    }
+
+    /// `make`'s steps after its first transaction, each kept where it is done, so `make` on a
+    /// node stopped between them finishes them: A's card on the profile naming the inbox, the dial
+    /// entries on A and the profile, then the profile made public (what tells `make` it is done).
+    fn finish(&self, db: &Osis, profile: Tid, inbox: Tid) -> Result<()> {
+        db.set_card(profile, self.thing, Some(inbox))?;
+        db.publish_dial_on(&[self.thing, profile])?;
+        self.publish_profile(db, profile)
     }
 
     /// The account `db`'s node acts for, if any: the thing it keeps its settings on.
@@ -90,23 +120,27 @@ impl Account {
 
     /// Removes a node from the account (spec/permissions.md §8 Removing): its role removed with
     /// the account's rotation, erasing unless `o.retain_copy` says retain, and its dial and settings
-    /// entries on the account and its profile dropped. It returns what is easy to forget: this
-    /// node's links still working. The removed node keeps their keys, so whoever holds it can read
-    /// and join through each until `revoke_link`, and ending them is the caller's choice. None when
-    /// `node` was not one of the account's. `Unsupported` through a connection.
+    /// entries on the account and its profile dropped. It returns what is easy to forget: the
+    /// account's links still working. The removed node keeps their keys, so whoever holds it can
+    /// read and join through each until `revoke_link`, and ending them is the caller's choice.
+    /// None when `node` was not one of the account's. `Permission` unless this node is an admin
+    /// node of the account; `Unsupported` through a connection.
     pub fn remove_node(&self, db: &Osis, node: Tid, o: SetRoleOpts) -> Result<Vec<LinkInfo>> {
-        if !db.has_store() {
-            return Err(Error::Unsupported("remove_node: not through a connection to a node".into()));
-        }
         if !db.grants(self.thing)?.contains_key(&node) {
             return Ok(Vec::new());
         }
-        let also: Vec<Tid> = self.profile(db)?.into_iter().collect();
-        let (a, retain) = (self.thing, o.retain_copy.unwrap_or(false));
-        db.engine(|e| match o.leave_adminless {
-            true => e.leaving_adminless(|e| e.remove_node(&a, &node, retain, &also)),
-            false => e.remove_node(&a, &node, retain, &also),
-        })?;
+        let a = self.thing;
+        db.set_role(a, node, None, SetRoleOpts { retain_copy: Some(o.retain_copy.unwrap_or(false)), ..o })?;
+        let mut w = db.write();
+        for t in std::iter::once(a).chain(self.profile(db)?) {
+            if db.at(t, DIAL).get()?.is_some_and(|d| d.contains_key(&Weak(node))) {
+                w.at(t, DIAL).path(osis::p![Weak(node)]).remove()?;
+            }
+        }
+        if db.at(a, CAPS).get()?.is_some_and(|c| c.contains_key(&Weak(node))) {
+            w.at(a, CAPS).path(osis::p![Weak(node)]).remove()?;
+        }
+        w.commit()?;
         db.links()
     }
 
@@ -159,43 +193,6 @@ impl Account {
         let reach = db.dial_hints()?.iter().map(|a| Value::Str(a.to_string())).collect();
         let offer = PairOffer(pack(OFFER, &Value::List(vec![Value::Int(1), Value::bytes(self.thing.as_bytes()), Value::bytes(profile.as_bytes()), Value::List(reach), Value::Bytes(secret.to_vec())])));
         Ok(Offering { account: *self, offer, secret })
-    }
-}
-
-/// Makes the account on `e` (spec/permissions.md §8 Making), in one transaction: A minted with the
-/// node thing as mint admin, its inbox and profile minted with admin A, each independent, held by
-/// strongs from A's `holds.0`; the inbox's setting enabling both inbox signals; A's card on the
-/// profile naming the inbox; the node root's strong to A, its settings on A and its dial entry on A and the
-/// profile. A and the profile.
-fn make(e: &mut eng::Engine) -> Result<(Tid, Tid)> {
-    let root = e.node_root().ok_or_else(|| Error::Storage("no node root".into()))?;
-    let admins = [eng::MintAdmin::Thing(e.me()), eng::MintAdmin::Minted(0), eng::MintAdmin::Minted(0)];
-    let now = e.now();
-    let (ts, _) = e.mint_independent(&admins, |ts| {
-        let [a, inbox, profile] = *ts else { return Err(eng::Error::Misuse("three minted")) };
-        let add = |v| osis::internals::crdt::PathOp { path: Vec::new(), op: osis::internals::crdt::Op::Add(v) };
-        let mut held = eng::Mutation::new();
-        held.op(a, &ct::HOLDS, add(Value::Strong(inbox)))?.op(a, &ct::HOLDS, add(Value::Strong(profile)))?;
-        held.set(a, &PROFILE, &Weak(profile))?.set(profile, &OF, &Weak(a))?;
-        let mut signals = eng::Mutation::new();
-        let mut setting = ct::RetentionSetting::default();
-        setting.take_inbox_signals();
-        signals.set(inbox, &ct::RETENTION, &setting)?;
-        // A's card on the profile naming the inbox, acting as A (spec/sync-inbox.md §1 Card): its
-        // keys are filled in as A's `keys.0` is written (`Engine::take_cards`)
-        let card = eng::flows::cards::put(profile, a, &eng::flows::cards::naming(Some(inbox), now))?;
-        // the node root's in commits of their own: it is local, under no sync ID
-        let mut hold = eng::Mutation::new();
-        hold.op(root, &ct::HOLDS, add(Value::Strong(a)))?;
-        let mut settings = eng::Mutation::new();
-        settings.set(root, &ct::SETTINGS, &Weak(a))?.set(root, &ct::DIAL_ON, &[Weak(a), Weak(profile)].into_iter().collect())?;
-        Ok(vec![held, signals, card, hold, settings])
-    })?;
-    // the card carries A's keys and the inbox's
-    e.refresh_cards()?;
-    match ts.as_slice() {
-        [a, _, profile] => Ok((*a, *profile)),
-        _ => Err(Error::Storage("account making minted otherwise".into())),
     }
 }
 
@@ -306,20 +303,23 @@ impl Offering {
     /// returns its node thing with the reply to carry back. The offer is used up. `Invalid` for a
     /// request to another offer; `Unsupported` through a connection.
     pub fn accept(self, db: &Osis, req: &PairRequest) -> Result<(Tid, PairReply)> {
-        if !db.has_store() {
-            return Err(Error::Unsupported("pairing: not through a connection to a node".into()));
-        }
         let items = unpack(&req.0, REQUEST)?;
         let malformed = || Error::Invalid("malformed pairing request".into());
-        let [_, node, commits, records, Value::Bytes(_)] = items.as_slice() else { return Err(malformed()) };
+        let [_, Value::Str(keys), Value::Bytes(_)] = items.as_slice() else { return Err(malformed()) };
         if !tag_ok(&self.secret, "osis pair request", &items) {
             return Err(Error::Invalid("pairing request matches no open offer".into()));
         }
-        let node = tid(node).ok_or_else(malformed)?;
-        let keys = osis::internals::blob::Certificates::from_values(commits, records, usize::MAX).map_err(|_| malformed())?;
+        let keys: Keys = keys.parse()?;
         let a = self.account.thing;
-        let (offer, _) = db.engine(|e| e.pair(&a, &node, &keys, Role::Admin))?;
-        Ok((node, PairReply(seal(REPLY, &self.secret, "osis pair reply", vec![offer.to_value()]))))
+        // only an admin node pairs: a grant by any other is invalid wherever it lands, and would
+        // hand the new node an offer of nothing
+        if db.role_on(a)? != Some(Role::Admin) {
+            return Err(Error::Permission { tid: a, needs: Role::Admin });
+        }
+        let node = db.take_keys(&keys)?;
+        db.grant(a, node, Role::Admin, GrantOpts::default())?;
+        let offer = db.offer(a, node)?;
+        Ok((node, PairReply(seal(REPLY, &self.secret, "osis pair reply", vec![Value::Str(offer.to_string())]))))
     }
 }
 
@@ -357,9 +357,8 @@ pub fn pair(store: Store, offer: &PairOffer, mut cfg: osis::Config) -> Result<Jo
         }
     }
     let db = Osis::create(store, cfg)?;
-    let keys = db.engine(|e| e.node_keys())?;
-    let [commits, records] = keys.to_values();
-    let request = PairRequest(seal(REQUEST, &secret, "osis pair request", vec![Value::bytes(db.node().as_bytes()), commits, records]));
+    let keys = db.keys(db.node())?;
+    let request = PairRequest(seal(REQUEST, &secret, "osis pair request", vec![Value::Str(keys.to_string())]));
     Ok(Joining { db, account, profile, secret, request })
 }
 
@@ -377,11 +376,17 @@ impl Joining {
         if !tag_ok(&self.secret, "osis pair reply", &items) {
             return Err(Error::Invalid("pairing reply does not match the offer".into()));
         }
-        let offer = eng::flows::pairing::Offer::from_value(offer).ok_or_else(|| Error::Invalid("malformed pairing reply".into()))?;
-        if offer.account != self.account {
+        let Value::Str(offer) = offer else { return Err(Error::Invalid("malformed pairing reply".into())) };
+        let offer: Offer = offer.parse()?;
+        if offer.target() != self.account {
             return Err(Error::Invalid("pairing reply: an offer of another account".into()));
         }
-        self.db.engine(|e| e.take_offer(&offer)).map_err(|e| Error::Invalid(format!("pairing reply: {e}")))?;
+        // held from the node root, which keeps the node's settings on it
+        let root = self.db.node_root()?;
+        self.db.take_offer(&offer, root).map_err(|e| Error::Invalid(format!("pairing reply: {e}")))?;
+        let mut w = self.db.write();
+        w.at(root, SETTINGS).set(&Weak(self.account))?;
+        w.commit()?;
         self.db.publish_dial_on(&[self.account, self.profile])?;
         Ok((self.db, Account { thing: self.account }))
     }

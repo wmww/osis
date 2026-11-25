@@ -498,7 +498,7 @@ pub use keys::{DynamicAspectKey, core};
 pub use large::ValueStream;
 pub use read::{AspectRef, Grant, Grants, PathRef, Stamp};
 pub use retention::History;
-pub use share::{Address, GrantOpts, Holder, HolderKind, LinkId, LinkInfo, Link, LinkOpts, Reads, SetRoleOpts, Url};
+pub use share::{Address, GrantOpts, Holder, HolderKind, Keys, LinkId, LinkInfo, Link, LinkOpts, Offer, Reads, SetRoleOpts, Url};
 pub use syncing::{Status, SyncScope, SyncState, UnitSync};
 pub use sources::{UnitSource, NodeLogin};
 pub use text::{Splice, TextSession};

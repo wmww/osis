@@ -43,7 +43,7 @@ fn samples() -> Vec<(&'static str, &'static str, Value)> {
         ("keys", "keys.0", KEYS.encode(&keys)),
         ("secrets", "secrets.0", SECRETS.encode(&secrets)),
         ("sync", "sync.0", SYNC.encode(&sync_ids)),
-        ("dial", "dial.0", DIAL.encode(&BTreeMap::from([(vec![36; 32], vec!["peer://203.0.113.7:4040".to_string()])]))),
+        ("dial", "dial.0", DIAL.encode(&BTreeMap::from([(tid(36).into(), Dial { key: vec![36; 32], urls: vec!["peer://203.0.113.7:4040".to_string()] })]))),
         ("settings", "settings^.0", SETTINGS.encode(&tid(37).into())),
         ("caps", "caps^.0", CAPS.encode(&BTreeMap::from([(tid(38).into(), Caps { policy: BTreeMap::from([("cap_bytes".to_string(), 1000)]), things: BTreeMap::from([(tid(33).into(), ThingCaps { entries: 5, bytes: 6 })]) })]))),
         ("clients", "clients^.0", CLIENTS.encode(&BTreeMap::from([(tid(34).into(), Client { secret_hash: [35; 32], until: Some(WallMs(1_700_000_000_000)) })]))),

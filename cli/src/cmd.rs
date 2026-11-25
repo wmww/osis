@@ -323,8 +323,16 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
     let db = ctx.db.clone();
     match cmd {
         Cmd::Init | Cmd::Pair(PairCmd::Join { .. }) | Cmd::Whoami => whoami(ctx),
-        Cmd::Hold { t } => t.iter().try_for_each(|x| Ok(db.hold(ctx.tid(x)?)?)),
-        Cmd::Unhold { t } => t.iter().try_for_each(|x| Ok(db.unhold(ctx.tid(x)?)?)),
+        Cmd::Hold { ref t } | Cmd::Unhold { ref t } => {
+            let (root, hold) = (db.node_root()?, matches!(cmd, Cmd::Hold { .. }));
+            let mut w = db.write();
+            for x in t {
+                let x = ctx.tid(x)?;
+                if hold { w.hold(root, x)? } else { w.unhold(root, x)? }
+            }
+            w.commit()?;
+            Ok(())
+        }
         Cmd::Pair(PairCmd::Offer) => {
             // print the offer, read the new node's request, print the reply and its node
             let o = ctx.account()?.offer_pairing(&db)?;

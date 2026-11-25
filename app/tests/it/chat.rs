@@ -37,7 +37,7 @@ fn shared(opts: &osis_chat::Options) -> (Arc<ManualClock>, Osis, Osis, Tid) {
     sync(&a, &b);
     let c = osis_chat::create(&a, opts, osis_app::store::account(&a).unwrap()).unwrap();
     a.grant(c, osis_app::store::account(&b).unwrap(), Role::Write, GrantOpts::default()).unwrap();
-    b.hold(c).unwrap();
+    { let mut w = b.write(); w.hold(b.node_root().unwrap(), c).unwrap(); w.commit().unwrap(); }
     (clock, a, b, c)
 }
 

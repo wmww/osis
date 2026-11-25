@@ -653,7 +653,7 @@ impl World {
             r => r.expect("pair"),
         }
         .0;
-        self.write(j, |e| e.take_offer(&offer)).expect("take the offer");
+        self.write(j, |e| e.take_pairing(&offer)).expect("take the offer");
         if let Some(n) = self.nodes.get_mut(j) {
             n.account = Some(acc);
             n.profile = profile;

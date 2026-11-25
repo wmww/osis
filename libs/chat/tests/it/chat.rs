@@ -107,7 +107,7 @@ fn edit_is_own_and_purges_as_the_set_lets_spec_permissions_6() {
     for (purge_by, gone) in [(PurgeBy::Admin, false), (PurgeBy::AuthorOrAdmin, true)] {
         let c = create(&alice, &Options { purge_by, ..Options::default() }, alice.node()).unwrap();
         alice.grant(c, bob.author(), Role::Write, Default::default()).unwrap();
-        bob.hold(c).unwrap();
+        { let mut w = bob.write(); w.hold(bob.node_root().unwrap(), c).unwrap(); w.commit().unwrap(); }
         let hers = post(&alice, c, "hers");
         deliver(&alice, &bob);
         assert!(matches!(edit(&bob, c, hers, "forged"), Err(Error::Invalid(_))), "another's message");

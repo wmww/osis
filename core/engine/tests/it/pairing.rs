@@ -50,7 +50,7 @@ fn only_an_admin_of_the_account_pairs_spec_permissions_8() {
     let mut w = Peer::new(1, T0).unwrap();
     let (node, keys) = (w.engine.me(), w.engine.node_keys().unwrap());
     let (offer, _) = lp.peers[0].engine.pair(&a, &node, &keys, Role::Write).unwrap();
-    w.engine.take_offer(&offer).unwrap();
+    w.engine.take_pairing(&offer).unwrap();
     lp.peers.push(w);
     lp.sync_all().unwrap();
     assert_eq!(lp.peers[1].engine.role_on(&a), Some(Role::Write));
@@ -73,11 +73,11 @@ fn an_offer_for_another_node_is_refused_spec_permissions_8() {
     let mut other = Peer::new(2, T0).unwrap();
     let (node, keys) = (meant.engine.me(), meant.engine.node_keys().unwrap());
     let (offer, _) = lp.peers[0].engine.pair(&a, &node, &keys, Role::Admin).unwrap();
-    let r = other.engine.take_offer(&offer);
+    let r = other.engine.take_pairing(&offer);
     assert!(matches!(r, Err(osis_engine::Error::BadInput(_))), "{r:?}");
     assert_eq!(other.engine.settings_thing().unwrap(), None);
     assert!(!other.engine.closure_holds(&a));
-    meant.engine.take_offer(&offer).unwrap();
+    meant.engine.take_pairing(&offer).unwrap();
     assert_eq!(meant.engine.settings_thing().unwrap(), Some(a));
 }
 
@@ -103,7 +103,8 @@ fn removing_a_node_rotates_the_account_and_drops_its_entries_spec_permissions_8(
     assert!(!e0.roster(&a).contains_key(&n1));
     assert_ne!(e0.epochs(&a).unwrap().role(Role::Read).current(), before, "A rotated");
     let dial = e0.get_typed(&a, &ct::DIAL).unwrap().unwrap_or_default();
-    assert!(!dial.contains_key([7u8; 32].as_slice()) && dial.contains_key([9u8; 32].as_slice()), "the removed node's entry alone goes: {dial:?}");
+    let n0 = e0.me();
+    assert!(!dial.contains_key(&osis_base::Weak(n1)) && dial.contains_key(&osis_base::Weak(n0)), "the removed node's entry alone goes: {dial:?}");
     assert!(e0.get_typed(&a, &ct::CAPS).unwrap().unwrap_or_default().is_empty());
     write(&mut lp, 0, a, "after");
     lp.sync_all().unwrap();

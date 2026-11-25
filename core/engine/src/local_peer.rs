@@ -721,7 +721,7 @@ impl LocalPeer {
         let a = self.peers[by].engine.settings_thing()?.ok_or(crate::error::Error::Misuse("the pairer acts for no account"))?;
         let (node, keys) = (p.engine.me(), p.engine.node_keys()?);
         let (offer, _) = self.peers[by].engine.pair(&a, &node, &keys, osis_base::Role::Admin)?;
-        p.engine.take_offer(&offer)?;
+        p.engine.take_pairing(&offer)?;
         Ok(a)
     }
 
@@ -1334,5 +1334,69 @@ impl LocalPeer {
         for p in &self.peers {
             p.clock.advance(ms);
         }
+    }
+}
+
+/// An account's pairing and removal as osis-account arranges them (spec/permissions.md §8), on
+/// the engine, for the harnesses: the library makes the same writes through the `osis` API.
+impl Engine {
+    /// What a new node shows the pairing node: its node thing's public key record.
+    pub fn node_keys(&mut self) -> Result<osis_blob::Certificates> {
+        let me = self.core.me();
+        self.holder_keys(&me)
+    }
+
+    /// Pairs node thing `node`, shown by `keys` (`node_keys`), into account `a` at `role`: its
+    /// grant on A and the offer to hand over (`Engine::offer`). `Permission` unless this node
+    /// holds admin on A; `BadInput` unless `keys` show `node`'s keys.
+    pub fn pair(&mut self, a: &Tid, node: &Tid, keys: &osis_blob::Certificates, role: osis_base::Role) -> Result<(crate::flows::offers::Offer, crate::flows::Done)> {
+        let me = self.core.me();
+        if self.core.role_now(&me, a) != Some(osis_base::Role::Admin) {
+            return Err(crate::error::Error::Permission { tid: *a, needs: osis_base::Role::Admin });
+        }
+        self.take_holder_keys(node, keys, None)?;
+        if self.current_keys(node).is_empty() {
+            return Err(crate::error::Error::BadInput("pairing: the keys shown are not the node's"));
+        }
+        let edge = osis_schema::core_types::Edge { role, until: None, may_grant: false, retain: false, floor: None };
+        let done = self.grant(a, node, &edge)?;
+        Ok((self.offer(a, node)?, done))
+    }
+
+    /// Takes a pairing offer held from the node root (`take_offer`), then names its account in
+    /// `settings^.0`.
+    pub fn take_pairing(&mut self, o: &crate::flows::offers::Offer) -> Result<crate::flows::Done> {
+        let root = self.core.node_root.ok_or(crate::error::Error::Misuse("no node root"))?;
+        let mut done = self.take_offer(o, &root)?;
+        let mut m = Mutation::new();
+        m.set(root, &osis_schema::core_types::SETTINGS, &osis_base::Weak(o.target))?;
+        done.add(self.commit(m)?);
+        Ok(done)
+    }
+
+    /// Removes node thing `node` from account `a`: the removal of its grant with A's rotation,
+    /// saying erase unless `retain`; then its `dial.0` entries on A and on each of `also` (A's
+    /// profile) and its `caps^.0` entry on A. `Permission` unless this node holds admin on A.
+    pub fn remove_node(&mut self, a: &Tid, node: &Tid, retain: bool, also: &[Tid]) -> Result<crate::flows::Done> {
+        use osis_schema::core_types as ct;
+        let me = self.core.me();
+        if self.core.role_now(&me, a) != Some(osis_base::Role::Admin) {
+            return Err(crate::error::Error::Permission { tid: *a, needs: osis_base::Role::Admin });
+        }
+        let mut done = self.demote(a, &crate::flows::Demotion { holder: *node, new: None, retain: Some(retain) })?;
+        let key = osis_base::Value::Weak(*node);
+        let mut m = Mutation::new();
+        for t in std::iter::once(*a).chain(also.iter().copied()) {
+            if self.role_on(&t) >= Some(osis_base::Role::Write) && self.get_typed(&t, &ct::DIAL)?.unwrap_or_default().contains_key(&osis_base::Weak(*node)) {
+                m.op(t, &ct::DIAL, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Remove(key.clone()) })?;
+            }
+        }
+        if self.get_typed(a, &ct::CAPS)?.unwrap_or_default().contains_key(&osis_base::Weak(*node)) {
+            m.op(*a, &ct::CAPS, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Remove(key) })?;
+        }
+        if !m.is_empty() {
+            done.add(self.commit(m)?);
+        }
+        Ok(done)
     }
 }

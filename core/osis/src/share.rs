@@ -5,7 +5,7 @@
 
 use crate::error::{Error, Result};
 use crate::handle::{Osis, ReadOnly};
-use osis_base::{Role, Tid, Time};
+use osis_base::{Role, Tid, Time, Value};
 use osis_engine::flows;
 use osis_schema::core_types as ct;
 use std::collections::{BTreeMap, BTreeSet};
@@ -216,6 +216,83 @@ impl Link {
     }
 }
 
+/// A text form `prefix` + base64url(CBOR of `v`).
+fn packed(prefix: &str, v: &Value) -> String {
+    format!("{prefix}{}", osis_base::base64url::encode(&osis_base::cbor::encode(v)))
+}
+
+/// What `packed` packed, or `Invalid` naming `what`.
+fn unpacked(s: &str, prefix: &str, what: &str) -> Result<Value> {
+    let bad = || Error::Invalid(format!("malformed {what}"));
+    let b = s.trim().strip_prefix(prefix).and_then(osis_base::base64url::decode).ok_or_else(bad)?;
+    osis_base::cbor::decode(&b, &osis_base::cbor::Limits::new(osis_base::format::MAX_OBJECT_DEPTH, b.len())).map_err(|_| bad())
+}
+
+/// A thing's public keys (`Osis::keys`), shown by hand to a node that has no card of it to read:
+/// once it takes them (`Osis::take_keys`) it can grant the thing roles. No secret. Text form
+/// `osis://keys/...`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Keys {
+    thing: Tid,
+    certs: osis_blob::Certificates,
+}
+
+const KEYS: &str = "osis://keys/";
+
+impl Keys {
+    /// The thing they are of.
+    pub fn thing(&self) -> Tid {
+        self.thing
+    }
+}
+
+impl std::fmt::Display for Keys {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let [commits, records] = self.certs.to_values();
+        f.write_str(&packed(KEYS, &Value::List(vec![Value::bytes(self.thing.as_bytes()), commits, records])))
+    }
+}
+
+impl std::str::FromStr for Keys {
+    type Err = Error;
+    fn from_str(s: &str) -> Result<Keys> {
+        let bad = || Error::Invalid("malformed keys".into());
+        let Value::List(v) = unpacked(s, KEYS, "keys")? else { return Err(bad()) };
+        let [thing, commits, records] = v.as_slice() else { return Err(bad()) };
+        let thing = thing.as_array().map(Tid::from_bytes).ok_or_else(bad)?;
+        let certs = osis_blob::Certificates::from_values(commits, records, usize::MAX).map_err(|_| bad())?;
+        Ok(Keys { thing, certs })
+    }
+}
+
+/// A grant handed over by hand (`Osis::offer`) in place of its delivery to the holder's inbox:
+/// the holder's node takes it (`Osis::take_offer`) and holds the role at once. No secret: it
+/// gives a role only to the holder it names. Text form `osis://offer/...`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Offer(osis_engine::flows::offers::Offer);
+
+const OFFER: &str = "osis://offer/";
+
+impl Offer {
+    /// The thing it grants a role on.
+    pub fn target(&self) -> Tid {
+        self.0.target
+    }
+}
+
+impl std::fmt::Display for Offer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&packed(OFFER, &self.0.to_value()))
+    }
+}
+
+impl std::str::FromStr for Offer {
+    type Err = Error;
+    fn from_str(s: &str) -> Result<Offer> {
+        osis_engine::flows::offers::Offer::from_value(&unpacked(s, OFFER, "offer")?).map(Offer).ok_or_else(|| Error::Invalid("malformed offer".into()))
+    }
+}
+
 /// A transport URL, such as `quic://example.org:4040`: where something listens or is dialed.
 /// `FromStr` checks it; a `quic://` URL without a port gets `:4040` spelled out.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -369,19 +446,15 @@ impl ReadOnly {
         self.thing_read(target, "holders", crate::port::method::HOLDERS, crate::watch::Filter::Due(crate::watch::Watch::RoleGraph), move |r| Ok(holders_in(r, target)))
     }
 
-    /// Holds `t` on this node: a strong in its node root (spec/sync-set.md §1), so this node syncs
-    /// and keeps `t` (spec/sync-set.md §4). This node alone holds it so.
-    /// `Unsupported` on a client with its own actor.
-    pub fn hold(&self, t: Tid) -> Result<()> {
-        self.local("hold")?;
-        Ok(self.engine(|e| e.hold(t.into()))?)
-    }
-
-    /// Removes this node's strong to `t` (`hold`): what only it held leaves the node closure.
-    /// `Unsupported` on a client with its own actor.
-    pub fn unhold(&self, t: Tid) -> Result<()> {
-        self.local("unhold")?;
-        Ok(self.engine(|e| e.unhold(t.into()))?)
+    /// This node's root: the thing holding what this node keeps (`Write::hold(root, t)`: this
+    /// node alone syncs and keeps `t` so) and naming the thing it keeps its settings on
+    /// (`core::SETTINGS`, read by `settings_thing`). Its own: nothing references it, no other
+    /// node reads it, and its writes beside others in a `Write` are a commit of their own in the
+    /// same transaction, so a thing it holds can be made in one write with its strong.
+    /// `Unsupported` through a connection.
+    pub fn node_root(&self) -> Result<Tid> {
+        self.local("node_root")?;
+        Ok(self.inner.node_root)
     }
 }
 
@@ -668,6 +741,50 @@ impl Osis {
     /// then the nodes it dials by configured address (`Config::dial`).
     fn link_peers(&self) -> Vec<osis_blob::DialHint> {
         self.locked(|l| osis_blob::link_peers(l.secret.public_key(), &[], &l.node.config().dial))
+    }
+
+    /// `t`'s public keys as held here, to show by hand (`Keys`). `UnknownActor` when none are
+    /// held: `t` has no keys of its own yet (`Write::create_with_keys` makes it with them; a `grant` to it or `set_card` of it gives it some).
+    /// `Unsupported` through a connection.
+    pub fn keys(&self, t: Tid) -> Result<Keys> {
+        self.local("keys")?;
+        let certs = self.engine(|e| e.holder_keys(&t))?;
+        if certs.commits.is_empty() {
+            return Err(Error::UnknownActor { tid: t });
+        }
+        Ok(Keys { thing: t, certs })
+    }
+
+    /// Takes keys shown by hand (`keys`): their thing can then be granted roles here. `Invalid`
+    /// when they hold no keys of it that this node judges valid. `Unsupported` through a
+    /// connection.
+    pub fn take_keys(&self, k: &Keys) -> Result<Tid> {
+        self.local("take_keys")?;
+        let t = k.thing;
+        let taken = self.engine(|e| e.take_holder_keys(&t, &k.certs, None).map(|_| !e.current_keys(&t).is_empty()))?;
+        if !taken {
+            return Err(Error::Invalid(format!("the keys shown are no keys of {t}")));
+        }
+        Ok(t)
+    }
+
+    /// The offer of `holder`'s grant on `target` (`grant`), to hand to its node by hand: in its
+    /// place, nothing is delivered to the holder's inbox. `Invalid` while no grant of `holder`
+    /// on `target` is here. `Unsupported` through a connection.
+    pub fn offer(&self, target: Tid, holder: Tid) -> Result<Offer> {
+        self.local_at(target, "offer")?;
+        Ok(Offer(self.engine(|e| e.offer(&target, &holder))?))
+    }
+
+    /// Takes an offer handed over by hand (`offer`) and holds its target by a strong from
+    /// `holder`'s `holds.0` (a thing this node holds, or `node_root()`), as `redeem` holds from
+    /// its joiner: this node then holds the role it grants and syncs the target. Its target.
+    /// `Invalid` (nothing taken) unless it grants this node a role. `Unsupported` through a
+    /// connection.
+    pub fn take_offer(&self, o: &Offer, holder: Tid) -> Result<Tid> {
+        self.local("take_offer")?;
+        self.engine(|e| e.take_offer(&o.0, &holder))?;
+        Ok(o.0.target)
     }
 
     /// Puts `of`'s card on `on` naming `inbox` (`of` itself, or another thing whose setting

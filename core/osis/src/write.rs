@@ -56,6 +56,8 @@ pub enum Purge {
 pub(crate) enum WriteOp {
     /// A new thing; its record fixes its tid.
     Create(CreationRecord),
+    /// A new thing minted with keys of its own (`Write::create_with_keys`).
+    CreateWithKeys(CreationRecord),
     /// An op at a path of a value aspect (whole-value ops at the root).
     Path { tid: Tid, key: u32, op: PathOp },
     /// A fire of a signal with `v`, replacing fire `replaces`.
@@ -186,7 +188,7 @@ impl<'d> Write<'d> {
             .ops
             .iter()
             .flat_map(|o| match o {
-                WriteOp::Create(r) => std::iter::once(r.tid()).chain(r.mint_admin()).collect(),
+                WriteOp::Create(r) | WriteOp::CreateWithKeys(r) => std::iter::once(r.tid()).chain(r.mint_admin()).collect(),
                 WriteOp::Path { tid, .. } | WriteOp::Fire { tid, .. } | WriteOp::PurgeBy { tid, .. } | WriteOp::Purge { tid, .. } | WriteOp::PurgeCommit { tid, .. } | WriteOp::PurgeAuthor { tid, .. } => vec![*tid],
                 WriteOp::PurgeThing(t) => vec![*t],
             })
@@ -252,7 +254,7 @@ impl<'d> Write<'d> {
         }
         for o in ops {
             let o = write_op_from(o)?;
-            if let WriteOp::Create(r) = &o {
+            if let WriteOp::Create(r) | WriteOp::CreateWithKeys(r) = &o {
                 w.created.push(r.tid());
             }
             w.ops.push(o);
@@ -289,8 +291,8 @@ impl<'d> Write<'d> {
     /// with a node thing (`node()`) or another thing that holds roles as admin. A thin client's own actor goes with the client, so it is
     /// refused as admin (`Invalid` at commit).
     ///
-    /// The same write must hold it: a strong to it from a thing this node holds (`hold`), else
-    /// the commit is `Invalid`. It syncs with
+    /// The same write must hold it: a strong to it from a thing this node holds or from its
+    /// node root (`hold`), else the commit is `Invalid`. It syncs with
     /// what holds it.
     pub fn create(&mut self, admin: Tid, expires: Option<Expiry>) -> Result<Tid> {
         let admin = self.known(admin)?;
@@ -302,11 +304,25 @@ impl<'d> Write<'d> {
         Ok(t)
     }
 
+    /// As `create` (with no expiry), the thing minted with keys of its own: whoever learns of
+    /// its role or of the roles granted it (a grant to it or on it, `Osis::offer`) learns of it
+    /// with them, before it syncs the thing, and `Osis::keys` shows them at once. Make so a thing
+    /// that is to hold roles or be granted from outside at once (an account, its inbox); a thing
+    /// made with `create` gets keys of its own at its first grant. Its minting is a commit of its
+    /// own ahead of this write's, in the same transaction.
+    pub fn create_with_keys(&mut self, admin: Tid) -> Result<Tid> {
+        let admin = self.known(admin)?;
+        let rec = self.db.engine(|e| e.thing_record(admin, None));
+        let t = rec.tid();
+        self.ops.push(WriteOp::CreateWithKeys(rec));
+        self.created.push(t);
+        Ok(t)
+    }
+
     /// `holder` holds `t`: a strong to `t` in `holder`'s `holds.0`, so `t` syncs with `holder`
     /// wherever `holder` is held (spec/sync-set.md §2) and stays while some held thing holds it.
     /// Holding a thing made in this write is what keeps it (`create`); holding one granted here
-    /// syncs it (spec/sync-set.md §4). This node's own hold, held by no other node of the
-    /// account, is `Osis::hold`: a commit of the node's, never part of a write.
+    /// syncs it (spec/sync-set.md §4). Held by `Osis::node_root`, this node alone holds it.
     pub fn hold(&mut self, holder: Tid, t: Tid) -> Result<()> {
         self.at(holder, crate::core::HOLDS).path(osis_schema::p![]).add(&Ref::Strong(Strong(t)))
     }
@@ -432,14 +448,15 @@ impl<'d> Write<'d> {
         let key = |i: u32| keys.get(i as usize).ok_or_else(|| Error::Invalid("op names no key of its write".into()));
         for op in ops {
             match op {
-                WriteOp::Create(rec) => {
+                WriteOp::Create(rec) | WriteOp::CreateWithKeys(rec) if acting.is_some() && rec.mint_admin() == acting => {
                     // the client's actor goes away with the client (notes/client-port.md §3)
-                    if let Some(a) = acting
-                        && rec.mint_admin() == Some(a)
-                    {
-                        return Err(Error::Invalid("a thin client's actor goes with it, so it creates nothing under it: name a thing that stays".into()));
-                    }
+                    return Err(Error::Invalid("a thin client's actor goes with it, so it creates nothing under it: name a thing that stays".into()));
+                }
+                WriteOp::Create(rec) => {
                     m.create(rec);
+                }
+                WriteOp::CreateWithKeys(rec) => {
+                    m.create_with_keys(rec);
                 }
                 WriteOp::PurgeThing(_) if expires.is_some() => return Err(Error::Invalid("a purge of a thing does not expire: this write has an expiry, so write it as a commit of its own".into())),
                 // a dynamic key's kind is known only now: a write of the other kind never

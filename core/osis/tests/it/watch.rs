@@ -208,7 +208,7 @@ fn two_nodes_remote_watch() {
     // b reads t
     deliver(&b, &a);
     a.grant(t, b.author(), Role::Read, Default::default()).unwrap();
-    b.hold(t).unwrap();
+    { let mut w = b.write(); w.hold(b.node_root().unwrap(), t).unwrap(); w.commit().unwrap(); }
     deliver(&a, &b);
     let (tx, rx) = channel();
     let _s = b.at(t, osis::DynamicAspectKey::untyped(k.clone())).on_change(move |_, c| tx.send(c).unwrap()).unwrap();
@@ -247,7 +247,7 @@ fn an_until_passing_tells_a_roster_watcher_spec_permissions_2() {
     alice.grant(h, bob.author(), osis::Role::Read, osis::GrantOpts::default()).unwrap();
     deliver(&alice, &carol);
     for t in [g, h, k] {
-        carol.hold(t).unwrap();
+        { let mut w = carol.write(); w.hold(carol.node_root().unwrap(), t).unwrap(); w.commit().unwrap(); }
     }
     deliver(&alice, &carol);
     let (tx, rx) = channel();
@@ -826,7 +826,7 @@ fn an_until_ending_an_actors_way_in_tells_its_roster_watch() {
     // §3): alice may grant it
     bob.grant(thing(&bob), actor, Role::Read, Default::default()).unwrap();
     deliver(&bob, &alice);
-    alice.hold(actor).unwrap();
+    { let mut w = alice.write(); w.hold(alice.node_root().unwrap(), actor).unwrap(); w.commit().unwrap(); }
     let (grp, t) = (thing(&alice), thing(&alice));
     alice.grant(grp, actor, Role::Read, osis::GrantOpts { until: Some(osis::Time(T0 + 60_000)), ..Default::default() }).unwrap();
     // bob reads both itself: the node's view stays
@@ -836,7 +836,7 @@ fn an_until_ending_an_actors_way_in_tells_its_roster_watch() {
     alice.grant(t, grp, Role::Read, osis::GrantOpts::default()).unwrap();
     deliver(&alice, &bob);
     for x in [grp, t] {
-        bob.hold(x).unwrap();
+        { let mut w = bob.write(); w.hold(bob.node_root().unwrap(), x).unwrap(); w.commit().unwrap(); }
     }
     deliver(&alice, &bob);
     let a = bob.acting_as(actor);

@@ -118,27 +118,33 @@ impl Engine {
             }
             let ts: Vec<Tid> = recs.iter().map(osis_base::CreationRecord::tid).collect();
             let muts = also(&ts)?;
-            // what the transaction gives each minted thing that a keyset written now carries a
-            // KEM key for (spec/crypto.md §3, Published KEM keys): admin on a thing minted after
-            // it (its record edge), a card of it (every role), a setting enabling a signal
-            // (`rotation::kem::by_setting`)
-            for (i, t) in ts.iter().enumerate() {
-                if admins.iter().skip(i + 1).any(|x| *x == MintAdmin::Minted(i)) || muts.iter().any(|m| m.writes_card_of(t)) {
-                    tx.publishing.push((*t, Role::Admin));
-                }
-                if let Some(r) = muts.iter().rev().find_map(|m| m.setting_of(t)).and_then(|s| rotation::kem::by_setting(&s)) {
-                    tx.publishing.push((*t, r));
-                }
-            }
-            for rec in recs {
-                rotation::own_secrets_new(tx, rec, &[], None, &mut done)?;
-            }
+            mint_with_keys(tx, recs, &muts, &mut done)?;
             for m in muts {
                 done.add(Engine::commit_tx(tx, m)?);
             }
             Ok((ts, done))
         })
     }
+}
+
+/// Mints the things of `recs` independent (spec/permissions.md §3), in order, each one's record
+/// in its own-secrets rotation, ahead of `muts`, the commits the transaction writes for them.
+/// What the transaction gives each that a keyset written now carries a KEM key for (spec/crypto.md
+/// §3, Published KEM keys): admin on a thing minted after it (its record edge), a card of it
+/// (every role), a setting enabling a signal (`rotation::kem::by_setting`).
+pub(crate) fn mint_with_keys(tx: &mut Tx<'_>, recs: Vec<osis_base::CreationRecord>, muts: &[Mutation], done: &mut Done) -> Result<()> {
+    for (i, t) in recs.iter().map(osis_base::CreationRecord::tid).enumerate() {
+        if recs.iter().skip(i + 1).any(|r| r.mint_admin() == Some(t)) || muts.iter().any(|m| m.writes_card_of(&t)) {
+            tx.publishing.push((t, Role::Admin));
+        }
+        if let Some(r) = muts.iter().rev().find_map(|m| m.setting_of(&t)).and_then(|s| rotation::kem::by_setting(&s)) {
+            tx.publishing.push((t, r));
+        }
+    }
+    for rec in recs {
+        rotation::own_secrets_new(tx, rec, &[], None, done)?;
+    }
+    Ok(())
 }
 
 /// A mint admin of a thing `Engine::mint_independent` mints.

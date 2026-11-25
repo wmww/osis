@@ -2690,6 +2690,8 @@ name = "osis-account"
 version = "0.1.0"
 dependencies = [
  "osis",
+ "osis-base",
+ "osis-crypto",
  "osis-schema",
  "tokio",
 ]

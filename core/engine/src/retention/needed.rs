@@ -56,10 +56,12 @@ impl Engine {
     /// goes (spec/commits.md §5 What a held thing needs), as at a release. The first call after an
     /// open judges every held record and every record a pending commit awaits, as an open keeps
     /// no list of what arrived. O(what arrived). First the stale cards the pass moved are written
-    /// again (`refresh_cards`).
+    /// again (`refresh_cards`), and this node's dial entry where missing (`refresh_reach`).
     pub fn settle_needs(&mut self) -> Result<()> {
-        // the cards the pass moved are rewritten where stale, from what it brought
+        // the cards the pass moved are rewritten where stale, from what it brought; this node's
+        // dial entry goes on the things it names that the pass brought
         self.refresh_cards()?;
+        self.refresh_reach()?;
         let mut due: BTreeSet<Tid> = match self.core.pass_due.replace(BTreeSet::new()) {
             Some(a) => a,
             None => {
