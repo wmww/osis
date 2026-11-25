@@ -112,3 +112,51 @@ fn public_explore() {
     assert!(found[4].0 > 0, "exact: agree");
 }
 
+
+// Public pieces over time (held_model::closure::public_epochs): T strongs D, a dependent of the
+// public thing X, and X rotates once after the public's grant. The rotation's open box is in the
+// public's edge piece (spec/permissions.md §4 Key part: each role commit boxing it once set), so a
+// reader served only T's sync ID holds X's current epoch and reads D's new commits; carrying only
+// the commits writing the grant leaves it at the grant's epoch for good (X's bodies are not under
+// T's sync ID: X is not in T's unit).
+#[test]
+fn a_public_things_rotation_reaches_a_reader_of_its_dependent() {
+    use held_model::closure::public_epochs::{Ev, Pieces, World};
+    let w = World { evs: vec![Ev::Grant, Ev::Rot], to_dep: true };
+    assert_eq!(w.reader(Pieces::Edge, 2), (true, Some(1)));
+    assert_eq!(w.reader(Pieces::GrantOnly, 2), (true, Some(0)));
+    assert_eq!(w.breaks(Pieces::GrantOnly), (false, true));
+    // T strongs X itself: X's rotation commits are bodies under T's sync ID, each opening with the
+    // epoch before
+    let w = World { evs: vec![Ev::Grant, Ev::Rot, Ev::Rot], to_dep: false };
+    assert_eq!(w.breaks(Pieces::GrantOnly), (false, false));
+}
+
+// Control: the public's removal is carried while a strong reaches X, though the public no longer
+// reads it; carried only while the public reads X, a reader that entered X keeps it.
+#[test]
+fn a_removal_of_the_public_is_carried_after_it() {
+    use held_model::closure::public_epochs::{Ev, Pieces, World};
+    let w = World { evs: vec![Ev::Grant, Ev::Remove], to_dep: false };
+    assert_eq!(w.reader(Pieces::Edge, 2).0, false);
+    assert_eq!(w.reader(Pieces::WhileRead, 2).0, true);
+    assert!(w.breaks(Pieces::WhileRead).0);
+}
+
+// Every history of up to five grants, rotations and removals of the public on X, T strongs X or
+// its dependent: the edge piece breaks neither property; each control breaks its own.
+#[test]
+fn public_epochs_explore() {
+    use held_model::closure::public_epochs::{all, Pieces};
+    let mut found = [(0usize, 0usize); 3];
+    for w in all(5) {
+        for (i, rule) in [Pieces::Edge, Pieces::GrantOnly, Pieces::WhileRead].into_iter().enumerate() {
+            let (a, r) = w.breaks(rule);
+            found[i].0 += a as usize;
+            found[i].1 += r as usize;
+        }
+    }
+    assert_eq!(found[0], (0, 0), "edge piece");
+    assert!(found[1].1 > 0, "grant only: reads");
+    assert!(found[2].0 > 0, "while read: agree");
+}

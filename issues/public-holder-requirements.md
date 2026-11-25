@@ -11,3 +11,7 @@ spec/requirements.md Concepts: "**Role**: ... held by one thing on another. A **
 - **(b) Keep the wording, make the public a thing**: a well-known thing with a constant record, keys and secrets, nobody able to sign as it or grant on it. Costs a thing that cannot be edited or granted on (against "things are all made of the same stuff") and constants every node must carry.
 
 Proposed: (a). Design and the reasons: notes/public-and-cards-brief.md (Decisions).
+
+## Related: may-grant to the public
+spec/permissions.md §2 May-grant grant applies to "a grant for a thing or key", so a may-grant holder cannot grant the public read (make a thing public); only a path giving admin can. Reading the public as any holder there ("every other rule reads its grant as any grant") would let a may-grant reader publish what it may already hand to any number of readers. Decide with the wording above.
+

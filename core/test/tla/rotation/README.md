@@ -1,10 +1,10 @@
 # Rotation, claim steps, re-seal (TLA+)
 > Summary: TLC model of read-role rotation for one actor and its sync ID at one store (spec/crypto.md §3–§5, spec/sync-ids.md §2/§5, spec/permissions.md §3–§4, spec/commits.md §2): epochs established by names (the removals a rotation's rotator held), frozen coverage (an epoch covers exactly the departures it names), a removal withheld forever from one admin, forced and eager rotation, forks, removal carried in its rotation, grants, re-registration after logging the rotation chain, opens by sync key and claims, claim-set drops, stranded stranded notices (also on a refused claim), re-seal after a complete pass (by inbox and under the sync ID), rotation by inbox to holders without a box at the epoch before, per-node box knowledge, co-reader peers, planted boxes (reading-only secrets). Holder actors are Depth0.tla's (depth-0 sealing, rule 4 for cycles); timed edges and finalizes Finalize.tla's. Written from spec/ alone.
 
-Files: `Rotation.tla` (the model; constants come straight from each `.cfg`), `ASSUMPTIONS.md`, `AMBIGUITIES.md` (the findings). `Depth0.tla`, `Finalize.tla`, `Cover.tla`, `Lockout.tla`, `Cut.tla`, `Withdrawn.tla`, `LeftOut.tla`, `ForkRot.tla`, `ForkDepth.tla`, `Planted.tla` and `FireKey.tla` are separate models (sections below).
+Files: `Rotation.tla` (the model; constants come straight from each `.cfg`), `ASSUMPTIONS.md`, `AMBIGUITIES.md` (the findings). `Depth0.tla`, `Finalize.tla`, `Cover.tla`, `Lockout.tla`, `Cut.tla`, `Withdrawn.tla`, `LeftOut.tla`, `ForkRot.tla`, `ForkDepth.tla`, `Planted.tla`, `FireKey.tla` and `KemKeys.tla` are separate models (sections below).
 
 ## Run
-`../run.sh rotation` (and `depth0`, `lockout`, `cut`, `finalize`, `cover`, `withdrawn`, `leftout`, `forkrot`, `forkdepth`, `planted`, `firekey`) runs a model's listed instances, each model about a minute or less at one worker on a quiet box; `../run.sh <module> <cfg>...` runs others by name. It fetches TLC into `~/.cache/tla/` if missing. By hand, from this directory (Java 11+):
+`../run.sh rotation` (and `depth0`, `lockout`, `cut`, `finalize`, `cover`, `withdrawn`, `leftout`, `forkrot`, `forkdepth`, `planted`, `firekey`, `kemkeys`) runs a model's listed instances, each model about a minute or less at one worker on a quiet box; `../run.sh <module> <cfg>...` runs others by name. It fetches TLC into `~/.cache/tla/` if missing. By hand, from this directory (Java 11+):
 ```
 java -XX:+UseParallelGC -cp ~/.cache/tla/tla2tools.jar tlc2.TLC -workers 1 \
   -metadir ../../../../target/tlc-states -config MC_grant.cfg Rotation
@@ -360,3 +360,18 @@ Findings:
 - **F3 (closed by `vouch`; `FK_seen`, `FK_partial`).** Under `seen` the step names the field's epoch whatever A holds of it and carries A's newest held epoch: A holding W1's knowing e3 as its `keys.0` delta alone (honest: its boxes still to come), or as W2's copy, steps naming e3 with e1's key; O holding e3 seals to e1, which R holds, and once A holds e3 whole nothing is due (the step names the field's epoch), so it lasts for good with read-only rotations. Under `vouch` A writes a key only for the field's epoch held current, so O waits until A holds e3.
 - **Stated limit (W2 masking; `FK_mask`).** W2 writes a keyset stamped after e3: a self-boxed or junk one (O pends; A cannot vouch), or a copy of e1, which puts the step naming e1 back in force at O until A's next step reaches it. W2 holds e3 and could hand R every fire anyway; a writer holding no secret (a keyless grant) can copy too (issues/unvouched-read-keyset-stalls-fires.md).
 - A2 (spec/sync-inbox.md §2): "If T's read key in force changes before a peer takes it, the sender seals it again": whether a change to none takes back a fire already sealed and offered (so it waits pending) is not said. The model takes it back (seal and take are one step); a fire sealed before O holds a knowing rotation and taken after would otherwise open to R.
+
+## KemKeys.tla: KEM keys only where sealed to (spec/crypto.md §3 Published KEM keys, KEM key due; §4 Seal; spec/permissions.md §2 Granting to a thing)
+Holder actor M of A, read role, M's keysets a line. m (an admin of M) rotates M (`MaxM` unprompted, a removal of x, a due re-key), learning M's grant on A when its edge piece reaches M's sync ID; `other` (a card, a role elsewhere, a signal) gives a KEM key until it ends. g (a writer of A that may not rotate M) grants M and seals it at each rotation of A by the newest keyset of M it holds (a card, M's readers' reports): there when it carries a KEM key, else M is left out (an older one is stale). x is a party removed from M, or the public granted read on M and removed (its open boxes make x every party). `Rule`: `written` (KEM key decided when written only), `due` (also KEM key due), `fallback` (control: Seal below a KEM-less newest keyset). `Check`: the granter's check. `StaleCard`: g starts one keyset behind, x removed. Invariants `NoLeak` (content g seals holding a keyset made knowing x's removal is not sealed to one x holds), `NoLeakAll` (none x opens at all); property `Live` (once granted, M boxed at its newest keyset for good).
+
+| cfg | setting | result |
+|---|---|---|
+| `KK_due` | due, check | pass (1,623 states) |
+| `KK_due_nocheck` | due, no check, no other reason | pass: the due re-key alone brings M in |
+| `KK_stale` | due, stale card | pass |
+| `KK_written` | written | **fails** `Live`: g grants at k1 (a card stood), the card goes, m rotates before learning the grant (k2, no KEM key); g leaves M out at k2, and nothing rotates M again |
+| `KK_fallback` | control | **fails** `NoLeak`: g seals at k1 below KEM-less k2 made knowing x's removal |
+| `KK_stale_all` | stated limit | **fails** `NoLeakAll`: a stale card's keyset is sealed to until M's newer keyset reaches g |
+
+Not modelled: forks of M's keysets (a foreign keyset makes nothing due; each side re-keys its own), several sealers (a no-candidate leave-out is no block: a sealer holding the KEM-less keyset's secret may box M there, which no record need stop).
+

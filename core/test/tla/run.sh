@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Run one TLA+ module's TLC instances. Usage: run.sh <module> [cfg...]
-#   <module>: sync, sides, rotation, reseal, joint, jointrule, depth0, lockout, cut, finalize, cover, tail, withdrawn, leftout, forkrot, forkdepth, planted, firekey, netstream, netshared, netopen, nethold, netkeep
+#   <module>: sync, sides, rotation, reseal, joint, jointrule, depth0, lockout, cut, finalize, cover, tail, withdrawn, leftout, forkrot, forkdepth, planted, firekey, kemkeys, netstream, netshared, netopen, nethold, netkeep
 #   no cfg: the module's instances listed below (each module under 3 min at
 #   one worker, but depth0: 10-20 min); with cfg names: those instances instead
 #   (the larger ones in the module's README, by hand), judged only if listed
@@ -163,6 +163,12 @@ instances=(
   "firekey rotation FireKey FK_partial.cfg fail:temporal"    # negative control: as FK_seen, honest: a keys.0 delta held before its boxes leaves the old epoch in force for good
   "firekey rotation FireKey FK_fork.cfg fail:NoLeakStrict"   # finding F2: an honest fork not knowing the removal masks the knowing keyset (README)
   "firekey rotation FireKey FK_mask.cfg fail:NoLeakAll"      # stated limit: a W2 keyset masks the knowing keyset (README)
+  "kemkeys rotation KemKeys KK_due.cfg pass"            # KEM keys only where sealed to (spec/crypto.md §3 Published KEM keys): a KEM-less current keyset the rule now asks for makes M's rotation due; M boxed again for good, nothing leaks
+  "kemkeys rotation KemKeys KK_due_nocheck.cfg pass"    # ... without the granter's check: the due rotation alone brings M in
+  "kemkeys rotation KemKeys KK_stale.cfg pass"          # ... the granter starting from a stale card
+  "kemkeys rotation KemKeys KK_written.cfg fail:temporal" # negative control: KEM keys decided when written only: a keyset written before M's rotator learns the grant leaves M out of A for good
+  "kemkeys rotation KemKeys KK_fallback.cfg fail:NoLeak"  # negative control: Seal falls back below a KEM-less newest keyset, the removed party (or the public) opens content
+  "kemkeys rotation KemKeys KK_stale_all.cfg fail:NoLeakAll" # stated limit: a stale card's keyset is sealed to until M's newer keyset reaches the granter
   "netstream net MCStream S_loss.cfg pass"
   "netstream net MCStream S_restore.cfg pass"
   "netstream net MCStream S_copies.cfg pass"
@@ -284,7 +290,7 @@ for line in "${instances[@]}"; do
   [ "$m" = "$module" ] && dir=$d tla=$t
 done
 if [ -z "$dir" ]; then
-  echo "usage: $0 sync|sides|rotation|reseal|joint|jointrule|depth0|lockout|cut|finalize|cover|tail|withdrawn|leftout|forkrot|forkdepth|planted|firekey|netstream|netshared|netopen|nethold|netkeep [cfg...]" >&2
+  echo "usage: $0 sync|sides|rotation|reseal|joint|jointrule|depth0|lockout|cut|finalize|cover|tail|withdrawn|leftout|forkrot|forkdepth|planted|firekey|kemkeys|netstream|netshared|netopen|nethold|netkeep [cfg...]" >&2
   exit 2
 fi
 

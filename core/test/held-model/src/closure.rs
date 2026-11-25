@@ -17,7 +17,9 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 pub mod entry;
+pub mod cards;
 pub mod public;
+pub mod public_epochs;
 pub mod keys;
 
 pub type T = usize;

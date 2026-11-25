@@ -21,6 +21,7 @@ mod spec_gaps;
 mod spec_holders;
 mod spec_entry;
 mod spec_public;
+mod spec_cards;
 mod spec_joint;
 mod spec_undo;
 mod spec_waits;
