@@ -151,7 +151,10 @@ impl Core {
     /// Invariant: a box is any writer's word, a step an admin's (`sync_ids::steps`: placed from
     /// valid `sync.0` writes alone, verified to their genesis), and the step binds this very
     /// secret. So no writer below admin makes a dependent thing count independent anywhere by a
-    /// box of its choosing (`tests_planted::box_on_a_dependent_thing_splits_nobody`).
+    /// box of its choosing (`tests_planted::box_on_a_dependent_thing_splits_nobody`), nor one
+    /// demoted since by its old word: its `sync.0` write is judged at its point
+    /// (`a_demoted_admins_step_splits_nobody`). An admin's step and box with no keyset count
+    /// at the boxed nodes alone: its word, as a rotation making the thing independent would be.
     fn stepped(&self, tid: &Tid, e: &ActorEpochs) -> bool {
         let Some(steps) = self.ix.steps.get(tid) else { return false };
         e.sync.held().any(|(_, s)| steps.bears_sync(&osis_crypto::role_key(osis_crypto::RoleKey::Sync, s).verifying_key().to_bytes()))

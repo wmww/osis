@@ -299,8 +299,69 @@ fn a_grantee_counts_its_target_independent_before_the_keyset_spec_permissions_4(
     let e1 = &lp.peers[1].engine;
     assert!(!e1.core.is_independent(&g), "G holds a keyset of g");
     assert!(e1.core.counts_independent(&g), "G's box and g's step leave g dependent at G");
+    lp.peers[1].restart(7).unwrap();
+    assert!(lp.peers[1].engine.core.counts_independent(&g), "a fresh load of G counts g dependent");
     let s = lp.peers[0].engine.sync_ids(&g).unwrap()[0].id;
     assert!(lp.synced(1).unwrap().contains(&s), "G does not sync g's sync ID");
     lp.sync_all().unwrap();
     assert!(reads_key(&mut lp, 1, g, "k"));
 }
+
+/// Peer `i`'s genesis step of a made-up sync ID on `y` and a box of the same made-up epochs to
+/// `to` (read and sync), in one commit, with no keyset: what only an admin's word places.
+fn plant_step_box(lp: &mut LocalPeer, i: usize, y: Tid, to: Tid, seed: u8) -> CommitId {
+    let mut fake = osis_keys::ActorEpochs::default();
+    for (k, r) in [Role::Sync, Role::Read, Role::Write, Role::Admin].into_iter().enumerate() {
+        let s = Secret32::from_bytes([seed.wrapping_add(k as u8); 32]);
+        let e = Epoch::derive(&y, r, 5, &s).unwrap();
+        fake.role_mut(r).set_secret(e, s);
+        fake.role_mut(r).set_established(e, osis_keys::Provenance::Fixed);
+    }
+    let m = lp.peers[i].engine.run(|tx| {
+        let rcpt = crate::flows::recipient(tx, to, Role::Read)?;
+        let w = osis_keys::box_holder(&y, &fake, &osis_keys::HistoryBoxes::new(), &rcpt, &[Role::Sync, Role::Read].into(), &mut *tx.rng)?.unwrap();
+        let issued = crate::flows::sync_ids::issue(tx, &y, &fake, None, &[], &Secret32::from_bytes([seed; 32]), None)?;
+        let mut m = Mutation::new();
+        crate::flows::put_secrets(&mut m, y, &w, true)?;
+        crate::flows::sync_ids::put_step(&mut m, y, issued.step.sync_id, &issued, true)?;
+        Ok(m)
+    });
+    lp.peers[i].engine.commit_hostile(m.unwrap()).unwrap().unwrap()
+}
+
+/// A dependent thing of `g` minted by peer 0 and held by every peer, with "before" on it.
+fn dependent_of(lp: &mut LocalPeer, g: Tid) -> Tid {
+    let mut m = Mutation::new();
+    let y = lp.peers[0].engine.new_thing(&mut m, g);
+    lp.peers[0].commit(m).unwrap();
+    lp.hold(y);
+    put_on(lp, 0, y, "before", 1);
+    lp.sync_all().unwrap();
+    y
+}
+
+// spec/sync-set.md §2 (Counts as independent: a step is an admin's word), spec/permissions.md §2:
+// D (peer 1), an admin of g lowered to write, then writes a step and a box to R (peer 2) on Y, a
+// dependent of g, with no keyset. Its `sync.0` write is judged at its point like any (D is no
+// admin there), so the step places nothing: Y stays dependent at every node and A (peer 0) and R
+// read each other's writes on it.
+#[test]
+fn a_demoted_admins_step_splits_nobody_spec_sync_set_2() {
+    let (mut lp, g, tids) = granted(3, &[(1, Role::Admin), (2, Role::Write)]);
+    let y = dependent_of(&mut lp, g);
+    lp.peers[0].engine.demote(&g, &crate::flows::Demotion { holder: tids[1], new: Some(edge(Role::Write)), retain: None }).unwrap();
+    lp.sync_all().unwrap();
+    plant_step_box(&mut lp, 1, y, tids[2], 40);
+    lp.sync_all().unwrap();
+    lp.peers[2].restart(7).unwrap();
+    assert!(lp.peers[2].engine.core.ix.secrets.get(&y).is_some_and(|e| e.sync.held().next().is_some()), "R opens no box of D's");
+    for i in 0..3 {
+        assert!(lp.peers[i].engine.core.ix.steps.get(&y).is_none(), "peer {i} places a demoted admin's step");
+        assert_eq!(lp.peers[i].engine.core.secret_actor(&y), Some(g), "peer {i} counts Y independent by a demoted admin's step");
+    }
+    put_on(&mut lp, 2, y, "by R", 1);
+    put_on(&mut lp, 0, y, "by A", 1);
+    lp.sync_all().unwrap();
+    assert!(reads_key(&mut lp, 0, y, "by R") && reads_key(&mut lp, 2, y, "by A"), "A and R split on Y");
+}
+
