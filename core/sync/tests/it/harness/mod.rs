@@ -1177,6 +1177,17 @@ impl World {
             .collect()
     }
 
+    /// The commits node `i`'s certificates of things `ts` name (`Engine::certificates`: copies,
+    /// headers, mintings).
+    fn certified(&mut self, i: usize, ts: &BTreeSet<osis_base::Tid>) -> BTreeSet<osis_base::CommitId> {
+        let mut out = BTreeSet::new();
+        for t in ts {
+            let c = self.engine(i).certificates(t).unwrap();
+            out.extend(c.commits.keys().chain(c.headers.iter()).chain(c.mintings.keys()).copied());
+        }
+        out
+    }
+
     /// The blobs of body `id` under `s` as node `i` opened or sealed them (`Engine::blob_body`).
     fn body_blobs(&mut self, i: usize, s: &osis_base::SyncId, id: &osis_engine::sync::BodyId) -> Vec<osis_base::BlobId> {
         let blobs = self.engine(i).commit_blobs(&id.commit).unwrap();
@@ -1186,7 +1197,10 @@ impl World {
     /// At quiet, a body some node judges must-hold under S (so may log, and logs) reaches every
     /// reader of S connected to it, caught up on S there and able to open that node's entry of
     /// it (spec/sync-judgement.md §2 Loggable is no way to lose a body a reader needs: who may
-    /// log it does). Not while a node lies (it may withhold).
+    /// log it does). Not while a node lies (it may withhold). A certificate S carries at the
+    /// holder (its things' certificates name the commit) is owed only to a reader whose own
+    /// certificates of S name it: an edge piece goes in a key part only as far as a node syncing
+    /// it syncs the edge's target (spec/permissions.md §4 Key part).
     fn unreached_must_holds(&mut self) {
         if !self.liars.is_empty() {
             return;
@@ -1202,8 +1216,14 @@ impl World {
                 let Some(st) = self.node(j).node.status_of(&s) else { continue };
                 let holders: Vec<usize> = st.sources.iter().filter(|(_, x)| x.caught_up).filter_map(|(c, _)| peers.get(c).copied()).filter(|i| on.contains(i)).collect();
                 let secrets: Vec<_> = t.iter().flat_map(|t| self.engine(j).read_secrets(t)).flat_map(|x| [x.clone(), osis_crypto::roles_secret(&x)]).collect();
+                let certified_at_j = self.certified(j, &t);
                 for i in holders {
+                    let held_at_i = self.store(i).syncs().into_iter().find(|(x, _)| *x == s).map(|(_, (ti, _))| ti).unwrap_or_default();
+                    let certified_at_i = self.certified(i, &held_at_i);
                     for (_, c) in self.musts(i, Some(&s)) {
+                        if certified_at_i.contains(&c.commit) && !certified_at_j.contains(&c.commit) {
+                            continue;
+                        }
                         let blobs = self.body_blobs(i, &s, &c);
                         // needed: j opens the wrap of an entry of it at i (one under an epoch j
                         // never held, say before a cut, is not j's to read)
@@ -1286,7 +1306,8 @@ impl World {
             for b in self.engine(i).commit_blobs(c).unwrap().iter() {
                 let entry = self.store(n).entry(s, b).unwrap().is_some();
                 let body = self.engine(n).holds_body(s, b).unwrap();
-                out += &format!("\n    blob {b:?}: entry {entry}, holds body {body}");
+                let tomb = self.store(n).tombstone(s, b).unwrap();
+                out += &format!("\n    blob {b:?}: entry {entry}, holds body {body}, tombstone {tomb:?}");
             }
         }
         out

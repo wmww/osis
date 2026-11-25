@@ -355,3 +355,22 @@ fn repro_a_store_granted_past_genesis_reads_it_public() {
     let script = [Step::New(0), Step::Give(0, 0, Holder::Public, Gives::Reads), Step::New(0), Step::Give(0, 1, Holder::Thing(0), Gives::Reads), Step::Give(0, 0, Holder::Node(1), Gives::Syncs), Step::Run, Step::Strong(1, None, 0), Step::Write(0, 0), Step::Run];
     holds_on(0, accounts, n, &script, String::new(), false);
 }
+
+// spec/permissions.md §4 (Key part: an edge piece as far as a node syncing H holds them):
+// node 1 makes thing 0, grants node 0's account write on it, makes thing 1 and grants thing 0
+// write on it; node 0 holds thing 0. Node 1, syncing thing 1, holds thing 0's edge piece on it
+// under thing 0's sync ID; node 0, a reader of thing 0 syncing no thing 1, holds none of it, and
+// the history holds (failed: the harness owed node 0 every certificate node 1 judged must-hold).
+#[test]
+fn an_edge_piece_reaches_only_readers_syncing_its_target_spec_permissions_4() {
+    use crate::harness::history::{Gives, Holder};
+    let script = [Step::New(1), Step::Give(1, 0, Holder::Node(0), Gives::Writes), Step::New(1), Step::Strong(0, None, 0), Step::Give(1, 1, Holder::Thing(0), Gives::Writes)];
+    let mut w = holds_on(0, 2, 3, &script, String::new(), false);
+    let (t0, t1) = (w.history.things[0].0, w.history.things[1].0);
+    let piece = |w: &mut World, i: usize| {
+        let c = w.engine(i).certificates(&t0).unwrap();
+        c.commits.keys().chain(c.mintings.keys()).filter(|x| w.engine(i).header(x).is_some_and(|h| h.aspects.iter().any(|a| a.tid == t1))).count()
+    };
+    assert!(piece(&mut w, 1) > 0, "node 1 carries thing 0's edge piece on thing 1");
+    assert_eq!(piece(&mut w, 0), 0, "node 0 syncs no thing 1: none of the piece");
+}
