@@ -159,7 +159,8 @@ impl Osis {
     /// waited for) and each commit of this node's on it held elsewhere. A sync ID no other node
     /// may hold (no thing but this node's own holds a role on its thing) holds
     /// nothing up; it never
-    /// resolves while one some other node may hold is unconnected.
+    /// resolves while one some other node may hold is unconnected. `All` also waits until each
+    /// grant or notice this node sends from outside a thing has been taken by a peer.
     /// It fails `Stranded` while a sync ID in scope is stranded here (naming its things); with no
     /// network (`Runtime::None`) one not done at once fails `Network`.
     pub async fn wait_synced(&self, scope: SyncScope) -> Result<()> {

@@ -463,7 +463,13 @@ impl Node {
         };
         // by the rosters, not by who has S open: a sync ID just joined is open at no peer yet;
         // a failed read keeps the wait waiting
-        self.status.wait(&net, scope, |_| carrying, |s| engine.others_may_hold(s).unwrap_or(true))
+        let w = self.status.wait(&net, scope, |_| carrying, |s| engine.others_may_hold(s).unwrap_or(true));
+        // a wait on all also waits for each sealed fire this node sends to be delivered: a write
+        // of this node's held nowhere else until a peer takes it
+        match (scope, w) {
+            (Scope::All, Waiting::Done) if engine.delivering() => Waiting::Pending,
+            (_, w) => w,
+        }
     }
 
     fn net(&self) -> NetView<'_> {

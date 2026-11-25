@@ -109,7 +109,7 @@ Reviewer (c)'s two observations:
 - An outside node's `take_keys` of an account's keys left no current keys: a bug, fixed (6310c22f6). `take_holder_keys` judged commits before the chain stood (the account's record names its mint admin, the node, whose record came later in the same loop, so the keys commit pended on a record that was there and was dropped), and it took `sync.0` only on the holder, so the signer's step placing the keys the commit lists was refused and the commit stayed miskeyed. Spec wire §9 and permissions §4 now say `sync.0` on chain things.
 
 Other findings:
-- `wait_synced(All)` does not wait for sealed fires owed, which spec/sync-status.md §3 requires (the line also names a removed "deliveries" scope): issues/wait-synced-sealed-fires.md.
+- `wait_synced(All)` does not wait for sealed fires owed, which spec/sync-status.md §3 requires (the line also names a removed "deliveries" scope): fixed (spar-fix-sync): `Node::wait` on all stays pending while `Engine::delivering`.
 - Held elsewhere trusts a reader's reported position, which notes/sync-status.md accepts; it is a peer's word, as a stream's presence is: no different in kind, not filed.
 
 **(c) Evidence, certificates, retention, accounts, public, cards, API** (17)

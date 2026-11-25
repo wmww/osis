@@ -692,6 +692,11 @@ impl World {
         self.write(i, |e| e.public_link(&target, peers)).expect("a public link").map(osis_blob::Link::Public)
     }
 
+    /// Where node `i`'s wait on `scope` stands (`Node::wait`).
+    pub fn wait(&mut self, i: usize, scope: osis_sync::types::Scope) -> osis_sync::types::Waiting {
+        self.nodes.get_mut(i).expect("no such node").node.wait(scope)
+    }
+
     /// Node `i` redeems `link` (`Node::redeem`), then it is stepped.
     pub fn redeem(&mut self, i: usize, link: &osis_blob::ShareLink) -> osis_sync::types::Waiting {
         self.redeem_any(i, &osis_blob::Link::Share(link.clone()))

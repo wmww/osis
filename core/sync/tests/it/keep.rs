@@ -301,3 +301,30 @@ fn a_grant_from_outside_reaches_an_account_that_removed_a_node() {
     let t = w.history.things[0].0;
     assert!(reads(w.engine(1), &t).value.is_some(), "node 1 reads the thing granted to its account");
 }
+
+// spec/sync-status.md §3 (a wait on all waits until each sealed fire this node sends is
+// delivered), spec/sync-inbox.md §2 (Delivery): node 1 grants node 0's account (a contact it
+// cannot reach) read on a thing its sibling, node 2, syncs: the wait on all at node 1 stays pending
+// while the grant's fire is owed, though the thing itself is synced; it ends once node 0 is back and
+// takes the fire.
+#[test]
+fn a_wait_on_all_waits_for_a_sealed_fire_owed_spec_sync_status_3() {
+    use crate::harness::Step::*;
+    use crate::harness::history::{Gives, Holder};
+    use osis_sync::types::{Scope, Waiting};
+    let mut w = crate::harness::siblings();
+    w.partition(0, 1);
+    w.partition(0, 2);
+    let _ = crate::harness::play(&mut w, &[New(1), Run], String::new());
+    let t = w.history.things[0].0;
+    assert_eq!(w.wait(1, Scope::Thing(t)), Waiting::Done, "the thing is synced with node 2");
+    assert_eq!(w.wait(1, Scope::All), Waiting::Done, "nothing owed yet");
+    let _ = crate::harness::play(&mut w, &[Give(1, 0, Holder::Node(0), Gives::Reads), Run], String::new());
+    assert!(!w.engine(1).fires_owed().is_empty(), "the grant's fire is owed");
+    assert_eq!(w.wait(1, Scope::Thing(t)), Waiting::Done, "the thing is synced with node 2");
+    assert_eq!(w.wait(1, Scope::All), Waiting::Pending, "the grant is held nowhere else");
+    w.heal();
+    w.advance(60_000);
+    assert!(w.engine(1).fires_owed().is_empty(), "node 0 took the fire");
+    assert_eq!(w.wait(1, Scope::All), Waiting::Done);
+}

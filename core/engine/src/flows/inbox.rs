@@ -544,6 +544,14 @@ impl Engine {
         self.core.ix.fires.keys().copied().collect()
     }
 
+    /// Whether a sealed fire's delivery is pending here (spec/sync-inbox.md §2): one owed, but a
+    /// stranded notice past its expiry (owed no more: no receiver would keep it). A wait on all
+    /// waits for these (spec/sync-status.md §3). O(fires owed).
+    pub fn delivering(&self) -> bool {
+        let now = self.now().0;
+        self.core.ix.fires.values().any(|o| !matches!(o.what, Fire::Expiring(_, t) if now >= t))
+    }
+
     /// Owed fire `id`'s commit once built (`sealed_fire`): its ID and the wall time it is
     /// stamped, which a receiver's clock must have reached but for `MAX_DRIFT`.
     pub fn fire_commit(&self, id: &FireId) -> Option<(CommitId, osis_base::WallMs)> {

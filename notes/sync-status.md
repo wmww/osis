@@ -11,6 +11,7 @@ Spec: spec/sync-status.md. Model: core/test/tla/net/NetStream.tla (`Synced`, `Ca
 - A source that left since the last settle still counts by where it stood as it left (`Moved::Left`'s `LeftAt`) and by what its record's stream showed: a peer that judges this node departed by the self-removal it just applied reports it and closes S in one step.
 - **Lacking counts** per (S, record of a source keeping S unread) are kept across its connections, by the record's rows, the connection read only for an entry they do not show.
 - `wait(Thing(t))` covers the engine's `carrying(t)`: t's own sync IDs and those of the sync units holding it, read or kept unread.
+- `wait(All)` also stays `Pending` while `Engine::delivering` (a sealed fire owed, but an expired stranded notice): `Node::wait` adds it to status's answer. A fire goes with the last of its thing held, so nothing waits past what the node holds; one to a thing whose nodes this node never meets keeps the wait pending (to the caller's timeout).
 
 ## State
 One rule, as read's (notes/sync-read.md, State): what status follows of a peer is the record's (its members of S and their class), kept across its connections; what is the connection's stays the connection's (caught up, full, reported positions, `until`, who it proved). S's sources are its members whose record a connection holds (`sources_of`). Keys: P a peer, E the engine or opens, N this node.
