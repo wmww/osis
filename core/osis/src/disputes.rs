@@ -67,7 +67,7 @@ pub enum Dispute {
 const LIST_MAX: usize = 64;
 
 impl Dispute {
-    /// Interim (notes/accounts-switch-brief.md, piece 6): `None` for a dispute over a key's grant,
+    /// Interim (issues/key-grant-disputes-unlisted.md): `None` for a dispute over a key's grant,
     /// until the API names keys.
     pub(crate) fn of(d: &DisputeInfo) -> Option<Dispute> {
         let osis_base::Holder::Thing(holder) = d.holder else { return None };

@@ -25,8 +25,8 @@ Each reviewer judges code, spec and notes against the abstract model and the ora
 One line each: the ruling, its state on main (dd5c0a3e4), where to look. "Applies" means the code still does what the ruling says; the reviewer judges whether it should.
 
 **(a) Permissions, keys, rotation** (15)
-- `created.0` excepted from the key-placement wait (191fcf85f): applies; reason is the spec's own (a record hashes to its tid). Check: `apply/mod.rs` `unjudgeable` still ORs `core.miskeyed` with no `created.0` exception while `Judge::part` calls it valid; held-model also exempts it from the overlapping-counter void (`model.rs` ~l.776, 847), engine checks `ix.void` first, spec/commits.md §4 has no exception; comment at `apply/validity.rs` ~l.1101 says "invalid" where the spec says unjudgeable.
-- Granter's check "may write H or holds H's current `keys.0`" (strict card rule would remove a user capability): applies; code checks any `keys.0` state of H, spec says current. `rotation/kem.rs` `grant_holder`; spec/permissions.md §2 Granting to a thing.
+- `created.0` excepted from every verdict on its commit, key placement and the overlapping-counter void alike (a record hashes to its tid and needs no authority, spec/permissions.md §1): done (spar-review-tidy). Engine `Judge::part` takes `created.0` before `ix.void`, `apply::unjudgeable` excepts it from `miskeyed`, as held-model does; spec/commits.md §4 names both exceptions; engine `validity::a_void_minting_still_creates_spec_commits_4`.
+- Granter's check "may write H or holds H's current `keys.0`" (strict card rule would remove a user capability): applies. Done (spar-review-tidy): "current" is the newest this node holds, which is what the code reads (no node can check against one it lacks; a removed reader holds H's newest too); spec and `grant_holder` say so; `rotation::tests_kem::a_reader_holding_the_holders_current_keys_grants_*`.
 - The public's role counts wherever its grant is held, not only on synced things (dd55273fe): applies, worded as an exception in spec/sync-set.md §2 Own things. `rotation/lost.rs` `role_here`; related issues/public-pieces-unheld.md.
 - Dependent-box: an admin's step+box with no keyset, admin then demoted, leaves the boxed reader counting the thing independent: applies; only a code comment calls it an admin dispute, and only demotion before the plant is tested (`tests_planted::a_demoted_admins_step_splits_nobody_spec_sync_set_2`). `engine/secrets.rs` `own_record`/`stepped`.
 - Left-out causes: a removal rotating in the same commit stands as a rotation (a regrant costs one re-key): applies. `rotation/members.rs` `stands`; spec/crypto.md §4 Left out; LeftOut.tla `LO_rot`.
@@ -42,7 +42,7 @@ One line each: the ruling, its state on main (dd5c0a3e4), where to look. "Applie
 - Link keys keep seed-derived secrets and the static entry, "the one special case" (source calls it a smell): applies. notes/accounts-switch-brief.md, Decisions and why.
 
 **(b) Sync** (20)
-- Removal-told metadata (count, size, timing of later sealed role entries) shown to a departed node in two timing cases (newest superseded epoch past the removal; no `until` before the rotation is logged): applies; stated only in notes/sync-opens.md (Departed peers), not among spec/sync-hostile.md §2's limits. `opens/holds.rs` `departure_until`, `opens/mod.rs` `close_if_reached`; spec/sync-opens.md §6.
+- Removal-told metadata (count, size, timing of later sealed role entries) shown to a departed node in two timing cases (newest superseded epoch past the removal; no `until` before the rotation is logged): applies; stated in spec/sync-hostile.md §2 (done, spar-review-tidy) and notes/sync-opens.md (Departed peers). `opens/holds.rs` `departure_until`, `opens/mod.rs` `close_if_reached`; spec/sync-opens.md §6.
 - `sync.0` is a role part; a floored holder sees steps below its floor; any holder encrypts a `sync.0` part under a roles secret it holds: applies. spec/sync-ids.md §4-5.
 - Held for keys walks up from every thing the closure holds (unread ones too), every hop with key access, only while a read secret is held: applies; the multi-hop case has no test (issues/roles-apart-from-syncing.md). `sync/units.rs`, `retention/needed.rs`.
 - A holder held for keys is a source class, not a `Pull` selector: applies. notes/sync.md, Held for keys; `streams/pull.rs`, `relay.rs`.
@@ -60,7 +60,7 @@ One line each: the ruling, its state on main (dd5c0a3e4), where to look. "Applie
 - `SETTLE_MS` designed, not built: every holder copies a demotion or `keys.0` at once (3.3 KB per holder per removal). issues/sync-unbuilt.md, Cost.
 - A record flood evicts records least recently used (a few 5 MB filters evict all): applies (accepted). spec/sync-hostile.md §2.
 - Not built: static entries claimed in the walk's tests (`Tested::Static`), rejudging connections on a policy change. issues/sync-unbuilt.md, Opens.
-- notes/holder-actors.md (Blocked through holder actors) says the sync facade's logging does not consult `Walk::Log` and points at issues/sync-unbuilt.md, which no longer lists it; `sync_ids/blobs.rs` ~l.695 does use `Walk::Log` and `sync/stranded.rs` `holder_keys` is built: confirm and fix the note.
+- notes/holder-actors.md on logging and `Walk::Log`, and stranded reports: fixed (spar-review-tidy): logging reads the walk in `Engine::wrap_blocked`; stranded reports built.
 - Next/Untested in notes/sync-rewrite-state.md: own boxes only for a holder held for keys, acting only after a complete pass, a paged role commit as evidence, a sealed copy stamped ahead of the receiver's clock, a sealed fire opening pending for drift: open.
 
 **(c) Evidence, certificates, retention, accounts, public, cards, API** (17)
@@ -69,7 +69,7 @@ One line each: the ruling, its state on main (dd5c0a3e4), where to look. "Applie
 - `card.0` never compacted, so a reader floored after a card was written (a history-less joiner) sees it only once rewritten: applies; the source calls it a smell. `retention/snapshot.rs`, `compact.rs`; spec/commits.md §5.
 - A card's keys mostly repeat the fellow-holder rule; its own work is the inbox, `since` and KEM keys (source raises it): applies. `flows/cards.rs`.
 - Copies holding more than S's cut stay in stores (storage; a part once in S's cut stays readable to later readers): applies. osis-sync `read/judge.rs` `unnamed_copy`, `facts::body_held_by`; notes/sync-rewrite-state.md, Next ("A copy's parts as exactly what S names").
-- notes/certificates.md (The cut, Pieces) still says a fire, sealed copy or offer to a sync-alone holder carries the rest (Interim); since 6a755f5a4 `cut_parts` gives the rest only to a holder reading X: fix the note. `sync_ids/certs.rs`.
+- notes/certificates.md (The cut, Pieces): fixed (spar-review-tidy): the rest goes only to a holder reading X, in every carrier (`cut_parts`).
 - Home is the account itself (Tess: "suspicious but fine"): applies (864c0c8da). notes/realms.md.
 - `dial.0` keyed by node thing (`{key, urls}`), `refresh_reach` writes it: changed from the brief. spec/sync-set.md §1 Dial list.
 - Pairing hands the offer over the channel (keys, grant, offer, `take_offer`), no `grant@~0`: applies. `osis/src/share.rs`, `flows/offers.rs`.
@@ -77,16 +77,16 @@ One line each: the ruling, its state on main (dd5c0a3e4), where to look. "Applie
 - Node settings as each node's entry keyed by node thing (`caps^.0`); `clients^.0` on the node root is a tess-call: applies. issues/settings.md.
 - Where the node thing's secrets live when its key store is copied: open tess-call. issues/recovery-design.md.
 - `leave` keeps link keys; link commands on a lone node run to their timeout; stolen-node steps 4 and 10-14 untested: applies.
-- Interim in `osis/src/disputes.rs` ~l.70 ("no dispute over a key's grant") points at piece 6, which is built: stale pointer, Interim with no live issue.
+- Interim in `osis/src/disputes.rs` ("no dispute over a key's grant"): repointed at issues/key-grant-disputes-unlisted.md (low; the API names no key holders; only a hand-written `signers.0` removal makes one) (spar-review-tidy).
 - Accepted risks: things minted with admin A are dependents; node things show to every reader; A's tid on every path; a strong to a public thing copies it under every referrer's unit; stores learn a unit is public; a stale card seals to A's older keysets (a party removed from A may open). notes/accounts-switch-brief.md and notes/public-and-cards-brief.md, Risks.
 - Revocation reach eventual; record chain depth capped at `MAX_CHAIN_DEPTH` 64: applies.
 - `Need::Acting` (`Indexes::by_actor`) is Interim: applies. issues/stated-path-certificates.md.
 
 **Security-tagged issues** (27 open; by area, one line each)
-- (a) issues/removed-node-reads-later-grants.md (normal; Tess's "judged again at A5" is due: A5 is built); issues/demoted-writer-deletes-at-stores.md (normal; "option 1 if easy", unbuilt; level 2 still `RoleKey::Sync`); issues/maker-unknown-from-snapshot.md; issues/unvouched-read-keyset-stalls-fires.md; issues/perm-hostile-path-joins-components.md (cost); issues/history-less-grant.md ("from now through holders" unbuilt).
+- (a) issues/removed-node-reads-later-grants.md (normal, tess-call: rewritten (spar-review-tidy): A5 closes nothing; the deposit seed is no leak of its own; the wrap's fix or a weaker property is Tess's); issues/demoted-writer-deletes-at-stores.md (normal; "option 1 if easy", unbuilt; level 2 still `RoleKey::Sync`); issues/maker-unknown-from-snapshot.md; issues/unvouched-read-keyset-stalls-fires.md; issues/perm-hostile-path-joins-components.md (cost); issues/history-less-grant.md ("from now through holders" unbuilt).
 - (b) issues/public-pieces-unheld.md (normal; largest differential class); issues/stranger-fire-bounds.md (normal; was waiting on A5, now unblocked); issues/removed-key-writes-show-far.md (normal, decided not to build around); issues/engine-invariant-wedges-sync.md (normal); issues/cert-blob-hostile-delete.md; issues/dial-candidates.md; issues/sync-memory-uncounted.md; issues/sync-units-linked-at-rest.md; issues/resource-limits.md; issues/privacy.md; issues/p2p-own.md.
 - (c) issues/backdated-replace-cuts-history.md (spec wording still "erases nothing"); issues/purge-floor-exact-ts-ties.md; issues/revoke-link-before-its-seed.md; issues/forged-copy-undetected.md; issues/durable-decode-bound.md; issues/eph-node-cost-bounds.md; issues/client-auth.md; issues/cli-proxy.md; issues/root-key-erasure-tier.md.
-- issues/external-signals-taken-by-default.md looks stale: cards and KEM keys are built and the account library enables inbox signals (`libs/account/src/lib.rs` `enable_inbox_signals`); only issues/held-set-external-fires.md is left. Close or rewrite.
+- The issue on external signals taken by default: closed (spar-review-tidy); what is left is issues/held-set-external-fires.md.
 
 ## Baseline on main
 On dd5c0a3e4 (`tools/merge-branch gate spar-review-prep --all`, ostrich, offset 532945376426; log under gate-logs/ until removed). A reviewer's failure not listed here is theirs to explain.

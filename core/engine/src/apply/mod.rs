@@ -979,7 +979,8 @@ fn edge_unreached(core: &crate::engine::Core, h: &Header, id: &CommitId, whole: 
 /// here (spec/commits.md §4 Unjudgeable): what `examine` waits for, read from the held records
 /// (`header_wait`, `thing_wait`), its thing's path opens nowhere here (a split commit's,
 /// spec/wire.md §4 `Split`), or its commit lists for its thing a key no held step places
-/// (`Core::miskeyed`: a wrong key and a step whose `sync.0` write is not held read alike). Its
+/// (`Core::miskeyed`: a wrong key and a step whose `sync.0` write is not held read alike; never
+/// its `created.0`, which needs no authority). Its
 /// validity flag reads false meanwhile, but it is not judged invalid
 /// (`retention::drops_invalid`).
 pub(crate) fn unjudgeable(core: &crate::engine::Core, id: &CommitId, h: &Header, view: &crate::engine::View, ai: usize) -> bool {
@@ -989,7 +990,7 @@ pub(crate) fn unjudgeable(core: &crate::engine::Core, id: &CommitId, h: &Header,
     header_wait(h, &held).is_err()
         || view.paths.as_deref().is_some_and(|p| !p.contains_key(&a.tid))
         || thing_wait(core, h, id, a, path.as_ref().map(|p| (p.0.as_slice(), p.1)), &held, &|t, core| core.created(t).cloned()).is_some()
-        || core.miskeyed(id, &a.tid)
+        || (a.ak.as_str() != osis_commit::retention::CREATED && core.miskeyed(id, &a.tid))
 }
 
 /// Applies or stores one decoded commit blob.

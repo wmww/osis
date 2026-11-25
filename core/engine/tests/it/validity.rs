@@ -167,6 +167,40 @@ fn overlapping_counters_spec_commits_4() {
     assert_eq!(lp.peers[0].engine.get(&d, &other).unwrap(), None);
 }
 
+// spec/commits.md §4 (overlapping counters void both commits but for their `created.0`: a
+// record needs no authority, spec/permissions.md §1): Alice's minting of T is void by a second
+// commit of her session reusing its counters on T's register; Bob drops the register's value,
+// and the minting still counts as T's creation.
+#[test]
+fn a_void_minting_still_creates_spec_commits_4() {
+    use osis_commit::{AspectWrite, CommitBuilder, Kind, MemoryBlobs, writer_ctx};
+    use osis_crdt::{AnyView, Delta, Writer, create, encode_delta};
+    let mut lp = net(2, 0);
+    lp.sync_all().unwrap();
+    let t = new_shared(&mut lp, 0);
+    lp.sync_all().unwrap();
+    let minting = lp.peers[1].engine.creation(&t).expect("Bob holds T's minting").commit;
+    let h = lp.peers[0].engine.header(&minting).unwrap();
+    assert!(matches!(h.form, osis_commit::Form::Session(_)), "the minting is of a session");
+    let a = h.aspects.iter().find(|x| x.tid == t && x.ak.as_str() == "t:reg.0").unwrap();
+    let (lo, hi) = (a.lo, a.hi);
+    let ts = osis_base::Ts::make(WallMs(h.ts.wall_ms().0 + 5), 0).unwrap();
+    let mut w = Writer::new(ts, h.form.own_source(h.signer, osis_base::CommitId([0; 32])), lo);
+    let f = create(&mut w, &AnyView, &s("second")).unwrap();
+    let bytes = encode_delta(&Delta { nonce: [7; 16], fragment: f }, &writer_ctx(h.form, Kind::Content, ts, h.signer, lo, hi), None).unwrap();
+    let mut aw = AspectWrite::new(t, ak("t:reg.0"), lo, hi, bytes);
+    aw.purge_by = osis_base::PurgeBy::Writer;
+    let mut cb = CommitBuilder::new(Kind::Content, ts, h.signer, osis_commit::Path::default(), h.form);
+    cb.aspects.push(aw);
+    let rec = lp.peers[0].engine.get_typed(&t, &osis_schema::core_types::CREATED).unwrap().unwrap();
+    let key = lp.peers[0].engine.identity().signing().clone();
+    let built = cb.build(&key, &lp.peers[0].engine.hand_secrets(&[rec]), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(0)).unwrap();
+    assert_eq!(lp.peers[1].engine.get_typed(&t, &REG).unwrap(), Some(s("new")));
+    lp.peers[1].receive(&built.commit.encode(), Vec::new()).unwrap();
+    assert_eq!(lp.peers[1].engine.get_typed(&t, &REG).unwrap(), None, "both commits are void");
+    assert_eq!(lp.peers[1].engine.creation(&t).map(|c| c.commit), Some(minting), "the void minting's record counts");
+}
+
 /// Bob's key signs a commit of his engine's session on `d`'s `ak` with counters from `lo`
 /// (any he used before included), setting the register to `v` at `ts`.
 fn forge_reg(lp: &mut LocalPeer, d: Tid, ak: &osis_base::Ak, lo: u64, ts: osis_base::Ts, v: &str) -> Vec<u8> {

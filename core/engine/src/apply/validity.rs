@@ -1089,18 +1089,20 @@ impl<'a> Judge<'a> {
 
     pub(crate) fn part(&mut self, h: &Header, view: &crate::engine::View, id: &CommitId, ai: usize) -> bool {
         let core = self.core;
-        if core.ix.void.contains(id) {
-            return false;
-        }
         let Some(a) = h.aspects.get(ai) else { return false };
         let ak = a.ak.as_str();
-        // `created.0` hashes to its tid, whoever writes it
+        // `created.0` hashes to its tid, whoever writes it: a record needs no authority
+        // (spec/permissions.md §1), so no verdict on its commit (keys, overlap) reaches it
         if ak == "created.0" {
             return true;
         }
+        if core.ix.void.contains(id) {
+            return false;
+        }
         // a commit's deltas on a thing for which it lists a level-1 or level-3 delete key no step
-        // places before it are invalid (spec/crypto.md §7 Checked keys, spec/commits.md §4;
-        // `Core::rekey` keeps the set, and names the commit stale wherever it moves)
+        // places before it are unjudgeable, never invalid (`unjudgeable`; spec/crypto.md §7
+        // Checked keys, spec/commits.md §4); their validity flag reads false meanwhile.
+        // `Core::rekey` keeps the set, and names the commit stale wherever it moves
         if core.miskeyed(id, &a.tid) {
             return false;
         }

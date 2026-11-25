@@ -107,8 +107,8 @@ fn carries(tx: &mut Tx<'_>, a: &Tid, r: Role) -> Result<bool> {
 
 /// The granter's check (spec/permissions.md §2 Granting to a thing) for a grant or change of
 /// `role` naming holder `h`, a thing, by this node, first half: it may write `h` or holds `h`'s
-/// keys (a card of `h` brings them, as `h`'s public key record does a fellow holder); else
-/// refused. From here the transaction's keysets of `h` up to `role` carry KEM keys
+/// current `keys.0`, the newest it holds (a card of `h` brings them, as `h`'s public key record
+/// does a fellow holder); else refused. From here the transaction's keysets of `h` up to `role` carry KEM keys
 /// (`publishing`), its making independent among them. Run before anything of the grant is made.
 pub(crate) fn grant_holder(tx: &mut Tx<'_>, h: Tid, role: Role) -> Result<()> {
     let me = tx.core.me();

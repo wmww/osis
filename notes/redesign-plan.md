@@ -47,7 +47,7 @@ Any time; nothing waits on it. Built: an idle reconnect's judgements, bytes, mem
 
 ### S2. External signals: what is left
 Built (spec/permissions.md §5.2 External fires; spec/commits.md §5 The setting; spec/sync-inbox.md §1-§2).
-- **For A5**: cards, KEM keys following the switch, refusing at the granter a grant to a holder that takes no grants from outside (issues/external-signals-taken-by-default.md).
+- **For A5**: cards, KEM keys following the switch, refusing at the granter a grant to a holder that takes no grants from outside (spec/permissions.md §2 Granting to a thing, §5.2 External fires).
 - **Owed**: the held-set property does not reach external fires (issues/held-set-external-fires.md); issues/external-signal-floor.md.
 
 ### S3. Removal gaps on today's rules

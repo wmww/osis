@@ -122,3 +122,24 @@ fn kem_key_due_ends_a_lockout_spec_crypto_3() {
     let named = sealed.get(&ct::BoxKey { holder: m.into(), role: Role::Read, epoch: ae }).cloned().unwrap_or_default();
     assert!(named.contains(&k), "A boxes M at its newest keyset: {named:?}, {k:?}");
 }
+
+
+// A reader of H, neither writer nor holding a card, holds H's current `keys.0` (the newest it
+// holds, carrying KEM keys: H reads X): its grant to H stands, sealed at H's newest read keyset
+// there, and rotates nothing of H (it may not).
+#[test]
+fn a_reader_holding_the_holders_current_keys_grants_spec_permissions_2() {
+    let mut lp = synced(2);
+    let p1 = lp.peers[1].engine.me();
+    let h = plain(&mut lp, 0, &[0, 1]);
+    let x = plain(&mut lp, 0, &[0]);
+    lp.peers[0].engine.grant(&x, &h, &edge(Role::Read)).unwrap();
+    lp.peers[0].engine.grant(&h, &p1, &edge(Role::Read)).unwrap();
+    let g = plain(&mut lp, 1, &[0, 1]);
+    lp.sync_all().unwrap();
+    let epoch = read_epoch(&mut lp, 1, h);
+    assert_eq!(read_epoch(&mut lp, 0, h), epoch, "peer 1 holds H's current read keyset");
+    assert!(lp.peers[1].engine.core.role_now(&p1, &h) < Some(Role::Write));
+    lp.peers[1].engine.grant(&g, &h, &edge(Role::Read)).unwrap();
+    assert_eq!(read_epoch(&mut lp, 1, h), epoch, "nothing of H rotated");
+}
