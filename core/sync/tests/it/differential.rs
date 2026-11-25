@@ -466,3 +466,54 @@ fn the_publics_removal_is_a_loss_for_every_node_spec_permissions_3() {
     let set = w.engine(0).sync_set().expect("sync set");
     assert!(!set.ids.values().any(|(ts, _)| ts.contains(&t)), "node 0 syncs thing 0 after the public's removal: {set:?}");
 }
+
+// spec/permissions.md §3 (Lost access: a node keeps what its roles give): the public's read on a
+// thing removed, a node whose account holds a grant of read on it still reads it.
+#[test]
+fn the_publics_removal_keeps_what_a_nodes_own_role_gives_spec_permissions_3() {
+    use crate::harness::history::{Gives, Holder, reads};
+    let (n, accounts, ..) = size();
+    let script = [Step::New(1), Step::Give(1, 0, Holder::Node(0), Gives::Reads), Step::Strong(0, None, 0), Step::Give(1, 0, Holder::Public, Gives::Reads), Step::Run, Step::Revoke(1, 0, Holder::Public)];
+    let mut w = holds_on(0, accounts, n, &script, String::new(), false);
+    let t = w.history.things[0].0;
+    assert!(reads(w.engine(0), &t).value.is_some(), "node 0 reads thing 0 by its account's grant");
+}
+
+// spec/permissions.md §3 (Lost access), spec/sync-set.md §4: a node that redeemed a public link
+// reads the thing by the public alone, so the public's removal is its loss too, the removal
+// coming after a quiet run or while the redemption is in flight. Control: no removal, it reads.
+#[test]
+fn a_public_links_redeemer_loses_the_thing_with_the_public_spec_permissions_3() {
+    use crate::harness::history::{Gives, Holder, reads};
+    let (n, accounts, ..) = size();
+    let start = [Step::New(0), Step::Give(0, 0, Holder::Public, Gives::Reads), Step::Run, Step::Redeem(1, 0)];
+    let mut w = holds_on(0, accounts, n, &start, String::new(), false);
+    let t = w.history.things[0].0;
+    assert!(reads(w.engine(1), &t).value.is_some(), "control: node 1 reads thing 0 by the link");
+    for quiet in [true, false] {
+        let mid = if quiet { vec![Step::Run] } else { vec![] };
+        let script: Vec<Step> = start.iter().cloned().chain(mid).chain([Step::Revoke(0, 0, Holder::Public)]).collect();
+        let mut w = holds_on(0, accounts, n, &script, String::new(), false);
+        assert!(reads(w.engine(1), &t).value.is_none(), "node 1 reads thing 0 after the public's removal (quiet run before it: {quiet})");
+    }
+}
+
+// spec/permissions.md §3 (Lost access), §1: the public's read removed and granted again (with
+// and without a quiet run between), a node that read the thing by the public reads it again by
+// the new grant's epoch.
+#[test]
+fn the_public_granted_again_is_read_again_spec_permissions_3() {
+    use crate::harness::history::{Gives, Holder, reads};
+    let (n, accounts, ..) = size();
+    for quiet in [true, false] {
+        let mid = if quiet { vec![Step::Run] } else { vec![] };
+        let script: Vec<Step> = [Step::New(1), Step::NewIn(1, 0), Step::Give(1, 1, Holder::Node(0), Gives::Reads), Step::Strong(0, None, 1), Step::Strong(1, Some(1), 0), Step::Give(1, 0, Holder::Public, Gives::Reads), Step::Run, Step::Revoke(1, 0, Holder::Public)]
+            .into_iter()
+            .chain(mid)
+            .chain([Step::Give(1, 0, Holder::Public, Gives::Reads)])
+            .collect();
+        let mut w = holds_on(0, accounts, n, &script, String::new(), false);
+        let t = w.history.things[0].0;
+        assert!(reads(w.engine(0), &t).value.is_some(), "node 0 reads thing 0 by the public again (quiet run between: {quiet})");
+    }
+}

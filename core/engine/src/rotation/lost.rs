@@ -198,7 +198,8 @@ pub(crate) fn may_learn(tx: &mut Tx<'_>, a: &Tid, r: Role, e: &osis_crypto::Epoc
     super::covers_known(tx, a, r, e)
 }
 
-/// Whether an edge on `a` of the node, a held link key or a thing it reads ended or lowered.
+/// Whether an edge on `a` of the node, a held link key, a thing it reads or the public (every
+/// party's: after its removal an old public entry box gives back only an epoch covering it) ended.
 fn ended_ours(core: &Core, a: &Tid) -> bool {
     core.timelines().get(a).is_some_and(|tl| tl.ended(a, now_ts(core)).keys().any(|h| *h == Tid::PUBLIC || was_ours(core, h)))
 }
