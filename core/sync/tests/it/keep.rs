@@ -266,6 +266,43 @@ fn a_reader_fetches_a_winning_record_blob_it_let_go_spec_permissions_4() {
     assert_eq!(noted(&mut w, 1), won, "the reader fetched the winner and dropped its own");
 }
 
+// spec/permissions.md §4 (Logging certificates: a winner the own store lacks is fetched where
+// shown, and a loser leaves once the winner is held): the reader holds a losing record blob of its own
+// while the winner is shown only at the writer, which is unreachable. It keeps its own until it
+// holds the winner: a source showing a blob it never serves leaves no reader without one.
+#[test]
+fn a_reader_keeps_a_losing_record_blob_until_it_holds_the_winner_spec_permissions_4() {
+    use crate::harness::Step::*;
+    use crate::harness::history::{Gives, world_of};
+    let mut w = world_of(0, 2, 2);
+    let _ = crate::harness::play(&mut w, &[New(0), Grant(0, 0, 1, Gives::Reads), Run], String::new());
+    let t = w.history.things[0].0;
+    let s = w.engine(0).sync_id_of(&t).unwrap().unwrap();
+    let noted = |w: &mut World, i: usize| -> Vec<osis_base::BlobId> {
+        let rows = w.engine(i).cert_blobs(&s);
+        w.store(i).entries(&s).unwrap().into_iter().map(|e| e.blob).filter(|b| rows.contains_key(b)).collect()
+    };
+    let won = noted(&mut w, 0);
+    assert_eq!(won.len(), 1, "one record blob at the writer: {won:?}");
+    assert_eq!(noted(&mut w, 1), won, "the reader holds it");
+    let records = w.engine(0).cert_blobs(&s)[&won[0]].tids.clone();
+    assert!(w.store(1).clone().unlog_entry(&s, &won[0]).unwrap());
+    let own = (0u64..).find_map(|n| {
+        let x = w.engine(1).seal_records(&s, &records, &mut osis_crypto::SeededRng::from_u64(n)).unwrap().expect("sealed");
+        (x.0 > won[0]).then_some(x)
+    }).unwrap();
+    let e = osis_sync::types::Entry { blob: own.0, wrap: own.2, stamp: None, deposited: true, own: true, role: false, class: osis_blob::Class::Durable, expires: None };
+    w.store(1).clone().log(&s, e, Some(own.1), None).unwrap();
+    w.power_off(0);
+    w.power_off(1);
+    w.power_on(1);
+    w.flush();
+    assert_eq!(noted(&mut w, 1), vec![own.0], "the reader keeps its own while the winner is out of reach");
+    w.power_on(0);
+    w.run();
+    assert_eq!(noted(&mut w, 1), won, "the reader fetched the winner and dropped its own");
+}
+
 // spec/sync-ids.md §6 (Steps: a reader registers at each source keeping S unread the steps after
 // the source's step), spec/sync-opens.md §6 (whether or not a connection holds its record):
 // node 0 rotates t's write secret, issuing a step, while node 1 (keeping S

@@ -624,22 +624,23 @@ impl Ground for Live<'_, '_> {
                 None => drop(out.gone.insert(*b)),
             }
         }
-        let wins = |b: &BlobId| !at(b).is_empty() && !counted.iter().any(|o| beats(o, b));
-        // the own store holds the winners alone: one losing to any counted leaves it
+        // the own store converges on the winner of every counted blob: one it lacks is fetched
+        // where shown, and a held blob leaves only for a held one beating it, so a source showing
+        // a winner it never serves leaves the own store no poorer (spec/permissions.md §4)
+        let wins = |b: &BlobId, mut among: &mut dyn Iterator<Item = &BlobId>| !at(b).is_empty() && !Iterator::any(&mut among, |o| beats(o, b));
+        let mut whole = false;
         for (b, e) in &held {
-            if !wins(b) {
+            if !wins(b, &mut held.keys()) {
                 out.unneeded.insert(*b);
-            } else if !self.under_head(s, e)? {
+                continue;
+            }
+            whole |= rows.get(b).is_some_and(|c| c.tids == carried);
+            if !self.under_head(s, e)? {
                 out.stale.insert(*b);
             }
         }
-        // a winner the own store lacks is fetched where shown, and stands as the log once kept
-        let mut whole = false;
-        for b in counted.iter().filter(|b| wins(b)) {
-            whole |= rows.get(b).is_some_and(|c| c.tids == carried);
-            if !held.contains_key(b) {
-                out.fetch.extend(self.streams.known().shown_at(s, b).into_iter().map(|at| (at, *b)));
-            }
+        for b in counted.iter().filter(|b| !held.contains_key(b) && wins(b, &mut counted.iter())) {
+            out.fetch.extend(self.streams.known().shown_at(s, b).into_iter().map(|at| (at, *b)));
         }
         // nothing can be sealed under S yet (a rotation owed before encrypting): what is missing
         // is told once it can, so the effect acts then

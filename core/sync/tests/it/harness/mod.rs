@@ -486,6 +486,8 @@ impl Net {
 
     /// `next_due`, else the earliest held-back input past `until`: quiet is no input in flight,
     /// so one a node sent near the horizon still arrives (a timer's write at the horizon edge).
+    /// Firing it ticks no wake past `until` (`World::fire`): what follows is the reaction to
+    /// messages alone, so a timer chain cannot carry the run past the horizon.
     fn next_quiet(&self, until: WallMs) -> Option<WallMs> {
         self.next_due(until).or_else(|| self.delayed.keys().next().map(|k| k.0))
     }
@@ -1070,7 +1072,7 @@ impl World {
         }
         let horizon = WallMs(self.now().0.saturating_add(self.horizon_ms));
         let Some(at) = self.net.next_quiet(horizon) else { return false };
-        self.fire(at);
+        self.fire(at, horizon);
         true
     }
 
@@ -1084,11 +1086,11 @@ impl World {
     }
 
     /// Moves the clock to `at` (when later), releases what is held back to then, and ticks the
-    /// node whose wake is earliest by then.
-    fn fire(&mut self, at: WallMs) {
+    /// node whose wake is earliest by then and by `wakes`.
+    fn fire(&mut self, at: WallMs, wakes: WallMs) {
         self.set_clock(at);
-        let now = self.now();
-        let next = self.net.wakes.iter().filter(|(n, w)| **w <= now && self.net.online.get(**n) == Some(&true)).min_by_key(|(n, w)| (**w, **n)).map(|(n, _)| *n);
+        let due = self.now().min(wakes);
+        let next = self.net.wakes.iter().filter(|(n, w)| **w <= due && self.net.online.get(**n) == Some(&true)).min_by_key(|(n, w)| (**w, **n)).map(|(n, _)| *n);
         if let Some(n) = next {
             self.net.wakes.remove(&n);
             self.tick(n);
@@ -1096,7 +1098,8 @@ impl World {
     }
 
     /// Runs to quiet: delivers everything in flight, then jumps the clock to the earliest wake
-    /// within `horizon_ms` or held-back input (at any time), until neither is left. A complete pass still under way
+    /// within `horizon_ms` or held-back input (at any time; no wake past the horizon fires on
+    /// its way), until neither is left. A complete pass still under way
     /// there ends within `PASS_WAIT_MS` (spec/sync-status.md §1): quiet waits it out, once.
     pub fn run(&mut self) {
         let mut horizon = WallMs(self.now().0.saturating_add(self.horizon_ms));
@@ -1104,7 +1107,7 @@ impl World {
         loop {
             self.flush();
             match self.net.next_quiet(horizon) {
-                Some(at) => self.fire(at),
+                Some(at) => self.fire(at, horizon),
                 None if !waited && self.passes_under_way() => {
                     waited = true;
                     horizon = WallMs(self.now().0.saturating_add(osis_proto::limits::PASS_WAIT_MS));
@@ -1325,7 +1328,7 @@ impl World {
         loop {
             self.flush();
             match self.net.next_due(to) {
-                Some(at) => self.fire(at),
+                Some(at) => self.fire(at, to),
                 None => break,
             }
         }
