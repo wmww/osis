@@ -348,8 +348,8 @@ fn a_departed_reader_opens_ended_on_its_superseded_epoch_spec_sync_opens_6() {
     }
 }
 
-// spec/sync-opens.md §6 (Judged holder or not departed again, it closes at once, naming no
-// position): b, judged departed before any rotation is logged here, is ended with no `until` and
+// spec/sync-opens.md §6 (A member whose peer J judges departed is ended too; Lost): b, judged
+// departed before any rotation is logged here, is ended with no `until` and
 // shown S's role entries alone; its stream moves past the rest. Granted again (judged a reader),
 // it closes at once with a Lost naming no position, and b rejoins from the start: a member kept
 // open, or one closing at a position, would leave b past entries it was never shown.
@@ -2334,7 +2334,7 @@ fn a_departure_alone_moves_what_read_the_member_spec_sync_opens_6() {
 }
 
 // spec/sync-opens.md §6 (whose peer J judges departed is ended too; closes only on the peer's Lost)
-// and (Judged holder or not departed again, it closes at once, naming no position): a reader
+// (judged holder or not departed again, it closes at once; Lost): a reader
 // judges its store peer departed, then a sync holder again (granted anew). Its stream, shown role
 // entries alone, is past what it skipped: the member closes without waiting for the peer's Lost,
 // with a Lost naming no position, so the store rejoins from the start.
