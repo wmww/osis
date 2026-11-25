@@ -104,7 +104,8 @@ pub(crate) fn role_here(core: &Core, a: &Tid) -> Option<Role> {
 /// Whether the grants the node holds of `a` count for its role (spec/sync-set.md §2 Own things:
 /// grants belong to the thing granted): the node syncs `a` or holds an offer of it (`syncs`), or
 /// `a` is a holder found from such a thing up: one holding a role now, with key access, on a
-/// thing whose grants count. A grant of any other thing is held as some commit's certificate
+/// thing whose grants count, by a held edge write or, holding sync alone, by counted sync copies
+/// (`Core::copies_naming`). A grant of any other thing is held as some commit's certificate
 /// and gives the node nothing, whoever it names. The walk down from `a` through what it is
 /// named on, stopping at the first thing synced: O(the things reached, each once).
 pub(crate) fn grants_count(core: &Core, a: &Tid) -> bool {
@@ -118,6 +119,12 @@ pub(crate) fn grants_count(core: &Core, a: &Tid) -> bool {
             if !seen.contains(y) && core.keyed_role_now(&x, y).is_some() {
                 seen.insert(*y);
                 todo.push(*y);
+            }
+        }
+        // a holder of sync alone: its counted sync copies are the node's record of its grant
+        for y in core.copies_naming(&x) {
+            if seen.insert(y) {
+                todo.push(y);
             }
         }
     }

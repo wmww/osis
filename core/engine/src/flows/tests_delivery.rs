@@ -424,7 +424,7 @@ fn holds_any(b: &[u8], xs: &[Vec<u8>]) -> bool {
 #[test]
 fn a_sync_alone_holder_gets_no_header_on_any_path_spec_sync_ids_2() {
     let (mut lp, g, t) = sync_holder();
-    let me0 = lp.peers[0].engine.me();
+    let me0 = lp.peers[0].engine.tid();
     lp.peers[2].engine.grant(&t, &me0, &edge(Role::Read)).unwrap();
     lp.sync_all().unwrap();
     // the key part

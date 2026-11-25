@@ -412,75 +412,83 @@ impl Read {
                 self.mintings.unwant(&k);
             }
         }
-        // the own judgement of each body, to its fixpoint
-        let mut judged: Moved<(SyncId, BodyId), Judged> = BTreeMap::new();
+        // the own judgement of each body, to its fixpoint, then its acts; again while acting on
+        // the own store moved what a judgement reads, so each value kept is judged after its own
+        // acts (an own entry logged and then dropped by another module before the next settle,
+        // a forgotten commit's, reads as the same value and would never be logged again)
         loop {
-            g.refresh()?;
-            let due = self.judged.due();
-            if due.is_empty() {
-                break;
-            }
-            for k in due {
-                let (s, c) = k;
-                let mine = Mine { verdicts: &self.verdicts, roles: &self.roles, held_roles: &self.held_roles, clock: &self.clock, metas: &self.metas, mints: &self.mints, arrived: &self.arrived, moved: &self.moved };
-                let Some((was, now)) = self.judged.try_settle(&k, || judge::body(g, &mine, &s, &c))? else { continue };
-                if self.verdicts.get(&k) != Some(&now.verdict) {
-                    #[cfg(debug_assertions)]
-                    osis_base::trace::note(|| format!("verdict {s:?} {c:?}: {:?} -> {:?} ({})", self.verdicts.get(&k).unwrap_or(&Verdict::Unjudged), now.verdict, judge::last_why()));
-                    self.verdicts.insert(k, now.verdict.clone());
-                    // what it calls for at each source whose stream shows it, up now or away (a
-                    // start judges every body: what the sources showed before is judged then)
-                    for at in g.shown_at(&s, &c)? {
-                        self.toward.want((s, c, at));
-                    }
-                    // a non-writer gives a must-hold body to each store source lacking it
-                    if now.verdict == Verdict::Must {
-                        for at in self.giving_to(g, &s)? {
+            let mut judged: Moved<(SyncId, BodyId), Judged> = BTreeMap::new();
+            loop {
+                g.refresh()?;
+                let due = self.judged.due();
+                if due.is_empty() {
+                    break;
+                }
+                for k in due {
+                    let (s, c) = k;
+                    let mine = Mine { verdicts: &self.verdicts, roles: &self.roles, held_roles: &self.held_roles, clock: &self.clock, metas: &self.metas, mints: &self.mints, arrived: &self.arrived, moved: &self.moved };
+                    let Some((was, now)) = self.judged.try_settle(&k, || judge::body(g, &mine, &s, &c))? else { continue };
+                    if self.verdicts.get(&k) != Some(&now.verdict) {
+                        #[cfg(debug_assertions)]
+                        osis_base::trace::note(|| format!("verdict {s:?} {c:?}: {:?} -> {:?} ({})", self.verdicts.get(&k).unwrap_or(&Verdict::Unjudged), now.verdict, judge::last_why()));
+                        self.verdicts.insert(k, now.verdict.clone());
+                        // what it calls for at each source whose stream shows it, up now or away (a
+                        // start judges every body: what the sources showed before is judged then)
+                        for at in g.shown_at(&s, &c)? {
                             self.toward.want((s, c, at));
                         }
+                        // a non-writer gives a must-hold body to each store source lacking it
+                        if now.verdict == Verdict::Must {
+                            for at in self.giving_to(g, &s)? {
+                                self.toward.want((s, c, at));
+                            }
+                        }
                     }
-                }
-                set_in(&mut self.roles, &s, &c, now.role && !now.idle);
-                set_in(&mut self.held_roles, &s, &c, now.held_role && !now.idle);
-                if let Some(w) = now.wait {
-                    wait_pass(&mut self.waits, s, w);
-                }
-                if now.idle {
-                    if !g.reads(&s) {
-                        unread.insert(s);
+                    set_in(&mut self.roles, &s, &c, now.role && !now.idle);
+                    set_in(&mut self.held_roles, &s, &c, now.held_role && !now.idle);
+                    if let Some(w) = now.wait {
+                        wait_pass(&mut self.waits, s, w);
                     }
-                    self.judged.unwant(&k);
-                    g.unfollow_facts(&s, &c);
-                    self.verdicts.remove(&k);
-                    self.arrived.remove(&k);
+                    if now.idle {
+                        if !g.reads(&s) {
+                            unread.insert(s);
+                        }
+                        self.judged.unwant(&k);
+                        g.unfollow_facts(&s, &c);
+                        self.verdicts.remove(&k);
+                        self.arrived.remove(&k);
+                    }
+                    let links = |j: &Judged| (j.roots.to_vec(), j.repairs);
+                    let (old, new) = (was.as_ref().map(links).unwrap_or_default(), links(&now));
+                    self.pieces.body(&s, &c, (&old.0, old.1), (&new.0, new.1), &now.fresh);
+                    note(&mut judged, k, was, now);
                 }
-                let links = |j: &Judged| (j.roots.to_vec(), j.repairs);
-                let (old, new) = (was.as_ref().map(links).unwrap_or_default(), links(&now));
-                self.pieces.body(&s, &c, (&old.0, old.1), (&new.0, new.1), &now.fresh);
-                note(&mut judged, k, was, now);
             }
-        }
-        // each piece the must-hold bodies link, to its fixpoint (a node judged held follows what
-        // lies below it)
-        loop {
-            let due = self.pieces.judged.due();
-            if due.is_empty() {
+            // each piece the must-hold bodies link, to its fixpoint (a node judged held follows what
+            // lies below it)
+            loop {
+                let due = self.pieces.judged.due();
+                if due.is_empty() {
+                    break;
+                }
+                for k in due {
+                    let Some(p) = self.pieces.link_of(&k) else { continue };
+                    let Some((_, now)) = self.pieces.judged.try_settle(&k, || judge::piece(g, &k.0, &p))? else { continue };
+                    self.pieces.settled(&k, now);
+                }
+            }
+            if judged.is_empty() {
                 break;
             }
-            for k in due {
-                let Some(p) = self.pieces.link_of(&k) else { continue };
-                let Some((_, now)) = self.pieces.judged.try_settle(&k, || judge::piece(g, &k.0, &p))? else { continue };
-                self.pieces.settled(&k, now);
+            // what is logged together goes in its commits' `ts` order, so the own ones in the order
+            // they were made (spec/sync-judgement.md §3 Own store: a removal before what was
+            // written after it, spec/permissions.md §3)
+            let mut judged: Vec<_> = judged.into_iter().collect();
+            judged.sort_by_cached_key(|((s, c), _)| (g.ts(&c.commit), *s, *c));
+            for ((s, c), (was, now)) in judged {
+                acted = true;
+                self.react(g, &s, c, &was.map(|w| w.acts).unwrap_or_default(), &now.acts)?;
             }
-        }
-        // what is logged together goes in its commits' `ts` order, so the own ones in the order
-        // they were made (spec/sync-judgement.md §3 Own store: a removal before what was
-        // written after it, spec/permissions.md §3)
-        let mut judged: Vec<_> = judged.into_iter().collect();
-        judged.sort_by_cached_key(|((s, c), _)| (g.ts(&c.commit), *s, *c));
-        for ((s, c), (was, now)) in judged {
-            acted = true;
-            self.react(g, &s, c, &was.map(|w| w.acts).unwrap_or_default(), &now.acts)?;
         }
         // what the pieces newly call for, and no longer; a lost one is repaired in the own bodies
         // over it, each body's in one commit

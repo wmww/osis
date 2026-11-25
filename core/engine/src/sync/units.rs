@@ -445,6 +445,11 @@ impl Grow for GrowSynced<'_> {
     }
 }
 
+/// Whether contexts `cs` read their thing: the local part or a read sync unit.
+fn reading(cs: &BTreeSet<Ctx>) -> bool {
+    cs.iter().any(|c| matches!(c, Ctx::Local | Ctx::Read(_)))
+}
+
 impl Closure {
     /// Whether the node closure holds `t`, in any context.
     pub(crate) fn holds(&self, t: &Tid) -> bool {
@@ -455,8 +460,13 @@ impl Closure {
     /// read sync unit (spec/sync-set.md §2: a sync unit kept unread is its root alone, the node
     /// cannot read what it holds).
     pub(crate) fn reads(&self, t: &Tid) -> bool {
-        let reading = |cs: &BTreeSet<Ctx>| cs.iter().any(|c| matches!(c, Ctx::Local | Ctx::Read(_)));
-        self.tree.held.get(t).is_some_and(reading) || self.left.get(t).is_some_and(reading)
+        self.reads_held(t) || self.left.get(t).is_some_and(reading)
+    }
+
+    /// Whether the node closure holds `t` now (not leaving) in the local part or a read sync
+    /// unit.
+    fn reads_held(&self, t: &Tid) -> bool {
+        self.tree.held.get(t).is_some_and(reading)
     }
 
     /// Whether a held vertex's strong reaches `t`, as last judged.
@@ -1094,9 +1104,12 @@ fn held_for_keys(core: &Core, t: &Tid) -> bool {
 /// Whether `t` is a holder the node opens without reading it in the node closure: an independent
 /// thing of which the node holds a read secret of its own (a box to an own thing
 /// or to a holder it opens gave it; the lost-access rule keeps it only while the node's role
-/// reads `t`, `rotation::lost`).
+/// reads `t`, `rotation::lost`). A thing that left the node closure is outside it while its
+/// release waits (spec/sync-set.md §3 Leaves), so it is held for keys from then: its key part
+/// (a holder of sync alone's sync copies, the one record of its grant) stays under a sync ID
+/// still synced instead of going with its release.
 fn opened_holder(core: &Core, t: &Tid) -> bool {
-    core.enter(t) == Some(Ctx::Read(*t)) && !core.ix.closure.reads(t)
+    core.enter(t) == Some(Ctx::Read(*t)) && !core.ix.closure.reads_held(t)
 }
 
 /// Whether the grants of a thing the node closure holds (read, or kept unread: its edge piece is
