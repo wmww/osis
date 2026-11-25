@@ -910,7 +910,9 @@ fn judge_part(tx: &mut Tx<'_>, h: &Header, id: &CommitId, p: &osis_commit::Part,
 
 /// The signer's record of commit `h`, else what it waits for whole: that record, or the record
 /// of its purge author, a member of every thing's path.
-// Interim (issues/stated-path-certificates.md): waits for every listed thing's record
+// Interim (issues/stated-path-certificates.md): the spec waits for every listed thing's record
+// and those up its chain; this waits for the purge author's alone (`thing_wait`'s hops read a
+// listed thing's record only where a hop needs it)
 fn header_wait(h: &Header, record: &dyn Fn(&Tid) -> Option<CreationRecord>) -> std::result::Result<CreationRecord, Reason> {
     let author = record(&h.signer).ok_or(Reason::MissingChain(h.signer))?;
     let acting = h.purge_author();
