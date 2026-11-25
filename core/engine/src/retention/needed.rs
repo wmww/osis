@@ -32,7 +32,7 @@
 //! (`apply::set_pending`), or outside the node closure a content part on which is newly held
 //! (`Core::put_meta`) is noted in `Core::pass_due` until then, so a parent's record arriving
 //! before what needs it stays. A lost need waits for nothing but a pass in flight: a thing that
-//! lost one (a strong row or a `card.0` row gone, durable or ephemeral, `refs::note`; a signer's commit
+//! lost one (a strong row, a card's inbox row or a card gone, durable or ephemeral, `refs::note`; a signer's commit
 //! leaving pending; the last held commit acting as it gone, `apply::unindex`; a
 //! commit's part no longer missing, `Core::note_on`; a holder unnamed, `Held::take_unnamed`; the
 //! last held vertex no longer following its strong) is noted in `Core::lost_due`, judged at a pass's end or, with
@@ -313,8 +313,14 @@ pub(crate) fn needs(tx: &mut Tx<'_>, t: &Tid) -> Result<Vec<(Tid, Need)>> {
     for r in refs {
         if crate::engine::refs::holds_target(r.kind, &r.ak) && core.ix.closure.holds(&r.source) {
             out.push((r.source, Need::Strong(r.ak)));
-        } else if r.ak.as_str() == "card.0" && core.ix.closure.holds(&r.source) {
+        } else if osis_schema::core_types::card_of(r.ak.as_str()).is_some() && core.ix.closure.holds(&r.source) {
             out.push((r.source, Need::Card));
+        }
+    }
+    // its own cards on things the node closure holds
+    for (h, _) in crate::flows::cards::cards_of(tx, t)? {
+        if tx.core.ix.closure.holds(&h) {
+            out.push((h, Need::Card));
         }
     }
     out.retain(|(x, _)| x != t);

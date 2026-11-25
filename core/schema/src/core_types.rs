@@ -44,10 +44,25 @@ pub fn counts_as_content(ak: &str) -> bool {
     is_content(ak) && ak != "purge.0"
 }
 
-/// Whether `ak` is a core schema key by its form: one name segment, no tid (spec/data-model.md
-/// §2), declared there or not.
+/// Whether `ak` is a core schema key by its form: one name segment (spec/data-model.md §2; with a
+/// tid segment only a card aspect), declared there or not.
 pub fn is_core_key(ak: &str) -> bool {
-    osis_base::Ak::new(ak).is_ok_and(|a| a.tid().is_none() && a.segments().count() == 1)
+    osis_base::Ak::new(ak).is_ok_and(|a| a.segments().count() == 1)
+}
+
+/// The name of a card aspect (spec/data-model.md §9), after its tid segment.
+const CARD_NAME: &str = "card.0";
+
+/// `a`'s card aspect, `:<a>:card.0` (spec/data-model.md §9): its card, on any thing.
+pub fn card_ak(a: &osis_base::Tid) -> Ak {
+    // a tid's text form and `card.0` always parse
+    Ak::new(format!(":{a}:{CARD_NAME}")).unwrap_or(Ak::MIN)
+}
+
+/// The thing whose card aspect `ak` is (`card_ak`), if it is one.
+pub fn card_of(ak: &str) -> Option<osis_base::Tid> {
+    let t = ak.strip_prefix(':')?.strip_suffix(CARD_NAME)?.strip_suffix(':')?;
+    osis_base::Tid::parse(t).ok()
 }
 
 /// One-case agility enum over a blob with an optional fixed length.
@@ -391,16 +406,13 @@ codec_struct! {
 pub type DialList = BTreeMap<Weak, Dial>;
 pub const DIAL: Aspect<DialList> = Aspect::new("dial.0", &CORE);
 codec_struct! {
-    /// A thing's card (`card.0`, spec/sync-inbox.md §1 Card): its inbox where it is another
+    /// A thing's card (its card aspect `:<tid>:card.0`, spec/sync-inbox.md §1 Card): its inbox where it is another
     /// thing, the wall ms that inbox was chosen (`since`), and its and that inbox's current
     /// `keys.0` commits in the holder keys form (`keys` `CommitBlobPlaintext` bytes, `records`
     /// `creation` bytes, spec/wire.md §9).
     #[derive(Clone, Debug, Default, PartialEq, Eq)]
     pub struct Card { 0 inbox: Option<Weak>, 1 keys: Vec<Vec<u8>>, 2 records: Vec<Vec<u8>>, 3 since: WallMs }
 }
-/// `card.0` on any thing: cards by the thing each is of (spec/data-model.md §9).
-pub type Cards = BTreeMap<Weak, Card>;
-pub const CARD: Aspect<Cards> = Aspect::new("card.0", &CORE);
 /// `settings^.0` on a node root: the thing holding the node's settings (spec/sync-set.md §1).
 pub const SETTINGS: Aspect<Weak> = Aspect::new("settings^.0", &CORE);
 /// `dial_on^.0` on a node root: the things the node keeps its dial entry on (spec/sync-set.md §1).

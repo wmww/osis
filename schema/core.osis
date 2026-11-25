@@ -259,19 +259,17 @@ type dial = struct {
 /// node keeping its own. Its readers dial them, for dialing only.
 aspect dial.0: map<weak, dial>;
 
-/// A thing's card (spec/sync-inbox.md §1 Card): its inbox where it is another thing, when that
-/// inbox was chosen (ms), and its and the inbox's current `keys.0` commits in the holder keys form
-/// (spec/wire.md §9).
+/// A thing's card (spec/sync-inbox.md §1 Card), the value of its card aspect `:<tid>:card.0` on
+/// any thing (spec/data-model.md §9; a family no schema declares): its inbox where it is another
+/// thing, when that inbox was chosen (ms), and its and the inbox's current `keys.0` commits in the
+/// holder keys form (spec/wire.md §9). It counts only written along a path through that thing
+/// (spec/permissions.md §5.2).
 type card = struct {
     inbox 0: option<weak>,
     keys 1: list<blob>,
     records 2: list<blob>,
     since 3: timestamp,
 };
-
-/// The cards of things on this one, by thing (spec/data-model.md §9): an entry keyed by A counts
-/// only written along a path through A (spec/permissions.md §5.2).
-aspect card.0: map<weak, card>;
 
 // ---- Nodes ----
 // A node's settings (spec/sync-set.md §1): its entries, keyed by its node thing, on the thing its

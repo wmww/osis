@@ -6,7 +6,7 @@
 
 use crate::common::T0;
 use osis_base::{Role, Tid, Value};
-use osis_crdt::{Op, PathOp, PathSeg};
+use osis_crdt::{Op, PathOp};
 use osis_engine::flows::cards;
 use osis_engine::local_peer::{Account, LocalPeer};
 use osis_engine::{Engine, Mutation};
@@ -46,7 +46,7 @@ fn a_card_written_off_its_path_is_invalid_spec_permissions_5_2() {
     let b = thing(&mut lp, 0, acc.thing, true);
     let mut m = Mutation::new();
     m.act_as(acc.thing);
-    m.op(acc.profile, &ct::CARD, PathOp { path: vec![PathSeg::Key(Value::Weak(b))], op: Op::Set(cards::naming(None, T0).to_value()) }).unwrap();
+    m.op(acc.profile, &ct::card_ak(&b), PathOp { path: vec![], op: Op::Set(cards::naming(None, T0).to_value()) }).unwrap();
     assert!(lp.peers[0].commit(m.clone()).is_err(), "refused writer-side");
     lp.peers[0].engine.core.skip_writer_rules = true;
     lp.peers[0].commit(m).unwrap().unwrap();
@@ -169,4 +169,35 @@ fn a_card_alone_lets_a_stranger_grant_spec_permissions_2() {
     e1.grant(&t, &acc.thing, &ct::Edge { role: Role::Read, until: None, may_grant: false, retain: false, floor: None }).unwrap();
     let owed: Vec<Tid> = e1.fires_owed().iter().filter_map(|id| e1.sealed_fire(id).ok().flatten()).map(|f| f.thing).collect();
     assert!(owed.contains(&acc.inbox), "the grant is fired at A0's inbox: {owed:?}");
+}
+
+// spec/permissions.md §5.2 (Compaction snapshot; card aspect): node 1, a writer of
+// C through its own account alone, holds A0's card on C. Its snapshot of the card aspect carries
+// the card off a path through A0: refused writer-side and, written anyway, invalid at node 0.
+// Node 0's own snapshot, acting as A0, is valid at node 1; once node 1 removes the card (any
+// writer's power), node 1's snapshot of the removed aspect is valid.
+#[test]
+fn a_card_snapshot_off_its_path_is_invalid_spec_permissions_5_2() {
+    let (mut lp, accs) = LocalPeer::accounts(2, 0, T0).unwrap();
+    let c = thing(&mut lp, 0, accs[0], true);
+    let ak = ct::card_ak(&accs[0]);
+    lp.peers[0].engine.write_card(c, accs[0], None, None).unwrap();
+    lp.peers[0].engine.grant(&c, &accs[1], &ct::Edge { role: Role::Write, until: None, may_grant: false, retain: false, floor: None }).unwrap();
+    lp.sync_all().unwrap();
+    lp.hold_at(1, c);
+    lp.sync_all().unwrap();
+    assert!(lp.peers[1].engine.cards_of(&accs[0]).unwrap().iter().any(|(h, _)| *h == c), "node 1 reads A0's card on C");
+    assert!(lp.peers[1].engine.snapshot(&c, &ak).is_err(), "refused writer-side");
+    lp.peers[1].engine.core.skip_writer_rules = true;
+    let off = lp.peers[1].engine.snapshot(&c, &ak).unwrap().unwrap();
+    lp.peers[1].engine.core.skip_writer_rules = false;
+    let on = lp.peers[0].engine.snapshot(&c, &ak).unwrap().unwrap();
+    lp.sync_all().unwrap();
+    assert_eq!(lp.peers[0].engine.part_valid(&off, 0), Some(false), "off its path: invalid");
+    assert_eq!(lp.peers[1].engine.part_valid(&on, 0), Some(true), "through A0: valid");
+    lp.peers[1].engine.remove_card(c, accs[0]).unwrap();
+    let removed = lp.peers[1].engine.snapshot(&c, &ak).unwrap().unwrap();
+    lp.sync_all().unwrap();
+    assert_eq!(lp.peers[0].engine.part_valid(&removed, 0), Some(true), "a removal's snapshot: any writer's");
+    assert!(!lp.peers[0].engine.cards_of(&accs[0]).unwrap().iter().any(|(h, _)| *h == c), "the card is gone at node 0");
 }

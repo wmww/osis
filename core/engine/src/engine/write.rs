@@ -172,7 +172,8 @@ impl Mutation {
 
     /// Whether this mutation puts a card of `t` on some thing (`flows::cards::put`).
     pub(crate) fn writes_card_of(&self, t: &Tid) -> bool {
-        self.aspects.iter().any(|((_, ak), a)| ak.as_str() == "card.0" && a.ops.iter().any(|o| o.path.first() == Some(&osis_crdt::PathSeg::Key(Value::Weak(*t)))))
+        let card = osis_schema::core_types::card_ak(t);
+        self.aspects.iter().any(|((_, ak), a)| *ak == card && a.ops.iter().any(|o| !matches!(o.op, osis_crdt::Op::RemoveAspect)))
     }
 
     /// Makes the aspect read `v` (structural diff, spec/crdt.md §9).

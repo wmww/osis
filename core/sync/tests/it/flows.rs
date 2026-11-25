@@ -149,6 +149,28 @@ fn a_from_now_grantee_reads_the_current_state_and_no_earlier_write_spec_crypto_4
     assert_eq!(w.engine(1).get(&t, &value_ak()).unwrap(), Some(Value::Str("after".into())), "what follows the grant");
 }
 
+// spec/crypto.md §4 (State at a cut), spec/sync-inbox.md §1 (Card), spec/data-model.md §9 (card
+// aspect): node 0 writes its account's card on t, then grants node 1's account read on t without
+// history. The card's write lies below node 1's floor; node 0, a writer of t through its account,
+// owes the card aspect's snapshot like any aspect's, so node 1 reads the card on t through sync
+// alone, naming the inbox and carrying the account's keys.
+#[test]
+fn a_from_now_grantee_reads_a_card_written_before_its_cut_spec_crypto_4() {
+    use crate::harness::Step::*;
+    use crate::harness::history::world_of;
+    let mut w = world_of(0, 2, 2);
+    let _ = crate::harness::play(&mut w, &[New(0), Card(0, 0), Run], String::new());
+    let t = w.history.things[0].0;
+    let a0 = w.node(0).account.unwrap();
+    let want = w.engine(0).cards_of(&a0).unwrap().into_iter().find(|(h, _)| *h == t).expect("node 0's card on t").1;
+    let a1 = w.node(1).account.unwrap();
+    w.write(0, |e| e.grant_with(&t, &a1, &edge(Role::Read), osis_engine::flows::edges::History::None)).unwrap();
+    w.run();
+    let _ = crate::harness::play(&mut w, &[Strong(1, None, 0), Run], String::new());
+    let got = w.engine(1).cards_of(&a0).unwrap().into_iter().find(|(h, _)| *h == t).map(|x| x.1);
+    assert_eq!(got, Some(want), "node 1 reads the card on t");
+}
+
 // spec/crypto.md §4 (State at a cut: a record whose minting lies below the cut goes as a
 // certificate), spec/commits.md §4 (Records: a held strong awaits its target's record): a dependent
 // thing p under t (carried under t's sync ID, as a chat's messages are) written before node 1's

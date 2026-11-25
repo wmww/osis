@@ -817,8 +817,8 @@ indexes! {
     pub retention: JMap<Tid, Vec<(Point, Arc<osis_schema::core_types::RetentionSetting>)>>,
     /// Parts writing beyond what their commit alone allows them, judged from the part and its
     /// header: `secrets.0` and `keys.0` parts of role commits beyond their grantees' boxes (a
-    /// may-grant grant may carry only those, spec/permissions.md §2), and `card.0` parts putting
-    /// an entry keyed by a thing off their stated path (invalid, spec/permissions.md §5.2).
+    /// may-grant grant may carry only those, spec/permissions.md §2), and card aspect parts writing
+    /// a card off their stated path (invalid, spec/permissions.md §5.2).
     pub overreach: JSet<(CommitId, usize)>,
     /// Keyed boxes per holder: holder -> (actor, box key), from `secrets.0` entries seen.
     pub boxes_to: JSetMap<Tid, (Tid, osis_base::Value)>,

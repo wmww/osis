@@ -213,7 +213,7 @@ issues/readers-see-readers.md wants an option under which reader-level grants op
 - **Contact-only information** (decided): the dial list is in a thing of its own, read by those its owner shares with; where it sits is the schema's. The dial aspect is core's: a node dials what it reads in `dial.0` on any thing it holds.
 
 ### The card: where a thing's keys and inbox are published
-To grant to a thing A it holds no role on, a party needs A's keysets and, for delivery, A's inbox's read key, sync ID and deposit seed. A **card** (`card.0`, spec/sync-inbox.md §1) carries A's and its inbox's current `keys.0` commits, written on any thing along a path through A; who reads that thing can grant to A. A holder's keys under each target it holds a role on (spec/permissions.md §4) are the only other place its KEM keys go.
+To grant to a thing A it holds no role on, a party needs A's keysets and, for delivery, A's inbox's read key, sync ID and deposit seed. A **card** (card aspect `:<A>:card.0`, spec/sync-inbox.md §1) carries A's and its inbox's current `keys.0` commits, written on any thing along a path through A; who reads that thing can grant to A. A holder's keys under each target it holds a role on (spec/permissions.md §4) are the only other place its KEM keys go.
 
 ## 4. External signals and grants from outside
 **Rule: a thing takes from outside only what its admins enabled, and a grant from outside is an offer.** A grant belongs to the thing granted and syncs with it; nothing is accepted or taken: the holder's node references the target (a strong, its own choice), syncs it, and its role is by the target's grants (Tess; notes/holder-access-study.md, The direction).
@@ -258,7 +258,7 @@ Checked in the named files; the right-hand side argued.
 | `author()`: the node thing, the author of a node handle's writes and the holder of its roles (core/osis/src/handle.rs) | a session's configured default path and purge author; `role_on` and `holders` answer for a stated path |
 | `Write::act_as`: one actor in place of `author()` (core/osis/src/write.rs) | a write states its path and purge author in place of the session's defaults |
 | siblings to sync with (engine `dial_peers`, core/engine/src/sync/dial.rs; spec/sync-set.md §1) | no sibling rule: a node dials what the dial aspect of any thing it holds lists (§3) |
-| inbox delivery by the account's card naming its inbox (`card.0`, `Engine::inbox_of`) | the card (§3): any thing's inbox, named by its writers through it |
+| inbox delivery by the account's card naming its inbox (`:<A>:card.0`, `Engine::inbox_of`) | the card (§3): any thing's inbox, named by its writers through it |
 | `profile`, `profile_of`, `contact_card`, `import_contact` (osis-account, libs/account) | the schema library: a profile is a public thing; a contact card is a link to the contact-only thing with a reference to the profile |
 | thin clients acting as a thing minted with the account (core/osis/src/clients.rs) | stays core's, a node's policy: a client session's configured path |
 | connection proofs of an account (spec/permissions.md §4 Stranded, spec/sync-opens.md §2) | a proof of a key of a thing, with the path it claims as evidence |

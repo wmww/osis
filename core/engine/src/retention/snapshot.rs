@@ -1170,6 +1170,9 @@ pub(crate) fn carried_only(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, of: &dyn Fn(&Tid
 /// (`replace::settle_none`).
 pub(crate) fn may_snapshot(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, memory: bool, ts: Ts) -> Result<MayWrite> {
     let node = tx.core.me();
+    if snapshot_actor(tx, tid, ak)?.is_none() && !tx.core.skip_writer_rules {
+        return Ok(MayWrite::No);
+    }
     if is_content(ak.as_str()) && !carried_passes_on(tx, tid, ak)? {
         return Ok(MayWrite::Later);
     }
@@ -1180,6 +1183,19 @@ pub(crate) fn may_snapshot(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, memory: bool, ts
         (false, _) => Some(crate::engine::write::snapshot_role(ak.as_str())),
     };
     crate::engine::write::may_write(tx, node, tid, ak.as_str(), need, ts)
+}
+
+/// The thing a snapshot of `(tid, ak)` by this node acts as (spec/permissions.md §5.2): this node,
+/// but on A's card aspect (`card_of`) A where this node may write `tid` along a path through A,
+/// else this node only while the state carries no card (a removal is any writer's). `None`: this
+/// node may write no snapshot of it.
+pub(crate) fn snapshot_actor(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Option<Tid>> {
+    let node = tx.core.me();
+    let Some(a) = osis_schema::core_types::card_of(ak.as_str()) else { return Ok(Some(node)) };
+    if a == *tid || crate::flows::cards::may_write_through(tx.core, &a, tid) {
+        return Ok(Some(if a == *tid { node } else { a }));
+    }
+    Ok(tx.state(tid, ak)?.is_none_or(|f| f.written().is_none()).then_some(node))
 }
 
 /// Whether every write a snapshot of `(tid, ak)` would carry from a held body may go under this
@@ -1309,7 +1325,8 @@ pub(crate) fn build_snapshot(tx: &mut Tx<'_>, tid: Tid, ak: Ak, st: SnapState, t
     absorbed.retain(|c, _| listed.contains(&osis_crdt::Source::commit(*c)));
     let facts = facts_of(tx, &tid, &ak, &st)?;
     let purge_by = osis_commit::retention::snapshot_purge_by(ak.as_str());
-    let plan = CommitPlan { kind, ts, actor: node, form: Form::Commit, creates: Default::default(), minted: Default::default(), purge: Vec::new(), undoes: None, frontier: None, signer: node, key: None, blind: crate::engine::write::draw_blind(&mut *tx.rng), expires, restores: false, own_cover, adminless: false };
+    let actor = snapshot_actor(tx, &tid, &ak)?.unwrap_or(node);
+    let plan = CommitPlan { kind, ts, actor, form: Form::Commit, creates: Default::default(), minted: Default::default(), purge: Vec::new(), undoes: None, frontier: None, signer: node, key: None, blind: crate::engine::write::draw_blind(&mut *tx.rng), expires, restores: false, own_cover, adminless: false };
     let d = Resolved { tid, ak, fragment: Fragment::default(), lo: 0, hi: 0, schema: None, purge_by: Some(purge_by), expires, replaces: None, original_floor: 0, snapshot: Some(crate::engine::write::SnapshotPart { state: st, frontiers, absorbed, facts }), chunks: Vec::new() };
     build_and_apply(tx, plan, vec![d])
 }
@@ -1331,12 +1348,10 @@ fn held_sources(core: &Core, tid: &Tid, ak: &Ak) -> BTreeSet<osis_crdt::Source> 
 }
 
 /// Whether `ak` is ever compacted (spec/commits.md §2): not role-class, `created.0`,
-/// `addenda.0`, `card.0` (each card counts only along its own write's path, so a snapshot by one
-/// writer of the cards of several things is invalid, spec/permissions.md §5.2) or a signal (no
-/// state).
+/// `addenda.0` or a signal (no state).
 pub(crate) fn compacted(ak: &Ak) -> bool {
     let a = ak.as_str();
-    !is_role_class(a) && a != "created.0" && a != "card.0" && !osis_schema::core_types::is_addenda(a) && !ak.signal()
+    !is_role_class(a) && a != "created.0" && !osis_schema::core_types::is_addenda(a) && !ak.signal()
 }
 
 /// The re-snapshot owed on `(tid, ak)` (`Indexes::resnapshots_owed`), in `tx`: one this node may
@@ -1434,10 +1449,6 @@ impl Engine {
         }
         if ak.as_str() == "created.0" {
             return Err(Error::Misuse("created.0 is never compacted"));
-        }
-        // each card counts only along its own write's path (spec/permissions.md §5.2)
-        if ak.as_str() == "card.0" {
-            return Err(Error::Misuse("card.0 is never compacted"));
         }
         // the judgment reads every addendum delta (spec/permissions.md §5.2)
         if osis_schema::core_types::is_addenda(ak.as_str()) {

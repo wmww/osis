@@ -284,7 +284,7 @@ pub struct Markers {
 /// An aspect key: name segments `[a-z_][a-z0-9_]*` joined by `:`, after an optional leading
 /// `:<tid>` segment; then the markers `+` (ephemeral) and `^` (admin-only); then `.` (an aspect)
 /// or `~` (a signal), or `@~` alone (an external signal), and the version: `name.0`,
-/// `contact:names.0`, `:<tid>:foo+^.1`, `x+~0`, `grant@~0`.
+/// `contact:names.0`, `:<tid>:foo:bar+^.1`, `x+~0`, `grant@~0`.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct Ak(String);
 

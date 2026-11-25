@@ -41,7 +41,7 @@ Encoding: spec/wire.md §4. Fields:
   - A durable commit's `created.0` part MUST be exactly one minting of the record: the delta of one write setting the thing's record (typed by the `creation` struct, spec/data-model.md §9), nothing else; otherwise that delta is bad input (§4).
 - **Compaction snapshot**: content or role kind with the compaction-snapshot marker; snapshot deltas (spec/crdt.md §8); no own writes, empty counter ranges (spec/sync-compaction.md §1).
   - Written by a node that may write the aspect (admin for `keys.0` and `secrets.0`, spec/permissions.md §5.2). A receiver judges this as for any delta of its signer, and a snapshot failing it gives nothing (spec/permissions.md §5.2).
-  - `roles.0` and `signers.0` are never compaction-snapshotted: the role timeline walks every edge write (spec/permissions.md §5.1). A node never compaction-snapshots `card.0`: each card counts only along its own write's path (spec/permissions.md §5.2), so a snapshot carrying the cards of things off its path is invalid.
+  - `roles.0` and `signers.0` are never compaction-snapshotted: the role timeline walks every edge write (spec/permissions.md §5.1).
 - **Ephemeral commit**: a commit with the ephemeral marker, carrying writes of ephemeral (`+`) aspects (spec/data-model.md §2), one of:
   - a content commit (its signer's own writes, in its form, §3);
   - a content compaction snapshot of one `+` aspect (an ephemeral snapshot, below).

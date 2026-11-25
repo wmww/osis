@@ -1,10 +1,11 @@
-//! Cards (spec/sync-inbox.md §1 Card, spec/data-model.md §9 `card.0`): a `card.0` entry keyed by
-//! a thing A on any thing C, written along a path through A: A's inbox where it is another
-//! thing, when that inbox was chosen (`since`), and A's and that inbox's current `keys.0`
-//! commits in the holder keys form. A node reading C takes those commits as holder keys
-//! (`Engine::take_cards`); at a pass's end a node that may write C along a path through A
-//! rewrites the card when it holds newer `keys.0` commits of A or its inbox, or a card of A with a greater
-//! `since`.
+//! Cards (spec/sync-inbox.md §1 Card, spec/data-model.md §9): A's card on any thing C is the
+//! value of A's card aspect on C (`card_ak`), written whole along a path through A: A's inbox
+//! where it is another thing, when that inbox was chosen (`since`), and A's and that inbox's
+//! current `keys.0` commits in the holder keys form. A node reading C takes those commits as
+//! holder keys (`Engine::take_cards`); at a pass's end a node that may write C along a path
+//! through A rewrites the card when it holds newer `keys.0` commits of A or its inbox, or a card
+//! of A with a greater `since`. A card aspect is retained, snapshotted and covered as any content
+//! aspect: its snapshots, as its writes, state a path through A.
 //!
 //! Invariant: a card counts only written along a path through A (`apply::validity::note_cards`),
 //! and what it carries counts only as judged here (`take_holder_keys`: what is on A's or the
@@ -23,35 +24,28 @@ use crate::Mutation;
 use osis_base::{Role, Tid, Value, WallMs, Weak};
 use osis_crdt::{Fragment, Op, PathOp, PathSeg};
 use osis_perm::graph::Need;
-use osis_schema::core_types as ct;
+use osis_schema::core_types::{self as ct, card_ak, card_of};
 use osis_schema::Codec;
 use std::collections::{BTreeMap, BTreeSet};
 
-/// The cards aspect.
-pub(crate) const CARD: &str = "card.0";
-
-/// The cards on `host` as its state holds them here, by the thing each is of: an entry that does
-/// not read as a card is none.
-pub(crate) fn cards_on(tx: &mut Tx<'_>, host: &Tid) -> Result<BTreeMap<Tid, ct::Card>> {
-    let v = tx.state(host, &super::ak(CARD)?)?.and_then(Fragment::read);
-    let Some(Value::Map(m)) = v else { return Ok(BTreeMap::new()) };
-    Ok(m.iter().filter_map(|(k, v)| match k {
-        Value::Weak(a) => ct::Card::from_value(v).ok().map(|c| (*a, c)),
-        _ => None,
-    }).collect())
+/// `a`'s card on `host` as its state holds it here: none where it does not read as a card.
+pub(crate) fn card_on(tx: &mut Tx<'_>, host: &Tid, a: &Tid) -> Result<Option<ct::Card>> {
+    let v = tx.state(host, &card_ak(a))?.and_then(Fragment::read);
+    Ok(v.and_then(|v| ct::Card::from_value(&v).ok()))
 }
 
-/// The things whose `card.0` state names `t`, as a card's thing or its inbox (the reference
-/// index).
-fn hosts_naming(tx: &mut Tx<'_>, t: &Tid) -> Result<BTreeSet<Tid>> {
-    Ok(crate::engine::refs::to(tx, t)?.into_iter().filter(|r| r.ak.as_str() == CARD).map(|r| r.source).collect())
+/// The cards held here naming `t` their inbox, each by (host, the card's thing): from the
+/// reference index (a card's inbox is a weak in its value).
+fn naming_inbox(tx: &mut Tx<'_>, t: &Tid) -> Result<BTreeSet<(Tid, Tid)>> {
+    Ok(crate::engine::refs::to(tx, t)?.into_iter().filter_map(|r| card_of(r.ak.as_str()).map(|a| (r.source, a))).collect())
 }
 
 /// The cards of `a` held here, each with its host.
 pub(crate) fn cards_of(tx: &mut Tx<'_>, a: &Tid) -> Result<Vec<(Tid, ct::Card)>> {
+    let hosts: Vec<Tid> = tx.core.ix.aspect_things.get(&card_ak(a)).into_iter().flatten().copied().collect();
     let mut out = Vec::new();
-    for h in hosts_naming(tx, a)? {
-        if let Some(c) = cards_on(tx, &h)?.remove(a) {
+    for h in hosts {
+        if let Some(c) = card_on(tx, &h, a)? {
             out.push((h, c));
         }
     }
@@ -95,19 +89,27 @@ fn since_for(tx: &mut Tx<'_>, a: &Tid, inbox: &Tid, now: WallMs) -> Result<WallM
 
 /// Whether this node may write `host` along a path through `a` (spec/sync-inbox.md §1): a path
 /// from it to `a`, then from `a` to `host`, each giving write.
-fn may_write_through(core: &crate::engine::Core, a: &Tid, host: &Tid) -> bool {
+pub(crate) fn may_write_through(core: &crate::engine::Core, a: &Tid, host: &Tid) -> bool {
     let me = core.me();
     let ts = core.hlc.peek();
     let none: crate::engine::write::Records<'_> = &|_| None;
     crate::engine::write::path_with(core, me, none, a, Need::Role(Role::Write), ts).is_some() && crate::engine::write::path_with(core, *a, none, host, Need::Role(Role::Write), ts).is_some()
 }
 
-/// Writes `card` as `a`'s on `host` into a mutation of its own, acting as `a`, so its stated path
-/// runs through `a` (spec/permissions.md §5.2).
+/// Writes `card` as `a`'s on `host` into a mutation of its own, acting as `a`, so its stated
+/// path runs through `a` (spec/permissions.md §5.2). Field by field, so a refresh and a
+/// concurrent move each write only what they change (neither undoes the other's `since`); its
+/// lists of commits whole, so no replaced list leaves its elements behind in the state.
 pub fn put(host: Tid, a: Tid, card: &ct::Card) -> Result<Mutation> {
     let mut m = Mutation::new();
     m.act_as(a);
-    m.op(host, &ct::CARD, PathOp { path: vec![PathSeg::Key(Value::Weak(a))], op: Op::Set(card.to_value()) })?;
+    let ak = card_ak(&a);
+    let Value::Map(fields) = card.to_value() else { return Err(crate::Error::Misuse("a card is a struct")) };
+    for (k, v) in fields {
+        let Value::Int(id) = k else { return Err(crate::Error::Misuse("a card is a struct")) };
+        let op = if matches!(v, Value::List(_)) { Op::Replace(v) } else { Op::Set(v) };
+        m.op(host, &ak, PathOp { path: vec![PathSeg::Field(id as u64)], op })?;
+    }
     Ok(m)
 }
 
@@ -123,21 +125,25 @@ pub(crate) fn note_due(core: &mut crate::engine::Core, t: Tid) {
     core.ix.cards_due.insert(t);
 }
 
-/// A `card.0` state on `host` moved: each thing a card there is of or names is due a look
-/// (`note_due`).
-pub(crate) fn state_moved(tx: &mut Tx<'_>, host: &Tid) -> Result<()> {
-    for (a, c) in cards_on(tx, host)? {
-        note_due(tx.core, a);
-        note_due(tx.core, named(&a, &c));
+/// `a`'s card aspect on `host` moved: `a` and the inbox its card names are due a look
+/// (`note_due`); with no card left there, a need of `a` went (`retention::needed`).
+pub(crate) fn state_moved(tx: &mut Tx<'_>, host: &Tid, a: &Tid) -> Result<()> {
+    note_due(tx.core, *a);
+    match card_on(tx, host, a)? {
+        Some(c) => note_due(tx.core, named(a, &c)),
+        None => tx.core.note_lost(*a),
     }
     Ok(())
 }
 
 /// An open: every card held is due a look (`cards_due` and `cards_stale` are kept in memory).
 pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
-    let hosts: Vec<Tid> = tx.core.ix.aspect_things.get(&super::ak(CARD)?).into_iter().flatten().copied().collect();
-    for h in hosts {
-        state_moved(tx, &h)?;
+    let held: Vec<(Tid, Tid)> = tx.core.ix.aspect_things.iter().filter_map(|(ak, hs)| card_of(ak.as_str()).map(|a| hs.iter().map(move |h| (*h, a)))).flatten().collect();
+    for (h, a) in held {
+        if let Some(c) = card_on(tx, &h, &a)? {
+            note_due(tx.core, a);
+            note_due(tx.core, named(&a, &c));
+        }
     }
     Ok(())
 }
@@ -198,9 +204,9 @@ impl Engine {
         for t in due {
             let t = *t;
             let found = self.read(|tx| {
-                let mut out = Vec::new();
-                for h in hosts_naming(tx, &t)? {
-                    out.extend(cards_on(tx, &h)?.into_iter().filter(|(a, c)| *a == t || named(a, c) == t).map(|(a, c)| (h, a, c)));
+                let mut out: Vec<(Tid, Tid, ct::Card)> = cards_of(tx, &t)?.into_iter().map(|(h, c)| (h, t, c)).collect();
+                for (h, a) in naming_inbox(tx, &t)? {
+                    out.extend(card_on(tx, &h, &a)?.filter(|c| named(&a, c) == t).map(|c| (h, a, c)));
                 }
                 Ok(out)
             })?;
@@ -313,7 +319,7 @@ impl Engine {
     /// Removes `a`'s card from `host`: any writer of `host` may (spec/sync-inbox.md §1 Card).
     pub fn remove_card(&mut self, host: Tid, a: Tid) -> Result<()> {
         let mut m = Mutation::new();
-        m.op(host, &ct::CARD, PathOp { path: vec![], op: Op::Remove(Value::Weak(a)) })?;
+        m.op(host, &card_ak(&a), PathOp { path: vec![], op: Op::RemoveAspect })?;
         self.commit(m)?;
         Ok(())
     }

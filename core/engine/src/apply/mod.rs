@@ -243,10 +243,10 @@ fn fits_part(a: &osis_commit::AspectEntry, memory: bool, snapshot: bool) -> bool
     fits_class(&a.ak, memory) && !(a.ak.signal() && snapshot) && (a.replaces.is_none() || (!memory && !snapshot && crate::engine::edits::durable_signal(&a.ak)))
 }
 
-/// Whether a part of aspect `ak` is decoded whole (`Parts`): a `card.0` part is judged by its body
+/// Whether a part of aspect `ak` is decoded whole (`Parts`): a card aspect's part is judged by its body
 /// (`validity::note_cards`).
 fn whole_part(ak: &str) -> bool {
-    osis_schema::core_types::is_role_class(ak) || osis_schema::core_types::is_addenda(ak) || ak == osis_commit::retention::CREATED || ak == "card.0"
+    osis_schema::core_types::is_role_class(ak) || osis_schema::core_types::is_addenda(ak) || ak == osis_commit::retention::CREATED || osis_schema::core_types::card_of(ak).is_some()
 }
 
 /// Commit ID of a blob whose header this build cannot decode: BLAKE3 of the header value.
@@ -2358,7 +2358,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
             if blob.header.kind.is_compaction() {
                 snaps.push(blob.clone());
             }
-            if blob.header.kind.is_role() || blob.header.aspects.iter().any(|a| a.ak.as_str() == osis_commit::retention::RETENTION || a.ak.as_str() == "card.0" || osis_schema::core_types::is_addenda(a.ak.as_str())) {
+            if blob.header.kind.is_role() || blob.header.aspects.iter().any(|a| a.ak.as_str() == osis_commit::retention::RETENTION || osis_schema::core_types::card_of(a.ak.as_str()).is_some() || osis_schema::core_types::is_addenda(a.ak.as_str())) {
                 bodies.push(blob);
             }
         }

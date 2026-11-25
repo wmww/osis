@@ -12,4 +12,3 @@ Where: `retention/snapshot.rs` `compacted` (`!is_role_class`), `retention/compac
 Options:
 1. Build it: an admin compacts `keys.0`, `secrets.0` and `sync.0` past `ROLE_KEEP` (admin-only snapshots, spec/permissions.md §5.2; a `secrets.0` snapshot's records rule, spec/crypto.md §4; `sync.0` steps' chain from genesis, spec/sync-ids.md, must stay verifiable, so maybe `sync.0` stays whole).
 2. State it: these bodies grow with rotations (spec/commits.md Fixed retention, notes/growth.md as a row with its growth).
-Related: issues/card-history-uncovered.md (the same gap for `card.0`, there by design).

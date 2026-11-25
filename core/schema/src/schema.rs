@@ -214,7 +214,7 @@ impl Schema {
             }
             let markers = match &parsed {
                 Ok(_) if crate::core_types::is_core_key(ak) != core => {
-                    bad(&item, "a schema declares core AKs (one name segment, no tid) only, or app AKs (two or more, or a tid) only".into());
+                    bad(&item, "a schema declares core AKs (one name segment) only, or app AKs (two or more) only".into());
                     Markers::default()
                 }
                 Ok(a) => Ak::markers_of(a.as_str()),

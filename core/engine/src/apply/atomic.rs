@@ -780,7 +780,7 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
     // a path was learned (`validity::note_cards`)
     validity::note_cards(tx.core, &h, &meta.view, id, &parts.whole);
     if learned {
-        let cards: Vec<usize> = h.aspects.iter().enumerate().filter(|(ai, a)| a.ak.as_str() == "card.0" && !late.contains(ai)).map(|(ai, _)| ai).collect();
+        let cards: Vec<usize> = h.aspects.iter().enumerate().filter(|(ai, a)| osis_schema::core_types::card_of(a.ak.as_str()).is_some() && !late.contains(ai)).map(|(ai, _)| ai).collect();
         for ai in cards {
             let held: Vec<(usize, osis_commit::Decoded)> = super::held_part(tx, id, ai)?.into_iter().map(|d| (ai, d)).collect();
             validity::note_cards(tx.core, &h, &meta.view, id, &held);
@@ -991,10 +991,12 @@ fn observe_secrets_keys(tx: &mut Tx<'_>, actor: &Tid, boxes: &[Value], history: 
 }
 
 /// Keeps the indexes derived from states current: secrets opened from `secrets.0`; the cards
-/// due a look (`flows::cards`) as a `card.0` or `keys.0` state moves.
+/// due a look (`flows::cards`) as a card aspect's or a `keys.0` state moves.
 pub(crate) fn observe_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
+    if let Some(a) = osis_schema::core_types::card_of(ak.as_str()) {
+        return crate::flows::cards::state_moved(tx, tid, &a);
+    }
     match ak.as_str() {
-        "card.0" => return crate::flows::cards::state_moved(tx, tid),
         "keys.0" => {
             crate::flows::cards::note_due(tx.core, *tid);
             return Ok(());

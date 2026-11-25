@@ -129,6 +129,37 @@ fn several_writers_grow_nothing_spec_commits_5() {
     grows_nothing(Gives::Writes, &[0, 2]);
 }
 
+/// `moves` inbox moves of node 0's account, back and forth between thing 0 and the inbox it was
+/// made with, each a card write on its profile (spec/sync-inbox.md §1; a move to thing 0 writes
+/// its setting too), a second apart, then a snapshot of the card and of thing 0's setting by node
+/// 0 (as `at` ends its writes); then aged as `at` ages: what each node holds then.
+fn moves_at(w: &mut World, moves: usize) -> Vec<Held> {
+    for i in 0..moves {
+        let k = if i % 2 == 0 { Some(0) } else { None };
+        let _ = play(w, &[Inbox(0, k), Run], String::new());
+        w.advance(1_000);
+    }
+    let (a, profile) = (w.node(0).account.unwrap(), w.node(0).profile.unwrap());
+    let t = w.history.things[0].0;
+    w.write(0, |e| e.snapshot(&profile, &osis_schema::core_types::card_ak(&a))).unwrap();
+    w.write(0, |e| e.snapshot(&t, &osis_schema::core_types::RETENTION.name())).unwrap();
+    w.run();
+    at(w, t, &[0], 0, 0)
+}
+
+// spec/commits.md §5 Covered, spec/sync-compaction.md §1 (trigger), spec/data-model.md §9 (card
+// aspect): node 0's account moving its inbox 4 and 40 more times rewrites its card on the profile
+// each time; the replaced card writes are covered (the card aspect compacts as any aspect), so
+// the writer, the node keeping S unread and the reader store the same at n and 10n.
+#[test]
+fn card_rewrites_grow_nothing_spec_commits_5() {
+    let (mut w, _) = setup(Gives::Reads);
+    moves_at(&mut w, 2);
+    let n = moves_at(&mut w, 4);
+    let n10 = moves_at(&mut w, 40);
+    flat(&n, &n10);
+}
+
 // spec/sync-opens.md §1 (One connection per pair): the differential's nodes dial each other at
 // once at first contact, yet each pair keeps one connection, so each write crosses each pair on one
 // stream: deliveries per write are the same at n and 10n writes, all on one connection per pair.

@@ -358,7 +358,7 @@ fn public_referenced(n: usize) -> PublicCost {
     let before: std::collections::BTreeSet<CommitId> = e.commit_ids().into_iter().collect();
     assert!(e.refresh_cards().unwrap(), "the card is rewritten");
     let card = e.commit_ids().into_iter().find(|c| !before.contains(c)).expect("the card's commit");
-    let card_value = e.get_typed(&p, &ct::CARD).unwrap().and_then(|cs| cs.get(&osis_base::Weak(a)).map(|c| osis_base::encode(&osis_schema::codec::Codec::to_value(c)).len())).unwrap();
+    let card_value = e.state(&p, &ct::card_ak(&a)).unwrap().and_then(|f| f.read()).map(|v| osis_base::encode(&v).len()).unwrap();
     PublicCost { value_entries: unit_bodies(e, &v), value_bytes: bytes(e, &v), card_entries: unit_bodies(e, &card), card_bytes: bytes(e, &card), card_value }
 }
 

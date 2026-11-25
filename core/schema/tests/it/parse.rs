@@ -17,13 +17,13 @@ fn core_schema_parses_spec_data_model_9() {
     assert!(s.declares_core());
     let aks: Vec<&str> = s.aspects.keys().map(String::as_str).collect();
     for ak in [
-        "aspects.0", "created.0", "roles.0", "signers.0", "keys.0", "secrets.0", "sync.0", "dial.0", "card.0", "settings^.0", "dial_on^.0", "caps^.0",
+        "aspects.0", "created.0", "roles.0", "signers.0", "keys.0", "secrets.0", "sync.0", "dial.0", "settings^.0", "dial_on^.0", "caps^.0",
         "clients^.0", "name.0", "body.0", "tag.0", "holds.0", "addenda.0", "retention^.0",
         "purge.0",
     ] {
         assert!(aks.contains(&ak), "{ak}");
     }
-    assert_eq!(aks.len(), 20);
+    assert_eq!(aks.len(), 19);
     let holders = &s.aspects["roles.0"];
     assert_eq!(holders.purge_by, PurgeBy::Admin);
     assert_eq!(s.aspects["created.0"].purge_by, PurgeBy::Admin);
@@ -184,8 +184,10 @@ fn validation_rules_spec_data_model_3() {
         assert_eq!((e.line, e.col), (2, col), "{src}: {e}");
     }
     // a tid-prefixed app key, its successor version, a marker run (spec/data-model.md §2)
-    let s = app("aspect :AAAAAAAAAAAAAAAAAAAA:a.0: int; ephemeral admin aspect :AAAAAAAAAAAAAAAAAAAA:a+^.1: text succeeds (x:b.0, y:c.0);").unwrap();
-    assert_eq!(s.aspects[":AAAAAAAAAAAAAAAAAAAA:a+^.1"].succeeds.len(), 2);
+    let s = app("aspect :AAAAAAAAAAAAAAAAAAAA:x:a.0: int; ephemeral admin aspect :AAAAAAAAAAAAAAAAAAAA:x:a+^.1: text succeeds (x:b.0, y:c.0);").unwrap();
+    assert_eq!(s.aspects[":AAAAAAAAAAAAAAAAAAAA:x:a+^.1"].succeeds.len(), 2);
+    // one name segment after a tid is a core key form (`:<tid>:card.0`), never an app's
+    assert!(app("aspect x:b.0: int; aspect :AAAAAAAAAAAAAAAAAAAA:a.0: int;").is_err());
     // ephemeral and signal are the key's markers (spec/data-model.md §2), no flag; the form round-trips
     let s = app("expires(5s) ephemeral aspect x:e+.0: int; ephemeral signal x:s+~0: string; aspect x:d.0: int; signal x:l~0: string; expires(1d) signal x:f~0: int;").unwrap();
     assert_eq!(s.defaults("x:e+.0").unwrap().expires, Some(5_000));
@@ -209,7 +211,7 @@ fn keywords_match_markers() {
         ("ephemeral aspect x:a+~0: int;", "`ephemeral aspect` needs `x:a+.0`"),
         ("ephemeral signal x:a+.0: int;", "`ephemeral signal` needs `x:a+~0`"),
         ("signal x:a+~0: int;", "`signal` needs `x:a~0`"),
-        ("ephemeral admin signal :AAAAAAAAAAAAAAAAAAAA:a.1: int;", "`ephemeral admin signal` needs `:AAAAAAAAAAAAAAAAAAAA:a+^~1`"),
+        ("ephemeral admin signal :AAAAAAAAAAAAAAAAAAAA:x:a.1: int;", "`ephemeral admin signal` needs `:AAAAAAAAAAAAAAAAAAAA:x:a+^~1`"),
     ] {
         let e = err(src);
         assert!(e.msg.contains(want), "{src}: {e}");
@@ -307,7 +309,7 @@ fn field_and_case_syntax() {
 
 #[test]
 fn markers_not_part_of_name_spec_data_model_2() {
-    for (a, b) in [("x:a.0", "x:a+.0"), ("x:a.0", "x:a^.0"), ("x:a+.0", "x:a+~0"), ("x:a^.0", "x:a+^.0"), (":AAAAAAAAAAAAAAAAAAAA:a.0", ":AAAAAAAAAAAAAAAAAAAA:a+~0")] {
+    for (a, b) in [("x:a.0", "x:a+.0"), ("x:a.0", "x:a^.0"), ("x:a+.0", "x:a+~0"), ("x:a^.0", "x:a+^.0"), (":AAAAAAAAAAAAAAAAAAAA:x:a.0", ":AAAAAAAAAAAAAAAAAAAA:x:a+~0")] {
         let kw = |k: &str| {
             let m = osis_base::Ak::markers_of(k);
             format!("{}{}{}", if m.ephemeral { "ephemeral " } else { "" }, if m.admin_only { "admin " } else { "" }, if m.signal { "signal" } else { "aspect" })
@@ -315,7 +317,7 @@ fn markers_not_part_of_name_spec_data_model_2() {
         let e = err(&format!("{} {a}: int; {} {b}: int;", kw(a), kw(b)));
         assert!(e.msg.contains("only in markers"), "{a} {b}: {e}");
     }
-    app("aspect x:a.0: int; ephemeral aspect x:a+.1: int; admin aspect x:b^.0: int; ephemeral aspect :AAAAAAAAAAAAAAAAAAAA:a+.0: int;").unwrap();
+    app("aspect x:a.0: int; ephemeral aspect x:a+.1: int; admin aspect x:b^.0: int; ephemeral aspect :AAAAAAAAAAAAAAAAAAAA:x:a+.0: int;").unwrap();
     let e = parse("c.osis", "revision 1;\naspect x.0: int;\nadmin aspect x^.0: int;").unwrap_err();
     assert!(e.msg.contains("only in markers"), "{e}");
 }

@@ -768,11 +768,13 @@ pub(crate) fn note_required(core: &mut Core, h: &Header, id: &CommitId, read: &s
     }
 }
 
-/// Notes the `card.0` parts among `parts` (each an part index and its delta or snapshot, read
-/// with view `view`) that put an entry keyed by a thing not among the members their commit
-/// states for the thing they are on (spec/permissions.md §5.2): invalid (`Indexes::overreach`).
-/// A reset alone puts nothing (removing a card is a writer's power, as removing data is). A part
-/// whose path is not known here is judged invalid until it is (`Judge::part`), then noted again.
+/// Notes the card aspect parts among `parts` (each a part index and its delta or snapshot, read
+/// with view `view`) that write a card of a thing A that is neither the thing they are on nor
+/// among the members their commit states for it (spec/permissions.md §5.2), or a `since` later
+/// than their commit's `ts`: invalid (`Indexes::overreach`). A reset alone writes no card
+/// (removing a card is a writer's power, as removing data is); a snapshot is judged alike, so one
+/// carrying a card states a path through A. A part whose path is not known here is judged
+/// invalid until it is (`Judge::part`), then noted again.
 /// Invariant (security): a card of A counts only written along a path through A, so only A's
 /// writers name A's inbox or A's keys in it; judged from the part and its header alone, so every
 /// node judges it alike whatever it holds.
@@ -782,13 +784,11 @@ pub(crate) fn note_required(core: &mut Core, h: &Header, id: &CommitId, read: &s
 pub(crate) fn note_cards(core: &mut Core, h: &Header, view: &View, id: &CommitId, parts: &[(usize, Decoded)]) {
     let wall = h.ts.wall_ms().0;
     for (ai, d) in parts {
-        let Some(a) = h.aspects.get(*ai).filter(|a| a.ak.as_str() == "card.0") else { continue };
+        let Some((a, of)) = h.aspects.get(*ai).and_then(|a| Some((a, ct::card_of(a.ak.as_str())?))) else { continue };
         let Some(members) = chain(h, view, &a.tid) else { continue };
-        let on = |k: &Value| matches!(k, Value::Weak(t) if *t == a.tid || members.contains(t));
-        let off = match d.fragment().slot(osis_crdt::Encoding::Map) {
-            Some(osis_crdt::SlotRef::Frag(Fragment::Map(m))) => m.entries().any(|(_, _, k, f)| f.is_some_and(|f| !k.is_some_and(on) || card_since(f).is_some_and(|s| s > wall))),
-            _ => false,
-        };
+        let f = d.fragment();
+        // any write but its own reset (`Fragment::written`) writes a card
+        let off = f.written().is_some() && ((of != a.tid && !members.contains(&of)) || card_since(f).is_some_and(|s| s > wall));
         let was = core.ix.overreach.contains(&(*id, *ai));
         if off != was {
             match off {
@@ -800,7 +800,7 @@ pub(crate) fn note_cards(core: &mut Core, h: &Header, view: &View, id: &CommitId
     }
 }
 
-/// The `since` a `card.0` entry's fragment `f` writes, whole or as its field alone.
+/// The `since` a card aspect's fragment `f` writes, whole or as its field alone.
 fn card_since(f: &Fragment) -> Option<u64> {
     let field = match f.slot(osis_crdt::Encoding::Struct) {
         Some(osis_crdt::SlotRef::Frag(Fragment::Struct(st))) => st.field(3).and_then(Fragment::read),
@@ -1132,8 +1132,8 @@ impl<'a> Judge<'a> {
         // signal. Invariant: the setting is admin-only (its own validity reads no fire), and the
         // current one is a function of the held valid settings alone; every move of it re-judges
         // the thing's external fires (`setting_moved`).
-        // a card put off its stated path (`note_cards`)
-        if ak == "card.0" && core.ix.overreach.contains(&(*id, ai)) {
+        // a card written off its stated path (`note_cards`)
+        if ct::card_of(ak).is_some() && core.ix.overreach.contains(&(*id, ai)) {
             return false;
         }
         if a.ak.external() {
