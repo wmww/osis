@@ -261,8 +261,20 @@ impl Net {
             }
             counting.extend(up);
         }
-        let role = self.roles(n.thing, &counting);
-        let at = |x: T, r: Role| role.get(&x).is_some_and(|&v| v >= r);
+        // the node's role: its own thing's, and the public's (every party's, spec/sync-set.md §2
+        // Own things), at most read, through holders as any holder's, from the things it reads
+        // (holding their grants: elsewhere the public's grant is not known held, the reference's
+        // gap of issues/public-pieces-unheld.md)
+        let mut role = self.roles(n.thing, &counting);
+        for &x in w.public.iter().filter(|x| s.read.contains(x)) {
+            for (y, r) in self.roles(x, &counting) {
+                let v = r.min(Role::Read);
+                if role.get(&y).is_none_or(|&o| o < v) {
+                    role.insert(y, v);
+                }
+            }
+        }
+        let at =|x: T, r: Role| role.get(&x).is_some_and(|&v| v >= r);
         // The walk: strongs from the local part and from read units to independent things.
         let mut out = S::default();
         let mut todo: Vec<T> = vec![n.thing];

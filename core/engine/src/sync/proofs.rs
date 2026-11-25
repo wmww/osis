@@ -128,7 +128,8 @@ impl Core {
     }
 
     /// The role proven thing `p` is trusted at on `a` (spec/sync-opens.md §2 proven role): the
-    /// least of what its path gives and its own role on `a` here.
+    /// least of what its path gives and its own role on `a` here. The public's grant proves
+    /// nothing of the peer: where it reads `a`, any party may hold it by the public entry.
     pub(crate) fn proven_role(&self, p: &ProvenThing, a: &Tid) -> Option<Role> {
         let on = if p.thing == *a { Some(Role::Admin) } else { self.role_now(&p.thing, a) };
         p.role.min(on)

@@ -178,7 +178,10 @@ pub fn all(n: usize) -> Vec<World> {
 //   party to this model. It releases X, syncing it no more, once it holds a removal of the public.
 // - `K` keeps X unread (an account holding sync on X, a strong to it): R opens X toward it by J
 //   (sync holder), registers its steps there and serves it every entry, which K reads only under
-//   the epochs it holds.
+//   the epochs it holds. Its own role gives it each sync epoch. Reading X by its head's public
+//   entry, it refuses Registers (its head stays where it was); once it opens the public's removal
+//   it drops its read epochs at the end of the next sync (a complete pass begun after it judged
+//   the loss: spec/permissions.md §3 Lost access) and keeps X unread again at that head.
 // Every event writes a step (spec/permissions.md §3: a step is due as the public's read starts and
 // at each read rotation); it lists the public entry exactly while the public reads X, and its entry
 // box for the public (open) holds its epoch. No per-reader record: R knows nothing of P or K but
@@ -203,10 +206,13 @@ pub struct Heard {
     /// A node keeping S unread whose head lists the public entry reads S by it, as a redeemer
     /// does (off: a control).
     pub store: bool,
+    /// It does so only while its head bears the newest sync epoch it holds: a head it knows
+    /// superseded proves nothing (off: any head listing the public, a control).
+    pub current: bool,
 }
 
 impl Heard {
-    pub const SPEC: Heard = Heard { lapsed: true, secret: true, ended: true, tests: true, store: true };
+    pub const SPEC: Heard = Heard { lapsed: true, secret: true, ended: true, tests: true, store: true, current: true };
 }
 
 /// One step of a history: an event on X, or a sync of one party with R.
@@ -225,19 +231,26 @@ pub struct Party {
     pub entry: Option<usize>,
     pub entered: bool,
     pub gone: bool,
+    /// K: its store's head (the step written after that many events), the newest sync epoch it
+    /// holds, and whether it judged the loss of its read epochs at an earlier sync.
+    pub head: Option<usize>,
+    pub sync: usize,
+    pub lost: bool,
 }
 
 /// Whether some property broke: `agree` (a party still holding X counts it public exactly when it
 /// is, after a final sync), `reads` (where public, it holds X's current epoch then), `sealed` (no
 /// commit written past the public's removal, while it does not read X, is served to a party that
-/// holds no role), `stranger` (a party holding no epoch of X is served nothing once the public is
-/// removed: it never read X).
+/// holds no role; K: it never holds an epoch the public's grant never boxed), `stranger` (a party
+/// holding no epoch of X is served nothing once the public is removed: it never read X),
+/// `settles` (further syncs after the final one change nothing K holds).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Broke {
     pub agree: bool,
     pub reads: bool,
     pub sealed: bool,
     pub stranger: bool,
+    pub settles: bool,
 }
 
 impl World {
@@ -343,14 +356,40 @@ impl World {
         }
     }
 
-    fn sync_k(&self, rule: Heard, q: &mut Party, k: usize) {
-        // J: a sync holder; R registers its steps (K's head is R's newest) and serves it all
-        q.served.extend(0..k);
-        let (listed, epoch) = self.step(k);
-        if rule.store && listed {
-            // K reads S by the public entry its head lists: the answer's entry box
-            q.entry = q.entry.max(Some(epoch));
+    /// K keeping X unread takes its head's public entry box where the rule lets it.
+    fn store_take(&self, rule: Heard, q: &mut Party) {
+        let Some(h) = q.head else { return };
+        let (listed, epoch) = self.step(h);
+        if rule.store && listed && (!rule.current || epoch == q.sync) {
+            q.entry = Some(epoch);
         }
+    }
+
+    fn sync_k(&self, rule: Heard, q: &mut Party, k: usize) {
+        // its own role: X's current sync epoch; R serves it every entry, reader or sync holder
+        q.sync = self.state(k).1;
+        q.served.extend(0..k);
+        if q.entry.is_none() {
+            // kept unread: R registers its steps there (K's head is R's newest)
+            q.head = Some(k);
+            self.store_take(rule, q);
+            return;
+        }
+        // reading: once it opens the public's removal, it drops its read epochs at the end of
+        // the next sync, keeping X unread again at its head as it was
+        if self.view(q, k).0 {
+            q.lost = false;
+        } else if q.lost {
+            *q = Party { head: q.head, sync: q.sync, ..Party::default() };
+            self.store_take(rule, q);
+        } else {
+            q.lost = true;
+        }
+    }
+
+    /// Every epoch of X whose role commit boxes the public, after `k` events.
+    fn public_epochs(&self, k: usize) -> BTreeSet<usize> {
+        self.commits(k).iter().filter(|c| c.boxes_public).map(|c| c.epoch).collect()
     }
 
     /// Runs `steps` (events on X among them: `self.evs` is ignored), then a final sync of each
@@ -359,12 +398,19 @@ impl World {
         let evs: Vec<Ev> = steps.iter().filter_map(|s| if let Step::X(e) = s { Some(*e) } else { None }).collect();
         let w = World { evs, to_dep: false };
         let (mut p, mut q, mut broke, mut k) = (Party::default(), Party::default(), Broke::default(), 0);
-        for s in steps.iter().chain(&[Step::SyncP, Step::SyncK]) {
+        // the final syncs: P once, K until it settles (a loss judged, then dropped)
+        for s in steps.iter().chain(&[Step::SyncP, Step::SyncK, Step::SyncK, Step::SyncK]) {
             match s {
                 Step::X(_) => k += 1,
                 Step::SyncP => w.sync_p(rule, &mut p, k, &mut broke),
                 Step::SyncK => w.sync_k(rule, &mut q, k),
             }
+            broke.sealed |= w.view(&q, k).1.is_some_and(|e| !w.public_epochs(k).contains(&e));
+        }
+        let before = (q.entry, q.head, q.lost);
+        for _ in 0..2 {
+            w.sync_k(rule, &mut q, k);
+            broke.settles |= (q.entry, q.head, q.lost) != before;
         }
         let (public, epoch) = w.state(k);
         for (party, holds) in [(&p, !p.gone), (&q, true)] {

@@ -212,6 +212,19 @@ fn a_sync_holder_hears_the_public_granted() {
     assert!(World::heard(&h, Heard { store: false, ..Heard::SPEC }).agree);
 }
 
+// K reads X by its head's public entry, then opens the public's removal and drops its read epochs:
+// it keeps X unread at the head it held while reading, which lists the public but bears a sync
+// epoch the removal superseded, so it takes nothing and waits for R's Register. Control (`current`
+// off): it takes that head's box again, reads X, opens the removal again and drops: for good
+// (spec/sync-opens.md §4 Admissible).
+#[test]
+fn a_sync_holder_settles_after_the_public_removed() {
+    use held_model::closure::public_epochs::{Ev, Heard, Step, World};
+    let h = [Step::SyncK, Step::X(Ev::Grant), Step::SyncK, Step::X(Ev::Remove)];
+    assert_eq!(World::heard(&h, Heard::SPEC), Default::default());
+    assert!(World::heard(&h, Heard { current: false, ..Heard::SPEC }).settles, "stale head: K reads again");
+}
+
 // Every history of up to six events and syncs: the spec breaks no property; each control breaks
 // its own.
 #[test]
@@ -224,8 +237,9 @@ fn heard_explore() {
         ("public entry", Heard { secret: false, ..Heard::SPEC }),
         ("redeem only", Heard { tests: false, ..Heard::SPEC }),
         ("store blind", Heard { store: false, ..Heard::SPEC }),
+        ("stale head", Heard { current: false, ..Heard::SPEC }),
     ];
-    let mut found = [(0usize, 0usize, 0usize, 0usize); 6];
+    let mut found = [(0usize, 0usize, 0usize, 0usize, 0usize); 7];
     for h in histories(6) {
         for (i, &(_, rule)) in rules.iter().enumerate() {
             let b = World::heard(&h, rule);
@@ -233,12 +247,14 @@ fn heard_explore() {
             found[i].1 += b.reads as usize;
             found[i].2 += b.sealed as usize;
             found[i].3 += b.stranger as usize;
+            found[i].4 += b.settles as usize;
         }
     }
-    assert_eq!(found[0], (0, 0, 0, 0), "spec");
+    assert_eq!(found[0], (0, 0, 0, 0, 0), "spec");
     assert!(found[1].0 > 0, "newest: agree");
     assert!(found[2].2 > 0, "whole: sealed");
     assert!(found[3].3 > 0, "public entry: stranger");
     assert!(found[4].1 > 0, "redeem only: reads");
     assert!(found[5].0 > 0, "store blind: agree");
+    assert!(found[6].4 > 0, "stale head: settles");
 }

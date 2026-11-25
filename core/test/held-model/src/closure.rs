@@ -54,7 +54,8 @@ pub struct World {
     pub keyless: BTreeSet<(T, T)>,
     /// The independent things the public reads, by its own grant of read on each
     /// (spec/permissions.md §1 The public): every thing's keys open them (`keys_of`), never
-    /// through holders (`closure::public`'s `chains`), and no role comes of it.
+    /// through holders (`closure::public`'s `chains`); a node's role counts the public's, through
+    /// holders as any holder's (`entry`).
     pub public: Set,
 }
 

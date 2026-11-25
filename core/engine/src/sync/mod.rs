@@ -757,6 +757,25 @@ impl Engine {
         Ok(())
     }
 
+    /// A node keeping `s` unread takes the public entry's box of `head`, its store's head (spec/sync-opens.md
+    /// §4 Admissible, keeping S unread): the open box's secrets, once its sync secret derives the
+    /// head's sync key. Whether it learned anything. The caller judges that `head` is current
+    /// (its sync key a held secret's, of the newest sync epoch held).
+    pub fn take_public_entry(&mut self, s: &SyncId, head: &Step, claims: &osis_blob::ClaimSet) -> Result<bool> {
+        let Some(b) = claims.entries.get(&osis_crypto::public_entry(s)) else { return Ok(false) };
+        for t in self.sync_things_of(s)? {
+            let Ok(item) = osis_blob::read_public_entry_box(b, head, &t) else { continue };
+            let key = osis_crypto::role_key(osis_crypto::RoleKey::Sync, &item.sync.1).verifying_key();
+            if key != head.keys.sync {
+                continue;
+            }
+            let g = OpenedGrant { thing: t, key: key.to_bytes(), secrets: EntryBoxSecrets { read: (item.epoch, item.secret), superseded: item.earlier, sync: item.sync } };
+            self.learn_grant(&g)?;
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
     // Grants, removals, peers
 
     /// Whether `epoch` of one of `s`'s things, of the role it is an epoch of (a read secret's read,

@@ -320,6 +320,12 @@ impl Core {
                 }
                 *epochs.role_mut(r) = kept;
             }
+            // a held epoch gives every earlier one its history boxes give, whatever the node's
+            // roles: they reach nothing the held secret's holder was not given (an entry box's
+            // epoch, taken before the role commits that give the role are read)
+            if !untaken.is_empty() {
+                let _ = osis_keys::ingest_held(actor, secrets, alts, &mut epochs, None);
+            }
         }
         let held_any = epochs.holds_any();
         ((held_any && Some(&epochs) != before.as_ref()).then_some(epochs), untaken)

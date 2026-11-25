@@ -62,10 +62,16 @@ pub struct Kept {
     pub stranded: bool,
     /// `None` when it shows no sync key.
     pub credentials: Option<Arc<UnreadCredentials>>,
+    /// Its head with its claim set, where the set lists S's public entry and the head bears the
+    /// newest sync epoch held: the node reads S by that entry's open box (spec/sync-opens.md §4
+    /// Admissible). A head behind a newer sync epoch held is one it knows superseded and proves
+    /// nothing (a public's removal since included): it waits for the Register moving it.
+    pub public: Option<(Step, ClaimSet)>,
 }
 
 /// What one S is judged on, every value read by key (spec/sync-judgement.md §6).
 pub struct Judged<'a> {
+    pub s: &'a SyncId,
     /// The sync secrets of S's thing held here, by epoch.
     pub secrets: &'a [(osis_crypto::Epoch, Secret32)],
     /// S's verified path as Registers gave it (its head last).
@@ -80,8 +86,9 @@ pub fn judge(j: &Judged) -> Kept {
     secrets.sort_by(|a, b| b.0.cmp(a.0));
     let mut seen = BTreeSet::new();
     secrets.retain(|(_, x)| seen.insert(*x.expose()));
+    let newest = secrets.first().map(|(_, x)| role_key(RoleKey::Sync, x).verifying_key());
     let held: Vec<(SigningSecret, Secret32)> = secrets.into_iter().map(|(_, x)| (role_key(RoleKey::Sync, x), Secret32::from_bytes(sync_proof(&role_key_seed(RoleKey::Sync, x))))).collect();
-    let keep = |stranded: bool, credentials: Option<UnreadCredentials>| Kept { stranded, credentials: credentials.map(Arc::new) };
+    let keep = |stranded: bool, credentials: Option<UnreadCredentials>| Kept { stranded, credentials: credentials.map(Arc::new), public: None };
     let Some(head) = j.steps.last() else {
         // no step registered yet: each sync secret it holds counts as its step, so a reader's
         // test finds S here and registers its path, and a box at a self-made epoch hides no
@@ -89,7 +96,10 @@ pub fn judge(j: &Judged) -> Kept {
         return keep(false, (!held.is_empty()).then(|| UnreadCredentials { step: None, keys: held, deposit: None, claims: None }));
     };
     if let Some(k) = held.iter().find(|(k, _)| k.verifying_key() == head.0.keys.sync) {
-        return keep(false, Some(UnreadCredentials { step: Some(head.0.id()), keys: vec![k.clone()], deposit: Some(head.0.keys.deposit), claims: head.1.clone() }));
+        let public = head.1.as_ref().filter(|c| c.lists_public(j.s) && newest == Some(head.0.keys.sync)).map(|c| (head.0.clone(), c.clone()));
+        let mut kept = keep(false, Some(UnreadCredentials { step: Some(head.0.id()), keys: vec![k.clone()], deposit: Some(head.0.keys.deposit), claims: head.1.clone() }));
+        kept.public = public;
+        return kept;
     }
     // its head is past its keys: it shows only the secrets no step of its path bears (a re-grant
     // past its head, which a reader holding it moves it to), so a node removed shows nothing
@@ -163,6 +173,10 @@ impl Unread {
             acted = true;
             // at a head past its keys its copy goes and it takes nothing (§6)
             cx.store.set_unheld(&s, k.stranded)?;
+            // read by the public entry its head lists: S becomes read (`syncs` follows it)
+            if let Some((head, claims)) = &k.public {
+                cx.engine.take_public_entry(&s, head, claims)?;
+            }
             self.kept.insert(s, k);
         }
         Ok(acted)
@@ -173,5 +187,5 @@ impl Unread {
 fn judge_s(cx: &mut Cx, s: &SyncId) -> Result<Kept> {
     let secrets = cx.engine.kept_sync_secrets(s);
     let path = cx.store.path(s)?;
-    Ok(judge(&Judged { secrets: &secrets, steps: path.as_ref().map(|p| p.steps.as_slice()).unwrap_or_default() }))
+    Ok(judge(&Judged { s, secrets: &secrets, steps: path.as_ref().map(|p| p.steps.as_slice()).unwrap_or_default() }))
 }
