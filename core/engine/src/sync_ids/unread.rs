@@ -341,8 +341,8 @@ impl Core {
         }
         let mut role = false;
         for rc in self.ix.held.edge_commits(x).iter() {
-            for o in rc.ops.iter().filter(|o| o.target == *x && o.holder == hd) {
-                if self.edge_gives_read(rc, o) {
+            for (i, o) in rc.ops.iter().enumerate().filter(|(_, o)| o.target == *x && o.holder == hd) {
+                if self.edge_gives_read(rc, i) {
                     return false;
                 }
                 role |= o.edge.is_some();
@@ -351,17 +351,21 @@ impl Core {
         role
     }
 
-    /// Whether edge write `o` of held role commit `rc` gives its holder read (spec/permissions.md
-    /// §4 Role changes travel): read or above, no self-write (its path ending at the holder), and
-    /// applied in the walk here (valid: not invalid, not pending). The one reading of a read
-    /// edge: the evidence derivation's (`evidence::held::copy_parts`) and `sync_alone_on`'s.
-    pub(crate) fn edge_gives_read(&self, rc: &osis_perm::RoleCommit, o: &osis_perm::EdgeOp) -> bool {
+    /// Whether edge write `i` of held role commit `rc` gives its holder read (spec/permissions.md
+    /// §4 Role changes travel): a thing holder (a key's grant gives no read: nothing is sealed to a
+    /// key), read or above, no self-write (its path ending at the holder), and applied in the walk
+    /// here (valid: not invalid, not pending). The one reading of a read edge: the evidence
+    /// derivation's (`evidence::held::copy_parts`) and `sync_alone_on`'s. Who writes it: any
+    /// writer of the holder or the target may sign an edge write naming read; only X's admins
+    /// (or a may-grant holder) make one apply, so only they turn the holder's pieces to
+    /// certificate copies.
+    pub(crate) fn edge_gives_read(&self, rc: &osis_perm::RoleCommit, i: usize) -> bool {
+        let (Some(o), Ok(w)) = (rc.ops.get(i), u32::try_from(i)) else { return false };
         let leave = osis_base::Holder::Thing(*rc.path_to(&o.target).last().unwrap_or(&rc.signer));
-        let Some(i) = rc.ops.iter().position(|x| std::ptr::eq(x, o)).and_then(|i| u32::try_from(i).ok()) else { return false };
         o.holder.thing().is_some()
             && o.holder != leave
             && o.edge.is_some_and(|e| e.role >= Role::Read)
-            && self.timelines().on(&o.target).is_some_and(|on| on.is_applied(&osis_perm::WriteId(rc.id, i)))
+            && self.timelines().on(&o.target).is_some_and(|on| on.is_applied(&osis_perm::WriteId(rc.id, w)))
     }
 
     /// Whether `u` holds sync on `y` as the sync copies of `y` counting here tell (no grant of

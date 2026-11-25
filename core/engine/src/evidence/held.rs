@@ -109,16 +109,14 @@ pub(crate) fn copy_parts(tx: &mut Tx<'_>, id: &CommitId) -> Result<CopyParts> {
             let on = parts.entry(t).or_default();
             // an edge aspect's parts: one per edge write there, things' on `roles.0`, keys' on
             // `signers.0`
-            let writes: Vec<&osis_perm::EdgeOp> = match (&rc, crate::apply::validity::Grants::of(a.ak.as_str())) {
-                (Some(rc), Some(g)) => rc.ops.iter().filter(|o| o.target == t && crate::apply::validity::Grants::of_holder(&o.holder) == g).collect(),
+            let writes: Vec<(usize, &osis_perm::EdgeOp)> = match (&rc, crate::apply::validity::Grants::of(a.ak.as_str())) {
+                (Some(rc), Some(g)) => rc.ops.iter().enumerate().filter(|(_, o)| o.target == t && crate::apply::validity::Grants::of_holder(&o.holder) == g).collect(),
                 _ => Vec::new(),
             };
             if let (Some(rc), false) = (&rc, writes.is_empty()) {
-                for o in writes {
+                for (i, o) in writes {
                     let path = rc.path_to(&t);
-                    // a key's grant gives no read (nothing is sealed to a key), nor does an invalid
-                    // or pending write
-                    let gives_read = core.edge_gives_read(rc, o);
+                    let gives_read = core.edge_gives_read(rc, i);
                     let kind = Kind::Write(Write { holder: o.holder, gives_read });
                     let mint = minted(&mut path.iter().copied().chain([rc.signer, t]));
                     let hops = osis_perm::paths::hops(&mint, rc.key, rc.signer, path, rc.direct, t, Some(o.holder), true);

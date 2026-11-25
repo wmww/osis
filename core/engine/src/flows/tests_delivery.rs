@@ -754,3 +754,86 @@ fn a_forged_edge_write_giving_read_shows_a_sync_holder_nothing_spec_permissions_
     assert!(carried.values().any(|(u, p)| *u == t && osis_commit::SyncCopy::decode(p).unwrap().thing == g), "T's key part carries G's sync copies");
     assert!(carried.values().all(|(_, p)| !holds_any(p, &forbidden)), "no header byte in a logged sync copy");
 }
+
+// spec/sync-hostile.md §2 (A writer of a holder H of sync alone on X can state a path through H's edge on X),
+// spec/permissions.md §4 (Evidence of a commit: every held edge write on a stated path's edges,
+// whatever its validity): T holds sync alone on G; peer 0 (G's admin) reads T. Peer 2, T's admin,
+// grants G write on D (T's, in T's unit), then signs a body on D stating the path [T, G] (T holds
+// sync alone on G: invalid).
+// Peer 0 holds it and logs it under T's sync ID with its evidence: G's grant to T as a
+// certificate copy, header and all. Pins the stated residual: it fails once a fix keeps the
+// writes on a sync-alone holder's edge out of a body's evidence under that holder's sync ID.
+#[test]
+fn a_writer_of_a_sync_holder_stating_a_path_through_its_edge_shows_its_grant_spec_sync_hostile_2() {
+    use osis_commit::{AspectWrite, CommitBuilder, Form, MemoryBlobs, writer_ctx};
+    use osis_crdt::{Delta, Source, Writer, create, encode_delta};
+    let (mut lp, g, t) = sync_holder();
+    let me0 = lp.peers[0].engine.tid();
+    lp.peers[2].engine.grant(&t, &me0, &edge(Role::Read)).unwrap();
+    let mut m = crate::Mutation::new();
+    let d = lp.peers[2].engine.new_thing(&mut m, t);
+    lp.peers[2].commit(m).unwrap();
+    lp.peers[2].engine.grant(&d, &g, &edge(Role::Write)).unwrap();
+    lp.sync_all().unwrap();
+    assert!(!certifies_on(&mut lp, 0, &t, &g, &t), "no certificate copy of G's grant to T before");
+    lp.advance(1_000);
+    let rec = lp.peers[2].engine.get_typed(&d, &osis_schema::core_types::CREATED).unwrap().unwrap();
+    let e2 = &lp.peers[2].engine;
+    let secrets = e2.hand_secrets(std::slice::from_ref(&rec));
+    let ak = osis_base::Ak::new("t:reg.0").unwrap();
+    let ts = osis_base::Ts::make(e2.now(), 0).unwrap();
+    let mut w = Writer::new(ts, Source::commit(CommitId([0; 32])), 1_000);
+    let f = create(&mut w, &osis_crdt::AnyView, &osis_base::Value::Str("via G".into())).unwrap();
+    let r = w.range();
+    let kind = osis_commit::Kind::Content;
+    let bytes = encode_delta(&Delta { nonce: [7; 16], fragment: f }, &writer_ctx(Form::Commit, kind, ts, e2.tid(), r.lo, r.hi), None).unwrap();
+    let mut aw = AspectWrite::new(d, ak.clone(), r.lo, r.hi, bytes);
+    aw.purge_by = osis_commit::retention::write_purge_by(ak.as_str(), None, None).unwrap();
+    let mut cb = CommitBuilder::new(kind, ts, e2.tid(), osis_commit::Path { purge: 0, things: vec![t, g], direct: 0 }, Form::Commit);
+    cb.aspects.push(aw);
+    let key = e2.identity().signing().clone();
+    let forged = cb.build(&key, &secrets, &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(0)).unwrap().commit.encode();
+    let crate::Ingested::Applied(c) = lp.peers[0].receive(&forged, Vec::new()).unwrap() else { panic!("taken") };
+    assert!(!lp.peers[0].engine.core.ix.commits.get(&c).unwrap().valid().iter().any(|v| *v), "the body is invalid");
+    assert!(certifies_on(&mut lp, 0, &t, &g, &t), "the stated path's edge brings G's grant to T as a certificate copy");
+    assert!(lp.peers[0].engine.certificates(&t).unwrap().records.contains(&g), "and G's record");
+    assert_eq!(lp.peers[0].engine.check_evidence().unwrap(), None);
+}
+
+// spec/permissions.md §4 (Key part: sync alone by the writes valid here; Role changes travel),
+// §5.1 (A lowering's **list** is its frontier), notes/evidence-derivation.md:
+// T holds sync alone on G; peer 1 reads T and G. Peer 0 (G's admin) makes peer 2 an admin of G
+// (A); peer 2 raises T to read (B). At peer 1, B applies: T reads G, and B is in the required set
+// of peer 1's sync ID (Role changes travel: its keys open T). Peer 0, not holding B, removes peer
+// 2: B is dropped, T holds sync alone again at peer 1 and B travels there no more; the kept
+// derivation is the one derived anew throughout. Fails if a write's standing changing re-derives
+// no copy (a stale `gives_read`), or if read is judged by held writes alone.
+#[test]
+fn a_read_grant_dropped_turns_a_holder_back_to_sync_alone_spec_permissions_4() {
+    let (mut lp, g, t) = sync_holder();
+    reads_t(&mut lp, t);
+    let (me1, w) = (lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
+    lp.peers[0].engine.grant(&g, &me1, &edge(Role::Read)).unwrap();
+    lp.sync_all().unwrap();
+    lp.peers[0].engine.grant(&g, &w, &edge(Role::Admin)).unwrap();
+    lp.sync(0, 2).unwrap();
+    lp.advance(1_000);
+    let b = lp.peers[2].engine.grant(&g, &t, &edge(Role::Read)).unwrap().commits[0];
+    lp.sync(2, 1).unwrap();
+    let travels = |lp: &mut LocalPeer| lp.peers[1].engine.kept_evidence().unwrap().required(&me1).is_some_and(|r| r.contains_key(&(b, g)));
+    let e1 = &lp.peers[1].engine;
+    assert_eq!(e1.core.role_now(&t, &g), Some(Role::Read), "B applies at peer 1");
+    assert!(!e1.core.sync_alone_on(&t, &g));
+    assert!(travels(&mut lp), "B travels under peer 1's sync ID");
+    assert_eq!(lp.peers[1].engine.check_evidence().unwrap(), None);
+    assert!(lp.peers[0].engine.header(&b).is_none());
+    lp.advance(1_000);
+    lp.peers[0].engine.demote(&g, &super::Demotion { holder: w, new: None, retain: None }).unwrap();
+    lp.sync(0, 1).unwrap();
+    let e1 = &lp.peers[1].engine;
+    assert!(e1.core.ix.held.edge_commits(&g).iter().any(|rc| rc.id == b), "peer 1 still holds B");
+    assert_eq!(e1.core.role_now(&t, &g), Some(Role::Sync), "B is dropped");
+    assert!(e1.core.sync_alone_on(&t, &g), "T holds sync alone again");
+    assert!(!travels(&mut lp), "B travels no more");
+    assert_eq!(lp.peers[1].engine.check_evidence().unwrap(), None);
+}

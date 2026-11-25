@@ -319,11 +319,10 @@ impl World {
 
     /// The seeds of S's required set over `h`, its unit `unit`: the bodies, and the edge writes
     /// naming S's thing (and under `keys_open` a thing S's keys open) as holder.
-    fn seeds(&self, rule: &Rule, s: Sid, unit: &Things, h: &Set) -> Set {
+    fn seeds(&self, rule: &Rule, s: Sid, unit: &Things, h: &Set, reads: &BTreeSet<Edge>) -> Set {
         // the things whose holder roles travel under S: its own, and under Role changes travel
         // those S's thing holds read or above on, at any time
-        let reads = self.read_edges(h);
-        let open = self.opened_by(rule, s, &reads);
+        let open = self.opened_by(rule, s, reads);
         // S's own thing's: its key part, every edge write naming it; another open thing's
         // travel only on an edge that gives its holder read (a held write giving read or above
         // valid over `h`, or the record): one giving no more than sync as `h` judges it goes in
@@ -340,7 +339,12 @@ impl World {
     }
     /// S's required set over held set `h` with units `units`: bodies and copies.
     pub fn req(&self, rule: &Rule, s: Sid, units: &BTreeMap<Sid, Things>, h: &Set) -> Set {
-        self.closure(rule, &self.seeds(rule, s, &units[&s], h), h)
+        self.req_with(rule, s, units, h, &self.read_edges(h))
+    }
+    /// `req` with `h`'s read graph edges (`read_edges`) given: judged once per held set, not per
+    /// sync ID.
+    fn req_with(&self, rule: &Rule, s: Sid, units: &BTreeMap<Sid, Things>, h: &Set, reads: &BTreeSet<Edge>) -> Set {
+        self.closure(rule, &self.seeds(rule, s, &units[&s], h, reads), h)
     }
     /// The things whose holder roles travel under S over held set `h`: S's own, and under
     /// `keys_open` those S's thing holds read or above on through them and through record edges,
@@ -654,21 +658,22 @@ impl World {
             let own = self.own(st, n);
             let mut held: Set = st.held[n].iter().chain(&own).copied().chain(sy.iter().flat_map(|s| st.entries[s].iter().copied())).filter(|i| !st.forgotten.contains(i)).collect();
             // keep only what a synced sync ID requires, and its own writes
-            loop {
-                let keep: Set = sy.iter().flat_map(|&s| self.req(rule, s, &st.units, &held)).chain(own.iter().copied()).filter(|i| held.contains(i)).collect();
+            let reads = loop {
+                let reads = self.read_edges(&held);
+                let keep: Set = sy.iter().flat_map(|&s| self.req_with(rule, s, &st.units, &held, &reads)).chain(own.iter().copied()).filter(|i| held.contains(i)).collect();
                 if keep == held {
-                    break;
+                    break reads;
                 }
                 held = keep;
-            }
+            };
             for &s in &sy {
                 let logs = if !self.nodes[n].honest {
                     self.thief_logs(rule, s, &st.units, &held, &own)
                 } else if self.stamps(n, s) {
-                    self.req(rule, s, &st.units, &held)
+                    self.req_with(rule, s, &st.units, &held, &reads)
                 } else if rule.deposit {
                     // D4: the removal copies its view requires there, deposited
-                    self.req(rule, s, &st.units, &held).into_iter().filter(|&i| self.takes_away(i) && !st.units[&s].contains(&self.on(i))).collect()
+                    self.req_with(rule, s, &st.units, &held, &reads).into_iter().filter(|&i| self.takes_away(i) && !st.units[&s].contains(&self.on(i))).collect()
                 } else {
                     Set::new()
                 };
