@@ -56,6 +56,10 @@ struct Table {
     /// times one was asked for.
     bodies: BTreeMap<osis_base::CommitId, Vec<u8>>,
     asked: usize,
+    /// Role entries by this node's judgement (`Ground::role_entry`).
+    role: std::collections::BTreeSet<BlobId>,
+    /// Notices, each with the thing whose removal it tells (`Ground::notice_tells`).
+    notices: BTreeMap<BlobId, osis_base::Tid>,
 }
 
 impl Ground for Table {
@@ -82,6 +86,12 @@ impl Ground for Table {
     }
     fn counted(&mut self, _s: &SyncId, b: &BlobId) -> bool {
         self.counted.contains(b)
+    }
+    fn role_entry(&mut self, _s: &SyncId, b: &BlobId) -> bool {
+        self.role.contains(b)
+    }
+    fn notice_tells(&mut self, _s: &SyncId, b: &BlobId, proven: &std::collections::BTreeSet<osis_base::Tid>) -> bool {
+        self.notices.get(b).is_some_and(|t| proven.contains(t))
     }
     fn open_relay(&mut self, _s: &SyncId, _e: &Entry, _bytes: &[u8]) -> Result<osis_engine::sync::RelayOpened> {
         Ok(self.relay.unwrap_or(osis_engine::sync::RelayOpened::NotOpen))
@@ -169,7 +179,7 @@ impl Shared for Open {
 }
 
 fn member() -> Member {
-    Member { class: SourceClass::Reader, own: SourceClass::Reader, by: Credential::J, until: None, departed: false }
+    Member { class: SourceClass::Reader, own: SourceClass::Reader, by: Credential::J, until: None, departed: None }
 }
 
 struct Side {
@@ -524,6 +534,28 @@ fn listed_then_pushed_spec_sync_streams_4() {
     assert!(streams.iter().any(|m| matches!(m, Msg::Stream(st) if added(&st.events) == [y] && st.seq == 0 && st.cursor.is_some())));
     assert!(p.b.streams.caught_up(C, &s));
     assert!(p.b.streams.known().present(&s, &y));
+}
+
+// spec/sync-opens.md §6, spec/permissions.md §4 (Notices): a's log holds a role entry, a
+// plain entry, a notice of another party's removal and one of the peer's. Toward a departed
+// peer a lists the peer's notice alone: no role entry (served up to a rotation's `until`, a
+// role commit made knowing the removal leaked), and no other party's notice.
+#[test]
+fn a_departed_peer_is_served_its_notices_alone_spec_sync_opens_6() {
+    let mut p = Pair::new();
+    let s = sid(1);
+    let (peer, other) = (osis_base::Tid::from_bytes([1; 15]), osis_base::Tid::from_bytes([2; 15]));
+    let role = p.a.log(s, 100);
+    p.a.log(s, 101);
+    let theirs = p.a.log(s, 102);
+    let mine = p.a.log(s, 103);
+    p.a.table.role.insert(role);
+    p.a.table.notices.insert(theirs, other);
+    p.a.table.notices.insert(mine, peer);
+    p.a.hold(s, Holding::Read);
+    p.a.open.members.entry(C).or_default().insert(s, Member { departed: Some(std::sync::Arc::new([peer].into())), ..member() });
+    let r = pull_at(&mut p.a, 0, plain_pull(None, vec![], 1 << 20));
+    assert_eq!(added(&r.events), [mine], "the peer's notice alone");
 }
 
 // spec/sync-streams.md §4 (Stream: both sides pull), SN_bothpull: whoever dialed, each side pulls
@@ -925,7 +957,7 @@ fn the_class_a_source_joined_lasts_with_what_it_showed_spec_sync_opens_3() {
     p.shared_read(s);
     let src = p.b.src();
     let join = |side: &mut Side, now: u64, class: SourceClass| {
-        side.open.members.entry(C).or_default().insert(s, Member { class, own: SourceClass::Reader, by: Credential::J, until: None, departed: false });
+        side.open.members.entry(C).or_default().insert(s, Member { class, own: SourceClass::Reader, by: Credential::J, until: None, departed: None });
         side.with(now, |st, ctx| st.member_moved(ctx, Moved::Joined(C, s, Rejoin::Held)));
     };
     assert!(!p.b.streams.known().kept(src, &s), "joined as a reader");

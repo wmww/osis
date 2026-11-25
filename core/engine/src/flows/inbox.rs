@@ -744,6 +744,21 @@ impl Engine {
         Ok(Some(SealedFireOut { sync_id, thing: o.thing, to: o.to.clone(), blob: sealed }))
     }
 
+    /// Notice `n` sealed (`sync::notices`): its removal's certificate copy on its thing (the
+    /// edge-class parts), with the copies of its evidence, their records and pages, as a sealed
+    /// copy to the thing's read KEM key `kem` at the notice's epoch. `None` while the removal is
+    /// not applied here.
+    pub(crate) fn sealed_notice(&mut self, n: &crate::sync::notices::Notice, kem: &osis_crypto::KemPublicKey) -> Result<Option<Vec<u8>>> {
+        let Some(p) = self.edge_piece(&n.commit, &n.thing, crate::sync_ids::Cut::Evidence { step: false })? else { return Ok(None) };
+        let limits = osis_base::Limits::new(osis_base::format::MAX_OBJECT_DEPTH, osis_base::format::MAX_BLOB);
+        let as_value = |b: &[u8]| osis_base::decode(b, &limits).map_err(|_| Error::Corrupt("commit blob"));
+        let copy = osis_commit::CommitBlob::decode(&p.copy)?;
+        let evidence = p.evidence.iter().map(|c| as_value(c)).collect::<Result<Vec<_>>>()?;
+        let fire = osis_blob::SealedFire { copy: true, commit: as_value(&p.copy)?, evidence, records: p.records, pages: p.pages };
+        let ais = sealed_ais(&copy, true);
+        Ok(Some(self.seal_payload(&copy.header, &ais, &n.thing, &n.epoch, kem, &osis_blob::Sealed::Fire(fire))?))
+    }
+
     /// Seals `fire` to `thing`'s read KEM key `kem` at `epoch`, behind the prefix of header `h`'s
     /// encryption of parts `ais` (spec/wire.md §9).
     fn seal_payload(&mut self, h: &osis_commit::Header, ais: &[usize], thing: &Tid, epoch: &osis_crypto::Epoch, kem: &osis_crypto::KemPublicKey, fire: &osis_blob::Sealed) -> Result<Vec<u8>> {
@@ -977,11 +992,13 @@ impl Engine {
         let Ok(commit) = osis_commit::CommitBlob::decode(&osis_base::encode(&fire.commit)) else { return Ok(Opened::Bad) };
         let h = &commit.header;
         // a sealed fire: one delta, a fire of an external signal of `t`; a sealed copy: a
-        // certificate copy on another thing (spec/sync-inbox.md §2)
+        // certificate copy on another thing (spec/sync-inbox.md §2), or on `t` itself: a notice
+        // (spec/permissions.md §4 Notices)
         let one = match fire.copy {
             false => matches!(commit.parts.as_slice(), [p] if h.aspects.get(p.ai).is_some_and(|a| a.tid == *t && a.ak.external())),
-            true => EdgePiece::target(&commit).is_some_and(|x| x != *t),
+            true => EdgePiece::target(&commit).is_some(),
         };
+        let notice = fire.copy && EdgePiece::target(&commit) == Some(*t);
         if !one || !h.is_resolved() {
             return Ok(Opened::Bad);
         }
@@ -1037,8 +1054,14 @@ impl Engine {
                 Ok(())
             })?;
         }
-        let row = crate::sync::BlobOf { commit: id, parts: parts.into_iter().collect(), sealed: Default::default(), copy: fire.copy, unchecked: false, salt: *prefix.salt(), ais: ais.into_iter().collect() };
         let b = *b;
+        // a notice is no blob of its commit: kept as what it is (`sync::notices`)
+        if notice {
+            let n = crate::sync::notices::Notice { thing: *t, commit: id, epoch: under };
+            self.run(|tx| crate::sync::notices::note(tx, &b, n))?;
+            return Ok(Opened::Notice(id, ingested));
+        }
+        let row = crate::sync::BlobOf { commit: id, parts: parts.into_iter().collect(), sealed: Default::default(), copy: fire.copy, unchecked: false, salt: *prefix.salt(), ais: ais.into_iter().collect() };
         self.run(|tx| crate::sync::bodies::note_blob(tx, &b, row))?;
         Ok(Opened::Commit(id, ingested))
     }

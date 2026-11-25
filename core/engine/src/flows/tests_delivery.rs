@@ -513,14 +513,14 @@ fn a_forged_duplicate_does_not_displace_the_real_copy_spec_permissions_4() {
 }
 
 // spec/sync-ids.md §5 (Peer budget: a sync copy is anyone's word, kept only while an entry of it
-// is): a sync copy's row goes with its blob's last entry (`unnamed_sync_copy`), and what it gave
+// is): a sync copy's row goes with its blob's last entry (`unnamed_copy`), and what it gave
 // with it; at n and 10n copies taken, the rows kept are exactly those whose entries stay, so what
 // a party pushes is bounded by what the store keeps of it (its budget). Fails with rows kept past
 // their entries (kept until the thing is forgotten).
 #[test]
 fn sync_copy_rows_go_with_their_entries_spec_sync_ids_5() {
     let (mut lp, g, t) = sync_holder();
-    let base = lp.peers[2].engine.sync_copy_blobs().len();
+    let base = lp.peers[2].engine.copy_blobs().len();
     for n in [3usize, 30] {
         let mut blobs = Vec::new();
         for i in 0..n {
@@ -529,14 +529,14 @@ fn sync_copy_rows_go_with_their_entries_spec_sync_ids_5() {
             assert!(lp.peers[2].engine.take_sync_copy(&t, &b, &copy.encode(), false).unwrap());
             blobs.push(b);
         }
-        assert_eq!(lp.peers[2].engine.sync_copy_blobs().len(), base + n, "at {n}: a row per entry");
+        assert_eq!(lp.peers[2].engine.copy_blobs().len(), base + n, "at {n}: a row per entry");
         // the store drops all but one (past the bringer's budget, or with its peer)
         for b in blobs.iter().skip(1) {
-            lp.peers[2].engine.unnamed_sync_copy(b).unwrap();
+            lp.peers[2].engine.unnamed_copy(b).unwrap();
         }
-        assert_eq!(lp.peers[2].engine.sync_copy_blobs().len(), base + 1, "at {n}: rows go with their entries");
-        lp.peers[2].engine.unnamed_sync_copy(&blobs[0]).unwrap();
-        assert_eq!(lp.peers[2].engine.sync_copy_blobs().len(), base);
+        assert_eq!(lp.peers[2].engine.copy_blobs().len(), base + 1, "at {n}: rows go with their entries");
+        lp.peers[2].engine.unnamed_copy(&blobs[0]).unwrap();
+        assert_eq!(lp.peers[2].engine.copy_blobs().len(), base);
     }
 }
 
@@ -552,9 +552,9 @@ fn a_forged_sync_alone_offer_takes_nothing_spec_sync_inbox_5() {
     let (copy, _, _) = forged_sync_copy(&mut lp, 0, g, t, 70);
     let offer = super::offers::Offer { target: g, pieces: super::offers::Pieces::SyncAlone(vec![copy.encode()]) };
     let offer = super::offers::Offer::from_value(&offer.to_value()).expect("round-trips");
-    let (rows, id, held) = (lp.peers[2].engine.sync_copy_blobs(), lp.peers[2].engine.sync_id_of(&g).unwrap(), sync_held(&lp, 2, &g));
+    let (rows, id, held) = (lp.peers[2].engine.copy_blobs(), lp.peers[2].engine.sync_id_of(&g).unwrap(), sync_held(&lp, 2, &g));
     assert!(lp.peers[2].engine.take_offer(&offer, &t).is_err(), "a forged offer gives no role");
-    assert_eq!(lp.peers[2].engine.sync_copy_blobs(), rows, "no row of the refused offer's copy kept");
+    assert_eq!(lp.peers[2].engine.copy_blobs(), rows, "no row of the refused offer's copy kept");
     assert_eq!((lp.peers[2].engine.sync_id_of(&g).unwrap(), sync_held(&lp, 2, &g)), (id, held), "G as before");
 }
 

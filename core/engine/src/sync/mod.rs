@@ -21,6 +21,7 @@ pub(crate) mod proofs;
 pub use proofs::{Claim, ProvenThing, Prover, Proving};
 pub use pieces::PieceLink;
 pub(crate) mod certblobs;
+pub mod notices;
 pub use certblobs::{CertBlob, CertBlobs};
 pub(crate) use certblobs::with_chains;
 mod relay;
@@ -129,6 +130,8 @@ pub enum Opened {
     Records(BTreeSet<Tid>),
     /// A sync copy (spec/wire.md §4): taken for its box and steps (`sync_ids::unread`).
     SyncCopy,
+    /// A notice of removal commit `c` (`notices`): `c`'s certificate copy taken.
+    Notice(CommitId, Ingested),
     /// No held secret opens it (or nothing held links it).
     NotOpen,
     /// It opened and is bad (its sender is to blame).

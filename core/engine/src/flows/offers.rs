@@ -179,7 +179,7 @@ impl Engine {
                 }
                 if let Some(e) = bad {
                     for b in &new {
-                        self.unnamed_sync_copy(b)?;
+                        self.unnamed_copy(b)?;
                     }
                     return Err(e);
                 }

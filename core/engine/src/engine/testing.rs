@@ -724,6 +724,7 @@ fn tables(ix: &super::Indexes) -> Vec<(&'static str, &dyn Table)> {
         ("blob_parts", &*ix.blob_parts),
         ("commit_blobs", &*ix.commit_blobs),
         ("cert_blobs", &*ix.cert_blobs),
+        ("notices", &*ix.notices),
         ("sync_copies", &*ix.sync_copies),
         ("sync_copy_on", &*ix.sync_copy_on),
         ("sync_copies_under", &*ix.sync_copies_under),

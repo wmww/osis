@@ -2,6 +2,7 @@
 //! holds now and the judgement J of a peer's proven actors. `Holds` is the one seam: the product
 //! reads it from the engine's facade and `unread` (`NodeHolds`); a test from a table.
 
+use std::collections::BTreeSet;
 use super::cred::{Shown, Tested};
 use crate::session::Proven;
 use crate::types::{Credential, Cursor, Cx, Holding, Position, RecordId};
@@ -143,10 +144,10 @@ pub trait Holds {
     /// in S of a rotation superseding `by`'s epoch was first logged, else the node log's end; at
     /// a node keeping S unread the position of its head's event.
     fn until(&mut self, s: &SyncId, by: &Credential) -> Position;
-    /// A member ended for its peer's departure at a reader: the highest position at which an
-    /// entry in S of a rotation superseding `by`'s epoch (opened by J, the newest epoch
-    /// superseded here) was first logged; none while none is logged here.
-    fn departure_until(&mut self, s: &SyncId, by: &Credential) -> Option<Position>;
+    /// A member ended for its peer's departure at a reader, the peer proving `proven`: the
+    /// highest position at which a notice in S of their removals (`Engine::told`) was first
+    /// logged; none while none is logged here.
+    fn departure_until(&mut self, s: &SyncId, proven: &BTreeSet<osis_base::Tid>) -> Option<Position>;
     /// The cursor naming `pos` of this node's log, for a Lost.
     fn cursor_at(&mut self, pos: Position) -> Option<Cursor>;
     /// The grant a static entry's answer carries (spec/sync-opens.md §5): the head's entry box
@@ -317,16 +318,16 @@ pub(crate) fn member_until(cx: &mut Cx, s: &SyncId, by: &Credential) -> crate::t
 }
 
 /// `Holds::departure_until`.
-pub(crate) fn departure_until(cx: &mut Cx, s: &SyncId, by: &Credential) -> crate::types::Result<Option<Position>> {
-    let e = match by {
-        Credential::ReadSecret(e) => *e,
-        Credential::J => match cx.engine.read_credentials(s)?.and_then(|c| c.old_read_secrets.first().map(|(e, _)| *e)) {
-            Some(e) => e,
-            None => return Ok(None),
-        },
-        _ => return Ok(None),
-    };
-    superseded_at(cx, s, &e)
+pub(crate) fn departure_until(cx: &mut Cx, s: &SyncId, proven: &BTreeSet<osis_base::Tid>) -> crate::types::Result<Option<Position>> {
+    let told = cx.engine.told(s, proven)?;
+
+    let mut at = None;
+    for (b, n) in cx.engine.notice_rows(s) {
+        if told.contains(&n.commit) {
+            at = at.max(cx.store.first_logged(s, &b)?);
+        }
+    }
+    Ok(at)
 }
 
 /// The highest position at which an entry in S of a rotation superseding read epoch `e` was
@@ -428,8 +429,8 @@ impl Holds for NodeHolds<'_, '_> {
         member_until(self.cx, s, by).unwrap_or(0)
     }
 
-    fn departure_until(&mut self, s: &SyncId, by: &Credential) -> Option<Position> {
-        departure_until(self.cx, s, by).ok().flatten()
+    fn departure_until(&mut self, s: &SyncId, proven: &BTreeSet<osis_base::Tid>) -> Option<Position> {
+        departure_until(self.cx, s, proven).ok().flatten()
     }
 
     fn cursor_at(&mut self, pos: Position) -> Option<Cursor> {

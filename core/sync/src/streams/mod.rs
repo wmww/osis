@@ -128,6 +128,12 @@ pub trait Ground {
         let _ = (s, b);
         false
     }
+    /// Whether held blob `b` under S is a notice of a removal of a holder a peer proving
+    /// `proven` reaches (`Engine::notice_tells`): what a departed peer is shown.
+    fn notice_tells(&mut self, s: &SyncId, b: &BlobId, proven: &std::collections::BTreeSet<osis_base::Tid>) -> bool {
+        let _ = (s, b, proven);
+        false
+    }
     /// The write key of the head S's `sync.0` records here (`ReadCredentials::head`), which the
     /// store's served path follows.
     fn head_write(&mut self, s: &SyncId) -> Option<osis_crypto::VerifyingKey> {
@@ -595,6 +601,8 @@ pub fn opening(engine: &mut Engine, store: &crate::store::Store, s: &SyncId, e: 
         // is held, `Core::copies_speak`):
         // charged to its bringer unless stamped (spec/sync-ids.md §5 Peer budget)
         Ok(Opened::SyncCopy) => Ok(Opening::Held { gave: false }),
+        // a notice: its removal's copy taken, kept as any certificate blob is
+        Ok(Opened::Notice(..)) => Ok(Opening::Held { gave: true }),
         Ok(Opened::Linked) => Ok(Opening::Taken),
         Ok(Opened::NotOpen) => Ok(Opening::NotOpen),
         Ok(Opened::Bad) => Ok(Opening::Bad),
@@ -632,7 +640,7 @@ impl Ground for EngineGround<'_> {
     fn unkept(&mut self, store: &crate::store::Store, b: &BlobId) -> Result<()> {
         self.engine.forget_carrier(b);
         if !store.named(b)? {
-            self.engine.unnamed_sync_copy(b)?;
+            self.engine.unnamed_copy(b)?;
         }
         if let Some(c) = self.engine.blob_commit(b) {
             crate::store::release(self.engine, store, &c)?;
@@ -658,6 +666,10 @@ impl Ground for EngineGround<'_> {
 
     fn role_entry(&mut self, s: &SyncId, b: &BlobId) -> bool {
         self.engine.role_entry(s, b)
+    }
+
+    fn notice_tells(&mut self, s: &SyncId, b: &BlobId, proven: &std::collections::BTreeSet<osis_base::Tid>) -> bool {
+        self.engine.notice_tells(s, b, proven)
     }
 
     fn want(&mut self, store: &crate::store::Store, s: &SyncId, c: &osis_base::CommitId) -> Result<Option<Given>> {

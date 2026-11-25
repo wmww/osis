@@ -224,7 +224,7 @@ impl Carriers {
                     engine.forget_carrier(&b);
                     if !store.named(&b)? {
                         engine.unnamed_blob(&b, !store.tombstoned_under(&b)?.is_empty())?;
-                        engine.unnamed_sync_copy(&b)?;
+                        engine.unnamed_copy(&b)?;
                     }
                     if let Some(c) = engine.blob_commit(&b) {
                         release(engine, store, &c)?;
@@ -233,10 +233,10 @@ impl Carriers {
             }
             None => {
                 self.unnamed = Some(store.unnamed_feed());
-                // a sync copy row whose entry went before a crash let the engine follow
-                for b in engine.sync_copy_blobs() {
+                // a sync copy or notice row whose entry went before a crash let the engine follow
+                for b in engine.copy_blobs() {
                     if !store.named(&b)? {
-                        engine.unnamed_sync_copy(&b)?;
+                        engine.unnamed_copy(&b)?;
                     }
                 }
                 for (c, _) in engine.pending() {

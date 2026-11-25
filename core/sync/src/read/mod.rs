@@ -344,8 +344,8 @@ impl Read {
                 acted = true;
             }
         }
-        // the sync copies each S carries, one blob of each content, while a reader can pull it
-        // (spec/permissions.md §4 Logging certificates)
+        // the sync copies and notices each S carries, one blob of each content, while a reader
+        // can pull it (spec/permissions.md §4 Logging certificates, Notices)
         for s in self.sync_copies.due() {
             if !g.reads(&s) {
                 self.sync_copies.unwant(&s);

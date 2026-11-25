@@ -147,12 +147,16 @@ fn encode_member(m: &Member, basis: Option<&[u8; 32]>) -> Vec<u8> {
     }
     match m.until {
         Some(p) => {
-            w.push(if m.departed { 2 } else { 1 });
+            w.push(if m.departed.is_some() { 2 } else { 1 });
             w.extend_from_slice(&p.to_be_bytes());
         }
-        None => w.push(if m.departed { 3 } else { 0 }),
+        None => w.push(if m.departed.is_some() { 3 } else { 0 }),
     }
     opt32(&mut w, basis);
+    // a departed peer's proven things, to the end
+    for t in m.departed.iter().flat_map(|p| p.iter()) {
+        w.extend_from_slice(t.as_bytes());
+    }
     w
 }
 
@@ -181,6 +185,16 @@ fn decode_member(v: &[u8]) -> Res<(Member, Option<[u8; 32]>)> {
         _ => return Err(corrupt()),
     };
     let basis = r.opt32()?;
+    let departed = match departed {
+        false => None,
+        true => {
+            let mut p = BTreeSet::new();
+            while !r.0.is_empty() {
+                p.insert(osis_base::Tid::from_bytes(r.take(15)?.try_into().map_err(|_| corrupt())?));
+            }
+            Some(std::sync::Arc::new(p))
+        }
+    };
     r.end()?;
     Ok((Member { class, own, by, until, departed }, basis))
 }

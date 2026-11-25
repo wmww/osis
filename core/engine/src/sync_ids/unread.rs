@@ -37,7 +37,7 @@ use std::sync::Arc;
 /// `su/` + blob ID: a sync copy taken here (`HeldSyncCopy`): the thing it came under (15 bytes),
 /// whether it came sealed (one byte, 1), then its `SyncCopyPlaintext` bytes.
 /// Invariant (bounds; spec/sync-ids.md §5 Peer budget): a row lives exactly as long as the store
-/// holds an entry of its blob (`Engine::unnamed_sync_copy`), and that entry is charged to its
+/// holds an entry of its blob (`Engine::unnamed_copy`), and that entry is charged to its
 /// bringer unless stamped (`Opened::SyncCopy`), so what a party makes this node keep is bounded
 /// by its budget, a writer's stamp aside.
 pub(crate) const SYNC_COPIES: &[u8] = b"su/";
@@ -313,16 +313,16 @@ fn join_steps(a: &mut ct::SyncIds, b: &ct::SyncIds) {
 }
 
 impl Core {
-    /// Whether `h`'s edge pieces on `x` go as sync copies (spec/permissions.md §4 Key part): a
-    /// held edge write on `x` gives `h` a role, none valid here gives it read or above (its own
+    /// Whether `h`'s edge pieces on `x` go as sync copies (spec/permissions.md §4 Key part): no
+    /// held edge write on `x` valid here gives `h` read or above (its own
     /// self-writes aside: `edge_gives_read`) and `h` is not `x`'s mint admin: no edge of the
     /// evidence's read graph (`evidence::Write::gives_read`), so Role changes travel carries no
     /// write of it. An invalid or pending write giving read (a writer of `h` or of `x` may sign
     /// any) changes nothing: what `h`'s readers receive is decided by valid writes alone.
     /// A holder that read `x` keeps certificate copies after a lowering or removal: its readers
     /// hold `x`'s record and judge its role commits. A holder no held write gives a role (a
-    /// removal by a node that never held its grant) goes as a reader does: its fire is the one
-    /// way a removed reader hears of it from a blind remover.
+    /// removal by a node that never held its grant) goes as one of sync alone: a blind remover
+    /// sends it nothing (a removed reader hears by notices, spec/permissions.md §4 Notices).
     /// Invariant (security; spec/sync-ids.md §2 What a sync holder learns): every path a commit
     /// of `x` naming `h` takes to `h`'s readers (key part, sealed copy, fire, offer) reads this
     /// one predicate, so none carries a header where another carries a sync copy.
@@ -331,16 +331,14 @@ impl Core {
         if self.ix.held.created(x).is_some_and(|r| r.holder() == hd) {
             return false;
         }
-        let mut role = false;
         for rc in self.ix.held.edge_commits(x).iter() {
-            for (i, o) in rc.ops.iter().enumerate().filter(|(_, o)| o.target == *x && o.holder == hd) {
+            for (i, _) in rc.ops.iter().enumerate().filter(|(_, o)| o.target == *x && o.holder == hd) {
                 if self.edge_gives_read(rc, i) {
                     return false;
                 }
-                role |= o.edge.is_some();
             }
         }
-        role
+        true
     }
 
     /// Whether edge write `i` of held role commit `rc` gives its holder read (spec/permissions.md
@@ -501,8 +499,10 @@ impl crate::engine::Engine {
         Ok(true)
     }
 
-    /// No store entry names blob `b` any more: its sync copy row, if any, goes (`SYNC_COPIES`).
-    pub fn unnamed_sync_copy(&mut self, b: &BlobId) -> Result<()> {
+    /// No store entry names blob `b` any more: its sync copy row (`SYNC_COPIES`) or notice row
+    /// (`sync::notices`), if any, goes.
+    pub fn unnamed_copy(&mut self, b: &BlobId) -> Result<()> {
+        self.unnamed_notice(b)?;
         if !self.core.ix.sync_copy_on.contains_key(b) {
             return Ok(());
         }
@@ -510,9 +510,9 @@ impl crate::engine::Engine {
         self.run(|tx| drop_blob(tx, &b))
     }
 
-    /// The blobs of every sync copy row (a start drops those the store does not hold).
-    pub fn sync_copy_blobs(&self) -> Vec<BlobId> {
-        self.core.ix.sync_copy_on.keys().copied().collect()
+    /// The blobs of every sync copy and notice row (a start drops those the store does not hold).
+    pub fn copy_blobs(&self) -> Vec<BlobId> {
+        self.core.ix.sync_copy_on.keys().chain(self.core.ix.notices.keys()).copied().collect()
     }
 
     /// The sync copies read sync ID `s` carries (spec/permissions.md §4 Key part), by content

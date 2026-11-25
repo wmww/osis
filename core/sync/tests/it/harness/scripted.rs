@@ -200,7 +200,7 @@ impl Holds for Table {
     fn until(&mut self, _s: &SyncId, _by: &Credential) -> Position {
         self.until
     }
-    fn departure_until(&mut self, _s: &SyncId, _by: &Credential) -> Option<Position> {
+    fn departure_until(&mut self, _s: &SyncId, _proven: &std::collections::BTreeSet<osis_base::Tid>) -> Option<Position> {
         self.departure_logged.then_some(self.until)
     }
     fn cursor_at(&mut self, pos: Position) -> Option<Cursor> {

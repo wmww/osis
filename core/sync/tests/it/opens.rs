@@ -375,7 +375,7 @@ fn a_departed_reader_opens_ended_on_its_superseded_epoch_spec_sync_opens_6() {
             continue;
         }
         let m = p.a.opens.members(p.ca)[&S].clone();
-        assert!(m.departed && m.until == Some(p.a.table.until) && m.by == Credential::ReadSecret(old.0), "ended at once: {m:?}");
+        assert!(m.departed.is_some() && m.until == Some(p.a.table.until) && m.by == Credential::ReadSecret(old.0), "ended at once: {m:?}");
         assert!(p.b.open(p.cb, &S), "b opens on a's answer");
         let until = p.a.table.until;
         p.a.reported(p.ca, S, until);
@@ -412,7 +412,7 @@ fn an_ended_member_closes_on_its_join_not_the_streams_position_spec_sync_opens_6
         p.a.settle();
         p.run();
         let m = p.a.opens.members(p.ca)[&S].clone();
-        assert!(m.until == Some(7) && m.departed == departed && m.by == Credential::ReadSecret(old.0), "ended at once (departed: {departed}): {m:?}");
+        assert!(m.until == Some(7) && m.departed.is_some() == departed && m.by == Credential::ReadSecret(old.0), "ended at once (departed: {departed}): {m:?}");
         assert!(p.b.open(p.cb, &S), "open past the stream's position, its join not named (departed: {departed})");
         p.a.reported(p.ca, S, 5);
         assert!(p.a.open(p.ca, &S), "joined below its until (departed: {departed})");
@@ -435,7 +435,7 @@ fn a_departed_reader_granted_again_rejoins_from_the_start_spec_sync_opens_6() {
     p.a.table.judge_as(S, tid(2), J::Departed);
     p.a.settle();
     let m = p.a.opens.members(p.ca)[&S].clone();
-    assert!(m.departed && m.until.is_none(), "ended for its departure, no rotation logged: {m:?}");
+    assert!(m.departed.is_some() && m.until.is_none(), "ended for its departure, no rotation logged: {m:?}");
     p.a.table.judge_as(S, tid(2), J::Reader);
     p.a.settle();
     assert!(!p.a.open(p.ca, &S), "closed at once");
@@ -936,7 +936,7 @@ fn a_j_open_closes_when_its_peer_stops_counting_spec_sync_opens_6() {
         assert_eq!(of_kind(&r.sent(), 38).len(), usize::from(!stays), "{j:?}: a Lost");
         if j == J::Departed {
             let m = &r.opens.members(adv.peer)[&S];
-            assert!(m.departed && m.until == Some(r.table.until), "ended for its departure: {m:?}");
+            assert!(m.departed.is_some() && m.until == Some(r.table.until), "ended for its departure: {m:?}");
             r.reported(adv.peer, S, r.table.until);
             assert!(!r.open(adv.peer, &S) && of_kind(&r.sent(), 38).len() == 1, "closed at its until with a Lost");
         }
@@ -954,7 +954,7 @@ fn a_removal_held_here_ends_a_credential_open_spec_sync_opens_6() {
     p.a.table.judge_as(S, tid(2), J::Departed);
     p.a.settle();
     let m = p.a.opens.members(p.ca)[&S].clone();
-    assert!(m.departed && m.until == Some(p.a.table.until), "ended, before any rotation: {m:?}");
+    assert!(m.departed.is_some() && m.until == Some(p.a.table.until), "ended, before any rotation: {m:?}");
     let until = p.a.table.until;
     p.a.reported(p.ca, S, until);
     p.run();
@@ -965,7 +965,7 @@ fn a_removal_held_here_ends_a_credential_open_spec_sync_opens_6() {
     p.close();
     p.a.table.judge_as(S, tid(2), J::Departed);
     p.a.restart();
-    assert!(p.a.opens.member_at(at, &S).is_some_and(|m| m.departed && m.until.is_some()), "kept ended across the restart");
+    assert!(p.a.opens.member_at(at, &S).is_some_and(|m| m.departed.is_some() && m.until.is_some()), "kept ended across the restart");
 }
 
 // spec/sync-opens.md §6 (whether or not a connection holds its record; a connection taking a
@@ -985,7 +985,7 @@ fn standing_is_followed_per_record_across_connections_spec_sync_opens_6() {
     assert!(p.a.opens.member_at(at, &S).is_some() && p.a.opens.conn_of(at).is_none(), "the record keeps its member, connected nowhere");
     p.a.table.judge_as(S, tid(2), J::Departed);
     p.a.settle();
-    assert!(p.a.opens.member_at(at, &S).is_some_and(|m| m.departed && m.until == Some(p.a.table.until)), "moved while away: ended in its step");
+    assert!(p.a.opens.member_at(at, &S).is_some_and(|m| m.departed.is_some() && m.until == Some(p.a.table.until)), "moved while away: ended in its step");
 }
 
 // spec/sync-opens.md §6 (closes once no connection holds its record; while one does, that
@@ -2396,7 +2396,7 @@ fn a_departure_alone_moves_what_read_the_member_spec_sync_opens_6() {
     p.a.table.set(S, Some(reader(&S, &read_secret(1, 0), &StepKeys::new(1, 1), &[], &[], &[])));
     p.a.settle();
     let was = p.a.opens.member(p.ca, &S).cloned().expect("ended, open");
-    assert!(was.until.is_some() && !was.departed);
+    assert!(was.until.is_some() && was.departed.is_none());
     let mut fx: Effects<(), Option<Member>> = Effects::new("test: member read");
     fx.want(());
     for key in fx.due() {
@@ -2406,7 +2406,7 @@ fn a_departure_alone_moves_what_read_the_member_spec_sync_opens_6() {
     p.a.table.judge_as(S, tid(2), J::Departed);
     p.a.settle();
     let now = p.a.opens.member(p.ca, &S).cloned().expect("open");
-    assert_eq!(now, Member { departed: true, ..was }, "only the departure moved");
+    assert!(now.departed.is_some() && Member { departed: None, ..now.clone() } == was, "only the departure moved");
     assert_eq!(fx.due(), [()], "a judgement of the member is due");
 }
 
@@ -2590,7 +2590,7 @@ fn shown_rows(w: &crate::harness::World, rid: osis_sync::types::RecordId, s: &Sy
 }
 
 fn ended_departed(w: &crate::harness::World, rid: osis_sync::types::RecordId, s: &SyncId) -> bool {
-    w.node(1).node.opens().member_at(osis_sync::store::Source::Record(rid), s).is_some_and(|m| m.departed && m.until.is_some())
+    w.node(1).node.opens().member_at(osis_sync::store::Source::Record(rid), s).is_some_and(|m| m.departed.is_some() && m.until.is_some())
 }
 
 // The same for a peer judged departed (§6: it is ended, served its role entries up to its

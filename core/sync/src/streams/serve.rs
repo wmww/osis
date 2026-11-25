@@ -161,11 +161,25 @@ impl Page {
     }
 }
 
-/// Whether the peer on `conn` is shown S's role entries alone (spec/sync-ids.md §6 Role entries):
-/// it holds S's thing for keys, as it declared opening S (spec/sync-opens.md §4 Source), or its
-/// member is ended for its departure (§6).
+/// Whether the peer on `conn` is shown part of S alone (`shown`): it holds S's thing for keys, as
+/// it declared opening S (spec/sync-opens.md §4 Source), or its member is ended for its departure
+/// (§6).
 pub(super) fn for_keys(ctx: &Ctx, conn: ConnId, s: &SyncId) -> bool {
-    ctx.shared.members(conn).get(s).is_some_and(|m| m.class == SourceClass::Keys || m.departed)
+    ctx.shared.members(conn).get(s).is_some_and(|m| m.class == SourceClass::Keys || m.departed.is_some())
+}
+
+/// Whether entry `e` of S is shown the peer on `conn`: to one held for keys, a role entry alone
+/// (`role_entry`); to one ended for its departure, the notices of its removals alone
+/// (spec/sync-opens.md §6, `Engine::notice_tells`).
+fn shown(ctx: &mut Ctx, conn: ConnId, s: &SyncId, e: &Entry) -> bool {
+    match ctx.shared.members(conn).get(s) {
+        Some(m) if m.departed.is_some() => {
+            let proven = m.departed.clone().unwrap_or_default();
+            ctx.ground.notice_tells(s, &e.blob, &proven)
+        }
+        Some(m) if m.class == SourceClass::Keys => role_entry(ctx, s, e),
+        _ => true,
+    }
 }
 
 /// Whether entry `e` of S is a role entry: by its stamp or deposit signature where this node
@@ -382,7 +396,7 @@ impl Streams {
         Ok(match *e {
             NodeEvent::Added(s, b) => {
                 let Some(entry) = ctx.store.entry(&s, &b)? else { return Ok(None) };
-                if for_keys(ctx, conn, &s) && !role_entry(ctx, &s, &entry) {
+                if !shown(ctx, conn, &s, &entry) {
                     return Ok(None);
                 }
                 let blob = if inline > 0 && !page.inlined.contains(&b) { ctx.store.bytes(&b)?.filter(|v| v.len() as u64 <= inline) } else { None };
@@ -709,7 +723,7 @@ impl Streams {
 
     fn fetchable(&self, ctx: &mut Ctx, conn: ConnId, s: &SyncId, b: &BlobId, until: Option<Position>) -> Result<Option<Body>> {
         let Some(e) = ctx.store.entry(s, b)? else { return Ok(None) };
-        if for_keys(ctx, conn, s) && !role_entry(ctx, s, &e) {
+        if !shown(ctx, conn, s, &e) {
             return Ok(None);
         }
         if let Some(u) = until

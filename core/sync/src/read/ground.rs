@@ -274,14 +274,14 @@ pub trait Ground {
         let _ = (s, tids);
         Ok(())
     }
-    /// The sync copies S carries (spec/permissions.md §4 Key part, Logging certificates) set
-    /// against the sync copy blobs the own store holds under S (`SyncCopiesDue`).
+    /// The sync copies and notices S carries (spec/permissions.md §4 Key part, Logging
+    /// certificates, Notices) set against those the own store holds under S (`SyncCopiesDue`).
     fn sync_copies_due(&mut self, s: &SyncId) -> Result<SyncCopiesDue> {
         let _ = s;
         Ok(SyncCopiesDue::default())
     }
-    /// Logs the sync copy of content `key` S carries under S in the own store (a fresh
-    /// encryption).
+    /// Logs the sync copy or notice of content `key` S carries under S in the own store (a
+    /// fresh encryption).
     fn log_sync_copy(&mut self, s: &SyncId, key: &[u8; 32]) -> Result<()> {
         let _ = (s, key);
         Ok(())
@@ -443,7 +443,8 @@ pub enum PieceAt {
     Tombstoned,
 }
 
-/// `Ground::sync_copies_due` under one S: per sync copy S carries (by content), its log here.
+/// `Ground::sync_copies_due` under one S: per sync copy or notice S carries (by content), its
+/// log here.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SyncCopiesDue {
     /// Carried, with no entry of its content in the own store: each logged.

@@ -66,7 +66,7 @@ Other findings:
 - For (c): the Interim on `apply::header_wait` (apply/mod.rs ~913) says it waits for every listed thing's record, which is what the spec wants; `thing_wait` already does so per part. Recheck what issues/stated-path-certificates.md still owes.
 
 **(b) Sync** (20)
-- Removal-told metadata (count, size, timing of later sealed role entries) shown to a departed node in two timing cases (newest superseded epoch past the removal; no `until` before the rotation is logged): applies; stated in spec/sync-hostile.md §2 (done, spar-review-tidy) and notes/sync-opens.md (Departed peers). `opens/holds.rs` `departure_until`, `opens/mod.rs` `close_if_reached`; spec/sync-opens.md §6.
+- Removal-told metadata: none shown; a departed node is served its notices alone (notes/sync-opens.md Departed peers; spec/sync-opens.md §6).
 - `sync.0` is a role part; a floored holder sees steps below its floor; any holder encrypts a `sync.0` part under a roles secret it holds: applies. spec/sync-ids.md §4-5.
 - Held for keys walks up from every thing the closure holds (unread ones too), every hop with key access, only while a read secret is held: applies; the multi-hop case has no test (issues/roles-apart-from-syncing.md). `sync/units.rs`, `retention/needed.rs`.
 - A holder held for keys is a source class, not a `Pull` selector: applies. notes/sync.md, Held for keys; `streams/pull.rs`, `relay.rs`.
@@ -88,7 +88,7 @@ Other findings:
 - Next/Untested in notes/sync-rewrite-state.md: own boxes only for a holder held for keys, acting only after a complete pass, a paged role commit as evidence, a sealed copy stamped ahead of the receiver's clock, a sealed fire opening pending for drift: open.
 
 **Findings (b)** (spar-review-b). Reviewed main through 4ff1c3a9f (spar-lapsed-rotation landed: its `Conn::served` guard applies only to walk Hits on superseded or lapsed secrets, so a current read secret is never refused by it; spar-kept-unread not landed during the review). Rulings, in order:
-1. Removal-told metadata: agree (stated limit, sync-hostile §2).
+1. Removal-told metadata: closed (notices alone).
 2. `sync.0` a role part: agree.
 3. Held for keys from every held thing: agree; multi-hop still untested (issues/roles-apart-from-syncing.md).
 4. Held for keys a source class: agree (the class reaches every rule reading a source before any Pull).

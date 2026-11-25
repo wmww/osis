@@ -668,8 +668,11 @@ impl Ground for Live<'_, '_> {
         Ok(out)
     }
     fn sync_copies_due(&mut self, s: &SyncId) -> Result<SyncCopiesDue> {
-        let carried = self.cx.engine.sync_copies_carried(s)?;
-        let rows = self.cx.engine.sync_copy_rows(s);
+        // the sync copies and the notices S carries (spec/permissions.md §4 Notices), alike
+        let mut carried: BTreeSet<[u8; 32]> = self.cx.engine.sync_copies_carried(s)?.keys().copied().collect();
+        carried.extend(self.cx.engine.notices_carried(s)?.into_keys());
+        let mut rows = self.cx.engine.sync_copy_rows(s);
+        rows.extend(self.cx.engine.notice_rows(s).into_iter().map(|(b, n)| (b, (n.content(), false))));
         let mut out = SyncCopiesDue::default();
         // per content, its log: the lowest blob ID held in the own store (rows in blob order);
         // a sealed copy is never one (spec/sync-inbox.md §2: H's writers log what it carries).
@@ -683,7 +686,7 @@ impl Ground for Live<'_, '_> {
                 continue;
             }
             let Some(e) = self.cx.store.entry(s, b)? else { continue };
-            if !carried.contains_key(k) {
+            if !carried.contains(k) {
                 // one carried no more (counted no more, or no more in the key part) leaves the
                 // own log; a peer's stays as its stamp or budget keeps it
                 if e.own {
@@ -705,12 +708,16 @@ impl Ground for Live<'_, '_> {
         // not yet logged in its place
         out.logged_deposits = sealed_rows.into_iter().filter(|(_, k)| logs.contains_key(k)).map(|(b, _)| b).collect();
         if self.cx.engine.cert_wrap(s)? {
-            out.missing = carried.keys().filter(|k| !logs.contains_key(*k)).copied().collect();
+            out.missing = carried.iter().filter(|k| !logs.contains_key(*k)).copied().collect();
         }
         Ok(out)
     }
     fn log_sync_copy(&mut self, s: &SyncId, key: &[u8; 32]) -> Result<()> {
-        let Some((blob, bytes, wrap)) = self.cx.engine.seal_sync_copy(s, key, self.cx.rng)? else { return Ok(()) };
+        let sealed = match self.cx.engine.seal_sync_copy(s, key, self.cx.rng)? {
+            Some(x) => Some(x),
+            None => self.cx.engine.seal_notice(s, key, self.cx.rng)?,
+        };
+        let Some((blob, bytes, wrap)) = sealed else { return Ok(()) };
         let e = own_entry(self.cx, s, blob, wrap, Class::Durable, true)?;
         self.cx.store.log(s, e, Some(bytes), None)?;
         Ok(())
