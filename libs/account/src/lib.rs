@@ -206,24 +206,37 @@ impl Account {
     /// entries on the account and its profile dropped. It returns what is easy to forget: the
     /// account's links still working. The removed node keeps their keys, so whoever holds it can
     /// read and join through each until `revoke_link`, and ending them is the caller's choice.
-    /// None when `node` was not one of the account's. `Permission` unless this node is an admin
+    /// None when `node` was not one of the account's (its entries dropped where they stand). `Permission` unless this node is an admin
     /// node of the account; `Unsupported` through a connection.
     pub fn remove_node(&self, db: &Osis, node: Tid, o: SetRoleOpts) -> Result<Vec<LinkInfo>> {
-        if !db.grants(self.thing)?.contains_key(&node) {
+        let a = self.thing;
+        // its entries go whenever they stand, so a removal stopped halfway ends by calling again
+        let entries = || -> Result<()> {
+            let mut w = db.write();
+            for t in std::iter::once(a).chain(self.realm().profile(db)?) {
+                if db.at(t, DIAL).get()?.is_some_and(|d| d.contains_key(&Weak(node))) {
+                    w.at(t, DIAL).path(osis::p![Weak(node)]).remove()?;
+                }
+            }
+            if db.at(a, CAPS).get()?.is_some_and(|c| c.contains_key(&Weak(node))) {
+                w.at(a, CAPS).path(osis::p![Weak(node)]).remove()?;
+            }
+            w.commit()?;
+            Ok(())
+        };
+        if !db.grants(a)?.contains_key(&node) {
+            entries()?;
             return Ok(Vec::new());
         }
-        let a = self.thing;
-        db.set_role(a, node, None, SetRoleOpts { retain_copy: Some(o.retain_copy.unwrap_or(false)), ..o })?;
-        let mut w = db.write();
-        for t in std::iter::once(a).chain(self.realm().profile(db)?) {
-            if db.at(t, DIAL).get()?.is_some_and(|d| d.contains_key(&Weak(node))) {
-                w.at(t, DIAL).path(osis::p![Weak(node)]).remove()?;
-            }
+        let role = || db.set_role(a, node, None, SetRoleOpts { retain_copy: Some(o.retain_copy.unwrap_or(false)), ..o });
+        // a node removing itself drops its entries first, while it may still write A
+        if node == db.node() {
+            entries()?;
+            role()?;
+        } else {
+            role()?;
+            entries()?;
         }
-        if db.at(a, CAPS).get()?.is_some_and(|c| c.contains_key(&Weak(node))) {
-            w.at(a, CAPS).path(osis::p![Weak(node)]).remove()?;
-        }
-        w.commit()?;
         db.links()
     }
 

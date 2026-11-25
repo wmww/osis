@@ -144,3 +144,19 @@ fn a_realm_made_in_the_account() {
     assert_eq!(db.role_on(r).unwrap(), Some(Role::Admin), "through the account");
     assert!(db.at(r, osis::core::RETENTION).get().unwrap().unwrap().retain_copies);
 }
+
+// spec/permissions.md §8 Removing: a node removing itself drops its own dial entries while it may
+// still write the account, then its role (retaining a copy, read here).
+#[test]
+fn a_node_removing_itself_drops_its_entries_spec_permissions_8() {
+    let c = clock();
+    let net = ManualNet::new(c.clone());
+    let first = person(&net, 1, &c);
+    let (db, a, _) = &first;
+    let b = pair(&net, &first, 2, &c);
+    drive(&net, b.wait_synced(SyncScope::All)).unwrap();
+    assert_eq!(dials(&b, a.thing()).len(), 2, "each node's entry");
+    a.remove_node(&b, b.node(), SetRoleOpts { retain_copy: Some(true), ..SetRoleOpts::default() }).unwrap();
+    assert!(!b.grants(a.thing()).unwrap().contains_key(&b.node()), "its role gone");
+    assert_eq!(dials(&b, a.thing()), [Weak(db.node())], "its entry gone");
+}
