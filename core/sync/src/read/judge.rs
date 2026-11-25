@@ -228,10 +228,12 @@ fn outside(g: &mut impl Ground, mine: &Mine, s: &SyncId, c: &BodyId) -> (Verdict
     }
 }
 
-/// Held blob `b` of a commit whose body at S is a certificate (`meta`): a copy holding deltas
-/// other than exactly S's cut (more or fewer parts, spec/permissions.md §4 Copies) is outside S's
-/// required set by the deltas it holds (spec/sync-judgement.md §2), whatever the body: an
-/// account's rotation past its current `keys.0` is named for its header alone.
+/// Held blob `b` of a commit whose body at S is a certificate (`meta`): a copy holding deltas,
+/// none of them in S's cut (spec/permissions.md §4 Copies), is outside S's required set by the
+/// deltas it holds (spec/sync-judgement.md §2), whatever the body: an account's rotation past
+/// its current `keys.0` is named for its header alone. Interim (issues/account-evidence-per-unit.md,
+/// Copies holding more than S's cut): a copy sharing a part with the cut stays, though it is no
+/// log of the body (`body_held_by`).
 fn unnamed_copy(g: &mut impl Ground, meta: &BodyMeta, b: &BlobId) -> Result<bool> {
     if !meta.certificate {
         return Ok(false);
@@ -350,7 +352,7 @@ pub(crate) fn body(g: &mut impl Ground, mine: &Mine, s: &SyncId, c: &BodyId) -> 
     // a lower ID). The body counts as unlogged until the rest is logged as the strip's rewrite
     let mut stale: Vec<BlobId> = own.iter().map(|e| e.blob).filter(|b| g.gone(b).is_some()).collect();
     let mut held: BTreeSet<BlobId> = own.iter().map(|e| e.blob).filter(|b| !stale.contains(b)).collect();
-    // a certificate copy holding other than S's cut of it leaves as outside, once final
+    // a certificate copy holding none of S's cut of it leaves as outside, once final
     let (unnamed, unnamed_gone, unnamed_wait) = unnamed_copies(g, mine, s, c, &held)?;
     let unnamed: Vec<BlobId> = if unnamed_gone { unnamed } else { Vec::new() };
     held.retain(|b| !unnamed.contains(b));
@@ -758,7 +760,7 @@ fn deletes(g: &mut impl Ground, mine: &Mine, t: &mut Toward, src: &SrcView, full
         let copy = mine.meta(s, c).is_some_and(|m| m.copy);
         let judged = *verdict != Verdict::Unjudged;
         let mut out = if judged { duplicates(g, seen, copy)? } else { Vec::new() };
-        // a copy holding other than S's cut of it (§2), once final, and only beside another
+        // a copy holding none of S's cut of it (§2), once final, and only beside another
         // entry of it there: the source never holds neither the old copy nor its replacement
         let (unnamed, gone, _) = if judged { unnamed_copies(g, mine, s, c, &seen.present)? } else { (Vec::new(), false, None) };
         let mut present = seen.present.clone();

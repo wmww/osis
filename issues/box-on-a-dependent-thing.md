@@ -1,0 +1,12 @@
+# A writer's box makes a dependent thing independent at one reader
+> Summary: `secrets.0` validity never asks whether its thing has secrets of its own, so a writer of a dependent thing Y can box chosen readers there with no keyset; each counts Y independent by the box (spec/sync-set.md §2) and, through `counts_independent` in `secret_actor` and `thing_sync_now`, takes Y's secrets and sync ID from it, while every other node keeps Y dependent.
+> Priority: normal
+> Tags: security, engine, permissions
+
+spec/sync-set.md §2 (Counts as independent) and spec/permissions.md §4 Key part count a thing independent where the node holds a secret a valid box of its `secrets.0` gave, "only a thing with role secrets of its own has boxes". Nothing enforces that: `validity::secrets_role` needs write and the role each box key names, so W, a writer of P, may write a `secrets.0` part on Y (minted with admin P, dependent) boxing reader R, with no `keys.0` beside it.
+
+At R, Y then counts independent (`Core::counts_independent`) and its secret actor is Y itself (`secret_actor`), so R would read and write Y under W's secret and sync Y by Y's own sync IDs (`thing_sync_now`), while every other node derives Y from P. Nothing at the others looks wrong (no keyset of Y), so no stranded report or re-seal repairs it: W splits R off Y for good, R's writes to Y readable by W alone. With `secret_actor` reading the role commits alone (`ix.independent`), R would keep Y's secrets derived until a keyset arrived; the walk counts Y independent by the box either way.
+
+Who can do it: any writer of a dependent thing's independent (write reaches the dependent by the record edge). Not a stranger: the box must be valid.
+
+The grantee case the rule exists for (a grant's box arriving before the rotation that made the epoch, spec/permissions.md §4: "an edge piece holds no rotation that made a granted epoch current") holds the box as a certificate copy of an edge piece, never as a body of a unit that opens Y as dependent. Candidate rule: a box counts toward independence only where the node does not open the thing as dependent (as the sync-secret clause already says), or a `secrets.0` part on a thing the writer's node counts dependent is invalid (a writer cannot know; needs a model). Not confirmed by an engine test yet: one needs a hand-sealed box on a dependent thing (a `secrets.0` mutation under `skip_writer_rules`).

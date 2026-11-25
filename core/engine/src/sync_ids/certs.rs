@@ -157,9 +157,9 @@ impl Engine {
         self.shared_certificates(ev, g, &mut out);
         // the public key records of `g`'s holders (spec/permissions.md §4): every admin can seal
         // to and list them; a link key's redeemer, holding its seed alone, learns its record and
-        // keysets from `g`'s sync ID
-        // its mint admin holds admin by its record edge, on no roster
-        let holders: BTreeSet<Tid> = self.core.roster_of(g).into_keys().chain(self.core.mint_admin(g)).collect();
+        // keysets from `g`'s sync ID; its mint admin among them by its record edge while that
+        // stands: a removed holder's keys go nowhere
+        let holders: BTreeSet<Tid> = self.core.roster_of(g).into_keys().collect();
         for h in &holders {
             self.public_key_record_into(ev, h, &mut out);
         }
@@ -210,9 +210,7 @@ impl Engine {
     /// holds its role on `x` through.
     fn stub_holders(&self, g: &Tid, x: &Tid) -> BTreeSet<Tid> {
         let core = &self.core;
-        // its mint admin holds by its record edge, on no roster
-        let admin = core.mint_admin(x);
-        core.roster_of(x).into_keys().chain(admin).filter(|h| h == g || core.keyed_role_now(g, h) >= Some(osis_base::Role::Sync)).collect()
+        core.roster_of(x).into_keys().filter(|h| h == g || core.keyed_role_now(g, h) >= Some(osis_base::Role::Sync)).collect()
     }
 
     /// What `g`'s sync IDs carry beside bodies (`sync_certificates`), whether or not this node
@@ -580,7 +578,7 @@ mod tests {
     #![allow(clippy::unwrap_used)]
     use crate::Mutation;
     use crate::local_peer::LocalPeer;
-    use osis_base::{Ak, Role, Value, WallMs};
+    use osis_base::{Ak, Role, Tid, Value, WallMs};
     use osis_schema::core_types as ct;
 
     // spec/permissions.md §4 (current `keys.0` commits): certificates and cards are the current valid writes, §5.2: a
@@ -655,5 +653,96 @@ mod tests {
         lp.deliver(3, &pk).unwrap();
         // held and valid (cut to `keys.0` alone, invalid there: the copy is not even kept)
         assert!(lp.peers[3].engine.judged_valid(&g, &[ai]), "the records count at a reader outside A");
+    }
+
+    /// The keyset of `m` that `t`'s box to `m` at read epoch `e` names, at peer `i`.
+    fn boxed_at(lp: &mut LocalPeer, i: usize, t: Tid, e: osis_crypto::Epoch, m: Tid) -> Option<osis_crypto::Epoch> {
+        let s = lp.peers[i].engine.get_typed(&t, &ct::SECRETS).unwrap()?;
+        s.boxes.iter().find(|(k, _)| k.holder == osis_base::Weak(m) && k.role == Role::Read && osis_keys::aspects::from_schema(&k.epoch).is_ok_and(|x| x == e)).and_then(|(_, b)| osis_keys::box_keysets(b).into_iter().next())
+    }
+
+    /// Peer 0 mints A, grants peer 1 admin on it; peer 1 rotates A to keyset k; peer 0 mints T
+    /// with admin A and makes it independent. Returns the peers, A, T, k and the rotation.
+    fn under_a_rotated_by_another() -> (LocalPeer, Tid, Tid, osis_crypto::Epoch, osis_base::CommitId) {
+        use crate::rotation::tests::{edge, independent_thing, synced};
+        let mut lp = synced(3);
+        let p1 = lp.peers[1].engine.me();
+        let a = independent_thing(&mut lp, 0);
+        lp.peers[0].engine.grant(&a, &p1, &edge(Role::Admin)).unwrap();
+        lp.sync(0, 1).unwrap();
+        let rot = lp.peers[1].engine.rotate_leaving_out(&a, &Role::ALL, &[]).unwrap().unwrap();
+        let k = lp.peers[1].engine.epochs(&a).unwrap().read.newest_held().unwrap().0;
+        lp.sync(1, 0).unwrap();
+        // T under A: its record edge makes A its mint admin
+        let mut m = Mutation::new();
+        let t = lp.peers[0].engine.new_thing(&mut m, a);
+        lp.peers[0].commit(m).unwrap();
+        lp.takes_grants(0, t);
+        lp.peers[0].engine.make_independent(&t).unwrap();
+        (lp, a, t, k, rot)
+    }
+
+    /// Whether `t`'s certificates at peer `i` carry `rot`'s `keys.0` part on `a`.
+    fn carries_keys_of(lp: &mut LocalPeer, i: usize, t: &Tid, a: &Tid, rot: &osis_base::CommitId) -> bool {
+        let e = &mut lp.peers[i].engine;
+        let certs = e.certificates(t).unwrap();
+        let ai = e.header(rot).unwrap().aspect_index(a, "keys.0").unwrap();
+        certs.commits.get(rot).is_some_and(|ps| ps.contains(&ai))
+    }
+
+    // held-model copy_cut `hand(true)` (spec/permissions.md §4 Copies: keys and the evidence of
+    // their parts): peer 1, granted admin on A by peer 0, rotates A to keyset k. T, minted with
+    // admin A, made independent, is granted write to peer 2, which reads nothing of A and holds
+    // only T's bodies and T's certificates (each copy cut). Peer 2 rotates T and boxes A at k, as
+    // a node holding every copy whole does: A's keys copy is judged by peer 1's grant, its
+    // evidence. Fails with no evidence closed over the keys copies (the rotation unjudgeable: A
+    // boxed at the older keyset).
+    #[test]
+    fn a_cut_holder_keyset_is_sealed_to_as_whole_spec_permissions_4() {
+        use crate::rotation::tests::edge;
+        use std::collections::BTreeSet;
+        let (mut lp, a, t, k, _) = under_a_rotated_by_another();
+        let p2 = lp.peers[2].engine.me();
+        lp.hold_at(2, t);
+        lp.peers[0].engine.grant(&t, &p2, &edge(Role::Write)).unwrap();
+        let e0 = lp.peers[0].engine.epochs(&t).unwrap().read.newest_held().unwrap().0;
+        assert_eq!(boxed_at(&mut lp, 0, t, e0, a), Some(k), "T's admin boxes A at k");
+        let on_t: Vec<_> = lp.peers[0].engine.commit_ids().into_iter().filter(|c| lp.peers[0].engine.header(c).is_some_and(|h| h.aspects.iter().any(|x| x.tid == t))).collect();
+        for c in on_t {
+            let pk = lp.peers[0].engine.package(&c).unwrap().unwrap();
+            lp.deliver(2, &pk).unwrap();
+        }
+        lp.send_certificates(0, 2, &t).unwrap();
+        // A's record, as the record blob under T carries it
+        let p0 = &mut lp.peers[0].engine;
+        let minting = p0.mintings_of(&a)[0].commit;
+        let created = p0.header(&minting).unwrap().aspect_index(&a, "created.0").unwrap();
+        let pk = p0.package_of_parts(&minting, &BTreeSet::from([created])).unwrap().unwrap();
+        lp.deliver(2, &pk).unwrap();
+        assert!(lp.peers[2].engine.get_typed(&a, &ct::SECRETS).unwrap().is_none(), "peer 2 holds no box of A");
+        assert!(lp.peers[2].engine.rotate_leaving_out(&t, &[Role::Read], &[]).unwrap().is_some(), "peer 2 rotates T");
+        let e2 = lp.peers[2].engine.epochs(&t).unwrap().read.newest_held().unwrap().0;
+        assert_ne!(e2, e0);
+        assert_eq!(boxed_at(&mut lp, 2, t, e2, a), Some(k), "peer 2 boxes A at k, as from whole copies");
+    }
+
+    // spec/permissions.md §4 (the public key record of a current holder; the mint admin holds by
+    // its record edge while it stands, §1): T, minted with admin A, carries A's keys while A
+    // holds, by its record edge alone and beside a grant; once peer 1 removes A's record edge,
+    // T's certificates carry none of A's keys. Fails with the mint admin's record carried
+    // whatever its edge.
+    #[test]
+    fn a_removed_mint_admins_keys_leave_the_certificates_spec_permissions_4() {
+        use crate::rotation::tests::edge;
+        let (mut lp, a, t, _, rot) = under_a_rotated_by_another();
+        assert!(carries_keys_of(&mut lp, 0, &t, &a, &rot), "A's keys under T, no edge write on T");
+        let p1 = lp.peers[1].engine.me();
+        lp.peers[0].engine.grant(&t, &p1, &edge(Role::Admin)).unwrap();
+        assert!(carries_keys_of(&mut lp, 0, &t, &a, &rot), "A's keys under T beside a grant");
+        lp.sync(0, 1).unwrap();
+        lp.peers[1].engine.demote(&t, &crate::flows::Demotion { holder: a, new: None, retain: None }).unwrap();
+        lp.sync(1, 0).unwrap();
+        assert!(!lp.peers[0].engine.core.current_holders(&t).iter().any(|(h, ..)| *h == a), "A removed from T");
+        assert!(!carries_keys_of(&mut lp, 0, &t, &a, &rot), "none of A's keys under T once removed");
     }
 }
