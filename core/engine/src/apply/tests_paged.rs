@@ -78,6 +78,8 @@ fn of(mut lp: LocalPeer, t: Tid, whole: bool) -> World {
     for p in &mut lp.peers {
         p.engine.core.whole_apply = whole;
     }
+    // a hand-built commit stamped `now` comes after the steps whose keys it lists (notes/delete-keys.md, Tests)
+    lp.advance(1);
     World { lp, t, log: Vec::new(), checked: BTreeMap::new() }
 }
 

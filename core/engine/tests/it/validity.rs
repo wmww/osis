@@ -284,6 +284,38 @@ fn a_body_listing_an_unplaced_key_is_not_judged_invalid_spec_commits_4() {
     assert!(!e.body_facts(&sd, &osis_engine::sync::BodyId::unit(id)).unwrap().invalid, "unjudgeable, not invalid");
 }
 
+/// Peer 0 of `setup` given `k` of Bob's writes listing made-up keys, each by an entry let go
+/// after: the commits peer 0 holds or keeps pending, more than before.
+fn kept_after_miskeyed(k: u64) -> usize {
+    let (mut lp, d, _, _) = setup();
+    let x = ak("x:other.0");
+    let first = put(&mut lp, 1, d, &x, &s("first"));
+    sync(&mut lp, 1, 0);
+    let h = lp.peers[1].engine.header(&first).unwrap();
+    let ts = osis_base::Ts::make(WallMs(h.ts.wall_ms().0 + 5), 0).unwrap();
+    let kept = |e: &mut osis_engine::Engine| e.commit_ids().len() + e.pending().len();
+    let before = kept(&mut lp.peers[0].engine);
+    for i in 0..k {
+        let forged = forge_reg_keyed(&mut lp, d, &x, h.aspects[0].hi + 2 * i, ts, "forged", false);
+        let id = osis_commit::CommitBlob::decode(&forged).unwrap().id();
+        assert_eq!(lp.peers[0].receive(&forged, Vec::new()).unwrap(), Ingested::Pending(id, osis_engine::Reason::Miskeyed(d)), "it pends");
+        lp.peers[0].engine.release_entry(&id).unwrap();
+    }
+    assert_eq!(lp.peers[0].engine.get(&d, &x).unwrap(), Some(s("first")));
+    kept(&mut lp.peers[0].engine) - before
+}
+
+// spec/commits.md §4 (Unjudgeable, Pending storage), spec/crypto.md §7 (Checked keys): a commit
+// whose every part lists a key no held step places pends, kept only while an entry carries it
+// (so within the bounds on unvouched input), never held as a body: a reader pushing n or 10n
+// such writes leaves nothing once their entries go.
+#[test]
+fn miskeyed_writes_pend_and_go_with_their_entries_spec_commits_4() {
+    for k in [3, 30] {
+        assert_eq!(kept_after_miskeyed(k), 0, "at {k}");
+    }
+}
+
 /// The ID of an applied ingest.
 fn applied(r: Ingested) -> osis_base::CommitId {
     match r {

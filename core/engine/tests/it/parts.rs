@@ -260,7 +260,8 @@ fn waiting_parts_boxes_are_read_in_either_order_spec_crypto_4() {
     let boxed = ct::Secrets { boxes: rot.secrets.boxes, history: rot.secrets.history.into_iter().collect() }.to_value();
     let secrets = osis_base::Ak::new("secrets.0").unwrap();
     let author = e.me();
-    let ts = osis_base::Ts::make(e.now(), 0).unwrap();
+    // after the steps whose keys it lists (notes/delete-keys.md, Tests)
+    let ts = osis_base::Ts::make(osis_base::WallMs(e.now().0 + 1), 0).unwrap();
     let view = osis_schema::core_schema().view(secrets.as_str()).unwrap();
     let mut w = Writer::new(ts, Source::commit(osis_base::CommitId([0; 32])), 1);
     let f = create(&mut w, &view, &boxed).unwrap();

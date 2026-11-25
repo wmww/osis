@@ -21,6 +21,9 @@ pub enum Wake {
     Enters(Tid),
     /// The role inputs held moving (an edge write, a record, a rotation): a reach or an epoch.
     Moved,
+    /// The steps this thing's `sync.0` records moving (`Core::steps_recorded`): a delete key a
+    /// part lists for a thing whose record chain holds it may be placed (`Reason::Miskeyed`).
+    Steps(Tid),
     /// The wall clock reaching this time (a `ts` ahead, `Reason::Drift`).
     At(u64),
     /// What is gone on this thing changing (a purge request, an expiry): what reaches a
@@ -36,6 +39,8 @@ pub(crate) fn wakes_of(core: &Core, id: &CommitId, r: &Reason, h: Option<&osis_c
         Reason::Parked | Reason::Unexamined | Reason::Fault => vec![Wake::Open],
         Reason::MissingChain(_) | Reason::UnknownCreated(_) => Vec::new(),
         Reason::Outside(t) => vec![Wake::Enters(*t)],
+        // with the things its parts' keys wait on (`keyed_of`), below
+        Reason::Miskeyed(_) => Vec::new(),
         Reason::Drift => match h {
             Some(h) => vec![Wake::At(h.ts.wall_ms().0.saturating_sub(osis_base::format::MAX_DRIFT_MS))],
             None => vec![Wake::Moved],
@@ -57,6 +62,14 @@ pub(crate) fn wakes_of(core: &Core, id: &CommitId, r: &Reason, h: Option<&osis_c
     }
     // every thing a content part of it waits to see enter the node closure
     out.extend(core.waits.entries_of(id).iter().map(|t| Wake::Enters(*t)));
+    // every base up the record chain of a thing its keys wait on: its steps moving may place them
+    let keyed = match r {
+        Reason::Miskeyed(t) => Some(*t),
+        _ => None,
+    };
+    for t in keyed.iter().chain(core.waits.keyed_of(id)) {
+        out.extend(core.record_chain(t).filter_map(|s| s.thing()).map(Wake::Steps));
+    }
     if let Some(h) = h {
         // an expiry already passed was run (`expire_stored`): no wake, or the clock is due for good
         if let Some(t) = h.expires.filter(|t| *t > core.now().0) {
@@ -289,6 +302,9 @@ pub(crate) struct Waits {
     /// Pending commits, and applied ones with parts waiting, by the things outside the node
     /// closure their content parts wait to see enter (`Reason::Outside`), noted as `records_of`.
     entries_of: BTreeMap<CommitId, Vec<Tid>>,
+    /// Pending commits, and applied ones with parts waiting, by the things for which their parts
+    /// list a key no held step places (`Reason::Miskeyed`), noted as `records_of`.
+    keyed_of: BTreeMap<CommitId, Vec<Tid>>,
     /// Records from record blobs nothing awaits yet (`Loose`).
     pub loose: Loose,
     /// Stamps a carrier of loose records whose every record was learned (`Engine::loose_feed`).
@@ -303,6 +319,8 @@ pub(crate) struct Waits {
     pub open_due: bool,
     /// Things whose gone lists or purge requests moved since the last `wake`: `Wake::Thing`.
     pub lists_moved: BTreeSet<Tid>,
+    /// Things whose placed steps moved since the last `wake`: `Wake::Steps`.
+    pub steps_moved: BTreeSet<Tid>,
     /// Tests: the next `wake` examines every pending commit, as a full scan (`Engine::lost_wakes`).
     pub every_due: bool,
     /// Actors whose applied boxes gave secrets the node's roles did not give then
@@ -337,14 +355,16 @@ impl Waits {
         self.unawaits(&id);
         let mut records = BTreeSet::new();
         let mut entries = BTreeSet::new();
+        let mut keyed = BTreeSet::new();
         for r in reasons {
             match r {
                 Reason::MissingChain(t) | Reason::UnknownCreated(t) => drop(records.insert(*t)),
                 Reason::Outside(t) => drop(entries.insert(*t)),
+                Reason::Miskeyed(t) => drop(keyed.insert(*t)),
                 _ => {}
             }
         }
-        if records.is_empty() && entries.is_empty() {
+        if records.is_empty() && entries.is_empty() && keyed.is_empty() {
             return;
         }
         self.make_room(&id);
@@ -358,14 +378,17 @@ impl Waits {
         if !entries.is_empty() {
             self.entries_of.insert(id, entries.into_iter().collect());
         }
+        if !keyed.is_empty() {
+            self.keyed_of.insert(id, keyed.into_iter().collect());
+        }
     }
 
     /// Remembered commits stay under `MAX_REMEMBERED`, the headers of commits given directly (a peer,
     /// an inbox chain) having no entry to go with: past it the smallest ID is forgotten (it waits on no
     /// wake; a restart forgets them all alike).
     fn make_room(&mut self, id: &CommitId) {
-        while !self.records_of.contains_key(id) && !self.entries_of.contains_key(id) && self.records_of.len().max(self.entries_of.len()) >= MAX_REMEMBERED {
-            let Some(first) = self.records_of.keys().chain(self.entries_of.keys()).min().copied() else { return };
+        while !self.records_of.contains_key(id) && !self.entries_of.contains_key(id) && !self.keyed_of.contains_key(id) && self.records_of.len().max(self.entries_of.len()).max(self.keyed_of.len()) >= MAX_REMEMBERED {
+            let Some(first) = self.records_of.keys().chain(self.entries_of.keys()).chain(self.keyed_of.keys()).min().copied() else { return };
             self.unawaits(&first);
         }
     }
@@ -373,6 +396,7 @@ impl Waits {
     /// `id` applied, or its last entry left.
     pub fn unawaits(&mut self, id: &CommitId) {
         self.entries_of.remove(id);
+        self.keyed_of.remove(id);
         for t in self.records_of.remove(id).into_iter().flatten() {
             if let Some(s) = self.on_record.get_mut(&t) {
                 s.remove(id);
@@ -391,6 +415,11 @@ impl Waits {
     /// The things whose entry into the node closure the parts of `id` await (`parts_await`).
     pub fn entries_of(&self, id: &CommitId) -> &[Tid] {
         self.entries_of.get(id).map_or(&[], |v| v.as_slice())
+    }
+
+    /// The things for which the parts of `id` list a key no held step places (`parts_await`).
+    pub fn keyed_of(&self, id: &CommitId) -> &[Tid] {
+        self.keyed_of.get(id).map_or(&[], |v| v.as_slice())
     }
 
 
@@ -462,6 +491,7 @@ pub(crate) fn wake(core: &mut Core) -> BTreeSet<CommitId> {
         keys.push(Wake::Open);
     }
     keys.extend(std::mem::take(&mut core.waits.lists_moved).into_iter().map(Wake::Thing));
+    keys.extend(std::mem::take(&mut core.waits.steps_moved).into_iter().map(Wake::Steps));
     let now = core.now().0;
     keys.extend(pend_on.range(Wake::At(0)..=Wake::At(now)).map(|(w, _)| *w));
     if std::mem::take(&mut core.waits.every_due) {

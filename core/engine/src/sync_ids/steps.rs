@@ -144,6 +144,8 @@ impl Core {
             Some(r) => self.ix.steps.insert(*t, Arc::new(r)),
             None => self.ix.steps.remove(t),
         };
+        // what pends on a key these steps may place is examined again (`Wake::Steps`)
+        self.waits.steps_moved.insert(*t);
         let again: BTreeSet<CommitId> = match grew {
             // the usual move (a step issued): only a commit held as wrong may turn, O(those)
             true => self.ix.miskeyed.iter().filter(|(_, x)| self.record_chain(x).any(|s| s.thing() == Some(*t))).map(|(c, _)| *c).chain(self.mintings(t).map(|(c, _)| c)).collect(),
@@ -437,8 +439,8 @@ mod tests {
     }
 
     // spec/crypto.md §7 (Checked keys), spec/commits.md §4 (Unjudgeable): a write listing a step
-    // a reader does not hold applies nowhere there, and applies once the `sync.0` write recording
-    // the step arrives after it. Alice rotates g's admin and issues the step registering it, then
+    // a reader does not hold pends there, and applies once the `sync.0` write recording the step
+    // arrives after it (`Wake::Steps`). Alice rotates g's admin and issues the step registering it, then
     // writes under it; bob's node gets the rotation, her write, and only then the step.
     #[test]
     fn a_write_applies_once_the_step_it_lists_arrives_after_it_spec_crypto_7() {
@@ -461,12 +463,12 @@ mod tests {
         }
         let e = &mut lp.peers[1].engine;
         assert!(!e.core.ix.steps.get(&g).unwrap().bears(DELETE_ADMIN, &listed.delete), "bob holds no step bearing the key");
-        assert!(e.core.miskeyed(&c, &g), "unjudgeable while the step is not here");
+        assert!(e.pends(&c) && !e.holds_commit(&c), "unjudgeable while the step is not here: it pends");
         assert_ne!(e.get(&g, &x).unwrap(), Some(osis_base::Value::Int(1)));
         let pk = lp.peers[0].engine.package(&step).unwrap().unwrap();
         lp.deliver(1, &pk).unwrap();
         let e = &mut lp.peers[1].engine;
-        assert!(!e.core.miskeyed(&c, &g), "right once the step is recorded");
+        assert!(e.holds_commit(&c) && !e.core.miskeyed(&c, &g), "right once the step is recorded");
         assert_eq!(e.get(&g, &x).unwrap(), Some(osis_base::Value::Int(1)));
     }
 }

@@ -68,6 +68,9 @@ pub enum Reason {
     /// Unjudgeable: a content part on a thing the node does not hold whole (outside the node
     /// closure, spec/commits.md §4 Outside the node closure), until it enters.
     Outside(Tid),
+    /// Unjudgeable: its commit lists for this thing a delete key no held step up its record
+    /// chain places (spec/crypto.md §7 Checked keys), until the steps move.
+    Miskeyed(Tid),
     /// `ts` more than `MAX_DRIFT` ahead of the wall clock.
     Drift,
     /// A page of a paged delta or a blob of a linked header list has not arrived.
@@ -639,6 +642,12 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
     // epoch or a `ts` ahead names another wait
     let mut unjudged: BTreeMap<usize, Reason> = BTreeMap::new();
     let hostile = origin == Origin::Local && tx.core.skip_writer_rules;
+    // Invariant: a received part whose commit lists for its thing a key no held step places is
+    // held only as any unjudgeable part, under Pending storage and its bounds on unvouched input
+    // (spec/commits.md §4), never applied as a body, so made-up keys grow no store past those
+    // bounds. A node's own commit listing one applies its part invalid and is refused
+    // (`apply_local`)
+    let wrong = if origin == Origin::Local { BTreeSet::new() } else { tx.core.wrong_keys(&h) };
     for (ai, a) in h.aspects.iter().enumerate() {
         if skip.contains(&ai) || blob.part(ai).is_none() {
             continue;
@@ -654,6 +663,9 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
             // nothing but certificates applies on a thing outside the node closure: content waits
             // until it enters (a node's own commits write only what it holds, `check_written`)
             unjudged.insert(ai, Reason::Outside(a.tid));
+        } else if a.ak.as_str() != osis_commit::retention::CREATED && wrong.contains(&a.tid) {
+            // a minting's `created.0` needs no authority (spec/permissions.md §1)
+            unjudged.insert(ai, Reason::Miskeyed(a.tid));
         }
     }
     // the slots a held purge request emptied while they waited (`retention::strip_purged`; perhaps just
@@ -1492,6 +1504,7 @@ pub(crate) fn apply_local(tx: &mut Tx<'_>, blob: &CommitBlob, signed: osis_commi
             Reason::MissingChain(_) => "own commit not applicable: a record on its chain is missing",
             Reason::UnknownCreated(_) => "own commit not applicable: a thing's record is unknown",
             Reason::Outside(_) => "own commit not applicable: a thing outside the node closure",
+            Reason::Miskeyed(_) => "own commit not applicable: a delete key no step places",
             Reason::Drift => "own commit not applicable: ts drift",
             Reason::WaitBlobs => "own commit not applicable: blobs missing",
             Reason::Parked | Reason::Unexamined | Reason::Fault => "own commit not applicable: parked",

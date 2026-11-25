@@ -378,15 +378,18 @@ fn join_held<'a>(h: &'a Held, parked: &BTreeSet<CommitId>, ov: &Overlap, dots: &
         // for that none places
         let placed = StepKeys::of(&live, &applied, &out, recording);
         let miskeyed: BTreeSet<(CommitId, ThingId)> = live.iter().flat_map(|c| miskeyed(&world, &placed, c).into_iter().map(|t| (c.id, t))).collect();
-        // a part the node cannot judge (notes/expiry-creation-design.md §3 Unjudgeable): not held
+        // a part the node cannot judge (spec/commits.md §4 Unjudgeable): not held. Among them a
+        // part whose commit lists a key no held step places, judged again as steps arrive (a
+        // creation hashes to its thing and needs no key)
         let t: BTreeSet<PartRef> = parts()
-            .filter(|(c, i, p)| unknown(&world, &exists, c, p) || (matches!(p.body, Body::Held(_)) && unreached(&edges, c, *i, &world)))
+            .filter(|(c, i, p)| {
+                unknown(&world, &exists, c, p) || (matches!(p.body, Body::Held(_)) && unreached(&edges, c, *i, &world)) || (p.aspect != Aspect::CREATED && miskeyed.contains(&(c.id, p.thing)))
+            })
             .map(|(c, i, _)| (c.id, i))
             .collect();
-        // parked parts wait, and those whose commit lists a key no held step places (held, judged
-        // again as steps arrive; a creation hashes to its thing and needs no key); nothing else does
+        // parked parts wait; nothing else does
         let w: BTreeSet<PartRef> = parts()
-            .filter(|(c, i, p)| !t.contains(&(c.id, *i)) && (p.body == Body::Parked || (p.aspect != Aspect::CREATED && miskeyed.contains(&(c.id, p.thing)))))
+            .filter(|(c, i, p)| !t.contains(&(c.id, *i)) && p.body == Body::Parked)
             .map(|(c, i, _)| (c.id, i))
             .collect();
         let a: BTreeSet<CommitId> = live.iter().filter(|c| applies(c, &t, &world)).map(|c| c.id).collect();

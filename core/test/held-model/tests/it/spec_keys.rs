@@ -42,6 +42,8 @@ fn a_listed_key_is_right_once_a_held_step_places_it_spec_crypto_7() {
     let (v, r) = judged(vec![w.clone()], 21);
     assert_ne!(v, Some(true));
     assert_eq!(r, None, "no held step: unjudgeable, applies nowhere");
+    let o = evaluate(&held(5, vec![w.clone()]));
+    assert!(!o.applied.contains(&21) && o.revisit.contains(&21), "every part unjudgeable: the commit pends, not held");
     // control: the step recorded after the write places nothing for it
     let late = steps(20, MINT_ADMIN, 3, MINT_ADMIN, &[GENESIS]);
     assert_eq!(judged(vec![late, w.clone()], 21).1, None, "a step recorded after the write");

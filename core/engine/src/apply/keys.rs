@@ -814,7 +814,11 @@ pub(crate) fn sealed_key(c: &CommitId, a: &Tid) -> Vec<u8> {
 /// by an applied valid box (spec/crypto.md §4).
 pub(crate) fn read_pending_boxes(tx: &mut Tx<'_>, blob: &osis_commit::CommitBlob, id: &CommitId) -> Result<()> {
     for (a, s, from) in pending_boxes(tx, blob, id)? {
-        read_for_reading(tx, &a, &s, from);
+        // what boxes to `a` opens with it, as for an invalid box (`read_invalid`): the same
+        // secrets whatever the order the commits came in
+        if read_for_reading(tx, &a, &s, from) {
+            crate::flows::reopen_dependents(tx, a)?;
+        }
     }
     Ok(())
 }
