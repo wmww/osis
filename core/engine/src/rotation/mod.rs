@@ -709,7 +709,7 @@ fn rotate_above(tx: &mut Tx<'_>, who: Tid, mut rotated: Vec<Tid>, keep: Option<K
     let mut entered: BTreeSet<Tid> = rotated.iter().copied().collect();
     while let Some(x) = rotated.pop() {
         for y in above(tx.core, &x) {
-            if tx.core.is_independent(&y) && !may_rotate(tx.core, &who, &y).is_empty() && entered.insert(y) {
+            if tx.core.is_independent(&y) && tx.core.ix.closure.holds(&y) && !may_rotate(tx.core, &who, &y).is_empty() && entered.insert(y) {
                 rotated.extend(rotate_below(tx, who, y, keep, Due::Encrypt, done)?);
             }
         }
@@ -765,9 +765,11 @@ fn rotate_below(tx: &mut Tx<'_>, who: Tid, a: Tid, keep: Option<Keep<'_>>, mode:
 }
 
 /// The holder actors of `x` the downward cascade enters (`rotate_below`): keyed ones with secrets
-/// of their own that `who` may rotate, in the order the walk pops them.
+/// of their own that `who` may rotate, held here (a node writes only what it holds, spec/sync-set.md
+/// §2 Writing: one it holds secrets of and not the thing waits until it does), in the order the
+/// walk pops them.
 fn below(core: &Core, who: &Tid, x: &Tid) -> Vec<Tid> {
-    let ms: Vec<Tid> = core.key_holders(x).into_iter().map(|m| m.0).filter(|m| m != x && core.is_independent(m)).collect();
+    let ms: Vec<Tid> = core.key_holders(x).into_iter().map(|m| m.0).filter(|m| m != x && core.is_independent(m) && core.ix.closure.holds(m)).collect();
     let mut out: Vec<Tid> = ms.into_iter().filter(|m| members::keyed(core, x, m) && !may_rotate(core, who, m).is_empty()).collect();
     out.reverse();
     out
@@ -1301,7 +1303,9 @@ impl Engine {
     /// are held for its destruction alone and nothing is written on it (spec/commits.md §5,
     /// spec/sync-judgement.md §5); one whose record is not held yet is judged when it arrives.
     pub fn role_duty_due(&mut self, actor: &Tid) -> Result<bool> {
-        if !self.core.ix.secrets.contains_key(actor) || !self.core.exists(actor) {
+        // a node writes only what it holds (spec/sync-set.md §2 Writing): secrets of a thing it
+        // does not hold owe nothing until it does
+        if !self.core.ix.secrets.contains_key(actor) || !self.core.exists(actor) || !self.core.ix.closure.holds(actor) {
             return Ok(false);
         }
         self.core.roster_of(actor);
