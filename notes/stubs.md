@@ -18,7 +18,7 @@
 - **Staying current needs a source of the thing's role entries**: a node reaching none misses its key changes until it does.
 
 ## Against the built tree
-- The spec carries a stub only by rule 2's widening (spec/sync-set.md §2 Stub: a strong to a thing its unit holds sync or above on and does not open); a weak brings in nothing there yet. Built as certificate copies under the unit's sync ID (`Engine::stubs_of`, `sync_certificates`), uncut to the readers' boxes.
+- The spec carries a stub only by rule 2's widening (spec/sync-set.md §2 Stub: a strong to a thing its unit holds sync or above on and does not open); a weak brings in nothing there yet. Built as certificate copies under the unit's sync ID (`Engine::stubs_of`, `sync_certificates`), whole role-class parts: the spec's cut (spec/permissions.md §4 Copies: the `secrets.0` parts holding a box the unit's readers open) is not built (issues/account-evidence-per-unit.md).
 - Held for keys (spec/sync-set.md §2) is the stub of a holder on a chain: the same state, entered there only for holders. A held grant fire keeps what it carried while it is held, as a snapshot nothing corrects.
 - The key part under a holder's sync ID (spec/permissions.md §4 Key part) carries an edge piece for every thing the holder holds a role on that a node syncs: rule 2 keeps only those on chains to things the unit carries.
 - Rule 4 is built for strongs in durable aspects the setting governs, fires included (spec/data-model.md §8 Held history, `refs::kept`). Not built: a weak in held history holding its target's stub (no stubs yet; the spec says weaks in history count for nothing), and held bodies of ephemeral aspects (memory bodies, notes/engine-refs.md History holds).
@@ -27,8 +27,7 @@
 ## For the spec piece
 - An external signal enabled on a dependent thing works as on any, or makes it independent unseen: a difference an API caller can observe is a bug (issues/behaviour-depends-on-own-keys.md). Which of the two: a fire sealed to its independent's key and deposited under its independent's sync ID costs almost nothing; an independent inbox about 15 KB, mostly keys. Nothing is known to need independence; not checked against the code.
 - A grant fire carries the stub's data as one edge piece (the role commit's copy on the target with its evidence, `EdgePiece`, the sealed copy's payload too), never a bare box: X's own role entries open only under X's secrets, so the evidence is what judges the first box, and a stranger may fire (notes/sync-rewrite-state.md, For review).
-- Own boxes only (a node following a stub fetches the boxes it opens, not every holder's): not built, and a commit applies only with all its pages.
-- A box is trusted only with the evidence that judges its commit, so a stub in a unit is its boxes plus that evidence.
+- A box is trusted only with the evidence that judges its commit, so a stub in a unit is its cut (spec/permissions.md §4 Copies): the `secrets.0` parts boxing the unit's readers, the rest of the role entries they read, and their evidence. A part is the finest cut: a rotation's part carries every holder's box (issues/account-evidence-per-unit.md, A part is the finest cut).
 - Each stub is one more sync ID a node follows (issues/many-sync-ids-cost.md).
 - spec/requirements.md, for Tess once built: the stub as a concept beside the sync unit.
 - Modelled (held-model `closure::entry`): rule 2 for strongs, and its cut of the key part as first entry reads it (spec/sync-set.md §2). Not modelled: rule 4, a stub from a fire, weaks. Model first (notes/principles.md).

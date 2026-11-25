@@ -6,6 +6,7 @@
 //! un-merge, strip, death, covering). README.md: input format; AMBIGUITIES.md: the choices the spec left; ASSUMPTIONS.md: what is cut.
 pub mod closure;
 pub mod connlived;
+pub mod copy_cut;
 pub mod edits;
 pub mod evidence;
 pub mod external;

@@ -2,6 +2,7 @@
 mod util;
 mod spec_closure;
 mod spec_connlived;
+mod spec_copy_cut;
 mod spec_commits;
 mod spec_fetch;
 mod spec_freed;
