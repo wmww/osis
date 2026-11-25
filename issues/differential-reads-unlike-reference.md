@@ -1,5 +1,5 @@
 # Differential: a node reads a thing unlike the reference
-> Summary: Sync differential `histories_hold_their_closure_plain` seed 149236181493 fails on main: "node 1 reads thing 0 unlike the reference". Not yet shrunk or diagnosed.
+> Summary: Sync differential `histories_hold_their_closure_plain` seed 149236181493 fails on main: "node 1 reads thing 0 unlike the reference", or, on later main, "node 2, removed from its account, reads thing 0: Some(Str(\"v1\"))" (a removed node still reading). Not yet shrunk or diagnosed.
 > Priority: normal
 > Tags: sync, tests
 
