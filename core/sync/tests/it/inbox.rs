@@ -14,7 +14,7 @@ use osis_proto::{Code, Msg, OfferItem, SharedItem};
 use osis_store::{MemoryBackend, MemoryRoot};
 use osis_sync::Result;
 use osis_sync::inbox::{Judge, Net, Offers, Plan, Progress, Judged, Promotion, Target, adds_delta, plan};
-use osis_sync::opens::{Member, Moved};
+use osis_sync::opens::Member;
 use osis_sync::session::RequestId;
 use osis_sync::store::Source;
 use osis_sync::types::{ConnId, Credential, Entry, SourceClass};
@@ -199,19 +199,23 @@ impl T {
         self.settle();
     }
 
+    /// `c` takes kept record `r`, joins `s` as a store source and agrees.
+    fn reconnect(&mut self, c: ConnId, r: osis_sync::types::RecordId, s: SyncId) {
+        self.take(c, r);
+        self.join(c, s, SourceClass::Store);
+        self.agree(c);
+    }
+
     /// `c` ends, its record let go.
     fn close(&mut self, c: ConnId) {
         self.offers.closed(c);
         self.net.rec.remove(&c);
-        if self.net.agreed.contains(&c) {
-            self.net.agreed.remove(&c);
-        }
+        self.net.agreed.remove(&c);
         self.settle();
     }
 
     fn join(&mut self, c: ConnId, s: SyncId, class: SourceClass) {
         self.net.members.insert((c, s), Member { class, own: SourceClass::Reader, by: Credential::SyncKey([0; 32]), until: None, departed: None });
-        let _ = Moved::Joined(c, s, osis_sync::opens::Rejoin::Held);
         self.offers.joined(c, &s, &self.net);
         self.settle();
     }
@@ -821,18 +825,14 @@ fn an_offer_goes_once_agreed_on_each_connection_until_moot_spec_sync_inbox_3() {
     assert_eq!(sent_of(&t, 0), vec![(conn(1), b)], "agreed: it goes");
     // unanswered as the connection ends: carried out on the next
     t.close(conn(1));
-    t.take(conn(2), r);
-    t.join(conn(2), s, SourceClass::Store);
-    t.agree(conn(2));
+    t.reconnect(conn(2), r, s);
     assert_eq!(sent_of(&t, 1), vec![(conn(2), b)], "carried out on the next connection");
     let id = t.deposits_sent()[1].1;
     t.reply(conn(2), id, T::shared(Code::OK));
     assert_eq!(t.deposits_sent().len(), 2, "taken: done on that connection");
     // the store may lose it while away: offered again on its next connection
     t.close(conn(2));
-    t.take(conn(3), r);
-    t.join(conn(3), s, SourceClass::Store);
-    t.agree(conn(3));
+    t.reconnect(conn(3), r, s);
     assert_eq!(sent_of(&t, 2), vec![(conn(3), b)], "taken before: offered again at a reconnect until moot");
     let id = t.deposits_sent()[2].1;
     t.reply(conn(3), id, T::shared(Code::OK));
@@ -845,9 +845,7 @@ fn an_offer_goes_once_agreed_on_each_connection_until_moot_spec_sync_inbox_3() {
     // stamped: moot, offered nowhere again
     t.offers.remove(&s, &b);
     t.close(conn(3));
-    t.take(conn(4), r);
-    t.join(conn(4), s, SourceClass::Store);
-    t.agree(conn(4));
+    t.reconnect(conn(4), r, s);
     assert_eq!(sent_of(&t, 4), vec![(conn(4), b2)], "refused: offered again on the next connection; the moot one not");
 }
 
@@ -864,9 +862,7 @@ fn a_peer_never_answering_holds_nothing_across_reconnects_spec_sync_inbox_3() {
             t.deposit(s, 1 + i, Target::Stores);
         }
         for c in 1..10 {
-            t.take(conn(c), [7; 16]);
-            t.join(conn(c), s, SourceClass::Store);
-            t.agree(conn(c));
+            t.reconnect(conn(c), [7; 16], s);
             t.close(conn(c));
             assert_eq!(t.offers.held(), 0, "nothing kept of a connection gone");
         }

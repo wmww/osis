@@ -76,25 +76,32 @@ fn a_discovered_node_is_dialed_spec_sync_opens_1() {
     assert_eq!(ups_to(&w, 0, 1), 1);
 }
 
+/// A wall clock jump of an hour.
+const JUMP: i64 = 3_600_000;
+
 // spec/sync-opens.md §1 (dial timeout), scenario dial-bound: a dial not up `DIAL_TIMEOUT_MS`
 // after it started, whatever the route does, closes as failed and is dialed again; once the
-// route answers, the redial connects.
+// route answers, the redial connects. spec/sync-streams.md §1 (Waits): on time with the wall
+// clock moved either way while the dial waits.
 #[test]
 fn a_silent_dial_times_out_and_redials_spec_sync_opens_1() {
-    let mut w = two_nodes();
-    w.net.hang.insert(1);
-    let mut w = configured(w);
-    w.flush();
-    assert_eq!(dials_to(&w, 0, 1), 1);
-    w.advance(DIAL_TIMEOUT_MS - 1);
-    assert_eq!(dials_to(&w, 0, 1), 1, "still waiting");
-    w.advance(1);
-    assert_eq!(dials_to(&w, 0, 1), 2, "timed out, dialed again (the pause since the last dial is over)");
-    w.net.hang.clear();
-    w.advance(DIAL_TIMEOUT_MS);
-    assert_eq!(dials_to(&w, 0, 1), 3);
-    w.run();
-    assert_eq!(ups_to(&w, 0, 1), 1);
+    for jump in [0, JUMP, -JUMP] {
+        let mut w = two_nodes();
+        w.net.hang.insert(1);
+        let mut w = configured(w);
+        w.flush();
+        assert_eq!(dials_to(&w, 0, 1), 1);
+        w.skew(0, jump);
+        w.advance(DIAL_TIMEOUT_MS - 1);
+        assert_eq!(dials_to(&w, 0, 1), 1, "jump {jump}: still waiting");
+        w.advance(1);
+        assert_eq!(dials_to(&w, 0, 1), 2, "jump {jump}: timed out, dialed again (the pause since the last dial is over)");
+        w.net.hang.clear();
+        w.advance(DIAL_TIMEOUT_MS);
+        assert_eq!(dials_to(&w, 0, 1), 3);
+        w.run();
+        assert_eq!(ups_to(&w, 0, 1), 1);
+    }
 }
 
 // spec/sync-opens.md §1 (Redial: it dials it again `REDIAL_MS` after its last dial): the pause
@@ -112,37 +119,6 @@ fn a_clock_gone_back_delays_no_redial_spec_sync_opens_1() {
     w.heal();
     w.advance(2 * REDIAL_MS);
     assert!(connected(&w, 0, 1), "connected within a pause of the heal");
-}
-
-/// A wall clock jump of an hour.
-const JUMP: i64 = 3_600_000;
-
-/// spec/sync-streams.md §1 (Waits), spec/sync-opens.md §1 (dial timeout): with node 0's wall
-/// clock moved by `jump` while its dial waits, the silent dial times out on time.
-fn dial_times_out_on_time(jump: i64) {
-    let mut w = two_nodes();
-    w.net.hang.insert(1);
-    let mut w = configured(w);
-    w.flush();
-    w.skew(0, jump);
-    w.advance(DIAL_TIMEOUT_MS - 1);
-    assert_eq!(dials_to(&w, 0, 1), 1, "still waiting");
-    w.advance(1);
-    assert_eq!(dials_to(&w, 0, 1), 2, "timed out on time, dialed again");
-}
-
-/// spec/sync-streams.md §1 (Waits), spec/sync-opens.md §1 (redial): with node 0's wall clock moved
-/// by `jump` while it waits to redial, it dials again on time.
-fn redials_on_time(jump: i64) {
-    let mut w = two_nodes();
-    w.power_off(1);
-    let mut w = configured(w);
-    w.flush();
-    w.skew(0, jump);
-    w.advance(REDIAL_MS - 1);
-    assert_eq!(dials_to(&w, 0, 1), 1, "within the pause");
-    w.advance(1);
-    assert_eq!(dials_to(&w, 0, 1), 2, "dialed again on time");
 }
 
 /// spec/sync-streams.md §1 (Waits): a time a stamped value is judged by (an entry's expiry) is the
@@ -169,26 +145,6 @@ fn expires_by_the_wall_clock(jump: i64) {
 }
 
 #[test]
-fn a_dial_times_out_on_time_after_the_clock_jumps_forward_spec_sync_streams_1() {
-    dial_times_out_on_time(JUMP);
-}
-
-#[test]
-fn a_dial_times_out_on_time_after_the_clock_goes_back_spec_sync_streams_1() {
-    dial_times_out_on_time(-JUMP);
-}
-
-#[test]
-fn a_redial_comes_on_time_after_the_clock_jumps_forward_spec_sync_streams_1() {
-    redials_on_time(JUMP);
-}
-
-#[test]
-fn a_redial_comes_on_time_after_the_clock_goes_back_spec_sync_streams_1() {
-    redials_on_time(-JUMP);
-}
-
-#[test]
 fn an_expiry_comes_at_the_next_step_after_the_clock_jumps_past_it_spec_sync_streams_1() {
     expires_by_the_wall_clock(JUMP);
 }
@@ -200,26 +156,30 @@ fn an_expiry_comes_later_after_the_clock_goes_back_spec_sync_streams_1() {
 
 // spec/sync-opens.md §1 (redial): a failed dial is dialed again `REDIAL_MS` after it, not sooner
 // without a change; a new address for the peer is a change: dialed at once.
+// spec/sync-streams.md §1 (Waits): on time with the wall clock moved either way while it waits.
 #[test]
 fn a_failed_dial_waits_one_pause_spec_sync_opens_1() {
-    let mut w = two_nodes();
-    w.power_off(1);
-    let mut w = configured(w);
-    w.flush();
-    assert_eq!(dials_to(&w, 0, 1), 1);
-    assert_eq!(w.dials(0).state(&w.node(1).key.0), Some(State::Idle));
-    w.advance(REDIAL_MS - 1);
-    assert_eq!(dials_to(&w, 0, 1), 1);
-    w.advance(1);
-    assert_eq!(dials_to(&w, 0, 1), 2);
-    let moved = Address { url: format!("{} 192.0.2.7:9", w.address(1).url), key: w.node(1).key.0 };
-    w.configure(0, |c| c.dial = vec![moved]);
-    w.flush();
-    assert_eq!(dials_to(&w, 0, 1), 3, "a new address: dialed at once");
-    w.power_on(1);
-    w.advance(REDIAL_MS);
-    w.run();
-    assert_eq!(ups_to(&w, 0, 1), 1);
+    for jump in [0, JUMP, -JUMP] {
+        let mut w = two_nodes();
+        w.power_off(1);
+        let mut w = configured(w);
+        w.flush();
+        assert_eq!(dials_to(&w, 0, 1), 1);
+        assert_eq!(w.dials(0).state(&w.node(1).key.0), Some(State::Idle));
+        w.skew(0, jump);
+        w.advance(REDIAL_MS - 1);
+        assert_eq!(dials_to(&w, 0, 1), 1, "jump {jump}: within the pause");
+        w.advance(1);
+        assert_eq!(dials_to(&w, 0, 1), 2, "jump {jump}: dialed again on time");
+        let moved = Address { url: format!("{} 192.0.2.7:9", w.address(1).url), key: w.node(1).key.0 };
+        w.configure(0, |c| c.dial = vec![moved]);
+        w.flush();
+        assert_eq!(dials_to(&w, 0, 1), 3, "a new address: dialed at once");
+        w.power_on(1);
+        w.advance(REDIAL_MS);
+        w.run();
+        assert_eq!(ups_to(&w, 0, 1), 1);
+    }
 }
 
 // spec/sync-opens.md §1 (whom to dial): within `max_peers`, which counts connections sharing
@@ -308,7 +268,6 @@ fn a_store_failure_restarts_in_place_once_per_stretch() {
     w.advance(REDIAL_MS);
     w.run();
     assert!(st.entry(&SID, &d2).unwrap().is_none() && st.entry(&SID, &e).unwrap().is_some());
-    let _ = &mut st;
 }
 
 // spec/commits.md §4 (No local error from peer bytes): a received commit whose apply faults here

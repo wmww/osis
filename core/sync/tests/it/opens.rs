@@ -1114,27 +1114,34 @@ fn s_leaving_the_sync_set_while_away_drops_it_from_the_record_spec_sync_opens_3(
     assert!(p.a.moved.contains(&Moved::Gone(rid, S)), "{:?}", p.a.moved);
 }
 
-// spec/sync-opens.md §6: a move of one peer's standing for one sync ID re-judges that member
-// alone: the same work at n and 10n sync IDs open on the connection.
-fn standing_moves_one_of(n: u8) -> osis_sync::opens::Work {
-    let st = StepKeys::new(1, 0);
+/// The work done at a side since `before`.
+fn since(w: osis_sync::opens::Work, before: osis_sync::opens::Work) -> osis_sync::opens::Work {
+    osis_sync::opens::Work { rejudged: w.rejudged - before.rejudged, standing: w.standing - before.standing, beacons: w.beacons - before.beacons, tested: w.tested - before.tested, creds: w.creds - before.creds }
+}
+
+/// Two readers sharing `n` sync IDs at step keys `st`, all open.
+fn two_readers(n: u8, st: &StepKeys) -> Pair {
     let mut a = Side::new(1);
     let mut b = Side::new(2);
     for i in 0..n {
         let rs = read_secret(i, 0);
-        a.table.set(sid(i), Some(reader(&sid(i), &rs, &st, &[], &[], &[])));
-        b.table.set(sid(i), Some(reader(&sid(i), &rs, &st, &[], &[], &[])));
+        a.table.set(sid(i), Some(reader(&sid(i), &rs, st, &[], &[], &[])));
+        b.table.set(sid(i), Some(reader(&sid(i), &rs, st, &[], &[], &[])));
     }
-    a.settle();
-    b.settle();
     let mut p = Pair::new(a, b, account(1), account(2));
     p.run();
     assert!((0..n).all(|i| p.a.open(p.ca, &sid(i))));
+    p
+}
+
+// spec/sync-opens.md §6: a move of one peer's standing for one sync ID re-judges that member
+// alone: the same work at n and 10n sync IDs open on the connection.
+fn standing_moves_one_of(n: u8) -> osis_sync::opens::Work {
+    let mut p = two_readers(n, &StepKeys::new(1, 0));
     let before = p.a.opens.work();
     p.a.table.judge_as(sid(0), tid(2), J::SyncHolder);
     p.a.settle();
-    let w = p.a.opens.work();
-    osis_sync::opens::Work { rejudged: w.rejudged - before.rejudged, standing: w.standing - before.standing, beacons: w.beacons - before.beacons, tested: w.tested - before.tested, creds: w.creds - before.creds }
+    since(p.a.opens.work(), before)
 }
 
 #[test]
@@ -1240,24 +1247,14 @@ fn a_static_grant_is_taken_only_once_its_signature_verifies_spec_sync_opens_5() 
 /// The work of that change, at each side.
 fn change_one_of(n: u8) -> osis_sync::opens::Work {
     let st = StepKeys::new(1, 0);
-    let mut a = Side::new(1);
-    let mut b = Side::new(2);
-    for i in 0..n {
-        let rs = read_secret(i, 0);
-        a.table.set(sid(i), Some(reader(&sid(i), &rs, &st, &[], &[], &[])));
-        b.table.set(sid(i), Some(reader(&sid(i), &rs, &st, &[], &[], &[])));
-    }
-    let mut p = Pair::new(a, b, account(1), account(2));
-    p.run();
-    assert!((0..n).all(|i| p.a.open(p.ca, &sid(i))));
+    let mut p = two_readers(n, &st);
     let before = p.a.opens.work();
     let rs = read_secret(0, 1);
     p.a.table.set(sid(0), Some(reader(&sid(0), &rs, &st, &[], &[], &[])));
     p.b.table.set(sid(0), Some(reader(&sid(0), &rs, &st, &[], &[], &[])));
     p.settle();
     assert!(p.a.open(p.ca, &sid(0)));
-    let w = p.a.opens.work();
-    osis_sync::opens::Work { rejudged: w.rejudged - before.rejudged, standing: w.standing - before.standing, beacons: w.beacons - before.beacons, tested: w.tested - before.tested, creds: w.creds - before.creds }
+    since(p.a.opens.work(), before)
 }
 
 // spec/sync-opens.md §6: a change of one sync ID's credentials re-judges, tests and filters that
@@ -1514,8 +1511,7 @@ fn reconnect_with(n: u8) -> osis_sync::opens::Work {
     p.connect(2, account(1), account(2));
     p.run();
     assert!(p.a.open(p.ca, &sid(0)));
-    let w = p.a.opens.work();
-    osis_sync::opens::Work { rejudged: w.rejudged - before.rejudged, standing: w.standing - before.standing, beacons: w.beacons - before.beacons, tested: w.tested - before.tested, creds: w.creds - before.creds }
+    since(p.a.opens.work(), before)
 }
 
 // spec/sync-opens.md §3 (records): a peer with a record reconnecting with nothing changed costs the same
