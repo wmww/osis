@@ -13,8 +13,11 @@
 //! is judged by nothing but its bytes: a box keyed with another holder, or a history entry, makes
 //! it bad input (`parse`); a secret it gives is kept only where a step on a path verified from its
 //! sync ID's genesis (each step signed by its parent's delete key, the genesis by its own, whose
-//! delete key the sync ID commits to) bears the secret's sync key: the copies' steps or the
-//! thing's `sync.0` state for what the walk and ownership read (`Unread::secrets`), the steps
+//! delete key the sync ID commits to) bears the secret's sync key: the thing's `sync.0` state as
+//! judged (an admin's word), and the copies' own steps only where the node holds no record of the
+//! thing (a genesis is anyone's making: with the record, a copy's step would make a dependent
+//! thing count independent, or put a forged sync ID in a reader's place), for what the walk and
+//! ownership read (`Unread::secrets`), the steps
 //! registered with this node for what it shows at peers (`Unread::candidates`, judged by
 //! osis-sync's unread judgement against its stored path). A forger may still make a sync
 //! ID of its own (its own genesis, its own secret): that one is kept beside the real one and never
@@ -126,14 +129,15 @@ pub(crate) fn forget(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
 /// bears, or, boxing nothing, once each step it carries verifies from its sync ID's genesis).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Unread {
-    /// The secrets held that a step of the copies' steps or the thing's `sync.0` state bears.
+    /// The secrets held that a step of the thing's `sync.0` state bears, or, with no record of
+    /// the thing held, a step of the copies'.
     pub secrets: BTreeMap<Epoch, Secret32>,
     /// Every sync secret held of the thing (`secrets` and those no such step bears yet): what
     /// is judged against the steps registered with this node (its stored path, osis-sync's;
     /// spec/crypto.md §4 Established: a step of its stored path bearing the secret's sync key).
     pub candidates: BTreeMap<Epoch, Secret32>,
-    /// The steps of every sync copy on `t`, joined: what `owned_sync_ids` judges beside `t`'s
-    /// `sync.0` state.
+    /// The steps of every sync copy on `t`, joined, where no record of `t` is held (else none):
+    /// what `owned_sync_ids` judges.
     pub steps: ct::SyncIds,
     pub counted: BTreeSet<BlobId>,
     /// The holders of counted copies: things holding sync or above on `t` as this node knows it
@@ -183,7 +187,7 @@ fn verified(steps: &ct::SyncIds) -> BTreeSet<[u8; 32]> {
 
 /// `a` joined with `b`: per sync ID, the step records of both (one per step ID: its bytes
 /// commit to it, `sync_steps` checks).
-pub(crate) fn join_steps(a: &mut ct::SyncIds, b: &ct::SyncIds) {
+fn join_steps(a: &mut ct::SyncIds, b: &ct::SyncIds) {
     for (id, e) in b {
         let at = a.entry(*id).or_insert_with(|| ct::SyncEntry { steps: BTreeMap::new() });
         for (k, r) in &e.steps {
@@ -202,10 +206,18 @@ impl Core {
     fn unread_derived(&self, t: &Tid) -> Unread {
         let mut out = Unread::default();
         let copies = self.ix.sync_copies.get(t).cloned().unwrap_or_default();
+        // a copy's own steps verify only to a genesis of anyone's making: they speak for `t` only
+        // where this node holds no record of it, having nothing else to judge by. With its record,
+        // `t`'s steps are its admins' word alone (`Indexes::steps`, from `sync.0` as judged), so a
+        // forged genesis neither makes a dependent thing independent nor gives a reader of `t` a
+        // sync ID in place of its own (`tests_delivery::a_forged_*`)
+        let unknown = self.created(t).is_none();
         // what each copy's box gives, opened by its holder's keys held here
         let mut given: Vec<Given> = Vec::new();
         for (b, c) in copies.iter() {
-            join_steps(&mut out.steps, &c.steps);
+            if unknown {
+                join_steps(&mut out.steps, &c.steps);
+            }
             let mut opened = Vec::new();
             if !c.boxes.is_empty()
                 // the holder's own secrets as held (an independent thing: its keysets are its
@@ -232,13 +244,16 @@ impl Core {
         };
         out.secrets = candidates.iter().filter(|(_, s)| bears(s)).map(|(e, s)| (*e, s.clone())).collect();
         out.candidates = candidates;
-        let ok = verified(&out.steps);
+        let ok = match unknown {
+            true => verified(&out.steps),
+            false => recorded.iter().flat_map(|r| r.steps.keys().map(|k| k.0)).collect(),
+        };
         for (b, h, o) in given {
             let c = copies.get(&b);
             let boxes = c.is_some_and(|c| !c.boxes.is_empty());
             let counts = match boxes {
                 true => o.iter().any(|(e, _)| out.secrets.contains_key(e)),
-                // boxing nothing: each step it carries verified
+                // boxing nothing: each step it carries verified (with `t`'s record, placed)
                 false => c.is_some_and(|c| !c.steps.is_empty() && c.steps.values().all(|e| e.steps.keys().all(|k| ok.contains(k)))),
             };
             if counts {

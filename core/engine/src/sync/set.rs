@@ -122,8 +122,6 @@ impl Engine {
         if self.kept_unread(t) {
             // every sync ID kept for it (spec/sync.md §3): one a forged copy names never
             // displaces the thing's own (`sync_ids::unread`)
-            // every sync ID kept for it (spec/sync.md §3): one a forged copy names never
-            // displaces the thing's own (`sync_ids::unread`)
             let ids: Vec<SyncId> = self.owned_sync_ids(t)?.iter().filter(|o| !o.hint).map(|o| o.id).collect();
             if !ids.is_empty() {
                 return Ok(ThingSync::Unread(ids));

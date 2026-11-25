@@ -1,0 +1,8 @@
+# Sync copies a node takes are kept uncharged and unbounded
+> Summary: every well-formed sync copy taken (`sync_ids::unread::note`, rows `su/`) is kept until its thing is forgotten whole, and its store entry is uncharged (`Opened::SyncCopy`: osis-sync `follow::open_these`, `streams::opening` `Held { gave: true }`) whether or not it counts. A sync copy is anyone's word who seals to its holder's read KEM key or logs under its holder's sync ID, so a party with deposit room can grow a node's storage without bound by distinct forged copies (each a fresh box); spec/sync-ids.md §5 Peer budget charges an entry that gives nothing held to its bringer.
+> Priority: normal
+> Tags: security, engine, sync
+
+- A copy that counts (`Unread::counted`: its box opens to a secret a step bears, or boxing nothing, its steps verified) gives something held; one that does not gives nothing yet. A real rotation's copy may arrive before the step bearing its secret reaches the node (`tests_delivery::a_rotation_reaches_a_holder_of_sync_alone_*`), so a not-yet-counting copy has to be kept a while, charged.
+- Wanted: the `su/` row lives exactly as long as its store entry (charged to its bringer while it counts for nothing, its row going when the store drops the entry), and `Opened::SyncCopy` says whether it gave something held so the store charges by the Peer budget rule. Where the node holds no record of the thing, a forged genesis counts (spec/sync-ids.md §2: every kept sync ID synced), so counting alone does not bound it: the bound is the bringer's budget and the thing being kept unread here.
+- Not a dedupe question: copies are keyed by blob ID; deduplicating by (commit, thing, holder) must key on content (issues/account-evidence-per-unit.md).

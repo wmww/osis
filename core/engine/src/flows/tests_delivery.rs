@@ -296,3 +296,108 @@ fn a_pieces_evidence_takes_its_own_pages_spec_wire_9() {
     assert!(lp.peers[1].engine.header(&rot).is_some(), "the rotation taken");
     assert_eq!(lp.peers[1].engine.get(&t, &ak).unwrap(), Some(big), "the paged evidence taken whole");
 }
+
+/// A sync copy for holder `h` on `x` with a sync ID of the forger's own making, built by peer
+/// `i` (its bytes alone reach the holder's reader, judged by nothing else): a genesis step on
+/// `x` from made-up secrets of every role, bearing the made-up sync secret, and a box of that
+/// secret to `h`. Peer `i` keeps the commit; nothing is synced. (copy, its sync ID, the secret)
+fn forged_sync_copy(lp: &mut LocalPeer, i: usize, x: Tid, h: Tid, seed: u8) -> (osis_commit::SyncCopy, osis_base::SyncId, osis_crypto::Secret32) {
+    let mut fake = osis_keys::ActorEpochs::default();
+    for r in Role::ALL {
+        let s = osis_crypto::Secret32::from_bytes([seed.wrapping_add(r.id()); 32]);
+        let e = osis_crypto::Epoch::derive(&x, r, 1, &s).unwrap();
+        fake.role_mut(r).set_secret(e, s);
+        fake.role_mut(r).set_established(e, osis_keys::Provenance::Fixed);
+    }
+    let sync = fake.role(Role::Sync).secret(&fake.role(Role::Sync).newest().unwrap()).unwrap().clone();
+    let e = &mut lp.peers[i].engine;
+    let mut m = crate::Mutation::new();
+    let id = e
+        .run(|tx| {
+            let rcpt = crate::flows::recipient(tx, h, Role::Sync)?;
+            let w = osis_keys::box_holder(&x, &fake, &osis_keys::HistoryBoxes::new(), &rcpt, &[Role::Sync].into(), &mut *tx.rng)?.unwrap();
+            crate::flows::put_secrets(&mut m, x, &w, true)?;
+            crate::flows::sync_ids::new_sync_id(tx, &mut m, x, &fake, &[], &osis_crypto::Secret32::from_bytes([seed; 32]), None)
+        })
+        .unwrap();
+    let c = e.commit_hostile(m).unwrap().unwrap();
+    let (copy, _) = e.sync_copy(&c, &x, &h).unwrap().expect("a sync copy of the forgery");
+    assert!(copy.piece.is_some() && copy.sync.is_some(), "its box and its genesis step");
+    (copy, id, sync)
+}
+
+// spec/sync.md §3 (Kept unread: only a step bearing a held secret's sync key keeps entries),
+// spec/sync-ids.md §2 (One sync ID per independent thing), spec/sync-set.md §2
+// (Counts as independent: a box is any writer's word, a step an admin's): a sync copy is anyone's
+// word who may log under its holder's sync ID or seal to its read key, and its steps verify only
+// to a genesis of its own making. Peer 2 keeps G unread (T holds sync) and holds G's record: a
+// copy for T naming G with a forged genesis bearing a forged secret takes nothing (G's sync ID,
+// the sync secrets held, how G is synced: unmoved), at any seed (greater or less than G's own).
+// Fails where a copy's own steps are judged beside G's admin-judged `sync.0` at a node holding
+// G's record (the forged sync ID owned, synced in place of G's own by a reader).
+#[test]
+fn a_forged_genesis_in_a_sync_copy_takes_nothing_spec_sync_ids_2() {
+    let mut above = BTreeSet::new();
+    for reader in [false, true] {
+        let (mut lp, g, t) = sync_holder();
+        if reader {
+            // peer 2 reads G too: a reader syncs G's greatest sync ID, which a forged one must
+            // not become
+            let me = lp.peers[2].engine.me();
+            lp.peers[0].engine.grant(&g, &me, &edge(Role::Read)).unwrap();
+            lp.sync_all().unwrap();
+        }
+        let real = lp.peers[2].engine.sync_id_of(&g).unwrap().unwrap();
+        let held = sync_held(&lp, 2, &g);
+        let how = lp.peers[2].engine.thing_sync_now(&g).unwrap();
+        let want = if reader { crate::sync::ThingSync::Read(vec![real]) } else { crate::sync::ThingSync::Unread(vec![real]) };
+        assert_eq!(how, want, "G synced by its own sync ID");
+        // a forged sync ID above G's own and one below (its admin secret's)
+        let id = |seed: u8| osis_blob::genesis_sync_id(&osis_crypto::Secret32::from_bytes([seed.wrapping_add(Role::Admin.id()); 32]));
+        let seeds: Vec<u8> = [true, false].into_iter().filter_map(|up| (1..=u8::MAX).find(|x| (id(*x) > real) == up)).collect();
+        // the forgeries stay at peer 0 (G's admin, whose commits would be G's word): no sync
+        for seed in seeds {
+            let (copy, forged, _) = forged_sync_copy(&mut lp, 0, g, t, seed);
+            assert_eq!(forged, id(seed));
+            above.insert(forged > real);
+            assert!(lp.peers[2].engine.take_sync_copy(&t, &osis_base::BlobId([seed; 32]), &copy.encode()).unwrap(), "well formed: taken");
+            assert_eq!(lp.peers[2].engine.sync_id_of(&g).unwrap(), Some(real), "G's sync ID");
+            assert!(!lp.peers[2].engine.sync_ids(&g).unwrap().iter().any(|o| o.id == forged), "the forged sync ID is not G's here");
+            assert_eq!(lp.peers[2].engine.thing_sync_now(&g).unwrap(), want, "G synced as before");
+            assert_eq!(sync_held(&lp, 2, &g), held, "no forged secret kept");
+        }
+        lp.peers[2].restart(7).unwrap();
+        assert_eq!(lp.peers[2].engine.thing_sync_now(&g).unwrap(), want, "G synced as before at a fresh load");
+    }
+    assert_eq!(above.len(), 2, "forged sync IDs both above and below G's own");
+}
+
+// spec/sync-set.md §2 (Counts as independent: a box is any writer's word, a step an admin's),
+// spec/sync.md §3: Y is a dependent thing in T (peer 2's), read by peers 1 and 2. Peer 1, a reader
+// of T and no admin of Y, forges T's sync copy naming Y: a genesis of its own on Y bearing a
+// secret boxed to T. Peer 2 takes it (as it would sealed to T or logged under T's sync ID): Y
+// stays dependent there, its secret actor T, synced as before, and peer 2 still reads Y. Fails
+// where a copy's own steps make a thing count independent (Y then read by no secret: blinded).
+#[test]
+fn a_forged_sync_copy_makes_no_dependent_thing_independent_spec_sync_set_2() {
+    let (mut lp, _g, t) = sync_holder();
+    reads_t(&mut lp, t);
+    let y = {
+        let mut m = crate::Mutation::new();
+        let y = lp.peers[2].engine.new_thing(&mut m, t);
+        lp.peers[2].commit(m).unwrap();
+        lp.hold(y);
+        y
+    };
+    lp.sync_all().unwrap();
+    let how = lp.peers[2].engine.thing_sync_now(&y).unwrap();
+    assert_eq!(lp.peers[2].engine.core.secret_actor(&y), Some(t), "Y is T's dependent");
+    let (copy, _, _) = forged_sync_copy(&mut lp, 1, y, t, 20);
+    let e2 = &mut lp.peers[2].engine;
+    assert!(e2.take_sync_copy(&t, &osis_base::BlobId([20; 32]), &copy.encode()).unwrap(), "well formed: taken");
+    assert!(!e2.core.counts_independent(&y), "Y counts independent by a forged copy");
+    assert_eq!(e2.core.secret_actor(&y), Some(t), "Y's secret actor");
+    assert_eq!(e2.thing_sync_now(&y).unwrap(), how, "Y synced as before");
+    lp.peers[2].restart(7).unwrap();
+    assert_eq!(lp.peers[2].engine.core.secret_actor(&y), Some(t), "Y's secret actor at a fresh load");
+}

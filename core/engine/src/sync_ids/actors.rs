@@ -260,13 +260,12 @@ impl Engine {
             // a destroyed thing's too: its `sync.0` stays (`retention::destroy`), read past `exists`
             let ak = crate::flows::ak(ct::SYNC.ak())?;
             let v = e.read(|tx| Ok(tx.state(g, &ak)?.and_then(osis_crdt::Fragment::read)))?;
-            let mut m = match v {
+            // the state alone: a sync copy's steps speak for `g` only with no record of it
+            // (`sync_ids::unread`)
+            let m = match v {
                 Some(v) => ct::SYNC.decode(&v)?,
                 None => Default::default(),
             };
-            // beside the state, the steps of the sync copies on `g` (`sync_ids::unread`): owned
-            // only where a held secret's sync key is borne, as any entry
-            crate::sync_ids::unread::join_steps(&mut m, &e.core.unread(g).steps);
             Ok::<_, crate::error::Error>(Arc::new(held_sync_ids(&e.core, g, &m)))
         })
     }
