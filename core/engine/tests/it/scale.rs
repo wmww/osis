@@ -2016,7 +2016,8 @@ fn pairing(n: usize) -> Pairing {
     let (node, keys) = (p.engine.tid(), p.engine.node_keys().unwrap());
     let ((offer, done), pairer) = measured_at(&mut lp, 0, |lp| lp.peers[0].engine.pair(&a, &node, &keys, Role::Admin).unwrap());
     let (pks, bytes) = bytes_of(&mut lp, 0, &done.commits);
-    let o = [osis_base::encode(&offer.to_value()).len() as u64, offer.grant.evidence.len() as u64, offer.grant.records.len() as u64, offer.sync.len() as u64, offer.trust.len() as u64];
+    let osis_engine::flows::offers::Pieces::Whole { grant, sync, trust } = &offer.pieces else { panic!("an admin's offer is whole") };
+    let o = [osis_base::encode(&offer.to_value()).len() as u64, grant.evidence.len() as u64, grant.records.len() as u64, sync.len() as u64, trust.len() as u64];
     let pb = p.backend.clone();
     let (_, taker) = measured(&pb, || p.engine.take_pairing(&offer).unwrap());
     let (_, sibling) = measured_at(&mut lp, 1, |lp| {

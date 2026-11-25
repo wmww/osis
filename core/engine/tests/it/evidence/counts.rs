@@ -18,7 +18,7 @@ fn hop(a: u16, b: u16) -> Edge<u16> {
     (a, b)
 }
 fn write(holder: u16) -> Kind<u16> {
-    Kind::Write(Write { holder, gives_read: true })
+    Kind::Write(Write { holder, gives_read: true, travels: true })
 }
 
 fn minus(a: Counts, b: Counts) -> Counts {

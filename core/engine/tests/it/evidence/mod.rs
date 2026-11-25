@@ -39,7 +39,8 @@ fn e1(w: &mut World) -> Rule {
 fn part(w: &World, i: Id) -> Part<Thing, Key> {
     let pw = &w.w;
     let kind = match &pw.commits[i].kind {
-        paths::Kind::Edge { holder, role, .. } => Kind::Write(Write { holder: *holder, gives_read: *role >= Role::Read && !pw.leave(i) }),
+        // the model has no sync role: every write travels
+        paths::Kind::Edge { holder, role, .. } => Kind::Write(Write { holder: *holder, gives_read: *role >= Role::Read && !pw.leave(i), travels: true }),
         _ => Kind::Content,
     };
     Part::new(kind, Some(pw.hops(i).to_vec()))

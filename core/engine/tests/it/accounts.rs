@@ -165,14 +165,17 @@ fn a_sibling_writes_a_nodes_settings_and_cannot_sign_as_it_spec_sync_set_1() {
     lp.peers[0].engine.check_closure();
 }
 
-// spec/sync-set.md §2 Stub, spec/permissions.md §4 Copies: G's sync unit strongs X, which G
-// holds sync alone on and whose keys G's do not open: G's sync ID carries X's stub, G's edge
-// piece on X as G's cut names it (boxes and `sync.0`), and none of X's content, nor a grant on X
-// to another holder Z (a holder G may not learn). Granted nothing on X, G carries
-// none of it.
+// spec/sync-set.md §2 Stub, spec/permissions.md §4 Copies, spec/wire.md §4 Sync copy: G's sync
+// unit strongs X, which G holds sync alone on and whose keys G's do not open: G's sync ID carries
+// X's stub as G's sync copies (its boxes and `sync.0`, no header: no certificate copy of any
+// part on X), none of X's content, nor anything of a grant on X to another holder Z (a holder G
+// may not learn). Granted nothing on X, G carries none of it. Fails with a stub's pieces cut by
+// their holder's role on X, or with G's grant travelling as a certificate copy (Role changes
+// travel: a grant of sync alone reaches its holder's readers as sync copies alone).
 #[test]
-fn a_units_stub_is_carried_as_certificate_copies_spec_sync_set_2() {
+fn a_units_stub_is_carried_as_sync_copies_spec_sync_set_2() {
     use crate::common::edge;
+    use std::collections::BTreeSet;
     let mut lp = crate::common::net(1, 0);
     let [g, x, z] = [(); 3].map(|_| independent_of_0(&mut lp));
     let e = &mut lp.peers[0].engine;
@@ -182,22 +185,21 @@ fn a_units_stub_is_carried_as_certificate_copies_spec_sync_set_2() {
     let mut m = osis_engine::Mutation::new();
     m.op(g, &ct::HOLDS, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Add(osis_base::Value::Strong(x)) }).unwrap();
     e.commit(m).unwrap();
-    let on_x = |e: &mut osis_engine::Engine| -> Vec<(osis_base::CommitId, Vec<String>)> {
+    // (the aspects on X of certificate copies, sync copies on X)
+    let on_x = |e: &mut osis_engine::Engine| {
         let c = e.certificates(&g).unwrap();
-        c.commits.iter().filter_map(|(id, parts)| {
-            let h = e.header(id)?;
-            let aks: Vec<String> = parts.iter().filter_map(|ai| h.aspects.get(*ai)).filter(|a| a.tid == x).map(|a| a.ak.as_str().to_string()).collect();
-            (!aks.is_empty()).then_some((*id, aks))
-        }).collect()
+        let aks: BTreeSet<String> = c.commits.iter().filter_map(|(id, parts)| Some((e.header(id)?, parts))).flat_map(|(h, parts)| parts.iter().filter_map(|ai| h.aspects.get(*ai)).filter(|a| a.tid == x).map(|a| a.ak.as_str().to_string()).collect::<Vec<_>>()).collect();
+        let copies: Vec<(osis_base::CommitId, osis_base::Tid)> = c.sync_copies.iter().filter(|(_, on, _)| *on == x).map(|(id, _, h)| (*id, *h)).collect();
+        (aks, copies)
     };
     let other = e.grant(&x, &z, &edge(Role::Read)).unwrap().commits;
-    assert_eq!(on_x(e), vec![], "no role on X: no stub");
-    e.grant(&x, &g, &edge(Role::Sync)).unwrap();
-    let stub = on_x(e);
-    assert!(stub.iter().any(|(_, aks)| aks.iter().any(|a| a == "secrets.0")), "G's boxes: {stub:?}");
-    assert!(!other.iter().any(|c| stub.iter().any(|(s, _)| s == c)), "nothing of Z's grant: {stub:?}");
-    // G's own grant also travels under G's sync ID (spec/permissions.md §4 Role changes travel)
-    assert!(stub.iter().all(|(c, aks)| *c != content && aks.iter().all(|a| ct::ROLE_CLASS.contains(&a.as_str()))), "role-class parts alone: {stub:?}");
+    assert_eq!(on_x(e), (BTreeSet::new(), vec![]), "no role on X: no stub");
+    let granted = e.grant(&x, &g, &edge(Role::Sync)).unwrap().commits;
+    let (aks, copies) = on_x(e);
+    assert_eq!(aks, BTreeSet::new(), "no header of a commit on X");
+    assert!(copies.iter().all(|(_, h)| *h == g), "G's copies alone: {copies:?}");
+    assert!(granted.iter().any(|c| copies.iter().any(|(s, _)| s == c)), "G's grant, its box: {copies:?}");
+    assert!(!other.iter().chain([&content]).any(|c| copies.iter().any(|(s, _)| s == c)), "nothing of Z's grant or X's content: {copies:?}");
 }
 
 // spec/sync-inbox.md §5 By hand: an offer of a grant to account A, handed to a node of A (one

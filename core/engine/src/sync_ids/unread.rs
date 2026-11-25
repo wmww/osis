@@ -35,19 +35,45 @@ use osis_store::Shred;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-/// `su/` + thing + blob ID: a sync copy taken here (`HeldSyncCopy`): its holder (15 bytes), then
-/// its `SyncCopyPlaintext` bytes.
+/// `su/` + blob ID: a sync copy taken here (`HeldSyncCopy`): the thing it came under (15 bytes),
+/// whether it came sealed (one byte, 1), then its `SyncCopyPlaintext` bytes.
+/// Invariant (bounds; spec/sync-ids.md §5 Peer budget): a row lives exactly as long as the store
+/// holds an entry of its blob (`Engine::unnamed_sync_copy`), and that entry is charged to its
+/// bringer unless stamped (`Opened::SyncCopy`), so what a party makes this node keep is bounded
+/// by its budget, a writer's stamp aside.
 pub(crate) const SYNC_COPIES: &[u8] = b"su/";
 
-/// A sync copy as taken here: the holder whose copy it is (the thing whose sync ID it came under,
-/// or that it was sealed to), the copy, and what its deltas say: its boxes and its steps.
+/// A sync copy as taken here: the thing it came under (whose sync ID it is an entry of, or whose
+/// inbox it was sealed to), the holder whose copy it is (its piece's, else that thing), whether
+/// it came sealed (a sealed copy, never a log under the sync ID), the copy, its content key, and
+/// what its deltas say: its boxes and its steps.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HeldSyncCopy {
+    pub under: Tid,
     pub holder: Tid,
+    pub sealed: bool,
     pub copy: osis_commit::SyncCopy,
+    pub key: ContentKey,
     pub boxes: BTreeMap<BoxKey, SecretBox>,
     pub steps: ct::SyncIds,
 }
+
+/// What two blobs of one sync copy share: the hash of its canonical plaintext. Two copies of one
+/// (commit, thing, holder) with different bytes (a forged box beside the real one) are two
+/// copies, so neither displaces the other (spec/permissions.md §4 Logging certificates).
+pub type ContentKey = [u8; 32];
+
+/// The content key of sync copy plaintext `plain` (canonical: `SyncCopy::decode` checks).
+pub fn content_key(plain: &[u8]) -> ContentKey {
+    osis_base::hash::hash(&[b"osis sync copy".as_slice(), plain].concat())
+}
+
+/// The sync copies a sync ID carries, by content: the thing reading it each is under, and its
+/// plaintext (`Engine::sync_copies_carried`).
+pub type Carried = BTreeMap<ContentKey, (Tid, Arc<Vec<u8>>)>;
+
+/// A sync copy as certificates name it: (commit, thing, holder).
+pub type CopyName = (CommitId, Tid, Tid);
 
 /// Per thing, the sync copies on it taken here, by blob.
 pub type SyncCopies = BTreeMap<BlobId, Arc<HeldSyncCopy>>;
@@ -62,62 +88,123 @@ fn read_headerless(bytes: &[u8], commit: &CommitId) -> Option<osis_crdt::Fragmen
     osis_crdt::decode_delta(bytes, &cx, &mut interner, None).ok().map(|d| d.fragment)
 }
 
-/// Reads sync copy `plain` as `holder`'s: `None` when it is bad input (spec/wire.md §4: not a
-/// sync copy; its piece holding a record keyed with another holder, or one keyed with none: a
-/// history box, a removal of another's; a delta that does not decode).
-pub(crate) fn parse(holder: Tid, plain: &[u8]) -> Option<HeldSyncCopy> {
-    let copy = osis_commit::SyncCopy::decode(plain).ok().filter(|c| c.thing != holder)?;
+/// Reads sync copy `plain`, come under `under` (`sealed`: sealed to it): `None` when it is bad
+/// input (spec/wire.md §4: not a sync copy; a copy of `under` itself; its piece holding records
+/// keyed with two holders, or one keyed with none: a history box; a delta that does not decode).
+/// Its holder is its piece's, else `under`: whether `under` may carry that holder's copy is the
+/// taker's check (`Engine::take_sync_copy`).
+pub(crate) fn parse(under: Tid, sealed: bool, plain: &[u8]) -> Option<HeldSyncCopy> {
+    let copy = osis_commit::SyncCopy::decode(plain).ok().filter(|c| c.thing != under)?;
     let mut boxes = BTreeMap::new();
+    let mut holder = under;
     if let Some(p) = &copy.piece {
         let w = crate::apply::keys::secrets_write(&read_headerless(p, &copy.commit)?);
-        if !w.history.is_empty() || w.boxes.keys().chain(&w.removed).any(|k| k.holder.0 != holder) {
+        let holders: BTreeSet<Tid> = w.boxes.keys().chain(&w.removed).map(|k| k.holder.0).collect();
+        if !w.history.is_empty() || holders.len() > 1 {
             return None;
         }
+        holder = holders.first().copied().unwrap_or(under);
         boxes = w.boxes;
+    }
+    if holder == copy.thing {
+        return None;
     }
     let steps = match &copy.sync {
         Some(s) => ct::SYNC.decode(&read_headerless(s, &copy.commit)?.read()?).ok()?,
         None => ct::SyncIds::default(),
     };
-    Some(HeldSyncCopy { holder, copy, boxes, steps })
+    Some(HeldSyncCopy { under, holder, sealed, key: content_key(plain), copy, boxes, steps })
+}
+
+/// The (thing, holder) of sync copy `plain` (its piece's holder): `None` where it is bad input
+/// or boxes no holder.
+pub(crate) fn holder_of(plain: &[u8]) -> Option<(Tid, Tid)> {
+    let copy = osis_commit::SyncCopy::decode(plain).ok()?;
+    let w = crate::apply::keys::secrets_write(&read_headerless(copy.piece.as_ref()?, &copy.commit)?);
+    let h = w.boxes.keys().map(|k| k.holder.0).next()?;
+    Some((copy.thing, h))
 }
 
 /// Loads the sync copies taken (an open or reload).
 pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
     let bad = || Error::Corrupt("sync copy row");
-    let mut rows: BTreeMap<Tid, SyncCopies> = BTreeMap::new();
+    let mut rows: Vec<(BlobId, HeldSyncCopy)> = Vec::new();
     tx.scan(SYNC_COPIES, |k, v| {
-        let t = Tid::from_bytes(k.get(..15).ok_or_else(bad)?.try_into().map_err(|_| bad())?);
-        let b = BlobId(k.get(15..).ok_or_else(bad)?.try_into().map_err(|_| bad())?);
-        let (h, plain) = v.split_at_checked(15).ok_or_else(bad)?;
-        let c = parse(Tid::from_bytes(h.try_into().map_err(|_| bad())?), plain).ok_or_else(bad)?;
-        rows.entry(t).or_default().insert(b, Arc::new(c));
+        let b = BlobId(k.try_into().map_err(|_| bad())?);
+        let (u, rest) = v.split_at_checked(15).ok_or_else(bad)?;
+        let (sealed, plain) = rest.split_first().ok_or_else(bad)?;
+        rows.push((b, parse(Tid::from_bytes(u.try_into().map_err(|_| bad())?), *sealed == 1, plain).ok_or_else(bad)?));
         Ok(())
     })?;
-    for (t, m) in rows {
-        tx.core.ix.sync_copies.insert(t, Arc::new(m));
+    for (b, c) in rows {
+        index(tx, b, c);
     }
     Ok(())
 }
 
+fn index(tx: &mut Tx<'_>, b: BlobId, c: HeldSyncCopy) {
+    let (t, c_under, ids, holder) = (c.copy.thing, c.under, c.steps.clone(), c.holder);
+    let mut m = tx.core.ix.sync_copies.get(&t).map(|x| (**x).clone()).unwrap_or_default();
+    m.insert(b, Arc::new(c));
+    tx.core.ix.sync_copies.insert(t, Arc::new(m));
+    tx.core.ix.sync_copies_under.insert(c_under, b);
+    tx.core.ix.sync_copy_on.insert(b, t);
+    for id in ids.keys() {
+        tx.core.ix.sync_copy_ids.insert(*id, t);
+    }
+    tx.core.ix.sync_copy_holders.insert(holder, t);
+}
+
+/// The sync IDs `m`'s copies carry steps of.
+fn ids_of(m: &SyncCopies) -> BTreeSet<osis_base::SyncId> {
+    m.values().flat_map(|c| c.steps.keys().copied()).collect()
+}
+
 /// Takes sync copy `c`, blob `b` (one taken already changes nothing).
 pub(crate) fn note(tx: &mut Tx<'_>, b: &BlobId, c: HeldSyncCopy) -> Result<()> {
-    let t = c.copy.thing;
-    let mut m = tx.core.ix.sync_copies.get(&t).map(|x| (**x).clone()).unwrap_or_default();
-    if m.contains_key(b) {
+    if tx.core.ix.sync_copy_on.contains_key(b) {
         return Ok(());
     }
-    tx.txn.put_local(&[SYNC_COPIES, t.as_bytes(), &b.0].concat(), &[c.holder.as_bytes().as_slice(), &c.copy.encode()].concat(), Shred::No)?;
-    m.insert(*b, Arc::new(c));
-    tx.core.ix.sync_copies.insert(t, Arc::new(m));
+    let v = [c.under.as_bytes().as_slice(), &[u8::from(c.sealed)], &c.copy.encode()].concat();
+    tx.txn.put_local(&[SYNC_COPIES, &b.0].concat(), &v, Shred::No)?;
+    index(tx, *b, c);
+    Ok(())
+}
+
+/// Sync copy blob `b`'s row goes (the store holds no entry of it).
+pub(crate) fn drop_blob(tx: &mut Tx<'_>, b: &BlobId) -> Result<()> {
+    let Some(t) = tx.core.ix.sync_copy_on.get(b).copied() else { return Ok(()) };
+    tx.txn.remove_local(&[SYNC_COPIES, &b.0].concat(), Shred::No)?;
+    tx.core.ix.sync_copy_on.remove(b);
+    let mut m = tx.core.ix.sync_copies.get(&t).map(|x| (**x).clone()).unwrap_or_default();
+    if let Some(c) = m.remove(b) {
+        tx.core.ix.sync_copies_under.remove(&c.under, b);
+        let left = ids_of(&m);
+        for id in c.steps.keys().filter(|id| !left.contains(*id)) {
+            tx.core.ix.sync_copy_ids.remove(id, &t);
+        }
+        if !m.values().any(|x| x.holder == c.holder) {
+            tx.core.ix.sync_copy_holders.remove(&c.holder, &t);
+        }
+    }
+    match m.is_empty() {
+        true => tx.core.ix.sync_copies.remove(&t),
+        false => tx.core.ix.sync_copies.insert(t, Arc::new(m)),
+    };
     Ok(())
 }
 
 /// The sync copies on `t` go (it is forgotten whole).
 pub(crate) fn forget(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
     let Some(m) = tx.core.ix.sync_copies.get(t).cloned() else { return Ok(()) };
-    for b in m.keys() {
-        tx.txn.remove_local(&[SYNC_COPIES, t.as_bytes(), &b.0].concat(), Shred::No)?;
+    for id in ids_of(&m) {
+        tx.core.ix.sync_copy_ids.remove(&id, t);
+    }
+    for (b, c) in m.iter() {
+        tx.core.ix.sync_copy_holders.remove(&c.holder, t);
+        tx.txn.remove_local(&[SYNC_COPIES, &b.0].concat(), Shred::No)?;
+        tx.core.ix.sync_copy_on.remove(b);
+        tx.core.ix.sync_copies_under.remove(&c.under, b);
     }
     tx.core.ix.sync_copies.remove(t);
     Ok(())
@@ -197,6 +284,19 @@ fn join_steps(a: &mut ct::SyncIds, b: &ct::SyncIds) {
 }
 
 impl Core {
+    /// Whether `u` holds sync on `y` as the sync copies of `y` counting here tell (no grant of
+    /// `y` held): a counted copy's holder is `u`, or one `u` holds sync or above on with key
+    /// access (its chain, as a grant held would give it).
+    pub(crate) fn syncs_by_copies(&self, u: &Tid, y: &Tid) -> bool {
+        self.unread(y).holders.iter().any(|h| h == u || self.keyed_role_now(u, h) >= Some(Role::Sync))
+    }
+
+    /// The things counted sync copies here name `h` holder on (`Unread::holders`): its edges
+    /// as a holder of sync alone shows them, no edge write held.
+    pub(crate) fn copies_naming(&self, h: &Tid) -> Vec<Tid> {
+        self.ix.sync_copy_holders.get(h).into_iter().flatten().copied().filter(|y| self.unread(y).holders.contains(h)).collect()
+    }
+
     /// `t` as this node keeps it unread (`Unread`; `memo`: every walk entering `t` and every
     /// sync ID judgement of it asks).
     pub(crate) fn unread(&self, t: &Tid) -> Arc<Unread> {
@@ -286,13 +386,96 @@ impl crate::engine::Engine {
         Ok(Some((copy, ais)))
     }
 
-    /// Takes sync copy `plain` as `holder`'s, blob `b` (`parse`; `note`): `false` when it is bad
-    /// input.
-    pub(crate) fn take_sync_copy(&mut self, holder: &Tid, b: &BlobId, plain: &[u8]) -> Result<bool> {
-        let Some(c) = parse(*holder, plain) else { return Ok(false) };
+    /// Takes sync copy `plain`, blob `b`, come under `under` (`sealed`: sealed to it; `parse`;
+    /// `note`): `false` when it is bad input, or the copy of a holder other than `under` that
+    /// `under` holds no sync on with key access (a stub's copy, spec/sync-set.md §2: `under`'s
+    /// readers open that holder's box by its keys).
+    pub(crate) fn take_sync_copy(&mut self, under: &Tid, b: &BlobId, plain: &[u8], sealed: bool) -> Result<bool> {
+        let Some(c) = parse(*under, sealed, plain) else { return Ok(false) };
+        if c.holder != c.under && self.core.keyed_role_now(&c.under, &c.holder) < Some(Role::Sync) {
+            return Ok(false);
+        }
         let b = *b;
         self.run(|tx| note(tx, &b, c))?;
         Ok(true)
+    }
+
+    /// No store entry names blob `b` any more: its sync copy row, if any, goes (`SYNC_COPIES`).
+    pub fn unnamed_sync_copy(&mut self, b: &BlobId) -> Result<()> {
+        if !self.core.ix.sync_copy_on.contains_key(b) {
+            return Ok(());
+        }
+        let b = *b;
+        self.run(|tx| drop_blob(tx, &b))
+    }
+
+    /// The blobs of every sync copy row (a start drops those the store does not hold).
+    pub fn sync_copy_blobs(&self) -> Vec<BlobId> {
+        self.core.ix.sync_copy_on.keys().copied().collect()
+    }
+
+    /// The sync copies read sync ID `s` carries (spec/permissions.md §4 Key part), by content
+    /// (`ContentKey`), each with the thing reading `s` it is under and its plaintext: those its
+    /// read things' certificates name (`Certs::sync_copies`, of commits held here), and each
+    /// counted copy taken under one of them (`Unread::counted`), a sealed copy's included (H's
+    /// writers log what it carries, spec/sync-inbox.md §2).
+    /// Invariant (security): what a node with no commit of the thing logs is a copy that counts
+    /// here, so a forged copy is logged only where its own steps bear its box (a genesis of the
+    /// forger's at a node holding no record of the thing), which gives nothing a reader of the
+    /// thing's own sync ID takes (`Core::unread`).
+    pub fn sync_copies_carried(&mut self, s: &osis_base::SyncId) -> Result<Arc<Carried>> {
+        self.follow_certificates()?;
+        let mut out = BTreeMap::new();
+        for t in self.read_things_of(s)? {
+            let named: Vec<(CommitId, Tid, Tid)> = self.core.certified.sync_copies.get(&t).into_iter().flat_map(|x| x.iter().copied()).collect();
+            for (c, x, h) in named {
+                if let Some((copy, _)) = self.sync_copy(&c, &x, &h)? {
+                    let plain = copy.encode();
+                    out.insert(content_key(&plain), (t, Arc::new(plain)));
+                }
+            }
+            let blobs: Vec<BlobId> = self.core.ix.sync_copies_under.get(&t).into_iter().flatten().copied().collect();
+            for b in blobs {
+                let Some(x) = self.core.ix.sync_copy_on.get(&b).copied() else { continue };
+                if !self.core.unread(&x).counted.contains(&b) {
+                    continue;
+                }
+                if let Some(c) = self.core.ix.sync_copies.get(&x).and_then(|m| m.get(&b).cloned()) {
+                    out.entry(c.key).or_insert_with(|| (t, Arc::new(c.copy.encode())));
+                }
+            }
+        }
+        Ok(Arc::new(out))
+    }
+
+    /// The sync copy rows taken under the things reading `s`: per blob, its content and whether
+    /// it came sealed.
+    pub fn sync_copy_rows(&mut self, s: &osis_base::SyncId) -> BTreeMap<BlobId, (ContentKey, bool)> {
+        let mut out = BTreeMap::new();
+        for t in self.read_things_of(s).unwrap_or_default() {
+            for b in self.core.ix.sync_copies_under.get(&t).into_iter().flatten() {
+                let Some(x) = self.core.ix.sync_copy_on.get(b) else { continue };
+                if let Some(c) = self.core.ix.sync_copies.get(x).and_then(|m| m.get(b).cloned()) {
+                    out.insert(*b, (c.key, c.sealed));
+                }
+            }
+        }
+        out
+    }
+
+    /// A fresh blob under `s` of the sync copy of content `key` it carries
+    /// (`sync_copies_carried`), framed as a record blob is (spec/wire.md §3, §4: committing to a
+    /// writer delete key of the thing it is under), its row taken as this node's: `None` where
+    /// `s` carries none such or nothing may be wrapped for it now.
+    pub fn seal_sync_copy(&mut self, s: &osis_base::SyncId, key: &ContentKey, rng: &mut dyn osis_crypto::NodeRng) -> Result<Option<(BlobId, Vec<u8>, crate::sync::Wrap)>> {
+        let carried = self.sync_copies_carried(s)?;
+        let Some((t, plain)) = carried.get(key).cloned() else { return Ok(None) };
+        let Some(w) = self.wrap_secret(&t, None)? else { return Ok(None) };
+        let Some(dk) = self.read(|tx| crate::engine::secrets::writer_delete_key_in(tx, &t))? else { return Ok(None) };
+        let (id, blob, wrap, _) = crate::sync::certblobs::seal_cert_blob(&w, &dk, &plain, BTreeSet::new(), rng)?;
+        let Some(c) = parse(t, false, &plain) else { return Ok(None) };
+        self.run(|tx| note(tx, &id, c))?;
+        Ok(Some((id, blob, wrap)))
     }
 
     /// The sync copies of `t` taken here, each with whether it counts (`Unread::counted`): tests.

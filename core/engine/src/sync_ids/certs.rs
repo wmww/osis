@@ -39,6 +39,9 @@ pub struct Certs {
     pub headers: BTreeSet<CommitId>,
     pub mintings: BTreeMap<CommitId, BTreeSet<Tid>>,
     pub records: BTreeSet<Tid>,
+    /// Sync copies (spec/wire.md §4; spec/permissions.md §4 Key part: a holder of sync alone's
+    /// edge piece), as (commit, thing, holder): no header, record or evidence goes with them.
+    pub sync_copies: BTreeSet<(CommitId, Tid, Tid)>,
 }
 
 impl Certs {
@@ -60,6 +63,7 @@ impl Certs {
             self.mintings.entry(*c).or_default().extend(ts.iter().copied());
         }
         self.records.extend(other.records.iter().copied());
+        self.sync_copies.extend(other.sync_copies.iter().copied());
     }
 
     /// Adds `other`'s commits, headers, mintings and records.
@@ -72,6 +76,7 @@ impl Certs {
             self.mintings.entry(c).or_default().extend(ts);
         }
         self.records.extend(other.records);
+        self.sync_copies.extend(other.sync_copies);
     }
 }
 
@@ -167,19 +172,19 @@ impl Engine {
         for h in &holders {
             self.public_key_record_into(ev, h, &mut out);
         }
-        self.edge_pieces_into(ev, g, None, &mut out);
+        self.edge_pieces_into(ev, g, None, false, &mut out);
         // the stubs `g`'s sync unit carries (spec/sync-set.md §2 Stub): each one's edge pieces of
-        // the holders `g` holds its role there through, as `g`'s cut names them; none of its
-        // content
+        // the holders `g` holds its role there through, as sync copies (`g`'s keys do not open
+        // the stub's thing: what it holds there is sync alone); none of its content
         for x in self.stubs_of(g) {
             for h in self.stub_holders(g, &x) {
-                self.edge_pieces_into(ev, &h, Some(&x), &mut out);
+                self.edge_pieces_into(ev, &h, Some(&x), true, &mut out);
             }
         }
         // the public pieces `g`'s sync unit carries (spec/sync-set.md §2 Public pieces): the
         // public's edge piece on each, its removal and rotations included, with their evidence
         for x in self.public_pieced(g) {
-            self.edge_pieces_into(ev, &Tid::PUBLIC, Some(&x), &mut out);
+            self.edge_pieces_into(ev, &Tid::PUBLIC, Some(&x), false, &mut out);
         }
         self.close_records(ev, &mut out);
         out
@@ -208,28 +213,26 @@ impl Engine {
     /// admins the role.
     pub(crate) fn stubs_of(&mut self, g: &Tid) -> BTreeSet<Tid> {
         let core = &self.core;
-        core.ix.closure.beyond(g).into_iter().filter(|y| y != g && !core.ix.closure.unit_holds(g, y) && core.counts_independent(y) && !core.keys_open(g, y) && (core.keyed_role_now(g, y) >= Some(osis_base::Role::Sync) || core.unread(y).holders.contains(g))).collect()
+        core.ix.closure.beyond(g).into_iter().filter(|y| y != g && !core.ix.closure.unit_holds(g, y) && core.counts_independent(y) && !core.keys_open(g, y) && (core.keyed_role_now(g, y) >= Some(osis_base::Role::Sync) || core.syncs_by_copies(g, y))).collect()
     }
 
     /// `h`'s edge pieces (spec/permissions.md §4 Key part), on `only` or on every thing `h` holds
     /// an edge on, added to `out`: each copy cut to the piece (`Cut::EdgePiece`) with its
-    /// evidence; where `h` holds sync alone, its `secrets.0` piece (spec/wire.md §4 Pieces) and
-    /// the `sync.0` parts and nothing else: no roster, no edge write, no evidence of either.
-    /// Interim (issues/account-evidence-per-unit.md, Boxes travel per holder): with its header,
-    /// until sync copies.
-    fn edge_pieces_into(&mut self, ev: &Ev, h: &Tid, only: Option<&Tid>, out: &mut Certs) {
+    /// evidence; where `h` holds sync alone (or `sync_alone`: a stub's), its sync copy
+    /// (spec/wire.md §4: its `secrets.0` piece and the `sync.0` part) and nothing else: no
+    /// header, record, edge write or evidence.
+    /// Invariant (security; spec/sync-ids.md §2 What a sync holder learns): no part of a commit
+    /// of a thing held sync alone goes as a certificate copy here, so its readers learn no
+    /// signer, path or other holder of it.
+    fn edge_pieces_into(&mut self, ev: &Ev, h: &Tid, only: Option<&Tid>, sync_alone: bool, out: &mut Certs) {
         let mut pieces = BTreeSet::new();
         let part = match only {
             Some(x) => self.key_part_on(h, x).into_iter().map(|c| (c, *x)).collect(),
             None => self.key_part(h),
         };
         for (c, x) in part {
-            if self.core.roster_of(&x).get(h).is_some_and(|e| e.role == osis_base::Role::Sync) {
-                let named = self.holders_named(&c);
-                let mut parts = self.parts_of(&c, &BTreeSet::from([x]), &["sync.0"]);
-                parts.extend(self.parts_of(&c, &BTreeSet::from([x]), &["secrets.0"]).into_iter().filter(|ai| named.get(ai).is_some_and(|hs| hs.contains(h))));
-                out.add(c, parts);
-                out.records.insert(x);
+            if sync_alone || self.core.roster_of(&x).get(h).is_some_and(|e| e.role == osis_base::Role::Sync) {
+                out.sync_copies.insert((c, x, *h));
             } else {
                 self.add_cut(&c, &x, Cut::EdgePiece(*h), out);
                 pieces.insert((c, x));

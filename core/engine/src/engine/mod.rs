@@ -729,6 +729,16 @@ indexes! {
     /// The sync copies taken here per thing (`sync_ids::unread`, rows `su/`): what a node keeping
     /// the thing unread keeps it by.
     pub sync_copies: JMap<Tid, Arc<crate::sync_ids::unread::SyncCopies>>,
+    /// `sync_copies`' thing per blob: a row goes with its blob's last entry.
+    pub sync_copy_on: JMap<osis_base::BlobId, Tid>,
+    /// `sync_copies`' blobs per thing they came under: what a sync ID of it logs.
+    pub sync_copies_under: JSetMap<Tid, osis_base::BlobId>,
+    /// The things whose `sync_copies` carry a step of each sync ID: what keeps a thing with no
+    /// record held among a sync ID's things (`Engine::sync_things_of`).
+    pub sync_copy_ids: JSetMap<SyncId, Tid>,
+    /// Per holder, the things `sync_copies` hold a copy of it on (counted or not: readers ask
+    /// `Unread::holders`).
+    pub sync_copy_holders: JSetMap<Tid, Tid>,
     /// The certificate blobs sealed here per sync ID, each with what it carries
     /// (`sync::certblobs`).
     pub cert_blobs: JMap<SyncId, Arc<crate::sync::CertBlobs>>,

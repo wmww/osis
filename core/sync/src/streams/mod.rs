@@ -589,7 +589,11 @@ pub fn opening(engine: &mut Engine, store: &crate::store::Store, s: &SyncId, e: 
         // a certificate blob is kept as it came, counted as the own store's and charged to no
         // one, as a start's open of it does (spec/permissions.md §4 Logging certificates: one
         // logged by any node counts; read keeps one per set of certificates, `cert_blobs`)
-        Ok(Opened::Records(_) | Opened::SyncCopy) => Ok(Opening::Held { gave: true }),
+        Ok(Opened::Records(_)) => Ok(Opening::Held { gave: true }),
+        // a sync copy is its bringer's word (anyone sealing to the holder or depositing under
+        // its sync ID makes one, a forged genesis counting where the thing's record is not held):
+        // charged to its bringer unless stamped (spec/sync-ids.md §5 Peer budget)
+        Ok(Opened::SyncCopy) => Ok(Opening::Held { gave: false }),
         Ok(Opened::Linked) => Ok(Opening::Taken),
         Ok(Opened::NotOpen) => Ok(Opening::NotOpen),
         Ok(Opened::Bad) => Ok(Opening::Bad),
@@ -626,6 +630,9 @@ impl Ground for EngineGround<'_> {
 
     fn unkept(&mut self, store: &crate::store::Store, b: &BlobId) -> Result<()> {
         self.engine.forget_carrier(b);
+        if !store.named(b)? {
+            self.engine.unnamed_sync_copy(b)?;
+        }
         if let Some(c) = self.engine.blob_commit(b) {
             crate::store::release(self.engine, store, &c)?;
         }

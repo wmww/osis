@@ -470,8 +470,9 @@ fn trust_records_reach_only_lowerings_on_the_account_spec_permissions_8() {
     let (node, keys) = (p.engine.tid(), p.engine.node_keys().unwrap());
     let (mut offer, _) = lp.peers[0].engine.pair(&a, &node, &keys, osis_base::Role::Admin).unwrap();
     // a record naming the grant's own write, its copy on A: no lowering, nothing to adopt
-    let grant = osis_engine::flows::offers::Trusted { commit: lp.peers[0].engine.commit_ids().into_iter().last().unwrap(), op: 0, holder: osis_base::Holder::Thing(node), copy: offer.grant.clone() };
-    offer.trust.push(grant);
+    let osis_engine::flows::offers::Pieces::Whole { grant, trust, .. } = &mut offer.pieces else { panic!("an admin's offer is whole") };
+    let record = osis_engine::flows::offers::Trusted { commit: lp.peers[0].engine.commit_ids().into_iter().last().unwrap(), op: 0, holder: osis_base::Holder::Thing(node), copy: grant.clone() };
+    trust.push(record);
     p.engine.take_pairing(&offer).unwrap();
     assert!(p.engine.disputes(usize::MAX).0.is_empty());
 }

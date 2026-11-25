@@ -150,7 +150,7 @@ pub(crate) fn forget_blob(tx: &mut Tx<'_>, s: &SyncId, b: &BlobId) -> Result<()>
 /// A fresh durable blob of `plain` committing to writer delete key `dk`, and its wrap under read
 /// secret `w` (spec/wire.md §3: no expiry, order 0; a fresh encryption per sync ID; its blind
 /// its key's link blind, spec/crypto.md §7).
-fn seal_cert_blob(w: &osis_crypto::Secret32, dk: &osis_crypto::VerifyingKey, plain: &[u8], tids: BTreeSet<Tid>, rng: &mut dyn NodeRng) -> Result<(BlobId, Vec<u8>, Wrap, CertBlob)> {
+pub(crate) fn seal_cert_blob(w: &osis_crypto::Secret32, dk: &osis_crypto::VerifyingKey, plain: &[u8], tids: BTreeSet<Tid>, rng: &mut dyn NodeRng) -> Result<(BlobId, Vec<u8>, Wrap, CertBlob)> {
     let (salt, key, blind) = osis_blob::linked_prefix_inputs(rng);
     let prefix = osis_blob::Prefix::for_keys(salt, &blind, None, &[(DELETE_WRITER, *dk)])?.with_class(osis_blob::Class::Durable);
     let (key, blob) = osis_blob::frame_under(key, &prefix, plain)?;

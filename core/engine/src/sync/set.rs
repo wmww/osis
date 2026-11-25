@@ -381,6 +381,8 @@ impl Engine {
     pub(crate) fn sync_things_of(&mut self, s: &SyncId) -> Result<Vec<Tid>> {
         let mut things: BTreeSet<Tid> = self.core.ix.sync_recorders.get(s).into_iter().flatten().copied().collect();
         things.extend(self.core.followed_links.naming(s));
+        // a thing kept unread with no record: its sync copies' steps (`owned_sync_ids` judges)
+        things.extend(self.core.ix.sync_copy_ids.get(s).into_iter().flatten().copied());
         let mut out = Vec::new();
         for t in things {
             if self.owned_sync_ids(&t)?.iter().any(|o| o.id == *s) {

@@ -60,6 +60,10 @@ pub struct Write<H> {
     /// (keys-open travel) It gives read or above (any `until`) and is no self-removal: a step by
     /// which keys open.
     pub gives_read: bool,
+    /// Its holder's role changes travel by it (Role changes travel): all but a grant of sync
+    /// alone that lowers nothing, which reaches its holder as sync copies alone, no header
+    /// (spec/permissions.md §4 Key part).
+    pub travels: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -758,14 +762,16 @@ where
             let e = (w.holder, c.1);
             self.ix.wrote(Row::Edge(&e));
             self.ix.on_edge.entry(e).or_default().insert(c);
-            self.ix.by_holder.entry(w.holder).or_default().insert(c);
+            if w.travels {
+                self.ix.by_holder.entry(w.holder).or_default().insert(c);
+            }
             for sid in self.edge_sids.get(&e).cloned().unwrap_or_default() {
                 todo.push(&sid, Item::Copy(c, Reason::Edge(e)));
             }
             // a seed of each sync ID its holder's role changes travel under (a thing's: a key
             // is no sync ID's actor and holds no read)
             let Some(holder) = w.holder.thing() else { continue };
-            for sid in self.open_sids.get(&holder).cloned().unwrap_or_default() {
+            for sid in self.open_sids.get(&holder).cloned().unwrap_or_default().into_iter().filter(|_| w.travels) {
                 if let Some(s) = self.sids.get_mut(&sid)
                     && !s.travel.seeds.contains_key(&c)
                 {

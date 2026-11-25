@@ -18,18 +18,24 @@ use crate::sync_ids::Cut;
 use osis_base::{CommitId, Holder, Tid, Value};
 use osis_schema::core_types as ct;
 
-/// An offer of `target` handed over by hand: the grant's edge piece, as a `grant@~0` fire
-/// carries one (`EdgePiece`), and the offering node's trust records on the target, each a
-/// trusted lowering's write ID with its piece on it.
+/// An offer of `target` handed over by hand (`Pieces`).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Offer {
     pub target: Tid,
-    pub grant: EdgePiece,
-    /// The pieces of the target's `sync.0` writes held that `grant`'s evidence does not carry
-    /// (the rest of the holder's edge piece on it, spec/permissions.md §4 Key part): its sync
-    /// IDs, which the taker syncs it by.
-    pub sync: Vec<EdgePiece>,
-    pub trust: Vec<Trusted>,
+    pub pieces: Pieces,
+}
+
+/// What an offer carries: to a holder reading or above, the grant's edge piece, as a `grant@~0`
+/// fire carries one (`EdgePiece`), the pieces of the target's `sync.0` writes held that its
+/// evidence does not carry (the rest of the holder's edge piece on it, spec/permissions.md §4 Key
+/// part: its sync IDs, which the taker syncs it by), and the offering node's trust records on the
+/// target, each a trusted lowering's write ID with its piece on it; to a holder of sync alone,
+/// the sync copies of the grant and of those `sync.0` writes (`SyncCopyPlaintext`, spec/wire.md
+/// §4), no header, evidence or trust record.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Pieces {
+    Whole { grant: EdgePiece, sync: Vec<EdgePiece>, trust: Vec<Trusted> },
+    SyncAlone(Vec<Vec<u8>>),
 }
 
 /// A trust record on the target (spec/permissions.md §5.1 Sides): edge write `op` of `commit`,
@@ -43,13 +49,24 @@ pub struct Trusted {
 }
 
 impl Offer {
+    /// `[target, grant, [sync], [trust]]`, or `[target, [copy]]` for a holder of sync alone.
     pub fn to_value(&self) -> Value {
-        let trust = self.trust.iter().map(|t| Value::List(vec![Value::Bytes(t.commit.0.to_vec()), Value::Int(i64::from(t.op)), crate::engine::index::Rec::to(&t.holder), t.copy.to_value()])).collect();
-        Value::List(vec![Value::Bytes(self.target.as_bytes().to_vec()), self.grant.to_value(), Value::List(self.sync.iter().map(EdgePiece::to_value).collect()), Value::List(trust)])
+        let target = Value::Bytes(self.target.as_bytes().to_vec());
+        match &self.pieces {
+            Pieces::Whole { grant, sync, trust } => {
+                let trust = trust.iter().map(|t| Value::List(vec![Value::Bytes(t.commit.0.to_vec()), Value::Int(i64::from(t.op)), crate::engine::index::Rec::to(&t.holder), t.copy.to_value()])).collect();
+                Value::List(vec![target, grant.to_value(), Value::List(sync.iter().map(EdgePiece::to_value).collect()), Value::List(trust)])
+            }
+            Pieces::SyncAlone(copies) => Value::List(vec![target, Value::List(copies.iter().map(|c| Value::Bytes(c.clone())).collect())]),
+        }
     }
 
     pub fn from_value(v: &Value) -> Option<Offer> {
         let Value::List(f) = v else { return None };
+        if let [Value::Bytes(a), Value::List(copies)] = f.as_slice() {
+            let copies = copies.iter().map(|c| if let Value::Bytes(b) = c { Some(b.clone()) } else { None }).collect::<Option<Vec<_>>>()?;
+            return Some(Offer { target: Tid::from_bytes(a.as_slice().try_into().ok()?), pieces: Pieces::SyncAlone(copies) });
+        }
         let [Value::Bytes(a), grant, Value::List(sync), Value::List(trust)] = f.as_slice() else { return None };
         let trust = trust.iter().map(|t| {
             let Value::List(x) = t else { return None };
@@ -57,7 +74,7 @@ impl Offer {
             Some(Trusted { commit: CommitId(c.as_slice().try_into().ok()?), op: u32::try_from(*op).ok()?, holder: <Holder as crate::engine::index::Rec>::from(holder)?, copy: EdgePiece::from_value(copy)? })
         }).collect::<Option<Vec<_>>>()?;
         let sync = sync.iter().map(EdgePiece::from_value).collect::<Option<Vec<_>>>()?;
-        Some(Offer { target: Tid::from_bytes(a.as_slice().try_into().ok()?), grant: EdgePiece::from_value(grant)?, sync, trust })
+        Some(Offer { target: Tid::from_bytes(a.as_slice().try_into().ok()?), pieces: Pieces::Whole { grant: EdgePiece::from_value(grant)?, sync, trust } })
     }
 }
 
@@ -73,9 +90,20 @@ impl Engine {
         let grant = grant.ok_or(Error::BadInput("no grant of the holder on the thing to offer"))?;
         let (n, t2) = (*holder, *t);
         self.run(|tx| crate::flows::inbox::unowe_grant(tx, n, grant, t2))?;
-        let grant_v = self.edge_piece(&grant, t, Cut::EdgePiece(*holder))?.ok_or(Error::BadInput("no grant of the holder on the thing to offer"))?;
         let ak = ct::SYNC.name();
         let syncs: Vec<CommitId> = self.core.on_thing(t).filter(|c| self.core.ix.commits.get(c).is_some_and(|m| m.header.aspects.iter().enumerate().any(|(ai, x)| x.tid == *t && x.ak == ak && m.holds(ai)))).collect();
+        // a holder of sync alone: sync copies alone, no header, evidence or trust record
+        // (spec/wire.md §4 Sync copy)
+        if self.core.roster_of(t).get(holder).is_some_and(|e| e.role == osis_base::Role::Sync) {
+            let mut copies = Vec::new();
+            for c in std::iter::once(grant).chain(syncs.into_iter().filter(|c| *c != grant)) {
+                if let Some((copy, _)) = self.sync_copy(&c, t, holder)? {
+                    copies.push(copy.encode());
+                }
+            }
+            return Ok(Offer { target: *t, pieces: Pieces::SyncAlone(copies) });
+        }
+        let grant_v = self.edge_piece(&grant, t, Cut::EdgePiece(*holder))?.ok_or(Error::BadInput("no grant of the holder on the thing to offer"))?;
         // each copy once: a `sync.0` write the grant's evidence carries already (the target's
         // first, at least) is not handed over again
         let mut sync = Vec::new();
@@ -91,7 +119,7 @@ impl Engine {
                 trust.push(Trusted { commit: w.0, op: w.1, holder, copy });
             }
         }
-        Ok(Offer { target: *t, grant: grant_v, sync, trust })
+        Ok(Offer { target: *t, pieces: Pieces::Whole { grant: grant_v, sync, trust } })
     }
 
     /// Takes offer `o` handed over by hand (spec/sync-inbox.md §5): the grant's copy, its
@@ -103,22 +131,48 @@ impl Engine {
     /// may write.
     pub fn take_offer(&mut self, o: &Offer, holder: &Tid) -> Result<Done> {
         let t = o.target;
-        self.take_parts(&o.grant, &t)?;
-        for p in &o.sync {
-            self.take_parts(p, &t)?;
-        }
-        // the offer is to a node of its holder (spec/sync-inbox.md §5 By hand): the node thing,
-        // or a thing it may write (an account), as `offered_to` reads a fire's
         let me = self.core.tid();
-        if !self.core.key_holders(&t).iter().any(|(h, _)| *h == me || self.core.role_now(&me, h) >= Some(osis_base::Role::Write)) {
-            return Err(Error::BadInput("the offer gives this node no role"));
-        }
+        let mine = |e: &Engine, h: &Tid| *h == me || e.core.role_now(&me, h) >= Some(osis_base::Role::Write);
+        let trust = match &o.pieces {
+            Pieces::Whole { grant, sync, trust } => {
+                self.take_parts(grant, &t)?;
+                for p in sync {
+                    self.take_parts(p, &t)?;
+                }
+                // the offer is to a node of its holder (spec/sync-inbox.md §5 By hand): the node
+                // thing, or a thing it may write (an account), as `offered_to` reads a fire's
+                if !self.core.key_holders(&t).iter().any(|(h, _)| mine(self, h)) {
+                    return Err(Error::BadInput("the offer gives this node no role"));
+                }
+                trust.as_slice()
+            }
+            // sync copies of a holder of this node's, each taken under its holder (kept unread
+            // here: a box counts only by a step bearing its secret, `sync_ids::unread`)
+            Pieces::SyncAlone(copies) => {
+                let Some((x, h)) = copies.iter().find_map(|c| crate::sync_ids::unread::holder_of(c)) else { return Err(Error::BadInput("an offer boxing no holder")) };
+                if x != t || !mine(self, &h) {
+                    return Err(Error::BadInput("an offer's sync copy of another thing or holder"));
+                }
+                let mut gave = false;
+                for c in copies {
+                    let b = osis_base::BlobId(crate::sync_ids::unread::content_key(c));
+                    if !self.take_sync_copy(&h, &b, c, false)? || self.core.ix.sync_copy_on.get(&b) != Some(&t) {
+                        return Err(Error::BadInput("an offer's sync copy"));
+                    }
+                    gave |= self.core.unread(&t).counted.contains(&b);
+                }
+                if !gave {
+                    return Err(Error::BadInput("the offer gives this node no role"));
+                }
+                &[]
+            }
+        };
         // trust records reach only lowerings on the target (an edge write carrying a frontier
         // the walk holds there, the trust set's kind, spec/permissions.md §5.1): an offering node
         // may side for the taker in the target's disputes, as it would by syncing it first, and
         // nowhere else
         let mut adopt = Vec::new();
-        for x in &o.trust {
+        for x in trust {
             self.take_parts(&x.copy, &t)?;
             let w = osis_perm::WriteId(x.commit, x.op);
             let lowering = self.core.timelines().role_commit(&w.0).is_some_and(|c| c.frontier.is_some());

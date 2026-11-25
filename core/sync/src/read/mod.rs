@@ -29,7 +29,7 @@ mod live;
 mod owed;
 mod pieces;
 
-pub use ground::{BlobInfo, CertBlobsMissing, Facts, Ground, PieceAt, Seen, SrcView, StepReady};
+pub use ground::{BlobInfo, CertBlobsMissing, SyncCopiesDue, Facts, Ground, PieceAt, Seen, SrcView, StepReady};
 pub use live::Live;
 
 /// What read asks a source for on a connection, outside any message (spec/sync-judgement.md §3
@@ -90,6 +90,9 @@ pub struct Read {
     /// (spec/permissions.md §4, spec/sync-judgement.md §1): one record blob of them is logged as
     /// they move.
     cert_blobs: Effects<SyncId, Arc<CertBlobsMissing>>,
+    /// Per S, the sync copies S carries set against their logs in the own store: each missing
+    /// one logged, a duplicate or one carried no more unlogged (`Ground::sync_copies_due`).
+    sync_copies: Effects<SyncId, Arc<SyncCopiesDue>>,
     /// Per S, whether this node's step of S is due with the rotations it registers logged here
     /// (`Ground::step_ready`): issued then, whatever connections are open.
     steps: Effects<SyncId, bool>,
@@ -141,6 +144,7 @@ impl Default for Read {
             mints: Stamped::default(),
             toward: Effects::new("read: toward"),
             cert_blobs: Effects::new("read: certificate blobs"),
+            sync_copies: Effects::new("read: sync copies"),
             steps: Effects::new("read: steps"),
             step_since: BTreeMap::new(),
             freed: Effects::new("read: freed"),
@@ -208,6 +212,7 @@ impl Read {
         if !self.cert_blobs.wants(s) {
             self.cert_since.insert(*s, g.place());
             self.cert_blobs.want(*s);
+            self.sync_copies.want(*s);
         }
     }
 
@@ -327,6 +332,31 @@ impl Read {
             }
             if !now.missing.is_empty() {
                 g.log_cert_blob(&s, &now.missing)?;
+                acted = true;
+            }
+        }
+        // the sync copies each S carries, one blob of each content, while a reader can pull it
+        // (spec/permissions.md §4 Logging certificates)
+        for s in self.sync_copies.due() {
+            if !g.reads(&s) {
+                self.sync_copies.unwant(&s);
+                continue;
+            }
+            let since = self.cert_since.get(&s).copied().unwrap_or(0);
+            let Some((_, now)) = self.sync_copies.try_settle(&s, || sync_copies_due(g, &s, since).map(Arc::new))? else { continue };
+            if let Some(w) = now.wait {
+                wait_pass(&mut self.waits, s, w);
+            }
+            for b in &now.unneeded {
+                g.unlog(&s, b)?;
+                acted = true;
+            }
+            for b in &now.stale {
+                g.restamp(&s, b)?;
+                acted = true;
+            }
+            for k in &now.missing {
+                g.log_sync_copy(&s, k)?;
                 acted = true;
             }
         }
@@ -772,6 +802,20 @@ fn wait_pass(waits: &mut Stamped<SyncId, u64>, s: SyncId, w: u64) {
     if waits.get(&s).is_none_or(|x| *x < w) {
         waits.insert(s, w);
     }
+}
+
+/// `Ground::sync_copies_due` while a reader can pull S, else nothing, its missing ones waiting
+/// as `cert_blobs_missing`'s do (a source's blob, pulled, may carry them).
+fn sync_copies_due(g: &mut impl Ground, s: &SyncId, since: u64) -> Result<SyncCopiesDue> {
+    let mut x = g.sync_copies_due(s)?;
+    if !x.missing.is_empty() && !g.first_synced(s)? && !g.passed(s, since) {
+        x.missing.clear();
+        x.wait = Some(since);
+    }
+    if x == SyncCopiesDue::default() || g.pullable(s)? {
+        return Ok(x);
+    }
+    Ok(SyncCopiesDue::default())
 }
 
 /// `Ground::cert_blobs_missing` while a reader can pull S, else nothing (`pullable` read inside,

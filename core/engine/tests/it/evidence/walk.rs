@@ -138,7 +138,7 @@ impl Node {
                     PartKind::Edge(e) => {
                         let Holder::Thing(holder) = e.holder else { continue };
                         let leave = holder == *p.path.last().unwrap_or(&c.signer);
-                        Kind::Write(Write { holder, gives_read: e.value.is_some_and(|v| v.role >= Role::Read) && !leave })
+                        Kind::Write(Write { holder, gives_read: e.value.is_some_and(|v| v.role >= Role::Read) && !leave, travels: !(e.value.is_some_and(|v| v.role == Role::Sync) && e.frontier.is_none()) })
                     }
                     PartKind::Delta(_) => Kind::Content,
                     PartKind::None => continue,

@@ -29,6 +29,20 @@ pub(crate) fn deliver_copy(tx: &mut Tx<'_>, holder: Tid, c: CommitId, target: Ti
     if holder.is_public() || tx.core.role_now(&me, &holder) >= Some(Role::Write) {
         return Ok(());
     }
+    // a holder of sync alone gets no header (spec/wire.md §4 Sync copy): the commit goes as its
+    // sealed sync copy, with those of the target's `sync.0` writes held (its sync IDs, by whose
+    // steps the box it carries counts), never as a `grant@~0` fire's certificate copy. A lowering
+    // to sync goes as one: the holder read the target, and loses that by the edge write alone
+    // (spec/permissions.md §3 Lost access)
+    let lowering = tx.core.timelines().role_commit(&c).is_some_and(|rc| rc.frontier.is_some());
+    if !lowering && tx.core.roster_of(&target).get(&holder).is_some_and(|e| e.role == Role::Sync) {
+        deliver_sealed(tx, holder, c, target)?;
+        let steps: Vec<CommitId> = Ak::new("sync.0").ok().and_then(|k| tx.core.ix.by_aspect.get(&(target, k))).into_iter().flatten().map(|(_, x)| *x).filter(|x| *x != c).collect();
+        for x in steps {
+            deliver_sealed(tx, holder, x, target)?;
+        }
+        return Ok(());
+    }
     fire_copy(tx, holder, c, target)
 }
 
@@ -608,7 +622,14 @@ impl Engine {
         if let Fire::Copy { commit, target } = &o.what
             && self.core.roster_of(target).get(&o.thing).is_some_and(|e| e.role == Role::Sync)
         {
-            let Some((copy, ais)) = self.sync_copy(commit, target, &o.thing)? else { return Ok(None) };
+            let Some((copy, ais)) = self.sync_copy(commit, target, &o.thing)? else {
+                // a commit held carrying nothing of the holder's: owed no more
+                if self.header(commit).is_some() {
+                    let id = *id;
+                    self.run(|tx| drop_fire(tx, &id))?;
+                }
+                return Ok(None);
+            };
             let Some(h) = self.header(commit) else { return Ok(None) };
             let fire = osis_blob::Sealed::SyncCopy(copy.encode());
             let sealed = self.seal_payload(&h, &ais, &o.thing, &epoch, &kem, &fire)?;
@@ -869,7 +890,7 @@ impl Engine {
         // a holder of sync alone's sync copy (form 2): taken for its box and steps alone
         // (`sync_ids::unread`), judged by nothing but its bytes
         let fire = match fire {
-            osis_blob::Sealed::SyncCopy(plain) => return Ok(if self.take_sync_copy(t, b, &plain)? { Opened::SyncCopy } else { Opened::Bad }),
+            osis_blob::Sealed::SyncCopy(plain) => return Ok(if self.take_sync_copy(t, b, &plain, true)? { Opened::SyncCopy } else { Opened::Bad }),
             osis_blob::Sealed::Fire(f) => f,
         };
         let Ok(commit) = osis_commit::CommitBlob::decode(&osis_base::encode(&fire.commit)) else { return Ok(Opened::Bad) };

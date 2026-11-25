@@ -889,7 +889,7 @@ pub(crate) fn reached_carried(core: &Core, y: &Tid) -> bool {
 /// Invariant: `y`'s own unit never carries it (`u != y`).
 fn edge_carries(core: &Core, v: Vx, y: &Tid) -> bool {
     match v.0 {
-        Ctx::Read(u) if u != *y => core.keys_open(&u, y) || core.keyed_role_now(&u, y) >= Some(Role::Sync),
+        Ctx::Read(u) if u != *y => core.keys_open(&u, y) || core.keyed_role_now(&u, y) >= Some(Role::Sync) || core.syncs_by_copies(&u, y),
         _ => false,
     }
 }
@@ -907,12 +907,15 @@ fn read_carriers<'a>(core: &'a Core, y: &Tid, pending: bool) -> impl Iterator<It
 }
 
 /// The holders whose edge piece on `y` carries it (`given`): its holders now, or every
-/// holder named on it while the node holds a read secret of `y`.
+/// holder named on it while the node holds a read secret of `y`; and the holders of the sync
+/// copies of `y` that count here (`Unread::holders`: a holder of sync alone's edge piece, no
+/// edge write in it, spec/permissions.md §4 Key part).
 fn pieces_on(core: &Core, y: &Tid, pending: bool) -> std::vec::IntoIter<Tid> {
     let pending = pending && core.ix.secrets.get(y).is_some_and(|e| e.role(Role::Read).holds_any());
     let current: BTreeSet<Tid> = core.edge_holders(y).into_iter().map(|(h, _)| h).collect();
-    let named: Vec<Tid> = core.ix.held.holders_of(y).copied().filter(|h| h != y && (pending || current.contains(h))).collect();
-    named.into_iter()
+    let mut named: BTreeSet<Tid> = core.ix.held.holders_of(y).copied().filter(|h| h != y && (pending || current.contains(h))).collect();
+    named.extend(core.unread(y).holders.iter().copied().filter(|h| h != y));
+    named.into_iter().collect::<Vec<_>>().into_iter()
 }
 
 /// Whether read thing `h` stays read with `y` out of the node closure (`founded`): a read
@@ -1107,6 +1110,10 @@ fn named_up(core: &Core, t: &Tid) -> bool {
     let mut seen = BTreeSet::from([*t]);
     let mut todo = vec![*t];
     while let Some(x) = todo.pop() {
+        let by_copies = core.copies_naming(&x);
+        if by_copies.iter().any(|y| core.ix.closure.holds(y)) {
+            return true;
+        }
         for y in core.ix.held.named_on(&x) {
             if core.ix.closure.holds(y) {
                 if core.keyed_role_now(&x, y).is_some() {

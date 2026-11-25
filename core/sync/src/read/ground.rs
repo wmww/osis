@@ -274,6 +274,18 @@ pub trait Ground {
         let _ = (s, tids);
         Ok(())
     }
+    /// The sync copies S carries (spec/permissions.md §4 Key part, Logging certificates) set
+    /// against the sync copy blobs the own store holds under S (`SyncCopiesDue`).
+    fn sync_copies_due(&mut self, s: &SyncId) -> Result<SyncCopiesDue> {
+        let _ = s;
+        Ok(SyncCopiesDue::default())
+    }
+    /// Logs the sync copy of content `key` S carries under S in the own store (a fresh
+    /// encryption).
+    fn log_sync_copy(&mut self, s: &SyncId, key: &[u8; 32]) -> Result<()> {
+        let _ = (s, key);
+        Ok(())
+    }
     /// The links of `c`'s body of `parts`, where its pieces start (`Engine::piece_roots`;
     /// spec/sync-judgement.md §1).
     fn piece_roots(&mut self, c: &CommitId, parts: &osis_engine::sync::PartSet) -> Result<Arc<Vec<PieceLink>>> {
@@ -429,6 +441,21 @@ pub enum PieceAt {
     Peer,
     /// Tombstoned: never logged again under that blob ID.
     Tombstoned,
+}
+
+/// `Ground::sync_copies_due` under one S: per sync copy S carries (by content), its log here.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SyncCopiesDue {
+    /// Carried, with no entry of its content in the own store: each logged.
+    pub missing: BTreeSet<[u8; 32]>,
+    /// The entry standing as a carried copy's log (of its content, the lowest blob ID) where
+    /// not stamped under S's head write key that this node holds: stamped in place.
+    pub stale: BTreeSet<osis_base::BlobId>,
+    /// Entries that leave the own store, no tombstone: one of a carried content beside its
+    /// log (a lower blob ID of the same bytes), an own one carrying nothing S carries now.
+    pub unneeded: BTreeSet<osis_base::BlobId>,
+    /// What is missing waits for S's first sync here, or a complete pass begun after this place.
+    pub wait: Option<u64>,
 }
 
 /// `Ground::cert_blobs_missing`, of one kind under one S.

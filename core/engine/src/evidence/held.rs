@@ -119,7 +119,8 @@ pub(crate) fn copy_parts(tx: &mut Tx<'_>, id: &CommitId) -> Result<CopyParts> {
                     // a key's grant gives no read (nothing is sealed to a key)
                     let leave = o.holder == Holder::Thing(*path.last().unwrap_or(&rc.signer));
                     let gives_read = o.holder.thing().is_some() && o.edge.is_some_and(|e| e.role >= Role::Read) && !leave;
-                    let kind = Kind::Write(Write { holder: o.holder, gives_read });
+                    let travels = !(o.edge.is_some_and(|e| e.role == Role::Sync) && rc.frontier.is_none());
+                    let kind = Kind::Write(Write { holder: o.holder, gives_read, travels });
                     let mint = minted(&mut path.iter().copied().chain([rc.signer, t]));
                     let hops = osis_perm::paths::hops(&mint, rc.key, rc.signer, path, rc.direct, t, Some(o.holder), true);
                     on.push(Part { kind, hops: Some(hops), dels: dels.clone(), steps: vec![] });

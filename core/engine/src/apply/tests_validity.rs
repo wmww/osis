@@ -206,10 +206,11 @@ mod tests {
         assert!(!no_rest.contains(&at_a[0]) && !no_rest.is_empty(), "control: without the rest, no epoch before the grant: {no_rest:?}");
         assert!(run(Role::Sync, true).0.is_empty(), "sync alone: no read epoch");
     }
-    // spec/permissions.md §4 Copies, spec/wire.md §4 Pieces: a role commit boxing several
-    // holders (a cut grant re-boxing the holders there, a removal rotating to the rest) reaches
-    // the holder its fire is for with that holder's piece, and the rest only where it reads x:
-    // never another holder's piece. The fire, as it is sealed and taken, not the cut alone.
+    // spec/permissions.md §4 Copies, spec/wire.md §4 Pieces, Sync copy: a role commit boxing
+    // several holders (a cut grant re-boxing the holders there, a removal rotating to the rest)
+    // reaches the holder its fire is for with that holder's piece, and the rest only where it
+    // reads x: never another holder's piece; a holder of sync alone, its sync copy alone (no
+    // header held). The delivery, as it is sealed and taken, not the cut alone.
     #[test]
     fn a_fire_carries_its_holders_piece_alone_spec_permissions_4() {
         let run = |c_role: Role, remove: bool| {
@@ -230,15 +231,16 @@ mod tests {
             let pieces: Vec<usize> = lp.peers[0].engine.core.ix.commits[&g].aspect_parts(&x, &secrets).collect();
             assert!(pieces.iter().any(|ai| named[ai].contains(&b)), "the commit boxes b: {named:?}");
             lp.pass_fires(2).unwrap();
-            let m = lp.peers[2].engine.core.ix.commits.get(&g).cloned().expect("c took its fire");
+            let copies: Vec<Tid> = lp.peers[2].engine.sync_copies_of(&x).iter().filter(|k| k.1.copy.commit == g).map(|k| k.1.holder).collect();
+            let Some(m) = lp.peers[2].engine.core.ix.commits.get(&g).cloned() else { return (Vec::new(), c, copies) };
             let held: Vec<BTreeSet<Tid>> = pieces.iter().filter(|ai| m.holds(**ai)).map(|ai| named[ai].clone()).collect();
-            (held, c)
+            (held, c, copies)
         };
-        let (held, c) = run(Role::Sync, false);
-        assert_eq!(held, vec![BTreeSet::from([c])], "sync alone, re-boxed: its piece alone");
-        let (held, c) = run(Role::Read, false);
+        let (held, c, copies) = run(Role::Sync, false);
+        assert!(held.is_empty() && copies == vec![c], "sync alone, re-boxed: its sync copy alone, no header: {held:?} {copies:?}");
+        let (held, c, _) = run(Role::Read, false);
         assert_eq!(held.iter().filter(|n| !n.is_empty()).cloned().collect::<Vec<_>>(), vec![BTreeSet::from([c])], "a reader: its piece and the rest, no other holder's: {held:?}");
-        let (held, c) = run(Role::Sync, true);
+        let (held, c, _) = run(Role::Sync, true);
         assert!(held.iter().all(|n| *n == BTreeSet::from([c])), "removed: no other holder's piece, no rest: {held:?}");
     }
     // spec/wire.md §4 Pieces (a `secrets.0` snapshot pieced alike), spec/commits.md §5 Covered:

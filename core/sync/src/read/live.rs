@@ -3,7 +3,7 @@
 //! failing in the middle of a settle fails the node's step, closing every connection.
 
 use super::{Ask, Why};
-use super::ground::{BlobInfo, CertBlobsMissing, Facts, Ground, PieceAt, Seen, SrcView, StepReady};
+use super::ground::{BlobInfo, CertBlobsMissing, SyncCopiesDue, Facts, Ground, PieceAt, Seen, SrcView, StepReady};
 use osis_engine::sync::PieceLink;
 use osis_blob::StepId;
 use crate::opens::Opens;
@@ -656,6 +656,48 @@ impl Ground for Live<'_, '_> {
             out.deletes = deletes;
         }
         Ok(out)
+    }
+    fn sync_copies_due(&mut self, s: &SyncId) -> Result<SyncCopiesDue> {
+        let carried = self.cx.engine.sync_copies_carried(s)?;
+        let rows = self.cx.engine.sync_copy_rows(s);
+        let mut out = SyncCopiesDue::default();
+        // per content, its log: the lowest blob ID held in the own store (rows in blob order);
+        // a sealed copy is never one (spec/sync-inbox.md §2: H's writers log what it carries).
+        // Keyed by content, so a forged copy of the same commit (another box) never displaces
+        // the real one's log
+        let mut logs: BTreeMap<[u8; 32], BlobId> = BTreeMap::new();
+        for (b, (k, sealed)) in rows.iter() {
+            if *sealed {
+                continue;
+            }
+            let Some(e) = self.cx.store.entry(s, b)? else { continue };
+            if !carried.contains_key(k) {
+                // one carried no more (counted no more, or no more in the key part) leaves the
+                // own log; a peer's stays as its stamp or budget keeps it
+                if e.own {
+                    out.unneeded.insert(*b);
+                }
+                continue;
+            }
+            if logs.contains_key(k) {
+                out.unneeded.insert(*b);
+                continue;
+            }
+            logs.insert(*k, *b);
+            if !self.under_head(s, &e)? {
+                out.stale.insert(*b);
+            }
+        }
+        if self.cx.engine.cert_wrap(s)? {
+            out.missing = carried.keys().filter(|k| !logs.contains_key(*k)).copied().collect();
+        }
+        Ok(out)
+    }
+    fn log_sync_copy(&mut self, s: &SyncId, key: &[u8; 32]) -> Result<()> {
+        let Some((blob, bytes, wrap)) = self.cx.engine.seal_sync_copy(s, key, self.cx.rng)? else { return Ok(()) };
+        let e = own_entry(self.cx, s, blob, wrap, Class::Durable, true)?;
+        self.cx.store.log(s, e, Some(bytes), None)?;
+        Ok(())
     }
     fn forget_cert_blobs(&mut self, s: &SyncId, gone: &BTreeSet<osis_base::BlobId>) -> Result<()> {
         for b in gone {

@@ -71,7 +71,7 @@ fn a_rotation_reaches_a_holder_of_sync_alone_as_a_sealed_copy_spec_permissions_4
     assert_eq!(Some(out.sync_id), lp.peers[2].engine.sync_id_of(&t).unwrap(), "under T's own sync ID");
     assert!(matches!(open(&mut lp, 2, &out), Opened::SyncCopy), "opened as the rotation's sync copy");
     // its box opens, but no step bears the secret yet: kept for nothing (spec/sync.md §3)
-    let copies = lp.peers[2].engine.sync_copies_of(&g);
+    let copies: Vec<_> = lp.peers[2].engine.sync_copies_of(&g).into_iter().filter(|c| c.1.copy.commit == rot).collect();
     assert!(copies.len() == 1 && copies[0].1.holder == t && !copies[0].2, "taken as T's, not counted: {copies:?}");
     assert_eq!(sync_held(&lp, 2, &g), was, "no step bears it yet");
     // G's admin issues the step: the secret is kept and the copy counts
@@ -80,7 +80,7 @@ fn a_rotation_reaches_a_holder_of_sync_alone_as_a_sealed_copy_spec_permissions_4
     lp.sync_all().unwrap();
     let now = sync_held(&lp, 2, &g);
     assert!(now.len() > was.len() && now.is_superset(&was), "G's new sync secret held: {was:?} -> {now:?}");
-    assert!(lp.peers[2].engine.sync_copies_of(&g).iter().all(|c| c.2), "counted once a step bears it");
+    assert!(lp.peers[2].engine.sync_copies_of(&g).iter().filter(|c| c.1.copy.commit == rot).all(|c| c.2), "counted once a step bears it");
 }
 
 /// Peer 2 forges a role commit on G making T an admin (it holds write there, no admin: the writer
@@ -236,10 +236,10 @@ fn a_sync_copy_of_another_holder_is_refused_spec_wire_4() {
     let (copy, _) = lp.peers[0].engine.sync_copy(&rot, &g, &t).unwrap().expect("T's sync copy");
     let plain = copy.encode();
     let b = osis_base::BlobId([9; 32]);
-    assert!(!lp.peers[1].engine.take_sync_copy(&u, &b, &plain).unwrap(), "T's piece is no copy of U's");
+    assert!(!lp.peers[1].engine.take_sync_copy(&u, &b, &plain, false).unwrap(), "T's piece is no copy of U's");
     assert!(lp.peers[1].engine.sync_copies_of(&g).is_empty(), "nothing taken");
     let was = sync_held(&lp, 2, &g);
-    assert!(lp.peers[2].engine.take_sync_copy(&t, &b, &plain).unwrap(), "T's own");
+    assert!(lp.peers[2].engine.take_sync_copy(&t, &b, &plain, false).unwrap(), "T's own");
     assert_eq!(sync_held(&lp, 2, &g), was, "no step bears it: kept for nothing");
 }
 
@@ -255,9 +255,9 @@ fn garbage_does_not_take_the_real_copys_place_spec_sync_3() {
     let rot = lp.peers[0].engine.rotate_leaving_out(&g, &[Role::Sync], &[]).unwrap().unwrap();
     let (copy, _) = lp.peers[0].engine.sync_copy(&rot, &g, &t).unwrap().expect("T's sync copy");
     let junk = osis_commit::SyncCopy { piece: Some(vec![0x81, 0x01]), ..copy.clone() };
-    assert!(!lp.peers[2].engine.take_sync_copy(&t, &osis_base::BlobId([1; 32]), &junk.encode()).unwrap(), "garbage: bad input");
+    assert!(!lp.peers[2].engine.take_sync_copy(&t, &osis_base::BlobId([1; 32]), &junk.encode(), false).unwrap(), "garbage: bad input");
     let other = lp.peers[0].engine.sync_copy(&rot, &g, &t).unwrap().unwrap().0;
-    lp.peers[2].engine.take_sync_copy(&t, &osis_base::BlobId([2; 32]), &other.encode()).unwrap();
+    lp.peers[2].engine.take_sync_copy(&t, &osis_base::BlobId([2; 32]), &other.encode(), false).unwrap();
     lp.sync_all().unwrap();
     assert_eq!(lp.peers[2].engine.sync_id_of(&g).unwrap(), before, "G's sync ID unmoved");
     assert!(lp.peers[2].engine.sync_copies_of(&g).iter().filter(|c| c.0 == osis_base::BlobId([1; 32])).count() == 0, "the garbage is not held");
@@ -360,7 +360,7 @@ fn a_forged_genesis_in_a_sync_copy_takes_nothing_spec_sync_ids_2() {
             let (copy, forged, _) = forged_sync_copy(&mut lp, 0, g, t, seed);
             assert_eq!(forged, id(seed));
             above.insert(forged > real);
-            assert!(lp.peers[2].engine.take_sync_copy(&t, &osis_base::BlobId([seed; 32]), &copy.encode()).unwrap(), "well formed: taken");
+            assert!(lp.peers[2].engine.take_sync_copy(&t, &osis_base::BlobId([seed; 32]), &copy.encode(), false).unwrap(), "well formed: taken");
             assert_eq!(lp.peers[2].engine.sync_id_of(&g).unwrap(), Some(real), "G's sync ID");
             assert!(!lp.peers[2].engine.sync_ids(&g).unwrap().iter().any(|o| o.id == forged), "the forged sync ID is not G's here");
             assert_eq!(lp.peers[2].engine.thing_sync_now(&g).unwrap(), want, "G synced as before");
@@ -394,10 +394,124 @@ fn a_forged_sync_copy_makes_no_dependent_thing_independent_spec_sync_set_2() {
     assert_eq!(lp.peers[2].engine.core.secret_actor(&y), Some(t), "Y is T's dependent");
     let (copy, _, _) = forged_sync_copy(&mut lp, 1, y, t, 20);
     let e2 = &mut lp.peers[2].engine;
-    assert!(e2.take_sync_copy(&t, &osis_base::BlobId([20; 32]), &copy.encode()).unwrap(), "well formed: taken");
+    assert!(e2.take_sync_copy(&t, &osis_base::BlobId([20; 32]), &copy.encode(), false).unwrap(), "well formed: taken");
     assert!(!e2.core.counts_independent(&y), "Y counts independent by a forged copy");
     assert_eq!(e2.core.secret_actor(&y), Some(t), "Y's secret actor");
     assert_eq!(e2.thing_sync_now(&y).unwrap(), how, "Y synced as before");
     lp.peers[2].restart(7).unwrap();
     assert_eq!(lp.peers[2].engine.core.secret_actor(&y), Some(t), "Y's secret actor at a fresh load");
+}
+
+/// The bytes no sync copy of `g`'s commits may hold at peer `i`: each held header's signer and
+/// blind (its path's keys and holders go with them).
+fn header_bytes(lp: &LocalPeer, i: usize, g: &Tid) -> Vec<Vec<u8>> {
+    let e = &lp.peers[i].engine;
+    e.core.on_thing(g).filter_map(|c| e.header(&c)).flat_map(|h| [h.signer.as_bytes().to_vec(), h.blind.to_vec()]).collect()
+}
+
+fn holds_any(b: &[u8], xs: &[Vec<u8>]) -> bool {
+    xs.iter().any(|x| b.windows(x.len()).any(|w| w == x.as_slice()))
+}
+
+// spec/sync-ids.md §2 (What a sync holder learns: of the thing's role commits only sync copies, no
+// header, signer, path or other holder), spec/permissions.md §4 (Key part; Delivering an edge
+// piece), spec/sync-inbox.md §5 (By hand): T holds sync alone on G. On every path a commit of G
+// reaches T's readers by, the bytes carry no header of G's: T's key part as peer 0 (G's admin,
+// a reader of T) logs it (sync copies alone, no certificate copy of a part on G); a new grant of
+// sync alone to U, delivered as sealed copies (form 2), never a `grant@~0` fire; the offer of
+// U's grant by hand (sync copies alone, no evidence or trust record). Fails with any path
+// carrying a certificate copy (the header, its signer and blind in the bytes).
+#[test]
+fn a_sync_alone_holder_gets_no_header_on_any_path_spec_sync_ids_2() {
+    let (mut lp, g, t) = sync_holder();
+    let me0 = lp.peers[0].engine.me();
+    lp.peers[2].engine.grant(&t, &me0, &edge(Role::Read)).unwrap();
+    lp.sync_all().unwrap();
+    // the key part
+    let s = lp.peers[0].engine.sync_id_of(&t).unwrap().unwrap();
+    let carried = lp.peers[0].engine.sync_copies_carried(&s).unwrap();
+    assert!(carried.values().any(|(u, p)| *u == t && osis_commit::SyncCopy::decode(p).unwrap().thing == g), "T's key part carries G's sync copies");
+    let forbidden = header_bytes(&lp, 0, &g);
+    assert!(!forbidden.is_empty());
+    assert!(carried.values().all(|(_, p)| !holds_any(p, &forbidden)), "no header byte in a logged sync copy");
+    let certs = lp.peers[0].engine.certificates(&t).unwrap();
+    let on_g = certs.commits.iter().any(|(c, ps)| lp.peers[0].engine.header(c).is_some_and(|h| ps.iter().any(|ai| h.aspects.get(*ai).is_some_and(|a| a.tid == g))));
+    assert!(!on_g && !certs.records.contains(&g), "no certificate copy or record of G under T's sync ID");
+    // a grant of sync alone to U: sealed copies, no fire
+    let u = independent_thing(&mut lp, 1);
+    lp.sync_all().unwrap();
+    let before = lp.peers[0].engine.fires_owed();
+    lp.peers[0].engine.grant(&g, &u, &edge(Role::Sync)).unwrap();
+    let owed = new_owed(&lp, 0, &before);
+    assert!(!owed.is_empty(), "the grant is delivered");
+    let forbidden = header_bytes(&lp, 0, &g);
+    for id in owed {
+        let o = lp.peers[0].engine.core.ix.fires.get(&id).cloned().unwrap();
+        assert!(o.ak.is_none() && matches!(o.what, Fire::Copy { .. }), "a sealed copy, no `grant@~0` fire: {o:?}");
+        let out = lp.peers[0].engine.sealed_fire(&id).unwrap().expect("sealed to U's read key");
+        let e1 = &lp.peers[1].engine;
+        let (prefix, sealed) = e1.read_epochs(&u, &[]).into_iter().find_map(|(e, x)| osis_blob::open_fire(&out.blob, &u, &e, &osis_crypto::role_kem(&x)).ok()).expect("opens at U's reader");
+        let osis_blob::Sealed::SyncCopy(plain) = sealed else { panic!("form 2") };
+        assert!(!holds_any(&plain, &forbidden) && !holds_any(&prefix.to_bytes(), &forbidden), "no header byte in a sealed copy");
+    }
+    // by hand
+    let offer = lp.peers[0].engine.offer(&g, &u).unwrap();
+    let super::offers::Pieces::SyncAlone(copies) = &offer.pieces else { panic!("an offer of sync alone is its sync copies") };
+    assert!(!copies.is_empty());
+    assert!(!holds_any(&osis_base::encode(&offer.to_value()), &forbidden), "no header byte in the offer");
+}
+
+// spec/permissions.md §4 (Logging certificates: two blobs of one copy are one, the lower blob ID
+// its log; copies of one (commit, thing, holder) with different bytes are two), spec/wire.md §4:
+// T's reader holds the real sync copy of G's grant to T. A forged copy of the same commit, its box
+// a forger's secret, taken under a lower blob ID: both rows kept, the real copy still counts and
+// is what T's sync ID carries; the forgery counts for nothing, is carried by nothing, and keeps
+// no secret. Fails with copies deduplicated by (commit, thing, holder) alone (the forgery under
+// the lower blob ID displacing the real one).
+#[test]
+fn a_forged_duplicate_does_not_displace_the_real_copy_spec_permissions_4() {
+    let (mut lp, g, t) = sync_holder();
+    let real = lp.peers[2].engine.sync_copies_of(&g).into_iter().find(|c| c.2 && c.1.copy.piece.is_some()).expect("T's counted copy of a box");
+    let held = sync_held(&lp, 2, &g);
+    let (forged, _, _) = forged_sync_copy(&mut lp, 0, g, t, 40);
+    let fake = osis_commit::SyncCopy { commit: real.1.copy.commit, thing: g, piece: forged.piece, sync: None };
+    let low = osis_base::BlobId([0; 32]);
+    assert!(low < real.0);
+    assert!(lp.peers[2].engine.take_sync_copy(&t, &low, &fake.encode(), false).unwrap(), "well formed: taken");
+    let copies = lp.peers[2].engine.sync_copies_of(&g);
+    let at = |b: &osis_base::BlobId| copies.iter().find(|c| c.0 == *b).cloned();
+    assert!(at(&real.0).is_some_and(|c| c.2), "the real copy kept, counted");
+    assert!(at(&low).is_some_and(|c| !c.2 && c.1.key != real.1.key), "the forgery kept beside it, another copy, counting for nothing");
+    let s = lp.peers[2].engine.sync_id_of(&t).unwrap().unwrap();
+    let carried = lp.peers[2].engine.sync_copies_carried(&s).unwrap();
+    assert!(carried.contains_key(&real.1.key) && !carried.contains_key(&at(&low).unwrap().1.key), "T's sync ID carries the real copy, not the forgery");
+    assert_eq!(sync_held(&lp, 2, &g), held, "no forged secret kept");
+}
+
+// spec/sync-ids.md §5 (Peer budget: a sync copy is anyone's word, kept only while an entry of it
+// is): a sync copy's row goes with its blob's last entry (`unnamed_sync_copy`), and what it gave
+// with it; at n and 10n copies taken, the rows kept are exactly those whose entries stay, so what
+// a party pushes is bounded by what the store keeps of it (its budget). Fails with rows kept past
+// their entries (kept until the thing is forgotten).
+#[test]
+fn sync_copy_rows_go_with_their_entries_spec_sync_ids_5() {
+    let (mut lp, g, t) = sync_holder();
+    let base = lp.peers[2].engine.sync_copy_blobs().len();
+    for n in [3usize, 30] {
+        let mut blobs = Vec::new();
+        for i in 0..n {
+            let (copy, _, _) = forged_sync_copy(&mut lp, 0, g, t, 50 + i as u8);
+            let b = osis_base::BlobId(crate::sync_ids::unread::content_key(&copy.encode()));
+            assert!(lp.peers[2].engine.take_sync_copy(&t, &b, &copy.encode(), false).unwrap());
+            blobs.push(b);
+        }
+        assert_eq!(lp.peers[2].engine.sync_copy_blobs().len(), base + n, "at {n}: a row per entry");
+        // the store drops all but one (past the bringer's budget, or with its peer)
+        for b in blobs.iter().skip(1) {
+            lp.peers[2].engine.unnamed_sync_copy(b).unwrap();
+        }
+        assert_eq!(lp.peers[2].engine.sync_copy_blobs().len(), base + 1, "at {n}: rows go with their entries");
+        lp.peers[2].engine.unnamed_sync_copy(&blobs[0]).unwrap();
+        assert_eq!(lp.peers[2].engine.sync_copy_blobs().len(), base);
+    }
 }
