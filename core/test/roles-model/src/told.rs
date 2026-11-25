@@ -1,10 +1,11 @@
 //! A removed node learns its removal (spec/sync-opens.md §4 Departed, §6; spec/sync-streams.md §4;
-//! spec/crypto.md §5 Who wraps under what, taking): a reader judging a peer departed opens the
+//! spec/permissions.md §4 Notices): a reader judging a peer departed opens the
 //! thing's sync ID toward it only ended, on any read secret it holds of an epoch superseded here,
-//! and serves it the thing's role entries alone up to the first-logged position of the commit
-//! taking its read under its **taking epoch** (the newest epoch held here among those what gave it
-//! read boxed it), and the entries telling its departure: that entry, and the record blob under
-//! that epoch carrying the records judging the commit needs. With no such entry here nothing opens.
+//! and serves it the **notices** of the commit taking its read alone, `until` the first-logged
+//! one. A notice is one entry carrying that commit with the records judging it needs (the
+//! remover's), under its **taking epoch** (the newest epoch held here among those what gave it
+//! read boxed it), logged by every member judging the departure that holds that epoch. With no
+//! notice here nothing opens.
 //!
 //! The world: thing A with nodes N0 and N1 (admins: each removes, rotates and re-seals), N2 (a
 //! member from the start), N3 (paired by N0: a grant boxing it every epoch N0 holds, its record
@@ -20,23 +21,20 @@
 //! departure later rotate before they encrypt. A node judging a member's departure, whose current
 //! epoch does not cover it, rotates at once if an admin; a node that may not rotate writes no
 //! content until it holds a covering epoch. Role commits and record blobs are logged whatever the
-//! departure (certificates). A record blob is logged by each node holding a role commit: the
-//! general one carrying the signers' records, and, at a node judging the departure, one under the
-//! removal's taking epoch carrying the remover's record, each competing only within its epoch's
-//! class. Of two entries of one commit a node opens, it keeps the one under the removal's taking
-//! epoch, else the newer (a spare by blob ID may go either way). A node judging its own removal
-//! (the removal held and its signer's record known) erases A.
+//! departure (certificates), the removal as any role commit. A record blob is logged by each node
+//! holding a role commit, under its newest epoch, carrying the signers' records. Of two entries of
+//! one commit a node opens, it keeps the newer (a spare by blob ID may go either way); a notice is
+//! no entry of its commit and competes with none. A node judging its own removal (the removal
+//! held and its signer's record known) erases A.
 //!
 //! Rules (`ToldRules`): `spec`, and controls `close` (a departed peer is opened nothing), `fire`
 //! (closed, and the remover alone tells the node by meeting it), `newest` (only the newest
-//! superseded epoch is shown), `full` (served content too), `late` (served up to the log end),
-//! `untold` (no taking epoch: the removal logged under the newest epoch, records only in the
-//! general blob), `uncovering` (the taking epoch is the newest held covering no departure, not the
-//! epoch boxed to it by what gave it read), `boxed` (the newest held epoch boxed to it), `range` (`until` grows to the told entries' positions and
-//! serves every role entry up to it), `rotation-until` (`until` the first rotation superseding the
-//! shown epoch, not the removal's taking entry), `spare` (of two entries of the removal, the newer kept, its
-//! taking epoch's or not), `no-record` (no record blob under the taking epoch), `hack`
-//! (no departure record blob; the general one sealed under the taking epoch). Properties:
+//! superseded epoch is shown), `full` (served content too, up to the notice), `late` (served
+//! everything up to the log end), `untold` (no notice), `uncovering` (the taking epoch is the
+//! newest held covering no departure, not the epoch boxed to it by what gave it read), `boxed`
+//! (the newest held epoch boxed to it), `rotation-until` (the notices and the role entries up to
+//! the first rotation superseding the shown epoch, as `until` was), `no-record` (a notice without
+//! the remover's record). Properties:
 //! - `told`: the removed node learns its removal from any member that judges it departed and
 //!   holds an epoch it holds superseded, the remover gone or not;
 //! - `notice`: of what a node judging it departed serves it, nothing it opens is content, a role
@@ -82,11 +80,8 @@ pub enum ToldRules {
     Untold,
     Uncovering,
     Boxed,
-    Range,
     RotationUntil,
-    Spare,
     NoRecord,
-    Hack,
 }
 
 impl ToldRules {
@@ -102,21 +97,14 @@ impl ToldRules {
             "-untold" => ToldRules::Untold,
             "-uncovering" => ToldRules::Uncovering,
             "-boxed" => ToldRules::Boxed,
-            "-range" => ToldRules::Range,
             "-rotation-until" => ToldRules::RotationUntil,
-            "-spare" => ToldRules::Spare,
             "-no-record" => ToldRules::NoRecord,
-            "-hack" => ToldRules::Hack,
             _ => return None,
         })
     }
-    /// The removal goes under its taking epoch at a node judging the departure.
+    /// A node judging the departure logs a notice under the taking epoch.
     fn taking(self) -> bool {
         self != ToldRules::Untold
-    }
-    /// A record blob of the remover's record goes under the taking epoch.
-    fn departure_records(self) -> bool {
-        !matches!(self, ToldRules::Untold | ToldRules::NoRecord | ToldRules::Hack)
     }
 }
 
@@ -128,6 +116,8 @@ enum Kind {
     Remove,
     Write,
     Records,
+    /// A notice of the removal: it and its `records`.
+    Notice,
 }
 
 #[derive(Clone, Debug)]
@@ -151,6 +141,10 @@ struct Commit {
 impl Commit {
     fn role(&self) -> bool {
         self.kind != Kind::Write
+    }
+    /// A role commit of A's (no record blob or notice).
+    fn role_commit(&self) -> bool {
+        !matches!(self.kind, Kind::Write | Kind::Records | Kind::Notice)
     }
 }
 
@@ -263,11 +257,6 @@ impl State {
     /// The epoch `a` logs commit `c` under now (`None`: not now).
     fn log_epoch(&self, a: usize, c: usize) -> Option<usize> {
         let x = &self.commits[c];
-        if self.removal.is_some_and(|(r, _, _)| r == c) {
-            if let Some(e) = self.taking_epoch(a) {
-                return Some(e);
-            }
-        }
         // a commit giving epochs: under the newest held one they supersede
         let given: Vec<usize> = x.boxes.iter().map(|b| b.1).filter(|&e| e > 0).collect();
         if !given.is_empty() {
@@ -316,7 +305,10 @@ impl State {
                 if held.contains(&e) && self.n[a].known.insert(c) {
                     moved = true;
                 }
-                if held.contains(&e) && self.commits[c].kind == Kind::Records {
+                if held.contains(&e) && self.commits[c].kind == Kind::Notice && self.n[a].known.insert(self.removal.map_or(c, |r| r.0)) {
+                    moved = true;
+                }
+                if held.contains(&e) && matches!(self.commits[c].kind, Kind::Records | Kind::Notice) {
                     for k in self.commits[c].records.clone() {
                         moved |= !self.n[a].recs[k];
                         self.n[a].recs[k] = true;
@@ -338,19 +330,11 @@ impl State {
     /// Records `a`'s general record blob carries: the signers of the role commits it holds, N3's
     /// once paired, of those it knows.
     fn general_records(&self, a: usize) -> Vec<usize> {
-        let mut s: BTreeSet<usize> = self.n[a].known.iter().map(|&c| &self.commits[c]).filter(|c| c.role() && c.kind != Kind::Records).map(|c| c.signer).collect();
+        let mut s: BTreeSet<usize> = self.n[a].known.iter().map(|&c| &self.commits[c]).filter(|c| c.role_commit()).map(|c| c.signer).collect();
         if self.pair.is_some_and(|p| self.n[a].known.contains(&p)) {
             s.insert(N3);
         }
         s.into_iter().filter(|&k| self.n[a].recs[k]).collect()
-    }
-    /// The records the class of a record blob under `e` needs at `a`: the remover's under the
-    /// taking epoch, else the general set.
-    fn class_needs(&self, a: usize, e: usize) -> Vec<usize> {
-        match self.removal {
-            Some((_, by, _)) if self.r.departure_records() && self.taking_epoch(a) == Some(e) => vec![by].into_iter().filter(|&k| self.n[a].recs[k]).collect(),
-            _ => self.general_records(a),
-        }
     }
     /// One settling step at `a`: rotate, re-seal, log, drop spares and lost record blobs.
     fn settle_once(&mut self, a: usize) -> bool {
@@ -379,57 +363,51 @@ impl State {
         let known: Vec<usize> = self.n[a].known.iter().copied().collect();
         for c in known {
             let x = &self.commits[c];
-            if x.kind == Kind::Records || (x.kind == Kind::Write && x.signer != a) {
+            if matches!(x.kind, Kind::Records | Kind::Notice) || (x.kind == Kind::Write && x.signer != a) {
                 continue;
             }
             let Some(e) = self.log_epoch(a, c) else { continue };
-            let has = self.n[a].log.iter().any(|&(y, f)| y == c && self.opens(a, f) && (f == e || Some(c) != self.removal.map(|r| r.0) || self.taking_epoch(a).is_none()));
-            if !has {
+            if !self.n[a].log.iter().any(|&(y, f)| y == c && self.opens(a, f)) {
                 self.n[a].log.push((c, e));
             }
         }
-        // spares: of two opened entries of a commit, the one under the taking epoch, else the newer
-        let taking = self.taking_epoch(a);
+        // a notice of the removal under its taking epoch: the remover's record with it
+        if let (Some(e), Some((_, by, _))) = (self.taking_epoch(a), self.removal) {
+            if !self.n[a].log.iter().any(|&(c, f)| f == e && self.commits[c].kind == Kind::Notice) {
+                let records = if self.r == ToldRules::NoRecord { vec![] } else { vec![by] };
+                let c = self.add(a, Commit { kind: Kind::Notice, signer: a, makes: None, boxes: vec![], supersedes: vec![], covers: false, records, knew: false });
+                self.n[a].log.push((c, e));
+            }
+        }
+        // spares: of two opened entries of a commit, the newer
         let mut keep = vec![];
         for &(c, e) in &self.n[a].log {
-            if self.commits[c].kind == Kind::Records || !self.opens(a, e) {
+            if matches!(self.commits[c].kind, Kind::Records | Kind::Notice) || !self.opens(a, e) {
                 keep.push(true);
                 continue;
             }
-            let rank = |f: usize| (self.r != ToldRules::Spare && Some(f) == taking && self.removal.is_some_and(|r| r.0 == c), f);
-            let best = self.n[a].log.iter().filter(|&&(y, f)| y == c && self.opens(a, f)).map(|&(_, f)| rank(f)).max().unwrap();
-            keep.push(rank(e) == best);
+            let best = self.n[a].log.iter().filter(|&&(y, f)| y == c && self.opens(a, f)).map(|&(_, f)| f).max().unwrap();
+            keep.push(e == best);
         }
         let mut it = keep.into_iter();
         let mut seen = BTreeSet::new();
-        self.n[a].log.retain(|&(c, e)| it.next().unwrap() && (self.commits[c].kind == Kind::Records || seen.insert((c, e))));
-        // record blobs: per class (the epoch it opens under), one carrying what the class needs
-        let mut classes = vec![];
+        self.n[a].log.retain(|&(c, e)| it.next().unwrap() && (matches!(self.commits[c].kind, Kind::Records | Kind::Notice) || seen.insert((c, e))));
+        // a record blob under the newest epoch carrying the signers' records
         if let Some(e) = self.current(a).last().copied() {
-            let e = if self.r == ToldRules::Hack { taking.unwrap_or(e) } else { e };
-            classes.push(e);
-        }
-        if let (true, Some(e)) = (self.r.departure_records(), taking) {
-            classes.push(e);
-        }
-        for e in classes {
-            let need = self.class_needs(a, e);
-            if need.is_empty() {
-                continue;
-            }
-            let has = self.n[a].log.iter().any(|&(c, f)| f == e && self.commits[c].kind == Kind::Records && self.commits[c].records == need);
+            let need = self.general_records(a);
+            let has = need.is_empty() || self.n[a].log.iter().any(|&(c, f)| f == e && self.commits[c].kind == Kind::Records && self.commits[c].records == need);
             if !has {
                 let c = self.add(a, Commit { kind: Kind::Records, signer: a, makes: None, boxes: vec![], supersedes: vec![], covers: false, records: need, knew: false });
                 self.n[a].log.push((c, e));
             }
         }
-        // of two record blobs of a class, the one carrying what it needs with fewer others wins
+        // of two record blobs under an epoch, the one carrying what it needs with fewer others wins
+        let need = self.general_records(a);
         let log = self.n[a].log.clone();
         let keep: Vec<bool> = log.iter().map(|&(c, e)| {
             if self.commits[c].kind != Kind::Records || !self.opens(a, e) {
                 return true;
             }
-            let need = self.class_needs(a, e);
             let score = |c: usize| {
                 let r = &self.commits[c].records;
                 (need.iter().filter(|k| r.contains(k)).count(), std::cmp::Reverse(r.len()), std::cmp::Reverse(c))
@@ -508,7 +486,7 @@ pub fn told_check(w: &ToldWorld, r: ToldRules, st: &mut ToldStats) {
                 if s.n[N0].gone || s.n[N1].gone {
                     continue;
                 }
-                let role: BTreeSet<usize> = s.n[N0].known.union(&s.n[N1].known).copied().filter(|&c| s.commits[c].role() && s.commits[c].kind != Kind::Records).collect();
+                let role: BTreeSet<usize> = s.n[N0].known.union(&s.n[N1].known).copied().filter(|&c| s.commits[c].role_commit()).collect();
                 for a in [N0, N1] {
                     s.n[a].known.extend(role.iter().copied());
                     for k in 0..NODES {
@@ -593,10 +571,7 @@ fn serve(s: &mut State, a: usize, b: usize, fails: &mut Vec<String>) {
     }
     let (rc, by, _) = s.removal.unwrap();
     let log = s.n[a].log.clone();
-    let taking = s.taking_epoch(a);
-    // the entries telling b its departure: the removal under its taking epoch, the record blob
-    // under it
-    let tells = |s: &State, (c, e): (usize, usize)| (c == rc && Some(e) == taking) || (s.commits[c].kind == Kind::Records && Some(e) == taking && s.r.departure_records());
+    let notice = |s: &State, c: usize| s.commits[c].kind == Kind::Notice;
     let served: Vec<(usize, usize)> = match s.r {
         ToldRules::Close => vec![],
         ToldRules::Fire => {
@@ -604,27 +579,15 @@ fn serve(s: &mut State, a: usize, b: usize, fails: &mut Vec<String>) {
         }
         r => {
             let Some(e) = shown(s, a, b, r == ToldRules::Newest) else { return };
-            let first = log.iter().position(|&(c, _)| s.commits[c].supersedes.contains(&e));
-            // until: the first-logged position here of the removal under its taking epoch (none
-            // logged: nothing opens); the first rotation superseding the shown epoch where the
-            // rule has no taking epoch (and `range`, `hack`, `rotation-until`); the log's end
-            // (`late`)
-            let mut until = match r {
-                ToldRules::Late => log.len().checked_sub(1),
-                ToldRules::Untold | ToldRules::Range | ToldRules::Hack | ToldRules::RotationUntil => first.or(log.len().checked_sub(1)),
-                _ => match log.iter().position(|&(c, f)| c == rc && Some(f) == taking) {
-                    Some(p) => Some(p),
-                    None => return,
-                },
-            };
-            if r == ToldRules::Range || r == ToldRules::Hack {
-                // until grows to the told entries (the hack: the record blob under the taking epoch)
-                let told = log.iter().enumerate().filter(|&(_, &x)| tells(s, x) || (r == ToldRules::Hack && s.commits[x.0].kind == Kind::Records && Some(x.1) == taking)).map(|(i, _)| i).max();
-                until = until.max(told);
-            }
-            let Some(until) = until else { return };
-            let spec = !matches!(r, ToldRules::Range | ToldRules::Hack);
-            log.iter().enumerate().filter(|&(i, &(c, e))| (i <= until && (r == ToldRules::Full || r == ToldRules::Late || s.commits[c].role())) || (spec && tells(s, (c, e)))).map(|(_, &x)| x).collect()
+            // until: the first-logged notice here (none logged: nothing opens)
+            let Some(until) = log.iter().position(|&(c, _)| notice(s, c)) else { return };
+            log.iter().enumerate().filter(|&(i, &(c, _))| match r {
+                ToldRules::Full => i <= until || notice(s, c),
+                ToldRules::Late => true,
+                // as `until` was: up to the first rotation superseding the shown epoch
+                ToldRules::RotationUntil => notice(s, c) || (s.commits[c].role() && log.iter().position(|&(y, _)| s.commits[y].supersedes.contains(&e)).is_some_and(|f| i <= f)),
+                _ => notice(s, c),
+            }).map(|(_, &x)| x).collect()
         }
     };
     // what b gains: a commit made knowing its removal that it opens and did not hold, a record
@@ -637,7 +600,7 @@ fn serve(s: &mut State, a: usize, b: usize, fails: &mut Vec<String>) {
         }
         let gain = match x.kind {
             Kind::Write => Some("content"),
-            Kind::Records => x.records.iter().any(|&k| s.late[k] && k != by && !s.n[b].recs[k]).then_some("a record minted knowing its removal"),
+            Kind::Records | Kind::Notice => x.records.iter().any(|&k| s.late[k] && k != by && !s.n[b].recs[k]).then_some("a record minted knowing its removal"),
             _ => {
                 let telling = c == rc || x.supersedes.iter().any(|e| mine.contains(e));
                 (x.knew && !telling && !s.n[b].known.contains(&c)).then_some("a role commit made knowing its removal")
@@ -757,9 +720,9 @@ mod tests {
     }
 
     /// N1 removes N3 never having held its pairing, so its removal rotates nothing, and N3 lacks
-    /// N1's record; N0 hears of it by another route, rotates, and N1 is reset. N0 tells N3: the
-    /// removal under the epoch N3 holds and a record blob of N1's record under it. Logged under the
-    /// newest epoch (the rule before), or without the record blob, N3 never learns.
+    /// N1's record; N0 hears of it by another route, rotates, and N1 is reset. N0 tells N3: a
+    /// notice under the epoch N3 holds, carrying N1's record. With no notice, or one without the
+    /// record, N3 never learns.
     #[test]
     fn a_blind_removal_tells_the_removed_node() {
         let w = vec![Pair, Remove(N1, N3), Hear, Reset(N1), Sync(N0, N3)];
@@ -778,38 +741,23 @@ mod tests {
         assert_eq!(kinds(w, ToldRules::Uncovering), ["told"]);
     }
 
-    /// N1 rotates (boxing N3 nothing) and removes N3 blind, logging the removal under its new
-    /// epoch; N0 takes that entry, judges the departure and logs the removal under the epoch N3's
-    /// pairing boxed it. Keeping the newer entry as spare, N3 opens neither.
+    /// N1 removes N2 beside N3's pairing: a re-seal giving N3 the covering rotation's epoch is
+    /// wrapped under the epoch it supersedes, which N2 holds, made knowing the removal and logged
+    /// before the notice. Served the notices alone, N2 gains
+    /// nothing else; served every entry up to the notice (`full`), it gains the giving commit.
     #[test]
-    fn the_taking_entry_never_loses_as_spare() {
-        let w = vec![Rotate(N1), Pair, Remove(N1, N3), Sync(N0, N1), Sync(N0, N3)];
-        assert!(kinds(w.clone(), ToldRules::Spec).is_empty());
-        assert_eq!(kinds(w, ToldRules::Spare), ["told"]);
-    }
-
-    /// N1 removes N2 beside N3's pairing: a commit giving N3 an epoch (the
-    /// pairing, a re-seal into the covering rotation) is wrapped under the epoch it supersedes,
-    /// which N2 holds, made knowing the removal and logged before the entries
-    /// telling N2. Served those entries alone, N2 gains nothing else; `until` grown to them
-    /// (`range`, `hack`) serves it the giving commit too.
-    #[test]
-    fn a_removed_node_is_served_its_telling_entries_alone() {
-        let w = vec![Pair, Remove(N1, N2), Sync(N0, N1), Sync(N1, N2)];
-        assert!(kinds(w.clone(), ToldRules::Spec).is_empty());
-        assert_eq!(kinds(w, ToldRules::Hack), ["notice"]);
+    fn a_removed_node_is_served_its_notices_alone() {
         let w = vec![Sync(N0, N2), Pair, Remove(N1, N2), Hear, Sync(N2, N3), Sync(N0, N2)];
         assert!(kinds(w.clone(), ToldRules::Spec).is_empty());
-        assert_eq!(kinds(w, ToldRules::Range), ["notice"]);
+        assert_eq!(kinds(w, ToldRules::Full), ["notice"]);
     }
 
     /// N0 removes N2 (knowing) and pairs N3, the pairing wrapped under epoch 0, which N2 holds; N1
     /// rotates unaware, boxing N2 its epoch, and N0 takes that rotation. N2's Hit opens on N1's
     /// epoch, whose superseding rotation N0 logs after the pairing: `until` there serves N2 the
-    /// pairing, made knowing the removal. Up to the removal's taking entry, nothing
-    /// past its judgement.
+    /// pairing, made knowing the removal. Served the notice alone, nothing past its judgement.
     #[test]
-    fn until_is_the_taking_entry() {
+    fn a_rotation_until_serves_past_the_removal() {
         let w = vec![Remove(N0, N2), Pair, Rotate(N1), Sync(N1, N2), Sync(N0, N1), Sync(N0, N2)];
         assert!(kinds(w.clone(), ToldRules::Spec).is_empty());
         assert_eq!(kinds(w, ToldRules::RotationUntil), ["notice"]);
@@ -832,10 +780,7 @@ mod tests {
             (ToldRules::Untold, "told"),
             (ToldRules::Uncovering, "told"),
             (ToldRules::Boxed, "told"),
-            (ToldRules::Range, "notice"),
-            (ToldRules::Spare, "told"),
             (ToldRules::NoRecord, "told"),
-            (ToldRules::Hack, "notice"),
         ] {
             assert!(run(r).kinds.contains_key(kind), "{r:?}");
         }

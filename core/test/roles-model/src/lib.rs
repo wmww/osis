@@ -10,7 +10,7 @@
 //! - `leave`: the own self-removal exception of Encrypting under (spec/crypto.md §4) and held
 //!   elsewhere for a self-removal (spec/sync-status.md §2). Searches `leave`, `leave-exh`.
 //! - `told`: a removed node learns its removal from any member, a blind remover's included, and
-//!   gains nothing else (spec/sync-opens.md §4 Departed, §6; spec/crypto.md §5 taking). Searches
+//!   gains nothing else (spec/sync-opens.md §4 Departed, §6; spec/permissions.md §4 Notices). Searches
 //!   `told`, `told-exh`.
 //! - `shrink`: `without`, a move list less one move.
 //! Binary: `cargo run --bin roles-model -- [samples] [mode]`; `cargo test` runs the hand worlds.
