@@ -189,16 +189,16 @@ pub fn all(n: usize) -> Vec<World> {
 pub struct Heard {
     /// A reader shows S's public entry while a recorded step lists it, not only its newest: a Hit
     /// on it past the newest step listing it opens a member ended at once (off: only while its
-    /// newest step lists it, the control `Newest`).
+    /// newest step lists it, a control).
     pub lapsed: bool,
     /// A member opened on a lapsed public entry is ended at once, served up to the rotation
-    /// superseding the newest listing step's epoch (off: served whole, the control `Whole`).
+    /// superseding the newest listing step's epoch (off: served whole, a control).
     pub ended: bool,
     /// A node reading X by the public tests the public entry while it holds the public's grant,
-    /// not only while it redeems (off: the control `RedeemOnly`).
+    /// not only while it redeems (off: a control).
     pub tests: bool,
     /// A node keeping S unread whose head lists the public entry reads S by it, as a redeemer
-    /// does (off: the control `StoreBlind`).
+    /// does (off: a control).
     pub store: bool,
 }
 

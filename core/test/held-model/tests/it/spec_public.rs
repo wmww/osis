@@ -164,7 +164,7 @@ fn public_epochs_explore() {
 // Who hears the public's grant changes (held_model::closure::public_epochs, Heard; spec/sync-opens.md
 // §4, §6; spec/sync-set.md §5). P reads X by the public alone, offline while the public is removed:
 // a reader still showing the public entry of a recorded step (lapsed) opens X toward it ended at
-// once, served up to the removal, so P holds it and releases X. Control `Newest`: shown only while
+// once, served up to the removal, so P holds it and releases X. Control (`lapsed` off): shown only while
 // its newest step lists it, nothing opens toward P and it keeps reading X for good.
 #[test]
 fn a_reader_by_the_public_offline_at_its_removal_hears_it() {
@@ -177,7 +177,7 @@ fn a_reader_by_the_public_offline_at_its_removal_hears_it() {
 }
 
 // P offline across a rotation while the public still reads X: it tests the public entry while it
-// holds the public's grant, and the answer's entry box gives the new epoch. Control `RedeemOnly`
+// holds the public's grant, and the answer's entry box gives the new epoch. Control (`tests` off)
 // (tested only while redeeming): R shows its new read secret, P holds the old, and P reads nothing
 // written since.
 #[test]
@@ -189,7 +189,7 @@ fn a_reader_by_the_public_offline_at_a_rotation_takes_the_new_epoch() {
 }
 
 // K keeps X unread when X is made public: its head lists the public entry, and it reads X by it as
-// a redeemer does. Control `StoreBlind`: no commit it is served opens, and it never counts X public.
+// a redeemer does. Control (`store` off): no commit it is served opens, and it never counts X public.
 #[test]
 fn a_sync_holder_hears_the_public_granted() {
     use held_model::closure::public_epochs::{Ev, Heard, Step, World};

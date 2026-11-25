@@ -7,9 +7,9 @@ Repro: osis-sync `differential::repro_a_sync_holder_reads_a_thing_made_public` (
 
 The redeemer's half (a node reading X by the public alone never heard its removal) is fixed: the lapsed public entry (spec/sync-opens.md §4, §6; notes/public-and-cards-brief.md, Who hears).
 
-**Design, modelled** (held-model `closure::public_epochs` `Heard`, the `store` clause; control `StoreBlind`): a node keeping S unread whose head lists S's public entry takes the head's public entry box (open form: every party's, spec/sync-ids.md §3), as a public link's redeemer takes it from an answer; holding a read secret it syncs S read, takes the public's grant and its role follows. No fan-out: readers already register the step at every store.
+**Design, modelled** (held-model `closure::public_epochs` `Heard`, the `store` clause; control: it off): a node keeping S unread whose head lists S's public entry takes the head's public entry box (open form: every party's, spec/sync-ids.md §3), as a public link's redeemer takes it from an answer; holding a read secret it syncs S read, takes the public's grant and its role follows. No fan-out: readers already register the step at every store.
 
-**Build finding** (the reason it is not in): built as `Engine::take_public_head` called from `Unread::settle`, the grant direction passes the repro, but after the public's removal the node loops:
+**Build finding** (the reason it is not in): built as an engine call taking the head's box from the store's settle, the grant direction passes the repro, but after the public's removal the node loops:
 - J at every source judges it a sync holder (its proven role) while it declares a reader; the pair churns (node 1 and its source exchanging ~80 KB per round, past the storm cap), so no complete pass of S ends;
 - its lost-access drop of the public's read secrets is due but waits for that complete pass (`lost_passed`), so it stays reading with stale secrets;
 - its store's head, frozen while it read (a reader refuses Registers), still lists the public when it goes back to unread: it takes the box again (guarded by skipping a head its recorded path has passed).

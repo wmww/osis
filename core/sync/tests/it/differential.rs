@@ -173,8 +173,8 @@ fn an_inbox_moved_takes_grants_from_outside_spec_sync_inbox_1() {
     assert_eq!(w.engine(1).inbox_of(&a).unwrap(), w.node(0).inbox, "control: a card on a thing moves no inbox");
 }
 
-// spec/sync-opens.md §4 (the public entry shown lapsed while its removal is held; tested while the
-// public reads), §6 (an open by it ended at once, served up to the public's removal): node 0 makes
+// spec/sync-opens.md §4 (lapsed public entry), §6 (A reader serves a public reader up to the
+// public's removal): node 0 makes
 // a thing public, node 1 of another account redeems a public link to it, then node 0 removes the
 // public and writes again while node 1 is off. Node 1 holds the removal and reads the thing no more
 // (fails without the lapsed entry: no reader opens the thing's sync ID toward it again).
@@ -188,7 +188,7 @@ fn a_redeemer_hears_the_public_removed_spec_sync_opens_6() {
     assert!(reads(w.engine(1), &t).value.is_none(), "node 1 reads the thing no more");
 }
 
-// spec/sync-set.md §2 (T's keys open what the public reads): node 1's account holds thing 0 at
+// spec/sync-set.md §2 (T's keys open): node 1's account holds thing 0 at
 // sync and holds it by a strong; node 0 then makes it public and writes. Node 1 should read it as
 // the reference does; it keeps it unread, never holding the public's grant
 // (issues/public-pieces-unheld.md).
@@ -201,8 +201,7 @@ fn repro_a_sync_holder_reads_a_thing_made_public() {
     holds_on(0, accounts, n, &script, String::new(), false);
 }
 
-// spec/sync-set.md §4 (Redeeming a public link), spec/permissions.md §1 (the public's grant gives
-// every party its role): node 1 makes a thing public and removes node 0's account, a writer of it,
+// spec/sync-set.md §4 (Redeeming a public link), spec/permissions.md §1 (The public): node 1 makes a thing public and removes node 0's account, a writer of it,
 // in one run; node 0 then redeems a public link to it and should read it as the reference does.
 // Its lost-access rule drops the secret the public entry's box gave before it holds the public's
 // grant, and the redeem stays pending (issues/departed-redeem-stalls.md).
