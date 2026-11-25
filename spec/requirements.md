@@ -9,7 +9,8 @@ Each item is a property that must hold, hard unless its section says goal. A pro
 - **Closure** of a thing: it and everything it references strongly, directly or through other things. Its **sync unit**: the part of its closure it can itself read, which is what syncs as one.
 - **Commit**: one signed, atomic edit. **Part**: what a commit writes on one aspect.
 - A thing is **created** by its creation record, which names its mint admin, and **destroyed** when its creation is purged or expires. A node **releases** a thing when nothing it holds references it strongly any more; a released thing is not destroyed.
-- **Role**: sync, read, write or admin, held by one thing on another. A **holder** is a thing with a role on something. Sync stores and serves data without reading it.
+- **Role**: sync, read, write or admin, held on a thing by a thing, a signing key or the public. A **holder** is whatever holds a role on something. However it is held, a role can be changed or removed by those with the right to. Sync stores and serves data without reading it.
+- **The public**: every party. A thing granted to the public is readable by anyone it reaches, and is carried along by whatever references it.
 - **Node**: a running osis instance with its own key and store. It reads what it holds keys for and stores and serves the rest encrypted, in any mix; nothing else separates nodes. A node is **untrusted** for data it cannot read.
 - **Account**: the identity a person's (or anything else's) nodes act as, and where others reach it: an ordinary thing its nodes hold roles on.
 - **Actor**: a thing a write is made through: the thing whose key signs it, then each thing whose role it uses, in order (a node, its account, a thing the account holds a role on). Being an actor is a part played in a write, not a kind of thing.
@@ -78,7 +79,7 @@ Each item is a property that must hold, hard unless its section says goal. A pro
 - What happens to replaced content is set per thing and aspect by the thing's admins and may change at any time: nothing promised (the default), kept for a time, or purged once replaced. A change applies to the history nodes still hold and brings back nothing already dropped.
 - Data may carry an expiry at which every node, whether or not it can read it, drops it with nobody online. An edit keeps the expiry it was written with.
 - A purge counts only if its author had the right to make it, judged as an edit's validity is. A node that cannot read the data cannot judge that: it acts on a deletion by anyone who ever held the right, and a reader holding the data restores what was wrongly dropped.
-- Purging or expiring a thing's creation destroys the thing at every node: each drops it and ignores later writes to it. What it held roles on or was admin of keeps working for the other holders, and what was written through it still shows so. It comes back only if the purge turns out invalid.
+- Purging or expiring a thing's creation destroys the thing at every node: each drops it and ignores later writes to it. What it held roles on or was admin of keeps working for their other holders, and what was written through it still shows so; access through it ends, as at a removal. It comes back only if the purge turns out invalid.
 - Purge is prompt: no honest node keeps purged content once it holds the deletion and what it needs to check it. No batching, and no bin: purged content is recoverable only from a node whose retention still holds it, and undo never brings back what another party purged.
 - A node deletes data on its own only where nothing promises to keep it: at expiry, and history its thing's settings no longer keep. Purging is the act of a right holder, taking effect elsewhere when it arrives.
 - Purge on replace: content replaced while it is set is gone at every writer holding it as soon as that writer holds the replacement, and at other nodes once they hear from such a writer. It never becomes history, whatever is set later, and does not return even if the replacing write turns out invalid.
@@ -126,7 +127,7 @@ Binds released formats only; until a stable release formats change in place.
 - Collaborative text and lists.
 
 ## Permissions
-- Roles that things hold on things, and nothing else. A role M holds on A reaches the parties holding roles on M; A never depends on who they are.
+- Roles held on things, by things, signing keys or the public, and nothing else. A role M holds on A reaches the parties holding roles on M; A never depends on who they are.
 - A thing's mint admin is fixed in its identity and is an ordinary admin, removable like any other. Sharing a thing, or changing its admins, never changes its identity or how it behaves, only what it costs.
 - Referencing a thing grants no rights, and removing a reference revokes none. A grant lasts until it expires or someone who may remove it does.
 - Readers only read. A thing's writers may grant roles to it. From anyone else it takes messages, or grants of roles to it, only where its admins allow.

@@ -1,8 +1,11 @@
-# A timed edge on a destroyed holder stays a holder for keys for good
-> Summary: Holders for keys read no clock, so an edge on destroyed thing t past its `until` but not finalized at the destruction makes its holder a frozen holder of everything t held a role on, boxed at every later epoch until t's own grant there is removed; the destruction is a fixed point, so `until` could be judged against it with no clock.
+# Destroying a holder ends access through it
+> Summary: Build (Tess): a destroyed thing holds nothing and nobody stands in for it, so access through it ends at the next rotation of what it held a role on, as at a removal. Deletes the frozen-holder rule (spec/crypto.md §4 Destroyed, `expand_destroyed`), which also ends the timed-edge leak below.
 > Priority: normal
-> Tags: security, crypto, engine, tess-call
+> Tags: security, crypto, engine
 
+**Decided (Tess):** destroying G ends access through G; spec/requirements.md (Purging or expiring a thing's creation): its other holders keep what it held roles on, access through it ends as at a removal. The frozen-holder rule goes whole (spec, `Core::key_holders`/`expand_destroyed`, key access through destroyed things, Depth0 `D0_destroyed*`, notes/holder-actors.md Destroyed holder actors), with the timed-edge case it caused.
+
+## Before (to delete)
 **Rule today** (spec/crypto.md §4 Holder actors, Destroyed): t's holders for keys as they stood at its destruction stand in for t; "an edge on t past its `until` but not finalized at the destruction stays a holder ... nobody writes t to finalize it". Code: `Core::key_holders` / `flows::expand_destroyed`.
 
 **Problem**: a timed share on t (a week's read through a group) becomes permanent read on every new epoch of what t held a role on, once t is destroyed before anyone finalized it. Deleting has no safe side (notes/principles.md): keeping that holder is not the cautious choice, it extends a grant past what its writer said.
