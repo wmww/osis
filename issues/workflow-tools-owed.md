@@ -15,3 +15,5 @@
 3. **Generator census and a no-room knob**: which of a model's generators write a shape took a temporary panic in `World::put`; the sync harness has no knob holding pushes back, so a test cannot tell an at-once lost-access drop from release's pass wait.
 
 Seed-dependent fixtures (a fixture seed taken from an env var): issues/fixture-seed-luck.md.
+
+- **Landing after main fixes a gate's failures**: a gate's NEW failures fixed by commits main gained during the gate leave `merge-branch land` refusing (the rebased branch is no descendant of the gated commit); a reviewer reset to the gated commit and cherry-picked. Wanted: land rebases, reruns the failing tests by name on the rebased tree, and lands when they pass (or a documented `--rebased` path).
