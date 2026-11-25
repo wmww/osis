@@ -3,13 +3,16 @@
 //! thing's sync ID toward it only ended, on any read secret it holds of an epoch superseded here,
 //! and serves it the **notices** of the commit taking its read alone, `until` the first-logged
 //! one. A notice is one entry carrying that commit with the records judging it needs (the
-//! remover's), under its **taking epoch** (the newest epoch held here among those what gave it
-//! read boxed it), logged by every member judging the departure that holds that epoch. With no
-//! notice here nothing opens.
+//! remover's), **sealed to the removed node's own key** and wrapped as any entry: under the
+//! logging member's newest current epoch, once that covers the departure (a member that may not
+//! rotate logs none until it holds one), one per removal among the entries a member opens. The
+//! removed node opens it by its key, a member by its wrap. With no notice here nothing opens.
 //!
 //! The world: thing A with nodes N0 and N1 (admins: each removes, rotates and re-seals), N2 (a
 //! member from the start), N3 (paired by N0: a grant boxing it every epoch N0 holds, its record
-//! minted then), and X, a stranger. N0 to N2 hold epoch 0 and each other's records; N3 knows N0's
+//! minted then), X, a stranger, and L, a reader lowered to sync before the world starts: it keeps
+//! epoch 0 (as a hostile one would), is boxed nothing, and stores every entry N1 holds when they
+//! sync (a store of A). N0 to N2 hold epoch 0 and each other's records; N3 knows N0's
 //! and its own. Events: syncs of two nodes (each side logs what it holds and serves the other what
 //! it judges it may hold, repeated until nothing moves), N0 and N1 hearing each other's role commits
 //! by another route (their account's sync ID: nothing logged under A), N1 or N2 writing content,
@@ -30,16 +33,19 @@
 //! Rules (`ToldRules`): `spec`, and controls `close` (a departed peer is opened nothing), `fire`
 //! (closed, and the remover alone tells the node by meeting it), `newest` (only the newest
 //! superseded epoch is shown), `full` (served content too, up to the notice), `late` (served
-//! everything up to the log end), `untold` (no notice), `uncovering` (the taking epoch is the
-//! newest held covering no departure, not the epoch boxed to it by what gave it read), `boxed`
-//! (the newest held epoch boxed to it), `rotation-until` (the notices and the role entries up to
-//! the first rotation superseding the shown epoch, as `until` was), `no-record` (a notice without
-//! the remover's record). Properties:
-//! - `told`: the removed node learns its removal from any member that judges it departed and
-//!   holds an epoch it holds superseded, the remover gone or not;
+//! everything up to the log end), `untold` (no notice), `taking` (a notice under its taking epoch,
+//! the newest held among those what gave the removed node read boxed it, opened by every holder
+//! of that epoch), `blocked` (wrapped under the newest current epoch, covering the departure or
+//! not), `rotation-until` (the notices and the role entries up to the first rotation superseding
+//! the shown epoch, as `until` was), `no-record` (a notice without the remover's record).
+//! Properties:
+//! - `told`: the removed node learns its removal from any member that judges it departed, holds
+//!   an epoch it holds superseded and may encrypt (its newest current epoch covers the
+//!   departure), the remover gone or not;
 //! - `notice`: of what a node judging it departed serves it, nothing it opens is content, a role
 //!   commit made by a node that had judged the removal (but the removal and a rotation superseding
-//!   an epoch it holds), or a record minted so (but the remover's).
+//!   an epoch it holds), or a record minted so (but the remover's);
+//! - `lowered`: L opens no notice (each is of a removal after its own departure).
 
 use crate::Findings;
 use std::collections::BTreeSet;
@@ -49,7 +55,8 @@ pub const N1: usize = 1;
 pub const N2: usize = 2;
 pub const N3: usize = 3;
 pub const X: usize = 4;
-pub const NODES: usize = 5;
+pub const L: usize = 5;
+pub const NODES: usize = 6;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Ev {
@@ -78,8 +85,8 @@ pub enum ToldRules {
     Full,
     Late,
     Untold,
-    Uncovering,
-    Boxed,
+    Taking,
+    Blocked,
     RotationUntil,
     NoRecord,
 }
@@ -95,15 +102,15 @@ impl ToldRules {
             "-full" => ToldRules::Full,
             "-late" => ToldRules::Late,
             "-untold" => ToldRules::Untold,
-            "-uncovering" => ToldRules::Uncovering,
-            "-boxed" => ToldRules::Boxed,
+            "-taking" => ToldRules::Taking,
+            "-blocked" => ToldRules::Blocked,
             "-rotation-until" => ToldRules::RotationUntil,
             "-no-record" => ToldRules::NoRecord,
             _ => return None,
         })
     }
-    /// A node judging the departure logs a notice under the taking epoch.
-    fn taking(self) -> bool {
+    /// A node judging the departure logs a notice.
+    fn logs(self) -> bool {
         self != ToldRules::Untold
     }
 }
@@ -134,6 +141,8 @@ struct Commit {
     covers: bool,
     /// A record blob's records.
     records: Vec<usize>,
+    /// A notice: the node it is sealed to (`taking`: none, opened by its epoch alone).
+    to: Option<usize>,
     /// Made by a node that had judged the removal.
     knew: bool,
 }
@@ -190,7 +199,7 @@ impl State {
     }
     fn held(&self, a: usize) -> BTreeSet<usize> {
         let mut out = BTreeSet::new();
-        if a <= N2 {
+        if a <= N2 || a == L {
             out.insert(0);
         }
         for &c in &self.n[a].known {
@@ -228,31 +237,37 @@ impl State {
     }
     fn member(&self, a: usize) -> bool {
         let n = &self.n[a];
-        !n.gone && !n.erased && a != X && (a != N3 || self.judges_member(N3, N3))
+        !n.gone && !n.erased && a != X && a != L && (a != N3 || self.judges_member(N3, N3))
     }
     fn admin(a: usize) -> bool {
         a == N0 || a == N1
     }
-    /// The removal's taking epoch at `a`: the newest epoch held there boxed to the departed node
-    /// (`uncovering`: covering no departure).
-    fn taking_epoch(&self, a: usize) -> Option<usize> {
+    /// The notice `a` logs now, if any: (the epoch it goes under, the node it is sealed to).
+    /// Spec: sealed to the departed node, under `a`'s newest current epoch once that covers the
+    /// departure (`blocked`: covering or not); `taking`: under the newest epoch held of those
+    /// what gave it read boxed it (N2's start, N3's pairing), sealed to no one.
+    fn notice_epoch(&self, a: usize) -> Option<(usize, Option<usize>)> {
         let who = self.departure(a)?;
-        if !self.r.taking() {
+        if !self.r.logs() {
             return None;
         }
-        let held = self.held(a);
-        match self.r {
-            ToldRules::Uncovering => held.into_iter().rev().find(|&e| !self.covers(e)),
-            ToldRules::Boxed => held.into_iter().rev().find(|&e| self.boxed_to(a, who, e)),
-            // what gave it read boxed it: N2's start, N3's pairing
-            _ => {
-                let given: BTreeSet<usize> = match self.pair {
-                    Some(p) if who == N3 => self.commits[p].boxes.iter().map(|b| b.1).collect(),
-                    _ => [0].into(),
-                };
-                held.into_iter().rev().find(|e| given.contains(e))
-            }
+        if self.r == ToldRules::Taking {
+            let given: BTreeSet<usize> = match self.pair {
+                Some(p) if who == N3 => self.commits[p].boxes.iter().map(|b| b.1).collect(),
+                _ => [0].into(),
+            };
+            return self.held(a).into_iter().rev().find(|e| given.contains(e)).map(|e| (e, None));
         }
+        let newest = self.current(a).last().copied()?;
+        (self.r == ToldRules::Blocked || self.covers(newest)).then_some((newest, Some(who)))
+    }
+    /// Whether `a` holds a covering epoch as its newest current one: it may encrypt.
+    fn may_encrypt(&self, a: usize) -> bool {
+        self.current(a).last().is_some_and(|&e| self.covers(e))
+    }
+    /// Whether `a` opens entry (`c`, `e`): by the epoch, or a notice sealed to it.
+    fn opens_entry(&self, a: usize, c: usize, e: usize) -> bool {
+        self.opens(a, e) || (self.commits[c].kind == Kind::Notice && self.commits[c].to == Some(a))
     }
     /// The epoch `a` logs commit `c` under now (`None`: not now).
     fn log_epoch(&self, a: usize, c: usize) -> Option<usize> {
@@ -292,7 +307,7 @@ impl State {
         let e = self.next_epoch();
         let gone = self.departure(a);
         let boxes = (0..NODES).filter(|&m| m != X && self.judges_member(a, m) && Some(m) != gone).map(|m| (m, e)).collect();
-        let c = Commit { kind, signer: a, makes: Some(e), boxes, supersedes: self.current(a), covers: gone.is_some(), records: vec![], knew: false };
+        let c = Commit { kind, signer: a, makes: Some(e), boxes, supersedes: self.current(a), covers: gone.is_some(), records: vec![], to: None, knew: false };
         self.add(a, c)
     }
     /// Opens what `a` can of its log; a removed node judging its removal erases A.
@@ -302,13 +317,14 @@ impl State {
             let mut moved = false;
             for i in 0..self.n[a].log.len() {
                 let (c, e) = self.n[a].log[i];
-                if held.contains(&e) && self.n[a].known.insert(c) {
+                let opens = held.contains(&e) || (self.commits[c].kind == Kind::Notice && self.commits[c].to == Some(a));
+                if opens && self.n[a].known.insert(c) {
                     moved = true;
                 }
-                if held.contains(&e) && self.commits[c].kind == Kind::Notice && self.n[a].known.insert(self.removal.map_or(c, |r| r.0)) {
+                if opens && self.commits[c].kind == Kind::Notice && self.n[a].known.insert(self.removal.map_or(c, |r| r.0)) {
                     moved = true;
                 }
-                if held.contains(&e) && matches!(self.commits[c].kind, Kind::Records | Kind::Notice) {
+                if opens && matches!(self.commits[c].kind, Kind::Records | Kind::Notice) {
                     for k in self.commits[c].records.clone() {
                         moved |= !self.n[a].recs[k];
                         self.n[a].recs[k] = true;
@@ -354,7 +370,7 @@ impl State {
                 }
                 for e in self.current(a) {
                     if !self.boxed_to(a, m, e) {
-                        self.add(a, Commit { kind: Kind::Reseal, signer: a, makes: None, boxes: vec![(m, e)], supersedes: vec![], covers: false, records: vec![], knew: false });
+                        self.add(a, Commit { kind: Kind::Reseal, signer: a, makes: None, boxes: vec![(m, e)], supersedes: vec![], covers: false, records: vec![], to: None, knew: false });
                     }
                 }
             }
@@ -371,11 +387,13 @@ impl State {
                 self.n[a].log.push((c, e));
             }
         }
-        // a notice of the removal under its taking epoch: the remover's record with it
-        if let (Some(e), Some((_, by, _))) = (self.taking_epoch(a), self.removal) {
-            if !self.n[a].log.iter().any(|&(c, f)| f == e && self.commits[c].kind == Kind::Notice) {
+        // a notice of the removal: the remover's record with it; one among the entries it opens
+        // (`taking`: one per taking epoch)
+        if let (Some((e, to)), Some((_, by, _))) = (self.notice_epoch(a), self.removal) {
+            let has = self.n[a].log.iter().any(|&(c, f)| self.commits[c].kind == Kind::Notice && (if to.is_some() { self.opens(a, f) } else { f == e }));
+            if !has {
                 let records = if self.r == ToldRules::NoRecord { vec![] } else { vec![by] };
-                let c = self.add(a, Commit { kind: Kind::Notice, signer: a, makes: None, boxes: vec![], supersedes: vec![], covers: false, records, knew: false });
+                let c = self.add(a, Commit { kind: Kind::Notice, signer: a, makes: None, boxes: vec![], supersedes: vec![], covers: false, records, to, knew: false });
                 self.n[a].log.push((c, e));
             }
         }
@@ -397,7 +415,7 @@ impl State {
             let need = self.general_records(a);
             let has = need.is_empty() || self.n[a].log.iter().any(|&(c, f)| f == e && self.commits[c].kind == Kind::Records && self.commits[c].records == need);
             if !has {
-                let c = self.add(a, Commit { kind: Kind::Records, signer: a, makes: None, boxes: vec![], supersedes: vec![], covers: false, records: need, knew: false });
+                let c = self.add(a, Commit { kind: Kind::Records, signer: a, makes: None, boxes: vec![], supersedes: vec![], covers: false, records: need, to: None, knew: false });
                 self.n[a].log.push((c, e));
             }
         }
@@ -450,7 +468,7 @@ pub fn told_check(w: &ToldWorld, r: ToldRules, st: &mut ToldStats) {
             Ev::Reset(n) => s.n[n].gone = true,
             Ev::Write(n) => {
                 if s.member(n) {
-                    let c = s.add(n, Commit { kind: Kind::Write, signer: n, makes: None, boxes: vec![], supersedes: vec![], covers: false, records: vec![], knew: false });
+                    let c = s.add(n, Commit { kind: Kind::Write, signer: n, makes: None, boxes: vec![], supersedes: vec![], covers: false, records: vec![], to: None, knew: false });
                     match s.log_epoch(n, c) {
                         Some(e) => s.n[n].log.push((c, e)),
                         None => {
@@ -471,7 +489,7 @@ pub fn told_check(w: &ToldWorld, r: ToldRules, st: &mut ToldStats) {
                     continue;
                 }
                 let boxes = s.held(N0).into_iter().map(|e| (N3, e)).collect();
-                let p = s.add(N0, Commit { kind: Kind::Pair, signer: N0, makes: None, boxes, supersedes: vec![], covers: false, records: vec![], knew: false });
+                let p = s.add(N0, Commit { kind: Kind::Pair, signer: N0, makes: None, boxes, supersedes: vec![], covers: false, records: vec![], to: None, knew: false });
                 s.pair = Some(p);
                 s.late[N3] = s.commits[p].knew;
                 s.settle(N0);
@@ -505,10 +523,10 @@ pub fn told_check(w: &ToldWorld, r: ToldRules, st: &mut ToldStats) {
                     // its rotation boxes the removed node nothing
                     let e = s.next_epoch();
                     let boxes = (0..NODES).filter(|&m| m != X && m != who && s.judges_member(by, m)).map(|m| (m, e)).collect();
-                    let c = Commit { kind: Kind::Remove, signer: by, makes: Some(e), boxes, supersedes: s.current(by), covers: true, records: vec![], knew: false };
+                    let c = Commit { kind: Kind::Remove, signer: by, makes: Some(e), boxes, supersedes: s.current(by), covers: true, records: vec![], to: None, knew: false };
                     s.add(by, c)
                 } else {
-                    s.add(by, Commit { kind: Kind::Remove, signer: by, makes: None, boxes: vec![], supersedes: vec![], covers: false, records: vec![], knew: false })
+                    s.add(by, Commit { kind: Kind::Remove, signer: by, makes: None, boxes: vec![], supersedes: vec![], covers: false, records: vec![], to: None, knew: false })
                 };
                 s.removal = Some((c, by, who));
                 st.count(if knowing { "knowing" } else { "blind" }, 1);
@@ -517,7 +535,7 @@ pub fn told_check(w: &ToldWorld, r: ToldRules, st: &mut ToldStats) {
             Ev::Sync(u, v) => {
                 let who = s.removal.map(|r| r.2);
                 for (a, b) in [(u, v), (v, u)] {
-                    if Some(b) == who && s.member(a) && s.member(b) && s.departed_at(a, b) && shown(&s, a, b, false).is_some() {
+                    if Some(b) == who && s.member(a) && s.member(b) && s.departed_at(a, b) && s.may_encrypt(a) && shown(&s, a, b, false).is_some() {
                         could = true;
                     }
                 }
@@ -543,6 +561,11 @@ pub fn told_check(w: &ToldWorld, r: ToldRules, st: &mut ToldStats) {
     if could && !s.n[who].erased {
         fails.push(format!("told: N{who} synced with a member judging it departed and did not learn its removal"));
     }
+    for &(c, e) in &s.n[L].log {
+        if s.commits[c].kind == Kind::Notice && s.opens_entry(L, c, e) {
+            fails.push(format!("lowered: L opens a notice of N{who}'s removal under {e}"));
+        }
+    }
     st.failed(fails, w);
 }
 
@@ -557,6 +580,12 @@ fn shown(s: &State, a: usize, b: usize, newest: bool) -> Option<usize> {
 
 /// Server `a` serves node `b` what it judges `b` may hold, where `b` opens toward `a`.
 fn serve(s: &mut State, a: usize, b: usize, fails: &mut Vec<String>) {
+    // a store of A: every entry
+    if b == L && s.member(a) {
+        let all = s.n[a].log.clone();
+        s.take(L, &all);
+        return;
+    }
     if !s.member(a) || !s.member(b) {
         return;
     }
@@ -595,7 +624,7 @@ fn serve(s: &mut State, a: usize, b: usize, fails: &mut Vec<String>) {
     let mine = s.held(b);
     for &(c, e) in &served {
         let x = &s.commits[c];
-        if !mine.contains(&e) {
+        if !s.opens_entry(b, c, e) {
             continue;
         }
         let gain = match x.kind {
@@ -613,15 +642,16 @@ fn serve(s: &mut State, a: usize, b: usize, fails: &mut Vec<String>) {
     s.take(b, &served);
 }
 
-/// Events a slot draws from: syncs of every pair, writes by N1 and N2, rotations by N0 and N1, a
+/// Events a slot draws from: syncs of every pair but L, N1's with L, writes by N1 and N2, rotations by N0 and N1, a
 /// pairing, hearing, the admins' resets, nothing.
 pub fn alphabet() -> Vec<Ev> {
     let mut out = vec![];
-    for u in 0..NODES {
-        for v in u + 1..NODES {
+    for u in 0..X + 1 {
+        for v in u + 1..X + 1 {
             out.push(Ev::Sync(u, v));
         }
     }
+    out.push(Ev::Sync(N1, L));
     out.extend([Ev::Write(N1), Ev::Write(N2), Ev::Rotate(N0), Ev::Rotate(N1), Ev::Pair, Ev::Hear, Ev::Reset(N0), Ev::Reset(N1), Ev::Skip]);
     out
 }
@@ -732,13 +762,30 @@ mod tests {
     }
 
     /// As above, N1 having rotated (boxing N3 nothing: it never held the pairing) before its
-    /// removal: N0 holds that epoch too, covering nothing. Under the newest epoch covering no
-    /// departure N3 cannot open the removal; under the newest boxed to it, it can.
+    /// removal: N3 holds none of N0's newer epochs, and opens the notice by its own key.
     #[test]
     fn a_blind_removal_after_a_rotation_not_boxing_the_node_tells_it() {
         let w = vec![Pair, Rotate(N1), Remove(N1, N3), Hear, Sync(N0, N3)];
+        assert!(kinds(w, ToldRules::Spec).is_empty());
+    }
+
+    /// N0 removes N2, a member from the start, and L stores what N1 holds. Under the taking epoch
+    /// (epoch 0, which L kept) L opens N2's notice; sealed to N2, L opens nothing.
+    #[test]
+    fn a_lowered_reader_opens_no_later_removal() {
+        let w = vec![Remove(N0, N2), Sync(N0, N1), Sync(N1, L)];
         assert!(kinds(w.clone(), ToldRules::Spec).is_empty());
-        assert_eq!(kinds(w, ToldRules::Uncovering), ["told"]);
+        assert_eq!(kinds(w, ToldRules::Taking), ["lowered"]);
+    }
+
+    /// N1 removes N3 blind; N2, which may not rotate, judges the departure before any admin
+    /// rotates, and N1 takes its log (judging the departure then, it rotates). Wrapped under N2's
+    /// newest epoch, epoch 0, L opens the notice; N2 logs none until it holds a covering epoch.
+    #[test]
+    fn a_member_that_may_not_rotate_waits_for_a_covering_epoch() {
+        let w = vec![Pair, Sync(N0, N2), Remove(N1, N3), Sync(N1, N2), Sync(N1, L)];
+        assert!(kinds(w.clone(), ToldRules::Spec).is_empty());
+        assert_eq!(kinds(w, ToldRules::Blocked), ["lowered"]);
     }
 
     /// N1 removes N2 beside N3's pairing: a re-seal giving N3 the covering rotation's epoch is
@@ -778,8 +825,8 @@ mod tests {
             (ToldRules::Full, "notice"),
             (ToldRules::Late, "notice"),
             (ToldRules::Untold, "told"),
-            (ToldRules::Uncovering, "told"),
-            (ToldRules::Boxed, "told"),
+            (ToldRules::Taking, "lowered"),
+            (ToldRules::Blocked, "lowered"),
             (ToldRules::NoRecord, "told"),
         ] {
             assert!(run(r).kinds.contains_key(kind), "{r:?}");

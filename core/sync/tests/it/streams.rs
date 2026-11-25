@@ -536,10 +536,11 @@ fn listed_then_pushed_spec_sync_streams_4() {
     assert!(p.b.streams.known().present(&s, &y));
 }
 
-// spec/sync-opens.md §6, spec/permissions.md §4 (Notices): a's log holds a role entry, a
-// plain entry, a notice of another party's removal and one of the peer's. Toward a departed
-// peer a lists the peer's notice alone: no role entry (served up to a rotation's `until`, a
-// role commit made knowing the removal leaked), and no other party's notice.
+// spec/sync-opens.md §6, spec/permissions.md §4 (Notices), spec/sync-streams.md §4: a's log holds
+// a role entry, a plain entry, a notice of another party's removal, one of the peer's, and the
+// deletion of another entry. Toward a departed peer a lists the peer's notice alone: no role
+// entry (served up to a rotation's `until`, a role commit made knowing the removal leaked), no
+// other party's notice, and no `Deleted` (when S deletes); toward a member, the deletion goes.
 #[test]
 fn a_departed_peer_is_served_its_notices_alone_spec_sync_opens_6() {
     let mut p = Pair::new();
@@ -549,6 +550,8 @@ fn a_departed_peer_is_served_its_notices_alone_spec_sync_opens_6() {
     p.a.log(s, 101);
     let theirs = p.a.log(s, 102);
     let mine = p.a.log(s, 103);
+    let gone = p.a.log(s, 104);
+    p.a.store.drop_entry(&s, &gone, Vec::new()).unwrap();
     p.a.table.role.insert(role);
     p.a.table.notices.insert(theirs, other);
     p.a.table.notices.insert(mine, peer);
@@ -556,6 +559,10 @@ fn a_departed_peer_is_served_its_notices_alone_spec_sync_opens_6() {
     p.a.open.members.entry(C).or_default().insert(s, Member { departed: Some(std::sync::Arc::new([peer].into())), ..member() });
     let r = pull_at(&mut p.a, 0, plain_pull(None, vec![], 1 << 20));
     assert_eq!(added(&r.events), [mine], "the peer's notice alone");
+    assert!(!r.events.contains(&(s, Event::Deleted(gone))), "no deletion");
+    p.a.open.members.entry(C).or_default().insert(s, member());
+    let r = pull_at(&mut p.a, 1, plain_pull(None, vec![], 1 << 20));
+    assert!(r.events.contains(&(s, Event::Deleted(gone))), "a member is told the deletion");
 }
 
 // spec/sync-streams.md §4 (Stream: both sides pull), SN_bothpull: whoever dialed, each side pulls

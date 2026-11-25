@@ -871,9 +871,14 @@ impl Engine {
         let things = self.opening_things(s)?;
         let Some((t, key)) = things.iter().find_map(|t| osis_blob::unwrap_any(self.read_secrets(t).iter(), blob, wrap).map(|(_, k)| (*t, k))) else {
             // a wrap no held secret opens: a sealed fire's filler, opened by the read KEM key
-            // (spec/sync-inbox.md §4 A sealed fire) of whichever thing it is sealed to
+            // (spec/sync-inbox.md §4 A sealed fire) of whichever thing it is sealed to, or a
+            // notice to a holder whose read secrets are held here (spec/permissions.md §4)
             for t in &things {
                 match self.open_sealed_fire(t, blob, bytes)? {
+                    Opened::NotOpen => {}
+                    o => return Ok(o),
+                }
+                match self.open_notice(t, blob, bytes, None)? {
                     Opened::NotOpen => {}
                     o => return Ok(o),
                 }
@@ -887,7 +892,8 @@ impl Engine {
                 // a record blob (spec/wire.md §3): its records taken, kept as a certificate blob
                 // of the own store under `s` (`certblobs`): one any node logged counts as this
                 // node's own; its prefix a certificate blob's (`CertBlob::of`), else bad input
-                let Ok((_, pt)) = osis_blob::open(bytes, &key) else { return Ok(Opened::Bad) };
+                // a notice (spec/permissions.md §4): its body behind its key's box
+                let Ok((_, pt)) = osis_blob::open(bytes, &key) else { return self.open_notice(&t, blob, bytes, Some(key)) };
                 if super::certblobs::CertBlob::of(bytes, &key, BTreeSet::new()).is_none() {
                     return Ok(Opened::Bad);
                 }

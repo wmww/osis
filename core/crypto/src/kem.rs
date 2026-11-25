@@ -223,9 +223,8 @@ pub fn seal(pk: &KemPublicKey, ad: &[u8], payload: &[u8], rng: &mut dyn CryptoRn
 }
 
 /// `seal` with explicit randomness: the ephemeral X25519 private key, then the ML-KEM
-/// encapsulation bytes, in the order `seal` draws them. For tests and vectors: reused
-/// randomness breaks the box.
-#[doc(hidden)]
+/// encapsulation bytes, in the order `seal` draws them. For tests and vectors, and a notice's
+/// box, whose randomness its sealed key derives (`seal_notice`): reused randomness breaks the box.
 pub fn seal_with(pk: &KemPublicKey, ad: &[u8], payload: &[u8], eph: &Secret32, m: &[u8; 32]) -> Result<Vec<u8>, Error> {
     let e = X25519Secret::from_secret(eph);
     let ct_x = e.public();

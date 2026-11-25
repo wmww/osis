@@ -404,6 +404,9 @@ impl Streams {
                 let inlined = blob.is_some();
                 Some((s, Event::Added { blob_id: b, blob, wrap: entry.wrap, stamp: entry.stamp }, inlined))
             }
+            // a departed peer is shown its notices alone: no delete (whose blob is no longer known
+            // here as a notice or not) and no head, so when S deletes or rotates tells it nothing
+            NodeEvent::Deleted { sync_id: s, .. } | NodeEvent::Head(s) if ctx.shared.members(conn).get(&s).is_some_and(|m| m.departed.is_some()) => None,
             NodeEvent::Deleted { sync_id, blob, .. } => Some((sync_id, Event::Deleted(blob), false)),
             NodeEvent::Head(s) => ctx.store.head(&s)?.map(|st| (s, Event::Head(st), false)),
         })

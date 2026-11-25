@@ -87,6 +87,67 @@ pub fn open_fire(blob: &[u8], thing: &Tid, epoch: &Epoch, kem: &KemSecret) -> Re
     Ok((prefix, Sealed::from_value(decode(&pt, &OBJECT_LIMITS)?)?))
 }
 
+/// A notice's payload (spec/wire.md §9 `Notice := [holder, n, nonce, Sealed]`): the holder and
+/// its read keyset's epoch the notice's key is sealed to, and the sealed copy it carries.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NoticeBody {
+    pub holder: Tid,
+    pub epoch: Epoch,
+    pub copy: SealedFire,
+}
+
+impl NoticeBody {
+    fn to_value(&self) -> Value {
+        let n = i64::try_from(self.epoch.n()).unwrap_or(i64::MAX);
+        Value::List(vec![Value::Bytes(self.holder.as_bytes().to_vec()), Value::Int(n), Value::Bytes(self.epoch.nonce().to_vec()), self.copy.to_value()])
+    }
+
+    fn from_value(v: Value) -> Result<NoticeBody, Error> {
+        let bad = || Error::Malformed("notice");
+        let Value::List(items) = v else { return Err(bad()) };
+        let Ok::<[Value; 4], _>([Value::Bytes(h), Value::Int(n), Value::Bytes(nonce), copy]) = items.try_into() else { return Err(bad()) };
+        let holder = Tid::from_bytes(h.as_slice().try_into().map_err(|_| bad())?);
+        let epoch = Epoch::new(u64::try_from(n).map_err(|_| bad())?, nonce.as_slice().try_into().map_err(|_| bad())?).map_err(|_| bad())?;
+        let copy = SealedFire::from_value(copy)?;
+        if !copy.copy {
+            return Err(bad());
+        }
+        Ok(NoticeBody { holder, epoch, copy })
+    }
+}
+
+/// Seals notice `body` behind `prefix` (its copy's encryption prefix) under blob key `key`, the
+/// key sealed to `kem`, the read KEM key of `body.holder`'s keyset at `body.epoch`
+/// (`osis_crypto::seal_notice`).
+pub fn seal_notice(prefix: &Prefix, kem: &KemPublicKey, key: &osis_crypto::Secret32, body: &NoticeBody) -> Result<Vec<u8>, Error> {
+    osis_crypto::seal_notice(&prefix.to_bytes(), &body.holder, &body.epoch, kem, key, &encode(&body.to_value())).map_err(|e| match e {
+        osis_crypto::Error::TooLarge => Error::TooLarge("notice above MAX_BLOB"),
+        e => Error::Crypto(e),
+    })
+}
+
+/// The blob key of notice `blob` opened by `holder`'s read KEM secret of its keyset at `epoch`.
+pub fn notice_key(blob: &[u8], holder: &Tid, epoch: &Epoch, kem: &KemSecret) -> Result<osis_crypto::Secret32, Error> {
+    crate::blob::check_size(blob)?;
+    let prefix = Prefix::parse(blob)?;
+    Ok(osis_crypto::notice_key(blob, prefix.len(), holder, epoch, kem)?)
+}
+
+/// Opens notice `blob` under its blob key `key`: its prefix and payload, its box checked against
+/// the holder and epoch the payload names, at `kem_of` (that keyset's read KEM key, `None` where
+/// not held): `Ok(None)` where the box cannot be checked here, an error where it is no such box.
+pub fn open_notice(blob: &[u8], key: &osis_crypto::Secret32, kem_of: impl FnOnce(&Tid, &Epoch) -> Option<KemPublicKey>) -> Result<Option<(Prefix, NoticeBody)>, Error> {
+    crate::blob::check_size(blob)?;
+    let prefix = Prefix::parse(blob)?;
+    let pt = osis_crypto::open_notice(blob, prefix.len(), key)?;
+    let body = NoticeBody::from_value(decode(&pt, &OBJECT_LIMITS)?)?;
+    let Some(kem) = kem_of(&body.holder, &body.epoch) else { return Ok(None) };
+    if !osis_crypto::notice_box_is(blob, prefix.len(), &body.holder, &body.epoch, &kem, key) {
+        return Err(Error::Malformed("notice box"));
+    }
+    Ok(Some((prefix, body)))
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]

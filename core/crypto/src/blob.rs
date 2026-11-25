@@ -280,7 +280,71 @@ pub fn open_fire(blob: &[u8], prefix_len: usize, thing: &Tid, epoch: &crate::Epo
 }
 
 fn fire_ad(thing: &Tid, epoch: &crate::Epoch, prefix: &[u8]) -> Vec<u8> {
-    encode(&Value::List(vec![Value::Bytes(thing.as_bytes().to_vec()), Value::Str("fire".into()), Value::Int(i64::try_from(epoch.n()).unwrap_or(i64::MAX)), Value::Bytes(epoch.nonce().to_vec()), Value::Bytes(prefix.to_vec())]))
+    sealed_ad(thing, "fire", epoch, prefix)
+}
+
+fn sealed_ad(thing: &Tid, label: &str, epoch: &crate::Epoch, prefix: &[u8]) -> Vec<u8> {
+    encode(&Value::List(vec![Value::Bytes(thing.as_bytes().to_vec()), Value::Str(label.into()), Value::Int(i64::try_from(epoch.n()).unwrap_or(i64::MAX)), Value::Bytes(epoch.nonce().to_vec()), Value::Bytes(prefix.to_vec())]))
+}
+
+/// Bytes of a notice's key box (`seal_notice`).
+pub const NOTICE_BOX_LEN: usize = SEALED_OVERHEAD + 32;
+
+/// Notice (spec/wire.md §9): `prefix || box || AEAD(key, nonce 0, AD prefix || box,
+/// pad(payload))`, `box` blob key `key` sealed to the read KEM key of `holder`'s keyset at
+/// `epoch`, AD = `[holder, "notice", n, nonce, prefix]`, its randomness `kdf("notice eph", key)`
+/// and `kdf("notice kem", key)`: so whoever holds the key (by the entry's wrap) checks the box
+/// (`notice_box_is`), and only the holder's readers open it without the key.
+pub fn seal_notice(prefix: &[u8], holder: &Tid, epoch: &crate::Epoch, kem: &KemPublicKey, key: &Secret32, payload: &[u8]) -> Result<Vec<u8>, Error> {
+    let padded = pad(payload);
+    let total = prefix.len().saturating_add(NOTICE_BOX_LEN).saturating_add(padded.len()).saturating_add(TAG_LEN);
+    if total > MAX_BLOB {
+        return Err(Error::TooLarge);
+    }
+    let bx = notice_box(prefix, holder, epoch, kem, key)?;
+    let mut blob = Vec::with_capacity(total);
+    blob.extend_from_slice(prefix);
+    blob.extend_from_slice(&bx);
+    let body = aead::seal(key.expose(), &ZERO_NONCE, &blob, &padded)?;
+    blob.extend_from_slice(&body);
+    Ok(blob)
+}
+
+fn notice_box(prefix: &[u8], holder: &Tid, epoch: &crate::Epoch, kem: &KemPublicKey, key: &Secret32) -> Result<Vec<u8>, Error> {
+    let m = kdf("notice kem", key.expose(), b"");
+    crate::seal_with(kem, &sealed_ad(holder, "notice", epoch, prefix), key.expose(), &kdf("notice eph", key.expose(), b""), m.expose())
+}
+
+/// A notice's head (prefix, then box: its body's AD) and body (`seal_notice`).
+fn notice_split(blob: &[u8], prefix_len: usize) -> Result<(&[u8], &[u8]), Error> {
+    if blob.len() > MAX_BLOB {
+        return Err(Error::Malformed("blob too large"));
+    }
+    blob.split_at_checked(prefix_len.saturating_add(NOTICE_BOX_LEN)).ok_or(Error::Malformed("notice shorter than its box"))
+}
+
+/// The blob key of notice `blob` (`seal_notice`) opened with `holder`'s read KEM secret of its
+/// keyset at `epoch`.
+pub fn notice_key(blob: &[u8], prefix_len: usize, holder: &Tid, epoch: &crate::Epoch, kem: &KemSecret) -> Result<Secret32, Error> {
+    let (prefix, bx) = notice_split(blob, prefix_len)?.0.split_at(prefix_len);
+    let k = open_sealed(kem, &sealed_ad(holder, "notice", epoch, prefix), bx)?;
+    Ok(Secret32::from_bytes(k.as_slice().try_into().map_err(|_| Error::Malformed("notice key"))?))
+}
+
+/// The payload of notice `blob` under its blob key `key`.
+pub fn open_notice(blob: &[u8], prefix_len: usize, key: &Secret32) -> Result<Vec<u8>, Error> {
+    let (head, body) = notice_split(blob, prefix_len)?;
+    let padded = Zeroizing::new(aead::open(key.expose(), &ZERO_NONCE, head, body)?);
+    Ok(unpad(&padded)?.to_vec())
+}
+
+/// Whether notice `blob`'s box is blob key `key` sealed to `kem`, `holder`'s read KEM key at
+/// `epoch`, as `seal_notice` seals it: what a node holding the key by the wrap checks before it
+/// counts the notice as one to that holder.
+pub fn notice_box_is(blob: &[u8], prefix_len: usize, holder: &Tid, epoch: &crate::Epoch, kem: &KemPublicKey, key: &Secret32) -> bool {
+    let Ok((head, _)) = notice_split(blob, prefix_len) else { return false };
+    let (prefix, bx) = head.split_at(prefix_len);
+    notice_box(prefix, holder, epoch, kem, key).is_ok_and(|b| b == bx)
 }
 
 #[cfg(test)]
@@ -288,6 +352,31 @@ mod tests {
     use super::*;
     use crate::SeededRng;
     use proptest::prelude::*;
+
+    // spec/wire.md §9 (Notice): the holder's KEM secret opens the key, the key the payload; a
+    // holder of the key checks the box, and a box sealed with other randomness or to another
+    // holder fails the check.
+    #[test]
+    fn notice_round_trip_and_box_check_spec_wire_9() {
+        let kem = KemSecret::derive(&Secret32::from_bytes([1; 32]));
+        let (m, e) = (Tid::from_bytes([2; 15]), crate::Epoch::new(3, [4; 32]).unwrap());
+        let key = Secret32::from_bytes([5; 32]);
+        let prefix = [7u8; 30];
+        let blob = seal_notice(&prefix, &m, &e, kem.public(), &key, b"payload").unwrap();
+        assert_eq!(notice_key(&blob, 30, &m, &e, &kem).unwrap().expose(), key.expose());
+        assert_eq!(open_notice(&blob, 30, &key).unwrap(), b"payload");
+        assert!(notice_box_is(&blob, 30, &m, &e, kem.public(), &key));
+        assert!(!notice_box_is(&blob, 30, &Tid::from_bytes([9; 15]), &e, kem.public(), &key), "another holder");
+        assert!(notice_key(&blob, 30, &m, &e, &KemSecret::derive(&Secret32::from_bytes([9; 32]))).is_err(), "another key");
+        // the box sealed with other randomness: the body opens, the box check fails
+        let mut forged = prefix.to_vec();
+        let mut rng = SeededRng::from_seed([8; 32]);
+        forged.extend(seal(kem.public(), &sealed_ad(&m, "notice", &e, &prefix), key.expose(), &mut rng).unwrap());
+        let body = aead::seal(key.expose(), &ZERO_NONCE, &forged, &pad(b"payload")).unwrap();
+        forged.extend(body);
+        assert_eq!(open_notice(&forged, 30, &key).unwrap(), b"payload");
+        assert!(!notice_box_is(&forged, 30, &m, &e, kem.public(), &key), "a box not derived from its key");
+    }
 
     // spec/wire.md §5: unpad rejections.
     // spec/wire.md §5 (unpad)

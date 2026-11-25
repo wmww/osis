@@ -623,6 +623,48 @@ fn a_removal_its_writer_made_blind_reaches_the_removed_reader_spec_permissions_4
     assert_eq!(value(&mut w, 0, &t), None, "Alice reads T no more");
 }
 
+// spec/permissions.md §4 (Notices), spec/sync-hostile.md (a removed reader learns at most one
+// rotation past what it read): Alice grants Bob and Carol read on T, lowers Bob to sync (his node
+// keeps T's sync ID as a store, every entry) and then removes Carol. Bob kept the read secrets he
+// held, as a hostile node would: none opens a notice of Carol's removal in his store, by its wrap
+// or its seal. Carol's node opens one by her account's key and reads T no more.
+#[test]
+fn a_reader_lowered_to_sync_opens_no_later_removals_notice_spec_permissions_4() {
+    let mut w = World::new(0);
+    for _ in 0..3 {
+        w.add_node();
+    }
+    crate::harness::history::introduce(&mut w);
+    w.run();
+    let t = make(&mut w, 0, None, "v1");
+    let (bob, carol) = (w.node(1).account.unwrap(), w.node(2).account.unwrap());
+    for (i, h) in [(1, bob), (2, carol)] {
+        w.write(0, |e| e.grant(&t, &h, &edge(Role::Read))).unwrap();
+        strong(&mut w, i, None, t, true);
+    }
+    w.run();
+    assert_eq!(value(&mut w, 1, &t), Some(Value::Str("v1".into())), "Bob reads T");
+    let kept: Vec<(osis_crypto::Epoch, osis_crypto::RoleSecret)> = w.engine(1).epochs(&t).map(|e| e.read.held().map(|(e, s)| (e, s.clone())).collect()).unwrap_or_default();
+    w.write(0, |e| e.demote(&t, &osis_engine::flows::Demotion { holder: bob, new: Some(edge(Role::Sync)), retain: None })).unwrap();
+    w.run();
+    assert_eq!(holding(&mut w, 1, &t), Some(Holding::Unread), "Bob keeps T unread");
+    let s = w.engine(0).sync_id_of(&t).unwrap().unwrap();
+    let bobs = w.engine(0).notice_rows(&s);
+    w.write(0, |e| e.demote(&t, &osis_engine::flows::Demotion { holder: carol, new: None, retain: None })).unwrap();
+    w.run();
+    assert_eq!(value(&mut w, 2, &t), None, "Carol reads T no more");
+    let carols: Vec<_> = w.engine(0).notice_rows(&s).into_keys().filter(|b| !bobs.contains_key(b)).collect();
+    assert!(!carols.is_empty(), "Alice logs a notice of Carol's removal");
+    for b in &carols {
+        let e = w.store(1).entry(&s, b).unwrap().expect("Bob's store holds the notice");
+        let bytes = w.store(1).bytes(b).unwrap().unwrap();
+        for (ep, sec) in &kept {
+            assert!(osis_crypto::unwrap(sec.secret(), b, &e.wrap).is_err(), "a kept secret opens no notice's wrap");
+            assert!(osis_blob::open_fire(&bytes, &t, ep, sec.kem()).is_err(), "nor its seal");
+        }
+    }
+}
+
 // spec/permissions.md §3 (Lost access; No secret taken back): Bob mints T1 with admin T0 and grants
 // Alice read on T0, so she reads T1 through T0. Cut off from his sibling, one of Bob's nodes
 // removes her from T0 while the other grants her sync on T1, still boxing her T1's read secret;
