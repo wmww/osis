@@ -10,9 +10,12 @@
 //! - position + `B`: the writes on the sequence elements of one bucket (`Bucket`: `BUCKET`
 //!   consecutive counters of one source), run-length coded, so a run record costs a row per
 //!   bucket, not per element;
-//! - position + `T`: the greatest stamp held at or below it; position + `S` + that stamp
-//!   (inverted: greatest first) + the step's hash, the step: its steps down by theirs, so a
-//!   reset reads only the positions written since the reset before it (`below`);
+//! - position + `A`: its tops (`Tops`): the greatest stamp held at or below it, the greatest of
+//!   its own writes per kind, and how many steps down it has; position + `S` + the greatest
+//!   stamp below a step (inverted: greatest first) + the step's hash, the step: its steps down
+//!   by theirs, so a reset reads only the positions written since the reset before it
+//!   (`below`), and a write asks only the positions holding a kind written after it for the
+//!   writes superseding it;
 //! - set + `V` + the reference's hash + the removal's hash, its dot and stamp: the set's value
 //!   removals by the reference their joined copy names (§5.5);
 //! - body + `D` + death (inverted): how many of the body's winning writes died then, so its
@@ -22,6 +25,11 @@
 //!
 //! A sequence element's position has its bucket before it, and its own writes (creation,
 //! position, flag, element reset) live in the bucket's row.
+//!
+//! A change (a body joining or leaving, `date_every`) reads each position's tops once and
+//! keeps the rows it writes (`Held::tops`, `Held::cells`), so a walk up a write's ancestors or
+//! across the kinds at its position reads rows only where a kind there was written after it: a
+//! join reads a few rows per write, whatever its depth and the writes held.
 
 use crate::fragment::{Elem, Fragment, Removal};
 use crate::stamp::{Dot, DotRange, Session, Source, SourceKind, Stamp};
@@ -280,18 +288,39 @@ fn kind_of(b: u8) -> Result<Kind, Corrupt> {
 // ---- positions
 
 /// A step of a stored position: a `Place`, or the bucket of the sequence element after it.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum StepOf {
     At(Place),
     /// The bucket's dot: an element's with its counter divided by `BUCKET`.
     Bucket(Dot),
 }
 
-/// A step with its hash in keys (`pos_key`), hashed once where the step is made.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+/// A step with its hash in keys (`pos_key`), hashed once where the step is made. Steps compare
+/// by hash, as keys do.
+#[derive(Clone, Debug)]
 struct Step {
     of: StepOf,
     h: [u8; 16],
+}
+
+impl PartialEq for Step {
+    fn eq(&self, o: &Step) -> bool {
+        self.h == o.h
+    }
+}
+
+impl Eq for Step {}
+
+impl PartialOrd for Step {
+    fn partial_cmp(&self, o: &Step) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(o))
+    }
+}
+
+impl Ord for Step {
+    fn cmp(&self, o: &Step) -> std::cmp::Ordering {
+        u128::from_be_bytes(self.h).cmp(&u128::from_be_bytes(o.h))
+    }
 }
 
 impl Step {
@@ -665,6 +694,64 @@ impl Bucket {
     }
 }
 
+/// A position's tops (`A` row; none: nothing held at or below it): the greatest stamp held at or
+/// below it, the greatest of its own writes per kind (a point's `W` rows; a bucket's writes are
+/// its row's), and how many steps down it has (`S` rows).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct Tops {
+    all: Option<Stamp>,
+    own: BTreeMap<Kind, Stamp>,
+    steps: u64,
+}
+
+impl Tops {
+    /// The greatest stamp, the steps, then per kind its byte and 0 where its top is the greatest,
+    /// else 1 and the stamp.
+    fn encode(&self, all: &Stamp) -> Vec<u8> {
+        let mut out = stamp_bytes(all);
+        put_u64(&mut out, self.steps);
+        for (k, s) in &self.own {
+            out.push(kind_byte(*k));
+            if s == all {
+                out.push(0);
+            } else {
+                out.push(1);
+                put_stamp(&mut out, s);
+            }
+        }
+        out
+    }
+    fn decode(b: &[u8]) -> Result<Tops, Corrupt> {
+        let mut r = Rd(b);
+        let all = r.stamp()?;
+        let steps = r.u64()?;
+        let mut own = BTreeMap::new();
+        while !r.0.is_empty() {
+            let k = kind_of(r.u8()?)?;
+            let s = if r.u8()? == 0 { all.clone() } else { r.stamp()? };
+            own.insert(k, s);
+        }
+        Ok(Tops { all: Some(all), own, steps })
+    }
+}
+
+/// Stamps `(lo, hi)` of two writes of one kind at one position with none between (`lo` `None`:
+/// none below `hi`).
+type Gap = (Option<Stamp>, Stamp);
+
+/// A position's tops as a change reads and writes them (`Held::tops`).
+#[derive(Clone, Debug)]
+struct At {
+    tops: Tops,
+    /// Changed since read: written at `flush`.
+    dirty: bool,
+    /// Nothing was held at or below it when read: its `W` rows are those the change wrote
+    /// (`Held::cells`).
+    fresh: bool,
+    /// Per kind, the gaps between its writes the change read, once its writes move no key.
+    gaps: BTreeMap<Kind, Vec<Gap>>,
+}
+
 /// A body's own writes: at points (with whether each wins in it and its copy payload), and per
 /// bucket on its elements.
 #[derive(Default)]
@@ -694,6 +781,10 @@ pub struct Held<R: Rows> {
     moved: BTreeSet<CommitId>,
     /// Whether a held write's death went to none since `take_revived` (§4.8 Revival).
     revived: bool,
+    /// The tops of the positions the change under way read, until `flush`.
+    tops: BTreeMap<Pos, At>,
+    /// The `W` rows the change under way wrote, by key (`None`: gone), until `flush`.
+    cells: BTreeMap<Vec<u8>, Option<Cell>>,
 }
 
 fn inv(b: &[u8]) -> Vec<u8> {
@@ -745,7 +836,7 @@ fn can_supersede(s: Kind, w: Kind, same: bool) -> bool {
 
 impl<R: Rows> Held<R> {
     pub fn new(rows: R) -> Held<R> {
-        Held { rows, dated: BTreeMap::new(), moved: BTreeSet::new(), revived: false }
+        Held { rows, dated: BTreeMap::new(), moved: BTreeSet::new(), revived: false, tops: BTreeMap::new(), cells: BTreeMap::new() }
     }
 
     /// Whether a write still held stopped being dead since the last call: a body leaving took
@@ -795,10 +886,43 @@ impl<R: Rows> Held<R> {
     }
 
     fn point(&mut self, pos: &[Step], kind: Kind, s: &Stamp) -> Result<Option<Cell>, R::Err> {
-        match self.rows.get(&point_key(pos, kind, s))? {
+        let key = point_key(pos, kind, s);
+        if let Some(c) = self.cells.get(&key) {
+            return Ok(c.clone());
+        }
+        if self.tops.get(pos).is_some_and(|a| a.fresh) {
+            return Ok(None);
+        }
+        self.stored_cell(&key)
+    }
+
+    /// The write at `pos` keyed `key`, its position's tops read first: one read at most, none
+    /// at a fresh position.
+    fn cell_at(&mut self, pos: &[Step], key: &[u8]) -> Result<Option<Cell>, R::Err> {
+        if let Some(c) = self.cells.get(key) {
+            return Ok(c.clone());
+        }
+        if self.at(pos)?.fresh {
+            return Ok(None);
+        }
+        self.stored_cell(key)
+    }
+
+    fn stored_cell(&mut self, key: &[u8]) -> Result<Option<Cell>, R::Err> {
+        match self.rows.get(key)? {
             Some(b) => Ok(Some(Cell::decode(&b)?)),
             None => Ok(None),
         }
+    }
+
+    /// Writes the write keyed `key` (`None`: gone), kept for the change's later reads.
+    fn put_cell(&mut self, key: &[u8], c: Option<Cell>) -> Result<(), R::Err> {
+        match &c {
+            Some(c) => self.rows.put(key, &c.encode())?,
+            None => self.rows.del(key)?,
+        }
+        self.cells.insert(key.to_vec(), c);
+        Ok(())
     }
 
     fn bucket(&mut self, pos: &[Step]) -> Result<Bucket, R::Err> {
@@ -830,8 +954,20 @@ impl<R: Rows> Held<R> {
         }
     }
 
-    /// Writes the `D` rows `redate` moved.
+    /// Writes the tops the change moved and the `D` rows `redate` moved; the change's reads
+    /// are forgotten.
     fn flush(&mut self) -> Result<(), R::Err> {
+        self.cells.clear();
+        for (pos, at) in std::mem::take(&mut self.tops) {
+            if !at.dirty {
+                continue;
+            }
+            let key = pos_key(b'A', &pos);
+            match &at.tops.all {
+                Some(all) => self.rows.put(&key, &at.tops.encode(all))?,
+                None => self.rows.del(&key)?,
+            }
+        }
         for ((c, t), n) in std::mem::take(&mut self.dated) {
             if n == 0 {
                 continue;
@@ -849,11 +985,27 @@ impl<R: Rows> Held<R> {
 
     // ---- tops
 
-    fn top(&mut self, pos: &[Step]) -> Result<Option<Stamp>, R::Err> {
-        match self.rows.get(&pos_key(b'T', pos))? {
-            Some(b) => Ok(Some(Rd(&b).stamp()?)),
-            None => Ok(None),
+    /// The tops of `pos`, read once per change.
+    fn at(&mut self, pos: &[Step]) -> Result<&mut At, R::Err> {
+        if !self.tops.contains_key(pos) {
+            // below a fresh position, nothing was held either
+            let under_fresh = (0..pos.len()).rev().find_map(|n| self.tops.get(pos.get(..n).unwrap_or_default())).is_some_and(|a| a.fresh);
+            let tops = match under_fresh {
+                true => None,
+                false => self.rows.get(&pos_key(b'A', pos))?,
+            };
+            let tops = match tops {
+                Some(b) => Tops::decode(&b)?,
+                None => Tops::default(),
+            };
+            let fresh = tops.all.is_none();
+            self.tops.insert(pos.to_vec(), At { tops, dirty: false, fresh, gaps: BTreeMap::new() });
         }
+        Ok(self.tops.get_mut(pos).ok_or(Corrupt("held writes: tops"))?)
+    }
+
+    fn top(&mut self, pos: &[Step]) -> Result<Option<Stamp>, R::Err> {
+        Ok(self.at(pos)?.tops.all.clone())
     }
 
     /// The `S` key of step `step` below `up` with top `top`, and its row: the step.
@@ -868,11 +1020,9 @@ impl<R: Rows> Held<R> {
 
     /// Sets the top of `pos` (`None`: none) from `old`, and its step row above.
     fn set_top(&mut self, pos: &[Step], old: Option<&Stamp>, new: Option<&Stamp>) -> Result<(), R::Err> {
-        let key = pos_key(b'T', pos);
-        match new {
-            Some(s) => self.rows.put(&key, &stamp_bytes(s))?,
-            None => self.rows.del(&key)?,
-        }
+        let at = self.at(pos)?;
+        at.tops.all = new.cloned();
+        at.dirty = true;
         if let Some((step, up)) = pos.split_last() {
             if let Some(o) = old {
                 self.rows.del(&Self::step_key(up, o, step).0)?;
@@ -880,6 +1030,11 @@ impl<R: Rows> Held<R> {
             if let Some(s) = new {
                 let (k, row) = Self::step_key(up, s, step);
                 self.rows.put(&k, &row)?;
+            }
+            if old.is_none() != new.is_none() {
+                let up = self.at(up)?;
+                up.tops.steps = if new.is_some() { up.tops.steps.checked_add(1) } else { up.tops.steps.checked_sub(1) }.ok_or(Corrupt("held writes: steps"))?;
+                up.dirty = true;
             }
         }
         Ok(())
@@ -903,11 +1058,7 @@ impl<R: Rows> Held<R> {
         if pos.last().and_then(Step::bucket).is_some() {
             return Ok(self.bucket(pos)?.top().cloned());
         }
-        let mut out = None;
-        for k in Kind::ALL {
-            out = out.max(self.pred(pos, k, None)?);
-        }
-        Ok(out)
+        Ok(self.at(pos)?.tops.own.values().max().cloned())
     }
 
     /// A write stamped `st` left `pos`: the tops at and above it, while `st` was a position's
@@ -921,9 +1072,12 @@ impl<R: Rows> Held<R> {
             }
             let own = self.own_top(q)?;
             let from = under(b'S', q);
-            let step = match self.rows.scan(&from, &end_of(&from), 1)?.pop() {
-                Some((k, _)) => Some(Rd(&inv(k.get(from.len()..).unwrap_or_default())).stamp()?),
-                None => None,
+            let step = match self.at(q)?.tops.steps {
+                0 => None,
+                _ => match self.rows.scan(&from, &end_of(&from), 1)?.pop() {
+                    Some((k, _)) => Some(Rd(&inv(k.get(from.len()..).unwrap_or_default())).stamp()?),
+                    None => None,
+                },
             };
             let new = own.max(step);
             if new.as_ref() == Some(&old) {
@@ -941,7 +1095,12 @@ impl<R: Rows> Held<R> {
         let mut out = Vec::new();
         let mut todo = vec![pos.to_vec()];
         while let Some(q) = todo.pop() {
-            if !self.top(&q)?.as_ref().is_some_and(high) {
+            let at = &self.at(&q)?.tops;
+            if !at.all.as_ref().is_some_and(high) {
+                continue;
+            }
+            if at.steps == 0 {
+                out.push(q);
                 continue;
             }
             let from = under(b'S', &q);
@@ -970,34 +1129,71 @@ impl<R: Rows> Held<R> {
 
     // ---- writes at a point
 
-    /// The greatest stamp of kind `k` at point `pos`, below `before` if given.
+    /// The greatest stamp of kind `k` at point `pos`, below `before` if given: by its tops, read
+    /// in the rows only where one of kind `k` there is stamped at or after `before`.
     fn pred(&mut self, pos: &[Step], k: Kind, before: Option<&Stamp>) -> Result<Option<Stamp>, R::Err> {
-        let mut from = under(b'W', pos);
-        from.push(kind_byte(k));
-        let to = match before {
-            Some(s) => {
-                let mut to = from.clone();
-                put_stamp(&mut to, s);
-                to
-            }
-            None => end_of(&from),
-        };
-        match self.rows.scan_back(&from, &to, 1)?.pop() {
-            Some((key, _)) => Ok(Some(Rd(key.get(from.len()..).unwrap_or_default()).stamp()?)),
-            None => Ok(None),
+        let Some(top) = self.at(pos)?.tops.own.get(&k).cloned() else { return Ok(None) };
+        let Some(before) = before.filter(|b| top >= **b) else { return Ok(Some(top)) };
+        let gaps = self.at(pos)?.gaps.get(&k);
+        if let Some((lo, _)) = gaps.into_iter().flatten().find(|(lo, hi)| lo.as_ref().is_none_or(|l| l < before) && before <= hi) {
+            return Ok(lo.clone());
         }
+        let lo = self.edge(pos, k, None, Some(before), true)?;
+        // `before` written by this change: held, with none between
+        if matches!(self.cells.get(&point_key(pos, k, before)), Some(Some(_))) {
+            self.at(pos)?.gaps.entry(k).or_default().push((lo.clone(), before.clone()));
+        }
+        Ok(lo)
     }
 
-    /// The least stamp of kind `k` at point `pos` above `after`.
+    /// The least stamp of kind `k` at point `pos` above `after`: by its tops, read in the rows
+    /// only where one of kind `k` there is stamped after `after`.
     fn succ(&mut self, pos: &[Step], k: Kind, after: &Stamp) -> Result<Option<Stamp>, R::Err> {
-        let mut from = under(b'W', pos);
-        from.push(kind_byte(k));
-        let to = end_of(&from);
-        let mut start = from.clone();
-        put_stamp(&mut start, after);
-        start.push(0);
-        match self.rows.scan(&start, &to, 1)?.pop() {
-            Some((key, _)) => Ok(Some(Rd(key.get(from.len()..).unwrap_or_default()).stamp()?)),
+        let at = self.at(pos)?;
+        if at.tops.own.get(&k).is_none_or(|t| t <= after) {
+            return Ok(None);
+        }
+        let gaps = at.gaps.get(&k);
+        if let Some((_, hi)) = gaps.into_iter().flatten().find(|(lo, hi)| lo.as_ref().is_none_or(|l| l <= after) && after < hi) {
+            return Ok(Some(hi.clone()));
+        }
+        self.edge(pos, k, Some(after), None, false)
+    }
+
+    /// The greatest (`back`) or least stamp of kind `k` at point `pos` above `after` and below
+    /// `before`: in the rows the change wrote at a fresh position, else in the stored rows.
+    fn edge(&mut self, pos: &[Step], k: Kind, after: Option<&Stamp>, before: Option<&Stamp>, back: bool) -> Result<Option<Stamp>, R::Err> {
+        let mut prefix = under(b'W', pos);
+        prefix.push(kind_byte(k));
+        let from = match after {
+            Some(s) => {
+                let mut f = prefix.clone();
+                put_stamp(&mut f, s);
+                f.push(0);
+                f
+            }
+            None => prefix.clone(),
+        };
+        let to = match before {
+            Some(s) => {
+                let mut t = prefix.clone();
+                put_stamp(&mut t, s);
+                t
+            }
+            None => end_of(&prefix),
+        };
+        if from >= to {
+            return Ok(None);
+        }
+        let key = if self.tops.get(pos).is_some_and(|a| a.fresh) {
+            let mut written = self.cells.range::<[u8], _>((Bound::Included(&from[..]), Bound::Excluded(&to[..]))).filter(|x| x.1.is_some()).map(|x| x.0.clone());
+            if back { written.next_back() } else { written.next() }
+        } else {
+            let found = if back { self.rows.scan_back(&from, &to, 1)? } else { self.rows.scan(&from, &to, 1)? };
+            found.into_iter().next().map(|x| x.0)
+        };
+        match key {
+            Some(key) => Ok(Some(Rd(key.get(prefix.len()..).unwrap_or_default()).stamp()?)),
             None => Ok(None),
         }
     }
@@ -1012,11 +1208,22 @@ impl<R: Rows> Held<R> {
             if !is_point(q) {
                 continue;
             }
-            for k in [Kind::Reset, Kind::Value] {
-                out = out.max(self.pred(q, k, Some(st))?);
+            for (k, top) in self.covers(q)? {
+                match top {
+                    Some(t) if t < *st => out = out.max(Some(t)),
+                    Some(_) => out = out.max(self.pred(q, k, Some(st))?),
+                    None => {}
+                }
             }
         }
         Ok(out)
+    }
+
+    /// The greatest reset and register write at point `pos`, the writes superseding every write
+    /// below them.
+    fn covers(&mut self, pos: &[Step]) -> Result<[(Kind, Option<Stamp>); 2], R::Err> {
+        let own = &self.at(pos)?.tops.own;
+        Ok([Kind::Reset, Kind::Value].map(|k| (k, own.get(&k).cloned())))
     }
 
     /// The least stamp above `st` among the writes above position `pos` (not at it) that
@@ -1047,8 +1254,10 @@ impl<R: Rows> Held<R> {
                     least(at.and_then(|m| m.range((Kind::ElemReset, st.clone())..).take_while(|(k, _)| k.0 == Kind::ElemReset).map(|(k, _)| &k.1).find(|s| *s > st).cloned()));
                 }
                 None if is_point(q) => {
-                    for k in [Kind::Reset, Kind::Value] {
-                        least(self.succ(q, k, st)?);
+                    for (k, top) in self.covers(q)? {
+                        if top.is_some_and(|t| t > *st) {
+                            least(self.succ(q, k, st)?);
+                        }
                     }
                 }
                 None => {}
@@ -1259,17 +1468,42 @@ impl<R: Rows> Held<R> {
     /// `date`: the deaths it moves are dated (else none is: `place`).
     fn change(&mut self, body: &Body, own: Own, join: bool, date: bool) -> Result<(), R::Err> {
         self.moved.insert(body.c);
+        self.tops.values_mut().for_each(|a| a.gaps.clear());
         // the writes whose coming, going or joined copy may move a death, and the positions
         // whose tops they move
         let mut sources: Vec<Won> = Vec::new();
         let mut raised: Vec<(Pos, Stamp)> = Vec::new();
         let mut lowered: Vec<(Pos, Stamp)> = Vec::new();
+        // the kinds whose greatest write left a position
+        let mut recount: BTreeSet<(Pos, Kind)> = BTreeSet::new();
+        // a joining write's row and the one of its kind below it, read at once (`gaps`)
+        let mut read: Vec<((Pos, Kind), Gap)> = Vec::new();
+        let mut added: BTreeMap<(Pos, Kind), Vec<Stamp>> = BTreeMap::new();
         for (pos, kind, stamp, wins, payload) in own.points {
             let key = point_key(&pos, kind, &stamp);
-            let old = match self.rows.get(&key)? {
-                Some(x) => Some(Cell::decode(&x)?),
-                None => None,
+            let old = match join && !self.cells.contains_key(&key) && !self.at(&pos)?.fresh {
+                true => {
+                    let mut prefix = under(b'W', &pos);
+                    prefix.push(kind_byte(kind));
+                    let mut found = self.rows.scan_back(&prefix, &[&key[..], &[0]].concat(), 2)?.into_iter();
+                    let mut old = None;
+                    let mut lo = found.next();
+                    if let Some((_, v)) = lo.take_if(|x| x.0 == key) {
+                        old = Some(Cell::decode(&v)?);
+                        lo = found.next();
+                    }
+                    let lo = match lo {
+                        Some((k, _)) => Some(Rd(k.get(prefix.len()..).unwrap_or_default()).stamp()?),
+                        None => None,
+                    };
+                    read.push(((pos.clone(), kind), (lo, stamp.clone())));
+                    old
+                }
+                false => self.cell_at(&pos, &key)?,
             };
+            if join {
+                added.entry((pos.clone(), kind)).or_default().push(stamp.clone());
+            }
             let mut new = old.clone().unwrap_or_default();
             if join {
                 new.add(Holder { body: *body, wins, payload });
@@ -1279,13 +1513,21 @@ impl<R: Rows> Held<R> {
             self.redate(old.as_ref(), Some(&new));
             let gone = new.holders.is_empty();
             if gone {
-                self.rows.del(&key)?;
+                self.put_cell(&key, None)?;
                 lowered.push((pos.clone(), stamp.clone()));
+                if self.at(&pos)?.tops.own.get(&kind) == Some(&stamp) {
+                    recount.insert((pos.clone(), kind));
+                }
             } else {
-                self.rows.put(&key, &new.encode())?;
+                self.put_cell(&key, Some(new.clone()))?;
             }
             if old.is_none() {
                 raised.push((pos.clone(), stamp.clone()));
+                let at = self.at(&pos)?;
+                if at.tops.own.get(&kind).is_none_or(|t| *t < stamp) {
+                    at.tops.own.insert(kind, stamp.clone());
+                    at.dirty = true;
+                }
             }
             // a value removal's row under the reference its joined copy names
             let mut copies = old.is_none() || gone;
@@ -1305,6 +1547,21 @@ impl<R: Rows> Held<R> {
             if copies {
                 sources.push(Won { path: path_of(&pos), kind, stamp });
             }
+        }
+        // a gap holding another write the change added is none
+        for ((pos, k), (lo, hi)) in read {
+            if !added.get(&(pos.clone(), k)).into_iter().flatten().any(|x| lo.as_ref().is_none_or(|l| l < x) && x < &hi) {
+                self.at(&pos)?.gaps.entry(k).or_default().push((lo, hi));
+            }
+        }
+        for (pos, kind) in recount {
+            let top = self.edge(&pos, kind, None, None, true)?;
+            let at = self.at(&pos)?;
+            match top {
+                Some(t) => at.tops.own.insert(kind, t),
+                None => at.tops.own.remove(&kind),
+            };
+            at.dirty = true;
         }
         let mut moved: BTreeSet<Moved> = BTreeSet::new();
         for (pos, cells) in &own.buckets {
@@ -1377,7 +1634,7 @@ impl<R: Rows> Held<R> {
         if death != c.death {
             let new = Cell { death, holders: c.holders.clone() };
             self.redate(Some(c), Some(&new));
-            self.rows.put(key, &new.encode())?;
+            self.put_cell(key, Some(new))?;
         }
         Ok(())
     }
@@ -1418,17 +1675,20 @@ impl<R: Rows> Held<R> {
             }
             let path = path_of(&q);
             let same = path.len() == depth;
-            for k in Kind::ALL {
+            let tops = self.at(&q)?.tops.own.clone();
+            for (k, top) in tops {
                 if !can_supersede(s.kind, k, same) {
                     continue;
                 }
-                // the greatest stamped no later than `s`, but `s`
-                let mut w = self.pred(&q, k, Some(&s.stamp))?;
-                if !(same && k == s.kind)
-                    && let Some(x) = self.point(&q, k, &s.stamp)?.map(|_| s.stamp.clone())
-                {
-                    w = Some(x);
-                }
+                // the greatest stamped no later than `s`, but `s`: its top, unless stamped later
+                let other = !(same && k == s.kind);
+                let w = if top < s.stamp || top == s.stamp && other {
+                    Some(top)
+                } else if other && self.point(&q, k, &s.stamp)?.is_some() {
+                    Some(s.stamp.clone())
+                } else {
+                    self.pred(&q, k, Some(&s.stamp))?
+                };
                 if let Some(st) = w.filter(|st| high(st))
                     && supersedes(depth, s.kind, &s.stamp, &Won { path: path.clone(), kind: k, stamp: st.clone() })
                 {
@@ -1468,6 +1728,34 @@ impl<R: Rows> Held<R> {
         };
         // every position holding a write is under the root's steps
         for pos in self.below(&[], None)? {
+            // its tops: its own writes' greatest per kind, its steps down, the greatest of all
+            let mut want = Tops::default();
+            let from = under(b'S', &pos);
+            let steps = self.rows.scan(&from, &end_of(&from), usize::MAX)?;
+            want.steps = steps.len() as u64;
+            let below = match steps.first() {
+                Some((k, _)) => Some(Rd(&inv(k.get(from.len()..).unwrap_or_default())).stamp()?),
+                None => None,
+            };
+            let own = if pos.last().and_then(Step::bucket).is_some() {
+                self.bucket(&pos)?.top().cloned()
+            } else {
+                let from = under(b'W', &pos);
+                for (k, _) in self.rows.scan(&from, &end_of(&from), usize::MAX)? {
+                    let mut r = Rd(k.get(from.len()..).unwrap_or_default());
+                    let (kind, st) = (kind_of(r.u8()?)?, r.stamp()?);
+                    want.own.insert(kind, st);
+                }
+                want.own.values().max().cloned()
+            };
+            want.all = own.max(below);
+            let kept = match self.rows.get(&pos_key(b'A', &pos))? {
+                Some(b) => Tops::decode(&b)?,
+                None => Tops::default(),
+            };
+            if kept != want {
+                return Ok(Err(format!("{:?}: tops {kept:?} kept, {want:?} by the rows", path_of(&pos))));
+            }
             if pos.last().and_then(Step::bucket).is_some() {
                 let b = self.bucket(&pos)?;
                 let mut again = b.clone();

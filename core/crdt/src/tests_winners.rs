@@ -1064,3 +1064,92 @@ fn an_embedding_copy_beaten_on_one_char_lives_on_another_spec_7() {
     assert!(killed(&copy, &late).iter().all(|(w, _)| w.stamp != st), "{:?}", killed(&copy, &late));
     first_superseding_check(&[copy, late]);
 }
+
+/// `Rows` counting its reads (gets and scans) and writes (puts and deletes).
+struct Counting<R> {
+    rows: R,
+    reads: usize,
+    writes: usize,
+}
+
+impl<R: crate::held::Rows> crate::held::Rows for Counting<R> {
+    type Err = R::Err;
+    fn get(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>, R::Err> {
+        self.reads += 1;
+        self.rows.get(key)
+    }
+    fn put(&mut self, key: &[u8], val: &[u8]) -> Result<(), R::Err> {
+        self.writes += 1;
+        self.rows.put(key, val)
+    }
+    fn del(&mut self, key: &[u8]) -> Result<(), R::Err> {
+        self.writes += 1;
+        self.rows.del(key)
+    }
+    fn scan(&mut self, from: &[u8], to: &[u8], limit: usize) -> Result<Vec<crate::held::Row>, R::Err> {
+        self.reads += 1;
+        self.rows.scan(from, to, limit)
+    }
+    fn scan_back(&mut self, from: &[u8], to: &[u8], limit: usize) -> Result<Vec<crate::held::Row>, R::Err> {
+        self.reads += 1;
+        self.rows.scan_back(from, to, limit)
+    }
+    fn flush(&mut self) -> Result<(), R::Err> {
+        self.rows.flush()
+    }
+}
+
+/// spec/crdt.md §4.8, spec/requirements.md Scale: a join costs the held writes rows by what it
+/// changes. A map of n and 10n held entries (a struct of registers each, one body per entry, kept
+/// in pages as a node keeps them), then a body replacing 8 entries' values, removing 8 and adding
+/// 8: its row reads and writes per write it holds are flat from n to 10n, and its reads a few
+/// per write, not a walk of every ancestor and kind per write (60 per write that way). The
+/// index after it is the one built from every body at once.
+#[test]
+fn a_join_reads_rows_by_what_it_changes_spec_4_8() {
+    use crate::ops::PathSeg;
+    let view = crate::testutil::TyView(Ty::Map(Box::new(Ty::Register), Box::new(Ty::Struct([(1, Ty::Register), (2, Ty::Struct([(1, Ty::Register), (2, Ty::Register)].into_iter().collect()))].into_iter().collect()))));
+    let entry = |v: i64| Value::Map([(Value::Int(1), Value::Int(v)), (Value::Int(2), Value::Map([(Value::Int(1), Value::Int(v)), (Value::Int(2), Value::Int(-v))].into_iter().collect()))].into_iter().collect());
+    let at = |i: u64, op: Op| PathOp { path: vec![PathSeg::Key(Value::Int(i as i64))], op };
+    let body = |i: u64| {
+        let mut c = [0; 32];
+        c[..8].copy_from_slice(&(i + 1).to_be_bytes());
+        Body { c: osis_base::CommitId(c), ts: ts((i + 1) << 16), snap: false }
+    };
+    let per_write = |n: u64| -> (f64, f64) {
+        let mut st = Fragment::default();
+        let mut bodies = Vec::new();
+        for i in 0..n {
+            let ops = [at(i, Op::Set(entry(i as i64)))];
+            let (b, _) = crate::testutil::build(&st, Writer::new(ts((i + 1) << 16), x(), 100 * i + 1), &ops, &view).unwrap();
+            st.join(b.clone());
+            bodies.push(b);
+        }
+        let ops: Vec<PathOp> = (0..8).map(|i| at(i, Op::Set(entry(-1)))).chain((8..16).map(|i| PathOp { path: vec![], op: Op::Remove(Value::Int(i as i64)) })).chain((n..n + 8).map(|i| at(i, Op::Set(entry(0))))).collect();
+        let (last, _) = crate::testutil::build(&st, Writer::new(ts((n + 1) << 16), node(2), 1), &ops, &view).unwrap();
+        let mut built = Held::new(MemRows::default());
+        for (i, b) in bodies.iter().enumerate() {
+            built.place(&body(i as u64), &BodyWrites::of(b, true), &[]).unwrap();
+        }
+        built.date_every().unwrap();
+        let mut paged = crate::row_pages::PagedRows::new(MemRows::default(), 120);
+        paged.fill(&built.rows.0).unwrap();
+        let mut ix = Held::new(Counting { rows: paged, reads: 0, writes: 0 });
+        let w = BodyWrites::of(&last, true);
+        let writes = last.held_writes().iter().count() as f64;
+        ix.join(&body(n), &w, &[]).unwrap();
+        let (reads, wrote) = (ix.rows.reads as f64 / writes, ix.rows.writes as f64 / writes);
+        // the index joined is the one built from every body at once
+        built.place(&body(n), &w, &[]).unwrap();
+        built.date_every().unwrap();
+        let all = crate::held::Rows::scan(&mut ix.rows.rows, &[], &[0xff; 4], usize::MAX).unwrap();
+        assert!(all == built.rows.0.into_iter().collect::<Vec<_>>(), "the rows joined are those built at once");
+        (reads, wrote)
+    };
+    let (small, big) = (per_write(30), per_write(300));
+    eprintln!("row reads, writes per write: {small:?} at n, {big:?} at 10n");
+    assert!(big.0 <= small.0 * 1.2 && big.1 <= small.1 * 1.2, "{small:?} at n, {big:?} at 10n");
+    // its own row and the one below it, its position's tops, its victim's row; ancestors' tops
+    // once per join
+    assert!(small.0 <= 5.0, "{small:?} per write");
+}
