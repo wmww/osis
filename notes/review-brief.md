@@ -47,21 +47,21 @@ One line each: the ruling, its state on main (dd5c0a3e4), where to look. "Applie
 3. The public's role wherever held: agree (the public is every party). Unproven caveat: `role_here` feeds `may_take`/`readable` for the node's own sealed boxes too, so a public grant whose removal the node lacks (issues/public-pieces-unheld.md) could keep a removed reader's sealed secrets; a role through the public giving only open boxes would make the ruling harmless.
 4. Dependent-box: demotion after the plant behaves as the spec says (the `sync.0` write judged at its point stays valid). Open: no rule reconciles boxed and unboxed nodes (the planted epochs are never established, so nothing re-seals); untested.
 5. Left-out causes: agree (LO_rot). No test fails if the edge check runs before `writes_keyset`.
-6. Foreign at depth: agree on finding, anchoring, sealing, superseding. Re-key may repeat: issues/rekey-foreign-unlisted.md. `Foreign`'s doc wrongly said no writer can make a node's own keyset foreign (f88ffb28c).
+6. Foreign at depth: agree on finding, anchoring, sealing, superseding. Re-key may repeat: reproduced (one extra re-key of the holder actor and one of the thing above) and fixed in spar-fix-rotation (`rekey_due` and `left_out` read the node's view of the holder actor; test `a_foreign_keyset_left_out_is_rekeyed_once_spec_crypto_4`, ForkDepth `FD_race_u_rekeylists`). `Foreign`'s doc wrongly said no writer can make a node's own keyset foreign (f88ffb28c).
 7. Permanent fork, held first: agree.
 8. Miskeyed never invalid: agree in validity, but the sync judgement judged such bodies invalid and unlogged them: fixed ae9708ca4 (`sync/bodies.rs`, test `validity::a_body_listing_an_unplaced_key_is_not_judged_invalid_spec_commits_4`). Held outside Pending storage, unbounded: fixed (spar-fix-security: a received miskeyed part is unjudgeable in `examine`, `Reason::Miskeyed`, woken by `Wake::Steps`; test `validity::miskeyed_writes_pend_and_go_with_their_entries_spec_commits_4`).
 9. Remover sealing to an ignorant fork: agree (accepted). The names-digest option proves knowing only on a match with the departure, ignorance only on a match without; any other set the rotator held matches neither and proves nothing.
 10. Destroyed holder with a passed `until`: applies as spec'd; the spec rule over-extends a timed grant: issues/destroyed-holder-timed-edge.md (judge `until` at the destruction point, no clock read).
 11. Box records dropped by an admin snapshot: agree (hostile admins not defended).
 12. Invalidated left-out cause: agree (`left_out_on_an_invalidated_rotation_ends_with_one_rekey`).
-13. Wrong-form box to the public: spec says ignored, the trigger counts it present: issues/public-ignored-box-blocks-reseal.md (low).
+13. Wrong-form box to the public: spec says ignored, the trigger counts it present: fixed in spar-fix-rotation (`osis_keys::has_box`).
 14. Seal skipping KEM-less keysets: agree; still no test of its own (extend `tests_kem::kem_key_due_ends_a_lockout`: before KEM key due, a rotation leaves M out, never seals at the older keyset).
 15. Link keys: agree. Justified by the link requirement (a bearer secret opens K with nothing else) and the record being the one origin fact; the seed-derived first secrets are the mint-with-key rotation with fixed randomness.
 
 Other findings:
 - Spec: Encrypting under excepted "an own thing's" departure; a link key's other redeemers hold its keys, so only the node thing's (as the code does). Crypto §4 Reading-only kept a box the node's roles do not give "for reading"; permissions §3 and the code take nothing. Both fixed in f88ffb28c, with comment remnants of the removed account machinery.
-- Open, no issue: `rotation::walk_from` past an epoch whose secret is lacking follows boxes to the node thing and judges departures from it; no spec clause states this (the spec judges such epochs by stale boxes and order alone). Spec it or delete it.
-- Sides: the spec's own-lowering-trusted clause is not built; "no order, no side" records an untrusted side: issues/own-counter-removal-side.md (low).
+- `rotation::walk_from` past an epoch whose secret is lacking followed boxes to the node thing (an account-root remnant): deleted in spar-fix-rotation.
+- Sides: the spec's own-lowering-trusted clause and "no order, no side": built in spar-fix-rotation (`sides::after_update`); the writer's check still refuses a removed admin's counter-removal (notes/perm-paths.md, Read short of the spec).
 - Low, no issue: a step's `since` (`sync_ids::steps` `Recorded::of`) is the current write's stamp, so an admin re-putting a step entry later makes commits stamped in between miskeyed for good (hostile admin only).
 - For (c): the Interim on `apply::header_wait` (apply/mod.rs ~913) says it waits for every listed thing's record, which is what the spec wants; `thing_wait` already does so per part. Recheck what issues/stated-path-certificates.md still owes.
 
