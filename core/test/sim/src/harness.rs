@@ -100,6 +100,8 @@ pub struct Node {
     pub peer: Peer,
     /// The account it acts for (spec/permissions.md §8), made at its start.
     pub account: Tid,
+    /// Its account's profile, holding the account's card (naming its inbox, spec/sync-inbox.md §1).
+    pub profile: Tid,
     pub faults: Faults,
     pub clock: ClockSpec,
     pub up: bool,
@@ -234,15 +236,27 @@ impl Sim {
         for i in 0..s.cfg.nodes {
             let clock = s.cfg.clocks.get(i).copied().unwrap_or_default();
             let (mut peer, faults) = boot(s.dice.u64(), WallMs(wall_of(clock, 0))).map_err(|e| s.fail(format!("node {i} create: {e}")))?;
-            let made = osis_engine::local_peer::make_account(&mut peer.engine).map_err(|e| s.fail(format!("node {i} account: {e}")))?;
-            s.nodes.push(Node { peer, account: made.0.thing, faults, clock, up: true });
+            let (made, _) = osis_engine::local_peer::make_account(&mut peer.engine).map_err(|e| s.fail(format!("node {i} account: {e}")))?;
+            s.nodes.push(Node { peer, account: made.thing, profile: made.profile, faults, clock, up: true });
         }
-        // each node keeps the others' accounts, as a contact's node does: a strong to each
-        // (`Peer::know`), their commits by the first sync
-        let all: Vec<Tid> = s.nodes.iter().map(|n| n.account).collect();
+        // each node keeps the others' accounts and profiles, as a contact's node does: each
+        // profile granted read to the others' nodes (standing in for a contact card, as
+        // `LocalPeer::shows_profile` does), a strong to each (`Peer::know`), their commits by the
+        // first sync; a grant from outside then fires at the inbox the profile's card names
+        let all: Vec<(Tid, Tid)> = s.nodes.iter().map(|n| (n.account, n.profile)).collect();
+        let read = ct::Edge { role: Role::Read, until: None, may_grant: false, retain: false, floor: None };
+        for (i, &(_, profile)) in all.iter().enumerate() {
+            for j in (0..all.len()).filter(|j| *j != i) {
+                let n = s.engine(j)?.me();
+                let keys = s.engine(j)?.holder_keys(&n);
+                let e = s.engine(i)?;
+                let r = keys.and_then(|k| e.take_holder_keys(&n, &k, None)).and_then(|_| e.grant(&profile, &n, &read));
+                r.map_err(|e| s.fail(format!("node {i} shows its profile to node {j}: {e}")))?;
+            }
+        }
         for i in 0..s.nodes.len() {
             let own = s.node(i)?.account;
-            let others: Vec<Tid> = all.iter().copied().filter(|a| *a != own).collect();
+            let others: Vec<Tid> = all.iter().filter(|a| a.0 != own).flat_map(|a| [a.0, a.1]).collect();
             let r = s.node(i)?.peer.know(&others);
             r.map_err(|e| s.fail(format!("node {i} know: {e}")))?;
             s.drain(i)?;
@@ -449,7 +463,8 @@ impl Sim {
     /// Node `from` offers node `to` each sealed fire it owes that account (spec/sync-inbox.md §3
     /// Sending, as a sync's fire step does, apart from its commits), and owes one no more once
     /// taken: a grant from outside reaches its holder as its `grant@~0` fire (spec/sync-inbox.md §5
-    /// Grant from outside). A fire refused fails the run: every fire here is on an account's inbox.
+    /// Grant from outside). A fire refused fails the run: every fire offered here is on an
+    /// account's inbox (a profile shown to a node fires at the node thing, owed to no account).
     pub fn fires(&mut self, from: usize, to: usize) -> Res<()> {
         if !self.node(from)?.up || !self.node(to)?.up {
             return Ok(());
