@@ -34,8 +34,9 @@ use std::collections::BTreeSet;
 pub struct Offer {
     pub account: Tid,
     pub grant: EdgePiece,
-    /// The pieces of A's `sync.0` writes held (the rest of the new node thing's edge piece on A,
-    /// spec/permissions.md §4 Key part): A's sync IDs, which the new node syncs A by.
+    /// The pieces of A's `sync.0` writes held that `grant`'s evidence does not carry (the rest of
+    /// the new node thing's edge piece on A, spec/permissions.md §4 Key part): A's sync IDs, which
+    /// the new node syncs A by.
     pub sync: Vec<EdgePiece>,
     pub trust: Vec<Trusted>,
 }
@@ -107,9 +108,11 @@ impl Engine {
         let grant_v = self.edge_piece(&grant, a)?.ok_or(Error::Misuse("pairing: the grant is not applied"))?;
         let ak = ct::SYNC.name();
         let syncs: Vec<CommitId> = self.core.on_thing(a).filter(|c| self.core.ix.commits.get(c).is_some_and(|m| m.header.aspects.iter().enumerate().any(|(ai, x)| x.tid == *a && x.ak == ak && m.holds(ai)))).collect();
+        // each copy once: a `sync.0` write the grant's evidence carries already (A's minting, at
+        // least) is not handed over again
         let mut sync = Vec::new();
         for c in syncs.iter().filter(|c| **c != grant) {
-            sync.extend(self.edge_piece(c, a)?);
+            sync.extend(self.edge_piece(c, a)?.filter(|p| !grant_v.evidence.contains(&p.copy)));
         }
         let mut trust = Vec::new();
         for (w, holder) in self.core.sides.trusted() {

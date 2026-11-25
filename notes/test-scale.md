@@ -7,7 +7,7 @@ Default tests against spec/requirements.md (Scale): each runs one operation at a
 - A collection of two or more elements pages above 3 KB of its own (notes/engine-paged.md): a check keeps n and 10n on one side of that (or both paged), or a count that is zero unpaged fails `linear` at 10n.
 - Engine checks (core/engine/tests/it/scale.rs) run on `osis_engine::local_peer`: a few peers, packages delivered by hand, a peer's `restart` for a new session. Their wall time is mostly debug checks (O(state) each, uncounted); cut a check's cost by its n, never by its 10x.
 
-Engine checks live in core/engine/tests/it/scale.rs (`scale::*`), one per property, named for its shape (`_is_flat`, `_is_linear`, `_spec_*` for the rule): map and set edits, text by index, roster removal (a rotation commit about 2.9 KB per remaining holder, budget 3000 B), purge on replace, late deltas and deaths, validity flips, snapshots, addenda, the path wait, purge requests, grants and open, long aspects, role history, history settings, expiry, chunk drops. Elsewhere:
+Engine checks live in core/engine/tests/it/scale.rs (`scale::*`), one per property, named for its shape (`_is_flat`, `_is_linear`, `_spec_*` for the rule): map and set edits, text by index, roster removal (a rotation commit about 2.9 KB per remaining holder, budget 3000 B), purge on replace, late deltas and deaths, validity flips, snapshots, addenda, the path wait, purge requests, grants and open, long aspects, role history, history settings, expiry, chunk drops, an account's pairing, node removal and per-unit evidence (`account_nodes`: n and 10n nodes; notes/thing-cost.md, Accounts at n and 10n nodes). Elsewhere:
 
 | property | test |
 |---|---|

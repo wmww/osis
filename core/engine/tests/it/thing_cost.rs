@@ -1,4 +1,4 @@
-//! What one thing costs (notes/thing-cost.md; spec/requirements.md Cost, spec/sync-set.md §2 Cost): a dependent thing minted with the account root as admin and an
+//! What one thing costs (notes/thing-cost.md; spec/requirements.md Cost, spec/sync-set.md §2 Cost): a dependent thing minted with the account as admin and an
 //! independent thing minted with the account as admin, for the maker and for the account's second
 //! node: commits, store rows by family, bytes a peer downloads, KEM and signature operations.
 
@@ -7,7 +7,10 @@ use crate::flows::{account_two_nodes, edge_of, people};
 use osis_base::Role;
 use osis_base::{CommitId, Tid, costs};
 use osis_engine::local_peer::LocalPeer;
-use osis_engine::Mutation;
+use osis_base::Value;
+use osis_crdt::{Op, PathOp};
+use osis_engine::{Engine, MintAdmin, Mutation};
+use osis_schema::core_types as ct;
 use std::collections::BTreeMap;
 
 type Census = BTreeMap<String, (usize, usize)>;
@@ -47,18 +50,38 @@ fn blob_bytes(lp: &LocalPeer, i: usize) -> i64 {
     (p.backend.held_split().1 + p.blob_disk.0.held_split().1) as i64
 }
 
-/// Peer 0 mints a thing with admin `admin` (as `flows::thing_of`); peer 1, its account's second node,
-/// receives the commits. Prints the breakdown when `show`.
-fn make(lp: &mut LocalPeer, admin: Tid, label: &str, show: bool) -> (Cost, Tid) {
-    let (c0, r0) = (lp.peers[0].engine.census().unwrap(), lp.peers[1].engine.census().unwrap());
-    let (b0, rb0) = (blob_bytes(lp, 0), blob_bytes(lp, 1));
-    let before: std::collections::BTreeSet<_> = lp.peers[0].engine.commit_ids().into_iter().collect();
-    costs::take();
-    let e = &mut lp.peers[0].engine;
+/// A dependent thing of `admin` with one small value: its record, the value and the strong in
+/// `admin`'s `holds.0`, one commit.
+fn a_dependent(e: &mut Engine, admin: Tid) -> Tid {
     let mut m = Mutation::new();
     let t = e.new_thing(&mut m, admin);
     m.set(t, &REG, &s("new")).unwrap();
     e.commit(m).unwrap().unwrap();
+    t
+}
+
+/// An independent thing minted with admin `admin` (`Engine::mint_independent`, as the account
+/// library mints A's inbox and profile): its own-secrets rotation carrying its record, then the
+/// value and the strong in `admin`'s `holds.0`.
+fn an_independent(e: &mut Engine, admin: Tid) -> Tid {
+    e.mint_independent(&[MintAdmin::Thing(admin)], |ts| {
+        let mut m = Mutation::new();
+        m.op(admin, &ct::HOLDS, PathOp { path: Vec::new(), op: Op::Add(Value::Strong(ts[0])) })?;
+        m.set(ts[0], &REG, &s("new"))?;
+        Ok(vec![m])
+    })
+    .unwrap()
+    .0[0]
+}
+
+/// Peer 0 makes a thing with admin `admin` by `build`; peer 1, its account's second node,
+/// receives the commits. Prints the breakdown when `show`.
+fn make(lp: &mut LocalPeer, admin: Tid, build: fn(&mut Engine, Tid) -> Tid, label: &str, show: bool) -> (Cost, Tid) {
+    let (c0, r0) = (lp.peers[0].engine.census().unwrap(), lp.peers[1].engine.census().unwrap());
+    let (b0, rb0) = (blob_bytes(lp, 0), blob_bytes(lp, 1));
+    let before: std::collections::BTreeSet<_> = lp.peers[0].engine.commit_ids().into_iter().collect();
+    costs::take();
+    let t = build(&mut lp.peers[0].engine, admin);
     let maker_ops = ops();
     let mut new: Vec<_> = lp.peers[0].engine.commit_ids().into_iter().filter(|c| !before.contains(c)).collect();
     new.sort_by_key(|c| lp.peers[0].engine.header(c).unwrap().ts);
@@ -110,24 +133,25 @@ fn make(lp: &mut LocalPeer, admin: Tid, label: &str, show: bool) -> (Cost, Tid) 
 // neither pays a first write's rows; the second is measured. Bounds are the measured figures
 // rounded up: a change that grows a thing's cost fails here and says by how much.
 #[test]
-#[ignore = "accounts: counting"]
 fn what_a_thing_costs() {
     let (mut lp, a) = account_two_nodes();
-    let p = lp.peers[0].engine.me();
-    make(&mut lp, a, "dependent warm-up", false);
-    make(&mut lp, p, "independent warm-up", false);
+    make(&mut lp, a, a_dependent, "dependent warm-up", false);
+    make(&mut lp, a, an_independent, "independent warm-up", false);
     let show = std::env::var_os("THING_COST").is_some();
-    let (dependent, pt) = make(&mut lp, a, "dependent (minted with the account)", show);
-    let (independent, kt) = make(&mut lp, p, "independent (minted with the account)", show);
+    let (dependent, pt) = make(&mut lp, a, a_dependent, "dependent (minted with the account)", show);
+    let (independent, kt) = make(&mut lp, a, an_independent, "independent (minted with the account)", show);
     eprintln!("dependent: {dependent:?}\nindependent: {independent:?}");
-    // spec/permissions.md §3: minted with the account root as admin it stays dependent; with the
-    // account it is independent and has its sync ID from its creating transaction
+    // spec/permissions.md §3: minted with admin A it stays dependent (A's unit, A's secrets); minted
+    // independent it has its sync ID from its creating transaction
     let e = &mut lp.peers[0].engine;
     assert!(e.sync_id_of(&pt).unwrap().is_none() && e.sync_id_of(&kt).unwrap().is_some());
     assert_eq!((dependent.commits, independent.commits), (1, 2), "its rotation carrying its record, then what the dependent one writes");
-    assert!(dependent.maker_rows < 1_700 && dependent.reader_rows < 1_700 && dependent.download < 700, "{dependent:?}");
-    assert!(independent.maker_rows < 15_000 && independent.reader_rows < 15_300 && independent.download < 9_400, "{independent:?}");
-    assert_eq!(independent.maker_ops.get("kem: keygen"), Some(&4), "a KEM key per role");
+    assert!(dependent.maker_rows < 1_500 && dependent.reader_rows < 1_500 && dependent.download < 600, "{dependent:?}");
+    assert_eq!(dependent.maker_ops.get("sign"), Some(&1), "the commit's signature alone");
+    assert!(independent.maker_rows < 16_100 && independent.reader_rows < 16_200 && independent.download < 10_400, "{independent:?}");
+    // a KEM key per role, and the step keys' read key derived again from the read secret (spec/crypto.md
+    // §3 step keys: the issuer derives it, never copies it from the keyset)
+    assert_eq!(independent.maker_ops.get("kem: keygen"), Some(&5), "a KEM key per role and the step's read key");
     assert!(!independent.reader_ops.keys().any(|k| k.starts_with("kem")), "the account's node opens symmetric boxes");
 }
 
@@ -202,4 +226,63 @@ fn what_a_reader_costs() {
     // time writes among it, `hf/`: its last place out; `keys.0` carries the step's read KEM key), and before (37,860 B: a node thing takes
     // no grant fire, so no offer is held; offers reach a node through its account's inbox)
     assert!(*commits == 1 && *bytes < 4_000 && *reader < 38_400 && *offered < 59_200, "{:?}, rows by table:\n{rows}", each[1]);
+}
+
+/// A one-value commit on `t` by peer `i` (signed as `as_` where given, by a key granted on it):
+/// (opened bytes, header bytes, path bytes, signer form bytes over the first form, sealed blob
+/// bytes).
+fn small_commit(lp: &mut LocalPeer, i: usize, t: Tid, as_: Option<Tid>, v: &str) -> [usize; 5] {
+    let mut m = Mutation::new();
+    if let Some(x) = as_ {
+        m.sign_as(x);
+    }
+    m.set(t, &REG, &s(v)).unwrap();
+    let c = lp.peers[i].commit(m).unwrap().unwrap();
+    let e = &mut lp.peers[i].engine;
+    let pk = e.package(&c).unwrap().unwrap();
+    let h = osis_commit::CommitBlob::decode(&pk.bytes).unwrap().header;
+    let path = match &h.path {
+        osis_commit::Paths::One(p) => p.encode().len(),
+        osis_commit::Paths::Split(_) => panic!("one path serves a commit on one thing"),
+    };
+    let mut rng = osis_crypto::SeededRng::from_u64(7);
+    let sealed = e.seal_package(&c, &mut rng).unwrap().unwrap().entries.iter().map(|x| x.blob.len()).sum();
+    let mut first = h.clone();
+    first.key = None;
+    [pk.bytes.len(), h.encode().len(), path, h.encode().len() - first.encode().len(), sealed]
+}
+
+// What a small commit costs in the accounts shape (notes/thing-cost.md): no epoch, no inner
+// signature; the account's first node writes its dependents along record edges (the empty
+// path, `[0]`, 2 B), a paired node states A (`[0, A]`, 2 B + 16 B), and a key granted on a thing
+// signs in the signer's second form, `[tid, signing_key]` (40 B more, spec/wire.md §4 field 1).
+#[test]
+fn what_a_small_commit_costs() {
+    let (mut lp, a) = account_two_nodes();
+    let t = a_dependent(&mut lp.peers[0].engine, a);
+    lp.sync_all().unwrap();
+    small_commit(&mut lp, 0, t, None, "x");
+    let by_minter = small_commit(&mut lp, 0, t, None, "y");
+    let by_paired = small_commit(&mut lp, 1, t, None, "z");
+    // a key granted write on a thing signs as it (as key_grants::granted): peer 1's node reads
+    // T, its key holds write on T
+    let (mut kp, ps) = people(2);
+    let k = crate::flows::thing_of(&mut kp, 0, ps[0]);
+    kp.peers[0].engine.grant(&k, &ps[1], &edge_of(Role::Read)).unwrap();
+    let key = osis_base::SignKey(kp.peers[1].engine.identity().signing().verifying_key().to_bytes());
+    kp.peers[0].engine.grant_key(&k, &key, Some(&edge_of(Role::Write))).unwrap();
+    kp.advance(1000);
+    crate::flows::spread(&mut kp);
+    small_commit(&mut kp, 0, k, None, "x");
+    let by_admin = small_commit(&mut kp, 0, k, None, "y");
+    let by_key = small_commit(&mut kp, 1, k, Some(k), "z");
+    eprintln!("small commit (opened, header, path, second signer form, sealed blob): minter {by_minter:?}, paired node {by_paired:?}, T's admin {by_admin:?}, a key granted on T {by_key:?}");
+    assert_eq!((by_minter[2], by_paired[2]), (2, 18), "the empty path; A's tid stated");
+    assert_eq!(by_paired[0] - by_minter[0], 16, "only the path differs");
+    // the second form's key is a `signing_key` agility value (1617([1, h'..32..']), 39 B) in a
+    // two-item list; the key's commit takes the commit form (1 B), not the node's session
+    // form (19 B: its nonce), as no session of the key's is open
+    assert_eq!(by_key[3], 40, "{by_key:?}");
+    assert_eq!(by_key[0] - by_admin[0], 40 - 18, "the signer's second form and the commit form: {by_admin:?} {by_key:?}");
+    assert!(by_minter[0] < 420 && by_minter[4] < 520, "{by_minter:?}");
 }

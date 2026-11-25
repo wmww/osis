@@ -1952,3 +1952,229 @@ fn a_deep_dependent_made_independent_costs_its_depth_per_rotation() {
         assert!(b <= 128 * a + 128, "{k}: {a} at depth 4, {b} at 32: grows faster than the depth squared");
     }
 }
+
+/// The bytes of commits `cs` as peer `i` hands them over (`Engine::package`, opened form).
+fn bytes_of(lp: &mut LocalPeer, i: usize, cs: &[osis_base::CommitId]) -> (Vec<osis_engine::local_peer::Package>, u64) {
+    let pks: Vec<_> = cs.iter().map(|c| lp.peers[i].engine.package(c).unwrap().unwrap()).collect();
+    let b = pks.iter().map(|p| (p.bytes.len() + p.blobs.iter().map(|b| b.1.len()).sum::<usize>()) as u64).sum();
+    (pks, b)
+}
+
+/// An account of `n` nodes (spec/permissions.md §8): peer 0 makes it and pairs each other in at
+/// admin (`LocalPeer::pair_into`), then peer 1 and peer 0 sync both ways. The other nodes hold
+/// their offers alone: what they would write after syncing (nothing, in the engine's harness)
+/// does not change what A's admins and siblings hold. `one_account`'s world without its O(n²)
+/// syncs. Built once per `n`.
+pub(crate) fn account_nodes(n: usize) -> (LocalPeer, osis_engine::local_peer::Account) {
+    LocalPeer::cached(&format!("scale::account_nodes/{n}"), || {
+        let t0 = crate::common::T0;
+        let mut lp = LocalPeer::apart(vec![osis_engine::local_peer::Peer::new(0, t0).unwrap()], 0);
+        let (acc, _) = osis_engine::local_peer::make_account(&mut lp.peers[0].engine).unwrap();
+        for k in 1..n {
+            let mut p = osis_engine::local_peer::Peer::new(k as u64, t0).unwrap();
+            lp.pair_into(0, &mut p).unwrap();
+            lp.peers.push(p);
+        }
+        if n > 1 {
+            lp.sync(0, 1).unwrap();
+            lp.sync(1, 0).unwrap();
+        }
+        (lp, acc)
+    })
+}
+
+/// The accounts the accounts checks compare: peer 0 and n other nodes, n 2 and 20.
+const NODES: [usize; 2] = [3, 21];
+
+/// What pairing a fresh node into an account of `n` nodes costs (`account_nodes`, peer 0
+/// pairing): the pairer's `pair`, its commits and their bytes, the offer's bytes and items
+/// (bytes, the grant copy's evidence and records, `sync.0` copies, trust records), the new
+/// node's `take_offer`, sibling peer 1 taking the pairing's commits, and the new node's first
+/// sync from the pairer.
+struct Pairing {
+    pairer: Work,
+    commits: u64,
+    bytes: u64,
+    offer: [u64; 5],
+    taker: Work,
+    sibling: Work,
+    first: Work,
+}
+
+fn pairing(n: usize) -> Pairing {
+    let (mut lp, acc) = account_nodes(n);
+    let a = acc.thing;
+    let mut p = osis_engine::local_peer::Peer::new(9_000, lp.peers[0].engine.now()).unwrap();
+    let (node, keys) = (p.engine.me(), p.engine.node_keys().unwrap());
+    let ((offer, done), pairer) = measured_at(&mut lp, 0, |lp| lp.peers[0].engine.pair(&a, &node, &keys, Role::Admin).unwrap());
+    let (pks, bytes) = bytes_of(&mut lp, 0, &done.commits);
+    let o = [osis_base::encode(&offer.to_value()).len() as u64, offer.grant.evidence.len() as u64, offer.grant.records.len() as u64, offer.sync.len() as u64, offer.trust.len() as u64];
+    let pb = p.backend.clone();
+    let (_, taker) = measured(&pb, || p.engine.take_offer(&offer).unwrap());
+    let (_, sibling) = measured_at(&mut lp, 1, |lp| {
+        for pk in &pks {
+            lp.deliver(1, pk).unwrap();
+        }
+    });
+    lp.peers.push(p);
+    let (_, first) = measured_at(&mut lp, n, |lp| lp.sync(0, n).unwrap());
+    Pairing { pairer, commits: done.commits.len() as u64, bytes, offer: o, taker, sibling, first }
+}
+
+/// The counts that judge a role commit against its whole component: per role commit O(the
+/// component's grants), so a first sync of k role commits on one component costs O(k²)
+/// (issues/perm-eval-cost.md: `standing_since_all` per update; held writes rewritten per death).
+const PER_COMPONENT: [&str; 6] = ["keys: grants judged for key access", "perm: roles walked", "held writes: pages written", "state page load", "state page write", "reexamine"];
+
+// spec/permissions.md §8 Pairing; spec/requirements.md Scale: pairing a node into an account of n
+// and 10n other nodes. What the pairer writes and hands over (the grant's commit, the offer, each
+// copy once) and what the new node does taking it are flat in the account's nodes; the pairer's
+// grant and a sibling taking it judge A's roster, linear in its holders; the new node's first
+// sync brings A's history, linear in it but for the counts that judge each role commit against
+// the whole component (`PER_COMPONENT`), quadratic.
+#[test]
+fn pairing_a_node_spec_permissions_8() {
+    let [small, big] = NODES.map(pairing);
+    flat("pairing: commits", small.commits, big.commits);
+    flat("pairing: commit bytes", small.bytes, big.bytes);
+    for (i, what) in ["offer bytes", "offer: the grant's evidence", "offer: records", "offer: sync.0 copies", "offer: trust records"].into_iter().enumerate() {
+        flat(&format!("pairing: {what}"), small.offer[i], big.offer[i]);
+    }
+    assert_eq!(small.offer[3], 0, "A's minting, its one sync.0 write, rides as the grant's evidence alone");
+    all_flat("pairing: the new node taking the offer", &small.taker, &big.taker);
+    all_linear("pairing: the pairer", &small.pairer, &big.pairer);
+    all_linear("pairing: a sibling taking the grant", &small.sibling, &big.sibling);
+    for k in phases(&small.first, &big.first) {
+        let (x, y) = (small.first.n(k), big.first.n(k));
+        match PER_COMPONENT.contains(&k) {
+            true => {
+                println!("pairing: the new node's first sync (per component): {k}: {x} at n, {y} at 10n");
+                assert!(y <= 150 * x + 150, "pairing: the new node's first sync: {k}: {x} at n, {y} at 10n: past quadratic");
+            }
+            false => linear(&format!("pairing: the new node's first sync: {k}"), x, y),
+        }
+    }
+}
+
+/// What removing a node from an account of `n` nodes costs (`account_nodes`, peer 0 removing
+/// the last node, erase): the remover's `remove_node`, its commits and their bytes, sibling
+/// peer 1 taking them, and the rotations the remover's role duty then writes, and the sibling's
+/// once it took those (what each re-keys).
+struct Removal {
+    remover: Work,
+    commits: u64,
+    bytes: u64,
+    sibling: Work,
+    rekeyed: [BTreeSet<Tid>; 2],
+}
+
+fn removal(n: usize) -> Removal {
+    let (mut lp, acc) = account_nodes(n);
+    let node = lp.peers[n - 1].engine.me();
+    let (done, remover) = measured_at(&mut lp, 0, |lp| lp.peers[0].engine.remove_node(&acc.thing, &node, false, &[acc.profile]).unwrap());
+    let (pks, bytes) = bytes_of(&mut lp, 0, &done.commits);
+    let (_, sibling) = measured_at(&mut lp, 1, |lp| {
+        for pk in &pks {
+            lp.deliver(1, pk).unwrap();
+        }
+    });
+    let rotated = |lp: &mut LocalPeer, i: usize, cs: &[osis_base::CommitId]| cs.iter().flat_map(|c| lp.peers[i].engine.header(c).unwrap().aspects.iter().map(|x| x.tid).collect::<Vec<_>>()).collect::<BTreeSet<Tid>>();
+    let at0 = lp.role_duties(0).unwrap();
+    let (duties, _) = bytes_of(&mut lp, 0, &at0);
+    for pk in &duties {
+        lp.deliver(1, pk).unwrap();
+    }
+    let at1 = lp.role_duties(1).unwrap();
+    Removal { remover, commits: done.commits.len() as u64, bytes, sibling, rekeyed: [rotated(&mut lp, 0, &at0), rotated(&mut lp, 1, &at1)] }
+}
+
+// spec/permissions.md §8 Removing a node, §3 (rotation); spec/requirements.md Scale: removing a
+// node from an account of n and 10n other nodes. The removal and A's rotation box A's new secrets
+// to each node left, one KEM encapsulation a role to each but the remover (it boxes itself
+// symmetrically): linear in them; a sibling opens its own boxes, flat, judging A's roster, linear.
+// A's inbox and profile, whose boxes to A went stale, are re-keyed once, by the remover's role
+// duty, whatever the account's size; the sibling taking those rotations re-keys nothing.
+#[test]
+fn removing_a_node_spec_permissions_8() {
+    let [small, big] = NODES.map(removal);
+    flat("removal: commits", small.commits, big.commits);
+    linear("removal: commit bytes", small.bytes, big.bytes);
+    for (r, n) in [(&small, NODES[0]), (&big, NODES[1])] {
+        assert_eq!(r.remover.n("kem: encapsulate"), 4 * (n as u64 - 2), "a box a role to each node left but the remover");
+    }
+    // past a blob's size (at 10n) the removal's body is read back from its linked blobs: O(its bytes)
+    const BLOB_READ: &str = "store blob bytes read";
+    for (what, x, y) in [("the remover", &small.remover, &big.remover), ("a sibling taking it", &small.sibling, &big.sibling)] {
+        // encapsulations: exactly per node but the remover, above
+        for k in phases(x, y).into_iter().filter(|k| ![BLOB_READ, "kem: encapsulate"].contains(k)) {
+            linear(&format!("removal: {what}: {k}"), x.n(k), y.n(k));
+        }
+        linear(&format!("removal: {what}: store bytes handed"), x.handed, y.handed);
+        linear(&format!("removal: {what}: store units written"), x.io.writes, y.io.writes);
+        assert!(y.n(BLOB_READ) <= 2 * big.bytes, "removal: {what}: blob bytes read {} for a {} B removal", y.n(BLOB_READ), big.bytes);
+    }
+    flat("removal: a sibling's decapsulations", small.sibling.n("kem: decapsulate"), big.sibling.n("kem: decapsulate"));
+    for (r, n) in [(&small, NODES[0]), (&big, NODES[1])] {
+        let (_, acc) = account_nodes(n);
+        assert_eq!(r.rekeyed, [BTreeSet::from([acc.inbox, acc.profile]), BTreeSet::new()], "A's inbox and profile re-keyed once");
+    }
+}
+
+/// The certificates an independent thing T of an account of `n` nodes carries in its unit
+/// (`Engine::certificates` at peer 0, its minter): (copies, records, copy bytes) with paired node
+/// 1 the one node writing in T, and with every paired node writing once.
+fn unit_evidence(n: usize) -> [[u64; 3]; 2] {
+    let (mut lp, acc) = account_nodes(n);
+    let a = acc.thing;
+    let t = lp.peers[0].engine.mint_independent(&[osis_engine::MintAdmin::Thing(a)], |ts| {
+        let mut m = Mutation::new();
+        m.op(a, &ct::HOLDS, PathOp { path: Vec::new(), op: Op::Add(Value::Strong(ts[0])) })?;
+        m.set(ts[0], &crate::common::REG, &s("new"))?;
+        Ok(vec![m])
+    })
+    .unwrap()
+    .0[0];
+    let mut out = [[0; 3]; 2];
+    // T's minting, the rotation boxing it to A: what a node of A writes on T with
+    let minting: Vec<_> = lp.peers[0].engine.commit_ids().into_iter().filter(|c| lp.peers[0].engine.header(c).is_some_and(|h| h.kind.is_role() && h.aspects.iter().any(|x| x.tid == t))).collect();
+    let (unit, _) = bytes_of(&mut lp, 0, &minting);
+    for k in 1..n {
+        lp.hold_at(k, t);
+        for pk in &unit {
+            lp.deliver(k, pk).unwrap();
+        }
+        let mut m = Mutation::new();
+        m.set(t, &crate::common::REG, &s(&format!("by {k}"))).unwrap();
+        let c = lp.peers[k].commit(m).unwrap().unwrap();
+        let pk = lp.peers[k].engine.package(&c).unwrap().unwrap();
+        assert!(matches!(lp.deliver(0, &pk).unwrap(), osis_engine::Ingested::Applied(_)), "node {k}'s write is valid at the minter");
+        if k == 1 || k == n - 1 {
+            let e = &mut lp.peers[0].engine;
+            let c = e.certificates(&t).unwrap();
+            let bytes: usize = c.commits.iter().map(|(id, parts)| {
+                let b = osis_commit::CommitBlob::decode(&e.package(id).unwrap().unwrap().bytes).unwrap();
+                osis_commit::rewrite(&b, |ai| !parts.contains(&ai)).encode().len()
+            }).sum();
+            out[usize::from(k != 1)] = [c.commits.len() as u64, c.records.len() as u64, bytes as u64];
+        }
+    }
+    out
+}
+
+// spec/permissions.md §4 (Evidence of a commit; Evidence of a sync ID), spec/sync-inbox.md §1
+// (Public key record): an independent thing of an account of n and 10n other nodes. Its unit
+// carries the path evidence of the nodes that write in it (each one's grant on A and its node
+// thing's record), and A's public key record: A's current `keys.0` commits, which are every grant
+// to a node at A's newest epoch, as each records its boxes in A's `keys.0` (spec/crypto.md §4
+// Box records). So one writer's unit carries copies linear in A's nodes too
+// (issues/account-evidence-per-unit.md); its records stay flat.
+#[test]
+fn evidence_per_unit_spec_permissions_4() {
+    let [small, big] = NODES.map(unit_evidence);
+    println!("unit certificates (copies, records, copy bytes), one writer then every node: {small:?} at n, {big:?} at 10n");
+    linear("one writer: copies", small[0][0], big[0][0]);
+    flat("one writer: records", small[0][1], big[0][1]);
+    linear("one writer: copy bytes", small[0][2], big[0][2]);
+    linear("every node writing: copies", small[1][0], big[1][0]);
+    linear("every node writing: records", small[1][1], big[1][1]);
+}
