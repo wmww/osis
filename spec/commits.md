@@ -172,7 +172,7 @@ Every delta carries its **purge-by** on the wire: who may purge it; its commit c
   - a write of a delta invalid here does not die (spec/crdt.md §4.6).
 
 ### Covered
-- A body is **covered** by a valid snapshot the node holds (spec/permissions.md §5.2) when joining each of its deltas into the snapshot's fragment of that aspect leaves its canonical bytes unchanged (spec/crdt.md §3.3): every live write of the body is in the snapshot, and canonical form carries no dead content. A held body is judged by this join whatever the snapshot's tables say.
+- A body is **covered** by a valid snapshot the node holds (spec/permissions.md §5.2) when joining each of its deltas into the snapshot's fragment of that aspect (a pieced snapshot's: the join of its valid pieces the node holds, their tables joined, spec/wire.md §4 Pieces) leaves its canonical bytes unchanged (spec/crdt.md §3.3): every live write of the body is in the snapshot, and canonical form carries no dead content. A held body is judged by this join whatever the snapshot's tables say.
   - A node MUST NOT count a body covered unless the snapshot holds each live write of the body with the body's payload: a copy held with another payload leaves the body uncovered whichever wins the copy order (spec/crdt.md §4.1).
   - A snapshot body is covered only if it is stamped no later than the covering snapshot.
   - An expiring snapshot (spec/crdt.md §8) covers only an expiring snapshot body of the same expiry.
