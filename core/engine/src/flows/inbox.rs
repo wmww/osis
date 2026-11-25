@@ -39,7 +39,8 @@ pub(crate) fn deliver_copy(tx: &mut Tx<'_>, holder: Tid, c: CommitId, target: Ti
 /// owed stays as it is.
 pub(crate) fn deliver_sealed(tx: &mut Tx<'_>, holder: Tid, c: CommitId, target: Tid) -> Result<()> {
     let me = tx.core.me();
-    if tx.core.role_now(&me, &holder) >= Some(Role::Write) {
+    // the public, as in `deliver_copy`: no sync ID, its boxes read wherever the target is
+    if holder.is_public() || tx.core.role_now(&me, &holder) >= Some(Role::Write) {
         return Ok(());
     }
     let to = fire_to(tx, &holder);
