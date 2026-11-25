@@ -182,8 +182,8 @@ fn keysets_after_rotations(w: &mut World, n: usize) -> (Vec<usize>, Vec<u64>) {
 }
 
 /// Per node, the store rows and derivations that reading S's path a second time costs: its
-/// path, head and head ID from the store, and every step's needs and the parents of the steps
-/// needing each held role commit from the engine (`Engine::step_parents`, asked per role entry
+/// path, head and head ID from the store, and every step's needs and the parent of the step
+/// waiting on each held role commit from the engine (`Engine::step_parent`, asked per role entry
 /// judged).
 fn path_reads(w: &mut World, s: &osis_base::SyncId) -> Vec<u64> {
     let mut out = Vec::new();
@@ -193,7 +193,7 @@ fn path_reads(w: &mut World, s: &osis_base::SyncId) -> Vec<u64> {
             let _ = (w.store(i).head(s).unwrap(), w.store(i).head_id(s).unwrap());
             for (st, _) in path.iter().flat_map(|p| p.steps.iter()) {
                 for c in w.engine(i).step_needs(s, &st.id()).unwrap().iter() {
-                    w.engine(i).step_parents(s, c).unwrap();
+                    w.engine(i).step_parent(s, c).unwrap();
                 }
             }
         };

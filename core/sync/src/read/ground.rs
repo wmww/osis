@@ -147,9 +147,9 @@ pub trait Ground {
     fn own(&mut self, s: &SyncId, c: &BodyId) -> Result<Vec<Entry>>;
     /// Whether entry `e` of `c`'s body under S stands as this node's log of it
     /// (spec/sync-judgement.md §3 Own store: stamped where it writes S): where it holds S's head
-    /// write key, one stamped under that key (or a role commit a recorded step registers, stamped
-    /// under that step's parent, spec/sync-ids.md §6 Steps), own or a peer's alike; anywhere
-    /// else, any entry held.
+    /// write key, one stamped under that key, but a role commit a recorded step waits on, under
+    /// that step's parent where it holds that step's write key (spec/sync-ids.md §6 Steps), own
+    /// or a peer's alike; anywhere else, any entry held.
     fn stands(&mut self, s: &SyncId, c: &BodyId, e: &Entry) -> Result<bool> {
         let _ = (s, c, e);
         Ok(true)

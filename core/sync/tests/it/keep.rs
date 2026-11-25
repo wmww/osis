@@ -62,16 +62,19 @@ fn a_head_move_restamps_own_entries_and_readers_deposit_nothing_spec_sync_judgem
         let stamp = e.stamp.expect("stamped");
         assert!(osis_blob::verify_stamp(key, &s, &e.blob, &e.wrap, &stamp).is_ok(), "own entry {:?} of {c:?} stamped under its step", e.blob);
     }
-    // a rotation the step registers held under no stamp that stands here (a stamp of no key
-    // standing in) is stamped in place under the step's parent, not the new head, so a store
-    // behind can still take it
+    // a rotation the step waits on held under no stamp that stands here (a stamp of no key
+    // standing in, or one under the new head: logged as the head moved) is stamped in place
+    // under the step's parent, not the new head, so a store behind can still take it
     let (rb, rc) = w.store(0).entries(&s).unwrap().into_iter().find_map(|e| w.engine(0).blob_commit(&e.blob).filter(|c| needs.contains(c)).map(|c| (e, c))).expect("an entry of a rotation the step registers");
-    w.store(0).clone().log(&s, osis_sync::types::Entry { stamp: Some(osis_crypto::Signature([7; 64])), ..rb }, None, None).unwrap();
-    w.power_off(0);
-    w.power_on(0);
-    w.run();
-    let e = w.store(0).entry(&s, &rb.blob).unwrap().expect("kept");
-    assert!(e.own && e.stamp.is_some_and(|x| osis_blob::verify_stamp(&parent.keys.write, &s, &e.blob, &e.wrap, &x).is_ok()), "{rc:?} stamped under the parent: {e:?}");
+    let at_head = w.engine(0).step_write_key(&s, &head.id()).unwrap().expect("node 0 writes the head");
+    for stamp in [osis_crypto::Signature([7; 64]), osis_blob::sign_stamp(&at_head, &s, &rb.blob, &rb.wrap, rb.role)] {
+        w.store(0).clone().log(&s, osis_sync::types::Entry { stamp: Some(stamp), ..rb.clone() }, None, None).unwrap();
+        w.power_off(0);
+        w.power_on(0);
+        w.run();
+        let e = w.store(0).entry(&s, &rb.blob).unwrap().expect("kept");
+        assert!(e.own && e.stamp.is_some_and(|x| osis_blob::verify_stamp(&parent.keys.write, &s, &e.blob, &e.wrap, &x).is_ok()), "{rc:?} stamped under the parent: {e:?}");
+    }
     // node 0's own entries of the writes it still logs (the last; the others are replaced), and
     // node 2's deposits of the writes
     let logged: Vec<osis_base::BlobId> = w.store(0).entries(&s).unwrap().into_iter().filter(|e| e.own && w.engine(0).blob_commit(&e.blob).is_some_and(|c| writes.contains(&c))).map(|e| e.blob).collect();

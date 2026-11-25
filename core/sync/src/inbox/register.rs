@@ -3,7 +3,7 @@
 //! A node reading S registers, at each connection where a source keeping S unread is open (a
 //! member of class `Store`), the steps its `sync.0` records after the source's step (the head its
 //! stream names), in order, one Register out at a time; each only once the source's stream showed
-//! every role commit the step's epochs depend on (`Engine::step_needs`, a blob of each present by
+//! every role commit the step waits on (`Engine::step_needs`, a blob of each present by
 //! `Net::present`), but at once at a source that takes nothing: a departed peer's, and one on a
 //! step past its keys (S open there by a sync key, or the proof of one, its step does not bear: a
 //! store granted after S's epochs moved on stands at genesis holding a later key) until it stands

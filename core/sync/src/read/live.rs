@@ -120,25 +120,14 @@ impl Live<'_, '_> {
         Ok(e.stamp.is_some() && self.cx.store.stamp_under(s, &e.blob, &[w.verifying_key()])?)
     }
 
-    /// The parents of the recorded steps of S whose epochs depend on role commit `c`
-    /// (`Engine::step_parents`), earliest first: an entry of `c` keeps a stamp under one, so a
-    /// source standing there takes it before the step is registered (spec/sync-ids.md §6 Steps).
-    fn step_parents(&mut self, s: &SyncId, id: &BodyId) -> Result<Vec<osis_blob::Step>> {
-        let c = &id.commit;
+    /// The parent of the recorded step of S waiting on role commit `c` (`Engine::step_parent`):
+    /// an entry of `c` keeps a stamp under it, so a source standing there takes it before the
+    /// step is registered (spec/sync-ids.md §6 Steps).
+    fn step_parent(&mut self, s: &SyncId, id: &BodyId) -> Result<Option<osis_blob::Step>> {
         if !self.cx.engine.read_facts(s, id)?.role {
-            return Ok(Vec::new());
+            return Ok(None);
         }
-        Ok(self.cx.engine.step_parents(s, c)?)
-    }
-
-    /// Entry `e` is of role commit `c` that a recorded step of S registers, stamped under that
-    /// step's parent (`step_parents`).
-    fn registers_step(&mut self, s: &SyncId, c: &BodyId, e: &Entry) -> Result<bool> {
-        if e.stamp.is_none() {
-            return Ok(false);
-        }
-        let keys: Vec<_> = self.step_parents(s, c)?.iter().map(|p| p.keys.write).collect();
-        self.cx.store.stamp_under(s, &e.blob, &keys)
+        Ok(self.cx.engine.step_parent(s, &id.commit)?)
     }
 
     /// `c`'s body under `s` as a fresh encryption (logging again, a deposit, a body with no held
@@ -363,7 +352,14 @@ impl Ground for Live<'_, '_> {
         Ok(out)
     }
     fn stands(&mut self, s: &SyncId, c: &BodyId, e: &Entry) -> Result<bool> {
-        Ok(self.under_head(s, e)? || self.registers_step(s, c, e)?)
+        // a role commit a recorded step waits on stands under that step's parent where this node
+        // holds its write key, whatever its head: a source standing there takes it
+        if let Some(p) = self.step_parent(s, c)?
+            && self.cx.engine.step_write_key(s, &p.id())?.is_some()
+        {
+            return Ok(e.stamp.is_some() && self.cx.store.stamp_under(s, &e.blob, &[p.keys.write])?);
+        }
+        self.under_head(s, e)
     }
     fn holds_body(&mut self, meta: &BodyMeta, b: &BlobId) -> Result<bool> {
         Ok(self.cx.engine.body_held_by(meta, b))
@@ -381,15 +377,13 @@ impl Ground for Live<'_, '_> {
         if stamp_key(self.cx, s)?.is_none() {
             return Ok(());
         }
-        // a role commit a recorded step registers under the earliest such step's parent whose
-        // write key is held (`registers_step`), anything else under the served head
+        // a role commit a recorded step registers under that step's parent where its write key
+        // is held (`stands`), anything else under the served head
         let mut w = None;
-        if let Some(c) = self.cx.engine.blob_body(s, b)? {
-            for p in self.step_parents(s, &c)? {
-                if w.is_none() {
-                    w = self.cx.engine.step_write_key(s, &p.id())?;
-                }
-            }
+        if let Some(c) = self.cx.engine.blob_body(s, b)?
+            && let Some(p) = self.step_parent(s, &c)?
+        {
+            w = self.cx.engine.step_write_key(s, &p.id())?;
         }
         let Some(w) = w.or(stamp_key(self.cx, s)?) else { return Ok(()) };
         // judged here, whoever logged it first: a pulled entry's row does not say
