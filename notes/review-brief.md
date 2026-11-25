@@ -174,10 +174,11 @@ On dd5c0a3e4 (`tools/merge-branch gate spar-review-prep --all`, ostrich, offset 
 - **Full-size sync differential** (200 seeds, `OSIS_FULL=1`, four holds of 50): 60 fail, none hang. By first panic: must-hold bodies with no entry at quiet 18; unlike the reference with the public in its roster 17; a caught-up reader lacking must-hold bodies 6; settle loop past its bound 5; older reads classes 9; sync set unlike the model 4; entries waiting for a read secret 1. Seeds per class: issues/differential-full-size-classes.md. Not gate tests: no known lines.
 
 ## Gate time
-Tess's cap is 10 minutes on ostrich (`gate` 260 u wall = 598 s, 3,560 u CPU = 8,188 s; notes/time-limits.md). The full selection above, at box load 35-46:
-- `gate`: 784 s wall (1.31x the cap), 7,383 CPU-s (0.9x). Lock wait and `build` (warm, 0 s) left out.
-- Hold 655 s wall (1.36x `gate.hold`): default tests 217 s / 1,645 CPU-s (within share); properties 421 s / 5,251 CPU-s (1.95x wall, 1.37x CPU over share); sim 14 s / 140 CPU-s; replays 3 s.
-- Outside the hold, over share: `gate.gui-tests` 89 s / 169 CPU-s (9.7x wall: it compiles inside its stage), `gate.unify` 16 s / 162 CPU-s (1.76x CPU), `gate.checks` 15 s / 66 CPU-s (1.43x CPU).
-- Costliest properties (CPU-s): `order::held_set_decides_plain` 806 (with its two failing seeds), `rotation_holds_large` 641, roles-model `small_family_holds_large` 420, `held_set_decides_exhaustive` 395, `deep_departure_holds_large` 380, roles-model `random_worlds_hold_large` 309, held-model `joint_one_sync_id_and_key_parts_act_as_everything_plain` 245, `evidence_over_story_worlds_large` 218: these eight are 3,414 of 5,251.
-- The review's gate (`--base e8f9ae5d4^`) selects every crate, the GUI and unification as `--all` does: expect about 13 min wall at that load and a CPU total just under the cap (an end gate runs every stage against shares sized for a selection: notes/time-limits.md, Patterns). The wall at a quiet box is bounded by the properties' tail (the costliest test alone 109 s wall).
+Tess's cap is 10 minutes on ostrich (`gate` 260 u wall = 598 s, 3,560 u CPU = 8,188 s; notes/time-limits.md). The full selection (`--all`) on 4ad05292b, box load 26-47 (47 through the properties):
+- `gate`: 877 s wall (1.47x the cap), 7,716 CPU-s (0.94x). Lock wait and `build` left out.
+- Hold 809 s wall: default tests 237 s / 1,827 CPU-s; properties 517 s / 5,451 CPU-s (CPU-bound, about 10.5 of 16 cores at that load); sim 14 s / 140 CPU-s.
+- Outside the hold: `gate.gui-tests` 34 s / 149 CPU-s (the tests alone; app's tail 13 s), `gate.unify` 8 s / 237 CPU-s, `gate.checks` 14 s / 55 CPU-s.
+- Costliest properties (CPU-s): `order::held_set_decides_plain` 829, `rotation_holds_large` 747, `held_set_decides_exhaustive` 455, `deep_departure_holds_large` 422, held-model `joint_one_sync_id_and_key_parts_act_as_everything_plain` 332, roles-model `small_family_holds_large` 296 and `random_worlds_hold_large` 216, `evidence_over_story_worlds_large` 209: 3,506 of 5,451.
+- The CPU is within the cap; the wall is over it by the load: 7,700 CPU-s on 16 threads is 480 s before any other work on the box. Levers left: issues/test-time.md (Properties and builds).
+- The review's gate (`--base e8f9ae5d4^`) selects every crate, the GUI and unification as `--all` does: expect about 14 min wall at that load.
 - The full-size differential is a separate cost: 4,920 CPU-s, about 8 min wall over four holds.

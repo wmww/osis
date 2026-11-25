@@ -11,3 +11,4 @@ osis-engine/retention::tests_carried::purge_by_id_reads_alike_forgotten_or_not_p
 osis-sync/differential::histories_hold_their_closure_plain rate:OSIS_SYNC_START=802245521440,OSIS_SYNC_SEEDS=1 issues/differential-full-size-classes.md store entries under thing \d+'s sync ID, which it does not hold
 osis-sync/differential::histories_hold_their_closure_plain rate:OSIS_SYNC_START=951514058946,OSIS_SYNC_SEEDS=1 issues/differential-full-size-classes.md node \d+ reads thing \d+ unlike the reference
 osis-sync/differential::histories_hold_their_closure_plain rate:OSIS_SYNC_START=214923654590,OSIS_SYNC_SEEDS=1 issues/differential-full-size-classes.md storm: past the cap of \d+ deliveries
+osis-engine/order::held_set_decides_plain OSIS_ORDER_START=988856941855 issues/order-list-reset-floor.md held-model judged no list write above its reset

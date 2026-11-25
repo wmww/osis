@@ -33,7 +33,7 @@ osis-sim/it 21
 osis-sim/osis_sim 0.0013
 osis-store/it 37
 osis-store/osis_store 2.6
-osis-sync/it 2100
+osis-sync/it 2030
 osis-sync/osis_sync 0.71
 osis-transport/it 5.7
 osis-transport/osis_transport 0.035
