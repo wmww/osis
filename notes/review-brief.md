@@ -87,6 +87,31 @@ Other findings:
 - notes/holder-actors.md on logging and `Walk::Log`, and stranded reports: fixed (spar-review-tidy): logging reads the walk in `Engine::wrap_blocked`; stranded reports built.
 - Next/Untested in notes/sync-rewrite-state.md: own boxes only for a holder held for keys, acting only after a complete pass, a paged role commit as evidence, a sealed copy stamped ahead of the receiver's clock, a sealed fire opening pending for drift: open.
 
+**Findings (b)** (spar-review-b). Reviewed main through 4ff1c3a9f (spar-lapsed-rotation landed: its `Conn::served` guard applies only to walk Hits on superseded or lapsed secrets, so a current read secret is never refused by it; spar-kept-unread not landed during the review). Rulings, in order:
+1. Removal-told metadata: agree (stated limit, sync-hostile §2).
+2. `sync.0` a role part: agree.
+3. Held for keys from every held thing: agree; multi-hop still untested (issues/roles-apart-from-syncing.md).
+4. Held for keys a source class: agree (the class reaches every rule reading a source before any Pull).
+5. `deliver_copy` by the writing node's role: agree; the spec states the gap (no node holding a piece syncs H), and a writer of H normally has H in its closure.
+6. An offer all a node knows of an unsynced thing: agree (accepted).
+7. `pass_due` waits for the next pass end: agree (storage only; what a hand-taken `Keys` brings waits there too).
+8. Copies keyed per thing: agree as (c) found.
+9. Three test rulings: not checked.
+10. `standing` memo keyed (record, S): agree; a resumed record re-judges nothing unchanged (spec/sync-opens.md §6), and the old copies are verified evidence; a removal held moves the memo.
+11. Held elsewhere for a self-removal: agree. A self-removal is in `held_wait` from the transaction that applies it, and its blobs are marked `elsewhere` only through `held_at` for that commit, after `counts_for`; `role_now` is the effective role, so a node of another account counts through its account where its roster is held.
+12. `refetch_holders` re-pulls: agree (stated cost).
+13. Dial hints not stored; 14. public redeem in memory: both lose a first contact at a restart, unlike a private redeem's durable row: issues/first-contact-in-memory.md (low).
+15-19. Sealed fire kept unread then promoted untested, `SETTLE_MS` unbuilt, record flood, unbuilt opens rules, Next/Untested: agree, as listed.
+20. holder-actors logging fixed: agree.
+
+Reviewer (c)'s two observations:
+- `wait_synced(All)` never resolving after a self-removal: as spec'd. After b leaves, the pairer has no connection (it dials nobody; only b dialed in), and the account's profile is public, so "some other node may hold it" holds for good: a node alone never waits out a public thing (sync-status §3). Waits on the account and the node thing resolve.
+- An outside node's `take_keys` of an account's keys left no current keys: a bug, fixed (6310c22f6). `take_holder_keys` judged commits before the chain stood (the account's record names its mint admin, the node, whose record came later in the same loop, so the keys commit pended on a record that was there and was dropped), and it took `sync.0` only on the holder, so the signer's step placing the keys the commit lists was refused and the commit stayed miskeyed. Spec wire §9 and permissions §4 now say `sync.0` on chain things.
+
+Other findings:
+- `wait_synced(All)` does not wait for sealed fires owed, which spec/sync-status.md §3 requires (the line also names a removed "deliveries" scope): issues/wait-synced-sealed-fires.md.
+- Held elsewhere trusts a reader's reported position, which notes/sync-status.md accepts; it is a peer's word, as a stream's presence is: no different in kind, not filed.
+
 **(c) Evidence, certificates, retention, accounts, public, cards, API** (17)
 - One value for an edge piece from outside (`EdgePiece`), one taker for fire and offer: changed by dd5c0a3e4 (a grant fire cut to its one holder, offer trust records cut to evidence). `flows/inbox.rs` `take_edge_piece`, `flows/offers.rs`, `Engine::edge_piece(Cut)`.
 - A sealed copy is never promoted (taken whole as a sealed fire's commit): applies. `inbox::open_sealed_fire`, `deliver_sealed`.
