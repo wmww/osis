@@ -457,8 +457,9 @@ fn decaps(f: impl FnOnce()) -> u64 {
 
 // spec/crypto.md §4 (Reading-only secrets: a box proves itself by what it opens): a box at an
 // epoch whose checked secret the opener's view holds can only give that secret again, so it is
-// not opened; a box at an epoch not held, or held only for reading, is, and one that does not
-// open there is reported.
+// not opened, nor one whose reading-only secret is known from the same pending commit (read
+// again at each retry); a box at an epoch not held, or held for reading from another source or
+// none, is, and one that does not open there is reported.
 #[test]
 fn a_held_epochs_box_is_not_opened_again_spec_crypto_4() {
     let mut f = forked();
@@ -478,6 +479,10 @@ fn a_held_epochs_box_is_not_opened_again_spec_crypto_4() {
     let mut rv = ActorEpochs::default();
     ingest(&f.a, &s, &opener, &mut rv, Some(from(1))).unwrap();
     assert!(rv.read.held().next().is_none());
+    let read = rv.clone();
+    assert_eq!(decaps(|| assert!(ingest(&f.a, &s, &opener, &mut rv, Some(from(1))).unwrap().is_empty())), 0);
+    assert_eq!(rv, read);
+    assert_eq!(decaps(|| assert!(ingest(&f.a, &s, &opener, &mut rv, Some(from(2))).unwrap().is_empty())), boxes);
     assert_eq!(decaps(|| assert!(ingest(&f.a, &s, &opener, &mut rv, None).unwrap().is_empty())), boxes);
     assert_eq!(rv, before);
     // a box that does not open at an epoch not held is reported; at one held it is not opened

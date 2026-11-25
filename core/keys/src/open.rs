@@ -227,8 +227,14 @@ pub fn ingest_with(actor: &Tid, secrets: &Secrets, alts: &HistoryAlts, opener: &
     // the same secret, `set_secret` keeps it and `set_reading_secret` returns at a checked one.
     // The held secret is checked against the epoch here rather than trusted. What is lost: the open error of a malformed box at such an epoch,
     // which reads nothing (spec/crypto.md §4: a box proves itself by what it opens).
+    // Likewise a box at an epoch whose reading-only secret is already known from this same source
+    // (a pending commit's boxes, read again at each retry): `set_reading_secret` would only add
+    // that source again, and the box opened when it was first recorded.
     let held = |k: &BoxKey| {
-        from_schema(&k.epoch).is_ok_and(|e| epochs.role(k.role).secret(&e).is_some_and(|s| e.names(actor, k.role, s)))
+        from_schema(&k.epoch).is_ok_and(|e| {
+            let r = epochs.role(k.role);
+            r.secret(&e).is_some_and(|s| e.names(actor, k.role, s)) || unchecked.is_some_and(|u| r.get(&e).is_some_and(|i| i.secret.is_some() && i.reading.contains(&u)))
+        })
     };
     let (opened, failed) = open_boxes_where(actor, secrets, opener, |k| !held(k));
     for o in opened {
