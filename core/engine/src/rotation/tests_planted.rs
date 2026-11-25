@@ -235,3 +235,72 @@ fn mixed_commit_not_absorbed_spec_crdt_8() {
         assert_ne!(lp.peers[5].engine.covered(&s, c, &g, &secrets_ak()).unwrap(), Some(true), "F judges the grant's unheld `secrets.0` body covered: N's box at e is never fetched");
     }
 }
+
+// spec/sync-set.md §2 (Counts as independent), spec/permissions.md §3: Y is a dependent thing of
+// g (minted with admin g, no keyset). W (peer 1), a writer of g, writes a `secrets.0` part on Y
+// boxing reader R (peer 2) at a read epoch of its choosing, with no `keys.0`. R keeps Y dependent
+// as every node does: its writes on Y reach A (peer 0), and A's later writes reach R.
+#[test]
+fn box_on_a_dependent_thing_splits_nobody_spec_sync_set_2() {
+    let (mut lp, g, tids) = granted(3, &[(1, Role::Write), (2, Role::Write)]);
+    let y = {
+        let mut m = Mutation::new();
+        let y = lp.peers[0].engine.new_thing(&mut m, g);
+        lp.peers[0].commit(m).unwrap();
+        lp.hold(y);
+        y
+    };
+    put_on(&mut lp, 0, y, "before", 1);
+    lp.sync_all().unwrap();
+    assert!(reads_key(&mut lp, 2, y, "before"));
+    let (e, s) = made_up(&y, 5, 7);
+    let r = tids[2];
+    let mut fake = osis_keys::ActorEpochs::default();
+    fake.role_mut(Role::Read).set_secret(e, s.clone());
+    fake.role_mut(Role::Read).set_established(e, osis_keys::Provenance::Fixed);
+    let rcpt = lp.peers[1].engine.run(|tx| crate::flows::recipient(tx, r, Role::Read)).unwrap();
+    let w = lp.peers[1].engine.run(|tx| Ok(osis_keys::box_holder(&y, &fake, &osis_keys::HistoryBoxes::new(), &rcpt, &[Role::Read].into(), &mut *tx.rng)?.unwrap())).unwrap();
+    let mut m = Mutation::new();
+    crate::flows::put_secrets(&mut m, y, &w, true).unwrap();
+    lp.peers[1].engine.commit_hostile(m).unwrap().unwrap();
+    lp.sync_all().unwrap();
+    // the invariant the issue is about: Y's secret actor stays g at every node
+    for i in 0..3 {
+        assert_eq!(lp.peers[i].engine.core.secret_actor(&y), Some(g), "peer {i} counts Y independent");
+    }
+    put_on(&mut lp, 0, y, "by A", 1);
+    lp.sync_all().unwrap();
+    assert!(reads_key(&mut lp, 2, y, "by A"), "A's write on Y never reaches R");
+    assert_eq!(lp.peers[2].engine.role_on(&y), Some(Role::Write), "R's role on Y is not g's");
+    put_on(&mut lp, 2, y, "by R", 1);
+    lp.sync_all().unwrap();
+    assert!(reads_key(&mut lp, 0, y, "by R"), "R's write on Y never reaches A");
+}
+
+// spec/permissions.md §4 Key part (an edge piece holds no rotation that made a granted epoch
+// current), spec/sync-set.md §2: G (peer 1) is granted read on g and holds everything of g but
+// its keysets (each `keys.0` part on g withheld). g counts independent at G by its box and the
+// step of g's `sync.0` bearing its sync key: G syncs g's sync ID, and reads g once it does.
+#[test]
+fn a_grantee_counts_its_target_independent_before_the_keyset_spec_permissions_4() {
+    let mut lp = super::tests::synced(2);
+    let g = super::tests::target_thing(&mut lp, 0);
+    put_on(&mut lp, 0, g, "k", 1);
+    let gr = lp.peers[1].engine.me();
+    lp.peers[0].engine.grant(&g, &gr, &edge(Role::Read)).unwrap();
+    let keys = Ak::new("keys.0").unwrap();
+    for pk in lp.packages_to(0, 1).unwrap() {
+        let h = lp.peers[0].engine.header(&pk.id).unwrap();
+        let parts: BTreeSet<usize> = (0..h.aspects.len()).filter(|i| h.aspects.get(*i).is_none_or(|a| a.tid != g || a.ak != keys)).collect();
+        let Some(pk) = lp.peers[0].engine.package_of_parts(&pk.id, &parts).unwrap() else { continue };
+        let _ = lp.deliver(1, &pk);
+    }
+    lp.settle_needs().unwrap();
+    let e1 = &lp.peers[1].engine;
+    assert!(!e1.core.is_independent(&g), "G holds a keyset of g");
+    assert!(e1.core.counts_independent(&g), "G's box and g's step leave g dependent at G");
+    let s = lp.peers[0].engine.sync_ids(&g).unwrap()[0].id;
+    assert!(lp.synced(1).unwrap().contains(&s), "G does not sync g's sync ID");
+    lp.sync_all().unwrap();
+    assert!(reads_key(&mut lp, 1, g, "k"));
+}

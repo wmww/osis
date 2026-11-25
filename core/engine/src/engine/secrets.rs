@@ -123,10 +123,10 @@ impl Core {
 
     /// The opened epochs of `tid` when they make it an independent thing here: it is
     /// in `independent`, is minted with a key (independent from its minting) or no known thing,
-    /// or, no keyset part of it held (`keyset_parts`), holds an epoch
-    /// with a held valid rotation commit or snapshot, a valid `secrets.0` part or an inbox hint of
-    /// its delete keys. Not by this node's own rotation alone: that commit may have turned
-    /// invalid. Its `Rotated` establishment is not computed: `own_epochs` is the view.
+    /// or, no keyset part of it held (`keyset_parts`), holds an epoch with a held valid rotation
+    /// commit or snapshot, or a sync secret a step of its `sync.0` bears (`stepped`). Not by this
+    /// node's own rotation alone: that commit may have turned invalid. Its `Rotated`
+    /// establishment is not computed: `own_epochs` is the view.
     pub(crate) fn own_record(&self, tid: &Tid) -> Option<&ActorEpochs> {
         let e = self.ix.secrets.get(tid)?;
         let dependent_once = self.created(tid).is_some_and(|r| r.mint_admin().is_some());
@@ -140,16 +140,21 @@ impl Core {
             return None;
         }
         let rotated = || ROLES.iter().any(|r| e.role(*r).epochs().any(|(_, i)| i.rotated()));
-        (rotated() || self.valid_secrets_part(tid)).then_some(e)
+        (rotated() || self.stepped(tid, e)).then_some(e)
     }
 
-    /// Whether a held role commit's `secrets.0` part on `tid` is valid (only an independent
-    /// thing has boxes: a grant whose target's `keys.0` is not held yet).
-    fn valid_secrets_part(&self, tid: &Tid) -> bool {
-        let Ok(ak) = osis_base::Ak::new("secrets.0") else { return false };
-        self.ix.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().any(|(_, c)| {
-            self.ix.commits.get(c).is_some_and(|m| m.view.kind.is_role() && m.aspect(tid, &ak).is_some_and(|ai| m.valid_at(ai)))
-        })
+    /// Whether a step `tid`'s `sync.0` places bears the sync key of a sync secret of it held in
+    /// `e` (spec/sync-set.md §2 Counts as independent; spec/sync-ids.md §4 Owner): only a thing
+    /// with role secrets of its own has boxes, and a grantee's box arrives before the rotation
+    /// that made its epoch (spec/permissions.md §4 Key part).
+    ///
+    /// Invariant: a box is any writer's word, a step an admin's (`sync_ids::steps`: placed from
+    /// valid `sync.0` writes alone, verified to their genesis), and the step binds this very
+    /// secret. So no writer below admin makes a dependent thing count independent anywhere by a
+    /// box of its choosing (`tests_planted::box_on_a_dependent_thing_splits_nobody`).
+    fn stepped(&self, tid: &Tid, e: &ActorEpochs) -> bool {
+        let Some(steps) = self.ix.steps.get(tid) else { return false };
+        e.sync.held().any(|(_, s)| steps.bears_sync(&osis_crypto::role_key(osis_crypto::RoleKey::Sync, s).verifying_key().to_bytes()))
     }
 
     /// The opened epochs of a dependent thing `tid` that are not its own (`own_epochs`): what a

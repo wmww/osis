@@ -109,6 +109,11 @@ impl Recorded {
         self.keys.values().any(|since| *since < ts)
     }
 
+    /// Whether a step bears sync key `key`.
+    pub(crate) fn bears_sync(&self, key: &[u8; 32]) -> bool {
+        self.steps.values().any(|s| s.sync == *key)
+    }
+
     /// Whether a step bears `key` at `level`, whenever recorded.
     pub(crate) fn bears(&self, level: u8, key: &[u8; 32]) -> bool {
         self.keys.contains_key(&(level, *key))

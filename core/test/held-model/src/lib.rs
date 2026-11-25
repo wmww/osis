@@ -14,6 +14,7 @@ pub mod external;
 pub mod fetch;
 pub mod freed;
 pub mod gen;
+pub mod independent;
 pub mod model;
 pub mod overlap;
 pub mod roles;
