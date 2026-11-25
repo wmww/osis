@@ -128,8 +128,8 @@ impl Engine {
 
     /// What read thing `g`'s sync IDs carry beside bodies (spec/permissions.md §4 Evidence of a
     /// sync ID, Key part), from `ev` holding `g` as a sync ID: its required copies; the records of
-    /// both ends of each edge its evidence reads; the records, cards and mintings `shared` adds;
-    /// the current `keys.0` commits of `g`'s holders; and `g`'s key part, with their evidence.
+    /// both ends of each edge its evidence reads; the records and mintings `shared` adds; the
+    /// public key records of `g`'s holders; and `g`'s key part, with their evidence.
     pub(crate) fn sync_certificates(&mut self, ev: &Ev, g: &Tid) -> Certs {
         let mut out = Certs::default();
         let req: BTreeSet<(CommitId, Tid)> = ev.required(g).map(|r| r.keys().copied().collect()).unwrap_or_default();
@@ -142,9 +142,17 @@ impl Engine {
             out.records.insert(*b);
         }
         self.shared_certificates(ev, g, &mut out);
+        // the public key records of `g`'s holders (spec/permissions.md §4): every admin can seal
+        // to and list them; a link key's redeemer, holding its seed alone, learns its record and
+        // keysets from `g`'s sync ID. Interim (notes/public-and-cards-brief.md piece 6, cards): with
+        // the inbox's a holder's `keys.0` names, so a holder of the sync ID can fire there.
         let holders: Vec<Tid> = self.core.roster_of(g).into_keys().collect();
         for h in &holders {
-            self.current_keys_into(ev, h, &mut out);
+            self.public_key_record_into(ev, h, &mut out);
+            let inbox = self.get_typed(h, &osis_schema::core_types::KEYS).ok().flatten().and_then(|x| x.inbox).map(Tid::from).filter(|i| i != h);
+            if let Some(i) = inbox {
+                self.public_key_record_into(ev, &i, &mut out);
+            }
         }
         // a holder of sync alone on a target gets that target's boxes and `sync.0` parts and
         // nothing else of it: no roster, no edge write, no evidence of either (spec/permissions.md
@@ -268,9 +276,8 @@ impl Engine {
     }
 
     /// What any node logs under `g` beside its evidence (spec/permissions.md §4): the records up
-    /// `g`'s record chain, the destroyed things its closure needs with their frozen permission
-    /// history, and the public key records of the independent things holding `g`. Nothing here
-    /// depends on which node asks. Added to `out`.
+    /// `g`'s record chain and the destroyed things its closure needs with their frozen permission
+    /// history. Nothing here depends on which node asks. Added to `out`.
     fn shared_certificates(&mut self, ev: &Ev, g: &Tid, out: &mut Certs) {
         out.records.extend(self.core.record_chain(g).filter_map(|s| s.thing()));
         // the destroyed things the sync ID's closure needs told destroyed: on an authority path into it,
@@ -285,26 +292,6 @@ impl Engine {
                 self.add_copy(c, x, out);
             }
             self.add_closure(ev, &frozen, out);
-        }
-        // the public key records of the independent things holding `g` (spec/sync-inbox.md §1:
-        // a record and current `keys.0`, wherever their `keys.0` commits go): a link key's
-        // redeemer, holding its seed alone, learns its record and keysets from `g`'s sync ID
-        let keys: Vec<Tid> = self.core.roster_of(g).into_keys().filter(|k| self.core.is_independent(k)).collect();
-        for k in keys {
-            self.public_key_record_into(&k, out);
-        }
-    }
-
-    /// `k`'s public key record (spec/sync-inbox.md §1): its record and current `keys.0`, with its
-    /// inbox's where its `keys.0` names one, added to `out`: a holder of the sync ID can fire at
-    /// `k`'s inbox (seal to it and find its sync ID).
-    fn public_key_record_into(&mut self, k: &Tid, out: &mut Certs) {
-        let inbox = self.get_typed(k, &osis_schema::core_types::KEYS).ok().flatten().and_then(|x| x.inbox).map(Tid::from).filter(|i| i != k);
-        for t in std::iter::once(*k).chain(inbox) {
-            out.records.insert(t);
-            if let Some(c) = self.latest_by(&t, "keys.0", None) {
-                out.add(c, self.parts_of(&c, &BTreeSet::from([t]), &["keys.0"]));
-            }
         }
     }
 
@@ -434,13 +421,19 @@ impl Engine {
         rotations.iter().chain(&records).copied().chain(card).collect()
     }
 
-    /// Actor `t`'s current `keys.0` commits projected to `keys.0`, with the demotions its keysets
-    /// carry (spec/permissions.md §4), added to `out`.
-    fn current_keys_into(&mut self, ev: &Ev, t: &Tid, out: &mut Certs) {
+    /// `t`'s public key record (spec/sync-inbox.md §1): its record and current `keys.0` commits
+    /// projected to `keys.0`, each a certificate copy with its evidence (the steps placing the
+    /// keys it lists among them: a reader judges it) and the demotions its keysets carry
+    /// (spec/permissions.md §4), added to `out`.
+    fn public_key_record_into(&mut self, ev: &Ev, t: &Tid, out: &mut Certs) {
+        out.records.insert(*t);
+        let mut seeds = BTreeSet::new();
         for c in self.current_keys(t) {
             out.add(c, self.parts_of(&c, &BTreeSet::from([*t]), &["keys.0"]));
             self.carried_demotions(ev, t, &c, out);
+            seeds.insert((c, *t));
         }
+        self.add_closure(ev, &seeds, out);
     }
 
     /// The demotions the keysets of `t` that commit `c` introduces carry (spec/crypto.md §4,
