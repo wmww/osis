@@ -2579,8 +2579,9 @@ impl Opens {
     fn follow(&mut self, ctx: &mut Ctx, rid: RecordId, s: SyncId, named: &Named) -> Option<J> {
         self.unfollowed.remove(&(rid, s));
         self.followed.entry(rid).or_default().insert(s);
-        let copies = self.conn_on(rid).and_then(|c| self.conns.get(&c)).map(|k| k.proven.copies.clone()).unwrap_or_default();
-        ctx.holds.standing(rid, &s, named, &copies)
+        let none = osis_blob::Certificates::default();
+        let copies = self.conn_on(rid).and_then(|c| self.conns.get(&c)).map_or(&none, |k| &k.proven.copies);
+        ctx.holds.standing(rid, &s, named, copies)
     }
 
     /// Member S of record `rid` is no longer followed here (`Holds::unfollow` is the caller's).

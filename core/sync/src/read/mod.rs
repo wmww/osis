@@ -683,6 +683,12 @@ impl Read {
         self.verdicts.get(&(*s, *c)).cloned()
     }
 
+    /// Tests: the bodies judged must-hold, by S (unstamped).
+    #[doc(hidden)]
+    pub fn must_bodies(&self) -> Vec<(SyncId, BodyId)> {
+        self.verdicts.iter().filter(|(_, v)| **v == Verdict::Must).map(|(k, _)| *k).collect()
+    }
+
     /// Tests: the pieces followed, acting or dormant (spec/sync-judgement.md §1).
     #[doc(hidden)]
     pub fn pieces_followed(&self) -> usize {

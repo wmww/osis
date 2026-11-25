@@ -68,22 +68,30 @@ pub struct ProvenThing {
 type Lowering = (WriteId, Tid, Tid, Option<Role>);
 
 impl Core {
-    /// The things `c` proves on this node's current reading: the signed thing while the key
-    /// hop gives a role, then each thing of the path while every hop up to it does
+    /// The things `c` proves on this node's reading at `now` (wall ms): the signed thing while
+    /// the key hop gives a role, then each thing of the path while every hop up to it does
     /// (spec/sync-opens.md §2), each at the least of its hops so far. The signed thing first;
-    /// the list stops at the first thing no hop up to ever gave a role.
-    fn claimed(&self, c: &Claim) -> Vec<ProvenThing> {
-        let ts = crate::flows::now_ts(self);
+    /// the list stops at the first thing no hop up to ever gave a role. With the earliest
+    /// `until` after `now` of a hop it read alive: the answer holds until then.
+    fn claimed(&self, c: &Claim, now: u64) -> (Vec<ProvenThing>, Option<u64>) {
+        let ts = crate::flows::ts_at(now);
         let tl = self.timelines();
         let key = SignKey(c.key);
-        let hop = tl.key_grant(&key, &c.thing).filter(|e| e.alive_at(Some(ts))).map(|e| e.role);
+        let mut until: Option<u64> = None;
+        let mut alive = |e: &osis_perm::Edge| {
+            if let Some(u) = e.until {
+                until = Some(until.map_or(u.0, |x| x.min(u.0)));
+            }
+            e.role
+        };
+        let hop = tl.key_grant(&key, &c.thing).filter(|e| e.alive_at(Some(ts))).map(|e| alive(&e));
         if hop.is_none() && !tl.key_grants(&c.thing, None).contains_key(&key) {
-            return Vec::new();
+            return (Vec::new(), until);
         }
         let mut out = vec![ProvenThing { thing: c.thing, role: hop }];
         let (mut role, mut prev) = (hop, c.thing);
         for x in &c.path {
-            let edge = tl.on(x).and_then(|o| o.roster(At::now(ts)).get(&prev).map(|e| e.role));
+            let edge = tl.on(x).and_then(|o| o.roster(At::now(ts)).get(&prev).map(&mut alive));
             if edge.is_none() && !tl.get(&prev).is_some_and(|t| t.roles_ever(&prev).contains_key(x)) {
                 break;
             }
@@ -91,7 +99,7 @@ impl Core {
             out.push(ProvenThing { thing: *x, role });
             prev = *x;
         }
-        out
+        (out, until)
     }
 
     /// The lowerings this node's reading applies (spec/permissions.md §5.1): edge writes on a
@@ -200,26 +208,55 @@ impl Engine {
                 h.update(t.as_bytes());
             }
         }
+        let mut bytes = Vec::new();
         for v in &copies.commits {
-            h.update(&osis_base::encode(v));
+            osis_base::cbor::encode_into(v, &mut bytes);
         }
         for r in &copies.records {
-            h.update(&osis_base::encode(&r.to_value()));
+            osis_base::cbor::encode_into(&r.to_value(), &mut bytes);
         }
-        let k = h.finalize();
-        let (claims, copies) = (claims.to_vec(), copies.clone());
-        osis_base::memo::Memo::get_in(self, |e| &e.core.proven, &k, |e| e.proven_now(&claims, &copies).map(Arc::new))
+        let k = h.update(&bytes).finalize();
+        osis_base::memo::Memo::get_in(self, |e| &e.core.proven, &k, |e| e.proven_now(claims, copies).map(Arc::new))
     }
 
     fn proven_now(&mut self, claims: &[Claim], copies: &Certificates) -> Result<Vec<ProvenThing>> {
         let blobs: Vec<CommitBlob> = copies.commits.iter().filter_map(|v| CommitBlob::decode(&osis_base::encode(v)).ok()).filter(|b| !self.core.ix.commits.contains_key(&b.id())).collect();
         let records: Vec<osis_base::CreationRecord> = copies.records.iter().filter(|r| self.core.created(&r.tid()).is_none()).cloned().collect();
-        let judge = |core: &Core| claims.iter().flat_map(|c| core.claimed(c)).collect::<Vec<_>>();
+        // each claim at the time, holding until the first `until` a hop read alive passes
+        let judge = |core: &Core, now: u64| {
+            let mut until: Option<u64> = None;
+            let mut out = Vec::new();
+            for c in claims {
+                let (p, u) = core.claimed(c, now);
+                out.extend(p);
+                until = match (until, u) {
+                    (Some(a), Some(b)) => Some(a.min(b)),
+                    (a, b) => a.or(b),
+                };
+            }
+            (out, until)
+        };
         if blobs.is_empty() && records.is_empty() {
-            return Ok(judge(&self.core));
+            return Ok(self.core.time.at(|now| judge(&self.core, now)));
         }
-        let own = self.core.applied_lowerings();
-        self.trial(records, blobs, |core| if core.undoes(&own) { Vec::new() } else { judge(core) })
+        let trial = |e: &mut Engine, now, records, blobs| {
+            let own = e.core.applied_lowerings();
+            e.trial(records, blobs, |core| if core.undoes(&own) { (Vec::new(), None) } else { judge(core, now) })
+        };
+        if !blobs.is_empty() {
+            // the copies applied judge by roles at the time: read whole
+            let now = self.core.time.now();
+            return Ok(trial(self, now, records, blobs)?.0);
+        }
+        // records alone: the trial's reading is the timelines (read whole) with them, at the
+        // clock, so it is judged unrecorded: its own writes and their undo would move every
+        // reader of the timelines, this answer too, which then never holds
+        let now = self.core.time.until(None);
+        let (out, until) = osis_base::memo::unrecorded(|| trial(self, now, records, Vec::new()))?;
+        // past the trial's own writes and their undo, which moved it
+        let _ = std::ops::Deref::deref(self.core.timelines());
+        self.core.time.until(until);
+        Ok(out)
     }
 
     /// J of a peer whose proofs prove `proven` for `s` (spec/sync-opens.md §4): reader if a

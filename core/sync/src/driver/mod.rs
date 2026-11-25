@@ -305,6 +305,12 @@ impl Node {
         self.read.body_verdict(s, c)
     }
 
+    /// Tests only: the bodies read judges must-hold, by S.
+    #[doc(hidden)]
+    pub fn must_bodies(&self) -> Vec<(SyncId, osis_engine::sync::BodyId)> {
+        self.read.must_bodies()
+    }
+
     /// Tests only: restarts in place after a store failure so far.
     #[doc(hidden)]
     pub fn restarts(&self) -> u64 {

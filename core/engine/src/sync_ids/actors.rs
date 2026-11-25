@@ -41,9 +41,14 @@ pub(crate) fn owns(held: &BTreeSet<[u8; 32]>, id: &SyncId, steps: &BTreeMap<Step
 /// head being the newest recorded step (`head_of`). `None` when no step's path verifies.
 pub(crate) fn recorded_path(steps: &BTreeMap<StepId, (Step, Option<ClaimSet>)>) -> Option<Path> {
     let head = head_of(steps)?;
-    let plain: BTreeMap<StepId, Step> = steps.iter().map(|(k, (s, _))| (*k, s.clone())).collect();
-    let path = osis_blob::path_to(&plain, &head).ok()?;
-    Some(Path { steps: path.into_iter().map(|s| { let c = steps.get(&s.id()).and_then(|(_, c)| c.clone()); (s, c) }).collect() })
+    let mut path = Vec::new();
+    let mut at = Some(head);
+    while let Some((s, c)) = at.and_then(|id| steps.get(&id)) {
+        path.push((s.clone(), c.clone()));
+        at = s.prev;
+    }
+    path.reverse();
+    Some(Path { steps: path })
 }
 
 /// The head a node reading S takes from its `sync.0` (spec/sync-ids.md §3 "the newest step its
@@ -52,8 +57,37 @@ pub(crate) fn recorded_path(steps: &BTreeMap<StepId, (Step, Option<ClaimSet>)>) 
 /// simplest reading.
 pub(crate) fn head_of(steps: &BTreeMap<StepId, (Step, Option<ClaimSet>)>) -> Option<StepId> {
     let parents: BTreeSet<StepId> = steps.values().filter_map(|(s, _)| s.prev).collect();
-    let plain: BTreeMap<StepId, Step> = steps.iter().map(|(k, (s, _))| (*k, s.clone())).collect();
-    steps.keys().filter(|k| !parents.contains(k)).filter_map(|k| Some((osis_blob::path_to(&plain, k).ok()?.len(), *k))).min_by_key(|(n, k)| (std::cmp::Reverse(*n), *k)).map(|(_, k)| k)
+    let depth = verified_depths(steps);
+    steps.keys().filter(|k| !parents.contains(k)).filter_map(|k| Some((*depth.get(k)?, *k))).min_by_key(|(n, k)| (std::cmp::Reverse(*n), *k)).map(|(_, k)| k)
+}
+
+/// The depth of each step whose path from its genesis step verifies (`osis_blob::verify_path`:
+/// each step under its own ID, the genesis by its own delete key, each child by its parent's),
+/// each signature checked once, from the genesis steps down.
+fn verified_depths(steps: &BTreeMap<StepId, (Step, Option<ClaimSet>)>) -> BTreeMap<StepId, usize> {
+    let mut children: BTreeMap<StepId, Vec<StepId>> = BTreeMap::new();
+    let mut todo: Vec<(StepId, usize)> = Vec::new();
+    for (id, (s, _)) in steps {
+        if s.id() != *id {
+            continue;
+        }
+        match s.prev {
+            Some(p) => children.entry(p).or_default().push(*id),
+            None if s.verify_genesis().is_ok() => todo.push((*id, 0)),
+            None => {}
+        }
+    }
+    let mut out = BTreeMap::new();
+    while let Some((id, d)) = todo.pop() {
+        out.insert(id, d);
+        let Some((parent, _)) = steps.get(&id) else { continue };
+        for c in children.remove(&id).unwrap_or_default() {
+            if steps.get(&c).is_some_and(|(s, _)| s.verify_child(parent).is_ok()) {
+                todo.push((c, d + 1));
+            }
+        }
+    }
+    out
 }
 
 /// The delete keys owing an endorsement of S's recorded head (spec/sync-ids.md §6 Steps): each
