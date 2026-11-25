@@ -115,7 +115,9 @@ def refs(rel, text, read, cache=None):
             continue
         rest = n.group(2)
         w = re.match(r"([A-Z]\d*)\b(?![-'])", rest)
-        labels = cache.setdefault((p, "labels"), set(LABEL.findall(t)))
+        if (p, "labels") not in cache:
+            cache[p, "labels"] = set(LABEL.findall(t))
+        labels = cache[p, "labels"]
         if w and len(w.group(1)) == 1 and re.match(r". [a-z]", rest):
             w = None  # an article ("A second"), not a label
         if w and labels:

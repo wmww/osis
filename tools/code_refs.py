@@ -79,8 +79,10 @@ VENDORED = "libs/kit/patches/"
 def cited(text):
     """(line number, name or path, kind) of each code citation in `text`."""
     text = FENCE.sub(lambda m: "\n" * m.group(0).count("\n"), text)
+    line, last = 1, 0
     for s in SPAN.finditer(text):
-        span, line = s.group(1).strip(), text.count("\n", 0, s.start()) + 1
+        line, last = line + text.count("\n", last, s.start()), s.start()
+        span = s.group(1).strip()
         if PATHLIKE.match(span) and span.endswith(PATH_EXTS):
             yield line, span[2:] if span.startswith("./") else span, "path"
             continue
