@@ -257,8 +257,8 @@ impl Engine {
     /// what is on the holder's authority chain as judged while taking them (the holder, then
     /// each one's mint admin and current holders, transitively, judged again as what is taken
     /// extends it): records of chain things, `keys.0` deltas on the holder and on the authors of
-    /// the holder's `keys.0` commits carried (their cards), `sync.0` deltas on the holder (the
-    /// steps placing its keys), `roles.0` deltas on chain things; each
+    /// the holder's `keys.0` commits carried (their cards), `sync.0` deltas on chain things (the
+    /// steps placing the keys those commits list), `roles.0` deltas on chain things; each
     /// commit, projected to those deltas, kept only if judged valid with every edge write it makes
     /// applied (`ingest_valid`), carried by `from` while it pends. Everything else is ignored.
     /// Returns the commits taken.
@@ -276,7 +276,11 @@ impl Engine {
             let recs: Vec<CreationRecord> = records.iter().filter(|(t, _)| chain.contains(*t) && !learned.contains(*t) && self.core.created(t).is_none()).map(|(_, r)| r.clone()).collect();
             if !recs.is_empty() {
                 learned.extend(recs.iter().map(CreationRecord::tid));
-                moved |= self.learn_records(recs)? > 0;
+                self.learn_records(recs)?;
+                // a record learned extends the chain (its mint admin): judge nothing before the
+                // chain stands, or a commit signed by a chain thing not yet on it pends on a
+                // record that is here, and is dropped (`from` None) or never retried
+                continue;
             }
             for (i, b) in blobs.iter().enumerate() {
                 if done.contains(&i) {
@@ -285,8 +289,9 @@ impl Engine {
                 let on = |ai: usize| {
                     b.header.aspects.get(ai).is_some_and(|a| match a.ak.as_str() {
                         "keys.0" => a.tid == *holder || chain.contains(&a.tid) && cards.contains(&a.tid),
-                        // the steps placing the holder's keys: without them its keys are miskeyed
-                        "sync.0" => a.tid == *holder,
+                        // the steps placing the keys a chain commit lists (the holder's, its
+                        // signers'): without them those keys are miskeyed
+                        "sync.0" => chain.contains(&a.tid),
                         "roles.0" => chain.contains(&a.tid),
                         _ => false,
                     })

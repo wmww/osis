@@ -45,19 +45,38 @@ fn holder_keys_bring_the_holders_new_keyset_spec_permissions_4() {
     assert!(lp.peers[0].engine.current_keys(&t).contains(&k), "T's new keyset taken");
 }
 
+// spec/permissions.md §4 (stranded), spec/wire.md §9 Holder keys: a receiver that knows nothing
+// of the holder takes its keys (a stranger granting from outside): the chain grows as each record
+// is learned, and the steps placing the keys a chain commit lists (its signer's) come with it.
+// Peer 1, apart from peer 0, takes the keys of a thing peer 0's node minted.
+#[test]
+fn holder_keys_reach_a_receiver_knowing_nothing_of_the_chain_spec_permissions_4() {
+    let mut lp = crate::local_peer::LocalPeer::new_apart(2, 0, super::tests::T0).unwrap();
+    let me = lp.peers[0].engine.me();
+    let mut m = crate::Mutation::new();
+    let t = lp.peers[0].engine.new_thing(&mut m, me);
+    lp.peers[0].commit(m).unwrap();
+    lp.peers[0].engine.make_independent(&t).unwrap();
+    let keys = lp.peers[0].engine.holder_keys(&t).unwrap();
+    assert!(!lp.peers[1].engine.knows(&me), "peer 1 knows nothing of the chain");
+    lp.peers[1].engine.take_holder_keys(&t, &keys, None).unwrap();
+    assert_eq!(lp.peers[1].engine.current_keys(&t), lp.peers[0].engine.current_keys(&t), "T's keys taken");
+}
+
 // spec/permissions.md §4 (stranded): nothing off the holder's authority chain is taken (peer
 // input never causes unbounded storage, spec/requirements.md). A report naming T that
-// carries the role commits and record of X, an independent thing of peer 2's peer 0 never saw, leaves peer 0
+// carries the role commits and record of X (and the step of X's mint admin, on T's chain too), an independent thing of peer 2's peer 0 never saw, leaves peer 0
 // none of them; X's keys named under X itself are taken only as a holder's (X holds nothing).
 #[test]
 fn holder_keys_take_nothing_off_the_chain_spec_permissions_4() {
     let (mut lp, _, t) = holder_on_g();
     let x = independent_thing(&mut lp, 2);
     let keys = lp.peers[2].engine.holder_keys(&x).unwrap();
+    let on_x = |c: &CommitId| lp.peers[2].engine.header(c).is_some_and(|h| h.aspects.iter().any(|a| a.tid == x));
     let mut ids = ids_of(&keys);
-    ids.retain(|c| lp.peers[0].engine.header(c).is_none());
+    ids.retain(|c| lp.peers[0].engine.header(c).is_none() && on_x(c));
     assert!(!ids.is_empty() && !lp.peers[0].engine.knows(&x));
-    assert_eq!(lp.peers[0].engine.take_holder_keys(&t, &keys, None).unwrap(), 0);
+    lp.peers[0].engine.take_holder_keys(&t, &keys, None).unwrap();
     assert_eq!(held(&lp, 0, &ids), 0, "X's commits not kept");
     assert!(!lp.peers[0].engine.knows(&x), "X's record not kept");
 }
