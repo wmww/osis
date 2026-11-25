@@ -282,6 +282,60 @@ mod tests {
         let w = lp.peers[0].engine.snapshot(&t, &secrets);
         assert!(matches!(w, Err(crate::Error::Data(osis_commit::Error::DeltaHash { .. }))), "a whole snapshot holds nothing: {w:?}");
     }
+    // spec/commits.md §5 Covered, spec/wire.md §4 Pieces: a hostile admin's `secrets.0` snapshot
+    // leaving c's box out while its rest piece states c's grant absorbed (the tables over-claim)
+    // covers no piece of that grant: covering is judged by the join of the held pieces, not the
+    // tables. Every node keeps the grant and c's box, through a day's ticks and a restart.
+    #[test]
+    fn a_rest_piece_over_claiming_covers_nothing_spec_commits_5() {
+        let mut lp = LocalPeer::fresh(3, WallMs(1_700_000_000_000));
+        lp.sync_all().unwrap();
+        let (a, b, c) = (lp.peers[0].engine.me(), lp.peers[1].engine.me(), lp.peers[2].engine.me());
+        let t = thing(&mut lp, a);
+        let secrets = osis_base::Ak::new("secrets.0").unwrap();
+        let read = ct::Edge { role: Role::Read, until: None, may_grant: false, retain: false, floor: None };
+        let gb = *lp.peers[0].engine.grant(&t, &b, &read).unwrap().commits.last().unwrap();
+        let gc = *lp.peers[0].engine.grant(&t, &c, &read).unwrap().commits.last().unwrap();
+        lp.sync_all().unwrap();
+        let k = secrets.clone();
+        let s = lp.peers[0]
+            .engine
+            .run(|tx| {
+                let whole = tx.state(&t, &k)?.cloned().unwrap();
+                let (mut pieces, rest) = whole.split_by_key(0, osis_commit::box_holder);
+                assert!(pieces.remove(&c).is_some(), "c's box held");
+                let mut st = rest;
+                for p in pieces.into_values() {
+                    st.join(p);
+                }
+                let absorbed = [(gb, a), (gc, a)].into_iter().collect();
+                let (ts, node) = (tx.core.hlc.next(), tx.core.me());
+                crate::retention::snapshot::build_snapshot(tx, t, k.clone(), st.into(), ts, node, Default::default(), absorbed, None, false)
+            })
+            .unwrap();
+        let abs = &lp.peers[0].engine.core.ix.snapshots[&(t, secrets.clone())].iter().find(|x| x.1 == s).unwrap().3;
+        assert!(abs.iter().any(|x| x.0 == gc), "the tables claim c's grant: {abs:?}");
+        lp.sync_all().unwrap();
+        let has_c = |lp: &mut LocalPeer, i: usize| {
+            let k = secrets.clone();
+            lp.peers[i].engine.run(|tx| Ok(tx.state(&t, &k)?.cloned().unwrap().split_by_key(0, osis_commit::box_holder).0.contains_key(&c))).unwrap()
+        };
+        for i in 0..3 {
+            assert!(crate::retention::bounds::valid_snapshot_held(&lp.peers[i].engine.core, &s, &t, &secrets), "peer {i} holds the snapshot, valid");
+            assert_eq!(lp.peers[i].engine.covered(&s, &gb, &t, &secrets).unwrap(), Some(true), "peer {i}: b's grant covered");
+            assert_eq!(lp.peers[i].engine.covered(&s, &gc, &t, &secrets).unwrap(), Some(false), "peer {i}: c's grant not covered");
+        }
+        lp.advance(86_400_000);
+        for i in 0..3 {
+            lp.peers[i].tick().unwrap();
+            lp.peers[i].restart(i as u64).unwrap();
+        }
+        for i in 0..3 {
+            let m = &lp.peers[i].engine.core.ix.commits[&gc];
+            assert!(m.aspect_parts(&t, &secrets).any(|ai| m.holds(ai)), "peer {i} keeps c's grant");
+            assert!(has_c(&mut lp, i), "peer {i} keeps c's box");
+        }
+    }
     // spec/commits.md §5 Bodies and deaths, spec/wire.md §4 Pieces: a piece held without its
     // siblings is the commit's body there, dated as any. A holder of sync alone takes its
     // grant's edge piece (its piece, no rest); its removal supersedes its box, so the piece it
