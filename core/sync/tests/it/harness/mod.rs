@@ -654,15 +654,17 @@ impl World {
         }
         .0;
         self.write(j, |e| e.take_pairing(&offer)).expect("take the offer");
+        // the offer also names where the pairer is dialed, as a link names its peers
+        // (`osis::Osis::take_offer`): the new node holds none of A's content (its `dial.0`) before
+        // it syncs A
+        let peers = osis_blob::link_peers(self.node(i).key.0, &self.net.reach.items(i), &self.node(i).node.config().dial);
+        self.nodes.get_mut(j).expect("no such node").node.offered(acc, peers).expect("the pairer's peers kept");
         if let Some(n) = self.nodes.get_mut(j) {
             n.account = Some(acc);
             n.profile = profile;
             n.inbox = inbox;
         }
         self.publish(j);
-        // the pairing channel also carries where the pairer is dialed, as a link carries its
-        // peers: the new node holds none of A's content (its `dial.0`) before it syncs A
-        self.discover(j, i);
         j
     }
 

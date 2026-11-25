@@ -441,6 +441,16 @@ impl Node {
         w
     }
 
+    /// An offer of `target` was taken by hand (spec/sync-inbox.md §5 By hand), its offering node
+    /// at `peers`: they are first-contact dial hints, kept durably while this node holds `target`
+    /// by a grant.
+    pub fn offered(&mut self, target: osis_base::Tid, peers: Vec<osis_blob::DialHint>) -> Result<()> {
+        let mut out = Vec::new();
+        let r = self.inbox.offered(&mut cx!(self, &mut out), target, peers);
+        self.driver.pending.extend(out);
+        r
+    }
+
     /// Whether link K (a public link: its target) is being redeemed here (`redeem`): not joined
     /// yet or the join not yet held at a source, and not ended or given up
     /// (`Policy::follow_link_ms`).

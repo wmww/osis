@@ -35,15 +35,21 @@
 //! (`Engine::follow_public`: the target's sync ID from the text read in the sync set, its public
 //! entry tested) until the public's grant on the target is held here, then writes the strong to
 //! the target in the joiner's `holds.0` (`Engine::redeem_public`) and forgets it: the strong brings
-//! the target into the joiner's sync unit from then on. Nothing of it is kept across a start (no
-//! secret, nothing to deliver): the caller redeems it again. Its follow time is a share link's.
+//! the target into the joiner's sync unit from then on. It is kept as a share link's is (a row
+//! `I/r/` under its target, not shredded: no secret), so a restart goes on with it. Its follow
+//! time is a share link's.
+//!
+//! An offer handed over (a pairing's, spec/permissions.md §8) is first contact too: its peers
+//! (`offered`) are kept as a joined link's (rows `I/p/`) while a joiner this node acts as holds
+//! its target by a grant (`Engine::joiner_of`), so a node paired and restarted before it holds
+//! where the account's nodes are still dials the pairer.
 
-use super::{DialHint, Here};
+use super::Here;
 use crate::types::{Result, Waiting};
 use osis_base::memo::{Effects, Stamped};
 use osis_base::{CommitId, Tid, WallMs};
 use osis_engine::Engine;
-use osis_blob::{PublicLink, ShareLink};
+use osis_blob::{DialHint, Link, PublicLink, ShareLink};
 use osis_store::Shred;
 use std::collections::BTreeMap;
 
@@ -67,21 +73,34 @@ fn link_hints(link: &ShareLink) -> Vec<DialHint> {
     link.peers.clone()
 }
 
+/// A redeem's durable row (`I/r/`, keyed by K or a public link's target), either kind of link:
+/// `[joined: 0 | 1 commit][since][joiner][link text]`.
+fn encode_row(link: &Link, since: WallMs, joiner: &Tid, joined: Option<CommitId>) -> Result<Vec<u8>> {
+    let text = link.to_text().map_err(|_| crate::types::Error::NotBuilt("link text"))?;
+    let joined = joined.map_or(vec![0], |c| [&[1u8][..], &c.0].concat());
+    Ok([joined, since.0.to_be_bytes().to_vec(), joiner.as_bytes().to_vec(), text.into_bytes()].concat())
+}
+
+fn decode_row(v: &[u8]) -> Option<(Link, WallMs, Tid, Option<CommitId>)> {
+    let (joined, rest) = match v.first()? {
+        0 => (None, v.get(1..)?),
+        _ => (Some(CommitId(v.get(1..33)?.try_into().ok()?)), v.get(33..)?),
+    };
+    let since = WallMs(u64::from_be_bytes(rest.get(..8)?.try_into().ok()?));
+    let joiner = Tid::from_bytes(rest.get(8..8 + osis_base::format::TID_LEN)?.try_into().ok()?);
+    let link = Link::from_text(std::str::from_utf8(rest.get(8 + osis_base::format::TID_LEN..)?).ok()?).ok()?;
+    Some((link, since, joiner, joined))
+}
+
 impl Pending {
     fn encode(&self) -> Result<Vec<u8>> {
-        let text = self.link.to_text().map_err(|_| crate::types::Error::NotBuilt("link text"))?;
-        let joined = self.joined.map_or(vec![0], |c| [&[1u8][..], &c.0].concat());
-        Ok([joined, self.since.0.to_be_bytes().to_vec(), self.joiner.as_bytes().to_vec(), text.into_bytes()].concat())
+        encode_row(&Link::Share(self.link.clone()), self.since, &self.joiner, self.joined)
     }
-    fn decode(v: &[u8]) -> Option<Pending> {
-        let (joined, rest) = match v.first()? {
-            0 => (None, v.get(1..)?),
-            _ => (Some(CommitId(v.get(1..33)?.try_into().ok()?)), v.get(33..)?),
-        };
-        let since = WallMs(u64::from_be_bytes(rest.get(..8)?.try_into().ok()?));
-        let joiner = Tid::from_bytes(rest.get(8..8 + osis_base::format::TID_LEN)?.try_into().ok()?);
-        let link = ShareLink::from_text(std::str::from_utf8(rest.get(8 + osis_base::format::TID_LEN..)?).ok()?).ok()?;
-        Some(Pending { link, since, joiner, joined })
+}
+
+impl PublicPending {
+    fn encode(&self) -> Result<Vec<u8>> {
+        encode_row(&Link::Public(self.link.clone()), self.since, &self.joiner, None)
     }
 }
 
@@ -149,8 +168,9 @@ pub(super) struct Redemptions {
     hints: Stamped<Tid, Vec<DialHint>>,
     ready: Effects<Tid, Stage>,
     held: Effects<Tid, bool>,
-    /// Links forgotten while the account holds K by a grant: their peers stay dial hints (rows
-    /// `I/p/`) while it does (`Engine::joined_link`, spec/permissions.md §7 First contact).
+    /// Links forgotten while the account holds K by a grant, and offers taken: their peers stay
+    /// dial hints (rows `I/p/`) while a joiner this node acts as holds the thing by a grant
+    /// (`Engine::joiner_of`, spec/permissions.md §7 First contact).
     kept: Effects<Tid, bool>,
 }
 
@@ -164,9 +184,12 @@ impl Redemptions {
     /// A start: every link being redeemed is held again.
     pub(super) fn start(&mut self, h: &mut Here<'_>) -> Result<()> {
         for (k, v) in h.store.with_tx(|t| t.scan_local(ROWS, b"", usize::MAX))? {
-            let Some(p) = Pending::decode(&v) else { continue };
             let Some(k) = k.get(ROWS.len()..).and_then(|x| <[u8; 15]>::try_from(x).ok()).map(Tid::from_bytes) else { continue };
-            self.follow(h, k, p)?;
+            match decode_row(&v) {
+                Some((Link::Share(link), since, joiner, joined)) => self.follow(h, k, Pending { link, since, joiner, joined })?,
+                Some((Link::Public(link), since, joiner, None)) => self.follow_public(h, PublicPending { link, since, joiner }),
+                _ => {}
+            }
         }
         for (k, v) in h.store.with_tx(|t| t.scan_local(PEERS, b"", usize::MAX))? {
             let Some(hints) = decode_peers(&v) else { continue };
@@ -193,9 +216,9 @@ impl Redemptions {
     pub(super) fn redeem(&mut self, h: &mut Here<'_>, link: &ShareLink, joiner: Tid) -> Result<Waiting> {
         // a redeem before this start's: the kept row, with its start
         if !self.pending.contains_key(&link.k)
-            && let Some(p) = h.store.with_tx(|t| t.get_local(&row_key(&link.k)))?.as_deref().and_then(Pending::decode)
+            && let Some((Link::Share(l), since, joiner, joined)) = h.store.with_tx(|t| t.get_local(&row_key(&link.k)))?.as_deref().and_then(decode_row)
         {
-            self.follow(h, link.k, p)?;
+            self.follow(h, link.k, Pending { link: l, since, joiner, joined })?;
         }
         if let Some(p) = self.pending.get(&link.k) {
             return Ok(if p.joined.is_some() { Waiting::Done } else { Waiting::Pending });
@@ -215,18 +238,40 @@ impl Redemptions {
     }
 
     /// Redeems a public link (module doc): `Done` once the node closure holds its target.
-    pub(super) fn redeem_public(&mut self, h: &mut Here<'_>, link: &PublicLink, joiner: Tid) -> Waiting {
+    pub(super) fn redeem_public(&mut self, h: &mut Here<'_>, link: &PublicLink, joiner: Tid) -> Result<Waiting> {
         let t = link.target;
         if h.engine.closure_holds(&t) {
-            return Waiting::Done;
+            return Ok(Waiting::Done);
         }
         if !self.public.contains_key(&t) {
-            h.engine.follow_public(link);
-            self.hints.insert(t, link.peers.clone());
-            self.public.insert(t, PublicPending { link: link.clone(), since: h.now, joiner });
-            self.public_ready.want(t);
+            let p = PublicPending { link: link.clone(), since: h.now, joiner };
+            let row = p.encode()?;
+            h.store.with_tx(|x| x.put_local(&row_key(&t), &row, Shred::No))?;
+            self.follow_public(h, p);
         }
-        Waiting::Pending
+        Ok(Waiting::Pending)
+    }
+
+    fn follow_public(&mut self, h: &mut Here<'_>, p: PublicPending) {
+        let t = p.link.target;
+        h.engine.follow_public(&p.link);
+        self.hints.insert(t, p.link.peers.clone());
+        self.public.insert(t, p);
+        self.public_ready.want(t);
+    }
+
+    /// First contact by an offer handed over (spec/sync-inbox.md §5 By hand): the offering node's
+    /// peers stay dial hints, durably, while a joiner this node acts as holds `target` by a grant
+    /// (`kept`), as a joined link's do.
+    pub(super) fn offered(&mut self, h: &mut Here<'_>, target: Tid, peers: Vec<DialHint>) -> Result<()> {
+        if peers.is_empty() {
+            return Ok(());
+        }
+        let row = encode_peers(&peers);
+        h.store.with_tx(|t| t.put_local(&peers_key(&target), &row, Shred::No))?;
+        self.hints.insert(target, peers);
+        self.kept.want(target);
+        Ok(())
     }
 
     pub(super) fn settle(&mut self, h: &mut Here<'_>) -> Result<bool> {
@@ -255,6 +300,7 @@ impl Redemptions {
             self.public.remove(&t);
             self.hints.remove(&t);
             h.engine.unfollow_link(&t);
+            h.store.with_tx(|x| x.remove_local(&row_key(&t), Shred::No))?;
             acted = true;
         }
         for k in self.ready.due() {
@@ -300,7 +346,7 @@ impl Redemptions {
         }
         for k in self.kept.due() {
             let engine = &mut *h.engine;
-            let Some((_, false)) = self.kept.settle(&k, || engine.joined_link(&k)) else { continue };
+            let Some((_, false)) = self.kept.settle(&k, || engine.joiner_of(&k).is_some()) else { continue };
             self.kept.unwant(&k);
             self.hints.remove(&k);
             h.store.with_tx(|t| t.remove_local(&peers_key(&k), Shred::No))?;

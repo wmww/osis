@@ -9,16 +9,16 @@
 //!
 //! Pairing a new node is transport-agnostic: the app carries three texts between the nodes (a QR
 //! code, the clipboard, a local socket), the pairing channel of spec/permissions.md §8: the offer
-//! (the account, its profile, where to reach the offering node and a one-time secret), the new
-//! node's request (its node thing's public key record) and the existing node's reply (the
-//! account's offer and its trust records), the last two authenticated by the offer's secret.
+//! (the account, its profile and a one-time secret), the new node's request (its node thing's
+//! public key record) and the existing node's reply (the account's offer, with its trust records
+//! and where to reach the offering node), the last two authenticated by the offer's secret.
 
 #![forbid(unsafe_code)]
 
 use osis_base as base;
 use osis_crypto as crypto;
 use osis::core::{CAPS, DIAL, HOLDS, NAME, RETENTION, RetentionSetting, SETTINGS};
-use osis::{Address, Error, GrantOpts, Keys, Link, LinkInfo, Offer, Osis, ReadOnly, Result, Role, SetRoleOpts, Store, Tid, Value, Weak};
+use osis::{Error, GrantOpts, Keys, Link, LinkInfo, Offer, Osis, ReadOnly, Result, Role, SetRoleOpts, Store, Tid, Value, Weak};
 
 /// Typed keys of schema/realm.osis.
 #[allow(dead_code, clippy::all)]
@@ -248,8 +248,7 @@ impl Account {
         let profile = self.realm().profile(db)?.ok_or_else(|| Error::Invalid("the account's profile is not here yet".into()))?;
         let mut secret = [0u8; 32];
         crypto::RngCore::fill_bytes(&mut crypto::OsRng, &mut secret);
-        let reach = db.dial_hints()?.iter().map(|a| Value::Str(a.to_string())).collect();
-        let offer = PairOffer(pack(OFFER, &Value::List(vec![Value::Int(1), Value::bytes(self.thing.as_bytes()), Value::bytes(profile.as_bytes()), Value::List(reach), Value::Bytes(secret.to_vec())])));
+        let offer = PairOffer(pack(OFFER, &Value::List(vec![Value::Int(1), Value::bytes(self.thing.as_bytes()), Value::bytes(profile.as_bytes()), Value::Bytes(secret.to_vec())])));
         Ok(Offering { account: *self, offer, secret })
     }
 }
@@ -397,23 +396,15 @@ impl std::fmt::Debug for Joining {
 }
 
 /// Starts pairing a fresh store as a new node of the account that made `offer`: returns the
-/// request to carry to the offering node and, with its reply, `Joining::finish`. Online, the new
-/// node dials the offering node, as the offer names it, beside `cfg.dial`, until it holds the
-/// account's own list of where its nodes are (a restart before that drops it: pair again, or
-/// configure an address).
-pub fn pair(store: Store, offer: &PairOffer, mut cfg: osis::Config) -> Result<Joining> {
+/// request to carry to the offering node and, with its reply, `Joining::finish`. Once finished,
+/// the new node dials the offering node, as its reply names it (`Osis::take_offer`), while it is
+/// a node of the account, restarts included.
+pub fn pair(store: Store, offer: &PairOffer, cfg: osis::Config) -> Result<Joining> {
     let items = unpack(&offer.0, OFFER)?;
     let malformed = || Error::Invalid("malformed pairing offer".into());
-    let [_, account, profile, Value::List(reach), Value::Bytes(secret)] = items.as_slice() else { return Err(malformed()) };
+    let [_, account, profile, Value::Bytes(secret)] = items.as_slice() else { return Err(malformed()) };
     let (account, profile) = (tid(account).ok_or_else(malformed)?, tid(profile).ok_or_else(malformed)?);
     let secret: [u8; 32] = secret.as_slice().try_into().map_err(|_| malformed())?;
-    for a in reach {
-        let Value::Str(a) = a else { return Err(malformed()) };
-        let a: Address = a.parse().map_err(|_| malformed())?;
-        if cfg.online() && !cfg.dial.contains(&a) {
-            cfg.dial.push(a);
-        }
-    }
     let db = Osis::create(store, cfg)?;
     let keys = db.keys(db.node())?;
     let request = PairRequest(seal(REQUEST, &secret, "osis pair request", vec![Value::Str(keys.to_string())]));

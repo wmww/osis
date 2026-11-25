@@ -78,7 +78,7 @@ Other findings:
 - Member `standing` memo keyed (record, S), not rejudged when the connection's copies change: applies. `opens/holds.rs` `standing`.
 - Held elsewhere for a self-removal: filtered through `counts_for_leave` (resolved), but `g.elsewhere(s, b)` returns Yes before the filter: check whether a leaving peer can set it. `status/mod.rs` ~l.1020-1050. `counts_for_leave` reads the proven node alone, not each claimed thing's role: applies. `engine/src/sync/held.rs`.
 - A new strong to an uncarried thing re-pulls every own and read sync ID (`units::refetch_holders`): applies (stated cost).
-- The new node's first dial: pairer's `dial_hints` not stored, a restart before A's `dial.0` loses them: applies. `Osis::dial_hints`, osis-sync `inbox/mod.rs`.
+- The new node's first dial: pairer's `dial_hints` not stored, a restart before A's `dial.0` loses them: fixed (spar-fix-sync): the `Offer` names the pairer's peers, kept as a joined link's (`Node::offered`); `Osis::dial_hints` gone.
 - A public redeem is in memory only: applies. osis-sync `inbox/links.rs` `redeem_public`.
 - A stranger's sealed fire to an inbox kept unread then promoted: untested (issues/sync-tests-owed.md).
 - `SETTLE_MS` designed, not built: every holder copies a demotion or `keys.0` at once (3.3 KB per holder per removal). issues/sync-unbuilt.md, Cost.
@@ -100,7 +100,7 @@ Other findings:
 10. `standing` memo keyed (record, S): agree; a resumed record re-judges nothing unchanged (spec/sync-opens.md §6), and the old copies are verified evidence; a removal held moves the memo.
 11. Held elsewhere for a self-removal: agree. A self-removal is in `held_wait` from the transaction that applies it, and its blobs are marked `elsewhere` only through `held_at` for that commit, after `counts_for`; `role_now` is the effective role, so a node of another account counts through its account where its roster is held.
 12. `refetch_holders` re-pulls: agree (stated cost).
-13. Dial hints not stored; 14. public redeem in memory: both lose a first contact at a restart, unlike a private redeem's durable row: issues/first-contact-in-memory.md (low).
+13. Dial hints not stored; 14. public redeem in memory: fixed (spar-fix-sync): a public redeem is a durable `I/r/` row as a share link's; an offer's peers kept as a joined link's.
 15-19. Sealed fire kept unread then promoted untested, `SETTLE_MS` unbuilt, record flood, unbuilt opens rules, Next/Untested: agree, as listed.
 20. holder-actors logging fixed: agree.
 

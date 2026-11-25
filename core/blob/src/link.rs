@@ -106,7 +106,7 @@ fn format_of(v: &Value) -> Result<u64, Error> {
 }
 
 /// `[peer*]`, checked against the caps (spec/wire.md §10).
-fn peers_value(peers: &[DialHint]) -> Result<Value, Error> {
+pub fn peers_value(peers: &[DialHint]) -> Result<Value, Error> {
     if peers.len() > MAX_PEERS {
         return Err(Error::Malformed("more than 4 peers"));
     }
@@ -121,7 +121,8 @@ fn peers_value(peers: &[DialHint]) -> Result<Value, Error> {
     Ok(Value::List(out))
 }
 
-fn peers_from(peers: &[Value]) -> Result<Vec<DialHint>, Error> {
+/// Peers from `[peer*]`, checked against the caps (spec/wire.md §10).
+pub fn peers_from(peers: &[Value]) -> Result<Vec<DialHint>, Error> {
     if peers.len() > MAX_PEERS {
         return Err(Error::Malformed("more than 4 peers"));
     }

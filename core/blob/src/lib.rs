@@ -27,6 +27,6 @@ pub use error::Error;
 pub use sync_ids::{StepRecord, SyncEntry, SyncIds, parse_record, step_record, sync_endorsements, sync_steps};
 pub use fire::{Sealed, SealedFire, open_fire, seal_fire};
 pub use certificates::Certificates;
-pub use link::{DialHint, Link, PublicLink, ShareLink, link_peers};
+pub use link::{DialHint, Link, PublicLink, ShareLink, link_peers, peers_from, peers_value};
 pub use step::{ClaimSet, Parent, Reader, Step, StepId, StepKeys, genesis_sync_id, open_entry_box, path_to, read_public_entry_box, register, register_with, verify_path};
 pub use tree::{BlobFetch, BlobReader, BlobSink, BlobStore, BlobWriter, Framing, Reuse, HashSink, LinkSource, MemoryBlobs, TreeReader, TreeSink, TreeWriter, Written, linked_prefix_inputs, read_tree, write_tree};

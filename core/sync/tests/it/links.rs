@@ -391,6 +391,36 @@ fn a_joined_links_peers_stay_dial_hints_while_it_holds_k_spec_permissions_7() {
     assert!(!hinted(&w), "the peer dropped with the join");
 }
 
+// spec/sync-inbox.md §5 (By hand: the offer names the granting node's peers, dialed while the
+// taker holds the target), spec/permissions.md §8 (Pairing): node 1, paired to node 0's account
+// and configured to dial nothing, restarts before it has met node 0: it still dials node 0 by the
+// offer's peers and syncs the account; the peers stay hints across a later restart.
+#[test]
+fn a_paired_node_restarted_before_first_contact_still_dials_the_pairer_spec_sync_inbox_5() {
+    use osis_sync::driver::dials::Why;
+    let mut w = World::new(0);
+    w.add_node();
+    w.run();
+    let pairer = w.node(0).key.0;
+    w.partition(0, 1);
+    let j = w.pair(0);
+    assert_eq!(j, 1);
+    w.power_off(1);
+    w.power_on(1);
+    w.advance(1);
+    let hinted = |w: &World| w.dials(1).why(&pairer).contains(&Why::Hint);
+    assert!(hinted(&w), "the pairer kept as a dial hint across the restart");
+    w.heal();
+    w.run();
+    let a = w.node(0).account.unwrap();
+    let dial = osis_base::Ak::new("dial.0").unwrap();
+    assert_eq!(w.engine(1).get(&a, &dial).unwrap(), w.engine(0).get(&a, &dial).unwrap(), "the account synced with the pairer");
+    w.power_off(1);
+    w.power_on(1);
+    w.run();
+    assert!(hinted(&w), "kept while a node of the account");
+}
+
 // spec/sync-streams.md §4 (Fill order: an entry opening with a section it cannot open, holding a
 // part that counts missing, opens again as that part's thing's read secrets gain an epoch),
 // spec/permissions.md §7 (Redeem: wait for K's grant on the target): accounts 1 and 2 join node

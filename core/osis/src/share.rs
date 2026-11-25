@@ -266,29 +266,38 @@ impl std::str::FromStr for Keys {
 
 /// A grant handed over by hand (`Osis::offer`) in place of its delivery to the holder's inbox:
 /// the holder's node takes it (`Osis::take_offer`) and holds the role at once. No secret: it
-/// gives a role only to the holder it names. Text form `osis://offer/...`.
+/// gives a role only to the holder it names. It names where the offering node is reached, as a
+/// link does. Text form `osis://offer/...`.
 #[derive(Clone, Debug, PartialEq)]
-pub struct Offer(osis_engine::flows::offers::Offer);
+pub struct Offer {
+    offer: osis_engine::flows::offers::Offer,
+    peers: Vec<osis_blob::DialHint>,
+}
 
 const OFFER: &str = "osis://offer/";
 
 impl Offer {
     /// The thing it grants a role on.
     pub fn target(&self) -> Tid {
-        self.0.target
+        self.offer.target
     }
 }
 
 impl std::fmt::Display for Offer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&packed(OFFER, &self.0.to_value()))
+        let peers = osis_blob::peers_value(&self.peers).map_err(|_| std::fmt::Error)?;
+        f.write_str(&packed(OFFER, &Value::List(vec![self.offer.to_value(), peers])))
     }
 }
 
 impl std::str::FromStr for Offer {
     type Err = Error;
     fn from_str(s: &str) -> Result<Offer> {
-        osis_engine::flows::offers::Offer::from_value(&unpacked(s, OFFER, "offer")?).map(Offer).ok_or_else(|| Error::Invalid("malformed offer".into()))
+        let bad = || Error::Invalid("malformed offer".into());
+        let Value::List(v) = unpacked(s, OFFER, "offer")? else { return Err(bad()) };
+        let [offer, Value::List(peers)] = v.as_slice() else { return Err(bad()) };
+        let offer = osis_engine::flows::offers::Offer::from_value(offer).ok_or_else(bad)?;
+        Ok(Offer { offer, peers: osis_blob::peers_from(peers).map_err(|_| bad())? })
     }
 }
 
@@ -727,15 +736,6 @@ impl Osis {
         Ok(Link(link.to_text().map_err(bad("link"))?))
     }
 
-    /// Where another node can reach this one, as a link made now names it: this node by its key,
-    /// then the nodes it dials (`Config::dial`). For a node that holds nothing yet of what it will
-    /// share with this one (a node being paired puts them in its `Config::dial`); anything it holds
-    /// tells it where to dial from then on.
-    pub fn dial_hints(&self) -> Result<Vec<Address>> {
-        self.local("dial_hints")?;
-        Ok(self.link_peers().into_iter().flat_map(|p| p.urls.into_iter().map(move |url| Address(osis_blob::Address { url, key: p.dialable }))).collect())
-    }
-
     /// A link's first-contact peers (spec/wire.md §10): this node by its dialable key,
     /// then the nodes it dials by configured address (`Config::dial`).
     fn link_peers(&self) -> Vec<osis_blob::DialHint> {
@@ -772,18 +772,23 @@ impl Osis {
     /// on `target` is here. `Unsupported` through a connection.
     pub fn offer(&self, target: Tid, holder: Tid) -> Result<Offer> {
         self.local_at(target, "offer")?;
-        Ok(Offer(self.engine(|e| e.offer(&target, &holder))?))
+        let offer = self.engine(|e| e.offer(&target, &holder))?;
+        Ok(Offer { offer, peers: self.link_peers() })
     }
 
     /// Takes an offer handed over by hand (`offer`) and holds its target by a strong from
     /// `holder`'s `holds.0` (a thing this node holds, or `node_root()`), as `redeem` holds from
-    /// its joiner: this node then holds the role it grants and syncs the target. Its target.
+    /// its joiner: this node then holds the role it grants and syncs the target, dialing the
+    /// offering node for as long as it does. Its target.
     /// `Invalid` (nothing taken) unless it grants this node a role. `Unsupported` through a
     /// connection.
     pub fn take_offer(&self, o: &Offer, holder: Tid) -> Result<Tid> {
         self.local("take_offer")?;
-        self.engine(|e| e.take_offer(&o.0, &holder))?;
-        Ok(o.0.target)
+        self.locked(|l| -> Result<()> {
+            l.engine().take_offer(&o.offer, &holder)?;
+            l.node.offered(o.offer.target, o.peers.clone()).map_err(crate::handle::sync_err)
+        })?;
+        Ok(o.offer.target)
     }
 
     /// Puts `of`'s card on `on` naming `inbox` (`of` itself, or another thing whose setting

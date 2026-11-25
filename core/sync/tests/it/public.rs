@@ -92,6 +92,34 @@ fn removing_the_public_ends_what_a_reader_of_the_referrer_reads_spec_sync_set_2(
     assert_ne!(reads(&mut w, 2, &p), Some(Value::Str("p2".into())), "nothing written since the removal");
 }
 
+// spec/sync-inbox.md §6 (First contact; a redeem goes on until joined or given up): node 1
+// redeems a public link to P while node 0 is unreachable and restarts: the redeem goes on from its
+// kept row (as a share link's), and once node 0 is back node 1 reads P.
+#[test]
+fn a_public_redeem_goes_on_across_a_restart_spec_sync_inbox_6() {
+    let mut w = two_nodes();
+    let a = w.node(0).account.unwrap();
+    let p = make(&mut w, 0, a, "p1");
+    w.write(0, |e| e.grant(&p, &Tid::PUBLIC, &edge(Role::Read))).unwrap();
+    w.run();
+    let link = w.public_link(0, p).expect("P is public");
+    w.partition(0, 1);
+    assert_eq!(w.redeem_any(1, &link), osis_sync::types::Waiting::Pending);
+    w.advance(1_000);
+    w.power_off(1);
+    w.power_on(1);
+    w.advance(1);
+    assert!(w.node(1).node.redeeming(&p), "kept across the restart");
+    w.heal();
+    w.run();
+    assert_eq!(reads(&mut w, 1, &p), Some(Value::Str("p1".into())), "read by the public link");
+    assert!(!w.node(1).node.redeeming(&p), "redeemed");
+    w.power_off(1);
+    w.power_on(1);
+    w.run();
+    assert!(!w.node(1).node.redeeming(&p), "nothing kept once redeemed");
+}
+
 // spec/wire.md §10, spec/sync-set.md §4, spec/sync-opens.md §4-§5: redeeming a public link writes
 // a strong to its target; the public entry is shown where the public reads S's thing and tested
 // by its redeemer, its Hit carries no proof and its answer the head's open entry box. Node 1, holding no
