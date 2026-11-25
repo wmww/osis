@@ -322,7 +322,8 @@ fn spec_decode(body: &[u8]) -> Result<(), &'static str> {
                 Ok(())
             })
         }),
-        20 => n(1).and_then(|_| {
+        // FetchReply and Wanted: one shape
+        20 | 48 => n(1).and_then(|_| {
             list(&a[0], 0, 1024, |x| {
                 let p = tuple(x, 2)?;
                 b(&p[0], 32)?;
@@ -410,18 +411,6 @@ fn spec_decode(body: &[u8]) -> Result<(), &'static str> {
                 ok(total.get() <= 1024, "want ids")?;
                 let distinct: std::collections::BTreeSet<String> = ids.iter().map(|x| format!("{x:?}")).collect();
                 ok(distinct.len() == ids.len(), "a commit ID twice")
-            })
-        }),
-        48 => n(1).and_then(|_| {
-            list(&a[0], 0, 1024, |x| {
-                let p = tuple(x, 2)?;
-                b(&p[0], 32)?;
-                opt_of(&p[1], |e| {
-                    let e = tuple(e, 3)?;
-                    bmax(&e[0], MAX_BLOB)?;
-                    b(&e[1], 57)?;
-                    opt_of(&e[2], |s| b(s, 64))
-                })
             })
         }),
         _ => return Err("unknown kind"),
