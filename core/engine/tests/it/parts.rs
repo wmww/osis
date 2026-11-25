@@ -266,12 +266,16 @@ fn waiting_parts_boxes_are_read_in_either_order_spec_crypto_4() {
     let f = create(&mut w, &view, &boxed).unwrap();
     let r = w.range();
     let cx = writer_ctx(Form::Commit, Kind::Role, ts, author, r.lo, r.hi);
-    let bytes = encode_delta(&Delta { nonce: [7; 16], fragment: f }, &cx, None).unwrap();
+    // in pieces, one per holder and the rest (spec/wire.md §4 Pieces)
+    let (by_holder, rest) = f.split_by_key(0, osis_commit::box_holder);
+    let pieces: Vec<Vec<u8>> = by_holder.into_values().chain([rest]).enumerate().map(|(i, p)| encode_delta(&Delta { nonce: [7 + i as u8; 16], fragment: p }, &cx, None).unwrap()).collect();
     let mut cb = CommitBuilder::new(Kind::Role, ts, author, osis_commit::Path::default(), Form::Commit);
     for t in [g, h] {
-        let mut aw = AspectWrite::new(t, secrets.clone(), r.lo, r.hi, bytes.clone());
-        aw.purge_by = osis_commit::retention::write_purge_by(secrets.as_str(), None, None).unwrap();
-        cb.aspects.push(aw);
+        for p in &pieces {
+            let mut aw = AspectWrite::new(t, secrets.clone(), r.lo, r.hi, p.clone());
+            aw.purge_by = osis_commit::retention::write_purge_by(secrets.as_str(), None, None).unwrap();
+            cb.aspects.push(aw);
+        }
     }
     let forge_key = e.identity().signing().clone();
     let blob = cb.build(&forge_key, &e.hand_secrets(&recs), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(0)).unwrap().commit;
@@ -285,7 +289,7 @@ fn waiting_parts_boxes_are_read_in_either_order_spec_crypto_4() {
         let f = create(&mut w, &osis_schema::core_schema().view(lab.as_str()).unwrap(), &Value::Map(Default::default())).unwrap();
         let lr = w.range();
         let empty = encode_delta(&Delta { nonce: [8; 16], fragment: f }, &writer_ctx(Form::Commit, Kind::Role, ts, author, lr.lo, lr.hi), None).unwrap();
-        for (t, a, lo, hi, d) in [(g, &lab, lr.lo, lr.hi, &empty), (h, &secrets, r.lo, r.hi, &bytes)] {
+        for (t, a, lo, hi, d) in std::iter::once((g, &lab, lr.lo, lr.hi, &empty)).chain(pieces.iter().map(|p| (h, &secrets, r.lo, r.hi, p))) {
             let mut aw = AspectWrite::new(t, a.clone(), lo, hi, d.clone());
             aw.purge_by = osis_commit::retention::write_purge_by(a.as_str(), None, None).unwrap();
             cb.aspects.push(aw);

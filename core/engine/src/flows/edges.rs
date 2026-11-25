@@ -193,6 +193,10 @@ pub(crate) fn grant_history(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, h
     if let Some(w) = &boxes {
         put_secrets(&mut m, target, w, !admin)?;
     }
+    #[cfg(test)]
+    if let Some(w) = tx.core.junk_boxes.take() {
+        put_secrets(&mut m, target, &w, !admin)?;
+    }
     if let Some(s) = signer.filter(|_| cut.is_none()) {
         m.sign_as(s);
     }

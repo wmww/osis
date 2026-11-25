@@ -1186,6 +1186,10 @@ pub struct Core {
     /// Tests: the original's floor this node's edits claim, over the true one (`commit_in`).
     #[cfg(test)]
     pub(crate) lie_floor: Option<u64>,
+    /// Tests: boxes this node's next grant writes beside its grantee's (`flows::edges`): a
+    /// hostile granter's junk.
+    #[cfg(test)]
+    pub(crate) junk_boxes: Option<osis_keys::SecretsWrite>,
     /// Link keys whose seed this node holds for now: they sign commits (`Mutation::sign_as`) and
     /// open their boxes by their seed's secrets. Derived: each is held exactly while
     /// `held_link_keys` or a followed link names it (`Engine::settle_link_key`). In memory only.
@@ -2037,6 +2041,8 @@ impl Core {
             snapshot_fault: _,
             #[cfg(test)]
             lie_floor: _,
+            #[cfg(test)]
+            junk_boxes: _,
         } = c;
         let actors = |m: &mut dyn Iterator<Item = &Tid>| m.copied().collect::<Vec<_>>();
         format!(
@@ -2241,6 +2247,8 @@ impl Core {
             snapshot_fault: None,
             #[cfg(test)]
             lie_floor: None,
+            #[cfg(test)]
+            junk_boxes: None,
             link_keys: Default::default(),
             held_link_keys: Default::default(),
             followed_links: Default::default(),

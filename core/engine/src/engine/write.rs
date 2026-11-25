@@ -983,19 +983,33 @@ fn build(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Resolved>) -> Result<osi
         if let Some(s) = &d.snapshot {
             osis_base::costs::paused(|| s.state.check_whole(tx, &d.tid, &d.ak, s, &cx))?;
         }
-        let mut blobs = TxBlobs::new(&mut tx.blobs, tx.txn.is_memory());
-        let mut nonce = [0u8; osis_crdt::NONCE_LEN];
-        tx.rng.fill_bytes(&mut nonce);
-        let mut bw = BlobWriter::new(&framing, &mut blobs, &mut *tx.rng);
-        let bytes = match &d.snapshot {
-            Some(s) => s.state.walk(&mut tx.txn, &d.tid, &d.ak, |st| osis_crdt::encode_paged_snapshot(&nonce, st, &s.frontiers, &s.absorbed, &s.facts, &cx, Some(&mut bw)))?,
-            None => encode_delta(&Delta { nonce, fragment: d.fragment }, &cx, Some(&mut bw))?,
+        // a role commit's `secrets.0` delta goes in pieces, one per holder its records are keyed
+        // with and one of the rest (spec/wire.md §4 Pieces); every other delta whole
+        let pieces: Vec<Fragment> = match (&d.snapshot, plan.kind == Kind::Role && d.ak.as_str() == osis_commit::PIECED) {
+            (None, true) => crate::apply::keys::secrets_pieces(&d.fragment),
+            (None, false) => vec![d.fragment],
+            (Some(_), _) => vec![Fragment::default()],
         };
-        drop(bw);
+        let mut deltas = Vec::with_capacity(pieces.len());
+        for fragment in pieces {
+            let mut blobs = TxBlobs::new(&mut tx.blobs, tx.txn.is_memory());
+            let mut nonce = [0u8; osis_crdt::NONCE_LEN];
+            tx.rng.fill_bytes(&mut nonce);
+            let mut bw = BlobWriter::new(&framing, &mut blobs, &mut *tx.rng);
+            let bytes = match &d.snapshot {
+                Some(s) => s.state.walk(&mut tx.txn, &d.tid, &d.ak, |st| osis_crdt::encode_paged_snapshot(&nonce, st, &s.frontiers, &s.absorbed, &s.facts, &cx, Some(&mut bw)))?,
+                None => encode_delta(&Delta { nonce, fragment }, &cx, Some(&mut bw))?,
+            };
+            drop(bw);
+            deltas.push(bytes);
+        }
         // trees written for values the resolved delta does not hold (an edit's item paired
         // with one deleted concurrently) are not kept
         if !d.chunks.is_empty() {
-            let linked: BTreeSet<osis_base::BlobId> = super::large::delta_links(tx, &framing.dedup, &bytes)?.iter().map(|l| l.blob).collect();
+            let mut linked = BTreeSet::new();
+            for bytes in &deltas {
+                linked.extend(super::large::delta_links(tx, &framing.dedup, bytes)?.iter().map(|l| l.blob));
+            }
             for w in d.chunks.iter().filter(|w| !linked.contains(&w.id)) {
                 tx.blobs.release(&w.id, tx.txn.is_memory())?;
             }
@@ -1006,9 +1020,12 @@ fn build(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Resolved>) -> Result<osi
                 return Err(Error::Misuse("counter moved under the writer"));
             }
         }
-        // hostile test authors only (`Engine::commit_forged`): the header hashes what is sent
-        let bytes = if tx.core.forge_bad.contains(&(d.tid, d.ak.clone())) { osis_base::encode(&osis_base::Value::List(vec![osis_base::Value::Int(1)])) } else { bytes };
-        writes.push(AspectWrite { tid: d.tid, ak: d.ak, lo: d.lo, hi: d.hi, delta: bytes, purge_by, replaces: d.replaces, original_floor: d.original_floor });
+        // hostile test authors only (`Engine::commit_forged`): the header hashes what is sent, one
+        // undecodable delta
+        let deltas = if tx.core.forge_bad.contains(&(d.tid, d.ak.clone())) { vec![osis_base::encode(&osis_base::Value::List(vec![osis_base::Value::Int(1)]))] } else { deltas };
+        for bytes in deltas {
+            writes.push(AspectWrite { tid: d.tid, ak: d.ak.clone(), lo: d.lo, hi: d.hi, delta: bytes, purge_by, replaces: d.replaces, original_floor: d.original_floor });
+        }
     }
     let stated = stated_paths(tx.core, &plan, &writes, &edges)?;
     let mut b = CommitBuilder::new(plan.kind, plan.ts, node, osis_commit::Path::default(), plan.form);
@@ -1354,6 +1371,12 @@ pub(crate) fn commit_or_build(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option
             // a session's counters: memory rows, gone with the session
             Form::Session(n) => tx.txn.counter(&tid, &ak, &n)?,
         };
+        // a role commit's `secrets.0` goes in pieces, which share its counters: they are
+        // consumed in an order independent of the holders (spec/wire.md §4 Pieces), so a
+        // piece's dots tell its reader nothing of the other holders
+        if kind == Kind::Role && ak.as_str() == osis_commit::PIECED {
+            shuffle_records(&mut am.ops, &mut *tx.rng);
+        }
         let attached = tx.load_for_ops(&tid, &ak, paths, &am.ops, &edits, &osis_crdt::Dot::new(own_source(form, node), lo))?;
         // depth counts a value as read (spec/data-model.md §5): checked before large values
         // become links, which count as leaves after
@@ -1438,6 +1461,33 @@ pub(crate) fn commit_or_build(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option
     }
     let id = build_and_apply(tx, plan, deltas)?;
     Ok(Some((id, None)))
+}
+
+/// Reorders `ops` by record: the ops on one record (a field's key: its removal, then its put)
+/// stay together and in order, the records in a random order, after every op on no key.
+fn shuffle_records(ops: &mut Vec<PathOp>, rng: &mut dyn osis_crypto::CryptoRngCore) {
+    let record = |o: &PathOp| -> Option<(u64, Value)> {
+        match (o.path.as_slice(), &o.op) {
+            ([osis_crdt::PathSeg::Field(f), osis_crdt::PathSeg::Key(k), ..], _) => Some((*f, k.clone())),
+            ([osis_crdt::PathSeg::Field(f)], Op::Remove(k)) => Some((*f, k.clone())),
+            _ => None,
+        }
+    };
+    let mut lead = Vec::new();
+    let mut groups: BTreeMap<(u64, Value), Vec<PathOp>> = BTreeMap::new();
+    for o in std::mem::take(ops) {
+        match record(&o) {
+            Some(r) => groups.entry(r).or_default().push(o),
+            None => lead.push(o),
+        }
+    }
+    let mut groups: Vec<Vec<PathOp>> = groups.into_values().collect();
+    // Fisher-Yates
+    for i in (1..groups.len()).rev() {
+        let j = (rng.next_u64() % (i as u64 + 1)) as usize;
+        groups.swap(i, j);
+    }
+    *ops = lead.into_iter().chain(groups.into_iter().flatten()).collect();
 }
 
 /// `w` for ops `ops` on aspect `(tid, ak)`: a removal of a tid among them covers the parts held

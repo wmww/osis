@@ -2072,6 +2072,9 @@ struct Removal {
     remover: Work,
     commits: u64,
     bytes: u64,
+    /// The bytes of sibling peer 1's edge piece of the removal's commits on A (each a certificate
+    /// copy cut to its pieces: spec/permissions.md §4 Copies, spec/wire.md §4 Pieces).
+    piece: u64,
     sibling: Work,
     rekeyed: [BTreeSet<Tid>; 2],
 }
@@ -2081,6 +2084,15 @@ fn removal(n: usize) -> Removal {
     let node = lp.peers[n - 1].engine.me();
     let (done, remover) = measured_at(&mut lp, 0, |lp| lp.peers[0].engine.remove_node(&acc.thing, &node, false, &[acc.profile]).unwrap());
     let (pks, bytes) = bytes_of(&mut lp, 0, &done.commits);
+    let sib = lp.peers[1].engine.me();
+    let mut piece = 0;
+    for c in &done.commits {
+        let Some(copy) = lp.peers[0].engine.edge_piece_copy(c, &acc.thing, &sib).unwrap() else { continue };
+        let b = osis_commit::CommitBlob::decode(&copy).unwrap();
+        let boxes = b.parts.iter().filter(|p| b.header.aspects[p.ai].ak.as_str() == "secrets.0").count();
+        assert!(boxes <= 2, "the sibling's edge piece holds its own piece and the rest alone, of the {} the commit lists", b.header.aspect_parts(&acc.thing, "secrets.0").len());
+        piece += copy.len() as u64;
+    }
     let (_, sibling) = measured_at(&mut lp, 1, |lp| {
         for pk in &pks {
             lp.deliver(1, pk).unwrap();
@@ -2093,7 +2105,7 @@ fn removal(n: usize) -> Removal {
         lp.deliver(1, pk).unwrap();
     }
     let at1 = lp.role_duties(1).unwrap();
-    Removal { remover, commits: done.commits.len() as u64, bytes, sibling, rekeyed: [rotated(&mut lp, 0, &at0), rotated(&mut lp, 1, &at1)] }
+    Removal { remover, commits: done.commits.len() as u64, bytes, piece, sibling, rekeyed: [rotated(&mut lp, 0, &at0), rotated(&mut lp, 1, &at1)] }
 }
 
 // spec/permissions.md §8 Removing a node, §3 (rotation); spec/requirements.md Scale: removing a
@@ -2107,6 +2119,11 @@ fn removing_a_node_spec_permissions_8() {
     let [small, big] = NODES.map(removal);
     flat("removal: commits", small.commits, big.commits);
     linear("removal: commit bytes", small.bytes, big.bytes);
+    // a unit carrying one node's edge piece pays that node's boxes and a hash a node in the
+    // header (spec/wire.md §4 Pieces): about 100 B a node more, never the others' boxes (some
+    // 1.2 KB a role each)
+    println!("removal: one node's edge piece: {} B at n, {} B at 10n (the commit {} B, {} B)", small.piece, big.piece, small.bytes, big.bytes);
+    assert!(small.piece > 0 && big.piece <= small.piece + 100 * (NODES[1] - NODES[0]) as u64, "removal: one node's edge piece: {} B at n, {} B at 10n", small.piece, big.piece);
     for (r, n) in [(&small, NODES[0]), (&big, NODES[1])] {
         assert_eq!(r.remover.n("kem: encapsulate"), 4 * (n as u64 - 2), "a box a role to each node left but the remover");
     }

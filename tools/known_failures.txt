@@ -8,3 +8,5 @@
 osis-engine/retention::tests_carried::purge_by_id_reads_alike_forgotten_or_not_plain_spec_commits_5 rate:OSIS_PURGE_BY_ID_START=679952827408 issues/purge-by-id-forgetting.md forgetting vs not
 osis-engine/retention::tests_carried::purge_by_id_reads_alike_forgotten_or_not_plain_spec_commits_5 rate:OSIS_PURGE_BY_ID_START=347698118767 issues/purge-by-id-forgetting.md purges through a name: 0 over \d+ seeds
 osis-sync/differential::histories_hold_their_closure_plain rate:OSIS_SYNC_START=149236181493,OSIS_SYNC_SEEDS=1 issues/differential-reads-unlike-reference.md node \d+(, removed from its account,)? reads thing \d+
+osis-engine/scale::kept_overwrite_dates_what_it_replaces_spec_commits_5 - issues/rng-sensitive-flat-checks.md held writes: pages written: \d+ at n, \d+ at 10n: grows with the data
+osis-sync/growth::a_lowered_writers_invalid_writes_leave_nothing_and_return_on_regrant_spec_commits_5 - issues/rng-sensitive-flat-checks.md node 2 store: rows by kind

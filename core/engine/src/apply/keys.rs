@@ -140,6 +140,18 @@ fn sealed_recs(body: &Fragment, written: &std::collections::BTreeMap<Role, (osis
 }
 
 /// The boxes a `secrets.0` delta writes (removals aside): typed key and key value.
+/// A role commit's `secrets.0` delta `f` as its pieces (spec/wire.md §4 Pieces): one per holder
+/// its box records are keyed with, then one of every other record (history boxes, whole-value,
+/// field and keyless writes), each present only where it holds a record. Joined, they are `f`.
+pub(crate) fn secrets_pieces(f: &Fragment) -> Vec<Fragment> {
+    let (pieces, rest) = f.split_by_key(0, osis_commit::box_holder);
+    let mut out: Vec<Fragment> = pieces.into_values().collect();
+    if !rest.is_empty() || out.is_empty() {
+        out.push(rest);
+    }
+    out
+}
+
 fn written_boxes(delta: &Fragment) -> Vec<(BoxKey, &Value)> {
     let Some(m) = map(field(delta, 0)) else { return Vec::new() };
     m.entries().filter(|(_, _, _, f)| f.is_some()).filter_map(|(_, _, k, _)| Some((typed(k?, "box_key").and_then(|t| BoxKey::from_value(&t).ok())?, k?))).collect()
@@ -622,10 +634,17 @@ pub(crate) fn invalidated(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()
         return Ok(());
     }
     tx.core.touch();
-    if let Some(e) = tx.core.ix.secrets.get_mut(&a.tid) {
+    let held = super::held_part(tx, c, ai)?;
+    // a rotation is made by the piece holding its history boxes (spec/crypto.md §4 Established):
+    // a holder's piece going invalid leaves it standing (spec/wire.md §4 Pieces, judged alone)
+    let rotates = match &held {
+        Some(Decoded::Delta(d)) => !secrets_write(&d.fragment).history.is_empty(),
+        _ => true,
+    };
+    if rotates && let Some(e) = tx.core.ix.secrets.get_mut(&a.tid) {
         e.invalidate(c);
     }
-    if let Some(Decoded::Delta(d)) = super::held_part(tx, c, ai)? {
+    if let Some(Decoded::Delta(d)) = held {
         read_invalid(tx, c, author, a.tid, &d.fragment)?;
     }
     Ok(())
@@ -1274,10 +1293,12 @@ mod tests {
     }
 
     /// Parts on `t`'s `secrets.0` of held commit `id` at peer 1.
-    fn secrets_parts(lp: &mut LocalPeer, id: &CommitId, t: Tid) -> usize {
-        let Some(bytes) = lp.peers[1].engine.commit_bytes(id).unwrap() else { return 0 };
+    /// The `secrets.0` parts on `t` peer 1 holds of `id`, and how many its header lists.
+    fn secrets_parts(lp: &mut LocalPeer, id: &CommitId, t: Tid) -> (usize, usize) {
+        let Some(bytes) = lp.peers[1].engine.commit_bytes(id).unwrap() else { return (0, 0) };
         let blob = osis_commit::CommitBlob::decode(&bytes).unwrap();
-        blob.parts.iter().filter(|p| blob.header.aspects.get(p.ai).is_some_and(|a| a.tid == t && a.ak.as_str() == "secrets.0")).count()
+        let held = blob.parts.iter().filter(|p| blob.header.aspects.get(p.ai).is_some_and(|a| a.tid == t && a.ak.as_str() == "secrets.0")).count();
+        (held, blob.header.aspect_parts(&t, "secrets.0").len())
     }
 
     // spec/permissions.md §3: a re-grant held pending past the removal and outside the wait (here
@@ -1304,7 +1325,8 @@ mod tests {
         lp.peers[1].engine.drop_lost_secrets().unwrap();
         assert!(lp.peers[1].engine.core.ix.secrets.get(&t).is_none(), "outside the wait: dropped, candidates too");
         assert_eq!(lp.peers[1].engine.get(&t, &osis_base::Ak::new("x:a.0").unwrap()).unwrap(), None, "content forgotten");
-        assert_eq!(secrets_parts(&mut lp, &regrant, t), 1, "the boxes stay");
+        let (held, listed) = secrets_parts(&mut lp, &regrant, t);
+        assert!(held > 0 && held == listed, "the boxes stay: {held} of {listed}");
         lp.peers[1].clock.advance(3 * osis_base::format::MAX_DRIFT_MS);
         lp.peers[1].reexamine().unwrap();
         assert_eq!(lp.peers[1].engine.core.role_now(&b, &t), Some(Role::Read), "the re-grant applied");

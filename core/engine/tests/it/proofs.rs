@@ -65,8 +65,8 @@ fn contact(on_t: Role) -> (LocalPeer, Tid, Tid) {
 fn honest_copies_prove_a_path_the_verifier_lacks_spec_sync_opens_2() {
     let (mut lp, t, _) = contact(Role::Write);
     let pr = lp.peers[0].engine.proving().unwrap();
-    assert_eq!(pr.provers[0].path, vec![t], "the node thing claims the thing it holds a grant on");
-    let c = pr.provers[0].claim();
+    // the node thing claims the thing it holds a grant on (beside its account, by tid order)
+    let c = pr.provers.iter().find(|p| p.path == vec![t]).expect("the node thing claims the thing it holds a grant on").claim();
     let e = &mut lp.peers[3].engine;
     assert_eq!(role_of(&e.proven(std::slice::from_ref(&c), &Default::default()).unwrap(), &t), None, "no copies: the path is not held here");
     assert_eq!(role_of(&e.proven(&[c], &pr.copies).unwrap(), &t), Some(Role::Write));
@@ -79,7 +79,7 @@ fn honest_copies_prove_a_path_the_verifier_lacks_spec_sync_opens_2() {
 fn the_proven_role_is_capped_by_the_path_spec_sync_opens_2() {
     let (mut lp, t, s) = contact(Role::Read);
     let pr = lp.peers[0].engine.proving().unwrap();
-    let c = pr.provers[0].claim();
+    let c = pr.provers.iter().find(|p| p.path == vec![t]).expect("a claim of t").claim();
     let e = &mut lp.peers[3].engine;
     let sid = e.sync_id_of(&s).unwrap().expect("s's sync ID");
     let p = e.proven(&[c], &pr.copies).unwrap();

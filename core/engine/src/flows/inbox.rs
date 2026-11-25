@@ -719,6 +719,13 @@ impl Engine {
         self.certs_values(&certs)
     }
 
+    /// Tests: the certificate copy of role commit `c`'s edge piece of `holder` on `target`
+    /// (`edge_piece`), as it travels.
+    #[doc(hidden)]
+    pub fn edge_piece_copy(&mut self, c: &CommitId, target: &Tid, holder: &Tid) -> Result<Option<Vec<u8>>> {
+        Ok(self.edge_piece(c, target, Some(*holder))?.map(|p| p.copy))
+    }
+
     /// Role commit `c`'s piece on `target` (`EdgePiece`): its certificate copy there (its header and
     /// its edge piece's cut there, `Cut::EdgePiece`), the copies of its evidence, their creation records and the blobs
     /// their deltas link (`held_pages`). `None` while `c` is not applied here.

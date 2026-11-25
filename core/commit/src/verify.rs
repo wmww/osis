@@ -113,6 +113,9 @@ pub fn verify_part<'a>(h: &Header, id: &CommitId, part: &Part, dedup: &Secret32,
         DeltaKind::Writer => Decoded::Delta(decode_delta(&part.delta, &cx, &mut *interner, pages)?),
     };
     check_fragment(ak, d.fragment())?;
+    if pieced(h, ak, cx.kind) {
+        PieceShape::of(d.fragment()).check(part.ai)?;
+    }
     Ok(d)
 }
 
@@ -128,12 +131,16 @@ pub fn stream_part<'a>(h: &Header, id: &CommitId, part: &Part, dedup: &Secret32,
     // `check_fragment` holds of the whole iff of every piece (per record, per position); a bad
     // delta still streams to its end, so a decoding error wins as in `verify_part`
     let mut keyed = Ok(());
+    let mut shape = pieced(h, ak, cx.kind).then(PieceShape::default);
     let mut each = |p: Piece| {
         let f = match p {
             Piece::Skeleton(f) | Piece::Page { fragment: f, .. } => f,
         };
         if keyed.is_ok() {
             keyed = check_fragment(ak, &f);
+        }
+        if let Some(s) = &mut shape {
+            s.add(&f);
         }
         if keyed.is_ok() { each(f) } else { Ok(()) }
     };
@@ -142,6 +149,7 @@ pub fn stream_part<'a>(h: &Header, id: &CommitId, part: &Part, dedup: &Secret32,
         DeltaKind::Writer => stream_delta(&part.delta, &cx, &mut *interner, pages, &mut each).map(|_| None)?,
     };
     keyed?;
+    shape.map_or(Ok(()), |s| s.check(part.ai))?;
     Ok(out)
 }
 
@@ -169,6 +177,63 @@ pub fn read_part_whole<'a>(h: &Header, id: &CommitId, ai: usize, delta: Checked<
 }
 
 /// The rules a delta's fragment answers to by itself (spec/commits.md §4), per record and position.
+/// Whether a delta of kind `kind` on `ak` in `h` is a `secrets.0` piece, held to `PieceShape`: a
+/// role commit's (a snapshot's is whole).
+fn pieced(h: &Header, ak: &str, kind: DeltaKind) -> bool {
+    h.kind == crate::Kind::Role && ak == crate::header::PIECED && kind == DeltaKind::Writer
+}
+
+/// The holder a `secrets.0` box record's key names (`None`: no box key).
+pub fn box_holder(k: &osis_base::Value) -> Option<Tid> {
+    let t = osis_schema::typed_read(osis_schema::core_schema(), k, &osis_schema::Type::Named("box_key".into(), Vec::new())).ok()?;
+    <osis_schema::core_types::BoxKey as osis_schema::Codec>::from_value(&t).ok().map(|b| b.holder.0)
+}
+
+/// Whether role commit `secrets.0` delta `f` is a piece (`PieceShape`).
+pub fn is_piece(f: &osis_crdt::Fragment) -> bool {
+    PieceShape::of(f).check(0).is_ok()
+}
+
+/// What a role commit's `secrets.0` delta holds, as its pieces are judged (spec/wire.md §4
+/// Pieces): the holders its box records are keyed with, and whether it holds any other record
+/// (history, whole-value or field writes, keyless records). A piece holds one holder's records
+/// and nothing else, or none keyed with a holder; anything else holds nothing, as bytes not
+/// matching the header (spec/commits.md §4). Invariant (security): a piece's readers are its
+/// holder's (spec/permissions.md §4 Copies), so no piece that stands carries another holder's
+/// records, whoever wrote it.
+#[derive(Default)]
+struct PieceShape {
+    holders: std::collections::BTreeSet<Tid>,
+    other: bool,
+}
+
+impl PieceShape {
+    fn of(f: &osis_crdt::Fragment) -> PieceShape {
+        let mut s = PieceShape::default();
+        s.add(f);
+        s
+    }
+    fn add(&mut self, f: &osis_crdt::Fragment) {
+        self.other |= !f.only_keyed_in(0);
+        for k in f.field_keys(0) {
+            match box_holder(k) {
+                Some(h) => {
+                    self.holders.insert(h);
+                }
+                None => self.other = true,
+            }
+        }
+    }
+    /// As a delta not matching its hash (`Error::DeltaHash`): part `ai` holds nothing, dropped
+    /// alone (spec/commits.md §4).
+    fn check(&self, ai: usize) -> Result<(), Error> {
+        match (self.holders.len(), self.other) {
+            (0, _) | (1, false) => Ok(()),
+            _ => Err(Error::DeltaHash { ai }),
+        }
+    }
+}
+
 fn check_fragment(ak: &str, f: &osis_crdt::Fragment) -> Result<(), Error> {
     check_entry_keys(ak, f)?;
     check_types(ak, f)?;

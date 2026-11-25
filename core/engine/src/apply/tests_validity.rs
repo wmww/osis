@@ -99,6 +99,47 @@ mod tests {
         let ai = h.aspects.iter().position(|a| a.ak.as_str() == "secrets.0").unwrap();
         assert!(lp.peers[0].engine.core.ix.overreach.contains(&(id, ai)));
     }
+    // spec/wire.md §4 Pieces, spec/permissions.md §2, §3: a
+    // may-grant holder's grant boxing its grantee and, beside it, a junk box keyed to the admin:
+    // the junk piece is an overreach and invalid, the grantee's piece stands and the grantee
+    // reads the thing. Judged as one delta, the junk voids the grantee's box with it.
+    #[test]
+    fn a_grantees_box_stands_beside_a_junk_box_spec_wire_4() {
+        let mut lp = LocalPeer::fresh(3, WallMs(1_700_000_000_000));
+        lp.sync_all().unwrap();
+        let (a, b, c) = (lp.peers[0].engine.me(), lp.peers[1].engine.me(), lp.peers[2].engine.me());
+        let t = thing(&mut lp, a);
+        let read = ct::Edge { role: Role::Read, until: None, may_grant: false, retain: false, floor: None };
+        lp.peers[0].engine.grant(&t, &b, &ct::Edge { may_grant: true, ..read.clone() }).unwrap();
+        lp.sync_all().unwrap();
+        let s = lp.peers[1].engine.get_typed(&t, &ct::SECRETS).unwrap().unwrap();
+        let (ak, ab) = s.boxes.iter().find(|(k, _)| k.holder == osis_base::Weak(a)).map(|(k, v)| (k.clone(), v.clone())).unwrap();
+        lp.peers[1].engine.core.junk_boxes = Some(osis_keys::SecretsWrite { boxes: [(ak, ab)].into_iter().collect(), ..Default::default() });
+        lp.peers[1].engine.core.skip_writer_rules = true;
+        let id = *lp.peers[1].engine.grant(&t, &c, &read).unwrap().commits.last().unwrap();
+        lp.peers[1].engine.core.skip_writer_rules = false;
+        lp.sync_all().unwrap();
+        let h = lp.peers[2].engine.header(&id).unwrap();
+        let named = lp.peers[2].engine.holders_named(&id);
+        let piece = |x: osis_base::Tid| h.aspect_parts(&t, "secrets.0").find(|ai| named.get(ai).is_some_and(|hs| hs.contains(&x))).unwrap();
+        let m = lp.peers[2].engine.core.ix.commits.get(&id).unwrap().clone();
+        assert!(m.valid_at(piece(c)), "the grantee's piece stands");
+        assert!(!m.valid_at(piece(a)), "the junk piece is an overreach");
+        assert!(lp.peers[2].engine.epochs(&t).is_some_and(|e| e.read.held().next().is_some()), "the grantee holds t's read secret");
+        // each piece is a piece; any two joined (two holders', a holder's beside the rest) is
+        // none, and holds nothing at a receiver (`osis_commit::is_piece`)
+        let e = &mut lp.peers[0].engine;
+        let pieces: Vec<osis_crdt::Fragment> = h.aspect_parts(&t, "secrets.0").map(|ai| e.read(|tx| crate::apply::held_fragment(tx, &id, ai)).unwrap().unwrap()).collect();
+        assert_eq!(pieces.len(), 3, "the grantee's, the junk and the rest");
+        assert!(pieces.iter().all(osis_commit::is_piece));
+        for (i, x) in pieces.iter().enumerate() {
+            for y in &pieces[i + 1..] {
+                let mut j = x.clone();
+                j.join(y.clone());
+                assert!(!osis_commit::is_piece(&j), "two pieces joined");
+            }
+        }
+    }
     // spec/permissions.md §2 (may-grant grant: its keys.0 only the records of its boxes), spec/crypto.md §4 (Stale: every box to a holder
     // actor is recorded beside it, whoever boxes): an may-grant holder granting an organization carries the
     // organization's box records in `keys.0` as puts keyed to its grantee: valid at a receiver, which

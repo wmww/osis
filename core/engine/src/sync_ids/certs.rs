@@ -104,9 +104,10 @@ impl Engine {
             .collect()
     }
 
-    /// The holders each `roles.0` or `secrets.0` aspect of applied role commit `c` is
-    /// about (spec/sync-inbox.md §5): those whose edge a `roles.0` delta writes, those a `secrets.0`
-    /// delta boxes. Empty for any other commit kind.
+    /// The holders each `roles.0` or `secrets.0` part of applied role commit `c` is about
+    /// (spec/sync-inbox.md §5), by part index: those whose edge a `roles.0` delta writes, those a
+    /// `secrets.0` piece's box records are keyed with (one per piece, none for the rest). Empty
+    /// for any other commit kind.
     pub fn holders_named(&mut self, c: &CommitId) -> Arc<BTreeMap<usize, BTreeSet<Tid>>> {
         // parts the store refused to read name nobody now, and are read again at the next ask
         Memo::get_in(self, |e| &e.core.holders_named, c, |e| e.holders_named_read(c).map(Arc::new)).unwrap_or_default()
@@ -126,7 +127,9 @@ impl Engine {
             let named: Vec<Tid> = match a.ak.as_str() {
                 // a key's grant names no holder with a key part (nothing is sealed to a key)
                 "roles.0" => crate::apply::validity::edge_holders(&self.core, &a.tid, crate::apply::validity::Grants::Things, &d.fragment).into_iter().filter_map(|h| h.thing()).collect(),
-                _ => crate::apply::keys::secrets_write(&d.fragment).boxes.into_keys().map(|k| k.holder.0).collect(),
+                // the holders its records are keyed with, puts and removals: of a piece, its
+                // holder (spec/wire.md §4 Pieces)
+                _ => d.fragment.field_keys(0).into_iter().filter_map(osis_commit::box_holder).collect(),
             };
             out.entry(ai).or_default().extend(named);
         }
@@ -209,9 +212,10 @@ impl Engine {
 
     /// `h`'s edge pieces (spec/permissions.md §4 Key part), on `only` or on every thing `h` holds
     /// an edge on, added to `out`: each copy cut to the piece (`Cut::EdgePiece`) with its
-    /// evidence; where `h` holds sync alone, its boxes and `sync.0` parts and nothing else: no
-    /// roster, no edge write, no evidence of either. Interim (issues/account-evidence-per-unit.md,
-    /// Boxes travel per holder): the whole `secrets.0` part, not `h`'s piece, and with its header.
+    /// evidence; where `h` holds sync alone, its `secrets.0` piece (spec/wire.md §4 Pieces) and
+    /// the `sync.0` parts and nothing else: no roster, no edge write, no evidence of either.
+    /// Interim (issues/account-evidence-per-unit.md, Boxes travel per holder): with its header,
+    /// until sync copies.
     fn edge_pieces_into(&mut self, ev: &Ev, h: &Tid, only: Option<&Tid>, out: &mut Certs) {
         let mut pieces = BTreeSet::new();
         let part = match only {
@@ -220,7 +224,10 @@ impl Engine {
         };
         for (c, x) in part {
             if self.core.roster_of(&x).get(h).is_some_and(|e| e.role == osis_base::Role::Sync) {
-                out.add(c, self.parts_of(&c, &BTreeSet::from([x]), &["secrets.0", "sync.0"]));
+                let named = self.holders_named(&c);
+                let mut parts = self.parts_of(&c, &BTreeSet::from([x]), &["sync.0"]);
+                parts.extend(self.parts_of(&c, &BTreeSet::from([x]), &["secrets.0"]).into_iter().filter(|ai| named.get(ai).is_some_and(|hs| hs.contains(h))));
+                out.add(c, parts);
                 out.records.insert(x);
             } else {
                 self.add_cut(&c, &x, Cut::EdgePiece(*h), out);
@@ -307,13 +314,16 @@ impl Engine {
 
     /// `cut`'s parts of commit `c` on thing `x` (spec/permissions.md §4 Copies: S's cut, each
     /// part whole): evidence, its edge-class parts and, recording a step placing a listed key, its
-    /// `sync.0`; holder H's edge piece, its `roles.0` writing H's edge, its `secrets.0` boxing H
-    /// and its `sync.0`; keys, its `keys.0`. Beside a `secrets.0` or `keys.0` part, the commit's
-    /// edge-class parts on `x`, which that part's verdict reads (a may-grant grant's boxes and
-    /// records are judged from its commit's `roles.0` alone, `validity::rotation_required`,
-    /// `note_required`). Invariant: nothing outside `x`; a box part only beside its edge-class
-    /// parts. Interim (issues/account-evidence-per-unit.md, Boxes travel per holder): `secrets.0`
-    /// whole, every holder's boxes, until its write comes in pieces.
+    /// `sync.0`; holder H's edge piece, its `roles.0` writing H's edge, its `secrets.0` piece of
+    /// H (spec/wire.md §4 Pieces: the part whose box records are keyed with H) with, beside it,
+    /// the rest piece (the history boxes), and its `sync.0`; keys, its `keys.0`. Beside a
+    /// `secrets.0` or `keys.0` part, the commit's edge-class parts on `x`, which that part's
+    /// verdict reads (a may-grant grant's boxes and records are judged from its commit's
+    /// `roles.0` alone, `validity::rotation_required`, `note_required`).
+    /// Invariant (security): nothing outside `x`; a box part only beside its edge-class parts;
+    /// of `secrets.0` H's piece and the rest, never another holder's: a piece holding another
+    /// holder's record, or the rest holding one, holds nothing at any receiver (`osis_commit`'s
+    /// piece check), so a writer cannot make H's copy carry another holder's box.
     pub(crate) fn cut_parts(&mut self, c: &CommitId, x: &Tid, cut: Cut) -> Parts {
         let Some(h) = self.header(c) else { return Parts::new() };
         let named = match cut {
@@ -337,6 +347,16 @@ impl Engine {
         }
         if boxes {
             out.extend(h.aspects.iter().enumerate().filter(|(_, a)| a.tid == *x && edge(a.ak.as_str())).map(|(i, _)| i));
+        }
+        // beside H's piece, the rest (history boxes): H opens them by the epochs its box gives,
+        // and the commit's body under x's sync ID is wrapped under an epoch they supersede, one
+        // a new holder lacks (spec/crypto.md §5 Who wraps under what). They are keyed with no
+        // holder: no other holder's box or key travels with them
+        if let Cut::EdgePiece(_) = cut {
+            let pieces: Vec<usize> = h.aspect_parts(x, "secrets.0").collect();
+            if pieces.iter().any(|i| out.contains(i)) {
+                out.extend(pieces.into_iter().filter(|i| named.get(i).is_some_and(BTreeSet::is_empty)));
+            }
         }
         out
     }

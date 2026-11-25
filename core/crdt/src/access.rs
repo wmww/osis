@@ -34,6 +34,58 @@ impl crate::fragment::Struct {
 use std::collections::BTreeMap;
 
 impl Fragment {
+    /// This struct fragment split by the keyed records of its map field `field`: `piece_of`
+    /// names a key's piece (`None`: the rest). Each piece is a struct holding at `field` only
+    /// those records (no struct or map meta); the rest holds everything else: the other fields,
+    /// both metas, the key-erased records, the records of keys no piece takes. Joined, they are
+    /// this fragment. Anything but a struct is all rest.
+    pub fn split_by_key<K: Ord>(&self, field: u64, piece_of: impl Fn(&Value) -> Option<K>) -> (BTreeMap<K, Fragment>, Fragment) {
+        let Fragment::Struct(s) = self else { return (BTreeMap::new(), self.clone()) };
+        let Some(Fragment::Map(m)) = s.fields.get(&field) else { return (BTreeMap::new(), self.clone()) };
+        let mut pieces: BTreeMap<K, BTreeMap<Eid, crate::fragment::Entry>> = BTreeMap::new();
+        let mut rest_entries = BTreeMap::new();
+        for (id, e) in &m.entries {
+            match id.key().and_then(&piece_of) {
+                Some(k) => {
+                    pieces.entry(k).or_default().insert(id.clone(), e.clone());
+                }
+                None => {
+                    rest_entries.insert(id.clone(), e.clone());
+                }
+            }
+        }
+        let wrap = |fields: BTreeMap<u64, Fragment>, meta: crate::fragment::Meta| Fragment::Struct(crate::fragment::Struct { meta, fields });
+        let out = pieces.into_iter().map(|(k, es)| (k, wrap(BTreeMap::from([(field, Fragment::Map(Map::new(Default::default(), es)))]), Default::default()))).collect();
+        let mut fields = s.fields.clone();
+        let rest_map = Map::new(m.meta.clone(), rest_entries);
+        if rest_map.entries.is_empty() && rest_map.meta == Default::default() {
+            fields.remove(&field);
+        } else {
+            fields.insert(field, Fragment::Map(rest_map));
+        }
+        (out, wrap(fields, s.meta.clone()))
+    }
+
+    /// The keys of the keyed records of this struct's map field `field` (none for anything else).
+    pub fn field_keys(&self, field: u64) -> Vec<&Value> {
+        let Fragment::Struct(s) = self else { return Vec::new() };
+        let Some(Fragment::Map(m)) = s.fields.get(&field) else { return Vec::new() };
+        m.entries.keys().filter_map(Eid::key).collect()
+    }
+
+    /// Whether this struct holds nothing but keyed records of its map field `field`: no other
+    /// field, no struct or map meta, no key-erased record.
+    pub fn only_keyed_in(&self, field: u64) -> bool {
+        let Fragment::Struct(s) = self else { return false };
+        if s.meta != Default::default() || s.fields.keys().any(|f| *f != field) {
+            return false;
+        }
+        match s.fields.get(&field) {
+            None => true,
+            Some(Fragment::Map(m)) => m.meta == Default::default() && m.entries.keys().all(|id| id.key().is_some()),
+            Some(_) => false,
+        }
+    }
     /// Calls `f` on every value the fragment holds: register values, map keys, at any depth,
     /// in records live or not (a write into another's entry carries no creation and reads as
     /// nothing alone, §5.6 Live; its values are still its).
