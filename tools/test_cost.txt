@@ -29,7 +29,7 @@ osis-proto/it 7.3
 osis-proto/osis_proto 7.9
 osis-schema/it 1.8
 osis-schema/osis_schema 0.0013
-osis-sim/it 3.3
+osis-sim/it 8.5
 osis-sim/osis_sim 0.0013
 osis-store/it 37
 osis-store/osis_store 2.6
