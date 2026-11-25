@@ -1,8 +1,8 @@
 //! Clients of this node by a secret (notes/client-port.md §3): `clients^.0` on the node root
 //! (spec/data-model.md §9, spec/sync-set.md §1) lists a client actor per client, by a weak, with
 //! the hash of its bearer secret
-//! and its end. The node mints the actor (a thing of its own whose mint admin is the node thing, like a link's K) and
-//! acts as it for the client's session (the client port, spec/wire.md §11.2); what the client may read and write is
+//! and its end. The node mints the actor (minted with the admin `add_client` names, the account where
+//! the node acts for one, like a link's K) and acts as it for the client's session (the client port, spec/wire.md §11.2); what the client may read and write is
 //! that actor's grants, nothing else. Only the node writes its node root: an entry makes the node
 //! sign as its node thing for the actor it names, so it is no setting a sibling writes (unlike
 //! `caps^.0`, spec/sync-set.md §1: a sibling naming the node thing, or another account of the
@@ -10,7 +10,7 @@
 
 use crate::error::{Error, Result};
 use crate::handle::Osis;
-use osis_base::{Tid, Value, Time};
+use osis_base::{Role, Tid, Value, Time};
 use osis_crdt::{Op, PathOp, PathSeg};
 use osis_crypto::Secret32;
 use osis_engine::flows::Demotion;
@@ -52,24 +52,36 @@ pub struct Client {
 }
 
 impl Osis {
-    /// Registers a client: a new thing minted with this node thing as admin, which can be granted to.
-    /// Returns the actor and the secret, shown only here. An `until` not in the future is `Invalid`. Grants decide what the
-    /// client reaches (it starts with none).
+    /// Registers a client: a new thing minted with admin `admin`, which can be granted to.
+    /// Returns the actor and the secret, shown only here. Grants decide what the client reaches
+    /// (it starts with none).
+    ///
+    /// This node acts as the client only through `admin`, so the client acts for whoever
+    /// administers `admin` and no longer than this node may write it: name the account this
+    /// node acts for, and removing the node from the account ends what its clients do there.
+    /// `Permission` unless this node may write `admin`; an `until` not in the future is `Invalid`.
     /// `Unsupported` on a client with its own actor.
-    pub fn add_client(&self, until: Option<Time>) -> Result<(Tid, ClientSecret)> {
+    pub fn add_client(&self, admin: Tid, until: Option<Time>) -> Result<(Tid, ClientSecret)> {
         self.local("add_client")?;
         let now = self.now()?;
         if until.is_some_and(|u| u <= now) {
             return Err(Error::Invalid("a client's until must be in the future".into()));
         }
+        if self.role_on(admin)?.is_none_or(|r| r < Role::Write) {
+            return Err(Error::Permission { tid: admin, needs: Role::Write });
+        }
         let secret = ClientSecret::generate();
         let entry = secret.entry(until);
-        let (me, root) = (self.author(), self.inner.node_root);
-        // the node root holds the actor by a strong, in the transaction minting it
+        let root = self.inner.node_root;
+        // Invariant: the node reaches the actor only through `admin` (its path to it, then the
+        // actor's record edge: spec/permissions.md §1 Path), never by an edge of its own, so the
+        // actor acts for `admin` no longer than the node may (a node removed from the account,
+        // spec/permissions.md §8 Removing, loses its clients' roles there by the ordinary rules).
+        // The node root holds the actor by a strong, in the transaction minting it
         // (spec/sync-set.md §2 Making a thing)
         let actor = self.engine(|e| {
             let d = e.node_root().ok_or(osis_engine::Error::Misuse("no node root"))?;
-            let (ts, _) = e.mint_independent(&[osis_engine::MintAdmin::Thing(me)], |ts| {
+            let (ts, _) = e.mint_independent(&[osis_engine::MintAdmin::Thing(admin)], |ts| {
                 let mut m = osis_engine::Mutation::new();
                 for t in ts {
                     m.op(d, &ct::HOLDS, PathOp { path: vec![], op: Op::Add(Value::Strong(*t)) })?;

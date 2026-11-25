@@ -190,7 +190,7 @@ fn port_node() -> (Osis, osis::Tid, osis::Tid, [u8; 32]) {
     let t = w.create_held().unwrap();
     w.at(t, osis::DynamicAspectKey::untyped(crate::common::ak("x:v.0"))).set(&Value::Int(5)).unwrap();
     w.commit().unwrap();
-    let (actor, secret) = db.add_client(None).unwrap();
+    let (actor, secret) = db.add_client(db.node(), None).unwrap();
     (db, t, actor, *secret.expose())
 }
 
@@ -329,7 +329,7 @@ fn the_publics_grant_round_trip_spec_permissions_1() {
     let t = w.create_held().unwrap();
     w.at(t, osis::core::NAME).set(&"open".to_string()).unwrap();
     w.commit().unwrap();
-    let (actor, _) = a.add_client(None).unwrap();
+    let (actor, _) = a.add_client(a.node(), None).unwrap();
     let client = osis::internals::Internals::acting_as(&a, actor);
     assert_eq!(client.at(t, osis::core::NAME).get().unwrap(), None, "a client granted nothing");
     assert!(matches!(a.public_link(t), Err(Error::Invalid(_))), "not public");
@@ -365,7 +365,7 @@ fn set_card_needs_keys_and_a_path_through_the_thing_spec_sync_inbox_1() {
     let elsewhere = w.create_held().unwrap();
     w.commit().unwrap();
     // g independent, with keys of its own: by a grant (here to a client actor)
-    let (actor, _) = a.add_client(None).unwrap();
+    let (actor, _) = a.add_client(a.node(), None).unwrap();
     a.grant(g, actor, Role::Read, GrantOpts::default()).unwrap();
     let unknown = Tid::from_bytes([7; 15]);
     assert!(matches!(a.set_card(p, unknown, Some(unknown)), Err(Error::UnknownActor { .. })), "no keys of it here");

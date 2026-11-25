@@ -160,3 +160,32 @@ fn a_node_removing_itself_drops_its_entries_spec_permissions_8() {
     assert!(!b.grants(a.thing()).unwrap().contains_key(&b.node()), "its role gone");
     assert_eq!(dials(&b, a.thing()), [Weak(db.node())], "its entry gone");
 }
+
+// spec/permissions.md §8 Removing, notes/client-port.md §3: a client actor is the account's
+// (`add_client` with the account as admin), so a removed node no longer acts for the account
+// through its client: what it writes as the client after the removal holds at no other node.
+#[test]
+fn a_removed_node_no_longer_acts_through_its_client_spec_permissions_8() {
+    let c = clock();
+    let net = ManualNet::new(c.clone());
+    let first = person(&net, 1, &c);
+    let (db, a, _) = &first;
+    let b = pair(&net, &first, 2, &c);
+    let t = make(&b, a, "before");
+    let (client, _) = b.add_client(a.thing(), None).unwrap();
+    b.grant(t, client, Role::Write, GrantOpts::default()).unwrap();
+    let mut w = b.write();
+    w.act_as(client).at(t, osis::core::NAME).set(&"by the client".to_string()).unwrap();
+    w.commit().unwrap();
+    drive(&net, b.wait_synced(SyncScope::All)).unwrap();
+    drive(&net, db.wait_synced(SyncScope::All)).unwrap();
+    assert_eq!(db.at(t, osis::core::NAME).get().unwrap().as_deref(), Some("by the client"));
+    a.remove_node(db, b.node(), SetRoleOpts { retain_copy: Some(true), ..SetRoleOpts::default() }).unwrap();
+    let mut w = b.write();
+    w.act_as(client).at(t, osis::core::NAME).set(&"after removal".to_string()).unwrap();
+    let _ = w.commit();
+    for _ in 0..20 {
+        net.run();
+    }
+    assert_eq!(db.at(t, osis::core::NAME).get().unwrap().as_deref(), Some("by the client"), "the removed node's write as the client holds nowhere else");
+}

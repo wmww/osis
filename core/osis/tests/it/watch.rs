@@ -729,8 +729,8 @@ fn a_watch_reads_as_its_acting_subscriber() {
     let db = db(0);
     let k = untyped("t:x.0");
     let (seen, hid) = (thing(&db), thing(&db));
-    let (actor, _) = db.add_client(None).unwrap();
-    let (other, _) = db.add_client(None).unwrap();
+    let (actor, _) = db.add_client(db.node(), None).unwrap();
+    let (other, _) = db.add_client(db.node(), None).unwrap();
     db.grant(seen, actor, Role::Read, osis::GrantOpts::default()).unwrap();
     let a = db.acting_as(actor);
     type Told = Arc<Mutex<Vec<String>>>;
@@ -821,7 +821,7 @@ fn an_until_ending_an_actors_way_in_tells_its_roster_watch() {
     o.app.internals.net = Some(net.clone());
     let bob = osis::internals::create(o).unwrap();
     let alice = osis::internals::create(cfg(1, MemStore::new(), &c)).unwrap();
-    let (actor, _) = bob.add_client(None).unwrap();
+    let (actor, _) = bob.add_client(bob.node(), None).unwrap();
     // the client a reader of a thing of bob's, so its read keysets carry KEM keys (spec/crypto.md
     // §3): alice may grant it
     bob.grant(thing(&bob), actor, Role::Read, Default::default()).unwrap();
@@ -861,7 +861,7 @@ fn a_thing_watch_tells_an_aspect_it_heard_going_absent() {
     let db = db(0);
     let (k, k2) = (untyped("t:x.0"), untyped("t:y.0"));
     let (t, u) = (thing(&db), thing(&db));
-    let (actor, _) = db.add_client(None).unwrap();
+    let (actor, _) = db.add_client(db.node(), None).unwrap();
     for x in [t, u] {
         db.grant(x, actor, Role::Read, osis::GrantOpts::default()).unwrap();
         db.commit_set(x, k.clone(), &Value::Int(1)).unwrap();

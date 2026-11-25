@@ -65,7 +65,7 @@ fn world(role: Option<Role>) -> World {
     let t = w.create_held().unwrap();
     w.at(t, v()).set(&Value::Int(5)).unwrap();
     w.commit().unwrap();
-    let (actor, secret) = a.add_client(None).unwrap();
+    let (actor, secret) = a.add_client(a.node(), None).unwrap();
     if let Some(r) = role {
         a.grant(t, actor, r, osis::GrantOpts::default()).unwrap();
     }
@@ -206,7 +206,7 @@ fn a_thin_client_answers_nothing_of_its_own_notes_client_port() {
     let cl = connect(&w.net, &w.c, &w.addr, &w.secret).unwrap();
     let u = |r: Result<(), Error>| assert!(matches!(r, Err(Error::Unsupported(_))), "{r:?}");
     let t = w.t;
-    u(cl.add_client(None).map(drop));
+    u(cl.add_client(cl.node(), None).map(drop));
     u(cl.clients().map(drop));
     u(cl.grant(t, w.actor, Role::Read, osis::GrantOpts::default()));
     u(cl.on_diagnostic(|_, _| {}).map(drop));
@@ -302,8 +302,8 @@ fn made_id(m: &Msg) -> [u8; 32] {
 fn ended_sessions_hold_nothing_spec_wire_11() {
     let w = world(Some(Role::Write));
     let until = osis::Time(w.a.now().unwrap().0 + 60_000);
-    let mut clients: Vec<(Tid, ClientSecret)> = (0..7).map(|_| w.a.add_client(None).unwrap()).collect();
-    clients.push(w.a.add_client(Some(until)).unwrap());
+    let mut clients: Vec<(Tid, ClientSecret)> = (0..7).map(|_| w.a.add_client(w.a.node(), None).unwrap()).collect();
+    clients.push(w.a.add_client(w.a.node(), Some(until)).unwrap());
     for (actor, _) in &clients {
         w.a.grant(w.t, *actor, Role::Write, osis::GrantOpts::default()).unwrap();
     }
@@ -316,7 +316,7 @@ fn ended_sessions_hold_nothing_spec_wire_11() {
         }
     }
     assert_eq!(osis::internals::port_held(&w.a), (64, 64));
-    let late = w.a.add_client(None).unwrap().1;
+    let late = w.a.add_client(w.a.node(), None).unwrap().1;
     let r = osis::internals::port_answers(&w.a, conn + 1, false, vec![auth_as(Some(&late), 1)]);
     assert_eq!(error_code(&r[0]), Some(4), "full");
     assert!(w.a.remove_client(clients[0].0).unwrap());
@@ -331,7 +331,7 @@ fn ended_sessions_hold_nothing_spec_wire_11() {
 #[test]
 fn clients_together_are_bounded_spec_wire_11() {
     let w = world(None);
-    let secrets: Vec<ClientSecret> = (0..9).map(|_| w.a.add_client(None).unwrap().1).collect();
+    let secrets: Vec<ClientSecret> = (0..9).map(|_| w.a.add_client(w.a.node(), None).unwrap().1).collect();
     let mut conn = 100;
     for s in &secrets[..8] {
         for _ in 0..8 {
@@ -708,7 +708,7 @@ fn a_grants_watch_through_a_thin_client_spec_wire_11() {
     let (_c, unknown) = grants(Tid::from_bytes([9; 15]));
     cl.settle();
     assert_eq!(seen.try_recv().unwrap().unwrap(), w.a.grants(w.t).unwrap());
-    let other = w.a.add_client(None).unwrap().0;
+    let other = w.a.add_client(w.a.node(), None).unwrap().0;
     osis::internals::costs::take();
     w.a.grant(hidden, other, Role::Read, osis::GrantOpts::default()).unwrap();
     cl.settle();

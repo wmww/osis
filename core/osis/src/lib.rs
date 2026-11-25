@@ -347,7 +347,7 @@
 //! ```no_run
 //! # use osis::{AppConfig, NodeLogin, Osis};
 //! # async fn demo(node: &Osis, addr: osis::Address) -> osis::Result<()> {
-//! let (actor, secret) = node.add_client(None)?;
+//! let (actor, secret) = node.add_client(node.node(), None)?;
 //! // on the other program, given `addr` and `secret`:
 //! let client = Osis::connect(&[NodeLogin { addr, secret }], AppConfig::default()).await?;
 //! assert_eq!(client.author(), actor);

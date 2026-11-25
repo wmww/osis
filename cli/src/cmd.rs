@@ -1252,8 +1252,12 @@ fn serve(ctx: &mut Ctx<'_>, listen: &[String]) -> anyhow::Result<()> {
 fn clients(ctx: &mut Ctx<'_>, c: &ClientsCmd) -> anyhow::Result<()> {
     use osis_schema::osis_base::hex;
     match c {
-        ClientsCmd::Add { until } => {
-            let (actor, secret) = ctx.db.add_client(opt_ts(until)?)?;
+        ClientsCmd::Add { admin, until } => {
+            let admin = match admin {
+                Some(a) => ctx.tid(a)?,
+                None => ctx.me()?,
+            };
+            let (actor, secret) = ctx.db.add_client(admin, opt_ts(until)?)?;
             let s = hex::encode(secret.expose());
             ctx.emit(&[format!("{} {s}", actor.to_uri())], J::obj([("actor", J::tid(actor)), ("secret", J::str(s.clone()))]))
         }
