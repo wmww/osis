@@ -139,7 +139,7 @@ pub struct Closure {
     /// was in when it left (`Engine::left_closure`).
     left: JMap<Tid, BTreeSet<Ctx>>,
     /// The things sourced at another node whose paths the sync set's walk takes not
-    /// (`Engine::set_sourced`, spec/sync-set.md §5), the account root never among them.
+    /// (`Engine::set_sourced`, spec/sync-set.md §5).
     cut: JSet<Tid>,
     /// The holders held for keys (`held_for_keys`), as last settled.
     keys: JSet<Tid>,
@@ -734,7 +734,7 @@ impl Core {
     /// Whether `t`'s keys open `x` (spec/sync-set.md §2): `x`'s secrets derive from `t`'s (`t` is
     /// `x`'s independent, the actor they derive from), or `t` holds read or above on that actor,
     /// by chains of grants with key access (`reads_now`), or the public does by its own grant on
-    /// that actor (`public_reads`). `t`'s own role: the account root reads as itself.
+    /// that actor (`public_reads`). `t`'s own role: a thing reads as itself.
     /// Invariant: a thing above an independent `a` on its record chain opens `a` only by its role
     /// there (a record edge is a grant), never by being its mint admin: once that edge is lowered
     /// or removed `a` leaves `t`'s sync unit, so whatever entry of `a`'s parts later arrives under

@@ -20,7 +20,7 @@ use osis_blob::ShareLink;
 use osis_schema::core_types::{self as ct, Edge};
 use std::sync::Arc;
 
-/// The untyped aspect of the thing minted with the account root as admin that keeps a link's seed.
+/// The untyped aspect, on a thing minted with K's mint admin S, that keeps a link's seed.
 pub const LINK_SEED: &str = "link:seed.0";
 
 /// A link whose seed this node holds (`Engine::held_links`).
@@ -28,12 +28,12 @@ pub const LINK_SEED: &str = "link:seed.0";
 pub struct HeldLink {
     pub k: Tid,
     pub l: Tid,
-    /// K's mint admin (the sharer's actor). Only a seed thing minted with this node's account as admin
-    /// root counts: its readers are the account's nodes alone.
+    /// K's mint admin S (a thing the sharing node administers). Only a seed thing minted with S as
+    /// admin counts: its readers are S's.
     pub mint_admin: Tid,
     pub target: Tid,
     pub single_use: bool,
-    /// The thing keeping the seed (`LINK_SEED`), held from the account root while the link works.
+    /// The thing keeping the seed (`LINK_SEED`), held from S's `holds.0` while the link works.
     pub keep: Tid,
     /// This node wrote the seed: it made the link, so its redeemer dials this node (the link's
     /// peers, spec/wire.md §10).

@@ -157,7 +157,7 @@ impl Osis {
     /// Resolves once everything in `scope` is synced: each sync ID carrying it heard out (every
     /// connected node with it open caught up both ways, none of them full or refusing it left
     /// waited for) and each commit of this node's on it held elsewhere. A sync ID no other node
-    /// may hold (no other account has a role on its thing, no other node of this account) holds
+    /// may hold (no thing but this node's own holds a role on its thing) holds
     /// nothing up; it never
     /// resolves while one some other node may hold is unconnected.
     /// It fails `Stranded` while a sync ID in scope is stranded here (naming its things); with no

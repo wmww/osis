@@ -1143,7 +1143,7 @@ mod tests {
             let (quiet, busy) = (run(rounds, 0), run(rounds, 5));
             println!("{rounds} rounds (weighed, written): third writer quiet {quiet:?}, five held-back bodies a round {busy:?}");
             assert!(busy.0 <= quiet.0 + 4 && busy.1 <= quiet.1 + 2, "{rounds} rounds: the held-back bodies weighed: {quiet:?} against {busy:?}");
-            // a few weighs more: the account root's `holds.0` and the node root's, which hold `t`
+            // a few weighs more: the account's `holds.0` and the node root's, which hold `t`
             assert!(busy.0 <= rounds as u64 / 2 + 7, "{rounds} rounds: {busy:?}");
         }
     }

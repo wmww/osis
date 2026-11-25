@@ -29,7 +29,7 @@ use std::path::Path;
 use std::sync::atomic::Ordering;
 
 /// How to log in to a node (`Osis::connect`, `Osis::connect_node`): where it is and what proves
-/// who this client is there. The node says which actor that makes it (`Osis::me`).
+/// who this client is there. The node says which actor that makes it (`Osis::author`).
 #[derive(Clone, Debug)]
 pub struct NodeLogin {
     /// Where it is.

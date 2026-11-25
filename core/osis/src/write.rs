@@ -277,7 +277,7 @@ impl<'d> Write<'d> {
         i
     }
 
-    /// A new thing with admin `admin` (its mint admin), stored with this commit: a thing or account
+    /// A new thing with admin `admin` (its mint admin), stored with this commit: a thing
     /// this actor may write (`Permission` at commit otherwise). The mint admin is an ordinary
     /// admin, removable like any other (spec/permissions.md §1).
     ///
@@ -338,9 +338,9 @@ impl<'d> Write<'d> {
 
     /// Destroys `tid` for everyone by purging its creation: every node drops the thing, whole, and
     /// ignores what is written on it later. It cannot be undone. What depends on it
-    /// lives on: rights others held through it stand as they were, and what a destroyed account
-    /// signed still verifies. Only an admin of the thing may purge it (`Permission` otherwise); an
-    /// account purges itself. A thing created with an expiry is destroyed the same way then.
+    /// lives on: rights others held through it stand as they were, and what was signed as a
+    /// destroyed thing still verifies. Only an admin of the thing may purge it (`Permission` otherwise); a
+    /// thing purges itself. A thing created with an expiry is destroyed the same way then.
     pub fn purge(&mut self, tid: Tid) -> Result<()> {
         let t = self.known(tid)?;
         self.ops.push(WriteOp::PurgeThing(t));

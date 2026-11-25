@@ -1,7 +1,7 @@
 //! Sharing, links, cards, nodes, peers and sync (notes/api.md Sharing and roles, Sync
 //! configuration and status) over role flows: each sharing call is one role commit made locally
 //! (spec/permissions.md §2); calls that wait for another node are `async` (runtime-agnostic
-//! futures). Sync is not built yet: what needs another node fails `NotBuilt`.
+//! futures).
 
 use crate::error::{Error, Result};
 use crate::handle::{Osis, ReadOnly};
@@ -103,8 +103,7 @@ pub struct Holder {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SetRoleOpts {
     /// On removal: whether the holder's nodes retain a read-only copy of what it could read (`true`)
-    /// or erase it (`false`). `None`: the thing's default (`core::RetentionSetting::retain_copies`), and
-    /// erase for a node leaving its account. `Invalid` when a role remains.
+    /// or erase it (`false`). `None`: the thing's default (`core::RetentionSetting::retain_copies`). `Invalid` when a role remains.
     pub retain_copy: Option<bool>,
     /// The change may leave the thing with no admin, for good: nobody can then change its
     /// grants (`Error::LeavesNoAdmin` without it).
@@ -535,11 +534,11 @@ impl Osis {
     ///
     /// A removal follows every way the holder has in (`holders`) until none is left: dropped or
     /// failed midway, the ways already removed stay so (call again). A holder who
-    /// joined by a link of this account is removed together with the link's key, in one commit:
+    /// joined by a link whose K this node administers is removed together with the link's key, in one commit:
     /// it may have kept the link's text. The link then stops working for anyone who has not used
     /// it yet (make a new one), and its other joiners stay. A joiner's role cannot be changed, only
     /// removed (`Invalid`; `grant` gives it a role of its own). Nor can this call reach through
-    /// another actor (an organization, a link of another account): `Invalid`, naming the actor to set
+    /// another actor (a realm, a link this node does not administer): `Invalid`, naming the actor to set
     /// the role on.
     ///
     /// A writer that changed the keys so only it can read locks the others out; removing it (or
