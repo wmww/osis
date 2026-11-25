@@ -22,7 +22,7 @@ pub use delete::{DeleteSecret, blind, commitment, link_blind, thing_blind, verif
 pub use boxes::{BoxForm, BoxItem, BoxSlot, EntryItem, Epoch, HistoryEntry, open_box, open_entry, open_form_box, open_form_entry, read_open_box, read_open_entry, open_history, open_joint_box, open_symmetric_box, roles_secret, seal_box, seal_entry, seal_history, seal_joint_box, wrap_symmetric_box};
 pub use error::Error;
 pub use kem::{KEM_PUBLIC_LEN, KemPublicKey, KemSecret, MLKEM_CT_LEN, SEALED_OVERHEAD, X25519Secret, open_sealed, seal, seal_with};
-pub use keys::{creation_nonce, dedup_secret, delta_hash, link_hash, link_key_role_secret, link_tree_hash, role_kem, signing_key, thing_role_secret};
+pub use keys::{creation_nonce, dedup_secret, delta_hash, link_hash, link_key_role_secret, link_tree_hash, RoleSecret, role_kem, signing_key, thing_role_secret};
 pub use sync_id::{RoleKey, claim_key, deposit_key, role_key, role_key_seed, open_digest, proof_digest, public_entry, sign_open, static_entry, sync_id, verify_open};
 pub use rng::{NodeRng, SeededRng};
 pub use secret::Secret32;

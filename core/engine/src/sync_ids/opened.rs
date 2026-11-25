@@ -160,8 +160,8 @@ impl Engine {
     /// The read epochs of thing `t` held here with their secrets: its own (or its derived ones),
     /// those derived from its mint admin's, and those derived down a section's chain
     /// (`chain_epochs`): every secret `open_commit` tries.
-    pub(crate) fn read_epochs(&self, t: &Tid, chain: &[Tid]) -> Vec<(Epoch, osis_crypto::Secret32)> {
-        let mut out: Vec<(Epoch, osis_crypto::Secret32)> = self.epochs(t).map(|e| e.read.held().map(|(ep, s)| (ep, s.clone())).collect()).unwrap_or_default();
+    pub(crate) fn read_epochs(&self, t: &Tid, chain: &[Tid]) -> Vec<(Epoch, osis_crypto::RoleSecret)> {
+        let mut out: Vec<(Epoch, osis_crypto::RoleSecret)> = self.epochs(t).map(|e| e.read.held().map(|(ep, s)| (ep, s.clone())).collect()).unwrap_or_default();
         let mut from = |e: &ActorEpochs| {
             for (ep, s) in ActorEpochs::derived(e, t).read.held() {
                 if !out.iter().any(|x| x.0 == ep) {

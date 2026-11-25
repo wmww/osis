@@ -5,7 +5,7 @@ use crate::epoch::{ActorEpochs, SUITE};
 use crate::names::Names;
 use crate::Error;
 use osis_base::{CommitId, Role};
-use osis_crypto::{Epoch, Secret32, role_kem};
+use osis_crypto::{Epoch, RoleSecret};
 use osis_schema::core_types::{self as ct, BoxKey, HistoryKey, KemKey, Keys, Keyset, SecretBox, Secrets};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -29,10 +29,10 @@ pub fn history_key(role: Role, epoch: &Epoch) -> HistoryKey {
 /// §3; the rotator decides by Published KEM keys), listing `supersedes` and the digest of the
 /// rotation's `names` (§4), with no left-out keysets or carried demotions yet (`produce::rotate`
 /// adds them).
-pub fn keyset(epoch: &Epoch, secret: &Secret32, supersedes: &BTreeSet<Epoch>, names: &Names, kem: bool) -> Keyset {
+pub fn keyset(epoch: &Epoch, secret: &RoleSecret, supersedes: &BTreeSet<Epoch>, names: &Names, kem: bool) -> Keyset {
     Keyset {
         epoch: to_schema(epoch),
-        kem_key: kem.then(|| KemKey::X25519MlKem768(role_kem(secret).public().as_bytes().to_vec())),
+        kem_key: kem.then(|| KemKey::X25519MlKem768(secret.kem().public().as_bytes().to_vec())),
         suite: SUITE,
         supersedes: supersedes.iter().map(to_schema).collect(),
         names: names.digest(),

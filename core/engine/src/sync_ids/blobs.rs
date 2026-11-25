@@ -672,7 +672,7 @@ impl Engine {
                 // another; a holder of one logs it)
                 GivingWrap::Lacking => return Ok(None),
                 GivingWrap::Under(ep, rotation) => match e.read.checked_roles(&ep) {
-                    Some(roles) => Some((rotation, (ep, WrapKey { secret: e.read.secret(&ep).cloned(), roles }))),
+                    Some(roles) => Some((rotation, (ep, WrapKey { secret: e.read.secret(&ep).map(|s| s.secret().clone()), roles }))),
                     None => return Ok(None),
                 },
             },
@@ -680,7 +680,7 @@ impl Engine {
         };
         let own_wrap = giving.as_ref().is_some_and(|(rotation, _)| *rotation);
         let giving = giving.map(|(_, x)| x);
-        let plain = || osis_keys::wrap_epoch(&e.read).and_then(|ep| e.read.secret(&ep).map(|s| (ep, WrapKey { roles: osis_crypto::roles_secret(s), secret: Some(s.clone()) })));
+        let plain = || osis_keys::wrap_epoch(&e.read).and_then(|ep| e.read.secret(&ep).map(|s| (ep, WrapKey { roles: osis_crypto::roles_secret(s), secret: Some(s.secret().clone()) })));
         let Some((ep, k)) = giving.or_else(plain) else { return Ok(None) };
         // spec/crypto.md §4 Encrypting under: wrapping is encrypting under the epoch, so none
         // under one blocked here (a rotation's own wrap excepted: it is what unblocks it)

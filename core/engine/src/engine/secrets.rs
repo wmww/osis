@@ -898,7 +898,7 @@ pub(crate) fn decode_epochs(b: &[u8]) -> Result<ActorEpochs> {
                 _ => Err(bad()),
             };
             if let [s] = sec.as_slice() {
-                info.secret = Some(secret(s)?);
+                info.secret = Some(secret(s)?.into());
             }
             if let [f] = floor.as_slice() {
                 info.floor = Some(f.as_uint().ok_or_else(bad)?);

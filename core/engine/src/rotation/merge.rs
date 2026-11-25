@@ -58,7 +58,7 @@ fn derived_through(core: &Core, t: &Tid, e: &Epoch) -> Vec<(Tid, Epoch)> {
     }
     for (b, s) in base.read.held() {
         let mut out = Vec::with_capacity(chain.len());
-        let (mut ep, mut sec) = (b, s.clone());
+        let (mut ep, mut sec) = (b, s.secret().clone());
         for x in chain.iter().rev() {
             (ep, sec) = ActorEpochs::derived_epoch(x, Role::Read, &ep, &sec);
             out.push((*x, ep));

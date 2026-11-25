@@ -87,7 +87,7 @@ fn own_secrets_switch() {
     applied(&mut ma);
     // the history box hands M the derived secret at the epoch it names (unestablished here: M
     // holds no secret of the mint admin)
-    assert_eq!(ma.read.secret(&de), Some(&derived_read));
+    assert_eq!(ma.read.secret(&de).map(|s| s.secret()), Some(&derived_read));
     assert!(!ma.read.is_established(&de));
     assert_eq!(ma.read.newest_held().unwrap().0, e(Role::Read));
     assert!(ma.write.held().next().is_none());

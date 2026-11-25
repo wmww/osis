@@ -499,3 +499,36 @@ fn a_held_epochs_box_is_not_opened_again_spec_crypto_4() {
     assert!(ingest(&f.a, &bad, &opener, &mut gv, None).unwrap().is_empty());
     assert_eq!(gv, before);
 }
+
+// spec/crypto.md §3: a held role secret's KEM key pair is derived once, kept with the secret:
+// opening every box of G three times derives one key pair per keyset they are sealed to, at
+// the first open
+#[test]
+fn opens_derive_each_held_key_pair_once_spec_crypto_3() {
+    let mut f = forked();
+    let (g, granted, s) = f.grant_reader();
+    // G's secrets held afresh: the grant derived the key pairs of `granted`'s
+    let mut ge = ActorEpochs::default();
+    for r in ROLES {
+        for (e, x) in granted.role(r).held() {
+            ge.role_mut(r).set_secret(e, x.secret().clone());
+        }
+    }
+    let opener = Opener { holder: g, epochs: &ge };
+    let sealed: Vec<_> = s.boxes.iter().filter(|(k, _)| k.holder.0 == g).filter_map(|(k, b)| match b {
+        SecretBox::Sealed(sb) => Some((k.role, sb.keyset.clone())),
+        _ => None,
+    }).collect();
+    let keysets: BTreeSet<_> = sealed.iter().cloned().collect();
+    assert!(sealed.len() > keysets.len(), "several boxes under one secret");
+    osis_base::costs::take();
+    for _ in 0..3 {
+        let (got, failed) = open_boxes(&f.a, &s, &opener);
+        assert!(failed.is_empty());
+        assert_eq!(got.len(), sealed.len());
+    }
+    let counted = |name: &str, c: &[(&str, std::time::Duration, u64)]| c.iter().filter(|x| x.0 == name).map(|x| x.2).sum::<u64>();
+    let c = osis_base::costs::take();
+    assert_eq!(counted("kem: decapsulate", &c), 3 * sealed.len() as u64);
+    assert_eq!(counted("kem: keygen", &c), keysets.len() as u64);
+}

@@ -210,7 +210,7 @@ fn a_sync_alone_holder_gets_no_header_spec_sync_ids_2() {
     let owed = new_owed(&lp, 0, &before);
     let out = lp.peers[0].engine.sealed_fire(&owed[0]).unwrap().expect("sealed to T's read key");
     let e2 = &lp.peers[2].engine;
-    let (prefix, sealed) = e2.read_epochs(&t, &[]).into_iter().find_map(|(e, x)| osis_blob::open_fire(&out.blob, &t, &e, &osis_crypto::role_kem(&x)).ok()).expect("opens at T's reader");
+    let (prefix, sealed) = e2.read_epochs(&t, &[]).into_iter().find_map(|(e, x)| osis_blob::open_fire(&out.blob, &t, &e, x.kem()).ok()).expect("opens at T's reader");
     let osis_blob::Sealed::SyncCopy(plain) = sealed else { panic!("form 2") };
     let h = lp.peers[0].engine.header(&rot).unwrap();
     let names = |b: &[u8], x: &[u8]| b.windows(x.len()).any(|w| w == x);
@@ -309,7 +309,7 @@ fn forged_sync_copy(lp: &mut LocalPeer, i: usize, x: Tid, h: Tid, seed: u8) -> (
         fake.role_mut(r).set_secret(e, s);
         fake.role_mut(r).set_established(e, osis_keys::Provenance::Fixed);
     }
-    let sync = fake.role(Role::Sync).secret(&fake.role(Role::Sync).newest().unwrap()).unwrap().clone();
+    let sync = fake.role(Role::Sync).secret(&fake.role(Role::Sync).newest().unwrap()).unwrap().secret().clone();
     let e = &mut lp.peers[i].engine;
     let mut m = crate::Mutation::new();
     let id = e

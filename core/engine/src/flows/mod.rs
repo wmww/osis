@@ -404,7 +404,7 @@ impl Engine {
     #[doc(hidden)]
     pub fn node_read_kem(&self) -> Option<osis_crypto::KemSecret> {
         let e = self.core.epochs(&self.core.me())?;
-        e.read.newest_held().map(|(_, s)| osis_crypto::role_kem(s))
+        e.read.newest_held().map(|(_, s)| s.kem().clone())
     }
 
 

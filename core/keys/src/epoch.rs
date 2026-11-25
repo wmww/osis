@@ -5,7 +5,7 @@
 
 use crate::names::{Held, Names};
 use osis_base::{CommitId, Role, Tid};
-use osis_crypto::{Epoch, Secret32, link_key_role_secret, thing_role_secret};
+use osis_crypto::{Epoch, RoleSecret, Secret32, link_key_role_secret, thing_role_secret};
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -79,8 +79,8 @@ pub struct EpochInfo {
     /// under, never put in a history box.
     pub established: Option<Provenance>,
     /// Its secret: the one it names (spec/crypto.md §4, every source is checked by the nonce
-    /// rule before it gets here).
-    pub secret: Option<Secret32>,
+    /// rule before it gets here), held with its KEM key pair.
+    pub secret: Option<RoleSecret>,
     /// Its roles secret (spec/crypto.md §4, Roles secrets) when known apart from its secret: from
     /// a history entry opened. It opens the role parts and wraps sealed under the epoch, nothing
     /// else; never encrypted under. Known only from pending commits (`roles_reading`
@@ -144,13 +144,13 @@ impl EpochInfo {
     }
 
     /// Its secret when it may be encrypted under (not reading-only).
-    pub fn checked(&self) -> Option<&Secret32> {
+    pub fn checked(&self) -> Option<&RoleSecret> {
         self.secret.as_ref().filter(|_| self.reading.is_empty())
     }
 
     /// Its roles secret when it may be encrypted under (`RoleEpochs::checked_roles`).
     pub fn checked_roles(&self) -> Option<Secret32> {
-        self.checked().map(osis_crypto::roles_secret).or_else(|| self.roles.clone().filter(|_| self.roles_reading.is_empty()))
+        self.checked().map(|s| osis_crypto::roles_secret(s)).or_else(|| self.roles.clone().filter(|_| self.roles_reading.is_empty()))
     }
 
     /// A valid rotation commit of it or a `secrets.0` snapshot keying it is held (spec/crypto.md
@@ -268,9 +268,9 @@ impl RoleEpochs {
     /// Sets `e`'s secret, known from a source that is no pending commit (an applied valid box, a
     /// history box opened with such a secret, an entry box, an own rotation, derivation): it may
     /// be encrypted under once `e` is established.
-    pub fn set_secret(&mut self, e: Epoch, secret: Secret32) {
+    pub fn set_secret(&mut self, e: Epoch, secret: impl Into<RoleSecret>) {
         let info = self.observe(e);
-        info.secret = Some(secret);
+        info.secret = Some(secret.into());
         info.reading.clear();
     }
 
@@ -306,7 +306,7 @@ impl RoleEpochs {
     /// history entry carried it.
     pub fn roles_secret(&self, e: &Epoch) -> Option<Secret32> {
         let i = self.map.get(e)?;
-        i.secret.as_ref().map(osis_crypto::roles_secret).or_else(|| i.roles.clone())
+        i.secret.as_ref().map(|s| osis_crypto::roles_secret(s)).or_else(|| i.roles.clone())
     }
 
     /// `e`'s roles secret when it may be encrypted under: from its secret (not reading-only), else
@@ -338,7 +338,7 @@ impl RoleEpochs {
             return;
         }
         let info = self.observe(e);
-        info.secret = Some(secret);
+        info.secret = Some(secret.into());
         info.reading.insert(from);
     }
 
@@ -354,15 +354,16 @@ impl RoleEpochs {
     pub fn drop_reading_from(&mut self, commit: &CommitId) -> bool {
         let mut touched = Vec::new();
         for (e, i) in self.map.iter_mut() {
-            for (from, secret) in [(&mut i.reading, &mut i.secret), (&mut i.roles_reading, &mut i.roles)] {
-                let n = from.len();
-                from.retain(|u| u.commit != *commit);
-                if from.len() != n {
-                    if from.is_empty() {
-                        *secret = None;
-                    }
-                    touched.push(*e);
-                }
+            // each secret goes with its own last source
+            let (a, b) = (drop_source(&mut i.reading, commit), drop_source(&mut i.roles_reading, commit));
+            if a == Some(true) {
+                i.secret = None;
+            }
+            if b == Some(true) {
+                i.roles = None;
+            }
+            if a.is_some() || b.is_some() {
+                touched.push(*e);
             }
         }
         for e in &touched {
@@ -482,13 +483,13 @@ impl RoleEpochs {
     }
 
     /// `e`'s secret when it may be encrypted under (not reading-only).
-    pub fn secret(&self, e: &Epoch) -> Option<&Secret32> {
+    pub fn secret(&self, e: &Epoch) -> Option<&RoleSecret> {
         self.map.get(e).and_then(EpochInfo::checked)
     }
 
     /// `e`'s secret for reading, reading-only included (opening a sync ID, unwrapping, opening
     /// history boxes).
-    pub fn reading_secret(&self, e: &Epoch) -> Option<&Secret32> {
+    pub fn reading_secret(&self, e: &Epoch) -> Option<&RoleSecret> {
         self.map.get(e).and_then(|i| i.secret.as_ref())
     }
 
@@ -498,7 +499,7 @@ impl RoleEpochs {
     }
 
     /// Every held secret that may be encrypted under (not reading-only), ascending by epoch.
-    pub fn held(&self) -> impl Iterator<Item = (Epoch, &Secret32)> {
+    pub fn held(&self) -> impl Iterator<Item = (Epoch, &RoleSecret)> {
         self.map.iter().filter_map(|(e, i)| i.checked().map(|s| (*e, s)))
     }
 
@@ -610,7 +611,7 @@ impl RoleEpochs {
     }
 
     /// The newest of `held` (epochs of this role, with their secrets).
-    fn newest_with<'a>(&self, held: impl Iterator<Item = (Epoch, &'a Secret32)>) -> Option<(Epoch, &'a Secret32)> {
+    fn newest_with<'a>(&self, held: impl Iterator<Item = (Epoch, &'a RoleSecret)>) -> Option<(Epoch, &'a RoleSecret)> {
         held.max_by_key(|(e, _)| self.by_order(e))
     }
 
@@ -665,31 +666,31 @@ impl RoleEpochs {
     /// The newest established epoch whose secret is held among those `keep` keeps, current or
     /// not (a rotation's thing lists wrap under the epoch current when it was made, spec/crypto.md
     /// §5 Who wraps under what).
-    pub fn newest_held_where(&self, keep: impl Fn(&Epoch) -> bool) -> Option<(Epoch, &Secret32)> {
+    pub fn newest_held_where(&self, keep: impl Fn(&Epoch) -> bool) -> Option<(Epoch, &RoleSecret)> {
         self.newest_with(self.held_established().filter(|(e, _)| keep(e)))
     }
 
     /// The newest current epoch whose secret is held, not foreign (spec/crypto.md §4, Newest).
-    pub fn newest_held(&self) -> Option<(Epoch, &Secret32)> {
+    pub fn newest_held(&self) -> Option<(Epoch, &RoleSecret)> {
         let current = self.current();
         self.newest_with(self.held().filter(|(e, _)| current.binary_search(e).is_ok() && !self.is_foreign(e)))
     }
 
     /// The newest established epoch whose secret is held, current or not.
-    pub fn newest_secret(&self) -> Option<(Epoch, &Secret32)> {
+    pub fn newest_secret(&self) -> Option<(Epoch, &RoleSecret)> {
         self.newest_with(self.held_established())
     }
 
     /// Held established secrets, ascending by epoch: what a history box carries (spec/crypto.md
     /// §4).
-    pub fn held_established(&self) -> impl Iterator<Item = (Epoch, &Secret32)> {
+    pub fn held_established(&self) -> impl Iterator<Item = (Epoch, &RoleSecret)> {
         self.held().filter(|(e, _)| self.is_established(e))
     }
 
     /// Held secrets, newest first (a reader tries them in this order, spec/crypto.md §5),
     /// reading-only ones included.
-    pub fn held_newest_first(&self) -> Vec<(Epoch, &Secret32)> {
-        let mut v: Vec<(Epoch, &Secret32)> = self.map.iter().filter_map(|(e, i)| i.secret.as_ref().map(|s| (*e, s))).collect();
+    pub fn held_newest_first(&self) -> Vec<(Epoch, &RoleSecret)> {
+        let mut v: Vec<(Epoch, &RoleSecret)> = self.map.iter().filter_map(|(e, i)| i.secret.as_ref().map(|s| (*e, s))).collect();
         v.sort_by_key(|(e, _)| Reverse(self.by_order(e)));
         v
     }
@@ -699,13 +700,20 @@ impl RoleEpochs {
     pub fn opening_newest_first(&self) -> Vec<Secret32> {
         let mut v: Vec<(Epoch, &EpochInfo)> = self.map.iter().filter(|(_, i)| i.secret.is_some() || i.roles.is_some()).map(|(e, i)| (*e, i)).collect();
         v.sort_by_key(|(e, _)| Reverse(self.by_order(e)));
-        v.into_iter().flat_map(|(_, i)| i.secret.iter().cloned().chain(i.secret.as_ref().map(osis_crypto::roles_secret).or_else(|| i.roles.clone()))).collect()
+        v.into_iter().flat_map(|(_, i)| i.secret.as_ref().map(|s| s.secret().clone()).into_iter().chain(i.secret.as_ref().map(|s| osis_crypto::roles_secret(s)).or_else(|| i.roles.clone()))).collect()
     }
 
     /// Whether any secret is held, reading-only ones included.
     pub fn holds_any(&self) -> bool {
         self.map.values().any(|i| i.secret.is_some())
     }
+}
+
+/// Drops `commit` from `from`: `None` when it was not there, else whether `from` is now empty.
+fn drop_source(from: &mut BTreeSet<Unchecked>, commit: &CommitId) -> Option<bool> {
+    let n = from.len();
+    from.retain(|u| u.commit != *commit);
+    (from.len() != n).then_some(from.is_empty())
 }
 
 /// The n of the epochs derived from a base epoch at `n` (spec/crypto.md §3): the mint admin's, capped
@@ -810,7 +818,7 @@ impl ActorEpochs {
                     // supersedes itself
                     supersedes: i.superseding().map(id).filter(|x| x != de).collect(),
                     established: i.established.map(|_| Provenance::Derived),
-                    secret: ds.clone(),
+                    secret: ds.clone().map(RoleSecret::new),
                     reading: i.reading.clone(),
                     order: Some(o.order(e)).filter(|&x| x != de.n()),
                     foreign: i.foreign,
@@ -1108,7 +1116,7 @@ mod tests {
         let want = thing_role_secret(&link_key_role_secret(&seed, Role::Write), Role::Write, &t);
         let dz = Epoch::derive(&t, Role::Write, 1, &want).unwrap();
         assert_eq!(d.write.current(), vec![dz]);
-        assert_eq!(d.write.secret(&dz), Some(&want));
+        assert_eq!(d.write.secret(&dz).map(|s| s.secret()), Some(&want));
         let mut base = ActorEpochs::default();
         base.read.set_secret(ep(1, 1), Secret32::from_bytes([1; 32]));
         base.read.set_secret(ep(1, 2), Secret32::from_bytes([2; 32]));
@@ -1180,14 +1188,14 @@ mod tests {
         r.set_reading_secret(ep(1, 1), s.clone(), u(1));
         r.set_reading_secret(ep(1, 1), s.clone(), u(2));
         assert!(r.is_reading_only(&ep(1, 1)) && r.secret(&ep(1, 1)).is_none());
-        assert_eq!(r.reading_secret(&ep(1, 1)), Some(&s));
+        assert_eq!(r.reading_secret(&ep(1, 1)).map(|x| x.secret()), Some(&s));
         assert!(r.drop_reading_from(&cid(1)));
         assert!(r.is_reading_only(&ep(1, 1)));
         assert!(r.drop_reading_from(&cid(2)));
         assert!(r.get(&ep(1, 1)).is_none());
         r.set_reading_secret(ep(1, 1), s.clone(), u(1));
         r.set_secret(ep(1, 1), s.clone());
-        assert_eq!(r.secret(&ep(1, 1)), Some(&s));
+        assert_eq!(r.secret(&ep(1, 1)).map(|x| x.secret()), Some(&s));
         r.set_reading_secret(ep(1, 1), s.clone(), u(3));
         assert!(!r.drop_reading_from(&cid(3)) && r.secret(&ep(1, 1)).is_some());
     }
@@ -1322,7 +1330,7 @@ mod current_oracle {
                     i.rotations.insert(CommitId([c as u8; 32]), pick(&mut next));
                 }
                 i.established = [None, Some(Provenance::Fixed), Some(Provenance::Rotated)][next(3) as usize];
-                i.secret = (next(2) == 0).then(|| Secret32::from_bytes([e.n() as u8; 32]));
+                i.secret = (next(2) == 0).then(|| Secret32::from_bytes([e.n() as u8; 32]).into());
                 r.map.insert(*e, i);
             }
             let want: Vec<Epoch> = r.map.keys().filter(|e| r.is_established(e) && !superseded_by_spec(&r, e)).copied().collect();

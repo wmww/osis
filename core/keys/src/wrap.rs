@@ -19,7 +19,7 @@ pub fn registration_epochs(a: &ActorEpochs) -> Option<[(Epoch, &Secret32); 4]> {
     let get = |r: Role| -> Option<(Epoch, &Secret32)> {
         let re = a.role(r);
         let e = re.newest()?;
-        re.secret(&e).map(|s| (e, s))
+        re.secret(&e).map(|s| (e, s.secret()))
     };
     Some([get(Role::Sync)?, get(Role::Read)?, get(Role::Write)?, get(Role::Admin)?])
 }

@@ -232,7 +232,7 @@ impl Core {
         }
         // what role commits gave (a box applied, a lowering, an entry box), where they make `t`
         // independent here (`own_record`: a held keyset part decides), judged alike
-        let mut candidates: BTreeMap<Epoch, Secret32> = self.own_record(t).map(|e| e.role(Role::Sync).held().map(|(e, s)| (e, s.clone())).collect()).unwrap_or_default();
+        let mut candidates: BTreeMap<Epoch, Secret32> = self.own_record(t).map(|e| e.role(Role::Sync).held().map(|(e, s)| (e, s.secret().clone())).collect()).unwrap_or_default();
         for (_, _, o) in &given {
             candidates.extend(o.iter().cloned());
         }

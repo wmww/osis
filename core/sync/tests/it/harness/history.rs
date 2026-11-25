@@ -877,7 +877,7 @@ fn learn_all(w: &mut World, refs: &mut Refs) {
             let Some(es) = w.engine(i).epochs(t) else { continue };
             for (e, s) in es.role(Role::Read).held() {
                 for r in refs.all() {
-                    let _ = r.engine.learn_secret(t, Role::Read, e, s.clone());
+                    let _ = r.engine.learn_secret(t, Role::Read, e, s.secret().clone());
                 }
             }
         }

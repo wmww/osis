@@ -852,7 +852,7 @@ impl Engine {
         use crate::sync::Opened;
         let mut found = None;
         for (e, secret) in self.read_epochs(t, &[]).into_iter().rev() {
-            if let Ok(x) = osis_blob::open_fire(bytes, t, &e, &osis_crypto::role_kem(&secret)) {
+            if let Ok(x) = osis_blob::open_fire(bytes, t, &e, secret.kem()) {
                 found = Some((e, x));
                 break;
             }

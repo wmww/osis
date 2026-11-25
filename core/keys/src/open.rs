@@ -6,7 +6,7 @@ use crate::epoch::{ActorEpochs, Unchecked};
 use crate::names::Names;
 use crate::Error;
 use osis_base::{Role, Tid};
-use osis_crypto::{BoxForm, BoxSlot, Epoch, Secret32, open_box, open_history, open_joint_box, open_symmetric_box, read_open_box, role_kem};
+use osis_crypto::{BoxForm, BoxSlot, Epoch, Secret32, open_box, open_history, open_joint_box, open_symmetric_box, read_open_box};
 use osis_schema::core_types::{BoxKey, HistoryKey, Sealed, SecretBox, Secrets};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -67,15 +67,9 @@ fn open_one(actor: &Tid, k: &BoxKey, b: &SecretBox, opener: &Opener) -> Result<O
         }
         SecretBox::Sealed(sb) => {
             let keyset = sb.keyset.as_ref().map(from_schema).transpose()?;
-            let role;
             let Some(ks) = keyset else { return Err(Error::Mismatch("a sealed box names no keyset")) };
-            let kem = match opener.epochs.role(k.role).secret(&ks) {
-                Some(s) => {
-                    role = role_kem(s);
-                    &role
-                }
-                None => return Ok(None),
-            };
+            let Some(s) = opener.epochs.role(k.role).secret(&ks) else { return Ok(None) };
+            let kem = s.kem();
             let Sealed::X25519MlKem768(bytes) = &sb.sealed;
             // osis-crypto checks the item is the key's (role, epoch)
             let i = open_box(kem, &slot, BoxForm::Sealed { keyset, suite: sb.suite }, bytes)?;
@@ -83,15 +77,13 @@ fn open_one(actor: &Tid, k: &BoxKey, b: &SecretBox, opener: &Opener) -> Result<O
         }
         SecretBox::Joint(jb) => {
             let keysets: Vec<Epoch> = jb.keysets.iter().map(from_schema).collect::<Result<_, _>>()?;
-            let mut roles = Vec::new();
             let mut kems = Vec::new();
             for ks in &keysets {
                 match opener.epochs.role(k.role).secret(ks) {
-                    Some(s) => roles.push(role_kem(s)),
+                    Some(s) => kems.push(s.kem()),
                     None => return Ok(None),
                 }
             }
-            kems.extend(roles.iter());
             let Sealed::X25519MlKem768(bytes) = &jb.sealed;
             let i = open_joint_box(&kems, &slot, &keysets, jb.suite, bytes)?;
             Ok(Some(Opened { role: i.role, epoch: i.epoch, secret: i.secret }))

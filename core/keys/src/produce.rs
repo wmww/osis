@@ -9,7 +9,7 @@ use crate::open::HistoryAlts;
 use crate::Error;
 use osis_base::{Role, Tid};
 use osis_crypto::{
-    BoxItem, BoxSlot, CryptoRngCore, Epoch, KemPublicKey, Secret32, open_form_box, open_history, seal_box, seal_history, HistoryEntry, seal_joint_box, wrap_symmetric_box,
+    BoxItem, BoxSlot, CryptoRngCore, Epoch, KemPublicKey, RoleSecret, Secret32, open_form_box, open_history, seal_box, seal_history, HistoryEntry, seal_joint_box, wrap_symmetric_box,
 };
 use osis_schema::core_types::{BoxKey, JointBox, KemKey, Keys, Sealed, SealedBox, SecretBox, Secrets, SymmetricBox};
 use std::collections::{BTreeMap, BTreeSet};
@@ -45,7 +45,7 @@ impl HolderKeys {
     pub fn with_own(mut self, holder: &ActorEpochs) -> HolderKeys {
         for r in ROLES {
             if let Some((e, s)) = holder.role(r).newest_held() {
-                self.own.insert(r, (e, s.clone()));
+                self.own.insert(r, (e, s.secret().clone()));
             }
         }
         self
@@ -145,7 +145,7 @@ fn symmetric(slot: &BoxSlot, i: &Item, s: &Secret32, epoch_s: Epoch) -> Result<S
 pub struct Rotated {
     pub role: Role,
     pub epoch: Epoch,
-    pub secret: Secret32,
+    pub secret: RoleSecret,
     /// The epochs it supersedes, as a node holding its secret reads them from its commit: those
     /// its keyset lists (`SecretsWrite::rotation_commit`) and those its history box lists.
     pub supersedes: BTreeSet<Epoch>,
@@ -276,10 +276,10 @@ pub fn rotate_leaving_out(actor: &Tid, roles: &BTreeSet<Role>, held: &ActorEpoch
             None if ROLES.iter().all(|q| held.role(*q).epochs().next().is_none()) => 0,
             None => return Err(Error::NoEpoch(r)),
         };
-        let secret = match seed {
+        let secret = RoleSecret::new(match seed {
             Some(s) => osis_crypto::link_key_role_secret(s, r),
             None => Secret32::random(rng),
-        };
+        });
         let epoch = Epoch::derive(actor, r, n + 1, &secret)?;
         // the floor (spec/crypto.md §4, Floors): a cut's own n; else the greatest floor among
         // its maker and the holders it boxes (each boxed, none handed what lies below its own)
@@ -289,7 +289,7 @@ pub fn rotate_leaving_out(actor: &Tid, roles: &BTreeSet<Role>, held: &ActorEpoch
             (false, true) => holders.iter().filter(|m| m.role >= r).map(|m| m.floor).max().unwrap_or(0).max(re.own_floor()).min(n + 1),
             (false, false) => 0,
         };
-        let established: Vec<(Epoch, Secret32)> = re.held_established().filter(|(e, _)| e.n() <= n).map(|(e, s)| (e, s.clone())).collect();
+        let established: Vec<(Epoch, Secret32)> = re.held_established().filter(|(e, _)| e.n() <= n).map(|(e, s)| (e, s.secret().clone())).collect();
         if r == Role::Read {
             // the greatest n it supersedes whose secret is held: one exists whenever any read
             // secret is held (the rotator may hold no current one). By n, not order n
@@ -419,7 +419,7 @@ pub fn history_boxes(actor: &Tid, held: &ActorEpochs, secrets: &Secrets, alts: &
             // (every holder of e reads it already); what this node adds, only as e's floor and
             // its maker's let in
             for (x, sx) in re.held_established().filter(|(x, _)| x.n() < e.n() && !re.is_current(x) && re.carries(&e, x)) {
-                earlier.entry(x).or_insert_with(|| sx.clone());
+                earlier.entry(x).or_insert_with(|| sx.secret().clone());
             }
             roles.retain(|x, _| !earlier.contains_key(x));
             out.insert((r, e), HistoryBox { earlier, listed, names, floor: re.floor(&e), roles, roles_listed });

@@ -465,10 +465,10 @@ fn sealing_at(tx: &mut Tx<'_>, who: &Tid, a: &Tid, m: &Tid, role: Role) -> Resul
         for k in &ks {
             let secret = own.as_ref().filter(|e| e.role(r).is_established(k)).and_then(|e| e.role(r).secret(k)).cloned();
             let written = crate::apply::keys::keyset_kem(tx, m, r, k)?;
-            let Some(kem) = written.or_else(|| secret.as_ref().map(|s| osis_crypto::role_kem(s).public().clone())) else { break };
+            let Some(kem) = written.or_else(|| secret.as_ref().map(|s| s.kem().public().clone())) else { break };
             row.push((*k, kem));
             if wrap.is_none() {
-                wrap = secret.map(|s| (*k, s));
+                wrap = secret.map(|s| (*k, s.secret().clone()));
             }
         }
         if row.len() < ks.len() {

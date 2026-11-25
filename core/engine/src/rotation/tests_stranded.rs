@@ -393,7 +393,7 @@ fn a_writers_junk_read_keyset_swallows_no_outside_fire_spec_crypto_3() {
     let f = fires_kept(&mut lp, g);
     let e = super::tests::newest_read(&lp, 0, g).unwrap();
     let mine = osis_crypto::Epoch::new(e.n() + 1, [0x77; 32]).unwrap();
-    let junk = osis_keys::keyset(&mine, &osis_crypto::Secret32::from_bytes([0x66; 32]), &Default::default(), &Default::default(), true);
+    let junk = osis_keys::keyset(&mine, &osis_crypto::Secret32::from_bytes([0x66; 32]).into(), &Default::default(), &Default::default(), true);
     write_read_keyset(&mut lp, g, &junk);
     assert_eq!(lp.peers[2].engine.get_typed(&g, &ct::KEYS).unwrap().unwrap().read, Some(junk), "the writer's keyset applied, valid");
     assert!(outside_fire(&mut lp, 2, g, &f, 5).is_none(), "no read key in force: the fire waits");
@@ -423,7 +423,7 @@ fn a_junk_kem_key_at_the_steps_epoch_holds_no_fire_back_spec_crypto_3() {
     let (mut lp, g, _) = granted(3, &[(1, Role::Write)]);
     let f = fires_kept(&mut lp, g);
     let e = super::tests::newest_read(&lp, 0, g).unwrap();
-    let junk = osis_keys::keyset(&e, &osis_crypto::Secret32::from_bytes([0x66; 32]), &Default::default(), &Default::default(), true);
+    let junk = osis_keys::keyset(&e, &osis_crypto::Secret32::from_bytes([0x66; 32]).into(), &Default::default(), &Default::default(), true);
     write_read_keyset(&mut lp, g, &junk);
     let out = outside_fire(&mut lp, 2, g, &f, 5).expect("the read key stays in force");
     sealed_to(&mut lp, &out, e, &[0, 1]);
@@ -452,7 +452,7 @@ fn a_removed_writers_keyset_holds_no_fire_back_spec_crypto_3() {
     assert!(lp.peers[1].engine.epochs(&g).is_none_or(|x| x.read.secret(&e).is_none()), "peer 1 left out of the removal's epoch");
     let held = lp.peers[2].engine.get_typed(&g, &ct::KEYS).unwrap().unwrap().read;
     let mine = osis_crypto::Epoch::new(e.n() + 1, [0x77; 32]).unwrap();
-    let junk = osis_keys::keyset(&mine, &osis_crypto::Secret32::from_bytes([0x66; 32]), &Default::default(), &Default::default(), true);
+    let junk = osis_keys::keyset(&mine, &osis_crypto::Secret32::from_bytes([0x66; 32]).into(), &Default::default(), &Default::default(), true);
     write_read_keyset(&mut lp, g, &junk);
     assert_eq!(lp.peers[2].engine.get_typed(&g, &ct::KEYS).unwrap().unwrap().read, held, "the removed writer's keyset applies nothing");
     let out = outside_fire(&mut lp, 2, g, &f, 5).expect("the read key stays in force");

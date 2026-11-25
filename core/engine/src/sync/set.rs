@@ -216,7 +216,7 @@ impl Engine {
         let current = self.current_read_secrets(t);
         if let Some(e) = self.core.epochs(t) {
             let read = e.role(Role::Read);
-            c.old_read_secrets.extend(read.held_newest_first().into_iter().filter(|(ep, _)| !current.iter().any(|(x, _)| x == ep)).map(|(ep, x)| (ep, x.clone())));
+            c.old_read_secrets.extend(read.held_newest_first().into_iter().filter(|(ep, _)| !current.iter().any(|(x, _)| x == ep)).map(|(ep, x)| (ep, x.secret().clone())));
         }
         c.read_secrets.extend(current);
         for k in self.static_listed(t)? {
@@ -263,9 +263,9 @@ impl Engine {
     pub(crate) fn current_read_secrets(&self, t: &Tid) -> Vec<(Epoch, Secret32)> {
         let Some(e) = self.core.epochs(t) else { return Vec::new() };
         let read = e.role(Role::Read);
-        let current: Vec<(Epoch, Secret32)> = read.current().into_iter().filter_map(|ep| Some((ep, read.secret(&ep)?.clone()))).collect();
+        let current: Vec<(Epoch, Secret32)> = read.current().into_iter().filter_map(|ep| Some((ep, read.secret(&ep)?.secret().clone()))).collect();
         match current.is_empty() {
-            true => read.held_newest_first().into_iter().take(1).map(|(ep, s)| (ep, s.clone())).collect(),
+            true => read.held_newest_first().into_iter().take(1).map(|(ep, s)| (ep, s.secret().clone())).collect(),
             false => current,
         }
     }
@@ -319,7 +319,7 @@ impl Engine {
         let me = self.core.me();
         for m in std::iter::once(me).chain(self.core.key_holders(&reader).into_iter().map(|(m, _)| m).filter(|m| *m != me)) {
             if let Some(e) = self.core.epochs(&m) {
-                keys.extend(e.role(Role::Read).held_newest_first().into_iter().map(|(_, s)| osis_crypto::role_kem(s).x25519().clone()));
+                keys.extend(e.role(Role::Read).held_newest_first().into_iter().map(|(_, s)| s.kem().x25519().clone()));
             }
         }
         for k in &keys {
@@ -365,7 +365,7 @@ impl Engine {
         let mut out = Vec::new();
         for t in things {
             if let Some(e) = self.core.epochs(&t) {
-                out.extend(e.role(osis_base::Role::Sync).held_newest_first().into_iter().map(|(ep, x)| (ep, x.clone())));
+                out.extend(e.role(osis_base::Role::Sync).held_newest_first().into_iter().map(|(ep, x)| (ep, x.secret().clone())));
             }
             // those its sync copies gave (`sync_ids::unread`), judged by the caller against the
             // steps registered with this node

@@ -38,7 +38,7 @@ fn opened_by_anyone(lp: &mut LocalPeer, g: Tid) -> BTreeSet<(Role, osis_crypto::
     assert!(failed.is_empty(), "{failed:?}");
     let held = lp.peers[0].engine.epochs(&g).unwrap();
     for o in &opened {
-        assert_eq!(held.role(o.role).secret(&o.epoch), Some(&o.secret));
+        assert_eq!(held.role(o.role).secret(&o.epoch).map(|s| s.secret()), Some(&o.secret));
     }
     opened.into_iter().map(|o| (o.role, o.epoch)).collect()
 }

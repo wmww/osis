@@ -129,8 +129,8 @@ pub(crate) fn issue(tx: &mut Tx<'_>, t: &Tid, epochs: &ActorEpochs, parent: Opti
     };
     // its KEM key only beside a read keyset carrying one (spec/crypto.md §3, Published KEM keys)
     let kem = keyset.is_some_and(|k| k.kem_key.is_some());
-    let read = vouched(epochs, keyset).map(|(e, s)| ct::ReadKey { epoch: osis_keys::aspects::to_schema(&e), kem_key: kem.then(|| KemKey::X25519MlKem768(osis_crypto::role_kem(s).public().as_bytes().to_vec())) });
-    let (step, set) = register_with(p, keys, &rk, (t, re, rs), (se, ss), epochs.read.wrapped_under([&re], |s| epochs.read.secret(s).is_some()).and_then(|s| epochs.read.secret(&s).map(|x| (s, x))), &mut *tx.rng)?;
+    let read = vouched(epochs, keyset).map(|(e, s)| ct::ReadKey { epoch: osis_keys::aspects::to_schema(&e), kem_key: kem.then(|| KemKey::X25519MlKem768(s.kem().public().as_bytes().to_vec())) });
+    let (step, set) = register_with(p, keys, &rk, (t, re, rs), (se, ss), epochs.read.wrapped_under([&re], |s| epochs.read.secret(s).is_some()).and_then(|s| epochs.read.secret(&s).map(|x| (s, x.secret()))), &mut *tx.rng)?;
     Ok(Issued { step, set, read })
 }
 
@@ -265,7 +265,7 @@ pub(crate) fn read_key_in_force(tx: &mut Tx<'_>, t: &Tid) -> Result<Option<ct::R
 /// it (spec/crypto.md §3, Read key): it holds the epoch current (established, not superseded) with
 /// its secret. None for a keyset it holds only part of, holds superseded, or never received the
 /// secret of (junk, a lockout): outside fires then wait for a rotation or a removal.
-fn vouched<'a>(epochs: &'a ActorEpochs, keyset: Option<&ct::Keyset>) -> Option<(Epoch, &'a Secret32)> {
+fn vouched<'a>(epochs: &'a ActorEpochs, keyset: Option<&ct::Keyset>) -> Option<(Epoch, &'a osis_crypto::RoleSecret)> {
     let e = osis_keys::aspects::from_schema(&keyset?.epoch).ok()?;
     let read = epochs.role(Role::Read);
     read.is_current(&e).then(|| read.secret(&e).map(|s| (e, s))).flatten()
@@ -318,7 +318,7 @@ pub(crate) fn step_due(tx: &mut Tx<'_>, g: &Tid, l: &SyncId, fresh: bool) -> Res
     if deposit_only && crate::rotation::keys_write_unapplied(tx, g)? {
         return Ok(None);
     }
-    let admin = epochs.role(Role::Admin).secret(&head_admin).cloned().ok_or(Error::Misuse("head admin secret"))?;
+    let admin = epochs.role(Role::Admin).secret(&head_admin).map(|s| s.secret().clone()).ok_or(Error::Misuse("head admin secret"))?;
     Ok(Some(Due { head, admin, deposit, epochs, deposit_only }))
 }
 

@@ -229,7 +229,7 @@ pub(super) fn held_secrets(p: &crate::local_peer::Peer, actors: &[Tid]) -> BTree
     for a in actors {
         let e = p.engine.epochs(a).unwrap_or_default();
         for r in osis_keys::ROLES {
-            out.extend(e.role(r).held().map(|(x, s)| ((*a, r, x), s.clone())));
+            out.extend(e.role(r).held().map(|(x, s)| ((*a, r, x), s.secret().clone())));
         }
     }
     out

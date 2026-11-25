@@ -18,5 +18,5 @@ fn source<'a>(level: u8, thing: &'a ActorEpochs, author_actor: Option<&'a ActorE
 /// the thing uses (itself, or the last actor of its derivation chain), `author_actor` the actor
 /// directly above the author node.
 pub fn delete_candidates<'a>(level: u8, thing: &'a ActorEpochs, author_actor: Option<&'a ActorEpochs>) -> Vec<(Epoch, &'a Secret32)> {
-    source(level, thing, author_actor).map(|re| re.held_newest_first()).unwrap_or_default()
+    source(level, thing, author_actor).map(|re| re.held_newest_first().into_iter().map(|(e, s)| (e, s.secret())).collect()).unwrap_or_default()
 }

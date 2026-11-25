@@ -15,6 +15,9 @@ pub struct Identity {
     signing: SigningSecret,
     record: CreationRecord,
     tid: Tid,
+    /// A link key's secrets, from its seed (none for a node thing): held here, so each KEM key
+    /// pair is derived once.
+    link: Option<ActorEpochs>,
 }
 
 impl Identity {
@@ -43,7 +46,8 @@ impl Identity {
 
     fn of(seed: Secret32, signing: SigningSecret, record: CreationRecord) -> Identity {
         let tid = record.tid();
-        Identity { seed, signing, record, tid }
+        let link = record.link_key_of().map(|_| ActorEpochs::link_key(&tid, &seed));
+        Identity { seed, signing, record, tid, link }
     }
 
     pub fn tid(&self) -> Tid {
@@ -63,12 +67,12 @@ impl Identity {
     /// A link key's secrets, from its seed alone (spec/crypto.md §3); none for a node thing,
     /// whose random secrets its minting gave the node's store.
     pub fn link_epochs(&self) -> Option<ActorEpochs> {
-        self.record.link_key_of().map(|_| ActorEpochs::link_key(&self.tid, &self.seed))
+        self.link.clone()
     }
     /// A link key's first read keyset's KEM key, which its entry boxes are sealed to
     /// (spec/sync-ids.md §3).
-    pub fn link_read_kem(&self) -> Option<osis_crypto::KemSecret> {
-        self.record.link_key_of().map(|_| osis_crypto::role_kem(&osis_crypto::link_key_role_secret(&self.seed, osis_base::Role::Read)))
+    pub fn link_read_kem(&self) -> Option<&osis_crypto::KemSecret> {
+        self.link.as_ref()?.read.held().next().map(|(_, s)| s.kem())
     }
 }
 

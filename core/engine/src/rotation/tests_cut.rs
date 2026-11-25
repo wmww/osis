@@ -624,7 +624,7 @@ fn forged_floor_on_a_fork_beside_the_cut_carries_nothing_spec_crypto_4() {
         .run(|tx| {
             let names = super::departures::names(tx.core, &g, None);
             let made_up = osis_crypto::Secret32::random(&mut *tx.rng);
-            let ks = osis_keys::aspects::keyset(&fork, &made_up, &BTreeSet::from([cut]), &names, true);
+            let ks = osis_keys::aspects::keyset(&fork, &made_up.clone().into(), &BTreeSet::from([cut]), &names, true);
             let w = osis_keys::aspects::KeysWrite { keysets: std::collections::BTreeMap::from([(Role::Read, ks)]) };
             let mut m = crate::Mutation::new();
             crate::flows::put_keysets(&mut m, g, &w)?;

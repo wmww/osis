@@ -1165,7 +1165,7 @@ mod tests {
         lp.peers[0].engine.rotate_boxing_only(&[t], &[Role::Read], &[a, g]).unwrap();
         let e0 = lp.peers[0].engine.epochs(&g).unwrap();
         let eg = e0.read.newest().unwrap();
-        let sg = e0.read.secret(&eg).cloned().unwrap();
+        let sg = e0.read.secret(&eg).unwrap().secret().clone();
         let et = lp.peers[0].engine.epochs(&t).unwrap().read.newest().unwrap();
         lp.sync(0, 1).unwrap();
         assert!(lp.peers[1].engine.epochs(&t).is_none_or(|e| e.read.secret(&et).is_none()), "nothing opens t yet");
@@ -1190,18 +1190,18 @@ mod tests {
         let e0 = lp.peers[0].engine.epochs(&t).unwrap();
         let e_new = e0.read.newest().unwrap();
         assert_ne!(e_new, before, "the removal rotated");
-        let genuine = e0.read.secret(&e_new).cloned().unwrap();
+        let genuine = e0.read.secret(&e_new).unwrap().secret().clone();
         let planted = Secret32::from_bytes([0x66; 32]);
         assert!(!lp.peers[1].engine.learn_secret(&t, Role::Read, e_new, planted.clone()).unwrap(), "a secret of another epoch");
         let e1 = lp.peers[1].engine.epochs(&t).unwrap();
         assert!(e1.read.reading_secret(&e_new).is_none());
         assert!(lp.peers[1].engine.learn_secret(&t, Role::Read, e_new, genuine.clone()).unwrap());
         let e1 = lp.peers[1].engine.epochs(&t).unwrap();
-        assert_eq!(e1.read.secret(&e_new), Some(&genuine));
+        assert_eq!(e1.read.secret(&e_new).map(|s| s.secret()), Some(&genuine));
         assert!(!e1.read.is_established(&e_new) && e1.read.newest_held().is_none_or(|x| x.0 != e_new));
         lp.sync(0, 1).unwrap();
         let e1 = lp.peers[1].engine.epochs(&t).unwrap();
-        assert_eq!(e1.read.newest_held(), Some((e_new, &genuine)));
+        assert_eq!(e1.read.newest_held().map(|(e, s)| (e, s.secret())), Some((e_new, &genuine)));
         assert_eq!(lp.peers[1].engine.wrap_secret(&t, None).unwrap().as_ref(), Some(&genuine));
     }
 
@@ -1228,10 +1228,10 @@ mod tests {
             lp.peers[0].engine.demote(&t, &Demotion { holder: m, new: None, retain: None }).unwrap();
             let e0 = lp.peers[0].engine.epochs(&t).unwrap();
             let e = e0.read.newest().unwrap();
-            let genuine = e0.read.secret(&e).cloned().unwrap();
+            let genuine = e0.read.secret(&e).unwrap().secret().clone();
             lp.sync(0, 1).unwrap();
             // the writer's `keys.0`: E's keyset with another secret's keys
-            let junk = osis_keys::keyset(&e, &Secret32::from_bytes([0x66; 32]), &Default::default(), &Default::default(), true);
+            let junk = osis_keys::keyset(&e, &Secret32::from_bytes([0x66; 32]).into(), &Default::default(), &Default::default(), true);
             let mut mu = Mutation::new();
             mu.op(t, &ct::KEYS, PathOp { path: vec![PathSeg::Field(0)], op: Op::Set(Some(junk.clone()).to_value()) }).unwrap();
             mu.unchecked();
@@ -1248,7 +1248,7 @@ mod tests {
             }
             assert_eq!(lp.peers[2].engine.get_typed(&t, &ct::KEYS).unwrap().unwrap().read, Some(junk), "the writer's keyset applied");
             let ed = lp.peers[2].engine.epochs(&t).unwrap();
-            assert_eq!(ed.read.newest_held(), Some((e, &genuine)), "junk first: {junk_first}");
+            assert_eq!(ed.read.newest_held().map(|(e, s)| (e, s.secret())), Some((e, &genuine)), "junk first: {junk_first}");
             assert_eq!(lp.peers[2].engine.wrap_secret(&t, None).unwrap().as_ref(), Some(&genuine));
         }
     }

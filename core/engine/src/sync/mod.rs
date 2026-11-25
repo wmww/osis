@@ -736,7 +736,7 @@ impl Engine {
             let ids: Vec<Arc<crate::identity::Identity>> = self.core.link_keys.values().cloned().collect();
             let Some(id) = ids.iter().find(|id| osis_crypto::static_entry(s, &id.signing().verifying_key()) == *entry) else { return Ok(None) };
             let Some(kem) = id.link_read_kem() else { return Ok(None) };
-            things.iter().find_map(|t| osis_blob::open_entry_box(b, head, &kem, t).ok().map(|i| (*t, i)))
+            things.iter().find_map(|t| osis_blob::open_entry_box(b, head, kem, t).ok().map(|i| (*t, i)))
         };
         let Some((thing, item)) = opened else { return Ok(None) };
         let key = osis_crypto::role_key(osis_crypto::RoleKey::Sync, &item.sync.1).verifying_key().to_bytes();
