@@ -15,5 +15,4 @@ osis-sync/differential::histories_hold_their_closure_plain rate:OSIS_SYNC_START=
 held-model/props::arrival_orders_read_alike_after_repair_large_spec_commits_5 rate:OSIS_HELD_START=92,OSIS_HELD_SEEDS=1 issues/held-arrival-orders-seed-92.md seed \d+ order \d+: \[
 osis-engine/order::held_set_decides_plain rate:OSIS_ORDER_SEED=755979868238 issues/held-set-decides-on-main.md Settled .*what waits for things entering the node closure\): \d+ rounds, past its bound
 osis-engine/order::held_set_decides_plain rate:OSIS_ORDER_SEED=977638812335 issues/held-set-decides-on-main.md Addenda .*panicked: called `Option::unwrap\(\)` on a `None` value
-osis-sync/differential::histories_hold_their_closure_plain rate:OSIS_SYNC_START=977638812338,OSIS_SYNC_SEEDS=1 issues/differential-full-size-classes.md panicked: must-hold bodies with no entry at quiet
 osis-sync/differential::histories_hold_their_closure_plain rate:OSIS_SYNC_START=392779649692,OSIS_SYNC_SEEDS=1 issues/differential-full-size-classes.md panicked: node-sync settle loop \(Node::settle\): \d+ rounds, past its bound
