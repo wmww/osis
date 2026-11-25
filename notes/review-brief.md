@@ -163,6 +163,8 @@ Other findings:
 - (c) issues/backdated-replace-cuts-history.md (spec wording still "erases nothing"); issues/purge-floor-exact-ts-ties.md; issues/revoke-link-before-its-seed.md; issues/forged-copy-undetected.md; issues/durable-decode-bound.md; issues/eph-node-cost-bounds.md; issues/client-auth.md; issues/cli-proxy.md; issues/root-key-erasure-tier.md.
 - The issue on external signals taken by default: closed (spar-review-tidy); what is left is issues/held-set-external-fires.md.
 
+**Landed unreviewed, for the final review**: f4acee5a2 (a holder deletes a sealed sync copy once logged; `Indexes::sync_sent` sends each `sync.0` write to a sync-alone holder once): new store behaviour on the holder's node.
+
 ## Baseline on main
 On dd5c0a3e4 (`tools/merge-branch gate spar-review-prep --all`, ostrich, offset 532945376426; log under gate-logs/ until removed). A reviewer's failure not listed here is theirs to explain.
 - **Default tests**: all pass (37 binaries, 4,580 G instructions, every binary within tools/test_cost.txt). Ignored on purpose: 14 `sync rewrite:` ignores (notes/sync-rewrite-state.md, Ignored tests) and 10 tied to issues (`rg '#\[ignore = "issues/'`).
