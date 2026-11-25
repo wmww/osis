@@ -1015,3 +1015,51 @@ fn a_writers_keyset_moves_no_copys_word_spec_sync_3() {
     p.restart(7).unwrap();
     assert_eq!(p.engine.thing_sync_now(&g).unwrap(), want, "G read as before at a fresh load");
 }
+
+/// The fires peer `i` owes to `h` among `owed`.
+fn owed_to(lp: &LocalPeer, i: usize, owed: &[FireId], h: Tid) -> usize {
+    owed.iter().filter(|id| lp.peers[i].engine.core.ix.fires.get(*id).is_some_and(|o| o.thing == h)).count()
+}
+
+// spec/permissions.md §4 (Delivering an edge piece: the steps go to a holder an admin's grant
+// gave a role): peers 0 and 1 are G's admins; peer 0 removes peer 1, which, not knowing, grants
+// U sync alone on G, boxing the sync epoch its removal rotated past. Settled, that grant is
+// invalid. Peer 0's step past that epoch goes to T (granted) and not to U: a box naming a holder
+// no applied write gave a role (anyone's junk) sends nothing. Fails with boxes of any holder
+// counting: peer 0 owes U the step and G's path.
+#[test]
+fn a_step_goes_to_no_holder_of_an_invalid_grant_spec_permissions_4() {
+    let (mut lp, g, t) = sync_holder();
+    let (me1, u) = (lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
+    lp.peers[0].engine.grant(&g, &me1, &edge(Role::Admin)).unwrap();
+    lp.sync_all().unwrap();
+    lp.peers[0].clock.advance(1_000);
+    lp.peers[0].engine.demote(&g, &super::Demotion { holder: me1, new: None, retain: None }).unwrap();
+    lp.peers[1].clock.advance(2_000);
+    lp.peers[1].engine.grant(&g, &u, &edge(Role::Sync)).unwrap();
+    lp.sync_all().unwrap();
+    assert!(lp.peers[0].engine.core.sync_alone_on(&u, &g) && !lp.peers[0].engine.core.roster_of(&g).contains_key(&u), "U's grant held, invalid");
+    let before = lp.peers[0].engine.fires_owed();
+    let s = lp.peers[0].engine.sync_id_of(&g).unwrap().unwrap();
+    lp.peers[0].engine.issue_step(&g, &s, false).unwrap().expect("the step past peer 1's keys");
+    let owed = new_owed(&lp, 0, &before);
+    assert!(owed_to(&lp, 0, &owed, t) > 0, "the step goes to T");
+    assert_eq!(owed_to(&lp, 0, &owed, u), 0, "nothing goes to U");
+}
+
+// spec/permissions.md §4 (Delivering an edge piece: the first step past a removed holder's keys,
+// and no later step): T holds sync alone on G; peer 0 removes T and issues the step past T's
+// keys, then a fresh step. The fresh step bears none of T's keys nor does its parent: nothing new
+// is owed to T. Fails with a removed holder sent every step.
+#[test]
+fn no_step_after_the_one_past_a_removed_holder_reaches_it_spec_permissions_4() {
+    let (mut lp, g, t) = sync_holder();
+    lp.peers[0].engine.demote(&g, &super::Demotion { holder: t, new: None, retain: None }).unwrap();
+    let s = lp.peers[0].engine.sync_id_of(&g).unwrap().unwrap();
+    let before = lp.peers[0].engine.fires_owed();
+    lp.peers[0].engine.issue_step(&g, &s, false).unwrap().expect("the step past T's keys");
+    assert!(owed_to(&lp, 0, &new_owed(&lp, 0, &before), t) > 0, "the step past T's keys goes to T");
+    let before = lp.peers[0].engine.fires_owed();
+    lp.peers[0].engine.issue_step(&g, &s, true).unwrap().expect("a fresh step");
+    assert_eq!(owed_to(&lp, 0, &new_owed(&lp, 0, &before), t), 0, "the step after it goes nowhere");
+}

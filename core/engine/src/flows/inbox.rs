@@ -57,15 +57,19 @@ fn deliver_with_steps(tx: &mut Tx<'_>, holder: Tid, c: CommitId, target: Tid) ->
 
 /// Step commit `c` of `target`, bearing sync key `key`, issued as a child of a step bearing
 /// `parent` (spec/sync-ids.md §2 What a sync holder learns, spec/sync-judgement.md §6 Stops):
-/// each holder of sync alone on `target` (`sync_alone_on`) one of whose sync keys
-/// (`sync_boxed`: of a secret `target`'s `secrets.0` boxes to it) either bears is sent it as
-/// sealed copies of `c` and the target's other `sync.0` writes held (its path), no header. A
-/// step bearing its key is how its box counts (a box at an epoch whose step comes later); the
-/// first past its keys is its removal, by which its readers judge it holding sync no more
-/// (`Unread::holders`), whatever rotation was blocked or step issued between. A step past that
-/// goes to it no more.
+/// each holder of sync alone on `target` (`sync_alone_on`) an applied edge write here gave a
+/// role (on the roster or removed), one of whose sync keys (`sync_boxed`: of a secret
+/// `target`'s `secrets.0` boxes to it) either bears, is sent it as sealed copies of `c` and the
+/// target's other `sync.0` writes held (its path), no header. A step bearing its key is how its
+/// box counts (a box at an epoch whose step comes later); the first past its keys is its
+/// removal, by which its readers judge it holding sync no more (`Unread::holders`), whatever
+/// rotation was blocked or step issued between. A step past that goes to it no more.
+/// Invariant (security): only a holder this admin's side granted is sent steps, so a held write
+/// of no authority (a removed admin's grant, a deposit's junk) makes an admin send nothing; a box
+/// counts whatever its validity: a junk box names an epoch its writer knew, whose steps it could hand on itself.
 pub(crate) fn deliver_step(tx: &mut Tx<'_>, target: Tid, c: CommitId, key: &[u8; 32], parent: Option<&[u8; 32]>) -> Result<()> {
-    let holders: Vec<Tid> = tx.core.ix.held.holders_of(&target).copied().filter(|h| tx.core.sync_alone_on(h, &target)).collect();
+    let granted: BTreeSet<Tid> = tx.core.timelines().on(&target).map(|on| on.applied().filter(|(_, o)| o.edge.is_some()).filter_map(|(_, o)| if let osis_base::Holder::Thing(h) = o.holder { Some(h) } else { None }).collect()).unwrap_or_default();
+    let holders: Vec<Tid> = tx.core.ix.held.holders_of(&target).copied().filter(|h| granted.contains(h) && tx.core.sync_alone_on(h, &target)).collect();
     for h in holders {
         let keys = crate::apply::keys::sync_boxed(tx.core, &target, &h);
         if keys.contains(key) || parent.is_some_and(|p| keys.contains(p)) {
