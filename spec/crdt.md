@@ -59,7 +59,7 @@ A reader checks that:
 
 ### 2.4 What the commit header provides
 - `ts` of the commit.
-- Per aspect: `(tid, ak, counter range [lo, hi), delta hash)` as in §2.3, one delta per `(tid, ak)`. Encoding IDs and the sources table are inside the delta (§3.2), not in the header.
+- Per aspect: `(tid, ak, counter range [lo, hi), delta hash)` as in §2.3, one delta per `(tid, ak)`; a `secrets.0` write may come in pieces, deltas sharing the range with disjoint dots that join as its one delta (spec/wire.md §4 Pieces). Encoding IDs and the sources table are inside the delta (§3.2), not in the header.
 - Dot form (commit, or session with its nonce).
 - Snapshot marker (§8): a snapshot commit carries only foreign writes and consumes no counters (empty ranges).
 - `expires: T` (wall ms), optional, one per commit (§4.7).

@@ -9,7 +9,7 @@ Encoding: spec/wire.md §4. Fields:
 - Kind: content or role (§2); compaction-snapshot marker.
 - `ts` (spec/crdt.md §2.2) and the dot form, commit or session (§3).
 - Optional `expires` (§6), the expiry of every delta of the commit.
-- Aspect list: per touched `(tid, ak)`: counter range `[lo, hi)`, purge-by (§5), the delta hash of its one delta, and for a durable signal's delta optionally the fire it `replaces` (§5 Signals).
+- Aspect list: per touched `(tid, ak)`: counter range `[lo, hi)`, purge-by (§5), the delta hash of its one delta (of each piece, for a `secrets.0` written per holder, spec/wire.md §4 Pieces), and for a durable signal's delta optionally the fire it `replaces` (§5 Signals).
 - Optional purge request (§5), optional `undoes: commit ID` (§7).
 - A 16-byte random blind (the commit blob's, spec/crypto.md §7) and the delete keys with their levels; per aspect, the indices of the keys its deltas call for.
 - Lowerings made as explicit writes only: the frontier (spec/permissions.md §5.1 Frontier), inline or as a link to a chunk tree when it exceeds `CHUNK_THRESHOLD` (spec/data-model.md §6).

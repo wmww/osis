@@ -1,0 +1,452 @@
+//! Boxes cut by holder (spec/wire.md §4 Pieces, spec/permissions.md §4 Copies): a commit's
+//! `secrets.0` write on a thing comes in pieces, one per holder its box records are keyed with
+//! (and the rest), each bound by its own hash and judged alone; an edge piece carries its holder's
+//! piece only, and a holder of sync alone's carries no header (its box proves itself by the step
+//! bearing its secret's sync key). Greenfield: the question is which boxes a reader of S, the
+//! sync ID of a holder T of X, takes and which of X's holders it learns.
+//!
+//! The world: X (mint admin XA) grants T (sync alone or read, per world), H and others, by XA or
+//! by a holder with the may-grant flag, sometimes with a junk box beside the grantee's; its
+//! admins and writers rotate X boxing every holder; anyone may write a box to T (a forged one at
+//! an epoch no step bears); XA records steps, H junk ones; XA removes holders. Sync and read
+//! share one epoch counter. R reads T's key part: T's edge piece on X as the rule cuts it,
+//! closed over evidence (the edge writes on each copied commit's hop (signer, X)), but for a
+//! holder of sync alone (no evidence, spec/permissions.md §4 Key part).
+use crate::gen::Rng;
+use std::collections::{BTreeMap, BTreeSet};
+
+pub type Id = u32;
+pub type Cid = u32;
+
+pub const X: Id = 30;
+pub const XA: Id = 31;
+pub const T: Id = 20;
+pub const H: Id = 32;
+pub const O1: Id = 40;
+pub const O2: Id = 41;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Role {
+    Sync,
+    Read,
+    Write,
+    Admin,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct Edge {
+    pub holder: Id,
+    pub role: Option<Role>,
+    pub may_grant: bool,
+}
+
+/// A box of X to `holder`: `role`'s secret at `epoch`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct BoxAt {
+    pub holder: Id,
+    pub role: Role,
+    pub epoch: u32,
+}
+
+/// A commit on X along the one hop (signer, X).
+#[derive(Clone, Debug)]
+pub struct Commit {
+    pub id: Cid,
+    pub signer: Id,
+    pub ts: u32,
+    pub roles: Option<Vec<Edge>>,
+    /// the `secrets.0` write: its pieces are its boxes grouped by holder
+    pub boxes: Vec<BoxAt>,
+    /// a `sync.0` step registering the sync key of this epoch; `chain` whether it verifies from
+    /// the genesis step (signed by an admin's delete key)
+    pub step: Option<(u32, bool)>,
+}
+
+impl Commit {
+    fn holders(&self) -> BTreeSet<Id> {
+        self.boxes.iter().map(|b| b.holder).collect()
+    }
+}
+
+/// A part of a commit as a copy holds it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum P {
+    Header,
+    Roles,
+    /// the `secrets.0` piece of this holder
+    Piece(Id),
+    Sync,
+}
+
+pub type Held = BTreeSet<(Cid, P)>;
+
+#[derive(Clone, Debug, Default)]
+pub struct World {
+    pub commits: Vec<Commit>,
+    /// T's grant role: sync alone, or read
+    pub t_sync_alone: bool,
+}
+
+/// Which copies R holds, and how it judges a `secrets.0` write.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Rule {
+    /// The spec: T's piece alone, each piece judged alone; no header for a holder of sync alone.
+    Spec,
+    /// Control, today's copies: the whole `secrets.0` part beside T's box (every holder's piece),
+    /// with its header, a holder of sync alone's included.
+    WholePart,
+    /// Control: T's piece alone, but a `secrets.0` write judged as one over the pieces held.
+    AspectVerdict,
+    /// Control: T's piece alone, a holder of sync alone's copies keeping their header.
+    SyncHeader,
+    /// Control: a holder of sync alone takes a box's secret without a step bearing its sync key.
+    NoStepCheck,
+}
+
+impl World {
+    fn commit(&self, c: Cid) -> &Commit {
+        self.commits.iter().find(|x| x.id == c).expect("commit")
+    }
+
+    /// The edge writes setting the hop (s, X): evidence of a commit signed by s.
+    fn evidence_of(&self, c: &Commit) -> Vec<Cid> {
+        if c.signer == XA {
+            return Vec::new();
+        }
+        self.commits.iter().filter(|d| d.roles.as_ref().is_some_and(|es| es.iter().any(|e| e.holder == c.signer))).map(|d| d.id).collect()
+    }
+
+    /// The commits T's edge piece on X names: edge writes naming T, commits boxing T, steps.
+    fn named(&self) -> Vec<&Commit> {
+        self.commits
+            .iter()
+            .filter(|c| c.roles.as_ref().is_some_and(|es| es.iter().any(|e| e.holder == T)) || c.holders().contains(&T) || c.step.is_some())
+            .collect()
+    }
+
+    /// The parts a reader of T's key part holds under `rule`.
+    pub fn cut(&self, rule: Rule) -> Held {
+        let mut held = Held::new();
+        for c in self.named() {
+            let pieces: Vec<Id> = match rule {
+                Rule::WholePart => c.holders().into_iter().collect(),
+                _ => c.holders().into_iter().filter(|h| *h == T).collect(),
+            };
+            held.extend(pieces.into_iter().map(|h| (c.id, P::Piece(h))));
+            if c.step.is_some() {
+                held.insert((c.id, P::Sync));
+            }
+            if self.t_sync_alone {
+                // no edge write, no evidence; the header only where the rule keeps it
+                if matches!(rule, Rule::WholePart | Rule::SyncHeader) {
+                    held.insert((c.id, P::Header));
+                }
+                continue;
+            }
+            held.insert((c.id, P::Header));
+            if c.roles.is_some() {
+                held.insert((c.id, P::Roles));
+            }
+        }
+        if !self.t_sync_alone {
+            // closed over evidence
+            let mut work: Vec<Cid> = held.iter().map(|(c, _)| *c).collect();
+            while let Some(c) = work.pop() {
+                for d in self.evidence_of(self.commit(c)) {
+                    if held.insert((d, P::Roles)) {
+                        held.insert((d, P::Header));
+                        work.push(d);
+                    }
+                }
+            }
+        }
+        held
+    }
+
+    /// The reference: whole copies of every commit T's edge piece names (every part, header
+    /// included), closed over evidence, but for a holder of sync alone (no evidence).
+    pub fn whole(&self) -> Held {
+        let mut held = Held::new();
+        for c in self.named() {
+            held.insert((c.id, P::Header));
+            if c.roles.is_some() {
+                held.insert((c.id, P::Roles));
+            }
+            held.extend(c.holders().into_iter().map(|h| (c.id, P::Piece(h))));
+            if c.step.is_some() {
+                held.insert((c.id, P::Sync));
+            }
+        }
+        if !self.t_sync_alone {
+            let mut work: Vec<Cid> = held.iter().map(|(c, _)| *c).collect();
+            while let Some(c) = work.pop() {
+                for d in self.evidence_of(self.commit(c)) {
+                    if held.insert((d, P::Roles)) {
+                        held.insert((d, P::Header));
+                        work.push(d);
+                    }
+                }
+            }
+        }
+        held
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum V {
+    Valid,
+    Invalid,
+    Pending,
+}
+
+/// What R takes and learns.
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub struct Seen {
+    /// X's (role, epoch) secrets R takes from boxes to T
+    pub taken: BTreeSet<(Role, u32)>,
+    /// X's holders R learns of (box keys, edge writes, headers' signers), T and XA aside
+    pub learned: BTreeSet<Id>,
+    /// other holders' pieces R carries
+    pub others_pieces: usize,
+}
+
+/// R's judgement holding `held` (`Rule::AspectVerdict`: a `secrets.0` write judged as one over
+/// the pieces held; `Rule::NoStepCheck`: no step check).
+pub fn judge(w: &World, held: &Held, rule: Rule) -> Seen {
+    let aspect = rule == Rule::AspectVerdict;
+    let mut out = Seen::default();
+    for &(c, p) in held {
+        let cm = w.commit(c);
+        match p {
+            P::Header => {
+                out.learned.insert(cm.signer);
+            }
+            P::Roles => out.learned.extend(cm.roles.iter().flatten().map(|e| e.holder)),
+            P::Piece(h) => {
+                out.learned.insert(h);
+                out.others_pieces += (h != T) as usize;
+            }
+            P::Sync => {}
+        }
+    }
+    out.learned.remove(&T);
+    out.learned.remove(&XA);
+    if w.t_sync_alone {
+        // no judging: a box to T proves itself by a held step bearing its sync key
+        let borne: BTreeSet<u32> = w.commits.iter().filter(|c| held.contains(&(c.id, P::Sync))).filter_map(|c| c.step).filter(|(_, chain)| *chain).map(|(e, _)| e).collect();
+        for c in &w.commits {
+            if !held.contains(&(c.id, P::Piece(T))) {
+                continue;
+            }
+            for b in c.boxes.iter().filter(|b| b.holder == T && b.role == Role::Sync) {
+                if rule == Rule::NoStepCheck || borne.contains(&b.epoch) {
+                    out.taken.insert((b.role, b.epoch));
+                }
+            }
+        }
+        return out;
+    }
+    let j = Judge::new(w, held);
+    for c in &w.commits {
+        let pieces: Vec<Vec<BoxAt>> = {
+            let ps: Vec<Vec<BoxAt>> = c.holders().into_iter().filter(|h| held.contains(&(c.id, P::Piece(*h)))).map(|h| c.boxes.iter().copied().filter(|b| b.holder == h).collect()).collect();
+            if aspect && !ps.is_empty() {
+                vec![ps.concat()]
+            } else {
+                ps
+            }
+        };
+        for bs in pieces {
+            if j.secrets(c, &bs) == V::Valid {
+                out.taken.extend(bs.iter().filter(|b| b.holder == T).map(|b| (b.role, b.epoch)));
+            }
+        }
+    }
+    out
+}
+
+struct Judge<'a> {
+    w: &'a World,
+    held: &'a Held,
+    /// edge writes in key order: (ts, edges applied)
+    walk: Vec<(u32, Vec<(Edge, bool)>)>,
+    roles: BTreeMap<Cid, V>,
+}
+
+impl<'a> Judge<'a> {
+    fn new(w: &'a World, held: &'a Held) -> Judge<'a> {
+        let mut j = Judge { w, held, walk: Vec::new(), roles: BTreeMap::new() };
+        let mut cs: Vec<&Commit> = w.commits.iter().filter(|c| held.contains(&(c.id, P::Roles))).collect();
+        cs.sort_by_key(|c| c.ts);
+        for c in cs {
+            let Some(es) = &c.roles else { continue };
+            if j.pending(w, c.signer) {
+                j.roles.insert(c.id, V::Pending);
+                continue;
+            }
+            let state = j.state_before(c.ts);
+            let by = state.get(&c.signer).copied();
+            let applied: Vec<(Edge, bool)> = es
+                .iter()
+                .map(|e| {
+                    let ok = match by {
+                        Some((Role::Admin, _)) => true,
+                        Some((r, true)) => e.role.is_some_and(|g| g <= r) && !state.contains_key(&e.holder),
+                        _ => false,
+                    };
+                    (*e, ok)
+                })
+                .collect();
+            let v = if applied.iter().all(|(_, ok)| *ok) { V::Valid } else { V::Invalid };
+            j.roles.insert(c.id, v);
+            j.walk.push((c.ts, applied));
+        }
+        j
+    }
+
+    fn pending(&self, w: &World, s: Id) -> bool {
+        s != XA && !w.commits.iter().any(|c| self.held.contains(&(c.id, P::Roles)) && c.roles.as_ref().is_some_and(|es| es.iter().any(|e| e.holder == s)))
+    }
+
+    fn state_before(&self, ts: u32) -> BTreeMap<Id, (Role, bool)> {
+        let mut s = BTreeMap::from([(XA, (Role::Admin, true))]);
+        for (k, applied) in &self.walk {
+            if *k >= ts {
+                break;
+            }
+            for (e, _) in applied.iter().filter(|(_, ok)| *ok) {
+                match e.role {
+                    Some(r) => {
+                        s.insert(e.holder, (r, e.may_grant));
+                    }
+                    None => {
+                        s.remove(&e.holder);
+                    }
+                }
+            }
+        }
+        s
+    }
+
+    /// A `secrets.0` write (a piece, or the pieces held as one): a may-grant grant's boxes to its
+    /// grantees judged from the commit alone (spec/permissions.md §2), else the boxes' greatest
+    /// role, at least write, along the hop (spec/permissions.md §3).
+    fn secrets(&self, c: &Commit, bs: &[BoxAt]) -> V {
+        if !self.held.contains(&(c.id, P::Header)) {
+            return V::Pending;
+        }
+        if let (Some(es), Some(V::Valid)) = (&c.roles, self.roles.get(&c.id)) {
+            if self.held.contains(&(c.id, P::Roles)) && bs.iter().all(|b| es.iter().any(|e| e.holder == b.holder && e.role.is_some_and(|g| g >= b.role))) {
+                return V::Valid;
+            }
+        }
+        if self.pending(self.w, c.signer) {
+            return V::Pending;
+        }
+        let need = bs.iter().map(|b| b.role).max().unwrap_or(Role::Write).max(Role::Write);
+        let s = self.state_before(c.ts);
+        if s.get(&c.signer).is_some_and(|(r, _)| *r >= need) {
+            V::Valid
+        } else {
+            V::Invalid
+        }
+    }
+}
+
+/// The boxes a holder of `role` gets at `epoch`: sync, and read where it reads.
+fn boxes_for(h: Id, role: Role, epoch: u32) -> Vec<BoxAt> {
+    let mut v = vec![BoxAt { holder: h, role: Role::Sync, epoch }];
+    if role >= Role::Read {
+        v.push(BoxAt { holder: h, role: Role::Read, epoch });
+    }
+    v
+}
+
+/// A random world of `seed`: four to fourteen events on X.
+pub fn world(seed: u64) -> World {
+    let mut r = Rng::new(seed ^ 0xB0C5);
+    let mut w = World { t_sync_alone: seed % 2 == 0, ..World::default() };
+    let t_role = if w.t_sync_alone { Role::Sync } else { Role::Read };
+    let mut x: BTreeMap<Id, (Role, bool)> = BTreeMap::from([(XA, (Role::Admin, true))]);
+    let mut epoch: u32 = 0;
+    let mut fake: u32 = 1000;
+    let mut id: Cid = 0;
+    let mut push = |w: &mut World, signer: Id, roles: Option<Vec<Edge>>, boxes: Vec<BoxAt>, step: Option<(u32, bool)>| {
+        id += 1;
+        w.commits.push(Commit { id, signer, ts: id, roles, boxes, step });
+    };
+    push(&mut w, XA, None, Vec::new(), Some((0, true)));
+    let others = [T, H, O1, O2];
+    let events = 4 + r.below(11);
+    for _ in 0..events {
+        match r.below(10) {
+            0..=3 => {
+                // a grant, by XA or a may-grant holder
+                let granters: Vec<Id> = x.iter().filter(|(_, (ro, mg))| *ro == Role::Admin || *mg).map(|(n, _)| *n).collect();
+                let s = r.pick(&granters);
+                let (sr, _) = x[&s];
+                let g = r.pick(&others);
+                if g == s || (sr != Role::Admin && x.contains_key(&g)) {
+                    continue;
+                }
+                let role = if g == T {
+                    t_role
+                } else {
+                    let roles = [Role::Sync, Role::Read, Role::Write, Role::Admin];
+                    r.pick(&roles[..if sr == Role::Admin { 4 } else { roles.iter().position(|y| *y == sr).unwrap() + 1 }])
+                };
+                let mg = g != T && role >= Role::Read && r.chance(50);
+                let mut bs = boxes_for(g, role, epoch);
+                if r.chance(25) {
+                    // junk beside the grantee's: a box to a holder the commit grants nothing
+                    let o = r.pick(&others);
+                    if o != g {
+                        bs.push(BoxAt { holder: o, role: Role::Read, epoch });
+                    }
+                }
+                push(&mut w, s, Some(vec![Edge { holder: g, role: Some(role), may_grant: mg }]), bs, None);
+                if sr == Role::Admin || !x.contains_key(&g) {
+                    x.insert(g, (role, mg));
+                }
+            }
+            4 | 5 => {
+                // a rotation by a writer or admin, boxing every holder; an admin's step follows
+                let rotators: Vec<Id> = x.iter().filter(|(_, (ro, _))| *ro >= Role::Write).map(|(n, _)| *n).collect();
+                let s = r.pick(&rotators);
+                epoch += 1;
+                let bs: Vec<BoxAt> = x.iter().filter(|(n, _)| **n != s).flat_map(|(n, (ro, _))| boxes_for(*n, *ro, epoch)).collect();
+                push(&mut w, s, None, bs, None);
+                if r.chance(80) {
+                    push(&mut w, XA, None, Vec::new(), Some((epoch, true)));
+                }
+            }
+            6 => {
+                // a box to T by anyone: a re-seal at the epoch, or a forged one at an epoch no step bears
+                let s = r.pick(&[XA, H, O1]);
+                let e = if r.chance(50) {
+                    fake += 1;
+                    fake
+                } else {
+                    epoch
+                };
+                push(&mut w, s, None, boxes_for(T, t_role, e), None);
+            }
+            7 => {
+                // a junk step by H: its chain does not verify
+                let e = if r.chance(50) { epoch } else { fake + 1 };
+                push(&mut w, H, None, Vec::new(), Some((e, false)));
+            }
+            _ => {
+                // XA removes a holder (no rotation: the next rotation boxes those left)
+                let hs: Vec<Id> = x.keys().copied().filter(|n| *n != XA).collect();
+                if hs.is_empty() {
+                    continue;
+                }
+                let g = r.pick(&hs);
+                push(&mut w, XA, Some(vec![Edge { holder: g, role: None, may_grant: false }]), Vec::new(), None);
+                x.remove(&g);
+            }
+        }
+    }
+    w
+}
