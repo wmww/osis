@@ -278,12 +278,12 @@ deny() {
 limited gate.deny deny
 # The tests, in one hold of the box-wide heavy lock (tools/heavy, notes/build.md, Heavy lock): two
 # all-core runs at once each take about twice as long. Doctests compile inside it, at run time.
-# tools/heavy checks the hold against `gate.hold` and writes its lock wait to $wf, which the
-# gate's own limit leaves out.
+# tools/heavy --gate goes ahead of waiting by-hand holds, checks the hold against `gate.hold` and
+# writes its lock wait to $wf, which the gate's own limit leaves out.
 # A failing stage ends neither the hold nor the gate: the GUI tests still run, then the summary.
 wf=$tmp/wait
 export HEAVY_WAIT_FILE="$wf"
-step tools/heavy --limit gate.hold sh tools/gate.sh --held "$sel" || :
+step tools/heavy --gate sh tools/gate.sh --held "$sel" || :
 wait_s=$(cat "$wf" 2>/dev/null || true); wait_s=${wait_s:-0}
 gui_test
 passed "${wait_s%.*}" ", ${wait_s%.*}s of it waiting for the heavy lock"

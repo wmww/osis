@@ -7,7 +7,7 @@
 ## Limits
 Limits are multiples of the box's base unit `u` (the CPU-s of one fixed work quantum of `tools/baseunit.c` with every hardware thread busy): CPU `k u`, wall `k u 16/threads`. A new box: `tools/heavy tools/limits.py unit`, then add its row. `tools/limits.py` parses both tables (columns `box`/`limit` first, then the numbers and `share of`): keep their shape.
 
-`gate` and `gate.hold` are Tess's 10-minute cap on ostrich, raised only by her. `gate` leaves out the lock wait and the `build` stage (a rebuild after a rebase is set by what main changed, not by the branch). Every gate stage is a share of one whole (`share of`); shares sum to at most the whole, leaving 1 u wall and 10 u CPU for the steps between (`tools/limits.py split`, a gate instant check). Shares are below what stages take today, so gates hit them until issues/test-time.md is done; such hits belong to that issue. A hit is reported and logged, never fatal.
+`gate` and `gate.hold` are Tess's 10-minute cap on ostrich, raised only by her. `gate` leaves out the lock wait and the `build` stage (a rebuild after a rebase is set by what main changed, not by the branch). Every gate stage is a share of one whole (`share of`); shares sum to at most the whole (`tools/limits.py split`, a gate instant check). Shares are in proportion to what each stage takes: `tools/limits.py derive` gives the whole's parts its limit times the fraction of it they took (the rest is the time between them), split by their medians over this box's last 10 gates; rerun it and copy its rows when the stages' mix moves. So a stage over its share grew against the others, and a gate over the cap with every stage near its share is issues/test-time.md's (the gate's wall does not fit: its median is 1.45x the cap, its CPU 0.76x). A hit is reported and logged, never fatal.
 
 | box | unit (CPU-s) |
 |---|---|
@@ -19,31 +19,31 @@ Limits are multiples of the box's base unit `u` (the CPU-s of one fixed work qua
 |---|---|---|---|---|
 | `test` | 4.5 | 6.5 |  | one default test alone (`tools/limits.py tests`); in a gate each binary is held to its instruction count instead (notes/gate.md, The summary) |
 | `rebuild` | 70 | 13 |  | an osis-base comment edit, warm, `cargo build --all-targets` (`tools/limits.py run rebuild cargo build --all-targets`) |
-| `build` | 55 | 10 |  | the gate's builds, outside `gate` |
-| `default-tests` | 1400 | 100 | `gate.hold` | `cargo test --no-fail-fast`, built |
-| `gate.checks` | 20 | 6 | `gate` | the instant checks with the tools' tests |
-| `gate.clippy` | 40 | 8 | `gate` | core clippy, warm |
-| `gate.gui-lint` | 10 | 2 | `gate` | the GUI's clippy after core's |
-| `gate.unify` | 40 | 6 | `gate` | the unification check |
-| `gate.deny` | 10 | 2 | `gate` | schema check, deny, core bans |
-| `gate.properties` | 1670 | 94 | `gate.hold` | the selected properties |
-| `gate.sim` | 210 | 14 | `gate.hold` | every sim scenario at 15 seeds |
-| `gate.replay` | 20 | 4 |  | one `rate:` known line replayed at its REPRO, in the hold (one seed: no share) |
+| `build` | 750 | 140 |  | the gate's builds, outside `gate`: a fixed setup cost, set at a low crate's change (every dependent's test binaries), the costliest common build, so only an unusual build is over |
+| `default-tests` | 1014 | 92 | `gate.hold` | `cargo test --no-fail-fast`, built |
+| `gate.checks` | 29 | 4.1 | `gate` | the instant checks with the tools' tests |
+| `gate.clippy` | 17 | 3.1 | `gate` | core clippy, warm |
+| `gate.gui-lint` | 3.7 | 1.1 | `gate` | the GUI's clippy after core's |
+| `gate.unify` | 218 | 2.9 | `gate` | the unification check |
+| `gate.deny` | 2.1 | 0.8 | `gate` | schema check, deny, core bans |
+| `gate.properties` | 2060 | 118 | `gate.hold` | the selected properties |
+| `gate.sim` | 76 | 4.1 | `gate.hold` | every sim scenario at 15 seeds |
+| `gate.replay` | 20 | 10 |  | one `rate:` known line replayed at its REPRO, in the hold (one seed: no share) |
 | `gate.doctests` | 55 | 10 |  | the comments path's doctests (notes/gate.md, Components pay for themselves), as `build` |
-| `gate.gui-tests` | 20 | 4 | `gate` | GUI tests |
-| `gate.hold` | 3300 | 210 | `gate` | the gate's one heavy-lock hold |
+| `gate.gui-tests` | 79 | 13 | `gate` | GUI tests |
+| `gate.hold` | 3208 | 230 | `gate` | the gate's one heavy-lock hold |
 | `gate` | 3560 | 260 |  | the whole gate but its lock wait and `build`; its CPU is what 10 minutes at the box's usual 85% busy allows |
 | `heavy` | 2200 | 260 |  | any other heavy-lock hold |
 | `heavy.short` | 50 | 100 |  | a cap, not a check: `tools/heavy --short` stops a run past either and reruns it in a hold (notes/build.md, Heavy lock). At 0 the lane closes; at infinity there is no lock |
 
-`tools/limits.py` (its docstring): `check` prints `limit NAME: CPU a/b s, wall c/d s` and a line per limit exceeded (`LIMIT CAP` over `gate`/`gate.hold`, an indented `over share:` for a stage over only its share, `LIMIT` otherwise), appends to limits.log and never fails the run; the gate checks each stage and itself, `tools/heavy` each hold (`--limit NAME`, default `heavy`). `run NAME CMD` wraps a by-hand run; `tests` times every default test alone (under the lock, about half an hour); `table` prints the limits in seconds on this box; `summary [--since H] [--all]` lists the hits and flags investigation triggers.
+`tools/limits.py` (its docstring): `check` prints `limit NAME: CPU a/b s, wall c/d s` and a line per limit exceeded (`LIMIT CAP` over `gate`/`gate.hold`, an indented `over share:` for a stage over only its share, `LIMIT` otherwise), appends to limits.log and never fails the run; the gate checks each stage and itself, `tools/heavy` each hold (`--limit NAME`, default `heavy`; `--gate` is `gate.hold`). `run NAME CMD` wraps a by-hand run; `tests` times every default test alone (under the lock, about half an hour); `table` prints the limits in seconds on this box; `summary [--since H] [--all]` lists the hits and flags investigation triggers; `derive [--gates N]` re-derives the gate's shares.
 
 ## Patterns
 Known causes of overruns. A report of a hit names the one that fits, or the cause when none does (then add it here). Wall over with CPU within is load: boxes run other agents' work beside a gate, usually at load 15-40.
-- **ostrich's CPU per u.** Ostrich spends about 1.6x fastbox-0's CPU-s per u on the same work (the quantum's mix misreads this CPU's cost of compiled Rust tests), so every ostrich gate is over `gate` wall and the default tests over their share. A hold also keeps only 12-13 cores busy (binaries run in turn, each ending on its slowest tests). Selections reaching roles-model or held-model run `gate.properties` at 1.1-1.6x its share. Levers: issues/test-time.md.
+- **ostrich's CPU per u.** Ostrich spends about 1.6x fastbox-0's CPU-s per u on the same work (the quantum's mix misreads this CPU's cost of compiled Rust tests), so every ostrich gate is over `gate` wall (its CPU fits). A hold also keeps only 12-13 cores busy (binaries run in turn, each ending on its slowest tests). Selections reaching roles-model or held-model run `gate.properties` over its share. Levers: issues/test-time.md.
 - **fastbox-0: CPU at its shares, wall over by load.** A warm gate at load under 15 fits; CPU over 1.2x is worth a look.
-- **Builds after a low-crate change.** Any change below osis-engine since the target's last build (the branch's or main's) recompiles every dependent's test binaries: at best 330-390 CPU-s, several times the `build` share; clippy and, when the GUI is reached, `gate.gui-lint` pay too. Only a gate with nothing below its own top crates changed fits.
-- **An engine change.** osis-engine compiles twice (library and its `#[cfg(test)]` lib tests), then sync, sim, osis, chat and cli: over the `build` share in every engine gate. Lever: issues/test-time.md, Properties and builds.
+- **Builds after a low-crate change.** Any change below osis-engine since the target's last build (the branch's or main's) recompiles every dependent's test binaries: 330-1700 CPU-s, the top of which `build` is set at; clippy and, when the GUI is reached, `gate.gui-lint` pay too. Only a gate with nothing below its own top crates changed fits.
+- **An engine change.** osis-engine compiles twice (library and its `#[cfg(test)]` lib tests), then sync, sim, osis, chat and cli: near the `build` limit in every engine gate. Lever: issues/test-time.md, Properties and builds.
 - **A manifest or lock change selects everything** and runs the unification check, which rebuilds the GUI (`gate.unify` up to thousands of CPU-s). By design (notes/gate.md, The selection).
 - **Other builds in the gating worktree.** A `tools/bin-at` or by-hand variant build leaves the target at another revision: the gate rebuilds every dependent.
 - **Tiny wall shares trip on load**: `gate.deny`, `gate.gui-lint`, `gate.checks`.
@@ -57,7 +57,7 @@ Known causes of overruns. A report of a hit names the one that fits, or the caus
 - **A hung test or seed**: a default target with no test finishing for 10x the `test` wall is stopped (notes/gate.md, Hung tests); a property seed can run to its 600 CPU-s timeout.
 
 ## Investigations
-One entry per investigation: date and box, trigger, what was tried, outcome (fixed, or a raised limit with why). Tess reviews every raise. Raised: `gate.checks` CPU (2026-11-21).
+One entry per investigation: date and box, trigger, what was tried, outcome (fixed, or a raised limit with why). Tess reviews every raise. Raised: `gate.checks` CPU (2026-11-21); `build`, `gate.replay` wall (2026-11-25).
 
 - 2026-11-10 ostrich, `gate` 4.3x the then 5-minute cap: issues/test-time.md holds what was measured, fixed and left; later gates over for the same cause belong to it.
 - 2026-11-12 fastbox-0, `gate.sim` 3.46x: main and the branch cost the same; sim CPU varies with the seed offset; the rest was load.
@@ -72,4 +72,5 @@ One entry per investigation: date and box, trigger, what was tried, outcome (fix
 - 2026-11-22 ostrich, `gate.properties` 3,997 against 3,841 CPU-s, wall 2x at load 37-57: load. Fixed: a yielded hold's waits are left out of the hold and the gate. Checked, not cut: capping play, story shrinking (each about 1%), smaller sizes, sampling the drop check (Tess's call).
 - 2026-11-25 ostrich, the full selection 784 s against 598 s: properties 1.37x their CPU share, `gate.gui-tests` compiling in its stage. Fixed: GUI test binaries built in `build`; a pending commit's boxes read from the same commit not opened again (`held_set_decides_*` -9% instructions); roles-model commit sets as bitsets (roles-model properties -25%, held-model -16%); rotation checks open each party's own boxes once (-4%); policy.py 14 -> 10 CPU-s. The full selection's properties after: 4,890 CPU-s, 379 s wall at load 40-46 (from 5,251 and 421 s); each binary's wall is its costliest property's (`held_set_decides_plain` 129 s, `rotation_holds_large` 93 s) and the stage runs at about 13 of 16 cores, so it is CPU-bound: running binaries side by side would gain little. Left: issues/test-time.md, Properties and builds.
 - 2026-11-25 ostrich, the full selection 859 s against 598 s at load 24-41: default tests 339 s wall (osis-sync `growth::rotations_keep_keysets_flat_spec_commits_5` alone about 120 s: each rotation's sync ID reads verified the step path per step and derived a key per held epoch per head, O(n) per step asked), `gate.gui-tests` 57 s (the app's `view_costs` test 27 s). Fixed: step trees verified once per derivation, `owned_sync_ids` memoized where copies speak, a head's epoch per role key by lookup (that test 456 -> 304 G); the view-cost checks split by view group and growth (app tail 27 -> 8 s). After: 877 s, 7,716 CPU-s (0.94x) at load 26-47: default tests 237 s / 1,827 CPU-s, `gate.gui-tests` 34 s, properties 517 s / 5,451 CPU-s at load 47. Checked, no gain: skipping a fire re-offer while what it reads is unchanged (the order properties' offers that cost are fires that open and are ingested again). Left: issues/test-time.md, Properties and builds.
+- 2026-11-25 ostrich, every gate printed over-2x lines for `build`, `gate.gui-tests` and `gate.properties` (2-13x their shares) that nobody acted on: the shares were not in proportion to the stages' work. Fixed: shares re-derived from the last 10 gates by `tools/limits.py derive` (in proportion to each stage's median, summing to the unchanged cap). Raised: `build` 55/10 -> 750/140 u, a fixed setup cost set at a low crate's change (the costliest common build: 1,713 CPU-s, 320 s); a branch's own build is about 290 CPU-s; `gate.replay` wall 4 -> 10 u (median 7 u). Left: the gate's wall, 1.45x the cap at the median (CPU 0.76x): issues/test-time.md, Budget.
 - 2026-11-23 ostrich, engine properties grew 1.3-1.6x in two days: the held-writes dating, the end-of-history row check, held-model's stated-path judging, `check_evidence`. Fixed: built held writes shared per process (`bounds::BUILT`); `LocalPeer` decodes each received blob once. Left: the dating's product cost, held-model's `hops`, `check_evidence` per node.

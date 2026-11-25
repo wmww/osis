@@ -12,6 +12,8 @@
   tools/limits.py unit                 measure this box's base unit (alone: take the heavy lock)
   tools/limits.py table                every limit in seconds on this box
   tools/limits.py split                every whole's shares sum to at most it (exits 1 if not)
+  tools/limits.py derive [--gates N]   shares re-derived from this box's last N (default 10) gates
+                                       in limits.log, as table rows to copy into the note
   tools/limits.py tests [--jobs N]     every default test against the `test` limit (under tools/heavy)
 
 Limits are multiples of the box's base unit u (tools/baseunit.c: the CPU-s of one fixed work
@@ -23,7 +25,7 @@ time, box, name, cpu, wall, limits, the 1-minute load, over), the record of ever
 `share of` cell names the whole it is a share of (a gate stage of `gate.hold` or `gate`): the
 shares of a whole sum to at most it, so a whole over its limit names its parts over their share.
 """
-import json, os, re, resource, socket, subprocess, sys, time
+import json, os, re, resource, socket, statistics, subprocess, sys, time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 NOTE = os.path.join(ROOT, "notes", "time-limits.md")
@@ -99,7 +101,7 @@ def check(name, cpu, wall, what="", quiet=False, since=None):
             print(f"LIMIT{cap} {hit}: {'over the cap (notes/time-limits.md, Limits); ' if cap else ''}report why (notes/time-limits.md, Patterns)")
     log(dict(t=round(time.time()), box=BOX, name=name, what=what, cpu=round(cpu, 1), wall=round(wall, 1),
              cpu_lim=round(lim[0], 1), wall_lim=round(lim[1], 1), load=round(os.getloadavg()[0], 1),
-             over=[k for k, _, _ in over], who=os.getcwd()))
+             over=[k for k, _, _ in over], who=os.getcwd(), **(dict(since=round(since)) if since is not None else {})))
     if over:
         shares(name, since if since is not None else time.time() - wall - 1)
     return over
@@ -143,6 +145,72 @@ def split():
             bad |= not ok
             print(f"{whole} {k}: shares {total:g} of {limits[whole][i]:g} u{'' if ok else '  OVER'} ({', '.join(f'{n} {limits[n][i]:g}' for n in parts)})")
     return bad
+
+
+def runs(top, n):
+    """This box's last n checks of `top`, each with {name: (cpu, wall)} of the checks made in its
+    directory since its run began (its `since`, as gate.sh passes it; without one, since the check
+    of `top` before it there, at most WINDOW_H back), a name checked twice summed."""
+    ev = [o for o in jsonl([LOG]) if o.get("box") == BOX and not o.get("what")]
+    out, prev = [], {}
+    for o in ev:
+        if o["name"] != top:
+            continue
+        lo = o["since"] - 1 if "since" in o else max(prev.get(o.get("who"), 0), o["t"] - WINDOW_H * 3600)
+        prev[o.get("who")] = o["t"]
+        got = {}
+        for x in ev:
+            if x.get("who") == o.get("who") and lo < x["t"] <= o["t"] and x is not o:
+                c, w = got.get(x["name"], (0, 0))
+                got[x["name"]] = (c + x["cpu"], w + x["wall"])
+        got[top] = (o["cpu"], o["wall"])
+        out.append(got)
+    return out[-n:]
+
+
+def derive(n):
+    """Each whole's shares in proportion to its parts' median CPU-s and wall over the last n runs of
+    the top whole (a part that did not run is left out of its median): the parts get the whole's
+    limit times the fraction of the whole they took (the rest is the time between them), split by
+    their medians. A part never measured keeps its share, taken off the top. Floors, so the shares
+    still sum to at most their whole. Prints table rows in u; returns {name: (cpu_u, wall_u)}."""
+    units, limits = tables()
+    if BOX not in units:
+        sys.exit(f"limits: no base unit for box {BOX}")
+    u = units[BOX]
+    whole_of = {k: w for k, (_, _, w) in limits.items() if w}
+    tops = sorted({w for w in whole_of.values() if w not in whole_of})
+    floor = lambda x: int(x * 10) / 10 if x < 10 else float(int(x))
+    out = {}
+
+    def split_whole(whole, budget, rs):
+        parts = [k for k, w in whole_of.items() if w == whole]
+        med = {k: [statistics.median(r[k][i] for r in rs if k in r) / u for i in (0, 1)] for k in parts + [whole] if any(k in r for r in rs)}
+        for i in (0, 1):
+            fixed = sum(limits[k][i] for k in parts if k not in med)
+            took = sum(med[k][i] for k in parts if k in med)
+            avail = (budget[i] - fixed) * min(1.0, took / med[whole][i]) if whole in med and med[whole][i] else budget[i] - fixed
+            for k in parts:
+                out.setdefault(k, list(limits[k][:2]))
+                if k in med and took:
+                    out[k][i] = floor(med[k][i] * avail / took)
+        for k in parts:
+            print(f"| `{k}` | {out[k][0]:g} | {out[k][1]:g} | `{whole}` |   (median {med[k][0]:.0f} u CPU, {med[k][1]:.0f} u wall)" if k in med
+                  else f"| `{k}` | {out[k][0]:g} | {out[k][1]:g} | `{whole}` |   (not measured: kept)")
+        for k in parts:
+            if k in whole_of.values():
+                split_whole(k, out[k], rs)
+
+    for top in tops:
+        rs = runs(top, n)
+        print(f"{top}: {len(rs)} runs on {BOX}")
+        if rs:
+            split_whole(top, limits[top][:2], rs)
+        for k in sorted({k for r in rs for k in r if k in limits and k not in whole_of and k != top}):
+            v = [r[k] for r in rs if k in r]
+            print(f"   `{k}`, its own limit {limits[k][0]:g} u CPU, {limits[k][1]:g} u wall: median {statistics.median(c for c, _ in v) / u:.0f} u CPU, "
+                  f"{statistics.median(w for _, w in v) / u:.0f} u wall, most {max(c for c, _ in v) / u:.0f} u CPU, {max(w for _, w in v) / u:.0f} u wall")
+    return {k: tuple(v) for k, v in out.items()}
 
 
 def tests(jobs):
@@ -295,5 +363,7 @@ if __name__ == "__main__":
         table()
     elif a == ["split"]:
         sys.exit(split())
+    elif a[:1] == ["derive"]:
+        derive(int(a[a.index("--gates") + 1]) if "--gates" in a else 10)
     else:
         sys.exit(__doc__)

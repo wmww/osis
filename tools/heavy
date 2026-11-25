@@ -2,6 +2,7 @@
 """Run a command that uses every core under the box-wide heavy lock, logging what it cost.
 
   tools/heavy [--limit NAME] [--log FILE] CMD [ARGS...]   wait for the lock, run CMD, release; exits with CMD's code
+  tools/heavy --gate [--log FILE] CMD [ARGS...]   the gate's hold (limit `gate.hold`): ahead of waiting by-hand holds
   tools/heavy --short [--log FILE] CMD [ARGS...]   run CMD in the short lane, beside any hold; past its caps, rerun in a hold
   tools/heavy --report [--since HOURS]   the lock's use and the box's CPU from the log
   tools/heavy --record BIN [ARGS...]   internal: cargo's runner while a cargo test/run builds
@@ -44,6 +45,13 @@ it started, finished or running; for a cargo test, only the copies' run (the bui
 anyway). Never for a command that edits the tree (tools/mutate.py): a stop leaves its edit in place
 and the rerun repeats it. Every hold prints whether it would have fit the lane.
 
+Gates first (--gate, tools/gate.sh's hold): a gate waiting for the lock goes ahead of every
+by-hand hold that has not started; a running hold is never pre-empted. A gate holds GATE_QUEUE
+shared while it waits; a by-hand run that takes the lock while any gate holds it hands the lock
+back and waits for GATE_QUEUE to empty, then queues again. Among gates, and among by-hand runs, the
+kernel's flock wake order (about first come, first served). A steady stream of gates waits out
+every by-hand run: intended, as a gate is what lands work.
+
 A quiet hold yields (notes/build.md, Heavy lock): the lock keeps all-core runs apart, so a hold
 whose process tree has used under YIELD_CORES cores over the last YIELD_WINDOW_S, at most SHORT_RSS
 resident, while another run waits for the lock, releases it and runs on beside the next holder
@@ -66,6 +74,7 @@ import limits  # noqa: E402
 LOCK = os.path.join(os.environ.get("XDG_RUNTIME_DIR") or "/tmp", "osis-gate.lock")
 SHORT_LOCK = os.path.join(os.environ.get("XDG_RUNTIME_DIR") or "/tmp", "osis-short.lock")
 YIELD_LOCK = os.path.join(os.environ.get("XDG_RUNTIME_DIR") or "/tmp", "osis-yield.lock")
+GATE_QUEUE = os.path.join(os.environ.get("XDG_RUNTIME_DIR") or "/tmp", "osis-gate-queue.lock")
 # The short lane's memory cap (its CPU and wall caps are limit `heavy.short`): the summed resident
 # memory of the run's processes. The heavy lock's other job is keeping two large runs out of one
 # 30 GB box; 0 would stop every run, infinity would let a 16 GB bench beside a gate push the box into
@@ -259,7 +268,38 @@ def quiet(samples):
     return bool(old) and c - old[-1][1] < YIELD_CORES * (t - old[-1][0])
 
 
-def run(cmd, name, out=None, short=False):
+def take(fd, gate, waiting):
+    """Take the heavy lock on fd, gates first (module doc). waiting(why) is called once if it must wait."""
+    q = os.open(GATE_QUEUE, os.O_RDWR | os.O_CREAT, 0o666)
+    told = False
+    try:
+        if gate:
+            fcntl.flock(q, fcntl.LOCK_SH)  # released by the close: once held, the gate no longer waits
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                if not told:
+                    waiting("another all-core run")
+                    told = True
+                fcntl.flock(fd, fcntl.LOCK_EX)
+            if gate:
+                return
+            try:
+                fcntl.flock(q, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return  # no gate waits
+            except BlockingIOError:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+                if not told:
+                    waiting("a gate goes first")
+                    told = True
+                fcntl.flock(q, fcntl.LOCK_EX)  # until no gate waits
+                fcntl.flock(q, fcntl.LOCK_UN)
+    finally:
+        os.close(q)
+
+
+def run(cmd, name, out=None, short=False, gate=False):
     # the lock is per open file: a hold inside a hold would wait on itself forever
     if os.environ.get("HEAVY_HELD"):
         sys.exit("heavy: already inside a hold (HEAVY_HELD): run the command directly")
@@ -279,14 +319,14 @@ def run(cmd, name, out=None, short=False):
     if refused:
         sys.exit(f"heavy: {refused}")
     if not sub:
-        return hold(cmd, name, out, who, [dict(argv=cmd, cwd=None, env=None)], sub, lane)
+        return hold(cmd, name, out, who, [dict(argv=cmd, cwd=None, env=None)], sub, lane, gate=gate)
     rec = tempfile.mkdtemp(prefix="osis-heavy-")
     try:
         rc, runs = build(cmd, rec, out)
         if rc or not runs:
             return rc
         print(f"heavy: built; the hold runs copies of {len(runs)} binaries: later edits don't reach them", file=sys.stderr)
-        return hold(cmd, name, out, who, runs, sub, lane)
+        return hold(cmd, name, out, who, runs, sub, lane, gate=gate)
     finally:
         shutil.rmtree(rec, ignore_errors=True)
 
@@ -318,22 +358,28 @@ def note(out, msg):
     print(msg, file=sys.stderr, flush=True)
 
 
-def hold(cmd, name, out, who, runs, sub, lane=None, failed=False):
-    """Take the lock (with lane, the short lane's: its (CPU-s, wall) caps) and run each of runs in
+def hold(cmd, name, out, who, runs, sub, lane=None, failed=False, gate=False):
+    """Take the lock (with lane, the short lane's: its (CPU-s, wall) caps; gate: a gate's, ahead of
+    by-hand holds) and run each of runs in
     order. A cargo test stops at the first failing binary unless --no-fail-fast, and exits 101 when
     any failed (failed: one did before a lane's stop), as cargo does. A run the lane stops goes on
     in a hold from the stopped one."""
     path = SHORT_LOCK if lane else LOCK
     fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o666)
     t0, (b0, a0) = time.time(), stat()
-    try:
-        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError:
-        # to --log's file too: a log empty for minutes otherwise reads as a hung run
-        note(out, f"heavy: waiting for {path} ({'another short run' if lane else 'another all-core run'}) since {time.strftime('%H:%M:%S')}")
-        fcntl.flock(fd, fcntl.LOCK_EX)
+    # to --log's file too: a log empty for minutes otherwise reads as a hung run
+    def waiting(why):
+        note(out, f"heavy: waiting for {path} ({why}) since {time.strftime('%H:%M:%S')}")
+    if lane:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            waiting("another short run")
+            fcntl.flock(fd, fcntl.LOCK_EX)
+    else:
+        take(fd, gate, waiting)
     t1 = time.time()
-    log("acq", wait=round(t1 - t0, 1), busy0=b0, all0=a0, **(dict(lane="short") if lane else {}), **who)
+    log("acq", wait=round(t1 - t0, 1), busy0=b0, all0=a0, **(dict(lane="short") if lane else {}), **(dict(gate=True) if gate else {}), **who)
     if t1 - t0 >= 1:
         note(out, f"heavy: waited {t1 - t0:.0f} s for the lock")
     waited = [t1 - t0, 0.0]  # the first acquisition's wait, a yielded run's waits to take it back
@@ -541,12 +587,14 @@ if __name__ == "__main__":
         report(float(a[2]) if a[1:2] == ["--since"] and len(a) > 2 else 0)
         sys.exit()
     opts = {"--limit": None, "--log": None}
-    short = False
-    while a[:1] == ["--short"] or a[:1] and a[0] in opts and len(a) > 2:
+    short = gate = False
+    while a[:1] in (["--short"], ["--gate"]) or a[:1] and a[0] in opts and len(a) > 2:
         if a[0] == "--short":
             short, a = True, a[1:]
+        elif a[0] == "--gate":
+            gate, a = True, a[1:]
         else:
             opts[a[0]], a = a[1], a[2:]
-    if not a or a[0].startswith("-") or short and opts["--limit"]:
+    if not a or a[0].startswith("-") or short and (opts["--limit"] or gate) or gate and opts["--limit"]:
         sys.exit(__doc__)
-    sys.exit(run(a, opts["--limit"] or "heavy", opts["--log"], short))
+    sys.exit(run(a, "gate.hold" if gate else opts["--limit"] or "heavy", opts["--log"], short, gate))

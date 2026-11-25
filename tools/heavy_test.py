@@ -136,6 +136,33 @@ p.communicate()
 expect("log then the run", [l for l in open(logf).read().splitlines() if not l.startswith("heavy: waited")][1:], ["ran"])
 expect("copies removed", [x for x in os.listdir(d) if x.startswith("osis-heavy-")], [])
 
+# gates first: gates that queued after a by-hand run take the lock before it, and none pre-empts
+# the running hold (the test's)
+order = os.path.join(d, "order")
+open(order, "w").close()
+fcntl.flock(lock, fcntl.LOCK_EX)
+
+
+def queued(label, *opts):
+    p = subprocess.Popen([HEAVY, *opts, "sh", "-c", f"echo {label} >> {order}"], env=ENV, cwd=d,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+    for line in p.stderr:
+        if "waiting for" in line:
+            break
+    return p
+
+
+ps = [queued("hand"), queued("gate", "--gate"), queued("gate", "--gate")]
+expect("none runs while the lock is held", open(order).read(), "")
+fcntl.flock(lock, fcntl.LOCK_UN)
+for p in ps:
+    p.communicate()
+expect("gates go first", open(order).read().split(), ["gate", "gate", "hand"])
+log = [json.loads(l) for l in open(os.path.join(d, ".cache/osis/heavy.log"))]
+expect("a gate's hold logged as one", [o.get("gate", False) for o in log if o["ev"] == "acq"][-3:], [True, True, False])
+expect("--gate refuses --limit", heavy("--gate", "--limit", "x", "true")[0], 1)
+expect("--gate refuses --short", heavy("--gate", "--short", "true")[0], 1)
+
 # the short lane runs beside a held heavy lock without waiting, and logs its run as the lane's
 fcntl.flock(lock, fcntl.LOCK_EX)
 rc, out, err = heavy("--short", "sh", "-c", "echo $HEAVY_HELD")
