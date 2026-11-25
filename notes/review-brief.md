@@ -78,7 +78,7 @@ Other findings:
 - Member `standing` memo keyed (record, S), not rejudged when the connection's copies change: applies. `opens/holds.rs` `standing`.
 - Held elsewhere for a self-removal: filtered through `counts_for_leave` (resolved), but `g.elsewhere(s, b)` returns Yes before the filter: check whether a leaving peer can set it. `status/mod.rs` ~l.1020-1050. `counts_for_leave` reads the proven node alone, not each claimed thing's role: applies. `engine/src/sync/held.rs`.
 - A new strong to an uncarried thing re-pulls every own and read sync ID (`units::refetch_holders`): applies (stated cost).
-- The new node's first dial: pairer's `dial_hints` not stored, a restart before A's `dial.0` loses them: fixed (spar-fix-sync): the `Offer` names the pairer's peers, kept as a joined link's (`Node::offered`); `Osis::dial_hints` gone.
+- The new node's first dial: pairer's `dial_hints` not stored, a restart before A's `dial.0` loses them: fixed (spar-fix-sync): the `Offer` names the pairer's peers, kept as a joined link's (`Node::offered`); the osis dial hints call gone.
 - A public redeem is in memory only: applies. osis-sync `inbox/links.rs` `redeem_public`.
 - A stranger's sealed fire to an inbox kept unread then promoted: untested (issues/sync-tests-owed.md).
 - `SETTLE_MS` designed, not built: every holder copies a demotion or `keys.0` at once (3.3 KB per holder per removal). issues/sync-unbuilt.md, Cost.

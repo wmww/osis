@@ -302,8 +302,8 @@ fn a_grant_from_outside_reaches_an_account_that_removed_a_node() {
     assert!(reads(w.engine(1), &t).value.is_some(), "node 1 reads the thing granted to its account");
 }
 
-// spec/sync-status.md §3 (a wait on all waits until each sealed fire this node sends is
-// delivered), spec/sync-inbox.md §2 (Delivery): node 1 grants node 0's account (a contact it
+// spec/sync-status.md §3, spec/sync-inbox.md §2 (delivery): a wait on all waits until each
+// sealed fire this node sends is delivered. Node 1 grants node 0's account (a contact it
 // cannot reach) read on a thing its sibling, node 2, syncs: the wait on all at node 1 stays pending
 // while the grant's fire is owed, though the thing itself is synced; it ends once node 0 is back and
 // takes the fire.

@@ -93,7 +93,7 @@ fn removing_the_public_ends_what_a_reader_of_the_referrer_reads_spec_sync_set_2(
 }
 
 // spec/sync-set.md §4 (Redeeming a public link), spec/permissions.md §1 (The public: every
-// party's role), spec/sync-opens.md §4 (Departed), §5 (a public entry's grant): node 1 grants node
+// party's role), spec/sync-opens.md §4 (Departed), §5: node 1 grants node
 // 0's account write on X, which node 0 never holds, then makes X public and removes that grant;
 // node 0 then redeems a public link to X and should read it. It stays pending until its follow
 // time (issues/departed-redeem-stalls.md).
@@ -111,7 +111,7 @@ fn a_removed_grantee_redeems_a_public_link_spec_sync_set_4() {
     assert!(reads(&mut w, 0, &t).is_some(), "node 0 reads X by the public link");
 }
 
-// spec/sync-inbox.md §6 (First contact; a redeem goes on until joined or given up): node 1
+// spec/sync-inbox.md §6 (First contact): node 1
 // redeems a public link to P while node 0 is unreachable and restarts: the redeem goes on from its
 // kept row (as a share link's), and once node 0 is back node 1 reads P.
 #[test]
