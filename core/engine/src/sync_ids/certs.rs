@@ -22,7 +22,8 @@ pub type Parts = BTreeSet<usize>;
 pub(crate) enum Cut {
     /// S's evidence; `step`: the copy records a step placing a listed key.
     Evidence { step: bool },
-    /// An edge piece of this holder: S's actor's key part, a stub.
+    /// An edge piece of this holder: S's actor's key part, a stub; a fire, sealed copy or offer
+    /// (`Engine::edge_piece`).
     EdgePiece(Tid),
     /// Keys: a public key record, a carried cause, holder keys.
     Keys,

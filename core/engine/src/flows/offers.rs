@@ -14,6 +14,7 @@ use crate::engine::Engine;
 use crate::error::{Error, Result};
 use crate::flows::inbox::EdgePiece;
 use crate::flows::Done;
+use crate::sync_ids::Cut;
 use osis_base::{CommitId, Holder, Tid, Value};
 use osis_schema::core_types as ct;
 
@@ -72,21 +73,21 @@ impl Engine {
         let grant = grant.ok_or(Error::BadInput("no grant of the holder on the thing to offer"))?;
         let (n, t2) = (*holder, *t);
         self.run(|tx| crate::flows::inbox::unowe_grant(tx, n, grant, t2))?;
-        let grant_v = self.edge_piece(&grant, t, Some(*holder))?.ok_or(Error::BadInput("no grant of the holder on the thing to offer"))?;
+        let grant_v = self.edge_piece(&grant, t, Cut::EdgePiece(*holder))?.ok_or(Error::BadInput("no grant of the holder on the thing to offer"))?;
         let ak = ct::SYNC.name();
         let syncs: Vec<CommitId> = self.core.on_thing(t).filter(|c| self.core.ix.commits.get(c).is_some_and(|m| m.header.aspects.iter().enumerate().any(|(ai, x)| x.tid == *t && x.ak == ak && m.holds(ai)))).collect();
         // each copy once: a `sync.0` write the grant's evidence carries already (the target's
         // first, at least) is not handed over again
         let mut sync = Vec::new();
         for c in syncs.iter().filter(|c| **c != grant) {
-            sync.extend(self.edge_piece(c, t, Some(*holder))?.filter(|p| !grant_v.evidence.contains(&p.copy)));
+            sync.extend(self.edge_piece(c, t, Cut::EdgePiece(*holder))?.filter(|p| !grant_v.evidence.contains(&p.copy)));
         }
         let mut trust = Vec::new();
         for (w, holder) in self.core.sides.trusted() {
             if self.core.timelines().edge_op(&w).is_none_or(|(_, _, on)| on != *t) {
                 continue;
             }
-            if let Some(copy) = self.edge_piece(&w.0, t, None)? {
+            if let Some(copy) = self.edge_piece(&w.0, t, Cut::Evidence { step: false })? {
                 trust.push(Trusted { commit: w.0, op: w.1, holder, copy });
             }
         }

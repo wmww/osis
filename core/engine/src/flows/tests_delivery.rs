@@ -144,7 +144,7 @@ fn a_forged_offer_gives_no_role_spec_sync_inbox_5() {
     let (mut lp, g, t) = sync_holder();
     reads_t(&mut lp, t);
     let (c, _) = forged_copy(&mut lp, g, t);
-    let p = lp.peers[2].engine.edge_piece(&c, &g, Some(t)).unwrap().expect("the forger's piece");
+    let p = lp.peers[2].engine.edge_piece(&c, &g, crate::sync_ids::Cut::EdgePiece(t)).unwrap().expect("the forger's piece");
     let piece = EdgePiece::from_value(&p.to_value()).expect("round-trips");
     assert_eq!(piece, p);
     let taken = lp.peers[1].engine.take_edge_piece(&piece, None).unwrap();
@@ -214,7 +214,7 @@ fn a_pieces_evidence_takes_its_own_pages_spec_wire_9() {
     m.set(t, &ak, &big).unwrap();
     let content = lp.peers[2].commit(m).unwrap().unwrap();
     let rot = lp.peers[0].engine.rotate_leaving_out(&g, &[Role::Sync], &[]).unwrap().unwrap();
-    let mut p = lp.peers[0].engine.edge_piece(&rot, &g, Some(t)).unwrap().unwrap();
+    let mut p = lp.peers[0].engine.edge_piece(&rot, &g, crate::sync_ids::Cut::EdgePiece(t)).unwrap().unwrap();
     let c = lp.peers[2].engine.read(|tx| tx.get_commit(&content)).unwrap().unwrap().encode();
     let pages = lp.peers[2].engine.run(|tx| super::inbox::held_pages(tx, &[c.as_slice()])).unwrap();
     assert!(!pages.is_empty(), "the content commit pages");

@@ -58,7 +58,7 @@ pub(crate) fn deliver_sealed(tx: &mut Tx<'_>, holder: Tid, c: CommitId, target: 
 pub(crate) fn fire_copy(tx: &mut Tx<'_>, holder: Tid, c: CommitId, target: Tid) -> Result<()> {
     let Some(inbox) = super::cards::inbox_in(tx, &holder)? else { return Ok(()) };
     let to = fire_to(tx, &holder);
-    let o = OwedFire { thing: inbox, ak: Some(super::ak(GRANT_FIRE)?), what: Fire::Grant { commit: c, target }, to, commit: None, pages: Default::default() };
+    let o = OwedFire { thing: inbox, ak: Some(super::ak(GRANT_FIRE)?), what: Fire::Grant { commit: c, target, holder }, to, commit: None, pages: Default::default() };
     if tx.core.ix.fires.contains_key(&o.id()) {
         return Ok(());
     }
@@ -69,7 +69,7 @@ pub(crate) fn fire_copy(tx: &mut Tx<'_>, holder: Tid, c: CommitId, target: Tid) 
 /// its offer went another way (a pairing channel, spec/permissions.md §8 Pairing).
 pub(crate) fn unowe_grant(tx: &mut Tx<'_>, holder: Tid, c: CommitId, target: Tid) -> Result<()> {
     let Some(inbox) = super::cards::inbox_in(tx, &holder)? else { return Ok(()) };
-    let ids: Vec<FireId> = tx.core.ix.fires_on.get(&inbox).into_iter().flatten().copied().filter(|id| tx.core.ix.fires.get(id).is_some_and(|o| o.what == Fire::Grant { commit: c, target })).collect();
+    let ids: Vec<FireId> = tx.core.ix.fires_on.get(&inbox).into_iter().flatten().copied().filter(|id| tx.core.ix.fires.get(id).is_some_and(|o| o.what == Fire::Grant { commit: c, target, holder })).collect();
     for id in ids {
         drop_fire(tx, &id)?;
     }
@@ -348,8 +348,11 @@ pub enum Fire {
     Value(Value),
     /// A value whose commit expires at wall ms `expires` (a stranded notice).
     Expiring(Value, u64),
-    /// A grant from outside: role commit `commit`'s piece on `target` (`fire_copy`).
-    Grant { commit: CommitId, target: Tid },
+    /// A grant from outside: role commit `commit`'s edge piece of `holder` on `target`
+    /// (`fire_copy`). Invariant (security): cut to `holder` (`Cut::EdgePiece`), never to every
+    /// holder the commit boxes: a commit re-boxing a thing's holders (a cut grant, a removal)
+    /// fires each the piece of its own.
+    Grant { commit: CommitId, target: Tid, holder: Tid },
     /// A sealed copy: role commit `commit`'s piece on `target` (`deliver_sealed`).
     Copy { commit: CommitId, target: Tid },
 }
@@ -359,7 +362,7 @@ impl Fire {
         match self {
             Fire::Value(v) => Value::List(vec![Value::Int(0), v.clone()]),
             Fire::Expiring(v, t) => Value::List(vec![Value::Int(2), v.clone(), Value::Int(i64::try_from(*t).unwrap_or(i64::MAX))]),
-            Fire::Grant { commit, target } => Value::List(vec![Value::Int(1), Value::Bytes(commit.0.to_vec()), Value::Bytes(target.as_bytes().to_vec())]),
+            Fire::Grant { commit, target, holder } => Value::List(vec![Value::Int(1), Value::Bytes(commit.0.to_vec()), Value::Bytes(target.as_bytes().to_vec()), Value::Bytes(holder.as_bytes().to_vec())]),
             Fire::Copy { commit, target } => Value::List(vec![Value::Int(3), Value::Bytes(commit.0.to_vec()), Value::Bytes(target.as_bytes().to_vec())]),
         }
     }
@@ -368,10 +371,8 @@ impl Fire {
         match f.as_slice() {
             [Value::Int(0), v] => Some(Fire::Value(v.clone())),
             [Value::Int(2), v, Value::Int(t)] => Some(Fire::Expiring(v.clone(), u64::try_from(*t).ok()?)),
-            [Value::Int(n @ (1 | 3)), Value::Bytes(c), Value::Bytes(t)] => {
-                let (commit, target) = (CommitId(c.as_slice().try_into().ok()?), Tid::from_bytes(t.as_slice().try_into().ok()?));
-                Some(if *n == 1 { Fire::Grant { commit, target } } else { Fire::Copy { commit, target } })
-            }
+            [Value::Int(1), Value::Bytes(c), Value::Bytes(t), Value::Bytes(h)] => Some(Fire::Grant { commit: CommitId(c.as_slice().try_into().ok()?), target: Tid::from_bytes(t.as_slice().try_into().ok()?), holder: Tid::from_bytes(h.as_slice().try_into().ok()?) }),
+            [Value::Int(3), Value::Bytes(c), Value::Bytes(t)] => Some(Fire::Copy { commit: CommitId(c.as_slice().try_into().ok()?), target: Tid::from_bytes(t.as_slice().try_into().ok()?) }),
             _ => None,
         }
     }
@@ -596,7 +597,7 @@ impl Engine {
         let as_value = |b: &[u8]| osis_base::decode(b, &limits).map_err(|_| Error::Corrupt("commit blob"));
         // a sealed copy: the piece, behind its copy's prefix (spec/sync-inbox.md §2 Sealed copy)
         let (blob, fire) = if let Fire::Copy { commit, target } = &o.what {
-            let Some(p) = self.edge_piece(commit, target, Some(o.thing))? else { return Ok(None) };
+            let Some(p) = self.edge_piece(commit, target, crate::sync_ids::Cut::EdgePiece(o.thing))? else { return Ok(None) };
             let copy = osis_commit::CommitBlob::decode(&p.copy)?;
             let evidence = p.evidence.iter().map(|c| as_value(c)).collect::<Result<Vec<_>>>()?;
             let fire = osis_blob::SealedFire { copy: true, commit: as_value(&p.copy)?, evidence, records: p.records, pages: p.pages };
@@ -635,7 +636,7 @@ impl Engine {
         let (value, expires) = match &o.what {
             Fire::Value(v) => (v.clone(), None),
             Fire::Expiring(v, t) => (v.clone(), Some(osis_base::WallMs(*t))),
-            Fire::Grant { commit, target } => match self.edge_piece(commit, target, None)? {
+            Fire::Grant { commit, target, holder } => match self.edge_piece(commit, target, crate::sync_ids::Cut::EdgePiece(*holder))? {
                 Some(p) => (p.to_value(), None),
                 None => return Ok(None),
             },
@@ -723,25 +724,17 @@ impl Engine {
     /// (`edge_piece`), as it travels.
     #[doc(hidden)]
     pub fn edge_piece_copy(&mut self, c: &CommitId, target: &Tid, holder: &Tid) -> Result<Option<Vec<u8>>> {
-        Ok(self.edge_piece(c, target, Some(*holder))?.map(|p| p.copy))
+        Ok(self.edge_piece(c, target, crate::sync_ids::Cut::EdgePiece(*holder))?.map(|p| p.copy))
     }
 
     /// Role commit `c`'s piece on `target` (`EdgePiece`): its certificate copy there (its header and
-    /// its edge piece's cut there, `Cut::EdgePiece`), the copies of its evidence, their creation records and the blobs
-    /// their deltas link (`held_pages`). `None` while `c` is not applied here.
-    pub(crate) fn edge_piece(&mut self, c: &CommitId, target: &Tid, holder: Option<Tid>) -> Result<Option<EdgePiece>> {
+    /// `cut`'s parts there: a holder's edge piece, `Cut::EdgePiece`, or the edge-class parts alone,
+    /// `Cut::Evidence`), the copies of its evidence, their creation records and the blobs their
+    /// deltas link (`held_pages`). `None` while `c` is not applied here.
+    pub(crate) fn edge_piece(&mut self, c: &CommitId, target: &Tid, cut: crate::sync_ids::Cut) -> Result<Option<EdgePiece>> {
         let id = *c;
         let Some(full) = self.read(|tx| tx.get_commit(&id))? else { return Ok(None) };
-        // the edge piece's cut (spec/permissions.md §4 Copies): of `holder`, else of each holder
-        // the commit writes an edge or boxes there (a grant fire's)
-        let holders: BTreeSet<Tid> = match holder {
-            Some(h) => BTreeSet::from([h]),
-            None => full.header.aspects.iter().enumerate().filter(|(_, a)| a.tid == *target).flat_map(|(ai, _)| self.holders_named(&id).get(&ai).cloned().unwrap_or_default()).collect(),
-        };
-        let mut parts = BTreeSet::new();
-        for h in holders {
-            parts.extend(self.cut_parts(&id, target, crate::sync_ids::Cut::EdgePiece(h)));
-        }
+        let parts = self.cut_parts(&id, target, cut);
         let (evidence, records) = self.copy_evidence(&(id, *target))?;
         let copy = osis_commit::rewrite(&full, |ai| !parts.contains(&ai));
         let (copy, evidence): (Vec<u8>, Vec<Vec<u8>>) = (copy.encode(), evidence.iter().map(osis_base::encode).collect());

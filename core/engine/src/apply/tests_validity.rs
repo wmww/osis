@@ -187,7 +187,7 @@ mod tests {
             let secrets = osis_base::Ak::new("secrets.0").unwrap();
             let parts: Vec<usize> = lp.peers[0].engine.core.ix.commits[&g].aspect_parts(&x, &secrets).collect();
             assert!(parts.iter().any(|ai| named[ai].is_empty()), "the grant writes a rest piece");
-            let mut p = lp.peers[0].engine.edge_piece(&g, &x, Some(t)).unwrap().unwrap();
+            let mut p = lp.peers[0].engine.edge_piece(&g, &x, crate::sync_ids::Cut::EdgePiece(t)).unwrap().unwrap();
             let blob = osis_commit::CommitBlob::decode(&p.copy).unwrap();
             let carried = blob.parts.iter().any(|q| parts.contains(&q.ai) && named[&q.ai].is_empty());
             assert_eq!(carried, role >= Role::Read, "the rest beside t's piece only where t reads x");
@@ -205,6 +205,41 @@ mod tests {
         let (no_rest, _) = run(Role::Read, false);
         assert!(!no_rest.contains(&at_a[0]) && !no_rest.is_empty(), "control: without the rest, no epoch before the grant: {no_rest:?}");
         assert!(run(Role::Sync, true).0.is_empty(), "sync alone: no read epoch");
+    }
+    // spec/permissions.md §4 Copies, spec/wire.md §4 Pieces: a role commit boxing several
+    // holders (a cut grant re-boxing the holders there, a removal rotating to the rest) reaches
+    // the holder its fire is for with that holder's piece, and the rest only where it reads x:
+    // never another holder's piece. The fire, as it is sealed and taken, not the cut alone.
+    #[test]
+    fn a_fire_carries_its_holders_piece_alone_spec_permissions_4() {
+        let run = |c_role: Role, remove: bool| {
+            let mut lp = LocalPeer::fresh(3, WallMs(1_700_000_000_000));
+            lp.sync_all().unwrap();
+            let (a, b, c) = (lp.peers[0].engine.me(), lp.peers[1].engine.me(), lp.peers[2].engine.me());
+            lp.takes_grants(2, c);
+            lp.sync_all().unwrap();
+            let x = thing(&mut lp, a);
+            let edge = |role| ct::Edge { role, until: None, may_grant: false, retain: false, floor: None };
+            lp.peers[0].engine.grant(&x, &b, &edge(Role::Read)).unwrap();
+            let mut g = *lp.peers[0].engine.grant_with(&x, &c, &edge(c_role), crate::flows::edges::History::None).unwrap().commits.last().unwrap();
+            if remove {
+                g = *lp.peers[0].engine.demote(&x, &crate::flows::edges::Demotion { holder: c, new: None, retain: None }).unwrap().commits.last().unwrap();
+            }
+            let secrets = osis_base::Ak::new("secrets.0").unwrap();
+            let named = lp.peers[0].engine.holders_named(&g);
+            let pieces: Vec<usize> = lp.peers[0].engine.core.ix.commits[&g].aspect_parts(&x, &secrets).collect();
+            assert!(pieces.iter().any(|ai| named[ai].contains(&b)), "the commit boxes b: {named:?}");
+            lp.pass_fires(2).unwrap();
+            let m = lp.peers[2].engine.core.ix.commits.get(&g).cloned().expect("c took its fire");
+            let held: Vec<BTreeSet<Tid>> = pieces.iter().filter(|ai| m.holds(**ai)).map(|ai| named[ai].clone()).collect();
+            (held, c)
+        };
+        let (held, c) = run(Role::Sync, false);
+        assert_eq!(held, vec![BTreeSet::from([c])], "sync alone, re-boxed: its piece alone");
+        let (held, c) = run(Role::Read, false);
+        assert_eq!(held.iter().filter(|n| !n.is_empty()).cloned().collect::<Vec<_>>(), vec![BTreeSet::from([c])], "a reader: its piece and the rest, no other holder's: {held:?}");
+        let (held, c) = run(Role::Sync, true);
+        assert!(held.iter().all(|n| *n == BTreeSet::from([c])), "removed: no other holder's piece, no rest: {held:?}");
     }
     // spec/commits.md §5 Bodies and deaths, spec/wire.md §4 Pieces: a piece held without its
     // siblings is the commit's body there, dated as any. A holder of sync alone takes its
@@ -229,7 +264,7 @@ mod tests {
             })
             .unwrap();
         let give = |lp: &mut LocalPeer, c: &osis_base::CommitId| {
-            let p = lp.peers[0].engine.edge_piece(c, &t, Some(b)).unwrap().unwrap();
+            let p = lp.peers[0].engine.edge_piece(c, &t, crate::sync_ids::Cut::EdgePiece(b)).unwrap().unwrap();
             lp.peers[1].engine.take_edge_piece(&p, None).unwrap();
         };
         give(&mut lp, &g);
