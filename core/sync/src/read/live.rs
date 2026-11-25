@@ -687,7 +687,7 @@ impl Ground for Live<'_, '_> {
         Ok(())
     }
     fn piece_roots(&mut self, c: &CommitId, parts: &osis_engine::sync::PartSet) -> Result<Arc<Vec<PieceLink>>> {
-        Ok(Arc::new(self.cx.engine.piece_roots(c, parts)?))
+        Ok(self.cx.engine.piece_roots(c, parts)?)
     }
     fn piece_below(&mut self, p: &PieceLink) -> Result<Option<Arc<Vec<PieceLink>>>> {
         Ok(self.cx.engine.piece_below(p)?)

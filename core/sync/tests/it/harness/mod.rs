@@ -1129,8 +1129,9 @@ impl World {
                 if self.engine(i).read_facts(&s, &id).unwrap().missing {
                     continue;
                 }
-                let blobs = self.body_blobs(i, &s, &id);
-                if !blobs.iter().any(|b| self.store(i).entry(&s, b).unwrap().is_some()) {
+                // an entry of a blob of it (the store's lookup before the body's)
+                let blobs = self.engine(i).commit_blobs(&id.commit).unwrap();
+                if !blobs.iter().any(|b| self.store(i).entry(&s, b).unwrap().is_some() && self.engine(i).blob_body(&s, b).unwrap() == Some(id)) {
                     stuck.push((i, s, id));
                 }
             }

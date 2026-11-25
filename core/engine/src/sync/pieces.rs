@@ -32,8 +32,13 @@ impl PieceLink {
 }
 
 impl Engine {
-    /// The links of the body of held commit `c` made of `parts` (`Engine::piece_roots`).
-    pub fn piece_roots(&mut self, c: &CommitId, parts: &PartSet) -> Result<Vec<PieceLink>> {
+    /// The links of the body of held commit `c` made of `parts`, through the memo.
+    pub fn piece_roots(&mut self, c: &CommitId, parts: &PartSet) -> Result<Arc<Vec<PieceLink>>> {
+        let k = (*c, parts.clone());
+        Memo::get_in(self, |e| &e.core.piece_roots, &k, |e| e.piece_roots_read(&k.0, &k.1).map(Arc::new))
+    }
+
+    fn piece_roots_read(&mut self, c: &CommitId, parts: &PartSet) -> Result<Vec<PieceLink>> {
         let c = *c;
         let parts = parts.clone();
         self.read(|tx| {

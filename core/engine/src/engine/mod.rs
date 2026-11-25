@@ -1306,6 +1306,8 @@ pub struct Core {
     pub(crate) sync_bodies: memo::Memo<CommitId, Arc<crate::sync::Bodies>>,
     /// `Engine::piece_below` per piece link (`memo`): a node's links, decoded once while held.
     pub(crate) pieces_below: memo::Memo<crate::sync::PieceLink, Option<Arc<Vec<crate::sync::PieceLink>>>>,
+    /// `Engine::piece_roots` per (commit, parts) (`memo`): a body's links, decoded once while held.
+    pub(crate) piece_roots: memo::Memo<(CommitId, crate::sync::PartSet), Arc<Vec<crate::sync::PieceLink>>>,
     /// Keep-bound judgments (`retention::bounds::part_keep`, `commit_bounds`: a commit's parts at once), for cost
     /// tests (`Engine::replaced_reads`).
     pub replaced_reads: u64,
@@ -1872,6 +1874,7 @@ impl Core {
             sync_body: _,
             sync_bodies: _,
             pieces_below: _,
+            piece_roots: _,
             secrets_read: _,
             own_commits: _,
             head_keys: _,
@@ -2269,6 +2272,7 @@ impl Core {
             sync_body: memo::Memo::new("sync body"),
             sync_bodies: memo::Memo::new("sync bodies"),
             pieces_below: memo::Memo::new("pieces: below"),
+            piece_roots: memo::Memo::new("pieces: roots"),
             replaced_reads: 0,
             death_walks: 0,
             rebuilds: 0,

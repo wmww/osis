@@ -874,7 +874,7 @@ fn a_repair_after_a_cut_passes_on_live_state_alone_spec_sync_ids_1() {
     assert!(now.is_disjoint(&lost), "the repair links no lost chunk");
     let parts: crate::sync::PartSet = (0..e.header(&c).unwrap().aspects.len()).collect();
     let mut linked = BTreeSet::new();
-    let mut todo = e.piece_roots(&c, &parts).unwrap();
+    let mut todo = e.piece_roots(&c, &parts).unwrap().to_vec();
     while let Some(p) = todo.pop() {
         if linked.insert(p.blob()) {
             todo.extend(e.piece_below(&p).unwrap().map(|k| k.to_vec()).unwrap_or_default());
