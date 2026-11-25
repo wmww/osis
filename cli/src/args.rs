@@ -507,7 +507,7 @@ pub enum ClientsCmd {
     /// the actor what it may reach
     Add {
         /// The actor's admin (default: `me`, the account): the client acts for it, through this
-        /// node, while this node may write it
+        /// node, while this node administers it
         #[arg(long, value_name = "A")]
         admin: Option<String>,
         /// When it ends (as `grant --until`)

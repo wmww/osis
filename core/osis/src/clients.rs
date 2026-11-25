@@ -57,9 +57,10 @@ impl Osis {
     /// (it starts with none).
     ///
     /// This node acts as the client only through `admin`, so the client acts for whoever
-    /// administers `admin` and no longer than this node may write it: name the account this
+    /// administers `admin` and no longer than this node administers it: name the account this
     /// node acts for, and removing the node from the account ends what its clients do there.
-    /// `Permission` unless this node may write `admin`; an `until` not in the future is `Invalid`.
+    /// `Permission` unless this node administers `admin` (minting the actor writes its keys and
+    /// steps, admin-only); an `until` not in the future is `Invalid`.
     /// `Unsupported` on a client with its own actor.
     pub fn add_client(&self, admin: Tid, until: Option<Time>) -> Result<(Tid, ClientSecret)> {
         self.local("add_client")?;
@@ -67,8 +68,8 @@ impl Osis {
         if until.is_some_and(|u| u <= now) {
             return Err(Error::Invalid("a client's until must be in the future".into()));
         }
-        if self.role_on(admin)?.is_none_or(|r| r < Role::Write) {
-            return Err(Error::Permission { tid: admin, needs: Role::Write });
+        if self.role_on(admin)?.is_none_or(|r| r < Role::Admin) {
+            return Err(Error::Permission { tid: admin, needs: Role::Admin });
         }
         let secret = ClientSecret::generate();
         let entry = secret.entry(until);

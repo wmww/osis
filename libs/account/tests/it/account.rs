@@ -172,6 +172,7 @@ fn a_removed_node_no_longer_acts_through_its_client_spec_permissions_8() {
     let (db, a, _) = &first;
     let b = pair(&net, &first, 2, &c);
     let t = make(&b, a, "before");
+    eprintln!("A {} node {} root {:?}", a.thing(), b.node(), b.node_root());
     let (client, _) = b.add_client(a.thing(), None).unwrap();
     b.grant(t, client, Role::Write, GrantOpts::default()).unwrap();
     let mut w = b.write();
@@ -188,4 +189,24 @@ fn a_removed_node_no_longer_acts_through_its_client_spec_permissions_8() {
         net.run();
     }
     assert_eq!(db.at(t, osis::core::NAME).get().unwrap().as_deref(), Some("by the client"), "the removed node's write as the client holds nowhere else");
+}
+
+// notes/client-port.md §3: minting a client's actor writes its keys and steps, so naming a mint
+// admin takes administering it: a node writing the account but not administering it is told so
+// up front (`Permission` on the account), not refused on the new actor; its own node thing works.
+#[test]
+fn a_node_writing_but_not_administering_the_account_mints_no_client_under_it() {
+    let c = clock();
+    let net = ManualNet::new(c.clone());
+    let first = person(&net, 1, &c);
+    let (db, a, _) = &first;
+    let b = pair(&net, &first, 2, &c);
+    db.set_role(a.thing(), b.node(), Some(Role::Write), SetRoleOpts::default()).unwrap();
+    drive(&net, db.wait_synced(SyncScope::All)).unwrap();
+    drive(&net, b.wait_synced(SyncScope::All)).unwrap();
+    assert_eq!(b.grants(a.thing()).unwrap().get(&b.node()).map(|g| g.role), Some(Role::Write));
+    let r = b.add_client(a.thing(), None);
+    assert!(matches!(r, Err(Error::Permission { tid, needs: Role::Admin }) if tid == a.thing()), "{r:?}");
+    assert!(b.clients().unwrap().is_empty(), "no entry");
+    b.add_client(b.node(), None).unwrap();
 }
