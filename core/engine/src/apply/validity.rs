@@ -776,13 +776,17 @@ pub(crate) fn note_required(core: &mut Core, h: &Header, id: &CommitId, read: &s
 /// Invariant (security): a card of A counts only written along a path through A, so only A's
 /// writers name A's inbox or A's keys in it; judged from the part and its header alone, so every
 /// node judges it alike whatever it holds.
+/// Invariant (security): a card's `since` is no later than its write's `ts` (spec/sync-inbox.md
+/// §1), so a writer of A cannot pin A's inbox past every later move by naming a `since` no honest
+/// writer reaches (parking bounds `ts`, spec/crdt.md §2.2).
 pub(crate) fn note_cards(core: &mut Core, h: &Header, view: &View, id: &CommitId, parts: &[(usize, Decoded)]) {
+    let wall = h.ts.wall_ms().0;
     for (ai, d) in parts {
         let Some(a) = h.aspects.get(*ai).filter(|a| a.ak.as_str() == "card.0") else { continue };
         let Some(members) = chain(h, view, &a.tid) else { continue };
         let on = |k: &Value| matches!(k, Value::Weak(t) if *t == a.tid || members.contains(t));
         let off = match d.fragment().slot(osis_crdt::Encoding::Map) {
-            Some(osis_crdt::SlotRef::Frag(Fragment::Map(m))) => m.entries().any(|(_, _, k, f)| f.is_some() && !k.is_some_and(on)),
+            Some(osis_crdt::SlotRef::Frag(Fragment::Map(m))) => m.entries().any(|(_, _, k, f)| f.is_some_and(|f| !k.is_some_and(on) || card_since(f).is_some_and(|s| s > wall))),
             _ => false,
         };
         let was = core.ix.overreach.contains(&(*id, *ai));
@@ -794,6 +798,16 @@ pub(crate) fn note_cards(core: &mut Core, h: &Header, view: &View, id: &CommitId
             core.stale_commits.insert(*id);
         }
     }
+}
+
+/// The `since` a `card.0` entry's fragment `f` writes, whole or as its field alone.
+fn card_since(f: &Fragment) -> Option<u64> {
+    let field = match f.slot(osis_crdt::Encoding::Struct) {
+        Some(osis_crdt::SlotRef::Frag(Fragment::Struct(st))) => st.field(3).and_then(Fragment::read),
+        _ => None,
+    };
+    let v = field.or_else(|| f.read().and_then(|v| ct::Card::from_value(&v).ok()).map(|c| c.since.to_value()))?;
+    u64::from_value(&v).ok()
 }
 
 /// Whether a `secrets.0` delta writes only the boxes of the holders `granted` puts on `actor`, at

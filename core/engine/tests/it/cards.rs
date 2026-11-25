@@ -81,6 +81,30 @@ fn an_inbox_move_spreads_to_every_card_spec_sync_inbox_1() {
     assert_eq!(e.inbox_of(&acc.thing).unwrap(), Some(i2));
 }
 
+// spec/sync-inbox.md §1 (`since`): a writer of A naming A's inbox at a `since` past its own
+// write's stamp (one no later move reaches) writes an invalid card: it names no inbox, so a later
+// move by A's other writers wins. Control: the same card at its write's time counts.
+#[test]
+fn a_card_since_past_its_write_is_invalid_spec_sync_inbox_1() {
+    let run = |ahead: u64| {
+        let (mut lp, acc) = one();
+        let c = thing(&mut lp, 0, acc.thing, false);
+        let i2 = thing(&mut lp, 0, acc.thing, true);
+        let now = lp.peers[0].engine.now();
+        let card = ct::Card { since: osis_base::WallMs(now.0 + ahead), ..cards::naming(Some(i2), now) };
+        let m = cards::put(c, acc.thing, &card).unwrap();
+        lp.peers[0].engine.core.skip_writer_rules = true;
+        lp.peers[0].commit(m).unwrap().unwrap();
+        lp.peers[0].engine.core.skip_writer_rules = false;
+        let e = &mut lp.peers[0].engine;
+        (e.inbox_of(&acc.thing).unwrap(), acc.inbox, i2)
+    };
+    let (inbox, old, _) = run(10 * 365 * 24 * 3600 * 1000);
+    assert_eq!(inbox, Some(old), "a since past its write names nothing");
+    let (inbox, _, i2) = run(0);
+    assert_eq!(inbox, Some(i2), "control: a since at its write names the inbox");
+}
+
 // spec/sync-inbox.md §1, held-model `closure::cards` control `Restamp`: node 0 moves A's inbox on
 // the profile; node 1, not yet seeing it, rotates A and refreshes A's cards with the old inbox,
 // written after the move. Ordered by `since`, not by the writes' stamps, both nodes end with

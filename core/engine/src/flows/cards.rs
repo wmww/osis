@@ -297,6 +297,13 @@ impl Engine {
                 Some(s) => s,
                 None => since_for(tx, &a, &named, now)?,
             };
+            // a card's `since` is no later than its write's `ts` (`validity::note_cards`): the
+            // clock runs ahead to it where a move goes past it
+            if since > tx.core.hlc.peek().wall_ms()
+                && let Some(ts) = osis_base::Ts::make(since, 0)
+            {
+                tx.core.hlc.observe(ts);
+            }
             let card = ct::Card { inbox: inbox.map(Weak), keys: commits, records, since };
             Engine::commit_tx(tx, put(host, a, &card)?)?;
             Ok(true)
