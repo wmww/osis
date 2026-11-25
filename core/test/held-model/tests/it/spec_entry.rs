@@ -458,10 +458,13 @@ fn entry_family() {
     assert!(fails.keys().all(|&f| f == "history"), "{fails:?}");
 }
 
-// spec/sync-set.md §2 (T's keys open: what the public reads), §4 (Redeeming a public link: a
-// strong to its target): B, another node's thing, made public, with a dependent C; node 1's
-// account strongs B (a redeem) and C. Node 1 holds no role on B, yet reads B and C by A's keys,
-// both in A's unit; once the public no longer reads B, neither (control: not public).
+// spec/sync-set.md §2 (T's keys open: what the public reads, Public pieces), §4 (Redeeming a
+// public link: a strong to its target): B, another node's thing, made public, with a dependent C;
+// node 1's account strongs B and C, and A's sync ID carries the public's piece on B (node 1 logged
+// it redeeming a link to B). Node 1 holds no role on B, yet reads B and C by A's keys, both in A's
+// unit; once the public no longer reads B, neither. Controls: no piece logged (no node reading A
+// ever held B's public grant: nothing tells A's readers B is public), and the carriers off (every
+// public read opens every unit's keys).
 #[test]
 fn a_strong_to_a_public_thing_brings_it_into_the_unit() {
     let mut net = account(None, 2);
@@ -470,17 +473,41 @@ fn a_strong_to_a_public_thing_brings_it_into_the_unit() {
     net.records.insert((N2, B));
     net.strongs.extend([(A, B), (A, C), (B, C)]);
     net.w.public.insert(B);
+    let unlogged = net.held(0, Rule::SPEC);
+    assert!(!unlogged.held.contains(&B) && !unlogged.held.contains(&C), "control: no piece under A, not held: {unlogged:?}");
+    let ideal = net.held(0, Rule { carriers: false, ..Rule::SPEC });
+    assert!(ideal.s.read.contains(&B), "control: carriers off, read: {ideal:?}");
+    net.pieces.insert((A, B));
     let h = net.held(0, Rule::SPEC);
     assert!(h.held.is_superset(&set(&[B, C])) && h.s.read.contains(&B), "B and C read through A's unit: {h:?}");
-    assert!(unit(&net.w, A, &net.edges(Rule::SPEC)).is_superset(&set(&[B, C])));
+    assert!(net.unit(Rule::SPEC, A, &net.edges(Rule::SPEC)).is_superset(&set(&[B, C])));
     net.w.public.clear();
     let h = net.held(0, Rule::SPEC);
     assert!(!h.held.contains(&B) && !h.held.contains(&C), "control: B not public, not held: {h:?}");
 }
 
+// spec/sync-set.md §2 (Public pieces; Carriers): node 2, paired to A, reads B by its own admin on
+// it; A strongs B, made public. Node 2 reads A and holds the public's grant on B, so it logs the
+// piece under A, and node 1, holding no role on B, reads B by A's keys. Control: node 2 unpaired
+// (no node reading A holds B's grant), and nothing is logged: node 1 holds nothing of B.
+#[test]
+fn a_reader_holding_the_publics_grant_carries_its_piece() {
+    for paired in [true, false] {
+        let mut net = account(paired.then_some(Role::Admin), 2);
+        net.w.grants.insert((N2, B), Role::Admin);
+        net.records.insert((N2, B));
+        net.strongs.extend([(A, B), (R2, B)]);
+        net.w.public.insert(B);
+        let (held, _, pieces) = net.held_all(Rule::SPEC);
+        assert_eq!(pieces.contains(&(A, B)), paired, "{pieces:?}");
+        assert_eq!(held[0].s.read.contains(&B), paired, "{:?}", held[0]);
+    }
+}
+
 // spec/sync-set.md §2 (Dependent entry): B, another node's
 // thing, made public, strongs its dependent C; node 1's account strongs C alone (a public link to
-// C redeemed). C is in A's unit by the public's grant on B, but no node reading A holds it
+// C redeemed, which logged the public's piece on B under A). C is in A's unit by the public's
+// grant on B, but no node reading A holds it
 // otherwise: at the strong to C the walk enters B's unit, read, so node 1 holds C under B's sync
 // ID and syncs it (C's later writes, B's rotations and the public's removal reach it there).
 // Control (`dep_entry` off): nothing carries C, as with no bridge.
@@ -492,6 +519,7 @@ fn a_strong_to_a_public_things_dependent_enters_its_independent() {
     net.records.insert((N2, B));
     net.strongs.extend([(A, C), (B, C)]);
     net.w.public.insert(B);
+    net.pieces.insert((A, B));
     let h = net.held(0, Rule::SPEC);
     assert!(h.held.contains(&C) && h.sync_set.contains(&B), "C held, B's sync ID synced: {h:?}");
     let off = net.held(0, Rule { dep_entry: false, ..Rule::SPEC });

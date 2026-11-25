@@ -22,7 +22,11 @@
 //! reading T holds otherwise (a bridge). A stub of X under T is carried only where a node reading T
 //! holds one of its edge pieces otherwise: T's own (T's key part), another stub holder's whose key
 //! part it holds, or any where it reads X. Both are `Net::logged`, the least fixpoint over every
-//! node (`Net::held_all`). The walk goes on only from a thing held.
+//! node (`Net::held_all`). The walk goes on only from a thing held. What the public reads opens T's
+//! keys only by a public piece under T's sync ID (`Net::pieces`), logged by a node reading T that
+//! holds the public's grant otherwise: it syncs the thing, or reads another unit carrying the piece
+//! (`logs_pieces`); a caller following a history passes in the pieces logged before (they outlive
+//! their carrier).
 //!
 //! Abstracted: every edge piece the spec indexes is logged under its holder's sync ID (ideal
 //! delivery), as is what a carrier holds (a bridge's carriage stands while it does: carriage that
@@ -30,7 +34,7 @@
 //! rotation, timing and the wire are left out. An edge piece is the current grant's: a removal's
 //! piece carries nothing, since a loss is carried out at once here (the engine's carries until
 //! the node's read secrets go, spec/sync-set.md §2 First entry).
-use super::{targets, unit, Edges, Kind, Role, Set, World, T};
+use super::{targets, unit_with, Edges, Kind, Role, Set, World, T};
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Debug, Default)]
@@ -56,6 +60,11 @@ pub struct Net {
     /// through that sync ID: a dependent `x` of another independent thing in `t`'s unit (a bridge),
     /// or the stub of independent `x` outside it (`held_all` computes them, `logs`).
     pub logged: Edges,
+    /// `(t, x)`: the public's edge pieces on independent `x` that `t`'s sync ID carries, logged by
+    /// a node reading `t` that held them (spec/sync-set.md §2 Public pieces): with `carriers`, `t`'s
+    /// keys open what the public reads only by these (`keys`). Logged once, they stay: a caller
+    /// tracking a history passes in what was logged before (`held_all` adds what is logged now).
+    pub pieces: Edges,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -83,8 +92,9 @@ pub struct Rule {
     pub founded_pieces: bool,
     /// The node root's strongs on the node thing itself (the split undone: a control).
     pub merged: bool,
-    /// A read unit's thing or stub held only where its sync ID carries it (`logged`; off: every
-    /// thing and stub of the unit, ideal delivery, the control).
+    /// A read unit's thing or stub held only where its sync ID carries it (`logged`), and what the
+    /// public reads opened by T's keys only by a public piece T's sync ID carries (`pieces`; off:
+    /// every thing and stub of the unit and every public read, ideal delivery, the control).
     pub carriers: bool,
     /// At a strong from a held thing of read unit T to a dependent D of another independent thing
     /// X that T's keys open (through X's grants: the public's, or T's role on X), the walk enters
@@ -128,11 +138,31 @@ impl Net {
         self.strongs.iter().map(|&(x, y)| (root_of.get(&x).copied().unwrap_or(x), y)).collect()
     }
 
+    /// The keys of `t` (`World::keys_of`): with `carriers`, what the public reads only where `t`'s
+    /// sync ID carries its piece (`pieces`).
+    pub fn keys(&self, rule: Rule, t: T) -> Set {
+        let mut keys = self.w.keys_of(t);
+        if rule.carriers {
+            keys.retain(|x| !self.w.public.contains(x) || self.pieces.contains(&(t, *x)) || self.w.roles_from(t).get(x).is_some_and(|&r| r >= Role::Read));
+        }
+        keys
+    }
+
+    /// What a node reading every thing in `reads` holds keys for (`World::ring` by `keys`).
+    pub fn ring(&self, rule: Rule, reads: &Set) -> Set {
+        reads.iter().flat_map(|&r| self.keys(rule, r)).collect()
+    }
+
+    /// T's sync unit (`closure::unit`) by `keys`.
+    pub fn unit(&self, rule: Rule, t: T, e: &Edges) -> Set {
+        unit_with(&self.w, t, &self.keys(rule, t), e)
+    }
+
     /// What a node reading `t` holds of `t`'s sync unit: with `carriers`, the walk from `t` over
     /// the unit's things its sync ID carries (an independent thing, a dependent of `t`, a logged
     /// one), going on only from those; else the unit.
     pub fn held_unit(&self, rule: Rule, t: T, e: &Edges) -> Set {
-        let u = unit(&self.w, t, e);
+        let u = self.unit(rule, t, e);
         if !rule.carriers {
             return u;
         }
@@ -152,21 +182,45 @@ impl Net {
         seen
     }
 
-    /// Every node's held set under `rule`, with what they log (`logged`): the least fixpoint,
-    /// from `self.logged`, so everything logged is founded on what some node held before it.
-    pub fn held_all(&self, rule: Rule) -> (Vec<Held>, Edges) {
+    /// Every node's held set under `rule`, with what they log (`logged`, `pieces`): the least
+    /// fixpoint, from `self`'s, so everything logged is founded on what some node held before it.
+    pub fn held_all(&self, rule: Rule) -> (Vec<Held>, Edges, Edges) {
         let mut net = self.clone();
         loop {
             let held: Vec<Held> = (0..net.nodes.len()).map(|i| net.held_alone(i, rule)).collect();
-            let mut more = net.logged.clone();
+            let (mut more, mut pieces) = (net.logged.clone(), net.pieces.clone());
             for h in &held {
                 more.extend(net.logs(rule, h));
+                pieces.extend(net.logs_pieces(rule, h));
             }
-            if more == net.logged {
-                return (held, more);
+            if more == net.logged && pieces == net.pieces {
+                return (held, more, pieces);
             }
-            net.logged = more;
+            (net.logged, net.pieces) = (more, pieces);
         }
+    }
+
+    /// The public pieces a node holding `h` logs (spec/sync-set.md §2 Public pieces): `(t, x)` for
+    /// each thing `t` it reads and independent `x` the public reads, a strong from a thing it holds
+    /// of `t`'s unit reaching `x` or a dependent of it, where it holds the public's grant on `x`: it
+    /// syncs `x` (read, kept unread or for keys) or reads a thing whose sync ID carries the piece.
+    pub fn logs_pieces(&self, rule: Rule, h: &Held) -> Edges {
+        let e = self.edges(rule);
+        let holds = |x: T| h.sync_set.contains(&x) || h.s.read.iter().any(|&t| self.pieces.contains(&(t, x)));
+        let mut out = Edges::new();
+        for &t in &h.s.read {
+            let u = self.held_unit(rule, t, &e);
+            for &(m, y) in &e {
+                let x = match self.w.kinds[y] {
+                    Kind::Independent => y,
+                    Kind::Dependent(k) => k,
+                };
+                if u.contains(&m) && self.w.public.contains(&x) && holds(x) {
+                    out.insert((t, x));
+                }
+            }
+        }
+        out
     }
 
     /// What a node holding `h` logs, for each thing `t` it reads: `(t, x)` for a dependent `x` of
@@ -177,7 +231,7 @@ impl Net {
         let e = self.edges(rule);
         let mut out = Edges::new();
         for &t in &h.s.read {
-            let u = unit(&self.w, t, &e);
+            let u = self.unit(rule, t, &e);
             out.extend(h.held.iter().filter(|&&x| u.contains(&x) && matches!(self.w.kinds[x], Kind::Dependent(k) if k != t)).map(|&x| (t, x)));
             let roles = self.w.roles_from(t);
             let holds_piece = |x: T| h.s.read.contains(&x) || h.s.keyparts.iter().any(|&g| roles.get(&g).is_some_and(|&r| r >= Role::Sync) && self.piece(rule, g, x));
@@ -263,8 +317,7 @@ impl Net {
         }
         // the node's role: its own thing's, and the public's (every party's, spec/sync-set.md §2
         // Own things), at most read, through holders as any holder's, from the things it reads
-        // (holding their grants: elsewhere the public's grant is not known held, the reference's
-        // gap of issues/public-pieces-unheld.md)
+        // (holding their grants; a public piece shows the public's grant on its thing alone)
         let mut role = self.roles(n.thing, &counting);
         for &x in w.public.iter().filter(|x| s.read.contains(x)) {
             for (y, r) in self.roles(x, &counting) {
@@ -296,7 +349,7 @@ impl Net {
             if own || by_dep.contains(&t) || at(t, Role::Read) {
                 let u = self.held_unit(rule, t, &e);
                 out.read.extend(u.iter().copied().filter(|&x| w.independent(x)));
-                let whole = unit(w, t, &e);
+                let whole = self.unit(rule, t, &e);
                 for &m in &u {
                     todo.extend(targets(&e, m).filter(|&y| w.independent(y) && !u.contains(&y)));
                     if rule.dep_entry {
@@ -352,7 +405,7 @@ impl Net {
         if !rule.carriers {
             return self.held_alone(i, rule);
         }
-        let (mut all, _) = self.held_all(rule);
+        let (mut all, ..) = self.held_all(rule);
         all.swap_remove(i)
     }
 

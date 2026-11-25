@@ -366,7 +366,7 @@ fn a_public_reader_keeps_a_thing_on_taking_its_record_spec_sync_3() {
 fn an_edge_piece_reaches_only_readers_syncing_its_target_spec_permissions_4() {
     use crate::harness::history::{Gives, Holder};
     let script = [Step::New(1), Step::Give(1, 0, Holder::Node(0), Gives::Writes), Step::New(1), Step::Strong(0, None, 0), Step::Give(1, 1, Holder::Thing(0), Gives::Writes)];
-    let mut w = holds_on(0, 2, 3, &script, String::new(), false);
+    let mut w = holds_on(0, 3, 4, &script, String::new(), false);
     let (t0, t1) = (w.history.things[0].0, w.history.things[1].0);
     let piece = |w: &mut World, i: usize| {
         let c = w.engine(i).certificates(&t0).unwrap();
@@ -405,5 +405,44 @@ fn an_entry_waits_for_a_part_dropped_after_its_opening_spec_sync_streams_4() {
     play(&mut w, &script, String::new());
     for s in [Step::Heal, Step::Run] {
         crate::harness::step(&mut w, &s);
+    }
+}
+
+// spec/sync-set.md §2 (T's keys open: what the public reads as the public pieces T's sync ID
+// carries; Carriers): node 1's account strongs node 0's thing, holding no role on it, before it
+// is made public. No node of the account holds anything of the thing, so none logs its public
+// piece under the account: node 1 reads nothing of it, and held-model's closure (public pieces
+// logged only by a node holding the public's grant) agrees. Control: a redeem of a public link
+// (the redeeming node holds the grant by the link's sync ID) logs it, and node 1 reads it.
+#[test]
+fn a_strong_no_reader_carries_reads_nothing_public_spec_sync_set_2() {
+    use crate::harness::history::{Gives, Holder, reads};
+    let (n, accounts, ..) = size();
+    let script = [Step::New(0), Step::Run, Step::Strong(1, None, 0), Step::Run, Step::Give(0, 0, Holder::Public, Gives::Reads), Step::Run];
+    let mut w = holds_on(0, accounts, n, &script, String::new(), false);
+    let t = w.history.things[0].0;
+    assert!(reads(w.engine(1), &t).value.is_none(), "no carrier: node 1 reads nothing of the public thing");
+    let redeemed: Vec<Step> = script.iter().cloned().chain([Step::Redeem(1, 0), Step::Run]).collect();
+    let mut w = holds_on(0, accounts, n, &redeemed, String::new(), false);
+    assert!(reads(w.engine(1), &t).value.is_some(), "control: redeemed, node 1 reads it");
+}
+
+// spec/sync-set.md §2 (Public pieces; Carriers): node 1's account holds sync on node 0's thing and
+// strongs it; the thing is made public and node 1 (keeping it unread, reading it by its public
+// entry) logs its public piece under the account. Its sync role then revoked, the piece stays under
+// the account's sync ID, so node 1 reads the thing by the public still, as the model says (pieces
+// logged over the history, not by who holds the thing at the end): with a quiet run between the
+// public's grant and the revocation, and with none (the grant arrives first).
+#[test]
+fn a_public_piece_outlives_its_carrier_spec_sync_set_2() {
+    use crate::harness::history::{Gives, Holder, reads};
+    let (n, accounts, ..) = size();
+    let start = [Step::New(0), Step::Give(0, 0, Holder::Node(1), Gives::Syncs), Step::Strong(1, None, 0), Step::Run, Step::Give(0, 0, Holder::Public, Gives::Reads)];
+    for quiet in [true, false] {
+        let mid = if quiet { vec![Step::Run] } else { vec![] };
+        let script: Vec<Step> = start.iter().cloned().chain(mid).chain([Step::Revoke(0, 0, Holder::Node(1)), Step::Run]).collect();
+        let mut w = holds_on(0, accounts, n, &script, String::new(), false);
+        let t = w.history.things[0].0;
+        assert!(reads(w.engine(1), &t).value.is_some(), "node 1 reads the thing by its account's public piece (quiet run between: {quiet})");
     }
 }
