@@ -363,6 +363,10 @@ pub struct ReadCredentials {
     /// The signing keys of the link keys this node acts for on S (the link it redeems): their
     /// static entries are tested (spec/sync-opens.md §4).
     pub acting: Vec<osis_crypto::SigningSecret>,
+    /// The public reads S's thing: its public entry is shown (spec/sync-opens.md §4).
+    pub shows_public: bool,
+    /// This node redeems a public link to S's thing: its public entry is tested.
+    pub tests_public: bool,
     /// The sync proof (spec/sync-ids.md §2) of each recorded step whose sync key this node holds,
     /// deepest first: the head's is what a reader shows, the rest what the walk tests
     /// (spec/sync-ids.md §6 Walk).
@@ -372,7 +376,7 @@ pub struct ReadCredentials {
     pub sync_keys: Vec<(Epoch, SigningSecret)>,
 }
 
-type PublicCredentials<'a> = (Option<StepId>, &'a BTreeMap<StepId, HeadKeys>, &'a [(Epoch, Secret32)], &'a BTreeSet<[u8; 32]>, Vec<osis_crypto::VerifyingKey>, &'a [(StepId, [u8; 32])], Vec<(Epoch, osis_crypto::VerifyingKey)>);
+type PublicCredentials<'a> = (Option<StepId>, &'a BTreeMap<StepId, HeadKeys>, &'a [(Epoch, Secret32)], &'a BTreeSet<[u8; 32]>, Vec<osis_crypto::VerifyingKey>, &'a [(StepId, [u8; 32])], Vec<(Epoch, osis_crypto::VerifyingKey)>, (bool, bool));
 
 impl ReadCredentials {
     /// What tells two apart (`Engine::read_credentials` is a memo): signing keys by their public
@@ -380,7 +384,7 @@ impl ReadCredentials {
     fn public(&self) -> PublicCredentials<'_> {
         let acting = self.acting.iter().map(SigningSecret::verifying_key).collect();
         let sync_keys = self.sync_keys.iter().map(|(e, k)| (*e, k.verifying_key())).collect();
-        (self.head.as_ref().map(Step::id), &self.keys, &self.read_secrets, &self.statics, acting, &self.proofs, sync_keys)
+        (self.head.as_ref().map(Step::id), &self.keys, &self.read_secrets, &self.statics, acting, &self.proofs, sync_keys, (self.shows_public, self.tests_public))
     }
 }
 
@@ -690,11 +694,12 @@ impl Engine {
         osis_base::memo::Memo::get_in(self, |e| &e.core.read_credentials, s, |e| e.read_credentials_now(s))
     }
 
-    /// Opens a static entry's grant (spec/sync-opens.md §5): `steps` verify from S's genesis step
-    /// (`verify_path`: its delete key hashes to `s`) and pass through the newest step of S recorded
-    /// here; a link key this node holds has static entry `entry` and opens the head's entry box
-    /// (spec/sync-ids.md §3 Entry boxes), each secret naming its epoch of S's thing; the box's sync
-    /// secret derives the head's sync key. Returns that key and the box, learning nothing: the
+    /// Opens a static or the public entry's grant (spec/sync-opens.md §5): `steps` verify from S's
+    /// genesis step (`verify_path`: its delete key hashes to `s`) and pass through the newest step
+    /// of S recorded here; a link key this node holds has static entry `entry` and opens the head's
+    /// entry box, or `entry` is S's public entry and this node redeems a public link to S's thing
+    /// (the box open, read by anyone) (spec/sync-ids.md §3 Entry boxes), each secret naming its
+    /// epoch of S's thing; the box's sync secret derives the head's sync key. Returns that key and the box, learning nothing: the
     /// caller verifies the answer's signature under the key, then `learn_grant`. `None` when any
     /// check fails or S is no sync ID this node reads.
     pub fn open_grant(&mut self, s: &SyncId, entry: &[u8; 32], steps: &[Step], b: &osis_schema::core_types::SecretBox) -> Result<Option<OpenedGrant>> {
@@ -710,11 +715,20 @@ impl Engine {
             return Ok(None);
         }
         let Some((things, _)) = self.sync_holder(s)? else { return Ok(None) };
-        let ids: Vec<Arc<crate::identity::Identity>> = self.core.link_keys.values().cloned().collect();
-        let Some(id) = ids.iter().find(|id| osis_crypto::static_entry(s, &id.signing().verifying_key()) == *entry) else { return Ok(None) };
-        let Some(kem) = id.link_read_kem() else { return Ok(None) };
         // the box names the thing it is of: whichever of S's things opens it
-        let Some((thing, item)) = things.iter().find_map(|t| osis_blob::open_entry_box(b, head, &kem, t).ok().map(|i| (*t, i))) else { return Ok(None) };
+        let opened = if *entry == osis_crypto::public_entry(s) {
+            // the public entry, tested only while a public link to S's thing is redeemed here
+            if !c.tests_public {
+                return Ok(None);
+            }
+            things.iter().find_map(|t| osis_blob::read_public_entry_box(b, head, t).ok().map(|i| (*t, i)))
+        } else {
+            let ids: Vec<Arc<crate::identity::Identity>> = self.core.link_keys.values().cloned().collect();
+            let Some(id) = ids.iter().find(|id| osis_crypto::static_entry(s, &id.signing().verifying_key()) == *entry) else { return Ok(None) };
+            let Some(kem) = id.link_read_kem() else { return Ok(None) };
+            things.iter().find_map(|t| osis_blob::open_entry_box(b, head, &kem, t).ok().map(|i| (*t, i)))
+        };
+        let Some((thing, item)) = opened else { return Ok(None) };
         let key = osis_crypto::role_key(osis_crypto::RoleKey::Sync, &item.sync.1).verifying_key().to_bytes();
         if key != head.keys.sync.to_bytes() {
             return Ok(None);

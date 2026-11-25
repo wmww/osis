@@ -43,6 +43,8 @@ impl DialHint {
 const MAX_PEERS: usize = 4;
 const MAX_URLS: usize = 4;
 const FORMAT: i64 = 1;
+/// A public link's format (spec/wire.md §10).
+const PUBLIC_FORMAT: i64 = 2;
 const LINK_PREFIX: &str = "osis://link/";
 /// Far above the largest layout the caps allow.
 const LIMITS: Limits = Limits::new(8, 16 * 1024);
@@ -95,10 +97,111 @@ fn check_url(u: &str) -> Result<(), Error> {
     Ok(())
 }
 
-fn format_of(v: &Value) -> Result<(), Error> {
+/// A link's format: 1 a share link, 2 a public link (spec/wire.md §10).
+fn format_of(v: &Value) -> Result<u64, Error> {
     match get_uint(v, "format")? {
-        1 => Ok(()),
+        n @ (1 | 2) => Ok(n),
         n => Err(Error::UnknownVersion(n)),
+    }
+}
+
+/// `[peer*]`, checked against the caps (spec/wire.md §10).
+fn peers_value(peers: &[DialHint]) -> Result<Value, Error> {
+    if peers.len() > MAX_PEERS {
+        return Err(Error::Malformed("more than 4 peers"));
+    }
+    let mut out = Vec::with_capacity(peers.len());
+    for p in peers {
+        if p.urls.len() > MAX_URLS {
+            return Err(Error::Malformed("more than 4 URLs"));
+        }
+        p.urls.iter().try_for_each(|r| check_url(r))?;
+        out.push(p.to_value());
+    }
+    Ok(Value::List(out))
+}
+
+fn peers_from(peers: &[Value]) -> Result<Vec<DialHint>, Error> {
+    if peers.len() > MAX_PEERS {
+        return Err(Error::Malformed("more than 4 peers"));
+    }
+    peers.iter().map(|p| DialHint::from_value(p, MAX_URLS, "link peer")).collect()
+}
+
+fn text_of(v: &Value) -> String {
+    format!("{LINK_PREFIX}{}", base64url::encode(&encode(v)))
+}
+
+fn value_of_text(s: &str) -> Result<Value, Error> {
+    let rest = s.strip_prefix(LINK_PREFIX).ok_or(Error::Malformed("text form prefix"))?;
+    if rest.len() > LIMITS.max_bytes * 2 {
+        return Err(Error::Malformed("text form too long"));
+    }
+    Ok(decode(&base64url::decode(rest).ok_or(Error::Malformed("base64url"))?, &LIMITS)?)
+}
+
+/// A link of either format (spec/wire.md §10), as a redeemer reads its text.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Link {
+    Share(ShareLink),
+    Public(PublicLink),
+}
+
+impl Link {
+    /// The thing it names.
+    pub fn target(&self) -> Tid {
+        match self {
+            Link::Share(l) => l.target,
+            Link::Public(l) => l.target,
+        }
+    }
+
+    pub fn to_text(&self) -> Result<String, Error> {
+        match self {
+            Link::Share(l) => l.to_text(),
+            Link::Public(l) => l.to_text(),
+        }
+    }
+
+    pub fn from_value(v: &Value) -> Result<Link, Error> {
+        let Value::List(items) = v else { return Err(Error::Malformed("link")) };
+        match format_of(items.first().ok_or(Error::Malformed("link"))?)? {
+            1 => Ok(Link::Share(ShareLink::from_value(v)?)),
+            _ => Ok(Link::Public(PublicLink::from_value(v)?)),
+        }
+    }
+
+    pub fn from_text(s: &str) -> Result<Link, Error> {
+        Link::from_value(&value_of_text(s)?)
+    }
+}
+
+/// `Link := [2, target, target_sync_id, [peer*]]` (spec/wire.md §10): a thing the public reads,
+/// its sync ID and the nodes to dial; no secret. Its redeemer opens the sync ID by its public
+/// entry (spec/sync-opens.md §4).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PublicLink {
+    pub target: Tid,
+    pub sync_id: SyncId,
+    pub peers: Vec<DialHint>,
+}
+
+impl PublicLink {
+    pub fn to_value(&self) -> Result<Value, Error> {
+        Ok(Value::List(vec![Value::Int(PUBLIC_FORMAT), tid(&self.target), Value::bytes(&self.sync_id.0), peers_value(&self.peers)?]))
+    }
+
+    pub fn from_value(v: &Value) -> Result<PublicLink, Error> {
+        let Value::List(items) = v else { return Err(Error::Malformed("link")) };
+        let [f, target, sync_id, Value::List(peers)] = items.as_slice() else { return Err(Error::Malformed("link")) };
+        if format_of(f)? != 2 {
+            return Err(Error::Malformed("not a public link"));
+        }
+        Ok(PublicLink { target: get_tid(target, "link target")?, sync_id: SyncId(get_bytes(sync_id, "link sync ID")?), peers: peers_from(peers)? })
+    }
+
+    pub fn to_text(&self) -> Result<String, Error> {
+        Ok(text_of(&self.to_value()?))
     }
 }
 
@@ -106,24 +209,13 @@ impl ShareLink {
     /// The value the text form encodes (spec/wire.md §10); the conformance vectors and the link
     /// fuzz target build and judge it directly.
     pub fn to_value(&self) -> Result<Value, Error> {
-        if self.peers.len() > MAX_PEERS {
-            return Err(Error::Malformed("more than 4 peers"));
-        }
-        let mut peers = Vec::with_capacity(self.peers.len());
-        for p in &self.peers {
-            if p.urls.len() > MAX_URLS {
-                return Err(Error::Malformed("more than 4 URLs"));
-            }
-            p.urls.iter().try_for_each(|r| check_url(r))?;
-            peers.push(p.to_value());
-        }
         let mut v = vec![
             Value::Int(FORMAT),
             Value::bytes(self.seed.expose()),
             tid(&self.target),
             tid(&self.k),
             Value::bytes(&self.k_sync_id.0),
-            Value::List(peers),
+            peers_value(&self.peers)?,
         ];
         // `flags` only when a bit is set: one encoding per link
         if self.single_use {
@@ -135,7 +227,9 @@ impl ShareLink {
     pub fn from_value(v: &Value) -> Result<ShareLink, Error> {
         let Value::List(items) = v else { return Err(Error::Malformed("link")) };
         let (f, rest) = items.split_first().ok_or(Error::Malformed("link"))?;
-        format_of(f)?;
+        if format_of(f)? != 1 {
+            return Err(Error::Malformed("not a share link"));
+        }
         let (rest, single_use) = match rest {
             [head @ .., flags] if rest.len() == 6 => {
                 let f = get_uint(flags, "link flags")?;
@@ -162,15 +256,12 @@ impl ShareLink {
     }
 
     pub fn to_text(&self) -> Result<String, Error> {
-        Ok(format!("{LINK_PREFIX}{}", base64url::encode(&encode(&self.to_value()?))))
+        Ok(text_of(&self.to_value()?))
     }
 
+    /// A share link's text (a public link's is no share link: `Link::from_text` reads either).
     pub fn from_text(s: &str) -> Result<ShareLink, Error> {
-        let rest = s.strip_prefix(LINK_PREFIX).ok_or(Error::Malformed("text form prefix"))?;
-        if rest.len() > LIMITS.max_bytes * 2 {
-            return Err(Error::Malformed("text form too long"));
-        }
-        ShareLink::from_value(&decode(&base64url::decode(rest).ok_or(Error::Malformed("base64url"))?, &LIMITS)?)
+        ShareLink::from_value(&value_of_text(s)?)
     }
 }
 
@@ -251,9 +342,24 @@ pub(crate) mod tests {
         assert!(l.to_value().is_err());
         let mut v = link().to_value().unwrap();
         if let Value::List(items) = &mut v {
-            items[0] = Value::Int(2);
+            items[0] = Value::Int(3);
         }
-        assert_eq!(ShareLink::from_value(&v), Err(Error::UnknownVersion(2)));
+        assert_eq!(Link::from_value(&v), Err(Error::UnknownVersion(3)));
         assert!(ShareLink::from_text("osis://link/!!").is_err());
+    }
+
+    // spec/wire.md §10 (public link): format 2, target, its sync ID and peers, no seed; read as
+    // a public link only, its text round trips.
+    #[test]
+    fn public_links() {
+        let l = link();
+        let p = PublicLink { target: l.target, sync_id: l.k_sync_id, peers: l.peers.clone() };
+        let t = p.to_text().unwrap();
+        assert_eq!(Link::from_text(&t).unwrap(), Link::Public(p.clone()));
+        assert_eq!(Link::from_text(&l.to_text().unwrap()).unwrap(), Link::Share(l));
+        assert!(ShareLink::from_text(&t).is_err(), "a public link is no share link");
+        let Value::List(mut items) = p.to_value().unwrap() else { panic!() };
+        items.push(Value::Int(1));
+        assert!(Link::from_value(&Value::List(items)).is_err(), "no flags");
     }
 }

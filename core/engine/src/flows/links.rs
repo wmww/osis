@@ -133,6 +133,35 @@ impl Engine {
         })
     }
 
+    /// Redeems a public link (spec/sync-set.md §4): a strong to its target in `joiner`'s
+    /// `holds.0`, unless the node closure holds the target, and nothing else. Written once the
+    /// public's grant on the target is held (`public_reads`): the strong then brings the target
+    /// into `joiner`'s sync unit (spec/sync-set.md §2 T's keys open), whose keys need no grant of
+    /// `joiner`'s. Who writes it: this node, for a joiner it writes.
+    pub fn redeem_public(&mut self, link: &osis_blob::PublicLink, joiner: &Tid) -> Result<Done> {
+        let (t, d) = (link.target, *joiner);
+        if !self.public_reads(&t) {
+            return Err(Error::Misuse("the public's grant on the link's target is not held here"));
+        }
+        let mut done = Done::default();
+        let c = self.run(|tx| {
+            if tx.core.ix.closure.holds(&t) {
+                return Ok(None);
+            }
+            let mut m = Mutation::new();
+            m.op(d, &ct::HOLDS, PathOp { path: vec![], op: Op::Add(Value::Strong(t)) })?;
+            Engine::commit_tx(tx, m)
+        })?;
+        done.add(c);
+        Ok(done)
+    }
+
+    /// Whether the public reads `t`'s independent by its own grant there, as held here
+    /// (spec/permissions.md §1, `Core::public_reads`): a public link to `t` can be redeemed.
+    pub fn public_reads(&self, t: &Tid) -> bool {
+        self.core.secret_actor(t).is_some_and(|a| self.core.public_reads(&a))
+    }
+
     /// Whether the held role history shows `holder` put on `thing` and its edge over: removed, or
     /// past `until` (spec/permissions.md §7). A holder not seen yet says nothing: its edge may be
     /// on its way.

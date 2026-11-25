@@ -47,7 +47,7 @@ impl Creds {
     /// its steps' sync key and the sync proof of it, and its head's deposit key and every key of
     /// the head's claim set; it tests the sync keys and the proofs; its step answers a Hit on what
     /// it shows (§5 Proof: a sync key by itself), so everything it shows it can accept.
-    pub fn kept_unread(uc: &UnreadCredentials) -> Creds {
+    pub fn kept_unread(s: &SyncId, uc: &UnreadCredentials) -> Creds {
         let mut c = Creds { holding: Some(Holding::Unread), ..Creds::default() };
         for (k, p) in &uc.keys {
             c.shows.push((Shown::SyncKey(k.verifying_key().to_bytes()), None));
@@ -56,9 +56,14 @@ impl Creds {
         if let Some(d) = &uc.deposit {
             c.shows.push((Shown::Deposit(d.to_bytes()), None));
         }
+        // the public entry, where the head lists it, is shown as itself: its Hit carries no proof
         if let Some(cs) = &uc.claims {
-            c.shows.extend(cs.claims.iter().map(|k| (Shown::Claim(*k), None)));
-            c.shows.extend(cs.entries.keys().map(|k| (Shown::Static(*k), None)));
+            let public = osis_crypto::public_entry(s);
+            c.shows.extend(cs.claims.iter().filter(|k| **k != public).map(|k| (Shown::Claim(*k), None)));
+            c.shows.extend(cs.entries.keys().filter(|k| **k != public).map(|k| (Shown::Static(*k), None)));
+            if cs.contains(&public) {
+                c.shows.push((Shown::Public(public), None));
+            }
         }
         for (k, p) in &uc.keys {
             c.tests.push((Tested::SyncKey { step: uc.step, key: k.clone() }, None));
@@ -209,6 +214,14 @@ fn node_creds(cx: &mut Cx, unread: &Unread, s: &SyncId) -> Option<Arc<Creds>> {
             for k in &rc.acting {
                 c.tests.push((Tested::Static { key: k.clone(), step: None }, None));
             }
+            // S's public entry: shown where the public reads S's thing, tested where this node
+            // redeems a public link to it (spec/sync-opens.md §4)
+            if rc.shows_public {
+                c.shows.push((Shown::Public(osis_crypto::public_entry(s)), None));
+            }
+            if rc.tests_public {
+                c.tests.push((Tested::Public, None));
+            }
             // the sync proof of the newest recorded step's sync key (spec/sync-opens.md §4)
             if let (Some(head), Some((id, p))) = (&rc.head, rc.proofs.first())
                 && head.id() == *id
@@ -231,7 +244,7 @@ fn node_creds(cx: &mut Cx, unread: &Unread, s: &SyncId) -> Option<Arc<Creds>> {
         // generation
         Holding::Unread => {
             if let Some(uc) = unread.credentials(s) {
-                c = Creds::kept_unread(&uc);
+                c = Creds::kept_unread(s, &uc);
             }
         }
     }

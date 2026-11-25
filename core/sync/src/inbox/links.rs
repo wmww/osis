@@ -30,13 +30,20 @@
 //! entry (a link revoked before its join was taken is followed until then).
 //!
 //! Finalize is the sharer's engine's, on a complete pass of K's sync ID (status tells it).
+//!
+//! A public link (spec/sync-set.md §4) has no join: `redeem_public` follows it in the engine
+//! (`Engine::follow_public`: the target's sync ID from the text read in the sync set, its public
+//! entry tested) until the public's grant on the target is held here, then writes the strong to
+//! the target in the joiner's `holds.0` (`Engine::redeem_public`) and forgets it: the strong brings
+//! the target into the joiner's sync unit from then on. Nothing of it is kept across a start (no
+//! secret, nothing to deliver): the caller redeems it again. Its follow time is a share link's.
 
 use super::{DialHint, Here};
 use crate::types::{Result, Waiting};
 use osis_base::memo::{Effects, Stamped};
 use osis_base::{CommitId, Tid, WallMs};
 use osis_engine::Engine;
-use osis_blob::ShareLink;
+use osis_blob::{PublicLink, ShareLink};
 use osis_store::Shred;
 use std::collections::BTreeMap;
 
@@ -111,9 +118,33 @@ enum Stage {
     GaveUp,
 }
 
+/// A public link being redeemed (`redeem_public`).
+#[derive(Clone, Debug)]
+struct PublicPending {
+    link: PublicLink,
+    since: WallMs,
+    joiner: Tid,
+}
+
+/// What a public link being redeemed waits on.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum PublicStage {
+    /// The public's grant on the target is not held here yet.
+    Waiting,
+    /// It is: the strong can be written.
+    Ready,
+    /// The node closure holds the target: nothing to write.
+    Held,
+    /// Not redeemed within the node's follow time.
+    GaveUp,
+}
+
 #[derive(Clone)]
 pub(super) struct Redemptions {
     pending: BTreeMap<Tid, Pending>,
+    /// Public links being redeemed, by target.
+    public: BTreeMap<Tid, PublicPending>,
+    public_ready: Effects<Tid, PublicStage>,
     /// Stamped: the driver follows the dial hints as they move.
     hints: Stamped<Tid, Vec<DialHint>>,
     ready: Effects<Tid, Stage>,
@@ -125,7 +156,7 @@ pub(super) struct Redemptions {
 
 impl Default for Redemptions {
     fn default() -> Self {
-        Redemptions { pending: BTreeMap::new(), hints: Stamped::default(), ready: Effects::new("inbox: link ready"), held: Effects::new("inbox: join held"), kept: Effects::new("inbox: joined link's peers") }
+        Redemptions { pending: BTreeMap::new(), public: BTreeMap::new(), public_ready: Effects::new("inbox: public link ready"), hints: Stamped::default(), ready: Effects::new("inbox: link ready"), held: Effects::new("inbox: join held"), kept: Effects::new("inbox: joined link's peers") }
     }
 }
 
@@ -183,8 +214,49 @@ impl Redemptions {
         Ok(Waiting::Pending)
     }
 
+    /// Redeems a public link (module doc): `Done` once the node closure holds its target.
+    pub(super) fn redeem_public(&mut self, h: &mut Here<'_>, link: &PublicLink, joiner: Tid) -> Waiting {
+        let t = link.target;
+        if h.engine.closure_holds(&t) {
+            return Waiting::Done;
+        }
+        if !self.public.contains_key(&t) {
+            h.engine.follow_public(link);
+            self.hints.insert(t, link.peers.clone());
+            self.public.insert(t, PublicPending { link: link.clone(), since: h.now, joiner });
+            self.public_ready.want(t);
+        }
+        Waiting::Pending
+    }
+
     pub(super) fn settle(&mut self, h: &mut Here<'_>) -> Result<bool> {
         let mut acted = false;
+        for t in self.public_ready.due() {
+            let Some(p) = self.public.get(&t).cloned() else {
+                self.public_ready.unwant(&t);
+                continue;
+            };
+            let engine = &mut *h.engine;
+            let until = WallMs(p.since.0.saturating_add(h.policy.follow_link_ms()));
+            let stage = || match () {
+                _ if engine.closure_holds(&t) => PublicStage::Held,
+                _ if engine.public_reads(&t) => PublicStage::Ready,
+                _ if engine.reached(until) => PublicStage::GaveUp,
+                _ => PublicStage::Waiting,
+            };
+            let Some((_, stage)) = self.public_ready.settle(&t, stage) else { continue };
+            match stage {
+                PublicStage::Waiting => continue,
+                // kept wanted until written: a failed write is tried again at the next change
+                PublicStage::Ready if h.engine.redeem_public(&p.link, &p.joiner).is_err() => continue,
+                _ => {}
+            }
+            self.public_ready.unwant(&t);
+            self.public.remove(&t);
+            self.hints.remove(&t);
+            h.engine.unfollow_link(&t);
+            acted = true;
+        }
         for k in self.ready.due() {
             let Some((link, since, joiner)) = self.pending.get(&k).map(|p| (p.link.clone(), p.since, p.joiner)) else {
                 self.ready.unwant(&k);
@@ -256,9 +328,9 @@ impl Redemptions {
         Ok(())
     }
 
-    /// Whether link K is being redeemed here.
+    /// Whether link K, or a public link to target `k`, is being redeemed here.
     pub(super) fn redeeming(&self, k: &Tid) -> bool {
-        self.pending.contains_key(k)
+        self.pending.contains_key(k) || self.public.contains_key(k)
     }
 
     /// The peers of the links being redeemed (spec/wire.md §10: first-contact hints) and of

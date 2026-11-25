@@ -5,7 +5,7 @@
 use crate::types::Credential;
 use osis_base::SyncId;
 use osis_crypto::kdf::{beacon, beacon_hit, beacon_reply};
-use osis_crypto::{sign_open, static_entry, verify_open};
+use osis_crypto::{public_entry, sign_open, static_entry, verify_open};
 use osis_crypto::{Epoch, Secret32, Signature, SigningSecret, VerifyingKey};
 use osis_blob::StepId;
 
@@ -87,6 +87,8 @@ pub enum Shown {
     SyncKey([u8; 32]),
     Claim([u8; 32]),
     Static([u8; 32]),
+    /// S's public entry: its Hit carries no proof (spec/sync-opens.md §5 Proof).
+    Public([u8; 32]),
     /// Shown so a sealed fire's sender finds a peer that may hold S (spec/sync-inbox.md §3); its
     /// Hit opens nothing (spec/sync-opens.md §5 Proof).
     Deposit([u8; 32]),
@@ -96,7 +98,7 @@ impl Shown {
     /// The match value (spec/sync-opens.md §5 Beacon).
     pub fn matched(&self) -> &[u8; 32] {
         match self {
-            Shown::Read(_, m) | Shown::Proof(m) | Shown::SyncKey(m) | Shown::Claim(m) | Shown::Static(m) | Shown::Deposit(m) => m,
+            Shown::Read(_, m) | Shown::Proof(m) | Shown::SyncKey(m) | Shown::Claim(m) | Shown::Static(m) | Shown::Public(m) | Shown::Deposit(m) => m,
         }
     }
 
@@ -108,6 +110,7 @@ impl Shown {
             Shown::SyncKey(_) => Credential::SyncKey,
             Shown::Claim(_) => Credential::Claim,
             Shown::Static(e) => Credential::Static(*e),
+            Shown::Public(_) => Credential::Public,
             Shown::Deposit(_) => return None,
         })
     }
@@ -125,6 +128,9 @@ pub enum Tested {
     Claim { step: StepId, key: SigningSecret, sync: [u8; 32] },
     /// A link key's static entry this node acts for, with that key.
     Static { step: Option<StepId>, key: SigningSecret },
+    /// S's public entry, while this node redeems a public link to S's thing: its Hit carries no
+    /// proof.
+    Public,
 }
 
 impl Tested {
@@ -135,6 +141,7 @@ impl Tested {
             Tested::Proof(p) => *p,
             Tested::SyncKey { key, .. } | Tested::Claim { key, .. } => key.verifying_key().to_bytes(),
             Tested::Static { key, .. } => static_entry(s, &key.verifying_key()),
+            Tested::Public => public_entry(s),
         }
     }
 
@@ -145,6 +152,7 @@ impl Tested {
             Tested::SyncKey { .. } => Credential::SyncKey,
             Tested::Claim { .. } => Credential::Claim,
             Tested::Static { key, .. } => Credential::Static(static_entry(s, &key.verifying_key())),
+            Tested::Public => Credential::Public,
         }
     }
 

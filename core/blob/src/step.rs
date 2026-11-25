@@ -8,7 +8,7 @@ use osis_base::format::{MAX_CLAIMS, MAX_MESSAGE, MAX_OBJECT_DEPTH};
 use osis_base::{SyncId, Tid, Value};
 use osis_crypto::{
     BoxForm, BoxSlot, CryptoRngCore, Domain, EntryItem, Epoch, KemPublicKey, KemSecret, RoleKey, Secret32, Signature, SigningSecret,
-    VerifyingKey, X25519Secret, claim_key, deposit_key, role_key, open_entry, seal_entry, static_entry, sync_id,
+    VerifyingKey, X25519Secret, claim_key, deposit_key, role_key, open_entry, open_form_entry, public_entry, read_open_entry, seal_entry, static_entry, sync_id,
 };
 use osis_schema::Codec;
 use osis_schema::core_types::{SealedBox, SecretBox, Sealed};
@@ -283,16 +283,28 @@ impl ClaimSet {
     pub fn entry_box(&self, sync_id: &SyncId, signing: &VerifyingKey) -> Option<&SecretBox> {
         self.entries.get(&static_entry(sync_id, signing))
     }
+
+    /// Whether the set lists the public (spec/sync-ids.md §3): its public entry.
+    pub fn lists_public(&self, sync_id: &SyncId) -> bool {
+        self.contains(&public_entry(sync_id))
+    }
+
+    /// Whether the set fits sync ID `sync_id` (spec/wire.md §7 Entry box): an open-form box only
+    /// under its public entry, a sealed one under any other. A set that does not is malformed.
+    pub fn fits(&self, sync_id: &SyncId) -> bool {
+        let public = public_entry(sync_id);
+        self.entries.iter().all(|(k, b)| matches!(b, SecretBox::Open(_)) == (*k == public))
+    }
 }
 
-/// An entry box (spec/wire.md §7): a canonical `box` value in the sealed form (an unknown case
-/// parks).
+/// An entry box (spec/wire.md §7): a canonical `box` value in the sealed or (the public entry's)
+/// open form (an unknown case parks). Which entry may hold which form: `ClaimSet::fits`.
 pub fn entry_box_from_value(v: &Value) -> Result<SecretBox, Error> {
     let b = SecretBox::from_value(v).map_err(|e| match e.kind {
         osis_schema::PathErrorKind::UnknownCase(c) => Error::Crypto(osis_crypto::Error::UnknownCase(c)),
         _ => Error::Malformed("entry box"),
     })?;
-    if b.to_value() != *v || !matches!(&b, SecretBox::Sealed(_)) {
+    if b.to_value() != *v || !matches!(&b, SecretBox::Sealed(_) | SecretBox::Open(_)) {
         return Err(Error::Malformed("entry box"));
     }
     Ok(b)
@@ -304,6 +316,8 @@ pub enum Reader<'a> {
     Dh([u8; 32]),
     /// A link key, by static entry, with an entry box sealed to its first read keyset's KEM key.
     Static { signing: VerifyingKey, kem: &'a KemPublicKey },
+    /// The public, by its public entry, with an open-form entry box.
+    Public,
 }
 
 /// Who signs a new step.
@@ -361,6 +375,11 @@ pub fn register_with(parent: Parent, keys: StepKeys, readers: &[Reader], read: (
                 claims.push(e);
                 entries.insert(e, seal_entry_box(&slot, kem, &item, rng)?);
             }
+            Reader::Public => {
+                let e = public_entry(&sync_id);
+                claims.push(e);
+                entries.insert(e, SecretBox::Open(open_form_entry(&slot, &item)?));
+            }
         }
     }
     drop(step_secret);
@@ -403,6 +422,14 @@ pub fn open_entry_box(b: &SecretBox, step: &Step, kem: &KemSecret, t: &Tid) -> R
     let keyset = sb.keyset.as_ref().map(|e| Epoch::new(e.n, e.nonce)).transpose()?;
     let Sealed::X25519MlKem768(sealed) = &sb.sealed;
     Ok(open_entry(kem, &slot, BoxForm::Sealed { keyset, suite: sb.suite }, sealed)?)
+}
+
+/// Reads the public entry's box of `step` of `t`'s sync ID (open form, spec/sync-ids.md §3):
+/// the read secrets it carries, with the epochs of `t` they name. Anyone reads it.
+pub fn read_public_entry_box(b: &SecretBox, step: &Step, t: &Tid) -> Result<EntryItem, Error> {
+    let slot = BoxSlot::Entry { sync_id: step.sync_id, step_key: step.step_key, actor: *t };
+    let SecretBox::Open(payload) = b else { return Err(Error::Malformed("entry box form")) };
+    Ok(read_open_entry(&slot, payload)?)
 }
 
 #[cfg(test)]
@@ -557,6 +584,23 @@ pub(crate) mod tests {
         let (s2, c2) = register_with(Parent::Child { step: &s0, delete: &g.delete() }, s0.keys, &readers, (&THING, e3, &g.read), g.sync_at(), Some((e2, &g.write)), &mut rng).unwrap();
         let b = c2.entry_box(&s2.sync_id, &card.signing.verifying_key()).unwrap();
         assert_eq!(open_entry_box(b, &s2, &card.kem, &THING).unwrap(), EntryItem { earlier: Some((e2, g.write.clone())), ..want });
+    }
+
+    // spec/sync-ids.md §3 (Entry boxes), spec/wire.md §7: the public listed by its public entry
+    // with an open entry box, which anyone reads; the set fits its sync ID only with the open box
+    // under that sync ID's public entry.
+    #[test]
+    fn the_public_entry_box_is_open() {
+        let mut rng = SeededRng::from_u64(0);
+        let g = Secrets::new(40);
+        let e = Epoch::derive(&THING, Role::Read, 0, &g.read).unwrap();
+        let (s0, c0) = register(Parent::Genesis(&g.delete()), g.keys(), &[Reader::Public], (&THING, e, &g.read), g.sync_at(), &mut rng).unwrap();
+        assert!(c0.lists_public(&s0.sync_id) && c0.fits(&s0.sync_id));
+        assert!(!c0.fits(&SyncId([1; 16])), "the open box under another sync ID's entry");
+        assert_eq!(ClaimSet::parse(&c0.to_bytes()).unwrap(), c0);
+        let b = c0.entries.get(&public_entry(&s0.sync_id)).unwrap();
+        let want = EntryItem { epoch: e, secret: g.read.clone(), earlier: None, sync: (g.sync_at().0, g.sync.clone()) };
+        assert_eq!(read_public_entry_box(b, &s0, &THING).unwrap(), want);
     }
 
     // spec/wire.md §8: claim set rejections: count not a power of two, entry key not among the

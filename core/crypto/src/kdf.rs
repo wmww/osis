@@ -118,6 +118,8 @@ pub const HYBRID_KEM: &str = "osis v1 hybrid kem";
 pub const SYNC_ID: &str = "osis v1 sync id";
 /// Static entry = BLAKE3(STATIC_CLAIM || sync ID || signing key) (spec/wire.md §8).
 pub const STATIC_CLAIM: &str = "osis v1 static claim";
+/// Public entry = BLAKE3(PUBLIC_CLAIM || sync ID) (spec/wire.md §8).
+pub const PUBLIC_CLAIM: &str = "osis v1 public claim";
 
 pub fn thing_purpose(role: Role) -> &'static str {
     match role {
@@ -235,11 +237,11 @@ mod tests {
     #[test]
     fn strings_distinct() {
         let mut all: Vec<String> = PURPOSES.iter().map(|p| format!("{PREFIX}{p}")).collect();
-        all.extend([DEDUP, HYBRID_KEM, SYNC_ID, STATIC_CLAIM, "osis v1 gear table"].map(String::from));
+        all.extend([DEDUP, HYBRID_KEM, SYNC_ID, STATIC_CLAIM, PUBLIC_CLAIM, "osis v1 gear table"].map(String::from));
         all.extend(Domain::ALL.iter().map(|d| d.as_str().to_string()));
         let set: BTreeSet<&String> = all.iter().collect();
         assert_eq!(set.len(), all.len());
-        assert_eq!(all.len(), PURPOSES.len() + 5 + Domain::ALL.len());
+        assert_eq!(all.len(), PURPOSES.len() + 6 + Domain::ALL.len());
     }
 
     // spec/crypto.md §1: kdf = keyed_hash(derive_key("osis v1 " + purpose, secret), input).

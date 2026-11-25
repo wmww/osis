@@ -274,15 +274,16 @@ pub(crate) fn held_sync_ids(core: &Core, g: &Tid, m: &ct::SyncIds) -> Vec<OwnedS
     }
 }
 
-/// The links this node redeems (`Engine::follow_link`): link K to its sync ID from the link text
-/// and its link key L, read per key three ways (by K; by L, an author this node writes as; by
-/// sync ID), so a reader asking about one link, actor or sync ID moves only when that one does,
-/// not at every link followed or let go. Each key L is kept exactly while some followed link names
-/// it, so it goes with the last link naming it (`Engine::settle_link_key`). In memory only
-/// (`Core::followed_links`).
+/// The links this node redeems (`Engine::follow_link`, `follow_public`): a share link's K, or a
+/// public link's target, to its sync ID from the link text and a share link's key L, read per key
+/// three ways (by K; by L, an author this node writes as; by sync ID), so a reader asking about
+/// one link, actor or sync ID moves only when that one does, not at every link followed or let
+/// go. Each key L is kept exactly while some followed link names it, so it goes with the last link
+/// naming it (`Engine::settle_link_key`). In memory only (`Core::followed_links`).
 #[derive(Clone, Default)]
 pub(crate) struct FollowedLinks {
-    by_k: Stamped<Tid, (SyncId, Tid)>,
+    /// Per link K (a public link: its target), its sync ID and key (a public link: none).
+    by_k: Stamped<Tid, (SyncId, Option<Tid>)>,
     /// Per link key L, the links K it is the key of.
     by_actor: Stamped<Tid, BTreeSet<Tid>>,
     /// Per link key L, its identity from the seed: kept exactly while `by_actor` names L.
@@ -292,8 +293,8 @@ pub(crate) struct FollowedLinks {
 }
 
 impl FollowedLinks {
-    /// Link `k`'s sync ID and key, read per K.
-    pub(crate) fn get(&self, k: &Tid) -> Option<(SyncId, Tid)> {
+    /// Link `k`'s sync ID and key (none: a public link), read per K.
+    pub(crate) fn get(&self, k: &Tid) -> Option<(SyncId, Option<Tid>)> {
         self.by_k.get(k).copied()
     }
 
@@ -307,7 +308,7 @@ impl FollowedLinks {
     }
 
     /// Every link followed: a read of all of them.
-    pub(crate) fn all(&self) -> &BTreeMap<Tid, (SyncId, Tid)> {
+    pub(crate) fn all(&self) -> &BTreeMap<Tid, (SyncId, Option<Tid>)> {
         &self.by_k
     }
 
@@ -326,26 +327,30 @@ impl FollowedLinks {
         self.by_sync.get(s).cloned().unwrap_or_default()
     }
 
-    /// Follows link `k` under sync ID `s` and key `l`; the same again moves nothing. Returns the
-    /// key `k` was followed under before, if any.
-    pub(crate) fn insert(&mut self, k: Tid, s: SyncId, l: Arc<Identity>) -> Option<Tid> {
-        let lt = l.tid();
+    /// Follows link `k` under sync ID `s` and key `l` (none: a public link); the same again moves
+    /// nothing. Returns the key `k` was followed under before, if any.
+    pub(crate) fn insert(&mut self, k: Tid, s: SyncId, l: Option<Arc<Identity>>) -> Option<Tid> {
+        let lt = l.as_ref().map(|l| l.tid());
         if self.by_k.get(&k) == Some(&(s, lt)) {
             return None;
         }
         let old = self.remove(&k);
         self.by_k.update_fed(k, |_| Some((s, lt)));
-        Self::add(&mut self.by_actor, lt, k);
+        if let Some(l) = l {
+            Self::add(&mut self.by_actor, l.tid(), k);
+            self.keys.insert(l.tid(), l);
+        }
         Self::add(&mut self.by_sync, s, k);
-        self.keys.insert(lt, l);
         old
     }
 
-    /// Lets link `k` go: its key, if it was followed (gone here with the last link naming it).
+    /// Lets link `k` go: its key, if it was followed with one (gone here with the last link naming
+    /// it).
     pub(crate) fn remove(&mut self, k: &Tid) -> Option<Tid> {
         let (s, l) = self.by_k.remove(k)?;
-        Self::take(&mut self.by_actor, &l, k);
         Self::take(&mut self.by_sync, &s, k);
+        let l = l?;
+        Self::take(&mut self.by_actor, &l, k);
         if !self.by_actor.contains_key(&l) {
             self.keys.remove(&l);
         }
@@ -383,9 +388,12 @@ fn followed(core: &Core, k: &Tid) -> Option<OwnedSyncId> {
 
 /// Whether followed link `k` may be a link's K here: a thing this node holds only as a link's K
 /// (its creation record has the `link` field), or one it knows nothing of yet (no record). A link text naming any other thing as K changes nothing of it.
+/// A public link's target may be any thing: its sync ID counts only where no held `sync.0` of the
+/// target's records one (`held_sync_ids`) and no other's records it (`followed`).
 pub(crate) fn followable(core: &Core, k: &Tid) -> bool {
-    if !core.followed_links.contains(k) {
-        return false;
+    match core.followed_links.get(k) {
+        None => false,
+        Some((_, None)) => true,
+        Some((_, Some(_))) => core.created(k).is_none_or(|r| r.link_target().is_some()),
     }
-    core.created(k).is_none_or(|r| r.link_target().is_some())
 }

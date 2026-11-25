@@ -1,7 +1,7 @@
 //! Role keys, the sync ID, claim keys, static entries and the open signature (spec/sync-ids.md §2, §3, spec/sync-opens.md §4,
 //! spec/wire.md §8, §11.2).
 
-use crate::kdf::{self, SYNC_ID, STATIC_CLAIM, kdf};
+use crate::kdf::{self, PUBLIC_CLAIM, SYNC_ID, STATIC_CLAIM, kdf};
 use crate::{Domain, Error, Secret32, Signature, SigningSecret, VerifyingKey, X25519Secret};
 use osis_base::{SyncId, Role, Value, encode};
 
@@ -74,6 +74,14 @@ pub fn claim_key(own: &X25519Secret, their: &[u8; 32], sync_id: &SyncId, step_ke
 pub fn static_entry(sync_id: &SyncId, signing: &VerifyingKey) -> [u8; 32] {
     let mut h = blake3::Hasher::new();
     h.update(STATIC_CLAIM.as_bytes()).update(&sync_id.0).update(&signing.to_bytes());
+    *h.finalize().as_bytes()
+}
+
+/// The public entry of a sync ID (spec/sync-ids.md §3): BLAKE3("osis v1 public claim" || sync ID).
+/// Every node derives it: listed, it says the public reads the sync ID's thing.
+pub fn public_entry(sync_id: &SyncId) -> [u8; 32] {
+    let mut h = blake3::Hasher::new();
+    h.update(PUBLIC_CLAIM.as_bytes()).update(&sync_id.0);
     *h.finalize().as_bytes()
 }
 

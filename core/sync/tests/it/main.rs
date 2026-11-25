@@ -23,6 +23,7 @@ mod status;
 mod store;
 mod opens;
 mod pieces;
+mod public;
 mod streams;
 mod world;
 mod deletes;

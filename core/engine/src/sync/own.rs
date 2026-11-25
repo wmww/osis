@@ -95,7 +95,7 @@ impl Engine {
         if things.is_empty() {
             return Ok(None);
         }
-        let links = self.core.followed_links.all().values().map(|(_, l)| *l);
+        let links = self.core.followed_links.all().values().filter_map(|(_, l)| *l);
         let authors = std::iter::once(self.core.me()).chain(links).collect();
         Ok(Some(Scope { things: things.into_iter().collect(), authors }))
     }

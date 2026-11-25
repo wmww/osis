@@ -215,11 +215,14 @@ impl Engine {
         for k in self.static_listed(t)? {
             c.statics.insert(osis_crypto::static_entry(s, &k));
         }
+        c.shows_public |= self.core.public_reads(t);
         if let Some((fs, l)) = self.core.followed_links.get(t)
             && fs == *s
-            && let Some(id) = self.core.link_keys.get(&l)
         {
-            c.acting.push(id.signing().clone());
+            match l.and_then(|l| self.core.link_keys.get(&l)) {
+                Some(id) => c.acting.push(id.signing().clone()),
+                None => c.tests_public |= l.is_none(),
+            }
         }
         if let Some(e) = self.core.epochs(t) {
             // each held sync secret's key derived once (a curve multiplication), then matched per step

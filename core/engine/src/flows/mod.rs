@@ -366,7 +366,7 @@ impl Engine {
     pub fn follow_link(&mut self, link: &osis_blob::ShareLink) -> Result<Tid> {
         let id = Arc::new(Identity::link_key(link.seed.clone(), link.k));
         let l = id.tid();
-        let old = self.core.followed_links.insert(link.k, link.k_sync_id, id);
+        let old = self.core.followed_links.insert(link.k, link.k_sync_id, Some(id));
         self.settle_link_key(&l);
         if let Some(o) = old {
             self.settle_link_key(&o);
@@ -375,8 +375,16 @@ impl Engine {
         Ok(l)
     }
 
-    /// Stops following link K (its join is held elsewhere); its key goes with the last link naming
-    /// it (spec/permissions.md §7).
+    /// Follows a public link being redeemed (spec/sync-set.md §4, §5): keeps its target's sync ID
+    /// from the link text in the sync set, read, testing the public entry (spec/sync-opens.md §4),
+    /// until `unfollow_link` of its target. The link text is untrusted: its sync ID counts only
+    /// where nothing held records the target's or another's (`sync_ids::actors::followed`).
+    pub fn follow_public(&mut self, link: &osis_blob::PublicLink) {
+        self.core.followed_links.insert(link.target, link.sync_id, None);
+    }
+
+    /// Stops following link K (its join is held elsewhere), or a public link's target; a share
+    /// link's key goes with the last link naming it (spec/permissions.md §7).
     pub fn unfollow_link(&mut self, k: &Tid) {
         if let Some(l) = self.core.followed_links.remove(k) {
             self.settle_link_key(&l);

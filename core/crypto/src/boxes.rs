@@ -171,18 +171,42 @@ pub struct EntryItem {
 /// `[]`, `sync` `[n, secret]` (spec/wire.md §7). Each secret must name its epoch of the slot's
 /// actor.
 pub fn seal_entry(recipient: &KemPublicKey, slot: &BoxSlot, item: &EntryItem, rng: &mut dyn CryptoRngCore) -> Result<Vec<u8>, Error> {
+    let payload = entry_payload(slot, item)?;
+    let ad = slot.ad(BoxForm::Sealed { keyset: None, suite: u64::from(SUITE_1) })?;
+    seal(recipient, &ad, &payload, rng)
+}
+
+/// The public entry's box at `slot` (spec/sync-ids.md §3 Entry boxes): the open form, its payload
+/// `[role, n, secret, earlier, sync]` in clear, checked as `seal_entry` checks it.
+pub fn open_form_entry(slot: &BoxSlot, item: &EntryItem) -> Result<Vec<u8>, Error> {
+    Ok(entry_payload(slot, item)?.to_vec())
+}
+
+/// Reads an open-form entry box at `slot`: each epoch the one its secret names under the slot's
+/// actor.
+pub fn read_open_entry(slot: &BoxSlot, payload: &[u8]) -> Result<EntryItem, Error> {
+    if slot.key().is_some() {
+        return Err(Error::Malformed("not an entry box slot"));
+    }
+    let value = decode(payload, &Limits::DEFAULT).map_err(|_| Error::Malformed("box payload"))?;
+    let out = parse_entry_item(&value, slot.actor());
+    wipe_value(value);
+    out
+}
+
+/// An entry box's payload (spec/wire.md §7), each secret naming its epoch of the slot's actor.
+fn entry_payload(slot: &BoxSlot, item: &EntryItem) -> Result<Zeroizing<Vec<u8>>, Error> {
     let actor = slot.actor();
     let named = |e: &Epoch, s: &Secret32| e.names(actor, Role::Read, s);
     if slot.key().is_some() || !named(&item.epoch, &item.secret) || item.earlier.as_ref().is_some_and(|(e, s)| !named(e, s)) || !item.sync.0.names(actor, Role::Sync, &item.sync.1) {
         return Err(Error::Malformed("entry box item"));
     }
-    let ad = slot.ad(BoxForm::Sealed { keyset: None, suite: u64::from(SUITE_1) })?;
     let earlier = item.earlier.iter().flat_map(|(e, s)| [Value::Int(e.n), Value::Bytes(s.expose().to_vec())]).collect();
     let sync = vec![Value::Int(item.sync.0.n), Value::Bytes(item.sync.1.expose().to_vec())];
     let value = Value::List(vec![role_value(Role::Read), Value::Int(item.epoch.n), Value::Bytes(item.secret.expose().to_vec()), Value::List(earlier), Value::List(sync)]);
     let payload = Zeroizing::new(encode(&value));
     wipe_value(value);
-    seal(recipient, &ad, &payload, rng)
+    Ok(payload)
 }
 
 /// Opens an entry box at `slot`. Each epoch is the one its secret names under the slot's actor.

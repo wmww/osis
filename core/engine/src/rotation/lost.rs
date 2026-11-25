@@ -89,12 +89,16 @@ fn holds_at(core: &Core, a: &Tid, min: Role) -> bool {
 /// hold on `a` now by `a`'s grants as the node holds them, by paths with key access, `until`
 /// honoured (`Core::keyed_role_now`), where those grants count (`grants_count`); none where they
 /// do not. A role through the public is one of secrets: no path lists the public, so it lets the
-/// node write nothing.
+/// node write nothing. It counts wherever the node holds the grant, synced or not (a unit's public
+/// piece on a thing it does not sync, spec/sync-set.md §2 Public pieces): it is every party's,
+/// so it gives no node a secret anyone else lacks, and an outdated grant held gives only the open
+/// boxes of epochs that were every party's.
 pub(crate) fn role_here(core: &Core, a: &Tid) -> Option<Role> {
+    let public = core.keyed_role_now(&Tid::PUBLIC, a);
     if !grants_count(core, a) {
-        return None;
+        return public;
     }
-    own_actors(core).iter().chain([&Tid::PUBLIC]).map(|m| core.keyed_role_now(m, a)).max().flatten()
+    own_actors(core).iter().map(|m| core.keyed_role_now(m, a)).chain([public]).max().flatten()
 }
 
 /// Whether the grants the node holds of `a` count for its role (spec/sync-set.md §2 Own things:

@@ -21,6 +21,9 @@ pub fn parse_record(r: &StepRecord) -> Result<(Step, Option<ClaimSet>), Error> {
     if claims.as_ref().is_some_and(|c| c.hash() != step.claims_hash) {
         return Err(Error::Verify("claim set does not hash to the step's"));
     }
+    if claims.as_ref().is_some_and(|c| !c.fits(&step.sync_id)) {
+        return Err(Error::Malformed("claim set entry box of another form"));
+    }
     Ok((step, claims))
 }
 

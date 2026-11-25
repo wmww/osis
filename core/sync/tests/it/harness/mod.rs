@@ -682,6 +682,11 @@ impl World {
 
     /// Node `i` redeems `link` (`Node::redeem`), then it is stepped.
     pub fn redeem(&mut self, i: usize, link: &osis_blob::ShareLink) -> osis_sync::types::Waiting {
+        self.redeem_any(i, &osis_blob::Link::Share(link.clone()))
+    }
+
+    /// Node `i` redeems a link of either format for its account (else its node thing).
+    pub fn redeem_any(&mut self, i: usize, link: &osis_blob::Link) -> osis_sync::types::Waiting {
         let n = self.nodes.get_mut(i).expect("no such node");
         let joiner = n.account.unwrap_or_else(|| n.node.engine().me());
         let w = n.node.redeem(link, joiner);

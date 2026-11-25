@@ -219,7 +219,7 @@ pub(crate) fn drop_claims(t: &mut Transaction<'_>, env: &mut Env<'_>, s: &SyncId
 /// cannot branch below the head.
 pub(crate) fn register(t: &mut Transaction<'_>, env: &mut Env<'_>, s: &SyncId, steps: &[(&Step, Option<&ClaimSet>)], endorsement: Option<&Signature>, past_cap_due: bool) -> Result<(Code, bool, bool)> {
     let Some(((first, _), (last, _))) = steps.first().zip(steps.last()) else { return Ok((Code::MALFORMED, false, false)) };
-    if steps.iter().any(|(st, c)| st.sync_id != *s || c.is_some_and(|c| c.hash() != st.claims_hash)) {
+    if steps.iter().any(|(st, c)| st.sync_id != *s || c.is_some_and(|c| c.hash() != st.claims_hash || !c.fits(s))) {
         return Ok((Code::MALFORMED, false, false));
     }
     if env.holding(s) != Some(Holding::Unread) {

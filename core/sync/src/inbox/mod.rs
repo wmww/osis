@@ -44,7 +44,7 @@ use crate::streams::Streams;
 use crate::types::{ConnId, Cx, Result, SourceClass, Waiting};
 use osis_base::{BlobId, Mono, SyncId, Tid, WallMs};
 use osis_engine::Engine;
-use osis_blob::{DialHint, ShareLink, StepId};
+use osis_blob::{DialHint, StepId};
 use osis_proto::Msg;
 use osis_store::Named;
 use std::collections::BTreeSet;
@@ -279,16 +279,20 @@ impl Inbox {
         self.reports.closed(conn);
     }
 
-    /// First contact through a link (spec/sync-inbox.md §6): durable until the join is held
-    /// elsewhere. `Done` once the join is written.
-    pub fn redeem(&mut self, cx: &mut Cx, link: &ShareLink, joiner: Tid) -> Waiting {
+    /// First contact through a link (spec/sync-inbox.md §6): a share link durable until the join
+    /// is held elsewhere, `Done` once the join is written; a public link followed until the strong
+    /// to its target is written (`Done` once the node closure holds it, spec/sync-set.md §4).
+    pub fn redeem(&mut self, cx: &mut Cx, link: &osis_blob::Link, joiner: Tid) -> Waiting {
         let Cx { engine, store, now, mono, policy, .. } = cx;
         let mut here = Here { engine, status: None, store, now: *now, mono: *mono, policy };
-        self.links.redeem(&mut here, link, joiner).unwrap_or(Waiting::Never("the link could not be kept"))
+        match link {
+            osis_blob::Link::Share(l) => self.links.redeem(&mut here, l, joiner).unwrap_or(Waiting::Never("the link could not be kept")),
+            osis_blob::Link::Public(l) => self.links.redeem_public(&mut here, l, joiner),
+        }
     }
 
-    /// Whether link K is being redeemed here: a redeem not joined and not ended, nor given up
-    /// (`Policy::follow_link_ms`).
+    /// Whether link K (a public link: its target) is being redeemed here: a redeem not joined and
+    /// not ended, nor given up (`Policy::follow_link_ms`).
     pub fn redeeming(&self, k: &Tid) -> bool {
         self.links.redeeming(k)
     }

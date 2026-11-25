@@ -2105,7 +2105,7 @@ impl Opens {
                 items.push(match t {
                     Tested::SyncKey { key, .. } | Tested::Claim { key, .. } => OfferItem::Hit { hit: h, sig: Some(bind.sign(key, &s)), class },
                     Tested::Static { key, .. } => OfferItem::Static { hit: h, signing_pk: key.verifying_key().to_bytes(), sig: bind.sign(key, &s), class },
-                    Tested::Read(..) | Tested::Proof(_) => OfferItem::Hit { hit: h, sig: None, class },
+                    Tested::Read(..) | Tested::Proof(_) | Tested::Public => OfferItem::Hit { hit: h, sig: None, class },
                 });
                 sent.push(Sent::Hit { s, cred: Box::new(t.clone()), beacon: b, own: adm.own });
                 hit = true;
@@ -2302,8 +2302,8 @@ impl Opens {
 
     /// The tester's own proof of the replier (spec/sync-opens.md §5): J judges it a holder, or
     /// the answer proves it: a tag keyed by a secret is its own proof; for a sync key or claim, an
-    /// open signature by the sync key of the step hit; for a static entry, the grant's head sync
-    /// key, the grant taken once it verifies.
+    /// open signature by the sync key of the step hit; for a static or the public entry, the
+    /// grant's head sync key, the grant taken once it verifies.
     fn replier_proved(&mut self, ctx: &mut Ctx, bind: &Bind, s: &SyncId, cred: &Tested, a: &SharedItem, j: J) -> bool {
         if matches!(j, J::Reader | J::SyncHolder) {
             return true;
@@ -2314,8 +2314,8 @@ impl Opens {
             Tested::SyncKey { key, .. } => key.verifying_key().to_bytes(),
             Tested::Claim { sync, .. } => *sync,
             // the grant's secrets are taken only once `sig` verifies under its head's sync key
-            Tested::Static { key, .. } => {
-                let entry = osis_crypto::static_entry(s, &key.verifying_key());
+            Tested::Static { .. } | Tested::Public => {
+                let entry = cred.matched(s);
                 let (Some(sig), Some(g)) = (&a.sig, a.grant.as_ref()) else { return false };
                 return ctx.holds.take_grant(s, &entry, g, &|k| bind.peer_signed(k, s, sig));
             }
@@ -2373,6 +2373,8 @@ impl Opens {
             (Shown::SyncKey(k) | Shown::Claim(k), None) => sig.is_some_and(|g| bind.peer_signed(k, &s, g)),
             (Shown::Static(e), None) => proven_statics(&s, &proven).contains(e),
             (Shown::Static(e), Some(pk)) => osis_crypto::VerifyingKey::from_bytes(&pk).is_ok_and(|k| osis_crypto::static_entry(&s, &k) == *e) && sig.is_some_and(|g| bind.peer_signed(&pk, &s, g)),
+            // anyone may hold S: the Hit proves only that it is bound to this connection
+            (Shown::Public(_), None) => true,
             // a Static item names a static entry
             (_, Some(_)) | (Shown::Deposit(_), None) => false,
         };
@@ -2397,7 +2399,7 @@ impl Opens {
             (None, false) => return refuse,
         };
         let grant = match &shown {
-            Shown::Static(e) => ctx.holds.grant(&s, e),
+            Shown::Static(e) | Shown::Public(e) => ctx.holds.grant(&s, e),
             _ => None,
         };
         let m = Member { class, own: adm.own, by, until: None, departed: false };

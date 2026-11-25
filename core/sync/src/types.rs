@@ -66,6 +66,8 @@ pub enum Credential {
     Claim,
     /// A static entry of S's roster.
     Static([u8; 32]),
+    /// S's public entry: S's thing is read by the public, so anyone may hold S.
+    Public,
     /// J, judged by roles.
     J,
 }

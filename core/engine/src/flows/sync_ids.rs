@@ -24,6 +24,8 @@ pub(crate) enum ReaderKey {
     /// A link key of the sync ID's thing: its static entry, by its signing key, with an entry
     /// box sealed to its read KEM key (spec/sync-ids.md §3).
     Static(VerifyingKey, KemPublicKey),
+    /// The public, by its public entry with an open entry box (spec/sync-ids.md §3).
+    Public,
 }
 
 fn kem_of(k: &KemKey) -> Result<KemPublicKey> {
@@ -33,7 +35,7 @@ fn kem_of(k: &KemKey) -> Result<KemPublicKey> {
 
 /// The readers of `t`'s read epoch `e` (spec/sync-ids.md §3): holders of read boxes at `e`, its
 /// mint admin included while its record edge stands; each by its newest read keyset, a link key
-/// of `t` by its static entry.
+/// of `t` by its static entry, the public (an open box) by its public entry.
 pub(crate) fn readers(tx: &mut Tx<'_>, t: &Tid, e: &Epoch) -> Result<Vec<ReaderKey>> {
     let mut holders: Vec<Tid> = Vec::new();
     if let Some(o) = tx.core.mint_admin(t).filter(|a| tx.core.key_holders(t).iter().any(|(m, _)| m == a)) {
@@ -60,6 +62,9 @@ pub(crate) fn readers(tx: &mut Tx<'_>, t: &Tid, e: &Epoch) -> Result<Vec<ReaderK
 /// else). None while no keyset of it is held, or that keyset carries no KEM key (spec/crypto.md
 /// §3: nothing is sealed to it; its claim key is unpublished).
 pub(crate) fn reader_key(tx: &mut Tx<'_>, t: &Tid, m: &Tid) -> Result<Option<ReaderKey>> {
+    if m.is_public() {
+        return Ok(Some(ReaderKey::Public));
+    }
     let Some(ks) = Core::keys_in(tx, m)?.and_then(|k| k.read) else { return Ok(None) };
     let Some(kem) = ks.kem_key.as_ref() else { return Ok(None) };
     let kem = kem_of(kem)?;
@@ -114,6 +119,7 @@ pub(crate) fn issue(tx: &mut Tx<'_>, t: &Tid, epochs: &ActorEpochs, parent: Opti
         .map(|r| match r {
             ReaderKey::Dh(x) => Reader::Dh(*x),
             ReaderKey::Static(vk, kem) => Reader::Static { signing: *vk, kem },
+            ReaderKey::Public => Reader::Public,
         })
         .collect();
     let del = role_key(RoleKey::Delete, parent.map_or(adm, |(_, a)| a));
@@ -292,13 +298,18 @@ pub(crate) fn step_due(tx: &mut Tx<'_>, g: &Tid, l: &SyncId, fresh: bool) -> Res
     let owned = owned_in(tx, g)?;
     let Some(rec) = owned.get(l) else { return Ok(None) };
     let steps = sync_steps(rec)?;
-    let Some((head, _)) = crate::sync_ids::actors::head_of(&steps).and_then(|h| steps.get(&h).cloned()) else { return Ok(None) };
+    let Some((head, claims)) = crate::sync_ids::actors::head_of(&steps).and_then(|h| steps.get(&h).cloned()) else { return Ok(None) };
     let Some(epochs) = tx.core.epochs(g) else { return Ok(None) };
     let Some(deposit) = deposit_seed_of(tx, g)? else { return Ok(None) };
     // no read key in force for a read keyset this admin vouches for: outside fires wait for this
     // step, so it is due (spec/permissions.md §3), whoever wrote the keyset
     let keyset = Core::keys_in(tx, g)?.and_then(|k| k.read);
     let read_moved = read_key_in_force(tx, g)?.is_none() && vouched(&epochs, keyset.as_ref()).is_some();
+    // the public reads `g` and the head does not list it: a stranger holding a public link opens
+    // the sync ID only by the public entry (spec/permissions.md §3), so a step is due. Its
+    // removal or lowering rotates read, which makes one due anyway.
+    let unlisted = claims.is_some_and(|c| !c.lists_public(l)) && tx.core.roster_of(g).get(&Tid::PUBLIC).is_some_and(|e| e.role >= Role::Read);
+    let read_moved = read_moved || unlisted;
     let Some(head_admin) = due_at(&epochs, &head, &deposit, read_moved, fresh) else { return Ok(None) };
     // a deposit-only step waits for a newer seed held but not applied (spec/permissions.md §3):
     // stepping to this one would register a key a departed party may know

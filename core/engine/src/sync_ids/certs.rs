@@ -172,8 +172,29 @@ impl Engine {
                 self.edge_pieces_into(ev, &h, Some(&x), &mut out);
             }
         }
+        // the public pieces `g`'s sync unit carries (spec/sync-set.md §2 Public pieces): the
+        // public's edge piece on each, its removal and rotations included, with their evidence
+        for x in self.public_pieced(g) {
+            self.edge_pieces_into(ev, &Tid::PUBLIC, Some(&x), &mut out);
+        }
         self.close_records(ev, &mut out);
         out
+    }
+
+    /// The things whose public pieces `g`'s sync unit carries (spec/sync-set.md §2 Public
+    /// pieces): the independent of each thing a strong of the unit reaches (its things but `g`,
+    /// and the targets it does not follow), outside the unit (inside it, its bodies carry its
+    /// role commits), that the public is named on. They let a reader of `g` count what the public
+    /// reads with nothing of it carried (`Core::keys_open`), so the unit it computes is the
+    /// logger's (the oracle: held-model `closure::public`). Who writes them: the unit's writers
+    /// the strongs; the reached thing's admins the public's grant. A piece is the public's alone:
+    /// what it shows anyone may read.
+    pub(crate) fn public_pieced(&mut self, g: &Tid) -> BTreeSet<Tid> {
+        let core = &self.core;
+        let cl = &core.ix.closure;
+        let reached = cl.members(&crate::sync::units::Ctx::Read(*g)).into_iter().flatten().copied().filter(|y| y != g).chain(cl.beyond(g));
+        let ind: BTreeSet<Tid> = reached.filter_map(|y| core.secret_actor(&y)).collect();
+        ind.into_iter().filter(|x| x != g && !cl.unit_holds(g, x) && core.ix.held.is_named(&Tid::PUBLIC, x)).collect()
     }
 
     /// The things whose stub `g`'s sync unit carries (spec/sync-set.md §2 Stub): each independent
@@ -193,7 +214,11 @@ impl Engine {
     /// Boxes travel per holder): the whole `secrets.0` part, not `h`'s piece, and with its header.
     fn edge_pieces_into(&mut self, ev: &Ev, h: &Tid, only: Option<&Tid>, out: &mut Certs) {
         let mut pieces = BTreeSet::new();
-        for (c, x) in self.key_part(h).into_iter().filter(|(_, x)| only.is_none_or(|o| o == x)) {
+        let part = match only {
+            Some(x) => self.key_part_on(h, x).into_iter().map(|c| (c, *x)).collect(),
+            None => self.key_part(h),
+        };
+        for (c, x) in part {
             if self.core.roster_of(&x).get(h).is_some_and(|e| e.role == osis_base::Role::Sync) {
                 out.add(c, self.parts_of(&c, &BTreeSet::from([x]), &["secrets.0", "sync.0"]));
                 out.records.insert(x);
@@ -235,19 +260,26 @@ impl Engine {
     /// does (`Held::named_on`), so a thing `g` minted is among them.
     pub(crate) fn key_part(&mut self, g: &Tid) -> BTreeSet<(CommitId, Tid)> {
         let on: Vec<Tid> = self.core.ix.held.named_on(g).filter(|x| *x != g).copied().collect();
+        on.into_iter().flat_map(|x| self.key_part_on(g, &x).into_iter().map(move |c| (c, x))).collect()
+    }
+
+    /// `g`'s edge piece on `x` (`key_part`): the commits writing `g`'s edge on `x`, boxing `g` in
+    /// `x`'s `secrets.0`, or writing `x`'s `sync.0`, while `g` is named on `x`.
+    pub(crate) fn key_part_on(&mut self, g: &Tid, x: &Tid) -> BTreeSet<CommitId> {
         let mut out = BTreeSet::new();
-        for x in on {
-            for ak in ["roles.0", "secrets.0", "sync.0"] {
-                let Ok(k) = osis_base::Ak::new(ak) else { continue };
-                let cs: Vec<CommitId> = self.core.ix.by_aspect.get(&(x, k)).into_iter().flatten().map(|(_, c)| *c).collect();
-                for c in cs {
-                    let named = ak == "sync.0" || {
-                        let Some(ai) = self.header(&c).and_then(|h| h.aspect_index(&x, ak)) else { continue };
-                        self.holders_named(&c).get(&ai).is_some_and(|hs| hs.contains(g))
-                    };
-                    if named {
-                        out.insert((c, x));
-                    }
+        if !self.core.ix.held.is_named(g, x) {
+            return out;
+        }
+        for ak in ["roles.0", "secrets.0", "sync.0"] {
+            let Ok(k) = osis_base::Ak::new(ak) else { continue };
+            let cs: Vec<CommitId> = self.core.ix.by_aspect.get(&(*x, k)).into_iter().flatten().map(|(_, c)| *c).collect();
+            for c in cs {
+                let named = ak == "sync.0" || {
+                    let Some(ai) = self.header(&c).and_then(|h| h.aspect_index(x, ak)) else { continue };
+                    self.holders_named(&c).get(&ai).is_some_and(|hs| hs.contains(g))
+                };
+                if named {
+                    out.insert(c);
                 }
             }
         }

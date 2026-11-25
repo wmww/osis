@@ -3488,7 +3488,7 @@ impl Engine {
             self.index_unchecked = false;
         }
         // link keys are derived: held exactly while `hold_link_key` or a followed link names them
-        let named: BTreeSet<Tid> = self.core.held_link_keys.keys().chain(self.core.followed_links.all().values().map(|(_, l)| l)).copied().collect();
+        let named: BTreeSet<Tid> = self.core.held_link_keys.keys().chain(self.core.followed_links.all().values().filter_map(|(_, l)| l.as_ref())).copied().collect();
         assert_eq!(self.core.link_keys.keys().copied().collect::<BTreeSet<_>>(), named, "link keys: held or named by a followed link");
         match self.checked_closure() {
             Err(e @ Error::Store(_)) => return Err(e),

@@ -202,14 +202,14 @@ macro_rules! secret_text {
 
 
 secret_text!(
-    /// A share link (`osis://link/...`): whoever holds this text can redeem it, so hand it over as a
-    /// secret.
-    ShareLink, osis_blob::ShareLink, |s| osis_blob::ShareLink::from_text(s).map_err(bad("link"))
+    /// A link (`osis://link/...`): a share link, which whoever holds this text can redeem, so hand
+    /// it over as a secret; or a public link to a thing anyone may read.
+    ShareLink, osis_blob::Link, |s| osis_blob::Link::from_text(s).map_err(bad("link"))
 );
 impl ShareLink {
     /// The thing the link shares.
     pub fn target(&self) -> Result<Tid> {
-        Ok(self.parse()?.target)
+        Ok(self.parse()?.target())
     }
 }
 
@@ -649,7 +649,7 @@ impl Osis {
     /// session).
     pub(crate) fn redeeming(&self, link: &ShareLink, joiner: Tid) -> Result<impl std::future::Future<Output = Result<Tid>> + Send + 'static> {
         let link = link.parse()?;
-        let target = link.target;
+        let target = link.target();
         let mut started = false;
         Ok(self.waiting(move |db| {
             if db.engine(|e| e.role_on(&target).is_some()) {
@@ -739,7 +739,7 @@ fn account_links(e: &mut osis_engine::Engine, me: Tid) -> Result<Vec<flows::Held
 
 /// Starts redeeming `link` for `joiner` on a redeem's first check: an error when the node can never
 /// redeem it.
-fn redeem_started<R>(db: &Osis, link: &osis_blob::ShareLink, joiner: Tid, started: &mut bool, what: &str) -> Option<Result<R>> {
+fn redeem_started<R>(db: &Osis, link: &osis_blob::Link, joiner: Tid, started: &mut bool, what: &str) -> Option<Result<R>> {
     if std::mem::replace(started, true) {
         return None;
     }
@@ -757,11 +757,19 @@ fn redeem_started<R>(db: &Osis, link: &osis_blob::ShareLink, joiner: Tid, starte
 /// A redeem with no role on its target yet whose node stopped
 /// redeeming the link: it ended (`Invalid`), or the sharer never answered within the node's
 /// follow time (`Network`, `osis_sync::Policy::follow_link_ms`). `None` while it is redeemed.
-fn redeem_over<R>(db: &Osis, link: &osis_blob::ShareLink, what: &str) -> Option<Result<R>> {
-    if db.locked(|l| l.node.redeeming(&link.k)) {
+fn redeem_over<R>(db: &Osis, link: &osis_blob::Link, what: &str) -> Option<Result<R>> {
+    let k = match link {
+        osis_blob::Link::Share(l) => l.k,
+        osis_blob::Link::Public(l) => l.target,
+    };
+    if db.locked(|l| l.node.redeeming(&k)) {
         return None;
     }
-    Some(Err(if db.engine(|e| e.link_ended(link)) {
+    let ended = match link {
+        osis_blob::Link::Share(l) => db.engine(|e| e.link_ended(l)),
+        osis_blob::Link::Public(_) => false,
+    };
+    Some(Err(if ended {
         Error::Invalid(format!("{what}: the link has ended"))
     } else {
         Error::Network(format!("{what}: no holder answered"))

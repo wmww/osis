@@ -733,8 +733,8 @@ impl Closure {
 impl Core {
     /// Whether `t`'s keys open `x` (spec/sync-set.md §2): `x`'s secrets derive from `t`'s (`t` is
     /// `x`'s independent, the actor they derive from), or `t` holds read or above on that actor,
-    /// by chains of grants with key access (`reads_now`). `t`'s own role: the account root reads
-    /// as itself.
+    /// by chains of grants with key access (`reads_now`), or the public does by its own grant on
+    /// that actor (`public_reads`). `t`'s own role: the account root reads as itself.
     /// Invariant: a thing above an independent `a` on its record chain opens `a` only by its role
     /// there (a record edge is a grant), never by being its mint admin: once that edge is lowered
     /// or removed `a` leaves `t`'s sync unit, so whatever entry of `a`'s parts later arrives under
@@ -742,7 +742,17 @@ impl Core {
     /// closure (`retention::needed::applies_on`), as one that arrived before the loss went.
     pub(crate) fn keys_open(&self, t: &Tid, x: &Tid) -> bool {
         let Some(a) = self.secret_actor(x) else { return false };
-        a == *t || self.reads_now(t, &a)
+        a == *t || self.reads_now(t, &a) || self.public_reads(&a)
+    }
+
+    /// Whether the public reads independent `a` by its own grant there (spec/sync-set.md §2 T's
+    /// keys open), as `a`'s role commits held here show it: its bodies where the node holds `a`,
+    /// else the public pieces a unit reaching it carries (`Engine::public_pieced`). Never through
+    /// holders: a reader of a unit could not found such a chain from what the unit carries
+    /// (notes/public-and-cards-brief.md, Rejected). Who writes it: `a`'s admins (a grant on `a`);
+    /// what anyone may read is what `a`'s admins made public, nothing a unit's writers decide.
+    pub(crate) fn public_reads(&self, a: &Tid) -> bool {
+        self.roster_of(a).get(&Tid::PUBLIC).is_some_and(|e| e.role >= Role::Read)
     }
 
     /// Whether the node opens dependent thing `y` (spec/sync-set.md §2 local part): it holds a read

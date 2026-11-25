@@ -535,13 +535,14 @@ impl Engine {
     }
 
 
-    /// Whether the actor of `ctx` may read `t` (spec/sync-judgement.md §1).
+    /// Whether the actor of `ctx` may read `t` (spec/sync-judgement.md §1): its keys open `t`.
     pub(crate) fn reads(&self, ctx: &BodyCtx, t: &Tid) -> bool {
         self.actor_reads(&ctx.actor, t)
     }
 
+    /// Whether `actor`'s keys open `t` (`Core::keys_open`): what its sync IDs carry.
     fn actor_reads(&self, actor: &Tid, t: &Tid) -> bool {
-        self.core.may_read(actor, &self.core.reader_of(t))
+        self.core.keys_open(actor, t)
     }
 
     /// The parts of `h` a sync ID of `ctx`'s sync unit carries in its bodies (spec/sync-judgement.md
@@ -610,7 +611,7 @@ impl Engine {
         // (spec/commits.md §5, spec/sync-judgement.md §2)
         let forever = |a: &crate::engine::AspectView| !h.memory && osis_commit::retention::fixed_purge_by(a.ak.as_str()).is_none() && crate::retention::history::of(&self.core, &a.tid, &a.ak).forever(h.ts);
         if out.is_empty() && (h.purges || h.aspects.iter().any(forever)) {
-            let on = |core: &crate::engine::Core, t: &Tid| ctx.holds(core, t) && core.may_read(&ctx.actor, &core.reader_of(t));
+            let on = |core: &crate::engine::Core, t: &Tid| ctx.holds(core, t) && core.keys_open(&ctx.actor, t);
             if self.run(|tx| crate::retention::lasting(tx, &id, &on))?
                 && let Some(blind) = self.core.ix.commits.get(&id).map(|m| m.header.blind)
             {
