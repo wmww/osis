@@ -105,7 +105,14 @@ impl Engine {
         // an edge piece holds no rotation that made a granted epoch current, which is a body
         // under the sync ID it opens)
         if self.core.counts_independent(t) && self.holds_read(t) {
-            let ids = synced(&self.owned_sync_ids(t)?);
+            let owned = self.owned_sync_ids(t)?;
+            // judged by its sync copies alone (`Core::copies_speak`), no sync ID is `t`'s by an
+            // admin's word: each is synced, as kept unread, so a forged one stands beside its own,
+            // never in its place
+            let ids = match self.core.copies_speak(t) {
+                true => owned.iter().map(|o| o.id).collect(),
+                false => synced(&owned),
+            };
             if !ids.is_empty() {
                 return Ok(ThingSync::Read(ids));
             }

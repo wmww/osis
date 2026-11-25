@@ -591,7 +591,8 @@ pub fn opening(engine: &mut Engine, store: &crate::store::Store, s: &SyncId, e: 
         // logged by any node counts; read keeps one per set of certificates, `cert_blobs`)
         Ok(Opened::Records(_)) => Ok(Opening::Held { gave: true }),
         // a sync copy is its bringer's word (anyone sealing to the holder or depositing under
-        // its sync ID makes one, a forged genesis counting where the thing's record is not held):
+        // its sync ID makes one, a forged genesis counting where none of the thing's admins' word
+        // is held, `Core::copies_speak`):
         // charged to its bringer unless stamped (spec/sync-ids.md §5 Peer budget)
         Ok(Opened::SyncCopy) => Ok(Opening::Held { gave: false }),
         Ok(Opened::Linked) => Ok(Opening::Taken),

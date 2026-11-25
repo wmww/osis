@@ -1,8 +1,0 @@
-# A node reading a thing by its public entry drops it on taking its record
-> Summary: a node granted sync on a public thing after its epochs moved on is moved to the head listing the public and reads the thing by its entry box; once it holds the thing's record it judges independence by the thing's applied `sync.0` writes alone (`Core::unread`, `own_record`), holds none yet, judges the thing dependent on its mint admin and drops it for good, keeping it neither read nor unread.
-> Priority: normal
-> Tags: sync
-
-Repro: osis-sync `differential::repro_a_store_granted_past_genesis_reads_it_public` (thing 0 public, granted read on thing 1, which moves its epochs on; then node 1's account given sync on it, strong). Node 1 takes thing 0's public entry (one `take_public_entry`, no record held then); at the end it holds thing 0's record, its sync copies count for nothing (with the record, `unread_derived` reads steps from `Indexes::steps` only), its sync set does not hold thing 0's sync ID, and `why_role` shows thing 0's secrets deriving from its mint admin. The reference reads thing 0.
-
-Likely: the record arrives (a body under S) before the role commits whose `sync.0` writes would place steps here: those are wrapped under epochs older than the entry box gives (only the one it supersedes), reached through history boxes. Between the two, `counts_independent` is false and nothing fetches S any more. Not checked: whether the role commits are ever opened, and whether a node with the record but no placed step should keep judging by the copies' steps (the forged-genesis rule in `sync_ids/unread.rs` says no).

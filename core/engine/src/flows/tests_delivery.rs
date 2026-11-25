@@ -837,3 +837,66 @@ fn a_read_grant_dropped_turns_a_holder_back_to_sync_alone_spec_permissions_4() {
     assert!(!travels(&mut lp), "B travels no more");
     assert_eq!(lp.peers[1].engine.check_evidence().unwrap(), None);
 }
+
+// spec/sync.md §3 (Holders by copies: a record alone is none of the admins' word), spec/sync-set.md
+// §2 (Counts as independent): a fresh node reading T holds G (T holds sync on G) by T's sync
+// copies alone, then takes G's record, as a node reading G by its public entry takes it under G's
+// sync ID before G's role commits. The record moves nothing: G counts independent, kept by the
+// same secrets and sync ID, still synced (what fetches the role commits, which alone decide once
+// held). Fails judging by the record alone (G dependent on its mint admin, of which the node holds
+// nothing: synced no more). Then G's admin grants the node read, its role commits waiting: a
+// reader judging by copies alone syncs a forged sync ID above G's own beside it, never in its
+// place (failed syncing the greatest alone: the forged one).
+#[test]
+fn a_record_alone_moves_no_copys_word_spec_sync_3() {
+    let (mut lp, g, t) = sync_holder();
+    let mut p = lp.fresh_reader(2, t, 11);
+    p.engine.hold(osis_base::Strong(g)).unwrap();
+    let mut copies = Vec::new();
+    for c in lp.peers[0].engine.commit_ids() {
+        if let Some((copy, _)) = lp.peers[0].engine.sync_copy(&c, &g, &t).unwrap() {
+            copies.push(copy);
+        }
+    }
+    assert!(!copies.is_empty(), "T's sync copies on G");
+    for (i, copy) in copies.iter().enumerate() {
+        assert!(p.engine.take_sync_copy(&t, &osis_base::BlobId([i as u8 + 1; 32]), &copy.encode(), false).unwrap(), "taken");
+    }
+    let real = lp.peers[0].engine.sync_id_of(&g).unwrap().unwrap();
+    let judged = |p: &mut crate::local_peer::Peer| {
+        let ids: Vec<osis_base::SyncId> = p.engine.sync_ids(&g).unwrap().iter().map(|o| o.id).collect();
+        (p.engine.core.counts_independent(&g), p.engine.core.unread(&g).secrets.clone(), ids, p.engine.thing_sync_now(&g).unwrap())
+    };
+    assert!(p.engine.core.created(&g).is_none(), "no record of G yet");
+    let before = judged(&mut p);
+    assert!(before.0 && !before.1.is_empty() && before.2 == vec![real] && before.3 == crate::sync::ThingSync::Unread(vec![real]), "G kept unread by T's copies: {before:?}");
+    let record = lp.peers[0].engine.core.created(&g).cloned().unwrap();
+    assert!(record.mint_admin().is_some(), "G minted dependent");
+    assert_eq!(p.engine.learn_records(vec![record]).unwrap(), 1, "G's record taken");
+    assert_eq!(judged(&mut p), before, "the record moves nothing");
+    // G's admin grants the node read; its role commits wait (wrapped under epochs it holds none
+    // of): a reader by a box alone
+    for c in p.engine.commit_ids() {
+        if let Some(pk) = p.engine.package(&c).unwrap() {
+            lp.deliver(0, &pk).unwrap();
+        }
+    }
+    let me = p.engine.tid();
+    lp.peers[0].engine.grant(&g, &me, &edge(Role::Read)).unwrap();
+    for c in lp.peers[0].engine.commit_ids() {
+        let on_g = lp.peers[0].engine.core.ix.commits.get(&c).is_some_and(|m| m.view.kind.is_role() && m.view.aspects.iter().any(|a| a.tid == g));
+        if on_g && let Some(pk) = lp.peers[0].engine.package(&c).unwrap() {
+            p.receive(&pk.bytes, pk.blobs.clone()).unwrap();
+        }
+    }
+    assert!(p.engine.core.copies_speak(&g), "no admin's word held yet");
+    assert_eq!(p.engine.thing_sync_now(&g).unwrap(), crate::sync::ThingSync::Read(vec![real]), "G read by its own sync ID");
+    let id = |seed: u8| osis_blob::genesis_sync_id(&osis_crypto::Secret32::from_bytes([seed.wrapping_add(Role::Admin.id()); 32]));
+    let seed = (1..=u8::MAX).find(|x| id(*x) > real).unwrap();
+    let (copy, forged, _) = forged_sync_copy(&mut lp, 0, g, t, seed);
+    assert!(p.engine.take_sync_copy(&t, &osis_base::BlobId([99; 32]), &copy.encode(), false).unwrap(), "taken");
+    match p.engine.thing_sync_now(&g).unwrap() {
+        crate::sync::ThingSync::Read(ids) => assert!(ids.contains(&real) && ids.contains(&forged), "the forged sync ID beside G's own, never in its place: {ids:?}"),
+        other => panic!("G read: {other:?}"),
+    }
+}

@@ -14,10 +14,10 @@
 //! it bad input (`parse`); a secret it gives is kept only where a step on a path verified from its
 //! sync ID's genesis (each step signed by its parent's delete key, the genesis by its own, whose
 //! delete key the sync ID commits to) bears the secret's sync key: the thing's `sync.0` state as
-//! judged (an admin's word), and the copies' own steps only where the node holds no record of the
-//! thing (a genesis is anyone's making: with the record, a copy's step would make a dependent
-//! thing count independent, or put a forged sync ID in a reader's place), for what the walk and
-//! ownership read (`Unread::secrets`), the steps
+//! judged (an admin's word), and the copies' own steps only where the node holds none of its
+//! admins' word on its keys (`Core::copies_speak`: a genesis is anyone's making, so beside that
+//! word a copy's step would make a dependent thing count independent, or put a forged sync ID in a
+//! reader's place), for what the walk and ownership read (`Unread::secrets`), the steps
 //! registered with this node for what it shows at peers (`Unread::candidates`, judged by
 //! osis-sync's unread judgement against its stored path). A forger may still make a sync
 //! ID of its own (its own genesis, its own secret): that one is kept beside the real one and never
@@ -215,15 +215,15 @@ pub(crate) fn forget(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
 /// bears, or, boxing nothing, once each step it carries verifies from its sync ID's genesis).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Unread {
-    /// The secrets held that a step of the thing's `sync.0` state bears, or, with no record of
-    /// the thing held, a step of the copies'.
+    /// The secrets held that a step of the thing's `sync.0` state bears, or, where the copies
+    /// speak (`Core::copies_speak`), a step of the copies'.
     pub secrets: BTreeMap<Epoch, Secret32>,
     /// Every sync secret held of the thing (`secrets` and those no such step bears yet): what
     /// is judged against the steps registered with this node (its stored path, osis-sync's;
     /// spec/crypto.md §4 Established: a step of its stored path bearing the secret's sync key).
     pub candidates: BTreeMap<Epoch, Secret32>,
-    /// The steps of every sync copy on `t`, joined, where no record of `t` is held (else none):
-    /// what `owned_sync_ids` judges.
+    /// The steps of every sync copy on `t`, joined, where the copies speak (else none): what
+    /// `owned_sync_ids` judges.
     pub steps: ct::SyncIds,
     pub counted: BTreeSet<BlobId>,
     /// The holders of counted copies of a box opening to a secret whose sync key a head bears
@@ -267,8 +267,8 @@ fn borne(steps: &ct::SyncIds) -> BTreeSet<[u8; 32]> {
 
 /// The sync keys the heads bear (`Unread::holders`): per sync ID, its newest step held, of
 /// `recorded` or carried by a copy (`steps`, on a path verified from the sync ID's genesis), the
-/// deepest, ties by lowest step ID (`sync_ids::actors::head_of`). With `recorded` (the thing's
-/// record held), a copy's steps count only on a sync ID it places: a child of a placed step is
+/// deepest, ties by lowest step ID (`sync_ids::actors::head_of`). With `recorded` (where the
+/// copies do not speak), a copy's steps count only on a sync ID it places: a child of a placed step is
 /// signed by its parent's delete key, an admin secret's, while a genesis is anyone's making.
 fn head_keys(steps: &ct::SyncIds, recorded: Option<&crate::sync_ids::steps::Recorded>) -> BTreeSet<[u8; 32]> {
     use std::cmp::Reverse;
@@ -387,19 +387,31 @@ impl Core {
         self.unread_of.get(t, || Arc::new(self.unread_derived(t)))
     }
 
+    /// Whether a sync copy's own steps speak for `t` here (spec/sync.md §3 Holders by copies):
+    /// this node holds none of `t`'s admins' word on its keys, so it has nothing else to judge
+    /// by: no step of `t`'s `sync.0` as judged (`Indexes::steps`), no keyset part of it, and no
+    /// secret its record chain derives. A record alone is no such word: it says how `t` was
+    /// minted, which a later rotation may have changed, so taking it (anyone may bring one) moves
+    /// nothing until the role commits it awaits arrive (osis-sync
+    /// `differential::a_public_reader_keeps_a_thing_on_taking_its_record_*`). Beside that word a
+    /// forged genesis neither makes a dependent thing independent nor gives a reader of `t` a
+    /// sync ID in place of its own (`tests_delivery::a_forged_*`).
+    pub(crate) fn copies_speak(&self, t: &Tid) -> bool {
+        if self.ix.steps.get(t).is_some_and(|s| !s.steps.is_empty()) || self.ix.keyset_parts.get(t).is_some_and(|s| !s.is_empty()) {
+            return false;
+        }
+        self.created(t).and_then(|r| r.mint_admin()).is_none_or(|m| self.derivation(&m).is_none())
+    }
+
     fn unread_derived(&self, t: &Tid) -> Unread {
         let mut out = Unread::default();
         let copies = self.ix.sync_copies.get(t).cloned().unwrap_or_default();
-        // a copy's own steps verify only to a genesis of anyone's making: they speak for `t` only
-        // where this node holds no record of it, having nothing else to judge by. With its record,
-        // `t`'s steps are its admins' word alone (`Indexes::steps`, from `sync.0` as judged), so a
-        // forged genesis neither makes a dependent thing independent nor gives a reader of `t` a
-        // sync ID in place of its own (`tests_delivery::a_forged_*`)
-        let unknown = self.created(t).is_none();
+        // a copy's own steps verify only to a genesis of anyone's making (`copies_speak`)
+        let speak = self.copies_speak(t);
         // what each copy's box gives, opened by its holder's keys held here
         let mut given: Vec<Given> = Vec::new();
         for (b, c) in copies.iter() {
-            if unknown {
+            if speak {
                 join_steps(&mut out.steps, &c.steps);
             }
             let mut opened = Vec::new();
@@ -428,24 +440,25 @@ impl Core {
         };
         out.secrets = candidates.iter().filter(|(_, s)| bears(s)).map(|(e, s)| (*e, s.clone())).collect();
         out.candidates = candidates;
-        let ok = match unknown {
+        let ok = match speak {
             true => verified(&out.steps),
             false => recorded.iter().flat_map(|r| r.steps.keys().map(|k| k.0)).collect(),
         };
-        // every copy's steps, joined: with the record held, on a sync ID its steps place
+        // every copy's steps, joined: where the copies do not speak, on a sync ID `t`'s steps place
         let heads = {
             let mut joined = ct::SyncIds::default();
             for c in copies.values() {
                 join_steps(&mut joined, &c.steps);
             }
-            head_keys(&joined, if unknown { None } else { recorded.as_ref().map(|r| &***r) })
+            head_keys(&joined, if speak { None } else { recorded.as_ref().map(|r| &***r) })
         };
         for (b, h, o) in given {
             let c = copies.get(&b);
             let boxes = c.is_some_and(|c| !c.boxes.is_empty());
             let counts = match boxes {
                 true => o.iter().any(|(e, _)| out.secrets.contains_key(e)),
-                // boxing nothing: each step it carries verified (with `t`'s record, placed)
+                // boxing nothing: each step it carries verified (where the copies do not speak,
+                // placed)
                 false => c.is_some_and(|c| !c.steps.is_empty() && c.steps.values().all(|e| e.steps.keys().all(|k| ok.contains(k)))),
             };
             // a holder by a box alone: a copy boxing nothing (a `sync.0` write's, which any
@@ -517,7 +530,7 @@ impl crate::engine::Engine {
     /// writers log what it carries, spec/sync-inbox.md §2).
     /// Invariant (security): what a node with no commit of the thing logs is a copy that counts
     /// here, so a forged copy is logged only where its own steps bear its box (a genesis of the
-    /// forger's at a node holding no record of the thing), which gives nothing a reader of the
+    /// forger's at a node holding none of the thing's admins' word), which gives nothing a reader of the
     /// thing's own sync ID takes (`Core::unread`).
     pub fn sync_copies_carried(&mut self, s: &osis_base::SyncId) -> Result<Arc<Carried>> {
         self.follow_certificates()?;

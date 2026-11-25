@@ -342,14 +342,15 @@ fn a_store_granted_past_genesis_is_moved_spec_sync_ids_6() {
     holds_on(0, accounts, n, &script, String::new(), false);
 }
 
-// spec/sync-opens.md §4 (Admissible: a node keeping S unread takes its head's public entry): as
-// above with thing 0 public and its epochs moved on by its read grant on thing 1. Node 1's store is
-// moved to the head listing the public and reads thing 0 by its entry box; then, holding thing 0's
-// record and no applied `sync.0` write of it, it judges thing 0 dependent and drops it
-// (issues/public-reader-record-before-steps.md).
+// spec/sync-opens.md §4 (Admissible: a node keeping S unread takes its head's public entry),
+// spec/sync.md §3 (Holders by copies: a record alone is none of the admins' word): as above with
+// thing 0 public and its epochs moved on by its read grant on thing 1. Node 1's store is moved to
+// the head listing the public and reads thing 0 by its entry box; it takes thing 0's record before
+// the role commits placing its steps, and reads it once they come (failed judging by the record
+// alone: thing 0 dependent on its mint admin, of which node 1 holds nothing, so nothing fetched the
+// role commits and it dropped thing 0 for good).
 #[test]
-#[ignore = "issues/public-reader-record-before-steps.md"]
-fn repro_a_store_granted_past_genesis_reads_it_public() {
+fn a_public_reader_keeps_a_thing_on_taking_its_record_spec_sync_3() {
     use crate::harness::history::{Gives, Holder};
     let (n, accounts, ..) = size();
     let script = [Step::New(0), Step::Give(0, 0, Holder::Public, Gives::Reads), Step::New(0), Step::Give(0, 1, Holder::Thing(0), Gives::Reads), Step::Give(0, 0, Holder::Node(1), Gives::Syncs), Step::Run, Step::Strong(1, None, 0), Step::Write(0, 0), Step::Run];

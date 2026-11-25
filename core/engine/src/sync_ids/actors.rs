@@ -250,9 +250,9 @@ impl Engine {
     /// per write of the `sync.0` (`Core::sync_ids`), a destroyed thing's too. A `sync.0` the store
     /// refuses to read is the error, read again at the next ask.
     pub(crate) fn owned_sync_ids(&mut self, g: &Tid) -> Result<Arc<Vec<OwnedSyncId>>> {
-        // kept unread with no record (spec/sync-ids.md §2: a sync holder learns none): the steps
-        // its sync copies carry alone (`sync_ids::unread`)
-        if self.core.created(g).is_none() {
+        // none of `g`'s admins' word held (spec/sync-ids.md §2: a sync holder learns none): the
+        // steps its sync copies carry alone (`Core::copies_speak`)
+        if self.core.copies_speak(g) {
             return Ok(Arc::new(held_sync_ids(&self.core, g, &self.core.unread(g).steps)));
         }
         Memo::get_in(self, |e| &e.core.sync_ids, g, |e| {
@@ -260,8 +260,8 @@ impl Engine {
             // a destroyed thing's too: its `sync.0` stays (`retention::destroy`), read past `exists`
             let ak = crate::flows::ak(ct::SYNC.ak())?;
             let v = e.read(|tx| Ok(tx.state(g, &ak)?.and_then(osis_crdt::Fragment::read)))?;
-            // the state alone: a sync copy's steps speak for `g` only with no record of it
-            // (`sync_ids::unread`)
+            // the state alone: a sync copy's steps speak for `g` only beside none of its admins'
+            // word (`Core::copies_speak`)
             let m = match v {
                 Some(v) => ct::SYNC.decode(&v)?,
                 None => Default::default(),
