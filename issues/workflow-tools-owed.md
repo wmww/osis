@@ -14,7 +14,6 @@
 2. **Quiet checks that miss stuck states** (a test passed vacuously at half the seeds; a stale-read bug hid behind the second): a quiet end with a commit pending `WaitBlobs` on blobs a source shows; `World::parks` skipping store entries never opened.
 3. **Generator census and a no-room knob**: which of a model's generators write a shape took a temporary panic in `World::put`; the sync harness has no knob holding pushes back, so a test cannot tell an at-once lost-access drop from release's pass wait.
 
-4. **The gate skips GUI tests on core-only changes** (coordinator to decide): `tools/gate.sh` runs the GUI's tests only when `app/` or `libs/kit/` change, yet a core change can break them (a card rule looping `refresh_cards` failed 15 app sync tests that no engine test covered). Options: run them when engine or sync code changes, or always (about 30 s wall warm).
 
 Seed-dependent fixtures (a fixture seed taken from an env var): issues/fixture-seed-luck.md.
 

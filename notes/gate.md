@@ -19,7 +19,7 @@ Each prints its wall and CPU-s and checks its time limit. Steps before the tests
 5. Builds, unlocked: `cargo test --no-run`, every binary the selection runs, with the runs' own arguments, and the GUI's test binaries when the GUI tests run, so the hold builds nothing but doctests. Every selected property must be listed by the built binaries (`tools/test_select.py --listed`): a name no target compiles would pass silently.
 6. The unification check when a `Cargo.toml`, `Cargo.lock` or `.cargo/` changed (notes/build-internals.md, Feature unification); `osis schema check` on every `schema/*.osis`; `cargo deny check`, then core's bans alone (deny.toml skip-trees the GUI stack, which would hide a core duplicate).
 7. One `tools/heavy` hold: the default tests (`cargo test --locked --no-fail-fast`, each binary counted: The summary), the selected properties, the selected sim scenarios at 15 seeds, each rate replay (The selection).
-8. The GUI tests (`cargo test -p osis-kit -p osis-app -p osis-android`), when libs/kit/ or app/ changed.
+8. The GUI tests (`cargo test -p osis-kit -p osis-app -p osis-android`): on every full gate, and on the reduced gates when libs/kit/ or app/ changed.
 9. The whole gate against `gate` (without its lock wait and build stage), then the summary.
 
 ## Components pay for themselves
@@ -27,7 +27,7 @@ The paths changed since the merge base (committed or not, untracked included) pi
 - Only libs/kit/ or app/: the GUI lint and tests, unification if a manifest changed, deny.
 - Everything else is Markdown under spec/, notes/ or issues/ (`core=docs`): steps 1-2, plus the GUI steps if the GUI changed. A Rust line reading or including a file there sends the full gate.
 - That Markdown plus .rs files whose every changed line is a whole-line `//` comment (`core=comments`): steps 1-2, core clippy, the doctests of each crate with a changed doc comment whose library has doctests (`gate.doctests`), plus the GUI steps if the GUI changed. Anything a comment could change falls through to the full gate (the docstring lists the cases).
-- Anything else: every step; the GUI lint always (an osis API change must not silently break the app), the GUI tests only if the GUI changed.
+- Anything else: every step; the GUI lint and tests always (a core change must not silently break the app).
 
 ## The selection
 `tools/test_select.py [--base REV | --all] [--offset N]` prints what a gate would select; `--paths P...` asks about paths without a diff; `--all` lists every property and the `OSIS_*` variable each reads.

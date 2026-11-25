@@ -235,7 +235,8 @@ offset=$(python3 -c 'import random; print(random.randrange(10**12))')
 if [ "$select" = all ]; then from=--all; else from="--base $base"; fi
 # shellcheck disable=SC2086
 step python3 tools/test_select.py $from --offset "$offset" --emit "$sel"
-if [ -n "$gui" ]; then echo "build $gui_build_cmd" >> "$sel"; fi
+# the GUI tests run on every full gate: a core change can break the app (a card refresh loop did)
+echo "build $gui_build_cmd" >> "$sel"
 # lints before tests: a lint failure found after minutes of tests wastes them;
 # core's, then the GUI's on the same artifacts (the core crates are linted already)
 limited gate.clippy cargo clippy --all-targets --locked -- -D warnings
@@ -284,5 +285,5 @@ wf=$tmp/wait
 export HEAVY_WAIT_FILE="$wf"
 step tools/heavy --limit gate.hold sh tools/gate.sh --held "$sel" || :
 wait_s=$(cat "$wf" 2>/dev/null || true); wait_s=${wait_s:-0}
-if [ -n "$gui" ]; then gui_test; fi
+gui_test
 passed "${wait_s%.*}" ", ${wait_s%.*}s of it waiting for the heavy lock"
