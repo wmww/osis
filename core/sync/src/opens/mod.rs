@@ -2228,6 +2228,7 @@ impl Opens {
         let Some(sent) = c.offer.take() else { return };
         let bind = c.bind;
         let mut accepted = BTreeSet::new();
+        let mut crossed = Vec::new();
         for (i, x) in sent.into_iter().enumerate() {
             let a = items.get(i).cloned().unwrap_or(SharedItem::code(Code::DECLINED));
             match x {
@@ -2251,6 +2252,7 @@ impl Opens {
                     }
                     accepted.insert(s);
                     if self.member(conn, &s).is_some() {
+                        crossed.extend(self.crossed(conn, s, own, a.class));
                         continue;
                     }
                     let Some(adm) = self.admissible(ctx, conn, &s) else { continue };
@@ -2266,6 +2268,7 @@ impl Opens {
                 }
                 Sent::ByRole(s, own) if a.code == Code::OK => {
                     accepted.insert(s);
+                    crossed.extend(self.crossed(conn, s, own, a.class));
                     // An accepted ByRole opens S at its sender while J is still reader there.
                     if self.member(conn, &s).is_none() && self.admissible(ctx, conn, &s).is_some_and(|a| a.j == J::Reader && a.own == own) {
                         self.open(ctx, conn, s, Member { class: a.class, own, by: Credential::J, until: None, departed: false }, None, moved);
@@ -2314,10 +2317,21 @@ impl Opens {
             let items = lost.iter().map(|s| (*s, self.reported_at(conn, s).map(|(_, c)| c.clone()))).collect();
             self.send_lost(ctx, conn, items);
         }
+        for s in crossed {
+            self.close_member(ctx, conn, s, Close::Class, moved);
+        }
         self.rise(conn);
         if let Some(c) = self.conns.get_mut(&conn) {
             c.test_due = true;
         }
+    }
+
+    /// S, open on `conn` already by a crossing exchange, when the classes this exchange declared
+    /// (`own`, the peer's `peer`) are not the member's: the peer may have opened S by this one, so
+    /// the two sides disagree on a class, and S closes as for a class move (spec/sync-opens.md §4
+    /// Source). One being ended closes at its `until` as it is.
+    fn crossed(&self, conn: ConnId, s: SyncId, own: SourceClass, peer: SourceClass) -> Option<SyncId> {
+        self.member(conn, &s).filter(|m| m.until.is_none() && (m.own, m.class) != (own, peer)).map(|_| s)
     }
 
     /// The tester's own proof of the replier (spec/sync-opens.md §5): J judges it a holder, or

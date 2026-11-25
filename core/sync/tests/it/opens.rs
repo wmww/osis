@@ -296,6 +296,42 @@ fn byrole_opens_on_j_spec_sync_opens_5() {
     assert_eq!(p.a.opens.members(p.ca)[&S].by, Credential::J);
 }
 
+// spec/sync-opens.md §4 (Source: a class that moves closes the member, and S opens again with
+// both classes declared anew): a, open with b on S by J, comes to hold S for keys and back to
+// read before its Offer declaring keys is answered; b, told of the close, offers S declaring
+// reader as it takes a's Offer. Each side opens S by the other's exchange; at the end b's member
+// has a's class as a holds S, a reader (else b serves a S's role entries alone). Control: a
+// staying keys.
+#[test]
+fn crossing_offers_leave_both_sides_one_class_spec_sync_opens_4() {
+    use osis_sync::types::Holding;
+    for back in [true, false] {
+        let st = StepKeys::new(1, 0);
+        let creds = |h: Holding| osis_sync::opens::holds::Creds { holding: Some(h), ..reader(&S, &read_secret(1, 0), &st, &[], &[], &[]) };
+        let mut a = Side::new(1);
+        let mut b = Side::new(2);
+        a.table.set(S, Some(creds(Holding::Read)));
+        b.table.set(S, Some(creds(Holding::Read)));
+        a.table.judge_as(S, tid(2), J::Reader);
+        b.table.judge_as(S, tid(1), J::Reader);
+        let mut p = Pair::new(a, b, account(1), account(2));
+        p.run();
+        assert!(p.a.open(p.ca, &S) && p.b.open(p.cb, &S));
+        // a's Lost and its Offer declaring keys go out; a reads again before b takes them
+        p.a.table.set(S, Some(creds(Holding::Keys)));
+        p.a.settle();
+        if back {
+            p.a.table.set(S, Some(creds(Holding::Read)));
+            p.a.settle();
+        }
+        p.run();
+        let class = if back { SourceClass::Reader } else { SourceClass::Keys };
+        assert!(p.a.open(p.ca, &S) && p.b.open(p.cb, &S), "open again");
+        assert_eq!(p.b.opens.members(p.cb)[&S].class, class, "b holds a's class as a declares it now");
+        assert_eq!(p.a.opens.members(p.ca)[&S].own, class);
+    }
+}
+
 // spec/sync-opens.md §3 (agreement): a member only one side's record holds closes there, with
 // no position kept, and is tested again: the two sides open it again.
 #[test]
