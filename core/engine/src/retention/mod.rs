@@ -1540,7 +1540,7 @@ impl Engine {
         })
     }
 
-    /// The parts of durable content commit `c` that drop as covered now, for node-sync to drop
+    /// The parts of durable content or role commit `c` that drop as covered now, for node-sync to drop
     /// (`drop_body`; spec/commits.md §5 Covered, Own replaces, Keep bounds;
     /// spec/sync-compaction.md §1 Own bodies): each covered by a held valid snapshot (of two
     /// covered-equal ones the higher commit ID goes) or by its author's own replaces, past its
@@ -1553,7 +1553,7 @@ impl Engine {
     /// judgement: what it read moving makes it due again.
     pub fn covered_drops(&mut self, c: &CommitId) -> Result<Vec<(Tid, Ak)>> {
         let Some(m) = self.core.ix.commits.get(c).cloned() else { return Ok(Vec::new()) };
-        if m.view.memory || !matches!(m.view.kind, Kind::Content | Kind::ContentSnapshot) {
+        if m.view.memory || !matches!(m.view.kind, Kind::Content | Kind::ContentSnapshot | Kind::Role | Kind::RoleSnapshot) {
             return Ok(Vec::new());
         }
         let keeps = self.part_keeps(c)?;

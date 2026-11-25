@@ -160,6 +160,36 @@ fn card_rewrites_grow_nothing_spec_commits_5() {
     flat(&n, &n10);
 }
 
+/// `n` rotations of every role of thing 0 by node 0, its admin, a second apart; then `ROLE_KEEP`
+/// passes (a replaced role-class body's keep bound): the `keys.0` bodies of thing 0 each node
+/// holds then.
+fn keysets_after_rotations(w: &mut World, n: usize) -> Vec<usize> {
+    let t = w.history.things[0].0;
+    for _ in 0..n {
+        w.write(0, |e| e.rotate_leaving_out(&t, &[Role::Sync, Role::Read, Role::Write, Role::Admin], &[])).unwrap().expect("a rotation");
+        w.run();
+        w.advance(1_000);
+    }
+    w.advance(osis_base::format::ROLE_KEEP_MS);
+    w.run();
+    let keys = Ak::new("keys.0").unwrap();
+    (0..3).map(|i| w.engine(i).held_bodies(&t, &keys)).collect()
+}
+
+// spec/commits.md §5 Fixed retention and Covered, spec/sync-compaction.md §1 (trigger): thing 0
+// rotated 3 and 30 more times by its admin, synced by node 1 (kept unread) and read by node 2.
+// Each rotation replaces the keysets before it; the admin's `keys.0` snapshots cover them, and
+// past `ROLE_KEEP` every node drops them, so each holds as many `keys.0` bodies at 10n as at n.
+// (Each rotation's boxes and step stay live in `secrets.0` and `sync.0`, kept for good.)
+#[test]
+fn rotations_keep_keysets_flat_spec_commits_5() {
+    let (mut w, _) = setup(Gives::Reads);
+    keysets_after_rotations(&mut w, 1);
+    let n = keysets_after_rotations(&mut w, 3);
+    let n10 = keysets_after_rotations(&mut w, 30);
+    assert_eq!(n, n10, "keys.0 bodies held per node at n and 10n rotations");
+}
+
 // spec/sync-opens.md §1 (One connection per pair): the differential's nodes dial each other at
 // once at first contact, yet each pair keeps one connection, so each write crosses each pair on one
 // stream: deliveries per write are the same at n and 10n writes, all on one connection per pair.

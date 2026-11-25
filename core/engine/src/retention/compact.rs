@@ -31,12 +31,12 @@ pub const FACTOR: usize = 2;
 /// compacts at every write.
 pub const ENTRY_CHARGE: usize = 1024;
 
-/// Whether the trigger compacts `ak`: an aspect of ordinary retention (no fixed retention, so not
-/// role-class), content or the thing's setting, but `created.0` (one minting) and a signal (no
-/// state).
+/// Whether the trigger compacts `ak`: an aspect ever compacted (`snapshot::compacted`) of
+/// ordinary retention (content or the thing's setting) or role-class (`keys.0`, `secrets.0`,
+/// `sync.0`, by an admin, their replaced bodies past `ROLE_KEEP`), not `purge.0`.
 pub(crate) fn compactable(ak: &Ak) -> bool {
     let a = ak.as_str();
-    (osis_schema::core_types::is_content(a) || a == osis_commit::retention::RETENTION) && osis_commit::retention::fixed_purge_by(a).is_none() && !ak.signal()
+    super::snapshot::compacted(ak) && (osis_schema::core_types::is_role_class(a) || osis_commit::retention::fixed_purge_by(a).is_none())
 }
 
 /// The trigger's state per aspect, in memory. An aspect is weighed (its bodies read) only once

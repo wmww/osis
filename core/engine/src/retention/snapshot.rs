@@ -1347,11 +1347,12 @@ fn held_sources(core: &Core, tid: &Tid, ak: &Ak) -> BTreeSet<osis_crdt::Source> 
     .collect()
 }
 
-/// Whether `ak` is ever compacted (spec/commits.md §2): not role-class, `created.0`,
-/// `addenda.0` or a signal (no state).
+/// Whether `ak` is ever compacted (spec/commits.md §2): not `roles.0` or `signers.0`
+/// (`never_compacted`), `created.0`, `addenda.0` or a signal (no state). `keys.0`, `secrets.0`
+/// and `sync.0` are, by an admin.
 pub(crate) fn compacted(ak: &Ak) -> bool {
     let a = ak.as_str();
-    !is_role_class(a) && a != "created.0" && !osis_schema::core_types::is_addenda(a) && !ak.signal()
+    !osis_schema::core_types::never_compacted(a) && a != "created.0" && !osis_schema::core_types::is_addenda(a) && !ak.signal()
 }
 
 /// The re-snapshot owed on `(tid, ak)` (`Indexes::resnapshots_owed`), in `tx`: one this node may
@@ -1445,7 +1446,7 @@ impl Engine {
         let (tid, ak) = (*tid, ak.clone());
         // the role timeline walks every edge write (spec/commits.md §2)
         if osis_schema::core_types::never_compacted(ak.as_str()) {
-            return Err(Error::Misuse("roles.0 is never compacted"));
+            return Err(Error::Misuse("roles.0 and signers.0 are never compacted"));
         }
         if ak.as_str() == "created.0" {
             return Err(Error::Misuse("created.0 is never compacted"));

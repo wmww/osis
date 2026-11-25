@@ -62,7 +62,8 @@ impl Engine {
     pub(crate) fn own_cover(&mut self, scope: &DemotionScope) -> Result<BTreeSet<CommitId>> {
         let mut by_aspect: BTreeMap<(Tid, Ak), BTreeSet<Tid>> = BTreeMap::new();
         for (node, t, ak) in self.scope_aspects(scope) {
-            if crate::retention::snapshot::compacted(&ak) && !ak.ephemeral() {
+            // an own cover is a content snapshot (spec/wire.md §4 field 14)
+            if crate::retention::snapshot::compacted(&ak) && !osis_schema::core_types::is_role_class(ak.as_str()) && !ak.ephemeral() {
                 by_aspect.entry((t, ak)).or_default().insert(node);
             }
         }

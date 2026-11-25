@@ -149,6 +149,29 @@ fn a_from_now_grantee_reads_the_current_state_and_no_earlier_write_spec_crypto_4
     assert_eq!(w.engine(1).get(&t, &value_ak()).unwrap(), Some(Value::Str("after".into())), "what follows the grant");
 }
 
+// spec/commits.md §5 (Fixed retention; Covered), spec/crypto.md §4 (Established: a `secrets.0`
+// snapshot keys its epochs): node 0 grants and removes node 1 twice on t (each removal rotates),
+// node 2 writing; past `ROLE_KEEP` its role-class snapshots cover the replaced keysets and boxes,
+// which every node drops. Node 3, granted afterwards, holds what the others hold and judges every
+// commit as they do (the reference), reading t.
+#[test]
+fn a_reader_joining_after_role_compaction_judges_alike_spec_commits_5() {
+    use crate::harness::Step::*;
+    use crate::harness::history::{Gives, check, value_ak, world_of};
+    let mut w = world_of(0, 4, 4);
+    let _ = crate::harness::play(&mut w, &[New(0), Grant(0, 0, 2, Gives::Writes), Write(2, 0), Run, Grant(0, 0, 1, Gives::Reads), Run, Remove(0, 0, 1), Run, Grant(0, 0, 1, Gives::Reads), Run, Remove(0, 0, 1), Write(2, 0), Run], String::new());
+    let t = w.history.things[0].0;
+    w.advance(osis_base::format::ROLE_KEEP_MS + 1_000);
+    w.run();
+    let _ = crate::harness::play(&mut w, &[Write(0, 0), Run], String::new());
+    let keys = osis_base::Ak::new("keys.0").unwrap();
+    let on = w.engine(0).core.ix.by_aspect.get(&(t, keys.clone())).map_or(0, |s| s.len());
+    assert!(w.engine(0).held_bodies(&t, &keys) < on, "node 0 dropped a replaced `keys.0` body");
+    let _ = crate::harness::play(&mut w, &[Grant(0, 0, 3, Gives::Reads), Run, Strong(3, None, 0), Run], String::new());
+    assert_eq!(w.engine(3).get(&t, &value_ak()).unwrap(), w.engine(0).get(&t, &value_ak()).unwrap(), "node 3 reads t");
+    check(&mut w);
+}
+
 // spec/crypto.md §4 (State at a cut), spec/sync-inbox.md §1 (Card), spec/data-model.md §9 (card
 // aspect): node 0 writes its account's card on t, then grants node 1's account read on t without
 // history. The card's write lies below node 1's floor; node 0, a writer of t through its account,
