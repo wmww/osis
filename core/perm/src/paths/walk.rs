@@ -1281,6 +1281,12 @@ impl Walk {
         out
     }
 
+    /// The commits of the seeds of held part `id` were it trusted (§5.1 Seeds).
+    pub(super) fn seed_commits(&mut self, id: &WriteId) -> BTreeSet<CommitId> {
+        let Some(&r) = self.ids.get(id) else { return BTreeSet::new() };
+        self.seeds_of(r).into_iter().map(|j| self.it(j).id.0).collect()
+    }
+
     /// Entries kept in memory: parts, edges, applied writes, events.
     pub(super) fn footprint(&self) -> u64 {
         let comps: usize = self.comps.values().map(|c| c.events.len()).sum();

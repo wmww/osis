@@ -126,7 +126,7 @@ What the engine reads short of spec/permissions.md, each to finish against the m
 - the wait for a part's evidence (spec/commits.md §4 Unjudgeable; `apply::thing_wait`, `validity::unreached`, held-model `unreached` alike) does not wait for the records of the listed things (the purge author's alone, issues/stated-path-certificates.md), a listed thing with no record being an edge nobody wrote; and the engine places an edge write among its own commit's by the edges of its own thing's stated path alone, where the walk reads those of every thing the commit writes (a record edge down to another thing written: issues/stated-path-wait-order.md);
 - an `addenda.0` delta's first entry alone is read;
 - a by-commit purge item is read as naming nothing (the engine names its own targets; only the request's right is the walk's), `signers_could` reads possible admins and writers, not `Paths::could_hold`;
-- the list (§5.1): the frontier leaves out no commit with edge-class parts that would end the lowering's authority;
+- the list (§5.1): the frontier leaves out no commit with edge-class parts that would end the lowering's authority, and the writer's check (`flows::edges::demote_in`, `usable_role_now`) reads the walk without the lowering trusted, so a removed admin cannot write its counter-removal (sides record its own lowering trusted all the same: `sides::tests`);
 - sides: "cannot stand beside" and "the counter-removal is told" are not read; `Engine::disputes` clones the timeline per call;
 - `rotation::members::keyless_in` runs over the whole timeline at every edge change;
 - `Timelines::get`/`path_now` stamp the whole timeline (coarser memo invalidation than per component).

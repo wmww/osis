@@ -99,7 +99,8 @@ fn detected(lp: &LocalPeer, i: usize) -> Vec<(Tid, Tid, bool)> {
 // spec/permissions.md §5.1 Trust set; notes/disputes.md, Detection and sides (first received): a
 // node that held the honest removal first keeps its side when the backdated one arrives (the
 // removal it applied stops applying: the dispute is detected, the side taken by default and
-// told); one that got the backdated removal first stays with it, warned the same way.
+// told); one that got the backdated removal first stays with it, warned the same way, with no
+// side recorded (No order).
 #[test]
 fn backdated_removal_loses_where_the_honest_one_was_first_spec_permissions_5_1() {
     let mut f = fight(4);
@@ -121,12 +122,12 @@ fn backdated_removal_loses_where_the_honest_one_was_first_spec_permissions_5_1()
     assert_eq!(admins(&f, 3), (true, false), "first received: the thief's side, warned");
     assert_eq!(detected(&f.lp, 3), vec![(f.a, f.lp.peers[1].engine.tid(), false)]);
     let d = the_dispute(&f, 3);
-    assert_eq!(d.side.map(|s| (s.trust, s.chosen)), Some((false, false)));
+    assert_eq!(d.side, None, "the seed held before the removal: no order, no side");
     // each party sides with itself
     send_carried(&mut f.lp, 0, 1, &r);
     send_carried(&mut f.lp, 1, 0, &w);
     assert_eq!((admins(&f, 0), admins(&f, 1)), ((true, false), (false, true)));
-    assert_eq!(the_dispute(&f, 0).side.map(|s| s.trust), Some(false));
+    assert_eq!(the_dispute(&f, 0).side, None);
     assert_eq!(the_dispute(&f, 1).side.map(|s| s.trust), Some(true));
 }
 

@@ -3,16 +3,16 @@
 //! `osis` API the one home of dispute types outside osis-perm (the coherence rule;
 //! tools/policy.py).
 //!
-//! A side is recorded once per dispute (R, holder): by default at detection, or by
-//! `Engine::choose`. The default is held first (spec/permissions.md §5.1 Sides): R is trusted
-//! iff the reading before the update that brought its dispute applied it. A node holds its own
-//! writes first, so sides with itself. A recorded side stays until chosen otherwise; a trusted
-//! write the walk cannot apply is void there.
+//! A side is recorded per dispute (R, holder) by default or by `Engine::choose`
+//! (spec/permissions.md §5.1 Sides): R trusted where this node made it (its own), or where an
+//! update brought another party's seed of R while the reading before applied R (held first);
+//! with no order between R and its seeds, nothing, the dispute only told. A recorded side stays
+//! until chosen otherwise; a trusted write the walk cannot apply is void there.
 
 use crate::engine::journal::{JMap, Journaled};
 use crate::engine::{records, Core, Tx};
 use crate::error::{Error, Result};
-use crate::events::Event;
+use crate::events::{Event, Origin};
 use osis_base::{CommitId, Holder, Tid, Value};
 use crate::engine::index::Rec;
 use osis_perm::WriteId;
@@ -43,10 +43,10 @@ pub struct DisputeInfo {
 }
 
 /// The sides recorded per admin dispute, journaled (`Engine::run` persists them when the
-/// transaction changed any).
+/// transaction changed any). `None`: the dispute was told and no side is recorded (no order).
 #[derive(Clone, Default)]
 pub struct Sides {
-    map: JMap<(WriteId, Holder), Side>,
+    map: JMap<(WriteId, Holder), Option<Side>>,
 }
 
 impl Sides {
@@ -61,7 +61,8 @@ impl Sides {
                     let commit = CommitId(c.as_slice().try_into().map_err(|_| bad())?);
                     let op = u32::try_from(*op).map_err(|_| bad())?;
                     let holder = <Holder as Rec>::from(holder).ok_or_else(bad)?;
-                    map.insert((WriteId(commit, op), holder), Side { trust: flags & 1 == 1, chosen: flags & 2 == 2 });
+                    let side = (flags & 4 == 0).then_some(Side { trust: flags & 1 == 1, chosen: flags & 2 == 2 });
+                    map.insert((WriteId(commit, op), holder), side);
                 }
                 _ => return Err(bad()),
             }
@@ -71,25 +72,32 @@ impl Sides {
     }
 
     fn encode(&self) -> Vec<u8> {
-        let items: Vec<Value> = self.map.iter().map(|((w, m), s)| Value::List(vec![Value::Bytes(w.0 .0.to_vec()), Value::Int(i64::from(w.1)), m.to(), Value::Int(i64::from(s.trust) | i64::from(s.chosen) << 1)])).collect();
+        let flags = |s: &Option<Side>| s.map_or(4, |s| i64::from(s.trust) | i64::from(s.chosen) << 1);
+        let items: Vec<Value> = self.map.iter().map(|((w, m), s)| Value::List(vec![Value::Bytes(w.0 .0.to_vec()), Value::Int(i64::from(w.1)), m.to(), Value::Int(flags(s))])).collect();
         Value::List(items).to_bytes()
     }
 
     /// The trust set: the ops of the sides that trust R.
     pub(crate) fn trust(&self) -> BTreeSet<WriteId> {
-        self.map.iter().filter(|(_, s)| s.trust).map(|(k, _)| k.0).collect()
+        self.map.iter().filter(|(_, s)| s.is_some_and(|s| s.trust)).map(|(k, _)| k.0).collect()
     }
 
     /// The sides that trust R, each with its holder.
     pub(crate) fn trusted(&self) -> Vec<(WriteId, Holder)> {
-        self.map.iter().filter(|(_, s)| s.trust).map(|(k, _)| *k).collect()
+        self.map.iter().filter(|(_, s)| s.is_some_and(|s| s.trust)).map(|(k, _)| *k).collect()
     }
 
+    /// The side recorded in dispute (R, holder).
     pub(crate) fn get(&self, op: WriteId, holder: Holder) -> Option<Side> {
-        self.map.get(&(op, holder)).copied()
+        self.map.get(&(op, holder)).copied().flatten()
     }
 
-    fn set(&mut self, op: WriteId, holder: Holder, side: Side) {
+    /// Whether dispute (R, holder) was told.
+    fn told(&self, op: WriteId, holder: Holder) -> bool {
+        self.map.contains_key(&(op, holder))
+    }
+
+    fn set(&mut self, op: WriteId, holder: Holder, side: Option<Side>) {
         self.map.insert((op, holder), side);
     }
 
@@ -121,11 +129,13 @@ impl Journaled for Sides {
     }
 }
 
-/// Records a default side for every dispute held after the timeline update that reported `c`
-/// and not recorded yet (spec/permissions.md §5.1 Sides, Held first: trusted iff the reading
-/// before the update applied it, other than as a may-grant grant; a lowering that came with the
-/// update takes none), feeds the trust set to the walk when a side trusts, and reports each
-/// (`Event::DisputeDetected`).
+/// Records the default side of every dispute held after the timeline update that reported `c`
+/// that has no side recorded (spec/permissions.md §5.1 Sides), feeds the trust set to the walk
+/// when one trusts, and reports each dispute once (`Event::DisputeDetected`). R is trusted when
+/// this node made it (Its own: decided at the first update where trusting it matters, which
+/// reads as recording it when made), or when the update brought another party's seed of R and
+/// the reading before applied R, other than as a may-grant grant (Held first); else nothing is
+/// recorded (No order), and a later update bringing a seed may still record it.
 pub(crate) fn after_update(core: &mut Core, c: &osis_perm::Changed) {
     if c.ops.is_empty() {
         return;
@@ -137,15 +147,35 @@ pub(crate) fn after_update(core: &mut Core, c: &osis_perm::Changed) {
         if core.sides.get(op, holder).is_some() {
             continue;
         }
-        let was = if c.ops.contains(&op) { c.was_applied.contains(&op) } else { core.timelines().is_applied(&op) };
-        let trust = !c.fresh.contains(&op.0) && was && core.timelines().way(&op) != Some(osis_perm::paths::Way::MayGrant);
-        core.sides.set(op, holder, Side { trust, chosen: false });
+        let own = core.ix.commits.get(&op.0).is_some_and(|m| m.origin == Origin::Local);
+        let trust = own || held_first(core, c, op);
+        let told = core.sides.told(op, holder);
+        if trust || !told {
+            core.sides.set(op, holder, trust.then_some(Side { trust, chosen: false }));
+        }
         trusts |= trust;
-        core.events.queue(Event::DisputeDetected { commit: op.0, op: op.1, holder, target, author, trust });
+        if !told {
+            core.events.queue(Event::DisputeDetected { commit: op.0, op: op.1, holder, target, author, trust });
+        }
     }
     if trusts {
         feed(core);
     }
+}
+
+/// Held first (spec/permissions.md §5.1 Sides): the update `c` brought a commit of another party
+/// that is a seed of R (`op`), held before as R was, and the reading before applied R other than
+/// as a may-grant grant.
+fn held_first(core: &mut Core, c: &osis_perm::Changed, op: WriteId) -> bool {
+    if c.fresh.contains(&op.0) || core.timelines().way(&op) == Some(osis_perm::paths::Way::MayGrant) {
+        return false;
+    }
+    let was = if c.ops.contains(&op) { c.was_applied.contains(&op) } else { core.timelines().is_applied(&op) };
+    if !was {
+        return false;
+    }
+    let seeds = core.timelines_mut().aside().seed_commits(&op);
+    seeds.iter().any(|s| c.fresh.contains(s) && core.ix.commits.get(s).is_some_and(|m| m.origin == Origin::Remote))
 }
 
 /// After a rollback restored the sides: the walk's trust set follows them (the stale flags the
@@ -203,7 +233,7 @@ impl crate::engine::Engine {
                 continue;
             }
             if let Some((author, h, target)) = tl.edge_op(op).filter(|x| x.1 == *holder) {
-                out.insert((*op, *holder), DisputeInfo { commit: op.0, op: op.1, holder: h, target, author, side: Some(*side) });
+                out.insert((*op, *holder), DisputeInfo { commit: op.0, op: op.1, holder: h, target, author, side: *side });
             }
         }
         (out.into_values().collect(), left)
@@ -214,7 +244,7 @@ impl crate::engine::Engine {
     pub(crate) fn adopt_trust(&mut self, ws: &[(WriteId, Holder)]) -> Result<()> {
         self.run(|tx| {
             for (w, h) in ws {
-                tx.core.sides.set(*w, *h, Side { trust: true, chosen: true });
+                tx.core.sides.set(*w, *h, Some(Side { trust: true, chosen: true }));
             }
             feed(tx.core);
             crate::apply::atomic::rejudged(tx, true).map(drop)
@@ -230,7 +260,7 @@ impl crate::engine::Engine {
             return Err(Error::UnknownCommit(commit));
         }
         self.run(|tx| {
-            tx.core.sides.set(w, holder, Side { trust, chosen: true });
+            tx.core.sides.set(w, holder, Some(Side { trust, chosen: true }));
             feed(tx.core);
             crate::apply::atomic::rejudged(tx, true)?;
             Ok(())
@@ -246,5 +276,59 @@ impl crate::engine::Engine {
             self.choose(d.commit, d.op, d.holder, false).unwrap_or_else(|e| panic!("choose: {e:?}"));
         }
         trusted.len()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+    use crate::flows::Demotion;
+    use crate::local_peer::LocalPeer;
+    use crate::rotation::tests::{edge, synced, target_thing};
+    use osis_base::{Role, Tid};
+
+    /// Admins H (peer 1) and X (peer 2) of g (peer 0's); X removes H, every peer holding it.
+    fn removed_h() -> (LocalPeer, Tid, Vec<Tid>) {
+        let mut lp = synced(3);
+        let tids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.me()).collect();
+        let g = target_thing(&mut lp, 0);
+        for i in [1, 2] {
+            lp.peers[0].engine.grant(&g, &tids[i], &edge(Role::Admin)).unwrap();
+        }
+        lp.sync_all().unwrap();
+        lp.advance(1_000);
+        lp.peers[2].engine.demote(&g, &Demotion { holder: tids[1], new: None, retain: None }).unwrap();
+        lp.sync_all().unwrap();
+        (lp, g, tids)
+    }
+
+    // spec/permissions.md §5.1 Sides (Its own; No order): H, holding X's removal of it, writes its
+    // counter-removal of X, its list leaving X's removal out (The list). H records its own
+    // lowering trusted, so its seeds take X's removal and H stands. Peer 0 held X's removal
+    // before H's: it records nothing, the dispute told with no side, and reads the walk's side.
+    // As roles-model `a_remover_sides_with_its_own_removal`.
+    #[test]
+    fn a_remover_sides_with_its_own_counter_removal_spec_permissions_5_1() {
+        let (mut lp, g, tids) = removed_h();
+        assert!(!lp.peers[1].engine.roster(&g).contains_key(&tids[1]), "H removed at H");
+        lp.advance(1_000);
+        // the writer's check refuses a removed admin's lowering: written past it
+        let mut m = crate::Mutation::new();
+        lp.peers[1].engine.run(|tx| crate::flows::edges::removal(tx, &mut m, g, tids[2])).unwrap();
+        m.frontier(osis_perm::Frontier::new(Vec::<osis_base::CommitId>::new()));
+        m.unchecked();
+        lp.peers[1].engine.core.skip_writer_rules = true;
+        lp.peers[1].commit(m).unwrap().unwrap();
+        lp.peers[1].engine.core.skip_writer_rules = false;
+        let e = &mut lp.peers[1].engine;
+        let r = e.roster(&g);
+        assert!(r.contains_key(&tids[1]) && !r.contains_key(&tids[2]), "H sides with its own removal: {r:?}");
+        let (ds, _) = e.disputes(64);
+        assert!(ds.iter().any(|d| d.author == tids[1] && d.side.is_some_and(|s| s.trust)), "{ds:?}");
+        lp.sync_all().unwrap();
+        let r = lp.peers[0].engine.roster(&g);
+        assert!(!r.contains_key(&tids[1]) && r.contains_key(&tids[2]), "peer 0: the walk's side: {r:?}");
+        let (ds, _) = lp.peers[0].engine.disputes(64);
+        assert!(ds.iter().any(|d| d.author == tids[1] && d.side.is_none()), "no order, no side: {ds:?}");
     }
 }

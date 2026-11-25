@@ -525,6 +525,12 @@ impl<S: Store> Paths<S> {
         self.timeline.way(id)
     }
 
+    /// The commits of the seeds held part `id` would have were it trusted (spec/permissions.md
+    /// §5.1 Seeds), over the settled walk.
+    pub fn seed_commits(&mut self, id: &WriteId) -> BTreeSet<CommitId> {
+        self.timeline.seed_commits(id)
+    }
+
     /// (holder, target) as restored after every applied write (spec/permissions.md §5.1): what
     /// it gives and what it lets grant.
     pub fn restored(&self, holder: &Holder, target: &Tid) -> (Option<Role>, Option<Role>) {

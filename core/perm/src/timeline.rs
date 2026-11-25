@@ -462,6 +462,15 @@ impl<S: Store> Timeline<S> {
         self.paths.way(&self.part_of(w)?)
     }
 
+    /// The commits holding the seeds held edge write `w` would have were it trusted
+    /// (spec/permissions.md §5.1 Seeds): what Sides' held first reads.
+    pub fn seed_commits(&mut self, w: &WriteId) -> BTreeSet<CommitId> {
+        match self.part_of(w) {
+            Some(p) => self.paths.seed_commits(&p),
+            None => BTreeSet::new(),
+        }
+    }
+
     /// Whether held edge write `w` would apply at its key were its holder's edge `old` there, the
     /// rest as the walk has it: its verdict over another state of its own edge, such as a second
     /// removal of a holder another write removed first (spec/crypto.md §4, Covers).

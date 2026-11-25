@@ -210,7 +210,7 @@ def env_vars():
 # The trust store (core/engine/src/sides.rs) is the rule's second exception: durable sides, fed
 # to the walk; its end-to-end tests are core/engine/tests/it/disputes.rs.
 DISPUTE_DIRS = ("core/perm/", "core/osis/", "core/engine/src/sides.rs", "core/engine/tests/it/disputes.rs")
-DISPUTE_CALLS = re.compile(r"\.(set_trust|disputes)\s*\(")
+DISPUTE_CALLS = re.compile(r"\.(set_trust|disputes|seed_commits)\s*\(")
 # The engine's own dispute names (the store and its event) outside the store itself: only its
 # hooks (the `Core` field and the update, commit and rollback calls, the load at open, the
 # event's definition and the module's export).
