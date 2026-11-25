@@ -397,7 +397,12 @@ impl Engine {
             let mut m = Mutation::new();
             let Some(out) = step_into(tx, &mut m, g, l, fresh)? else { return Ok(None) };
             drop_old_claims(tx, &mut m, g)?;
-            Engine::commit_tx(tx, m)?;
+            let c = Engine::commit_tx(tx, m)?;
+            // a removed holder of sync alone is told by the step past its keys
+            let parent = out.0.prev.and_then(|p| tx.core.ix.steps.get(&g).and_then(|r| r.steps.get(&p)).map(|s| s.since));
+            if let (Some(c), Some(parent)) = (c, parent) {
+                crate::flows::inbox::deliver_step(tx, g, c, parent)?;
+            }
             Ok(Some(out))
         })
     }

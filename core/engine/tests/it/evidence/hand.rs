@@ -275,7 +275,7 @@ fn req32(ev: &E) -> Copies32 {
 }
 
 fn write(holder: Thing) -> Kind<Thing> {
-    Kind::Write(Write { holder, gives_read: true, travels: true })
+    Kind::Write(Write { holder, gives_read: true })
 }
 
 /// A sync ID D with D in its unit, keys-open travel as given.
@@ -326,7 +326,7 @@ fn a_member_brings_the_writes_on_the_edges_it_writes_spec_permissions_4() {
 /// through [A] brings the removal and the grant it ends.
 #[test]
 fn a_removal_is_evidence_only_where_a_body_rests_on_its_edge_spec_permissions_4() {
-    let w = |holder: Thing, grant: bool| Kind::Write(Write { holder, gives_read: grant, travels: true });
+    let w = |holder: Thing, grant: bool| Kind::Write(Write { holder, gives_read: grant });
     let mut ev = d_unit(true);
     ev.add((1, D), vec![Part::new(w(A, true), Some(vec![(Y, D)]))]);
     ev.add((2, A), vec![Part::new(w(K, true), Some(vec![(X, A)]))]);

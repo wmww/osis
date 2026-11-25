@@ -88,6 +88,24 @@ fn read_headerless(bytes: &[u8], commit: &CommitId) -> Option<osis_crdt::Fragmen
     osis_crdt::decode_delta(bytes, &cx, &mut interner, None).ok().map(|d| d.fragment)
 }
 
+/// The step records a `sync.0` delta writes, as the delta alone gives them: a sync ID set whole
+/// (a genesis) and each step record set into one (a later step: its delta reads as nothing
+/// without the state it joins). A record that does not decode is no step.
+fn delta_steps(f: &osis_crdt::Fragment) -> ct::SyncIds {
+    use crate::apply::keys::{field, map};
+    use osis_schema::Codec;
+    let mut out: ct::SyncIds = f.read().and_then(|v| ct::SYNC.decode(&v).ok()).unwrap_or_default();
+    for (_, _, k, sub) in map(Some(f)).into_iter().flat_map(|m| m.entries()) {
+        let (Some(id), Some(sub)) = (k.and_then(|k| osis_base::SyncId::from_value(k).ok()), sub) else { continue };
+        for (_, _, sk, rf) in map(field(sub, 0)).into_iter().flat_map(|m| m.entries()) {
+            let Some(Ok(sk)) = sk.map(<[u8; 32]>::from_value) else { continue };
+            let Some(Ok(rec)) = rf.and_then(osis_crdt::Fragment::read).map(|v| ct::StepRecord::from_value(&v)) else { continue };
+            out.entry(id).or_insert_with(|| ct::SyncEntry { steps: BTreeMap::new() }).steps.entry(sk).or_insert(rec);
+        }
+    }
+    out
+}
+
 /// Reads sync copy `plain`, come under `under` (`sealed`: sealed to it): `None` when it is bad
 /// input (spec/wire.md §4: not a sync copy; a copy of `under` itself; its piece holding records
 /// keyed with two holders, or one keyed with none: a history box; a delta that does not decode).
@@ -110,7 +128,7 @@ pub(crate) fn parse(under: Tid, sealed: bool, plain: &[u8]) -> Option<HeldSyncCo
         return None;
     }
     let steps = match &copy.sync {
-        Some(s) => ct::SYNC.decode(&read_headerless(s, &copy.commit)?.read()?).ok()?,
+        Some(s) => delta_steps(&read_headerless(s, &copy.commit)?),
         None => ct::SyncIds::default(),
     };
     Some(HeldSyncCopy { under, holder, sealed, key: content_key(plain), copy, boxes, steps })
@@ -227,8 +245,11 @@ pub struct Unread {
     /// what `owned_sync_ids` judges.
     pub steps: ct::SyncIds,
     pub counted: BTreeSet<BlobId>,
-    /// The holders of counted copies of a box: things holding sync or above on `t` as this node
-    /// knows it from them (`stubs_of`).
+    /// The holders of counted copies of a box opening to a secret whose sync key a head bears
+    /// (the newest step of a sync ID of `t` held: `heads`): things holding sync or above on `t`
+    /// as this node knows it from them (`stubs_of`). A head past every key a holder's boxes give
+    /// is its removal (spec/sync-judgement.md §6 Stops): a holder of sync alone is told so by
+    /// that step, never by a header (spec/sync-ids.md §2 What a sync holder learns).
     /// Invariant (security): a holder is named only by a box opening to a secret a step bears,
     /// so what anyone may bring (a copy boxing nothing) names no role.
     pub holders: BTreeSet<Tid>,
@@ -263,6 +284,39 @@ fn borne(steps: &ct::SyncIds) -> BTreeSet<[u8; 32]> {
     out
 }
 
+/// The sync keys the heads bear (`Unread::holders`): per sync ID, its newest step held, of
+/// `recorded` or carried by a copy (`steps`, on a path verified from the sync ID's genesis), the
+/// deepest, ties by lowest step ID (`sync_ids::actors::head_of`). With `recorded` (the thing's
+/// record held), a copy's steps count only on a sync ID it places: a child of a placed step is
+/// signed by its parent's delete key, an admin secret's, while a genesis is anyone's making.
+fn head_keys(steps: &ct::SyncIds, recorded: Option<&crate::sync_ids::steps::Recorded>) -> BTreeSet<[u8; 32]> {
+    use std::cmp::Reverse;
+    let mut best: BTreeMap<osis_base::SyncId, (u32, Reverse<osis_blob::StepId>, [u8; 32])> = BTreeMap::new();
+    for (k, p) in recorded.into_iter().flat_map(|r| r.heads()) {
+        best.insert(p.sync_id, (p.depth, Reverse(*k), p.sync));
+    }
+    for (id, e) in steps {
+        if recorded.is_some() && !best.contains_key(id) {
+            continue;
+        }
+        let Ok(mut st) = osis_blob::sync_steps(e) else { continue };
+        st.retain(|_, (s, _)| s.sync_id == *id);
+        let Some(h) = crate::sync_ids::actors::head_of(&st) else { continue };
+        let plain: BTreeMap<osis_blob::StepId, osis_blob::Step> = st.iter().map(|(k, (s, _))| (*k, s.clone())).collect();
+        let Ok(path) = osis_blob::path_to(&plain, &h) else { continue };
+        if path.first().is_none_or(|g| g.sync_id != *id) {
+            continue;
+        }
+        let Some((s, _)) = st.get(&h) else { continue };
+        let at = (u32::try_from(path.len().saturating_sub(1)).unwrap_or(u32::MAX), Reverse(h), s.keys.sync.to_bytes());
+        let b = best.entry(*id).or_insert(at);
+        if (at.0, at.1) > (b.0, b.1) {
+            *b = at;
+        }
+    }
+    best.into_values().map(|b| b.2).collect()
+}
+
 /// The verified step IDs of `steps` per sync ID (`borne`'s paths).
 fn verified(steps: &ct::SyncIds) -> BTreeSet<[u8; 32]> {
     let mut out = BTreeSet::new();
@@ -286,6 +340,26 @@ fn join_steps(a: &mut ct::SyncIds, b: &ct::SyncIds) {
 }
 
 impl Core {
+    /// Whether `h`'s edge pieces on `x` go as sync copies (spec/permissions.md §4 Key part): no
+    /// held edge write on `x` gives `h` read or above (its own self-writes aside) and `h` is not
+    /// `x`'s mint admin, whatever their validity: the evidence's read edges
+    /// (`evidence::Write::gives_read`), so Role changes travel carries a write on the edge
+    /// exactly where this is false. A holder that read `x` keeps certificate copies after a
+    /// lowering or removal: its readers hold `x`'s record and judge its role commits.
+    /// Invariant (security; spec/sync-ids.md §2 What a sync holder learns): every path a commit
+    /// of `x` naming `h` takes to `h`'s readers (key part, sealed copy, fire, offer, travel) reads
+    /// this one predicate, so none carries a header where another carries a sync copy.
+    pub(crate) fn sync_alone_on(&self, h: &Tid, x: &Tid) -> bool {
+        let hd = osis_base::Holder::Thing(*h);
+        if self.ix.held.created(x).is_some_and(|r| r.holder() == hd) {
+            return false;
+        }
+        !self.ix.held.edge_commits(x).iter().any(|rc| {
+            let leave = osis_base::Holder::Thing(*rc.path_to(x).last().unwrap_or(&rc.signer));
+            rc.ops.iter().any(|o| o.target == *x && o.holder == hd && hd != leave && o.edge.is_some_and(|e| e.role >= Role::Read))
+        })
+    }
+
     /// Whether `u` holds sync on `y` as the sync copies of `y` counting here tell (no grant of
     /// `y` held): a counted copy's holder is `u`, or one `u` holds sync or above on with key
     /// access (its chain, as a grant held would give it).
@@ -350,6 +424,14 @@ impl Core {
             true => verified(&out.steps),
             false => recorded.iter().flat_map(|r| r.steps.keys().map(|k| k.0)).collect(),
         };
+        // every copy's steps, joined: with the record held, on a sync ID its steps place
+        let heads = {
+            let mut joined = ct::SyncIds::default();
+            for c in copies.values() {
+                join_steps(&mut joined, &c.steps);
+            }
+            head_keys(&joined, if unknown { None } else { recorded.as_ref().map(|r| &***r) })
+        };
         for (b, h, o) in given {
             let c = copies.get(&b);
             let boxes = c.is_some_and(|c| !c.boxes.is_empty());
@@ -362,7 +444,7 @@ impl Core {
             // syncer of `t` holds and anyone may seal or log) gives steps, never a role
             if counts {
                 out.counted.insert(b);
-                if boxes {
+                if boxes && o.iter().any(|(_, s)| heads.contains(&sync_key(s))) {
                     out.holders.insert(h);
                 }
             }

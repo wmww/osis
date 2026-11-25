@@ -97,7 +97,7 @@ fn a_member_listing_a_key_brings_its_steps_spec_permissions_4() {
     const K: u16 = 2;
     let mut ev = d_unit();
     ev.add((1, B), sync0(vec![step(1, None)]));
-    let grant = Part { dels: vec![Del { base: B, level: Level::Admin, key: 11 }], ..Part::new(Kind::Write(osis_engine::evidence::Write { holder: K, gives_read: true, travels: true }), Some(vec![(X, O)])) };
+    let grant = Part { dels: vec![Del { base: B, level: Level::Admin, key: 11 }], ..Part::new(Kind::Write(osis_engine::evidence::Write { holder: K, gives_read: true }), Some(vec![(X, O)])) };
     ev.add((5, O), vec![grant]);
     assert_eq!(req(&ev), Copies::new());
     ev.add((9, D), vec![Part::new(Kind::Content, Some(vec![(K, O), (O, D)]))]);

@@ -18,14 +18,14 @@ fn typed(v: &Value, name: &str) -> Option<Value> {
     typed_read(osis_schema::core_schema(), v, &Type::Named(name.into(), Vec::new())).ok()
 }
 
-fn field(f: &Fragment, id: u64) -> Option<&Fragment> {
+pub(crate) fn field(f: &Fragment, id: u64) -> Option<&Fragment> {
     match f.slot(Encoding::Struct)? {
         SlotRef::Frag(Fragment::Struct(s)) => s.field(id),
         _ => None,
     }
 }
 
-fn map(f: Option<&Fragment>) -> Option<&osis_crdt::Map> {
+pub(crate) fn map(f: Option<&Fragment>) -> Option<&osis_crdt::Map> {
     match f?.slot(Encoding::Map)? {
         SlotRef::Frag(Fragment::Map(m)) => Some(m),
         _ => None,

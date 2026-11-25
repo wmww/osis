@@ -29,9 +29,8 @@ A rotation's `secrets.0` held every holder's boxes in one delta, so each unit ca
 
 Left of the build:
 - **Sync copies**: built on every path (notes/certificates.md Sync alone; Sync copies logged and bounded). Left:
-  - A removal of a holder of sync alone hands its readers headers: issues/sync-alone-removal-header.md.
   - Duplicate blobs of one sync copy at a store keeping S unread are not deleted there (record blobs are, `CertBlobsMissing::deletes`): a reader unlogs its own losing blob only.
-  - held-model `box_cut`'s `sync_alone` world against the engine: covered by the delivery tests on a real rotation; a hand port is left (held-model has no sync role in `roles_model::Role`, so `evidence::Write::travels` has no model counterpart either).
+  - held-model `box_cut`'s `sync_alone` world against the engine: covered by the delivery tests on a real rotation; a hand port is left (held-model has no sync role in `roles_model::Role`).
 - **`secrets.0` snapshots in pieces**: built (spec/wire.md §4 Pieces, spec/crdt.md §8, spec/commits.md §5 Covered: a holder's piece states its own fragment's tables, the rest piece, always present, the snapshot's whole; covering is judged against the join of the pieces held, so a holder's piece and the rest cover that holder's and the rest's pieces of what the snapshot covers and reach every commit it absorbs). Tests: `tests_validity` `a_secrets_snapshot_travels_in_pieces_*` (pieces, b's edge piece of it, b covering as the admin, a whole snapshot refused); `commits::tests::a_dropped_piece_stands_for_its_body_*` (a dropped piece, not one never got, stands for the body).
 - **`Contents` paging** (spec/wire.md §4 Pieces): a section's `[Part*]` is not paged, so a rotation's pieces of about 6,000 holders pass `MAX_BLOB` (a whole delta paged before).
 - The engine against held-model `box_cut`'s hand worlds: `junk_beside` (`tests_validity` `a_grantees_box_stands_beside_a_junk_box_*`) and `granted_after_a_removal` (`a_grantee_reads_its_history_by_the_rest_*`) ported; `sync_alone`: Sync copies above.

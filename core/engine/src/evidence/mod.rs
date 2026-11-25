@@ -57,13 +57,12 @@ pub type Stepped<C, T> = BTreeSet<CopyId<C, T>>;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Write<H> {
     pub holder: H,
-    /// (keys-open travel) It gives read or above (any `until`) and is no self-removal: a step by
-    /// which keys open.
+    /// It gives read or above (any `until`) and is no self-removal: a step by which keys open
+    /// (keys-open travel), and what makes every write on its edge travel (Role changes travel:
+    /// a write travels on an edge a held write giving read or a record stands on; one only ever
+    /// giving sync reaches its holder's readers as sync copies alone, no header,
+    /// spec/permissions.md §4 Key part).
     pub gives_read: bool,
-    /// Its holder's role changes travel by it (Role changes travel): all but a grant of sync
-    /// alone that lowers nothing, which reaches its holder as sync copies alone, no header
-    /// (spec/permissions.md §4 Key part).
-    pub travels: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -716,6 +715,7 @@ where
         let mut todo = Todo::default();
         if self.ix.reads.insert_record(e) {
             self.read_edge(e, &mut todo);
+            self.edge_reads(e, &mut todo);
         }
         self.settle(todo);
     }
@@ -728,10 +728,8 @@ where
         }
         self.ix.stamps.moved();
         let mut todo = Todo::default();
-        if self.ix.reads.remove_record(e)
-            && let (Some(a), Some(b)) = (self.open_sids.get(&e.0), self.open_sids.get(&e.1))
-        {
-            todo.travel.extend(a.intersection(b).copied());
+        if self.ix.reads.remove_record(e) {
+            self.edge_unreads(e, &mut todo);
         }
         self.settle(todo);
     }
@@ -762,25 +760,26 @@ where
             let e = (w.holder, c.1);
             self.ix.wrote(Row::Edge(&e));
             self.ix.on_edge.entry(e).or_default().insert(c);
-            if w.travels {
-                self.ix.by_holder.entry(w.holder).or_default().insert(c);
-            }
+            self.ix.by_holder.entry(w.holder).or_default().insert(c);
             for sid in self.edge_sids.get(&e).cloned().unwrap_or_default() {
                 todo.push(&sid, Item::Copy(c, Reason::Edge(e)));
             }
-            // a seed of each sync ID its holder's role changes travel under (a thing's: a key
-            // is no sync ID's actor and holds no read)
+            // a seed of each sync ID its holder's role changes travel under, on an edge giving
+            // read (a thing's: a key is no sync ID's actor and holds no read)
             let Some(holder) = w.holder.thing() else { continue };
-            for sid in self.open_sids.get(&holder).cloned().unwrap_or_default().into_iter().filter(|_| w.travels) {
-                if let Some(s) = self.sids.get_mut(&sid)
-                    && !s.travel.seeds.contains_key(&c)
-                {
-                    s.travel.seeds.insert(c, Reason::Travels(holder));
-                    todo.push(&sid, Item::Copy(c, Reason::Travels(holder)));
+            let re = (holder, c.1);
+            if w.gives_read && self.ix.reads.insert(re, (c, i)) {
+                self.read_edge(re, &mut todo);
+                self.edge_reads(re, &mut todo);
+            } else if self.ix.reads.has(&re) {
+                for sid in self.open_sids.get(&holder).cloned().unwrap_or_default() {
+                    if let Some(s) = self.sids.get_mut(&sid)
+                        && !s.travel.seeds.contains_key(&c)
+                    {
+                        s.travel.seeds.insert(c, Reason::Travels(holder));
+                        todo.push(&sid, Item::Copy(c, Reason::Travels(holder)));
+                    }
                 }
-            }
-            if w.gives_read && self.ix.reads.insert((holder, c.1), (c, i)) {
-                self.read_edge((holder, c.1), &mut todo);
             }
         }
         self.ix.copies.insert(c, parts);
@@ -855,10 +854,7 @@ where
             // a shrink of the graph: the sync IDs it can move compute theirs again
             let e = (holder, c.1);
             if w.gives_read && self.ix.reads.remove(&e, &(*c, i)) {
-                let (a, b) = (self.open_sids.get(&e.0), self.open_sids.get(&e.1));
-                if let (Some(a), Some(b)) = (a, b) {
-                    todo.travel.extend(a.intersection(b).copied());
-                }
+                self.edge_unreads(&e, todo);
             }
         }
     }
@@ -893,12 +889,33 @@ where
         let open = if self.cfg.keys_open { bfs([actor], |x| self.ix.reads.next(x), &mut counts.opened) } else { BTreeSet::from([actor]) };
         let mut seeds = BTreeMap::new();
         for h in &open {
-            for c in self.ix.by_holder.get(&H::from(*h)).into_iter().flatten() {
+            for c in self.ix.by_holder.get(&H::from(*h)).into_iter().flatten().filter(|c| self.ix.reads.has(&(*h, c.1))) {
                 counts.seeds += 1;
                 seeds.entry(*c).or_insert(Reason::Travels(*h));
             }
         }
         Travel { open, seeds }
+    }
+
+    /// Edge `e` gives read from now on: every write on it travels under the sync IDs its holder
+    /// is open in (Role changes travel).
+    fn edge_reads(&mut self, e: Edge<T>, todo: &mut Todo<C, T, S, H>) {
+        let writes = self.ix.on_edge.get(&(H::from(e.0), e.1)).cloned().unwrap_or_default();
+        for sid in self.open_sids.get(&e.0).cloned().unwrap_or_default() {
+            let Some(s) = self.sids.get_mut(&sid) else { continue };
+            for c in &writes {
+                if let std::collections::btree_map::Entry::Vacant(v) = s.travel.seeds.entry(*c) {
+                    v.insert(Reason::Travels(e.0));
+                    todo.push(&sid, Item::Copy(*c, Reason::Travels(e.0)));
+                }
+            }
+        }
+    }
+
+    /// Edge `e` gives read no more: a shrink of the keys-open graph and of what travels on it, so
+    /// the sync IDs whose open things held its holder compute theirs again.
+    fn edge_unreads(&mut self, e: &Edge<T>, todo: &mut Todo<C, T, S, H>) {
+        todo.travel.extend(self.open_sids.get(&e.0).into_iter().flatten().copied());
     }
 
     /// A new edge giving read: each sync ID whose open things hold its holder opens what its
@@ -916,7 +933,7 @@ where
             let new = bfs([e.1], |x| self.ix.reads.next(x).filter(|y| !open.contains(y)), &mut self.counts.opened);
             for t in new {
                 self.open_sids.entry(t).or_default().insert(sid);
-                let writes = self.ix.by_holder.get(&H::from(t)).cloned().unwrap_or_default();
+                let writes: Vec<CopyId<C, T>> = self.ix.by_holder.get(&H::from(t)).into_iter().flatten().filter(|c| self.ix.reads.has(&(t, c.1))).copied().collect();
                 let Some(s) = self.sids.get_mut(&sid) else { continue };
                 s.travel.open.insert(t);
                 for c in writes {

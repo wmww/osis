@@ -12,7 +12,9 @@ fn seen(w: &World, rule: Rule, whole: bool) -> Seen {
 
 #[test]
 fn a_holder_takes_from_its_piece_what_it_takes_from_whole_copies_spec_permissions_4() {
-    let (mut taken, mut carried_before, mut sync_worlds, mut history) = (0, 0, 0, 0);
+    // and a holder of sync alone learns no holder of X, its removal included, and holds sync
+    // exactly while X's newest step bears a secret its boxes give
+    let (mut taken, mut carried_before, mut sync_worlds, mut history, mut told, mut shown) = (0, 0, 0, 0, 0, 0);
     for s in 0..SEEDS {
         let w = world(s);
         let (wh, cu) = (seen(&w, Rule::Spec, true), seen(&w, Rule::Spec, false));
@@ -22,11 +24,16 @@ fn a_holder_takes_from_its_piece_what_it_takes_from_whole_copies_spec_permission
         if w.t_sync_alone {
             sync_worlds += 1;
             assert!(cu.learned.is_empty(), "seed {s}: a holder of sync alone learns {:?}", cu.learned);
+            assert_eq!(cu.holds, w.t_holds(), "seed {s}: T's holding as its steps tell it");
+            told += (!cu.holds && seen(&w, Rule::HolderKept, false).holds) as u64;
+            shown += !seen(&w, Rule::RemovalHeader, false).learned.is_empty() as u64;
         }
         taken += !cu.taken.is_empty() as u64;
         carried_before += (judge(&w, &w.cut(Rule::WholePart), Rule::Spec).others_pieces > 0) as u64;
     }
-    assert!(taken > 0 && carried_before > 0 && sync_worlds > 0 && history > 0, "taken {taken} carried {carried_before} sync {sync_worlds} history {history}");
+    // the controls read otherwise somewhere: a removal told only by its step, a header naming its
+    // remover
+    assert!(taken > 0 && carried_before > 0 && sync_worlds > 0 && history > 0 && told > 0 && shown > 0, "taken {taken} carried {carried_before} sync {sync_worlds} history {history} told {told} shown {shown}");
 }
 
 fn rd(holder: Id, role: Role, epoch: u32) -> BoxAt {
@@ -146,4 +153,33 @@ fn a_rest_beside_sync_alone_names_departed_holders_spec_sync_ids_2() {
     let w = granted_after_a_removal(true);
     assert!(seen(&w, Rule::Spec, false).learned.is_empty());
     assert!(seen(&w, Rule::RestToSync, false).learned.contains(&O1));
+}
+
+/// T holds sync alone (XA's grant at epoch 0); XA makes H an admin; H removes T, rotates X to
+/// epoch 1 boxing those left, and XA records the step. T's key part holds the removal and the
+/// step, no header: R learns no remover and judges T removed by the step past its keys.
+fn removed_by_another_admin() -> World {
+    let commits = vec![
+        Commit { id: 1, signer: XA, ts: 1, roles: None, boxes: vec![], step: Some((0, true)), history: None },
+        grant(2, XA, T, Role::Sync, false, vec![rd(T, Role::Sync, 0)]),
+        grant(3, XA, H, Role::Admin, false, vec![rd(H, Role::Sync, 0), rd(H, Role::Read, 0)]),
+        Commit { id: 4, signer: H, ts: 4, roles: Some(vec![Edge { holder: T, role: None, may_grant: false }]), boxes: vec![], step: None, history: None },
+        Commit { id: 5, signer: H, ts: 5, roles: None, boxes: vec![rd(XA, Role::Sync, 1), rd(XA, Role::Read, 1)], step: None, history: history(1, &[Role::Sync, Role::Read], &[T]) },
+        Commit { id: 6, signer: XA, ts: 6, roles: None, boxes: vec![], step: Some((1, true)), history: None },
+    ];
+    World { commits, t_sync_alone: true }
+}
+
+/// A holder of sync alone learns its removal by the step past its keys, never by a header
+/// (spec/sync-ids.md §2 What a sync holder learns, spec/sync-judgement.md §6 Stops).
+#[test]
+fn a_removal_of_sync_alone_is_told_by_its_step_spec_sync_ids_2() {
+    let w = removed_by_another_admin();
+    let s = seen(&w, Rule::Spec, false);
+    assert!(s.learned.is_empty() && !s.holds && !w.t_holds(), "{s:?}");
+    assert!(seen(&w, Rule::RemovalHeader, false).learned.contains(&H), "control: the removal's header names its remover");
+    assert!(seen(&w, Rule::HolderKept, false).holds, "control: the box alone keeps T holding");
+    // before XA's step T holds epoch 0's secret, which nothing has replaced
+    let before = World { commits: w.commits[..5].to_vec(), ..w.clone() };
+    assert!(seen(&before, Rule::Spec, false).holds && before.t_holds());
 }

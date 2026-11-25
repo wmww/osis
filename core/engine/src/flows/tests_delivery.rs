@@ -564,3 +564,88 @@ fn a_boxless_copy_names_no_holder_spec_sync_ids_2() {
     assert!(!un.counted.is_empty(), "its steps verify: counted");
     assert!(!un.holders.contains(&me1) && !lp.peers[1].engine.core.syncs_by_copies(&me1, &g), "names peer 1 holder of nothing");
 }
+
+/// Whether `g`'s certificates at peer `i` hold a copy of a part on `x` of a commit naming `h` on
+/// `x` (an edge write or a box: its key part's commits, `key_part_on`).
+fn certifies_on(lp: &mut LocalPeer, i: usize, g: &Tid, x: &Tid, h: &Tid) -> bool {
+    let naming = lp.peers[i].engine.edge_on(h, x, false);
+    let certs = lp.peers[i].engine.certificates(g).unwrap();
+    let e = &lp.peers[i].engine;
+    certs.commits.iter().any(|(c, ps)| naming.contains(c) && e.header(c).is_some_and(|hd| ps.iter().any(|ai| hd.aspects.get(*ai).is_some_and(|a| a.tid == *x))))
+}
+
+// spec/sync-ids.md §2 (What a sync holder learns: no header, signer or path, its removal
+// included), spec/sync-judgement.md §6 (Stops: a step past its keys is its removal),
+// spec/permissions.md §4 (Key part, Role changes travel, Delivering an edge piece): T holds sync
+// alone on G; peer 0 (G's admin, may not write T) and peer 1 read T. Peer 0 removes T from G: no
+// `grant@~0` fire is owed, and neither T's sync ID nor peer 1's node's (whose keys open T: Role
+// changes travel) carries a certificate copy of a commit naming T on G, before or after. The step peer 0 issues next, past T's keys, goes to T
+// as sealed sync copies (that step and G's other `sync.0` writes), no header byte in them; T's
+// reader takes them and judges T holding sync on G no more, its key part's copies naming T no
+// holder. A later step goes to T no more. Fails with the removal sent as a fire, carried as a
+// certificate copy (key part by the roster now, Role changes travel), or not told.
+#[test]
+fn a_sync_alone_holders_removal_is_told_by_its_step_alone_spec_sync_ids_2() {
+    let (mut lp, g, t) = sync_holder();
+    let me0 = lp.peers[0].engine.tid();
+    lp.peers[2].engine.grant(&t, &me0, &edge(Role::Read)).unwrap();
+    lp.sync_all().unwrap();
+    assert!(lp.peers[2].engine.core.unread(&g).holders.contains(&t), "T holds sync on G as its reader knows it");
+    reads_t(&mut lp, t);
+    let me1 = lp.peers[1].engine.tid();
+    let certified = |lp: &mut LocalPeer| certifies_on(lp, 0, &t, &g, &t) || certifies_on(lp, 0, &me1, &g, &t);
+    assert!(!certified(&mut lp), "no certificate copy of a commit naming T on G before");
+    let before = lp.peers[0].engine.fires_owed();
+    lp.peers[0].engine.demote(&g, &super::Demotion { holder: t, new: None, retain: None }).unwrap();
+    assert!(new_owed(&lp, 0, &before).is_empty(), "the removal itself is delivered nowhere");
+    assert!(!certified(&mut lp), "none after: neither key part nor travel");
+    // the step past T's keys
+    let s = lp.peers[0].engine.sync_id_of(&g).unwrap().unwrap();
+    lp.peers[0].engine.issue_step(&g, &s, false).unwrap().expect("a step due");
+    let owed = new_owed(&lp, 0, &before);
+    assert!(!owed.is_empty(), "the step is delivered to T");
+    let forbidden = header_bytes(&lp, 0, &g);
+    for id in &owed {
+        let o = lp.peers[0].engine.core.ix.fires.get(id).cloned().unwrap();
+        assert!(o.thing == t && o.ak.is_none() && matches!(o.what, Fire::Copy { .. }), "a sealed copy to T: {o:?}");
+        let out = lp.peers[0].engine.sealed_fire(id).unwrap().expect("sealed to T's read key");
+        let e2 = &lp.peers[2].engine;
+        let (prefix, sealed) = e2.read_epochs(&t, &[]).into_iter().find_map(|(e, x)| osis_blob::open_fire(&out.blob, &t, &e, &osis_crypto::role_kem(&x)).ok()).expect("opens at T's reader");
+        let osis_blob::Sealed::SyncCopy(plain) = sealed else { panic!("form 2") };
+        assert!(!holds_any(&plain, &forbidden) && !holds_any(&prefix.to_bytes(), &forbidden), "no header byte in a sealed copy");
+        assert!(matches!(open(&mut lp, 2, &out), Opened::SyncCopy), "taken as a sync copy");
+    }
+    let un = lp.peers[2].engine.core.unread(&g);
+    assert!(!un.holders.contains(&t) && !lp.peers[2].engine.core.syncs_by_copies(&t, &g), "T holds sync on G no more: {un:?}");
+    // a later step is no notice of T's: nothing more goes to it
+    let before = lp.peers[0].engine.fires_owed();
+    lp.peers[0].engine.issue_step(&g, &s, true).unwrap().expect("a fresh step");
+    assert!(new_owed(&lp, 0, &before).is_empty(), "nothing after the step past its keys");
+}
+
+// spec/permissions.md §4 (Key part: every `sync.0` write of X while H is named, the step past
+// its keys among them), spec/sync.md §3 (Holders by copies): as above with peer 0 a writer of T,
+// so T's edge piece on G goes in T's key part, which peer 0 logs: after the removal and the step
+// past T's keys, T's sync ID carries no header byte of G's and T's reader judges T holding sync on
+// G no more. Fails with the key part by the roster now (the removal and the grant as certificate
+// copies) or a copy's later steps unread (a lone step delta reads as nothing).
+#[test]
+fn a_sync_alone_holders_removal_in_its_key_part_is_its_step_spec_sync_ids_2() {
+    let (mut lp, g, t) = sync_holder();
+    let me0 = lp.peers[0].engine.tid();
+    lp.peers[2].engine.grant(&t, &me0, &edge(Role::Write)).unwrap();
+    lp.sync_all().unwrap();
+    assert!(lp.peers[2].engine.core.unread(&g).holders.contains(&t));
+    lp.peers[0].engine.demote(&g, &super::Demotion { holder: t, new: None, retain: None }).unwrap();
+    let s = lp.peers[0].engine.sync_id_of(&g).unwrap().unwrap();
+    lp.peers[0].engine.issue_step(&g, &s, false).unwrap().expect("a step due");
+    lp.sync_all().unwrap();
+    let st = lp.peers[0].engine.sync_id_of(&t).unwrap().unwrap();
+    let carried = lp.peers[0].engine.sync_copies_carried(&st).unwrap();
+    let forbidden = header_bytes(&lp, 0, &g);
+    assert!(carried.values().any(|(u, p)| *u == t && osis_commit::SyncCopy::decode(p).unwrap().thing == g), "T's key part carries G's sync copies");
+    assert!(carried.values().all(|(_, p)| !holds_any(p, &forbidden)), "no header byte in a logged sync copy");
+    assert!(!certifies_on(&mut lp, 0, &t, &g, &t), "no certificate copy of a commit naming T on G");
+    let un = lp.peers[2].engine.core.unread(&g);
+    assert!(!un.holders.contains(&t) && !lp.peers[2].engine.core.syncs_by_copies(&t, &g), "T holds sync on G no more: {un:?}");
+}

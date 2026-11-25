@@ -27,6 +27,7 @@ A node holds S of thing T, at each moment, by the secrets it holds of T:
 **Kept sync IDs.** Principle: a node keeping T unread trusts only what it holds: only a step on the node's own path bearing the sync key of a held secret keeps S's entries. Nothing the granter, a roster or a chain says is needed or used.
 - **Kept for T**: the sync IDs T owns by the `sync.0` parts of the edge pieces the node holds (spec/sync-ids.md §4 Owner), and, from its own reading, the sync IDs T owned as it judged them when it stopped reading T while holding a sync secret of it (spec/sync-judgement.md §6 Read and unread move).
 - **Held sync secrets** of T: those its role gives (spec/sync-set.md §2), and those it held of T when it stopped reading it. A secret no step of S's path bears keeps nothing and proves nothing there.
+- **Holders by copies**: of T's holders it knows only those a sync copy it holds boxes (spec/permissions.md §4 Key part), each holding sync on T while the head of a sync ID of T it holds (per sync ID the newest step it holds, recorded or carried by a sync copy on a path verified from the sync ID's genesis; with T's record held, a copy's steps count only on a sync ID T's recorded steps place) bears the sync key of a secret a box to that holder opens to. A head past every such key is that holder's removal; no header tells it.
 - It syncs only the sync IDs it keeps; the node keeps this state as its own, and shares none of it with other nodes.
 
 ## 4. Areas

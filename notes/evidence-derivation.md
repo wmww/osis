@@ -20,7 +20,7 @@ No validity, no order: E1 takes every held write "whatever their validity or ord
 
 ## The rule (spec/permissions.md §4 under E1)
 S's evidence is the least set of copies holding:
-- **seeds**: the bodies' known path edges and listed delete keys (`atoms`, counted per body); each held copy with an edge write naming a holder in **open(S)** (Role changes travel).
+- **seeds**: the bodies' known path edges and listed delete keys (`atoms`, counted per body); each held copy with an edge write naming a holder in **open(S)** on an edge of the read graph (Role changes travel: a write on an edge only ever giving sync travels nowhere, its holder's readers get it as sync copies, notes/certificates.md Sync alone).
 - **closure**: an edge brings every held copy with an edge write on it; a delete key brings every held copy recording a step from its base's genesis to a step bearing the key (the parent chain of each bearing step, as far as held steps reach); a member copy (outside the unit) brings its parts' known path edges, the edge each of its edge writes sets, and the keys it lists.
 
 "The edge each of its edge writes sets" is finding 9's clause: a removal applies only once the creations of the entries it resets are held (spec/permissions.md §2), and those creations are writes on the edges the commit writes. held-model's `Rule::commit_edges` brings the edges of the commit's *other* parts; the two give the same members (a member's own edge's writes are already in: it entered by that edge, or as a travel seed whose edge's writes all name the same open holder).
@@ -34,10 +34,10 @@ Reachability over the **read graph**: an edge (holder → target) per held part 
 
 | change | keys-open work |
 |---|---|
-| a part giving read on a new edge (x, y) | per sync ID whose open set holds x and not y: walk what y opens beyond it, take the writes naming each newly opened holder: O(what it opens + its writes) |
+| a part giving read on a new edge (x, y) | per sync ID whose open set holds x and not y: walk what y opens beyond it, take the writes naming each newly opened holder on a read edge; per sync ID whose open set holds x, take the writes on (x, y): O(what it opens + its writes) |
 | record edge added | as a new read edge |
-| a write naming holder h | the sync IDs whose open set holds h take it |
-| a read edge gone (a forget, a record forgotten) | sync IDs whose open set held both ends recompute open and seeds |
+| a write naming holder h on a read edge | the sync IDs whose open set holds h take it |
+| a read edge gone (a forget, a record forgotten) | sync IDs whose open set held its holder recompute open and seeds |
 
 ## Steps
 Per (base, step ID) the held step and the copies recording it; per (base, level, key) the step IDs bearing it. A key's placement is walked inside the closure (`Item::Del`), memoized per closure (`dels`). A copy recording a step arriving or leaving closes again every sync ID placing a key of that base (`base_sids`): steps move only with rotations, a rare path paid at closure size. A body listing a key another body lists walks nothing (counted atom).

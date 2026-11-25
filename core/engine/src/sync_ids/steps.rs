@@ -119,10 +119,16 @@ impl Recorded {
         self.keys.contains_key(&(level, *key))
     }
 
+    /// The newest step of each recorded sync ID (`head`).
+    pub(crate) fn heads(&self) -> impl Iterator<Item = (&StepId, &Placed)> + '_ {
+        let ids: BTreeSet<SyncId> = self.steps.values().map(|s| s.sync_id).collect();
+        ids.into_iter().filter_map(|id| self.head(&id))
+    }
+
     /// The newest step of sync ID `id`: the deepest, ties by lowest step ID (spec/sync-ids.md §3
     /// head, as `sync_ids::actors::head_of` reads a forked tree).
-    fn head(&self, id: &SyncId) -> Option<&Placed> {
-        self.steps.iter().filter(|(_, s)| s.sync_id == *id).min_by_key(|(k, s)| (std::cmp::Reverse(s.depth), **k)).map(|(_, s)| s)
+    fn head(&self, id: &SyncId) -> Option<(&StepId, &Placed)> {
+        self.steps.iter().filter(|(_, s)| s.sync_id == *id).min_by_key(|(k, s)| (std::cmp::Reverse(s.depth), **k))
     }
 }
 
@@ -252,7 +258,7 @@ impl Core {
         let held = self.holds_own_sync(b).then(|| self.held_sync_keys(b));
         let owned = |id: &SyncId| held.as_ref().is_none_or(|h| r.steps.values().any(|s| s.sync_id == *id && h.contains(&s.sync)));
         let id = r.steps.values().map(|s| s.sync_id).filter(owned).max()?;
-        r.head(&id).cloned()
+        r.head(&id).map(|(_, s)| s.clone())
     }
 
     /// The admin and write delete keys of `listed_step(b)`, parsed (`memo`: every write on a

@@ -31,20 +31,59 @@ pub(crate) fn deliver_copy(tx: &mut Tx<'_>, holder: Tid, c: CommitId, target: Ti
     }
     // a holder of sync alone gets no header (spec/wire.md §4 Sync copy): the commit goes as its
     // sealed sync copy, with those of the target's `sync.0` writes held (its sync IDs, by whose
-    // steps the box it carries counts), never as a `grant@~0` fire's certificate copy. A lowering
-    // to sync goes as one: the holder read the target, and loses that by the edge write alone
-    // (spec/permissions.md §3 Lost access). Interim (issues/sync-alone-removal-header.md): a
-    // removal of a holder of sync alone goes as a fire below, with its header
-    let lowering = tx.core.timelines().role_commit(&c).is_some_and(|rc| rc.frontier.is_some());
-    if !lowering && tx.core.roster_of(&target).get(&holder).is_some_and(|e| e.role == Role::Sync) {
-        deliver_sealed(tx, holder, c, target)?;
-        let steps: Vec<CommitId> = Ak::new("sync.0").ok().and_then(|k| tx.core.ix.by_aspect.get(&(target, k))).into_iter().flatten().map(|(_, x)| *x).filter(|x| *x != c).collect();
-        for x in steps {
-            deliver_sealed(tx, holder, x, target)?;
+    // steps the box it carries counts), never as a `grant@~0` fire's certificate copy; removed, it
+    // is told by the step past its keys (`deliver_step`), so its removal goes nowhere. A holder
+    // that read the target goes as one (`sync_alone_on`): it loses read by the edge write alone
+    // (spec/permissions.md §3 Lost access)
+    if tx.core.sync_alone_on(&holder, &target) {
+        if tx.core.roster_of(&target).get(&holder).is_some() {
+            deliver_with_steps(tx, holder, c, target)?;
         }
         return Ok(());
     }
     fire_copy(tx, holder, c, target)
+}
+
+/// Commit `c` of `target` to `holder` as a sealed copy (`deliver_sealed`), with every `sync.0`
+/// write of the target held: the steps by which its box counts.
+fn deliver_with_steps(tx: &mut Tx<'_>, holder: Tid, c: CommitId, target: Tid) -> Result<()> {
+    deliver_sealed(tx, holder, c, target)?;
+    let steps: Vec<CommitId> = Ak::new("sync.0").ok().and_then(|k| tx.core.ix.by_aspect.get(&(target, k))).into_iter().flatten().map(|(_, x)| *x).filter(|x| *x != c).collect();
+    for x in steps {
+        deliver_sealed(tx, holder, x, target)?;
+    }
+    Ok(())
+}
+
+/// Step commit `c` of `target`, issued as a child of a step recorded from `parent` on
+/// (`steps::Placed::since`; spec/sync-ids.md §2 What a sync holder learns, spec/sync-judgement.md
+/// §6 Stops): each holder of sync alone on `target` (`sync_alone_on`) holding no role there now,
+/// removed after that, is told its removal by it, the first step recorded after its removal,
+/// which bears none of its keys (the removal rotates sync): sealed copies of `c` and the
+/// target's other `sync.0` writes held (its path), no header. Its readers judge it holding sync
+/// no more (`Unread::holders`). A later step goes to it no more.
+pub(crate) fn deliver_step(tx: &mut Tx<'_>, target: Tid, c: CommitId, parent: osis_base::Ts) -> Result<()> {
+    let roster = tx.core.roster_of(&target);
+    let removed: BTreeSet<Tid> = tx.core.ix.held.holders_of(&target).copied().filter(|h| roster.get(h).is_none() && tx.core.sync_alone_on(h, &target)).collect();
+    if removed.is_empty() {
+        return Ok(());
+    }
+    // the removals of those holders recorded after the parent
+    let mut told = BTreeSet::new();
+    for rc in tx.core.ix.held.edge_commits(&target) {
+        for o in rc.ops.iter().filter(|o| o.target == target && o.edge.is_none()) {
+            if let osis_base::Holder::Thing(h) = o.holder
+                && removed.contains(&h)
+                && rc.ts > parent
+            {
+                told.insert(h);
+            }
+        }
+    }
+    for h in told {
+        deliver_with_steps(tx, h, c, target)?;
+    }
+    Ok(())
 }
 
 /// Rotation or re-seal commit `c` of `target` boxing `holder` where the holder holds no box at
@@ -626,7 +665,7 @@ impl Engine {
         // a holder of sync alone's sealed copy: its sync copy alone (spec/wire.md §9 form 2), behind
         // the prefix of its commit's parts it carries; never the header, records or evidence
         if let Fire::Copy { commit, target } = &o.what
-            && self.core.roster_of(target).get(&o.thing).is_some_and(|e| e.role == Role::Sync)
+            && self.core.sync_alone_on(&o.thing, target)
         {
             let Some((copy, ais)) = self.sync_copy(commit, target, &o.thing)? else {
                 // a commit held carrying nothing of the holder's: owed no more

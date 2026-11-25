@@ -94,7 +94,7 @@ impl Engine {
         let syncs: Vec<CommitId> = self.core.on_thing(t).filter(|c| self.core.ix.commits.get(c).is_some_and(|m| m.header.aspects.iter().enumerate().any(|(ai, x)| x.tid == *t && x.ak == ak && m.holds(ai)))).collect();
         // a holder of sync alone: sync copies alone, no header, evidence or trust record
         // (spec/wire.md §4 Sync copy)
-        if self.core.roster_of(t).get(holder).is_some_and(|e| e.role == osis_base::Role::Sync) {
+        if self.core.sync_alone_on(holder, t) {
             let mut copies = Vec::new();
             for c in std::iter::once(grant).chain(syncs.into_iter().filter(|c| *c != grant)) {
                 if let Some((copy, _)) = self.sync_copy(&c, t, holder)? {

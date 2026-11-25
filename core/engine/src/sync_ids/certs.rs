@@ -218,14 +218,13 @@ impl Engine {
 
     /// `h`'s edge pieces (spec/permissions.md §4 Key part), on `only` or on every thing `h` holds
     /// an edge on, added to `out`: each copy cut to the piece (`Cut::EdgePiece`) with its
-    /// evidence; where `h` holds sync alone (or `sync_alone`: a stub's), its sync copy
+    /// evidence; where `h` holds sync alone (`Core::sync_alone_on`: no held edge write gave it
+    /// read, its removal included; or `sync_alone`: a stub's), its sync copy
     /// (spec/wire.md §4: its `secrets.0` piece and the `sync.0` part) and nothing else: no
     /// header, record, edge write or evidence.
     /// Invariant (security; spec/sync-ids.md §2 What a sync holder learns): no part of a commit
     /// of a thing held sync alone goes as a certificate copy here, so its readers learn no
     /// signer, path or other holder of it.
-    /// Interim (issues/sync-alone-removal-header.md): "held sync alone" is by the roster now, so
-    /// once `h` is removed its whole edge piece goes as certificate copies, headers and all.
     fn edge_pieces_into(&mut self, ev: &Ev, h: &Tid, only: Option<&Tid>, sync_alone: bool, out: &mut Certs) {
         let mut pieces = BTreeSet::new();
         let part = match only {
@@ -233,7 +232,7 @@ impl Engine {
             None => self.key_part(h),
         };
         for (c, x) in part {
-            if sync_alone || self.core.roster_of(&x).get(h).is_some_and(|e| e.role == osis_base::Role::Sync) {
+            if sync_alone || self.core.sync_alone_on(h, &x) {
                 out.sync_copies.insert((c, x, *h));
             } else {
                 self.add_cut(&c, &x, Cut::EdgePiece(*h), out);

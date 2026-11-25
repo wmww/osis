@@ -7,12 +7,16 @@
 //! (the holders it saw removed): opened by a holder of e's secret, so it gives a grantee the
 //! epochs before its grant, and a holder of sync alone opening the sync role's would learn
 //! departed holders. Greenfield: the question is which boxes a reader of S, the
-//! sync ID of a holder T of X, takes and which of X's holders it learns.
+//! sync ID of a holder T of X, takes and which of X's holders it learns, and, for a holder of
+//! sync alone, whether it judges T holding sync on X as X's admins made it: its removal is told by
+//! the step past its keys (the newest step bearing no sync key its boxes give), never by a
+//! header.
 //!
 //! The world: X (mint admin XA) grants T (sync alone or read, per world), H and others, by XA or
 //! by a holder with the may-grant flag, sometimes with a junk box beside the grantee's; its
 //! admins and writers rotate X boxing every holder; anyone may write a box to T (a forged one at
-//! an epoch no step bears); XA records steps, H junk ones; XA removes holders. Sync and read
+//! an epoch no step bears, or a re-seal at the current one while T holds a role); XA records
+//! steps, H junk ones; an admin removes holders. Sync and read
 //! share one epoch counter. R reads T's key part: T's edge piece on X as the rule cuts it,
 //! closed over evidence (the edge writes on each copied commit's hop (signer, X)), but for a
 //! holder of sync alone (no evidence, spec/permissions.md §4 Key part).
@@ -122,6 +126,11 @@ pub enum Rule {
     NoRest,
     /// Control: the rest beside a holder of sync alone's piece too.
     RestToSync,
+    /// Control: a holder of sync alone's removal keeps its header (a `grant@~0` fire, a
+    /// certificate copy in its key part).
+    RemovalHeader,
+    /// Control: a holder of sync alone holds sync while any box to it opens, the steps aside.
+    HolderKept,
 }
 
 impl World {
@@ -169,7 +178,8 @@ impl World {
             }
             if self.t_sync_alone {
                 // no edge write, no evidence; the header only where the rule keeps it
-                if matches!(rule, Rule::WholePart | Rule::SyncHeader) {
+                let removal = c.roles.as_ref().is_some_and(|es| es.iter().any(|e| e.holder == T && e.role.is_none()));
+                if matches!(rule, Rule::WholePart | Rule::SyncHeader) || (rule == Rule::RemovalHeader && removal) {
                     held.insert((c.id, P::Header));
                 }
                 continue;
@@ -192,6 +202,14 @@ impl World {
             }
         }
         held
+    }
+
+    /// The reference for a holder of sync alone: whether T holds sync on X as X's admins made it,
+    /// boxed (granted, rotated or re-sealed while on the roster) at the epoch of X's newest
+    /// verified step.
+    pub fn t_holds(&self) -> bool {
+        let head = self.commits.iter().filter_map(|c| c.step).filter(|(_, chain)| *chain).map(|(e, _)| e).max();
+        head.is_some_and(|h| self.commits.iter().any(|c| c.boxes.iter().any(|b| *b == BoxAt { holder: T, role: Role::Sync, epoch: h })))
     }
 
     /// The reference: whole copies of every commit T's edge piece names (every part, header
@@ -242,6 +260,9 @@ pub struct Seen {
     pub learned: BTreeSet<Id>,
     /// other holders' pieces R carries
     pub others_pieces: usize,
+    /// (sync alone) whether R judges T holding sync on X: the newest verified step it holds bears
+    /// the sync key of a secret a box to T gave
+    pub holds: bool,
 }
 
 /// R's judgement holding `held` (`Rule::AspectVerdict`: a `secrets.0` write judged as one over
@@ -278,6 +299,12 @@ pub fn judge(w: &World, held: &Held, rule: Rule) -> Seen {
                 }
             }
         }
+        // T holds sync while the newest verified step held (epochs only grow) bears a secret
+        // its boxes gave: a step past its keys is its removal
+        out.holds = match rule {
+            Rule::HolderKept => out.taken.iter().any(|(r, _)| *r == Role::Sync),
+            _ => borne.last().is_some_and(|e| out.taken.contains(&(Role::Sync, *e))),
+        };
         // it judges nothing and takes a secret from its box alone (spec/crypto.md §4
         // Established); a rest piece it holds still opens under the sync secret it took
         let mut opened = out.clone();
@@ -515,7 +542,7 @@ pub fn world(seed: u64) -> World {
             6 => {
                 // a box to T by anyone: a re-seal at the epoch, or a forged one at an epoch no step bears
                 let s = r.pick(&[XA, H, O1]);
-                let e = if r.chance(50) {
+                let e = if r.chance(50) || !x.contains_key(&T) {
                     fake += 1;
                     fake
                 } else {
@@ -529,13 +556,15 @@ pub fn world(seed: u64) -> World {
                 push(&mut w, H, None, Vec::new(), Some((e, false)), None);
             }
             _ => {
-                // XA removes a holder (no rotation: the next rotation boxes those left)
-                let hs: Vec<Id> = x.keys().copied().filter(|n| *n != XA).collect();
+                // an admin removes a holder (no rotation: the next rotation boxes those left)
+                let admins: Vec<Id> = x.iter().filter(|(_, (ro, _))| *ro == Role::Admin).map(|(n, _)| *n).collect();
+                let s = r.pick(&admins);
+                let hs: Vec<Id> = x.keys().copied().filter(|n| *n != XA && *n != s).collect();
                 if hs.is_empty() {
                     continue;
                 }
                 let g = r.pick(&hs);
-                push(&mut w, XA, Some(vec![Edge { holder: g, role: None, may_grant: false }]), Vec::new(), None, None);
+                push(&mut w, s, Some(vec![Edge { holder: g, role: None, may_grant: false }]), Vec::new(), None, None);
                 x.remove(&g);
                 removed.push(g);
             }
