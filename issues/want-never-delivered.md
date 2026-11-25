@@ -1,0 +1,13 @@
+# Sync: a Want never reaches the peer's streams
+> Summary: two wire bugs make every Want fail (its id lacks the top bit; the receiver routes kind 47 to no module and closes); the two-line fix exposes a record-blob convergence failure in keep::readers_logging_the_same_records_settle_on_one_record_blob_spec_permissions_4, so it is not landed.
+> Priority: normal
+> Tags: sync, tests
+
+**The bugs** (both on main):
+- `Session::fresh_id` gives top-bit ids to kinds `19 | 36..=41` only; spec/wire.md §11.2 and `osis_proto::msg`'s `top_bit_kind` include Want (47) and its answer. A Want goes out with a low id, the peer's decode refuses it (`Malformed("id")`), answers Error 2, and the body is never fetched. Fix: `let top = osis_proto::msg::top_bit_kind(kind);` (make `top_bit_kind` pub).
+- `Incoming::to` routes no module for kind 47, so a well-formed Want closes the connection ("a message for no module"). Fix: add 47 to the `To::Streams` arm.
+- Tests for both: `session::request_ids_spec_wire_11_2` (a Want's id has the top bit; `frames` decodes it) and `session::routing_by_kind` (Fetch and Want go to streams). Both fail on main, pass with the fix.
+
+**Why not landed**: with Wants answered, `keep::readers_logging_the_same_records_settle_on_one_record_blob_spec_permissions_4` fails deterministically: node 1 ends holding node 2's record blob (1aa670..) while the writer holds 1188b1.. (same records, lower ID: it wins, and the writer deleted 1aa670). Node 1 fetched 1188b1 earlier in the run (FetchReply with its entry) but never logged it (no `+entry` in `OSIS_SYNC_TRACE=0,1`: which arm of `streams::pull` `take_body` let it go is unchecked), so later only own-store blobs compete (`read::live` `cert_blobs_missing`: `beaten` reads `held` only, while spec/permissions.md §4 Logging certificates counts a blob held at a source of S too). Answering Wants with no entry (a probe) passes the test: the bodies the Wants bring change which records S carries when, and the reader's earlier take of the winner is lost. Find why a fetched record blob is opened and not kept, against the spec's "counts once opened, while held in the own store or at a source", then land the two-line fix with it.
+
+**Effect on the differential**: the script `New(1), Partition(0, 2), Partition(1, 2), Strong(0, None, 0), Unpair(0, 2), Run` (`differential::worlds("scratch", ..)`, default size) fails 13 of seeds 0..30 on main with "must-hold bodies a caught-up reader lacks": the removed node, its profile leaving, wants a body from its source and is never caught up there; with both fixes all 30 pass. The top-bit fix alone storms the world build at many full-size seeds (each Want then closes its connection).
