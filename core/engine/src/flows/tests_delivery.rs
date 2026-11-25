@@ -193,7 +193,7 @@ fn a_replayed_rotation_copy_gives_back_nothing_spec_sync_inbox_2() {
     assert_eq!(sync_held(&lp, 2, &g), epochs, "G's sync epochs at peer 2 unchanged");
 }
 
-// spec/wire.md §4 (sync copy: no header), §9 (form 2), spec/sync-ids.md §2 (What a sync holder
+// spec/wire.md §4 (sync copy: no header), §9 (Payload: form 2 a sealed sync copy), spec/sync-ids.md §2 (What a sync holder
 // learns: no signer, path or other holder's box key): peer 0 rotates G's sync role, boxing T
 // (sync alone) and peer 1 (granted read on G). What reaches T's readers is T's sync copy alone:
 // its payload is form 2, and no byte of it names the rotator or the other holder, nor carries
@@ -244,7 +244,7 @@ fn a_sync_copy_of_another_holder_is_refused_spec_wire_4() {
 }
 
 // spec/wire.md §4 (sync copy: a delta that does not decode is bad input), spec/permissions.md §4
-// (of two sync copies of one commit, thing and holder: one counts): a copy logged under T's
+// (Logging certificates: one of two sync copies counts): a copy logged under T's
 // sync ID with garbage for its piece is refused and not held; the real copy taken again under
 // another blob moves nothing; G's sync ID at T's reader stays G's own. Fails if garbage is held
 // or takes the real copy's place.
