@@ -46,7 +46,6 @@ Known causes of overruns. A report of a hit names the one that fits, or the caus
 - **An engine change.** osis-engine compiles twice (library and its `#[cfg(test)]` lib tests), then sync, sim, osis, chat and cli: over the `build` share in every engine gate. Lever: issues/test-time.md, Properties and builds.
 - **A manifest or lock change selects everything** and runs the unification check, which rebuilds the GUI (`gate.unify` up to thousands of CPU-s). By design (notes/gate.md, The selection).
 - **Other builds in the gating worktree.** A `tools/bin-at` or by-hand variant build leaves the target at another revision: the gate rebuilds every dependent.
-- **`gate.gui-tests` compiles inside its stage** (the build stage prebuilds core's test binaries only).
 - **Tiny wall shares trip on load**: `gate.deny`, `gate.gui-lint`, `gate.checks`.
 - **A storm seed or a slow tail in the sim.** `gate.sim` wall 3-5x with CPU 1.3-1.7x: a seed running to the 5000-delivery storm cutoff. Read the stage's slow seeds before blaming load; the seed offset alone moves its CPU around the share.
 - **By-hand holds over `heavy`**: sweeps, A/B and plant batches, roles-model exhaustive families, TLC configs, full-size differentials. Sized by design; log what ran. Back-to-back holds starve the unlocked runs beside them.

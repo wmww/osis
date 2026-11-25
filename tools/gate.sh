@@ -164,12 +164,16 @@ passed() {
 gui_pkgs="-p osis-kit -p osis-app -p osis-android"
 # shellcheck disable=SC2086
 gui_lint() { limited gate.gui-lint cargo clippy $gui_pkgs --all-targets --locked -- -D warnings; }
+# the GUI's test binaries, built in the build stage so gate.gui-tests measures only the tests
+gui_build_cmd="cargo test $gui_pkgs --locked --no-fail-fast --no-run"
 # shellcheck disable=SC2086
 gui_test() { echo "expect gate.gui-tests" >> "$sel"; tested gate.gui-tests "$tmp/gui.log" cargo test $gui_pkgs --locked --no-fail-fast; }
 # A change of the GUI and docs alone: no core build or test. Called from `if` bodies only: in an
 # `a || f` list `set -e` is off inside f.
 gui_only() {
   gui_lint
+  limited build $gui_build_cmd
+  build_cpu=$step_cpu build_wall=$step_wall
   gui_test
   if [ -n "$unify" ]; then limited gate.unify unification_check; fi
   limited gate.deny cargo deny check
@@ -231,6 +235,7 @@ offset=$(python3 -c 'import random; print(random.randrange(10**12))')
 if [ "$select" = all ]; then from=--all; else from="--base $base"; fi
 # shellcheck disable=SC2086
 step python3 tools/test_select.py $from --offset "$offset" --emit "$sel"
+if [ -n "$gui" ]; then echo "build $gui_build_cmd" >> "$sel"; fi
 # lints before tests: a lint failure found after minutes of tests wastes them;
 # core's, then the GUI's on the same artifacts (the core crates are linted already)
 limited gate.clippy cargo clippy --all-targets --locked -- -D warnings

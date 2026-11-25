@@ -38,7 +38,7 @@ Rejected: `opt-level` 2 for the workspace (3-10%); fake or memoized crypto in te
 
 ## Properties and builds
 - **The engine compiles twice**: every engine edit compiles osis-engine as a library and again with its 600-odd lib tests, the build's critical path (notes/time-limits.md, Patterns, An engine change). Moving them into `it` saves the lib tests' CPU and at most about 15 s of wall per edit, but is not mechanical: they reach about 1,500 `pub(crate)` items through `super::`/`crate::`, and a second feature set for tests is not allowed (notes/build.md). Tried on osis-crdt (blanket `pub`): no wall saved (crdt's lib tests build off the critical path), and blocked by tests building records field by field, `seq::LIN_MIN` as `cfg!(test)`, and `cfg(test)` checks in the library; each needs its own design. Count what the engine's tests reach before deciding.
-- **Builds after a rebase**: main moving under a low crate rebuilds every dependent's test binaries (5-17x the `build` share). `gate.gui-tests` compiles kit, app and masonry test binaries inside its stage; prebuilding them in `build` would put the cost where its share counts it.
+- **Builds after a rebase**: main moving under a low crate rebuilds every dependent's test binaries (5-17x the `build` share).
 
 ## Patterns
 - **Per-whole work redone per member**: a commit's reading built again for each part (`part_valid` in a loop instead of one `Judge`), a search from a root over every thing it minted per thing asked: linear at small n, 10-40x at a requirement's 2,000.
