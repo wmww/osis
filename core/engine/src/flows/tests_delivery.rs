@@ -836,6 +836,7 @@ fn a_read_grant_dropped_turns_a_holder_back_to_sync_alone_spec_permissions_4() {
     assert!(e1.core.sync_alone_on(&t, &g), "T holds sync alone again");
     assert!(!travels(&mut lp), "B travels no more");
     assert_eq!(lp.peers[1].engine.check_evidence().unwrap(), None);
+}
 
 /// Opens each fire `ids` of peer 0 owed to T at peer 2 (T's node), in order.
 fn open_owed(lp: &mut LocalPeer, t: Tid, ids: &[FireId]) {
