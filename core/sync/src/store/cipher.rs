@@ -18,13 +18,14 @@ fn to_store(e: crate::types::Error) -> Error {
 impl Inner {
     /// Runs `f` in the engine's open transaction (begun at its first use).
     fn engine_tx<R>(&mut self, f: impl FnOnce(&mut Transaction<'_>, &mut super::Env<'_>) -> crate::types::Result<R>) -> Res<R> {
-        let Inner { store, rng, open, now, holdings, caps, policy, mem, total, .. } = self;
+        let Inner { store, rng, open, now, holdings, caps, policy, mem, paths, total, .. } = self;
         let mut t = match open.take() {
             Some(s) => store.resume(s, &mut **rng),
             None => store.transaction(&mut **rng)?,
         };
-        let mut env = super::Env { now: *now, holdings, caps, policy, mem, total: *total };
+        let mut env = super::Env { now: *now, holdings, caps, policy, mem, paths, total: *total };
         let r = f(&mut t, &mut env);
+        debug_assert!(!env.paths.staged(), "a path written in the engine's transaction");
         *open = Some(t.suspend()?);
         // an abort of the engine's transaction counts the total again (`abort`)
         *total = env.total;
@@ -34,7 +35,7 @@ impl Inner {
 
 impl osis_store::CipherStore for Inner {
     fn bears(&mut self, s: &osis_base::SyncId, key: &osis_crypto::VerifyingKey) -> Res<bool> {
-        self.engine_tx(|t, _| super::path::bears(t, s, key))
+        self.engine_tx(|t, env| super::path::bears(t, env, s, key))
     }
 
     fn held(&mut self, id: &BlobId) -> Res<bool> {
@@ -172,6 +173,7 @@ impl osis_store::CipherStore for Inner {
             policy: self.policy.clone(),
             ram: self.ram.test_copy()?,
             mem: self.mem.clone(),
+            paths: self.paths.clone(),
             total: self.total,
             past_cap: self.past_cap.clone(),
             unheld: self.unheld.clone(),

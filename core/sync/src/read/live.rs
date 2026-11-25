@@ -121,22 +121,14 @@ impl Live<'_, '_> {
     }
 
     /// The parents of the recorded steps of S whose epochs depend on role commit `c`
-    /// (`Engine::step_needs`), earliest first: an entry of `c` keeps a stamp under one, so a
+    /// (`Engine::step_parents`), earliest first: an entry of `c` keeps a stamp under one, so a
     /// source standing there takes it before the step is registered (spec/sync-ids.md §6 Steps).
     fn step_parents(&mut self, s: &SyncId, id: &BodyId) -> Result<Vec<osis_blob::Step>> {
         let c = &id.commit;
         if !self.cx.engine.read_facts(s, id)?.role {
             return Ok(Vec::new());
         }
-        let Some(path) = self.cx.store.path(s)? else { return Ok(Vec::new()) };
-        let mut out = Vec::new();
-        for w in path.steps.windows(2) {
-            let [(parent, _), (step, _)] = w else { continue };
-            if self.cx.engine.step_needs(s, &step.id())?.contains(c) {
-                out.push(parent.clone());
-            }
-        }
-        Ok(out)
+        Ok(self.cx.engine.step_parents(s, c)?)
     }
 
     /// Entry `e` is of role commit `c` that a recorded step of S registers, stamped under that

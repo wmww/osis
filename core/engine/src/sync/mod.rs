@@ -25,7 +25,7 @@ pub mod notices;
 pub use certblobs::{CertBlob, CertBlobs};
 pub(crate) use certblobs::with_chains;
 mod relay;
-mod signing;
+pub(crate) mod signing;
 pub use relay::{Relay, RelayOpened};
 pub(crate) mod set;
 pub(crate) mod setting;

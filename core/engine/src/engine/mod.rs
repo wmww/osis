@@ -994,6 +994,9 @@ pub struct Core {
     pub(crate) sync_set: memo::Memo<(), Arc<crate::sync::SyncSet>>,
     /// `Engine::dial_peers` per sync ID (`memo`): sync's dials read it at each move of what it read.
     pub(crate) dial_peers: memo::Memo<SyncId, Arc<Vec<osis_base::Address>>>,
+    /// `Engine::step_needs` of every recorded step per sync ID (`memo`): sync asks a step's or a
+    /// role commit's at each role entry it judges.
+    pub(crate) steps_needs: memo::Memo<SyncId, Arc<crate::sync::signing::StepsNeeds>>,
     /// `Engine::proven` per (claims, copies) digest (`memo`): opens reads a connection's per sync
     /// ID at each step.
     pub(crate) proven: memo::Memo<[u8; 32], Arc<Vec<crate::sync::ProvenThing>>>,
@@ -1935,6 +1938,7 @@ impl Core {
             thing_sync: _,
             sync_set: _,
             dial_peers: _,
+            steps_needs: _,
             proven: _,
             addenda_owed: _,
             // built again from the journaled `ix.paths_unknown` (`apply::paths::Wait`)
@@ -2187,6 +2191,7 @@ impl Core {
             thing_sync: memo::Memo::new("sync: thing sync"),
             sync_set: memo::Memo::new("sync: sync set"),
             dial_peers: memo::Memo::new("sync: dial peers"),
+            steps_needs: memo::Memo::new("sync: steps needs"),
             proven: memo::Memo::new("sync: proven"),
             addenda_owed: crate::flows::addenda::Decides::default(),
             own_roles: memo::Cutoff::new("own roles"),

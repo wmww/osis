@@ -14,6 +14,8 @@ use osis_engine::sync::{Holding, Path};
 use osis_blob::{ClaimSet, Step, StepId};
 use osis_proto::{Code, Grant};
 use osis_store::{Shred, Transaction};
+use std::collections::BTreeMap;
+use std::sync::Arc;
 
 /// A credential key a Behind item was signed by (spec/sync-ids.md §6 Behind), its open signature
 /// verified by the caller.
@@ -44,8 +46,92 @@ pub(crate) fn step_row(t: &mut Transaction<'_>, s: &SyncId, i: u32) -> Result<Op
     t.get_local(&rows::step_key(s, i))?.map(|v| StepRow::decode(&v)).transpose()
 }
 
-pub(crate) fn step(t: &mut Transaction<'_>, s: &SyncId, i: u32) -> Result<Option<Step>> {
-    Ok(step_row(t, s, i)?.map(|r| Step::parse(&r.step)).transpose().map_err(osis_engine::Error::from)?)
+/// S's path as its rows hold it, parsed: its steps with their claim sets, and each step's ID.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Kept {
+    pub path: Arc<Path>,
+    pub ids: Vec<StepId>,
+}
+
+impl Kept {
+    pub(crate) fn head(&self) -> Option<(u32, &Step)> {
+        let i = self.path.steps.len().checked_sub(1)?;
+        Some((i as u32, &self.path.steps.get(i)?.0))
+    }
+}
+
+/// The durable part's paths parsed (`Kept`), per sync ID: parsed at the first read, then changed
+/// by the writes that change the rows (`append`, `truncate`, `drop_claims`), staged in the
+/// transaction and taken at its commit (`end`). A read of one reads its stamp in `Memory::stamps`,
+/// which a committed change moves. The memory part holds no path.
+#[derive(Clone, Default)]
+pub(crate) struct Paths {
+    kept: BTreeMap<SyncId, Arc<Kept>>,
+    /// This transaction's changes: `None`, no path.
+    staged: BTreeMap<SyncId, Option<Arc<Kept>>>,
+}
+
+/// The stamp key of S's path in `Memory::stamps`.
+#[derive(Hash)]
+struct PathOf<'a>(&'static str, &'a SyncId);
+
+impl Paths {
+    /// Whether this transaction changed a path.
+    pub(crate) fn staged(&self) -> bool {
+        !self.staged.is_empty()
+    }
+
+    /// The transaction ends, committed or not.
+    pub(crate) fn end(&mut self, committed: bool, stamps: &osis_base::memo::Stamps) {
+        for (s, k) in std::mem::take(&mut self.staged) {
+            if !committed {
+                continue;
+            }
+            stamps.wrote(&PathOf("path", &s), true);
+            match k {
+                Some(k) => self.kept.insert(s, k),
+                None => self.kept.remove(&s),
+            };
+        }
+    }
+}
+
+/// S's path, parsed once per change (`Paths`). O(1) once parsed.
+pub(crate) fn kept(t: &mut Transaction<'_>, env: &mut Env<'_>, s: &SyncId) -> Result<Option<Arc<Kept>>> {
+    if t.is_memory() {
+        return Ok(None);
+    }
+    env.mem.stamps.read(&PathOf("path", s));
+    if let Some(k) = env.paths.staged.get(s) {
+        return Ok(k.clone());
+    }
+    if let Some(k) = env.paths.kept.get(s) {
+        return Ok(Some(k.clone()));
+    }
+    let n = len(t, s)?;
+    if n == 0 {
+        return Ok(None);
+    }
+    let (mut steps, mut ids) = (Vec::with_capacity(n as usize), Vec::with_capacity(n as usize));
+    for i in 0..n {
+        let Some(r) = step_row(t, s, i)? else { break };
+        ids.push(StepId(osis_base::hash::hash(&r.step)));
+        steps.push((Step::parse(&r.step).map_err(osis_engine::Error::from)?, claims(t, s, i)?));
+    }
+    let k = Arc::new(Kept { path: Arc::new(Path { steps }), ids });
+    env.paths.kept.insert(*s, k.clone());
+    Ok(Some(k))
+}
+
+/// Changes S's parsed path as its rows change in this transaction: before they do (a first read
+/// parses the rows as they were).
+fn change(t: &mut Transaction<'_>, env: &mut Env<'_>, s: &SyncId, f: impl FnOnce(&mut Kept)) -> Result<()> {
+    debug_assert!(!t.is_memory(), "a path written in the memory part");
+    let mut k = kept(t, env, s)?.unwrap_or_default();
+    f(Arc::make_mut(&mut k));
+    let k = (!k.ids.is_empty()).then_some(k);
+    env.paths.staged.insert(*s, k);
+    Ok(())
 }
 
 pub(crate) fn claims(t: &mut Transaction<'_>, s: &SyncId, i: u32) -> Result<Option<ClaimSet>> {
@@ -53,47 +139,23 @@ pub(crate) fn claims(t: &mut Transaction<'_>, s: &SyncId, i: u32) -> Result<Opti
 }
 
 /// The head and its index.
-pub(crate) fn head(t: &mut Transaction<'_>, s: &SyncId) -> Result<Option<(u32, Step)>> {
-    let n = len(t, s)?;
-    let Some(i) = n.checked_sub(1) else { return Ok(None) };
-    Ok(step(t, s, i)?.map(|st| (i, st)))
+pub(crate) fn head(t: &mut Transaction<'_>, env: &mut Env<'_>, s: &SyncId) -> Result<Option<(u32, Step)>> {
+    Ok(kept(t, env, s)?.and_then(|k| k.head().map(|(i, st)| (i, st.clone()))))
 }
 
-/// The head's ID, from its stored bytes (`Step::to_bytes`, as `append` stores them) without
-/// parsing the step.
-pub(crate) fn head_id(t: &mut Transaction<'_>, s: &SyncId) -> Result<Option<StepId>> {
-    let n = len(t, s)?;
-    let Some(i) = n.checked_sub(1) else { return Ok(None) };
-    Ok(step_row(t, s, i)?.map(|r| StepId(osis_base::hash::hash(&r.step))))
+/// The head's ID.
+pub(crate) fn head_id(t: &mut Transaction<'_>, env: &mut Env<'_>, s: &SyncId) -> Result<Option<StepId>> {
+    Ok(kept(t, env, s)?.and_then(|k| k.ids.last().copied()))
 }
 
-pub(crate) fn read(t: &mut Transaction<'_>, s: &SyncId) -> Result<Option<Path>> {
-    let n = len(t, s)?;
-    if n == 0 {
-        return Ok(None);
-    }
-    let mut steps = Vec::with_capacity(n as usize);
-    for i in 0..n {
-        let Some(st) = step(t, s, i)? else { break };
-        steps.push((st, claims(t, s, i)?));
-    }
-    Ok(Some(Path { steps }))
-}
-
-/// The steps alone, from genesis.
-fn steps(t: &mut Transaction<'_>, s: &SyncId) -> Result<Vec<Step>> {
-    let n = len(t, s)?;
-    let mut out = Vec::with_capacity(n as usize);
-    for i in 0..n {
-        out.extend(step(t, s, i)?);
-    }
-    Ok(out)
+pub(crate) fn read(t: &mut Transaction<'_>, env: &mut Env<'_>, s: &SyncId) -> Result<Option<Arc<Path>>> {
+    Ok(kept(t, env, s)?.map(|k| k.path.clone()))
 }
 
 /// Whether a step of S's path bears sync key `key` (spec/sync.md §3: what keeps S, and what
 /// establishes a sync secret at a node keeping S unread).
-pub(crate) fn bears(t: &mut Transaction<'_>, s: &SyncId, key: &VerifyingKey) -> Result<bool> {
-    Ok(steps(t, s)?.iter().any(|st| st.keys.sync == *key))
+pub(crate) fn bears(t: &mut Transaction<'_>, env: &mut Env<'_>, s: &SyncId, key: &VerifyingKey) -> Result<bool> {
+    Ok(kept(t, env, s)?.is_some_and(|k| k.path.steps.iter().any(|(st, _)| st.keys.sync == *key)))
 }
 
 /// Bytes a step and its claim set count toward the caps.
@@ -104,6 +166,10 @@ fn step_bytes(step: &Step, claims: Option<&ClaimSet>) -> u64 {
 /// Appends `step` (the head's child, or the genesis step) with its claim set, the parent's set
 /// starting its `ROLE_KEEP` at its first child; logs the head event.
 pub(crate) fn append(t: &mut Transaction<'_>, env: &mut Env<'_>, s: &SyncId, step: &Step, claims: Option<&ClaimSet>) -> Result<()> {
+    change(t, env, s, |k| {
+        Arc::make_mut(&mut k.path).steps.push((step.clone(), claims.cloned()));
+        k.ids.push(step.id());
+    })?;
     let n = len(t, s)?;
     if let Some(p) = n.checked_sub(1)
         && let Some(mut row) = step_row(t, s, p)?
@@ -144,6 +210,12 @@ fn bytes_from(t: &mut Transaction<'_>, s: &SyncId, keep: u32) -> Result<u64> {
 /// Drops S's path rows from index `keep` on (its usage with them).
 fn truncate(t: &mut Transaction<'_>, env: &mut Env<'_>, s: &SyncId, keep: u32) -> Result<()> {
     let n = len(t, s)?;
+    if keep < n {
+        change(t, env, s, |k| {
+            Arc::make_mut(&mut k.path).steps.truncate(keep as usize);
+            k.ids.truncate(keep as usize);
+        })?;
+    }
     let mut freed = 0;
     for i in keep..n {
         if let Some(row) = step_row(t, s, i)? {
@@ -169,7 +241,7 @@ fn truncate(t: &mut Transaction<'_>, env: &mut Env<'_>, s: &SyncId, keep: u32) -
 /// A reader's served path: replaced whole by what its `sync.0` records, the head event logged
 /// when the head moved.
 pub(crate) fn serve(t: &mut Transaction<'_>, env: &mut Env<'_>, s: &SyncId, path: &Path) -> Result<()> {
-    if read(t, s)?.as_ref() == Some(path) {
+    if read(t, env, s)?.as_deref() == Some(path) {
         return Ok(());
     }
     erase(t, env, s)?;
@@ -182,6 +254,11 @@ pub(crate) fn serve(t: &mut Transaction<'_>, env: &mut Env<'_>, s: &SyncId, path
 /// Drops claim set `i` of S once superseded for `ROLE_KEEP` (the sweep).
 pub(crate) fn drop_claims(t: &mut Transaction<'_>, env: &mut Env<'_>, s: &SyncId, i: u32) -> Result<()> {
     if let Some(c) = t.get_local(&rows::claims_key(s, i))? {
+        change(t, env, s, |k| {
+            if let Some(x) = Arc::make_mut(&mut k.path).steps.get_mut(i as usize) {
+                x.1 = None;
+            }
+        })?;
         t.remove_local(&rows::claims_key(s, i), Shred::No)?;
         add_usage(t, env, s, |u| u.bytes = u.bytes.saturating_sub(c.len() as u64))?;
     }
@@ -236,14 +313,15 @@ pub(crate) fn register(t: &mut Transaction<'_>, env: &mut Env<'_>, s: &SyncId, s
         true
     };
     // the index the new steps start at, and those of the list the path does not hold
-    let (keep, new) = match head(t, s)? {
+    let (keep, new) = match head(t, env, s)? {
         None if first.prev.is_some() => return Ok((Code::UNKNOWN_SYNC_ID, false, false)),
         None if first.verify_genesis().is_err() => return Ok((Code::REFUSED, false, false)),
         None if !chained(first, steps.get(1..).unwrap_or_default()) => return Ok((Code::NOT_HEAD_KEY, false, false)),
         None => (0, steps),
         Some((_, h)) if h.id() == last.id() => return Ok((Code::OK, false, false)),
         Some((hi, h)) => {
-            let ids: Vec<StepId> = steps_ids(t, s)?;
+            let path = kept(t, env, s)?.unwrap_or_default();
+            let ids = &path.ids;
             // where the list's first step goes on the path, then past the steps the path holds
             let Some(mut at) = (match first.prev {
                 None => Some(0),
@@ -260,7 +338,7 @@ pub(crate) fn register(t: &mut Transaction<'_>, env: &mut Env<'_>, s: &SyncId, s
             }
             let new = steps.get(skip..).unwrap_or_default();
             // `at` is at least 1 here: a genesis the path does not hold is no step after one of it
-            let Some(fork) = at.checked_sub(1).and_then(|j| step(t, s, j as u32).transpose()).transpose()? else {
+            let Some(fork) = at.checked_sub(1).and_then(|j| path.path.steps.get(j)).map(|(st, _)| st.clone()) else {
                 return Ok((Code::NOT_HEAD_KEY, false, false));
             };
             let by_head = fork.keys.delete == h.keys.delete || endorsement.is_some_and(|e| last.endorsed_by(&h.keys.delete, e));
@@ -294,44 +372,36 @@ pub(crate) fn register(t: &mut Transaction<'_>, env: &mut Env<'_>, s: &SyncId, s
     Ok((Code::OK, past, true))
 }
 
-/// The step IDs of S's path, from genesis.
-fn steps_ids(t: &mut Transaction<'_>, s: &SyncId) -> Result<Vec<StepId>> {
-    let n = len(t, s)?;
-    let mut out = Vec::with_capacity(n as usize);
-    for i in 0..n {
-        out.extend(step_row(t, s, i)?.map(|r| StepId(osis_base::hash::hash(&r.step))));
-    }
-    Ok(out)
-}
-
 /// The code a Behind of S that carries nothing is answered with, whatever it names or shows
 /// (spec/sync-ids.md §6 Behind): 13 where this node does not keep S (kept unread with no step
 /// registered included), else 14 (a node reading S answers every Behind of S so).
-pub(crate) fn behind_refusal(t: &mut Transaction<'_>, env: &Env<'_>, s: &SyncId) -> Result<Code> {
+pub(crate) fn behind_refusal(t: &mut Transaction<'_>, env: &mut Env<'_>, s: &SyncId) -> Result<Code> {
     Ok(match env.holding(s) {
         None => Code::UNKNOWN_SYNC_ID,
-        Some(Holding::Unread) if steps(t, s)?.is_empty() => Code::UNKNOWN_SYNC_ID,
+        Some(Holding::Unread) if kept(t, env, s)?.is_none() => Code::UNKNOWN_SYNC_ID,
         Some(_) => Code::DECLINED,
     })
 }
 
 /// A Behind item's answer at a node keeping S unread (spec/sync-ids.md §6 Behind): at most
 /// `max_steps` steps in it.
-pub(crate) fn behind(t: &mut Transaction<'_>, env: &Env<'_>, s: &SyncId, named: Option<&StepId>, cred: &Cred, max_steps: usize) -> Result<Behind> {
+pub(crate) fn behind(t: &mut Transaction<'_>, env: &mut Env<'_>, s: &SyncId, named: Option<&StepId>, cred: &Cred, max_steps: usize) -> Result<Behind> {
     if env.holding(s) != Some(Holding::Unread) {
         return Ok(refused(behind_refusal(t, env, s)?));
     }
-    let path = steps(t, s)?;
+    let Some(k) = kept(t, env, s)? else { return Ok(refused(behind_refusal(t, env, s)?)) };
+    let path: Vec<&Step> = k.path.steps.iter().map(|(st, _)| st).collect();
     let Some(last) = path.len().checked_sub(1) else { return Ok(refused(behind_refusal(t, env, s)?)) };
+    let claims = |i: usize| k.path.steps.get(i).and_then(|(_, c)| c.as_ref());
     let bound = |v: Vec<Step>| if v.is_empty() { refused(Code::RATE_LIMITED) } else { (Code::OK, Some(Grant { entry_box: None, steps: v })) };
     match (named, cred) {
         (Some(id), _) => {
-            let Some(i) = path.iter().take(last).position(|st| st.id() == *id) else { return Ok(refused(Code::DECLINED)) };
+            let Some(i) = k.ids.iter().take(last).position(|x| x == id) else { return Ok(refused(Code::DECLINED)) };
             let Some(named_step) = path.get(i) else { return Ok(refused(Code::DECLINED)) };
             let is_cred = match cred {
                 Cred::Sync(k) => named_step.keys.sync == *k,
-                Cred::Claim(pk) => claims(t, s, i as u32)?.is_some_and(|c| c.contains(pk)),
-                Cred::Signing(k) => claims(t, s, i as u32)?.is_some_and(|c| c.contains(&osis_crypto::static_entry(s, k))),
+                Cred::Claim(pk) => claims(i).is_some_and(|c| c.contains(pk)),
+                Cred::Signing(key) => claims(i).is_some_and(|c| c.contains(&osis_crypto::static_entry(s, key))),
             };
             if !is_cred {
                 return Ok(refused(Code::DECLINED));
@@ -342,24 +412,24 @@ pub(crate) fn behind(t: &mut Transaction<'_>, env: &Env<'_>, s: &SyncId, named: 
                     break;
                 }
                 let other = st.keys.sync != named_step.keys.sync;
-                out.push(st.clone());
+                out.push((*st).clone());
                 if other {
                     break;
                 }
             }
             Ok(bound(out))
         }
-        (None, Cred::Sync(k)) => match path.iter().take(last).rposition(|st| st.keys.sync == *k) {
-            Some(j) => Ok(bound(path.get(j + 1).into_iter().take(max_steps).cloned().collect())),
+        (None, Cred::Sync(key)) => match path.iter().take(last).rposition(|st| st.keys.sync == *key) {
+            Some(j) => Ok(bound(path.get(j + 1).into_iter().take(max_steps).map(|st| (*st).clone()).collect())),
             None => Ok(refused(Code::DECLINED)),
         },
-        (None, Cred::Signing(k)) => {
-            let Some(c) = claims(t, s, last as u32)? else { return Ok(refused(Code::DECLINED)) };
-            let Some(entry_box) = c.entry_box(s, k).cloned() else { return Ok(refused(Code::DECLINED)) };
+        (None, Cred::Signing(key)) => {
+            let Some(c) = claims(last) else { return Ok(refused(Code::DECLINED)) };
+            let Some(entry_box) = c.entry_box(s, key).cloned() else { return Ok(refused(Code::DECLINED)) };
             if path.len() > max_steps {
                 return Ok(refused(Code::RATE_LIMITED));
             }
-            Ok((Code::OK, Some(Grant { entry_box: Some(entry_box), steps: path })))
+            Ok((Code::OK, Some(Grant { entry_box: Some(entry_box), steps: path.into_iter().cloned().collect() })))
         }
         (None, Cred::Claim(_)) => Ok(refused(Code::DECLINED)),
     }
@@ -367,14 +437,8 @@ pub(crate) fn behind(t: &mut Transaction<'_>, env: &Env<'_>, s: &SyncId, named: 
 
 /// Whether `ok` holds of a step on S's path before its head: a stamp or Delete verifying under
 /// such a step's keys only is under superseded keys (code 9, spec/sync-ids.md §6).
-pub(crate) fn earlier(t: &mut Transaction<'_>, s: &SyncId, ok: impl Fn(&Step) -> bool) -> Result<bool> {
-    let n = len(t, s)?;
-    for i in (0..n.saturating_sub(1)).rev() {
-        if let Some(st) = step(t, s, i)?
-            && ok(&st)
-        {
-            return Ok(true);
-        }
-    }
-    Ok(false)
+pub(crate) fn earlier(t: &mut Transaction<'_>, env: &mut Env<'_>, s: &SyncId, ok: impl Fn(&Step) -> bool) -> Result<bool> {
+    let Some(k) = kept(t, env, s)? else { return Ok(false) };
+    let n = k.path.steps.len().saturating_sub(1);
+    Ok(k.path.steps.iter().take(n).rev().any(|(st, _)| ok(st)))
 }

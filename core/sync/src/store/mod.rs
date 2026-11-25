@@ -167,6 +167,7 @@ pub(crate) struct Env<'a> {
     pub caps: &'a Caps,
     pub policy: &'a Policy,
     pub mem: &'a mut Memory,
+    pub paths: &'a mut path::Paths,
     /// Bytes used by every sync ID kept unread; `None` until counted.
     pub total: Option<Total>,
 }
@@ -262,6 +263,7 @@ pub(crate) struct Inner {
     caps: Caps,
     policy: Policy,
     mem: Memory,
+    paths: path::Paths,
     total: Option<Total>,
     /// When each sync ID last took a child step past its caps (spec/sync-ids.md §6).
     past_cap: BTreeMap<SyncId, Mono>,
@@ -403,16 +405,19 @@ impl Inner {
     }
 
     fn tx<T>(&mut self, memory: bool, commit: bool, f: impl FnOnce(&mut Transaction<'_>, &mut Env<'_>) -> Result<T>) -> Result<T> {
-        let Inner { store, ram, rng, now, holdings, caps, policy, mem, total, .. } = self;
-        let mut env = Env { now: *now, holdings, caps, policy, mem, total: *total };
+        let Inner { store, ram, rng, now, holdings, caps, policy, mem, paths, total, .. } = self;
+        let mut env = Env { now: *now, holdings, caps, policy, mem, paths, total: *total };
         let mut t = if memory { ram.transaction(&mut **rng)? } else { store.transaction(&mut **rng)? };
         t.set_memory(memory);
-        let r = f(&mut t, &mut env)?;
-        if commit {
-            t.commit()?;
-            *total = env.total;
-        }
-        Ok(r)
+        let r = f(&mut t, &mut env).and_then(|r| {
+            if commit {
+                t.commit()?;
+                *total = env.total;
+            }
+            Ok(r)
+        });
+        env.paths.end(commit && r.is_ok(), &env.mem.stamps);
+        r
     }
 
     fn write<T>(&mut self, f: impl FnOnce(&mut Transaction<'_>, &mut Env<'_>) -> Result<T>) -> Result<T> {
@@ -512,7 +517,7 @@ impl Store {
     pub fn open(backend: Box<dyn osis_store::Backend>, root: Box<dyn osis_store::RootStorage>, mut rng: Box<dyn osis_crypto::NodeRng>) -> Result<Store> {
         let store = osis_store::Store::open_or_create(backend, root, osis_store::StoreConfig::default(), &mut *rng)?;
         let ram = osis_store::Store::create(Box::new(osis_store::MemoryBackend::new()), Box::new(osis_store::MemoryRoot::new()), osis_store::StoreConfig::default(), &mut *rng)?;
-        let mut inner = Inner { store, ram, rng, open: None, now: WallMs(0), holdings: BTreeMap::new(), caps: Caps::default(), policy: Policy::default(), mem: Memory::default(), total: None, past_cap: BTreeMap::new(), unheld: BTreeSet::new(), room: BTreeMap::new(), room_fx: Effects::new(ROOM_JUDGED), room_gone: BTreeSet::new(), room_conn: BTreeMap::new(), clock: Clock::default() };
+        let mut inner = Inner { store, ram, rng, open: None, now: WallMs(0), holdings: BTreeMap::new(), caps: Caps::default(), policy: Policy::default(), mem: Memory::default(), paths: path::Paths::default(), total: None, past_cap: BTreeMap::new(), unheld: BTreeSet::new(), room: BTreeMap::new(), room_fx: Effects::new(ROOM_JUDGED), room_gone: BTreeSet::new(), room_conn: BTreeMap::new(), clock: Clock::default() };
         inner.write(|t, env| {
             // a start ends every connection: each one charged or bringing goes (connection
             // numbers start again, so none may name the next one given it)
@@ -890,22 +895,22 @@ impl Store {
     /// node keeping S unread, spec/sync-ids.md §6 Relay-only).
     pub fn stamp_vouches(&self, s: &SyncId, e: &Entry) -> Result<bool> {
         let Some(stamp) = e.stamp else { return Ok(false) };
-        self.lock().read(|t, _| Ok(head_vouch(t, s, &e.blob, &e.wrap, &stamp, None)?.is_some()))
+        self.lock().read(|t, env| Ok(head_vouch(t, env, s, &e.blob, &e.wrap, &stamp, None)?.is_some()))
     }
 
     /// The head S's path ends at.
     pub fn head(&self, s: &SyncId) -> Result<Option<Step>> {
-        self.lock().read(|t, _| Ok(path::head(t, s)?.map(|(_, st)| st)))
+        self.lock().read(|t, env| Ok(path::head(t, env, s)?.map(|(_, st)| st)))
     }
 
     /// The head's ID (`head`'s `Step::id`, without parsing it).
     pub fn head_id(&self, s: &SyncId) -> Result<Option<StepId>> {
-        self.lock().read(|t, _| path::head_id(t, s))
+        self.lock().read(|t, env| path::head_id(t, env, s))
     }
 
     /// S's path from genesis: a kept-unread S's registered one, a read S's served one.
     pub fn path(&self, s: &SyncId) -> Result<Option<Arc<Path>>> {
-        self.lock().read(|t, _| Ok(path::read(t, s)?.map(Arc::new)))
+        self.lock().read(|t, env| path::read(t, env, s))
     }
 
     // Writes by this node's own judgement
@@ -942,7 +947,7 @@ impl Store {
             // a held stamp stays (`log`: one that does not vouch replaces none)
             None => {
                 // checked under the served head as any peer's stamp: once, where that is `head`
-                let served = self.lock().read(|t, _| path::head(t, s))?.map(|(_, st)| st.keys.write);
+                let served = self.lock().read(|t, env| path::head(t, env, s))?.map(|(_, st)| st.keys.write);
                 let checked = (head.is_some() && served == head).then_some(None);
                 self.log_checked(s, e, None, Some(from), checked).map(drop)
             }
@@ -970,7 +975,7 @@ impl Store {
             (_, _, Some(v)) => v,
             (Some(stamp), _, None) => {
                 let kept = g.find(s, &b)?.and_then(|(_, r)| r.vouch);
-                g.read(|t, _| head_vouch(t, s, &b, &e.wrap, stamp, kept))?
+                g.read(|t, env| head_vouch(t, env, s, &b, &e.wrap, stamp, kept))?
             }
             _ => None,
         };
@@ -1120,15 +1125,15 @@ impl Store {
         if e.stamp.is_some() && held == Some((e.wrap, e.stamp)) {
             return Ok(Code::OK);
         }
-        let verdict = g.read(|t, _| {
+        let verdict = g.read(|t, env| {
             if entries::tombstone(t, s, &b)?.is_some() {
                 return Ok(Err(Code::TOMBSTONED));
             }
             let Some(stamp) = e.stamp else { return Ok(Err(Code::REFUSED)) };
-            let Some((_, head)) = path::head(t, s)?.filter(|_| !unheld) else { return Ok(Err(Code::REFUSED)) };
+            let Some((_, head)) = path::head(t, env, s)?.filter(|_| !unheld) else { return Ok(Err(Code::REFUSED)) };
             match rows::verify_stamp(&head.keys.write, s, &b, &e.wrap, &stamp) {
                 Some((signed, vouch)) => Ok(Ok((signed == osis_blob::Signed::RoleEntry, vouch))),
-                None if path::earlier(t, s, |st| osis_blob::verify_stamp(&st.keys.write, s, &b, &e.wrap, &stamp).is_ok())? => Ok(Err(Code::NOT_HEAD_KEY)),
+                None if path::earlier(t, env, s, |st| osis_blob::verify_stamp(&st.keys.write, s, &b, &e.wrap, &stamp).is_ok())? => Ok(Err(Code::NOT_HEAD_KEY)),
                 None => Ok(Err(Code::REFUSED)),
             }
         })?;
@@ -1181,13 +1186,14 @@ impl Store {
         let mem_usage = g.read_in(true, |t, _| entries::usage(t, &s))?;
         let unheld = g.unheld.contains(&s);
         let checked = g.read(|t, env| {
-            let Some((hi, head)) = path::head(t, &s)?.filter(|_| !unheld) else { return Ok(Err(Code::RATE_LIMITED)) };
+            let Some(path) = path::kept(t, env, &s)?.filter(|_| !unheld) else { return Ok(Err(Code::RATE_LIMITED)) };
+            let Some((head, claims)) = path.path.steps.last() else { return Ok(Err(Code::RATE_LIMITED)) };
             if held {
                 return Ok(Err(Code::OK));
             }
             let Ok(signed) = osis_blob::verify_deposit(&head.keys.deposit, &s, &b, &d.wrap, &d.sig) else { return Ok(Err(Code::DECLINED)) };
             let role = signed == osis_blob::Signed::RoleEntry;
-            let claims = path::claims(t, &s, hi)?.map_or(0, |c| c.claims.len());
+            let claims = claims.as_ref().map_or(0, |c| c.claims.len());
             let (be, bb) = deposit_budget(&policy, claims);
             let u = entries::usage(t, &s)?;
             if u.deposits + mem_usage.deposits + 1 > be || u.deposit_bytes + mem_usage.deposit_bytes + size > bb {
@@ -1249,7 +1255,7 @@ impl Store {
         let mut ephemeral = Vec::new();
         let tomb = || Removal::Tomb(Tombstone { at: now, deleted: true, note: Vec::new() });
         let out = g.write(|t, env| {
-            let Some((_, head)) = path::head(t, s)?.filter(|_| !unheld) else { return Ok(vec![Code::UNKNOWN_SYNC_ID; items.len()]) };
+            let Some((_, head)) = path::head(t, env, s)?.filter(|_| !unheld) else { return Ok(vec![Code::UNKNOWN_SYNC_ID; items.len()]) };
             let mut out = Vec::with_capacity(items.len());
             for d in items {
                 let b = d.blob;
@@ -1270,7 +1276,7 @@ impl Store {
                     } else {
                         Code::REFUSED
                     }
-                } else if path::earlier(t, s, |st| d.verify(st, prefix.as_ref()).is_ok())? {
+                } else if path::earlier(t, env, s, |st| d.verify(st, prefix.as_ref()).is_ok())? {
                     Code::NOT_HEAD_KEY
                 } else {
                     Code::REFUSED
@@ -1869,8 +1875,8 @@ fn served(t: &mut Transaction<'_>, e: &LoggedEvent, until: Option<Position>) -> 
 
 /// The verdict on `stamp` of entry `b` of S under `wrap` by S's head write key, in either domain
 /// (`kept` answering when it is this check's, `rows::check_stamp`): none when it does not verify.
-fn head_vouch(t: &mut Transaction<'_>, s: &SyncId, b: &BlobId, wrap: &[u8], stamp: &osis_crypto::Signature, kept: Option<Vouch>) -> Result<Option<Vouch>> {
-    let Some((_, head)) = path::head(t, s)? else { return Ok(None) };
+fn head_vouch(t: &mut Transaction<'_>, env: &mut Env<'_>, s: &SyncId, b: &BlobId, wrap: &[u8], stamp: &osis_crypto::Signature, kept: Option<Vouch>) -> Result<Option<Vouch>> {
+    let Some((_, head)) = path::head(t, env, s)? else { return Ok(None) };
     Ok(rows::check_stamp(&head.keys.write, s, b, wrap, stamp, kept))
 }
 
@@ -1907,9 +1913,9 @@ fn heir(t: &mut Transaction<'_>, env: &Env<'_>, src: Source, s: &SyncId, b: &Blo
 /// What `Store::charge_unvouched` makes of entry row `old`: kept as it is (`Some(None)`: its own,
 /// charged, unstamped or still vouching), kept charged to the peer that brought it
 /// (`Some(Some(row))`), or not kept (`None`).
-fn unvouched(t: &mut Transaction<'_>, env: &Env<'_>, s: &SyncId, b: &BlobId, old: &EntryRow) -> Result<Option<Option<EntryRow>>> {
+fn unvouched(t: &mut Transaction<'_>, env: &mut Env<'_>, s: &SyncId, b: &BlobId, old: &EntryRow) -> Result<Option<Option<EntryRow>>> {
     let Some(stamp) = old.stamp.filter(|_| !old.own && old.charged.is_none()) else { return Ok(Some(None)) };
-    if head_vouch(t, s, b, &old.wrap, &stamp, old.vouch)?.is_some() {
+    if head_vouch(t, env, s, b, &old.wrap, &stamp, old.vouch)?.is_some() {
         return Ok(Some(None));
     }
     Ok(match old.brought {
