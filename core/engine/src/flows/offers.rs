@@ -153,16 +153,35 @@ impl Engine {
                 if x != t || !mine(self, &h) {
                     return Err(Error::BadInput("an offer's sync copy of another thing or holder"));
                 }
-                let mut gave = false;
+                // each copy's row under its content key; a refused offer's new rows go (a hander
+                // makes this node keep nothing for an offer giving nothing)
+                let mut new = Vec::new();
+                let mut bad = None;
+                let mut taken = Vec::new();
                 for c in copies {
                     let b = osis_base::BlobId(crate::sync_ids::unread::content_key(c));
-                    if !self.take_sync_copy(&h, &b, c, false)? || self.core.ix.sync_copy_on.get(&b) != Some(&t) {
-                        return Err(Error::BadInput("an offer's sync copy"));
+                    taken.push(b);
+                    let fresh = !self.core.ix.sync_copy_on.contains_key(&b);
+                    let ok = self.take_sync_copy(&h, &b, c, false)?;
+                    if fresh && self.core.ix.sync_copy_on.contains_key(&b) {
+                        new.push(b);
                     }
-                    gave |= self.core.unread(&t).counted.contains(&b);
+                    if !ok || self.core.ix.sync_copy_on.get(&b) != Some(&t) {
+                        bad = Some(Error::BadInput("an offer's sync copy"));
+                        break;
+                    }
                 }
-                if !gave {
-                    return Err(Error::BadInput("the offer gives this node no role"));
+                // a role is a counted box to the holder (`Unread::holders`): one of the offer's
+                let un = self.core.unread(&t);
+                let boxed = |b: &osis_base::BlobId| self.core.ix.sync_copies.get(&t).and_then(|m| m.get(b).cloned()).is_some_and(|c| !c.boxes.is_empty());
+                if bad.is_none() && !taken.iter().any(|b| un.counted.contains(b) && boxed(b)) {
+                    bad = Some(Error::BadInput("the offer gives this node no role"));
+                }
+                if let Some(e) = bad {
+                    for b in &new {
+                        self.unnamed_sync_copy(b)?;
+                    }
+                    return Err(e);
                 }
                 &[]
             }

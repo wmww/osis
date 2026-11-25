@@ -227,8 +227,10 @@ pub struct Unread {
     /// what `owned_sync_ids` judges.
     pub steps: ct::SyncIds,
     pub counted: BTreeSet<BlobId>,
-    /// The holders of counted copies: things holding sync or above on `t` as this node knows it
-    /// from them (`stubs_of`).
+    /// The holders of counted copies of a box: things holding sync or above on `t` as this node
+    /// knows it from them (`stubs_of`).
+    /// Invariant (security): a holder is named only by a box opening to a secret a step bears,
+    /// so what anyone may bring (a copy boxing nothing) names no role.
     pub holders: BTreeSet<Tid>,
 }
 
@@ -356,9 +358,13 @@ impl Core {
                 // boxing nothing: each step it carries verified (with `t`'s record, placed)
                 false => c.is_some_and(|c| !c.steps.is_empty() && c.steps.values().all(|e| e.steps.keys().all(|k| ok.contains(k)))),
             };
+            // a holder by a box alone: a copy boxing nothing (a `sync.0` write's, which any
+            // syncer of `t` holds and anyone may seal or log) gives steps, never a role
             if counts {
                 out.counted.insert(b);
-                out.holders.insert(h);
+                if boxes {
+                    out.holders.insert(h);
+                }
             }
         }
         out

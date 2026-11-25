@@ -415,7 +415,13 @@ impl Read {
         // the own judgement of each body, to its fixpoint, then its acts; again while acting on
         // the own store moved what a judgement reads, so each value kept is judged after its own
         // acts (an own entry logged and then dropped by another module before the next settle,
-        // a forgotten commit's, reads as the same value and would never be logged again)
+        // a forgotten commit's, reads as the same value and would never be logged again).
+        // Bounded (debug builds, `LoopGuard`): a round runs again only for a judgement whose
+        // value its acts moved, each moving once for what came in and once after its own acts, so
+        // at most twice the judgements moved and one more; at infinity two judgements undoing each
+        // other's acts hang the node with no settle round to catch it
+        let mut guard = osis_base::loop_guard::LoopGuard::new("read: judgements and their acts (Read::settle_on)");
+        let mut keys = BTreeSet::new();
         loop {
             let mut judged: Moved<(SyncId, BodyId), Judged> = BTreeMap::new();
             loop {
@@ -485,10 +491,14 @@ impl Read {
             // written after it, spec/permissions.md §3)
             let mut judged: Vec<_> = judged.into_iter().collect();
             judged.sort_by_cached_key(|((s, c), _)| (g.ts(&c.commit), *s, *c));
+            let moved: Vec<(SyncId, BodyId)> = judged.iter().map(|(k, _)| *k).take(4).collect();
+            keys.extend(judged.iter().map(|(k, _)| *k));
             for ((s, c), (was, now)) in judged {
                 acted = true;
                 self.react(g, &s, c, &was.map(|w| w.acts).unwrap_or_default(), &now.acts)?;
             }
+            let n = keys.len() as u64;
+            guard.round(moved, || (2 * n + 1, format!("{n} judgements moved")));
         }
         // what the pieces newly call for, and no longer; a lost one is repaired in the own bodies
         // over it, each body's in one commit

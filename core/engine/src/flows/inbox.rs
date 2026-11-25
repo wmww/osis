@@ -33,7 +33,8 @@ pub(crate) fn deliver_copy(tx: &mut Tx<'_>, holder: Tid, c: CommitId, target: Ti
     // sealed sync copy, with those of the target's `sync.0` writes held (its sync IDs, by whose
     // steps the box it carries counts), never as a `grant@~0` fire's certificate copy. A lowering
     // to sync goes as one: the holder read the target, and loses that by the edge write alone
-    // (spec/permissions.md §3 Lost access)
+    // (spec/permissions.md §3 Lost access). Interim (issues/sync-alone-removal-header.md): a
+    // removal of a holder of sync alone goes as a fire below, with its header
     let lowering = tx.core.timelines().role_commit(&c).is_some_and(|rc| rc.frontier.is_some());
     if !lowering && tx.core.roster_of(&target).get(&holder).is_some_and(|e| e.role == Role::Sync) {
         deliver_sealed(tx, holder, c, target)?;

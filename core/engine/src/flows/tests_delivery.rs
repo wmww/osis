@@ -515,3 +515,52 @@ fn sync_copy_rows_go_with_their_entries_spec_sync_ids_5() {
         assert_eq!(lp.peers[2].engine.sync_copy_blobs().len(), base);
     }
 }
+
+// spec/sync-inbox.md §5 (By hand: an offer to a holder of sync alone is its sync copies, which give
+// nothing until one counts), spec/sync-ids.md §2: a by-hand offer is the hander's word. Peer 2
+// keeps G unread for T and holds G's record; an offer naming T on G whose one copy carries a
+// forged genesis bearing the forger's secret, boxed to T, is refused, and leaves nothing: no row
+// of the copy, G's sync ID and the sync secrets held unmoved. Fails with a refused offer's copies
+// kept (rows a hander makes this node keep for nothing).
+#[test]
+fn a_forged_sync_alone_offer_takes_nothing_spec_sync_inbox_5() {
+    let (mut lp, g, t) = sync_holder();
+    let (copy, _, _) = forged_sync_copy(&mut lp, 0, g, t, 70);
+    let offer = super::offers::Offer { target: g, pieces: super::offers::Pieces::SyncAlone(vec![copy.encode()]) };
+    let offer = super::offers::Offer::from_value(&offer.to_value()).expect("round-trips");
+    let (rows, id, held) = (lp.peers[2].engine.sync_copy_blobs(), lp.peers[2].engine.sync_id_of(&g).unwrap(), sync_held(&lp, 2, &g));
+    assert!(lp.peers[2].engine.take_offer(&offer, &t).is_err(), "a forged offer gives no role");
+    assert_eq!(lp.peers[2].engine.sync_copy_blobs(), rows, "no row of the refused offer's copy kept");
+    assert_eq!((lp.peers[2].engine.sync_id_of(&g).unwrap(), sync_held(&lp, 2, &g)), (id, held), "G as before");
+}
+
+// spec/sync-ids.md §2 (What a sync holder learns), spec/sync-set.md §2 (Stub), spec/crypto.md §4 (Established): a role on a thing is a box a step bears. Any
+// syncer of G holds G's `sync.0` writes, and a copy of one boxes nothing: anyone sealing to a
+// holder, logging under its sync ID or handing an offer can bring one. Peer 1's node holds no role
+// on G; boxless copies of G's real `sync.0` writes taken as its own count (their steps verify) but
+// name it holder of nothing, and an offer of them beside a forged box is refused. Fails with a
+// boxless copy's holder counted as holding sync (`Unread::holders`: the walk carrying G for it).
+#[test]
+fn a_boxless_copy_names_no_holder_spec_sync_ids_2() {
+    let (mut lp, g, _) = sync_holder();
+    let me1 = lp.peers[1].engine.tid();
+    let syncs: Vec<CommitId> = osis_base::Ak::new("sync.0").ok().and_then(|k| lp.peers[0].engine.core.ix.by_aspect.get(&(g, k)).cloned()).into_iter().flatten().map(|(_, c)| c).collect();
+    let mut copies = Vec::new();
+    for c in &syncs {
+        if let Some((copy, _)) = lp.peers[0].engine.sync_copy(c, &g, &me1).unwrap() {
+            assert!(copy.piece.is_none(), "a `sync.0` write boxes peer 1 nothing");
+            copies.push(copy.encode());
+        }
+    }
+    assert!(!copies.is_empty());
+    let (forged, _, _) = forged_sync_copy(&mut lp, 0, g, me1, 80);
+    let offer = super::offers::Offer { target: g, pieces: super::offers::Pieces::SyncAlone([vec![forged.encode()], copies.clone()].concat()) };
+    assert!(lp.peers[1].engine.take_offer(&offer, &me1).is_err(), "boxless copies beside a forged box give no role");
+    assert!(!lp.peers[1].engine.core.syncs_by_copies(&me1, &g));
+    for (i, c) in copies.iter().enumerate() {
+        assert!(lp.peers[1].engine.take_sync_copy(&me1, &osis_base::BlobId([90 + i as u8; 32]), c, true).unwrap(), "well formed: taken");
+    }
+    let un = lp.peers[1].engine.core.unread(&g);
+    assert!(!un.counted.is_empty(), "its steps verify: counted");
+    assert!(!un.holders.contains(&me1) && !lp.peers[1].engine.core.syncs_by_copies(&me1, &g), "names peer 1 holder of nothing");
+}

@@ -224,6 +224,8 @@ impl Engine {
     /// Invariant (security; spec/sync-ids.md §2 What a sync holder learns): no part of a commit
     /// of a thing held sync alone goes as a certificate copy here, so its readers learn no
     /// signer, path or other holder of it.
+    /// Interim (issues/sync-alone-removal-header.md): "held sync alone" is by the roster now, so
+    /// once `h` is removed its whole edge piece goes as certificate copies, headers and all.
     fn edge_pieces_into(&mut self, ev: &Ev, h: &Tid, only: Option<&Tid>, sync_alone: bool, out: &mut Certs) {
         let mut pieces = BTreeSet::new();
         let part = match only {
