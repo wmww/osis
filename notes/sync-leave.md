@@ -11,7 +11,8 @@ One value: the sync set, and each sync ID that left it while it waits to stop. `
 The engine answers for a leaving S by its things' held read secrets, not the sync set (`Engine::opening_things`): `read_credentials`, `claim_key`, `open_entry` and `dial_peers` go by it, `sync_bodies` by `thing_sync`.
 
 ## The wait
-One wait, for a sync ID leaving the sync set and a thing leaving the node closure alike (spec/sync-set.md §3): a complete pass begun after it left (status runs one, `Leave::passes_wanted`, by pass place; leave reads `Status::passed_since`), or none while S has no source (`Status::sourced`).
+One wait, for a sync ID leaving the sync set and a thing leaving the node closure alike (spec/sync-set.md §3): a pass over the sources connected then, begun after it left (status runs one, `Leave::passes_wanted` through `Ground::leave_passes`, by pass place: a fresh Pull at each source, ended once each but those full or refusing is caught up from it; leave reads `Status::heard_since`, which a complete pass's end also meets), or none while S has no source (`Status::sourced`).
+- Not a complete pass: that waits up to `PASS_WAIT_MS` for recorded peers not connected, and one under way begun before the leave is followed by another, so a removed node would keep S (served, judged, its bodies unopenable outside the node closure) for up to two `PASS_WAIT_MS` while a peer is away.
 - A role commit uncounted for want of its lists (a revocation taken before them) is no reason to wait longer: waiting for a source to bring the lists would stall on an absent peer for good. S given back later is fetched again.
 
 ## A sync ID

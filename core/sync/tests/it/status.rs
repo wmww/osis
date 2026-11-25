@@ -81,6 +81,8 @@ struct Fake {
     leaving: BTreeSet<(CommitId, Tid)>,
     /// The engine's wants, by pass place; the fake's places are its ms (`begin_pass`).
     wanted: Stamped<(), Arc<BTreeMap<SyncId, u64>>>,
+    /// Leave's waits, by pass place (`leave_passes`).
+    leave: Stamped<(), Arc<BTreeMap<SyncId, u64>>>,
     passes: Vec<(SyncId, u64)>,
     /// The pass starts kept durably (`set_pass_begun`): what a restart keeps.
     begun: BTreeMap<SyncId, WallMs>,
@@ -200,6 +202,9 @@ impl Ground for Fake {
     }
     fn begin_pass(&mut self) -> u64 {
         self.now
+    }
+    fn leave_passes(&mut self) -> Arc<BTreeMap<SyncId, u64>> {
+        self.leave.get(&()).cloned().unwrap_or_default()
     }
     fn stranding(&mut self, s: &SyncId) -> Result<Option<Arc<Stranding>>> {
         Ok(self.strandings.get(s).cloned())
@@ -561,6 +566,30 @@ fn complete_pass_needs_fresh_pulls_and_recorded_peers() {
     t.caught(B, S, 120);
     assert_eq!(t.g.passes, vec![(S, 100)]);
     assert_eq!(t.st.of(&S, &t.g).unwrap().pass_waits, None);
+}
+
+// spec/sync-set.md §3 (Release): a leave waits for the pass in flight with the connected sources
+// only: a fresh Pull at each, ended once each is caught up from it, while a complete pass of S
+// begun before the leave still waits for a recorded peer that is not connected (it would hold
+// the leave for PASS_WAIT_MS, then for another pass after it).
+#[test]
+fn a_leave_waits_for_the_connected_sources_only_spec_sync_set_3() {
+    let mut t = T::new(&[(S, Holding::Read)]);
+    t.join(S, A, reader(RA, 1));
+    t.caught(A, S, 0);
+    t.g.records.insert(S, [RA, RB].into());
+    t.at(100);
+    want(&mut t, S, 100);
+    t.pulls.clear();
+    t.at(200);
+    t.g.leave.insert((), Arc::new(BTreeMap::from([(S, 150)])));
+    t.settle();
+    assert_eq!(t.pulls, vec![A], "a fresh Pull at the connected source");
+    assert!(!t.st.heard_since(&S, 150), "caught up from a Pull before the leave");
+    t.caught(A, S, 200);
+    assert!(t.st.heard_since(&S, 150), "the connected source caught up since: RB not waited for");
+    assert_eq!(t.st.of(&S, &t.g).unwrap().pass_waits, Some([RB].into()), "the complete pass still waits for RB");
+    assert!(!t.st.passed_since(&S, 150));
 }
 
 // spec/sync-status.md §1 (complete pass): with no source and no peer to be waited for on S, a pass ends at once.

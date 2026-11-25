@@ -6,15 +6,17 @@
 //! left it while it waits to stop. Every other module follows that (crate::set), so a waiting
 //! sync ID stays open, served, logged into, judged and counted as before until it stops.
 //!
-//! The rule, read or kept unread alike, whatever made S leave: S that left waits for a complete
-//! pass of it begun after it left, unless it has no source (no absent peer is waited for; what
+//! The rule, read or kept unread alike, whatever made S leave: S that left waits for a pass of
+//! it over the sources connected then, begun after it left (every source but those full or
+//! refusing caught up from a Pull sent after: `Status::heard_since`; no recorded peer and no
+//! clock is waited for), unless it has no source (no absent peer is waited for; what
 //! made it leave may be undone by what that pass brings, such as a rotation's thing list arriving
 //! after the rotation), then judges again: the node's keys must still let it hold S as it did
 //! (`Engine::sync_holder`), else it stops at once (its secrets lost, a removal). Then it stops:
 //! its thing is released (if read and still out of the node closure) and its store shredded. Synced again before then, it is kept as it was.
 //!
 //! A thing that left the node closure (`Engine::left_closure`) is released the same way: once
-//! each sync ID that carried it when it left has had a complete pass begun after, or has no
+//! each sync ID that carried it when it left has had such a pass begun after, or has no
 //! source; one that left the local part, at once. Its writes held nowhere else go with it.
 //!
 //! One derived value (`out`): the sync IDs out of the sync set that this node syncs or holds rows
@@ -50,7 +52,8 @@ pub trait Ground {
     fn shred(&mut self, s: &SyncId) -> Result<()>;
     /// The pass place now (`Engine::pass_place`): when S left, in the order passes begin.
     fn pass_seq(&mut self) -> u64;
-    /// A complete pass of S begun after pass place `since` ended (status's, spec/sync-status.md §1).
+    /// A pass of S over the sources connected then, begun after pass place `since`, ended
+    /// (`Status::heard_since`, spec/sync-set.md §3 Release).
     fn passed(&mut self, s: &SyncId, since: u64) -> bool;
     /// The things that left the node closure and are not released yet, each with the sync units
     /// that held it when it left (`Engine::left_closure`), a stamped read.
@@ -63,11 +66,11 @@ pub trait Ground {
     fn release(&mut self, ts: &BTreeSet<Tid>) -> Result<()>;
 }
 
-/// A leaving S: its entry when it left, and the complete pass it waits for.
+/// A leaving S: its entry when it left, and the pass it waits for.
 #[derive(Clone, Debug, PartialEq)]
 struct Left {
     held: Held,
-    /// The pass place a complete pass of S must begin after.
+    /// The pass place the pass of S must begin after.
     since: u64,
 }
 
@@ -79,9 +82,9 @@ enum Wait {
     /// sync set is empty for want of one, not because anything left).
     #[default]
     Not,
-    /// It left and waits for a complete pass begun after it left.
+    /// It left and waits for a pass begun after it left.
     Waiting,
-    /// A complete pass of S since it left, or none with no source: it stops.
+    /// A pass of S since it left, or none with no source: it stops.
     Done,
     /// After that pass, this node's keys no longer hold S as they did: it stops at once.
     Lost,
@@ -97,12 +100,12 @@ pub struct Leave {
     started: bool,
     /// Per sync ID out of the sync set that this node syncs or holds rows of, its judgement.
     out: Effects<SyncId, Wait>,
-    /// Per leaving S, its entry when it left and the pass place it waits for a complete pass
-    /// begun after (`Engine::pass_place`): status runs it (`passes_wanted`), which the wait
+    /// Per leaving S, its entry when it left and the pass place it waits for a pass begun
+    /// after (`Engine::pass_place`): status runs it (`passes_wanted`), which the wait
     /// reads. Stamped: status follows it whole.
     leaving: Stamped<SyncId, Left>,
     /// Per thing that left the node closure and waits to be released: the pass place it left
-    /// at and the sync IDs that carried it then, each waiting for a complete pass begun after
+    /// at and the sync IDs that carried it then, each waiting for a pass begun after
     /// (status runs it, `passes_wanted`). Stamped: status follows it whole.
     releasing: Stamped<Tid, (u64, Vec<SyncId>)>,
     /// Judgements of a sync ID out of the sync set made (tests: what a change costs).
@@ -123,7 +126,7 @@ impl std::fmt::Debug for Leave {
 
 impl Leave {
     /// Follows the sync set into what this node syncs, and stops each sync ID that left it once
-    /// a complete pass after it left ended, or at once with no source (spec/sync-set.md §3).
+    /// a pass after it left ended, or at once with no source (spec/sync-set.md §3).
     /// Whether it acted.
     pub fn settle(&mut self, g: &mut impl Ground) -> Result<bool> {
         let mut acted = false;
@@ -236,7 +239,7 @@ impl Leave {
         self.leaving.contains_key(s)
     }
 
-    /// Per leaving S, the pass place it left at: a complete pass begun after is wanted (status
+    /// Per leaving S, the pass place it left at: a pass begun after is wanted (status
     /// runs it). A stamped read, whole.
     pub fn passes_wanted(&self) -> BTreeMap<SyncId, u64> {
         let mut out: BTreeMap<SyncId, u64> = self.leaving.iter().map(|(s, l)| (*s, l.since)).collect();
@@ -257,8 +260,8 @@ impl Leave {
 }
 
 /// S, out of the sync set: whether it left (its entry: as synced, else as this node's keys hold
-/// it; neither, or no account joined yet: not), noting when it first did; then a complete
-/// pass since it left, then its own keys.
+/// it; neither, or no account joined yet: not), noting when it first did; then a pass since it
+/// left, then its own keys.
 fn judge(g: &mut impl Ground, s: &SyncId, leaving: &mut Stamped<SyncId, Left>) -> Result<Wait> {
     let holder = g.holder(s)?;
     let left = match leaving.get(s) {
@@ -316,7 +319,7 @@ impl Ground for Live<'_, '_> {
         self.cx.engine.pass_place()
     }
     fn passed(&mut self, s: &SyncId, since: u64) -> bool {
-        self.status.passed_since(s, since)
+        self.status.heard_since(s, since)
     }
     fn left(&mut self) -> Result<BTreeMap<Tid, BTreeSet<Tid>>> {
         Ok(self.cx.engine.left_closure())
