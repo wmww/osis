@@ -1,12 +1,20 @@
 //! The cost harness over kit's views (notes/fast-design.md section 4).
 use crate::view_tree::data;
-use osis_kit::testing::check_views;
+use osis_kit::testing::{check_view_scale, check_views};
 
 /// Every registered view: a node reads no address twice, a write to what it did not read runs
 /// nothing, a write to what it read runs exactly that.
 #[test]
 fn every_view_reads_exactly_what_it_shows() {
-    let fails = check_views(&data());
+    let fails = check_views(&data(), |_| true);
+    assert!(fails.is_empty(), "{}", fails.join("\n"));
+}
+
+/// Every registered view that grows: at n and 10n a window of rows at most, and a flat cost to
+/// add one.
+#[test]
+fn every_view_grows_flat() {
+    let fails = check_view_scale(&data());
     assert!(fails.is_empty(), "{}", fails.join("\n"));
 }
 

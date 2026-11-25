@@ -71,9 +71,10 @@ impl Surface for Screen {
     }
 }
 
-/// Every view of `d`'s registry shown from its `sample`, with a search typed and without. Returns
-/// each failure; nothing means every view passed.
-pub fn check_views(d: &Data) -> Vec<String> {
+/// Every view of `d`'s registry that `pick` takes, shown from its `sample`, with a search typed
+/// and without. Returns each failure; nothing means every view passed. Their growth:
+/// `check_view_scale`.
+pub fn check_views(d: &Data, pick: impl Fn(&ViewType) -> bool) -> Vec<String> {
     let mut fails = Vec::new();
     let probe = |t: Tid| put(d, t, PROBE, Some(Value::Int(0)));
     // a thing nothing shows: nothing reads it unless the view shows everything, then its address is
@@ -87,7 +88,7 @@ pub fn check_views(d: &Data) -> Vec<String> {
     };
     probe(other);
     let spare = crate::facets::create(d, "tag").unwrap();
-    for v in d.registry.views.iter().copied() {
+    for v in d.registry.views.iter().copied().filter(|v| pick(v)) {
         let mut reached = Reached::default();
         for query in ["", "a"] {
             let t = (v.sample)(d);
@@ -102,7 +103,13 @@ pub fn check_views(d: &Data) -> Vec<String> {
             fails.push(format!("{}: nothing it read could be moved", v.id));
         }
     }
-    // last: what they grow would make the checks above walk more things
+    fails
+}
+
+/// Every view of `d`'s registry with a `grow`, grown to n and 10n (`check_scale`); on data of its
+/// own, as what they grow would make `check_views` walk more things. Returns each failure.
+pub fn check_view_scale(d: &Data) -> Vec<String> {
+    let mut fails = Vec::new();
     for v in d.registry.views.iter().copied() {
         if let Some(grow) = v.grow {
             check_scale(d, v, grow, &mut fails);
