@@ -14,3 +14,4 @@ osis-engine/order::held_set_decides_plain rate:OSIS_ORDER_SEED=532945376430 issu
 osis-sync/differential::histories_hold_their_closure_plain rate:OSIS_SYNC_START=574265879490,OSIS_SYNC_SEEDS=1 issues/differential-full-size-classes.md node-sync settle loop \(Node::settle\): \d+ rounds, past its bound
 osis-sync/differential::histories_hold_their_closure_plain rate:OSIS_SYNC_START=65054997954,OSIS_SYNC_SEEDS=1 issues/public-pieces-unheld.md panicked: node \d+ reads thing \d+ unlike the reference
 held-model/props::arrival_orders_read_alike_after_repair_large_spec_commits_5 rate:OSIS_HELD_START=92,OSIS_HELD_SEEDS=1 issues/held-arrival-orders-seed-92.md seed \d+ order \d+: \[
+osis-engine/order::held_set_decides_plain rate:OSIS_ORDER_SEED=755979868238 issues/held-set-decides-on-main.md Settled .*what waits for things entering the node closure\): \d+ rounds, past its bound
