@@ -2950,7 +2950,7 @@ impl Seen {
             (Emphasis::RecordOnly, "a mint admin's record edge removed", |s| s.tally.kinds.get("RemoveFlow(record)").is_some_and(|x| x.1 > 0)),
             (Emphasis::Lists, "list elements written, some by a writer predating the undo expiry rule", |s| s.aspects.contains_key("t:listtext.0") && s.tally.kinds.iter().any(|(k, x)| k.ends_with("(old)") && x.1 > 0)),
             (Emphasis::PartsAway, "parts held away and parts left out as covered", |s| s.withheld > 0 && s.covered_away > 0),
-            (Emphasis::Settled, "a settled history judged before its exchange, and held-model judging a live body dropped as covered", |s| s.settled > 0 && s.model.reached.get("live drops judged").is_some_and(|n| *n > 0)),
+            (Emphasis::Settled, "a settled history judged before its exchange", |s| s.settled > 0),
             (Emphasis::Addenda, "an addendum written", |s| s.aspects.contains_key(osis_schema::core_types::ADDENDA_AK)),
         ];
         for (e, what, reached) in checks {
@@ -2958,13 +2958,16 @@ impl Seen {
                 fail(&format!("{e:?} seeds ran, but not {what}"));
             }
         }
-        // every history's `Removals`, as held-model judged them (`held::compare`); every emphasis's
-        // seeds tried with late parts
+        // every history's `Removals`, as held-model judged them in its own held set
+        // (`held::compare`, `Played::own_sets`), but a settled one's: it tries the whole set
+        // alone (`check_orders`), where a role commit waiting puts the roles out of scope;
+        // every emphasis's seeds tried with late parts
+        let settled = format!("{:?}", Emphasis::Settled);
         for (e, s) in by {
             if s.twins.2 == 0 {
                 fail(&format!("{e} seeds ran, but no order with late parts"));
             }
-            for k in crate::held::REMOVALS {
+            for k in crate::held::REMOVALS.iter().filter(|_| *e != settled) {
                 if !s.model.reached.get(k).is_some_and(|n| *n > 0) {
                     fail(&format!("{e} seeds ran, but held-model judged no {k}"));
                 }
@@ -2991,6 +2994,9 @@ impl Seen {
             // about one clocked delivery in fifty moves something: judged over 300 or more
             ("a move of an earlier clock changing a state or a body", open.moved > 0 || open.clocked < 300),
             ("purged or expired deltas judged", open.judged[1] > 0),
+            // most seeds of every emphasis reach it, no seed by construction (an order's early
+            // clock may park the write until its cover arrives): `live_body_dropped_as_covered_is_judged_spec_commits_5`
+            ("held-model judging a live body dropped as covered", open.model.reached.get("live drops judged").is_some_and(|n| *n > 0)),
             ("a reopen after every ingest", open.reopened > 0),
             ("an order with late parts", open.twins.2 > 0),
             ("a sync exchange bringing content back", open.restored > 0),
@@ -4694,6 +4700,27 @@ fn harness_flags_a_live_drop_before_its_live_bound_spec_commits_5() {
     assert!(d.contains("live") && d.contains(kept.as_str()), "{d}");
     assert_eq!(cov.differs.get("dropped a live body before its live bound"), Some(&1), "{:?}", cov.differs);
     assert_eq!(cov.reached.get("live drops judged"), Some(&2), "{:?}", cov.reached);
+}
+
+// spec/commits.md §5 Kept while live: 0 writes G's plain register and compacts it. A node given
+// both in turn holds the write, then drops it as covered (`drop_covered`, as after every ingest):
+// held-model judges that drop of a live body (past its live bound, so rightly dropped). Generated
+// histories reach it only where an order's early clock leaves the write applied before its
+// cover arrives.
+#[test]
+fn live_body_dropped_as_covered_is_judged_spec_commits_5() {
+    use Step::*;
+    let h = vec![Typed { by: 0, t: 0, op: 0, k: 0, v: 1 }, Advance { who: None, ms: 10 }, Compact { by: 0, t: 0, op: 0 }];
+    let played = play(0, &h);
+    let hist = crate::held::History::new(&played.packs);
+    let n = played.packs.len();
+    assert!(osis_commit::CommitBlob::decode(&played.packs[n - 1].bytes).unwrap().header.kind.is_compaction(), "{:?}", played.tally.show());
+    let drops = std::cell::RefCell::new(crate::held::Drops::default());
+    let (mut cov, mut differs) = (crate::held::Coverage::default(), Vec::new());
+    deliver_with(&played, &(0..n).collect::<Vec<_>>(), None, None, Some(&drops), &mut |p| differs.extend(crate::held::compare(&mut p.engine, &hist, &mut cov, Some(&mut drops.borrow_mut()), None)));
+    assert_eq!(differs, Vec::<String>::new());
+    assert!(played.dropped.load(std::sync::atomic::Ordering::Relaxed) > 0, "the write dropped as covered");
+    assert_eq!(cov.reached.get("live drops judged"), Some(&1), "{:?}", cov.reached);
 }
 
 // The harness's covered-drop check judges a drop of a body last seen out of scope by that body
