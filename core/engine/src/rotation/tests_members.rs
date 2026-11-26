@@ -2005,6 +2005,45 @@ fn left_out_on_an_invalidated_rotation_ends_with_one_rekey_spec_crypto_4() {
     assert_eq!(newest_read(&lp, 2, m).unwrap().n(), km.unwrap().n() + 1, "M re-keyed once");
 }
 
+// spec/crypto.md §4 (Left out: a commit writing a keyset stands as a rotation, whatever its edge
+// writes), model `LO_rot`: as above, but P's rotation of N is its removal of Z, in one commit
+// writing both the edge and N's keyset. Once everything is held the removal is invalid, so Z
+// never left; it stands all the same as the rotation it also is, and M re-keys once. Fails with
+// the cause judged by its edge writes first (an invalid departure voiding the record).
+#[test]
+fn left_out_on_an_invalidated_removal_rotation_stands_as_a_rotation_spec_crypto_4() {
+    let mut lp = synced(5);
+    let [z, p, _, _, w] = std::array::from_fn(|i| lp.peers[i].engine.tid());
+    let n = independent_thing(&mut lp, 3);
+    lp.peers[3].engine.grant(&n, &p, &edge(Role::Admin)).unwrap();
+    lp.peers[3].engine.grant(&n, &z, &edge(Role::Read)).unwrap();
+    lp.sync_all().unwrap();
+    let m = independent_thing(&mut lp, 2);
+    lp.peers[2].engine.grant(&m, &n, &edge(Role::Read)).unwrap();
+    lp.sync_all().unwrap();
+    let g = independent_thing(&mut lp, 0);
+    lp.peers[0].engine.grant(&g, &m, &edge(Role::Read)).unwrap();
+    lp.peers[0].engine.grant(&g, &w, &edge(Role::Admin)).unwrap();
+    lp.sync_all().unwrap();
+    let before = commit_ids(&mut lp, 1);
+    removal(&mut lp, 1, n, z);
+    let new: Vec<CommitId> = commit_ids(&mut lp, 1).difference(&before).copied().collect();
+    let [p_rm] = new.as_slice() else { panic!("one commit: {new:?}") };
+    assert!(lp.peers[1].engine.core.ix.held.edge_commit(p_rm).is_some() && super::members::writes_keyset(&lp.peers[1].engine.core, p_rm), "an edge write and a keyset");
+    lp.peers[3].engine.demote(&n, &Demotion { holder: p, new: Some(edge(Role::Read)), retain: None }).unwrap();
+    lp.sync(1, 4).unwrap();
+    rotate_skipping(&mut lp, 4, g, &BTreeSet::from([Role::Read]), &[]);
+    assert_eq!(sealed_at(&mut lp, 4, g, m), None, "W leaves M out");
+    let rec = recorded(&lp, 4, g, m);
+    assert!(rec.len() == 1 && rec.values().all(|c| c.contains(p_rm)), "the record names P's removal: {rec:?}");
+    let km = newest_read(&lp, 2, m);
+    lp.sync_all().unwrap();
+    assert!(!lp.peers[0].engine.departures(&n).unwrap().iter().any(|x| x.holder == z), "the removal is invalid: Z never left");
+    settle(&mut lp, &[0, 1, 2, 3, 4], &[n, m, g]);
+    assert!(all_boxed(&mut lp, 0, &[g]), "M ends boxed at G's current epochs");
+    assert_eq!(newest_read(&lp, 2, m).unwrap().n(), km.unwrap().n() + 1, "M re-keyed once");
+}
+
 /// The keysets of `m` (each with its causes) peer `i` finds `a`'s current read keysets record.
 fn recorded(lp: &LocalPeer, i: usize, a: Tid, m: Tid) -> std::collections::BTreeMap<Epoch, BTreeSet<CommitId>> {
     let ix = &lp.peers[i].engine.core.ix.keysets;

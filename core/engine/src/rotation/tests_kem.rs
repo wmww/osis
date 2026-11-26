@@ -123,6 +123,38 @@ fn kem_key_due_ends_a_lockout_spec_crypto_3() {
     assert!(named.contains(&k), "A boxes M at its newest keyset: {named:?}, {k:?}");
 }
 
+// spec/crypto.md §4 (Seal: a candidate carries a KEM key or its secret is held), KemKeys.tla
+// `KK_fallback`: peer 2, no member of M, grants M read on A, sealing at M's keyset k1 (with KEM
+// keys: M reads X). M leaves X and peer 0 rotates M to k2, with no KEM key. Before KEM key due,
+// peer 2 holds k2 and no secret of it: its rotation of A leaves M out, never sealing at k1, which
+// the party M's maker removed may hold. Fails with Seal falling back to k1 below the KEM-less
+// newest keyset (`KK_fallback`).
+#[test]
+fn a_kem_less_keyset_leaves_its_holder_out_spec_crypto_4() {
+    let mut lp = synced(3);
+    let m = plain(&mut lp, 0, &[0, 2]);
+    let x = plain(&mut lp, 0, &[0]);
+    lp.peers[0].engine.grant(&x, &m, &edge(Role::Read)).unwrap();
+    lp.sync_all().unwrap();
+    let a = plain(&mut lp, 2, &[2]);
+    lp.peers[2].engine.grant(&a, &m, &edge(Role::Read)).unwrap();
+    let k1 = osis_keys::aspects::from_schema(&read_epoch(&mut lp, 2, m)).unwrap();
+    // the keysets of M that A's boxes to M at A's current read epochs name, at peer 2
+    let boxed_at = |lp: &mut LocalPeer| {
+        let current = lp.peers[2].engine.epochs(&a).unwrap().read.current();
+        let s = lp.peers[2].engine.get_typed(&a, &ct::SECRETS).unwrap().unwrap();
+        let at = |x: &ct::BoxKey| osis_keys::aspects::from_schema(&x.epoch).is_ok_and(|e| current.contains(&e));
+        s.boxes.iter().filter(|(x, _)| x.holder == m.into() && x.role == Role::Read && at(x)).flat_map(|(_, b)| osis_keys::box_keysets(b)).collect::<BTreeSet<_>>()
+    };
+    assert_eq!(boxed_at(&mut lp), BTreeSet::from([k1]), "M boxed at k1");
+    lp.peers[0].engine.demote(&x, &Demotion { holder: m, new: None, retain: None }).unwrap();
+    rotate_as(&mut lp, 0, m, &BTreeSet::from([Role::Sync, Role::Read]), &[]).unwrap();
+    assert_eq!(kem_roles(&mut lp, 0, m), BTreeSet::new(), "k2 carries no KEM key");
+    lp.sync_all().unwrap();
+    assert_ne!(osis_keys::aspects::from_schema(&read_epoch(&mut lp, 2, m)).unwrap(), k1, "peer 2 holds k2");
+    rotate_as(&mut lp, 2, a, &BTreeSet::from([Role::Sync, Role::Read]), &[]).unwrap();
+    assert_eq!(boxed_at(&mut lp), BTreeSet::new(), "M left out, not sealed at k1");
+}
 
 // A reader of H, neither writer nor holding a card, holds H's current `keys.0` (the newest it
 // holds, carrying KEM keys: H reads X): its grant to H stands, sealed at H's newest read keyset

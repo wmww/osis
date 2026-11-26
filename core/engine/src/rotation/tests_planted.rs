@@ -365,3 +365,25 @@ fn a_demoted_admins_step_splits_nobody_spec_sync_set_2() {
     assert!(reads_key(&mut lp, 0, y, "by R") && reads_key(&mut lp, 2, y, "by A"), "A and R split on Y");
 }
 
+
+// spec/sync-set.md §2 (Counts as independent: a step is an admin's word), spec/permissions.md
+// §5.2: D (peer 1), an admin of g, writes a step and a box to R (peer 2) on Y, a dependent of g,
+// with no keyset, and is lowered to write after (its demoter holding the plant). The `sync.0`
+// write judged at its point stays valid, so the step places everywhere and counts at the boxed
+// node alone: Y independent at R, dependent at A (peer 0), a restart of R alike. Fails with the
+// step of a since-demoted admin dropped, or with a step not counting a box's thing independent.
+#[test]
+fn an_admins_step_counts_at_the_boxed_node_after_its_demotion_spec_sync_set_2() {
+    let (mut lp, g, tids) = granted(3, &[(1, Role::Admin), (2, Role::Write)]);
+    let y = dependent_of(&mut lp, g);
+    plant_step_box(&mut lp, 1, y, tids[2], 60);
+    lp.sync_all().unwrap();
+    lp.peers[0].engine.demote(&g, &crate::flows::Demotion { holder: tids[1], new: Some(edge(Role::Write)), retain: None }).unwrap();
+    lp.sync_all().unwrap();
+    lp.peers[2].restart(7).unwrap();
+    for i in 0..3 {
+        assert!(lp.peers[i].engine.core.ix.steps.get(&y).is_some(), "peer {i} places the step: valid at its point");
+    }
+    assert_eq!(lp.peers[2].engine.core.secret_actor(&y), Some(y), "R counts Y independent by its box and the step");
+    assert_eq!(lp.peers[0].engine.core.secret_actor(&y), Some(g), "A, boxed nothing, counts Y dependent");
+}

@@ -355,7 +355,7 @@ pub(crate) fn keyset_commit(core: &Core, x: &Tid, r: Role, e: &Epoch) -> Option<
 }
 
 /// Whether held commit `c` has a `keys.0` part writing a keyset (`Indexes::keyset_parts`).
-fn writes_keyset(core: &Core, c: &CommitId) -> bool {
+pub(super) fn writes_keyset(core: &Core, c: &CommitId) -> bool {
     core.ix.commits.get(c).is_some_and(|m| m.view.aspects.iter().any(|a| a.ak.as_str() == "keys.0" && core.ix.keyset_parts.get(&a.tid).is_some_and(|s| s.contains(c))))
 }
 
