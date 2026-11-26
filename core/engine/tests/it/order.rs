@@ -1771,7 +1771,20 @@ fn later_than(played: &Played) -> WallMs {
 /// node's own count and pulls (`give`) decide: a node that fails to count a body missing never
 /// gets it back.
 fn fetch_missing(p: &mut Peer, played: &Played, held: &[usize]) {
-    let missing = |p: &Peer| -> BTreeSet<CommitId> { p.engine.commit_parts_missing().into_iter().filter(|(_, m)| !m.is_empty()).map(|(c, _)| c).collect() };
+    // a part missing, or a snapshot held as its leftover lacking a write no longer gone (its
+    // purge fell): each counts as never received for fetching (spec/permissions.md §6, as
+    // node-sync's `read_facts` judges it)
+    let missing = |p: &mut Peer| -> BTreeSet<CommitId> {
+        let mut out: BTreeSet<CommitId> = p.engine.commit_parts_missing().into_iter().filter(|(_, m)| !m.is_empty()).map(|(c, _)| c).collect();
+        for &i in held {
+            let id = played.packs[i].id;
+            let n = p.engine.header(&id).map_or(0, |h| h.aspects.len());
+            if (0..n).any(|ai| p.engine.part_short(&id, ai)) {
+                out.insert(id);
+            }
+        }
+        out
+    };
     let mut was = missing(p);
     while !was.is_empty() {
         for &i in held.iter().filter(|&&i| was.contains(&played.packs[i].id)) {
@@ -5147,4 +5160,17 @@ fn a_path_opened_up_a_released_things_record_chain_waits_spec_wire_4() {
     use Step::*;
     let h = vec![Aim(Box::new(Edge { by: 0, t: 6, holder: 2, role: None })), Aim(Box::new(RecordOnly { by: 2, admin: Some(0) })), Aim(Box::new(New { by: 0, admin: 1, write: false })), Forged { by: 1, a: 1, b: 2, how: 1, op: 28, k: 2, v: 5 }, Sync { from: 1, to: 0 }];
     check(0, &h, Cfg { away: true, ..NAMED }).unwrap();
+}
+
+// spec/permissions.md §6 (a snapshot held as its leftover lacking a write no longer gone counts
+// as never received for fetching): 0 writes a setting with "beside" on the register and compacts
+// it; 2 purges the register's every delta, and 0 demotes 2, so the purge falls. A node that took
+// the purge holds 0's snapshot stripped of "beside" and the setting's write dropped under it; the
+// sync exchange fetches the snapshot again and it reads "beside". Failed while the harness's
+// exchange fetched missing parts alone.
+#[test]
+fn a_leftover_short_of_a_fallen_purge_is_fetched_in_the_exchange_spec_permissions_6() {
+    use Step::*;
+    let h = vec![Setting { by: 0, t: 0, op: 16, rule: 3 }, Setting { by: 2, t: 0, op: 16, rule: 2 }, Aim(Box::new(Purge { by: 2, t: 1, of: 1, back: 3, v: 7 })), Aim(Box::new(Demote { by: 0, t: 0, holder: 2, at: 2, to_read: false }))];
+    check(0, &h, Cfg { random: 6, partial: 6, ..ORDERS }).unwrap();
 }
