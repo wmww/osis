@@ -31,7 +31,7 @@ osis-schema/it 1.8
 osis-schema/osis_schema 0.0013
 osis-sim/it 21
 osis-sim/osis_sim 0.0013
-osis-store/it 37
+osis-store/it 17
 osis-store/osis_store 2.6
 osis-sync/it 1800
 osis-sync/osis_sync 0.71
