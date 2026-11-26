@@ -70,8 +70,9 @@ pub(super) struct Serve {
     /// Members reported at a position of their own (a join not merged yet).
     own: BTreeSet<SyncId>,
     /// Blobs whose bytes went inline in a message asking a report, with the last such message's
-    /// number, until an Applied covers it: the peer holds them or is taking them, so they go
-    /// inline no more under any sync ID (`peer_holds_blob`); once applied, its stream shows them.
+    /// number, until an Applied covers it or it leaves `asked`: the peer holds them or is taking
+    /// them, so they go inline no more under any sync ID (`peer_holds_blob`); once applied, its
+    /// stream shows them. At most the blobs of `REPORTS_KEPT` messages.
     inlined: BTreeMap<BlobId, u64>,
 }
 
@@ -85,8 +86,12 @@ impl Serve {
     fn served(&mut self, events: &[(SyncId, Event)], cursor: Cursor) {
         self.sent += 1;
         self.asked.push_back((cursor, self.sent));
-        if self.asked.len() > REPORTS_KEPT {
-            self.asked.pop_front();
+        // a message no Applied can name alone: its blobs may go inline again (`inlined` stays
+        // within the newest `REPORTS_KEPT` messages, whether or not the peer reports)
+        if self.asked.len() > REPORTS_KEPT
+            && let Some((_, n)) = self.asked.pop_front()
+        {
+            self.inlined.retain(|_, x| *x > n);
         }
         for (s, e) in events {
             self.unapplied.insert(*s, self.sent);

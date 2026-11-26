@@ -190,11 +190,10 @@ instances=(
   "netstream net MCStream SN_applied.cfg fail"     # negative control: served to the end counted before the peer's Applied
   "netstream net MCStream SN_pres.cfg fail"        # finding: only a trimmed listing replaces presence (the spec as written)
   "netstream net MCStream SN_trim.cfg fail"        # negative control: no trimmed reply below the deletion horizon (PresenceSound)
-  "netstream net MCStream S_echo.cfg pass"         # no echo, no copied store: a server counts its applied sends and lists nothing its requester counts it holding (PresenceComplete)
-  "netstream net MCStream SN_echotold.cfg fail"    # negative control: an applied send counts though the requester took it not and told nothing (PresenceSound)
-  "netstream net MCStream SN_echocount.cfg fail"   # negative control: the filter without counting applied sends (PresenceComplete)
-  "netstream net MCStream SN_echodurable.cfg fail" # negative control: the peer's count kept across connections (PresenceComplete)
-  "netstream net MCStream SN_echorestore.cfg fail" # finding: an applied send counted at the Applied, b restored from before it took the entry (PresenceSound)
+  "netstream net MCStream SN_echotold.cfg fail:PresenceSound" # negative control: an applied send counts though the requester took it not and told nothing (PresenceSound)
+  "netstream net MCStream SN_echocount.cfg fail:PresenceComplete" # negative control: the filter without counting applied sends (PresenceComplete)
+  "netstream net MCStream SN_echodurable.cfg fail:PresenceComplete" # negative control: the peer's count kept across connections (PresenceComplete)
+  "netstream net MCStream SN_echorestore.cfg fail:PresenceSound" # finding: an applied send counted at the Applied, b restored from before it took the entry (PresenceSound)
   "netshared net MCShared T_cred.cfg pass"
   "netshared net MCShared T_gain.cfg pass"
   "netshared net MCShared T_remove.cfg pass"

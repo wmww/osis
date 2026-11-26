@@ -2191,6 +2191,80 @@ fn a_blob_held_under_one_sync_id_goes_inline_under_no_other_spec_sync_streams_4(
     assert_eq!(p.seen.iter().filter(|(ab, _)| *ab).map(|(_, m)| inline(m)).sum::<usize>(), 1, "its bytes cross once");
 }
 
+/// The events of `m` (a reply or a push) adding blob `x`, and whether each carried its bytes.
+fn adds_of(m: &Msg, x: BlobId) -> Vec<(SyncId, bool, [u8; WRAP_LEN])> {
+    let evs = match m {
+        Msg::PullReply(r) => &r.events,
+        Msg::Stream(st) => &st.events,
+        _ => return Vec::new(),
+    };
+    evs.iter().filter_map(|(s, e)| match e {
+        Event::Added { blob_id, blob, wrap, .. } if *blob_id == x => Some((*s, blob.is_some(), *wrap)),
+        _ => None,
+    }).collect()
+}
+
+// spec/sync-streams.md §4 (Bodies): bytes are shared between sync IDs, wraps are not: the entry
+// taken under the second sync ID with the bytes held under the first keeps its own wrap.
+#[test]
+fn a_blob_taken_with_bytes_held_elsewhere_keeps_its_own_wrap_spec_sync_streams_4() {
+    let (s1, s2) = (sid(1), sid(2));
+    let mut p = Pair::sharing(&[s1, s2]);
+    p.b.table.held = Some(true);
+    let x = p.a.log(s1, 100);
+    p.run();
+    let (_, bytes) = blob(100, Class::Durable);
+    let e = Entry { blob: x, wrap: [7; WRAP_LEN], stamp: None, deposited: false, own: true, role: false, class: Class::Durable, expires: None };
+    assert_eq!(p.a.store.log(&s2, e, Some(bytes), None).unwrap(), Code::OK);
+    p.run();
+    assert!(p.seen.iter().filter(|(ab, _)| *ab).flat_map(|(_, m)| adds_of(m, x)).any(|(s, inl, _)| s == s2 && !inl), "announced under S2 without its bytes");
+    assert_eq!(p.b.store.entry(&s1, &x).unwrap().unwrap().wrap, [100; WRAP_LEN]);
+    assert_eq!(p.b.store.entry(&s2, &x).unwrap().unwrap().wrap, [7; WRAP_LEN], "S2's wrap, not S1's");
+}
+
+// spec/sync-streams.md §4 (Bodies): the requester's copy gone by the time an entry of the blob
+// arrives without bytes (a's view of b's stream still shows it): b fetches it, nothing lost.
+#[test]
+fn a_blob_dropped_under_one_sync_id_before_another_announces_it_is_fetched_spec_sync_streams_4() {
+    let (s1, s2) = (sid(1), sid(2));
+    let mut p = Pair::sharing(&[s1, s2]);
+    p.b.table.held = Some(true);
+    let x = p.a.log(s1, 100);
+    p.run();
+    assert!(knows(&p.a, p.a.src(), s1, x), "b's stream shows it to a");
+    p.b.store.drop_entry(&s1, &x, Vec::new()).unwrap();
+    assert!(p.b.store.blob_len(&x).unwrap().is_none(), "b holds no bytes of it");
+    p.a.log(s2, 100);
+    p.run();
+    assert!(p.seen.iter().filter(|(ab, _)| *ab).flat_map(|(_, m)| adds_of(m, x)).any(|(s, inl, _)| s == s2 && !inl), "announced under S2 without its bytes");
+    assert!(p.b.store.entry(&s2, &x).unwrap().is_some(), "fetched under S2");
+    assert!(p.b.store.blob_len(&x).unwrap().is_some());
+}
+
+// spec/wire.md §11.2 Pull: bytes sent inline in a message lost with its connection were not
+// sent there: the next connection sends them inline again.
+#[test]
+fn a_blob_inlined_in_a_lost_message_goes_inline_on_the_next_connection_spec_sync_streams_4() {
+    let (s1, s2) = (sid(1), sid(2));
+    let mut p = Pair::sharing(&[s1, s2]);
+    p.b.table.held = Some(true);
+    p.run();
+    let x = p.a.log(s1, 100);
+    p.run_with(|ab, m| ab && !adds_of(m, x).is_empty());
+    p.a.log(s2, 100);
+    p.run_with(|ab, m| ab && !adds_of(m, x).is_empty());
+    let lost: Vec<_> = p.held.drain(..).flat_map(|(_, f)| adds_of(&f.msg(), x)).collect();
+    assert_eq!(lost.iter().map(|(s, inl, _)| (*s, *inl)).collect::<Vec<_>>(), [(s1, true), (s2, false)], "inline once, then not, both lost");
+    p.a.streams.closed(C);
+    p.b.streams.closed(C);
+    let n = p.seen.len();
+    p.join(s1);
+    p.join(s2);
+    p.run();
+    assert!(p.seen[n..].iter().filter(|(ab, _)| *ab).flat_map(|(_, m)| adds_of(m, x)).any(|(_, inl, _)| inl), "inline again on the new connection");
+    assert!(p.b.store.entry(&s1, &x).unwrap().is_some() && p.b.store.entry(&s2, &x).unwrap().is_some());
+}
+
 // spec/sync-streams.md §4 (Costs): a push costs the events since the cursor, whatever the log
 // holds: one new event read at n and at 10n entries.
 #[test]
