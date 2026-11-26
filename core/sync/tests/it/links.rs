@@ -2,19 +2,40 @@
 //! the redeemer dials the sharer node by the link's hints, opens K by the link key's static entry,
 //! takes the head's entry box, pulls K and joins.
 
-use crate::harness::{World, edge, two_nodes};
+use crate::harness::{World, edge, fixture, two_nodes};
 use osis_base::Role;
 use osis_blob::ShareLink;
 use osis_sync::types::Waiting;
 
-/// Node 0 makes a read link to its profile; node 1 redeems it; run to quiet.
-fn redeemed() -> (World, ShareLink) {
+/// Node 0 makes a read link to its profile; node 1 redeems it (cut off from node 0 when `apart`).
+fn redeeming(apart: bool) -> (World, ShareLink) {
     let mut w = two_nodes();
     let p0 = w.node(0).profile.unwrap();
     let link = w.make_link(0, p0, Role::Read);
+    if apart {
+        w.partition(0, 1);
+    }
     assert_eq!(w.redeem(1, &link), Waiting::Pending);
+    (w, link)
+}
+
+/// `redeeming(false)`, run to quiet.
+fn redeemed() -> (World, ShareLink) {
+    let (mut w, link) = redeeming(false);
     w.run();
     (w, link)
+}
+
+/// Three nodes, each with an account of its own, quiet. Built once per process (`fixture`).
+fn three_nodes() -> World {
+    fixture("links three nodes", || {
+        let mut w = World::new(0);
+        for _ in 0..3 {
+            w.add_node();
+        }
+        w.run();
+        w
+    })
 }
 
 // spec/sync-inbox.md §6 (First contact), spec/sync-set.md §2 (Sync set: a link's sync ID while
@@ -128,11 +149,7 @@ fn an_ended_link_is_not_redeemed_spec_permissions_7() {
 // epoch it supersedes); the join waits for the keyset, never fails for want of it.
 #[test]
 fn a_third_redeemer_sharing_another_link_joins_spec_permissions_7() {
-    let mut w = World::new(0);
-    for _ in 0..3 {
-        w.add_node();
-    }
-    w.run();
+    let mut w = three_nodes();
     let links: Vec<ShareLink> = (0..3).map(|i| {
         let p = w.node(i).profile.unwrap();
         w.make_link(i, p, Role::Read)
@@ -223,11 +240,7 @@ fn a_joiner_leaves_k_by_its_clock_alone_spec_permissions_7() {
 // deposited and promoted. It verifies at node 2, which does not hold node 1's node thing.
 #[test]
 fn a_link_keys_promoted_grant_verifies_where_the_redeemers_node_is_not_held_spec_sync_judgement_2() {
-    let mut w = World::new(0);
-    for _ in 0..3 {
-        w.add_node();
-    }
-    w.run();
+    let mut w = three_nodes();
     let p0 = w.node(0).profile.unwrap();
     let link = w.make_link(0, p0, Role::Read);
     w.redeem(2, &link);
@@ -251,11 +264,7 @@ fn a_link_keys_promoted_grant_verifies_where_the_redeemers_node_is_not_held_spec
 #[test]
 fn a_link_whose_sharer_never_answers_is_given_up_spec_sync_inbox_6() {
     use osis_sync::types::FOLLOW_LINK_MS;
-    let mut w = two_nodes();
-    let p0 = w.node(0).profile.unwrap();
-    let link = w.make_link(0, p0, Role::Read);
-    w.partition(0, 1);
-    assert_eq!(w.redeem(1, &link), Waiting::Pending);
+    let (mut w, link) = redeeming(true);
     // the restart off the redial pace's grid (`REDIAL_MS` from each dial), so only the follow
     // time's own wake ticks node 1 at it
     let off = FOLLOW_LINK_MS / 2 + 7_001;
@@ -291,11 +300,7 @@ fn a_link_whose_sharer_never_answers_is_given_up_spec_sync_inbox_6() {
 #[test]
 fn a_sharer_answering_before_the_follow_time_is_joined_spec_sync_inbox_6() {
     use osis_sync::types::FOLLOW_LINK_MS;
-    let mut w = two_nodes();
-    let p0 = w.node(0).profile.unwrap();
-    let link = w.make_link(0, p0, Role::Read);
-    w.partition(0, 1);
-    assert_eq!(w.redeem(1, &link), Waiting::Pending);
+    let (mut w, link) = redeeming(true);
     w.advance(FOLLOW_LINK_MS - 60_000);
     w.heal();
     w.run();
@@ -312,11 +317,7 @@ fn a_sharer_answering_before_the_follow_time_is_joined_spec_sync_inbox_6() {
 #[test]
 fn a_joined_redeem_is_followed_past_the_follow_time_until_its_join_is_held_spec_permissions_7() {
     use osis_sync::types::FOLLOW_LINK_MS;
-    let mut w = two_nodes();
-    let p0 = w.node(0).profile.unwrap();
-    let link = w.make_link(0, p0, Role::Read);
-    w.partition(0, 1);
-    assert_eq!(w.redeem(1, &link), Waiting::Pending);
+    let (mut w, link) = redeeming(true);
     w.advance(FOLLOW_LINK_MS - 60_000);
     w.heal();
     // one input at a time, so node 0 is cut off right after node 1 writes the join
@@ -431,11 +432,7 @@ fn a_paired_node_restarted_before_first_contact_still_dials_the_pairer_spec_sync
 // lets K1's grant on the target apply, and the join is written.
 #[test]
 fn a_held_commits_sealed_part_opens_once_its_things_secrets_arrive_spec_sync_streams_4() {
-    let mut w = World::new(0);
-    for _ in 0..3 {
-        w.add_node();
-    }
-    w.run();
+    let mut w = three_nodes();
     let links: Vec<ShareLink> = (0..2).map(|i| {
         let p = w.node(i).profile.unwrap();
         w.make_link(i, p, Role::Read)

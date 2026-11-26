@@ -574,9 +574,8 @@ fn a_resumed_record_sends_additions_first_spec_sync_opens_5() {
 
 /// Two readers sharing sync IDs 1 to 4 (room in the whole filter for later additions); `a`
 /// comes to hold sync ID 5 and sends its additions, whose answer is lost with the connection
-/// (`b` read them when `stored`); they connect again. The bases of `a`'s generations on the new
-/// connection, and the codes `b` answered them with.
-fn after_a_lost_answer(stored: bool) -> (Vec<Option<u64>>, Vec<Code>) {
+/// (`b` read them when `stored`), closed.
+fn answer_lost(stored: bool) -> Pair {
     let st = StepKeys::new(1, 0);
     let mut a = Side::new(1);
     let mut b = Side::new(2);
@@ -600,6 +599,13 @@ fn after_a_lost_answer(stored: bool) -> (Vec<Option<u64>>, Vec<Code>) {
         }
     }
     p.close();
+    p
+}
+
+/// `answer_lost(stored)`, connected again: the bases of `a`'s generations on the new connection,
+/// and the codes `b` answered them with.
+fn after_a_lost_answer(stored: bool) -> (Vec<Option<u64>>, Vec<Code>) {
+    let mut p = answer_lost(stored);
     p.log.clear();
     p.connect(2, account(1), account(2));
     p.run();
@@ -634,24 +640,7 @@ fn a_lost_answer_costs_no_whole_filter_spec_sync_opens_5() {
 #[test]
 fn additions_after_a_lost_answer_keep_both_counts_alike_spec_sync_opens_5() {
     let st = StepKeys::new(1, 0);
-    let mut a = Side::new(1);
-    let mut b = Side::new(2);
-    for i in 1..=4 {
-        for x in [&mut a, &mut b] {
-            x.table.set(sid(i), Some(reader(&sid(i), &read_secret(i, 0), &st, &[], &[], &[])));
-            x.settle();
-        }
-    }
-    let mut p = Pair::new(a, b, account(1), account(2));
-    p.run();
-    p.a.table.set(sid(5), Some(reader(&sid(5), &read_secret(5, 0), &st, &[], &[], &[])));
-    p.a.settle();
-    for (c, m) in p.a.sent() {
-        if c == p.ca {
-            p.b.take(p.cb, incoming(m));
-        }
-    }
-    p.close();
+    let mut p = answer_lost(true);
     p.connect(2, account(1), account(2));
     p.run();
     p.log.clear();
@@ -2514,7 +2503,7 @@ fn away_and_back(one: crate::harness::history::Gives) -> (crate::harness::World,
     use crate::harness::history::{Gives, world_of};
     crate::harness::fixture_with(&format!("opens away and back {one:?}"), || {
         let mut w = world_of(0, 3, 3);
-        w.cap = 2_000_000;
+        w.cap = crate::harness::WIDE_CAP;
         let _ = crate::harness::play(&mut w, &[New(0), Grant(0, 0, 1, one), Grant(0, 0, 2, Gives::Reads), Run], String::new());
         let t = w.history.things[0].0;
         let s = w.engine(0).sync_id_of(&t).unwrap().unwrap();

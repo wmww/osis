@@ -18,7 +18,7 @@ use osis_schema::core_types as ct;
 /// Node 0 admin, node 1 keeping S unread, node 2 a writer (`history::three`, shared).
 fn three() -> (World, Tid, SyncId) {
     let (mut w, t, s) = three_of(Gives::Writes, 2);
-    w.cap = 20_000;
+    w.cap = crate::harness::WIDE_CAP;
     (w, t, s)
 }
 
@@ -26,7 +26,7 @@ fn three() -> (World, Tid, SyncId) {
 pub(crate) fn four() -> (World, Tid, SyncId) {
     let (w, (t, s)) = fixture_with("deletes four", || {
         let mut w = world_of(0, 4, 4);
-        w.cap = 20_000;
+        w.cap = crate::harness::WIDE_CAP;
         let _ = play(&mut w, &[New(0), Grant(0, 0, 1, Gives::Syncs), Grant(0, 0, 2, Gives::Writes), Grant(0, 0, 3, Gives::Writes), Run], String::new());
         let t = w.history.things[0].0;
         let s = w.engine(0).sync_id_of(&t).unwrap().unwrap();
@@ -515,7 +515,7 @@ fn make_held(w: &mut World) -> Tid {
 #[test]
 fn strips_of_two_parts_by_nodes_apart_meet_at_a_node_reading_neither_spec_sync_judgement_1() {
     let mut w = world_of(0, 4, 4);
-    w.cap = 20_000;
+    w.cap = crate::harness::WIDE_CAP;
     let [a, b, c] = [0; 3].map(|_| make_held(&mut w));
     for (i, ts) in [(1, vec![a, c]), (2, vec![b, c]), (3, vec![c])] {
         let to = w.node(i).account.unwrap();

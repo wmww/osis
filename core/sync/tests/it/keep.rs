@@ -23,7 +23,6 @@ use osis_engine::sync::Holding;
 fn a_head_move_restamps_own_entries_and_readers_deposit_nothing_spec_sync_judgement_3() {
     use crate::harness::history::{Gives, three, value_ak};
     let (mut w, t, s) = three(Gives::Reads, 2);
-    w.cap = 20_000;
     assert_eq!(w.engine(1).sync_holder(&s).unwrap(), Some(([t].into(), Holding::Unread)));
     assert_eq!(w.engine(2).sync_holder(&s).unwrap(), Some(([t].into(), Holding::Read)));
     w.power_off(1);
@@ -112,7 +111,6 @@ fn a_head_move_restamps_own_entries_and_readers_deposit_nothing_spec_sync_judgem
 fn a_store_moved_step_by_step_holds_what_each_step_waits_on_spec_sync_ids_6() {
     use crate::harness::history::{Gives, three};
     let (mut w, t, s) = three(Gives::Reads, 2);
-    w.cap = 20_000;
     let path = |w: &mut World| w.engine(0).sync_ids(&t).unwrap().iter().find(|o| o.id == s).unwrap().path.clone();
     let before = path(&mut w).steps.len();
     w.power_off(1);
@@ -164,7 +162,7 @@ fn a_reader_moves_a_removed_store_past_its_keys_spec_sync_opens_6() {
     use crate::harness::Step::*;
     use crate::harness::history::{Gives, Holder, three};
     let (mut w, t, s) = three(Gives::Reads, 2);
-    w.cap = 20_000;
+    w.cap = crate::harness::WIDE_CAP;
     assert_eq!(w.engine(1).sync_holder(&s).unwrap(), Some(([t].into(), Holding::Unread)));
     assert!(!w.store(1).entries(&s).unwrap().is_empty(), "node 1 keeps S");
     w.partition(0, 1);
@@ -188,7 +186,7 @@ fn a_reader_moves_a_removed_store_it_never_showed_its_step_spec_sync_opens_6() {
     use crate::harness::Step::*;
     use crate::harness::history::{Gives, Holder, world_of};
     let mut w = world_of(0, 3, 3);
-    w.cap = 20_000;
+    w.cap = crate::harness::WIDE_CAP;
     w.partition(1, 2);
     let _ = crate::harness::play(&mut w, &[New(0), Grant(0, 0, 1, Gives::Syncs), Grant(0, 0, 2, Gives::Reads), Run], String::new());
     let t = w.history.things[0].0;
@@ -213,7 +211,6 @@ fn a_reader_moves_a_store_departed_before_it_kept_s_unread_spec_sync_opens_6() {
     use crate::harness::Step::*;
     use crate::harness::history::{Gives, Holder, world_of};
     let mut w = world_of(0, 2, 2);
-    w.cap = 20_000;
     let _ = crate::harness::play(&mut w, &[New(0), Grant(0, 0, 1, Gives::Writes), Run], String::new());
     let t = w.history.things[0].0;
     let s = w.engine(0).sync_id_of(&t).unwrap().unwrap();
@@ -356,7 +353,7 @@ fn a_reader_keeps_a_losing_record_blob_until_it_holds_the_winner_spec_permission
 fn a_step_issued_while_a_store_is_away_is_registered_when_it_is_back_spec_sync_ids_6() {
     use crate::harness::history::{Gives, three};
     let (mut w, t, s) = three(Gives::Reads, 2);
-    w.cap = 20_000;
+    w.cap = crate::harness::WIDE_CAP;
     w.partition(0, 1);
     w.partition(1, 2);
     w.run();
@@ -379,7 +376,6 @@ fn a_step_issued_while_a_store_is_away_is_registered_when_it_is_back_spec_sync_i
 fn a_register_lost_with_its_connection_goes_again_at_the_reconnect_spec_sync_ids_6() {
     use crate::harness::history::{Gives, three};
     let (mut w, t, s) = three(Gives::Reads, 2);
-    w.cap = 20_000;
     w.partition(1, 2);
     w.run();
     let a0 = w.node(0).account.unwrap();

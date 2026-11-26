@@ -702,7 +702,6 @@ fn a_writer_promotes_a_deposit_spec_sync_inbox_4() {
     use osis_base::{Role, Value};
     use osis_engine::Mutation;
     let (mut w, t, s) = three(Gives::Writes, 1);
-    w.cap = 20_000;
     assert_eq!(w.engine(1).sync_holder(&s).unwrap(), Some(([t].into(), Holding::Unread)));
     w.power_off(2);
     let a2 = w.node(2).account.unwrap();
@@ -767,7 +766,7 @@ fn deposit_items_to_a_peer_back(removed: bool) -> u64 {
     use osis_engine::Mutation;
     let (mut w, (t, s)) = crate::harness::fixture_with("inbox away and back", || {
         let (mut w, t, s) = three(Gives::Writes, 1);
-        w.cap = 2_000_000;
+        w.cap = crate::harness::WIDE_CAP;
         w.partition(0, 1);
         w.partition(1, 2);
         w.advance(1000);
@@ -945,7 +944,6 @@ fn losing_sibling(admin: bool) {
     use osis_engine::flows::edges::Demotion;
     let (mut w, (t, s)) = crate::harness::fixture_with("inbox losing sibling", || {
         let mut w = world_of(0, 2, 3);
-        w.cap = 20_000;
         let _ = crate::harness::play(&mut w, &[New(2), Run, Strong(1, None, 0), Write(2, 0), Give(0, 0, Holder::Node(1), Syncs), Run], String::new());
         let t = w.history.things[0].0;
         let s = w.engine(0).sync_id_of(&t).unwrap().unwrap();

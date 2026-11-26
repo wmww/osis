@@ -14,8 +14,7 @@ use std::collections::BTreeMap;
 const DAY_MS: u64 = 86_400_000;
 
 fn setup(gives: Gives) -> (World, Tid) {
-    let (mut w, t, _) = history::three(gives, 1);
-    w.cap = 200_000;
+    let (w, t, _) = history::three(gives, 1);
     (w, t)
 }
 
@@ -262,7 +261,7 @@ fn each_write_crosses_each_pair_on_one_connection_spec_sync_opens_1() {
 fn lowered() -> (World, (Tid, CommitId)) {
     fixture_with("growth lowered", || {
         let mut w = world_of(0, 3, 3);
-        w.cap = 200_000;
+        w.cap = crate::harness::WIDE_CAP;
         let _ = play(&mut w, &[New(0), Grant(0, 0, 1, Gives::Writes), Grant(0, 0, 2, Gives::Reads), Run], String::new());
         let t = w.history.things[0].0;
         let note = Ak::new("u:n.0").unwrap();
@@ -370,7 +369,7 @@ fn a_lowered_writers_invalid_writes_leave_nothing_and_return_on_regrant_spec_com
 #[test]
 fn a_write_valid_again_before_its_author_hears_comes_from_a_store_spec_permissions_6() {
     let mut w = world_of(0, 4, 4);
-    w.cap = 200_000;
+    w.cap = crate::harness::WIDE_CAP;
     let _ = play(&mut w, &[New(0), Grant(0, 0, 1, Gives::Writes), Grant(0, 0, 2, Gives::Reads), Grant(0, 0, 3, Gives::Syncs), Run], String::new());
     let t = w.history.things[0].0;
     // two islands: {0, 2} hear the demotion, {1, 3} the write
@@ -462,7 +461,6 @@ fn a_request_given_force_again_reaches_a_node_that_forgot_it_spec_perm_6() {
 #[ignore = "sync rewrite: copies per (commit, thing)"]
 fn a_head_move_relists_nothing_between_a_reader_and_a_store_at_n_and_10n() {
     let mut w = world_of(0, 4, 4);
-    w.cap = 200_000;
     let _ = play(&mut w, &[New(0), Grant(0, 0, 1, Gives::Syncs), Grant(0, 0, 2, Gives::Reads), Run], String::new());
     let t = w.history.things[0].0;
     let s = w.engine(0).sync_id_of(&t).unwrap().unwrap();
@@ -819,13 +817,6 @@ fn settled(w: &mut World) -> Vec<Held> {
 /// store rows it reads (`store rows read <- read`).
 type Work = [u64; 2];
 
-/// Two accounts' world for `grant_rounds`, quiet.
-fn grant_world() -> World {
-    let mut w = world_of(0, 2, 2);
-    w.cap = 2_000_000;
-    w
-}
-
 /// Round `k`: node 0 mints a thing with its account as admin, writes it, and gives node 1's
 /// account read on it: node 1 holds it (`held`, a strong from its account) or declines (no
 /// strong, the fire left in its inbox); node 0 writes again, removes node 1's account, and both
@@ -851,7 +842,7 @@ fn grant_rounds(held: bool, redeem: bool) -> ([(World, Vec<Held>); 2], Vec<Work>
         }
         work.push(round_work());
     };
-    let worlds = one_and_ten(grant_world(), round, settled);
+    let worlds = one_and_ten(world_of(0, 2, 2), round, settled);
     (worlds, work)
 }
 
@@ -934,7 +925,7 @@ fn redeem_round(w: &mut World) {
 /// removals at most `removals` a node.
 fn grants_as_fresh(held: bool, redeem: bool, removals: usize) {
     let (mut wf, fresh) = fixture_with("growth grants fresh", || {
-        let mut w = grant_world();
+        let mut w = world_of(0, 2, 2);
         let held = settled(&mut w);
         (w, held)
     });
@@ -1039,7 +1030,6 @@ fn a_released_things_forgotten_commits_leave_no_own_entry_spec_sync_judgement_3(
 #[test]
 fn record_blobs_at_a_store_stay_flat_spec_sync_ids_6() {
     let (mut w, _, s) = crate::deletes::four();
-    w.cap = 200_000;
     let records: std::collections::BTreeSet<Tid> = w.engine(0).certificate_records(&s).unwrap().iter().copied().collect();
     assert!(!records.is_empty(), "S carries records");
     let writers = [0, 2, 3];
@@ -1069,7 +1059,6 @@ fn record_blobs_at_a_store_stay_flat_spec_sync_ids_6() {
 /// (spec/sync-inbox.md §1). (bytes every other node sent it, distinct blobs fetched, fetches.)
 fn key_record_wire(k: usize, held: bool) -> (u64, u64, u64) {
     let mut w = world_of(0, 3, 3);
-    w.cap = 4_000_000;
     let mut steps = Vec::new();
     for t in 0..k {
         steps.push(New(0));

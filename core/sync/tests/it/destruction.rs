@@ -18,7 +18,7 @@ use osis_schema::core_types as ct;
 /// node 1's account sync and node 2's write; both hold it (after the first run) and sync.
 fn three() -> (World, Tid, SyncId) {
     let (mut w, t, s) = history::three(Gives::Writes, 2);
-    w.cap = 20_000;
+    w.cap = crate::harness::WIDE_CAP;
     assert!(w.engine(2).knows(&t) && w.engine(2).get(&t, &value_ak()).unwrap().is_some(), "node 2 reads t");
     assert!(!w.store(1).entries(&s).unwrap().is_empty(), "node 1 keeps S");
     (w, t, s)

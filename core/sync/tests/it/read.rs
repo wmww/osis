@@ -2570,7 +2570,7 @@ type Start = (Commits, BTreeSet<(SyncId, BlobId)>, Commits);
 /// entries, certificate blobs too, per sync ID read).
 fn starts(n: usize) -> Vec<Start> {
     let mut w = crate::harness::history::shared(n);
-    w.cap = 2_000_000;
+    w.cap = crate::harness::WIDE_CAP;
     let bodies = |w: &mut crate::harness::World, i: usize| -> BTreeSet<(SyncId, BlobId)> {
         let mut out = BTreeSet::new();
         for (s, _) in w.store(i).syncs().into_iter().filter(|(_, (_, h))| *h == osis_engine::sync::Holding::Read) {

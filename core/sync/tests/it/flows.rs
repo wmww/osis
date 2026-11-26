@@ -36,7 +36,6 @@ fn a_raced_grant_is_resealed_at_a_complete_passs_end_spec_perm_3() {
 fn a_removal_is_logged_before_what_was_written_after_it_spec_permissions_3() {
     use crate::harness::history::{Gives, three};
     let (mut w, t, s) = three(Gives::Reads, 1);
-    w.cap = 20_000;
     let a2 = w.node(2).account.unwrap();
     let made: Vec<osis_base::CommitId> = w.write(0, |e| {
         let write = |e: &mut osis_engine::Engine, i: usize| {

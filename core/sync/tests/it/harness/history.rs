@@ -772,13 +772,11 @@ pub fn reads(e: &mut Engine, t: &Tid) -> Reads {
 pub fn three(gives: Gives, runs: usize) -> (World, Tid, osis_base::SyncId) {
     let (w, (t, s)) = super::fixture_with(&format!("three {gives:?} {runs}"), || {
         let mut w = world_of(0, 3, 3);
-        w.cap = 2_000_000;
         let mut steps = vec![Step::New(0), Step::Grant(0, 0, 1, Gives::Syncs), Step::Grant(0, 0, 2, gives)];
         steps.extend(std::iter::repeat_n(Step::Run, runs));
         let _ = super::play(&mut w, &steps, String::new());
         let t = w.history.things[0].0;
         let s = w.engine(0).sync_id_of(&t).unwrap().unwrap();
-        w.cap = super::RULE_CAP;
         (w, (t, s))
     });
     (w, t, s)
@@ -792,7 +790,6 @@ pub fn three(gives: Gives, runs: usize) -> (World, Tid, osis_base::SyncId) {
 pub fn shared(n: usize) -> World {
     super::fixture(&format!("shared {n}"), || {
         let mut w = if n == 1 { three(Gives::Reads, 1).0 } else { shared(1) };
-        w.cap = 2_000_000;
         let mut steps: Vec<Step> = (w.history.things.len()..n).flat_map(|k| [Step::New(0), Step::Grant(0, k, 1, Gives::Syncs), Step::Grant(0, k, 2, Gives::Reads)]).collect();
         if n > 1 {
             steps.push(Step::Run);

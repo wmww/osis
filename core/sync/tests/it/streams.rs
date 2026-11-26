@@ -337,6 +337,15 @@ impl Pair {
         (p, k)
     }
 
+    /// A pair with each of `ids` read at both, a member both ways (`shared_read`).
+    fn sharing(ids: &[SyncId]) -> Pair {
+        let mut p = Pair::new();
+        for s in ids {
+            p.shared_read(*s);
+        }
+        p
+    }
+
     /// S read at both, a member both ways.
     fn shared_read(&mut self, s: SyncId) {
         self.a.hold(s, Holding::Read);
@@ -622,9 +631,8 @@ fn cursor_stored_once_bodies_held_spec_sync_streams_4() {
 // reads again from its stored cursor, ephemeral entries listed again.
 #[test]
 fn lost_push_read_again_by_seq_spec_sync_streams_4() {
-    let mut p = Pair::new();
     let s = sid(1);
-    p.shared_read(s);
+    let mut p = Pair::sharing(&[s]);
     p.run();
     let x = p.a.log(s, 100);
     let mut lost = false;
@@ -658,10 +666,8 @@ fn lost_push_read_again_by_seq_spec_sync_streams_4() {
 // server no longer shares gets no later event.
 #[test]
 fn served_by_the_shared_set_now_spec_sync_streams_4() {
-    let mut p = Pair::new();
     let (s, t) = (sid(1), sid(2));
-    p.shared_read(s);
-    p.shared_read(t);
+    let mut p = Pair::sharing(&[s, t]);
     p.run();
     p.a.open.members.get_mut(&C).unwrap().remove(&s);
     let x = p.a.log(s, 100);
@@ -1015,9 +1021,8 @@ fn a_start_forgets_a_stop_a_crash_left_spec_sync_opens_6() {
 // and a restart, moved by a join in the other class, gone with what it showed.
 #[test]
 fn the_class_a_source_joined_lasts_with_what_it_showed_spec_sync_opens_3() {
-    let mut p = Pair::new();
     let s = sid(1);
-    p.shared_read(s);
+    let mut p = Pair::sharing(&[s]);
     let src = p.b.src();
     let join = |side: &mut Side, now: u64, class: SourceClass| {
         side.open.members.entry(C).or_default().insert(s, Member { class, own: SourceClass::Reader, by: Credential::J, until: None, departed: None });
@@ -2213,9 +2218,8 @@ fn an_ephemeral_push_lists_only_what_moved_spec_sync_streams_4() {
 #[test]
 fn a_member_gone_mid_listing_holds_back_no_applied_spec_sync_streams_4() {
     for gone in [true, false] {
-        let mut p = Pair::new();
         let (s, t) = (sid(1), sid(2));
-        p.shared_read(s);
+        let mut p = Pair::sharing(&[s]);
         p.a.log(s, 100);
         p.run();
         p.a.hold(t, Holding::Read);
@@ -2242,9 +2246,8 @@ fn a_member_gone_mid_listing_holds_back_no_applied_spec_sync_streams_4() {
 // it until a later one covers it.
 #[test]
 fn caught_up_needs_the_peers_applied_spec_sync_status_1() {
-    let mut p = Pair::new();
     let s = sid(1);
-    p.shared_read(s);
+    let mut p = Pair::sharing(&[s]);
     p.run();
     assert!(p.a.streams.caught_up(C, &s) && p.b.streams.caught_up(C, &s));
     p.a.log(s, 100);
@@ -2263,10 +2266,8 @@ fn caught_up_needs_the_peers_applied_spec_sync_status_1() {
 // at the requester one of T in hand awaiting its body leaves S caught up there.
 #[test]
 fn another_sync_ids_traffic_leaves_s_caught_up_spec_sync_status_1() {
-    let mut p = Pair::new();
     let (s, t) = (sid(1), sid(2));
-    p.shared_read(s);
-    p.shared_read(t);
+    let mut p = Pair::sharing(&[s, t]);
     p.run();
     // a's push of t is applied at b, b's Applied lost
     p.a.log(t, 100);
@@ -2312,9 +2313,8 @@ fn a_join_left_in_pages_keeps_s_busy_spec_sync_status_1() {
 // write not yet pushed (no room) keeps S from caught up.
 #[test]
 fn an_ephemeral_write_not_listed_keeps_s_busy_spec_sync_status_1() {
-    let mut p = Pair::new();
     let s = sid(1);
-    p.shared_read(s);
+    let mut p = Pair::sharing(&[s]);
     p.a.log(s, 100);
     p.run();
     assert!(p.a.streams.caught_up(C, &s));
@@ -2331,10 +2331,8 @@ fn an_ephemeral_write_not_listed_keeps_s_busy_spec_sync_status_1() {
 // no event: S does not stay busy on an idle connection.
 #[test]
 fn a_later_report_covers_what_was_served_spec_sync_status_1() {
-    let mut p = Pair::new();
     let (s, t) = (sid(1), sid(2));
-    p.shared_read(s);
-    p.shared_read(t);
+    let mut p = Pair::sharing(&[s, t]);
     p.a.log(s, 100);
     p.run();
     let replies = p.sent_by_a(42);
@@ -2349,10 +2347,8 @@ fn a_later_report_covers_what_was_served_spec_sync_status_1() {
 // before they are, though the log was read past them while it was ended.
 #[test]
 fn an_until_cleared_makes_s_busy_spec_sync_status_1() {
-    let mut p = Pair::new();
     let (s, t) = (sid(1), sid(2));
-    p.shared_read(s);
-    p.shared_read(t);
+    let mut p = Pair::sharing(&[s, t]);
     p.a.log(s, 100);
     p.run();
     let (end, _) = p.a.store.log_bounds().unwrap();
@@ -2400,10 +2396,8 @@ fn a_member_joined_after_the_pull_waits_for_its_join_spec_sync_status_1() {
 // logged meanwhile, and a counts it caught up.
 #[test]
 fn a_member_at_the_stream_opened_after_the_first_pull_joins_spec_sync_streams_4() {
-    let mut p = Pair::new();
     let (s, t) = (sid(1), sid(2));
-    p.shared_read(s);
-    p.shared_read(t);
+    let mut p = Pair::sharing(&[s, t]);
     p.a.log(s, 100);
     p.run();
     let rec = p.b.open.record.unwrap();
@@ -2433,9 +2427,8 @@ fn a_member_at_the_stream_opened_after_the_first_pull_joins_spec_sync_streams_4(
 // the Applied of the last message names a cursor still kept and covers the rest.
 #[test]
 fn a_requester_far_behind_on_reports_is_caught_up_once_quiet_spec_sync_status_1() {
-    let mut p = Pair::new();
     let s = sid(1);
-    p.shared_read(s);
+    let mut p = Pair::sharing(&[s]);
     p.run();
     let kept = 2 * osis_sync::streams::PENDING_CAP;
     for i in 0..kept + 10 {
@@ -2456,9 +2449,8 @@ fn a_requester_far_behind_on_reports_is_caught_up_once_quiet_spec_sync_status_1(
 #[test]
 fn a_fresh_cursor_per_message_costs_the_same_at_n_and_10n_spec_sync_streams_4() {
     let per_message = |n: usize| {
-        let mut p = Pair::new();
         let s = sid(1);
-        p.shared_read(s);
+        let mut p = Pair::sharing(&[s]);
         p.run();
         osis_base::costs::take();
         let before = p.sent_by_a(43).len();
@@ -2482,9 +2474,8 @@ fn a_fresh_cursor_per_message_costs_the_same_at_n_and_10n_spec_sync_streams_4() 
 // pulls (its join of T), and the server still counts S busy until the Applied answering the push.
 #[test]
 fn a_pull_while_a_body_is_owed_reports_nothing_applied_spec_sync_status_1() {
-    let mut p = Pair::new();
     let (s, t) = (sid(1), sid(2));
-    p.shared_read(s);
+    let mut p = Pair::sharing(&[s]);
     p.run();
     let x = p.a.log(s, 40_000);
     // a's answer to b's Fetch of x is held back: b holds a's push in hand
@@ -2508,9 +2499,8 @@ fn a_pull_while_a_body_is_owed_reports_nothing_applied_spec_sync_status_1() {
 // reported, counts as applied only by the Applied answering it.
 #[test]
 fn an_ephemeral_push_waits_for_its_applied_spec_sync_status_1() {
-    let mut p = Pair::new();
     let s = sid(1);
-    p.shared_read(s);
+    let mut p = Pair::sharing(&[s]);
     p.a.log(s, 100);
     p.run();
     assert!(p.a.streams.caught_up(C, &s));
@@ -2531,9 +2521,8 @@ fn an_ephemeral_push_waits_for_its_applied_spec_sync_status_1() {
 // position) reports nothing on this one: a push of S whose own Applied is held back keeps S busy.
 #[test]
 fn an_applied_of_an_earlier_connection_reports_nothing_spec_sync_streams_4() {
-    let mut p = Pair::new();
     let s = sid(1);
-    p.shared_read(s);
+    let mut p = Pair::sharing(&[s]);
     p.a.log(s, 100);
     p.run();
     // the connection ends and comes back; a logs an ephemeral entry (no log position moves)
@@ -2565,10 +2554,8 @@ fn an_applied_of_an_earlier_connection_reports_nothing_spec_sync_streams_4() {
 // a never says b caught up on S while b lacks what the push carried, and does once quiet.
 #[test]
 fn a_member_left_and_rejoined_with_a_push_unreported_spec_sync_status_1() {
-    let mut p = Pair::new();
     let (s, t) = (sid(1), sid(2));
-    p.shared_read(s);
-    p.shared_read(t);
+    let mut p = Pair::sharing(&[s, t]);
     p.a.log(s, 100);
     p.run();
     let x = p.a.log(s, 40_000);
@@ -2594,9 +2581,8 @@ fn a_member_left_and_rejoined_with_a_push_unreported_spec_sync_status_1() {
 // once quiet.
 #[test]
 fn ephemeral_only_traffic_both_ways_reaches_caught_up_spec_sync_status_1() {
-    let mut p = Pair::new();
     let s = sid(1);
-    p.shared_read(s);
+    let mut p = Pair::sharing(&[s]);
     p.a.log(s, 100);
     p.b.log(s, 200);
     p.run();
@@ -2665,9 +2651,8 @@ fn ephemeral_entries_held_back_are_not_read_at_every_tick_spec_sync_streams_4() 
 // in Streams, and S is not caught up until it has.
 #[test]
 fn an_ephemeral_listing_cut_by_a_reply_follows_spec_sync_status_1() {
-    let mut p = Pair::new();
     let s = sid(1);
-    p.shared_read(s);
+    let mut p = Pair::sharing(&[s]);
     p.a.log(s, 100);
     p.run();
     let all: std::collections::BTreeSet<BlobId> = (0..4).map(|i| p.a.log_as(s, 6000 + i, Class::Ephemeral)).collect();
@@ -2693,9 +2678,8 @@ fn an_ephemeral_listing_cut_by_a_reply_follows_spec_sync_status_1() {
 // nothing, whatever the clock reads.
 #[test]
 fn caught_since_moves_with_a_fresh_pull_spec_sync_status_1() {
-    let mut p = Pair::new();
     let s = sid(1);
-    p.shared_read(s);
+    let mut p = Pair::sharing(&[s]);
     p.run();
     let t0 = p.b.streams.caught_since(C, &s).unwrap();
     let pulls = p.sent_by_b(41).len();
@@ -3153,10 +3137,8 @@ fn a_member_left_at_the_stream_rejoins_from_there_after_the_cursor_moved_spec_sy
 // what was logged meanwhile.
 #[test]
 fn only_a_member_stopped_at_the_cursor_rejoins_with_no_join_spec_sync_streams_4() {
-    let mut p = Pair::new();
     let (s, t) = (sid(1), sid(2));
-    p.shared_read(s);
-    p.shared_read(t);
+    let mut p = Pair::sharing(&[s, t]);
     p.a.log(s, 100);
     p.run();
     p.a.leave(p.now, s);
@@ -3224,9 +3206,8 @@ fn a_reply_after_its_member_left_moves_nothing_of_it_spec_sync_streams_4() {
 // only once that connection's first Pull is answered.
 #[test]
 fn a_taken_record_is_caught_up_only_once_answered_spec_sync_status_1() {
-    let mut p = Pair::new();
     let s = sid(1);
-    p.shared_read(s);
+    let mut p = Pair::sharing(&[s]);
     p.run();
     assert!(p.b.streams.caught_up(C, &s));
     let rec = p.b.open.record.unwrap();
@@ -3246,9 +3227,8 @@ fn a_taken_record_is_caught_up_only_once_answered_spec_sync_status_1() {
 // what that push carried.
 #[test]
 fn a_push_after_the_release_moves_no_cursor_spec_sync_opens_1() {
-    let mut p = Pair::new();
     let s = sid(1);
-    p.shared_read(s);
+    let mut p = Pair::sharing(&[s]);
     p.run();
     let x = p.a.log(s, 100);
     p.run_with(|ab, m| ab && m.kind() == 43);
@@ -3329,9 +3309,8 @@ fn a_member_gone_or_shredded_while_away_joins_anew_spec_sync_opens_6() {
 #[test]
 fn a_listing_of_made_up_ids_grows_nothing_spec_sync_streams_4() {
     let flood = |pages: u8| {
-        let mut p = Pair::new();
         let s = sid(1);
-        p.shared_read(s);
+        let mut p = Pair::sharing(&[s]);
         for page in 0..pages {
             p.run_with(|ab, m| ab && m.kind() == 42);
             for (_, f) in std::mem::take(&mut p.held) {

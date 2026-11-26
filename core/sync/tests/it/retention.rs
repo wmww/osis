@@ -18,7 +18,6 @@ const HOUR_MS: u64 = 3_600_000;
 fn covered_in_history() -> (World, Tid, SyncId, CommitId) {
     let (w, (t, s, one)) = fixture_with("retention covered in history", || {
         let mut w = world_of(0, 3, 3);
-        w.cap = 20_000;
         // `run` looks a minute ahead, never to the keep bound: only `advance` passes it
         w.horizon_ms = 60_000;
         let _ = play(&mut w, &[New(0), Grant(0, 0, 1, Gives::Syncs), Grant(0, 0, 2, Gives::Reads), Run], String::new());

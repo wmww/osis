@@ -38,12 +38,19 @@ use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 /// (`World::cap`). The rule-test layer's cap (notes/sync-test-harness.md, Enforcement).
 pub const RULE_CAP: u64 = 2_000;
 
+/// The cap a rule test sets (`World::cap`) whose runs carry more than `RULE_CAP` allows: a node
+/// away for hours and redialed, four nodes reconciling after a split, a store moved. About 2.5x
+/// the most such a test makes in one run (3,920). At 0 every such test storms; at infinity a
+/// storm in one hangs the test instead of failing it in seconds.
+pub const WIDE_CAP: u64 = 10_000;
+
 /// Deliveries one `run` of a differential history, simulation or flow world may make before it
-/// panics as a storm: about 5x the most any default seed's whole history makes (5,800; median
-/// 740). A run is bounded in time by its horizon, so what is paced by time (redials toward an
-/// unreachable peer) stays under it, however many runs a history has. At 0 every history storms;
-/// at infinity a livelock runs until the seed timeout (600 CPU-s) instead of failing in seconds.
-pub const STORM_CAP: u64 = 30_000;
+/// panics as a storm: about 4x the most one run makes in any default seed, full-size seed or
+/// simulation (3,463; a history's median run 10). A run is bounded in time by its horizon, so
+/// what is paced by time (redials toward an unreachable peer) stays under it, however many runs a
+/// history has. At 0 every history storms; at infinity a livelock runs until the seed timeout
+/// (600 CPU-s) instead of failing in seconds.
+pub const STORM_CAP: u64 = 15_000;
 
 /// Settle rounds one step may take before the world panics: a settle loop that never ends is
 /// two modules undoing each other's acts. A round runs again only for an act a module reads, so
@@ -883,11 +890,12 @@ impl World {
         let _node = osis_base::costs::node(i);
         self.deliveries += 1;
         *self.delivered.entry(i).or_default() += 1;
-        MOST.set(MOST.get().max(self.deliveries));
-        if CANDIDATE_CAP.get().is_some_and(|c| self.deliveries > c && c < self.cap) {
+        let run = self.deliveries - self.run_from;
+        MOST.set(MOST.get().max(run));
+        if CANDIDATE_CAP.get().is_some_and(|c| run > c && c < self.cap) {
             std::panic::panic_any(Capped);
         }
-        if self.deliveries - self.run_from > self.cap {
+        if run > self.cap {
             let flowing: Vec<Seen> = self.net.queue.iter().take(8).map(|(n, x)| Seen::of(*n, x, self.node(*n).clock.mono())).collect();
             let off: Vec<usize> = (0..self.net.online.len()).filter(|n| !self.online(*n)).collect();
             let (busiest, most) = self.delivered.iter().max_by_key(|x| *x.1).map_or((0, 0), |(n, k)| (*n, *k));
@@ -1737,16 +1745,15 @@ pub fn play(w: &mut World, steps: &[Step], replay: String) -> Script<Step> {
     script
 }
 
-/// A shrink candidate (`shrinking`) that makes more than this many times the deliveries of the
-/// run it shrinks counts as not failing: a storm the shrink made, not the failure (a failing run
-/// that storms meets its world's own cap first). At 1 a candidate that only delivers in another
-/// order may be cut; at infinity a livelocked candidate runs to its world's cap (`STORM_CAP`,
-/// several histories' worth).
+/// A shrink candidate (`shrinking`) that makes more than this many times the most deliveries in
+/// one run of the history it shrinks counts as not failing: a storm the shrink made, not the
+/// failure (a failing run that storms meets its world's own cap first). At 1 a candidate that only delivers in another
+/// order may be cut; at infinity a livelocked candidate runs to its world's cap (`STORM_CAP`).
 pub const SHRINK_STORM: u64 = 3;
 
 thread_local! {
-    /// The most deliveries any world on this thread has made (`shrinking` measures the run it
-    /// shrinks by it).
+    /// The most deliveries any world on this thread has made in one run (`shrinking` measures
+    /// the history it shrinks by it).
     static MOST: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
     /// The delivery cap of the shrink candidate this thread plays (`capped`).
     static CANDIDATE_CAP: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
@@ -1755,8 +1762,9 @@ thread_local! {
 /// The panic of a world past its candidate cap (`capped`).
 struct Capped;
 
-/// `f` with every world on this thread capped at `cap` deliveries: `None` when one went past
-/// it (its world's own cap, when lower, panics as a storm as ever).
+/// `f` with every world on this thread capped at `cap` deliveries in one run, as its own cap
+/// counts: `None` when one went past it (its world's own cap, when lower, panics as a storm as
+/// ever).
 pub fn capped<T>(cap: u64, f: impl FnOnce() -> T) -> Option<T> {
     use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
     let prev = CANDIDATE_CAP.replace(Some(cap));
@@ -1771,8 +1779,8 @@ pub fn capped<T>(cap: u64, f: impl FnOnce() -> T) -> Option<T> {
 
 /// Runs `run` (which plays a script with `play`); with `OSIS_SYNC_SHRINK` set, a failure is
 /// shrunk (`osis_base::testenv::shrinking`): each candidate played once by `replay(steps,
-/// false)` under a delivery cap of `SHRINK_STORM` times the most any world of `run` made
-/// (`capped`; past it the candidate does not fail), the shrunk run by `replay(steps, true)`.
+/// false)` under a delivery cap of `SHRINK_STORM` times the most any world of `run` made in one
+/// run (`capped`; past it the candidate does not fail), the shrunk run by `replay(steps, true)`.
 pub fn shrinking(run: impl FnOnce(), replay: impl Fn(&[Step], bool)) {
     MOST.set(0);
     let base = std::cell::Cell::new(None);

@@ -23,7 +23,7 @@ fn big(seed: u64) -> Vec<u8> {
 /// `history::three(gives, 1)` with room for large values.
 fn three(gives: Gives) -> (World, Tid, SyncId) {
     let (mut w, t, s) = history::three(gives, 1);
-    w.cap = 200_000;
+    w.cap = crate::harness::WIDE_CAP;
     (w, t, s)
 }
 
@@ -216,7 +216,6 @@ fn a_write_is_one_blob_however_many_read_it_spec_sync_judgement_3() {
 #[test]
 fn a_blob_framed_under_other_commitments_is_dropped_once_its_lists_resolve_spec_commits_4() {
     let mut w = world_of(0, 2, 2);
-    w.cap = 200_000;
     let _ = play(&mut w, &[New(0), Grant(0, 0, 1, Gives::Reads), Run], String::new());
     let t = w.history.things[0].0;
     let s = w.engine(0).sync_id_of(&t).unwrap().unwrap();

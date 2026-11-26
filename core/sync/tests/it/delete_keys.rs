@@ -100,9 +100,7 @@ fn held(w: &World, s: &SyncId, b: &BlobId) -> bool {
 
 /// `three` (node 0 admin, node 1 keeping thing 0 unread, node 2 a writer).
 fn world_of_three() -> (World, Tid, SyncId) {
-    let (mut w, t, s) = three(Gives::Writes, 2);
-    w.cap = 20_000;
-    (w, t, s)
+    three(Gives::Writes, 2)
 }
 
 // spec/sync-ids.md §6 (Delete: one delete signature per commitment group of the blob's prefix),
@@ -260,11 +258,9 @@ fn a_demoted_writers_old_keys_keep_its_writes_out_of_an_unread_store_spec_permis
 fn two_things() -> (World, [(Tid, SyncId); 2]) {
     fixture_with("delete keys two things", || {
         let (mut w, _, _) = three(Gives::Writes, 2);
-        w.cap = 2_000_000;
         let _ = play(&mut w, &[New(0), Grant(0, 1, 1, Gives::Syncs), Grant(0, 1, 2, Gives::Reads), Run, Run], String::new());
         let ts = [0, 1].map(|i| w.history.things[i].0);
         let out = ts.map(|t| (t, w.engine(0).sync_id_of(&t).unwrap().unwrap()));
-        w.cap = 20_000;
         (w, out)
     })
 }

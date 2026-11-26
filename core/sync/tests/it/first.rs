@@ -19,7 +19,6 @@ const LARGE: usize = 5 * N;
 fn closure(n: usize) -> World {
     fixture(&format!("first closure {n}"), || {
         let mut w = if n == N { world_of(0, 3, 3) } else { closure(N) };
-        w.cap = 2_000_000;
         let mut steps = Vec::new();
         if n == N {
             steps.extend([New(0), Grant(0, 0, 1, Gives::Syncs)]);

@@ -16,7 +16,6 @@ fn org(r: usize) -> (World, Vec<CommitId>, Vec<CommitId>) {
     let mut removals = vec![];
     let w = fixture(&format!("removal cost org {r}"), || {
         let mut w = world_of(0, 2 + r, 2 + r);
-        w.cap = 4_000_000;
         let _ = play(&mut w, &[New(0), New(0), Give(0, 1, Holder::Thing(0), Gives::Writes), Write(0, 1), Write(0, 1), Run], String::new());
         w
     });
