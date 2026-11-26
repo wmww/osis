@@ -45,11 +45,11 @@ pub const RULE_CAP: u64 = 2_000;
 pub const WIDE_CAP: u64 = 10_000;
 
 /// Deliveries one `run` of a differential history, simulation or flow world may make before it
-/// panics as a storm: about 4x the most one run makes in any default seed, full-size seed or
-/// simulation (3,463; a history's median run 10). A run is bounded in time by its horizon, so
-/// what is paced by time (redials toward an unreachable peer) stays under it, however many runs a
-/// history has. At 0 every history storms; at infinity a livelock runs until the seed timeout
-/// (600 CPU-s) instead of failing in seconds.
+/// panics as a storm: over 3x the most one run makes in any default seed, full-size seed or
+/// simulation (4,455, a full-size `lost_and_repeated_messages_plain` seed; a history's median
+/// run 10). A run is bounded in time by its horizon, so what is paced by time (redials toward an
+/// unreachable peer) stays under it, however many runs a history has. At 0 every history storms;
+/// at infinity a livelock runs until the seed timeout (600 CPU-s) instead of failing in seconds.
 pub const STORM_CAP: u64 = 15_000;
 
 /// Settle rounds one step may take before the world panics: a settle loop that never ends is
