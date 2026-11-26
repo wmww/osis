@@ -3,7 +3,7 @@
 > Priority: normal
 > Tags: sync, engine, tess-call
 
-Script, at `holds_on(0, 3, 4, ..)`: `New(2), New(0), New(1), NewIn(1, 2), Give(1, 3, Holder::Node(2), Syncs), Strong(2, None, 3), Give(1, 2, Holder::Node(2), Reads)`. Thing 3 (X) is minted in thing 2 (H); node 2's account A gets sync on X, a strong from A to X, and read on H as an offer (no strong to H). First failure: "node 2's sync set holds thing 2 as None, the model Some(Keys)". Seed 10 of the full-size differential shrinks to it; 38, 78, 151 fail with the same first panic, unshrunk.
+Script, at `holds_on(0, 3, 4, ..)`: `New(2), New(0), New(1), NewIn(1, 2), Give(1, 3, Holder::Node(2), Syncs), Strong(2, None, 3), Give(1, 2, Holder::Node(2), Reads)`. Thing 3 (X) is minted in thing 2 (H); node 2's account A gets sync on X, a strong from A to X, and read on H as an offer (no strong to H). First failure: "node 2's sync set holds thing 2 as None, the model Some(Keys)". Seed 10 of the full-size differential shrinks to it; 38, 78 and 151 shrink to the same question (scripts in issues/differential-full-size-classes.md), 38's with the holder holding read on X by a grant rather than as X's admin, and the account no role on X of its own.
 
 What each side does:
 - held-model (`closure::entry`) computes T's keys and a node's role over the world's grants: A holds read on X through H, so X is in A's sync unit, read whole, and H is held for keys up from X. The harness's `unoffered` filter only hides grants to the account that were never offered.
