@@ -211,6 +211,7 @@ fn a_reader_moves_a_removed_store_it_never_showed_its_step_spec_sync_opens_6() {
 // proof, which node 0's filter shows toward a departed peer, opens S ended at node 0, which
 // registers past node 1's keys, and node 1 drops its copy.
 #[test]
+#[ignore = "stub rewrite: the differential's oracle on held-model's stub closure (R4)"]
 fn a_reader_moves_a_store_departed_before_it_kept_s_unread_spec_sync_opens_6() {
     use crate::harness::Step::*;
     use crate::harness::history::{Gives, Holder, world_of};

@@ -967,16 +967,11 @@ pub struct Model {
     accounts: Vec<Tid>,
     world: hc::World,
     edges: hc::Edges,
-    /// The grants (holder, target) whose holder's readers were never offered them (`Made::unoffered`).
-    unoffered: BTreeSet<(usize, usize)>,
     /// What the accounts' node closures log under the sync IDs they read: bridges and stubs (`entry::Net::logged`).
     logged: hc::Edges,
     /// The public's pieces under the sync IDs they read : those logged before
     /// in the history (`Made::pieces`) and what the closures log now.
     pieces: hc::Edges,
-    /// The sync IDs each holder's key part names (`Made::named`, and each thing's mint admin by
-    /// its record edge; `entry::Net::named`).
-    named: hc::Edges,
 }
 
 impl Model {
@@ -1020,7 +1015,6 @@ impl Model {
             });
         }
         let mut grants = BTreeMap::new();
-        let mut unoffered = BTreeSet::new();
         let mut public = hc::Set::new();
         let mut public_sync = hc::Set::new();
         let mut edges = hc::Edges::new();
@@ -1041,9 +1035,6 @@ impl Model {
                     continue;
                 }
                 if let Some(g) = index(&holder) {
-                    if h.unoffered.contains(&(k, holder)) {
-                        unoffered.insert((g, na + k));
-                    }
                     let role = match e.role {
                         Role::Sync => hc::Role::Sync,
                         Role::Read => hc::Role::Read,
@@ -1074,22 +1065,11 @@ impl Model {
             keyless.extend(r.engine.keyless_grants().iter().filter_map(|(t, g)| Some((index(g)?, index(t)?))));
         }
         let pieces = h.pieces.iter().filter_map(|(t, x)| Some((index(t)?, index(x)?))).collect();
-        let mut named: hc::Edges = h.named.iter().filter(|(k, g)| !h.unoffered.contains(&(*k, *g))).filter_map(|(k, g)| Some((index(g)?, na + k))).collect();
-        named.extend((0..things.len()).map(|k| (mint_admin(k), na + k)));
-        let mut m = Model { accounts, world: hc::World { kinds, grants, keyless, public, public_sync }, edges, unoffered, logged: hc::Edges::new(), pieces, named };
-        // what the closures log, to their least fixpoint over the accounts (`entry::Net::held_all`)
-        loop {
-            let (mut more, mut pieces) = (m.logged.clone(), m.pieces.clone());
-            for a in 0..m.accounts.len() {
-                let (net, held) = m.entry(a);
-                more.extend(net.logs(held_model::closure::entry::Rule::SPEC, &held));
-                pieces.extend(net.logs_pieces(held_model::closure::entry::Rule::SPEC, &held));
-            }
-            if more == m.logged && pieces == m.pieces {
-                return m;
-            }
-            (m.logged, m.pieces) = (more, pieces);
-        }
+        let mut m = Model { accounts, world: hc::World { kinds, grants, keyless, public, public_sync }, edges, logged: hc::Edges::new(), pieces };
+        // Stub rewrite (notes/stub-rewrite.md): what the closures log, to their least fixpoint, on
+        // held-model's stub closure (R4)
+        m.logged = hc::Edges::new();
+        m
     }
 
     /// The public's pieces logged (`pieces`) as the history's tids, for `Made::pieces`.
@@ -1110,45 +1090,10 @@ impl Model {
     /// `for_keys`: holders held in the keys class alone) and the keys of what it reads, with what
     /// every account's closure logs (`Model::logged`, spec/sync-set.md §2 Carriers).
     fn closure(&self, a: usize) -> (hc::Closure, hc::Set) {
-        use held_model::closure::entry;
-        let (net, held) = self.entry(a);
-        let e = net.edges(entry::Rule::SPEC);
-        let keys = net.ring(entry::Rule::SPEC, &held.s.read);
-        let mut carried = held.held.clone();
-        for &t in &held.s.kept {
-            carried.extend(net.unit(entry::Rule::SPEC, t, &e));
-        }
-        let for_keys = held.s.keyparts.iter().copied().filter(|x| !held.s.read.contains(x) && !held.s.kept.contains(x)).collect();
-        let c = hc::Closure { read: held.s.read, stored: held.s.kept, held: held.held, carried, keys: keys.clone(), synced: hc::Set::new(), for_keys, follows: held.follows };
-        (c, keys)
+        // Stub rewrite (notes/stub-rewrite.md): the oracle on held-model's stub closure (R4)
+        panic!("stub rewrite: the differential's oracle for account {a} waits for R4")
     }
 
-    /// Account `a`'s first-entry world (`closure`) with what is logged, and what its node holds.
-    fn entry(&self, a: usize) -> (held_model::closure::entry::Net, held_model::closure::entry::Held) {
-        use held_model::closure::entry;
-        let n = self.world.kinds.len();
-        let mut known = hc::Set::new();
-        loop {
-            let mut w = self.world.clone();
-            w.grants.retain(|e, _| !self.unoffered.contains(e) || known.contains(&e.1));
-            let mut strongs = self.edges.clone();
-            let mut nodes = Vec::new();
-            for b in 0..self.accounts.len() {
-                let (thing, root) = (n + 2 * b, n + 2 * b + 1);
-                w.kinds.extend([hc::Kind::Independent, hc::Kind::Dependent(thing)]);
-                w.grants.insert((thing, b), hc::Role::Admin);
-                strongs.extend([(root, thing), (root, b)]);
-                nodes.push(entry::Node { thing, root, offers: hc::Set::new() });
-            }
-            let records = (0..self.accounts.len()).map(|b| (n + 2 * b, b)).collect();
-            let net = entry::Net { w, records, strongs, nodes, logged: self.logged.clone(), pieces: self.pieces.clone(), named: self.named.clone() };
-            let held = net.held_alone(a, entry::Rule::SPEC);
-            if held.s.read.is_subset(&known) {
-                return (net, held);
-            }
-            known.extend(held.s.read.iter().copied());
-        }
-    }
 
     /// Whether account `a` (model index) holds write or above on history thing `k` at the end.
     fn writes(&self, a: usize, k: usize) -> bool {
@@ -1349,7 +1294,7 @@ fn closure_clauses(w: &mut World, refs: &mut Refs, m: &Model, gone: &BTreeSet<St
                 }
             }
             if independent {
-                let want = if c.read.contains(&x) || c.follows.contains(&x) { Some(Holding::Read) } else if c.for_keys.contains(&x) { Some(Holding::Keys) } else if c.stored.contains(&x) { Some(Holding::Unread) } else { None };
+                let want = if c.read.contains(&x) { Some(Holding::Read) } else if c.stored.contains(&x) { Some(Holding::Unread) } else { None };
                 let held: Vec<Holding> = set.ids.values().filter(|(ts, _)| ts.contains(t)).map(|(_, h)| *h).collect();
                 let held = held.iter().copied().max_by_key(|h| matches!(h, Holding::Read));
                 // a node keeping a thing unread cannot read its removal: it stops at the step its

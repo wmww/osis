@@ -1,0 +1,3 @@
+# sheave-r1-delete
+- M1's held-model rewrite (d6dc8c8d5) landed with its consumers not compiling: osis-sync `tests/it/harness/history.rs` (the differential's oracle calls removed `entry::Net` methods and `Held` fields) and engine `tests/it/evidence/mod.rs` (`Rule::key_part_whole`). Found only on rebase; fixing it fell to R1. A model job that changes a model's API should build its consumers' tests (`cargo test --workspace --no-run`) before landing, even on a main allowed to be broken in behaviour.
+- `git rm` stages deletions in the index, so a later `git add -A <dirs>; git commit` of one area also commits every earlier `git rm` elsewhere: the prose commit carried the code deletions. Commit by explicit paths (`git commit -- <paths>`) when splitting chunks.

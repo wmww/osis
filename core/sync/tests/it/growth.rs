@@ -162,6 +162,7 @@ fn moves_at(w: &mut World, moves: usize) -> Vec<(usize, usize)> {
 // past `ROLE_KEEP`, so each node holds as many card and `keys.0` bodies at 10n as at n. (Each
 // move is a role commit, whose header is kept as any role commit's.)
 #[test]
+#[ignore = "stub rewrite: the differential's oracle on held-model's stub closure (R4)"]
 fn card_rewrites_grow_nothing_spec_commits_5() {
     let (mut w, _) = setup(Gives::Reads);
     moves_at(&mut w, 2);
@@ -238,6 +239,7 @@ fn rotations_keep_keysets_flat_spec_commits_5() {
 // once at first contact, yet each pair keeps one connection, so each write crosses each pair on one
 // stream: deliveries per write are the same at n and 10n writes, all on one connection per pair.
 #[test]
+#[ignore = "stub rewrite: the differential's oracle on held-model's stub closure (R4)"]
 fn each_write_crosses_each_pair_on_one_connection_spec_sync_opens_1() {
     let (mut w, _) = setup(Gives::Writes);
     for i in 0..3 {

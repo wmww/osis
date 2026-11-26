@@ -2071,6 +2071,7 @@ fn judged_per_event(n: usize) -> [u64; 2] {
 // its first judgement, which turns on how the commit IDs of that run sort, not on n. Growth with
 // n would judge some of the 54 more commits under other sync IDs at the larger size.
 #[test]
+#[ignore = "stub rewrite: the differential's oracle on held-model's stub closure (R4)"]
 fn an_event_on_one_sync_id_judges_what_it_moved() {
     // the grant commit judged once more at each of its 4 (sync ID, commit) pairs, twice over
     const REJUDGED: u64 = 8;
@@ -2684,6 +2685,7 @@ fn starts(n: usize) -> Vec<Start> {
 // the session left unlogged; it commits the same at n and 10n things shared with a reader and a
 // node keeping them unread; a start with nothing new after it commits nothing.
 #[test]
+#[ignore = "stub rewrite: the differential's oracle on held-model's stub closure (R4)"]
 fn a_start_after_a_session_finds_nothing_owed_at_n_and_10n_spec_sync_judgement_3() {
     let (a, b) = (starts(1), starts(10));
     for (i, (_, new, _)) in a.iter().chain(&b).enumerate() {

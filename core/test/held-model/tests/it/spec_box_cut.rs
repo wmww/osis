@@ -210,7 +210,7 @@ fn forged_read() -> World {
 
 /// An invalid or pending edge write giving T read changes nothing R receives: T reads X only by a
 /// valid one, so R takes T's sync secret and learns no holder of X (spec/sync-ids.md §2 What a
-/// sync holder learns; spec/permissions.md §4 Key part). Control: judged whatever their validity,
+/// sync holder learns). Control: judged whatever their validity,
 /// the forged writes send T's pieces with headers and evidence, naming its granter H.
 #[test]
 fn a_forged_edge_write_giving_read_changes_nothing_a_sync_holder_learns_spec_sync_ids_2() {

@@ -212,6 +212,7 @@ fn a_redeemer_misses_a_rotation_and_hears_the_public_removed_spec_sync_opens_6()
 // served the thing up to the removal, the public's open boxes with it). Control: with the public
 // not removed, the same redeem is served the thing.
 #[test]
+#[ignore = "stub rewrite: the differential's oracle on held-model's stub closure (R4)"]
 fn a_public_link_redeemed_after_the_removal_opens_nothing_spec_sync_opens_4() {
     use crate::harness::history::{Gives, Holder};
     let (n, accounts, ..) = size();
@@ -337,6 +338,7 @@ fn a_public_reader_keeps_a_thing_on_taking_its_record_spec_sync_3() {
 // waiting for a read secret is parked under it (failed: what a blob waited for was judged on the
 // parts missing at its opening, and a part dropped later parked nothing).
 #[test]
+#[ignore = "stub rewrite: the differential's oracle on held-model's stub closure (R4)"]
 fn an_entry_waits_for_a_part_dropped_after_its_opening_spec_sync_streams_4() {
     use crate::harness::history::{Gives, Holder};
     let script = [
