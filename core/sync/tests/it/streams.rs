@@ -2168,6 +2168,29 @@ fn a_body_is_not_sent_back_to_the_peer_that_showed_it_spec_sync_streams_4() {
     assert!(!p.sent_by_b(42).iter().chain(p.sent_by_b(43).iter()).any(inlined), "b never sends it back inline");
 }
 
+// spec/sync-streams.md §4 (Bodies), spec/wire.md §11.2 Pull: a blob the requester holds under one
+// sync ID goes inline under no other: its entry there is taken with the bytes held.
+#[test]
+fn a_blob_held_under_one_sync_id_goes_inline_under_no_other_spec_sync_streams_4() {
+    let (s1, s2) = (sid(1), sid(2));
+    let mut p = Pair::sharing(&[s1, s2]);
+    p.b.table.held = Some(true);
+    let x = p.a.log(s1, 100);
+    p.run();
+    assert_eq!(p.a.log(s2, 100), x, "one blob under both");
+    p.run();
+    assert!(p.b.store.entry(&s2, &x).unwrap().is_some(), "taken under the second");
+    let inline = |m: &Msg| {
+        let evs = match m {
+            Msg::PullReply(r) => &r.events,
+            Msg::Stream(st) => &st.events,
+            _ => return 0,
+        };
+        evs.iter().filter(|(_, e)| matches!(e, Event::Added { blob_id, blob: Some(_), .. } if *blob_id == x)).count()
+    };
+    assert_eq!(p.seen.iter().filter(|(ab, _)| *ab).map(|(_, m)| inline(m)).sum::<usize>(), 1, "its bytes cross once");
+}
+
 // spec/sync-streams.md §4 (Costs): a push costs the events since the cursor, whatever the log
 // holds: one new event read at n and at 10n entries.
 #[test]

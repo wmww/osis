@@ -69,6 +69,10 @@ pub(super) struct Serve {
     joins_left: BTreeSet<SyncId>,
     /// Members reported at a position of their own (a join not merged yet).
     own: BTreeSet<SyncId>,
+    /// Blobs whose bytes went inline in a message asking a report, with the last such message's
+    /// number, until an Applied covers it: the peer holds them or is taking them, so they go
+    /// inline no more under any sync ID (`peer_holds_blob`); once applied, its stream shows them.
+    inlined: BTreeMap<BlobId, u64>,
 }
 
 impl Serve {
@@ -84,8 +88,11 @@ impl Serve {
         if self.asked.len() > REPORTS_KEPT {
             self.asked.pop_front();
         }
-        for (s, _) in events {
+        for (s, e) in events {
             self.unapplied.insert(*s, self.sent);
+            if let Event::Added { blob_id, blob: Some(_), .. } = e {
+                self.inlined.insert(*blob_id, self.sent);
+            }
         }
     }
 
@@ -104,6 +111,7 @@ impl Serve {
         self.reported = self.reported.max(n);
         let r = self.reported;
         self.unapplied.retain(|_, x| *x > r);
+        self.inlined.retain(|_, x| *x > r);
     }
 }
 
@@ -405,7 +413,7 @@ impl Streams {
                     return Ok(None);
                 }
                 // its bytes read (made again, where the engine keeps its seal) only to inline them
-                let fits = inline > 0 && !page.inlined.contains(&b) && ctx.store.blob_len(&b)?.is_some_and(|n| n <= inline) && !self.shown_by_peer(ctx, conn, &s, &b);
+                let fits = inline > 0 && !page.inlined.contains(&b) && ctx.store.blob_len(&b)?.is_some_and(|n| n <= inline) && !self.peer_holds_blob(ctx, conn, &b);
                 let blob = if fits { ctx.ground.bytes(ctx.store, &b)? } else { None };
                 let inlined = blob.is_some();
                 Some((s, Event::Added { blob_id: b, blob, wrap: entry.wrap, stamp: entry.stamp }, inlined))
@@ -442,11 +450,18 @@ impl Streams {
         }
     }
 
-    /// Whether the peer on `conn` showed entry `b` of S present on its own stream (`known`): its
-    /// bytes are not sent to it inline (spec/wire.md §11.2 Pull). Read from what this node keeps
-    /// of held entries, so it needs no memory per body sent.
-    fn shown_by_peer(&self, ctx: &Ctx, conn: ConnId, s: &SyncId, b: &BlobId) -> bool {
-        self.knows(self.source(ctx.shared, conn), Some(conn), s, b)
+    /// Whether the peer on `conn` holds blob `b` under some sync ID: its stream showed it under one
+    /// naming the blob here (`known`), or its bytes went to it inline on this connection in a
+    /// message not reported applied yet. Its bytes go to it inline under no sync ID (spec/wire.md
+    /// §11.2 Pull): a blob several sync IDs carry (a key record, a commit under its thing's unit
+    /// and its admin's) crosses a connection once; the peer takes another entry of it with the
+    /// bytes it holds (spec/sync-streams.md §4 Bodies).
+    fn peer_holds_blob(&self, ctx: &Ctx, conn: ConnId, b: &BlobId) -> bool {
+        if self.serve.get(&conn).is_some_and(|x| x.inlined.contains_key(b)) {
+            return true;
+        }
+        let src = self.source(ctx.shared, conn);
+        ctx.store.naming(b).unwrap_or_default().iter().any(|s| self.knows(src, Some(conn), s, b))
     }
 
     /// The ephemeral listing (spec/wire.md §11.2 Pull `ephemeral`): each listed member's memory
@@ -474,7 +489,7 @@ impl Streams {
                             at = n;
                             continue;
                         };
-                        let shown = page.inlined.contains(&b) || self.shown_by_peer(ctx, conn, &s, &b);
+                        let shown = page.inlined.contains(&b) || self.peer_holds_blob(ctx, conn, &b);
                         Event::Added { blob_id: b, blob: (!shown).then_some(bytes), wrap: entry.wrap, stamp: entry.stamp }
                     } else {
                         Event::Deleted(b)
