@@ -13,13 +13,11 @@
 //!   gains nothing else; a reader lowered to sync opens no later removal's notice
 //!   (spec/sync-opens.md §4 Departed, §6; spec/permissions.md §4 Notices). Searches
 //!   `told`, `told-exh`.
-//! - `shrink`: `without`, a move list less one move.
 //! Binary: `cargo run --bin roles-model -- [samples] [mode]`; `cargo test` runs the hand worlds.
 
 pub mod idset;
 pub mod leave;
 pub mod paths;
-pub mod shrink;
 pub mod told;
 
 /// Roles, `None` below read. The build's sync role (below read) is not modelled: §5.1 judges it as

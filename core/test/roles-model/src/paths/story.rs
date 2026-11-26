@@ -1257,7 +1257,7 @@ pub fn shrink(spec: &Spec, rules: &Rules, prop: &str) -> Spec {
     };
     let mut cur = spec.clone();
     'step: loop {
-        let mut next: Vec<Spec> = (0..cur.moves.len()).map(|k| Spec { moves: crate::shrink::without(&cur.moves, k), ..cur.clone() }).collect();
+        let mut next: Vec<Spec> = (0..cur.moves.len()).map(|k| Spec { moves: cur.moves.iter().enumerate().filter(|&(i, _)| i != k).map(|(_, m)| m.clone()).collect(), ..cur.clone() }).collect();
         next.extend(smaller_setups(&cur.setup).into_iter().map(|setup| Spec { setup, ..cur.clone() }));
         for c in next {
             if fails(&c) {
