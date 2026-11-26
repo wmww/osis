@@ -78,6 +78,17 @@ pub struct BlobOf {
     /// Dropped bodies).
     pub salt: [u8; 16],
     pub ais: PartSet,
+    /// What makes the blob again from the commit as held (`Engine::regenerate`): `None` for a blob
+    /// that is no commit blob framed from its sections (a sealed fire).
+    pub seal: Option<Arc<BlobSeal>>,
+}
+
+/// A commit blob's seal: its blob key and each section as kept (`osis_commit::SectionSeal`).
+/// With the prefix salt (`BlobOf::salt`) and the commit as held it gives the blob byte for byte.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BlobSeal {
+    pub key: Secret32,
+    pub sections: Vec<osis_commit::SectionSeal>,
 }
 
 impl BlobOf {

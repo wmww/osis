@@ -1128,7 +1128,7 @@ impl Engine {
             self.run(|tx| crate::sync::notices::note(tx, &b, n))?;
             return Ok(Opened::Notice(id, ingested));
         }
-        let row = crate::sync::BlobOf { commit: id, parts: parts.into_iter().collect(), sealed: Default::default(), copy: fire.copy, unchecked: false, salt: *prefix.salt(), ais: ais.into_iter().collect() };
+        let row = crate::sync::BlobOf { commit: id, parts: parts.into_iter().collect(), sealed: Default::default(), copy: fire.copy, unchecked: false, salt: *prefix.salt(), ais: ais.into_iter().collect(), seal: None };
         self.run(|tx| crate::sync::bodies::note_blob(tx, &b, row))?;
         Ok(Opened::Commit(id, ingested))
     }

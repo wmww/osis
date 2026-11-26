@@ -314,6 +314,22 @@ impl Section {
         osis_base::hash::hash(&out)
     }
 
+    /// Its canonical encoding (a seal's kept section, `SectionSeal::Verbatim`).
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(self.encoded_len());
+        self.put(&mut out);
+        out
+    }
+
+    /// `to_bytes` read back: only for bytes this node wrote.
+    pub fn from_bytes(b: &[u8]) -> Result<Section, Error> {
+        let s = Section::read(Item::parse(b, &LIMITS)?)?;
+        if s.to_bytes() != b {
+            return Err(Error::Malformed("section not canonical"));
+        }
+        Ok(s)
+    }
+
     /// Encoded length.
     pub fn encoded_len(&self) -> usize {
         use osis_base::cbor::head_len;
@@ -383,16 +399,23 @@ impl Section {
     /// key has junk on both, bad at every reader alike. What a reader takes is a function of the
     /// secrets it holds, never of their order (spec/crypto.md §5 Section).
     pub fn open(&self, commit: &CommitId, split: bool, secrets: &[Secret32]) -> Result<Option<Contents>, Error> {
+        Ok(self.open_keyed(commit, split, secrets)?.map(|(c, _)| c))
+    }
+
+    /// `open`, with the section key that opened it (what a seal keeps, `SectionSeal`).
+    pub fn open_keyed(&self, commit: &CommitId, split: bool, secrets: &[Secret32]) -> Result<Option<(Contents, Secret32)>, Error> {
         let mut opened = None;
         for s in secrets {
             let Ok(key) = osis_crypto::unwrap_section(s, commit, &self.wrap) else { continue };
-            opened = Some(osis_crypto::open_section(commit, &key, &self.ciphertext));
-            if opened.as_ref().is_some_and(|r| r.is_ok()) {
+            let pt = osis_crypto::open_section(commit, &key, &self.ciphertext);
+            let ok = pt.is_ok();
+            opened = Some(pt.map(|pt| (pt, key)));
+            if ok {
                 break;
             }
         }
         let Some(pt) = opened else { return Ok(None) };
-        let pt = pt?;
+        let (pt, key) = pt?;
         let v = Item::parse(&pt, &LIMITS)?;
         let (parts, keys) = if split {
             let Some([pv, kv]) = item::list(v)?.tuple() else { return Err(Error::Malformed("section contents arity")) };
@@ -408,18 +431,23 @@ impl Section {
         if canon != pt {
             return Err(Error::Malformed("section not canonical"));
         }
-        Ok(Some(Contents { parts, keys }))
+        Ok(Some((Contents { parts, keys }, key)))
     }
 
     /// Seals `parts` (sorted), with the path keys `keys` where the commit states the split form,
     /// under the thing's read secret `secret`, listing its derivation chain `chain`.
     pub fn seal(commit: &CommitId, parts: &[impl Borrow<Part>], keys: Option<&BTreeMap<usize, [u8; 32]>>, chain: Vec<Tid>, secret: &Secret32, rng: &mut dyn CryptoRngCore) -> Result<Section, Error> {
+        Ok(Section::seal_keyed(commit, parts, keys, chain, secret, rng)?.0)
+    }
+
+    /// `seal`, with the fresh section key (what a seal keeps, `SectionSeal`).
+    pub fn seal_keyed(commit: &CommitId, parts: &[impl Borrow<Part>], keys: Option<&BTreeMap<usize, [u8; 32]>>, chain: Vec<Tid>, secret: &Secret32, rng: &mut dyn CryptoRngCore) -> Result<(Section, Secret32), Error> {
         let mut pt = Vec::new();
         encode_contents(parts, keys, &mut pt);
         let (key, ciphertext) = osis_crypto::seal_section(commit, &pt, rng)?;
         let wrap = osis_crypto::wrap_section(secret, commit, &key, rng)?.to_vec();
         let ais: Vec<usize> = parts.iter().map(|p| p.borrow().ai).collect();
-        Ok(Section { ais, chain, wrap, ciphertext })
+        Ok((Section { ais, chain, wrap, ciphertext }, key))
     }
 }
 
@@ -491,9 +519,11 @@ impl Envelope {
         let mut parts = Vec::new();
         let mut keys = BTreeMap::new();
         let mut sealed = Vec::new();
+        let mut seals = Vec::with_capacity(self.sections.len());
         for s in &self.sections {
-            let Some(c) = s.open(&id, split, &secrets(s))? else {
+            let Some((c, key)) = s.open_keyed(&id, split, &secrets(s))? else {
                 sealed.push(s.clone());
+                seals.push(SectionSeal::Verbatim(s.clone()));
                 continue;
             };
             let entries = match &h.path {
@@ -501,8 +531,10 @@ impl Envelope {
                 Paths::One(_) => &[],
             };
             if c.keys.iter().any(|(i, k)| entries.get(*i).is_none_or(|e| crate::path::Split::open(k, e).is_none())) || (split && !keys_exact(h, &s.ais, &c.keys)) {
+                seals.push(SectionSeal::Verbatim(s.clone()));
                 continue;
             }
+            seals.push(SectionSeal::Keyed { ais: s.ais.clone(), chain: s.chain.clone(), wrap: s.wrap.clone(), key });
             parts.extend(c.parts);
             keys.extend(c.keys);
         }
@@ -510,7 +542,7 @@ impl Envelope {
         let mut commit = CommitBlob { header: h.clone(), sigs: self.sigs.clone(), parts, keys };
         commit.settle_paths();
         commit.check_paths()?;
-        Ok(Opened { commit, sealed })
+        Ok(Opened { commit, sealed, seals })
     }
 }
 
@@ -539,6 +571,62 @@ fn keys_exact(h: &Header, ais: &[usize], keys: &BTreeMap<usize, [u8; 32]>) -> bo
 pub struct Opened {
     pub commit: CommitBlob,
     pub sealed: Vec<Section>,
+    /// Every section, in order, as a seal keeps it: keyed where its parts were taken, else as
+    /// it came (`regenerate`).
+    pub seals: Vec<SectionSeal>,
+}
+
+/// One section of a commit blob as the node holding the blob keeps it, to make the blob again
+/// byte for byte from the commit as held (`regenerate`; notes/slim-design.md B).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SectionSeal {
+    /// A section whose parts the commit as held carries: its list, chain, wrap as sent and section
+    /// key; its contents are the held commit's parts on `ais` (none: a header-only copy's, the
+    /// destroyed things' path keys), with their things' path keys where the path is split.
+    Keyed { ais: Vec<usize>, chain: Vec<Tid>, wrap: Vec<u8>, key: Secret32 },
+    /// A section kept as it came (not opened here, or its parts not taken).
+    Verbatim(Section),
+}
+
+impl SectionSeal {
+    /// The part indices its section lists.
+    pub fn ais(&self) -> &[usize] {
+        match self {
+            SectionSeal::Keyed { ais, .. } => ais,
+            SectionSeal::Verbatim(s) => &s.ais,
+        }
+    }
+}
+
+/// The envelope of `c` (its header resolved: `resolved`) that `seals` were taken of, made again:
+/// each keyed section's contents read from `c`'s parts and sealed again under its key, each
+/// verbatim one as it came. Fails where `c` lacks a part a keyed section lists. The caller checks
+/// the framed blob against its ID: a key seals only the plaintext it sealed before.
+pub fn regenerate(c: &CommitBlob, resolved: &Header, seals: &[SectionSeal]) -> Result<Envelope, Error> {
+    let id = c.id();
+    let split = c.header.is_split();
+    let things = if split { resolved.things() } else { Vec::new() };
+    let mut sections = Vec::with_capacity(seals.len());
+    for s in seals {
+        let (ais, chain, wrap, key) = match s {
+            SectionSeal::Verbatim(sec) => {
+                sections.push(sec.clone());
+                continue;
+            }
+            SectionSeal::Keyed { ais, chain, wrap, key } => (ais, chain, wrap, key),
+        };
+        let parts = ais.iter().map(|ai| c.part(*ai).ok_or(Error::Malformed("a sealed part not held"))).collect::<Result<Vec<&Part>, Error>>()?;
+        let keys = match (split, ais.is_empty()) {
+            (false, _) => None,
+            (true, false) => Some(path_keys_of(c, resolved, &things, ais)?),
+            (true, true) => Some(resolved.destroyed().filter_map(|t| things.iter().position(|x| x == t)).filter_map(|i| Some((i, *c.keys.get(&i)?))).collect()),
+        };
+        let mut pt = Vec::new();
+        encode_contents(&parts, keys.as_ref(), &mut pt);
+        let ciphertext = osis_crypto::reseal_section(&id, key, &pt)?;
+        sections.push(Section { ais: ais.clone(), chain: chain.clone(), wrap: wrap.clone(), ciphertext });
+    }
+    Ok(Envelope { header: c.header.clone(), sigs: c.sigs.clone(), sections })
 }
 
 /// Seals a commit's parts into sections, one per value of `section_of(ai)`, each wrapped under the
@@ -548,7 +636,13 @@ pub struct Opened {
 /// the thing of each part). A section whose secret is not held (`None`) is left out, its parts
 /// travelling in other copies; `extra` sections are copied verbatim, except one listing an aspect
 /// a sealed part is on.
-pub fn seal_commit<K: Ord + Clone>(c: &CommitBlob, resolved: &Header, section_of: impl Fn(usize) -> K, mut secret_of: impl FnMut(&K, &[usize]) -> Option<(Secret32, Vec<Tid>)>, extra: &[Section], rng: &mut dyn CryptoRngCore) -> Result<Envelope, Error> {
+pub fn seal_commit<K: Ord + Clone>(c: &CommitBlob, resolved: &Header, section_of: impl Fn(usize) -> K, secret_of: impl FnMut(&K, &[usize]) -> Option<(Secret32, Vec<Tid>)>, extra: &[Section], rng: &mut dyn CryptoRngCore) -> Result<Envelope, Error> {
+    Ok(seal_commit_keyed(c, resolved, section_of, secret_of, extra, rng)?.0)
+}
+
+/// `seal_commit`, with each section as a seal keeps it (`SectionSeal`, in the envelope's order):
+/// those it sealed keyed, the `extra` ones verbatim.
+pub fn seal_commit_keyed<K: Ord + Clone>(c: &CommitBlob, resolved: &Header, section_of: impl Fn(usize) -> K, mut secret_of: impl FnMut(&K, &[usize]) -> Option<(Secret32, Vec<Tid>)>, extra: &[Section], rng: &mut dyn CryptoRngCore) -> Result<(Envelope, Vec<SectionSeal>), Error> {
     let id = c.id();
     let things = if c.header.is_split() { resolved.things() } else { Vec::new() };
     let mut by: BTreeMap<K, Vec<&Part>> = BTreeMap::new();
@@ -562,7 +656,9 @@ pub fn seal_commit<K: Ord + Clone>(c: &CommitBlob, resolved: &Header, section_of
         let keys = c.header.is_split().then(|| path_keys_of(c, resolved, &things, &ais)).transpose()?;
         let Some((secret, chain)) = secret_of(&k, &ais) else { continue };
         own.extend(ais.iter().copied());
-        sections.push(Section::seal(&id, &ps, keys.as_ref(), chain, &secret, rng)?);
+        let (sec, key) = Section::seal_keyed(&id, &ps, keys.as_ref(), chain, &secret, rng)?;
+        let seal = SectionSeal::Keyed { ais: sec.ais.clone(), chain: sec.chain.clone(), wrap: sec.wrap.clone(), key };
+        sections.push((sec, seal));
     }
     let mut seen = own.clone();
     for s in extra {
@@ -572,10 +668,11 @@ pub fn seal_commit<K: Ord + Clone>(c: &CommitBlob, resolved: &Header, section_of
         if s.ais.iter().any(|a| !seen.insert(*a)) {
             return Err(Error::Malformed("an aspect in two sections"));
         }
-        sections.push(s.clone());
+        sections.push((s.clone(), SectionSeal::Verbatim(s.clone())));
     }
-    sections.sort_by_key(|s| s.ais.first().copied());
-    Ok(Envelope { header: c.header.clone(), sigs: c.sigs.clone(), sections })
+    sections.sort_by_key(|(s, _)| s.ais.first().copied());
+    let (sections, seals) = sections.into_iter().unzip();
+    Ok((Envelope { header: c.header.clone(), sigs: c.sigs.clone(), sections }, seals))
 }
 
 /// The path keys of the things the parts on `ais` are on, every one held.
@@ -592,8 +689,20 @@ fn path_keys_of(c: &CommitBlob, resolved: &Header, things: &[Tid], ais: &[usize]
 /// destroys things (`Header::destroyed`), one section of no part carrying their held path keys,
 /// under `secret` (a copy's blob key), so the destroyed things' judges open their paths.
 pub fn seal_header_only(c: &CommitBlob, resolved: &Header, secret: &Secret32, rng: &mut dyn CryptoRngCore) -> Result<Envelope, Error> {
+    Ok(seal_header_only_keyed(c, resolved, secret, rng)?.0)
+}
+
+/// `seal_header_only`, with its section as a seal keeps it.
+pub fn seal_header_only_keyed(c: &CommitBlob, resolved: &Header, secret: &Secret32, rng: &mut dyn CryptoRngCore) -> Result<(Envelope, Vec<SectionSeal>), Error> {
     let things = resolved.things();
     let keys: BTreeMap<usize, [u8; 32]> = resolved.destroyed().filter_map(|t| things.iter().position(|x| x == t)).filter_map(|i| Some((i, *c.keys.get(&i)?))).collect();
-    let sections = if c.header.is_split() && !keys.is_empty() { vec![Section::seal(&c.id(), &[] as &[Part], Some(&keys), Vec::new(), secret, rng)?] } else { Vec::new() };
-    Ok(Envelope { header: c.header.clone(), sigs: c.sigs.clone(), sections })
+    let (sections, seals) = match c.header.is_split() && !keys.is_empty() {
+        true => {
+            let (sec, key) = Section::seal_keyed(&c.id(), &[] as &[Part], Some(&keys), Vec::new(), secret, rng)?;
+            let seal = SectionSeal::Keyed { ais: Vec::new(), chain: Vec::new(), wrap: sec.wrap.clone(), key };
+            (vec![sec], vec![seal])
+        }
+        false => (Vec::new(), Vec::new()),
+    };
+    Ok((Envelope { header: c.header.clone(), sigs: c.sigs.clone(), sections }, seals))
 }

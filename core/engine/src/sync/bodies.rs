@@ -15,9 +15,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 /// `bp/` + commit ID + blob ID: flags (one byte: 1 a per-sync-ID copy, 2 unchecked), its prefix
-/// salt (16 bytes), the count of aspects its sections list (u32) and those (u32 each), the count of
-/// parts it holds (u32) and those, then the digest of each section it holds that this node did not
-/// open (32 bytes each; `BlobOf`).
+/// salt (16 bytes), the aspects its sections list and the parts it holds (each a count, u32, then
+/// u32 each), the digests of the sections it holds that this node did not open (a count, then 32
+/// bytes each; `BlobOf`), then its seal (`BlobSeal`): absent, or the blob key (32 bytes) and each
+/// section (`seal_bytes`).
 pub(crate) const BLOB_PARTS: &[u8] = b"bp/";
 
 /// Loads the blob parts (an open or reload).
@@ -27,12 +28,7 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
     tx.scan(BLOB_PARTS, |k, v| {
         let c = CommitId(k.get(..32).ok_or_else(bad)?.try_into().map_err(|_| bad())?);
         let b = BlobId(k.get(32..).ok_or_else(bad)?.try_into().map_err(|_| bad())?);
-        let (copy, rest) = v.split_first().ok_or_else(bad)?;
-        let (salt, rest) = rest.split_first_chunk::<16>().ok_or_else(bad)?;
-        let (ais, rest) = indices(rest).ok_or_else(bad)?;
-        let (ps, sealed) = indices(rest).ok_or_else(bad)?;
-        let sealed: SealedSet = sealed.chunks(32).map(|x| x.try_into().map_err(|_| bad())).collect::<Result<_>>()?;
-        parts.push((b, BlobOf { commit: c, parts: ps, sealed, copy: copy & 1 != 0, unchecked: copy & 2 != 0, salt: *salt, ais }));
+        parts.push((b, decode_row(c, &v).ok_or_else(bad)?));
         Ok(())
     })?;
     for (b, row) in parts {
@@ -40,6 +36,92 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
         tx.core.ix.blob_parts.insert(b, Arc::new(row));
     }
     Ok(())
+}
+
+/// A `bp/` row's value.
+fn encode_row(row: &BlobOf) -> Vec<u8> {
+    let mut v = vec![u8::from(row.copy) | u8::from(row.unchecked) << 1];
+    v.extend(row.salt);
+    put_indices(&mut v, row.ais.iter().copied());
+    put_indices(&mut v, row.parts.iter().copied());
+    v.extend((row.sealed.len() as u32).to_be_bytes());
+    v.extend(row.sealed.iter().flatten());
+    if let Some(seal) = &row.seal {
+        v.extend(seal.key.expose());
+        for s in &seal.sections {
+            seal_bytes(&mut v, s);
+        }
+    }
+    v
+}
+
+/// One section of a seal: 0, its aspect list, its chain (a count byte, then tids), its wrap and
+/// key; or 1, the section's canonical bytes (length u32 first).
+fn seal_bytes(v: &mut Vec<u8>, s: &osis_commit::SectionSeal) {
+    match s {
+        osis_commit::SectionSeal::Keyed { ais, chain, wrap, key } => {
+            v.push(0);
+            put_indices(v, ais.iter().copied());
+            v.push(chain.len() as u8);
+            chain.iter().for_each(|t| v.extend(t.as_bytes()));
+            v.extend(wrap);
+            v.extend(key.expose());
+        }
+        osis_commit::SectionSeal::Verbatim(sec) => {
+            v.push(1);
+            let b = sec.to_bytes();
+            v.extend((b.len() as u32).to_be_bytes());
+            v.extend(b);
+        }
+    }
+}
+
+/// `encode_row` read back.
+fn decode_row(commit: CommitId, v: &[u8]) -> Option<BlobOf> {
+    let (flags, rest) = v.split_first()?;
+    let (salt, rest) = rest.split_first_chunk::<16>()?;
+    let (ais, rest) = indices(rest)?;
+    let (parts, rest) = indices(rest)?;
+    let (n, rest) = rest.split_first_chunk::<4>()?;
+    let (sealed, mut rest) = rest.split_at_checked(u32::from_be_bytes(*n) as usize * 32)?;
+    let sealed: SealedSet = sealed.as_chunks::<32>().0.iter().copied().collect();
+    let seal = match rest.split_first_chunk::<32>() {
+        None if rest.is_empty() => None,
+        None => return None,
+        Some((key, r)) => {
+            rest = r;
+            let mut sections = Vec::new();
+            while let Some((tag, r)) = rest.split_first() {
+                let (s, r) = match tag {
+                    0 => {
+                        let (ais, r) = indices(r)?;
+                        let (n, r) = r.split_first()?;
+                        let (chain, r) = r.split_at_checked(*n as usize * 15)?;
+                        let chain = chain.as_chunks::<15>().0.iter().map(|t| Tid::from_bytes(*t)).collect();
+                        let (wrap, r) = r.split_at_checked(osis_crypto::SECTION_WRAP_LEN)?;
+                        let (k, r) = r.split_first_chunk::<32>()?;
+                        (osis_commit::SectionSeal::Keyed { ais: ais.into_iter().collect(), chain, wrap: wrap.to_vec(), key: osis_crypto::Secret32::from_bytes(*k) }, r)
+                    }
+                    1 => {
+                        let (n, r) = r.split_first_chunk::<4>()?;
+                        let (b, r) = r.split_at_checked(u32::from_be_bytes(*n) as usize)?;
+                        (osis_commit::SectionSeal::Verbatim(osis_commit::Section::from_bytes(b).ok()?), r)
+                    }
+                    _ => return None,
+                };
+                sections.push(s);
+                rest = r;
+            }
+            Some(Arc::new(super::BlobSeal { key: osis_crypto::Secret32::from_bytes(*key), sections }))
+        }
+    };
+    Some(BlobOf { commit, parts, sealed, copy: flags & 1 != 0, unchecked: flags & 2 != 0, salt: *salt, ais, seal })
+}
+
+/// A count (u32) then each index (u32).
+fn put_indices(v: &mut Vec<u8>, xs: impl ExactSizeIterator<Item = usize>) {
+    v.extend((xs.len() as u32).to_be_bytes());
+    xs.for_each(|p| v.extend((p as u32).to_be_bytes()));
 }
 
 /// A count (u32) of indices (u32 each) at the start of `rest`, and what follows.
@@ -51,26 +133,73 @@ fn indices(rest: &[u8]) -> Option<(PartSet, &[u8])> {
 
 /// Notes blob `b` as this node opened or sealed it (`row`), in place of what an earlier opening
 /// noted (opened again once more is checked, `BlobOf::unchecked`).
-pub(crate) fn note_blob(tx: &mut Tx<'_>, b: &BlobId, row: BlobOf) -> Result<()> {
+pub(crate) fn note_blob(tx: &mut Tx<'_>, b: &BlobId, mut row: BlobOf) -> Result<()> {
+    // a seal is kept only where the commit as held carries every part it keyed: a part held here
+    // only in a blob (dropped, or never taken) makes no blob again (notes/slim-design.md B)
+    if let Some(s) = row.seal.clone() {
+        let held = carried(tx, &row.commit, None)?;
+        if !keyed(&s).all(|ai| held.contains(&ai)) {
+            row.seal = None;
+        }
+    }
     match tx.core.ix.blob_parts.get(b) {
         Some(old) if **old == row => return Ok(()),
         Some(_) => unnote_blob(tx, b)?,
         None => {}
     }
     // a memory commit's rows are memory, gone with it at a restart
-    let mut v = vec![u8::from(row.copy) | u8::from(row.unchecked) << 1];
-    v.extend(row.salt);
-    v.extend((row.ais.len() as u32).to_be_bytes());
-    v.extend(row.ais.iter().flat_map(|p| (*p as u32).to_be_bytes()));
-    v.extend((row.parts.len() as u32).to_be_bytes());
-    v.extend(row.parts.iter().flat_map(|p| (*p as u32).to_be_bytes()));
-    v.extend(row.sealed.iter().flatten());
+    let v = encode_row(&row);
     let c = row.commit;
     let k = [BLOB_PARTS, &c.0, &b.0].concat();
     tx.in_class(tx.is_memory_commit(&c), |tx| Ok(tx.txn.put_local(&k, &v, Shred::No)?))?;
     tx.core.ix.blob_parts.insert(*b, Arc::new(row));
     tx.core.ix.commit_blobs.insert(c, *b);
     Ok(())
+}
+
+/// Commit `c`'s record is written as `record` (`None`: removed): a blob of `c` whose seal lists,
+/// in a section it keyed, a part the commit as held no longer carries (`carried`) is made again
+/// here no more, so its seal goes, shredded: its keys would open the blob's bytes wherever they
+/// still are, so a purged part, or a commit no longer held, stays unrecoverable.
+pub(crate) fn unseal(tx: &mut Tx<'_>, c: &CommitId, record: Option<&osis_commit::CommitBlob>) -> Result<()> {
+    let blobs: Vec<BlobId> = tx.core.ix.commit_blobs.get(c).into_iter().flatten().copied().collect();
+    let mut held: Option<PartSet> = None;
+    for b in blobs {
+        let Some(row) = tx.core.ix.blob_parts.get(&b).cloned() else { continue };
+        if !row.seal.as_ref().is_some_and(|s| keyed(s).any(|ai| record.is_none_or(|r| r.part(ai).is_none()))) {
+            continue;
+        }
+        if record.is_some() && held.is_none() {
+            held = Some(carried(tx, c, record)?);
+        }
+        if record.is_some() && row.seal.as_ref().is_some_and(|s| keyed(s).all(|ai| held.as_ref().is_some_and(|h| h.contains(&ai)))) {
+            continue;
+        }
+        note_blob(tx, &b, BlobOf { seal: None, ..(*row).clone() })?;
+    }
+    Ok(())
+}
+
+/// The parts seal `s` lists in sections it keyed: what making its blob again reads of the commit.
+fn keyed(s: &super::BlobSeal) -> impl Iterator<Item = usize> + '_ {
+    s.sections.iter().filter(|x| matches!(x, osis_commit::SectionSeal::Keyed { .. })).flat_map(|x| x.ais().iter().copied())
+}
+
+/// The parts commit `c` as held here carries (`Engine::regenerate` reads them): its record's
+/// (`record`, else the stored one) and its pending copy's.
+fn carried(tx: &mut Tx<'_>, c: &CommitId, record: Option<&osis_commit::CommitBlob>) -> Result<PartSet> {
+    let mut out: PartSet = match record {
+        Some(r) => r.parts.iter().map(|p| p.ai).collect(),
+        None => tx.get_commit(c)?.map(|r| r.parts.iter().map(|p| p.ai).collect()).unwrap_or_default(),
+    };
+    if let Some(p) = tx.txn.get_pending(c)? {
+        let p = match p.kind {
+            osis_store::PendingKind::Parked => osis_commit::CommitBlob::decode(&p.bytes).ok(),
+            _ => osis_commit::CommitBlob::decode_stored(&p.bytes).ok(),
+        };
+        out.extend(p.iter().flat_map(|p| p.parts.iter().map(|x| x.ai)));
+    }
+    Ok(out)
 }
 
 /// Blob `b`'s row goes, from where it was noted (its commit forgotten, or the blob opened again
@@ -84,7 +213,7 @@ fn unnote_blob(tx: &mut Tx<'_>, b: &BlobId) -> Result<()> {
     // a memory commit was held went to memory
     let k = [BLOB_PARTS, &c.0, &b.0].concat();
     for memory in [false, true] {
-        tx.in_class(memory, |tx| Ok(tx.txn.remove_local(&k, Shred::No)?))?;
+        tx.in_class(memory, |tx| Ok(tx.txn.remove_local(&k, Shred::Yes)?))?;
     }
     Ok(())
 }
@@ -609,7 +738,7 @@ impl Engine {
         let wrap = osis_crypto::wrap(&w, &sealed.id, &sealed.key, b.order)?;
         // a section copied verbatim that this node never opened counts by its bytes, whatever of
         // its parts it holds from another blob (spec/sync-compaction.md §1 Only what the node checked)
-        let mut row = BlobOf { commit: *c, parts: sealed.parts.iter().copied().collect(), sealed: sealed.unopened.clone(), copy: b.to_sync_id, unchecked: false, salt: sealed.salt, ais: sealed.ais.iter().copied().collect() };
+        let mut row = BlobOf { commit: *c, parts: sealed.parts.iter().copied().collect(), sealed: sealed.unopened.clone(), copy: b.to_sync_id, unchecked: false, salt: sealed.salt, ais: sealed.ais.iter().copied().collect(), seal: sealed.seal.clone() };
         if !unopened.is_empty() {
             let env = osis_commit::Envelope::decode(&osis_blob::open(&sealed.blob, &sealed.key)?.1)?;
             for sec in env.sections.iter().filter(|sec| unopened.contains(&sec.digest())) {
@@ -808,7 +937,7 @@ impl Engine {
         }
         let Some(w) = self.wrap_secret(t, Some((c, &parts)))? else { return Ok(None) };
         let wrap = osis_crypto::wrap(&w, &sealed.id, &sealed.key, meta.order)?;
-        let row = BlobOf { commit: *c, parts: meta.parts.clone(), sealed: SealedSet::new(), copy: true, unchecked: false, salt: sealed.salt, ais: sealed.ais.iter().copied().collect() };
+        let row = BlobOf { commit: *c, parts: meta.parts.clone(), sealed: SealedSet::new(), copy: true, unchecked: false, salt: sealed.salt, ais: sealed.ais.iter().copied().collect(), seal: sealed.seal.clone() };
         let bid = sealed.id;
         self.run(|tx| note_blob(tx, &bid, row))?;
         Ok(Some((sealed, wrap)))
@@ -979,7 +1108,8 @@ impl Engine {
         }
         // a blob opened before its header lists resolve here checked no commitment of its prefix
         // and opened no section (spec/commits.md §4): it opens again, checked, once they do
-        let row = BlobOf { commit: id, parts, sealed, copy: opened.copy, unchecked: !unchecked.is_empty() || h.is_none(), salt: opened.salt, ais: opened.ais.iter().copied().collect() };
+        let seal = Some(Arc::new(super::BlobSeal { key: key.clone(), sections: opened.seals.clone() }));
+        let row = BlobOf { commit: id, parts, sealed, copy: opened.copy, unchecked: !unchecked.is_empty() || h.is_none(), salt: opened.salt, ais: opened.ais.iter().copied().collect(), seal };
         let b = *blob;
         self.run(|tx| note_blob(tx, &b, row))?;
         Ok(Opened::Commit(id, ingested))
@@ -1048,4 +1178,81 @@ mod tests {
     
     
 
+}
+
+impl Engine {
+    /// Held blob `b` made again, byte for byte, from its seal (`BlobOf::seal`) and the commit as
+    /// held here (its record's parts, and its pending copy's; notes/slim-design.md B).
+    /// `None`: no seal (not a commit blob, or none kept), or the commit as held no longer gives it
+    /// (a part it lists is not held): a blob that is not regenerated is not served.
+    pub fn regenerate(&mut self, b: &BlobId) -> Result<Option<Vec<u8>>> {
+        let Some(row) = self.core.ix.blob_parts.get(b).cloned() else { return Ok(None) };
+        let Some(seal) = row.seal.clone() else { return Ok(None) };
+        let c = row.commit;
+        let Some(cb) = self.held_commit_whole(&c)? else { return Ok(None) };
+        let resolved = match self.resolved_header(&cb) {
+            h if h.is_resolved() => h,
+            h => match self.held_resolved((*h).clone()) {
+                Some(r) => Arc::new(r),
+                None => return Ok(None),
+            },
+        };
+        let Ok(env) = osis_commit::regenerate(&cb, &resolved, &seal.sections) else { return Ok(None) };
+        let ais = env.ais();
+        let groups = osis_commit::prefix_groups(&resolved, ais.iter().copied())?;
+        let prefix = osis_blob::Prefix::for_delete_keys(row.salt, &cb.header.blind, osis_commit::prefix_expiry(&resolved, &ais).map(WallMs), &groups)?.with_class(osis_blob::Class::of_marker(resolved.ephemeral));
+        let (_, blob) = osis_blob::frame_under(osis_crypto::BlobKey::of_blob(seal.key.clone()), &prefix, &env.encode())?;
+        Ok((osis_blob::blob_id(&blob) == *b).then_some(blob))
+    }
+
+    /// Commit `c` as held here: its record's parts with those of its pending copy (an applied
+    /// commit's waiting parts, or a pending commit's).
+    fn held_commit_whole(&mut self, c: &CommitId) -> Result<Option<osis_commit::CommitBlob>> {
+        let c = *c;
+        let (record, pending) = self.read(|tx| Ok((tx.get_commit(&c)?, tx.txn.get_pending(&c)?)))?;
+        let pending = pending.and_then(|p| match p.kind {
+            osis_store::PendingKind::Parked => osis_commit::CommitBlob::decode(&p.bytes).ok(),
+            _ => osis_commit::CommitBlob::decode_stored(&p.bytes).ok(),
+        });
+        let mut out = match (record, pending.as_ref()) {
+            (Some(r), _) => (*r).clone(),
+            (None, Some(p)) => p.clone(),
+            (None, None) => return Ok(None),
+        };
+        if let Some(p) = pending {
+            for part in p.parts {
+                if out.part(part.ai).is_none() {
+                    out.parts.push(part);
+                }
+            }
+            for (i, k) in p.keys {
+                out.keys.entry(i).or_insert(k);
+            }
+            out.parts.sort_by_key(|p| p.ai);
+        }
+        Ok(Some(out))
+    }
+
+    /// Every held blob with a seal whose bytes the store holds is made again to them
+    /// (`regenerate`): how many were, and each that was not, described. Debug builds check it at
+    /// the end of every engine's history.
+    #[doc(hidden)]
+    pub fn check_seals(&mut self) -> (usize, Vec<String>) {
+        let rows: Vec<(BlobId, Arc<BlobOf>)> = self.core.ix.blob_parts.iter().filter(|(_, r)| r.seal.is_some()).map(|(b, r)| (*b, r.clone())).collect();
+        let (mut made, mut out) = (0, Vec::new());
+        for (b, row) in rows {
+            let Ok(Some(bytes)) = self.read(|tx| tx.blobs.get(&b)) else { continue };
+            match self.regenerate(&b) {
+                Ok(Some(r)) if r == bytes => made += 1,
+                r => {
+                    let c = row.commit;
+                    let m = self.core.ix.commits.get(&c);
+                    let holds: Vec<String> = row.seal.iter().flat_map(|s| s.sections.iter()).filter(|s| matches!(s, osis_commit::SectionSeal::Keyed { .. })).flat_map(|s| s.ais().to_vec()).map(|ai| format!("{ai}:{:?}", m.and_then(|m| m.hold(ai)))).collect();
+                    let pending = self.core.ix.pending.contains_key(&c);
+                    out.push(format!("blob {b:?} of {c:?} copy {} unchecked {} held {} pending {pending} keyed parts [{}]: {}", row.copy, row.unchecked, m.is_some(), holds.join(", "), match r { Ok(Some(_)) => "differs".to_string(), Ok(None) => "not made again".to_string(), Err(e) => format!("{e:?}") }));
+                }
+            }
+        }
+        (made, out)
+    }
 }

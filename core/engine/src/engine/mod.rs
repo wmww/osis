@@ -3569,6 +3569,9 @@ impl Drop for Engine {
             self.check_missed_wakes("end of history");
             let r = self.check_walks(true);
             assert!(matches!(r, Ok(()) | Err(Error::Store(_))), "blob waits at the end of history: {:?}", r.err());
+            // every held blob with a seal is made again byte for byte (notes/slim-design.md B)
+            let (_, failed) = self.check_seals();
+            assert!(failed.is_empty(), "held blobs not made again from their seals at the end of history:\n{}", failed.join("\n"));
         }
     }
 }

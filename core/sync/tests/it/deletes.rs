@@ -503,6 +503,48 @@ fn make_held(w: &mut World) -> Tid {
     })
 }
 
+// notes/slim-design.md B (one stored form per commit): every commit blob a node holds with a seal
+// is made again byte for byte from its seal and the commit as held: its own fresh encryptions,
+// blobs others sealed, a section it cannot open (kept as it came), and a strip's rewrite. Node
+// 0's commit writes A, B and C; node 1 reads A and C, node 2 C alone; node 1 purges A's part and
+// rewrites the blob. Each node makes again every held blob it keeps a seal of, and some at each.
+// Fails if a seal leaves out what its blob carries (a wrap, a key, a section, the prefix).
+#[test]
+fn every_held_blob_is_made_again_from_its_seal() {
+    let mut w = world_of(0, 3, 3);
+    w.cap = crate::harness::WIDE_CAP;
+    let [a, b, c] = [0; 3].map(|_| make_held(&mut w));
+    for (i, ts) in [(1, vec![a, c]), (2, vec![c])] {
+        let to = w.node(i).account.unwrap();
+        for t in ts {
+            w.write(0, |e| e.grant(&t, &to, &edge(Role::Write))).unwrap();
+            let d = w.node(i).account.unwrap();
+            w.write(i, |e| {
+                let mut m = Mutation::new();
+                m.op(d, &ct::HOLDS, osis_crdt::PathOp { path: vec![], op: osis_crdt::Op::Add(Value::Strong(t)) }).unwrap();
+                e.commit(m).unwrap();
+            });
+        }
+    }
+    w.run();
+    let x = w.write(0, |e| {
+        let mut m = Mutation::new();
+        for t in [a, b, c] {
+            m.set(t, &value_ak(), &Value::Str("v".into())).unwrap().purge_by(t, &value_ak(), PurgeBy::Writer).unwrap();
+        }
+        e.commit(m).unwrap().unwrap()
+    });
+    w.run();
+    w.advance(10);
+    purge(&mut w, 1, a, x);
+    w.run();
+    for i in 0..3 {
+        let (made, failed) = w.engine(i).check_seals();
+        assert!(failed.is_empty(), "node {i}: {failed:?}");
+        assert!(made > 0, "node {i} made no blob again");
+    }
+}
+
 // spec/sync-judgement.md §1 (One blob per commit: a section a node cannot open goes into its
 // fresh encryption only where every held blob of the commit carries it), §2 (Per blob):
 // `Engine::held_sections`. Node 0's commit writes A, B and C, each independent;

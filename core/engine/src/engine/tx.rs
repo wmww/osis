@@ -673,6 +673,7 @@ impl Tx<'_> {
         let v = [index::record_head(meta), blob.encode()].concat();
         self.txn.put_local(&records::commit_key(id), &v, shred)?;
         crate::sync_ids::opened::prune(self, id, meta)?;
+        crate::sync::bodies::unseal(self, id, Some(blob))?;
         if meta.header.kind.is_role() {
             // perm's reading of it, persisted beside the record (an open decodes no body)
             match edges {
@@ -694,6 +695,7 @@ impl Tx<'_> {
     /// Removes a commit record (shredded) with what the index keeps beside it.
     pub fn remove_commit(&mut self, id: &CommitId) -> Result<()> {
         self.txn.remove_local(&records::commit_key(id), Shred::Yes)?;
+        crate::sync::bodies::unseal(self, id, None)?;
         crate::apply::remove_page_index(self, id, None)?;
         crate::sync_ids::opened::forget(self, id)?;
         index::remove_perm(self, id)?;

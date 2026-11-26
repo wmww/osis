@@ -26,7 +26,7 @@ fn send(lp: &mut LocalPeer, from: usize, to: usize, ids: &[CommitId]) {
 /// Peer `i` notes blob `b` of `c` holding `parts` as opened (a shared blob unless `copy`).
 fn opened(lp: &mut LocalPeer, i: usize, b: u8, c: &CommitId, parts: &[usize], copy: bool) -> BlobId {
     let (id, c, ps) = (BlobId([b; 32]), *c, parts.iter().copied().collect::<PartSet>());
-    lp.peers[i].engine.run(|tx| note_blob(tx, &id, super::BlobOf { commit: c, parts: ps, sealed: Default::default(), copy, unchecked: false, salt: [0; 16], ais: Default::default() })).unwrap();
+    lp.peers[i].engine.run(|tx| note_blob(tx, &id, super::BlobOf { commit: c, parts: ps, sealed: Default::default(), copy, unchecked: false, salt: [0; 16], ais: Default::default(), seal: None })).unwrap();
     id
 }
 
@@ -196,7 +196,7 @@ fn a_blob_loses_to_another_by_what_each_carries_spec_sync_judgement_2() {
     let mut noted = |b: u8, parts: &[usize], sealed: &[u8]| {
         let (id, ps) = (BlobId([b; 32]), parts.iter().copied().collect::<PartSet>());
         let sealed = sealed.iter().map(|k| [*k; 32]).collect();
-        e.run(|tx| note_blob(tx, &id, super::BlobOf { commit: c, parts: ps.clone(), sealed, copy, unchecked: false, salt: [0; 16], ais: ps })).unwrap();
+        e.run(|tx| note_blob(tx, &id, super::BlobOf { commit: c, parts: ps.clone(), sealed, copy, unchecked: false, salt: [0; 16], ais: ps, seal: None })).unwrap();
         id
     };
     let (b1, b2, b3, b4, b5, b6, b7, b8) = (noted(1, &[p0], &[]), noted(2, &[p0], &[]), noted(3, &[p0], &[9]), noted(4, &[p0], &[]), noted(5, &[p0, p1], &[9]), noted(6, &[p0], &[]), noted(7, &[p0], &[]), noted(8, &[p0, p1], &[]));
@@ -225,7 +225,7 @@ fn a_strip_names_its_live_parts_and_covers_spec_sync_judgement_2() {
     let noted = |e: &mut crate::Engine, b: u8, c: CommitId, t: Tid| {
         let ps: PartSet = e.header(&c).unwrap().aspects.iter().enumerate().filter(|(_, a)| a.tid == t).map(|(i, _)| i).collect();
         let id = BlobId([b; 32]);
-        e.run(|tx| note_blob(tx, &id, super::BlobOf { commit: c, parts: ps.clone(), sealed: Default::default(), copy: false, unchecked: false, salt: [0; 16], ais: ps })).unwrap();
+        e.run(|tx| note_blob(tx, &id, super::BlobOf { commit: c, parts: ps.clone(), sealed: Default::default(), copy: false, unchecked: false, salt: [0; 16], ais: ps, seal: None })).unwrap();
         id
     };
     let part = |e: &crate::Engine, c: &CommitId, t: Tid, k: &str| e.header(c).unwrap().aspects.iter().position(|a| a.tid == t && a.ak.as_str() == k).unwrap();

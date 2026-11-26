@@ -69,6 +69,13 @@ impl BlobKey {
         &self.0
     }
 
+    /// The key of a blob already made, to make it again byte for byte (a held commit blob
+    /// regenerated from its seal): the caller checks the result's
+    /// blob ID against the one it was made for, so the key encrypts that one plaintext only.
+    pub fn of_blob(key: Secret32) -> BlobKey {
+        BlobKey(key)
+    }
+
     /// `encrypt_blob` under this key.
     pub fn encrypt(self, prefix: &[u8], plaintext: &[u8]) -> Result<(Secret32, Vec<u8>), Error> {
         let total = blob_len(prefix.len(), plaintext.len());
@@ -202,6 +209,12 @@ pub fn seal_section(commit: &CommitId, plaintext: &[u8], rng: &mut dyn CryptoRng
     let key = Secret32::random(rng);
     let ct = aead::seal(key.expose(), &aead::ZERO_NONCE, &commit.0, plaintext)?;
     Ok((key, ct))
+}
+
+/// A section's ciphertext under its key again (`seal_section`'s, regenerated from a seal): the
+/// caller checks the blob it goes into against its ID, so the key seals that one plaintext only.
+pub fn reseal_section(commit: &CommitId, key: &Secret32, plaintext: &[u8]) -> Result<Vec<u8>, Error> {
+    aead::seal(key.expose(), &aead::ZERO_NONCE, &commit.0, plaintext)
 }
 
 /// Opens a section's ciphertext under its key.
