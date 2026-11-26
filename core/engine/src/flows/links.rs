@@ -368,9 +368,9 @@ fn create_link_in(tx: &mut Tx<'_>, sharer: Tid, spec: &LinkSpec, krec: osis_base
     // K is granted the link's role on the target below, in this transaction: its keysets up to
     // it carry KEM keys from its minting (spec/crypto.md §3, Published KEM keys)
     tx.publishing.push((krec.tid(), spec.role));
-    let k = rotation::own_secrets_new(tx, krec, &[ReaderKey::Static(lid.signing().verifying_key(), lread)], None, &mut done)?;
+    let k = rotation::own_secrets_new(tx, krec, &[ReaderKey::Static(lid.signing().verifying_key(), lread)], None, Vec::new(), &mut done)?;
     // L: minted with the seed's key, its secrets the seed's, signed by that key as L
-    rotation::own_secrets_new(tx, lid.record().clone(), &[], Some(seed), &mut done)?;
+    rotation::own_secrets_new(tx, lid.record().clone(), &[], Some(seed), Vec::new(), &mut done)?;
     debug_assert_eq!(lid.tid(), l);
     // L's edge (r, may-grant, until) with its boxes, sealed to L's keysets
     let epochs = tx.core.epochs(&k).ok_or(Error::Misuse("K's secrets"))?;

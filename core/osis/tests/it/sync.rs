@@ -364,14 +364,23 @@ fn put_card_needs_keys_and_a_path_through_the_thing_spec_sync_inbox_1() {
     w.hold(g, p).unwrap();
     let elsewhere = w.create_held().unwrap();
     w.commit().unwrap();
-    // g with its keys: by a grant (here to a client's thing)
+    // g with its keys: by a grant (here write, to a client's thing)
     let (client, _) = a.add_client(a.node(), None).unwrap();
-    a.grant(g, client, Role::Read, GrantOpts::default()).unwrap();
+    a.grant(g, client, Role::Write, GrantOpts::default()).unwrap();
     let unknown = Tid::from_bytes([7; 15]);
     assert!(matches!(a.put_card(p, unknown), Err(Error::UnknownKeys { .. })), "no keys of it here");
     assert!(matches!(a.put_card(elsewhere, g), Err(Error::Permission { .. })), "g does not write it");
-    assert!(matches!(a.set_inbox(unknown, g), Err(Error::Permission { .. })), "no admin of it");
-    a.set_inbox(g, p).unwrap();
+    // naming g's inbox: admin on g, and g with keys of its own
+    let as_client = osis::internals::Internals::acting_as(&a, client);
+    let mut w = as_client.write();
+    w.set_inbox(g, p).unwrap();
+    assert!(matches!(w.commit(), Err(Error::Permission { .. })), "a writer of g, acting through a node administering it");
+    let mut w = a.write();
+    w.set_inbox(elsewhere, g).unwrap();
+    assert!(matches!(w.commit(), Err(Error::Invalid(_))), "elsewhere has no keys of its own");
+    let mut w = a.write();
+    w.set_inbox(g, p).unwrap();
+    w.commit().unwrap();
     a.put_card(p, g).unwrap();
     a.grant(p, Tid::PUBLIC, Role::Read, GrantOpts::default()).unwrap();
     let b = on(&net, 51, &c);

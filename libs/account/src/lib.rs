@@ -17,7 +17,7 @@
 
 use osis_base as base;
 use osis_crypto as crypto;
-use osis::core::{CAPS, DIAL, HOLDS, NAME, RETENTION, RetentionSetting, SETTINGS};
+use osis::core::{CAPS, DIAL, NAME, RETENTION, RetentionSetting, SETTINGS};
 use osis::{Error, GrantOpts, HolderKind, Keys, Link, LinkInfo, Offer, Osis, ReadOnly, Result, Role, SetRoleOpts, Store, Tid, Value, Weak};
 
 /// Typed keys of schema/realm.osis.
@@ -136,14 +136,7 @@ impl Account {
             // one made by a node stopped before its last step is finished; one made, refused
             let a = Account { thing: a };
             return match a.realm().profile(db)? {
-                Some(p) if !db.grants(p)?.contains_key(&Tid::PUBLIC) => {
-                    // nothing else is made for A before `make` returns: its other strong is the inbox
-                    let inbox = db.at(a.thing, HOLDS).get()?.unwrap_or_default().into_iter().find_map(|r| match r {
-                        osis::Ref::Strong(s) if s.0 != p => Some(s.0),
-                        _ => None,
-                    });
-                    a.finish(db, p, inbox.ok_or_else(|| Error::Invalid("the account's inbox is not here".into()))?).map(|()| a)
-                }
+                Some(p) if !db.grants(p)?.contains_key(&Tid::PUBLIC) => a.finish(db, p).map(|()| a),
                 _ => Err(Error::Invalid(format!("this node acts for {} already", a.thing))),
             };
         }
@@ -164,17 +157,18 @@ impl Account {
         let mut setting = RetentionSetting::default();
         setting.enable_inbox_signals();
         w.at(inbox, RETENTION).set(&setting)?;
+        // grants to A from outside go to the inbox: named in A's minting
+        w.set_inbox(a, inbox)?;
         w.commit()?;
         let a = Account { thing: a };
-        a.finish(db, profile, inbox)?;
+        a.finish(db, profile)?;
         Ok(a)
     }
 
     /// `make`'s steps after its first transaction, each kept where it is done, so `make` on a
-    /// node stopped between them finishes them: A's inbox, A's card on the profile, the dial
+    /// node stopped between them finishes them: A's card on the profile, the dial
     /// entries on A and the profile, then the profile made public (what tells `make` it is done).
-    fn finish(&self, db: &Osis, profile: Tid, inbox: Tid) -> Result<()> {
-        db.set_inbox(self.thing, inbox)?;
+    fn finish(&self, db: &Osis, profile: Tid) -> Result<()> {
         db.put_card(profile, self.thing)?;
         db.publish_dial_on(&[self.thing, profile])?;
         publish_profile(db, profile)

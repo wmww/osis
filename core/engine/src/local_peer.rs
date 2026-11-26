@@ -672,7 +672,7 @@ pub struct Account {
 /// Makes an account on `e` as the account library does (spec/permissions.md §8 Making), with the
 /// same engine calls, in one transaction: A minted with the node thing as mint admin, its inbox and
 /// profile minted with admin A, each independent, held by strongs from A's `holds.0`; the inbox's
-/// setting enabling both inbox signals; A's `keys.0` naming the inbox; A's card on the profile; the node root's strong to A
+/// setting enabling both inbox signals; A's `keys.0` naming the inbox in the commit holding them; A's card on the profile; the node root's strong to A
 /// and its `settings^.0` naming A. Then the public's read on the profile, in its own transaction.
 pub fn make_account(e: &mut Engine) -> Result<(Account, crate::flows::Done)> {
     use osis_crdt::{Op, PathOp};
@@ -681,16 +681,17 @@ pub fn make_account(e: &mut Engine) -> Result<(Account, crate::flows::Done)> {
     let admins = [crate::MintAdmin::Thing(e.tid()), crate::MintAdmin::Minted(0), crate::MintAdmin::Minted(0)];
     let (ts, done) = e.mint_independent(&admins, |ts| {
         let [a, inbox, profile] = ts else { return Err(crate::Error::Misuse("three minted")) };
+        // A holding its inbox and profile, and naming the inbox its own (an admin's write: the
+        // node is A's mint admin)
         let mut held = Mutation::new();
         for t in [inbox, profile] {
             held.op(*a, &ct::HOLDS, PathOp { path: Vec::new(), op: Op::Add(osis_base::Value::Strong(*t)) })?;
         }
+        crate::flows::cards::put_inbox(&mut held, *a, Some(*inbox))?;
         let mut signals = Mutation::new();
         let mut setting = ct::RetentionSetting::default();
         setting.take_inbox_signals();
         signals.set(*inbox, &ct::RETENTION, &setting)?;
-        let mut named = Mutation::new();
-        crate::flows::cards::put_inbox(&mut named, *a, Some(*inbox))?;
         // A's card on the profile, acting as A; its keys filled in once A's `keys.0` is written
         // (`Engine::refresh_cards`)
         let card = crate::flows::cards::put(*profile, *a, &ct::Card::default())?;
@@ -699,7 +700,7 @@ pub fn make_account(e: &mut Engine) -> Result<(Account, crate::flows::Done)> {
         hold.op(root, &ct::HOLDS, PathOp { path: Vec::new(), op: Op::Add(osis_base::Value::Strong(*a)) })?;
         let mut settings = Mutation::new();
         settings.set(root, &ct::SETTINGS, &osis_base::Weak(*a))?;
-        Ok(vec![held, signals, named, card, hold, settings])
+        Ok(vec![held, signals, card, hold, settings])
     })?;
     let [thing, inbox, profile] = ts.as_slice() else { return Err(crate::Error::Misuse("three minted")) };
     // the card carries A's keys and the inbox's

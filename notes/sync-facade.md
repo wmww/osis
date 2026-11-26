@@ -18,7 +18,7 @@ Every value call is a memo or reads stamped rows (`sync/mod.rs`), so a module re
 - **Keys**: `rotations_superseding`, `read_credentials(s)` (a memo per sync ID compared by public halves, as each key is a curve multiplication), `claim_key`, `signers`, `open_grant`/`learn_grant`, `step_needs` and `step_parent` (one memo per sync ID, `steps_needs`), `due_step(s)` and the command `issue_due_step(s)`.
 - **Peers**: `proving` (what this node proves: its node thing claiming each thing it holds a grant on, then link keys by tid, with copies of those edges; notes/sync-session.md Proving again), `proven(claims, copies)` (a peer's claims judged, a memo; copies taken in as a trial), `judge_peer(s, proven) -> J`, `may_hold`, `writer_of`, `others_may_hold`, `covers_departures`.
 - **Stranded** (`sync/stranded.rs`, whose doc holds the rules; notes/sync-inbox.md `stranded`).
-- **The inbox**: `kept_sync_secrets(s)`, `inbox_of(a)` (by the cards held, `flows::cards`), `logged_with(c)`.
+- **The inbox**: `kept_sync_secrets(s)`, `inbox_of(a)` (the `inbox` field of `a`'s `keys.0`, `flows::cards`), `logged_with(c)`.
 - **Status**: `carrying(t)`, `waiting_removals`/`removal_done(c)` (notes/engine-lost-access.md Self-removal drops), `passes_wanted`, `begin_pass`/`pass_place`, `note_complete_pass`, `forget_read`, `history_complete`.
 - **Duties** (`osis_sync::life`): `role_things`, `named_a_holder(t)`, `joined_link_ended(k)`/`leave_link(k)`.
 - **Dials**: `dial_peers(s)`, `publish_reach`, `publishes_dial` (Dial peers below).

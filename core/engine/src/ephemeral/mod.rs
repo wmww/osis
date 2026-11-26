@@ -69,15 +69,24 @@ impl Engine {
         if eph_ops.is_empty() {
             let local = self.core.node_root.and_then(|r| local_part(&mut m, r));
             let independent = std::mem::take(&mut m.independent);
+            // a thing's inbox is named in its `keys.0` (`flows::cards::put_inbox`): one with keys
+            // of its own, minted so here or before
+            let keys = Ak::new("keys.0").map_err(|_| Error::Misuse("ak"))?;
+            if let Some((t, _)) = m.aspects.keys().find(|(t, ak)| *ak == keys && !self.core.is_independent(t) && !independent.iter().any(|r| r.tid() == *t)) {
+                return Err(Error::Clash(format!("{t} has no keys of its own to name its inbox in: create it with keys, or put its card first")));
+            }
             let id = self.run(|tx| {
                 if !independent.is_empty() {
-                    crate::engine::acting::mint_independent_in(tx, independent, std::slice::from_ref(&m), &mut crate::flows::Done::default())?;
+                    crate::engine::acting::mint_independent_in(tx, independent, std::slice::from_mut(&mut m), &mut crate::flows::Done::default())?;
                 }
-                let id = commit_in(tx, m)?;
-                Ok(match local {
-                    Some(l) => id.or(commit_in(tx, l)?),
-                    None => id,
-                })
+                // what is left in `keys.0` (on a thing minted before) is a role commit's
+                let roles = role_part(&mut m, &keys);
+                let mut id = commit_in(tx, m)?;
+                for p in [roles, local].into_iter().flatten() {
+                    let other = commit_in(tx, p)?;
+                    id = id.or(other);
+                }
+                Ok(id)
             })?;
             return Ok(id.map(|id| self.written(id)));
         }
@@ -180,16 +189,27 @@ impl Engine {
 /// The writes of `m` on node root `root`, taken out into a mutation of their own where `m` writes
 /// anything else too (`Engine::write`).
 fn local_part(m: &mut Mutation, root: Tid) -> Option<Mutation> {
-    let on_root = |k: &(Tid, Ak)| k.0 == root;
-    let others = !m.creates.is_empty() || !m.purge.is_empty() || m.aspects.keys().any(|k| !on_root(k));
-    if !others || !m.aspects.keys().any(on_root) {
+    part(m, |k| k.0 == root)
+}
+
+/// The writes of `m` in `keys` (`keys.0`), taken out into a mutation of their own where `m` writes
+/// anything else too: a commit is a content or a role commit (`Engine::write`).
+fn role_part(m: &mut Mutation, keys: &Ak) -> Option<Mutation> {
+    part(m, |k| k.1 == *keys)
+}
+
+/// The writes of `m` on the aspects `of` picks, taken out into a mutation of their own where `m`
+/// writes anything else too.
+fn part(m: &mut Mutation, of: impl Fn(&(Tid, Ak)) -> bool) -> Option<Mutation> {
+    let others = !m.creates.is_empty() || !m.purge.is_empty() || m.aspects.keys().any(|k| !of(k));
+    if !others || !m.aspects.keys().any(&of) {
         return None;
     }
     let mut l = Mutation::new();
     l.actor = m.actor;
     l.confined = m.confined;
-    let keys: Vec<(Tid, Ak)> = m.aspects.keys().filter(|k| on_root(k)).cloned().collect();
-    for k in keys {
+    let picked: Vec<(Tid, Ak)> = m.aspects.keys().filter(|k| of(k)).cloned().collect();
+    for k in picked {
         if let Some(a) = m.aspects.remove(&k) {
             l.aspects.insert(k, a);
         }

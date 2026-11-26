@@ -277,6 +277,15 @@ pub(crate) fn required_role(ak: &str) -> Role {
     }
 }
 
+/// The role a local write of `ops` on `ak` needs: `required_role`, but admin for a `keys.0` op
+/// outside the fields a writer rotates (its read, write and sync keysets and box records), as
+/// its receivers judge it (`apply::validity::rotation_required`: the inbox, deposit seed, sync ID
+/// and step keys are an admin's).
+pub(crate) fn ops_role(ak: &str, ops: &[PathOp]) -> Role {
+    let writers = |op: &PathOp| matches!(op.path.first(), Some(osis_crdt::PathSeg::Field(f)) if [0, 1, 7, crate::flows::SEALED].contains(f));
+    if ak == "keys.0" && !ops.iter().all(writers) { Role::Admin } else { required_role(ak) }
+}
+
 /// The role a compaction snapshot of `ak` needs (spec/permissions.md §5.2): the strictest any
 /// write it carries could need, so admin for `keys.0` and `secrets.0` (admin keysets, inbox,
 /// deposit seed, admin boxes and tombstones), else the aspect's role.
@@ -1273,7 +1282,9 @@ pub(crate) fn commit_or_build(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option
         // a sealed fire's sender holds no setting of the thing and is bound by none: its
         // readers judge it (spec/sync-inbox.md §2)
         if !m.unchecked && !sealed {
-            check_authority(tx.core, node, &|t| base.creates.get(t), &tid, ak.as_str(), ts)?;
+            // (tests: `skip_writer_rules` forges past the receivers' finer rule)
+            let need = if tx.core.skip_writer_rules { required_role(ak.as_str()) } else { ops_role(ak.as_str(), &am.ops) };
+            check_role(tx.core, node, &|t| base.creates.get(t), &tid, ak.as_str(), need, ts)?;
         }
         // a content write is written under the setting: one known and not held yet is waited
         // for, never read as none (`secrets::usable_role`, spec/commits.md §5 The setting)

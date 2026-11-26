@@ -527,7 +527,12 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
         }
         Cmd::Card(CardCmd::Put { on, of }) => Ok(db.put_card(ctx.tid(&on)?, ctx.tid(&of)?)?),
         Cmd::Card(CardCmd::Rm { on, of }) => Ok(db.remove_card(ctx.tid(&on)?, ctx.tid(&of)?)?),
-        Cmd::Card(CardCmd::Inbox { of, inbox }) => Ok(db.set_inbox(ctx.tid(&of)?, ctx.tid(&inbox)?)?),
+        Cmd::Card(CardCmd::Inbox { of, inbox }) => {
+            let mut w = db.write();
+            w.set_inbox(ctx.tid(&of)?, ctx.tid(&inbox)?)?;
+            w.commit()?;
+            Ok(())
+        }
         Cmd::Contact(ContactCmd::Show) => {
             // a contact card is a public link to the profile
             let a = ctx.account()?.realm();

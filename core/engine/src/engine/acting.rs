@@ -51,8 +51,8 @@ impl Engine {
         let creates = &m.creates;
         let records: Records<'_> = &|t| creates.get(t);
         let created = "created.0";
-        for (t, ak) in m.aspects.keys() {
-            check_authority(&self.core, *actor, records, t, ak.as_str(), ts)?;
+        for ((t, ak), a) in &m.aspects {
+            check_role(&self.core, *actor, records, t, ak.as_str(), super::write::ops_role(ak.as_str(), &a.ops), ts)?;
         }
         for t in m.creates.keys() {
             check_authority(&self.core, *actor, records, t, created, ts)?;
@@ -117,8 +117,8 @@ impl Engine {
                 recs.push(crate::identity::thing_record(admin, None, &mut *tx.rng));
             }
             let ts: Vec<Tid> = recs.iter().map(osis_base::CreationRecord::tid).collect();
-            let muts = also(&ts)?;
-            mint_independent_in(tx, recs, &muts, &mut done)?;
+            let mut muts = also(&ts)?;
+            mint_independent_in(tx, recs, &mut muts, &mut done)?;
             for m in muts {
                 done.add(Engine::commit_tx(tx, m)?);
             }
@@ -131,8 +131,10 @@ impl Engine {
 /// in its own-secrets rotation, ahead of `muts`, the commits the transaction writes for them.
 /// What the transaction gives each that a keyset written now carries a KEM key for (spec/crypto.md
 /// §3, Published KEM keys): admin on a thing minted after it (its record edge), a card of it
-/// (every role), a setting enabling a signal (`rotation::kem::by_setting`).
-pub(crate) fn mint_independent_in(tx: &mut Tx<'_>, recs: Vec<osis_base::CreationRecord>, muts: &[Mutation], done: &mut Done) -> Result<()> {
+/// (every role), a setting enabling a signal (`rotation::kem::by_setting`). What `muts` write in
+/// one's `keys.0` (its inbox, `flows::cards::put_inbox`) moves into its minting rotation: one
+/// commit, not a second role commit beside it.
+pub(crate) fn mint_independent_in(tx: &mut Tx<'_>, recs: Vec<osis_base::CreationRecord>, muts: &mut [Mutation], done: &mut Done) -> Result<()> {
     for (i, t) in recs.iter().map(osis_base::CreationRecord::tid).enumerate() {
         if recs.iter().skip(i + 1).any(|r| r.mint_admin() == Some(t)) || muts.iter().any(|m| m.writes_card_of(&t)) {
             tx.publishing.push((t, Role::Admin));
@@ -141,8 +143,11 @@ pub(crate) fn mint_independent_in(tx: &mut Tx<'_>, recs: Vec<osis_base::Creation
             tx.publishing.push((t, r));
         }
     }
+    let keys = Ak::new("keys.0").map_err(|_| Error::Misuse("ak"))?;
     for rec in recs {
-        rotation::own_secrets_new(tx, rec, &[], None, done)?;
+        let t = rec.tid();
+        let ops = muts.iter_mut().filter_map(|m| m.aspects.remove(&(t, keys.clone()))).flat_map(|a| a.ops).collect();
+        rotation::own_secrets_new(tx, rec, &[], None, ops, done)?;
     }
     Ok(())
 }

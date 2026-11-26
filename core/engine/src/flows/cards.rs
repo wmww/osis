@@ -35,9 +35,15 @@ pub(crate) fn card_on(tx: &mut Tx<'_>, host: &Tid, a: &Tid) -> Result<Option<ct:
 }
 
 /// The things whose `keys.0` held here names `t` their inbox: from the reference index (the
-/// `inbox` field is a weak).
+/// `inbox` field is a weak), each read (a `keys.0` names its box records' holders too).
 pub(crate) fn naming_inbox(tx: &mut Tx<'_>, t: &Tid) -> Result<BTreeSet<Tid>> {
-    Ok(crate::engine::refs::to(tx, t)?.into_iter().filter(|r| r.ak.as_str() == "keys.0" && r.source != *t).map(|r| r.source).collect())
+    let mut out = BTreeSet::new();
+    for r in crate::engine::refs::to(tx, t)? {
+        if r.ak.as_str() == "keys.0" && r.source != *t && inbox_in(tx, &r.source)? == Some(*t) {
+            out.insert(r.source);
+        }
+    }
+    Ok(out)
 }
 
 /// The cards of `a` held here, each with its host.

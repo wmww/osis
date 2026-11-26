@@ -109,6 +109,8 @@ fn a_writer_cannot_move_the_inbox_spec_permissions_3() {
     assert!(matches!(lp.peers[1].engine.set_inbox(accs[0], Some(i2)), Err(osis_engine::Error::Permission { needs: Role::Admin, .. })), "refused writer-side");
     let mut m = Mutation::new();
     cards::put_inbox(&mut m, accs[0], Some(i2)).unwrap();
+    // the plain write path too: a `keys.0` op outside a writer's keysets needs admin
+    assert!(matches!(lp.peers[1].engine.write(m.clone()), Err(osis_engine::Error::Permission { needs: Role::Admin, .. })), "refused writer-side, written plainly");
     lp.peers[1].engine.core.skip_writer_rules = true;
     let forged = lp.peers[1].commit(m).unwrap().unwrap();
     lp.peers[1].engine.core.skip_writer_rules = false;

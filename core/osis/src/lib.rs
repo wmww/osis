@@ -306,7 +306,7 @@
 //! needs the holder's keys (a card of it, a shared thing). `set_role` changes or removes a role.
 //! A link needs no keys. A grant to `Tid::PUBLIC` lets everyone read the thing, and
 //! `public_link` hands out a way to it; `put_card` puts a thing's card on another, so whoever
-//! reads that one can grant to it, and `set_inbox` says where those grants go.
+//! reads that one can grant to it, and `Write::set_inbox` says where those grants go.
 //! ```
 //! # use osis::{Config, GrantOpts, MemStore, Osis, Role, Store};
 //! let db = Osis::create(Store::Memory(MemStore::new()), Config::default())?;

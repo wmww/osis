@@ -141,8 +141,9 @@ pub(crate) fn deliver_sealed(tx: &mut Tx<'_>, holder: Tid, c: CommitId, target: 
 
 /// Fires `grant@~0` on `holder`'s inbox carrying role commit `c`'s piece on `target`: the fire's
 /// value (`Engine::edge_piece`) is made when the fire is first sealed, `c` applied by then. One
-/// already owed stays as it is. A holder with no inbox here (no card of it held, and not
-/// independent here) is fired nothing.
+/// already owed stays as it is. A holder not independent here (no keys of it, so no inbox) is
+/// fired nothing; one whose inbox's keys are not held here (its public key record alone) waits
+/// for them (a card of it).
 pub(crate) fn fire_copy(tx: &mut Tx<'_>, holder: Tid, c: CommitId, target: Tid) -> Result<()> {
     let Some(inbox) = super::cards::inbox_in(tx, &holder)? else { return Ok(()) };
     let to = fire_to(tx, &holder);

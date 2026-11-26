@@ -383,6 +383,7 @@ pub(crate) fn write_op_to(o: &WriteOp) -> Result<Value> {
         WriteOp::PurgeCommit { tid, key, commit } => vec![u(6), tid.to_wire(), k(key), commit.to_wire()],
         WriteOp::PurgeAuthor { tid, key, author } => vec![u(7), tid.to_wire(), k(key), author.to_wire()],
         WriteOp::PurgeThing(t) => vec![u(9), t.to_wire()],
+        WriteOp::Inbox { of, inbox } => vec![u(10), of.to_wire(), inbox.to_wire()],
     }))
 }
 
@@ -419,6 +420,10 @@ pub(crate) fn write_op_from(v: Value) -> Result<WriteOp> {
             WriteOp::PurgeAuthor { tid: Form::from_wire(t)?, key: k(key)?, author: Form::from_wire(author)? }
         }
         9 => args(a, w).and_then(|[t]| Tid::from_wire(t)).map(WriteOp::PurgeThing)?,
+        10 => {
+            let [of, inbox] = args(a, w)?;
+            WriteOp::Inbox { of: Form::from_wire(of)?, inbox: Form::from_wire(inbox)? }
+        }
         _ => return case_of(w),
     })
 }

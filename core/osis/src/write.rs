@@ -72,6 +72,8 @@ pub(crate) enum WriteOp {
     PurgeAuthor { tid: Tid, key: u32, author: Tid },
     /// Destroys the thing for everyone: purges its creation.
     PurgeThing(Tid),
+    /// Names `inbox` the inbox of `of` (`Write::set_inbox`).
+    Inbox { of: Tid, inbox: Tid },
 }
 
 /// Writes that become one commit (two: below), all or nothing. Reads meanwhile do not see them. What cannot share
@@ -190,7 +192,7 @@ impl<'d> Write<'d> {
             .flat_map(|o| match o {
                 WriteOp::Create(r) | WriteOp::CreateWithKeys(r) => std::iter::once(r.tid()).chain(r.mint_admin()).collect(),
                 WriteOp::Path { tid, .. } | WriteOp::Fire { tid, .. } | WriteOp::PurgeBy { tid, .. } | WriteOp::Purge { tid, .. } | WriteOp::PurgeCommit { tid, .. } | WriteOp::PurgeAuthor { tid, .. } => vec![*tid],
-                WriteOp::PurgeThing(t) => vec![*t],
+                WriteOp::PurgeThing(t) | WriteOp::Inbox { of: t, .. } => vec![*t],
             })
             .filter(|t| !self.created.contains(t))
             .collect();
@@ -317,6 +319,18 @@ impl<'d> Write<'d> {
         self.ops.push(WriteOp::CreateWithKeys(rec));
         self.created.push(t);
         Ok(t)
+    }
+
+    /// Makes `inbox` the thing grants to `of` from outside go to (`Osis::grant`), carried by every
+    /// card of `of` (`Osis::put_card`): `of` itself, or another thing whose setting enables its
+    /// inbox signals. Needs admin on `of` (`Permission` at commit) and `of` made with its keys,
+    /// here or before (`create_with_keys`, a grant to it, a card of it), else `Invalid`. Written
+    /// with `of`'s making, it goes in that thing's minting; otherwise in a commit of its own in
+    /// the same transaction. It does not expire (`Invalid` in a write that does).
+    pub fn set_inbox(&mut self, of: Tid, inbox: Tid) -> Result<()> {
+        let of = self.known(of)?;
+        self.ops.push(WriteOp::Inbox { of, inbox });
+        Ok(())
     }
 
     /// `holder` holds `t`: a strong to `t` in `holder`'s `holds.0`, so `t` syncs with `holder`
@@ -458,11 +472,19 @@ impl<'d> Write<'d> {
                 WriteOp::CreateWithKeys(rec) => {
                     m.create_independent(rec);
                 }
+                WriteOp::Inbox { .. } if expires.is_some() => return Err(Error::Invalid("a thing's inbox does not expire: this write has an expiry, so name it in a write of its own".into())),
+                WriteOp::Inbox { of, inbox } => {
+                    osis_engine::flows::cards::put_inbox(&mut m, of, (inbox != of).then_some(inbox))?;
+                }
                 WriteOp::PurgeThing(_) if expires.is_some() => return Err(Error::Invalid("a purge of a thing does not expire: this write has an expiry, so write it as a commit of its own".into())),
                 // a dynamic key's kind is known only now: a write of the other kind never
                 // silently does nothing
                 WriteOp::Path { tid, key: k, op } => {
                     let k = key(k)?;
+                    // as `at` refuses it: a write through the client port names its keys itself
+                    if let Some(why) = not_writable(k.ak.as_str()) {
+                        return Err(Error::Invalid(why));
+                    }
                     if k.signal() {
                         return Err(Error::Invalid(format!("{} is a signal: it is fired, not written (fire)", k.ak)));
                     }

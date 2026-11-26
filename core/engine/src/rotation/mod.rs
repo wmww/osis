@@ -819,7 +819,7 @@ pub(crate) fn own_secrets(tx: &mut Tx<'_>, t: Tid, done: &mut Done) -> Result<()
 /// `own_secrets`, its genesis step listing `also` besides the holders it boxes (a link's key,
 /// granted next).
 pub(crate) fn own_secrets_listing(tx: &mut Tx<'_>, t: Tid, also: &[crate::flows::sync_ids::ReaderKey], done: &mut Done) -> Result<()> {
-    if let Some((c, rot, to)) = own_secrets_rot(tx, t, None, also, None, done)? {
+    if let Some((c, rot, to)) = own_secrets_rot(tx, t, None, also, None, Vec::new(), done)? {
         recorded(tx, t, c, &rot, &to, done)?;
     }
     Ok(())
@@ -829,8 +829,8 @@ pub(crate) fn own_secrets_listing(tx: &mut Tx<'_>, t: Tid, also: &[crate::flows:
 /// the rotation commit (spec/permissions.md §3), held here ahead of it so the rotation is built
 /// as for a held dependent thing. A thing minted with a key is minted so, its rotation from none
 /// signed by that key as it, its secrets random or, for a link key, `seed`'s (spec/crypto.md §3).
-/// Its tid.
-pub(crate) fn own_secrets_new(tx: &mut Tx<'_>, rec: osis_base::CreationRecord, also: &[crate::flows::sync_ids::ReaderKey], seed: Option<&osis_crypto::Secret32>, done: &mut Done) -> Result<Tid> {
+/// `keys`: more of its `keys.0` its minter writes in that commit (its inbox). Its tid.
+pub(crate) fn own_secrets_new(tx: &mut Tx<'_>, rec: osis_base::CreationRecord, also: &[crate::flows::sync_ids::ReaderKey], seed: Option<&osis_crypto::Secret32>, keys: Vec<osis_crdt::PathOp>, done: &mut Done) -> Result<Tid> {
     let t = rec.tid();
     if tx.core.created(&t).is_some() {
         return Err(Error::Misuse("thing already exists"));
@@ -840,7 +840,7 @@ pub(crate) fn own_secrets_new(tx: &mut Tx<'_>, rec: osis_base::CreationRecord, a
     let creates = BTreeMap::from([(t, rec.clone())]);
     let signer = if rec.key().is_some() { t } else { tx.core.tid() };
     crate::engine::write::check_authority(tx.core, signer, &|x| creates.get(x), &t, osis_commit::retention::CREATED, tx.core.hlc.peek())?;
-    let Some((c, rot, to)) = own_secrets_rot(tx, t, Some(rec), also, seed, done)? else { return Err(Error::Misuse("a new thing is made independent")) };
+    let Some((c, rot, to)) = own_secrets_rot(tx, t, Some(rec), also, seed, keys, done)? else { return Err(Error::Misuse("a new thing is made independent")) };
     recorded(tx, t, c, &rot, &to, done)?;
     Ok(t)
 }
@@ -849,8 +849,10 @@ pub(crate) fn own_secrets_new(tx: &mut Tx<'_>, rec: osis_base::CreationRecord, a
 /// holders it boxes that held no box at a current read epoch before it (`unreached`).
 type OwnRot = (Option<osis_base::CommitId>, Rotation, Vec<Tid>);
 /// `rec`: the record of a new `t`, held from here and carried by the rotation commit
-/// (`own_secrets_new`); `seed`: a new link key's.
-fn own_secrets_rot(tx: &mut Tx<'_>, t: Tid, rec: Option<osis_base::CreationRecord>, also: &[crate::flows::sync_ids::ReaderKey], seed: Option<&osis_crypto::Secret32>, done: &mut Done) -> Result<Option<OwnRot>> {
+/// (`own_secrets_new`); `seed`: a new link key's; `keys`: more `keys.0` ops of `t` the commit
+/// carries.
+#[allow(clippy::too_many_arguments)]
+fn own_secrets_rot(tx: &mut Tx<'_>, t: Tid, rec: Option<osis_base::CreationRecord>, also: &[crate::flows::sync_ids::ReaderKey], seed: Option<&osis_crypto::Secret32>, keys: Vec<osis_crdt::PathOp>, done: &mut Done) -> Result<Option<OwnRot>> {
     if let Some(r) = &rec {
         crate::apply::atomic::learn_record(tx, r.clone())?;
     }
@@ -913,6 +915,9 @@ fn own_secrets_rot(tx: &mut Tx<'_>, t: Tid, rec: Option<osis_base::CreationRecor
         let readers: Vec<_> = readers.into_iter().chain(also.iter().cloned()).collect();
         crate::flows::sync_ids::new_sync_id(tx, &mut m, t, &after, &readers, &deposit, rot.keys.keysets.get(&Role::Read))?;
     }
+    for op in keys {
+        m.op(t, &osis_schema::core_types::KEYS, op)?;
+    }
     let to = unreached(tx, &t, &rot)?;
     let c = Engine::commit_tx(tx, m)?;
     Ok(Some((c, rot, to)))
@@ -950,7 +955,7 @@ pub(crate) fn own_secrets_candidates(core: &Core, a: &Tid) -> Vec<Tid> {
 /// first under the sync IDs above the thing (its new `keys.0`).
 fn own_secrets_delivered(tx: &mut Tx<'_>, t: Tid) -> Result<Done> {
     let mut done = Done::default();
-    let Some((c, rot, to)) = own_secrets_rot(tx, t, None, &[], None, &mut done)? else { return Ok(done) };
+    let Some((c, rot, to)) = own_secrets_rot(tx, t, None, &[], None, Vec::new(), &mut done)? else { return Ok(done) };
     recorded(tx, t, c, &rot, &to, &mut done)?;
     Ok(done)
 }

@@ -2119,23 +2119,30 @@ fn removal(n: usize) -> Removal {
     Removal { remover, commits: done.commits.len() as u64, bytes, piece, sibling, rekeyed: [rotated(&mut lp, 0, &at0), rotated(&mut lp, 1, &at1)] }
 }
 
+/// The accounts the removal check compares: the remover, the removed node and n others, n 2 and
+/// 20. What a removal costs is per node left but the remover (each one's boxes rewritten), so
+/// those are n and 10n: at `NODES` they would be 1 and 19, and a cost exactly linear in them
+/// would grow 19-fold.
+const REMOVAL_NODES: [usize; 2] = [4, 22];
+
 // spec/permissions.md §8 Removing a node, §3 (rotation); spec/requirements.md Scale: removing a
-// node from an account of n and 10n other nodes. The removal and A's rotation box A's new secrets
-// to each node left, one KEM encapsulation a role to each but the remover (it boxes itself
-// symmetrically): linear in them; a sibling opens its own boxes, flat, judging A's roster, linear.
-// A's inbox and profile, whose boxes to A went stale, are re-keyed once, by the remover's role
-// duty, whatever the account's size; the sibling taking those rotations re-keys nothing.
+// node from an account where n and 10n other nodes stay beside the remover. The removal and A's
+// rotation box A's new secrets to each node left, one KEM encapsulation a role to each but the
+// remover (it boxes itself symmetrically): linear in them; a sibling opens its own boxes, flat,
+// judging A's roster, linear. A's inbox and profile, whose boxes to A went stale, are re-keyed
+// once, by the remover's role duty, whatever the account's size; the sibling taking those
+// rotations re-keys nothing.
 #[test]
 fn removing_a_node_spec_permissions_8() {
-    let [small, big] = NODES.map(removal);
+    let [small, big] = REMOVAL_NODES.map(removal);
     flat("removal: commits", small.commits, big.commits);
     linear("removal: commit bytes", small.bytes, big.bytes);
     // a unit carrying one node's edge piece pays that node's boxes and a hash a node in the
     // header (spec/wire.md §4 Pieces): about 100 B a node more, never the others' boxes (some
     // 1.2 KB a role each)
     println!("removal: one node's edge piece: {} B at n, {} B at 10n (the commit {} B, {} B)", small.piece, big.piece, small.bytes, big.bytes);
-    assert!(small.piece > 0 && big.piece <= small.piece + 100 * (NODES[1] - NODES[0]) as u64, "removal: one node's edge piece: {} B at n, {} B at 10n", small.piece, big.piece);
-    for (r, n) in [(&small, NODES[0]), (&big, NODES[1])] {
+    assert!(small.piece > 0 && big.piece <= small.piece + 100 * (REMOVAL_NODES[1] - REMOVAL_NODES[0]) as u64, "removal: one node's edge piece: {} B at n, {} B at 10n", small.piece, big.piece);
+    for (r, n) in [(&small, REMOVAL_NODES[0]), (&big, REMOVAL_NODES[1])] {
         assert_eq!(r.remover.n("kem: encapsulate"), 4 * (n as u64 - 2), "a box a role to each node left but the remover");
     }
     // past a blob's size (at 10n) the removal's body is read back from its linked blobs: O(its bytes)
@@ -2150,7 +2157,7 @@ fn removing_a_node_spec_permissions_8() {
         assert!(y.n(BLOB_READ) <= 2 * big.bytes, "removal: {what}: blob bytes read {} for a {} B removal", y.n(BLOB_READ), big.bytes);
     }
     flat("removal: a sibling's decapsulations", small.sibling.n("kem: decapsulate"), big.sibling.n("kem: decapsulate"));
-    for (r, n) in [(&small, NODES[0]), (&big, NODES[1])] {
+    for (r, n) in [(&small, REMOVAL_NODES[0]), (&big, REMOVAL_NODES[1])] {
         let (_, acc) = account_nodes(n);
         assert_eq!(r.rekeyed, [BTreeSet::from([acc.inbox, acc.profile]), BTreeSet::new()], "A's inbox and profile re-keyed once");
     }
