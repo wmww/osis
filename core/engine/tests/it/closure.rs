@@ -1273,6 +1273,54 @@ fn a_thing_released_in_the_pass_that_brought_it_is_pulled_anew_spec_sync_judgeme
     assert_eq!(lp.peers[1].engine.get(&y, &reg).unwrap(), Some(Value::Str("y".into())), "Y's content back");
 }
 
+// spec/sync-judgement.md §3 Dropped bodies (nothing of the thing forgotten since): a part waiting on
+// a thing outside the node closure that goes with its commit, forgotten whole at another thing's
+// release, ends the exemption too. Peer 1 holds X and V in X's sync unit; peer 0 mints W with X's
+// strong (C), writes V and W in one commit (D) and removes X's strong to V. In one pass peer 1 takes
+// C's part on W (W minted, outside the node closure), D (its part on V applies, on W waits), the
+// removal and V's release (D forgotten whole, its part on W with it), then C's part on X: W enters,
+// is pulled anew, and D's write on W comes back. Fails where only the released things leave the
+// exemption.
+#[test]
+fn a_part_waiting_on_a_thing_that_goes_with_its_commit_is_pulled_anew_spec_sync_judgement_3() {
+    let reg = crate::common::ak("t:reg.0");
+    let (mut lp, x) = x_read_at_1();
+    let (v, mv) = crate::common::mint_from(&mut lp.peers[0].engine, x, x, &[(&crate::common::REG, "v")]);
+    crate::flows::send_carried(&mut lp, 0, 1, &[mv]);
+    pass_end(&mut lp.peers[1].engine);
+    assert!(lp.peers[1].engine.closure_holds(&v), "V in X's sync unit");
+    let e0 = &mut lp.peers[0].engine;
+    let (w, c) = crate::common::mint_from(e0, x, x, &[(&crate::common::REG, "w")]);
+    let mut m = Mutation::new();
+    m.set(v, &crate::common::REG, &Value::Str("v2".into())).unwrap();
+    m.set(w, &crate::common::REG, &Value::Str("w2".into())).unwrap();
+    let d = e0.commit(m).unwrap().unwrap();
+    let seen = lp.peers[0].engine.commit_ids();
+    strong(&mut lp.peers[0].engine, x, v, false);
+    let removal: Vec<_> = lp.peers[0].engine.commit_ids().into_iter().filter(|id| !seen.contains(id)).collect();
+    let cp = lp.peers[0].engine.package(&c).unwrap().unwrap();
+    let c_blob = osis_commit::CommitBlob::decode(&cp.bytes).unwrap();
+    let on = |t: Tid| osis_commit::rewrite(&c_blob, |ai| c_blob.header.aspects[ai].tid != t).encode();
+    lp.peers[1].pulled_anew.clear();
+    let was = synced(&mut lp);
+    drop(lp.peers[1].receive(&on(w), cp.blobs.clone()));
+    assert!(!lp.peers[1].engine.closure_holds(&w), "W minted outside the node closure");
+    let dp = lp.peers[0].engine.package(&d).unwrap().unwrap();
+    drop(lp.peers[1].receive(&dp.bytes, dp.blobs.clone()));
+    assert!(lp.peers[1].engine.pends(&d), "D's part on W waits");
+    assert_eq!(lp.peers[1].engine.get(&v, &reg).unwrap(), Some(Value::Str("v2".into())), "D's part on V applies");
+    crate::flows::send_carried(&mut lp, 0, 1, &removal);
+    let e1 = &mut lp.peers[1].engine;
+    assert!(!e1.closure_holds(&v), "V left X's sync unit");
+    e1.released(&[v].into()).unwrap();
+    assert!(e1.header(&d).is_none() && !e1.pends(&d), "D forgotten whole with V's release");
+    drop(lp.peers[1].receive(&on(x), cp.blobs.clone()));
+    assert!(lp.peers[1].engine.closure_holds(&w), "W in X's sync unit");
+    assert!(pull_again(&mut lp, &was), "W's entry pulls anew");
+    pass_end(&mut lp.peers[1].engine);
+    assert_eq!(lp.peers[1].engine.get(&w, &reg).unwrap(), Some(Value::Str("w2".into())), "D's write on W back");
+}
+
 // spec/commits.md §4 Outside the node closure, Pending storage: one commit of peer 0 writes Y,
 // outside peer 1's node closure, and X, in it; peer 1 gets its part on Y alone: that part waits for
 // Y to enter, so the commit pends whole (its every held part waits) and Y reads nothing. Peer 1

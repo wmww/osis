@@ -1255,8 +1255,9 @@ pub struct Core {
     /// (`Core::note_brought`), nothing of them forgotten since: a strong newly reaching one pulls
     /// nothing anew (`sync::units::refetch`). Emptied at a pass end (`Engine::settle_needs`); a
     /// thing goes from it once anything of it is forgotten sooner (`retention::forget`: a
-    /// release, lost access; `apply::unreceive_outside`; `apply::carriers::forget`: a waiting
-    /// part's last carrier gone). In memory only: an open starts it empty, so a strong then pulls
+    /// release, lost access; `apply::unindex_unreceived`: a commit forgotten whole, its parts
+    /// waiting on other things with it; `apply::unreceive_outside`; `apply::carriers::forget`: a
+    /// waiting part's last carrier gone). In memory only: an open starts it empty, so a strong then pulls
     /// anew.
     pub brought: BTreeSet<Tid>,
     /// The (context, thing) members entering the node closure since the last transaction's end

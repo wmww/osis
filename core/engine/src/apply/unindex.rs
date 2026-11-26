@@ -25,6 +25,13 @@ pub(crate) fn unindex_commit(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
 /// the timelines the held set's change (`Core::update_timelines`) once it has forgotten all it
 /// forgets: each update re-walks the components touched.
 pub(crate) fn unindex_unreceived(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
+    // every thing it writes on had something forgotten (a part waiting on one outside the node
+    // closure goes with it): a strong reaching it later pulls anew (`Core::brought`)
+    if let Some(m) = tx.core.ix.commits.get(id) {
+        for a in &m.header.aspects {
+            tx.core.brought.remove(&a.tid);
+        }
+    }
     // never received, nothing keeps it out: fetched again where present once needed
     let blobs: Vec<osis_base::BlobId> = tx.core.ix.commit_blobs.get(id).into_iter().flatten().copied().collect();
     for b in blobs {
