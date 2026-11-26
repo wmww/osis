@@ -486,7 +486,7 @@ impl Engine {
             }
             Ok(parts)
         })?;
-        Ok(Some(CommitRow { id: c, kind, undoes: header.decoded().and_then(|h| undoes(&h)), purge_author, node, ts, received, parts }))
+        Ok(Some(CommitRow { id: c, kind, undoes: undoes(&header), purge_author, node, ts, received, parts }))
     }
 
     /// Up to `n` places a listing walks on `aspects` past `from` in its direction, each once, in
@@ -532,7 +532,7 @@ impl Engine {
         for k in self.revert_reach(c) {
             let Some(set) = self.core.ix.by_aspect.get(&k) else { continue };
             for x in set.range((Excluded(at), Unbounded)) {
-                if !out.contains(x) && self.core.ix.commits.get(&x.1).and_then(|m| m.header.decoded()).is_some_and(|h| undoes(&h) == Some(*c)) {
+                if !out.contains(x) && self.core.ix.commits.get(&x.1).is_some_and(|m| undoes(&m.header) == Some(*c)) {
                     out.insert(*x);
                 }
             }

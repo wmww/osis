@@ -19,8 +19,6 @@ pub const SECRETS: &[u8] = b"k/";
 pub const COMMIT: &[u8] = b"c/";
 /// Creation records: `t/` + tid.
 pub const CREATED: &[u8] = b"t/";
-/// Aspects with a state (the `aspects.0` index): `a/` + aspect key, empty value.
-pub const ASPECTS: &[u8] = b"a/";
 /// Gone deltas per aspect (expired, purged): `v/` + aspect key.
 pub const GONE: &[u8] = b"v/";
 /// The leftover of a part whose values went (expired, purged; `Hold::Leftover`): its body with

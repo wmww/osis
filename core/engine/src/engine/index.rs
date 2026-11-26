@@ -702,29 +702,19 @@ pub(crate) fn record_head(m: &Meta) -> Vec<u8> {
     w.take()
 }
 
-/// A commit's `METAS` row: version 1, the part count, a byte per part (bit 7: its thing is
-/// `Indexes::miskeyed` for the commit), the view.
+/// A commit's `METAS` row: what this node judged of it, never what its header says (an open
+/// decodes the header for that): the part count, a byte per part (bit 7: its thing is
+/// `Indexes::miskeyed` for the commit), and in a split commit what is decided here of each
+/// thing's path (`View::paths`).
 pub(super) fn meta_row(core: &Core, id: &CommitId, m: &Meta) -> Vec<u8> {
-    let mut out = Vec::with_capacity(64 + 48 * m.parts());
-    out.push(1);
+    let mut out = Vec::with_capacity(8 + m.parts());
     out.extend_from_slice(&(m.parts() as u32).to_be_bytes());
     for (ai, v) in m.valid().iter().enumerate() {
         let role = core.ix.rotation_role.get(&(*id, ai)).map_or(0, |r| 1 + *r as u8);
         out.push(u8::from(*v) | (role << 1) | (u8::from(core.ix.overreach.contains(&(*id, ai))) << 4) | (u8::from(m.missing(ai)) << 5) | (u8::from(m.whole(ai)) << 6) | (u8::from(m.view.aspects.get(ai).is_some_and(|a| core.ix.miskeyed.contains(&(*id, a.tid)))) << 7));
     }
-    let v = &m.view;
-    let mut w = records::Wr(out).u64(v.ts.to_u64()).u8(v.kind.id() as u8);
-    w = match v.form {
-        osis_commit::Form::Commit => w.u8(0),
-        osis_commit::Form::Session(n) => w.u8(1).raw(&n),
-    };
-    w = w.raw(v.signer.as_bytes()).u8(u8::from(v.linked) | (u8::from(v.memory) << 1) | (u8::from(v.purges) << 2) | (u8::from(v.own_cover) << 3) | (u8::from(v.paths.is_some()) << 4) | (u8::from(v.key.is_some()) << 5));
-    if let Some(k) = &v.key {
-        w = w.raw(&k.0);
-    }
-    // its purge author; in a split commit, what is decided here of each thing's path
-    w = w.raw(v.purge_author.as_bytes());
-    if let Some(p) = &v.paths {
+    let mut w = records::Wr(out);
+    if let Some(p) = &m.view.paths {
         w = w.raw(&(p.len() as u32).to_be_bytes());
         for (t, path) in p.iter() {
             w = w.raw(t.as_bytes()).u8(u8::from(path.is_some()));
@@ -736,83 +726,31 @@ pub(super) fn meta_row(core: &Core, id: &CommitId, m: &Meta) -> Vec<u8> {
             }
         }
     }
-    for a in &v.aspects {
-        let ak = a.ak.as_str().as_bytes();
-        w = w.raw(a.tid.as_bytes()).raw(&(ak.len() as u16).to_be_bytes()).raw(ak).u64(a.lo).u64(a.hi).u8(u8::from(a.replaces.is_some()) | (u8::from(a.original_floor > 0) << 1));
-        if let Some(c) = &a.replaces {
-            w = w.raw(&c.0);
-        }
-        if a.original_floor > 0 {
-            w = w.u64(a.original_floor);
-        }
-    }
-    match &v.frontier {
-        None => w = w.u8(0),
-        Some(f) => {
-            let mut b = Vec::new();
-            osis_commit::put_frontier(&mut b, f.commits());
-            w = w.u8(1).bytes(&b);
-        }
-    }
     w.take()
 }
 
-/// A `METAS` row's part bytes and view.
-fn parse_meta_row(row: &[u8]) -> Result<(&[u8], super::View)> {
+/// A `METAS` row's part bytes and decided paths.
+fn parse_meta_row(row: &[u8]) -> Result<(&[u8], Option<Arc<super::Decided>>)> {
     let mut r = records::Rd::new(row);
-    if r.u8()? != 1 {
-        return Err(Error::Corrupt("meta row version"));
-    }
     let n = r.u32()? as usize;
     let parts = r.take(n)?;
-    let ts = Ts::from_u64(r.u64()?).ok_or(Error::Corrupt("meta row ts"))?;
-    let kind = osis_commit::Kind::from_id(<u64 as From<u8>>::from(r.u8()?)).ok_or(Error::Corrupt("meta row kind"))?;
-    let form = match r.u8()? {
-        0 => osis_commit::Form::Commit,
-        1 => osis_commit::Form::Session(r.take(osis_crdt::SESSION_NONCE_LEN)?.try_into().map_err(|_| Error::Corrupt("meta row form"))?),
-        _ => return Err(Error::Corrupt("meta row form")),
-    };
-    let signer = r.tid()?;
-    let flags = r.u8()?;
-    let key = if flags & 32 != 0 { Some(osis_base::SignKey(r.arr()?)) } else { None };
-    let purge_author = r.tid()?;
-    let paths = if flags & 16 == 0 {
-        None
-    } else {
-        let mut m = std::collections::BTreeMap::new();
-        for _ in 0..r.u32()? {
-            let t = r.tid()?;
-            let path = if r.u8()? != 0 {
-                let (purge, direct, n) = (r.u32()? as usize, u128::from_be_bytes(r.arr()?), r.u32()?);
-                let things = (0..n).map(|_| r.tid()).collect::<Result<Vec<Tid>>>()?;
-                Some(osis_commit::Path { purge, things, direct })
-            } else {
-                None
-            };
-            m.insert(t, path);
-        }
-        Some(Arc::new(m))
-    };
-    let (linked, memory, purges) = (flags & 1 != 0, flags & 2 != 0, flags & 4 != 0);
-    let own_cover = flags & 8 != 0;
-    let mut aspects = Vec::with_capacity(n);
-    for _ in 0..n {
-        let (tid, ak) = (r.tid()?, r.ak()?);
-        let (lo, hi, bits) = (r.u64()?, r.u64()?, r.u8()?);
-        let replaces = if bits & 1 != 0 { Some(CommitId(r.arr()?)) } else { None };
-        let original_floor = if bits & 2 != 0 { r.u64()? } else { 0 };
-        aspects.push(super::AspectView { tid, ak, lo, hi, replaces, original_floor });
+    if r.is_empty() {
+        return Ok((parts, None));
     }
-    let frontier = match r.u8()? {
-        0 => None,
-        1 => {
-            let ids = osis_commit::frontier_ids(r.bytes()?).map_err(|_| Error::Corrupt("meta row frontier"))?;
-            Some(Arc::new(osis_perm::Frontier::of_sorted(ids)))
-        }
-        _ => return Err(Error::Corrupt("meta row frontier")),
-    };
+    let mut m = std::collections::BTreeMap::new();
+    for _ in 0..r.u32()? {
+        let t = r.tid()?;
+        let path = if r.u8()? != 0 {
+            let (purge, direct, n) = (r.u32()? as usize, u128::from_be_bytes(r.arr()?), r.u32()?);
+            let things = (0..n).map(|_| r.tid()).collect::<Result<Vec<Tid>>>()?;
+            Some(osis_commit::Path { purge, things, direct })
+        } else {
+            None
+        };
+        m.insert(t, path);
+    }
     r.end()?;
-    Ok((parts, super::View { ts, kind, form, signer, key, purge_author, paths, linked, memory, aspects, frontier, purges, own_cover }))
+    Ok((parts, Some(Arc::new(m))))
 }
 
 /// A commit record's head and its blob bytes.
@@ -1032,11 +970,11 @@ pub(crate) fn old_judgments(tx: &mut Tx<'_>) -> Option<OldJudgments> {
     Some(parts)
 }
 
-/// Loads the persisted index into `core`: commit metas (headers held undecoded, decoded on
-/// first use; those with lists by link resolved now), and the indexes derived from role-commit
-/// bodies.
+/// Loads the persisted index into `core`: commit metas (each header decoded from its record,
+/// lists by link resolved; the judgments from its `METAS` row), and the indexes derived from
+/// role-commit bodies.
 pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
-    // commit records: the head and the header's bytes only, nothing decoded
+    // commit records: the head and the header, no part decoded
     let hs = osis_base::costs::span("open: headers");
     let recs = tx.scan_rows(records::COMMIT, |k, v| {
         let id = CommitId(k.try_into().map_err(|_| Error::Corrupt("commit record key"))?);
@@ -1044,7 +982,9 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
         // the blob is `[header, signature, parts]`: its first item
         let lim = osis_base::Limits::new(osis_base::format::MAX_OBJECT_DEPTH, blob.len());
         let hb = osis_base::item_prefix(blob.get(1..).unwrap_or_default(), &lim).map_err(|_| Error::Corrupt("commit record header"))?;
-        Ok((id, head, Box::<[u8]>::from(hb)))
+        let mut h = super::decode_stored_header(&id, hb).ok_or(Error::Corrupt("commit record header"))?;
+        head.resolve(&mut h)?;
+        Ok((id, head, Arc::new(h)))
     })?;
     drop(hs);
     let _ms = osis_base::costs::span("open: metas");
@@ -1054,10 +994,12 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
         rows.insert(CommitId(k.as_slice().try_into().map_err(|_| Error::Corrupt("meta row key"))?), v);
         Ok(())
     })?;
-    let fault = tx.core.header_fault.clone();
-    for (id, mut head, bytes) in recs {
+    for (id, mut head, header) in recs {
         let row = rows.remove(&id).ok_or(Error::Corrupt("meta row missing"))?;
-        let (parts, view) = parse_meta_row(&row)?;
+        let (parts, paths) = parse_meta_row(&row)?;
+        if header.aspects.len() != parts.len() {
+            return Err(Error::Corrupt("meta row"));
+        }
         let mut valid = Vec::with_capacity(parts.len());
         let mut hold = Vec::with_capacity(parts.len());
         for (ai, p) in parts.iter().enumerate() {
@@ -1070,25 +1012,12 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
                 tx.core.ix.overreach.insert((id, ai));
             }
             if p & 128 != 0
-                && let Some(a) = view.aspects.get(ai)
+                && let Some(a) = header.aspects.get(ai)
             {
                 tx.core.ix.miskeyed.insert((id, a.tid));
             }
         }
-        let view = Arc::new(view);
-        let header = if view.linked {
-            // lists by link from the record
-            let mut h = super::decode_stored_header(&id, &bytes).ok_or(Error::Corrupt("commit record header"))?;
-            head.resolve(&mut h)?;
-            debug_assert_eq!(super::View::of(&h, view.paths.clone()), *view, "meta row of {id:?} is stale");
-            super::LazyHeader::ready(Arc::new(h))
-        } else {
-            // a debug build checks the view against the header where it decodes
-            super::LazyHeader::stored(id, bytes, view.clone(), fault.clone())
-        };
-        if view.aspects.len() != valid.len() {
-            return Err(Error::Corrupt("meta row"));
-        }
+        let view = Arc::new(super::View::of(&header, paths));
         crate::apply::index_commit(tx.core, &id, &view);
         tx.core.put_meta(id, Meta::of(view, header, head.received, head.origin, head.repair.clone(), head.signed, valid, hold));
         tx.core.index_validity(&id);

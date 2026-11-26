@@ -470,11 +470,19 @@ fn rebalance(u: &mut dyn Units, es: &mut Vec<InnerE>, l: usize, r: usize, shred:
 /// (`rev`) descending.
 pub(crate) fn range(u: &mut dyn Units, root: u64, start: &[u8], end: Option<&[u8]>, limit: usize, rev: bool) -> Result<Vec<KeyValue>, Error> {
     let mut out = Vec::new();
-    collect(u, root, start, end, limit, rev, &mut out)?;
+    collect(u, root, start, end, limit, rev, true, &mut out)?;
     Ok(out)
 }
 
-fn collect(u: &mut dyn Units, slot: u64, start: &[u8], end: Option<&[u8]>, limit: usize, rev: bool, out: &mut Vec<KeyValue>) -> Result<(), Error> {
+/// `range`'s keys alone, ascending, each with an empty value: no value is read or copied.
+pub(crate) fn keys(u: &mut dyn Units, root: u64, start: &[u8], end: Option<&[u8]>, limit: usize) -> Result<Vec<KeyValue>, Error> {
+    let mut out = Vec::new();
+    collect(u, root, start, end, limit, false, false, &mut out)?;
+    Ok(out)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn collect(u: &mut dyn Units, slot: u64, start: &[u8], end: Option<&[u8]>, limit: usize, rev: bool, values: bool, out: &mut Vec<KeyValue>) -> Result<(), Error> {
     // the entries (a leaf's) or children (an inner page's, each holding its first key) in range
     fn within<'a, T>(es: &'a [T], key: impl Fn(&T) -> &[u8], lo: usize, end: Option<&[u8]>, rev: bool) -> impl Iterator<Item = &'a T> {
         let hi = end.map_or(es.len(), |end| es.partition_point(|e| key(e) < end)).max(lo);
@@ -488,7 +496,7 @@ fn collect(u: &mut dyn Units, slot: u64, start: &[u8], end: Option<&[u8]>, limit
                 if out.len() >= limit {
                     break;
                 }
-                out.push((e.key.to_vec(), resolve(u, &e.val)?));
+                out.push((e.key.to_vec(), if values { resolve(u, &e.val)? } else { Vec::new() }));
             }
         }
         Page::Inner(es) => {
@@ -496,7 +504,7 @@ fn collect(u: &mut dyn Units, slot: u64, start: &[u8], end: Option<&[u8]>, limit
                 if out.len() >= limit {
                     break;
                 }
-                collect(u, e.child, start, end, limit, rev, out)?;
+                collect(u, e.child, start, end, limit, rev, values, out)?;
             }
         }
     }

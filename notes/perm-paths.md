@@ -108,7 +108,7 @@ osis-perm holds one walk, `paths`; `Edge` carries `may_grant: bool`.
 - `View::paths` keeps each thing's opened split path (`Decided`: `osis_commit::Path`, `None` where bad), persisted in the parts row.
 - A commit is judged as it applies, before the walk takes it, and a writer checks its own purge request before it applies: `Paths::judge(commit, part)` and `judge_right` are the point queries of `content` and `right` over a commit's reading (`validity::reading_of`), held or not.
 - The trust set is kept by (commit, op) (`Timeline::trusted`), so a trusted write held after the set was given (an open loads sides first) is trusted when it comes.
-- An open decodes every header to give the walk its delta facts; the engine's check that an open from the persisted index decodes none is off (Interim, issues/perm-eval-cost.md) until the walk's store is the engine's index.
+- An open gives the walk every held commit's delta facts from its header (issues/perm-eval-cost.md).
 - `Judge::part` keeps the engine's own rules (`created.0`, `path_known`, external fires, too deep, the may-grant boxes exemption by `Way::MayGrant`) and asks `Paths::content` for the rest.
 - `timelines_changed` feeds `stale_commits` from `Changed.reached` and `ops`; role consequences are keyed by `Changed.edges()` and `created`.
 - The frontier a lowering carries (`receipt::scope_of`): the signers and things of every held commit resting on the lowered edges (`Paths::through`); the frontier lists those signers' received commits on those things.
@@ -133,7 +133,7 @@ What the engine reads short of spec/permissions.md, each to finish against the m
 
 ## Left
 - Certificates and the indexes of a commit's purge author where that is not its signer: `Indexes::by_actor` (its record is needed while the commit is held: `retention::needed`), `apply::header_wait`'s wait for its record, `write::check_acts`. What they stand in for is every listed thing of the path (its record needed): issues/stated-path-certificates.md, its sites marked Interim. `engine/acting.rs` is the confined client port (`Mutation::confine`), not a check of the purge author.
-- `paths::Store` over the engine index in place of `MemStore` (about 0.5 KB a held delta in memory until then), and an open that decodes no header: issues/perm-eval-cost.md.
+- `paths::Store` over the engine index in place of `MemStore` (about 0.5 KB a held delta in memory until then): issues/perm-eval-cost.md.
 - Parked engine properties, each with its issue: `evidence::a3::` (five, issues/engine-evidence-trails-model.md) and `order::settled_writers_fetch_what_their_first_side_dropped_before_compacting` (issues/settled-writers-dispute-script.md).
 
 ## The differential

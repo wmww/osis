@@ -7,7 +7,7 @@
 //! that part's state does, not with every other part of the commit.
 
 use super::journal::Journaled;
-use super::{Dropped, DropFor, Hold, LazyHeader, Missing, View, index};
+use super::{Dropped, DropFor, Hold, Missing, View, index};
 use crate::events::Origin;
 use osis_base::memo::{Reader, UndoableStamps};
 use osis_base::{Ak, BlobId, CommitId, Tid, WallMs};
@@ -58,10 +58,9 @@ impl std::fmt::Debug for Rec {
 /// An applied commit as the engine indexes it.
 #[derive(Clone, Debug)]
 pub struct Meta {
-    /// What the per-commit indexes read of the header (an open reads it from the index).
+    /// What the per-commit indexes read of the header, with what this node decided of its paths.
     pub view: Arc<View>,
-    /// Decoded on first use (an open decodes no header the indexes do not need).
-    pub header: LazyHeader,
+    pub header: Arc<Header>,
     pub received: WallMs,
     pub origin: Origin,
     /// An own commit a repair wrote (`Engine::relink`, spec/sync-ids.md §1 Repair), with the blobs
@@ -81,11 +80,11 @@ impl Meta {
     /// says (`Hold::stored`).
     pub(crate) fn new(header: Arc<Header>, paths: Option<Arc<super::Decided>>, valid: Vec<bool>, mut head: index::RecordHead, missing: BTreeSet<usize>) -> Meta {
         let hold = (0..valid.len()).map(|ai| Hold::stored(ai, &mut head, missing.contains(&ai), false)).collect();
-        Meta::of(Arc::new(View::of(&header, paths)), LazyHeader::ready(header), head.received, head.origin, head.repair.clone(), head.signed, valid, hold)
+        Meta::of(Arc::new(View::of(&header, paths)), header, head.received, head.origin, head.repair.clone(), head.signed, valid, hold)
     }
     /// A meta of its fields.
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn of(view: Arc<View>, header: LazyHeader, received: WallMs, origin: Origin, repair: Option<Arc<BTreeSet<BlobId>>>, signed: osis_commit::Signed, valid: Vec<bool>, hold: Vec<Hold>) -> Meta {
+    pub(crate) fn of(view: Arc<View>, header: Arc<Header>, received: WallMs, origin: Origin, repair: Option<Arc<BTreeSet<BlobId>>>, signed: osis_commit::Signed, valid: Vec<bool>, hold: Vec<Hold>) -> Meta {
         Meta { view, header, received, origin, repair, signed, valid, hold, rec: Rec::default() }
     }
     /// How many parts the commit has (fixed by its header).
@@ -281,7 +280,7 @@ impl Deref for Commits {
 
 /// Whether two metas of one commit hold the same fixed facts (those its key stands for).
 fn fixed_same(a: &Meta, b: &Meta) -> bool {
-    (Arc::ptr_eq(&a.view, &b.view) || a.view == b.view) && a.header.same(&b.header) && a.received == b.received && a.origin == b.origin
+    (Arc::ptr_eq(&a.view, &b.view) || a.view == b.view) && Arc::ptr_eq(&a.header, &b.header) && a.received == b.received && a.origin == b.origin
 }
 
 impl Commits {

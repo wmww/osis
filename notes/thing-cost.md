@@ -12,12 +12,12 @@ Engine, the maker (the node minting A) and its account's second node (`account_t
 |---|---|---|
 | commits | 1 (content: record, value, A's `holds.0`) | 2 (rotation: `created.0` 88 B, `keys.0` 1387 B, `secrets.0` 1409 B, `sync.0` 458 B; content: value, A's `holds.0`) |
 | commit as stored, opened (`Engine::package`) | 553 B (header 306 B) | 4208 B (3776 + 432; headers 353 and 275 B) |
-| stored, maker | 1445 B | 9.6 KB |
-| stored, second node | 1469 B (128 B of it the epochs its parts opened under, `ou/`, what passing them on needs) | 9.7 KB |
+| stored, maker | 1205 B | 9.3 KB |
+| stored, second node | 1229 B (128 B of it the epochs its parts opened under, `ou/`, what passing them on needs) | 9.4 KB |
 | maker work | 1 sign | 3 signs, 1 sync-step verify, no KEM |
 | second node work | 1 commit verify | 2 commit verifies, 4 sync-step verifies, no KEM |
 
-Independent, stored rows at the maker: commit records `c/` 4380 (the two commits whole); aspect states 66-69 B each (`keys.0`, `secrets.0`, `sync.0`, `created.0`, content: each its one body, States stored as their body); `node/keysets` 944; `k/` (opened epochs) 1443; `node/metas` 428, `node/sealed` 808, `node/epoch intro` 408, `node/boxes to` 400, refs 354, `node/perm` 33, `g/` 50; small local rows about 190. Dependent: `c/` 639, `node/metas` 223, refs 178, states 136 (by body), `t/` 74, `a/` 56, counters 104.
+Independent, stored rows at the maker: commit records `c/` 4380 (the two commits whole); aspect states 66-69 B each (`keys.0`, `secrets.0`, `sync.0`, `created.0`, content: each its one body, States stored as their body); `node/keysets` 944; `k/` (opened epochs) 1443; `node/metas` 79, `node/sealed` 808, `node/epoch intro` 408, `node/boxes to` 400, refs 354, `node/perm` 33, `g/` 50; small local rows about 190. Dependent: `c/` 639, `node/metas` 39, refs 178, states 136 (by body), `t/` 74, counters 104.
 
 The independent thing holds nothing and takes no external signal, so it publishes no KEM key (spec/crypto.md §3 Published KEM keys). A holder's keysets carry one per role (1216 B each) and its step keys' read key one more (the issuer derives it from the read secret, never copies it from the keyset): 6080 B more downloaded and stored at every holder (16.0 KB stored, 10.3 KB downloaded, 5 ML-KEM keygens at the maker). `thing_cost::an_independent_thing_nobody_seals_to_carries_no_kem_key` holds the figures alike at n and 10n.
 
@@ -69,7 +69,7 @@ Every figure is marked: **[M]** measured, **[C]** computed from spec/wire.md, **
 |---|---|---|---|---|
 | sync store blob | 846 | 846 | the sealed blob: a second copy of the commit beside `c/` | blob |
 | `c/` | 637 | 637 | key 34, record head, the opened commit | commit |
-| `node/metas` | 221 | 221 | the header again: ts, kind, form, signer, each aspect's tid, ak, lo, hi, a flag byte per part | commit, aspect |
+| `node/metas` | 39 | 39 | key 32, part count 4, a judgment byte per part (the view is the header's, decoded at open) | commit, part |
 | `bp/` | 117 | 117 | key commit ID and blob ID; the prefix salt again, the aspects its sections list, the parts held | commit |
 | `E/` | 224 | 224 | key sync ID, blob ID; wrap 57, stamp 64, flags, class, expiry 8 and size 8 (both in the prefix), sources, stamp verdict 33 | entry |
 | `X/`, `S/` | 100 | 50 | blob to its sync IDs 50; a peer showed holding it 50 (maker) | entry; entry per peer |
@@ -78,26 +78,25 @@ Every figure is marked: **[M]** measured, **[C]** computed from spec/wire.md, **
 | A's `holds.0` | 217 | 217 | the strong to t: state growth while whole, a 74 B table row per element once paged | reference |
 | `node/refs` | 178 | 178 | from 49 and to 40 for each of two references (record's weak to A, A's strong to t) | reference |
 | `t/` | 74 | 74 | the creation record again (in `c/`, named by the `created.0` state) | thing |
-| `a/` | 54 | 54 | 27 per aspect with a state | aspect |
 | `dw/` | 59 | – | the derived epoch t was sealed under while dependent | dependent thing |
 | counters | 102 | – | 51 per (aspect, session); memory rows, the census counts them | aspect per session |
 
-Totals: maker 1793 engine + 324 sync store + 846 blob = 2963 B logical, 3150 physical; second node 2112 + 274 + 846 = 3232 logical.
+Totals: maker 1557 engine + 324 sync store + 846 blob = 2727 B logical; second node 1876 + 274 + 846 = 2996 logical.
 
 ### Marginal units [M]
-Wire is maker to second node (back in brackets); stored is logical, engine rows + sync store rows + sealed blob.
+Wire is maker to second node (back in brackets); stored is logical, engine rows + sync store rows + sealed blob. The engine rows are the sync-world measurement less what slim design D deleted (notes/slim-design.md; `a/`, `node/metas` down to its part bytes), each measured in the engine census (`thing_cost::`); the 100-commit row's estimate is marked.
 
 | unit | wire | sealed blob | stored, maker | stored, second |
 |---|---|---|---|---|
-| one value, alone | 1182 (333) | 846 | 2963 | 3232 |
-| one value, per thing of 100 in one commit | 415 (4) | 410 | 1091 + 3 + 410 | 1189 + 3 + 410 |
-| one value, per thing of 100 in 100 commits | 2186 (374): A's `holds.0` snapshot every third make carries every strong, so this grows toward a bound with A's size | 914 | 1906 + 371 + 914 | 2126 + 321 + 914 |
-| a 1-byte change | 814 (333) | 478 | 597 + 324 + 478 = 1399 | 821 + 274 + 478 = 1573 |
-| a 1-byte change, steady over 30 (compactions included) | 923 (383) | net about 0 | 699 + 282 | 740 + 278 |
-| an independent thing (marginal, 10 averaged) | 23,668 (3,310) | 4 new, 9.4 KB | 10.9 KB + 3.0 KB + 9.4 KB | 11.7 KB + 3.0 KB + 9.4 KB |
+| one value, alone | 1182 (333) | 846 | 2727 | 2996 |
+| one value, per thing of 100 in one commit | 415 (4) | 410 | 955 + 3 + 410 | 1053 + 3 + 410 |
+| one value, per thing of 100 in 100 commits | 2186 (374): A's `holds.0` snapshot every third make carries every strong, so this grows toward a bound with A's size | 914 | about 1640 + 371 + 914 | about 1860 + 321 + 914 |
+| a 1-byte change | 814 (333) | 478 | 499 + 324 + 478 = 1301 | 723 + 274 + 478 = 1475 |
+| a 1-byte change, steady over 30 (compactions included) | 923 (383) | net about 0 | 601 + 282 | 642 + 278 |
+| an independent thing (marginal, 10 averaged) | 23,668 (3,310) | 4 new, 9.4 KB | 10.4 KB + 3.0 KB + 9.4 KB | 11.2 KB + 3.0 KB + 9.4 KB |
 
-- A 1-byte change at the second node: `c/` 361, `node/metas` 135, `bp/` 101, `ou/` 224 (2 rows), `E/` 224, `X/` 50.
-- Batched, per thing: states 134, `node/refs` 178, `a/` 54, `t/` 74, the holder's `holds.0` element 74, `c/` 283 and `node/metas` 85 shared, `dw/` 59 and counters 102 at the maker, `ou/` 258 at the second node.
+- A 1-byte change at the second node: `c/` 361, `node/metas` 37, `bp/` 101, `ou/` 224 (2 rows), `E/` 224, `X/` 50.
+- Batched, per thing: states 134, `node/refs` 178, `t/` 74, the holder's `holds.0` element 74, `c/` 283 and `node/metas` 3 shared, `dw/` 59 and counters 102 at the maker, `ou/` 258 at the second node.
 - A replaced value: the old body's entry goes at the next compaction, leaving tombstone rows `T/` 91, `Y/` 50, `t/` 58, `w/` 79 (278 B per deleted entry at every node, for `TOMBSTONE_LIFETIME`); the maker keeps `node/snapshots`, `fn/`, `cv/`, `f/` for the snapshot.
 - **An independent thing** (`mint_independent` with admin A, held by A's `holds.0`), the third and later: to the second node 7,268 B of Stream under A's sync ID (its rotation as a per-sync-ID copy 4,046, its content commit 752, a snapshot of A's `holds.0` 880, a 590 B blob) and its own sync ID's first sync, 15.4 KB inline (a record blob 286, an account-constant 1,070 B blob, A's key record cut 8,782, its rotation 4,174, the content commit 752 again); A's unit is not pulled anew (its rotation mints it in the pass the strong arrives in; about 6.9 KB of PullReply a make at 13 things, and 0.26 KB of the second node's sync store, while it was). The 1,070 and 8,782 B blobs are the same blobs for every independent thing of A, held already, sent again; the content commit crosses twice. Stored at each node: `c/` 5.0 KB (three commits), `k/` 1,443, `node/keysets` 704, `boxed` 448, `sealed` 448, `epoch intro` 408, `boxes to` 400, `node/metas` 591, `bp/` 476, refs 354, `E/` 1,568 (seven entries), `X/` 350, `P/` 319 (its genesis step), states 5 of about 67, small rows; blobs 9.4 KB. Work (both nodes): 13 signs, 3 commit verifications, 18 stamp, 12 role entry and 12 sync-step verifications.
 
@@ -106,24 +105,24 @@ Wire is maker to second node (back in brackets); stored is logical, engine rows 
 - **Rows read** (pre-rewrite build, to count again): engine 12 at the maker and 7 at the second node for a 1-byte change, 31 and 32 for a make; the sync side read some 40 times what the engine does per small commit.
 - **Decodes**: each part decoded once per node in the engine (`part decode` equals the parts).
 - **Hashes [C]** (not counted by `costs`): at the maker, a delta hash per part, the commit ID, the blob ID, the stamp's entry digest; at a receiver, the blob ID, the entry digest and the verdict hash per stamp check, the commit ID, a delta hash per part.
-- **Memory [M, unattributed]**: the world's resident set grows about 120 KB per small commit over both nodes, 40 times their disks (issues/memory-per-commit.md). Known per held commit: a `Meta` with its `View` (an `AspectView` of about 120 B per aspect) and the header's bytes, entries in `by_aspect`, `ranges`, `by_thing`, `by_actor`, `commit_blobs`, `blob_parts`; per thing `Held::created` and `mint_admin_of`; `derived_written` per dependent thing at its maker. Counter rows (51 B per aspect written) stay in memory until the session ends.
+- **Memory [M, unattributed]**: the world's resident set grows about 120 KB per small commit over both nodes, 40 times their disks (issues/memory-per-commit.md). Known per held commit: a `Meta` with its `View` (an `AspectView` of about 120 B per aspect) and its decoded header, entries in `by_aspect`, `ranges`, `by_thing`, `by_actor`, `commit_blobs`, `blob_parts`; per thing `Held::created` and `mint_admin_of`; `derived_written` per dependent thing at its maker. Counter rows (51 B per aspect written) stay in memory until the session ends.
 
 ### What each cost is
 (a) a job nothing else does, (b) a second copy or a pointer bigger than its data, (c) a job something present could do, (d) removed by a decided change.
-- (a) Load-bearing, keep: `blind` (unlinks a commit's commitments across blobs, spec/crypto.md §7); the delete key and its prefix commitment (Delete and shredding by level); the delta hash per aspect (a part dropped or purged alone leaves a header that still verifies, spec/commits.md §5); the delta nonce of a sealed part (readers of the commit's other sections must not confirm a guessed small value from its hash); padding (size leakage); the stamp (a node keeping the sync ID unread checks a write came from a writer without learning who); the blob wrap (one ciphertext serves several sync IDs); the section chain (derivation without the record); the prefix salt; signatures.
-- (b) The sealed blob and `c/` (two copies of each commit at every node, `bp/` relating them); `node/metas` (header fields again); `ou/`'s delta hash; `bp/`'s salt; `E/`'s expiry and class; `t/`; a state row naming a body smaller than itself; the entry echoed back; the blob ID beside an inline blob; `refs from` beside the state it indexes.
-- (c) the tid in every aspect entry of one thing; the section wrap where a key could be derived; `dw/` (derivable from the mint admin's epochs); `X/` for a blob under one sync ID; the 33 B stamp verdict; the record's 32 B nonce behind a 15 B tid; the `created.0` delta nonce (the record carries its own).
+- (a) Load-bearing, keep: `blind` (unlinks a commit's commitments across blobs, spec/crypto.md §7); the delete key and its prefix commitment (Delete and shredding by level); the delta hash per aspect (a part dropped or purged alone leaves a header that still verifies, spec/commits.md §5); the delta nonce of a sealed part (readers of the commit's other sections must not confirm a guessed small value from its hash); padding (size leakage); the stamp (a node keeping the sync ID unread checks a write came from a writer without learning who); the blob wrap (one ciphertext serves several sync IDs); the section chain (derivation without the record); the prefix salt; signatures; `t/`, `refs from` and `dw/` (each the only fast way to answer its reads: notes/slim-design.md D).
+- (b) The sealed blob and `c/` (two copies of each commit at every node, `bp/` relating them); `ou/`'s delta hash; `bp/`'s salt; `E/`'s expiry and class; a state row naming a body smaller than itself; the entry echoed back; the blob ID beside an inline blob.
+- (c) the tid in every aspect entry of one thing; the section wrap where a key could be derived; `X/` for a blob under one sync ID; the 33 B stamp verdict; the record's 32 B nonce behind a 15 B tid; the `created.0` delta nonce (the record carries its own).
 - (d) Stated paths cost 2 B (`[0]`) plus 16 B per listed thing for a commit whose things are all written along one path, whatever their number (none for what the node minting A writes on A's dependents, its record edges descending to them; `[0, A]` for a paired node's, 16 B more), and in the split form (notes/path-form.md, Bytes) 3 B plus 115 B per thing in the header (32 B of it the entry's key commitment) and 38 B per section (its thing's path key) only where one path does not serve; their evidence is not counted here.
 
 ### Floors
-- **Empty dependent thing [E]**, from the format with notes/slim-design.md B, D and E built. Batched, its record (about 36 B: admin 15, nonce 16) embedded as `created.0` with its aspect entry (about 20 B) and an element of its holder's `holds.0` (about 20 B): about 80 B on the wire, about 200 B stored per node (record and entry in the stored commit, state rows, `refs to`). Alone in a commit, add the commit floor below: about 550 B on the wire, 800 B stored per node. Today, with one value: 1182 B (333 back), and 3.0-3.2 KB.
+- **Empty dependent thing [E]**, from the format with notes/slim-design.md B, D and E built. Batched, its record (about 36 B: admin 15, nonce 16) embedded as `created.0` with its aspect entry (about 20 B) and an element of its holder's `holds.0` (about 20 B): about 80 B on the wire, about 320 B stored per node (record and entry in the stored commit, state rows, `t/`, both reference orders). Alone in a commit, add the commit floor below: about 550 B on the wire, 800 B stored per node. Today, with one value: 1182 B (333 back), and 3.0-3.2 KB.
 - **Small commit [E]**: blob about 320 B (prefix 62, tag 16, header about 170 with the value embedded, signature 66, padding); on the wire about 470 B with its entry (wrap 57, stamp 64, sync ID and heads 30) and no echo; stored per node about 600 B (blob, entry row about 150, record head and meta about 100). Today: 814 B (333 back) and 1.4-1.6 KB. Below that, each further byte is the author's signature, the stamp, the delete key with its commitment, or the wrap: jobs nothing else does.
 
 ## Why the big lines are what they are
 - **The keyset index names its body, not its KEM key** (`HeldKeyset::kem_in`, the earliest body carrying one; `apply::keys::keyset_kem` reads the key from that body or its dropped record when sealing, a rare path): a copy would cost 4.9 KB stored per independent thing at every node, and the same in memory (`Indexes::keysets` is in memory). The key sealed to is still one a valid noted body of the keyset carries. Earliest by body order, so two bodies of one epoch naming different keys (a writer re-publishing a keyset with junk) give every node the same key in any arrival order (`parts::` index checks compare a rebuild with the live index).
 - **A state is stored as its body** (States stored as their body, below): a second copy would cost 8.4 KB per independent thing and 0.16 KB per dependent one, at every node.
 - **The record rides in the own-secrets rotation** (The record in the rotation, below): one commit and two signatures fewer per independent thing. Content cannot join it: a commit is of one kind (spec/commits.md §2), and role commits travel as certificates under other sync IDs, where content would leak. So an independent thing made with content is two commits (a minted actor, made without, is one).
-- **Dependent things**, engine rows only: 1.4 KB is the commit record (639 B, of which the header is 306 B: three aspect entries with their delta hashes, the delete-key commitment, blind and signature), the metas row (223 B) and reference rows (178 B). The sync store's sealed blob and entry add as much again (Survey).
+- **Dependent things**, engine rows only: 1.2 KB is the commit record (639 B, of which the header is 306 B: three aspect entries with their delta hashes, the delete-key commitment, blind and signature), reference rows (178 B), states (136 B) and `t/` (74 B). The sync store's sealed blob and entry add as much again (Survey).
 
 ## Open
 - **Fewer KEM keys held** (Tess: each is fine to do where a worker finds it works and is worth it; she doubts keys are where most bytes go, so measure first). A holder's five KEM keys (four keysets and the step keys' read key) are about 60% of what a reader of it downloads and, after its first grant, stored twice (the commit record, and a `keys.0` state holding two bodies whole).

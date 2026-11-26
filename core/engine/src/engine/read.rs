@@ -2,7 +2,7 @@
 //! (spec/data-model.md §9), `roles.0` as the role timeline's roster (spec/permissions.md §2) and
 //! roles.
 
-use super::{Core, Engine, records};
+use super::{Core, Engine};
 use crate::error::{Error, Result};
 use osis_base::{Ak, Role, Tid, Value};
 use osis_crdt::Fragment;
@@ -243,13 +243,7 @@ impl Engine {
 
     /// Every aspect with a held state, as `(tid, ak)` (simulator invariants).
     pub fn all_aspects(&mut self) -> Result<Vec<(Tid, Ak)>> {
-        self.read(|tx| {
-            let out = tx.scan_rows(records::ASPECTS, |k, _| {
-                let mut r = records::Rd::new(k);
-                Ok((r.tid()?, r.ak()?))
-            })?;
-            Ok(out)
-        })
+        self.read(|tx| Ok(tx.txn.all_aspects()?))
     }
 }
 

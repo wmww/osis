@@ -2117,9 +2117,9 @@ impl Engine {
         self.core.ix.commits.get(id).and_then(|m| m.view.paths.clone())
     }
 
-    /// The header of an applied commit (none if its stored bytes fail to decode: `LazyHeader`).
+    /// The header of an applied commit.
     pub fn header(&self, id: &CommitId) -> Option<Arc<Header>> {
-        self.core.ix.commits.get(id).and_then(|m| m.header.decoded())
+        self.core.ix.commits.get(id).map(|m| m.header.clone())
     }
 
     /// The commit that created `tid`: the oldest held commit carrying its `created.0` that is
@@ -2435,10 +2435,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
     tx.core.waits.open_due = true;
     crate::retention::destroy::load(tx, fast)?;
     // derived indexes from states (secrets: persisted, read again on a rebuild)
-    let aspects = tx.scan_rows(crate::engine::records::ASPECTS, |k, _| {
-        let mut r = records::Rd::new(k);
-        Ok((r.tid()?, r.ak()?))
-    })?;
+    let aspects = tx.txn.all_aspects()?;
     for (tid, ak) in aspects {
         match ak.as_str() {
             // what observing a `keys.0` state derives is the delete hints it ends, which a load
@@ -3093,27 +3090,5 @@ mod tests {
         assert_eq!(verifies(), 0, "applied on the kept verdict");
         let held = (*lp.peers[1].engine.run(|tx| tx.get_commit(&id)).unwrap().unwrap()).clone();
         assert_eq!(held.sigs, CommitBlob::decode(&pk.bytes).unwrap().sigs, "applied with the genuine signatures");
-    }
-
-    // a header held as bytes that fail to decode (hash or format: `LazyHeader`) reads as none
-    // outside a transaction, and every later transaction fails as corrupt, never a default
-    #[test]
-    fn failed_lazy_header_is_corrupt() {
-        let mut lp = LocalPeer::fresh(1, WallMs(1_700_000_000_000));
-        let p0 = &mut lp.peers[0];
-        let me = p0.engine.tid();
-        let mut m = Mutation::new();
-        let t = p0.engine.new_thing(&mut m, me);
-        m.set(t, &Ak::new("x:a.0").unwrap(), &Value::Int(1)).unwrap();
-        let id = p0.commit(m).unwrap().unwrap();
-        let c = &mut p0.engine.core;
-        let mut meta = c.ix.commits.get(&id).unwrap().clone();
-        meta.header = crate::engine::LazyHeader::stored(id, vec![0x80].into(), meta.view.clone(), c.header_fault.clone());
-        c.ix.commits.insert(id, meta);
-        assert!(p0.engine.header(&id).is_none());
-        let mut m = Mutation::new();
-        m.set(t, &Ak::new("x:a.0").unwrap(), &Value::Int(2)).unwrap();
-        assert!(matches!(p0.engine.commit(m), Err(crate::Error::Corrupt(_))));
-        assert!(matches!(p0.engine.commit(Mutation::new()), Err(crate::Error::Corrupt(_))));
     }
 }

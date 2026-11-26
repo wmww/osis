@@ -421,7 +421,7 @@ pub(crate) fn settle(tx: &mut Tx<'_>) -> Result<bool> {
         for (ai, a) in m.header.aspects.iter().enumerate() {
             if a.ak.as_str() == "secrets.0" && gone.contains(&a.tid) && m.holds(ai) {
                 let body = crate::apply::held_fragment(tx, id, ai)?;
-                boxes.push((m.header.arc(), ai, body.into_iter().collect::<Vec<_>>()));
+                boxes.push((m.header.clone(), ai, body.into_iter().collect::<Vec<_>>()));
             }
         }
     }

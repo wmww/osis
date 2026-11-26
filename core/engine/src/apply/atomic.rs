@@ -599,7 +599,7 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, o
     let valid = validity::parts_valid(tx.core, &h, &view, &id);
     let missing: BTreeSet<usize> = (0..h.aspects.len()).filter(|ai| !parts.has(*ai)).collect();
     let hold = (0..h.aspects.len()).map(|ai| if missing.contains(&ai) { Hold::Missing(Missing::Plain) } else { Hold::Body { whole: false } }).collect();
-    let meta = Meta::of(view.clone(), crate::engine::LazyHeader::ready(h.clone()), received, origin, None, parts.signed, valid.clone(), hold);
+    let meta = Meta::of(view.clone(), h.clone(), received, origin, None, parts.signed, valid.clone(), hold);
     tx.core.put_meta(id, meta.clone());
     tx.core.index_validity(&id);
     validity::note_grant_fire(tx.core, &id, &h, &valid);

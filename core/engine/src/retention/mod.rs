@@ -153,7 +153,7 @@ fn aspect_index(core: &Core, c: &CommitId, tid: &Tid, ak: &Ak) -> Option<usize> 
 
 /// The part index of `(tid, ak)` in known commit `c` and its header (`UnknownCommit`: not
 /// known with that aspect).
-fn known_part(core: &Core, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<(usize, crate::engine::LazyHeader)> {
+fn known_part(core: &Core, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<(usize, std::sync::Arc<osis_commit::Header>)> {
     let m = core.ix.commits.get(c).ok_or(Error::UnknownCommit(*c))?;
     Ok((m.aspect(tid, ak).ok_or(Error::UnknownCommit(*c))?, m.header.clone()))
 }

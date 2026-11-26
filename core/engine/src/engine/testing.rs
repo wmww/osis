@@ -565,7 +565,7 @@ impl Engine {
                 let rows: Vec<(CommitId, Vec<u8>)> = tx.core.ix.commits.iter().map(|(id, m)| {
                     let mut row = meta_row(tx.core, id, m);
                     // every part valid, nothing else needed
-                    row.iter_mut().skip(5).take(m.parts()).for_each(|p| *p = 1);
+                    row.iter_mut().skip(4).take(m.parts()).for_each(|p| *p = 1);
                     (*id, row)
                 }).collect();
                 for (id, row) in rows {

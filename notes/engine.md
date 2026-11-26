@@ -118,7 +118,7 @@ Rustdoc has the list; the rules it rests on:
 - Rotation and lost access: notes/engine-roles.md, notes/engine-lost-access.md. Events: `Event`'s variant docs; sync and the API report diagnostics through `Engine::report` (one `DiagnosticKind` enum).
 
 ## The engine-* notes
-- notes/engine-store.md: store records and index tables, the persisted index, open, lazy headers, saved walks.
+- notes/engine-store.md: store records and index tables, the persisted index, open, headers, saved walks.
 - notes/engine-apply.md: receiving commits, counters and the HLC, carriers and waits, the writer-side rules, apply costs.
 - notes/engine-validity.md: re-judging, un-merge by one rebuild, snapshot authority and carried writes, uncovering, flips against dropped data.
 - notes/engine-retention.md: index of the retention notes; how bodies drop, invalid bodies, bodies coming back.

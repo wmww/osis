@@ -108,6 +108,16 @@ fn aspect_key(k: u8, tid: &Tid, ak: &Ak) -> Vec<u8> {
     W::new().u8(k).raw(tid.as_bytes()).u32(a.len() as u32).raw(a).take()
 }
 
+/// The `(tid, ak)` of an `aspect_key`.
+fn aspect_of_key(k: &[u8]) -> Result<(Tid, Ak), Error> {
+    let mut r = R::new(k.get(1..).unwrap_or_default());
+    let tid = Tid::from_bytes(r.array()?);
+    let n = r.u32()? as usize;
+    let ak = std::str::from_utf8(r.raw(n)?).ok().and_then(|a| Ak::new(a).ok()).ok_or(Error::Corrupt("aspect key"))?;
+    r.end()?;
+    Ok((tid, ak))
+}
+
 /// A session's counter row: the aspect key with the session's nonce (an open's sessions share
 /// an aspect without sharing counters).
 fn counter_key(tid: &Tid, ak: &Ak, nonce: &[u8]) -> Vec<u8> {
@@ -706,6 +716,16 @@ impl Transaction<'_> {
         }
         Ok(removed)
     }
+    /// The catalog keys under `prefix`, in order: no value is read.
+    fn cat_keys(&mut self, prefix: &[u8]) -> Result<Vec<Vec<u8>>, Error> {
+        self.st.s.read_prefix(prefix);
+        let mem: Vec<KeyValue> = self.mem.o.cat.range(prefix.to_vec()..).take_while(|(k, _)| k.starts_with(prefix)).map(|(k, _)| (k.clone(), Vec::new())).collect();
+        let c = self.catalog();
+        let durable = btree::keys(self, c, prefix, crate::backend::prefix_end(prefix).as_deref(), usize::MAX)?;
+        let rows = crate::overlay::merge(mem, durable, usize::MAX, false);
+        osis_base::costs::count_scoped("store rows read", rows.len() as u64 + 1);
+        Ok(rows.into_iter().map(|r| r.0).collect())
+    }
     /// Catalog entries under `prefix`, from `prefix || from` on.
     pub(crate) fn cat_scan(&mut self, prefix: &[u8], from: &[u8], limit: usize) -> Result<Vec<KeyValue>, Error> {
         self.st.s.read_prefix(prefix);
@@ -792,6 +812,22 @@ impl Transaction<'_> {
         let v = W::new().bytes(&unit.state).take();
         let m = self.aspect_mem(ak);
         self.cat_put_to(&aspect_key(kind::ASPECT, tid, ak), v, shred, m)
+    }
+
+    /// Removes an aspect's unit (its state went); its tables and counters stay.
+    pub fn remove_aspect(&mut self, tid: &Tid, ak: &Ak, shred: Shred) -> Result<(), Error> {
+        self.cat_remove(&aspect_key(kind::ASPECT, tid, ak), shred).map(drop)
+    }
+
+    /// The AKs of `tid`'s aspect units, in key order: keys alone are read, no state.
+    pub fn aspects_of(&mut self, tid: &Tid) -> Result<Vec<Ak>, Error> {
+        let p = W::new().u8(kind::ASPECT).raw(tid.as_bytes()).take();
+        self.cat_keys(&p)?.iter().map(|k| Ok(aspect_of_key(k)?.1)).collect()
+    }
+
+    /// Every aspect unit as `(tid, ak)`, in key order: keys alone are read, no state.
+    pub fn all_aspects(&mut self) -> Result<Vec<(Tid, Ak)>, Error> {
+        self.cat_keys(&[kind::ASPECT])?.iter().map(|k| aspect_of_key(k)).collect()
     }
 
     /// Drops an aspect's unit and tables, shredded (a whole-aspect purge). Its

@@ -7,16 +7,17 @@
 use super::{gone_of, hold_gone, list_gone, off_gone, purged_changed, reopen_to_fetch, unstrip, writes_of};
 use crate::engine::Owned;
 use crate::engine::records::{self, Rd};
-use crate::engine::{Core, Engine, LazyHeader, Tx};
+use crate::engine::{Core, Engine, Tx};
 use crate::error::{Error, Result};
 use osis_base::{Ak, CommitId, Tid, Ts};
 use osis_commit::{AspectEntry, Header, PurgeItem};
 use osis_perm::Point;
 use osis_store::Shred;
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 /// A held request: its ID and header.
-type Request = (CommitId, LazyHeader);
+type Request = (CommitId, Arc<Header>);
 
 /// Whether a request stamped `at` may name a delta on `ak` stamped `ts`: one stamped before it, or
 /// any minting (`created.0`): a request destroying a thing drops every minting of it, so a later minting
@@ -416,7 +417,7 @@ pub(crate) fn purged_aspects<'a>(tx: &mut Tx<'_>, things: &BTreeSet<Tid>, commit
 struct AspectRequests {
     /// By the stamp they name.
     named: BTreeMap<(Ts, osis_crdt::Source), Vec<Request>>,
-    wide: Vec<(CommitId, PurgeItem, LazyHeader)>,
+    wide: Vec<(CommitId, PurgeItem, Arc<Header>)>,
     /// Per class and purge author: the newest standing request of `wide`, its `ts` and ID.
     newest: BTreeMap<(u64, Tid), Option<(Ts, CommitId)>>,
 }

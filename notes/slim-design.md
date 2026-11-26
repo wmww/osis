@@ -8,13 +8,13 @@ Sync-harness world, node 0 makes, node 1 is its account's second node (rows by f
 
 | unit | wire 0→1 | wire 1→0 | stored, maker | stored, second |
 |---|---|---|---|---|
-| one dependent, one small value, alone | 1182 | 333 | 2963 (3150 physical) | 3232 |
-| a 1-byte change | 814 | 333 | 1399 | 1573 |
-| a small change, steady (compactions included) | 923 | 383 | about 980 | about 1020 |
-| one dependent of 100 in one commit | 670 | 5 | 1094 + 410 blob | 1235 + 410 blob |
-| one independent (marginal, 10 averaged) | 23.7 KB | 3.3 KB | 23.3 KB (28.3 physical) | 24.4 KB (29.7) |
+| one dependent, one small value, alone | 1182 | 333 | 2727 | 2996 |
+| a 1-byte change | 814 | 333 | 1301 | 1475 |
+| a small change, steady (compactions included) | 923 | 383 | about 880 | about 920 |
+| one dependent of 100 in one commit | 670 | 5 | 958 + 410 blob | 1099 + 410 blob |
+| one independent (marginal, 10 averaged) | 23.7 KB | 3.3 KB | 22.8 KB | 23.9 KB |
 
-Where it goes, per node, for a small commit: sealed blob 478, its opened copy `c/` 361, `node/metas` 135, `bp/` 101, the epochs it opened under `ou/` 224 (second node), the entry `E/` 224, `X/` 50, `S/` 50 (maker, per peer). On the wire the commit's Stream frame is 740 B and the peer echoes it back (259 B) with an Applied each way (74 B). Per thing in a batch: about 680 B of index rows for a 36 B record and a 4 B value (states 134, `refs` 178, `t/` 74, `a/` 54, counters 102, `dw/` 59 at the maker, `ou/` 258 at the second node, the holder's element 74).
+Where it goes, per node, for a small commit: sealed blob 478, its opened copy `c/` 361, `bp/` 101, the epochs it opened under `ou/` 224 (second node), the entry `E/` 224, `X/` 50, `S/` 50 (maker, per peer). On the wire the commit's Stream frame is 740 B and the peer echoes it back (259 B) with an Applied each way (74 B). Per thing in a batch: about 620 B of index rows for a 36 B record and a 4 B value (states 134, `refs` 178, `t/` 74, counters 102, `dw/` 59 at the maker, `ou/` 258 at the second node, the holder's element 74).
 
 ## Candidates
 Each: cost now; why it is there (the concept); the change; what it deletes; wire and disk (spec sections); risks.
@@ -40,12 +40,12 @@ Each: cost now; why it is there (the concept); the change; what it deletes; wire
 - **Risks**: a store keeping S unread applies past what it refuses: its refusals must always be told (spec/sync-streams.md §4 Full, Refused) for an applied send to count, else it counts by its stream alone as now (the existing carve-out in Held elsewhere, which this keeps, not adds). Deletes judged from `known` at a store must not count a blob the store never stored. The sync models lag (issues/sync-models-lag.md): the streams model should take the rule before it is built.
 
 ### D. Index rows that repeat a stored fact
-- **Cost**, per node: `node/metas` 135 B per small commit, 221 per make (the header's `View` again, beside a flag byte per part); `t/` 74 per thing (the creation record, which the `created.0` state already names); `refs from` 49 per reference (readable from the state it indexes); `a/` 27 per aspect (which aspects have a state: the aspect units' own keys); `dw/` 59 per dependent thing at its maker (derived epochs it sealed under, derivable from its mint admin's epochs since its creation).
-- **Concept**: each is an index for the fast open or a hot lookup; the engine's rule is that every `node/*` table is a function of the held commits (notes/engine-store.md Principle). A function of one stored row at the same cost is that row read twice.
-- **Change**: `node/metas` keeps the per-part judgment bytes only (the open decodes every header for the walk anyway, so the view comes from it); `created.0`'s state is the record whole (smaller than a body reference plus the record row) and `t/` goes; `refs from` read from the state; `a/` from a scan of the thing's aspect units; `dw/` gone, the rotation making a thing independent listing every derived epoch of its mint admin since its creation that the floor allows (spec/crypto.md §4 Lists, Current).
-- **Deletes**: four row families and their writers, half of `node/metas`. About 250-300 B per batched thing and 150-200 B per commit at every node.
-- **Wire, disk**: store layout only, but `dw/` changes what a promotion's history box lists (spec/crypto.md §4): run the TLA rotation model with the change.
-- **Risks**: the open's cost (headers decoded once, as now); dropping an aspect must read its state before clearing `refs to`; `dw/`'s promotion may list epochs nobody wrote under (harmless: their secrets derive from the mint admin's anyway) and must still respect the floor.
+- **Built**: `node/metas` holds only what this node judged of a commit (part count, a byte per part, a split commit's decided paths); an open decodes each header from its record and takes the view from it (`View::of`): the view is the bulk of a header and every commit's is needed at open, so the row was the header twice. `a/` is gone: an aspect has a unit exactly while it has a state, so `aspects.0`, the open and a rebuild list units by key (`Transaction::aspects_of`, `all_aspects`; no state read). Saved per node: about 98 B per small commit, 182 per make, 27 per aspect with a state (engine `thing_cost::`; notes/thing-cost.md).
+- **Kept** (each the only fast way to answer its reads):
+  - `t/`: the node's creation records, all held before an open judges anything. A record learned from a record blob or an inbox payload (record chains) has no `created.0` part here, so deriving the rest from parts gives records two homes by origin (a part decoded per thing at open, a row for the others, a row written whenever a `created.0` part drops while its record stays, as at a destruction). The `created.0` state is another fact (the aspect's value, empty after a destruction); reading it from `t/` would be one aspect's carve-out.
+  - `refs from`: the only per-source order of the reference index. The closure walk reads a thing's strongs from it (`units::strongs_from`): from the states that reads every state of the thing, O(its data) for O(its references). A signal's rows count fires that may be gone when its resync runs (`resync_fires` after a drop or forget), so its old rows cannot be read back from what is held. And the count that tells a row appearing or going lives there. `refs to` is the same index by target (backlinks).
+  - `dw/`: records an act (this node sealed under a derived epoch while the thing was dependent here), not a function of held commits: the commit may be gone here, covered, while held elsewhere. The proposed replacement, the promotion listing every derived epoch of the mint admin since creation that the floor allows, misses a writer that seals under a derived epoch of a mint-admin epoch the promoter did not know (concurrent with the promotion, spec/crypto.md §4 Current): only that writer knows its rotation is due. A replacement must keep that duty; model it in the TLA rotation model before building.
+- **Left**: F (entry rows, sync store), after B and C.
 
 ### E. The commit's own bytes
 - **Cost**: a small commit's blob is 478 B (header 174 opened). Per thing touched a 72 B section wrap; per further aspect of one thing a repeated 16 B tid; per delete level a 35 B `[level, key]` in the header and a 33 B blinded commitment in the prefix, plus a 16 B blind (about 85 B with one level, 150 with two); the record's 32 B nonce behind a 15 B tid; the signature's 7 B agility wrapper; empty optional fields about 6 B.
@@ -69,7 +69,7 @@ Each: cost now; why it is there (the concept); the change; what it deletes; wire
 - Rejected for now: roles sharing a keyset while their holders coincide (notes/thing-cost.md Open: the likeliest to add states; a grant would become a split rotation); role secrets derived down the role order (a holder actor's own role holders differ, so a box per role stays); dropping a newborn's history boxes (notes/thing-cost.md Rejected).
 
 ### H. Memory
-- **Cost**: unmeasured, and possibly the largest: a two-node world's resident set grows about 120 KB per small commit, 40 times what both disks gain (issues/memory-per-commit.md). Known per held commit: a `Meta` with its `View` and the header's bytes, kept for every commit for the engine's life.
+- **Cost**: unmeasured, and possibly the largest: a two-node world's resident set grows about 120 KB per small commit, 40 times what both disks gain (issues/memory-per-commit.md). Known per held commit: a `Meta` with its `View` and its decoded header, kept for every commit for the engine's life.
 - **Change**: none designed until attributed. If the engine's per-commit structures are the bulk, the direction is memory in the working set's size, not the store's: views and headers read through the store on demand (they are rows already, D keeps the header readable), with the in-memory indexes keyed sparsely.
 
 ## Jobs

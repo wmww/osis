@@ -959,3 +959,29 @@ fn a_memo_over_a_blob_moves_as_it_comes_and_goes() {
     let mut t = s.transaction(&mut rng).unwrap();
     assert_eq!(ask(&mut t, 0), Some(4), "the delete undone");
 }
+
+// spec: none (internal: notes/engine-store.md, Aspect units). A thing's aspects are its units'
+// keys: memory and durable alike, in key order, a removed unit gone, a large state's listing
+// alike; across a reopen the durable ones.
+#[test]
+fn aspects_are_their_units_keys() {
+    let (dev, mut rng, mut s) = fresh(cfg());
+    let (t1, t2) = (tid(1), tid(2));
+    let big = AspectUnit { state: vec![7; 50_000] };
+    let small = AspectUnit { state: b"s".to_vec() };
+    let mut t = s.transaction(&mut rng).unwrap();
+    t.put_aspect(&t1, &ak("b.0"), &big, Shred::No).unwrap();
+    t.put_aspect(&t1, &ak("a.0"), &small, Shred::No).unwrap();
+    t.put_aspect(&t1, &ak("m+.0"), &small, Shred::No).unwrap();
+    t.put_aspect(&t1, &ak("gone.0"), &small, Shred::No).unwrap();
+    t.put_aspect(&t2, &ak("a.0"), &small, Shred::No).unwrap();
+    t.remove_aspect(&t1, &ak("gone.0"), Shred::Yes).unwrap();
+    assert_eq!(t.aspects_of(&t1).unwrap(), vec![ak("a.0"), ak("b.0"), ak("m+.0")]);
+    assert_eq!(t.all_aspects().unwrap(), vec![(t1, ak("a.0")), (t1, ak("b.0")), (t1, ak("m+.0")), (t2, ak("a.0"))]);
+    t.commit().unwrap();
+    drop(s);
+    let mut s = reopen(&dev);
+    let mut t = s.transaction(&mut rng).unwrap();
+    assert_eq!(t.aspects_of(&t1).unwrap(), vec![ak("a.0"), ak("b.0")], "the memory unit went with the open");
+    assert_eq!(t.get_aspect(&t1, &ak("b.0")).unwrap(), Some(big));
+}

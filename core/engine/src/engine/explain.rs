@@ -234,13 +234,11 @@ impl Engine {
             format!("{} {}{valid} {hold}", label(core, &a.tid), a.ak)
         }).collect();
         let _ = write!(out, " on [{}]", parts.join(", "));
-        if let Some(h) = osis_base::costs::paused(|| m.header.decoded()) {
-            if let Some(u) = &h.undoes {
-                let _ = write!(out, ", undoes c:{}", short(u));
-            }
-            if let Some(x) = h.expires {
-                let _ = write!(out, ", expires {x}");
-            }
+        if let Some(u) = &m.header.undoes {
+            let _ = write!(out, ", undoes c:{}", short(u));
+        }
+        if let Some(x) = m.header.expires {
+            let _ = write!(out, ", expires {x}");
         }
         if v.memory {
             out.push_str(", a memory commit");

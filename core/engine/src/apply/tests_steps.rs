@@ -21,8 +21,6 @@ fn ak(s: &str) -> Ak {
 
 /// The node's indexes, its perm view and its store, decrypted.
 fn state(e: &mut Engine) -> (String, Vec<(String, Vec<u8>)>) {
-    // headers decoded alike (decoding is a cache, not undone)
-    e.core.ix.commits.values().for_each(|m| drop(m.header.decoded()));
     (format!("{}\n{}", e.core.ix.contents(), e.perm_digest(false)), e.store_dump().unwrap())
 }
 

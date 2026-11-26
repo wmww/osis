@@ -355,153 +355,12 @@ impl View {
 /// `Engine::point`.
 pub type ReadPoint = (u64, u64, u64, u64);
 
-/// A commit's header, decoded from its stored bytes on first use. The bytes hash to the commit
-/// ID and were verified on arrival by a build with these rules (the index tag), so decoding
-/// does not fail; if it does (a bug, damaged memory) the header reads as its view with every
-/// other field empty, the running transaction fails (`Error::Corrupt`) and readers outside one
-/// (`Engine::header`) see none (`decoded`).
-pub struct LazyHeader(Lazy);
-
-enum Lazy {
-    Ready(Arc<Header>),
-    /// Decoded: `Ok`, else `Err` with the fallback header.
-    Stored(std::sync::OnceLock<std::result::Result<Arc<Header>, Arc<Header>>>, Arc<StoredHeader>),
-}
-
-struct StoredHeader {
-    id: CommitId,
-    bytes: Box<[u8]>,
-    view: Arc<View>,
-    fault: Arc<std::sync::atomic::AtomicBool>,
-}
-
-/// A clone shares the bytes; in a world copy (`osis_base::copying`) a header not decoded yet sets
-/// the copy's fault flag (`Core::header_fault`), not the original's.
-impl Clone for LazyHeader {
-    fn clone(&self) -> LazyHeader {
-        LazyHeader(match &self.0 {
-            Lazy::Ready(h) => Lazy::Ready(h.clone()),
-            Lazy::Stored(got, s) if got.get().is_none() && osis_base::copying::in_copy() => {
-                let s = osis_base::copying::remap(s, |s| StoredHeader {
-                    id: s.id,
-                    bytes: s.bytes.clone(),
-                    view: s.view.clone(),
-                    fault: osis_base::copying::remap(&s.fault, |f| std::sync::atomic::AtomicBool::new(f.load(std::sync::atomic::Ordering::Relaxed))),
-                });
-                Lazy::Stored(std::sync::OnceLock::new(), s)
-            }
-            Lazy::Stored(got, s) => Lazy::Stored(got.clone(), s.clone()),
-        })
-    }
-}
-
-impl LazyHeader {
-    pub fn ready(h: Arc<Header>) -> LazyHeader {
-        LazyHeader(Lazy::Ready(h))
-    }
-
-    /// A header held as its canonical bytes (`id`'s), decoded on first use; a failed decode
-    /// sets `fault`.
-    pub(crate) fn stored(id: CommitId, bytes: Box<[u8]>, view: Arc<View>, fault: Arc<std::sync::atomic::AtomicBool>) -> LazyHeader {
-        LazyHeader(Lazy::Stored(std::sync::OnceLock::new(), Arc::new(StoredHeader { id, bytes, view, fault })))
-    }
-
-    pub fn arc(&self) -> Arc<Header> {
-        self.get().clone()
-    }
-
-    /// The header, unless its decode failed (then `arc` and `Deref` give the fallback).
-    pub fn decoded(&self) -> Option<Arc<Header>> {
-        match &self.0 {
-            Lazy::Ready(h) => Some(h.clone()),
-            Lazy::Stored(got, s) => got.get_or_init(|| s.decode()).as_ref().ok().cloned(),
-        }
-    }
-
-    /// Whether `o` holds this header's very value (shared bytes or decode): what an index write
-    /// compares to tell a commit's fixed facts unchanged (`commits::Commits`).
-    pub(crate) fn same(&self, o: &LazyHeader) -> bool {
-        match (&self.0, &o.0) {
-            (Lazy::Ready(a), Lazy::Ready(b)) => Arc::ptr_eq(a, b),
-            (Lazy::Stored(_, a), Lazy::Stored(_, b)) => Arc::ptr_eq(a, b),
-            _ => false,
-        }
-    }
-
-    fn get(&self) -> &Arc<Header> {
-        match &self.0 {
-            Lazy::Ready(h) => h,
-            Lazy::Stored(got, s) => match got.get_or_init(|| s.decode()) {
-                Ok(h) | Err(h) => h,
-            },
-        }
-    }
-}
-
-impl StoredHeader {
-    fn decode(&self) -> std::result::Result<Arc<Header>, Arc<Header>> {
-        match decode_stored_header(&self.id, &self.bytes) {
-            Some(h) => {
-                // the persisted view is the header's (index check: an open from the index
-                // equals a rebuild from the commit records)
-                debug_assert_eq!(View::of(&h, self.view.paths.clone()), *self.view, "meta row of {:?} is stale", self.id);
-                Ok(Arc::new(h))
-            }
-            None => {
-                self.fault.store(true, std::sync::atomic::Ordering::Relaxed);
-                Err(Arc::new(fallback_header(&self.view)))
-            }
-        }
-    }
-}
-
 /// The header whose canonical bytes are `bytes`, if they hash to `id` and decode.
 pub(crate) fn decode_stored_header(id: &CommitId, bytes: &[u8]) -> Option<Header> {
     if osis_base::hash::hash(bytes) != id.0 {
         return None;
     }
     Header::decode_stored(bytes).ok()
-}
-
-fn fallback_header(v: &View) -> Header {
-    Header {
-        signer: v.signer,
-        key: v.key,
-        path: osis_commit::Paths::default(),
-        kind: v.kind,
-        ts: v.ts,
-        form: v.form,
-        expires: None,
-        aspects: v.aspects.iter().map(|a| osis_commit::AspectEntry { tid: a.tid, ak: a.ak.clone(), lo: a.lo, hi: a.hi, purge_by: Default::default(), keys: Vec::new(), hash: [0; 32], replaces: a.replaces, original_floor: a.original_floor }).collect(),
-        purge: Vec::new(),
-        undoes: None,
-        blind: [0; 16],
-        keys: Vec::new(),
-        frontier: None,
-        links: Default::default(),
-        ephemeral: None,
-        own_cover: v.own_cover, adminless: false,
-    }
-}
-
-impl std::ops::Deref for LazyHeader {
-    type Target = Header;
-    fn deref(&self) -> &Header {
-        self.get()
-    }
-}
-
-impl std::fmt::Debug for LazyHeader {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match &self.0 {
-            Lazy::Ready(h) => h.fmt(f),
-            Lazy::Stored(got, _) => match got.get() {
-                Some(Ok(h)) => h.fmt(f),
-                Some(Err(_)) => f.write_str("LazyHeader(failed to decode)"),
-                None => f.write_str("LazyHeader(not decoded)"),
-            },
-        }
-    }
 }
 
 /// The rebuild of one aspect `apply::run_batched` runs.
@@ -1176,9 +1035,6 @@ pub struct Core {
     /// the next `Engine::tick` writes (`apply::memory::resnapshot_fallen`; `next_timer` is now
     /// while any waits).
     pub fallen: BTreeSet<(Tid, Ak)>,
-    /// Set when a lazily held header failed to decode (`LazyHeader`): every later transaction
-    /// fails (`Error::Corrupt`).
-    pub header_fault: Arc<std::sync::atomic::AtomicBool>,
     /// Tests: after each per-entry `secrets.0` ingestion, check that ingesting the whole state
     /// learns nothing more (`apply::atomic::observe_secrets_keys`).
     #[cfg(test)]
@@ -1433,7 +1289,6 @@ impl Core {
         c.unchecked_states.clear();
         #[cfg(debug_assertions)]
         c.unchecked_rows.clear();
-        c.header_fault = osis_base::copying::remap(&self.header_fault, |f| std::sync::atomic::AtomicBool::new(f.load(std::sync::atomic::Ordering::Relaxed)));
         c
     }
 }
@@ -2068,7 +1923,6 @@ impl Core {
             sourced_elsewhere,
             // test hooks and debug bookkeeping, set and taken anywhere
             forged: _,
-            header_fault: _,
             #[cfg(debug_assertions)]
             unchecked_tx: _,
             #[cfg(debug_assertions)]
@@ -2286,7 +2140,6 @@ impl Core {
             later_sessions: 0,
             compaction: Default::default(),
             fallen: Default::default(),
-            header_fault: Arc::default(),
             #[cfg(test)]
             check_ingest: false,
             #[cfg(test)]
@@ -2884,9 +2737,6 @@ fn end_flows<T>(tx: &mut Tx<'_>, mut r: Result<T>) -> Result<T> {
 /// The transaction's end, steps 3 and 4 (notes/engine.md): invalid bodies, settings, re-judging,
 /// setting waits and covers; then destructions and what nothing held needs any more.
 fn end_drops<T>(tx: &mut Tx<'_>, mut r: Result<T>) -> Result<T> {
-    if r.is_ok() && tx.core.header_fault.load(std::sync::atomic::Ordering::Relaxed) {
-        r = Err(Error::Corrupt("commit record header"));
-    }
     // a body judged invalid goes at the end of the transaction that judged it
     // (spec/permissions.md §6), after this node's addenda vouched for what they list;
     // a memory transaction drops memory parts only (`drop_invalid`)
@@ -3804,8 +3654,6 @@ mod tests {
     }
 
     fn digest(p: &Peer) -> String {
-        // headers decoded alike (decoding is a cache, not undone)
-        p.engine.core.ix.commits.values().for_each(|m| drop(m.header.decoded()));
         format!("{}\n{}", p.engine.core.ix.contents(), p.engine.perm_digest(false))
     }
 

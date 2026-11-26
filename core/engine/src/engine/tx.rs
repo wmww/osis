@@ -140,9 +140,9 @@ impl Tx<'_> {
         Ok(self.txn.get_aspect(tid, ak)?.map(|u| u.state).unwrap_or_default())
     }
 
-    /// The AKs of `t` with a state stored (`records::ASPECTS`), in key order.
+    /// The AKs of `t` with a state stored (an aspect unit), in key order.
     pub(crate) fn state_aks(&mut self, t: &Tid) -> Result<Vec<Ak>> {
-        self.scan_rows(&[records::ASPECTS, t.as_bytes()].concat(), |k, _| records::Rd::new(k).ak())
+        Ok(self.txn.aspects_of(t)?)
     }
 
     /// Loads the state of `(tid, ak)` into the cache: a paged state lazily (its skeleton; pages
@@ -587,12 +587,10 @@ impl Tx<'_> {
             Some(idx) => self.core.pages.insert((*tid, ak.clone()), idx),
             None => self.core.pages.remove(&(*tid, ak.clone())),
         };
-        self.txn.put_aspect(tid, ak, &AspectUnit { state }, shred)?;
-        // the state-list row is the aspect's class (its key's marker), whatever the transaction
-        if f.is_some() {
-            self.put_aspect_local(records::ASPECTS, tid, ak, &[])?;
-        } else {
-            self.txn.remove_local(&records::aspect_key(records::ASPECTS, tid, ak), Shred::No)?;
+        // an aspect has a unit while it has a state (`state_aks`)
+        match f {
+            Some(_) => self.txn.put_aspect(tid, ak, &AspectUnit { state }, shred)?,
+            None => self.txn.remove_aspect(tid, ak, shred)?,
         }
         self.derive(tid, ak, f.as_ref());
         self.core.states.insert((*tid, ak.clone()), f);

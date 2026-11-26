@@ -231,7 +231,7 @@ impl Engine {
     /// else the stored one.
     pub(crate) fn resolved_header(&self, blob: &CommitBlob) -> std::sync::Arc<osis_commit::Header> {
         match self.core.ix.commits.get(&blob.id()) {
-            Some(m) if !blob.header.is_resolved() => m.header.arc(),
+            Some(m) if !blob.header.is_resolved() => m.header.clone(),
             _ => std::sync::Arc::new(blob.header.clone()),
         }
     }
@@ -410,7 +410,7 @@ impl Engine {
         // stay sealed (no aspect names a thing yet) and the prefix's commitment groups, which
         // need the lists, go unchecked
         let header: Option<std::sync::Arc<osis_commit::Header>> = match self.core.ix.commits.get(&id) {
-            Some(m) if !env.header.is_resolved() => m.header.decoded(),
+            Some(m) if !env.header.is_resolved() => Some(m.header.clone()),
             _ if env.header.is_resolved() => Some(std::sync::Arc::new(env.header.clone())),
             _ => self.held_resolved(env.header.clone()).map(std::sync::Arc::new),
         };

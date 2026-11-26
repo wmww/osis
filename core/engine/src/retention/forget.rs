@@ -175,7 +175,7 @@ fn unreceive(tx: &mut Tx<'_>, id: &CommitId, ais: &BTreeSet<usize>, rest: Option
         let Some(a) = m.view.aspects.get(ai).cloned() else { continue };
         if m.view.kind.is_role() && a.ak.as_str() == "secrets.0" {
             let body = crate::apply::held_fragment(tx, id, ai)?;
-            let e = boxes.entry((a.tid, a.ak.clone())).or_insert_with(|| (m.header.arc(), ai, Vec::new()));
+            let e = boxes.entry((a.tid, a.ak.clone())).or_insert_with(|| (m.header.clone(), ai, Vec::new()));
             e.2.extend(body);
         }
         if m.stripped(ai) {

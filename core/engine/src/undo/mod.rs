@@ -576,7 +576,7 @@ impl Engine {
             .rev()
             .filter_map(|(_, id)| {
                 let m = self.core.ix.commits.get(&id)?;
-                let header = m.header.decoded()?;
+                let header = m.header.clone();
                 let touches = header.aspects.iter().enumerate().any(|(ai, a)| m.valid_at(ai) && keep.contains(&(a.tid, a.ak.clone())));
                 touches.then_some(HeldCommit { id, header, purge_author: m.view.purge_author })
             })

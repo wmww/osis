@@ -573,10 +573,7 @@ pub(crate) fn from(tx: &mut Tx<'_>, source: &Tid) -> Result<Vec<Reference>> {
 /// Fills the index from every state (after `index::write_all` dropped it): each state read
 /// once, the cache left as it was.
 pub(crate) fn write_all(tx: &mut Tx<'_>) -> Result<()> {
-    let aspects = tx.scan_rows(records::ASPECTS, |k, _| {
-        let mut r = records::Rd::new(k);
-        Ok((r.tid()?, r.ak()?))
-    })?;
+    let aspects = tx.txn.all_aspects()?;
     // a signal has no aspect record: its held fires are found by the commits naming it
     let signals: Vec<(Tid, Ak)> = tx.core.ix.by_aspect.keys().filter(|(_, ak)| ak.signal() && indexed(ak)).cloned().collect();
     for (t, ak) in signals {
