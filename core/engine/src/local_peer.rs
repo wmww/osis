@@ -122,20 +122,26 @@ impl Peer {
     /// Which of `on` anything held or pending here needs (`retention::needed::needs`): a package
     /// on them this node dropped at a pass end is wanted no more than then while that stands
     /// (`LocalPeer::sync`).
-    fn needed<'a>(&mut self, on: impl IntoIterator<Item = &'a Tid>) -> Result<BTreeSet<Tid>> {
+    /// `known`: the answers kept at a point of this engine (`SyncMemo::needed`).
+    fn needed<'a>(&mut self, on: impl IntoIterator<Item = &'a Tid>, known: &mut Option<(ReadPoint, BTreeMap<Tid, bool>)>) -> Result<BTreeSet<Tid>> {
         let on: BTreeSet<Tid> = on.into_iter().copied().collect();
         if on.is_empty() {
             return Ok(on);
         }
-        self.engine.read(|tx| {
-            let mut out = BTreeSet::new();
-            for t in on {
-                if !crate::retention::needed::needs(tx, &t)?.is_empty() {
-                    out.insert(t);
-                }
+        let point = self.engine.point();
+        let mut kept = known.take().filter(|k| k.0 == point).map(|k| k.1).unwrap_or_default();
+        let ask: Vec<Tid> = on.iter().filter(|t| !kept.contains_key(*t)).copied().collect();
+        if !ask.is_empty() {
+            let fresh = self.engine.read(|tx| ask.into_iter().map(|t| Ok((t, !crate::retention::needed::needs(tx, &t)?.is_empty()))).collect::<Result<Vec<_>>>())?;
+            // a read settling blobs first moves the point: its answers are the new point's
+            if self.engine.point() != point {
+                kept.clear();
             }
-            Ok(out)
-        })
+            kept.extend(fresh);
+        }
+        let out = on.into_iter().filter(|t| kept.get(t) == Some(&true)).collect();
+        *known = Some((self.engine.point(), kept));
+        Ok(out)
     }
 
     /// Receives a package and stands in for node-sync's carriers and fetches: a carrier of what
@@ -594,6 +600,9 @@ struct SyncMemo {
     dropped: HashMap<(usize, u64), BTreeSet<Tid>>,
     /// Per receiver: the packages delivered (not as duplicates) since its last pass end.
     in_pass: HashMap<usize, Vec<(u64, CommitId, Vec<Tid>)>>,
+    /// Per receiver: which things something held needs (`Peer::needed`), at this point: asked
+    /// by every sender while its engine stands.
+    needed: HashMap<usize, (ReadPoint, BTreeMap<Tid, bool>)>,
 }
 
 /// A package as sent: with a hash of it and the things its commit is on.
@@ -1371,7 +1380,9 @@ impl LocalPeer {
         if pks.is_empty() {
             return Ok(HashSet::new());
         }
-        let needed = p.needed(pks.iter().flat_map(|pk| pk.2.iter()))?;
+        let mut known = self.memo.needed.remove(&to);
+        let needed = p.needed(pks.iter().flat_map(|pk| pk.2.iter()), &mut known)?;
+        self.memo.needed.extend(known.map(|k| (to, k)));
         let dropped = &self.memo.dropped;
         // one of its things awaited there goes again: what awaits a record learns it from the
         // record blob a pass fetches first (spec/commits.md §4 Records)
@@ -1409,7 +1420,9 @@ impl LocalPeer {
         let Some(p) = self.peers.get_mut(to) else { return Ok(()) };
         p.engine.settle_needs()?;
         let gone: Vec<(u64, Vec<Tid>)> = self.memo.in_pass.remove(&to).unwrap_or_default().into_iter().filter(|(_, id, on)| !p.engine.core.ix.pending.contains_key(id) && !p.engine.holds_whole(id) && !on.iter().any(|t| p.engine.closure_holds(t))).map(|(h, _, on)| (h, on)).collect();
-        let needed = p.needed(gone.iter().flat_map(|(_, on)| on.iter()))?;
+        let mut known = self.memo.needed.remove(&to);
+        let needed = p.needed(gone.iter().flat_map(|(_, on)| on.iter()), &mut known)?;
+        self.memo.needed.extend(known.map(|k| (to, k)));
         for (hash, on) in gone {
             self.memo.dropped.insert((to, hash), on.into_iter().filter(|t| needed.contains(t)).collect());
         }
