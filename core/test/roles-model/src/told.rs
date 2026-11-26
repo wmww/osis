@@ -811,12 +811,11 @@ mod tests {
     }
 
     /// Every 101st family world (`-- 1 told-exh` runs them all): spec holds; each control fails
-    /// its property.
+    /// its property in one of them (searched until one does).
     #[test]
     #[ignore = "property"]
     fn told_family_holds_plain() {
-        let run = |r: ToldRules| crate::family_on_every_core(family_size(), 101, |k, st: &mut ToldStats| told_check(&told_family(k), r, st));
-        let st = run(ToldRules::Spec);
+        let st = crate::family_on_every_core(family_size(), 101, |k, st: &mut ToldStats| told_check(&told_family(k), ToldRules::Spec, st));
         assert!(st.worlds > 0 && st.failures == 0, "{:?}", st.fail);
         for (r, kind) in [
             (ToldRules::Close, "told"),
@@ -829,7 +828,12 @@ mod tests {
             (ToldRules::Blocked, "lowered"),
             (ToldRules::NoRecord, "told"),
         ] {
-            assert!(run(r).kinds.contains_key(kind), "{r:?}");
+            let fails = crate::family_any(family_size(), 101, |k| {
+                let mut st = ToldStats::default();
+                told_check(&told_family(k), r, &mut st);
+                st.kinds.contains_key(kind)
+            });
+            assert!(fails, "{r:?}");
         }
     }
 }

@@ -179,6 +179,20 @@ pub fn family_on_every_core<T: Tally>(total: usize, stride: usize, f: impl Fn(us
     })
 }
 
+/// Whether `found(world)` holds for some `stride`th world of `0..total` (a family:
+/// `stride_refusal`), on a thread per core; once one holds no thread starts another (the answer is
+/// the same whichever is found first). Panics on a stride `stride_refusal` refuses.
+pub fn family_any(total: usize, stride: usize, found: impl Fn(usize) -> bool + Sync) -> bool {
+    use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
+    let any = AtomicBool::new(false);
+    family_on_every_core(total, stride, |i, _: &mut [u64; 0]| {
+        if !any.load(Relaxed) && found(i) {
+            any.store(true, Relaxed);
+        }
+    });
+    any.into_inner()
+}
+
 /// A test's decimal `u64` environment variable (unset or empty: None).
 #[cfg(test)]
 pub(crate) fn env_u64(k: &str) -> Option<u64> {
