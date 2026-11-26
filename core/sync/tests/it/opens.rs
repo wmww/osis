@@ -1122,6 +1122,36 @@ fn s_leaving_the_sync_set_while_away_drops_it_from_the_record_spec_sync_opens_3(
     }
 }
 
+// spec/sync-set.md §3 (Stopping), spec/sync-opens.md §6 (Where it stopped): S shredded and synced
+// again before a settle saw it go rejoins from the start, never at where it stood before the
+// shred: connected, the peer hears a Lost naming none; away, the next take opens S afresh.
+#[test]
+fn s_shredded_and_synced_again_rejoins_from_the_start_spec_sync_set_3() {
+    for connected in [true, false] {
+        let mut p = readers();
+        assert!(p.a.open(p.ca, &S), "connected {connected}");
+        p.a.reported(p.ca, S, 7);
+        if !connected {
+            p.close();
+            p.a.settle();
+        }
+        p.a.store.shred(&S).unwrap();
+        p.a.moved.clear();
+        p.b.moved.clear();
+        p.a.settle();
+        if connected {
+            p.run();
+            assert!(p.log.iter().any(|(by_a, m)| *by_a && matches!(m, Msg::Lost { items, .. } if items[0] == (S, None))), "its Lost names no position: {:?}", p.log);
+            assert!(p.b.moved.contains(&Moved::Joined(p.cb, S, Rejoin::From(None))), "b from the start: {:?}", p.b.moved);
+        } else {
+            p.connect(2, account(1), account(2));
+            p.run();
+        }
+        assert!(p.a.open(p.ca, &S) && p.b.open(p.cb, &S), "connected {connected}: opened again");
+        assert!(p.a.moved.contains(&Moved::Joined(p.ca, S, Rejoin::From(None))), "connected {connected}: a from the start: {:?}", p.a.moved);
+    }
+}
+
 /// The work done at a side since `before`.
 fn since(w: osis_sync::opens::Work, before: osis_sync::opens::Work) -> osis_sync::opens::Work {
     osis_sync::opens::Work { rejudged: w.rejudged - before.rejudged, standing: w.standing - before.standing, beacons: w.beacons - before.beacons, tested: w.tested - before.tested, creds: w.creds - before.creds }
