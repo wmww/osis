@@ -836,6 +836,54 @@ fn a_join_in_pages_keeps_its_position_spec_sync_streams_4() {
     assert_eq!(a.reported_at(t), a.reported_at(s));
 }
 
+// spec/sync-opens.md §6 (reported positions: a join's own until the message merging it is
+// covered), spec/sync-streams.md §4 (Reports: an Applied covers its message and every earlier one):
+// coverage is by message order, never by position. An Applied of a reply sent before the merging
+// one, naming the very position the merge stood at, covers no merge (failed: a server took any
+// Applied at or past the merge's position, so a member ended there closed with a Lost on entries
+// the peer had not stored). A merging reply asking no report is covered by the next message that
+// asks one.
+#[test]
+fn a_merge_is_covered_by_its_own_message_not_an_earlier_one_spec_sync_opens_6() {
+    let applied = |a: &mut Side, c: &[u8]| a.with(1, |st, cx| st.message(cx, C, Incoming::Push(Msg::Applied { cursor: osis_proto::Cursor::new(c.to_vec()).unwrap() })));
+    let mut a = Side::new(1);
+    let (s, t, u) = (sid(1), sid(2), sid(3));
+    for x in [s, t, u] {
+        a.hold(x, Holding::Read);
+    }
+    a.log(t, 200);
+    a.log(s, 100);
+    a.open.members.entry(C).or_default().insert(s, member());
+    let first = pull_at(&mut a, 1, plain_pull(None, vec![], REPLY_BUDGET));
+    assert!(first.report);
+    let c1 = first.cursor.unwrap().into_bytes();
+    // T joins from the start while the first reply is not reported: the join reads to the log's
+    // end, where the stream already stands, and merges
+    a.open.members.get_mut(&C).unwrap().insert(t, member());
+    let r = pull_at(&mut a, 1, plain_pull(Some(c1.clone()), vec![(t, None)], REPLY_BUDGET));
+    assert!(r.joins.is_empty() && r.report, "merged, asking a report: {:?}", r.joins);
+    let c2 = r.cursor.unwrap().into_bytes();
+    applied(&mut a, &c1);
+    assert!(a.reported_at(s).is_some(), "the stream's position");
+    assert_eq!(a.reported_at(t), None, "an Applied of the earlier reply covers no merge");
+    applied(&mut a, &c2);
+    assert!(a.reported.contains(&Reported::Merged(C, t)));
+    assert_eq!(a.reported_at(t), a.reported_at(s));
+    // U, with nothing logged, joins with every message reported: the merging reply asks no report
+    a.open.members.get_mut(&C).unwrap().insert(u, member());
+    let r = pull_at(&mut a, 1, plain_pull(Some(c2.clone()), vec![(u, None)], REPLY_BUDGET));
+    assert!(r.joins.is_empty() && !r.report, "merged, asking no report");
+    let c3 = r.cursor.unwrap().into_bytes();
+    applied(&mut a, &c2);
+    applied(&mut a, &c3);
+    assert_eq!(a.reported_at(u), None, "no Applied covers the reply yet");
+    a.log(s, 101);
+    let r = pull_at(&mut a, 1, plain_pull(Some(c3), vec![], REPLY_BUDGET));
+    assert!(r.report);
+    applied(&mut a, &r.cursor.unwrap().into_bytes());
+    assert!(a.reported.contains(&Reported::Merged(C, u)), "the next message asking a report covers the merge");
+}
+
 // spec/sync-streams.md §4 (Applying: a whole reply covers the members its Pull went out for;
 // Joining): T joins while b's first Pull, a whole listing of S alone, is out; the reply puts S at
 // the stream, not T, whose join is still owed. That join's Pull is lost with the connection, and

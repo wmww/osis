@@ -635,6 +635,8 @@ impl Streams {
             serve.applied = Some(pos);
             ctx.reported.push(Reported::Stream(conn, pos, cursor));
         }
+        // a merge is covered by message order, never by position: an Applied of a message sent
+        // before the merging reply may name the very position the merge stood at
         let r = serve.reported;
         let merged: Vec<SyncId> = serve.merging.iter().filter(|(_, n)| **n <= r).map(|(s, _)| *s).collect();
         for s in merged {
