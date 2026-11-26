@@ -680,7 +680,7 @@ impl ReadOnly {
     /// The thing this node keeps its settings on (its entry in that thing's `core::CAPS`, keyed
     /// by `node()`), if it names one: `core::SETTINGS` on `node_root()`, written where the node
     /// comes to act for such a thing, as an account library does when it makes or pairs into an
-    /// account; none while `node()` holds no grant on it (removed from an account, say). On a
+    /// account; none while `node()` holds no grant of write or admin on it (removed from an account, say). On a
     /// thin client, its node's (which `node_root` does not reach): `Network` when it cannot be
     /// reached.
     pub fn settings_thing(&self) -> Result<Option<Tid>> {

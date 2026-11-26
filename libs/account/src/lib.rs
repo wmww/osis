@@ -174,8 +174,8 @@ impl Account {
     }
 
     /// The account `db`'s node acts for, if any: the thing it keeps its settings on, which its
-    /// node thing holds a grant on. None once it learns its removal (`remove_node`); `make`
-    /// then makes it another.
+    /// node thing holds write or admin on (as `nodes` counts it). None once it learns its
+    /// removal (`remove_node`) or a lowering below write; `make` then makes it another.
     pub fn of(db: &ReadOnly) -> Result<Option<Account>> {
         Ok(db.settings_thing()?.map(|thing| Account { thing }))
     }

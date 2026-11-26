@@ -33,6 +33,17 @@ impl Core {
             (r, until)
         })
     }
+
+    /// `holder`'s edge on `thing` now, as `roster_of` reads it, without reading the rest.
+    pub(crate) fn edge_now(&self, thing: &Tid, holder: &Tid) -> Option<Edge> {
+        if !self.exists(thing) {
+            return None;
+        }
+        self.time.at(|now| {
+            let e = self.timelines().on(thing).and_then(|on| on.edge_at(holder, None)).filter(|e| e.alive_at(Some(crate::flows::ts_at(now))));
+            (e, e.and_then(|e| e.until).map(|u| u.0).filter(|u| *u > now))
+        })
+    }
 }
 
 impl Engine {

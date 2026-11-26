@@ -400,11 +400,12 @@ impl Engine {
     }
 
     /// The thing holding this node's settings (spec/sync-set.md §1): the one its node root's
-    /// `settings^.0` names, written only by this node, while its node thing holds a grant on it.
+    /// `settings^.0` names, written only by this node, while its node thing holds a grant of
+    /// write or admin on it (acts for it).
     pub fn settings_thing(&mut self) -> Result<Option<Tid>> {
         let Some(root) = self.core.node_root else { return Ok(None) };
         let Some(t) = self.get_typed(&root, &ct::SETTINGS)?.map(|w| w.0) else { return Ok(None) };
-        Ok(self.roster(&t).contains_key(&self.core.tid()).then_some(t))
+        Ok(self.core.edge_now(&t, &self.core.tid()).is_some_and(|e| e.role >= Role::Write).then_some(t))
     }
 
     /// This node's caps: its node thing's entry in the `caps^.0` of the thing holding its

@@ -244,3 +244,45 @@ fn a_removed_node_acts_for_no_account_spec_permissions_8() {
     assert_eq!(Account::of(&b).unwrap(), Some(mine));
     assert_eq!(mine.nodes(&b).unwrap(), [AccountNode { node: b.node(), role: Role::Admin }]);
 }
+
+// spec/permissions.md §8: a node acts for the account while its node thing's grant on it gives
+// write or admin, as `nodes` counts it: from pairing on (before it syncs), until a timed grant's
+// `until` passes, or until it is lowered to read.
+#[test]
+fn a_node_acts_for_the_account_while_it_may_write_spec_permissions_8() {
+    let c = clock();
+    let net = ManualNet::new(c.clone());
+    let first = person(&net, 1, &c);
+    let (db, a, _) = &first;
+    let o = opening(&net, 2, &c, Vec::new());
+    let offering = a.offer_pairing(db).unwrap();
+    let join = osis_account::pair(o.store, offering.offer(), o.cfg).unwrap();
+    let (_, reply) = offering.accept(db, join.request()).unwrap();
+    let (b, _) = join.finish(&reply).unwrap();
+    assert_eq!(Account::of(&b).unwrap(), Some(*a), "paired, before it syncs");
+    drive(&net, b.wait_synced(SyncScope::All)).unwrap();
+    // far beyond what the syncs below run the clock on
+    let until = osis::Time(db.now().unwrap().0 + 30 * 86_400_000);
+    db.grant(a.thing(), b.node(), Role::Admin, GrantOpts { until: Some(until), retain_copy: Some(true), ..Default::default() }).unwrap();
+    net.run();
+    drive(&net, b.wait_synced(SyncScope::All)).unwrap();
+    assert_eq!(b.grants(a.thing()).unwrap().get(&b.node()).and_then(|g| g.until), Some(until), "b holds the timed grant");
+    assert_eq!(Account::of(&b).unwrap(), Some(*a), "before its end");
+    net.advance(until.0 - b.now().unwrap().0);
+    assert_eq!(Account::of(&b).unwrap(), None, "its end passed, nothing written");
+    assert_eq!(a.nodes(db).unwrap(), [AccountNode { node: db.node(), role: Role::Admin }]);
+
+    let c = clock();
+    let net = ManualNet::new(c.clone());
+    let first = person(&net, 1, &c);
+    let (db, a, _) = &first;
+    let b = crate::pair(&net, &first, 2, &c);
+    db.set_role(a.thing(), b.node(), Some(Role::Read), SetRoleOpts::default()).unwrap();
+    net.run();
+    drive(&net, b.wait_synced(SyncScope::All)).unwrap();
+    assert_eq!(b.grants(a.thing()).unwrap().get(&b.node()).map(|g| g.role), Some(Role::Read), "b reads A still");
+    assert_eq!(Account::of(&b).unwrap(), None, "lowered to read");
+    assert_eq!(a.nodes(db).unwrap(), [AccountNode { node: db.node(), role: Role::Admin }], "not one of A's nodes");
+    let mine = Account::make(&b).unwrap();
+    assert_eq!(Account::of(&b).unwrap(), Some(mine));
+}
