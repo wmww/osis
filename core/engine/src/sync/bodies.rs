@@ -144,16 +144,17 @@ pub(crate) fn note_blob(tx: &mut Tx<'_>, b: &BlobId, row: BlobOf) -> Result<()> 
 /// `note_blob`; a blob losing its seal is made a last time only where `named` (its bytes kept
 /// again for the entries naming it), else its bytes go with it.
 fn put_row(tx: &mut Tx<'_>, b: &BlobId, mut row: BlobOf, named: bool) -> Result<()> {
-    // a seal is kept only where the commit as held carries every part it keyed: a part held here
-    // only in a blob (dropped, or never taken) makes no blob again (notes/slim-design.md B); nor
-    // does a blob opened unchecked (its prefix not checked against the header's lists, so its
-    // bytes may be framed otherwise)
+    let old = tx.core.ix.blob_parts.get(b).cloned();
+    // a seal is kept only where it makes its blob again from the commit as held, checked once as
+    // it is noted (`unseal` keeps it so while what it reads stays): not where a part it keyed is
+    // held here only in a blob (dropped, or never taken), nor where the copy held carries other
+    // signatures; nor for a blob opened unchecked (its prefix not checked against the header's
+    // lists)
     if let Some(s) = row.seal.clone()
-        && (row.unchecked || !carried(tx, &row.commit)?.is_some_and(|held| keyed(&s).all(|ai| held.contains(&ai))))
+        && (row.unchecked || (old.as_ref().is_none_or(|o| o.seal.as_ref() != Some(&s)) && regenerate_in(tx, b, &row)?.is_none()))
     {
         row.seal = None;
     }
-    let old = tx.core.ix.blob_parts.get(b).cloned();
     if old.as_deref() == Some(&row) {
         return Ok(());
     }
@@ -187,25 +188,53 @@ fn put_row(tx: &mut Tx<'_>, b: &BlobId, mut row: BlobOf, named: bool) -> Result<
 /// still name it.
 fn hand_back(tx: &mut Tx<'_>, b: &BlobId, row: &BlobOf) -> Result<()> {
     let Some(seal) = &row.seal else { return Ok(()) };
-    let bytes = regenerate_in(tx, row)?;
+    let bytes = regenerate_in(tx, b, row)?;
     debug_assert!(bytes.is_some(), "blob {b:?} of {:?} not made again as its seal goes", row.commit);
     let memory = tx.is_memory_commit(&row.commit);
     tx.blobs.unmade(b, bytes, seal.len, memory);
     Ok(())
 }
 
-/// Commit `c` as held is about to carry the parts `keep` alone (`None`: neither its record nor a
-/// pending copy stays): a blob of `c` whose seal lists, in a section it keyed, a part it will not
-/// carry, or any blob of a commit no longer held, is made again here no more, so its seal goes
-/// (`note_blob`: made a last time first), shredded: its keys would open the blob's bytes wherever
-/// they still are, so a purged part, or a commit no longer held, stays unrecoverable. Called
-/// before the record or pending copy is written.
-pub(crate) fn unseal(tx: &mut Tx<'_>, c: &CommitId, keep: Option<&PartSet>) -> Result<()> {
+/// Commit `c`'s record is about to be written as `record` (`None`: removed), its pending copy as
+/// stored: `unseal` with the commit as it will be held.
+pub(crate) fn unseal_record(tx: &mut Tx<'_>, c: &CommitId, record: Option<&osis_commit::CommitBlob>) -> Result<()> {
+    if !sealed_any(tx, c) {
+        return Ok(());
+    }
+    let future = whole(record.cloned(), pending_copy(tx, c)?);
+    unseal(tx, c, future.as_ref())
+}
+
+/// Commit `c`'s pending copy is about to be written as `pending` (`None`: removed), its record as
+/// stored: `unseal` with the commit as it will be held.
+pub(crate) fn unseal_pending(tx: &mut Tx<'_>, c: &CommitId, pending: Option<&osis_commit::CommitBlob>) -> Result<()> {
+    if !sealed_any(tx, c) {
+        return Ok(());
+    }
+    let future = whole(tx.get_commit(c)?.map(|r| (*r).clone()), pending.cloned());
+    unseal(tx, c, future.as_ref())
+}
+
+/// Whether a blob of `c` has a seal.
+fn sealed_any(tx: &Tx<'_>, c: &CommitId) -> bool {
+    tx.core.ix.commit_blobs.get(c).into_iter().flatten().any(|b| tx.core.ix.blob_parts.get(b).is_some_and(|r| r.seal.is_some()))
+}
+
+/// Commit `c` is about to be held as `future` (`None`: neither its record nor a pending copy
+/// stays): a blob of `c` whose seal reads of it anything that changes (`reads_same`), or any blob
+/// of a commit no longer held, is made again here no more, so its seal goes (`note_blob`: made a
+/// last time first), shredded: its keys would open the blob's bytes wherever they still are, so a
+/// purged part, or a commit no longer held, stays unrecoverable. Called before the record or
+/// pending copy is written.
+fn unseal(tx: &mut Tx<'_>, c: &CommitId, future: Option<&osis_commit::CommitBlob>) -> Result<()> {
+    let now = held_commit_whole(tx, c)?;
     let blobs: Vec<BlobId> = tx.core.ix.commit_blobs.get(c).into_iter().flatten().copied().collect();
     for b in blobs {
         let Some(row) = tx.core.ix.blob_parts.get(&b).cloned() else { continue };
         let Some(s) = &row.seal else { continue };
-        if keep.is_some_and(|k| keyed(s).all(|ai| k.contains(&ai))) {
+        if let (Some(n), Some(f)) = (&now, future)
+            && reads_same(n, f, s)
+        {
             continue;
         }
         note_blob(tx, &b, BlobOf { seal: None, ..(*row).clone() })?;
@@ -213,41 +242,11 @@ pub(crate) fn unseal(tx: &mut Tx<'_>, c: &CommitId, keep: Option<&PartSet>) -> R
     Ok(())
 }
 
-/// The parts seal `s` lists in sections it keyed: what making its blob again reads of the commit.
-fn keyed(s: &super::BlobSeal) -> impl Iterator<Item = usize> + '_ {
-    s.sections.iter().filter(|x| matches!(x, osis_commit::SectionSeal::Keyed { .. })).flat_map(|x| x.ais().iter().copied())
-}
-
-/// The parts commit `c` as held here carries (`regenerate_in` reads them): its record's and its
-/// pending copy's; `None` where neither is held.
-pub(crate) fn carried(tx: &mut Tx<'_>, c: &CommitId) -> Result<Option<PartSet>> {
-    let record = tx.get_commit(c)?;
-    let pending = pending_copy(tx, c)?;
-    if record.is_none() && pending.is_none() {
-        return Ok(None);
-    }
-    Ok(Some(record.iter().flat_map(|r| r.parts.iter()).chain(pending.iter().flat_map(|p| p.parts.iter())).map(|p| p.ai).collect()))
-}
-
-/// The parts of `c`'s record as it is written now, with those of its pending copy: what
-/// `unseal` keeps for a record about to be written as `record` (`None`: removed).
-pub(crate) fn carried_with(tx: &mut Tx<'_>, c: &CommitId, record: Option<&osis_commit::CommitBlob>) -> Result<Option<PartSet>> {
-    let pending = pending_copy(tx, c)?;
-    if record.is_none() && pending.is_none() {
-        return Ok(None);
-    }
-    Ok(Some(record.iter().flat_map(|r| r.parts.iter()).chain(pending.iter().flat_map(|p| p.parts.iter())).map(|p| p.ai).collect()))
-}
-
-/// Commit `c`'s pending copy is about to be written as `pending` (`None`: removed), its record as
-/// stored: `unseal` with what it then carries.
-pub(crate) fn unseal_pending(tx: &mut Tx<'_>, c: &CommitId, pending: Option<&osis_commit::CommitBlob>) -> Result<()> {
-    if tx.core.ix.commit_blobs.get(c).is_none() {
-        return Ok(());
-    }
-    let record = tx.get_commit(c)?;
-    let keep: Option<PartSet> = (record.is_some() || pending.is_some()).then(|| record.iter().flat_map(|r| r.parts.iter()).chain(pending.iter().flat_map(|p| p.parts.iter())).map(|p| p.ai).collect());
-    unseal(tx, c, keep.as_ref())
+/// Whether making a blob again under seal `s` reads the same of commit forms `a` and `b`: their
+/// header, signatures and path keys, and each part a section it keyed lists.
+fn reads_same(a: &osis_commit::CommitBlob, b: &osis_commit::CommitBlob, s: &super::BlobSeal) -> bool {
+    let keyed = s.sections.iter().filter(|x| matches!(x, osis_commit::SectionSeal::Keyed { .. })).flat_map(|x| x.ais().iter().copied());
+    a.header == b.header && a.sigs == b.sigs && a.keys == b.keys && { keyed.collect::<Vec<_>>() }.into_iter().all(|ai| a.part(ai).is_some() && a.part(ai) == b.part(ai))
 }
 
 /// Commit `c`'s pending copy, decoded (a parked one as received).
@@ -279,10 +278,10 @@ fn remove_row(tx: &mut Tx<'_>, b: &BlobId, row: &BlobOf) -> Result<()> {
     Ok(())
 }
 
-/// Blob `row` made again, byte for byte, from its seal and the commit as held now (its record's
-/// parts and its pending copy's; notes/slim-design.md B). `None`: no seal (not a commit blob, or
-/// none kept), or the commit as held no longer gives it.
-pub(crate) fn regenerate_in(tx: &mut Tx<'_>, row: &BlobOf) -> Result<Option<Vec<u8>>> {
+/// Blob `b` (noted as `row`) made again, byte for byte, from its seal and the commit as held now
+/// (its record's parts and its pending copy's; notes/slim-design.md B). `None`: no seal (not a
+/// commit blob, or none kept), or the commit as held does not give `b`.
+pub(crate) fn regenerate_in(tx: &mut Tx<'_>, b: &BlobId, row: &BlobOf) -> Result<Option<Vec<u8>>> {
     let Some(seal) = row.seal.clone() else { return Ok(None) };
     let c = row.commit;
     let Some(cb) = held_commit_whole(tx, &c)? else { return Ok(None) };
@@ -305,18 +304,22 @@ pub(crate) fn regenerate_in(tx: &mut Tx<'_>, row: &BlobOf) -> Result<Option<Vec<
     let groups = osis_commit::prefix_groups(&resolved, ais.iter().copied())?;
     let prefix = osis_blob::Prefix::for_delete_keys(row.salt, &cb.header.blind, osis_commit::prefix_expiry(&resolved, &ais).map(WallMs), &groups)?.with_class(osis_blob::Class::of_marker(resolved.ephemeral));
     let (_, blob) = osis_blob::frame_under(osis_crypto::BlobKey::of_blob(seal.key.clone()), &prefix, &env.encode())?;
-    let made = osis_blob::blob_id(&blob);
-    Ok(tx.core.ix.commit_blobs.get(&c).is_some_and(|bs| bs.contains(&made)).then_some(blob))
+    Ok((osis_blob::blob_id(&blob) == *b).then_some(blob))
 }
 
-/// Commit `c` as held here: its record's parts with those of its pending copy (an applied
-/// commit's waiting parts, or a pending commit's).
+/// Commit `c` as held here (`whole`).
 fn held_commit_whole(tx: &mut Tx<'_>, c: &CommitId) -> Result<Option<osis_commit::CommitBlob>> {
-    let (record, pending) = (tx.get_commit(c)?, pending_copy(tx, c)?);
-    let mut out = match (record, pending.as_ref()) {
-        (Some(r), _) => (*r).clone(),
-        (None, Some(p)) => p.clone(),
-        (None, None) => return Ok(None),
+    let record = tx.get_commit(c)?.map(|r| (*r).clone());
+    Ok(whole(record, pending_copy(tx, c)?))
+}
+
+/// A commit as held from its `record` and `pending` copy: the record's parts with those of the
+/// pending copy (an applied commit's waiting parts, or a pending commit's).
+fn whole(record: Option<osis_commit::CommitBlob>, pending: Option<osis_commit::CommitBlob>) -> Option<osis_commit::CommitBlob> {
+    let (mut out, pending) = match (record, pending) {
+        (Some(r), p) => (r, p),
+        (None, Some(p)) => (p, None),
+        (None, None) => return None,
     };
     if let Some(p) = pending {
         for part in p.parts {
@@ -329,7 +332,7 @@ fn held_commit_whole(tx: &mut Tx<'_>, c: &CommitId) -> Result<Option<osis_commit
         }
         out.parts.sort_by_key(|p| p.ai);
     }
-    Ok(Some(out))
+    Some(out)
 }
 
 /// Commit `c` is forgotten (`apply::unindex_commit`, a release): its blob parts go with it, in
@@ -1304,8 +1307,7 @@ impl Engine {
     /// as held no longer gives it: its bytes are the store's (`osis_sync::store::blob_bytes`).
     pub fn regenerate(&mut self, b: &BlobId) -> Result<Option<Vec<u8>>> {
         let Some(row) = self.core.ix.blob_parts.get(b).filter(|r| r.seal.is_some()).cloned() else { return Ok(None) };
-        let made = self.read(|tx| regenerate_in(tx, &row))?;
-        Ok(made.filter(|v| osis_blob::blob_id(v) == *b))
+        self.read(|tx| regenerate_in(tx, b, &row))
     }
 
     /// The parts that strip now (`strip_due`) but are not marked so (`Dropped::strips`), on an

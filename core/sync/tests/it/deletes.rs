@@ -746,3 +746,57 @@ fn a_making_commit_stripped_before_a_siblings_fetch_reaches_the_sibling_spec_syn
     assert!(!w.engine(2).read_facts(&s, &osis_engine::sync::BodyId::unit(c)).unwrap().missing, "no part of it counts missing");
     assert_eq!(w.engine(2).get(&t, &value_ak()).unwrap(), Some(Value::Str("v1".into())));
 }
+
+// notes/slim-design.md B (one stored form per commit), spec/sync-ids.md §5 (a blob held as what
+// makes it again: once the node can no longer make it while an entry names it, its bytes are kept
+// first): node 2 loses power at each durable write in turn, while it writes a commit (its blob's
+// bytes go once its seal is durable) and while node 0 lowers it to keeping S unread (its commits
+// lost, their blobs' bytes kept again), and restarts in place. Every entry it keeps then has its
+// blob's bytes, kept or made again, and every seal makes its blob. Fails if a crash between the
+// engine's store and the sync store leaves an entry with neither bytes nor a seal. By hand: about
+// 400 restarts.
+#[test]
+#[ignore = "by hand: a restart per durable write"]
+fn a_crash_at_any_write_leaves_each_blob_kept_or_made_again() {
+    use crate::harness::DiskFault;
+    let (w, t, s) = three_of(Gives::Writes, 1);
+    let write = |w: &mut World, v: &str| {
+        w.write(2, |e| {
+            let mut m = Mutation::new();
+            m.set(t, &Ak::new("u:n2.0").unwrap(), &Value::Str(v.into())).unwrap();
+            let _ = e.commit(m);
+        });
+        w.run();
+    };
+    let lower = |w: &mut World| drop(play(w, &[Lower(0, 0, crate::harness::history::Holder::Node(2), Gives::Syncs), Run], String::new()));
+    let mut crashed = [0; 2];
+    for (phase, n) in crashed.iter_mut().enumerate() {
+        let mut base = w.copy();
+        if phase == 1 {
+            write(&mut base, "w");
+        }
+        for k in 0.. {
+            let mut w = base.copy();
+            w.disk_fault(2, k, DiskFault::Crash);
+            match phase {
+                0 => write(&mut w, "w"),
+                _ => lower(&mut w),
+            }
+            if w.crashes == 0 {
+                break;
+            }
+            *n += 1;
+            w.run();
+            for e in w.store(2).entries(&s).unwrap() {
+                if w.store(2).blob_len(&e.blob).unwrap().is_none() {
+                    continue;
+                }
+                let bytes = w.bytes(2, &e.blob);
+                assert!(bytes.as_ref().is_some_and(|v| osis_blob::blob_id(v) == e.blob), "phase {phase}, crash at write {k}: an entry held without its bytes");
+            }
+            let (_, failed) = w.engine(2).check_seals();
+            assert!(failed.is_empty(), "phase {phase}, crash at write {k}: {failed:?}");
+        }
+    }
+    assert!(crashed.iter().all(|n| *n > 0), "a crash in each phase: {crashed:?}");
+}

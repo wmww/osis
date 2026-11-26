@@ -404,8 +404,9 @@ impl Streams {
                 if !shown(ctx, conn, &s, &entry) {
                     return Ok(None);
                 }
-                let blob = if inline > 0 && !page.inlined.contains(&b) { ctx.ground.bytes(ctx.store, &b)?.filter(|v| v.len() as u64 <= inline) } else { None };
-                let blob = blob.filter(|_| !self.shown_by_peer(ctx, conn, &s, &b));
+                // its bytes read (made again, where the engine keeps its seal) only to inline them
+                let fits = inline > 0 && !page.inlined.contains(&b) && ctx.store.blob_len(&b)?.is_some_and(|n| n <= inline) && !self.shown_by_peer(ctx, conn, &s, &b);
+                let blob = if fits { ctx.ground.bytes(ctx.store, &b)? } else { None };
                 let inlined = blob.is_some();
                 Some((s, Event::Added { blob_id: b, blob, wrap: entry.wrap, stamp: entry.stamp }, inlined))
             }

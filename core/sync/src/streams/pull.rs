@@ -935,7 +935,8 @@ impl Streams {
     /// what this node lacks and may take (spec/sync-streams.md §4 Bodies); one held is taken now.
     fn wanted(&mut self, ctx: &mut Ctx, conn: ConnId, s: &SyncId, b: &BlobId, wrap: &Wrap, stamp: Option<Stamp>) -> Option<(u8, u64)> {
         let holding = ctx.store.holding(s)?;
-        let held = ctx.ground.bytes(ctx.store, b).ok().flatten();
+        // held: its bytes are read (made again, where the engine keeps its seal) only to take it
+        let held = ctx.store.blob_len(b).ok().flatten().is_some();
         let tomb = ctx.store.tombstone(s, b).ok().flatten().is_some();
         match holding {
             Holding::Unread => {
@@ -945,8 +946,10 @@ impl Streams {
                     self.tell(conn, *s, Event::Refused(*b, Code::TOMBSTONED));
                     return None;
                 }
-                if let Some(bytes) = held {
-                    self.take_body(ctx, conn, *s, *b, *wrap, Some(stamp), &bytes);
+                if held {
+                    if let Some(bytes) = ctx.ground.bytes(ctx.store, b).ok().flatten() {
+                        self.take_body(ctx, conn, *s, *b, *wrap, Some(stamp), &bytes);
+                    }
                     return None;
                 }
                 class(Rank::Unopened, false)
@@ -959,8 +962,10 @@ impl Streams {
                 }
                 // bytes held under another sync ID (a certificate copy is one blob wrapped under
                 // each sync ID needing it): this entry is taken with them, its wrap for S
-                if let Some(bytes) = held {
-                    if ctx.store.entry(s, b).ok().flatten().is_none() {
+                if held {
+                    if ctx.store.entry(s, b).ok().flatten().is_none()
+                        && let Some(bytes) = ctx.ground.bytes(ctx.store, b).ok().flatten()
+                    {
                         self.take_body(ctx, conn, *s, *b, *wrap, stamp, &bytes);
                     }
                     return None;

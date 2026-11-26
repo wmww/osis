@@ -291,3 +291,30 @@ fn a_stripping_blob_carrying_a_missing_part_gives_it_spec_sync_judgement_3() {
     assert!(e.blob_gives_missing(&both), "it carries the missing part");
     assert!(!e.blob_gives_missing(&purged), "the purged part alone gives nothing");
 }
+
+// notes/slim-design.md B (one stored form per commit): a seal is kept only where it makes its
+// blob again from the commit as held. Peer 0 seals a blob of its commit; the
+// same opening noted for another blob of the commit (framed otherwise: other signatures, another
+// prefix) keeps no seal, so its bytes stay; the seal of the true blob makes it byte for byte.
+// Fails if a seal is noted for bytes it does not make (they would be dropped, and lost).
+#[test]
+fn a_seal_is_kept_only_for_the_blob_it_makes() {
+    let (mut lp, d) = two_nodes();
+    let mut m = Mutation::new();
+    m.set(d, &ak("u:v.0"), &Value::Str("v".into())).unwrap();
+    let c = lp.peers[0].commit(m).unwrap().unwrap();
+    let e = &mut lp.peers[0].engine;
+    let s = e.sync_id_of(&d).unwrap().unwrap();
+    let mut rng = osis_crypto::SeededRng::from_u64(1);
+    let (sealed, _) = e.seal_body(&s, &super::BodyId::unit(c), &[], &mut rng).unwrap().expect("sealed");
+    let b = sealed.id;
+    let row = (*e.blob_of(&b).expect("noted")).clone();
+    assert!(row.seal.is_some(), "a fresh encryption keeps its seal");
+    let made = e.regenerate(&b).unwrap().expect("made again");
+    assert_eq!(osis_blob::blob_id(&made), b);
+    let other = BlobId([0xA5; 32]);
+    e.run(|tx| note_blob(tx, &other, row.clone())).unwrap();
+    assert!(e.blob_of(&other).is_some_and(|r| r.seal.is_none()), "no seal for a blob it does not make");
+    assert!(e.regenerate(&other).unwrap().is_none());
+    assert_eq!(e.check_seals().1, Vec::<String>::new());
+}
