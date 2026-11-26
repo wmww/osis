@@ -3,4 +3,4 @@
 > Priority: low
 > Tags: engine, performance
 
-Seen by the inbox-admin review (9228c6491); no cause found. First step: a counting test at 0, k and 10k earlier rotations with the remover's loads per component, then a cpuprof of the grown case.
+No cause found. First step: a counting test at 0, k and 10k earlier rotations with the remover's loads per component, then a cpuprof of the grown case.

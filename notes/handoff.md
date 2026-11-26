@@ -8,11 +8,12 @@
 
 ## State
 - **Coordinator**: Spar. Agents run on main (no kept branches); security changes go through a branch, a reviewer and the gate.
-- **Reviewed and gated**: everything through the sync rewrite, accounts as ordinary things, public things, cards, the account library, and the design changes that followed (destroying a thing ends access through it, steps' needs). The full-size differential's open classes: issue differential-full-size-classes; the review's small leftovers: issue review-suspects. Every job is reviewed and gated (notes/coordination.md).
+- **Reviewed and gated**: everything on main, the final gate over the whole tree included; every job since is reviewed and gated as it lands (notes/coordination.md). The full-size differential's open classes: issue differential-full-size-classes; the review's small leftovers: issue review-suspects.
+- **In flight**: slimming job B (one stored form per commit) in review on `spar-slim-b`; following by the public entry's leftovers on `spar-diff-5`.
 
 ## The route (Tess)
 Target: osis basically works, the big pieces in place, the architecture sensible and mostly settled; what is left is fixes, tweaks and verification. In order:
-1. **Architectural slimming before dogfooding** (notes/priorities.md Slimmer things; jobs in notes/slim-design.md): it may churn the set of unknown issues, so it goes first. Philosophically sound changes that also work; usually less code.
+1. **Architectural slimming before dogfooding** (notes/priorities.md Slimmer things; jobs in notes/slim-design.md): it may churn the set of unknown issues, so it goes first. Philosophically sound changes that also work; usually less code. Landed: no pull anew for a thing another node makes (dependent and independent; an attach still pulls, issue attach-pulls-unit-anew) and index rows repeating stored facts; B in review; then the jobs after it in slim-design's order.
 2. **A light local dogfood pass** (chat between accounts, pairing, removing a node): testing finds problems; fix each at its level (mistake, architecture, or the model), never a workaround; where building it right is unclear, a design pass or a question for Tess. Many QA passes come later, before release.
 3. Then known issues, more dogfooding, and simplification beside them.
 
@@ -28,12 +29,10 @@ Two agents on workflow and cleanup throughout (notes/coordination.md, Job mix).
 - **No fix sized by its label.** Three times a class of failing tests labelled with one cause had three or more; one probe line per failing test (what it holds, which fire or box was refused) sizes a job in a session's first minutes. A cause written in a note says whether it was probed or guessed.
 
 ## Waiting on Tess
-- Whether writes through a destroyed holder stamped after its destruction stay valid (issue destroyed-holder-write-authority, tess-call).
-- The rest of the tess-call issues: notes/priorities.md, Parked on Tess.
+Every tess-call issue, listed in notes/priorities.md, Parked on Tess. The model questions come first: destroyed-holder-write-authority, destroyed-mint-admin-dependents, chain-top-unseen-by-sync-holder, held-model-late-commit-read-lost, start-cost-grows-with-held.
 
 ## Parked
-- Old branches on GitHub with nothing to land: `mizzen-a2-switch` (the sync rewrite before its last rebase; main has it) and `windlass-wiring-1` (a debug shadow of a walk since deleted). Delete them when Tess says.
-- `mizzen-snapshot-stream`: page-walking snapshot writer, unbounded memory on forged states; resume only with a per-source cursor (issues/durable-decode-bound.md).
+- `windlass-wiring-1` on GitHub has nothing to land (a debug shadow of a walk since deleted). Delete it when Tess says.
 - The held-writes dating is about a quarter of the rotation and deep-departure properties' cost: product cost worth a design pass (notes/time-limits.md, Investigations).
 
 ## Habits that saved time
