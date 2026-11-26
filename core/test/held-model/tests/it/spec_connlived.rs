@@ -28,7 +28,7 @@ fn random_histories_hold_by_the_rule() {
 
 /// Failure counts of every variant (by hand: the findings in issues/connection-lived-data.md).
 #[test]
-#[ignore]
+#[ignore = "by hand: prints failure counts"]
 fn explore() {
     for (settled, alt) in [(false, false), (false, true), (true, false)] {
         for (b, u) in [(Blind::Judges, 0), (Blind::Judges, 30), (Blind::Keeps, 30), (Blind::Relays, 30)] {

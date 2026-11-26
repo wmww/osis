@@ -1,6 +1,7 @@
 //! The node closure (spec/sync-set.md §1-§3): what the node root reaches by strongs, sync unit
 //! by sync unit, what left it, and what its changes cost.
 
+use crate::common::pass_end;
 use crate::flows::people;
 use osis_base::{Tid, Value};
 use std::collections::{BTreeMap, BTreeSet};
@@ -1046,15 +1047,6 @@ fn x_read_at_1() -> (LocalPeer, Tid) {
         assert!(lp.peers[1].engine.closure_holds(&x));
         (lp, x)
     })
-}
-
-/// A pass ends with no source in flight (spec/sync-set.md §3 Release: at once): what left the
-/// node closure is released, then what the pass brought is judged.
-fn pass_end(e: &mut Engine) {
-    let left: BTreeSet<Tid> = e.left_closure().into_keys().collect();
-    e.released(&left).unwrap();
-    e.settle_needs().unwrap();
-    e.check_index();
 }
 
 /// Peer 0's commits, all sent to peer 1 again (a pull from the start), when peer 1 pulled a sync

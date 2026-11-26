@@ -29,7 +29,7 @@ fn random_histories_reach_the_oracle() {
 
 /// What each rule holds up (by hand: the findings in notes/whole-commits.md, Strip).
 #[test]
-#[ignore]
+#[ignore = "by hand: prints what each rule holds"]
 fn explore() {
     let offs = [
         ("all on", Off::default()),

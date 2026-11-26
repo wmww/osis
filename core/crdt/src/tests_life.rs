@@ -698,7 +698,7 @@ fn struct_field_paging_rejections_spec_8() {
 }
 
 #[test]
-#[ignore]
+#[ignore = "property"]
 fn paging_large_spec_8() {
     let st = big_set(100_000, 7);
     let mut pages = MemoryPages::new();

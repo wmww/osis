@@ -65,7 +65,7 @@ fn take_memory(lp: &mut LocalPeer, x: usize) -> Vec<osis_commit::CommitBlob> {
 // bound). Run each shape alone (a fresh process):
 // `cargo test --release -p osis-engine --test it -- --ignored --nocapture --test-threads 1 memory::eph_decoded_memory`.
 #[test]
-#[ignore]
+#[ignore = "by hand: memory, release, run alone"]
 fn eph_decoded_memory() {
     let shape = std::env::var("OSIS_EPH_SHAPE").unwrap_or_else(|_| "tiny".into());
     let (mut lp, b, x, t) = eph_net();
@@ -120,7 +120,7 @@ fn eph_decoded_memory() {
 // expiry's phases. Run alone:
 // `cargo test --release -p osis-engine --test it -- --ignored --nocapture --test-threads 1 memory::eph_leftover_memory`.
 #[test]
-#[ignore]
+#[ignore = "by hand: memory, release, run alone"]
 fn eph_leftover_memory() {
     let (mut lp, b, x, t) = eph_net();
     let n = size("OSIS_EPH_COMMITS", 2_000, 200);
@@ -214,7 +214,7 @@ fn decode_packages(bytes: &[u8]) -> Vec<osis_engine::local_peer::Package> {
 // The stores are in memory, so what a step stores stays resident too (`kept`).
 // `OSIS_SCALE_N` sets N (default 10^6 in release: the writer peaks at about 10 GB, run it alone).
 #[test]
-#[ignore]
+#[ignore = "by hand: memory, release, run alone"]
 fn big_map_apply_memory() {
     let step = |what: &str, f: &mut dyn FnMut()| {
         let rss0 = rss_kib();

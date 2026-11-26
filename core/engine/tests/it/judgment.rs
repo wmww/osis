@@ -937,7 +937,7 @@ fn chainless_part_order_spec_commits_4() {
 // of its order (a step a user cannot see, such as a commit that waits or is refused, leaves the
 // judgment alone).
 #[test]
-#[ignore]
+#[ignore = "by hand: the vectors' negative control"]
 fn judgment_vectors_can_fail() {
     for (path, text) in files() {
         let mut shown = false;

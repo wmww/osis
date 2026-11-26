@@ -136,7 +136,7 @@ fn paths_components_agree_plain() {
 
 // As above, more worlds (a property).
 #[test]
-#[ignore]
+#[ignore = "property"]
 fn paths_components_agree_large() {
     let f: Vec<String> = sharded(100_000, 0x5eed_0a1e, |n, seed| run(seeded(seed) % (1 << 40), n.div_ceil(9), alike)).concat();
     assert!(f.is_empty(), "{}", f.join("\n"));

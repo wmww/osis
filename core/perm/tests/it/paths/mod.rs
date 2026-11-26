@@ -459,7 +459,7 @@ fn paths_story_agree_plain() {
 
 // spec/permissions.md §5.1: as above, a sample of tiny worlds (a property).
 #[test]
-#[ignore]
+#[ignore = "property"]
 fn paths_tiny_agree_large() {
     let f: Vec<String> = sharded(160_000, 0x5eed_0a1a, |n, seed| tiny_run(seeded(seed) % (1 << 40), n.div_ceil(MODES.len() as u64), true)).concat();
     assert!(f.is_empty(), "{}", f.join("\n"));
@@ -467,7 +467,7 @@ fn paths_tiny_agree_large() {
 
 // spec/permissions.md §5.1: as above, a sample of story worlds at every node (a property).
 #[test]
-#[ignore]
+#[ignore = "property"]
 fn paths_story_agree_large() {
     let f: Vec<String> = sharded(8_000, 0x5eed_0a1b, |n, seed| story_run(seeded(seed) % (1 << 40), n, true)).concat();
     assert!(f.is_empty(), "{}", f.join("\n"));

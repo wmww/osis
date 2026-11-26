@@ -47,7 +47,6 @@ QUERY_PAGE  planned: issues/cli-proxy.md, notes/client-port.md
 MAX_QUERY_SUBS  planned: issues/cli-proxy.md, notes/client-port.md
 MAX_SCHEMA_BYTES  planned: notes/client-port.md (schemas over the port, not built)
 STREAM_CHUNK  planned: notes/client-port.md (streams over the port, not built)
-recv_all  planned: issues/test-consolidation.md
 
 HostAddr  rejected: notes/api-design.md
 ListenerId  rejected: notes/api.md

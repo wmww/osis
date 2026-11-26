@@ -318,7 +318,7 @@ fn forged_copies_fail_no_node_plain() {
 /// `forged_copies_fail_no_node_plain` at size: 300 seeds (`OSIS_FULL=1`), a tenth by default;
 /// `OSIS_FORGED_START`/`OSIS_FORGED_SEEDS` pick them.
 #[test]
-#[ignore]
+#[ignore = "property"]
 fn forged_copies_fail_no_node_large() {
     let s = osis_base::testenv::Seeds::from_env("OSIS_FORGED_START", "OSIS_FORGED_SEEDS", osis_base::testenv::large(0..300));
     let made = s.run("retention::tests_forged::forged_copies_fail_no_node_large", replay, forged_copies_case);

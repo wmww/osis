@@ -17,6 +17,38 @@ fn set(lp: &mut LocalPeer, i: usize, t: Tid, k: &osis_schema::Aspect<Value>, v: 
     lp.peers[i].commit(m).unwrap().unwrap()
 }
 
+/// Peer `i` adds tag `v` to `t`.
+fn tag(lp: &mut LocalPeer, i: usize, t: Tid, v: &str) -> CommitId {
+    let mut m = Mutation::new();
+    m.op(t, &TAGS, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Add(s(v)) }).unwrap();
+    lp.peers[i].commit(m).unwrap().unwrap()
+}
+
+/// `n` peers and peer 0's thing (`shared`: read by the rest), peers `ws` its writers.
+fn writers(n: usize, shared: bool, ws: &[usize]) -> (LocalPeer, Tid) {
+    let mut lp = net(n, 0);
+    lp.sync_all().unwrap();
+    let t = if shared { new_shared(&mut lp, 0) } else { new_thing(&mut lp, 0) };
+    for &p in ws {
+        let w = lp.peers[p].engine.tid();
+        set_edge(&mut lp.peers[0].engine, t, w, Some(edge(Role::Write)), None);
+    }
+    lp.sync_all().unwrap();
+    (lp, t)
+}
+
+/// Peer 0's commit c setting the register to "a" and adding tag "a": c, its package for peer 1,
+/// its header.
+fn reg_and_tag(lp: &mut LocalPeer, t: Tid) -> (CommitId, osis_engine::local_peer::Package, std::sync::Arc<osis_commit::Header>) {
+    let mut m = Mutation::new();
+    m.set(t, &REG, &s("a")).unwrap();
+    m.op(t, &TAGS, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Add(s("a")) }).unwrap();
+    let c = lp.peers[0].commit(m).unwrap().unwrap();
+    let pk = package_for(lp, 0, 1, c);
+    let h = lp.peers[0].engine.header(&c).unwrap();
+    (c, pk, h)
+}
+
 /// The frontiers of held snapshot `snap` of `(t, a)`.
 fn frontiers_of(e: &Engine, snap: &CommitId, t: &Tid, a: &Ak) -> osis_crdt::Frontiers {
     e.core.ix.snapshots.get(&(*t, a.clone())).into_iter().flatten().find(|x| x.1 == *snap).map(|x| x.2.clone()).expect("a held snapshot")
@@ -102,22 +134,12 @@ fn snapshot_lists_the_held_commits_sessions_spec_crdt_8() {
 // `purge::snapshot_right`), and the live tag is not.
 #[test]
 fn frontier_gap_covers_what_joins_unchanged_spec_commits_5() {
-    let mut lp = net(2, 0);
-    lp.sync_all().unwrap();
-    let t = new_thing(&mut lp, 0);
-    let w = lp.peers[1].engine.tid();
-    set_edge(&mut lp.peers[0].engine, t, w, Some(edge(Role::Write)), None);
-    lp.sync_all().unwrap();
-    let tag = |lp: &mut LocalPeer, v: &str| {
-        let mut m = Mutation::new();
-        m.op(t, &TAGS, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Add(s(v)) }).unwrap();
-        lp.peers[0].commit(m).unwrap().unwrap()
-    };
+    let (mut lp, t) = writers(2, false, &[1]);
     let old = set(&mut lp, 0, t, &REG, "old");
-    let old_tag = tag(&mut lp, "x");
+    let old_tag = tag(&mut lp, 0, t, "x");
     lp.advance(1_000);
     let new = set(&mut lp, 0, t, &REG, "new");
-    let new_tag = tag(&mut lp, "y");
+    let new_tag = tag(&mut lp, 0, t, "y");
     let pks = packages_for(&mut lp, 0, 1);
     let pk = |c: &CommitId| pks.iter().find(|p| p.id == *c).unwrap();
     lp.deliver(1, pk(&new)).unwrap();
@@ -146,25 +168,15 @@ fn frontier_gap_covers_what_joins_unchanged_spec_commits_5() {
 // it), so each writer's latest snapshot does not stay beside the others' for good.
 #[test]
 fn snapshot_covers_one_reaching_further_spec_commits_5() {
-    let mut lp = net(2, 0);
-    lp.sync_all().unwrap();
-    let t = new_thing(&mut lp, 0);
-    let w = lp.peers[1].engine.tid();
-    set_edge(&mut lp.peers[0].engine, t, w, Some(edge(Role::Write)), None);
-    lp.sync_all().unwrap();
+    let (mut lp, t) = writers(2, false, &[1]);
     let tags = ak("t:tags.0");
-    let add = |lp: &mut LocalPeer, i: usize, v: &str| {
-        let mut m = Mutation::new();
-        m.op(t, &TAGS, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Add(s(v)) }).unwrap();
-        lp.peers[i].commit(m).unwrap().unwrap()
-    };
-    let c = add(&mut lp, 0, "a");
+    let c = tag(&mut lp, 0, t, "a");
     lp.advance(1_000);
     let z1 = lp.peers[0].engine.snapshot(&t, &tags).unwrap().unwrap();
     let pk = package_for(&mut lp, 0, 1, z1);
     lp.deliver(1, &pk).unwrap();
     lp.advance(1_000);
-    add(&mut lp, 1, "b");
+    tag(&mut lp, 1, t, "b");
     lp.advance(1_000);
     let zb = lp.peers[1].engine.snapshot(&t, &tags).unwrap().unwrap();
     let src = source_of(&lp, 0, &c);
@@ -183,23 +195,10 @@ fn snapshot_covers_one_reaching_further_spec_commits_5() {
 // comes, the snapshot holding nothing of its session.
 #[test]
 fn untraced_session_part_joins_late_spec_commits_4() {
-    let mut lp = net(3, 0);
-    lp.sync_all().unwrap();
-    let t = new_thing(&mut lp, 0);
-    share(&mut lp, 0, t);
-    let w = lp.peers[2].engine.tid();
-    set_edge(&mut lp.peers[0].engine, t, w, Some(edge(Role::Write)), None);
-    lp.sync_all().unwrap();
-    let mut m = Mutation::new();
-    m.op(t, &TAGS, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Add(s("w")) }).unwrap();
-    lp.peers[2].commit(m).unwrap().unwrap();
+    let (mut lp, t) = writers(3, true, &[2]);
+    tag(&mut lp, 2, t, "w");
     lp.advance(1_000);
-    let mut m = Mutation::new();
-    m.set(t, &REG, &s("a")).unwrap();
-    m.op(t, &TAGS, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Add(s("a")) }).unwrap();
-    let c = lp.peers[0].commit(m).unwrap().unwrap();
-    let pk = package_for(&mut lp, 0, 1, c);
-    let h = lp.peers[0].engine.header(&c).unwrap();
+    let (c, pk, h) = reg_and_tag(&mut lp, t);
     lp.advance(1_000);
     let snap = lp.peers[2].engine.snapshot(&t, &ak("t:tags.0")).unwrap().unwrap();
     assert!(!frontiers_of(&lp.peers[2].engine, &snap, &t, &ak("t:tags.0")).lists(&source_of(&lp, 0, &c)), "W never received c");
@@ -332,29 +331,14 @@ fn frontier_entries_are_the_tables_sessions_spec_crdt_8() {
 // Z2 apply c alike.
 #[test]
 fn snapshot_not_covered_by_an_earlier_equal_spec_commits_4() {
-    let mut lp = net(5, 0);
-    lp.sync_all().unwrap();
-    let t = new_thing(&mut lp, 0);
-    share(&mut lp, 0, t);
-    for p in [2, 3] {
-        let w = lp.peers[p].engine.tid();
-        set_edge(&mut lp.peers[0].engine, t, w, Some(edge(Role::Write)), None);
-    }
-    lp.sync_all().unwrap();
+    let (mut lp, t) = writers(5, true, &[2, 3]);
     let tags = ak("t:tags.0");
-    let mut m = Mutation::new();
-    m.op(t, &TAGS, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Add(s("w")) }).unwrap();
-    lp.peers[2].commit(m).unwrap().unwrap();
+    tag(&mut lp, 2, t, "w");
     sync(&mut lp, 2, 3);
     lp.advance(1_000);
     let z1 = lp.peers[2].engine.snapshot(&t, &tags).unwrap().unwrap();
     lp.advance(1_000);
-    let mut m = Mutation::new();
-    m.set(t, &REG, &s("a")).unwrap();
-    m.op(t, &TAGS, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Add(s("a")) }).unwrap();
-    let c = lp.peers[0].commit(m).unwrap().unwrap();
-    let pk = package_for(&mut lp, 0, 1, c);
-    let h = lp.peers[0].engine.header(&c).unwrap();
+    let (c, pk, h) = reg_and_tag(&mut lp, t);
     lp.advance(1_000);
     // a Z2 with the higher ID
     let mut z2 = lp.peers[3].engine.snapshot(&t, &tags).unwrap().unwrap();
@@ -387,26 +371,12 @@ fn snapshot_not_covered_by_an_earlier_equal_spec_commits_4() {
 // before both, its missing part held under either).
 #[test]
 fn equal_stamped_snapshots_cover_each_other_spec_sync_7() {
-    let mut lp = net(5, 0);
-    lp.sync_all().unwrap();
-    let t = new_shared(&mut lp, 0);
-    for p in [2, 3] {
-        let w = lp.peers[p].engine.tid();
-        set_edge(&mut lp.peers[0].engine, t, w, Some(edge(Role::Write)), None);
-    }
-    lp.sync_all().unwrap();
+    let (mut lp, t) = writers(5, true, &[2, 3]);
     let tags = ak("t:tags.0");
-    let mut m = Mutation::new();
-    m.op(t, &TAGS, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Add(s("w")) }).unwrap();
-    lp.peers[2].commit(m).unwrap().unwrap();
+    tag(&mut lp, 2, t, "w");
     sync(&mut lp, 2, 3);
     lp.advance(1_000);
-    let mut m = Mutation::new();
-    m.set(t, &REG, &s("a")).unwrap();
-    m.op(t, &TAGS, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Add(s("a")) }).unwrap();
-    let c = lp.peers[0].commit(m).unwrap().unwrap();
-    let pk = package_for(&mut lp, 0, 1, c);
-    let h = lp.peers[0].engine.header(&c).unwrap();
+    let (_, pk, h) = reg_and_tag(&mut lp, t);
     lp.advance(1_000);
     let a = lp.peers[2].engine.snapshot(&t, &tags).unwrap().unwrap();
     let b = lp.peers[3].engine.snapshot(&t, &tags).unwrap().unwrap();
@@ -438,32 +408,17 @@ fn equal_stamped_snapshots_cover_each_other_spec_sync_7() {
 // writer's) stays the same way.
 #[test]
 fn invalid_or_lagging_later_snapshot_stays_and_stands_in_spec_commits_5() {
-    let mut lp = net(4, 0);
-    lp.sync_all().unwrap();
-    let t = new_shared(&mut lp, 0);
-    let (w, y) = (lp.peers[2].engine.tid(), lp.peers[3].engine.tid());
-    set_edge(&mut lp.peers[0].engine, t, w, Some(edge(Role::Write)), None);
-    set_edge(&mut lp.peers[0].engine, t, y, Some(edge(Role::Write)), None);
-    lp.sync_all().unwrap();
+    let (mut lp, t) = writers(4, true, &[2, 3]);
+    let y = lp.peers[3].engine.tid();
     let tags = ak("t:tags.0");
-    let add = |lp: &mut LocalPeer, i: usize, v: &str| {
-        let mut m = Mutation::new();
-        m.op(t, &TAGS, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Add(s(v)) }).unwrap();
-        lp.peers[i].commit(m).unwrap().unwrap()
-    };
-    add(&mut lp, 2, "w");
+    tag(&mut lp, 2, t, "w");
     sync(&mut lp, 2, 3);
     // W's earlier snapshot holds more than Y's later one: W's "x" never reached Y
-    add(&mut lp, 2, "x");
+    tag(&mut lp, 2, t, "x");
     lp.advance(1_000);
     let z1 = lp.peers[2].engine.snapshot(&t, &tags).unwrap().unwrap();
     lp.advance(1_000);
-    let mut m = Mutation::new();
-    m.set(t, &REG, &s("a")).unwrap();
-    m.op(t, &TAGS, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Add(s("a")) }).unwrap();
-    let c = lp.peers[0].commit(m).unwrap().unwrap();
-    let pk = package_for(&mut lp, 0, 1, c);
-    let h = lp.peers[0].engine.header(&c).unwrap();
+    let (_, pk, h) = reg_and_tag(&mut lp, t);
     lp.advance(1_000);
     let z2 = lp.peers[3].engine.snapshot(&t, &tags).unwrap().unwrap();
     sync(&mut lp, 2, 1);

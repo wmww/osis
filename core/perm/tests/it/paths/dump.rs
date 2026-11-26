@@ -78,7 +78,7 @@ fn line(out: &mut String, what: String, t: [String; 3]) {
 
 // Writes the dump (OSIS_DUMP: the file; OSIS_DUMP_N: worlds per kind, default 300).
 #[test]
-#[ignore]
+#[ignore = "by hand: writes OSIS_DUMP"]
 fn paths_dump_readings() {
     // by hand: without a file to write, nothing to do
     let Ok(path) = std::env::var("OSIS_DUMP") else { return };

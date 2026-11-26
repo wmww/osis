@@ -824,7 +824,7 @@ async fn session<C: Connection>(c: &C) -> Result<(), Error> {
 // through the relay reaches the listener (directly once punched: no NAT on loopback) with the
 // key pinned.
 #[test]
-#[ignore]
+#[ignore = "by hand: real sockets"]
 fn quic_relay_loopback_spec_sync_10() {
     let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
     rt.block_on(async {
@@ -855,7 +855,7 @@ fn quic_relay_loopback_spec_sync_10() {
 // with more unread in them than a `quic://` connection window, forwarding to the target
 // goes on and a new dial still connects.
 #[test]
-#[ignore]
+#[ignore = "by hand: real sockets"]
 fn quic_relay_unread_sessions_spec_sync_10() {
     const UNREAD: usize = 6;
     let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
@@ -1031,7 +1031,7 @@ fn allow_rechecked_spec_sync_10() {
 // listening socket's own port (a dual-stack one reaching an IPv4 address too), and the QUIC
 // endpoint answers a punch with nothing and still accepts connections after it.
 #[test]
-#[ignore]
+#[ignore = "by hand: real sockets"]
 fn quic_punch_is_one_unanswered_datagram_spec_sync_10() {
     let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
     rt.block_on(async {
@@ -1056,7 +1056,7 @@ fn quic_punch_is_one_unanswered_datagram_spec_sync_10() {
 // at an IPv6 relay and at an IPv4 one from its one dual-stack socket, and a dial through either
 // relay reaches it.
 #[test]
-#[ignore]
+#[ignore = "by hand: real sockets"]
 fn quic_relay_dual_stack_spec_sync_10() {
     let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
     rt.block_on(async {
@@ -1087,7 +1087,7 @@ fn quic_relay_dual_stack_spec_sync_10() {
 // its address family: with an IPv4 item first (a node of another key) the IPv6 item still
 // connects.
 #[test]
-#[ignore]
+#[ignore = "by hand: real sockets"]
 fn quic_dial_mixed_families_spec_sync_10() {
     let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
     rt.block_on(async {
@@ -1177,7 +1177,7 @@ fn peer_routes_connect_spec_sync_10() {
 // `osis` and `osis-lan`; a LAN listener's socket chooses `osis-lan` (rank 0), any other socket
 // `osis` (rank 1), and both ends see the same choice; a relay dial to a LAN listener fails.
 #[test]
-#[ignore]
+#[ignore = "by hand: real sockets"]
 fn quic_session_protocol_ranks_alike_spec_sync_10() {
     let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
     rt.block_on(async {

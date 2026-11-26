@@ -38,7 +38,7 @@ osis-sync's checks (core/sync/tests/it) count module work (`Work` counters, stor
 - a node keeping S unread writing a 64-entry log or delete batch in a few durable writes at any size.
 
 ## Size budgets and benches (core/bench)
-- Budgets: `core/bench/tests/it/budgets.rs`, each `#[test] #[ignore] fn budget_<name>` calling `assert_budget(name, actual, budget)` with its source's number plus about 10%, citing the source; public APIs only. Live: `budget_creation_record`, `budget_minimal_commit`, `budget_text_snapshot_ratio` (notes/crdt.md, Text size). Pending: role boxes about 1.2 KB per holder and role (notes/crypto.md); revoke frontier after a long-held role.
+- Budgets: `core/bench/tests/it/budgets.rs`, each `#[test] fn budget_<name>` (`#[ignore = "by hand: ..."]` when slow) calling `assert_budget(name, actual, budget)` with its source's number plus about 10%, citing the source; public APIs only. Live: `budget_creation_record`, `budget_minimal_commit`, `budget_text_snapshot_ratio` (notes/crdt.md, Text size). Pending: role boxes about 1.2 KB per holder and role (notes/crypto.md); revoke frontier after a long-held role.
 - Benches: `core/bench/benches/<crate>.rs` with `harness = false`, calling `osis_bench::bench(name, bytes, f)` (median ns/iter and MB/s; `OSIS_BENCH_MS` sets the sample time). `cargo bench`, by hand, release, not gated. No criterion: a 40-line harness keeps the tree small.
 
 ## Memory checks

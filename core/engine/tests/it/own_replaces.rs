@@ -136,25 +136,26 @@ fn forgotten_goes_with_its_thing_spec_commits_5() {
     assert!(!e.local_census().unwrap().contains_key("f/"), "gone with the thing");
 }
 
-// spec/commits.md §5 Own replaces, spec/permissions.md §5.2: own replaces that turn invalid give
-// nothing: the commit dropped under them alone is missing again, and once it comes back the node
-// reads as one that never dropped it. Bob writes C, then two replaces only the reader Eve gets;
-// Alice removes Bob without having received them.
-#[test]
-fn invalid_own_replaces_give_back_what_they_covered_spec_commits_5() {
-    let mut lp = LocalPeer::fresh(3, T0);
-    lp.sync_all().unwrap();
-    let me = lp.peers[0].engine.tid();
-    let mut m = Mutation::new();
-    let t = lp.peers[0].engine.new_thing(&mut m, me);
-    lp.peers[0].commit(m).unwrap();
-    lp.hold(t);
-    let edge = |role| osis_schema::core_types::Edge { role, until: None, may_grant: false, retain: false, floor: None };
-    for (p, r) in [(1, osis_base::Role::Write), (2, osis_base::Role::Read)] {
-        let who = lp.peers[p].engine.tid();
-        lp.peers[0].engine.grant(&t, &who, &edge(r)).unwrap();
-    }
-    lp.sync_all().unwrap();
+/// Alice's (peer 0's) thing with Bob (1) its writer and Eve (2) its reader. Bob writes C = 5 on
+/// `x:a`, then replaces it with 6, 7, ...: `shared` replaces everyone gets, then `only` that only
+/// Eve gets, and Eve drops C. Returns the thing, C and the shared replaces.
+fn bob_replaces(shared: i64, only: i64) -> (LocalPeer, Tid, CommitId, Vec<CommitId>) {
+    let (mut lp, t) = LocalPeer::cached("retention::tests_own::writer_and_reader", || {
+        let mut lp = LocalPeer::fresh(3, T0);
+        lp.sync_all().unwrap();
+        let me = lp.peers[0].engine.tid();
+        let mut m = Mutation::new();
+        let t = lp.peers[0].engine.new_thing(&mut m, me);
+        lp.peers[0].commit(m).unwrap();
+        lp.hold(t);
+        let edge = |role| osis_schema::core_types::Edge { role, until: None, may_grant: false, retain: false, floor: None };
+        for (p, r) in [(1, osis_base::Role::Write), (2, osis_base::Role::Read)] {
+            let who = lp.peers[p].engine.tid();
+            lp.peers[0].engine.grant(&t, &who, &edge(r)).unwrap();
+        }
+        lp.sync_all().unwrap();
+        (lp, t)
+    });
     let a = ak("x:a.0");
     let write = |lp: &mut LocalPeer, v: i64| {
         lp.advance(1000);
@@ -163,20 +164,43 @@ fn invalid_own_replaces_give_back_what_they_covered_spec_commits_5() {
         lp.peers[1].commit(m).unwrap().unwrap()
     };
     let c = write(&mut lp, 5);
+    let qs = (6..6 + shared).map(|v| write(&mut lp, v)).collect();
     lp.sync_all().unwrap();
-    write(&mut lp, 6);
-    write(&mut lp, 7);
+    for v in 6 + shared..6 + shared + only {
+        write(&mut lp, v);
+    }
     lp.sync(1, 2).unwrap();
     lp.peers[2].engine.drop_body(&c, &t, &a).unwrap();
-    assert_eq!(lp.peers[2].engine.get(&t, &a).unwrap(), Some(Value::Int(7)));
+    (lp, t, c, qs)
+}
+
+/// Alice removes Bob, then syncs with Eve.
+fn remove_bob(lp: &mut LocalPeer, t: Tid) {
     lp.advance(1000);
     let bob = lp.peers[1].engine.tid();
     lp.peers[0].engine.demote(&t, &osis_engine::flows::Demotion { holder: bob, new: None, retain: None }).unwrap();
     lp.advance(1000);
     lp.sync(0, 2).unwrap();
+}
+
+/// Whether C's part on `x:a` is missing at Eve.
+fn missing_at_eve(lp: &LocalPeer, t: Tid, c: &CommitId) -> bool {
     let e2 = &lp.peers[2].engine;
-    let ai = e2.core.ix.commits.get(&c).unwrap().view.aspect(&t, a.as_str()).unwrap();
-    assert!(e2.core.ix.commits.get(&c).unwrap().missing(ai), "C is missing again");
+    let ai = e2.core.ix.commits.get(c).unwrap().view.aspect(&t, "x:a.0").unwrap();
+    e2.core.ix.commits.get(c).unwrap().missing(ai)
+}
+
+// spec/commits.md §5 Own replaces, spec/permissions.md §5.2: own replaces that turn invalid give
+// nothing: the commit dropped under them alone is missing again, and once it comes back the node
+// reads as one that never dropped it. Bob writes C, then two replaces only the reader Eve gets;
+// Alice removes Bob without having received them.
+#[test]
+fn invalid_own_replaces_give_back_what_they_covered_spec_commits_5() {
+    let (mut lp, t, c, _) = bob_replaces(0, 2);
+    let a = ak("x:a.0");
+    assert_eq!(lp.peers[2].engine.get(&t, &a).unwrap(), Some(Value::Int(7)));
+    remove_bob(&mut lp, t);
+    assert!(missing_at_eve(&lp, t, &c), "C is missing again");
     let pk = lp.peers[0].engine.package(&c).unwrap().unwrap();
     lp.deliver(2, &pk).unwrap();
     assert_eq!(lp.peers[0].engine.get(&t, &a).unwrap(), Some(Value::Int(5)), "Alice never held the replaces");
@@ -190,41 +214,11 @@ fn invalid_own_replaces_give_back_what_they_covered_spec_commits_5() {
 // keeping C dropped would delete at peers what Alice, holding C uncovered, logs.
 #[test]
 fn one_own_replace_left_covers_nothing_spec_commits_5() {
-    let mut lp = LocalPeer::fresh(3, T0);
-    lp.sync_all().unwrap();
-    let me = lp.peers[0].engine.tid();
-    let mut m = Mutation::new();
-    let t = lp.peers[0].engine.new_thing(&mut m, me);
-    lp.peers[0].commit(m).unwrap();
-    lp.hold(t);
-    let edge = |role| osis_schema::core_types::Edge { role, until: None, may_grant: false, retain: false, floor: None };
-    for (p, r) in [(1, osis_base::Role::Write), (2, osis_base::Role::Read)] {
-        let who = lp.peers[p].engine.tid();
-        lp.peers[0].engine.grant(&t, &who, &edge(r)).unwrap();
-    }
-    lp.sync_all().unwrap();
+    let (mut lp, t, c, qs) = bob_replaces(1, 1);
     let a = ak("x:a.0");
-    let write = |lp: &mut LocalPeer, v: i64| {
-        lp.advance(1000);
-        let mut m = Mutation::new();
-        m.set(t, &a, &Value::Int(v)).unwrap();
-        lp.peers[1].commit(m).unwrap().unwrap()
-    };
-    let c = write(&mut lp, 5);
-    let q1 = write(&mut lp, 6);
-    lp.sync_all().unwrap();
-    write(&mut lp, 7);
-    lp.sync(1, 2).unwrap();
-    lp.peers[2].engine.drop_body(&c, &t, &a).unwrap();
-    lp.advance(1000);
-    let bob = lp.peers[1].engine.tid();
-    lp.peers[0].engine.demote(&t, &osis_engine::flows::Demotion { holder: bob, new: None, retain: None }).unwrap();
-    lp.advance(1000);
-    lp.sync(0, 2).unwrap();
-    assert_eq!(lp.peers[0].engine.covered(&q1, &c, &t, &a).unwrap(), Some(false), "Alice: one own replace covers nothing");
-    let e2 = &lp.peers[2].engine;
-    let ai = e2.core.ix.commits.get(&c).unwrap().view.aspect(&t, a.as_str()).unwrap();
-    assert!(e2.core.ix.commits.get(&c).unwrap().missing(ai), "Eve: C is missing again");
+    remove_bob(&mut lp, t);
+    assert_eq!(lp.peers[0].engine.covered(&qs[0], &c, &t, &a).unwrap(), Some(false), "Alice: one own replace covers nothing");
+    assert!(missing_at_eve(&lp, t, &c), "Eve: C is missing again");
     assert_eq!(lp.peers[2].engine.get(&t, &a).unwrap(), Some(Value::Int(6)), "Eve reads as Alice");
     assert_eq!(lp.peers[0].engine.get(&t, &a).unwrap(), Some(Value::Int(6)));
 }
@@ -256,43 +250,12 @@ fn delta_live_is_the_deltas_own_spec_sync_7() {
 // so C stays dropped there, as Alice, holding C, judges it covered.
 #[test]
 fn any_two_held_own_replaces_keep_a_drop_spec_commits_5() {
-    let mut lp = LocalPeer::fresh(3, T0);
-    lp.sync_all().unwrap();
-    let me = lp.peers[0].engine.tid();
-    let mut m = Mutation::new();
-    let t = lp.peers[0].engine.new_thing(&mut m, me);
-    lp.peers[0].commit(m).unwrap();
-    lp.hold(t);
-    let edge = |role| osis_schema::core_types::Edge { role, until: None, may_grant: false, retain: false, floor: None };
-    for (p, r) in [(1, osis_base::Role::Write), (2, osis_base::Role::Read)] {
-        let who = lp.peers[p].engine.tid();
-        lp.peers[0].engine.grant(&t, &who, &edge(r)).unwrap();
-    }
-    lp.sync_all().unwrap();
+    let (mut lp, t, c, qs) = bob_replaces(2, 1);
     let a = ak("x:a.0");
-    let write = |lp: &mut LocalPeer, v: i64| {
-        lp.advance(1000);
-        let mut m = Mutation::new();
-        m.set(t, &a, &Value::Int(v)).unwrap();
-        lp.peers[1].commit(m).unwrap().unwrap()
-    };
-    let c = write(&mut lp, 5);
-    let q0 = write(&mut lp, 6);
-    write(&mut lp, 7);
-    lp.sync_all().unwrap();
-    write(&mut lp, 8);
-    lp.sync(1, 2).unwrap();
-    lp.peers[2].engine.drop_body(&c, &t, &a).unwrap();
-    lp.advance(1000);
-    let bob = lp.peers[1].engine.tid();
-    lp.peers[0].engine.demote(&t, &osis_engine::flows::Demotion { holder: bob, new: None, retain: None }).unwrap();
-    lp.advance(1000);
-    lp.sync(0, 2).unwrap();
-    assert_eq!(lp.peers[0].engine.covered(&q0, &c, &t, &a).unwrap(), Some(true), "Alice: two own replaces cover C");
-    let e2 = &mut lp.peers[2].engine;
-    assert_eq!(e2.covered(&q0, &c, &t, &a).unwrap(), Some(true), "Eve: the same two");
-    let ai = e2.core.ix.commits.get(&c).unwrap().view.aspect(&t, a.as_str()).unwrap();
-    assert!(!e2.core.ix.commits.get(&c).unwrap().missing(ai), "Eve: C stays dropped");
+    remove_bob(&mut lp, t);
+    assert_eq!(lp.peers[0].engine.covered(&qs[0], &c, &t, &a).unwrap(), Some(true), "Alice: two own replaces cover C");
+    assert_eq!(lp.peers[2].engine.covered(&qs[0], &c, &t, &a).unwrap(), Some(true), "Eve: the same two");
+    assert!(!missing_at_eve(&lp, t, &c), "Eve: C stays dropped");
     assert_eq!(lp.peers[2].engine.get(&t, &a).unwrap(), Some(Value::Int(7)), "Eve reads as Alice");
     assert_eq!(lp.peers[0].engine.get(&t, &a).unwrap(), Some(Value::Int(7)));
 }

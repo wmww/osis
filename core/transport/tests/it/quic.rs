@@ -56,7 +56,7 @@ async fn echo(c: &QuicConn, data: &[u8]) -> Vec<u8> {
 
 // spec/sync-transport.md §1: pinned listener key, ephemeral dialer key per connection, ordered byte stream.
 #[test]
-#[ignore]
+#[ignore = "by hand: real sockets"]
 fn quic_round_trip_keys() {
     rt().block_on(async {
         let (addr, keys) = echo_listener(7).await;
@@ -76,7 +76,7 @@ fn quic_round_trip_keys() {
 
 // spec/sync-transport.md §1 (node key check): the dialer checks the listener's key against the address.
 #[test]
-#[ignore]
+#[ignore = "by hand: real sockets"]
 fn quic_pinned_key_mismatch_refused() {
     rt().block_on(async {
         let (mut addr, _keys) = echo_listener(8).await;
@@ -88,7 +88,7 @@ fn quic_pinned_key_mismatch_refused() {
 
 // spec/sync-transport.md §1: a large stream transfer arrives intact and in order.
 #[test]
-#[ignore]
+#[ignore = "by hand: real sockets"]
 fn quic_large_transfer() {
     rt().block_on(async {
         let (addr, _keys) = echo_listener(9).await;
@@ -111,7 +111,7 @@ use crate::common;
 
 // spec/wire.md §11.1: framed requests and replies on one stream, graceful close, over QUIC.
 #[test]
-#[ignore]
+#[ignore = "by hand: real sockets"]
 fn quic_framed_session() {
     rt().block_on(async {
         let cfg = ListenConfig { url: "quic://127.0.0.1:0".into(), secret: StaticSecret::from_bytes([4; 32]) };
@@ -129,7 +129,7 @@ fn quic_framed_session() {
 // (`quic::CONN_WINDOW`, shared by the streams; links read only as asked), so a served connection
 // holds at most `link::CONN_MEMORY`; read again, the rest goes through
 #[test]
-#[ignore]
+#[ignore = "by hand: real sockets"]
 fn quic_unread_sessions_hold_one_window_spec_sync_10() {
     const STREAMS: usize = 4;
     const PIECE: usize = 4096;

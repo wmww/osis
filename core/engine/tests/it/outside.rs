@@ -1,22 +1,16 @@
 //! Content of a thing outside the node closure (spec/commits.md §4 Outside the node closure,
 //! Pending storage): what waits, what is carried, what is fetched again, and what it stores.
 
+use crate::common::pass_end;
 use osis_base::{CommitId, Tid, Value};
 use osis_crdt::{Op, PathOp};
 use osis_engine::local_peer::LocalPeer;
-use osis_engine::{Engine, Mutation};
+use osis_engine::Mutation;
 use osis_schema::core_types as ct;
 use std::collections::BTreeSet;
 
 fn strong_m(m: &mut Mutation, from: Tid, to: Tid) {
     m.op(from, &ct::HOLDS, PathOp { path: vec![], op: Op::Add(Value::Strong(to)) }).unwrap();
-}
-
-fn pass_end(e: &mut Engine) {
-    let left: BTreeSet<Tid> = e.left_closure().into_keys().collect();
-    e.released(&left).unwrap();
-    e.settle_needs().unwrap();
-    e.check_index();
 }
 
 /// Peer 0's commit `c`, whole.

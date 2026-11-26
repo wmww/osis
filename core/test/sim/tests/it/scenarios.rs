@@ -106,7 +106,7 @@ fn unknown_scenario_fails() {
 // `OSIS_SIM_ONLY` a comma list of
 // scenario names (default all but the blocked ones). The nightly sweep is the `sim-sweep` binary.
 #[test]
-#[ignore]
+#[ignore = "by hand: a seed sweep"]
 fn sweep() {
     let seeds = osis_base::testenv::Seeds::from_env("OSIS_SIM_FROM", "OSIS_SIM_SEEDS", 0..100);
     seeds.announce("sim sweep");

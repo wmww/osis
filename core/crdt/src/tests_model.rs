@@ -623,7 +623,7 @@ fn crdt_equals_model_plain() {
 /// `Small`, or `Large` with `OSIS_FULL=1`; `OSIS_CRDT_START`/`OSIS_CRDT_SEEDS` pick the
 /// seeds (one seed replays a failure at any size).
 #[test]
-#[ignore]
+#[ignore = "property"]
 fn crdt_equals_model_large() {
     differential(Size::from_env());
 }

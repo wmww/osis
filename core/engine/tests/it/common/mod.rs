@@ -528,3 +528,12 @@ pub fn held_bytes(e: &mut Engine, c: &CommitId) -> Option<Vec<u8>> {
         _ => e.memory_blob(c).ok().flatten().map(|b| b.encode()),
     }
 }
+
+/// A pass ends with no source in flight (spec/sync-set.md §3 Release: at once): what left the
+/// node closure is released, then what the pass brought is judged.
+pub fn pass_end(e: &mut Engine) {
+    let left: std::collections::BTreeSet<Tid> = e.left_closure().into_keys().collect();
+    e.released(&left).unwrap();
+    e.settle_needs().unwrap();
+    e.check_index();
+}

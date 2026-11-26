@@ -397,7 +397,7 @@ fn a_dependent_of_another_thing_is_carried_by_its_independent_or_a_bridge() {
 // By hand: OSIS_ENTRY_WORLDS random worlds (default 20000) of OSIS_ENTRY_MORE further things
 // (default 5) under each rule, printing the failures per property.
 #[test]
-#[ignore]
+#[ignore = "by hand: prints failures per property"]
 fn entry_explore() {
     let n: u64 = std::env::var("OSIS_ENTRY_WORLDS").ok().and_then(|s| s.parse().ok()).unwrap_or(20000);
     let more: usize = std::env::var("OSIS_ENTRY_MORE").ok().and_then(|s| s.parse().ok()).unwrap_or(5);
@@ -420,7 +420,7 @@ fn entry_explore() {
 // (A on each, each on each other) none, sync or read, and one strong to one of them from A or from
 // both roots; every property under `Rule::SPEC` but "history".
 #[test]
-#[ignore]
+#[ignore = "by hand: the exhaustive family"]
 fn entry_family() {
     let roles = [None, Some(Role::Sync), Some(Role::Read)];
     let (b, c, x) = (8, 9, 10);

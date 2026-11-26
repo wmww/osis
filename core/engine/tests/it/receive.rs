@@ -284,59 +284,32 @@ fn without_parts(bytes: &[u8], keep: impl Fn(&str) -> bool, h: &osis_commit::Hea
     b.encode()
 }
 
-// spec/commits.md §4: a node applies the parts it holds and never waits for one, synced or not, on
-// one thing or across things; a delta of an applied commit arriving later is joined on arrival.
+// spec/commits.md §4: a node applies the parts it holds and never waits for one, on one thing or
+// across things; a delta of an applied commit arriving later is joined on arrival.
 #[test]
 fn applies_what_is_held_and_late_delta_spec_commits_4() {
-    let mut lp = net(2, 0);
-    let t = new_shared(&mut lp, 0);
-    let u = new_shared(&mut lp, 0);
-    sync(&mut lp, 0, 1);
-    let mut m = Mutation::new();
-    m.set(t, &REG, &s("r")).unwrap();
-    m.set(u, &TAGS, &Value::Set([s("a")].into_iter().collect())).unwrap();
-    let id = lp.peers[0].commit(m).unwrap().unwrap();
-    let h = lp.peers[0].engine.header(&id).unwrap();
-    let pk = package_for(&mut lp, 0, 1, id);
-    let partial = without_parts(&pk.bytes, |a| a == "t:reg.0", &h);
-    // another thing, not synced: applies with what arrived
-    assert!(matches!(lp.peers[1].receive(&partial, Vec::new()).unwrap(), Ingested::Applied(_)));
-    assert_eq!(lp.peers[1].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("r")));
-    assert_eq!(lp.peers[1].engine.get(&u, &ak("t:tags.0")).unwrap(), None);
-    lp.peers[1].drain_events();
-    assert!(matches!(lp.deliver(1, &pk).unwrap(), Ingested::Applied(_)));
-    assert!(lp.peers[1].engine.get(&u, &ak("t:tags.0")).unwrap().is_some());
-    assert!(lp.peers[1].drain_events().iter().any(|e| matches!(e, Event::Changed { cause: osis_engine::Cause::LateDelta, .. })));
-    // the same thing, synced: applies what is held too
-    let mut lp = net(2, 0);
-    let t = new_shared(&mut lp, 0);
-    sync(&mut lp, 0, 1);
-    let mut m = Mutation::new();
-    m.set(t, &REG, &s("r")).unwrap();
-    m.set(t, &TAGS, &Value::Set([s("a")].into_iter().collect())).unwrap();
-    let id = lp.peers[0].commit(m).unwrap().unwrap();
-    let h = lp.peers[0].engine.header(&id).unwrap();
-    let pk = package_for(&mut lp, 0, 1, id);
-    let partial = without_parts(&pk.bytes, |a| a == "t:reg.0", &h);
-    assert_eq!(lp.peers[1].receive(&partial, Vec::new()).unwrap(), Ingested::Applied(id));
-    assert_eq!(lp.peers[1].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("r")));
-    assert_eq!(lp.peers[1].engine.get(&t, &ak("t:tags.0")).unwrap(), None);
-    assert!(matches!(lp.deliver(1, &pk).unwrap(), Ingested::Applied(_)));
-    assert!(lp.peers[1].engine.get(&t, &ak("t:tags.0")).unwrap().is_some());
-    // across things, the other one synced: applies what is held
-    let mut lp = net(2, 0);
-    let (t, u) = (new_shared(&mut lp, 0), new_shared(&mut lp, 0));
-    sync(&mut lp, 0, 1);
-    let mut m = Mutation::new();
-    m.set(t, &REG, &s("r")).unwrap();
-    m.set(u, &TAGS, &Value::Set([s("a")].into_iter().collect())).unwrap();
-    let id = lp.peers[0].commit(m).unwrap().unwrap();
-    let h = lp.peers[0].engine.header(&id).unwrap();
-    let pk = package_for(&mut lp, 0, 1, id);
-    let partial = without_parts(&pk.bytes, |a| a == "t:reg.0", &h);
-    assert_eq!(lp.peers[1].receive(&partial, Vec::new()).unwrap(), Ingested::Applied(id));
-    assert_eq!(lp.peers[1].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("r")));
-    assert!(lp.peers[1].engine.pending().is_empty());
+    // the parts on two things, then both on one
+    for same in [false, true] {
+        let mut lp = net(2, 0);
+        let t = new_shared(&mut lp, 0);
+        let u = if same { t } else { new_shared(&mut lp, 0) };
+        sync(&mut lp, 0, 1);
+        let mut m = Mutation::new();
+        m.set(t, &REG, &s("r")).unwrap();
+        m.set(u, &TAGS, &Value::Set([s("a")].into_iter().collect())).unwrap();
+        let id = lp.peers[0].commit(m).unwrap().unwrap();
+        let h = lp.peers[0].engine.header(&id).unwrap();
+        let pk = package_for(&mut lp, 0, 1, id);
+        let partial = without_parts(&pk.bytes, |a| a == "t:reg.0", &h);
+        assert_eq!(lp.peers[1].receive(&partial, Vec::new()).unwrap(), Ingested::Applied(id), "{same}");
+        assert_eq!(lp.peers[1].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("r")));
+        assert_eq!(lp.peers[1].engine.get(&u, &ak("t:tags.0")).unwrap(), None);
+        assert!(lp.peers[1].engine.pending().is_empty());
+        lp.peers[1].drain_events();
+        assert!(matches!(lp.deliver(1, &pk).unwrap(), Ingested::Applied(_)));
+        assert!(lp.peers[1].engine.get(&u, &ak("t:tags.0")).unwrap().is_some());
+        assert!(lp.peers[1].drain_events().iter().any(|e| matches!(e, Event::Changed { cause: osis_engine::Cause::LateDelta, .. })), "{same}");
+    }
 }
 
 // spec/versioning.md §2: an unknown encoding or format version parks the commit as bytes; it

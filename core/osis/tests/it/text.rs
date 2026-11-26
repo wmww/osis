@@ -251,13 +251,7 @@ fn text_edit_between_unshown_merges_lands_where_typed() {
 fn text_edit_random_against_reference() {
     let (db, t, k) = setup(db(0));
     let s = open(&db, t, &k);
-    let mut x = 1u64; // xorshift at seed 0 (its state is never 0)
-    let mut rnd = move |m: usize| {
-        x ^= x << 13;
-        x ^= x >> 7;
-        x ^= x << 17;
-        (x % m as u64) as usize
-    };
+    let mut rnd = osis_base::testenv::picker(0);
     let word = |rnd: &mut dyn FnMut(usize) -> usize, n: usize| -> Vec<char> { (0..rnd(n)).map(|_| if rnd(2) == 0 { 'a' } else { 'b' }).collect() };
     let apply = |t: &[char], at: usize, del: usize, ins: &[char]| -> Vec<char> { [&t[..at], ins, &t[at + del..]].concat() };
     // every (at, del, ins) with apply(a, at, del, ins) == b

@@ -456,13 +456,7 @@ fn list_edits_match_whole(with_large: bool) {
         p.commit(m).unwrap().unwrap();
     }
     let t = t.unwrap();
-    let mut x = 0x5851_f42d_4c95_7f2du64;
-    let mut r = |n: usize| {
-        x ^= x << 13;
-        x ^= x >> 7;
-        x ^= x << 17;
-        (x % n.max(1) as u64) as usize
-    };
+    let mut r = osis_base::testenv::picker(0);
     let (mut fresh_id, mut stale) = (10_000, model.clone());
     let (mut at_window, mut stale_edits) = (0, 0);
     for step in 0..24u64 {
@@ -621,13 +615,7 @@ fn paged_text_edits_by_index_and_undo_spec_crdt_6_1() {
     let mut model: Vec<char> = (0..20_000u32).map(|i| char::from_u32(0x1F600 + i % 64).unwrap()).collect();
     m.set(t, &TEXT_AK, &Value::Str(model.iter().collect())).unwrap();
     p.engine.commit(m).unwrap().unwrap();
-    let mut x = 0x9e37_79b9_7f4a_7c15u64;
-    let mut r = |n: usize| {
-        x ^= x << 13;
-        x ^= x >> 7;
-        x ^= x << 17;
-        (x % n.max(1) as u64) as usize
-    };
+    let mut r = osis_base::testenv::picker(0);
     let mut done = Vec::new();
     // a new session (`forget_cached`; a restart at the end)
     let restart = |p: &mut Peer| {
@@ -701,13 +689,7 @@ fn paged_text_reset_then_edits_by_index_spec_crdt_5_7() {
     let t = p.engine.new_thing(&mut m, me);
     m.set(t, &TEXT_AK, &Value::Str(text(20_000, 0).into_iter().collect())).unwrap();
     p.engine.commit(m).unwrap().unwrap();
-    let mut x = 0x2545_f491_4f6c_dd1du64;
-    let mut r = |n: usize| {
-        x ^= x << 13;
-        x ^= x >> 7;
-        x ^= x << 17;
-        (x % n.max(1) as u64) as usize
-    };
+    let mut r = osis_base::testenv::picker(0);
     // a new session (`forget_cached`; a restart at the end)
     let restart = |p: &mut Peer| {
         p.engine.forget_cached(&t, &a);

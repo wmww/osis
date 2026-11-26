@@ -4,7 +4,7 @@
 //! an hour; what a fire carries is taken as `Engine::take_fire` takes a carried commit
 //! (`ingest_valid` from the fire). Reports: rotation::tests_stranded.
 
-use crate::common::{ak, set_setting, REG};
+use crate::common::{ak, pass_end, set_setting, REG};
 use osis_base::{CommitId, Tid, Value};
 use osis_crdt::{Op, PathOp};
 use osis_engine::local_peer::LocalPeer;
@@ -14,13 +14,6 @@ use std::collections::BTreeSet;
 
 const NOTE: &str = "x:note@~0";
 const HOUR_MS: u64 = 3_600_000;
-
-fn pass_end(e: &mut Engine) {
-    let left: BTreeSet<Tid> = e.left_closure().into_keys().collect();
-    e.released(&left).unwrap();
-    e.settle_needs().unwrap();
-    e.check_index();
-}
 
 /// Peer 0 makes X and grants peer 1 read; peer 1 holds X and keeps `NOTE` fires on its inbox an
 /// hour. (lp, X, peer 1's inbox)

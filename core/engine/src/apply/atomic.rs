@@ -1458,13 +1458,7 @@ mod tests {
     fn owned_set_matches_owned_spec_crdt_4_6() {
         let srcs = [Source::session(osis_crdt::Session { node: osis_base::Tid::from_bytes([1; 15]), nonce: [0; osis_crdt::SESSION_NONCE_LEN] }), Source::session(osis_crdt::Session { node: osis_base::Tid::from_bytes([2; 15]), nonce: [0; osis_crdt::SESSION_NONCE_LEN] }), Source::commit(osis_base::CommitId([3; 32])), Source::commit(osis_base::CommitId([4; 32]))];
         let ctrs: Vec<u64> = (1..14).chain([u64::MAX - 1, u64::MAX]).collect();
-        let mut x = 0x9e37_79b9_7f4a_7c15u64;
-        let mut next = |n: usize| {
-            x ^= x << 13;
-            x ^= x >> 7;
-            x ^= x << 17;
-            x as usize % n
-        };
+        let mut next = osis_base::testenv::picker(0);
         for _ in 0..3000 {
             let owned: Vec<Owned> = (0..next(6))
                 .map(|_| {

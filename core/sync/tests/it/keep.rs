@@ -172,6 +172,19 @@ fn a_reader_moves_a_store_departed_before_it_kept_s_unread_spec_sync_opens_6() {
     assert!(w.store(1).entries(&s).unwrap().is_empty(), "node 1 stopped: {} entries kept", w.store(1).entries(&s).unwrap().len());
 }
 
+/// The record blobs node `i` holds in its own store for `s`.
+fn record_blobs(w: &mut World, s: &osis_base::SyncId, i: usize) -> Vec<osis_base::BlobId> {
+    let noted = w.engine(i).cert_blobs(s);
+    w.store(i).entries(s).unwrap().into_iter().map(|e| e.blob).filter(|b| noted.contains_key(b)).collect()
+}
+
+/// Node `i` seals `records` with `rng` and logs the record blob in its own store.
+fn log_own_records(w: &mut World, s: &osis_base::SyncId, i: usize, records: &std::collections::BTreeSet<osis_base::Tid>, rng: &mut osis_crypto::SeededRng) {
+    let (blob, bytes, wrap) = w.engine(i).seal_records(s, records, rng).unwrap().expect("sealed");
+    let e = osis_sync::types::Entry { blob, wrap, stamp: None, deposited: true, own: true, role: false, class: osis_blob::Class::Durable, expires: None };
+    w.store(i).clone().log(s, e, Some(bytes), None).unwrap();
+}
+
 // spec/permissions.md §4 (Logging certificates: a record blob logged by any node counts once
 // opened, while held in the own store): two readers of S each sealing a record blob of the same
 // records at once (each before it saw the other's) settle, with the writer, on one record blob in
@@ -187,14 +200,9 @@ fn readers_logging_the_same_records_settle_on_one_record_blob_spec_permissions_4
     let s = w.engine(0).sync_id_of(&t).unwrap().unwrap();
     let records: std::collections::BTreeSet<osis_base::Tid> = w.engine(0).cert_blobs(&s).values().flat_map(|c| c.tids.iter()).copied().collect();
     assert!(!records.is_empty(), "S carries records");
-    let held = |w: &mut World, i: usize| -> Vec<osis_base::BlobId> {
-        let noted = w.engine(i).cert_blobs(&s);
-        w.store(i).entries(&s).unwrap().into_iter().map(|e| e.blob).filter(|b| noted.contains_key(b)).collect()
-    };
+    let held = |w: &mut World, i: usize| record_blobs(w, &s, i);
     for i in [1, 2] {
-        let (blob, bytes, wrap) = w.engine(i).seal_records(&s, &records, &mut osis_crypto::SeededRng::from_u64(i as u64)).unwrap().expect("sealed");
-        let e = osis_sync::types::Entry { blob, wrap, stamp: None, deposited: true, own: true, role: false, class: osis_blob::Class::Durable, expires: None };
-        w.store(i).clone().log(&s, e, Some(bytes), None).unwrap();
+        log_own_records(&mut w, &s, i, &records, &mut osis_crypto::SeededRng::from_u64(i as u64));
     }
     // each reader comes back holding its own
     for i in [1, 2] {
@@ -230,6 +238,32 @@ fn readers_logging_the_same_records_settle_on_one_record_blob_spec_permissions_4
     }
 }
 
+/// Node 0 writes t and grants node 1 read; node 1 lets the one record blob of t's sync ID S go
+/// and logs one of its own of the same records, a higher ID (a loser). (world, S, [the winner],
+/// node 1's own)
+fn reader_holding_a_loser() -> (World, osis_base::SyncId, Vec<osis_base::BlobId>, osis_base::BlobId) {
+    use crate::harness::Step::*;
+    use crate::harness::history::{Gives, world_of};
+    let mut w = world_of(0, 2, 2);
+    let _ = crate::harness::play(&mut w, &[New(0), Grant(0, 0, 1, Gives::Reads), Run], String::new());
+    let t = w.history.things[0].0;
+    let s = w.engine(0).sync_id_of(&t).unwrap().unwrap();
+    let won = record_blobs(&mut w, &s, 0);
+    assert_eq!(won.len(), 1, "one record blob at the writer: {won:?}");
+    assert_eq!(record_blobs(&mut w, &s, 1), won, "the reader holds it");
+    let records = w.engine(0).cert_blobs(&s)[&won[0]].tids.clone();
+    assert!(w.store(1).clone().unlog_entry(&s, &won[0]).unwrap());
+    let own = (0u64..)
+        .find_map(|n| {
+            let x = w.engine(1).seal_records(&s, &records, &mut osis_crypto::SeededRng::from_u64(n)).unwrap().expect("sealed");
+            (x.0 > won[0]).then_some(x)
+        })
+        .unwrap();
+    let e = osis_sync::types::Entry { blob: own.0, wrap: own.2, stamp: None, deposited: true, own: true, role: false, class: osis_blob::Class::Durable, expires: None };
+    w.store(1).clone().log(&s, e, Some(own.1), None).unwrap();
+    (w, s, won, own.0)
+}
+
 // spec/permissions.md §4 (Logging certificates: a record blob counts once opened, while held in the
 // own store or shown at a source, and of two counted the loser leaves the own store): a reader that
 // opened the winner and let it go (it judged it losing while its view of S's records was short)
@@ -237,28 +271,8 @@ fn readers_logging_the_same_records_settle_on_one_record_blob_spec_permissions_4
 // fetches the winner and keeps it in place of its own.
 #[test]
 fn a_reader_fetches_a_winning_record_blob_it_let_go_spec_permissions_4() {
-    use crate::harness::Step::*;
-    use crate::harness::history::{Gives, world_of};
-    let mut w = world_of(0, 2, 2);
-    let _ = crate::harness::play(&mut w, &[New(0), Grant(0, 0, 1, Gives::Reads), Run], String::new());
-    let t = w.history.things[0].0;
-    let s = w.engine(0).sync_id_of(&t).unwrap().unwrap();
-    let noted = |w: &mut World, i: usize| -> Vec<osis_base::BlobId> {
-        let rows = w.engine(i).cert_blobs(&s);
-        w.store(i).entries(&s).unwrap().into_iter().map(|e| e.blob).filter(|b| rows.contains_key(b)).collect()
-    };
-    let won = noted(&mut w, 0);
-    assert_eq!(won.len(), 1, "one record blob at the writer: {won:?}");
-    assert_eq!(noted(&mut w, 1), won, "the reader holds it");
-    let records = w.engine(0).cert_blobs(&s)[&won[0]].tids.clone();
-    // the reader lets the winner go and holds one of its own of the same records, a higher ID
-    assert!(w.store(1).clone().unlog_entry(&s, &won[0]).unwrap());
-    let own = (0u64..).find_map(|n| {
-        let x = w.engine(1).seal_records(&s, &records, &mut osis_crypto::SeededRng::from_u64(n)).unwrap().expect("sealed");
-        (x.0 > won[0]).then_some(x)
-    }).unwrap();
-    let e = osis_sync::types::Entry { blob: own.0, wrap: own.2, stamp: None, deposited: true, own: true, role: false, class: osis_blob::Class::Durable, expires: None };
-    w.store(1).clone().log(&s, e, Some(own.1), None).unwrap();
+    let (mut w, s, won, _) = reader_holding_a_loser();
+    let noted = |w: &mut World, i: usize| record_blobs(w, &s, i);
     w.power_off(1);
     w.power_on(1);
     w.run();
@@ -272,32 +286,13 @@ fn a_reader_fetches_a_winning_record_blob_it_let_go_spec_permissions_4() {
 // holds the winner: a source showing a blob it never serves leaves no reader without one.
 #[test]
 fn a_reader_keeps_a_losing_record_blob_until_it_holds_the_winner_spec_permissions_4() {
-    use crate::harness::Step::*;
-    use crate::harness::history::{Gives, world_of};
-    let mut w = world_of(0, 2, 2);
-    let _ = crate::harness::play(&mut w, &[New(0), Grant(0, 0, 1, Gives::Reads), Run], String::new());
-    let t = w.history.things[0].0;
-    let s = w.engine(0).sync_id_of(&t).unwrap().unwrap();
-    let noted = |w: &mut World, i: usize| -> Vec<osis_base::BlobId> {
-        let rows = w.engine(i).cert_blobs(&s);
-        w.store(i).entries(&s).unwrap().into_iter().map(|e| e.blob).filter(|b| rows.contains_key(b)).collect()
-    };
-    let won = noted(&mut w, 0);
-    assert_eq!(won.len(), 1, "one record blob at the writer: {won:?}");
-    assert_eq!(noted(&mut w, 1), won, "the reader holds it");
-    let records = w.engine(0).cert_blobs(&s)[&won[0]].tids.clone();
-    assert!(w.store(1).clone().unlog_entry(&s, &won[0]).unwrap());
-    let own = (0u64..).find_map(|n| {
-        let x = w.engine(1).seal_records(&s, &records, &mut osis_crypto::SeededRng::from_u64(n)).unwrap().expect("sealed");
-        (x.0 > won[0]).then_some(x)
-    }).unwrap();
-    let e = osis_sync::types::Entry { blob: own.0, wrap: own.2, stamp: None, deposited: true, own: true, role: false, class: osis_blob::Class::Durable, expires: None };
-    w.store(1).clone().log(&s, e, Some(own.1), None).unwrap();
+    let (mut w, s, won, own) = reader_holding_a_loser();
+    let noted = |w: &mut World, i: usize| record_blobs(w, &s, i);
     w.power_off(0);
     w.power_off(1);
     w.power_on(1);
     w.flush();
-    assert_eq!(noted(&mut w, 1), vec![own.0], "the reader keeps its own while the winner is out of reach");
+    assert_eq!(noted(&mut w, 1), vec![own], "the reader keeps its own while the winner is out of reach");
     w.power_on(0);
     w.run();
     assert_eq!(noted(&mut w, 1), won, "the reader fetched the winner and dropped its own");

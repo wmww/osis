@@ -86,6 +86,18 @@ pub struct Seeds {
     vars: String,
 }
 
+/// Fixed pseudo-random picks for a test's edits (xorshift64 from `seed`, never a zero state):
+/// each call gives a value below its bound (0 for a bound of 0).
+pub fn picker(seed: u64) -> impl FnMut(usize) -> usize {
+    let mut x = 0x9e37_79b9_7f4a_7c15 ^ seed;
+    move |n| {
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        (x % n.max(1) as u64) as usize
+    }
+}
+
 /// A property's small size, the gate's (notes/testing.md, Sizes): a tenth of its large size, at
 /// least 1; the large size under `OSIS_FULL=1` (release checks). Breadth belongs to release checks:
 /// per-branch runs at large size found few bugs for their cost (notes/test-design.md, What finds bugs).

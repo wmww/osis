@@ -703,7 +703,7 @@ mod tests {
 
     // spec/sync-transport.md §2: a peer failing the protocol (wrong ALPN) is a protocol error, not retried.
     #[test]
-    #[ignore]
+    #[ignore = "by hand: real sockets"]
     fn wrong_alpn_is_protocol_error() {
         rt().block_on(async {
             let (_l, sa) = listener(1).await;
@@ -717,7 +717,7 @@ mod tests {
 
     // spec/sync-transport.md §1: a stalled handshake does not block accepting others.
     #[test]
-    #[ignore]
+    #[ignore = "by hand: real sockets"]
     fn stalled_handshake_does_not_block_accept() {
         let main = rt();
         let (mut l, sa) = main.block_on(listener(3));
@@ -743,7 +743,7 @@ mod tests {
     // a crash resets a connection of its earlier run at the dialer's next packet, not at the idle
     // timeout.
     #[test]
-    #[ignore]
+    #[ignore = "by hand: real sockets"]
     fn a_restarted_listener_resets_its_earlier_connections() {
         let multi = || tokio::runtime::Builder::new_multi_thread().worker_threads(1).enable_all().build().unwrap();
         let earlier = multi();
@@ -805,7 +805,7 @@ mod tests {
     // spec/sync-transport.md §2 (mutual auth): a client presenting no key is refused: the serving side yields
     // no connection and the client's is closed.
     #[test]
-    #[ignore]
+    #[ignore = "by hand: real sockets"]
     fn client_without_key_refused() {
         rt().block_on(async {
             let (mut l, sa) = listener(6).await;
@@ -820,7 +820,7 @@ mod tests {
 
     // spec/sync-transport.md §2 (mutual auth): Ed25519 only: a client presenting a P-256 raw key is refused.
     #[test]
-    #[ignore]
+    #[ignore = "by hand: real sockets"]
     fn client_p256_key_refused() {
         use ring::signature::{EcdsaKeyPair, KeyPair, ECDSA_P256_SHA256_ASN1_SIGNING as P256};
         const P256_SPKI: [u8; 26] = [0x30, 0x59, 0x30, 0x13, 0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01, 0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07, 0x03, 0x42, 0x00];
@@ -874,7 +874,7 @@ mod tests {
     // spec/sync-transport.md §2 (no 0-rtt): the serving side issues no session tickets, so a client asking for
     // 0-RTT cannot use it on its next connection.
     #[test]
-    #[ignore]
+    #[ignore = "by hand: real sockets"]
     fn no_zero_rtt() {
         rt().block_on(async {
             let (mut l, sa) = listener(7).await;

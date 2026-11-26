@@ -1,4 +1,4 @@
-//! Size budgets (by hand: `cargo test -p osis-bench --test it -- --ignored budgets::`). Each budget is a number from
+//! Size budgets (default tests; the text replay by hand: `cargo test -p osis-bench --test it -- --ignored budgets::`). Each budget is a number from
 //! notes or spec plus a margin, cites its source, and fails on regression. Pending budgets (their
 //! crates have not landed) are listed in notes/test-scale.md, "Size budgets and benches".
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
@@ -9,7 +9,6 @@ use osis_base::{CreationRecord, Tid, encode};
 // spec/wire.md §3: a creation record is a 3-entry struct around a tid or key and a 32-byte nonce;
 // an ordinary thing's encodes in under 64 bytes.
 #[test]
-#[ignore]
 fn budget_creation_record() {
     let rec = CreationRecord::with_admin(Tid::from_bytes([1; 15]), [2; 32]);
     assert_budget("creation record (thing)", encode(&rec.to_value()).len(), 64);
@@ -35,7 +34,6 @@ impl osis_commit::Secrets for Secrets {
 // spec/commits.md §1: a minimal content commit (header plus one register delta, untyped `author`
 // purge-by) is about 300 bytes before encryption (notes/crdt.md, Commit floor).
 #[test]
-#[ignore]
 fn budget_minimal_commit() {
     use osis_commit::{AspectWrite, CommitBuilder, Form, Kind, MemoryBlobs, writer_ctx};
     use osis_base::{Ak, Ts, Value, WallMs};
@@ -57,7 +55,7 @@ fn budget_minimal_commit() {
 // `OSIS_TEXT_TRACE` names it, else a synthetic typist of the same shape (osis_bench::text;
 // measured 2.9x, 6.7x).
 #[test]
-#[ignore]
+#[ignore = "by hand: a 20,000-edit replay"]
 fn budget_text_snapshot_ratio() {
     use osis_bench::text::{final_text, from_env, replay, snapshot_len, synthetic};
     let edits = match from_env() {

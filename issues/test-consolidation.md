@@ -1,5 +1,5 @@
 # Test code that can go: duplicates, vacuous tests, copied helpers
-> Summary: What is left of a read of the tests under core/ for duplicates and copied helpers: entries in code other jobs are changing (rotation, keys, the chain; osis-sync's inbox promotion tests), the greenfield thing-history tests without an `evaluate` twin, and helper families to unify.
+> Summary: What is left of a read of the tests under core/ for duplicates and copied helpers: entries in code other jobs are changing (rotation, keys; osis-sync's inbox promotion tests), the greenfield thing-history tests without an `evaluate` twin, and helper families to unify.
 > Priority: low
 > Tags: tests
 
@@ -8,7 +8,6 @@ Every entry needs both tests read side by side before it goes. `tools/spec_map.p
 ## Waiting on other work
 - keys `epoch.rs ordering_keys_match_folds` | delete | a differential against the hand-written folds the ordering keys replaced; the rule is in `current_and_newest` | medium
 - keys `props.rs departures_and_current_holders` | maybe delete: a keys-level copy of engine `rotation::tests_property`, its unique part the `snapshot_keyed` / `unvouched` check | low
-- base `chain.rs record_link_of_each_record` | delete | `each_end` and `depth_limit` walk every link kind; the accounts work rewrote it for key minting | medium
 - engine `rotation/tests_departs.rs`: its diagnostic baseline test | delete | low
 - osis-sync inbox `genuine_deposit_promoted_beside_stamped_forgery`, `forger_variants_hold_one_slot_until_an_opener_promotes`, `one_stamped_copy_per_delta` | maybe one `adds_delta` table test (the second copy of part 0 asserted twice) | medium
 
@@ -19,7 +18,6 @@ Every entry needs both tests read side by side before it goes. `tools/spec_map.p
 | helper | replaces | where |
 |---|---|---|
 | `common::forge(...)` commit builder | ~17 hand-built `CommitBuilder` sites | engine `it` validity, parts, receive, flows |
-| `recv_all(&n, t)`; `arrive(..)`; `assert_eq!(check(..), None)` | dozens of sites | perm scenarios/queries/content |
 | one forger of a commit "as received" with the thing's real delete keys and a path whose edges are held | made-up delete keys in about six helpers; hostile commits along paths nobody granted | engine and sync test helpers |
 | osis-sync streams `Pair` helpers: restart b and rejoin (restart, close, join each), release and retake of a side's record, count of Pulls joining S from the start | 8, 7 and 14 hand-written sites | sync `tests/it/streams.rs` |
 | one builder of crdt `Commits` tables | nested `l(vec![...])` literals in about a dozen crdt test files | crdt tests |

@@ -137,11 +137,4 @@ mod tests {
         let cyc = BTreeMap::from([(tid(1), RecordLink::Admin(tid(2))), (tid(2), RecordLink::Admin(tid(1)))]);
         assert_eq!(record_chain(tid(1), |x| cyc.get(x).copied()).end(), ChainStep::TooDeep);
     }
-
-    #[test]
-    fn record_link_of_each_record() {
-        let nonce = [7; 32];
-        assert_eq!(CreationRecord::with_admin(tid(1), nonce).record_link(), RecordLink::Admin(tid(1)));
-        assert_eq!(CreationRecord::with_key(crate::SignKey([0; 32]), nonce).record_link(), RecordLink::Key);
-    }
 }

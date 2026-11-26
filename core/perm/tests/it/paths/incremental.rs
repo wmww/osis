@@ -262,7 +262,7 @@ fn paths_incremental_agrees_plain() {
 
 // As above, more worlds (a property).
 #[test]
-#[ignore]
+#[ignore = "property"]
 fn paths_incremental_agrees_large() {
     let f: Vec<String> = crate::common::sharded(60_000, 0x5eed_0a1c, |n, seed| arrivals(crate::common::seeded(seed) % (1 << 40), n.div_ceil(7))).concat();
     assert!(f.is_empty(), "{}", f.join("\n"));
@@ -461,7 +461,7 @@ fn paths_forget_agrees_plain() {
 
 // As above, more worlds (a property).
 #[test]
-#[ignore]
+#[ignore = "property"]
 fn paths_forget_agrees_large() {
     let f: Vec<String> = crate::common::sharded(30_000, 0x5eed_0a1d, |n, seed| forgets(crate::common::seeded(seed) % (1 << 40), n.div_ceil(7))).concat();
     assert!(f.is_empty(), "{}", f.join("\n"));

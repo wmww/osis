@@ -142,28 +142,16 @@ fn unmerge_restores_register_spec_crdt_4_6() {
 // spec/permissions.md §5.2 (dot reuse)
 #[test]
 fn overlapping_counters_spec_commits_4() {
-    use osis_commit::{AspectWrite, CommitBuilder, Kind, MemoryBlobs, writer_ctx};
-    use osis_crdt::{AnyView, Delta, Writer, create, encode_delta};
-    let (mut lp, d, b, _) = setup();
+    let (mut lp, d, _, _) = setup();
     let other = ak("x:other.0");
     let first = put(&mut lp, 1, d, &other, &s("first"));
     let h = lp.peers[1].engine.header(&first).unwrap();
-    let (lo, hi) = (h.aspects[0].lo, h.aspects[0].hi);
     // Bob's key signs a second commit of the same session reusing those counters
     let ts = osis_base::Ts::make(WallMs(h.ts.wall_ms().0 + 5), 0).unwrap();
-    let mut w = Writer::new(ts, h.form.own_source(b, osis_base::CommitId([0; 32])), lo);
-    let f = create(&mut w, &AnyView, &s("second")).unwrap();
-    let bytes = encode_delta(&Delta { nonce: [7; 16], fragment: f }, &writer_ctx(h.form, Kind::Content, ts, b, lo, hi), None).unwrap();
-    let mut aw = AspectWrite::new(d, other.clone(), lo, hi, bytes);
-    aw.purge_by = osis_base::PurgeBy::Writer;
-    let mut cb = CommitBuilder::new(Kind::Content, ts, b, osis_commit::Path::default(), h.form);
-    cb.aspects.push(aw);
-    let rec = lp.peers[0].engine.get_typed(&d, &osis_schema::core_types::CREATED).unwrap().unwrap();
-    let forge_key = lp.peers[1].engine.identity().signing().clone();
-    let built = cb.build(&forge_key, &lp.peers[0].engine.hand_secrets(&[rec]), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(0)).unwrap();
+    let second = forge_reg(&mut lp, d, &other, h.aspects[0].lo, ts, "second");
     sync(&mut lp, 1, 0);
     assert_eq!(lp.peers[0].engine.get(&d, &other).unwrap(), Some(s("first")));
-    lp.peers[0].receive(&built.commit.encode(), Vec::new()).unwrap();
+    lp.peers[0].receive(&second, Vec::new()).unwrap();
     assert_eq!(lp.peers[0].engine.get(&d, &other).unwrap(), None);
 }
 
@@ -173,30 +161,18 @@ fn overlapping_counters_spec_commits_4() {
 // and the minting still counts as T's creation.
 #[test]
 fn a_void_minting_still_creates_spec_commits_4() {
-    use osis_commit::{AspectWrite, CommitBuilder, Kind, MemoryBlobs, writer_ctx};
-    use osis_crdt::{AnyView, Delta, Writer, create, encode_delta};
     let mut lp = net(2, 0);
     lp.sync_all().unwrap();
     let t = new_shared(&mut lp, 0);
     lp.sync_all().unwrap();
     let minting = lp.peers[1].engine.creation(&t).expect("Bob holds T's minting").commit;
     let h = lp.peers[0].engine.header(&minting).unwrap();
-    assert!(matches!(h.form, osis_commit::Form::Session(_)), "the minting is of a session");
-    let a = h.aspects.iter().find(|x| x.tid == t && x.ak.as_str() == "t:reg.0").unwrap();
-    let (lo, hi) = (a.lo, a.hi);
+    assert!(h.form == session_of(&lp, 0), "the minting is of Alice's session");
+    let lo = h.aspects.iter().find(|x| x.tid == t && x.ak.as_str() == "t:reg.0").unwrap().lo;
     let ts = osis_base::Ts::make(WallMs(h.ts.wall_ms().0 + 5), 0).unwrap();
-    let mut w = Writer::new(ts, h.form.own_source(h.signer, osis_base::CommitId([0; 32])), lo);
-    let f = create(&mut w, &AnyView, &s("second")).unwrap();
-    let bytes = encode_delta(&Delta { nonce: [7; 16], fragment: f }, &writer_ctx(h.form, Kind::Content, ts, h.signer, lo, hi), None).unwrap();
-    let mut aw = AspectWrite::new(t, ak("t:reg.0"), lo, hi, bytes);
-    aw.purge_by = osis_base::PurgeBy::Writer;
-    let mut cb = CommitBuilder::new(Kind::Content, ts, h.signer, osis_commit::Path::default(), h.form);
-    cb.aspects.push(aw);
-    let rec = lp.peers[0].engine.get_typed(&t, &osis_schema::core_types::CREATED).unwrap().unwrap();
-    let key = lp.peers[0].engine.identity().signing().clone();
-    let built = cb.build(&key, &lp.peers[0].engine.hand_secrets(&[rec]), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(0)).unwrap();
+    let second = forge_reg_keyed(&mut lp, 0, t, &ak("t:reg.0"), lo, ts, "second", true);
     assert_eq!(lp.peers[1].engine.get_typed(&t, &REG).unwrap(), Some(s("new")));
-    lp.peers[1].receive(&built.commit.encode(), Vec::new()).unwrap();
+    lp.peers[1].receive(&second, Vec::new()).unwrap();
     assert_eq!(lp.peers[1].engine.get_typed(&t, &REG).unwrap(), None, "both commits are void");
     assert_eq!(lp.peers[1].engine.creation(&t).map(|c| c.commit), Some(minting), "the void minting's record counts");
 }
@@ -204,15 +180,16 @@ fn a_void_minting_still_creates_spec_commits_4() {
 /// Bob's key signs a commit of his engine's session on `d`'s `ak` with counters from `lo`
 /// (any he used before included), setting the register to `v` at `ts`.
 fn forge_reg(lp: &mut LocalPeer, d: Tid, ak: &osis_base::Ak, lo: u64, ts: osis_base::Ts, v: &str) -> Vec<u8> {
-    forge_reg_keyed(lp, d, ak, lo, ts, v, true)
+    forge_reg_keyed(lp, 1, d, ak, lo, ts, v, true)
 }
 
-/// `forge_reg`, listing the keys `d`'s maker lists (`listed`) or made-up ones.
-fn forge_reg_keyed(lp: &mut LocalPeer, d: Tid, ak: &osis_base::Ak, lo: u64, ts: osis_base::Ts, v: &str, listed: bool) -> Vec<u8> {
+/// `forge_reg` by peer `by`, listing the keys `d`'s maker lists (`listed`) or made-up ones.
+#[allow(clippy::too_many_arguments)]
+fn forge_reg_keyed(lp: &mut LocalPeer, by: usize, d: Tid, ak: &osis_base::Ak, lo: u64, ts: osis_base::Ts, v: &str, listed: bool) -> Vec<u8> {
     use osis_commit::{AspectWrite, CommitBuilder, Kind, MemoryBlobs, writer_ctx};
     use osis_crdt::{AnyView, Delta, Writer, create, encode_delta};
-    let b = lp.peers[1].engine.tid();
-    let form = crate::common::session_of(lp, 1);
+    let b = lp.peers[by].engine.tid();
+    let form = crate::common::session_of(lp, by);
     let mut w = Writer::new(ts, form.own_source(b, osis_base::CommitId([0; 32])), lo);
     let f = create(&mut w, &AnyView, &s(v)).unwrap();
     let hi = lo + 1;
@@ -222,7 +199,7 @@ fn forge_reg_keyed(lp: &mut LocalPeer, d: Tid, ak: &osis_base::Ak, lo: u64, ts: 
     let mut cb = CommitBuilder::new(Kind::Content, ts, b, osis_commit::Path::default(), form);
     cb.aspects.push(aw);
     let rec = lp.peers[0].engine.get_typed(&d, &osis_schema::core_types::CREATED).unwrap().unwrap();
-    let forge_key = lp.peers[1].engine.identity().signing().clone();
+    let forge_key = lp.peers[by].engine.identity().signing().clone();
     let secrets = lp.peers[0].engine.hand_secrets(&[rec]);
     let secrets = if listed { secrets } else { secrets.all_made_up() };
     cb.build(&forge_key, &secrets, &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(0)).unwrap().commit.encode()
@@ -241,7 +218,7 @@ fn a_delta_listing_a_key_no_step_bears_applies_nowhere_spec_crypto_7() {
     sync(&mut lp, 1, 0);
     let h = lp.peers[1].engine.header(&first).unwrap();
     let ts = osis_base::Ts::make(WallMs(h.ts.wall_ms().0 + 5), 0).unwrap();
-    let forged = forge_reg_keyed(&mut lp, d, &x, h.aspects[0].hi, ts, "forged", false);
+    let forged = forge_reg_keyed(&mut lp, 1, d, &x, h.aspects[0].hi, ts, "forged", false);
     lp.peers[0].receive(&forged, Vec::new()).unwrap();
     assert_eq!(lp.peers[0].engine.get(&d, &x).unwrap(), Some(s("first")), "its key is on no step");
     // at another reader as well
@@ -275,7 +252,7 @@ fn a_body_listing_an_unplaced_key_is_not_judged_invalid_spec_commits_4() {
     sync(&mut lp, 1, 0);
     let h = lp.peers[1].engine.header(&first).unwrap();
     let ts = osis_base::Ts::make(WallMs(h.ts.wall_ms().0 + 5), 0).unwrap();
-    let forged = forge_reg_keyed(&mut lp, d, &x, h.aspects[0].hi, ts, "forged", false);
+    let forged = forge_reg_keyed(&mut lp, 1, d, &x, h.aspects[0].hi, ts, "forged", false);
     let id = osis_commit::CommitBlob::decode(&forged).unwrap().id();
     lp.peers[0].receive(&forged, Vec::new()).unwrap();
     assert_eq!(lp.peers[0].engine.get(&d, &x).unwrap(), Some(s("first")), "the delta waits");
@@ -296,7 +273,7 @@ fn kept_after_miskeyed(k: u64) -> usize {
     let kept = |e: &mut osis_engine::Engine| e.commit_ids().len() + e.pending().len();
     let before = kept(&mut lp.peers[0].engine);
     for i in 0..k {
-        let forged = forge_reg_keyed(&mut lp, d, &x, h.aspects[0].hi + 2 * i, ts, "forged", false);
+        let forged = forge_reg_keyed(&mut lp, 1, d, &x, h.aspects[0].hi + 2 * i, ts, "forged", false);
         let id = osis_commit::CommitBlob::decode(&forged).unwrap().id();
         assert_eq!(lp.peers[0].receive(&forged, Vec::new()).unwrap(), Ingested::Pending(id, osis_engine::Reason::Miskeyed(d)), "it pends");
         lp.peers[0].engine.release_entry(&id).unwrap();
@@ -578,23 +555,9 @@ fn foreign_actor_claim_refused_spec_wire_4() {
 /// Bob's (peer 1) key signs a commit-form commit setting `d`'s register to `v`, naming `actor`
 /// as the actor it acts for, past the writer's rules.
 fn forge_acting(lp: &mut LocalPeer, d: Tid, actor: Tid, v: &str) -> Vec<u8> {
-    use osis_commit::{AspectWrite, CommitBuilder, Form, Kind, MemoryBlobs, writer_ctx};
-    use osis_crdt::{AnyView, Delta, Source, Writer, create, encode_delta};
-    let b = lp.peers[1].engine.tid();
-    let ts = osis_base::Ts::make(lp.peers[1].engine.now(), 0).unwrap();
-    let mut w = Writer::new(ts, Source::commit(osis_base::CommitId([0; 32])), 1);
-    let f = create(&mut w, &AnyView, &s(v)).unwrap();
-    let r = w.range();
-    let cx = writer_ctx(Form::Commit, Kind::Content, ts, b, r.lo, r.hi);
-    let bytes = encode_delta(&Delta { nonce: [7; 16], fragment: f }, &cx, None).unwrap();
-    let mut aw = AspectWrite::new(d, ak("t:reg.0"), r.lo, r.hi, bytes);
-    aw.purge_by = osis_base::PurgeBy::Writer;
-    let path = if actor == b { osis_commit::Path::default() } else { osis_commit::Path::through(actor) };
-    let mut cb = CommitBuilder::new(Kind::Content, ts, b, path, Form::Commit);
-    cb.aspects.push(aw);
     let rec = lp.peers[0].engine.get_typed(&d, &osis_schema::core_types::CREATED).unwrap().unwrap();
-    let forge_key = lp.peers[1].engine.identity().signing().clone();
-    cb.build(&forge_key, &lp.peers[0].engine.hand_secrets(&[rec]), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(0)).unwrap().commit.encode()
+    let path = if actor == lp.peers[1].engine.tid() { osis_commit::Path::default() } else { osis_commit::Path::through(actor) };
+    forge_by(&lp.peers[1].engine, &lp.peers[0].engine.hand_secrets(&[rec]), d, &ak("t:reg.0"), &s(v), 1, osis_commit::Kind::Content, path)
 }
 
 // spec/permissions.md §1 Path, spec/commits.md §4 Unjudgeable: Bob, a writer of D, signs a write
@@ -1421,13 +1384,7 @@ fn unmerge_paged_matches_fresh_large_spec_crdt_4_6() {
         m.set(d, &LIST, &Value::List((0..N).map(|i| key(i, &pad)).collect())).unwrap();
         lp.peers[0].commit(m).unwrap().unwrap();
         lp.sync_all().unwrap();
-        let mut x = 0x9e37_79b9_7f4a_7c14u64;
-        let mut r = |n: usize| {
-            x ^= x << 13;
-            x ^= x >> 7;
-            x ^= x << 17;
-            (x % n.max(1) as u64) as usize
-        };
+        let mut r = osis_base::testenv::picker(0);
         let op = |lp: &mut LocalPeer, i: usize, a: &osis_schema::Aspect<Value>, path: Vec<PathSeg>, op: Op| {
             let mut m = Mutation::new();
             m.op(d, a, PathOp { path, op }).unwrap();

@@ -759,7 +759,7 @@ mod tests {
     /// Shrinks the failing script of `OSIS_SHRINK=<seed>` (as `random_scripts_replay_plain_spec_5_7`
     /// makes it) by dropping steps and ops while it still panics; prints the result.
     #[test]
-    #[ignore]
+    #[ignore = "by hand: shrinks OSIS_SHRINK"]
     fn shrink_script() {
         let Ok(seed) = std::env::var("OSIS_SHRINK") else { return };
         let mut s = script(seed.parse().unwrap());

@@ -551,7 +551,7 @@ mod tests {
 
     // spec/sync-transport.md §4: an announcement sent over UDP is heard (by hand: localhost socket).
     #[tokio::test]
-    #[ignore]
+    #[ignore = "by hand: real sockets"]
     async fn announce_over_udp_spec_sync_10() {
         let rx = Lan::bind(0).await.unwrap();
         let tx = Lan::bind(0).await.unwrap();
@@ -572,7 +572,7 @@ mod tests {
     // spec/sync-transport.md §4: two nodes on one machine both bind the announcement port and both hear
     // a broadcast to it (by hand: real sockets).
     #[tokio::test]
-    #[ignore]
+    #[ignore = "by hand: real sockets"]
     async fn two_nodes_share_the_port_spec_sync_10() {
         let a = Lan::bind(0).await.unwrap();
         let b = Lan::bind(a.port()).await.unwrap();
@@ -592,7 +592,7 @@ mod tests {
     // The one test that sends on the real network (every real link is its point), to a free port no
     // node listens on; run it through tools/heavy with the networking check (notes/testing.md, By hand).
     #[tokio::test]
-    #[ignore]
+    #[ignore = "by hand: the real network, under tools/heavy"]
     async fn announce_v6_every_interface_spec_sync_10() {
         let rx = Lan::bind(0).await.unwrap();
         let tx = Lan::bind(0).await.unwrap();
@@ -620,7 +620,7 @@ mod tests {
     // spec/sync-transport.md §4 (joining): a socket's network watch starts and polls the routes
     // (by hand: real sockets).
     #[tokio::test]
-    #[ignore]
+    #[ignore = "by hand: real sockets"]
     async fn net_watch_starts_spec_sync_10() {
         let l = Lan::bind(0).await.unwrap();
         // nothing changes here within a short wait

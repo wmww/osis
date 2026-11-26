@@ -142,7 +142,7 @@ fn paths_content_agree_plain() {
 
 // spec/permissions.md §5.2: as above, a sample (a property).
 #[test]
-#[ignore]
+#[ignore = "property"]
 fn paths_content_agree_large() {
     let f: Vec<String> = sharded(200_000, 0x5eed_0a1c, |n, seed| {
         let start = seeded(seed) % (1 << 40);

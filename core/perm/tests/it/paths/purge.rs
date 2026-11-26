@@ -38,7 +38,7 @@ fn paths_purge_agree_plain() {
 
 // spec/permissions.md §6: as above, a sample (a property).
 #[test]
-#[ignore]
+#[ignore = "property"]
 fn paths_purge_agree_large() {
     let f: Vec<String> = sharded(100_000, 0x5eed_0a1e, |n, seed| run(seeded(seed) % (1 << 40), n, true)).concat();
     assert!(f.is_empty(), "{}", f.join("\n"));
