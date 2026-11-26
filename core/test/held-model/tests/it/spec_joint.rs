@@ -2,7 +2,7 @@
 //! node acting as a signer and holding one sync ID plus its paths' key parts judges and acts as
 //! the node holding everything. Over the evidence family, random and wide worlds under the spec's
 //! rule (`Rule::fixed`), with a control per check. spec: none (modelled before any spec).
-use crate::util::{env, par_map};
+use crate::util::{env, par_any, par_map};
 use held_model::evidence::*;
 use std::collections::BTreeMap;
 
@@ -18,10 +18,11 @@ fn joint(w: World, j: Joint) -> Vec<Fail> {
 type Tally = BTreeMap<&'static str, (usize, String)>;
 
 /// Every `family_step`th family world and `n` random and `n` wide worlds (seeds from
-/// `OSIS_HELD_START`), under `j`.
-fn tally(family_step: usize, n: u64, j: Joint) -> (usize, Tally) {
+/// `OSIS_HELD_START`), each built by its job with its name.
+type Job = Box<dyn Fn() -> (String, World) + Sync>;
+fn worlds(family_step: usize, n: u64) -> Vec<Job> {
     let start = env("OSIS_HELD_START", 0u64);
-    let mut jobs: Vec<Box<dyn Fn() -> (String, World) + Sync>> = vec![];
+    let mut jobs: Vec<Job> = vec![];
     for i in (0..FAMILY).step_by(family_step) {
         jobs.push(Box::new(move || (format!("{:?}", Shape::nth(i)), family(Shape::nth(i)))));
     }
@@ -29,8 +30,13 @@ fn tally(family_step: usize, n: u64, j: Joint) -> (usize, Tally) {
         jobs.push(Box::new(move || (format!("random {seed}"), random(seed, 14))));
         jobs.push(Box::new(move || (format!("wide {seed}"), wide(seed, 16, Wide { mint: seed % 2 == 1, ..Wide::default() }))));
     }
+    jobs
+}
+
+/// The worlds of `jobs` under `j`: per property the worlds failing it and the first failure.
+fn tally(jobs: &[Job], j: Joint) -> Tally {
     let mut out = Tally::new();
-    for (name, f) in par_map(&jobs, |job| {
+    for (name, f) in par_map(jobs, |job| {
         let (name, w) = job();
         (name, joint(w, j))
     }) {
@@ -42,32 +48,32 @@ fn tally(family_step: usize, n: u64, j: Joint) -> (usize, Tally) {
             out.entry(p).or_insert((0, format!("{name}: {x:?}"))).0 += 1;
         }
     }
-    (jobs.len(), out)
+    out
 }
 
 /// Each control and the check it fails. `J-judge` has none: no generated world holds a key part
 /// that moves a verdict on S's bodies off both S's reference and the node holding everything.
 const CONTROLS: [(Joint, &str); 3] = [(Joint::Unit, "J-act"), (Joint::UnitLog, "J-logged"), (Joint::Grants, "J-act")];
 
-/// The design holds every check; each control fails its own.
-fn search(family_step: usize, n: u64) {
-    let (worlds, t) = tally(family_step, n, Joint::Paths);
-    eprintln!("joint, design: {worlds} worlds");
+/// The design holds every check over every world of `jobs`; each control fails its own in some
+/// world (searched until one does).
+fn holds_with_controls(jobs: &[Job], controls: &[(Joint, &str)]) {
+    let t = tally(jobs, Joint::Paths);
+    eprintln!("joint, design: {} worlds", jobs.len());
     assert!(t.is_empty(), "the design fails: {t:?}");
-    for (j, prop) in CONTROLS {
-        let (_, t) = tally(family_step, n, j);
-        eprintln!("joint, control {j:?}: {t:?}");
-        assert!(t.contains_key(prop), "control {j:?} never fails {prop} in {worlds} worlds");
+    for (j, prop) in controls {
+        let fails = par_any(jobs, |job| joint(job().1, *j).iter().any(|f| f.prop == *prop));
+        assert!(fails, "control {j:?} never fails {prop} in {} worlds", jobs.len());
     }
+}
+
+fn search(family_step: usize, n: u64) {
+    holds_with_controls(&worlds(family_step, n), &CONTROLS);
 }
 
 #[test]
 fn joint_holds_on_a_slice() {
-    let (worlds, t) = tally(1999, 4, Joint::Paths);
-    assert!(t.is_empty(), "the design fails: {t:?}");
-    for (j, prop) in &CONTROLS[..2] {
-        assert!(tally(1999, 4, *j).1.contains_key(prop), "control {j:?} never fails {prop} in {worlds} worlds");
-    }
+    holds_with_controls(&worlds(1999, 4), &CONTROLS[..2]);
 }
 
 /// K (a member of A) reaches D through [A] and [A, O]; W removes A on O. D's entries lack the

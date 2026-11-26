@@ -33,6 +33,27 @@ pub fn par_map<'a, J: Sync, R: Send>(jobs: &'a [J], f: impl Fn(&'a J) -> R + Syn
     out.into_iter().map(|x| x.1).collect()
 }
 
+/// Whether `f` holds for any job, each job taken by the next free thread of one per core; once one
+/// holds no thread takes another (the answer is the same whichever is found first).
+pub fn par_any<J: Sync>(jobs: &[J], f: impl Fn(&J) -> bool + Sync) -> bool {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed};
+    let (next, found) = (AtomicUsize::new(0), AtomicBool::new(false));
+    let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
+    std::thread::scope(|sc| {
+        for _ in 0..threads {
+            sc.spawn(|| {
+                while !found.load(Relaxed) {
+                    let Some(j) = jobs.get(next.fetch_add(1, Relaxed)) else { return };
+                    if f(j) {
+                        found.store(true, Relaxed);
+                    }
+                }
+            });
+        }
+    });
+    found.into_inner()
+}
+
 /// Counts one world's failures `f` (named `name`) into `e`: per property, the worlds failing it
 /// and the first one's failure.
 pub fn count_props(e: &mut BTreeMap<&'static str, (usize, String)>, name: &str, f: &[held_model::evidence::Fail]) {
