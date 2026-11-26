@@ -73,7 +73,7 @@ impl Default for Config {
 impl Config {
     /// Whether a node made with this config reaches other nodes (it has a runtime): without,
     /// `dial` is `Invalid`.
-    pub fn online(&self) -> bool {
+    fn online(&self) -> bool {
         !matches!(self.runtime, Runtime::None) || self.app.internals.net.is_some()
     }
 

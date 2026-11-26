@@ -306,13 +306,6 @@ impl std::str::FromStr for Offer {
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Url(String);
 
-impl Url {
-    /// Its text.
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
 impl std::str::FromStr for Url {
     type Err = Error;
     fn from_str(s: &str) -> Result<Url> {
