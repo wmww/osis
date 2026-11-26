@@ -317,6 +317,8 @@ impl Engine {
                     }
                     let due = crate::rotation::explain_due(tx, &a)?;
                     let _ = write!(out, "\n  lost access ({}): {due}", label(tx.core, &a));
+                    let u = tx.core.unread(&t);
+                    let _ = write!(out, "\n  kept unread: sync secrets a step bears {:?}, held {:?}, copies {} ({} counted), steps of {} sync IDs, holders {}", u.secrets.keys().map(|e| e.n()).collect::<Vec<_>>(), u.candidates.keys().map(|e| e.n()).collect::<Vec<_>>(), tx.core.ix.sync_copies.get(&t).map_or(0, |c| c.len()), u.counted.len(), u.steps.len(), u.holders.len());
                     let cl = &tx.core.ix.closure;
                     let _ = write!(out, "\n  node closure: contexts {:?}, left {:?}, reads {}, content held {}", cl.contexts(&t), cl.left().get(&t), cl.reads(&t), crate::retention::needed::holds_content(tx.core, &t));
                     kept_lines(tx.core, &t, &mut out);

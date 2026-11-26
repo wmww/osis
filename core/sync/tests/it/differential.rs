@@ -730,3 +730,18 @@ fn a_departed_public_reader_holds_the_publics_removal_spec_sync_opens_6() {
         holds_on(0, 2, 3, &script, String::new(), false);
     }
 }
+
+// spec/crypto.md §4 (Seal: a holder actor left out is re-sealed once a keyset exists),
+// spec/permissions.md §3 (Re-seal, Complete pass): node 1 grants node 0's account sync on its
+// thing, which node 3 (paired into that account) strongs; node 3 removes node 2 from the account.
+// Node 1, rotating its thing for node 2's departure before it holds the account's new keyset,
+// leaves the account out, so the account's nodes are at a head past their keys; the keyset's
+// arrival makes a pass of the thing due, at whose end node 1 re-seals the account, and node 0
+// keeps the thing unread, as the model says. Failed while only the thing's own role commits made
+// a pass due: node 1 held the keyset and never re-sealed, and node 0 followed the thing by the
+// public entry.
+#[test]
+fn a_holder_left_out_is_re_sealed_once_its_keyset_arrives_spec_permissions_3() {
+    use crate::harness::script::*;
+    holds_on(0, 2, 3, &[New(1), Give(1, 0, Holder::Node(0), Syncs), Pair(0), Run, Strong(3, None, 0), Unpair(3, 2)], String::new(), false);
+}
