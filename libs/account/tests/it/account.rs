@@ -38,6 +38,13 @@ fn making_an_account_spec_permissions_8() {
     assert_eq!(key.len(), 1, "its entry on the account");
     assert_eq!(dials(&db, p), key, "and on the profile");
     assert!(matches!(Account::make(&db), Err(Error::Invalid(_))), "one account per node");
+    // its other holders of write are no nodes of it: a realm, a client's thing
+    let r = Realm::make(&db, a.realm(), "a realm").unwrap();
+    let (client, _) = db.add_client(a.thing(), None).unwrap();
+    for h in [r.thing(), client] {
+        db.grant(a.thing(), h, Role::Write, GrantOpts::default()).unwrap();
+    }
+    assert_eq!(a.nodes(&db).unwrap(), [AccountNode { node: db.node(), role: Role::Admin }], "the node alone");
     let bare = osis::internals::create(opening(&net, 2, &c, Vec::new())).unwrap();
     assert_eq!(Account::of(&bare).unwrap(), None);
 }

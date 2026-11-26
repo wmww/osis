@@ -18,7 +18,7 @@
 use osis_base as base;
 use osis_crypto as crypto;
 use osis::core::{CAPS, DIAL, HOLDS, NAME, RETENTION, RetentionSetting, SETTINGS};
-use osis::{Error, GrantOpts, Keys, Link, LinkInfo, Offer, Osis, ReadOnly, Result, Role, SetRoleOpts, Store, Tid, Value, Weak};
+use osis::{Error, GrantOpts, HolderKind, Keys, Link, LinkInfo, Offer, Osis, ReadOnly, Result, Role, SetRoleOpts, Store, Tid, Value, Weak};
 
 /// Typed keys of schema/realm.osis.
 #[allow(dead_code, clippy::all)]
@@ -196,9 +196,11 @@ impl Account {
         Realm { thing: self.thing }
     }
 
-    /// The account's nodes: its holders of write or admin.
+    /// The account's nodes: the node things granted write or admin on it. Its other holders (a
+    /// realm, a client's thing) are none.
     pub fn nodes(&self, db: &ReadOnly) -> Result<Vec<AccountNode>> {
-        Ok(db.grants(self.thing)?.into_iter().filter(|(_, g)| g.role >= Role::Write).map(|(node, g)| AccountNode { node, role: g.role }).collect())
+        let direct = db.holders(self.thing)?.into_iter().filter(|h| h.through.is_empty() && h.kind == HolderKind::Key && h.role >= Role::Write);
+        Ok(direct.map(|h| AccountNode { node: h.thing, role: h.role }).collect())
     }
 
     /// Removes a node from the account (spec/permissions.md §8 Removing): its role removed with
