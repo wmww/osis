@@ -1258,18 +1258,24 @@ fn settle_keys(tx: &mut Tx<'_>, f: &mut Follow) -> Result<()> {
 /// (spec/sync-set.md §2 Following by the public entry): `y`'s independent X, where a strong of a
 /// read unit G reaches `y` beyond it (G's keys do not open X), G's key part names X (an edge of
 /// G's on X, standing or since lowered or removed, as edge writes, sync copies or X's record
-/// naming G its mint admin) and the node holds X's sync ID by it, and the node does not keep X
-/// unread. Following, it holds the public's grant once the public reads X, and logs the public
+/// naming G its mint admin) and the node holds X's sync ID (X's `sync.0` state, or the steps of a
+/// sync copy in G's key part: a removed sync-alone holder's loss forgets the state, never the
+/// piece), and the node does not keep X unread. Following, it holds the public's grant once the public reads X, and logs the public
 /// piece under G's sync ID (`Engine::public_pieced`), which takes X into G's unit; it follows X
 /// still while it reads X by the public's secrets before that, so entering X ends no follow it
 /// rests on. Who writes it: G's writers the strong, X's admins
 /// the edge.
 fn follows_public(core: &Core, y: &Tid) -> Option<Tid> {
     let cl = &core.ix.closure;
+    // the holders whose own key part holds a sync copy carrying steps of `x`'s sync ID (a
+    // sync-alone edge piece's `sync.0` part: held whatever the edge now, a loss carried out too)
+    let copies = |x: &Tid| core.ix.sync_copies.get(x).map(|m| m.values().filter(|c| c.holder == c.under && !c.steps.is_empty()).map(|c| c.under).collect::<Vec<Tid>>()).unwrap_or_default();
+    // a sync ID of `x` held: its `sync.0` state, or such a copy's steps
+    let recorded = |x: &Tid| core.ix.sync_recorded_ids.get(x).is_some_and(|s| !s.is_empty()) || !copies(x).is_empty();
     // `y` itself where its sync ID is held (independent by it, its keyset commit held or not)
-    let recorded = |x: &Tid| core.ix.sync_recorded_ids.get(x).is_some_and(|s| !s.is_empty());
     let x = if recorded(y) { *y } else { core.secret_actor(y)? };
-    let named = |g: &Tid| core.ix.held.is_named(g, &x) || core.copies_naming(g).contains(&x);
+    let under = copies(&x);
+    let named = |g: &Tid| core.ix.held.is_named(g, &x) || under.contains(g) || core.copies_naming(g).contains(&x);
     let beyond = cl.targeting(y).any(|v| matches!(v.0, Ctx::Read(g) if named(&g)) && cl.beyond.contains(&v.0, &(*y, v.1)));
     let unread = cl.contexts(&x).iter().any(|c| matches!(c, Ctx::Unread(_)));
     (beyond && recorded(&x) && !unread).then_some(x)

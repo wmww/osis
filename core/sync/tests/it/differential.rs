@@ -633,3 +633,51 @@ fn a_node_lowered_with_the_public_reads_again_on_its_regrant_spec_sync_opens_4()
     assert!(crate::harness::history::reads(w.engine(1), &t).value.is_some(), "node 1 reads the thing again by the public's grant");
 }
 
+// spec/sync-set.md §2 (Following by the public entry): node 0's account held sync alone on node
+// 1's thing, was removed, and only then strongs it. The account's key part names the thing (its
+// sync edge, revoked), its edge piece carrying the thing's `sync.0` part: node 0 follows the
+// thing's sync ID, read, and reads nothing of it while the public does not; made public, node 0
+// reads it by the public.
+#[test]
+fn a_removed_sync_holder_follows_what_its_key_part_names_spec_sync_set_2() {
+    use crate::harness::history::{Gives, Holder, reads};
+    let script = [Step::New(1), Step::Give(1, 0, Holder::Node(0), Gives::Syncs), Step::Run, Step::Revoke(1, 0, Holder::Node(0)), Step::Run, Step::Strong(0, None, 0)];
+    let mut w = holds_on(0, 2, 3, &script, String::new(), false);
+    let t = w.history.things[0].0;
+    assert!(reads(w.engine(0), &t).value.is_none(), "node 0 reads nothing of the thing");
+    play(&mut w, &[Step::Give(1, 0, Holder::Public, Gives::Reads), Step::Run], String::new());
+    assert!(reads(w.engine(0), &t).value.is_some(), "made public, node 0 reads it by the public");
+}
+
+
+// spec/permissions.md §3 (No secret taken back, entry boxes): a removed reader takes the public's
+// box as any party does, and no more. Node 0's account reads node 1's public thing and strongs
+// it; it is removed and a write follows (read by the public), then the public is removed and a
+// write follows: node 0 reads neither that write nor any secret of the epoch the public's removal
+// minted, whether the removals have a run between them or node 0 is off through both.
+// Control: the public not removed, node 0 reads the last write by the public.
+#[test]
+fn a_removed_reader_takes_from_the_publics_box_no_more_than_a_stranger_spec_permissions_3() {
+    use crate::harness::history::{Gives, Holder, reads};
+    let start = [Step::New(1), Step::Give(1, 0, Holder::Node(0), Gives::Reads), Step::Give(1, 0, Holder::Public, Gives::Reads), Step::Strong(0, None, 0), Step::Run];
+    for (case, mid, off) in [("a run between", vec![Step::Run], false), ("node 0 off", vec![], true)] {
+        for ended in [true, false].into_iter().filter(|e| *e || !off) {
+            let mut s: Vec<Step> = start.to_vec();
+            s.extend(off.then_some(Step::PowerOff(0)));
+            s.extend([Step::Revoke(1, 0, Holder::Node(0)), Step::Write(1, 0)].into_iter().chain(mid.clone()));
+            s.extend(ended.then_some(Step::Revoke(1, 0, Holder::Public)));
+            s.extend([Step::Write(1, 0), Step::PowerOn(0), Step::Run]);
+            let mut w = world_of(0, 2, 3);
+            w.cap = crate::harness::STORM_CAP;
+            play(&mut w, &s, String::new());
+            let t = w.history.things[0].0;
+            let last = reads(w.engine(1), &t).value;
+            let newest = w.engine(1).epochs(&t).unwrap().read.newest().unwrap();
+            let got = w.engine(0).epochs(&t).is_some_and(|e| e.read.secret(&newest).is_some());
+            match ended {
+                true => assert!(reads(w.engine(0), &t).value != last && !got, "{case}: node 0 reads nothing written after the public's read ended"),
+                false => assert!(reads(w.engine(0), &t).value == last && got, "{case}: control: node 0 reads the last write by the public"),
+            }
+        }
+    }
+}

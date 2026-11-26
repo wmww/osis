@@ -1315,6 +1315,30 @@ mod tests {
         assert!(lp.peers[1].engine.learn_secret(&t, Role::Read, old, secret, &Tid::PUBLIC).unwrap(), "the public's box gives it as it gives any party");
     }
 
+    // spec/permissions.md §3 No secret taken back (entry boxes): the public's box gives a removed
+    // node no epoch the public's own removal superseded. The public reads t and is removed while
+    // node 1 reads it; node 1 is removed after (its loss carried out): the epoch before the
+    // public's removal, from a box admitting the public or node 1, gives it nothing.
+    #[test]
+    fn the_publics_box_gives_no_epoch_its_removal_superseded_spec_permissions_3() {
+        let (mut lp, t) = removed_reader();
+        let b = lp.peers[1].engine.tid();
+        let read = ct::Edge { role: Role::Read, until: None, may_grant: false, retain: false, floor: None };
+        lp.peers[0].engine.grant(&t, &Tid::PUBLIC, &read).unwrap();
+        let e0 = lp.peers[0].engine.epochs(&t).unwrap();
+        let old = e0.read.newest().unwrap();
+        let secret = e0.read.secret(&old).unwrap().secret().clone();
+        lp.peers[0].engine.demote(&t, &Demotion { holder: Tid::PUBLIC, new: None, retain: None }).unwrap();
+        lp.sync(0, 1).unwrap();
+        lp.peers[0].engine.demote(&t, &Demotion { holder: b, new: None, retain: None }).unwrap();
+        lp.sync(0, 1).unwrap();
+        assert!(lp.peers[1].engine.drop_lost(&t).unwrap(), "its loss carried out");
+        assert!(lp.peers[1].engine.epochs(&t).is_none_or(|e| e.read.secret(&old).is_none()));
+        for party in [Tid::PUBLIC, b] {
+            assert!(!lp.peers[1].engine.learn_secret(&t, Role::Read, old, secret.clone(), &party).unwrap(), "{party:?}");
+        }
+    }
+
     // spec/crypto.md §4 (`keys.0` vouches for no secret): a writer
     // re-publishing the current read epoch with another epoch's keys, applied at a late joiner
     // before or after the grant that boxes it that epoch, drops nothing: the joiner holds and
