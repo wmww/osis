@@ -1,5 +1,5 @@
 # A chat's join and add cost O(members)
-> Summary: A node joining a chat fetches and judges every member's role commits before it reads the newest page, and every member costs every node tens of KB stored (its first commit, its add, its `keys.0` states, the blob copies of each under the sync ID). Measured before the sync rewrite and accounts as ordinary things; recount when those settle.
+> Summary: A node joining a chat fetches and judges every member's role commits before it reads the newest page, and every member costs every node tens of KB stored (its first commit, its add, its `keys.0` states, the blob copies of each under the sync ID). Measured on an older build: recount first.
 > Priority: low
 > Tags: engine, sync, performance
 

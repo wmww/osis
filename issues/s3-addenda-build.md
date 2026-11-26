@@ -1,5 +1,5 @@
 # S3: what addenda still owe
-> Summary: Addenda (spec/permissions.md §5.2 Addenda) are built in perm and engine (notes/addenda.md). Left: the remover's leaving out, held-model and the order harness playing addenda, addenda vouching for purge requests, and which node's addendum counts as "of its own" now that each node signs as its node thing.
+> Summary: Addenda (spec/permissions.md §5.2 Addenda) are built in perm and engine (notes/addenda.md). Left: the remover's leaving out, held-model and the order harness playing addenda, addenda vouching for purge requests, and which node's addendum counts as "of its own" with each node signing as its node thing.
 > Priority: normal
 > Tags: perm, engine, spec, tests
 
