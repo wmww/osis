@@ -609,7 +609,7 @@ fn droppable(tx: &Tx<'_>, tid: &Tid, ak: &Ak) -> BTreeSet<CommitId> {
 /// writes) encoded and paged as written, its root and pages weighed as a part (as `body_bytes`
 /// weighs a held one) plus `ENTRY_CHARGE`, the pages counted, not kept. `None`: no state.
 fn snapshot_cost(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, me: Tid) -> Result<Option<usize>> {
-    let Some(st) = super::snapshot_state(tx, tid, ak)? else { return Ok(None) };
+    let Some(st) = super::snapshot_state(tx, tid, ak, None)? else { return Ok(None) };
     let cx = osis_commit::writer_ctx(Form::Commit, osis_commit::Kind::ContentSnapshot, osis_base::Ts::default(), me, 0, 0);
     let mut pages = Counted(0);
     let encoded = st.walk(&mut tx.txn, tid, ak, |p| osis_crdt::encode_paged_snapshot(&[0; osis_crdt::NONCE_LEN], p, &osis_crdt::Frontiers::default(), &BTreeMap::new(), &Default::default(), &cx, Some(&mut pages)));

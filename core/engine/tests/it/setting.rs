@@ -338,6 +338,65 @@ fn value_beaten_only_by_an_expiring_one_lives_spec_crdt_4_8() {
     assert!(!lp.peers[1].engine.body_not_dropped(&v1, &d, &ak(A)), "a lasting overwrite: under purge on replace");
 }
 
+// spec/commits.md §5 (Covered; Purge on replace), spec/crdt.md §8: a cover lasts as long as what
+// it covers. An expiring write outlasted by another expiring one is replaced: the writer covers
+// it with one snapshot ending with it, carrying the state it died in, and it goes everywhere; no
+// later judgment owes another, and reads follow both expiries, live and reloaded
+#[test]
+fn an_outlasted_expiring_write_drops_under_a_cover_ending_with_it_spec_commits_5() {
+    let (mut lp, d) = setup();
+    set(&mut lp, 2, d, &setting(&[(A, History::PurgeOnReplace)]));
+    lp.sync_all().unwrap();
+    let snaps = |p: &mut Peer| p.engine.commit_ids().iter().filter(|c| p.engine.header(c).is_some_and(|h| h.kind == osis_commit::Kind::ContentSnapshot && h.aspects.iter().any(|x| x.ak == ak(A)))).count();
+    let brief = |lp: &mut LocalPeer, v: &str, hours: u64| {
+        let mut m = Mutation::new();
+        let end = lp.peers[1].engine.now().0 + hours * HOUR;
+        m.expires(d, &ak(A), WallMs(end)).unwrap();
+        m.set(d, &ak(A), &s(v)).unwrap();
+        lp.peers[1].commit(m).unwrap().unwrap()
+    };
+    let one = put(&mut lp, 1, d, "one");
+    lp.sync_all().unwrap();
+    let x1 = brief(&mut lp, "first", 1);
+    lp.sync_all().unwrap();
+    lp.advance(1_000);
+    assert_eq!(snaps(&mut lp.peers[1]), 0, "beaten only by an expiring write: nothing replaced");
+    brief(&mut lp, "second", 2);
+    assert_eq!(snaps(&mut lp.peers[1]), 1, "one cover, ending with what it covers");
+    assert!(!lp.peers[1].engine.body_not_dropped(&x1, &d, &ak(A)), "the writer drops it at once");
+    // every writer holding both may cover it (duplicates are harmless); then no round owes more
+    lp.sync_all().unwrap();
+    let after: Vec<usize> = (0..3).map(|i| snaps(&mut lp.peers[i])).collect();
+    assert!(after.iter().all(|n| *n <= 3), "{after:?}");
+    for _ in 0..3 {
+        for i in 0..3 {
+            lp.peers[i].tick().unwrap();
+        }
+        lp.sync_all().unwrap();
+        assert_eq!((0..3).map(|i| snaps(&mut lp.peers[i])).collect::<Vec<_>>(), after, "no cover owed again");
+    }
+    for i in 0..3 {
+        assert!(!lp.peers[i].engine.body_not_dropped(&x1, &d, &ak(A)), "peer {i}: gone under the writer's cover");
+        assert!(lp.peers[i].engine.body_not_dropped(&one, &d, &ak(A)), "peer {i}: the lasting value is no expiring cover's");
+    }
+    let reads = |lp: &mut LocalPeer, v: &str, at: &str| {
+        for i in 0..3 {
+            lp.peers[i].tick().unwrap();
+            assert_eq!(lp.peers[i].engine.get(&d, &ak(A)).unwrap(), Some(s(v)), "peer {i} {at}");
+        }
+        lp.peers[0].restart(80).unwrap();
+        assert_eq!(lp.peers[0].engine.get(&d, &ak(A)).unwrap(), Some(s(v)), "{at}, loaded fresh");
+    };
+    reads(&mut lp, "second", "before either ends");
+    lp.advance(HOUR + 30 * 60_000);
+    reads(&mut lp, "second", "past the first's expiry");
+    assert_eq!(snaps(&mut lp.peers[1]), after[1], "no cover owed at its end");
+    lp.advance(HOUR);
+    reads(&mut lp, "one", "past both");
+    lp.sync_all().unwrap();
+    assert_eq!(snaps(&mut lp.peers[1]), after[1]);
+}
+
 // spec/commits.md §5 One way: a keep after purge on replace carries a floor at its own stamp, so
 // what was written before it is under purge on replace when replaced, at every node; what is
 // written after it is kept

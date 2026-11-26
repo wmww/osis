@@ -939,8 +939,8 @@ fn forged_expiring_snapshot_ends_no_lasting_value_spec_commits_5() {
 // spec/commits.md §5 Covered, spec/crdt.md §8: what a cut's expiring snapshots cost over many
 // cuts. A writes "e" (expiring in 100 s) and cuts for N, then for M: each cut writes an expiring
 // snapshot ending with "e", and the second covers the first (both end then), so one per expiry
-// and aspect stays however many cuts are made; neither covers "e"'s own delta (it may outlive an
-// expiring snapshot claiming a sooner end). Fails with expiring snapshots covering nothing (the
+// and aspect stays however many cuts are made; each covers "e"'s own delta, ending with it (a
+// cover lasts as long as what it covers, spec/commits.md §5 Covered). Fails with expiring snapshots covering nothing (the
 // cuts' snapshots pile up until "e" ends).
 #[test]
 fn each_cut_replaces_the_last_cuts_expiring_snapshots_spec_commits_5() {
@@ -963,7 +963,7 @@ fn each_cut_replaces_the_last_cuts_expiring_snapshots_spec_commits_5() {
     assert_eq!(e.covered(&x[1], &x[0], &g, &ak).unwrap(), Some(true), "a cut's expiring snapshot does not replace the last cut's");
     assert_eq!(e.covered(&x[0], &x[1], &g, &ak).unwrap(), Some(false));
     for s in &x {
-        assert_eq!(e.covered(s, &delta, &g, &ak).unwrap(), Some(false), "an expiring snapshot covers a delta");
+        assert_eq!(e.covered(s, &delta, &g, &ak).unwrap(), Some(true), "a cover lasts as long as the delta it covers");
     }
 }
 

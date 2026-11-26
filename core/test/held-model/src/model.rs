@@ -93,9 +93,9 @@ pub struct Outcome {
     pub reads: BTreeMap<(ThingId, Aspect), Option<Value>>,
     /// Canonical state per aspect.
     pub states: BTreeMap<(ThingId, Aspect), Frag>,
-    /// Per aspect, the state as it reads once every expiring write has ended: the join of the
-    /// bodies each without them (spec/crdt.md §8 Values), what a snapshot without an expiry carries.
-    pub lasting: BTreeMap<(ThingId, Aspect), Frag>,
+    /// Per aspect, the bodies joined into its state, each without its gone writes
+    /// (`snapshot_state` reads them).
+    pub bodies: BTreeMap<(ThingId, Aspect), Vec<Frag>>,
     /// Fate of every held body.
     pub fates: BTreeMap<PartRef, Fate>,
     /// Held valid bodies holding a write the canonical state does not (replaced content).
@@ -901,7 +901,8 @@ fn judge(h: &Held, ov: &Overlap) -> (Outcome, Timeline) {
                 }
                 let Some(f) = body(p) else { continue };
                 match c.kind {
-                    CommitKind::Snapshot if snap_ok(c, i) && !never_received(c, p) => snaps.push((c.id, f.clone())),
+                    // an expiring snapshot ends whole at its expiry (spec/crdt.md §4.7)
+                    CommitKind::Snapshot if snap_ok(c, i) && !never_received(c, p) && !expired(c, now) => snaps.push((c.id, f.clone())),
                     CommitKind::Content if !never_received(c, p) => own.push((c.id, f.clone())),
                     _ => {}
                 }
@@ -916,8 +917,7 @@ fn judge(h: &Held, ov: &Overlap) -> (Outcome, Timeline) {
         bodies.extend(snaps);
         let bodies: Vec<(CommitId, Frag)> = bodies.into_iter().map(|(id, f)| (id, dots.strip(t, a, &f, &|c| is_gone(c, t, a)))).collect();
         let st = join(bodies.iter().map(|x| x.1.clone()));
-        let expiring = |c: CommitId| h.commits.iter().any(|k| k.id == c && k.expires.is_some());
-        o.lasting.insert((t, a), join(bodies.iter().map(|x| dots.strip(t, a, &x.1, &expiring))));
+        o.bodies.insert((t, a), bodies.iter().map(|x| x.1.clone()).collect());
         o.reads.insert((t, a), st.read());
         o.states.insert((t, a), st);
         contrib.insert((t, a), bodies);
@@ -927,9 +927,8 @@ fn judge(h: &Held, ov: &Overlap) -> (Outcome, Timeline) {
     // dead in the state (not held there, or held there and not winning, spec/crdt.md §4.8),
     // joining into the state leaving it unchanged (the write is dead, not un-merged). Only writes
     // lasting at least as long as the body's own supersede it (spec/crdt.md §4.8): a body is
-    // judged against the state of those alone (a lasting one against what a snapshot carries).
-    // An expiring delta is judged also without its own writes (a snapshot carries none of them,
-    // spec/crdt.md §8): replaced only once others' writes supersede all of it.
+    // judged against the state of those alone: what the cover ending with it carries
+    // (`snapshot_state`).
     let expiry: BTreeMap<CommitId, u64> = h.commits.iter().filter_map(|k| k.expires.map(|e| (k.id, e))).collect();
     for c in view.iter().filter(|c| !c.is_role()) {
         for (i, p) in c.parts.iter().enumerate() {
@@ -954,7 +953,7 @@ fn judge(h: &Held, ov: &Overlap) -> (Outcome, Timeline) {
                 continue;
             }
             let lasts = c.expires.unwrap_or(NEVER);
-            let shorter = |x: CommitId| is_gone(x, t, a) || expiry.get(&x).is_some_and(|&e| e < lasts) || (x == c.id && c.expires.is_some());
+            let shorter = |x: CommitId| is_gone(x, t, a) || expiry.get(&x).is_some_and(|&e| e < lasts);
             let b = dots.strip(t, a, f, &|x| is_gone(x, t, a));
             let bodies: Vec<(CommitId, Frag)> = bodies.iter().map(|(id, bf)| (*id, dots.strip(t, a, bf, &shorter))).collect();
             let st = join(bodies.iter().map(|x| x.1.clone()));
@@ -1169,6 +1168,10 @@ fn fate(
     if p.aspect.signal && !signal_kept(o, c, p, now) {
         return (Fate::MayDrop(DropWhy::PastBound), false);
     }
+    // an expiring snapshot's body goes whole at its expiry (spec/crdt.md §8)
+    if expired(c, now) && c.kind == CommitKind::Snapshot {
+        return (Fate::MustDrop(DropWhy::Gone), false);
+    }
     if expired(c, now) {
         return (Fate::Leftover(LeftoverWhy::Expired), false);
     }
@@ -1192,15 +1195,16 @@ fn fate(
     if p.aspect.fixed() {
         return (keep(KeepWhy::Plain), false);
     }
-    // Covers: a valid snapshot whose part on the aspect covers the body by the join; an expiring
-    // delta only once none of its writes lives (a snapshot carries none of them,
-    // spec/crdt.md §8); a snapshot body only by one stamped later, or at the same `ts` by one with
-    // a lower commit ID (covered-equal, spec/sync-compaction.md §1); another node's own cover
-    // never (only its writer drops a held body under it, spec/commits.md §5 Covered). Each with
-    // whether its commit holds the purge right over the body.
+    // Covers: a valid snapshot ending no earlier than the body (spec/commits.md §5 Covered: a
+    // lasting one any body, one expiring at T a body expiring by T) whose part on the aspect
+    // covers the body by the join; a snapshot body only by one stamped later, or at the same `ts`
+    // by one with a lower commit ID (covered-equal, spec/sync-compaction.md §1); another node's
+    // own cover never (only its writer drops a held body under it, spec/commits.md §5 Covered).
+    // Each with whether its commit holds the purge right over the body.
+    let outlasts = |s: &Commit| s.expires.unwrap_or(NEVER) >= c.expires.unwrap_or(NEVER) && !expired(s, now);
     let covering: Vec<(CommitId, bool)> = live
         .iter()
-        .filter(|s| s.kind == CommitKind::Snapshot && s.id != c.id && o.applied.contains(&s.id) && !(c.kind == CommitKind::Snapshot && (c.ts, s.id) > (s.ts, c.id)) && (!s.own_cover || s.signer == me))
+        .filter(|s| s.kind == CommitKind::Snapshot && s.id != c.id && o.applied.contains(&s.id) && outlasts(s) && !(c.kind == CommitKind::Snapshot && (c.ts, s.id) > (s.ts, c.id)) && (!s.own_cover || s.signer == me))
         .filter(|s| {
             s.parts.iter().enumerate().any(|(j, q)| {
                 q.thing == t && q.aspect == a && o.valid.get(&(s.id, j)) == Some(&true) && !never_received(s, q) && body(q).is_some_and(|sw| covers(sw, &ws))
@@ -1237,21 +1241,37 @@ fn fate(
 }
 
 /// The covering snapshot `me` writes for an aspect from its whole state (spec/commits.md §2), its
-/// purge-by `writer`: what a writer owes for an `owed` body (`Outcome::owed`), or writes to
-/// compact. A snapshot carries no write of an expiring delta (spec/crdt.md §8).
-pub fn cover(h: &Held, o: &Outcome, thing: ThingId, aspect: Aspect, id: CommitId, ts: u64) -> Commit {
-    let f = snapshot_state(o, thing, aspect);
+/// purge-by `writer`, ending at `ends` (`None`: lasting): what a writer owes for an `owed` body
+/// ending then (`owed_covers`), or writes to compact. It carries `snapshot_state`.
+pub fn cover(h: &Held, o: &Outcome, thing: ThingId, aspect: Aspect, ends: Option<u64>, id: CommitId, ts: u64) -> Commit {
+    let f = snapshot_state(h, o, thing, aspect, ends);
     let part = Part { thing, aspect, purge_by: PurgeBy::Writer, body: Body::Held(Delta::Writes(f)), stripped: Default::default(), replaces: None, keys: Default::default() };
     // along a path holding the right over what it owes there, else one giving `me` write
     let path = o.cover_along.get(&(thing, aspect)).or(o.my_paths.get(&thing)).cloned().unwrap_or_default();
-    Commit { id, signer: h.me, author: h.me, paths: [(thing, path)].into(), ts, expires: None, kind: CommitKind::Snapshot, parts: vec![part], purge: vec![], frontier: None, undoes: None, own_cover: false, boxes: vec![] }
+    Commit { id, signer: h.me, author: h.me, paths: [(thing, path)].into(), ts, expires: ends, kind: CommitKind::Snapshot, parts: vec![part], purge: vec![], frontier: None, undoes: None, own_cover: false, boxes: vec![] }
 }
 
-/// What a snapshot of an aspect carries: the state as it reads once every expiring write has
-/// ended (spec/crdt.md §8 Values: no write of an expiring delta, and every write only such writes
-/// superseded).
-pub fn snapshot_state(o: &Outcome, thing: ThingId, aspect: Aspect) -> Frag {
-    o.lasting.get(&(thing, aspect)).cloned().unwrap_or_else(|| Frag::empty(0))
+/// The covers `me` owes (`Outcome::owed`): per aspect, one ending when each owed body ends (a
+/// cover lasts as long as what it covers, spec/commits.md §5 Purge on replace).
+pub fn owed_covers(h: &Held, o: &Outcome) -> BTreeSet<(ThingId, Aspect, Option<u64>)> {
+    o.owed
+        .iter()
+        .filter_map(|&(c, i)| {
+            let c = h.commits.iter().find(|x| x.id == c)?;
+            let p = &c.parts[i];
+            Some((p.thing, p.aspect, c.expires))
+        })
+        .collect()
+}
+
+/// What a snapshot of an aspect ending at `ends` carries: the state as it reads just before then
+/// (spec/crdt.md §8 Values): the join of the bodies, each without the writes ending sooner, so
+/// with every write only those superseded; lasting (`None`), without every write with an end.
+/// It is the state a write ending then dies in (spec/crdt.md §4.8).
+pub fn snapshot_state(h: &Held, o: &Outcome, thing: ThingId, aspect: Aspect, ends: Option<u64>) -> Frag {
+    let dots = Dots::new(h);
+    let sooner = |c: CommitId| h.commits.iter().any(|k| k.id == c && k.expires.is_some_and(|e| ends.is_none_or(|t| e < t)));
+    join(o.bodies.get(&(thing, aspect)).into_iter().flatten().map(|f| dots.strip(thing, aspect, f, &sooner)))
 }
 
 /// The join of fragments, pruned (spec/crdt.md §4.1, §7); nothing is the empty register.

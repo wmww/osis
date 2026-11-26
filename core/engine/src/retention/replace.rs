@@ -51,17 +51,15 @@ fn coverer(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak, right: bool) -> Re
 /// replaced by its own content and writers' covers do not chase each other. Only writes lasting
 /// at least as long as its own supersede (spec/crdt.md §4.8): it is judged against the state
 /// without the writes ending sooner (`snapshot::outlived`; a lasting body: what a snapshot
-/// carries, so a snapshot is not replaced by an expiring write either). A delta with an expiry
-/// is judged also without its own writes, as no snapshot carries them (spec/crdt.md §8):
-/// replaced only once none of its writes lives, when a snapshot of the state covers it
-/// (spec/commits.md §5). `by`: the judging states read so far while the held set stood.
+/// carries, so a snapshot is not replaced by an expiring write either; one with an expiry: what
+/// the cover ending with it carries, `snapshot::write_cover`). `by`: the judging states read so
+/// far while the held set stood.
 pub(super) fn replaced(tx: &mut Tx<'_>, c: &CommitId, ai: usize, tid: &Tid, ak: &Ak, by: &mut OutlivedBy) -> Result<bool> {
     let Some(m) = tx.core.ix.commits.get(c) else { return Ok(false) };
     if !m.valid_at(ai) {
         return Ok(false);
     }
     let life = m.header.expires;
-    let own = (life.is_some() && !super::is_gone(tx.core, c, ai)).then(|| super::writes_of(&m.header, c, ai));
     let by = by.of(tx, tid, ak, life)?;
     let mut out = false;
     super::each_body_piece(tx, c, ai, &mut |tx, f| {
@@ -69,9 +67,6 @@ pub(super) fn replaced(tx: &mut Tx<'_>, c: &CommitId, ai: usize, tid: &Tid, ak: 
             return Ok(());
         }
         let Some(mut st) = super::snapshot::judged_state(tx, tid, ak, &f, by, false)? else { return Ok(()) };
-        if let Some(own) = &own {
-            st.remove_gone(&|d| own.iter().any(|o| o.owns(d)));
-        }
         let mine: BTreeSet<osis_crdt::Dot> = f.live_writes().into_iter().map(|(d, _)| d).collect();
         let there: BTreeSet<osis_crdt::Dot> = st.live_writes().into_iter().map(|(d, _)| d).collect();
         let before = crate::engine::state::encode(&st)?;
@@ -94,7 +89,8 @@ pub(crate) fn settle_none(tx: &mut Tx<'_>) -> Result<()> {
     if tx.core.keep_bodies {
         return Ok(());
     }
-    let mut written: BTreeSet<(Tid, Ak)> = BTreeSet::new();
+    // the covers written this transaction, by aspect and end: at most one each
+    let mut written: BTreeSet<(Tid, Ak, Option<u64>)> = BTreeSet::new();
     while let Some(k) = tx.core.none_due.pop_first() {
         let (tid, ak) = k.clone();
         // a memory transaction writes no durable commit
@@ -130,9 +126,8 @@ pub(crate) fn settle_none(tx: &mut Tx<'_>) -> Result<()> {
         // for what moves that (`wake_covers`). One whose snapshot would hold no right over a body
         // another held cover already drops here owes none for it: its own would add nothing
         // (spec/commits.md §5 Purge on replace)
-        let mut owed = false;
         let ts = tx.core.hlc.peek();
-        let may = if !written.contains(&k) && !uncovered.is_empty() { super::snapshot::may_snapshot(tx, &tid, &ak, memory, ts)? } else { MayWrite::No };
+        let may = if !uncovered.is_empty() { super::snapshot::may_snapshot(tx, &tid, &ak, memory, ts)? } else { MayWrite::No };
         match may {
             MayWrite::Later => await_cover(tx.core, &tid),
             MayWrite::Yes if tx.core.ix.cover_waits.get(&tid).is_some_and(|w| w.contains(&tid)) => {
@@ -141,6 +136,12 @@ pub(crate) fn settle_none(tx: &mut Tx<'_>) -> Result<()> {
             }
             _ => {}
         }
+        // a cover lasts as long as what it covers (spec/commits.md §5 Covered): one per end among
+        // the owed bodies, from the state a write ending then dies in (`snapshot::write_cover`),
+        // so it covers every owed body ending then. Latest first, each only while a body ending
+        // then is still uncovered: a later one covers an earlier body no write ending between
+        // keeps alive
+        let mut owed: Vec<(Option<u64>, CommitId)> = Vec::new();
         if may == MayWrite::Yes {
             let me = tx.core.tid();
             for (c, ai) in &uncovered {
@@ -150,17 +151,23 @@ pub(crate) fn settle_none(tx: &mut Tx<'_>) -> Result<()> {
                 if !super::purge::would_hold_right(tx.core, &me, ts, c, &tid, &ak) && coverer(tx, c, &tid, &ak, false)?.is_some() {
                     continue;
                 }
-                owed = true;
-                break;
+                let ends = tx.core.ix.commits.get(c).and_then(|m| m.header.expires);
+                if !written.contains(&(tid, ak.clone(), ends)) {
+                    owed.push((ends, *c));
+                }
             }
         }
-        if owed {
-            written.insert(k.clone());
+        owed.sort_by_key(|x| std::cmp::Reverse(x.0.unwrap_or(u64::MAX)));
+        for (ends, c) in owed {
+            if written.contains(&(tid, ak.clone(), ends)) || coverer(tx, &c, &tid, &ak, true)?.is_some() {
+                continue;
+            }
+            written.insert((tid, ak.clone(), ends));
             by = OutlivedBy::default();
             // the write's own check has the last word (a removal sweep before it moves its stamp
             // on): a cover that fails leaves nothing and the body to the writers that may, and is
             // reported, never failing the transaction
-            if let Err(e) = tx.step(Step::Cover, |tx| tx.in_class(memory, |tx| super::snapshot::write_snapshot(tx, &tid, &ak, memory))) {
+            if let Err(e) = tx.step(Step::Cover, |tx| tx.in_class(memory, |tx| super::snapshot::write_cover(tx, &tid, &ak, memory, ends))) {
                 tx.core.events.diagnostic(Diagnostic { kind: DiagnosticKind::OwnWriteFailed, tids: vec![tid], commit: None, peer: None, detail: e.to_string() }, tx.core.hlc.mono());
             }
         }

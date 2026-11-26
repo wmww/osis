@@ -1,7 +1,7 @@
 //! A small random history generator (for this crate's properties and for an engine adapter), and a
 //! shuffle of a held set's order. Dependency-free PRNG so a seed means the same history everywhere.
 
-use crate::model::{cover, evaluate, join, snapshot_state};
+use crate::model::{cover, evaluate, join, owed_covers, snapshot_state};
 use crate::types::*;
 use crdt_model::ops::{self, Ty, Writer};
 use std::collections::BTreeSet;
@@ -352,7 +352,7 @@ pub fn history(seed: u64, n: usize) -> Held {
             let h = prefix(author);
             let o = evaluate(&h);
             // a snapshot carries the state as it reads once every expiring write ends (spec/crdt.md §8)
-            let f = snapshot_state(&o, thing, aspect);
+            let f = snapshot_state(&h, &o, thing, aspect, None);
             Commit { kind: CommitKind::Snapshot, parts: vec![plain_part(thing, aspect, PurgeBy::Writer, Delta::Writes(f))], ..base(id, author, ts) }
         } else if roll < 31 && !commits.is_empty() {
             // a creation's purge destroys the thing: drawn less often
@@ -438,11 +438,10 @@ pub fn history(seed: u64, n: usize) -> Held {
         if content && r.chance(80) {
             let h = Held { now: w, me: author, records: RECORDS.to_vec(), commits: commits.clone(), dots: vec![], external_fires: ExternalFires::Any };
             let o = evaluate(&h);
-            let owed: BTreeSet<(ThingId, Aspect)> = o.owed.iter().map(|&(c, i)| { let p = &h.commits.iter().find(|x| x.id == c).unwrap().parts[i]; (p.thing, p.aspect) }).collect();
-            for (thing, aspect) in owed {
+            for (thing, aspect, ends) in owed_covers(&h, &o) {
                 logical += 1;
                 let id = new_id(&mut r);
-                commits.push(cover(&h, &o, thing, aspect, id, w * MS + logical));
+                commits.push(cover(&h, &o, thing, aspect, ends, id, w * MS + logical));
             }
         }
     }

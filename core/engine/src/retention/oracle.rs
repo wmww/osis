@@ -13,9 +13,10 @@ use std::collections::BTreeSet;
 
 pub(crate) fn covered(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<Option<bool>> {
     let (Some(sai), Some(cai)) = (super::aspect_index(tx.core, s, tid, ak), super::aspect_index(tx.core, c, tid, ak)) else { return Ok(None) };
-    // an expiring snapshot covers only an expiring snapshot ending with it (spec/commits.md §5 Covered)
-    let ends = |x: &CommitId| tx.core.ix.commits.get(x).and_then(|m| m.header.expires.filter(|_| m.header.kind.is_compaction()));
-    if !crate::apply::copies::snapshot_valid(tx.core, s, tid, ak) || ends(s).is_some_and(|t| ends(c) != Some(t)) {
+    // a cover lasts as long as what it covers: an expiring snapshot only a body ending no later
+    // (spec/commits.md §5 Covered)
+    let ends = |x: &CommitId| tx.core.ix.commits.get(x).and_then(|m| m.header.expires);
+    if !crate::apply::copies::snapshot_valid(tx.core, s, tid, ak) || ends(s).is_some_and(|t| ends(c).is_none_or(|e| e > t)) {
         return Ok(Some(false));
     }
     if super::snapshot::stamped_later(tx.core, c, s) {

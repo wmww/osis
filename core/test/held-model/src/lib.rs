@@ -23,5 +23,5 @@ pub mod thing_history;
 pub mod types;
 pub mod undo;
 
-pub use model::{act, at_quiet, cover, creation, evaluate, evaluate_with, join, judged, judged_with, promotes, kept_until, snapshot_state, timeline, Dots, DropWhy, Fate, KeepWhy, LeftoverWhy, Outcome, PartRef};
+pub use model::{act, at_quiet, cover, creation, owed_covers, evaluate, evaluate_with, join, judged, judged_with, promotes, kept_until, snapshot_state, timeline, Dots, DropWhy, Fate, KeepWhy, LeftoverWhy, Outcome, PartRef};
 pub use types::*;

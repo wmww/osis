@@ -172,21 +172,22 @@ pub(crate) fn carried_meets(core: &Core, tid: &Tid, ak: &Ak, own: &[Owned]) -> b
     core.ix.snapshots.get(&(*tid, ak.clone())).into_iter().flatten().any(|s| s.4.meets(own))
 }
 
-/// The state of `(tid, ak)` a snapshot of it carries: this node's state as it reads once every
-/// write with an end has ended (spec/crdt.md §4.7, §8 Values): no write of a delta with an
-/// expiry, nor one held only from an expiring snapshot (`expiring_writes`), so its copy never
-/// outlives the write, and every write only those superseded, so a node holding it reads as
-/// without them: the stored state without them, joined a page at a time with what only they
-/// superseded (`SnapState::join_in`). `None`: no state.
-pub(crate) fn snapshot_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Option<SnapState>> {
+/// The state of `(tid, ak)` a snapshot of it ending at `ends` carries (`None`: a lasting one):
+/// this node's state as it reads just before then (spec/crdt.md §4.7, §8 Values), the state a
+/// write ending then dies in (spec/crdt.md §4.8): no write ending sooner (a lasting one: no write
+/// of a delta with an expiry, nor one held only from an expiring snapshot, `ending_before`), so
+/// its copy never outlives the write, and every write only those superseded, so a node holding it
+/// reads as without them: the stored state without them, joined a page at a time with what only
+/// they superseded (`SnapState::join_in`). `None`: no state.
+pub(crate) fn snapshot_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, ends: Option<u64>) -> Result<Option<SnapState>> {
     let Some(mut st) = SnapState::stored(tx, tid, ak, Carries::AllBut(Vec::new()))? else { return Ok(None) };
-    let expiring = expiring_writes(tx, tid, ak)?;
-    if expiring.is_empty() {
+    let sooner = ending_before(tx, tid, ak, ends)?;
+    if sooner.is_empty() {
         return Ok(Some(st));
     }
-    let ends = Ends { all: expiring.clone(), keep: Vec::new() };
-    let over = superseded(tx, tid, ak, &expiring, std::slice::from_ref(&ends))?.pop().unwrap_or_default();
-    st.carries = Carries::AllBut(expiring);
+    let ends = Ends { all: sooner.clone(), keep: Vec::new() };
+    let over = superseded(tx, tid, ak, &sooner, std::slice::from_ref(&ends))?.pop().unwrap_or_default();
+    st.carries = Carries::AllBut(sooner);
     st.join_in(tx, tid, ak, ends, over)?;
     Ok(Some(st))
 }
@@ -537,13 +538,20 @@ pub(crate) fn expiring_copies(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<BTr
             Ok(())
         })?;
     }
-    let mut dots: BTreeMap<u64, BTreeMap<osis_crdt::Source, BTreeSet<u64>>> = BTreeMap::new();
+    // a write lives while any held body holds a copy of it (spec/crdt.md §4.8): each by the
+    // latest expiry carrying it
+    let mut last: BTreeMap<(osis_crdt::Source, u64), u64> = BTreeMap::new();
     for (t, f) in &expiring {
         for (d, _) in f.writes() {
             if tx.core.write_expiry(tid, ak, &d).is_none() && !lasting.contains(&(d.src.clone(), d.ctr)) {
-                dots.entry(*t).or_default().entry(d.src).or_default().insert(d.ctr);
+                let e = last.entry((d.src, d.ctr)).or_insert(*t);
+                *e = (*e).max(*t);
             }
         }
+    }
+    let mut dots: BTreeMap<u64, BTreeMap<osis_crdt::Source, BTreeSet<u64>>> = BTreeMap::new();
+    for ((src, ctr), t) in last {
+        dots.entry(t).or_default().entry(src).or_default().insert(ctr);
     }
     for (t, by) in dots {
         out.insert(t, by.into_iter().map(|(src, ctrs)| Owned::Dots { src, ctrs: ctrs.into_iter().collect() }).collect());
@@ -846,12 +854,12 @@ pub(super) fn by_id(kind: Kind, form: Form) -> bool {
 }
 
 /// Whether snapshot `s` may cover body `c` by their expiries (spec/commits.md §5 Covered): a
-/// lasting one any; an expiring one, whose copies end at its expiry, sooner than another body's
-/// may, only an expiring snapshot ending then (so each cut's expiring snapshots replace the last
-/// cut's: one per expiry and aspect stays).
+/// cover lasts as long as what it covers. A lasting one any; an expiring one, whose copies end
+/// at its expiry, only a body ending no later (so a forged expiry never drops a lasting body
+/// early).
 pub(crate) fn expiry_covers(core: &Core, s: &CommitId, c: &CommitId) -> bool {
-    let ends = |x: &CommitId| core.ix.commits.get(x).and_then(|m| m.header.expires.filter(|_| m.header.kind.is_compaction()));
-    ends(s).is_none_or(|t| ends(c) == Some(t))
+    let ends = |x: &CommitId| core.ix.commits.get(x).and_then(|m| m.header.expires);
+    ends(s).is_none_or(|t| ends(c).is_some_and(|e| e <= t))
 }
 
 /// Whether `c` is a compaction snapshot stamped later than `s`.
@@ -1290,17 +1298,26 @@ pub(crate) fn carried_passes_on(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<b
 /// `Engine::snapshot` in `tx` (`memory`: the aspect is ephemeral, `tx` in the memory class):
 /// a snapshot of `(tid, ak)` from this node's whole state, applied here.
 pub(crate) fn write_snapshot(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, memory: bool) -> Result<Option<CommitId>> {
-    snapshot_from_state(tx, tid, ak, memory, false)
+    snapshot_from_state(tx, tid, ak, memory, None, false)
+}
+
+/// A cover of `(tid, ak)` ending at `ends` (spec/commits.md §5 Purge on replace: a cover lasts as
+/// long as what it covers): `write_snapshot` for a lasting one, else an expiring snapshot from
+/// this node's whole state as it reads just before then (`snapshot_state`), its tables claiming
+/// nothing (spec/crdt.md §8). One ending by the stamp it would carry is none (`None`): what it
+/// would cover has ended.
+pub(crate) fn write_cover(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, memory: bool, ends: Option<u64>) -> Result<Option<CommitId>> {
+    snapshot_from_state(tx, tid, ak, memory, ends, false)
 }
 
 /// This node's own cover of durable `(tid, ak)` at a removal (spec/permissions.md §5.1, Own
 /// cover): `write_snapshot` marked so (spec/wire.md §4 field 17).
 pub(crate) fn write_own_cover(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Option<CommitId>> {
-    snapshot_from_state(tx, tid, ak, false, true)
+    snapshot_from_state(tx, tid, ak, false, None, true)
 }
 
-/// `write_snapshot`, an own cover when `own_cover`.
-fn snapshot_from_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, memory: bool, own_cover: bool) -> Result<Option<CommitId>> {
+/// `write_snapshot`, ending at `ends` (`write_cover`), an own cover when `own_cover`.
+fn snapshot_from_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, memory: bool, ends: Option<u64>, own_cover: bool) -> Result<Option<CommitId>> {
     let (tid, ak) = (*tid, ak.clone());
     // what no write can show any more goes first, by ordinary commits of at most
     // `MAX_DELTA_BARE` content-less elements each: its bodies die and the snapshot does not
@@ -1322,8 +1339,12 @@ fn snapshot_from_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, memory: bool, own_co
     if may_snapshot(tx, &tid, &ak, memory, ts)? != MayWrite::Yes {
         return Err(Error::Permission { tid, needs: osis_base::Role::Write });
     }
+    // stamped at or past its end, a snapshot is invalid (spec/commits.md §6)
+    if ends.is_some_and(|t| t <= ts.wall_ms().0) {
+        return Ok(None);
+    }
     let node = tx.core.tid();
-    let Some(mut st) = snapshot_state(tx, &tid, &ak)? else { return Ok(None) };
+    let Some(mut st) = snapshot_state(tx, &tid, &ak, ends)? else { return Ok(None) };
     // what a `secrets.0` snapshot leaves out reads its value whole: a roster's keys, not a large state
     let left_out = if ak.as_str() == "secrets.0" {
         st = SnapState::from(st.whole(tx, &tid, &ak)?);
@@ -1335,6 +1356,10 @@ fn snapshot_from_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, memory: bool, own_co
     // frontiers cover only counters whose writes this state reflects: applied, valid, from the
     // held valid snapshots' frontiers on (`frontiers_now`); `build_snapshot` lists the sessions
     // occurring in it and those of the commits held (spec/crdt.md §8)
+    // an expiring one carries part of the state: its tables claim nothing (spec/crdt.md §8)
+    if ends.is_some() {
+        return build_snapshot(tx, tid, ak, st, ts, node, Frontiers::default(), Default::default(), ends, own_cover).map(Some);
+    }
     let (frontiers, _) = frontiers_now(tx, &tid, &ak, memory, &valid_on);
     // commit-form commits whose valid writes the state reflects, every one (none left out)
     let mut absorbed = std::collections::BTreeMap::new();

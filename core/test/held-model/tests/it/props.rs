@@ -83,13 +83,10 @@ fn settle(mut h: Held, full: Option<&Held>, seed: u64, seen: &mut Seen) -> Held 
                 seen.gone.insert((p.thing, p.aspect));
             }
         }
-        let mut owed: Vec<(ThingId, Aspect)> = o.owed.iter().map(|&(c, i)| { let p = &h.commits.iter().find(|x| x.id == c).unwrap().parts[i]; (p.thing, p.aspect) }).collect();
-        owed.sort();
-        owed.dedup();
         let written = h.commits.iter().filter(|c| c.id >= COVER_ID).count() as CommitId;
-        for (k, (t, a)) in owed.into_iter().enumerate() {
+        for (k, (t, a, ends)) in owed_covers(&h, &o).into_iter().enumerate() {
             let id = COVER_ID + written + k as CommitId;
-            n.commits.push(cover(&h, &o, t, a, id, h.now * MS + 1 + written as u64 + k as u64));
+            n.commits.push(cover(&h, &o, t, a, ends, id, h.now * MS + 1 + written as u64 + k as u64));
         }
         // a drop or strip changes no read
         if n != h {

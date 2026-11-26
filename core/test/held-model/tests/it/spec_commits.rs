@@ -131,7 +131,7 @@ fn none_body_is_owed_a_cover_at_the_kill_and_drops_covered_spec_commits_5() {
     assert!(o.under_purge.contains(&(10, 0)));
     assert_eq!(o.owed, [(10, 0)].into_iter().collect(), "the writer owes the cover");
     assert_eq!(o.fates[&(10, 0)], Fate::Keep(KeepWhy::Plain), "until it is covered");
-    let s = cover(&h, &o, T, REG, 12, ts(2) + 1);
+    let s = cover(&h, &o, T, REG, None, 12, ts(2) + 1);
     assert_eq!(s.parts[0].purge_by, PurgeBy::Writer);
     let mut cs2 = cs.clone();
     cs2.push(s);
@@ -192,7 +192,7 @@ fn none_body_partly_replaced_is_covered_by_the_state_snapshot_spec_commits_5() {
     let o = evaluate(&h);
     assert_eq!(o.owed, [(10, 0)].into_iter().collect());
     let mut h2 = h.clone();
-    h2.commits.push(cover(&h, &o, T, MAP, 12, ts(2) + 1));
+    h2.commits.push(cover(&h, &o, T, MAP, None, 12, ts(2) + 1));
     let o2 = evaluate(&h2);
     assert_eq!(o2.fates[&(10, 0)], Fate::MustDrop(DropWhy::Covered { by: 12 }));
     let h3 = act(&h2, &o2, None);
@@ -214,7 +214,7 @@ fn snapshot_under_purge_on_replace_drops_covered_spec_commits_5() {
     let o = evaluate(&h);
     assert!(o.under_purge.contains(&(12, 0)) && o.owed.contains(&(12, 0)));
     let mut h2 = h.clone();
-    h2.commits.push(cover(&h, &o, T, REG, 14, ts(3) + 1));
+    h2.commits.push(cover(&h, &o, T, REG, None, 14, ts(3) + 1));
     assert_eq!(fate(&h2, 12), Fate::MustDrop(DropWhy::Covered { by: 14 }));
 }
 
@@ -231,7 +231,7 @@ fn a_write_beaten_only_by_a_shorter_one_lives_spec_crdt_4_8() {
     let o = evaluate(&h);
     assert!(!o.replaced.contains(&(10, 0)) && o.owed.is_empty(), "beaten only by an expiring write: not replaced");
     let mut h2 = h.clone();
-    h2.commits.push(cover(&h, &o, T, REG, 14, ts(3) + 1));
+    h2.commits.push(cover(&h, &o, T, REG, None, 14, ts(3) + 1));
     let o2 = evaluate(&h2);
     assert!(!o2.replaced.contains(&(14, 0)) && o2.owed.is_empty(), "the cover settles");
     let h3 = act(&h2, &o2, Some((10, 0)));
@@ -247,6 +247,36 @@ fn a_write_beaten_only_by_a_shorter_one_lives_spec_crdt_4_8() {
     c.push(f);
     let o = evaluate(&held(4, c));
     assert!(o.replaced.contains(&(11, 0)) && !o.replaced.contains(&(10, 0)));
+}
+
+// spec/commits.md §5 (Covered; Purge on replace), spec/crdt.md §8: a cover lasts as long as what
+// it covers. An expiring write outlasted by another expiring one is replaced; the writer's cover
+// ends with it, carrying the state it died in, so it drops at once and nothing more is owed. A
+// lasting cover carries neither expiring write and covers nothing (the chase, its control).
+#[test]
+fn an_outlasted_expiring_write_drops_under_a_cover_ending_with_it_spec_commits_5() {
+    let mut x1 = reg(11, MINT_ADMIN, 2, REG, PurgeBy::AuthorOrAdmin, 2);
+    x1.expires = Some(at(5));
+    let mut x2 = reg(12, MINT_ADMIN, 3, REG, PurgeBy::AuthorOrAdmin, 3);
+    x2.expires = Some(at(7));
+    let h = held(3, vec![setting(5, 0, REG, Opt::Purge), reg(10, MINT_ADMIN, 1, REG, PurgeBy::AuthorOrAdmin, 1), x1, x2]);
+    let o = evaluate(&h);
+    assert!(o.under_purge.contains(&(11, 0)) && o.owed.contains(&(11, 0)));
+    assert_eq!(owed_covers(&h, &o), [(T, REG, Some(at(5)))].into_iter().collect());
+    let mut lasting = h.clone();
+    lasting.commits.push(cover(&h, &o, T, REG, None, 14, ts(3) + 1));
+    assert!(evaluate(&lasting).owed.contains(&(11, 0)), "a lasting cover covers no outlasted expiring write");
+    let mut h2 = h.clone();
+    h2.commits.push(cover(&h, &o, T, REG, Some(at(5)), 14, ts(3) + 1));
+    let o2 = evaluate(&h2);
+    assert!(o2.owed.is_empty(), "the cover settles");
+    assert_eq!(o2.fates[&(11, 0)], Fate::MustDrop(DropWhy::Covered { by: 14 }));
+    let h3 = act(&h2, &o2, None);
+    assert!(evaluate(&h3).owed.is_empty());
+    for (now, v) in [(3, 3), (4, 3), (6, 3), (8, 1)] {
+        assert_eq!(read(&Held { now: at(now), ..h3.clone() }, REG), int(v), "at {now}");
+        assert_eq!(read(&Held { now: at(now), ..h3.clone() }, REG), read(&Held { now: at(now), ..h.clone() }, REG), "at {now}: as before the drop");
+    }
 }
 
 // spec/sync-compaction.md §1 (covered-equal): of two snapshots at one `ts` covering each other, only the lower
@@ -471,7 +501,7 @@ fn copy_leftover_drops_as_covered_spec_commits_5() {
     assert_eq!(fate(&held(2, cs.clone()), 15), Fate::Leftover(LeftoverWhy::Copy));
     let h = held(3, cs);
     let mut h2 = h.clone();
-    h2.commits.push(cover(&h, &evaluate(&h), T, REG, 16, ts(3)));
+    h2.commits.push(cover(&h, &evaluate(&h), T, REG, None, 16, ts(3)));
     assert_eq!(fate(&h2, 15), Fate::MayDrop(DropWhy::Covered { by: 16 }));
 }
 
