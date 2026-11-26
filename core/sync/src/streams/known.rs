@@ -187,9 +187,9 @@ impl Known {
     }
 
     /// Everything a connection's source showed goes with it (its ephemeral entries and what a
-    /// peer with no record showed).
+    /// peer with no record showed): the rows under the tags `Known` keeps.
     pub fn forget_source(&mut self, src: Source) -> crate::types::Result<()> {
-        self.store.with_tx_in(true, |t| source::forget_source(t, src))
+        self.store.with_tx_in(true, |t| source::forget_tags(t, src, |x| [PRESENT, HEAD, KEPT, FULL, REFUSED].contains(&x)))
     }
 
     /// Whether `src`'s stream showed `b` present under S.

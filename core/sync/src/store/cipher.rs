@@ -180,7 +180,6 @@ impl osis_store::CipherStore for Inner {
             room: self.room.clone(),
             room_fx: self.room_fx.clone(),
             room_gone: self.room_gone.clone(),
-            room_conn: self.room_conn.clone(),
             clock: self.clock.clone(),
         })
     }

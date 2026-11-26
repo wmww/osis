@@ -165,11 +165,31 @@ pub(crate) fn drop_row(t: &mut Transaction<'_>, src: Source, tag: u8, s: &SyncId
     remove(t, src, tag, s, key).map(|_| ())
 }
 
+/// The sync IDs under which `src` keeps a memory row under `tag`. O(its memory rows).
+pub(crate) fn syncs_under(t: &mut Transaction<'_>, src: Source, tag: u8) -> Result<Vec<SyncId>, Error> {
+    let mut out = Vec::new();
+    for (k, _) in t.scan_local(&[ROW, &rows::source_bytes(src)[..]].concat(), b"", usize::MAX)? {
+        let (_, s, x, _) = parse(&k)?;
+        if x == tag {
+            out.push(s);
+        }
+    }
+    Ok(out)
+}
+
 /// Every memory row of `src` goes (the source went). O(its rows).
 pub(crate) fn forget_source(t: &mut Transaction<'_>, src: Source) -> Result<(), Error> {
+    forget_tags(t, src, |_| true)
+}
+
+/// `src`'s memory rows under each tag `owned` takes go: an owner forgets its own tags as the
+/// source goes for it. O(its rows).
+pub(crate) fn forget_tags(t: &mut Transaction<'_>, src: Source, owned: impl Fn(u8) -> bool) -> Result<(), Error> {
     for (k, _) in t.scan_local(&[ROW, &rows::source_bytes(src)[..]].concat(), b"", usize::MAX)? {
         let (src, s, tag, key) = parse(&k)?;
-        drop_row(t, src, tag, &s, key)?;
+        if owned(tag) {
+            drop_row(t, src, tag, &s, key)?;
+        }
     }
     Ok(())
 }

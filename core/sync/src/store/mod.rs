@@ -47,7 +47,7 @@ impl Members for BTreeMap<SyncId, Option<Position>> {
     }
 }
 
-use crate::types::{ConnId, Cursor, Entry, Position, RecordId, Result};
+use crate::types::{Cursor, Entry, Position, RecordId, Result};
 use entries::Removal;
 use memory::Memory;
 use osis_base::format::{MAX_BLOB, TOMBSTONE_LIFETIME_MS};
@@ -280,10 +280,6 @@ pub(crate) struct Inner {
     /// The full sync IDs ended since the last `room_grew` by their last room mark going
     /// (`unmark`): their rows went then, `room_grew` reports them.
     room_gone: BTreeSet<SyncId>,
-    /// The room marks of sources that are connections (spec/sync-streams.md §4 Full; a record's
-    /// are its rows, `tag::ROOM_AT`): per S, each connection's, whether owed. Gone with the
-    /// connection (`gone`).
-    room_conn: BTreeMap<SyncId, BTreeMap<ConnId, bool>>,
     /// `now` as read by `room_fits` (an expiry it waits for is a wake, `next_wake`).
     clock: Clock,
 }
@@ -302,7 +298,7 @@ impl Inner {
     /// `expires`, whose place passes it at each of `from`: S is full, durably, keeping the least
     /// need and the latest expiry that cap refused (`Store::room_grew`), and each of `from` with
     /// no room mark of S gets one standing (an owed one stays owed: its pull from the start shows
-    /// the entry again), in the same transaction.
+    /// the entry again), a record's in the same transaction (a connection's in the memory part).
     fn wait_room(&mut self, s: &SyncId, cap: Cap, need: u64, expires: Option<WallMs>, from: &[Source]) -> Result<()> {
         let expires = expires.map_or(u64::MAX, |t| t.0);
         let r = match self.room.get(&(*s, cap)) {
@@ -310,32 +306,22 @@ impl Inner {
             None => Refused { need, expires },
         };
         let moved = self.room.get(&(*s, cap)) != Some(&r);
-        let conns: Vec<ConnId> = from.iter().filter_map(|x| if let Source::Conn(c) = x { Some(*c) } else { None }).filter(|c| !self.room_conn.get(s).is_some_and(|m| m.contains_key(c))).collect();
-        let recs: Vec<RecordId> = from.iter().filter_map(|x| if let Source::Record(r) = x { Some(*r) } else { None }).collect();
-        let recs: Vec<RecordId> = self.read(|t, _| {
-            let mut out = Vec::new();
-            for rec in recs {
-                if t.record_get_row(&rec, ROOM_AT, s, b"")?.is_none() {
-                    out.push(rec);
-                }
+        let mut new = Vec::new();
+        for src in from {
+            if self.mark(s, *src)?.is_none() {
+                new.push(*src);
             }
-            Ok(out)
-        })?;
-        if !moved && conns.is_empty() && recs.is_empty() {
+        }
+        if !moved && new.is_empty() {
             return Ok(());
         }
         self.write(|t, _| {
             if moved {
                 t.put_local(&room_key(s, cap), &[r.need.to_be_bytes(), r.expires.to_be_bytes()].concat(), Shred::No)?;
             }
-            for rec in &recs {
-                t.record_put_row(rec, ROOM_AT, s, b"", vec![rows::ROOM_STANDS])?;
-            }
-            Ok(())
+            Ok(set_marks(t, s, &new, Some(rows::ROOM_STANDS))?)
         })?;
-        for c in conns {
-            self.room_conn.entry(*s).or_default().insert(c, false);
-        }
+        self.write_in(true, |t, _| Ok(set_marks(t, s, &new, Some(rows::ROOM_STANDS))?))?;
         if moved {
             self.room.insert((*s, cap), r);
             self.mem.stamps.wrote(&RoomNeed(s, cap), true);
@@ -354,32 +340,29 @@ impl Inner {
     /// too (spec/sync-streams.md §4 Full), reported at the next `room_grew`. O(S's room marks
     /// read: one).
     fn unmark(&mut self, s: &SyncId, srcs: &[Source], f: impl FnOnce(&mut Transaction<'_>) -> std::result::Result<(), osis_store::Error>) -> Result<()> {
-        let conns_left = self.room_conn.get(s).is_some_and(|m| m.keys().any(|c| !srcs.contains(&Source::Conn(*c))));
+        let conns_left = self.read_in(true, |t, _| Ok(source::with_row(t, s, ROOM_AT, b"", usize::MAX)?.iter().any(|c| !srcs.contains(c))))?;
         let full = self.full(s);
         let ended = self.write(|t, _| {
             f(t)?;
-            for src in srcs {
-                if let Source::Record(rec) = src {
-                    t.record_remove_row(rec, ROOM_AT, s, b"")?;
-                }
-            }
-            let ended = full && !conns_left && !t.records_any_row(s, ROOM_AT, b"")?;
+            set_marks(t, s, srcs, None)?;
+            let ended = full && !conns_left && !source::any_row(t, s, ROOM_AT, b"")?;
             if ended {
                 remove_room_rows(t, s)?;
             }
             Ok(ended)
         })?;
-        if let Some(m) = self.room_conn.get_mut(s) {
-            m.retain(|c, _| !srcs.contains(&Source::Conn(*c)));
-            if m.is_empty() {
-                self.room_conn.remove(s);
-            }
-        }
+        self.write_in(true, |t, _| Ok(set_marks(t, s, srcs, None)?))?;
         if ended {
             self.forget_room(s);
             self.room_gone.insert(*s);
         }
         Ok(())
+    }
+
+    /// `src`'s room mark of S (in the source's own part, `source::home`): whether owed; none
+    /// where it has none.
+    fn mark(&mut self, s: &SyncId, src: Source) -> Result<Option<bool>> {
+        self.read_in(source::home(src), |t, _| Ok(source::get(t, src, ROOM_AT, s, b"")?.map(|v| v == [rows::ROOM_OWED])))
     }
 
     /// S full under no cap, in memory (its `R/` rows go with `remove_room_rows`).
@@ -517,7 +500,7 @@ impl Store {
     pub fn open(backend: Box<dyn osis_store::Backend>, root: Box<dyn osis_store::RootStorage>, mut rng: Box<dyn osis_crypto::NodeRng>) -> Result<Store> {
         let store = osis_store::Store::open_or_create(backend, root, osis_store::StoreConfig::default(), &mut *rng)?;
         let ram = osis_store::Store::create(Box::new(osis_store::MemoryBackend::new()), Box::new(osis_store::MemoryRoot::new()), osis_store::StoreConfig::default(), &mut *rng)?;
-        let mut inner = Inner { store, ram, rng, open: None, now: WallMs(0), holdings: BTreeMap::new(), caps: Caps::default(), policy: Policy::default(), mem: Memory::default(), paths: path::Paths::default(), total: None, past_cap: BTreeMap::new(), unheld: BTreeSet::new(), room: BTreeMap::new(), room_fx: Effects::new(ROOM_JUDGED), room_gone: BTreeSet::new(), room_conn: BTreeMap::new(), clock: Clock::default() };
+        let mut inner = Inner { store, ram, rng, open: None, now: WallMs(0), holdings: BTreeMap::new(), caps: Caps::default(), policy: Policy::default(), mem: Memory::default(), paths: path::Paths::default(), total: None, past_cap: BTreeMap::new(), unheld: BTreeSet::new(), room: BTreeMap::new(), room_fx: Effects::new(ROOM_JUDGED), room_gone: BTreeSet::new(), clock: Clock::default() };
         inner.write(|t, env| {
             // a start ends every connection: each one charged or bringing goes (connection
             // numbers start again, so none may name the next one given it)
@@ -541,7 +524,7 @@ impl Store {
         inner.room = inner.write(|t, _| {
             let mut kept = BTreeMap::new();
             for (k, r) in room {
-                if !t.records_any_row(&k.0, ROOM_AT, b"")? {
+                if !source::any_row(t, &k.0, ROOM_AT, b"")? {
                     t.remove_local(&room_key(&k.0, k.1), Shred::No)?;
                 } else {
                     kept.insert(k, r);
@@ -1467,7 +1450,6 @@ impl Store {
         })?;
         g.forget_room(s);
         g.room_gone.remove(s);
-        g.room_conn.remove(s);
         g.mem.forget(s);
         g.mem.shreds.wrote_added(s, true, true);
         g.past_cap.remove(s);
@@ -1515,14 +1497,16 @@ impl Store {
     /// marks).
     pub fn room_marks(&self, s: &SyncId) -> Result<Vec<(Source, bool)>> {
         let mut g = self.lock();
-        let mut out: Vec<(Source, bool)> = g.room_conn.get(s).into_iter().flatten().map(|(c, o)| (Source::Conn(*c), *o)).collect();
-        g.read(|t, _| {
-            for rec in t.records_with_row(s, ROOM_AT, b"", usize::MAX)? {
-                let v = t.record_get_row(&rec, ROOM_AT, s, b"")?;
-                out.push((Source::Record(rec), v.as_deref() == Some(&[rows::ROOM_OWED][..])));
-            }
-            Ok(())
-        })?;
+        let mut out = Vec::new();
+        for memory in [true, false] {
+            out.extend(g.read_in(memory, |t, _| {
+                let mut v = Vec::new();
+                for src in source::with_row(t, s, ROOM_AT, b"", usize::MAX)? {
+                    v.push((src, source::get(t, src, ROOM_AT, s, b"")?.as_deref() == Some(&[rows::ROOM_OWED][..])));
+                }
+                Ok(v)
+            })?);
+        }
         Ok(out)
     }
 
@@ -1564,24 +1548,14 @@ impl Store {
     /// S: a source whose place passed nothing refused shows nothing of it.
     pub fn refused_may_be_gone(&mut self, s: &SyncId, src: Source) -> Result<()> {
         let mut g = self.lock();
-        let mark = match src {
-            Source::Conn(c) => g.room_conn.get(s).and_then(|m| m.get(&c)).copied(),
-            Source::Record(rec) => g.read(|t, _| Ok(t.record_get_row(&rec, ROOM_AT, s, b"")?.map(|v| v == [rows::ROOM_OWED])))?,
-        };
-        if mark != Some(false) {
+        if g.mark(s, src)? != Some(false) {
             return Ok(());
         }
         let feed = g.write(|t, env| {
-            if let Source::Record(rec) = src {
-                t.record_put_row(&rec, ROOM_AT, s, b"", vec![rows::ROOM_OWED])?;
-            }
+            set_marks(t, s, &[src], Some(rows::ROOM_OWED))?;
             mark_some(t, env, s)
         })?;
-        if let Source::Conn(c) = src
-            && let Some(o) = g.room_conn.get_mut(s).and_then(|m| m.get_mut(&c))
-        {
-            *o = true;
-        }
+        g.write_in(true, |t, _| Ok(set_marks(t, s, &[src], Some(rows::ROOM_OWED))?))?;
         if feed {
             g.mem.anew.wrote_added(s, true, true);
         }
@@ -1593,11 +1567,7 @@ impl Store {
     /// refuses again marks it again.
     pub fn listed_from_start(&mut self, s: &SyncId, src: Source) -> Result<()> {
         let mut g = self.lock();
-        let marked = match src {
-            Source::Conn(c) => g.room_conn.get(s).is_some_and(|m| m.contains_key(&c)),
-            Source::Record(rec) => g.read(|t, _| Ok(t.record_get_row(&rec, ROOM_AT, s, b"")?.is_some()))?,
-        };
-        if !marked {
+        if g.mark(s, src)?.is_none() {
             return Ok(());
         }
         g.unmark(s, &[src], |_| Ok(()))
@@ -1635,14 +1605,12 @@ impl Store {
     /// again where present), and what was kept for a connection alone goes. One transaction.
     pub fn gone(&mut self, src: Source) -> Result<()> {
         let mut g = self.lock();
+        // a connection's room marks go with its memory rows: each S they marked is judged again
+        let marked = g.read_in(true, |t, _| Ok(source::syncs_under(t, src, ROOM_AT)?))?;
         Self::gone_memory(&mut g, src)?;
         g.write(|t, env| Self::gone_from(t, env, src))?;
-        // a connection's room marks go with it
-        if let Source::Conn(c) = src {
-            let marked: Vec<SyncId> = g.room_conn.iter().filter(|(_, m)| m.contains_key(&c)).map(|(s, _)| *s).collect();
-            for s in marked {
-                g.unmark(&s, &[src], |_| Ok(()))?;
-            }
+        for s in marked {
+            g.unmark(&s, &[src], |_| Ok(()))?;
         }
         Ok(())
     }
@@ -2064,12 +2032,8 @@ fn end_full(g: &mut Inner, ended: &BTreeSet<SyncId>) -> Result<()> {
         }
         for s in ended {
             let unread = env.holding(s) == Some(Holding::Unread);
-            for rec in t.records_with_row(s, ROOM_AT, b"", usize::MAX)? {
-                match unread {
-                    true => t.record_put_row(&rec, ROOM_AT, s, b"", vec![rows::ROOM_OWED])?,
-                    false => drop(t.record_remove_row(&rec, ROOM_AT, s, b"")?),
-                }
-            }
+            let srcs = source::with_row(t, s, ROOM_AT, b"", usize::MAX)?;
+            set_marks(t, s, &srcs, unread.then_some(rows::ROOM_OWED))?;
             if mark_some(t, env, s)? {
                 anew.push(*s);
             }
@@ -2090,14 +2054,13 @@ fn end_full(g: &mut Inner, ended: &BTreeSet<SyncId>) -> Result<()> {
         g.room.remove(k);
         g.room_fx.unwant(k);
     }
-    for s in ended {
-        if !anew.contains(s) {
-            g.room_conn.remove(s);
+    g.write_in(true, |t, _| {
+        for s in ended {
+            let srcs = source::with_row(t, s, ROOM_AT, b"", usize::MAX)?;
+            set_marks(t, s, &srcs, anew.contains(s).then_some(rows::ROOM_OWED))?;
         }
-        for o in g.room_conn.get_mut(s).into_iter().flat_map(|m| m.values_mut()) {
-            *o = true;
-        }
-    }
+        Ok(())
+    })?;
     for s in &anew {
         g.mem.anew.wrote_added(s, true, true);
     }
@@ -2116,6 +2079,19 @@ fn mark_some(t: &mut Transaction<'_>, env: &Env<'_>, s: &SyncId) -> Result<bool>
         t.put_local(&mark, rows::ANEW_SOME, Shred::No)?;
     }
     Ok(true)
+}
+
+/// In `t`: each of `srcs` whose own part (`source::home`) `t` is sets its room mark of S to `v`
+/// (none: it goes); the others are written in their own part's transaction.
+fn set_marks(t: &mut Transaction<'_>, s: &SyncId, srcs: &[Source], v: Option<u8>) -> std::result::Result<(), osis_store::Error> {
+    let memory = t.is_memory();
+    for src in srcs.iter().filter(|x| source::home(**x) == memory) {
+        match v {
+            Some(v) => source::put(t, *src, ROOM_AT, s, b"", vec![v])?,
+            None => drop(source::remove(t, *src, ROOM_AT, s, b"")?),
+        }
+    }
+    Ok(())
 }
 
 /// Settles each due full key (`room_fits`); the sync IDs one of whose keys fits now.
