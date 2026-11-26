@@ -1,10 +1,12 @@
-# Memory per held commit is unmeasured and looks large
-> Summary: A two-node sync world's resident set grows about 120 KB per small commit (both nodes, steady over 4 rounds of 100) while both nodes' disks grow 3 KB: memory 40 times what is stored, linear in commits held. Not attributed: the test backend, memos, debug checks or the engine's per-commit `Meta`, header bytes and views. Count it before slimming memory (notes/slim-design.md, Memory).
+# Memory per held commit is 33 times what is stored, most of it memos following every commit
+> Summary: A two-node sync world keeps 93 KB of live heap per small commit (both nodes) while both disks gain 2.85 KB, linear in commits held: about 55 KB the memos following every held commit for its life (dependency lists, memo entries repeating them, index entries, values), 18.5 KB caches bounded at 16 MB each, 12 KB engine per-commit structures. Attribution and the changes: notes/slim-design.md H.
 > Priority: normal
 > Tags: engine, sync, performance
 
-Seen by a throwaway probe (the sync-harness world of notes/thing-cost.md Survey): `/proc/self/statm` around 100 one-value commits on one dependent of A by node 0, node 1 its account's second node, each `run` and one second apart, in the test profile: 144, 116, 131, 103 KB per commit in four rounds (66 MB to 100 MB), disks (`disk_use`, rows and blobs) about 3.05 KB per commit. 3,000 dependents made in 300-thing commits grew it about 290 KB per thing (high-water of a big commit's apply, or retained: not told apart).
+Measured with `tools/memprof` over sync `memory::memory_per_commit_probe` at `MEM_N=50` and `500`, `--report A B --per 450`. Left to build, by bytes (slim-design H, Change):
+- `Engine::sync_bodies` (a `Memo`) and the per-body metas memo as cutoffs, so the sync `Read`'s `Effects` over them reads one stamped row per key, not the ~45 reads each derivation makes, recorded again: about 20 KB a commit.
+- `memo::Dep` is 56 B (`Option<u64>` key and part); every dependency list pays it per read: about 7 KB a commit at 40 B.
+- perm's delta facts per content write (`content::set`) live in the engine's `Timeline`, which is over `MemStore`, though content.rs says the engine backs the store with its index: 4.1 KB a commit, in memory for the engine's life.
+- The memos keep a reactive record (key, list, index entries) of every held commit, settled or not: a structure following coarser keys would make a settled commit cost its value alone. Design question, model first.
 
-What is known to stay per held commit (notes/engine-store.md Headers): a `Meta` with its `View` (about 120 B an aspect) and its decoded header (the `View` copies the header's fields and aspect entries: with the header resident it could hold only what is derived or decided here, the rest read from the header, about 106 sites); entries in `by_aspect`, `ranges`, `by_thing`, `by_actor`, `commit_blobs`, `blob_parts`; per thing `Held::created` and `mint_admin_of`. None of that reaches 60 KB a commit, so something else grows: the memory backend (`osis_store::memory`, its live and durable copies), the memo system's stamps or caches, the harness (`Net`, history), or a debug check's state.
-
-Method: a counting global allocator in a by-hand test binary (live bytes after each commit at n and 10n commits, by node), or dhat; then each live set by owner. A per-commit cost above the stored bytes is a defect (notes/thing-cost.md principle); spec/requirements.md Scale asks for millions of things a node holds.
+spec/requirements.md Scale asks for millions of things a node holds; at 46 KB a commit a node, a million commits is 46 GB.

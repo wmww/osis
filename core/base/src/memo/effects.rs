@@ -6,7 +6,7 @@
 #[cfg(debug_assertions)]
 use super::at_power;
 use super::{Dep, Ids, Logged, Table, bucket, copied, lock, recorded_frame};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::hash::Hash;
 use std::marker::PhantomData;
 use std::sync::{Arc, Mutex};
@@ -20,13 +20,16 @@ use std::sync::{Arc, Mutex};
 pub struct Effects<K, V> {
     name: &'static str,
     followed: HashMap<K, Followed<V>>,
-    /// Want order: `due` gives keys in it, so a run is the same whatever the hashes.
+    /// Want order: `due` gives keys in it, so a run is the same whatever the hashes. A followed
+    /// key's `seq` is its name in the index (`Indexed`), which holds no copy of the key.
     seq: u64,
+    /// The followed keys by `seq`.
+    by_seq: HashMap<u64, K, Ids>,
     /// Followed keys known due: wanted and not settled since, given by `due` and not settled
     /// since, or moved while their settle read.
     pending: HashSet<K>,
     /// What the followed keys' last values read, per container (`Arc::as_ptr` of its table).
-    tables: HashMap<usize, Indexed<K>, Ids>,
+    tables: HashMap<usize, Indexed, Ids>,
     #[cfg(debug_assertions)]
     checks: Checks<K>,
 }
@@ -77,22 +80,30 @@ impl<V> Followed<V> {
     }
 }
 
-/// The followed keys that read one container, and this reader's mark in its log.
-struct Indexed<K> {
+/// The followed keys (by `seq`) that read one container, and this reader's mark in its log.
+struct Indexed {
     table: Arc<Mutex<Table>>,
     /// The log is read up to here (`Table::read_log`).
     at: u64,
     /// Keys that read the container whole.
-    whole: HashSet<K>,
-    /// Keys that read each key of it (by hash), and the hashes read at their bucket's absent
-    /// stamp, by bucket: a removal moves those of its bucket.
-    keys: HashMap<u64, HashSet<K>, Ids>,
+    whole: HashSet<u64, Ids>,
+    /// Keys that read each key of it, as (hash read, key), and the hashes read at their
+    /// bucket's absent stamp, by bucket: a removal moves those of its bucket. One ordered set,
+    /// not a set per hash: most hashes have one reader.
+    keys: BTreeSet<(u64, u64)>,
     buckets: HashMap<usize, HashSet<u64, Ids>, Ids>,
     /// Reads indexed here: the mark goes with the last.
     reads: usize,
 }
 
-impl<K> Drop for Indexed<K> {
+impl Indexed {
+    /// The keys that read hash `h`.
+    fn readers(&self, h: u64) -> impl Iterator<Item = u64> + '_ {
+        self.keys.range((h, 0)..=(h, u64::MAX)).map(|(_, k)| *k)
+    }
+}
+
+impl Drop for Indexed {
     fn drop(&mut self) {
         lock(&self.table).unmark(self.at);
     }
@@ -104,6 +115,7 @@ impl<K: Hash + Eq + Clone + std::fmt::Debug, V: Clone + PartialEq + std::fmt::De
             name,
             followed: HashMap::new(),
             seq: 0,
+            by_seq: HashMap::default(),
             pending: HashSet::new(),
             tables: HashMap::default(),
             #[cfg(debug_assertions)]
@@ -119,13 +131,15 @@ impl<K: Hash + Eq + Clone + std::fmt::Debug, V: Clone + PartialEq + std::fmt::De
         }
         self.seq += 1;
         self.followed.insert(k.clone(), Followed::new(self.seq, None, Vec::new()));
+        self.by_seq.insert(self.seq, k.clone());
         self.pending.insert(k);
     }
 
     /// Stops following `k`: it is never due again until wanted again.
     pub fn unwant(&mut self, k: &K) {
         if let Some(f) = self.followed.remove(k) {
-            self.unindex(k, &f.deps);
+            self.unindex(f.seq, &f.deps);
+            self.by_seq.remove(&f.seq);
         }
         self.pending.remove(k);
     }
@@ -191,7 +205,7 @@ impl<K: Hash + Eq + Clone + std::fmt::Debug, V: Clone + PartialEq + std::fmt::De
     /// whose settle compares with the value kept (`Checks`).
     pub fn due(&mut self) -> Vec<K> {
         let given = std::mem::take(&mut self.pending);
-        let mut maybe: HashSet<K> = HashSet::new();
+        let mut maybe: HashSet<u64, Ids> = HashSet::default();
         // per container a prune moved buckets of since the marks (and nothing moved whole), the
         // keys written, removed or pruned (by hash)
         let mut pruned: HashMap<usize, HashSet<u64, Ids>, Ids> = HashMap::default();
@@ -205,20 +219,20 @@ impl<K: Hash + Eq + Clone + std::fmt::Debug, V: Clone + PartialEq + std::fmt::De
             let mut buckets = HashSet::new();
             for c in &changes {
                 match c {
-                    Logged::Key { h, .. } => maybe.extend(ix.keys.get(h).into_iter().flatten().cloned()),
+                    Logged::Key { h, .. } => maybe.extend(ix.readers(*h)),
                     Logged::Bucket(h) => {
-                        maybe.extend(ix.keys.get(h).into_iter().flatten().cloned());
+                        maybe.extend(ix.readers(*h));
                         buckets.insert(bucket(*h));
                     }
                     Logged::Whole => {}
-                    Logged::All => maybe.extend(ix.keys.values().flatten().cloned()),
+                    Logged::All => maybe.extend(ix.keys.iter().map(|(_, k)| *k)),
                 }
             }
             if buckets.is_empty() {
                 continue;
             }
             for x in buckets.iter().filter_map(|b| ix.buckets.get(b)).flatten() {
-                maybe.extend(ix.keys.get(x).into_iter().flatten().cloned());
+                maybe.extend(ix.readers(*x));
             }
             if !changes.iter().any(|c| matches!(c, Logged::All)) {
                 let named = changes.iter().filter_map(|c| match c {
@@ -228,7 +242,7 @@ impl<K: Hash + Eq + Clone + std::fmt::Debug, V: Clone + PartialEq + std::fmt::De
                 pruned.insert(*p, named.collect());
             }
         }
-        maybe.retain(|k| !given.contains(k));
+        let maybe: Vec<K> = maybe.iter().filter_map(|n| self.by_seq.get(n)).filter(|k| !given.contains(*k)).cloned().collect();
         crate::costs::count("effects: candidates", (given.len() + maybe.len()) as u64);
         // a logged write of a key read, before the read or by a key sharing its hash, moved
         // nothing: the stamps say which did. A key read at its bucket's absent stamp and named
@@ -366,8 +380,8 @@ impl<K: Hash + Eq + Clone + std::fmt::Debug, V: Clone + PartialEq + std::fmt::De
             Err(e) => {
                 if let Some(old) = self.followed.get_mut(k) {
                     old.value = None;
-                    let deps = std::mem::take(&mut old.deps);
-                    self.unindex(k, &deps);
+                    let (n, deps) = (old.seq, std::mem::take(&mut old.deps));
+                    self.unindex(n, &deps);
                     self.pending.insert(k.clone());
                 }
                 Err(e)
@@ -377,6 +391,7 @@ impl<K: Hash + Eq + Clone + std::fmt::Debug, V: Clone + PartialEq + std::fmt::De
 
     fn record(&mut self, k: &K, now: V, frame: super::Frame) -> Option<(Option<V>, V)> {
         let Some(old) = self.followed.get_mut(k) else { return Some((None, now)) };
+        let n = old.seq;
         let was = old.value.replace(now.clone());
         let old_deps = std::mem::replace(&mut old.deps, frame.deps.clone());
         if old_deps.len() == frame.deps.len() && old_deps.iter().zip(&frame.deps).all(|(a, b)| a.id() == b.id()) {
@@ -389,9 +404,9 @@ impl<K: Hash + Eq + Clone + std::fmt::Debug, V: Clone + PartialEq + std::fmt::De
             let now: HashSet<(usize, Option<u64>), Ids> = frame.deps.iter().map(Dep::id).collect();
             let gone: Vec<Dep> = old_deps.iter().filter(|d| !now.contains(&d.id())).cloned().collect();
             let (kept, came): (Vec<Dep>, Vec<Dep>) = frame.deps.iter().cloned().partition(|d| was.contains(&d.id()));
-            self.unindex(k, &gone);
+            self.unindex(n, &gone);
             self.reindex_buckets(&kept);
-            self.index(k, &came);
+            self.index(n, &came);
         }
         self.pending.remove(k);
         // a write between a read and its index here is in no log this reader reads
@@ -401,21 +416,21 @@ impl<K: Hash + Eq + Clone + std::fmt::Debug, V: Clone + PartialEq + std::fmt::De
         (was.as_ref() != Some(&now)).then_some((was, now))
     }
 
-    fn index(&mut self, k: &K, deps: &[Dep]) {
+    fn index(&mut self, k: u64, deps: &[Dep]) {
         for d in deps {
             let ix = self.tables.entry(Arc::as_ptr(&d.table) as usize).or_insert_with(|| {
                 let mut t = lock(&d.table);
                 let at = t.seq;
                 t.mark(at);
-                Indexed { table: d.table.clone(), at, whole: HashSet::new(), keys: HashMap::default(), buckets: HashMap::default(), reads: 0 }
+                Indexed { table: d.table.clone(), at, whole: HashSet::default(), keys: BTreeSet::new(), buckets: HashMap::default(), reads: 0 }
             });
             ix.reads += 1;
             match d.key {
                 None => {
-                    ix.whole.insert(k.clone());
+                    ix.whole.insert(k);
                 }
                 Some(h) => {
-                    ix.keys.entry(h).or_default().insert(k.clone());
+                    ix.keys.insert((h, k));
                     // only a key read at its bucket's absent stamp moves with another's removal
                     // (one read present has a stamp of its own: its own removal names it); a
                     // change since the read leaves `k` due at once (`settle`)
@@ -439,25 +454,22 @@ impl<K: Hash + Eq + Clone + std::fmt::Debug, V: Clone + PartialEq + std::fmt::De
         }
     }
 
-    fn unindex(&mut self, k: &K, deps: &[Dep]) {
+    fn unindex(&mut self, k: u64, deps: &[Dep]) {
         for d in deps {
             let p = Arc::as_ptr(&d.table) as usize;
             let Some(ix) = self.tables.get_mut(&p) else { continue };
             match d.key {
                 None => {
-                    ix.whole.remove(k);
+                    ix.whole.remove(&k);
                 }
                 Some(h) => {
-                    if let Some(s) = ix.keys.get_mut(&h) {
-                        s.remove(k);
-                        if s.is_empty() {
-                            ix.keys.remove(&h);
-                            if let Some(b) = ix.buckets.get_mut(&bucket(h)) {
-                                b.remove(&h);
-                                if b.is_empty() {
-                                    ix.buckets.remove(&bucket(h));
-                                }
-                            }
+                    if ix.keys.remove(&(h, k))
+                        && ix.readers(h).next().is_none()
+                        && let Some(b) = ix.buckets.get_mut(&bucket(h))
+                    {
+                        b.remove(&h);
+                        if b.is_empty() {
+                            ix.buckets.remove(&bucket(h));
                         }
                     }
                 }
@@ -525,6 +537,7 @@ impl<K: Hash + Eq + Clone, V: Clone> Clone for Effects<K, V> {
             name: self.name,
             followed,
             seq: self.seq,
+            by_seq: self.by_seq.clone(),
             pending: self.pending.clone(),
             tables,
             #[cfg(debug_assertions)]

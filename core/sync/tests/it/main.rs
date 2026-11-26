@@ -6,6 +6,7 @@ mod faults;
 mod flows;
 mod growth;
 mod idle;
+mod memory;
 mod first;
 mod harness;
 mod holding;

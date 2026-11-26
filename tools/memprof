@@ -1,0 +1,28 @@
+#!/bin/sh
+# tools/memprof OUT CMD...: runs CMD under a heap recorder (tools/memprof.c, LD_PRELOAD), which
+# writes every allocation still live at exit, by call stack, to OUT.<pid>; then prints the owners
+# holding the most (notes/test-harnesses.md, Measuring). A test that measures what a structure
+# keeps forgets it at its end (`std::mem::forget`) so it is live at exit.
+# `tools/memprof --report A [B] [--per N] [--top K]` reprints one dump, or B less A per owner
+# (divided by N: bytes per unit added between the two runs): tools/memprof_report.py.
+# Builds memprof.c on first use; sets cargo's [env] (tools/cargo_env.sh).
+set -e
+. "$(dirname "$0")/cargo_env.sh"
+dir="$(cd "$(dirname "$0")" && pwd)"
+if [ "$1" = "--report" ]; then
+    shift
+    exec python3 "$dir/memprof_report.py" "$@"
+fi
+out="$1"; shift
+src="$dir/memprof.c"
+lib="${XDG_CACHE_HOME:-$HOME/.cache}/osis/memprof.so"
+if [ ! -f "$lib" ] || [ "$src" -nt "$lib" ]; then
+    mkdir -p "$(dirname "$lib")"
+    cc -O2 -Wall -shared -fPIC -o "$lib" "$src" -ldl -lpthread
+fi
+status=0
+MEMPROF_OUT="$out" LD_PRELOAD="$lib" "$@" || status=$?
+for f in "$out".*; do
+    [ -f "$f" ] && python3 "$dir/memprof_report.py" "$f" --top 40
+done
+exit $status
