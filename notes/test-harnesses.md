@@ -24,7 +24,7 @@ Crate-wide seeds:
   - The rate is at most what any one seed reaches and, where seeds vary, about a quarter of the mean or less; set it from runs at offsets, never from the default seeds alone.
   - A case a seed draws on purpose (a seed class: `seed % 8 < 2` large values) is asserted per seed instead.
   - A `_plain` running a fixed covering set asserts its set reaches each case exactly; its `_large` twin carries the rates (rotation `tests_property::SHAPES`).
-  - A case too rare for a rate at the gate's size gets more default seeds or a draw on purpose, never a floor of 0. The order harness's floors are per emphasis (`Seen::floors`).
+  - A case too rare for a rate at the gate's size gets more default seeds or a draw on purpose, never a floor of 0. The order harness floors each emphasis's outcome over its own seeds, and a shape no seed reaches by construction over a run of every emphasis, with a default test pinning its path (`Seen::floors`).
 - **Converting a fixed-seed loop to a range**: the seed may index nothing but an RNG or a modulus. A value sized by the raw seed (terabytes at the gate's offset) aborts the whole property binary; a loop index turned seed keeps everything it fed. A thread-local setting (`PageParams::set_test`) is set inside the per-seed closure, or `Seeds::run`'s threads run at defaults and pass for the wrong reason. Run the converted property once at an offset below 10^12 before committing.
 
 ## Copied worlds

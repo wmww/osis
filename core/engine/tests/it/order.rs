@@ -2958,16 +2958,20 @@ impl Seen {
                 fail(&format!("{e:?} seeds ran, but not {what}"));
             }
         }
-        // every history's `Removals`, as held-model judged them in its own held set
-        // (`held::compare`, `Played::own_sets`), but a settled one's: it tries the whole set
-        // alone (`check_orders`), where a role commit waiting puts the roles out of scope;
-        // every emphasis's seeds tried with late parts
+        // every emphasis's seeds tried with late parts; every history's `Removals`, as
+        // held-model judged them in its own held set (`held::compare`, `Played::own_sets`), but
+        // a settled one's: it tries the whole set alone (`check_orders`), where a role commit
+        // waiting takes the roles out of held-model's scope, so no settled seed reaches them by
+        // construction
         let settled = format!("{:?}", Emphasis::Settled);
         for (e, s) in by {
             if s.twins.2 == 0 {
                 fail(&format!("{e} seeds ran, but no order with late parts"));
             }
-            for k in crate::held::REMOVALS.iter().filter(|_| *e != settled) {
+            if *e == settled {
+                continue;
+            }
+            for k in crate::held::REMOVALS {
                 if !s.model.reached.get(k).is_some_and(|n| *n > 0) {
                     fail(&format!("{e} seeds ran, but held-model judged no {k}"));
                 }
@@ -4704,9 +4708,9 @@ fn harness_flags_a_live_drop_before_its_live_bound_spec_commits_5() {
 
 // spec/commits.md §5 Kept while live: 0 writes G's plain register and compacts it. A node given
 // both in turn holds the write, then drops it as covered (`drop_covered`, as after every ingest):
-// held-model judges that drop of a live body (past its live bound, so rightly dropped). Generated
-// histories reach it only where an order's early clock leaves the write applied before its
-// cover arrives.
+// held-model judges that drop of a live body (a plain register's has no live bound, so rightly
+// dropped). Generated histories reach it only where an order's early clock leaves the write
+// applied before its cover arrives.
 #[test]
 fn live_body_dropped_as_covered_is_judged_spec_commits_5() {
     use Step::*;
