@@ -879,7 +879,7 @@ fn make_leftover(tx: &mut Tx<'_>, c: &CommitId, ai: usize, o: &[Owned], extra: &
             && let Some(l) = leftover::get(tx, &a.tid, &a.ak, c, ai)?
         {
             // as bare as `unstrip` left it; a whole replace by the leftover, as a load reads it
-            let whole = l.gives.is_none() && snapshot::whole_replace(&m, &a.ak, &l.fragment);
+            let whole = l.gives.is_none() && snapshot::whole_replace(&m.header, &a.ak, &l.fragment);
             m.set_hold(ai, Hold::Leftover { whole, own_live: false });
             tx.put_meta_record(c, m)?;
             crate::apply::rebuild(tx, &a.tid, &a.ak)?;
@@ -1032,7 +1032,7 @@ fn put_leftover(tx: &mut Tx<'_>, c: &CommitId, ai: usize, mut m: crate::engine::
     }
     // a held body keeps what it was judged; one held again (dropped as covered, missing) is a
     // whole replace by its leftover, as a load from the commit records reads it
-    let whole_replace = m.whole(ai) || !m.holds(ai) && gives.is_none() && snapshot::whole_replace(&m, &a.ak, &body);
+    let whole_replace = m.whole(ai) || !m.holds(ai) && gives.is_none() && snapshot::whole_replace(&m.header, &a.ak, &body);
     leftover::put(tx, &a.tid, &a.ak, c, ai, &leftover::Leftover { fragment: body, gives, taken })?;
     // an expiring snapshot past its expiry holds no value (`expire_snapshot`)
     let ended = m.header.kind.is_compaction() && m.header.expires.is_some_and(|t| t <= tx.now().0);

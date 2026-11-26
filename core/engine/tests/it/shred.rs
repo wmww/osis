@@ -620,17 +620,35 @@ fn junk_beside_a_part_past_expiry_raises_no_flag_spec_commits_5() {
 // so each rotation and each place of T meets both (every pair of the three choices once).
 #[test]
 fn past_expiry_and_purge_alike_spec_commits_5() {
-    past_expiry_and_purge_alike(false);
+    past_expiry_and_purge_alike(Cases::Rotations);
 }
 
-// As above, all 5040 orders in every shape (50400 cases).
+// As above, all 5040 orders in every shape (50400 cases, about 6000 CPU-s: by hand).
 #[test]
 #[ignore = "by hand: every order"]
 fn past_expiry_and_purge_alike_in_every_order_by_hand_spec_commits_5() {
-    past_expiry_and_purge_alike(true);
+    past_expiry_and_purge_alike(Cases::Every);
 }
 
-fn past_expiry_and_purge_alike(every: bool) {
+// As above, spec/commits.md §5 Own replaces: the request, the true register part, the brief part
+// and the record before T, the rest after it: the register part's leftover is no whole replace
+// (its commit expires), live or loaded afresh (the end-of-history index check).
+#[test]
+fn expired_purged_leftover_no_whole_replace_spec_commits_5() {
+    past_expiry_and_purge_alike(Cases::One((false, 4, false), &[0, 1, 3, 6, 2, 4, 5]));
+}
+
+/// The cases `past_expiry_and_purge_alike` runs.
+enum Cases {
+    /// Each rotation of the order at each place of T, restarting at alternate ones.
+    Rotations,
+    /// Every order in every shape.
+    Every,
+    /// One shape and order.
+    One((bool, usize, bool), &'static [usize]),
+}
+
+fn past_expiry_and_purge_alike(which: Cases) {
     let mut lp = net2_one();
     // the nodes judged: nodes of 0's account
     let mut node = node_of(&mut lp, 0);
@@ -671,19 +689,23 @@ fn past_expiry_and_purge_alike(every: bool) {
     ];
     let n = items.len();
     let mut orders: Vec<Vec<usize>> = (0..n).map(|r| (0..n).map(|i| (r + i) % n).collect()).collect();
-    if every {
+    if let Cases::Every = which {
         orders = vec![Vec::new()];
         for i in 0..n {
             orders = orders.iter().flat_map(|q| (0..=q.len()).map(move |at| { let mut x = q.clone(); x.insert(at, i); x })).collect();
         }
     }
     // (whether it restarts before the fourth item, deliveries before T, whether a tick follows T)
-    let shapes: Vec<(bool, usize, bool)> = [false, true].into_iter().flat_map(|restart| [(0, false), (2, false), (2, true), (4, false), (4, true)].map(|(k, tick)| (restart, k, tick))).collect();
+    let mut shapes: Vec<(bool, usize, bool)> = [false, true].into_iter().flat_map(|restart| [(0, false), (2, false), (2, true), (4, false), (4, true)].map(|(k, tick)| (restart, k, tick))).collect();
     // by hand every order in every shape; else each order and place of T once, restarting at
     // alternate ones
-    let cases: Vec<(usize, usize)> = match every {
-        true => (0..shapes.len()).flat_map(|n| (0..orders.len()).map(move |o| (n, o))).collect(),
-        false => (0..5).flat_map(|t| (0..orders.len()).map(move |o| (t + 5 * ((t + o) % 2), o))).collect(),
+    let cases: Vec<(usize, usize)> = match which {
+        Cases::Every => (0..shapes.len()).flat_map(|n| (0..orders.len()).map(move |o| (n, o))).collect(),
+        Cases::Rotations => (0..5).flat_map(|t| (0..orders.len()).map(move |o| (t + 5 * ((t + o) % 2), o))).collect(),
+        Cases::One(shape, order) => {
+            (shapes, orders) = (vec![shape], vec![order.to_vec()]);
+            vec![(0, 0)]
+        }
     };
     let outcomes = std::sync::Mutex::new(std::collections::BTreeMap::<String, String>::new());
     let next = std::sync::atomic::AtomicUsize::new(0);

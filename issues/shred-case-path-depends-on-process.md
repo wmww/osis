@@ -1,0 +1,8 @@
+# One shred case takes a different engine path depending on what else ran in the process
+> Summary: `shred::past_expiry_and_purge_alike` case (no restart, T after the fourth item, no tick, order [0, 1, 3, 6, 2, 4, 5]) reached a different `Hold` for the commit's register part in one full by-hand run than alone or in another full run of the same binary: something outside the case (shared state between cases, a per-process seed) changes engine behaviour.
+> Priority: normal
+> Tags: engine, tests
+
+- Seen before the whole-replace fix (`expired_purged_leftover_no_whole_replace_spec_commits_5`): that case alone failed the end-of-history index check 6 runs of 6; the by-hand test (every order, all cases on scoped threads copying one base world) failed it in 36 cases in one run, 16 in another, none in a third, same build.
+- So the leftover-held-again path (`retention::put_leftover` with the part not held, `whole_replace`) ran in some processes and not others for the same inputs. Candidates: the base world shared by copies (`osis_base::copying`, lazy headers decoded or not when copied), memo or decode caches shared across cases, per-process hash seeds (`memo::Ids`) where an order is drawn from a map.
+- Next: run the case after other cases on one thread, in a fixed sequence, and diff the path it takes (log the `Hold` of each part after each item).

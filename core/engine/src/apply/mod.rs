@@ -2365,7 +2365,8 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
         for (id, view) in plain {
             let own = |ai: usize| view.aspects.get(ai).is_some_and(|a| crate::retention::snapshot::own_aspect(&a.ak));
             let whole: BTreeSet<usize> = held_parts_at(tx, &id, &own)?.into_iter().filter(|(_, d)| matches!(d, Decoded::Delta(x) if crate::retention::snapshot::replaces(&x.fragment))).map(|(ai, _)| ai).collect();
-            if let Some(mut m) = tx.core.ix.commits.get(&id).cloned().filter(|_| !whole.is_empty()) {
+            // judged by the header as apply judges it (decoded only where a part replaces)
+            if let Some(mut m) = tx.core.ix.commits.get(&id).cloned().filter(|m| whole.iter().any(|ai| view.aspects.get(*ai).is_some_and(|a| crate::retention::snapshot::may_replace_whole(&m.header, &a.ak)))) {
                 for ai in whole {
                     m.set_whole(ai);
                 }

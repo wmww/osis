@@ -88,6 +88,28 @@ fn every_later_own_replace_covers_spec_commits_5() {
     assert_eq!(e.covered(&last, &qs[3], &t, &a).unwrap(), Some(false));
 }
 
+// spec/commits.md §5 Own replaces: a whole replace carries no expiry, so the author's later
+// register writes expiring with C cover nothing, as applied or loaded afresh (the end-of-history
+// index check reads every part's `whole` again).
+#[test]
+fn expiring_writes_are_no_own_replaces_spec_commits_5() {
+    let (mut lp, t) = thing();
+    let a = ak("x:a.0");
+    let end = osis_base::WallMs(lp.peers[0].engine.now().0 + 60_000);
+    let cs: Vec<CommitId> = (0..3)
+        .map(|v| {
+            lp.advance(1000);
+            let mut m = Mutation::new();
+            m.set(t, &a, &Value::Int(v)).unwrap();
+            m.expires(t, &a, end).unwrap();
+            lp.peers[0].commit(m).unwrap().unwrap()
+        })
+        .collect();
+    let e = &mut lp.peers[0].engine;
+    assert_eq!(e.covered(&cs[2], &cs[0], &t, &a).unwrap(), Some(false), "an expiring write is no own replace");
+    assert!(e.covered_drops(&cs[0]).unwrap().is_empty());
+}
+
 // spec/commits.md §5 Forgetting, §7: what a forgotten durable commit stands for (`ix.forgotten`,
 // read by `undo::replaced_kept`) is the same after a restart and after an index rebuild.
 #[test]

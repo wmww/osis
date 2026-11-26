@@ -865,12 +865,18 @@ pub(crate) fn replaces(f: &Fragment) -> bool {
     f.reset().is_some() || matches!(f, Fragment::Register(_) | Fragment::Slots(_))
 }
 
-/// Whether held body `f` of a part of commit `m` on `ak` stands as a whole replace
-/// (`Hold::Body::whole`): a plain durable commit's delta with no expiry (its writes go at T,
-/// spec/crdt.md §4.7, so it covers nothing) on an own aspect replacing it whole, as apply and a
-/// load from the commit records judge it.
-pub(crate) fn whole_replace(m: &crate::engine::Meta, ak: &Ak, f: &Fragment) -> bool {
-    m.view.kind == Kind::Content && !m.view.memory && m.header.expires.is_none() && own_aspect(ak) && replaces(f)
+/// Whether a part on `ak` of a commit with header `h` may stand as a whole replace
+/// (`Hold::Body::whole`, spec/commits.md §5 Own replaces): a plain durable content commit with
+/// no expiry (its writes go at T, spec/crdt.md §4.7, so it covers nothing) on an own aspect. The
+/// one test of apply, a part held again and a load from the commit records.
+pub(crate) fn may_replace_whole(h: &Header, ak: &Ak) -> bool {
+    h.kind == Kind::Content && h.ephemeral.is_none() && h.expires.is_none() && own_aspect(ak)
+}
+
+/// Whether held body `f` of a part on `ak` of a commit with header `h` stands as a whole
+/// replace: `may_replace_whole`, `f` replacing the aspect whole.
+pub(crate) fn whole_replace(h: &Header, ak: &Ak, f: &Fragment) -> bool {
+    may_replace_whole(h, ak) && replaces(f)
 }
 
 /// `author`'s valid own replaces of `(tid, ak)` held here, oldest first.

@@ -364,7 +364,7 @@ fn join_part(tx: &mut Tx<'_>, h: &Header, id: &CommitId, blob: &CommitBlob, ai: 
     let gives = part.gives();
     let snap = gives.is_some();
     // what stands as an own replace: a plain durable commit's whole delta (`Indexes::own_replaces`)
-    let own = !snap && h.ephemeral.is_none() && h.kind == osis_commit::Kind::Content && crate::retention::snapshot::own_aspect(&ak);
+    let own = !snap && crate::retention::snapshot::may_replace_whole(h, &ak);
     let mut whole = false;
     // edge and creation aspects reach perm instead
     let perm = validity::perm_ak(ak.as_str());
