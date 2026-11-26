@@ -5162,8 +5162,8 @@ fn a_path_opened_up_a_released_things_record_chain_waits_spec_wire_4() {
     check(0, &h, Cfg { away: true, ..NAMED }).unwrap();
 }
 
-// spec/permissions.md §6 (a snapshot held as its leftover lacking a write no longer gone counts
-// as never received for fetching): 0 writes a setting with "beside" on the register and compacts
+// spec/permissions.md §6 (A snapshot held as its leftover): one lacking a write no longer gone
+// counts as never received for fetching. 0 writes a setting with "beside" on the register and compacts
 // it; 2 purges the register's every delta, and 0 demotes 2, so the purge falls. A node that took
 // the purge holds 0's snapshot stripped of "beside" and the setting's write dropped under it; the
 // sync exchange fetches the snapshot again and it reads "beside". Failed while the harness's
