@@ -346,7 +346,7 @@ fn lifetimes_check(bodies: &[Fragment], r: &mut crate::testutil::SeedRng) {
     if embedded(raws.clone()).len() == raws.len() {
         held.iter_mut().zip(raws).for_each(|(h, x)| h.1 = x);
         let lasts = |a: Option<u64>, b: Option<u64>| a.is_none() || b.is_some_and(|b| a.is_some_and(|a| a >= b));
-        let lives: BTreeMap<Won, Option<u64>> = held.iter().map(|(_, x)| (x.w.clone(), held.iter().filter(|(_, y)| y.w == x.w).map(|(i, _)| ends[*i]).fold(Some(0), |a, b| if a.is_none() || b.is_none() { None } else { a.max(b) }))).collect();
+        let lives: BTreeMap<Won, Option<u64>> = held.iter().map(|(_, x)| (x.w.clone(), held.iter().filter(|(_, y)| y.w == x.w).map(|(i, _)| ends[*i]).try_fold(0, |a, b| b.map(|b| a.max(b))))).collect();
         for (i, w) in held.iter().filter(|x| !x.1.shadow) {
             let min = ends[*i];
             let long = |s: &Raw| lasts(lives[&s.w], min);

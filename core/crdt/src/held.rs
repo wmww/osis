@@ -6,16 +6,17 @@
 //! Rows (keys relative to the aspect). A position's rows start with 0, a 16-byte hash per step
 //! of its path and 16 zero bytes, so they lie in path order: a position's own rows, then those
 //! of the positions below it. A body's start with 1 and its commit ID.
-//! - position + `W` + kind + stamp: a write: when it died, and its holders;
+//! - position + `W` + kind + end + stamp: a write: its holders, and when it died for each end
+//!   among them;
 //! - position + `B`: the writes on the sequence elements of one bucket (`Bucket`: `BUCKET`
 //!   consecutive counters of one source), run-length coded, so a run record costs a row per
 //!   bucket, not per element;
 //! - position + `A`: its tops (`Tops`): the greatest stamp held at or below it, the greatest of
-//!   its own writes per kind, and how many steps down it has; position + `S` + the greatest
+//!   its own writes per kind and end, and how many steps down it has; position + `S` + the greatest
 //!   stamp below a step (inverted: greatest first) + the step's hash, the step: its steps down
 //!   by theirs, so a reset reads only the positions written since the reset before it
-//!   (`below`), and a write asks only the positions holding a kind written after it for the
-//!   writes superseding it;
+//!   lasting as long (`below`), and a write asks only the positions holding a kind written
+//!   after it for the writes superseding it;
 //! - set + `V` + the reference's hash + the removal's hash, its dot and stamp: the set's value
 //!   removals by the reference their joined copy names (§5.5);
 //! - body + `D` + death (inverted): how many of the body's winning writes died then, so its
@@ -877,6 +878,15 @@ struct Own {
 /// as large as the body. About a state page.
 const OWN_CHUNK: usize = 4096;
 
+/// A write as a change names it: its element's counter in a bucket (0 at a point), kind, stamp.
+type WriteKey = (u64, Kind, Stamp);
+
+/// Plain deaths (`EVERY`) by write (`Held::plain`).
+type Plain = BTreeMap<WriteKey, Option<Ts>>;
+
+/// `Held::above`'s last answer.
+type Memo = Option<(Stamp, Option<Stamp>)>;
+
 /// What may have moved: a write, or every write of a bucket.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum Moved {
@@ -893,7 +903,7 @@ pub struct Held<R: Rows> {
     dated: BTreeMap<(CommitId, Option<Ts>), i64>,
     /// The bodies whose dates may have moved since `take_moved`.
     moved: BTreeSet<CommitId>,
-    /// Whether a held write's death went to none since `take_revived` (§4.8 Revival).
+    /// Whether a held write read again since `take_revived` (§4.8 Revival).
     revived: bool,
     /// The tops of the positions the change under way read, until `flush`.
     tops: BTreeMap<Pos, At>,
@@ -1388,7 +1398,7 @@ impl<R: Rows> Held<R> {
     /// position `pos` (not at it) that supersede any write below them: resets and register
     /// writes, and element resets of the sequence elements on the way. `memo`: the last answer
     /// for `min`, good for a stamp between its question and its answer.
-    fn above(&mut self, pos: &[Step], st: &Stamp, min: End, memo: &mut Option<(Stamp, Option<Stamp>)>) -> Result<Option<Stamp>, R::Err> {
+    fn above(&mut self, pos: &[Step], st: &Stamp, min: End, memo: &mut Memo) -> Result<Option<Stamp>, R::Err> {
         if let Some((lo, next)) = memo
             && *lo <= *st
             && next.as_ref().is_none_or(|n| n > st)
@@ -1467,7 +1477,7 @@ impl<R: Rows> Held<R> {
     /// at `min`, `at`: the writes on that element: by those lasting at least as long (a text
     /// element's creation only by a delete beating the latest such undelete) and those above the
     /// sequence.
-    fn item_death(&mut self, pos: &[Step], at: Option<&BTreeMap<(Kind, Stamp), Cell>>, kind: Kind, st: &Stamp, min: End, memo: &mut Option<(Stamp, Option<Stamp>)>) -> Result<Option<Ts>, R::Err> {
+    fn item_death(&mut self, pos: &[Step], at: Option<&BTreeMap<(Kind, Stamp), Cell>>, kind: Kind, st: &Stamp, min: End, memo: &mut Memo) -> Result<Option<Ts>, R::Err> {
         let mut best = self.above(pos, st, min, memo)?.map(|s| s.ts);
         let Some(at) = at else { return Ok(best) };
         let undeleted = if kind == Kind::Created { at.iter().filter(|(x, c)| x.0 == Kind::Undelete && outlasts(c.life(), min)).map(|(x, _)| &x.1).max() } else { None };
@@ -1486,8 +1496,8 @@ impl<R: Rows> Held<R> {
 
     /// The deaths of every write of bucket row `b` at `pos`, for each end among its holders
     /// (`plain`: for `EVERY` alone), by counter, kind and stamp.
-    fn bucket_dates(&mut self, pos: &[Step], b: &Bucket, plain: bool) -> Result<Vec<((u64, Kind, Stamp), Deaths)>, R::Err> {
-        let mut memos: BTreeMap<(bool, u64), Option<(Stamp, Option<Stamp>)>> = BTreeMap::new();
+    fn bucket_dates(&mut self, pos: &[Step], b: &Bucket, plain: bool) -> Result<Vec<(WriteKey, Deaths)>, R::Err> {
+        let mut memos: BTreeMap<(bool, u64), Memo> = BTreeMap::new();
         let mut out = Vec::new();
         for (ctr, at) in &b.0 {
             for ((kind, st), c) in at {
@@ -1644,7 +1654,7 @@ impl<R: Rows> Held<R> {
 
     /// The plain deaths (`EVERY`) of the writes `m` names that are held, by counter (0 at a
     /// point), kind and stamp.
-    fn plain(&mut self, m: &Moved) -> Result<BTreeMap<(u64, Kind, Stamp), Option<Ts>>, R::Err> {
+    fn plain(&mut self, m: &Moved) -> Result<Plain, R::Err> {
         let mut out = BTreeMap::new();
         match m {
             Moved::Point(pos, kind, st) => {
@@ -1664,7 +1674,7 @@ impl<R: Rows> Held<R> {
 
     /// The writes with an end body `b` holds alone, leaving: the writes they may revive (the
     /// writes whose plain death they may move), with those plain deaths before they leave.
-    fn ending(&mut self, b: &Body, own: &Own) -> Result<Vec<(Moved, BTreeMap<(u64, Kind, Stamp), Option<Ts>>)>, R::Err> {
+    fn ending(&mut self, b: &Body, own: &Own) -> Result<Vec<(Moved, Plain)>, R::Err> {
         let alone = |c: &Cell| c.life().is_some() && c.holders.iter().all(|h| h.body.c == b.c);
         let mut probes: BTreeSet<Moved> = BTreeSet::new();
         for (pos, kind, st, ..) in &own.points {
