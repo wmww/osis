@@ -242,11 +242,12 @@ echo "build $gui_build_cmd" >> "$sel"
 limited gate.clippy cargo clippy --all-targets --locked -- -D warnings
 gui_lint
 # the fuzz targets (core/test/fuzz, its own workspace, lock and target dir; nightly): nothing
-# else compiles them. Warm well under a second, cold about 10 s.
+# else compiles them. Dev profile: incremental, so a branch's edit to a crate below them rechecks in
+# about 2 s (release, cargo-fuzz's default, is not incremental: 15 CPU-s, 20-50 s wall).
 fuzz_check() {
   cargo metadata --locked --format-version 1 --manifest-path core/test/fuzz/Cargo.toml >/dev/null || {
     echo "gate: core/test/fuzz/Cargo.lock is stale: refresh it with cargo metadata --format-version 1 --manifest-path core/test/fuzz/Cargo.toml >/dev/null and commit it" >&2; return 1; }
-  (cd core/test/fuzz && cargo +nightly fuzz check --fuzz-dir .) || {
+  (cd core/test/fuzz && cargo +nightly fuzz check --dev --fuzz-dir .) || {
     echo "gate: the fuzz targets do not compile (above; needs the nightly toolchain and cargo-fuzz)" >&2; return 1; }
 }
 step fuzz_check

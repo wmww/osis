@@ -1,6 +1,6 @@
 # Fuzzing
 
-cargo-fuzz targets for every parser of bytes that can come from a peer or from disk. Outside the workspace (needs nightly and libFuzzer); no default test depends on it. The gate type-checks every target (`cargo +nightly fuzz check`, notes/gate.md, Steps) and fails on a stale `Cargo.lock` here: refresh it with `cargo metadata --format-version 1 --manifest-path core/test/fuzz/Cargo.toml >/dev/null`.
+cargo-fuzz targets for every parser of bytes that can come from a peer or from disk. Outside the workspace (needs nightly and libFuzzer); no default test depends on it. The gate type-checks every target (`cargo +nightly fuzz check --dev`, notes/gate.md, Steps) and fails on a stale `Cargo.lock` here: refresh it with `cargo metadata --format-version 1 --manifest-path core/test/fuzz/Cargo.toml >/dev/null`.
 
 ## Running
 ```
