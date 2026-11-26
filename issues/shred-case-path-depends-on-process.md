@@ -3,6 +3,6 @@
 > Priority: normal
 > Tags: engine, tests
 
-- Seen before the whole-replace fix (`expired_purged_leftover_no_whole_replace_spec_commits_5`): that case alone failed the end-of-history index check 6 runs of 6; the by-hand test (every order, all cases on scoped threads copying one base world) failed it in 36 cases in one run, 16 in another, none in a third, same build.
+- Seen before the whole-replace fix (`expired_purged_leftover_no_whole_replace_spec_commits_5`): that case alone failed the end-of-history index check 6 runs of 6; the by-hand test (every order, all cases on scoped threads copying one base world) failed it in 144 cases in one run (every shape with T after the fourth item, the first four items {0, 1, 3, 6} in any order), 16 in another, none in a third, same build.
 - So the leftover-held-again path (`retention::put_leftover` with the part not held, `whole_replace`) ran in some processes and not others for the same inputs. Candidates: the base world shared by copies (`osis_base::copying`, lazy headers decoded or not when copied), memo or decode caches shared across cases, per-process hash seeds (`memo::Ids`) where an order is drawn from a map.
 - Next: run the case after other cases on one thread, in a fixed sequence, and diff the path it takes (log the `Hold` of each part after each item).
