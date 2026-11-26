@@ -47,7 +47,10 @@ cd "$d/a"
 git config user.email t@t && git config user.name t
 mkdir -p tools notes core/x core/y
 cp "$tools/merge-branch" "$tools/claim" "$tools/land" "$tools/known_failures_merge.py" tools/
-printf 'import os, sys\nsys.exit(int(os.environ.get("POLICY_RC", "0")))\n' > tools/policy.py
+# POLICY_HOOK: a command run at the first call (main moving between tools/land's fetch and its push)
+printf '%s\n' 'import os, subprocess, sys' 'h, m = os.environ.get("POLICY_HOOK"), os.environ.get("CARGO_LOG", "") + ".policy-hooked"' \
+    'if h and not os.path.exists(m): open(m, "w").close(); subprocess.run(["sh", "-c", h], capture_output=True)' \
+    'sys.exit(int(os.environ.get("POLICY_RC", "0")))' > tools/policy.py
 # GATE_KEEP=DIR: a failed gate keeps its files for the summary's re-read
 # GATE_STALE: summary lines to print (KNOWN-BUT-PASSED, STALE-COST)
 printf '%s\n' 'echo "== test stages: 1 run of 1, 0 failed"' 'printf "%b" "${GATE_STALE:-}"' 'echo "== gate exit ${GATE_RC:-0}"' \
@@ -164,6 +167,17 @@ CARGO_HOOK="cd $d/c && git pull -q && sed -i 5s/.*/moved/ core/y/g && git commit
 check "moved during checks: landed" "$rc $(git --git-dir="$d/origin.git" log --format=%s -2 main | tr "\n" " ")" "0 t5 moved "
 check "moved during checks: x, then y" "$(grep '^test' "$CARGO_LOG" | tr "\n" " ")" "test -p x test -p y "
 rm -f "$CARGO_LOG" "$CARGO_LOG.hooked"
+git fetch -q
+
+# main moves after the land's last check, before tools/land pushes (its push refused): rebased and
+# checked again, then landed
+branch t10 core/x/f core/y/f
+"$mb" gate t10 > /dev/null 2>&1
+POLICY_HOOK="cd $d/c && git pull -q && sed -i 5s/.*/late/ core/y/g && git commit -qam late && git push -q origin HEAD:main" \
+    "$mb" land t10 > /dev/null 2> "$d/err" && rc=0 || rc=$?
+check "moved before the push: landed" "$rc $(git --git-dir="$d/origin.git" log --format=%s -2 main | tr "\n" " ")" "0 t10 late "
+check "moved before the push: y checked" "$(grep '^test' "$CARGO_LOG" | tr "\n" " ")" "test -p y "
+rm -f "$CARGO_LOG" "$CARGO_LOG.policy-hooked"
 git fetch -q
 
 # a failing check after the land's rebase stops it; the rerun needs --fixed

@@ -29,8 +29,8 @@ test reads from the tree at run time, and cargo inside a script or another progr
 
 Log: ~/.cache/osis/heavy.log, one JSON object per line. Every line carries the box's cumulative
 CPU jiffies (`busy`, `all` from /proc/stat), so any two lines give the box's utilization between
-them. Events: `acq` (lock taken: who, cmd, wait, and the box at the request), `smp` (every
-SAMPLE_S while held: the run's CPU-s so far), `yld` (a quiet hold released the lock, run going on),
+them, and its MemAvailable (`avail`, MB). Events: `acq` (lock taken: who, cmd, wait, and the box at
+the request), `smp` (every SAMPLE_S while held: the run's CPU-s so far, its processes' resident MB), `yld` (a quiet hold released the lock, run going on),
 `back` (a yielded run holds it again: wait, paused), `rel` (the command ended: held, its wall from
 the first acquisition less the waits to take it back, the command's CPU-s from its rusage, exit code).
 tools/agent-times.py charges each acquisition to the agent whose command ran it.
@@ -111,9 +111,18 @@ def stat():
     return sum(v) - idle, sum(v)
 
 
+def avail():
+    """The box's MemAvailable in MB (None where /proc/meminfo lacks it)."""
+    try:
+        with open("/proc/meminfo") as f:
+            return next((int(l.split()[1]) >> 10 for l in f if l.startswith("MemAvailable:")), None)
+    except OSError:
+        return None
+
+
 def log(ev, **kw):
     b, a = stat()
-    line = json.dumps(dict(ev=ev, t=round(time.time(), 2), pid=os.getpid(), busy=b, all=a, **kw), separators=(",", ":"))
+    line = json.dumps(dict(ev=ev, t=round(time.time(), 2), pid=os.getpid(), busy=b, all=a, avail=avail(), **kw), separators=(",", ":"))
     try:
         os.makedirs(os.path.dirname(LOG), exist_ok=True)
         if os.path.exists(LOG) and os.path.getsize(LOG) > LOG_CAP:
@@ -486,7 +495,7 @@ def hold(cmd, name, out, who, runs, sub, lane=None, failed=False, gate=False):
                 cpu, rss = used()
                 if not lane:
                     samples.append((time.time(), cpu))
-                    log("smp", cpu=round(cpu, 1))
+                    log("smp", cpu=round(cpu, 1), rss=rss >> 20)
                     if yfd is None:
                         if quiet(samples) and rss <= SHORT_RSS and waiters(fd):
                             yfd = os.open(YIELD_LOCK, os.O_RDWR | os.O_CREAT, 0o666)
@@ -556,6 +565,9 @@ def report(hours):
     def pct(u):
         return f"{100 * u:3.0f}%" if u is not None else "   ?"
 
+    def gb(mb):
+        return f"{mb / 1024:4.1f}" if mb is not None else "   ?"
+
     def yielded(a):
         ys = [y for y in a["yld"] if y["ev"] == "yld"]
         if not ys:
@@ -577,16 +589,18 @@ def report(hours):
             a = acq.pop(o["pid"])
             runs.append((a, o))
     print(f"{len(runs)} locked runs, {sum(1 for a, _ in runs if a.get('lane'))} of them in the short lane ({len(acq)} unfinished or killed). wait/held in minutes; own = the run's CPU-s over held x "
-          f"{ncpu} cores; box = every process's CPU while held; waitbox = the box while it waited; min = lowest {SAMPLE_S} s sample; [yielded at N min]: released the lock as quiet N minutes in (stopped Kx: stopped K times to retake it)")
-    print(f"{'start':11s} {'wait':>5s} {'held':>5s} {'CPU-s':>7s} {'own':>4s} {'box':>4s} {'min':>4s} {'waitbox':>7s} {'rc':>3s}  who: command")
+          f"{ncpu} cores; box = every process's CPU while held; waitbox = the box while it waited; min = lowest {SAMPLE_S} s sample; rss = the run's peak resident GB over the samples; free = the box's lowest MemAvailable GB while held; [yielded at N min]: released the lock as quiet N minutes in (stopped Kx: stopped K times to retake it)")
+    print(f"{'start':11s} {'wait':>5s} {'held':>5s} {'CPU-s':>7s} {'own':>4s} {'box':>4s} {'min':>4s} {'waitbox':>7s} {'rss':>4s} {'free':>4s} {'rc':>3s}  who: command")
     for a, r in runs:
         pts = [a] + a["smp"] + [r]
         mins = [util(x["busy"], x["all"], y["busy"], y["all"]) for x, y in zip(pts, pts[1:])]
         mins = [m for m in mins if m is not None]
         own = r["cpu"] / (r["held"] * ncpu) if r["held"] else None
+        rss = max((x["rss"] for x in a["smp"] if "rss" in x), default=None)
+        free = min((x["avail"] for x in pts if x.get("avail") is not None), default=None)
         print(f"{time.strftime('%d %H:%M:%S', time.localtime(a['t'])):11s} {a['wait']/60:5.1f} {r['held']/60:5.1f} {r['cpu']:7.0f} "
               f"{pct(own)} {pct(util(a['busy'], a['all'], r['busy'], r['all']))} {pct(min(mins) if len(mins) > 1 else None)} "
-              f"{pct(util(a['busy0'], a['all0'], a['busy'], a['all'])):>7s} {r['rc']:3d}  "
+              f"{pct(util(a['busy0'], a['all0'], a['busy'], a['all'])):>7s} {gb(rss)} {gb(free)} {r['rc']:3d}  "
               f"{os.path.basename(a['who'])} {a['branch']}{' ' + a['via'] if a['via'] else ''}: {a['cmd'][:70]}" + yielded(a))
     # the box over the whole span, split by whether the lock was held (a reboot resets the counters: skipped)
     pts = sorted(ev, key=lambda o: o["t"])
@@ -601,6 +615,10 @@ def report(hours):
             s[0] += y["busy"] - x["busy"]
             s[1] += y["all"] - x["all"]
     hz = os.sysconf("SC_CLK_TCK") * ncpu
+    low = min((o for o in ev if o.get("avail") is not None), key=lambda o: o["avail"], default=None)
+    if low:
+        print(f"\nbox MemAvailable: lowest {low['avail'] / 1024:.1f} GB at {time.strftime('%d %H:%M:%S', time.localtime(low['t']))} "
+              f"(of {os.sysconf('SC_PHYS_PAGES') * os.sysconf('SC_PAGE_SIZE') / 2**30:.0f} GB)")
     print("\nbox CPU between log events: " + ", ".join(
         f"lock {k} {s[1] / hz / 60:.0f} min at {pct(s[0] / s[1])}" for k, s in sums.items() if s[1]))
     for lane, rs in (("the heavy lock", [x for x in runs if not x[0].get("lane")]), ("the short lane", [x for x in runs if x[0].get("lane")])):

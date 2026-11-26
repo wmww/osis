@@ -19,7 +19,7 @@ A package's features are the union of what everything in the build asks for, so 
 - Checked by the gate when a manifest, the lock or `.cargo/` changed: after `cargo build --workspace --all-targets`, `cargo build --all-targets` and `cargo build -p <member> --all-targets` for every member compile nothing. An offender: diff `cargo tree -e normal,build,dev --prefix none -f '{p}|{f}'` with `--workspace` and with `-p X`; same features but a different fingerprint `profile` hash is a per-unit profile difference: compare the unit's rustc line in `cargo build -v`.
 
 ## Heavy lock log
-`~/.cache/osis/heavy.log` (JSON lines; tools/heavy's docstring lists the events). `tools/heavy --report [--since HOURS]` lists runs and utilization (short-lane and yielded holds marked). `tools/agent-times.py [--long N] [--since HH:MM|ISO|commit]` charges each agent its lock wait, hold, CPU-s and time by kind.
+`~/.cache/osis/heavy.log` (JSON lines; tools/heavy's docstring lists the events). `tools/heavy --report [--since HOURS]` lists runs, utilization and memory (each run's peak resident GB, the box's lowest MemAvailable; short-lane and yielded holds marked). `tools/agent-times.py [--long N] [--since HH:MM|ISO|commit]` charges each agent its lock wait, hold, CPU-s and time by kind.
 
 ## Scheduler
 `system76-scheduler` (Pop!_OS, `com.system76.Scheduler.service`) must stay off (`sudo systemctl disable --now` and `mask`; an OS upgrade can re-enable it): it puts `cargo`, `rustc`, `ld` and their children in SCHED_IDLE, and a cargo run then crawls beside any other (10-30x the wall at normal CPU-s; `nice`/`chrt` don't help). Check: `ps -eo pid,cls,ni,comm | grep -E 'cargo|rustc'` shows `IDL`; the gate warns while the service runs.

@@ -310,6 +310,11 @@ rc, ev, (wacq, _), end = yielding(0.1, spinners(4, 1.5))
 expect("busy keeps the lock", (rc, [o["ev"] for o in ev if o["ev"] == "yld"], wacq >= end - 0.5), (["0"], [], True))
 rc, ev, _, _ = yielding(1.5, "sleep 1", waiter=False)
 expect("no waiter: no yield", (rc, [o["ev"] for o in ev if o["ev"] == "yld"]), (["0"], []))
+# memory: every line has the box's MemAvailable, every sample the run's resident MB; the report shows both
+smp = [o for o in ev if o["ev"] == "smp"]
+expect("memory logged", (all(isinstance(o.get("avail"), int) for o in ev), bool(smp) and all(isinstance(o.get("rss"), int) for o in smp)), (True, True))
+rc, out, _ = heavy("--report")
+expect("memory reported", (rc, " rss free " in out[1], any(l.startswith("box MemAvailable: lowest ") for l in out)), (0, True, True))
 
 subprocess.run(["rm", "-rf", d])
 print("heavy_test: ok" if not fails else f"heavy_test: {fails} failed")
