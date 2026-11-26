@@ -136,6 +136,17 @@ p.communicate()
 expect("log then the run", [l for l in open(logf).read().splitlines() if not l.startswith("heavy: waited")][1:], ["ran"])
 expect("copies removed", [x for x in os.listdir(d) if x.startswith("osis-heavy-")], [])
 
+# a record left by a killed run (its lock free) is swept by the next cargo run; a live one's is kept
+for n in ("dead", "live"):
+    os.makedirs(os.path.join(d, f"osis-heavy-{n}"))
+    open(os.path.join(d, f"osis-heavy-{n}.lock"), "w").close()
+live = os.open(os.path.join(d, "osis-heavy-live.lock"), os.O_RDWR)
+fcntl.flock(live, fcntl.LOCK_EX)
+plan((ok, [], d))
+heavy("cargo", "test")
+expect("dead record swept, live kept", sorted(x for x in os.listdir(d) if x.startswith("osis-heavy-")), ["osis-heavy-live", "osis-heavy-live.lock"])
+os.close(live)
+
 # gates first: gates that queued after a by-hand run take the lock before it, and none pre-empts
 # the running hold (the test's)
 order = os.path.join(d, "order")
@@ -291,7 +302,8 @@ expect("resumed only after the waiter's hold", backs and backs[0]["t"] >= wrel -
 # the wait to take the lock back is a wait, not the hold's: written to the wait file, left out of held
 acq, rel = next(o for o in ev if o["ev"] == "acq"), next(o for o in ev if o["ev"] == "rel")
 expect("retake wait left out of held", bool(backs) and abs(rel["held"] + backs[0]["wait"] - (rel["t"] - acq["t"])) < 0.2, True)
-expect("retake wait in the wait file", bool(backs) and open(waitf).read().strip() == f"{acq['wait'] + backs[0]['wait']:.0f}", True)
+# the log rounds each wait to 0.1 s, the file their sum to 1 s: equal within a second
+expect("retake wait in the wait file", bool(backs) and abs(int(open(waitf).read()) - (acq["wait"] + backs[0]["wait"])) <= 1, True)
 # a busy run keeps the lock with a waiter (four spinners: over 0.1 cores up to a load of 40 per
 # core; two over 0.5 cores yielded at load 100 on 16); a quiet one keeps it with none
 rc, ev, (wacq, _), end = yielding(0.1, spinners(4, 1.5))

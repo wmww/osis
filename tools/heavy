@@ -19,7 +19,8 @@ empty while it queues.
 
 A `cargo test` or `cargo run` (maybe after `env VAR=VAL...`) builds before queueing, with
 tools/heavy as cargo's runner (`--record`): cargo compiles and chooses each binary, its args, cwd
-and env as usual, and each is copied to a private dir instead of run. The hold then runs the
+and env as usual, and each is copied to a private dir instead of run (a killed run's dir is
+removed by the next cargo run: `sweep_records`). The hold then runs the
 copies in order, with cargo's `Running` lines, stopping at a failing test binary unless
 --no-fail-fast (exit 101, as cargo). So the hold runs what was on disk at invocation and compiles
 nothing; a build failure exits with cargo's code without queueing. Not covered: doctests (cargo
@@ -66,7 +67,7 @@ over-limit line and logs the hit. The waits are not part of the hold (the first 
 yielded run's to take the lock back): with HEAVY_WAIT_FILE set, their seconds are written there
 (the gate's own limit leaves them out).
 """
-import errno, fcntl, json, os, re, resource, shlex, shutil, signal, subprocess, sys, tempfile, time
+import errno, fcntl, glob, json, os, re, resource, shlex, shutil, signal, subprocess, sys, tempfile, time
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import limits  # noqa: E402
@@ -320,7 +321,11 @@ def run(cmd, name, out=None, short=False, gate=False):
         sys.exit(f"heavy: {refused}")
     if not sub:
         return hold(cmd, name, out, who, [dict(argv=cmd, cwd=None, env=None)], sub, lane, gate=gate)
-    rec = tempfile.mkdtemp(prefix="osis-heavy-")
+    sweep_records()
+    fd, lock = tempfile.mkstemp(prefix="osis-heavy-", suffix=".lock")
+    fcntl.flock(fd, fcntl.LOCK_EX)  # held while the record lives (sweep_records)
+    rec = lock[:-len(".lock")]
+    os.mkdir(rec)
     try:
         rc, runs = build(cmd, rec, out)
         if rc or not runs:
@@ -329,6 +334,32 @@ def run(cmd, name, out=None, short=False, gate=False):
         return hold(cmd, name, out, who, runs, sub, lane, gate=gate)
     finally:
         shutil.rmtree(rec, ignore_errors=True)
+        try:
+            os.unlink(lock)
+        except FileNotFoundError:  # a sweep took it between mkstemp and flock
+            pass
+        os.close(fd)
+
+
+def sweep_records():
+    """Remove the records (binary copies, up to GBs) of runs killed before their cleanup ran: a
+    record's `.lock` beside it is flocked while its run lives, so one this process can lock is dead."""
+    for lock in glob.glob(os.path.join(tempfile.gettempdir(), "osis-heavy-*.lock")):
+        try:
+            fd = os.open(lock, os.O_RDWR)
+        except FileNotFoundError:
+            continue
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            os.close(fd)
+            continue
+        shutil.rmtree(lock[:-len(".lock")], ignore_errors=True)
+        try:
+            os.unlink(lock)
+        except FileNotFoundError:
+            pass
+        os.close(fd)
 
 
 def refusal(cmd, top):
