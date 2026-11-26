@@ -79,10 +79,32 @@ impl S {
     }
 }
 
-fn tmp(name: &str) -> PathBuf {
+/// A test's own directory under the target's tmp, absent at first and removed when dropped (also
+/// when the test fails).
+struct Tmp(PathBuf);
+
+impl std::ops::Deref for Tmp {
+    type Target = std::path::Path;
+    fn deref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl AsRef<std::path::Path> for Tmp {
+    fn as_ref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl Drop for Tmp {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn tmp(name: &str) -> Tmp {
     let d = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("osis-cli-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    d
+    Tmp(d)
 }
 
 // notes/cli.md Tests: argument parsing for every command (clap's debug_assert).
@@ -172,19 +194,18 @@ fn store_dir_init_lock_plan_cli_2() {
     // spec/requirements.md, Deletion (local keys): the store directory, its node and its
     // root key are the owner's only
     #[cfg(unix)]
-    for (p, m) in [(d.clone(), 0o700), (d.join("db.redb"), 0o600), (d.join("root"), 0o600)] {
+    for (p, m) in [(d.to_path_buf(), 0o700), (d.join("db.redb"), 0o600), (d.join("root"), 0o600)] {
         let mode = std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(&p).unwrap().permissions());
         assert_eq!(mode & 0o777, m, "{}", p.display());
     }
     assert_eq!(s.code(&["init"]), 8, "refuses a non-empty store");
     let t = s.thing();
     assert_eq!(s.ok(&["get", &t, "t:made.0"]).out, "true\n");
-    let held = osis::internals::open(osis::internals::Opening::dir(&d)).unwrap();
+    let held = osis::internals::open(osis::internals::Opening::dir(&*d)).unwrap();
     let o = s.call(&["whoami"], "");
     assert!(o.code == 8 && o.err.contains("store in use"), "{}", o.err);
     drop(held);
     s.ok(&["whoami"]);
-    let _ = std::fs::remove_dir_all(&d);
 }
 
 // notes/cli.md Design (daemon), notes/client-port.md §2: beside a node serving the store's
@@ -198,7 +219,7 @@ fn commands_run_through_the_daemon_plan_cli() {
     ok(&["init"]);
     let c = ok(&["chat", "create", "--name", "room"]).trim().to_string();
     let one = ok(&["chat", "post", &c, "one"]).trim().to_string();
-    let mut o = osis::internals::Opening::dir(&d);
+    let mut o = osis::internals::Opening::dir(&*d);
     o.runtime = osis::Runtime::Own;
     o.app.internals.no_listen = true;
     let held = osis::internals::open(o).unwrap();
@@ -223,7 +244,6 @@ fn commands_run_through_the_daemon_plan_cli() {
     assert_eq!(ok(&["contact", "import", card.line(), "--timeout", "60s"]).trim(), acc.thing().to_uri());
     ok(&["diag"]);
     drop(held);
-    let _ = std::fs::remove_dir_all(&d);
 }
 
 // notes/cli.md JSON mapping: --json output carries tids under their API names.
@@ -518,7 +538,6 @@ fn named_keys_with_schema_plan_cli_1() {
     assert_eq!(call(&["get", t, "todo:list.0", "[0].done"], "").1, "true\n");
     assert_eq!(call(&["schema", "rm", f.to_str().unwrap()], "").0, 0);
     assert_eq!(call(&["get", t, "todo:task.0"], "").1, "{0: \"buy milk\", 1: true, 2: #0}\n");
-    let _ = std::fs::remove_dir_all(&d);
 }
 
 // CLI Inspection (format not stable): runs over the engine.
@@ -632,10 +651,10 @@ fn serve_survives_a_bad_socket_dir() {
     let d = tmp("badsockdir");
     let ds = d.to_str().unwrap();
     S::dir(&d).ok(&["init"]);
-    let xdg = d.with_extension("xdg");
+    let xdg = tmp("badsockdir-xdg");
     std::fs::create_dir_all(xdg.join("osis")).unwrap();
     std::fs::set_permissions(xdg.join("osis"), std::fs::Permissions::from_mode(0o755)).unwrap();
-    let mut c = std::process::Command::new(env!("CARGO_BIN_EXE_osis")).env("XDG_RUNTIME_DIR", &xdg).args(["--no-lan", "-s", ds, "serve"]).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::piped()).spawn().unwrap();
+    let mut c = std::process::Command::new(env!("CARGO_BIN_EXE_osis")).env("XDG_RUNTIME_DIR", &*xdg).args(["--no-lan", "-s", ds, "serve"]).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::piped()).spawn().unwrap();
     // read on a thread: a serve that never warns runs on and keeps stderr open
     let err = std::io::BufReader::new(c.stderr.take().unwrap());
     let (tx, rx) = std::sync::mpsc::channel();
@@ -647,7 +666,7 @@ fn serve_survives_a_bad_socket_dir() {
     assert!(warned && running);
     // a socket it may use: its line, once it takes clients, is the socket's path
     std::fs::set_permissions(xdg.join("osis"), std::fs::Permissions::from_mode(0o700)).unwrap();
-    let mut c = std::process::Command::new(env!("CARGO_BIN_EXE_osis")).env("XDG_RUNTIME_DIR", &xdg).args(["--no-lan", "-s", ds, "serve"]).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null()).spawn().unwrap();
+    let mut c = std::process::Command::new(env!("CARGO_BIN_EXE_osis")).env("XDG_RUNTIME_DIR", &*xdg).args(["--no-lan", "-s", ds, "serve"]).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null()).spawn().unwrap();
     let out = std::io::BufReader::new(c.stdout.take().unwrap());
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || tx.send(out.lines().map_while(Result::ok).next()));
@@ -656,8 +675,6 @@ fn serve_survives_a_bad_socket_dir() {
     let _ = c.wait();
     let line = line.expect("a socket line");
     assert!(line.starts_with(xdg.join("osis").to_str().unwrap()) && line.ends_with(".sock"), "{line}");
-    let _ = std::fs::remove_dir_all(&d);
-    let _ = std::fs::remove_dir_all(&xdg);
 }
 
 // CLI `writes`, `fired`, `purge`: pages by place, each part in its line, a purged part, purge by
