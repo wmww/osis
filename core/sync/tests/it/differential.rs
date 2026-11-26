@@ -103,6 +103,19 @@ fn a_making_released_before_a_grantee_held_it_is_lost_spec_sync_set_3() {
     holds_on(0, 2, 3, &script, String::new(), false);
 }
 
+// spec/sync-set.md §3 (Nothing of R stays): node 1 makes a thing, gives the public sync and node
+// 2's account read, and releases it before any run: its making and the public's grant are at no
+// node, while the grant to node 2's account reaches it as an offer and node 2 holds the thing by
+// a strong. The oracle counts a lost grant as it counts a lost value write (`lost_writes`) and
+// builds the reference and the model without it, so node 2 reads the roster it holds (failed:
+// the reference, handed the public's grant, read a sync role node 2 can never learn of).
+#[test]
+fn a_grant_released_before_anyone_received_it_is_lost_spec_sync_set_3() {
+    use crate::harness::history::{Gives, Holder};
+    let script = [Step::New(1), Step::Give(1, 0, Holder::Public, Gives::Syncs), Step::Give(1, 0, Holder::Node(2), Gives::Reads), Step::Unstrong(1, None, 0), Step::Strong(2, None, 0)];
+    holds_on(0, 3, 4, &script, String::new(), false);
+}
+
 // spec: none (test harness): a history is a function of its seed, faults included, and the
 // property's seeds at small size draw every kind of step the oracle judges.
 #[test]

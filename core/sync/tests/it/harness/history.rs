@@ -19,6 +19,7 @@ use super::{DiskFault, Loss, Step, World};
 use held_model::closure as hc;
 use osis_base::{Ak, CommitId, Ref, Role, Tid, Value};
 use osis_crypto::{RngCore, SeededRng};
+use osis_engine::flows::Done;
 use osis_engine::flows::edges::Demotion;
 use osis_engine::local_peer::{Package, Peer};
 use osis_engine::sync::Holding;
@@ -92,10 +93,17 @@ pub enum MintAdmin {
 #[derive(Clone, Debug)]
 struct Event {
     thing: usize,
-    /// The holder's account for a grant to an account; `None` for a rotation or a write.
+    /// The holder's account for a grant to an account, a lowering included; `None` for any
+    /// other.
     granted: Option<Tid>,
     /// The commit of a value write; `None` for a grant or a rotation.
     wrote: Option<CommitId>,
+    /// A change of the thing's read keys, for the excuse: a rotation, a removal below read, a
+    /// grant to the public or a thing.
+    rekeys: bool,
+    /// Every commit the write made (the value write's, a grant's or rotation's), each lost when a
+    /// release takes it unreceived (`lost_writes`).
+    commits: Vec<CommitId>,
     node: usize,
     known: BTreeSet<usize>,
 }
@@ -135,7 +143,7 @@ pub struct Made {
     /// where the node's account's node closure held the write's thing at that run, by the model
     /// of what was handed then (`ran`).
     know: Vec<BTreeSet<usize>>,
-    /// Per value write (by event), the nodes that surely received it when a node of its writer's
+    /// Per write (by event), the nodes that surely received it when a node of its writer's
     /// account next took a strong away or lowered a role (a step that may release its thing):
     /// what a release after it could still lose (`lost_writes`).
     froze: BTreeMap<usize, BTreeSet<usize>>,
@@ -240,18 +248,24 @@ impl Made {
         format!("v{}", self.written)
     }
 
-    fn event(&mut self, thing: usize, granted: Option<Tid>, node: usize) {
-        self.event_of(thing, granted, None, node);
+    /// A change of `thing`'s keys or roles by `node`, writing `done`'s commits.
+    fn event(&mut self, thing: usize, granted: Option<Tid>, rekeys: bool, done: Done, node: usize) {
+        self.push(Event { thing, granted, wrote: None, rekeys, commits: done.commits, node, known: BTreeSet::new() });
     }
 
-    fn event_of(&mut self, thing: usize, granted: Option<Tid>, wrote: Option<CommitId>, node: usize) {
+    /// A value write of `thing` by `node` in commit `c`.
+    fn wrote(&mut self, thing: usize, c: CommitId, node: usize) {
+        self.push(Event { thing, granted: None, wrote: Some(c), rekeys: false, commits: vec![c], node, known: BTreeSet::new() });
+    }
+
+    fn push(&mut self, mut e: Event) {
         let n = self.events.len();
-        if self.know.len() <= node {
-            self.know.resize(node + 1, BTreeSet::new());
+        if self.know.len() <= e.node {
+            self.know.resize(e.node + 1, BTreeSet::new());
         }
-        let known = self.know[node].clone();
-        self.events.push(Event { thing, granted, wrote, node, known });
-        self.know[node].insert(n);
+        e.known = self.know[e.node].clone();
+        self.know[e.node].insert(n);
+        self.events.push(e);
     }
 }
 
@@ -429,7 +443,7 @@ pub fn step(w: &mut World, s: &Step) -> String {
                 Ok(c) => {
                     w.history.values.extend(c.map(|c| (v.clone(), c)));
                     if let Some(c) = c {
-                        w.history.event_of(*k, None, Some(c), i);
+                        w.history.wrote(*k, c, i);
                     }
                     Ok(v)
                 }
@@ -451,12 +465,14 @@ pub fn step(w: &mut World, s: &Step) -> String {
         Step::Revoke(_, k, h) => demote(w, i, *k, *h, None),
         Step::Rotate(_, k) => {
             let Some(t) = thing(w, *k) else { return "skipped: no such thing".into() };
-            let r = w.write(i, |e| e.make_independent(&t)).map(|_| String::new()).map_err(|e| e.to_string());
-            if r.is_ok() {
-                w.history.independent[*k] = true;
-                w.history.event(*k, None, i);
+            match w.write(i, |e| e.make_independent(&t)) {
+                Ok(done) => {
+                    w.history.independent[*k] = true;
+                    w.history.event(*k, None, true, done, i);
+                    Ok(String::new())
+                }
+                Err(e) => Err(e.to_string()),
             }
-            r
         }
         Step::Strong(_, from, k) => strong(w, i, *from, *k, true),
         Step::Unstrong(_, from, k) => strong(w, i, *from, *k, false),
@@ -483,12 +499,12 @@ pub fn step(w: &mut World, s: &Step) -> String {
     }
 }
 
-/// Node `i` may have released a thing: each value write by its account not frozen yet keeps the
+/// Node `i` may have released a thing: each write by its account not frozen yet keeps the
 /// nodes that surely received it now (`Made::froze`).
 fn freeze(w: &mut World, i: usize) {
     let account = w.node(i).account;
     let h = &w.history;
-    let due: Vec<usize> = h.events.iter().enumerate().filter(|(n, e)| e.wrote.is_some() && !h.froze.contains_key(n) && w.node(e.node).account == account).map(|(n, _)| n).collect();
+    let due: Vec<usize> = h.events.iter().enumerate().filter(|(n, e)| !e.commits.is_empty() && !h.froze.contains_key(n) && w.node(e.node).account == account).map(|(n, _)| n).collect();
     let knew: Vec<(usize, BTreeSet<usize>)> = due.into_iter().map(|n| (n, (0..h.know.len()).filter(|j| h.know[*j].contains(&n)).collect())).collect();
     w.history.froze.extend(knew);
 }
@@ -497,7 +513,7 @@ fn freeze(w: &mut World, i: usize) {
 /// `remove_node`); node `j` acts for no account from then on. Never an account's first node: its
 /// copy is the account's twin in the reference (`Refs`). The history removes only a node that
 /// wrote nothing (`history`): what a removed node wrote and no other node received goes with its
-/// erasing, strongs and grants too, which the oracle tracks as lost for value writes alone.
+/// erasing, strongs and grants too; the oracle tracks values, grants and rotations as lost.
 fn unpair(w: &mut World, i: usize, j: usize) -> Result<String, String> {
     let a = w.node(i).account.ok_or("no account")?;
     if j >= w.len() || j == i || j < w.history.twins.as_ref().map_or(0, |t| t.0.lock().unwrap().len()) || w.node(j).account != Some(a) {
@@ -588,9 +604,9 @@ fn inbox(w: &mut World, i: usize, k: Option<usize>) -> Result<String, String> {
     if let (Some(k), Some(t)) = (k, to)
         && !w.history.independent[k]
     {
-        w.write(i, |e| e.make_independent(&t)).map_err(|e| e.to_string())?;
+        let done = w.write(i, |e| e.make_independent(&t)).map_err(|e| e.to_string())?;
         w.history.independent[k] = true;
-        w.history.event(k, None, i);
+        w.history.event(k, None, true, done, i);
     }
     let r = w.write(i, |e| -> osis_engine::Result<()> {
         let to = match to {
@@ -645,7 +661,7 @@ fn make(w: &mut World, i: usize, mint_admin: Option<usize>) -> Result<String, St
             h.values.extend(c.map(|c| (v, c)));
             if let Some(c) = c {
                 h.made.insert(c);
-                h.event_of(h.things.len() - 1, None, Some(c), i);
+                h.wrote(h.things.len() - 1, c, i);
             }
             Ok(format!("thing {}", h.things.len() - 1))
         }
@@ -682,7 +698,7 @@ fn give(w: &mut World, i: usize, k: usize, h: Holder, g: Gives) -> Result<String
     let (Some(t), Some(holder)) = (thing(w, k), holder_tid(w, h)) else { return Ok("skipped: no such thing or holder".into()) };
     let edge = Edge { role: g.role(), until: None, may_grant: false, retain: false, floor: None };
     let (on_holder, stood) = before_edge(w, i, &t, &holder);
-    let r = w.write(i, |e| e.grant(&t, &holder, &edge)).map(|_| String::new()).map_err(|e| e.to_string());
+    let r = w.write(i, |e| e.grant(&t, &holder, &edge)).map_err(|e| e.to_string());
     if r.is_ok() || stands(w, i, &t, &holder, Some(g.role())) {
         note_offered(w, k, h, holder, on_holder, stood);
         let account = matches!(h, Holder::Node(_)).then_some(holder);
@@ -692,12 +708,14 @@ fn give(w: &mut World, i: usize, k: usize, h: Holder, g: Gives) -> Result<String
         if let Holder::Thing(j) = h {
             hist.independent[j] = true;
         }
-        hist.event(k, account, i);
+        // a refused grant that stands made its commits unseen: none to lose
+        let done = r.as_ref().cloned().unwrap_or_default();
+        hist.event(k, account, account.is_none(), done, i);
         if h != Holder::Public {
             hist.named.insert((k, holder));
         }
     }
-    r
+    r.map(|_| String::new())
 }
 
 /// Node `i` lowers holder `h` on thing `k` to `g`, or removes it (`None`).
@@ -705,18 +723,24 @@ fn demote(w: &mut World, i: usize, k: usize, h: Holder, g: Option<Gives>) -> Res
     let (Some(t), Some(holder)) = (thing(w, k), holder_tid(w, h)) else { return Ok("skipped: no such thing or holder".into()) };
     let new = g.map(|g| Edge { role: g.role(), until: None, may_grant: false, retain: false, floor: None });
     let (on_holder, stood) = before_edge(w, i, &t, &holder);
-    let r = w.write(i, |e| e.demote(&t, &Demotion { holder, new, retain: None })).map(|_| String::new()).map_err(|e| e.to_string());
-    if g.is_some() && stood && (r.is_ok() || stands(w, i, &t, &holder, g.map(Gives::role))) {
+    let r = w.write(i, |e| e.demote(&t, &Demotion { holder, new, retain: None })).map_err(|e| e.to_string());
+    let applied = r.is_ok() || stands(w, i, &t, &holder, g.map(Gives::role));
+    if g.is_some() && stood && applied {
         note_offered(w, k, h, holder, on_holder, stood);
     }
     if r.is_ok() && g.is_none() && matches!(h, Holder::Thing(p) if w.history.minted_with[k] == MintAdmin::Thing(p)) {
         w.history.record_gone.insert(k);
     }
-    // a change taking the holder below read rotates the read role
-    if (r.is_ok() || stands(w, i, &t, &holder, g.map(Gives::role))) && g.is_none_or(|g| g < Gives::Reads) {
-        w.history.event(k, None, i);
+    // a change taking the holder below read rotates the read role; either way its commits may go
+    // with a release (`lost_writes`)
+    if applied {
+        let rekeys = g.is_none_or(|g| g < Gives::Reads);
+        // a lowering the holder still reads after is a grant to it (the excuse's last grant)
+        let account = matches!(h, Holder::Node(_)).then_some(holder).filter(|_| !rekeys);
+        let done = r.as_ref().cloned().unwrap_or_default();
+        w.history.event(k, account, rekeys, done, i);
     }
-    r
+    r.map(|_| String::new())
 }
 
 /// Node `i` adds or removes a strong from its account (`None`) or from thing `from` to
@@ -1141,7 +1165,7 @@ fn excused(w: &World, m: &Model, a: Tid, k: usize) -> bool {
     let h = &w.history;
     let Some(g) = h.events.iter().rposition(|e| e.thing == k && e.granted == Some(a)) else { return false };
     let account_of = |i: usize| w.node(i).account;
-    h.events.iter().enumerate().filter(|(_, e)| e.thing == k && e.granted.is_none() && e.wrote.is_none()).any(|(r, e)| {
+    h.events.iter().enumerate().filter(|(_, e)| e.thing == k && e.rekeys).any(|(r, e)| {
         let concurrent = if r > g { !e.known.contains(&g) } else { !h.events[g].known.contains(&r) };
         let mut boxed: BTreeSet<Tid> = [account_of(e.node), account_of(h.things[k].1)].into_iter().flatten().collect();
         boxed.extend(e.known.iter().filter_map(|x| h.events[*x].granted.filter(|_| h.events[*x].thing == k)));
@@ -1149,16 +1173,18 @@ fn excused(w: &World, m: &Model, a: Tid, k: usize) -> bool {
     })
 }
 
-/// The value writes a release lost (spec/sync-set.md §3 Nothing of R stays: a node's own writes on
-/// a thing it releases not yet held elsewhere go, and a release waits for no peer not connected):
-/// node i's write on thing k, after which i's account took a strong away, lowered a role or
-/// removed a node (a step that may release k: a removed node erases), that no other node surely
-/// received by then (`Made::froze`) whose account's node closure holds k at the end, and whose
-/// value no node holds at the check (i, holding k again, fetches what others hold). A thing's
-/// making is such a write: released before another node received it, its value is gone. The
-/// reference is not handed a lost value write alone (it
-/// changes no roster, so the model is the same either way); a lost making it is handed whole, for
-/// the thing's record, and its value is read as none (`closure_clauses`).
+/// The writes a release lost (spec/sync-set.md §3 Nothing of R stays: a node's own writes on a
+/// thing it releases not yet held elsewhere go, and a release waits for no peer not connected):
+/// each commit of node i's write on thing k (a value, a grant, a lowering, a rotation), after
+/// which i's account took a strong away, lowered a role or removed a node (a step that may
+/// release k: a removed node erases), that no other node surely received by then (`Made::froze`)
+/// whose account's node closure holds k at the end, and that no node holds at the check (its
+/// value part, for a value write: i, holding k again, fetches what others hold). A thing's making
+/// is such a write: released before another node received it, its value is gone. The reference
+/// and the model are built without the lost commits (a lost grant changes the roster, and a
+/// later commit on it stands without it where a node took it as a piece); a lost making the
+/// reference is handed whole, for the thing's record, and its value is read as none
+/// (`closure_clauses`).
 fn lost_writes(w: &mut World, m: &Model) -> BTreeSet<CommitId> {
     let holds = |a: Option<Tid>, k: usize| {
         a.and_then(|a| m.account(&a)).is_some_and(|a| {
@@ -1169,15 +1195,15 @@ fn lost_writes(w: &mut World, m: &Model) -> BTreeSet<CommitId> {
     let mut lost = BTreeSet::new();
     for (n, e) in w.history.events.iter().enumerate() {
         // a write its writer's account may have released since: who had surely received it then
-        let (Some(c), Some(knew)) = (e.wrote, w.history.froze.get(&n)) else { continue };
+        let Some(knew) = w.history.froze.get(&n) else { continue };
         let shared = knew.iter().any(|&j| j != e.node && j < w.len() && holds(w.node(j).account, e.thing));
         if !shared {
-            lost.insert(c);
+            lost.extend(e.commits.iter().map(|c| (*c, e.wrote.is_some())));
         }
     }
     let on: Vec<usize> = (0..w.len()).filter(|i| w.online(*i)).collect();
-    lost.retain(|c| !on.iter().any(|&i| holds_value(w, i, c)));
-    lost
+    lost.retain(|(c, value)| !on.iter().any(|&i| if *value { holds_value(w, i, c) } else { w.engine(i).holds_commit(c) }));
+    lost.into_iter().map(|(c, _)| c).collect()
 }
 
 /// Whether node `i` holds a value part (`value_ak`) of commit `c`.
