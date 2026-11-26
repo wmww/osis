@@ -657,7 +657,7 @@ pub(crate) fn record_head(m: &Meta) -> Vec<u8> {
     w = w.raw(&m.signed().to_bytes()).u32(m.dropped_parts().count() as u32);
     for (a, d) in m.dropped_parts() {
         let role = d.role.map_or(0, |r| 1 + r as u8);
-        w = w.u32(a as u32).u8(u8::from(d.as_cover()) | role << 2 | u8::from(d.overreach) << 5 | u8::from(d.why == super::DropFor::Invalid) << 6).u32(d.covered_by.len() as u32);
+        w = w.u32(a as u32).u8(u8::from(d.as_cover()) | role << 2 | u8::from(d.overreach) << 5 | u8::from(d.why == super::DropFor::Invalid) << 6 | u8::from(d.strips) << 7).u32(d.covered_by.len() as u32);
         for s in &d.covered_by {
             w = w.raw(&s.0);
         }
@@ -808,7 +808,7 @@ pub(crate) fn parse_head(v: &[u8]) -> Result<(RecordHead, &[u8])> {
         }
         let peer_delete_from = r.u64()?;
         let role = Role::ALL.get(<usize as From<u8>>::from((flags >> 2) & 7).wrapping_sub(1)).copied();
-        dropped.insert(a, super::Dropped { covered_by, why: if flags & 1 != 0 { super::DropFor::Cover } else if flags & 64 != 0 { super::DropFor::Invalid } else { super::DropFor::Other }, peer_delete_from, role, overreach: flags & 32 != 0, keysets, superseded_by: BTreeSet::new() });
+        dropped.insert(a, super::Dropped { covered_by, why: if flags & 1 != 0 { super::DropFor::Cover } else if flags & 64 != 0 { super::DropFor::Invalid } else { super::DropFor::Other }, peer_delete_from, role, overreach: flags & 32 != 0, keysets, superseded_by: BTreeSet::new(), strips: flags & 128 != 0 });
     }
     let (mut stripped, mut own_live) = (BTreeSet::new(), BTreeSet::new());
     for _ in 0..r.u32()? {

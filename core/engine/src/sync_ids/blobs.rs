@@ -352,7 +352,7 @@ impl Engine {
         // an expiry's leftover, one dropped as covered under purge on replace: `bodies::strips`)
         let whole: Vec<Section> = {
             let m = self.core.ix.commits.get(&id);
-            extra.iter().filter(|s| s.ais.iter().all(|ai| m.is_none_or(|m| !crate::sync::bodies::strips(&self.core, &id, m, *ai)))).cloned().collect()
+            extra.iter().filter(|s| s.ais.iter().all(|ai| m.is_none_or(|m| !crate::sync::bodies::strips(m, *ai)))).cloned().collect()
         };
         // per thing, every part of it here: its sections' epoch is chosen from them all (a
         // rotation's roles.0 section goes under the epoch it supersedes too)

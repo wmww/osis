@@ -368,7 +368,7 @@ fn drop_body(tx: &mut Tx<'_>, c: &CommitId, ai: usize, why: DropFor) -> Result<O
         leftover::remove(tx, &a.tid, &a.ak, c, ai)?;
     }
     // a part missing (again, `uncover`) and dropped is dropped, as an open reads it: received
-    m.set_hold(ai, Hold::Dropped(Dropped { covered_by, why, peer_delete_from, role, overreach, keysets, superseded_by: BTreeSet::new() }));
+    m.set_hold(ai, Hold::Dropped(Dropped { covered_by, why, peer_delete_from, role, overreach, keysets, superseded_by: BTreeSet::new(), strips: false }));
     if osis_schema::core_types::is_addenda(a.ak.as_str()) {
         crate::apply::validity::forget_addendum_body(tx.core, c, &a.tid);
     }

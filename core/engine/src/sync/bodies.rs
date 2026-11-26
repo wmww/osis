@@ -236,21 +236,28 @@ pub(crate) fn forget(tx: &mut Tx<'_>, c: &CommitId) -> Result<()> {
     Ok(())
 }
 
-/// Part `ai` of `c` (meta `m`) leaves every blob of its commit (spec/sync-judgement.md §2 Per
-/// blob; `Engine::blob_gone`): its body is gone here other than while invalid (no right deletes
-/// that one, and its blobs are its refetch source, spec/permissions.md §6). One dropped as covered
-/// only on an aspect a held setting puts under purge on replace (`Kept::purges`), while a held
-/// valid snapshot of its aspect reaches it by its tables (`reachers`): a node that never held it
-/// then counts it covered too, not missing (spec/commits.md §5 Covered). Elsewhere its blobs keep
-/// it: a new reader joins it and judges the cover itself, as a snapshot covering the reacher may
-/// name no session left without a write (spec/crdt.md §8 Absence), so tables prove nothing for
-/// good. One dropped under own replaces alone goes only with its whole commit.
-pub(crate) fn strips(core: &crate::engine::Core, c: &CommitId, m: &crate::engine::Meta, ai: usize) -> bool {
+/// Part `ai` of meta `m` leaves every blob of its commit (spec/sync-judgement.md §2 Per blob;
+/// `Engine::blob_gone`): its body is gone here other than while invalid (no right deletes that
+/// one, and its blobs are its refetch source, spec/permissions.md §6). One dropped as covered once
+/// marked so (`Dropped::strips`, `strip_due`). A function of the record alone: a strip is written.
+pub(crate) fn strips(m: &crate::engine::Meta, ai: usize) -> bool {
     match m.dropped(ai) {
         Some(d) if d.why == DropFor::Invalid => false,
-        Some(d) if d.as_cover() => m.view.aspects.get(ai).is_some_and(|a| crate::retention::history::of(core, &a.tid, &a.ak).purges()) && !reachers(core, c, m, ai).is_empty(),
+        Some(d) if d.as_cover() => d.strips,
         _ => m.body_gone(ai),
     }
+}
+
+/// Whether part `ai` of `c` (meta `m`), dropped as covered and not marked to strip, strips now
+/// (`retention::replace::settle_none` marks it, `Dropped::strips`): its aspect is under purge on
+/// replace by a held setting (`Kept::purges`) and a held valid snapshot of it reaches the part by
+/// its tables (`reachers`): a node that never held it then counts it covered too, not missing
+/// (spec/commits.md §5 Covered). Elsewhere its blobs keep it: a new reader joins it and judges the
+/// cover itself, as a snapshot covering the reacher may name no session left without a write
+/// (spec/crdt.md §8 Absence), so tables prove nothing for good. One dropped under own replaces
+/// alone goes only with its whole commit.
+pub(crate) fn strip_due(core: &crate::engine::Core, c: &CommitId, m: &crate::engine::Meta, ai: usize) -> bool {
+    m.dropped(ai).is_some_and(|d| d.as_cover() && !d.strips) && m.view.aspects.get(ai).is_some_and(|a| crate::retention::history::of(core, &a.tid, &a.ak).purges()) && !reachers(core, c, m, ai).is_empty()
 }
 
 /// The held valid snapshots of part `ai`'s aspect whose tables reach it (`snapshot::reaches`):
@@ -616,7 +623,7 @@ impl Engine {
     pub fn blob_gone(&self, b: &BlobId) -> bool {
         let Some(x) = self.core.ix.blob_parts.get(b) else { return false };
         let Some(m) = self.core.ix.commits.get(&x.commit) else { return false };
-        x.parts.iter().any(|ai| strips(&self.core, &x.commit, m, *ai))
+        x.parts.iter().any(|ai| strips(m, *ai))
     }
 
     /// Held blob `b` as a strip leaves it (`blob_gone`), to be deleted at a peer once each part
@@ -664,7 +671,7 @@ impl Engine {
             return Ok(None);
         }
         let Some(m) = self.core.ix.commits.get(&c) else { return Ok(None) };
-        if x.parts.iter().any(|ai| m.holds(*ai) && !strips(&self.core, &c, m, *ai) && !y.parts.contains(ai)) {
+        if x.parts.iter().any(|ai| m.holds(*ai) && !strips(m, *ai) && !y.parts.contains(ai)) {
             return Ok(None);
         }
         // a blob of the other kind holds no body here (a certificate copy beside the shared blob
@@ -707,7 +714,7 @@ impl Engine {
         // what a strip leaves of the body: its parts whose bodies are not gone here
         let meta = self.sync_body_now(s, id)?.map(|mut m| {
             if let Some(cm) = self.core.ix.commits.get(c) {
-                m.parts.retain(|ai| !strips(&self.core, c, cm, *ai));
+                m.parts.retain(|ai| !strips(cm, *ai));
             }
             m
         });
@@ -773,7 +780,7 @@ impl Engine {
         }
         // the body's parts whose bodies are not gone here: a strip logs the rest
         let body: Vec<usize> = match self.core.ix.commits.get(c) {
-            Some(m) => meta.parts.iter().copied().filter(|ai| !strips(&self.core, c, m, *ai)).collect(),
+            Some(m) => meta.parts.iter().copied().filter(|ai| !strips(m, *ai)).collect(),
             None => return Ok(false),
         };
         // verbatim: a held genuine blob (a certificate copy of exactly the body's parts for a
@@ -790,7 +797,7 @@ impl Engine {
             }
             if !row.copy {
                 let m = self.core.ix.commits.get(c);
-                let strip = |ai: &usize| m.is_some_and(|m| strips(&self.core, c, m, *ai));
+                let strip = |ai: &usize| m.is_some_and(|m| strips(m, *ai));
                 opened.extend(row.parts.iter().copied().filter(|ai| meta.parts.contains(ai) && !strip(ai)));
                 let mut sections: BTreeMap<(Tid, bool), Vec<usize>> = BTreeMap::new();
                 for ai in &row.parts {
@@ -1221,6 +1228,16 @@ impl Engine {
             out.parts.sort_by_key(|p| p.ai);
         }
         Ok(Some(out))
+    }
+
+    /// The parts that strip now (`strip_due`) but are not marked so (`Dropped::strips`), on an
+    /// aspect whose purge-on-replace re-judge is not pending (`Core::none_due`): none, as every
+    /// strip is written in the transaction that makes it true. Debug builds check it at the end of
+    /// every engine's history.
+    #[doc(hidden)]
+    pub fn unwritten_strips(&self) -> Vec<(CommitId, usize)> {
+        let core = &self.core;
+        core.ix.commits.iter().flat_map(|(c, m)| (0..m.view.aspects.len()).filter(move |ai| strip_due(core, c, m, *ai) && m.view.aspects.get(*ai).is_some_and(|a| !core.none_due.contains(&(a.tid, a.ak.clone())))).map(move |ai| (*c, ai))).collect()
     }
 
     /// Every held blob with a seal whose bytes the store holds is made again to them

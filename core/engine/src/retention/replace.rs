@@ -135,6 +135,7 @@ pub(crate) fn settle_none(tx: &mut Tx<'_>) -> Result<()> {
             continue;
         }
         let bodies: Vec<CommitId> = tx.core.ix.by_aspect.get(&k).into_iter().flatten().map(|x| x.1).collect();
+        mark_strips(tx, &bodies)?;
         let mut held = Vec::new();
         for c in bodies {
             if let Some(ai) = super::held_part(tx.core, &c, &tid, &ak).filter(|ai| tx.core.ix.commits.get(&c).is_some_and(|m| !m.own_gone(*ai))) {
@@ -232,6 +233,29 @@ pub(crate) fn settle_none(tx: &mut Tx<'_>) -> Result<()> {
                 super::memory::forget_if_spent(tx, &c)
             })?;
         }
+    }
+    Ok(())
+}
+
+/// Of `bodies` (the commits with a part on an aspect `settle_none` judges), each part dropped as
+/// covered that strips now is marked so in its record (`sync::bodies::strip_due`,
+/// `Dropped::strips`): its blobs drop it, and what this node keeps of it for them goes, in this
+/// transaction. A drop as covered below puts its meta, so its aspect is judged again here.
+fn mark_strips(tx: &mut Tx<'_>, bodies: &[CommitId]) -> Result<()> {
+    for c in bodies {
+        let Some(m) = tx.core.ix.commits.get(c) else { continue };
+        let due: Vec<usize> = (0..m.view.aspects.len()).filter(|ai| crate::sync::bodies::strip_due(tx.core, c, m, *ai)).collect();
+        if due.is_empty() {
+            continue;
+        }
+        let mut m = m.clone();
+        for ai in due {
+            if let Some(d) = m.dropped_mut(ai) {
+                d.strips = true;
+            }
+        }
+        tx.core.touch();
+        tx.in_class(m.view.memory, |tx| tx.put_meta_record(c, m))?;
     }
     Ok(())
 }

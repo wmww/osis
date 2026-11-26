@@ -147,6 +147,12 @@ pub struct Dropped {
     /// that superseded it (the lane's carriers once its commit is forgotten). Never stored:
     /// memory commits are not.
     pub superseded_by: BTreeSet<CommitId>,
+    /// A part dropped as covered that its blobs drop too (spec/sync-judgement.md §2 Per blob,
+    /// `sync::bodies::strips`): set, for good, by the purge-on-replace re-judge of its aspect
+    /// (`retention::replace::settle_none`) once a held valid snapshot reaches it by its tables
+    /// while a setting purges on replace, so a strip is an event of the transaction making it
+    /// true.
+    pub strips: bool,
 }
 
 /// The aspects of `m`'s parts not held (`Indexes::missing`).
@@ -3572,6 +3578,9 @@ impl Drop for Engine {
             // every held blob with a seal is made again byte for byte (notes/slim-design.md B)
             let (_, failed) = self.check_seals();
             assert!(failed.is_empty(), "held blobs not made again from their seals at the end of history:\n{}", failed.join("\n"));
+            // every strip due is written, but on an aspect whose re-judge waits (`Core::none_due`)
+            let unwritten = self.unwritten_strips();
+            assert!(unwritten.is_empty(), "strips due and not written at the end of history: {unwritten:?}");
         }
     }
 }

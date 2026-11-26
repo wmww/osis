@@ -210,7 +210,7 @@ impl Engine {
     /// derived.
     pub fn body_held_by(&self, meta: &super::BodyMeta, b: &BlobId) -> bool {
         let Some(row) = self.core.ix.blob_parts.get(b) else { return false };
-        let gone = |ai: &usize| self.core.ix.commits.get(&row.commit).is_some_and(|m| super::bodies::strips(&self.core, &row.commit, m, *ai));
+        let gone = |ai: &usize| self.core.ix.commits.get(&row.commit).is_some_and(|m| super::bodies::strips(m, *ai));
         // a certificate copy is its body only holding exactly S's cut (spec/permissions.md §4
         // Copies): one blob per distinct cut
         let exact = !meta.certificate || row.parts.iter().all(|ai| meta.parts.contains(ai));
