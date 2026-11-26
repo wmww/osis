@@ -1232,3 +1232,37 @@ fn a_refused_offer_leaves_nothing_spec_sync_inbox_5() {
     let new: Vec<String> = lp.peers[2].engine.rows(b"", None).unwrap().into_iter().filter(|r| !rows.iter().any(|x| x.key == r.key && x.family == r.family)).map(|r| format!("{} {}", r.family, r.key)).collect();
     assert_eq!(count(&mut lp), before, "no row of the refused offer kept: {new:?}");
 }
+
+// spec/sync-inbox.md §5 (By hand), spec/commits.md §5 (What a held thing needs): a refused offer
+// drops only what nothing held needs. Peer 2 reads Z (its record, chain and edge writes held);
+// peer 0 grants G to Z and hands the offer to peer 2, which writes no Z: refused, every row of
+// peer 2's is as before, those of Z the offer carried again included, also after a pass. Fails
+// with a refused offer dropping what a held thing needs, or keeping what it brought.
+#[test]
+fn a_refused_offer_keeps_what_was_held_spec_sync_inbox_5() {
+    let mut lp = synced(3);
+    let me0 = lp.peers[0].engine.tid();
+    let me2 = lp.peers[2].engine.tid();
+    let mut m = crate::Mutation::new();
+    let g = lp.peers[0].engine.new_thing(&mut m, me0);
+    let z = lp.peers[0].engine.new_thing(&mut m, me0);
+    lp.peers[0].commit(m).unwrap();
+    lp.peers[0].engine.make_independent(&g).unwrap();
+    lp.peers[0].engine.make_independent(&z).unwrap();
+    lp.peers[0].engine.grant(&z, &me2, &edge(Role::Read)).unwrap();
+    lp.sync_all().unwrap();
+    lp.hold_at(2, z);
+    lp.sync_all().unwrap();
+    assert!(lp.peers[2].engine.core.created(&z).is_some(), "peer 2 holds Z");
+    lp.peers[0].engine.grant(&g, &z, &edge(Role::Read)).unwrap();
+    let offer = lp.peers[0].engine.offer(&g, &z).unwrap();
+    let rows = |lp: &mut LocalPeer| lp.peers[2].engine.rows(b"", None).unwrap().into_iter().map(|r| (r.family, r.key)).collect::<BTreeSet<_>>();
+    let count = |lp: &mut LocalPeer| lp.peers[2].engine.census().unwrap().into_iter().map(|(f, (n, _))| (f, n)).collect::<std::collections::BTreeMap<_, _>>();
+    let (before, n) = (rows(&mut lp), count(&mut lp));
+    assert!(lp.peers[2].engine.take_offer(&offer, &me2).is_err(), "peer 2 reads Z, writes it not");
+    assert_eq!(count(&mut lp), n, "every store as before");
+    let after = rows(&mut lp);
+    assert_eq!(before.difference(&after).collect::<Vec<_>>(), Vec::<&(_, _)>::new(), "nothing held dropped");
+    assert_eq!(after.difference(&before).collect::<Vec<_>>(), Vec::<&(_, _)>::new(), "nothing of the offer kept");
+    assert!(lp.peers[2].engine.core.created(&z).is_some() && lp.peers[2].engine.core.created(&g).is_none(), "Z kept, G not");
+}

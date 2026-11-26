@@ -63,6 +63,9 @@ fn pairing_and_removing_a_node_spec_permissions_8() {
     let mut want = vec![AccountNode { node: db.node(), role: Role::Admin }, AccountNode { node: b.node(), role: Role::Admin }];
     want.sort_by_key(|n| n.node);
     assert_eq!(nodes, want);
+    let mut there = a.nodes(&b).unwrap();
+    there.sort_by_key(|n| n.node);
+    assert_eq!(there, want, "alike at the paired node");
     let t = make(db, a, "from the first");
     drive(&net, db.wait_synced(SyncScope::All)).unwrap();
     drive(&net, b.wait_synced(SyncScope::All)).unwrap();
