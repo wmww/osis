@@ -6,13 +6,13 @@ path claimed; then brings the branch to its pushed copy: REF, or else the one re
 a local branch that is no ancestor of it (`wt claim` checks out a local branch as it is, ignoring the
 base: a reviewer got a stale pre-rebase copy twice). With no pushed copy, a branch lacking
 origin/main is reported (a claim of an old local branch). Sets the repo's known-failures merge
-driver (tools/known_failures_merge.py) on the way, and ends a `git bisect` an earlier task left in
-the worktree. Prints the worktree's path, last, on stdout:
+driver (tools/known_failures_merge.py) on the way, ends a `git bisect` an earlier task left in
+the worktree, and bounds the fuzz target (`fuzz_target`). Prints the worktree's path, last, on stdout:
 `W=$(tools/claim BRANCH)`.
 
 Exit 1 when the claim failed (a release still holding BRANCH says so: retry once `wt list` shows
 its worktree free) or the worktree is not clean (nothing moved)."""
-import glob, os, subprocess, sys
+import glob, hashlib, os, shutil, subprocess, sys
 
 
 def run(*a, cwd=None, check=True):
@@ -35,6 +35,42 @@ def wt():
     if not copies:
         sys.exit("claim: no `wt` on PATH or in the plugin cache: ask Tess to install reasonable-rust-builds")
     return max(copies, key=lambda p: [int(x) if x.isdigit() else 0 for x in p.split("/")[-3].split(".")])
+
+
+FUZZ = "core/test/fuzz"
+
+
+def fuzz_target(path):
+    """core/test/fuzz/target, which `wt release` never prunes (nightly cargo's build-dir layout has
+    no `.fingerprint/`, so wt sees no profile): drops cargo-fuzz's release profile (by-hand fuzz
+    runs; the gate checks in dev), and empties the target when its build key (the fuzz lock, every
+    tracked manifest, .cargo/config.toml, nightly `rustc -vV`) changed since the last claim, as
+    units of an old key are never read again. A wipe costs the next fuzz check a cold build (about
+    140 CPU-s): a few manifest or lock changes a week."""
+    if not os.path.isdir(os.path.join(path, FUZZ)):
+        return
+    tgt = os.path.join(path, FUZZ, "target")
+    h = hashlib.sha256()
+    manifests = [m for m in git("ls-files", "-z", "--", "Cargo.toml", "**/Cargo.toml", cwd=path).split("\0") if m]
+    for f in sorted([f"{FUZZ}/Cargo.lock", ".cargo/config.toml", *manifests]):
+        if os.path.isfile(os.path.join(path, f)):
+            h.update(f.encode() + b"\0" + open(os.path.join(path, f), "rb").read() + b"\0")
+    h.update(run("rustc", "+nightly", "-vV", cwd=path, check=False).stdout.encode())
+    key, stamp = h.hexdigest(), os.path.join(tgt, ".claim-key")
+    old = open(stamp).read().strip() if os.path.exists(stamp) else None
+    if old != key:
+        os.makedirs(tgt, exist_ok=True)  # cargo keeps a target it finds, so the stamp can wait in it
+        for e in os.scandir(tgt):
+            if e.name != "CACHEDIR.TAG":
+                shutil.rmtree(e.path) if e.is_dir(follow_symlinks=False) else os.unlink(e.path)
+        with open(stamp, "w") as f:
+            f.write(key + "\n")
+        if old is not None:
+            print(f"claim: emptied {FUZZ}/target: its build key changed", file=sys.stderr)
+        return
+    for prof in glob.glob(os.path.join(tgt, "release")) + glob.glob(os.path.join(tgt, "*", "release")):
+        shutil.rmtree(prof)
+        print(f"claim: removed {os.path.relpath(prof, path)} (cargo-fuzz's release profile, from a by-hand run)", file=sys.stderr)
 
 
 def main(argv):
@@ -84,6 +120,7 @@ def main(argv):
         behind = git("rev-list", "--count", "HEAD..origin/main", cwd=path)
         print(f"claim: {branch} is an existing local branch {behind} commits behind origin/main and has no pushed copy: "
               f"rebase it, or `git reset --hard origin/main` if it is stale", file=sys.stderr)
+    fuzz_target(path)
     print(f"claim: {branch} at {git('log', '--oneline', '-1', cwd=path)}", file=sys.stderr)
     print(path)
 

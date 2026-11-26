@@ -29,6 +29,7 @@ A package's features are the union of what everything in the build asks for, so 
 - Pruning needs access times: on `noatime` wt prints `targets not pruned` and targets only grow (`findmnt -T .`; `relatime` works).
 - A warm target settles at 11-15 GB; 4-6 GB after a gate and a release. A worktree over 15 GB where no cargo runs: keep only the newest incremental session per crate dir (no rebuild): `python3 -c 'import glob,os,shutil,sys; [shutil.rmtree(s) for d in glob.glob(sys.argv[1]+"/target/*/incremental/*/") for s in sorted((x for x in glob.glob(d+"s-*") if os.path.isdir(x)),key=os.path.getmtime)[:-1]]' .worktrees/wtN`. Past 20 GB delete the target. Not `wt trim`: the next claim builds cold.
 - A `libs/kit/target` in a worktree is dead (wt never prunes it): delete it.
+- `core/test/fuzz/target` (nightly) is never pruned by wt (issues/upstream-wt.md): tools/claim drops its release profiles (by-hand fuzz runs) and empties it when its build key changes (`fuzz_target`).
 - A full disk reads as a compile error (`failed to write query cache`, `failed to parse process output`): `df` before believing a build failure. A `du` of `/home/ai/*` takes over 10 minutes: use `df` and the worktrees only.
 
 ## Scripted renames

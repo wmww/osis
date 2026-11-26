@@ -2,7 +2,8 @@
 # Tests tools/claim against a temp repo with a bare origin and a fake `wt` (claim: a git worktree
 # of BRANCH, made from BASE when new; list: path and branch): a new branch starts at origin/main, a
 # stale local branch is reset to its pushed copy (naming the refs still holding what it dropped), an ancestor fast-forwards, a dirty worktree moves
-# nothing, a leftover bisect is ended, and the known-failures merge driver is set. Exit 1 on a mismatch.
+# nothing, a leftover bisect is ended, the known-failures merge driver is set, and the fuzz target loses
+# its release profiles, or everything when its build key changed. Exit 1 on a mismatch.
 set -eu
 claim=$(cd "$(dirname "$0")" && pwd)/claim
 d=$(mktemp -d)
@@ -58,5 +59,18 @@ check "dirty: refused, nothing moved" "$rc $(git -C "$d/a/.wts/w3" rev-parse HEA
 # an earlier task's bisect left in the worktree is ended
 w5=$(FAKE_BISECT=1 "$claim" bisected 2> /dev/null)
 check "bisect ended" "$(git -C "$w5" bisect log > /dev/null 2>&1 && echo bisecting || echo none) $(git -C "$w5" rev-parse HEAD)" "none $(git rev-parse origin/main)"
+# the fuzz target: stamped when first seen; release profiles dropped; emptied on a new build key
+mkdir -p core/test/fuzz && echo lock1 > core/test/fuzz/Cargo.lock && echo target/ > core/test/fuzz/.gitignore
+git add core && git commit -qm fuzz && git push -q origin HEAD:main
+w6=$("$claim" fuzzed 2> /dev/null)
+t=$w6/core/test/fuzz/target
+check "fuzz target stamped" "$(ls -A "$t")" ".claim-key"
+mkdir -p "$t/release/build" "$t/x86_64-unknown-linux-gnu/release" "$t/x86_64-unknown-linux-gnu/debug" "$t/debug"
+fuzz() { python3 -c 'import importlib.machinery as m, sys; m.SourceFileLoader("claim", sys.argv[1]).load_module().fuzz_target(sys.argv[2])' "$claim" "$w6" 2> /dev/null; }
+fuzz
+check "release profiles dropped" "$(cd "$t" && find . -mindepth 1 | sort | tr '\n' ' ')" "./.claim-key ./debug ./x86_64-unknown-linux-gnu ./x86_64-unknown-linux-gnu/debug "
+echo lock2 > "$w6/core/test/fuzz/Cargo.lock"
+fuzz
+check "new key: emptied" "$(ls -A "$t")" ".claim-key"
 check "no branch: usage" "$("$claim" > /dev/null 2>&1 && echo 0 || echo $?)" "1"
 exit $fail
