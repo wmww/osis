@@ -503,13 +503,14 @@ pub(crate) fn remove_gone_writes(core: &Core, tid: &Tid, ak: &Ak, f: &mut Fragme
 }
 
 /// Records the creation records durable commit `h` carries on `created.0` that are not held
-/// yet; whether any was new. `first`: the node held nothing of `h`, so a strong newly reaching
-/// a thing whose record it brings pulls nothing anew (`learn_record`): content on a thing is
-/// dropped as not carried only while a commit minting it is held, and forgetting keeps that
-/// commit known while a part of it may still bring the thing in. A late part of a commit
-/// already held (a released thing's record among them, forgotten with its content) is no
-/// exemption, and what was forgotten is fetched again (spec/sync-judgement.md §3 Dropped
-/// bodies).
+/// yet; whether any was new. `first`: the node held nothing of `h` when the transaction began,
+/// so a strong newly reaching a thing it mints pulls nothing anew (`Core::brought`), whether or
+/// not its record was held before (a record taken alone from a sealed section or a record blob
+/// holds nothing of the commit): content on a thing is dropped as not carried only while a
+/// commit minting it is held, and forgetting keeps that commit known while a part of it may
+/// still bring the thing in. A late part of a commit already held (a released thing's record
+/// among them, forgotten with its content) is no exemption, and what was forgotten is fetched
+/// again (spec/sync-judgement.md §3 Dropped bodies).
 fn note_created(tx: &mut Tx<'_>, h: &Header, parts: &[(usize, Decoded)], first: bool) -> Result<bool> {
     let mut any = false;
     if h.ephemeral.is_some() {
@@ -519,6 +520,9 @@ fn note_created(tx: &mut Tx<'_>, h: &Header, parts: &[(usize, Decoded)], first: 
         let Some(a) = h.aspects.get(*ai) else { continue };
         if a.ak.as_str() != osis_commit::retention::CREATED {
             continue;
+        }
+        if first {
+            tx.core.brought.insert(a.tid);
         }
         if tx.core.created(&a.tid).is_some() {
             // the commit minting it: what waits on it is judged once the pass ends
@@ -530,26 +534,15 @@ fn note_created(tx: &mut Tx<'_>, h: &Header, parts: &[(usize, Decoded)], first: 
         }
         let rec = d.fragment().read().as_ref().and_then(CreationRecord::from_value).ok_or(Error::BadInput("created.0"))?;
         if rec.tid() == a.tid {
-            any |= if first { learn_record(tx, rec)? } else { hold_record(tx, rec)? };
+            any |= learn_record(tx, rec)?;
         }
     }
     Ok(any)
 }
 
 /// Holds creation record `rec` (from a `created.0` delta or a record blob: a record proves itself
-/// by its hash, spec/permissions.md §1), learned in this transaction (`Core::learned`); whether
-/// it was new.
+/// by its hash, spec/permissions.md §1); whether it was new.
 pub(crate) fn learn_record(tx: &mut Tx<'_>, rec: CreationRecord) -> Result<bool> {
-    let t = rec.tid();
-    let new = hold_record(tx, rec)?;
-    if new {
-        tx.core.learned.insert(t);
-    }
-    Ok(new)
-}
-
-/// `learn_record`, not counted learned: a record in a late part of a commit already held.
-fn hold_record(tx: &mut Tx<'_>, rec: CreationRecord) -> Result<bool> {
     let t = rec.tid();
     if tx.core.created(&t).is_some() {
         return Ok(false);

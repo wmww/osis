@@ -1251,9 +1251,10 @@ pub struct Core {
     /// a holder unnamed): judged once the pass in flight ends,
     /// or at once with none in flight (`Engine::settle_lost`).
     pub lost_due: BTreeSet<Tid>,
-    /// Records learned in this transaction (`apply::atomic::learn_record`): a strong newly
-    /// reaching such a thing pulls nothing anew (`sync::units::refetch`).
-    pub learned: BTreeSet<Tid>,
+    /// Things minted by a commit this transaction applied that the node held nothing of when it
+    /// began (`apply::atomic::note_created`): a strong newly reaching one pulls nothing anew
+    /// (`sync::units::refetch`).
+    pub brought: BTreeSet<Tid>,
     /// The (context, thing) members entering the node closure since the last transaction's end
     /// (`apply::wake_entered`): what waits for a thing to be read whole is examined again (a thing
     /// kept unread read again enters a read context). `None` until the first such end, which
@@ -2007,7 +2008,7 @@ impl Core {
             fire_brings: _,
             pass_due: _,
             lost_due: _,
-            learned: _,
+            brought: _,
             entered: _,
             keys_came: _,
             wakes: _,
@@ -2304,7 +2305,7 @@ impl Core {
             // what arrived before the open but was not judged yet: all judged at the first settle
             pass_due: None,
             lost_due: BTreeSet::new(),
-            learned: BTreeSet::new(),
+            brought: BTreeSet::new(),
             entered: None,
             keys_came: BTreeSet::new(),
             batched: None,
@@ -3289,7 +3290,7 @@ impl Engine {
         // changes made outside a transaction are not this one's to undo
         self.core.commit_journal();
         self.core.memory_tx = false;
-        self.core.learned.clear();
+        self.core.brought.clear();
         let start = self.core.mark();
         #[cfg(debug_assertions)]
         {

@@ -929,17 +929,19 @@ impl Engine {
                 self.note_opened(&opened.commit.header, &[(t, e, opened.commit.parts.iter().collect())]);
             }
         }
-        // the records minted in sections of things not held here, taken alone
-        // (spec/sync-judgement.md §1 Sealed sections): a held strong may bring the thing in
-        if !opened.records.is_empty() {
-            self.learn_records(opened.records.clone())?;
-        }
         let parts: PartSet = opened.parts().into_iter().collect();
         // an ephemeral commit is held in memory, within the room S's cap leaves
-        // (spec/sync-compaction.md §2 Holding, Caps); a relay-only one is never an entry
+        // (spec/sync-compaction.md §2 Holding, Caps); a relay-only one is never an entry. The
+        // records minted in sections of things not held here are taken alone with it
+        // (spec/sync-judgement.md §1 Sealed sections): a held strong may bring the thing in
         let ingested = match opened.commit.header.ephemeral {
-            None => self.ingest(&opened.plaintext, Vec::new()),
-            Some(osis_commit::EphClass::Plain) => self.ingest_memory(&opened.plaintext, room),
+            None => self.ingest_carrying(&opened.plaintext, Vec::new(), opened.records.clone()),
+            Some(osis_commit::EphClass::Plain) => {
+                if !opened.records.is_empty() {
+                    self.learn_records(opened.records.clone())?;
+                }
+                self.ingest_memory(&opened.plaintext, room)
+            }
             Some(osis_commit::EphClass::Relay) => return Ok(Opened::Bad),
         };
         let ingested = match ingested {

@@ -520,20 +520,19 @@ impl Engine {
     }
 
     /// `open_package`, with the records taken from sections of things not held here
-    /// (`OpenedBlob::records`, learned before the ingest as `open_entry` does) that were new.
+    /// (`OpenedBlob::records`, taken with the ingest as `open_entry` does) that were new.
     fn open_package_counted(&mut self, pk: &SealedPackage) -> Result<(Vec<Ingested>, usize)> {
         let mut out = Vec::new();
         let mut learned = 0;
         for e in &pk.entries {
             let Some(key) = e.wraps.iter().find_map(|(a, w)| osis_blob::unwrap_any(self.read_secrets(a).iter(), &e.id, w).map(|x| x.1)) else { continue };
             let o = self.open_commit(&e.blob, &key)?;
-            if !o.records.is_empty() {
-                learned += self.learn_records(o.records.clone())?;
-            }
             if o.commit.parts.is_empty() {
+                learned += self.learn_records(o.records)?;
                 continue;
             }
-            out.push(self.ingest(&o.plaintext, pk.blobs.clone())?);
+            learned += o.records.iter().filter(|r| self.core.created(&r.tid()).is_none()).count();
+            out.push(self.ingest_carrying(&o.plaintext, pk.blobs.clone(), o.records)?);
         }
         Ok((out, learned))
     }

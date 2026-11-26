@@ -1108,3 +1108,55 @@ fn a_holders_key_record_crosses_the_wire_once_spec_permissions_4() {
         eprintln!("{k} things: (bytes, distinct blobs, fetches) to the reader: {with:?} with the holder, {without:?} without");
     }
 }
+
+/// Frames between nodes 0 and 1 by (from, kind): count, bytes.
+type Frames = BTreeMap<(usize, &'static str), (u64, u64)>;
+
+/// Node 0 makes `n` dependents of its account A (each held by A's `holds.0`, a small value), each
+/// alone in a commit, run to quiet after each: the frames between it and A's second node, node 1,
+/// and the sync IDs node 1 pulled anew.
+fn makes(w: &mut World, n: u64) -> (Frames, u64) {
+    let a = w.node(0).account.unwrap();
+    let frames = |w: &World| -> Frames { w.net.frames.iter().filter(|((x, y, _), _)| (*x, *y) == (0, 1) || (*x, *y) == (1, 0)).map(|((x, _, k), v)| ((*x, *k), *v)).collect() };
+    osis_base::costs::take();
+    let before = frames(w);
+    for _ in 0..n {
+        w.write(0, |e| {
+            let mut m = Mutation::new();
+            let t = e.new_thing(&mut m, a);
+            m.set(t, &value_ak(), &Value::Str("new".into())).unwrap();
+            e.commit(m).unwrap();
+        });
+        w.run();
+        w.advance(1_000);
+    }
+    let anew = osis_base::costs::take().into_iter().filter(|(k, ..)| *k == "sync IDs pulled anew").map(|(.., n)| n).sum::<u64>();
+    let mut out = frames(w);
+    for (k, v) in &mut out {
+        let b = before.get(k).copied().unwrap_or((0, 0));
+        *v = (v.0 - b.0, v.1 - b.1);
+    }
+    out.retain(|_, v| v.0 > 0);
+    (out, anew)
+}
+
+// spec/sync-judgement.md §3 Dropped bodies, spec/requirements.md Scale: a thing another node of
+// the account makes reaches its second node in the commit minting it, which brings its record
+// (taken alone from the thing's sealed section, the thing not yet held): nothing of the thing was
+// forgotten, so its unit is not pulled anew. Each make, 3 and 30 of them after 3, crosses as its
+// stream frames alone, the same at n and 10n, with no Pull listing the unit. (A's `holds.0`
+// grows a strong a make: its compaction snapshot grows with it, so bytes are not compared.)
+#[test]
+fn a_thing_another_node_makes_pulls_nothing_anew_spec_sync_judgement_3() {
+    let mut w = World::new(0);
+    w.add_node();
+    w.pair(0);
+    w.run();
+    makes(&mut w, 3);
+    let ((n, a), (n10, a10)) = (makes(&mut w, 3), makes(&mut w, 30));
+    assert_eq!((a, a10), (0, 0), "sync IDs pulled anew at n and 10n");
+    let kinds = |f: &Frames| f.iter().map(|(k, v)| (*k, v.0)).collect::<BTreeMap<_, _>>();
+    let per = |f: &Frames, by: u64| kinds(f).into_iter().map(|(k, c)| (k, c / by)).collect::<BTreeMap<_, _>>();
+    assert!(kinds(&n).values().all(|c| c % 3 == 0) && per(&n, 3) == per(&n10, 30), "frames per make: {n:?} at n, {n10:?} at 10n");
+    assert!(!n10.keys().any(|k| k.1.starts_with("Pull")), "no pull: {n10:?}");
+}

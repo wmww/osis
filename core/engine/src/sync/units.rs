@@ -1317,7 +1317,8 @@ fn set_carry(tx: &mut Tx<'_>, v: Vx, y: Tid, got: &BTreeSet<Vx>, k: Carry) {
 /// A new edge of read unit `v` to `y`, which the node held as
 /// certificates alone or not at all when the transaction began (`retention::needed::Holding`:
 /// not in the node closure, nor leaving it, nor dropped from it in this transaction, `was_held`),
-/// unless its record was learned in this transaction: the unit's sync IDs are pulled anew from
+/// unless this transaction applied a commit minting `y` that it held nothing of when it began
+/// (`Core::brought`): the unit's sync IDs are pulled anew from
 /// every source, so what was forgotten of `y` (its content outside the node closure, a body
 /// judged outside the required set before the strong arrived) is fetched again
 /// (spec/sync-judgement.md §3 Dropped bodies). Once per new edge, durable before the
@@ -1325,7 +1326,7 @@ fn set_carry(tx: &mut Tx<'_>, v: Vx, y: Tid, got: &BTreeSet<Vx>, k: Carry) {
 fn refetch(tx: &mut Tx<'_>, v: Vx, y: Tid, was_held: bool) -> Result<()> {
     let Ctx::Read(t) = v.0 else { return Ok(()) };
     let cl = &tx.core.ix.closure;
-    if was_held || cl.holds(&y) || cl.left().contains_key(&y) || tx.core.learned.contains(&y) {
+    if was_held || cl.holds(&y) || cl.left().contains_key(&y) || tx.core.brought.contains(&y) {
         return Ok(());
     }
     // a held commit minting `y` whose part on it was never taken: nothing keeps its blobs out

@@ -1624,7 +1624,16 @@ impl Engine {
     /// chunk and header-list blobs it references (ciphertexts by ID). Bad input is reported as
     /// a diagnostic and returned as an error; nothing of it is stored.
     pub fn ingest(&mut self, bytes: &[u8], blobs: Vec<(BlobId, Vec<u8>)>) -> Result<Ingested> {
-        self.ingest_class(bytes, blobs, None, None)
+        self.ingest_class(bytes, blobs, Vec::new(), None, None)
+    }
+
+    /// `ingest` of an opened commit blob (`OpenedBlob`) with `records`, the creation records it
+    /// carries in sections left sealed here, taken alone (spec/sync-judgement.md §1 Sealed
+    /// sections), in the same transaction: where the node held nothing of the commit, the
+    /// commit brings them, and a strong it adds to one of their things pulls nothing anew
+    /// (`Core::brought`).
+    pub fn ingest_carrying(&mut self, bytes: &[u8], blobs: Vec<(BlobId, Vec<u8>)>, records: Vec<CreationRecord>) -> Result<Ingested> {
+        self.ingest_class(bytes, blobs, records, None, None)
     }
 
     /// `ingest_valid` of a commit with `pages`, the blobs its deltas link that travel with it
@@ -1883,15 +1892,17 @@ impl Engine {
     /// only by `apply_waiting_memory`, within the room then. Sync reaches it through
     /// `open_entry`; `ingest` refuses an ephemeral commit.
     pub fn ingest_memory(&mut self, bytes: &[u8], room: u64) -> Result<Ingested> {
-        self.ingest_class(bytes, Vec::new(), None, Some(room))
+        self.ingest_class(bytes, Vec::new(), Vec::new(), None, Some(room))
     }
 
-    /// `room`: a memory commit's (`ingest_memory`); `None` on the durable path.
-    fn ingest_class(&mut self, bytes: &[u8], blobs: Vec<(BlobId, Vec<u8>)>, peer: Option<Tid>, room: Option<u64>) -> Result<Ingested> {
+    /// `room`: a memory commit's (`ingest_memory`); `None` on the durable path. `records`:
+    /// `ingest_carrying`'s.
+    fn ingest_class(&mut self, bytes: &[u8], blobs: Vec<(BlobId, Vec<u8>)>, records: Vec<CreationRecord>, peer: Option<Tid>, room: Option<u64>) -> Result<Ingested> {
         let memory = room.is_some();
         let _s = osis_base::costs::span("ingest");
         let mut fresh = false;
         let mut seen = None;
+        let mut learned = 0;
         self.core.memory_room = room;
         let r = self.run(|tx| {
             let decoded = CommitBlob::decode(bytes);
@@ -1906,6 +1917,15 @@ impl Engine {
             } else {
                 fresh = !tx.store_blobs(blobs)?.is_empty();
             }
+            // records it brings: the node held nothing of it (spec/sync-judgement.md §3 Dropped
+            // bodies)
+            if let Ok(b) = &decoded
+                && !tx.core.ix.commits.contains_key(&b.id())
+                && !tx.core.ix.pending.contains_key(&b.id())
+            {
+                tx.core.brought.extend(records.iter().map(CreationRecord::tid));
+            }
+            learned = learn_records_in(tx, records)?;
             match decoded {
                 Ok(blob) => {
                     let id = blob.id();
@@ -1948,6 +1968,7 @@ impl Engine {
             Err(e) if e.class() == ErrorClass::BadInput => {
                 self.core.events.diagnostic(Diagnostic { kind: DiagnosticKind::BadInput, tids: Vec::new(), commit: raw_id(bytes).ok(), peer, detail: e.to_string() }, self.core.hlc.mono());
             }
+            Ok(_) if learned > 0 => self.reexamine()?,
             Ok(Ingested::Applied(_)) => self.reexamine()?,
             // it awaits a record kept loose: learned now (`promote_loose`); blobs it brought end
             // other commits' waits (`reach::Walks`)

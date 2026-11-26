@@ -43,7 +43,7 @@ Engine `scale::pairing_a_node_spec_permissions_8`, `removing_a_node_spec_permiss
 Every figure is marked: **[M]** measured, **[C]** computed from spec/wire.md, **[E]** estimated. The [M] figures are from a sync-harness world (`World::new(0)`, `add_node`, `pair(0)`: node 0 the maker, node 1 its account's second node; a throwaway probe, not kept): `net.between` bytes per direction, `net.frames` by kind, both nodes' engine census and sync store rows (`scan_local`), `disk_use`, `osis_base::costs` counts around each step, frames by `OSIS_SYNC_TRACE`. The thing is a dependent of A held by A's `holds.0`, its value `u:v.0`. The design built on them: notes/slim-design.md.
 
 ### One dependent thing with one small value, alone in a commit
-**Wire [M]**: 4945 B maker to second node, 516 B back; without the pull anew it triggers at the second node (issues/new-strong-pulls-anew.md: a Pull of 109 B and a PullReply of 3763 B at 25 entries in A's unit, growing with it), 1182 B and 333 B.
+**Wire [M]**: 1182 B maker to second node, 333 B back, flat in A's unit (sync `growth::a_thing_another_node_makes_pulls_nothing_anew_spec_sync_judgement_3`: the commit minting the thing brings its record, so its unit is not pulled anew).
 - Maker's Stream frame, 1108 B: the sealed blob 846, blob ID, wrap 57, stamp 64, sync ID, cursor 64, frame; its Applied 74.
 - Back: the second node streams the entry back without its blob (259 B) and its Applied (74 B).
 
@@ -81,18 +81,17 @@ Every figure is marked: **[M]** measured, **[C]** computed from spec/wire.md, **
 | `a/` | 54 | 54 | 27 per aspect with a state | aspect |
 | `dw/` | 59 | – | the derived epoch t was sealed under while dependent | dependent thing |
 | counters | 102 | – | 51 per (aspect, session); memory rows, the census counts them | aspect per session |
-| store `w/` | – | 80 | an aging stand row per entry the pull anew listed (bug) | entry listed |
 
-Totals: maker 1793 engine + 324 sync store + 846 blob = 2963 B logical, 3150 physical; second node 2112 + 354 + 846 = 3312 logical, 3918 physical.
+Totals: maker 1793 engine + 324 sync store + 846 blob = 2963 B logical, 3150 physical; second node 2112 + 274 + 846 = 3232 logical.
 
 ### Marginal units [M]
 Wire is maker to second node (back in brackets); stored is logical, engine rows + sync store rows + sealed blob.
 
 | unit | wire | sealed blob | stored, maker | stored, second |
 |---|---|---|---|---|
-| one value, alone | 4945 (516); 1182 (333) without the pull anew | 846 | 2963 | 3312 |
-| one value, per thing of 100 in one commit | 670 (5) | 410 | 1091 + 3 + 410 | 1189 + 46 + 410 |
-| one value, per thing of 100 in 100 commits | 17,669 (578): PullReply 15,758 a make, the pull anew | 885 | 1906 + 396 + 885 | 2126 + 3849 + 885 (`w/` 3524) |
+| one value, alone | 1182 (333) | 846 | 2963 | 3232 |
+| one value, per thing of 100 in one commit | 415 (4) | 410 | 1091 + 3 + 410 | 1189 + 3 + 410 |
+| one value, per thing of 100 in 100 commits | 2186 (374): A's `holds.0` snapshot every third make carries every strong, so this grows toward a bound with A's size | 914 | 1906 + 371 + 914 | 2126 + 321 + 914 |
 | a 1-byte change | 814 (333) | 478 | 597 + 324 + 478 = 1399 | 821 + 274 + 478 = 1573 |
 | a 1-byte change, steady over 30 (compactions included) | 923 (383) | net about 0 | 699 + 282 | 740 + 278 |
 | an independent thing (marginal, 10 averaged) | 30,939 (3,406) | 4 new, 9.4 KB | 10.9 KB + 3.0 KB + 9.4 KB | 11.7 KB + 3.3 KB + 9.4 KB |
@@ -103,7 +102,7 @@ Wire is maker to second node (back in brackets); stored is logical, engine rows 
 - **An independent thing** (`mint_independent` with admin A, held by A's `holds.0`), the third and later: to the second node 7,268 B of Stream under A's sync ID (its rotation as a per-sync-ID copy 4,046, its content commit 752, a snapshot of A's `holds.0` 880, a 590 B blob) and its own sync ID's first sync, 15.4 KB inline (a record blob 286, an account-constant 1,070 B blob, A's key record cut 8,782, its rotation 4,174, the content commit 752 again), besides the pull anew of A. The 1,070 and 8,782 B blobs are the same blobs for every independent thing of A, held already, sent again; the content commit crosses twice. Stored at each node: `c/` 5.0 KB (three commits), `k/` 1,443, `node/keysets` 704, `boxed` 448, `sealed` 448, `epoch intro` 408, `boxes to` 400, `node/metas` 591, `bp/` 476, refs 354, `E/` 1,568 (seven entries), `X/` 350, `P/` 319 (its genesis step), states 5 of about 67, small rows; blobs 9.4 KB. Work (both nodes): 13 signs, 3 commit verifications, 18 stamp, 12 role entry and 12 sync-step verifications.
 
 ### CPU and memory
-- **Signatures [M]**: a small commit is 2 signs (commit at the maker, its stamp), 1 commit verify at the second node and 2 stamp verifications (the second node's of the maker's entry, the maker's of the echo); no KEM. A new dependent thing adds 2 sync-step verifications at the second node, from the pull anew.
+- **Signatures [M]**: a small commit is 2 signs (commit at the maker, its stamp), 1 commit verify at the second node and 2 stamp verifications (the second node's of the maker's entry, the maker's of the echo); no KEM. A new dependent thing adds none: its unit is not pulled anew.
 - **Rows read** (pre-rewrite build, to count again): engine 12 at the maker and 7 at the second node for a 1-byte change, 31 and 32 for a make; the sync side read some 40 times what the engine does per small commit.
 - **Decodes**: each part decoded once per node in the engine (`part decode` equals the parts).
 - **Hashes [C]** (not counted by `costs`): at the maker, a delta hash per part, the commit ID, the blob ID, the stamp's entry digest; at a receiver, the blob ID, the entry digest and the verdict hash per stamp check, the commit ID, a delta hash per part.
@@ -117,7 +116,7 @@ Wire is maker to second node (back in brackets); stored is logical, engine rows 
 - (d) Stated paths cost 2 B (`[0]`) plus 16 B per listed thing for a commit whose things are all written along one path, whatever their number (none for what the node minting A writes on A's dependents, its record edges descending to them; `[0, A]` for a paired node's, 16 B more), and in the split form (notes/path-form.md, Bytes) 3 B plus 115 B per thing in the header (32 B of it the entry's key commitment) and 38 B per section (its thing's path key) only where one path does not serve; their evidence is not counted here.
 
 ### Floors
-- **Empty dependent thing [E]**, from the format with notes/slim-design.md B, D and E built. Batched, its record (about 36 B: admin 15, nonce 16) embedded as `created.0` with its aspect entry (about 20 B) and an element of its holder's `holds.0` (about 20 B): about 80 B on the wire, about 200 B stored per node (record and entry in the stored commit, state rows, `refs to`). Alone in a commit, add the commit floor below: about 550 B on the wire, 800 B stored per node. Today, with one value: 1182 B (333 back) without the pull anew, and 3.0-3.3 KB.
+- **Empty dependent thing [E]**, from the format with notes/slim-design.md B, D and E built. Batched, its record (about 36 B: admin 15, nonce 16) embedded as `created.0` with its aspect entry (about 20 B) and an element of its holder's `holds.0` (about 20 B): about 80 B on the wire, about 200 B stored per node (record and entry in the stored commit, state rows, `refs to`). Alone in a commit, add the commit floor below: about 550 B on the wire, 800 B stored per node. Today, with one value: 1182 B (333 back), and 3.0-3.2 KB.
 - **Small commit [E]**: blob about 320 B (prefix 62, tag 16, header about 170 with the value embedded, signature 66, padding); on the wire about 470 B with its entry (wrap 57, stamp 64, sync ID and heads 30) and no echo; stored per node about 600 B (blob, entry row about 150, record head and meta about 100). Today: 814 B (333 back) and 1.4-1.6 KB. Below that, each further byte is the author's signature, the stamp, the delete key with its commitment, or the wrap: jobs nothing else does.
 
 ## Why the big lines are what they are

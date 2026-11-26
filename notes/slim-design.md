@@ -8,7 +8,7 @@ Sync-harness world, node 0 makes, node 1 is its account's second node (rows by f
 
 | unit | wire 0→1 | wire 1→0 | stored, maker | stored, second |
 |---|---|---|---|---|
-| one dependent, one small value, alone | 4945 (1182 without the pull anew) | 516 (333) | 2963 (3150 physical) | 3312 (3918) |
+| one dependent, one small value, alone | 1182 | 333 | 2963 (3150 physical) | 3232 |
 | a 1-byte change | 814 | 333 | 1399 | 1573 |
 | a small change, steady (compactions included) | 923 | 383 | about 980 | about 1020 |
 | one dependent of 100 in one commit | 670 | 5 | 1094 + 410 blob | 1235 + 410 blob |
@@ -19,11 +19,9 @@ Where it goes, per node, for a small commit: sealed blob 478, its opened copy `c
 ## Candidates
 Each: cost now; why it is there (the concept); the change; what it deletes; wire and disk (spec sections); risks.
 
-### A. A new thing pulls its unit anew (a bug)
-- **Cost**: every thing another node makes is followed at a reader by a Pull joining the unit from the start: 3.8 KB at 25 entries, 15.8 KB a make averaged over 100 makes (O(n²) over n makes), 44 aging stand rows a make, 2 sync-step verifications per thing (200 for 100 things in one commit). An independent thing's 21 KB PullReply is mostly this.
-- **Concept**: spec/sync-judgement.md §3 Dropped bodies: a strong newly reaching a thing outside the node closure fetches again what was forgotten of it, "unless that transaction brought its record in a commit of which the node held nothing". A thing just made had nothing forgotten.
-- **Change**: build the spec's exemption (the code exempts only a record learned in the same transaction; the record arrives beforehand from the sealed section): issues/new-strong-pulls-anew.md.
-- **Deletes**: nothing; it stops the brute-force path firing on the common one. No spec change.
+### A. A new thing pulls its unit anew (built for dependents; independents and attach open)
+- **Built**: a commit the node held nothing of brings the records it mints, applied or taken alone from its sealed sections in the transaction taking it (`Core::brought`, `Engine::ingest_carrying`), so a dependent thing another node makes pulls nothing anew at a reader (sync `growth::a_thing_another_node_makes_pulls_nothing_anew_*`; spec/sync-judgement.md §3 Dropped bodies).
+- **Open** (issues/new-strong-pulls-anew.md): an independent thing's content commit, carrying the strong, arrives in a transaction after its rotation's, so the spec's exemption does not reach it and A's unit is pulled anew per independent make (PullReply about 34 KB a make at 30 things, growing); an attach pulls the enclosing unit whole.
 
 ### B. One stored form per commit: the record and its seal
 - **Cost**: every node holds each commit twice: the sealed blob (478 B small, 846 a make) and the opened record in `c/` (361, 637), with `bp/` (101-117) relating them and, at a reader, `ou/` (224 per small commit, 480 per make: four 120 B rows, one per part and one per header opening, each repeating the delta hash). At the second node that is 803 of 1573 B for a small commit, 1443 of 3312 for a make; an independent thing's blobs are 9.4 KB of 24 KB.
