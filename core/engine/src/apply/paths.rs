@@ -9,7 +9,7 @@
 use crate::engine::{Core, Decided, Tx};
 use osis_base::Tid;
 use osis_commit::{Header, ThingPath};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 /// The path commit header `h` states for the thing `t` at place `i`, opened here: under `key`
@@ -200,6 +200,30 @@ fn reopen(tx: &mut Tx<'_>, id: &osis_base::CommitId) {
     if now.len() != before {
         set_paths(tx, id, Some(Arc::new(now)));
     }
+}
+
+/// The openers of `things` went (their records forgotten, their read secrets dropped): each held
+/// split commit on a thing whose secrets derive from one of them has its paths decided again from
+/// what is held now (the keys its record keeps, the roles secrets and records left), as a load
+/// decides them; a thing whose entry opens nowhere now waits (`Wait`).
+pub(crate) fn openers_gone(tx: &mut Tx<'_>, things: &BTreeSet<Tid>) -> crate::Result<()> {
+    let core: &Core = tx.core;
+    let on = crate::retention::forget::deriving_from(core, things);
+    let ids: BTreeSet<osis_base::CommitId> = on.iter().flat_map(|t| core.on_thing(t)).filter(|id| core.ix.commits.get(id).is_some_and(|m| m.view.paths.as_deref().is_some_and(|p| p.keys().any(|t| on.contains(t))))).collect();
+    for id in ids {
+        let Some(blob) = tx.get_commit(&id)? else { continue };
+        let Some(m) = tx.core.ix.commits.get(&id) else { continue };
+        let h = m.header.clone();
+        let paths = decided(tx.core, &h, &blob.keys);
+        if paths == m.view.paths {
+            continue;
+        }
+        if undecided(&h, paths.as_deref()) {
+            tx.core.ix.paths_unknown.insert(id);
+        }
+        set_paths(tx, &id, paths);
+    }
+    Ok(())
 }
 
 /// Commit `id`'s view with the paths decided here `paths`: its parts judged again, and it leaves

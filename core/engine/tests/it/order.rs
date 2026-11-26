@@ -5136,3 +5136,15 @@ fn a_delete_splitting_a_held_range_delete_kills_nothing_of_its_other_elements_sp
 
 
 
+
+// spec/wire.md §4 Split (a reader opens an entry with a key a part carries, else with the roles
+// secrets up the thing's record chain), notes/principles.md (a fresh load and the live node agree):
+// 1 writes two things in one split commit; a node given it with one thing's parts alone opens the
+// other's entry up that thing's record chain, then releases that thing with its record. Its entry
+// opens nowhere then, so its path waits, live as after a reload.
+#[test]
+fn a_path_opened_up_a_released_things_record_chain_waits_spec_wire_4() {
+    use Step::*;
+    let h = vec![Aim(Box::new(Edge { by: 0, t: 6, holder: 2, role: None })), Aim(Box::new(RecordOnly { by: 2, admin: Some(0) })), Aim(Box::new(New { by: 0, admin: 1, write: false })), Forged { by: 1, a: 1, b: 2, how: 1, op: 28, k: 2, v: 5 }, Sync { from: 1, to: 0 }];
+    check(0, &h, Cfg { away: true, ..NAMED }).unwrap();
+}

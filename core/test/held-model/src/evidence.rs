@@ -1027,7 +1027,8 @@ impl World {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Joint {
     /// The design: the key part of the signer and of every holder on a path from it to a thing
-    /// of the unit; its write logged with what its view requires.
+    /// of the unit, the world's paths and those its own reading shows; its write logged with what
+    /// its view requires.
     Paths,
     /// Control of `J-act`: the sync ID alone.
     Unit,
@@ -1036,6 +1037,10 @@ pub enum Joint {
     /// Control of `J-act`: of each key part only the writes that remove nothing (`removes`):
     /// it acts along a removed hop.
     Grants,
+    /// Control of `J-act`: the key parts of the holders on the world's paths alone: it writes
+    /// along a path only its own reading shows (a hop whose grant a removal it lacks undid)
+    /// without that path's key parts.
+    WorldPaths,
 }
 
 impl World {
@@ -1125,14 +1130,24 @@ impl World {
             let owed = self.owed_bodies(st, s);
             let refv = self.verdicts(&self.reference(rule, st, s, &Set::new()), &owed);
             for a in self.signers(st) {
-                let held = self.joint_held(rule, st, s, a, &edges, j);
+                // the paths it would write along: the world's, and those its own reading shows,
+                // each holder's key part on any of them held (spec/sync-set.md §2 Held for keys:
+                // every path, found by what it holds), until its reading shows no path more
+                let mut cand = edges.clone();
+                let held = loop {
+                    let held = self.joint_held(rule, st, s, a, &cand, j);
+                    let more = self.role_edges(&paths::judge(&self.w, &self.rules, &seen(held.clone()).v));
+                    if more.is_subset(&cand) || j == Joint::WorldPaths {
+                        cand.extend(more);
+                        break held;
+                    }
+                    cand.extend(more);
+                };
                 for (i, v) in self.verdicts(&seen(held.clone()), &owed.intersection(&held).copied().collect()) {
                     if v != fv[&i] && v != refv[&i] {
                         out.push(Fail { prop: "J-judge", step: st.step, sid: s, id: i, reader: Some(v), full: Some(fv[&i]) });
                     }
                 }
-                // the paths it would write along: the world's, and those its own reading shows
-                let cand: BTreeSet<Edge> = edges.union(&self.role_edges(&paths::judge(&self.w, &self.rules, &seen(held.clone()).v))).copied().collect();
                 for &t in &st.units[&s] {
                     for path in Self::candidate_paths(&cand, a, t) {
                         let mut w2 = self.clone();

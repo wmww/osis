@@ -96,6 +96,19 @@ fn joint_a_removed_hop_reaches_the_actor_through_the_key_part() {
     assert!(acts(Joint::Grants) > 0);
 }
 
+/// Wide world 610247967233: the signer 4 reads a path [R, A] to O whose hop R on A fell with its
+/// granter's demotion on A, which A's key part has and O's entries lack; the world's paths reach O
+/// from 4 by none. Holding the key parts of its own reading's paths' holders, it judges a write
+/// along [R, A] invalid, as the node holding everything; holding those of the world's paths alone,
+/// it acts.
+#[test]
+fn joint_a_path_its_own_reading_shows_brings_its_holders_key_parts() {
+    let w = wide(610247967233, 16, Wide { mint: true, ..Wide::default() });
+    let acts = |j: Joint| joint(w.clone(), j).into_iter().filter(|f| f.prop == "J-act").count();
+    assert_eq!(acts(Joint::Paths), 0);
+    assert!(acts(Joint::WorldPaths) > 0);
+}
+
 #[test]
 #[ignore = "property"]
 fn joint_one_sync_id_and_key_parts_act_as_everything_plain() {

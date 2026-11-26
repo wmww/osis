@@ -537,6 +537,8 @@ fn drop_actors(tx: &mut Tx<'_>, lost: Vec<Tid>, dropped: &[Tid], rejudge: bool) 
     }
     let set: BTreeSet<Tid> = lost.iter().copied().collect();
     crate::retention::forget::forget(tx, crate::retention::forget::Scope::Lost(&set), &held)?;
+    // the paths their read secrets opened, decided again without them
+    crate::apply::paths::openers_gone(tx, &set)?;
     // a kept sync role's history (what it supersedes, its names and floor) is what the entries
     // still held say, as a load reads them: those it opened while it read went with the read
     let ak = crate::flows::ak("secrets.0")?;

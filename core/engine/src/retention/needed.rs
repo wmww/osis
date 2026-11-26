@@ -462,6 +462,8 @@ pub(crate) fn settle(tx: &mut Tx<'_>) -> Result<bool> {
         }
     }
     tx.core.update_timelines();
+    // the paths their records and secrets opened, decided again without them
+    crate::apply::paths::openers_gone(tx, &gone)?;
     crate::apply::rejudged(tx, true)?;
     Ok(true)
 }
