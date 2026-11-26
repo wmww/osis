@@ -920,7 +920,7 @@ fn redeem_round(w: &mut World) {
     w.advance(1_000);
 }
 
-/// `grant_rounds` at 1 and 10 rounds: each node as a fresh world's (`as_fresh`: `grant_world`
+/// `grant_rounds` at 1 and 10 rounds: each node as a fresh world's (`as_fresh`: `world_of(0, 2, 2)`
 /// `settled` at 0 rounds, the same for every arm, built once per process), each round's set
 /// removals at most `removals` a node.
 fn grants_as_fresh(held: bool, redeem: bool, removals: usize) {
