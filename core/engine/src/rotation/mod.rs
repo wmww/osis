@@ -242,13 +242,19 @@ pub(crate) fn uncovered(tx: &mut Tx<'_>, x: &Tid, r: Role, k: &osis_crypto::Epoc
 }
 
 /// Whether epoch `k` of role `r` of `x` covers every departure from `x` known here, as this node
-/// can tell (`uncovered_by`; spec/crypto.md §4): the one rule both sides of a departed party's
-/// open judge by (spec/sync-opens.md §4 Departed: what the source shows it; spec/permissions.md §3
-/// No secret taken back: what the party takes and keeps). An epoch of no held keyset covers by
-/// it: what the party takes so is an entry box's, which every party holding the step's entry
-/// opens, and judged again by its keyset once the role entries it opens apply.
+/// can tell (`uncovered_by`; spec/crypto.md §4): what a source shows a departed peer
+/// (spec/sync-opens.md §4 Departed). An epoch of no held keyset covers by it.
 pub(crate) fn covers_known(tx: &mut Tx<'_>, x: &Tid, r: Role, k: &osis_crypto::Epoch) -> Result<bool> {
     let deps = departures(tx, x)?;
+    Ok(!uncovered(tx, x, r, k, &deps)?)
+}
+
+/// `covers_known` of `holder`'s departures alone: what an entry box admitting `holder` (the
+/// public, a link key) gives whoever takes it (spec/permissions.md §3 No secret taken back). An
+/// epoch of no held keyset covers by it: what is taken so is judged again by its keyset once the
+/// role entries it opens apply.
+pub(crate) fn covers_known_of(tx: &mut Tx<'_>, x: &Tid, r: Role, k: &osis_crypto::Epoch, holder: &Tid) -> Result<bool> {
+    let deps: Vec<Departure> = departures(tx, x)?.into_iter().filter(|d| d.holder == *holder).collect();
     Ok(!uncovered(tx, x, r, k, &deps)?)
 }
 

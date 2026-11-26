@@ -957,20 +957,20 @@ fn pending_deltas(blob: &osis_commit::CommitBlob, id: &CommitId, keep: impl Fn(&
 }
 
 impl crate::engine::Engine {
-    /// Records a read or sync secret learned from an entry box (a link key opening
-    /// by static entry, spec/sync-ids.md §3) when it is the secret of epoch `e` of `g`'s role `r` (spec/crypto.md
-    /// §4; anyone holding the head's step key, a removed admin among them, can write the box, so
-    /// it establishes nothing). False when it is not, or when the node lost `g` (`rotation::may_learn`,
-    /// spec/permissions.md §3).
-    pub fn learn_secret(&mut self, g: &Tid, r: Role, e: osis_crypto::Epoch, secret: osis_crypto::Secret32) -> Result<bool> {
-        let g = *g;
-        self.run(|tx| learn_secret_in(tx, &g, r, e, secret))
+    /// Records a read or sync secret learned from an entry box admitting `party` (the public, or
+    /// a link key opening by static entry, spec/sync-ids.md §3) when it is the secret of epoch `e`
+    /// of `g`'s role `r` (spec/crypto.md §4; anyone holding the head's step key, a removed admin
+    /// among them, can write the box, so it establishes nothing). False when it is not, or when
+    /// the box may not give it here (`rotation::may_learn`, spec/permissions.md §3).
+    pub fn learn_secret(&mut self, g: &Tid, r: Role, e: osis_crypto::Epoch, secret: osis_crypto::Secret32, party: &Tid) -> Result<bool> {
+        let (g, party) = (*g, *party);
+        self.run(|tx| learn_secret_in(tx, &g, r, e, secret, &party))
     }
 }
 
 /// `Engine::learn_secret` in a transaction.
-pub(crate) fn learn_secret_in(tx: &mut Tx<'_>, g: &Tid, r: Role, e: osis_crypto::Epoch, secret: osis_crypto::Secret32) -> Result<bool> {
-    if !e.names(g, r, &secret) || !crate::rotation::may_learn(tx, g, r, &e)? {
+pub(crate) fn learn_secret_in(tx: &mut Tx<'_>, g: &Tid, r: Role, e: osis_crypto::Epoch, secret: osis_crypto::Secret32, party: &Tid) -> Result<bool> {
+    if !e.names(g, r, &secret) || !crate::rotation::may_learn(tx, g, r, &e, party)? {
         return Ok(false);
     }
     let g = *g;
@@ -1229,7 +1229,7 @@ mod tests {
         let et = lp.peers[0].engine.epochs(&t).unwrap().read.newest().unwrap();
         lp.sync(0, 1).unwrap();
         assert!(lp.peers[1].engine.epochs(&t).is_none_or(|e| e.read.secret(&et).is_none()), "nothing opens t yet");
-        assert!(lp.peers[1].engine.learn_secret(&g, Role::Read, eg, sg).unwrap());
+        assert!(lp.peers[1].engine.learn_secret(&g, Role::Read, eg, sg, &Tid::PUBLIC).unwrap());
         assert!(lp.peers[1].engine.epochs(&t).unwrap().read.secret(&et).is_some(), "the box sealed to g's epoch opened");
         lp.peers[1].engine.check_index();
     }
@@ -1282,10 +1282,10 @@ mod tests {
         assert_ne!(e_new, before, "the removal rotated");
         let genuine = e0.read.secret(&e_new).unwrap().secret().clone();
         let planted = Secret32::from_bytes([0x66; 32]);
-        assert!(!lp.peers[1].engine.learn_secret(&t, Role::Read, e_new, planted.clone()).unwrap(), "a secret of another epoch");
+        assert!(!lp.peers[1].engine.learn_secret(&t, Role::Read, e_new, planted.clone(), &Tid::PUBLIC).unwrap(), "a secret of another epoch");
         let e1 = lp.peers[1].engine.epochs(&t).unwrap();
         assert!(e1.read.reading_secret(&e_new).is_none());
-        assert!(lp.peers[1].engine.learn_secret(&t, Role::Read, e_new, genuine.clone()).unwrap());
+        assert!(lp.peers[1].engine.learn_secret(&t, Role::Read, e_new, genuine.clone(), &Tid::PUBLIC).unwrap());
         let e1 = lp.peers[1].engine.epochs(&t).unwrap();
         assert_eq!(e1.read.secret(&e_new).map(|s| s.secret()), Some(&genuine));
         assert!(!e1.read.is_established(&e_new) && e1.read.newest_held().is_none_or(|x| x.0 != e_new));
@@ -1293,6 +1293,26 @@ mod tests {
         let e1 = lp.peers[1].engine.epochs(&t).unwrap();
         assert_eq!(e1.read.newest_held().map(|(e, s)| (e, s.secret())), Some((e_new, &genuine)));
         assert_eq!(lp.peers[1].engine.wrap_secret(&t, None).unwrap().as_ref(), Some(&genuine));
+    }
+
+    // spec/permissions.md §3 No secret taken back, spec/sync-ids.md §3 Entry boxes: an entry box
+    // gives whoever takes it what it gives every holder of its entry. Node 1, removed from t (its
+    // loss carried out), takes from the public's box the superseded epoch t's rotation commit is
+    // wrapped under, as any party does; a box admitting node 1 itself gives it no epoch its
+    // removal superseded.
+    #[test]
+    fn a_removed_node_takes_the_publics_box_as_any_party_spec_permissions_3() {
+        let (mut lp, t) = removed_reader();
+        let b = lp.peers[1].engine.tid();
+        let e0 = lp.peers[0].engine.epochs(&t).unwrap();
+        let old = e0.read.newest().unwrap();
+        let secret = e0.read.secret(&old).unwrap().secret().clone();
+        lp.peers[0].engine.demote(&t, &Demotion { holder: b, new: None, retain: None }).unwrap();
+        lp.sync(0, 1).unwrap();
+        assert!(lp.peers[1].engine.drop_lost(&t).unwrap(), "its loss carried out");
+        assert!(lp.peers[1].engine.epochs(&t).is_none_or(|e| e.read.secret(&old).is_none()));
+        assert!(!lp.peers[1].engine.learn_secret(&t, Role::Read, old, secret.clone(), &b).unwrap(), "a box admitting node 1 gives no epoch its removal superseded");
+        assert!(lp.peers[1].engine.learn_secret(&t, Role::Read, old, secret, &Tid::PUBLIC).unwrap(), "the public's box gives it as it gives any party");
     }
 
     // spec/crypto.md §4 (`keys.0` vouches for no secret): a writer

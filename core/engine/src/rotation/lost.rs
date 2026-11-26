@@ -183,19 +183,20 @@ pub(crate) fn may_take_role(core: &Core, a: &Tid, r: Role) -> bool {
     may_take(core, a) || r == Role::Sync && holds_at(core, a, Role::Sync)
 }
 
-/// Whether an entry box may give this node `a`'s secret of role `r` at epoch `e`
-/// (spec/sync-ids.md §3): as a box may (`may_take_role`), or while nothing held says the node lost
-/// `a` (`ended_ours`: a link's redeemer opens the sync ID before it holds the grant to its key;
-/// the trigger judges `a` once role commits on it apply), or at an epoch covering every departure
-/// from `a` known here (`covers_known`: the tester's side of spec/sync-opens.md §4 Departed). What
-/// the last gives is the step's entry box's, which every holder of its entry opens (the public's:
-/// every party), and the trigger judges it once the role entries it opens apply, keeping it only
-/// where a role (the public's) gives it.
-pub(crate) fn may_learn(tx: &mut Tx<'_>, a: &Tid, r: Role, e: &osis_crypto::Epoch) -> Result<bool> {
+/// Whether an entry box admitting `party` (the public, or a link key: spec/sync-ids.md §3) may
+/// give this node `a`'s secret of role `r` at epoch `e`: as a box may (`may_take_role`), or while
+/// nothing held says the node lost `a` (`ended_ours`: a link's redeemer opens the sync ID before
+/// it holds the grant to its key; the trigger judges `a` once role commits on it apply), or at an
+/// epoch covering every departure of `party` from `a` known here (`covers_known_of`). The box is
+/// every holder of its entry's alike (the public's: every party's), so the node takes what any
+/// of them takes, its own departures aside: a removed party reads as the public as any party
+/// does, the superseded epoch its rotation commit is wrapped under included. The trigger judges
+/// `a` once the role entries it opens apply, keeping it only where a role (the public's) gives it.
+pub(crate) fn may_learn(tx: &mut Tx<'_>, a: &Tid, r: Role, e: &osis_crypto::Epoch, party: &Tid) -> Result<bool> {
     if may_take_role(tx.core, a, r) || !ended_ours(tx.core, a) {
         return Ok(true);
     }
-    super::covers_known(tx, a, r, e)
+    super::covers_known_of(tx, a, r, e, party)
 }
 
 /// Whether an edge on `a` of the node, a held link key, a thing it reads or the public (every

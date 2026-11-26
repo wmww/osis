@@ -426,6 +426,8 @@ pub struct OpenedGrant {
     /// The head's sync key the box's sync secret derives: the answer's `sig` verifies under it.
     pub key: [u8; 32],
     pub secrets: EntryBoxSecrets,
+    /// The party the entry admits: the public, or the link key whose static entry it is.
+    pub party: Tid,
 }
 
 /// The keys this node signs entries of a sync ID with (spec/sync-inbox.md §2-§4).
@@ -726,34 +728,34 @@ impl Engine {
         }
         let Some((things, _)) = self.sync_holder(s)? else { return Ok(None) };
         // the box names the thing it is of: whichever of S's things opens it
-        let opened = if *entry == osis_crypto::public_entry(s) {
+        let (party, opened) = if *entry == osis_crypto::public_entry(s) {
             // the public entry, tested only while a public link to S's thing is redeemed here
             if !c.tests_public {
                 return Ok(None);
             }
-            things.iter().find_map(|t| osis_blob::read_public_entry_box(b, head, t).ok().map(|i| (*t, i)))
+            (Tid::PUBLIC, things.iter().find_map(|t| osis_blob::read_public_entry_box(b, head, t).ok().map(|i| (*t, i))))
         } else {
-            let ids: Vec<Arc<crate::identity::Identity>> = self.core.link_keys.values().cloned().collect();
-            let Some(id) = ids.iter().find(|id| osis_crypto::static_entry(s, &id.signing().verifying_key()) == *entry) else { return Ok(None) };
+            let ids: Vec<(Tid, Arc<crate::identity::Identity>)> = self.core.link_keys.iter().map(|(k, id)| (*k, id.clone())).collect();
+            let Some((k, id)) = ids.iter().find(|(_, id)| osis_crypto::static_entry(s, &id.signing().verifying_key()) == *entry) else { return Ok(None) };
             let Some(kem) = id.link_read_kem() else { return Ok(None) };
-            things.iter().find_map(|t| osis_blob::open_entry_box(b, head, kem, t).ok().map(|i| (*t, i)))
+            (*k, things.iter().find_map(|t| osis_blob::open_entry_box(b, head, kem, t).ok().map(|i| (*t, i))))
         };
         let Some((thing, item)) = opened else { return Ok(None) };
         let key = osis_crypto::role_key(osis_crypto::RoleKey::Sync, &item.sync.1).verifying_key().to_bytes();
         if key != head.keys.sync.to_bytes() {
             return Ok(None);
         }
-        Ok(Some(OpenedGrant { thing, key, secrets: EntryBoxSecrets { read: (item.epoch, item.secret), superseded: item.earlier, sync: item.sync } }))
+        Ok(Some(OpenedGrant { thing, key, secrets: EntryBoxSecrets { read: (item.epoch, item.secret), superseded: item.earlier, sync: item.sync }, party }))
     }
 
     /// Learns an opened grant's secrets (`learn_secret`), once its answer's signature verified.
     pub fn learn_grant(&mut self, g: &OpenedGrant) -> Result<()> {
         let x = &g.secrets;
-        self.learn_secret(&g.thing, osis_base::Role::Read, x.read.0, x.read.1.clone())?;
+        self.learn_secret(&g.thing, osis_base::Role::Read, x.read.0, x.read.1.clone(), &g.party)?;
         if let Some((e, v)) = &x.superseded {
-            self.learn_secret(&g.thing, osis_base::Role::Read, *e, v.clone())?;
+            self.learn_secret(&g.thing, osis_base::Role::Read, *e, v.clone(), &g.party)?;
         }
-        self.learn_secret(&g.thing, osis_base::Role::Sync, x.sync.0, x.sync.1.clone())?;
+        self.learn_secret(&g.thing, osis_base::Role::Sync, x.sync.0, x.sync.1.clone(), &g.party)?;
         Ok(())
     }
 
@@ -769,7 +771,7 @@ impl Engine {
             if key != head.keys.sync {
                 continue;
             }
-            let g = OpenedGrant { thing: t, key: key.to_bytes(), secrets: EntryBoxSecrets { read: (item.epoch, item.secret), superseded: item.earlier, sync: item.sync } };
+            let g = OpenedGrant { thing: t, key: key.to_bytes(), secrets: EntryBoxSecrets { read: (item.epoch, item.secret), superseded: item.earlier, sync: item.sync }, party: Tid::PUBLIC };
             self.learn_grant(&g)?;
             return Ok(true);
         }

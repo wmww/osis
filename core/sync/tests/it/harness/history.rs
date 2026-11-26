@@ -909,7 +909,7 @@ fn twins(w: &World) -> Refs {
 }
 
 /// Each twin learns every read secret of a history thing or account that a node holds and it
-/// does not.
+/// does not (taken as from the public's entry box: whatever the twin's own departures).
 fn learn_all(w: &mut World, refs: &mut Refs) {
     let mut all: Vec<Tid> = w.history.things.iter().map(|x| x.0).collect();
     all.extend((0..w.len()).filter_map(|i| w.node(i).account));
@@ -918,7 +918,7 @@ fn learn_all(w: &mut World, refs: &mut Refs) {
             let Some(es) = w.engine(i).epochs(t) else { continue };
             for (e, s) in es.role(Role::Read).held() {
                 for r in refs.all() {
-                    let _ = r.engine.learn_secret(t, Role::Read, e, s.secret().clone());
+                    let _ = r.engine.learn_secret(t, Role::Read, e, s.secret().clone(), &Tid::PUBLIC);
                 }
             }
         }
