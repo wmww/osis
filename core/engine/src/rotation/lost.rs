@@ -512,6 +512,8 @@ fn drop_actors(tx: &mut Tx<'_>, lost: Vec<Tid>, dropped: &[Tid], rejudge: bool) 
     let gone: Vec<Tid> = held.iter().map(|(a, _)| *a).filter(|a| !kept.contains_key(a) && (dropped.contains(a) || marks.contains_key(a))).collect();
     let lost: Vec<Tid> = lost.into_iter().chain(gone).collect();
     let held: BTreeMap<Tid, u64> = lost.iter().filter_map(|a| Some((*a, tx.core.ix.secrets.get(a)?.read.held().map(|(e, _)| e.n()).max()?))).collect();
+    // the things whose entries their read secrets may have opened, found before they go
+    let opened = crate::retention::forget::deriving_from(tx.core, &lost.iter().copied().collect());
     for a in &lost {
         // lowered to sync: its sync secrets stay, so it is kept unread (spec/sync-judgement.md §6 Read and unread move, spec/sync-set.md §1)
         let sync = tx.core.ix.secrets.get(a).filter(|_| holds_at(tx.core, a, Role::Sync)).map(|e| e.role(Role::Sync).clone()).filter(|r| r.holds_any());
@@ -538,7 +540,7 @@ fn drop_actors(tx: &mut Tx<'_>, lost: Vec<Tid>, dropped: &[Tid], rejudge: bool) 
     let set: BTreeSet<Tid> = lost.iter().copied().collect();
     crate::retention::forget::forget(tx, crate::retention::forget::Scope::Lost(&set), &held)?;
     // the paths their read secrets opened, decided again without them
-    crate::apply::paths::openers_gone(tx, &set)?;
+    crate::apply::paths::openers_gone(tx, &opened)?;
     // a kept sync role's history (what it supersedes, its names and floor) is what the entries
     // still held say, as a load reads them: those it opened while it read went with the read
     let ak = crate::flows::ak("secrets.0")?;

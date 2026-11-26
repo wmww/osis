@@ -96,14 +96,26 @@ fn joint_a_removed_hop_reaches_the_actor_through_the_key_part() {
     assert!(acts(Joint::Grants) > 0);
 }
 
-/// Wide world 610247967233: the signer 4 reads a path [R, A] to O whose hop R on A fell with its
-/// granter's demotion on A, which A's key part has and O's entries lack; the world's paths reach O
-/// from 4 by none. Holding the key parts of its own reading's paths' holders, it judges a write
-/// along [R, A] invalid, as the node holding everything; holding those of the world's paths alone,
-/// it acts.
+/// O is minted by A and holds write on H. Z (admin on H) reaches O through [H, A], H on A by
+/// Q's grant, which O's entries log (a node syncing O alone keeps them); X then lowers Q to
+/// write on A with no frontier, so H's hop on A falls with it: A's key part has the lowering,
+/// O's entries lack it, and the world's paths reach O from Z by none. Holding the key parts of the holders on the
+/// paths its own reading shows, Z judges a write along [H, A] invalid, as the node holding
+/// everything; holding those of the world's paths alone, it acts.
 #[test]
 fn joint_a_path_its_own_reading_shows_brings_its_holders_key_parts() {
-    let w = wide(610247967233, 16, Wide { mint: true, ..Wide::default() });
+    use held_model::evidence::names::*;
+    use roles_model::Role;
+    let pw = roles_model::paths::World::new(&[(X, A), (A, O), (W, H)]);
+    let mut w = World::new(pw, &[A, O, H]);
+    let (x, h) = (w.node(true, &[A, O]), w.node(true, &[H]));
+    w.node(true, &[O]);
+    w.write(h, |p| p.edge(W, 1, &[], H, Z, Role::Admin, &[]));
+    w.write(h, |p| p.edge(W, 1, &[], H, O, Role::Write, &[]));
+    w.write(h, |p| p.content(Z, 1, &[], H));
+    w.write(x, |p| p.edge(X, 1, &[], A, Q, Role::Admin, &[]));
+    w.write(x, |p| p.edge(Q, 1, &[], A, H, Role::Write, &[]));
+    w.write(x, |p| p.edge(X, 2, &[], A, Q, Role::Write, &[]));
     let acts = |j: Joint| joint(w.clone(), j).into_iter().filter(|f| f.prop == "J-act").count();
     assert_eq!(acts(Joint::Paths), 0);
     assert!(acts(Joint::WorldPaths) > 0);

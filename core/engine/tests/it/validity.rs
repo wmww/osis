@@ -5107,3 +5107,66 @@ fn the_engine_states_one_path_for_a_creation_spec_wire_4() {
     assert_eq!(path_bytes(&h), 34);
     assert!(matches!(acting_on_two(), Err(osis_engine::Error::Permission { .. })), "acting as D on E, which D holds nothing on");
 }
+
+// spec/wire.md §4 `Split` (a reader opens an entry with a key a part carries, else with the read
+// roles secrets up the thing's record chain), spec/permissions.md §3 (Lost access: the read
+// secrets go): Carol reads P, and D through `reader` (D itself, or the mint admin D derives its
+// secrets from); given Bob's split commit with P's parts alone, she opens D's entry by those
+// secrets. Removed from `reader`, she drops them: D's entry opens nowhere at her then, so it
+// waits, live as after a reopen.
+fn lost_secrets_paths(lp: &mut LocalPeer, d: Tid, p: Tid, reader: Tid) {
+    let c = lp.peers[2].engine.tid();
+    set_edge(&mut lp.peers[0].engine, reader, c, Some(edge(Role::Read)), None);
+    lp.sync_all().unwrap();
+    let mut m = Mutation::new();
+    m.set(d, &REG, &s("on d")).unwrap();
+    m.set(p, &REG, &s("on p")).unwrap();
+    let id = lp.peers[1].engine.commit(m).unwrap().unwrap();
+    let full = held(lp, 1, &id);
+    assert!(full.header.is_split());
+    let pi = place(&full, p);
+    let mut only_p = osis_commit::rewrite(&full, |ai| full.header.aspects[ai].tid != p);
+    only_p.keys.retain(|i, _| *i == pi);
+    unless_refused(lp.peers[2].engine.ingest(&only_p.encode(), Vec::new()));
+    lp.peers[2].reexamine().unwrap();
+    let state = |lp: &LocalPeer| {
+        let e = &lp.peers[2].engine;
+        let paths = e.core.ix.commits.get(&id).unwrap().view.paths.clone().unwrap();
+        (paths.get(&d).map(Option::is_some), paths.get(&p).map(Option::is_some), e.core.ix.paths_unknown.contains(&id))
+    };
+    assert_eq!(state(lp), (Some(true), Some(true), false), "D's entry opened by her secrets");
+    lp.peers[2].engine.check_index();
+    let removal = set_edge(&mut lp.peers[0].engine, reader, c, None, None);
+    let pk = lp.peers[0].engine.package(&removal).unwrap().unwrap();
+    unless_refused(lp.peers[2].engine.ingest(&pk.bytes, pk.blobs));
+    lp.peers[2].reexamine().unwrap();
+    let lost = lp.peers[2].engine.role_duties().unwrap();
+    assert!(lost.contains(&reader), "{lost:?}");
+    assert_eq!(state(lp), (None, Some(true), true), "D's entry waits");
+    lp.peers[2].engine.check_index();
+    crate::flows::reopen(lp, 2).unwrap();
+    assert_eq!(state(lp), (None, Some(true), true), "D's entry waits after a reopen");
+}
+
+// spec/wire.md §4 `Split`, spec/permissions.md §3: `lost_secrets_paths`, Carol reading D itself.
+#[test]
+fn a_path_opened_by_read_secrets_waits_once_they_are_lost_spec_wire_4() {
+    let (mut lp, _, d, p) = two_paths_world();
+    lost_secrets_paths(&mut lp, d, p, d);
+}
+
+// spec/wire.md §4 `Split`, spec/permissions.md §3: `lost_secrets_paths`, Carol reading D's mint
+// admin A, whose secrets D's derive from.
+#[test]
+fn a_path_opened_by_a_mint_admins_read_secrets_waits_once_they_are_lost_spec_wire_4() {
+    let (mut lp, _, _, p) = two_paths_world();
+    let a = new_thing(&mut lp, 0);
+    let b = lp.peers[1].engine.tid();
+    set_edge(&mut lp.peers[0].engine, a, b, Some(edge(Role::Write)), None);
+    let mut m = Mutation::new();
+    let d = lp.peers[0].engine.new_thing(&mut m, a);
+    m.set(d, &REG, &s("new")).unwrap();
+    lp.peers[0].commit(m).unwrap();
+    lp.sync_all().unwrap();
+    lost_secrets_paths(&mut lp, d, p, a);
+}

@@ -398,6 +398,8 @@ pub(crate) fn settle(tx: &mut Tx<'_>) -> Result<bool> {
         return Ok(!content.is_empty());
     }
     osis_base::costs::count("needed: things dropped", gone.len() as u64);
+    // the things whose entries their records and secrets may have opened, found before they go
+    let opened = crate::retention::forget::deriving_from(tx.core, &gone);
     // what waits on a thing going whole goes with it, as never received
     for t in &gone {
         crate::apply::unreceive_outside(tx, t)?;
@@ -463,7 +465,7 @@ pub(crate) fn settle(tx: &mut Tx<'_>) -> Result<bool> {
     }
     tx.core.update_timelines();
     // the paths their records and secrets opened, decided again without them
-    crate::apply::paths::openers_gone(tx, &gone)?;
+    crate::apply::paths::openers_gone(tx, &opened)?;
     crate::apply::rejudged(tx, true)?;
     Ok(true)
 }

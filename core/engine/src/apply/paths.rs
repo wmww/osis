@@ -4,7 +4,9 @@
 //! the read roles secrets it holds of the things up the thing's record chain. A thing whose path
 //! opens to a bad list, or opens nowhere here, has its parts judged invalid (`View::paths`);
 //! one opening nowhere here waits (`Wait`) and is opened again when a roles secret or a record
-//! that may open it moves (`refresh`) or a late encryption brings its key (`atomic::join_late`).
+//! that may open it moves (`refresh`) or a late encryption brings its key (`atomic::join_late`),
+//! and decided again when a record or roles secret that may have opened it goes (`openers_gone`):
+//! what a node decided of paths is a function of what it holds, live as a load decides it.
 
 use crate::engine::{Core, Decided, Tx};
 use osis_base::Tid;
@@ -202,14 +204,15 @@ fn reopen(tx: &mut Tx<'_>, id: &osis_base::CommitId) {
     }
 }
 
-/// The openers of `things` went (their records forgotten, their read secrets dropped): each held
-/// split commit on a thing whose secrets derive from one of them has its paths decided again from
-/// what is held now (the keys its record keeps, the roles secrets and records left), as a load
-/// decides them; a thing whose entry opens nowhere now waits (`Wait`).
-pub(crate) fn openers_gone(tx: &mut Tx<'_>, things: &BTreeSet<Tid>) -> crate::Result<()> {
+/// Openers went (records forgotten, read secrets dropped): each held split commit with an entry
+/// decided on a thing of `opened` (`retention::forget::deriving_from` the things going, found
+/// before they went) has its paths decided again from what is held now (the keys its record
+/// keeps, the roles secrets and records left), as a load decides them; a thing whose entry opens
+/// nowhere now waits (`Wait`). With `refresh` (openers arriving), what a node decided of paths
+/// is a function of what it holds. O(the commits on `opened`).
+pub(crate) fn openers_gone(tx: &mut Tx<'_>, opened: &BTreeSet<Tid>) -> crate::Result<()> {
     let core: &Core = tx.core;
-    let on = crate::retention::forget::deriving_from(core, things);
-    let ids: BTreeSet<osis_base::CommitId> = on.iter().flat_map(|t| core.on_thing(t)).filter(|id| core.ix.commits.get(id).is_some_and(|m| m.view.paths.as_deref().is_some_and(|p| p.keys().any(|t| on.contains(t))))).collect();
+    let ids: BTreeSet<osis_base::CommitId> = opened.iter().flat_map(|t| core.on_thing(t)).filter(|id| core.ix.commits.get(id).is_some_and(|m| m.view.paths.as_deref().is_some_and(|p| p.keys().any(|t| opened.contains(t))))).collect();
     for id in ids {
         let Some(blob) = tx.get_commit(&id)? else { continue };
         let Some(m) = tx.core.ix.commits.get(&id) else { continue };
