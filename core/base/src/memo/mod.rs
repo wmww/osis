@@ -418,7 +418,7 @@ fn record(t: &Arc<Mutex<Table>>, key: impl FnOnce() -> Option<u64>) {
         let mut f = f.borrow_mut();
         let (accounted, part) = (accounting(&f), current_part(&f));
         let Some(top) = f.last_mut() else { return };
-        top.note((Arc::as_ptr(t) as usize, key), accounted, part, || Dep { table: t.clone(), key, seen: lock(t).stamp(key), accounted, part });
+        top.note((Arc::as_ptr(t) as usize, key), accounted, part, || Dep::new(t, key, accounted, part));
     });
 }
 
@@ -655,7 +655,7 @@ impl Undoable {
             for (frame, at) in fr.borrow_mut().iter_mut().zip(&self.frames) {
                 for d in frame.deps.iter_mut().skip(*at) {
                     if stretch.saved.contains_key(&d.id().0) {
-                        d.seen = lock(&d.table).stamp(d.key);
+                        d.seen = lock(&d.table).stamp(d.key());
                     }
                 }
             }
@@ -758,27 +758,42 @@ impl Drop for Stamps {
     }
 }
 
-/// One thing a memo read, and the stamp it had.
+/// A part's name in `Dep::part` (`part_id`).
+type Part = std::num::NonZeroU64;
+
+/// One thing a memo read, and the stamp it had. Every memo, `Effects` key and `Cutoff` row keeps
+/// one per read, so it is packed: 40 bytes (`a_dep_is_40_bytes`).
 #[derive(Clone, Debug)]
 struct Dep {
     table: Arc<Mutex<Table>>,
-    key: Option<u64>,
+    /// The key's hash, unless `whole`.
+    key: u64,
     seen: u64,
+    /// The part of the answer every read of it was made for (`part`), if one: an amend that
+    /// drops the part (`release`) drops this read with it.
+    part: Option<Part>,
+    /// A read of the whole container, not of `key`.
+    whole: bool,
     /// Every read of it the memo's answer rests on was inside `accounted`: its move is one an
     /// amend brings the answer up to date with (`Cutoff::get_amended_in`).
     accounted: bool,
-    /// The part of the answer every read of it was made for (`part`), if one: an amend that
-    /// drops the part (`release`) drops this read with it.
-    part: Option<u64>,
 }
 
 impl Dep {
+    /// A read of `key` of table `t` (`None`: the whole) at its stamp now.
+    fn new(t: &Arc<Mutex<Table>>, key: Option<u64>, accounted: bool, part: Option<Part>) -> Dep {
+        Dep { table: t.clone(), key: key.unwrap_or(0), seen: lock(t).stamp(key), part, whole: key.is_none(), accounted }
+    }
+    /// The key read (`None`: the whole container).
+    fn key(&self) -> Option<u64> {
+        (!self.whole).then_some(self.key)
+    }
     fn holds(&self) -> bool {
-        lock(&self.table).stamp(self.key) == self.seen
+        lock(&self.table).stamp(self.key()) == self.seen
     }
     /// The container and key read, whatever the stamp.
     fn id(&self) -> (usize, Option<u64>) {
-        (Arc::as_ptr(&self.table) as usize, self.key)
+        (Arc::as_ptr(&self.table) as usize, self.key())
     }
 }
 
@@ -789,7 +804,7 @@ pub(crate) struct Frame {
     computing: bool,
     deps: Vec<Dep>,
     /// The parts an amend dropped (`release`).
-    released: std::collections::HashSet<u64, Ids>,
+    released: std::collections::HashSet<Part, Ids>,
     /// Each dep's place in `deps`, by `Dep::id`.
     seen: HashMap<(usize, Option<u64>), usize, Ids>,
     /// `Clock` bounds held over this frame (`Clock::bound`, `Clock::at`): while one is, the
@@ -840,7 +855,7 @@ impl Hasher for IdHasher {
 impl Frame {
     /// A read of `id`, inside `accounted` or not, for `part` or none; `dep` makes its dep when
     /// it is the first.
-    fn note(&mut self, id: (usize, Option<u64>), accounted: bool, part: Option<u64>, dep: impl FnOnce() -> Dep) {
+    fn note(&mut self, id: (usize, Option<u64>), accounted: bool, part: Option<Part>, dep: impl FnOnce() -> Dep) {
         match self.seen.entry(id) {
             std::collections::hash_map::Entry::Occupied(i) => {
                 if let Some(d) = self.deps.get_mut(*i.get()) {
@@ -864,7 +879,7 @@ fn accounting(frames: &[Frame]) -> bool {
 }
 
 /// The part reads now land in, in the top frame of `frames` (`part`).
-fn current_part(frames: &[Frame]) -> Option<u64> {
+fn current_part(frames: &[Frame]) -> Option<Part> {
     PART.get().filter(|(at, _)| at + 1 == frames.len()).map(|x| x.1)
 }
 
@@ -936,7 +951,7 @@ thread_local! {
     /// The frame whose reads `accounted` marks, while one runs (its place in `FRAMES`).
     static ACCOUNTING: Cell<Option<usize>> = const { Cell::new(None) };
     /// The frame and part whose reads `part` marks, while one runs.
-    static PART: Cell<Option<(usize, u64)>> = const { Cell::new(None) };
+    static PART: Cell<Option<(usize, Part)>> = const { Cell::new(None) };
     /// Debug comparisons running on this thread (`Memo::compare`).
     static COMPARING: Cell<u32> = const { Cell::new(0) };
 }
@@ -1058,7 +1073,7 @@ pub fn accounted<T>(f: impl FnOnce() -> T) -> T {
 /// (`release`): one body of the aspect's held writes (`retention::bounds::held_writes`). A read
 /// made for two parts, or also outside any, is for none. Elsewhere it is a plain read.
 pub fn part<T>(id: &(impl Hash + ?Sized), f: impl FnOnce() -> T) -> T {
-    struct Restore(Option<(usize, u64)>);
+    struct Restore(Option<(usize, Part)>);
     impl Drop for Restore {
         fn drop(&mut self) {
             PART.set(self.0);
@@ -1073,9 +1088,10 @@ pub fn part<T>(id: &(impl Hash + ?Sized), f: impl FnOnce() -> T) -> T {
 /// Part `id`'s name in `Dep::part`, keyed per process: two parts sharing one would release each
 /// other's reads (a stale answer, where a shared stamp key only moves an answer more often), so
 /// no input may choose ids that collide (`hash`'s key is fixed).
-fn part_id(id: &(impl Hash + ?Sized)) -> u64 {
+fn part_id(id: &(impl Hash + ?Sized)) -> Part {
     static KEY: std::sync::OnceLock<std::collections::hash_map::RandomState> = std::sync::OnceLock::new();
-    std::hash::BuildHasher::hash_one(KEY.get_or_init(std::collections::hash_map::RandomState::new), id)
+    let h = std::hash::BuildHasher::hash_one(KEY.get_or_init(std::collections::hash_map::RandomState::new), id);
+    Part::new(h).unwrap_or(Part::MIN)
 }
 
 /// The amend running (`Cutoff::get_amended_in`) dropped part `id` of the answer: the kept
@@ -1160,7 +1176,7 @@ impl<V> Entry<V> {
             if g.held_at.get() == Some(t.ver) {
                 return true;
             }
-            let holds = deps.iter().all(|d| t.stamp(d.key) == d.seen);
+            let holds = deps.iter().all(|d| t.stamp(d.key()) == d.seen);
             if holds {
                 g.held_at.set(Some(t.ver));
             }
@@ -1317,7 +1333,7 @@ impl<K: Hash + Eq + Clone, V: Clone + PartialEq + std::fmt::Debug> Memo<K, V> {
     pub fn amend(&self, k: &K, value: V) {
         if let Some(e) = self.entries.borrow_mut().get_mut(k) {
             e.value = value;
-            e.deps = e.deps.iter().map(|d| Dep { seen: lock(&d.table).stamp(d.key), ..d.clone() }).collect();
+            e.deps = e.deps.iter().map(|d| Dep { seen: lock(&d.table).stamp(d.key()), ..d.clone() }).collect();
             e.groups = groups(&e.deps);
         }
     }
@@ -1676,6 +1692,13 @@ mod tests {
     fn costs_of<const N: usize>(names: [&str; N]) -> [u64; N] {
         let c = crate::costs::take();
         names.map(|name| c.iter().filter(|x| x.0 == name).map(|x| x.2).sum())
+    }
+
+    // spec: none (internal: notes/engine.md, Derived values). A read kept is 40 bytes: every
+    // memo entry, followed key and cutoff row keeps one per read for the life of what it follows.
+    #[test]
+    fn a_dep_is_40_bytes() {
+        assert_eq!(std::mem::size_of::<Dep>(), 40);
     }
 
     // spec: none (internal: notes/engine.md, Derived values). A memo runs again exactly when

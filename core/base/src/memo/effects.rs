@@ -250,7 +250,7 @@ impl<K: Hash + Eq + Clone + std::fmt::Debug, V: Clone + PartialEq + std::fmt::De
         // value stands, read again at the bucket's stamp now. Not for a key given before: the
         // write that moved it may be in an earlier `due`'s log
         let bucket_only = |d: &Dep| -> bool {
-            let Some(h) = d.key else { return false };
+            let Some(h) = d.key() else { return false };
             let Some(named) = pruned.get(&(Arc::as_ptr(&d.table) as usize)) else { return false };
             !named.contains(&h) && !lock(&d.table).keys.contains_key(&h)
         };
@@ -274,7 +274,7 @@ impl<K: Hash + Eq + Clone + std::fmt::Debug, V: Clone + PartialEq + std::fmt::De
             } else {
                 if stale {
                     for d in f.deps.iter_mut() {
-                        d.seen = lock(&d.table).stamp(d.key);
+                        d.seen = lock(&d.table).stamp(d.key());
                     }
                 }
                 #[cfg(debug_assertions)]
@@ -425,7 +425,7 @@ impl<K: Hash + Eq + Clone + std::fmt::Debug, V: Clone + PartialEq + std::fmt::De
                 Indexed { table: d.table.clone(), at, whole: HashSet::default(), keys: BTreeSet::new(), buckets: HashMap::default(), reads: 0 }
             });
             ix.reads += 1;
-            match d.key {
+            match d.key() {
                 None => {
                     ix.whole.insert(k);
                 }
@@ -446,7 +446,7 @@ impl<K: Hash + Eq + Clone + std::fmt::Debug, V: Clone + PartialEq + std::fmt::De
     /// stamp now joins its bucket (one present at the earlier read was not in it).
     fn reindex_buckets(&mut self, deps: &[Dep]) {
         for d in deps {
-            let Some(h) = d.key else { continue };
+            let Some(h) = d.key() else { continue };
             let Some(ix) = self.tables.get_mut(&(Arc::as_ptr(&d.table) as usize)) else { continue };
             if !lock(&ix.table).keys.contains_key(&h) {
                 ix.buckets.entry(bucket(h)).or_default().insert(h);
@@ -458,7 +458,7 @@ impl<K: Hash + Eq + Clone + std::fmt::Debug, V: Clone + PartialEq + std::fmt::De
         for d in deps {
             let p = Arc::as_ptr(&d.table) as usize;
             let Some(ix) = self.tables.get_mut(&p) else { continue };
-            match d.key {
+            match d.key() {
                 None => {
                     ix.whole.remove(&k);
                 }
@@ -493,7 +493,7 @@ impl<K: Hash + Eq + Clone + std::fmt::Debug, V: Clone + PartialEq + std::fmt::De
             let mut moved = false;
             for d in f.deps.iter().filter(|d| !d.holds()) {
                 let t = lock(&d.table);
-                crate::costs::count_by(self.name, t.cause(d.key.is_none()), 1);
+                crate::costs::count_by(self.name, t.cause(d.whole), 1);
                 moved = true;
             }
             if !moved {

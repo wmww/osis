@@ -922,6 +922,10 @@ pub struct Core {
     /// `Engine::follow`: a body's judgement moves only when its facts do, not with every write on
     /// its aspects.
     pub(crate) read_facts: memo::Cutoff<(SyncId, crate::sync::BodyId), crate::sync::ReadFacts>,
+    /// `Engine::sync_bodies` per commit (`memo::Cutoff`), refreshed by `Engine::follow`: each
+    /// reader of a commit's bodies (sync read's, `read_facts`) reads one row, not the ~45 reads
+    /// of a derivation.
+    pub(crate) sync_bodies: memo::Cutoff<CommitId, Arc<crate::sync::Bodies>>,
     /// `Engine::held_fate` per commit (`memo::Cutoff`), refreshed by `Engine::follow`.
     pub(crate) held_fates: memo::Cutoff<CommitId, Option<crate::sync::HeldFate>>,
     /// Page indexes of the cached states kept paged in the store.
@@ -1216,10 +1220,6 @@ pub struct Core {
     pub(crate) live_bodies: memo::Memo<(CommitId, Tid, Ak), bool>,
     /// `retention::snapshot::covered` per (cover, body, aspect) (`memo`).
     pub(crate) covers: memo::Memo<(CommitId, CommitId, Tid, Ak), Option<bool>>,
-    /// `Engine::sync_body_now` per (sync ID, commit) (`memo`).
-    pub(crate) sync_body: memo::Memo<(SyncId, crate::sync::BodyId), Option<crate::sync::BodyMeta>>,
-    /// `Engine::sync_bodies` per commit (`memo`).
-    pub(crate) sync_bodies: memo::Memo<CommitId, Arc<crate::sync::Bodies>>,
     /// `Engine::piece_below` per piece link (`memo`): a node's links, decoded once while held.
     pub(crate) pieces_below: memo::Memo<crate::sync::PieceLink, Option<Arc<Vec<crate::sync::PieceLink>>>>,
     /// `Engine::piece_roots` per (commit, parts) (`memo`): a body's links, decoded once while held.
@@ -1810,8 +1810,6 @@ impl Core {
             listed_keys: _,
             live_bodies: _,
             covers: _,
-            sync_body: _,
-            sync_bodies: _,
             pieces_below: _,
             piece_roots: _,
             secrets_read: _,
@@ -1837,6 +1835,7 @@ impl Core {
             wrap_blocks: _,
             own_roles: _,
             read_facts: _,
+            sync_bodies: _,
             held_fates: _,
             sync_ids: _,
             sync_rows: _,
@@ -2090,6 +2089,7 @@ impl Core {
             place: 0,
             wrap_blocks: memo::Cutoff::new("wrap blocked"),
             read_facts: memo::Cutoff::new("sync: read facts"),
+            sync_bodies: memo::Cutoff::new("sync: bodies"),
             held_fates: memo::Cutoff::new("sync: held fate"),
             pages: HashMap::new(),
             timelines: held::Timelines::default(),
@@ -2217,8 +2217,6 @@ impl Core {
             missed: BTreeSet::new(),
             live_bodies: memo::Memo::new("delta live"),
             covers: memo::Memo::new("covered"),
-            sync_body: memo::Memo::new("sync body"),
-            sync_bodies: memo::Memo::new("sync bodies"),
             pieces_below: memo::Memo::new("pieces: below"),
             piece_roots: memo::Memo::new("pieces: roots"),
             replaced_reads: 0,

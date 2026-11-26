@@ -29,7 +29,7 @@ Sync's modules follow facade values with `Effects` (notes/engine.md, `Effects<K,
 
 Values derived from walks whose reads move far more often than the value are kept per key (notes/engine.md, Per-key rows):
 - `sync::certified`: each read thing's certificates as pieces (Certificate bodies below), its module doc says how; kept equal to the whole derivation (`Engine::sync_certificates`): `sync::certified::tests`.
-- `sync_body_now(s, b)`: one body (`BodyId`) at one sync ID, read from S's things alone; read keeps each (S, commit)'s body as its `bodies` effect last settled it (`Mine::meta`), so a body coming at one sync ID re-judges nothing at another.
+- `sync_bodies(c)` per commit (`Core::sync_bodies`); `sync_body(s, b)` is a lookup in it. Read keeps each (S, commit)'s body as its `bodies` effect last settled it (`Mine::meta`) and a body's facts are a row of their own (`read_facts`), so a body coming at one sync ID re-judges nothing at another.
 - `wrap_blocked` per (actor, walk) (`Core::wrap_blocks`), so a role change re-judges only the bodies whose wrap it blocks or unblocks.
 - What the node syncs per sync ID is the store's `synced`, written by leave (notes/sync-leave.md).
 

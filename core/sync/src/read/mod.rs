@@ -246,10 +246,10 @@ impl Read {
             self.moved.insert(c, place);
             let was = self.settled.insert(c, now.clone()).unwrap_or_default();
             let id = |on: &Option<Tid>| BodyId { commit: c, on: *on };
-            for (s, on) in was.keys().filter(|k| !now.contains_key(*k)) {
+            for (s, on) in was.keys().filter(|k| !now.contains_key(k)) {
                 self.metas.remove(&(*s, id(on)));
             }
-            for ((s, on), m) in now.iter().filter(|(k, m)| was.get(*k) != Some(*m)) {
+            for ((s, on), m) in now.iter().filter(|(k, m)| was.get(k) != Some(*m)) {
                 self.metas.insert((*s, id(on)), m.clone());
             }
             for ((s, _), m) in now.iter() {

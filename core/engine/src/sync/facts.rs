@@ -77,7 +77,7 @@ impl Engine {
         let c = &id.commit;
         let body: BodyFacts = self.body_facts(s, id)?;
         let mut f = ReadFacts { body, must_not: None, own: false, repair_fresh: Arc::default(), role: false, later_unheld: Vec::new(), missing: false };
-        let (Some(b), Some(h)) = (self.sync_body_now(s, id)?, self.header(c)) else { return Ok(f) };
+        let (Some(b), Some(h)) = (self.sync_body(s, id)?, self.header(c)) else { return Ok(f) };
         let Some(m) = self.core.ix.commits.get(c) else { return Ok(f) };
         f.own = m.origin == crate::events::Origin::Local;
         f.repair_fresh = m.repair().cloned().unwrap_or_default();
@@ -130,7 +130,7 @@ impl Engine {
     /// (spec/permissions.md §5.2). One of each must be held where the body leaves.
     pub(crate) fn carriers_now(&mut self, s: &SyncId, id: &BodyId) -> Result<Vec<BTreeSet<CommitId>>> {
         let c = &id.commit;
-        let (Some(b), Some(h)) = (self.sync_body_now(s, id)?, self.header(c)) else { return Ok(Vec::new()) };
+        let (Some(b), Some(h)) = (self.sync_body(s, id)?, self.header(c)) else { return Ok(Vec::new()) };
         if !self.core.ix.commits.contains_key(c) {
             return Ok(Vec::new());
         }
@@ -166,7 +166,7 @@ impl Engine {
     /// sync's to know; one not counted here only widens this set, toward keeping.
     pub(crate) fn blob_only(&mut self, s: &SyncId, id: &BodyId) -> Result<Option<PartSet>> {
         let c = &id.commit;
-        let (Some(b), Some(h)) = (self.sync_body_now(s, id)?, self.header(c)) else { return Ok(None) };
+        let (Some(b), Some(h)) = (self.sync_body(s, id)?, self.header(c)) else { return Ok(None) };
         let keeps = self.part_keeps(c)?;
         let mut out = PartSet::new();
         for ai in &b.parts {
@@ -201,7 +201,7 @@ impl Engine {
     /// opened or sealed here holds none.
     pub fn holds_body(&mut self, s: &SyncId, b: &BlobId) -> Result<bool> {
         let Some(id) = self.blob_body(s, b)? else { return Ok(false) };
-        let Some(meta) = self.sync_body_now(s, &id)? else { return Ok(false) };
+        let Some(meta) = self.sync_body(s, &id)? else { return Ok(false) };
         Ok(self.body_held_by(&meta, b))
     }
 
@@ -224,7 +224,7 @@ impl Engine {
     /// ones that could hold the right names a delta of it without dropping it.
     pub fn neither(&mut self, s: &SyncId, id: &BodyId, there: &BTreeSet<BlobId>) -> Result<bool> {
         let c = &id.commit;
-        let Some(meta) = self.sync_body_now(s, id)? else { return Ok(false) };
+        let Some(meta) = self.sync_body(s, id)? else { return Ok(false) };
         if meta.certificate {
             return Ok(false);
         }

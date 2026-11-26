@@ -100,7 +100,7 @@ fn holdings(f: &Fact, r: Right) -> BTreeSet<Holding> {
 }
 
 /// The delta facts content reads, by point lookups (notes/perm-paths.md, The delta-facts seam):
-/// the engine backs it with its store index, `MemStore` keeps it in memory. Its indexes follow
+/// `MemStore` keeps them in memory, the engine's timelines too. Its indexes follow
 /// `put` and `remove`; the stored addenda verdicts are its too.
 pub trait Store {
     /// Holds delta `f`: a snapshot's with the commits it carries.

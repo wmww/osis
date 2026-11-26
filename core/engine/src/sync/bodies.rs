@@ -403,16 +403,17 @@ impl Engine {
     /// The bodies of commit `c` under the sync IDs this node reads (spec/sync-judgement.md §1,
     /// spec/permissions.md §4 Copies): per (sync ID, thing), its sync unit body (no thing: parts,
     /// expiry, fetch order, a per-sync-ID copy or the shared blob, or a header alone) and its
-    /// certificate copy on each thing outside the sync unit (`bodies_at`). A memo
-    /// (`Core::sync_bodies`): read's bodies and each judgement's held blobs ask it.
+    /// certificate copy on each thing outside the sync unit (`bodies_at`). Kept per commit from
+    /// its first ask (`Core::sync_bodies`, a `memo::Cutoff`, refreshed by `follow`): a reader moves
+    /// only when the bodies do; `unfollow_fate` lets a commit go.
     pub fn sync_bodies(&mut self, c: &CommitId) -> Result<Arc<super::Bodies>> {
         self.follow_bodies()?;
-        osis_base::memo::Memo::get_in(self, |e| &e.core.sync_bodies, c, |e| e.sync_bodies_read(c))
+        osis_base::memo::Cutoff::get_in(self, |e| &e.core.sync_bodies, c, |e, c| e.sync_bodies_read(c))
     }
 
-    /// Brings the per-entry values a body reads (the read things, `certified`) up to date before a
-    /// memo of bodies is asked: a hit asks neither, and its reads of them hold only once they are
-    /// (notes/engine.md, Derived values: Per-key rows).
+    /// Brings the per-entry values a body reads (the read things, `certified`) up to date before
+    /// the bodies are: they go due only once those rows are written (notes/engine.md, Derived
+    /// values: Per-key rows).
     fn follow_bodies(&mut self) -> Result<()> {
         self.follow_read_things()?;
         self.follow_certificates()?;
@@ -420,7 +421,7 @@ impl Engine {
     }
 
     /// `sync_bodies` read anew: `bodies_at` each read sync ID of a thing that may carry one.
-    fn sync_bodies_read(&mut self, c: &CommitId) -> Result<Arc<super::Bodies>> {
+    pub(super) fn sync_bodies_read(&mut self, c: &CommitId) -> Result<Arc<super::Bodies>> {
         let mut things = self.body_things(c);
         things.extend(self.certified(c)?.into_iter().map(|x| x.0));
         let mut ids = BTreeSet::new();
@@ -435,21 +436,12 @@ impl Engine {
                 out.insert((s, on), meta);
             }
         }
-        Ok(Arc::new(out))
+        Ok(Arc::new(out.into_iter().collect()))
     }
 
-    /// Body `b` at read sync ID `s` (`sync_bodies`' entry for it), a read of that pair alone
-    /// (`sync_body_now`).
+    /// Body `b` at read sync ID `s`: its entry in `sync_bodies`, a read of its commit's row.
     pub fn sync_body(&mut self, s: &SyncId, b: &BodyId) -> Result<Option<BodyMeta>> {
-        self.sync_body_now(s, b)
-    }
-
-    /// Body `b` at read sync ID `s` (`sync_bodies`' entry for it), read from `s`'s things alone:
-    /// a body coming or going at another sync ID moves nothing here. A memo (`Core::sync_body`):
-    /// each judgement of a body asks it from several facade calls.
-    pub(crate) fn sync_body_now(&mut self, s: &SyncId, b: &BodyId) -> Result<Option<BodyMeta>> {
-        self.follow_bodies()?;
-        osis_base::memo::Memo::get_in(self, |e| &e.core.sync_body, &(*s, *b), |e| Ok(e.bodies_at(s, &b.commit)?.remove(&b.on)))
+        Ok(self.sync_bodies(&b.commit)?.get(&(*s, b.on)).cloned())
     }
 
     /// Whether `x` is outside `s`'s sync unit as its bodies read it: no thing reading `s` carries
@@ -612,7 +604,7 @@ impl Engine {
     /// certificate's author's other blobs) is the judgement's to add.
     pub fn body_facts(&mut self, s: &SyncId, id: &BodyId) -> Result<BodyFacts> {
         let c = &id.commit;
-        let Some(b) = self.sync_body_now(s, id)? else { return Ok(BodyFacts { required: false, closure: false, dropped: None, invalid: false, kept: false, peer_delete_from: 0, covered: Some(false), lasting_header: false }) };
+        let Some(b) = self.sync_body(s, id)? else { return Ok(BodyFacts { required: false, closure: false, dropped: None, invalid: false, kept: false, peer_delete_from: 0, covered: Some(false), lasting_header: false }) };
         let Some(h) = self.header(c) else { return Err(Error::UnknownCommit(*c)) };
         let keeps = self.part_keeps(c)?;
         let Some(m) = self.core.ix.commits.get(c) else { return Err(Error::UnknownCommit(*c)) };
@@ -796,7 +788,7 @@ impl Engine {
         }
         // a blob of the other kind holds no body here (a certificate copy beside the shared blob
         // carries parts S's readers cannot open there, whatever this node opens of it)
-        let body_kind = self.sync_body_now(s, &id)?.is_some_and(|meta| x.of_kind(meta.copy));
+        let body_kind = self.sync_body(s, &id)?.is_some_and(|meta| x.of_kind(meta.copy));
         if body_kind && x.parts.is_subset(&y.parts) && y.parts.len() > x.parts.len() && x.sealed.is_subset(&y.sealed) && let Some(only) = self.blob_only(s, &id)? && y.parts.difference(&x.parts).any(|ai| only.contains(ai)) {
             return Ok(Some(Loss::Needed));
         }
@@ -832,7 +824,7 @@ impl Engine {
         let c = &id.commit;
         let Some(t) = self.body_thing(s, id)? else { return Ok(None) };
         // what a strip leaves of the body: its parts whose bodies are not gone here
-        let meta = self.sync_body_now(s, id)?.map(|mut m| {
+        let meta = self.sync_body(s, id)?.map(|mut m| {
             if let Some(cm) = self.core.ix.commits.get(c) {
                 m.parts.retain(|ai| !strips(cm, *ai));
             }
@@ -893,7 +885,7 @@ impl Engine {
     pub fn may_log(&mut self, s: &SyncId, id: &BodyId, held_blobs: &[BlobId]) -> Result<bool> {
         let c = &id.commit;
         let Some(t) = self.body_thing(s, id)? else { return Ok(false) };
-        let Some(meta) = self.sync_body_now(s, id)? else { return Ok(false) };
+        let Some(meta) = self.sync_body(s, id)? else { return Ok(false) };
         let Some(h) = self.header(c) else { return Ok(false) };
         if !self.core.ix.commits.contains_key(c) {
             return Ok(false);
@@ -1088,8 +1080,8 @@ impl Engine {
         // a certificate copy of the same parts is one blob wrapped under each sync ID needing
         // them (spec/sync-judgement.md §1 Certificate blobs); a per-sync-ID copy never is shared,
         // even as a certificate of the same parts elsewhere: `from` holds `b` as a certificate too
-        let Some(meta) = self.sync_body_now(to, id)? else { return Ok(None) };
-        let from_certificate = self.sync_body_now(from, id)?.is_some_and(|m| m.certificate && m.parts == meta.parts);
+        let Some(meta) = self.sync_body(to, id)? else { return Ok(None) };
+        let from_certificate = self.sync_body(from, id)?.is_some_and(|m| m.certificate && m.parts == meta.parts);
         let certificate = meta.certificate && from_certificate && self.blob_copy_now(b) == Some(true) && self.blob_parts(b).as_ref() == Some(&meta.parts);
         if !certificate && (self.blob_copy_now(b) != Some(false) || meta.copy) {
             return Ok(None);

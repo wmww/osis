@@ -189,7 +189,7 @@ fn a_blob_loses_to_another_by_what_each_carries_spec_sync_judgement_2() {
     let (t, c) = wide_commit(&mut lp, d, 2);
     let e = &mut lp.peers[0].engine;
     let s = e.sync_id_of(&d).unwrap().unwrap();
-    let copy = e.sync_body_now(&s, &crate::sync::BodyId::unit(c)).unwrap().expect("a body under S").copy;
+    let copy = e.sync_body(&s, &crate::sync::BodyId::unit(c)).unwrap().expect("a body under S").copy;
     let h = e.header(&c).unwrap();
     let on = |k: &str| h.aspects.iter().position(|a| a.tid == t && a.ak.as_str() == k).unwrap();
     let (p0, p1) = (on("x:a0.0"), on("x:a1.0"));

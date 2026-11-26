@@ -168,8 +168,43 @@ impl BodyId {
 }
 
 /// A commit's bodies under the read sync IDs (`Engine::sync_bodies`): per (sync ID, thing), its
-/// sync unit body (no thing) or its certificate copy on that thing.
-pub type Bodies = BTreeMap<(SyncId, Option<Tid>), BodyMeta>;
+/// sync unit body (no thing) or its certificate copy on that thing. Sorted by key, one entry per
+/// key: a commit has a body or two, which a `BTreeMap` keeps in a node of eleven, and every held
+/// commit keeps its bodies.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Bodies(Box<[BodyEntry]>);
+
+/// A body in `Bodies`: its (sync ID, thing) and what the sync ID carries of it.
+pub type BodyEntry = ((SyncId, Option<Tid>), BodyMeta);
+
+impl Bodies {
+    pub fn get(&self, k: &(SyncId, Option<Tid>)) -> Option<&BodyMeta> {
+        self.0.binary_search_by(|e| e.0.cmp(k)).ok().and_then(|i| self.0.get(i)).map(|e| &e.1)
+    }
+    pub fn contains_key(&self, k: &(SyncId, Option<Tid>)) -> bool {
+        self.get(k).is_some()
+    }
+    pub fn keys(&self) -> impl Iterator<Item = &(SyncId, Option<Tid>)> {
+        self.0.iter().map(|e| &e.0)
+    }
+    pub fn iter(&self) -> impl Iterator<Item = (&(SyncId, Option<Tid>), &BodyMeta)> {
+        self.0.iter().map(|e| (&e.0, &e.1))
+    }
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+}
+
+/// The last entry of each key, in key order.
+impl FromIterator<BodyEntry> for Bodies {
+    fn from_iter<I: IntoIterator<Item = BodyEntry>>(it: I) -> Bodies {
+        let m: BTreeMap<(SyncId, Option<Tid>), BodyMeta> = it.into_iter().collect();
+        Bodies(m.into_iter().collect())
+    }
+}
 
 /// One body under a sync ID: what S carries of it (spec/sync-judgement.md §1).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -488,7 +523,7 @@ impl Engine {
     /// Brings the facade values kept per entry (`Core::read_things` per sync ID; `Core::step_write_keys` per sync ID and step;
     /// `Core::wrap_blocks`, per actor and walk; each read
     /// thing's certificates per piece and commit, `certified`; its thing lists per rotation,
-    /// `listed`; `Core::read_facts`, per sync ID and commit; `Core::held_fates`, per commit) up to date with what moved since
+    /// `listed`; `Core::sync_bodies` and `Core::held_fates`, per commit; `Core::read_facts`, per sync ID and commit) up to date with what moved since
     /// the last call: whether any entry moved. Each refreshes itself when asked, but an `Effects`
     /// key that read an entry goes due only once the entry is written, so a module calls this
     /// before its `due()` (the driver, once per settle round before the modules, and until it
@@ -505,6 +540,7 @@ impl Engine {
         self.follow_own()?;
         let moved = osis_base::memo::Cutoff::refresh_in(self, |e| &e.core.wrap_blocks, |e, (a, walk)| e.wrap_blocked_read(a, *walk))? | moved;
         let moved = self.follow_cert_records()? | moved;
+        let moved = osis_base::memo::Cutoff::refresh_in(self, |e| &e.core.sync_bodies, |e, c| e.sync_bodies_read(c))? | moved;
         // a body's facts read every value above
         let moved = osis_base::memo::Cutoff::refresh_in(self, |e| &e.core.read_facts, |e, (s, c)| e.read_facts_now(s, c))? | moved;
         Ok(osis_base::memo::Cutoff::refresh_in(self, |e| &e.core.held_fates, |e, c| e.held_fate_now(c))? | moved)
@@ -544,9 +580,10 @@ impl Engine {
         osis_base::memo::Cutoff::get_in(self, |e| &e.core.held_fates, c, |e, c| e.held_fate_now(c))
     }
 
-    /// Stops keeping `c`'s fate (`held_fate`): it left read.
+    /// Stops keeping `c`'s fate (`held_fate`) and bodies (`sync_bodies`): it left read.
     pub fn unfollow_fate(&mut self, c: &CommitId) {
         self.core.held_fates.unfollow(c);
+        self.core.sync_bodies.unfollow(c);
     }
 
     /// `held_fate` derived anew.
