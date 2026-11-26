@@ -483,7 +483,6 @@ fn the_publics_removal_keeps_what_a_nodes_own_role_gives_spec_permissions_3() {
 // reads the thing by the public alone, so the public's removal is its loss too, the removal
 // coming after a quiet run or while the redemption is in flight. Control: no removal, it reads.
 #[test]
-#[ignore = "issues/public-removal-reaches-no-redeemer.md"]
 fn a_public_links_redeemer_loses_the_thing_with_the_public_spec_permissions_3() {
     use crate::harness::history::{Gives, Holder, reads};
     let (n, accounts, ..) = size();
