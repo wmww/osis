@@ -650,7 +650,7 @@ fn a_removed_sync_holder_follows_what_its_key_part_names_spec_sync_set_2() {
 }
 
 
-// spec/permissions.md §3 (No secret taken back, entry boxes): a removed reader takes the public's
+// spec/permissions.md §3 (No secret taken back): a removed reader takes the public's
 // box as any party does, and no more. Node 0's account reads node 1's public thing and strongs
 // it; it is removed and a write follows (read by the public), then the public is removed and a
 // write follows: node 0 reads neither that write nor any secret of the epoch the public's removal
