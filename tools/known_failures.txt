@@ -12,3 +12,4 @@ osis-sync/differential::histories_hold_their_closure_plain rate:OSIS_SYNC_START=
 osis-sync/differential::histories_hold_their_closure_plain rate:OSIS_SYNC_START=951514058946,OSIS_SYNC_SEEDS=1 issues/differential-full-size-classes.md node \d+ reads thing \d+ unlike the reference
 osis-sync/differential::histories_hold_their_closure_plain rate:OSIS_SYNC_START=214923654590,OSIS_SYNC_SEEDS=1 issues/differential-full-size-classes.md storm: past the cap of \d+ deliveries
 osis-engine/order::held_set_decides_plain rate:OSIS_ORDER_SEED=817700046039,OSIS_ORDER_LEN=60 issues/order-addenda-validity.md differs: validity of commit CommitId\([0-9a-f.]+\) \(#\d+\) on Tid\([^)]*\) t:reg\.0: model Some\(true\), node Some\(false\)
+osis-engine/order::held_set_decides_plain rate:OSIS_ORDER_SEED=878473417130,OSIS_ORDER_LEN=60 issues/order-settings-sync-exchange.md shows other than the node keeping every body: Tid\([^)]*\) t:reg\.0:
