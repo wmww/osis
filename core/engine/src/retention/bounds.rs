@@ -450,7 +450,7 @@ pub(crate) fn settle_index(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
         let mut moved = BTreeSet::new();
         if was.is_some() {
             // its `ts` and kind are not read: a leaving body is named by its commit
-            let b = osis_crdt::Body { c, ts: Ts::ZERO, snap: false };
+            let b = osis_crdt::Body { c, ts: Ts::ZERO, snap: false, ends: None };
             let mut ix = index(tx, tid, ak, Shred::Yes)?;
             ix.leave(&b)?;
             moved.extend(ix.take_moved());

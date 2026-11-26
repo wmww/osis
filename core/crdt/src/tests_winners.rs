@@ -290,6 +290,7 @@ fn winners_check(seed: u64, types: &[Ty], honest: bool) {
         some.push(bodies.iter().filter(|_| r.chance(1, 2)).fold(Fragment::default(), |f, b| joined(&f, b)));
     }
     changes_check(&some, &mut r);
+    lifetimes_check(&some, &mut r);
     for _ in 0..6 {
         let mut pick = || bodies.iter().filter(|_| r.chance(1, 2)).fold(Fragment::default(), |f, b| joined(&f, b));
         let (a, b) = (pick(), pick());
@@ -311,6 +312,58 @@ fn winners_check(seed: u64, types: &[Ty], honest: bool) {
             assert!(held.dies(w).unwrap().is_some(), "a dead write dies by a write a side holds: {w:?} in {ab:?}");
             assert!(a.holds_stamp(&w.stamp) || a.held_writes().iter().any(|x| x == *w && x.kind == Kind::Value), "a dead write is the side's by exact stamp (a register write's: or its embedding's): {w:?}");
         }
+    }
+}
+
+/// §4.8 with lifetimes: `bodies` ending at random (`None`: lasting), a write lasting as long as
+/// its longest holder. Each held write dies, for each end among its holders, at the earliest
+/// `ts` among the writes lasting at least as long superseding it (a text element's creation by
+/// a delete beating the latest such undelete); the index kept as bodies join and leave, a
+/// write's end moving with its holders, is the one built from those held, row for row, and
+/// dates as its rows do.
+fn lifetimes_check(bodies: &[Fragment], r: &mut crate::testutil::SeedRng) {
+    let ends: Vec<crate::held::End> = bodies.iter().map(|_| [None, Some(1), Some(2)][r.below(3)]).collect();
+    let at = |i: usize| Body { ends: ends[i], ..body(i) };
+    let build = |s: &[bool]| {
+        let mut ix = Held::new(MemRows::default());
+        for (i, b) in bodies.iter().enumerate().filter(|(i, _)| s[*i]) {
+            ix.place(&at(i), &BodyWrites::of(b, true), &[]).unwrap();
+        }
+        ix.date_every().unwrap();
+        ix
+    };
+    let all_in: Vec<bool> = bodies.iter().map(|_| true).collect();
+    let mut ix = Held::new(MemRows::default());
+    for (i, b) in bodies.iter().enumerate() {
+        ix.join(&at(i), &BodyWrites::of(b, true), &[]).unwrap();
+        assert_eq!(ix.check().unwrap(), Ok(()), "after body {i} joined");
+    }
+    assert!(ix.rows == build(&all_in).rows, "the index joined is the one built at once");
+    // from scratch, where no register write embeds a char (its copies' join is the whole held set's)
+    let mut held: Vec<(usize, Raw)> = bodies.iter().enumerate().flat_map(|(i, b)| own(b).into_iter().map(move |x| (i, x))).collect();
+    let mut raws: Vec<Raw> = held.iter().map(|x| x.1.clone()).collect();
+    as_joined(&mut raws);
+    if embedded(raws.clone()).len() == raws.len() {
+        held.iter_mut().zip(raws).for_each(|(h, x)| h.1 = x);
+        let lasts = |a: Option<u64>, b: Option<u64>| a.is_none() || b.is_some_and(|b| a.is_some_and(|a| a >= b));
+        let lives: BTreeMap<Won, Option<u64>> = held.iter().map(|(_, x)| (x.w.clone(), held.iter().filter(|(_, y)| y.w == x.w).map(|(i, _)| ends[*i]).fold(Some(0), |a, b| if a.is_none() || b.is_none() { None } else { a.max(b) }))).collect();
+        for (i, w) in held.iter().filter(|x| !x.1.shadow) {
+            let min = ends[*i];
+            let long = |s: &Raw| lasts(lives[&s.w], min);
+            let undeleted = held.iter().map(|x| &x.1).filter(|s| s.w.kind == Kind::Undelete && s.w.path == w.w.path && long(s)).map(|s| &s.w.stamp).max();
+            let want = held.iter().map(|x| &x.1).filter(|s| long(s) && kills(s, w) && !(w.text_creation && s.w.kind == Kind::Delete && undeleted.is_some_and(|u| s.w.stamp < *u))).map(|s| s.w.stamp.ts).min();
+            assert_eq!(ix.held(&w.w, min).unwrap().map(|x| x.0), Some(want), "{w:?} held by a body ending at {min:?}: the earliest write lasting as long superseding it");
+        }
+    }
+    for _ in 0..4 {
+        let from: Vec<bool> = bodies.iter().map(|_| r.chance(1, 2)).collect();
+        let to: Vec<bool> = bodies.iter().map(|_| r.chance(1, 2)).collect();
+        let mut ix = build(&from);
+        for i in (0..bodies.len()).filter(|i| from[*i] != to[*i]) {
+            if to[i] { ix.join(&at(i), &BodyWrites::of(&bodies[i], true), &[]).unwrap() } else { ix.leave(&at(i)).unwrap() }
+            assert_eq!(ix.check().unwrap(), Ok(()), "after body {i} joined or left");
+        }
+        assert!(ix.rows == build(&to).rows, "the index after bodies left and came is the one built from those held");
     }
 }
 
@@ -342,7 +395,7 @@ fn as_joined(all: &mut [Raw]) {
 
 /// Body `i` of a test's held set: every other one a snapshot, so writes held twice are carried.
 fn body(i: usize) -> Body {
-    Body { c: osis_base::CommitId([i as u8 + 1; 32]), ts: ts((i as u64 + 1) << 16), snap: i % 2 == 1 }
+    Body { c: osis_base::CommitId([i as u8 + 1; 32]), ts: ts((i as u64 + 1) << 16), snap: i % 2 == 1, ends: None }
 }
 
 /// The index of `bodies` (`Held`), each joined whole as body `i`.
@@ -1114,7 +1167,7 @@ fn a_join_reads_rows_by_what_it_changes_spec_4_8() {
     let body = |i: u64| {
         let mut c = [0; 32];
         c[..8].copy_from_slice(&(i + 1).to_be_bytes());
-        Body { c: osis_base::CommitId(c), ts: ts((i + 1) << 16), snap: false }
+        Body { c: osis_base::CommitId(c), ts: ts((i + 1) << 16), snap: false, ends: None }
     };
     let per_write = |n: u64| -> (f64, f64) {
         let mut st = Fragment::default();
@@ -1152,4 +1205,43 @@ fn a_join_reads_rows_by_what_it_changes_spec_4_8() {
     // its own row and the one below it, its position's tops, its victim's row; ancestors' tops
     // once per join
     assert!(small.0 <= 5.0, "{small:?} per write");
+}
+
+/// §4.8 When, Revival: a lasting register value `a` overwritten only by `b`, ending at 10, has
+/// no death (its lasting holder) and is dated at `b` for a holder ending no later; `b` leaving
+/// revives it (the state holds it again). With a lasting `c` over it too, `a` dies at `c` and
+/// `b` leaving revives nothing. `b` held also by a lasting snapshot lasts: `a` dies at `b`.
+#[test]
+fn a_write_only_a_sooner_ending_one_supersedes_lives_and_reads_again_spec_4_8() {
+    let (sa, sb, sc) = (Stamp::new(ts(1 << 16), x(), 1), Stamp::new(ts(2 << 16), x(), 2), Stamp::new(ts(3 << 16), x(), 3));
+    let (a, b, c) = (string_reg(&sa, "a"), string_reg(&sb, "b"), string_reg(&sc, "c"));
+    let at = |i: usize, ends: Option<u64>| Body { ends, ..body(i) };
+    let w = |s: &Stamp| a.winners().iter().chain(b.winners().iter()).chain(c.winners().iter()).find(|x| x.stamp == *s).unwrap();
+    let mut ix = Held::new(MemRows::default());
+    ix.join(&at(0, None), &BodyWrites::of(&a, true), &[]).unwrap();
+    ix.join(&at(2, Some(10)), &BodyWrites::of(&b, true), &[]).unwrap();
+    assert_eq!(ix.held(&w(&sa), None).unwrap().unwrap().0, None, "a lasting write only an expiring one supersedes lives");
+    assert_eq!(ix.date(&body(0).c).unwrap(), None);
+    assert!(!ix.take_revived());
+    ix.leave(&at(2, Some(10))).unwrap();
+    assert!(ix.take_revived(), "the expiring write's leaving revives the lasting one");
+    ix.join(&at(2, Some(10)), &BodyWrites::of(&b, true), &[]).unwrap();
+    ix.join(&at(4, None), &BodyWrites::of(&c, true), &[]).unwrap();
+    assert_eq!(ix.held(&w(&sa), None).unwrap().unwrap().0, Some(sc.ts), "a lasting superseder dates it");
+    assert_eq!(ix.held(&w(&sb), Some(10)).unwrap().unwrap().0, Some(sc.ts));
+    ix.take_revived();
+    ix.leave(&at(2, Some(10))).unwrap();
+    assert!(!ix.take_revived(), "still superseded by a lasting write: nothing reads again");
+    assert_eq!(ix.check().unwrap(), Ok(()));
+    // `b` carried by a lasting snapshot lasts
+    let mut ix = Held::new(MemRows::default());
+    ix.join(&at(0, None), &BodyWrites::of(&a, true), &[]).unwrap();
+    ix.join(&at(2, Some(10)), &BodyWrites::of(&b, true), &[]).unwrap();
+    ix.join(&at(1, None), &BodyWrites::of(&b, true), &[]).unwrap();
+    assert_eq!(ix.held(&w(&sa), None).unwrap().unwrap().0, Some(sb.ts), "a write lasts as long as its longest holder");
+    assert_eq!(ix.date(&body(0).c).unwrap(), Some(sb.ts));
+    ix.leave(&at(1, None)).unwrap();
+    assert_eq!(ix.held(&w(&sa), None).unwrap().unwrap().0, None);
+    assert_eq!(ix.date(&body(0).c).unwrap(), None);
+    assert_eq!(ix.check().unwrap(), Ok(()));
 }
