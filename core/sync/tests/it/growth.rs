@@ -129,10 +129,12 @@ fn several_writers_grow_nothing_spec_commits_5() {
 }
 
 /// `moves` inbox moves of node 0's account, back and forth between thing 0 and the inbox it was
-/// made with, each a card write on its profile (spec/sync-inbox.md §1; a move to thing 0 writes
-/// its setting too), a second apart, then a snapshot of the card and of thing 0's setting by node
-/// 0 (as `at` ends its writes); then aged as `at` ages: what each node holds then.
-fn moves_at(w: &mut World, moves: usize) -> Vec<Held> {
+/// made with, each a `keys.0` write on the account and a card rewrite on its profile
+/// (spec/sync-inbox.md §1; a move to thing 0 writes its setting too), a second apart, then a
+/// snapshot of the card and of the account's `keys.0` by node 0; then `ROLE_KEEP` passes (a replaced role-class body's keep
+/// bound) and aged as `at` ages: per node, the card bodies on the profile and the account's
+/// `keys.0` bodies it holds then.
+fn moves_at(w: &mut World, moves: usize) -> Vec<(usize, usize)> {
     for i in 0..moves {
         let k = if i % 2 == 0 { Some(0) } else { None };
         let _ = play(w, &[Inbox(0, k), Run], String::new());
@@ -140,23 +142,30 @@ fn moves_at(w: &mut World, moves: usize) -> Vec<Held> {
     }
     let (a, profile) = (w.node(0).account.unwrap(), w.node(0).profile.unwrap());
     let t = w.history.things[0].0;
-    w.write(0, |e| e.snapshot(&profile, &osis_schema::core_types::card_ak(&a))).unwrap();
-    w.write(0, |e| e.snapshot(&t, &osis_schema::core_types::RETENTION.name())).unwrap();
+    let card = osis_schema::core_types::card_ak(&a);
+    let keys = Ak::new("keys.0").unwrap();
+    w.write(0, |e| e.snapshot(&profile, &card)).unwrap();
+    w.write(0, |e| e.snapshot(&a, &keys)).unwrap();
     w.run();
-    at(w, t, &[0], 0, 0)
+    w.advance(osis_base::format::ROLE_KEEP_MS);
+    w.run();
+    at(w, t, &[0], 0, 0);
+    (0..3).map(|i| (w.engine(i).held_bodies(&profile, &card), w.engine(i).held_bodies(&a, &keys))).collect()
 }
 
-// spec/commits.md §5 Covered, spec/sync-compaction.md §1 (trigger), spec/data-model.md §9 (card
-// aspect): node 0's account moving its inbox 4 and 40 more times rewrites its card on the profile
-// each time; the replaced card writes are covered (the card aspect compacts as any aspect), so
-// the writer, the node keeping S unread and the reader store the same at n and 10n.
+// spec/commits.md §5 Covered and Fixed retention, spec/sync-compaction.md §1 (trigger),
+// spec/data-model.md §9 (card aspect): node 0's account moving its inbox 4 and 40 more times
+// writes the account's `keys.0` and rewrites its card on the profile each time; the replaced card
+// writes are covered (the card aspect compacts as any aspect) and the replaced `keys.0` bodies go
+// past `ROLE_KEEP`, so each node holds as many card and `keys.0` bodies at 10n as at n. (Each
+// move is a role commit, whose header is kept as any role commit's.)
 #[test]
 fn card_rewrites_grow_nothing_spec_commits_5() {
     let (mut w, _) = setup(Gives::Reads);
     moves_at(&mut w, 2);
     let n = moves_at(&mut w, 4);
     let n10 = moves_at(&mut w, 40);
-    flat(&n, &n10);
+    assert_eq!(n, n10, "card and keys.0 bodies held per node at n and 10n moves");
 }
 
 /// `n` rotations of every role of thing 0 by node 0, its admin, a second apart, node 1 keeping

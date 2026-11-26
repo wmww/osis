@@ -558,29 +558,23 @@ fn independent_of(w: &World, k: usize) -> usize {
     x
 }
 
-/// Node `i` writes its account's card on thing `k`, naming the account's inbox as node `i` reads
-/// it (spec/sync-inbox.md §1 Card: valid only where node `i` writes `k` along a path through the
-/// account, refused otherwise).
+/// Node `i` writes its account's card on thing `k` (spec/sync-inbox.md §1 Card: valid only where
+/// node `i` writes `k` along a path through the account, refused otherwise).
 fn card(w: &mut World, i: usize, k: usize) -> Result<String, String> {
     let Some(t) = thing(w, k) else { return Ok("skipped: no such thing".into()) };
     let a = w.node(i).account.ok_or("no account")?;
-    w.write(i, |e| -> osis_engine::Result<bool> {
-        let inbox = e.inbox_of(&a)?.filter(|x| *x != a);
-        let since = e.cards_of(&a)?.into_iter().find(|(_, c)| c.inbox.map(|x| x.0) == inbox).map(|(_, c)| c.since);
-        e.write_card(t, a, inbox, since)
-    })
+    w.write(i, |e| e.write_card(t, a))
     .map(|wrote| if wrote { String::new() } else { "nothing to carry".into() })
     .map_err(|e| e.to_string())
 }
 
 /// Node `i` moves its account's inbox to thing `k` (made independent first where it is not, as a
 /// fire goes under the inbox's own sync ID sealed to its keys, spec/sync-inbox.md §2; then its
-/// setting taking both inbox signals) or back to the one the account was made with (`None`): its
-/// card on the profile names it, with a `since` above every card of the account node `i` holds
-/// (spec/sync-inbox.md §1).
+/// setting taking both inbox signals) or back to the one the account was made with (`None`): the
+/// account's `keys.0` names it, an admin's write (spec/sync-inbox.md §1), refused at a node that
+/// is no admin of the account.
 fn inbox(w: &mut World, i: usize, k: Option<usize>) -> Result<String, String> {
     let a = w.node(i).account.ok_or("no account")?;
-    let profile = w.node(i).profile.ok_or("no profile")?;
     let to = match k {
         Some(k) => match thing(w, k) {
             Some(t) => Some(t),
@@ -596,7 +590,7 @@ fn inbox(w: &mut World, i: usize, k: Option<usize>) -> Result<String, String> {
         w.history.independent[k] = true;
         w.history.event(k, None, i);
     }
-    let r = w.write(i, |e| -> osis_engine::Result<bool> {
+    let r = w.write(i, |e| -> osis_engine::Result<()> {
         let to = match to {
             Some(t) => {
                 let mut setting: ct::RetentionSetting = e.get_typed(&t, &ct::RETENTION)?.unwrap_or_default();
@@ -608,9 +602,9 @@ fn inbox(w: &mut World, i: usize, k: Option<usize>) -> Result<String, String> {
             }
             None => made,
         };
-        e.write_card(profile, a, (to != a).then_some(to), None)
+        e.set_inbox(a, Some(to))
     });
-    // the setting's commit stands even where the card's was refused
+    // the setting's commit stands even where the move was refused
     if let Some(k) = k
         && w.online(i)
         && let Some(t) = thing(w, k)
@@ -1372,8 +1366,8 @@ fn recorded_steps(w: &mut World, t: &Tid, s: &osis_base::SyncId) -> Option<(usiz
 }
 
 /// `check`'s card clause (spec/sync-inbox.md §1 Card): each online node of an account takes every
-/// account's inbox as its account's reference does (handed every commit: the cards and their
-/// `since` alike), so an inbox move spreads to every card read and no keys refresh undoes it.
+/// account's inbox as its account's reference does (handed every commit: the accounts' `keys.0`
+/// and the cards alike), so an inbox move spreads to every card read and no keys refresh undoes it.
 fn card_clauses(w: &mut World, refs: &mut Refs, m: &Model) {
     let on: Vec<usize> = (0..w.len()).filter(|i| w.online(*i)).collect();
     for i in on {

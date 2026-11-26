@@ -175,7 +175,7 @@ fn a_reader_joining_after_role_compaction_judges_alike_spec_commits_5() {
 // aspect): node 0 writes its account's card on t, then grants node 1's account read on t without
 // history. The card's write lies below node 1's floor; node 0, a writer of t through its account,
 // owes the card aspect's snapshot like any aspect's, so node 1 reads the card on t through sync
-// alone, naming the inbox and carrying the account's keys.
+// alone, carrying the account's keys.
 #[test]
 fn a_from_now_grantee_reads_a_card_written_before_its_cut_spec_crypto_4() {
     use crate::harness::Step::*;

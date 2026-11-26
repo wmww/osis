@@ -362,8 +362,8 @@ pub enum Cmd {
     /// Contact cards: a public link to an account's profile, which gives its keys
     #[command(subcommand)]
     Contact(ContactCmd),
-    /// Cards: a thing's keys and inbox put on another thing, so whoever reads that one can grant
-    /// it roles
+    /// Cards: a thing's keys put on another thing, so whoever reads that one can grant it roles;
+    /// and a thing's inbox, where those grants go
     #[command(subcommand)]
     Card(CardCmd),
     /// Group chat
@@ -662,11 +662,13 @@ pub enum ContactCmd {
 
 #[derive(Subcommand, Debug)]
 pub enum CardCmd {
-    /// Puts OF's card on ON naming INBOX (OF itself, or a thing taking its inbox signals); needs
-    /// write on ON through OF
-    Set { on: String, of: String, inbox: String },
+    /// Puts OF's card on ON; needs write on ON through OF
+    Put { on: String, of: String },
     /// Removes OF's card from ON
     Rm { on: String, of: String },
+    /// Makes INBOX (OF itself, or a thing taking its inbox signals) where grants to OF from
+    /// outside go, on every card of OF; needs admin on OF
+    Inbox { of: String, inbox: String },
 }
 
 #[derive(Subcommand, Debug)]

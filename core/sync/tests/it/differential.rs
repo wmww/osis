@@ -144,12 +144,11 @@ fn a_public_thing_redeemed_is_read_until_the_public_goes_spec_sync_set_4() {
     assert!(reads(w.engine(1), &t).value.is_none(), "control: not public, not read");
 }
 
-// spec/sync-inbox.md §1 (Card: a move writes a `since` above every card; inbox: the one the card
-// with the greatest `since` names), §5 (Grant from outside): node 0 moves its
-// account's inbox to a thing of its own and back again; node 1, a contact, takes each move from the
-// profile's card, and its grant from outside reaches node 0's account at the inbox the card names
-// (the oracle's card clause: every node takes every inbox as the reference does). Control: a
-// card on a thing node 0 writes changes no inbox.
+// spec/sync-inbox.md §1 (inbox: the account's `keys.0` names it, a card carries it), §5 (Grant
+// from outside): node 0 moves its account's inbox to a thing of its own and back again; node 1, a
+// contact, takes each move from the profile's card, and its grant from outside reaches node 0's
+// account at the inbox moved to (the oracle's card clause: every node takes every inbox as the
+// reference does). Control: a card on a thing node 0 writes changes no inbox.
 #[test]
 fn an_inbox_moved_takes_grants_from_outside_spec_sync_inbox_1() {
     use crate::harness::history::{Gives, Holder, reads};

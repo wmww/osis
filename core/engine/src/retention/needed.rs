@@ -32,7 +32,7 @@
 //! (`apply::set_pending`), or outside the node closure a content part on which is newly held
 //! (`Core::put_meta`) is noted in `Core::pass_due` until then, so a parent's record arriving
 //! before what needs it stays. A lost need waits for nothing but a pass in flight: a thing that
-//! lost one (a strong row, a card's inbox row or a card gone, durable or ephemeral, `refs::note`; a signer's commit
+//! lost one (a strong row, a `keys.0` row naming it an inbox or a card gone, durable or ephemeral, `refs::note`; a signer's commit
 //! leaving pending; the last held commit acting as it gone, `apply::unindex`; a
 //! commit's part no longer missing, `Core::note_on`; a holder unnamed, `Held::take_unnamed`; the
 //! last held vertex no longer following its strong) is noted in `Core::lost_due`, judged at a pass's end or, with
@@ -281,7 +281,7 @@ pub(crate) fn rooted(core: &Core, t: &Tid) -> Option<Root> {
 
 /// The things that need `t` held (the module doc), but `t`, each with why (one thing may come
 /// more than once): those naming it, those in the node closure whose state holds a strong to it
-/// (`refs::to`; a card there of it or naming it its inbox too), those a
+/// (`refs::to`), those holding a card of it or of a thing naming it its inbox, those a
 /// pending commit it signed or whose first awaited record it is (`Indexes::pend_by`) writes on
 /// (a record only another part awaits is due once the commit pends on it), and, in the node
 /// closure, those a held commit on it has a part missing on and those an edge write on it names
@@ -305,8 +305,7 @@ pub(crate) fn needs(tx: &mut Tx<'_>, t: &Tid) -> Result<Vec<(Tid, Need)>> {
     let granted = crate::flows::inbox::granted_on(core, t).map(|(h, c)| (h, Need::Offered(c)));
     let mut out: Vec<(Tid, Need)> = core.ix.held.named_on(t).map(|x| (*x, Need::Holder)).chain(pending).chain(acting).chain(waiting).chain(granted).collect();
     // a strong from a thing the node closure holds (a weak only points; one kept only
-    // as a certificate needs nothing by what its state names), and a thing's reference from its
-    // card on a thing the node closure holds (spec/sync-inbox.md §1)
+    // as a certificate needs nothing by what its state names)
     let refs = crate::engine::refs::to(tx, t)?;
     // a strong in a held body of a thing whose history holds its targets (`refs::kept`)
     let kept = crate::engine::refs::kept::to(tx, t)?;
@@ -315,8 +314,6 @@ pub(crate) fn needs(tx: &mut Tx<'_>, t: &Tid) -> Result<Vec<(Tid, Need)>> {
     for r in refs {
         if crate::engine::refs::holds_target(r.kind, &r.ak) && core.ix.closure.holds(&r.source) {
             out.push((r.source, Need::Strong(r.ak)));
-        } else if osis_schema::core_types::card_of(r.ak.as_str()).is_some() && core.ix.closure.holds(&r.source) {
-            out.push((r.source, Need::Card));
         }
     }
     // its own cards on things the node closure holds
@@ -324,6 +321,11 @@ pub(crate) fn needs(tx: &mut Tx<'_>, t: &Tid) -> Result<Vec<(Tid, Need)>> {
         if tx.core.ix.closure.holds(&h) {
             out.push((h, Need::Card));
         }
+    }
+    // the card aspects there of the things naming it their inbox (a card carries its inbox's keys)
+    for a in crate::flows::cards::naming_inbox(tx, t)? {
+        let hosts = tx.core.ix.aspect_things.get(&osis_schema::core_types::card_ak(&a)).into_iter().flatten().filter(|h| tx.core.ix.closure.holds(h));
+        out.extend(hosts.map(|h| (*h, Need::Card)));
     }
     out.retain(|(x, _)| x != t);
     Ok(out)

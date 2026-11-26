@@ -1,6 +1,6 @@
 //! External signals (spec/sync-inbox.md §1, §2, §5): `grant@~0` and `stranded@~0` on any thing
-//! that enables them, fired sealed by anyone holding the thing's keys (a card naming it its
-//! inbox, or as a fellow holder), promoted by a writer.
+//! that enables them, fired sealed by anyone holding the thing's keys (a card of a thing
+//! whose inbox it is, or as a fellow holder), promoted by a writer.
 
 use crate::engine::{Engine, Tx};
 use crate::error::{Error, Result};

@@ -91,7 +91,7 @@ fn need(core: &Core, x: &Tid, n: &Need) -> String {
         Need::Acting(c) => format!("held commit c:{} on {x} acts as it", short(c)),
         Need::Missing(c) => format!("held commit c:{} on it has a part missing on {x}", short(c)),
         Need::Strong(ak) => format!("{x}'s {ak} holds a strong to it"),
-        Need::Card => format!("a card on {x} is of it or names it its inbox"),
+        Need::Card => format!("a card on {x} is of it or of a thing naming it its inbox"),
         Need::Offered(c) => format!("a grant fire held on {x}'s inbox carries {c:?} on it"),
     }
 }

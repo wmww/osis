@@ -8,7 +8,8 @@ use osis_schema::core_types as ct;
 
 // spec/permissions.md §8 Making, spec/sync-inbox.md §1: A is minted with the node thing as mint
 // admin, independent; its inbox and profile are minted with admin A, independent, held by strongs
-// from A; A's card on the profile names the inbox, whose setting takes both inbox signals; the node holds A
+// from A; A's `keys.0` names the inbox, whose setting takes both inbox signals, and A's card is on
+// the profile; the node holds A
 // (a strong from its root) and reads all three, the inbox and profile in A's sync unit, with
 // admin on each by A's record edge.
 #[test]

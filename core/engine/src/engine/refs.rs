@@ -419,9 +419,10 @@ fn note_rows(tx: &mut Tx<'_>, source: &Tid, ak: &Ak, d: Delta) -> Result<()> {
                 tx.txn.table_remove(from, &fk, Shred::Yes)?;
                 tx.txn.table_remove(to, &tk, Shred::Yes)?;
                 moved.push((target, ak.clone()));
-                // a need of the target went (a strong, or a card naming it its inbox): judged
-                // once the pass ends (`retention::needed`)
-                if kind == RefKind::Strong || osis_schema::core_types::card_of(ak.as_str()).is_some() {
+                // a need of the target went (a strong, or a `keys.0` naming it its thing's
+                // inbox, which that thing's cards carry the keys of): judged once the pass ends
+                // (`retention::needed`)
+                if kind == RefKind::Strong || ak.as_str() == "keys.0" {
                     tx.core.note_lost(target);
                 }
                 if kind == RefKind::Strong {

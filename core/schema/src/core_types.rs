@@ -230,7 +230,7 @@ codec_struct! {
         0 read: Option<Keyset>, 1 write: Option<Keyset>, 2 admin: Option<Keyset>,
         5 deposit_seed: Option<[u8; 32]>,
         7 sync: Option<Keyset>, 8 sealed: BTreeMap<BoxKey, BTreeSet<Epoch>>, 9 sync_id: Option<SyncId>,
-        10 step: Option<StepKeys>,
+        10 step: Option<StepKeys>, 11 inbox: Option<Weak>,
     }
 }
 codec_struct! {
@@ -406,12 +406,11 @@ codec_struct! {
 pub type DialList = BTreeMap<Weak, Dial>;
 pub const DIAL: Aspect<DialList> = Aspect::new("dial.0", &CORE);
 codec_struct! {
-    /// A thing's card (its card aspect `:<tid>:card.0`, spec/sync-inbox.md §1 Card): its inbox where it is another
-    /// thing, the wall ms that inbox was chosen (`since`), and its and that inbox's current
-    /// `keys.0` commits in the holder keys form (`keys` `CommitBlobPlaintext` bytes, `records`
-    /// `creation` bytes, spec/wire.md §9).
+    /// A thing's card (its card aspect `:<tid>:card.0`, spec/sync-inbox.md §1 Card): its and its
+    /// inbox's current `keys.0` commits in the holder keys form (`keys` `CommitBlobPlaintext`
+    /// bytes, `records` `creation` bytes, spec/wire.md §9).
     #[derive(Clone, Debug, Default, PartialEq, Eq)]
-    pub struct Card { 0 inbox: Option<Weak>, 1 keys: Vec<Vec<u8>>, 2 records: Vec<Vec<u8>>, 3 since: WallMs }
+    pub struct Card { 0 keys: Vec<Vec<u8>>, 1 records: Vec<Vec<u8>> }
 }
 /// `settings^.0` on a node root: the thing holding the node's settings (spec/sync-set.md §1).
 pub const SETTINGS: Aspect<Weak> = Aspect::new("settings^.0", &CORE);

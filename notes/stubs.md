@@ -22,7 +22,7 @@
 - Held for keys (spec/sync-set.md §2) is the stub of a holder on a chain: the same state, entered there only for holders. A held grant fire keeps what it carried while it is held, as a snapshot nothing corrects.
 - The key part under a holder's sync ID (spec/permissions.md §4 Key part) carries an edge piece for every thing the holder holds a role on that a node syncs: rule 2 keeps only those on chains to things the unit carries.
 - Rule 4 is built for strongs in durable aspects the setting governs, fires included (spec/data-model.md §8 Held history, `refs::kept`). Not built: a weak in held history holding its target's stub (no stubs yet; the spec says weaks in history count for nothing), and held bodies of ephemeral aspects (memory bodies, notes/engine-refs.md History holds).
-- A thing's inbox is the thing its card names, else itself where independent (spec/sync-inbox.md §1); an account's is a thing of its own, named by its card. Rule 5 would make a separate inbox the rule for all.
+- A thing's inbox is the thing its `keys.0` names (an admin's write), else itself (spec/sync-inbox.md §1); an account's is a thing of its own. Rule 5 would make a separate inbox the rule for all.
 
 ## For the spec piece
 - An external signal enabled on a dependent thing works as on any, or makes it independent unseen: a difference an API caller can observe is a bug (issues/behaviour-depends-on-own-keys.md). Which of the two: a fire sealed to its independent's key and deposited under its independent's sync ID costs almost nothing; an independent inbox about 15 KB, mostly keys. Nothing is known to need independence; not checked against the code.

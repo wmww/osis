@@ -672,14 +672,13 @@ pub struct Account {
 /// Makes an account on `e` as the account library does (spec/permissions.md §8 Making), with the
 /// same engine calls, in one transaction: A minted with the node thing as mint admin, its inbox and
 /// profile minted with admin A, each independent, held by strongs from A's `holds.0`; the inbox's
-/// setting enabling both inbox signals; A's card on the profile naming the inbox; the node root's strong to A
+/// setting enabling both inbox signals; A's `keys.0` naming the inbox; A's card on the profile; the node root's strong to A
 /// and its `settings^.0` naming A. Then the public's read on the profile, in its own transaction.
 pub fn make_account(e: &mut Engine) -> Result<(Account, crate::flows::Done)> {
     use osis_crdt::{Op, PathOp};
     use osis_schema::core_types as ct;
     let root = e.node_root().ok_or(crate::Error::Misuse("no node root"))?;
     let admins = [crate::MintAdmin::Thing(e.tid()), crate::MintAdmin::Minted(0), crate::MintAdmin::Minted(0)];
-    let now = e.now();
     let (ts, done) = e.mint_independent(&admins, |ts| {
         let [a, inbox, profile] = ts else { return Err(crate::Error::Misuse("three minted")) };
         let mut held = Mutation::new();
@@ -690,15 +689,17 @@ pub fn make_account(e: &mut Engine) -> Result<(Account, crate::flows::Done)> {
         let mut setting = ct::RetentionSetting::default();
         setting.take_inbox_signals();
         signals.set(*inbox, &ct::RETENTION, &setting)?;
-        // A's card on the profile naming the inbox, acting as A; its keys filled in as A's
-        // `keys.0` is written (`Engine::take_cards`)
-        let card = crate::flows::cards::put(*profile, *a, &crate::flows::cards::naming(Some(*inbox), now))?;
+        let mut named = Mutation::new();
+        crate::flows::cards::put_inbox(&mut named, *a, Some(*inbox))?;
+        // A's card on the profile, acting as A; its keys filled in once A's `keys.0` is written
+        // (`Engine::refresh_cards`)
+        let card = crate::flows::cards::put(*profile, *a, &ct::Card::default())?;
         // the node root's in commits of their own: it is local, under no sync ID
         let mut hold = Mutation::new();
         hold.op(root, &ct::HOLDS, PathOp { path: Vec::new(), op: Op::Add(osis_base::Value::Strong(*a)) })?;
         let mut settings = Mutation::new();
         settings.set(root, &ct::SETTINGS, &osis_base::Weak(*a))?;
-        Ok(vec![held, signals, card, hold, settings])
+        Ok(vec![held, signals, named, card, hold, settings])
     })?;
     let [thing, inbox, profile] = ts.as_slice() else { return Err(crate::Error::Misuse("three minted")) };
     // the card carries A's keys and the inbox's
@@ -1123,8 +1124,7 @@ impl LocalPeer {
         m.set(t, &osis_schema::core_types::RETENTION, &setting).unwrap_or_else(|e| panic!("setting of {t:?}: {e}"));
         self.peers[i].commit(m).unwrap_or_else(|e| panic!("setting of {t:?}: {e}"));
         // its card, its keys filled in once it has them (`Engine::take_cards`)
-        let now = self.peers[i].engine.now();
-        let card = crate::flows::cards::put(t, t, &crate::flows::cards::naming(None, now)).unwrap_or_else(|e| panic!("card of {t:?}: {e}"));
+        let card = crate::flows::cards::put(t, t, &osis_schema::core_types::Card::default()).unwrap_or_else(|e| panic!("card of {t:?}: {e}"));
         self.peers[i].commit(card).unwrap_or_else(|e| panic!("card of {t:?}: {e}"));
         // keysets written before the card carry no KEM key it gives (spec/crypto.md §3): KEM key
         // due rotates them, here at once rather than at a pass's end

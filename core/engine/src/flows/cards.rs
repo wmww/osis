@@ -1,27 +1,27 @@
 //! Cards (spec/sync-inbox.md §1 Card, spec/data-model.md §9): A's card on any thing C is the
-//! value of A's card aspect on C (`card_ak`), written whole along a path through A: A's inbox
-//! where it is another thing, when that inbox was chosen (`since`), and A's and that inbox's
-//! current `keys.0` commits in the holder keys form. A node reading C takes those commits as
-//! holder keys (`Engine::take_cards`); at a pass's end a node that may write C along a path
-//! through A rewrites the card when a rewrite would carry newer `keys.0` parts on A or its
-//! inbox, or a card of A with a greater `since`. A card aspect is retained, snapshotted and covered as any content
-//! aspect: its snapshots, as its writes, state a path through A.
+//! value of A's card aspect on C (`card_ak`), written whole along a path through A: A's and A's
+//! inbox's current `keys.0` commits in the holder keys form. A's inbox is A's own: the `inbox`
+//! field of A's `keys.0` (an admin's write, `Engine::set_inbox`), else A. A node reading C takes
+//! those commits as holder keys (`Engine::take_cards`); at a pass's end a node that may write C
+//! along a path through A rewrites the card when a rewrite would carry newer `keys.0` parts on A
+//! or its inbox. A card aspect is retained, snapshotted and covered as any content aspect: its
+//! snapshots, as its writes, state a path through A.
 //!
 //! Invariant: a card counts only written along a path through A (`apply::validity::note_cards`),
 //! and what it carries counts only as judged here (`take_holder_keys`: what is on A's or the
 //! inbox's authority chain, each commit judged valid). Who writes each input: a card, a writer of
-//! C along a path through A (a writer of A: it reads A anyway; a hostile one may point offers at
-//! an inbox it controls, a writer's power, as removing data is); its commits, A's and the inbox's
-//! admins (judged); C's other writers may remove a card, never put one. A removed writer of A
-//! writes no valid card once its removal applies; a stranger holding an old card seals to A's
-//! keysets as of that card until a newer one reaches it (spec/sync-inbox.md §2: what it seals
-//! is judged by A's readers). A card on a thing no node may write along a path through A any
-//! longer stays as written.
+//! C along a path through A (a writer of A: it reads A anyway); its commits, A's and the inbox's
+//! admins (judged), so where grants to A go is chosen by A's admins alone (the inbox field needs
+//! admin, `validity::rotation_required`); C's other writers may remove a card, never put one. A
+//! removed writer of A writes no valid card once its removal applies; a stranger holding an old
+//! card seals to A's keysets as of that card until a newer one reaches it (spec/sync-inbox.md §2:
+//! what it seals is judged by A's readers). A card on a thing no node may write along a path
+//! through A any longer stays as written.
 
 use crate::engine::{Engine, Tx};
 use crate::error::Result;
 use crate::Mutation;
-use osis_base::{Role, Tid, Value, WallMs, Weak};
+use osis_base::{Role, Tid, Value, Weak};
 use osis_crdt::{Fragment, Op, PathOp, PathSeg};
 use osis_perm::graph::Need;
 use osis_schema::core_types::{self as ct, card_ak, card_of};
@@ -34,10 +34,10 @@ pub(crate) fn card_on(tx: &mut Tx<'_>, host: &Tid, a: &Tid) -> Result<Option<ct:
     Ok(v.and_then(|v| ct::Card::from_value(&v).ok()))
 }
 
-/// The cards held here naming `t` their inbox, each by (host, the card's thing): from the
-/// reference index (a card's inbox is a weak in its value).
-fn naming_inbox(tx: &mut Tx<'_>, t: &Tid) -> Result<BTreeSet<(Tid, Tid)>> {
-    Ok(crate::engine::refs::to(tx, t)?.into_iter().filter_map(|r| card_of(r.ak.as_str()).map(|a| (r.source, a))).collect())
+/// The things whose `keys.0` held here names `t` their inbox: from the reference index (the
+/// `inbox` field is a weak).
+pub(crate) fn naming_inbox(tx: &mut Tx<'_>, t: &Tid) -> Result<BTreeSet<Tid>> {
+    Ok(crate::engine::refs::to(tx, t)?.into_iter().filter(|r| r.ak.as_str() == "keys.0" && r.source != *t).map(|r| r.source).collect())
 }
 
 /// The cards of `a` held here, each with its host.
@@ -57,34 +57,17 @@ pub(crate) fn stands(tx: &mut Tx<'_>, a: &Tid) -> Result<bool> {
     Ok(!cards_of(tx, a)?.is_empty())
 }
 
-/// The inbox a card names: its `inbox`, else its thing.
-fn named(a: &Tid, c: &ct::Card) -> Tid {
-    c.inbox.map_or(*a, Tid::from)
-}
-
-/// `a`'s inbox at this node by its cards and its `since` (spec/sync-inbox.md §1): the inbox named
-/// by the card of `a` held here with the greatest `since`, ties by the inbox's tid; `None` with no
-/// card held.
-pub(crate) fn inbox_of(tx: &mut Tx<'_>, a: &Tid) -> Result<Option<(Tid, WallMs)>> {
-    Ok(cards_of(tx, a)?.iter().map(|(_, c)| (c.since, named(a, c))).max().map(|(s, i)| (i, s)))
-}
-
-/// Where a grant from outside to `a` is fired at this node (spec/sync-inbox.md §1): its inbox by
-/// the cards of it held here (`inbox_of`), else `a` itself where independent here.
+/// `a`'s inbox at this node (spec/sync-inbox.md §1): the `inbox` field of its `keys.0` state here,
+/// else `a` itself; `None` where `a` is not independent here (no keys of it to fire by).
 pub(crate) fn inbox_in(tx: &mut Tx<'_>, a: &Tid) -> Result<Option<Tid>> {
-    Ok(inbox_of(tx, a)?.map(|x| x.0).or_else(|| tx.core.is_independent(a).then_some(*a)))
-}
-
-/// The `since` a card of `a` naming `inbox` written now carries (spec/sync-inbox.md §1): the
-/// `since` of `a`'s inbox here where it names that one; else (a move) above every card of `a`
-/// held here, and no earlier than `now`.
-fn since_for(tx: &mut Tx<'_>, a: &Tid, inbox: &Tid, now: WallMs) -> Result<WallMs> {
-    let cards = cards_of(tx, a)?;
-    let chosen = cards.iter().map(|(_, c)| (c.since, named(a, c))).max();
-    Ok(match chosen {
-        Some((s, i)) if i == *inbox => s,
-        _ => cards.iter().map(|(_, c)| WallMs(c.since.0.saturating_add(1))).max().unwrap_or(WallMs(0)).max(now),
-    })
+    if !tx.core.is_independent(a) {
+        return Ok(None);
+    }
+    // the field alone: `keys.0` holds a box record per holder, paged
+    let (ak, path) = (super::ak("keys.0")?, [PathSeg::Field(INBOX)]);
+    tx.ensure_paths(a, &ak, &[path.to_vec()])?;
+    let named = tx.cached(a, &ak).and_then(|f| f.read_at(&path)).and_then(|v| Option::<Weak>::from_value(&v).ok().flatten());
+    Ok(Some(named.map_or(*a, Tid::from)))
 }
 
 /// Whether this node may write `host` along a path through `a` (spec/sync-inbox.md §1): a path
@@ -97,41 +80,40 @@ pub(crate) fn may_write_through(core: &crate::engine::Core, a: &Tid, host: &Tid)
 }
 
 /// Writes `card` as `a`'s on `host` into a mutation of its own, acting as `a`, so its stated
-/// path runs through `a` (spec/permissions.md §5.2). Field by field, so a refresh and a
-/// concurrent move each write only what they change (neither undoes the other's `since`); its
-/// lists of commits whole, so no replaced list leaves its elements behind in the state.
+/// path runs through `a` (spec/permissions.md §5.2): replaced whole, so no replaced list leaves
+/// its elements behind in the state.
 pub fn put(host: Tid, a: Tid, card: &ct::Card) -> Result<Mutation> {
     let mut m = Mutation::new();
     m.act_as(a);
-    let ak = card_ak(&a);
-    let Value::Map(fields) = card.to_value() else { return Err(crate::Error::Misuse("a card is a struct")) };
-    for (k, v) in fields {
-        let Value::Int(id) = k else { return Err(crate::Error::Misuse("a card is a struct")) };
-        let op = if matches!(v, Value::List(_)) { Op::Replace(v) } else { Op::Set(v) };
-        m.op(host, &ak, PathOp { path: vec![PathSeg::Field(id as u64)], op })?;
-    }
+    m.op(host, &card_ak(&a), PathOp { path: vec![], op: Op::Replace(card.to_value()) })?;
     Ok(m)
 }
 
-/// A card of `a` naming `inbox` (`None`: `a` itself), carrying no keys yet: the node writing it
-/// fills them in (`Engine::refresh_cards`) from the `keys.0` commits it holds.
-pub fn naming(inbox: Option<Tid>, since: WallMs) -> ct::Card {
-    ct::Card { inbox: inbox.map(Weak), since, ..ct::Card::default() }
+/// The `keys.0` write naming `inbox` (`None`: `a` itself) `a`'s inbox (an admin's,
+/// spec/permissions.md §3).
+pub fn put_inbox(m: &mut Mutation, a: Tid, inbox: Option<Tid>) -> Result<()> {
+    m.op(a, &ct::KEYS, PathOp { path: vec![PathSeg::Field(INBOX)], op: Op::Set(inbox.map(Weak).to_value()) })?;
+    Ok(())
 }
 
-/// The cards `t` is due a look at: those of `t` and those naming `t` their inbox (a card of it
-/// written, or its `keys.0` moved).
+/// `keys.0` field `inbox` (schema/core.osis).
+const INBOX: u64 = 11;
+
+/// The cards `t` is due a look at: those of `t` and those of the things naming `t` their inbox
+/// (a card of it written, or its `keys.0` moved).
 pub(crate) fn note_due(core: &mut crate::engine::Core, t: Tid) {
     core.ix.cards_due.insert(t);
 }
 
-/// `a`'s card aspect on `host` moved: `a` and the inbox its card names are due a look
-/// (`note_due`); with no card left there, a need of `a` went (`retention::needed`).
+/// `a`'s card aspect on `host` moved: `a` is due a look (`note_due`); with no card left there, a
+/// need of `a` and of its inbox went (`retention::needed`).
 pub(crate) fn state_moved(tx: &mut Tx<'_>, host: &Tid, a: &Tid) -> Result<()> {
     note_due(tx.core, *a);
-    match card_on(tx, host, a)? {
-        Some(c) => note_due(tx.core, named(a, &c)),
-        None => tx.core.note_lost(*a),
+    if card_on(tx, host, a)?.is_none() {
+        tx.core.note_lost(*a);
+        if let Some(i) = inbox_in(tx, a)? {
+            tx.core.note_lost(i);
+        }
     }
     Ok(())
 }
@@ -140,9 +122,8 @@ pub(crate) fn state_moved(tx: &mut Tx<'_>, host: &Tid, a: &Tid) -> Result<()> {
 pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
     let held: Vec<(Tid, Tid)> = tx.core.ix.aspect_things.iter().filter_map(|(ak, hs)| card_of(ak.as_str()).map(|a| hs.iter().map(move |h| (*h, a)))).flatten().collect();
     for (h, a) in held {
-        if let Some(c) = card_on(tx, &h, &a)? {
+        if card_on(tx, &h, &a)?.is_some() {
             note_due(tx.core, a);
-            note_due(tx.core, named(&a, &c));
         }
     }
     Ok(())
@@ -186,8 +167,9 @@ impl Engine {
         for ((_, a), c) in &cards {
             if let Some(k) = certificates(&c.keys, &c.records) {
                 self.take_holder_keys(a, &k, None)?;
-                let inbox = named(a, c);
-                if inbox != *a {
+                // A's inbox as A's keys just taken name it
+                let a = *a;
+                if let Some(inbox) = self.read(|tx| inbox_in(tx, &a))?.filter(|i| *i != a) {
                     self.take_holder_keys(&inbox, &k, None)?;
                 }
             }
@@ -202,15 +184,16 @@ impl Engine {
         Ok(true)
     }
 
-    /// The cards of each of `due` or naming it: (host, card's thing) to card.
+    /// The cards of each of `due` and of the things naming it their inbox: (host, card's thing)
+    /// to card.
     fn cards_naming(&mut self, due: &[Tid]) -> Result<BTreeMap<(Tid, Tid), ct::Card>> {
         let mut cards = BTreeMap::new();
         for t in due {
             let t = *t;
             let found = self.read(|tx| {
                 let mut out: Vec<(Tid, Tid, ct::Card)> = cards_of(tx, &t)?.into_iter().map(|(h, c)| (h, t, c)).collect();
-                for (h, a) in naming_inbox(tx, &t)? {
-                    out.extend(card_on(tx, &h, &a)?.filter(|c| named(&a, c) == t).map(|c| (h, a, c)));
+                for a in naming_inbox(tx, &t)? {
+                    out.extend(cards_of(tx, &a)?.into_iter().map(|(h, c)| (h, a, c)));
                 }
                 Ok(out)
             })?;
@@ -222,9 +205,9 @@ impl Engine {
     /// At a pass's end, once this node holds what the pass brought (`settle_needs`): rewrites
     /// the cards due a refresh (`Indexes::cards_stale`) that are stale and this node may
     /// (spec/sync-inbox.md §1 Card): where it may write the card's host along a path through A
-    /// and a rewrite would carry newer `keys.0` parts on A or A's inbox than the card does, or a
-    /// card of A with a greater `since` and inbox, the card written again: A's inbox here with its
-    /// `since`, and the holder keys of A and that inbox held here. Whether any card moved.
+    /// and a rewrite would carry newer `keys.0` parts on A or A's inbox than the card does, the
+    /// card written again with the holder keys of A and that inbox held here. Whether any card
+    /// moved.
     pub fn refresh_cards(&mut self) -> Result<bool> {
         let mut moved = false;
         let mut guard = osis_base::loop_guard::LoopGuard::new("Engine::refresh_cards (rewritten cards due again)");
@@ -258,20 +241,17 @@ impl Engine {
             return Ok(false);
         }
         let (a, host) = (*a, *host);
-        let Some((inbox, since)) = self.read(|tx| inbox_of(tx, &a))? else { return Ok(false) };
+        let Some(inbox) = self.read(|tx| inbox_in(tx, &a))? else { return Ok(false) };
         if !may_write_through(&self.core, &a, &host) {
             return Ok(false);
         }
-        let moved = (card.since, named(&a, card)) < (since, inbox);
         // newer `keys.0` parts on `a` or its inbox among what a rewrite carries than the card's
-        if !moved {
-            let Some((keys, records)) = self.card_keys(&a, &inbox)? else { return Ok(false) };
-            let have = carried(&card.keys, &card.records);
-            if !carried(&keys, &records).iter().any(|(t, ts)| (*t == a || *t == inbox) && have.get(t).is_none_or(|x| ts > x)) {
-                return Ok(false);
-            }
+        let Some((keys, records)) = self.card_keys(&a, &inbox)? else { return Ok(false) };
+        let have = carried(&card.keys, &card.records);
+        if !carried(&keys, &records).iter().any(|(t, ts)| (*t == a || *t == inbox) && have.get(t).is_none_or(|x| ts > x)) {
+            return Ok(false);
         }
-        self.write_card(host, a, (inbox != a).then_some(inbox), Some(since))
+        self.write_card(host, a)
     }
 
     /// What a card of `a` naming `named` written here carries (spec/wire.md §9 Holder keys): the
@@ -294,44 +274,65 @@ impl Engine {
         Ok(Some((commits, records)))
     }
 
-    /// Writes `a`'s card on `host` naming `inbox` (`None`: `a` itself) as of what this node holds
-    /// (spec/sync-inbox.md §1 Card): `since` as given, else kept where it names `a`'s inbox here
-    /// and above every card of `a` held here where it moves it; the holder keys of `a` and of the
-    /// inbox held here. Acting as `a`: refused where this node may not write `host` along a path
-    /// through `a`. `a` and the inbox, where dependent and this node an admin of each, are made
-    /// independent first (spec/permissions.md §3: a card carries keys of their own), `a`'s
-    /// keysets carrying KEM keys for every role as its card stands. Whether it wrote (nothing to
-    /// carry: no `keys.0` of `a` held).
-    pub fn write_card(&mut self, host: Tid, a: Tid, inbox: Option<Tid>, since: Option<WallMs>) -> Result<bool> {
-        let named = inbox.unwrap_or(a);
-        for t in [a, named] {
-            if !self.core.is_independent(&t) && self.role_on(&t) == Some(Role::Admin) {
-                self.run(|tx| {
-                    if t == a {
-                        tx.publishing.push((a, Role::Admin));
-                    }
-                    crate::rotation::own_secrets(tx, t, &mut crate::flows::Done::default())
-                })?;
-            }
+    /// Writes `a`'s card on `host` as of what this node holds (spec/sync-inbox.md §1 Card): the
+    /// holder keys of `a` and of its inbox held here. Acting as `a`: refused where this node may
+    /// not write `host` along a path through `a`. `a` and its inbox, where dependent and this node
+    /// an admin of each, are made independent first (spec/permissions.md §3: a card carries keys
+    /// of their own), `a`'s keysets carrying KEM keys for every role as its card stands. Whether it
+    /// wrote (nothing to carry: no `keys.0` of `a` held).
+    pub fn write_card(&mut self, host: Tid, a: Tid) -> Result<bool> {
+        self.publish(a, true)?;
+        let Some(named) = self.read(|tx| inbox_in(tx, &a))? else { return Ok(false) };
+        if named != a {
+            self.publish(named, false)?;
         }
-        let Some((commits, records)) = self.card_keys(&a, &named)? else { return Ok(false) };
-        let now = self.now();
+        let Some((keys, records)) = self.card_keys(&a, &named)? else { return Ok(false) };
         self.run(|tx| {
-            let since = match since {
-                Some(s) => s,
-                None => since_for(tx, &a, &named, now)?,
-            };
-            // a card's `since` is no later than its write's `ts` (`validity::note_cards`): the
-            // clock runs ahead to it where a move goes past it
-            if since > tx.core.hlc.peek().wall_ms()
-                && let Some(ts) = osis_base::Ts::make(since, 0)
-            {
-                tx.core.hlc.observe(ts);
-            }
-            let card = ct::Card { inbox: inbox.map(Weak), keys: commits, records, since };
-            Engine::commit_tx(tx, put(host, a, &card)?)?;
+            Engine::commit_tx(tx, put(host, a, &ct::Card { keys, records })?)?;
             Ok(true)
         })
+    }
+
+    /// Makes `t` independent where dependent and this node an admin of it (`carded`: its keysets
+    /// carrying KEM keys for every role, as its card stands).
+    fn publish(&mut self, t: Tid, carded: bool) -> Result<()> {
+        if self.core.is_independent(&t) || self.role_on(&t) != Some(Role::Admin) {
+            return Ok(());
+        }
+        self.run(|tx| {
+            if carded {
+                tx.publishing.push((t, Role::Admin));
+            }
+            crate::rotation::own_secrets(tx, t, &mut crate::flows::Done::default())
+        })
+    }
+
+    /// Names `inbox` (`None`: `a` itself) `a`'s inbox, where grants to `a` from outside go
+    /// (spec/sync-inbox.md §1): the `inbox` field of `a`'s `keys.0`, which needs admin on `a`
+    /// (spec/permissions.md §3), so refused unless this node is one. `a` and the inbox are made
+    /// independent first where this node is an admin of each (a card carries their keys). The
+    /// cards of `a` held here that this node may write are rewritten with it at once; the others
+    /// by the nodes that may, as they take it (`refresh_cards`).
+    pub fn set_inbox(&mut self, a: Tid, inbox: Option<Tid>) -> Result<()> {
+        if self.role_on(&a) != Some(Role::Admin) {
+            return Err(crate::Error::Permission { tid: a, needs: Role::Admin });
+        }
+        let inbox = inbox.filter(|i| *i != a);
+        let carded = self.read(|tx| stands(tx, &a))?;
+        self.publish(a, carded)?;
+        if let Some(i) = inbox {
+            self.publish(i, false)?;
+        }
+        let mut m = Mutation::new();
+        put_inbox(&mut m, a, inbox)?;
+        self.commit(m)?;
+        let hosts: Vec<Tid> = self.read(|tx| cards_of(tx, &a))?.into_iter().map(|x| x.0).collect();
+        for host in hosts {
+            if self.core.ix.closure.holds(&host) && may_write_through(&self.core, &a, &host) {
+                self.write_card(host, a)?;
+            }
+        }
+        Ok(())
     }
 
     /// Removes `a`'s card from `host`: any writer of `host` may (spec/sync-inbox.md §1 Card).
@@ -342,8 +343,8 @@ impl Engine {
         Ok(())
     }
 
-    /// `a`'s inbox at this node (spec/sync-inbox.md §1): the thing its card held here with the
-    /// greatest `since` names, else `a` itself where independent here.
+    /// `a`'s inbox at this node (spec/sync-inbox.md §1): the `inbox` field of its `keys.0` here,
+    /// else `a` itself; `None` where `a` is not independent here.
     pub fn inbox_of(&mut self, a: &Tid) -> Result<Option<Tid>> {
         let a = *a;
         self.read(|tx| inbox_in(tx, &a))

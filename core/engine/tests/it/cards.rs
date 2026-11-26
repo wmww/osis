@@ -1,8 +1,8 @@
 //! Cards (spec/sync-inbox.md §1 Card, spec/permissions.md §5.2): a card counts only written along
-//! a path through its thing; the inbox it names is the one with the greatest `since`, a move
-//! spreads to every card its thing's nodes may write, a keys refresh keeps the inbox; a party
-//! holding nothing of an account but a card of it grants to it and fires at the inbox the card
-//! names.
+//! a path through its thing; a thing's inbox is its own `keys.0` field, an admin's: a writer
+//! cannot move it, an admin's move spreads to every card its thing's nodes may write, a writer's
+//! keys refresh keeps it; a party holding nothing of an account but a card of it grants to it and
+//! fires at the inbox the account's admins chose.
 
 use crate::common::T0;
 use osis_base::{Role, Tid, Value};
@@ -25,9 +25,26 @@ fn thing(lp: &mut LocalPeer, i: usize, admin: Tid, independent: bool) -> Tid {
     t
 }
 
-/// The inbox each card of `a` held at `e` names, by host.
-fn named(e: &mut Engine, a: &Tid) -> Vec<(Tid, Tid, u64)> {
-    e.cards_of(a).unwrap().into_iter().map(|(h, c)| (h, c.inbox.map_or(*a, Tid::from), c.since.0)).collect()
+/// Whether every card of `a` held at `e` carries the current `keys.0` commits of `a` and of its
+/// inbox there.
+fn cards_current(e: &mut Engine, a: &Tid) -> bool {
+    let inbox = e.inbox_of(a).unwrap().unwrap();
+    let mut keys = e.current_keys(a).unwrap();
+    keys.extend(e.current_keys(&inbox).unwrap());
+    let cards = e.cards_of(a).unwrap();
+    !cards.is_empty()
+        && cards.iter().all(|(_, card)| {
+            let carried: std::collections::BTreeSet<_> = card.keys.iter().filter_map(|b| osis_commit::CommitBlob::decode(b).ok()).map(|b| b.id()).collect();
+            keys.is_subset(&carried)
+        })
+}
+
+/// Write on `accs[0]` for `accs[1]`, `accs[0]` held at node 1.
+fn writer(lp: &mut LocalPeer, accs: &[Tid]) {
+    lp.peers[0].engine.grant(&accs[0], &accs[1], &ct::Edge { role: Role::Write, until: None, may_grant: false, retain: false, floor: None }).unwrap();
+    lp.sync_all().unwrap();
+    lp.hold_at(1, accs[0]);
+    lp.sync_all().unwrap();
 }
 
 /// One node's account, its card on the profile filled in.
@@ -46,7 +63,7 @@ fn a_card_written_off_its_path_is_invalid_spec_permissions_5_2() {
     let b = thing(&mut lp, 0, acc.thing, true);
     let mut m = Mutation::new();
     m.act_as(acc.thing);
-    m.op(acc.profile, &ct::card_ak(&b), PathOp { path: vec![], op: Op::Set(cards::naming(None, T0).to_value()) }).unwrap();
+    m.op(acc.profile, &ct::card_ak(&b), PathOp { path: vec![], op: Op::Set(ct::Card::default().to_value()) }).unwrap();
     assert!(lp.peers[0].commit(m.clone()).is_err(), "refused writer-side");
     lp.peers[0].engine.core.skip_writer_rules = true;
     lp.peers[0].commit(m).unwrap().unwrap();
@@ -62,68 +79,67 @@ fn a_card_written_off_its_path_is_invalid_spec_permissions_5_2() {
     assert_eq!(e.inbox_of(&acc.thing).unwrap(), Some(acc.inbox));
 }
 
-// spec/sync-inbox.md §1 (`since`): A's cards on the profile and on C name its inbox; a move on the
-// profile writes a greater `since`, and A's node rewrites C to the new inbox with it.
+// spec/sync-inbox.md §1: an admin moves A's inbox; A's cards on the profile and on C are
+// rewritten carrying it (A's newest `keys.0` and the new inbox's keys).
 #[test]
 fn an_inbox_move_spreads_to_every_card_spec_sync_inbox_1() {
     let (mut lp, acc) = one();
     let c = thing(&mut lp, 0, acc.thing, false);
     let i2 = thing(&mut lp, 0, acc.thing, true);
     let e = &mut lp.peers[0].engine;
-    assert!(e.write_card(c, acc.thing, Some(acc.inbox), None).unwrap());
-    let before = named(e, &acc.thing);
-    assert!(before.iter().all(|x| x.1 == acc.inbox) && before.len() == 2);
-    assert!(e.write_card(acc.profile, acc.thing, Some(i2), None).unwrap());
-    e.refresh_cards().unwrap();
-    let after = named(e, &acc.thing);
-    assert_eq!(after.len(), 2);
-    assert!(after.iter().all(|x| x.1 == i2 && x.2 > before[0].2), "every card names the new inbox, at a greater since: {after:?}");
+    assert!(e.write_card(c, acc.thing).unwrap());
+    e.set_inbox(acc.thing, Some(i2)).unwrap();
     assert_eq!(e.inbox_of(&acc.thing).unwrap(), Some(i2));
+    assert_eq!(e.cards_of(&acc.thing).unwrap().len(), 2);
+    assert!(cards_current(e, &acc.thing), "every card carries the move");
+    assert!(!e.refresh_cards().unwrap(), "nothing left to rewrite");
 }
 
-// spec/sync-inbox.md §1 (`since`): a writer of A naming A's inbox at a `since` past its own
-// write's stamp (one no later move reaches) writes an invalid card: it names no inbox, so a later
-// move by A's other writers wins. Control: the same card at its write's time counts.
+// spec/permissions.md §3 (Who rotates: a `keys.0` delta touching the inbox field needs admin), spec/sync-inbox.md
+// §1: node 1, acting for an account holding write on A0, may not move A0's inbox: refused at its
+// writer, and a commit writing it anyway (forged) is invalid at both nodes, A0's inbox unmoved.
+// Control: node 0, an admin of A0, moves it.
 #[test]
-fn a_card_since_past_its_write_is_invalid_spec_sync_inbox_1() {
-    let run = |ahead: u64| {
-        let (mut lp, acc) = one();
-        let c = thing(&mut lp, 0, acc.thing, false);
-        let i2 = thing(&mut lp, 0, acc.thing, true);
-        let now = lp.peers[0].engine.now();
-        let card = ct::Card { since: osis_base::WallMs(now.0 + ahead), ..cards::naming(Some(i2), now) };
-        let m = cards::put(c, acc.thing, &card).unwrap();
-        lp.peers[0].engine.core.skip_writer_rules = true;
-        lp.peers[0].commit(m).unwrap().unwrap();
-        lp.peers[0].engine.core.skip_writer_rules = false;
-        let e = &mut lp.peers[0].engine;
-        (e.inbox_of(&acc.thing).unwrap(), acc.inbox, i2)
-    };
-    let (inbox, old, _) = run(10 * 365 * 24 * 3600 * 1000);
-    assert_eq!(inbox, Some(old), "a since past its write names nothing");
-    let (inbox, _, i2) = run(0);
-    assert_eq!(inbox, Some(i2), "control: a since at its write names the inbox");
-}
-
-// spec/sync-inbox.md §1, held-model `closure::cards` control `Restamp`: node 0 moves A's inbox on
-// the profile; node 1, not yet seeing it, rotates A and refreshes A's cards with the old inbox,
-// written after the move. Ordered by `since`, not by the writes' stamps, both nodes end with
-// every card naming the new inbox and carrying A's new keys.
-#[test]
-fn a_keys_refresh_does_not_undo_a_move_spec_sync_inbox_1() {
-    let (mut lp, acc) = LocalPeer::one_account(2, 0, T0).unwrap();
-    let c = thing(&mut lp, 0, acc.thing, false);
-    let i2 = thing(&mut lp, 0, acc.thing, true);
-    lp.peers[0].engine.write_card(c, acc.thing, Some(acc.inbox), None).unwrap();
+fn a_writer_cannot_move_the_inbox_spec_permissions_3() {
+    let (mut lp, accs) = LocalPeer::accounts(2, 0, T0).unwrap();
+    writer(&mut lp, &accs);
+    let i2 = thing(&mut lp, 1, accs[1], true);
+    let inbox = lp.peers[0].engine.inbox_of(&accs[0]).unwrap().unwrap();
+    assert_eq!(lp.peers[1].engine.inbox_of(&accs[0]).unwrap(), Some(inbox));
+    assert!(matches!(lp.peers[1].engine.set_inbox(accs[0], Some(i2)), Err(osis_engine::Error::Permission { needs: Role::Admin, .. })), "refused writer-side");
+    let mut m = Mutation::new();
+    cards::put_inbox(&mut m, accs[0], Some(i2)).unwrap();
+    lp.peers[1].engine.core.skip_writer_rules = true;
+    let forged = lp.peers[1].commit(m).unwrap().unwrap();
+    lp.peers[1].engine.core.skip_writer_rules = false;
     lp.sync_all().unwrap();
-    for p in lp.peers.iter_mut() {
-        p.engine.refresh_cards().unwrap();
+    for i in 0..2 {
+        assert_eq!(lp.peers[i].engine.part_valid(&forged, 0), Some(false), "node {i}: the forged move is invalid");
+        assert_eq!(lp.peers[i].engine.inbox_of(&accs[0]).unwrap(), Some(inbox), "node {i}: the inbox stays");
     }
-    lp.peers[0].engine.write_card(acc.profile, acc.thing, Some(i2), None).unwrap();
+    let i3 = thing(&mut lp, 0, accs[0], true);
+    lp.peers[0].engine.set_inbox(accs[0], Some(i3)).unwrap();
+    lp.sync_all().unwrap();
+    assert_eq!(lp.peers[1].engine.inbox_of(&accs[0]).unwrap(), Some(i3), "control: an admin's move counts");
+}
+
+// spec/sync-inbox.md §1: node 1, a writer of A0 (through its account), refreshes A0's card on C
+// after rotating A0, before it sees node 0's move of A0's inbox; once both sync, A0's inbox is the
+// moved one everywhere and every card carries A0's newest keys: a writer's refresh carries the admin's inbox, never
+// one of its own.
+#[test]
+fn a_writers_refresh_keeps_the_admins_inbox_spec_sync_inbox_1() {
+    let (mut lp, accs) = LocalPeer::accounts(2, 0, T0).unwrap();
+    let c = thing(&mut lp, 0, accs[0], false);
+    lp.peers[0].engine.write_card(c, accs[0]).unwrap();
+    writer(&mut lp, &accs);
+    lp.hold_at(1, c);
+    lp.sync_all().unwrap();
+    let i2 = thing(&mut lp, 0, accs[0], true);
+    lp.peers[0].engine.set_inbox(accs[0], Some(i2)).unwrap();
     lp.advance(1000);
-    lp.peers[1].engine.rotate_leaving_out(&acc.thing, &[Role::Read], &[]).unwrap();
+    lp.peers[1].engine.rotate_leaving_out(&accs[0], &[Role::Read], &[]).unwrap();
     lp.peers[1].engine.refresh_cards().unwrap();
-    assert!(named(&mut lp.peers[1].engine, &acc.thing).iter().all(|x| x.1 == acc.inbox), "node 1 refreshed with the inbox it knows");
     for _ in 0..3 {
         lp.sync_all().unwrap();
         for p in lp.peers.iter_mut() {
@@ -132,25 +148,29 @@ fn a_keys_refresh_does_not_undo_a_move_spec_sync_inbox_1() {
     }
     for i in 0..2 {
         let e = &mut lp.peers[i].engine;
-        let keys = e.current_keys(&acc.thing).unwrap();
-        let cards = e.cards_of(&acc.thing).unwrap();
-        assert_eq!(cards.len(), 2, "node {i}");
-        assert!(named(e, &acc.thing).iter().all(|x| x.1 == i2), "node {i}: every card names the moved inbox");
-        for (_, card) in cards {
-            let carried: std::collections::BTreeSet<_> = card.keys.iter().filter_map(|b| osis_commit::CommitBlob::decode(b).ok()).map(|b| b.id()).collect();
-            assert!(keys.is_subset(&carried), "node {i}: the card carries A's new keys");
-        }
+        assert_eq!(e.inbox_of(&accs[0]).unwrap(), Some(i2), "node {i}: the admin's inbox");
+        assert!(cards_current(e, &accs[0]), "node {i}: every card carries A0's newest keys and the inbox's");
     }
 }
 
 // spec/permissions.md §2 (Granting to a thing): node 1 holds nothing of account A0 but A0's
 // profile, read (as a contact card gives it). Before, its grant to A0 is refused; once it holds
-// the profile, A0's card there gives it A0's keys, and its grant is fired at the inbox the card
-// names.
+// the profile, A0's card there gives it A0's keys, and its grant is fired at the inbox A0's admin
+// chose.
 #[test]
 fn a_card_alone_lets_a_stranger_grant_spec_permissions_2() {
     let mut lp = LocalPeer::new_apart(2, 0, T0).unwrap();
     let (acc, _) = osis_engine::local_peer::make_account(&mut lp.peers[0].engine).unwrap();
+    // an admin of A0 moves its inbox to i2, taking its inbox signals (so its read keyset carries
+    // a KEM key to seal to)
+    let mut m = Mutation::new();
+    let i2 = lp.peers[0].engine.new_thing(&mut m, acc.thing);
+    let mut setting = ct::RetentionSetting::default();
+    setting.take_inbox_signals();
+    m.set(i2, &ct::RETENTION, &setting).unwrap();
+    lp.peers[0].commit(m).unwrap();
+    lp.hold_at(0, i2);
+    lp.peers[0].engine.set_inbox(acc.thing, Some(i2)).unwrap();
     lp.peers[0].engine.refresh_cards().unwrap();
     let me1 = lp.peers[1].engine.tid();
     let t = thing(&mut lp, 1, me1, true);
@@ -165,10 +185,10 @@ fn a_card_alone_lets_a_stranger_grant_spec_permissions_2() {
     crate::flows::send_carried(&mut lp, 0, 1, &ids);
     let e1 = &mut lp.peers[1].engine;
     e1.take_carried().unwrap();
-    assert_eq!(e1.inbox_of(&acc.thing).unwrap(), Some(acc.inbox), "A0's card read");
+    assert_eq!(e1.inbox_of(&acc.thing).unwrap(), Some(i2), "A0's card read: the inbox its admin chose");
     e1.grant(&t, &acc.thing, &ct::Edge { role: Role::Read, until: None, may_grant: false, retain: false, floor: None }).unwrap();
     let owed: Vec<Tid> = e1.fires_owed().iter().filter_map(|id| e1.sealed_fire(id).ok().flatten()).map(|f| f.thing).collect();
-    assert!(owed.contains(&acc.inbox), "the grant is fired at A0's inbox: {owed:?}");
+    assert!(owed.contains(&i2), "the grant is fired at A0's inbox: {owed:?}");
 }
 
 // spec/permissions.md §5.2 (Compaction snapshot; card aspect): node 1, a writer of
@@ -181,7 +201,7 @@ fn a_card_snapshot_off_its_path_is_invalid_spec_permissions_5_2() {
     let (mut lp, accs) = LocalPeer::accounts(2, 0, T0).unwrap();
     let c = thing(&mut lp, 0, accs[0], true);
     let ak = ct::card_ak(&accs[0]);
-    lp.peers[0].engine.write_card(c, accs[0], None, None).unwrap();
+    lp.peers[0].engine.write_card(c, accs[0]).unwrap();
     lp.peers[0].engine.grant(&c, &accs[1], &ct::Edge { role: Role::Write, until: None, may_grant: false, retain: false, floor: None }).unwrap();
     lp.sync_all().unwrap();
     lp.hold_at(1, c);

@@ -171,10 +171,11 @@ impl Account {
     }
 
     /// `make`'s steps after its first transaction, each kept where it is done, so `make` on a
-    /// node stopped between them finishes them: A's card on the profile naming the inbox, the dial
+    /// node stopped between them finishes them: A's inbox, A's card on the profile, the dial
     /// entries on A and the profile, then the profile made public (what tells `make` it is done).
     fn finish(&self, db: &Osis, profile: Tid, inbox: Tid) -> Result<()> {
-        db.set_card(profile, self.thing, Some(inbox))?;
+        db.set_inbox(self.thing, inbox)?;
+        db.put_card(profile, self.thing)?;
         db.publish_dial_on(&[self.thing, profile])?;
         publish_profile(db, profile)
     }

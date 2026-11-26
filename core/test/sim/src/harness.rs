@@ -100,7 +100,8 @@ pub struct Node {
     pub peer: Peer,
     /// The account it acts for (spec/permissions.md §8), made at its start.
     pub account: Tid,
-    /// Its account's profile, holding the account's card (naming its inbox, spec/sync-inbox.md §1).
+    /// Its account's profile, holding the account's card (its keys, its inbox among them,
+    /// spec/sync-inbox.md §1).
     pub profile: Tid,
     pub faults: Faults,
     pub clock: ClockSpec,
@@ -242,7 +243,7 @@ impl Sim {
         // each account is every other's contact (spec/sync-inbox.md §5): its profile is public and
         // its contact card a public link to it, which each other node follows until the profile
         // is here, then redeems (a strong from its account, spec/sync-set.md §4); the profile
-        // carries the account's card, so a grant from outside fires at the inbox it names
+        // carries the account's card, so a grant from outside fires at the inbox its keys name
         let mut links = Vec::new();
         for i in 0..s.nodes.len() {
             let profile = s.node(i)?.profile;

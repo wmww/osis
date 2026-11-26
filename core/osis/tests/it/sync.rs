@@ -349,10 +349,10 @@ fn the_publics_grant_round_trip_spec_permissions_1() {
 }
 
 // spec/sync-inbox.md §1 (Card): putting a thing's card needs its keys here and write on the host
-// through it; a stranger reading the host then holds its keys and grants it a
-// role. Removing a card needs write on the host.
+// through it; a stranger reading the host then holds its keys and grants it a role. Removing a
+// card needs write on the host; naming a thing's inbox, admin on it.
 #[test]
-fn set_card_needs_keys_and_a_path_through_the_thing_spec_sync_inbox_1() {
+fn put_card_needs_keys_and_a_path_through_the_thing_spec_sync_inbox_1() {
     use osis::{GrantOpts, Tid};
     let c = clock();
     let net = ManualNet::new(c.clone());
@@ -368,9 +368,11 @@ fn set_card_needs_keys_and_a_path_through_the_thing_spec_sync_inbox_1() {
     let (client, _) = a.add_client(a.node(), None).unwrap();
     a.grant(g, client, Role::Read, GrantOpts::default()).unwrap();
     let unknown = Tid::from_bytes([7; 15]);
-    assert!(matches!(a.set_card(p, unknown, Some(unknown)), Err(Error::UnknownKeys { .. })), "no keys of it here");
-    assert!(matches!(a.set_card(elsewhere, g, Some(g)), Err(Error::Permission { .. })), "g does not write it");
-    a.set_card(p, g, Some(g)).unwrap();
+    assert!(matches!(a.put_card(p, unknown), Err(Error::UnknownKeys { .. })), "no keys of it here");
+    assert!(matches!(a.put_card(elsewhere, g), Err(Error::Permission { .. })), "g does not write it");
+    assert!(matches!(a.set_inbox(unknown, g), Err(Error::Permission { .. })), "no admin of it");
+    a.set_inbox(g, p).unwrap();
+    a.put_card(p, g).unwrap();
     a.grant(p, Tid::PUBLIC, Role::Read, GrantOpts::default()).unwrap();
     let b = on(&net, 51, &c);
     assert_eq!(drive(&net, b.redeem(&a.public_link(p).unwrap(), b.node())).unwrap(), p);
@@ -378,7 +380,7 @@ fn set_card_needs_keys_and_a_path_through_the_thing_spec_sync_inbox_1() {
     let t = w.create_held().unwrap();
     w.commit().unwrap();
     b.grant(t, g, Role::Read, GrantOpts::default()).unwrap();
-    a.set_card(p, g, None).unwrap();
+    a.remove_card(p, g).unwrap();
 }
 
 // ---- leaving (spec/sync-set.md §3) ----

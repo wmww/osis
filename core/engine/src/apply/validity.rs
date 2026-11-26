@@ -773,25 +773,21 @@ pub(crate) fn note_required(core: &mut Core, h: &Header, id: &CommitId, read: &s
 
 /// Notes the card aspect parts among `parts` (each a part index and its delta or snapshot, read
 /// with view `view`) that write a card of a thing A that is neither the thing they are on nor
-/// among the members their commit states for it (spec/permissions.md §5.2), or a `since` later
-/// than their commit's `ts`: invalid (`Indexes::overreach`). A reset alone writes no card
+/// among the members their commit states for it (spec/permissions.md §5.2): invalid
+/// (`Indexes::overreach`). A reset alone writes no card
 /// (removing a card is a writer's power, as removing data is); a snapshot is judged alike, so one
 /// carrying a card states a path through A. A part whose path is not known here is judged
 /// invalid until it is (`Judge::part`), then noted again.
 /// Invariant (security): a card of A counts only written along a path through A, so only A's
-/// writers name A's inbox or A's keys in it; judged from the part and its header alone, so every
-/// node judges it alike whatever it holds.
-/// Invariant (security): a card's `since` is no later than its write's `ts` (spec/sync-inbox.md
-/// §1), so a writer of A cannot pin A's inbox past every later move by naming a `since` no honest
-/// writer reaches (parking bounds `ts`, spec/crdt.md §2.2).
+/// writers put A's keys in it (A's inbox is A's `keys.0`, an admin's); judged from the part and its
+/// header alone, so every node judges it alike whatever it holds.
 pub(crate) fn note_cards(core: &mut Core, h: &Header, view: &View, id: &CommitId, parts: &[(usize, Decoded)]) {
-    let wall = h.ts.wall_ms().0;
     for (ai, d) in parts {
         let Some((a, of)) = h.aspects.get(*ai).and_then(|a| Some((a, ct::card_of(a.ak.as_str())?))) else { continue };
         let Some(members) = chain(h, view, &a.tid) else { continue };
         let f = d.fragment();
         // any write but its own reset (`Fragment::written`) writes a card
-        let off = f.written().is_some() && ((of != a.tid && !members.contains(&of)) || card_since(f).is_some_and(|s| s > wall));
+        let off = f.written().is_some() && of != a.tid && !members.contains(&of);
         let was = core.ix.overreach.contains(&(*id, *ai));
         if off != was {
             match off {
@@ -801,16 +797,6 @@ pub(crate) fn note_cards(core: &mut Core, h: &Header, view: &View, id: &CommitId
             core.stale_commits.insert(*id);
         }
     }
-}
-
-/// The `since` a card aspect's fragment `f` writes, whole or as its field alone.
-fn card_since(f: &Fragment) -> Option<u64> {
-    let field = match f.slot(osis_crdt::Encoding::Struct) {
-        Some(osis_crdt::SlotRef::Frag(Fragment::Struct(st))) => st.field(3).and_then(Fragment::read),
-        _ => None,
-    };
-    let v = field.or_else(|| f.read().and_then(|v| ct::Card::from_value(&v).ok()).map(|c| c.since.to_value()))?;
-    u64::from_value(&v).ok()
 }
 
 /// Whether a `secrets.0` delta writes only the boxes of the holders `granted` puts on `actor`, at

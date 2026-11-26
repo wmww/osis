@@ -1626,12 +1626,11 @@ pub enum Step {
     /// Node i redeems a public link to thing k for its account (`Node::redeem`), the link made at
     /// an online node where the public reads it, preferably the thing's maker.
     Redeem(usize, usize),
-    /// Node i writes its account's card on thing k (spec/sync-inbox.md §1 Card), naming the
-    /// account's inbox as node i reads it.
+    /// Node i writes its account's card on thing k (spec/sync-inbox.md §1 Card).
     Card(usize, usize),
     /// Node i moves its account's inbox (spec/sync-inbox.md §1): to thing k, its setting first
     /// taking both inbox signals, or back to the inbox the account was made with (`None`): the
-    /// card on the profile written with a `since` above every card of the account node i holds.
+    /// account's `keys.0` names it (an admin's write, refused at any other node).
     Inbox(usize, Option<usize>),
 }
 

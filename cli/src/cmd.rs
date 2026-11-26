@@ -525,8 +525,9 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             let id: osis::LinkId = id.parse()?;
             Ok(db.revoke_link(id)?)
         }
-        Cmd::Card(CardCmd::Set { on, of, inbox }) => Ok(db.set_card(ctx.tid(&on)?, ctx.tid(&of)?, Some(ctx.tid(&inbox)?))?),
-        Cmd::Card(CardCmd::Rm { on, of }) => Ok(db.set_card(ctx.tid(&on)?, ctx.tid(&of)?, None)?),
+        Cmd::Card(CardCmd::Put { on, of }) => Ok(db.put_card(ctx.tid(&on)?, ctx.tid(&of)?)?),
+        Cmd::Card(CardCmd::Rm { on, of }) => Ok(db.remove_card(ctx.tid(&on)?, ctx.tid(&of)?)?),
+        Cmd::Card(CardCmd::Inbox { of, inbox }) => Ok(db.set_inbox(ctx.tid(&of)?, ctx.tid(&inbox)?)?),
         Cmd::Contact(ContactCmd::Show) => {
             // a contact card is a public link to the profile
             let a = ctx.account()?.realm();

@@ -477,8 +477,8 @@ impl Osis {
     /// holder of a role on it can read it.
     ///
     /// A grant to a thing as holder reaches that thing's readers through it; from a node that does
-    /// not read the holder it goes as a grant fire to the holder's inbox (the one its card names,
-    /// `set_card`, else the holder itself), taken only once that thing's setting enables its inbox
+    /// not read the holder it goes as a grant fire to the holder's inbox (`set_inbox`, else the
+    /// holder itself), taken only once that thing's setting enables its inbox
     /// signals (`core::RetentionSetting::enable_inbox_signals`), waiting until then.
     ///
     /// `Tid::PUBLIC` as holder makes `target` public: everyone may read it, from any node holding
@@ -736,7 +736,7 @@ impl Osis {
     }
 
     /// `t`'s public keys as held here, to show by hand (`Keys`). `UnknownKeys` when none are
-    /// held: `t` has no keys yet (`Write::create_with_keys` makes it with them; a `grant` to it or `set_card` of it gives it some).
+    /// held: `t` has no keys yet (`Write::create_with_keys` makes it with them; a `grant` to it or `put_card` of it gives it some).
     /// `Unsupported` through a connection.
     pub fn keys(&self, t: Tid) -> Result<Keys> {
         self.local("keys")?;
@@ -784,26 +784,34 @@ impl Osis {
         Ok(o.offer.target)
     }
 
-    /// Puts `of`'s card on `on` naming `inbox` (`of` itself, or another thing whose setting
-    /// enables its inbox signals), or with `None` removes it. A card lets whoever reads `on` grant
-    /// `of` roles and reach its inbox (`grant`): `of`'s keys go with it, and this node keeps
-    /// them current. A card naming another inbox moves `of`'s inbox, on every card of it.
-    /// Putting one needs write on `on` through `of` (`Write::act_as`) and `of`'s keys here, else
-    /// `Permission` or `UnknownKeys`; removing one, write on `on`. `Unsupported` on a client with
-    /// a thing of its own.
-    pub fn set_card(&self, on: Tid, of: Tid, inbox: Option<Tid>) -> Result<()> {
-        self.local_at(on, "set_card")?;
+    /// Puts `of`'s card on `on`: whoever reads `on` may then grant `of` roles and reach its inbox
+    /// (`grant`, `set_inbox`). `of`'s keys and its inbox's go with it, and this node keeps them
+    /// current. Needs write on `on` through `of` (`Write::act_as`) and `of`'s keys here, else
+    /// `Permission` or `UnknownKeys`. `Unsupported` on a client with a thing of its own.
+    pub fn put_card(&self, on: Tid, of: Tid) -> Result<()> {
+        self.local_at(on, "put_card")?;
         if !self.has_record(on) {
             return Err(Error::UnknownThing { tid: on });
         }
-        let Some(inbox) = inbox else {
-            return Ok(self.engine(|e| e.remove_card(on, of))?);
-        };
-        let wrote = self.engine(|e| e.write_card(on, of, (inbox != of).then_some(inbox), None))?;
-        if !wrote {
+        if !self.engine(|e| e.write_card(on, of))? {
             return Err(Error::UnknownKeys { tid: of });
         }
         Ok(())
+    }
+
+    /// Removes `of`'s card from `on` (`put_card`). Needs write on `on`, else `Permission`.
+    /// `Unsupported` on a client with a thing of its own.
+    pub fn remove_card(&self, on: Tid, of: Tid) -> Result<()> {
+        self.local_at(on, "remove_card")?;
+        Ok(self.engine(|e| e.remove_card(on, of))?)
+    }
+
+    /// Makes `inbox` the thing grants to `of` from outside go to (`grant`), on every card of
+    /// `of`: `of` itself, or another thing whose setting enables its inbox signals. Needs admin
+    /// on `of`, else `Permission`. `Unsupported` on a client with a thing of its own.
+    pub fn set_inbox(&self, of: Tid, inbox: Tid) -> Result<()> {
+        self.local_at(of, "set_inbox")?;
+        Ok(self.engine(|e| e.set_inbox(of, (inbox != of).then_some(inbox)))?)
     }
 
     /// Redeems a link for `joiner`: reaches what it names and joins it, returning the thing.
