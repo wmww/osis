@@ -28,7 +28,7 @@ Layouts in `engine/records.rs` (and the module named); all are `*_local` store r
 | `i/v` | the persisted index's rules tag |
 | `hr/`+aspect+replaced-at+commit, `hf/`+aspect | history rows and cursors (`retention/leaving.rs`, notes/engine-retention-dating.md Rows) |
 | `pi/`+commit+part index | a paged part's page index (`apply::held_part_at`), written when the part is applied, gone with it |
-| `sy/`, `ow/`, `iw/`, `ih/`, `cp/`, `ra/`, `hw/`, `fm/`, `bp/` | the tables the engine keeps for sync (notes/sync-facade.md) |
+| `sy/`, `ow/`, `iw/`, `ih/`, `cp/`, `ra/`, `hw/`, `fm/`, `bp/` | the tables the engine keeps for sync (notes/sync-facade.md); `bp/` per held blob of a commit also its seal (blob key, each section keyed or verbatim: notes/slim-design.md B), removed shredded |
 
 Other store kinds (osis-store's catalog):
 - **Aspect units**: the state (`state::Stored`); a unit exists exactly while its aspect has a state, so a key scan of a thing's units lists them (`Transaction::aspects_of`, `aspects.0`; `all_aspects` for an open and a rebuild): snapshot grammar with its pages inline; for a paged state `[1, skeleton, [[set ID, path, encoding]*]]` (paged collections reduced to their reset and `W`); or `[2, commit ID]`, the state as that commit's part in its record (notes/thing-cost.md, States stored as their body).
