@@ -193,7 +193,7 @@ fn cut_off() -> (World, osis_base::Tid) {
 
 /// Node 2's bodies are must-hold under S at node 0, and node 0 logs each.
 fn must_hold_logged(w: &mut World, s: &osis_base::SyncId) {
-    let must: Vec<_> = w.engine(0).commit_ids().into_iter().filter(|c| w.node(0).node.verdict(s, c) == Some(osis_sync::read::Verdict::Must)).collect();
+    let must: Vec<_> = w.engine(0).commit_ids().into_iter().filter(|c| w.node(0).node.read().verdict(s, c) == Some(osis_sync::read::Verdict::Must)).collect();
     assert!(!must.is_empty(), "node 2's bodies must-hold under S");
     assert!(must.iter().all(|c| w.engine(0).commit_blobs(c).unwrap().iter().any(|b| w.store(0).entry(s, b).unwrap().is_some())), "logged");
 }

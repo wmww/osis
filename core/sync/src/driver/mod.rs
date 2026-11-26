@@ -293,22 +293,10 @@ impl Node {
         &self.opens
     }
 
-    /// Tests only: read's verdict of commit `c`'s sync unit body under `s`.
+    /// Tests only: read (`Read`).
     #[doc(hidden)]
-    pub fn verdict(&self, s: &SyncId, c: &osis_base::CommitId) -> Option<crate::read::Verdict> {
-        self.read.verdict(s, c)
-    }
-
-    /// Tests only: read's verdict of body `c` under `s`.
-    #[doc(hidden)]
-    pub fn body_verdict(&self, s: &SyncId, c: &osis_engine::sync::BodyId) -> Option<crate::read::Verdict> {
-        self.read.body_verdict(s, c)
-    }
-
-    /// Tests only: the bodies read judges must-hold, by S.
-    #[doc(hidden)]
-    pub fn must_bodies(&self) -> Vec<(SyncId, osis_engine::sync::BodyId)> {
-        self.read.must_bodies()
+    pub fn read(&self) -> &crate::read::Read {
+        &self.read
     }
 
     /// Tests only: restarts in place after a store failure so far.
@@ -796,10 +784,7 @@ impl Node {
             acted |= acts.by(Act::Read, self.read.settle(&mut cx, sessions, &self.opens, &self.streams, &self.status, &self.unread, &mut fetches)?);
             for (conn, s, ask) in fetches {
                 let mut cx = cx!(self, out);
-                match ask {
-                    crate::read::Ask::Entry(b) => self.streams.fetch_again(&mut cx, &mut self.driver.sessions, &self.opens, conn, s, b, &mut self.driver.reported),
-                    crate::read::Ask::Body(c) => self.streams.want(&mut cx, &mut self.driver.sessions, &self.opens, conn, s, c, &mut self.driver.reported),
-                }
+                self.streams.ask(&mut cx, &mut self.driver.sessions, &self.opens, conn, s, ask, &mut self.driver.reported);
             }
             let mut cx = cx!(self, out);
             let sessions = &mut self.driver.sessions;

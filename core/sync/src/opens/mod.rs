@@ -809,8 +809,13 @@ impl Opens {
         self.members_unstamped(conn).get(s)
     }
 
+    /// The record `conn` holds, in memory.
+    fn record_on(&self, conn: ConnId) -> Option<&Record> {
+        self.records.get(&self.conns.get(&conn)?.rec?)
+    }
+
     fn members_unstamped(&self, conn: ConnId) -> &BTreeMap<SyncId, Member> {
-        self.conns.get(&conn).and_then(|c| c.rec).and_then(|r| self.records.get(&r)).map_or(&NO_MEMBERS, |r| &r.members)
+        self.record_on(conn).map_or(&NO_MEMBERS, |r| &r.members)
     }
 
     /// Member S of `conn`'s record opened, changed or went (`member_stamps`, `record_members`).
@@ -866,7 +871,7 @@ impl Opens {
     /// generation arriving (notes/decode-bounds.md: about what the peer sent of them).
     pub fn peer_filter_held(&self, conn: ConnId) -> (u64, usize) {
         let Some(c) = self.conns.get(&conn) else { return (0, 0) };
-        let latest = c.rec.and_then(|r| self.records.get(&r)).and_then(|r| r.peer.as_ref()).map_or((0, 0), |p| (p.values.len(), p.values.bytes()));
+        let latest = self.record_on(conn).and_then(|r| r.peer.as_ref()).map_or((0, 0), |p| (p.values.len(), p.values.bytes()));
         let arriving = c.peer_gen.as_ref().map_or((0, 0), |g| (g.values.len(), g.values.bytes()));
         (latest.0 + arriving.0, latest.1 + arriving.1)
     }
@@ -874,14 +879,14 @@ impl Opens {
     /// How many of the peer's filter generations have arrived through `conn`'s record: moves at
     /// each arrival (spec/sync-inbox.md §3: a refused Deposit item waits for the next).
     pub fn filter_arrivals(&self, conn: ConnId) -> u64 {
-        self.conns.get(&conn).and_then(|c| c.rec).and_then(|r| self.records.get(&r)).and_then(|r| r.peer.as_ref()).map_or(0, |p| p.arrived)
+        self.record_on(conn).and_then(|r| r.peer.as_ref()).map_or(0, |p| p.arrived)
     }
 
     /// Whether the peer's latest filter shows `key` as S's deposit key (spec/sync-opens.md §5
     /// Filter: a node keeping S unread shows it to every connection): a deposit of S may land
     /// there (filters have false positives: the answer tells).
     pub fn shows_deposit_key(&self, conn: ConnId, s: &SyncId, key: &[u8; 32]) -> bool {
-        let Some(r) = self.conns.get(&conn).and_then(|c| c.rec).and_then(|r| self.records.get(&r)) else { return false };
+        let Some(r) = self.record_on(conn) else { return false };
         let Some(p) = &r.peer else { return false };
         p.values.contains(beacon_value(&beacon_of(key, s, &r.r), p.f))
     }
@@ -1286,13 +1291,7 @@ impl Opens {
             // kept is told, so a peer keeps nothing of what this node showed of S (its head
             // among it) and joins and registers from the start
             let on: Vec<ConnId> = self.conns.keys().copied().filter(|c| self.members_unstamped(*c).contains_key(&s)).collect();
-            for c in on {
-                self.close_member(ctx, c, s, Close::Left, moved);
-            }
-            let kept: Vec<ConnId> = self.conns.iter().filter(|(_, k)| k.rec.and_then(|r| self.records.get(&r)).is_some_and(|r| r.stopped.contains_key(&s))).map(|(c, _)| *c).collect();
-            for c in kept {
-                self.send_lost(ctx, c, vec![(s, None)]);
-            }
+            self.lost_here(ctx, s, on, moved);
             for r in self.records.values_mut() {
                 r.stopped.remove(&s);
                 r.basis.remove(&s);
@@ -1367,6 +1366,19 @@ impl Opens {
         moved.len() > before
     }
 
+    /// This node holds S no more (spec/sync-opens.md §6 Where it stopped): S's members on `on`
+    /// close with a Lost, and each connection whose record keeps a stop of S is told nothing of S
+    /// is kept here.
+    fn lost_here(&mut self, ctx: &mut Ctx, s: SyncId, on: Vec<ConnId>, moved: &mut Vec<Moved>) {
+        for c in on {
+            self.close_member(ctx, c, s, Close::Left, moved);
+        }
+        let kept: Vec<ConnId> = self.conns.iter().filter(|(_, k)| k.rec.and_then(|r| self.records.get(&r)).is_some_and(|r| r.stopped.contains_key(&s))).map(|(c, _)| *c).collect();
+        for c in kept {
+            self.send_lost(ctx, c, vec![(s, None)]);
+        }
+    }
+
     /// S's credentials moved to `now` (none: S left the sync set).
     fn moved_creds(&mut self, ctx: &mut Ctx, s: SyncId, now: Option<Arc<Creds>>, moved: &mut Vec<Moved>) {
         let known = self.changed.at.remove(&s);
@@ -1397,14 +1409,7 @@ impl Opens {
                 // spec/sync-opens.md §3: a node that stops holding S drops S from every record in
                 // the step that stops it; members on a connection close with a Lost (§6).
                 let on: Vec<ConnId> = self.held.get(&s).into_iter().flatten().filter_map(|r| self.conn_on(*r)).collect();
-                for c in on {
-                    self.close_member(ctx, c, s, Close::Left, moved);
-                }
-                // a stop kept on a connection: told that nothing of S is kept here
-                let kept: Vec<ConnId> = self.conns.iter().filter(|(_, k)| k.rec.and_then(|r| self.records.get(&r)).is_some_and(|r| r.stopped.contains_key(&s))).map(|(c, _)| *c).collect();
-                for c in kept {
-                    self.send_lost(ctx, c, vec![(s, None)]);
-                }
+                self.lost_here(ctx, s, on, moved);
                 self.peers.wrote(&s, false);
                 for k in self.conns.values_mut() {
                     k.walks.remove(&s);

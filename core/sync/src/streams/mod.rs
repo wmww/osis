@@ -46,6 +46,7 @@ mod serve;
 pub use known::{Known, Row as KnownRow};
 
 use crate::opens::{Member, Moved, Opens, Reported};
+use crate::read::Ask;
 use crate::session::{Incoming, Sessions, To};
 use crate::store::{Source, Store};
 use crate::types::{ConnId, Cx, Entry, Position, RecordId, Result};
@@ -300,24 +301,20 @@ impl Streams {
         product(cx, sessions, opens, reported, |ctx| self.again(ctx, conn));
     }
 
-    /// Entry `b` of S fetched from the source on `conn` though no message in hand owes it: a body
-    /// counting missing again that the source's stream showed present (read's word,
-    /// spec/sync-judgement.md §3 Dropped bodies).
+    /// Read's ask of the source on `conn` outside any message (spec/sync-judgement.md §3): an
+    /// entry of S its stream showed present, fetched again while it counts missing (Dropped
+    /// bodies), or a body asked for by its commit ID whatever the stream shows (Asked by ID).
     #[allow(clippy::too_many_arguments)]
-    pub fn fetch_again(&mut self, cx: &mut Cx, sessions: &mut Sessions, opens: &Opens, conn: ConnId, s: SyncId, b: BlobId, reported: &mut Vec<Reported>) {
-        product(cx, sessions, opens, reported, |ctx| self.refetch(ctx, conn, s, b));
+    pub fn ask(&mut self, cx: &mut Cx, sessions: &mut Sessions, opens: &Opens, conn: ConnId, s: SyncId, ask: Ask, reported: &mut Vec<Reported>) {
+        product(cx, sessions, opens, reported, |ctx| self.ask_in(ctx, conn, s, ask));
     }
 
-    /// Commit `c`'s body under S asked for by ID on `conn` (read's word: a body counting missing,
-    /// spec/sync-judgement.md §3 Asked by ID), whatever the source's stream shows.
-    #[allow(clippy::too_many_arguments)]
-    pub fn want(&mut self, cx: &mut Cx, sessions: &mut Sessions, opens: &Opens, conn: ConnId, s: SyncId, c: osis_base::CommitId, reported: &mut Vec<Reported>) {
-        product(cx, sessions, opens, reported, |ctx| self.want_in(ctx, conn, s, c));
-    }
-
-    /// `want` over `Ctx`.
-    pub fn want_in(&mut self, ctx: &mut Ctx, conn: ConnId, s: SyncId, c: osis_base::CommitId) {
-        self.want_body(ctx, conn, s, c);
+    /// `ask` over `Ctx`.
+    pub fn ask_in(&mut self, ctx: &mut Ctx, conn: ConnId, s: SyncId, ask: Ask) {
+        match ask {
+            Ask::Entry(b) => self.refetch(ctx, conn, s, b),
+            Ask::Body(c) => self.want_body(ctx, conn, s, c),
+        }
     }
 
     pub fn next_wake(&self) -> Option<Mono> {

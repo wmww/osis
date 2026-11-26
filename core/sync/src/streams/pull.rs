@@ -1005,7 +1005,7 @@ impl Streams {
         self.failed(r);
     }
 
-    /// Entry `b` of S queued for fetching on `conn` outside any message (`Streams::fetch_again`):
+    /// Entry `b` of S queued for fetching on `conn` outside any message (`Ask::Entry`):
     /// only while S is a member there and this node lacks the bytes and holds no tombstone of it.
     /// Its wrap comes with the reply; until then it ranks as a body that opens, after the rest.
     pub(super) fn refetch(&mut self, ctx: &mut Ctx, conn: ConnId, s: SyncId, b: BlobId) {
@@ -1025,7 +1025,7 @@ impl Streams {
         self.track(ctx, conn);
     }
 
-    /// Commit `c`'s body under S asked for by ID on `conn` (`Streams::want`; spec/sync-judgement.md
+    /// Commit `c`'s body under S asked for by ID on `conn` (`Ask::Body`; spec/sync-judgement.md
     /// §3 Asked by ID): only while S is a member there that this node opens. Read asks once per
     /// connection while the body counts missing, so nothing here repeats it.
     pub(super) fn want_body(&mut self, ctx: &mut Ctx, conn: ConnId, s: SyncId, c: osis_base::CommitId) {

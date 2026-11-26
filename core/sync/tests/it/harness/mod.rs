@@ -1182,7 +1182,7 @@ impl World {
     /// (each a body `Engine::sync_bodies` names): read's verdicts, not every held commit's bodies.
     fn musts(&mut self, i: usize, s: Option<&osis_base::SyncId>) -> Vec<(osis_base::SyncId, osis_engine::sync::BodyId)> {
         let held: BTreeSet<osis_base::CommitId> = self.engine(i).commit_ids().into_iter().collect();
-        let musts = self.node(i).node.must_bodies();
+        let musts = self.node(i).node.read().must_bodies();
         musts
             .into_iter()
             .filter(|(x, id)| s.is_none_or(|s| s == x) && held.contains(&id.commit))
@@ -1312,7 +1312,7 @@ impl World {
         }
         for (who, n) in [("holder", i), ("reader", j)] {
             let held = self.engine(n).holds_commit(c);
-            let verdict = self.node(n).node.body_verdict(s, id);
+            let verdict = self.node(n).node.read().body_verdict(s, id);
             let facts = if held { format!("{:?}", self.engine(n).read_facts(s, id)) } else { "-".into() };
             let missing = self.engine(n).commit_parts_missing().get(c).cloned();
             out += &format!("\n  {who} {n}: holds commit {held}, verdict {verdict:?}, missing parts {missing:?}, facts {facts}");

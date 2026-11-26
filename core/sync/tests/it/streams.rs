@@ -14,6 +14,7 @@ use osis_proto::{Code, Event, Id, Msg, Pull};
 use osis_store::{MemoryBackend, MemoryRoot, RecordId};
 use osis_sync::opens::{LeftAt, Leaving, Member, Moved, Positions, Rejoin, Reported};
 use osis_sync::session::{Incoming, To};
+use osis_sync::read::Ask;
 use osis_sync::store::Source;
 use osis_sync::streams::{Ctx, Ground, INLINE_LIMIT, Opening, Rank, Shared, Streams, Wire};
 use osis_sync::types::{ConnId, Credential, Entry, Result, SourceClass};
@@ -1229,9 +1230,9 @@ fn a_body_no_stream_shows_comes_when_asked_by_id_spec_sync_judgement_3() {
         let lacking = osis_base::CommitId([0xee; 32]);
         let now = p.now;
         for (c, _) in &asked {
-            p.b.with(now, |st, ctx| st.want_in(ctx, C, s, *c));
+            p.b.with(now, |st, ctx| st.ask_in(ctx, C, s, Ask::Body(*c)));
         }
-        p.b.with(now, |st, ctx| st.want_in(ctx, C, s, lacking));
+        p.b.with(now, |st, ctx| st.ask_in(ctx, C, s, Ask::Body(lacking)));
         p.run();
         for (_, b) in &asked {
             assert!(p.b.table.opened.contains(b), "a body asked for by ID taken");

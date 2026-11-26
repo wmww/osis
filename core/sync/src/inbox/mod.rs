@@ -164,22 +164,32 @@ pub(crate) struct Here<'a> {
     pub policy: &'a crate::types::Policy,
 }
 
+impl<'a> Here<'a> {
+    fn of(cx: &'a mut Cx, status: Option<&'a crate::status::Status>) -> Here<'a> {
+        let Cx { engine, store, now, mono, policy, .. } = cx;
+        Here { engine, status, store, now: *now, mono: *mono, policy }
+    }
+}
+
 impl Inbox {
     /// Whether anything acted.
     pub fn settle(&mut self, cx: &mut Cx, sessions: &mut Sessions, opens: &Opens, streams: &Streams, status: &crate::status::Status) -> Result<bool> {
-        let Cx { engine, store, now, mono, policy, .. } = cx;
-        let mut here = Here { engine, status: Some(status), store, now: *now, mono: *mono, policy };
-        let mut net = Links { sessions, opens, streams };
-        self.step(&mut here, &mut net)
+        let (h, net) = (&mut Here::of(cx, Some(status)), &mut Links { sessions, opens, streams });
+        let mut acted = self.begin(h)?;
+        acted |= self.held.settle(h, &mut self.offers)?;
+        acted |= self.fires.settle(h, &mut self.offers)?;
+        acted |= self.links.settle(h)?;
+        acted |= self.register.settle(h, net)?;
+        acted |= self.reports.settle(h, net)?;
+        acted |= self.offers.settle(h.mono, h.store, net, &mut *h.engine)?;
+        Ok(acted)
     }
 
     /// A start: what this module makes the engine follow (links being redeemed) is
     /// followed again from the store, before any module reads the sync set (`leave` judges what
     /// left it by the set as it stands). Whether it started now.
     pub fn start(&mut self, cx: &mut Cx) -> Result<bool> {
-        let Cx { engine, store, now, mono, policy, .. } = cx;
-        let mut here = Here { engine, status: None, store, now: *now, mono: *mono, policy };
-        self.begin(&mut here)
+        self.begin(&mut Here::of(cx, None))
     }
 
     fn begin(&mut self, h: &mut Here<'_>) -> Result<bool> {
@@ -194,26 +204,9 @@ impl Inbox {
         Ok(true)
     }
 
-    fn step(&mut self, h: &mut Here<'_>, net: &mut impl Net) -> Result<bool> {
-        let mut acted = self.begin(h)?;
-        acted |= self.held.settle(h, &mut self.offers)?;
-        acted |= self.fires.settle(h, &mut self.offers)?;
-        acted |= self.links.settle(h)?;
-        acted |= self.register.settle(h, net)?;
-        acted |= self.reports.settle(h, net)?;
-        acted |= self.offers.settle(h.mono, h.store, net, &mut *h.engine)?;
-        Ok(acted)
-    }
-
     /// Register, Delete and Stranded requests; Deposit, Stranded and Register answers.
     pub fn on_message(&mut self, cx: &mut Cx, sessions: &mut Sessions, opens: &Opens, streams: &Streams, conn: ConnId, m: Incoming) {
-        let Cx { engine, store, now, mono, policy, .. } = cx;
-        let mut here = Here { engine, status: None, store, now: *now, mono: *mono, policy };
-        let mut net = Links { sessions, opens, streams };
-        self.receive(&mut here, &mut net, conn, m);
-    }
-
-    fn receive(&mut self, h: &mut Here<'_>, net: &mut impl Net, conn: ConnId, m: Incoming) {
+        let (h, net) = (&mut Here::of(cx, None), &mut Links { sessions, opens, streams });
         match m {
             Incoming::Request(id, m) => serve::request(h, net, conn, id, m),
             Incoming::Reply(_, id, m) => {
@@ -283,8 +276,7 @@ impl Inbox {
     /// is held elsewhere, `Done` once the join is written; a public link durable until the strong
     /// to its target is written (`Done` once the node closure holds it, spec/sync-set.md §4).
     pub fn redeem(&mut self, cx: &mut Cx, link: &osis_blob::Link, joiner: Tid) -> Waiting {
-        let Cx { engine, store, now, mono, policy, .. } = cx;
-        let mut here = Here { engine, status: None, store, now: *now, mono: *mono, policy };
+        let mut here = Here::of(cx, None);
         match link {
             osis_blob::Link::Share(l) => self.links.redeem(&mut here, l, joiner).unwrap_or(Waiting::Never("the link could not be kept")),
             osis_blob::Link::Public(l) => self.links.redeem_public(&mut here, l, joiner).unwrap_or(Waiting::Never("the link could not be kept")),
@@ -294,9 +286,7 @@ impl Inbox {
     /// An offer of `target` taken by hand, its offering node at `peers` (first-contact hints,
     /// kept while this node holds `target` by a grant: `links::Redemptions::offered`).
     pub fn offered(&mut self, cx: &mut Cx, target: Tid, peers: Vec<DialHint>) -> Result<()> {
-        let Cx { engine, store, now, mono, policy, .. } = cx;
-        let mut here = Here { engine, status: None, store, now: *now, mono: *mono, policy };
-        self.links.offered(&mut here, target, peers)
+        self.links.offered(&mut Here::of(cx, None), target, peers)
     }
 
     /// Whether link K (a public link: its target) is being redeemed here: a redeem not joined and
