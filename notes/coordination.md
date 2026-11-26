@@ -44,7 +44,7 @@ How to run them:
 - A change that adds a new kind of permanent data adds or updates a row in notes/growth.md.
 - App work (libs/kit/, app/) is planned with Tess in a separate UX session (notes/app.md); what kit or app needs from core becomes an issue tagged `core-ask`.
 - Names: each coordinator picks a name and pronouns once it knows the codebase, records both here and says them in chat.
-- Registry: **Lodestar**, she/her. **Tiller**, he/him. **Wren**, they/them. **Sorrel**, they/them. **Fathom**, they/them. **Kestrel**, they/them. **Petrel**, they/them. **Halyard**, they/them. **Bowline**, they/them (app). **Capstan**, they/them. **Sextant**, they/them (reference graph design). **Keel**, they/them. **Gimbal**, they/them (design session with Tess: studies and the terms pass). **Windlass**, they/them. **Mizzen**, they/them. **Spar**, they/them.
+- Registry: **Lodestar**, she/her. **Tiller**, he/him. **Wren**, they/them. **Sorrel**, they/them. **Fathom**, they/them. **Kestrel**, they/them. **Petrel**, they/them. **Halyard**, they/them. **Bowline**, they/them (app). **Capstan**, they/them. **Sextant**, they/them (reference graph design). **Keel**, they/them. **Gimbal**, they/them (design session with Tess: studies and the terms pass). **Windlass**, they/them. **Mizzen**, they/them. **Spar**, they/them. **Sheave**, they/them.
 
 ## Test budget
 Seed breadth belongs to the release checks, not to jobs: reading and targeted new tests find most bugs, rerunning ranges almost none (notes/test-design.md, What finds bugs).
