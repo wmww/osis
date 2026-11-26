@@ -7,3 +7,4 @@
 - Not from the expiring cover: `covered_join` never counts an expiring delta not held covered, whatever covers it (a lasting cover of one a lasting write overwrote alike).
 - Cost: fetches no peer can answer; while missing, the node's own frontier for that session may stop at the gap (`frontiers_upto` walks held ranges), so its lasting snapshots reach none of the session's later never-received deltas until the expiry. Bounded by the expiry, which may be long.
 - A fix needs a way for a cover to vouch for an expiring delta it does not carry (its tables claim nothing, spec/crdt.md §8), or a judgment that a delta never received is replaced from its header and the state alone.
+- Not settled by superseded expiring writes (notes/ephemeral.md): that rule compares two held bodies' reads, so a header alone judges nothing; it applies to memory commits only, and a memory entry no source lists is forgotten anyway (spec/sync-compaction.md §2 Presence).
