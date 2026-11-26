@@ -760,7 +760,15 @@ impl Timelines {
     /// node that reaches it and nothing else, so the answer moves with those alone.
     pub fn roles_on(&self, thing: &Tid, at: osis_perm::At, skip: &BTreeSet<(Tid, Tid)>) -> Arc<BTreeMap<Tid, Role>> {
         let roles = match (at.point, at.ts) {
-            (None, Some(ts)) if skip.is_empty() => self.roles.at(*thing, ts, || self.of.roles_on_now(thing, ts)).0,
+            (None, Some(ts)) => {
+                let all = self.roles.at(*thing, ts, || self.of.roles_on_now(thing, ts)).0;
+                // the walk (`thing` among its keys) follows an edge only from a thing it reached:
+                // skipping edges from none of them changes nothing
+                match skip.iter().any(|(t, _)| all.contains_key(t)) {
+                    false => all,
+                    true => Arc::new(self.of.roles_on_without(thing, at, skip)),
+                }
+            }
             _ => Arc::new(self.of.roles_on_without(thing, at, skip)),
         };
         for t in roles.keys() {

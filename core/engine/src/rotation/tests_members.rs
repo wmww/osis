@@ -1768,11 +1768,19 @@ const T0: WallMs = WallMs(1_700_000_000_000);
 // in its place. Once T expires, X's admin rotates X (its box to T is a departure) boxing neither
 // T nor G, T's holder: peers 1 and 3, reading X only through T, open nothing of X's new epoch
 // from every secret they held and hold X for keys no more, while their roles through T stand
-// for judging writes (spec/commits.md §5 Destruction). Nobody holds D, T's dependent, for keys
+// for judging writes (spec/commits.md §5 Destruction). Their nodes drop X keeping no copy, as at
+// a removal not saying retain (spec/permissions.md §3 Lost access). Nobody holds D, T's
+// dependent, for keys
 #[test]
 fn destroying_a_holder_actor_ends_access_through_it_spec_crypto_4() {
     let (mut lp, t, x, g, d) = destroyed_world();
     let (n0, n1, n3) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid(), lp.peers[3].engine.tid());
+    let k = osis_base::Ak::new("x:a.0").unwrap();
+    let mut m = Mutation::new();
+    m.set(x, &k, &osis_base::Value::Int(7)).unwrap();
+    lp.peers[0].commit(m).unwrap();
+    lp.sync_all().unwrap();
+    assert_eq!(lp.peers[3].engine.get(&x, &k).unwrap(), Some(osis_base::Value::Int(7)), "peer 3 reads X's content");
     assert_eq!(lp.peers[0].engine.core.keyed_role_now(&n0, &d), Some(Role::Admin), "peer 0 holds D through T");
     let start: Opened = held_by(&lp, 1, &[t, x]).into_iter().chain(held_by(&lp, 3, &[t, x, g])).collect();
     assert!(held_by(&lp, 3, &[x]).iter().any(|k| k.0 == x), "peer 3 reads X through G and T");
@@ -1799,6 +1807,63 @@ fn destroying_a_holder_actor_ends_access_through_it_spec_crypto_4() {
         assert!(!openable(&mut lp, 0, &[t, x, g], n, start.clone()).contains(&(x, Role::Read, w)), "{n:?} opens nothing of X's new epoch");
     }
     assert!(all_boxed(&mut lp, 0, &[x]), "every holder of X boxed");
+    for i in [1, 3] {
+        lp.peers[i].engine.drop_lost_secrets().unwrap();
+        assert!(!lp.peers[i].engine.core.ix.kept.contains_key(&x), "peer {i} keeps no copy of X through T");
+        assert_eq!(lp.peers[i].engine.get(&x, &k).unwrap(), None, "peer {i} reads none of X's content");
+    }
+    assert_eq!(lp.peers[0].engine.get(&x, &k).unwrap(), Some(osis_base::Value::Int(7)), "X's admin reads it on");
+}
+
+// spec/requirements.md (Purging or expiring a thing's creation: it comes back only if the purge
+// turns out invalid), spec/crypto.md §4 (Destroyed): peer 1, an admin of T, destroys it while
+// peer 0 removes peer 1 from T, neither holding the other's commit. Peer 2, an admin of X holding
+// the destruction alone, rotates X without T. Once the removal reaches it the destruction falls:
+// T holds X again for keys and is re-sealed, so peer 3 (through G and T) reads X's newest epoch,
+// and peer 1, removed from T, opens nothing of it
+#[test]
+fn a_destruction_that_falls_gives_access_through_it_back_spec_crypto_4() {
+    let (mut lp, t, x, g, _) = destroyed_world();
+    let (n1, n2) = (lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
+    lp.peers[0].know(&[n2]).unwrap();
+    lp.sync_all().unwrap();
+    lp.peers[0].engine.grant(&t, &n1, &edge(Role::Admin)).unwrap();
+    lp.peers[0].engine.grant(&x, &n2, &edge(Role::Admin)).unwrap();
+    lp.sync_all().unwrap();
+    let start = held_by(&lp, 1, &[t, x]);
+    lp.advance(1_000);
+    {
+        let e = &mut lp.peers[1].engine;
+        let mut m = Mutation::new();
+        let now = e.now();
+        m.set(t, &ct::PURGE, &now).unwrap();
+        m.purge(osis_commit::PurgeItem::Aspect { tid: t, ak: ct::CREATED.name() });
+        e.commit(m).unwrap().unwrap();
+    }
+    lp.advance(1_000);
+    lp.peers[0].engine.demote(&t, &Demotion { holder: n1, new: None, retain: None }).unwrap();
+    let before = newest_read(&lp, 2, x);
+    send_skipping(&mut lp, 1, 2, &BTreeSet::new());
+    assert!(lp.peers[2].engine.core.destroyed(&t), "T destroyed at peer 2");
+    lp.peers[2].engine.ensure_rotated(&x).unwrap();
+    let w0 = newest_read(&lp, 2, x).unwrap();
+    assert_ne!(Some(w0), before, "peer 2 rotated X past its box to T");
+    assert!(!boxes_at(&mut lp, 2, x, t, w0), "X's new epoch boxes no T");
+    lp.sync_all().unwrap();
+    for i in 0..lp.peers.len() {
+        assert!(!lp.peers[i].engine.core.destroyed(&t), "peer {i}: the destruction fell");
+    }
+    settle(&mut lp, &[0, 2], &[x]);
+    let w = newest_read(&lp, 0, x).unwrap();
+    assert!(lp.peers[0].engine.core.key_holders(&x).iter().any(|h| h.0 == t), "T holds X again");
+    assert!(boxes_at(&mut lp, 0, x, t, w), "T boxed at X's newest epoch");
+    assert_eq!(newest_read(&lp, 3, x), Some(w), "peer 3 reads X through G and T again");
+    assert!(!openable(&mut lp, 0, &[t, x, g], n1, start).contains(&(x, Role::Read, w)), "peer 1, removed from T, opens nothing of it");
+}
+
+/// Whether `a`'s `secrets.0` at peer `i` boxes `h` at read epoch `e`.
+fn boxes_at(lp: &mut LocalPeer, i: usize, a: Tid, h: Tid, e: Epoch) -> bool {
+    lp.peers[i].engine.get_typed(&a, &ct::SECRETS).unwrap().is_some_and(|s| s.boxes.keys().any(|k| k.holder == osis_base::Weak(h) && k.role == Role::Read && osis_keys::aspects::from_schema(&k.epoch).is_ok_and(|x| x == e)))
 }
 
 /// Every box of `a`'s `secrets.0` state at peer `boxer` to a holder actor, at an epoch current
