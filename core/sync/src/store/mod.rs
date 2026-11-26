@@ -191,12 +191,12 @@ impl Total {
 
 /// Whether S moving from `was` to `now` is raised (spec/sync-judgement.md §6 Read and unread
 /// move): it takes entries its sources showed it before and it did not take, so they are pulled
-/// from the start: from kept unread to opened (read or for keys), or from held in the keys class (role
+/// from the start: from kept unread to opened (read or as a stub), or from held as a stub (role
 /// entries alone) to read.
 fn raised(was: Option<&Held>, now: Option<&Held>) -> bool {
     match (was.map(|(_, h)| *h), now.map(|(_, h)| *h)) {
         (Some(Holding::Unread), Some(h)) => h.opens(),
-        (Some(Holding::Keys), Some(Holding::Read)) => true,
+        (Some(Holding::Stub), Some(Holding::Read)) => true,
         _ => false,
     }
 }
@@ -640,7 +640,7 @@ impl Store {
             }
             g.mem.syncs.wrote_added(s, true, true);
             // raised: what it refused kept unread (a stamp under no key of its head then), or
-            // was not shown held in the keys class (all but role entries), its sources show no more, so S
+            // was not shown held as a stub (all but role entries), its sources show no more, so S
             // is pulled anew (`anew_feed`)
             if raised(was.as_ref(), now.as_ref()) {
                 g.mem.anew.wrote_added(s, true, true);
@@ -1254,7 +1254,7 @@ impl Store {
         let all = |c: Code| Ok(vec![c; items.len()]);
         match g.holding(s) {
             None => return all(Code::UNKNOWN_SYNC_ID),
-            Some(Holding::Read | Holding::Keys) => return all(Code::DECLINED),
+            Some(Holding::Read | Holding::Stub) => return all(Code::DECLINED),
             Some(Holding::Unread) => {}
         }
         if !by_store_credential {

@@ -168,7 +168,7 @@ pub fn messages() -> Vec<(&'static str, Msg)> {
         ("beacons additions", Msg::Beacons { id: top(37), generation: 2, base: Some(1), f: 9, lo: 0, hi: 512, gcs: vec![], more: false }),
         ("offer", Msg::Offer { id: top(37), items: vec![OfferItem::Hit { hit: [9; 32], sig: None, class: SourceClass::Reader }, OfferItem::Hit { hit: [10; 32], sig: Some(open(&f.sync)), class: SourceClass::Store }, OfferItem::ByRole { sync_id: l, hits: vec![[8; 32]], class: SourceClass::Reader }] }),
         ("offer with a deposit", Msg::Offer { id: top(38), items: vec![OfferItem::Deposit(DepositItem { sync_id: l, blob: deposited, wrap: dep_wrap, sig: dep_sig })] }),
-        ("offer static", Msg::Offer { id: top(39), items: vec![OfferItem::Static { hit: [12; 32], signing_pk: f.link_key.verifying_key().to_bytes(), sig: open(&f.link_key), class: SourceClass::Keys }] }),
+        ("offer static", Msg::Offer { id: top(39), items: vec![OfferItem::Static { hit: [12; 32], signing_pk: f.link_key.verifying_key().to_bytes(), sig: open(&f.link_key), class: SourceClass::Stub }] }),
         (
             "offer behind",
             Msg::Offer {

@@ -1005,7 +1005,7 @@ impl Status {
             })
             .collect();
         let unheld = match holding {
-            Some(Holding::Read | Holding::Keys) => self.unheld.get(s).copied(),
+            Some(Holding::Read | Holding::Stub) => self.unheld.get(s).copied(),
             _ => Some(0),
         };
         let pass_waits = self.passes.get(s).map(|p| p.waits.clone());

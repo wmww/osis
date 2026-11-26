@@ -124,7 +124,7 @@ pub trait Ground {
         false
     }
     /// Whether held blob `b` under S is a role entry by this node's own judgement
-    /// (`Engine::role_entry`): what a node opening S shows a peer holding S's thing for keys.
+    /// (`Engine::role_entry`): what a node opening S shows a peer holding S's thing as a stub.
     fn role_entry(&mut self, s: &SyncId, b: &BlobId) -> bool {
         let _ = (s, b);
         false

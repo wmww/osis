@@ -296,7 +296,7 @@ pub(crate) fn held_sync_ids(core: &Core, g: &Tid, m: &ct::SyncIds) -> Vec<OwnedS
     if let Some(h) = followed(core, g) {
         return vec![h];
     }
-    match core.public_listed(g) {
+    match core.public_listed(g).is_some() {
         true => recorded_in(core, g, m, true),
         false => Vec::new(),
     }

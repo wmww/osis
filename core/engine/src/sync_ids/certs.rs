@@ -37,8 +37,7 @@ pub struct Certs {
     pub mintings: BTreeMap<CommitId, BTreeSet<Tid>>,
     pub records: BTreeSet<Tid>,
     /// Sync copies (spec/wire.md §4), as (commit, thing, holder): no header, record or evidence
-    /// goes with them.
-    // Stub rewrite (notes/stub-rewrite.md): filled by the sync-only cut of the stubs S carries (R2)
+    /// goes with them; a stub's sync-only cut (spec/permissions.md §4 Stub).
     pub sync_copies: BTreeSet<(CommitId, Tid, Tid)>,
 }
 
@@ -131,9 +130,8 @@ impl Engine {
     /// What read thing `g`'s sync IDs carry beside bodies (spec/permissions.md §4 Evidence of a
     /// sync ID), from `ev` holding `g` as a sync ID: its required copies; the records of both ends
     /// of each edge its evidence reads; the records and mintings `shared` adds; and the public
-    /// key records of `g`'s holders, with their evidence.
-    // Stub rewrite (notes/stub-rewrite.md): and the stubs `g`'s unit carries, each cut to its
-    // readers (R2)
+    /// key records of `g`'s holders, with their evidence; and the stubs `g`'s unit carries, each
+    /// cut to its readers (`stub_certificates`).
     pub(crate) fn sync_certificates(&mut self, ev: &Ev, g: &Tid) -> Certs {
         let mut out = Certs::default();
         let req: BTreeSet<(CommitId, Tid)> = ev.required(g).map(|r| r.keys().copied().collect()).unwrap_or_default();
@@ -155,7 +153,70 @@ impl Engine {
         for h in &holders {
             self.public_key_record_into(ev, h, &mut out);
         }
+        self.stub_certificates(ev, g, &mut out);
         self.close_records(ev, &mut out);
+        out
+    }
+
+    /// The stubs `g`'s unit carries as this node holds their role entries (spec/permissions.md
+    /// §4 Stub; spec/sync-set.md §2 Stubs, Carriers), added to `out`: of each independent thing
+    /// X the walk gives from `g`'s unit, outside it. Where `g`'s keys open X: each held commit
+    /// with a role-class part on X, cut to the stub (`stub_parts`: the pieces boxing `g`, the
+    /// holders on its chains to X or the public), with its evidence, and X's public key record
+    /// (its sync ID and step keys); else, `g` holding sync on X, the sync copies for holder `g`.
+    fn stub_certificates(&mut self, ev: &Ev, g: &Tid, out: &mut Certs) {
+        for x in self.core.ix.closure.unit_stubs(g) {
+            let role = |ak: &str| matches!(ak, "roles.0" | "signers.0" | "secrets.0" | "sync.0");
+            let cs: BTreeSet<CommitId> = self.core.aspects_of(&x).filter(|((_, ak), _)| role(ak.as_str())).flat_map(|(_, cs)| cs.iter().map(|(_, c)| *c).collect::<Vec<_>>()).collect();
+            if self.core.keys_open(g, &x) {
+                let mut open = crate::sync::units::chain_holders(&self.core, g, &x);
+                open.extend([*g, Tid::PUBLIC]);
+                let mut seeds = BTreeSet::new();
+                for c in cs {
+                    let parts = self.stub_parts(&c, &x, &open);
+                    if !parts.is_empty() {
+                        out.add(c, parts);
+                        out.records.insert(x);
+                        out.records.extend(self.header(&c).map(|h| h.signer));
+                        seeds.insert((c, x));
+                    }
+                }
+                self.add_closure(ev, &seeds, out);
+                self.public_key_record_into(ev, &x, out);
+            } else if self.core.keyed_role_now(g, &x) >= Some(osis_base::Role::Sync) {
+                for c in cs {
+                    let boxes = self.header(&c).map(|h| h.aspect_parts(&x, "secrets.0")).unwrap_or_default();
+                    let named = self.holders_named(&c);
+                    let steps = self.header(&c).is_some_and(|h| !h.aspect_parts(&x, "sync.0").is_empty());
+                    if steps || boxes.into_iter().any(|ai| named.get(&ai).is_some_and(|hs| hs.contains(g))) {
+                        out.sync_copies.insert((c, x, *g));
+                    }
+                }
+            }
+        }
+    }
+
+    /// The stub cut of commit `c` on `x` for readers opening `open`: its
+    /// edge-class and `sync.0` parts, its `secrets.0` pieces naming a holder of `open` or none
+    /// (the rest piece). Invariant (security): nothing outside `x`; a box part only beside its
+    /// edge-class parts.
+    fn stub_parts(&mut self, c: &CommitId, x: &Tid, open: &BTreeSet<Tid>) -> Parts {
+        let Some(h) = self.header(c) else { return Parts::new() };
+        let named = self.holders_named(c);
+        let edge = |ak: &str| crate::apply::validity::edge_ak(ak);
+        let mut out = Parts::new();
+        for (i, a) in h.aspects.iter().enumerate().filter(|(_, a)| a.tid == *x) {
+            let take = match a.ak.as_str() {
+                "secrets.0" => named.get(&i).is_none_or(|hs| hs.is_empty() || hs.iter().any(|h| open.contains(h))),
+                ak => edge(ak) || ak == "sync.0",
+            };
+            if take {
+                out.insert(i);
+            }
+        }
+        if !out.is_empty() {
+            out.extend(h.aspects.iter().enumerate().filter(|(_, a)| a.tid == *x && edge(a.ak.as_str())).map(|(i, _)| i));
+        }
         out
     }
 
@@ -222,8 +283,7 @@ impl Engine {
     /// `x`: they carry the edge writes its rotation makes (a removal: a public link's redeemer
     /// learns the public's removal so).
     /// Invariant (security): nothing outside `x`; a box part only beside its edge-class parts.
-    // Stub rewrite (notes/stub-rewrite.md): a stub's cut, the `secrets.0` pieces boxing the
-    // holders its readers open, the rest piece where they read, `sync.0` (R2)
+    /// A stub's cut: `stub_parts`.
     pub(crate) fn cut_parts(&mut self, c: &CommitId, x: &Tid, cut: Cut) -> Parts {
         let Some(h) = self.header(c) else { return Parts::new() };
         let edge = |ak: &str| crate::apply::validity::edge_ak(ak);

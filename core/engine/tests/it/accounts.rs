@@ -94,7 +94,6 @@ fn a_sibling_writes_a_nodes_settings_and_cannot_sign_as_it_spec_sync_set_1() {
 // their holder's role on X, or with G's grant travelling as a certificate copy (Role changes
 // travel: a grant of only sync reaches its holder's readers as sync copies alone).
 #[test]
-#[ignore = "stub rewrite: a unit's stubs, cut and logged (R2)"]
 fn a_units_stub_is_carried_as_sync_copies_spec_sync_set_2() {
     use crate::common::edge;
     use std::collections::BTreeSet;

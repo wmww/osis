@@ -317,11 +317,19 @@ pub fn ran(w: &mut World) {
     }
 }
 
+/// The oracle is off (`closure`): R4 points it at held-model's stub closure.
+const MODEL_OFF: bool = true;
+
 /// The model at a quiet run with every node on and connected on a clean network, from the
 /// history alone (a reference of what was handed); `None` at any other run. Every node then
 /// holds its node closure: a thing made that no account's model closure holds or carries is held
 /// by no node, so it is gone (`Made::gone`).
 fn quiet_model(w: &mut World) -> Option<Model> {
+    // Stub rewrite (notes/stub-rewrite.md): no model at a quiet run until the oracle runs on
+    // held-model's stub closure (R4); a hand test's history plays without it (`played_on`)
+    if MODEL_OFF {
+        return None;
+    }
     if !w.net.cut_off.is_empty() || (0..w.len()).any(|i| !w.online(i)) {
         return None;
     }

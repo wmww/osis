@@ -53,6 +53,7 @@ fn ctx(c: &Ctx) -> String {
         Ctx::Local => "local".into(),
         Ctx::Read(t) => format!("read {t}"),
         Ctx::Unread(t) => format!("unread {t}"),
+        Ctx::Stub(t) => format!("stub {t}"),
     }
 }
 
@@ -314,7 +315,7 @@ impl Engine {
                         out.push_str(&sub.replace('\n', "\n  "));
                     }
                     let public = tx.core.keyed_role_now(&Tid::PUBLIC, &t);
-                    let _ = write!(out, "\n  the public: {public:?} by its grant, listed at the heads {:?}", tx.core.ix.public_listed.get(&t).map(|m| m.iter().map(|(s, h)| (*s, h.0[..4].to_vec())).collect::<Vec<_>>()));
+                    let _ = write!(out, "\n  the public: {public:?} by its grant, listed at the heads {:?}", tx.core.ix.public_listed.get(&t).map(|m| m.iter().map(|(s, l)| (*s, l.head.0[..4].to_vec(), l.role)).collect::<Vec<_>>()));
                     let due = crate::rotation::explain_due(tx, &a)?;
                     let _ = write!(out, "\n  lost access ({}): {due}", label(tx.core, &a));
                     let u = tx.core.unread(&t);

@@ -181,8 +181,8 @@ pub enum SourceClass {
     Reader,
     /// It keeps S unread (1).
     Store,
-    /// It holds S's thing for keys: S's role entries alone (2).
-    Keys,
+    /// It holds S's thing as a stub: S's role entries alone (2).
+    Stub,
 }
 
 impl SourceClass {
@@ -190,7 +190,7 @@ impl SourceClass {
         Value::uint(match self {
             SourceClass::Reader => 0,
             SourceClass::Store => 1,
-            SourceClass::Keys => 2,
+            SourceClass::Stub => 2,
         })
     }
 
@@ -198,7 +198,7 @@ impl SourceClass {
         match n {
             0 => Ok(SourceClass::Reader),
             1 => Ok(SourceClass::Store),
-            2 => Ok(SourceClass::Keys),
+            2 => Ok(SourceClass::Stub),
             _ => Err(Error::Malformed("class")),
         }
     }

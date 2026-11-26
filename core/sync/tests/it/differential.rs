@@ -20,6 +20,13 @@ pub(crate) fn holds(seed: u64, steps: &[Step], replay: String, twice: bool) -> W
 
 /// `holds` on a world of `n` nodes of `accounts` accounts.
 fn holds_on(seed: u64, accounts: usize, n: usize, steps: &[Step], replay: String, twice: bool) -> World {
+    let mut w = played_on(seed, accounts, n, steps, replay, twice);
+    check(&mut w);
+    w
+}
+
+/// `holds_on` without the oracle's check: the world at quiet, for a hand test's own assertions.
+pub(crate) fn played_on(seed: u64, accounts: usize, n: usize, steps: &[Step], replay: String, twice: bool) -> World {
     let played = |replay: String, again: bool| {
         let mut w = world_of(seed, accounts, n);
         if again {
@@ -36,14 +43,13 @@ fn holds_on(seed: u64, accounts: usize, n: usize, steps: &[Step], replay: String
         }
         (w, script)
     };
-    let (mut w, _script) = played(replay.clone(), false);
+    let (w, _script) = played(replay.clone(), false);
     if twice {
         let (again, _) = played(replay, true);
         if let Some(i) = (0..w.seen.len().max(again.seen.len())).find(|&i| w.seen.get(i) != again.seen.get(i)) {
             panic!("not deterministic: replay differs at delivery {i} of {}: {:?} then {:?}", w.seen.len(), w.seen.get(i), again.seen.get(i));
         }
     }
-    check(&mut w);
     w
 }
 
@@ -212,7 +218,6 @@ fn a_redeemer_misses_a_rotation_and_hears_the_public_removed_spec_sync_opens_6()
 // served the thing up to the removal, the public's open boxes with it). Control: with the public
 // not removed, the same redeem is served the thing.
 #[test]
-#[ignore = "stub rewrite: the differential's oracle on held-model's stub closure (R4)"]
 fn a_public_link_redeemed_after_the_removal_opens_nothing_spec_sync_opens_4() {
     use crate::harness::history::{Gives, Holder};
     let (n, accounts, ..) = size();
@@ -338,7 +343,6 @@ fn a_public_reader_keeps_a_thing_on_taking_its_record_spec_sync_3() {
 // waiting for a read secret is parked under it (failed: what a blob waited for was judged on the
 // parts missing at its opening, and a part dropped later parked nothing).
 #[test]
-#[ignore = "stub rewrite: the differential's oracle on held-model's stub closure (R4)"]
 fn an_entry_waits_for_a_part_dropped_after_its_opening_spec_sync_streams_4() {
     use crate::harness::history::{Gives, Holder};
     let script = [
@@ -591,4 +595,35 @@ fn a_holder_left_out_is_re_sealed_once_its_keyset_arrives_spec_permissions_3() {
 fn a_removed_reader_keeps_the_publics_sync_secret_through_its_loss_spec_permissions_3() {
     use crate::harness::script::*;
     holds_on(0, 3, 4, &[New(2), Give(2, 0, Holder::Node(0), Reads), Give(2, 0, Holder::Node(1), Reads), Revoke(2, 0, Holder::Node(1)), Give(2, 0, Holder::Public, Syncs), Strong(0, None, 0), Revoke(2, 0, Holder::Node(0))], String::new(), false);
+}
+
+// spec/sync.md §3 (Holders by copies: the head listing the public is the word of its role only to a
+// node not holding the `sync.0` write placing that head): node 1 redeems a public link to thing 0
+// and reads it by the public entry's box, then is granted sync of its own; node 0 lowers the
+// public to sync and writes. Lowering rotates read alone, so node 1 sees no new head but holds the
+// lowering: it reads no more.
+#[test]
+fn a_reader_by_the_publics_box_reads_no_more_once_lowered_spec_sync_3() {
+    use crate::harness::history::{Gives, Holder, reads};
+    let (n, accounts, ..) = size();
+    let script = [Step::New(0), Step::Give(0, 0, Holder::Public, Gives::Reads), Step::Run, Step::Redeem(1, 0), Step::Run, Step::Give(0, 0, Holder::Node(1), Gives::Syncs), Step::Write(0, 0), Step::Run, Step::Lower(0, 0, Holder::Public, Gives::Syncs), Step::Write(0, 0), Step::Run];
+    let mut w = played_on(0, accounts, n, &script, String::new(), false);
+    let t = w.history.things[0].0;
+    let (latest, read) = (reads(w.engine(0), &t).value, reads(w.engine(1), &t).value);
+    assert!(read != latest, "node 1 reads the latest write no more");
+}
+
+// spec/sync.md §3 (Holders by copies): node 1, granted sync, reads thing 0 by its head's public
+// entry box, and started again still reads its latest write.
+#[test]
+fn a_reader_by_the_publics_box_reads_across_a_start_spec_sync_3() {
+    use crate::harness::history::{Gives, Holder, reads};
+    let (n, accounts, ..) = size();
+    let script = [Step::New(0), Step::Give(0, 0, Holder::Public, Gives::Reads), Step::Run, Step::Redeem(1, 0), Step::Run, Step::Give(0, 0, Holder::Node(1), Gives::Syncs), Step::Write(0, 0), Step::Run];
+    let mut w = played_on(0, accounts, n, &script, String::new(), false);
+    let t = w.history.things[0].0;
+    assert!(reads(w.engine(1), &t).value.is_some(), "node 1 reads the thing by the public's box");
+    play(&mut w, &[Step::PowerOff(1), Step::PowerOn(1), Step::Write(0, 0), Step::Run], String::new());
+    let (latest, read) = (reads(w.engine(0), &t).value, reads(w.engine(1), &t).value);
+    assert!(read.is_some() && read == latest, "started again: node 1 reads the latest write");
 }

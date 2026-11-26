@@ -37,6 +37,12 @@ pub(crate) fn holds_target(kind: RefKind, ak: &Ak) -> bool {
     kind == RefKind::Strong && !ak.signal()
 }
 
+/// Whether a `kind` row on `ak` brings its target's stub as a weak in a current value does
+/// (spec/sync-set.md §2 Stubs).
+pub(crate) fn holds_stub(kind: RefKind, ak: &Ak) -> bool {
+    kind == RefKind::Weak && !ak.signal()
+}
+
 /// Whether `ak` is indexed: every aspect with a state, and every durable signal by its held
 /// valid fires (an ephemeral signal's fires are held by none).
 pub fn indexed(ak: &Ak) -> bool {
@@ -425,18 +431,14 @@ fn note_rows(tx: &mut Tx<'_>, source: &Tid, ak: &Ak, d: Delta) -> Result<()> {
                 if kind == RefKind::Strong || ak.as_str() == "keys.0" {
                     tx.core.note_lost(target);
                 }
-                if kind == RefKind::Strong {
-                    tx.core.ix.closure.note_row(*source, target);
-                }
+                tx.core.ix.closure.note_row(*source, target);
             } else {
                 tx.txn.table_put(from, &fk, new.to_be_bytes().to_vec(), Shred::No)?;
                 if old == 0 {
                     tx.txn.table_put(to, &tk, Vec::new(), Shred::No)?;
                     moved.push((target, ak.clone()));
-                    // the node closure follows a strong appearing or going (`sync::units`)
-                    if kind == RefKind::Strong {
-                        tx.core.ix.closure.note_row(*source, target);
-                    }
+                    // the node closure follows a reference appearing or going (`sync::units`)
+                    tx.core.ix.closure.note_row(*source, target);
                 }
             }
         }
@@ -547,6 +549,23 @@ pub(crate) fn strong_from(tx: &mut Tx<'_>, source: &Tid, target: &Tid) -> Result
         let Some((k, _)) = tx.txn.table_range(to, &start, Some(&end), 1)?.into_iter().next() else { return Ok(false) };
         let (_, ak, _) = parse_to(k.get(pre.len()..).ok_or(Error::Corrupt("reference row"))?)?;
         if holds_target(RefKind::Strong, &ak) && tx.txn.table_get(to, &to_key(target, source, &ak, RefKind::Strong))?.is_some() {
+            return Ok(true);
+        }
+        start = [pre.as_slice(), ak.as_str().as_bytes(), &[1]].concat();
+    }
+}
+
+/// Whether `source` holds a weak to `target` in a current value (a fire's weaks are history,
+/// spec/data-model.md §8 What counts): what brings a stub (spec/sync-set.md §2 Stubs).
+pub(crate) fn weak_from(tx: &mut Tx<'_>, source: &Tid, target: &Tid) -> Result<bool> {
+    let to = tx.txn.index(TO)?;
+    let pre = target.as_bytes().to_vec();
+    let end = [pre.as_slice(), &[0xff; 16]].concat();
+    let mut start = pre.clone();
+    loop {
+        let Some((k, _)) = tx.txn.table_range(to, &start, Some(&end), 1)?.into_iter().next() else { return Ok(false) };
+        let (_, ak, _) = parse_to(k.get(pre.len()..).ok_or(Error::Corrupt("reference row"))?)?;
+        if holds_stub(RefKind::Weak, &ak) && tx.txn.table_get(to, &to_key(target, source, &ak, RefKind::Weak))?.is_some() {
             return Ok(true);
         }
         start = [pre.as_slice(), ak.as_str().as_bytes(), &[1]].concat();

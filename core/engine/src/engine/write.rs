@@ -1217,11 +1217,13 @@ pub(crate) fn commit_or_build(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option
     // a node writes only what it holds (spec/sync-set.md §2 Writing, Making a thing): every thing
     // the commit makes, and every thing it writes not held as it writes, must be held at the
     // transaction's end; a thing made with its role entries alone may be held as a holder
-    // (`Written::Holder`); a sealed fire is built, never applied.
+    // (`Written::Holder`); role entries on a thing held as a stub are no write outside it; a
+    // sealed fire is built, never applied.
     if !sealed {
         let role_only = |t: &Tid| m.aspects.keys().filter(|(x, _)| x == t).all(|(_, ak)| ak.as_str() == CREATED.ak() || is_role_class(ak.as_str()));
         let made = m.creates.keys().map(|t| if role_only(t) { Written::Holder(*t) } else { Written::Held(*t) });
-        let unheld = m.aspects.keys().map(|(t, _)| *t).filter(|t| !m.creates.contains_key(t) && !tx.core.ix.closure.holds(t)).map(Written::Held);
+        let cl = &tx.core.ix.closure;
+        let unheld = m.aspects.keys().map(|(t, _)| *t).filter(|t| !m.creates.contains_key(t) && !cl.holds(t) && !(cl.holds_any(t) && role_only(t))).map(Written::Held);
         let written: Vec<Written> = made.chain(unheld).collect();
         tx.core.wrote_on.extend(written);
     }

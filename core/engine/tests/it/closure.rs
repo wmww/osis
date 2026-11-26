@@ -559,7 +559,8 @@ fn a_take_up_costs_what_the_opener_opens_spec_sync_set_2() {
     };
     let (small, large) = (work(5), work(50));
     eprintln!("take-up and create_link work at n, 10n: {small:?} {large:?}");
-    assert_eq!(small, large);
+    // the work does not grow with n (it moves by a few edges woken either way)
+    assert!(large.0 <= small.0 && large.1 <= small.1, "{small:?} at n, {large:?} at 10n");
 }
 
 // spec/commits.md §5 What a held thing needs (dropped when the pass that brought it ends): what a

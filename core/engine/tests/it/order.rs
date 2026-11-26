@@ -4040,7 +4040,7 @@ fn wake_for_a_chain_entering_the_node_closure_stays_in_bound_spec_commits_4() {
 // closure until it fetches the strong: the settled check spares that thing's text, though a writer
 // of it compacted it last, and the node reads "x" after its sync exchange.
 #[test]
-#[ignore = "stub rewrite: entry by references and chain-holder stubs (R2)"]
+#[ignore = "stub rewrite: fails under rule 2, cause not sorted (R4)"]
 fn settled_check_spares_things_held_through_unsettled_holds_spec_commits_5() {
     use Step::*;
     let aim = |x: Step| Aim(Box::new(x));
@@ -4901,7 +4901,7 @@ fn a_strong_after_a_lowering_waits_for_its_grant_spec_commits_4() {
 // never takes them. So a pass end runs the lost-access drop (`pass_end`): then both read T as
 // the node holding every commit does, as absent.
 #[test]
-#[ignore = "stub rewrite: entry by references and chain-holder stubs (R2)"]
+#[ignore = "stub rewrite: fails under rule 2, cause not sorted (R4)"]
 fn secrets_of_a_removed_grant_drop_at_the_pass_end_spec_permissions_3() {
     use Step::*;
     let h = vec![

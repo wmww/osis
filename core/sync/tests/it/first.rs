@@ -108,7 +108,6 @@ fn cost(n: usize) -> Cost {
 // what the maker holds under each member's sync ID, so the maker fetches nothing back from it:
 // as many bodies at 5n members as at n.
 #[test]
-#[ignore = "stub rewrite: the differential's oracle on held-model's stub closure (R4)"]
 fn a_new_reader_logs_no_copy_of_what_its_source_holds_spec_sync_judgement_3() {
     let (small, large) = (cost(N), cost(LARGE));
     let (asked, answered) = ((small.sent(0, 2, "Fetch"), large.sent(0, 2, "Fetch")), (small.sent(2, 0, "FetchReply"), large.sent(2, 0, "FetchReply")));
@@ -155,7 +154,6 @@ fn a_blob_is_fetched_once_whatever_sync_ids_carry_it_spec_sync_streams_4() {
 // the store keeping the root unread still lists until the maker's Delete reaches it), once each
 // and as many at 5n members as at n.
 #[test]
-#[ignore = "stub rewrite: the differential's oracle on held-model's stub closure (R4)"]
 fn what_a_reader_fetches_and_drops_does_not_grow_spec_permissions_4() {
     let (small, large) = (cost(N), cost(LARGE));
     let count = |c: &Cost| c.unkept.values().map(Vec::len).sum::<usize>();
@@ -174,7 +172,6 @@ fn what_a_reader_fetches_and_drops_does_not_grow_spec_permissions_4() {
 // held back for one (streams::ephemeral_entries_wait_for_a_log_position builds that case on a
 // bare store): the maker, the node keeping the closure unread and the new reader alike.
 #[test]
-#[ignore = "stub rewrite: the differential's oracle on held-model's stub closure (R4)"]
 fn a_node_holding_an_entry_of_s_has_its_head_logged_spec_sync_streams_4() {
     let c = cost(N);
     for (i, (held, missing)) in c.heads.iter().enumerate() {

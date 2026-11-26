@@ -177,14 +177,14 @@ impl Page {
     }
 }
 
-/// Whether the peer on `conn` is shown part of S alone (`shown`): it holds S's thing for keys, as
+/// Whether the peer on `conn` is shown part of S alone (`shown`): it holds S's thing as a stub, as
 /// it declared opening S (spec/sync-opens.md §4 Source), or its member is ended for its departure
 /// (§6).
-pub(super) fn for_keys(ctx: &Ctx, conn: ConnId, s: &SyncId) -> bool {
-    ctx.shared.members(conn).get(s).is_some_and(|m| m.class == SourceClass::Keys || m.departed.is_some())
+pub(super) fn as_stub(ctx: &Ctx, conn: ConnId, s: &SyncId) -> bool {
+    ctx.shared.members(conn).get(s).is_some_and(|m| m.class == SourceClass::Stub || m.departed.is_some())
 }
 
-/// Whether entry `e` of S is shown the peer on `conn`: to one held in the keys class, a role entry alone
+/// Whether entry `e` of S is shown the peer on `conn`: to one held as a stub, a role entry alone
 /// (`role_entry`); to one ended for its departure, the notices of its removals and the public's
 /// edge alone (spec/sync-opens.md §6, `Engine::departed_shown`).
 fn shown(ctx: &mut Ctx, conn: ConnId, s: &SyncId, e: &Entry) -> bool {
@@ -193,7 +193,7 @@ fn shown(ctx: &mut Ctx, conn: ConnId, s: &SyncId, e: &Entry) -> bool {
             let proven = m.departed.clone().unwrap_or_default();
             ctx.ground.departed_shown(s, &e.blob, &proven)
         }
-        Some(m) if m.class == SourceClass::Keys => role_entry(ctx, s, e),
+        Some(m) if m.class == SourceClass::Stub => role_entry(ctx, s, e),
         _ => true,
     }
 }
@@ -478,8 +478,8 @@ impl Streams {
             (Some(x), None) => x.eph.iter().map(|(s, n)| (*s, *n)).collect(),
             (Some(x), Some(m)) => m.iter().filter_map(|s| Some((*s, *x.eph.get(s)?))).collect(),
         };
-        // no ephemeral entry is a role entry: a peer holding S's thing for keys is listed none
-        let listing: Vec<(SyncId, u64)> = listing.into_iter().filter(|(s, _)| members.until(s) == Some(None) && !for_keys(ctx, conn, s)).collect();
+        // no ephemeral entry is a role entry: a peer holding S's thing as a stub is listed none
+        let listing: Vec<(SyncId, u64)> = listing.into_iter().filter(|(s, _)| members.until(s) == Some(None) && !as_stub(ctx, conn, s)).collect();
         self.work.members += listing.len() as u64;
         for (s, mut at) in listing {
             loop {
@@ -734,12 +734,12 @@ impl Streams {
     /// A Want (spec/wire.md §11.2 Want; spec/sync-judgement.md §3 Asked by ID): for each commit, in
     /// request order, an entry of its body under its sync ID this node holds or makes, a prefix of
     /// them within `max_reply`; none under a sync ID not shared here, not read here, or open to a
-    /// peer holding it for keys.
+    /// peer holding it as a stub.
     pub(super) fn on_want(&mut self, ctx: &mut Ctx, conn: ConnId, id: Id, max_reply: u64, ids: Vec<(SyncId, Vec<osis_base::CommitId>)>) {
         let mut left = (max_reply as usize).min(REPLY_BUDGET).saturating_sub(OVERHEAD);
         let mut items = Vec::new();
         for (s, c) in ids.into_iter().flat_map(|(s, cs)| cs.into_iter().map(move |c| (s, c))) {
-            let open = ctx.shared.members(conn).contains_key(&s) && ctx.store.holding(&s) == Some(Holding::Read) && !for_keys(ctx, conn, &s);
+            let open = ctx.shared.members(conn).contains_key(&s) && ctx.store.holding(&s) == Some(Holding::Read) && !as_stub(ctx, conn, &s);
             let entry = if open { ctx.ground.want(ctx.store, &s, &c).ok().flatten() } else { None };
             let n = entry.as_ref().map_or(40, |(v, ..)| v.len() + 200);
             if n > left && !items.is_empty() {

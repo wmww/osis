@@ -39,8 +39,8 @@ impl Streams {
         if osis_blob::blob_id(&bytes) != e.blob {
             return;
         }
-        // held in the keys class it takes role entries alone, and no relay-only blob is one
-        if holding == Holding::Keys {
+        // held as a stub it takes role entries alone, and no relay-only blob is one
+        if holding == Holding::Stub {
             return;
         }
         if holding != Holding::Read {
@@ -70,12 +70,12 @@ impl Streams {
     }
 
     /// Pushes a relay-only entry to every connection where S is a member and not ended, but
-    /// `from` and a peer holding S's thing for keys (it takes role entries alone): one whose push does not fit is not pushed there (spec/sync-streams.md §2).
+    /// `from` and a peer holding S's thing as a stub (it takes role entries alone): one whose push does not fit is not pushed there (spec/sync-streams.md §2).
     #[allow(clippy::too_many_arguments)]
     fn pass_on(&mut self, ctx: &mut Ctx, from: Option<ConnId>, s: SyncId, b: BlobId, bytes: Vec<u8>, wrap: crate::types::Wrap, stamp: Option<osis_proto::Stamp>) {
         let to: Vec<ConnId> = self.holders.get(&s).into_iter().flatten().copied().filter(|c| Some(*c) != from).collect();
         for c in to {
-            if ctx.shared.members(c).get(&s).is_none_or(|m| m.until.is_some()) || super::serve::for_keys(ctx, c, &s) {
+            if ctx.shared.members(c).get(&s).is_none_or(|m| m.until.is_some()) || super::serve::as_stub(ctx, c, &s) {
                 continue;
             }
             let ev = Event::Added { blob_id: b, blob: Some(bytes.clone()), wrap, stamp };

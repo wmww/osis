@@ -1197,7 +1197,6 @@ fn finalize_without_secret_rotates_history_added_spec_permissions_2() {
 // default to erase. Past the `until`, the ending still says retain: in the timeline every node
 // reads (the way a lost copy hangs on) and in A's finalize.
 #[test]
-#[ignore = "stub rewrite: the local part's entry follows a timed ending (R2)"]
 fn a_later_default_changes_no_timed_ending_spec_permissions_3() {
     let (mut lp, g, tids) = granted(2, &[]);
     let set_default = |lp: &mut LocalPeer, retain: bool| {

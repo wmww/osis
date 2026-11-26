@@ -42,7 +42,6 @@ fn a_paired_node_holds_and_writes_the_account_spec_permissions_8() {
 // spec/permissions.md §8 Pairing: only a node holding admin on A pairs. A node paired at write
 // is refused, and nothing is granted.
 #[test]
-#[ignore = "stub rewrite: pairing hands over A's values (R3)"]
 fn only_an_admin_of_the_account_pairs_spec_permissions_8() {
     let mut lp = LocalPeer::apart(vec![Peer::new(0, T0).unwrap()], 0);
     osis_engine::local_peer::make_account(&mut lp.peers[0].engine).unwrap();

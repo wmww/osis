@@ -318,14 +318,14 @@ fn crossing_offers_leave_both_sides_one_class_spec_sync_opens_4() {
         p.run();
         assert!(p.a.open(p.ca, &S) && p.b.open(p.cb, &S));
         // a's Lost and its Offer declaring keys go out; a reads again before b takes them
-        p.a.table.set(S, Some(creds(Holding::Keys)));
+        p.a.table.set(S, Some(creds(Holding::Stub)));
         p.a.settle();
         if back {
             p.a.table.set(S, Some(creds(Holding::Read)));
             p.a.settle();
         }
         p.run();
-        let class = if back { SourceClass::Reader } else { SourceClass::Keys };
+        let class = if back { SourceClass::Reader } else { SourceClass::Stub };
         assert!(p.a.open(p.ca, &S) && p.b.open(p.cb, &S), "open again");
         assert_eq!(p.b.opens.members(p.cb)[&S].class, class, "b holds a's class as a declares it now");
         assert_eq!(p.a.opens.members(p.ca)[&S].own, class);

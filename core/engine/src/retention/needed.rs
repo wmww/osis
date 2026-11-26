@@ -255,7 +255,7 @@ pub(crate) enum Need {
 /// Why `t` is kept for itself (the module doc), if it is.
 pub(crate) fn rooted(core: &Core, t: &Tid) -> Option<Root> {
     let cl = &core.ix.closure;
-    if cl.holds(t) || cl.left().contains_key(t) {
+    if cl.holds_any(t) || cl.left().contains_key(t) {
         return Some(Root::Held);
     }
     if let Some(a) = super::forget::copy_of(core, t) {

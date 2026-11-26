@@ -108,7 +108,7 @@ fn class_byte(c: SourceClass) -> u8 {
     match c {
         SourceClass::Store => 0,
         SourceClass::Reader => 1,
-        SourceClass::Keys => 2,
+        SourceClass::Stub => 2,
     }
 }
 
@@ -116,7 +116,7 @@ fn class_of(b: u8) -> Res<SourceClass> {
     match b {
         0 => Ok(SourceClass::Store),
         1 => Ok(SourceClass::Reader),
-        2 => Ok(SourceClass::Keys),
+        2 => Ok(SourceClass::Stub),
         _ => Err(corrupt()),
     }
 }

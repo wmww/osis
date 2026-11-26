@@ -13,7 +13,7 @@ impl Engine {
     /// that held it when it left (none: it left the local part): what sync drops once its pass
     /// in flight ends (spec/sync-set.md §3). A stamped read.
     pub fn left_closure(&self) -> BTreeMap<Tid, BTreeSet<Tid>> {
-        let units = |cs: &BTreeSet<crate::sync::units::Ctx>| cs.iter().filter_map(|c| if let crate::sync::units::Ctx::Read(u) | crate::sync::units::Ctx::Unread(u) = c { Some(*u) } else { None }).collect();
+        let units = |cs: &BTreeSet<crate::sync::units::Ctx>| cs.iter().filter_map(|c| if let crate::sync::units::Ctx::Read(u) | crate::sync::units::Ctx::Unread(u) | crate::sync::units::Ctx::Stub(u) = c { Some(*u) } else { None }).collect();
         self.core.ix.closure.left().iter().map(|(t, cs)| (*t, units(cs))).collect()
     }
 
@@ -23,7 +23,7 @@ impl Engine {
     /// received, its certificates stay while a held thing needs them, and the store's own
     /// entries of the commits it deleted whole go (`sync::bodies::forget`).
     pub fn released(&mut self, ts: &BTreeSet<Tid>) -> Result<()> {
-        let out: BTreeSet<Tid> = ts.iter().filter(|t| !self.core.ix.closure.holds(t)).copied().collect();
+        let out: BTreeSet<Tid> = ts.iter().filter(|t| !self.core.ix.closure.holds_any(t)).copied().collect();
         if out.is_empty() {
             return Ok(());
         }

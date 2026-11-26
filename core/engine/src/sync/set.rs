@@ -88,7 +88,7 @@ impl Engine {
             }
         }
         for s in ids {
-            // history is the content's: a sync ID held in the keys class carries none of it here
+            // history is the content's: a sync ID held as a stub carries none of it here
             if self.sync_holder(&s)?.is_some_and(|(_, h)| h == Holding::Read) && !self.core.ix.passes.contains_key(&s) {
                 return Ok(false);
             }
@@ -136,13 +136,13 @@ impl Engine {
     }
 
     /// The sync IDs thing `t` of `sync_things` is synced under, each with how it is held
-    /// (spec/sync.md §3): read by a read secret of a thing the node closure reads, kept unread by
-    /// a sync secret alone. Reads `t`'s keys.
-    // Stub rewrite (notes/stub-rewrite.md): a stub's holder is synced for role entries alone
-    // (`Holding::Keys`, the stub class, R2)
+    /// (spec/sync.md §3): read by a read secret of a thing the node closure reads, as a stub by a
+    /// read secret of a thing held as a stub alone (spec/sync-set.md §2 Holding a stub: its role
+    /// entries alone), kept unread by a sync secret alone. Reads `t`'s keys.
     pub(crate) fn thing_holdings(&mut self, t: &Tid) -> Result<Vec<(SyncId, Holding)>> {
+        let read = if self.core.ix.closure.stub_only(t) { Holding::Stub } else { Holding::Read };
         Ok(match self.thing_sync(t)? {
-            ThingSync::Read(ids) => ids.into_iter().map(|s| (s, Holding::Read)).collect(),
+            ThingSync::Read(ids) => ids.into_iter().map(|s| (s, read)).collect(),
             ThingSync::Unread(ids) => ids.into_iter().map(|s| (s, Holding::Unread)).collect(),
             ThingSync::Unsyncable | ThingSync::Dependent => Vec::new(),
         })

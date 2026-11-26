@@ -97,6 +97,14 @@ fn valid(lp: &LocalPeer, peer: usize, c: &CommitId, t: Tid, a: &str) -> bool {
     m.valid_at(m.aspect(&t, &ak(a)).unwrap())
 }
 
+/// The peers holding `t`: a removed holder holds it no more (spec/sync-set.md §2), so it judges
+/// nothing of it; at least two do.
+fn holding(lp: &LocalPeer, t: Tid) -> Vec<usize> {
+    let out: Vec<usize> = (0..lp.peers.len()).filter(|p| lp.peers[*p].engine.closure_holds(&t)).collect();
+    assert!(out.len() >= 2, "{t:?} held by {out:?}");
+    out
+}
+
 /// The addenda commits held at `peer` on `t`, by author.
 fn addenda(lp: &LocalPeer, peer: usize, t: Tid) -> Vec<(Tid, CommitId)> {
     let core = &lp.peers[peer].engine.core;
@@ -163,7 +171,6 @@ fn received_after_the_removal_is_not_vouched_for_spec_perm_5_2() {
 // Carol's addendum, so it falls and the edit with it; Dave, a writer who received Carol's addendum
 // before her removal, vouches for the addendum in turn, and the edit is back everywhere.
 #[test]
-#[ignore = "stub rewrite: entry by references and chain-holder stubs (R2)"]
 fn a_fallen_addendum_is_vouched_for_in_turn_spec_perm_5_2() {
     let (mut lp, t) = world(4, &[Role::Write, Role::Write, Role::Write]);
     let e = write(&mut lp, 1, t, "x:e.0", 7);
@@ -179,7 +186,7 @@ fn a_fallen_addendum_is_vouched_for_in_turn_spec_perm_5_2() {
     lp.sync_all().unwrap();
     let dave = lp.peers[3].engine.tid();
     assert!(addenda(&lp, 0, t).iter().any(|(x, _)| *x == dave), "Dave vouches for Carol's addendum");
-    for p in [0, 2, 3] {
+    for p in holding(&lp, t) {
         assert!(valid(&lp, p, &a, t, ct::ADDENDA_AK), "peer {p}: Carol's addendum counts again");
         assert!(valid(&lp, p, &e, t, "x:e.0"), "peer {p}: the edit is back");
         assert_eq!(reads(&mut lp, p, t, "x:e.0"), Some(Value::Int(7)), "peer {p}");
@@ -320,7 +327,7 @@ fn build_holder() -> (LocalPeer, Tid, Tid, CommitId, CommitId) {
 // write states: the write counts. A writer can always vouch for the removed side's earlier
 // writes on a thing it writes (stated limit, notes/revocation.md).
 #[test]
-#[ignore = "stub rewrite: entry by references and chain-holder stubs (R2)"]
+#[ignore = "stub rewrite: a removed holder judges nothing of the thing; which peers to assert on (R4)"]
 fn lying_writer_vouches_for_a_removed_holders_write_spec_perm_5_2() {
     let (mut lp, n, _, r, e) = holder_world();
     lp.sync(1, 2).unwrap();
@@ -669,7 +676,7 @@ fn removed_writers_writes(seed: u64) -> (usize, bool) {
 // commit in either order read alike: Bob's write stands by Carol's addendum when she had it, and
 // Bob's own snapshot never stands, whatever the tids (both orders of the tied pair's).
 #[test]
-#[ignore = "stub rewrite: entry by references and chain-holder stubs (R2)"]
+#[ignore = "stub rewrite: a removed holder judges nothing of the thing; which peers to assert on (R4)"]
 fn a_compaction_around_a_write_at_its_removals_ts_reads_alike_spec_perm_5_2() {
     for [a, b, c] in [[0, 1, 2], [1, 0, 2]] {
         for bob_compacts in [false, true] {
@@ -710,7 +717,7 @@ fn a_compaction_around_a_write_at_its_removals_ts_reads_alike_spec_perm_5_2() {
                 lp.sync_all().unwrap();
             }
             let want = Some(Value::Int(5));
-            for i in 0..3 {
+            for i in holding(&lp, t) {
                 assert_eq!(reads(&mut lp, i, t, "x:v.0"), want, "{at}: peer {i}");
                 if let Some(s) = snap {
                     assert!(!valid(&lp, i, &s, t, "x:v.0"), "{at}: peer {i}: Bob's snapshot");
@@ -788,7 +795,7 @@ fn a_write_at_its_authors_grants_ts_is_before_the_grant_spec_perm_5_2() {
 // of her addendum's `ts`, and Dave, who received it in time, vouches for it: it counts, and Bob's
 // edit with it, at every peer whatever the tids.
 #[test]
-#[ignore = "stub rewrite: entry by references and chain-holder stubs (R2)"]
+#[ignore = "stub rewrite: a removed holder judges nothing of the thing; which peers to assert on (R4)"]
 fn an_addendum_at_its_authors_removals_ts_counts_when_vouched_for_spec_perm_5_2() {
     for [a, b, c, d] in [[0, 1, 2, 3], [2, 1, 0, 3]] {
         let mut lp = LocalPeer::fresh(4, T0);
@@ -1183,7 +1190,6 @@ fn purge_on_replace_keeps_what_an_own_cover_covers_spec_perm_5_1() {
 // Carol writes her addendum then, by the state rule (answering once, as Carol applied the removal
 // without the role, loses the edit), and the edit stands at every node.
 #[test]
-#[ignore = "stub rewrite: entry by references and chain-holder stubs (R2)"]
 fn a_witness_granted_write_after_the_removal_writes_its_addendum_then_spec_perm_5_2() {
     let (mut lp, t) = world(3, &[Role::Write, Role::Read]);
     let e = write(&mut lp, 1, t, "x:e.0", 7);
@@ -1198,7 +1204,7 @@ fn a_witness_granted_write_after_the_removal_writes_its_addendum_then_spec_perm_
     lp.sync(0, 2).unwrap();
     assert_eq!(addenda(&lp, 2, t).iter().filter(|(a, _)| *a == carol).count(), 1, "Carol writes once she holds write");
     lp.sync_all().unwrap();
-    for p in 0..3 {
+    for p in holding(&lp, t) {
         assert!(valid(&lp, p, &e, t, "x:e.0"), "peer {p}: the edit stands");
     }
 }
@@ -1219,7 +1225,6 @@ fn demote_to(lp: &mut LocalPeer, t: Tid, to: Option<Role>) -> CommitId {
 // to write, without it. Carol, an admin who received it, writes her addendum by the state rule
 // and it keeps Bob's write at every node; Dave, a writer who received it too, owes none.
 #[test]
-#[ignore = "stub rewrite: entry by references and chain-holder stubs (R2)"]
 fn admin_only_content_is_kept_by_an_admin_witness_spec_perm_5_2() {
     for to in [None, Some(Role::Write)] {
         let (mut lp, t) = world(4, &[Role::Admin, Role::Admin, Role::Write]);
@@ -1234,7 +1239,7 @@ fn admin_only_content_is_kept_by_an_admin_witness_spec_perm_5_2() {
         let by: Vec<Tid> = addenda(&lp, 0, t).into_iter().map(|(a, _)| a).collect();
         assert!(by.contains(&carol), "Carol, an admin, writes one ({to:?})");
         assert!(!by.contains(&dave), "Dave, a writer, owes none ({to:?})");
-        for p in 0..4 {
+        for p in holding(&lp, t) {
             assert!(valid(&lp, p, &e, t, "x:p^.0"), "peer {p} ({to:?}): Bob's admin-only write stands");
         }
     }
@@ -1244,7 +1249,7 @@ fn admin_only_content_is_kept_by_an_admin_witness_spec_perm_5_2() {
 // delta needs admin): as above, but only Dave, a writer, received Bob's admin-only write; his
 // addendum listing it (written by hand: the state rule writes none) keeps nothing.
 #[test]
-#[ignore = "stub rewrite: entry by references and chain-holder stubs (R2)"]
+#[ignore = "stub rewrite: a removed holder judges nothing of the thing; which peers to assert on (R4)"]
 fn admin_only_content_is_not_kept_by_a_writers_addendum_spec_perm_5_2() {
     let (mut lp, t) = world(4, &[Role::Admin, Role::Admin, Role::Write]);
     for p in &mut lp.peers {
@@ -1304,7 +1309,6 @@ fn an_edit_received_in_time_that_applies_late_is_vouched_for_spec_perm_5_2() {
 // catches up both apply in one round, the edit as plain content moving nothing else. Received
 // before the removal, it is a candidate there and then: Carol vouches for it and it stands.
 #[test]
-#[ignore = "stub rewrite: entry by references and chain-holder stubs (R2)"]
 fn an_edit_applying_in_its_removals_round_is_vouched_for_spec_perm_5_2() {
     use crate::apply::{Ingested, Reason};
     let (mut lp, t) = world(3, &[Role::Write, Role::Write]);
@@ -1325,7 +1329,7 @@ fn an_edit_applying_in_its_removals_round_is_vouched_for_spec_perm_5_2() {
     let carol = lp.peers[2].engine.tid();
     assert_eq!(addenda(&lp, 2, t).iter().filter(|(a, _)| *a == carol).count(), 1, "Carol vouches for the edit");
     lp.sync_all().unwrap();
-    for p in 0..3 {
+    for p in holding(&lp, t) {
         assert!(valid(&lp, p, &e, t, "x:e.0"), "peer {p}: the edit stands");
     }
 }
@@ -1336,7 +1340,6 @@ fn an_edit_applying_in_its_removals_round_is_vouched_for_spec_perm_5_2() {
 // is outside her node closure and the addendum owed there waits; her addendum on t makes the
 // strong count again and brings t2 back in, and she writes the one on t2 in the same transaction.
 #[test]
-#[ignore = "stub rewrite: entry by references and chain-holder stubs (R2)"]
 fn a_thing_an_addendum_brings_into_the_closure_gets_its_addendum_then_spec_perm_5_2() {
     let (mut lp, t) = world(3, &[Role::Write, Role::Write]);
     let (t2, _) = lp.peers[1].engine.create_with_admin(&t).unwrap();
@@ -1352,7 +1355,7 @@ fn a_thing_an_addendum_brings_into_the_closure_gets_its_addendum_then_spec_perm_
     assert!(lp.peers[2].engine.closure_holds(&t2), "the strong counts: t2 is in Carol's node closure");
     assert_eq!(by_carol(&lp, t2), 1, "and the edit on t2 in the same transaction");
     lp.sync_all().unwrap();
-    for p in 0..3 {
+    for p in holding(&lp, t2) {
         assert!(valid(&lp, p, &e, t2, "x:e.0"), "peer {p}: the edit stands");
     }
 }
@@ -1361,7 +1364,6 @@ fn a_thing_an_addendum_brings_into_the_closure_gets_its_addendum_then_spec_perm_
 // removal and Bob's edit but writes nothing (writing off); after a restart, her next transaction
 // writes the addendum she owes, and the edit stands at every node.
 #[test]
-#[ignore = "stub rewrite: entry by references and chain-holder stubs (R2)"]
 fn an_addendum_owed_across_a_restart_is_written_spec_perm_5_2() {
     let (mut lp, t) = world(3, &[Role::Write, Role::Write]);
     let e = write(&mut lp, 1, t, "x:e.0", 7);
@@ -1378,7 +1380,7 @@ fn an_addendum_owed_across_a_restart_is_written_spec_perm_5_2() {
     lp.peers[2].commit(m).unwrap();
     assert_eq!(addenda(&lp, 2, t).iter().filter(|(a, _)| *a == me).count(), 1, "written after the restart");
     lp.sync_all().unwrap();
-    for p in 0..3 {
+    for p in holding(&lp, t) {
         assert!(valid(&lp, p, &e, t, "x:e.0"), "peer {p}: the edit stands");
     }
 }

@@ -351,7 +351,7 @@ pub(crate) struct Entered {
 /// How this node syncs one thing of N's closure (spec/sync-set.md §2).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ThingSync {
-    /// Its sync IDs, opened by a read secret held: read, or, where the thing is held in the keys class,
+    /// Its sync IDs, opened by a read secret held: read, or, where the thing is held as a stub,
     /// for role entries alone (`Engine::thing_holdings` tells which).
     Read(Vec<SyncId>),
     /// Kept unread: by a sync secret alone (spec/sync.md §3).
@@ -368,15 +368,13 @@ pub enum Holding {
     Read,
     /// Its role entries alone, opened and judged as a reader does, and none of its thing's
     /// content.
-    // Stub rewrite (notes/stub-rewrite.md): the stub class, a stub's holder followed for role
-    // entries (R2); nothing holds a sync ID so yet
-    Keys,
+    Stub,
     Unread,
 }
 
 impl Holding {
     /// Whether a read secret of S's thing is held: S's entries are opened and judged as a reader
-    /// does (all of them read, its role entries alone held in the keys class).
+    /// does (all of them read, its role entries alone held as a stub).
     pub fn opens(self) -> bool {
         self != Holding::Unread
     }
@@ -794,15 +792,18 @@ impl Engine {
     }
 
     /// Learns an opened grant's secrets (`learn_secret`), once its answer's signature verified.
-    /// The public's: its head lists the public entry, so the public holds sync there as this node
-    /// knows it (`Core::public_listed`), noted first so its role there lets it take the sync
-    /// secret.
+    /// The public's: its head lists the public entry, so the public holds there, as this node
+    /// knows it, the role the box gives (`Core::public_listed`): read where it carries read
+    /// secrets (a box taken where the head is not current for reading carries none here), sync
+    /// alone else; noted first so that role lets it take the secrets.
     pub fn learn_grant(&mut self, g: &OpenedGrant) -> Result<()> {
         if g.party.is_public() {
             let (t, (s, head)) = (g.thing, g.head);
+            let role = if g.secrets.read.is_some() { osis_base::Role::Read } else { osis_base::Role::Sync };
+            let l = crate::engine::PublicListing { head, role };
             self.run(|tx| {
-                if tx.core.ix.public_listed.get(&t).and_then(|m| m.get(&s)) != Some(&head) {
-                    tx.core.ix.public_listed.insert(t, s, head);
+                if tx.core.ix.public_listed.get(&t).and_then(|m| m.get(&s)) != Some(&l) {
+                    tx.core.ix.public_listed.insert(t, s, l);
                 }
                 Ok(())
             })?;
@@ -837,7 +838,7 @@ impl Engine {
             let current = |e: &Engine, i: &osis_crypto::EntryItem| e.core.epochs(&t).is_none_or(|x| x.role(osis_base::Role::Sync).held().all(|(ep, _)| ep.n() <= i.sync.0.n()));
             let Some((h, item)) = opened.filter(|(h, i)| osis_crypto::role_key(osis_crypto::RoleKey::Sync, &i.sync.1).verifying_key() == h.keys.sync && current(self, i)) else {
                 self.run(|tx| {
-                    if tx.core.ix.public_listed.get(&t).and_then(|m| m.get(s)).is_some_and(|h| path.contains(h)) {
+                    if tx.core.ix.public_listed.get(&t).and_then(|m| m.get(s)).is_some_and(|l| path.contains(&l.head)) {
                         tx.core.ix.public_listed.remove(&t, s);
                     }
                     Ok(())
@@ -880,7 +881,7 @@ impl Engine {
     }
 
     /// The nodes this node may dial for S (spec/sync-opens.md §1 Whom to dial), each at the
-    /// address it is known by here: of S read or held in the keys class, those the `dial.0` lists of S's
+    /// address it is known by here: of S read or held as a stub, those the `dial.0` lists of S's
     /// things name (the driver never dials its own key). A memo per sync ID; for dialing only,
     /// never proof.
     pub fn dial_peers(&mut self, s: &SyncId) -> Result<Arc<Vec<Address>>> {
@@ -891,7 +892,7 @@ impl Engine {
     /// Whether the entries of held commit `c` are role entries (spec/sync-ids.md §6 Role
     /// entries): a role commit or a commit carrying a purge request. What a
     /// writer stamps under the role-entry domain, and what a peer holding the sync ID's thing
-    /// for keys is shown.
+    /// as a stub is shown.
     pub fn role_commit(&mut self, c: &CommitId) -> bool {
         let Some(h) = self.header(c) else { return false };
         h.kind.is_role() || self.core.ix.commits.get(c).is_some_and(|m| m.view.purges)

@@ -590,11 +590,12 @@ indexes! {
     /// speak (`Core::copies_speak`) among a sync ID's things (`Engine::sync_things_of`).
     pub sync_copy_ids: JSetMap<SyncId, Tid>,
     /// Per thing, each sync ID of it whose head, as this node keeps or follows it, lists the public
-    /// entry with a box whose sync secret the head's sync key comes from, with that head
-    /// (spec/sync.md §3 Holders by copies: the public holds sync there). Fed by an open by the
-    /// public entry (`Engine::learn_grant`) and the unread judgement at each head move
-    /// (`Engine::public_head`), each sync ID's by its own path; in memory, fed again after an open.
-    pub public_listed: JNested<Tid, SyncId, osis_blob::StepId>,
+    /// entry with a box whose sync secret the head's sync key comes from (spec/sync.md §3 Holders
+    /// by copies: the public holds the box's role there). Fed by an open by the public entry
+    /// (`Engine::learn_grant`) and the unread judgement at each head move (`Engine::public_head`),
+    /// each sync ID's by its own path; counted while it is the node's word of the public's role
+    /// (`Core::public_listed`). In memory, fed again after an open.
+    pub public_listed: JNested<Tid, SyncId, PublicListing>,
     /// Per holder, the things `sync_copies` hold a copy of it on (counted or not: readers ask
     /// `Unread::holders`).
     pub sync_copy_holders: JSetMap<Tid, Tid>,
@@ -3410,7 +3411,13 @@ impl Engine {
         // link keys are derived: held exactly while `hold_link_key` or a followed link names them
         let named: BTreeSet<Tid> = self.core.held_link_keys.keys().chain(self.core.followed_links.all().values().filter_map(|(_, l)| l.as_ref())).copied().collect();
         assert_eq!(self.core.link_keys.keys().copied().collect::<BTreeSet<_>>(), named, "link keys: held or named by a followed link");
-        match self.checked_closure() {
+        // the node closure is as of the last transaction: a role ending at an `until` since moves
+        // it at the next one (`Engine::tick`), and a walk afresh now reads the clock past it
+        #[cfg(debug_assertions)]
+        let settled = self.last_tx_wall.is_none_or(|w| w == self.core.hlc.wall().0);
+        #[cfg(not(debug_assertions))]
+        let settled = true;
+        match if settled { self.checked_closure() } else { Ok(()) } {
             Err(e @ Error::Store(_)) => return Err(e),
             r => assert!(r.is_ok(), "node closure walked afresh: {:?}", r.err()),
         }
@@ -3864,4 +3871,12 @@ mod tests {
         p.restart(0).unwrap();
         assert_eq!(rev(&p).map(|r| r.0), Some(3), "registered again after a failed transaction");
     }
+}
+
+/// A head listing the public entry (`Indexes::public_listed`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PublicListing {
+    pub head: osis_blob::StepId,
+    /// The role the box gives: read where it carries read secrets, only sync else.
+    pub role: osis_base::Role,
 }

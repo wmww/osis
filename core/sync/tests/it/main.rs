@@ -26,6 +26,7 @@ mod opens;
 mod pieces;
 mod public;
 mod streams;
+mod stubs;
 mod world;
 mod deletes;
 mod delete_keys;

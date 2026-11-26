@@ -65,9 +65,7 @@ fn reaching_public() -> (World, Tid, Tid, Tid) {
 // writes again. Node 2 learns the removal from what T carries of P (P leaves T's unit there as at
 // node 0) and reads nothing written since (model control `WhileRead`: without the removal it
 // would keep P in the unit).
-// Stub rewrite (notes/stub-rewrite.md): P's stub in T's unit carries the removal (R2)
 #[test]
-#[ignore = "stub rewrite: the differential's oracle on held-model's stub closure (R4)"]
 fn removing_the_public_ends_what_a_reader_of_the_referrer_reads_spec_sync_set_2() {
     let (mut w, t, p, _) = reaching_public();
     w.write(0, |e| e.demote(&p, &osis_engine::flows::Demotion { holder: Tid::PUBLIC, new: None, retain: None })).unwrap();

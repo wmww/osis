@@ -2046,7 +2046,6 @@ const PER_COMPONENT: [&str; 6] = ["keys: grants judged for key access", "perm: r
 // sync brings A's history, linear in it but for the counts that judge each role commit against
 // the whole component (`PER_COMPONENT`), quadratic.
 #[test]
-#[ignore = "stub rewrite: pairing hands over A's values (R3)"]
 fn pairing_a_node_spec_permissions_8() {
     let [small, big] = NODES.map(pairing);
     flat("pairing: commits", small.commits, big.commits);
@@ -2187,7 +2186,7 @@ fn unit_evidence(n: usize) -> [[u64; 3]; 2] {
 // writes (spec/crypto.md §4 Box records: a rotation's alone). So one writer's unit is flat in A's
 // nodes; with every node writing, linear in the writers.
 #[test]
-#[ignore = "stub rewrite: a unit's stubs, cut and logged (R2)"]
+#[ignore = "stub rewrite: pairing hands over A's values (R3)"]
 fn evidence_per_unit_spec_permissions_4() {
     let [small, big] = NODES.map(unit_evidence);
     println!("unit certificates (copies, records, copy bytes), one writer then every node: {small:?} at n, {big:?} at 10n");

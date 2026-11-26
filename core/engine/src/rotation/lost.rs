@@ -91,14 +91,11 @@ fn holds_at(core: &Core, a: &Tid, min: Role) -> bool {
 /// do not. A role through the public is one of secrets: no path lists the public, so it lets the
 /// node write nothing. It counts wherever the node holds the grant, synced or not: it is every party's,
 /// so it gives no node a secret anyone else lacks, and an outdated grant held gives only the open
-/// boxes of epochs that were every party's. The public's sync also where the head of `a`'s sync
-/// ID lists the public entry (`Core::public_listed`, spec/sync.md §3 Holders by copies).
+/// boxes of epochs that were every party's. The public's role also where the head of `a`'s sync
+/// ID lists the public entry at the role its box gives (`Core::public_listed`, spec/sync.md §3
+/// Holders by copies).
 pub(crate) fn role_here(core: &Core, a: &Tid) -> Option<Role> {
-    // Interim (issues/public-listing-role.md): the listing counts only while no read secret of
-    // `a` is held, as it is noted at sync whatever role the box gives
-    let unread = !core.ix.secrets.get(a).is_some_and(|e| e.role(Role::Read).holds_any());
-    let listed = (unread && core.public_listed(a)).then_some(Role::Sync);
-    let public = core.keyed_role_now(&Tid::PUBLIC, a).max(listed);
+    let public = core.keyed_role_now(&Tid::PUBLIC, a).max(core.public_listed(a));
     if !grants_count(core, a) {
         return public;
     }
@@ -153,11 +150,9 @@ fn own_things(core: &Core) -> Vec<Tid> {
 }
 
 /// Whether the node's roles give it `a`'s sync secrets (spec/permissions.md §3 Lost access): sync
-/// or above (`holds_at`), or the public's sync its head of `a`'s sync ID lists
-/// (`Core::public_listed`), counted here also while the node holds read secrets of `a` a loss
-/// not carried out yet keeps: dropping them keeps the sync secret the public's box gave.
+/// or above (`holds_at`).
 fn holds_sync(core: &Core, a: &Tid) -> bool {
-    holds_at(core, a, Role::Sync) || core.public_listed(a)
+    holds_at(core, a, Role::Sync)
 }
 
 /// Whether the node (`holds_at`) reads `a` now: read or above.

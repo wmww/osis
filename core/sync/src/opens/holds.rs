@@ -27,7 +27,7 @@ pub fn named(proven: &Proven) -> Named {
 /// (spec/sync-opens.md §4 Admissible): each with the epoch it is at, for the Departed rule.
 #[derive(Clone, Debug, Default)]
 pub struct Creds {
-    /// How the node holds S: read, for keys, or kept unread.
+    /// How the node holds S: read, as a stub, or kept unread.
     pub holding: Option<Holding>,
     /// Credentials it shows, each with its epoch (none: at no epoch covering a departure).
     pub shows: Vec<(Shown, Option<Epoch>)>,
@@ -218,8 +218,8 @@ fn node_creds(cx: &mut Cx, unread: &Unread, s: &SyncId) -> Option<Arc<Creds>> {
     let (_, holding) = cx.store.synced(s)?;
     let mut c = Creds { holding: Some(holding), ..Creds::default() };
     match holding {
-        // held in the keys class it opens as a reader does: by the read secret a box gave it
-        Holding::Read | Holding::Keys => {
+        // held as a stub it opens as a reader does: by the read secret a box gave it
+        Holding::Read | Holding::Stub => {
             let rc = cx.engine.read_credentials(s).ok()??;
             for (e, k) in &rc.read_secrets {
                 c.shows.push((Shown::Read(*e, *k.expose()), Some(*e)));
@@ -317,8 +317,8 @@ pub(crate) fn member_until(cx: &mut Cx, s: &SyncId, by: &Credential) -> crate::t
     match (cx.store.synced(s), by) {
         (Some((_, Holding::Unread)), _) => Ok(cx.store.head_at(s)?.unwrap_or(end)),
         // the public entry, the public's read since removed: up to its edge, the removal last
-        (Some((_, Holding::Read | Holding::Keys)), Credential::Public) => Ok(public_edge_at(cx, s)?.unwrap_or(end)),
-        (Some((_, Holding::Read | Holding::Keys)), Credential::ReadSecret(e)) => Ok(superseded_at(cx, s, e)?.unwrap_or(end)),
+        (Some((_, Holding::Read | Holding::Stub)), Credential::Public) => Ok(public_edge_at(cx, s)?.unwrap_or(end)),
+        (Some((_, Holding::Read | Holding::Stub)), Credential::ReadSecret(e)) => Ok(superseded_at(cx, s, e)?.unwrap_or(end)),
         _ => Ok(end),
     }
 }
@@ -448,7 +448,7 @@ impl Holds for NodeHolds<'_, '_> {
     fn grant(&mut self, s: &SyncId, entry: &[u8; 32]) -> Option<Grant> {
         // the path this node keeps: a reader's recorded one, else the one registered here
         let steps: Vec<(Step, Option<osis_blob::ClaimSet>)> = match self.cx.store.synced(s)? {
-            (_, Holding::Read | Holding::Keys) => path_of(self.cx, s)?.steps.clone(),
+            (_, Holding::Read | Holding::Stub) => path_of(self.cx, s)?.steps.clone(),
             (_, Holding::Unread) => self.cx.store.path(s).ok()??.steps.clone(),
         };
         let (_, claims) = steps.last()?;

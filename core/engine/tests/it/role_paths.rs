@@ -436,7 +436,6 @@ fn finding_a_may_grant_grants_path_does_not_grow_with_history_spec_wire_4() {
 // descent, unmarked; once it holds the grant, the marked hop (the fewest edges), before the detach
 // too.
 #[test]
-#[ignore = "stub rewrite: entry by references and chain-holder stubs (R2)"]
 fn a_detached_things_owner_states_a_marked_hop_spec_wire_4() {
     let (mut lp, ps) = people(2);
     let g = thing_of(&mut lp, 0, ps[0]);
@@ -446,6 +445,8 @@ fn a_detached_things_owner_states_a_marked_hop_spec_wire_4() {
     m.set(t, &REG, &s("before")).unwrap();
     let before = lp.peers[0].commit(m).unwrap().unwrap();
     grant(&mut lp, 0, t, ps[0], edge_of(Role::Admin));
+    // A references T from its own node root: detached from G, T is held by that reference
+    lp.peers[0].engine.hold(osis_base::Strong(t)).unwrap();
     let mut m = Mutation::new();
     m.set(t, &REG, &s("both routes")).unwrap();
     let both = lp.peers[0].commit(m).unwrap().unwrap();
@@ -481,7 +482,6 @@ fn a_detached_things_owner_states_a_marked_hop_spec_wire_4() {
 // a detached thing's path (A's direct edge, marked) walks the things reaching it, as many at 10n
 // unrelated role commits held as at n.
 #[test]
-#[ignore = "stub rewrite: entry by references and chain-holder stubs (R2)"]
 fn finding_a_marked_path_does_not_grow_with_history_spec_wire_4() {
     let walked = |n: usize| {
         let (mut lp, ps) = people(2);
@@ -489,6 +489,7 @@ fn finding_a_marked_path_does_not_grow_with_history_spec_wire_4() {
         let t = thing_of(&mut lp, 0, g);
         spread(&mut lp);
         grant(&mut lp, 0, t, ps[0], edge_of(Role::Admin));
+        lp.peers[0].engine.hold(osis_base::Strong(t)).unwrap();
         remove(&mut lp, 0, t, g);
         for _ in 0..n {
             let x = thing_of(&mut lp, 0, g);

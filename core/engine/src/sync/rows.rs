@@ -29,7 +29,7 @@ pub(crate) struct SyncRows {
     pub(crate) held: Stamped<SyncId, Held>,
     /// `held`'s keys: a feed gives the sync IDs entering it.
     ids: StampedSet<SyncId>,
-    /// The things opening a sync ID by a read secret, read or held in the keys class (read per thing; a
+    /// The things opening a sync ID by a read secret, read or held as a stub (read per thing; a
     /// feed gives those added), and how many each opens.
     pub(crate) read: StampedSet<Tid>,
     read_count: BTreeMap<Tid, usize>,
@@ -63,13 +63,13 @@ impl Default for SyncRows {
 }
 
 /// The sync set's entry of one sync ID from the things synced under it (`Engine::sync_set`'s
-/// fold): every one of them, whatever their order; read while any reads it, else for keys
-/// while any is held in the keys class, else kept unread (spec/sync.md §3).
+/// fold): every one of them, whatever their order; read while any reads it, else as a stub
+/// while any is held as a stub, else kept unread (spec/sync.md §3).
 pub(crate) fn fold(m: &BTreeMap<Tid, Holding>) -> Option<Held> {
     if m.is_empty() {
         return None;
     }
-    let h = [Holding::Read, Holding::Keys].into_iter().find(|h| m.values().any(|x| x == h)).unwrap_or(Holding::Unread);
+    let h = [Holding::Read, Holding::Stub].into_iter().find(|h| m.values().any(|x| x == h)).unwrap_or(Holding::Unread);
     Some((m.keys().copied().collect(), h))
 }
 

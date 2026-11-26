@@ -51,7 +51,7 @@ pub use osis_proto::SourceClass;
 pub fn class_of(h: Holding) -> SourceClass {
     match h {
         Holding::Read => SourceClass::Reader,
-        Holding::Keys => SourceClass::Keys,
+        Holding::Stub => SourceClass::Stub,
         Holding::Unread => SourceClass::Store,
     }
 }

@@ -210,8 +210,8 @@ impl Engine {
         })
     }
 
-    /// This node opens `s` by a read secret (its sync set holds it read or for keys): a complete
-    /// pass of it is noted, of role entries alone where it is held in the keys class (spec/sync-set.md §2).
+    /// This node opens `s` by a read secret (its sync set holds it read or as a stub): a complete
+    /// pass of it is noted, of role entries alone where it is held as a stub (spec/sync-set.md §2).
     fn reads_now(&mut self, s: &SyncId) -> Result<bool> {
         Ok(self.sync_held(s)?.is_some_and(|(_, h)| h.opens()))
     }
