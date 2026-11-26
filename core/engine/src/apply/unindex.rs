@@ -45,6 +45,14 @@ fn unindex(tx: &mut Tx<'_>, id: &CommitId, marks: bool) -> Result<()> {
     if marks {
         crate::retention::handed::note(tx, id)?;
     }
+    // a role commit's `secrets.0` bodies: what they noted (`boxes_to`) goes with them, re-derived
+    // from the bodies still held, as a drop re-derives it (`keys::forget_dropped`)
+    let mut boxes: Vec<(usize, Vec<osis_crdt::Fragment>)> = Vec::new();
+    if let Some(m) = tx.core.ix.commits.get(id).filter(|m| m.view.kind.is_role()).cloned() {
+        for ai in (0..m.view.aspects.len()).filter(|ai| m.holds(*ai) && m.view.aspects.get(*ai).is_some_and(|a| a.ak.as_str() == "secrets.0")) {
+            boxes.push((ai, super::held_fragment(tx, id, ai)?.into_iter().collect()));
+        }
+    }
     // what sync's facade kept of it: section epochs, blob parts
     if marks {
         crate::sync::bodies::forget(tx, id)?;
@@ -165,7 +173,11 @@ fn unindex(tx: &mut Tx<'_>, id: &CommitId, marks: bool) -> Result<()> {
     for a in m.header.aspects.iter().filter(|a| a.ak.signal()) {
         crate::retention::leaving::unplaced(tx, &a.tid, &a.ak)?;
     }
-    tx.remove_commit(id)
+    tx.remove_commit(id)?;
+    for (ai, bodies) in boxes {
+        super::keys::forget_dropped(tx, &m.header.arc(), ai, &bodies)?;
+    }
+    Ok(())
 }
 
 /// The rows part `ai` of `c`'s judgment derived (the roles its `secrets.0` or `keys.0` delta

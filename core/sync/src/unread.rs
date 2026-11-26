@@ -65,8 +65,9 @@ pub struct Kept {
     /// Its head with its claim set, where the set lists S's public entry and the head bears a sync
     /// epoch of the latest number held: the node reads S by that entry's open box
     /// (spec/sync-opens.md §4 Admissible). A head behind a later sync epoch held is one it knows
-    /// superseded and proves nothing (a public's removal since included): it waits for the
-    /// Register moving it.
+    /// superseded and proves nothing (a public's removal since included), and so is the head it
+    /// was lowered to sync at (it read there what ended the public's read, a lowering of it
+    /// included, which rotates no sync epoch): it waits for the Register moving it.
     pub public: Option<(Step, ClaimSet)>,
 }
 
@@ -77,6 +78,8 @@ pub struct Judged<'a> {
     pub secrets: &'a [(osis_crypto::Epoch, Secret32)],
     /// S's verified path as Registers gave it (its head last).
     pub steps: &'a [(Step, Option<ClaimSet>)],
+    /// The head this node was lowered from reading S to keeping it unread at, if it was.
+    pub lowered_at: Option<&'a StepId>,
 }
 
 /// spec/sync-judgement.md §6 (keeps, stops), over plain values.
@@ -100,7 +103,7 @@ pub fn judge(j: &Judged) -> Kept {
         return keep(false, (!held.is_empty()).then(|| UnreadCredentials { step: None, keys: held, deposit: None, claims: None }));
     };
     if let Some(k) = held.iter().find(|(k, _)| k.verifying_key() == head.0.keys.sync) {
-        let public = head.1.as_ref().filter(|c| c.lists_public(j.s) && current.contains(&head.0.keys.sync)).map(|c| (head.0.clone(), c.clone()));
+        let public = head.1.as_ref().filter(|c| c.lists_public(j.s) && current.contains(&head.0.keys.sync) && j.lowered_at != Some(&head.0.id())).map(|c| (head.0.clone(), c.clone()));
         let mut kept = keep(false, Some(UnreadCredentials { step: Some(head.0.id()), keys: vec![k.clone()], deposit: Some(head.0.keys.deposit), claims: head.1.clone() }));
         kept.public = public;
         return kept;
@@ -119,11 +122,15 @@ pub struct Unread {
     followed: BTreeSet<SyncId>,
     judged: Effects<SyncId, Kept>,
     kept: Stamped<SyncId, Kept>,
+    /// Each S followed that this node was lowered from reading to keeping unread, with its head
+    /// then (`Kept::public`). In memory: after a start S is read once more by that entry, and
+    /// lowered again as its role entries open.
+    lowered: std::collections::BTreeMap<SyncId, StepId>,
 }
 
 impl Default for Unread {
     fn default() -> Self {
-        Unread { syncs: Default::default(), followed: BTreeSet::new(), judged: Effects::new("unread: judged"), kept: Stamped::default() }
+        Unread { syncs: Default::default(), followed: BTreeSet::new(), judged: Effects::new("unread: judged"), kept: Stamped::default(), lowered: Default::default() }
     }
 }
 
@@ -148,9 +155,14 @@ impl Unread {
     /// changed.
     pub fn settle(&mut self, cx: &mut Cx) -> Result<bool> {
         let mut acted = false;
-        for (s, _, now) in self.syncs.settle(cx.store) {
+        for (s, then, now) in self.syncs.settle(cx.store) {
             match now {
                 Some((_, Holding::Unread)) => {
+                    if then.as_ref().is_some_and(|(_, h)| h.opens())
+                        && let Some(h) = cx.store.head_id(&s)?
+                    {
+                        self.lowered.insert(s, h);
+                    }
                     if self.followed.insert(s) {
                         self.judged.want(s);
                     }
@@ -163,6 +175,7 @@ impl Unread {
                     }
                     if self.followed.remove(&s) {
                         self.judged.unwant(&s);
+                        self.lowered.remove(&s);
                         acted |= self.kept.remove(&s).is_some();
                     }
                 }
@@ -173,7 +186,8 @@ impl Unread {
                 self.judged.unwant(&s);
                 continue;
             }
-            let Some((_, k)) = self.judged.try_settle(&s, || judge_s(cx, &s))? else { continue };
+            let lowered_at = self.lowered.get(&s);
+            let Some((_, k)) = self.judged.try_settle(&s, || judge_s(cx, &s, lowered_at))? else { continue };
             acted = true;
             // at a head past its keys its copy goes and it takes nothing (§6)
             cx.store.set_unheld(&s, k.stranded)?;
@@ -188,10 +202,10 @@ impl Unread {
 }
 
 /// One S's judgement, reading its own keys only.
-fn judge_s(cx: &mut Cx, s: &SyncId) -> Result<Kept> {
+fn judge_s(cx: &mut Cx, s: &SyncId, lowered_at: Option<&StepId>) -> Result<Kept> {
     let secrets = cx.engine.kept_sync_secrets(s);
     let path = cx.store.path(s)?;
-    Ok(judge(&Judged { s, secrets: &secrets, steps: path.as_ref().map(|p| p.steps.as_slice()).unwrap_or_default() }))
+    Ok(judge(&Judged { s, secrets: &secrets, steps: path.as_ref().map(|p| p.steps.as_slice()).unwrap_or_default(), lowered_at }))
 }
 
 #[cfg(test)]
@@ -219,8 +233,10 @@ mod tests {
             let read_at = (&t, Epoch::derive(&t, Role::Read, 3, &read).unwrap(), &read);
             let step = register(Parent::Genesis(&role_key(RoleKey::Delete, &admin)), keys, &[Reader::Public], read_at, (*e, x), &mut SeededRng::from_u64(0)).unwrap();
             let steps = [(step.0, Some(step.1))];
-            assert!(judge(&Judged { s: &s, secrets: &held[..2], steps: &steps }).public.is_some(), "head at concurrent epoch {i}");
-            assert!(judge(&Judged { s: &s, secrets: &held, steps: &steps }).public.is_none(), "head at {i} behind a later epoch");
+            assert!(judge(&Judged { s: &s, secrets: &held[..2], steps: &steps, lowered_at: None }).public.is_some(), "head at concurrent epoch {i}");
+            assert!(judge(&Judged { s: &s, secrets: &held, steps: &steps, lowered_at: None }).public.is_none(), "head at {i} behind a later epoch");
+            let head = steps.first().map(|x| x.0.id());
+            assert!(judge(&Judged { s: &s, secrets: &held[..2], steps: &steps, lowered_at: head.as_ref() }).public.is_none(), "head at {i} it was lowered at");
         }
     }
 }

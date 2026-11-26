@@ -570,3 +570,18 @@ fn a_sync_alone_holder_regranted_on_an_inbox_keeps_it_unread_spec_sync_3() {
     use crate::harness::script::*;
     holds(0, &[New(1), Inbox(1, Some(0)), Run, Give(1, 0, Holder::Node(0), Syncs), Revoke(1, 0, Holder::Node(0)), Give(1, 0, Holder::Node(0), Syncs), Run, Strong(0, None, 0), Run], String::new(), false);
 }
+
+// spec/sync-opens.md §4 (Admissible: keeping S unread, the head it was lowered to sync at gives
+// nothing): node 2 makes a thing the public reads; node 0, of its account, grants node 1's account
+// sync and node 1 holds the thing, reading it by the public's grant; node 0 lowers the public to
+// sync, which rotates read and no sync epoch. Node 1 drops its read secrets and keeps the thing
+// unread at the head it read, whose claim set lists the public entry: taking that entry's box it
+// would read again, drop again on the role entries, and refuse while reading each Register moving
+// its head, a storm past the world's cap. It reaches quiet, keeping the thing unread as the model
+// says, and its index rebuilds from what it holds once the role commits it read are forgotten.
+#[test]
+fn a_node_lowered_with_the_public_reads_no_more_by_its_head_spec_sync_opens_4() {
+    use crate::harness::history::{Gives, Holder};
+    let script = [Step::New(2), Step::Run, Step::Give(2, 0, Holder::Public, Gives::Reads), Step::Give(0, 0, Holder::Node(1), Gives::Syncs), Step::Run, Step::Strong(1, None, 0), Step::Lower(0, 0, Holder::Public, Gives::Syncs)];
+    holds_on(0, 2, 3, &script, String::new(), false);
+}
