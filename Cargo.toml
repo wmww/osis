@@ -92,10 +92,14 @@ opt-level = 1
 lto = "off"
 
 # Dependencies only: crypto and hashing unoptimized are slow; no debuginfo (frames in
-# dependencies show no file:line).
+# dependencies show no file:line). No debug assertions or overflow checks: they check the
+# dependency, not us, and std's checked generics instantiated there (redb writing its allocator
+# state at every close) cost a third of a store-heavy CLI test. opt-level 3: under 1% more saved.
 [profile.dev.package."*"]
 opt-level = 2
 debug = false
+debug-assertions = false
+overflow-checks = false
 
 # osis-crypto instantiates the generic AEAD, hash and curve code: optimized like a dependency.
 [profile.dev.package.osis-crypto]
