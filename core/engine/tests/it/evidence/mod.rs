@@ -232,42 +232,40 @@ fn other_keys(sim: &paths::Sim) -> bool {
 fn search(family_step: usize, random_worlds: u64, story: u64) {
     let start = std::env::var("OSIS_HELD_START").ok().filter(|v| !v.is_empty()).map_or(0, |v| v.parse::<u64>().expect("OSIS_HELD_START is a decimal u64"));
     eprintln!("evidence derivation: random seeds {start}..{}, story seeds {start}..{}", start + random_worlds, start + story);
-    type Job = Box<dyn Fn() -> (String, Run) + Sync>;
-    let mut jobs: Vec<Job> = vec![];
+    type Job = Box<dyn Fn() -> Run + Sync>;
+    let mut jobs: Vec<(String, Job)> = vec![];
     for i in (0..hm::FAMILY).step_by(family_step) {
-        jobs.push(Box::new(move || (format!("{:?}", Shape::nth(i)), differ(&hm::family(Shape::nth(i))))));
+        jobs.push((format!("{:?}", Shape::nth(i)), Box::new(move || differ(&hm::family(Shape::nth(i))))));
     }
     for seed in start..start + random_worlds {
-        jobs.push(Box::new(move || (format!("random seed {seed}"), differ(&hm::random(seed, 14)))));
+        jobs.push((format!("random seed {seed}"), Box::new(move || differ(&hm::random(seed, 14)))));
     }
     for seed in start..start + story {
         for u in 0..hm::STORY_UNITS {
-            jobs.push(Box::new(move || {
-                let sim = paths::random_world(seed, &Rules::fixed());
-                if other_keys(&sim) {
-                    return (format!("story seed {seed} units {u}"), Run::default());
-                }
-                (format!("story seed {seed} units {u}"), differ(&hm::story_world(&sim, u)))
-            }));
+            jobs.push((
+                format!("story seed {seed} units {u}"),
+                Box::new(move || {
+                    let sim = paths::random_world(seed, &Rules::fixed());
+                    if other_keys(&sim) {
+                        return Run::default();
+                    }
+                    differ(&hm::story_world(&sim, u))
+                }),
+            ));
         }
     }
-    let next = std::sync::atomic::AtomicUsize::new(0);
     let bad = std::sync::Mutex::new(vec![]);
     let total = std::sync::Mutex::new(Run::default());
-    let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
-    std::thread::scope(|sc| {
-        for _ in 0..threads {
-            sc.spawn(|| loop {
-                let Some(j) = jobs.get(next.fetch_add(1, std::sync::atomic::Ordering::Relaxed)) else { return };
-                let (name, mut r) = j();
-                let d = std::mem::take(&mut r.differ);
-                total.lock().unwrap().add(r);
-                if !d.is_empty() {
-                    bad.lock().unwrap().push(format!("{name}: {} disagreements, first: {}", d.len(), d[0]));
-                }
-            });
+    let ran = osis_base::testenv::run_jobs("evidence derivation", &jobs, osis_base::testenv::threads("OSIS_SEED_THREADS"), false, |(name, _)| name.clone(), |(name, j)| {
+        let mut r = j();
+        let d = std::mem::take(&mut r.differ);
+        total.lock().unwrap().add(r);
+        if !d.is_empty() {
+            bad.lock().unwrap().push(format!("{name}: {} disagreements, first: {}", d.len(), d[0]));
         }
     });
+    let panicked: Vec<String> = ran.iter().zip(&jobs).filter_map(|(r, (name, _))| r.as_ref().err().map(|e| format!("{name}: {e}"))).collect();
+    assert!(panicked.is_empty(), "{} worlds failed:\n{}", panicked.len(), panicked.join("\n\n"));
     let bad = bad.into_inner().unwrap();
     assert!(bad.is_empty(), "{} worlds disagree, first: {}", bad.len(), bad[0]);
     let r = total.into_inner().unwrap();

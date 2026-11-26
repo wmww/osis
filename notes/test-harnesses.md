@@ -17,7 +17,7 @@ Crate-wide seeds:
 - **sim**: notes/test-sim.md, Running and replaying.
 
 ## Seed runners
-- `osis_base::testenv`'s `run_seeds` (and `Seeds::run`, which announces an env range) runs a seed per thread per core (`OSIS_SEED_THREADS` overrides); `run_jobs` is the general runner. A multi-seed run goes through them, not a serial loop.
+- `osis_base::testenv`'s `run_seeds` (and `Seeds::run`, which announces an env range) runs a seed per thread per core (`OSIS_SEED_THREADS` overrides); `run_jobs` is the general runner. A multi-seed or multi-case run goes through them, not a serial loop or hand-rolled `thread::scope` workers: a panic ends such a worker, so every case it would have taken after its first failure never runs and a run reports about one failure per thread (a by-hand shred run read as cases changing path between processes).
 - **Hung seeds**: `OSIS_SEED_TIMEOUT_SECS` (default 600) is CPU time, not wall. A lower value names a hung seed early in quick runs. A hung thread prints its backtrace at its next `testenv::checkpoint()`.
 - `Cpu::now()`/`secs_since` reads the CPU spent on a thread's work, including threads `par_map` and `run_jobs` ran for it. `pooled_map` is `par_map` holding a `Permit` per call, so concurrent tests and seeds share the cores.
 - **Coverage floors**: a property over a seed range checks what its seeds reached with `testenv::reach_floor` at every size and offset.

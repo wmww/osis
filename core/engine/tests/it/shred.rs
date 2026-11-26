@@ -708,65 +708,61 @@ fn past_expiry_and_purge_alike(which: Cases) {
         }
     };
     let outcomes = std::sync::Mutex::new(std::collections::BTreeMap::<String, String>::new());
-    let next = std::sync::atomic::AtomicUsize::new(0);
-    let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
     // every case starts at one node holding the setup: built once, each case a copy of it
     let base = std::sync::Mutex::new(holding(node, &setup));
-    let (base, items, orders, shapes, cases, ids) = (&base, &items, &orders, &shapes, &cases, &ids);
-    std::thread::scope(|sc| {
-        for _ in 0..threads {
-            sc.spawn(|| loop {
-                let at = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                let Some(&(n, o)) = cases.get(at) else { return };
-                let ((restart, k, tick), order) = (shapes[n], &orders[o]);
-                let mut p = base.lock().unwrap().copy().unwrap();
-                let late = exp.0 + 5_000;
-                let to = |p: &mut Peer, when: u64| {
-                    let now = p.engine.now().0;
-                    p.clock.advance(when.saturating_sub(now));
-                };
-                to(&mut p, if k > 0 { start + 20 } else { late });
-                for (i, x) in order.iter().enumerate() {
-                    if i == k && k > 0 {
-                        to(&mut p, late);
-                        if tick {
-                            p.tick().unwrap();
-                        }
-                    }
-                    if i == 3 && restart {
-                        p = reopened(p, FRESH + 1);
-                    }
-                    unless_refused(p.receive(&items[*x].0, items[*x].1.clone()));
-                    p.reexamine().unwrap();
-                    // never shown past its expiry (a value held before T goes at the tick), nor after the request
-                    if (k == 0 || tick) && p.engine.now().0 >= exp.0 {
-                        assert_eq!(p.engine.get(&t2, &brief).unwrap(), None, "order {order:?}");
-                    }
-                    if order[..=i].contains(&0) {
-                        assert_ne!(p.engine.get(&t, &reg).unwrap(), Some(s("SECRET-R5c")), "order {order:?}");
-                    }
+    let label = |&(n, o): &(usize, usize)| format!("restart, T after, tick {:?} order {:?}", shapes[n], orders[o]);
+    // every case runs, a failing one reported by its shape and order
+    let threads = osis_base::testenv::threads("OSIS_SEED_THREADS");
+    let ran = osis_base::testenv::run_jobs("past_expiry_and_purge_alike", &cases, threads, false, label, |&(n, o)| {
+        let ((restart, k, tick), order) = (shapes[n], &orders[o]);
+        let mut p = base.lock().unwrap().copy().unwrap();
+        let late = exp.0 + 5_000;
+        let to = |p: &mut Peer, when: u64| {
+            let now = p.engine.now().0;
+            p.clock.advance(when.saturating_sub(now));
+        };
+        to(&mut p, if k > 0 { start + 20 } else { late });
+        for (i, x) in order.iter().enumerate() {
+            if i == k && k > 0 {
+                to(&mut p, late);
+                if tick {
+                    p.tick().unwrap();
                 }
-                // before the copies that would heal it: every item delivered once
-                let [kept_secret, kept_brief] = recovered(&mut p, [b"SECRET-R5c", b"BRIEF-R5c"]);
-                assert!(!kept_secret, "order {order:?}: purged value kept");
-                assert!(!(k == 0 || tick) || !kept_brief, "order {order:?}: expired value kept");
-                if p.engine.pending().is_empty() {
-                    assert_eq!(p.engine.stripped_count(&c).unwrap(), 0, "order {order:?}: nothing waits");
-                }
-                for x in [1, 2, 3] {
-                    unless_refused(p.receive(&items[x].0, items[x].1.clone()));
-                    p.reexamine().unwrap();
-                }
-                p.tick().unwrap();
-                p.reexamine().unwrap();
-                let e = &mut p.engine;
-                let got = format!("applied {} pending {:?} stripped {} reads {:?} {:?} {:?} states {:?} {:?} {:?} {:?}", e.commit_ids().contains(&c), e.pending(), e.stripped_count(&c).unwrap(), e.get(&t, &reg).unwrap(), e.get(&t, &list).unwrap(), e.get(&t2, &brief).unwrap(), e.state_bytes(&t, &reg).unwrap(), e.state_bytes(&t, &list).unwrap(), e.state_bytes(&t2, &brief).unwrap(), crate::judgment::observe(e, ids));
-                let [kept_secret, kept_brief] = recovered(&mut p, [b"SECRET-R5c", b"BRIEF-R5c"]);
-                let gone = !kept_secret && !kept_brief;
-                outcomes.lock().unwrap().entry(format!("gone {gone} {got}")).or_insert(format!("restart {restart} k {k} tick {tick} order {order:?}"));
-            });
+            }
+            if i == 3 && restart {
+                p = reopened(p, FRESH + 1);
+            }
+            unless_refused(p.receive(&items[*x].0, items[*x].1.clone()));
+            p.reexamine().unwrap();
+            // never shown past its expiry (a value held before T goes at the tick), nor after the request
+            if (k == 0 || tick) && p.engine.now().0 >= exp.0 {
+                assert_eq!(p.engine.get(&t2, &brief).unwrap(), None, "order {order:?}");
+            }
+            if order[..=i].contains(&0) {
+                assert_ne!(p.engine.get(&t, &reg).unwrap(), Some(s("SECRET-R5c")), "order {order:?}");
+            }
         }
+        // before the copies that would heal it: every item delivered once
+        let [kept_secret, kept_brief] = recovered(&mut p, [b"SECRET-R5c", b"BRIEF-R5c"]);
+        assert!(!kept_secret, "order {order:?}: purged value kept");
+        assert!(!(k == 0 || tick) || !kept_brief, "order {order:?}: expired value kept");
+        if p.engine.pending().is_empty() {
+            assert_eq!(p.engine.stripped_count(&c).unwrap(), 0, "order {order:?}: nothing waits");
+        }
+        for x in [1, 2, 3] {
+            unless_refused(p.receive(&items[x].0, items[x].1.clone()));
+            p.reexamine().unwrap();
+        }
+        p.tick().unwrap();
+        p.reexamine().unwrap();
+        let e = &mut p.engine;
+        let got = format!("applied {} pending {:?} stripped {} reads {:?} {:?} {:?} states {:?} {:?} {:?} {:?}", e.commit_ids().contains(&c), e.pending(), e.stripped_count(&c).unwrap(), e.get(&t, &reg).unwrap(), e.get(&t, &list).unwrap(), e.get(&t2, &brief).unwrap(), e.state_bytes(&t, &reg).unwrap(), e.state_bytes(&t, &list).unwrap(), e.state_bytes(&t2, &brief).unwrap(), crate::judgment::observe(e, &ids));
+        let [kept_secret, kept_brief] = recovered(&mut p, [b"SECRET-R5c", b"BRIEF-R5c"]);
+        let gone = !kept_secret && !kept_brief;
+        outcomes.lock().unwrap().entry(format!("gone {gone} {got}")).or_insert(format!("restart {restart} k {k} tick {tick} order {order:?}"));
     });
+    let failed: Vec<String> = ran.iter().zip(&cases).filter_map(|(r, c)| r.as_ref().err().map(|e| format!("{}: {e}", label(c)))).collect();
+    assert!(failed.is_empty(), "{} of {} cases failed:\n{}", failed.len(), cases.len(), failed.join("\n\n"));
     let out = outcomes.into_inner().unwrap();
     assert_eq!(out.len(), 1, "{out:#?}");
     let (only, _) = out.iter().next().unwrap();
