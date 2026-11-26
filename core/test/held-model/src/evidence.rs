@@ -20,21 +20,22 @@
 //! - **The required set** of sync ID S over a held set H (`World::req`): the evidence closure
 //!   (`paths::evidence`: every held edge write on a seed's key hop, on an edge of its path and on
 //!   each edge its commit's edge writes on its thing set, closed under the same for what it adds:
-//!   spec/permissions.md §4 Evidence of a commit) of the seeds: the bodies; the edge writes naming
-//!   S's thing as holder (its key part: every grant counts), and under Role changes travel those
-//!   naming a thing S's keys open on an edge giving it read (a held write giving read that the
-//!   node judges valid over what it holds, or its record: `World::read_edges`; an edge giving no
-//!   more than sync goes as sync copies, no header, which this model has no role for; held-model
-//!   `box_cut` judges what those carry). What of it
-//!   lies on things outside the unit is a copy, the rest bodies. A removal is in it only as
-//!   evidence of a body (notes/write-path-design.md §2, D1) or as Role changes travel puts it
-//!   (D3); nothing logs a removal anywhere for its own sake (lazy delivery).
+//!   spec/permissions.md §4 Evidence of a commit) of the seeds: the bodies, and the chain stubs'
+//!   role entries (notes/stub-rewrite.md §2 rule 2: every holder on a chain by which S's keys open
+//!   a thing of S's unit is a stub in it): each edge write on an edge of such a chain, a path of
+//!   read edges from S's thing to a thing of the unit (a held write giving read that the node
+//!   judges valid over what it holds, at any time, or a record: `World::read_edges`; an edge
+//!   giving no more than sync brings the sync-only cut, which this model has no role for;
+//!   held-model `box_cut` judges what that holds). What of it lies on things outside the unit is a
+//!   copy, the rest bodies. A removal is in it only as evidence of a body (notes/write-path-design.md
+//!   §2, D1) or as a chain stub's entry; nothing logs a removal anywhere for its own sake (lazy
+//!   delivery), and nothing is sent to a holder for being granted something.
 //! - **Delivery** (`Placement`): nodes sync sync IDs (`Node::syncs`, closed as a node closure is:
 //!   a node syncing S syncs every sync ID of a thing in S's unit) and hold what those carry and what
 //!   they wrote. An honest node logs under each sync ID it syncs what its own view requires there;
 //!   an entry no syncing node requires is deleted (a delete-key holder deletes, a holder whose view
 //!   requires it logs again: the union). The thief logs its own bodies and the grants they rest on,
-//!   never a lowering. A granter logs its grant under the holder's sync ID.
+//!   never a lowering.
 //! - **The reference** (`World::reference`): a reader of S is judged against a node holding
 //!   everything written but the edge writes S lacks that no honest node syncing S holds
 //!   (`World::undelivered`): lazy delivery brings evidence only where a node holding it holds S.
@@ -104,17 +105,17 @@ pub enum Lists {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Rule {
     pub placement: Placement,
-    /// Role changes travel's keys-open half: an edge write naming holder h is a seed also of the
-    /// sync ID of each thing whose keys open h (holding read or above on h through grants the closure takes,
-    /// at any time: `ROLE_KEEP` read as for good). The half naming S's own thing is always on.
-    pub keys_open: bool,
+    /// Chain stubs: an edge write on an edge of a chain by which S's keys open a thing of S's
+    /// unit is a seed of S (read edges and records at any time: `ROLE_KEEP` read as for good).
+    /// False: the control (bodies alone).
+    pub chain_stubs: bool,
     /// An edge write in the closure brings every held edge write on each edge its commit's edge
     /// writes on its thing set (spec/permissions.md §4 Evidence of a commit; finding 9: a commit's
     /// edge writes apply together, and a removal waits for the creations its resets name). False:
     /// the control (its commit's other parts on the thing alone).
     pub commit_edges: bool,
     /// Record edges are edges of the read graph (each a mint admin's admin edge on the thing it
-    /// minted, at any time: `World::opened`): keys open through them (spec/sync-set.md §2).
+    /// minted, at any time: `World::chain_edges`): keys open through them (spec/sync-set.md §2).
     /// False: the control (grants only), which under-reads (record edges open keys as grants do: spec/sync-set.md §2).
     pub records: bool,
     pub lists: Lists,
@@ -124,24 +125,18 @@ pub struct Rule {
     /// D4, the reader's deposit on sight (notes/write-path-design.md §2): a node syncing S that
     /// cannot stamp it deposits the removal copies S's required set takes over its holdings.
     pub deposit: bool,
-    /// S's own thing's edge writes are all seeds of S (its key part), whatever its edge there
-    /// gives it. False: only on an edge giving it read, as the engine's derivation takes them
-    /// (`osis_engine::evidence`): one where S holds sync alone goes in its key part as sync copies
-    /// (spec/permissions.md §4 Key part), cut outside the derivation, which this model has no
-    /// role for.
-    pub key_part_whole: bool,
 }
 
 impl Rule {
     /// The spec's rule (spec/permissions.md §4; notes/a2-spec/README.md Open 2: E1): every held
-    /// edge write on a stated path's edges and on the edges its commit sets, lazy delivery, Role
-    /// changes travel whole, lists whole; the engine's derivation (`osis_engine::evidence`).
+    /// edge write on a stated path's edges and on the edges its commit sets, lazy delivery, chain
+    /// stubs, lists whole.
     pub fn fixed() -> Rule {
-        Rule { placement: Placement::Function, keys_open: true, commit_edges: true, records: true, lists: Lists::Whole, keysets: true, deposit: false, key_part_whole: true }
+        Rule { placement: Placement::Function, chain_stubs: true, commit_edges: true, records: true, lists: Lists::Whole, keysets: true, deposit: false }
     }
-    /// The control of Role changes travel's keys-open half: the actor seed alone (finding 19).
-    pub fn actor_seed() -> Rule {
-        Rule { keys_open: false, ..Rule::fixed() }
+    /// The control of chain stubs: a unit carries its bodies' evidence alone.
+    pub fn bodies_only() -> Rule {
+        Rule { chain_stubs: false, ..Rule::fixed() }
     }
 }
 
@@ -213,8 +208,6 @@ pub struct State {
     pub entries: BTreeMap<Sid, Set>,
     /// Per node what it holds (`Placement::Function`: kept while a sync ID it syncs requires it).
     pub held: Vec<Set>,
-    /// `Placement::AtLog`: what granters delivered under holders' sync IDs, never unplaced.
-    pub delivered: BTreeMap<Sid, Set>,
     /// `Placement::AtLog`: per (sync ID, copy), the commits it was placed for.
     pub placed: BTreeMap<(Sid, Id), Set>,
     /// A settle that did not reach a fixpoint.
@@ -323,20 +316,11 @@ impl World {
 
     // ---- What a sync ID requires ----
 
-    /// The seeds of S's required set over `h`, its unit `unit`: the bodies, and the edge writes
-    /// naming S's thing (and under `keys_open` a thing S's keys open) as holder.
+    /// The seeds of S's required set over `h`, its unit `unit`: the bodies, and under
+    /// `chain_stubs` the edge writes on the edges of a chain from S's thing to a thing of the unit.
     fn seeds(&self, rule: &Rule, s: Sid, unit: &Things, h: &Set, reads: &BTreeSet<Edge>) -> Set {
-        // the things whose holder roles travel under S: its own, and under Role changes travel
-        // those S's thing holds read or above on, at any time
-        let open = self.opened(rule, s, reads);
-        // S's own thing's: its key part, every edge write naming it (`Rule::key_part_whole`);
-        // another open thing's
-        // travel only on an edge that gives its holder read (a held write giving read or above
-        // valid over `h`, or the record): one giving no more than sync as `h` judges it goes in
-        // the holder's key part alone, as sync copies, whatever invalid or pending writes on it
-        // say (spec/permissions.md §4 Key part, Role changes travel)
-        let travels = |i: Id, hd: Thing| (hd == s && rule.key_part_whole) || reads.contains(&(hd, self.on(i))) || self.w.is_record((hd, self.on(i)));
-        let mut seed: Set = h.iter().copied().filter(|&i| unit.contains(&self.on(i)) || self.holder(i).is_some_and(|hd| open.contains(&hd) && travels(i, hd))).collect();
+        let chain = if rule.chain_stubs { self.chain_edges(rule, s, unit, reads) } else { BTreeSet::new() };
+        let mut seed: Set = h.iter().copied().filter(|&i| unit.contains(&self.on(i)) || self.holder(i).is_some_and(|hd| chain.contains(&(hd, self.on(i))))).collect();
         if rule.keysets {
             // a held keyset's carried demotions are evidence of it, each whole
             let carried: Vec<Id> = seed.iter().filter_map(|k| self.keysets.get(k)).flatten().copied().filter(|c| h.contains(c)).collect();
@@ -353,31 +337,27 @@ impl World {
     fn req_with(&self, rule: &Rule, s: Sid, units: &BTreeMap<Sid, Things>, h: &Set, reads: &BTreeSet<Edge>) -> Set {
         self.closure(rule, &self.seeds(rule, s, &units[&s], h, reads), h)
     }
-    /// The things whose holder roles travel under S over read graph edges `reads`: S's own, and under
-    /// `keys_open` those S's thing holds read or above on through them and through record edges,
-    /// at any time. A record edge opens as a grant of admin from the mint admin to the thing it
-    /// minted (spec/sync-set.md §2 T's keys open: effective role over paths that climb record
-    /// edges; a dependent's secrets derive from its mint admin's), standing since the thing's
-    /// creation, ordered before every write (spec/crypto.md §4 Key access), and read at any time as
-    /// grants are: a record edge removed later still opens (as a grant removed later does).
-    fn opened(&self, rule: &Rule, s: Sid, reads: &BTreeSet<Edge>) -> Things {
-        let mut open = Things::from([s]);
-        if rule.keys_open {
-            let edges: Vec<Edge> = self.records(rule).chain(reads.iter().copied()).collect();
+    /// The edges of the chains by which S's keys open a thing of `unit`: read graph edges `reads`
+    /// and record edges (`Rule::records`) on a path from S's thing to a thing of the unit, at any
+    /// time. A record edge opens as a grant of admin from the mint admin to the thing it minted
+    /// (spec/sync-set.md §2 T's keys open: effective role over paths that climb record edges; a
+    /// dependent's secrets derive from its mint admin's), standing since the thing's creation,
+    /// ordered before every write (spec/crypto.md §4 Key access), and read at any time as grants
+    /// are: a record edge removed later still opens (as a grant removed later does).
+    fn chain_edges(&self, rule: &Rule, s: Sid, unit: &Things, reads: &BTreeSet<Edge>) -> BTreeSet<Edge> {
+        let edges: BTreeSet<Edge> = self.w.records.iter().copied().filter(|_| rule.records).chain(reads.iter().copied()).collect();
+        let reach = |from: Things, fwd: bool| {
+            let mut seen = from;
             loop {
-                let more: Vec<Thing> = edges.iter().filter(|e| open.contains(&e.0) && !open.contains(&e.1)).map(|e| e.1).collect();
+                let more: Vec<Thing> = edges.iter().filter_map(|&(x, y)| if fwd { (seen.contains(&x) && !seen.contains(&y)).then_some(y) } else { (seen.contains(&y) && !seen.contains(&x)).then_some(x) }).collect();
                 if more.is_empty() {
-                    break;
+                    return seen;
                 }
-                open.extend(more);
+                seen.extend(more);
             }
-        }
-        open
-    }
-    /// The record edges keys-open travel steps along (`Rule::records`).
-    fn records<'a>(&'a self, rule: &Rule) -> impl Iterator<Item = Edge> + 'a {
-        let on = rule.records;
-        self.w.records.iter().copied().filter(move |_| on)
+        };
+        let (from, to) = (reach(Things::from([s]), true), reach(unit.clone(), false));
+        edges.into_iter().filter(|(x, y)| from.contains(x) && to.contains(y)).collect()
     }
     /// An edge write giving read or above (any `until`): a link by which keys open, once valid.
     fn gives_read(&self, i: Id) -> Option<Edge> {
@@ -388,7 +368,7 @@ impl World {
     }
     /// The read graph's grant edges over held set `h`: each set by a write of `h` giving read that
     /// `h` judges valid (a node's own view, its lists whole), so no invalid or pending write
-    /// opens keys or carries a holder's role changes (spec/permissions.md §4 Role changes travel).
+    /// opens keys or brings a chain stub.
     pub fn read_edges(&self, h: &Set) -> BTreeSet<Edge> {
         self.reads_valid(h).into_iter().filter_map(|i| self.gives_read(i)).collect()
     }
@@ -542,22 +522,6 @@ impl World {
         let known: Set = held.iter().chain(own.iter().filter_map(|i| self.opens.get(i)).filter(|&&o| o < self.by.len())).copied().filter(|&i| !withheld(i)).collect();
         self.closure(rule, &mine, &known).into_iter().filter(|i| held.contains(i)).collect()
     }
-    /// What node `n` delivers over `held` besides what it logs by its view: a grant naming a
-    /// holder goes under the holder's sync ID by its granter (spec/permissions.md §4 Delivering
-    /// an edge piece), with its closure.
-    fn deliveries(&self, rule: &Rule, st: &State, n: usize, held: &Set) -> BTreeMap<Sid, Set> {
-        let mut out: BTreeMap<Sid, Set> = BTreeMap::new();
-        if !self.nodes[n].honest {
-            return out;
-        }
-        for &i in &self.own(st, n) {
-            if let Some(hd) = self.holder(i).filter(|hd| self.sids.contains(hd)) {
-                out.entry(hd).or_default().extend(self.closure(rule, &Set::from([i]), held));
-            }
-        }
-        out
-    }
-
     /// The state before any event.
     pub fn start(&self) -> State {
         let entries = self.sids.iter().map(|&s| (s, Set::new())).collect();
@@ -606,9 +570,7 @@ impl World {
         }
         for c in drop {
             st.placed.remove(&(s, c));
-            if !st.delivered.get(&s).is_some_and(|e| e.contains(&c)) {
-                st.entries.get_mut(&s).unwrap().remove(&c);
-            }
+            st.entries.get_mut(&s).unwrap().remove(&c);
         }
     }
     /// Every event in order; `each` sees the state after each.
@@ -625,9 +587,6 @@ impl World {
         st.forgotten.insert(i);
         for h in st.held.iter_mut() {
             h.remove(&i);
-        }
-        for e in st.delivered.values_mut() {
-            e.remove(&i);
         }
         if rule.placement == Placement::AtLog {
             for s in self.sids.clone() {
@@ -646,7 +605,7 @@ impl World {
             let before = (st.entries.clone(), st.held.clone());
             match rule.placement {
                 Placement::Function => self.round_function(rule, st),
-                Placement::AtLog => self.round_atlog(rule, st),
+                Placement::AtLog => self.round_atlog(st),
             }
             if (st.entries.clone(), st.held.clone()) == before {
                 return;
@@ -655,7 +614,7 @@ impl World {
         st.unsettled = true;
     }
     fn round_function(&self, rule: &Rule, st: &mut State) {
-        // nothing is kept for its past: a delivered entry stays while a holder's view requires it
+        // nothing is kept for its past: an entry stays while a holder's view requires it
         let mut new: BTreeMap<Sid, Set> = self.sids.iter().map(|&s| (s, Set::new())).collect();
         for n in 0..self.nodes.len() {
             let sy = self.syncs(n, &st.units);
@@ -683,14 +642,11 @@ impl World {
                 };
                 new.get_mut(&s).unwrap().extend(logs);
             }
-            for (s, items) in self.deliveries(rule, st, n, &held) {
-                new.get_mut(&s).unwrap().extend(items);
-            }
             st.held[n] = held;
         }
         st.entries = new;
     }
-    fn round_atlog(&self, rule: &Rule, st: &mut State) {
+    fn round_atlog(&self, st: &mut State) {
         for n in 0..self.nodes.len() {
             let sy = self.syncs(n, &st.units);
             let own = self.own(st, n);
@@ -699,8 +655,7 @@ impl World {
             for &s in &sy {
                 let unit = st.units[&s].clone();
                 for &c in &held {
-                    let body = unit.contains(&self.on(c)) || self.holder(c) == Some(s);
-                    if !body || st.entries[&s].contains(&c) || (!honest && !own.contains(&c)) {
+                    if !unit.contains(&self.on(c)) || st.entries[&s].contains(&c) || (!honest && !own.contains(&c)) {
                         continue;
                     }
                     st.entries.get_mut(&s).unwrap().insert(c);
@@ -713,11 +668,7 @@ impl World {
                     }
                 }
             }
-            st.held[n] = held.clone();
-            for (s, items) in self.deliveries(rule, st, n, &held) {
-                st.delivered.entry(s).or_default().extend(items.iter().copied());
-                st.entries.get_mut(&s).unwrap().extend(items);
-            }
+            st.held[n] = held;
         }
     }
 
@@ -1018,25 +969,25 @@ impl World {
     }
 }
 
-// ---- The joint property (notes/holder-access-study.md, With A2) ----
+// ---- The joint property: acting through chain stubs ----
 
 /// What a joint node holds beside its one sync ID, and logs (`World::joint`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Joint {
-    /// The design: the key part of the signer and of every holder on a path from it to a thing
-    /// of the unit, the world's paths and those its own reading shows; its write logged with what
-    /// its view requires.
+    /// The design: the stub of every holder on a path from the signer to a thing of the unit
+    /// (the world's paths and those its own reading shows) and the signer's own role entries;
+    /// its write logged with what its view requires.
     Paths,
     /// Control of `J-act`: the sync ID alone.
     Unit,
     /// Control of `J-logged`: its write logged with what S's entries alone require of it.
     UnitLog,
-    /// Control of `J-act`: of each key part only the writes that remove nothing (`removes`):
-    /// it acts along a removed hop.
+    /// Control of `J-act`: of each stub only the writes that remove nothing (`removes`): it acts
+    /// along a removed hop.
     Grants,
-    /// Control of `J-act`: the key parts of the holders on the world's paths alone: it writes
-    /// along a path only its own reading shows (a hop whose grant a removal it lacks undid)
-    /// without that path's key parts.
+    /// Control of `J-act`: the stubs of the holders on the world's paths alone: it writes along a
+    /// path only its own reading shows (a hop whose grant a removal it lacks undid) without that
+    /// path's stubs.
     WorldPaths,
 }
 
@@ -1064,24 +1015,29 @@ impl World {
         let (f, b) = (reach(Things::from([a]), true), reach(unit.clone(), false));
         f.intersection(&b).copied().filter(|&x| x != a).collect()
     }
-    /// A key part at `st`: a holder's, its sync ID's role entries as logged; a signer's (no sync ID
-    /// in the model: its node's own), every written edge write naming it or on it, with their
-    /// evidence.
-    pub fn key_part(&self, rule: &Rule, st: &State, h: Thing) -> Set {
-        if let Some(e) = st.entries.get(&h) {
-            return e.iter().copied().filter(|&i| self.w.edge_class(i)).collect();
-        }
-        let all = self.full(st, &Set::new()).v.held;
-        let seeds: Set = all.iter().copied().filter(|&i| self.w.sets(i).is_some_and(|(x, y)| x == h || y == h)).collect();
-        self.closure(rule, &seeds, &all)
+    /// Holder `h`'s stub at `st`, cut to the edges into it from `from` (the signer and the
+    /// holders on its paths): its edge writes on those edges as its own sync ID carries them, with
+    /// their evidence there; the signer's (no sync ID in the model: its node's own) every written
+    /// edge write on it, with their evidence.
+    pub fn stub(&self, rule: &Rule, st: &State, h: Thing, from: &Things) -> Set {
+        let (seeds, avail): (Set, Set) = match st.entries.get(&h) {
+            Some(e) => (e.iter().copied().filter(|&i| self.on(i) == h && self.holder(i).is_some_and(|g| from.contains(&g))).collect(), e.clone()),
+            None => {
+                let all = self.full(st, &Set::new()).v.held;
+                (all.iter().copied().filter(|&i| self.on(i) == h && self.w.edge_class(i)).collect(), all)
+            }
+        };
+        self.closure(rule, &seeds, &avail)
     }
-    /// What a node acting as `a` and syncing `s` holds: S's entries, and under `j` the key parts
-    /// over the paths of `edges`.
+    /// What a node acting as `a` and syncing `s` holds: S's entries, and under `j` the stubs of
+    /// the holders on the paths of `edges` and its own role entries.
     pub fn joint_held(&self, rule: &Rule, st: &State, s: Sid, a: Thing, edges: &BTreeSet<Edge>, j: Joint) -> Set {
         let mut held = st.entries[&s].clone();
         if j != Joint::Unit {
-            for h in Self::path_holders(edges, a, &st.units[&s]).into_iter().chain([a]) {
-                held.extend(self.key_part(rule, st, h).into_iter().filter(|&i| j != Joint::Grants || self.removes(i).is_none()));
+            let holders = Self::path_holders(edges, a, &st.units[&s]);
+            let from: Things = holders.iter().copied().chain([a]).collect();
+            for h in holders.into_iter().chain([a]) {
+                held.extend(self.stub(rule, st, h, &from).into_iter().filter(|&i| j != Joint::Grants || self.removes(i).is_none()));
             }
         }
         held
@@ -1103,8 +1059,8 @@ impl World {
         }
         out
     }
-    /// The joint property: a node acting as a signer and holding one sync ID plus its paths' key
-    /// parts (`joint_held`) judges and acts as the node holding everything.
+    /// The joint property: a node acting as a signer and holding one sync ID plus its paths'
+    /// stubs (`joint_held`) judges and acts as the node holding everything.
     /// - `J-judge`: each body S should carry that it holds, it judges as S's reference or as the
     ///   node holding everything (holding a removal S lacks takes it to the latter).
     /// - `J-act`: a content write it would make now on a thing of S's unit, along any path the
@@ -1128,8 +1084,8 @@ impl World {
             let refv = self.verdicts(&self.reference(rule, st, s, &Set::new()), &owed);
             for a in self.signers(st) {
                 // the paths it would write along: the world's, and those its own reading shows,
-                // each holder's key part on any of them held (spec/sync-set.md §2 Held for keys:
-                // every path, found by what it holds), until its reading shows no path more
+                // each holder's stub on any of them held (every path, found by what it holds),
+                // until its reading shows no path more
                 let mut cand = edges.clone();
                 let held = loop {
                     let held = self.joint_held(rule, st, s, a, &cand, j);

@@ -970,7 +970,7 @@ pub struct Model {
     unoffered: BTreeSet<(usize, usize)>,
     /// What the accounts' node closures log under the sync IDs they read: bridges and stubs (`entry::Net::logged`).
     logged: hc::Edges,
-    /// The public's pieces under the sync IDs they read (`entry::Net::pieces`): those logged before
+    /// The public's pieces under the sync IDs they read : those logged before
     /// in the history (`Made::pieces`) and what the closures log now.
     pieces: hc::Edges,
     /// The sync IDs each holder's key part names (`Made::named`, and each thing's mint admin by

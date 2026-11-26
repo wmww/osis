@@ -6,7 +6,7 @@ Tess approved building this shape, taking the recommendations below as working a
 
 | Job | State |
 |---|---|
-| M1 held-model | running |
+| M1 held-model | done (Model findings) |
 | R1 delete | running |
 | M2 TLA | after M1/R1 |
 | R2 stubs, R3 entry, R4 tests/notes | not started |
@@ -187,6 +187,19 @@ Options:
 - KemKeys.tla (it delivers by edge piece) and Depth0.tla `pl`/`kpl` (guess: key-part-like) rechecked.
 - roles-model `told.rs` (notices) kept or re-pointed per Q6.
 
+### Model findings (M1)
+What held-model checks (core/test/held-model/README.md):
+- `closure::entry`: units (things' and local parts) carry by rule 2, judged from their own data, only what a node holding the role entries logged; held signals give stubs; chain-holder stubs. Each property fails under its control: founded (`Fix::Greatest`), readers agree (`reader_view`), no grant-driven entry (`by_grants`, the key-part rule), siblings (`PRIVATE`: fetched stubs kept at the node), chains against `on_paths` (`Chains::Up`, the walk up), signal lifetime (`keep_fetched`). Hand worlds: pairing, unsignalled grant, signal then reference then expiry, signal alone, weak, two-hop chain and its removal, public thing, reference at sync.
+- `evidence`: a sync ID's required set is its bodies plus its chain stubs' role entries (edge writes on chains of read edges and records from its thing to a thing of its unit), closed over evidence; no delivery to a holder's sync ID. The joint property holds with the actor holding its paths' stubs (each control fails).
+- `box_cut`, `copy_cut`, `independent`: the same cuts, read as X's stub in the unit of T (the holder on its chain).
+
+Findings:
+- **Q4 gap (finding 19).** A removal of a hop O→D on a chain to R reaches R's readers only where an honest node holding the removal syncs a unit whose chain to a thing it carries passes the hop, and some node syncing that unit also syncs R. Where R is written through the hop only from a local part (or a unit nobody honest shares), R's reader shows the stolen key's write valid until the removal reaches a node syncing R (`spec_reach::reach_a_chain_stub_carries_a_removal_to_the_units_reading_through_it`). The generated evidence worlds reach no case where chain stubs, keys-open travel and bodies alone differ (105 of 1,848 property worlds with a gap under each; `reach_explore`: 20 family worlds): only the hand worlds tell them apart.
+- **Signals need the holder opened.** A signal's entry box is sealed to its holder, so a node uses it only where it opens the holder (reads it, or a unit's keys open it). A signal naming a realm reaches a member's node only once it reads through the realm.
+- **A reference founds nothing alone.** A strong to a thing (a public one included) is carried only once a node holding its role entries logs the stub; the node writing it normally does. A stub logged under a unit outlives its logger while rule 2 carries it.
+- The actor's own reading still matters: `Joint::WorldPaths` fails in generated worlds, though a stub carries a lowering with the hop it undoes.
+- Not modelled: bridges (a dependent of another independent thing counts as that thing), rotation and re-seals (Q2), notices (Q6), the Dependent-entry oracle gap.
+
 ## 9. Jobs (one agent, one session each)
 
 | Job | What it delivers | Runs |
@@ -259,7 +272,7 @@ Options:
 | 21 | data-model §8 Held history ("weaks in history count for nothing") | — | — | **Rule 4:** a weak in a held body holds its target's stub. |
 | 22 | sync-inbox §1 inbox = `keys.0`-named thing else itself | — | — | **Rule 5:** the inbox is always a thing of its own, strongly referenced. Also settles the dependent-thing case of behaviour-depends-on-own-keys. |
 | 23 | API: `Osis::grant` doc "a grant to a thing as holder reaches that thing's readers through it" (core/osis/src/share.rs, read) | API promises key-part delivery | Apps rely on a grant to a realm reaching its members | **Rewrite under notes/api-design.md:** a grant is the target's data; the holder learns of it only if someone sends a signal (an option, may default on) or writes a reference it reads. |
-| 24 | notes: holder-access-study (direction 3 and "Why not down": "key part's edge pieces are a bootstrap for siblings"), node-closure (Kept list: "a grant naming a holder in the holder's key part"; Learning a grant), accounts-switch-brief (First entry; `record_pieces` control), certificates, sync-facade (Key part), sync-inbox, write-path-design §2/§231, public-and-cards-brief (Public pieces, Following), a2-spec README (Open 5, 9), mint-admins, keys-rotation, engine-roles, sync-access, sync-unread, sync-opens, terms (sync words) | They describe the built design as the design | — | Rewrite each to the stub design, or delete the obsolete sections (complete refactor, no "formerly"). holder-access-study's key-part paragraphs go and its own title moves onto stubs.md. |
+| 24 | notes: holder-access-study (direction 3 and "Why not down": "key part's edge pieces are a bootstrap for siblings"), node-closure (Kept list: "a grant naming a holder in the holder's key part"; Learning a grant), accounts-switch-brief (First entry; the record edge's piece control), certificates, sync-facade (Key part), sync-inbox, write-path-design §2/§231, public-and-cards-brief (Public pieces, Following), a2-spec README (Open 5, 9), mint-admins, keys-rotation, engine-roles, sync-access, sync-unread, sync-opens, terms (sync words) | They describe the built design as the design | — | Rewrite each to the stub design, or delete the obsolete sections (complete refactor, no "formerly"). holder-access-study's key-part paragraphs go and its own title moves onto stubs.md. |
 
 ### 1b. Code (from grep counts and file sizes; function names read; roles of whole files partly guessed)
 | Mechanism | Where | Fate |
@@ -275,7 +288,7 @@ Options:
 | Retention of pieces | engine `retention/needed.rs` (`Need::Offered`, key-part needs), `sync/bodies.rs`, `sync/certblobs.rs` | Re-derive needs from stubs and held fires. |
 | Lost access and role | engine `rotation/lost.rs` (`grants_count`, `role_here`), `rotation/*` | `grants_count`: where the node syncs the thing or holds its stub. |
 | Tests | engine `flows/tests_delivery.rs` (1,268; 90 hits), `apply/tests_validity.rs`, `tests/it/{external,accounts,pairing,closure,scale}.rs`; osis-sync `tests/it/{holding,differential,harness/history,streams,flows,store,grants,growth}.rs` | Delete tests of deleted mechanisms wholesale (tests_delivery mostly goes). Rewrite slimmer around the stub properties (part 4). |
-| Models | held-model `closure/entry.rs` (487), `closure/keys.rs` (80), `closure/public.rs` (172), `closure/public_epochs.rs` (437), `box_cut.rs` (604), `copy_cut.rs` (569), `evidence.rs` (1,890: `Rule::fixed` with keys-open travel, `key_part_whole`), `independent.rs`; tests `spec_{entry,holders,joint,public,box_cut,copy_cut,reach,independent}.rs`; TLA `rotation/KemKeys.tla` (an edge piece is how M learns its grant) | Part 2. |
+| Models | held-model `closure::entry`, `evidence`, `box_cut`, `copy_cut`, `independent`; TLA `rotation/KemKeys.tla` (an edge piece is how M learns its grant) | M1 done (Model findings); KemKeys is M2's. |
 
 Detail: Appendix A.
 
@@ -301,4 +314,4 @@ Not in scope though the grep hits: sync-opens `Msg::Offer`/`OfferItem`; osis-syn
   - Harness `history.rs` (`unoffered`/`pieces`/`named`, the `for_keys` check), `harness/mod.rs` 1236.
   - Indirect (pair through offers): osis-account, chat and app sync tests.
   - Ignored "sync rewrite" tests plausibly touching these (guess): `holding.rs` 537, `retention.rs` 106, `inbox.rs` 923/934, engine `order.rs` 4797/5169.
-- **Models**: held-model as in 1b, plus `closure.rs` 426-431 and `evidence.rs` `Joint`/`key_part` (1026-1140); held-model tests `spec_box_cut` (10), `spec_entry` (17), `spec_holders` (3), `spec_public` (15), `spec_independent` (3), `spec_joint` (4), `spec_copy_cut` (3, partly); roles-model `told.rs`; TLA `KemKeys.tla` (`Deliver`: the edge piece reaching M), `Depth0.tla` (`pl`/`kpl`, guess). sim: nothing specific.
+- **Models**: held-model done (M1); roles-model `told.rs`; TLA `KemKeys.tla` (`Deliver`: the edge piece reaching M), `Depth0.tla` (`pl`/`kpl`, guess). sim: nothing specific.

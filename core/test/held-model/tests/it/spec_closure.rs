@@ -535,7 +535,7 @@ fn p3_worlds() -> Vec<(World, Edges, NodeView)> {
 #[test]
 fn p3_strong_never_changes_what_no_role_holds_exhaustive() {
     for (w, e, n) in p3_worlds() {
-        let roles = keys::roles_of(&w, &n.own);
+        let roles = roles_of(&w, &n.own);
         let c = closure(&w, &e, &n, Walk::Units);
         assert!(c.read.iter().all(|k| roles.get(k) >= Some(&Role::Read)), "{w:?} {e:?} {n:?}");
         assert!(c.stored.iter().all(|k| roles.get(k) == Some(&Role::Sync)), "{w:?} {e:?} {n:?}");

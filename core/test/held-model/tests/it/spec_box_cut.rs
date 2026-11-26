@@ -1,5 +1,5 @@
 //! Boxes cut by holder (held_model::box_cut; spec/wire.md §4 Pieces, spec/permissions.md §4
-//! Copies): a reader of a holder T's key part holding T's piece of each commit takes every secret
+//! Copies): a reader of a holder T's unit holding, in X's stub, T's piece of each commit takes every secret
 //! of X it takes from whole copies, and a holder of sync alone learns none of X's holders; each
 //! clause is needed (a control without it reads otherwise). Findings: issues/account-evidence-per-unit.md.
 use held_model::box_cut::*;
@@ -166,7 +166,7 @@ fn a_rest_beside_sync_alone_names_departed_holders_spec_sync_ids_2() {
 }
 
 /// T holds sync alone (XA's grant at epoch 0); XA makes H an admin; H removes T, rotates X to
-/// epoch 1 boxing those left, and XA records the step. T's key part holds the removal and the
+/// epoch 1 boxing those left, and XA records the step. X's stub in T's unit holds the removal and the
 /// step, no header: R learns no remover and judges T removed by the step past its keys.
 fn removed_by_another_admin() -> World {
     let commits = vec![

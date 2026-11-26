@@ -1,5 +1,5 @@
 //! Which things count as independent (held_model::independent; spec/sync-set.md §2 Counts as
-//! independent, spec/permissions.md §4 Key part): no party below admin makes a dependent thing
+//! independent): no party below admin makes a dependent thing
 //! count independent at any node, whatever it holds; every honest holding of a box without the
 //! keyset counts; each clause is needed (each control fails one of the two).
 use held_model::independent::*;
@@ -15,8 +15,8 @@ fn no_box_below_admin_makes_a_dependent_thing_independent_spec_sync_set_2() {
 fn an_honest_box_counts_before_its_keyset_spec_permissions_4() {
     assert!(stuck(Rule::Spec).is_empty(), "{:?}", stuck(Rule::Spec));
     assert_eq!(stuck(Rule::KeysetOnly).len(), honest_holdings().len());
-    assert_eq!(stuck(Rule::NotOpenedDependent), ["key part of the mint admin", "late reader of the mint admin"]);
-    assert_eq!(stuck(Rule::BesideEdge), ["key part of the mint admin"]);
+    assert_eq!(stuck(Rule::NotOpenedDependent), ["stub in the mint admin's unit", "late reader of the mint admin"]);
+    assert_eq!(stuck(Rule::BesideEdge), ["stub in the mint admin's unit"]);
     for r in [Rule::KeysetOnly, Rule::BesideEdge] {
         assert!(unsafe_case(r).is_none(), "{r:?}: the control fails liveness alone");
     }

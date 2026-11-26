@@ -1,6 +1,6 @@
 //! How removals reach a sync ID (notes/write-path-design.md §2, D1 to D3: lazy delivery). Each
-//! delivery rule (`deliveries`): the spec's (`Rule::fixed`: Role changes travel whole) and the
-//! actor seed alone (`Rule::actor_seed`). Each is judged against its reference
+//! delivery rule (`deliveries`): the spec's (`Rule::fixed`: chain stubs) and bodies' evidence
+//! alone (`Rule::bodies_only`). Each is judged against its reference
 //! (`World::reference`) and its gap counted (`World::gap`). Hand worlds per finding;
 //! `reach_explore` (by hand) tallies every delivery rule over the family, random and story worlds.
 use crate::spec_evidence::fails_at;
@@ -14,7 +14,7 @@ pub type Steps = BTreeSet<usize>;
 
 /// The delivery rules compared, by name.
 pub fn deliveries() -> [(&'static str, Rule); 2] {
-    [("e1", Rule::fixed()), ("actor", Rule::actor_seed())]
+    [("stubs", Rule::fixed()), ("bodies", Rule::bodies_only())]
 }
 
 /// `w` under `rule`: the failures, the per-step checks at steps `at` (every step: None).
@@ -87,70 +87,62 @@ fn reach_a_removed_writers_other_route_is_the_gap_at_r() {
     }
 }
 
-/// R's mint admin (`reach_keys_open_*`).
+/// R's mint admin.
 const V: Thing = 7;
 
-/// Role changes travel's keys-open half carries a removal of a thing's grant to the things that
-/// read through it: K (of A) writes R through [A, O, D] (A writes O, O writes D, D writes R); Y
-/// removes O from D; the stolen K writes R again. Y syncs D and A, N syncs A and R; R's admin V
-/// syncs R alone. A reads through O, so the removal goes under A (Y logs it there), N takes it to
-/// R as evidence of K's write. With keys-open travel left out (`actor`) no node holding the
-/// removal holds R: R's reader shows K's late write, counted as the gap (the reference follows the
-/// rule's own delivery, so a delivery rule is compared by its gap).
-#[test]
-fn reach_keys_open_travel_carries_a_removal_to_the_things_reading_through_it() {
-    let pw = paths::World::new(&[(X, A), (W, O), (Y, D), (V, R)]);
-    let mut w = World::new(pw, &[A, O, D, R]);
+/// Finding 19's world: K (of A) writes R through [A, O, D] (A writes O, O writes D, D writes R);
+/// Y removes O from D; the stolen K writes R again. Y syncs D and A, N syncs A and R; R's admin V
+/// syncs R alone. `wider` adds H (Y's), on which D holds read, to A's unit: a chain A, O, D, H by
+/// which A's keys open a thing of A's unit, so O and D are chain stubs in A.
+fn finding_19(record: bool, wider: bool) -> (World, paths::Id) {
+    let o_admin = if record { A } else { W };
+    let pw = paths::World::new(&[(X, A), (o_admin, O), (Y, D), (V, R), (Y, H)]);
+    let mut w = World::new(pw, &[A, O, D, R, H]);
     let (x, wn, y, v, k) = (w.node(true, &[A]), w.node(true, &[O]), w.node(true, &[D, A]), w.node(true, &[R]), w.node(false, &[]));
     let _n = w.node(true, &[A, R]);
+    if wider {
+        w.member(H, A);
+    }
     w.write(x, |p| p.edge(X, 1, &[], A, K, Role::Write, &[]));
-    w.write(wn, |p| p.edge(W, 1, &[], O, A, Role::Write, &[]));
+    if !record {
+        w.write(wn, |p| p.edge(W, 1, &[], O, A, Role::Write, &[]));
+    }
     w.write(y, |p| p.edge(Y, 1, &[], D, O, Role::Write, &[]));
     w.write(v, |p| p.edge(V, 1, &[], R, D, Role::Write, &[]));
+    w.write(y, |p| p.edge(Y, 1, &[], H, D, Role::Read, &[]));
     w.write(k, |p| p.content(K, 2, &[A, O, D], R));
     w.write(y, |p| p.edge(Y, 6, &[], D, O, Role::None, &[]));
     let late = w.write(k, |p| p.content(K, 8, &[A, O, D], R));
-    for (name, p) in by_delivery(&w, |r| r) {
-        assert_eq!(p, Vec::<&str>::new(), "{name}");
-    }
-    for (name, rule) in deliveries() {
-        assert_eq!(gaps_under(&w, &rule).iter().any(|f| f.sid == R && f.id == late), !rule.keys_open, "{name}");
-    }
+    (w, late)
 }
 
-/// The rule with record edges left out of keys-open travel (the control).
-fn grants_only(r: Rule) -> Rule {
-    Rule { records: false, ..r }
-}
-
-/// Keys open through a record edge: finding 19's world with O minted by A (record (A, O)) in place of W granting A write
-/// on O. K writes R through [A, O, D]; Y removes O from D; the stolen K writes R again. A's keys
-/// open O through its record edge (spec/sync-set.md §2: effective role climbs record edges), so
-/// Role changes travel puts the removal under A and N carries it to R. Every rule but the actor
-/// seed alone brings it; read through grants only, none does, and R's reader shows K's late
-/// write: the gap.
+/// Finding 19's gap under stubs (notes/stub-rewrite.md Q4): no unit carries anything through O
+/// and D, so no node holding the removal holds R, and R's reader shows K's late write under every
+/// rule. With a unit reading through them (`wider`), the chain stubs carry the removal under A
+/// and N takes it to R; carrying bodies' evidence alone leaves the gap.
 #[test]
-fn records_keys_open_through_a_mint_admins_record_edge() {
-    let pw = paths::World::new(&[(X, A), (A, O), (Y, D), (V, R)]);
-    let mut w = World::new(pw, &[A, O, D, R]);
-    let (x, y, v, k) = (w.node(true, &[A]), w.node(true, &[D, A]), w.node(true, &[R]), w.node(false, &[]));
-    let _n = w.node(true, &[A, R]);
-    w.write(x, |p| p.edge(X, 1, &[], A, K, Role::Write, &[]));
-    w.write(y, |p| p.edge(Y, 1, &[], D, O, Role::Write, &[]));
-    w.write(v, |p| p.edge(V, 1, &[], R, D, Role::Write, &[]));
-    w.write(k, |p| p.content(K, 2, &[A, O, D], R));
-    w.write(y, |p| p.edge(Y, 6, &[], D, O, Role::None, &[]));
-    let late = w.write(k, |p| p.content(K, 8, &[A, O, D], R));
-    for f in [(|r| r) as fn(Rule) -> Rule, grants_only] {
-        for (name, p) in by_delivery(&w, f) {
-            assert_eq!(p, Vec::<&str>::new(), "{name}");
+fn reach_a_chain_stub_carries_a_removal_to_the_units_reading_through_it() {
+    for record in [false, true] {
+        for wider in [false, true] {
+            let (w, late) = finding_19(record, wider);
+            for (name, p) in by_delivery(&w, |r| r) {
+                assert_eq!(p, Vec::<&str>::new(), "{name}");
+            }
+            for (name, rule) in deliveries() {
+                let gap = gaps_under(&w, &rule).iter().any(|f| f.sid == R && f.id == late && f.reader == Some(Verdict::Valid) && f.full == Some(Verdict::Invalid));
+                assert_eq!(gap, !(wider && rule.chain_stubs), "{name} record {record} wider {wider}");
+            }
         }
     }
-    let at_r = |g: Vec<Fail>| g.iter().any(|f| f.sid == R && f.id == late && f.reader == Some(Verdict::Valid) && f.full == Some(Verdict::Invalid));
-    for (name, rule) in deliveries() {
-        assert_eq!(at_r(gaps_under(&w, &rule)), !rule.keys_open, "{name}");
-        assert!(at_r(gaps_under(&w, &grants_only(rule))), "control {name}");
-    }
+}
+
+/// The rule with record edges left out of the chains (the control): A's keys open O through its
+/// record edge alone, so no chain is found and the gap stays.
+#[test]
+fn records_chains_climb_a_mint_admins_record_edge() {
+    let (w, late) = finding_19(true, true);
+    let rule = Rule { records: false, ..Rule::fixed() };
+    assert!(gaps_under(&w, &rule).iter().any(|f| f.sid == R && f.id == late));
 }
 
 /// A record edge on the other route: finding 18's world with D minted by A in place of Y granting A write on D. X grants K
@@ -237,5 +229,5 @@ fn reach_explore() {
         }
     }
     let control = std::env::var("OSIS_REACH_CONTROL").unwrap_or_default();
-    eprintln!("{}", tally(&jobs, |r| if control == "grants" { grants_only(r) } else { r }));
+    eprintln!("{}", tally(&jobs, |r| if control == "grants" { Rule { records: false, ..r } } else { r }));
 }

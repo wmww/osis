@@ -1,6 +1,6 @@
-//! The joint property (notes/holder-access-study.md, With A2; held_model::evidence `joint`): a
-//! node acting as a signer and holding one sync ID plus its paths' key parts judges and acts as
-//! the node holding everything. Over the evidence family, random and wide worlds under the spec's
+//! The joint property (held_model::evidence `joint`; notes/stub-rewrite.md §2 rule 2): a node
+//! acting as a signer and holding one sync ID plus the stubs of the holders on its paths judges
+//! and acts as the node holding everything. Over the evidence family, random and wide worlds under the spec's
 //! rule (`Rule::fixed`), with a control per check. spec: none (modelled before any spec).
 use crate::util::{env, par_any, par_map};
 use held_model::evidence::*;
@@ -51,9 +51,9 @@ fn tally(jobs: &[Job], j: Joint) -> Tally {
     out
 }
 
-/// Each control and the check it fails. `J-judge` has none: no generated world holds a key part
-/// that moves a verdict on S's bodies off both S's reference and the node holding everything.
-const CONTROLS: [(Joint, &str); 3] = [(Joint::Unit, "J-act"), (Joint::UnitLog, "J-logged"), (Joint::Grants, "J-act")];
+/// Each control and the check it fails. `J-judge` has none: no generated world holds a stub that
+/// moves a verdict on S's bodies off both S's reference and the node holding everything.
+const CONTROLS: [(Joint, &str); 4] = [(Joint::Unit, "J-act"), (Joint::UnitLog, "J-logged"), (Joint::Grants, "J-act"), (Joint::WorldPaths, "J-act")];
 
 /// The design holds every check over every world of `jobs`; each control fails its own in some
 /// world (searched until one does).
@@ -76,18 +76,22 @@ fn joint_holds_on_a_slice() {
     holds_with_controls(&worlds(1999, 4), &CONTROLS[..2]);
 }
 
-/// K (a member of A) reaches D through [A] and [A, O]; W removes A on O. D's entries lack the
-/// removal (no body of D rests on it), A's key part has it: K, syncing D alone with its paths' key
-/// parts, does not act along the removed hop. Holding key parts without their removals, it does.
+/// K (a member of A) reaches D through [A], [A, O] and [A, H, O]; W removes A on O. D's entries
+/// lack the removal (no body of D rests on it); O stays on a path, so O's stub, cut to the edges
+/// into it from the path's holders, has the removal with the grant: K, syncing D alone with its
+/// paths' stubs, does not act along the removed hop. Holding stubs without their removals, it
+/// does.
 #[test]
-fn joint_a_removed_hop_reaches_the_actor_through_the_key_part() {
+fn joint_a_removed_hop_reaches_the_actor_through_the_stub() {
     use held_model::evidence::names::*;
     use roles_model::Role;
-    let pw = roles_model::paths::World::new(&[(X, A), (W, O), (Y, D)]);
-    let mut w = World::new(pw, &[A, O, D]);
-    let (x, wn, y) = (w.node(true, &[A]), w.node(true, &[O]), w.node(true, &[D]));
+    let pw = roles_model::paths::World::new(&[(X, A), (W, O), (Y, D), (W, H)]);
+    let mut w = World::new(pw, &[A, O, D, H]);
+    let (x, wn, y) = (w.node(true, &[A]), w.node(true, &[O, H]), w.node(true, &[D]));
     w.write(x, |p| p.edge(X, 1, &[], A, K, Role::Write, &[]));
     w.write(wn, |p| p.edge(W, 1, &[], O, A, Role::Write, &[]));
+    w.write(wn, |p| p.edge(W, 1, &[], H, A, Role::Write, &[]));
+    w.write(wn, |p| p.edge(W, 1, &[], O, H, Role::Write, &[]));
     w.write(y, |p| p.edge(Y, 1, &[], D, O, Role::Write, &[]));
     w.write(y, |p| p.edge(Y, 1, &[], D, A, Role::Write, &[]));
     w.write(wn, |p| p.edge(W, 2, &[], O, A, Role::None, &[]));
@@ -96,14 +100,13 @@ fn joint_a_removed_hop_reaches_the_actor_through_the_key_part() {
     assert!(acts(Joint::Grants) > 0);
 }
 
-/// O is minted by A and holds write on H. Z (admin on H) reaches O through [H, A], H on A by
-/// Q's grant, which O's entries log (a node syncing O alone keeps them); X then lowers Q to
-/// write on A with no frontier, so H's hop on A falls with it: A's key part has the lowering,
-/// O's entries lack it, and the world's paths reach O from Z by none. Holding the key parts of the holders on the
-/// paths its own reading shows, Z judges a write along [H, A] invalid, as the node holding
-/// everything; holding those of the world's paths alone, it acts.
+/// O is minted by A and holds write on H. Z (admin on H) would reach O through [H, A], H on A by
+/// Q's grant; X then lowers Q to write on A with no frontier, so H's hop on A falls with it. A
+/// holder's stub carries the lowering with the hop it undoes (the evidence of H's grant on A is
+/// every write on Q's hop), so Z's own reading shows no path the world's lacks: Z does not act
+/// along [H, A], with or without the paths its own reading shows.
 #[test]
-fn joint_a_path_its_own_reading_shows_brings_its_holders_key_parts() {
+fn joint_a_stub_carries_a_lowering_with_the_hop_it_undoes() {
     use held_model::evidence::names::*;
     use roles_model::Role;
     let pw = roles_model::paths::World::new(&[(X, A), (A, O), (W, H)]);
@@ -118,11 +121,11 @@ fn joint_a_path_its_own_reading_shows_brings_its_holders_key_parts() {
     w.write(x, |p| p.edge(X, 2, &[], A, Q, Role::Write, &[]));
     let acts = |j: Joint| joint(w.clone(), j).into_iter().filter(|f| f.prop == "J-act").count();
     assert_eq!(acts(Joint::Paths), 0);
-    assert!(acts(Joint::WorldPaths) > 0);
+    assert_eq!(acts(Joint::WorldPaths), 0);
 }
 
 #[test]
 #[ignore = "property"]
-fn joint_one_sync_id_and_key_parts_act_as_everything_plain() {
+fn joint_one_sync_id_and_chain_stubs_act_as_everything_plain() {
     search(env("OSIS_JOINT_STEP", 97), env("OSIS_JOINT_RANDOM", 40));
 }

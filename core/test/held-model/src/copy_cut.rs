@@ -7,8 +7,8 @@
 //!
 //! The world: an account A (mint admin node 1) whose nodes 1..=k are granted on A, rotate their
 //! own keysets and A; T, minted with admin A, is S's thing and its whole unit; nodes write T along
-//! [node, A, T] and rotate T, boxing A at an epoch of A; X (mint admin XA) grants T read (T's
-//! edge piece on X), by XA or by H, a holder of read with the may-grant flag. The reader R of S
+//! [node, A, T] and rotate T, boxing A at an epoch of A; X (mint admin XA) grants T read, T's unit
+//! referencing X (X's stub there: T the holder on its chain), by XA or by H, a holder of read with the may-grant flag. The reader R of S
 //! holds T's bodies, the copies S needs, and some of the nodes' keysets by another route (as a
 //! node in the nodes' own world would).
 //!
@@ -163,7 +163,7 @@ impl World {
         for c in self.commits.iter().filter(|c| c.thing == T) {
             need.extend(self.evidence_of(c));
         }
-        // T's key part: its edge pieces on X (the edge writes naming T, the boxes to T, X's steps)
+        // X's stub in T's unit: the edge writes naming T, the boxes to T, X's steps
         for c in self.commits.iter().filter(|c| c.thing == X) {
             for d in &c.parts {
                 let named = match d {
@@ -196,8 +196,8 @@ impl World {
                 }
             }
         }
-        // a box travels with its commit's edge writes on the thing (an edge piece holds them
-        // already: the `roles.0` part naming its holder)
+        // a box travels with its commit's edge writes on the thing (the stub holds them already:
+        // the `roles.0` part naming its holder)
         let deps: Vec<(Cid, Ak)> = need.iter().filter(|(c, ak)| *ak == Ak::Secrets && self.commit(*c).part(Ak::Roles).is_some()).map(|(c, _)| (*c, Ak::Roles)).collect();
         need.extend(deps);
         // closed over the evidence of each named part

@@ -145,7 +145,7 @@ pub enum Reason<T, S, H = T> {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Config {
     /// Role changes travel's keys-open half: a write naming a holder the actor holds read or above
-    /// on, through held grants at any time, is a seed (held-model `Rule::keys_open`). Off: only
+    /// on, through held grants at any time, is a seed. Off: only
     /// writes naming the actor.
     pub keys_open: bool,
 }

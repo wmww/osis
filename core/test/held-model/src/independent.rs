@@ -1,5 +1,5 @@
-//! Which things count as independent at a node (spec/sync-set.md §2 Counts as independent,
-//! spec/permissions.md §4 Key part). Greenfield: the question is what a node holding some of Y's
+//! Which things count as independent at a node (spec/sync-set.md §2 Counts as independent;
+//! a stub, notes/stub-rewrite.md §2 point 1, holds no keyset). Greenfield: the question is what a node holding some of Y's
 //! parts may take as "Y has role secrets of its own", when the rotation making Y independent
 //! (its keyset) may not be among them.
 //!
@@ -10,7 +10,7 @@
 //! Hostile parts: W, W2 or X boxing R, P or G at a made-up epoch, or writing a step bearing one.
 //! Validity is judged at each part's point: a box needs write on Y, a keyset, a step or an edge
 //! write admin. Sync and read share one epoch counter: a box gives both secrets of its epoch.
-//! A node holds any subset of the parts (an edge piece carries no keyset) and opens the boxes to
+//! A node holds any subset of the parts (a stub carries no keyset) and opens the boxes to
 //! the holders it acts for or holds secrets of.
 use std::collections::BTreeSet;
 
@@ -163,16 +163,16 @@ pub fn subsets(parts: &[Part]) -> impl Iterator<Item = BTreeSet<Part>> + '_ {
     (0u32..1 << parts.len()).map(move |m| parts.iter().enumerate().filter(|(i, _)| m & (1 << i) != 0).map(|(_, p)| *p).collect())
 }
 
-/// The honest holdings that must count Y independent with no keyset held (spec/permissions.md §4
-/// Key part: an edge piece holds no rotation that made a granted epoch current), each with what
-/// its node opens: G's edge piece (its grant, its box, Y's `sync.0`); a node holding P's key part
-/// (P's edge piece on Y: the rotation's box to P and Y's `sync.0`, no keyset); G2, a reader of P
-/// granted on Y after Y left P's sync unit, holding its edge piece and not Y's keyset.
+/// The honest holdings that must count Y independent with no keyset held (a stub holds no
+/// rotation that made a granted epoch current), each with what its node opens: G's stub of Y (its
+/// grant, its box, Y's `sync.0`); a reader of P's unit, which references Y (Y's stub there: the
+/// rotation's box to P and Y's `sync.0`, no keyset); G2, a reader of P granted on Y after Y left
+/// P's sync unit, holding Y's stub and not Y's keyset.
 pub fn honest_holdings() -> Vec<(&'static str, BTreeSet<Part>, BTreeSet<Id>)> {
     let step = Part::Step { signer: A, epoch: MADE };
     vec![
         ("grantee", [Part::Edge { signer: A, holder: G }, Part::Box { signer: A, holder: G, epoch: MADE }, step].into(), [G].into()),
-        ("key part of the mint admin", [Part::Box { signer: A, holder: P, epoch: MADE }, step].into(), [P].into()),
+        ("stub in the mint admin's unit", [Part::Box { signer: A, holder: P, epoch: MADE }, step].into(), [P].into()),
         ("late reader of the mint admin", [Part::Edge { signer: A, holder: G2 }, Part::Box { signer: A, holder: G2, epoch: MADE }, step].into(), [G2, P].into()),
     ]
 }

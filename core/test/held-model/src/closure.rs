@@ -18,9 +18,6 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 pub mod entry;
 pub mod cards;
-pub mod public;
-pub mod public_epochs;
-pub mod keys;
 
 pub type T = usize;
 /// A commit's index in its world's list.
@@ -54,11 +51,10 @@ pub struct World {
     pub keyless: BTreeSet<(T, T)>,
     /// The independent things the public reads, by its own grant of read on each
     /// (spec/permissions.md §1 The public): every thing's keys open them (`keys_of`), never
-    /// through holders (`closure::public`'s `chains`); a node's role counts the public's, through
-    /// holders as any holder's (`entry`).
+    /// through holders (`entry`: where a unit carries their role entries).
     pub public: Set,
-    /// The independent things the public holds sync alone on, by its own grant: every party's
-    /// role there is sync (`entry`: kept unread wherever entered and not read).
+    /// The independent things the public holds sync on, by its own grant: every party's role
+    /// there is sync (`entry`: a reference to one brings its stub).
     pub public_sync: Set,
 }
 
@@ -423,12 +419,6 @@ pub struct Closure {
     pub keys: Set,
     /// The things the node's role gives a sync secret of (sync or above).
     pub synced: Set,
-    /// Holders held for keys alone (`keys::for_keys`: notes/holder-access-study.md). Empty from
-    /// `closure`.
-    pub for_keys: Set,
-    /// Independent things neither read nor kept unread whose sync ID is followed, read, by the
-    /// public entry (`entry::Held::follows`). Empty from `closure`.
-    pub follows: Set,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -441,11 +431,23 @@ pub enum Walk {
     Literal,
 }
 
+/// The best role any of `own` holds on each thing over `w`'s grants.
+pub fn roles_of(w: &World, own: &Set) -> BTreeMap<T, Role> {
+    let mut out = BTreeMap::new();
+    for &a in own {
+        for (t, r) in w.roles_from(a) {
+            let e = out.entry(t).or_insert(r);
+            *e = (*e).max(r);
+        }
+    }
+    out
+}
+
 /// The node closure (spec/sync-set.md §2): the walk below by the node's role, its own things'
 /// effective role over `w`'s grants (spec/sync-set.md §2 Own things). A function of the world: no
 /// role waits for a strong.
 pub fn closure(w: &World, e: &Edges, n: &NodeView, walk: Walk) -> Closure {
-    let roles = keys::roles_of(w, &n.own);
+    let roles = roles_of(w, &n.own);
     let ring: Set = roles.iter().filter(|&(_, &r)| r >= Role::Read).map(|(&x, _)| x).collect();
     let sync: Set = roles.keys().copied().collect();
     let mut c = walk_with(w, e, &n.roots, walk, &ring, &sync);

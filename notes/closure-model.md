@@ -1,7 +1,7 @@
 # Closure model
 > Summary: The held-model model of the reference graph, the readable closure (held_model::closure, `spec_closure`, the sync differential's oracle): what it checks, P1-P6 with each test, the P5 work counts, and why a role commit travels under the holder it names (spec/permissions.md §4 Role changes travel): without it a revocation never reaches a node syncing only the grantee when the target is dependent or the grant is a chain, and with a delete key two honest nodes undo each other for good.
 
-Holder access (`for_keys`: the holders found from a read thing up) is `held_model::closure::keys`: notes/holder-access-study.md, The model. `closure` walks by the own things' roles over the world's grants, and is the sync differential's oracle.
+Chain-holder stubs and first entry: held-model `closure::entry` (notes/stub-rewrite.md, Model findings). `closure` walks by the own things' roles over the world's grants, and is the sync differential's oracle.
 
 ## The readable-closure model (held_model::closure, tests `spec_closure`)
 The model is an oracle written from the design's rules (spec/data-model.md §8, spec/sync-set.md), not from code: plain data, pure functions, 24 tests in about 0.8 s (debug, parallel). Its module doc lists what it leaves out (validity, disputes, key rotation, the wire, sealing, `@` signals, purge, storage rows).
@@ -69,7 +69,6 @@ Each rule the passing tests rely on was removed once and failed tests:
   - W is among X's keys but in X's sync unit only by a strong. PASS.
   - Chains also run through the random tests and the chain case of the Hole.
 - **(d) A dependent thing in two sync units**, `p2_two_units_reach_only_through_a_bridge` and the fixed-grant mode of `p2_sync_settles_random`. The limit is exactly "through a node that syncs both". It reaches by that node's exchanges or through the two stores alone. Every other split traces to such an edit. An independent thing in two sync units has no such limit, since every holder syncs its own sync ID.
-  - The first-entry model carries it (`closure::entry`, `Rule::carriers`, `Rule::dep_entry`; spec/sync-set.md §2 Carriers, Dependent entry): a reader of T holds a dependent D of another thing X in T's unit where its independent's unit holds it (the walk enters X's unit at the strong to D), else only where a node reading T made it or holds it otherwise (a bridge), so the sync differential's oracle reads nothing of a unit no node carries (`a_dependent_of_another_thing_is_carried_by_its_independent_or_a_bridge`: with ideal delivery it is read).
   - Two things reach the grantee's readers only through a node syncing both: a grant itself (its certificate must be logged under the grantee by someone holding the target's role record) and, without the rule, never a revocation (Hole).
 
 ### Hole

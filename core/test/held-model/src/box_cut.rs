@@ -1,8 +1,9 @@
 //! Boxes cut by holder (spec/wire.md §4 Pieces, spec/permissions.md §4 Copies): a commit's
 //! `secrets.0` write on a thing comes in pieces, one per holder its box records are keyed with
 //! (and the rest: history boxes, keyed with no holder), each bound by its own hash and judged
-//! alone; an edge piece carries its holder's piece and the rest, and a holder of sync alone's its
-//! piece only, with no header (its box proves itself by the step bearing its secret's sync key).
+//! alone; X's stub in a unit carries the piece of each holder on the unit's chains to X and the
+//! rest, and the sync-only cut (readers reaching X only at sync) the piece only, with no header
+//! (its box proves itself by the step bearing its secret's sync key; notes/stub-rewrite.md §2 point 1).
 //! A history box at (role, e) carries every earlier secret of the role and the rotation's names
 //! (the holders it saw removed): opened by a holder of e's secret, so it gives a grantee the
 //! epochs before its grant, and a holder of sync alone opening the sync role's would learn
@@ -17,9 +18,9 @@
 //! admins and writers rotate X boxing every holder; anyone may write a box to T (a forged one at
 //! an epoch no step bears, or a re-seal at the current one while T holds a role); XA records
 //! steps, H junk ones; an admin removes holders. Sync and read
-//! share one epoch counter. R reads T's key part: T's edge piece on X as the rule cuts it,
-//! closed over evidence (the edge writes on each copied commit's hop (signer, X)), but for a
-//! holder of sync alone (no evidence, spec/permissions.md §4 Key part). Which T holds is the
+//! share one epoch counter. R reads T's unit, which references X: X's stub there, T the holder on
+//! the unit's chain to X, as the rule cuts it, closed over evidence (the edge writes on each copied
+//! commit's hop (signer, X)), but for a holder of sync alone (the sync-only cut: no evidence). Which T holds is the
 //! sender's judgement of what it holds (it holds every commit): T reads X where a valid edge write
 //! gives it read, so a forged edge write naming T read (by a holder neither admin nor may-grant,
 //! or by one holding no role: invalid or pending) changes nothing R receives.
@@ -130,8 +131,8 @@ pub enum Rule {
     NoRest,
     /// Control: the rest beside a holder of sync alone's piece too.
     RestToSync,
-    /// Control: a holder of sync alone's removal keeps its header (a `grant@~0` fire, a
-    /// certificate copy in its key part).
+    /// Control: a holder of sync alone's removal keeps its header (a certificate copy in its
+    /// stub).
     RemovalHeader,
     /// Control: a holder of sync alone holds sync while any box to it opens, the steps aside.
     HolderKept,
@@ -144,8 +145,8 @@ impl World {
         self.commits.iter().find(|x| x.id == c).expect("commit")
     }
 
-    /// Whether T reads X as the sender judges it holding every commit (spec/permissions.md §4 Key
-    /// part): a valid edge write gives T read (`Rule::AnyValidity`: any held one does). Else T
+    /// Whether T reads X as the logger judges it holding every commit: a valid edge write gives T
+    /// read (`Rule::AnyValidity`: any held one does). Else T
     /// holds sync alone: its pieces go as sync copies.
     pub fn reads(&self, rule: Rule) -> bool {
         let all: Held = self.commits.iter().flat_map(|c| [(c.id, P::Header), (c.id, P::Roles)]).collect();
@@ -164,7 +165,7 @@ impl World {
         self.commits.iter().filter(|d| d.roles.as_ref().is_some_and(|es| es.iter().any(|e| e.holder == c.signer))).map(|d| d.id).collect()
     }
 
-    /// The commits T's edge piece on X names: edge writes naming T, commits boxing T, steps.
+    /// The commits X's stub in T's unit names: edge writes naming T, commits boxing T, steps.
     fn named(&self) -> Vec<&Commit> {
         self.commits
             .iter()
@@ -172,7 +173,7 @@ impl World {
             .collect()
     }
 
-    /// The parts a reader of T's key part holds under `rule`.
+    /// The parts a reader of T's unit holds of X's stub under `rule`.
     pub fn cut(&self, rule: Rule) -> Held {
         let sync_alone = !self.reads(rule);
         let mut held = Held::new();
@@ -231,7 +232,7 @@ impl World {
         head.is_some_and(|h| self.commits.iter().any(|c| c.boxes.iter().any(|b| *b == BoxAt { holder: T, role: Role::Sync, epoch: h })))
     }
 
-    /// The reference: whole copies of every commit T's edge piece names (every part, header
+    /// The reference: whole copies of every commit X's stub names (every part, header
     /// included), closed over evidence, but for a holder of sync alone (no evidence).
     pub fn whole(&self) -> Held {
         let sync_alone = !self.reads(Rule::Spec);
