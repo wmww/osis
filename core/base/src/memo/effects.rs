@@ -1180,6 +1180,65 @@ mod tests {
         assert_eq!(e.due(), [1, 2, 3, 4]);
     }
 
+    // spec: none (internal: notes/engine.md, Derived values). An unwanted key leaves no reader
+    // behind: keys followed after it are due with their own reads alone, a key sharing a read
+    // with it still moves with that read, and the key wanted again moves only with what it reads
+    // again; a clone's unwant and want leave the original's index as it was.
+    #[test]
+    fn a_key_followed_after_an_unwanted_one_moves_only_with_its_own_reads() {
+        let mut m: Stamped<u8, u8> = Stamped::default();
+        let mut s: StampedSet<u8> = StampedSet::default();
+        let mut e: Effects<u8, u8> = Effects::new("test effects");
+        // key 9 reads `s` whole; key 11 reads what key 1 does; key 1, wanted again, reads 4
+        let again = std::cell::Cell::new(false);
+        let read = |m: &Stamped<u8, u8>, s: &StampedSet<u8>, k: u8| match k {
+            9 => s.len() as u8,
+            1 if again.get() => m.get(&4).copied().unwrap_or(0),
+            _ => m.get(&(k % 10)).copied().unwrap_or(0),
+        };
+        let settle = |e: &mut Effects<u8, u8>, m: &Stamped<u8, u8>, s: &StampedSet<u8>| {
+            for k in e.due() {
+                e.settle(&k, || read(m, s, k));
+            }
+        };
+        for k in [1, 9, 11] {
+            e.want(k);
+        }
+        settle(&mut e, &m, &s);
+        e.unwant(&1);
+        e.unwant(&9);
+        e.want(2);
+        e.want(3);
+        settle(&mut e, &m, &s);
+        s.insert(1);
+        assert!(e.due().is_empty(), "the whole reader unwanted");
+        m.insert(1, 1);
+        assert_eq!(e.due(), [11], "a reader of the same key stays");
+        settle(&mut e, &m, &s);
+        m.insert(2, 1);
+        assert_eq!(e.due(), [2]);
+        m.insert(3, 1);
+        assert_eq!(e.due(), [2, 3]);
+        settle(&mut e, &m, &s);
+        again.set(true);
+        e.want(1);
+        assert_eq!(e.due(), [1], "wanted again: unsettled");
+        settle(&mut e, &m, &s);
+        m.insert(1, 2);
+        assert_eq!(e.due(), [11], "key 1 reads 4 now");
+        settle(&mut e, &m, &s);
+        m.insert(4, 1);
+        assert_eq!(e.due(), [1]);
+        settle(&mut e, &m, &s);
+        let mut c = e.clone();
+        c.unwant(&2);
+        c.want(5);
+        settle(&mut c, &m, &s);
+        m.insert(2, 2);
+        m.insert(5, 1);
+        assert_eq!((e.due(), c.due()), (vec![2], vec![5]), "each moves with its own keys");
+    }
+
     // spec: none (internal: notes/engine.md, Derived values). Debug builds with the comparison
     // on (`check_effects`): a settled value that read something unstamped (a plain cell) fails
     // at a comparison once that moved alone, never while it holds.
