@@ -600,8 +600,9 @@ pub(crate) fn resolve_held(tx: &mut Tx<'_>, h: &mut Header) -> bool {
 /// - it cannot be judged yet (its thing's record or chain, the author's reach): it waits alone
 ///   as well, parked under what it awaits; with every held part so the commit pends whole.
 ///
-/// Every wait only ends as the held set grows, so the applied parts are the least fixpoint of a
-/// monotone rule, one result for every order (`tests/it` `order::held_set_decides` plays them).
+/// A wait ends as the held set grows, and a validity falling may start one again: an applied
+/// commit whose every held part turns unjudgeable pends again (`atomic::pend_again`), so what
+/// applies is one result for every order (`tests/it` `order::held_set_decides` plays them).
 pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, skip: &BTreeSet<usize>, origin: Origin, known: &mut Option<osis_commit::Signed>) -> Result<Exam> {
     // its blob waits taken on from what arrived for them (this transaction's holds among them)
     reach::take_on(tx, id)?;
@@ -2475,7 +2476,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
         }
     } else {
         tx.core.stale_all = true;
-        validity::rejudge_all(tx, false)?;
+        validity::rejudge_all(tx, false, &mut BTreeSet::new())?;
         // the held keysets and boxes from the valid `keys.0` and `secrets.0` parts, now judged
         // (nothing judges by them before)
         let actors: BTreeSet<Tid> = tx.core.ix.commits.values().flat_map(|m| m.view.aspects.iter().filter(|a| matches!(a.ak.as_str(), "keys.0" | "secrets.0")).map(|a| a.tid)).collect();

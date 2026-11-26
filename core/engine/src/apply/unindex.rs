@@ -52,6 +52,8 @@ fn unindex(tx: &mut Tx<'_>, id: &CommitId, marks: bool) -> Result<()> {
     if marks {
         crate::retention::handed::note(tx, id)?;
     }
+    // the holders its `roles.0` entries keyed
+    super::validity::unkey_holders(tx, id, &|_| true)?;
     // a role commit's `secrets.0` bodies: what they noted (`boxes_to`) goes with them, re-derived
     // from the bodies still held, as a drop re-derives it (`keys::forget_dropped`)
     let mut boxes: Vec<(usize, Vec<osis_crdt::Fragment>)> = Vec::new();

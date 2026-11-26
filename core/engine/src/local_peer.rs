@@ -77,6 +77,9 @@ pub struct Peer {
     pub given: BTreeSet<CommitId>,
     /// The sealed fires offered here (`offer_fires`).
     pub offers: FireOffers,
+    /// Every copy taken, by commit, as node-sync's store keeps its entries: opened again when the
+    /// engine names a commit it neither holds nor pends (`Engine::take_redeliver`).
+    pub entries: BTreeMap<CommitId, Vec<Discarded>>,
 }
 
 /// Per sealed fire offered (`Peer::offer_fires`), by the commit it carries: whether it is held,
@@ -197,6 +200,10 @@ impl Peer {
         let id = match i {
             Ingested::Applied(x) | Ingested::Duplicate(x) | Ingested::Pending(x, _) | Ingested::Parked(x) | Ingested::TooLarge(x) => *x,
         };
+        let kept = self.entries.entry(id).or_default();
+        if !kept.iter().any(|d| d.bytes == bytes) {
+            kept.push(Discarded { bytes: bytes.to_vec(), blob: blob.clone(), blobs: blobs.to_vec(), commit: id, carries: true });
+        }
         if self.engine.core.ix.pending.contains_key(&id) {
             self.discarded.push(Discarded { bytes: bytes.to_vec(), blob, blobs: blobs.to_vec(), commit: id, carries: true });
             return;
@@ -223,6 +230,13 @@ impl Peer {
             self.pulled_anew.extend(w.pulled_anew.iter().copied());
             let again = self.engine.take_redeliver();
             let core = &self.engine.core;
+            // a commit named that is neither held nor pending (forgotten to pend again,
+            // `apply::atomic::pend_again`): its entries open again, as node-sync's `reopen`
+            for c in &again {
+                if !core.ix.commits.contains_key(c) && !core.ix.pending.contains_key(c) && !self.discarded.iter().any(|d| d.commit == *c) {
+                    self.discarded.extend(self.entries.get(c).into_iter().flatten().cloned());
+                }
+            }
             // a carrier whose commit pends no more and is not named to deliver again is a copy of
             // a part the applied commit misses, or goes (node-sync keeps the entry, fetched again
             // when the commit is woken)
@@ -300,7 +314,7 @@ impl Peer {
         let mut engine = Engine::create(Box::new(backend.clone()), Box::new(root.clone()), blob_area(&blob_disk, seed)?, Config::default(), c, Box::new(SeededRng::from_u64(seed)))?;
         engine.take_wakes();
         let events = engine.subscribe();
-        Ok(Peer { engine, clock, backend, root, blob_disk, events, restarts: 0, discarded: Vec::new(), discards: 0, redelivered: 0, pulled_anew: BTreeSet::new(), given: BTreeSet::new(), offers: FireOffers::default() })
+        Ok(Peer { engine, clock, backend, root, blob_disk, events, restarts: 0, discarded: Vec::new(), discards: 0, redelivered: 0, pulled_anew: BTreeSet::new(), given: BTreeSet::new(), offers: FireOffers::default(), entries: BTreeMap::new() })
     }
 
     /// Drops the engine and opens it again over the same durable state.
@@ -332,7 +346,7 @@ impl Peer {
         let mut engine = Engine::open(Box::new(backend.clone()), Box::new(root.clone()), blob_area(&blob_disk, seed)?, Config::default(), c, Box::new(SeededRng::from_u64(seed)))?;
         let events = engine.subscribe();
         engine.take_wakes();
-        let mut p = Peer { engine, clock, backend, root, blob_disk, events, restarts: self.restarts + 1, discarded: self.discarded.clone(), discards: self.discards, redelivered: self.redelivered, pulled_anew: self.pulled_anew.clone(), given: self.given.clone(), offers: FireOffers::default() };
+        let mut p = Peer { engine, clock, backend, root, blob_disk, events, restarts: self.restarts + 1, discarded: self.discarded.clone(), discards: self.discards, redelivered: self.redelivered, pulled_anew: self.pulled_anew.clone(), given: self.given.clone(), offers: FireOffers::default(), entries: self.entries.clone() };
         p.fetch_discarded()?;
         Ok(p)
     }
@@ -351,7 +365,7 @@ impl Peer {
             let events = engine.test_subscribe_with(pending);
             let (backend, root) = (self.backend.test_copy(), self.root.test_copy());
             let blob_disk = (self.blob_disk.0.test_copy(), self.blob_disk.1.test_copy());
-            Ok(Peer { engine, clock, backend, root, blob_disk, events, restarts: self.restarts, discarded: self.discarded.clone(), discards: self.discards, redelivered: self.redelivered, pulled_anew: self.pulled_anew.clone(), given: self.given.clone(), offers: self.offers.clone() })
+            Ok(Peer { engine, clock, backend, root, blob_disk, events, restarts: self.restarts, discarded: self.discarded.clone(), discards: self.discards, redelivered: self.redelivered, pulled_anew: self.pulled_anew.clone(), given: self.given.clone(), offers: self.offers.clone(), entries: self.entries.clone() })
         })
     }
 

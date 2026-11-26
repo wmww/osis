@@ -711,7 +711,8 @@ pub(crate) fn rejudged(tx: &mut Tx<'_>, held_changed: bool) -> Result<Vec<(Tid, 
     let mut first = held_changed;
     while first || tx.core.stale() {
         first = false;
-        let flipped = validity::rejudge_all(tx, true)?;
+        let mut judged = BTreeSet::new();
+        let flipped = validity::rejudge_all(tx, true, &mut judged)?;
         for (tid, ak) in &flipped {
             observe_state(tx, tid, ak)?;
         }
@@ -720,8 +721,53 @@ pub(crate) fn rejudged(tx: &mut Tx<'_>, held_changed: bool) -> Result<Vec<(Tid, 
         // and so may the secrets opening split commits' paths (`paths::refresh`)
         super::paths::refresh(tx);
         all.extend(flipped);
+        // a commit whose held parts all turned unjudgeable pends again: what it gave moves
+        pend_again(tx, &judged)?;
     }
     Ok(all)
+}
+
+/// The applied commits among `judged` whose every held part is unjudgeable now pend
+/// (spec/commits.md §4 Unjudgeable): a step's `sync.0` write or an edge write on a stated path
+/// may fall after a commit applied. Each is forgotten as never received, the parts of it that
+/// waited alone with it, and named for redelivery: sync opens its entries again
+/// (`Engine::take_redeliver`), so it pends as a commit arriving unjudgeable does, carried by
+/// them, and applies when what it awaits arrives; with no entry left it stays never received
+/// (Pending storage). Its parts' flags read false meanwhile, so what it gave the states went with
+/// them; its edge writes leave the timelines here, marking stale what they reached.
+///
+/// Not this node's own: its own commits apply at once and stay, its user told of each fall
+/// (`retention::goes_invalid`). O(`judged`), a held part read only for a commit holding no valid
+/// one.
+fn pend_again(tx: &mut Tx<'_>, judged: &BTreeSet<CommitId>) -> Result<()> {
+    let me = tx.core.tid();
+    let mut gone = false;
+    for id in judged {
+        let Some(m) = tx.core.ix.commits.get(id).cloned() else { continue };
+        let n = m.view.aspects.len();
+        if m.view.signer == me || (0..n).any(|ai| m.holds(ai) && m.valid_at(ai)) {
+            continue;
+        }
+        // held: its bodies, and the parts that wait alone in its pending copy
+        let mut held: BTreeSet<usize> = (0..n).filter(|ai| m.holds(*ai)).collect();
+        if tx.core.ix.pending.contains_key(id)
+            && let Some(p) = tx.txn.get_pending(id)?
+            && let Ok(b) = CommitBlob::decode_stored(&p.bytes)
+        {
+            held.extend(b.parts.iter().map(|p| p.ai));
+        }
+        if held.is_empty() || !held.iter().all(|ai| super::unjudgeable(tx.core, id, &m.header, &m.view, *ai)) {
+            continue;
+        }
+        super::carriers::forget(tx, id)?;
+        super::unindex_unreceived(tx, id)?;
+        tx.core.redeliver.insert(*id);
+        gone = true;
+    }
+    if gone {
+        tx.core.update_timelines();
+    }
+    Ok(())
 }
 
 /// Joins deltas of an applied commit that arrived later (spec/commits.md §4). Late creation

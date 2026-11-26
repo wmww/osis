@@ -294,6 +294,21 @@ fn note_keys(core: &mut Core, target: &Tid, g: Grants, es: &[Entry], own: Option
     new
 }
 
+/// The holders held role commit `id`'s `roles.0` entries on the things `on` takes keyed
+/// (`note_keys`) go: those parts leave, or the commit does.
+pub(crate) fn unkey_holders(tx: &mut Tx<'_>, id: &CommitId, on: &dyn Fn(&Tid) -> bool) -> Result<()> {
+    let Some(view) = tx.core.ix.commits.get(id).filter(|m| m.view.kind.is_role()).map(|m| m.view.clone()) else { return Ok(()) };
+    let parts = super::perm_parts(tx, id)?;
+    for (ai, es) in &parts.edges {
+        let Some(a) = view.aspects.get(*ai).filter(|a| on(&a.tid)) else { continue };
+        let (Some(g), Some(own)) = (Grants::of(a.ak.as_str()), crate::engine::Owned::of_view(&view, id, *ai)) else { continue };
+        for (d, _, _) in es.iter().filter(|(d, _, _)| own.owns(d.origin())) {
+            tx.core.ix.holder_keys.remove(&(a.tid, g, d.clone()));
+        }
+    }
+    Ok(())
+}
+
 /// The edge writes of one `roles.0` delta of a role commit, per holder: an entry the
 /// delta creates sets the edge it reads; an entry reset removes the edge its entry's creation
 /// keyed, when the reset carries that key or none (a record acts only on the entry of its key,
@@ -1170,12 +1185,13 @@ impl<'a> Judge<'a> {
 /// `retention::uncover` made missing loses what its body judged, the role it required among
 /// them: perm's timelines read it anew). Ends: only `uncover` marks stale here, and it turns
 /// parts dropped as covered missing, never back.
-pub(crate) fn rejudge_all(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
+/// `judged`: every commit judged again is added (`atomic::pend_again` reads them).
+pub(crate) fn rejudge_all(tx: &mut Tx<'_>, rebuild: bool, judged: &mut BTreeSet<CommitId>) -> Result<Vec<(Tid, Ak)>> {
     let _s = osis_base::costs::span("rejudge");
     let mut out: BTreeSet<(Tid, Ak)> = BTreeSet::new();
     loop {
         super::paths::refresh(tx);
-        out.extend(rejudge_once(tx, rebuild)?);
+        out.extend(rejudge_once(tx, rebuild, judged)?);
         if !tx.core.stale() {
             return Ok(out.into_iter().collect());
         }
@@ -1216,7 +1232,7 @@ fn misjudged_one(core: &Core, id: &CommitId, m: &Meta) -> Option<String> {
 }
 
 /// One pass of `rejudge_all`.
-fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
+fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool, judged: &mut BTreeSet<CommitId>) -> Result<Vec<(Tid, Ak)>> {
     // the keys held as wrong are checked again where what the check reads may have moved besides
     // the steps (`Core::steps_recorded`): a record on a chain (the things judged again); every key
     // on a thing whose chain became known (`Indexes::keys_due`)
@@ -1270,6 +1286,7 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
         let mut judge = Judge::new(core);
         let mut one = |id: &CommitId, m: &Meta, whole: bool| {
             drop(osis_base::costs::span("rejudge: a commit"));
+            judged.insert(*id);
             let mut now: Option<Vec<bool>> = None;
             for (ai, a) in m.header.aspects.iter().enumerate() {
                 // parts on things not re-judged keep their flag

@@ -185,7 +185,7 @@ fn twin(w: &mut World, i: usize) -> Peer {
     let events = engine.subscribe();
     let mem = || (osis_store::MemoryBackend::new(), osis_store::MemoryRoot::new());
     let (backend, root) = mem();
-    Peer { engine, clock, backend, root, blob_disk: mem(), events, restarts: 0, discarded: Vec::new(), discards: 0, redelivered: 0, pulled_anew: BTreeSet::new(), given: BTreeSet::new(), offers: Default::default() }
+    Peer { engine, clock, backend, root, blob_disk: mem(), events, restarts: 0, discarded: Vec::new(), discards: 0, redelivered: 0, pulled_anew: BTreeSet::new(), given: BTreeSet::new(), offers: Default::default(), entries: Default::default() }
 }
 
 /// The reference (spec: a node of each account handed every commit directly; sync's property is
