@@ -19,6 +19,13 @@ impl Engine {
         self.core.epochs(t).is_some_and(|e| e.role(Role::Read).holds_any())
     }
 
+    /// Whether the node follows `t` by the public entry holding no read secret of it
+    /// (spec/sync-set.md §2): it opens `t`'s sync ID by the public entry alone, judging no peer
+    /// by its roster, until the public's box gives it a secret.
+    pub(crate) fn by_public_alone(&self, t: &Tid) -> bool {
+        self.core.ix.closure.follows_public(t) && !self.holds_read(t)
+    }
+
     /// The things the sync set is judged over: the node closure (spec/sync-set.md §2) walked
     /// through no thing sourced at another node (§5, `Closure::synced`), with the holders held
     /// for keys, the things followed by the public entry (§2) and the links being redeemed. A
@@ -225,6 +232,10 @@ impl Engine {
 
     /// Adds what thing `t` of `s` (owning it as `o`) opens and acts with to `c`.
     fn credentials_of(&mut self, c: &mut ReadCredentials, s: &SyncId, t: &Tid, o: &OwnedSyncId) -> Result<()> {
+        if self.by_public_alone(t) {
+            c.tests_public = true;
+            return Ok(());
+        }
         if let Some((st, _)) = o.path.steps.last() {
             c.head = Some(st.clone());
         }

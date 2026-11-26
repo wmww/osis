@@ -252,10 +252,15 @@ impl Engine {
     /// J of a peer whose proofs prove `proven` for `s` (spec/sync-opens.md §4): reader if a
     /// proven thing's proven role on one of `s`'s things is read or above, sync holder if one's
     /// is sync, departed if one once held a role there and none holds one now, else unknown.
-    /// `Unknown` for a sync ID this node does not read.
+    /// `Unknown` for a sync ID this node does not read, and on a thing it follows by the public
+    /// entry alone (`by_public_alone`).
     pub fn judge_peer(&mut self, s: &SyncId, proven: &[ProvenThing]) -> Result<J> {
         let mut out = J::Unknown;
         for t in self.sync_things_of(s)? {
+            // followed by the public entry alone: no peer is judged by its roster here
+            if self.by_public_alone(&t) {
+                continue;
+            }
             let a = self.core.reader_of(&t);
             let best = proven.iter().map(|p| self.core.proven_role(p, &a)).max().flatten();
             let j = match best {

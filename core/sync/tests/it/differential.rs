@@ -650,6 +650,37 @@ fn a_removed_sync_holder_follows_what_its_key_part_names_spec_sync_set_2() {
 }
 
 
+// spec/sync-set.md §2 (Following by the public entry), spec/sync-opens.md §4 (J): a removed writer
+// keeping its strong follows the thing by the public entry, holding no read secret of it: it opens
+// the thing's sync ID by the public entry alone, so with the public not reading it no member of it
+// is open anywhere, also toward a node holding sync it once shared it with (by its old role, J).
+#[test]
+fn a_follower_with_no_secret_opens_by_the_public_entry_alone_spec_sync_set_2() {
+    use crate::harness::history::Gives;
+    use crate::harness::lies::Lie;
+    let script = [Step::New(0), Step::Grant(0, 0, 1, Gives::Writes), Step::Grant(0, 0, 2, Gives::Syncs), Step::Run, Step::Lies(2, Lie::Forget), Step::Write(0, 0), Step::Run, Step::Write(1, 0), Step::Run, Step::Remove(0, 0, 1), Step::Rotate(0, 0), Step::Run];
+    let mut w = world_of(0, 3, 3);
+    w.cap = crate::harness::STORM_CAP;
+    play(&mut w, &script, String::new());
+    let t = w.history.things[0].0;
+    let s = w.engine(0).sync_id_of(&t).unwrap().expect("a sync ID");
+    assert!(w.engine(1).sync_set().unwrap().ids.contains_key(&s), "node 1 follows the thing");
+    assert!(w.node(1).node.opens().sources_of(&s).is_empty(), "node 1 shares the thing's sync ID with no one");
+}
+
+// spec/sync-set.md §2 (Following by the public entry): a node whose account is granted read on a
+// public thing and lowered to sync before the node first runs reads it by the public (the
+// lowering ends its own read, not the public's): its account's strong follows the thing by the
+// public entry, so the head it was lowered at decides nothing (the model reads it by the public).
+#[test]
+fn a_reader_lowered_before_it_ran_reads_a_public_thing_spec_sync_set_2() {
+    use crate::harness::history::{Gives, Holder, reads};
+    let script = [Step::New(2), Step::Give(2, 0, Holder::Public, Gives::Reads), Step::Give(2, 0, Holder::Node(1), Gives::Reads), Step::Strong(1, None, 0), Step::Lower(2, 0, Holder::Node(1), Gives::Syncs)];
+    let mut w = holds_on(0, 3, 4, &script, String::new(), false);
+    let t = w.history.things[0].0;
+    assert!(reads(w.engine(1), &t).value.is_some(), "node 1 reads the thing by the public");
+}
+
 // spec/permissions.md §3 (No secret taken back): a removed reader takes the public's
 // box as any party does, and no more. Node 0's account reads node 1's public thing and strongs
 // it; it is removed and a write follows (read by the public), then the public is removed and a
