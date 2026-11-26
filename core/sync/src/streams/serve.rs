@@ -33,8 +33,11 @@ pub(super) struct Serve {
     pulled: bool,
     /// Joins named before on this connection.
     named: BTreeSet<SyncId>,
-    /// Joins merged into the stream at a reply's position, awaiting an Applied covering it.
-    merging: BTreeMap<SyncId, Position>,
+    /// Joins merged into the stream by a reply, with that reply's message number (the number the
+    /// next message asking a report takes, where the reply asks none): awaiting an Applied
+    /// covering that message. An Applied of an earlier message covers no merge, whatever
+    /// position it names.
+    merging: BTreeMap<SyncId, u64>,
     inline: u64,
     /// The ephemeral listing per member: the memory counter read to.
     eph: BTreeMap<SyncId, u64>,
@@ -284,6 +287,7 @@ impl Streams {
         // joins: each from its own cursor; one that reaches the log's end merges
         let mut reply_joins = Vec::new();
         let mut joins_left = BTreeSet::new();
+        let mut merged = Vec::new();
         if !whole {
             for (s, c, pos) in joins {
                 let Some(until) = members.get(&s) else {
@@ -305,18 +309,15 @@ impl Streams {
                     joins_left.insert(s);
                     reply_joins.push((s, wire_cursor(&r.cursor)));
                 } else {
-                    let serve = self.serve.entry(conn).or_default();
-                    serve.merging.insert(s, read.pos);
-                    serve.unjoined.remove(&s);
+                    merged.push(s);
+                    self.serve.entry(conn).or_default().unjoined.remove(&s);
                 }
             }
         } else {
             // joins ignored, but one of a member not shared here is still answered so; every
             // member at a position of its own follows the stream once this reply is covered
             let serve = self.serve.entry(conn).or_default();
-            for s in serve.own.clone() {
-                serve.merging.insert(s, read.pos);
-            }
+            merged.extend(serve.own.iter().copied());
             serve.unjoined.clear();
             for (s, ..) in &p.joins {
                 if !members.contains_key(s) {
@@ -349,6 +350,10 @@ impl Streams {
             }
             c => c,
         };
+        // the joins this reply merged follow the stream once an Applied covers it
+        let serve = self.serve.entry(conn).or_default();
+        let n = if report { serve.sent } else { serve.sent + 1 };
+        serve.merging.extend(merged.into_iter().map(|s| (s, n)));
         let cursor = wire_cursor(&cursor);
         let from_start: Vec<SyncId> = if whole { members.keys().copied().collect() } else { p.joins.iter().filter(|(s, c)| c.is_none() && members.contains_key(s)).map(|(s, _)| *s).collect() };
         self.offered(ctx, conn, &page.events, &from_start);
@@ -626,12 +631,12 @@ impl Streams {
         let Ok(Some(pos)) = ctx.store.position(&cursor) else { return };
         let serve = self.serve.entry(conn).or_default();
         serve.reported_by(&cursor);
-        // a join merging at a position the stream stood at already is covered by an Applied of it
         if serve.applied.is_none_or(|p| p < pos) {
             serve.applied = Some(pos);
             ctx.reported.push(Reported::Stream(conn, pos, cursor));
         }
-        let merged: Vec<SyncId> = serve.merging.iter().filter(|(_, p)| **p <= pos).map(|(s, _)| *s).collect();
+        let r = serve.reported;
+        let merged: Vec<SyncId> = serve.merging.iter().filter(|(_, n)| **n <= r).map(|(s, _)| *s).collect();
         for s in merged {
             serve.merging.remove(&s);
             serve.own.remove(&s);

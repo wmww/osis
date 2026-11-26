@@ -482,18 +482,22 @@ fn the_publics_removal_keeps_what_a_nodes_own_role_gives_spec_permissions_3() {
 // spec/permissions.md §3 (Lost access), spec/sync-set.md §4: a node that redeemed a public link
 // reads the thing by the public alone, so the public's removal is its loss too, the removal
 // coming after a quiet run or while the redemption is in flight. Control: no removal, it reads.
+// At world seed 5 (seeds 1-6 alike) the redeemer is served up to the removal on a member ended at
+// once (opened on a reader's lapsed read secret, spec/sync-opens.md §6): its join follows the
+// stream only once the reply merging it is applied (§6 Lost, reported positions), else the
+// member closes with the removal listed and not yet fetched.
 #[test]
 fn a_public_links_redeemer_loses_the_thing_with_the_public_spec_permissions_3() {
     use crate::harness::history::{Gives, Holder, reads};
     let (n, accounts, ..) = size();
     let start = [Step::New(0), Step::Give(0, 0, Holder::Public, Gives::Reads), Step::Run, Step::Redeem(1, 0)];
-    let mut w = holds_on(0, accounts, n, &start, String::new(), false);
+    let mut w = holds_on(5, accounts, n, &start, String::new(), false);
     let t = w.history.things[0].0;
     assert!(reads(w.engine(1), &t).value.is_some(), "control: node 1 reads thing 0 by the link");
     for quiet in [true, false] {
         let mid = if quiet { vec![Step::Run] } else { vec![] };
         let script: Vec<Step> = start.iter().cloned().chain(mid).chain([Step::Revoke(0, 0, Holder::Public)]).collect();
-        let mut w = holds_on(0, accounts, n, &script, String::new(), false);
+        let mut w = holds_on(5, accounts, n, &script, String::new(), false);
         assert!(reads(w.engine(1), &t).value.is_none(), "node 1 reads thing 0 after the public's removal (quiet run before it: {quiet})");
     }
 }
