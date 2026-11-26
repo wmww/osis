@@ -10,7 +10,7 @@ use osis_engine::Mutation;
 use osis_engine::sync::Holding;
 
 // spec/sync-judgement.md §3 (Own store: stamped when it writes S, a pulled entry stamped in place;
-// Reader that is not a writer), spec/sync-ids.md §6 (Taking a stamped entry: a stamp under a
+// Giving a body), spec/sync-ids.md §6 (Taking a stamped entry: a stamp under a
 // superseded write key is refused; Steps: the registrar logs the rotation stamped under the
 // source's head): node 0 (admin) writes t three times and a large value while node 1, keeping t's sync ID S unread,
 // is off, then rotates t's write secret, issuing a step. Each own entry of node 0 stands stamped under
@@ -75,15 +75,9 @@ fn a_head_move_restamps_own_entries_and_readers_deposit_nothing_spec_sync_judgem
         let e = w.store(0).entry(&s, &rb.blob).unwrap().expect("kept");
         assert!(e.own && e.stamp.is_some_and(|x| osis_blob::verify_stamp(&parent.keys.write, &s, &e.blob, &e.wrap, &x).is_ok()), "{rc:?} stamped under the parent: {e:?}");
     }
-    // node 0's own entries of the writes it still logs (the last; the others are replaced), and
-    // node 2's deposits of the writes
+    // node 0's own entries of the writes it still logs (the last; the others are replaced)
     let logged: Vec<osis_base::BlobId> = w.store(0).entries(&s).unwrap().into_iter().filter(|e| e.own && w.engine(0).blob_commit(&e.blob).is_some_and(|c| writes.contains(&c))).map(|e| e.blob).collect();
     assert!(!logged.is_empty());
-    let reader_deposits = |w: &mut World| {
-        let es: Vec<osis_sync::types::Entry> = w.store(2).entries(&s).unwrap().into_iter().filter(|e| e.own && e.deposited).collect();
-        es.iter().filter(|e| w.engine(2).blob_commit(&e.blob).is_some_and(|c| writes.contains(&c))).count()
-    };
-    assert_eq!(reader_deposits(&mut w), 0);
     w.power_off(0);
     w.power_on(1);
     w.run();
@@ -91,7 +85,8 @@ fn a_head_move_restamps_own_entries_and_readers_deposit_nothing_spec_sync_judgem
     for b in &logged {
         assert!(w.store(1).entry(&s, b).unwrap().is_some_and(|e| e.stamp.is_some()), "{b:?} taken at node 1 as node 0 stamped it");
     }
-    assert_eq!(reader_deposits(&mut w), 0, "node 2 deposits nothing");
+    let deposited: Vec<osis_sync::types::Entry> = w.store(1).entries(&s).unwrap().into_iter().filter(|e| e.deposited).collect();
+    assert!(!deposited.iter().any(|e| w.engine(2).blob_commit(&e.blob).is_some_and(|c| writes.contains(&c))), "node 2 deposits no write: {deposited:?}");
     // node 2, holding no write secret, registered the step only once node 1 held the write
     // rotation, so node 1 took it as node 0 stamped it, never refused (code 9). (Node 2 may log
     // an encryption of its own beside it: a rotation's parts are role parts, which any holder
@@ -104,14 +99,15 @@ fn a_head_move_restamps_own_entries_and_readers_deposit_nothing_spec_sync_judgem
 }
 
 // spec/sync-ids.md §6 (Steps: each role commit a recorded step depends on is waited on by one
-// step, stamped under its parent): node 0 rotates t's write secret twice while node 1, keeping
-// t's sync ID S unread, is off, issuing two steps; the second's write epoch supersedes the
-// first's. In every node's view the steps wait on disjoint commits, each stamped under the
-// parent of the step waiting on it, and the second does not wait on the first's rotation; node
-// 1, moved one step at a time, holds every commit each step it passed waits on, stamped. Fails
-// on spar-step-needs 08dcc425a: node 2 (no write secret) waits on the write rotations only at the
-// step that brought the newest write key, so it registers the first step at once and node 1 never
-// takes its rotation (stamped by node 0 under genesis); passes with node 2 off, and on main.
+// step, stamped under its parent; Taking a stamped entry: one under a superseded write key goes
+// as a deposit), spec/sync-judgement.md §3 (Giving a body): node 0 rotates t's write secret twice
+// while node 1, keeping t's sync ID S unread, is off, issuing two steps; the second's write epoch
+// supersedes the first's. In every node's view the steps wait on disjoint commits, each stamped
+// under the parent of the step waiting on it, and the second does not wait on the first's
+// rotation. Node 1, moved one step at a time, holds every commit each step waits on: node 2 (no
+// write secret) waits on the write rotations only at the step that brought the newest write key,
+// so it may register the first step before node 1 took that step's rotation, stamped by node 0
+// under genesis; node 0 then gives it as a deposit.
 #[test]
 fn a_store_moved_step_by_step_holds_what_each_step_waits_on_spec_sync_ids_6() {
     use crate::harness::history::{Gives, three};
@@ -148,7 +144,7 @@ fn a_store_moved_step_by_step_holds_what_each_step_waits_on_spec_sync_ids_6() {
             let blobs = w.engine(0).commit_blobs(c).unwrap();
             let held: Vec<_> = blobs.iter().map(|b| w.store(1).entry(&s, b).unwrap()).collect();
             let own: Vec<_> = blobs.iter().map(|b| w.store(0).entry(&s, b).unwrap()).collect();
-            assert!(blobs.iter().any(|b| w.store(1).entry(&s, b).unwrap().is_some_and(|e| e.stamp.is_some() && !e.deposited)), "{c:?} of step {k} of {} taken stamped at node 1: {held:?} node 0 {own:?}", p.steps.len());
+            assert!(held.iter().any(|e| e.as_ref().is_some_and(|e| e.role)), "{c:?} of step {k} of {} held at node 1, a role entry: {held:?} node 0 {own:?}", p.steps.len());
         }
     }
 }

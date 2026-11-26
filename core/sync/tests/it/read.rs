@@ -555,11 +555,15 @@ impl Ground for Fake {
         self.requests += 1;
         Ok(Some(self.requests))
     }
-    fn deposit(&mut self, conn: ConnId, head: Option<StepId>, s: &SyncId, c: &BodyId, b: &BlobId) -> Result<()> {
-        let c = &c.commit;
-        let _ = (head, s, c);
+    fn deposit(&mut self, conn: ConnId, s: &SyncId, c: &BodyId, head: &StepId, b: &BlobId) -> Result<bool> {
+        // stamped under the source's head (this node's): pulled as it is
+        let ours = self.creds.get(s).and_then(|x| x.head.as_ref()).map(|h| h.id());
+        let stamp = self.own.get(&(*s, c.commit)).and_then(|v| v.iter().find(|e| e.blob == *b)).and_then(|e| e.stamp);
+        if ours == Some(*head) && stamp.is_some() && stamp == self.head_stamp(s) {
+            return Ok(false);
+        }
         self.sent.push(Sent::Deposit(conn, *b));
-        Ok(())
+        Ok(false)
     }
     fn set_stand(&mut self, at: &Source, s: &SyncId, c: &BodyId, stand: &Stand) -> Result<()> {
         let c = &c.commit;
@@ -1562,7 +1566,7 @@ fn deleted_while_unjudged_is_logged_again_once_must_hold() {
     assert_eq!(w.logs(S, cid(1)), 2, "must-hold: logged again at K");
 }
 
-// spec/sync-judgement.md §3 (reader that is not a writer: nothing deposited at a source on an
+// spec/sync-judgement.md §3 (giving a body: nothing but role commits given at a source on an
 // earlier step of its recorded path), spec/sync-ids.md §6 (Steps): a non-writer whose `sync.0`
 // records step 1 gives K, standing at step 0, nothing until K stands at step 1.
 #[test]
@@ -1746,7 +1750,7 @@ fn a_pull_flip_judges_only_what_is_to_log() {
 // spec/sync-judgement.md §2 (Loggable): a body of S's required set this node may not log under S
 // is may-hold, so a non-writer gives it no source and owes it nowhere; once it may (the judgement
 // reads it, so it moves then), it is must-hold, logged once and given. spec/sync-judgement.md §3
-// (reader that is not a writer): a must-hold body K lacks is given as a held entry (deposited).
+// (giving a body): a must-hold body K lacks is given as a held entry (deposited).
 #[test]
 fn a_body_this_node_may_not_log_is_may_hold_until_it_may_spec_sync_judgement_2() {
     let mut w = W::new();

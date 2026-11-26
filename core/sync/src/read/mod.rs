@@ -40,6 +40,10 @@ pub enum Ask {
     Body(CommitId),
 }
 
+/// An entry of S read gives the source on a connection as a Deposit item of itself, signed for
+/// the source's head (spec/sync-judgement.md §3 Giving a body), by inbox's offers.
+pub type Give = (ConnId, SyncId, BlobId, osis_blob::StepId);
+
 use crate::opens::Opens;
 use crate::session::{Incoming, Sessions};
 use crate::store::{Source, Stand};
@@ -185,12 +189,13 @@ fn note<K: Ord, V>(moved: &mut Moved<K, V>, k: K, was: Option<V>, now: V) {
 
 impl Read {
     /// The product's step: over the engine, store, opens' members and streams' `known`. Entries
-    /// to fetch again (a body counting missing again) go to `fetches`, for streams.
+    /// to fetch again (a body counting missing again) go to `fetches`, for streams; entries given
+    /// a source as deposits to `gives`, for inbox.
     #[allow(clippy::too_many_arguments)]
-    pub fn settle(&mut self, cx: &mut Cx, sessions: &mut Sessions, opens: &Opens, streams: &Streams, status: &crate::status::Status, unread: &crate::unread::Unread, fetches: &mut Vec<(ConnId, SyncId, Ask)>) -> Result<bool> {
+    pub fn settle(&mut self, cx: &mut Cx, sessions: &mut Sessions, opens: &Opens, streams: &Streams, status: &crate::status::Status, unread: &crate::unread::Unread, fetches: &mut Vec<(ConnId, SyncId, Ask)>, gives: &mut Vec<Give>) -> Result<bool> {
         let mut commits = self.commits.take();
         let mut feeds = std::mem::take(&mut self.feeds);
-        let r = osis_base::costs::scoped("read", || self.settle_on(&mut Live { cx, sessions, opens, streams, status, unread, commits: &mut commits, feeds: &mut feeds, fetches }));
+        let r = osis_base::costs::scoped("read", || self.settle_on(&mut Live { cx, sessions, opens, streams, status, unread, commits: &mut commits, feeds: &mut feeds, fetches, gives }));
         self.commits = commits;
         self.feeds = feeds;
         r
@@ -456,9 +461,9 @@ impl Read {
                         for at in g.shown_at(&s, &c)? {
                             self.toward.want((s, c, at));
                         }
-                        // a non-writer gives a must-hold body to each store source lacking it
+                        // a must-hold body given to each store source lacking it
                         if now.verdict == Verdict::Must {
-                            for at in self.giving_to(g, &s)? {
+                            for at in self.giving_to(g, &s, now.held_role)? {
                                 self.toward.want((s, c, at));
                             }
                         }
@@ -528,10 +533,13 @@ impl Read {
             g.repair(&c, &b)?;
         }
         // what each body calls for at each source keeping S unread: the rows a source's stream
-        // wrote, and a source joining or moving (a non-writer there gives every must-hold body)
+        // wrote, and a source joining or moving (`giving_to`: a non-writer there gives every
+        // must-hold body, a writer its role commits)
         for (s, at) in g.sources_added() {
-            if self.giving_to(g, &s)?.contains(&at) {
-                let must: Vec<BodyId> = self.verdicts.range((s, BodyId::unit(CommitId([0; 32])))..).take_while(|(k, _)| k.0 == s).filter(|(_, v)| **v == Verdict::Must).map(|((_, c), _)| *c).collect();
+            let (all, roles) = (self.giving_to(g, &s, false)?.contains(&at), self.giving_to(g, &s, true)?.contains(&at));
+            if roles {
+                let held = self.held_roles.get(&s).cloned().unwrap_or_default();
+                let must: Vec<BodyId> = self.verdicts.range((s, BodyId::unit(CommitId([0; 32])))..).take_while(|(k, _)| k.0 == s).filter(|(c, v)| **v == Verdict::Must && (all || held.contains(&c.1))).map(|((_, c), _)| *c).collect();
                 for c in must {
                     self.toward.want((s, c, at));
                 }
@@ -685,11 +693,11 @@ impl Read {
                 let id = g.delete_freed(conn, s, head, blob, thing)?;
                 sent(id, &mut self.owed)
             }
-            (Act::Deposit { blob, .. }, Some(c)) => {
-                let head = g.head_at(s, &at);
-                g.deposit(conn, head, s, c, blob)?;
-                owed::State::Done
-            }
+            // offered on this connection (inbox's offers), again on the next while owed
+            (Act::Deposit { head, blob, .. }, Some(c)) => match g.deposit(conn, s, c, head, blob)? {
+                true => owed::State::Sent(conn),
+                false => owed::State::Done,
+            },
             (Act::Again { head, fall, old, .. }, Some(c)) => {
                 // a fresh encryption under this sync ID alone; its stand first, durably
                 if let Some(logged) = g.log_own(s, c, true, &[])? {
@@ -704,12 +712,14 @@ impl Read {
         })
     }
 
-    /// The store sources of S where this node is no writer at their head (it gives them what it
-    /// must hold; a writer's store is pulled).
-    fn giving_to(&self, g: &mut impl Ground, s: &SyncId) -> Result<Vec<Source>> {
+    /// The store sources of S this node gives a must-hold body (a role commit: `role`) it lacks
+    /// (`judge::toward`): where this node is no writer at their head, every one; where it is, a
+    /// role commit alone (its entry may be pinned under a step's parent, `Ground::stands`;
+    /// anything else stands under the head, and the source pulls it).
+    fn giving_to(&self, g: &mut impl Ground, s: &SyncId, role: bool) -> Result<Vec<Source>> {
         let creds = g.credentials(s)?;
         let writer = |h: &osis_blob::StepId| creds.as_ref().and_then(|c| c.keys.get(h)).is_some_and(|k| k.write.is_some());
-        Ok(g.sources(s).iter().filter(|x| x.store && !x.head.is_some_and(|h| writer(&h))).map(|x| x.at).collect())
+        Ok(g.sources(s).iter().filter(|x| x.store && (role || !x.head.is_some_and(|h| writer(&h)))).map(|x| x.at).collect())
     }
 
     /// Answers to its own requests: a Delete taken (its one item answered 0) is done; refused,

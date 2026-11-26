@@ -775,8 +775,11 @@ impl Node {
             self.moved(&mut moved, out);
             let mut cx = cx!(self, out);
             let sessions = &mut self.driver.sessions;
-            let mut fetches = Vec::new();
-            acted |= acts.by(Act::Read, self.read.settle(&mut cx, sessions, &self.opens, &self.streams, &self.status, &self.unread, &mut fetches)?);
+            let (mut fetches, mut gives) = (Vec::new(), Vec::new());
+            acted |= acts.by(Act::Read, self.read.settle(&mut cx, sessions, &self.opens, &self.streams, &self.status, &self.unread, &mut fetches, &mut gives)?);
+            for (conn, s, b, head) in gives {
+                self.inbox.offer_on(conn, s, b, head);
+            }
             for (conn, s, ask) in fetches {
                 let mut cx = cx!(self, out);
                 self.streams.ask(&mut cx, &mut self.driver.sessions, &self.opens, conn, s, ask, &mut self.driver.reported);

@@ -6,7 +6,7 @@
 The module notes (notes/sync-*.md) point here. Untested built parts: issues/sync-tests-owed.md.
 
 ## Data loss
-- **A reader's copy under a superseded stamp** (spec/sync-judgement.md §3 Reader that is not a writer, notes/sync-inbox.md) is not deposited once the source's head moved: `Live::deposit` ran only while the reader saw the old head (relay under stamp); nothing deposits after the head event. Seen in a World: a writer writes an ephemeral value, rotates write and goes off while the reader is partitioned; the node keeping S unread restarts and loses it.
+- **A reader's copy under a superseded stamp** (spec/sync-judgement.md §3 Giving a body, notes/sync-inbox.md) is not deposited once the source's head moved: `Live::deposit` ran only while the reader saw the old head (relay under stamp); nothing deposits after the head event. Seen in a World: a writer writes an ephemeral value, rotates write and goes off while the reader is partitioned; the node keeping S unread restarts and loses it.
 
 ## Convergence
 - **Stale copies** (spec/permissions.md §3: `open_entry` takes none, `Opened::NotOpen`) are opened again only when S's read secrets move, not when this node gets secrets of the part's actor (`Engine::take_wakes` names such waits; nothing in osis-sync takes them).

@@ -147,6 +147,12 @@ impl Judge for FakeJudge<'_> {
     fn deposit_key(&mut self, s: &SyncId, _: Option<Tid>) -> Result<Option<SigningSecret>> {
         Ok(self.keys.get(s).map(|n| deposit_key(&deposit_seed(*n), s)))
     }
+    fn step_deposit_key(&mut self, s: &SyncId, _: &osis_blob::StepId) -> Result<Option<SigningSecret>> {
+        self.deposit_key(s, None)
+    }
+    fn role_entry(&mut self, _: &SyncId, _: &BlobId) -> bool {
+        false
+    }
     /// Every thing a claim was signed as.
     fn proven(&mut self, named: &osis_store::Named) -> Vec<Tid> {
         named.things()
@@ -234,8 +240,10 @@ impl T {
         match target {
             // a sealed fire: held outside the store
             Target::Fire { .. } => self.offers.add_fire(s, b, Arc::new(bytes), [5; 57], target),
-            Target::Stores => {
-                let e = Entry { blob: b, wrap: [5; 57], stamp: None, deposited: true, own: true, role: false, class: Class::Durable, expires: Some(WallMs(T0 + INBOX_LIFETIME_MS)) };
+            // an own deposit, or (on given connections) an entry stamped under another step
+            Target::Stores | Target::On(_) => {
+                let on = matches!(target, Target::On(_));
+                let e = Entry { blob: b, wrap: [5; 57], stamp: on.then_some(osis_crypto::Signature([7; 64])), deposited: !on, own: true, role: false, class: Class::Durable, expires: Some(WallMs(T0 + INBOX_LIFETIME_MS)) };
                 assert_eq!(self.store.log(&s, e, Some(bytes), None).unwrap(), Code::OK);
                 self.offers.add(s, b, target);
             }
@@ -383,6 +391,40 @@ fn own_deposit_offered_to_store_sources_only_spec_sync_inbox_3() {
     assert_eq!(sent.iter().map(|x| (x.0, x.3)).collect::<Vec<_>>(), vec![(conn(2), b)]);
     t.reply(conn(2), sent[0].1, T::shared(Code::OK));
     assert_eq!(t.deposits_sent().len(), 1, "answered: done there");
+}
+
+// spec/sync-inbox.md §3 (sending: an entry given to a source as a Deposit item of itself, on
+// that source's connections while owed), spec/sync-ids.md §6 (Taking a stamped entry: a stamp
+// under a superseded write key goes as a deposit): a stamped entry offered on one connection
+// goes there alone, signed with the step's deposit key, stays through a refusal for now, and is
+// done there once taken; a connection ending lets it go.
+#[test]
+fn an_entry_offered_on_a_connection_goes_there_alone_spec_sync_inbox_3() {
+    let mut t = T::new();
+    let s = sync_id(1);
+    t.hold(&[(s, Holding::Read)]);
+    for c in [conn(1), conn(2)] {
+        t.connect(c, &[]);
+        t.join(c, s, SourceClass::Store);
+    }
+    let step = osis_blob::StepId([3; 32]);
+    let b = t.deposit(s, 1, Target::On([(conn(2), step)].into()));
+    let sent = t.deposits_sent();
+    assert_eq!(sent.iter().map(|x| (x.0, x.3)).collect::<Vec<_>>(), vec![(conn(2), b)], "on its connection alone");
+    t.reply(conn(2), sent[0].1, T::shared(Code::DEPOSIT_BUDGET_FULL));
+    t.advance(osis_sync::inbox::BACKOFF_MIN_MS);
+    let sent = t.deposits_sent();
+    assert_eq!(sent.len(), 2, "again past the back-off");
+    t.reply(conn(2), sent[1].1, T::shared(Code::OK));
+    t.advance(osis_sync::inbox::BACKOFF_MAX_MS);
+    assert_eq!(t.deposits_sent().len(), 2, "taken: done there");
+    // offered again on a connection that then ends: gone with it
+    let b2 = t.deposit(s, 2, Target::On([(conn(1), step)].into()));
+    assert_eq!(t.deposits_sent().last().map(|x| (x.0, x.3)), Some((conn(1), b2)));
+    t.offers.closed(conn(1));
+    t.connect(conn(1), &[]);
+    t.join(conn(1), s, SourceClass::Store);
+    assert_eq!(t.deposits_sent().len(), 3, "not again on a new connection: read offers it again there");
 }
 
 /// A blob as a promoter judges it: the parts it opened and checked, its other sections by

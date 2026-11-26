@@ -534,14 +534,14 @@ fn a_store_that_stops_and_syncs_again_is_registered_from_genesis_spec_sync_opens
     holds_on(0, 3, 4, &script, String::new(), false);
 }
 
-// spec/sync-ids.md §6 (Steps: a step waits on the role commits of its epochs but those an earlier
-// step waits on): node 1 grants node 0's account sync on thing 0 and makes thing 1 in it, which
-// issues step 2; node 0, holding both steps' sync secrets and no head, keeps thing 0, so node 1
-// opens S there by step 2's key and moves it from genesis to step 2 at once (a source on a step
-// past its keys): node 0 never takes step 2's rotation, stamped under genesis. Removing node 0's
-// account's other node issues step 3. Failed while step 3 waited on step 2's rotation as the
-// rotation of an epoch its own supersedes: node 0 refused it (a superseded write key) and kept
-// thing 0 unread at step 2.
+// spec/sync-ids.md §6 (Steps; Taking a stamped entry: one under a superseded write key goes as a
+// deposit), spec/sync-judgement.md §3 (Giving a body): node 1 grants node 0's account sync on
+// thing 0 and makes thing 1 in it, which issues step 2; node 0, holding both steps' sync secrets
+// and no head, keeps thing 0, so node 1 opens S there by step 2's key and moves it from genesis
+// to step 2 at once (a source on a step past its keys): node 0 never takes the rotation pinned
+// under genesis. Removing node 0's account's other node issues step 3, which waits on it too.
+// Failed while a writer gave a store nothing but what it pulls: node 0 refused the genesis stamp
+// (a superseded write key) and kept thing 0 unread at step 2; node 1 now deposits the entry.
 #[test]
 fn a_store_moved_at_once_takes_the_next_step_spec_sync_ids_6() {
     use crate::harness::script::*;

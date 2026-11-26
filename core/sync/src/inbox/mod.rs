@@ -3,7 +3,8 @@
 //!
 //! Principle: a deposit is the one way a non-writer adds an entry. This module carries what this
 //! node owes others and what others left in its store:
-//! - `offers`: Deposit items out, one unanswered per connection, refused-for-now backed off.
+//! - `offers`: Deposit items out, one unanswered per connection, refused-for-now backed off: own
+//!   deposits, sealed fires, and entries read gives a source as deposits (`offer_on`).
 //! - `fires`: sealed fires this node owes, offered until a peer takes one.
 //! - `held`: entries in this node's store to act on: deposits promoted by a writer, own deposits
 //!   offered, clearing past the bounds.
@@ -300,6 +301,12 @@ impl Inbox {
     /// `Effects` key, read again only as they move.
     pub fn dial_hints(&self) -> BTreeSet<DialHint> {
         self.links.hints().cloned().collect()
+    }
+
+    /// Entry `b` of S offered as a Deposit item on `conn`, signed for step `head` (read's
+    /// `Act::Deposit`): until the source there takes it, or the connection ends.
+    pub fn offer_on(&mut self, conn: ConnId, s: SyncId, b: BlobId, head: StepId) {
+        self.offers.add(s, b, Target::On([(conn, head)].into()));
     }
 
     /// Whether a deposit to `conn` may land (spec/sync-opens.md §1 Keep or close).

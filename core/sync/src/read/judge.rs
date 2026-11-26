@@ -51,8 +51,9 @@ pub(crate) enum Act {
     /// Logged again once past a delete at the source (§4), a fresh encryption: `old` leaves the
     /// own log; the stand records `head` and `fall`. `full`: as a Delete's.
     Again { at: Source, head: StepId, fall: u64, old: Vec<BlobId>, full: bool },
-    /// The body given to a source this node does not stamp for (§3 Reader that is not a writer).
-    Deposit { at: Source, blob: BlobId },
+    /// The body given to a source on `head` as own entry `blob`, a Deposit item of it where the
+    /// head's write key does not verify its stamp (spec/sync-ids.md §6 Taking a stamped entry).
+    Deposit { at: Source, head: StepId, blob: BlobId },
     /// A held piece of a must-hold body into the own store (§1: the same blob, a filler wrap).
     LogPiece(BlobId),
     /// A missing piece whose bytes the store holds (a peer's entry): taken by the engine.
@@ -665,7 +666,10 @@ pub(crate) fn toward(g: &mut impl Ground, mine: &Mine, s: &SyncId, c: &BodyId, a
     let keys = head.and_then(|h| creds.as_ref()?.keys.get(&h).cloned());
     let writer = keys.as_ref().is_some_and(|k| k.write.is_some());
     let quiet = seen.present.is_empty() && seen.deleted.is_empty();
-    t.idle = quiet && (writer || verdict != Verdict::Must);
+    // a writer's own entries stand under the source's head where it writes it, but a role
+    // commit's pinned under a step's parent (`Ground::stands`)
+    let role = mine.held_roles.get(s).is_some_and(|r| r.contains(c));
+    t.idle = quiet && ((writer && !role) || verdict != Verdict::Must);
     // unjudged calls for nothing yet but a strip's deletes: an entry gone here goes whatever the
     // body is judged (spec/sync-judgement.md §2 per blob)
     if verdict == Verdict::Unjudged && !seen.present.iter().any(|b| g.gone(b).is_some()) {
@@ -678,7 +682,7 @@ pub(crate) fn toward(g: &mut impl Ground, mine: &Mine, s: &SyncId, c: &BodyId, a
     };
     let calls = |g: &mut _, t: &mut Toward, src: &SrcView, full: bool| -> Result<()> {
         if f.is_some() {
-            at_source(g, mine, t, src, full, &seen, s, c, &verdict, head, creds, writer, f.as_ref().is_some_and(|f| f.role))?;
+            at_source(g, mine, t, src, full, &seen, s, c, &verdict, head, creds, f.as_ref().is_some_and(|f| f.role))?;
         }
         if keys.is_some() && !seen.present.is_empty() {
             deletes(g, mine, t, src, full, &seen, s, c, f.as_ref(), &verdict, head, creds)?;
@@ -863,24 +867,25 @@ fn duplicates(g: &mut impl Ground, seen: &Seen, copy_body: bool) -> Result<Vec<B
     Ok(out)
 }
 
-/// A must-hold body the source lacks (§3 Reader that is not a writer; §4 Logged again once).
+/// A must-hold body the source lacks (§3 Giving a body; §4 Logged again once).
 #[allow(clippy::too_many_arguments)]
-fn at_source(g: &mut impl Ground, mine: &Mine, t: &mut Toward, src: &SrcView, full: bool, seen: &Seen, s: &SyncId, c: &BodyId, verdict: &Verdict, head: StepId, creds: &ReadCredentials, writer: bool, role: bool) -> Result<()> {
+fn at_source(g: &mut impl Ground, mine: &Mine, t: &mut Toward, src: &SrcView, full: bool, seen: &Seen, s: &SyncId, c: &BodyId, verdict: &Verdict, head: StepId, creds: &ReadCredentials, role: bool) -> Result<()> {
     // what the source holds of it carries the body (§3 Neither): nothing to relay
     if *verdict != Verdict::Must || (!seen.present.is_empty() && g.neither(s, c, &seen.present)?) {
         return Ok(());
     }
     let own = g.own(s, c)?;
     if let Some(e) = own.iter().find(|e| !seen.deleted.contains(&e.blob) && !seen.present.contains(&e.blob)) {
-        // a writer's own store is pulled; a non-writer gives it, but not to a source on an
-        // earlier step of the recorded path: the path is registered there first (spec/sync-ids.md
-        // §6 Steps), and what this node holds stamped under a later step is taken as it is
-        // once the source stands there. A role commit goes there all the same: registering
-        // waits on the source holding the ones the step depends on, and a copy stamped under
-        // its head may be held nowhere
+        // given as it is (pulled where stamped under the source's head, else deposited), but not
+        // to a source on an earlier step of the recorded path: the path is registered there
+        // first (spec/sync-ids.md §6 Steps), and what this node holds stamped under a later step
+        // is taken as it is once the source stands there. A role commit goes there all the same:
+        // registering waits on the source holding the ones the step depends on, and an entry of
+        // it may be stamped under no step the source will stand on (a later head's, or a step
+        // parent the source was moved past)
         let behind = !role && creds.head.as_ref().is_some_and(|h| h.id() != head) && creds.keys.contains_key(&head);
-        if !writer && !behind {
-            t.acts.insert(Act::Deposit { at: src.at, blob: e.blob });
+        if !behind {
+            t.acts.insert(Act::Deposit { at: src.at, head, blob: e.blob });
         }
         return Ok(());
     }

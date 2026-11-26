@@ -63,6 +63,8 @@ pub struct Live<'a, 'b> {
     /// Entries to fetch again and bodies to ask for by ID, per connection (`Act::Fetch`,
     /// `Act::Want`): the driver hands them to streams.
     pub fetches: &'a mut Vec<(ConnId, SyncId, Ask)>,
+    /// Entries given a source as deposits (`Act::Deposit`): the driver hands them to inbox.
+    pub gives: &'a mut Vec<super::Give>,
 }
 
 
@@ -120,17 +122,19 @@ impl Live<'_, '_> {
         Ok(e.stamp.is_some() && self.cx.store.stamp_under(s, &e.blob, &[w.verifying_key()])?)
     }
 
-    /// The parent of the recorded step of S waiting on role commit `c` (`Engine::step_parent`):
-    /// an entry of `c` keeps a stamp under it, so a source standing there takes it before the
-    /// step is registered (spec/sync-ids.md §6 Steps).
-    fn step_parent(&mut self, s: &SyncId, id: &BodyId) -> Result<Option<osis_blob::Step>> {
+    /// Where an entry of role commit `c` that a recorded step of S waits on is stamped: that
+    /// step's parent (`Engine::step_parent`) where this node holds its write key, with that key,
+    /// so a source standing there takes it before the step is registered (spec/sync-ids.md §6
+    /// Steps). `None`: anything else, stamped under the served head.
+    fn pinned(&mut self, s: &SyncId, id: &BodyId) -> Result<Option<(osis_blob::Step, osis_crypto::SigningSecret)>> {
         if !self.cx.engine.read_facts(s, id)?.role {
             return Ok(None);
         }
-        Ok(self.cx.engine.step_parent(s, &id.commit)?)
+        let Some(p) = self.cx.engine.step_parent(s, &id.commit)? else { return Ok(None) };
+        Ok(self.cx.engine.step_write_key(s, &p.id())?.map(|w| (p, w)))
     }
 
-    /// `c`'s body under `s` as a fresh encryption (logging again, a deposit, a body with no held
+    /// `c`'s body under `s` as a fresh encryption (logging again, a body with no held
     /// encryption): `Engine::seal_body` given every blob of `c` the store holds bytes of, each
     /// with an entry's wrap, tombstoned under `s` or not (spec/crypto.md §5 Passing on: what
     /// this node may not encrypt under an epoch of its choosing goes as the section it came in).
@@ -352,14 +356,12 @@ impl Ground for Live<'_, '_> {
         Ok(out)
     }
     fn stands(&mut self, s: &SyncId, c: &BodyId, e: &Entry) -> Result<bool> {
-        // a role commit a recorded step waits on stands under that step's parent where this node
-        // holds its write key, whatever its head: a source standing there takes it
-        if let Some(p) = self.step_parent(s, c)?
-            && self.cx.engine.step_write_key(s, &p.id())?.is_some()
-        {
-            return Ok(e.stamp.is_some() && self.cx.store.stamp_under(s, &e.blob, &[p.keys.write])?);
+        // a pinned role commit stands only where it is pinned, whatever the head: an entry under
+        // the head (logged as the head moved) is restamped there
+        match self.pinned(s, c)? {
+            Some((p, _)) => Ok(e.stamp.is_some() && self.cx.store.stamp_under(s, &e.blob, &[p.keys.write])?),
+            None => self.under_head(s, e),
         }
-        self.under_head(s, e)
     }
     fn holds_body(&mut self, meta: &BodyMeta, b: &BlobId) -> Result<bool> {
         Ok(self.cx.engine.body_held_by(meta, b))
@@ -377,13 +379,10 @@ impl Ground for Live<'_, '_> {
         if stamp_key(self.cx, s)?.is_none() {
             return Ok(());
         }
-        // a role commit a recorded step registers under that step's parent where its write key
-        // is held (`stands`), anything else under the served head
+        // a pinned role commit where it is pinned, anything else under the served head
         let mut w = None;
-        if let Some(c) = self.cx.engine.blob_body(s, b)?
-            && let Some(p) = self.step_parent(s, &c)?
-        {
-            w = self.cx.engine.step_write_key(s, &p.id())?;
+        if let Some(c) = self.cx.engine.blob_body(s, b)? {
+            w = self.pinned(s, &c)?.map(|(_, w)| w);
         }
         let Some(w) = w.or(stamp_key(self.cx, s)?) else { return Ok(()) };
         // judged here, whoever logged it first: a pulled entry's row does not say
@@ -561,25 +560,20 @@ impl Ground for Live<'_, '_> {
         let Some(item) = self.delete_item(s, head, b)? else { return Ok(None) };
         Ok(self.sessions.get_mut(conn).map(|session| session.request(To::Read, Msg::Delete { id: 0, sync_id: *s, items: vec![item] })))
     }
-    fn deposit(&mut self, _conn: ConnId, head: Option<StepId>, s: &SyncId, c: &BodyId, b: &BlobId) -> Result<()> {
-        let Some(e) = self.cx.store.entry(s, b)? else { return Ok(()) };
-        // a deposited own entry is offered to every store source of S (inbox's offers)
+    fn deposit(&mut self, conn: ConnId, s: &SyncId, _c: &BodyId, head: &StepId, b: &BlobId) -> Result<bool> {
+        let Some(e) = self.cx.store.entry(s, b)? else { return Ok(false) };
         if e.deposited {
-            return Ok(());
+            return Ok(false);
         }
-        // stamped under the source's head write key: it pulls it as it is
-        let write = head.and_then(|h| self.cx.store.path(s).ok().flatten().and_then(|p| p.steps.iter().find(|(st, _)| st.id() == h).map(|(st, _)| st.keys.write)));
+        let write = self.cx.store.path(s)?.and_then(|p| p.steps.iter().find(|(st, _)| st.id() == *head).map(|(st, _)| st.keys.write));
         if let Some(w) = write
             && e.stamp.is_some()
             && self.cx.store.stamp_under(s, b, &[w])?
         {
-            return Ok(());
+            return Ok(false);
         }
-        // else a fresh encryption, deposited: offered as it is logged
-        let Some((sealed, wrap)) = self.fresh(s, c)? else { return Ok(()) };
-        let entry = Entry { blob: sealed.id, wrap, stamp: None, deposited: true, own: true, role: self.cx.engine.role_commit(&c.commit), class: e.class, expires: None };
-        self.cx.store.log(s, entry, Some(sealed.blob), None)?;
-        Ok(())
+        self.gives.push((conn, *s, *b, *head));
+        Ok(true)
     }
     fn set_stand(&mut self, at: &Source, s: &SyncId, c: &BodyId, stand: &Stand) -> Result<()> {
         self.cx.store.set_stand(*at, s, &stand_key(c), Some(stand))

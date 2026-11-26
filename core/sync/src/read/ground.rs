@@ -147,9 +147,9 @@ pub trait Ground {
     fn own(&mut self, s: &SyncId, c: &BodyId) -> Result<Vec<Entry>>;
     /// Whether entry `e` of `c`'s body under S stands as this node's log of it
     /// (spec/sync-judgement.md §3 Own store: stamped where it writes S): where it holds S's head
-    /// write key, one stamped under that key, but a role commit a recorded step waits on, under
-    /// that step's parent where it holds that step's write key (spec/sync-ids.md §6 Steps), own
-    /// or a peer's alike; anywhere else, any entry held.
+    /// write key, one stamped under that key, but a role commit a recorded step waits on, stamped
+    /// under that step's parent where it holds its write key (spec/sync-ids.md §6 Steps: one step
+    /// waits on it), own or a peer's alike; anywhere else, any entry held.
     fn stands(&mut self, s: &SyncId, c: &BodyId, e: &Entry) -> Result<bool> {
         let _ = (s, c, e);
         Ok(true)
@@ -249,11 +249,12 @@ pub trait Ground {
     fn delete_item(&mut self, s: &SyncId, head: &StepId, b: &BlobId) -> Result<Option<osis_blob::DeleteItem>>;
     /// A Delete of `b` on `conn` (`delete_item`): the request, if one went.
     fn delete(&mut self, conn: ConnId, s: &SyncId, head: &StepId, b: &BlobId) -> Result<Option<RequestId>>;
-    /// `c`'s body given to the source on `conn`, on `head`, that this node does not stamp for
-    /// (spec/sync-judgement.md §3 Reader that is not a writer): own entry `b` relayed under its
-    /// stamp when the head's write key verifies it, else a fresh encryption
-    /// (`Engine::seal_body`) deposited.
-    fn deposit(&mut self, conn: ConnId, head: Option<StepId>, s: &SyncId, c: &BodyId, b: &BlobId) -> Result<()>;
+    /// `c`'s body given to the source on `conn`, on `head` (spec/sync-judgement.md §3 At a
+    /// source keeping S unread): entry `b` is pulled as it is where `head`'s write key verifies
+    /// its stamp, else offered there as a Deposit item of itself (spec/sync-ids.md §6 Taking a
+    /// stamped entry), signed with `head`'s deposit key. `true`: offered on `conn`. An own deposit
+    /// is offered already (to every source keeping S unread), a peer's is not given.
+    fn deposit(&mut self, conn: ConnId, s: &SyncId, c: &BodyId, head: &StepId, b: &BlobId) -> Result<bool>;
     fn set_stand(&mut self, at: &Source, s: &SyncId, c: &BodyId, stand: &Stand) -> Result<()>;
 
     /// What S carries as certificates that no certificate blob in the own store carries,

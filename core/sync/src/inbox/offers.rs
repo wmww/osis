@@ -1,7 +1,10 @@
 //! Deposit items out (spec/sync-inbox.md §3 Sending).
 //!
 //! An offer is an own deposited entry (S, blob) and who may take it: a source of S keeping S
-//! unread (`Target::Stores`: readers pull deposited entries), or a sealed fire on a thing this
+//! unread (`Target::Stores`: readers pull deposited entries); an entry of the store offered on
+//! given connections, each signed for that source's head (`Target::On`: read's `Act::Deposit`,
+//! an entry whose stamp that head's write key does not verify, offered there until taken; read
+//! offers it again on the next connection while it is owed); or a sealed fire on a thing this
 //! node does not sync, held outside the store (`add_fire`), for a peer that may hold it
 //! (`Target::Fire`): one where S is open, one where an account holding a role on the thing is
 //! proven (an inbox's account: its own nodes read it), or one whose filter shows S's deposit key (a node keeping S
@@ -40,6 +43,7 @@ use crate::session::RequestId;
 use crate::types::{ConnId, Result, SourceClass};
 use osis_base::{BlobId, Mono, SyncId, Tid};
 use osis_base::memo::Effects;
+use osis_blob::StepId;
 use osis_crypto::{Signature, SigningSecret, VerifyingKey};
 use osis_proto::{Code, DepositItem, Msg, OfferItem};
 use std::collections::{BTreeMap, BTreeSet};
@@ -60,6 +64,11 @@ type Key = (SyncId, BlobId);
 pub trait Judge {
     /// The deposit key S's offers are signed with, for a fired thing from its deposit seed.
     fn deposit_key(&mut self, s: &SyncId, thing: Option<Tid>) -> Result<Option<SigningSecret>>;
+    /// The deposit key of recorded step `step` of S, where held (`Target::On`).
+    fn step_deposit_key(&mut self, s: &SyncId, step: &StepId) -> Result<Option<SigningSecret>>;
+    /// Whether `b` is a role entry of S, signed so (`Target::On`: a pulled entry's row does not
+    /// say).
+    fn role_entry(&mut self, s: &SyncId, b: &BlobId) -> bool;
     /// The things `named`'s claims prove now, each with a role by its path (spec/sync-opens.md
     /// §2), ascending.
     fn proven(&mut self, named: &osis_store::Named) -> Vec<Tid>;
@@ -68,6 +77,12 @@ pub trait Judge {
 impl Judge for osis_engine::Engine {
     fn deposit_key(&mut self, s: &SyncId, thing: Option<Tid>) -> Result<Option<SigningSecret>> {
         Ok(self.signers(s, thing.as_ref())?.deposit)
+    }
+    fn step_deposit_key(&mut self, s: &SyncId, step: &StepId) -> Result<Option<SigningSecret>> {
+        Ok(self.read_credentials(s)?.and_then(|c| c.keys.get(step).and_then(|k| k.deposit.clone())))
+    }
+    fn role_entry(&mut self, s: &SyncId, b: &BlobId) -> bool {
+        osis_engine::Engine::role_entry(self, s, b)
     }
     fn proven(&mut self, named: &osis_store::Named) -> Vec<Tid> {
         let p = osis_engine::Engine::proven(self, &named.claims, &osis_blob::Certificates::default()).unwrap_or_default();
@@ -83,6 +98,9 @@ impl Judge for osis_engine::Engine {
 pub enum Target {
     /// Sources of S keeping S unread.
     Stores,
+    /// The sources on these connections, each on the step given (signed with its deposit key):
+    /// an entry of the store, deposited or not.
+    On(BTreeMap<ConnId, StepId>),
     /// A sealed fire on `thing`: a peer where S is open, where one of `to` (the accounts holding
     /// a role on the thing, as the sender judged them) is proven, or whose filter shows S's
     /// deposit key.
@@ -167,12 +185,18 @@ impl Offers {
 
     pub fn add(&mut self, s: SyncId, b: BlobId, target: Target) {
         let k = (s, b);
-        match self.items.get(&k) {
-            // a fire's offer goes wherever a store's would
-            Some(Target::Fire { .. }) => return,
-            Some(t) if *t == target => return,
-            _ => {}
-        }
+        let target = match (self.items.get(&k), target) {
+            // a fire's offer goes wherever a store's would, an own deposit's to every store
+            (Some(Target::Fire { .. } | Target::Stores), Target::On(_)) => return,
+            (Some(Target::Fire { .. }), _) => return,
+            (Some(t), target) if *t == target => return,
+            (Some(Target::On(was)), Target::On(on)) => {
+                let mut all = was.clone();
+                all.extend(on);
+                Target::On(all)
+            }
+            (_, target) => target,
+        };
         if let Target::Fire { to, .. } = &target {
             for r in to.iter() {
                 self.to.entry(*r).or_default().insert(k);
@@ -184,6 +208,16 @@ impl Offers {
         for (c, conn) in &mut self.conns {
             conn.ready.insert(k);
             self.active.insert(*c);
+        }
+    }
+
+    /// `Target::On` offer `k` goes on `conn` no more (taken there, or the connection ended); with
+    /// no connection left, it goes.
+    fn off(&mut self, k: &Key, conn: ConnId) {
+        let Some(Target::On(on)) = self.items.get_mut(k) else { return };
+        on.remove(&conn);
+        if on.is_empty() {
+            self.remove(&k.0, &k.1);
         }
     }
 
@@ -238,6 +272,10 @@ impl Offers {
     }
 
     pub fn closed(&mut self, conn: ConnId) {
+        let on: Vec<Key> = self.items.iter().filter(|(_, t)| matches!(t, Target::On(m) if m.contains_key(&conn))).map(|(k, _)| *k).collect();
+        for k in on {
+            self.off(&k, conn);
+        }
         self.who.unwant(&conn);
         self.agreed.unwant(&conn);
         self.conns.remove(&conn);
@@ -301,7 +339,13 @@ impl Offers {
                 self.keys.unwant(&k);
                 continue;
             };
-            let Some((Some(_), _)) = self.keys.try_settle(&k, || Ok::<_, crate::types::Error>(judge.deposit_key(&k.0, target.actor())?.map(|d| d.verifying_key())))? else { continue };
+            // a step's deposit key never moves: an offer on a connection is signed again only
+            // for another step, by read
+            let key = |judge: &mut dyn Judge| match &target {
+                Target::On(_) => Ok(None),
+                _ => Ok::<_, crate::types::Error>(judge.deposit_key(&k.0, target.actor())?.map(|d| d.verifying_key())),
+            };
+            let Some((Some(_), _)) = self.keys.try_settle(&k, || key(judge))? else { continue };
             // the deposit key moved: signed again, it goes again wherever it was refused
             for (c, conn) in &mut self.conns {
                 if conn.parked.remove(&k).is_some() {
@@ -348,7 +392,7 @@ impl Offers {
                     Some(g) => g != generation,
                     // just refused: again at once only if signing again changes the signature
                     None => match self.items.get(&k) {
-                        Some(target) => item(store, &self.loose, judge, &k, target)?.is_some_and(|i| i.sig != sig),
+                        Some(target) => item(store, &self.loose, judge, &k, target, conn)?.is_some_and(|i| i.sig != sig),
                         None => true,
                     },
                 };
@@ -378,14 +422,18 @@ impl Offers {
             while let Some(k) = c.ready.pop_first() {
                 let Some(target) = self.items.get(&k) else { continue };
                 osis_base::costs::count("inbox: offer judged", 1);
-                let Some(key) = judge.deposit_key(&k.0, target.actor())? else {
-                    drop_item(&mut self.items, &mut self.to, &k);
+                let Some(key) = signing_key(judge, &k, target, conn)? else {
+                    // an offer on other connections, or for a step whose deposit key is not held
+                    // here: it goes on this one no more (`closed` lets it go)
+                    if !matches!(target, Target::On(_)) {
+                        drop_item(&mut self.items, &mut self.to, &k);
+                    }
                     continue;
                 };
                 if !may_take(net, conn, &c.actors, &k.0, target, &key.verifying_key().to_bytes()) {
                     continue;
                 }
-                let Some(item) = item(store, &self.loose, judge, &k, target)? else {
+                let Some(item) = item(store, &self.loose, judge, &k, target, conn)? else {
                     drop_item(&mut self.items, &mut self.to, &k);
                     continue;
                 };
@@ -441,6 +489,10 @@ impl Offers {
             }
         }
         self.active.insert(conn);
+        // an offer on given connections is done on this one once taken
+        if code == Code::OK {
+            self.off(&k, conn);
+        }
         true
     }
 
@@ -465,7 +517,7 @@ impl Target {
     pub fn actor(&self) -> Option<Tid> {
         match self {
             Target::Fire { thing, .. } => Some(*thing),
-            Target::Stores => None,
+            Target::Stores | Target::On(_) => None,
         }
     }
 }
@@ -501,25 +553,43 @@ fn may_take(net: &impl Net, conn: ConnId, actors: &[Tid], s: &SyncId, target: &T
     let member = net.member(conn, s).filter(|m| m.until.is_none());
     match target {
         Target::Stores => member.is_some_and(|m| m.class == SourceClass::Store),
+        Target::On(on) => on.contains_key(&conn) && member.is_some_and(|m| m.class == SourceClass::Store),
         Target::Fire { to, .. } => member.is_some() || actors.iter().any(|a| to.contains(a)) || net.shows_deposit_key(conn, s, key),
     }
 }
 
-/// The Deposit item of offer `k`, signed with the deposit key now; `None`: moot (its entry is
-/// no longer an own deposit, or no deposit key is held).
-fn item(store: &Store, loose: &BTreeMap<Key, (Arc<Vec<u8>>, Wrap)>, judge: &mut dyn Judge, k: &Key, target: &Target) -> Result<Option<DepositItem>> {
+/// The key offer `k` is signed with on `conn` now: the deposit key of the step it goes on there
+/// (`Target::On`), else S's (or the fired thing's).
+fn signing_key(judge: &mut dyn Judge, k: &Key, target: &Target, conn: ConnId) -> Result<Option<SigningSecret>> {
+    match target {
+        Target::On(on) => match on.get(&conn) {
+            Some(step) => judge.step_deposit_key(&k.0, step),
+            None => Ok(None),
+        },
+        _ => judge.deposit_key(&k.0, target.actor()),
+    }
+}
+
+/// The Deposit item of offer `k` on `conn`, signed with its key now (`signing_key`); `None`: moot
+/// (its entry is no longer an own deposit, or for `Target::On` no longer held with its bytes, or
+/// no deposit key is held).
+fn item(store: &Store, loose: &BTreeMap<Key, (Arc<Vec<u8>>, Wrap)>, judge: &mut dyn Judge, k: &Key, target: &Target, conn: ConnId) -> Result<Option<DepositItem>> {
     let (s, b) = k;
     if let Some((blob, wrap)) = loose.get(k) {
-        let Some(key) = judge.deposit_key(s, target.actor())? else { return Ok(None) };
+        let Some(key) = signing_key(judge, k, target, conn)? else { return Ok(None) };
         let sig = osis_blob::sign_deposit(&key, s, b, wrap, false);
         return Ok(Some(DepositItem { sync_id: *s, blob: blob.to_vec(), wrap: *wrap, sig }));
     }
     let Some(e) = store.entry(s, b)? else { return Ok(None) };
-    if !e.deposited || !e.own {
+    if !matches!(target, Target::On(_)) && (!e.deposited || !e.own) {
         return Ok(None);
     }
     let Some(blob) = store.bytes(b)? else { return Ok(None) };
-    let Some(key) = judge.deposit_key(s, target.actor())? else { return Ok(None) };
-    let sig = osis_blob::sign_deposit(&key, s, b, &e.wrap, e.role);
+    let Some(key) = signing_key(judge, k, target, conn)? else { return Ok(None) };
+    let role = match target {
+        Target::On(_) => judge.role_entry(s, b),
+        _ => e.role,
+    };
+    let sig = osis_blob::sign_deposit(&key, s, b, &e.wrap, role);
     Ok(Some(DepositItem { sync_id: *s, blob, wrap: e.wrap, sig }))
 }
