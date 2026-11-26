@@ -14,6 +14,7 @@
 //! judged again when what it waits for arrives (`wake_covers`), so the last to arrive of body,
 //! replacement, role, minting and keys triggers the cover. A cover that fails leaves the body and never fails the transaction.
 
+use super::snapshot::OutlivedBy;
 use crate::engine::write::{MayWrite, may_write_on};
 use crate::engine::{Core, DropFor, Step, Tx};
 use crate::error::Result;
@@ -53,21 +54,21 @@ fn coverer(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak, right: bool) -> Re
 /// carries, so a snapshot is not replaced by an expiring write either). A delta with an expiry
 /// is judged also without its own writes, as no snapshot carries them (spec/crdt.md §8):
 /// replaced only once none of its writes lives, when a snapshot of the state covers it
-/// (spec/commits.md §5).
-pub(super) fn replaced(tx: &mut Tx<'_>, c: &CommitId, ai: usize, tid: &Tid, ak: &Ak) -> Result<bool> {
+/// (spec/commits.md §5). `by`: the judging states read so far while the held set stood.
+pub(super) fn replaced(tx: &mut Tx<'_>, c: &CommitId, ai: usize, tid: &Tid, ak: &Ak, by: &mut OutlivedBy) -> Result<bool> {
     let Some(m) = tx.core.ix.commits.get(c) else { return Ok(false) };
     if !m.valid_at(ai) {
         return Ok(false);
     }
     let life = m.header.expires;
     let own = (life.is_some() && !super::is_gone(tx.core, c, ai)).then(|| super::writes_of(&m.header, c, ai));
-    let by = super::snapshot::outlived(tx, tid, ak, life)?;
+    let by = by.of(tx, tid, ak, life)?;
     let mut out = false;
     super::each_body_piece(tx, c, ai, &mut |tx, f| {
         if out {
             return Ok(());
         }
-        let Some(mut st) = super::snapshot::judged_state(tx, tid, ak, &f, by.as_ref(), false)? else { return Ok(()) };
+        let Some(mut st) = super::snapshot::judged_state(tx, tid, ak, &f, by, false)? else { return Ok(()) };
         if let Some(own) = &own {
             st.remove_gone(&|d| own.iter().any(|o| o.owns(d)));
         }
@@ -115,6 +116,9 @@ pub(crate) fn settle_none(tx: &mut Tx<'_>) -> Result<()> {
         if held.is_empty() {
             continue;
         }
+        // one judging state per lifetime while the held set stands (a cover written or a body
+        // dropped clears it)
+        let mut by = OutlivedBy::default();
         let mut uncovered = Vec::new();
         for (c, ai) in &held {
             if coverer(tx, c, &tid, &ak, true)?.is_none() {
@@ -140,7 +144,7 @@ pub(crate) fn settle_none(tx: &mut Tx<'_>) -> Result<()> {
         if may == MayWrite::Yes {
             let me = tx.core.tid();
             for (c, ai) in &uncovered {
-                if !under_purge(tx, c, *ai, &tid, &ak, &kept)? {
+                if !under_purge(tx, c, *ai, &tid, &ak, &kept, &mut by)? {
                     continue;
                 }
                 if !super::purge::would_hold_right(tx.core, &me, ts, c, &tid, &ak) && coverer(tx, c, &tid, &ak, false)?.is_some() {
@@ -152,6 +156,7 @@ pub(crate) fn settle_none(tx: &mut Tx<'_>) -> Result<()> {
         }
         if owed {
             written.insert(k.clone());
+            by = OutlivedBy::default();
             // the write's own check has the last word (a removal sweep before it moves its stamp
             // on): a cover that fails leaves nothing and the body to the writers that may, and is
             // reported, never failing the transaction
@@ -169,9 +174,9 @@ pub(crate) fn settle_none(tx: &mut Tx<'_>) -> Result<()> {
             // replaced under another setting) is node-sync's too, where its author keeps its own
             // (notes/ephemeral.md Own bodies under own covers)
             let gone = if memory {
-                under_purge(tx, &c, ai, &tid, &ak, &kept)?
+                under_purge(tx, &c, ai, &tid, &ak, &kept, &mut by)?
             } else {
-                tx.core.ix.commits.get(&c).is_some_and(|m| m.view.kind.is_compaction()) || replaced(tx, &c, ai, &tid, &ak)?
+                tx.core.ix.commits.get(&c).is_some_and(|m| m.view.kind.is_compaction()) || replaced(tx, &c, ai, &tid, &ak, &mut by)?
             };
             if !gone {
                 continue;
@@ -187,6 +192,7 @@ pub(crate) fn settle_none(tx: &mut Tx<'_>) -> Result<()> {
                 }
                 continue;
             }
+            by = OutlivedBy::default();
             tx.in_class(memory, |tx| {
                 super::drop_part_for(tx, &c, ai, DropFor::Cover)?;
                 super::memory::forget_if_spent(tx, &c)
@@ -199,8 +205,8 @@ pub(crate) fn settle_none(tx: &mut Tx<'_>) -> Result<()> {
 /// Whether held body `c` (part `ai`) of `(tid, ak)` is under purge on replace (spec/commits.md
 /// §5): replaced, and the current setting's entry purges on replace or its floor is past the
 /// body's oldest dead write (`bounds::written_of`).
-fn under_purge(tx: &mut Tx<'_>, c: &CommitId, ai: usize, tid: &Tid, ak: &Ak, kept: &super::history::Kept) -> Result<bool> {
-    if !replaced(tx, c, ai, tid, ak)? {
+fn under_purge(tx: &mut Tx<'_>, c: &CommitId, ai: usize, tid: &Tid, ak: &Ak, kept: &super::history::Kept, by: &mut OutlivedBy) -> Result<bool> {
+    if !replaced(tx, c, ai, tid, ak, by)? {
         return Ok(false);
     }
     let Some(h) = tx.core.ix.commits.get(c).map(|m| m.header.clone()) else { return Ok(false) };

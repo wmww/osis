@@ -82,13 +82,25 @@ pub(crate) fn live(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<bool> {
     }
     let Some(a) = h.aspects.get(ai) else { return Ok(false) };
     let own = super::writes_of(&h, c, ai);
-    Ok(tx.state(&a.tid, &a.ak)?.is_some_and(|st| st.holds_owned_write(&|src, lo, hi| own.iter().any(|o| o.owns_range(src, lo, hi)))))
+    let Some(st) = judged(tx, &a.tid, &a.ak, h.expires)? else { return Ok(false) };
+    Ok(st.holds_owned_write(&|src, lo, hi| own.iter().any(|o| o.owns_range(src, lo, hi))))
+}
+
+/// The whole state as a body lasting to `life` is judged against (`snapshot::outlived`).
+fn judged(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, life: Option<u64>) -> Result<Option<osis_crdt::Fragment>> {
+    let by = super::snapshot::outlived(tx, tid, ak, life)?;
+    Ok(tx.state(tid, ak)?.cloned().map(|mut st| {
+        if let Some(o) = &by {
+            o.at(&mut st);
+        }
+        st
+    }))
 }
 
 fn snapshot_live(tx: &mut Tx<'_>, h: &Header, c: &CommitId, ai: usize) -> Result<bool> {
     let Some(a) = h.aspects.get(ai) else { return Ok(false) };
     let part = super::body_fragment(tx, c, ai)?;
-    let Some(st) = tx.state(&a.tid, &a.ak)? else { return Ok(false) };
+    let Some(st) = judged(tx, &a.tid, &a.ak, h.expires)? else { return Ok(false) };
     let writes = st.live_writes();
     let Some(f) = part else {
         return Ok(writes.iter().any(|(_, t)| t.is_none_or(|t| t <= h.ts)));

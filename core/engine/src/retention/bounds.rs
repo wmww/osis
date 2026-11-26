@@ -214,6 +214,9 @@ fn judged(core: &Core, c: &CommitId, ai: usize, tid: &Tid, ak: &Ak) -> bool {
 /// one keeps their history); `None`: no write dead. So a cover dropping a body redates nothing
 /// in history (notes/engine-retention-dating.md Invariant), and a node holding more bodies
 /// dates no later. One row read: the index keeps each body's deaths by date.
+/// Interim (issues/dating-ignores-lifetimes.md): a superseder of any lifetime dates a death (a
+/// lasting body beaten only by an expiring write is dated replaced); `Held` reading only
+/// superseders lasting at least as long replaces it.
 pub(super) fn held_date(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<Option<Ts>> {
     settle_index(tx, tid, ak)?;
     drop(osis_base::costs::span("replaced at"));
@@ -655,6 +658,8 @@ pub(super) fn index_exact(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, when: &str) -> Re
 /// The writes of held part `ai` of `c` the state supersedes (spec/crdt.md §4.8): the part's
 /// winners that do not win once it joins, whole, a copy of the state at its positions
 /// (`Tx::state_part_at`: O(part), whatever the state's size).
+/// Interim (issues/dating-ignores-lifetimes.md): judged against the state as it is, as `Held`
+/// dates; judged against `snapshot::outlived`'s state once `Held` reads lifetimes.
 fn deaths(tx: &mut Tx<'_>, c: &CommitId, ai: usize, tid: &Tid, ak: &Ak) -> Result<BTreeSet<Won>> {
     let Some(f) = super::body_fragment(tx, c, ai)? else { return Ok(Default::default()) };
     let Some(mut st) = tx.state_part_at(tid, ak, &f)? else { return Ok(Default::default()) };

@@ -296,8 +296,9 @@ fn late_purge_on_replace_setting_makes_holders_cover_spec_commits_5() {
 
 // spec/crdt.md §4.8 (When), spec/commits.md §5 (Bodies and deaths): only a write lasting at least
 // as long supersedes. Under purge on replace a value overwritten only by an expiring one is not
-// replaced: no cover is owed for it, a later write on the aspect owes none either (covers do not
-// chase each other), and the value reads again once the expiring one ends
+// replaced: no cover is owed for it, a later judgment owes none either (covers do not chase each
+// other; after an open every held purge-on-replace aspect is judged), and the value reads again
+// once the expiring one ends
 #[test]
 fn value_beaten_only_by_an_expiring_one_lives_spec_crdt_4_8() {
     let (mut lp, d) = setup();
@@ -315,13 +316,13 @@ fn value_beaten_only_by_an_expiring_one_lives_spec_crdt_4_8() {
     lp.advance(1_000);
     assert_eq!(snaps(&mut lp.peers[1]), 0, "nothing replaced: no cover owed");
     assert!(lp.peers[1].engine.body_not_dropped(&v1, &d, &ak(A)));
-    // each later transaction on the aspect writes no cover
-    for v in ["x", "y"] {
-        let mut m = Mutation::new();
-        m.set(d, &ak("t:other.0"), &s(v)).unwrap();
-        lp.peers[1].commit(m).unwrap().unwrap();
-        lp.sync_all().unwrap();
+    // judged again from a fresh load: still owed none, the value still live
+    for i in 0..3 {
+        lp.peers[i].restart(70 + i as u64).unwrap();
+        lp.peers[i].tick().unwrap();
+        assert!(lp.peers[i].engine.delta_live(&v1, &d, &ak(A)).unwrap(), "peer {i}: live while beaten only by an expiring write");
     }
+    lp.sync_all().unwrap();
     assert_eq!(snaps(&mut lp.peers[1]), 0);
     assert_eq!(lp.peers[0].engine.get(&d, &ak(A)).unwrap(), Some(s("brief")));
     lp.advance(2 * HOUR);
@@ -1065,4 +1066,59 @@ fn a_late_row_leaves_no_earlier_than_replaced_spec_commits_5() {
     p.tick().unwrap();
     assert!(!listed(&mut p, &v, d));
     assert!(told(&mut p).contains(&v), "told once out");
+}
+
+// spec/crdt.md §4.8, §4.7: on an aspect keeping history, a value overwritten only by an expiring
+// one is live (needs a carrier) at every node, live or loaded fresh, and reads again at every node
+// once that one ends, its removal in place included
+#[test]
+fn value_beaten_only_by_an_expiring_one_reads_again_kept_spec_crdt_4_8() {
+    let (mut lp, d) = setup();
+    set(&mut lp, 2, d, &setting(&[(A, keep(10 * HOUR))]));
+    let v1 = put(&mut lp, 1, d, "one");
+    let mut m = Mutation::new();
+    let end = lp.peers[1].engine.now().0 + HOUR;
+    m.expires(d, &ak(A), WallMs(end)).unwrap();
+    m.set(d, &ak(A), &s("brief")).unwrap();
+    lp.peers[1].commit(m).unwrap().unwrap();
+    lp.sync_all().unwrap();
+    lp.peers[2].restart(77).unwrap();
+    for i in 0..3 {
+        assert_eq!(lp.peers[i].engine.get(&d, &ak(A)).unwrap(), Some(s("brief")), "peer {i}");
+        assert!(lp.peers[i].engine.delta_live(&v1, &d, &ak(A)).unwrap(), "peer {i}: live");
+    }
+    lp.advance(2 * HOUR);
+    for i in 0..3 {
+        lp.peers[i].tick().unwrap();
+        assert_eq!(lp.peers[i].engine.get(&d, &ak(A)).unwrap(), Some(s("one")), "peer {i}: back once it ends");
+    }
+    lp.peers[0].restart(78).unwrap();
+    assert_eq!(lp.peers[0].engine.get(&d, &ak(A)).unwrap(), Some(s("one")), "loaded fresh");
+}
+
+// fast by construction: judging an aspect's purge-on-replace bodies reads its held bodies once
+// per lifetime among them (`snapshot::OutlivedBy`), not once per body
+#[test]
+fn judging_beside_an_expiring_write_reads_bodies_once_spec_crdt_4_8() {
+    const L: &str = "t:list.0";
+    let (mut lp, d) = setup();
+    set(&mut lp, 2, d, &setting(&[(L, History::PurgeOnReplace)]));
+    lp.sync_all().unwrap();
+    let add = |lp: &mut LocalPeer, v: &str, brief: bool| {
+        let mut m = Mutation::new();
+        if brief {
+            let end = lp.peers[1].engine.now().0 + HOUR;
+            m.expires(d, &ak(L), WallMs(end)).unwrap();
+        }
+        m.op(d, &LIST, osis_crdt::PathOp { path: vec![], op: osis_crdt::Op::Insert { at: 0, items: vec![s(v)] } }).unwrap();
+        lp.peers[1].commit(m).unwrap().unwrap();
+    };
+    add(&mut lp, "brief", true);
+    for i in 0..20 {
+        add(&mut lp, &format!("v{i}"), false);
+    }
+    osis_base::costs::take();
+    add(&mut lp, "later", false);
+    let reads = osis_base::costs::take().iter().find(|x| x.0 == "retention: judging states read").map_or(0, |x| x.2);
+    assert_eq!(reads, 1, "one judging state for the 21 live lasting bodies");
 }

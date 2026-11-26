@@ -266,7 +266,7 @@ pub(crate) fn own_kept_under(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &
     if tx.core.ix.commits.get(c).is_none_or(|m| m.own_gone(ai)) {
         return Ok(true);
     }
-    Ok(!replace::replaced(tx, c, ai, tid, ak)?)
+    Ok(!replace::replaced(tx, c, ai, tid, ak, &mut snapshot::OutlivedBy::default())?)
 }
 
 /// Whether `s` is another node's own cover at a removal (its header's marker, spec/wire.md §4

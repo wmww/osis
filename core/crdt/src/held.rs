@@ -30,6 +30,10 @@
 //! keeps the rows it writes (`Held::tops`, `Held::cells`), so a walk up a write's ancestors or
 //! across the kinds at its position reads rows only where a kind there was written after it: a
 //! join reads a few rows per write, whatever its depth and the writes held.
+//!
+//! Interim (issues/dating-ignores-lifetimes.md): a write dies at any later write superseding it,
+//! whatever either's lifetime (spec/crdt.md §4.8 counts only superseders lasting at least as
+//! long); cells carrying their write's lifetime replace it.
 
 use crate::fragment::{Elem, Fragment, Removal};
 use crate::stamp::{Dot, DotRange, Session, Source, SourceKind, Stamp};
