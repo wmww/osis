@@ -6,7 +6,7 @@ use osis::{GrantOpts, LinkOpts, Osis, Role, Tid};
 use osis::internals::ManualClock;
 use osis_app::facets::log as chat;
 use std::sync::Arc;
-use crate::common::{clock, deliver, node};
+use crate::common::{clock, node, sync};
 
 /// Sets the profile's name.
 fn set_name(db: &Osis, name: &str) -> osis::Result<()> {
@@ -21,13 +21,6 @@ fn fire(db: &Osis, c: osis::Tid, m: osis_chat::schema::Message) {
     let mut w = db.write();
     w.at(c, osis_chat::schema::MSG).fire(&m).unwrap();
     w.commit().unwrap();
-}
-
-fn sync(a: &Osis, b: &Osis) {
-    for _ in 0..2 {
-        deliver(a, b);
-        deliver(b, a);
-    }
 }
 
 /// Two accounts and a chat `a` made with `opts` that `b` may write in and holds.

@@ -121,10 +121,10 @@ fn arrangements_expand_or_show_one_each() {
 #[test]
 fn an_unknown_thing_opens_raw() {
     let d = data();
-    let g = d.home().unwrap();
+    let home = d.home().unwrap();
     let mut w = d.db.write();
-    let t = w.create(g, None).unwrap();
-    w.hold(g, t).unwrap();
+    let t = w.create(home, None).unwrap();
+    w.hold(home, t).unwrap();
     w.at(t, DynamicAspectKey::untyped(osis::Ak::new("mystery:thing.0").unwrap())).set(&Value::Int(3)).unwrap();
     w.commit().unwrap();
     let n = open(&d, t);
@@ -186,10 +186,10 @@ fn raw_shows_every_aspect() {
 fn an_element_spec_embeds_a_view() {
     let d = data();
     let e = create(&d, "event").unwrap();
-    let g = d.home().unwrap();
+    let home = d.home().unwrap();
     let mut wr = d.db.write();
-    let holder = wr.create(g, None).unwrap();
-    wr.hold(g, holder).unwrap();
+    let holder = wr.create(home, None).unwrap();
+    wr.hold(home, holder).unwrap();
     wr.at(holder, TAG).set(&Tag { color: None }).unwrap();
     wr.at(holder, COLLECTION)
         .set(&Collection { source: CollectionSource::Holds, having: Default::default(), order: CollectionOrder::Own, arrange: Arrange::Cards, element: Some(ElementSpec { view_type: "note".into(), config: BTreeMap::from([("compact".to_string(), "true".to_string())]) }) })
@@ -210,10 +210,7 @@ fn an_element_spec_embeds_a_view() {
 #[test]
 fn arrangement_on_what_i_cannot_write() {
     let (a, b) = (data(), data());
-    let sync = || {
-        crate::common::deliver(&a.db, &b.db);
-        crate::common::deliver(&b.db, &a.db);
-    };
+    let sync = || crate::common::sync(&a.db, &b.db);
     sync();
     let t = create(&a, "tag").unwrap();
     a.db.grant(t, crate::common::account(&b.db).unwrap(), Role::Read, osis::GrantOpts::default()).unwrap();

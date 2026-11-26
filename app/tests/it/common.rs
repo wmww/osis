@@ -44,6 +44,14 @@ pub fn cfg(seed: u64, clock: &Arc<ManualClock>) -> osis::internals::Opening {
     c
 }
 
+/// `deliver` both ways, twice: what either answers to the other's commits arrives too.
+pub fn sync(a: &Osis, b: &Osis) {
+    for _ in 0..2 {
+        deliver(a, b);
+        deliver(b, a);
+    }
+}
+
 /// Every commit `from` holds that `to` takes (another account's private commits it cannot use
 /// are refused; one account's own all apply). Of another account, `to`'s account holds `from`'s
 /// account and its profile first (strongs from its `holds.0`, as importing its contact card

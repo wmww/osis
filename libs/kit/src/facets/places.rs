@@ -30,22 +30,22 @@ impl Facet for PlacesFacet {
     fn show(&self, cx: &Cx, t: Tid) -> Result<Section> {
         let open = cx.flag(PICKING, &cx.path())?;
         let tags = cx.tags_of(t)?;
-        let tag_chip = |g: Tid, press: Do, remove: Option<Do>| -> Result<Chip> { Ok(Chip { label: cx.name(g)?, color: cx.own_color(g)?, mark: ChipMark::Dot, flat: false, press: Some(press), remove }) };
+        let tag_chip = |tag: Tid, press: Do, remove: Option<Do>| -> Result<Chip> { Ok(Chip { label: cx.name(tag)?, color: cx.own_color(tag)?, mark: ChipMark::Dot, flat: false, press: Some(press), remove }) };
         let mut chips = Vec::new();
-        for g in &tags {
-            chips.push(tag_chip(*g, Do::new(crate::view::Open(Some(*g))), Some(Do::new(RemoveTag(t, *g))))?);
+        for tag in &tags {
+            chips.push(tag_chip(*tag, Do::new(crate::view::Open(Some(*tag))), Some(Do::new(RemoveTag(t, *tag))))?);
         }
         chips.push(Chip::action(Icon::Plus, if open { "Done" } else { "Tag" }, Do::new(Toggle(PICKING, cx.path()))));
         let mut blocks = vec![Block::Chips(chips)];
         if open {
-            let others: Vec<Tid> = cx.all_tags()?.into_iter().filter(|g| !tags.contains(g) && *g != t).collect();
+            let others: Vec<Tid> = cx.all_tags()?.into_iter().filter(|tag| !tags.contains(tag) && *tag != t).collect();
             blocks.push(Block::Label("Add a tag".into()));
             if others.is_empty() {
                 blocks.push(Block::Line("No other tags yet.".into()));
             }
             let mut pick = Vec::new();
-            for g in others {
-                pick.push(tag_chip(g, Do::new(AddTag(t, g)), None)?);
+            for tag in others {
+                pick.push(tag_chip(tag, Do::new(AddTag(t, tag)), None)?);
             }
             blocks.push(Block::Chips(pick));
         }

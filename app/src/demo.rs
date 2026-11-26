@@ -24,9 +24,9 @@ impl Ctx<'_, '_> {
         start_setting(self.w, t)?;
         self.w.at(t, NAME).set(&name.to_string())?;
         self.w.hold(self.home, t)?;
-        for g in tags {
-            if let Some(g) = self.names.get(g).copied() {
-                self.w.hold(g, t)?;
+        for name in tags {
+            if let Some(tag) = self.names.get(name).copied() {
+                self.w.hold(tag, t)?;
             }
         }
         self.names.insert(key, t);

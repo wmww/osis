@@ -23,9 +23,9 @@ pub fn found(d: &Data, q: &str) -> osis_kit::view::search::Found {
 #[test]
 fn home_and_seeds() {
     let d = data();
-    let g = d.home().unwrap();
-    assert_eq!(g, crate::common::account(&d.db).unwrap());
-    assert_eq!(d.db.at(g, TAG).get().unwrap(), None);
+    let home = d.home().unwrap();
+    assert_eq!(home, crate::common::account(&d.db).unwrap());
+    assert_eq!(d.db.at(home, TAG).get().unwrap(), None);
     assert_eq!(d.collections().unwrap().len(), 4);
     let favs: Vec<String> = d.favorites().unwrap().iter().map(|t| d.name(*t).unwrap()).collect();
     assert_eq!(favs, ["Calendar", "People", "Tags", "Recent"]);
@@ -68,13 +68,13 @@ fn create_open_favorite_delete() {
 fn favorite_twice_then_moved() {
     use osis_kit::schema::FAVORITES;
     let d = data();
-    let g = d.home().unwrap();
+    let home = d.home().unwrap();
     let (n, m, k) = (d.create_note().unwrap(), d.create_note().unwrap(), d.create_note().unwrap());
-    let base = d.db.at(g, FAVORITES).get().unwrap().unwrap_or_default();
+    let base = d.db.at(home, FAVORITES).get().unwrap().unwrap_or_default();
     let mut list = base.clone();
     list.extend([n, m, n, k].map(osis::Weak));
     let mut w = d.db.write();
-    w.at(g, FAVORITES).edit(&base, &list).unwrap();
+    w.at(home, FAVORITES).edit(&base, &list).unwrap();
     w.commit().unwrap();
     let f = d.favorites().unwrap();
     assert_eq!(f.iter().filter(|x| **x == n).count(), 1);
@@ -138,19 +138,19 @@ fn offers_tags_reach_undo() {
     let d = data();
     assert_eq!(view_of(&d, create(&d, "event").unwrap()), "event");
     assert_eq!(view_of(&d, create(&d, "person").unwrap()), "person");
-    let g = create(&d, "tag").unwrap();
-    assert_eq!(view_of(&d, g), "collection");
-    assert!(d.own_color(g).unwrap().is_some(), "a new tag has a colour");
-    assert_eq!(d.all_tags().unwrap(), vec![g]);
+    let tag = create(&d, "tag").unwrap();
+    assert_eq!(view_of(&d, tag), "collection");
+    assert!(d.own_color(tag).unwrap().is_some(), "a new tag has a colour");
+    assert_eq!(d.all_tags().unwrap(), vec![tag]);
     let n = create(&d, "note").unwrap();
-    d.add_tag(n, g).unwrap();
-    assert_eq!(d.tags_of(n).unwrap(), vec![g]);
-    assert_eq!(d.tag_contents(g).unwrap().1, vec![n]);
+    d.add_tag(n, tag).unwrap();
+    assert_eq!(d.tags_of(n).unwrap(), vec![tag]);
+    assert_eq!(d.tag_contents(tag).unwrap().1, vec![n]);
     let w = WindowState::default();
     let cx = Cx::new(&d, &w, false);
     assert_eq!(reach(&cx, n).unwrap().who(), "Only you");
-    assert_eq!(reach(&cx, g).unwrap().people, Vec::<String>::new());
-    d.remove_tag(n, g).unwrap();
+    assert_eq!(reach(&cx, tag).unwrap().people, Vec::<String>::new());
+    d.remove_tag(n, tag).unwrap();
     assert!(d.tags_of(n).unwrap().is_empty());
     assert!(d.things().unwrap().contains(&n), "still held by home");
     let mut w = d.db.write();

@@ -1,7 +1,7 @@
 //! The account's own state (notes/app.md Layers), toolkit-free: its home, favorites, the look, the
 //! open thing, and the universe of things.
 //!
-//! Home is the person's account (osis-account, schema/realm.osis): favorites, the collections and
+//! Home is the user's account (osis-account, schema/realm.osis): favorites, the collections and
 //! the look are on it, so they reach every node of the account. Every thing the app makes is
 //! minted with home as admin (its mint admin, whose keys it takes) and held by home's `holds.0`;
 //! a tag holds what it tags in its own `holds.0`.
@@ -38,7 +38,7 @@ pub fn open(dir: &Path, dial: Vec<Address>, wake: Arc<dyn Fn() + Send + Sync>) -
 
 /// Whether aspect `ak` is the system's, not the user's: a core aspect but the content ones (`name.0`,
 /// `body.0`, `tag.0`). No view accounts for one, raw hides them, and a thing carrying nothing else
-/// (an account's inbox, a link's thing) is no thing of the person's.
+/// (an account's inbox, a link's thing) is no thing of the user's.
 pub fn system(ak: &str) -> bool {
     !ak.contains(':') && !matches!(ak, "name.0" | "body.0" | "tag.0")
 }
@@ -206,9 +206,9 @@ impl Reader {
         Ok(self.state(key, node)?.unwrap_or(false))
     }
 
-    /// Home: the person's account, which every node of it shares.
+    /// Home: the account this node acts for, which every node of it shares.
     pub fn home(&self) -> Result<Tid> {
-        Ok(self.person()?.ok_or_else(|| osis::Error::Invalid("this node acts for no account".into()))?.thing())
+        Ok(self.account()?.ok_or_else(|| osis::Error::Invalid("this node acts for no account".into()))?.thing())
     }
 
     /// Whether `t` is home.
@@ -216,14 +216,14 @@ impl Reader {
         Ok(self.home()? == t)
     }
 
-    /// The person this node acts for: its account (osis-account), if any.
-    pub fn person(&self) -> Result<Option<osis_account::Account>> {
+    /// The account this node acts for (osis-account), if any.
+    pub fn account(&self) -> Result<Option<osis_account::Account>> {
         osis_account::Account::of(&self.db)
     }
 
-    /// The person's profile thing, once it is here (`osis_account::Account::profile`).
+    /// The account's profile thing, once it is here (`osis_account::Account::profile`).
     pub fn you(&self) -> Result<Option<Tid>> {
-        match self.person()? {
+        match self.account()? {
             Some(a) => a.realm().profile(&self.db),
             None => Ok(None),
         }
@@ -336,7 +336,7 @@ impl Reader {
 
     /// The thing's own colour: its tag colour.
     pub fn own_color(&self, t: Tid) -> Result<Option<String>> {
-        Ok(self.tag(t)?.as_ref().as_ref().and_then(|g| g.color.clone()))
+        Ok(self.tag(t)?.as_ref().as_ref().and_then(|tag| tag.color.clone()))
     }
 
     /// Its own colour, else its first tag's.
@@ -344,8 +344,8 @@ impl Reader {
         if let Some(c) = self.own_color(t)? {
             return Ok(Some(c));
         }
-        for g in self.tags_of(t)? {
-            if let Some(c) = self.own_color(g)? {
+        for tag in self.tags_of(t)? {
+            if let Some(c) = self.own_color(tag)? {
                 return Ok(Some(c));
             }
         }
@@ -475,8 +475,8 @@ impl Reader {
 
     /// The chosen theme id (`None`: the default) and mode.
     pub fn look(&self) -> Result<(Option<String>, Mode)> {
-        let g = self.home()?;
-        Ok((self.db.at(g, THEME).get()?, self.db.at(g, MODE).get()?.unwrap_or(Mode::Auto)))
+        let home = self.home()?;
+        Ok((self.db.at(home, THEME).get()?, self.db.at(home, MODE).get()?.unwrap_or(Mode::Auto)))
     }
 
     // ---- navigation (per-window state, the window held by home)
@@ -504,12 +504,12 @@ impl Data {
     }
     /// Remembers how the viewer arranges `t`, on home: `t` need not be writable.
     pub fn set_arranged(&self, t: Tid, a: &Arrange) -> Result<()> {
-        let g = self.home()?;
-        self.commit(|w| w.at(g, ARRANGED).path(p![Weak(t)]).set(a))
+        let home = self.home()?;
+        self.commit(|w| w.at(home, ARRANGED).path(p![Weak(t)]).set(a))
     }
     pub fn set_viewed_as(&self, t: Tid, id: &str) -> Result<()> {
-        let g = self.home()?;
-        self.commit(|w| w.at(g, VIEWED_AS).path(p![Weak(t)]).set(&id.to_string()))
+        let home = self.home()?;
+        self.commit(|w| w.at(home, VIEWED_AS).path(p![Weak(t)]).set(&id.to_string()))
     }
     /// Tags `t` with `tag`: a strong in the tag's `holds.0` (a tag in a tag is nested: notes/tags.md).
     /// A strong grants nothing, so tagging shares nothing (notes/tags.md, Sharing a tag).
@@ -531,8 +531,8 @@ impl Data {
     }
     /// Adds `t` at the end of the favorites, or removes every entry showing it.
     pub fn toggle_favorite(&self, t: Tid) -> Result<()> {
-        let g = self.home()?;
-        let base = self.db.at(g, FAVORITES).get()?.unwrap_or_default();
+        let home = self.home()?;
+        let base = self.db.at(home, FAVORITES).get()?.unwrap_or_default();
         let mut new = Vec::with_capacity(base.len() + 1);
         if self.is_favorite(t)? {
             let views = self.view_map()?;
@@ -545,7 +545,7 @@ impl Data {
             new.extend(base.iter().copied());
             new.push(Weak(t));
         }
-        self.commit(|w| w.at(g, FAVORITES).edit(&base, &new))
+        self.commit(|w| w.at(home, FAVORITES).edit(&base, &new))
     }
     /// Moves the favorite at `from` to `to` (indices into `favorites()`), by a sequence move: a
     /// node removing it meanwhile wins (a move never brings back a deleted element, where
@@ -559,8 +559,8 @@ impl Data {
         let x = favs.remove(from);
         favs.insert(to, x);
         let views = self.view_map()?;
-        let g = self.home()?;
-        let list = self.db.at(g, FAVORITES).get()?.unwrap_or_default();
+        let home = self.home()?;
+        let list = self.db.at(home, FAVORITES).get()?.unwrap_or_default();
         let mut shown = Vec::with_capacity(list.len());
         for e in &list {
             shown.push(self.shown_as(&views, e.0)?);
@@ -578,10 +578,10 @@ impl Data {
         }
         self.commit(|w| {
             for &j in at.iter().skip(1).rev() {
-                w.at(g, FAVORITES).path(p![]).splice(j..j + 1, ())?;
+                w.at(home, FAVORITES).path(p![]).splice(j..j + 1, ())?;
             }
             if dest != i {
-                w.at(g, FAVORITES).path(p![]).move_range(i..i + 1, dest)?;
+                w.at(home, FAVORITES).path(p![]).move_range(i..i + 1, dest)?;
             }
             Ok(())
         })
@@ -594,11 +594,11 @@ impl Data {
     }
     /// Sets `key` on home to `v`, unless it is that already.
     fn set_look<T: osis::Codec + PartialEq + 'static>(&self, key: osis::generated::Aspect<T>, v: T) -> Result<()> {
-        let g = self.home()?;
-        if self.db.at(g, key).get()?.as_ref() == Some(&v) {
+        let home = self.home()?;
+        if self.db.at(home, key).get()?.as_ref() == Some(&v) {
             return Ok(());
         }
-        self.commit(|w| w.at(g, key).set(&v))
+        self.commit(|w| w.at(home, key).set(&v))
     }
     /// This node's window, made on first use, minted with home as admin and held by home's `ui:windows.0` (so it
     /// syncs, and is not among the things home holds).
@@ -606,10 +606,10 @@ impl Data {
         if let Some(w) = self.window_opt()? {
             return Ok(w);
         }
-        let g = self.home()?;
+        let home = self.home()?;
         let mut w = self.db.write();
-        let win = w.create(g, None)?;
-        w.at(g, WINDOWS).path(p![Weak(self.db.node())]).set(&Strong(win))?;
+        let win = w.create(home, None)?;
+        w.at(home, WINDOWS).path(p![Weak(self.db.node())]).set(&Strong(win))?;
         w.commit()?;
         Ok(win)
     }
@@ -628,13 +628,13 @@ impl Data {
     /// A new thing minted with home as admin and held by it, with an empty `name.0` and whatever `start`
     /// writes, opened on this node.
     pub fn create_with(&self, start: impl FnOnce(&Data, &mut osis::Write<'_>, Tid) -> Result<()>) -> Result<Tid> {
-        let g = self.home()?;
+        let home = self.home()?;
         let mut w = self.db.write();
-        let t = w.create(g, None)?;
+        let t = w.create(home, None)?;
         start_setting(&mut w, t)?;
         w.at(t, NAME).set(&String::new())?;
         start(self, &mut w, t)?;
-        w.hold(g, t)?;
+        w.hold(home, t)?;
         w.commit()?;
         self.set_open(Some(t))?;
         Ok(t)
@@ -704,14 +704,14 @@ impl Data {
     /// target this account already reaches for good at the link's role opens at once (`Osis::redeem`).
     pub fn redeem(&self, link: &str) -> Result<Tid> {
         let l: osis::Link = link.trim().parse().map_err(|e| osis::Error::Invalid(format!("not a link: {e}")))?;
-        // the person joins (their account), else this node
-        let joiner = self.person()?.map_or(self.db.node(), |a| a.thing());
+        // the account joins, else this node
+        let joiner = self.account()?.map_or(self.db.node(), |a| a.thing());
         let rt = tokio::runtime::Builder::new_current_thread().enable_time().build().map_err(|e| osis::Error::Network(e.to_string()))?;
         let got = rt.block_on(async { tokio::time::timeout(JOIN_WAIT, self.db.redeem(&l, joiner)).await }).unwrap_or_else(|_| Err(osis::Error::Network("could not confirm this link yet; trying again is safe".into())))?;
         // home holds it, which brings it to the account's other nodes
         if !self.things()?.contains(&got) {
-            let g = self.home()?;
-            self.commit(|w| w.hold(g, got))?;
+            let home = self.home()?;
+            self.commit(|w| w.hold(home, got))?;
         }
         Ok(got)
     }

@@ -7,6 +7,7 @@ use osis::internals::{ManualClock};
 use osis_kit::store::Data;
 use std::sync::Arc;
 use crate::common::{cfg, deliver};
+use crate::data::found;
 
 /// Two nodes of one account, paired; nothing synced yet beyond the pairing.
 fn two() -> (Data, Data) {
@@ -33,11 +34,6 @@ fn sync(a: &Data, b: &Data) {
 
 fn views_in(d: &Data, v: &[Tid]) -> Vec<String> {
     v.iter().filter(|t| d.is_scope(**t).unwrap()).map(|t| d.name(*t).unwrap()).collect()
-}
-
-fn found(d: &Data, q: &str) -> osis_kit::view::search::Found {
-    let w = osis_kit::view::WindowState::default();
-    osis_kit::view::search::search(&osis_kit::view::Cx::new(d, &w, false), q).unwrap()
 }
 
 /// A node paired a moment ago writes home before it holds any of it: it seeds nothing, and once
@@ -163,10 +159,10 @@ fn remote_delete_of_the_open_thing() {
 fn malformed_aspects_do_not_break_reads() {
     let (a, _) = two();
     osis_app::demo::add(&a).unwrap();
-    let g = a.home().unwrap();
+    let home = a.home().unwrap();
     let bad = |w: &mut osis::Write<'_>, ak: &str, v: Value| -> osis::Result<()> {
-        let t = w.create(g, None)?;
-        w.hold(g, t)?;
+        let t = w.create(home, None)?;
+        w.hold(home, t)?;
         w.at(t, osis::DynamicAspectKey::untyped(Ak::new(ak).unwrap())).set(&v)?;
         Ok(())
     };
@@ -182,8 +178,8 @@ fn malformed_aspects_do_not_break_reads() {
     // an event with a far start and a huge duration
     {
         let mut w = a.db.write();
-        let t = w.create(g, None).unwrap();
-        w.hold(g, t).unwrap();
+        let t = w.create(home, None).unwrap();
+        w.hold(home, t).unwrap();
         w.at(t, osis_app::event::START).set(&osis_app::event::Start::At(osis_app::event::Wall { time: i64::MAX - 1, zone: None })).unwrap();
         w.at(t, osis_app::event::END).set(&osis_app::event::End::After(i64::MAX)).unwrap();
         w.commit().unwrap();
@@ -202,7 +198,7 @@ fn malformed_aspects_do_not_break_reads() {
     for q in ["a", "acme", "tomorrow", "7"] {
         found(&a, q);
     }
-    assert!(!a.holds(g).unwrap().is_empty());
+    assert!(!a.holds(home).unwrap().is_empty());
 }
 
 /// Concurrent favorites, before the first sync and after: both nodes settle on one list.

@@ -118,12 +118,12 @@ mod rows {
 
     fn big(d: &osis_kit::store::Data, n: usize) -> osis::Tid {
         let tag = create(d, "tag").unwrap();
-        let g = d.home().unwrap();
+        let home = d.home().unwrap();
         let mut x = d.db.write();
         for i in 0..n {
-            let t = x.create(g, None).unwrap();
+            let t = x.create(home, None).unwrap();
             x.at(t, NAME).set(&format!("note {i:04}")).unwrap();
-            x.hold(g, t).unwrap();
+            x.hold(home, t).unwrap();
             x.hold(tag, t).unwrap();
         }
         x.commit().unwrap();

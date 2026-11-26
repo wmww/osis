@@ -87,12 +87,12 @@ pub fn sample_main(d: &Data) -> Tid {
 /// `n` more notes in the tag `t` (`ViewType::grow`).
 #[allow(clippy::expect_used)]
 pub fn grow_tag(d: &Data, t: Tid, n: usize) {
-    let g = d.home().expect("grow: home");
+    let home = d.home().expect("grow: home");
     d.commit(|w| {
         for i in 0..n {
-            let x = w.create(g, None)?;
+            let x = w.create(home, None)?;
             w.at(x, osis::core::NAME).set(&format!("grown {i}"))?;
-            w.hold(g, x)?;
+            w.hold(home, x)?;
             w.hold(t, x)?;
         }
         Ok(())

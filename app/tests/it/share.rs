@@ -3,7 +3,7 @@
 use osis::core::NAME;
 use osis::{GrantOpts, Role, Time};
 use osis_kit::store::Data;
-use crate::common::{clock, deliver, node};
+use crate::common::{clock, node};
 use osis_kit::view::{Cx, WindowState};
 
 fn reach(d: &Data, t: osis::Tid) -> osis::Result<osis_kit::facets::about::Reach> {
@@ -12,10 +12,7 @@ fn reach(d: &Data, t: osis::Tid) -> osis::Result<osis_kit::facets::about::Reach>
 }
 
 fn sync(a: &Data, b: &Data) {
-    for _ in 0..2 {
-        deliver(&a.db, &b.db);
-        deliver(&b.db, &a.db);
-    }
+    crate::common::sync(&a.db, &b.db);
 }
 
 /// Alice and Bob, two accounts, each with a home; each holds the other's commits.

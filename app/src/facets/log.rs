@@ -118,7 +118,7 @@ fn quote_memo(r: &Reader, c: Tid, id: CommitId) -> Result<std::rc::Rc<Option<Str
 /// read: its cost is the page's, however long the chat.
 fn lines(db: &ReadOnly, c: Tid, from: CommitFrom, n: usize, mut quote: impl FnMut(CommitId) -> Result<Option<String>>) -> Result<Vec<Line>> {
     let page = db.at(c, MSG).fired(&CommitQuery { from, limit: Some(n), kinds: vec![CommitKind::Content], ..Default::default() })?;
-    // the person's: written by this node or another node of its account
+    // mine: written by this node or another node of its account
     let me: BTreeSet<Tid> = match osis_account::Account::of(db)? {
         Some(a) => a.nodes(db)?.into_iter().map(|n| n.node).chain([db.author()]).collect(),
         None => [db.author()].into(),

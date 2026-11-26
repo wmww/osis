@@ -24,27 +24,27 @@ fn seeds() -> Vec<(Collection, &'static str, &'static str)> {
 /// with. A node paired a moment ago holds none of the account yet and seeds nothing: the
 /// account's seeds reach it.
 fn seed(d: &Data) -> Result<()> {
-    let g = d.home()?;
-    if osis_account::Realm::at(g).profile(&d.db)?.is_none() || d.db.at(g, COLLECTION).get()?.is_some() {
+    let home = d.home()?;
+    if d.you()?.is_none() || d.db.at(home, COLLECTION).get()?.is_some() {
         return Ok(());
     }
     let mut w = d.db.write();
-    if d.db.role_on(g)? == Some(Role::Admin) {
-        start_setting(&mut w, g)?;
+    if d.db.role_on(home)? == Some(Role::Admin) {
+        start_setting(&mut w, home)?;
     }
-    w.at(g, COLLECTION).set(&Collection { source: Source::Favorites, having: Default::default(), order: Order::Own, arrange: Arrange::Cards, element: None })?;
+    w.at(home, COLLECTION).set(&Collection { source: Source::Favorites, having: Default::default(), order: Order::Own, arrange: Arrange::Cards, element: None })?;
     let mut favs = Vec::new();
     for (v, name, color) in seeds() {
-        let t = w.create(g, None)?;
+        let t = w.create(home, None)?;
         start_setting(&mut w, t)?;
         w.at(t, COLLECTION).set(&v)?;
         w.at(t, NAME).set(&name.to_string())?;
         w.at(t, COLOR).set(&color.to_string())?;
-        w.hold(g, t)?;
+        w.hold(home, t)?;
         favs.push(Weak(t));
     }
     // an edit, not a set: a favorite another node adds meanwhile stays
-    w.at(g, FAVORITES).edit(&Vec::new(), &favs)?;
+    w.at(home, FAVORITES).edit(&Vec::new(), &favs)?;
     w.commit()?;
     Ok(())
 }

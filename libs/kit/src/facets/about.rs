@@ -15,7 +15,7 @@ pub static FACET: AboutFacet = AboutFacet;
 pub struct Reach {
     /// People other than me, by display name.
     pub people: Vec<String>,
-    /// The shared tags (actors) it reaches them through.
+    /// The shared tags it reaches them through.
     pub via: Vec<Tid>,
 }
 
@@ -31,16 +31,16 @@ fn live(e: &Grant, now: osis::Time) -> bool {
 }
 
 /// Who can see `t`: its holders (its mint admin among them while that edge stands), through
-/// the things holding roles (shared tags, a home, an organization) down to people, the actors no one holds
-/// a role on; the person (their account), what it holds roles on, and this node are "you". Grants with an `until` count until it
-/// passes.
+/// the things holding roles (shared tags, a home, an organization) down to people, the things no
+/// one holds a role on; the account, what it holds roles on, and this node are "you". Grants with
+/// an `until` count until it passes.
 pub fn reach(cx: &Reader, t: Tid) -> Result<Reach> {
     Ok((*cx.memo(("reach", t), |r, &(_, t)| compute_reach(r, t))?).clone())
 }
 
 fn compute_reach(cx: &Reader, t: Tid) -> Result<Reach> {
     let db = &cx.db;
-    let me = cx.person()?.map_or(db.node(), |a| a.thing());
+    let me = cx.account()?.map_or(db.node(), |a| a.thing());
     let now = cx.now()?;
     let mine: BTreeSet<Tid> = db.grants(me)?.into_keys().chain([me, db.node()]).collect();
     let mut r = Reach::default();
@@ -89,7 +89,7 @@ fn standing_for(cx: &Reader) -> Result<Rc<BTreeMap<Tid, String>>> {
 /// profile, else a short id.
 pub fn account_name(cx: &Reader, p: Tid) -> Result<String> {
     let db = &cx.db;
-    let prof = match cx.person()? {
+    let prof = match cx.account()? {
         Some(a) => a.realm().profile_of(db, p)?,
         None => None,
     };
@@ -143,7 +143,7 @@ impl Facet for AboutFacet {
         let r = reach(cx, t)?;
         let mut who = r.who();
         if !r.via.is_empty() {
-            let via: Result<Vec<String>> = r.via.iter().map(|g| cx.name(*g)).collect();
+            let via: Result<Vec<String>> = r.via.iter().map(|tag| cx.name(*tag)).collect();
             who = format!("{who} · via {}", via?.join(", "));
         }
         Ok(Section::of(vec![Block::Chips(vec![Chip::info(Icon::Eye, &who), Chip::info(Icon::Clock, &cx.edited(t)?), undo_chip(cx, t)?])]))

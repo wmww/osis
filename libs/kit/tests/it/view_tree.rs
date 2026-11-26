@@ -43,10 +43,10 @@ fn kit_alone_opens_things() {
     let d = data();
     let t = d.create_note().unwrap();
     assert_eq!(view_type(&d, t), "note");
-    let g = d.home().unwrap();
+    let home = d.home().unwrap();
     let mut w = d.db.write();
-    let u = w.create(g, None).unwrap();
-    w.hold(g, u).unwrap();
+    let u = w.create(home, None).unwrap();
+    w.hold(home, u).unwrap();
     w.at(u, osis::DynamicAspectKey::untyped(osis::Ak::new("x:y.0").unwrap())).set(&osis::Value::Int(1)).unwrap();
     w.commit().unwrap();
     assert_eq!(view_type(&d, u), "raw");

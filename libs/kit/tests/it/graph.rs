@@ -49,13 +49,13 @@ fn ran(w: &WindowState, f: impl FnOnce()) -> Vec<String> {
 #[test]
 fn no_node_runs_twice_in_a_pass() {
     let d = data();
-    let g = d.home().unwrap();
+    let home = d.home().unwrap();
     for i in 0..20 {
         let n = d.create_note().unwrap();
         name(&d, n, &format!("n{i}"));
     }
     let w = WindowState::default();
-    let keys = ran(&w, || drop(page(&Cx::new(&d, &w, false), g).unwrap()));
+    let keys = ran(&w, || drop(page(&Cx::new(&d, &w, false), home).unwrap()));
     let distinct: HashSet<&String> = keys.iter().collect();
     assert_eq!(distinct.len(), keys.len(), "something ran twice in one pass: {keys:?}");
     assert_eq!(keys.iter().filter(|k| k.contains("\"things\"")).count(), 1, "things read once per pass");
@@ -103,13 +103,13 @@ fn a_value_depending_on_itself_fails() {
 fn collections_of_everything_summarize() {
     let d = data();
     let v = Collection { source: Source::Everything, having: Default::default(), order: Order::Name, arrange: Arrange::Cards, element: None };
-    let g = d.home().unwrap();
+    let home = d.home().unwrap();
     let mut w = d.db.write();
-    let (a, b) = (w.create(g, None).unwrap(), w.create(g, None).unwrap());
+    let (a, b) = (w.create(home, None).unwrap(), w.create(home, None).unwrap());
     for (x, n) in [(a, "One"), (b, "Two")] {
         w.at(x, COLLECTION).set(&v).unwrap();
         w.at(x, NAME).set(&n.to_string()).unwrap();
-        w.hold(g, x).unwrap();
+        w.hold(home, x).unwrap();
     }
     w.commit().unwrap();
     // each: the other and the profile
@@ -302,7 +302,7 @@ fn nothing_grows_and_a_window_frees_its_graph() {
 fn one_write_costs_the_same_at_n_and_10n() {
     let at = |n: usize| {
         let d = data();
-        let g = d.home().unwrap();
+        let home = d.home().unwrap();
         let mut last = None;
         for i in 0..n {
             let t = d.create_note().unwrap();
@@ -310,11 +310,11 @@ fn one_write_costs_the_same_at_n_and_10n() {
             last = Some(t);
         }
         let w = WindowState::default();
-        page(&Cx::new(&d, &w, false), g).unwrap();
+        page(&Cx::new(&d, &w, false), home).unwrap();
         let held = w.graph.len();
         let keys = ran(&w, || {
             name(&d, last.unwrap(), "renamed");
-            page(&Cx::new(&d, &w, false), g).unwrap();
+            page(&Cx::new(&d, &w, false), home).unwrap();
         });
         (keys.len(), held)
     };
