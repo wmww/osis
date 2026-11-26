@@ -1506,7 +1506,8 @@ fn a_remover_sides_with_its_own_removal() {
 /// before it that its list leaves out: B records the demotion (F2), its seeds take H's removal,
 /// and B is told of the counter-removal (F5, `countered`). Choosing H's removal drops the record
 /// of the demotion (F4) and reads as H does. Control `-choice-adds`: the demotion stays recorded,
-/// its seeds take the removal chosen, and the choice is void.
+/// its seeds take the removal chosen, and the choice is void. Control `-untold`: B is told
+/// nothing, and H's removal is lost silently there (`dispute`).
 #[test]
 fn a_thief_heard_first_keeps_a_node_until_its_user_chooses() {
     let s = Setup::default();
@@ -1530,6 +1531,15 @@ fn a_thief_heard_first_keeps_a_node_until_its_user_chooses() {
     let off = Rules { sides: Sides::ChoiceAdds, ..rules };
     let rd = judge(&m.w, &off, &choose(&m.w, &off, &vb, m.r));
     assert!(rd.void.contains(&m.r) && rd.role(H, A) == Write, "{rd:?}");
+    let mut st = Stats::default();
+    check(&m, &rules, &mut st);
+    assert_eq!(st.failures(), 0, "{:?}", st.fails);
+    let untold = Rules { sides: Sides::Untold, ..rules };
+    let m = Sim::build(&s, &untold, &mv, &mut Rng(0));
+    assert!(countered(&m.w, &untold, &m.view_unchosen(B, &untold)).is_empty());
+    let mut st = Stats::default();
+    check(&m, &untold, &mut st);
+    assert!(st.fails.contains_key("dispute"), "{:?}", st.fails);
 }
 
 /// Equivocation: X signs a twin of its removal of N5 at its `ts`, ordered first, listing H's
@@ -3851,5 +3861,77 @@ fn a_redundant_honest_lowering_is_what_takes_a_backdated_one() {
         let mut st = Stats::default();
         check(&m, &rules, &mut st);
         assert_eq!(st.failures() > 0, lowered, "{sides:?}: {:?}", st.fails);
+    }
+}
+
+/// F2 records a lowering only where the walk applied it. B removes A2 from T1 at 6 (`h_t1`, X
+/// admin of A2); X, stolen, removes A from T1 through A2 stamped 8 (move 32), listing B's grant
+/// of A2 alone. H holds it, its walk not applying it (A2 holds nothing on T1 at 8), when X's
+/// commit stamped 3, a write it leaves out, arrives: H records nothing and A keeps T1. Control
+/// `-unapplied`: H records the removal there, its seeds take B's removal of A2, and the thief's
+/// write shows at H (safety).
+#[test]
+fn an_unapplied_lowering_is_no_side() {
+    let s = Setup { h_t1: true, x_role: 5, x_a2: 4, ..Setup::default() };
+    let mv = [Move { kind: 32, ts: 8, made: 7 }];
+    for (sides, recorded) in [(Sides::Received, false), (Sides::Unapplied, true)] {
+        let rules = Rules { sides, ..Rules::fixed() };
+        let m = Sim::build(&s, &rules, &mv, &mut Rng(0));
+        let off = *m.thief.keys().next().unwrap();
+        let v = m.view(H, &rules);
+        let rd = judge(&m.w, &rules, &v);
+        assert_eq!((v.trust.contains(&off), rd.applied.contains(&off)), (recorded, recorded), "{sides:?}: {:?} {rd:?}", v.trust);
+        assert_eq!(rd.role(A, T1) == Admin, !recorded, "{sides:?}: {rd:?}");
+        let mut st = Stats::default();
+        check(&m, &rules, &mut st);
+        assert_eq!(st.fails.contains_key("safety"), recorded, "{sides:?}: {:?}", st.fails);
+        assert_eq!(st.failures() > 0, recorded, "{sides:?}: {:?}", st.fails);
+    }
+}
+
+/// A node's own writes are those it made, not those its key signed. X removed N5 at 3 (`out5`);
+/// the thief, holding N5's key, backdates N5's removal of B to 2 (move 47), made at 9. It reaches
+/// N5 as any commit: N5 records nothing for it, keeps X's removal of it recorded, and applies B's
+/// grant on T1 (`gs`), as B does. Control `-key-own`: N5 takes the thief's write as its own
+/// choice, which drops X's removal of N5 from its sides, and its walk drops `gs`, which B shows
+/// (alike, liveness).
+#[test]
+fn a_write_by_a_nodes_stolen_key_is_not_its_own() {
+    let s = Setup { n5: 3, ..Setup::default() };
+    let mv = [Move { kind: 47, ts: 8, made: 9 }];
+    for (sides, own) in [(Sides::Received, false), (Sides::KeyOwn, true)] {
+        let rules = Rules { sides, ..Rules::fixed() };
+        let m = Sim::build(&s, &rules, &mv, &mut Rng(0));
+        let (off, out5) = (*m.thief.keys().next().unwrap(), m.out5.unwrap());
+        let v = m.view(N5, &rules);
+        assert_eq!((v.trust.contains(&off), v.trust.contains(&out5)), (own, !own), "{sides:?}: {:?}", v.trust);
+        assert_eq!(judge(&m.w, &rules, &v).applied.contains(&m.gs), !own, "{sides:?}");
+        assert!(judge(&m.w, &rules, &m.view(B, &rules)).applied.contains(&m.gs), "{sides:?}");
+        let mut st = Stats::default();
+        check(&m, &rules, &mut st);
+        assert_eq!(st.fails.contains_key("alike") && st.fails.contains_key("liveness"), own, "{sides:?}: {:?}", st.fails);
+        assert_eq!(st.failures() > 0, own, "{sides:?}: {:?}", st.fails);
+    }
+}
+
+/// F5 tells a counter-removal only where choosing it changes the reading. X removes B at 2 and H
+/// removes X at 3, leaving X's removal out; a node trusting H's removal holds both. Its seeds take
+/// X's removal, but choosing that (which drops H's removal from the node's sides) changes
+/// nothing: H's removal, applied untrusted too, still takes it. Nothing is shown. Control
+/// `-told-all`: X's removal is told as a counter-removal, so an honest history can show a dispute
+/// (`quiet`).
+#[test]
+fn a_counter_removal_changing_nothing_is_not_told() {
+    let (mut w, ..) = paired();
+    let out = w.edge(X, 2, &[], A, B, Gone, &[]);
+    let r = w.edge(H, 3, &[], A, X, Gone, &[]);
+    let v = View::all(&w).trusting(&[r]);
+    for (sides, told) in [(Sides::Received, false), (Sides::ToldAll, true)] {
+        let rules = Rules { sides, ..Rules::fixed() };
+        let rd = judge(&w, &rules, &v);
+        let chosen = judge(&w, &rules, &choose(&w, &rules, &v, out));
+        assert!(rd.applied.contains(&r) && !rd.applied.contains(&out) && chosen.applied == rd.applied && chosen.roles == rd.roles, "{sides:?}: {rd:?} {chosen:?}");
+        assert!(disputes(&w, &rules, &v).is_empty(), "{sides:?}");
+        assert_eq!(countered(&w, &rules, &v), if told { vec![out] } else { vec![] }, "{sides:?}");
     }
 }

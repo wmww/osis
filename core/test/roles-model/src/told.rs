@@ -36,7 +36,8 @@
 //! the newest held among those what gave the removed node read boxed it, opened by every holder
 //! of that epoch), `blocked` (wrapped under the newest current epoch, covering the departure or
 //! not), `rotation-until` (the notices and the role entries up to the first rotation superseding
-//! the shown epoch, as `until` was), `no-record` (a notice without the remover's record).
+//! the shown epoch, as `until` was), `no-record` (a notice without the remover's record),
+//! `all-records` (a notice carrying every record the logger's record blob carries).
 //! Properties:
 //! - `told`: the removed node learns its removal from any member that judges it departed, holds
 //!   an epoch it holds superseded and may encrypt (its newest current epoch covers the
@@ -86,6 +87,7 @@ pub enum ToldRules {
     Blocked,
     RotationUntil,
     NoRecord,
+    AllRecords,
 }
 
 impl ToldRules {
@@ -101,6 +103,7 @@ impl ToldRules {
             "-blocked" => ToldRules::Blocked,
             "-rotation-until" => ToldRules::RotationUntil,
             "-no-record" => ToldRules::NoRecord,
+            "-all-records" => ToldRules::AllRecords,
             _ => return None,
         })
     }
@@ -387,7 +390,11 @@ impl State {
         if let (Some((e, to)), Some((_, by, _))) = (self.notice_epoch(a), self.removal) {
             let has = self.n[a].log.iter().any(|&(c, f)| self.commits[c].kind == Kind::Notice && (if to.is_some() { self.opens(a, f) } else { f == e }));
             if !has {
-                let records = if self.r == ToldRules::NoRecord { vec![] } else { vec![by] };
+                let records = match self.r {
+                    ToldRules::NoRecord => vec![],
+                    ToldRules::AllRecords => self.general_records(a),
+                    _ => vec![by],
+                };
                 let c = self.add(a, Commit { kind: Kind::Notice, signer: a, makes: None, boxes: vec![], supersedes: vec![], covers: false, records, to, knew: false });
                 self.n[a].log.push((c, e));
             }
@@ -801,6 +808,17 @@ mod tests {
         assert_eq!(kinds(w, ToldRules::RotationUntil), ["notice"]);
     }
 
+    /// N0 removes N2 and then pairs N3 (N3's record minted knowing the removal), taking N3's
+    /// record blob; N1 hears of both by another route, with N3's record, and logs its own notice.
+    /// Carrying the remover's record alone, it serves N2 nothing more; carrying every record N1's
+    /// record blob carries, it serves N2 N3's record.
+    #[test]
+    fn a_notice_carries_the_removers_record_alone() {
+        let w = vec![Remove(N0, N2), Pair, Sync(N0, N3), Hear, Sync(N1, N2)];
+        assert!(kinds(w.clone(), ToldRules::Spec).is_empty());
+        assert_eq!(kinds(w, ToldRules::AllRecords), ["notice"]);
+    }
+
     /// Every 101st family world (`-- 1 told-exh` runs them all): spec holds; each control fails
     /// its property in one of them (searched until one does).
     #[test]
@@ -816,6 +834,7 @@ mod tests {
             (ToldRules::Taking, "lowered"),
             (ToldRules::Blocked, "lowered"),
             (ToldRules::NoRecord, "told"),
+            (ToldRules::AllRecords, "notice"),
         ] {
             let fails = crate::family_any(family_size(), 101, |k| {
                 let mut st = ToldStats::default();

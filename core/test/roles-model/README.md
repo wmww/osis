@@ -12,7 +12,7 @@ Tests: the hand worlds are default tests; every sampled search (random worlds, f
 |---|---|---|
 | `proofs` | 20,000; `proofs-exh` 1 (the whole family, 225,792 worlds, about 370 CPU-s); controls `proofs-draft`, `-no-guard`, `-no-receipt`, `-no-j` | `src/paths/proofs.rs` module doc; findings notes/accounts-switch-brief.md, Models |
 | `leave` | 20,000; `leave-exh` 1 (the whole family, 9,547,776 worlds, 2,088,576 with a valid leave; a few CPU-s); controls `leave-draft`, `-rotating`, `-any-source` | `src/leave.rs` module doc; same findings |
-| `told` | `told-exh` 1 (the whole family, 37,701,790 worlds; about 4,100 CPU-s and 600 s wall on ostrich: a hold at the `heavy` wall limit); every 101st by `told_family_holds_plain`; controls `told-fire`, `-newest`, `-untold`, `-no-record` fail `told`; `-full`, `-rotation-until` fail `notice` (`-rotation-until` in few family worlds: its hand world); `-taking`, `-blocked` fail `lowered` | `src/told.rs` module doc |
+| `told` | `told-exh` 1 (the whole family, 37,701,790 worlds; about 4,100 CPU-s and 600 s wall on ostrich: a hold at the `heavy` wall limit); every 101st by `told_family_holds_plain`; controls `told-fire`, `-newest`, `-untold`, `-no-record` fail `told`; `-full`, `-rotation-until` fail `notice` (`-rotation-until` in few family worlds: its hand world); `-taking`, `-blocked` fail `lowered`; `-all-records` (a notice carrying every record the logger's record blob carries) fails `notice` (1 world of every 101st; hand world `a_notice_carries_the_removers_record_alone`) | `src/told.rs` module doc |
 | `paths-purge` | 100,000 (about 400 CPU-s); variants 8,000 | notes/purge-model.md |
 | `paths` | 13,000 (random worlds, `--from K` to split a larger run); `-- 0 paths --only I` world I alone, traced; `paths-exh` 367 (every 367th family world; the whole family, 8,257,536 worlds, by hand); `paths-tiny[-flags|-detached|-keys][-honest[-writers]]` 1,000,000; controls `paths-*` 3,000 to 8,000 (about 130 CPU-s each) | below, Paths |
 
@@ -74,10 +74,10 @@ An oracle of a design that is not built (its walk is spec/permissions.md §5; it
 | `-- 37 paths-exh` | 223,177 (alike 63.4M, liveness 29.1M) | 0 |
 | `-- 3000 paths-no-own` (no side for a node's own lowering) | 3,000 | alike 31,242, liveness 2,469, safety 2,315, own path 989, purge 9, removal 6 |
 | `-- 3000 paths-no-receipt` (nothing recorded on receipt) | 3,000 | alike 6,137, liveness 3,806, safety 2,502, own path 620, purge 14, removal 8, dispute 1 |
-| `-- 3000 paths-unapplied` (a held lowering recorded whether or not the walk applied it) | 3,000 | alike 70, liveness 7, safety 1 |
+| `-- 3000 paths-unapplied` (a held lowering recorded whether or not the walk applied it) | 3,000; `--from 3000` 13,000; `paths-exh-unapplied` every 367th | 0; alike 148, liveness 57, safety 4, dispute 2; alike 63, liveness 14, safety 3, own path 1 (hand world `an_unapplied_lowering_is_no_side`) |
 | `-- 3000 paths-choice-adds` (a choice leaves the other side recorded) | 3,000 | alike 1,632, safety 504, dispute 338, liveness 253, own path 216, removal 216 |
-| `-- 3000 paths-key-own` (a node's own writes read by key) | 3,000 | alike 16, liveness 4 |
-| `-- 3000 paths-untold` / `paths-told-all` (no counter-removal told / every seeded lowering told) | 3,000 each | dispute 612 / quiet 6 |
+| `-- 3000 paths-key-own` (a node's own writes read by key) | 3,000 | alike 4, liveness 1 (hand world `a_write_by_a_nodes_stolen_key_is_not_its_own`) |
+| `-- 3000 paths-untold` / `paths-told-all` (no counter-removal told / every seeded lowering told) | 3,000 each | dispute 359 / quiet 8 (hand worlds `a_thief_heard_first_keeps_a_node_until_its_user_chooses` / `a_counter_removal_changing_nothing_is_not_told`) |
 | `-- 13000 paths-lowered` (the variant: a lowering recorded only where it took its hop down) | 13,000 | alike 32, liveness 8 in 1 world (finding 52; hand world `a_redundant_honest_lowering_is_what_takes_a_backdated_one`); `paths-exh-lowered` every 367th: 0 |
 | `-- 3000 paths-tie` / `paths-both` / `paths-choice-seeds` | 3,000 each | 0: each fails its hand world (`first_received_trusts_a_removal_held_before_a_backdated_write`, `a_recorded_side_keeps_the_other_side_of_its_fight_unrecorded`, `a_choice_drops_an_earlier_lowering_of_its_own_path`); `-both` dispute 48 at 130,000 |
 | `-- 1000000 paths-tiny` | 1,000,000 (at most 7 restarts) | illegit gains N 1 (finding 49); counted: unshown idle N 23, T 1, V 8, unapplied N 3, V 2, void 6, fight legit 42, fight illegit 1; honest 9 (36); fight 16; stray 480 `N`, 35 `T`, 180 `V` |
