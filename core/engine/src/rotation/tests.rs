@@ -3022,3 +3022,29 @@ fn a_foreign_grant_to_a_dependent_thing_gets_it_secrets_from_its_admins_alone_sp
     write_on(&mut lp, 2, x, "x:a.0", 1);
     assert_eq!(read_at(&mut lp, 0, x, "x:a.0"), Some(osis_base::Value::Int(1)), "peer 0 reads X through T");
 }
+
+// spec/permissions.md §3 (Complete pass: a `keys.0` commit of a holder the thing's re-seal
+// trigger then names): node 1 reads peer 0's thing g. Node 1 re-keys itself (a rotation of its
+// node thing, writing its `keys.0`): boxed at g's current epoch, it is no re-seal candidate there,
+// so its keyset's arrival makes no pass of g due at peer 0 (a holder named on many things re-keys
+// at no cost to them). Left out of g's next epoch, its next keyset's arrival makes one due.
+#[test]
+fn a_holders_keyset_makes_a_pass_due_only_where_it_is_left_out_spec_permissions_3() {
+    let (mut lp, g, tids) = granted(2, &[(1, Role::Read)]);
+    let m = tids[1];
+    let rekey = |lp: &mut LocalPeer| {
+        let before = commit_ids(lp, 1);
+        lp.peers[1].engine.rotate_leaving_out(&m, &[Role::Read], &[]).unwrap().expect("a re-key");
+        let made: Vec<osis_base::CommitId> = commit_ids(lp, 1).difference(&before).copied().collect();
+        assert!(made.iter().any(|c| lp.peers[1].engine.header(c).is_some_and(|h| h.aspects.iter().any(|a| a.tid == m && a.ak.as_str() == "keys.0"))), "the re-key writes m's keys.0");
+        lp.sync(1, 0).unwrap();
+    };
+    let at = |lp: &LocalPeer| lp.peers[0].engine.role_arrival(&g);
+    let before = at(&lp);
+    rekey(&mut lp);
+    assert_eq!(at(&lp), before, "m boxed at g's epoch: no pass of g due");
+    rotate_leaving_out(&mut lp, 0, g, &BTreeSet::from([Role::Read]), &[1]);
+    let before = at(&lp);
+    rekey(&mut lp);
+    assert!(at(&lp) > before, "m left out of g: its keyset's arrival makes a pass of g due");
+}

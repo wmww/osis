@@ -78,9 +78,10 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
 }
 
 /// Role commit `c`, applied from elsewhere in this transaction (or late parts of it), arrived:
-/// each thing whose `roles.0`, `secrets.0` or `keys.0` it writes, each thing named as a holder
-/// on a thing whose `keys.0` it writes (its keysets are what Seal boxes that holder at: a holder
-/// actor left out is re-sealed once one exists, spec/crypto.md §4 Seal), and each dependent thing
+/// each thing whose `roles.0`, `secrets.0` or `keys.0` it writes, each thing whose re-seal
+/// trigger names a holder whose `keys.0` it writes (its keysets are what Seal boxes that holder
+/// at: a holder actor left out is re-sealed once one exists, spec/crypto.md §4 Seal; a holder's
+/// routine re-key makes no pass of the things it is named on due), and each dependent thing
 /// it writes an edge to (a holder that may be due secrets of its own, spec/permissions.md §3),
 /// its record held, gives its actor (`reader_of`: a dependent thing's sync IDs are its
 /// independent's) the next pass place (a part on a thing whose record is not held is on nothing
@@ -90,8 +91,12 @@ pub(crate) fn note_arrival(tx: &mut Tx<'_>, c: &CommitId, h: &osis_commit::Heade
     let mut actors: BTreeSet<Tid> = h.aspects.iter().filter(|a| ROLE_ASPECTS.contains(&a.ak.as_str()) && held(tx, &a.tid)).map(|a| tx.core.reader_of(&a.tid)).collect();
     let keyed: BTreeSet<Tid> = h.aspects.iter().filter(|a| a.ak.as_str() == "keys.0").map(|a| a.tid).collect();
     for m in keyed {
-        let on: Vec<Tid> = tx.core.ix.held.named_on(&m).copied().filter(|x| held(tx, x)).collect();
-        actors.extend(on.iter().map(|x| tx.core.reader_of(x)));
+        let on: Vec<Tid> = tx.core.ix.held.named_on(&m).copied().filter(|x| held(tx, x)).map(|x| tx.core.reader_of(&x)).collect();
+        for a in on {
+            if crate::rotation::reseal_candidates(tx, &a)?.iter().any(|(h, _)| *h == m) {
+                actors.insert(a);
+            }
+        }
     }
     if let Some(rc) = tx.core.timelines().role_commit(c) {
         for m in rc.ops.iter().filter_map(|op| op.holder.thing()) {
