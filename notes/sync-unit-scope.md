@@ -5,7 +5,7 @@
 
 ## What the built unit costs
 - An entry and stamp per enclosing unit on every commit: measured at about 1230 B on the wire, a sign and two stamp checks per commit per enclosing unit per reader pair, against a bare entry of about 153 B (issues/enclosing-unit-commit-cost.md).
-- Work in the size of a thing when a reference to it changes (retag: its live blobs added under, or deleted from, the enclosing sync ID); attaching an existing thing measured at 83 to 146 KB (issues/attach-cost.md).
+- Work in the size of a thing when a reference to it changes (retag: its live blobs added under, or deleted from, the enclosing sync ID); attaching an existing thing measured at 83 to 146 KB (issues/new-strong-pulls-anew.md).
 - Deposits into enclosing units by a nested thing's writers that cannot stamp there, and their promotion; per-sync-ID copies where a unit's readers cannot open every section of a shared blob. These paths are among the least settled code (issues/differential-full-size-classes.md and the sync leftovers, notes/priorities.md).
 - What it buys is real only in part: a node keeping one root unread sees one bag of blobs and nothing of its inside, but only while it keeps none of the inner independent things under their own sync IDs (nor two overlapping roots); where it does, the same blobs under both show exactly which thing sits inside which. Bursts of entries when a thing is attached or detached show its extent to a node that watches.
 
@@ -35,7 +35,7 @@ A flat list at the root (every inner unit carries its own list, so the tree can 
 
 ## What the work found that stands whatever the unit is
 - The cost defects of many sync IDs: issues/many-sync-ids-cost.md (notes/redesign-plan.md, S1).
-- Attaching a thing costs in the size of what it is attached to: issues/attach-cost.md.
+- Attaching a thing costs in the size of what it is attached to: issues/new-strong-pulls-anew.md.
 - The cost per enclosing unit per commit beyond its entry: issues/enclosing-unit-commit-cost.md.
 - A reference from a thing holding only sync on its target should bring it (Tess): issues/sync-only-reference.md.
 - What a node keeping data unread may know (its account; that units share a writer): spec/requirements.md, Data a node cannot read; issues/sync-units-linked-at-rest.md.

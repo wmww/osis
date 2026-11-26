@@ -1,0 +1,91 @@
+# Slimming design
+> Summary: The design for Slimmer things (notes/priorities.md item 2): today's measured cost of a dependent thing, a small commit and an independent thing over real sync; per candidate its cost, the concept it serves, the change at the model's level, what it deletes and changes on the wire and disk, and its risks; ordered into build jobs that do not collide, biggest structural win first; what was ruled out and why.
+
+Principle (Tess): fixed overhead per thing, aspect, reference and commit is paid on everything forever, so whatever need not be there goes; nothing is assumed sensible as built. A change here must be sound at the model's level (one representation instead of two, a derived fact not stored, a concept merged) and usually deletes code; one that pays off only through a cache or a special case ranks low. Measurements and the byte-by-byte survey: notes/thing-cost.md.
+
+## Today (measured)
+Sync-harness world, node 0 makes, node 1 is its account's second node (rows by family and how to measure: notes/thing-cost.md, Survey).
+
+| unit | wire 0→1 | wire 1→0 | stored, maker | stored, second |
+|---|---|---|---|---|
+| one dependent, one small value, alone | 4945 (1182 without the pull anew) | 516 (333) | 2963 (3150 physical) | 3312 (3918) |
+| a 1-byte change | 814 | 333 | 1399 | 1573 |
+| a small change, steady (compactions included) | 923 | 383 | about 980 | about 1020 |
+| one dependent of 100 in one commit | 670 | 5 | 1094 + 410 blob | 1235 + 410 blob |
+| one independent (marginal, 10 averaged) | 30.9 KB | 3.4 KB | 23.3 KB (28.3 physical) | 24.4 KB (29.7) |
+
+Where it goes, per node, for a small commit: sealed blob 478, its opened copy `c/` 361, `node/metas` 135, `bp/` 101, the epochs it opened under `ou/` 224 (second node), the entry `E/` 224, `X/` 50, `S/` 50 (maker, per peer). On the wire the commit's Stream frame is 740 B and the peer echoes it back (259 B) with an Applied each way (74 B). Per thing in a batch: about 680 B of index rows for a 36 B record and a 4 B value (states 134, `refs` 178, `t/` 74, `a/` 54, counters 102, `dw/` 59 at the maker, `ou/` 258 at the second node, the holder's element 74).
+
+## Candidates
+Each: cost now; why it is there (the concept); the change; what it deletes; wire and disk (spec sections); risks.
+
+### A. A new thing pulls its unit anew (a bug)
+- **Cost**: every thing another node makes is followed at a reader by a Pull joining the unit from the start: 3.8 KB at 25 entries, 15.8 KB a make averaged over 100 makes (O(n²) over n makes), 44 aging stand rows a make, 2 sync-step verifications per thing (200 for 100 things in one commit). An independent thing's 21 KB PullReply is mostly this.
+- **Concept**: spec/sync-judgement.md §3 Dropped bodies: a strong newly reaching a thing outside the node closure fetches again what was forgotten of it, "unless that transaction brought its record in a commit of which the node held nothing". A thing just made had nothing forgotten.
+- **Change**: build the spec's exemption (the code exempts only a record learned in the same transaction; the record arrives beforehand from the sealed section): issues/new-strong-pulls-anew.md.
+- **Deletes**: nothing; it stops the brute-force path firing on the common one. No spec change.
+
+### B. One stored form per commit: the record and its seal
+- **Cost**: every node holds each commit twice: the sealed blob (478 B small, 846 a make) and the opened record in `c/` (361, 637), with `bp/` (101-117) relating them and, at a reader, `ou/` (224 per small commit, 480 per make: four 120 B rows, one per part and one per header opening, each repeating the delta hash). At the second node that is 803 of 1573 B for a small commit, 1443 of 3312 for a make; an independent thing's blobs are 9.4 KB of 24 KB.
+- **Concept**: the engine's truth is the commit (header, signature, parts), read on every body read (states stored as their body name it); sync serves the blob byte for byte (its ID and stamp cover it). Both exist because nothing says a blob is a function of the commit. It is: canonical CBOR (spec/wire.md §1: a decoder rejects non-canonical input), Padmé padding from the length, AEADs with zero nonces under keys that are data. A blob is the commit sealed under its **seal**: the prefix salt, the blob key (already in the entry's wrap), and per section its key, its wrap's 72 bytes as sent, its chain as sent and the epoch it opened under.
+- **Change**: the record keeps every byte of the commit the node holds, once; a held blob is a seal row (about 110 B for one section) from which the node regenerates the blob byte for byte to serve or fetch it; sections it cannot open, and bytes of parts it dropped while a held blob still carries them, stay in the record verbatim (so a purge or strip has one place to reach, where today it must reach two). `bp/` and `ou/` fold into the seal row (`ou/`'s epoch is the section's epoch; its delta hash is in the header).
+- **Deletes**: the commit blobs in the engine's ciphertext store and their `G/` holds, `bp/` and `ou/` as row families, the strip's second copy to shred. Saves about 700 B per small commit and 1.3 KB per make at a reader, 480 and 840 at the maker, about 8 KB per independent thing per node.
+- **Wire, disk**: no wire change. Engine store layout (notes/engine-store.md), the `CipherStore` boundary (the sync store asks for a blob's bytes, the engine regenerates them). Nodes keeping S unread hold no record and keep blobs as now; so do page, chunk and tree blobs (the same idea later, if it pays).
+- **Risks**: byte-for-byte regeneration must be proved first (a property test: every blob the engine holds regenerates to its ID, across strips, re-seals, copies made by others, unopened sections, split paths); one decryption-free re-encryption per serve (two XChaCha20 passes, cheap); copies a node opened but did not make keep only their seal (their one section is under the blob key, which the entry's wrap gives). A body read stays a record read (no AEAD on the read path). Rejected: the blob as truth with the record keeping head and header only (saves only the parts, about 250 B a make, and puts an AEAD open on every body read).
+
+### C. A blob crosses each connection once
+- **Cost**: (1) the echo: a reader streams back every entry it just took from its peer (259 B and an Applied of 74 B per commit per pair, 29% of a small commit's wire, one stamp verification at the maker, the maker's `S/` row of 50 B written from it); (2) a new unit's first sync sends inline blobs the requester already holds under other sync IDs: an independent thing's first sync carried A's key record (8,782 B) and an account-constant 1,070 B blob again, and its content commit (752 B) twice, once under A's Stream and once under its own: 10.6 KB of the 30.9 KB a reader receives.
+- **Concept**: a source's `known` (spec/sync-judgement.md §3) is what its stream showed, "a write's acknowledgement, a send or a deposit counts for nothing until the stream shows it", so a reader proves it holds what it was sent by sending it back. And `known`, which keeps bytes off the wire, is per (sync ID, entry), though bytes are per blob.
+- **Change**: one fact, by blob: a node knows what a peer holds by blob, from what the peer showed under any sync ID and from what it sent the peer in a message the peer reported applied and did not refuse (Applied and Refused already exist). Then a server lists no event to the peer it took it from (an identical Added: same blob, wrap and stamp; any other still flows) and inlines or answers no bytes of a blob the requester holds. Held elsewhere already counts a reader source's report (spec/sync-status.md §2); `known` gains the applied send.
+- **Deletes**: the echo's frames and the work they cause at both ends (stamp check, `known` update, `S/` write); the second copy of shared blobs on a connection.
+- **Wire, disk**: spec/sync-judgement.md §3 (`known`), spec/sync-streams.md §4 (Stream, Applying, Reports), spec/wire.md §11.2 (Pull's inline rule), spec/sync-status.md §2. Whole listings are unchanged (they list everything; they are rare).
+- **Risks**: a store keeping S unread applies past what it refuses: its refusals must always be told (spec/sync-streams.md §4 Full, Refused) for an applied send to count, else it counts by its stream alone as now (the existing carve-out in Held elsewhere, which this keeps, not adds). Deletes judged from `known` at a store must not count a blob the store never stored. The sync models lag (issues/sync-models-lag.md): the streams model should take the rule before it is built.
+
+### D. Index rows that repeat a stored fact
+- **Cost**, per node: `node/metas` 135 B per small commit, 221 per make (the header's `View` again, beside a flag byte per part); `t/` 74 per thing (the creation record, which the `created.0` state already names); `refs from` 49 per reference (readable from the state it indexes); `a/` 27 per aspect (which aspects have a state: the aspect units' own keys); `dw/` 59 per dependent thing at its maker (derived epochs it sealed under, derivable from its mint admin's epochs since its creation).
+- **Concept**: each is an index for the fast open or a hot lookup; the engine's rule is that every `node/*` table is a function of the held commits (notes/engine-store.md Principle). A function of one stored row at the same cost is that row read twice.
+- **Change**: `node/metas` keeps the per-part judgment bytes only (the open decodes every header for the walk anyway, so the view comes from it); `created.0`'s state is the record whole (smaller than a body reference plus the record row) and `t/` goes; `refs from` read from the state; `a/` from a scan of the thing's aspect units; `dw/` gone, the rotation making a thing independent listing every derived epoch of its mint admin since its creation that the floor allows (spec/crypto.md §4 Lists, Current).
+- **Deletes**: four row families and their writers, half of `node/metas`. About 250-300 B per batched thing and 150-200 B per commit at every node.
+- **Wire, disk**: store layout only, but `dw/` changes what a promotion's history box lists (spec/crypto.md §4): run the TLA rotation model with the change.
+- **Risks**: the open's cost (headers decoded once, as now); dropping an aspect must read its state before clearing `refs to`; `dw/`'s promotion may list epochs nobody wrote under (harmless: their secrets derive from the mint admin's anyway) and must still respect the floor.
+
+### E. The commit's own bytes
+- **Cost**: a small commit's blob is 478 B (header 174 opened). Per thing touched a 72 B section wrap; per further aspect of one thing a repeated 16 B tid; per delete level a 35 B `[level, key]` in the header and a 33 B blinded commitment in the prefix, plus a 16 B blind (about 85 B with one level, 150 with two); the record's 32 B nonce behind a 15 B tid; the signature's 7 B agility wrapper; empty optional fields about 6 B.
+- **Concept**: each is load-bearing in its job (notes/thing-cost.md, What each cost is (a)); the question is only its size.
+- **Change** (each its own rule, all in the format): the section key derived from the thing's read secret, the commit ID and a 16 B nonce (`kdf("section", ...)`), a copy's from the blob key alike, in place of a wrap (saves 56 B per thing per commit, on the wire and in every seal row of B); the aspect list grouped by thing, one tid per group (16 B per further aspect); one blinded commitment per author within a sync unit (Tess: yes; about 33 B a commit); the blind derived from the blob key as linked blobs already do (16 B); a delete key named by its epoch where the reader holds it (the admin delete key from `keys.0`, the author's from its signing key or chain: about 32 B a level); the record nonce at 16 B.
+- **Deletes**: the section wrap and its random section key (and their storage in B's seal row: the seal shrinks to salt, epochs and chains); nothing else of note.
+- **Wire, disk**: spec/wire.md §3, §4, §5; spec/crypto.md §5, §7. About 120-150 B of a 478 B small commit.
+- **Risks**: a derived section key is one key per plaintext: a strip's re-seal takes a fresh nonce; named delete keys need the reader to resolve the epoch before checking a delete (delete keys at stores keeping S unread read `keys.0` they may not hold: check notes/delete-keys.md before naming one); the per-author commitment lets a store tell which of a unit's blobs one author can delete (Tess accepted). Each item measured on the blob before and after.
+
+### F. Entry rows
+- **Cost**: per entry per node `E/` 224 B (key 50, wrap 57, stamp 64, the stamp verdict 33, the blob prefix's class and expiry again 9, its size 8, flags and sources), `X/` 50 (the blob's sync IDs, a refcount), `S/` 50 per peer at a maker.
+- **Change**: the verdict by the head's index (about 29 B); class, expiry and size from the seal (B) or the blob; `X/` only for a blob under two or more sync IDs, the entry row naming its blob's sharing (50 B for the common one); `S/` gone with C (a peer's holding by blob, from what C keeps).
+- **Deletes**: about 90-140 B per entry per node. Sync store layout only (notes/sync-store.md).
+
+### G. Independent things
+- **Cost**: 23-24 KB stored per node, 31 KB to a reader; the commits are near their floor (rotation 3,838 B opened: `keys.0` 1,387 with four keysets, sync ID, deposit seed and step keys, no KEM key; `secrets.0` 799 of history boxes and 635 of boxes to A; `sync.0` 458; content 432). The rest is storage: its rotation sealed twice (4,174 B under its own sync ID and a 4,046 B copy under A's: a role part on a thing other than the sync ID's actor always goes as a copy, `Body::to_sync_id`), `k/` 1,443 B, five per-role key index families (`node/keysets`, `boxed`, `sealed`, `boxes to`, `epoch intro`) 2.4 KB, seven entries 1.6 KB of `E/` and their `X/`, `S/`.
+- **Changes**:
+  - **The copy only where a section does not open** (spec/sync-judgement.md §1 already says so: the shared blob where S's readers can open every section). A newborn's rotation is wrapped under its mint admin's derived epoch (spec/crypto.md §5), which A's readers hold; so is every later rotation under the epoch it supersedes, which A's readers hold through A's boxes. The copy is needed for readers without that history (history-less grants, notes/history-less-grant.md) and for role parts on things outside the derivation: decide it by the section's epoch against what S's readers can hold, not by the part's class. Saves about 4 KB stored per node and 4 KB on the wire per independent thing in a unit. Model first: held-model's copy rules with a history-less reader of A.
+  - **One row per (thing, epoch)** for the key indexes and `k/`, each role's secret, keyset body and boxes in it, in place of five families keyed per role: to measure what each family holds first (a cut of about 2-3 KB is the aim). Store only.
+  - **One box record per holder actor per rotation** (issues/account-evidence-per-unit.md): a quarter of the 526 B a node an account's removal carries into every unit. spec/crypto.md §4 Box records.
+- Rejected for now: roles sharing a keyset while their holders coincide (notes/thing-cost.md Open: the likeliest to add states; a grant would become a split rotation); role secrets derived down the role order (a holder actor's own role holders differ, so a box per role stays); dropping a newborn's history boxes (notes/thing-cost.md Rejected).
+
+### H. Memory
+- **Cost**: unmeasured, and possibly the largest: a two-node world's resident set grows about 120 KB per small commit, 40 times what both disks gain (issues/memory-per-commit.md). Known per held commit: a `Meta` with its `View` and the header's bytes, kept for every commit for the engine's life.
+- **Change**: none designed until attributed. If the engine's per-commit structures are the bulk, the direction is memory in the working set's size, not the store's: views and headers read through the store on demand (they are rows already, D keeps the header readable), with the in-memory indexes keyed sparsely.
+
+## Jobs
+In order; jobs on one line may run side by side (they touch different crates or layers). Each job recounts the figures above at its end in the default thing-cost tests (and makes `what_a_thing_costs_as_the_app_makes_it` run again: it is ignored since the sync rewrite), so the next ranks by real numbers.
+1. **No pull anew for a thing just made** (A; engine `sync/units`): the biggest wire win, and it distorts every other count. Beside it: **attribute memory** (H; a counting allocator, by-hand), a measuring job.
+2. **One stored form per commit** (B; engine store, `CipherStore`): biggest storage win for every commit at every node; deletes two row families and the second copy. Beside it: **a blob crosses each connection once** (C; osis-sync streams and its spec), if job 2 keeps the sync store's "bytes of blob b" call as it is.
+3. **Index rows that repeat a stored fact** (D; engine index), then **entry rows** (F; sync store), side by side.
+4. **The commit's own bytes** (E; osis-commit, osis-crypto, spec): after 2, whose seal row it shrinks.
+5. **Independent things** (G): the copy rule (held-model first), the key rows, box records.
+6. **Memory** (H), as job 1's measurement directs; possibly earlier if it is the bulk.
+
+## Ruled out
+- **One stamp over a batch**: entries are stored and served one by one, so each keeps a proof, a Merkle path of 32 B per level, at least the 64 B saved from a batch of two up.
+- **One signature for commit and stamp** (Tess asked): the two serve readers who must learn the signer (the commit's, inside the ciphertext) and stores that must not (the stamp, by the sync ID's write key); one signature would tell the stores who wrote or the readers nothing. Stays two.
+- **A lone small delta embedded in the header** (no hash, no section, about 160 B): needs the commit to have one section whose audience is the blob's and no per-part purge: a special case. Low; reconsider after E.
+- **A state stored whole when smaller than its body reference**: a few bytes per aspect, beside D's `created.0` change, which is the case that matters.
+- **A verified-step memo** (sync-step verifications per make, notes/thing-cost.md Open): a cache; recount after job 1, which removes most of them.
