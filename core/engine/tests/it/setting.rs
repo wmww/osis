@@ -1294,3 +1294,36 @@ fn judging_beside_an_expiring_write_reads_bodies_once_spec_crdt_4_8() {
     let reads = osis_base::costs::take().iter().find(|x| x.0 == "retention: judging states read").map_or(0, |x| x.2);
     assert_eq!(reads, 1, "one judging state for the 21 live lasting bodies");
 }
+
+// spec/crdt.md §4.8, spec/commits.md §5 (Bodies and deaths), §7: on an aspect keeping history, a
+// value overwritten only by an expiring one is live, not replaced: undated and listed at every
+// node, live or loaded fresh; undoing the expiring write reads it; once a lasting write
+// overwrites it, it is dated there
+#[test]
+fn a_value_overwritten_only_by_an_expiring_one_is_not_replaced_spec_crdt_4_8() {
+    let (mut lp, d) = setup();
+    set(&mut lp, 2, d, &setting(&[(A, keep(10 * HOUR))]));
+    let v1 = put(&mut lp, 1, d, "one");
+    let mut m = Mutation::new();
+    let end = lp.peers[1].engine.now().0 + HOUR;
+    m.expires(d, &ak(A), WallMs(end)).unwrap();
+    m.set(d, &ak(A), &s("brief")).unwrap();
+    let x = lp.peers[1].commit(m).unwrap().unwrap();
+    lp.sync_all().unwrap();
+    lp.peers[2].restart(79).unwrap();
+    for i in 0..3 {
+        let p = &mut lp.peers[i];
+        assert_eq!(p.engine.replaced_at(&v1, &d, &ak(A)).unwrap(), None, "peer {i}: not replaced");
+        assert!(listed(p, &v1, d), "peer {i}: listed");
+    }
+    let mut m = Mutation::new();
+    m.undo(x);
+    lp.peers[1].engine.write(m).unwrap();
+    assert_eq!(lp.peers[1].engine.get(&d, &ak(A)).unwrap(), Some(s("one")), "undoing the expiring write reads the value");
+    let v2 = put(&mut lp, 0, d, "two");
+    lp.sync_all().unwrap();
+    for i in 0..3 {
+        let e = &mut lp.peers[i].engine;
+        assert_eq!(e.replaced_at(&v1, &d, &ak(A)).unwrap(), Some(e.header(&v2).unwrap().ts), "peer {i}: dated at the lasting write");
+    }
+}

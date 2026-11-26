@@ -250,7 +250,7 @@ pub(crate) fn drops_as_covered(m: &crate::engine::Meta, ai: usize, now: u64) -> 
 
 /// Whether this node keeps held part `(tid, ak)` of `c` under cover `s` though `s` covers it:
 /// `s` is another node's own cover at a removal (`others_own_cover`), or `c` is a delta this node
-/// wrote none of whose writes is dead, which drops only under a cover it wrote
+/// wrote none of whose writes is dead (`bounds::dead`), which drops only under a cover it wrote
 /// (spec/sync-compaction.md §1 own bodies). The one judgment: the covered drops
 /// (`Engine::covered_drops`) and the compaction trigger's count (`compact::covered_already`) ask it.
 pub(crate) fn own_kept_under(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<bool> {
@@ -266,7 +266,7 @@ pub(crate) fn own_kept_under(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &
     if tx.core.ix.commits.get(c).is_none_or(|m| m.own_gone(ai)) {
         return Ok(true);
     }
-    Ok(!replace::replaced(tx, c, ai, tid, ak, &mut snapshot::OutlivedBy::default())?)
+    Ok(!bounds::dead(tx, c, ai)?)
 }
 
 /// Whether `s` is another node's own cover at a removal (its header's marker, spec/wire.md §4
@@ -933,11 +933,11 @@ fn make_leftover(tx: &mut Tx<'_>, c: &CommitId, ai: usize, o: &[Owned], extra: &
 
 /// The writes of `o` left the held bodies of `(tid, ak)`; `at`, the body that held them, says
 /// where they sit in the state. Removing them from the state in place is the join of the held
-/// bodies (spec/crdt.md §4.7) unless one superseded a write still held, which is back there
-/// (§4.8 Revival): the held writes (kept from a dated aspect's first death, or from the aspect's
-/// first expiring part: `bounds::follow`), settled before they left and again now, say whether
-/// one revived since `revivals` (none kept on a dated aspect: no held write was dead). Else the
-/// state is rebuilt.
+/// bodies (spec/crdt.md §4.7) unless one was the only superseder of a write still held, which
+/// reads again (§4.8 Revival: a write only writes ending sooner superseded): the held writes
+/// (kept from the aspect's first expiring part, `bounds::follow`), settled before they left and
+/// again now, say whether one revived since `revivals` (`osis_crdt::Held::take_revived`). Then
+/// the state is rebuilt.
 fn gone_in_place(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, at: &Fragment, o: &[Owned], revivals: u64) -> Result<()> {
     bounds::settle_index(tx, tid, ak)?;
     if tx.core.revivals != revivals {

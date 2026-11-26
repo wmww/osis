@@ -2322,3 +2322,31 @@ fn an_accounts_key_record_table() {
         }
     }
 }
+
+// spec/crdt.md §4.8; spec/requirements.md, Scale: beside a write ending sooner, judging a body
+// costs the body. n and 10n lasting set elements with one expiring add among them: a lasting add
+// written, then one element's liveness and date read. Every counted phase is flat, and no state
+// without the expiring writes is built (the held writes date by lifetime).
+#[test]
+fn judging_beside_an_expiring_write_is_flat_spec_crdt_4_8() {
+    use crate::common::KEPTSET;
+    let run = |n: usize| -> Work {
+        let (mut lp, t) = shared_thing(2, &[Role::Write]);
+        let k = ak(KEPTSET.ak());
+        let mut m = Mutation::new();
+        let end = lp.peers[0].engine.now().0 + 3_600_000;
+        m.expires(t, &k, osis_base::WallMs(end)).unwrap();
+        m.op(t, &KEPTSET, PathOp { path: Vec::new(), op: Op::Add(Value::Str("brief".into())) }).unwrap();
+        lp.peers[0].commit(m).unwrap().unwrap();
+        let ids: Vec<_> = (0..n).map(|i| add(&mut lp, 0, t, &KEPTSET, format!("e{i:0>200}"))).collect();
+        let (_, w) = measured_at(&mut lp, 0, |lp| {
+            add(lp, 0, t, &KEPTSET, "later".into());
+            assert!(lp.peers[0].engine.delta_live(&ids[0], &t, &k).unwrap());
+            assert_eq!(lp.peers[0].engine.replaced_at(&ids[0], &t, &k).unwrap(), None);
+        });
+        assert_eq!(w.n("retention: judging states read"), 0, "no judging state built");
+        w
+    };
+    let (a, b) = (run(30), run(300));
+    all_flat("a lasting add and a body judged beside an expiring write", &a, &b);
+}

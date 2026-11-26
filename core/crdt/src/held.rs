@@ -19,7 +19,8 @@
 //! - set + `V` + the reference's hash + the removal's hash, its dot and stamp: the set's value
 //!   removals by the reference their joined copy names (§5.5);
 //! - body + `D` + death (inverted): how many of the body's winning writes died then, so its
-//!   date (the latest, `date`) follows each death moved without reading the body;
+//!   date (the latest, `date`) follows each death moved without reading the body; body + `U`:
+//!   how many have not died (`alive`);
 //! - body + `N`: a body joined, with the caller's tag; body + `L` + chunk: its own writes, so
 //!   it leaves without being read.
 //!
@@ -888,7 +889,8 @@ enum Moved {
 pub struct Held<R: Rows> {
     pub rows: R,
     /// Changes to the `D` rows not written yet (`flush`).
-    dated: BTreeMap<(CommitId, Ts), i64>,
+    /// (`None`: the `U` row.)
+    dated: BTreeMap<(CommitId, Option<Ts>), i64>,
     /// The bodies whose dates may have moved since `take_moved`.
     moved: BTreeSet<CommitId>,
     /// Whether a held write's death went to none since `take_revived` (§4.8 Revival).
@@ -906,6 +908,14 @@ fn inv(b: &[u8]) -> Vec<u8> {
 /// A body's rows lie together, after every position's: 1, its commit ID, `tag`.
 fn of_body(tag: u8, c: &CommitId) -> Vec<u8> {
     [&[1], &c.0[..], &[tag]].concat()
+}
+
+/// A body's `D` row at death `t`, or its `U` row.
+fn count_key(c: &CommitId, t: Option<Ts>) -> Vec<u8> {
+    match t {
+        Some(_) => date_key(c, t),
+        None => of_body(b'U', c),
+    }
 }
 
 fn date_key(c: &CommitId, t: Option<Ts>) -> Vec<u8> {
@@ -986,6 +996,15 @@ impl<R: Rows> Held<R> {
         let Some((k, _)) = self.rows.scan(&from, &end_of(&from), 1)?.pop() else { return Ok(None) };
         let t = inv(k.get(from.len()..).unwrap_or_default());
         Ok(Some(Rd(&t).ts()?))
+    }
+
+    /// How many of the writes body `c` dates have not died (for its end): it holds a write live
+    /// where it is joined and this is not 0 (spec/commits.md §5 live writes, those winning in it).
+    pub fn alive(&mut self, c: &CommitId) -> Result<u64, R::Err> {
+        match self.rows.get(&count_key(c, None))? {
+            Some(b) => Ok(Rd(&b).u64()?),
+            None => Ok(0),
+        }
     }
 
     /// When held write `w` died for a holder ending at `ends` (`None`: not held; `Some(None)`:
@@ -1073,9 +1092,11 @@ impl<R: Rows> Held<R> {
         for (c, sign) in [(old, -1), (new, 1)] {
             let Some(c) = c else { continue };
             for h in c.dated() {
-                let Some(t) = c.death(h.body.ends) else { continue };
+                let t = c.death(h.body.ends);
                 *self.dated.entry((h.body.c, t)).or_default() += sign;
-                self.moved.insert(h.body.c);
+                if t.is_some() {
+                    self.moved.insert(h.body.c);
+                }
             }
         }
     }
@@ -1098,7 +1119,7 @@ impl<R: Rows> Held<R> {
             if n == 0 {
                 continue;
             }
-            let key = date_key(&c, Some(t));
+            let key = count_key(&c, t);
             let was = match self.rows.get(&key)? {
                 Some(b) => Rd(&b).u64()?,
                 None => 0,
@@ -1958,12 +1979,10 @@ impl<R: Rows> Held<R> {
     /// under its end, and every body's deaths as its writes give them.
     #[cfg(test)]
     pub fn check(&mut self) -> Result<Result<(), String>, R::Err> {
-        let mut dated: BTreeMap<(CommitId, Ts), u64> = BTreeMap::new();
+        let mut dated: BTreeMap<(CommitId, Option<Ts>), u64> = BTreeMap::new();
         let mut count = |c: &Cell| {
             for h in c.dated() {
-                if let Some(t) = c.death(h.body.ends) {
-                    *dated.entry((h.body.c, t)).or_default() += 1;
-                }
+                *dated.entry((h.body.c, c.death(h.body.ends))).or_default() += 1;
             }
         };
         // every position holding a write is under the root's steps
@@ -2028,13 +2047,14 @@ impl<R: Rows> Held<R> {
                 count(&c);
             }
         }
-        let mut kept: BTreeMap<(CommitId, Ts), u64> = BTreeMap::new();
+        let mut kept: BTreeMap<(CommitId, Option<Ts>), u64> = BTreeMap::new();
         for (k, v) in self.rows.scan(&[1], &[2], usize::MAX)? {
-            if k.get(33) != Some(&b'D') {
-                continue;
-            }
+            let t = match k.get(33) {
+                Some(b'D') => Some(Rd(&inv(k.get(34..).unwrap_or_default())).ts()?),
+                Some(b'U') => None,
+                _ => continue,
+            };
             let c = CommitId(k.get(1..33).unwrap_or_default().try_into().map_err(|_| Corrupt("held writes row: short"))?);
-            let t = Rd(&inv(k.get(34..).unwrap_or_default())).ts()?;
             kept.insert((c, t), Rd(&v).u64()?);
         }
         if kept != dated {

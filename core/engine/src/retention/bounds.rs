@@ -208,25 +208,24 @@ fn judged(core: &Core, c: &CommitId, ai: usize, tid: &Tid, ak: &Ak) -> bool {
 
 /// When held valid part `(tid, ak)` of `c` was replaced, by the aspect's held writes brought up
 /// to date (`settle_index`; spec/crdt.md §4.8 When): a winner of the part is dead when a held
-/// valid write supersedes it, and died at the earliest `ts` among those, a write dated by its
-/// own stamp whichever body holds it. The part is replaced at the latest of its writes' deaths,
-/// a snapshot's leaving out those a held valid snapshot stamped later holds as winners (that
-/// one keeps their history); `None`: no write dead. So a cover dropping a body redates nothing
-/// in history (notes/engine-retention-dating.md Invariant), and a node holding more bodies
-/// dates no later. One row read: the index keeps each body's deaths by date.
-/// Interim (issues/dating-ignores-lifetimes.md): a superseder of any lifetime dates a death (a
-/// lasting body beaten only by an expiring write is dated replaced); `Held` reading only
-/// superseders lasting at least as long replaces it.
+/// valid write lasting at least as long as the part supersedes it, and died at the earliest
+/// `ts` among those, a write dated by its own stamp whichever body holds it. The part is
+/// replaced at the latest of its writes' deaths, a snapshot's leaving out those a held valid
+/// snapshot stamped later holds as winners (that one keeps their history); `None`: no write
+/// dead. So a cover dropping a body redates nothing in history
+/// (notes/engine-retention-dating.md Invariant), and a node holding more bodies dates no later.
+/// One row read: the index keeps each body's deaths by date.
 pub(super) fn held_date(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<Option<Ts>> {
     settle_index(tx, tid, ak)?;
     drop(osis_base::costs::span("replaced at"));
     index(tx, tid, ak, Shred::No)?.date(c)
 }
 
-/// When held write `w` of `(tid, ak)` died and the snapshots holding it winning
-/// (`osis_crdt::Held::held`), by the aspect's held writes as last settled (`settle_index`).
-fn held_write(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, w: &Won) -> Result<Option<osis_crdt::HeldWrite>> {
-    index(tx, tid, ak, Shred::No)?.held(w)
+/// When held write `w` of `(tid, ak)` died for a holder ending at `ends` and the snapshots
+/// holding it winning (`osis_crdt::Held::held`), by the aspect's held writes as last settled
+/// (`settle_index`).
+fn held_write(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, w: &Won, ends: Option<u64>) -> Result<Option<osis_crdt::HeldWrite>> {
+    index(tx, tid, ak, Shred::No)?.held(w, ends)
 }
 
 /// Runs debug check `f` unseen: its reads record nothing, its costs and death walks count none.
@@ -238,37 +237,78 @@ pub(super) fn unseen<R>(tx: &mut Tx<'_>, f: impl FnOnce(&mut Tx<'_>) -> R) -> R 
     r
 }
 
-/// `held_date` by the state: the part's winners the state supersedes (`deaths`), each dated by
-/// the held writes (one not held, or held undated: `Error::Corrupt`). The debug check of a row.
+/// `held_date` by the state: the part's winners the state as the part is judged against
+/// supersedes (`snapshot::outlived`: without the writes ending sooner, spec/crdt.md §4.8), a
+/// snapshot's leaving out those a held valid snapshot stamped later holds as winners, each dated
+/// by the held writes (one not held, or held undated: `Error::Corrupt`). The debug check of a row.
 #[cfg(debug_assertions)]
 pub(super) fn whole_date(tx: &mut Tx<'_>, h: &Header, c: &CommitId, ai: usize) -> Result<Option<Ts>> {
     let Some(a) = h.aspects.get(ai) else { return Ok(None) };
     let (tid, ak) = (a.tid, a.ak.clone());
-    let dead = dating_deaths(tx, h, c, ai, &tid, &ak)?;
+    let by = super::snapshot::outlived(tx, &tid, &ak, h.expires)?;
+    let Some(f) = super::body_fragment(tx, c, ai)? else { return Ok(None) };
+    let Some(mut st) = super::snapshot::judged_state(tx, &tid, &ak, &f, by.as_ref(), true)? else { return Ok(None) };
+    let mine = winners_of(tx, &f);
+    st.join(f);
+    let dead = mine.minus(&winners_of(tx, &st));
+    let dead = not_carried_later(tx, h, c, &tid, &ak, dead)?;
     let mut out: Option<Ts> = None;
     for w in &dead {
-        let d = held_write(tx, &tid, &ak, w)?.and_then(|x| x.0).ok_or(Error::Corrupt("a dead write no held body supersedes"))?;
+        let d = held_write(tx, &tid, &ak, w, h.expires)?.and_then(|x| x.0).ok_or(Error::Corrupt("a dead write no held body supersedes"))?;
         out = out.max(Some(d));
     }
     Ok(out)
 }
 
-/// The dead writes that date held valid part `ai` of `c` (`deaths`), a snapshot's leaving out
-/// those a held valid snapshot stamped later holds as winners (that one keeps their history).
+/// The dead writes that date held valid part `ai` of `c`: its winners superseded by writes
+/// lasting at least as long (spec/crdt.md §4.8), a snapshot's leaving out those a held valid
+/// snapshot stamped later holds as winners (that one keeps their history). Those the state
+/// supersedes (`deaths`, O(part)) that the held writes, where kept, date dead for the part's
+/// end: one only a write ending sooner supersedes is dead in the state alone. None kept: no
+/// write with an end is held (`follow`), so the state's are the part's.
 fn dating_deaths(tx: &mut Tx<'_>, h: &Header, c: &CommitId, ai: usize, tid: &Tid, ak: &Ak) -> Result<BTreeSet<Won>> {
-    let mut dead = deaths(tx, c, ai, tid, ak)?;
-    if h.kind.is_compaction() && !dead.is_empty() && bounded(tx.core, tid, ak) {
-        settle_index(tx, tid, ak)?;
-        let mut kept = BTreeSet::new();
-        for w in dead {
-            let carried = held_write(tx, tid, ak, &w)?.is_some_and(|x| x.1.iter().any(|(t, x)| *t > h.ts && x != c));
-            if !carried {
-                kept.insert(w);
-            }
-        }
-        dead = kept;
+    let dead = deaths(tx, c, ai, tid, ak)?;
+    if dead.is_empty() || !(bounded(tx.core, tid, ak) || followed(tx, tid, ak)?) {
+        return Ok(dead);
     }
-    Ok(dead)
+    settle_index(tx, tid, ak)?;
+    if tx.txn.table(tid, ak, HELD_TABLE)?.is_none() {
+        // kept from the first death: none dead
+        return Ok(BTreeSet::new());
+    }
+    let mut kept = BTreeSet::new();
+    for w in dead {
+        if held_write(tx, tid, ak, &w, h.expires)?.is_some_and(|x| x.0.is_some()) {
+            kept.insert(w);
+        }
+    }
+    not_carried_later(tx, h, c, tid, ak, kept)
+}
+
+/// Whether a write of held valid part `ai` of `c` is dead (spec/crdt.md §4.8: one it dates,
+/// `dating_deaths`), O(part).
+pub(super) fn dead(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<bool> {
+    let Some(h) = tx.core.ix.commits.get(c).filter(|m| m.valid_at(ai)).map(|m| m.header.clone()) else { return Ok(false) };
+    let Some(a) = h.aspects.get(ai) else { return Ok(false) };
+    let (tid, ak) = (a.tid, a.ak.clone());
+    Ok(!dating_deaths(tx, &h, c, ai, &tid, &ak)?.is_empty())
+}
+
+/// Dead writes `dead` of part `(tid, ak)` of `c` but, of a snapshot's, those a held valid
+/// snapshot stamped later holds as winners.
+fn not_carried_later(tx: &mut Tx<'_>, h: &Header, c: &CommitId, tid: &Tid, ak: &Ak, dead: BTreeSet<Won>) -> Result<BTreeSet<Won>> {
+    if !h.kind.is_compaction() || dead.is_empty() || !bounded(tx.core, tid, ak) {
+        return Ok(dead);
+    }
+    settle_index(tx, tid, ak)?;
+    let mut kept = BTreeSet::new();
+    for w in dead {
+        let carried = held_write(tx, tid, ak, &w, h.expires)?.is_some_and(|x| x.1.iter().any(|(t, x)| *t > h.ts && x != c));
+        if !carried {
+            kept.insert(w);
+        }
+    }
+    Ok(kept)
 }
 
 /// How a held valid part is held, which decides the writes its body gives: as a leftover
@@ -374,7 +414,8 @@ fn body_writes(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, x: &CommitId, f: Form) -> Re
     let Some(frag) = super::body_fragment(tx, x, xai)? else { return Ok(None) };
     drop(osis_base::costs::span("deaths: a body"));
     tx.core.death_walks += 1;
-    Ok(Some((osis_crdt::Body { c: *x, ts, snap }, osis_crdt::BodyWrites::of(&frag, !f.1))))
+    let ends = tx.core.ix.commits.get(x).and_then(|m| m.header.expires);
+    Ok(Some((osis_crdt::Body { c: *x, ts, snap, ends }, osis_crdt::BodyWrites::of(&frag, !f.1))))
 }
 
 /// Brings the held writes of value aspect `(tid, ak)` (`osis_crdt::Held`: every write its held
@@ -655,11 +696,9 @@ pub(super) fn index_exact(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, when: &str) -> Re
     Ok(fresh)
 }
 
-/// The writes of held part `ai` of `c` the state supersedes (spec/crdt.md §4.8): the part's
-/// winners that do not win once it joins, whole, a copy of the state at its positions
-/// (`Tx::state_part_at`: O(part), whatever the state's size).
-/// Interim (issues/dating-ignores-lifetimes.md): judged against the state as it is, as `Held`
-/// dates; judged against `snapshot::outlived`'s state once `Held` reads lifetimes.
+/// The writes of held part `ai` of `c` the state supersedes (spec/crdt.md §4.8, by every held
+/// write whatever its end): the part's winners that do not win once it joins, whole, a copy of
+/// the state at its positions (`Tx::state_part_at`: O(part), whatever the state's size).
 fn deaths(tx: &mut Tx<'_>, c: &CommitId, ai: usize, tid: &Tid, ak: &Ak) -> Result<BTreeSet<Won>> {
     let Some(f) = super::body_fragment(tx, c, ai)? else { return Ok(Default::default()) };
     let Some(mut st) = tx.state_part_at(tid, ak, &f)? else { return Ok(Default::default()) };
@@ -734,17 +773,20 @@ pub(crate) fn mark_bounded(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) {
     }
 }
 
-/// `Engine::delta_live` of delta `ai` of `c`, judged against the state in
-/// `tx` without the writes ending sooner than it (`snapshot::outlived`: only a write lasting at
-/// least as long supersedes, spec/crdt.md §4.8): a function of the commits applied (the
-/// join's), so alike at nodes that applied the same ones.
+/// `Engine::delta_live` of delta `ai` of `c`, judged against the state in `tx` without the
+/// writes ending sooner than it (only a write lasting at least as long supersedes, spec/crdt.md
+/// §4.8): a function of the commits applied (the join's), so alike at nodes that applied the
+/// same ones. Held: the state holds a write of it (a write it holds is superseded by no held
+/// write), or one of its winners only writes ending sooner supersede (the held writes date it
+/// alive: `osis_crdt::Held::alive`, kept wherever a write with an end is held, `follow`; none
+/// kept, the state is the one it is judged against). Not held: the whole state without the
+/// writes ending sooner (`snapshot::outlived`).
 pub(super) fn live(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<bool> {
     let Some(h) = tx.core.ix.commits.get(c).map(|m| m.header.clone()) else { return Ok(true) };
     if h.kind.is_compaction() {
         return snapshot_live(tx, &h, c, ai);
     }
     let Some(a) = h.aspects.get(ai) else { return Ok(false) };
-    let by = super::snapshot::outlived(tx, &a.tid, &a.ak, h.expires)?;
     let own = writes_of(&h, c, ai);
     let owns = |st: &Fragment| st.holds_owned_write(&|src, lo, hi| own.iter().any(|o| o.owns_range(src, lo, hi)));
     // per piece of the delta, the state at its positions (O(piece), whatever the state's size;
@@ -753,23 +795,34 @@ pub(super) fn live(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<bool> {
     // pages up to it, not every page
     let mut live = false;
     let held = match super::each_body_piece(tx, c, ai, &mut |tx, f| {
-        live = super::snapshot::judged_state(tx, &a.tid, &a.ak, &f, by.as_ref(), true)?.as_ref().is_some_and(owns);
+        live = tx.state_part_at(&a.tid, &a.ak, &f)?.as_ref().is_some_and(owns);
         if live { Err(Error::Misuse("live: stream stopped")) } else { Ok(()) }
     }) {
         Ok(held) => held.is_some(),
         Err(_) if live => true,
         Err(e) => return Err(e),
     };
-    if !held {
-        live = match &by {
-            Some(o) => tx.state(&a.tid, &a.ak)?.cloned().is_some_and(|mut st| {
-                o.at(&mut st);
-                owns(&st)
-            }),
-            None => tx.state(&a.tid, &a.ak)?.is_some_and(owns),
-        };
+    if live {
+        return Ok(true);
     }
-    Ok(live)
+    if held {
+        if !(bounded(tx.core, &a.tid, &a.ak) || followed(tx, &a.tid, &a.ak)?) {
+            return Ok(false);
+        }
+        settle_index(tx, &a.tid, &a.ak)?;
+        if tx.txn.table(&a.tid, &a.ak, HELD_TABLE)?.is_none() {
+            return Ok(false);
+        }
+        return Ok(index(tx, &a.tid, &a.ak, Shred::No)?.alive(c)? > 0);
+    }
+    let by = super::snapshot::outlived(tx, &a.tid, &a.ak, h.expires)?;
+    Ok(match &by {
+        Some(o) => tx.state(&a.tid, &a.ak)?.cloned().is_some_and(|mut st| {
+            o.at(&mut st);
+            owns(&st)
+        }),
+        None => tx.state(&a.tid, &a.ak)?.is_some_and(owns),
+    })
 }
 
 /// Whether a compaction snapshot carries a write still live in this node's state (`delta_live`;

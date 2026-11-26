@@ -1222,12 +1222,14 @@ fn a_write_only_a_sooner_ending_one_supersedes_lives_and_reads_again_spec_4_8() 
     ix.join(&at(2, Some(10)), &BodyWrites::of(&b, true), &[]).unwrap();
     assert_eq!(ix.held(&w(&sa), None).unwrap().unwrap().0, None, "a lasting write only an expiring one supersedes lives");
     assert_eq!(ix.date(&body(0).c).unwrap(), None);
+    assert_eq!(ix.alive(&body(0).c).unwrap(), 1, "its write is live");
     assert!(!ix.take_revived());
     ix.leave(&at(2, Some(10))).unwrap();
     assert!(ix.take_revived(), "the expiring write's leaving revives the lasting one");
     ix.join(&at(2, Some(10)), &BodyWrites::of(&b, true), &[]).unwrap();
     ix.join(&at(4, None), &BodyWrites::of(&c, true), &[]).unwrap();
     assert_eq!(ix.held(&w(&sa), None).unwrap().unwrap().0, Some(sc.ts), "a lasting superseder dates it");
+    assert_eq!(ix.alive(&body(0).c).unwrap(), 0);
     assert_eq!(ix.held(&w(&sb), Some(10)).unwrap().unwrap().0, Some(sc.ts));
     ix.take_revived();
     ix.leave(&at(2, Some(10))).unwrap();
