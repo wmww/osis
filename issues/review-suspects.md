@@ -1,5 +1,5 @@
 # Small suspects and open questions from the review since the sync rewrite
-> Summary: Leftovers of the review of everything since the sync rewrite, each too small for an issue of its own: a writer's card pointing strangers at an earlier inbox, the KEM-less seal skip with no observable effect found, the boxed/unboxed split after a demoted admin's plant, and two unreproduced suspects.
+> Summary: Leftovers of the review of everything since the sync rewrite, each too small for an issue of its own: a writer's card pointing strangers at an earlier inbox, the KEM-less seal skip with no observable effect found, the boxed/unboxed split after a demoted admin's plant, two unreproduced suspects, a debug check feeding its own settle, a revoked store never reopened and stale status sources.
 > Priority: normal
 > Tags: engine, keys, security
 
@@ -15,3 +15,12 @@ An admin's step and box on a dependent Y with no keyset, the admin demoted after
 ## Suspects not reproduced
 - **The public's role wherever held** (`rotation::lost::role_here`) also feeds `may_take`/`readable` for the node's own sealed boxes, so a public grant whose removal the node lacks could keep a removed reader's sealed secrets. Harmless if a role through the public gives only open boxes.
 - **A step's `since`** (`sync_ids::steps` `Recorded::of`) is the current write's stamp: an admin re-putting a step entry later leaves commits stamped in between miskeyed for good (hostile admin only).
+
+## A debug check feeding its own settle (latent)
+`Engine::role_duty_due` checks itself against `rotated_already` in debug builds, a run rolled back; the rollback moves the stamps it undid, so the duty's key is due again at once, and the rolled-back writes (a grant fire owed) reach the fires feed. While a duty stays owed and its run fails, every round acts and the node never settles. A check run inside a frame should leave no stamp or feed moved.
+
+## A revoked store never reopened (latent, no reproducer)
+After a revocation nothing reopens S at a store whose credentials and `changed_at(S)` did not move, so it is never tested again (spec/sync-opens.md §5 Testing) and keeps S's entries.
+
+## Stale status sources (unshrunk)
+A sync differential panic, "sources status counts that are no member at quiet", that no current seed reproduces.
