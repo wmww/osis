@@ -203,5 +203,5 @@ GUI test footguns:
 - Patches: a `.diff` is `-p0` against the crates.io source, its base the commit before it was added; check a chain by applying it in order to a scratch copy of `~/.cargo/registry/src/*/masonry*-0.4.0`.
 
 ### Core features the app has yet to adopt
-Remove each line once adopted. Other asks of core: issues tagged `core-ask`.
+Remove each line once adopted.
 - A thing watch sees a release as aspects going absent and `has_content` is false for a released thing: `Data::opened` can check that instead of scanning `things()`.

@@ -25,7 +25,7 @@ Crate-wide seeds:
   - A case a seed draws on purpose (a seed class: `seed % 8 < 2` large values) is asserted per seed instead.
   - A `_plain` running a fixed covering set asserts its set reaches each case exactly; its `_large` twin carries the rates (rotation `tests_property::SHAPES`).
   - A case too rare for a rate at the gate's size gets more default seeds or a draw on purpose, never a floor of 0. The order harness's floors are per emphasis (`Seen::floors`).
-- **Converting a fixed-seed loop to a range**: the seed may index nothing but an RNG or a modulus. A value sized by the raw seed (once 44 TB at the gate's offset) aborts the whole property binary; a loop index turned seed keeps everything it fed. A thread-local setting (`PageParams::set_test`) is set inside the per-seed closure, or `Seeds::run`'s threads run at defaults and pass for the wrong reason. Run the converted property once at an offset below 10^12 before committing.
+- **Converting a fixed-seed loop to a range**: the seed may index nothing but an RNG or a modulus. A value sized by the raw seed (terabytes at the gate's offset) aborts the whole property binary; a loop index turned seed keeps everything it fed. A thread-local setting (`PageParams::set_test`) is set inside the per-seed closure, or `Seeds::run`'s threads run at defaults and pass for the wrong reason. Run the converted property once at an offset below 10^12 before committing.
 
 ## Copied worlds
 A setup many tests share is built once per test process and each test gets an exact in-memory copy of the live world: it goes on as the original would (same next commit IDs, rng draws, connections, queues, memo hits). Reopening stores is not a copy (every node restarts and syncs again).
@@ -155,7 +155,7 @@ Each binary's budget is its line in tools/test_cost.txt (notes/gate.md, The summ
 **Oracles and isolation**
 - A test meant to isolate one mechanism fails with that mechanism alone disabled: a test passing by either of two mechanisms isolates neither.
 - An oracle choosing its subjects by an internal flag breaks across a refactor of that index: choose by a stable fact.
-- A differential's exclusion is counted over every world it covers and printed beside the failures (applied to failing worlds only, one once excused 38% of worlds unseen).
+- A differential's exclusion is counted over every world it covers and printed beside the failures: applied to failing worlds only, it can excuse a large share of worlds unseen.
 - A differential mapping model flags to wire shapes never emits a shape its mapping lacks: a shape rule needs a test that builds the wire input directly.
 - A test whose comment claims a state asserts or tallies it. The forensic `recoverable` sees nothing of a pending copy outside the node closure: assert the value recoverable before the step that should remove it.
 - A count from a process-wide counter (`memo::writes`) moves with other tests' threads: count per thread.
