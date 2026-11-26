@@ -73,8 +73,8 @@ Each: cost now; why it is there (the concept); the change; what it deletes; wire
 - **Change**: none designed until attributed. If the engine's per-commit structures are the bulk, the direction is memory in the working set's size, not the store's: views and headers read through the store on demand (they are rows already, D keeps the header readable), with the in-memory indexes keyed sparsely.
 
 ## Jobs
-In order; jobs on one line may run side by side (they touch different crates or layers). Each job recounts the figures above at its end in the default thing-cost tests (and makes `what_a_thing_costs_as_the_app_makes_it` run again: it is ignored since the sync rewrite), so the next ranks by real numbers.
-1. **No pull anew for a thing just made** (A; engine `sync/units`): the biggest wire win, and it distorts every other count. Beside it: **attribute memory** (H; a counting allocator, by-hand), a measuring job.
+In order; jobs on one line may run side by side (they touch different crates or layers). Each job recounts the figures above at its end in the default thing-cost tests (and makes `what_a_thing_costs_as_the_app_makes_it` run again: it is ignored, "sync rewrite: copies per (commit, thing)"), so the next ranks by real numbers.
+1. **No pull anew for a thing just made** (A; engine `sync/units`): the biggest wire win, and it distorts every other count. Built for dependent things; independent things and attach are left. Beside it: **attribute memory** (H; a counting allocator, by-hand), a measuring job.
 2. **One stored form per commit** (B; engine store, `CipherStore`): biggest storage win for every commit at every node; deletes two row families and the second copy. Beside it: **a blob crosses each connection once** (C; osis-sync streams and its spec), if job 2 keeps the sync store's "bytes of blob b" call as it is.
 3. **Index rows that repeat a stored fact** (D; engine index), then **entry rows** (F; sync store), side by side.
 4. **The commit's own bytes** (E; osis-commit, osis-crypto, spec): after 2, whose seal row it shrinks.

@@ -1,5 +1,5 @@
 # Test and gate time
-> Summary: Targets (Tess): default tests 4x cheaper than the 8,553 G per-test reference profile (about 2,140 G) without losing coverage that matters, and the whole gate in 10 minutes on ostrich, reached by fixing perf, not shrinking sizes. The per-test figure is about 6,500 G (1.3x); a third of it is fixtures rebuilt per process. The full gate runs about 920 s, every stage CPU-bound but the storm replay. The ranked levers, the patterns behind slow tests, and the method.
+> Summary: Targets (Tess): default tests 4x cheaper than the 8,553 G per-test reference profile (about 2,140 G) without losing coverage that matters, and the whole gate in 10 minutes on ostrich, reached by fixing perf, not shrinking sizes. The per-test figure is about 6,500 G (1.3x); a third of it is fixtures rebuilt per process. The full gate (every crate) runs about 680 s against the 598 s cap, every test stage CPU-bound. The ranked levers, the patterns behind slow tests, and the method.
 > Priority: normal
 > Tags: tests, performance, sync, engine
 
@@ -8,7 +8,7 @@ Each binary's budget is its line in tools/test_cost.txt; each new default test n
 ## Where it goes
 - **Per-process fixtures are a third of the per-test figure**: each test process of the three big binaries (osis-sync `it`, engine `it`, engine lib) builds its cached worlds again (`history::world_of`, `LocalPeer::cached`). A gate pays them once per binary, so caching across processes cuts nothing real; making a fixture cheaper cuts both.
 - Most of the cost is in tests of 5-20 G (about 300 of them). Heaviest modules: engine lib `rotation`, `apply`; osis-sync `holding`, `deletes`, `growth`, `delete_keys`, `idle`; engine `it` `validity`, `order`, `scale`, `flows`, `shred`.
-- **Gate**: the properties stage is over `gate.properties` CPU (about 4,700 CPU-s for every crate against 3,841) and the gate over the 10 minutes at load near 50; the engine's rotation and order properties are the costliest (notes/review-brief.md, Gate time). In the engine's lib tests the drop's `checked_index` is 20% and held-writes dating (`date_due`) 15%; both are in every engine property too.
+- **Gate**: the properties are the largest stage (Budget); the engine's rotation and order properties are the costliest. In the engine's lib tests the drop's `checked_index` is 20% and held-writes dating (`date_due`) 15%; both are in every engine property too.
 
 ## Levers, by evidence
 1. **Cheaper fixtures**: osis-sync's `world_of` (nearly all `introduce`'s redeems over real sync, so mostly lever 2 seen through the fixtures) and engine lib rotation's cached setups; fewer distinct fixtures (tests sharing one world) also count.
@@ -27,11 +27,12 @@ Each binary's budget is its line in tools/test_cost.txt; each new default test n
 Rejected: `opt-level` 2 for the workspace (3-10%); fake or memoized crypto in tests (debug and release differ, every forgery test must opt out).
 
 ## Budget
-- The gate: 10 minutes wall without its lock wait (notes/time-limits.md, Limits). It does not fit: the full selection runs about 920 s at load 50-70 with 8,000 CPU-s (0.98x the CPU cap). Each test stage runs its targets side by side (`tools/targets.py`), so every stage is CPU-bound at the box's share left by other work (about 13 of 16 cores at that load): default tests 171 s / 2,212 CPU-s, properties 369 s / 5,025 CPU-s. Running targets side by side costs about 15% more CPU-s than one binary at a time (SMT siblings and caches shared), the same instructions. Left on the wall, by size:
-  - **The CPU itself**: 7,500 CPU-s in the hold at 13 cores is 580 s before any other step; the levers above and Properties and builds.
-  - **Outside the hold** (about 140 s): clippy 47 s, the fuzz check about 2 s (dev profile: the release check was not incremental, so every change below the targets rechecked them whole, 20-50 s), the tools' tests 25 s, the GUI tests 20 s, unification 18 s, the GUI lint 16 s.
+- The gate: 10 minutes wall without its lock wait and `build` (notes/time-limits.md, Limits: 598 s, 8,188 CPU-s on ostrich). It does not fit: the full selection (every crate, 6dc89649f, load 50-85) took 680 s wall (1.14x) and 7,245 CPU-s (0.88x). Each test stage runs its targets side by side (`tools/targets.py`), so every stage is CPU-bound at the cores other work leaves; running side by side costs about 15% more CPU-s than one binary at a time (SMT siblings and caches shared), the same instructions. Left on the wall, by size:
+  - **The hold** (521 s, 6,790 CPU-s): properties 283 s / 4,328 CPU-s, default tests 209 s / 2,194 CPU-s, replays 17 s, sim 12 s. Costliest properties (CPU-s): `order::held_set_decides_plain` 540, `rotation_holds_large` 499, `held_set_decides_exhaustive` 420, `deep_departure_holds_large` 318, roles-model `small_family_holds_large` 302 and `random_worlds_hold_large` 220, crdt `stream_check_matches_whole_large` 164, `crdt_equals_model_large` 107. The levers above and Properties and builds.
+  - **Outside the hold** (about 160 s): `gate.unify` 18 s, the tools' tests and policy 14 s, the fuzz check 13 s, `gate.gui-tests` 12 s, deny 5 s, clippy 2 s warm.
+  - The full-size sync differential is not a gate stage: 5,300-5,700 CPU-s, about 8 min wall over four holds.
 - A stage still ends on its slowest test: the properties' slowest (`held_set_decides_plain`, `rotation_holds_large`: 300-330 s wall each at the stage's oversubscription) end within the stage's CPU-bound wall; a default test over about 60 s would set the default stage's wall (osis-sync `growth::rotations_keep_keysets_flat_spec_commits_5`, 120 G, is the longest).
-- Ostrich spends about 1.6x the CPU-s per u that fastbox-0 does, so its u limits are tight by that factor until u is timed on real work. `gate.sim` and `gate.properties` shares were moved to their work by a coordinator (Windlass); Tess may undo it.
+- Ostrich spends about 1.6x the CPU-s per u that fastbox-0 does, so its u limits are tight by that factor until u is timed on real work.
 
 ### Levers that need Tess
 - The drop's index check sampled (10-15% of every engine property), or checked whole at a cadence and incrementally between (Properties and builds, `checked_index` incremental).

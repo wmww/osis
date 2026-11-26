@@ -1,5 +1,5 @@
 # A new strong pulls its whole unit anew
-> Summary: A strong newly reaching a thing outside the node closure pulls the unit's sync IDs anew from every source (`units::refetch`), re-listing the whole unit. A dependent thing another node makes no longer does (its minting brings its record), but an independent one still does at every reader (its content commit, carrying the strong, arrives in a later transaction than its rotation), and so does an attach (83 KB at 4 members, 141 KB at 40).
+> Summary: A strong newly reaching a thing outside the node closure pulls the unit's sync IDs anew from every source (`units::refetch`), re-listing the whole unit. A dependent thing another node makes is exempt (its minting brings its record); an independent one is not, at every reader (its content commit, carrying the strong, arrives in a later transaction than its rotation), and so does an attach (83 KB at 4 members, 141 KB at 40).
 > Priority: normal
 > Tags: sync, engine, performance
 
