@@ -747,9 +747,7 @@ fn a_making_commit_stripped_before_a_siblings_fetch_reaches_the_sibling_spec_syn
     assert_eq!(w.engine(2).get(&t, &value_ak()).unwrap(), Some(Value::Str("v1".into())));
 }
 
-// notes/slim-design.md B (one stored form per commit), spec/sync-ids.md §5 (a blob held as what
-// makes it again: once the node can no longer make it while an entry names it, its bytes are kept
-// first): node 2 loses power at each durable write in turn, while it writes a commit (its blob's
+// notes/slim-design.md B (one stored form per commit), spec/sync-ids.md §5 (Across sync IDs): node 2 loses power at each durable write in turn, while it writes a commit (its blob's
 // bytes go once its seal is durable) and while node 0 lowers it to keeping S unread (its commits
 // lost, their blobs' bytes kept again), and restarts in place. Every entry it keeps then has its
 // blob's bytes, kept or made again, and every seal makes its blob. Fails if a crash between the
