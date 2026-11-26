@@ -1317,8 +1317,8 @@ fn set_carry(tx: &mut Tx<'_>, v: Vx, y: Tid, got: &BTreeSet<Vx>, k: Carry) {
 /// A new edge of read unit `v` to `y`, which the node held as
 /// certificates alone or not at all when the transaction began (`retention::needed::Holding`:
 /// not in the node closure, nor leaving it, nor dropped from it in this transaction, `was_held`),
-/// unless this transaction brought a minting of `y` while the node held none (`Core::brought`):
-/// the unit's sync IDs are pulled anew from
+/// unless the pass in flight brought a minting of `y` while the node held none and nothing of
+/// `y` was forgotten since (`Core::brought`): the unit's sync IDs are pulled anew from
 /// every source, so what was forgotten of `y` (its content outside the node closure, a body
 /// judged outside the required set before the strong arrived) is fetched again
 /// (spec/sync-judgement.md §3 Dropped bodies). Once per new edge, durable before the

@@ -62,6 +62,8 @@ impl Engine {
         // dial entry goes on the things it names that the pass brought
         self.refresh_cards()?;
         self.refresh_reach()?;
+        // what waits on a thing it brought counts as never received from now (`Core::brought`)
+        self.core.brought.clear();
         let mut due: BTreeSet<Tid> = match self.core.pass_due.replace(BTreeSet::new()) {
             Some(a) => a,
             None => {

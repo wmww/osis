@@ -1251,9 +1251,13 @@ pub struct Core {
     /// a holder unnamed): judged once the pass in flight ends,
     /// or at once with none in flight (`Engine::settle_lost`).
     pub lost_due: BTreeSet<Tid>,
-    /// Things this transaction brought a minting of while the node held none
-    /// (`Core::note_brought`): a strong newly reaching one pulls nothing anew
-    /// (`sync::units::refetch`).
+    /// Things a minting of arrived while the node held none since the pass in flight began
+    /// (`Core::note_brought`), nothing of them forgotten since: a strong newly reaching one pulls
+    /// nothing anew (`sync::units::refetch`). Emptied at a pass end (`Engine::settle_needs`); a
+    /// thing goes from it once anything of it is forgotten sooner (`retention::forget`: a
+    /// release, lost access; `apply::unreceive_outside`; `apply::carriers::forget`: a waiting
+    /// part's last carrier gone). In memory only: an open starts it empty, so a strong then pulls
+    /// anew.
     pub brought: BTreeSet<Tid>,
     /// The (context, thing) members entering the node closure since the last transaction's end
     /// (`apply::wake_entered`): what waits for a thing to be read whole is examined again (a thing
@@ -1638,8 +1642,11 @@ impl Core {
     /// A minting of `t` arriving, not indexed yet: where the node holds none, nothing of `t` was
     /// forgotten (content on a thing counts as never received only while a minting of it is
     /// held, and forgetting keeps that commit known while a part of it may still bring the thing
-    /// in), so `t` is `brought` (spec/sync-judgement.md §3 Dropped bodies). Not judged on the
-    /// arriving commit: a minting needs no authority, and any writer may mint a held thing again.
+    /// in), nor is before the pass in flight ends (content waiting on it counts as never received
+    /// once that pass ends, spec/commits.md §4 Outside the node closure) unless it is forgotten
+    /// sooner (a release, lost access), so `t` is `brought` until then (spec/sync-judgement.md §3
+    /// Dropped bodies). Not judged on the arriving commit: a minting needs no authority, and any
+    /// writer may mint a held thing again; one held already brings nothing.
     pub(crate) fn note_brought(&mut self, t: Tid) {
         if self.mintings(&t).next().is_none() {
             self.brought.insert(t);
@@ -3301,7 +3308,6 @@ impl Engine {
         // changes made outside a transaction are not this one's to undo
         self.core.commit_journal();
         self.core.memory_tx = false;
-        self.core.brought.clear();
         let start = self.core.mark();
         #[cfg(debug_assertions)]
         {

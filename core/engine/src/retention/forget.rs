@@ -237,6 +237,8 @@ pub(crate) fn forget(tx: &mut Tx<'_>, scope: Scope<'_>, held: &BTreeMap<Tid, u64
             continue;
         }
         reached.insert(t);
+        // forgotten: a strong reaching it later pulls anew (`Core::brought`)
+        tx.core.brought.remove(&t);
         let mut held: BTreeSet<Ak> = tx.core.aspects_of(&t).map(|((_, ak), _)| ak.clone()).collect();
         held.extend(tx.state_aks(&t)?);
         if held.is_empty() {

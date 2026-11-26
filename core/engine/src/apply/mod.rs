@@ -467,6 +467,8 @@ pub(crate) fn entering(tx: &Tx<'_>) -> bool {
 /// or `t` went whole. Each leaves its commit's stored copy; a copy left with no part goes, as does
 /// a commit nothing of which applied; one with other parts waiting is examined again.
 pub(crate) fn unreceive_outside(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
+    // forgotten: a strong reaching it later pulls anew (`Core::brought`)
+    tx.core.brought.remove(t);
     let ids: Vec<CommitId> = tx.core.ix.pend_on.get(&Wake::Enters(*t)).into_iter().flatten().copied().collect();
     for id in ids {
         let Some(mut b) = read_pending(tx, &id)? else { continue };

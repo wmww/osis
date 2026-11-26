@@ -196,7 +196,13 @@ pub(crate) fn settle(tx: &mut Tx<'_>) -> Result<()> {
 /// is the memory lane's, and stays. Whether there was one.
 pub(crate) fn forget(tx: &mut Tx<'_>, id: &CommitId) -> Result<bool> {
     let Some(osis_store::Pending { bytes, .. }) = tx.txn.get_pending(id)? else { return Ok(false) };
-    let things: Vec<Tid> = osis_commit::CommitBlob::decode_stored(&bytes).ok().filter(|b| b.header.kind.is_role()).map(|b| b.header.aspects.iter().map(|a| a.tid).collect()).unwrap_or_default();
+    let blob = osis_commit::CommitBlob::decode_stored(&bytes).ok();
+    // what it writes on had something forgotten: a strong reaching it later pulls anew
+    // (`Core::brought`)
+    for a in blob.iter().flat_map(|b| &b.header.aspects) {
+        tx.core.brought.remove(&a.tid);
+    }
+    let things: Vec<Tid> = blob.filter(|b| b.header.kind.is_role()).map(|b| b.header.aspects.iter().map(|a| a.tid).collect()).unwrap_or_default();
     super::drop_pending(tx, id)?;
     tx.core.waits.unawaits(id);
     super::keys::forget_unchecked(tx, id)?;

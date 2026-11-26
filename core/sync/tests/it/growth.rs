@@ -1101,21 +1101,16 @@ fn a_holders_key_record_crosses_the_wire_once_spec_permissions_4() {
 /// Frames between nodes 0 and 1 by (from, kind): count, bytes.
 type Frames = BTreeMap<(usize, &'static str), (u64, u64)>;
 
-/// Node 0 makes `n` dependents of its account A (each held by A's `holds.0`, a small value), each
-/// alone in a commit, run to quiet after each: the frames between it and A's second node, node 1,
-/// and the sync IDs node 1 pulled anew.
-fn makes(w: &mut World, n: u64) -> (Frames, u64) {
+/// Node 0 makes `n` things of its account A by `make` (each held by A's `holds.0`, a small value),
+/// run to quiet after each: the frames between it and A's second node, node 1, and the sync IDs
+/// node 1 pulled anew.
+fn makes(w: &mut World, n: u64, make: fn(&mut osis_engine::Engine, Tid)) -> (Frames, u64) {
     let a = w.node(0).account.unwrap();
     let frames = |w: &World| -> Frames { w.net.frames.iter().filter(|((x, y, _), _)| (*x, *y) == (0, 1) || (*x, *y) == (1, 0)).map(|((x, _, k), v)| ((*x, *k), *v)).collect() };
     osis_base::costs::take();
     let before = frames(w);
     for _ in 0..n {
-        w.write(0, |e| {
-            let mut m = Mutation::new();
-            let t = e.new_thing(&mut m, a);
-            m.set(t, &value_ak(), &Value::Str("new".into())).unwrap();
-            e.commit(m).unwrap();
-        });
+        w.write(0, |e| make(e, a));
         w.run();
         w.advance(1_000);
     }
@@ -1141,11 +1136,56 @@ fn a_thing_another_node_makes_pulls_nothing_anew_spec_sync_judgement_3() {
     w.add_node();
     w.pair(0);
     w.run();
-    makes(&mut w, 3);
-    let ((n, a), (n10, a10)) = (makes(&mut w, 3), makes(&mut w, 30));
+    makes(&mut w, 3, a_dependent);
+    let ((n, a), (n10, a10)) = (makes(&mut w, 3, a_dependent), makes(&mut w, 30, a_dependent));
     assert_eq!((a, a10), (0, 0), "sync IDs pulled anew at n and 10n");
     let kinds = |f: &Frames| f.iter().map(|(k, v)| (*k, v.0)).collect::<BTreeMap<_, _>>();
     let per = |f: &Frames, by: u64| kinds(f).into_iter().map(|(k, c)| (k, c / by)).collect::<BTreeMap<_, _>>();
     assert!(kinds(&n).values().all(|c| c % 3 == 0) && per(&n, 3) == per(&n10, 30), "frames per make: {n:?} at n, {n10:?} at 10n");
     assert!(!n10.keys().any(|k| k.1.starts_with("Pull")), "no pull: {n10:?}");
+}
+
+/// A dependent of `a` held by `a`'s `holds.0` (`Engine::new_thing`), with a small value.
+fn a_dependent(e: &mut osis_engine::Engine, a: Tid) {
+    let mut m = Mutation::new();
+    let t = e.new_thing(&mut m, a);
+    m.set(t, &value_ak(), &Value::Str("new".into())).unwrap();
+    e.commit(m).unwrap();
+}
+
+/// An independent thing minted with admin `a` (`Engine::mint_independent`): its own-secrets
+/// rotation carrying its record, then a commit of its small value and `a`'s strong to it in
+/// `holds.0`.
+fn an_independent(e: &mut osis_engine::Engine, a: Tid) {
+    use osis_schema::core_types::HOLDS;
+    e.mint_independent(&[osis_engine::MintAdmin::Thing(a)], |ts| {
+        let mut m = Mutation::new();
+        m.op(a, &HOLDS, osis_crdt::PathOp { path: vec![], op: osis_crdt::Op::Add(Value::Strong(ts[0])) })?;
+        m.set(ts[0], &value_ak(), &Value::Str("new".into()))?;
+        Ok(vec![m])
+    })
+    .unwrap();
+}
+
+// spec/sync-judgement.md §3 Dropped bodies, spec/requirements.md Scale: an independent thing
+// another node of the account makes reaches its second node as its rotation (its minting) and
+// then its content commit, carrying A's strong to it, in a later transaction of the same pass:
+// nothing of the thing was forgotten between them, so A's unit is not pulled anew. At 3 and 30
+// makes after 3 no sync ID is pulled anew, and the frames and PullReply bytes per make (the new
+// thing's own sync ID's first sync) are the same at n and 10n.
+#[test]
+fn an_independent_thing_another_node_makes_pulls_nothing_anew_spec_sync_judgement_3() {
+    let mut w = World::new(0);
+    w.add_node();
+    w.pair(0);
+    w.run();
+    makes(&mut w, 3, an_independent);
+    let ((n, a), (n10, a10)) = (makes(&mut w, 3, an_independent), makes(&mut w, 30, an_independent));
+    assert_eq!((a, a10), (0, 0), "sync IDs pulled anew at n and 10n");
+    let kinds = |f: &Frames| f.iter().map(|(k, v)| (*k, v.0)).collect::<BTreeMap<_, _>>();
+    let per = |f: &Frames, by: u64| kinds(f).into_iter().map(|(k, c)| (k, c / by)).collect::<BTreeMap<_, _>>();
+    assert!(kinds(&n).values().all(|c| c % 3 == 0) && per(&n, 3) == per(&n10, 30), "frames per make: {n:?} at n, {n10:?} at 10n");
+    // a Pull each way per make: the new thing's own sync ID's first sync, the same bytes each make
+    let pulled = |f: &Frames, by: u64| f.iter().filter(|(k, _)| k.1 == "PullReply").map(|(k, v)| (k.0, v.1 / by)).collect::<BTreeMap<_, _>>();
+    assert_eq!(pulled(&n, 3), pulled(&n10, 30), "PullReply bytes per make at n and 10n");
 }

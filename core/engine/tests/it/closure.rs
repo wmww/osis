@@ -1234,6 +1234,45 @@ fn a_thing_minted_again_with_the_strong_back_is_pulled_anew_spec_sync_judgement_
     assert_eq!(lp.peers[1].engine.get(&y, &reg).unwrap(), Some(Value::Str("y".into())), "Y's content back");
 }
 
+// spec/sync-judgement.md §3 Dropped bodies (nothing of the thing forgotten since): a release ends
+// the exemption of the pass that brought a thing's minting. Peer 1 holds X; peer 0 makes Y in X's
+// sync unit with a value and Z with mint admin Y (Y stays needed outside the node closure), then
+// removes X's strong to Y and adds it back. In one pass peer 1 takes Y's making, the removal,
+// releases Y (its content goes) and takes the strong back: Y is pulled anew and its content comes
+// back. Fails where the exemption outlives a release within the pass.
+#[test]
+fn a_thing_released_in_the_pass_that_brought_it_is_pulled_anew_spec_sync_judgement_3() {
+    let reg = crate::common::ak("t:reg.0");
+    let (mut lp, x) = x_read_at_1();
+    let since = |lp: &LocalPeer, seen: &[osis_base::CommitId]| -> Vec<osis_base::CommitId> { lp.peers[0].engine.commit_ids().into_iter().filter(|c| !seen.contains(c)).collect() };
+    let seen = lp.peers[0].engine.commit_ids();
+    let (y, _) = crate::common::mint_from(&mut lp.peers[0].engine, x, x, &[(&crate::common::REG, "y")]);
+    make(&mut lp.peers[0].engine, y, x);
+    let made = since(&lp, &seen);
+    let seen = lp.peers[0].engine.commit_ids();
+    strong(&mut lp.peers[0].engine, x, y, false);
+    let removal = since(&lp, &seen);
+    let seen = lp.peers[0].engine.commit_ids();
+    strong(&mut lp.peers[0].engine, x, y, true);
+    let back = since(&lp, &seen);
+    lp.peers[1].pulled_anew.clear();
+    let was = synced(&mut lp);
+    crate::flows::send_carried(&mut lp, 0, 1, &made);
+    assert_eq!(lp.peers[1].engine.get(&y, &reg).unwrap(), Some(Value::Str("y".into())), "Y in X's sync unit reads");
+    assert!(lp.peers[1].pulled_anew.is_empty(), "Y's minting came with the strong");
+    crate::flows::send_carried(&mut lp, 0, 1, &removal);
+    let e1 = &mut lp.peers[1].engine;
+    assert!(!e1.closure_holds(&y), "Y left X's sync unit");
+    e1.released(&[y].into()).unwrap();
+    assert!(!e1.mintings_of(&y).is_empty(), "Y's minting kept: {}", e1.why_kept(&y));
+    assert_eq!(e1.get(&y, &reg).unwrap(), None, "Y's content went at the release");
+    crate::flows::send_carried(&mut lp, 0, 1, &back);
+    assert!(lp.peers[1].engine.closure_holds(&y), "Y back in X's sync unit");
+    assert!(pull_again(&mut lp, &was), "Y's entry pulls anew");
+    pass_end(&mut lp.peers[1].engine);
+    assert_eq!(lp.peers[1].engine.get(&y, &reg).unwrap(), Some(Value::Str("y".into())), "Y's content back");
+}
+
 // spec/commits.md §4 Outside the node closure, Pending storage: one commit of peer 0 writes Y,
 // outside peer 1's node closure, and X, in it; peer 1 gets its part on Y alone: that part waits for
 // Y to enter, so the commit pends whole (its every held part waits) and Y reads nothing. Peer 1
@@ -1397,10 +1436,13 @@ fn record_with_strong(orders: &[&[&str]]) -> Vec<End> {
     ends
 }
 
-// spec/sync-judgement.md §3 Dropped bodies (unless its record arrived in that transaction): a
-// strong newly reaching a thing pulls nothing anew when the thing's record arrives in the same
-// storage transaction, and that changes nothing the node ends up holding: C whole, or its part on
-// W in a transaction (and a pass) before its part on X, D before or after, end alike. D first
+// spec/sync-judgement.md §3 Dropped bodies (unless a minting arrived, while none was held, in the
+// pass in flight, nothing of the thing forgotten since): a strong newly reaching a thing pulls
+// nothing anew when the commit minting it arrives in the same pass, and that changes nothing the
+// node ends up holding: C whole, or its part on W in a transaction (or a pass) before its part on
+// X, D before or after, end alike. D taken between C's part on W and its part on X waits outside
+// the node closure and is still held when the strong comes; once the pass ends or D's last
+// carrier goes, it counts as never received and the strong pulls anew. D first
 // pends for W's record (spec/commits.md §4 Unjudgeable) and is kept across pass ends and a
 // restart while carried (§4 Pending storage, §5 What a held thing needs: W held for itself while
 // awaited), so C bringing W's record with the strong, pulling nothing, still finds it.
@@ -1424,13 +1466,18 @@ fn a_record_arriving_with_the_strong_pulls_nothing_and_ends_alike_spec_sync_judg
         &["D", "pass end", "C on X", "pass end", "C on W"],
         &["D", "W's record", "C"],
         &["D", "W's record", "pass end", "C"],
+        &["C on W", "D", "C on X"],
+        &["C on W", "D", "pass end", "C on X"],
+        &["C on W", "D", "D gone", "C on X"],
     ]);
     for e in &ends[1..] {
         assert_eq!((&e.2, &e.3), (&ends[0].2, &ends[0].3), "{} ends as {}", e.0, ends[0].0);
     }
-    assert_eq!(ends[0].1, 0, "C whole: its record came with the strong, nothing pulled anew");
-    assert!(ends[1].1 > 0 && ends[2].1 > 0, "C on W first: the strong reaches a thing outside the node closure, pulled anew");
-    assert_eq!((ends[4].1, ends[5].1), (0, 0), "D first, C whole: nothing pulled anew, D kept pending");
+    let pulls = |i: usize| ends[i].1;
+    assert_eq!((pulls(0), pulls(1), pulls(12)), (0, 0, 0), "C's minting in the pass the strong came in: nothing pulled anew");
+    assert!(pulls(2) > 0 && pulls(13) > 0, "the pass that brought C's minting ended first: pulled anew");
+    assert!(pulls(14) > 0, "D forgotten within the pass (its carrier gone): pulled anew");
+    assert_eq!((pulls(4), pulls(5)), (0, 0), "D first, C whole: nothing pulled anew, D kept pending");
 }
 
 // spec/commits.md §4 Pending storage, §5 What a held thing needs (held for itself while awaited):
