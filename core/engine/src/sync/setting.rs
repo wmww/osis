@@ -43,14 +43,12 @@ fn put(tx: &mut Tx<'_>, t: Tid, c: CommitId, at: u64) -> Result<()> {
 /// Loads the setting waits (an open or reload); the pass place goes on from the highest stored.
 pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
     let bad = || Error::Corrupt("setting wait");
-    let mut rows = Vec::new();
-    tx.scan(ROWS, |k, v| {
+    let rows = tx.scan_rows(ROWS, |k, v| {
         let (t, c) = k.split_at_checked(15).ok_or_else(bad)?;
         let t = Tid::from_bytes(t.try_into().map_err(|_| bad())?);
         let c = CommitId(c.try_into().map_err(|_| bad())?);
         let at = u64::from_be_bytes(v.as_slice().try_into().map_err(|_| bad())?);
-        rows.push(((t, c), Wait { at, ended: false }));
-        Ok(())
+        Ok(((t, c), Wait { at, ended: false }))
     })?;
     tx.core.place = tx.core.place.max(rows.iter().map(|(_, w)| w.at).max().unwrap_or(0));
     tx.core.ix.setting_waits.extend(rows);

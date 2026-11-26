@@ -904,11 +904,7 @@ pub(crate) fn pending_boxes(tx: &mut Tx<'_>, blob: &osis_commit::CommitBlob, id:
 /// lost-access trigger, which drops them with what they read.
 pub(crate) fn forget_unchecked(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
     let prefix = [SEALED, &id.0[..]].concat();
-    let mut sealed = Vec::new();
-    tx.scan(&prefix, |k, _| {
-        sealed.push([prefix.as_slice(), k].concat());
-        Ok(())
-    })?;
+    let sealed = tx.scan_rows(&prefix, |k, _| Ok([prefix.as_slice(), k].concat()))?;
     for k in sealed {
         tx.txn.remove_local(&k, Shred::No)?;
     }

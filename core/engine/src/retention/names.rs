@@ -179,13 +179,11 @@ pub(crate) fn forget_aspect(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
 
 /// The names kept at the last stop.
 pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
-    let mut rows = Vec::new();
-    tx.scan(records::FORGOTTEN_NAMES, |k, v| {
+    let rows = tx.scan_rows(records::FORGOTTEN_NAMES, |k, v| {
         let mut r = Rd::new(k);
         let (tid, ak, c) = (r.tid()?, r.ak()?, CommitId(r.arr()?));
         r.end()?;
-        rows.push(((tid, ak), c, Name::decode(&v)?));
-        Ok(())
+        Ok(((tid, ak), c, Name::decode(&v)?))
     })?;
     for (k, c, n) in rows {
         tx.core.ix.forgotten_names.insert(k, c, n);

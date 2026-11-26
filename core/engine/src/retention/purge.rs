@@ -324,11 +324,7 @@ fn aspect_requests(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Vec<CommitId>>
         Some(b) => request_ids(&b)?,
         None => Vec::new(),
     };
-    let mut lists = Vec::new();
-    tx.scan(&records::aspect_key(records::PURGES_NAMED, tid, ak), |_, v| {
-        lists.push(v);
-        Ok(())
-    })?;
+    let lists = tx.scan_rows(&records::aspect_key(records::PURGES_NAMED, tid, ak), |_, v| Ok(v))?;
     for l in lists {
         out.extend(request_ids(&l)?);
     }
@@ -757,11 +753,7 @@ fn writes_on(core: &Core, tid: &Tid) -> bool {
 
 /// The re-snapshots owed at the last stop (`Indexes::resnapshots_owed`), each due again.
 pub(crate) fn load_owed(tx: &mut Tx<'_>) -> Result<()> {
-    let mut rows = Vec::new();
-    tx.scan(records::RESNAPSHOTS_OWED, |k, v| {
-        rows.push((k.to_vec(), v));
-        Ok(())
-    })?;
+    let rows = tx.scan_rows(records::RESNAPSHOTS_OWED, |k, v| Ok((k.to_vec(), v)))?;
     for (k, v) in rows {
         let mut r = records::Rd::new(&k);
         let (tid, ak) = (r.tid()?, r.ak()?);

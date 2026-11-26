@@ -1038,15 +1038,13 @@ pub(crate) fn old_judgments(tx: &mut Tx<'_>) -> Option<OldJudgments> {
 pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
     // commit records: the head and the header's bytes only, nothing decoded
     let hs = osis_base::costs::span("open: headers");
-    let mut recs = Vec::new();
-    tx.scan(records::COMMIT, |k, v| {
+    let recs = tx.scan_rows(records::COMMIT, |k, v| {
         let id = CommitId(k.try_into().map_err(|_| Error::Corrupt("commit record key"))?);
         let (head, blob) = parse_head(&v)?;
         // the blob is `[header, signature, parts]`: its first item
         let lim = osis_base::Limits::new(osis_base::format::MAX_OBJECT_DEPTH, blob.len());
         let hb = osis_base::item_prefix(blob.get(1..).unwrap_or_default(), &lim).map_err(|_| Error::Corrupt("commit record header"))?;
-        recs.push((id, head, Box::<[u8]>::from(hb)));
-        Ok(())
+        Ok((id, head, Box::<[u8]>::from(hb)))
     })?;
     drop(hs);
     let _ms = osis_base::costs::span("open: metas");

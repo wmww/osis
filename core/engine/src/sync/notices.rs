@@ -63,11 +63,9 @@ fn decode(v: &[u8]) -> Option<Notice> {
 /// Loads the notice rows (an open or reload).
 pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
     let bad = || Error::Corrupt("notice row");
-    let mut rows = Vec::new();
-    tx.scan(NOTICES, |k, v| {
+    let rows = tx.scan_rows(NOTICES, |k, v| {
         let b = BlobId(k.try_into().map_err(|_| bad())?);
-        rows.push((b, decode(&v).ok_or_else(bad)?));
-        Ok(())
+        Ok((b, decode(&v).ok_or_else(bad)?))
     })?;
     for (b, n) in rows {
         tx.core.ix.notices.insert(b, n);

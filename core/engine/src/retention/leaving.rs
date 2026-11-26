@@ -547,15 +547,13 @@ pub(crate) fn rows_exact(tx: &mut Tx<'_>, keys: &BTreeSet<(Tid, Ak)>) -> Result<
 /// Reads the rows and cursors at open (`apply::load`); a row of a commit no longer held there
 /// (its records changed outside the indexes) goes.
 pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
-    let mut rows = Vec::new();
-    tx.scan(records::LEAVING, |k, _| {
+    let rows = tx.scan_rows(records::LEAVING, |k, _| {
         let mut r = Rd::new(k);
         let (tid, ak) = (r.tid()?, r.ak()?);
         let ts = Ts::from_u64(r.u64()?).ok_or(Error::Corrupt("leaving row"))?;
         let c = CommitId(r.arr()?);
         r.end()?;
-        rows.push((tid, ak, (ts, c)));
-        Ok(())
+        Ok((tid, ak, (ts, c)))
     })?;
     for (tid, ak, p) in rows {
         if tx.core.ix.commits.get(&p.1).is_some_and(|m| m.aspect(&tid, &ak).is_some()) {
@@ -565,16 +563,14 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
             put(tx, &ak, &row_key(&tid, &ak, &p), None)?;
         }
     }
-    let mut froms = Vec::new();
-    tx.scan(records::LEAVE_FROM, |k, v| {
+    let froms = tx.scan_rows(records::LEAVE_FROM, |k, v| {
         let mut r = Rd::new(k);
         let (tid, ak) = (r.tid()?, r.ak()?);
         let mut r = Rd::new(&v);
         let due = r.u64()?;
         let out = if r.u8()? == 1 { Some((Ts::from_u64(r.u64()?).ok_or(Error::Corrupt("leaving cursor"))?, CommitId(r.arr()?))) } else { None };
         r.end()?;
-        froms.push(((tid, ak), (due, out)));
-        Ok(())
+        Ok(((tid, ak), (due, out)))
     })?;
     for (k, f) in froms {
         if f.0 != u64::MAX {

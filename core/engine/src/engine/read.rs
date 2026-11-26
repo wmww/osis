@@ -233,11 +233,9 @@ impl Engine {
     /// Every aspect with a held state, as `(tid, ak)` (simulator invariants).
     pub fn all_aspects(&mut self) -> Result<Vec<(Tid, Ak)>> {
         self.read(|tx| {
-            let mut out = Vec::new();
-            tx.scan(records::ASPECTS, |k, _| {
+            let out = tx.scan_rows(records::ASPECTS, |k, _| {
                 let mut r = records::Rd::new(k);
-                out.push((r.tid()?, r.ak()?));
-                Ok(())
+                Ok((r.tid()?, r.ak()?))
             })?;
             Ok(out)
         })

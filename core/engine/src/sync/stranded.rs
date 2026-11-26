@@ -82,12 +82,10 @@ fn ask_key(a: &Tid, m: &Tid) -> Vec<u8> {
 /// Loads the asks (an open or reload).
 pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
     let bad = || Error::Corrupt("re-seal ask");
-    let mut rows = Vec::new();
-    tx.scan(ASKS, |k, v| {
+    let rows = tx.scan_rows(ASKS, |k, v| {
         let a = Tid::from_bytes(k.get(..15).ok_or_else(bad)?.try_into().map_err(|_| bad())?);
         let m = Tid::from_bytes(k.get(15..).ok_or_else(bad)?.try_into().map_err(|_| bad())?);
-        rows.push(((a, m), Ask::decode(&v).ok_or_else(bad)?));
-        Ok(())
+        Ok(((a, m), Ask::decode(&v).ok_or_else(bad)?))
     })?;
     // the pass place goes on from the highest stored (`sync::held::load`)
     let top = rows.iter().map(|(_, k)| k.at).max().unwrap_or(0);

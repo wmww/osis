@@ -116,15 +116,13 @@ pub(crate) fn key(t: &Tid, e: &Epoch) -> Vec<u8> {
 
 /// Loads `Indexes::derived_written` from its records.
 pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
-    let mut rows = Vec::new();
-    tx.scan(records::DERIVED_WRITTEN, |k, _| {
+    let rows = tx.scan_rows(records::DERIVED_WRITTEN, |k, _| {
         let bad = || Error::Corrupt("derived written");
         let (t, rest) = k.split_at_checked(15).ok_or_else(bad)?;
         let (n, nonce) = rest.split_at_checked(8).ok_or_else(bad)?;
         let n = u64::from_be_bytes(n.try_into().map_err(|_| bad())?);
         let e = Epoch::new(n, nonce.try_into().map_err(|_| bad())?).map_err(|_| bad())?;
-        rows.push((Tid::from_bytes(t.try_into().map_err(|_| bad())?), e));
-        Ok(())
+        Ok((Tid::from_bytes(t.try_into().map_err(|_| bad())?), e))
     })?;
     for (t, e) in rows {
         tx.core.ix.derived_written.upsert(t, BTreeSet::new, |s| {

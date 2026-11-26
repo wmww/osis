@@ -2188,11 +2188,9 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
         tx.core.hlc.observe(ts);
     }
     crate::sides::load(tx)?;
-    let mut created = Vec::new();
-    tx.scan(records::CREATED, |_, v| {
+    let created = tx.scan_rows(records::CREATED, |_, v| {
         let lim = osis_base::Limits::new(8, v.len());
-        created.push(osis_base::decode(&v, &lim).ok().and_then(|v| CreationRecord::from_value(&v)).ok_or(Error::Corrupt("creation record"))?);
-        Ok(())
+        osis_base::decode(&v, &lim).ok().and_then(|v| CreationRecord::from_value(&v)).ok_or(Error::Corrupt("creation record"))
     })?;
     for r in created {
         tx.core.ix.held.create(r);
@@ -2213,30 +2211,22 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
     crate::sync_ids::opened::load(tx)?;
     crate::rotation::merge::load(tx)?;
     crate::retention::load_owed(tx)?;
-    let mut vl = Vec::new();
-    tx.scan(records::GONE, |k, v| {
-        vl.push((k.to_vec(), v));
-        Ok(())
-    })?;
+    let vl = tx.scan_rows(records::GONE, |k, v| Ok((k.to_vec(), v)))?;
     for (k, v) in vl {
         let mut r = records::Rd::new(&k);
         let (tid, ak) = (r.tid()?, r.ak()?);
         tx.core.ix.gone.insert((tid, ak), crate::retention::decode_owned(&v)?);
     }
-    let mut secrets = Vec::new();
-    tx.scan(crate::engine::records::SECRETS, |k, v| {
+    let secrets = tx.scan_rows(crate::engine::records::SECRETS, |k, v| {
         let t = Tid::from_bytes(k.try_into().map_err(|_| Error::Corrupt("secrets"))?);
-        secrets.push((t, crate::engine::secrets::decode_epochs(&v)?));
-        Ok(())
+        Ok((t, crate::engine::secrets::decode_epochs(&v)?))
     })?;
     tx.core.ix.secrets.extend(secrets);
     // the `keys.0` parts that wrote a keyset, kept once their bodies dropped or went missing
-    let mut parts = Vec::new();
-    tx.scan(records::OWN_SECRETS, |k, _| {
+    let parts = tx.scan_rows(records::OWN_SECRETS, |k, _| {
         let bad = || Error::Corrupt("own secrets");
         let (t, c) = k.split_at_checked(15).ok_or_else(bad)?;
-        parts.push((Tid::from_bytes(t.try_into().map_err(|_| bad())?), CommitId(c.try_into().map_err(|_| bad())?)));
-        Ok(())
+        Ok((Tid::from_bytes(t.try_into().map_err(|_| bad())?), CommitId(c.try_into().map_err(|_| bad())?)))
     })?;
     for (t, c) in parts {
         tx.core.ix.keyset_parts.insert(t, c);
@@ -2260,14 +2250,12 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
         Ok(())
     })?;
     tx.core.schemas.extend(schemas);
-    let mut forgotten = Vec::new();
-    tx.scan(records::FORGOTTEN, |k, v| {
+    let forgotten = tx.scan_rows(records::FORGOTTEN, |k, v| {
         let bad = || Error::Corrupt("forgotten row");
         let mut r = records::Rd::new(k);
         let (tid, ak) = (r.tid()?, r.ak()?);
         let ts = v.try_into().map_err(|_| bad()).and_then(|b: [u8; 8]| osis_base::Ts::from_u64(u64::from_be_bytes(b)).ok_or_else(bad))?;
-        forgotten.push(((tid, ak), ts));
-        Ok(())
+        Ok(((tid, ak), ts))
     })?;
     for (k, ts) in forgotten {
         tx.core.ix.forgotten.insert(k, ts);
@@ -2304,11 +2292,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
     } else {
         // applied commits, each record decoded once per write of it (`Core::decoded`, kept as
         // `Tx::get_commit` reads it)
-        let mut recs = Vec::new();
-        tx.scan(records::COMMIT, |k, v| {
-            recs.push((CommitId(k.try_into().map_err(|_| Error::Corrupt("commit record key"))?), v.to_vec()));
-            Ok(())
-        })?;
+        let recs = tx.scan_rows(records::COMMIT, |k, v| Ok((CommitId(k.try_into().map_err(|_| Error::Corrupt("commit record key"))?), v.to_vec())))?;
         let mut bodies = Vec::new();
         let mut snaps = Vec::new();
         for (id, bytes) in recs {
@@ -2447,11 +2431,9 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
     tx.core.waits.open_due = true;
     crate::retention::destroy::load(tx, fast)?;
     // derived indexes from states (secrets: persisted, read again on a rebuild)
-    let mut aspects = Vec::new();
-    tx.scan(crate::engine::records::ASPECTS, |k, _| {
+    let aspects = tx.scan_rows(crate::engine::records::ASPECTS, |k, _| {
         let mut r = records::Rd::new(k);
-        aspects.push((r.tid()?, r.ak()?));
-        Ok(())
+        Ok((r.tid()?, r.ak()?))
     })?;
     for (tid, ak) in aspects {
         match ak.as_str() {

@@ -40,16 +40,6 @@ fn written(core: &crate::engine::Core, target: &Tid, old: Option<&PermEdge>, d: 
     Ok(retain.then_some(Edge { role: Role::Read, until: Some(osis_base::WallMs(0)), may_grant: false, retain: false, floor: None }))
 }
 
-/// A grant or a raise of `holder`'s edge on `target` by `who` (its node thing, or a held link key
-/// signing), with the grantee's boxes for every granted role at each current epoch
-/// (spec/crypto.md §4). An admin's grant, or a may-grant grant (spec/permissions.md §2) where
-/// `who`'s effective may-grant allows it and the holder has no current edge. `leave`: the signer's
-/// own edge removed in the same commit (a single-use redemption, spec/permissions.md §7).
-/// `frontier`: the one a grant that audits carries (`Engine::grant_signed`).
-pub(crate) fn grant_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, holder: Tid, edge: &Edge, leave: bool, frontier: Option<osis_perm::Frontier>) -> Result<Done> {
-    grant_history(tx, signer, target, holder, edge, leave, frontier, History::All)
-}
-
 /// What a grant hands its holder of what was written before it (spec/crypto.md §4, Floors).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum History {
@@ -60,7 +50,13 @@ pub enum History {
     None,
 }
 
-/// `grant_in`, handing `history`.
+/// A grant or a raise of `holder`'s edge on `target` by `who` (its node thing, or a held link key
+/// signing), with the grantee's boxes for every granted role at each current epoch
+/// (spec/crypto.md §4). An admin's grant, or a may-grant grant (spec/permissions.md §2) where
+/// `who`'s effective may-grant allows it and the holder has no current edge. `leave`: the signer's
+/// own edge removed in the same commit (a single-use redemption, spec/permissions.md §7).
+/// `frontier`: the one a grant that audits carries (`Engine::grant_signed_then`). `history`:
+/// what it hands the holder of what was written before it.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn grant_history(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, holder: Tid, edge: &Edge, leave: bool, frontier: Option<osis_perm::Frontier>, history: History) -> Result<Done> {
     let who = signer.unwrap_or(tx.core.tid());
@@ -438,14 +434,14 @@ impl Engine {
     /// as an admin of the target or by a may-grant. Gives the target (and a dependent holder) secrets of
     /// their own first where needed. Delivers the grant to the holder's inbox (a node: direct).
     pub fn grant(&mut self, target: &Tid, holder: &Tid, edge: &Edge) -> Result<Done> {
-        self.grant_signed(None, *target, *holder, edge, false, History::All)
+        self.grant_with(target, holder, edge, History::All)
     }
 
     /// `grant` handing `history` of what was written before it (spec/crypto.md §4, Floors): a
     /// grant without it is a cut, so `holder` reads only what is written under its epoch and
     /// those after it. An admin's grant to a holder holding no role on the target.
     pub fn grant_with(&mut self, target: &Tid, holder: &Tid, edge: &Edge, history: History) -> Result<Done> {
-        self.grant_signed(None, *target, *holder, edge, false, history)
+        self.grant_signed_then(None, *target, *holder, edge, false, history, |_| Ok(()))
     }
 
     /// Writes `key`'s grant on `target` (spec/permissions.md §1 Key grant, §2 Key grants): `edge`
@@ -499,16 +495,11 @@ impl Engine {
         Ok(done)
     }
 
-    /// `grant_in` with the frontier of what this node received when the grant audits: an admin's
+    /// `grant_history` with the frontier of what this node received when the grant audits: an admin's
     /// grant below the edge as restored (spec/permissions.md §5.1 step 4), such as a may-grant taken
     /// away or a role below one the holder lost with no explicit write on the edge since. Invariant: an
     /// explicit write that audits carries its author's frontier, else every write of the holder's
-    /// it puts in question drops, received or not.
-    pub(crate) fn grant_signed(&mut self, signer: Option<Tid>, target: Tid, holder: Tid, edge: &Edge, leave: bool, history: History) -> Result<Done> {
-        self.grant_signed_then(signer, target, holder, edge, leave, history, |_| Ok(()))
-    }
-
-    /// `grant_signed`, then `then` in the same transaction.
+    /// it puts in question drops, received or not. `then` runs in the same transaction.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn grant_signed_then(&mut self, signer: Option<Tid>, target: Tid, holder: Tid, edge: &Edge, leave: bool, history: History, then: impl FnOnce(&mut Tx<'_>) -> Result<()>) -> Result<Done> {
         let who = signer.unwrap_or(self.core.tid());

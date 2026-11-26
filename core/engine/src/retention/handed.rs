@@ -162,13 +162,11 @@ pub(crate) fn settle_due(tx: &mut Tx<'_>) -> Result<()> {
 
 /// The covers kept at the last stop.
 pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
-    let mut rows = Vec::new();
-    tx.scan(records::HANDED, |k, v| {
+    let rows = tx.scan_rows(records::HANDED, |k, v| {
         let mut r = Rd::new(k);
         let id = CommitId(r.arr()?);
         r.end()?;
-        rows.push((id, Handed::decode(&v)?));
-        Ok(())
+        Ok((id, Handed::decode(&v)?))
     })?;
     for (id, h) in rows {
         tx.core.put_handed(id, Arc::new(h));

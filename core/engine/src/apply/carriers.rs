@@ -72,11 +72,9 @@ fn key(c: &CommitId, k: &Carrier) -> Vec<u8> {
 /// Loads the carriers (an open or reload).
 pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
     let bad = || Error::Corrupt("pending carrier");
-    let mut rows = Vec::new();
-    tx.scan(CARRIERS, |k, _| {
+    let rows = tx.scan_rows(CARRIERS, |k, _| {
         let c = CommitId(k.get(..32).ok_or_else(bad)?.try_into().map_err(|_| bad())?);
-        rows.push((c, Carrier::decode(k.get(32..).ok_or_else(bad)?).ok_or_else(bad)?));
-        Ok(())
+        Ok((c, Carrier::decode(k.get(32..).ok_or_else(bad)?).ok_or_else(bad)?))
     })?;
     for (c, k) in rows {
         insert(tx, c, k);

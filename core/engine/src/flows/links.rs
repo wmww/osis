@@ -9,7 +9,7 @@ use super::sync_ids::ReaderKey;
 use super::{Done, put_edge};
 use crate::engine::{Engine, Tx};
 use crate::error::{Error, Result};
-use crate::flows::edges::grant_in;
+use crate::flows::edges::{History, grant_history};
 use crate::rotation;
 use crate::Mutation;
 use osis_base::{Role, Tid, Value, WallMs};
@@ -120,7 +120,7 @@ impl Engine {
         // and the target (spec/sync-set.md §4): strongs to both in the joiner's `holds.0`,
         // unless the node closure holds them
         let target = link.target;
-        self.grant_signed_then(Some(l), k, grantee, &grant, single_use, crate::flows::edges::History::All, move |tx| {
+        self.grant_signed_then(Some(l), k, grantee, &grant, single_use, History::All, move |tx| {
             let d = grantee;
             let mut m = Mutation::new();
             for t in [k, target].into_iter().filter(|t| !tx.core.ix.closure.holds(t)) {
@@ -394,7 +394,7 @@ fn create_link_in(tx: &mut Tx<'_>, sharer: Tid, spec: &LinkSpec, krec: osis_base
     // grant on it, to a redeemer (spec/permissions.md §7 Redeem step 3)
     let target_edge = Edge { role: spec.role, until: None, may_grant: false, retain: false, floor: None };
     // K is new: the grant demotes nobody, so it carries no frontier
-    done.extend(grant_in(tx, None, spec.target, k, &target_edge, false, None)?);
+    done.extend(grant_history(tx, None, spec.target, k, &target_edge, false, None, History::All)?);
     let mut m = Mutation::new();
     m.op(k, &ct::HOLDS, PathOp { path: Vec::new(), op: Op::Add(Value::Strong(spec.target)) })?;
     done.add(Engine::commit_tx(tx, m)?);

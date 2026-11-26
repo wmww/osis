@@ -66,21 +66,9 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
     tx.core.ix.held_wait.extend(ids);
     let bad = || Error::Corrupt("complete pass");
     let place = |v: &[u8]| v.try_into().map(u64::from_be_bytes).map_err(|_| bad());
-    let mut rows = Vec::new();
-    tx.scan(PASSES, |k, v| {
-        rows.push((SyncId(k.get(..).ok_or_else(bad)?.try_into().map_err(|_| bad())?), place(v.get(..).ok_or_else(bad)?)?));
-        Ok(())
-    })?;
-    let mut arrivals = Vec::new();
-    tx.scan(ARRIVALS, |k, v| {
-        arrivals.push((Tid::from_bytes(k.get(..).ok_or_else(bad)?.try_into().map_err(|_| bad())?), place(v.get(..).ok_or_else(bad)?)?));
-        Ok(())
-    })?;
-    let mut causes = Vec::new();
-    tx.scan(CAUSES, |k, v| {
-        causes.push((Cause::from_key(k).ok_or_else(bad)?, place(v.get(..).ok_or_else(bad)?)?));
-        Ok(())
-    })?;
+    let rows = tx.scan_rows(PASSES, |k, v| Ok((SyncId(k.get(..).ok_or_else(bad)?.try_into().map_err(|_| bad())?), place(v.get(..).ok_or_else(bad)?)?)))?;
+    let arrivals = tx.scan_rows(ARRIVALS, |k, v| Ok((Tid::from_bytes(k.get(..).ok_or_else(bad)?.try_into().map_err(|_| bad())?), place(v.get(..).ok_or_else(bad)?)?)))?;
+    let causes = tx.scan_rows(CAUSES, |k, v| Ok((Cause::from_key(k).ok_or_else(bad)?, place(v.get(..).ok_or_else(bad)?)?)))?;
     let top = rows.iter().map(|x| x.1).chain(arrivals.iter().map(|x| x.1)).chain(causes.iter().map(|x| x.1)).max().unwrap_or(0);
     tx.core.place = tx.core.place.max(top);
     tx.core.ix.passes.extend(rows);

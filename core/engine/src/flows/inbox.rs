@@ -75,11 +75,9 @@ fn sent_key(c: &CommitId, holder: &Tid) -> Vec<u8> {
 /// Loads the `sync.0` writes sent (an open).
 pub(crate) fn load_sent(tx: &mut Tx<'_>) -> Result<()> {
     let bad = || Error::Corrupt("sync sent row");
-    let mut rows = Vec::new();
-    tx.scan(SYNC_SENT, |k, _| {
+    let rows = tx.scan_rows(SYNC_SENT, |k, _| {
         let (c, h) = k.split_at_checked(32).ok_or_else(bad)?;
-        rows.push((CommitId(c.try_into().map_err(|_| bad())?), Tid::from_bytes(h.try_into().map_err(|_| bad())?)));
-        Ok(())
+        Ok((CommitId(c.try_into().map_err(|_| bad())?), Tid::from_bytes(h.try_into().map_err(|_| bad())?)))
     })?;
     for (c, h) in rows {
         tx.core.ix.sync_sent.insert(c, h);
@@ -356,14 +354,12 @@ fn index_carried(core: &mut crate::engine::Core, fire: CommitId, c: Carried) {
 /// Loads what the held grant fires carry (an open or reload).
 pub(crate) fn load_carried(tx: &mut Tx<'_>) -> Result<()> {
     let bad = || Error::Corrupt("grant fire row");
-    let mut rows = Vec::new();
-    tx.scan(CARRIED, |k, v| {
+    let rows = tx.scan_rows(CARRIED, |k, v| {
         let fire = CommitId(k.try_into().map_err(|_| bad())?);
         let (c, rest) = v.split_at_checked(32).ok_or_else(bad)?;
         let (h, t) = rest.split_at_checked(15).ok_or_else(bad)?;
         let tid = |b: &[u8]| -> Result<Tid> { Ok(Tid::from_bytes(b.try_into().map_err(|_| bad())?)) };
-        rows.push((fire, Carried { commit: CommitId(c.try_into().map_err(|_| bad())?), holder: tid(h)?, target: tid(t)? }));
-        Ok(())
+        Ok((fire, Carried { commit: CommitId(c.try_into().map_err(|_| bad())?), holder: tid(h)?, target: tid(t)? }))
     })?;
     for (fire, c) in rows {
         index_carried(tx.core, fire, c);
@@ -513,11 +509,7 @@ fn ak_value(ak: &Option<Ak>) -> Value {
 
 /// Loads the owed fires (an open).
 pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
-    let mut rows = Vec::new();
-    tx.scan(FIRES, |_, v| {
-        rows.push(OwedFire::decode(&v)?);
-        Ok(())
-    })?;
+    let rows = tx.scan_rows(FIRES, |_, v| OwedFire::decode(&v))?;
     for o in rows {
         tx.core.ix.fires_on.insert(o.thing, o.id());
         tx.core.ix.fires.insert(o.id(), Arc::new(o));

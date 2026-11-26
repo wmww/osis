@@ -127,11 +127,7 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
 }
 
 fn rows(tx: &mut Tx<'_>, prefix: &[u8]) -> Result<Vec<Freed>> {
-    let mut out = Vec::new();
-    tx.scan(prefix, |k, v| {
-        out.push(Freed::decode(&[prefix.get(records::FREED.len()..).unwrap_or_default(), k].concat(), &v)?);
-        Ok(())
-    })?;
+    let out = tx.scan_rows(prefix, |k, v| Freed::decode(&[prefix.get(records::FREED.len()..).unwrap_or_default(), k].concat(), &v))?;
     Ok(out)
 }
 
@@ -325,11 +321,7 @@ fn judge_blobs(tx: &mut Tx<'_>, blobs: &BTreeSet<BlobId>) -> Result<(Judgment, V
 pub(crate) fn lost(tx: &mut Tx<'_>, things: &BTreeSet<Tid>, roots: BTreeMap<Tid, Vec<Link>>, aspects: &BTreeSet<(Tid, Ak)>, parts: &BTreeMap<CommitId, BTreeSet<usize>>) -> Result<BTreeSet<BlobId>> {
     // the rows of `things` alone, found by thing
     for t in things {
-        let mut blobs = Vec::new();
-        tx.scan(&[records::FREED_OF, t.as_bytes()].concat(), |k, _| {
-            blobs.push(BlobId(Rd::new(k).arr()?));
-            Ok(())
-        })?;
+        let blobs = tx.scan_rows(&[records::FREED_OF, t.as_bytes()].concat(), |k, _| Ok(BlobId(Rd::new(k).arr()?)))?;
         for b in blobs {
             remove_row(tx, &b, t)?;
         }

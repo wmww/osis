@@ -12,13 +12,11 @@ pub(crate) const FALLS: &[u8] = b"fm/";
 
 /// Loads the fall marks (an open or reload).
 pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
-    let mut rows = Vec::new();
-    tx.scan(FALLS, |k, v| {
+    let rows = tx.scan_rows(FALLS, |k, v| {
         let mut r = records::Rd::new(k);
         let (t, ak) = (r.tid()?, r.ak()?);
         let n = u64::from_be_bytes(v.as_slice().try_into().map_err(|_| Error::Corrupt("fall mark"))?);
-        rows.push(((t, ak), n));
-        Ok(())
+        Ok(((t, ak), n))
     })?;
     tx.core.ix.falls.extend(rows);
     Ok(())

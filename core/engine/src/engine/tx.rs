@@ -125,11 +125,9 @@ impl Tx<'_> {
     /// Removes every timer of commit `c` (`ai`: of that part alone), found by part
     /// (`records::TIMER_OF`): O(the commit's timers).
     pub(crate) fn remove_timers_of(&mut self, c: &CommitId, ai: Option<usize>) -> Result<()> {
-        let mut found = Vec::new();
-        self.scan(&[records::TIMER_OF, &c.0[..]].concat(), |k, _| {
+        let found = self.scan_rows(&[records::TIMER_OF, &c.0[..]].concat(), |k, _| {
             let mut r = records::Rd::new(k);
-            found.push((r.u32()? as usize, r.u64()?));
-            Ok(())
+            Ok((r.u32()? as usize, r.u64()?))
         })?;
         for (x, t) in found.into_iter().filter(|(x, _)| ai.is_none_or(|ai| ai == *x)) {
             self.remove_timer(t, c, x)?;
@@ -144,12 +142,7 @@ impl Tx<'_> {
 
     /// The AKs of `t` with a state stored (`records::ASPECTS`), in key order.
     pub(crate) fn state_aks(&mut self, t: &Tid) -> Result<Vec<Ak>> {
-        let mut aks = Vec::new();
-        self.scan(&[records::ASPECTS, t.as_bytes()].concat(), |k, _| {
-            aks.push(records::Rd::new(k).ak()?);
-            Ok(())
-        })?;
-        Ok(aks)
+        self.scan_rows(&[records::ASPECTS, t.as_bytes()].concat(), |k, _| records::Rd::new(k).ak())
     }
 
     /// Loads the state of `(tid, ak)` into the cache: a paged state lazily (its skeleton; pages
@@ -796,15 +789,20 @@ impl Tx<'_> {
         }
     }
 
-    /// The keys under `prefix`, each `N` bytes made a `T` by `of`; a key of another length is a
-    /// corrupt `what` row.
-    pub(crate) fn scan_keys<const N: usize, T>(&mut self, prefix: &[u8], what: &'static str, of: impl Fn([u8; N]) -> T) -> Result<Vec<T>> {
+    /// `scan`, each row (key, value) made a `T` by `f`, in key order.
+    pub(crate) fn scan_rows<T>(&mut self, prefix: &[u8], mut f: impl FnMut(&[u8], Vec<u8>) -> Result<T>) -> Result<Vec<T>> {
         let mut out = Vec::new();
-        self.scan(prefix, |k, _| {
-            out.push(of(k.try_into().map_err(|_| Error::Corrupt(what))?));
+        self.scan(prefix, |k, v| {
+            out.push(f(k, v)?);
             Ok(())
         })?;
         Ok(out)
+    }
+
+    /// The keys under `prefix`, each `N` bytes made a `T` by `of`; a key of another length is a
+    /// corrupt `what` row.
+    pub(crate) fn scan_keys<const N: usize, T>(&mut self, prefix: &[u8], what: &'static str, of: impl Fn([u8; N]) -> T) -> Result<Vec<T>> {
+        self.scan_rows(prefix, |k, _| Ok(of(k.try_into().map_err(|_| Error::Corrupt(what))?)))
     }
 
     pub fn now(&self) -> WallMs {

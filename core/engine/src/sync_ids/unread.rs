@@ -127,13 +127,11 @@ pub(crate) fn holder_of(plain: &[u8]) -> Option<(Tid, Tid)> {
 /// Loads the sync copies taken (an open or reload).
 pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
     let bad = || Error::Corrupt("sync copy row");
-    let mut rows: Vec<(BlobId, HeldSyncCopy)> = Vec::new();
-    tx.scan(SYNC_COPIES, |k, v| {
+    let rows = tx.scan_rows(SYNC_COPIES, |k, v| {
         let b = BlobId(k.try_into().map_err(|_| bad())?);
         let (u, rest) = v.split_at_checked(15).ok_or_else(bad)?;
         let (sealed, plain) = rest.split_first().ok_or_else(bad)?;
-        rows.push((b, parse(Tid::from_bytes(u.try_into().map_err(|_| bad())?), *sealed == 1, plain).ok_or_else(bad)?));
-        Ok(())
+        Ok((b, parse(Tid::from_bytes(u.try_into().map_err(|_| bad())?), *sealed == 1, plain).ok_or_else(bad)?))
     })?;
     for (b, c) in rows {
         index(tx, b, c);

@@ -12,7 +12,7 @@
 //! edit costs a question its changed tree path and a memo hit per source, whatever the value's
 //! size. A node not held when counted is `missing` until it is, checked at each question.
 //!
-//! Debug builds compare every answer with a fresh walk of every source (`walked`), which is also
+//! Debug builds compare every answer with a fresh walk of every source (`walked_all`), which is also
 //! the rare lost-access question's answer (`kept_refs_in`).
 
 use super::Tx;
@@ -289,7 +289,8 @@ pub(crate) fn state_refs_in(tx: &mut Tx<'_>, t: &Tid, blobs: &BTreeSet<BlobId>) 
 /// aspects' states and bodies, still indexed while the forget runs, `retention::freed::lost`):
 /// a rare question, answered by a fresh walk.
 pub(crate) fn kept_refs_in(tx: &mut Tx<'_>, t: &Tid, blobs: &BTreeSet<BlobId>, gone: &dyn Fn(&Source) -> bool) -> Result<Trees> {
-    walked(tx, t, blobs, false, gone)
+    let all = walked_all(tx, t, false, gone)?;
+    Ok(Trees { blobs: blobs.intersection(&all.blobs).copied().collect(), missing: all.missing })
 }
 
 /// Every source of thing `t`, states and bodies.
@@ -297,14 +298,8 @@ pub(crate) fn sources_of(tx: &mut Tx<'_>, t: &Tid) -> Result<BTreeSet<Source>> {
     sources(tx, t, false)
 }
 
-/// The answer of a fresh walk of every source of `t` (the states alone if `states`) but those
-/// `gone` names: the blobs among `blobs` one links, and the node blobs they lack.
-fn walked(tx: &mut Tx<'_>, t: &Tid, blobs: &BTreeSet<BlobId>, states: bool, gone: &dyn Fn(&Source) -> bool) -> Result<Trees> {
-    let all = walked_all(tx, t, states, gone)?;
-    Ok(Trees { blobs: blobs.intersection(&all.blobs).copied().collect(), missing: all.missing })
-}
-
-/// Every blob a fresh walk of those sources reaches, and the node blobs they lack.
+/// Every blob a fresh walk of the sources of `t` (the states alone if `states`) but those `gone`
+/// names reaches, and the node blobs they lack.
 fn walked_all(tx: &mut Tx<'_>, t: &Tid, states: bool, gone: &dyn Fn(&Source) -> bool) -> Result<Trees> {
     let mut out = Trees::default();
     for s in sources(tx, t, states)?.into_iter().filter(|s| !gone(s)) {
