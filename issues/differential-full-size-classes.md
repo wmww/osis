@@ -1,5 +1,5 @@
 # Sync differential: failure classes beyond the gate's seeds
-> Summary: the sync differential at full size (25 of 200 seeds failing on 339ddd951; 3 of them fixed since: an oracle gap, a KEM key due with no pass) by class with shrunk scripts and what is known of each cause, and the three small-size seeds tools/known_failures.txt lists: each class to turn into a hand-written test.
+> Summary: the sync differential at full size (25 of 200 seeds failing on 339ddd951; 52 and 134 pass since, 15's shrunk script too: an oracle gap, a KEM key due with no pass) by class with shrunk scripts and what is known of each cause, and the three small-size seeds tools/known_failures.txt lists: each class to turn into a hand-written test.
 > Priority: normal
 > Tags: sync, engine, tests
 
@@ -21,6 +21,8 @@ Seeds move whenever commit bytes change: work from scripts, and turn each class 
 - **Sync set Read, the model None** (39), undiagnosed (passes with the inbox move dropped): `New(0), Give(0, 0, Holder::Public, Syncs), New(1), Revoke(0, 0, Holder::Public), Inbox(0, Some(0)), Strong(1, Some(1), 0)`.
 - **Must-hold bodies a caught-up reader lacks** (128, 174), undiagnosed: 128 `New(2), Write(2, 0), Write(2, 0), Give(2, 0, Holder::Node(0), Syncs), Strong(0, None, 0), Give(2, 0, Holder::Public, Reads), New(0), Run, Revoke(2, 0, Holder::Node(0)), NewIn(2, 0), Give(2, 2, Holder::Node(0), Syncs)`; 174 `New(1), Give(1, 0, Holder::Node(0), Syncs), Strong(0, None, 0), Run, NewIn(1, 0), Give(1, 0, Holder::Public, Reads), NewIn(1, 1), Revoke(1, 0, Holder::Node(0)), Give(1, 2, Holder::Node(0), Syncs)`. Both: a node with sync, the public given read, the node removed, a dependent minted in the thing, sync given on it.
 - **Must-hold bodies with no entry at quiet** (35), undiagnosed (passes with the inbox move dropped): `New(0), Pair(3), Run, Give(3, 0, Holder::Node(1), Reads), Partition(3, 4), Inbox(4, Some(0)), Partition(3, 0), Run`.
+
+Rerun on spar-diff-6 (these 17 seeds, full size): 52 and 134 pass. Seed 15's whole history (its shrunk script passes) fails on: node 2 reads thing 0 as none with the reference's roles (write, admin) where the reference reads `Str("v3")`, a class of its own to shrink. 35 now fails first on "node 2's sync set holds thing 1 as Some(Unread), the model Some(Read)"; the rest as above.
 
 The inbox move (`Step::Inbox`: made independent, then its setting takes the signals) is in 53, 39 and 35 too, each passing without it; with the KEM key fix in they still fail, so each has a cause of its own.
 
