@@ -172,13 +172,13 @@ pub(super) fn for_keys(ctx: &Ctx, conn: ConnId, s: &SyncId) -> bool {
 }
 
 /// Whether entry `e` of S is shown the peer on `conn`: to one held for keys, a role entry alone
-/// (`role_entry`); to one ended for its departure, the notices of its removals alone
-/// (spec/sync-opens.md §6, `Engine::notice_tells`).
+/// (`role_entry`); to one ended for its departure, the notices of its removals and the public's
+/// edge alone (spec/sync-opens.md §6, `Engine::departed_shown`).
 fn shown(ctx: &mut Ctx, conn: ConnId, s: &SyncId, e: &Entry) -> bool {
     match ctx.shared.members(conn).get(s) {
         Some(m) if m.departed.is_some() => {
             let proven = m.departed.clone().unwrap_or_default();
-            ctx.ground.notice_tells(s, &e.blob, &proven)
+            ctx.ground.departed_shown(s, &e.blob, &proven)
         }
         Some(m) if m.class == SourceClass::Keys => role_entry(ctx, s, e),
         _ => true,
@@ -409,8 +409,8 @@ impl Streams {
                 let inlined = blob.is_some();
                 Some((s, Event::Added { blob_id: b, blob, wrap: entry.wrap, stamp: entry.stamp }, inlined))
             }
-            // a departed peer is shown its notices alone: no delete (whose blob is no longer known
-            // here as a notice or not) and no head, so when S deletes or rotates tells it nothing
+            // a departed peer is shown its notices and the public's edge alone: no delete (whose blob is no longer known
+            // here as either or not) and no head, so when S deletes or rotates tells it nothing
             NodeEvent::Deleted { sync_id: s, .. } | NodeEvent::Head(s) if ctx.shared.members(conn).get(&s).is_some_and(|m| m.departed.is_some()) => None,
             NodeEvent::Deleted { sync_id, blob, .. } => Some((sync_id, Event::Deleted(blob), false)),
             NodeEvent::Head(s) => ctx.store.head(&s)?.map(|st| (s, Event::Head(st), false)),

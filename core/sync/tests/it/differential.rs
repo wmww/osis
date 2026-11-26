@@ -712,3 +712,21 @@ fn a_removed_reader_takes_from_the_publics_box_no_more_than_a_stranger_spec_perm
         }
     }
 }
+
+// spec/sync-opens.md §6 (a departed member is served its notices and the public's edge): node 0's
+// account reads node 1's public thing and strongs it; both removed (the public's first, with no
+// run between; or node 0's, a run, then the public's), node 0 is departed at every reader, so a
+// notice tells it its own removal, and the public's removal, which has no notice (the public
+// holds no keys), reaches it only as the public's edge: it reads the thing no more, as the model
+// says. Failed while a departed member was served its notices alone: node 0 kept reading at the
+// public's role, its roster still listing the public.
+#[test]
+fn a_departed_public_reader_holds_the_publics_removal_spec_sync_opens_6() {
+    use crate::harness::history::{Gives, Holder};
+    let start = [Step::New(1), Step::Give(1, 0, Holder::Node(0), Gives::Reads), Step::Give(1, 0, Holder::Public, Gives::Reads), Step::Strong(0, None, 0), Step::Run];
+    let ends = [vec![Step::Revoke(1, 0, Holder::Public), Step::Revoke(1, 0, Holder::Node(0))], vec![Step::Revoke(1, 0, Holder::Node(0)), Step::Run, Step::Revoke(1, 0, Holder::Public)]];
+    for end in ends {
+        let script: Vec<Step> = start.iter().cloned().chain(end).collect();
+        holds_on(0, 2, 3, &script, String::new(), false);
+    }
+}

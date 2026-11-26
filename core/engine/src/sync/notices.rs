@@ -6,7 +6,7 @@
 //! entry (X's readers open it as they may encrypt now, never by an epoch M or an earlier departed
 //! reader holds), that key sealed to M's own read KEM key (`rotation::members::notice_keyset`):
 //! only M's readers open it otherwise. A departed member is served the notices of its removals
-//! alone (spec/sync-opens.md §6).
+//! and the public's edge alone (spec/sync-opens.md §6, `departed_shown`).
 //!
 //! A notice is no entry of its commit: it competes with none, and one is kept per (thing,
 //! commit, holder, holder's keyset) as sync copies are (one log of each content, `content`). Rows
@@ -159,6 +159,14 @@ impl Engine {
     pub fn notice_tells(&mut self, s: &SyncId, b: &BlobId, proven: &BTreeSet<Tid>) -> bool {
         let Some(n) = self.notice_of(b) else { return false };
         self.read_things_of(s).is_ok_and(|t| t.contains(&n.thing)) && self.tells(&n, proven)
+    }
+
+    /// Whether held blob `b` under `s` is shown a peer proving `proven` that this node judges
+    /// departed (spec/sync-opens.md §6): a notice telling it (`notice_tells`), or a blob of a
+    /// commit of the public's edge on `s`'s things (`public_edge`): the public's role is every
+    /// party's, that peer's too.
+    pub fn departed_shown(&mut self, s: &SyncId, b: &BlobId, proven: &BTreeSet<Tid>) -> bool {
+        self.notice_tells(s, b, proven) || self.blob_commit(b).is_some_and(|c| self.public_edge(s).is_ok_and(|e| e.contains(&c)))
     }
 
     /// Whether notice `n`'s commit applies a write leaving its holder below read, and that holder

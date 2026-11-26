@@ -129,9 +129,10 @@ pub trait Ground {
         let _ = (s, b);
         false
     }
-    /// Whether held blob `b` under S is a notice of a removal of a holder a peer proving
-    /// `proven` reaches (`Engine::notice_tells`): what a departed peer is shown.
-    fn notice_tells(&mut self, s: &SyncId, b: &BlobId, proven: &std::collections::BTreeSet<osis_base::Tid>) -> bool {
+    /// Whether held blob `b` under S is shown a departed peer proving `proven`
+    /// (`Engine::departed_shown`): a notice of a removal of a holder it reaches, or the public's
+    /// edge.
+    fn departed_shown(&mut self, s: &SyncId, b: &BlobId, proven: &std::collections::BTreeSet<osis_base::Tid>) -> bool {
         let _ = (s, b, proven);
         false
     }
@@ -667,8 +668,8 @@ impl Ground for EngineGround<'_> {
         self.engine.role_entry(s, b)
     }
 
-    fn notice_tells(&mut self, s: &SyncId, b: &BlobId, proven: &std::collections::BTreeSet<osis_base::Tid>) -> bool {
-        self.engine.notice_tells(s, b, proven)
+    fn departed_shown(&mut self, s: &SyncId, b: &BlobId, proven: &std::collections::BTreeSet<osis_base::Tid>) -> bool {
+        self.engine.departed_shown(s, b, proven)
     }
 
     fn want(&mut self, store: &crate::store::Store, s: &SyncId, c: &osis_base::CommitId) -> Result<Option<Given>> {

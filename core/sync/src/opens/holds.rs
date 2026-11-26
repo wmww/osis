@@ -145,8 +145,9 @@ pub trait Holds {
     /// a node keeping S unread the position of its head's event.
     fn until(&mut self, s: &SyncId, by: &Credential) -> Position;
     /// A member ended for its peer's departure at a reader, the peer proving `proven`: the
-    /// highest position at which a notice in S of their removals (`Engine::told`) was first
-    /// logged; none while none is logged here.
+    /// highest position at which a notice in S of their removals (`Engine::told`) or an entry of
+    /// the public's edge (`Engine::public_edge`) was first logged; none while no such notice is
+    /// logged here.
     fn departure_until(&mut self, s: &SyncId, proven: &BTreeSet<osis_base::Tid>) -> Option<Position>;
     /// The cursor naming `pos` of this node's log, for a Lost.
     fn cursor_at(&mut self, pos: Position) -> Option<Cursor>;
@@ -311,7 +312,7 @@ pub(crate) fn member_until(cx: &mut Cx, s: &SyncId, by: &Credential) -> crate::t
     match (cx.store.synced(s), by) {
         (Some((_, Holding::Unread)), _) => Ok(cx.store.head_at(s)?.unwrap_or(end)),
         // the public entry, the public's read since removed: up to its edge, the removal last
-        (Some((_, Holding::Read | Holding::Keys)), Credential::Public) => Ok(public_removed_at(cx, s)?.unwrap_or(end)),
+        (Some((_, Holding::Read | Holding::Keys)), Credential::Public) => Ok(public_edge_at(cx, s)?.unwrap_or(end)),
         (Some((_, Holding::Read | Holding::Keys)), Credential::ReadSecret(e)) => Ok(superseded_at(cx, s, e)?.unwrap_or(end)),
         _ => Ok(end),
     }
@@ -327,14 +328,14 @@ pub(crate) fn departure_until(cx: &mut Cx, s: &SyncId, proven: &BTreeSet<osis_ba
             at = at.max(cx.store.first_logged(s, &b)?);
         }
     }
-    Ok(at)
+    // the public's edge goes with them (`Engine::departed_shown`)
+    let Some(at) = at else { return Ok(None) };
+    Ok(Some(at.max(public_edge_at(cx, s)?.unwrap_or(0))))
 }
 
-/// The highest position at which an entry in S of a rotation superseding read epoch `e` was
-/// first logged.
 /// The highest position at which an entry in S of a commit of the public's edge on S's thing
 /// (`Engine::public_edge`) was first logged.
-fn public_removed_at(cx: &mut Cx, s: &SyncId) -> crate::types::Result<Option<Position>> {
+fn public_edge_at(cx: &mut Cx, s: &SyncId) -> crate::types::Result<Option<Position>> {
     let mut at = None;
     for c in cx.engine.public_edge(s)? {
         for b in cx.engine.commit_blobs(&c)?.iter() {
@@ -344,6 +345,8 @@ fn public_removed_at(cx: &mut Cx, s: &SyncId) -> crate::types::Result<Option<Pos
     Ok(at)
 }
 
+/// The highest position at which an entry in S of a rotation superseding read epoch `e` was
+/// first logged.
 fn superseded_at(cx: &mut Cx, s: &SyncId, e: &Epoch) -> crate::types::Result<Option<Position>> {
     let mut at = None;
     for c in cx.engine.rotations_superseding(s, e)? {

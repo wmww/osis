@@ -59,7 +59,7 @@ struct Table {
     asked: usize,
     /// Role entries by this node's judgement (`Ground::role_entry`).
     role: std::collections::BTreeSet<BlobId>,
-    /// Notices, each with the thing whose removal it tells (`Ground::notice_tells`).
+    /// Notices, each with the thing whose removal it tells (`Ground::departed_shown`).
     notices: BTreeMap<BlobId, osis_base::Tid>,
 }
 
@@ -91,7 +91,7 @@ impl Ground for Table {
     fn role_entry(&mut self, _s: &SyncId, b: &BlobId) -> bool {
         self.role.contains(b)
     }
-    fn notice_tells(&mut self, _s: &SyncId, b: &BlobId, proven: &std::collections::BTreeSet<osis_base::Tid>) -> bool {
+    fn departed_shown(&mut self, _s: &SyncId, b: &BlobId, proven: &std::collections::BTreeSet<osis_base::Tid>) -> bool {
         self.notices.get(b).is_some_and(|t| proven.contains(t))
     }
     fn open_relay(&mut self, _s: &SyncId, _e: &Entry, _bytes: &[u8]) -> Result<osis_engine::sync::RelayOpened> {
