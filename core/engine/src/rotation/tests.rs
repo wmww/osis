@@ -2988,7 +2988,7 @@ fn writes_under_both_forks_of_own_secrets_are_read_spec_perm_3() {
     }
 }
 
-// spec/permissions.md §3 (Complete pass, a dependent thing holding a role with key access): peer
+// spec/permissions.md §3 (Complete pass: a dependent thing holding a role with key access): peer
 // 2, no admin of G, grants T read on X, an independent thing of its own, past the writer rules (it
 // cannot make T independent first). Only G's admin nodes make T independent at their pass ends;
 // peer 2 and Z make no rotation of T; afterwards peer 0 reads X's writes through T.
