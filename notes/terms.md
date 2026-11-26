@@ -22,7 +22,7 @@ The concepts and their properties are spec/requirements.md (Concepts). This note
 - **Home**: the user's realm, one per account, described by the schema: neither core's nor any one app's.
 - **External signal**: a signal that parties holding no role on the thing may fire (not *open*: opening already names what a node does to a sync ID, a blob or a sealed fire; a fire of one is an **external fire**). A thing's admins **enable** each external signal it takes; none is taken otherwise. A member fires one the ordinary way; a party that does not hold the thing sends a **sealed fire** (the fire as a commit sealed to the thing's public read key and deposited). **Externally grantable**: a thing that has enabled the external signal by which grants from outside arrive (`grant@~0`), so parties outside it can offer it the roles they grant it. **Offer**: a `grant@~0` fire, telling a holder's nodes of a grant from outside (the thing, its sync ID, the holder's boxes); it proves nothing and gives no role, the grant being its target's data.
 - No **team**: it is not a term and names no kind of thing. For an example say "an organization" or "a shared space"; for the concept, a holder, or a realm.
-- Sync words (sync unit, sync ID, closure, held for keys, key part, release, store, peer, source): spec/requirements.md Concepts and spec/sync-set.md.
+- Sync words (sync unit, sync ID, closure, release, store, peer, source): spec/requirements.md Concepts and spec/sync-set.md.
 
 ## API words
 The `osis` API's names for the concepts above (notes/api-design.md: one word per concept):

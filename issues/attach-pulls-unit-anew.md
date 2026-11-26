@@ -7,6 +7,6 @@ A thing made by another node pulls nothing anew (its minting arrives in the pass
 
 **Attach**: a pull limited to the attached thing's entries, if it meets the spec's reason for the pull anew (what was forgotten of the thing is fetched again); else state why the spec needs the whole unit. The pass rule does not reach it: nothing local says what of the thing went, and notes/certificates.md rejects a durable mark per forgotten thing.
 
-`refetch_holders` (a new strong to an independent or unknown thing nothing carries: every own and read thing's sync IDs pulled anew) takes no exemption for a thing just minted: an edge piece naming it is dropped by the key-part rule (kept only so far), not by its minting being held, so a fresh minting says nothing about it.
+Re-measure once stubs are built (notes/stub-rewrite.md §9 Issues).
 
 Tests to add: an attach at n and 10n members of the enclosing unit and of the attached thing, in default tests (as sync `growth::an_independent_thing_another_node_makes_pulls_nothing_anew_*` for makes).

@@ -25,7 +25,7 @@ Checked, in each inline backtick span (fenced blocks are sketches, not citations
       its source): core/test/<crate> has that fn and each module named.
 A repo file is tracked, or untracked and not ignored (a new file counts before its `git add`).
 Not read: notes/complaints/ (consumed), the Investigations section of notes/time-limits.md (a record
-of what ran then), spec/ (its names are wire and grammar terms). Names not in our code on purpose
+of what ran then), notes/stub-rewrite.md (its inventory names the code the rewrite deletes), spec/ (its names are wire and grammar terms). Names not in our code on purpose
 (third-party, placeholder, planned, rejected, removed; `Type::item` too) are listed in
 tools/code_refs_allow.txt with a reason; a listed name that is in the code, or that nothing cites,
 fails.
@@ -108,6 +108,8 @@ def cited(text):
 
 def skipped(rel, text):
     """`text` with the parts not checked blanked (line numbers kept)."""
+    if rel == "notes/stub-rewrite.md":  # its inventory names the code the rewrite deletes
+        return "\n" * text.count("\n")
     if rel == "notes/time-limits.md" and "\n## Investigations" in text:
         a = text.index("\n## Investigations") + 1
         e = text.find("\n## ", a)

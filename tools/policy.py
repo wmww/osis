@@ -507,17 +507,36 @@ DEAD_WORDS = {w: re.compile(p) for w, p in {
     "UnknownActor": r"\bUnknownActor\b|\bUNKNOWN_ACTOR\b",
 }.items()}
 
+# Words of key parts (notes/stub-rewrite.md), refused in prose now; widen to every tracked file once
+# code and core/test/held-model are rid of them (notes/stub-rewrite.md, Owed by R1).
+STUB_DEAD_WORDS = {w: re.compile(p) for w, p in {
+    "edge piece": r"(?i)\bedge[ _-]?pieces?\b",
+    "key part": r"(?i)\bkey[ _-]parts?\b|\bkey_part\w*",
+    "public piece": r"(?i)\bpublic[ _-]pieces?\b",
+    "held for keys": r"(?i)\bheld[ _-]for[ _-]keys\b",
+    "keys-open travel": r"(?i)\bkeys[ _-]open[ _-]travel\b",
+    "sync alone": r"(?i)\bsync[ _-]alone\b",
+    "follows_public": r"\bfollows_public\b",
+    "by_public": r"\bby_public\w*",
+    "deliver_copy": r"\bdeliver_copy\b",
+}.items()}
+STUB_DEAD_IN = ("spec/", "notes/", "issues/")
+
 
 def dead_words():
     tracked = subprocess.run(["git", "ls-files"], cwd=ROOT, capture_output=True, text=True, check=True).stdout.split("\n")
     skip = ("docs/", "notes/complaints/", "libs/kit/patches/", "issues/deprecated-terms.md", "tools/policy.py", "notes/account-membership-design.md")
     for rel in tracked:
-        if not rel or rel.startswith(skip):
+        if not rel or rel.startswith(skip) or not os.path.exists(os.path.join(ROOT, rel)):
             continue
         for n, line in enumerate(read(os.path.join(ROOT, rel)).split("\n"), 1):
             for word, pat in DEAD_WORDS.items():
                 if pat.search(line):
                     yield f"{rel}:{n}: uses \"{word}\", a removed concept (issues/deprecated-terms.md, Gone)"
+            if rel.startswith(STUB_DEAD_IN) and rel != "notes/stub-rewrite.md":
+                for word, pat in STUB_DEAD_WORDS.items():
+                    if pat.search(line):
+                        yield f"{rel}:{n}: uses \"{word}\", a removed concept (issues/deprecated-terms.md, Gone)"
 
 
 # the slowest first, so the pool balances

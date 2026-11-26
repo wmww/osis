@@ -9,16 +9,16 @@
 ## State
 - **Coordinator**: Sheave, on the stub rewrite. Agents run on main (no kept branches); every job is reviewed and gated as it lands (notes/coordination.md).
 - **Reviewed and gated**: everything on main, the final gate over the whole tree included. Slimming landed: no pull anew for a thing another node makes (attach left, issue attach-pulls-unit-anew), index rows repeating stored facts, one stored form per commit (~35% storage), a blob's bytes once per connection, memory per commit 128 → 70 KB (issue memory-per-commit). The full-size differential: 25 of 200 (issue differential-full-size-classes).
-- **Pushed, awaiting review and gate**: `spar-slim-c2` (echo removed, anchored by a log cursor of the requester's own log; the NetStream TLA model passes with the anchor, its controls fail; return direction per dependent make 403 → 180 B). Streams only: no key-part dependence, so it can be reviewed now.
-- **Pushed, held, not to review yet**: `spar-public-listing-role` (the public's listing role by its box, counted until the node's own `sync.0` records that head). It builds on the machinery below; judge it after the key-part decision.
+- **Pushed, awaiting review and gate**: `spar-slim-c2` (echo removed, anchored by a log cursor of the requester's own log; the NetStream TLA model passes with the anchor, its controls fail; return direction per dependent make 403 → 180 B). Streams only: nothing the stub rewrite touches, so it can be reviewed now.
+- **Pushed, held, not to review yet**: `spar-public-listing-role` (the public's listing role by its box, counted until the node's own `sync.0` records that head). It builds on the machinery below; judge it after the stub rewrite.
 
 ## First: the stub rewrite (Tess: go-ahead)
-Key parts (copies of every grant naming a holder, kept under the holder's sync ID) contradict Tess's model: grants belong to the granted thing; signal → reference → sync → permissions; a grant nobody is told of is valid. The rewrite deletes them and builds reference-driven stubs: plan, working answers and job state in notes/stub-rewrite.md. Sheave coordinates it, staying on this one refactor. Until it lands, brief nothing that builds on key parts, edge pieces, held for keys or public pieces, and judge differential classes and issues touching them after it.
+Copies of every grant naming a holder, kept under the holder's sync ID, contradict Tess's model: grants belong to the granted thing; signal → reference → sync → permissions; a grant nobody is told of is valid. The rewrite deletes them and builds reference-driven stubs: plan, working answers and job state in notes/stub-rewrite.md. Sheave coordinates it, staying on this one refactor. Until it lands, brief nothing that builds on the words issues/deprecated-terms.md lists for it, and judge differential classes and issues touching them after it.
 
 ## The route (Tess)
 Target: osis basically works, the big pieces in place, the architecture sensible and mostly settled; what is left is fixes, tweaks and verification. In order:
-1. **The key-part fix above.**
-2. **Architectural slimming** (notes/priorities.md Slimmer things; jobs in notes/slim-design.md): the rest in slim-design's order, after the key-part rewrite where they touch it.
+1. **The stub rewrite above.**
+2. **Architectural slimming** (notes/priorities.md Slimmer things; jobs in notes/slim-design.md): the rest in slim-design's order, after the stub rewrite where they touch it.
 3. **A light local dogfood pass** (chat between accounts, pairing, removing a node): testing finds problems; fix each at its level (mistake, architecture, or the model), never a workaround; where building it right is unclear, a design pass or a question for Tess. Many QA passes come later, before release.
 4. Then known issues, more dogfooding, and simplification beside them.
 
@@ -30,11 +30,11 @@ Two agents on workflow and cleanup throughout (notes/coordination.md, Job mix): 
 - A word met in git history or in a brief that the tree does not use is dead until the tree says otherwise: read notes/terms.md, never build on it.
 
 ## Not to build on the way
-- **No grant list with the holder** (key parts' edge pieces are one, still in the spec: see First, above), no taken or accepted grant, no fire kept as proof, no path a role commit states for its holders: each was built and removed (notes/holder-access-study.md; why not down from the account).
+- **No grant list with the holder**, no taken or accepted grant, no fire kept as proof, no path a role commit states for its holders: each was built and removed (notes/stubs.md, Rejected).
 - **No fix sized by its label.** Three times a class of failing tests labelled with one cause had three or more; one probe line per failing test (what it holds, which fire or box was refused) sizes a job in a session's first minutes. A cause written in a note says whether it was probed or guessed.
 
 ## Waiting on Tess
-Every tess-call issue, listed in notes/priorities.md, Parked on Tess. The model questions come first: destroyed-holder-write-authority, destroyed-mint-admin-dependents, chain-top-unseen-by-sync-holder, held-model-late-commit-read-lost, start-cost-grows-with-held.
+Every tess-call issue, listed in notes/priorities.md, Parked on Tess. The model questions come first: destroyed-holder-write-authority, destroyed-mint-admin-dependents, held-model-late-commit-read-lost, start-cost-grows-with-held.
 
 ## Parked
 - `windlass-wiring-1` on GitHub has nothing to land (a debug shadow of a walk since deleted). Delete it when Tess says.

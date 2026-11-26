@@ -3,5 +3,5 @@
 > Priority: low
 > Tags: sync, perm, data-model
 
-- An offer is a bootstrap only (notes/holder-access-study.md, The direction). Pairing already hands an offer over its channel (notes/accounts-switch-brief.md).
+- A grant signal is values only, and its entry credential is a link's static entry in all but name (notes/stub-rewrite.md §3 Q1). Pairing hands the same values over its channel.
 - Differences a merge keeps or drops on purpose: a link carries addresses (a first contact has nothing else to dial; an offer carries none); a link's holders join through its link key L, a thing with its own roster (an offer's holder is the thing it is sealed to); a link ends by removing L; an offer is kept the inbox lifetime and proves nothing.

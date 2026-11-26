@@ -20,7 +20,6 @@ Tess's words, verbatim; every rule below keeps them.
 ## The built sync rules it rests on
 The sync unit is the built one: a thing's readable closure, so a thing may be carried under several sync IDs (spec/sync-set.md §2; notes/sync-unit-scope.md). Used here:
 - A commit is one blob, wrapped under the sync ID of every unit that carries a thing it writes; a certificate copy, one per (commit, thing outside the unit), logged under several sync IDs is one blob wrapped under each (checked: spec/sync-judgement.md §1 One blob per commit, Certificate blobs). Evidence is stated per sync ID.
-- A grant naming a holder travels under the holder's sync ID, in its key part, with the target's boxes to it and the target's `sync.0`, so the holder's readers enter what it holds roles on (checked: spec/sync-set.md §2 Node closure, read; spec/permissions.md §4 Key part, Role changes travel).
 - A node opens a sync ID only while it syncs it (checked: spec/sync-opens.md §4, the shared set); nothing is logged or fetched under a sync ID outside the node's sync set without holding it.
 - Deposits work per sync ID (spec/sync-inbox.md §3).
 - A reader drops a body it judges invalid at once; no node deletes one at a store (checked: spec/commits.md §5 Invalid).
@@ -203,7 +202,7 @@ issues/readers-see-readers.md wants an option under which reader-level grants op
 ## 3. Public things
 **Rule: a thing is public by an ordinary grant to the public, a holder that is no thing.** Specified, with the card, its decisions, model and pieces: notes/public-and-cards-brief.md.
 - **The public** (spec/permissions.md §1): named by the zero tid, nobody signs as it, holds a role on it or lists it on a path; boxed in the open form; a claim set lists it by its public entry. Every other rule reads its grant as any grant (rotations, departures, removal by the thing's admins).
-- **Every thing's keys open what the public reads** by its grant on the thing's independent (spec/sync-set.md §2), and a unit carries the public's edge pieces on what its strongs reach, so a strong brings a public thing into the referrer's unit, founded at every reader.
+- **Every thing's keys open what the public reads** by its grant on the thing's independent (spec/sync-set.md §2), so a strong brings a public thing into the referrer's unit (founded by X's stub, notes/stub-rewrite.md §2).
 - **The deposit budget of a public thing is open to everyone**: the reader budget the requirements call best effort (spec/requirements.md, Data a node cannot read); keeping the public from depositing would mean moving the seed, not a check in one place (Tess: acceptable).
 - **To say in the API**: a public thing's dependents are public; a thing that grants a public thing read is readable by everyone through it (carried in others' units only by its own public grant); a holder with may-grant at read may publish.
 
@@ -216,20 +215,19 @@ issues/readers-see-readers.md wants an option under which reader-level grants op
 To grant to a thing A it holds no role on, a party needs A's keysets and, for delivery, A's inbox's read key, sync ID and deposit seed. A **card** (card aspect `:<A>:card.0`, spec/sync-inbox.md §1) carries A's and its inbox's current `keys.0` commits, written on any thing along a path through A; who reads that thing can grant to A. A holder's keys under each target it holds a role on (spec/permissions.md §4) are the only other place its KEM keys go.
 
 ## 4. External signals and grants from outside
-**Rule: a thing takes from outside only what its admins enabled, and a grant from outside is an offer.** A grant belongs to the thing granted and syncs with it; nothing is accepted or taken: the holder's node references the target (a strong, its own choice), syncs it, and its role is by the target's grants (Tess; notes/holder-access-study.md, The direction).
+**Rule: a thing takes from outside only what its admins enabled, and a grant signal is values only (notes/stub-rewrite.md §2).** A grant belongs to the thing granted and syncs with it; nothing is accepted or taken: the holder's node references the target (a strong, its own choice), syncs it, and its role is by the target's grants (Tess; notes/stubs.md).
 
 ### The routes (checked: spec/sync-inbox.md §2-§5, spec/sync-judgement.md §2)
-A grant naming holder A reaches A's nodes, its granter holding nothing on A, by a sealed `grant@~0` fire on A's inbox carrying the bootstrap (the target, its sync ID, A's boxes). A deposit of the role commit under A's own sync ID is promoted only as part of A's key part (spec/permissions.md §4 Delivering an edge piece).
+A grant naming holder A reaches A's nodes only if someone sends a signal (a sealed `grant@~0` fire on A's inbox) or writes a reference A's nodes read; nothing else tells them.
 
 ### The rule
 - **The setting**: a thing's admin-only `retention^.0` entries naming external signals (spec/commits.md §5 The setting). A thing's admins **enable** an external signal by an entry of its own naming it; none is taken otherwise.
 - **External fires** (built: spec/permissions.md §5.2 External fires; modelled: held-model `ExternalFires::Enabled`): a fire of external signal `s` on N valid by its author's authority is valid whatever the setting; any other is valid iff N's **current setting** enables `s`. Current, not "in force at the fire's key": a fire's `ts` is its writer's word.
 - **Externally grantable**: A is externally grantable while a card of A stands and its inbox (the card's, else A) enables `grant@~0`; the granter's node refuses a grant to a thing it may not write and holds no card of (spec/permissions.md §2 Granting to a thing).
 - **What enabling publishes**: a card of A (§3), with KEM keys in A's keysets (spec/crypto.md §3 Published KEM keys). Disabling removes the cards and rotates the deposit seed, with the deposit-only step that follows (checked: spec/permissions.md §3 Sync ID role keys).
-- **What an offer gives** (spec/sync-inbox.md §5 Grant from outside): the grant is valid on X by X's timeline whoever the holder is; the fire only tells A's nodes of it, held while A's setting enables and keeps the signal (`INBOX_LIFETIME` on an account's inbox) and proving nothing. A's node counts a role on X by X's grants as it holds them: the offer's copy until X syncs, X's own data after. Disabling the signal ends the offers held and breaks no grant.
+- **What a signal gives**: the grant is valid on X by X's timeline whoever the holder is; the signal only tells A's nodes of it, held while A's setting enables and keeps it (`INBOX_LIFETIME` on an account's inbox), proving nothing. Disabling the signal ends the signals held and breaks no grant.
 - **A role change needs** admin on the target (or may-grant, to add a new holder: §1); a holder may always drop or lower its own grant (decided). Whether the holder's nodes hear of it from outside is the holder's setting.
-- **Without the switch: a writer of A delivers a grant to it** (decided), for a new thing and an existing one alike: its node logs the grant's edge piece under A's sync ID, A's key part. A reader of A may not. Cost, stated: a writer can attach outside things, adding to what members are offered.
-- **No grant waits on the grantee's side**: a grant that is written is valid on X at once; only delivery of the offer is pending, shown as such.
+- **No grant waits on the grantee's side**: a grant that is written is valid on X at once; only delivery of a signal is pending, shown as such.
 - Ordinary signals have no switch (decided). How an app enables a signal, and the default per kind of thing, are the schema library's.
 
 ## 5. Core without accounts

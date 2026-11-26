@@ -7,7 +7,7 @@ Tess approved building this shape, taking the recommendations below as working a
 | Job | State |
 |---|---|
 | M1 held-model | done (Model findings) |
-| R1 delete | running |
+| R1 delete | landed; placeholders owed below |
 | M2 TLA | after M1/R1 |
 | R2 stubs, R3 entry, R4 tests/notes | not started |
 
@@ -242,6 +242,31 @@ Findings:
 - stubs.md rule 6 ("a grant fire carries the data to make the stub") and its "For the spec piece" bullet (the fire carries an `EdgePiece`) contradict Tess's correction 1. Rewrite them to §2.6.
 - holder-access-study "The direction" 1 and sync-rewrite-state "For review: One value for an edge piece from outside" reject the bare offer for the reasons Q1 lists. Q1(a) answers them; rewrite both once decided.
 
+
+## Owed by R1
+Placeholders left in the spec, each `[Stub rewrite (notes/stub-rewrite.md): ...]`, for R2/R3 to replace with rules:
+- spec/permissions.md: §1 The public (its open boxes in every stub); §3 Who rotates and Re-seal (a holder that cannot open a rotation or re-seal by its wrap: Q2); §4 the stub (role entries cut to a unit's readers, sync-only cut); a hop's removal reaching readers through chain-holder stubs (was Role changes travel); Copies (a stub's cut); Logging certificates (when a stub's sync-only copy counts); the grant signal and its receiver's entry (Q1, was Delivering an edge piece); §8 Pairing (A's values).
+- spec/sync-set.md: Principle (stubs a unit carries); T's keys open (the public's grant read from X's stub); Stub (rule 2); Carriers of a stub; First entry (held signal, rule 4); chain-holder stubs (was Held for keys); Sync set (a stub's sync ID); Writing (role commits on a stub); Making a thing (a link key held by a reference or chain stub); §3 a stub no unit carries any more.
+- spec/sync-inbox.md §5: the grant signal (values, held while the setting keeps it; pairing by hand).
+- spec/sync-judgement.md: §2 required set (the stubs S carries); §6 Read and unread move (a stub holder).
+- spec/sync-ids.md: §2 What a sync holder learns (sync-only cut); §4 Owner (sync IDs from stubs); §6 a stub holder shown role entries.
+- spec/sync.md §3: Stub (was Held for keys); Kept for T; Holders by copies.
+- spec/sync-opens.md §4: the keys class as the stub class.
+- spec/sync-hostile.md §2: the grant signal; what a holder lacks until it takes its entry box (Q2).
+- spec/commits.md: §4 Outside the node closure; §5 What a held thing needs (stub, held signal).
+- spec/data-model.md §9: the `grant@~0` value; spec/wire.md §4: the sync copy as the sync-only cut.
+
+Code sites marked `// Stub rewrite (notes/stub-rewrite.md): ...`, for R2/R3:
+- engine `sync/units.rs` `given_by`, `edge_carries`: entry by rule 2 over references and stubs, the local part as a unit. Until then the local part carries a strong to a thing an own thing's keys open or hold sync on (`keyed_role_now`), which misses a timed ending (two tests ignored for it).
+- engine `sync_ids/certs.rs`: `Certs::sync_copies` (filled by the sync-only cut of the stubs S carries, nothing fills it now), `sync_certificates` (the stubs a unit carries), `cut_parts` (a stub's cut).
+- engine `sync/set.rs` `thing_holdings` and `sync/mod.rs` `Holding::Keys`: the keys class as the stub class; nothing holds a sync ID so now.
+- engine `flows/inbox.rs` `take_fire` (a grant signal of values, R3) and `open_fire_in` (a sealed sync copy is no fire: entry boxes, Q2).
+- engine `rotation/mod.rs` `recorded`, `reseal_one`, and `flows/sync_ids.rs` `issue_step`: a holder that cannot open a rotation, re-seal or step by its wrap gets an entry box (Q2, R3).
+- engine `local_peer.rs` `pair`/`take_pairing` and libs/account `Offering::accept`/`Joining::finish`: pairing hands over A's values (R3). The reply carries nothing now; the new node holds A from its root but has no way to sync it. `Osis::offer`/`take_offer` and the `osis://offer/` form are deleted. Pairing also handed over the pairer's trust records (dispute sides on A, `Sides::adopt_trust`, deleted with offers): R3 decides how a new node gets them.
+- Tests: engine `apply/tests_validity.rs` (a stub cut covering as the whole snapshot does), `tests/it/scale.rs` (a stub's bytes per node), osis-sync `tests/it/public.rs` (P's stub carries the public's removal), `tests/it/harness/history.rs` (`unoffered`/`pieces`/`named` model key-part delivery for held-model's old closure).
+- Ignored tests carry `#[ignore = "stub rewrite: ..."]`: engine 34 (entry by references and chain-holder stubs; held-model evidence without role-change travel, M1; a unit's stubs; pairing by values; the local part and timed endings), osis-sync 159 (entry by references and stubs, pairing by values). Their causes were sorted by failure message, not one by one: R4 re-judges each.
+
+Also owed: `tools/policy.py` `STUB_DEAD_WORDS` refuses the deleted words in spec/, notes/ and issues/ only; widen it to every file once code and core/test/held-model are clean. The notes still describing engine and held-model code being rewritten (notes/closure-model.md, core/test/held-model/README.md) are R4's.
 
 ## Appendix 0: inventory tables
 (spec/notes rows, then code rows; Q numbers refer to §3 above)

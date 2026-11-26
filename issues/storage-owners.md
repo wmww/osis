@@ -8,9 +8,8 @@ Bounded leftovers once a node releases everything (notes/node-closure.md, Storag
 
 ## Failing arms (ignored on this issue, osis-sync `growth::`)
 Each node acts for an account (its own node thing signing); the first symptom of each, not probed further:
-- `a_granted_and_revoked_thing_returns_storage_to_a_fresh_worlds_spec_sync_set_3`: the grantee, after 1 round, keeps an `ou/` row (`records::OPENED_UNDER`) of a commit opened under its account's epoch.
-- `a_declined_grant_returns_storage_to_a_fresh_worlds_spec_sync_set_3`: storage matches; read's judgements per round grow a few percent over the rounds (`flat_work`: rounds 2-4 892, the last three 914).
-- `a_redeemed_and_ended_link_returns_storage_to_a_fresh_worlds_spec_sync_set_3`: the maker, after 1 round, keeps a `bp/` row (`sync::bodies::BLOB_PARTS`) of the grantee's account's minting commit (its record and key part, which the redeem brought).
+- The grant and declined-grant arms: [Stub rewrite (notes/stub-rewrite.md): written again on grant signals and stubs, R4; the grantee kept an `ou/` row (`records::OPENED_UNDER`) of a commit opened under its account's epoch]
+- `a_redeemed_and_ended_link_returns_storage_to_a_fresh_worlds_spec_sync_set_3`: the maker, after 1 round, keeps a `bp/` row (`sync::bodies::BLOB_PARTS`) of the grantee's account's minting commit (its record, which the redeem brought).
 
 ## Owed
 One count test arm per case, in osis-sync `growth::`: a node holding a thing with a purge, with an admin dispute (`sides`), with a retained copy, and a dependent thing that leaves the node closure while the sync ID that carried it stays (spec/sync-set.md §3: released), each released; store rows and bytes by family equal a fresh node's that synced nothing, the work flat between n and 10n of what stays, and re-syncing reads as a node that never left.
