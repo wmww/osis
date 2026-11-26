@@ -585,3 +585,44 @@ fn a_node_lowered_with_the_public_reads_no_more_by_its_head_spec_sync_opens_4() 
     let script = [Step::New(2), Step::Run, Step::Give(2, 0, Holder::Public, Gives::Reads), Step::Give(0, 0, Holder::Node(1), Gives::Syncs), Step::Run, Step::Strong(1, None, 0), Step::Lower(0, 0, Holder::Public, Gives::Syncs)];
     holds_on(0, 2, 3, &script, String::new(), false);
 }
+
+// spec/sync-opens.md §4 (Admissible: keeping S unread, the head it was lowered to sync at gives
+// nothing), across a start: node 1, lowered with the public as above, is powered off and on while
+// it keeps the thing unread at the head it read, before the Register moving it arrives. Started,
+// it keeps the thing unread, never reading it by that head's public entry again (a start judges
+// as the live node did).
+#[test]
+fn a_node_lowered_with_the_public_reads_no_more_after_a_start_spec_sync_opens_4() {
+    use crate::harness::history::{Gives, Holder, reads};
+    const TAKEN: &str = "unread: read by its head's public entry @node 1";
+    let taken = || osis_base::costs::take().iter().find(|x| x.0 == TAKEN).map_or(0, |x| x.2);
+    let script = [Step::New(2), Step::Run, Step::Give(2, 0, Holder::Public, Gives::Reads), Step::Give(0, 0, Holder::Node(1), Gives::Syncs), Step::Run, Step::Strong(1, None, 0), Step::Run];
+    let mut w = world_of(0, 2, 3);
+    w.cap = crate::harness::STORM_CAP;
+    osis_base::costs::take();
+    play(&mut w, &script, String::new());
+    taken();
+    let t = w.history.things[0].0;
+    let s = w.engine(0).sync_id_of(&t).unwrap().unwrap();
+    play(&mut w, &[Step::Lower(0, 0, Holder::Public, Gives::Syncs)], String::new());
+    let at_read_head = |w: &mut World| reads(w.engine(1), &t).value.is_none() && w.store(1).path(&s).unwrap().and_then(|p| p.steps.last().and_then(|x| x.1.clone())).is_some_and(|c| c.lists_public(&s));
+    while !at_read_head(&mut w) {
+        assert!(w.step_or_wake(), "node 1 is lowered at the head it read");
+    }
+    assert_eq!(taken(), 1, "node 1 reads by the public's entry, then is lowered");
+    play(&mut w, &[Step::PowerOff(1), Step::PowerOn(1), Step::Run], String::new());
+    assert_eq!(taken(), 0, "started, it reads no more by the head it was lowered at");
+    check(&mut w);
+}
+
+// spec/sync-opens.md §4 (Admissible: the head it was lowered at gives nothing until a Register
+// moves it): node 1, lowered with the public as above, reads the thing again once the public is
+// granted read again (a new step listing the public entry is registered with it).
+#[test]
+fn a_node_lowered_with_the_public_reads_again_on_its_regrant_spec_sync_opens_4() {
+    use crate::harness::history::{Gives, Holder};
+    let script = [Step::New(2), Step::Run, Step::Give(2, 0, Holder::Public, Gives::Reads), Step::Give(0, 0, Holder::Node(1), Gives::Syncs), Step::Run, Step::Strong(1, None, 0), Step::Lower(0, 0, Holder::Public, Gives::Syncs), Step::Run, Step::Give(0, 0, Holder::Public, Gives::Reads), Step::Run];
+    let mut w = holds_on(0, 2, 3, &script, String::new(), false);
+    let t = w.history.things[0].0;
+    assert!(crate::harness::history::reads(w.engine(1), &t).value.is_some(), "node 1 reads the thing again by the public's grant");
+}

@@ -78,7 +78,8 @@ pub struct Judged<'a> {
     pub secrets: &'a [(osis_crypto::Epoch, Secret32)],
     /// S's verified path as Registers gave it (its head last).
     pub steps: &'a [(Step, Option<ClaimSet>)],
-    /// The head this node was lowered from reading S to keeping it unread at, if it was.
+    /// The head this node was lowered at from opening S to keeping it unread, if it was
+    /// (`Store::lowered_at`, durable).
     pub lowered_at: Option<&'a StepId>,
 }
 
@@ -122,15 +123,11 @@ pub struct Unread {
     followed: BTreeSet<SyncId>,
     judged: Effects<SyncId, Kept>,
     kept: Stamped<SyncId, Kept>,
-    /// Each S followed that this node was lowered from reading to keeping unread, with its head
-    /// then (`Kept::public`). In memory: after a start S is read once more by that entry, and
-    /// lowered again as its role entries open.
-    lowered: std::collections::BTreeMap<SyncId, StepId>,
 }
 
 impl Default for Unread {
     fn default() -> Self {
-        Unread { syncs: Default::default(), followed: BTreeSet::new(), judged: Effects::new("unread: judged"), kept: Stamped::default(), lowered: Default::default() }
+        Unread { syncs: Default::default(), followed: BTreeSet::new(), judged: Effects::new("unread: judged"), kept: Stamped::default() }
     }
 }
 
@@ -155,14 +152,9 @@ impl Unread {
     /// changed.
     pub fn settle(&mut self, cx: &mut Cx) -> Result<bool> {
         let mut acted = false;
-        for (s, then, now) in self.syncs.settle(cx.store) {
+        for (s, _, now) in self.syncs.settle(cx.store) {
             match now {
                 Some((_, Holding::Unread)) => {
-                    if then.as_ref().is_some_and(|(_, h)| h.opens())
-                        && let Some(h) = cx.store.head_id(&s)?
-                    {
-                        self.lowered.insert(s, h);
-                    }
                     if self.followed.insert(s) {
                         self.judged.want(s);
                     }
@@ -175,7 +167,6 @@ impl Unread {
                     }
                     if self.followed.remove(&s) {
                         self.judged.unwant(&s);
-                        self.lowered.remove(&s);
                         acted |= self.kept.remove(&s).is_some();
                     }
                 }
@@ -186,14 +177,15 @@ impl Unread {
                 self.judged.unwant(&s);
                 continue;
             }
-            let lowered_at = self.lowered.get(&s);
-            let Some((_, k)) = self.judged.try_settle(&s, || judge_s(cx, &s, lowered_at))? else { continue };
+            let Some((_, k)) = self.judged.try_settle(&s, || judge_s(cx, &s))? else { continue };
             acted = true;
             // at a head past its keys its copy goes and it takes nothing (§6)
             cx.store.set_unheld(&s, k.stranded)?;
             // read by the public entry its head lists: S becomes read (`syncs` follows it)
-            if let Some((head, claims)) = &k.public {
-                cx.engine.take_public_entry(&s, head, claims)?;
+            if let Some((head, claims)) = &k.public
+                && cx.engine.take_public_entry(&s, head, claims)?
+            {
+                osis_base::costs::count("unread: read by its head's public entry", 1);
             }
             self.kept.insert(s, k);
         }
@@ -202,10 +194,11 @@ impl Unread {
 }
 
 /// One S's judgement, reading its own keys only.
-fn judge_s(cx: &mut Cx, s: &SyncId, lowered_at: Option<&StepId>) -> Result<Kept> {
+fn judge_s(cx: &mut Cx, s: &SyncId) -> Result<Kept> {
     let secrets = cx.engine.kept_sync_secrets(s);
     let path = cx.store.path(s)?;
-    Ok(judge(&Judged { s, secrets: &secrets, steps: path.as_ref().map(|p| p.steps.as_slice()).unwrap_or_default(), lowered_at }))
+    let lowered_at = cx.store.lowered_at(s)?;
+    Ok(judge(&Judged { s, secrets: &secrets, steps: path.as_ref().map(|p| p.steps.as_slice()).unwrap_or_default(), lowered_at: lowered_at.as_ref() }))
 }
 
 #[cfg(test)]

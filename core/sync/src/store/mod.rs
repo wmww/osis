@@ -594,10 +594,30 @@ impl Store {
     /// Caps); only the sync IDs whose entry moved stamp. One raised (`raised`) is
     /// fetched anew (spec/sync-judgement.md §6 Read and unread move), marked durably (`N/`) until
     /// streams moved every source's place of S back to the start (`reset_anew`), so a restart
-    /// between still fetches it (`anew_feed`).
+    /// between still fetches it (`anew_feed`). One lowered from opening S to keeping it unread
+    /// marks its head then durably (`L/`, `lowered_at`); opening S again, the mark goes. Written
+    /// after the engine's drop: a crash between leaves S read once more by that head's public
+    /// entry, and lowered again as its role entries open.
     pub fn set_holdings(&mut self, moved: &[(SyncId, Option<Held>)]) -> Result<()> {
         let mut g = self.lock();
         let unread = |h: Option<&Held>| h.is_some_and(|(_, h)| *h == Holding::Unread);
+        let opens = |h: Option<&Held>| h.is_some_and(|(_, h)| h.opens());
+        let marks: Vec<(SyncId, bool)> = moved.iter().filter(|(s, now)| opens(g.holdings.get(s)) && unread(now.as_ref()) || opens(now.as_ref()) && !opens(g.holdings.get(s))).map(|(s, now)| (*s, unread(now.as_ref()))).collect();
+        if !marks.is_empty() {
+            g.write(|t, env| {
+                for (s, lowered) in &marks {
+                    match path::head_id(t, env, s)?.filter(|_| *lowered) {
+                        Some(h) => {
+                            t.put_local(&rows::lowered_key(s), &h.0, Shred::No)?;
+                        }
+                        None => {
+                            t.remove_local(&rows::lowered_key(s), Shred::No)?;
+                        }
+                    }
+                }
+                Ok(())
+            })?;
+        }
         let anew: Vec<SyncId> = moved.iter().filter(|(s, now)| raised(g.holdings.get(s), now.as_ref()) && !g.unheld.contains(s)).map(|(s, _)| *s).collect();
         if !anew.is_empty() {
             // a dropped copy's mark stands as it is: it is fetched anew once judged (`set_unheld`)
@@ -1446,6 +1466,7 @@ impl Store {
             t.changed_forget(s)?;
             t.remove_local(&rows::anew_key(s), Shred::No)?;
             t.remove_local(&rows::first_key(s), Shred::No)?;
+            t.remove_local(&rows::lowered_key(s), Shred::No)?;
             remove_room_rows(t, s)
         })?;
         g.forget_room(s);
@@ -1461,6 +1482,13 @@ impl Store {
     /// at the end of a listing from the start since S was last shredded here. Stamped (row `F/`).
     pub fn first_synced(&self, s: &SyncId) -> Result<bool> {
         self.lock().read(|t, _| Ok(t.get_local(&rows::first_key(s))?.is_some()))
+    }
+
+    /// The head S kept unread here was lowered to it at from opening S (`set_holdings`), whose
+    /// public entry gives it nothing (spec/sync-opens.md §4 Admissible). Stamped (row `L/`).
+    pub fn lowered_at(&self, s: &SyncId) -> Result<Option<StepId>> {
+        let v = self.lock().read(|t, _| Ok(t.get_local(&rows::lowered_key(s))?))?;
+        v.map(|v| v.as_slice().try_into().map(StepId).map_err(|_| crate::types::Error::Store(osis_store::Error::Corrupt("lowered row")))).transpose()
     }
 
     /// S's first sync here ended: kept until S is shredded (`first_synced`).

@@ -41,6 +41,9 @@
 //!   and the latest expiry of one (`u64::MAX`: one has none), 8 bytes each (`Store::room_grew`).
 //!   Stands only while some source's room mark of S does (`tag::ROOM_AT`, a connection's in
 //!   memory).
+//! - `L/ s` S kept unread was lowered to it from opening S (`Store::set_holdings`): value the head's
+//!   step ID then, which gives it nothing (`Store::lowered_at`, spec/sync-opens.md §4); gone once
+//!   S opens again, or with S (`shred`).
 //! - `F/ s` S's first sync here ended (spec/sync-streams.md §5): a source's stream of S stood at
 //!   the end of a listing from the start; gone with S (`shred`).
 
@@ -82,6 +85,7 @@ pub(crate) const ROOM_STANDS: u8 = 0;
 pub(crate) const ROOM_OWED: u8 = 1;
 pub(crate) const ROOM: &[u8] = b"R/";
 pub(crate) const FIRST: &[u8] = b"F/";
+pub(crate) const LOWERED: &[u8] = b"L/";
 
 /// The tags of the rows each module keeps of a source: in a peer's record (`osis_store::
 /// Transaction::record_put_row`, `record_put_wide_row` for a row about the record as a whole) or
@@ -180,6 +184,9 @@ pub(crate) fn anew_key(s: &SyncId) -> Vec<u8> {
 }
 pub(crate) fn first_key(s: &SyncId) -> Vec<u8> {
     [FIRST, &s.0].concat()
+}
+pub(crate) fn lowered_key(s: &SyncId) -> Vec<u8> {
+    [LOWERED, &s.0].concat()
 }
 pub(crate) fn usage_key(s: &SyncId) -> Vec<u8> {
     [USAGE, &s.0].concat()
