@@ -520,6 +520,25 @@ fn role_entries_pass_the_caps_spec_sync_ids_6() {
     assert!(st.entry(&s.id, &b4).unwrap().is_some());
 }
 
+// spec/sync-ids.md §6 (role entries: a deposited one within the deposit budget), spec/sync-inbox.md
+// §3 (budget: one per sync ID): the store cannot check a role entry it keeps unread, so any
+// deposit-key holder may sign any blob as one; doing so gains no room past S's caps beyond the
+// one deposit budget, which plain and role-domain deposits share.
+#[test]
+fn role_domain_deposits_share_the_one_deposit_budget_spec_sync_ids_6() {
+    let (_dev, s, mut st) = one_unread();
+    st.set_caps(&caps(&[("entries", 0)]));
+    // the genesis claim set holds one key: 68 entries
+    for i in 0..68 {
+        let (_, x) = blob(64 + i, Class::Durable, None, &[]);
+        assert_eq!(st.take_deposit(&deposit(&s, &x, true), None).unwrap(), Code::OK, "role-domain deposit {i}");
+    }
+    let (_, x) = blob(400, Class::Durable, None, &[]);
+    assert_eq!(st.take_deposit(&deposit(&s, &x, true), None).unwrap(), Code::DEPOSIT_BUDGET_FULL, "past the budget");
+    st.set_caps(&caps(&[]));
+    assert_eq!(st.take_deposit(&deposit(&s, &x, false), None).unwrap(), Code::DEPOSIT_BUDGET_FULL, "the plain domain shares it");
+}
+
 // spec/sync-streams.md §4 (Full: the room of the cap that refused grows as an entry leaves,
 // under S or another sync ID): S refused by the store's total stays full until the total has
 // room for the entry it refused; here tombstones (which no give-way removes) leaving at their

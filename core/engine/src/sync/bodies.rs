@@ -560,7 +560,7 @@ impl Engine {
     }
 
     /// `c`'s body under `s` as a fresh encryption, with its wrap for `s` (spec/sync-judgement.md
-    /// §1, §4: logging again, a non-writer's deposit, a body with no held encryption): the one
+    /// §1, §4: logging again, a body with no held encryption): the one
     /// place sync encrypts a body (spec/crypto.md §5 Passing on). A per-sync-ID copy is one
     /// section under its blob key (`seal_to`); else `Engine::seal` with every section of every
     /// held genuine blob of `c` (`held`: shared blobs opened or sealed here, never a copy's), so
