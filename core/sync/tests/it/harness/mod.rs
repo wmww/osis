@@ -127,6 +127,9 @@ impl Disks {
     }
 }
 
+/// A node's disks as they stood when backed up (`World::backup`).
+pub struct Backup(Disks);
+
 /// One world node.
 pub struct WNode {
     pub node: Node,
@@ -1594,6 +1597,19 @@ impl World {
             *o = true;
         }
         self.tick(i);
+    }
+
+    /// A backup of node `i`'s disks as they stand (a device's whole state: engine and store).
+    pub fn backup(&self, i: usize) -> Backup {
+        Backup(osis_base::copying::copying(|| self.nodes.get(i).expect("no such node").disks.test_copy()))
+    }
+
+    /// Node `i` restored from backup `b`: it loses power and reopens over a copy of the backup's
+    /// disks; `power_on` brings it back.
+    pub fn restore(&mut self, i: usize, b: &Backup) {
+        let d = osis_base::copying::copying(|| b.0.test_copy());
+        self.nodes.get_mut(i).expect("no such node").disks = d;
+        self.power_off(i);
     }
 
     /// An exact copy sharing nothing with this world (`osis_base::copying`).

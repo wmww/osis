@@ -213,7 +213,8 @@ instances=(
   "netstream net MCStream SN_echotold.cfg fail:PresenceSound" # negative control: an applied send counts though the requester took it not and told nothing (PresenceSound)
   "netstream net MCStream SN_echocount.cfg fail:PresenceComplete" # negative control: the filter without counting applied sends (PresenceComplete)
   "netstream net MCStream SN_echodurable.cfg fail:PresenceComplete" # negative control: the peer's count kept across connections (PresenceComplete)
-  "netstream net MCStream SN_echorestore.cfg fail:PresenceSound" # finding: an applied send counted at the Applied, b restored from before it took the entry (PresenceSound)
+  "netstream net MCStream SN_echoanchor.cfg fail:PresenceSound" # negative control: no anchor, b restored from before it took the entry is counted holding it (PresenceSound)
+  "netstream net MCStream SN_echocheck.cfg fail:PresenceSound" # negative control: the held anchor replaced before a reply checked it (PresenceSound)
   "netshared net MCShared T_cred.cfg pass"
   "netshared net MCShared T_gain.cfg pass"
   "netshared net MCShared T_remove.cfg pass"

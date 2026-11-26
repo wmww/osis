@@ -393,7 +393,7 @@ impl Streams {
             Incoming::Request(id, Msg::Pull(p)) => self.on_pull(ctx, conn, id, *p),
             Incoming::Request(id, Msg::Fetch { max_reply, ids, .. }) => self.on_fetch(ctx, conn, id, max_reply, ids),
             Incoming::Request(id, Msg::Want { max_reply, ids, .. }) => self.on_want(ctx, conn, id, max_reply, ids),
-            Incoming::Push(Msg::Applied { cursor }) => self.on_applied(ctx, conn, cursor.into_bytes()),
+            Incoming::Push(Msg::Applied { cursor, anchor }) => self.on_applied(ctx, conn, cursor.into_bytes(), anchor.map(osis_proto::Cursor::into_bytes)),
             Incoming::Push(Msg::Stream(st)) => self.on_stream(ctx, conn, *st),
             Incoming::Reply(To::Streams, id, m) => self.on_reply(ctx, conn, id, m),
             _ => {}

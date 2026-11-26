@@ -348,7 +348,7 @@ fn spec_decode(body: &[u8]) -> Result<(), &'static str> {
         37 => n(1).and_then(|_| list(&a[0], 1, 1024, item)),
         38 => n(1).and_then(|_| list(&a[0], 1, 1024, join)),
         39 => n(1).and_then(|_| list(&a[0], 1, 1024, shared)),
-        41 => n(6).and_then(|_| opt_of(&a[0], cursor)).and_then(|_| list(&a[1], 0, usize::MAX, join)).and_then(|_| u(&a[2])).and_then(|_| max_reply(&a[3])).and_then(|_| boolean(&a[4])).and_then(|_| boolean(&a[5])),
+        41 => n(7).and_then(|_| opt_of(&a[0], cursor)).and_then(|_| list(&a[1], 0, usize::MAX, join)).and_then(|_| u(&a[2])).and_then(|_| max_reply(&a[3])).and_then(|_| boolean(&a[4])).and_then(|_| boolean(&a[5])).and_then(|_| opt_of(&a[6], cursor)),
         42 => n(7).and_then(|_| events(&a[0], false)).and_then(|_| opt_of(&a[1], cursor)).and_then(|_| a[2..6].iter().try_for_each(boolean)).and_then(|_| list(&a[6], 0, usize::MAX, join)),
         43 => n(4).and_then(|_| {
             let c = opt(&a[1])?;
@@ -359,7 +359,7 @@ fn spec_decode(body: &[u8]) -> Result<(), &'static str> {
             // a Stream with no cursor has seq 0, and nothing to report
             ok(c.is_some() || (seq == 0 && a[2] == Value::Bool(false)), "cursorless stream")
         }),
-        44 => n(1).and_then(|_| cursor(&a[0])),
+        44 => n(2).and_then(|_| cursor(&a[0])).and_then(|_| opt_of(&a[1], cursor)),
         45 => n(1).and_then(|_| b(&a[0], 32)),
         46 => n(2).and_then(|_| list(&a[0], 0, 4096, |s| b(s, 16))).and_then(|_| boolean(&a[1])),
         47 => n(2).and_then(|_| max_reply(&a[0])).and_then(|_| {

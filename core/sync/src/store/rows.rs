@@ -116,8 +116,10 @@ pub(crate) mod tag {
     pub(crate) const KEPT: u8 = b'u';
     pub(crate) const FULL: u8 = b'n';
     pub(crate) const TOLD: u8 = b't';
-    // streams: a member closed on the connection up, its place kept while that connection lasts
+    // streams: a member closed on the connection up, its place kept while that connection lasts;
+    // the source's anchor (record-wide: `h` held, `n` waiting for a reply to check the held one)
     pub(crate) const CLOSED: u8 = b'l';
+    pub(crate) const ANCHOR: u8 = b'g';
 }
 
 pub(crate) fn head_key(s: &SyncId) -> Vec<u8> {

@@ -467,7 +467,7 @@ fn pull_at(side: &mut Side, now: u64, p: Pull) -> osis_proto::PullReply {
 
 fn plain_pull(cursor: Option<Vec<u8>>, joins: Vec<(SyncId, Option<Vec<u8>>)>, max_reply: usize) -> Pull {
     let cur = |c: Option<Vec<u8>>| c.map(|c| osis_proto::Cursor::new(c).unwrap());
-    Pull { id: 0, cursor: cur(cursor), joins: joins.into_iter().map(|(s, c)| (s, cur(c))).collect(), inline_limit: 0, max_reply: max_reply as u64, follow: false, ephemeral: false }
+    Pull { id: 0, cursor: cur(cursor), joins: joins.into_iter().map(|(s, c)| (s, cur(c))).collect(), inline_limit: 0, max_reply: max_reply as u64, follow: false, ephemeral: false, anchor: None }
 }
 
 fn added(r: &[(SyncId, Event)]) -> Vec<BlobId> {
@@ -771,7 +771,7 @@ fn a_join_in_pages_keeps_its_position_spec_sync_streams_4() {
     a.log(s, 100);
     a.open.members.entry(C).or_default().insert(s, member());
     let c = pull_at(&mut a, 1, plain_pull(None, vec![], REPLY_BUDGET)).cursor.unwrap().into_bytes();
-    a.with(1, |st, cx| st.message(cx, C, Incoming::Push(Msg::Applied { cursor: osis_proto::Cursor::new(c.clone()).unwrap() })));
+    a.with(1, |st, cx| st.message(cx, C, Incoming::Push(Msg::Applied { cursor: osis_proto::Cursor::new(c.clone()).unwrap(), anchor: None })));
     assert!(a.reported_at(s).is_some(), "the stream's position");
     a.open.members.get_mut(&C).unwrap().insert(t, member());
     let r = pull_at(&mut a, 1, plain_pull(Some(c.clone()), vec![(t, None)], SMALL_REPLY));
@@ -796,7 +796,7 @@ fn a_join_in_pages_keeps_its_position_spec_sync_streams_4() {
     assert_eq!(seen, 300, "every event of the join, each once");
     assert_eq!(a.reported_at(t), None, "its own position until an Applied covers the merge");
     // merged: the member follows the stream once an Applied covers the merging reply
-    a.with(1, |st, cx| st.message(cx, C, Incoming::Push(Msg::Applied { cursor: osis_proto::Cursor::new(stream.clone()).unwrap() })));
+    a.with(1, |st, cx| st.message(cx, C, Incoming::Push(Msg::Applied { cursor: osis_proto::Cursor::new(stream.clone()).unwrap(), anchor: None })));
     assert!(a.reported.contains(&Reported::Merged(C, t)));
     assert_eq!(a.reported_at(t), a.reported_at(s));
 }
@@ -810,7 +810,7 @@ fn a_join_in_pages_keeps_its_position_spec_sync_streams_4() {
 // asks one.
 #[test]
 fn a_merge_is_covered_by_its_own_message_not_an_earlier_one_spec_sync_opens_6() {
-    let applied = |a: &mut Side, c: &[u8]| a.with(1, |st, cx| st.message(cx, C, Incoming::Push(Msg::Applied { cursor: osis_proto::Cursor::new(c.to_vec()).unwrap() })));
+    let applied = |a: &mut Side, c: &[u8]| a.with(1, |st, cx| st.message(cx, C, Incoming::Push(Msg::Applied { cursor: osis_proto::Cursor::new(c.to_vec()).unwrap(), anchor: None })));
     let mut a = Side::new(1);
     let (s, t, u) = (sid(1), sid(2), sid(3));
     for x in [s, t, u] {
@@ -2592,7 +2592,7 @@ fn an_applied_of_an_earlier_connection_reports_nothing_spec_sync_streams_4() {
     p.b.streams.closed(C);
     p.join(s);
     p.run();
-    let Some(Msg::Applied { cursor: old }) = p.sent_by_b(44).last().map(|m| (*m).clone()) else { panic!("b reported") };
+    let Some(Msg::Applied { cursor: old, anchor: None }) = p.sent_by_b(44).last().map(|m| (*m).clone()) else { panic!("b reported") };
     let at = p.a.store.position(old.as_bytes()).unwrap();
     assert!(p.a.streams.caught_up(C, &s));
     // a reconnect again: the last Applied is of the connection before
@@ -2604,7 +2604,7 @@ fn an_applied_of_an_earlier_connection_reports_nothing_spec_sync_streams_4() {
     p.run_with(|ab, m| !ab && m.kind() == 44);
     assert!(held(&p.b, s).contains(&e));
     assert_eq!(p.a.store.position(old.as_bytes()).unwrap(), at, "the old cursor names the stream's position");
-    p.a.with(p.now, |st, c| st.message(c, C, Incoming::Push(Msg::Applied { cursor: old })));
+    p.a.with(p.now, |st, c| st.message(c, C, Incoming::Push(Msg::Applied { cursor: old, anchor: None })));
     assert!(!p.a.streams.caught_up(C, &s), "an Applied of an earlier connection reported this one's push");
     p.release();
     p.run();
@@ -2955,6 +2955,114 @@ fn a_join_from_the_start_replaces_presence_spec_sync_streams_4() {
     assert!(p.sent_by_a(42).iter().all(|m| matches!(m, Msg::PullReply(r) if !r.whole)), "a join, not a whole listing");
     assert!(knows(&p.b, p.b.src(), s, x));
     assert!(!knows(&p.b, p.b.src(), s, y), "S's listing from the start is its live set there");
+}
+
+// spec/sync-streams.md §4 (Reports: a server counts what it sent held once an Applied reports it
+// and nothing told it not held, and is served no Added of it back), NetStream S_echo: an entry b takes from a is counted held at a from b's Applied, and b's
+// stream never carries it back, at n and 10n; what b does not keep it tells, and a counts it not.
+#[test]
+fn an_entry_taken_is_counted_held_and_never_streamed_back_spec_sync_streams_4() {
+    let back = |n: usize, keep: bool| {
+        let mut p = Pair::new();
+        p.b.table.held = keep.then_some(true);
+        let s = sid(1);
+        p.shared_read(s);
+        p.run();
+        p.seen.clear();
+        let xs: Vec<BlobId> = (0..n).map(|i| p.a.log(s, 100 + i)).collect();
+        p.run();
+        for x in &xs {
+            assert_eq!(p.b.store.entry(&s, x).unwrap().is_some(), keep);
+            assert_eq!(knows(&p.a, p.a.src(), s, *x), keep, "a counts b holding it exactly when b keeps it");
+        }
+        let echoed = p.seen.iter().filter(|(ab, m)| !*ab && matches!(m, Msg::PullReply(_) | Msg::Stream(_))).flat_map(|(_, m)| match m {
+            Msg::PullReply(r) => r.events.clone(),
+            Msg::Stream(st) => st.events.clone(),
+            _ => Vec::new(),
+        });
+        echoed.filter(|(_, e)| matches!(e, Event::Added { .. })).count()
+    };
+    assert_eq!((back(3, true), back(30, true)), (0, 0), "nothing streamed back");
+    assert_eq!((back(3, false), back(30, false)), (0, 0), "nothing streamed back");
+}
+
+// spec/sync-streams.md §4 (Reports: an Applied's anchor, a Pull naming one of no position of the
+// server's history answered from the start), NetStream S_echorestore / SN_echoanchor: b takes x
+// from a, and a counts it held there from b's Applied; b's store is restored from a backup taken
+// before, its record kept, a's cursor of b's log still naming a position there (b's stream
+// carried nothing since). a's first Pull names the anchor b gave, which the restored history
+// lacks: b answers from the start, and its listing read to its end leaves x counted held there
+// no more. a's replies to b are lost meanwhile, so b does not take x again.
+#[test]
+fn a_restored_store_is_not_counted_holding_what_it_took_after_the_backup_spec_sync_streams_4() {
+    let mut p = Pair::new();
+    p.b.table.held = Some(true);
+    let s = sid(1);
+    p.b.log(s, 50);
+    p.shared_read(s);
+    p.run();
+    let (backend, root) = osis_base::copying::copying(|| (p.b.backend.test_copy(), p.b.root.test_copy()));
+    let x = p.a.log(s, 100);
+    p.run();
+    assert!(p.b.store.entry(&s, &x).unwrap().is_some() && knows(&p.a, p.a.src(), s, x), "b took x and a counts it");
+    p.b.backend = backend;
+    p.b.root = root;
+    p.b.restart_all(9);
+    p.a.streams.closed(C);
+    assert!(p.b.store.entry(&s, &x).unwrap().is_none(), "the restored store lacks x");
+    p.take_again();
+    p.seen.clear();
+    p.run_with(|ab, m| ab && matches!(m, Msg::PullReply(_) | Msg::Stream(_)));
+    let pulls = p.sent_by_a(41);
+    assert!(matches!(pulls.first(), Some(Msg::Pull(q)) if q.anchor.is_some()), "a's first Pull names the anchor: {pulls:?}");
+    assert!(p.sent_by_b(42).first().is_some_and(|m| matches!(m, Msg::PullReply(r) if r.whole && !r.trimmed)), "answered from the start");
+    assert!(!knows(&p.a, p.a.src(), s, x), "not counted held at the restored store");
+}
+
+// spec/sync-streams.md §4 (Reports: a newer anchor waits until a reply on the connection checked
+// the one held), NetStream SN_echocheck: b takes x and y from a, a drops y, and b is restored
+// from before both. The restored b pulls first and takes x again: its Applied's anchor, a
+// position of the restored history, comes before any reply checked the one a holds, so it waits;
+// a's Pull names the held one, b answers from the start, and y is counted held there no more.
+#[test]
+fn a_newer_anchor_waits_for_the_held_one_to_be_checked_spec_sync_streams_4() {
+    let mut p = Pair::new();
+    p.b.table.held = Some(true);
+    let s = sid(1);
+    p.b.log(s, 50);
+    p.shared_read(s);
+    p.run();
+    let (backend, root) = osis_base::copying::copying(|| (p.b.backend.test_copy(), p.b.root.test_copy()));
+    let x = p.a.log(s, 100);
+    let y = p.a.log(s, 101);
+    p.run();
+    assert!(knows(&p.a, p.a.src(), s, x) && knows(&p.a, p.a.src(), s, y));
+    p.a.store.drop_entry(&s, &y, Vec::new()).unwrap();
+    p.run();
+    assert!(knows(&p.a, p.a.src(), s, y), "a's drop leaves what b holds");
+    p.b.backend = backend;
+    p.b.root = root;
+    p.b.restart_all(9);
+    p.a.streams.closed(C);
+    // b's connection first: it pulls a and takes x again before a pulls
+    let rec = p.b.open.record.unwrap();
+    p.b.with(p.now, |st, ctx| st.member_moved(ctx, Moved::Taken(C, rec, false)));
+    p.seen.clear();
+    p.run();
+    assert!(p.b.store.entry(&s, &x).unwrap().is_some() && p.sent_by_b(44).iter().any(|m| matches!(m, Msg::Applied { anchor: Some(_), .. })), "b took x again and sent an anchor");
+    let rec = p.a.open.record.unwrap();
+    p.a.with(p.now, |st, ctx| st.member_moved(ctx, Moved::Taken(C, rec, false)));
+    p.run();
+    assert!(p.sent_by_b(42).iter().any(|m| matches!(m, Msg::PullReply(r) if r.whole)), "a's Pull named the held anchor: answered from the start");
+    assert!(knows(&p.a, p.a.src(), s, x), "x held there again");
+    assert!(!knows(&p.a, p.a.src(), s, y), "y counted held at the restored store no more");
+    // the check made the waiting anchor the held one (SN_history: a reconnect lists nothing again)
+    p.a.streams.closed(C);
+    p.b.streams.closed(C);
+    p.take_again();
+    p.seen.clear();
+    p.run();
+    assert!(p.sent_by_b(42).iter().all(|m| matches!(m, Msg::PullReply(r) if !r.whole)), "a reconnect is no listing from the start");
 }
 
 // spec/sync-streams.md §3 (Durability: the records and the cursors stored in them are durable):

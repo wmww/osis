@@ -39,10 +39,16 @@ CONSTANTS
                                     \* `known`): "stream" (only the requester's own stream shows it: a requester
                                     \* streams back what it took), "applied" (also each Added it sent that the
                                     \* requester reported applied and did not tell refused; a server lists no
-                                    \* Added its requester counts it holding, outside a listing from the start),
+                                    \* Added its requester counts it holding, outside a listing from the start;
+                                    \* the Applied carries the requester's log end, the anchor, which the next
+                                    \* Pull to that requester names: a server answers from the start when its
+                                    \* history lacks it; the held anchor is replaced only once a reply on the
+                                    \* connection checked it, a newer one waiting till then),
                                     \* "untold" (control: an applied send counts though the requester holds it
                                     \* not), "uncounted" (control: the filter without counting applied sends),
-                                    \* "durable" (control: what the peer counts kept across connections)
+                                    \* "durable" (control: what the peer counts kept across connections),
+                                    \* "unanchored" (control: no anchor), "unchecked" (control: every Applied
+                                    \* replaces the held anchor at once)
 
 A == "a"
 Other(x, l) == CHOOSE y \in l : y # x
@@ -54,11 +60,13 @@ NoDig == [on |-> FALSE, set |-> {}]
 Mem0 == [st |-> "out", c |-> NoCur]
 Rec0 == [rid |-> 0, cur |-> NoCur, mem |-> [l \in Ls |-> Mem0], srv |-> [l \in Ls |-> FALSE],
          lostp |-> {}, listing |-> [on |-> FALSE, seen |-> {}], knew |-> {}, last |-> NoCur, everCur |-> FALSE,
-         pres |-> {}, plist |-> [l \in Ls |-> "none"]]
+         pres |-> {}, plist |-> [l \in Ls |-> "none"], anc |-> NoCur, anew |-> NoCur, ancOk |-> FALSE]
+\* anc: the anchor, a position of the peer's log covering every send of this node it counts the peer
+\* holding; anew: a newer one waiting for a reply on the connection to check anc; ancOk: one has.
 Store0(sid, inc) == [log |-> {}, end |-> 0, held |-> {}, tomb |-> {}, lid |-> sid, inc |-> inc, sid |-> sid, draws |-> 0,
                      pend |-> FALSE, hist |-> {[inc |-> inc, end |-> Inf]}, rec |-> Rec0, hz |-> 0]
 NoReply == [on |-> FALSE, items |-> {}, whole |-> FALSE, listing |-> FALSE, more |-> FALSE, cur |-> NoCur, refused |-> {}, stale |-> FALSE, asked |-> {},
-            lfrom |-> {}, ltrim |-> {}, snap |-> {}, acks |-> [took |-> {}, gone |-> {}]]
+            lfrom |-> {}, ltrim |-> {}, snap |-> {}, acks |-> [took |-> {}, gone |-> {}, anc |-> NoCur]]
 
 VARIABLES st, link, dialer, inflight, active, cloned, cu, dirty, ever, written,
           rights, cnt, unforced, lostW, badServe, dig, ctd
@@ -123,12 +131,16 @@ Valid(c, s) ==
     /\ (IncCheck => Lineage(c, s))
     /\ (Trim => c.pos >= s.hz)
 Trimmed(c, s) == Trim /\ c # NoCur /\ c.pos < s.hz
+Anchored == Echo \notin {"stream", "unanchored"}
+\* The anchor names a position of this history (deletion expiry does not matter to it).
+AncBad(r, s) == Anchored /\ r.anc # NoCur /\ ~(r.anc.lid = s.lid /\ r.anc.pos <= s.end /\ Lineage(r.anc, s))
 \* Real need for a from-the-start reply: nothing to resume from, or a restored
 \* or copied store's other history.
 Forced(r, s) ==
     \/ r.cur = NoCur /\ ~r.everCur
     \/ r.cur # NoCur /\ (r.cur.lid # s.lid \/ (cloned /\ (r.cur.pos > s.end \/ ~Lineage(r.cur, s))))
     \/ Trimmed(r.cur, s)
+    \/ cloned /\ AncBad(r, s)
 
 Page(S) == {ev \in S : Cardinality({u \in S : u.pos < ev.pos}) < PageK}
 
@@ -137,7 +149,7 @@ Pull(x) ==
         r == st[x].rec
         s == st[y]
         cv == Valid(r.cur, s)
-        wholeNew == ~cv
+        wholeNew == ~cv \/ AncBad(r, s)
         From(l) ==
             IF wholeNew THEN 0
             ELSE IF r.mem[l].st = "join"
@@ -170,7 +182,7 @@ Pull(x) ==
              cur |-> [lid |-> s.lid, inc |-> s.inc, pos |-> p], refused |-> refused, stale |-> FALSE, asked |-> {l \in Ls : r.mem[l].st # "out"},
              lfrom |-> IF TrackPres THEN lfrom ELSE {}, ltrim |-> IF TrackPres THEN ltrim ELSE {},
              snap |-> IF TrackPres THEN {e \in s.held : Shared(EL[e])} ELSE {},
-             acks |-> [took |-> {}, gone |-> {}]]]
+             acks |-> [took |-> {}, gone |-> {}, anc |-> NoCur]]]
     /\ st' = [st EXCEPT ![y].rec.last = r.cur,
                         ![x].rec.cur = IF CursorOnApply THEN @ ELSE inflight'[x].cur,
                         ![x].rec.everCur = IF CursorOnApply THEN @ ELSE TRUE]
@@ -214,12 +226,20 @@ Apply(x) ==
         sent == {i.e : i \in {i \in rp.items : i.k = "add"}}
         took == sent \cap s2.held
         EvPos(e) == (CHOOSE ev \in s2.log : ev.e = e).pos
-        ack == CASE Echo \in {"applied", "durable"} -> [took |-> took, gone |-> sent \ took]
-                 [] Echo = "untold" -> [took |-> sent, gone |-> {}]
-                 [] OTHER -> [took |-> {}, gone |-> {}]
+        anc == IF Anchored /\ took # {} THEN [lid |-> s2.lid, inc |-> s2.inc, pos |-> s2.end] ELSE NoCur
+        ack == CASE Echo \in {"applied", "durable", "unanchored", "unchecked"} -> [took |-> took, gone |-> sent \ took, anc |-> anc]
+                 [] Echo = "untold" -> [took |-> sent, gone |-> {}, anc |-> anc]
+                 [] OTHER -> [took |-> {}, gone |-> {}, anc |-> NoCur]
         \* the Applied reaches y after y's reply in flight from x (sent before it), else at once
         queued == inflight[y].on
         Acked(p, a) == (p \cup a.took) \ a.gone
+        \* this reply checked x's held anchor: a newer one replaces it, a listing from the start
+        \* spends it (its end replaces presence); then the Applied that waited for it (y's)
+        anc1 == IF r.anew # NoCur THEN r.anew ELSE IF rp.whole THEN NoCur ELSE r.anc
+        anc2 == IF rp.acks.anc # NoCur THEN rp.acks.anc ELSE anc1
+        \* y's anchor from this Applied: replaces y's once a reply checked it, else waits
+        yr == st[y].rec
+        yNow == ack.anc # NoCur /\ (yr.ancOk \/ yr.anc = NoCur \/ Echo = "unchecked")
         ctd2 == IF Echo = "stream" THEN ctd[x]
                 ELSE {c \in ctd[x] : c.e \notin took} \cup {[e |-> e, pos |-> EvPos(e)] : e \in took}
     IN
@@ -227,7 +247,8 @@ Apply(x) ==
     /\ inflight[x].on
     /\ inflight' = [inflight EXCEPT ![x] = NoReply,
                                     ![y].acks = IF queued THEN [took |-> (@.took \ ack.gone) \cup ack.took,
-                                                                gone |-> (@.gone \ ack.took) \cup ack.gone]
+                                                                gone |-> (@.gone \ ack.took) \cup ack.gone,
+                                                                anc |-> IF ack.anc # NoCur THEN ack.anc ELSE @.anc]
                                                 ELSE @]
     /\ ctd' = [ctd EXCEPT ![x] = ctd2]
     /\ st' = [st EXCEPT
@@ -238,9 +259,12 @@ Apply(x) ==
                 !.rec.listing = IF rp.more THEN listing2 ELSE [on |-> FALSE, seen |-> {}],
                 !.rec.knew = @ \cup {i.e : i \in rp.items},
                 !.rec.pres = IF TrackPres THEN Acked(pres2, rp.acks) ELSE @,
-                !.rec.plist = IF TrackPres THEN plist2 ELSE @],
+                !.rec.plist = IF TrackPres THEN plist2 ELSE @,
+                !.rec.anc = anc2, !.rec.anew = NoCur, !.rec.ancOk = Anchored],
               ![y].rec.last = rp.cur,
-              ![y].rec.pres = IF TrackPres /\ ~queued THEN Acked(@, ack) ELSE @]
+              ![y].rec.pres = IF TrackPres /\ ~queued THEN Acked(@, ack) ELSE @,
+              ![y].rec.anc = IF ~queued /\ yNow THEN ack.anc ELSE @,
+              ![y].rec.anew = IF ~queued /\ ack.anc # NoCur /\ ~yNow THEN ack.anc ELSE @]
     /\ cu' = [cu EXCEPT ![x] = [l \in Ls |-> ~rp.more /\ ~(Rearm /\ rp.stale) /\ mem2[l].st = "stream" /\ l \in rp.asked]]
     /\ dirty' = [dirty EXCEPT ![x] = @ \/ s2.end # st[x].end]
     /\ lostW' = lostW \cup (candidates \ ever)
@@ -414,7 +438,8 @@ Connect(x, y) ==
     /\ link' = {x, y}
     /\ dialer' = x
     /\ IF same
-       THEN /\ st' = [st EXCEPT ![x].rec.lostp = {}, ![y].rec.lostp = {}]
+       THEN /\ st' = [st EXCEPT ![x].rec.lostp = {}, ![y].rec.lostp = {},
+                                 ![x].rec.ancOk = FALSE, ![y].rec.ancOk = FALSE]
             /\ UNCHANGED cnt
        ELSE /\ st' = [st EXCEPT ![x] = Fresh(@), ![y] = Fresh(@)]
             /\ cnt' = [cnt EXCEPT !.rid = rid]

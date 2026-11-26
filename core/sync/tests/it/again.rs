@@ -72,14 +72,14 @@ fn restart(w: &mut World, i: usize) {
 
 // spec/sync-judgement.md §4 (logs the body again once; a restart is no change of ground), §3
 // (Role entries first: a full source is skipped): node 0 sees its write deleted at node 1
-// while node 1 lacks a role commit of node 0's (node 0's stream withheld it), so logging again
-// waits; node 0 restarts, then node 1 tells it is full for S, which ends the wait: node 0 logs
-// the write there again once.
+// while node 1 lacks a role commit of node 0's (node 0 answers none of its requests), so
+// logging again waits; node 0 restarts, then node 1 tells it is full for S, which ends the
+// wait: node 0 logs the write there again once.
 #[test]
 fn a_delete_seen_before_a_restart_is_logged_again_once_after_spec_sync_judgement_4() {
     let (mut w, t, s, c) = setup();
     let before = encryptions(&mut w, &c);
-    w.lie(0, Some(Lie::Withhold));
+    w.lie(0, Some(Lie::Hold));
     grant_reader(&mut w, t);
     w.run();
     store_deletes(&mut w, &s, &c);

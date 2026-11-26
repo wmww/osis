@@ -161,7 +161,7 @@ pub fn messages() -> Vec<(&'static str, Msg)> {
         ("shared", Msg::Shared { id: top(37), items: vec![SharedItem { code: Code::OK, tag: Some([7; 32]), sig: None, class: SourceClass::Store }, SharedItem::code(Code::DECLINED)] }),
         ("shared on a claim", Msg::Shared { id: top(39), items: vec![SharedItem { code: Code::OK, tag: Some([7; 32]), sig: Some(open(&f.sync)), class: SourceClass::Stub }, SharedItem::code(Code::UNKNOWN_SYNC_ID)] }),
         ("no record", Msg::NoRecord { id: crate::limits::NO_RECORD_ID }),
-        ("pull", Msg::Pull(Box::new(Pull { id: top(41), cursor: Some(cursor(0x2c)), joins: vec![(l, None), (other, Some(cursor(0x2d)))], inline_limit: 0, max_reply: 65_536, follow: true, ephemeral: true }))),
+        ("pull", Msg::Pull(Box::new(Pull { id: top(41), cursor: Some(cursor(0x2c)), joins: vec![(l, None), (other, Some(cursor(0x2d)))], inline_limit: 0, max_reply: 65_536, follow: true, ephemeral: true, anchor: Some(cursor(0x31)) }))),
         (
             "pull reply",
             Msg::PullReply(Box::new(PullReply { id: top(41), events: vec![(l, added.clone()), (l, Event::Deleted(id(0xb7))), (l, Event::Head(f.child.clone()))], cursor: Some(cursor(0x2e)), whole: false, trimmed: false, more: true, report: true, joins: vec![(other, Some(cursor(0x2f)))] })),
@@ -169,7 +169,7 @@ pub fn messages() -> Vec<(&'static str, Msg)> {
         ("stream", Msg::Stream(Box::new(Stream { events: vec![(l, added.clone())], cursor: Some(cursor(0x30)), report: true, seq: 3 }))),
         ("stream with no events", Msg::Stream(Box::new(Stream { events: vec![], cursor: Some(cursor(0x30)), report: true, seq: 0 }))),
         ("stream with no cursor", Msg::Stream(Box::new(Stream { events: vec![(l, Event::Full(true)), (l, Event::Refused(id(0xb1), Code::NOT_HEAD_KEY)), (l, added)], cursor: None, report: false, seq: 0 }))),
-        ("applied", Msg::Applied { cursor: cursor(0x30) }),
+        ("applied", Msg::Applied { cursor: cursor(0x30), anchor: Some(cursor(0x32)) }),
         ("digest", Msg::Digest { digest: [0x31; 32] }),
         ("members", Msg::Members { sync_ids: vec![l, other], more: false }),
     ]

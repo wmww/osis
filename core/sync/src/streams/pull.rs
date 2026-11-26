@@ -4,9 +4,10 @@
 //! `seq` checked and a gap read again, bodies fetched one source at a time in the fill order.
 
 use super::known::{self, Op};
+use super::serve::{At, Sent};
 use super::{ASKED_MS, Ctx, FETCHES_OUT, INLINE_LIMIT, Opening, PENDING_CAP, Rank, Streams};
 use crate::opens::{Leaving, Rejoin};
-use crate::store::rows::tag::{AT_STREAM, CLOSED, CURSOR, JOIN_FROM, TOLD};
+use crate::store::rows::tag::{ANCHOR, AT_STREAM, CLOSED, CURSOR, JOIN_FROM, TOLD};
 use crate::store::{Source, Store};
 use crate::types::{ConnId, Cursor, Entry, RESYNC_MS, RecordId, SourceClass};
 use osis_store::Transaction;
@@ -38,6 +39,13 @@ pub(super) struct Place {
     /// The head of S this node last told this source a refusal of S under (no head: `None`),
     /// until S is pulled from the start there (spec/sync-streams.md §4 Refused). Row `TOLD`.
     pub told: BTreeMap<SyncId, Option<StepId>>,
+    /// The anchor: a position of the source's own log at or past its events of every entry this
+    /// node counts it holding from its Applieds (spec/sync-streams.md §4 Reports), which this
+    /// node's Pulls name until a reply on the connection checked it; and a newer one waiting for
+    /// that check (SN_echocheck). Rows `ANCHOR`, written by the transaction of what they cover.
+    anchor: Option<Cursor>,
+    anchor_new: Option<Cursor>,
+    anchor_moved: bool,
 }
 
 impl Place {
@@ -67,6 +75,8 @@ impl Place {
         for (s, ..) in t.record_tag_rows(rec, CLOSED)? {
             p.closed.insert(s);
         }
+        p.anchor = t.record_get_wide_row(rec, ANCHOR, b"h")?;
+        p.anchor_new = t.record_get_wide_row(rec, ANCHOR, b"n")?;
         for (s, _, v) in t.record_tag_rows(rec, TOLD)? {
             let head = match v.len() {
                 0 => None,
@@ -75,6 +85,39 @@ impl Place {
             p.told.insert(s, head);
         }
         Ok(p)
+    }
+
+    /// Writes the anchors into record `rec`'s rows as memory holds them.
+    fn write_anchor(&self, t: &mut Transaction<'_>, rec: &RecordId) -> std::result::Result<(), osis_store::Error> {
+        for (key, c) in [(b"h", &self.anchor), (b"n", &self.anchor_new)] {
+            match c {
+                Some(c) => t.record_put_wide_row(rec, ANCHOR, key, c.clone())?,
+                None => drop(t.record_remove_wide_row(rec, ANCHOR, key)?),
+            }
+        }
+        Ok(())
+    }
+
+    /// An Applied of the source gave anchor `a`: it replaces the one held once a reply on the
+    /// connection checked that (`checked`), or where none is held; else it waits for that check.
+    fn anchored(&mut self, a: Cursor, checked: bool) {
+        match checked || self.anchor.is_none() {
+            true => self.anchor = Some(a),
+            false => self.anchor_new = Some(a),
+        }
+        self.anchor_moved = true;
+    }
+
+    /// A reply on the connection checked the anchor held: a newer one replaces it; a listing from
+    /// the start (`whole`) spends it, its end replacing what the source holds as present.
+    fn anchor_checked(&mut self, whole: bool) {
+        let was = (self.anchor.clone(), self.anchor_new.clone());
+        match self.anchor_new.take() {
+            Some(a) => self.anchor = Some(a),
+            None if whole => self.anchor = None,
+            None => {}
+        }
+        self.anchor_moved |= was != (self.anchor.clone(), self.anchor_new.clone());
     }
 
     /// Writes member S's told head into record `rec`'s rows as memory holds it.
@@ -173,6 +216,9 @@ struct Batch {
     /// Every entry it shows present under a member, owed or not: shown while it is in hand
     /// (`Known::shown`).
     shows: Vec<(SyncId, BlobId)>,
+    /// The source's Applieds that came while this message was in hand, last: counted once it is
+    /// applied (a listing it ends would otherwise replace what they count).
+    after: Vec<(Vec<Sent>, Option<Cursor>)>,
 }
 
 #[derive(Clone, Debug)]
@@ -255,6 +301,14 @@ pub(super) struct Pulling {
     pub(super) again: bool,
     /// Wants out (spec/sync-judgement.md §3 Asked by ID): what each asked, in order.
     wants: BTreeMap<Id, Vec<(SyncId, osis_base::CommitId)>>,
+    /// A reply on this connection checked the source's anchor (`Place::anchor`).
+    checked: bool,
+    /// The entries `Added` events carried in the messages the next Applied reports (applied or
+    /// passed over, as a gap): each held as sent once applied with where this node stood then
+    /// (`Serve::counted`), else none. At the Applied each one not held is told first.
+    reporting: Vec<(SyncId, BlobId, Option<At>)>,
+    /// Entries told the source refused (or not held) since the last Applied went.
+    told_now: BTreeSet<(SyncId, BlobId)>,
 }
 
 impl Pulling {
@@ -293,6 +347,9 @@ impl Pulling {
             answered_at: 0,
             again: false,
             wants: BTreeMap::new(),
+            checked: false,
+            reporting: Vec::new(),
+            told_now: BTreeSet::new(),
         }
     }
 
@@ -443,7 +500,8 @@ impl Streams {
             self.failed(r);
             return false;
         }
-        if rec_ops.is_empty() && (!matches!(src, Source::Record(_)) || (ss.is_empty() && !cursor)) {
+        let anchor = self.places.get(&src).is_some_and(|p| p.anchor_moved);
+        if rec_ops.is_empty() && (!matches!(src, Source::Record(_)) || (ss.is_empty() && !cursor && !anchor)) {
             return true;
         }
         // a record's head that moves ends its memory refusals too (`known::memory_lift`)
@@ -464,6 +522,9 @@ impl Streams {
                     }
                     t.record_put_wide_row(&rec, CURSOR, b"", opt_cursor(&p.cursor))?;
                 }
+                if anchor {
+                    p.write_anchor(t, &rec)?;
+                }
             }
             Ok(())
         });
@@ -480,6 +541,7 @@ impl Streams {
                     true => p.stale.clear(),
                     false => p.stale.retain(|s| !ss.contains(s)),
                 }
+                p.anchor_moved = false;
             }
         }
         self.failed(r);
@@ -668,6 +730,17 @@ impl Streams {
         }
         self.drain(ctx, conn);
         self.fetch(ctx, conn);
+        // the Applied reports every message before it: each entry their `Added` events carried
+        // that this node does not hold is told first (SN_echotold), with its refusal's code where
+        // it refused it, else 14
+        let Some(p) = self.pull.get(&conn) else { return };
+        let untold: Vec<(SyncId, BlobId)> = match p.applied_owed {
+            Some(_) => p.reporting.iter().filter(|(s, b, _)| !p.told_now.contains(&(*s, *b)) && ctx.store.entry(s, b).ok().flatten().is_none()).map(|(s, b, _)| (*s, *b)).collect(),
+            None => Vec::new(),
+        };
+        for (s, b) in untold {
+            self.tell(conn, s, Event::Refused(b, Code::DECLINED));
+        }
         let Some(p) = self.pull.get_mut(&conn) else { return };
         if !p.tell.is_empty() {
             let st = Stream { events: p.tell.clone(), cursor: None, report: false, seq: 0 };
@@ -675,11 +748,23 @@ impl Streams {
                 p.tell.clear();
             }
         }
-        if let Some(c) = p.applied_owed.clone()
+        if p.tell.is_empty()
+            && let Some(c) = p.applied_owed.clone()
             && let Ok(cursor) = osis_proto::Cursor::new(c)
-            && ctx.wire.push(conn, Msg::Applied { cursor })
         {
-            p.applied_owed = None;
+            // what the source counts this node holding from it, filtered from what this node
+            // serves it once the Applied goes (no reply of this node's passes it unreported)
+            let held: Vec<((SyncId, BlobId), At)> = p.reporting.iter().filter_map(|(s, b, m)| Some(((*s, *b), (*m)?))).filter(|((s, b), _)| !p.told_now.contains(&(*s, *b)) && ctx.store.entry(s, b).ok().flatten().is_some()).collect();
+            let anchor = match held.is_empty() {
+                true => None,
+                false => ctx.store.log_bounds().and_then(|(end, _)| ctx.store.cursor_at(end)).ok().flatten().and_then(|c| osis_proto::Cursor::new(c).ok()),
+            };
+            if ctx.wire.push(conn, Msg::Applied { cursor, anchor }) {
+                p.applied_owed = None;
+                p.reporting.clear();
+                p.told_now.clear();
+                self.serve.entry(conn).or_default().counted.extend(held);
+            }
         }
         self.send_pull(ctx, conn);
     }
@@ -722,7 +807,9 @@ impl Streams {
         }
         let joins: Vec<(SyncId, Option<osis_proto::Cursor>)> = p.joins.iter().map(|(s, j)| (*s, j.cursor.clone().and_then(|c| osis_proto::Cursor::new(c).ok()))).collect();
         let asked = p.joins.iter().map(|(s, j)| (*s, j.generation)).collect();
-        let pull = Pull { id: 0, cursor: p.recv.clone().and_then(|c| osis_proto::Cursor::new(c).ok()), joins, inline_limit: p.inline, max_reply: REPLY_BUDGET as u64, follow: true, ephemeral: !p.first_sent || p.eph_next };
+        // the anchor held, until a reply on the connection checked it
+        let anchor = if p.checked { None } else { self.places.get(&p.src).and_then(|pl| pl.anchor.clone()).and_then(|c| osis_proto::Cursor::new(c).ok()) };
+        let pull = Pull { id: 0, cursor: p.recv.clone().and_then(|c| osis_proto::Cursor::new(c).ok()), joins, inline_limit: p.inline, max_reply: REPLY_BUDGET as u64, follow: true, ephemeral: !p.first_sent || p.eph_next, anchor };
         let Some(id) = ctx.wire.request(conn, Msg::Pull(Box::new(pull))) else { return };
         let first = !p.first_sent;
         p.first_sent = true;
@@ -831,7 +918,7 @@ impl Streams {
             }
         }
         let info = ReplyInfo { whole: r.whole, covered, more: r.more, joins, asked };
-        let batch = Batch { events: r.events, cursor: r.cursor.map(osis_proto::Cursor::into_bytes), report: r.report, reply: Some(info), owed: Vec::new(), shows: Vec::new() };
+        let batch = Batch { events: r.events, cursor: r.cursor.map(osis_proto::Cursor::into_bytes), report: r.report, reply: Some(info), owed: Vec::new(), shows: Vec::new(), after: Vec::new() };
         self.stage(ctx, conn, batch);
     }
 
@@ -850,9 +937,18 @@ impl Streams {
                 if !members.contains_key(&s) {
                     continue;
                 }
+                if let Event::Refused(b, _) = e {
+                    // what the peer's next Applied counts held leaves this out
+                    self.serve.entry(conn).or_default().told.insert((s, b));
+                }
                 match e {
                     // a fact of this connection, whatever the source (`known`)
                     Event::Full(f) => ops.push((Source::Conn(conn), Op::Full(s, f))),
+                    // 14: the peer does not hold an entry this node sent it, for no refusal of its own
+                    Event::Refused(b, Code::DECLINED) => {
+                        ops.push((src, Op::Remove(s, b)));
+                        ops.push((Source::Conn(conn), Op::Remove(s, b)));
+                    }
                     // code 6 counts as the entry deleted there
                     Event::Refused(b, Code::TOMBSTONED) => {
                         ops.push((src, Op::Remove(s, b)));
@@ -889,11 +985,13 @@ impl Streams {
         if p.gap || st.seq != p.seq || p.pending.len() >= PENDING_CAP {
             p.gap = true;
             p.eph_next = true;
+            // the next Applied reports it too, applied or not: told of what is not held then
+            p.reporting.extend(st.events.iter().filter_map(|(s, e)| if let Event::Added { blob_id, .. } = e { Some((*s, *blob_id, None)) } else { None }));
             return;
         }
         p.seq += 1;
         p.recv = Some(cursor.as_bytes().to_vec());
-        let batch = Batch { events: st.events, cursor: Some(cursor.into_bytes()), report: st.report, reply: None, owed: Vec::new(), shows: Vec::new() };
+        let batch = Batch { events: st.events, cursor: Some(cursor.into_bytes()), report: st.report, reply: None, owed: Vec::new(), shows: Vec::new(), after: Vec::new() };
         self.stage(ctx, conn, batch);
     }
 
@@ -1089,6 +1187,9 @@ impl Streams {
 
     fn tell(&mut self, conn: ConnId, s: SyncId, e: Event) {
         if let Some(p) = self.pull.get_mut(&conn) {
+            if let Event::Refused(b, _) = e {
+                p.told_now.insert((s, b));
+            }
             p.tell.push((s, e));
         }
     }
@@ -1454,11 +1555,15 @@ impl Streams {
             if !ready {
                 return;
             }
-            let Some(batch) = self.pull.get_mut(&conn).and_then(|p| p.next_held()) else { return };
+            let Some(mut batch) = self.pull.get_mut(&conn).and_then(|p| p.next_held()) else { return };
             for (s, b) in &batch.shows {
                 self.known.hand(s, b, false);
             }
+            let after = std::mem::take(&mut batch.after);
             self.apply(ctx, conn, batch);
+            for (sent, anchor) in after {
+                self.count_now(ctx, conn, sent, anchor);
+            }
         }
         if let Some(p) = self.pull.get_mut(&conn) {
             p.settled.clear();
@@ -1492,6 +1597,10 @@ impl Streams {
         }
         let mut listing = p.listing.take();
         let mut join_listing = std::mem::take(&mut p.join_listing);
+        // a reply on the connection checked the source's anchor (its Pull named it): stored with
+        // what the reply covers
+        let check = batch.reply.as_ref().filter(|_| !p.checked).map(|r| r.whole);
+        p.checked |= check.is_some();
         let mut ops = Vec::new();
         // the members a deletion here shows a refused entry of may be gone at this source
         // (`Store::refused_may_be_gone`)
@@ -1544,6 +1653,19 @@ impl Streams {
                 _ => {}
             }
         }
+        // where this node stands once the message applied: each entry it carried held as sent is
+        // counted by the source from the Applied reporting it (SN_echocount)
+        let (end, _) = match ctx.store.log_bounds() {
+            Ok(b) => b,
+            Err(e) => return self.failed(Err(e)),
+        };
+        let mem = ctx.store.memory_mark();
+        let mut reporting = Vec::new();
+        for (s, e) in &batch.events {
+            let Event::Added { blob_id: b, wrap, stamp, .. } = e else { continue };
+            let held = ctx.store.entry(s, b).ok().flatten().filter(|x| members.contains(s) && x.wrap == *wrap && x.stamp == *stamp);
+            reporting.push((*s, *b, held.map(|x| if x.class == Class::Ephemeral { At::Memory(mem) } else { At::Log(end) })));
+        }
         // marked durably before the place passes what showed it
         for s in &gone {
             if let Err(e) = ctx.store.refused_may_be_gone(s, src) {
@@ -1555,6 +1677,9 @@ impl Streams {
         // presence is always a whole one (spec/sync-streams.md §4 Applying)
         let mid_listing = batch.reply.as_ref().is_some_and(|r| r.more) && listing.is_some();
         let place = self.place(ctx.store, src);
+        if let Some(whole) = check {
+            place.anchor_checked(whole);
+        }
         let cursor = (batch.cursor.is_some() || batch.reply.as_ref().is_some_and(|r| r.whole)) && !mid_listing;
         let was_cursor = place.cursor.clone();
         let was: BTreeMap<SyncId, (bool, Option<Option<Cursor>>)> = batch.reply.iter().flat_map(|r| if r.whole { covered.iter().copied().collect::<Vec<_>>() } else { r.asked.iter().map(|(s, _)| *s).collect() }).map(|s| (s, (place.at_stream.contains(&s), place.join_from(&s).cloned()))).collect();
@@ -1642,6 +1767,7 @@ impl Streams {
             self.failed(r);
         }
         let Some(p) = self.pull.get_mut(&conn) else { return };
+        p.reporting.extend(reporting);
         // an Applied says the cursor and each join's position are stored: none while a listing
         // from the start is under way
         if batch.report
@@ -1651,5 +1777,41 @@ impl Streams {
         {
             p.applied_owed = Some(c);
         }
+    }
+}
+
+impl Streams {
+    /// An Applied of the peer on `conn` reported these entries sent it, none told not held
+    /// (spec/sync-streams.md §4 Reports): counted where they stand against a message in hand (the
+    /// last, so a listing it ends replaces nothing they count), else now.
+    pub(super) fn count_applied(&mut self, ctx: &mut Ctx, conn: ConnId, sent: Vec<(SyncId, BlobId)>, anchor: Option<Cursor>) {
+        if sent.is_empty() && anchor.is_none() {
+            return;
+        }
+        if let Some(b) = self.pull.get_mut(&conn).and_then(|p| p.pending.back_mut()) {
+            b.after.push((sent, anchor));
+            return;
+        }
+        self.count_now(ctx, conn, sent, anchor);
+    }
+
+    /// The peer on `conn` holds `sent` (spec/sync-judgement.md §3 `known`): of the entries held
+    /// or tombstoned here under members, each counted present there as its stream showing it
+    /// would be; with the anchor its Applied gave, in one transaction for a record source.
+    pub(super) fn count_now(&mut self, ctx: &mut Ctx, conn: ConnId, sent: Vec<(SyncId, BlobId)>, anchor: Option<Cursor>) {
+        let src = self.source(ctx.shared, conn);
+        let mut ops = Vec::new();
+        for (s, b) in sent {
+            if !ctx.shared.members(conn).contains_key(&s) || !concerns(ctx, self.pull.get(&conn), &s, &b) {
+                continue;
+            }
+            let ephemeral = ctx.store.entry(&s, &b).ok().flatten().is_some_and(|e| e.class == Class::Ephemeral);
+            ops.push((if ephemeral { Source::Conn(conn) } else { src }, Op::Add(s, b)));
+        }
+        if let (Some(a), Source::Record(_)) = (anchor, src) {
+            let checked = self.pull.get(&conn).is_some_and(|p| p.checked);
+            self.place(ctx.store, src).anchored(a, checked);
+        }
+        self.save(ctx, src, &[], false, ops);
     }
 }

@@ -298,6 +298,12 @@ impl Node {
         &self.opens
     }
 
+    /// Tests only: streams (`Streams`).
+    #[doc(hidden)]
+    pub fn streams(&self) -> &crate::streams::Streams {
+        &self.streams
+    }
+
     /// Tests only: read (`Read`).
     #[doc(hidden)]
     pub fn read(&self) -> &crate::read::Read {

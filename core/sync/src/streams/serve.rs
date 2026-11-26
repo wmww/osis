@@ -52,8 +52,21 @@ pub(super) struct Serve {
     /// The highest number an Applied named (covering every message before it).
     reported: u64,
     /// The cursors of messages asking a report not yet covered, each sealed afresh so an Applied
-    /// names one message, with its number: the newest `REPORTS_KEPT`.
-    asked: VecDeque<(Cursor, u64)>,
+    /// names one message, with its number and the entries its `Added` events carried (counted held
+    /// by the peer once an Applied covers it, `Streams::count_applied`): the newest `REPORTS_KEPT`.
+    asked: VecDeque<(Cursor, u64, Vec<Sent>)>,
+    /// Entries the peer told it does not hold (a refusal event) since its last Applied: the next
+    /// Applied counts none of them held.
+    pub(super) told: BTreeSet<(SyncId, BlobId)>,
+    /// What the peer counts this node holding: entries it sent that this node holds as sent, each
+    /// with this node's log end and memory mark when it applied them, put here as the Applied
+    /// reporting them goes (`Streams::run`). No event of one at or below its marks is served
+    /// the peer outside a listing from the start (spec/sync-streams.md §4 Reports); one at or below
+    /// the position the peer reported applied goes, never served it again on the connection.
+    pub(super) counted: BTreeMap<(SyncId, BlobId), At>,
+    /// Members whose listing from the start (a whole reply's, or a join from the start) is under
+    /// way on this connection: served whole, with no entry left out for being counted.
+    listing: BTreeSet<SyncId>,
     /// Per member, the number of the last message carrying an event of it that asked a report:
     /// S's messages served are applied once `reported` reaches it (spec/sync-status.md §1 caught
     /// up). Kept while above `reported`.
@@ -85,11 +98,13 @@ impl Serve {
     /// A message carrying `events`, asking a report with `cursor`, went out.
     fn served(&mut self, events: &[(SyncId, Event)], cursor: Cursor) {
         self.sent += 1;
-        self.asked.push_back((cursor, self.sent));
+        let added = events.iter().filter_map(|(s, e)| if let Event::Added { blob_id, .. } = e { Some((*s, *blob_id)) } else { None }).collect();
+        self.asked.push_back((cursor, self.sent, added));
         // a message no Applied can name alone: its blobs may go inline again (`inlined` stays
-        // within the newest `REPORTS_KEPT` messages, whether or not the peer reports)
+        // within the newest `REPORTS_KEPT` messages, whether or not the peer reports), and what it
+        // sent is counted held nowhere
         if self.asked.len() > REPORTS_KEPT
-            && let Some((_, n)) = self.asked.pop_front()
+            && let Some((_, n, _)) = self.asked.pop_front()
         {
             self.inlined.retain(|_, x| *x > n);
         }
@@ -108,16 +123,42 @@ impl Serve {
     }
 
     /// An Applied named `cursor`: the message it was sent with, and every one before it, is
-    /// applied. A cursor of no message asking a report here (one dropped from `asked`, or not
-    /// this connection's) covers nothing.
-    fn reported_by(&mut self, cursor: &[u8]) {
-        let Some((i, n)) = self.asked.iter().enumerate().find_map(|(i, (c, n))| (c.as_slice() == cursor).then_some((i, *n))) else { return };
-        self.asked.drain(..=i);
+    /// applied; the entries their `Added` events carried, less those the peer told it does not
+    /// hold. A cursor of no message asking a report here (one dropped from `asked`, or not this
+    /// connection's) covers nothing.
+    fn reported_by(&mut self, cursor: &[u8]) -> Vec<(SyncId, BlobId)> {
+        let told = std::mem::take(&mut self.told);
+        let Some((i, n)) = self.asked.iter().enumerate().find_map(|(i, (c, n, _))| (c.as_slice() == cursor).then_some((i, *n))) else { return Vec::new() };
+        let sent: BTreeSet<(SyncId, BlobId)> = self.asked.drain(..=i).flat_map(|(_, _, a)| a).filter(|x| !told.contains(x)).collect();
         self.reported = self.reported.max(n);
         let r = self.reported;
         self.unapplied.retain(|_, x| *x > r);
         self.inlined.retain(|_, x| *x > r);
+        sent.into_iter().collect()
     }
+
+    /// Whether the peer counts this node holding entry `b` of S as of its event at `pos` (its
+    /// memory event `mem`, an ephemeral entry's): none served it outside a listing from the start.
+    fn counts(&self, s: &SyncId, b: &BlobId, at: At) -> bool {
+        !self.listing.contains(s)
+            && self.counted.get(&(*s, *b)).is_some_and(|m| match (at, m) {
+                (At::Log(pos), At::Log(mark)) => pos <= *mark,
+                (At::Memory(n), At::Memory(mark)) => n < *mark,
+                _ => false,
+            })
+    }
+}
+
+/// An entry an `Added` event carried to the peer: its sync ID and blob.
+pub(super) type Sent = (SyncId, BlobId);
+
+/// Where an event stands: a log position, or an ephemeral entry's memory counter. As a mark
+/// (`Serve::counted`): where this node's log (an ephemeral entry's: its memory part) stood when
+/// it applied the entry its peer sent: its end, or the counter its next memory event takes.
+#[derive(Clone, Copy, Debug)]
+pub(super) enum At {
+    Log(Position),
+    Memory(u64),
 }
 
 /// Messages asking a report whose cursors a server keeps to tell which one an Applied names. At
@@ -240,8 +281,15 @@ impl Streams {
         }
         // SN_inc, SN_copies: a cursor not of this history (or past its end) names no position:
         // every member from the start. A cursor below the deletion horizon: the same, trimmed.
+        // SN_echoanchor: an anchor naming no position of this history (a store restored from
+        // before it) the same, whatever the horizon: what the requester counts this node holding
+        // stands on a history it lacks (spec/sync-streams.md §4 Reports)
+        let lost = match &p.anchor {
+            Some(a) => ctx.store.position(a.as_bytes())?.is_none(),
+            None => false,
+        };
         let named = own.iter().chain(joins.iter().filter_map(|(_, _, p)| p.as_ref()));
-        let mut whole = own.is_none() || own == Some(None);
+        let mut whole = own.is_none() || own == Some(None) || lost;
         let mut trimmed = false;
         for pos in named {
             match pos {
@@ -290,7 +338,22 @@ impl Streams {
         let stream: BTreeMap<SyncId, Option<Position>> = members.iter().filter(|(s, _)| !joining.contains(*s)).map(|(s, u)| (*s, *u)).collect();
         let from = if whole { None } else { p.cursor.as_ref().map(|c| c.as_bytes().to_vec()) };
         let start = if whole { 0 } else { own.flatten().unwrap_or(0) };
+        // a listing from the start is served whole until its end: its members' and each join's
+        // from the start (SN_echocount: the requester's listing replaces presence by what it lists)
+        let serve = self.serve.entry(conn).or_default();
+        if whole {
+            serve.listing = members.keys().copied().collect();
+        }
+        for (s, c, _) in &joins {
+            if c.is_none() && !whole {
+                serve.listing.insert(*s);
+            }
+        }
         let read = self.read_into(ctx, conn, &mut page, &stream, None, from, start)?;
+        if !read.more {
+            let serve = self.serve.entry(conn).or_default();
+            serve.listing.retain(|s| joining.contains(s));
+        }
         // joins: each from its own cursor; one that reaches the log's end merges
         let mut reply_joins = Vec::new();
         let mut joins_left = BTreeSet::new();
@@ -317,7 +380,9 @@ impl Streams {
                     reply_joins.push((s, wire_cursor(&r.cursor)));
                 } else {
                     merged.push(s);
-                    self.serve.entry(conn).or_default().unjoined.remove(&s);
+                    let serve = self.serve.entry(conn).or_default();
+                    serve.unjoined.remove(&s);
+                    serve.listing.remove(&s);
                 }
             }
         } else {
@@ -386,7 +451,7 @@ impl Streams {
             };
             self.work.served += r.events.len() as u64;
             for e in &r.events {
-                if let Some((s, ev, inlined)) = self.event(ctx, conn, page, inline, &e.event)?
+                if let Some((s, ev, inlined)) = self.event(ctx, conn, page, inline, e.pos, &e.event)?
                     && !page.take(s, ev, inlined)
                 {
                     // ends before the event that would pass the budget
@@ -403,10 +468,14 @@ impl Streams {
         }
     }
 
-    /// A log event as sent: an add carries its entry as held now (none if it left since).
-    fn event(&mut self, ctx: &mut Ctx, conn: ConnId, page: &Page, inline: u64, e: &NodeEvent) -> Result<Option<(SyncId, Event, bool)>> {
+    /// A log event at `pos` as sent: an add carries its entry as held now (none if it left
+    /// since, or the peer counts this node holding it as of this event, `Serve::counts`).
+    fn event(&mut self, ctx: &mut Ctx, conn: ConnId, page: &Page, inline: u64, pos: Position, e: &NodeEvent) -> Result<Option<(SyncId, Event, bool)>> {
         Ok(match *e {
             NodeEvent::Added(s, b) => {
+                if self.serve.get(&conn).is_some_and(|x| x.counts(&s, &b, At::Log(pos))) {
+                    return Ok(None);
+                }
                 let Some(entry) = ctx.store.entry(&s, &b)? else { return Ok(None) };
                 if !shown(ctx, conn, &s, &entry) {
                     return Ok(None);
@@ -480,6 +549,10 @@ impl Streams {
                     break;
                 }
                 for (n, b, present) in evs {
+                    if present && self.serve.get(&conn).is_some_and(|x| x.counts(&s, &b, At::Memory(n))) {
+                        at = n;
+                        continue;
+                    }
                     let ev = if present {
                         let (Some(entry), Some(bytes)) = (ctx.store.entry(&s, &b)?, ctx.ground.bytes(ctx.store, &b)?) else {
                             at = n;
@@ -638,15 +711,26 @@ impl Streams {
         }
     }
 
-    /// An Applied: the requester stored this cursor (spec/sync-opens.md §6 reported positions).
-    pub(super) fn on_applied(&mut self, ctx: &mut Ctx, conn: ConnId, cursor: Cursor) {
+    /// An Applied: the requester stored this cursor (spec/sync-opens.md §6 reported positions),
+    /// and holds what the messages it covers sent it but what it told it does not
+    /// (`count_applied`); `anchor` is a position of its own log at or past its events of them.
+    pub(super) fn on_applied(&mut self, ctx: &mut Ctx, conn: ConnId, cursor: Cursor, anchor: Option<Cursor>) {
         let Ok(Some(pos)) = ctx.store.position(&cursor) else { return };
         let serve = self.serve.entry(conn).or_default();
-        serve.reported_by(&cursor);
+        let sent = serve.reported_by(&cursor);
         if serve.applied.is_none_or(|p| p < pos) {
             serve.applied = Some(pos);
             ctx.reported.push(Reported::Stream(conn, pos, cursor));
         }
+        // what the peer counts this node holding at or below where it applied (its ephemeral
+        // listing read past) is served it no more on this connection
+        let eph = serve.eph.clone();
+        serve.counted.retain(|(s, _), m| match m {
+            At::Log(mark) => *mark > pos,
+            At::Memory(mark) => eph.get(s).is_none_or(|n| *mark > *n + 1),
+        });
+        self.count_applied(ctx, conn, sent, anchor);
+        let serve = self.serve.entry(conn).or_default();
         // a merge is covered by message order, never by position: an Applied of a message sent
         // before the merging reply may name the very position the merge stood at
         let r = serve.reported;
@@ -674,6 +758,7 @@ impl Streams {
     /// A member left, as server: a later join is another, reported afresh.
     pub(super) fn served_left(&mut self, conn: ConnId, s: &SyncId) {
         let Some(serve) = self.serve.get_mut(&conn) else { return };
+        serve.listing.remove(s);
         serve.named.remove(s);
         serve.merging.remove(s);
         serve.unapplied.remove(s);

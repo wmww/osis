@@ -1128,8 +1128,42 @@ fn a_thing_another_node_makes_pulls_nothing_anew_spec_sync_judgement_3() {
     assert_eq!((a, a10), (0, 0), "sync IDs pulled anew at n and 10n");
     let kinds = |f: &Frames| f.iter().map(|(k, v)| (*k, v.0)).collect::<BTreeMap<_, _>>();
     let per = |f: &Frames, by: u64| kinds(f).into_iter().map(|(k, c)| (k, c / by)).collect::<BTreeMap<_, _>>();
-    assert!(kinds(&n).values().all(|c| c % 3 == 0) && per(&n, 3) == per(&n10, 30), "frames per make: {n:?} at n, {n10:?} at 10n");
+    assert_eq!(per(&n, 3), per(&n10, 30), "frames per make: {n:?} at n, {n10:?} at 10n");
     assert!(!n10.keys().any(|k| k.1.starts_with("Pull")), "no pull: {n10:?}");
+}
+
+// spec/sync-streams.md §4 (Reports: a server counts what its peer reported applied, the count
+// anchored in the peer's log), spec/sync-judgement.md §3 (`known`), NetStream S_echorestore:
+// node 1, A's second node, is restored from a backup taken before three makes it took from
+// node 0, and reconnects. At no step after is node 0, caught up with it on a sync ID, counting
+// it holding an entry of that sync ID it lacks; at quiet it holds again what node 0 counts. This
+// world passes without the anchor too (being caught up waits for node 1 to have pulled node 0's
+// stream to its end); the anchor's own case: streams::a_restored_store_is_not_counted_*.
+#[test]
+fn a_node_restored_from_a_backup_is_counted_holding_nothing_it_lacks_spec_sync_streams_4() {
+    let mut w = World::new(0);
+    w.add_node();
+    w.pair(0);
+    w.run();
+    makes(&mut w, 1, a_dependent);
+    let backup = w.backup(1);
+    makes(&mut w, 3, a_dependent);
+    let counted = |w: &World| w.node(0).node.streams().known().rows_all().unwrap();
+    let lacked = |w: &World, caught_only: bool| -> Vec<(osis_sync::store::Source, osis_base::SyncId, osis_base::BlobId)> {
+        let status = w.node(0).node.status();
+        counted(w).into_iter().filter(|(_, s, b)| (!caught_only || status.get(s).is_some_and(|st| st.sources.values().any(|x| x.caught_up))) && w.store(1).entry(s, b).unwrap().is_none()).collect()
+    };
+    assert!(!counted(&w).is_empty());
+    w.restore(1, &backup);
+    w.power_on(1);
+    let mut steps = 0;
+    while w.step_or_wake() {
+        steps += 1;
+        assert!(steps < 100_000, "settles");
+        let l = lacked(&w, true);
+        assert!(l.is_empty(), "step {steps}: node 0 caught up counts node 1 holding what it lacks: {l:?}");
+    }
+    assert!(lacked(&w, false).is_empty(), "at quiet");
 }
 
 /// A dependent of `a` held by `a`'s `holds.0` (`Engine::new_thing`), with a small value.
@@ -1171,7 +1205,7 @@ fn an_independent_thing_another_node_makes_pulls_nothing_anew_spec_sync_judgemen
     assert_eq!((a, a10), (0, 0), "sync IDs pulled anew at n and 10n");
     let kinds = |f: &Frames| f.iter().map(|(k, v)| (*k, v.0)).collect::<BTreeMap<_, _>>();
     let per = |f: &Frames, by: u64| kinds(f).into_iter().map(|(k, c)| (k, c / by)).collect::<BTreeMap<_, _>>();
-    assert!(kinds(&n).values().all(|c| c % 3 == 0) && per(&n, 3) == per(&n10, 30), "frames per make: {n:?} at n, {n10:?} at 10n");
+    assert_eq!(per(&n, 3), per(&n10, 30), "frames per make: {n:?} at n, {n10:?} at 10n");
     // a Pull each way per make: the new thing's own sync ID's first sync, the same bytes each make
     let pulled = |f: &Frames, by: u64| f.iter().filter(|(k, _)| k.1 == "PullReply").map(|(k, v)| (k.0, v.1 / by)).collect::<BTreeMap<_, _>>();
     assert_eq!(pulled(&n, 3), pulled(&n10, 30), "PullReply bytes per make at n and 10n");

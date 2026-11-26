@@ -141,7 +141,7 @@ fn link_key(seed: u8) -> Prover {
 }
 
 fn pull(max_reply: u64) -> Msg {
-    Msg::Pull(Box::new(Pull { id: 0, cursor: None, joins: Vec::new(), inline_limit: 0, max_reply, follow: false, ephemeral: false }))
+    Msg::Pull(Box::new(Pull { id: 0, cursor: None, joins: Vec::new(), inline_limit: 0, max_reply, follow: false, ephemeral: false, anchor: None }))
 }
 
 fn pull_reply(id: u32) -> Msg {
@@ -380,7 +380,7 @@ fn routing_by_kind() {
     assert_eq!(req(Msg::Auth { id: 1, secret: None, session_id: [0; 16] }), Some(To::Port));
     assert_eq!(Incoming::Push(Msg::Unsub { id: 1, sub_id: 2 }).to(), None);
     assert_eq!(Incoming::Push(Msg::Digest { digest: [0; 32] }).to(), Some(To::Opens));
-    assert_eq!(Incoming::Push(Msg::Applied { cursor: osis_proto::Cursor::new(vec![1]).expect("cursor") }).to(), Some(To::Streams));
+    assert_eq!(Incoming::Push(Msg::Applied { cursor: osis_proto::Cursor::new(vec![1]).expect("cursor"), anchor: None }).to(), Some(To::Streams));
     assert_eq!(Incoming::Proved.to(), Some(To::Opens));
 }
 

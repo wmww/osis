@@ -111,7 +111,9 @@ pub struct WantedItem {
 /// the same shape: the sync ID and where it stopped for the receiver.
 pub type Join = (SyncId, Option<Cursor>);
 
-/// `Pull [41, id, Opt(cursor), [join*], inline_limit, max_reply, follow, ephemeral]`.
+/// `Pull [41, id, Opt(cursor), [join*], inline_limit, max_reply, follow, ephemeral, Opt(anchor)]`:
+/// `anchor` is a cursor of the server's log its Applied gave the requester, which the server
+/// checks names a position of its history (spec/sync-streams.md §4 Reports).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Pull {
     pub id: Id,
@@ -121,6 +123,7 @@ pub struct Pull {
     pub max_reply: u64,
     pub follow: bool,
     pub ephemeral: bool,
+    pub anchor: Option<Cursor>,
 }
 
 /// `PullReply [42, id, [[sync_id, event]*], Opt(cursor), whole, trimmed, more, report, [join*]]`:
@@ -271,7 +274,9 @@ pub enum Msg {
     Pull(Box<Pull>),
     PullReply(Box<PullReply>),
     Stream(Box<Stream>),
-    Applied { cursor: Cursor },
+    /// `Applied [44, 0, cursor, Opt(anchor)]`: `anchor`, a cursor of the requester's own log at
+    /// or past its events of what the messages reported carried.
+    Applied { cursor: Cursor, anchor: Option<Cursor> },
     Digest { digest: [u8; 32] },
     Members { sync_ids: Vec<SyncId>, more: bool },
 }
@@ -488,10 +493,10 @@ impl Msg {
             M::Offer { items, .. } => vec![k, id, Value::List(items.iter().map(offer_item_value).collect())],
             M::Lost { items, .. } => vec![k, id, joins_value(items)],
             M::Shared { items, .. } => vec![k, id, Value::List(items.iter().map(shared_item_value).collect())],
-            M::Pull(p) => vec![k, id, opt_cursor(&p.cursor), joins_value(&p.joins), Value::uint(p.inline_limit), Value::uint(p.max_reply), Value::Bool(p.follow), Value::Bool(p.ephemeral)],
+            M::Pull(p) => vec![k, id, opt_cursor(&p.cursor), joins_value(&p.joins), Value::uint(p.inline_limit), Value::uint(p.max_reply), Value::Bool(p.follow), Value::Bool(p.ephemeral), opt_cursor(&p.anchor)],
             M::PullReply(r) => vec![k, id, events_value(&r.events), opt_cursor(&r.cursor), Value::Bool(r.whole), Value::Bool(r.trimmed), Value::Bool(r.more), Value::Bool(r.report), joins_value(&r.joins)],
             M::Stream(st) => vec![k, id, events_value(&st.events), opt_cursor(&st.cursor), Value::Bool(st.report), Value::uint(st.seq)],
-            M::Applied { cursor } => vec![k, id, Value::bytes(cursor.as_bytes())],
+            M::Applied { cursor, anchor } => vec![k, id, Value::bytes(cursor.as_bytes()), opt_cursor(anchor)],
             M::Digest { digest } => vec![k, id, Value::bytes(digest)],
             M::Members { sync_ids, more } => vec![k, id, Value::List(sync_ids.iter().map(s).collect()), Value::Bool(*more)],
             M::Head { sync_id, after, .. } => vec![k, id, s(sync_id), Value::opt(after.map(|x| Value::bytes(&x.0)))],
@@ -624,6 +629,7 @@ fn decode_body(kind: u64, id: Id, v: Value, n: &Items) -> Result<Msg, Error> {
             max_reply: max_reply(&mut f)?,
             follow: f.bool()?,
             ephemeral: f.bool()?,
+            anchor: opt_cursor_of(&mut f)?,
         })),
         42 => {
             let events = events(f.list(0, usize::MAX, "events")?, n)?;
@@ -643,7 +649,7 @@ fn decode_body(kind: u64, id: Id, v: Value, n: &Items) -> Result<Msg, Error> {
             }
             Msg::Stream(Box::new(st))
         }
-        44 => Msg::Applied { cursor: Cursor::new(f.bytes(MAX_CURSOR_BYTES)?)? },
+        44 => Msg::Applied { cursor: Cursor::new(f.bytes(MAX_CURSOR_BYTES)?)?, anchor: opt_cursor_of(&mut f)? },
         45 => Msg::Digest { digest: f.fixed()? },
         46 => Msg::Members { sync_ids: f.list(0, MAX_MEMBERS, "members")?.into_iter().map(|v| dec::fixed(v, "sync id").map(SyncId)).collect::<Result<_, _>>()?, more: f.bool()? },
         49 => {
