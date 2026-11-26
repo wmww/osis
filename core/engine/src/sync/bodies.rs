@@ -286,7 +286,7 @@ pub(crate) fn regenerate_in(tx: &mut Tx<'_>, b: &BlobId, row: &BlobOf) -> Result
     let c = row.commit;
     let Some(cb) = held_commit_whole(tx, &c)? else { return Ok(None) };
     let resolved = match tx.core.ix.commits.get(&c) {
-        Some(m) if !cb.header.is_resolved() => m.header.arc(),
+        Some(m) if !cb.header.is_resolved() => m.header.clone(),
         _ => Arc::new(cb.header.clone()),
     };
     let resolved = match resolved.is_resolved() {
