@@ -1268,10 +1268,10 @@ fn value_beaten_only_by_an_expiring_one_reads_again_kept_spec_crdt_4_8() {
     assert_eq!(lp.peers[0].engine.get(&d, &ak(A)).unwrap(), Some(s("one")), "loaded fresh");
 }
 
-// fast by construction: judging an aspect's purge-on-replace bodies reads its held bodies once
-// per lifetime among them (`snapshot::OutlivedBy`), not once per body
+// fast by construction: judging an aspect's purge-on-replace bodies beside an expiring write
+// reads each body's deaths from the held writes, never a state without the expiring writes
 #[test]
-fn judging_beside_an_expiring_write_reads_bodies_once_spec_crdt_4_8() {
+fn judging_beside_an_expiring_write_reads_no_judging_state_spec_crdt_4_8() {
     const L: &str = "t:list.0";
     let (mut lp, d) = setup();
     set(&mut lp, 2, d, &setting(&[(L, History::PurgeOnReplace)]));
@@ -1292,7 +1292,7 @@ fn judging_beside_an_expiring_write_reads_bodies_once_spec_crdt_4_8() {
     osis_base::costs::take();
     add(&mut lp, "later", false);
     let reads = osis_base::costs::take().iter().find(|x| x.0 == "retention: judging states read").map_or(0, |x| x.2);
-    assert_eq!(reads, 1, "one judging state for the 21 live lasting bodies");
+    assert_eq!(reads, 0, "no judging state for the 21 live lasting bodies");
 }
 
 // spec/crdt.md §4.8, spec/commits.md §5 (Bodies and deaths), §7: on an aspect keeping history, a
@@ -1326,4 +1326,52 @@ fn a_value_overwritten_only_by_an_expiring_one_is_not_replaced_spec_crdt_4_8() {
         let e = &mut lp.peers[i].engine;
         assert_eq!(e.replaced_at(&v1, &d, &ak(A)).unwrap(), Some(e.header(&v2).unwrap().ts), "peer {i}: dated at the lasting write");
     }
+}
+
+// spec/sync-compaction.md §1 (Own bodies), spec/crdt.md §4.8: with no history kept, an own
+// value overwritten only by another's expiring one has no dead write: it is live and kept under
+// others' covers; a lasting overwrite makes it droppable under them
+#[test]
+fn an_own_value_overwritten_only_by_an_expiring_one_is_kept_under_others_covers_spec_sync_compaction_1() {
+    let (mut lp, d) = setup();
+    let v1 = put(&mut lp, 0, d, "one");
+    let mut m = Mutation::new();
+    let end = lp.peers[1].engine.now().0 + HOUR;
+    m.expires(d, &ak(A), WallMs(end)).unwrap();
+    m.set(d, &ak(A), &s("brief")).unwrap();
+    let x = lp.peers[1].commit(m).unwrap().unwrap();
+    lp.sync_all().unwrap();
+    let e = &mut lp.peers[0].engine;
+    assert_eq!(e.get(&d, &ak(A)).unwrap(), Some(s("brief")));
+    assert!(e.delta_live(&v1, &d, &ak(A)).unwrap(), "only an expiring write supersedes it");
+    assert!(e.own_kept_under(&x, &v1, &d, &ak(A)).unwrap(), "kept under another's cover");
+    let v2 = put(&mut lp, 1, d, "two");
+    lp.sync_all().unwrap();
+    let e = &mut lp.peers[0].engine;
+    assert!(!e.delta_live(&v1, &d, &ak(A)).unwrap());
+    assert!(!e.own_kept_under(&v2, &v1, &d, &ak(A)).unwrap(), "a lasting overwrite: droppable under another's cover");
+}
+
+// spec/sync-compaction.md §1 (Own bodies), spec/crdt.md §4.8: an own root reset is a write (§5.1)
+// like any other: only another's expiring write over it, it is not dead and stays under others'
+// covers; a lasting one implies a later reset, so it is dead and drops under them
+#[test]
+fn an_own_root_reset_is_kept_under_others_covers_while_only_an_expiring_write_follows_spec_sync_compaction_1() {
+    let (mut lp, d) = setup();
+    put(&mut lp, 1, d, "one");
+    let mut m = Mutation::new();
+    m.remove_aspect(d, &ak(A)).unwrap();
+    let r = lp.peers[0].commit(m).unwrap().unwrap();
+    lp.advance(1_000);
+    let mut m = Mutation::new();
+    let end = lp.peers[1].engine.now().0 + HOUR;
+    m.expires(d, &ak(A), WallMs(end)).unwrap();
+    m.set(d, &ak(A), &s("brief")).unwrap();
+    let x = lp.peers[1].commit(m).unwrap().unwrap();
+    lp.sync_all().unwrap();
+    let e = &mut lp.peers[0].engine;
+    assert!(e.own_kept_under(&x, &r, &d, &ak(A)).unwrap(), "only an expiring write follows it");
+    let v2 = put(&mut lp, 1, d, "two");
+    lp.sync_all().unwrap();
+    assert!(!lp.peers[0].engine.own_kept_under(&v2, &r, &d, &ak(A)).unwrap(), "a lasting write implies a later reset");
 }

@@ -258,21 +258,6 @@ pub(crate) fn outlived(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, life: Option<u64>) -
     Ok(Some(Outlived { sooner, over }))
 }
 
-/// `outlived` per lifetime, each read once while the held set stands: a pass judging many
-/// bodies of one aspect reads every held body twice per lifetime among them, not per body.
-#[derive(Default)]
-pub(crate) struct OutlivedBy(BTreeMap<Option<u64>, Option<Outlived>>);
-
-impl OutlivedBy {
-    /// `outlived` of `(tid, ak)` for `life`; the caller clears this when the held set moves.
-    pub(crate) fn of(&mut self, tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, life: Option<u64>) -> Result<Option<&Outlived>> {
-        Ok(match self.0.entry(life) {
-            std::collections::btree_map::Entry::Occupied(e) => e.into_mut().as_ref(),
-            std::collections::btree_map::Entry::Vacant(e) => e.insert(outlived(tx, tid, ak, life)?).as_ref(),
-        })
-    }
-}
-
 /// The writes ending sooner than a body, and what only they superseded (`outlived`).
 pub(crate) struct Outlived {
     sooner: Vec<Owned>,

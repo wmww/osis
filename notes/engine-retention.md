@@ -26,7 +26,7 @@ Timers: expiry; one per (thing, AK) at the next body leaving history; `T_KEPT` (
 ## Decided (Tess) and definitions the code follows
 - **Fallback for purge on replace**, if compaction on replace causes problems: replaced writes become `writer` purgeable and the writer attaches a purge request for them to each edit, generated automatically. Costs: a purge cannot express a partial replacement of a body, a request is kept to its floor (`ROLE_KEEP`), purged writes leave leftovers. Acceptable as a fallback.
 - **Small values**: per-commit overhead matters less than extra mechanisms; no special commit forms for small durable writes (a whole replacement covering the old body directly only if cheap).
-- **Replaced** is "the body holds a write the canonical state does not hold" (what a snapshot from the state leaves out), not "has a dead write" (spec/crdt.md §4.8): a root reset is dead once a later write implies one, yet canonical form keeps it, so by deaths every cover of such an aspect is replaced for good and covers chase each other.
+- **Replaced** is "a write of the body is dead and it joins into the state changing nothing" (a snapshot from the state carries all it holds), not "has a dead write" alone (spec/crdt.md §4.8): a root reset is dead once a later write implies one, yet canonical form keeps it, so by deaths every cover of such an aspect is replaced for good and covers chase each other.
 - **Covered-equal** snapshots at one `ts`: only the lower commit ID covers (spec/sync-compaction.md §1), else two covers drop each other.
 - A local drop as covered needs no right of the dropping node (the snapshot's commit holds it).
 

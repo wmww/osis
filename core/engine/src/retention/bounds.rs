@@ -262,11 +262,18 @@ pub(super) fn whole_date(tx: &mut Tx<'_>, h: &Header, c: &CommitId, ai: usize) -
 
 /// The dead writes that date held valid part `ai` of `c`: its winners superseded by writes
 /// lasting at least as long (spec/crdt.md §4.8), a snapshot's leaving out those a held valid
-/// snapshot stamped later holds as winners (that one keeps their history). Those the state
-/// supersedes (`deaths`, O(part)) that the held writes, where kept, date dead for the part's
-/// end: one only a write ending sooner supersedes is dead in the state alone. None kept: no
-/// write with an end is held (`follow`), so the state's are the part's.
+/// snapshot stamped later holds as winners (that one keeps their history).
 fn dating_deaths(tx: &mut Tx<'_>, h: &Header, c: &CommitId, ai: usize, tid: &Tid, ak: &Ak) -> Result<BTreeSet<Won>> {
+    let dead = lasting_deaths(tx, h, c, ai, tid, ak)?;
+    not_carried_later(tx, h, c, tid, ak, dead)
+}
+
+/// The winners of held valid part `ai` of `c` superseded by writes lasting at least as long
+/// (spec/crdt.md §4.8): those the state supersedes (`deaths`, O(part)) that the held writes,
+/// where kept, date dead for the part's end: one only a write ending sooner supersedes is dead
+/// in the state alone. None kept: no write with an end is held (`follow`), so the state's are
+/// the part's.
+fn lasting_deaths(tx: &mut Tx<'_>, h: &Header, c: &CommitId, ai: usize, tid: &Tid, ak: &Ak) -> Result<BTreeSet<Won>> {
     let dead = deaths(tx, c, ai, tid, ak)?;
     if dead.is_empty() || !(bounded(tx.core, tid, ak) || followed(tx, tid, ak)?) {
         return Ok(dead);
@@ -282,16 +289,16 @@ fn dating_deaths(tx: &mut Tx<'_>, h: &Header, c: &CommitId, ai: usize, tid: &Tid
             kept.insert(w);
         }
     }
-    not_carried_later(tx, h, c, tid, ak, kept)
+    Ok(kept)
 }
 
-/// Whether a write of held valid part `ai` of `c` is dead (spec/crdt.md §4.8: one it dates,
-/// `dating_deaths`), O(part).
+/// Whether a write of held valid part `ai` of `c` is dead (spec/crdt.md §4.8, `lasting_deaths`),
+/// O(part).
 pub(super) fn dead(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<bool> {
     let Some(h) = tx.core.ix.commits.get(c).filter(|m| m.valid_at(ai)).map(|m| m.header.clone()) else { return Ok(false) };
     let Some(a) = h.aspects.get(ai) else { return Ok(false) };
     let (tid, ak) = (a.tid, a.ak.clone());
-    Ok(!dating_deaths(tx, &h, c, ai, &tid, &ak)?.is_empty())
+    Ok(!lasting_deaths(tx, &h, c, ai, &tid, &ak)?.is_empty())
 }
 
 /// Dead writes `dead` of part `(tid, ak)` of `c` but, of a snapshot's, those a held valid
