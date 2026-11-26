@@ -15,3 +15,5 @@ held-model/props::settled_histories_keep_their_laws_large_spec_commits_5 rate:OS
 held-model/props::late_commit_converges_after_repair_large_spec_commits_5 rate:OSIS_HELD_START=610247967463,OSIS_HELD_SEEDS=1 issues/held-model-unsettled-fates.md fates did not settle
 held-model/spec_joint::joint_one_sync_id_and_key_parts_act_as_everything_plain rate:OSIS_HELD_START=610247967233 issues/held-model-unsettled-fates.md the design fails: .*J-act.*reader: Some\(Valid\), full: Some\(Invalid\)
 osis-engine/order::held_set_decides_plain rate:OSIS_ORDER_SEED=610247967197,OSIS_ORDER_LEN=60 issues/order-index-reload-paths.md rebuilt from the commit records \(want: this node's live index, got: its store loaded afresh\)
+osis-sync/sims::a_peer_refusing_role_entries_plain rate:OSIS_SYNC_START=675321254093,OSIS_SYNC_SEEDS=1 issues/refusing-role-entries-unstamped-owed.md effects read: owed: Record\(.*it read something unstamped
+osis-engine/order::held_set_decides_plain rate:OSIS_ORDER_SEED=675321254095,OSIS_ORDER_LEN=60 issues/order-addenda-role-commit-applied.md held-model differs: commit CommitId\([0-9a-f.]+\) \(#\d+\) applied: model false, node true
