@@ -5,7 +5,7 @@
 # summary prints it, with the reason in the commit message.
 crdt-model/props 35
 held-model/it 470
-osis-account/it 38
+osis-account/it 59
 osis-account/osis_account 0.0013
 osis-app/it 270
 osis-base/cbor 25
