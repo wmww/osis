@@ -9,7 +9,8 @@
 ## State
 - **Coordinator**: Spar, winding down at the end of its context; the next coordinator takes over. Agents run on main (no kept branches); every job is reviewed and gated as it lands (notes/coordination.md).
 - **Reviewed and gated**: everything on main, the final gate over the whole tree included. Slimming landed: no pull anew for a thing another node makes (attach left, issue attach-pulls-unit-anew), index rows repeating stored facts, one stored form per commit (~35% storage), a blob's bytes once per connection, memory per commit 128 → 70 KB (issue memory-per-commit). The full-size differential: 25 of 200 (issue differential-full-size-classes).
-- **Still running when Spar stopped** (let them finish; review each before it lands): echo removal anchored by a log cursor (`spar-slim-c2`), watchdog round 4, test optimizer round 6.
+- **Pushed, awaiting review and gate**: `spar-slim-c2` (echo removed, anchored by a log cursor of the requester's own log; the NetStream TLA model passes with the anchor, its controls fail; return direction per dependent make 403 → 180 B). Streams only: no key-part dependence, so it can be reviewed now.
+- **Still running when Spar stopped**: test optimizer round 6 (harness-only pieces land directly; core pieces push `spar-testopt-6` for review).
 - **Pushed, held, not to review yet**: `spar-public-listing-role` (the public's listing role by its box, counted until the node's own `sync.0` records that head). It builds on the machinery below; judge it after the key-part decision.
 
 ## First: key parts contradict the model (Tess, stop and fix)
