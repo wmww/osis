@@ -376,13 +376,16 @@ fn sharing_commands_local_plan_cli_4() {
     let account = grants.strip_suffix(" admin -\n").expect("the account alone").to_string();
     assert_eq!(account, s.me(), "me: the account");
     assert_ne!(account, s.node(), "the account is not the node");
-    assert_eq!(s.ok(&["node", "ls"]).line(), s.node(), "this node alone");
+    assert_eq!(s.ok(&["node", "ls"]).line(), format!("{} admin", s.node()), "this node alone, an admin node");
     // spec/sync-inbox.md §6: `make_link` works on every node; the link names this node
     let l = s.thing();
     let o = s.call(&["--timeout", "10ms", "link", "make", &l, "write", "--single-use"], "");
     assert_eq!(o.code, 6, "{}", o.err);
     assert!(o.line().starts_with("osis://link/"), "{}", o.out);
     assert!(s.ok(&["--json", "link", "ls", &l]).line().contains("\"single_use\":true"));
+    let o = s.call(&["--timeout", "10ms", "link", "make", &l, "read", "--until", "1900000000000"], "");
+    assert_eq!(o.code, 6, "{}", o.err);
+    assert!(s.ok(&["--raw", "link", "ls", &l]).out.lines().any(|x| x.contains(" read 1900000000000 - ")), "a link's expiry is listed");
     let o = s.call(&["--timeout", "10ms", "contact", "show"], "");
     assert!(o.code == 6 && o.line().starts_with("osis://link/"), "{}", o.err);
     let stranger = S::mem().me();

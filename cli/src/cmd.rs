@@ -135,7 +135,7 @@ pub(crate) fn delivered(ctx: &Ctx<'_>, things: &[Tid]) -> anyhow::Result<()> {
 }
 
 fn links_j(ls: &[osis::LinkInfo]) -> J {
-    J::Arr(ls.iter().map(|l| J::obj([("id", J::str(l.id.to_string())), ("target", J::tid(l.target)), ("role", J::str(role_text(l.role).to_string())), ("single_use", J::Bool(l.single_use))])).collect())
+    J::Arr(ls.iter().map(|l| J::obj([("id", J::str(l.id.to_string())), ("target", J::tid(l.target)), ("role", J::str(role_text(l.role).to_string())), ("until", J::opt(l.until.map(|u| J::int(u.0)))), ("single_use", J::Bool(l.single_use))])).collect())
 }
 
 fn scope(ctx: &Ctx<'_>, s: &Scope) -> anyhow::Result<osis::Scope> {
@@ -339,7 +339,7 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
         }
         Cmd::Node(NodeCmd::Ls) => {
             let ds = ctx.account()?.nodes(&db)?;
-            ctx.emit(&ds.iter().map(|d| d.node.to_uri()).collect::<Vec<_>>(), J::Arr(ds.iter().map(|d| J::obj([("node", J::tid(d.node))])).collect()))
+            ctx.emit(&ds.iter().map(|d| format!("{} {}", d.node.to_uri(), role_text(d.role))).collect::<Vec<_>>(), J::Arr(ds.iter().map(|d| J::obj([("node", J::tid(d.node)), ("role", J::str(role_text(d.role)))])).collect()))
         }
         Cmd::Node(NodeCmd::Rm { node, d, end_links }) => {
             let n = ctx.tid(&node)?;
@@ -517,7 +517,8 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
                 let t = ctx.tid(&t)?;
                 ls.retain(|l| l.target == t);
             }
-            let lines: Vec<String> = ls.iter().map(|l| format!("{} {} {} {}", l.id, role_text(l.role), if l.single_use { "single-use" } else { "-" }, l.target.to_uri())).collect();
+            let raw = ctx.g.raw;
+            let lines: Vec<String> = ls.iter().map(|l| format!("{} {} {} {} {}", l.id, role_text(l.role), l.until.map_or("-".into(), |u| ts_text(raw, u.0)), if l.single_use { "single-use" } else { "-" }, l.target.to_uri())).collect();
             ctx.emit(&lines, links_j(&ls))
         }
         Cmd::Link(LinkCmd::Revoke { id }) => {
