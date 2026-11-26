@@ -1255,6 +1255,26 @@ fn cached_placement_follows_siblings_spec_6_1() {
     assert_eq!(read_str(&d.state), format!("nRSPQoa{}MMXb", "y".repeat(5000)));
 }
 
+/// §6.1 sibling order (`seq_lin`): one delta inserting a run and then into it (`PQ` after `a`,
+/// then `R` after `P`): `R` is `P`'s newer child, ahead of `Q`, so `P` ends its run there. A cached
+/// placement, whole or held in part, follows it to a whole pass's order.
+#[test]
+fn cached_placement_follows_an_insert_into_its_own_run_spec_6_1() {
+    let mut w = Replica::new(1);
+    w.commit(1, &[op(Op::Set(s("ab")))], &text_view());
+    let mut d = w.fork(2);
+    let ops = [op(Op::Insert { at: 1, items: vec![s("P"), s("Q")] }), op(Op::Insert { at: 2, items: vec![s("R")] })];
+    let (delta, _, _) = w.commit(2, &ops, &text_view()).unwrap();
+    assert_eq!(read_str(&w.state), "aPRQb");
+    let (Fragment::Seq(st), Fragment::Seq(ds)) = (&d.state, &delta) else { panic!("text") };
+    assert!(crate::testutil::partial_follow(st, ds, 1).is_some(), "followed in part");
+    let _ = read_str(&d.state);
+    d.state.join(delta);
+    crate::testutil::check_lin(&d.state);
+    assert!(cached(&d.state), "followed");
+    assert_eq!(read_str(&d.state), "aPRQb");
+}
+
 /// §4.5 (net effect): `DeltaBuilder`'s sequence ops at one position resolve against a kept view of it once the
 /// delta has written there; an op elsewhere drops it; the result equals one-by-one commits.
 #[test]

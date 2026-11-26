@@ -399,8 +399,9 @@ fn fit(e: &mut osis_engine::Engine, t: Tid, a: &Ak, mut po: PathOp) -> PathOp {
 }
 
 /// Points an aimed step's author and things at ones that can write it as far as that peer can
-/// tell, `t` choosing among them; an author none of which can stays as it is (and is refused).
-fn aim(st: &Step, lp: &mut LocalPeer, things: &[Tid], ids: &[Tid], own: &[Vec<CommitId>]) -> Step {
+/// tell, `t` choosing among them, and whether it found one: a step none can write stays as it is
+/// (and is refused by construction).
+fn aim(st: &Step, lp: &mut LocalPeer, things: &[Tid], ids: &[Tid], own: &[Vec<CommitId>]) -> (Step, bool) {
     use Step::*;
     let want = |r: Role| move |lp: &LocalPeer, by: usize, t: &Tid| lp.peers[by].engine.knows(t) && lp.peers[by].engine.role_on(t) >= Some(r);
     // the first of the authors from `by` on with such a thing, and which of its things
@@ -412,15 +413,17 @@ fn aim(st: &Step, lp: &mut LocalPeer, things: &[Tid], ids: &[Tid], own: &[Vec<Co
     };
     // what each peer holds, for a compaction
     let holding: Vec<BTreeSet<(Tid, Ak)>> = if matches!(st, Compact { .. }) { lp.peers.iter_mut().map(|p| p.engine.all_aspects().unwrap().into_iter().collect()).collect() } else { Vec::new() };
-    // for an undo, the indexes in `own[by]` of the author's content commits a revert writes
-    // (`check_revertible`), oldest first
-    let undoable: Vec<usize> = match st {
-        Undo { by, .. } => {
-            let e = &mut lp.peers[*by].engine;
-            let content = |e: &osis_engine::Engine, id: &CommitId| e.header(id).is_some_and(|h| h.kind == osis_commit::Kind::Content);
-            own[*by].iter().enumerate().filter(|(_, id)| content(e, id) && e.check_revertible(id).is_ok_and(|w| w)).map(|(i, _)| i).collect()
-        }
-        _ => Vec::new(),
+    // for an undo, the first author from `by` on with an own commit its revert writes, held to
+    // the author's rights (`check_revertible_as`) and in an `Undo`'s reach (`back` is a `u8`), and
+    // the indexes in `own` of those, oldest first
+    let undoable: Option<(usize, Vec<usize>)> = match st {
+        Undo { by, .. } => (0..3).map(|i| (by + i) % 3).find_map(|b| {
+            let e = &mut lp.peers[b].engine;
+            let me = e.tid();
+            let c: Vec<usize> = own[b].iter().enumerate().filter(|(i, id)| own[b].len() - i <= 256 && e.check_revertible_as(**id, me).is_ok_and(|w| w)).map(|(i, _)| i).collect();
+            (!c.is_empty()).then_some((b, c))
+        }),
+        _ => None,
     };
     let lp = &*lp;
     let write = want(Role::Write);
@@ -460,10 +463,13 @@ fn aim(st: &Step, lp: &mut LocalPeer, things: &[Tid], ids: &[Tid], own: &[Vec<Co
             pick(lp, by, t, &held).map(|(by, t)| RemoveFlow { by, t, holder, lower })
         }
         // one of the last of them
-        Undo { by, back } => undoable.iter().rev().nth(back as usize % undoable.len().max(1)).map(|i| Undo { by, back: (own[by].len() - 1 - i).min(255) as u8 }),
+        Undo { back, .. } => undoable.map(|(by, c)| Undo { by, back: (own[by].len() - 1 - c[c.len() - 1 - back as usize % c.len()]) as u8 }),
         _ => None,
     };
-    aimed.unwrap_or_else(|| st.clone())
+    match aimed {
+        Some(x) => (x, true),
+        None => (st.clone(), false),
+    }
 }
 
 fn random_step(rng: &mut Rng) -> Step {
@@ -955,9 +961,13 @@ fn play_in(seed: u64, steps: &[Step], addenda: bool, written: bool) -> Played {
             p.engine.core.skip_writer_rules = old;
         }
         let aimed;
+        // an aimed step none can write: refused by construction (`aim`)
+        let mut unaimed = false;
         let st = match st {
             Step::Aim(x) => {
-                aimed = aim(x, &mut lp, &things, &ids, &own);
+                let found;
+                (aimed, found) = aim(x, &mut lp, &things, &ids, &own);
+                unaimed = !found;
                 &aimed
             }
             x => x,
@@ -1554,7 +1564,7 @@ fn play_in(seed: u64, steps: &[Step], addenda: bool, written: bool) -> Played {
             // a holds compaction tallies as a compaction: whether one commits follows the
             // history's rights and what it made, as for any other aspect
             let kind = if matches!(st, Step::CompactHolds { .. }) { "Compact".to_string() } else { format!("{st:?}") };
-            let kind = kind.split(' ').next().unwrap().to_string() + if matches!(st, Step::Nested { text: true, .. }) { "(text)" } else if record { "(record)" } else { "" } + if old { "(old)" } else { "" };
+            let kind = kind.split(' ').next().unwrap().to_string() + if matches!(st, Step::Nested { text: true, .. }) { "(text)" } else if record { "(record)" } else { "" } + if unaimed { "(unaimed)" } else { "" } + if old { "(old)" } else { "" };
             match st {
                 Step::Compact { t, .. } | Step::CompactHolds { t, .. } => {
                     let a = if let Step::Compact { op, .. } = st { aspect_of(*op) } else { ak("holds.0") };
@@ -2931,7 +2941,7 @@ impl Seen {
     /// every run judged nodes; each emphasis that ran outside the exhaustive cap reached its own
     /// outcome (`by`: those seeds per emphasis; a capped history may stop before its start ends);
     /// seeds of every emphasis outside the cap (`open`) reached a commit of every step kind tried
-    /// ten times or more and every judging path (a clock move over 300 clocked deliveries).
+    /// ten times or more (an unaimed one aside: `aim`) and every judging path (a clock move over 300 clocked deliveries).
     fn floors(&self, open: &Seen, by: &BTreeMap<String, Seen>) {
         let fail = |what: &str| -> ! { panic!("held_set_decides: {what}:\n{}\n{open:?}", open.tally.show()) };
         if self.judged[0] == 0 || self.model.compared == 0 {
@@ -2985,9 +2995,9 @@ impl Seen {
             fail(&format!("{m} of {n} commit steps made a commit"));
         }
         // a kind refused ten times in a row is refused always (most kinds commit half the time
-        // or more)
+        // or more); an unaimed step is refused by construction
         for (k, (n, c)) in &open.tally.kinds {
-            if *n >= 10 && *c == 0 {
+            if *n >= 10 && *c == 0 && !k.contains("(unaimed)") {
                 fail(&format!("none of {n} {k} steps made a commit"));
             }
         }
@@ -4071,6 +4081,19 @@ fn settled_check_spares_aspects_no_writer_compacted_spec_commits_5() {
     let mut p = deliver(&played, &order);
     assert_eq!(shown(&mut p, &played.things)[&g], "Ok(Some(Str(\"v1\")))", "1's write waited for its grant");
     order_checks(&played, &order).unwrap();
+}
+
+// The generator's undo (`aim`): an aimed undo goes to the first author from its own on with an own
+// commit whose revert writes, held to that author's rights, so it commits; with none it is refused
+// by construction and tallied unaimed, which the step-kind floor leaves aside (`Seen::floors`).
+#[test]
+fn an_aimed_undo_commits_or_is_unaimed() {
+    use Step::*;
+    let a = |s| Aim(Box::new(s));
+    let tick = Advance { who: None, ms: 1 };
+    let h = vec![a(Undo { by: 1, back: 0 }), tick.clone(), a(Typed { by: 0, t: 0, op: 23, k: 0, v: 5 }), tick, a(Undo { by: 1, back: 2 })];
+    let kinds = play(0, &h).tally.kinds;
+    assert_eq!((kinds.get("Undo(unaimed)"), kinds.get("Undo")), (Some(&(1, 0)), Some(&(1, 1))), "{kinds:?}");
 }
 
 // spec/crdt.md §5.7: 0 inserts `v5` and deletes the `5` (both kept, so the delete undoes), 1

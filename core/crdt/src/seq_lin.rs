@@ -1376,17 +1376,15 @@ impl Lin {
                     };
                     cuts.extend(cut);
                     let run = match key.as_ref().and_then(|x| new.get(x)) {
-                        // right after a new element, which must end its run
-                        Some(i) => {
+                        // right after the new element ending its run: that run's next
+                        Some(i) if runs.get(*i).is_some_and(|r| r.2.last() == key.as_ref()) => {
                             let Some((_, _, run)) = runs.get_mut(*i) else { return false };
-                            if run.last() != key.as_ref() {
-                                return false;
-                            }
                             run.push(dot.clone());
                             *i
                         }
-                        // a child of an existing node: a run of its own
-                        None => {
+                        // a child of an existing node, or of a new one inside its run (placed
+                        // before: its run came first): a run of its own
+                        _ => {
                             runs.push((key, stamp, vec![dot.clone()]));
                             runs.len() - 1
                         }
@@ -1459,7 +1457,9 @@ impl Lin {
         }
         for (key, stamp, run) in runs {
             *work += each;
-            let Some(q) = self.slot(&sibs, &key, &stamp, fresh.as_ref(), usize::MAX..usize::MAX, work) else { return false };
+            // onto a new element: its run's next element (a newer stamp) may be a sibling
+            let fresh = fresh.as_ref().filter(|_| !matches!(&key, Some(x) if new.contains_key(x)));
+            let Some(q) = self.slot(&sibs, &key, &stamp, fresh, usize::MAX..usize::MAX, work) else { return false };
             let Some(d0) = self.depth_below(&key) else { return false };
             let mut head = key.is_none();
             let mut parent = key;

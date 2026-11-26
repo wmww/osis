@@ -12,5 +12,3 @@ osis-sync/differential::histories_hold_their_closure_plain rate:OSIS_SYNC_START=
 held-model/props::late_commit_converges_after_repair_large_spec_commits_5 rate:OSIS_HELD_START=527365123558,OSIS_HELD_SEEDS=1 issues/held-model-late-commit-read-lost.md seed \d+: late Commit
 osis-sync/differential::histories_hold_their_closure_plain rate:OSIS_SYNC_START=527365123461,OSIS_SYNC_SEEDS=1 issues/differential-full-size-classes.md panicked: node \d+ reads thing \d+ unlike the reference
 osis-sync/differential::histories_hold_their_closure_plain rate:OSIS_SYNC_START=277009481497,OSIS_SYNC_SEEDS=1 issues/differential-full-size-classes.md sync set holds thing \d+ as None, the model Some\(Read\)
-osis-engine/engine::pages::tests::seq_cold_edits_keep_placement_plain_spec_crdt_6_1 rate:OSIS_SEQ_COLD_START=433811979068,OSIS_SEQ_COLD_SEEDS=1 issues/seq-cold-placement-kept.md placement kept \(writer
-osis-engine/order::held_set_decides_plain rate:OSIS_ORDER_START=776032563648 issues/order-undo-floor.md none of \d+ Undo steps made a commit
