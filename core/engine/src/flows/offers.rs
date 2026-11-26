@@ -128,21 +128,27 @@ impl Engine {
     /// entry), and its trust records on the target; then a strong to the target in `holder`'s
     /// `holds.0` (a thing this node holds, or its node root), so this node holds it.
     /// `BadInput` unless it gives a role on the target to this node's node thing or a thing it
-    /// may write.
+    /// may write; refused, what it brought goes unless something held needs it.
     pub fn take_offer(&mut self, o: &Offer, holder: &Tid) -> Result<Done> {
         let t = o.target;
         let me = self.core.tid();
         let mine = |e: &Engine, h: &Tid| *h == me || e.core.role_now(&me, h) >= Some(osis_base::Role::Write);
         let trust = match &o.pieces {
             Pieces::Whole { grant, sync, trust } => {
-                self.take_parts(grant, &t)?;
+                // taken, then judged: refused, what it brought goes as a release's does
+                // (`settle_due`: what nothing held needs), so a hander makes this node keep
+                // nothing for an offer giving nothing
+                let mut r = self.take_parts(grant, &t);
                 for p in sync {
-                    self.take_parts(p, &t)?;
+                    r = r.and_then(|()| self.take_parts(p, &t));
                 }
                 // the offer is to a node of its holder (spec/sync-inbox.md §5 By hand): the node
                 // thing, or a thing it may write (an account), as `offered_to` reads a fire's
-                if !self.core.key_holders(&t).iter().any(|(h, _)| mine(self, h)) {
-                    return Err(Error::BadInput("the offer gives this node no role"));
+                let r = r.and_then(|()| if self.core.key_holders(&t).iter().any(|(h, _)| mine(self, h)) { Ok(()) } else { Err(Error::BadInput("the offer gives this node no role")) });
+                if let Err(e) = r {
+                    let brought = std::iter::once(grant).chain(sync).flat_map(EdgePiece::things).chain([t]).collect();
+                    self.settle_due(&brought)?;
+                    return Err(e);
                 }
                 trust.as_slice()
             }

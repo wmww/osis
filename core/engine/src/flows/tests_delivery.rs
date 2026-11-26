@@ -1207,3 +1207,28 @@ fn a_notice_naming_another_holder_tells_that_holder_nothing_spec_permissions_4()
     assert!(r.notice_rows(&s).contains_key(&id), "and keeps its row");
     assert!(!r.told(&s, &[n1].into()).unwrap().contains(&c), "G's removal is not told to peer 1");
 }
+
+// spec/sync-inbox.md §5 (By hand), notes/node-closure.md (Storage owners): an offer is anyone's
+// to hand over. Peer 0 grants G to Z, a thing of its own, and hands the offer to peer 2, which
+// writes no Z: it is refused, and leaves nothing (the store as before). Fails with a refused
+// offer's records or commits kept (rows a hander makes this node keep for nothing).
+#[test]
+fn a_refused_offer_leaves_nothing_spec_sync_inbox_5() {
+    let mut lp = synced(3);
+    let me0 = lp.peers[0].engine.tid();
+    let mut m = crate::Mutation::new();
+    let g = lp.peers[0].engine.new_thing(&mut m, me0);
+    let z = lp.peers[0].engine.new_thing(&mut m, me0);
+    lp.peers[0].commit(m).unwrap();
+    lp.peers[0].engine.make_independent(&g).unwrap();
+    lp.peers[0].engine.make_independent(&z).unwrap();
+    lp.peers[0].engine.grant(&g, &z, &edge(Role::Read)).unwrap();
+    let offer = lp.peers[0].engine.offer(&g, &z).unwrap();
+    assert!(matches!(offer.pieces, super::offers::Pieces::Whole { .. }));
+    let me2 = lp.peers[2].engine.tid();
+    let count = |lp: &mut LocalPeer| lp.peers[2].engine.census().unwrap().into_iter().map(|(f, (n, _))| (f, n)).collect::<std::collections::BTreeMap<_, _>>();
+    let (before, rows) = (count(&mut lp), lp.peers[2].engine.rows(b"", None).unwrap());
+    assert!(lp.peers[2].engine.take_offer(&offer, &me2).is_err(), "an offer to Z gives peer 2 no role");
+    let new: Vec<String> = lp.peers[2].engine.rows(b"", None).unwrap().into_iter().filter(|r| !rows.iter().any(|x| x.key == r.key && x.family == r.family)).map(|r| format!("{} {}", r.family, r.key)).collect();
+    assert_eq!(count(&mut lp), before, "no row of the refused offer kept: {new:?}");
+}

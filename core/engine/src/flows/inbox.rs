@@ -902,6 +902,13 @@ pub struct EdgePiece {
 }
 
 impl EdgePiece {
+    /// The things piece `p` brings: those its records make and its commits write.
+    pub(crate) fn things(&self) -> BTreeSet<Tid> {
+        let commits = self.evidence.iter().chain([&self.copy]).filter_map(|c| osis_commit::CommitBlob::decode(c).ok());
+        let written: Vec<Tid> = commits.flat_map(|b| b.header.aspects.iter().map(|a| a.tid).collect::<Vec<_>>()).collect();
+        self.records.iter().map(osis_base::CreationRecord::tid).chain(written).collect()
+    }
+
     /// `struct { grant 0: blob, evidence 1: list<blob>, records 2: list<blob>, pages 3: list<blob> }`
     /// (spec/data-model.md §9).
     pub fn to_value(&self) -> Value {
