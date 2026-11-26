@@ -192,14 +192,18 @@ fn carried(tx: &mut Tx<'_>, c: &CommitId, record: Option<&osis_commit::CommitBlo
         Some(r) => r.parts.iter().map(|p| p.ai).collect(),
         None => tx.get_commit(c)?.map(|r| r.parts.iter().map(|p| p.ai).collect()).unwrap_or_default(),
     };
-    if let Some(p) = tx.txn.get_pending(c)? {
-        let p = match p.kind {
-            osis_store::PendingKind::Parked => osis_commit::CommitBlob::decode(&p.bytes).ok(),
-            _ => osis_commit::CommitBlob::decode_stored(&p.bytes).ok(),
-        };
-        out.extend(p.iter().flat_map(|p| p.parts.iter().map(|x| x.ai)));
+    if let Some(p) = pending_copy(tx, c)? {
+        out.extend(p.parts.iter().map(|x| x.ai));
     }
     Ok(out)
+}
+
+/// Commit `c`'s pending copy, decoded (a parked one as received).
+fn pending_copy(tx: &mut Tx<'_>, c: &CommitId) -> Result<Option<osis_commit::CommitBlob>> {
+    Ok(tx.txn.get_pending(c)?.and_then(|p| match p.kind {
+        osis_store::PendingKind::Parked => osis_commit::CommitBlob::decode(&p.bytes).ok(),
+        _ => osis_commit::CommitBlob::decode_stored(&p.bytes).ok(),
+    }))
 }
 
 /// Blob `b`'s row goes, from where it was noted (its commit forgotten, or the blob opened again
@@ -1170,16 +1174,6 @@ fn join_body(a: Option<BodyMeta>, b: BodyMeta) -> BodyMeta {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    #![allow(clippy::unwrap_used)]
-    
-    
-    
-    
-
-}
-
 impl Engine {
     /// Held blob `b` made again, byte for byte, from its seal (`BlobOf::seal`) and the commit as
     /// held here (its record's parts, and its pending copy's; notes/slim-design.md B).
@@ -1209,11 +1203,7 @@ impl Engine {
     /// commit's waiting parts, or a pending commit's).
     fn held_commit_whole(&mut self, c: &CommitId) -> Result<Option<osis_commit::CommitBlob>> {
         let c = *c;
-        let (record, pending) = self.read(|tx| Ok((tx.get_commit(&c)?, tx.txn.get_pending(&c)?)))?;
-        let pending = pending.and_then(|p| match p.kind {
-            osis_store::PendingKind::Parked => osis_commit::CommitBlob::decode(&p.bytes).ok(),
-            _ => osis_commit::CommitBlob::decode_stored(&p.bytes).ok(),
-        });
+        let (record, pending) = self.read(|tx| Ok((tx.get_commit(&c)?, pending_copy(tx, &c)?)))?;
         let mut out = match (record, pending.as_ref()) {
             (Some(r), _) => (*r).clone(),
             (None, Some(p)) => p.clone(),
@@ -1255,4 +1245,14 @@ impl Engine {
         }
         (made, out)
     }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+    
+    
+    
+    
+
 }
