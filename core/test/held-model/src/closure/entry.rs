@@ -217,7 +217,7 @@ impl Net {
     }
 
     /// The public pieces a node holding `h` logs (spec/sync-set.md §2 Public pieces): `(t, x)` for
-    /// each thing `t` it reads and independent `x` the public reads, a strong from a thing it holds
+    /// each thing `t` it reads and independent `x` the public holds a role on, a strong from a thing it holds
     /// of `t`'s unit reaching `x` or a dependent of it, where it holds the public's grant on `x`: it
     /// syncs `x` (read, kept unread, for keys or followed by the public entry) or reads a thing
     /// whose sync ID carries the piece.
@@ -232,7 +232,7 @@ impl Net {
                     Kind::Independent => y,
                     Kind::Dependent(k) => k,
                 };
-                if u.contains(&m) && self.w.public.contains(&x) && holds(x) {
+                if u.contains(&m) && (self.w.public.contains(&x) || self.w.public_sync.contains(&x)) && holds(x) {
                     out.insert((t, x));
                 }
             }
@@ -339,9 +339,13 @@ impl Net {
         let n = &self.nodes[i];
         let w = &self.w;
         let e = self.edges(rule);
-        // Whether a unit the node syncs carries `x`, or the node holds an offer of it.
+        // A public piece under a thing it reads shows the public's sync alone on `x`.
+        let pieced = |x: T| w.public_sync.contains(&x) && s.read.iter().any(|&t| self.pieces.contains(&(t, x)));
+        // Whether a unit the node syncs carries `x` (a public piece showing the public's sync
+        // alone on it among them), or the node holds an offer of it.
         let carried = |x: T| {
-            n.offers.contains(&x)
+            pieced(x)
+                || n.offers.contains(&x)
                 || s.read.iter().any(|&t| self.held_unit(rule, t, &e).contains(&x))
                 || s.keyparts.iter().any(|&h| (!rule.founded_pieces || h == n.thing || s.read.contains(&h)) && self.piece(rule, h, x))
                 || rule.stubs_at_sync && s.read.iter().any(|&t| (!rule.carriers || self.logged.contains(&(t, x))) && self.stubs(rule, t, &e).contains(&x))
@@ -369,6 +373,11 @@ impl Net {
                     role.insert(y, v);
                 }
             }
+        }
+        // the public's sync alone: every party's role is sync there (spec/sync-set.md §2 Own
+        // things), where the node holds the grant: it syncs `x`, or a public piece shows it
+        for &x in w.public_sync.iter().filter(|&&x| counting.contains(&x) || pieced(x)) {
+            role.entry(x).or_insert(Role::Sync);
         }
         let at =|x: T, r: Role| role.get(&x).is_some_and(|&v| v >= r);
         // The walk: strongs from the local part and from read units to independent things.

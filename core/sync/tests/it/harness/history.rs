@@ -997,6 +997,7 @@ impl Model {
         let mut grants = BTreeMap::new();
         let mut unoffered = BTreeSet::new();
         let mut public = hc::Set::new();
+        let mut public_sync = hc::Set::new();
         let mut edges = hc::Edges::new();
         for (k, t) in things.iter().enumerate() {
             // the record edge stands at admin until an edge write lowers it, which the roster then
@@ -1008,8 +1009,9 @@ impl Model {
             for (holder, e) in roster {
                 // the public reads by its own grant on the thing (spec/permissions.md §1)
                 if holder == Tid::PUBLIC {
-                    if e.role >= Role::Read {
-                        public.insert(na + k);
+                    match e.role >= Role::Read {
+                        true => drop(public.insert(na + k)),
+                        false => drop(public_sync.insert(na + k)),
                     }
                     continue;
                 }
@@ -1049,7 +1051,7 @@ impl Model {
         let pieces = h.pieces.iter().filter_map(|(t, x)| Some((index(t)?, index(x)?))).collect();
         let mut named: hc::Edges = h.named.iter().filter(|(k, g)| !h.unoffered.contains(&(*k, *g))).filter_map(|(k, g)| Some((index(g)?, na + k))).collect();
         named.extend((0..things.len()).map(|k| (mint_admin(k), na + k)));
-        let mut m = Model { accounts, world: hc::World { kinds, grants, keyless, public }, edges, unoffered, logged: hc::Edges::new(), pieces, named };
+        let mut m = Model { accounts, world: hc::World { kinds, grants, keyless, public, public_sync }, edges, unoffered, logged: hc::Edges::new(), pieces, named };
         // what the closures log, to their least fixpoint over the accounts (`entry::Net::held_all`)
         loop {
             let (mut more, mut pieces) = (m.logged.clone(), m.pieces.clone());

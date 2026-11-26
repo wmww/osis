@@ -556,6 +556,25 @@ fn a_named_strong_to_a_public_thing_is_followed_by_the_public_entry() {
     assert!(!off.held.contains(&B), "control: follows off, not held: {off:?}");
 }
 
+// spec/sync-set.md §2 (Own things: the public's role is every party's; Public pieces; Following
+// by the public entry): A strongs B, naming B's sync ID, and the public holds sync alone on B, its
+// piece under A's sync ID: every party holds sync there, so node 1 keeps B unread rather than
+// following it by the public entry. Control: with no public grant, node 1 follows B.
+#[test]
+fn a_public_sync_grant_keeps_a_named_strong_unread() {
+    let mut net = account(None, 2);
+    net.w.grants.insert((N2, B), Role::Admin);
+    net.records.insert((N2, B));
+    net.strongs.insert((A, B));
+    net.named.insert((A, B));
+    let h = net.held(0, Rule::SPEC);
+    assert!(h.follows.contains(&B) && !h.s.kept.contains(&B), "control: followed: {h:?}");
+    net.w.public_sync.insert(B);
+    net.pieces.insert((A, B));
+    let h = net.held(0, Rule::SPEC);
+    assert!(h.s.kept.contains(&B) && h.follows.is_empty() && !h.s.read.contains(&B), "kept unread, not followed: {h:?}");
+}
+
 // spec/sync-set.md §2 (Public pieces; Following by the public entry): what an account's nodes
 // hold does not depend on when they synced. Over random worlds with public things and edges since
 // removed (`Net::named`), the held sets are the same whether or not a past reader of T logged a

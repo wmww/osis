@@ -57,6 +57,9 @@ pub struct World {
     /// through holders (`closure::public`'s `chains`); a node's role counts the public's, through
     /// holders as any holder's (`entry`).
     pub public: Set,
+    /// The independent things the public holds sync alone on, by its own grant: every party's
+    /// role there is sync (`entry`: kept unread wherever entered and not read).
+    pub public_sync: Set,
 }
 
 /// The keyless grants among actor grants `(g, t)` (holder `g` on target `t`) taken in `order`
