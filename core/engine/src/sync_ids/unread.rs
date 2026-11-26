@@ -599,8 +599,8 @@ impl crate::engine::Engine {
     }
 
     /// The sync copies of `t` taken here, each with whether it counts (`Unread::counted`): tests.
-    #[doc(hidden)]
-    pub fn sync_copies_of(&self, t: &Tid) -> Vec<(BlobId, Arc<HeldSyncCopy>, bool)> {
+    #[cfg(test)]
+    pub(crate) fn sync_copies_of(&self, t: &Tid) -> Vec<(BlobId, Arc<HeldSyncCopy>, bool)> {
         let u = self.core.unread(t);
         self.core.ix.sync_copies.get(t).map(|m| m.iter().map(|(b, c)| (*b, c.clone(), u.counted.contains(b))).collect()).unwrap_or_default()
     }

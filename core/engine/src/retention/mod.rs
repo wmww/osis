@@ -1453,7 +1453,8 @@ impl Engine {
     /// Whether commit `c` is kept only for its purged parts (`kept_purged`): a memory one is
     /// charged its own bytes against its sync IDs' caps until it is forgotten, not through its
     /// entries, which the purger deletes at peers.
-    pub fn kept_purged(&self, c: &CommitId) -> bool {
+    #[cfg(test)]
+    pub(crate) fn kept_purged(&self, c: &CommitId) -> bool {
         self.core.ix.commits.get(c).is_some_and(|m| kept_purged(&self.core, c, m))
     }
 

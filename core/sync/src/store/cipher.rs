@@ -34,10 +34,6 @@ impl Inner {
 }
 
 impl osis_store::CipherStore for Inner {
-    fn bears(&mut self, s: &osis_base::SyncId, key: &osis_crypto::VerifyingKey) -> Res<bool> {
-        self.engine_tx(|t, env| super::path::bears(t, env, s, key))
-    }
-
     fn held(&mut self, id: &BlobId) -> Res<bool> {
         let key = rows::engine_key(id);
         if self.read_in(true, |t, _| Ok(t.get_local(&key)?.is_some())).map_err(to_store)? {

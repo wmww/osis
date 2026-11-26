@@ -370,7 +370,8 @@ impl super::Engine {
     /// (deltas, snapshots, leftovers), and the node blobs those trees link and this node does not
     /// hold (`missing`: what lies below them is unknown until they are fetched). Costs a memo hit
     /// per source and a lookup per blob, plus the tree paths a source's roots moved by.
-    pub fn tree_refs(&mut self, tid: &Tid, blobs: &BTreeSet<BlobId>) -> Result<Trees> {
+    #[cfg(test)]
+    pub(crate) fn tree_refs(&mut self, tid: &Tid, blobs: &BTreeSet<BlobId>) -> Result<Trees> {
         self.run(|tx| tree_refs_in(tx, tid, blobs))
     }
 }

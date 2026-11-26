@@ -58,12 +58,6 @@ impl<'a> Cipher<'a> {
         self.tx.get_or_insert_with(|| src.begin())
     }
 
-    /// Whether a step of the path the store keeps of sync ID `s` bears sync key `key`
-    /// (spec/sync.md §3), read through the store's row stamps.
-    pub fn bears(&mut self, s: &osis_base::SyncId, key: &osis_crypto::VerifyingKey) -> crate::error::Result<bool> {
-        Ok(self.tx().bears(s, key)?)
-    }
-
     /// Whether the engine holds blob `id` (a release this transaction made counts).
     pub fn held(&mut self, id: &BlobId) -> crate::error::Result<bool> {
         self.stamps.read(id);
@@ -303,7 +297,8 @@ impl crate::engine::Engine {
 
     /// `put_blobs` of blobs of memory commits: kept in the store's memory overlay, never on disk
     /// (spec/sync-compaction.md §2).
-    pub fn put_memory_blobs(&mut self, blobs: Vec<(BlobId, Vec<u8>)>) -> crate::error::Result<()> {
+    #[cfg(test)]
+    pub(crate) fn put_memory_blobs(&mut self, blobs: Vec<(BlobId, Vec<u8>)>) -> crate::error::Result<()> {
         if blobs.is_empty() {
             return Ok(());
         }

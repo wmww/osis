@@ -86,12 +86,6 @@ pub trait CipherStore: Send + Any {
     fn commit(&mut self) -> Result<(), Error>;
     /// Drops what was written since the last commit.
     fn abort(&mut self);
-    /// Whether a step of the path the store keeps of sync ID `s` bears sync key `key`
-    /// (spec/sync.md §3): none in a store of blobs only.
-    fn bears(&mut self, s: &osis_base::SyncId, key: &osis_crypto::VerifyingKey) -> Result<bool, Error> {
-        let _ = (s, key);
-        Ok(false)
-    }
     /// Tests only: every key the store's tree yields, its open writes committed first.
     #[doc(hidden)]
     fn forensic_keys(&mut self) -> Result<Vec<[u8; 32]>, Error>;

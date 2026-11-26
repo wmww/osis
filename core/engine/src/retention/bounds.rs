@@ -840,8 +840,8 @@ impl Engine {
     /// The lowest `ts` among the writes the held body of aspect `ak` of `c` carries (`None`: not
     /// held, or none stamped). Tests: the order harness bounds which invalid writes may have
     /// killed a snapshot's carried write.
-    #[doc(hidden)]
-    pub fn body_min_ts(&mut self, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<Option<Ts>> {
+    #[cfg(test)]
+    pub(crate) fn body_min_ts(&mut self, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<Option<Ts>> {
         let (c, tid, ak) = (*c, *tid, ak.clone());
         self.read(|tx| {
             let Some(ai) = aspect_index(tx.core, &c, &tid, &ak) else { return Ok(None) };
@@ -878,7 +878,8 @@ impl Engine {
 
     /// The snapshots that covered `c`'s part on `(tid, ak)` when it dropped, and those that
     /// covered such a coverer dropped in turn (`Dropped::covered_by`).
-    pub fn coverers_of(&self, c: &CommitId, tid: &Tid, ak: &Ak) -> Vec<CommitId> {
+    #[cfg(test)]
+    pub(crate) fn coverers_of(&self, c: &CommitId, tid: &Tid, ak: &Ak) -> Vec<CommitId> {
         let Some(ai) = self.core.ix.commits.get(c).and_then(|m| m.aspect(tid, ak)) else { return Vec::new() };
         super::coverers(&self.core, c, ai)
     }

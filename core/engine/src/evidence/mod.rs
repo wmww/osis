@@ -478,11 +478,6 @@ where
         self.sids.get(sid).map(|s| &s.atoms.edges)
     }
 
-    pub fn holds(&self, c: &CopyId<C, T>) -> bool {
-        self.ix.read(Row::Copy(c));
-        self.ix.copies.contains_key(c)
-    }
-
     /// S's evidence computed from nothing over the held copies (the same closure).
     pub fn from_scratch(&self, sid: &T) -> Option<Required<C, T, S, H>> {
         self.from_scratch_counted(sid).map(|r| r.0)

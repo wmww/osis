@@ -805,8 +805,8 @@ impl Engine {
     }
 
     /// Tests: snapshots every ephemeral aspect held here with a body a snapshot may cover, now.
-    #[doc(hidden)]
-    pub fn compact_memory_now(&mut self) -> Result<Vec<CommitId>> {
+    #[cfg(test)]
+    pub(crate) fn compact_memory_now(&mut self) -> Result<Vec<CommitId>> {
         let aspects: Vec<(Tid, Ak)> = self.core.ix.by_aspect.iter().filter(|(k, s)| k.1.ephemeral() && s.iter().any(|(_, c)| self.holds_memory(c))).map(|(k, _)| k.clone()).collect();
         let mut out = Vec::new();
         for (tid, ak) in aspects {
@@ -829,7 +829,8 @@ impl Engine {
 
     /// Per compactable aspect held here, its load (tests, diagnostics: at a writer within
     /// `FACTOR` times the snapshot plus one body once the trigger ran).
-    pub fn compaction_load(&mut self) -> Result<Vec<Load>> {
+    #[cfg(test)]
+    pub(crate) fn compaction_load(&mut self) -> Result<Vec<Load>> {
         let aspects: Vec<(Tid, Ak)> = self.core.ix.by_aspect.keys().filter(|k| compactable(&k.1)).cloned().collect();
         let mut out = Vec::new();
         for (tid, ak) in aspects {

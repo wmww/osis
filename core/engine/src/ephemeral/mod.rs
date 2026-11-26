@@ -168,8 +168,8 @@ impl Engine {
     }
 
     /// Tests: an own memory commit of `m` (what `write` makes of an ephemeral write).
-    #[doc(hidden)]
-    pub fn commit_in_memory(&mut self, m: Mutation) -> Result<Option<CommitId>> {
+    #[cfg(test)]
+    pub(crate) fn commit_in_memory(&mut self, m: Mutation) -> Result<Option<CommitId>> {
         self.run(|tx| {
             tx.set_memory();
             commit_in(tx, m)

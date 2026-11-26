@@ -515,7 +515,8 @@ impl Engine {
     /// Opens what it can of a sealed package with the read secrets held (`read_secrets`,
     /// `unwrap_any`, `open_commit`, as node-sync opens a sync ID entry) and ingests what opened;
     /// the results, empty when nothing opened (no wrap opened, or no section).
-    pub fn open_package(&mut self, pk: &SealedPackage) -> Result<Vec<Ingested>> {
+    #[cfg(test)]
+    pub(crate) fn open_package(&mut self, pk: &SealedPackage) -> Result<Vec<Ingested>> {
         Ok(self.open_package_counted(pk)?.0)
     }
 
@@ -852,7 +853,8 @@ impl LocalPeer {
 
     /// `cached` for a world holding peers beside state that is not `Clone` (a property's run):
     /// `copy` copies it whole, its peers by `copy`.
-    pub fn cached_world<W: Send + 'static>(key: &str, build: impl FnOnce() -> W, copy: impl FnOnce(&mut W) -> W) -> W {
+    #[cfg(test)]
+    pub(crate) fn cached_world<W: Send + 'static>(key: &str, build: impl FnOnce() -> W, copy: impl FnOnce(&mut W) -> W) -> W {
         osis_base::copying::cached(key, build, copy)
     }
 
@@ -1025,7 +1027,8 @@ impl LocalPeer {
     /// but its record blobs and mintings. A test handing `to` a
     /// commit on `t` by hand sends this first: a pass end drops what nothing held needs, so a
     /// thing is judged only with its certificates delivered again, as a sync of `t` brings it.
-    pub fn send_certificates(&mut self, from: usize, to: usize, t: &Tid) -> Result<()> {
+    #[cfg(test)]
+    pub(crate) fn send_certificates(&mut self, from: usize, to: usize, t: &Tid) -> Result<()> {
         let Some(p) = self.peers.get_mut(from) else { return Ok(()) };
         let certs = p.engine.certificates(t)?;
         let mut cut: BTreeMap<CommitId, BTreeSet<usize>> = certs.commits.clone();
@@ -1101,7 +1104,8 @@ impl LocalPeer {
 
     /// Holds back the fires peer `from` owes (`on`) or lets them pass again: a test in which some
     /// peers stay unaware of a write of `from`'s keeps its fire from them as it keeps the commit.
-    pub fn hold_fires_of(&mut self, from: usize, on: bool) {
+    #[cfg(test)]
+    pub(crate) fn hold_fires_of(&mut self, from: usize, on: bool) {
         match on {
             true => drop(self.memo.fires_held_of.insert(from)),
             false => drop(self.memo.fires_held_of.remove(&from)),

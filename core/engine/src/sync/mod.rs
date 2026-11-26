@@ -152,11 +152,6 @@ impl BodyId {
     pub fn unit(c: CommitId) -> BodyId {
         BodyId { commit: c, on: None }
     }
-
-    /// `c`'s certificate copy on `x`.
-    pub fn copy(c: CommitId, x: Tid) -> BodyId {
-        BodyId { commit: c, on: Some(x) }
-    }
 }
 
 /// A commit's bodies under the read sync IDs (`Engine::sync_bodies`): per (sync ID, thing), its

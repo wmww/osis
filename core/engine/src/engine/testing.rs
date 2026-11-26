@@ -223,8 +223,8 @@ impl Engine {
 
     /// The KEM key of held keyset `e` of role `r` of `m`, as sealing reads it
     /// (`apply::keys::keyset_kem`).
-    #[doc(hidden)]
-    pub fn keyset_kem(&mut self, m: &Tid, r: osis_base::Role, e: &osis_crypto::Epoch) -> Result<Option<osis_crypto::KemPublicKey>> {
+    #[cfg(test)]
+    pub(crate) fn keyset_kem(&mut self, m: &Tid, r: osis_base::Role, e: &osis_crypto::Epoch) -> Result<Option<osis_crypto::KemPublicKey>> {
         self.read(|tx| crate::apply::keys::keyset_kem(tx, m, r, e))
     }
 
@@ -288,8 +288,8 @@ impl Engine {
 
     /// The list bound in place of `MAX_LIST_BYTES` (tests: frontiers, thing lists and listings
     /// fit end to end).
-    #[doc(hidden)]
-    pub fn list_bound(&mut self, bytes: usize) {
+    #[cfg(test)]
+    pub(crate) fn list_bound(&mut self, bytes: usize) {
         self.core.list_bound = bytes;
     }
 
