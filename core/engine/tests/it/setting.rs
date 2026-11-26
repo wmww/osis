@@ -10,6 +10,7 @@ use osis_engine::local_peer::{LocalPeer, Package, Peer};
 use osis_engine::Mutation;
 use osis_schema::core_types as ct;
 use osis_schema::{Codec, History};
+use std::collections::BTreeSet;
 
 const HOUR: u64 = 3_600_000;
 const A: &str = "t:reg.0";
@@ -395,6 +396,118 @@ fn an_outlasted_expiring_write_drops_under_a_cover_ending_with_it_spec_commits_5
     reads(&mut lp, "one", "past both");
     lp.sync_all().unwrap();
     assert_eq!(snaps(&mut lp.peers[1]), after[1]);
+}
+
+// spec/commits.md §5 (Covered; Purge on replace), spec/crdt.md §4.8, §8: covers end with what
+// they cover, whatever the shape. Three writers on clocks minutes apart write a record's two
+// fields with lasting and expiring writes of many lifetimes: writes partly overwritten, outlasted,
+// outlasting, concurrent, covers carrying writes later overwritten. After every write and
+// hourly until all have ended: sync settles (a second round writes nothing), every
+// node reads what the history reads by its own clock (live, and loaded fresh hourly), and every replaced
+// body is gone at every node (no write lasting at least as long supersedes it: kept)
+#[test]
+fn covers_settle_over_mixed_lifetimes_and_skewed_clocks_spec_commits_5() {
+    const REC: &str = "t:rec.0";
+    let (mut lp, d) = setup();
+    set(&mut lp, 0, d, &setting(&[(REC, History::PurgeOnReplace)]));
+    lp.sync_all().unwrap();
+    lp.peers[0].clock.advance(5 * 60_000);
+    lp.peers[1].clock.advance(2 * 60_000);
+    let k = ak(REC);
+    let snaps = |p: &mut Peer| p.engine.commit_ids().iter().filter(|c| p.engine.header(c).is_some_and(|h| h.kind == osis_commit::Kind::ContentSnapshot && h.aspects.iter().any(|x| x.ak == k))).count();
+    // (commit, fields written)
+    let mut writes: Vec<(CommitId, Vec<u64>)> = Vec::new();
+    let write = |lp: &mut LocalPeer, writes: &mut Vec<(CommitId, Vec<u64>)>, i: usize, fs: &[(u64, Value)], mins: Option<u64>| {
+        let mut m = Mutation::new();
+        if let Some(x) = mins {
+            let end = lp.peers[i].engine.now().0 + x * 60_000;
+            m.expires(d, &k, WallMs(end)).unwrap();
+        }
+        for (f, v) in fs {
+            m.op(d, &k, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Field(*f)], op: osis_crdt::Op::Set(v.clone()) }).unwrap();
+        }
+        let c = lp.peers[i].commit(m).unwrap().unwrap();
+        writes.push((c, fs.iter().map(|x| x.0).collect()));
+        lp.advance(1_000);
+    };
+    // settles, reads as the history, replaced bodies gone everywhere
+    let check = |lp: &mut LocalPeer, writes: &[(CommitId, Vec<u64>)], at: &str, reload: bool| {
+        for i in 0..3 {
+            lp.peers[i].tick().unwrap();
+        }
+        lp.sync_all().unwrap();
+        let counts = |lp: &mut LocalPeer| (0..3).map(|i| (snaps(&mut lp.peers[i]), lp.peers[i].engine.commit_ids().len())).collect::<Vec<_>>();
+        let settled = counts(lp);
+        for i in 0..3 {
+            lp.peers[i].tick().unwrap();
+        }
+        lp.sync_all().unwrap();
+        assert_eq!(counts(lp), settled, "{at}: a second round owes nothing");
+        let meta: Vec<(CommitId, Vec<u64>, osis_base::Ts, Option<u64>)> = writes.iter().map(|(c, fs)| {
+            let h = lp.peers[2].engine.header(c).unwrap();
+            (*c, fs.clone(), h.ts, h.expires)
+        }).collect();
+        let lasts = |e: Option<u64>| e.unwrap_or(u64::MAX);
+        let live: usize = meta.iter().filter_map(|x| x.3).collect::<BTreeSet<_>>().len();
+        for i in 0..3 {
+            let now = lp.peers[i].engine.now().0;
+            let alive = |e: Option<u64>| e.is_none_or(|e| e > now);
+            let field = |f: u64| meta.iter().filter(|x| x.1.contains(&f) && alive(x.3)).max_by_key(|x| x.2).map(|x| x.0);
+            let mut want = std::collections::BTreeMap::new();
+            for f in [0u64, 1] {
+                let c = field(f).unwrap();
+                let pos = writes.iter().position(|x| x.0 == c).unwrap();
+                want.insert(Value::Int(f as i64), values(pos, f));
+            }
+            assert_eq!(lp.peers[i].engine.get(&d, &k).unwrap(), Some(Value::Map(want.clone().into_iter().collect())), "{at}: peer {i} reads the history");
+            for (c, fs, ts, e) in &meta {
+                let replaced = alive(*e) && meta.iter().any(|y| y.2 > *ts && y.1.iter().any(|f| fs.contains(f)) && lasts(y.3) >= lasts(*e));
+                // a body dropped before it reached a node is never held there
+                let m = lp.peers[i].engine.core.ix.commits.get(c).unwrap();
+                let held = m.header.aspects.iter().position(|x| x.ak == k).is_some_and(|ai| m.holds(ai));
+                if replaced {
+                    assert!(!held, "{at}: peer {i} holds replaced write {}", writes.iter().position(|x| x.0 == *c).unwrap());
+                }
+            }
+            assert!(snaps(&mut lp.peers[i]) <= 3 * (live + 1), "{at}: peer {i} holds {} snapshots", snaps(&mut lp.peers[i]));
+            if reload && i == 2 {
+                lp.peers[2].restart(90 + now % 7).unwrap();
+                assert_eq!(lp.peers[2].engine.get(&d, &k).unwrap(), Some(Value::Map(want.into_iter().collect())), "{at}: loaded fresh");
+            }
+        }
+    };
+    // what write `pos` writes on field `f`
+    fn values(pos: usize, f: u64) -> Value {
+        if f == 0 { s(&format!("v{pos}")) } else { Value::Int(pos as i64) }
+    }
+    let plan: &[(usize, &[u64], Option<u64>, bool)] = &[
+        (1, &[0, 1], None, true),
+        (1, &[0], Some(120), true),
+        (0, &[1], Some(180), true),
+        (1, &[0, 1], Some(60), true),
+        (0, &[1], Some(240), true),
+        // concurrent: two writers before a sync (the fast clock stamps later)
+        (2, &[0], Some(60), false),
+        (0, &[0], Some(180), true),
+        (0, &[1], None, true),
+        (1, &[0], Some(120), true),
+        (2, &[1], Some(120), false),
+        (0, &[0, 1], Some(60), true),
+        (1, &[1], Some(300), true),
+        (2, &[0], Some(30), true),
+    ];
+    for (n, (i, fs, mins, sync)) in plan.iter().enumerate() {
+        let fv: Vec<(u64, Value)> = fs.iter().map(|f| (*f, values(writes.len(), *f))).collect();
+        write(&mut lp, &mut writes, *i, &fv, *mins);
+        if *sync {
+            check(&mut lp, &writes, &format!("after write {n}"), false);
+        }
+    }
+    lp.advance(15 * 60_000);
+    for step in 0..6 {
+        check(&mut lp, &writes, &format!("hour {step}"), true);
+        lp.advance(60 * 60_000);
+    }
 }
 
 // spec/commits.md §5 One way: a keep after purge on replace carries a floor at its own stamp, so
