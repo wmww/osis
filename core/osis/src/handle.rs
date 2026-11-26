@@ -680,10 +680,14 @@ impl ReadOnly {
     /// The thing this node keeps its settings on (its entry in that thing's `core::CAPS`, keyed
     /// by `node()`), if it names one: `core::SETTINGS` on `node_root()`, written where the node
     /// comes to act for such a thing, as an account library does when it makes or pairs into an
-    /// account. On a thin client, its node's (which `node_root` does not reach).
+    /// account; none while `node()` holds no grant on it (removed from an account, say). On a
+    /// thin client, its node's (which `node_root` does not reach): `Network` when it cannot be
+    /// reached.
     pub fn settings_thing(&self) -> Result<Option<Tid>> {
-        if let Some(t) = self.inner.thin.get() {
-            return Ok(t.settings);
+        if !self.has_store() {
+            let at = self.locked(|l| l.remotes.first().map(|r| r.addr.clone())).ok_or_else(|| Error::Network("not connected".into()))?;
+            let (_, _, settings): (Tid, Tid, Option<Tid>) = self.forward(&at, crate::port::method::WHOAMI, ())?;
+            return Ok(settings);
         }
         Ok(self.engine(|e| e.settings_thing())?)
     }

@@ -132,9 +132,8 @@ impl Account {
     /// which everyone may read: the node becomes its first admin node. `Invalid` on a node that
     /// acts for an account already; `Unsupported` through a connection.
     pub fn make(db: &Osis) -> Result<Account> {
-        if let Some(a) = db.settings_thing()? {
+        if let Some(a) = Account::of(db)? {
             // one made by a node stopped before its last step is finished; one made, refused
-            let a = Account { thing: a };
             return match a.realm().profile(db)? {
                 Some(p) if !db.grants(p)?.contains_key(&Tid::PUBLIC) => a.finish(db, p).map(|()| a),
                 _ => Err(Error::Invalid(format!("this node acts for {} already", a.thing))),
@@ -174,7 +173,9 @@ impl Account {
         publish_profile(db, profile)
     }
 
-    /// The account `db`'s node acts for, if any: the thing it keeps its settings on.
+    /// The account `db`'s node acts for, if any: the thing it keeps its settings on, which its
+    /// node thing holds a grant on. None once it learns its removal (`remove_node`); `make`
+    /// then makes it another.
     pub fn of(db: &ReadOnly) -> Result<Option<Account>> {
         Ok(db.settings_thing()?.map(|thing| Account { thing }))
     }

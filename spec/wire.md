@@ -328,7 +328,7 @@ Steps and claim sets (§8) and `entry_box` (a `box` value, §7) are their canoni
 
     | method | row | args -> value |
     |---|---|---|
-    | 0 | whoami | `[] -> [author, node, Opt(settings)]`: the thing the session acts as, its node thing, and the thing its node root's `settings^.0` names (spec/sync-set.md §1) |
+    | 0 | whoami | `[] -> [author, node, Opt(settings)]`: the thing the session acts as, its node thing, and the thing holding its node's settings (spec/sync-set.md §1) |
     | 1 | get | `[tid, ak, path] -> read result` |
     | 2 | aspects | `[tid] -> [ak*]` |
     | 3 | has content | `[tid] -> bool` |

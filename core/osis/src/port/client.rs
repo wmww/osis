@@ -41,7 +41,6 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 pub(crate) struct Thin {
     pub author: Tid,
     pub node: Tid,
-    pub settings: Option<Tid>,
 }
 
 /// The wait before dialing again a node whose connection could not be made while a watch is
@@ -385,8 +384,8 @@ pub(crate) fn reply(db: &ReadOnly, conn: ConnId, id: RequestId, m: Msg) {
 }
 
 fn who(v: Value) -> Result<Thin> {
-    let (author, node, settings) = Form::from_wire(v)?;
-    Ok(Thin { author, node, settings })
+    let (author, node, _settings): (Tid, Tid, Option<Tid>) = Form::from_wire(v)?;
+    Ok(Thin { author, node })
 }
 
 /// A connection ended (or its dial failed): one that was up is dialed again at once; one that

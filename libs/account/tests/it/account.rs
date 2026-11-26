@@ -196,3 +196,51 @@ fn a_removed_node_no_longer_acts_through_its_client_spec_permissions_8() {
     }
     assert_eq!(db.at(t, osis::core::NAME).get().unwrap().as_deref(), Some("by the client"), "the removed node's write as the client holds nowhere else");
 }
+
+// spec/permissions.md §8 Removing: a node acts for the account its node thing holds a grant on;
+// removed (erasing), it acts for none, at a client of it alike, live and after a restart, and it
+// makes an account of its own.
+#[test]
+fn a_removed_node_acts_for_no_account_spec_permissions_8() {
+    let c = clock();
+    let net = ManualNet::new(c.clone());
+    let first = person(&net, 1, &c);
+    let (db, a, _) = &first;
+    let o = opening(&net, 2, &c, Vec::new());
+    let store = o.store.clone();
+    let offering = a.offer_pairing(db).unwrap();
+    let join = osis_account::pair(o.store, offering.offer(), o.cfg.clone()).unwrap();
+    let (_, reply) = offering.accept(db, join.request()).unwrap();
+    let (b, _) = join.finish(&reply).unwrap();
+    drive(&net, b.wait_synced(SyncScope::All)).unwrap();
+    // a client of b's (its thing b's node thing's, so it outlives the removal) reads as b
+    let (_, secret) = b.add_client(b.node(), None).unwrap();
+    let client = |net: &ManualNet, b: &Osis| {
+        let addr = b.listen(&["peer://127.0.0.1:1".parse().unwrap()]).unwrap().remove(0);
+        let mut app = osis::AppConfig::default();
+        app.internals.net = Some(net.clone());
+        app.internals.clock = Some(c.clone());
+        drive(net, Osis::connect(&[osis::NodeLogin { addr, secret: secret.clone() }], app)).unwrap()
+    };
+    let cl = client(&net, &b);
+    assert_eq!(Account::of(&b).unwrap(), Some(*a));
+    assert_eq!(Account::of(&cl).unwrap(), Some(*a), "at its client");
+    a.remove_node(db, b.node(), SetRoleOpts::default()).unwrap();
+    // b learns its removal from db (neither waits on A synced: it is b's no more)
+    net.run();
+    assert_eq!(Account::of(&b).unwrap(), None, "removed");
+    assert_eq!(Account::of(&cl).unwrap(), None, "at its client");
+    assert!(matches!(cl.close().unwrap(), osis::Close::Closed));
+    assert!(matches!(b.close().unwrap(), osis::Close::Closed), "closed for the restart");
+    // reopened on a net of its own: the closed node's place on `net` keeps its key
+    let net = ManualNet::new(c.clone());
+    let mut o = opening(&net, 2, &c, Vec::new());
+    o.store = store;
+    let b = osis::internals::open(o).unwrap();
+    assert_eq!(Account::of(&b).unwrap(), None, "after a restart");
+    assert_eq!(Account::of(&client(&net, &b)).unwrap(), None, "at its client after a restart");
+    let mine = Account::make(&b).unwrap();
+    assert_ne!(mine, *a);
+    assert_eq!(Account::of(&b).unwrap(), Some(mine));
+    assert_eq!(mine.nodes(&b).unwrap(), [AccountNode { node: b.node(), role: Role::Admin }]);
+}
