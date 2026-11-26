@@ -3,9 +3,9 @@
 
 use crate::args::ChatCmd;
 use crate::Ctx;
-use crate::cmd::{parse_id, parse_role};
+use crate::cmd::{parse_id, parse_in, parse_role};
 use crate::json::J;
-use crate::{exit, parse_dur, usage};
+use crate::{exit, parse_dur};
 use osis::core::RETENTION;
 use osis::{Body, Commit, CommitEvent, CommitFrom, CommitKind, CommitQuery, GrantOpts, HolderKind, LinkOpts, ReadOnly, Role, SetRoleOpts, Tid};
 use osis_chat::schema::{self, EditMode, MSG, SETTINGS};
@@ -135,12 +135,7 @@ pub(crate) fn run(ctx: &mut Ctx<'_>, c: ChatCmd) -> anyhow::Result<()> {
     match c {
         ChatCmd::Create { name, purge_by, edit, disappear, no_retain_copy } => {
             let purge_by = crate::write::purge_by(&purge_by)?;
-            let edit = match edit.as_str() {
-                "purge" => Some(EditMode::Purge),
-                "keep" => Some(EditMode::Keep),
-                "off" => None,
-                x => return Err(usage(format!("--edit: purge, keep or off, not {x:?}"))),
-            };
+            let edit = parse_in(&[("purge", Some(EditMode::Purge)), ("keep", Some(EditMode::Keep)), ("off", None)], "--edit", &edit)?;
             let o = Options { name, purge_by, edit, disappear: disappear.as_deref().map(parse_dur).transpose()?, retain_copies: !no_retain_copy };
             let t = osis_chat::create(&db, &o, ctx.me()?)?;
             ctx.one("tid", t.to_uri())

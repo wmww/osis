@@ -310,8 +310,7 @@ pub enum Cmd {
     /// This node's clock
     Now,
     /// Grant HOLDER ROLE (read, write, admin) on T, or change the grant's --until and --may-grant (no
-    /// ROLE: as it is). Never lowers. Waits until T's other holders hold the grant and HOLDER took
-    /// it (exit 6 past --timeout: done here, it goes on as this node syncs)
+    /// ROLE: as it is). Never lowers. Waits until T's other holders hold the grant (exit 6 past --timeout: done here, it goes on as this node syncs)
     Grant {
         t: String,
         holder: String,
@@ -673,7 +672,6 @@ pub enum CardCmd {
 #[derive(Subcommand, Debug)]
 pub enum InspectCmd {
     Thing { t: String },
-    Actor { a: String },
     Commit { id: String },
 }
 

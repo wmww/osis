@@ -19,6 +19,7 @@ use std::task::{Context, Poll, Wake, Waker};
 use std::time::{Duration, Instant};
 
 const ROLES: [(&str, Role); 4] = [("sync", Role::Sync), ("read", Role::Read), ("write", Role::Write), ("admin", Role::Admin)];
+const SIDES: [(&str, osis::Side); 2] = [("author", osis::Side::Author), ("holder", osis::Side::Holder)];
 const KINDS: [(&str, CommitKind); 4] = [("content", CommitKind::Content), ("revert", CommitKind::Revert), ("role", CommitKind::Role), ("snapshot", CommitKind::Snapshot)];
 
 /// The name of `v` in a table of words.
@@ -27,8 +28,8 @@ fn name_in<T: PartialEq>(table: &[(&'static str, T)], v: T) -> &'static str {
 }
 
 /// The value a table names `s`, else a usage error listing the names.
-fn parse_in<T: Copy>(table: &[(&str, T)], what: &str, s: &str) -> anyhow::Result<T> {
-    table.iter().find(|x| x.0 == s).map(|x| x.1).ok_or_else(|| usage(format!("{what}: one of {} (got {s:?})", table.iter().map(|x| x.0).collect::<Vec<_>>().join(", "))))
+pub(crate) fn parse_in<T: Clone>(table: &[(&str, T)], what: &str, s: &str) -> anyhow::Result<T> {
+    table.iter().find(|x| x.0 == s).map(|x| x.1.clone()).ok_or_else(|| usage(format!("{what}: one of {} (got {s:?})", table.iter().map(|x| x.0).collect::<Vec<_>>().join(", "))))
 }
 
 pub fn role_text(r: Role) -> &'static str {
@@ -40,14 +41,8 @@ pub(crate) fn parse_role(s: &str) -> anyhow::Result<Role> {
 }
 
 fn parse_reads(s: Option<&str>) -> anyhow::Result<osis::Reads> {
-    match s {
-        None => Ok(osis::Reads::Kept),
-        Some("from-now") => Ok(osis::Reads::FromNow),
-        Some("all") => Ok(osis::Reads::All),
-        Some(s) => Err(usage(format!("reads: from-now or all (got {s:?})"))),
-    }
+    s.map_or(Ok(osis::Reads::Kept), |s| parse_in(&[("from-now", osis::Reads::FromNow), ("all", osis::Reads::All)], "reads", s))
 }
-
 
 /// Prints a commit id (nothing when nothing changed).
 fn emit_commit(ctx: &mut Ctx<'_>, c: Option<CommitId>) -> anyhow::Result<()> {
@@ -135,7 +130,7 @@ fn synced(ctx: &Ctx<'_>, scopes: &[SyncScope]) -> anyhow::Result<bool> {
 pub(crate) fn delivered(ctx: &Ctx<'_>, things: &[Tid]) -> anyhow::Result<()> {
     match synced(ctx, &things.iter().map(|t| SyncScope::Thing(*t)).collect::<Vec<_>>())? {
         true => Ok(()),
-        false => Err(Error::Network("done here, not yet held or taken where it goes: it goes on as this node syncs".into()).into()),
+        false => Err(Error::Network("done here, not yet held where it goes: it goes on as this node syncs".into()).into()),
     }
 }
 
@@ -558,10 +553,7 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
         }
         Cmd::Disputes(DisputeCmd::Ls) => {
             let (ds, left) = db.disputes()?;
-            let side = |s: osis::Side| match s {
-                osis::Side::Author => "author".to_string(),
-                osis::Side::Holder => "holder".to_string(),
-            };
+            let side = |s: osis::Side| name_in(&SIDES, s);
             let (mut lines, js): (Vec<String>, Vec<J>) = ds
                 .iter()
                 .map(|d| {
@@ -580,12 +572,7 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             ctx.emit(&lines, J::obj([("disputes", J::Arr(js)), ("unexamined", J::int(left as i64))]))
         }
         Cmd::Disputes(DisputeCmd::Choose { id, side }) => {
-            let side = match side.as_str() {
-                "author" => osis::Side::Author,
-                "holder" => osis::Side::Holder,
-                _ => return Err(exit(2, "side: author or holder")),
-            };
-            Ok(db.choose_side(id.parse()?, side)?)
+            Ok(db.choose_side(id.parse()?, parse_in(&SIDES, "side", &side)?)?)
         }
         Cmd::Status { watch: false } => {
             let s = db.status()?;
@@ -1203,15 +1190,8 @@ fn inspect(ctx: &mut Ctx<'_>, i: InspectCmd) -> anyhow::Result<()> {
                     lines.push(format!("  state {f}"));
                 }
             }
+            lines.push(format!("epochs {:?}", db.engine(|e| e.epochs(&t))));
             for (m, e) in db.grants(t)? {
-                lines.push(format!("holder {} {:?}", m.to_uri(), e));
-            }
-        }
-        InspectCmd::Actor { a } => {
-            let a = ctx.tid(&a)?;
-            let ep = db.engine(|e| e.epochs(&a));
-            lines.push(format!("actor {} epochs {ep:?}", a.to_uri()));
-            for (m, e) in db.grants(a)? {
                 lines.push(format!("holder {} {:?}", m.to_uri(), e));
             }
         }

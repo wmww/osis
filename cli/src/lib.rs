@@ -76,16 +76,8 @@ pub struct Io<'a> {
     pub tty: bool,
 }
 
-/// Runs one invocation (args include the binary name); returns the exit code.
-pub fn main_with<I, T>(args: I, stdin: &mut dyn BufRead, stdout: &mut dyn Write, stderr: &mut (dyn Write + Send)) -> i32
-where
-    I: IntoIterator<Item = T>,
-    T: Into<OsString> + Clone,
-{
-    run(args, None, Io { stdin, stdout, stderr, tty: false })
-}
-
-/// `main_with` with an explicit store (a memory store in tests) and terminal flag.
+/// Runs one invocation (args include the binary name) on `store`, else the one the flags name;
+/// returns the exit code.
 pub fn run<I, T>(args: I, store: Option<Store>, io: Io<'_>) -> i32
 where
     I: IntoIterator<Item = T>,
@@ -245,8 +237,8 @@ fn open(sel: &Store, g: &Global, net: Network, use_daemon: bool) -> anyhow::Resu
     }
 }
 
-/// The daemon serving the store at `d`, as a client acting as the node's account
-/// (notes/client-port.md §5). Nothing answering on its socket is `InUse`, saying why (the store's
+/// The daemon serving the store at `d`, as its main session (the node itself,
+/// notes/client-port.md §5). Nothing answering on its socket is `InUse`, saying why (the store's
 /// holder may serve no socket: the app, or a command); any other failure is itself.
 fn daemon(d: &Path, g: &Global) -> anyhow::Result<Osis> {
     let wait = wait_bound(g)?;
@@ -395,7 +387,7 @@ impl Ctx<'_> {
         Ok(osis_account::Account::of(&self.db)?.map_or(self.db.node(), |a| a.thing()))
     }
 
-    /// The account this node acts for (osis-account): `Invalid` on a node acting for none.
+    /// The account this node acts for (osis-account): exit 3 on a node acting for none.
     pub fn account(&self) -> anyhow::Result<osis_account::Account> {
         osis_account::Account::of(&self.db)?.ok_or_else(|| exit(3, "this node acts for no account"))
     }

@@ -155,8 +155,7 @@ fn exit_codes_plan_cli_6() {
     assert_eq!(s.code(&["set", &t, "roles.0", "{}"]), 7);
     // 8: store missing
     let d = tmp("missing");
-    let o = osis_cli::main_with(["osis", "--no-lan", "-s", d.to_str().unwrap(), "whoami"], &mut &b""[..], &mut Vec::new(), &mut Vec::new());
-    assert_eq!(o, 8);
+    assert_eq!(S::dir(&d).code(&["whoami"]), 8);
     // a secret is read from `@FILE` or `-` (a link need not sit in argv)
     let o = s.call(&["link", "redeem", "@/nonexistent/link"], "");
     assert_eq!(o.code, 2, "{}", o.err);
@@ -530,7 +529,7 @@ fn inspect_and_diag_plan_cli_4() {
     let shown = s.ok(&["show", &t]).out;
     assert!(shown.contains("created\t"), "{shown}");
     assert!(!s.ok(&["now"]).out.trim().is_empty());
-    assert!(s.ok(&["inspect", "actor", "me"]).out.starts_with("actor osis://"));
+    assert!(s.ok(&["inspect", "thing", "me"]).out.contains("\nepochs Some("));
     let id = id_of(&s.ok(&["writes", "--thing", &t]).out).to_string();
     assert!(s.ok(&["inspect", "commit", &id]).out.contains("Header"));
     s.ok(&["diag"]);
@@ -619,7 +618,7 @@ fn clients_commands_plan_cli() {
     let addr = format!("quic://127.0.0.1:1#{k}");
     assert_eq!(s.code(&["--node", &addr, "--client-secret", bad.to_str().unwrap(), "whoami"]), 2);
     assert_eq!(s.code(&["--node", &addr, "--client-secret", "/nonexistent", "whoami"]), 8);
-    assert_eq!(s.code(&["--node", &addr, "--client-secret", bad.to_str().unwrap(), "inspect", "actor", "me"]), 2);
+    assert_eq!(s.code(&["--node", &addr, "--client-secret", bad.to_str().unwrap(), "inspect", "thing", "me"]), 2);
 }
 
 // notes/cli.md Design (daemon), notes/client-port.md §5: a socket directory another user made first (here: one of the wrong mode) does not stop `serve`: it warns and serves without the client socket; with a good one, its first line is the socket's path (the one test here that runs the binary)
@@ -629,7 +628,7 @@ fn serve_survives_a_bad_socket_dir() {
     use std::os::unix::fs::PermissionsExt;
     let d = tmp("badsockdir");
     let ds = d.to_str().unwrap();
-    assert_eq!(osis_cli::main_with(["osis", "--no-lan", "-s", ds, "init"], &mut &b""[..], &mut Vec::new(), &mut Vec::new()), 0);
+    S::dir(&d).ok(&["init"]);
     let xdg = d.with_extension("xdg");
     std::fs::create_dir_all(xdg.join("osis")).unwrap();
     std::fs::set_permissions(xdg.join("osis"), std::fs::Permissions::from_mode(0o755)).unwrap();
