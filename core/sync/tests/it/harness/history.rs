@@ -1160,12 +1160,15 @@ impl Model {
 /// node that had not surely received the other (`Made::know`), and no account that change boxed
 /// (its maker's, the thing's maker's, and those whose grants its maker had surely received)
 /// holds write or above on `k` at the end (every node is on at the check: such a node re-seals).
-/// It permits a failure, never requires one.
-fn excused(w: &World, m: &Model, a: Tid, k: usize) -> bool {
+/// A grant or change whose commits a release lost all of (`lost_writes`) was never made. It
+/// permits a failure, never requires one.
+fn excused(w: &World, m: &Model, lost: &BTreeSet<CommitId>, a: Tid, k: usize) -> bool {
     let h = &w.history;
-    let Some(g) = h.events.iter().rposition(|e| e.thing == k && e.granted == Some(a)) else { return false };
+    // a refused grant that stands made no commits of its own: it stands
+    let made = |e: &Event| e.commits.is_empty() || !e.commits.iter().all(|c| lost.contains(c));
+    let Some(g) = h.events.iter().rposition(|e| e.thing == k && e.granted == Some(a) && made(e)) else { return false };
     let account_of = |i: usize| w.node(i).account;
-    h.events.iter().enumerate().filter(|(_, e)| e.thing == k && e.rekeys).any(|(r, e)| {
+    h.events.iter().enumerate().filter(|(_, e)| e.thing == k && e.rekeys && made(e)).any(|(r, e)| {
         let concurrent = if r > g { !e.known.contains(&g) } else { !h.events[g].known.contains(&r) };
         let mut boxed: BTreeSet<Tid> = [account_of(e.node), account_of(h.things[k].1)].into_iter().flatten().collect();
         boxed.extend(e.known.iter().filter_map(|x| h.events[*x].granted.filter(|_| h.events[*x].thing == k)));
@@ -1258,7 +1261,7 @@ pub fn check(w: &mut World) {
     let checked = catch_unwind(AssertUnwindSafe(|| {
         // the values of the lost makings (`lost_writes`): gone, the reference's as none
         let gone: BTreeSet<String> = w.history.values.iter().filter(|(_, c)| unmade.contains(*c)).map(|(v, _)| v.clone()).collect();
-        closure_clauses(w, &mut r, &m, &gone);
+        closure_clauses(w, &mut r, &m, &gone, &lost);
         card_clauses(w, &mut r, &m);
         body_clauses(w, &mut r, &m, &gone);
         invalid_clauses(w);
@@ -1306,7 +1309,7 @@ fn at_check(w: &mut World, refs: &mut Refs, m: &Model) -> String {
 /// independent thing read, for keys or kept unread exactly as the model does; it keeps no store entry
 /// under the sync ID of an independent thing the model has it neither read nor keep unread; its
 /// store of one it keeps unread stands at the head an online reader records.
-fn closure_clauses(w: &mut World, refs: &mut Refs, m: &Model, gone: &BTreeSet<String>) {
+fn closure_clauses(w: &mut World, refs: &mut Refs, m: &Model, gone: &BTreeSet<String>, lost: &BTreeSet<CommitId>) {
     let things = w.history.things.clone();
     let ids: Vec<Option<osis_base::SyncId>> = things.iter().map(|(t, _)| refs.all().find_map(|r| r.engine.sync_id_of(t).ok().flatten())).collect();
     let on: Vec<usize> = (0..w.len()).filter(|i| w.online(*i)).collect();
@@ -1328,7 +1331,7 @@ fn closure_clauses(w: &mut World, refs: &mut Refs, m: &Model, gone: &BTreeSet<St
         let set = w.engine(i).sync_set().expect("sync set");
         for (k, (t, _)) in things.iter().enumerate() {
             let x = m.thing(k);
-            let excused = excused(w, m, acct, k);
+            let excused = excused(w, m, lost, acct, k);
             let independent = m.world.independent(x);
             let read = if independent { c.read.contains(&x) } else { c.held.contains(&x) && m.world.opens(&keys, x) };
             let got = reads(w.engine(i), t);

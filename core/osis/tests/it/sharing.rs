@@ -268,6 +268,28 @@ fn the_owners_rule_one_write_through_different_actors_is_one_commit_spec_wire_4(
     assert_eq!(alice.at(o, k()).get().unwrap(), None, "alice reads no O");
 }
 
+// spec/crypto.md §3 (KEM key due): G, independent (granted), coming to hold admin for keys, by a thing minted with
+// admin G, makes a KEM key due on G once; its rotation writes the KEM key, so further mints make
+// none due. G's role commits stay put from n mints to 10n.
+#[test]
+fn minting_under_a_thing_rotates_it_for_kem_keys_once_spec_crypto_3() {
+    let (alice, bob) = (db(1), db(2));
+    mesh(&[&alice, &bob]);
+    let g = alice.commit_with(|w| w.create_held()).unwrap();
+    // a grant makes G independent: keysets of its own
+    alice.grant(g, bob.author(), Role::Read, Default::default()).unwrap();
+    let on_g = |db: &osis::Osis| db.engine(|e| e.commit_ids()).into_iter().filter(|id| db.engine(|e| e.header(id)).is_some_and(|h| h.kind.is_role() && h.aspects.iter().any(|a| a.tid == g))).count();
+    let before = on_g(&alice);
+    let mint = |n: usize| for _ in 0..n {
+        alice.commit_with(|w| w.create_held_with_admin(g)).unwrap();
+    };
+    mint(3);
+    let after_n = on_g(&alice);
+    assert_eq!(after_n, before + 1, "one rotation of G for its KEM keys");
+    mint(30);
+    assert_eq!(on_g(&alice), after_n, "no rotation of G per mint");
+}
+
 /// Carries every node's commits to every other, then settles each.
 fn mesh(dbs: &[&osis::Osis]) {
     for (i, from) in dbs.iter().enumerate() {
