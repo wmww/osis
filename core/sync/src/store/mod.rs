@@ -191,7 +191,7 @@ impl Total {
 
 /// Whether S moving from `was` to `now` is raised (spec/sync-judgement.md §6 Read and unread
 /// move): it takes entries its sources showed it before and it did not take, so they are pulled
-/// from the start: from kept unread to opened (read or for keys), or from held for keys (role
+/// from the start: from kept unread to opened (read or for keys), or from held in the keys class (role
 /// entries alone) to read.
 fn raised(was: Option<&Held>, now: Option<&Held>) -> bool {
     match (was.map(|(_, h)| *h), now.map(|(_, h)| *h)) {
@@ -640,7 +640,7 @@ impl Store {
             }
             g.mem.syncs.wrote_added(s, true, true);
             // raised: what it refused kept unread (a stamp under no key of its head then), or
-            // was not shown held for keys (all but role entries), its sources show no more, so S
+            // was not shown held in the keys class (all but role entries), its sources show no more, so S
             // is pulled anew (`anew_feed`)
             if raised(was.as_ref(), now.as_ref()) {
                 g.mem.anew.wrote_added(s, true, true);

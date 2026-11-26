@@ -19,23 +19,13 @@ impl Engine {
         self.core.epochs(t).is_some_and(|e| e.role(Role::Read).holds_any())
     }
 
-    /// Whether the node follows `t` by the public entry holding no read secret of it
-    /// (spec/sync-set.md §2): it opens `t`'s sync ID by the public entry alone, judging no peer
-    /// by its roster, until the public's box gives it a secret.
-    pub(crate) fn by_public_alone(&self, t: &Tid) -> bool {
-        self.core.ix.closure.follows_public(t) && !self.holds_read(t)
-    }
-
     /// The things the sync set is judged over: the node closure (spec/sync-set.md §2) walked
-    /// through no thing sourced at another node (§5, `Closure::synced`), with the holders held
-    /// for keys, the things followed by the public entry (§2) and the links being redeemed. A
-    /// holder held for keys syncs its sync ID for role entries alone (`thing_holdings`). A memo of
+    /// through no thing sourced at another node (§5, `Closure::synced`), with the links being
+    /// redeemed. A memo of
     /// the whole, for a listing: per thing `in_sync_things`, entering `things_entered`.
     pub fn sync_things(&mut self) -> Result<Arc<BTreeSet<Tid>>> {
         osis_base::memo::Memo::get_in(self, |e| &e.core.sync_things, &(), |e| {
             let mut out: BTreeSet<Tid> = e.core.ix.closure.synced_things().copied().collect();
-            out.extend(e.core.ix.closure.keys().copied());
-            out.extend(e.core.ix.closure.public_follows().copied());
             osis_base::costs::count("sync: things walked", out.len() as u64);
             out.extend(e.core.followed_links.all().keys().filter(|k| crate::sync_ids::actors::followable(&e.core, k)).copied());
             Ok(Arc::new(out))
@@ -45,24 +35,22 @@ impl Engine {
     /// `sync_things`'s answer for `t` alone: reads only `t`'s rows.
     pub fn in_sync_things(&mut self, t: &Tid) -> Result<bool> {
         let cl = &self.core.ix.closure;
-        Ok(crate::sync_ids::actors::followable(&self.core, t) || cl.synced(t) || cl.for_keys(t) || cl.follows_public(t))
+        Ok(crate::sync_ids::actors::followable(&self.core, t) || cl.synced(t))
     }
 
     /// The things that may have entered `sync_things` since `f`'s last read (its first: every
-    /// one): each that entered the sync set's walk since, each followed by the public entry since, and each link followed since (a link
+    /// one): each that entered the sync set's walk since, and each link followed since (a link
     /// stays followable from its follow until K is made as no link's, so one followed before
     /// that left enters again only by being followed again). Leaving needs no feed:
     /// `in_sync_things` moves.
     pub(crate) fn things_entered(&mut self, f: &mut super::ThingsFeed) -> Result<Vec<Tid>> {
         let Some(at) = f.0.as_mut() else {
             let ix = &self.core.ix;
-            f.0 = Some(super::Entered { held: ix.closure.synced_feed(), keys: ix.closure.keys_feed(), links: self.core.followed_links.followed_feed(), public: ix.closure.public_feed() });
+            f.0 = Some(super::Entered { held: ix.closure.synced_feed(), links: self.core.followed_links.followed_feed() });
             return Ok(self.sync_things()?.iter().copied().collect());
         };
         let mut out = at.held.added();
-        out.extend(at.keys.added());
         out.extend(at.links.added());
-        out.extend(at.public.added());
         osis_base::costs::count("sync: things entered", out.len() as u64);
         Ok(out)
     }
@@ -100,7 +88,7 @@ impl Engine {
             }
         }
         for s in ids {
-            // history is the content's: a sync ID held for keys carries none of it here
+            // history is the content's: a sync ID held in the keys class carries none of it here
             if self.sync_holder(&s)?.is_some_and(|(_, h)| h == Holding::Read) && !self.core.ix.passes.contains_key(&s) {
                 return Ok(false);
             }
@@ -111,9 +99,8 @@ impl Engine {
     /// How this node syncs thing `t` of `sync_things`: its sync ID read while a read secret
     /// of it is held; an independent thing and none is unsyncable; a dependent thing has none of its own. Reads only `t`'s keys.
     pub(crate) fn thing_sync_now(&mut self, t: &Tid) -> Result<ThingSync> {
-        // read: by its own secrets, independent by a box alone (spec/permissions.md §4 Key part:
-        // an edge piece holds no rotation that made a granted epoch current, which is a body
-        // under the sync ID it opens)
+        // read: by its own secrets, independent by a box alone (a grantee holds no rotation that
+        // made a granted epoch current: it is a body under the sync ID the box opens)
         if self.core.counts_independent(t) && self.holds_read(t) {
             let owned = self.owned_sync_ids(t)?;
             // judged by its sync copies alone (`Core::copies_speak`), no sync ID is `t`'s by an
@@ -135,14 +122,6 @@ impl Engine {
         {
             return Ok(ThingSync::Read(vec![s]));
         }
-        // followed by the public entry (spec/sync-set.md §2): read, opened by the public entry
-        // alone until the public's grant is held
-        if self.core.ix.closure.follows_public(t) {
-            let ids = synced(&self.owned_sync_ids(t)?);
-            if !ids.is_empty() {
-                return Ok(ThingSync::Read(ids));
-            }
-        }
         // kept unread: in the node closure by a sync secret alone (spec/sync.md §3)
         if self.kept_unread(t) {
             // every sync ID kept for it (spec/sync.md §3): one a forged copy names never
@@ -157,16 +136,13 @@ impl Engine {
     }
 
     /// The sync IDs thing `t` of `sync_things` is synced under, each with how it is held
-    /// (spec/sync.md §3): read by a read secret of a thing the node closure reads, for keys by
-    /// one of a holder held for keys (spec/sync-set.md §2), kept unread by a sync secret alone.
-    /// Reads `t`'s keys and whether it is held for keys.
+    /// (spec/sync.md §3): read by a read secret of a thing the node closure reads, kept unread by
+    /// a sync secret alone. Reads `t`'s keys.
+    // Stub rewrite (notes/stub-rewrite.md): a stub's holder is synced for role entries alone
+    // (`Holding::Keys`, the stub class, R2)
     pub(crate) fn thing_holdings(&mut self, t: &Tid) -> Result<Vec<(SyncId, Holding)>> {
         Ok(match self.thing_sync(t)? {
-            ThingSync::Read(ids) => {
-                // a link being redeemed is read whatever else holds its thing
-                let h = if self.core.ix.closure.for_keys(t) && !crate::sync_ids::actors::followable(&self.core, t) { Holding::Keys } else { Holding::Read };
-                ids.into_iter().map(|s| (s, h)).collect()
-            }
+            ThingSync::Read(ids) => ids.into_iter().map(|s| (s, Holding::Read)).collect(),
             ThingSync::Unread(ids) => ids.into_iter().map(|s| (s, Holding::Unread)).collect(),
             ThingSync::Unsyncable | ThingSync::Dependent => Vec::new(),
         })
@@ -233,10 +209,6 @@ impl Engine {
 
     /// Adds what thing `t` of `s` (owning it as `o`) opens and acts with to `c`.
     fn credentials_of(&mut self, c: &mut ReadCredentials, s: &SyncId, t: &Tid, o: &OwnedSyncId) -> Result<()> {
-        if self.by_public_alone(t) {
-            c.tests_public = true;
-            return Ok(());
-        }
         if let Some((st, _)) = o.path.steps.last() {
             c.head = Some(st.clone());
         }
@@ -259,7 +231,7 @@ impl Engine {
         let listed = self.core.public_syncs(t);
         c.shows_public |= listed;
         c.public_reads |= public;
-        c.tests_public |= listed || self.core.ix.closure.follows_public(t);
+        c.tests_public |= listed;
         c.lapsed_public |= !public && self.core.ix.held.is_named(&Tid::PUBLIC, t);
         if let Some((fs, l)) = self.core.followed_links.get(t)
             && fs == *s
@@ -317,12 +289,12 @@ impl Engine {
     }
 
     /// The commits of the public's edge on `s`'s things (its grants, removals and the rotations
-    /// boxing it, spec/permissions.md §4 Key part, steps aside): a member opened on S's public entry
+    /// boxing it, steps aside): a member opened on S's public entry
     /// is served up to the last of them logged (spec/sync-opens.md §6).
     pub fn public_edge(&mut self, s: &SyncId) -> Result<BTreeSet<CommitId>> {
         let mut out = BTreeSet::new();
         for t in self.opening_things(s)? {
-            out.extend(self.edge_on(&Tid::PUBLIC, &t, false));
+            out.extend(self.edge_on(&Tid::PUBLIC, &t));
         }
         Ok(out)
     }

@@ -412,13 +412,6 @@ pub(crate) fn wake_entered(tx: &mut Tx<'_>) -> Result<usize> {
         }
     };
     let mut ids: BTreeSet<CommitId> = BTreeSet::new();
-    // a thing come to be held for keys takes the parts it is judged by, its other content
-    // waiting on (`retention::needed::applies_on`)
-    for t in std::mem::take(&mut tx.core.keys_came) {
-        if tx.core.ix.closure.for_keys(&t) {
-            ids.extend(tx.core.ix.pend_on.get(&Wake::Enters(t)).into_iter().flatten().copied());
-        }
-    }
     for t in came.iter().filter(|t| crate::retention::needed::whole(tx.core, t)) {
         ids.extend(tx.core.ix.pend_on.get(&Wake::Enters(*t)).into_iter().flatten().copied());
         // a held commit missing a part on `t` that a blob of it opened here (taken out as outside
@@ -459,7 +452,7 @@ fn missing_opened(core: &crate::engine::Core, c: &CommitId, t: &Tid) -> bool {
 /// so a write that fails and stays due brings no other round. O(what was logged since).
 pub(crate) fn entering(tx: &Tx<'_>) -> bool {
     let cl = &tx.core.ix.closure;
-    tx.core.keys_came.iter().any(|t| cl.for_keys(t)) || tx.core.entered.as_ref().is_some_and(|f| f.clone().added().iter().any(|(c, t)| cl.members(c).is_some_and(|m| m.contains(t))))
+    tx.core.entered.as_ref().is_some_and(|f| f.clone().added().iter().any(|(c, t)| cl.members(c).is_some_and(|m| m.contains(t))))
 }
 
 /// The parts waiting for `t` to enter the node closure count as never received: no sync ID the
@@ -1601,13 +1594,6 @@ impl Engine {
         self.ingest_class(bytes, blobs, records, None, None)
     }
 
-    /// `ingest_valid` of a commit with `pages`, the blobs its deltas link that travel with it
-    /// (a piece's, spec/wire.md §9): none of them kept unless the commit is, nothing kept where
-    /// one is no blob its deltas link.
-    pub(crate) fn ingest_valid_paged(&mut self, bytes: &[u8], pages: &[Vec<u8>], from: Option<carriers::Carrier>) -> Result<Option<Ingested>> {
-        self.ingest_kept_paged(bytes, pages, from, |core, id, ais, out| matches!(out, Ingested::Parked(_)) || (matches!(out, Ingested::Applied(_)) && !crate::sync_ids::judged_valid(core, id, ais)))
-    }
-
     /// `ingest` of a commit taken only for what it proves here (a fire's carried commit, a
     /// stranded report's holder keys, spec/permissions.md §4), carried by `from` while it pends
     /// (`carriers`; `None`: by nothing, so nothing of it pends past this transaction): one that
@@ -2213,7 +2199,6 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
     crate::sync::falls::load(tx)?;
     crate::sync::bodies::load(tx)?;
     carriers::load(tx)?;
-    crate::flows::inbox::load_carried(tx)?;
     crate::sync::certblobs::load(tx)?;
     crate::sync::notices::load(tx)?;
     crate::sync_ids::unread::load(tx)?;
@@ -2430,7 +2415,6 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
     crate::rotation::load_lost(tx)?;
     crate::rotation::load_kept(tx)?;
     crate::flows::inbox::load(tx)?;
-    crate::flows::inbox::load_sent(tx)?;
     crate::retention::leaving::load(tx)?;
     let mut pend = Vec::new();
     tx.each_pending(|id, p| pend.push((id, p.kind)))?;
@@ -2875,8 +2859,6 @@ mod tests {
         }
         lp.peers[0].engine.core.skip_writer_rules = true;
         let id = lp.peers[0].commit(m).unwrap().unwrap();
-        // a grant from outside b's account: fired, as the edge writers do
-        lp.peers[0].engine.run(|tx| crate::flows::inbox::fire_copy(tx, b, id, t)).unwrap();
         lp.hold_fires(true);
         let pk = lp.peers[0].engine.package(&id).unwrap().unwrap();
         for p in lp.packages_for(0, 1).unwrap() {

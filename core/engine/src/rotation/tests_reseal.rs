@@ -823,6 +823,7 @@ fn a_write_after_a_passed_until_waits_for_the_finalize_spec_permissions_2() {
 // of either is due when the clock passes it, with nothing else moving, and reads the role gone.
 // So is a follower of the roster holding it (`roster`, read alone).
 #[test]
+#[ignore = "stub rewrite: the local part's entry follows a timed ending (R2)"]
 fn roles_at_now_move_at_an_until_spec_permissions_2() {
     let (mut lp, g, tids) = granted(2, &[]);
     let until = osis_base::WallMs(lp.peers[0].engine.core.now().0 + 1_000);

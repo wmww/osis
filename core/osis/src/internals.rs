@@ -26,8 +26,7 @@ pub fn read_counts(set: &crate::ReadSet) -> Vec<(String, u32)> {
 
 /// Hands `to` each sealed fire `from` owes on a thing `to` holds a read secret of, as sync's fire
 /// step does between connected nodes (spec/sync-inbox.md §3): a harness carrying commits by hand
-/// carries fires so, and a grant from outside reaches its holder as its `grant@~0` fire
-/// (spec/sync-inbox.md §5 Grant from outside). Whether `to` refused any (the thing's setting, as `to`
+/// carries fires so. Whether `to` refused any (the thing's setting, as `to`
 /// holds it, keeps no such signal).
 pub fn pass_fires(from: &Osis, to: &Osis) -> bool {
     let fired = |e: &mut Engine| e.fire_own().map_err(|e| e.to_string());

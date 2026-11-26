@@ -307,7 +307,7 @@ impl<'d> Write<'d> {
     }
 
     /// As `create` (with no expiry), the thing minted with its keys: whoever learns of its role or
-    /// of the roles granted it (a grant to it or on it, `Osis::offer`) learns its keys with them,
+    /// of the roles granted it (a grant to it or on it) learns its keys with them,
     /// before it syncs the thing, and `Osis::keys` shows them at once. Make so a thing that is to
     /// hold roles or be granted from outside at once (an account, its inbox); a thing made with
     /// `create` gets its keys at its first grant or card. Its minting is a commit of its

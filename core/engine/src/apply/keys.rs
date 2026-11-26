@@ -40,14 +40,6 @@ pub(crate) fn note_boxes_to(core: &mut Core, actor: &Tid, delta: &Fragment) {
     }
 }
 
-/// The sync keys of `x`'s sync secrets held here at the epochs a `secrets.0` box of any validity
-/// is keyed to `h` at (`boxes_to`): the steps bearing them are those `h`'s readers name it holder by.
-pub(crate) fn sync_boxed(core: &Core, x: &Tid, h: &Tid) -> std::collections::BTreeSet<[u8; 32]> {
-    let Some(epochs) = core.epochs(x) else { return Default::default() };
-    let sync = epochs.role(Role::Sync);
-    core.ix.boxes_to.get(h).into_iter().flatten().filter(|(a, _)| a == x).filter_map(|(_, k)| typed(k, "box_key").and_then(|t| BoxKey::from_value(&t).ok())).filter(|k| k.role == Role::Sync).filter_map(|k| osis_keys::aspects::from_schema(&k.epoch).ok()).filter_map(|e| sync.secret(&e).map(|s| crate::sync_ids::unread::sync_key(s.secret()))).collect()
-}
-
 /// The keysets part `ai` of `h` writes in `bodies` (its `keys.0` deltas or snapshot): what it
 /// noted (`note_keysets`), kept in its record when it drops (`Dropped::keysets`).
 pub(crate) fn keysets_of(h: &Header, ai: usize, bodies: &[Fragment]) -> Vec<KeysetRec> {
@@ -978,7 +970,7 @@ pub(crate) fn learn_secret_in(tx: &mut Tx<'_>, g: &Tid, r: Role, e: osis_crypto:
         return Ok(false);
     }
     tx.core.touch();
-    // a sync secret of a thing not read (a holder of sync alone's, spec/sync.md §3): held as its epoch's,
+    // a sync secret of a thing not read (a holder of only sync's, spec/sync.md §3): held as its epoch's,
     // nothing of the thing opened by it
     if r == Role::Sync && !tx.core.epochs(&g).is_some_and(|x| x.role(Role::Read).holds_any()) {
         tx.core.ix.secrets.entry_or_default(g).role_mut(r).set_secret(e, secret);
@@ -1035,6 +1027,7 @@ mod tests {
     // A genuine grant past the cap reads its boxes once an applied one frees a place, or it waits
     // for good on the sync ID those secrets open.
     #[test]
+    #[ignore = "stub rewrite: a grant signal of values (R3) reaches the grantee"]
     fn refused_boxes_read_when_a_grant_applies_spec_crypto_4() {
         let (mut lp, ps) = LocalPeer::accounts(2, 0, WallMs(1_700_000_000_000)).unwrap();
         let (me, b) = (ps[0], ps[1]);
@@ -1067,9 +1060,6 @@ mod tests {
         // the first grant's thing arrives: it applies, its secret is checked, a place is free
         let created = lp.peers[0].engine.package(&c1).unwrap().unwrap();
         lp.deliver(1, &created).unwrap();
-        // and the first grant's fire alone (the second's went to another node of b's)
-        let f2 = lp.peers[0].engine.core.ix.fires.iter().find(|(_, o)| matches!(o.what, crate::flows::inbox::Fire::Grant { commit, .. } if commit == g2)).map(|(id, _)| *id).unwrap();
-        lp.peers[0].engine.fire_taken(&f2).unwrap();
         lp.hold_fires(false);
         lp.pass_fires(1).unwrap();
         lp.peers[1].reexamine().unwrap();

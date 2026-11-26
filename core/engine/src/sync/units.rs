@@ -121,13 +121,8 @@ pub struct Closure {
     /// by target, as `targeted` reads one target's.
     rows: JSetMap<Tid, Tid>,
     /// Per thing, the held vertices of a context that reads strongs (the local part, a read sync
-    /// unit) whose strong reaches it, as last judged: the things the walk reaches at a strong
-    /// (spec/sync-set.md §2 Held for keys).
+    /// unit) whose strong reaches it, as last judged: the things the walk reaches at a strong.
     targeted: JSetMap<Tid, Vx>,
-    /// Per read context, each (target, source) of a strong of a thing of it whose target the
-    /// context does not follow (its keys do not open it), as last judged: what its stubs are
-    /// found among (`Engine::stubs_of`), never its whole unit.
-    beyond: JSetMap<Ctx, (Tid, Tid)>,
     /// Per thing whose record the node does not hold, the held vertices whose strong reaches it,
     /// as last judged: each awaits the record (spec/commits.md §4 Records), which decides whether
     /// the strong brings the thing in, so a record blob's record of it is learned
@@ -141,18 +136,6 @@ pub struct Closure {
     /// The things sourced at another node whose paths the sync set's walk takes not
     /// (`Engine::set_sourced`, spec/sync-set.md §5).
     cut: JSet<Tid>,
-    /// The holders held for keys (`held_for_keys`), as last settled.
-    keys: JSet<Tid>,
-    /// Per independent thing followed by the public entry (`follows_public`), the targets of
-    /// strongs beyond read units that follow it, as last settled.
-    public: JSetMap<Tid, Tid>,
-    /// Each edge (referrer, entry vertex) whose entry rests on a read thing's piece, as last
-    /// judged (`founded` walks these alone; every other entry is carried on its edge or by what
-    /// needs no founding).
-    pieced: JSet<(Vx, Vx)>,
-    /// Each such edge whose entry gives no role either: `pieced`, or resting on a piece kept only
-    /// while a loss is carried out (`founded` for the role).
-    loose: JSet<(Vx, Vx)>,
     /// Per out-list edge (vertex, entry vertex) a Dependent entry gives (`given`), the targets of
     /// the vertex's strongs giving it: several dependents of one thing, or the thing itself beside
     /// them, give one entry, which goes with the last of them.
@@ -172,15 +155,10 @@ impl Default for Closure {
             moved: JSet::default(),
             rows: JSetMap::default(),
             targeted: JSetMap::default(),
-            beyond: JSetMap::default(),
             unknown: JSetMap::default(),
             members: JSetMap::by_element(),
             left: JMap::default(),
             cut: JSet::default(),
-            keys: JSet::default(),
-            public: JSetMap::default(),
-            pieced: JSet::default(),
-            loose: JSet::default(),
             deps: JSetMap::default(),
             dep_of: JMap::default(),
         }
@@ -205,16 +183,11 @@ pub(crate) struct Follow {
     /// whose edges are all old (a refetch was durable before the transaction adding its strong).
     before: Option<Effects<Edge, BTreeSet<Vx>>>,
     known: bool,
-    /// Per thing the node holds secrets of: whether it is held for keys (`held_for_keys`).
-    keys: Effects<Tid, bool>,
-    /// Per target of a strong beyond a read unit (`Closure::beyond`) since judged: the thing it
-    /// has the node follow by the public entry, if any (`follows_public`).
-    public: Effects<Tid, Option<Tid>>,
 }
 
 impl Default for Follow {
     fn default() -> Follow {
-        Follow { fx: Effects::new("closure: edges"), reset: true, acted: false, gone: Default::default(), before: None, known: false, keys: Effects::new("closure: held for keys"), public: Effects::new("closure: followed by the public entry") }
+        Follow { fx: Effects::new("closure: edges"), reset: true, acted: false, gone: Default::default(), before: None, known: false }
     }
 }
 
@@ -235,10 +208,9 @@ impl Follow {
 }
 
 impl Journaled for Closure {
-    type Mark = ([usize; 4], [usize; 4], [usize; 16]);
+    type Mark = ([usize; 4], [usize; 4], [usize; 11]);
     fn commit(&mut self) {
         self.targeted.commit();
-        self.beyond.commit();
         self.unknown.commit();
         self.tree.commit();
         self.synced.commit();
@@ -249,15 +221,11 @@ impl Journaled for Closure {
         self.members.commit();
         self.left.commit();
         self.cut.commit();
-        self.keys.commit();
-        self.public.commit();
-        self.pieced.commit();
-        self.loose.commit();
         self.deps.commit();
         self.dep_of.commit();
     }
     fn mark(&mut self) -> Self::Mark {
-        (self.tree.mark(), self.synced.mark(), [self.out.mark(), self.inn.mark(), self.moved.mark(), self.rows.mark(), self.members.mark(), self.left.mark(), self.cut.mark(), self.unknown.mark(), self.targeted.mark(), self.keys.mark(), self.pieced.mark(), self.loose.mark(), self.beyond.mark(), self.deps.mark(), self.dep_of.mark(), self.public.mark()])
+        (self.tree.mark(), self.synced.mark(), [self.out.mark(), self.inn.mark(), self.moved.mark(), self.rows.mark(), self.members.mark(), self.left.mark(), self.cut.mark(), self.unknown.mark(), self.targeted.mark(), self.deps.mark(), self.dep_of.mark()])
     }
     fn rollback_to(&mut self, (t, s, m): Self::Mark) {
         self.tree.rollback_to(t);
@@ -271,13 +239,8 @@ impl Journaled for Closure {
         self.cut.rollback_to(m[6]);
         self.unknown.rollback_to(m[7]);
         self.targeted.rollback_to(m[8]);
-        self.keys.rollback_to(m[9]);
-        self.pieced.rollback_to(m[10]);
-        self.loose.rollback_to(m[11]);
-        self.beyond.rollback_to(m[12]);
-        self.deps.rollback_to(m[13]);
-        self.dep_of.rollback_to(m[14]);
-        self.public.rollback_to(m[15]);
+        self.deps.rollback_to(m[9]);
+        self.dep_of.rollback_to(m[10]);
     }
     fn name(&mut self, _name: &'static str) {
         self.tree.name("index: closure held");
@@ -287,11 +250,6 @@ impl Journaled for Closure {
         self.cut.name("index: closure cut");
         self.targeted.name("index: closure targeted");
         self.unknown.name("index: closure unknown");
-        self.keys.name("index: held for keys");
-        self.public.name("index: followed by the public entry");
-        self.pieced.name("index: closure pieced");
-        self.loose.name("index: closure loose");
-        self.beyond.name("index: closure beyond");
     }
     #[cfg(test)]
     fn contents(&self) -> String {
@@ -520,26 +478,7 @@ impl Closure {
             true => drop(self.targeted.insert(t, v)),
             false => drop(self.targeted.remove(&t, &v)),
         }
-        if !on {
-            self.set_beyond(t, v, false);
-        }
         was && !set(self)
-    }
-
-    /// Notes whether `v`'s strong to `t` reaches beyond its read context (`beyond`).
-    fn set_beyond(&mut self, t: Tid, v: Vx, on: bool) {
-        if !matches!(v.0, Ctx::Read(_)) || self.beyond.contains(&v.0, &(t, v.1)) == on {
-            return;
-        }
-        match on {
-            true => drop(self.beyond.insert(v.0, (t, v.1))),
-            false => drop(self.beyond.remove(&v.0, &(t, v.1))),
-        }
-    }
-
-    /// The targets of strongs of `g`'s sync unit that its keys do not follow, as last judged.
-    pub(crate) fn beyond(&self, g: &Tid) -> BTreeSet<Tid> {
-        self.beyond.get(&Ctx::Read(*g)).into_iter().flatten().map(|(t, _)| *t).collect()
     }
 
     /// Whether a held vertex's strong reaches `t`, whose record was not held when it was judged
@@ -613,37 +552,6 @@ impl Closure {
     /// A cursor over the things entering the sync set's walk from now on.
     pub(crate) fn synced_feed(&self) -> osis_base::memo::Feed<Tid> {
         self.synced.held.feed()
-    }
-
-    /// Whether `t` is held for keys (`held_for_keys`, as last settled).
-    pub(crate) fn for_keys(&self, t: &Tid) -> bool {
-        self.keys.contains(t)
-    }
-
-    /// The holders held for keys (a read of them whole).
-    pub(crate) fn keys(&self) -> impl Iterator<Item = &Tid> {
-        self.keys.iter()
-    }
-
-    /// A cursor over the things coming to be held for keys from now on.
-    pub(crate) fn keys_feed(&self) -> osis_base::memo::Feed<Tid> {
-        self.keys.feed()
-    }
-
-    /// Whether the node follows `t`'s sync ID by the public entry (`follows_public`, as last
-    /// settled).
-    pub(crate) fn follows_public(&self, t: &Tid) -> bool {
-        self.public.get(t).is_some_and(|s| !s.is_empty())
-    }
-
-    /// The things followed by the public entry (a read of them whole).
-    pub(crate) fn public_follows(&self) -> impl Iterator<Item = &Tid> {
-        self.public.keys_held()
-    }
-
-    /// A cursor over the things coming to be followed by the public entry from now on.
-    pub(crate) fn public_feed(&self) -> osis_base::memo::Feed<Tid> {
-        self.public.feed()
     }
 
     /// The things the sync set's walk takes no path through.
@@ -810,9 +718,7 @@ impl Core {
 
     /// Whether the public reads independent `a` by its own grant there (spec/sync-set.md §2 T's
     /// keys open), as `a`'s role commits held here show it: its bodies where the node holds `a`,
-    /// else the public pieces a unit reaching it carries (`Engine::public_pieced`). Never through
-    /// holders: a reader of a unit could not found such a chain from what the unit carries
-    /// (notes/public-and-cards-brief.md, Rejected). Who writes it: `a`'s admins (a grant on `a`);
+    /// else what a unit reaching it carries of it. Never through holders. Who writes it: `a`'s admins (a grant on `a`);
     /// what anyone may read is what `a`'s admins made public, nothing a unit's writers decide.
     pub(crate) fn public_reads(&self, a: &Tid) -> bool {
         self.roster_of(a).get(&Tid::PUBLIC).is_some_and(|e| e.role >= Role::Read)
@@ -849,7 +755,7 @@ impl Core {
     /// a secret of its own a held valid box gave, a step of its `sync.0` bearing a sync secret
     /// so given (`Core::own_record`; not one derived from its mint admin's, nor a reading-only
     /// one). Established or not: a grantee holds the grant's box before it syncs `y`, where the
-    /// rotation that made the epoch is (spec/permissions.md §4 Key part).
+    /// rotation that made the epoch is.
     pub(crate) fn counts_independent(&self, y: &Tid) -> bool {
         self.is_independent(y) || self.public_listed(y) || self.own_record(y).is_some_and(|e| Role::ALL.iter().any(|r| e.role(*r).held().next().is_some())) || self.unread(y).holds_any()
     }
@@ -888,40 +794,16 @@ fn strong_to(tx: &mut Tx<'_>, x: &Tid, y: &Tid) -> Result<bool> {
 }
 
 /// What the walk takes from vertex `v` by a strong of its thing to `y` (module doc).
-fn given_by(core: &Core, v: Vx, y: Tid) -> BTreeSet<Vx> {
-    given(core, v, y).0
-}
-
-/// How an entry is carried (`given`): on its edge or by what needs no founding (`Plain`), by a
-/// piece kept only while a loss is carried out (`Pending`: no role), or by a read thing's piece
-/// (`Pieced`).
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Carry {
-    Plain,
-    Pending,
-    Pieced,
-}
-
-/// `given_by`, with how its entry, if any, is carried.
 ///
 /// First entry (spec/sync-set.md §2): an entry is carried by the unit its strong is in
-/// (`edge_carries`), an edge piece in the key part of an own thing, a link the node follows or a
-/// thing the node closure reads, or an offer of `y` the node holds. A piece carries while its edge is current (a holder on `y` now, its record edge
-/// included), or while the node still holds a read secret of `y`: a loss not carried out yet
-/// (spec/permissions.md §3 Lost access), so a removed holder syncs `y` until its loss is, and
-/// once it is the removal's piece carries nothing. A read thing's piece carries only where that
-/// thing is read without `y` (`founded_without`): entry is founded, so nothing is kept for
-/// supporting itself. Who writes each input: `y`'s grants, judged by the walk (an edge write by
-/// anyone without the right to it sets no edge); `y`'s record (its mint admin's edge); the
-/// offers, held only valid on an inbox the node reads; the secrets, taken only from boxes the
-/// node's role lets it take and dropped by lost access. A holder held for keys alone carries
-/// nothing: an entry hanging on an unrelated reference would not be founded
-/// (notes/accounts-switch-brief.md, Models).
-fn given(core: &Core, v: Vx, y: Tid) -> (BTreeSet<Vx>, Carry) {
+/// (`edge_carries`), or is of an own thing.
+// Stub rewrite (notes/stub-rewrite.md): entry by a unit carrying the thing whole or as a stub,
+// the local part, or a held signal whose fetch succeeded (R2, R3)
+fn given_by(core: &Core, v: Vx, y: Tid) -> BTreeSet<Vx> {
     let (c, x) = v;
     let mut out = BTreeSet::new();
     if matches!(c, Ctx::Unread(_)) || x == y {
-        return (out, Carry::Plain);
+        return out;
     }
     let independent = core.counts_independent(&y);
     let follows = match c {
@@ -943,175 +825,78 @@ fn given(core: &Core, v: Vx, y: Tid) -> (BTreeSet<Vx>, Carry) {
             out.insert((Ctx::Read(a), a));
         }
     }
-    let mut how = Carry::Plain;
-    if independent && Ctx::Read(y) != c && let Some(e) = core.enter(&y) {
-        let carry = if core.is_own(&y) || edge_carries(core, v, &y) || own_carried(core, &y, false) || listed_carries(core, v, &y) {
-            Some(Carry::Plain)
-        } else if own_carried(core, &y, true) {
-            Some(Carry::Pending)
-        } else if read_carriers(core, &y, true).any(|h| founded_without(core, &h, &[y], true)) {
-            Some(Carry::Pieced)
-        } else {
-            None
-        };
-        if let Some(k) = carry {
-            out.insert((e, y));
-            how = k;
-        }
+    if independent && Ctx::Read(y) != c && let Some(e) = core.enter(&y) && (core.is_own(&y) || edge_carries(core, v, &y)) {
+        out.insert((e, y));
     }
-    (out, how)
+    out
 }
 
 /// Whether a held strong reaches `y` where First entry carries it (spec/sync-set.md §2 Own
 /// things): its grants count there, and nowhere a strong alone reaches (a thing nothing the node
-/// syncs carries is held as certificates at most, whose grants give no role).
-/// Judged on paths giving a role (`founded`): a piece kept only while a loss is carried out
-/// carries nothing here.
+/// syncs carries is held as certificates at most, whose grants give no role), on a path
+/// avoiding `y` (`founded`).
 pub(crate) fn reached_carried(core: &Core, y: &Tid) -> bool {
     let cl = &core.ix.closure;
     let avoid = [*y];
-    let by_unit = || cl.targeting(y).any(|v| edge_carries(core, *v, y) && founded(core, *v, &avoid, false));
-    let by_read = || read_carriers(core, y, false).any(|h| founded_without(core, &h, &avoid, false));
-    cl.targeted(y) && (core.is_own(y) || own_carried(core, y, false) || by_unit() || by_read())
+    cl.targeted(y) && (core.is_own(y) || cl.targeting(y).any(|v| edge_carries(core, *v, y) && founded(core, *v, &avoid)))
 }
 
 /// Whether held vertex `v`'s unit carries `y`, a target of its thing's strongs (spec/sync-set.md
-/// §2 First entry): `v` is in the read sync unit of a thing `u` other than `y` whose keys open
-/// `y` (whole) or whose effective role on `y` is sync or above (its stub). Local to the edge, so
-/// the tree founds it: an entry by `u`'s unit goes when `u`'s does, whatever `u` reaches back.
-/// Invariant: `y`'s own unit never carries it (`u != y`).
+/// §2 First entry): `v` is in the read sync unit of a thing `u` other than `y`, or in the local
+/// part with `u` an own thing, whose keys open `y` (whole) or whose effective role on `y` is sync
+/// or above (its stub). Local to the edge, so the tree founds it: an entry by `u`'s unit goes
+/// when `u`'s does, whatever `u` reaches back. Invariant: `y`'s own unit never carries it
+/// (`u != y`).
+// Stub rewrite (notes/stub-rewrite.md): rule 2 over references, the stubs logged under the unit's
+// sync ID or kept in the local part (R2)
 fn edge_carries(core: &Core, v: Vx, y: &Tid) -> bool {
+    let carries = |u: &Tid| u != y && (core.keys_open(u, y) || core.keyed_role_now(u, y) >= Some(Role::Sync) || core.syncs_by_copies(u, y));
     match v.0 {
-        Ctx::Read(u) if u != *y => core.keys_open(&u, y) || core.keyed_role_now(&u, y) >= Some(Role::Sync) || core.syncs_by_copies(&u, y),
-        _ => false,
+        Ctx::Read(u) => carries(&u),
+        Ctx::Local => std::iter::once(core.tid()).chain(core.link_keys.keys().copied()).any(|o| carries(&o)),
+        Ctx::Unread(_) => false,
     }
 }
 
-/// Whether `v`'s unit carries `y` kept unread by the public's sync (spec/sync-set.md §2
-/// Following by the public entry, spec/sync.md §3 Holders by copies): `v` is in the read unit of a
-/// thing whose key part names `y`'s sync ID, as it does for a thing followed by the public entry,
-/// and `y`'s head lists the public entry (`Core::public_listed`). Where the public holds sync, a
-/// thing so followed is kept unread instead.
-fn listed_carries(core: &Core, v: Vx, y: &Tid) -> bool {
-    match v.0 {
-        Ctx::Read(g) if g != *y => core.public_listed(y) && names_sync_id(core, &g, y),
-        _ => false,
-    }
-}
-
-/// Whether `g`'s key part names `x`'s sync ID (`follows_public`): an edge piece of `g` on `x`,
-/// standing or since lowered or removed, as edge writes, sync copies or `x`'s record naming `g`
-/// its mint admin.
-fn names_sync_id(core: &Core, g: &Tid, x: &Tid) -> bool {
-    core.ix.held.is_named(g, x) || core.ix.sync_copies.get(x).is_some_and(|m| m.values().any(|c| c.holder == c.under && c.under == *g && !c.steps.is_empty())) || core.copies_naming(g).contains(x)
-}
-
-/// Whether an offer of `y` or an edge piece in the key part of an own thing or a followed link
-/// carries `y` (`given`): needing no founding, the node holding these whatever it reads.
-fn own_carried(core: &Core, y: &Tid, pending: bool) -> bool {
-    crate::flows::inbox::granted_on(core, y).next().is_some() || pieces_on(core, y, pending).any(|h| core.is_own(&h) || core.followed_links.contains(&h))
-}
-
-/// The things the node closure reads whose edge piece on `y` carries it, founding aside
-/// (`given`).
-fn read_carriers<'a>(core: &'a Core, y: &Tid, pending: bool) -> impl Iterator<Item = Tid> + use<'a> {
-    pieces_on(core, y, pending).filter(|h| core.ix.closure.contexts(h).contains(&Ctx::Read(*h)))
-}
-
-/// The holders whose edge piece on `y` carries it (`given`): its holders now, or every
-/// holder named on it while the node holds a read secret of `y`; and the holders of the sync
-/// copies of `y` that count here (`Unread::holders`: a holder of sync alone's edge piece, no
-/// edge write in it, spec/permissions.md §4 Key part).
-fn pieces_on(core: &Core, y: &Tid, pending: bool) -> std::vec::IntoIter<Tid> {
-    let pending = pending && core.ix.secrets.get(y).is_some_and(|e| e.role(Role::Read).holds_any());
-    let current: BTreeSet<Tid> = core.edge_holders(y).into_iter().map(|(h, _)| h).collect();
-    let mut named: BTreeSet<Tid> = core.ix.held.holders_of(y).copied().filter(|h| h != y && (pending || current.contains(h))).collect();
-    named.extend(core.unread(y).holders.iter().copied().filter(|h| h != y));
-    named.into_iter().collect::<Vec<_>>().into_iter()
-}
-
-/// Whether read thing `h` stays read with `y` out of the node closure (`founded`): a read
-/// thing's piece carries `y` only where that thing is read without `y` (spec/sync-set.md §2
-/// First entry: entry is founded, so nothing is kept for supporting itself).
-fn founded_without(core: &Core, h: &Tid, y: &[Tid], pending: bool) -> bool {
-    founded(core, (Ctx::Read(*h), *h), y, pending)
-}
-
-/// Whether the node closure holds `t` within the local part or another thing's sync unit, on a
-/// path giving a role (`founded`: no entry on the way kept only while a loss is carried out, nor
-/// resting on a piece unfounded so; spec/sync-set.md §2 Own things, judged on the least state).
+/// Whether the node closure holds `t` within the local part or another thing's sync unit
+/// (`founded`; spec/sync-set.md §2 Own things).
 pub(crate) fn holds_within(core: &Core, t: &Tid) -> bool {
     let cs = core.ix.closure.contexts(t);
-    cs.into_iter().any(|c| !matches!(c, Ctx::Read(u) | Ctx::Unread(u) if u == *t) && founded(core, (c, *t), &[], false))
+    cs.into_iter().any(|c| !matches!(c, Ctx::Read(u) | Ctx::Unread(u) if u == *t) && founded(core, (c, *t), &[]))
 }
 
-/// Whether held vertex `v` stays held with `y` out of the node closure: the least state the
-/// out-lists give without `y` holds it, each entry on the way carried by something other than a
-/// read thing's piece, or by such a piece of a thing reached so (`pending`: a piece kept only
-/// while a loss is carried out counts too). Its tree path answers where it avoids `y` and enters
-/// each thing on it so; else a search from the root over the out-lists avoiding `y`: brute
-/// force, for the rare vertex resting on a read thing's piece or below or beside `y`. Its tree
-/// reads make what asked judged again as the path moves.
-fn founded(core: &Core, start: Vx, y: &[Tid], pending: bool) -> bool {
+/// Whether held vertex `v` stays held with `y` out of the node closure: its tree path avoids
+/// `y`, else a search from the root over the out-lists avoiding `y` reaches it. Its tree reads
+/// make what asked judged again as the path moves.
+fn founded(core: &Core, start: Vx, y: &[Tid]) -> bool {
     let cl = &core.ix.closure;
-    let plain = |p: &Vx, w: &Vx| !if pending { &cl.pieced } else { &cl.loose }.contains(&(*p, *w));
     if y.contains(&start.1) || !cl.is_held(&start) {
         return false;
     }
-    // the tree path, each entry on it plain or by the piece of a read thing whose own tree path
-    // answers so without the thing it carries: O(the paths walked)
-    let fast = || {
-        let mut stack: Vec<(Vx, Vec<Tid>)> = vec![(start, Vec::new())];
-        let mut tried = BTreeSet::from([start.1]);
-        while let Some((mut v, out)) = stack.pop() {
-            while let Some(p) = cl.parent_of(&v) {
-                if y.contains(&p.1) || out.contains(&p.1) {
-                    return false;
-                }
-                if !plain(p, &v) {
-                    let Some(c) = read_carriers(core, &v.1, pending).find(|c| !y.contains(c) && !out.contains(c) && !tried.contains(c)) else { return false };
-                    tried.insert(c);
-                    stack.push(((Ctx::Read(c), c), out.iter().copied().chain([v.1]).collect()));
-                }
-                v = *p;
-            }
+    let mut v = start;
+    let mut clear = true;
+    while let Some(p) = cl.parent_of(&v) {
+        if y.contains(&p.1) {
+            clear = false;
+            break;
         }
-        true
-    };
-    if fast() {
+        v = *p;
+    }
+    if clear {
         return true;
     }
     let Some(root) = core.node_root else { return false };
     let root = (Ctx::Local, root);
     let mut seen = BTreeSet::from([root]);
     let mut todo = vec![root];
-    let mut waiting: Vec<Vx> = Vec::new();
-    loop {
-        while let Some(u) = todo.pop() {
-            for w in cl.out_of(&u) {
-                if y.contains(&w.1) || seen.contains(w) {
-                    continue;
-                }
-                if plain(&u, w) {
-                    seen.insert(*w);
-                    todo.push(*w);
-                } else {
-                    waiting.push(*w);
-                }
-            }
-        }
-        let read = |w: &Vx| read_carriers(core, &w.1, pending).any(|c| seen.contains(&(Ctx::Read(c), c)));
-        let (now, rest): (Vec<Vx>, Vec<Vx>) = std::mem::take(&mut waiting).into_iter().filter(|w| !seen.contains(w)).partition(read);
-        waiting = rest;
-        if now.is_empty() {
-            return seen.contains(&start);
-        }
-        for w in now {
-            if seen.insert(w) {
-                todo.push(w);
+    while let Some(u) = todo.pop() {
+        for w in cl.out_of(&u) {
+            if !y.contains(&w.1) && seen.insert(*w) {
+                todo.push(*w);
             }
         }
     }
+    seen.contains(&start)
 }
 
 /// Brings the node closure up to date with what moved since the last settle (module doc): at
@@ -1127,7 +912,7 @@ pub(crate) fn settle(tx: &mut Tx<'_>) -> Result<()> {
         tx.core.closure_follow = f;
         r?;
         // the grants of what the node newly syncs count (`rotation::grants_count`: a thing a
-        // strong reaches where it is carried, a holder held for keys), so a box its roles had kept out opens, and
+        // strong reaches where it is carried), so a box its roles had kept out opens, and
         // the walk enters by the secret it gives: the two settle together
         if !crate::flows::retake(tx)? {
             return Ok(());
@@ -1145,18 +930,6 @@ fn settle_with(tx: &mut Tx<'_>, f: &mut Follow, rv: Vx) -> Result<()> {
         osis_base::costs::count("closure: refollowed", all.len() as u64);
         for v in all {
             want_edges(tx, f, v)?;
-        }
-        f.keys = Effects::new("closure: held for keys");
-        for t in tx.core.ix.secrets.keys_held() {
-            f.keys.want(*t);
-        }
-        f.public = Effects::new("closure: followed by the public entry");
-        // judged afresh: what was followed is let go, its targets wanted again
-        let cl = &mut tx.core.ix.closure;
-        let was: Vec<(Tid, Tid)> = cl.public.keys_held().flat_map(|x| cl.public.get(x).into_iter().flatten().map(|y| (*x, *y))).collect();
-        for (x, y) in was {
-            cl.public.remove(&x, &y);
-            f.public.want(y);
         }
     }
     if !tx.core.ix.closure.is_held(&rv) {
@@ -1190,9 +963,7 @@ fn settle_with(tx: &mut Tx<'_>, f: &mut Follow, rv: Vx) -> Result<()> {
             }
             f.before = None;
             f.known = true;
-            cl.settle_synced(rv)?;
-            settle_keys(tx, f)?;
-            return settle_public(tx, f);
+            return cl.settle_synced(rv);
         }
         for (v, y) in due {
             if !tx.core.ix.closure.is_held(&v) {
@@ -1203,144 +974,6 @@ fn settle_with(tx: &mut Tx<'_>, f: &mut Follow, rv: Vx) -> Result<()> {
             apply(tx, f, rv, v, y, now)?;
         }
     }
-}
-
-/// Whether the node holds `t` for keys (spec/sync-set.md §2 Held for keys): a holder the grants
-/// of a thing the node syncs name, found from that thing up (`named_up`), which the node closure
-/// does not read and the node can open (`opened_holder`).
-fn held_for_keys(core: &Core, t: &Tid) -> bool {
-    opened_holder(core, t) && named_up(core, t)
-}
-
-/// Whether `t` is a holder the node opens without reading it in the node closure: an independent
-/// thing of which the node holds a read secret of its own (a box to an own thing
-/// or to a holder it opens gave it; the lost-access rule keeps it only while the node's role
-/// reads `t`, `rotation::lost`). A thing that left the node closure is outside it while its
-/// release waits (spec/sync-set.md §3 Leaves), so it is held for keys from then: its key part
-/// (a holder of sync alone's sync copies, the one record of its grant) stays under a sync ID
-/// still synced instead of going with its release.
-fn opened_holder(core: &Core, t: &Tid) -> bool {
-    core.enter(t) == Some(Ctx::Read(*t)) && !core.ix.closure.reads_held(t)
-}
-
-/// Whether the grants of a thing the node closure holds (read, or kept unread: its edge piece is
-/// in `t`'s key part) name `t`, or those of a holder so named
-/// in turn that the node opens (`opened_holder`): each hop an edge write the node holds naming
-/// its holder on its target, the holder holding a role there now with key access, any role on a
-/// read thing and read or above on a holder (a hop that opens that holder's keys). The walk up
-/// from a read thing through the holders its grants name, asked of one holder: O(what `t` is
-/// named on by such hops).
-fn named_up(core: &Core, t: &Tid) -> bool {
-    let mut seen = BTreeSet::from([*t]);
-    let mut todo = vec![*t];
-    while let Some(x) = todo.pop() {
-        let by_copies = core.copies_naming(&x);
-        if by_copies.iter().any(|y| core.ix.closure.holds(y)) {
-            return true;
-        }
-        for y in core.ix.held.named_on(&x) {
-            if core.ix.closure.holds(y) {
-                if core.keyed_role_now(&x, y).is_some() {
-                    return true;
-                }
-            } else if opened_holder(core, y) && core.keyed_role_now(&x, y) >= Some(Role::Read) && seen.insert(*y) {
-                todo.push(*y);
-            }
-        }
-    }
-    false
-}
-
-/// Brings the holders held for keys up to date (`held_for_keys`): each thing whose secrets moved
-/// in this transaction is followed or let go, and each followed one whose judgement moved is
-/// judged again. One coming to be held for keys wakes what waits for it (`apply::wake_entered`);
-/// one held so no more is judged for what it still needs (`retention::needed`). Work in
-/// proportion to the things whose secrets or holding moved.
-fn settle_keys(tx: &mut Tx<'_>, f: &mut Follow) -> Result<()> {
-    for t in tx.core.ix.secrets.logged() {
-        if tx.core.ix.secrets.contains_key(&t) {
-            f.keys.want(t);
-        } else {
-            f.keys.unwant(&t);
-            if tx.core.ix.closure.keys.remove(&t) {
-                tx.core.note_lost(t);
-            }
-        }
-    }
-    for t in f.keys.due() {
-        if !tx.core.ix.secrets.contains_key(&t) {
-            f.keys.unwant(&t);
-            continue;
-        }
-        let core = &*tx.core;
-        let mut now = false;
-        f.keys.settle(&t, || {
-            now = held_for_keys(core, &t);
-            now
-        });
-        if now == tx.core.ix.closure.keys.contains(&t) {
-            continue;
-        }
-        if now {
-            tx.core.ix.closure.keys.insert(t);
-            tx.core.keys_came.insert(t);
-        } else {
-            tx.core.ix.closure.keys.remove(&t);
-            tx.core.note_lost(t);
-        }
-    }
-    Ok(())
-}
-
-/// The independent thing strong target `y` has the node follow by the public entry
-/// (spec/sync-set.md §2 Following by the public entry): `y`'s independent X, where a strong of a
-/// read unit G reaches `y` beyond it (G's keys do not open X), G's key part names X (an edge of
-/// G's on X, standing or since lowered or removed, as edge writes, sync copies or X's record
-/// naming G its mint admin) and the node holds X's sync ID (X's `sync.0` state, or the steps of a
-/// sync copy in G's key part: a removed sync-alone holder's loss forgets the state, never the
-/// piece), and the node does not keep X unread. Following, it holds the public's grant once the public reads X, and logs the public
-/// piece under G's sync ID (`Engine::public_pieced`), which takes X into G's unit; it follows X
-/// still while it reads X by the public's secrets before that, so entering X ends no follow it
-/// rests on. Who writes it: G's writers the strong, X's admins
-/// the edge.
-fn follows_public(core: &Core, y: &Tid) -> Option<Tid> {
-    let cl = &core.ix.closure;
-    // the holders whose own key part holds a sync copy carrying steps of `x`'s sync ID (a
-    // sync-alone edge piece's `sync.0` part: held whatever the edge now, a loss carried out too)
-    let copies = |x: &Tid| core.ix.sync_copies.get(x).map(|m| m.values().filter(|c| c.holder == c.under && !c.steps.is_empty()).map(|c| c.under).collect::<Vec<Tid>>()).unwrap_or_default();
-    // a sync ID of `x` held: its `sync.0` state, or such a copy's steps
-    let recorded = |x: &Tid| core.ix.sync_recorded_ids.get(x).is_some_and(|s| !s.is_empty()) || !copies(x).is_empty();
-    // `y` itself where its sync ID is held (independent by it, its keyset commit held or not)
-    let x = if recorded(y) { *y } else { core.secret_actor(y)? };
-    let beyond = cl.targeting(y).any(|v| matches!(v.0, Ctx::Read(g) if names_sync_id(core, &g, &x)) && cl.beyond.contains(&v.0, &(*y, v.1)));
-    let unread = cl.contexts(&x).iter().any(|c| matches!(c, Ctx::Unread(_)));
-    (beyond && recorded(&x) && !unread).then_some(x)
-}
-
-/// Brings what the node follows by the public entry up to date (`follows_public`): each target
-/// judged since, or whose judgement moved. Work in proportion to the targets judged.
-fn settle_public(tx: &mut Tx<'_>, f: &mut Follow) -> Result<()> {
-    for y in f.public.due() {
-        let core = &*tx.core;
-        let mut now = None;
-        let moved = f.public.settle(&y, || {
-            now = follows_public(core, &y);
-            now
-        });
-        if let Some((old, _)) = moved {
-            let cl = &mut tx.core.ix.closure;
-            if let Some(Some(x)) = old {
-                cl.public.remove(&x, &y);
-            }
-            if let Some(x) = now {
-                cl.public.insert(x, y);
-            }
-        }
-        if now.is_none() && !tx.core.ix.closure.targeting(&y).any(|v| matches!(v.0, Ctx::Read(_))) {
-            f.public.unwant(&y);
-        }
-    }
-    Ok(())
 }
 
 /// Follows every edge of held vertex `v`: O(its thing's strongs).
@@ -1359,9 +992,7 @@ fn want_edges(tx: &mut Tx<'_>, f: &mut Follow, v: Vx) -> Result<()> {
 fn judge(tx: &mut Tx<'_>, f: &mut Follow, v: Vx, y: Tid) -> Result<BTreeSet<Vx>> {
     if matches!(v.0, Ctx::Unread(_)) || !strong_to(tx, &v.1, &y)? {
         f.fx.unwant(&(v, y));
-        set_carry(tx, v, y, &BTreeSet::new(), Carry::Plain);
         set_targeted(tx, y, v, false);
-        f.public.want(y);
         tx.core.ix.closure.set_unknown(y, v, false);
         return Ok(BTreeSet::new());
     }
@@ -1381,63 +1012,11 @@ fn judge(tx: &mut Tx<'_>, f: &mut Follow, v: Vx, y: Tid) -> Result<BTreeSet<Vx>>
     }
     let core = &*tx.core;
     let mut got = BTreeSet::new();
-    let mut how = None;
     f.fx.settle(&(v, y), || {
-        let (g, k) = given(core, v, y);
-        how = Some(k);
-        got = g.clone();
-        g
+        got = given_by(core, v, y);
+        got.clone()
     });
-    if let Some(k) = how {
-        set_carry(tx, v, y, &got, k);
-    }
-    tx.core.ix.closure.set_beyond(y, v, !got.contains(&(v.0, y)));
-    f.public.want(y);
-    // a thing whose record is not held may be independent: its piece may be what was dropped
-    if new && !got.iter().any(|w| w.1 == y) && (unknown || tx.core.counts_independent(&y)) {
-        refetch_holders(tx)?;
-    }
     Ok(got)
-}
-
-/// A new strong to independent (or unknown) `y` that nothing carries (spec/sync-set.md §2 First
-/// entry): an edge piece on `y` in the key part of an own or read thing may have been dropped
-/// while the node synced neither `y` nor an offer of it (spec/permissions.md §4 Key part: a piece is kept
-/// only so far), and nothing local says which holder names `y`; so the sync IDs of every own
-/// and read thing are pulled anew, fetching any such piece again (spec/sync-judgement.md §3
-/// Dropped bodies). Rare-path brute force: one pull of those sync IDs per such strong, also
-/// where nothing names `y`.
-fn refetch_holders(tx: &mut Tx<'_>) -> Result<()> {
-    let core = &*tx.core;
-    let mut hs: BTreeSet<Tid> = core.ix.closure.tree.parent.keys().filter_map(|(c, t)| matches!(c, Ctx::Read(u) if u == t).then_some(*t)).collect();
-    hs.insert(core.tid());
-    hs.extend(core.link_keys.keys().copied());
-    for h in hs {
-        crate::flows::sync_ids::pull_anew(tx, &h)?;
-    }
-    Ok(())
-}
-
-/// Records how `v`'s edge to `y` carries its entry (`Closure::pieced`, `loose`), none where it
-/// gives none.
-fn set_carry(tx: &mut Tx<'_>, v: Vx, y: Tid, got: &BTreeSet<Vx>, k: Carry) {
-    let cl = &mut tx.core.ix.closure;
-    for w in [(Ctx::Read(y), y), (Ctx::Unread(y), y)] {
-        let entry = got.contains(&w);
-        let (pieced, loose) = (entry && k == Carry::Pieced, entry && k != Carry::Plain);
-        if pieced != cl.pieced.contains(&(v, w)) {
-            match pieced {
-                true => drop(cl.pieced.insert((v, w))),
-                false => drop(cl.pieced.remove(&(v, w))),
-            }
-        }
-        if loose != cl.loose.contains(&(v, w)) {
-            match loose {
-                true => drop(cl.loose.insert((v, w))),
-                false => drop(cl.loose.remove(&(v, w))),
-            }
-        }
-    }
 }
 
 /// A new edge of read unit `v` to `y`, which the node held as
@@ -1464,8 +1043,7 @@ fn refetch(tx: &mut Tx<'_>, v: Vx, y: Tid, was_held: bool) -> Result<()> {
 }
 
 /// Notes whether `v`'s strong to `y` counts for `Closure::targeted`; `y` losing its last is
-/// judged for what it still needs (`retention::needed`): what was held for keys on the paths to
-/// it goes with the strong (spec/sync-set.md §2 Held for keys).
+/// judged for what it still needs (`retention::needed`).
 fn set_targeted(tx: &mut Tx<'_>, y: Tid, v: Vx, on: bool) {
     if tx.core.ix.closure.set_targeted(y, v, on) {
         tx.core.note_lost(y);
@@ -1515,7 +1093,6 @@ fn apply(tx: &mut Tx<'_>, f: &mut Follow, rv: Vx, v: Vx, y: Tid, now: BTreeSet<V
                     for y in strongs_from(tx, &x.1)? {
                         f.fx.unwant(&(x, y));
                         set_targeted(tx, y, x, false);
-                        f.public.want(y);
                     }
                 }
             }
@@ -1593,9 +1170,6 @@ pub(crate) fn check_whole(tx: &mut Tx<'_>) -> Result<()> {
             }
         }
     }
-    let core = &*tx.core;
-    let keys: BTreeSet<Tid> = core.ix.secrets.keys().filter(|t| held_for_keys(core, t)).copied().collect();
-    assert_eq!(core.ix.closure.keys.iter().copied().collect::<BTreeSet<Tid>>(), keys, "the holders held for keys differ from those judged afresh");
     Ok(())
 }
 
@@ -1710,11 +1284,6 @@ impl Engine {
     /// Whether the node closure holds `t` (spec/sync-set.md §2).
     pub fn closure_holds(&self, t: &Tid) -> bool {
         self.core.ix.closure.holds(t)
-    }
-
-    /// Whether `t` is held for keys (spec/sync-set.md §2), as last settled.
-    pub fn held_for_keys(&self, t: &Tid) -> bool {
-        self.core.ix.closure.keys.contains(t)
     }
 
     /// Whether `t` is kept unread: in the node closure by a sync secret alone (spec/sync-set.md

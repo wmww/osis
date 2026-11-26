@@ -5,7 +5,7 @@
 //! the engine does not run the walk yet (A1 step 3), so this is the walk's plain input, with a
 //! minimal adapter (`Node`) from it to the derivation's `Part`s.
 use osis_base::{Ak, CommitId, Holder, PurgeBy, Role, SignKey, Tid, Ts, WallMs};
-use osis_engine::evidence::{Config, CopyId, Evidence, Kind, Part, Write};
+use osis_engine::evidence::{CopyId, Evidence, Kind, Part, Write};
 use osis_perm::paths::{Commit, Content, Delta, DeltaClass, EdgeWrite, Key, List, Part as PPart, PartKind, Paths};
 use osis_perm::{Edge, WriteId};
 use std::collections::{BTreeMap, BTreeSet};
@@ -126,8 +126,8 @@ struct Node {
 impl Node {
     fn new(w: &World, held: &[Commit], trust: BTreeSet<WriteId>, unit: &[u8]) -> Node {
         let paths = Paths::evaluate(&w.holders(), trust, held);
-        let mut ev = Evidence::new(Config { keys_open: false });
-        ev.add_sid(tid(D), tid(D));
+        let mut ev = Evidence::new();
+        ev.add_sid(tid(D));
         for &t in unit {
             ev.join(&tid(D), tid(t));
         }
@@ -137,8 +137,7 @@ impl Node {
                 let kind = match &p.kind {
                     PartKind::Edge(e) => {
                         let Holder::Thing(holder) = e.holder else { continue };
-                        let leave = holder == *p.path.last().unwrap_or(&c.signer);
-                        Kind::Write(Write { holder, gives_read: e.value.is_some_and(|v| v.role >= Role::Read) && !leave })
+                        Kind::Write(Write { holder })
                     }
                     PartKind::Delta(_) => Kind::Content,
                     PartKind::None => continue,

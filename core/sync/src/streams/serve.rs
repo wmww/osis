@@ -184,7 +184,7 @@ pub(super) fn for_keys(ctx: &Ctx, conn: ConnId, s: &SyncId) -> bool {
     ctx.shared.members(conn).get(s).is_some_and(|m| m.class == SourceClass::Keys || m.departed.is_some())
 }
 
-/// Whether entry `e` of S is shown the peer on `conn`: to one held for keys, a role entry alone
+/// Whether entry `e` of S is shown the peer on `conn`: to one held in the keys class, a role entry alone
 /// (`role_entry`); to one ended for its departure, the notices of its removals and the public's
 /// edge alone (spec/sync-opens.md §6, `Engine::departed_shown`).
 fn shown(ctx: &mut Ctx, conn: ConnId, s: &SyncId, e: &Entry) -> bool {

@@ -1,4 +1,4 @@
-//! The public in sync (spec/sync-set.md §2 T's keys open, Public pieces; spec/sync-ids.md §3 the
+//! The public in sync (spec/sync-set.md §2 T's keys open; spec/sync-ids.md §3 the
 //! public entry; spec/sync-opens.md §4-§5; spec/wire.md §10 public links): what the public reads
 //! is carried whole by every unit whose strongs reach it, entered by readers served only that
 //! unit, and opened by anyone holding a public link.
@@ -60,27 +60,12 @@ fn reaching_public() -> (World, Tid, Tid, Tid) {
     (w, t, p, d)
 }
 
-// spec/sync-set.md §2 (T's keys open; Public pieces), spec/sync-judgement.md §2 (the stubs and
-// public pieces S's sync unit carries): T's keys open what the public reads by its own grant on
-// the thing's independent, and T's pieces show it. Node 2, served only by node 1 keeping T unread, reads P whole and D (whose independent X no
-// strong reaches: its piece is X's), and computes T's unit as node 0 does. Without the clause
-// neither is carried; without the pieces node 2 never enters them (held-model `closure::public`).
-#[test]
-fn a_reader_served_by_a_store_reads_what_the_public_reads_spec_sync_set_2() {
-    let (mut w, t, p, d) = reaching_public();
-    assert_eq!(reads(&mut w, 2, &p), Some(Value::Str("p1".into())), "P read through T alone");
-    assert_eq!(reads(&mut w, 2, &d), Some(Value::Str("d1".into())), "a public thing's dependent read through T");
-    let unit = w.engine(0).sync_unit(&t);
-    assert!(unit.contains(&p) && unit.contains(&d), "T's unit carries both at its logger");
-    assert_eq!(w.engine(2).sync_unit(&t), unit, "the reader computes the logger's unit");
-}
-
-// spec/sync-set.md §2 (Public pieces), spec/permissions.md §1 (The public): a removal's piece
-// stays carried while a strong reaches the thing, and the public's departure rotates read as
-// any. Node 0 removes the
-// public from P and writes again. Node 2 learns the removal from T's pieces (P leaves T's unit
-// there as at node 0) and reads nothing written since (model control `WhileRead`: without the
-// removal's piece it would keep P in the unit).
+// spec/permissions.md §1 (The public): the public's removal is carried while a strong reaches the
+// thing, and the public's departure rotates read as any. Node 0 removes the public from P and
+// writes again. Node 2 learns the removal from what T carries of P (P leaves T's unit there as at
+// node 0) and reads nothing written since (model control `WhileRead`: without the removal it
+// would keep P in the unit).
+// Stub rewrite (notes/stub-rewrite.md): P's stub in T's unit carries the removal (R2)
 #[test]
 fn removing_the_public_ends_what_a_reader_of_the_referrer_reads_spec_sync_set_2() {
     let (mut w, t, p, _) = reaching_public();

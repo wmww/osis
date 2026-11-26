@@ -155,44 +155,6 @@ fn a_writers_refresh_keeps_the_admins_inbox_spec_sync_inbox_1() {
     }
 }
 
-// spec/permissions.md §2 (Granting to a thing): node 1 holds nothing of account A0 but A0's
-// profile, read (as a contact card gives it). Before, its grant to A0 is refused; once it holds
-// the profile, A0's card there gives it A0's keys, and its grant is fired at the inbox A0's admin
-// chose.
-#[test]
-fn a_card_alone_lets_a_stranger_grant_spec_permissions_2() {
-    let mut lp = LocalPeer::new_apart(2, 0, T0).unwrap();
-    let (acc, _) = osis_engine::local_peer::make_account(&mut lp.peers[0].engine).unwrap();
-    // an admin of A0 moves its inbox to i2, taking its inbox signals (so its read keyset carries
-    // a KEM key to seal to)
-    let mut m = Mutation::new();
-    let i2 = lp.peers[0].engine.new_thing(&mut m, acc.thing);
-    let mut setting = ct::RetentionSetting::default();
-    setting.take_inbox_signals();
-    m.set(i2, &ct::RETENTION, &setting).unwrap();
-    lp.peers[0].commit(m).unwrap();
-    lp.hold_at(0, i2);
-    lp.peers[0].engine.set_inbox(acc.thing, Some(i2)).unwrap();
-    lp.peers[0].engine.refresh_cards().unwrap();
-    let me1 = lp.peers[1].engine.tid();
-    let t = thing(&mut lp, 1, me1, true);
-    assert!(lp.peers[1].engine.grant(&t, &acc.thing, &ct::Edge { role: Role::Read, until: None, may_grant: false, retain: false, floor: None }).is_err(), "no card, no keys: refused");
-    // node 0 grants node 1 read on the profile (node 1's keys shown by hand)
-    let keys = lp.peers[1].engine.holder_keys(&me1).unwrap();
-    lp.peers[0].engine.take_holder_keys(&me1, &keys, None).unwrap();
-    lp.peers[0].engine.grant(&acc.profile, &me1, &ct::Edge { role: Role::Read, until: None, may_grant: false, retain: false, floor: None }).unwrap();
-    lp.peers[1].know(&[acc.profile]).unwrap();
-    let ids = lp.peers[0].engine.commit_ids();
-    crate::flows::send_carried(&mut lp, 0, 1, &ids);
-    crate::flows::send_carried(&mut lp, 0, 1, &ids);
-    let e1 = &mut lp.peers[1].engine;
-    e1.take_carried().unwrap();
-    assert_eq!(e1.inbox_of(&acc.thing).unwrap(), Some(i2), "A0's card read: the inbox its admin chose");
-    e1.grant(&t, &acc.thing, &ct::Edge { role: Role::Read, until: None, may_grant: false, retain: false, floor: None }).unwrap();
-    let owed: Vec<Tid> = e1.fires_owed().iter().filter_map(|id| e1.sealed_fire(id).ok().flatten()).map(|f| f.thing).collect();
-    assert!(owed.contains(&i2), "the grant is fired at A0's inbox: {owed:?}");
-}
-
 // spec/permissions.md §5.2 (Compaction snapshot; card aspect): node 1, a writer of
 // C through its own account alone, holds A0's card on C. Its snapshot of the card aspect carries
 // the card off a path through A0: refused writer-side and, written anyway, invalid at node 0.
@@ -233,8 +195,8 @@ fn a_card_rewrite_settles_for_a_paired_node_spec_sync_inbox_1() {
     let (mut lp, acc) = LocalPeer::one_account(1, 0, T0).unwrap();
     let mut p = osis_engine::local_peer::Peer::new(7, lp.peers[0].engine.now()).unwrap();
     let (node, keys) = (p.engine.tid(), p.engine.node_keys().unwrap());
-    let (offer, done) = lp.peers[0].engine.pair(&acc.thing, &node, &keys, Role::Admin).unwrap();
-    p.engine.take_pairing(&offer).unwrap();
+    let done = lp.peers[0].engine.pair(&acc.thing, &node, &keys, Role::Admin).unwrap();
+    p.engine.take_pairing(&acc.thing).unwrap();
     p.know(&[acc.thing, acc.profile]).unwrap();
     for id in lp.peers[0].engine.commit_ids() {
         if !done.commits.contains(&id) {

@@ -39,7 +39,7 @@ impl Streams {
         if osis_blob::blob_id(&bytes) != e.blob {
             return;
         }
-        // held for keys it takes role entries alone, and no relay-only blob is one
+        // held in the keys class it takes role entries alone, and no relay-only blob is one
         if holding == Holding::Keys {
             return;
         }

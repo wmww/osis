@@ -344,18 +344,14 @@ impl std::fmt::Debug for ThingsFeed {
 #[derive(Clone)]
 pub(crate) struct Entered {
     held: osis_base::memo::Feed<Tid>,
-    /// The holders coming to be held for keys (`Closure::keys_feed`).
-    keys: osis_base::memo::Feed<Tid>,
     /// The links followed (`FollowedLinks::followed_feed`).
     links: osis_base::memo::Feed<Tid>,
-    /// The things coming to be followed by the public entry (`Closure::public_feed`).
-    public: osis_base::memo::Feed<Tid>,
 }
 
 /// How this node syncs one thing of N's closure (spec/sync-set.md §2).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ThingSync {
-    /// Its sync IDs, opened by a read secret held: read, or, where the thing is held for keys,
+    /// Its sync IDs, opened by a read secret held: read, or, where the thing is held in the keys class,
     /// for role entries alone (`Engine::thing_holdings` tells which).
     Read(Vec<SyncId>),
     /// Kept unread: by a sync secret alone (spec/sync.md §3).
@@ -370,15 +366,17 @@ pub enum ThingSync {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Holding {
     Read,
-    /// Held for keys (spec/sync-set.md §2): its role entries alone, opened and judged as a reader
-    /// does, and none of its thing's content.
+    /// Its role entries alone, opened and judged as a reader does, and none of its thing's
+    /// content.
+    // Stub rewrite (notes/stub-rewrite.md): the stub class, a stub's holder followed for role
+    // entries (R2); nothing holds a sync ID so yet
     Keys,
     Unread,
 }
 
 impl Holding {
     /// Whether a read secret of S's thing is held: S's entries are opened and judged as a reader
-    /// does (all of them read, its role entries alone held for keys).
+    /// does (all of them read, its role entries alone held in the keys class).
     pub fn opens(self) -> bool {
         self != Holding::Unread
     }
@@ -418,7 +416,7 @@ pub struct ReadCredentials {
     pub acting: Vec<osis_crypto::SigningSecret>,
     /// The public holds a role on S's thing: its public entry is shown (spec/sync-opens.md §4).
     pub shows_public: bool,
-    /// The public reads S's thing (else, shown, it holds sync alone there).
+    /// The public reads S's thing (else, shown, it holds only sync there).
     pub public_reads: bool,
     /// The public holds a role on S's thing as held here, this node redeems a public link to it,
     /// or it follows S's thing by the public entry: its public entry is tested.
@@ -810,7 +808,7 @@ impl Engine {
             })?;
         }
         let x = &g.secrets;
-        // the public's box where it holds sync alone carries no read secret
+        // the public's box where it holds only sync carries no read secret
         if let Some(r) = &x.read {
             self.learn_secret(&g.thing, osis_base::Role::Read, r.epoch, r.secret.clone(), &g.party)?;
             if let Some((e, v)) = &r.earlier {
@@ -882,7 +880,7 @@ impl Engine {
     }
 
     /// The nodes this node may dial for S (spec/sync-opens.md §1 Whom to dial), each at the
-    /// address it is known by here: of S read or held for keys, those the `dial.0` lists of S's
+    /// address it is known by here: of S read or held in the keys class, those the `dial.0` lists of S's
     /// things name (the driver never dials its own key). A memo per sync ID; for dialing only,
     /// never proof.
     pub fn dial_peers(&mut self, s: &SyncId) -> Result<Arc<Vec<Address>>> {

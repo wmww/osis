@@ -295,7 +295,7 @@ pub enum Reader<'a> {
     /// A link key, by static entry, with an entry box sealed to its first read keyset's KEM key.
     Static { signing: VerifyingKey, kem: &'a KemPublicKey },
     /// The public, by its public entry, with an open-form entry box: the read secrets and the
-    /// sync secret where it reads (`reads`), the sync secret alone where it holds sync alone.
+    /// sync secret where it reads (`reads`), the sync secret alone where it holds only sync.
     Public { reads: bool },
 }
 
@@ -405,7 +405,7 @@ pub fn open_entry_box(b: &SecretBox, step: &Step, kem: &KemSecret, t: &Tid) -> R
 }
 
 /// Reads the public entry's box of `step` of `t`'s sync ID (open form, spec/sync-ids.md §3):
-/// the secrets of the public's role it carries (read and sync, or sync alone), with the epochs of
+/// the secrets of the public's role it carries (read and sync, or only sync), with the epochs of
 /// `t` they name. Anyone reads it.
 pub fn read_public_entry_box(b: &SecretBox, step: &Step, t: &Tid) -> Result<EntryItem, Error> {
     let slot = BoxSlot::Entry { sync_id: step.sync_id, step_key: step.step_key, actor: *t };
@@ -568,7 +568,7 @@ pub(crate) mod tests {
 
     // spec/sync-ids.md §3 (Entry boxes), spec/wire.md §7: the public listed by its public entry
     // with an open entry box, which anyone reads, carrying its role's secrets: the read secrets
-    // and the sync secret where it reads, the sync secret alone where it holds sync alone; the set
+    // and the sync secret where it reads, the sync secret alone where it holds only sync; the set
     // fits its sync ID only with the open box under that sync ID's public entry.
     #[test]
     fn the_public_entry_box_is_open() {

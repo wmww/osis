@@ -243,7 +243,7 @@ impl Sim {
         // each account is every other's contact (spec/sync-inbox.md §5): its profile is public and
         // its contact card a public link to it, which each other node follows until the profile
         // is here, then redeems (a strong from its account, spec/sync-set.md §4); the profile
-        // carries the account's card, so a grant from outside fires at the inbox its keys name
+        // carries the account's card, so a fire reaches the inbox its keys name
         let mut links = Vec::new();
         for i in 0..s.nodes.len() {
             let profile = s.node(i)?.profile;
@@ -464,8 +464,7 @@ impl Sim {
 
     /// Node `from` offers node `to` each sealed fire it owes that account (spec/sync-inbox.md §3
     /// Sending, as a sync's fire step does, apart from its commits), and owes one no more once
-    /// taken: a grant from outside reaches its holder as its `grant@~0` fire (spec/sync-inbox.md §5
-    /// Grant from outside). A fire refused fails the run: every fire offered here is on an
+    /// taken. A fire refused fails the run: every fire offered here is on an
     /// account's inbox.
     pub fn fires(&mut self, from: usize, to: usize) -> Res<()> {
         if !self.node(from)?.up || !self.node(to)?.up {

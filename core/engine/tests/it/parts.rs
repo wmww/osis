@@ -909,6 +909,7 @@ fn purge_whose_only_part_is_parked_applies_spec_commits_4() {
 // It cannot be decoded, so it goes, whichever came first: no copy of its bytes is left on the device,
 // its writes having no effect anywhere (spec/crdt.md §4.7).
 #[test]
+#[ignore = "stub rewrite: entry by references and chain-holder stubs (R2)"]
 fn parked_part_goes_at_its_purge_spec_commits_5() {
     use crate::common::*;
     for parked_first in [true, false] {

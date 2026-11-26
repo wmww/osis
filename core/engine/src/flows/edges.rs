@@ -177,10 +177,6 @@ pub(crate) fn grant_history(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, h
         }
         _ => None,
     };
-    let unreached = match &cut {
-        Some(rot) => rotation::unreached(tx, &target, rot)?.into_iter().filter(|x| *x != holder).collect(),
-        None => Vec::new(),
-    };
     let edge = &edge;
     put_edge(&mut m, target, holder, edge)?;
     if leave {
@@ -204,7 +200,7 @@ pub(crate) fn grant_history(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, h
     }
     let c = Engine::commit_tx(tx, m)?;
     if let Some(rot) = &cut {
-        rotation::recorded(tx, target, c, rot, &unreached, &mut done)?;
+        rotation::recorded(tx, target, c, rot, &mut done)?;
         // the current state under the cut: a snapshot owed of each aspect holding content from
         // before it (spec/crypto.md §4, State at a cut), written right after this transaction
         rotation::floors::owe_state(tx, &target)?;
@@ -216,9 +212,6 @@ pub(crate) fn grant_history(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, h
         None => None,
     };
     done.add(c);
-    if let Some(c) = c {
-        super::inbox::deliver_copy(tx, holder, c, target)?;
-    }
     if let Some(s) = setting {
         let mut m = Mutation::new();
         m.set(target, &ct::RETENTION, &s)?;
@@ -356,13 +349,7 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
     if selfr {
         m.unchecked();
     }
-    let c = rotation::commit_rotating(tx, m, who, target, &roles, &skip, departs, &mut done)?;
-    // a removed holder is opened the target's sync ID no more: its removal reaches it as a grant does
-    if let (Some(c), false) = (c, selfr) {
-        for x in &removing {
-            super::inbox::deliver_copy(tx, *x, c, target)?;
-        }
-    }
+    rotation::commit_rotating(tx, m, who, target, &roles, &skip, departs, &mut done)?;
     Ok(done)
 }
 

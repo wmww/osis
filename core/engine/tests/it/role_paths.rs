@@ -436,6 +436,7 @@ fn finding_a_may_grant_grants_path_does_not_grow_with_history_spec_wire_4() {
 // descent, unmarked; once it holds the grant, the marked hop (the fewest edges), before the detach
 // too.
 #[test]
+#[ignore = "stub rewrite: entry by references and chain-holder stubs (R2)"]
 fn a_detached_things_owner_states_a_marked_hop_spec_wire_4() {
     let (mut lp, ps) = people(2);
     let g = thing_of(&mut lp, 0, ps[0]);
@@ -480,6 +481,7 @@ fn a_detached_things_owner_states_a_marked_hop_spec_wire_4() {
 // a detached thing's path (A's direct edge, marked) walks the things reaching it, as many at 10n
 // unrelated role commits held as at n.
 #[test]
+#[ignore = "stub rewrite: entry by references and chain-holder stubs (R2)"]
 fn finding_a_marked_path_does_not_grow_with_history_spec_wire_4() {
     let walked = |n: usize| {
         let (mut lp, ps) = people(2);

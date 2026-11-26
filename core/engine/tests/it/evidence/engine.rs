@@ -16,7 +16,7 @@ fn every_node_of_the_role_paths_world_passes_the_evidence_check_spec_permissions
         assert!(copies.values().flatten().any(|x| matches!(x.kind, osis_engine::evidence::Kind::Write(_))), "node {i} holds edge writes");
         assert_eq!(p.engine.check_evidence().unwrap(), None, "node {i}");
         let things: std::collections::BTreeSet<_> = copies.keys().map(|c| c.1).collect();
-        let sids: Vec<_> = things.iter().map(|t| (*t, *t, vec![*t])).collect();
+        let sids: Vec<_> = things.iter().map(|t| (*t, vec![*t])).collect();
         let ev = p.engine.evidence(&sids).unwrap();
         let with = things.iter().filter(|t| ev.required(t).is_some_and(|r| !r.is_empty())).count();
         assert!(with >= 3, "node {i}: {with} things require copies");
@@ -134,7 +134,7 @@ fn f9_a_removal_of_two_holders_waits_for_both_creations_at_a_reader_spec_permiss
     assert_eq!(x.check_evidence().unwrap(), None);
     let rm = *rm.last().unwrap();
     let gq = *gq.last().unwrap();
-    let ev = x.evidence(&[(d, d, vec![d])]).unwrap();
+    let ev = x.evidence(&[(d, vec![d])]).unwrap();
     let req = ev.required(&d).unwrap();
     let _ = ga;
     assert!(gk.iter().any(|c| req.contains_key(&(*c, a))), "X's grant to K: {req:?}");
@@ -204,7 +204,7 @@ fn a_write_listing_an_old_step_after_sync_is_compacted_requires_the_snapshot_spe
     assert_eq!(at_snap.ts, e.header(&s2).unwrap().ts);
     assert!(at_snap.ts < e.header(&snap).unwrap().ts);
     // D's write (unit D alone) requires the steps' copies; forgotten but the snapshot, it alone
-    let mut ev = osis_engine::evidence::held::derive(&e.evidence_mint(), &copies, &[(d, d, vec![d])]);
+    let mut ev = osis_engine::evidence::held::derive(&copies, &[(d, vec![d])]);
     let req = ev.required(&d).unwrap().clone();
     assert!(req.contains_key(&(snap, g)) && req.contains_key(&(s2, g)), "{req:?}");
     let recording: Vec<_> = req.keys().filter(|c| c.1 == g && c.0 != snap && copies[c].iter().any(|p| !p.steps.is_empty())).copied().collect();
@@ -281,7 +281,7 @@ fn a_write_listing_its_mint_admins_step_requires_that_step_spec_crypto_7() {
     let e = &mut lp.peers[0].engine;
     let copies = e.evidence_copies().unwrap();
     let minting = copies.keys().find(|k| k.1 == n && copies[*k].iter().any(|p| !p.steps.is_empty())).expect("N's minting records its genesis step").0;
-    let req = e.evidence(&[(g, g, vec![g])]).unwrap().required(&g).unwrap().clone();
+    let req = e.evidence(&[(g, vec![g])]).unwrap().required(&g).unwrap().clone();
     assert!(matches!(req.get(&(minting, n)), Some(Reason::Step(b, _)) if *b == n), "{req:?}");
     // G's commits, in the order made, and N's record: not N's minting
     let mut on_g: Vec<CommitId> = copies.keys().filter(|k| k.1 == g).map(|k| k.0).collect::<BTreeSet<_>>().into_iter().collect();

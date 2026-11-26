@@ -604,7 +604,7 @@ fn what_nothing_needs_goes_whatever_the_arrival_order_spec_commits_5() {
         if late {
             crate::flows::send_carried(&mut lp, 1, 0, &[x]);
         }
-        // the grant ends and its last fire leaves the inbox: T's edge piece is held no more
+        // the grant ends and its last fire leaves the inbox: nothing of T's grant is held
         let removal = lp.peers[1].engine.demote(&t, &osis_engine::flows::Demotion { holder: p0, new: None, retain: Some(false) }).unwrap().commits;
         crate::flows::send_carried(&mut lp, 1, 0, &removal);
         lp.advance(osis_base::format::INBOX_LIFETIME_MS + 3_600_000);

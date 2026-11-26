@@ -146,7 +146,7 @@ impl Core {
     /// Whether a step `tid`'s `sync.0` places bears the sync key of a sync secret of it held in
     /// `e` (spec/sync-set.md §2 Counts as independent; spec/sync-ids.md §4 Owner): only a thing
     /// with role secrets of its own has boxes, and a grantee's box arrives before the rotation
-    /// that made its epoch (spec/permissions.md §4 Key part).
+    /// that made its epoch.
     ///
     /// Invariant: a box is any writer's word, a step an admin's (`sync_ids::steps`: placed from
     /// valid `sync.0` writes alone, verified to their genesis), and the step binds this very
@@ -282,7 +282,7 @@ impl Core {
         }
         // a node holds no secret of an actor it cannot read (spec/permissions.md §3): an applied
         // box gives a role's secrets only where the node's roles give them now
-        // (`may_take_role`: reading, every role's; sync alone, the sync secret), whatever the box
+        // (`may_take_role`: reading, every role's; only sync, the sync secret), whatever the box
         // (a forgotten part rejoining, a late rotation, a holder actor's chain); a pending one's
         // are a grant's still to be judged, read until it is (`keys::forget_unchecked`). The role
         // is kept as it was, and read again once the node's roles give it (`flows::retake`)

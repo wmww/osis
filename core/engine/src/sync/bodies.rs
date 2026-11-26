@@ -1149,7 +1149,7 @@ impl Engine {
                 if super::certblobs::CertBlob::of(bytes, &key, BTreeSet::new()).is_none() {
                     return Ok(Opened::Bad);
                 }
-                // a sync copy in `t`'s key part (spec/wire.md §4, framed as a record blob is):
+                // a sync copy under `t` (spec/wire.md §4, framed as a record blob is):
                 // taken under `t`, for its box and steps alone (`sync_ids::unread`)
                 if osis_commit::SyncCopy::is_shaped(&pt) {
                     return Ok(if self.take_sync_copy(&t, blob, &pt, false)? { Opened::SyncCopy } else { Opened::Bad });

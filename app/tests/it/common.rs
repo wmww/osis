@@ -77,6 +77,5 @@ pub fn deliver(from: &Osis, to: &Osis) {
         let r = to.engine(|e| e.ingest(&pk.bytes, pk.blobs.clone()));
         assert!(r.is_ok() || other, "{r:?}");
     }
-    // a grant from outside reaches its holder as an offer, its fire (spec/sync-inbox.md §5 Grant from outside)
     osis::internals::pass_fires(from, to);
 }

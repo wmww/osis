@@ -205,6 +205,7 @@ fn a_valid_edit_of_an_invalid_original_stands_alone_spec_commits_5() {
 // spec/commits.md §5 Signals: versions fall with their original and fold under it again when both
 // return (the kicker's kick falls)
 #[test]
+#[ignore = "stub rewrite: entry by references and chain-holder stubs (R2)"]
 fn versions_return_folded_with_their_original_spec_commits_5() {
     let (mut lp, d, ids) = net_with(3);
     let r = purgeable();

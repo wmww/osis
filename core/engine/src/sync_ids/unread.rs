@@ -115,15 +115,6 @@ pub(crate) fn parse(under: Tid, sealed: bool, plain: &[u8]) -> Option<HeldSyncCo
     Some(HeldSyncCopy { under, holder, sealed, key: content_key(plain), copy, boxes, steps })
 }
 
-/// The (thing, holder) of sync copy `plain` (its piece's holder): `None` where it is bad input
-/// or boxes no holder.
-pub(crate) fn holder_of(plain: &[u8]) -> Option<(Tid, Tid)> {
-    let copy = osis_commit::SyncCopy::decode(plain).ok()?;
-    let w = crate::apply::keys::secrets_write(&read_headerless(copy.piece.as_ref()?, &copy.commit)?);
-    let h = w.boxes.keys().map(|k| k.holder.0).next()?;
-    Some((copy.thing, h))
-}
-
 /// Loads the sync copies taken (an open or reload).
 pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
     let bad = || Error::Corrupt("sync copy row");
@@ -226,8 +217,8 @@ pub struct Unread {
     pub counted: BTreeSet<BlobId>,
     /// The holders of counted copies of a box opening to a secret whose sync key a head bears
     /// (the newest step of a sync ID of `t` held: `heads`): things holding sync or above on `t`
-    /// as this node knows it from them (`stubs_of`). A head past every key a holder's boxes give
-    /// is its removal (spec/sync-judgement.md §6 Stops): a holder of sync alone is told so by
+    /// as this node knows it from them. A head past every key a holder's boxes give
+    /// is its removal (spec/sync-judgement.md §6 Stops): a holder of only sync is told so by
     /// that step, never by a header (spec/sync-ids.md §2 What a sync holder learns).
     /// Invariant (security): a holder is named only by a box opening to a secret a step bears,
     /// so what anyone may bring (a copy boxing nothing) names no role.
@@ -320,51 +311,6 @@ fn join_steps(a: &mut ct::SyncIds, b: &ct::SyncIds) {
 }
 
 impl Core {
-    /// Whether `h`'s edge pieces on `x` go as sync copies (spec/permissions.md §4 Key part): no
-    /// held edge write on `x` valid here gives `h` read or above (its own
-    /// self-writes aside: `edge_gives_read`) and `h` is not `x`'s mint admin: no edge of the
-    /// evidence's read graph (`evidence::Write::gives_read`), so Role changes travel carries no
-    /// write of it. An invalid or pending write giving read (a writer of `h` or of `x` may sign
-    /// any) changes nothing: what `h`'s readers receive is decided by valid writes alone.
-    /// A holder that read `x` keeps certificate copies after a lowering or removal: its readers
-    /// hold `x`'s record and judge its role commits. A holder no held write gives a role (a
-    /// removal by a node that never held its grant) goes as one of sync alone: a blind remover
-    /// sends it nothing (a removed reader hears by notices, spec/permissions.md §4 Notices).
-    /// Invariant (security; spec/sync-ids.md §2 What a sync holder learns): every path a commit
-    /// of `x` naming `h` takes to `h`'s readers (key part, sealed copy, fire, offer) reads this
-    /// one predicate, so none carries a header where another carries a sync copy.
-    pub(crate) fn sync_alone_on(&self, h: &Tid, x: &Tid) -> bool {
-        let hd = osis_base::Holder::Thing(*h);
-        if self.ix.held.created(x).is_some_and(|r| r.holder() == hd) {
-            return false;
-        }
-        for rc in self.ix.held.edge_commits(x).iter() {
-            for (i, _) in rc.ops.iter().enumerate().filter(|(_, o)| o.target == *x && o.holder == hd) {
-                if self.edge_gives_read(rc, i) {
-                    return false;
-                }
-            }
-        }
-        true
-    }
-
-    /// Whether edge write `i` of held role commit `rc` gives its holder read (spec/permissions.md
-    /// §4 Role changes travel): a thing holder (a key's grant gives no read: nothing is sealed to a
-    /// key), read or above, no self-write (its path ending at the holder), and applied in the walk
-    /// here (valid: not invalid, not pending). The one reading of a read edge: the evidence
-    /// derivation's (`evidence::held::copy_parts`) and `sync_alone_on`'s. Who writes it: any
-    /// writer of the holder or the target may sign an edge write naming read; only X's admins
-    /// (or a may-grant holder) make one apply, so only they turn the holder's pieces to
-    /// certificate copies.
-    pub(crate) fn edge_gives_read(&self, rc: &osis_perm::RoleCommit, i: usize) -> bool {
-        let (Some(o), Ok(w)) = (rc.ops.get(i), u32::try_from(i)) else { return false };
-        let leave = osis_base::Holder::Thing(*rc.path_to(&o.target).last().unwrap_or(&rc.signer));
-        o.holder.thing().is_some()
-            && o.holder != leave
-            && o.edge.is_some_and(|e| e.role >= Role::Read)
-            && self.timelines().on(&o.target).is_some_and(|on| on.is_applied(&osis_perm::WriteId(rc.id, w)))
-    }
-
     /// Whether `u` holds sync on `y` as the sync copies of `y` counting here tell (no grant of
     /// `y` held): a counted copy's holder is `u`, or one `u` holds sync or above on with key
     /// access (its chain, as a grant held would give it).
@@ -373,7 +319,7 @@ impl Core {
     }
 
     /// The things counted sync copies here name `h` holder on (`Unread::holders`): its edges
-    /// as a holder of sync alone shows them, no edge write held.
+    /// as a holder of only sync shows them, no edge write held.
     pub(crate) fn copies_naming(&self, h: &Tid) -> Vec<Tid> {
         self.ix.sync_copy_holders.get(h).into_iter().flatten().copied().filter(|y| self.unread(y).holders.contains(h)).collect()
     }
@@ -392,7 +338,7 @@ impl Core {
     /// nothing until the role commits it awaits arrive (osis-sync
     /// `differential::a_public_reader_keeps_a_thing_on_taking_its_record_*`). Beside that word a
     /// forged genesis neither makes a dependent thing independent nor gives a reader of `t` a
-    /// sync ID in place of its own (`tests_delivery::a_forged_*`).
+    /// sync ID in place of its own.
     pub(crate) fn copies_speak(&self, t: &Tid) -> bool {
         if self.ix.steps.get(t).is_some_and(|s| !s.steps.is_empty()) || self.ix.keyset_parts.get(t).is_some_and(|s| !s.is_empty()) {
             return false;
@@ -482,8 +428,7 @@ impl Core {
 }
 
 impl crate::engine::Engine {
-    /// Holder `h`'s sync copy of held commit `c` on `x` (spec/wire.md §4; spec/permissions.md §4
-    /// Key part: where `h` holds sync alone on `x`): `h`'s `secrets.0` piece and the `sync.0`
+    /// Holder `h`'s sync copy of held commit `c` on `x` (spec/wire.md §4): `h`'s `secrets.0` piece and the `sync.0`
     /// delta, each as held, with the part indices they are (what its prefix commits to, spec/wire.md
     /// §5). `None` where `c` is not held or holds neither for `h`.
     pub(crate) fn sync_copy(&mut self, c: &CommitId, x: &Tid, h: &Tid) -> Result<Option<(osis_commit::SyncCopy, Vec<usize>)>> {
@@ -532,7 +477,7 @@ impl crate::engine::Engine {
         self.core.ix.sync_copy_on.keys().chain(self.core.ix.notices.keys()).copied().collect()
     }
 
-    /// The sync copies read sync ID `s` carries (spec/permissions.md §4 Key part), by content
+    /// The sync copies read sync ID `s` carries (spec/wire.md §4), by content
     /// (`ContentKey`), each with the thing reading `s` it is under and its plaintext: those its
     /// read things' certificates name (`Certs::sync_copies`, of commits held here), and each
     /// counted copy taken under one of them (`Unread::counted`), a sealed copy's included (H's
@@ -596,10 +541,4 @@ impl crate::engine::Engine {
         Ok(Some((id, blob, wrap)))
     }
 
-    /// The sync copies of `t` taken here, each with whether it counts (`Unread::counted`): tests.
-    #[cfg(test)]
-    pub(crate) fn sync_copies_of(&self, t: &Tid) -> Vec<(BlobId, Arc<HeldSyncCopy>, bool)> {
-        let u = self.core.unread(t);
-        self.core.ix.sync_copies.get(t).map(|m| m.iter().map(|(b, c)| (*b, c.clone(), u.counted.contains(b))).collect()).unwrap_or_default()
-    }
 }

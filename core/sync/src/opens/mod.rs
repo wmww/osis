@@ -346,7 +346,7 @@ struct Conn {
     tested_pos: u64,
     test_due: bool,
     /// A filter arrived since the sync IDs tested by the public entry alone were last tested
-    /// (`Changed::by_public`).
+    /// (`Changed::public_tested`).
     public_due: bool,
     offer: Option<Vec<Sent>>,
     /// Reported positions (spec/sync-opens.md §6 Lost): streams' word, through `reported`.
@@ -375,11 +375,11 @@ struct Changed {
     end: u64,
     at: BTreeMap<SyncId, (u64, [u8; 32], Arc<Creds>)>,
     order: BTreeMap<u64, SyncId>,
-    /// The sync IDs whose credentials test the public entry without showing it (a thing
-    /// followed by it, a public link redeemed: spec/sync-opens.md §5 Testing): tested at each
+    /// The sync IDs whose credentials test the public entry without showing it (a public link
+    /// redeemed: spec/sync-opens.md §5 Testing): tested at each
     /// filter arrival, since a peer's filter shows the entry once the public reads S's thing,
     /// whatever this node's own credentials did.
-    by_public: BTreeSet<SyncId>,
+    public_tested: BTreeSet<SyncId>,
 }
 
 impl Changed {
@@ -1427,12 +1427,12 @@ impl Opens {
         if let Some((p, ..)) = &known {
             self.changed.order.remove(p);
         }
-        self.changed.by_public.remove(&s);
+        self.changed.public_tested.remove(&s);
         if let Some(c) = &now
             && c.tests.iter().any(|(t, _)| matches!(t, Tested::Public))
             && !c.shows.iter().any(|(x, _)| matches!(x, Shown::Public(_)))
         {
-            self.changed.by_public.insert(s);
+            self.changed.public_tested.insert(s);
         }
         if let Some(c) = now {
             // the store's `changed_at` moves only for credentials that moved since it was
@@ -2116,9 +2116,9 @@ impl Opens {
         // a walk Hit refused: S asks Behind (spec/sync-ids.md §6 Walk)
         // and a Behind refused for now, its back-off over, asked again
         let mut missed: Vec<SyncId> = c.walks.iter().filter(|(_, w)| w.missed || w.retry).map(|(s, _)| *s).collect();
-        // tested by the public entry alone: again at each filter arrival (`Changed::by_public`)
+        // tested by the public entry alone: again at each filter arrival (`Changed::public_tested`)
         if c.public_due {
-            missed.extend(self.changed.by_public.iter().copied());
+            missed.extend(self.changed.public_tested.iter().copied());
             missed.sort();
             missed.dedup();
         }

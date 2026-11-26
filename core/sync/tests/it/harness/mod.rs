@@ -672,15 +672,14 @@ impl World {
         let (acc, profile, inbox) = (self.node(i).account.expect("an account"), self.node(i).profile, self.node(i).inbox);
         let (node, keys) = self.write(j, |e| (e.tid(), e.node_keys().expect("node keys")));
         let pair = |e: &mut Engine| e.pair(&acc, &node, &keys, osis_base::Role::Admin);
-        let offer = match self.write(i, pair) {
-            Err(osis_engine::Error::Store(_)) => self.write(i, pair).expect("pairing again after a store failure"),
-            r => r.expect("pair"),
+        match self.write(i, pair) {
+            Err(osis_engine::Error::Store(_)) => drop(self.write(i, pair).expect("pairing again after a store failure")),
+            r => drop(r.expect("pair")),
         }
-        .0;
-        self.write(j, |e| e.take_pairing(&offer)).expect("take the offer");
-        // the offer also names where the pairer is dialed, as a link names its peers
-        // (`osis::Osis::take_offer`): the new node holds none of A's content (its `dial.0`) before
-        // it syncs A
+        // Stub rewrite (notes/stub-rewrite.md): pairing hands over A's values (R3)
+        self.write(j, |e| e.take_pairing(&acc)).expect("name the account");
+        // where the pairer is dialed, as a link names its peers: the new node holds none of A's
+        // content (its `dial.0`) before it syncs A
         let peers = osis_blob::link_peers(self.node(i).key.0, &self.net.reach.items(i), &self.node(i).node.config().dial);
         self.nodes.get_mut(j).expect("no such node").node.offered(acc, peers).expect("the pairer's peers kept");
         if let Some(n) = self.nodes.get_mut(j) {
@@ -1233,8 +1232,7 @@ impl World {
     /// it (spec/sync-judgement.md §2 Loggable is no way to lose a body a reader needs: who may
     /// log it does). Not while a node lies (it may withhold). A certificate S carries at the
     /// holder (its things' certificates name the commit) is owed only to a reader whose own
-    /// certificates of S name it: an edge piece goes in a key part only as far as a node syncing
-    /// it syncs the edge's target (spec/permissions.md §4 Key part).
+    /// certificates of S name it.
     fn unreached_must_holds(&mut self) {
         if !self.liars.is_empty() {
             return;

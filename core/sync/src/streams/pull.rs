@@ -954,7 +954,7 @@ impl Streams {
                 }
                 class(Rank::Unopened, false)
             }
-            // held for keys it takes what it is shown as a reader does: its source shows it role
+            // held in the keys class it takes what it is shown as a reader does: its source shows it role
             // entries alone (`Streams::event`)
             Holding::Read | Holding::Keys => {
                 if tomb {

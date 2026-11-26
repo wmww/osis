@@ -3,7 +3,7 @@
 //! on B recording a step on the path from B's genesis to a step bearing that key, whatever order
 //! they arrive in. held-model has no steps (notes/a2-spec/README.md Open 3), so these are hand
 //! worlds only; each step incremental equals from scratch.
-use osis_engine::evidence::{Config, CopyId, Del, Evidence, Kind, Level, Part, Reason, Step};
+use osis_engine::evidence::{CopyId, Del, Evidence, Kind, Level, Part, Reason, Step};
 use std::collections::BTreeSet;
 
 type E = Evidence<u32, u16, u32>;
@@ -21,8 +21,8 @@ fn req(ev: &E) -> Copies {
 }
 
 fn d_unit() -> E {
-    let mut ev = E::new(Config::default());
-    ev.add_sid(D, D);
+    let mut ev = E::new();
+    ev.add_sid(D);
     ev.join(&D, D);
     ev
 }
@@ -97,7 +97,7 @@ fn a_member_listing_a_key_brings_its_steps_spec_permissions_4() {
     const K: u16 = 2;
     let mut ev = d_unit();
     ev.add((1, B), sync0(vec![step(1, None)]));
-    let grant = Part { dels: vec![Del { base: B, level: Level::Admin, key: 11 }], ..Part::new(Kind::Write(osis_engine::evidence::Write { holder: K, gives_read: true }), Some(vec![(X, O)])) };
+    let grant = Part { dels: vec![Del { base: B, level: Level::Admin, key: 11 }], ..Part::new(Kind::Write(osis_engine::evidence::Write { holder: K }), Some(vec![(X, O)])) };
     ev.add((5, O), vec![grant]);
     assert_eq!(req(&ev), Copies::new());
     ev.add((9, D), vec![Part::new(Kind::Content, Some(vec![(K, O), (O, D)]))]);

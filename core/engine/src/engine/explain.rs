@@ -75,7 +75,6 @@ fn root(core: &Core, x: &Tid, r: &Root) -> String {
     match r {
         Root::Held if core.ix.closure.holds(x) => format!("in the node closure: {}", path(core, x)),
         Root::Held => "leaving the node closure, not released yet".into(),
-        Root::Keys => "held for keys".into(),
         Root::Copy(a) if a == x => "a retained copy".into(),
         Root::Copy(a) => format!("the retained copy of {}", label(core, a)),
         Root::SelfRemoval(c) => format!("an own self-removal from it (c:{}) waits to be sealed", short(c)),
@@ -92,7 +91,6 @@ fn need(core: &Core, x: &Tid, n: &Need) -> String {
         Need::Missing(c) => format!("held commit c:{} on it has a part missing on {x}", short(c)),
         Need::Strong(ak) => format!("{x}'s {ak} holds a strong to it"),
         Need::Card => format!("a card on {x} is of it or of a thing naming it its inbox"),
-        Need::Offered(c) => format!("a grant fire held on {x}'s inbox carries {c:?} on it"),
     }
 }
 

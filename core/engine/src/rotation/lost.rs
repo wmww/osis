@@ -89,8 +89,7 @@ fn holds_at(core: &Core, a: &Tid, min: Role) -> bool {
 /// hold on `a` now by `a`'s grants as the node holds them, by paths with key access, `until`
 /// honoured (`Core::keyed_role_now`), where those grants count (`grants_count`); none where they
 /// do not. A role through the public is one of secrets: no path lists the public, so it lets the
-/// node write nothing. It counts wherever the node holds the grant, synced or not (a unit's public
-/// piece on a thing it does not sync, spec/sync-set.md §2 Public pieces): it is every party's,
+/// node write nothing. It counts wherever the node holds the grant, synced or not: it is every party's,
 /// so it gives no node a secret anyone else lacks, and an outdated grant held gives only the open
 /// boxes of epochs that were every party's. The public's sync also where the head of `a`'s sync
 /// ID lists the public entry (`Core::public_listed`, spec/sync.md §3 Holders by copies).
@@ -109,7 +108,7 @@ pub(crate) fn role_here(core: &Core, a: &Tid) -> Option<Role> {
 /// Whether the grants the node holds of `a` count for its role (spec/sync-set.md §2 Own things:
 /// grants belong to the thing granted): the node syncs `a` or holds an offer of it (`syncs`), or
 /// `a` is a holder found from such a thing up: one holding a role now, with key access, on a
-/// thing whose grants count, by a held edge write or, holding sync alone, by counted sync copies
+/// thing whose grants count, by a held edge write or, holding only sync, by counted sync copies
 /// (`Core::copies_naming`). A grant of any other thing is held as some commit's certificate
 /// and gives the node nothing, whoever it names. The walk down from `a` through what it is
 /// named on, stopping at the first thing synced: O(the things reached, each once).
@@ -126,7 +125,7 @@ pub(crate) fn grants_count(core: &Core, a: &Tid) -> bool {
                 todo.push(*y);
             }
         }
-        // a holder of sync alone: its counted sync copies are the node's record of its grant
+        // a holder of only sync: its counted sync copies are the node's record of its grant
         for y in core.copies_naming(&x) {
             if seen.insert(y) {
                 todo.push(y);
@@ -136,20 +135,15 @@ pub(crate) fn grants_count(core: &Core, a: &Tid) -> bool {
     false
 }
 
-/// Whether the node syncs `t` or holds an offer of it: an own thing,
-/// a thing the node closure holds within the local part or another thing's sync unit, or a held
-/// strong reaches where First entry carries it (`sync::units::reached_carried`: what the node
-/// asked to sync, before a box lets the walk enter it; a strong alone counts nothing), each on a
-/// path giving a role (an entry kept only while a loss is carried out gives none, so it never
-/// keeps the role that would keep it: the loss is judged on the least state), a holder held for keys, a thing followed
-/// by the public entry (spec/sync-set.md §2), a link the node redeems (its sync ID is in the sync set from the link's text, spec/sync-set.md §5), or the
-/// target of a held valid `grant@~0` fire (spec/sync-inbox.md §5 Grant from outside); a
-/// dependent thing where the actor its secrets derive from is one (its grants travel under that
-/// actor's sync IDs).
+/// Whether the node syncs `t`: an own thing, a thing the node closure holds within the local
+/// part or another thing's sync unit, or a held strong reaches where First entry carries it
+/// (`sync::units::reached_carried`: what the node asked to sync, before a box lets the walk
+/// enter it; a strong alone counts nothing), or a link the node redeems (its sync ID is in the
+/// sync set from the link's text, spec/sync-set.md §5); a dependent thing where the actor its
+/// secrets derive from is one (its grants travel under that actor's sync IDs).
 fn syncs(core: &Core, t: &Tid) -> bool {
-    let cl = &core.ix.closure;
     let own = own_things(core);
-    let one = |t: &Tid| own.contains(t) || crate::sync::units::holds_within(core, t) || crate::sync::units::reached_carried(core, t) || cl.for_keys(t) || cl.follows_public(t) || core.followed_links.contains(t) || crate::flows::inbox::granted_on(core, t).next().is_some();
+    let one = |t: &Tid| own.contains(t) || crate::sync::units::holds_within(core, t) || crate::sync::units::reached_carried(core, t) || core.followed_links.contains(t);
     one(t) || core.secret_actor(t).is_some_and(|a| a != *t && one(&a))
 }
 
@@ -191,7 +185,7 @@ pub(crate) fn may_take(core: &Core, a: &Tid) -> bool {
 
 /// Whether a box may give this node `a`'s secret of role `r` (spec/permissions.md §3 No secret
 /// taken back): every role's where it may take (`may_take`), the sync secret where its roles
-/// give sync alone.
+/// give only sync.
 pub(crate) fn may_take_role(core: &Core, a: &Tid, r: Role) -> bool {
     may_take(core, a) || r == Role::Sync && holds_sync(core, a)
 }

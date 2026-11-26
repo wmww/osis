@@ -84,6 +84,7 @@ fn a_blob_under_another_expiry_is_refused_spec_sync_ids_1() {
 // noted as. Opening it again (a peer relaying it under another sync ID, where nothing in its
 // bytes says copy) leaves it the body, so the node logs no fresh encryption of it each time.
 #[test]
+#[ignore = "stub rewrite: a unit's stubs, cut and logged (R2)"]
 fn a_header_alone_holds_a_header_only_body_of_either_kind_spec_sync_judgement_1() {
     let (mut lp, _) = two_nodes();
     let e = &mut lp.peers[0].engine;

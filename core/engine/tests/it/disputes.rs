@@ -457,22 +457,3 @@ fn a_part_never_received_dropped_as_invalid_is_fetched_once_valid() {
     send_carried(&mut f.lp, 0, 3, &[id]);
     assert_eq!(f.lp.peers[3].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("x")));
 }
-
-// spec/permissions.md §8 Pairing, §5.1 Sides (security): the pairer hands over its trust records
-// on A alone. A trusted lowering on A is adopted; offer forged to carry a record of a lowering on
-// another thing adopts nothing there.
-#[test]
-fn trust_records_reach_only_lowerings_on_the_account_spec_permissions_8() {
-    let mut lp = osis_engine::local_peer::LocalPeer::apart(vec![osis_engine::local_peer::Peer::new(0, crate::common::T0).unwrap()], 0);
-    osis_engine::local_peer::make_account(&mut lp.peers[0].engine).unwrap();
-    let a = crate::common::account_of(&mut lp);
-    let mut p = osis_engine::local_peer::Peer::new(1, crate::common::T0).unwrap();
-    let (node, keys) = (p.engine.tid(), p.engine.node_keys().unwrap());
-    let (mut offer, _) = lp.peers[0].engine.pair(&a, &node, &keys, osis_base::Role::Admin).unwrap();
-    // a record naming the grant's own write, its copy on A: no lowering, nothing to adopt
-    let osis_engine::flows::offers::Pieces::Whole { grant, trust, .. } = &mut offer.pieces else { panic!("an admin's offer is whole") };
-    let record = osis_engine::flows::offers::Trusted { commit: lp.peers[0].engine.commit_ids().into_iter().last().unwrap(), op: 0, holder: osis_base::Holder::Thing(node), copy: grant.clone() };
-    trust.push(record);
-    p.engine.take_pairing(&offer).unwrap();
-    assert!(p.engine.disputes(usize::MAX).0.is_empty());
-}

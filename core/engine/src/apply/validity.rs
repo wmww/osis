@@ -465,7 +465,7 @@ pub(crate) fn edge_writes_of(core: &Core, h: &View, id: &CommitId, parts: &PermP
 }
 
 /// Notes commit `id` (header `h`, parts judged `valid`) for taking (`Indexes::fires_due`) when a
-/// valid part of it is a `grant@~0` fire (spec/sync-inbox.md §5 Carried commits).
+/// valid part of it is a fire taken for what it carries (`flows::inbox::carries`).
 pub(crate) fn note_grant_fire(core: &mut Core, id: &CommitId, h: &Header, valid: &[bool]) {
     if h.aspects.iter().zip(valid).any(|(a, v)| *v && crate::flows::inbox::carries(a.ak.as_str())) {
         core.ix.fires_due.insert(*id);

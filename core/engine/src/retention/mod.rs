@@ -315,9 +315,6 @@ fn drop_body(tx: &mut Tx<'_>, c: &CommitId, ai: usize, why: DropFor) -> Result<O
     if a.ak.as_str() == osis_commit::retention::RETENTION {
         crate::apply::validity::forget_setting(tx.core, &a.tid, c);
     }
-    if a.ak.as_str() == crate::flows::inbox::GRANT_FIRE {
-        crate::flows::inbox::fire_dropped(tx.core, c);
-    }
     let k = (a.tid, a.ak.clone());
     // a stripped part's body is its leftover: read below as the held body, forgotten after
     let stripped = m.stripped(ai);

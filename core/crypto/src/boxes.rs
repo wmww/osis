@@ -157,7 +157,7 @@ pub fn seal_box(recipient: &KemPublicKey, slot: &BoxSlot, keyset: Option<Epoch>,
 }
 
 /// What an entry box carries (spec/sync-ids.md §3): the read secrets (`read`; none in the
-/// public's box where it holds sync alone) and the sync secret whose role key the step registers.
+/// public's box where it holds only sync) and the sync secret whose role key the step registers.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct EntryItem {
     pub read: Option<EntryRead>,
@@ -187,7 +187,7 @@ pub fn seal_entry(recipient: &KemPublicKey, slot: &BoxSlot, item: &EntryItem, rn
 
 /// The public entry's box at `slot` (spec/sync-ids.md §3 Entry boxes): the open form, its payload
 /// in clear, checked as `seal_entry` checks it: `[role, n, secret, earlier, sync]` where the public
-/// reads, `[role, sync]` where it holds sync alone.
+/// reads, `[role, sync]` where it holds only sync.
 pub fn open_form_entry(slot: &BoxSlot, item: &EntryItem) -> Result<Vec<u8>, Error> {
     Ok(entry_payload(slot, item)?.to_vec())
 }
@@ -669,7 +669,7 @@ mod tests {
             assert!(open_box(&kem, &entry, form, &b).is_err());
             assert_eq!(&read_open_entry(&entry, &open_form_entry(&entry, i).unwrap()).unwrap(), i);
         }
-        // the public's box where it holds sync alone: the sync secret, nothing sealed so
+        // the public's box where it holds only sync: the sync secret, nothing sealed so
         let alone = EntryItem { read: None, sync: sync.clone() };
         assert_eq!(read_open_entry(&entry, &open_form_entry(&entry, &alone).unwrap()).unwrap(), alone);
         assert_eq!(seal_entry(kem.public(), &entry, &alone, &mut rng), Err(Error::Malformed("entry box item")));

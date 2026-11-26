@@ -1,6 +1,5 @@
 //! The engine's one evidence derivation (`Kept`), brought up to date with what moved since the
-//! last ask (`Engine::kept_evidence`): each held commit's copies (`held::copy_parts`), each held
-//! record's mint admin, each read thing as a sync ID and each thing of its unit, followed per key
+//! last ask (`Engine::kept_evidence`): each held commit's copies (`held::copy_parts`), each read thing as a sync ID and each thing of its unit, followed per key
 //! (`memo::Effects`), so a change costs what it moved and never the held set. `held::derive` over
 //! the same inputs is the oracle (`Engine::check_evidence`; debug builds compare at the 1st, 2nd,
 //! 4th, ... follow).
@@ -20,7 +19,6 @@ type Parts = Arc<super::held::CopyParts>;
 #[derive(Clone)]
 struct Feeds {
     held: Feed<CommitId>,
-    records: Feed<Tid>,
     read: Feed<Tid>,
     members: Feed<(Ctx, Tid)>,
 }
@@ -41,8 +39,6 @@ pub(crate) struct Kept {
     feeds: Option<Feeds>,
     /// Per held commit, its copies as the derivation holds them.
     copies: Effects<CommitId, Parts>,
-    /// Per thing whose record is held, its mint admin.
-    mint: Effects<Tid, Option<Tid>>,
     /// Per read thing (`SyncRows::read`), whether it is one: a sync ID of the derivation.
     sids: Effects<Tid, bool>,
     /// Per (read thing, thing), whether the first's sync unit holds the second.
@@ -57,10 +53,9 @@ pub(crate) struct Kept {
 impl Default for Kept {
     fn default() -> Self {
         Kept {
-            ev: Own(Arc::new(Ev::new(super::Config { keys_open: true }))),
+            ev: Own(Arc::new(Ev::new())),
             feeds: None,
             copies: Effects::new("evidence: copies"),
-            mint: Effects::new("evidence: records"),
             sids: Effects::new("evidence: sync IDs"),
             units: Effects::new("evidence: units"),
             quiet: Quiet::default(),
@@ -73,7 +68,7 @@ impl Default for Kept {
 
 impl Kept {
     fn idle(&self) -> bool {
-        self.copies.idle() && self.mint.idle() && self.sids.idle() && self.units.idle()
+        self.copies.idle() && self.sids.idle() && self.units.idle()
     }
 }
 
@@ -106,14 +101,14 @@ impl Engine {
     }
 
     fn follow_evidence(&mut self, k: &mut Kept) -> Result<()> {
-        let Kept { ev, feeds, copies, mint, sids, units, read: copies_read, .. } = k;
+        let Kept { ev, feeds, copies, sids, units, read: copies_read, .. } = k;
         let ev = Arc::make_mut(&mut ev.0);
-        let (held, records, read, members) = match feeds.as_mut() {
-            Some(f) => (f.held.added(), f.records.added(), f.read.added(), f.members.added()),
+        let (held, read, members) = match feeds.as_mut() {
+            Some(f) => (f.held.added(), f.read.added(), f.members.added()),
             None => {
                 let (ix, rows) = (&self.core.ix, &self.core.sync_rows);
-                *feeds = Some(Feeds { held: ix.commits.feed(), records: ix.held.records_feed(), read: rows.read.feed(), members: ix.closure.member_feed() });
-                (ix.commits.keys().copied().collect(), ix.held.things().copied().collect(), rows.read.iter().copied().collect(), Vec::new())
+                *feeds = Some(Feeds { held: ix.commits.feed(), read: rows.read.feed(), members: ix.closure.member_feed() });
+                (ix.commits.keys().copied().collect(), rows.read.iter().copied().collect(), Vec::new())
             }
         };
         // the sync IDs: a read thing, with its unit as it stands; a unit's later members by the feed
@@ -123,7 +118,7 @@ impl Engine {
         for g in sids.due() {
             let Some((_, now)) = sids.settle(&g, || self.core.sync_rows.read.contains(&g)) else { continue };
             if now {
-                ev.add_sid(g, g);
+                ev.add_sid(g);
                 units.want((g, g));
                 for t in self.core.ix.closure.members(&Ctx::Read(g)).into_iter().flatten() {
                     units.want((g, *t));
@@ -146,21 +141,6 @@ impl Engine {
             } else {
                 ev.leave(&g, t);
                 units.unwant(&(g, t));
-            }
-        }
-        // the record edges
-        for t in records {
-            mint.want(t);
-        }
-        for t in mint.due() {
-            let Some((was, now)) = mint.settle(&t, || self.core.ix.held.created(&t).and_then(|r| r.mint_admin())) else { continue };
-            if let Some(m) = was.flatten() {
-                ev.remove_record(&(m, t));
-            }
-            match now {
-                Some(m) => ev.add_record((m, t)),
-                // a record is its thing's for good: one held again comes by the feed
-                None => mint.unwant(&t),
             }
         }
         // the copies
@@ -188,7 +168,7 @@ impl Engine {
     /// set and the read things' units (`held::derive`), and `ev`'s own check (tests, debug builds).
     pub(crate) fn kept_differs(&mut self, ev: &Ev) -> Result<Option<String>> {
         let read: Vec<Tid> = self.core.sync_rows.read.iter().copied().collect();
-        let sids: Vec<(Tid, Tid, Vec<Tid>)> = read.iter().map(|g| (*g, *g, self.sync_unit(g).iter().copied().collect())).collect();
+        let sids: Vec<(Tid, Vec<Tid>)> = read.iter().map(|g| (*g, self.sync_unit(g).iter().copied().collect())).collect();
         let anew = self.evidence(&sids)?;
         if let Err(e) = ev.check() {
             return Ok(Some(e));
@@ -202,8 +182,8 @@ impl Engine {
                 return Ok(Some(format!("sync ID {g:?}: kept edges {:?}, derived anew {:?}", ev.edges(g), anew.edges(g))));
             }
         }
-        if ev.copies() != anew.copies() || ev.records() != anew.records() {
-            return Ok(Some("the kept copies or record edges are not the held ones".into()));
+        if ev.copies() != anew.copies() {
+            return Ok(Some("the kept copies are not the held ones".into()));
         }
         let extra: Vec<Tid> = ev.sids().filter(|g| !read.contains(g)).collect();
         Ok((!extra.is_empty()).then(|| format!("kept sync IDs {extra:?} are not read")))

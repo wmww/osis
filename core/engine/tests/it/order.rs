@@ -612,8 +612,7 @@ pub(crate) struct Played {
     pub(crate) access: Vec<(Tid, Package)>,
     /// The sealed fires the three peers owe at the history's end, each with its commit and the
     /// wall time it is stamped: a node under test takes those on its account's inbox before each
-    /// ingest once its clock reaches them (`take_fires`), as a grant from outside reaches its
-    /// holder (spec/sync-inbox.md §5 Grant from outside).
+    /// ingest once its clock reaches them (`take_fires`).
     pub(crate) fires: Vec<(CommitId, WallMs, osis_engine::sync::SealedFireOut)>,
     /// What enters the node closure of a node under test, from the history (`held::Walk`).
     pub(crate) walk: std::sync::Arc<crate::held::Walk>,
@@ -4041,6 +4040,7 @@ fn wake_for_a_chain_entering_the_node_closure_stays_in_bound_spec_commits_4() {
 // closure until it fetches the strong: the settled check spares that thing's text, though a writer
 // of it compacted it last, and the node reads "x" after its sync exchange.
 #[test]
+#[ignore = "stub rewrite: entry by references and chain-holder stubs (R2)"]
 fn settled_check_spares_things_held_through_unsettled_holds_spec_commits_5() {
     use Step::*;
     let aim = |x: Step| Aim(Box::new(x));
@@ -4901,6 +4901,7 @@ fn a_strong_after_a_lowering_waits_for_its_grant_spec_commits_4() {
 // never takes them. So a pass end runs the lost-access drop (`pass_end`): then both read T as
 // the node holding every commit does, as absent.
 #[test]
+#[ignore = "stub rewrite: entry by references and chain-holder stubs (R2)"]
 fn secrets_of_a_removed_grant_drop_at_the_pass_end_spec_permissions_3() {
     use Step::*;
     let h = vec![

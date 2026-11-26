@@ -42,8 +42,7 @@ impl Engine {
 
     /// Tests only: rotates `roles` of `a` boxing every holder this node would but `skip`, as a
     /// rotation that left them out (a holder left out of a rotation, spec/permissions.md §4
-    /// Stranded), delivering it to the holders boxed that cannot open it from the sync ID
-    /// (`rotation::unreached`). The commit made.
+    /// Stranded). The commit made.
     #[doc(hidden)]
     pub fn rotate_leaving_out(&mut self, a: &Tid, roles: &[osis_base::Role], skip: &[Tid]) -> Result<Option<CommitId>> {
         let (a, roles): (Tid, BTreeSet<osis_base::Role>) = (*a, roles.iter().copied().collect());
@@ -54,9 +53,8 @@ impl Engine {
             let holders = crate::rotation::recipients(tx, &me, &a, &skip)?;
             let mut m = crate::Mutation::new();
             let r = crate::rotation::rotation_into(tx, &mut m, a, &roles, &held, &holders, crate::rotation::Departs::No)?;
-            let unreached = crate::rotation::unreached(tx, &a, &r)?;
             let c = Engine::commit_tx(tx, m)?;
-            crate::rotation::recorded(tx, a, c, &r, &unreached, &mut crate::flows::Done::default())?;
+            crate::rotation::recorded(tx, a, c, &r, &mut crate::flows::Done::default())?;
             Ok(c)
         })
     }
@@ -719,8 +717,6 @@ fn tables(ix: &super::Indexes) -> Vec<(&'static str, &dyn Table)> {
         ("void", &*ix.void),
         ("held_wait", &*ix.held_wait),
         ("opened_under", &*ix.opened_under),
-        ("grant_fires", &*ix.grant_fires),
-        ("fires_carrying", &*ix.fires_carrying),
         ("blob_parts", &*ix.blob_parts),
         ("commit_blobs", &*ix.commit_blobs),
         ("cert_blobs", &*ix.cert_blobs),
@@ -754,7 +750,6 @@ fn tables(ix: &super::Indexes) -> Vec<(&'static str, &dyn Table)> {
         ("timed_lost", &*ix.timed_lost),
         ("fires", &*ix.fires),
         ("fires_on", &*ix.fires_on),
-        ("sync_sent", &*ix.sync_sent),
     ]
 }
 

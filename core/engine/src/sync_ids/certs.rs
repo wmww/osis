@@ -21,9 +21,6 @@ pub type Parts = BTreeSet<usize>;
 pub(crate) enum Cut {
     /// S's evidence; `step`: the copy records a step placing a listed key.
     Evidence { step: bool },
-    /// An edge piece of this holder: S's actor's key part, a stub; a fire, sealed copy or offer
-    /// (`Engine::edge_piece`).
-    EdgePiece(Tid),
     /// Keys: a public key record, a carried cause, holder keys.
     Keys,
 }
@@ -39,8 +36,9 @@ pub struct Certs {
     pub headers: BTreeSet<CommitId>,
     pub mintings: BTreeMap<CommitId, BTreeSet<Tid>>,
     pub records: BTreeSet<Tid>,
-    /// Sync copies (spec/wire.md §4; spec/permissions.md §4 Key part: a holder of sync alone's
-    /// edge piece), as (commit, thing, holder): no header, record or evidence goes with them.
+    /// Sync copies (spec/wire.md §4), as (commit, thing, holder): no header, record or evidence
+    /// goes with them.
+    // Stub rewrite (notes/stub-rewrite.md): filled by the sync-only cut of the stubs S carries (R2)
     pub sync_copies: BTreeSet<(CommitId, Tid, Tid)>,
 }
 
@@ -114,7 +112,7 @@ impl Engine {
             let Some(a) = h.aspects.get(ai) else { continue };
             let f = d.fragment();
             let named: Vec<Tid> = match a.ak.as_str() {
-                // a key's grant names no holder with a key part (nothing is sealed to a key)
+                // a key's grant names no holder (nothing is sealed to a key)
                 "roles.0" => crate::apply::validity::edge_holders(&self.core, &a.tid, crate::apply::validity::Grants::Things, f).into_iter().filter_map(|h| h.thing()).collect(),
                 // the holders its records are keyed with, puts and removals: of a piece, its
                 // holder (spec/wire.md §4 Pieces)
@@ -131,9 +129,11 @@ impl Engine {
     }
 
     /// What read thing `g`'s sync IDs carry beside bodies (spec/permissions.md §4 Evidence of a
-    /// sync ID, Key part), from `ev` holding `g` as a sync ID: its required copies; the records of
-    /// both ends of each edge its evidence reads; the records and mintings `shared` adds; the
-    /// public key records of `g`'s holders; and `g`'s key part, with their evidence.
+    /// sync ID), from `ev` holding `g` as a sync ID: its required copies; the records of both ends
+    /// of each edge its evidence reads; the records and mintings `shared` adds; and the public
+    /// key records of `g`'s holders, with their evidence.
+    // Stub rewrite (notes/stub-rewrite.md): and the stubs `g`'s unit carries, each cut to its
+    // readers (R2)
     pub(crate) fn sync_certificates(&mut self, ev: &Ev, g: &Tid) -> Certs {
         let mut out = Certs::default();
         let req: BTreeSet<(CommitId, Tid)> = ev.required(g).map(|r| r.keys().copied().collect()).unwrap_or_default();
@@ -155,84 +155,8 @@ impl Engine {
         for h in &holders {
             self.public_key_record_into(ev, h, &mut out);
         }
-        self.edge_pieces_into(ev, g, None, false, &mut out);
-        // the stubs `g`'s sync unit carries (spec/sync-set.md §2 Stub): each one's edge pieces of
-        // the holders `g` holds its role there through, as sync copies (`g`'s keys do not open
-        // the stub's thing: what it holds there is sync alone); none of its content
-        for x in self.stubs_of(g) {
-            for h in self.stub_holders(g, &x) {
-                self.edge_pieces_into(ev, &h, Some(&x), true, &mut out);
-            }
-        }
-        // the public pieces `g`'s sync unit carries (spec/sync-set.md §2 Public pieces): the
-        // public's edge piece on each, its removal and rotations included, with their evidence
-        for x in self.public_pieced(g) {
-            self.edge_pieces_into(ev, &Tid::PUBLIC, Some(&x), false, &mut out);
-        }
         self.close_records(ev, &mut out);
         out
-    }
-
-    /// The things whose public pieces `g`'s sync unit carries (spec/sync-set.md §2 Public
-    /// pieces): the independent of each thing a strong of the unit reaches (its things but `g`,
-    /// and the targets it does not follow), outside the unit (inside it, its bodies carry its
-    /// role commits), that the public is named on. They let a reader of `g` count what the public
-    /// reads with nothing of it carried (`Core::keys_open`), so the unit it computes is the
-    /// logger's (the oracle: held-model `closure::public`). Who writes them: the unit's writers
-    /// the strongs; the reached thing's admins the public's grant. A piece is the public's alone:
-    /// what it shows anyone may read.
-    pub(crate) fn public_pieced(&mut self, g: &Tid) -> BTreeSet<Tid> {
-        let core = &self.core;
-        let cl = &core.ix.closure;
-        let reached = cl.members(&crate::sync::units::Ctx::Read(*g)).into_iter().flatten().copied().filter(|y| y != g).chain(cl.beyond(g));
-        let ind: BTreeSet<Tid> = reached.filter_map(|y| core.secret_actor(&y)).collect();
-        ind.into_iter().filter(|x| x != g && !cl.unit_holds(g, x) && core.ix.held.is_named(&Tid::PUBLIC, x)).collect()
-    }
-
-    /// The things whose stub `g`'s sync unit carries (spec/sync-set.md §2 Stub): each independent
-    /// thing outside the unit a strong of it reaches, that `g`'s keys do not open and that `g`
-    /// holds sync or above on (its effective role, with key access). Invariant: no thing of the
-    /// unit and not `g` itself; who writes them: the unit's writers write the strongs, `x`'s
-    /// admins the role.
-    pub(crate) fn stubs_of(&mut self, g: &Tid) -> BTreeSet<Tid> {
-        let core = &self.core;
-        core.ix.closure.beyond(g).into_iter().filter(|y| y != g && !core.ix.closure.unit_holds(g, y) && core.counts_independent(y) && !core.keys_open(g, y) && (core.keyed_role_now(g, y) >= Some(osis_base::Role::Sync) || core.syncs_by_copies(g, y))).collect()
-    }
-
-    /// `h`'s edge pieces (spec/permissions.md §4 Key part), on `only` or on every thing `h` holds
-    /// an edge on, added to `out`: each copy cut to the piece (`Cut::EdgePiece`) with its
-    /// evidence; where `h` holds sync alone (`Core::sync_alone_on`: no held edge write gave it
-    /// read, its removal included; or `sync_alone`: a stub's), its sync copy
-    /// (spec/wire.md §4: its `secrets.0` piece and the `sync.0` part) and nothing else: no
-    /// header, record, edge write or evidence.
-    /// Invariant (security; spec/sync-ids.md §2 What a sync holder learns): no part of a commit
-    /// of a thing held sync alone goes as a certificate copy here, so its readers learn no
-    /// signer, path or other holder of it.
-    fn edge_pieces_into(&mut self, ev: &Ev, h: &Tid, only: Option<&Tid>, sync_alone: bool, out: &mut Certs) {
-        let mut pieces = BTreeSet::new();
-        let part = match only {
-            Some(x) => self.key_part_on(h, x).into_iter().map(|c| (c, *x)).collect(),
-            None => self.key_part(h),
-        };
-        // judged once per thing: it walks the thing's edge commits
-        let mut alone: BTreeMap<Tid, bool> = BTreeMap::new();
-        for (c, x) in part {
-            if sync_alone || *alone.entry(x).or_insert_with(|| self.core.sync_alone_on(h, &x)) {
-                out.sync_copies.insert((c, x, *h));
-            } else {
-                self.add_cut(&c, &x, Cut::EdgePiece(*h), out);
-                pieces.insert((c, x));
-            }
-        }
-        self.add_closure(ev, &pieces, out);
-    }
-
-    /// The holders of stub `x` of `g`'s unit (`stubs_of`) whose edge pieces it is: `g` itself and
-    /// every holder on `x`'s roster `g` holds sync or above on (with key access), the chain `g`
-    /// holds its role on `x` through.
-    fn stub_holders(&self, g: &Tid, x: &Tid) -> BTreeSet<Tid> {
-        let core = &self.core;
-        core.roster_of(x).into_keys().filter(|h| h == g || core.keyed_role_now(g, h) >= Some(osis_base::Role::Sync)).collect()
     }
 
     /// What `g`'s sync IDs carry beside bodies (`sync_certificates`), whether or not this node
@@ -243,7 +167,7 @@ impl Engine {
         if !ev.sids().any(|s| s == *g) {
             let unit = self.sync_unit(g);
             let e = Arc::make_mut(&mut ev);
-            e.add_sid(*g, *g);
+            e.add_sid(*g);
             for t in unit.iter() {
                 e.join(g, *t);
             }
@@ -251,34 +175,17 @@ impl Engine {
         Ok(self.sync_certificates(&ev, g))
     }
 
-    /// `g`'s key part (spec/permissions.md §4 Key part), as copies: per thing `x` an edge write
-    /// names `g` holder on, each commit writing such an edge, boxing `g` in `x`'s `secrets.0`, or
-    /// writing `x`'s `sync.0`. A creation record naming `g` mint admin names it as an edge write
-    /// does (`Held::named_on`), so a thing `g` minted is among them.
-    pub(crate) fn key_part(&mut self, g: &Tid) -> BTreeSet<(CommitId, Tid)> {
-        let on: Vec<Tid> = self.core.ix.held.named_on(g).filter(|x| *x != g).copied().collect();
-        on.into_iter().flat_map(|x| self.key_part_on(g, &x).into_iter().map(move |c| (c, x))).collect()
-    }
-
-    /// `g`'s edge piece on `x` (`key_part`): the commits writing `g`'s edge on `x`, boxing `g` in
-    /// `x`'s `secrets.0`, or writing `x`'s `sync.0`, while `g` is named on `x`.
-    pub(crate) fn key_part_on(&mut self, g: &Tid, x: &Tid) -> BTreeSet<CommitId> {
-        self.edge_on(g, x, true)
-    }
-
-    /// The commits writing `g`'s edge on `x` or boxing `g` there (`key_part_on` without `x`'s
-    /// `sync.0` writes).
-    pub(crate) fn edge_on(&mut self, g: &Tid, x: &Tid, steps: bool) -> BTreeSet<CommitId> {
+    /// The commits writing `g`'s edge on `x` or boxing `g` there, while `g` is named on `x`.
+    pub(crate) fn edge_on(&mut self, g: &Tid, x: &Tid) -> BTreeSet<CommitId> {
         let mut out = BTreeSet::new();
         if !self.core.ix.held.is_named(g, x) {
             return out;
         }
-        let aks: &[&str] = if steps { &["roles.0", "secrets.0", "sync.0"] } else { &["roles.0", "secrets.0"] };
-        for &ak in aks {
+        for ak in ["roles.0", "secrets.0"] {
             let Ok(k) = osis_base::Ak::new(ak) else { continue };
             let cs: Vec<CommitId> = self.core.ix.by_aspect.get(&(*x, k)).into_iter().flatten().map(|(_, c)| *c).collect();
             for c in cs {
-                let named = ak == "sync.0" || {
+                let named = {
                     let parts = self.header(&c).map(|h| h.aspect_parts(x, ak)).unwrap_or_default();
                     let named = self.holders_named(&c);
                     parts.into_iter().any(|ai| named.get(&ai).is_some_and(|hs| hs.contains(g)))
@@ -311,25 +218,14 @@ impl Engine {
 
     /// `cut`'s parts of commit `c` on thing `x` (spec/permissions.md §4 Copies: S's cut, each
     /// part whole): evidence, its edge-class parts and, recording a step placing a listed key, its
-    /// `sync.0`; holder H's edge piece, its `roles.0` writing H's edge, its `secrets.0` piece of
-    /// H (spec/wire.md §4 Pieces: the part whose box records are keyed with H) with, beside it
-    /// where H reads `x`, the rest piece (the history boxes), and its `sync.0`; keys, its
-    /// `keys.0`. Beside a `secrets.0` or `keys.0` part, the commit's edge-class parts on `x`: a
-    /// `secrets.0` part's verdict reads them (a may-grant grant's boxes are judged from its
-    /// commit's `roles.0` alone, `validity::note_required`), and beside `keys.0` they carry the
-    /// edge writes its rotation makes (a removal: a public link's redeemer learns the public's
-    /// removal so, `differential::a_public_links_redeemer_loses_the_thing_with_the_public_*`).
-    /// Invariant (security): nothing outside `x`; a box part only beside its edge-class parts;
-    /// of `secrets.0` H's piece and, only where H reads `x`, the rest (its history boxes name
-    /// `x`'s departed holders), never another holder's: a piece holding another
-    /// holder's record, or the rest holding one, holds nothing at any receiver (`osis_commit`'s
-    /// piece check), so a writer cannot make H's copy carry another holder's box.
+    /// `sync.0`; keys, its `keys.0`. Beside a `keys.0` part, the commit's edge-class parts on
+    /// `x`: they carry the edge writes its rotation makes (a removal: a public link's redeemer
+    /// learns the public's removal so).
+    /// Invariant (security): nothing outside `x`; a box part only beside its edge-class parts.
+    // Stub rewrite (notes/stub-rewrite.md): a stub's cut, the `secrets.0` pieces boxing the
+    // holders its readers open, the rest piece where they read, `sync.0` (R2)
     pub(crate) fn cut_parts(&mut self, c: &CommitId, x: &Tid, cut: Cut) -> Parts {
         let Some(h) = self.header(c) else { return Parts::new() };
-        let named = match cut {
-            Cut::EdgePiece(_) => self.holders_named(c),
-            _ => Arc::default(),
-        };
         let edge = |ak: &str| crate::apply::validity::edge_ak(ak);
         let mut out = Parts::new();
         let mut boxes = false;
@@ -337,7 +233,6 @@ impl Engine {
             let ak = a.ak.as_str();
             let take = match cut {
                 Cut::Evidence { step } => edge(ak) || (step && ak == "sync.0"),
-                Cut::EdgePiece(holder) => ak == "sync.0" || (matches!(ak, "roles.0" | "secrets.0") && named.get(&i).is_some_and(|hs| hs.contains(&holder))),
                 Cut::Keys => ak == "keys.0",
             };
             if take {
@@ -347,21 +242,6 @@ impl Engine {
         }
         if boxes {
             out.extend(h.aspects.iter().enumerate().filter(|(_, a)| a.tid == *x && edge(a.ak.as_str())).map(|(i, _)| i));
-        }
-        // beside H's piece, the rest (history boxes): H opens them by the epochs its box gives,
-        // and the commit's body under x's sync ID is wrapped under an epoch they supersede, one
-        // a new holder lacks (spec/crypto.md §5 Who wraps under what). They are keyed with no
-        // holder: no other holder's box or key travels with them. Only to a holder reading x:
-        // one of sync alone (spec/permissions.md §4 Key part, its sync copy) reads nothing of x,
-        // and the sync role's history box it would open names x's departed holders
-        // (spec/crypto.md §4 Names); one removed opens none
-        if let Cut::EdgePiece(holder) = cut
-            && self.core.roster_of(x).get(&holder).is_some_and(|e| e.role >= osis_base::Role::Read)
-        {
-            let pieces: Vec<usize> = h.aspect_parts(x, "secrets.0").collect();
-            if pieces.iter().any(|i| out.contains(i)) {
-                out.extend(pieces.into_iter().filter(|i| named.get(i).is_some_and(BTreeSet::is_empty)));
-            }
         }
         out
     }

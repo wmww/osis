@@ -264,43 +264,6 @@ impl std::str::FromStr for Keys {
     }
 }
 
-/// A grant handed over by hand (`Osis::offer`) in place of its delivery to the holder's inbox:
-/// the holder's node takes it (`Osis::take_offer`) and holds the role at once. No secret: it
-/// gives a role only to the holder it names. It names where the offering node is reached, as a
-/// link does. Text form `osis://offer/...`.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Offer {
-    offer: osis_engine::flows::offers::Offer,
-    peers: Vec<osis_blob::DialHint>,
-}
-
-const OFFER: &str = "osis://offer/";
-
-impl Offer {
-    /// The thing it grants a role on.
-    pub fn target(&self) -> Tid {
-        self.offer.target
-    }
-}
-
-impl std::fmt::Display for Offer {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let peers = osis_blob::peers_value(&self.peers).map_err(|_| std::fmt::Error)?;
-        f.write_str(&packed(OFFER, &Value::List(vec![self.offer.to_value(), peers])))
-    }
-}
-
-impl std::str::FromStr for Offer {
-    type Err = Error;
-    fn from_str(s: &str) -> Result<Offer> {
-        let bad = || Error::Invalid("malformed offer".into());
-        let Value::List(v) = unpacked(s, OFFER, "offer")? else { return Err(bad()) };
-        let [offer, Value::List(peers)] = v.as_slice() else { return Err(bad()) };
-        let offer = osis_engine::flows::offers::Offer::from_value(offer).ok_or_else(bad)?;
-        Ok(Offer { offer, peers: osis_blob::peers_from(peers).map_err(|_| bad())? })
-    }
-}
-
 /// A transport URL, such as `quic://example.org:4040`: where something listens or is dialed.
 /// `FromStr` checks it; a `quic://` URL without a port gets `:4040` spelled out.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -758,30 +721,6 @@ impl Osis {
             return Err(Error::Invalid(format!("the keys shown are no keys of {t}")));
         }
         Ok(t)
-    }
-
-    /// The offer of `holder`'s grant on `target` (`grant`), to hand to its node by hand: in its
-    /// place, nothing is delivered to the holder's inbox. `Invalid` while no grant of `holder`
-    /// on `target` is here. `Unsupported` through a connection.
-    pub fn offer(&self, target: Tid, holder: Tid) -> Result<Offer> {
-        self.local_at(target, "offer")?;
-        let offer = self.engine(|e| e.offer(&target, &holder))?;
-        Ok(Offer { offer, peers: self.link_peers() })
-    }
-
-    /// Takes an offer handed over by hand (`offer`) and holds its target by a strong from
-    /// `holder`'s `holds.0` (a thing this node holds, or `node_root()`), as `redeem` holds from
-    /// its joiner: this node then holds the role it grants and syncs the target, dialing the
-    /// offering node for as long as it does. Its target.
-    /// `Invalid` (nothing taken) unless it grants this node a role. `Unsupported` through a
-    /// connection.
-    pub fn take_offer(&self, o: &Offer, holder: Tid) -> Result<Tid> {
-        self.local("take_offer")?;
-        self.locked(|l| -> Result<()> {
-            l.engine().take_offer(&o.offer, &holder)?;
-            l.node.offered(o.offer.target, o.peers.clone()).map_err(crate::handle::sync_err)
-        })?;
-        Ok(o.offer.target)
     }
 
     /// Puts `of`'s card on `on`: whoever reads `on` may then grant `of` roles and reach its inbox

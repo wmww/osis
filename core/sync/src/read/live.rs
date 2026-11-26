@@ -670,7 +670,7 @@ impl Ground for Live<'_, '_> {
             }
             let Some(e) = self.cx.store.entry(s, b)? else { continue };
             if !carried.contains(k) {
-                // one carried no more (counted no more, or no more in the key part) leaves the
+                // one carried no more (counted no more, or named no more) leaves the
                 // own log; a peer's stays as its stamp or budget keeps it
                 if e.own {
                     out.unneeded.insert(*b);

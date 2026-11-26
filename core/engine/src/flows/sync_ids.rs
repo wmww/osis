@@ -26,7 +26,7 @@ pub(crate) enum ReaderKey {
     Static(VerifyingKey, KemPublicKey),
     /// The public, by its public entry with an open entry box of its role's secrets: the read
     /// secrets and the sync secret where it reads (`reads`), the sync secret alone where it holds
-    /// sync alone (spec/sync-ids.md §3).
+    /// only sync (spec/sync-ids.md §3).
     Public { reads: bool },
 }
 
@@ -38,7 +38,7 @@ fn kem_of(k: &KemKey) -> Result<KemPublicKey> {
 /// The readers of `t`'s read epoch `e` (spec/sync-ids.md §3): holders of read boxes at `e`, its
 /// mint admin included while its record edge stands; each by its newest read keyset, a link key
 /// of `t` by its static entry, the public (an open box) by its public entry. The public holding
-/// sync alone: `listed`.
+/// only sync: `listed`.
 pub(crate) fn readers(tx: &mut Tx<'_>, t: &Tid, e: &Epoch) -> Result<Vec<ReaderKey>> {
     let mut holders: Vec<Tid> = Vec::new();
     if let Some(o) = tx.core.mint_admin(t).filter(|a| tx.core.key_holders(t).iter().any(|(m, _)| m == a)) {
@@ -60,7 +60,7 @@ pub(crate) fn readers(tx: &mut Tx<'_>, t: &Tid, e: &Epoch) -> Result<Vec<ReaderK
 }
 
 /// What a step of `t` registering read epoch `re` and sync epoch `se` lists (spec/sync-ids.md
-/// §3): the readers of `re` (`readers`), and the public where it holds sync alone, boxed at `se`
+/// §3): the readers of `re` (`readers`), and the public where it holds only sync, boxed at `se`
 /// (its entry box the sync secret alone).
 pub(crate) fn listed(tx: &mut Tx<'_>, t: &Tid, re: &Epoch, se: &Epoch) -> Result<Vec<ReaderKey>> {
     let mut out = readers(tx, t, re)?;
@@ -419,12 +419,9 @@ impl Engine {
             let mut m = Mutation::new();
             let Some(out) = step_into(tx, &mut m, g, l, fresh)? else { return Ok(None) };
             drop_old_claims(tx, &mut m, g)?;
-            let c = Engine::commit_tx(tx, m)?;
-            // a holder of sync alone is sent each step bearing its keys and the first past them
-            let parent = out.0.prev.and_then(|p| tx.core.ix.steps.get(&g).and_then(|r| r.steps.get(&p)).map(|s| s.sync));
-            if let Some(c) = c {
-                crate::flows::inbox::deliver_step(tx, g, c, &out.0.keys.sync.to_bytes(), parent.as_ref())?;
-            }
+            Engine::commit_tx(tx, m)?;
+            // Stub rewrite (notes/stub-rewrite.md): a sync-only holder that cannot open a step
+            // by its wrap gets an entry box (Q2, R3)
             Ok(Some(out))
         })
     }

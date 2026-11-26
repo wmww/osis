@@ -127,8 +127,9 @@ pub struct Made {
     written: u64,
     /// Things whose record edge a removal took (the roster then shows no mint admin either).
     record_gone: BTreeSet<usize>,
-    /// (thing, holder thing) edges standing that the holder's readers were never offered
-    /// (spec/permissions.md §4 Delivering an edge piece): no write of the edge since it last began
+    // Stub rewrite (notes/stub-rewrite.md): `unoffered`, `pieces` and `named` model key-part
+    // delivery for held-model's old closure; they go with held-model's rewrite (M1, R4)
+    /// (thing, holder thing) edges standing that the holder's readers were never offered: no write of the edge since it last began
     /// was by a node writing the holder (which logs it in the holder's key part), and the holder
     /// did not take `grant@~0` when it was written (`inboxes`). An account is offered every grant:
     /// its inbox enables the signal.
@@ -152,7 +153,7 @@ pub struct Made {
     /// Things held by no node at some quiet run (`ran`): gone for everyone, a strong to one
     /// holds nothing from then on (spec/sync-set.md §3 A thing goes when its last reference goes).
     gone: BTreeSet<usize>,
-    /// The public's pieces logged so far (spec/sync-set.md §2 Public pieces): `(t, x)`, `t`'s sync
+    /// The public's pieces logged so far (held-model's old closure): `(t, x)`, `t`'s sync
     /// ID carrying the public's edge piece on `x`, by the model at each quiet run (`model_now`),
     /// and by each redeem done or pending (the redeeming node reads its account and holds the
     /// public's grant by the link's sync ID as it writes the strong). Logged pieces stay: carriage
@@ -1106,7 +1107,7 @@ impl Model {
     /// counts once the node reads the target by another way, and opens nothing before (no node of
     /// the holder's learns the target's sync ID or box by it). The least such closure, as
     /// `hc::Closure` (`carried`: what its read units and the units of what it keeps unread carry;
-    /// `for_keys`: holders held for keys alone) and the keys of what it reads, with what
+    /// `for_keys`: holders held in the keys class alone) and the keys of what it reads, with what
     /// every account's closure logs (`Model::logged`, spec/sync-set.md §2 Carriers).
     fn closure(&self, a: usize) -> (hc::Closure, hc::Set) {
         use held_model::closure::entry;

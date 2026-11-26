@@ -12,10 +12,7 @@
 //! (`Indexes::by_actor`), one a pending commit it authored or acted
 //! in, or first awaiting its record, writes on (`Indexes::pend_by`),
 //! one in the node closure a held commit on it has a part missing on (`Meta::missing_parts`: a
-//! part the node fetches again), one on whose inbox a `grant@~0` fire held valid carries a commit on it (what an
-//! offer carries, `flows::inbox::granted_on`). A holder's edge piece on a thing is kept only as
-//! far as the node syncs the thing or holds an offer of it (spec/permissions.md §4 Key part): a
-//! piece dropped so comes again when a strong reaches the thing (`sync::units::refetch_holders`).
+//! part the node fetches again).
 //! A thing is rooted, kept for itself (`Root`): held (in the node closure
 //! or leaving it), a retained copy, a thing an own self-removal still waits to seal under, or a
 //! thing whose record what waits under Pending storage awaits (nothing on it applies before its
@@ -225,8 +222,6 @@ fn excess(tx: &mut Tx<'_>, t: &Tid) -> Result<bool> {
 pub(crate) enum Root {
     /// In the node closure, or leaving it and not released yet.
     Held,
-    /// Held for keys (spec/sync-set.md §2): its key part, nothing of its content.
-    Keys,
     /// A retained copy (`rotation::lost`) under this kept actor, itself or the secret actor it is
     /// a copy under (`forget::copy_of`).
     Copy(Tid),
@@ -255,9 +250,6 @@ pub(crate) enum Need {
     /// `x` is in the node closure and a card on it is of `t` or names `t` its inbox
     /// (spec/sync-inbox.md §1 Card): their keys, which a granter seals to.
     Card,
-    /// A `grant@~0` fire on `x`'s inbox held valid carries this commit on `t`: what an offer
-    /// carries is held while the offer is (spec/sync-inbox.md §5 Grant from outside).
-    Offered(osis_base::CommitId),
 }
 
 /// Why `t` is kept for itself (the module doc), if it is.
@@ -265,9 +257,6 @@ pub(crate) fn rooted(core: &Core, t: &Tid) -> Option<Root> {
     let cl = &core.ix.closure;
     if cl.holds(t) || cl.left().contains_key(t) {
         return Some(Root::Held);
-    }
-    if cl.for_keys(t) {
-        return Some(Root::Keys);
     }
     if let Some(a) = super::forget::copy_of(core, t) {
         return Some(Root::Copy(a));
@@ -300,10 +289,7 @@ pub(crate) fn needs(tx: &mut Tx<'_>, t: &Tid) -> Result<Vec<(Tid, Need)>> {
     // things it writes on: its path lists it, so its record judges the commit (spec/commits.md §4
     // Unjudgeable)
     let acting = core.acting_for(t).flat_map(|c| core.ix.commits.get(&c).into_iter().flat_map(move |m| m.view.aspects.iter().map(move |a| (a.tid, Need::Acting(c)))));
-    // a holder a held valid grant fire on whose inbox carries a commit on it: what an offer
-    // carries, held while the offer is
-    let granted = crate::flows::inbox::granted_on(core, t).map(|(h, c)| (h, Need::Offered(c)));
-    let mut out: Vec<(Tid, Need)> = core.ix.held.named_on(t).map(|x| (*x, Need::Holder)).chain(pending).chain(acting).chain(waiting).chain(granted).collect();
+    let mut out: Vec<(Tid, Need)> = core.ix.held.named_on(t).map(|x| (*x, Need::Holder)).chain(pending).chain(acting).chain(waiting).collect();
     // a strong from a thing the node closure holds (a weak only points; one kept only
     // as a certificate needs nothing by what its state names)
     let refs = crate::engine::refs::to(tx, t)?;

@@ -97,7 +97,7 @@ impl Meta {
     /// body here, as a whole part is, and once dropped (as covered by a pieced snapshot's piece,
     /// spec/commits.md §5 Covered) it still is: what a node holds or held of a commit on an
     /// aspect is never judged by a piece it never got (another holder's, or the rest, which a
-    /// holder of sync alone never gets), which reads as still to arrive.
+    /// holder of only sync never gets), which reads as still to arrive.
     pub(crate) fn aspect(&self, tid: &Tid, ak: &Ak) -> Option<usize> {
         let parts = self.aspect_parts(tid, ak);
         let first = parts.clone().next()?;

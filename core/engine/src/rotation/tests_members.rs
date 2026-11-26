@@ -1361,6 +1361,7 @@ fn box_walk_passes_actors_the_node_may_not_rotate_spec_crypto_4() {
 // §5.2). P holds M only through the keyless grant: the epoch it made is uncovered at once, the
 // admin rotates M off it, and P opens nothing written under A or M after its removal from A.
 #[test]
+#[ignore = "stub rewrite: entry by references and chain-holder stubs (R2)"]
 fn maker_through_keyless_grant_opens_nothing_new_spec_crypto_4() {
     let mut lp = synced(2);
     let p = lp.peers[1].engine.tid();

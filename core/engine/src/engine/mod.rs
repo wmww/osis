@@ -613,10 +613,6 @@ indexes! {
     pub carriers: JSetMap<CommitId, crate::apply::carriers::Carrier>,
     /// `carriers` by fire and report: what each carries.
     pub carrying: JSetMap<crate::apply::carriers::Carrier, CommitId>,
-    /// Per held `grant@~0` fire, what it carries (`flows::inbox`, rows `gf/`).
-    pub grant_fires: JMap<CommitId, crate::flows::inbox::Carried>,
-    /// `grant_fires` by target: the held grant fires carrying a commit on each thing.
-    pub fires_carrying: JSetMap<Tid, CommitId>,
     /// Per thing, the commits with an opening written under an epoch of it (`sync_ids::opened`,
     /// `records::OPENED_UNDER`): what goes with the thing.
     pub opened_under: JSetMap<Tid, CommitId>,
@@ -757,9 +753,6 @@ indexes! {
     /// The fires of `fires` by the thing each fires on (its inbox): what goes as that thing is
     /// forgotten whole (`flows::inbox::drop_fires_on`). Loaded with `fires`.
     pub fires_on: JSetMap<Tid, crate::flows::inbox::FireId>,
-    /// Per `sync.0` write, the holders of sync alone it went to as a sealed copy
-    /// (`flows::inbox::deliver_with_steps`): durable (`flows::inbox::SYNC_SENT`).
-    pub sync_sent: JSetMap<CommitId, Tid>,
 }
 
 /// The steps run inside a transaction, each applied fully or not at all (`Tx::step`).
@@ -1135,9 +1128,6 @@ pub struct Core {
     /// kept unread read again enters a read context). `None` until the first such end, which
     /// reads every awaited thing.
     pub(crate) entered: Option<memo::Feed<(crate::sync::units::Ctx, Tid)>>,
-    /// The things that came to be held for keys since `apply::wake_entered` last looked
-    /// (`sync::units`): what waits for them is examined again.
-    pub(crate) keys_came: BTreeSet<Tid>,
     /// While `Some` (a tick round's expiries): the rebuilds asked, one per aspect, run once
     /// when it ends (`apply::run_batched`).
     pub batched: Option<BTreeMap<(Tid, Ak), Batched>>,
@@ -1893,7 +1883,6 @@ impl Core {
             lost_due: _,
             brought: _,
             entered: _,
-            keys_came: _,
             wakes: _,
             resnapshots_due: _,
             openings: _,
@@ -2189,7 +2178,6 @@ impl Core {
             lost_due: BTreeSet::new(),
             brought: BTreeSet::new(),
             entered: None,
-            keys_came: BTreeSet::new(),
             batched: None,
             touches: Default::default(),
             waiting_carried: memo::Memo::new("waiting snapshot: bound"),

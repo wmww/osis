@@ -7,7 +7,7 @@
 //! exactly the copies the derivation requires judges each of those bodies under osis-perm `paths`
 //! as the node holding everything does.
 
-use super::{Config, CopyId, Del, Evidence, Kind, Level, Part, Step, Write};
+use super::{CopyId, Del, Evidence, Kind, Level, Part, Step, Write};
 use crate::engine::{Core, Tx};
 use crate::error::Result;
 use osis_base::{CommitId, Holder, Tid};
@@ -29,12 +29,6 @@ impl super::Holds<Tid> for Holder {
     fn thing(&self) -> Option<Tid> {
         Holder::thing(self)
     }
-}
-
-/// Things to their mint admins, of every held creation record naming one.
-pub(crate) fn mint(core: &Core) -> BTreeMap<Tid, Tid> {
-    let held = &core.ix.held;
-    held.things().filter_map(|t| Some((*t, held.created(t)?.mint_admin()?))).collect()
 }
 
 /// Things to their records' holders (mint admin or key), of every held creation record: the walk's
@@ -114,10 +108,9 @@ pub(crate) fn copy_parts(tx: &mut Tx<'_>, id: &CommitId) -> Result<CopyParts> {
                 _ => Vec::new(),
             };
             if let (Some(rc), false) = (&rc, writes.is_empty()) {
-                for (i, o) in writes {
+                for (_, o) in writes {
                     let path = rc.path_to(&t);
-                    let gives_read = core.edge_gives_read(rc, i);
-                    let kind = Kind::Write(Write { holder: o.holder, gives_read });
+                    let kind = Kind::Write(Write { holder: o.holder });
                     let mint = minted(&mut path.iter().copied().chain([rc.signer, t]));
                     let hops = osis_perm::paths::hops(&mint, rc.key, rc.signer, path, rc.direct, t, Some(o.holder), true);
                     on.push(Part { kind, hops: Some(hops), dels: dels.clone(), steps: vec![] });
@@ -165,15 +158,11 @@ fn recorded_steps(tx: &mut Tx<'_>, id: &CommitId, ai: usize) -> Result<Vec<Step<
     Ok(out)
 }
 
-/// The derivation over `copies` and the held records, with sync IDs `sids` (sync ID, actor, its
-/// unit's things), keys-open travel on (spec/permissions.md §4 Role changes travel).
-pub fn derive(core_mint: &BTreeMap<Tid, Tid>, copies: &Copies, sids: &[(Tid, Tid, Vec<Tid>)]) -> Ev {
-    let mut ev = Ev::new(Config { keys_open: true });
-    for (t, m) in core_mint {
-        ev.add_record((*m, *t));
-    }
-    for (s, a, unit) in sids {
-        ev.add_sid(*s, *a);
+/// The derivation over `copies`, with sync IDs `sids` (sync ID, its unit's things).
+pub fn derive(copies: &Copies, sids: &[(Tid, Vec<Tid>)]) -> Ev {
+    let mut ev = Ev::new();
+    for (s, unit) in sids {
+        ev.add_sid(*s);
         for t in unit {
             ev.join(s, *t);
         }
@@ -198,17 +187,11 @@ impl crate::Engine {
         osis_base::costs::paused(|| osis_perm::uncounted(|| osis_base::memo::unrecorded(|| self.read(|tx| recorded_steps(tx, &id, ai)))))
     }
 
-    /// Things to their mint admins, of the held creation records (tests).
-    #[doc(hidden)]
-    pub fn evidence_mint(&self) -> BTreeMap<Tid, Tid> {
-        mint(&self.core)
-    }
-
     /// The derivation over the held set with sync IDs `sids` (tests).
     #[doc(hidden)]
-    pub fn evidence(&mut self, sids: &[(Tid, Tid, Vec<Tid>)]) -> Result<Ev> {
+    pub fn evidence(&mut self, sids: &[(Tid, Vec<Tid>)]) -> Result<Ev> {
         let copies = self.evidence_copies()?;
-        Ok(derive(&self.evidence_mint(), &copies, sids))
+        Ok(derive(&copies, sids))
     }
 
     /// The work the kept derivation (`evidence::kept`) has done, brought up to date, and the
@@ -244,27 +227,23 @@ impl crate::Engine {
             return Ok(Some(format!("followed certificates against derived anew: {d}")));
         }
         let copies = self.evidence_copies()?;
-        let mint = self.evidence_mint();
         let walk: Vec<Commit> = {
             let core = &self.core;
             core.ix.commits.keys().filter_map(|id| crate::apply::validity::reading(core, id)).map(|h| h.commit()).collect()
         };
         let things: BTreeSet<Tid> = copies.keys().map(|c| c.1).collect();
-        let sids: Vec<(Tid, Tid, Vec<Tid>)> = things.iter().map(|t| (*t, *t, vec![*t])).collect();
-        let ev = derive(&mint, &copies, &sids);
+        let sids: Vec<(Tid, Vec<Tid>)> = things.iter().map(|t| (*t, vec![*t])).collect();
+        let ev = derive(&copies, &sids);
         if let Err(e) = ev.check() {
             return Ok(Some(format!("incremental against from scratch: {e}")));
         }
         // the copies in the reverse order, the units after
-        let mut back = Ev::new(Config { keys_open: true });
-        for (t, m) in &mint {
-            back.add_record((*m, *t));
-        }
+        let mut back = Ev::new();
         for (c, ps) in copies.iter().rev() {
             back.add(*c, ps.clone());
         }
-        for (s, a, unit) in &sids {
-            back.add_sid(*s, *a);
+        for (s, unit) in &sids {
+            back.add_sid(*s);
             for t in unit {
                 back.join(s, *t);
             }

@@ -191,7 +191,7 @@ impl Engine {
             own.commits.entry(k).or_default().extend(self.cut_parts(&k, holder, crate::sync_ids::Cut::Keys));
             // and its `sync.0` there: a commit recording a step writes its step keys beside it,
             // and a receiver judges a step by the record they key (spec/wire.md §9 Holder keys: a
-            // holder of sync alone that also holds these keysets has its sync copies judged by a
+            // holder of only sync that also holds these keysets has its sync copies judged by a
             // recorded step alone, `Core::copies_speak`)
             own.commits.entry(k).or_default().extend(h.aspect_parts(holder, "sync.0"));
             evidence.records.insert(h.signer);

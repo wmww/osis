@@ -811,8 +811,8 @@ impl LocalPeer {
     pub fn pair_into(&mut self, by: usize, p: &mut Peer) -> Result<osis_base::Tid> {
         let a = self.peers[by].engine.settings_thing()?.ok_or(crate::error::Error::Misuse("the pairer acts for no account"))?;
         let (node, keys) = (p.engine.tid(), p.engine.node_keys()?);
-        let (offer, _) = self.peers[by].engine.pair(&a, &node, &keys, osis_base::Role::Admin)?;
-        p.engine.take_pairing(&offer)?;
+        self.peers[by].engine.pair(&a, &node, &keys, osis_base::Role::Admin)?;
+        p.engine.take_pairing(&a)?;
         Ok(a)
     }
 
@@ -928,7 +928,6 @@ impl LocalPeer {
                 p.receive(&pk.bytes, pk.blobs.clone()).unwrap_or_else(|e| panic!("grant to the reader: {e}"));
             }
         }
-        assert!(p.engine.grant_fires_held().iter().any(|c| c.holder == who && c.target == t && done.commits.contains(&c.commit)), "the reader holds its grant's offer of {t:?}");
         p
     }
 
@@ -1062,9 +1061,7 @@ impl LocalPeer {
     }
 
     /// Offers peer `to` each sealed fire another peer owes (spec/sync-inbox.md §3 Sending) on a
-    /// thing `to` holds a read secret of, until `to` takes it: a grant from outside reaches its
-    /// holder's readers as its `grant@~0` fire, an offer (spec/sync-inbox.md §5 Grant from
-    /// outside). A fire `to` refuses fails the test unless the thing's setting, as `to` holds it,
+    /// thing `to` holds a read secret of, until `to` takes it. A fire `to` refuses fails the test unless the thing's setting, as `to` holds it,
     /// does not enable the signal (the one refusal the rules give); it is
     /// offered again once that setting enables it.
     #[allow(clippy::indexing_slicing, clippy::panic)] // test harness: indexes below the peer count; a refused fire fails the test
@@ -1090,14 +1087,12 @@ impl LocalPeer {
                     continue;
                 }
                 // one `to` refused is offered again once the thing's setting enables its signal there
-                let enabled = |e: &crate::Engine| o.ak.as_ref().is_some_and(|ak| crate::apply::validity::enabled(&e.core, &o.thing).contains(ak));
+                let enabled = |e: &crate::Engine| crate::apply::validity::enabled(&e.core, &o.thing).contains(&o.ak);
                 if self.memo.refused.contains(&(from, id, to)) && !enabled(&self.peers[to].engine) {
                     continue;
                 }
                 let Some(out) = self.peers[from].engine.sealed_fire(&id)? else { continue };
                 match self.peers[to].engine.offer_fire(&out)? {
-                    // a sealed copy that does not apply valid there (yet): offered again
-                    crate::sync::Opened::Bad if o.ak.is_none() => {}
                     crate::sync::Opened::Bad => {
                         assert!(!enabled(&self.peers[to].engine), "peer {to} refused peer {from}'s {:?} fire on {:?}, which its setting enables", o.ak, o.thing);
                         self.memo.refused.insert((from, id, to));
@@ -1129,8 +1124,7 @@ impl LocalPeer {
     }
 
     /// Peer `i`, an admin of thing `t`, writes `t`'s setting enabling its inbox signals as an
-    /// account's inbox has them and `t`'s card on `t` itself (spec/sync-inbox.md §1): `t`, a holder,
-    /// is offered grants from outside (spec/sync-inbox.md §5 Grant from outside).
+    /// account's inbox has them and `t`'s card on `t` itself (spec/sync-inbox.md §1).
     #[allow(clippy::panic, clippy::indexing_slicing)] // test harness: a setup that fails fails the test
     pub fn takes_grants(&mut self, i: usize, t: Tid) {
         let mut setting = osis_schema::core_types::RetentionSetting::default();
@@ -1160,7 +1154,7 @@ impl LocalPeer {
             }
             let Some(out) = self.peers[from].engine.sealed_fire(&id)? else { continue };
             let opened = p.engine.offer_fire(&out)?;
-            let enabled = o.ak.as_ref().is_some_and(|ak| crate::apply::validity::enabled(&p.engine.core, &o.thing).contains(ak));
+            let enabled = crate::apply::validity::enabled(&p.engine.core, &o.thing).contains(&o.ak);
             assert!(!matches!(opened, crate::sync::Opened::Bad) || !enabled, "the peer refused peer {from}'s {:?} fire on {:?}, which its setting enables", o.ak, o.thing);
         }
         Ok(())
@@ -1497,9 +1491,10 @@ impl Engine {
     }
 
     /// Pairs node thing `node`, shown by `keys` (`node_keys`), into account `a` at `role`: its
-    /// grant on A and the offer to hand over (`Engine::offer`). `Permission` unless this node
-    /// holds admin on A; `BadInput` unless `keys` show `node`'s keys.
-    pub fn pair(&mut self, a: &Tid, node: &Tid, keys: &osis_blob::Certificates, role: osis_base::Role) -> Result<(crate::flows::offers::Offer, crate::flows::Done)> {
+    /// grant on A. `Permission` unless this node holds admin on A; `BadInput` unless `keys` show
+    /// `node`'s keys.
+    // Stub rewrite (notes/stub-rewrite.md): pairing hands over A's values (R3)
+    pub fn pair(&mut self, a: &Tid, node: &Tid, keys: &osis_blob::Certificates, role: osis_base::Role) -> Result<crate::flows::Done> {
         let me = self.core.tid();
         if self.core.role_now(&me, a) != Some(osis_base::Role::Admin) {
             return Err(crate::error::Error::Permission { tid: *a, needs: osis_base::Role::Admin });
@@ -1509,17 +1504,17 @@ impl Engine {
             return Err(crate::error::Error::BadInput("pairing: the keys shown are not the node's"));
         }
         let edge = osis_schema::core_types::Edge { role, until: None, may_grant: false, retain: false, floor: None };
-        let done = self.grant(a, node, &edge)?;
-        Ok((self.offer(a, node)?, done))
+        self.grant(a, node, &edge)
     }
 
-    /// Takes a pairing offer held from the node root (`take_offer`), then names its account in
-    /// `settings^.0`.
-    pub fn take_pairing(&mut self, o: &crate::flows::offers::Offer) -> Result<crate::flows::Done> {
+    /// Holds account `a` by a strong from the node root and names it in `settings^.0`.
+    // Stub rewrite (notes/stub-rewrite.md): the node syncs A by the values pairing hands over (R3)
+    pub fn take_pairing(&mut self, a: &Tid) -> Result<crate::flows::Done> {
         let root = self.core.node_root.ok_or(crate::error::Error::Misuse("no node root"))?;
-        let mut done = self.take_offer(o, &root)?;
+        let mut done = crate::flows::Done::default();
         let mut m = Mutation::new();
-        m.set(root, &osis_schema::core_types::SETTINGS, &osis_base::Weak(o.target))?;
+        m.op(root, &osis_schema::core_types::HOLDS, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Add(osis_base::Value::Strong(*a)) })?;
+        m.set(root, &osis_schema::core_types::SETTINGS, &osis_base::Weak(*a))?;
         done.add(self.commit(m)?);
         Ok(done)
     }

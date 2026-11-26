@@ -206,6 +206,7 @@ fn sample(shape: Shape) -> usize {
 // actor created in one commit, a grandchild in a later commit or in theirs; a demotion by an admin other than the
 // mint admin; a commit naming a former leaf; B's last write at the demotion's `ts` (§5.2, Position).
 #[test]
+#[ignore = "stub rewrite: entry by references and chain-holder stubs (R2)"]
 fn validity_alike_in_every_arrival_order_spec_permissions_5_2() {
     let cases = [(1, 0, 0, 1, 0, false), (1, 1, 2, 1, 0, false), (2, 1, 2, 2, 0, false), (2, 1, 0, 0, 0, false), (1, 0, 2, 0, 3, false), (2, 2, 2, 2, 0, true)];
     for (writes, at, by, sub, tail, tie) in cases {

@@ -1,5 +1,5 @@
-//! Sync copies (spec/wire.md §4 `SyncCopyPlaintext`, spec/permissions.md §4 Key part): a holder
-//! of sync alone's copy of a role commit on a thing, `[commit_id, tid, Opt(Delta), Opt(Delta)]`:
+//! Sync copies (spec/wire.md §4 `SyncCopyPlaintext`): a holder of only sync's copy of a role
+//! commit on a thing, `[commit_id, tid, Opt(Delta), Opt(Delta)]`:
 //! its `secrets.0` piece and the commit's `sync.0` delta on the thing. No header: its reader
 //! learns no signer, path or other holder (spec/sync-ids.md §2 What a sync holder learns). It is
 //! read for its boxes and steps alone; nothing of it applies and no hash checks its deltas, so a

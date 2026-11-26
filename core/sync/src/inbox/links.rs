@@ -260,8 +260,8 @@ impl Redemptions {
         self.public_ready.want(t);
     }
 
-    /// First contact by an offer handed over (spec/sync-inbox.md §5 By hand): the offering node's
-    /// peers stay dial hints, durably, while a joiner this node acts as holds `target` by a grant
+    /// First contact by peers handed over by hand: the granting node's peers stay dial hints,
+    /// durably, while a joiner this node acts as holds `target` by a grant
     /// (`kept`), as a joined link's do.
     pub(super) fn offered(&mut self, h: &mut Here<'_>, target: Tid, peers: Vec<DialHint>) -> Result<()> {
         if peers.is_empty() {

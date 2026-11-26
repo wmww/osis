@@ -556,7 +556,7 @@ fn a_sealed_fire_is_one_fire_of_its_thing_spec_sync_inbox_4() {
             m.sealed = true;
             m.commit_form().unchecked();
             let b = crate::engine::write::commit_or_build(tx, m)?.and_then(|x| x.1).expect("built");
-            save(tx, OwedFire { thing: g, ak: Some(f.clone()), what: Fire::Value(Value::Int(n as i64)), to: BTreeSet::new(), commit: Some(std::sync::Arc::new(b.encode())), pages: Default::default() })
+            save(tx, OwedFire { thing: g, ak: f.clone(), what: Fire::Value(Value::Int(n as i64)), to: BTreeSet::new(), commit: Some(std::sync::Arc::new(b.encode())), pages: Default::default() })
         })
         .unwrap();
         let id = *e1.fires_owed().iter().find(|x| !before.contains(x)).expect("owed");
@@ -567,54 +567,6 @@ fn a_sealed_fire_is_one_fire_of_its_thing_spec_sync_inbox_4() {
             assert!(matches!(opened, crate::sync::Opened::Bad), "{row}: bad, {opened:?}");
         }
     }
-}
-
-// spec/sync-inbox.md §5 (Carried commits: a grant fire's commit is taken as an arriving
-// commit, each part only where judged valid): peer 2, a reader of g and no admin, forges Bob's
-// (peer 1's) demotion on g, built as a hostile sender would, and fires it as a grant fire sealed
-// on Bob's inbox. Bob, taking it, checks it against the roster he holds: he still reads g, and holds
-// nothing of the forged commit.
-#[test]
-fn a_forged_grant_fire_changes_nothing_spec_sync_inbox_5() {
-    let (mut lp, tids) = LocalPeer::accounts(3, 0, super::tests::T0).unwrap();
-    let g = super::tests::independent_thing(&mut lp, 0);
-    for i in [1, 2] {
-        lp.peers[0].engine.grant(&g, &tids[i], &super::tests::edge(Role::Read)).unwrap();
-    }
-    lp.sync_all().unwrap();
-    let bob = tids[1];
-    let reg = osis_base::Ak::new("t:reg.0").unwrap();
-    let mut m = crate::Mutation::new();
-    m.set(g, &reg, &osis_base::Value::Str("before".into())).unwrap();
-    lp.peers[0].commit(m).unwrap().unwrap();
-    lp.sync_all().unwrap();
-    assert!(lp.peers[1].engine.get(&g, &reg).unwrap().is_some(), "Bob reads g");
-    let e2 = &mut lp.peers[2].engine;
-    let before = e2.fires_owed();
-    let c = e2
-        .run(|tx| {
-            let mut m = crate::Mutation::new();
-            crate::flows::put_edge(&mut m, g, bob, &edge(Role::Sync))?;
-            m.unchecked();
-            tx.core.skip_writer_rules = true;
-            let c = crate::engine::Engine::commit_tx(tx, m);
-            tx.core.skip_writer_rules = false;
-            let c = c?.expect("built");
-            crate::flows::inbox::fire_copy(tx, bob, c, g)?;
-            Ok(c)
-        })
-        .unwrap();
-    let id = *e2.fires_owed().iter().find(|x| !before.contains(x)).expect("owed");
-    let out = e2.sealed_fire(&id).unwrap().expect("sealed");
-    let e1 = &mut lp.peers[1].engine;
-    let opened = e1.open_entry(&out.sync_id, &osis_blob::blob_id(&out.blob), &[0; 57], &out.blob, u64::MAX).unwrap();
-    assert!(matches!(opened, crate::sync::Opened::Commit(..)), "the grant fire is a fire like any: {opened:?}");
-    e1.take_carried().unwrap();
-    e1.role_duties().unwrap();
-    e1.settle_needs().unwrap();
-    assert_eq!(e1.role_on(&g), Some(Role::Read), "Bob's role stands");
-    assert_eq!(e1.get(&g, &reg).unwrap(), Some(osis_base::Value::Str("before".into())), "he reads g as before");
-    assert!(e1.header(&c).is_none(), "nothing of the forged commit is held");
 }
 
 /// Peer 1 writes again an independent thing W it makes, unknown to peer 0 (D): (W, D, D's
@@ -667,65 +619,6 @@ fn a_report_letting_go_forgets_what_only_it_carries_spec_commits_4() {
     assert!(lp.peers[0].engine.pends(&d2) && awaited_at(&lp.peers[0].engine, &w2));
 }
 
-// spec/commits.md §4 Pending storage (a fire carries while its commit is held), spec/sync-inbox.md
-// §5 Carried commits, §5 What a held thing needs: peer 2, a reader of g, fires Bob (peer 1) a
-// grant fire carrying its own role commit on g and on W, a thing it mints and never sends,
-// projected to its part on W. Bob takes it from the fire (`take_fire`): it pends for W's record,
-// carried by the fire alone, rooting W. Once the fire leaves Bob's inbox history and is
-// forgotten, nothing of the commit or W is left, across a restart.
-#[test]
-fn a_grant_fire_carries_what_it_brings_until_it_goes_spec_commits_4() {
-    use crate::apply::carriers::Carrier;
-    use crate::flows::inbox::{save, Fire, OwedFire, GRANT_FIRE};
-    let (mut lp, g, tids) = granted(3, &[(1, Role::Read), (2, Role::Read)]);
-    let bob = tids[1];
-    let grant = osis_base::Ak::new(GRANT_FIRE).unwrap();
-    let (inbox, w) = keeps_fires_an_hour(&mut lp, &grant);
-    let e2 = &mut lp.peers[2].engine;
-    let before = e2.fires_owed();
-    let c = e2
-        .run(|tx| {
-            let mut m = crate::Mutation::new();
-            crate::flows::put_edge(&mut m, g, bob, &edge(Role::Sync))?;
-            crate::flows::put_edge(&mut m, w, bob, &edge(Role::Read))?;
-            m.unchecked();
-            tx.core.skip_writer_rules = true;
-            let c = crate::engine::Engine::commit_tx(tx, m);
-            tx.core.skip_writer_rules = false;
-            let c = c?.expect("built");
-            let full = tx.get_commit(&c)?.expect("held");
-            let on_w = osis_commit::rewrite(&full, |ai| full.header.aspects.get(ai).is_none_or(|a| a.tid != w));
-            let v = crate::flows::inbox::EdgePiece { copy: on_w.encode(), evidence: Vec::new(), records: Vec::new(), pages: Vec::new() }.to_value();
-            save(tx, OwedFire { thing: inbox, ak: Some(grant.clone()), what: Fire::Value(v), to: BTreeSet::new(), commit: None, pages: Default::default() })?;
-            Ok(c)
-        })
-        .unwrap();
-    let id = *e2.fires_owed().iter().find(|x| !before.contains(x)).expect("owed");
-    let out = e2.sealed_fire(&id).unwrap().expect("sealed");
-    let e1 = &mut lp.peers[1].engine;
-    let f = match e1.open_entry(&out.sync_id, &osis_blob::blob_id(&out.blob), &[0; 57], &out.blob, u64::MAX).unwrap() {
-        crate::sync::Opened::Commit(f, _) => f,
-        o => panic!("the grant fire is a fire like any: {o:?}"),
-    };
-    e1.take_carried().unwrap();
-    e1.settle_needs().unwrap();
-    assert!(e1.pends(&c) && awaited_at(e1, &w), "taken from the fire, pending for W's record");
-    assert_eq!(e1.pending_carriers(&c), vec![Carrier::Fire(f)]);
-    lp.peers[1].restart(0).unwrap();
-    lp.peers[1].engine.settle_needs().unwrap();
-    assert!(lp.peers[1].engine.pends(&c) && awaited_at(&lp.peers[1].engine, &w), "carried across a restart");
-    lp.advance(HOUR_MS + 1_000);
-    lp.peers[1].tick().unwrap();
-    let e1 = &mut lp.peers[1].engine;
-    assert!(e1.forgettable(&f).unwrap(), "the fire is out of history");
-    e1.forget_commits(&[f]).unwrap();
-    e1.settle_needs().unwrap();
-    assert!(!e1.pends(&c) && !awaited_at(e1, &w) && e1.core.created(&w).is_none(), "gone with its fire: {}", e1.why_kept(&w));
-    lp.peers[1].restart(0).unwrap();
-    lp.peers[1].engine.settle_needs().unwrap();
-    assert!(!lp.peers[1].engine.pends(&c) && lp.peers[1].engine.pending_carriers(&c).is_empty());
-}
-
 fn awaited_at(e: &crate::Engine, w: &Tid) -> bool {
     e.core.ix.pend_on.contains_key(&crate::apply::Wake::Record(*w))
 }
@@ -760,10 +653,9 @@ fn keeps_fires_an_hour(lp: &mut LocalPeer, fire: &osis_base::Ak) -> (Tid, Tid) {
 #[test]
 fn a_sealed_fire_carries_its_chain_until_it_goes_spec_commits_4() {
     use crate::apply::carriers::Carrier;
-    use crate::flows::inbox::GRANT_FIRE;
     use osis_base::Value;
     let (mut lp, _, _) = granted(3, &[]);
-    let grant = osis_base::Ak::new(GRANT_FIRE).unwrap();
+    let grant = osis_base::Ak::new(osis_schema::core_types::INBOX_SIGNALS[0]).unwrap();
     let (inbox, w) = keeps_fires_an_hour(&mut lp, &grant);
     let e2 = &mut lp.peers[2].engine;
     let mut m = crate::Mutation::new();
@@ -807,39 +699,6 @@ fn a_sealed_fire_carries_its_chain_until_it_goes_spec_commits_4() {
     e1.forget_commits(&[f]).unwrap();
     e1.settle_needs().unwrap();
     assert!(!e1.pends(&d) && !awaited_at(e1, &w) && e1.core.created(&w).is_none(), "gone with its fire: {}", e1.why_kept(&w));
-}
-
-// spec/permissions.md §4 Delivering an edge piece: an edge write goes as a `grant@~0` fire only
-// where its writer may not write the holder. Alice grants her own G a role on her X: G's key
-// part, logged under G's sync ID, so nothing is fired. She grants Bob's account, which she does
-// not write: a fire is owed. Bob's H hangs under his A, on which Alice holds admin by a grant:
-// she writes H through A, and nothing is fired.
-#[test]
-fn an_edge_write_fires_only_where_its_writer_may_not_write_the_holder_spec_permissions_4() {
-    let mut lp = synced(2);
-    let (alice, bob) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
-    let a = independent_thing(&mut lp, 1);
-    let mut m = crate::Mutation::new();
-    let h = lp.peers[1].engine.new_thing(&mut m, a);
-    lp.peers[1].commit(m).unwrap();
-    lp.hold(h);
-    lp.peers[1].engine.grant(&a, &alice, &edge(Role::Admin)).unwrap();
-    lp.sync_all().unwrap();
-    let g = independent_thing(&mut lp, 0);
-    let x = independent_thing(&mut lp, 0);
-    lp.sync_all().unwrap();
-    let e0 = &mut lp.peers[0].engine;
-    let fired = |e0: &crate::Engine, c: CommitId| e0.core.ix.fires.values().any(|o| matches!(o.what, crate::flows::inbox::Fire::Grant { commit, .. } if commit == c));
-    let grant = |e0: &mut crate::Engine, holder: Tid| {
-        e0.grant(&x, &holder, &edge(Role::Read)).unwrap();
-        e0.core.timelines().in_force(&osis_base::Holder::Thing(holder), &x).expect("the grant applied")
-    };
-    let c = grant(e0, g);
-    assert!(!fired(e0, c), "a grant by the holder's writer is fired nowhere");
-    let c = grant(e0, bob);
-    assert!(fired(e0, c), "a grant from outside is fired");
-    let c = grant(e0, h);
-    assert!(!fired(e0, c), "Alice writes H through A: fired nowhere");
 }
 
 // spec/crypto.md §3 (Read key in force: only over the keyset its issuer had received), §4

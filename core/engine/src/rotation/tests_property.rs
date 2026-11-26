@@ -789,7 +789,7 @@ fn check(run: &mut Run, seed: u64, rotated: bool) {
             // every holder at r agrees on the current epochs, each established by the mint admin;
             // a node holding none of r's secrets reads supersession from keysets alone, without
             // the history boxes (spec/crypto.md §4, Supersedes), so may count more
-            // a holder of sync alone reads nothing, so holds no secret (spec/permissions.md §3)
+            // a holder of only sync reads nothing, so holds no secret (spec/permissions.md §3)
             let holds = r.max(Role::Read);
             for &(p, _) in direct.iter().filter(|x| x.1 >= holds) {
                 assert!(at_o.iter().all(|x| ep(o).is_established(x)), "seed {seed}: {t:?} {r:?}: the mint admin counts current {at_o:?}, not all established there");

@@ -184,6 +184,6 @@ fn a_key_hops_grant_is_evidence_of_what_the_key_signs_spec_permissions_4() {
     let e = &mut lp.peers[0].engine;
     let copies = e.evidence_copies().unwrap();
     assert_eq!(copies[&(w, d)][0].hops.as_ref().and_then(|h| h.first().copied()), Some((osis_base::Holder::Key(k), t)), "the key hop first");
-    let ev = osis_engine::evidence::held::derive(&e.evidence_mint(), &copies, &[(d, d, vec![d])]);
+    let ev = osis_engine::evidence::held::derive(&copies, &[(d, vec![d])]);
     assert_eq!(ev.required(&d).unwrap().get(&(grant, t)), Some(&Reason::Edge((osis_base::Holder::Key(k), t))), "the key's grant");
 }

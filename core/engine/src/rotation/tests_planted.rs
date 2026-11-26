@@ -277,9 +277,8 @@ fn box_on_a_dependent_thing_splits_nobody_spec_sync_set_2() {
     assert!(reads_key(&mut lp, 0, y, "by R"), "R's write on Y never reaches A");
 }
 
-// spec/permissions.md §4 Key part (an edge piece holds no rotation that made a granted epoch
-// current), spec/sync-set.md §2: G (peer 1) is granted read on g and holds everything of g but
-// its keysets (each `keys.0` part on g withheld). g counts independent at G by its box and the
+// spec/sync-set.md §2: a grantee holds no rotation that made a granted epoch current. G (peer 1)
+// is granted read on g and holds everything of g but its keysets (each `keys.0` part on g withheld). g counts independent at G by its box and the
 // step of g's `sync.0` bearing its sync key: G syncs g's sync ID, and reads g once it does.
 #[test]
 fn a_grantee_counts_its_target_independent_before_the_keyset_spec_permissions_4() {

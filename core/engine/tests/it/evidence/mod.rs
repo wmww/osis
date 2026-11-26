@@ -1,12 +1,11 @@
 //! The evidence derivation (`osis_engine::evidence`, notes/evidence-derivation.md;
 //! spec/permissions.md §4) against held-model `evidence` (`World::req` under `Rule::fixed`: every
-//! edge write on a stated path's edges, keys-open travel on), the oracle: at every step of a
+//! edge write on a stated path's edges), the oracle: at every step of a
 //! world, for every node's held set and every sync ID's held entries, under every sync ID, the
 //! copies the derivation keeps incrementally and computes from scratch equal the model's required
-//! copies. Hand worlds per model test naming a rule or finding (keys-open travel's in
-//! `travel.rs`); the derivation's own (a waiting path entry, delete-key steps); count tests.
+//! copies. Hand worlds per model test naming a rule or finding; the derivation's own (a waiting path entry, delete-key steps); count tests.
 use held_model::evidence::{self as hm, Rule, Shape, World};
-use osis_engine::evidence::{Config, CopyId, Evidence, Kind, Part, Write};
+use osis_engine::evidence::{CopyId, Evidence, Kind, Part, Write};
 use roles_model::paths::{self, Id, Key, Rules, Set, Thing, Things};
 use roles_model::Role;
 use std::collections::{BTreeMap, BTreeSet};
@@ -15,7 +14,6 @@ mod counts;
 mod engine;
 mod hand;
 mod steps;
-mod travel;
 mod walk;
 
 type Ev = Evidence<Id, Thing, Key>;
@@ -23,11 +21,10 @@ type Copies = BTreeSet<CopyId<Id, Thing>>;
 /// Held copies with their parts as the derivation takes them.
 type HeldCopies = BTreeMap<CopyId<Id, Thing>, Vec<Part<Thing, Key>>>;
 
-/// The model's rule as the derivation is built: no carried-demotion seed, and S's key part only
-/// on an edge giving S read (the rest is cut as sync copies outside the derivation).
+/// The model's rule as the derivation is built: no carried-demotion seed.
 // Interim (issues/engine-evidence-trails-model.md): `keysets` goes when the derivation builds the keyset seed
 fn derived() -> Rule {
-    Rule { keysets: false, key_part_whole: false, ..Rule::fixed() }
+    Rule { keysets: false, ..Rule::fixed() }
 }
 
 /// `w` set to the spec's rule (`Rule::fixed`, as the derivation is built).
@@ -36,12 +33,11 @@ fn e1(w: &mut World) -> Rule {
     derived()
 }
 
-/// Part `i` of the model's world as the derivation's input, `reads` the writes giving read that
-/// the node holding it judges valid (`World::reads_valid`), as the engine feeds it.
-fn part(w: &World, i: Id, reads: &Set) -> Part<Thing, Key> {
+/// Part `i` of the model's world as the derivation's input.
+fn part(w: &World, i: Id) -> Part<Thing, Key> {
     let pw = &w.w;
     let kind = match &pw.commits[i].kind {
-        paths::Kind::Edge { holder, role, .. } => Kind::Write(Write { holder: *holder, gives_read: *role >= Role::Read && !pw.leave(i) && reads.contains(&i) }),
+        paths::Kind::Edge { holder, .. } => Kind::Write(Write { holder: *holder }),
         _ => Kind::Content,
     };
     Part::new(kind, Some(pw.hops(i).to_vec()))
@@ -72,17 +68,10 @@ struct Driver {
 }
 
 impl Driver {
-    fn new(w: &World, keys_open: bool) -> Driver {
-        Driver::with(w, Config { keys_open })
-    }
-
-    fn with(w: &World, cfg: Config) -> Driver {
-        let mut ev = Ev::new(cfg);
-        for &e in &w.w.records {
-            ev.add_record(e);
-        }
+    fn new(w: &World) -> Driver {
+        let mut ev = Ev::new();
         for &s in &w.sids {
-            ev.add_sid(s, s);
+            ev.add_sid(s);
         }
         Driver { ev, held: BTreeMap::new(), units: w.sids.iter().map(|&s| (s, Things::new())).collect() }
     }
@@ -90,8 +79,7 @@ impl Driver {
     /// Moves the derivation to held set `h` and units `units`: new copies, forgotten copies,
     /// retags.
     fn step(&mut self, w: &World, h: &Set, units: &BTreeMap<Thing, Things>) {
-        let reads = w.reads_valid(h);
-        let now: HeldCopies = copies_of(w, h).into_iter().map(|(c, ids)| (c, ids.iter().map(|&i| part(w, i, &reads)).collect())).collect();
+        let now: HeldCopies = copies_of(w, h).into_iter().map(|(c, ids)| (c, ids.iter().map(|&i| part(w, i)).collect())).collect();
         for (c, parts) in &now {
             // other parts held (the model's per-part events): taken again
             if self.held.get(c) != Some(parts) {
@@ -149,8 +137,8 @@ fn differ(w: &World) -> Run {
     let mut w = w.clone();
     let rule = e1(&mut w);
     let w = &w;
-    let mut nodes: Vec<Driver> = (0..w.nodes.len()).map(|_| Driver::new(w, true)).collect();
-    let mut readers: BTreeMap<Thing, Driver> = w.sids.iter().map(|&s| (s, Driver::new(w, true))).collect();
+    let mut nodes: Vec<Driver> = (0..w.nodes.len()).map(|_| Driver::new(w)).collect();
+    let mut readers: BTreeMap<Thing, Driver> = w.sids.iter().map(|&s| (s, Driver::new(w))).collect();
     w.run(&rule, |st| {
         let mut held: Vec<(String, &Set, &mut Driver)> = vec![];
         for (n, d) in nodes.iter_mut().enumerate() {

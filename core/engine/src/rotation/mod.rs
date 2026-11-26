@@ -482,7 +482,7 @@ pub(crate) fn fresh_deposit_seed(tx: &mut Tx<'_>, m: &mut Mutation, a: Tid) -> R
 
 /// Whether a rotation of `roles` of `a` by `who` also refreshes `a`'s deposit seed (spec/crypto.md
 /// §3): it rotates sync (every departure from sync or above does), so the departed party (which
-/// read the seed in `keys.0`, a holder of sync alone included) can no longer deposit under `a`'s
+/// read the seed in `keys.0`, a holder of only sync included) can no longer deposit under `a`'s
 /// sync IDs, and `who` is an admin (the seed is admin-written).
 pub(crate) fn refreshes_deposit(core: &Core, who: &Tid, a: &Tid, roles: &BTreeSet<Role>) -> bool {
     roles.contains(&Role::Sync) && may_rotate(core, who, a).contains(&Role::Admin)
@@ -537,46 +537,6 @@ pub(crate) fn cut_into(tx: &mut Tx<'_>, m: &mut Mutation, a: Tid, roles: &BTreeS
     Ok(rot)
 }
 
-/// Holders a rotation `rot` of `a` boxes that hold no box at a current read epoch before it: its
-/// commit is wrapped under that epoch, so they cannot open it from the sync ID (a grant this node
-/// learned of after an epoch that left it out, the single-use link race's winner); while `a`
-/// owns several sync IDs here (a fork), every holder it boxes. They get it as a sealed copy
-/// (spec/permissions.md §3, §4 Delivering an edge piece).
-/// Called before the rotation is committed.
-pub(crate) fn unreached(tx: &mut Tx<'_>, a: &Tid, rot: &Rotation) -> Result<Vec<Tid>> {
-    let Some(epochs) = tx.core.epochs(a) else { return Ok(Vec::new()) };
-    let secrets = secrets_in(tx, a)?;
-    let me = tx.core.tid();
-    let mut out: Vec<Tid> = rot.secrets.boxes.keys().map(|k| k.holder.0).filter(|m| *m != me).collect();
-    out.sort();
-    out.dedup();
-    // Invariant: a holder syncs the sync ID the commit is logged under (`a`'s, the greatest it
-    // owns) only once it holds the `sync.0` entry recording it. With two (admins making `a`
-    // independent at once), a holder granted on the other side holds none: nothing is logged
-    // under its sync ID once every writer syncs the greater one, so only the inbox reaches it,
-    // and this node cannot tell which side a holder is on
-    if flows::sync_ids::owned_in(tx, a)?.len() > 1 {
-        return Ok(out);
-    }
-    // reached: boxed at the epoch the commit is wrapped under (a current one: held by box), or,
-    // with none, at a current epoch. A holder a floor bars from that epoch (spec/crypto.md §4,
-    // Floors: a fork beside its cut) is boxed at another and must take the commit by inbox
-    let wrap = rot.wrap_epoch();
-    out.retain(|m| !secrets.boxes.keys().any(|k| k.holder == osis_base::Weak(*m) && k.role == Role::Read && osis_keys::aspects::from_schema(&k.epoch).is_ok_and(|e| wrap.map_or(epochs.read.is_current(&e), |w| e == w))));
-    Ok(out)
-}
-
-/// Rotation commit `c` of `a` to `holders` that cannot open it from `a`'s sync ID: each as a
-/// sealed copy (spec/permissions.md §4 Delivering an edge piece).
-pub(crate) fn deliver_rotation(tx: &mut Tx<'_>, a: Tid, c: Option<osis_base::CommitId>, holders: &[Tid]) -> Result<()> {
-    if let Some(c) = c {
-        for m in holders {
-            flows::inbox::deliver_sealed(tx, *m, c, a)?;
-        }
-    }
-    Ok(())
-}
-
 /// Records a rotation this node made (spec/crypto.md §4: its own epochs are established).
 pub(crate) fn record(tx: &mut Tx<'_>, a: Tid, rot: &Rotation) -> Result<()> {
     tx.core.touch();
@@ -624,18 +584,18 @@ pub(crate) fn commit_rotating(tx: &mut Tx<'_>, mut m: Mutation, who: Tid, a: Tid
     if refreshes_deposit(tx.core, &who, &a, roles) {
         fresh_deposit_seed(tx, &mut m, a)?;
     }
-    let to = unreached(tx, &a, &rot)?;
     let c = Engine::commit_tx(tx, m)?;
-    recorded(tx, a, c, &rot, &to, done)?;
+    recorded(tx, a, c, &rot, done)?;
     Ok(c)
 }
 
-/// Records rotation `rot` of `a`, committed as `c`, into `done` with its inbox deliveries to
-/// `to`.
-pub(crate) fn recorded(tx: &mut Tx<'_>, a: Tid, c: Option<osis_base::CommitId>, rot: &Rotation, to: &[Tid], done: &mut Done) -> Result<()> {
+/// Records rotation `rot` of `a`, committed as `c`, into `done`.
+// Stub rewrite (notes/stub-rewrite.md): a holder that cannot open the rotation by its wrap gets
+// an entry box in `a`'s next step (Q2, R3)
+pub(crate) fn recorded(tx: &mut Tx<'_>, a: Tid, c: Option<osis_base::CommitId>, rot: &Rotation, done: &mut Done) -> Result<()> {
     record(tx, a, rot)?;
     done.add(c);
-    deliver_rotation(tx, a, c, to)
+    Ok(())
 }
 
 /// Things whose sync IDs must learn a rotated actor's new `keys.0`: what it is a holder of and
@@ -814,10 +774,8 @@ fn finalize_due(tx: &mut Tx<'_>, who: Tid, a: Tid, keep: Option<Keep<'_>>, done:
 /// three roles from its derived epochs (those of the next actor up its record chain: rotated
 /// first where this node can, the history boxes carry them), boxed to its current holders (its
 /// mint admin included; not one whose grant this node may finalize, `ended_holders`), with a
-/// `keys.0` carrying the keysets and a fresh deposit seed, delivered by inbox to each holder it
-/// boxes (none held a box before it), the mint admin included: this node may not sync it, and
-/// its sync IDs must learn the thing's own secrets (spec/permissions.md §3, Own secrets add only).
-/// Nothing when it has them already.
+/// `keys.0` carrying the keysets and a fresh deposit seed (spec/permissions.md §3, Own secrets
+/// add only). Nothing when it has them already.
 pub(crate) fn own_secrets(tx: &mut Tx<'_>, t: Tid, done: &mut Done) -> Result<()> {
     own_secrets_listing(tx, t, &[], done)
 }
@@ -825,8 +783,8 @@ pub(crate) fn own_secrets(tx: &mut Tx<'_>, t: Tid, done: &mut Done) -> Result<()
 /// `own_secrets`, its genesis step listing `also` besides the holders it boxes (a link's key,
 /// granted next).
 pub(crate) fn own_secrets_listing(tx: &mut Tx<'_>, t: Tid, also: &[crate::flows::sync_ids::ReaderKey], done: &mut Done) -> Result<()> {
-    if let Some((c, rot, to)) = own_secrets_rot(tx, t, None, also, None, Vec::new(), done)? {
-        recorded(tx, t, c, &rot, &to, done)?;
+    if let Some((c, rot)) = own_secrets_rot(tx, t, None, also, None, Vec::new(), done)? {
+        recorded(tx, t, c, &rot, done)?;
     }
     Ok(())
 }
@@ -846,14 +804,13 @@ pub(crate) fn own_secrets_new(tx: &mut Tx<'_>, rec: osis_base::CreationRecord, a
     let creates = BTreeMap::from([(t, rec.clone())]);
     let signer = if rec.key().is_some() { t } else { tx.core.tid() };
     crate::engine::write::check_authority(tx.core, signer, &|x| creates.get(x), &t, osis_commit::retention::CREATED, tx.core.hlc.peek())?;
-    let Some((c, rot, to)) = own_secrets_rot(tx, t, Some(rec), also, seed, keys, done)? else { return Err(Error::Misuse("a new thing is made independent")) };
-    recorded(tx, t, c, &rot, &to, done)?;
+    let Some((c, rot)) = own_secrets_rot(tx, t, Some(rec), also, seed, keys, done)? else { return Err(Error::Misuse("a new thing is made independent")) };
+    recorded(tx, t, c, &rot, done)?;
     Ok(t)
 }
 
-/// `own_secrets` up to its commit, not yet recorded: the commit, the rotation, and the
-/// holders it boxes that held no box at a current read epoch before it (`unreached`).
-type OwnRot = (Option<osis_base::CommitId>, Rotation, Vec<Tid>);
+/// `own_secrets` up to its commit, not yet recorded: the commit and the rotation.
+type OwnRot = (Option<osis_base::CommitId>, Rotation);
 /// `rec`: the record of a new `t`, held from here and carried by the rotation commit
 /// (`own_secrets_new`); `seed`: a new link key's; `keys`: more `keys.0` ops of `t` the commit
 /// carries.
@@ -924,9 +881,8 @@ fn own_secrets_rot(tx: &mut Tx<'_>, t: Tid, rec: Option<osis_base::CreationRecor
     for op in keys {
         m.op(t, &osis_schema::core_types::KEYS, op)?;
     }
-    let to = unreached(tx, &t, &rot)?;
     let c = Engine::commit_tx(tx, m)?;
-    Ok(Some((c, rot, to)))
+    Ok(Some((c, rot)))
 }
 
 /// The dependent things whose secrets derive from `a` that this node, an admin of each, sees with a
@@ -1033,8 +989,7 @@ pub(crate) enum Reseal {
 }
 
 /// A re-seal of `holder` for `roles` of `a` (spec/permissions.md §3): its boxes at the current
-/// epochs `which` names, with history boxes, delivered by inbox (a node: over a direct connection) and placed
-/// under the actor's sync IDs like any role commit (later removals reset its box entries: every
+/// epochs `which` names, with history boxes, placed under the actor's sync IDs like any role commit (later removals reset its box entries: every
 /// node must hold them, or the removal waits for good), with the keyset commits it names.
 pub(crate) fn reseal_one(tx: &mut Tx<'_>, a: Tid, holder: Tid, roles: &BTreeSet<Role>, which: Reseal) -> Result<Done> {
     let mut done = Done::default();
@@ -1095,15 +1050,9 @@ pub(crate) fn reseal_one_into(tx: &mut Tx<'_>, a: Tid, holder: Tid, roles: &BTre
     };
     let mut m = Mutation::new();
     put_secrets(&mut m, a, &w, false)?;
-    let c = Engine::commit_tx(tx, m)?;
-    done.add(c);
-    if let Some(c) = c {
-        // the holder holds no box at the epoch it is wrapped under: a sealed copy
-        // (spec/permissions.md §4 Delivering an edge piece)
-        if holder != me {
-            flows::inbox::deliver_sealed(tx, holder, c, a)?;
-        }
-    }
+    // Stub rewrite (notes/stub-rewrite.md): the holder holds no box at the epoch the re-seal is
+    // wrapped under: an entry box in `a`'s next step (Q2, R3)
+    done.add(Engine::commit_tx(tx, m)?);
     Ok(())
 }
 

@@ -278,8 +278,8 @@ pub trait Ground {
         let _ = (s, tids);
         Ok(())
     }
-    /// The sync copies and notices S carries (spec/permissions.md §4 Key part, Logging
-    /// certificates, Notices) set against those the own store holds under S (`SyncCopiesDue`).
+    /// The sync copies and notices S carries (spec/permissions.md §4 Logging certificates,
+    /// Notices) set against those the own store holds under S (`SyncCopiesDue`).
     fn sync_copies_due(&mut self, s: &SyncId) -> Result<SyncCopiesDue> {
         let _ = s;
         Ok(SyncCopiesDue::default())

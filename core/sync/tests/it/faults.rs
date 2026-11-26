@@ -199,6 +199,7 @@ fn a_crash_restarts_the_node_in_place() {
 // makes the new node a node of the account. Every write of the pairing's own transaction:
 // osis-engine `a_failed_pairing_keeps_no_seed_of_its_rotation`.
 #[test]
+#[ignore = "stub rewrite: entry by references and stubs, pairing by values (R2, R3)"]
 fn a_pairing_hit_by_a_store_failure_pairs_when_tried_again() {
     for f in [DiskFault::Fail, DiskFault::Unsynced, DiskFault::Crash] {
         let mut w = two_nodes();

@@ -182,7 +182,7 @@ fn boxes_by_role(rot: &osis_keys::Rotation) -> std::collections::BTreeMap<Role, 
 }
 
 // spec/permissions.md §3, spec/crypto.md §4 (a rotation writes new boxes for every current holder): counted, not timed: with n readers and n holders of
-// sync alone besides the admin, removing a sync holder rotates sync alone, one box per holder
+// only sync besides the admin, removing a sync holder rotates only sync, one box per holder
 // (2n + 1); removing a reader rotates sync and read, the sync secret's share every holder's box
 // (2n + 1) beside the readers' read boxes (n + 1). At 10n each count is 10x the holders' part:
 // linear in the holders, about 1.2 KB a sealed box.
@@ -199,7 +199,7 @@ fn rotation_boxes_per_role_at_n_and_10n_spec_permissions_3() {
         }
         let (a, p, pe, view, s) = switched(&extra, rg);
         let holders: Vec<Recipient> = std::iter::once(admin_rcpt(p, &pe)).chain(extra.iter().cloned()).collect();
-        // a sync holder removed: sync alone
+        // a sync holder removed: only sync
         let sync_only = rotate(&a, &roles(&[Role::Sync]), &view, &s, &holders[..holders.len() - 1], &osis_keys::Names::default(), &mut *rg).unwrap();
         let by = boxes_by_role(&sync_only);
         assert_eq!(by.keys().copied().collect::<Vec<_>>(), vec![Role::Sync]);

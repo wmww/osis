@@ -18,7 +18,7 @@
 use osis_base as base;
 use osis_crypto as crypto;
 use osis::core::{CAPS, DIAL, NAME, RETENTION, RetentionSetting, SETTINGS};
-use osis::{Error, GrantOpts, HolderKind, Keys, Link, LinkInfo, Offer, Osis, ReadOnly, Result, Role, SetRoleOpts, Store, Tid, Value, Weak};
+use osis::{Error, GrantOpts, HolderKind, Keys, Link, LinkInfo, Osis, ReadOnly, Result, Role, SetRoleOpts, Store, Tid, Value, Weak};
 
 /// Typed keys of schema/realm.osis.
 #[allow(dead_code, clippy::all)]
@@ -369,8 +369,9 @@ impl Offering {
         }
         let node = db.take_keys(&keys)?;
         db.grant(a, node, Role::Admin, GrantOpts::default())?;
-        let offer = db.offer(a, node)?;
-        Ok((node, PairReply(seal(REPLY, &self.secret, "osis pair reply", vec![Value::Str(offer.to_string())]))))
+        // Stub rewrite (notes/stub-rewrite.md): the reply carries the account's values (its
+        // tid, sync ID, an entry credential, peer hints) for the new node to sync it (R3)
+        Ok((node, PairReply(seal(REPLY, &self.secret, "osis pair reply", Vec::new()))))
     }
 }
 
@@ -390,9 +391,7 @@ impl std::fmt::Debug for Joining {
 }
 
 /// Starts pairing a fresh store as a new node of the account that made `offer`: returns the
-/// request to carry to the offering node and, with its reply, `Joining::finish`. Once finished,
-/// the new node dials the offering node, as its reply names it (`Osis::take_offer`), while it is
-/// a node of the account, restarts included.
+/// request to carry to the offering node and, with its reply, `Joining::finish`.
 pub fn pair(store: Store, offer: &PairOffer, cfg: osis::Config) -> Result<Joining> {
     let items = unpack(&offer.0, OFFER)?;
     let malformed = || Error::Invalid("malformed pairing offer".into());
@@ -415,19 +414,15 @@ impl Joining {
     /// the account.
     pub fn finish(self, reply: &PairReply) -> Result<(Osis, Account)> {
         let items = unpack(&reply.0, REPLY)?;
-        let [_, offer, Value::Bytes(_)] = items.as_slice() else { return Err(Error::Invalid("malformed pairing reply".into())) };
+        let [_, Value::Bytes(_)] = items.as_slice() else { return Err(Error::Invalid("malformed pairing reply".into())) };
         if !tag_ok(&self.secret, "osis pair reply", &items) {
             return Err(Error::Invalid("pairing reply does not match the offer".into()));
         }
-        let Value::Str(offer) = offer else { return Err(Error::Invalid("malformed pairing reply".into())) };
-        let offer: Offer = offer.parse()?;
-        if offer.target() != self.account {
-            return Err(Error::Invalid("pairing reply: an offer of another account".into()));
-        }
-        // held from the node root, which keeps the node's settings on it
+        // Stub rewrite (notes/stub-rewrite.md): the new node syncs the account by the values the
+        // reply carries (R3)
         let root = self.db.node_root()?;
-        self.db.take_offer(&offer, root).map_err(|e| Error::Invalid(format!("pairing reply: {e}")))?;
         let mut w = self.db.write();
+        w.hold(root, self.account)?;
         w.at(root, SETTINGS).set(&Weak(self.account))?;
         w.commit()?;
         self.db.publish_dial_on(&[self.account, self.profile])?;

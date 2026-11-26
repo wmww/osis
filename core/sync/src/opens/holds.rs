@@ -218,7 +218,7 @@ fn node_creds(cx: &mut Cx, unread: &Unread, s: &SyncId) -> Option<Arc<Creds>> {
     let (_, holding) = cx.store.synced(s)?;
     let mut c = Creds { holding: Some(holding), ..Creds::default() };
     match holding {
-        // held for keys it opens as a reader does: by the read secret a box gave it
+        // held in the keys class it opens as a reader does: by the read secret a box gave it
         Holding::Read | Holding::Keys => {
             let rc = cx.engine.read_credentials(s).ok()??;
             for (e, k) in &rc.read_secrets {

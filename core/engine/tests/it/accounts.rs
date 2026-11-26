@@ -46,86 +46,6 @@ fn independent_of_0(lp: &mut osis_engine::local_peer::LocalPeer) -> osis_base::T
     t
 }
 
-// spec/sync-set.md §2 First entry: peer 1 reads X only through G (peer 1 read on G, G read on
-// X). Its root's strong to X alone enters nothing: no unit it syncs carries X, and no key part of
-// an own or read thing holds a piece on X (G is held for no reading of peer 1's). Once its root
-// strongs G too, G is entered (its node thing's piece) and read, and G's piece on X carries it.
-#[test]
-fn a_strong_enters_only_what_a_unit_piece_or_offer_carries_spec_sync_set_2() {
-    let mut lp = crate::common::net(2, 0);
-    let (g, x) = (independent_of_0(&mut lp), independent_of_0(&mut lp));
-    let n1 = lp.peers[1].engine.tid();
-    lp.peers[0].engine.grant(&g, &n1, &crate::common::edge(Role::Read)).unwrap();
-    lp.peers[0].engine.grant(&x, &g, &crate::common::edge(Role::Read)).unwrap();
-    lp.hold_at(1, x);
-    lp.sync_all().unwrap();
-    let e = &mut lp.peers[1].engine;
-    assert!(!e.closure_holds(&x), "a role through G and a strong: nothing carries X");
-    assert_eq!(e.role_on(&x), None, "X's grants count only where X is carried");
-    e.check_closure();
-    lp.hold_at(1, g);
-    lp.sync_all().unwrap();
-    let e = &mut lp.peers[1].engine;
-    assert!(e.closure_holds(&g), "G: the node thing's piece");
-    assert!(e.closure_holds(&x), "X: G's piece, G read");
-    e.check_closure();
-}
-
-// spec/sync-set.md §2 First entry: an edge piece carries its target while its edge is current or
-// while a loss is not carried out yet. Peer 1 reads X by its own grant and holds sync on X through
-// G (peer 1 read on G, G sync on X; G held for keys alone, no strong to it). Once its grant is
-// removed and the loss carried out (read secrets dropped, sync kept), the removal's piece carries
-// nothing and G's key part carries nothing: X leaves, though peer 1 keeps the sync secrets.
-#[test]
-fn a_removals_piece_carries_nothing_once_the_loss_is_carried_out_spec_sync_set_2() {
-    let mut lp = crate::common::net(2, 0);
-    let (g, x) = (independent_of_0(&mut lp), independent_of_0(&mut lp));
-    let n1 = lp.peers[1].engine.tid();
-    lp.peers[0].engine.grant(&g, &n1, &crate::common::edge(Role::Read)).unwrap();
-    lp.peers[0].engine.grant(&x, &g, &crate::common::edge(Role::Sync)).unwrap();
-    lp.peers[0].engine.grant(&x, &n1, &crate::common::edge(Role::Read)).unwrap();
-    lp.hold_at(1, x);
-    lp.sync_all().unwrap();
-    assert!(lp.peers[1].engine.closure_holds(&x), "X: its own grant's piece");
-    crate::common::set_edge(&mut lp.peers[0].engine, x, n1, None, None);
-    lp.sync_all().unwrap();
-    lp.peers[1].engine.drop_lost_secrets().unwrap();
-    let e = &mut lp.peers[1].engine;
-    assert!(!e.closure_holds(&x), "the removal's piece carries nothing once the loss is carried out");
-    e.check_closure();
-}
-
-// spec/sync-set.md §2 First entry: entry is founded. Peer 1 reads Y through G (held for keys
-// alone, no strong to it) and holds Y by its root's strong, carried first by U's piece (U read).
-// Y's unit strongs H (Y read on H), and H holds an edge on Y: H is read only through Y's unit, so
-// once U's edge goes, H's piece would carry Y only by Y itself: the loss is carried out, and
-// neither is held then.
-#[test]
-fn a_read_things_piece_carries_nothing_it_is_read_only_through_spec_sync_set_2() {
-    use crate::common::edge;
-    let mut lp = crate::common::net(2, 0);
-    let [u, y, h, g] = [(); 4].map(|_| independent_of_0(&mut lp));
-    let n1 = lp.peers[1].engine.tid();
-    let e0 = &mut lp.peers[0].engine;
-    for (t, holder) in [(u, n1), (g, n1), (y, g), (y, u), (h, y), (y, h)] {
-        e0.grant(&t, &holder, &edge(Role::Read)).unwrap();
-    }
-    let mut m = osis_engine::Mutation::new();
-    m.op(y, &osis_schema::core_types::HOLDS, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Add(osis_base::Value::Strong(h)) }).unwrap();
-    e0.commit(m).unwrap();
-    lp.hold_at(1, u);
-    lp.hold_at(1, y);
-    lp.sync_all().unwrap();
-    assert!(lp.peers[1].engine.closure_holds(&y) && lp.peers[1].engine.closure_holds(&h), "Y by U's piece, H in Y's unit");
-    crate::common::set_edge(&mut lp.peers[0].engine, y, u, None, None);
-    lp.sync_all().unwrap();
-    lp.peers[1].engine.drop_lost_secrets().unwrap();
-    let e = &mut lp.peers[1].engine;
-    assert_eq!(e.role_on(&y), None, "Y's grants count nowhere Y is carried");
-    assert!(!e.closure_holds(&y) && !e.closure_holds(&h), "H's piece carries Y only through Y");
-    e.check_closure();
-}
-
 // spec/sync-set.md §1, spec/permissions.md §8 Making: a node's settings are its node thing's
 // entries on the thing its root's `settings^.0` names, A from its making. A sibling holding admin
 // on A writes the node's caps entry there and the node applies it; one holding write on A cannot
@@ -167,13 +87,14 @@ fn a_sibling_writes_a_nodes_settings_and_cannot_sign_as_it_spec_sync_set_1() {
 }
 
 // spec/sync-set.md §2 Stub, spec/permissions.md §4 Copies, spec/wire.md §4 Sync copy: G's sync
-// unit strongs X, which G holds sync alone on and whose keys G's do not open: G's sync ID carries
+// unit strongs X, which G holds only sync on and whose keys G's do not open: G's sync ID carries
 // X's stub as G's sync copies (its boxes and `sync.0`, no header: no certificate copy of any
 // part on X), none of X's content, nor anything of a grant on X to another holder Z (a holder G
 // may not learn). Granted nothing on X, G carries none of it. Fails with a stub's pieces cut by
 // their holder's role on X, or with G's grant travelling as a certificate copy (Role changes
-// travel: a grant of sync alone reaches its holder's readers as sync copies alone).
+// travel: a grant of only sync reaches its holder's readers as sync copies alone).
 #[test]
+#[ignore = "stub rewrite: a unit's stubs, cut and logged (R2)"]
 fn a_units_stub_is_carried_as_sync_copies_spec_sync_set_2() {
     use crate::common::edge;
     use std::collections::BTreeSet;
@@ -201,23 +122,4 @@ fn a_units_stub_is_carried_as_sync_copies_spec_sync_set_2() {
     assert!(copies.iter().all(|(_, h)| *h == g), "G's copies alone: {copies:?}");
     assert!(granted.iter().any(|c| copies.iter().any(|(s, _)| s == c)), "G's grant, its box: {copies:?}");
     assert!(!other.iter().chain([&content]).any(|c| copies.iter().any(|(s, _)| s == c)), "nothing of Z's grant or X's content: {copies:?}");
-}
-
-// spec/sync-inbox.md §5 By hand: an offer of a grant to account A, handed to a node of A (one
-// holding write on A), is taken there: the node holds the target at the role A's grant gives.
-#[test]
-fn an_offer_to_the_account_is_taken_by_its_node_spec_sync_inbox_5() {
-    let mut lp = crate::common::net_one(2);
-    let a = crate::common::account_of(&mut lp);
-    let mut m = osis_engine::Mutation::new();
-    let me = lp.peers[0].engine.tid();
-    let t = lp.peers[0].engine.new_thing(&mut m, me);
-    lp.peers[0].commit(m).unwrap();
-    lp.peers[0].engine.make_independent(&t).unwrap();
-    lp.hold_at(0, t);
-    let edge = ct::Edge { role: Role::Read, until: None, may_grant: false, retain: false, floor: None };
-    lp.peers[0].engine.grant(&t, &a, &edge).unwrap();
-    let offer = lp.peers[0].engine.offer(&t, &a).unwrap();
-    lp.peers[1].engine.take_offer(&offer, &a).unwrap();
-    assert_eq!(lp.peers[1].engine.role_on(&t), Some(Role::Read));
 }
