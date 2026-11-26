@@ -34,6 +34,7 @@ osis supports a highly composable feature set, carefully chosen to balance API s
 - ³ Nothing prevents a someone from preserving expired/purged data in some way. Permanent deletion applies when you trust your counterparty to respect it (or simply to not use technical means to subvert it).
 
 ## Concepts
+- **Node**: an instance of the osis software that manages its own data and keys.
 - **Thing**: generic container of aspects. The unit of permissions, sync and referencing. An entity in ECS terminology.
 - **Tid**: Thing ID. Permanent and globally unique 120-bit ID. 20 base64 URL characters when formatted.
 - **Value**: raw data. Has a type. May contain arbitrarily deep nestings (in the case of a recursive type), but may not be recursive/self-referential.
@@ -59,24 +60,43 @@ osis supports a highly composable feature set, carefully chosen to balance API s
 - **Actor**: a thing which authorizes an action.
 - **Signer**: the actor which holds the keys that sign a commit.
 - **Actor chain**: starts with the commit's signer and ends with the thing being acted on. Each actor holds at least `write` on the next.
-- **Node**: an osis instance with its own key and store.
 - **Peer**: another node a node syncs with directly.
 - **Relay**: forwards a connection's encrypted data. Stores nothing, and is not a node.
 - **Client**: anything using the osis client protocol to reach a node, on the same machine or another.
 - **Schema**: a file defining aspects and their types. Uses a DSL and the .osis file extension.
 - **Core**: the library that implements osis, the API. Excludes osis, the app, osis, the CLI and other software built on the API.
 
-## Abstract model
-The implementation is complex, but the contract is compatively simple. This is what you need to understand to correctly use the osis API.
+## High-level design
 
-### Data structure
-Each osis node stores a graph of things beginning at a root node. A thing is a collection of aspects (key/value pairs). Each thing has at most one aspect with a given key. A schema defines aspect keys and their types. Aspect values must be of the correct type for their aspect key (enforced at read and write, but not sync). Edges of the graph are strong referencess between things. References may appear anywhere within an aspect value. When a thing or cluster of things is no longer strongly referenced by anything in the graph it may be guarbage collected. Weak references may be used to navigate the graph, but do not effect its structure.
+### Architecture
+The **osis API** allows applications to store, query and listen for changes to osis data. A **node** (generally an instance of [osis core](core/)) implements the API. Nodes sync with each other in a mesh network. Each node locally stores the data it syncs. The permission system offers fine-grained control for which nodes have access to what data. The node software can be embedded in an app, a system service or running on a server.
+
+### Things
+In osis a **thing** is the unit of sync, permissions and references. Each thing has a permanent and globally unique **tid** (thing ID), commonly displayed as 20 base64 URL characters.
+
+### Aspects
+Data is stored on a thing as a collection of aspects. Each **aspect** is a key/value pair, with at most one aspect of a given key per thing. Aspect keys are compact strings containing name, version and other metadata.
+
+### Schema & types
+A **schema** specifies aspect keys, their types, versioning info, etc. Schema are written in a domain-specific language, stored in .osis files and generally compiled into apps. Aspects should generally have keys defined in included schema, and values of the type the schema defines. A single thing may contain aspects defined in multiple schemas. A node does not reject aspects from unknown schemas or with incorrect types at sync, but reading or writing them may produce an error.
+
+### Reference graph
+Aspect values may contain **references** to other things. A reference may be **strong** or **weak**. The graph of things directly and indirectly accessible via strong references is known as the root thing's **closure**. Each node has a **node root** thing, and its closure determines which things are stored and synced by the node. When the node's root closure no longer contains a thing it's garbage collected on that node.
 
 ### Permissions
-Any number of things may hold different roles on a thing. Roles may be held indirectly, in which case the role is the minimum of the chain. A node is considered to have a role if its signer has that role. One way for a role change to be valid is if the committer has admin on the thing the role is being granted on AND have at least write on the holder. for a grant specifically, the former can be replaced by the committer holding a row ≥ the granted on with the `may_grant` flag set. The latter may be replaced by the "external grant" flow (involves an admin enabling external grants, and a writer accepting it). A holder may always drop or lower its own grant.
+A **holder** holds a **role** on a thing. Holders may be other things, keys or "the public" (anyone with access to the thing). A role grants the holder rights to interact with the thing. A thing may have any number of holders with the same or different roles. Each role is a superset of previous roles. The roles are:
+- **`sync`**: allows receiving the data but not decrypting it.
+- **`read`**: allows decrypting.
+- **`write`**: allows editing/firing signals.
+- **`admin`**: allows editing permissions and other admin-only data.
+
+In }addition to its role, a holder may be given `may_grant`, which allows that holder to grant other holders up to the same role as itself. Roles may be used indirectly—a holder on a thing which itself has a role on another thing may act on the latter with the minimum role of the chain.
 
 ### Sync
-When a node connects to a peer, it effeciently syncs all sync units reachable through both nodes' graphs. Roles alone do not cause sync, but they are required for a thing to appear in another's sync unit.
+Connected nodes sync changes to the things they have in common. Nodes with the `sync` role on a thing sync only metadata and encrypted data, without getting the keys to decrypt it. Things sync along with the subset of their closure they hold at least `read` on, so a node can receive a new thing when a strong reference is added from a thing it already syncs.
+
+### Stubs
+Where a strong reference would sync a target's closure along with the referrer, a weak reference syncs a stub. A stub contains information needed to sync a thing, without most of its data or closure. If a strong ref is written to something a node only syncs as a stub, that node (and any that sync the strong ref) begin syncing the target using the stub. If no syncing node syncs the target (in full or its stub) the ref remains dangling until one does.
 
 ### Data merging
-All osis values are conflict-free replicated data types (CRDTs). This means two simultanious edits (or edits when two nodes are disconnected from each other) are merged without user intervention. For many types, this simply falls back to last write wins, depending on timestamp from the writers (there is no meaningful way to merge setting a valueless enum to two different values). For other types, especially containers and strings, effort is taken to merge changes in a way that is likely to be considered correct. Data merges recursively, that is strings inside map values changing merge just as toplevel strings would.
+Values use conflict-free replicated data types (CRDTs). Two simultaneous edits (or edits when two nodes are disconnected) are merged without user intervention. For some types this just means the most recent write wins (there is no meaningful way to merge two cases of an enum). Others, especially containers and strings, merge changes. Data merges recursively, strings inside map values merge just as top-level strings.
