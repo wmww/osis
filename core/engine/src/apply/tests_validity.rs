@@ -468,8 +468,8 @@ mod tests {
         let ki = h.aspects.iter().position(|x| x.ak.as_str() == "keys.0").unwrap();
         assert!(!lp.peers[3].engine.core.ix.commits.get(&id).unwrap().valid()[ki], "a may-grant grant's record is invalid");
     }
-    // spec/permissions.md §3 (a `keys.0` delta's box records ride with the keysets of their
-    // roles), §4 (Current `keys.0` commits): a writer recording boxes in `keys.0` without
+    // spec/permissions.md §3 (A `keys.0` delta needs write), §4 (Current `keys.0` commits): a
+    // `keys.0` delta's box records ride with the keysets of their roles: a writer recording boxes in `keys.0` without
     // rotating is judged as admin, so its records never become current and every card, holder
     // keys and public key record carrying the thing's keys stays at its rotations, whatever a
     // writer writes. Failed when a bare record needed write: each one a current commit more.
