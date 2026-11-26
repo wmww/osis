@@ -18,7 +18,7 @@ use super::judge::Act;
 use crate::session::RequestId;
 use crate::store::Source;
 use crate::types::ConnId;
-use osis_base::memo::Effects;
+use osis_base::memo::{Effects, Stamped};
 use osis_base::SyncId;
 use osis_engine::sync::BodyId;
 use std::collections::{BTreeMap, BTreeSet};
@@ -45,16 +45,20 @@ pub(crate) struct Owed {
     pub by: BTreeMap<Source, BTreeMap<Key, State>>,
     /// Per connection, the requests out and the act each answers.
     out: BTreeMap<ConnId, BTreeMap<RequestId, (Source, Key)>>,
-    /// Per source owed something, where its acts go (`On`): a take, a release, an agreement or a
-    /// `full` moving makes it due.
+    /// Per source owed something, where its acts go (`On`): a take, a release, an agreement, a
+    /// `full` moving or its acts owed only while full moving (`wanted_full`) makes it due.
     pub on: Effects<Source, On>,
+    /// Per source, the sync IDs of its acts owed only while full and not done: stamped, so `on`
+    /// reads it. How many such acts each has: `full_count`.
+    pub wanted_full: Stamped<Source, BTreeSet<SyncId>>,
+    full_count: BTreeMap<(Source, SyncId), usize>,
     /// Sources owed a new act since the last `due`.
     touched: BTreeSet<Source>,
 }
 
 impl Default for Owed {
     fn default() -> Self {
-        Owed { by: BTreeMap::new(), out: BTreeMap::new(), on: Effects::new("read: owed"), touched: BTreeSet::new() }
+        Owed { by: BTreeMap::new(), out: BTreeMap::new(), on: Effects::new("read: owed"), wanted_full: Stamped::named("read: owed while full"), full_count: BTreeMap::new(), touched: BTreeSet::new() }
     }
 }
 
@@ -62,7 +66,10 @@ impl Owed {
     /// A judgement came to hold act `k` toward its source.
     pub fn add(&mut self, k: Key) {
         let Some(at) = k.2.toward() else { return };
-        self.by.entry(at).or_default().entry(k).or_insert(State::Waiting);
+        if !self.by.get(&at).is_some_and(|m| m.contains_key(&k)) {
+            self.count_full(at, &k, true);
+            self.by.entry(at).or_default().insert(k, State::Waiting);
+        }
         self.on.want(at);
         self.touched.insert(at);
     }
@@ -71,8 +78,12 @@ impl Owed {
     pub fn remove(&mut self, k: &Key) {
         let Some(at) = k.2.toward() else { return };
         let Some(m) = self.by.get_mut(&at) else { return };
-        m.remove(k);
-        if m.is_empty() {
+        let Some(st) = m.remove(k) else { return };
+        let empty = m.is_empty();
+        if st != State::Done {
+            self.count_full(at, k, false);
+        }
+        if empty {
             self.by.remove(&at);
             self.on.unwant(&at);
             self.touched.remove(&at);
@@ -94,11 +105,40 @@ impl Owed {
         out.into_iter().collect()
     }
 
-    /// The sync IDs of `at`'s acts owed only while full and not done.
-    pub fn full_wanted(&self, at: &Source) -> Vec<SyncId> {
-        let mut out: Vec<SyncId> = self.by.get(at).into_iter().flatten().filter(|(k, st)| **st != State::Done && k.2.needs_full()).map(|(k, _)| k.0).collect();
-        out.dedup();
-        out
+    /// One more (`up`) or one fewer act `k` toward `at` owed and not done: counted in
+    /// `wanted_full` where it is owed only while full.
+    fn count_full(&mut self, at: Source, k: &Key, up: bool) {
+        if !k.2.needs_full() {
+            return;
+        }
+        let n = self.full_count.entry((at, k.0)).or_default();
+        *n = if up { *n + 1 } else { n.saturating_sub(1) };
+        let n = *n;
+        if n == 0 {
+            self.full_count.remove(&(at, k.0));
+        }
+        // the set `on` reads moves only as a sync ID comes or goes
+        if (up && n == 1) || n == 0 {
+            self.wanted_full.update(at, |m| {
+                let mut m = m.unwrap_or_default();
+                if n == 0 {
+                    m.remove(&k.0);
+                } else {
+                    m.insert(k.0);
+                }
+                (!m.is_empty()).then_some(m)
+            });
+        }
+    }
+
+    /// Act `k` toward `at` stands at `st` now.
+    pub fn set(&mut self, at: Source, k: &Key, st: State) {
+        let Some(x) = self.by.get_mut(&at).and_then(|m| m.get_mut(k)) else { return };
+        let done = *x != State::Done && st == State::Done;
+        *x = st;
+        if done {
+            self.count_full(at, k, false);
+        }
     }
 
     /// Request `id` on `conn` carrying act `k` toward `at` is out.
@@ -111,10 +151,8 @@ impl Owed {
     /// it was answered.
     pub fn answered(&mut self, conn: ConnId, id: RequestId, taken: bool) {
         let Some((at, k)) = self.out.get_mut(&conn).and_then(|m| m.remove(&id)) else { return };
-        if let Some(st) = self.by.get_mut(&at).and_then(|m| m.get_mut(&k))
-            && taken
-        {
-            *st = State::Done;
+        if taken {
+            self.set(at, &k, State::Done);
         }
     }
 

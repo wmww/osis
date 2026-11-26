@@ -1158,6 +1158,31 @@ fn a_delete_owed_only_while_full_goes_where_told_full_spec_sync_judgement_3() {
     assert!(w.g.sent.contains(&Sent::Delete(c2, b)), "not sent once K told full there");
 }
 
+// spec/sync-judgement.md §3 (Deletes: one owed only while full goes only where told full): where
+// a source's acts go (`read: owed`) reads by stamp which of its acts are owed only while full: a
+// Delete owed only while K is full, sent and taken, then read settling with every key compared
+// (`memo::check_effects`). Failed with that set read from the acts unstamped: the comparison
+// found the Delete's sync ID still kept where a settle gives none.
+#[test]
+fn where_acts_go_reads_the_full_only_acts_by_stamp() {
+    let mut w = W::new();
+    w.pulls = false;
+    w.hold(cid(1), &[S], uncovered());
+    let b = w.own_blobs(S, cid(1))[0];
+    w.g.k.held.insert((S, b), cid(1));
+    w.g.k.full = true;
+    w.stream();
+    w.hold(cid(2), &[S], uncovered());
+    w.judge(S, cid(1), covered(cid(2)));
+    assert_eq!(w.deletes(), 1, "not deleted at a K told full");
+    osis_base::memo::check_effects(true);
+    w.read.answered(KC, w.g.requests, true);
+    for _ in 0..300 {
+        w.read.settle_on(&mut w.g).unwrap();
+    }
+    osis_base::memo::check_effects(false);
+}
+
 // spec/sync-judgement.md §3 (between readers): no Delete is sent to a source that reads S; its
 // view is its own (HN_readers).
 #[test]

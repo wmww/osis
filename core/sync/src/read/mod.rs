@@ -644,11 +644,11 @@ impl Read {
         if !self.owed.by.contains_key(&at) {
             return Ok(false);
         }
-        let fulls = self.owed.full_wanted(&at);
         let mut on: owed::On = (None, Arc::default());
+        let wanted = &self.owed.wanted_full;
         self.owed.on.try_settle(&at, || {
             let conn = g.connected(&at);
-            let full = conn.map(|c| fulls.iter().copied().filter(|s| g.told_full(c, s)).collect()).unwrap_or_default();
+            let full = conn.map(|c| wanted.get(&at).into_iter().flatten().copied().filter(|s| g.told_full(c, s)).collect()).unwrap_or_default();
             on = (conn, Arc::new(full));
             Ok::<_, crate::types::Error>(on.clone())
         })?;
@@ -658,9 +658,7 @@ impl Read {
         for k in todo {
             osis_base::costs::count("read: acts", 1);
             let st = self.carry(g, conn, at, &k)?;
-            if let Some(x) = self.owed.by.get_mut(&at).and_then(|m| m.get_mut(&k)) {
-                *x = st;
-            }
+            self.owed.set(at, &k, st);
             acted = true;
         }
         Ok(acted)
