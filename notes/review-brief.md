@@ -166,19 +166,17 @@ Other findings:
 **Landed unreviewed, for the final review**: f4acee5a2 (a holder deletes a sealed sync copy once logged; `Indexes::sync_sent` sends each `sync.0` write to a sync-alone holder once): new store behaviour on the holder's node.
 
 ## Baseline on main
-On dd5c0a3e4 (`tools/merge-branch gate spar-review-prep --all`, ostrich, offset 532945376426; log under gate-logs/ until removed). A reviewer's failure not listed here is theirs to explain.
-- **Default tests**: all pass (37 binaries, 4,580 G instructions, every binary within tools/test_cost.txt). Ignored on purpose: 14 `sync rewrite:` ignores (notes/sync-rewrite-state.md, Ignored tests) and 10 tied to issues (`rg '#\[ignore = "issues/'`).
+On 6dc89649f, the final gate (`tools/merge-branch gate spar-final-gate --base e8f9ae5d4^`: every crate, the GUI, unification; ostrich, offset 602410714852): passed. A reviewer's failure not listed here is theirs to explain.
+- **Default tests**: all pass (37 binaries, 4,946 G instructions, every binary within tools/test_cost.txt). Ignored on purpose: 14 `sync rewrite:` ignores (notes/sync-rewrite-state.md, Ignored tests) and 8 tied to issues (`rg '#\[ignore = "issues/'`).
 - **Sim**: 5 scenarios at 15 seeds, none failing.
-- **Properties** (107 selected), failing only as listed in tools/known_failures.txt:
-  - osis-engine `retention::tests_carried::purge_by_id_reads_alike_forgotten_or_not_plain_spec_commits_5`: its coverage floor at this offset (1 purge through a name over 8 seeds), and both earlier `rate:` replays still fail as listed: issues/purge-by-id-forgetting.md.
-- **Full-size sync differential** (200 seeds, `OSIS_FULL=1`, four holds of 50): 60 fail, none hang. By first panic: must-hold bodies with no entry at quiet 18; unlike the reference with the public in its roster 17; a caught-up reader lacking must-hold bodies 6; settle loop past its bound 5; older reads classes 9; sync set unlike the model 4; entries waiting for a read secret 1. Seeds per class: issues/differential-full-size-classes.md. Not gate tests: no known lines.
+- **Properties** (106 selected): none failing at this offset; every `rate:` line of tools/known_failures.txt replays failing as listed (purge-by-id-forgetting 3, the differential 1, order 2).
+- **Full-size sync differential** (200 seeds, `OSIS_FULL=1`, four holds of 50): 20 fail, none hang. By first panic: reads unlike the reference 9; sync set unlike the model 5; a node reads a thing the model does not 2; a caught-up reader lacking must-hold bodies 2; must-hold bodies with no entry 1; storm 1. Seeds per class: issues/differential-full-size-classes.md. Not gate tests: no known lines.
 
 ## Gate time
-Tess's cap is 10 minutes on ostrich (`gate` 260 u wall = 598 s, 3,560 u CPU = 8,188 s; notes/time-limits.md). The full selection (`--all`) on 97ee429c2, box load 48-73 through the hold:
-- `gate`: 924 s wall (1.55x the cap), 8,002 CPU-s (0.98x). Lock wait and `build` left out.
-- Hold 736 s wall: default tests 171 s / 2,212 CPU-s; properties 369 s / 5,025 CPU-s; sim 13 s / 145 CPU-s; replays 182 s, 170 of them the storm replay on one thread (issues/test-time.md, Budget). Each test stage runs its targets side by side (`tools/targets.py`) at about 13 cores, the share other work left: CPU-bound.
-- Outside the hold, about 180 s: clippy 47 s, the fuzz check 46 s, the tools' tests 25 s, `gate.gui-tests` 20 s, `gate.unify` 18 s, the GUI lint 16 s.
-- Costliest properties (CPU-s): `rotation_holds_large` 725, `order::held_set_decides_plain` 717, `held_set_decides_exhaustive` 512, `deep_departure_holds_large` 431, roles-model `small_family_holds_large` 301 and `random_worlds_hold_large` 220, crdt `stream_check_matches_whole_large` 160, `crdt_equals_model_large` 108.
+Tess's cap is 10 minutes on ostrich (`gate` 260 u wall = 598 s, 3,560 u CPU = 8,188 s; notes/time-limits.md). The final gate (every crate) on 6dc89649f, box load 50-85 through the hold, no lock wait:
+- `gate`: 680 s wall (1.14x the cap), 7,245 CPU-s (0.88x). Lock wait and `build` (43 s) left out.
+- Hold 521 s wall / 6,790 CPU-s: default tests 209 s / 2,194 CPU-s; properties 283 s / 4,328 CPU-s; sim 12 s / 135 CPU-s; replays 17 s, the storm replay no longer among them. Each test stage runs its targets side by side (`tools/targets.py`): CPU-bound.
+- Outside the hold, about 160 s: `gate.unify` 18 s (2.7x its share), the tools' tests and policy (`gate.checks`) 14 s, `gate.gui-tests` 12 s, deny 5 s, the fuzz check 13 s, clippy 2 s (a warm target).
+- Costliest properties (CPU-s): `order::held_set_decides_plain` 540, `rotation_holds_large` 499, `held_set_decides_exhaustive` 420, `deep_departure_holds_large` 318, roles-model `small_family_holds_large` 302 and `random_worlds_hold_large` 220, crdt `stream_check_matches_whole_large` 164, `crdt_equals_model_large` 107.
 - Levers left: issues/test-time.md (Budget, Properties and builds).
-- The review's gate (`--base e8f9ae5d4^`) selects every crate, the GUI and unification as `--all` does: expect about 14 min wall at that load.
-- The full-size differential is a separate cost: 4,920 CPU-s, about 8 min wall over four holds.
+- The full-size differential is a separate cost: 5,308 CPU-s, about 8 min wall over four holds.

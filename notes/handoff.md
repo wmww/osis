@@ -8,12 +8,12 @@
 
 ## State
 - **Coordinator**: Spar. Agents run on main (no kept branches); security changes go through a branch, a reviewer and the gate.
-- **Built on main, unreviewed as a whole**: the sync rewrite, accounts as ordinary things, public things, cards and the account library (osis-account, libs/account). The big review over them is done; its fix wave is nearly through (issues/differential-full-size-classes.md holds what the full-size differential still finds).
+- **Reviewed and gated**: the sync rewrite, accounts as ordinary things, public things, cards and the account library (osis-account, libs/account). The big review and its final gate are through (notes/review-brief.md, Baseline on main); issues/differential-full-size-classes.md holds what the full-size differential still finds. Every job from here is reviewed and gated (notes/coordination.md).
 
 ## The route (Tess)
-Target: osis basically works, the big pieces in place, the architecture sensible and mostly settled; what is left is fixes, tweaks and verification. In order:
+Target: osis basically works, the big pieces in place, the architecture sensible and mostly settled; what is left is fixes, tweaks and verification. In order (next: step 3):
 1. **The design changes in flight**: destroying a thing ends access through it (issue destroyed-holder-timed-edge), steps' needs.
-2. **The final review and gate** over everything since the sync rewrite (notes/gate.md: a big change on main is gated from a fresh claim with `--base`), fixes on main. It marks the turn from bringing the implementation in line with the design to optimizing it; from then on every job is reviewed and gated.
+2. **The final review and gate** over everything since the sync rewrite: done, passed on 6dc89649f. It marks the turn from bringing the implementation in line with the design to optimizing it; from here every job is reviewed and gated.
 3. **Architectural slimming before dogfooding** (notes/priorities.md Slimmer things): it may churn the set of unknown issues, so it goes first. Philosophically sound changes that also work; usually less code.
 4. **A light local dogfood pass** (chat between accounts, pairing, removing a node): testing finds problems; fix each at its level (mistake, architecture, or the model), never a workaround; where building it right is unclear, a design pass or a question for Tess. Many QA passes come later, before release.
 5. Then known issues, more dogfooding, and simplification beside them.
