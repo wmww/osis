@@ -442,12 +442,18 @@ impl Journaled for Commits {
     }
     // a key changed after the mark is journaled again: its entry restores the value at the mark
     fn mark(&mut self) -> usize {
-        self.seen.clear();
+        if !self.seen.is_empty() {
+            self.seen.clear();
+        }
         self.log.len()
     }
     fn rollback_to(&mut self, m: usize) {
         // a change after the mark journaled its commit again, so the log was longer by then
         self.changes.retain(|x| x.0 <= m);
+        // nothing journaled since the mark (a read): no undo stretch to open
+        if self.log.len() <= m {
+            return;
+        }
         osis_base::memo::undoing(|| {
             self.seen.clear();
             while self.log.len() > m {

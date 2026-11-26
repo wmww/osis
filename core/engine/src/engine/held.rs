@@ -488,6 +488,10 @@ impl Journaled for Held {
         self.log.len()
     }
     fn rollback_to(&mut self, m: usize) {
+        // nothing journaled since the mark (a read): no undo stretch to open
+        if self.log.len() <= m {
+            return;
+        }
         osis_base::memo::undoing(|| {
             while self.log.len() > m {
                 let Some(u) = self.log.pop() else { break };

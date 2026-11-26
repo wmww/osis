@@ -236,10 +236,16 @@ impl<K: Ord + Clone + Hash + Send + Sync + 'static + Debug, V: Clone + Debug> Jo
     }
     // a key changed after the mark is journaled again: its entry restores the value at the mark
     fn mark(&mut self) -> usize {
-        self.seen.clear();
+        if !self.seen.is_empty() {
+            self.seen.clear();
+        }
         self.log.len()
     }
     fn rollback_to(&mut self, m: usize) {
+        // nothing journaled since the mark (a read): no undo stretch to open
+        if self.log.len() <= m {
+            return;
+        }
         osis_base::memo::undoing(|| {
             self.seen.clear();
             while self.log.len() > m {
@@ -334,6 +340,10 @@ impl<T: Ord + Clone + Hash + Debug + Send + Sync + 'static> Journaled for JSet<T
         self.log.len()
     }
     fn rollback_to(&mut self, m: usize) {
+        // nothing journaled since the mark (a read): no undo stretch to open
+        if self.log.len() <= m {
+            return;
+        }
         osis_base::memo::undoing(|| {
             while self.log.len() > m {
                 let Some((t, was)) = self.log.pop() else { break };
@@ -516,6 +526,10 @@ impl<K: Ord + Clone + Hash + Debug + Send + Sync + 'static, T: Ord + Clone + Deb
         self.log.len()
     }
     fn rollback_to(&mut self, m: usize) {
+        // nothing journaled since the mark (a read): no undo stretch to open
+        if self.log.len() <= m {
+            return;
+        }
         osis_base::memo::undoing(|| {
             while self.log.len() > m {
                 let Some((k, t, was)) = self.log.pop() else { break };
@@ -610,6 +624,10 @@ impl<K: Ord + Clone + Hash + Debug, K2: Ord + Clone + Debug, V: Clone + Debug> J
         self.log.len()
     }
     fn rollback_to(&mut self, m: usize) {
+        // nothing journaled since the mark (a read): no undo stretch to open
+        if self.log.len() <= m {
+            return;
+        }
         osis_base::memo::undoing(|| {
             while self.log.len() > m {
                 let Some((k, k2, old)) = self.log.pop() else { break };
