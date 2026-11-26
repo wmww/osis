@@ -1828,14 +1828,13 @@ fn forged_layers(n: usize) -> u64 {
     let qs: Vec<Tid> = (0..n).map(|_| new_thing(&mut lp, 0)).collect();
     let (e, r) = (new_thing(&mut lp, 0), new_thing(&mut lp, 0));
     crate::common::sync(&mut lp, 0, 1);
-    let rec = lp.peers[0].engine.get_typed(&x, &ct::CREATED).unwrap().unwrap();
     let mut lo = 1u64 << 40;
     let mut forge = |lp: &mut LocalPeer, via: Tid, to: &[Tid]| {
         lp.advance(1_000);
         lo += 1 << 20;
         let mut v = osis_base::ValueMap::from([(Value::Weak(via), edge(Role::Read).to_value())]);
         v.extend(to.iter().map(|t| (Value::Weak(*t), edge(Role::Admin).to_value())));
-        let f = crate::validity::forge_by(&lp.peers[0].engine, &lp.peers[0].engine.hand_secrets(std::slice::from_ref(&rec)), x, &ak("roles.0"), &Value::Map(v), lo, osis_commit::Kind::Role, osis_commit::Path { purge: 0, things: vec![via], direct: 0 });
+        let f = crate::validity::forge_by(lp, 0, x, &ak("roles.0"), &Value::Map(v), lo, osis_commit::Kind::Role, osis_commit::Path { purge: 0, things: vec![via], direct: 0 });
         assert!(matches!(lp.peers[1].receive(&f, Vec::new()).unwrap(), Ingested::Applied(_)));
     };
     for &f in &fs {

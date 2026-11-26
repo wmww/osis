@@ -28,11 +28,7 @@ fn strong(e: &mut Engine, from: Tid, to: Tid, on: bool) {
 
 /// A dependent thing minted with admin `admin`, strongly referenced from `from` in the same transaction.
 fn make(e: &mut Engine, admin: Tid, from: Tid) -> Tid {
-    let rec = e.thing_record(admin, None);
-    let mut m = Mutation::new();
-    let t = m.create(rec);
-    m.op(from, &ct::HOLDS, PathOp { path: vec![], op: Op::Add(Value::Strong(t)) }).unwrap();
-    e.commit(m).unwrap();
+    let (t, _) = crate::common::mint_from(e, admin, from, &[]);
     e.check_closure();
     t
 }
@@ -1297,12 +1293,7 @@ fn record_with_strong(orders: &[&[&str]]) -> Vec<End> {
         strong(&mut lp.peers[1].engine, d1, x, true);
         pass_end(&mut lp.peers[1].engine);
         let e0 = &mut lp.peers[0].engine;
-        let rec = e0.thing_record(x, None);
-        let mut m = Mutation::new();
-        let w = m.create(rec);
-        m.set(w, &crate::common::REG, &Value::Str("w".into())).unwrap();
-        m.op(x, &ct::HOLDS, PathOp { path: vec![], op: Op::Add(Value::Strong(w)) }).unwrap();
-        let c = e0.commit(m).unwrap().unwrap();
+        let (w, c) = crate::common::mint_from(e0, x, x, &[(&crate::common::REG, "w")]);
         let mut m = Mutation::new();
         m.set(w, &crate::common::LIST, &Value::List(vec![Value::Str("d".into())])).unwrap();
         let d = e0.commit(m).unwrap().unwrap();
@@ -1400,11 +1391,7 @@ fn a_commit_awaiting_its_record_is_kept_while_carried_and_no_longer_spec_commits
     let mut made = Vec::new();
     for _ in 0..n {
         let e0 = &mut lp.peers[0].engine;
-        let rec = e0.thing_record(x, None);
-        let mut m = Mutation::new();
-        let w = m.create(rec);
-        m.op(x, &ct::HOLDS, PathOp { path: vec![], op: Op::Add(Value::Strong(w)) }).unwrap();
-        let c = e0.commit(m).unwrap().unwrap();
+        let (w, c) = crate::common::mint_from(e0, x, x, &[]);
         let mut m = Mutation::new();
         m.set(w, &crate::common::REG, &Value::Str("d".into())).unwrap();
         let d = e0.commit(m).unwrap().unwrap();
@@ -1458,13 +1445,7 @@ fn a_needed_account_keeps_its_role_class_parts_alone_spec_commits_5() {
 #[test]
 fn a_commit_minting_with_the_strong_applies_whole_in_its_transaction_spec_commits_4() {
     let (mut lp, x) = x_read_at_1();
-    let e0 = &mut lp.peers[0].engine;
-    let rec = e0.thing_record(x, None);
-    let mut m = Mutation::new();
-    let w = m.create(rec);
-    m.set(w, &crate::common::REG, &Value::Str("w".into())).unwrap();
-    m.op(x, &ct::HOLDS, PathOp { path: vec![], op: Op::Add(Value::Strong(w)) }).unwrap();
-    let c = e0.commit(m).unwrap().unwrap();
+    let (w, c) = crate::common::mint_from(&mut lp.peers[0].engine, x, x, &[(&crate::common::REG, "w")]);
     let pk = lp.peers[0].engine.package(&c).unwrap().unwrap();
     let before = lp.peers[1].engine.examined();
     lp.peers[1].receive(&pk.bytes, pk.blobs.clone()).unwrap();

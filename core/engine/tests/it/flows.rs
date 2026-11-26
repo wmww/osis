@@ -1653,28 +1653,17 @@ fn linked_frontier_spec_perm_5_1() {
 /// A role commit by a made-up node (its chain unknown everywhere, so held pending forever)
 /// writing `secrets` as `secrets.0` on `t`.
 fn stranger_secrets(lp: &mut LocalPeer, t: Tid, secrets: &ct::Secrets) -> Vec<u8> {
-    use osis_commit::{AspectWrite, CommitBuilder, Form, Kind, MemoryBlobs, writer_ctx};
-    use osis_crdt::{Delta, Source, Writer, create, encode_delta};
     use osis_schema::Codec;
     let key = osis_crypto::signing_key(&osis_crypto::Secret32::from_bytes([0x55; 32]));
     let author = Tid::from_bytes([0x77; 15]);
     let ts = osis_base::Ts::make(lp.peers[0].engine.now(), 0).unwrap();
     let a = ak("secrets.0");
-    let view = osis_schema::core_schema().view(a.as_str()).unwrap();
-    let mut w = Writer::new(ts, Source::commit(CommitId([0; 32])), 1);
-    let f = create(&mut w, &view, &secrets.to_value()).unwrap();
-    let r = w.range();
-    let cx = writer_ctx(Form::Commit, Kind::Role, ts, author, r.lo, r.hi);
-    // small enough to stay inline: no page blobs to deliver
-    let mut pages = osis_crdt::MemoryPages::default();
-    let bytes = encode_delta(&Delta { nonce: [7; 16], fragment: f }, &cx, Some(&mut pages)).unwrap();
-    assert!(pages.is_empty());
-    let mut aw = AspectWrite::new(t, a.clone(), r.lo, r.hi, bytes);
+    let mut cb = osis_commit::CommitBuilder::new(osis_commit::Kind::Role, ts, author, osis_commit::Path::default(), osis_commit::Form::Commit);
+    let mut aw = crate::common::forged_write(&cb, t, &a, 1, &secrets.to_value());
     aw.purge_by = osis_commit::retention::write_purge_by(a.as_str(), None, None).unwrap();
-    let mut cb = CommitBuilder::new(Kind::Role, ts, author, osis_commit::Path::default(), Form::Commit);
     cb.aspects.push(aw);
-    let rec = lp.peers[0].engine.get_typed(&t, &ct::CREATED).unwrap().unwrap();
-    cb.build(&key, &lp.peers[0].engine.hand_secrets(&[rec]), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(9)).unwrap().commit.encode()
+    let held = crate::common::held_secrets(lp, &[t]);
+    crate::common::seal_with(&key, cb, &held).unwrap().encode()
 }
 
 // spec/crypto.md §4 (Rotation; Reading-only secrets): a rotation's n is 1 + the greatest n it supersedes; a pending commit's

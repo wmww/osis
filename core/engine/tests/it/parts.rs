@@ -191,30 +191,20 @@ fn part_missing_pages_waits_alone_spec_commits_4() {
 #[test]
 fn parked_part_waits_alone_spec_versioning_2() {
     use crate::common::*;
-    use osis_commit::{AspectWrite, CommitBuilder, Kind, MemoryBlobs, writer_ctx};
-    use osis_crdt::{Delta, Writer, create, encode_delta};
+    use osis_commit::{AspectWrite, CommitBuilder, Kind};
     let mut lp = net_one(2);
     let (g, h) = (new_thing(&mut lp, 0), new_thing(&mut lp, 0));
     for pk in packages_for(&mut lp, 0, 1) {
         lp.deliver(1, &pk).unwrap();
     }
     lp.peers[0].clock.advance(10);
-    let e = &mut lp.peers[0].engine;
-    let recs = vec![e.get_typed(&g, &osis_schema::core_types::CREATED).unwrap().unwrap(), e.get_typed(&h, &osis_schema::core_types::CREATED).unwrap().unwrap()];
-    let author = e.tid();
-    let ts = osis_base::Ts::make(e.now(), 0).unwrap();
-    let form = crate::common::forged_session(author);
-    let mut w = Writer::new(ts, form.own_source(author, osis_base::CommitId([0; 32])), 1000);
-    let view = osis_crdt::AnyView;
-    let f = create(&mut w, &view, &s("ok")).unwrap();
-    let r = w.range();
-    let good = encode_delta(&Delta { nonce: [7; 16], fragment: f }, &writer_ctx(form, Kind::Content, ts, author, r.lo, r.hi), None).unwrap();
+    let author = lp.peers[0].engine.tid();
+    let ts = osis_base::Ts::make(lp.peers[0].engine.now(), 0).unwrap();
     let parked = osis_base::encode(&Value::List(vec![Value::Bytes(vec![0; 16]), Value::List(vec![]), Value::List(vec![]), Value::List(vec![Value::Int(99)])]));
-    let mut cb = CommitBuilder::new(Kind::Content, ts, author, osis_commit::Path::default(), form);
-    cb.aspects.push(AspectWrite::new(g, ak("t:reg.0"), r.lo, r.hi, good));
+    let mut cb = CommitBuilder::new(Kind::Content, ts, author, osis_commit::Path::default(), forged_session(author));
+    cb.aspects.push(forged_write(&cb, g, &ak("t:reg.0"), 1000, &s("ok")));
     cb.aspects.push(AspectWrite::new(h, ak("t:future.0"), 100, 101, parked));
-    let forge_key = e.identity().signing().clone();
-    let blob = cb.build(&forge_key, &e.hand_secrets(&recs), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(0)).unwrap().commit;
+    let blob = seal(&mut lp, 0, cb, &[g, h]);
     let part = |t: Tid| on_blob(&blob, t);
     let id = blob.id();
     let e = &mut lp.peers[1].engine;
@@ -243,7 +233,7 @@ fn parked_part_waits_alone_spec_versioning_2() {
 #[test]
 fn waiting_parts_boxes_are_read_in_either_order_spec_crypto_4() {
     use crate::common::*;
-    use osis_commit::{AspectWrite, CommitBuilder, Form, Kind, MemoryBlobs, writer_ctx};
+    use osis_commit::{AspectWrite, CommitBuilder, Form, Kind, writer_ctx};
     use osis_crdt::{Delta, Source, Writer, create, encode_delta};
     use osis_schema::{Codec, core_types as ct};
     let mut lp = net_one(2);
@@ -251,9 +241,7 @@ fn waiting_parts_boxes_are_read_in_either_order_spec_crypto_4() {
     let known = packages_for(&mut lp, 0, 1);
     let h = new_thing(&mut lp, 0);
     let rcpt = read_recipient(&mut lp.peers[1].engine);
-    let e = &mut lp.peers[0].engine;
-    let recs = vec![e.get_typed(&g, &ct::CREATED).unwrap().unwrap(), e.get_typed(&h, &ct::CREATED).unwrap().unwrap()];
-    let recs2 = recs.clone();
+    let e = &lp.peers[0].engine;
     let mut held = osis_keys::ActorEpochs::default();
     held.read.set_established(osis_keys::Epoch::new(1, [0; 32]).unwrap(), osis_keys::Provenance::Fixed);
     let rot = osis_keys::rotate(&h, &[Role::Read].into(), &held, &ct::Secrets::default(), &[rcpt], &osis_keys::Names::default(), &mut osis_crypto::SeededRng::from_u64(0)).unwrap();
@@ -278,25 +266,20 @@ fn waiting_parts_boxes_are_read_in_either_order_spec_crypto_4() {
             cb.aspects.push(aw);
         }
     }
-    let forge_key = e.identity().signing().clone();
-    let blob = cb.build(&forge_key, &e.hand_secrets(&recs), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(0)).unwrap().commit;
+    let blob = seal(&mut lp, 0, cb, &[g, h]);
     let part = |t: Tid| on_blob(&blob, t);
     let (one, two, whole) = (part(g), part(h), blob.encode());
     let plain = {
         // G's part is no `secrets.0` (an empty `sync.0`): only the waiting part's boxes can be read
         let mut cb = CommitBuilder::new(Kind::Role, ts, author, osis_commit::Path::default(), Form::Commit);
         let lab = osis_base::Ak::new("sync.0").unwrap();
-        let mut w = Writer::new(ts, Source::commit(osis_base::CommitId([0; 32])), r.hi);
-        let f = create(&mut w, &osis_schema::core_schema().view(lab.as_str()).unwrap(), &Value::Map(Default::default())).unwrap();
-        let lr = w.range();
-        let empty = encode_delta(&Delta { nonce: [8; 16], fragment: f }, &writer_ctx(Form::Commit, Kind::Role, ts, author, lr.lo, lr.hi), None).unwrap();
-        for (t, a, lo, hi, d) in std::iter::once((g, &lab, lr.lo, lr.hi, &empty)).chain(pieces.iter().map(|p| (h, &secrets, r.lo, r.hi, p))) {
-            let mut aw = AspectWrite::new(t, a.clone(), lo, hi, d.clone());
-            aw.purge_by = osis_commit::retention::write_purge_by(a.as_str(), None, None).unwrap();
+        let empty = forged_write(&cb, g, &lab, r.hi, &Value::Map(Default::default()));
+        for aw in std::iter::once(empty).chain(pieces.iter().map(|p| AspectWrite::new(h, secrets.clone(), r.lo, r.hi, p.clone()))) {
+            let mut aw = aw;
+            aw.purge_by = osis_commit::retention::write_purge_by(aw.ak.as_str(), None, None).unwrap();
             cb.aspects.push(aw);
         }
-        let forge_key = lp.peers[0].engine.identity().signing().clone();
-        cb.build(&forge_key, &lp.peers[0].engine.hand_secrets(&recs2), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(0)).unwrap().commit
+        seal(&mut lp, 0, cb, &[g, h])
     };
     let plain_id = plain.id();
     let plain = plain.encode();
@@ -344,33 +327,19 @@ fn late_part_of_applied_commit_joins_alone_spec_commits_4() {
 #[test]
 fn bad_part_beside_good_ones_holds_nothing_back_spec_commits_4() {
     use crate::common::*;
-    use osis_commit::{AspectWrite, CommitBuilder, Kind, MemoryBlobs, writer_ctx};
-    use osis_crdt::{Delta, Writer, create, encode_delta};
+    use osis_commit::{AspectWrite, CommitBuilder, Kind};
     let mut lp = net(2, 0);
     let g = new_shared(&mut lp, 0);
     let setup = packages_to(&mut lp, 0, 1);
     lp.peers[0].clock.advance(10);
-    let e = &mut lp.peers[0].engine;
-    let recs = vec![e.get_typed(&g, &osis_schema::core_types::CREATED).unwrap().unwrap()];
-    let author = e.tid();
-    let ts = osis_base::Ts::make(e.now(), 0).unwrap();
-    let form = crate::common::forged_session(author);
-    let own = form.own_source(author, osis_base::CommitId([0; 32]));
-    let delta = |text: &str, nonce: u8, at: u64| {
-        let mut w = Writer::new(ts, own.clone(), at);
-        let f = create(&mut w, &osis_crdt::AnyView, &s(text)).unwrap();
-        let r = w.range();
-        let cx = writer_ctx(form, Kind::Content, ts, author, r.lo, r.hi);
-        (encode_delta(&Delta { nonce: [nonce; 16], fragment: f }, &cx, None).unwrap(), r.lo, r.hi)
-    };
-    let (one, two) = (delta("one", 7, 1000), delta("two", 8, 1000));
+    let author = lp.peers[0].engine.tid();
+    let ts = osis_base::Ts::make(lp.peers[0].engine.now(), 0).unwrap();
     let bad = osis_base::encode(&Value::List(vec![Value::Int(1)]));
-    let mut cb = CommitBuilder::new(Kind::Content, ts, author, osis_commit::Path::default(), form);
-    cb.aspects.push(AspectWrite::new(g, ak("t:one.0"), one.1, one.2, one.0));
-    cb.aspects.push(AspectWrite::new(g, ak("t:two.0"), two.1, two.2, two.0));
+    let mut cb = CommitBuilder::new(Kind::Content, ts, author, osis_commit::Path::default(), forged_session(author));
+    cb.aspects.push(forged_write(&cb, g, &ak("t:one.0"), 1000, &s("one")));
+    cb.aspects.push(forged_write(&cb, g, &ak("t:two.0"), 1000, &s("two")));
     cb.aspects.push(AspectWrite::new(g, ak("t:bad.0"), 100, 101, bad));
-    let forge_key = e.identity().signing().clone();
-    let blob = cb.build(&forge_key, &e.hand_secrets(&recs), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(0)).unwrap().commit;
+    let blob = seal(&mut lp, 0, cb, &[g]);
     let id = blob.id();
     lp.peers[0].clock.advance(10);
     let mut m = Mutation::new();
@@ -824,34 +793,25 @@ fn forge(f: &mut Forge, parts: &[(Tid, &str, Made, Option<u64>)]) -> CommitBlob 
 /// `forge` carrying purge request `purge`.
 fn forge_with(f: &mut Forge, parts: &[(Tid, &str, Made, Option<u64>)], purge: Vec<osis_commit::PurgeItem>) -> CommitBlob {
     use crate::common::*;
-    use osis_commit::{AspectWrite, CommitBuilder, Kind, MemoryBlobs, writer_ctx};
-    use osis_crdt::{Delta, Writer, create, encode_delta};
     f.lp.peers[0].clock.advance(10);
-    let e = &mut f.lp.peers[0].engine;
-    let recs = [f.x, f.y, f.z].iter().map(|t| e.get_typed(t, &osis_schema::core_types::CREATED).unwrap().unwrap()).collect::<Vec<_>>();
+    let e = &f.lp.peers[0].engine;
     let author = e.tid();
     let ts = osis_base::Ts::make(e.now(), 0).unwrap();
-    let form = crate::common::forged_session(author);
-    let own = form.own_source(author, osis_base::CommitId([0; 32]));
     let now = e.now().0;
-    let mut cb = CommitBuilder::new(Kind::Content, ts, author, osis_commit::Path::default(), form);
+    let mut cb = osis_commit::CommitBuilder::new(osis_commit::Kind::Content, ts, author, osis_commit::Path::default(), forged_session(author));
     cb.purge = purge;
     for (n, (t, k, how, exp)) in parts.iter().enumerate() {
-        let mut w = Writer::new(ts, own.clone(), 1000 + n as u64 * 100);
-        let c = create(&mut w, &osis_crdt::AnyView, &s("ok")).unwrap();
-        let r = w.range();
-        let cx = writer_ctx(form, Kind::Content, ts, author, r.lo, r.hi);
-        let d = match how {
-            Made::Good => encode_delta(&Delta { nonce: [7; 16], fragment: c }, &cx, None).unwrap(),
-            Made::Bad => osis_base::encode(&Value::List(vec![Value::Int(1)])),
+        let mut w = forged_write(&cb, *t, &ak(k), 1000 + n as u64 * 100, &s("ok"));
+        match how {
+            Made::Good => {}
+            Made::Bad => w.delta = osis_base::encode(&Value::List(vec![Value::Int(1)])),
             // an encoding this build does not know (99), carrying `PARKED_MARK`
-            Made::Parked => osis_base::encode(&Value::List(vec![Value::Bytes(vec![0; 16]), Value::List(vec![]), Value::List(vec![]), Value::List(vec![Value::Int(99), Value::Bytes(PARKED_MARK.to_vec())])])),
-        };
+            Made::Parked => w.delta = osis_base::encode(&Value::List(vec![Value::Bytes(vec![0; 16]), Value::List(vec![]), Value::List(vec![]), Value::List(vec![Value::Int(99), Value::Bytes(PARKED_MARK.to_vec())])])),
+        }
         cb.expires = cb.expires.or(exp.map(|x| now + x));
-        cb.aspects.push(AspectWrite::new(*t, ak(k), r.lo, r.hi, d));
+        cb.aspects.push(w);
     }
-    let forge_key = e.identity().signing().clone();
-    cb.build(&forge_key, &e.hand_secrets(&recs), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(0)).unwrap().commit
+    seal(&mut f.lp, 0, cb, &[f.x, f.y, f.z])
 }
 
 /// What a parked part of `forge` carries.

@@ -4,10 +4,9 @@
 
 use crate::common;
 use common::*;
-use osis_commit::{AspectWrite, CommitBlob, CommitBuilder, Kind, MemoryBlobs};
+use osis_commit::{AspectWrite, CommitBlob, CommitBuilder, Kind};
 use osis_base::Classified;
 use osis_base::{Role, Tid, Ts, Value, WallMs};
-use osis_crypto::SeededRng;
 use osis_engine::{Event, Ingested, Mutation, Origin, Reason};
 
 /// The index among `pks` of the commit creating `t`.
@@ -321,23 +320,21 @@ fn parked_spec_versioning_2() {
     let t = new_thing(&mut lp, 0);
     share(&mut lp, 0, t);
     sync(&mut lp, 0, 1);
-    let e = &mut lp.peers[0].engine;
-    let rec = e.get_typed(&t, &osis_schema::core_types::CREATED).unwrap().unwrap();
     let ts = Ts::make(WallMs(T0.0 + 10), 0).unwrap();
     let delta = osis_base::encode(&Value::List(vec![Value::Bytes(vec![0; 16]), Value::List(vec![]), Value::List(vec![]), Value::List(vec![Value::Int(99)])]));
     let mut w = AspectWrite::new(t, ak("t:future.0"), 100, 101, delta);
     w.purge_by = osis_base::PurgeBy::Writer;
-    let mut b = CommitBuilder::new(Kind::Content, ts, e.tid(), osis_commit::Path::default(), crate::common::forged_session(e.tid()));
+    let me = lp.peers[0].engine.tid();
+    let mut b = CommitBuilder::new(Kind::Content, ts, me, osis_commit::Path::default(), crate::common::forged_session(me));
     b.aspects.push(w);
-    let forge_key = e.identity().signing().clone();
-    let built = b.build(&forge_key, &e.hand_secrets(&[rec]), &mut MemoryBlobs::default(), &mut SeededRng::from_u64(0)).unwrap();
-    let bytes = built.commit.encode();
+    let commit = crate::common::seal(&mut lp, 0, b, &[t]);
+    let bytes = commit.encode();
     let r = lp.peers[1].receive(&bytes, Vec::new()).unwrap();
     assert!(matches!(r, Ingested::Applied(_)), "its header waits for no part: {r:?}");
     lp.peers[1].reexamine().unwrap();
-    assert_eq!(lp.peers[1].engine.pending(), vec![(built.commit.id(), osis_engine::Reason::Parked)], "the part kept as bytes");
+    assert_eq!(lp.peers[1].engine.pending(), vec![(commit.id(), osis_engine::Reason::Parked)], "the part kept as bytes");
     // an unknown format version: the header does not even decode
-    let mut v = osis_base::decode(&built.commit.encode(), &osis_base::Limits::DEFAULT).unwrap();
+    let mut v = osis_base::decode(&commit.encode(), &osis_base::Limits::DEFAULT).unwrap();
     if let Value::List(items) = &mut v
         && let Some(Value::List(h)) = items.first_mut()
     {

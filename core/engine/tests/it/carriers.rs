@@ -67,16 +67,20 @@ fn fires_go(lp: &mut LocalPeer, fires: &[CommitId]) {
     pass_end(e);
 }
 
-/// Peer 0 mints W with admin X and X's strong to it (C) and writes W again (D): (W, C, D's bytes, D).
+/// Peer 0 mints W with admin X and X's strong to it (C) and writes W's `REG` again (D): (W, C,
+/// D's bytes, D).
 fn minted(lp: &mut LocalPeer, x: Tid, v: &str) -> (Tid, CommitId, Vec<u8>, CommitId) {
+    minted_with(lp, x, &[(&REG, v)])
+}
+
+/// `minted`, D writing `writes` on W.
+fn minted_with(lp: &mut LocalPeer, x: Tid, writes: &[(&osis_schema::Aspect<Value>, &str)]) -> (Tid, CommitId, Vec<u8>, CommitId) {
     let e0 = &mut lp.peers[0].engine;
-    let rec = e0.thing_record(x, None);
+    let (w, c) = crate::common::mint_from(e0, x, x, &[]);
     let mut m = Mutation::new();
-    let w = m.create(rec);
-    m.op(x, &ct::HOLDS, PathOp { path: vec![], op: Op::Add(Value::Strong(w)) }).unwrap();
-    let c = e0.commit(m).unwrap().unwrap();
-    let mut m = Mutation::new();
-    m.set(w, &REG, &Value::Str(v.into())).unwrap();
+    for (a, v) in writes {
+        m.set(w, *a, &crate::common::s(v)).unwrap();
+    }
     let d = e0.commit(m).unwrap().unwrap();
     (w, c, e0.package(&d).unwrap().unwrap().bytes, d)
 }
@@ -250,22 +254,6 @@ fn a_commit_that_waited_for_its_record_was_received_when_it_came_spec_commits_4(
     assert!(!e1.frontier(&scope, before).unwrap().commits.contains(&d));
 }
 
-/// Peer 0 mints W with admin X (C) and writes W's `REG` and `GONE` in one commit (D): (W, C, D's
-/// bytes, D).
-fn minted_two(lp: &mut LocalPeer, x: Tid) -> (Tid, CommitId, Vec<u8>, CommitId) {
-    let e0 = &mut lp.peers[0].engine;
-    let rec = e0.thing_record(x, None);
-    let mut m = Mutation::new();
-    let w = m.create(rec);
-    m.op(x, &ct::HOLDS, PathOp { path: vec![], op: Op::Add(Value::Strong(w)) }).unwrap();
-    let c = e0.commit(m).unwrap().unwrap();
-    let mut m = Mutation::new();
-    m.set(w, &REG, &Value::Str("d".into())).unwrap();
-    m.set(w, &crate::common::GONE, &Value::Str("g".into())).unwrap();
-    let d = e0.commit(m).unwrap().unwrap();
-    (w, c, e0.package(&d).unwrap().unwrap().bytes, d)
-}
-
 /// `bytes` (a commit) with its parts `keep` picks, the rest left out.
 fn parts_of(bytes: &[u8], keep: impl Fn(usize) -> bool) -> Vec<u8> {
     let mut b = osis_commit::CommitBlob::decode(bytes).unwrap();
@@ -293,7 +281,7 @@ fn work(f: impl FnOnce()) -> [u64; 4] {
 fn a_pending_commit_handed_again_costs_a_lookup_unless_it_brings_something_spec_commits_4() {
     let (mut lp, x, inbox) = base();
     let f = fire(&mut lp, inbox, "f");
-    let (w, c, b, d) = minted_two(&mut lp, x);
+    let (w, c, b, d) = minted_with(&mut lp, x, &[(&REG, "d"), (&crate::common::GONE, "g")]);
     let first = osis_commit::CommitBlob::decode(&b).unwrap().parts[0].ai;
     let half = parts_of(&b, |ai| ai == first);
     let before = lp.peers[1].engine.now();

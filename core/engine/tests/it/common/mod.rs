@@ -186,6 +186,19 @@ pub fn net_off(n: usize, seed: u64) -> LocalPeer {
     lp
 }
 
+/// A thing minted at `e` with admin `admin`, `from`'s strong to it and `writes` on it, in one
+/// commit: (the thing, the commit).
+pub fn mint_from(e: &mut Engine, admin: Tid, from: Tid, writes: &[(&Aspect<Value>, &str)]) -> (Tid, CommitId) {
+    let rec = e.thing_record(admin, None);
+    let mut m = Mutation::new();
+    let t = m.create(rec);
+    for (a, v) in writes {
+        m.set(t, *a, &s(v)).unwrap();
+    }
+    m.op(from, &ct::HOLDS, PathOp { path: vec![], op: Op::Add(Value::Strong(t)) }).unwrap();
+    (t, e.commit(m).unwrap().unwrap())
+}
+
 /// A new dependent thing of peer `i`: its mint admin the account the peer acts for
 /// (`settings_thing`: made for the account, so its other nodes read it, spec/permissions.md §8),
 /// else `Engine::me`; held where it lives and by every other peer (`LocalPeer::hold`), which
@@ -475,15 +488,45 @@ pub fn forge_snapshot_absorbing(lp: &mut LocalPeer, by: usize, t: Tid, a: &osis_
 /// A content snapshot commit of `(t, a)` by peer `by` at `ts` over snapshot delta `bytes` as
 /// given (hand-built, unchecked: bad input reaches the receiver's decoder).
 pub fn forge_snapshot_bytes(lp: &mut LocalPeer, by: usize, t: Tid, a: &osis_base::Ak, ts: osis_base::Ts, bytes: Vec<u8>) -> Vec<u8> {
-    use osis_commit::{AspectWrite, CommitBuilder, Form, Kind, MemoryBlobs};
     let author = lp.peers[by].engine.tid();
-    let mut aw = AspectWrite::new(t, a.clone(), 0, 0, bytes);
+    let mut aw = osis_commit::AspectWrite::new(t, a.clone(), 0, 0, bytes);
     aw.purge_by = osis_commit::retention::snapshot_purge_by(a.as_str());
-    let mut cb = CommitBuilder::new(Kind::ContentSnapshot, ts, author, osis_commit::Path::default(), Form::Commit);
+    let mut cb = osis_commit::CommitBuilder::new(Kind::ContentSnapshot, ts, author, osis_commit::Path::default(), osis_commit::Form::Commit);
     cb.aspects.push(aw);
-    let rec = lp.peers[0].engine.get_typed(&t, &osis_schema::core_types::CREATED).unwrap().unwrap();
-    let forge_key = lp.peers[by].engine.identity().signing().clone();
-    cb.build(&forge_key, &lp.peers[0].engine.hand_secrets(&[rec]), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(0)).unwrap().commit.encode()
+    seal(lp, by, cb, &[t]).encode()
+}
+
+/// One write of `v` on `(t, a)` (typed by the core view of `a`, else untyped) by `cb`'s signer
+/// under its form, kind and time, its counters from `lo`; purge-by left to the caller.
+pub fn forged_write(cb: &osis_commit::CommitBuilder, t: Tid, a: &Ak, lo: u64, v: &Value) -> osis_commit::AspectWrite {
+    use osis_crdt::{Delta, Writer, create, encode_delta};
+    let mut w = Writer::new(cb.ts, cb.form.own_source(cb.signer, CommitId([0; 32])), lo);
+    let f = match osis_schema::core_schema().view(a.as_str()) {
+        Some(view) => create(&mut w, &view, v).unwrap(),
+        None => create(&mut w, &osis_crdt::AnyView, v).unwrap(),
+    };
+    let r = w.range();
+    let cx = osis_commit::writer_ctx(cb.form, cb.kind, cb.ts, cb.signer, r.lo, r.hi);
+    let bytes = encode_delta(&Delta { nonce: [7; 16], fragment: f }, &cx, None).unwrap();
+    osis_commit::AspectWrite::new(t, a.clone(), r.lo, r.hi, bytes)
+}
+
+/// The secrets peer 0 holds for `things` (their records' dedup secrets and keys) to build with.
+pub fn held_secrets(lp: &mut LocalPeer, things: &[Tid]) -> osis_engine::engine::HandSecrets {
+    let e = &mut lp.peers[0].engine;
+    let recs: Vec<_> = things.iter().map(|t| e.get_typed(t, &ct::CREATED).unwrap().unwrap()).collect();
+    e.hand_secrets(&recs)
+}
+
+/// `cb` signed by `key` with `secrets`, past every writer rule (a hand-built commit).
+pub fn seal_with(key: &osis_crypto::SigningSecret, cb: osis_commit::CommitBuilder, secrets: &osis_engine::engine::HandSecrets) -> Result<osis_commit::CommitBlob, osis_commit::Error> {
+    Ok(cb.build(key, secrets, &mut osis_commit::MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(0))?.commit)
+}
+
+/// `cb` signed by peer `by`'s key with the secrets peer 0 holds for `things`.
+pub fn seal(lp: &mut LocalPeer, by: usize, cb: osis_commit::CommitBuilder, things: &[Tid]) -> osis_commit::CommitBlob {
+    let secrets = held_secrets(lp, things);
+    seal_with(lp.peers[by].engine.identity().signing(), cb, &secrets).unwrap()
 }
 
 /// A session of `node` for hand-built commits (spec/crdt.md §2.1): one of its own, apart from
