@@ -908,6 +908,8 @@ pub(crate) enum Step {
     Cover,
     /// One re-snapshot owed after a purge written (`Engine::purge_resnapshots`).
     Resnapshot,
+    /// One dependent thing given secrets of its own at a pass end (`Engine::pass_end`).
+    OwnSecrets,
 }
 
 /// Tests: after `skip` more steps of kind `site` run, every later one fails (`BadInput`), before

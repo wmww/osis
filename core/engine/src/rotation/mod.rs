@@ -926,7 +926,8 @@ fn own_secrets_rot(tx: &mut Tx<'_>, t: Tid, rec: Option<osis_base::CreationRecor
 /// The dependent things whose secrets derive from `a` that this node, an admin of each, sees with a
 /// current holder other than its mint admin, or holding a role with key access on an independent
 /// thing (spec/permissions.md §3: such a thing is left by its only keyset part
-/// turning invalid, spec/crypto.md §3); each is made independent again. A dependent holder actor has no keyset to
+/// turning invalid, spec/crypto.md §3); each is made independent again at the end of a complete
+/// pass of `a`'s sync IDs (`Engine::pass_end`). A dependent holder actor has no keyset to
 /// be sealed at, so no rotation of what it holds a role on boxes it: its members read nothing new
 /// there, and rotators reaching it only through it hold no epoch there (`boxes_rotator`).
 pub(crate) fn own_secrets_candidates(core: &Core, a: &Tid) -> Vec<Tid> {
@@ -948,16 +949,6 @@ pub(crate) fn own_secrets_candidates(core: &Core, a: &Tid) -> Vec<Tid> {
         }
     }
     out.into_iter().collect()
-}
-
-/// `own_secrets` for a dependent thing with current holders, delivering the rotation by inbox to
-/// each holder it boxes (they hold no box at the derived epochs it wraps under) and logging it
-/// first under the sync IDs above the thing (its new `keys.0`).
-fn own_secrets_delivered(tx: &mut Tx<'_>, t: Tid) -> Result<Done> {
-    let mut done = Done::default();
-    let Some((c, rot, to)) = own_secrets_rot(tx, t, None, &[], None, Vec::new(), &mut done)? else { return Ok(done) };
-    recorded(tx, t, c, &rot, &to, &mut done)?;
-    Ok(done)
 }
 
 /// The re-seal trigger for `a` (spec/permissions.md §3): current holders for keys lacking a box
@@ -1328,22 +1319,6 @@ impl Engine {
         })
     }
 
-    /// The dependent things whose secrets derive from `actor` that this node administers and sees
-    /// with a current holder other than their mint admin, or holding a role with key access on
-    /// an independent thing (spec/permissions.md §3): each is
-    /// due to be made independent again (`make_independent_again`), decided at the end of a complete
-    /// pass of `actor`'s sync IDs (node-sync's).
-    pub fn own_secrets_candidates(&self, actor: &Tid) -> Vec<Tid> {
-        own_secrets_candidates(&self.core, actor)
-    }
-
-    /// Gives `t`, one of `own_secrets_candidates`, new secrets of its own, delivered to the
-    /// holders it boxes and logged under the sync IDs above it.
-    pub fn make_independent_again(&mut self, t: &Tid) -> Result<Done> {
-        let t = *t;
-        self.run(|tx| own_secrets_delivered(tx, t))
-    }
-
     /// `pass_end` after a complete pass of `actor`'s sync IDs noted now (tests: the pass sync
     /// would note), run whether or not the actor has a sync ID read here.
     #[doc(hidden)]
@@ -1358,8 +1333,10 @@ impl Engine {
     }
 
     /// What a complete pass of `actor`'s sync IDs makes due, once one began after every role
-    /// commit on it received from elsewhere (`note_complete_pass`); nothing otherwise: the
-    /// rotations of `actor` nothing waits for (`pass_end_rotations`: withdraws), the re-seals of
+    /// commit on it received from elsewhere (`note_complete_pass`); nothing otherwise: secrets of
+    /// their own for the dependent things deriving from it that are due them
+    /// (`own_secrets_candidates`), the rotations of `actor` nothing waits for
+    /// (`pass_end_rotations`: withdraws), the re-seals of
     /// the holders the trigger names, the history its current epochs lack (spec/permissions.md §3,
     /// spec/crypto.md §4 History box) and the snapshots a cut owes (spec/crypto.md §4, State at
     /// a cut).
@@ -1378,6 +1355,22 @@ impl Engine {
             // a node removed from its account writes nothing as it (it may still hold the read
             // secrets through the pass its drop waits for)
             let me = tx.core.tid();
+            // each in a step of its own: one that cannot be made now (a holder's `keys.0` not
+            // held, an intermediate uncovered) is reported and decided again at the next pass end
+            for t in own_secrets_candidates(tx.core, &a) {
+                match tx.step(crate::engine::Step::OwnSecrets, |tx| {
+                    let mut d = Done::default();
+                    own_secrets(tx, t, &mut d)?;
+                    Ok(d)
+                }) {
+                    Ok(d) => done.extend(d),
+                    Err(e @ Error::Store(_)) => return Err(e),
+                    Err(e) => {
+                        let d = crate::events::Diagnostic { kind: crate::events::DiagnosticKind::OwnWriteFailed, tids: vec![t], commit: None, peer: None, detail: format!("secrets of its own: {e}") };
+                        tx.core.events.diagnostic(d, tx.core.hlc.mono());
+                    }
+                }
+            }
             pass_end_rotations(tx, me, a, &mut done)?;
             let mut due = reseal_candidates(tx, &a)?;
             if !due.is_empty() {

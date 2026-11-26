@@ -449,7 +449,7 @@ pub fn step(w: &mut World, s: &Step) -> String {
         Step::Revoke(_, k, h) => demote(w, i, *k, *h, None),
         Step::Rotate(_, k) => {
             let Some(t) = thing(w, *k) else { return "skipped: no such thing".into() };
-            let r = w.write(i, |e| e.make_independent_again(&t)).map(|_| String::new()).map_err(|e| e.to_string());
+            let r = w.write(i, |e| e.make_independent(&t)).map(|_| String::new()).map_err(|e| e.to_string());
             if r.is_ok() {
                 w.history.independent[*k] = true;
                 w.history.event(*k, None, i);
@@ -586,7 +586,7 @@ fn inbox(w: &mut World, i: usize, k: Option<usize>) -> Result<String, String> {
     if let (Some(k), Some(t)) = (k, to)
         && !w.history.independent[k]
     {
-        w.write(i, |e| e.make_independent_again(&t)).map_err(|e| e.to_string())?;
+        w.write(i, |e| e.make_independent(&t)).map_err(|e| e.to_string())?;
         w.history.independent[k] = true;
         w.history.event(k, None, i);
     }

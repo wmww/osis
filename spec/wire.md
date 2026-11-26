@@ -65,7 +65,7 @@ Not format constants. A value marked recommended is advice.
 | `INCARNATIONS_KEPT` | recommended 4096 ended incarnations of a node log (spec/sync-streams.md §3), oldest evicted: a cursor naming an evicted one names no position |
 | `MAX_DELIVERED` | 2^16 delivered relay-only commit IDs remembered (spec/sync-compaction.md §2) |
 | `LOST_HEARD_WAIT_MS` | `ROLE_KEEP`: how long after a node first found a role gone by an `until` alone it drops anyway (spec/permissions.md §2) |
-| `SETTLE_MS` | local policy, 30 s: how long a node leaves another node's fresh demotion or `keys.0` to its signer before copying it, and a dependent thing with a holder to the signer of its newest edge write before making it independent (spec/permissions.md §2, §3, §4) |
+| `SETTLE_MS` | local policy, 30 s: how long a node leaves another node's fresh demotion or `keys.0` to its signer before copying it (spec/permissions.md §2, §4) |
 | `PASS_WAIT_MS` | local policy, recommended 1 hour: how long a complete pass waits for a peer whose record holds the sync ID (spec/sync-status.md §1) |
 
 ## 3. Creation records and agility enums

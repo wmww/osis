@@ -276,7 +276,7 @@ fn a_key_change_keeps_a_sync_only_holder_spec_sync_set_2() {
     w.run();
     let s = w.engine(0).sync_id_of(&t).unwrap().expect("T's sync ID");
     let before = w.store(1).entries(&s).unwrap().len();
-    w.write(0, |e| e.make_independent_again(&t)).unwrap();
+    w.write(0, |e| e.make_independent(&t)).unwrap();
     w.write(0, |e| {
         let mut m = Mutation::new();
         m.set(t, &ak(), &Value::Str("after".into())).unwrap();
@@ -310,7 +310,7 @@ fn independent_at_once(first: usize, rotate: bool) {
     w.partition(0, 3 - first);
     w.write(first, |e| e.grant(&t, &alice, &edge(Role::Read))).unwrap();
     match rotate {
-        true => w.write(3 - first, |e| e.make_independent_again(&t)).unwrap(),
+        true => w.write(3 - first, |e| e.make_independent(&t)).unwrap(),
         false => w.write(3 - first, |e| e.grant(&t, &alice, &edge(Role::Read))).unwrap(),
     };
     w.flush();

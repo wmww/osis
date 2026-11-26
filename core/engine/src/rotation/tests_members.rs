@@ -1896,7 +1896,7 @@ fn grants_leave_the_current_keys_as_they_were_spec_permissions_4() {
 /// held actor (`Life`, when `role_duty_due`), the lost-access drop (when `role_duties_due`), then
 /// a complete pass of each sync ID it wants one of, its end deciding (`pass_end`, as status calls
 /// it).
-fn driver_duties(lp: &mut LocalPeer, i: usize) {
+pub(super) fn driver_duties(lp: &mut LocalPeer, i: usize) {
     let e = &mut lp.peers[i].engine;
     for a in e.held_actors() {
         if e.role_duty_due(&a).unwrap() {
