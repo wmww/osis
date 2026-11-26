@@ -464,15 +464,15 @@ impl Osis {
         self.on_commits(Address::Writes(scope.clone()), Box::new(f))
     }
 
-    /// Undoes this actor's newest commit in effect in `scope` (a redo counts as a commit): reverts
+    /// Undoes the newest commit of `author()` in effect in `scope` (a redo counts as a commit): reverts
     /// it. `None` when there is none, `NotUndoable` when it cannot be reverted (nothing older is
     /// undone instead).
     pub fn undo(&self, scope: &Scope) -> Result<Option<Commit>> {
         self.step(scope, false)
     }
 
-    /// Redoes this actor's newest undo in effect in `scope`, unless a new commit of this actor
-    /// came after it there: reverts the undo. `None` when there is none.
+    /// Redoes the newest undo of `author()` in effect in `scope`, unless a new commit of it came
+    /// after it there: reverts the undo. `None` when there is none.
     pub fn redo(&self, scope: &Scope) -> Result<Option<Commit>> {
         self.step(scope, true)
     }
