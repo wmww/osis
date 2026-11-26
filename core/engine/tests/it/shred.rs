@@ -623,7 +623,7 @@ fn past_expiry_and_purge_alike_spec_commits_5() {
     past_expiry_and_purge_alike(Cases::Rotations);
 }
 
-// As above, all 5040 orders in every shape (50400 cases, about 6000 CPU-s: by hand).
+// As above, all 5040 orders in every shape (50400 cases, about 13000 CPU-s: by hand).
 #[test]
 #[ignore = "by hand: every order"]
 fn past_expiry_and_purge_alike_in_every_order_by_hand_spec_commits_5() {

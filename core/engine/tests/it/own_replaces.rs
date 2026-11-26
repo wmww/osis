@@ -110,6 +110,32 @@ fn expiring_writes_are_no_own_replaces_spec_commits_5() {
     assert!(e.covered_drops(&cs[0]).unwrap().is_empty());
 }
 
+// spec/commits.md §5 Own replaces: the author's later expiring writes are no own replaces, so
+// they never stand in for its durable ones: two durable whole replaces still cover C with two
+// expiring writes after them, as applied and loaded afresh.
+#[test]
+fn expiring_writes_hide_no_own_replace_spec_commits_5() {
+    let (mut lp, t) = thing();
+    let a = ak("x:a.0");
+    let qs = replaces(&mut lp, t, &a, 0..3);
+    let end = osis_base::WallMs(lp.peers[0].engine.now().0 + 60_000);
+    for v in 3..5 {
+        lp.advance(1000);
+        let mut m = Mutation::new();
+        m.set(t, &a, &Value::Int(v)).unwrap();
+        m.expires(t, &a, end).unwrap();
+        lp.peers[0].commit(m).unwrap().unwrap();
+    }
+    for restart in [false, true] {
+        if restart {
+            lp.peers[0].restart(7).unwrap();
+        }
+        let e = &mut lp.peers[0].engine;
+        assert_eq!(e.covered(&qs[2], &qs[0], &t, &a).unwrap(), Some(true), "restart {restart}");
+        assert_eq!(e.covered_drops(&qs[0]).unwrap(), vec![(t, a.clone())], "restart {restart}");
+    }
+}
+
 // spec/commits.md §5 Forgetting, §7: what a forgotten durable commit stands for (`ix.forgotten`,
 // read by `undo::replaced_kept`) is the same after a restart and after an index rebuild.
 #[test]
