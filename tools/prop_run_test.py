@@ -56,6 +56,7 @@ def run(*args):
 
 
 d = tempfile.mkdtemp()
+prop_run.COSTS = os.path.join(d, "prop-costs")
 fake = os.path.join(d, "fake")
 open(fake, "w").write(FAKE)
 os.chmod(fake, os.stat(fake).st_mode | stat.S_IXUSR)

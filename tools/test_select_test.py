@@ -217,7 +217,7 @@ if kinds != ["kept", "build", "build", "check", "run", "run", "run", "run"]:
     print(f"FAIL --emit: line kinds {kinds}\n" + "\n".join(lines))
     fails = 1
 check("--emit", "\n".join(lines), "build cargo test --locked -p osis-mid -p osis-top --tests --no-run", "build cargo build --locked --bin sim-sweep",
-      "check python3 tools/test_select.py --listed mid_cfg_test_large mid_child_large ", "_RUNNER=" + test_select.RUNNER + " cargo test --locked --no-fail-fast ", " model_large top_exhaustive -- cargo", "cargo test --locked --quiet -p osis-mid -p osis-top --tests -- --list --ignored ",
+      "check python3 tools/test_select.py --listed mid_cfg_test_large mid_child_large ", "_RUNNER=" + test_select.RUNNER + " python3 tools/targets.py cargo test --locked --no-fail-fast ", " model_large top_exhaustive -- cargo", "cargo test --locked --quiet -p osis-mid -p osis-top --tests -- --list --ignored ",
       "run gate.properties env ", "OSIS_ORDER_START=7 ", "run gate.sim cargo run --locked --bin sim-sweep -- --seeds 15 --from 7",
       "run gate.replay printf 'gate: replay %s %s\\n' osis-mid/m::mid_it_plain rate:OSIS_ORDER_SEED=5,OSIS_SYNC_START=1 && env OSIS_ORDER_SEED=5 OSIS_SYNC_START=1 cargo test --locked --no-fail-fast -p osis-mid --tests -- --exact m::mid_it_plain --include-ignored",
       "run gate.replay printf 'gate: replay %s %s\\n' sim-sweep:two_nodes rate:9 && cargo run --locked --bin sim-sweep -- --seeds 1 --from 9 --only two_nodes",

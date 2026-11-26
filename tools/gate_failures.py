@@ -205,7 +205,8 @@ def cargo_failures(text):
             continue
         m = TARGETS.match(line)
         if m:
-            declared = int(m.group(1))
+            # one count per cargo: tools/targets.py runs one per target
+            declared = (declared or 0) + int(m.group(1))
         elif cur is not None and cur["result"] is None:
             cur["lines"].append(line)
             r = RESULT.match(line)

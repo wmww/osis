@@ -42,14 +42,14 @@ limited() { local n; n=$1; shift; step "$@"; python3 "$tools/limits.py" check "$
 # A test stage, `tested LIMIT LOG CMD...` (one external command): timed and checked against its
 # limit like `limited`, its output also saved to LOG, and `LIMIT EXIT LOG` appended to $results;
 # it returns 0 whatever CMD did, so no failure ends a later stage. Its stdin is /dev/null: one
-# reading stdin would eat the held runner's later lines. A stage of default tests (held to the
-# `test` limit) runs under tools/test_watch.py, which stops a target where no test finishes for a
-# multiple of that limit and names its running tests "hung" (notes/gate.md, Hung tests), and counts
-# each test binary's instructions for the summary's test cost (notes/gate.md, The summary).
+# reading stdin would eat the held runner's later lines. Every test stage runs its targets side by
+# side (tools/targets.py); a stage of default tests each under tools/test_watch.py (`--watch`),
+# which stops a target where no test finishes for a multiple of the `test` limit and names its
+# running tests "hung" (notes/gate.md, Hung tests), and counts each test binary's instructions for
+# the summary's test cost (notes/gate.md, The summary).
 tested() {
   local n log s c; n=$1; log=$2; shift 2
   printf '== %s\n' "$*"; s=$(date +%s); cpu; c=$cpu
-  case $n in default-tests|gate.gui-tests) set -- python3 "$tools/test_watch.py" "$@" ;; esac
   { rc=0; "$@" < /dev/null || rc=$?; echo "$rc" > "$log.rc"; } 2>&1 | tee "$log"
   cpu; step_wall=$(( $(date +%s) - s )); step_cpu=$(( cpu - c )); printf '   (%ss, %s CPU-s)\n' $step_wall $step_cpu
   python3 "$tools/limits.py" check "$n" $step_cpu $step_wall || true
@@ -167,7 +167,7 @@ gui_lint() { limited gate.gui-lint cargo clippy $gui_pkgs --all-targets --locked
 # the GUI's test binaries, built in the build stage so gate.gui-tests measures only the tests
 gui_build_cmd="cargo test $gui_pkgs --locked --no-fail-fast --no-run"
 # shellcheck disable=SC2086
-gui_test() { echo "expect gate.gui-tests" >> "$sel"; tested gate.gui-tests "$tmp/gui.log" cargo test $gui_pkgs --locked --no-fail-fast; }
+gui_test() { echo "expect gate.gui-tests" >> "$sel"; tested gate.gui-tests "$tmp/gui.log" python3 "$tools/targets.py" --watch cargo test $gui_pkgs --locked --no-fail-fast; }
 # A change of the GUI and docs alone: no core build or test. Called from `if` bodies only: in an
 # `a || f` list `set -e` is off inside f.
 gui_only() {
@@ -230,7 +230,7 @@ if [ "$core" = comments ]; then
 fi
 # the tests the gate runs, as `build CMD` and `run CMD` lines: the default tests, then the branch's
 # selection (properties and sim scenarios at small size, on one random offset)
-printf '%s\n' "build cargo test --locked --no-fail-fast --no-run" "run default-tests cargo test --locked --no-fail-fast" > "$sel"
+printf '%s\n' "build cargo test --locked --no-fail-fast --no-run" "run default-tests python3 tools/targets.py --watch cargo test --locked --no-fail-fast" > "$sel"
 offset=$(python3 -c 'import random; print(random.randrange(10**12))')
 if [ "$select" = all ]; then from=--all; else from="--base $base"; fi
 # shellcheck disable=SC2086

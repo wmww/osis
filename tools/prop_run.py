@@ -7,7 +7,10 @@ prints.
 
 Lists BIN's tests matching ARGS (`--list`, the same filters, `--ignored` and `--skip`s), then runs
 each as `BIN --exact NAME` (keeping `--ignored`/`--include-ignored`), as many at once as libtest
-would run threads (RUST_TEST_THREADS, else every core). Each child's own CPU-s and wall come from
+would run threads (RUST_TEST_THREADS, else every core), or, under tools/targets.py (which runs every
+target's runner at once), one per token taken from its shared pool (`GATE_SLOTS`: the box's threads
+across every target), costliest first by the box's last run (`~/.cache/osis/prop-costs`; a test it
+lacks first: a new or renamed test may be the costliest). Each child's own CPU-s and wall come from
 its rusage (wait4): `gate: cost NAME: W s, C CPU-s` after its `test NAME ... ok|FAILED` line.
 tools/gate_failures.py reads those lines for the cost table.
 
@@ -20,7 +23,7 @@ counts NEW, as for a crashed target.
 A test listed in tools/known_failures.txt with a `counts:` baseline runs at that line's REPRO
 setting (`VAR=VAL,...`; `-` keeps the gate's), so its failing counts compare with the baseline
 (tools/gate_failures.py, notes/coordination.md, Known failures)."""
-import os, re, subprocess, sys, tempfile, time
+import os, re, select, subprocess, sys, tempfile, time
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -49,6 +52,51 @@ def section(out, name):
     return lines[i:j]
 
 
+COSTS = os.path.expanduser("~/.cache/osis/prop-costs")
+
+
+def last_costs():
+    """{test: CPU-s} of each test's last run on this box (COSTS: `BIN-NAME TEST CPU` lines appended
+    by every run)."""
+    out = {}
+    try:
+        for l in open(COSTS):
+            f = l.split()
+            if len(f) == 3:
+                out[f[1]] = float(f[2])
+    except (OSError, ValueError):
+        pass
+    return out
+
+
+def note_cost(name, cpu):
+    try:
+        os.makedirs(os.path.dirname(COSTS), exist_ok=True)
+        # one short O_APPEND write per line: lines from concurrent runners never interleave
+        with open(COSTS, "a") as f:
+            f.write(f"- {name} {cpu:.1f}\n")
+    except OSError:
+        pass
+
+
+class Slots:
+    """The shared pool of tools/targets.py (`GATE_SLOTS=R,W`, a pipe holding one byte per slot), or
+    None: each running test holds one byte, written back when it ends."""
+
+    def __init__(self, spec):
+        self.r, self.w = (int(x) for x in spec.split(","))
+        os.set_blocking(self.r, False)
+
+    def take(self):
+        try:
+            return os.read(self.r, 1) == b"."
+        except BlockingIOError:
+            return False
+
+    def give(self):
+        os.write(self.w, b".")
+
+
 def main(argv, root=gate_failures.ROOT):
     if not argv:
         sys.exit(__doc__)
@@ -57,20 +105,36 @@ def main(argv, root=gate_failures.ROOT):
     keep = [a for a in args if a in KEEP]
     envs = gate_failures.counted_envs(root)
     width = int(os.environ.get("RUST_TEST_THREADS") or os.cpu_count() or 1)
+    slots = Slots(os.environ["GATE_SLOTS"]) if os.environ.get("GATE_SLOTS") else None
     print(f"\nrunning {len(names)} test{'' if len(names) == 1 else 's'}", flush=True)
     t0 = time.time()
-    todo, running, done = list(names), {}, {}
+    last = last_costs()
+    todo, running, done = sorted(names, key=lambda n: -last.get(n, float("inf"))), {}, {}
     while todo or running:
-        while todo and len(running) < width:
+        while todo and (slots.take() if slots else len(running) < width):
             n = todo.pop(0)
             out = tempfile.TemporaryFile("w+", errors="replace")
             env = dict(os.environ, **envs.get(n, {}))
+            env.pop("GATE_SLOTS", None)
             p = subprocess.Popen([bin_, "--exact", n, *keep], stdout=out, stdin=subprocess.DEVNULL, env=env)
-            running[p.pid] = (n, out, time.time(), p)
-        pid, status, ru = os.wait4(-1, 0)
+            running[p.pid] = (n, out, time.time(), p, os.pidfd_open(p.pid))
+        if slots and todo:
+            # a slot freed by another target's runner, or one of ours ending
+            select.select([slots.r, *(v[4] for v in running.values())], [], [])
+            ended = [pid for pid, v in running.items() if select.select([v[4]], [], [], 0)[0]]
+            if not ended:
+                continue
+            pid = ended[0]
+        else:
+            pid = -1
+        pid, status, ru = os.wait4(pid, 0)
         if pid not in running:
             continue
-        n, out, s, p = running.pop(pid)
+        n, out, s, p, fd = running.pop(pid)
+        os.close(fd)
+        if slots:
+            slots.give()
+        note_cost(n, ru.ru_utime + ru.ru_stime)
         p.returncode = os.waitstatus_to_exitcode(status)  # reaped here: Popen must not wait again
         out.seek(0)
         text = out.read()

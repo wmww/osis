@@ -143,7 +143,7 @@ printf 'error: test failed, to rerun pass `--test a`\n     Running tests/b.rs (b
 exit 101
 FAKE
 chmod +x fakebin/cargo
-echo "run default-tests cargo test --no-fail-fast" > runs
+echo "run default-tests python3 $(dirname "$gate")/test_watch.py cargo test --no-fail-fast" > runs
 s0=$(date +%s); rc=0; env HEAVY_HELD=1 GATE_HANG_S=1 PATH="$PWD/fakebin:$PATH" sh "$gate" --held runs > /dev/null 2>&1 || rc=$?
 took=$(( $(date +%s) - s0 ))
 got="exit $rc, res $(cut -d' ' -f1,2 runs.res), hung $(grep -c '^gate: hung test: a::spin$' runs.1.log), b ran $(grep -c '^test b::fine \.\.\. ok$' runs.1.log)"

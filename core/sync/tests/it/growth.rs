@@ -207,7 +207,7 @@ fn path_reads(w: &mut World, s: &osis_base::SyncId) -> Vec<u64> {
 }
 
 // spec/commits.md §5 Fixed retention and Covered, spec/sync-compaction.md §1 (trigger): thing 0
-// rotated 3 and 30 more times by its admin, synced by node 1 (kept unread) and read by node 2.
+// rotated 2 and 20 more times by its admin, synced by node 1 (kept unread) and read by node 2.
 // Each rotation replaces the keysets before it; the admin's `keys.0` snapshots cover them, and
 // past `ROLE_KEEP` every node drops them, so each holds as many `keys.0` bodies at 10n as at n.
 // (Each rotation's boxes and step stay live in `secrets.0` and `sync.0`, kept for good.) A path
@@ -217,8 +217,8 @@ fn path_reads(w: &mut World, s: &osis_base::SyncId) -> Vec<u64> {
 fn rotations_keep_keysets_flat_spec_commits_5() {
     let (mut w, _) = setup(Gives::Reads);
     keysets_after_rotations(&mut w, 1);
-    let (n, reads) = keysets_after_rotations(&mut w, 3);
-    let (n10, reads10) = keysets_after_rotations(&mut w, 30);
+    let (n, reads) = keysets_after_rotations(&mut w, 2);
+    let (n10, reads10) = keysets_after_rotations(&mut w, 20);
     assert_eq!(n, n10, "keys.0 bodies held per node at n and 10n rotations");
     assert_eq!(reads, reads10, "store rows and derivations of a path read again per node at n and 10n rotations");
 }

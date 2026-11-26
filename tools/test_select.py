@@ -401,7 +401,7 @@ def main():
         build.append(["cargo", "test", "--locked", *pkgs, "--tests", "--no-run"])
         wanted = sorted({t for v in props.values() for t in v})
         checks.append(["python3", "tools/test_select.py", "--listed", *wanted, "--", "cargo", "test", "--locked", "--quiet", *pkgs, "--tests", "--", "--list", *filters])
-        cmds.append(("gate.properties", ["env", *envs(offset), f"{runner_var()}={RUNNER}", "cargo", "test", "--locked", "--no-fail-fast", *pkgs, "--tests", "--", *filters]))
+        cmds.append(("gate.properties", ["env", *envs(offset), f"{runner_var()}={RUNNER}", "python3", "tools/targets.py", "cargo", "test", "--locked", "--no-fail-fast", *pkgs, "--tests", "--", *filters]))
     if sim:
         build.append(["cargo", "build", "--locked", "--bin", "sim-sweep"])
         cmds.append(("gate.sim", ["cargo", "run", "--locked", "--bin", "sim-sweep", "--", "--seeds", str(SIM_SEEDS), "--from", str(offset)]))
