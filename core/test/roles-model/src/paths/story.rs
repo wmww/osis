@@ -996,8 +996,8 @@ impl Sim {
                 let cands: Vec<(Id, Vec<Id>)> = pool
                     .iter()
                     .copied()
-                    // (a seed is ordered before it, but under `Until::PastEnd`; the cheapest test first)
-                    .filter(|&r| rules.until == Until::PastEnd || arrived.iter().any(|&j| w.key(j) < w.key(r)))
+                    // (a seed is ordered before it; the cheapest test first)
+                    .filter(|&r| arrived.iter().any(|&j| w.key(j) < w.key(r)))
                     .filter(|&r| !trust.contains(&r) && explicit(r))
                     // no side in its fight yet: nothing recorded stands against it
                     .filter(|&r| rules.sides == Sides::Both || !trust.iter().any(|&l| against_by(w, rules, r, l, &seeds_of)))
@@ -2082,9 +2082,8 @@ pub fn family_run(rules: &Rules, stride: usize) -> Stats {
 /// (a purge request holds the author right wherever its path gives write), `-purge-contains` (a
 /// request by author matches every delta whose chain holds that author); the variants `-facts`
 /// (a carried write judged by its own facts, not shown by a cover's copy: not the design),
-/// `-until-at-key` and `-until-past-end` (an end date on admin as a lowering: `Until`, both failing
-/// a required gate); what a drop takes of a commit (`Drops`): the control `-part-drops` (each
-/// part by its own need) and the variants `-leave-lowers`, `-leave-on-grant`, `-redemption-whole`;
+/// `-until-at-key` (an end date on admin as a lowering: `Until`, failing a required gate); what a
+/// drop takes of a commit (`Drops`): the control `-part-drops` (each part by its own need);
 /// `-list-any-cut` (one answering cut of a delta's path makes it valid: `Answers`); `-no-end` (the
 /// remover keeps a role write wherever its removal applies with it, L3's end clause off); how a
 /// node records its sides (`Sides`): `-no-own`, `-no-receipt`, `-unapplied`, `-tie`, `-lowered`, `-both`,
@@ -2132,11 +2131,7 @@ pub fn mode_rules(mode: &str) -> Option<Rules> {
         "-seeds-all" => Rules { seeds_by_need: false, ..f },
         "-refuse-shapes" => Rules { refuse_shapes: true, ..f },
         "-until-at-key" => Rules { until: Until::AtKey, ..f },
-        "-until-past-end" => Rules { until: Until::PastEnd, ..f },
         "-part-drops" => Rules { drops: Drops::Part, ..f },
-        "-leave-lowers" => Rules { drops: Drops::LeaveLowers, ..f },
-        "-leave-on-grant" => Rules { drops: Drops::LeaveOnGrant, ..f },
-        "-redemption-whole" => Rules { drops: Drops::Redemption, ..f },
         "-list-any-cut" => Rules { answers: Answers::AnyCut, ..f },
         "-no-key-hop" => Rules { key_hop: false, ..f },
         _ => return None,

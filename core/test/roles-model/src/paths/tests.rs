@@ -1969,24 +1969,20 @@ fn a_commit_writes_its_paths_end_and_what_hangs_from_it() {
     assert!(rd.valid.contains(&ids[1]) && !rd.valid.contains(&ids[0]) && !rd.valid.contains(&ids[2]));
 }
 
-/// Proposed (`Rules::author_thing`): a write may be by the thing it writes. X writes T1 stating
-/// [A, T1] and naming T1; B, another writer of T1, purges by author T1 and takes exactly that
-/// delta, not X's edit by A nor its own. Without the variant no request's chain holds T1. A
-/// request by a signer with no path to T1 is invalid and takes nothing either way.
+/// A write may be by the thing it writes (notes/a1-spec/README.md Open 16): X writes T1 stating
+/// [A, T1] and naming T1. No request's chain holds T1, so B's purge by author T1 takes nothing; a
+/// request by a signer with no path to T1 is invalid.
 #[test]
-fn a_write_by_the_thing_it_writes_is_purged_by_any_writer_of_it() {
+fn a_write_by_the_thing_it_writes_is_purged_by_no_request_by_author() {
     let (mut w, ..) = paired();
     let by_thing = w.stated(X, 2, &[A, T1], 2, &[T1])[0];
     assert_eq!(w.purge_author(by_thing), T1);
-    let by_a = w.content_as(X, 2, &[A], T1, 1);
-    let own = w.content(B, 2, &[A], T1);
-    let q = w.purge(B, 3, &[A], T1, T1);
+    w.content_as(X, 2, &[A], T1, 1);
+    w.content(B, 2, &[A], T1);
+    w.purge(B, 3, &[A], T1, T1);
     let stray = w.purge(Z, 3, &[], T1, T1);
-    let rd = fixed_but(&w, &[], |r| r.author_thing = true);
-    assert!(rd.valid.contains(&q) && !rd.valid.contains(&stray));
-    assert_eq!(rd.purged, Set::from([by_thing]));
-    assert!(!rd.purged.contains(&by_a) && !rd.purged.contains(&own));
-    assert!(fixed(&w, &[]).purged.is_empty());
+    let rd = fixed(&w, &[]);
+    assert!(!rd.valid.contains(&stray) && rd.purged.is_empty(), "{rd:?}");
 }
 
 /// A commit whose things need different paths (notes/path-form.md, The split form) is judged per
@@ -2329,8 +2325,7 @@ fn tiny_gates_under(w: &World, trust: &[Id], rules: &Rules) -> TinyStats {
 }
 
 /// A single-use link redeemed twice, the sharer H removing L at 6 listing what it received
-/// (notes/a1-spec/README.md Open 23), under the rule and each other reading of what a drop takes
-/// (`Drops`), trusting nothing and trusting the removal alike: who holds LK in the end,
+/// (notes/a1-spec/README.md Open 23), under the rule and its control (`Drops`), trusting nothing and trusting the removal alike: who holds LK in the end,
 /// (R1, R2). R2 is the thief, R1 the redeemer the sharer saw.
 /// - `unseen`: R2 redeems at 3, unseen by H; R1 at 4; H lists R1's redemption.
 /// - `backdated`: as `unseen`, R2's redemption stamped 2 (made after R1's).
@@ -2343,8 +2338,8 @@ fn tiny_gates_under(w: &World, trust: &[Id], rules: &Rules) -> TinyStats {
 /// and `backdated`, at a node not trusting the removal, R2's leave stands (its need at L's edge,
 /// admin, was never met there), so R1's grant finds L's edge gone and nobody holds LK; a node
 /// trusting it seeds the leave too (a seed asks only that the removal's value not meet the need)
-/// and gives R1 LK: the nodes read differently by trust. The other worlds read alike under every
-/// reading and trust.
+/// and gives R1 LK: the nodes read differently by trust. The other worlds read alike under both
+/// readings and trust.
 #[test]
 fn a_single_use_link_redeemed_twice_stays_with_the_redemption_the_sharer_listed() {
     type Want = (Role, Role);
@@ -2375,7 +2370,7 @@ fn a_single_use_link_redeemed_twice_stays_with_the_redemption_the_sharer_listed(
         add("multi", Some(3), 4, &|a, _| a.to_vec(), false, (read, Gone), (read, Gone));
         out
     };
-    let readings = [Drops::Commit, Drops::Part, Drops::LeaveLowers, Drops::LeaveOnGrant, Drops::Redemption];
+    let readings = [Drops::Commit, Drops::Part];
     for (name, w, end, fixed_want, fair) in &worlds {
         for ln in readings {
             let rules = Rules { drops: ln, ..Rules::fixed() };
@@ -2438,28 +2433,22 @@ fn views_differing(m: &Sim, rules: &Rules) -> u64 {
 }
 
 /// By hand (notes/a1-spec/README.md Open 23): the story's worlds (no link in them) read alike under
-/// `fixed` (`Drops::Commit`) and each other reading of what a drop takes but `-leave-lowers`, at
-/// every honest node: the random worlds from `OSIS_ROLES_START` (`OSIS_ROLES_SEEDS`, 13,000) and
+/// `fixed` (`Drops::Commit`) and `-part-drops`, at every honest node: the random worlds from `OSIS_ROLES_START` (`OSIS_ROLES_SEEDS`, 13,000) and
 /// every 367th family world, the gate's sizes. The rule meant for redemptions changes no other
 /// reading there (its reach elsewhere: `tiny`'s commits of several parts, the differentials).
 #[test]
 #[ignore = "by hand: Open 23's readings against fixed"]
-fn leave_readings_change_no_story_reading() {
+fn part_drops_change_no_story_reading() {
     let start = crate::env_u64("OSIS_ROLES_START").unwrap_or(0);
     let n = crate::env_u64("OSIS_ROLES_SEEDS").unwrap_or(13_000);
-    let mut out = vec![];
-    for ln in [Drops::Part, Drops::LeaveLowers, Drops::LeaveOnGrant, Drops::Redemption] {
-        let rules = Rules { drops: ln, ..Rules::fixed() };
-        let random: u64 = crate::on_every_core(|th, threads, c: &mut u64| {
-            for i in (start + th as u64..start + n).step_by(threads) {
-                *c += views_differing(&random_world(i, &Rules::fixed()), &rules);
-            }
-        });
-        let fam: u64 = crate::family_on_every_core(FAMILY, 367, |i, c: &mut u64| *c += views_differing(&family(i, &Rules::fixed()), &rules));
-        println!("{ln:?}: views reading otherwise: random {random}, family {fam}");
-        out.push((ln, random, fam));
-    }
-    assert!(out.iter().filter(|x| x.0 != Drops::LeaveLowers).all(|x| x.1 == 0 && x.2 == 0), "{out:?}");
+    let rules = Rules { drops: Drops::Part, ..Rules::fixed() };
+    let random: u64 = crate::on_every_core(|th, threads, c: &mut u64| {
+        for i in (start + th as u64..start + n).step_by(threads) {
+            *c += views_differing(&random_world(i, &Rules::fixed()), &rules);
+        }
+    });
+    let fam: u64 = crate::family_on_every_core(FAMILY, 367, |i, c: &mut u64| *c += views_differing(&family(i, &Rules::fixed()), &rules));
+    assert_eq!((random, fam), (0, 0), "views reading otherwise: random, family");
 }
 
 /// Two admins leaving at once (notes/permissions.md, The last admin: a writer's check only): H
@@ -2944,47 +2933,19 @@ fn with_honest_writers_a_grant_applying_nowhere_decides_a_fight() {
     }
 }
 
-/// The variant `Until::PastEnd` (an end's drops also the writes after it resting on its edge stamped
-/// past the end, whatever sets the edge between) shows finding 36's world: B's end drops H's removal
-/// (stamped 12, past 8, through H's edge), so Z's grant applies and B, Z and H stay admins, and
-/// H's removal is shown as a dispute. With B removing H in place of the end date it changes nothing:
-/// an end date takes more than a removal, a write made under a later re-grant included.
+/// An end on admin drops nothing stamped past it: H grants N5 and B admin at 1; N5 sets H's admin
+/// to end at 4 at 2; B, not having received it, removes N5 at 3 listing nothing; H, not having
+/// received N5's end either, grants Z admin at 5. Under the rule, and as a lowering judged at its
+/// key (`Until::AtKey`), N5's end drops nothing and Z is admin everywhere, B's removal no dispute.
 #[test]
-fn an_end_dropping_writes_past_it_shows_the_honest_fight() {
-    let rules = Rules { until: Until::PastEnd, ..Rules::fixed() };
-    let (w, g, r, _) = b_ends_h(Kind::set(H, Admin).until(8));
-    let v = View::all(&w);
-    let rd = judge(&w, &rules, &v);
-    assert!(rd.dropped.contains(&r) && rd.applied.contains(&g) && (rd.role(H, A), rd.role(B, A), rd.role(Z, A)) == (Admin, Admin, Admin), "{rd:?}");
-    assert_eq!(disputes(&w, &rules, &v), vec![r]);
-    let (w, g, _, _) = b_ends_h(Kind::set(H, Gone));
-    let rd = judge(&w, &rules, &View::all(&w));
-    assert!(!rd.applied.contains(&g) && (rd.role(H, A), rd.role(B, A)) == (Admin, Gone));
-}
-
-/// Why `Until::PastEnd` is no rule (it fails liveness in the story, an honest admin's writes lost
-/// at the trusting nodes, and `quiet` in this honest world): H grants N5 and B admin at 1; N5 sets
-/// H's admin to end at 4 at 2; B, not having received it, removes N5 at 3 listing nothing; H, not
-/// having received N5's end either, grants Z admin at 5. Judged at its key N5's end drops H's grant
-/// (stamped past 4, through H's edge); B's removal then drops N5's end, H's edge is standing again,
-/// but the grant stays dropped (drops only grow): Z none at nodes trusting nothing, B's removal shown
-/// as a dispute in an honest history. Trusting B's removal, its seeds take N5's end first: Z admin.
-/// Under the rule, and as a lowering judged at its key (`Until::AtKey`), N5's end drops nothing and
-/// Z is admin everywhere.
-#[test]
-fn an_end_dropping_writes_past_it_keeps_its_drops_after_it_falls() {
+fn an_end_on_admin_drops_nothing_stamped_past_it() {
     let mut w = account();
     w.push(H, 1, &[], A, Kind::set(N5, Admin));
     w.push(H, 1, &[], A, Kind::set(B, Admin));
     w.push(N5, 2, &[], A, Kind::set(H, Admin).until(4));
     let rb = w.push(B, 3, &[], A, Kind::set(N5, Gone));
     let g = w.push(H, 5, &[], A, Kind::set(Z, Admin));
-    let past = Rules { until: Until::PastEnd, ..Rules::fixed() };
     let v = View::all(&w);
-    let rd = judge(&w, &past, &v);
-    assert!(rd.stray == Set::from([g]) && (rd.role(H, A), rd.role(Z, A)) == (Admin, Gone), "{rd:?}");
-    assert_eq!(disputes(&w, &past, &v), vec![rb]);
-    assert_eq!(judge(&w, &past, &v.clone().trusting(&[rb])).role(Z, A), Admin);
     for rules in [Rules::fixed(), Rules { until: Until::AtKey, ..Rules::fixed() }] {
         for t in [vec![], vec![rb]] {
             let rd = judge(&w, &rules, &v.clone().trusting(&t));

@@ -288,7 +288,7 @@ mod tests {
         for st in <[LeaveStats; 2]>::from(run(LeaveRules::spec())) {
             assert!(st.worlds > 0 && st.failures == 0, "{:?}", st.fail.iter().map(|f| &f.0).collect::<Vec<_>>());
         }
-        for (mode, kind) in [("leave-draft", "content"), ("leave-draft", "lost"), ("leave-rotating", "content"), ("leave-any-source", "lost")] {
+        for (mode, kind) in [("leave-rotating", "content"), ("leave-any-source", "lost")] {
             let (fam, rnd) = run(LeaveRules::named(mode).unwrap());
             assert!(fam.kinds.contains_key(kind) && rnd.kinds.contains_key(kind), "{mode}: {:?} {:?}", fam.kinds, rnd.kinds);
         }

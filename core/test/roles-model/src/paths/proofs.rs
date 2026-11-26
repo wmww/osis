@@ -484,13 +484,13 @@ mod tests {
         assert_eq!(j(ProofRules::spec(), Role::Read), Role::Read);
     }
 
-    /// The searches at small size: the spec's rules hold, each control and the draft fail.
+    /// The searches at small size: the spec's rules hold, the guard's and the path role's controls fail.
     #[test]
     #[ignore = "property"]
     fn proofs_hold_plain() {
         let st = proofs_random(0, 2000, ProofRules::spec());
         assert_eq!(st.failures, 0, "{:?} {:?}", st.kinds, st.fail.iter().map(|f| &f.0).collect::<Vec<_>>());
-        for (mode, kind) in [("proofs-draft", "revive"), ("proofs-no-guard", "revive"), ("proofs-no-j", "j-path")] {
+        for (mode, kind) in [("proofs-no-guard", "revive"), ("proofs-no-j", "j-path")] {
             let st = proofs_random(0, 2000, ProofRules::named(mode).unwrap());
             assert!(st.kinds.contains_key(kind), "{mode}: {:?}", st.kinds);
         }

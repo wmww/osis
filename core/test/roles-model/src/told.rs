@@ -30,10 +30,9 @@
 //! no entry of its commit and competes with none. A node judging its own removal (the removal
 //! held and its signer's record known) erases A.
 //!
-//! Rules (`ToldRules`): `spec`, and controls `close` (a departed peer is opened nothing), `fire`
-//! (closed, and the remover alone tells the node by meeting it), `newest` (only the newest
-//! superseded epoch is shown), `full` (served content too, up to the notice), `late` (served
-//! everything up to the log end), `untold` (no notice), `taking` (a notice under its taking epoch,
+//! Rules (`ToldRules`): `spec`, and controls `fire` (a departed peer is opened nothing, and the
+//! remover alone tells the node by meeting it), `newest` (only the newest superseded epoch is
+//! shown), `full` (served content too, up to the notice), `untold` (no notice), `taking` (a notice under its taking epoch,
 //! the newest held among those what gave the removed node read boxed it, opened by every holder
 //! of that epoch), `blocked` (wrapped under the newest current epoch, covering the departure or
 //! not), `rotation-until` (the notices and the role entries up to the first rotation superseding
@@ -79,11 +78,9 @@ pub struct ToldWorld {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ToldRules {
     Spec,
-    Close,
     Fire,
     Newest,
     Full,
-    Late,
     Untold,
     Taking,
     Blocked,
@@ -96,11 +93,9 @@ impl ToldRules {
         let rest = mode.strip_prefix("told").unwrap_or(mode);
         Some(match rest.strip_prefix("-exh").unwrap_or(rest) {
             "" => ToldRules::Spec,
-            "-close" => ToldRules::Close,
             "-fire" => ToldRules::Fire,
             "-newest" => ToldRules::Newest,
             "-full" => ToldRules::Full,
-            "-late" => ToldRules::Late,
             "-untold" => ToldRules::Untold,
             "-taking" => ToldRules::Taking,
             "-blocked" => ToldRules::Blocked,
@@ -602,7 +597,6 @@ fn serve(s: &mut State, a: usize, b: usize, fails: &mut Vec<String>) {
     let log = s.n[a].log.clone();
     let notice = |s: &State, c: usize| s.commits[c].kind == Kind::Notice;
     let served: Vec<(usize, usize)> = match s.r {
-        ToldRules::Close => vec![],
         ToldRules::Fire => {
             if a == by { log.iter().copied().filter(|x| x.0 == rc).collect() } else { vec![] }
         }
@@ -612,7 +606,6 @@ fn serve(s: &mut State, a: usize, b: usize, fails: &mut Vec<String>) {
             let Some(until) = log.iter().position(|&(c, _)| notice(s, c)) else { return };
             log.iter().enumerate().filter(|&(i, &(c, _))| match r {
                 ToldRules::Full => i <= until || notice(s, c),
-                ToldRules::Late => true,
                 // as `until` was: up to the first rotation superseding the shown epoch
                 ToldRules::RotationUntil => notice(s, c) || (s.commits[c].role() && log.iter().position(|&(y, _)| s.commits[y].supersedes.contains(&e)).is_some_and(|f| i <= f)),
                 _ => notice(s, c),
@@ -712,13 +705,12 @@ mod tests {
         st.kinds.keys().cloned().collect()
     }
 
-    /// N0 removes N2 and is reset; N2 meets N1 alone. Spec: N1 tells it. Closed, or told by the
-    /// remover's fire alone, it never learns.
+    /// N0 removes N2 and is reset; N2 meets N1 alone. Spec: N1 tells it. Told by the remover's
+    /// fire alone, it never learns.
     #[test]
     fn a_removed_node_learns_from_a_member_the_remover_gone() {
         let w = vec![Sync(N0, N1), Remove(N0, N2), Sync(N0, N1), Reset(N0), Sync(N1, N2)];
         assert!(kinds(w.clone(), ToldRules::Spec).is_empty());
-        assert_eq!(kinds(w.clone(), ToldRules::Close), ["told"]);
         assert_eq!(kinds(w, ToldRules::Fire), ["told"]);
     }
 
@@ -732,14 +724,13 @@ mod tests {
         assert_eq!(kinds(w, ToldRules::Newest), ["told"]);
     }
 
-    /// N1 writes before and after it holds the removal; N2 is served its role entries up to the
-    /// removal alone. Served content, or up to the log's end, it gains more than its notice.
+    /// N1 writes before it holds the removal; N2 is served its notice alone. Served content up to
+    /// the notice, it gains more than its notice.
     #[test]
     fn a_removed_node_gains_nothing_but_its_notice() {
-        let w = vec![Write(N1), Remove(N0, N2), Sync(N0, N1), Write(N1), Sync(N1, N2)];
+        let w = vec![Write(N1), Remove(N0, N2), Sync(N0, N1), Sync(N1, N2)];
         assert!(kinds(w.clone(), ToldRules::Spec).is_empty());
-        assert_eq!(kinds(w.clone(), ToldRules::Full), ["notice"]);
-        assert_eq!(kinds(w, ToldRules::Late), ["notice"]);
+        assert_eq!(kinds(w, ToldRules::Full), ["notice"]);
     }
 
     /// A node paired after the removal tells N2; a stranger opens nothing.
@@ -818,11 +809,9 @@ mod tests {
         let st = crate::family_on_every_core(family_size(), 101, |k, st: &mut ToldStats| told_check(&told_family(k), ToldRules::Spec, st));
         assert!(st.worlds > 0 && st.failures == 0, "{:?}", st.fail);
         for (r, kind) in [
-            (ToldRules::Close, "told"),
             (ToldRules::Fire, "told"),
             (ToldRules::Newest, "told"),
             (ToldRules::Full, "notice"),
-            (ToldRules::Late, "notice"),
             (ToldRules::Untold, "told"),
             (ToldRules::Taking, "lowered"),
             (ToldRules::Blocked, "lowered"),
