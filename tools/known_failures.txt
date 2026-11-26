@@ -11,6 +11,7 @@ osis-engine/retention::tests_carried::purge_by_id_reads_alike_forgotten_or_not_p
 osis-sync/differential::histories_hold_their_closure_plain rate:OSIS_SYNC_START=802245521440,OSIS_SYNC_SEEDS=1 issues/differential-full-size-classes.md store entries under thing \d+'s sync ID, which it does not hold
 osis-engine/order::held_set_decides_plain rate:OSIS_ORDER_SEED=817700046039,OSIS_ORDER_LEN=60 issues/order-addenda-validity.md differs: validity of commit CommitId\([0-9a-f.]+\) \(#\d+\) on Tid\([^)]*\) t:reg\.0: model Some\(true\), node Some\(false\)
 osis-engine/order::held_set_decides_plain rate:OSIS_ORDER_SEED=878473417130,OSIS_ORDER_LEN=60 issues/order-settings-sync-exchange.md shows other than the node keeping every body: Tid\([^)]*\) t:reg\.0:
+osis-engine/order::held_set_decides_plain rate:OSIS_ORDER_SEED=320665913728,OSIS_ORDER_LEN=60 issues/order-settings-sync-exchange.md shows other than the node keeping every body: Tid\([^)]*\) t:msg\.0:
 held-model/props::settled_histories_keep_their_laws_large_spec_commits_5 rate:OSIS_HELD_START=610247967463,OSIS_HELD_SEEDS=1 issues/held-model-unsettled-fates.md fates did not settle
 held-model/props::late_commit_converges_after_repair_large_spec_commits_5 rate:OSIS_HELD_START=610247967463,OSIS_HELD_SEEDS=1 issues/held-model-unsettled-fates.md fates did not settle
 held-model/props::creations_last_read_like_creations_first_large_spec_commits_4 rate:OSIS_HELD_START=941546520067,OSIS_HELD_SEEDS=1 issues/held-model-unsettled-fates.md fates did not settle

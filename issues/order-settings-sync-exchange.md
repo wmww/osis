@@ -5,3 +5,4 @@
 
 - Replay: `OSIS_ORDER_SEED=878473417130 OSIS_ORDER_LEN=60 cargo test -p osis-engine --test it -- --ignored --exact order::held_set_decides_plain` (fails on 3f054424b; `OSIS_ORDER_SHRINK=1` shrinks it). Found by a gate.
 - `now, after the sync exchange: shows other than the node keeping every body: Tid(..) t:reg.0: want Ok(Some(Str("beside"))) got Ok(None)`. The history mixes retention settings (`Setting`), purge sets, a demotion and forged commits. Unexamined.
+- Also at seed 320665913728 (Purges emphasis, same replay form): `t:msg.0` read `None` where the node keeping every body reads `Some(Str("m9"))`; fails alike on main (found by the expiry-dead gate). Same symptom, cause unexamined.
