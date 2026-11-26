@@ -108,6 +108,9 @@ struct Run {
     /// Whether an actor holding a role on another rotated: the epochs boxing or proving its
     /// old keyset go stale, which only a rotation clears (spec/crypto.md §4, Stale).
     holder_rotated: bool,
+    /// Each peer's read point and actor count at its last `note`: a peer whose engine stands
+    /// since (`Engine::point`) holds what it held then, so is not read again.
+    noted: Vec<Option<(crate::engine::ReadPoint, usize)>>,
 }
 
 impl Drop for Run {
@@ -129,7 +132,7 @@ impl Drop for Run {
 impl Run {
     fn new(lp: LocalPeer, actors: Vec<(Tid, usize)>, rng: Rng) -> Run {
         let tids: Vec<Tid> = (0..N).map(|i| lp.peers[i].engine.tid()).collect();
-        let mut run = Run { lp, tids, actors, ever: vec![BTreeSet::new(); N], handed: vec![BTreeMap::new(); N], made: BTreeMap::new(), resealed: Vec::new(), boxed: BTreeMap::new(), states: Vec::new(), state_step: Vec::new(), stale: BTreeSet::new(), secrets: BTreeMap::new(), rng, hostile: BTreeSet::new(), log: Vec::new(), first: BTreeMap::new(), holder_rotated: false };
+        let mut run = Run { lp, tids, actors, ever: vec![BTreeSet::new(); N], handed: vec![BTreeMap::new(); N], made: BTreeMap::new(), resealed: Vec::new(), boxed: BTreeMap::new(), states: Vec::new(), state_step: Vec::new(), stale: BTreeSet::new(), secrets: BTreeMap::new(), rng, hostile: BTreeSet::new(), log: Vec::new(), first: BTreeMap::new(), holder_rotated: false, noted: vec![None; N] };
         run.log.push(format!("actors {:?} (owners), peers {:?}", run.actors, run.tids));
         run.note();
         run
@@ -155,6 +158,8 @@ impl Run {
             secrets: self.secrets.clone(),
             first: self.first.clone(),
             holder_rotated: self.holder_rotated,
+            // the copies' engines count their points afresh
+            noted: vec![None; N],
         }
     }
 
@@ -179,6 +184,10 @@ impl Run {
     fn note(&mut self) {
         let all = self.all();
         for p in 0..N {
+            let at = Some((self.lp.peers[p].engine.point(), all.len()));
+            if std::mem::replace(&mut self.noted[p], at) == at {
+                continue;
+            }
             let h = self.held(p);
             for k in &h {
                 self.first.entry((p, *k)).or_insert(self.log.len());
