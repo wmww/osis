@@ -503,15 +503,9 @@ pub(crate) fn remove_gone_writes(core: &Core, tid: &Tid, ak: &Ak, f: &mut Fragme
 }
 
 /// Records the creation records durable commit `h` carries on `created.0` that are not held
-/// yet; whether any was new. `first`: the node held nothing of `h` when the transaction began,
-/// so a strong newly reaching a thing it mints pulls nothing anew (`Core::brought`), whether or
-/// not its record was held before (a record taken alone from a sealed section or a record blob
-/// holds nothing of the commit): content on a thing is dropped as not carried only while a
-/// commit minting it is held, and forgetting keeps that commit known while a part of it may
-/// still bring the thing in. A late part of a commit already held (a released thing's record
-/// among them, forgotten with its content) is no exemption, and what was forgotten is fetched
-/// again (spec/sync-judgement.md §3 Dropped bodies).
-fn note_created(tx: &mut Tx<'_>, h: &Header, parts: &[(usize, Decoded)], first: bool) -> Result<bool> {
+/// yet, each a minting `Core::note_brought` counts (`h` not indexed yet: a late part of a held
+/// commit brings none); whether any was new.
+fn note_created(tx: &mut Tx<'_>, h: &Header, parts: &[(usize, Decoded)]) -> Result<bool> {
     let mut any = false;
     if h.ephemeral.is_some() {
         return Ok(false);
@@ -521,9 +515,7 @@ fn note_created(tx: &mut Tx<'_>, h: &Header, parts: &[(usize, Decoded)], first: 
         if a.ak.as_str() != osis_commit::retention::CREATED {
             continue;
         }
-        if first {
-            tx.core.brought.insert(a.tid);
-        }
+        tx.core.note_brought(a.tid);
         if tx.core.created(&a.tid).is_some() {
             // the commit minting it: what waits on it is judged once the pass ends
             // (`retention::needed::uncarried`)
@@ -570,7 +562,7 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, o
     }
 
     // creation records first: perm and dedup secrets need them
-    let mut held_changed = note_created(tx, &h, &parts.whole, true)?;
+    let mut held_changed = note_created(tx, &h, &parts.whole)?;
     let view = Arc::new(crate::engine::View::of(&h, super::paths::decided(tx.core, &h, &blob.keys)));
     let read = super::PartsRead::of(&h, &parts.whole);
     tx.core.note_keys_of(&id, &h);
@@ -763,7 +755,7 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
         tx.core.index_validity(id);
     }
     let late = parts.ais();
-    let mut held_changed = note_created(tx, &h, &parts.whole, false)?;
+    let mut held_changed = note_created(tx, &h, &parts.whole)?;
     let edges = h.kind.is_role() && late.iter().any(|ai| h.aspects.get(*ai).is_some_and(|a| validity::edge_ak(a.ak.as_str())));
     // a late role-class part may change what perm reads of the commit: its edge writes or the
     // role another part needs (`validity::add_role_commit`)

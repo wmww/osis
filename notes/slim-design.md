@@ -20,7 +20,7 @@ Where it goes, per node, for a small commit: sealed blob 478, its opened copy `c
 Each: cost now; why it is there (the concept); the change; what it deletes; wire and disk (spec sections); risks.
 
 ### A. A new thing pulls its unit anew (built for dependents; independents and attach open)
-- **Built**: a commit the node held nothing of brings the records it mints, applied or taken alone from its sealed sections in the transaction taking it (`Core::brought`, `Engine::ingest_carrying`), so a dependent thing another node makes pulls nothing anew at a reader (sync `growth::a_thing_another_node_makes_pulls_nothing_anew_*`; spec/sync-judgement.md §3 Dropped bodies).
+- **Built**: a minting of a thing the node held none of exempts it, applied or its record taken alone from its sealed section in the transaction taking the commit (`Core::brought`, `Engine::ingest_carrying`), so a dependent thing another node makes pulls nothing anew at a reader (sync `growth::a_thing_another_node_makes_pulls_nothing_anew_*`; spec/sync-judgement.md §3 Dropped bodies).
 - **Open** (issues/new-strong-pulls-anew.md): an independent thing's content commit, carrying the strong, arrives in a transaction after its rotation's, so the spec's exemption does not reach it and A's unit is pulled anew per independent make (PullReply about 34 KB a make at 30 things, growing); an attach pulls the enclosing unit whole.
 
 ### B. One stored form per commit: the record and its seal

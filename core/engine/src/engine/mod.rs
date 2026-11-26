@@ -1251,8 +1251,8 @@ pub struct Core {
     /// a holder unnamed): judged once the pass in flight ends,
     /// or at once with none in flight (`Engine::settle_lost`).
     pub lost_due: BTreeSet<Tid>,
-    /// Things minted by a commit this transaction applied that the node held nothing of when it
-    /// began (`apply::atomic::note_created`): a strong newly reaching one pulls nothing anew
+    /// Things this transaction brought a minting of while the node held none
+    /// (`Core::note_brought`): a strong newly reaching one pulls nothing anew
     /// (`sync::units::refetch`).
     pub brought: BTreeSet<Tid>,
     /// The (context, thing) members entering the node closure since the last transaction's end
@@ -1633,6 +1633,17 @@ impl Core {
     /// be one every node that saw the destruction ignores.
     pub fn writable(&self, t: &Tid) -> bool {
         self.exists(t) && self.mintings(t).next().is_some()
+    }
+
+    /// A minting of `t` arriving, not indexed yet: where the node holds none, nothing of `t` was
+    /// forgotten (content on a thing counts as never received only while a minting of it is
+    /// held, and forgetting keeps that commit known while a part of it may still bring the thing
+    /// in), so `t` is `brought` (spec/sync-judgement.md §3 Dropped bodies). Not judged on the
+    /// arriving commit: a minting needs no authority, and any writer may mint a held thing again.
+    pub(crate) fn note_brought(&mut self, t: Tid) {
+        if self.mintings(&t).next().is_none() {
+            self.brought.insert(t);
+        }
     }
 
     /// The held mintings of `t`: its `created.0` deltas, each `(commit, delta index)`.

@@ -1177,6 +1177,63 @@ fn a_thing_entering_again_with_its_record_held_is_pulled_anew_spec_sync_judgemen
     assert_eq!(lp.peers[1].engine.get(&y, &reg).unwrap(), Some(Value::Str("y".into())), "Y's content back");
 }
 
+// spec/sync-judgement.md §3 Dropped bodies (the exemption is a minting held nothing of, not a commit
+// held nothing of): as `a_thing_entering_again_with_its_record_held_is_pulled_anew`, but the commit
+// adding X's strong back mints Y again (a minting needs no authority, spec/commits.md §5). Peer 1
+// held nothing of that commit, but held Y's first minting while Y's content went: Y is pulled anew
+// and its content comes back. Fails where any commit held nothing of exempts the things it mints.
+#[test]
+fn a_thing_minted_again_with_the_strong_back_is_pulled_anew_spec_sync_judgement_3() {
+    let reg = crate::common::ak("t:reg.0");
+    let (mut lp, ps) = people(2);
+    let e0 = &mut lp.peers[0].engine;
+    let mut m = Mutation::new();
+    let x = e0.new_thing(&mut m, ps[0]);
+    m.set(x, &crate::common::REG, &Value::Str("x".into())).unwrap();
+    e0.commit(m).unwrap();
+    let y = make(e0, x, x);
+    make(e0, y, x);
+    let mut m = Mutation::new();
+    m.set(y, &crate::common::REG, &Value::Str("y".into())).unwrap();
+    e0.commit(m).unwrap();
+    e0.grant(&x, &ps[1], &crate::flows::edge_of(osis_base::Role::Read)).unwrap();
+    let d1 = lp.peers[1].engine.node_root().unwrap();
+    strong(&mut lp.peers[1].engine, d1, x, true);
+    let all = lp.peers[0].engine.commit_ids();
+    crate::flows::send_carried(&mut lp, 0, 1, &all);
+    crate::flows::send_carried(&mut lp, 0, 1, &all);
+    pass_end(&mut lp.peers[1].engine);
+    assert_eq!(lp.peers[1].engine.get(&y, &reg).unwrap(), Some(Value::Str("y".into())), "Y in X's sync unit reads");
+    let before = lp.peers[0].engine.commit_ids();
+    strong(&mut lp.peers[0].engine, x, y, false);
+    let cut: Vec<_> = lp.peers[0].engine.commit_ids().into_iter().filter(|c| !before.contains(c)).collect();
+    crate::flows::send_carried(&mut lp, 0, 1, &cut);
+    pass_end(&mut lp.peers[1].engine);
+    let e1 = &mut lp.peers[1].engine;
+    assert!(!e1.closure_holds(&y) && !e1.mintings_of(&y).is_empty(), "Y outside, its minting held: {}", e1.why_kept(&y));
+    assert_eq!(e1.get(&y, &reg).unwrap(), None, "Y's content went at the release");
+    lp.peers[1].pulled_anew.clear();
+    let was = synced(&mut lp);
+    let before = lp.peers[0].engine.commit_ids();
+    let e0 = &mut lp.peers[0].engine;
+    let rec = e0.core.created(&y).unwrap().clone();
+    let mut m = Mutation::new();
+    m.create(rec);
+    m.op(x, &ct::HOLDS, PathOp { path: vec![], op: Op::Add(Value::Strong(y)) }).unwrap();
+    // peer 0 holds Y: it mints again only past its writer rules, as a hostile writer would
+    e0.core.skip_writer_rules = true;
+    e0.commit(m).unwrap().unwrap();
+    e0.core.skip_writer_rules = false;
+    let back: Vec<_> = lp.peers[0].engine.commit_ids().into_iter().filter(|c| !before.contains(c)).collect();
+    assert_eq!(back.len(), 1, "one commit mints Y again and adds the strong");
+    assert_eq!(lp.peers[0].engine.mintings_of(&y).len(), 2, "Y minted twice");
+    crate::flows::send_carried(&mut lp, 0, 1, &back);
+    assert!(lp.peers[1].engine.closure_holds(&y), "Y back in X's sync unit");
+    assert!(pull_again(&mut lp, &was), "Y's entry pulls anew");
+    pass_end(&mut lp.peers[1].engine);
+    assert_eq!(lp.peers[1].engine.get(&y, &reg).unwrap(), Some(Value::Str("y".into())), "Y's content back");
+}
+
 // spec/commits.md §4 Outside the node closure, Pending storage: one commit of peer 0 writes Y,
 // outside peer 1's node closure, and X, in it; peer 1 gets its part on Y alone: that part waits for
 // Y to enter, so the commit pends whole (its every held part waits) and Y reads nothing. Peer 1

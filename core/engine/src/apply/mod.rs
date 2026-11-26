@@ -1629,9 +1629,7 @@ impl Engine {
 
     /// `ingest` of an opened commit blob (`OpenedBlob`) with `records`, the creation records it
     /// carries in sections left sealed here, taken alone (spec/sync-judgement.md §1 Sealed
-    /// sections), in the same transaction: where the node held nothing of the commit, the
-    /// commit brings them, and a strong it adds to one of their things pulls nothing anew
-    /// (`Core::brought`).
+    /// sections), in the same transaction: each a minting it brings (`Core::note_brought`).
     pub fn ingest_carrying(&mut self, bytes: &[u8], blobs: Vec<(BlobId, Vec<u8>)>, records: Vec<CreationRecord>) -> Result<Ingested> {
         self.ingest_class(bytes, blobs, records, None, None)
     }
@@ -1815,7 +1813,7 @@ impl Engine {
                 refused = true;
                 Ok(set_aside)
             }
-            Err(e) if e.is_fault() => self.set_aside_arrival(&id, bytes, from, &e),
+            Err(e) if e.is_fault() => self.set_aside_arrival(&id, bytes, Vec::new(), from, &e),
             r => r,
         };
         // written where kept, or nothing of it is kept (`sync_ids::opened`)
@@ -1866,15 +1864,17 @@ impl Engine {
     }
 
     /// The transaction taking received commit `id` (`bytes`, as it came) failed for fault `e` of
-    /// this node: one that only sets it aside (`set_aside`), carried by `carrier` (`None`: a
-    /// memory commit, or by nothing). An error here (the same fault again, outside the commit)
+    /// this node: one that only sets it aside (`set_aside`) with `records` (`ingest_carrying`'s),
+    /// carried by `carrier` (`None`: a memory commit, or by nothing). An error here (the same fault again, outside the commit)
     /// is the node's.
-    fn set_aside_arrival(&mut self, id: &CommitId, bytes: &[u8], carrier: Option<carriers::Carrier>, e: &Error) -> Result<Ingested> {
+    fn set_aside_arrival(&mut self, id: &CommitId, bytes: &[u8], records: Vec<CreationRecord>, carrier: Option<carriers::Carrier>, e: &Error) -> Result<Ingested> {
         let memory = CommitBlob::decode(bytes).is_ok_and(|b| b.header.ephemeral.is_some());
         self.run(|tx| {
             if memory {
                 tx.set_memory();
             }
+            // the records it carries sealed are taken with it, set aside or not
+            learn_records_in(tx, records)?;
             let out = set_aside(tx, id, Some(bytes), e)?;
             crate::sync_ids::opened::persist(tx, id)?;
             carriers::taken(tx, id, carrier)?;
@@ -1917,15 +1917,11 @@ impl Engine {
             } else {
                 fresh = !tx.store_blobs(blobs)?.is_empty();
             }
-            // records it brings: the node held nothing of it (spec/sync-judgement.md §3 Dropped
-            // bodies)
-            if let Ok(b) = &decoded
-                && !tx.core.ix.commits.contains_key(&b.id())
-                && !tx.core.ix.pending.contains_key(&b.id())
-            {
-                tx.core.brought.extend(records.iter().map(CreationRecord::tid));
+            // each a minting the commit brings, its record held or not
+            for r in &records {
+                tx.core.note_brought(r.tid());
             }
-            learned = learn_records_in(tx, records)?;
+            learned = learn_records_in(tx, records.clone())?;
             match decoded {
                 Ok(blob) => {
                     let id = blob.id();
@@ -1957,7 +1953,7 @@ impl Engine {
         }
         let r = match (r, seen) {
             // a memory commit's copy is the memory lane's
-            (Err(e), Some(id)) if e.is_fault() => self.set_aside_arrival(&id, bytes, (!memory).then_some(carriers::Carrier::Entry), &e),
+            (Err(e), Some(id)) if e.is_fault() => self.set_aside_arrival(&id, bytes, records, (!memory).then_some(carriers::Carrier::Entry), &e),
             (r, _) => r,
         };
         // written where kept, or nothing of it is kept (`sync_ids::opened`)
