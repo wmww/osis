@@ -136,15 +136,15 @@ pub(crate) fn grants_count(core: &Core, a: &Tid) -> bool {
 /// strong reaches where First entry carries it (`sync::units::reached_carried`: what the node
 /// asked to sync, before a box lets the walk enter it; a strong alone counts nothing), each on a
 /// path giving a role (an entry kept only while a loss is carried out gives none, so it never
-/// keeps the role that would keep it: the loss is judged on the least state), a holder held for keys, a link the node
-/// redeems (its sync ID is in the sync set from the link's text, spec/sync-set.md §5), or the
+/// keeps the role that would keep it: the loss is judged on the least state), a holder held for keys, a thing followed
+/// by the public entry (spec/sync-set.md §2), a link the node redeems (its sync ID is in the sync set from the link's text, spec/sync-set.md §5), or the
 /// target of a held valid `grant@~0` fire (spec/sync-inbox.md §5 Grant from outside); a
 /// dependent thing where the actor its secrets derive from is one (its grants travel under that
 /// actor's sync IDs).
 fn syncs(core: &Core, t: &Tid) -> bool {
     let cl = &core.ix.closure;
     let own = own_things(core);
-    let one = |t: &Tid| own.contains(t) || crate::sync::units::holds_within(core, t) || crate::sync::units::reached_carried(core, t) || cl.for_keys(t) || core.followed_links.contains(t) || crate::flows::inbox::granted_on(core, t).next().is_some();
+    let one = |t: &Tid| own.contains(t) || crate::sync::units::holds_within(core, t) || crate::sync::units::reached_carried(core, t) || cl.for_keys(t) || cl.follows_public(t) || core.followed_links.contains(t) || crate::flows::inbox::granted_on(core, t).next().is_some();
     one(t) || core.secret_actor(t).is_some_and(|a| a != *t && one(&a))
 }
 
@@ -679,6 +679,14 @@ fn drop_scope(tx: &mut Tx<'_>, scope: LostScope<'_>) -> Result<Vec<Tid>> {
         _ => &[],
     };
     let actors = drop_actors(tx, lost, dropped, rejudge)?;
+    // a loss ends with the last secret of its actor: one learned again later is judged afresh
+    // and waits its own complete pass (spec/permissions.md §3 When it learns it)
+    for a in &actors {
+        let c = crate::sync::held::Cause::Lost(*a);
+        if !tx.core.ix.secrets.contains_key(a) && tx.core.ix.cause_at.remove(&c).is_some() {
+            tx.txn.remove_local(&c.key(), osis_store::Shred::No)?;
+        }
+    }
     prune_timed(tx)?;
     Ok(actors)
 }

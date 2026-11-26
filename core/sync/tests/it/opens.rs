@@ -2673,7 +2673,7 @@ fn a_departed_peers_report_holds_nothing_elsewhere_spec_sync_status_2() {
     }
     w.advance(60_000);
     w.run();
-    assert!(w.engine(2).role_on(&t).is_none() && w.store(2).holding(&s).is_none(), "node 2 learned its removal");
+    assert!(w.engine(2).role_on(&t).is_none() && w.engine(2).read_secrets(&t).is_empty(), "node 2 learned its removal");
     assert!(!served, "node 2 was served none of the write");
     assert!(write.iter().all(|b| !w.store(0).elsewhere(&s, b).unwrap()), "held at no source");
 }

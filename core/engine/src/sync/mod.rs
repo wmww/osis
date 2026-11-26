@@ -300,6 +300,8 @@ pub(crate) struct Entered {
     keys: osis_base::memo::Feed<Tid>,
     /// The links followed (`FollowedLinks::followed_feed`).
     links: osis_base::memo::Feed<Tid>,
+    /// The things coming to be followed by the public entry (`Closure::public_feed`).
+    public: osis_base::memo::Feed<Tid>,
 }
 
 /// How this node syncs one thing of N's closure (spec/sync-set.md §2).

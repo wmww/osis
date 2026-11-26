@@ -25,8 +25,9 @@
 //! node (`Net::held_all`). The walk goes on only from a thing held. What the public reads opens T's
 //! keys only by a public piece under T's sync ID (`Net::pieces`), logged by a node reading T that
 //! holds the public's grant otherwise: it syncs the thing, or reads another unit carrying the piece
-//! (`logs_pieces`); a caller following a history passes in the pieces logged before (they outlive
-//! their carrier).
+//! (`logs_pieces`), or follows its sync ID by the public entry (`Rule::follows`: a strong of
+//! a unit it reads reaches the thing, whose sync ID that unit's key part names: `Net::named`);
+//! a caller following a history passes in the pieces logged before (they outlive their carrier).
 //!
 //! Abstracted: every edge piece the spec indexes is logged under its holder's sync ID (ideal
 //! delivery), as is what a carrier holds (a bridge's carriage stands while it does: carriage that
@@ -65,6 +66,11 @@ pub struct Net {
     /// keys open what the public reads only by these (`keys`). Logged once, they stay: a caller
     /// tracking a history passes in what was logged before (`held_all` adds what is logged now).
     pub pieces: Edges,
+    /// `(t, x)`: `t`'s sync ID names independent `x`'s sync ID, by an edge piece of `t` on `x` in
+    /// `t`'s key part (an edge write naming `t` on `x`, or `x`'s record edge, standing or since
+    /// lowered or removed: the key part keeps the piece). A current grant of `t` on `x` names it
+    /// too. A caller following a history passes them in.
+    pub named: Edges,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -101,11 +107,17 @@ pub struct Rule {
     /// X's unit, read: X's sync ID carries D where X's unit holds it, with no bridge (off: D only
     /// as a bridge logs it under T, the control).
     pub dep_entry: bool,
+    /// A node reading `t`, a strong of whose held unit reaches independent `x` (or a dependent of
+    /// it) that it neither reads nor keeps unread, follows `x`'s sync ID by the public entry where
+    /// `t`'s key part names that sync ID (`Net::names`): it holds the public's grant on `x` whenever
+    /// the public reads `x`, so it logs the piece (off: pieces only from what a node syncs
+    /// otherwise, which depends on when it synced, the control).
+    pub follows: bool,
 }
 
 impl Rule {
-    pub const DRAFT: Rule = Rule { fix: Fix::Least, first_entry: true, record_pieces: false, stubs_at_sync: false, founded_pieces: false, merged: false, carriers: false, dep_entry: false };
-    pub const SPEC: Rule = Rule { record_pieces: true, stubs_at_sync: true, founded_pieces: true, carriers: true, dep_entry: true, ..Rule::DRAFT };
+    pub const DRAFT: Rule = Rule { fix: Fix::Least, first_entry: true, record_pieces: false, stubs_at_sync: false, founded_pieces: false, merged: false, carriers: false, dep_entry: false, follows: false };
+    pub const SPEC: Rule = Rule { record_pieces: true, stubs_at_sync: true, founded_pieces: true, carriers: true, dep_entry: true, follows: true, ..Rule::DRAFT };
 }
 
 /// A node's state: the independent things it reads, keeps unread, and whose key parts it holds.
@@ -124,8 +136,12 @@ pub struct Held {
     pub s: S,
     /// Every thing held: the local part, the read units, the things kept unread.
     pub held: Set,
-    /// The sync IDs it syncs: read and kept unread things, and holders held for keys.
+    /// The sync IDs it syncs: read and kept unread things, holders held for keys, and what it
+    /// follows by the public entry.
     pub sync_set: Set,
+    /// Independent things neither read nor kept unread whose sync ID it follows by the public
+    /// entry (`Rule::follows`).
+    pub follows: Set,
 }
 
 impl Net {
@@ -203,7 +219,8 @@ impl Net {
     /// The public pieces a node holding `h` logs (spec/sync-set.md §2 Public pieces): `(t, x)` for
     /// each thing `t` it reads and independent `x` the public reads, a strong from a thing it holds
     /// of `t`'s unit reaching `x` or a dependent of it, where it holds the public's grant on `x`: it
-    /// syncs `x` (read, kept unread or for keys) or reads a thing whose sync ID carries the piece.
+    /// syncs `x` (read, kept unread, for keys or followed by the public entry) or reads a thing
+    /// whose sync ID carries the piece.
     pub fn logs_pieces(&self, rule: Rule, h: &Held) -> Edges {
         let e = self.edges(rule);
         let holds = |x: T| h.sync_set.contains(&x) || h.s.read.iter().any(|&t| self.pieces.contains(&(t, x)));
@@ -274,6 +291,32 @@ impl Net {
     /// Whether `h`'s key part holds an edge piece on `x`.
     fn piece(&self, rule: Rule, h: T, x: T) -> bool {
         self.w.grants.contains_key(&(h, x)) && (rule.record_pieces || !self.records.contains(&(h, x)))
+    }
+
+    /// Whether `t`'s key part names `x`'s sync ID (`named`, a current grant on `x`), under
+    /// `Rule::follows`.
+    pub fn names(&self, rule: Rule, t: T, x: T) -> bool {
+        rule.follows && (self.named.contains(&(t, x)) || self.w.grants.contains_key(&(t, x)))
+    }
+
+    /// What a node in state `s` follows by the public entry (`Rule::follows`): each independent
+    /// thing a strong of a held unit it reads reaches (or a dependent of it), outside that unit,
+    /// that it neither reads nor keeps unread, whose sync ID that unit's key part names.
+    fn follows(&self, rule: Rule, s: &S, e: &Edges) -> Set {
+        let mut out = Set::new();
+        for &t in &s.read {
+            let u = self.held_unit(rule, t, e);
+            for &(m, y) in e {
+                let x = match self.w.kinds[y] {
+                    Kind::Independent => y,
+                    Kind::Dependent(k) => k,
+                };
+                if u.contains(&m) && !u.contains(&x) && self.w.independent(x) && !s.read.contains(&x) && !s.kept.contains(&x) && self.names(rule, t, x) {
+                    out.insert(x);
+                }
+            }
+        }
+        out
     }
 
     /// The node's local part: its root and the dependents of its node thing the root reaches.
@@ -428,7 +471,8 @@ impl Net {
             held.extend(self.held_unit(rule, t, &e));
         }
         held.extend(&s.kept);
-        let sync_set = s.read.iter().chain(&s.kept).chain(&s.keyparts).copied().collect();
-        Held { s, held, sync_set }
+        let follows = self.follows(rule, &s, &e);
+        let sync_set = s.read.iter().chain(&s.kept).chain(&s.keyparts).chain(&follows).copied().collect();
+        Held { s, held, sync_set, follows }
     }
 }

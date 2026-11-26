@@ -21,13 +21,14 @@ impl Engine {
 
     /// The things the sync set is judged over: the node closure (spec/sync-set.md §2) walked
     /// through no thing sourced at another node (§5, `Closure::synced`), with the holders held
-    /// for keys and the links being redeemed. A holder held for keys syncs its sync ID for role
-    /// entries alone (`thing_holdings`). A memo of
+    /// for keys, the things followed by the public entry (§2) and the links being redeemed. A
+    /// holder held for keys syncs its sync ID for role entries alone (`thing_holdings`). A memo of
     /// the whole, for a listing: per thing `in_sync_things`, entering `things_entered`.
     pub fn sync_things(&mut self) -> Result<Arc<BTreeSet<Tid>>> {
         osis_base::memo::Memo::get_in(self, |e| &e.core.sync_things, &(), |e| {
             let mut out: BTreeSet<Tid> = e.core.ix.closure.synced_things().copied().collect();
             out.extend(e.core.ix.closure.keys().copied());
+            out.extend(e.core.ix.closure.public_follows().copied());
             osis_base::costs::count("sync: things walked", out.len() as u64);
             out.extend(e.core.followed_links.all().keys().filter(|k| crate::sync_ids::actors::followable(&e.core, k)).copied());
             Ok(Arc::new(out))
@@ -36,23 +37,25 @@ impl Engine {
 
     /// `sync_things`'s answer for `t` alone: reads only `t`'s rows.
     pub fn in_sync_things(&mut self, t: &Tid) -> Result<bool> {
-        Ok(crate::sync_ids::actors::followable(&self.core, t) || self.core.ix.closure.synced(t) || self.core.ix.closure.for_keys(t))
+        let cl = &self.core.ix.closure;
+        Ok(crate::sync_ids::actors::followable(&self.core, t) || cl.synced(t) || cl.for_keys(t) || cl.follows_public(t))
     }
 
     /// The things that may have entered `sync_things` since `f`'s last read (its first: every
-    /// one): each that entered the sync set's walk since, and each link followed since (a link
+    /// one): each that entered the sync set's walk since, each followed by the public entry since, and each link followed since (a link
     /// stays followable from its follow until K is made as no link's, so one followed before
     /// that left enters again only by being followed again). Leaving needs no feed:
     /// `in_sync_things` moves.
     pub(crate) fn things_entered(&mut self, f: &mut super::ThingsFeed) -> Result<Vec<Tid>> {
         let Some(at) = f.0.as_mut() else {
             let ix = &self.core.ix;
-            f.0 = Some(super::Entered { held: ix.closure.synced_feed(), keys: ix.closure.keys_feed(), links: self.core.followed_links.followed_feed() });
+            f.0 = Some(super::Entered { held: ix.closure.synced_feed(), keys: ix.closure.keys_feed(), links: self.core.followed_links.followed_feed(), public: ix.closure.public_feed() });
             return Ok(self.sync_things()?.iter().copied().collect());
         };
         let mut out = at.held.added();
         out.extend(at.keys.added());
         out.extend(at.links.added());
+        out.extend(at.public.added());
         osis_base::costs::count("sync: things entered", out.len() as u64);
         Ok(out)
     }
@@ -124,6 +127,14 @@ impl Engine {
             && self.owned_sync_ids(t)?.iter().any(|o| o.id == s)
         {
             return Ok(ThingSync::Read(vec![s]));
+        }
+        // followed by the public entry (spec/sync-set.md §2): read, opened by the public entry
+        // alone until the public's grant is held
+        if self.core.ix.closure.follows_public(t) {
+            let ids = synced(&self.owned_sync_ids(t)?);
+            if !ids.is_empty() {
+                return Ok(ThingSync::Read(ids));
+            }
         }
         // kept unread: in the node closure by a sync secret alone (spec/sync.md §3)
         if self.kept_unread(t) {
@@ -229,11 +240,12 @@ impl Engine {
         for k in self.static_listed(t)? {
             c.statics.insert(osis_crypto::static_entry(s, &k));
         }
-        // the public entry shown and tested while the public reads S's thing; once its removal is
-        // held, the superseded read secrets lapsed (spec/sync-opens.md §4)
+        // the public entry shown and tested while the public reads S's thing, tested while S's
+        // thing is followed by it; once its removal is held, the superseded read secrets lapsed
+        // (spec/sync-opens.md §4)
         let public = self.core.public_reads(t);
         c.shows_public |= public;
-        c.tests_public |= public;
+        c.tests_public |= public || self.core.ix.closure.follows_public(t);
         c.lapsed_public |= !public && self.core.ix.held.is_named(&Tid::PUBLIC, t);
         if let Some((fs, l)) = self.core.followed_links.get(t)
             && fs == *s

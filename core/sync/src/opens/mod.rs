@@ -345,6 +345,9 @@ struct Conn {
     peer_gen: Option<PeerGen>,
     tested_pos: u64,
     test_due: bool,
+    /// A filter arrived since the sync IDs tested by the public entry alone were last tested
+    /// (`Changed::by_public`).
+    public_due: bool,
     offer: Option<Vec<Sent>>,
     /// Reported positions (spec/sync-opens.md §6 Lost): streams' word, through `reported`.
     reported: Positions,
@@ -372,6 +375,11 @@ struct Changed {
     end: u64,
     at: BTreeMap<SyncId, (u64, [u8; 32], Arc<Creds>)>,
     order: BTreeMap<u64, SyncId>,
+    /// The sync IDs whose credentials test the public entry without showing it (a thing
+    /// followed by it, a public link redeemed: spec/sync-opens.md §5 Testing): tested at each
+    /// filter arrival, since a peer's filter shows the entry once the public reads S's thing,
+    /// whatever this node's own credentials did.
+    by_public: BTreeSet<SyncId>,
 }
 
 impl Changed {
@@ -1419,6 +1427,13 @@ impl Opens {
         if let Some((p, ..)) = &known {
             self.changed.order.remove(p);
         }
+        self.changed.by_public.remove(&s);
+        if let Some(c) = &now
+            && c.tests.iter().any(|(t, _)| matches!(t, Tested::Public))
+            && !c.shows.iter().any(|(x, _)| matches!(x, Shown::Public(_)))
+        {
+            self.changed.by_public.insert(s);
+        }
         if let Some(c) = now {
             // the store's `changed_at` moves only for credentials that moved since it was
             // written: a restart finds the rest as they were
@@ -1476,6 +1491,7 @@ impl Opens {
             peer_gen: None,
             tested_pos: 0,
             test_due: false,
+            public_due: false,
             offer: None,
             reported: Positions::default(),
             ending: BTreeSet::new(),
@@ -2043,6 +2059,7 @@ impl Opens {
         // generation.
         c.tested_pos = c.tested_pos.min(r.acked_pos);
         c.test_due = true;
+        c.public_due = true;
         if let Some(rid) = c.rec {
             let d = self.dirty(rid);
             d.core = true;
@@ -2098,7 +2115,13 @@ impl Opens {
         let mut pending = self.changed.after(from);
         // a walk Hit refused: S asks Behind (spec/sync-ids.md §6 Walk)
         // and a Behind refused for now, its back-off over, asked again
-        let missed: Vec<SyncId> = c.walks.iter().filter(|(_, w)| w.missed || w.retry).map(|(s, _)| *s).collect();
+        let mut missed: Vec<SyncId> = c.walks.iter().filter(|(_, w)| w.missed || w.retry).map(|(s, _)| *s).collect();
+        // tested by the public entry alone: again at each filter arrival (`Changed::by_public`)
+        if c.public_due {
+            missed.extend(self.changed.by_public.iter().copied());
+            missed.sort();
+            missed.dedup();
+        }
         if !missed.is_empty() {
             let have: BTreeSet<SyncId> = pending.iter().copied().collect();
             pending.extend(missed.into_iter().filter(|s| !have.contains(s)));
@@ -2173,6 +2196,7 @@ impl Opens {
         if !cut {
             c.tested_pos = end;
             c.test_due = false;
+            c.public_due = false;
         }
         items.truncate(MAX_OFFER_ITEMS);
         sent.truncate(MAX_OFFER_ITEMS);

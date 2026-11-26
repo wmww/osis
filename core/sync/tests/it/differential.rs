@@ -408,10 +408,10 @@ fn an_entry_waits_for_a_part_dropped_after_its_opening_spec_sync_streams_4() {
 }
 
 // spec/sync-set.md §2 (T's keys open: what the public reads as the public pieces T's sync ID
-// carries; Carriers): node 1's account strongs node 0's thing, holding no role on it, before it
-// is made public. No node of the account holds anything of the thing, so none logs its public
-// piece under the account: node 1 reads nothing of it, and held-model's closure (public pieces
-// logged only by a node holding the public's grant) agrees. Control: a redeem of a public link
+// carries; Carriers; Following by the public entry): node 1's account strongs node 0's thing,
+// holding no role on it, before it is made public. No node of the account holds anything of the
+// thing, its sync ID among them, so none follows it or logs its public piece under the account:
+// node 1 reads nothing of it, and held-model's closure agrees. Control: a redeem of a public link
 // (the redeeming node holds the grant by the link's sync ID) logs it, and node 1 reads it.
 #[test]
 fn a_strong_no_reader_carries_reads_nothing_public_spec_sync_set_2() {
@@ -426,24 +426,31 @@ fn a_strong_no_reader_carries_reads_nothing_public_spec_sync_set_2() {
     assert!(reads(w.engine(1), &t).value.is_some(), "control: redeemed, node 1 reads it");
 }
 
-// spec/sync-set.md §2 (Public pieces; Carriers): node 1's account holds sync on node 0's thing and
-// strongs it; the thing is made public and node 1 (keeping it unread, reading it by its public
-// entry) logs its public piece under the account. Its sync role then revoked, the piece stays under
-// the account's sync ID, so node 1 reads the thing by the public still, as the model says (pieces
-// logged over the history, not by who holds the thing at the end): with a quiet run between the
-// public's grant and the revocation, and with none (the grant arrives first).
+// spec/sync-set.md §2 (Following by the public entry): whether an account reads a public thing it
+// strongs, once its own role there is revoked, does not depend on whether one of its nodes held
+// the public's grant while the role stood. Node 1's account held read on node 0's thing and
+// strongs it; the thing is made public and the role revoked while node 1 is off, so no node of
+// the account ever held the public's grant: node 1 follows the thing's sync ID (its account's key
+// part names it) by the public entry and reads it by the public. Likewise with the public granted
+// only after the revocation (node 1 follows the thing before it is public), and where a node of
+// the account did take the grant (node 3, its sync role, in a partitioned run). Control: never
+// public, node 1 follows the thing and reads nothing of it.
 #[test]
-fn a_public_piece_outlives_its_carrier_spec_sync_set_2() {
+fn a_public_thing_is_read_whoever_synced_it_spec_sync_set_2() {
     use crate::harness::history::{Gives, Holder, reads};
     let (n, accounts, ..) = size();
-    let start = [Step::New(0), Step::Give(0, 0, Holder::Node(1), Gives::Syncs), Step::Strong(1, None, 0), Step::Run, Step::Give(0, 0, Holder::Public, Gives::Reads)];
-    for quiet in [true, false] {
-        let mid = if quiet { vec![Step::Run] } else { vec![] };
-        let script: Vec<Step> = start.iter().cloned().chain(mid).chain([Step::Revoke(0, 0, Holder::Node(1)), Step::Run]).collect();
-        let mut w = holds_on(0, accounts, n, &script, String::new(), false);
+    let read = |r: usize, steps: &[Step]| {
+        let mut w = holds_on(0, accounts, n, steps, String::new(), false);
         let t = w.history.things[0].0;
-        assert!(reads(w.engine(1), &t).value.is_some(), "node 1 reads the thing by its account's public piece (quiet run between: {quiet})");
-    }
+        reads(w.engine(r), &t).value.is_some()
+    };
+    let off = [Step::New(0), Step::Give(0, 0, Holder::Node(1), Gives::Reads), Step::Strong(1, None, 0), Step::Give(0, 0, Holder::Public, Gives::Reads), Step::PowerOff(1), Step::Revoke(0, 0, Holder::Node(1))];
+    assert!(read(1, &off), "node 1 reads the thing by the public, off while its account read it");
+    let after = [Step::New(0), Step::Give(0, 0, Holder::Node(1), Gives::Reads), Step::Strong(1, None, 0), Step::Run, Step::Revoke(0, 0, Holder::Node(1)), Step::Run, Step::Give(0, 0, Holder::Public, Gives::Reads)];
+    assert!(read(1, &after), "node 1 reads the thing made public after its account's role went");
+    let partitioned = [Step::New(2), Step::Give(2, 0, Holder::Node(0), Gives::Syncs), Step::Give(2, 0, Holder::Public, Gives::Reads), Step::Strong(3, None, 0), Step::Partition(3, 1), Step::Run, Step::Revoke(2, 0, Holder::Node(0))];
+    assert!(read(0, &partitioned), "node 0 reads the thing its account's other node took the public's grant of");
+    assert!(!read(1, &after[..6]), "control: never public, node 1 reads nothing");
 }
 
 // spec/permissions.md §3 (Lost access), spec/sync-set.md §2 (Held for keys): node 0's account
@@ -625,3 +632,4 @@ fn a_node_lowered_with_the_public_reads_again_on_its_regrant_spec_sync_opens_4()
     let t = w.history.things[0].0;
     assert!(crate::harness::history::reads(w.engine(1), &t).value.is_some(), "node 1 reads the thing again by the public's grant");
 }
+

@@ -143,6 +143,9 @@ pub struct Closure {
     cut: JSet<Tid>,
     /// The holders held for keys (`held_for_keys`), as last settled.
     keys: JSet<Tid>,
+    /// Per independent thing followed by the public entry (`follows_public`), the targets of
+    /// strongs beyond read units that follow it, as last settled.
+    public: JSetMap<Tid, Tid>,
     /// Each edge (referrer, entry vertex) whose entry rests on a read thing's piece, as last
     /// judged (`founded` walks these alone; every other entry is carried on its edge or by what
     /// needs no founding).
@@ -175,6 +178,7 @@ impl Default for Closure {
             left: JMap::default(),
             cut: JSet::default(),
             keys: JSet::default(),
+            public: JSetMap::default(),
             pieced: JSet::default(),
             loose: JSet::default(),
             deps: JSetMap::default(),
@@ -203,11 +207,14 @@ pub(crate) struct Follow {
     known: bool,
     /// Per thing the node holds secrets of: whether it is held for keys (`held_for_keys`).
     keys: Effects<Tid, bool>,
+    /// Per target of a strong beyond a read unit (`Closure::beyond`) since judged: the thing it
+    /// has the node follow by the public entry, if any (`follows_public`).
+    public: Effects<Tid, Option<Tid>>,
 }
 
 impl Default for Follow {
     fn default() -> Follow {
-        Follow { fx: Effects::new("closure: edges"), reset: true, acted: false, gone: Default::default(), before: None, known: false, keys: Effects::new("closure: held for keys") }
+        Follow { fx: Effects::new("closure: edges"), reset: true, acted: false, gone: Default::default(), before: None, known: false, keys: Effects::new("closure: held for keys"), public: Effects::new("closure: followed by the public entry") }
     }
 }
 
@@ -228,7 +235,7 @@ impl Follow {
 }
 
 impl Journaled for Closure {
-    type Mark = ([usize; 4], [usize; 4], [usize; 15]);
+    type Mark = ([usize; 4], [usize; 4], [usize; 16]);
     fn commit(&mut self) {
         self.targeted.commit();
         self.beyond.commit();
@@ -243,13 +250,14 @@ impl Journaled for Closure {
         self.left.commit();
         self.cut.commit();
         self.keys.commit();
+        self.public.commit();
         self.pieced.commit();
         self.loose.commit();
         self.deps.commit();
         self.dep_of.commit();
     }
     fn mark(&mut self) -> Self::Mark {
-        (self.tree.mark(), self.synced.mark(), [self.out.mark(), self.inn.mark(), self.moved.mark(), self.rows.mark(), self.members.mark(), self.left.mark(), self.cut.mark(), self.unknown.mark(), self.targeted.mark(), self.keys.mark(), self.pieced.mark(), self.loose.mark(), self.beyond.mark(), self.deps.mark(), self.dep_of.mark()])
+        (self.tree.mark(), self.synced.mark(), [self.out.mark(), self.inn.mark(), self.moved.mark(), self.rows.mark(), self.members.mark(), self.left.mark(), self.cut.mark(), self.unknown.mark(), self.targeted.mark(), self.keys.mark(), self.pieced.mark(), self.loose.mark(), self.beyond.mark(), self.deps.mark(), self.dep_of.mark(), self.public.mark()])
     }
     fn rollback_to(&mut self, (t, s, m): Self::Mark) {
         self.tree.rollback_to(t);
@@ -269,6 +277,7 @@ impl Journaled for Closure {
         self.beyond.rollback_to(m[12]);
         self.deps.rollback_to(m[13]);
         self.dep_of.rollback_to(m[14]);
+        self.public.rollback_to(m[15]);
     }
     fn name(&mut self, _name: &'static str) {
         self.tree.name("index: closure held");
@@ -279,6 +288,7 @@ impl Journaled for Closure {
         self.targeted.name("index: closure targeted");
         self.unknown.name("index: closure unknown");
         self.keys.name("index: held for keys");
+        self.public.name("index: followed by the public entry");
         self.pieced.name("index: closure pieced");
         self.loose.name("index: closure loose");
         self.beyond.name("index: closure beyond");
@@ -618,6 +628,22 @@ impl Closure {
     /// A cursor over the things coming to be held for keys from now on.
     pub(crate) fn keys_feed(&self) -> osis_base::memo::Feed<Tid> {
         self.keys.feed()
+    }
+
+    /// Whether the node follows `t`'s sync ID by the public entry (`follows_public`, as last
+    /// settled).
+    pub(crate) fn follows_public(&self, t: &Tid) -> bool {
+        self.public.get(t).is_some_and(|s| !s.is_empty())
+    }
+
+    /// The things followed by the public entry (a read of them whole).
+    pub(crate) fn public_follows(&self) -> impl Iterator<Item = &Tid> {
+        self.public.keys_held()
+    }
+
+    /// A cursor over the things coming to be followed by the public entry from now on.
+    pub(crate) fn public_feed(&self) -> osis_base::memo::Feed<Tid> {
+        self.public.feed()
     }
 
     /// The things the sync set's walk takes no path through.
@@ -1086,6 +1112,14 @@ fn settle_with(tx: &mut Tx<'_>, f: &mut Follow, rv: Vx) -> Result<()> {
         for t in tx.core.ix.secrets.keys_held() {
             f.keys.want(*t);
         }
+        f.public = Effects::new("closure: followed by the public entry");
+        // judged afresh: what was followed is let go, its targets wanted again
+        let cl = &mut tx.core.ix.closure;
+        let was: Vec<(Tid, Tid)> = cl.public.keys_held().flat_map(|x| cl.public.get(x).into_iter().flatten().map(|y| (*x, *y))).collect();
+        for (x, y) in was {
+            cl.public.remove(&x, &y);
+            f.public.want(y);
+        }
     }
     if !tx.core.ix.closure.is_held(&rv) {
         tx.core.ix.closure.hold(rv, None);
@@ -1119,7 +1153,8 @@ fn settle_with(tx: &mut Tx<'_>, f: &mut Follow, rv: Vx) -> Result<()> {
             f.before = None;
             f.known = true;
             cl.settle_synced(rv)?;
-            return settle_keys(tx, f);
+            settle_keys(tx, f)?;
+            return settle_public(tx, f);
         }
         for (v, y) in due {
             if !tx.core.ix.closure.is_held(&v) {
@@ -1219,6 +1254,53 @@ fn settle_keys(tx: &mut Tx<'_>, f: &mut Follow) -> Result<()> {
     Ok(())
 }
 
+/// The independent thing strong target `y` has the node follow by the public entry
+/// (spec/sync-set.md §2 Following by the public entry): `y`'s independent X, where a strong of a
+/// read unit G reaches `y` beyond it (G's keys do not open X), G's key part names X (an edge of
+/// G's on X, standing or since lowered or removed, as edge writes, sync copies or X's record
+/// naming G its mint admin) and the node holds X's sync ID by it, and the node does not keep X
+/// unread. Following, it holds the public's grant once the public reads X, and logs the public
+/// piece under G's sync ID (`Engine::public_pieced`), which takes X into G's unit; it follows X
+/// still while it reads X by the public's secrets before that, so entering X ends no follow it
+/// rests on. Who writes it: G's writers the strong, X's admins
+/// the edge.
+fn follows_public(core: &Core, y: &Tid) -> Option<Tid> {
+    let cl = &core.ix.closure;
+    // `y` itself where its sync ID is held (independent by it, its keyset commit held or not)
+    let recorded = |x: &Tid| core.ix.sync_recorded_ids.get(x).is_some_and(|s| !s.is_empty());
+    let x = if recorded(y) { *y } else { core.secret_actor(y)? };
+    let named = |g: &Tid| core.ix.held.is_named(g, &x) || core.copies_naming(g).contains(&x);
+    let beyond = cl.targeting(y).any(|v| matches!(v.0, Ctx::Read(g) if named(&g)) && cl.beyond.contains(&v.0, &(*y, v.1)));
+    let unread = cl.contexts(&x).iter().any(|c| matches!(c, Ctx::Unread(_)));
+    (beyond && recorded(&x) && !unread).then_some(x)
+}
+
+/// Brings what the node follows by the public entry up to date (`follows_public`): each target
+/// judged since, or whose judgement moved. Work in proportion to the targets judged.
+fn settle_public(tx: &mut Tx<'_>, f: &mut Follow) -> Result<()> {
+    for y in f.public.due() {
+        let core = &*tx.core;
+        let mut now = None;
+        let moved = f.public.settle(&y, || {
+            now = follows_public(core, &y);
+            now
+        });
+        if let Some((old, _)) = moved {
+            let cl = &mut tx.core.ix.closure;
+            if let Some(Some(x)) = old {
+                cl.public.remove(&x, &y);
+            }
+            if let Some(x) = now {
+                cl.public.insert(x, y);
+            }
+        }
+        if now.is_none() && !tx.core.ix.closure.targeting(&y).any(|v| matches!(v.0, Ctx::Read(_))) {
+            f.public.unwant(&y);
+        }
+    }
+    Ok(())
+}
+
 /// Follows every edge of held vertex `v`: O(its thing's strongs).
 fn want_edges(tx: &mut Tx<'_>, f: &mut Follow, v: Vx) -> Result<()> {
     if matches!(v.0, Ctx::Unread(_)) {
@@ -1237,6 +1319,7 @@ fn judge(tx: &mut Tx<'_>, f: &mut Follow, v: Vx, y: Tid) -> Result<BTreeSet<Vx>>
         f.fx.unwant(&(v, y));
         set_carry(tx, v, y, &BTreeSet::new(), Carry::Plain);
         set_targeted(tx, y, v, false);
+        f.public.want(y);
         tx.core.ix.closure.set_unknown(y, v, false);
         return Ok(BTreeSet::new());
     }
@@ -1267,6 +1350,7 @@ fn judge(tx: &mut Tx<'_>, f: &mut Follow, v: Vx, y: Tid) -> Result<BTreeSet<Vx>>
         set_carry(tx, v, y, &got, k);
     }
     tx.core.ix.closure.set_beyond(y, v, !got.contains(&(v.0, y)));
+    f.public.want(y);
     // a thing whose record is not held may be independent: its piece may be what was dropped
     if new && !got.iter().any(|w| w.1 == y) && (unknown || tx.core.counts_independent(&y)) {
         refetch_holders(tx)?;
@@ -1389,6 +1473,7 @@ fn apply(tx: &mut Tx<'_>, f: &mut Follow, rv: Vx, v: Vx, y: Tid, now: BTreeSet<V
                     for y in strongs_from(tx, &x.1)? {
                         f.fx.unwant(&(x, y));
                         set_targeted(tx, y, x, false);
+                        f.public.want(y);
                     }
                 }
             }

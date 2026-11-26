@@ -428,6 +428,9 @@ pub struct Closure {
     /// Holders held for keys alone (`keys::for_keys`: notes/holder-access-study.md). Empty from
     /// `closure`.
     pub for_keys: Set,
+    /// Independent things neither read nor kept unread whose sync ID is followed, read, by the
+    /// public entry (`entry::Held::follows`). Empty from `closure`.
+    pub follows: Set,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

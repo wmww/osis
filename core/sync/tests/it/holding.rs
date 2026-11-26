@@ -252,13 +252,14 @@ fn held_after_a_change(lowered: bool) -> (World, Tid) {
 
 // spec/sync-set.md §2: a strong enters a thing at the role the held role commits give. Alice
 // grants Bob read and, before he holds it, lowers him to sync or removes him; his strong keeps T
-// unread (lowered) or enters nothing (removed).
+// unread (lowered) or enters nothing (removed: his account's key part names T, so he follows T's
+// sync ID by the public entry, Following by the public entry, and reads nothing of it).
 #[test]
 fn a_strong_enters_at_the_role_the_role_commits_give_spec_sync_set_2() {
     for lowered in [true, false] {
         let (mut w, t) = held_after_a_change(lowered);
         assert_eq!(value(&mut w, 1, &t), None, "lowered {lowered}");
-        assert_eq!(holding(&mut w, 1, &t), lowered.then_some(Holding::Unread), "lowered {lowered}: kept unread, or nothing");
+        assert_eq!(holding(&mut w, 1, &t), Some(if lowered { Holding::Unread } else { Holding::Read }), "lowered {lowered}: kept unread, or followed");
     }
 }
 
@@ -439,7 +440,8 @@ fn a_reader_of_a_thing_reads_what_it_is_granted_spec_sync_set_2() {
 
 // spec/crypto.md §4 Key access, spec/sync-set.md §2: T1 is minted with admin T0, so T1 granted read on
 // T0 closes a cycle and is keyless: it reads nothing through it. Bob, a reader of T1, never reads
-// T0, whether T1 references it or he holds it from his account and is granted sync on it
+// T0, whether T1 references it (T1's key part names T0, so he follows T0's sync ID by the public
+// entry, Following by the public entry) or he holds it from his account and is granted sync on it
 // (then he keeps it unread by his sync grant).
 #[test]
 fn a_keyless_grant_reads_nothing_through_it_spec_crypto_4() {
@@ -457,7 +459,7 @@ fn a_keyless_grant_reads_nothing_through_it_spec_crypto_4() {
         w.run();
         assert_eq!(value(&mut w, 1, &t0), None, "direct {direct}: Bob reads no T0");
         assert!(w.engine(1).read_secrets(&t0).is_empty(), "direct {direct}: nor holds its read secrets");
-        assert_eq!(holding(&mut w, 1, &t0), direct.then_some(Holding::Unread), "direct {direct}");
+        assert_eq!(holding(&mut w, 1, &t0), Some(if direct { Holding::Unread } else { Holding::Read }), "direct {direct}");
     }
 }
 

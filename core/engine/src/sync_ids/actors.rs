@@ -146,11 +146,16 @@ pub(crate) fn endorsements_owed(o: &OwnedSyncId) -> BTreeSet<[u8; 32]> {
 /// The sync IDs decoded `sync.0` `m` of `g` records that `g` owns here (`Core::owns_sync_id`),
 /// each with its recorded path; records that do not parse are skipped.
 pub(crate) fn owned_in(core: &Core, g: &Tid, m: &ct::SyncIds) -> Vec<OwnedSyncId> {
-    let hint = !core.holds_own_sync(g);
+    recorded_in(core, g, m, false)
+}
+
+/// `owned_in`, or with `any` every sync ID `m` records, judged or not, as hints.
+fn recorded_in(core: &Core, g: &Tid, m: &ct::SyncIds, any: bool) -> Vec<OwnedSyncId> {
+    let hint = any || !core.holds_own_sync(g);
     m.iter()
         .filter_map(|(id, l)| {
             let steps = osis_blob::sync_steps(l).ok()?;
-            if !core.owns_sync_id(g, id, &steps) {
+            if !any && !core.owns_sync_id(g, id, &steps) {
                 return None;
             }
             let tree = steps.iter().map(|(k, (s, _))| (*k, s.clone())).collect();
@@ -279,12 +284,20 @@ impl Engine {
 }
 
 /// The sync IDs this node holds for `g`, its `sync.0` recording `m`: those `m` records that `g`
-/// owns here (`owned_in`), else a followed link's (`followed`).
+/// owns here (`owned_in`), else a followed link's (`followed`), else, `g` followed by the public
+/// entry (spec/sync-set.md §2), each `m` records as hints: the secrets its entry box gave bear
+/// the newest steps, which the recorded `sync.0` reaches only once the pass brings them.
 pub(crate) fn held_sync_ids(core: &Core, g: &Tid, m: &ct::SyncIds) -> Vec<OwnedSyncId> {
     let out = owned_in(core, g, m);
-    match out.is_empty() {
-        true => followed(core, g).map(|h| vec![h]).unwrap_or_default(),
-        false => out,
+    if !out.is_empty() {
+        return out;
+    }
+    if let Some(h) = followed(core, g) {
+        return vec![h];
+    }
+    match core.ix.closure.follows_public(g) {
+        true => recorded_in(core, g, m, true),
+        false => Vec::new(),
     }
 }
 

@@ -530,3 +530,72 @@ fn a_strong_to_a_public_things_dependent_enters_its_independent() {
     let h = net.held(0, Rule::SPEC);
     assert!(!h.held.contains(&C), "{h:?}");
 }
+
+// spec/sync-set.md §2 (Public pieces; Following by the public entry): node 1's account A strongs
+// B, another node's thing, and A's key part names B's sync ID (an edge of A on B since removed);
+// B is public and no node holds anything of it, so no piece was logged while A's edge stood.
+// Node 1 follows B's sync ID by the public entry, takes the public's grant, logs the piece and
+// reads B by A's keys. Not public, it follows B and reads nothing of it. Controls: `follows` off
+// (nothing tells A's readers B is public: not read), and A naming nothing of B (no sync ID to
+// follow: not followed).
+#[test]
+fn a_named_strong_to_a_public_thing_is_followed_by_the_public_entry() {
+    let mut net = account(None, 2);
+    net.w.grants.insert((N2, B), Role::Admin);
+    net.records.insert((N2, B));
+    net.strongs.insert((A, B));
+    let followed = net.held(0, Rule::SPEC);
+    assert!(followed.follows.is_empty(), "control: A names nothing of B: {followed:?}");
+    net.named.insert((A, B));
+    let h = net.held(0, Rule::SPEC);
+    assert!(h.follows.contains(&B) && h.sync_set.contains(&B) && !h.held.contains(&B), "not public: followed, nothing held: {h:?}");
+    net.w.public.insert(B);
+    let h = net.held(0, Rule::SPEC);
+    assert!(h.s.read.contains(&B) && h.held.contains(&B) && h.follows.is_empty(), "public: read by A's keys: {h:?}");
+    let off = net.held(0, Rule { follows: false, ..Rule::SPEC });
+    assert!(!off.held.contains(&B), "control: follows off, not held: {off:?}");
+}
+
+// spec/sync-set.md §2 (Public pieces; Following by the public entry): what an account's nodes
+// hold does not depend on when they synced. Over random worlds with public things and edges since
+// removed (`Net::named`), the held sets are the same whether or not a past reader of T logged a
+// piece on X while it held X's public grant by a path now gone (the pieces `(t, x)` T's key part
+// names). Control: `follows` off, the held sets depend on those pieces.
+#[test]
+fn held_sets_do_not_depend_on_pieces_logged_by_timing() {
+    let differ = |rule: Rule| {
+        let mut n = 0;
+        for seed in 0..1000u64 {
+            let mut net = random(seed, 5);
+            let mut st = seed.wrapping_mul(0x2545f4914f6cdd1d) | 1;
+            let mut next = |m: u64| {
+                st = st.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                (st >> 33) % m
+            };
+            let things: Vec<T> = std::iter::once(A).chain(8..13).collect();
+            for &x in &things[1..] {
+                if net.w.independent(x) && next(2) == 0 {
+                    net.w.public.insert(x);
+                }
+            }
+            for &t in &things {
+                for &x in &things[1..] {
+                    if t != x && net.w.independent(x) && next(3) == 0 {
+                        net.named.insert((t, x));
+                    }
+                }
+            }
+            let (fresh, ..) = net.held_all(rule);
+            let mut logged = net.clone();
+            // a piece is logged only where a strong of the unit reaches the thing or a dependent
+            let reaches = |t: T, x: T| net.strongs.iter().any(|&(f, y)| f == t && (y == x || net.w.kinds[y] == Kind::Dependent(x)));
+            logged.pieces = net.named.iter().copied().filter(|&(t, x)| net.w.public.contains(&x) && reaches(t, x)).collect();
+            let (past, ..) = logged.held_all(rule);
+            let d = fresh.iter().zip(&past).any(|(a, b)| a.held != b.held);
+            n += d as usize;
+        }
+        n
+    };
+    assert_eq!(differ(Rule::SPEC), 0);
+    assert!(differ(Rule { follows: false, ..Rule::SPEC }) > 0, "control: follows off depends on past pieces");
+}

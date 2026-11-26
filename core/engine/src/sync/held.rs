@@ -41,7 +41,7 @@ pub enum Cause {
 }
 
 impl Cause {
-    fn key(&self) -> Vec<u8> {
+    pub(crate) fn key(&self) -> Vec<u8> {
         match self {
             Cause::Lost(a) => [CAUSES, b"l", a.as_bytes()].concat(),
         }
