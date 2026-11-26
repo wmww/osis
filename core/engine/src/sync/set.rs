@@ -148,8 +148,7 @@ impl Engine {
             // every sync ID kept for it (spec/sync.md §3): one a forged copy names never
             // displaces the thing's own (`sync_ids::unread`); the one whose head lists the public
             // entry (a path verified from its genesis, `public_listed`)
-            let listed = self.core.public_listed_id(t);
-            let ids: Vec<SyncId> = self.owned_sync_ids(t)?.iter().filter(|o| !o.hint || Some(o.id) == listed).map(|o| o.id).collect();
+            let ids: Vec<SyncId> = self.owned_sync_ids(t)?.iter().filter(|o| !o.hint || self.core.public_listed_on(t, &o.id)).map(|o| o.id).collect();
             if !ids.is_empty() {
                 return Ok(ThingSync::Unread(ids));
             }

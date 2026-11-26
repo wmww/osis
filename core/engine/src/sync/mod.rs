@@ -764,10 +764,10 @@ impl Engine {
     /// secret.
     pub fn learn_grant(&mut self, g: &OpenedGrant) -> Result<()> {
         if g.party.is_public() {
-            let (t, head) = (g.thing, g.head);
+            let (t, (s, head)) = (g.thing, g.head);
             self.run(|tx| {
-                if tx.core.ix.public_listed.get(&t) != Some(&head) {
-                    tx.core.ix.public_listed.insert(t, head);
+                if tx.core.ix.public_listed.get(&t).and_then(|m| m.get(&s)) != Some(&head) {
+                    tx.core.ix.public_listed.insert(t, s, head);
                 }
                 Ok(())
             })?;
@@ -791,7 +791,7 @@ impl Engine {
     /// number, the public holds sync on S's thing as this node knows it (`Core::public_listed`)
     /// and it takes the box's sync secret (a head past its keys moves to it); `read` (the head is
     /// its step, current, not the one it was lowered at) also its read secrets. Else, where `path`
-    /// (S's verified path as registered here, its head last) passes the head this node knew
+    /// (S's verified path as registered here, its head last) passes the head this node knew on S
     /// listing the public, the public holds nothing there as this node knows it: a head past the
     /// public's box is its removal; a head behind it says nothing. Whether it took read secrets.
     pub fn public_head(&mut self, s: &SyncId, head: Option<(&Step, &osis_blob::ClaimSet)>, read: bool, path: &[osis_blob::StepId]) -> Result<bool> {
@@ -802,8 +802,8 @@ impl Engine {
             let current = |e: &Engine, i: &osis_crypto::EntryItem| e.core.epochs(&t).is_none_or(|x| x.role(osis_base::Role::Sync).held().all(|(ep, _)| ep.n() <= i.sync.0.n()));
             let Some((h, item)) = opened.filter(|(h, i)| osis_crypto::role_key(osis_crypto::RoleKey::Sync, &i.sync.1).verifying_key() == h.keys.sync && current(self, i)) else {
                 self.run(|tx| {
-                    if tx.core.ix.public_listed.get(&t).is_some_and(|(_, h)| path.contains(h)) {
-                        tx.core.ix.public_listed.remove(&t);
+                    if tx.core.ix.public_listed.get(&t).and_then(|m| m.get(s)).is_some_and(|h| path.contains(h)) {
+                        tx.core.ix.public_listed.remove(&t, s);
                     }
                     Ok(())
                 })?;

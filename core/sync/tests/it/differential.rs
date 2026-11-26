@@ -814,3 +814,21 @@ fn a_removed_reader_keeps_the_publics_sync_secret_through_its_loss_spec_permissi
     use crate::harness::script::*;
     holds_on(0, 3, 4, &[New(2), Give(2, 0, Holder::Node(0), Reads), Give(2, 0, Holder::Node(1), Reads), Revoke(2, 0, Holder::Node(1)), Give(2, 0, Holder::Public, Syncs), Strong(0, None, 0), Revoke(2, 0, Holder::Node(0))], String::new(), false);
 }
+
+// spec/sync.md §3 (Holders by copies): the public's sync a node knows from its head's public entry
+// is the head's, so a restart keeps it: node 0, following the thing by the public entry and
+// keeping it unread at the public's sync alone, still keeps it unread once started again, and
+// reads nothing.
+#[test]
+fn a_follower_keeps_the_publics_sync_across_a_start_spec_sync_3() {
+    use crate::harness::history::{Gives, Holder, reads};
+    let script = [Step::New(2), Step::Give(2, 0, Holder::Node(0), Gives::Writes), Step::Give(2, 0, Holder::Public, Gives::Syncs), Step::Strong(3, None, 0), Step::Revoke(2, 0, Holder::Node(0))];
+    let mut w = holds_on(0, 3, 4, &script, String::new(), false);
+    let t = w.history.things[0].0;
+    let unread = |w: &mut crate::harness::World| w.engine(0).sync_set().unwrap().ids.values().any(|(ts, h)| ts.contains(&t) && *h == osis_engine::sync::Holding::Unread);
+    assert!(unread(&mut w), "kept unread by the public's sync");
+    play(&mut w, &[Step::PowerOff(0), Step::PowerOn(0), Step::Run], String::new());
+    assert!(unread(&mut w), "started again: still kept unread by the public's sync");
+    assert!(reads(w.engine(0), &t).value.is_none(), "node 0 reads nothing of the thing");
+    check(&mut w);
+}

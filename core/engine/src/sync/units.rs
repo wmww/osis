@@ -829,12 +829,12 @@ impl Core {
     /// the public holds sync on `a` as a node holding no grant of it knows (spec/sync.md §3
     /// Holders by copies). Who writes it: `a`'s admins, the step (a path verified from genesis).
     pub(crate) fn public_listed(&self, a: &Tid) -> bool {
-        self.ix.public_listed.contains_key(a)
+        self.ix.public_listed.get(a).is_some()
     }
 
-    /// The sync ID of `a` whose head lists the public entry here (`public_listed`).
-    pub(crate) fn public_listed_id(&self, a: &Tid) -> Option<SyncId> {
-        self.ix.public_listed.get(a).map(|(s, _)| *s)
+    /// Whether the head of `a`'s sync ID `s` lists the public entry here (`public_listed`).
+    pub(crate) fn public_listed_on(&self, a: &Tid, s: &SyncId) -> bool {
+        self.ix.public_listed.get(a).is_some_and(|m| m.contains_key(s))
     }
 
     /// Whether the node opens dependent thing `y` (spec/sync-set.md §2 local part): it holds a read

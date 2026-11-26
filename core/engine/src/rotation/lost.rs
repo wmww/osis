@@ -92,11 +92,11 @@ fn holds_at(core: &Core, a: &Tid, min: Role) -> bool {
 /// node write nothing. It counts wherever the node holds the grant, synced or not (a unit's public
 /// piece on a thing it does not sync, spec/sync-set.md §2 Public pieces): it is every party's,
 /// so it gives no node a secret anyone else lacks, and an outdated grant held gives only the open
-/// boxes of epochs that were every party's. The public's sync also where the node holds no read
-/// secret of `a` (keeps it unread or follows it) and the head of its sync ID lists the public
-/// entry (`Core::public_listed`, spec/sync.md §3 Holders by copies): such a node reads no grant
-/// of `a`; one reading `a` judges the public by the grants it reads.
+/// boxes of epochs that were every party's. The public's sync also where the head of `a`'s sync
+/// ID lists the public entry (`Core::public_listed`, spec/sync.md §3 Holders by copies).
 pub(crate) fn role_here(core: &Core, a: &Tid) -> Option<Role> {
+    // Interim (issues/public-listing-role.md): the listing counts only while no read secret of
+    // `a` is held, as it is noted at sync whatever role the box gives
     let unread = !core.ix.secrets.get(a).is_some_and(|e| e.role(Role::Read).holds_any());
     let listed = (unread && core.public_listed(a)).then_some(Role::Sync);
     let public = core.keyed_role_now(&Tid::PUBLIC, a).max(listed);
