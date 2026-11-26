@@ -1,7 +1,7 @@
 # Chat cases
 > Summary: Informal chat behavior cases with what chat (design E, notes/chat.md) answers: forced yes or no, app's choice, or needs a core change; `want` values are guesses for Tess to correct. Answers come from reading spec and code, run where libs/chat/tests covers them. Check a new chat topology against these.
 
-Cells: `yes`/`no` forced; `opt` app's clean choice; `opt*` a modified client defeats it; `core x` needs core change x (list at the end); `?` not traced; `!` marks a forced answer that differs from want. "Honest" means the party's client follows the rules; "modified" means it does not. Kick cost cells assume frontier heads, a dropped design (frontiers list IDs: notes/revocation.md, Frontier encoding). Assumed fixed (issues/): writer rotating to itself (removing it recovers, notes/keys.md Lockouts), header forgetting, rotation-name growth, the query API.
+Cells: `yes`/`no` forced; `opt` app's clean choice; `opt*` a modified client defeats it; `core x` needs core change x (list at the end); `?` not traced; `!` marks a forced answer that differs from want. "Honest" means the party's client follows the rules; "modified" means it does not. Assumed fixed: rotation-name growth (issues/rotation-names-grow.md) and listing things (issues/api-deferred.md).
 
 ## Identity and authorship
 
@@ -167,7 +167,7 @@ Cells: `yes`/`no` forced; `opt` app's clean choice; `opt*` a modified client def
 
 | case | want | chat |
 |---|---|---|
-| Kick in a chat with a million messages under a minute of work on a phone? | yes | ?³² |
+| Kick in a chat with a million messages under a minute of work on a phone? | yes | ? |
 | Kick or lost node in a 1000-member group under 10 MB sent? | yes | yes⁴⁰ |
 | Fresh node of a disappearing chat under 50 MB after 10 years at 100 a day? | yes | yes |
 | Long-lived node of a permanent chat holds every message body? | yes | yes |
@@ -267,12 +267,12 @@ Nothing here is designed: each answer is what today's core would give if servers
 26. admins may always purge (spec/commits.md §5 Who and how long): a modified sender's message goes like any.
 27. an edit is a replacement of the message purging its older versions in the same commit.
 28. the header-only blob of a purged permanent delta is kept forever and reaches new nodes, with its purge commit (spec/commits.md §5).
-30. nothing is compacted; messages keep at least forever.
+30. nothing is compacted: messages are kept for good.
 31. admins may always purge (spec/commits.md §5 Who and how long): junk is what an admin's purge by author erases.
 33. The grant's `reads` (`GrantOpts::reads`: `FromNow` or `All`; notes/history-less-grant.md). Segments, a chain of chats, are rejected (notes/chat.md Left out).
 38. admins may always purge (spec/commits.md §5): no setting makes a message undeletable.
 39. the purge author is a member of every thing's stated path, so validity checks it (notes/path-form.md, Whom a write is by): a valid commit's purge author is its sender.
-40. with frontier heads (unbuilt); without them a kick lists about 34 B per message the member ever sent (3.4 MB at 10^5) and caps near 1.9x10^6 messages.
+40. 2.7 MB of key boxes, plus the frontier: about 34 B per message the member ever sent (3.4 MB at 10^5; past the list bound the rest go in the remover's addenda, notes/revocation.md Frontier encoding). Past about 2x10^5 messages from the member, no.
 41. The removal and the top realm's rotation are one commit (2.7 KB per member); each channel re-keys on any writer's next sync pass (about 11 KB, eager, may fork). Cutting sync, write and deposit keys needs an admin of each channel to register a step at each node keeping it unread; until then the removed member reads ciphertext and can log entries.
 42. At 1000: 2.7 MB plus about 11 KB per channel, spread over members' passes. At 100,000 with tiers of 1000: the tier (2.7 MB), the top realm (100 boxes), then channels; estimated.
 43. All three roles rotate on every realm and chat the mod administered, admins only; the ex-mod keeps delete keys until each sync ID is stepped.
@@ -283,7 +283,7 @@ Nothing here is designed: each answer is what today's core would give if servers
 48. A sibling chat the members write carries the reactions; the app shows them under the announcement.
 49. Adding a channel is a grant for the realm on the chat, needing admin on the chat and on the realm's layout; a member creates a chat and asks an admin to add it.
 50. Names and categories are a chat-app layout aspect on the realm, naming each channel by a weak, so nothing of a channel is in the realm's sync unit; a member's app syncs a channel by holding a strong to it (spec/sync-set.md §1).
-51. Grant the private channel only to a role realm. Left: the nodes keeping it unread see its sync ID, a node-removal frontier head names its tid under public sync IDs (frontier-study format), and a purge across channels shows their tids.
+51. Grant the private channel only to a role realm. Left: the nodes keeping it unread see its sync ID, and a purge across channels shows their tids.
 52. Entry counts are drowned by certificates (no kind in the log); a latest-time register per channel on the realm, written by posters, is the cheap source.
 53. Threads and forum posts are reply chains inside the channel, grouped by the app.
 54. A thing the realm reads (minted with it as admin, or granted to it) is in the realm's sync unit while a strong on the realm references it; an independent one syncs under its own sync ID too. Whether writers may remove one is the realm schema's choice (Tess): strongs in an admin-only aspect (`^`, spec/data-model.md §2) only admins remove; in `holds.0` any member may, and the thing leaves the realm's sync unit, going where nothing else references it (spec/sync-set.md §3).
