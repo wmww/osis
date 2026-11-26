@@ -309,8 +309,8 @@ fn unpack(s: &str, prefix: &str) -> Result<Vec<Value>> {
     }
 }
 
-fn mac(secret: &[u8; 32], purpose: &str, body: &Value) -> Vec<u8> {
-    crypto::kdf::kdf(purpose, secret, &base::cbor::encode(body)).expose().to_vec()
+fn mac(secret: &[u8; 32], purpose: &str, body: &Value) -> crypto::Secret32 {
+    crypto::kdf::kdf(purpose, secret, &base::cbor::encode(body))
 }
 
 /// The message `[1, items.., tag]` with `prefix`; the tag MACs `[1, items..]`.
@@ -318,19 +318,15 @@ fn seal(prefix: &str, secret: &[u8; 32], purpose: &str, items: Vec<Value>) -> St
     let mut v = vec![Value::Int(1)];
     v.extend(items);
     let tag = mac(secret, purpose, &Value::List(v.clone()));
-    v.push(Value::Bytes(tag));
+    v.push(Value::bytes(tag.expose()));
     pack(prefix, &Value::List(v))
 }
 
 /// Whether an unpacked message's last item is its tag under `secret`.
 fn tag_ok(secret: &[u8; 32], purpose: &str, items: &[Value]) -> bool {
     let Some((Value::Bytes(tag), body)) = items.split_last() else { return false };
-    same(&mac(secret, purpose, &Value::List(body.to_vec())), tag)
-}
-
-/// Whether `a` equals `b`, compared in constant time.
-fn same(a: &[u8], b: &[u8]) -> bool {
-    a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+    // Secret32's comparison takes constant time
+    <[u8; 32]>::try_from(tag.as_slice()).is_ok_and(|t| mac(secret, purpose, &Value::List(body.to_vec())) == crypto::Secret32::from_bytes(t))
 }
 
 fn tid(v: &Value) -> Option<Tid> {

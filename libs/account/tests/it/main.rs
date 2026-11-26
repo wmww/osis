@@ -46,6 +46,15 @@ pub fn pair(net: &ManualNet, (db, a, _): &(Osis, Account, osis::Address), seed: 
     b
 }
 
+/// Node 1 with an account of its own and node 2 paired into it, on one net and clock.
+pub fn paired() -> (ManualNet, Arc<ManualClock>, (Osis, Account, osis::Address), Osis) {
+    let c = clock();
+    let net = ManualNet::new(c.clone());
+    let first = person(&net, 1, &c);
+    let b = pair(&net, &first, 2, &c);
+    (net, c, first, b)
+}
+
 /// Runs `f` to its end, running `net` between polls.
 pub fn drive<T>(net: &ManualNet, f: impl std::future::Future<Output = T>) -> T {
     let mut f = std::pin::pin!(f);

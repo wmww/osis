@@ -1,4 +1,4 @@
-use crate::{clock, drive, opening, pair, person};
+use crate::{clock, drive, opening, paired, person};
 use osis::internals::ManualNet;
 use osis::{Error, GrantOpts, Osis, Role, SetRoleOpts, SyncScope, Tid, Weak};
 use osis_account::schema::{OF, REALM};
@@ -48,11 +48,8 @@ fn making_an_account_spec_permissions_8() {
 // entries gone. A request to another offer pairs nothing.
 #[test]
 fn pairing_and_removing_a_node_spec_permissions_8() {
-    let c = clock();
-    let net = ManualNet::new(c.clone());
-    let first = person(&net, 1, &c);
+    let (net, c, first, b) = paired();
     let (db, a, _) = &first;
-    let b = pair(&net, &first, 2, &c);
     assert_eq!(Account::of(&b).unwrap(), Some(*a));
     let mut nodes = a.nodes(db).unwrap();
     nodes.sort_by_key(|n| n.node);
@@ -109,11 +106,8 @@ fn a_stranger_importing_a_card_grants_its_account_spec_sync_inbox_5() {
 // the link to the account, which stays its admin.
 #[test]
 fn links_are_the_accounts_spec_permissions_7() {
-    let c = clock();
-    let net = ManualNet::new(c.clone());
-    let first = person(&net, 1, &c);
+    let (net, _, first, b) = paired();
     let (db, a, _) = &first;
-    let b = pair(&net, &first, 2, &c);
     let t = make(db, a, "linked");
     db.grant(t, db.node(), Role::Admin, GrantOpts::default()).unwrap();
     db.make_link(t, Role::Read, a.thing(), osis::LinkOpts::default()).unwrap();
@@ -149,11 +143,8 @@ fn a_realm_made_in_the_account() {
 // still write the account, then its role (retaining a copy, read here).
 #[test]
 fn a_node_removing_itself_drops_its_entries_spec_permissions_8() {
-    let c = clock();
-    let net = ManualNet::new(c.clone());
-    let first = person(&net, 1, &c);
+    let (net, _, first, b) = paired();
     let (db, a, _) = &first;
-    let b = pair(&net, &first, 2, &c);
     drive(&net, b.wait_synced(SyncScope::All)).unwrap();
     assert_eq!(dials(&b, a.thing()).len(), 2, "each node's entry");
     a.remove_node(&b, b.node(), SetRoleOpts { retain_copy: Some(true), ..SetRoleOpts::default() }).unwrap();
@@ -168,11 +159,8 @@ fn a_node_removing_itself_drops_its_entries_spec_permissions_8() {
 // node lowered to writing the account is told so up front (`Permission` on the account).
 #[test]
 fn a_removed_node_no_longer_acts_through_its_client_spec_permissions_8() {
-    let c = clock();
-    let net = ManualNet::new(c.clone());
-    let first = person(&net, 1, &c);
+    let (net, _, first, b) = paired();
     let (db, a, _) = &first;
-    let b = pair(&net, &first, 2, &c);
     let t = make(&b, a, "before");
     let (client, _) = b.add_client(a.thing(), None).unwrap();
     b.grant(t, client, Role::Write, GrantOpts::default()).unwrap();
