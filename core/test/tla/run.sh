@@ -64,12 +64,7 @@ instances=(
   "depth0 rotation Depth0MC D0_fa_dmerge.cfg pass" # liveness: a derived write is merged
   "depth0 rotation Depth0MC D0_rm_np_travel.cfg pass" # a removed writer below a holder actor: its removal travels with the knowing keyset (spec/crypto.md §4, Carried demotions)
   "depth0 rotation Depth0MC D0_rm_np.cfg fail"    # negative control: without travel W seals the knowing keyset it cannot open
-  "depth0 rotation Depth0MC D0_pf_off.cfg fail"   # negative control: a node holding none of G's boxes, not judging its box records, seals G at a stale epoch (spec/crypto.md §4 Stale)
-  "depth0 rotation Depth0MC D0_pf_true.cfg fail"  # negative control: true box records without travel: W's own epoch of G looks fresh
-  "depth0 rotation Depth0MC D0_rs.cfg pass"       # a grant's box to a holder actor is recorded too: a node holding none of G's boxes finds it stale (spec/crypto.md §4 Stale)
-  "depth0 rotation Depth0MC D0_rs_off.cfg fail"   # negative control: only rotations record, the grant's stale box goes unseen
-  "depth0 rotation Depth0MC D0_rs_noenc.cfg fail" # negative control: stale records judged for sealing only, a writer encrypts under an epoch boxing a stale one
-  "depth0 rotation Depth0MC D0_rs_lie.cfg fail"   # negative control: a writer of G recording falsely (it may hand G's secrets out anyway)
+  "depth0 rotation Depth0MC D0_rs_blind.cfg pass" # a node holding G's keysets but none of its boxes judges by order: the requirement holds (grants and re-seals record nothing, spec/crypto.md §4 Box records)
   "depth0 rotation Depth0MC D0_readers.cfg fail" # negative control: Walk "rotator" leaks above (README)
   "depth0 rotation Depth0MC D0_gone_live.cfg pass" # a node's own departure blocks nothing (spec/crypto.md §4)
   "depth0 rotation Depth0MC D0_gone_role.cfg fail" # negative control: judging a holder actor only while in it re-seals into a leave-out
@@ -148,6 +143,7 @@ instances=(
   "forkdepth rotation ForkDepth FD_fork_builder_nl.cfg fail:Live" # ... though rotations list no foreign epoch
   "forkdepth rotation ForkDepth FD_fork_list.cfg fail:Live"       # negative control: no anchor or candidate, but rotations list foreign epochs: the other side's list makes a side's own keyset stale above
   "forkdepth rotation ForkDepth FD_race_u_rekeylists.cfg fail:Quiet" # negative control: U's rotator reads current for the re-key by lists alone: a foreign keyset left out stays current, U re-keyed at every turn
+  "forkdepth rotation ForkDepth FD_probe.cfg fail:ProbeStrip"     # probe: a rotation foreign at a side strips the box of an epoch still current there (spec/crypto.md §4 Stale reads every box written)
   "planted rotation Planted P_leaveout.cfg pass"    # a secrets.0 snapshot leaves out records at epochs its writer has not verified (spec/crypto.md §4)
   "planted rotation Planted P_wait.cfg fail"        # negative control: waiting for every keyed epoch stops compaction for good
   "planted rotation Planted P_all.cfg fail"         # negative control: carrying everything bases a planted epoch

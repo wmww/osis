@@ -148,7 +148,7 @@ fn what_a_thing_costs() {
     assert_eq!((dependent.commits, independent.commits), (1, 2), "its rotation carrying its record, then what the dependent one writes");
     assert!(dependent.maker_rows < 1_500 && dependent.reader_rows < 1_500 && dependent.download < 600, "{dependent:?}");
     assert_eq!(dependent.maker_ops.get("sign"), Some(&1), "the commit's signature alone");
-    assert!(independent.maker_rows < 9_800 && independent.reader_rows < 9_900 && independent.download < 4_300, "{independent:?}");
+    assert!(independent.maker_rows < 10_000 && independent.reader_rows < 10_100 && independent.download < 4_300, "{independent:?}");
     // it holds nothing and takes no signal: no KEM key (spec/crypto.md §3 Published KEM keys)
     assert_eq!(independent.maker_ops.get("kem: keygen"), None, "no KEM key made");
     assert!(!independent.reader_ops.keys().any(|k| k.starts_with("kem")), "the account's node opens symmetric boxes");

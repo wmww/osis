@@ -676,15 +676,23 @@ fn shared_thing(n: usize, roles: &[Role]) -> (LocalPeer, Tid) {
     })
 }
 
-/// Late deltas into a set of n one-element commits (`asp`, compacted after them or not): a late
-/// delta older than all of them arriving and the first commit judged, then one 5 commits late.
+/// Late deltas into a set of n one-element commits (`asp`, compacted after them or not): late
+/// deltas older than all of them arriving, each with the first commit judged, then one 5
+/// commits late. The older ones are measured `OLDER` together, in a state paged at both sizes:
+/// the store work of one is a few units, and a page split or a state crossing into paging,
+/// one-off and landing at n or 10n by where bytes fall, moves more than that; over several
+/// deltas such a step is one among them, while growth per delta is counted once per delta and
+/// still fails the check.
 fn late_deltas(n: usize, asp: &osis_schema::Aspect<Value>, compact: bool) -> [Work; 2] {
+    const OLDER: usize = 4;
     // the world before the compaction, alike with and without it: built once per (n, asp)
-    let (mut lp, (t, late, ids)) = LocalPeer::cached(&format!("scale::late_deltas/{n}/{}", asp.ak()), || {
+    let (mut lp, (t, late, ids)) = LocalPeer::cached(&format!("scale::late_deltas/{n}/{}/{OLDER}/paged", asp.ak()), || {
         let (mut lp, t) = shared_thing(2, &[Role::Write]);
-        let late: Vec<_> = (0..3).map(|i| add(&mut lp, 1, t, asp, format!("late{i}"))).collect();
+        let late: Vec<_> = (0..=OLDER).map(|i| add(&mut lp, 1, t, asp, format!("late{i}"))).collect();
         lp.advance(1_000);
-        let ids: Vec<_> = (0..n).map(|i| add(&mut lp, 0, t, asp, format!("e{i}"))).collect();
+        // elements of 200 bytes: the state is paged at n already, so n and 10n differ by the
+        // data alone, not by crossing into paging
+        let ids: Vec<_> = (0..n).map(|i| add(&mut lp, 0, t, asp, format!("e{i:0>200}"))).collect();
         (lp, (t, late, ids))
     });
     let k = ak(asp.ak());
@@ -695,8 +703,10 @@ fn late_deltas(n: usize, asp: &osis_schema::Aspect<Value>, compact: bool) -> [Wo
     let pk = |c: &osis_base::CommitId| pks.iter().find(|p| p.id == *c).unwrap().clone();
     lp.deliver(0, &pk(&late[0])).unwrap();
     let (_, old) = measured_at(&mut lp, 0, |lp| {
-        lp.deliver(0, &pk(&late[1])).unwrap();
-        lp.peers[0].engine.replaced_at(&ids[0], &t, &k).unwrap();
+        for c in &late[1..] {
+            lp.deliver(0, &pk(c)).unwrap();
+            lp.peers[0].engine.replaced_at(&ids[0], &t, &k).unwrap();
+        }
     });
     lp.advance(1);
     let recent = add(&mut lp, 1, t, asp, "recent".into());
@@ -753,7 +763,7 @@ fn all_linear(what: &str, small: &Work, big: &Work) {
 }
 
 // spec/commits.md §5 (when a body was replaced), spec/crdt.md §4.8; spec/requirements.md,
-// Scale (no operation O(history)): a set of n and 10n one-element commits, then a delta by
+// Scale (no operation O(history)): a set of n and 10n one-element commits, then deltas by
 // another writer older than all of them, and one 5 commits late, each arriving and the first
 // commit judged: in an unbounded set, a keep-at-least one, and that one compacted. Every counted
 // phase (death walks, replaced reads among them) is flat.
@@ -2191,17 +2201,118 @@ fn unit_evidence(n: usize) -> [[u64; 3]; 2] {
 // spec/permissions.md §4 (Evidence of a commit; Evidence of a sync ID), spec/sync-inbox.md §1
 // (Public key record): an independent thing of an account of n and 10n other nodes. Its unit
 // carries the path evidence of the nodes that write in it (each one's grant on A and its node
-// thing's record), and A's public key record: A's current `keys.0` commits, which are every grant
-// to a node at A's newest epoch, as each records its boxes in A's `keys.0` (spec/crypto.md §4
-// Box records). So one writer's unit carries copies linear in A's nodes too
-// (issues/account-evidence-per-unit.md); its records stay flat.
+// thing's record), and A's public key record: A's current `keys.0` commits, which no grant
+// writes (spec/crypto.md §4 Box records: a rotation's alone). So one writer's unit is flat in A's
+// nodes; with every node writing, linear in the writers.
 #[test]
 fn evidence_per_unit_spec_permissions_4() {
     let [small, big] = NODES.map(unit_evidence);
     println!("unit certificates (copies, records, copy bytes), one writer then every node: {small:?} at n, {big:?} at 10n");
-    linear("one writer: copies", small[0][0], big[0][0]);
+    flat("one writer: copies", small[0][0], big[0][0]);
     flat("one writer: records", small[0][1], big[0][1]);
-    linear("one writer: copy bytes", small[0][2], big[0][2]);
+    flat_bytes("one writer: copy bytes", small[0][2], big[0][2]);
     linear("every node writing: copies", small[1][0], big[1][0]);
     linear("every node writing: records", small[1][1], big[1][1]);
+}
+
+/// What `k` things T_i, each minted independent with admin A (an account of `n` nodes, peer 0
+/// minting), carry of A under their sync IDs (`Engine::certificates` at peer 0): per unit, the
+/// copies on A (A's public key record and its evidence on A: spec/sync-inbox.md §1) and their
+/// bytes; over all units, the distinct (commit, parts) among them, each one blob however many
+/// units log it (spec/permissions.md §4 Copies: one blob per distinct cut), and its bytes. After
+/// the pairings (`account_nodes`), then after peer 0 removes the last node (A rotates; the role
+/// duty re-keys what boxed A).
+struct KeyRecord {
+    /// Per unit: (copies on A, their bytes), the most over the units.
+    unit: [u64; 2],
+    /// Over the units: (distinct copies on A, their bytes).
+    blobs: [u64; 2],
+}
+
+fn key_record(n: usize, k: usize, removed: bool) -> KeyRecord {
+    key_record_parts(n, k, removed).0
+}
+
+/// `key_record`, with each distinct copy on A: (commit kind, aspects on A, bytes).
+fn key_record_parts(n: usize, k: usize, removed: bool) -> (KeyRecord, Vec<(String, Vec<String>, u64)>) {
+    let (mut lp, acc) = account_nodes(n);
+    let a = acc.thing;
+    let ts: Vec<Tid> = (0..k)
+        .map(|_| {
+            lp.peers[0]
+                .engine
+                .mint_independent(&[osis_engine::MintAdmin::Thing(a)], |ts| {
+                    let mut m = Mutation::new();
+                    m.op(a, &ct::HOLDS, PathOp { path: Vec::new(), op: Op::Add(Value::Strong(ts[0])) })?;
+                    m.set(ts[0], &crate::common::REG, &s("new"))?;
+                    Ok(vec![m])
+                })
+                .unwrap()
+                .0[0]
+        })
+        .collect();
+    if removed {
+        let node = lp.peers[n - 1].engine.tid();
+        lp.peers[0].engine.remove_node(&a, &node, false, &[acc.profile]).unwrap();
+        lp.role_duties(0).unwrap();
+    }
+    let e = &mut lp.peers[0].engine;
+    let mut unit = [0; 2];
+    let mut blobs: BTreeMap<(osis_base::CommitId, BTreeSet<usize>), u64> = BTreeMap::new();
+    for t in &ts {
+        let c = e.certificates(t).unwrap();
+        let mut here = [0; 2];
+        for (id, parts) in &c.commits {
+            let b = osis_commit::CommitBlob::decode(&e.package(id).unwrap().unwrap().bytes).unwrap();
+            let on_a: BTreeSet<usize> = parts.iter().copied().filter(|ai| b.header.aspects.get(*ai).is_some_and(|x| x.tid == a)).collect();
+            if on_a.is_empty() {
+                continue;
+            }
+            let bytes = osis_commit::rewrite(&b, |ai| !on_a.contains(&ai)).encode().len() as u64;
+            here[0] += 1;
+            here[1] += bytes;
+            blobs.insert((*id, on_a), bytes);
+        }
+        unit = [unit[0].max(here[0]), unit[1].max(here[1])];
+    }
+    let what = blobs.iter().map(|((id, parts), b)| {
+        let h = e.header(id).unwrap();
+        (format!("{:?}", h.kind), parts.iter().map(|ai| h.aspects[*ai].ak.as_str().to_string()).collect(), *b)
+    }).collect();
+    (KeyRecord { unit, blobs: [blobs.len() as u64, blobs.values().sum()] }, what)
+}
+
+// spec/sync-inbox.md §1 (Public key record), spec/permissions.md §4 (Copies: one blob per
+// distinct cut; current `keys.0` commits), spec/crypto.md §4 (Box records: a rotation's alone):
+// what an account A of n and 10n nodes costs the things it holds a role on, after its pairings
+// and after a removal. A unit's copies of A do not grow with A's nodes beyond the bytes of A's
+// rotation (its records, one per box), and every unit carries the same cuts: the distinct blobs
+// stay those of one unit however many things A holds a role on.
+#[test]
+fn an_accounts_key_record_per_unit_spec_sync_inbox_1() {
+    for removed in [false, true] {
+        let what = if removed { "after a removal" } else { "after the pairings" };
+        let [one, ten] = [1, 10].map(|k| key_record(NODES[0], k, removed));
+        println!("{what}: n nodes: unit {:?}, distinct over 1 unit {:?}, over 10 units {:?}", one.unit, one.blobs, ten.blobs);
+        assert_eq!(one.blobs, ten.blobs, "{what}: every unit carries the same cuts of A");
+        let big = key_record(NODES[1], 1, removed);
+        println!("{what}: 10n nodes: unit {:?}", big.unit);
+        flat(&format!("{what}: copies of A per unit"), one.unit[0], big.unit[0]);
+    }
+}
+
+// spec/sync-inbox.md §1 (Public key record), spec/permissions.md §4 (Copies): by hand, the table
+// of notes/thing-cost.md (Accounts at n and 10n nodes, the key record per unit), at 1, 10 and
+// 100 things, n and 10n nodes.
+#[test]
+#[ignore = "by hand: 100 things, about 20 s in a debug build"]
+fn an_accounts_key_record_table() {
+    for removed in [false, true] {
+        for n in NODES {
+            for k in [1, 10, 100] {
+                let (r, what) = key_record_parts(n, k, removed);
+                println!("removed {removed}, nodes {n}, things {k}: per unit (copies, bytes) {:?}, distinct blobs (count, bytes) {:?}: {what:?}", r.unit, r.blobs);
+            }
+        }
+    }
 }

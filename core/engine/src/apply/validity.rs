@@ -758,8 +758,8 @@ pub(crate) fn note_required(core: &mut Core, h: &Header, id: &CommitId, read: &s
     }
     for (ai, d) in parts {
         let Some(a) = h.aspects.get(*ai) else { continue };
-        if matches!(a.ak.as_str(), "secrets.0" | "keys.0") {
-            if crate::engine::Owned::of(h, id, *ai).is_some_and(|own| grantee_boxes_only(&a.tid, a.ak.as_str(), d.fragment(), &granted, &own)) {
+        if a.ak.as_str() == "secrets.0" {
+            if crate::engine::Owned::of(h, id, *ai).is_some_and(|own| grantee_boxes_only(&a.tid, d.fragment(), &granted, &own)) {
                 core.ix.overreach.remove(&(*id, *ai));
             } else {
                 core.ix.overreach.insert((*id, *ai));
@@ -811,11 +811,11 @@ fn card_since(f: &Fragment) -> Option<u64> {
 }
 
 /// Whether a `secrets.0` delta writes only the boxes of the holders `granted` puts on `actor`, at
-/// or below each one's role, and history boxes at or below the highest granted role, or a
-/// `keys.0` delta only those boxes' records (field `SEALED`), as puts only: entries this delta
-/// creates (`own` dots), no reset of the value, a field, a map or any entry (spec/permissions.md
-/// §2). Judged from the delta alone, so every node judges it alike whatever it holds.
-pub(super) fn grantee_boxes_only(actor: &Tid, ak: &str, f: &Fragment, granted: &BTreeMap<(Tid, Tid), Role>, own: &crate::engine::Owned) -> bool {
+/// or below each one's role, and history boxes at or below the highest granted role, as puts
+/// only: entries this delta creates (`own` dots), no reset of the value, a field, a map or any
+/// entry (spec/permissions.md §2). Judged from the delta alone, so every node judges it alike
+/// whatever it holds.
+pub(super) fn grantee_boxes_only(actor: &Tid, f: &Fragment, granted: &BTreeMap<(Tid, Tid), Role>, own: &crate::engine::Owned) -> bool {
     // a write or reset of the whole value removes every box
     if !f.is_plain_struct() {
         return false;
@@ -823,11 +823,7 @@ pub(super) fn grantee_boxes_only(actor: &Tid, ak: &str, f: &Fragment, granted: &
     let Some(osis_crdt::SlotRef::Frag(Fragment::Struct(st))) = f.slot(osis_crdt::Encoding::Struct) else { return false };
     let top = granted.iter().filter(|((t, _), _)| t == actor).map(|(_, r)| *r).max();
     let fits = |k: &ct::BoxKey| granted.get(&(*actor, k.holder.0)).is_some_and(|r| k.role <= *r);
-    let fields: &[u64] = if ak == "keys.0" { &[crate::flows::SEALED] } else { &[0, 1] };
-    if ak == "keys.0" && st.field_ids().any(|id| id != crate::flows::SEALED) {
-        return false;
-    }
-    for &id in fields {
+    for id in [0, 1] {
         let Some(field) = st.field(id) else { continue };
         // every entry new: created by this delta (its own dots), never a write into another's
         if !field.is_put_only_map(&|d| own.owns(d)) {
@@ -1159,7 +1155,7 @@ impl<'a> Judge<'a> {
         // an applied may-grant grant carries the grantee's boxes (spec/permissions.md §2): every
         // put on the thing applied as a may-grant grant (`overreach` checked the boxes
         // against all of them), so a self-removal beside a failing put exempts nothing
-        if matches!(ak, "secrets.0" | "keys.0")
+        if ak == "secrets.0"
             && !core.ix.overreach.contains(&(*id, ai))
             && let Some(c) = core.timelines().role_commit(id)
         {
@@ -1378,6 +1374,8 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
                 }
                 if x.ak.as_str() == "secrets.0" {
                     secrets_flips.push((id, ai, *b));
+                    // the boxes Stale reads (`Indexes::boxed`), rebuilt with the keysets
+                    keyset_flips.insert(x.tid);
                 }
                 if x.ak.as_str() == "keys.0" {
                     keyset_flips.insert(x.tid);

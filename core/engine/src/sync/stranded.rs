@@ -163,7 +163,7 @@ impl Engine {
         let step = step.unwrap_or_else(|| o.path.steps.last().map_or([0; 32], |(st, _)| st.keys.sync.to_bytes()));
         let me = self.core.tid();
         let admins = self.core.key_holders(&actor).into_iter().filter(|(m, r)| *r == Role::Admin && *m != me).map(|(m, _)| m).collect();
-        Ok(Some(Stranding { actor, holder, step, keys: self.current_keys(&holder), admins }))
+        Ok(Some(Stranding { actor, holder, step, keys: self.current_keys(&holder)?, admins }))
     }
 
     /// The holder of `a` this node reads it through, as it judges it (spec/permissions.md §4):
@@ -185,12 +185,17 @@ impl Engine {
         let ev = self.evidence_now()?;
         let mut evidence = Certs::default();
         let mut own = Certs::default();
-        for k in self.current_keys(holder) {
+        for k in self.current_keys(holder)? {
             let Some(h) = self.header(&k) else { continue };
             if h.aspect_index(holder, "keys.0").is_none() {
                 continue;
             }
             own.commits.entry(k).or_default().extend(self.cut_parts(&k, holder, crate::sync_ids::Cut::Keys));
+            // and its `sync.0` there: a commit recording a step writes its step keys beside it,
+            // and a receiver judges a step by the record they key (spec/wire.md §9 Holder keys: a
+            // holder of sync alone that also holds these keysets has its sync copies judged by a
+            // recorded step alone, `Core::copies_speak`)
+            own.commits.entry(k).or_default().extend(h.aspect_parts(holder, "sync.0"));
             evidence.records.insert(h.signer);
             self.add_closure(&ev, &BTreeSet::from([(k, *holder)]), &mut evidence);
         }
@@ -232,7 +237,7 @@ impl Engine {
         if !self.may_reseal(&a, &m) {
             return Ok(false);
         }
-        let digest = keys_digest(&self.current_keys(&m));
+        let digest = keys_digest(&self.current_keys(&m)?);
         if self.core.ix.reseal_asks.get(&(a, m)).is_some_and(|k| k.keys == digest) {
             return Ok(false);
         }

@@ -28,9 +28,16 @@
 \* re-key (Left out) by the lists of keysets not foreign alone (TRUE: a
 \* foreign keyset, listed nowhere, stays current for good), or as CurU, its
 \* history boxes counted at a holder of their secret (FALSE, the rule).
+\* Box removal: a rotation of T removes the boxes (its own and re-seals') at
+\* each epoch it lists or carries in its history box (every node holds every
+\* secret of T), from the state every node shares, a foreign one's included.
+\* Anchors and re-seals read the state. StaleKept: Stale reads every box
+\* written at an epoch, removed or not (TRUE, the rule: spec/crypto.md \S 4
+\* Stale); FALSE (control): the state's boxes alone, so a rotation foreign at
+\* a node strips the box that kept an epoch still current there stale.
 EXTENDS Naturals, FiniteSets
 
-CONSTANTS Scen, Above, ListForeign, RekeyLists, MaxU, MaxT, QU, QT
+CONSTANTS Scen, Above, ListForeign, RekeyLists, StaleKept, MaxU, MaxT, QU, QT
 
 Nodes == IF Scen = "fork" THEN {"p", "q"} ELSE {"m", "w"}
 RotU == IF Scen = "fork" THEN {"p", "q"} ELSE {"m"}
@@ -87,13 +94,20 @@ CurT(s) == {e \in ht[s] : ~\E j \in ht[s] : e \in SupT(s, j)}
 RecsAt(s) == UNION {t[e].rec : e \in CurT(s)}
 LeftU(s, k) == k \in RecsAt(s) /\ VAbove(s, k)
 BlkAbove(s, k) == StaleAbove(s, k) \/ StaleBoxU(s, k) \/ ~CovU(s, k) \/ LeftU(s, k)
+\* every box written at e that s holds; those of the state: less those a held
+\* rotation of T listing e or carrying it in its history box removed (e's own
+\* box, and each re-seal made before that rotation: r.at epochs of T then)
 BoxesT(s, e) == {S \in {t[e].box} \cup {r.ks : r \in {x \in hr[s] : x.e = e}} : S # {}}
-BlkT(s, e) == \E S \in BoxesT(s, e) : \E k \in S : BlkAbove(s, k)
-KnowDueT(s, e) == ~ForT(s, e) /\ \E S \in BoxesT(s, e) : \E k \in S : StaleAbove(s, k)
+RemovedBy(s, e) == {j \in ht[s] : e \in t[j].lists \cup t[j].hist}
+StateT(s, e) == {S \in (IF RemovedBy(s, e) = {} THEN {t[e].box} ELSE {})
+                       \cup {r.ks : r \in {x \in hr[s] : x.e = e /\ \A j \in RemovedBy(s, e) : x.at >= j}} : S # {}}
+StaleT(s, e) == IF StaleKept THEN BoxesT(s, e) ELSE StateT(s, e)
+BlkT(s, e) == \E S \in StaleT(s, e) : \E k \in S : BlkAbove(s, k)
+KnowDueT(s, e) == ~ForT(s, e) /\ \E S \in StaleT(s, e) : \E k \in S : StaleAbove(s, k)
 RotTDue(s) == (\A e \in CurT(s) : BlkT(s, e)) \/ \E e \in CurT(s) : KnowDueT(s, e)
 
 Cand(s) == {k \in hu[s] : AnchorOK(s, k)}
-Anchors(s) == {k \in UNION UNION {BoxesT(s, e) : e \in CurT(s)} : k \in Cand(s)}
+Anchors(s) == {k \in UNION UNION {StateT(s, e) : e \in CurT(s)} : k \in Cand(s)}
 Newest(S) == CHOOSE k \in S : \A j \in S : u[j].ht < u[k].ht \/ (u[j].ht = u[k].ht /\ j <= k)
 From(s, a) == {k \in Cand(s) : k = a \/ a \in AncU(s, k)}
 SealSet(s) ==
@@ -104,8 +118,8 @@ SealSet(s) ==
      ELSE IF \E a \in tops : From(s, a) = {} THEN {}
      ELSE {Newest(From(s, a)) : a \in tops}
 SealOK(s) == SealSet(s) # {} /\ \A k \in SealSet(s) : ~BlkAbove(s, k)
-ResealAt(s) == {e \in CurT(s) : BoxesT(s, e) = {}}
-CanReseal(s) == SealOK(s) /\ \E e \in ResealAt(s) : [e |-> e, ks |-> SealSet(s), by |-> s] \notin rs
+ResealAt(s) == {e \in CurT(s) : StateT(s, e) = {}}
+CanReseal(s) == SealOK(s) /\ \E e \in ResealAt(s) : [e |-> e, ks |-> SealSet(s), by |-> s, at |-> Len(t)] \notin rs
 
 CurUL(s) == {k \in hu[s] : ~\E j \in hu[s] : ~ForU(s, j) /\ k \in u[j].lists}
 RotUDue(s) == \/ \E k \in CurU(s) : ~ForU(s, k) /\ BlkU(s, k)
@@ -143,7 +157,7 @@ RotTAct(s) ==
 Reseal(s) ==
   /\ s \in RotT /\ SealOK(s)
   /\ \E e \in ResealAt(s) :
-       LET r == [e |-> e, ks |-> SealSet(s), by |-> s] IN
+       LET r == [e |-> e, ks |-> SealSet(s), by |-> s, at |-> Len(t)] IN
        /\ r \notin rs
        /\ rs' = rs \cup {r}
        /\ hr' = [hr EXCEPT ![s] = @ \cup {r}]
@@ -225,11 +239,14 @@ Settled == AllHeld /\ ~Due
 \* its side applies, and each rotator of U holds an unblocked epoch of U
 Live == Settled =>
           /\ \A s \in RotT : \E e \in CurT(s) :
-               ~BlkT(s, e) /\ ~ForT(s, e) /\ \E S \in BoxesT(s, e) : \A k \in S : ~ForU(s, k)
+               ~BlkT(s, e) /\ ~ForT(s, e) /\ \E S \in StateT(s, e) : \A k \in S : ~ForU(s, k)
           /\ \A s \in RotU : \E k \in CurU(s) : ~BlkU(s, k)
 \* Kept: settled, every epoch of T is current at each writer or in the
 \* history of a current one; alike for U at its rotators
 Kept == Settled =>
           /\ \A s \in RotT : DOMAIN t \subseteq HistT(CurT(s))
           /\ \A s \in RotU : DOMAIN u \subseteq HistU(CurU(s))
+\* probe: an epoch current at a writer of T, not foreign there, whose every box
+\* a rotation removed (expected reachable: a rotation foreign at the writer)
+ProbeStrip == ~\E s \in RotT : \E e \in CurT(s) : ~ForT(s, e) /\ BoxesT(s, e) # {} /\ StateT(s, e) = {}
 ====

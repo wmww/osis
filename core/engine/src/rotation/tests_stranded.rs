@@ -42,7 +42,7 @@ fn holder_keys_bring_the_holders_new_keyset_spec_permissions_4() {
     let keys = lp.peers[2].engine.holder_keys(&t).unwrap();
     assert!(ids_of(&keys).contains(&k));
     assert!(lp.peers[0].engine.take_holder_keys(&t, &keys, None).unwrap() > 0);
-    assert!(lp.peers[0].engine.current_keys(&t).contains(&k), "T's new keyset taken");
+    assert!(lp.peers[0].engine.current_keys(&t).unwrap().contains(&k), "T's new keyset taken");
 }
 
 // spec/permissions.md §4 (stranded), spec/wire.md §9 Holder keys: a receiver that knows nothing
@@ -60,7 +60,7 @@ fn holder_keys_reach_a_receiver_knowing_nothing_of_the_chain_spec_permissions_4(
     let keys = lp.peers[0].engine.holder_keys(&t).unwrap();
     assert!(!lp.peers[1].engine.knows(&me), "peer 1 knows nothing of the chain");
     lp.peers[1].engine.take_holder_keys(&t, &keys, None).unwrap();
-    assert_eq!(lp.peers[1].engine.current_keys(&t), lp.peers[0].engine.current_keys(&t), "T's keys taken");
+    assert_eq!(lp.peers[1].engine.current_keys(&t).unwrap(), lp.peers[0].engine.current_keys(&t).unwrap(), "T's keys taken");
 }
 
 // spec/permissions.md §4 (stranded): nothing off the holder's authority chain is taken (peer

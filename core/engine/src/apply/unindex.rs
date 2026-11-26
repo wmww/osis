@@ -150,10 +150,12 @@ fn unindex(tx: &mut Tx<'_>, id: &CommitId, marks: bool) -> Result<()> {
             None => crate::retention::off_gone(tx, &a.tid, &a.ak, &owned),
         }
     }
-    // what its `keys.0` parts gave (held or dropped: `Dropped::keysets`), re-derived from the
-    // parts still held, as a drop re-derives it (`keys::forget_dropped`)
+    // what its `keys.0` parts gave (held or dropped: `Dropped::keysets`) and its `secrets.0`
+    // parts' boxes (`Indexes::boxed`), re-derived from the parts still held, as a drop
+    // re-derives them (`keys::forget_dropped`)
     let keys: BTreeSet<Tid> = v.aspects.iter().filter(|a| a.ak.as_str() == "keys.0").map(|a| a.tid).collect();
-    super::keys::rebuild_keysets(tx, &keys)?;
+    let boxed: BTreeSet<Tid> = v.aspects.iter().filter(|a| matches!(a.ak.as_str(), "keys.0" | "secrets.0")).map(|a| a.tid).collect();
+    super::keys::rebuild_keysets(tx, &boxed)?;
     super::keys::refresh_independent(tx, &keys, false)?;
     // the reading-only secrets its invalid boxes gave go with it (`keys::read_invalid`)
     if tx.core.waits.read_any(id) {

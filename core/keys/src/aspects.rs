@@ -47,16 +47,12 @@ fn superseded_of(ks: &Keyset) -> Result<BTreeSet<Epoch>, Error> {
     ks.supersedes.iter().map(from_schema).collect()
 }
 
-/// A write to `secrets.0`: boxes put, boxes removed, history boxes put (spec/crypto.md §4); and
-/// the `keys.0` records of its boxes to holder actors, keyed as each box, naming the holder's
-/// keysets it names (`sealed`, spec/crypto.md §4 Stale: written with the box, whoever boxes,
-/// and gone with it).
+/// A write to `secrets.0`: boxes put, boxes removed, history boxes put (spec/crypto.md §4).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SecretsWrite {
     pub boxes: BTreeMap<BoxKey, SecretBox>,
     pub removed: BTreeSet<BoxKey>,
     pub history: BTreeMap<HistoryKey, Vec<u8>>,
-    pub sealed: BTreeMap<BoxKey, BTreeSet<Epoch>>,
 }
 
 impl SecretsWrite {
@@ -75,16 +71,13 @@ impl SecretsWrite {
     pub fn extend(&mut self, other: SecretsWrite) {
         for k in &other.boxes {
             self.removed.remove(k.0);
-            self.sealed.remove(k.0);
         }
         for k in &other.removed {
             self.boxes.remove(k);
-            self.sealed.remove(k);
         }
         self.boxes.extend(other.boxes);
         self.removed.extend(other.removed);
         self.history.extend(other.history);
-        self.sealed.extend(other.sealed);
     }
 
     pub fn is_empty(&self) -> bool {
@@ -195,10 +188,13 @@ pub fn unvouched(s: &Secrets, epochs: &ActorEpochs) -> Result<Unvouched, Error> 
     Ok(out)
 }
 
-/// A write to `keys.0` by a rotation: the rotated roles' keysets (spec/crypto.md §3).
+/// A write to `keys.0` by a rotation: the rotated roles' keysets (spec/crypto.md §3), and the
+/// records of its boxes to holder actors, keyed as each box, naming the holder's keysets it
+/// names (`sealed`, spec/crypto.md §4 Box records: what makes a keyset foreign).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct KeysWrite {
     pub keysets: BTreeMap<Role, Keyset>,
+    pub sealed: BTreeMap<BoxKey, BTreeSet<Epoch>>,
 }
 
 impl KeysWrite {

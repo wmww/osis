@@ -206,30 +206,22 @@ pub struct HeldKeyset {
     pub demotions: BTreeSet<CommitId>,
 }
 
-/// A box record a `keys.0` body writes (spec/crypto.md §4, Stale): the actor's box of `role` at
-/// `epoch` to holder actor `holder` names `keysets` of it.
+/// A box record a `keys.0` body writes with the keyset of its epoch (spec/crypto.md §4 Box
+/// records): the actor's box of `role` at `epoch` to holder actor `holder` names `keysets` of it.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SealedRec {
     pub role: osis_base::Role,
     pub epoch: osis_crypto::Epoch,
     pub holder: Tid,
     pub keysets: Vec<osis_crypto::Epoch>,
-    /// Written with the epoch's keyset, by the commit writing it (its rotation commit, or a
-    /// re-write of the keyset): its epoch's own box (spec/crypto.md §4 Holder actors, Foreign),
-    /// not a grant's or re-seal's.
-    pub own: bool,
 }
 
 /// The box records of one epoch of an actor noted from its valid `keys.0` bodies
-/// (`Indexes::sealed`): per holder actor the keysets they name, joined (Stale reads them: a node
-/// holding none of the actor's boxes judges its epoch so), and the commits whose bodies wrote
-/// them (placed with the epoch's keyset, spec/crypto.md §4 Carried).
+/// (`Indexes::sealed`): per holder actor the keysets they name, joined (what makes the epoch
+/// foreign, spec/crypto.md §4 Foreign).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SealedAt {
     pub keysets: BTreeMap<Tid, BTreeSet<osis_crypto::Epoch>>,
-    /// Of `keysets`, those the epoch's own records name (`SealedRec::own`): what makes it foreign.
-    pub own: BTreeMap<Tid, BTreeSet<osis_crypto::Epoch>>,
-    pub by: BTreeSet<CommitId>,
 }
 
 impl HeldKeyset {
@@ -863,10 +855,15 @@ indexes! {
     /// `Dropped::keysets`), each with those bodies' commits: (actor, role, epoch) -> commits. A
     /// keyset here and not in `keysets` is held invalid (spec/crypto.md §4, Held keyset).
     pub keysets_invalid: JMap<(Tid, osis_base::Role, osis_crypto::Epoch), BTreeSet<CommitId>>,
-    /// The box records of each epoch (spec/crypto.md §4, Stale): (actor, role, epoch) for each
-    /// epoch a held valid `keys.0` body (a role commit's delta or a compaction snapshot) records
-    /// a box at.
+    /// The box records of each epoch (spec/crypto.md §4 Box records): (actor, role, epoch) for
+    /// each epoch a held valid `keys.0` body (a role commit's delta or a compaction snapshot)
+    /// records a box at beside that epoch's keyset.
     pub sealed: JMap<(Tid, osis_base::Role, osis_crypto::Epoch), SealedAt>,
+    /// The boxes of each epoch to holder actors (spec/crypto.md §4 Stale): (actor, role, epoch)
+    /// for each epoch a held valid `secrets.0` body (a role commit's piece or a compaction
+    /// snapshot) puts a box at, per holder the keysets they name, whatever later bodies write
+    /// at its key.
+    pub boxed: JMap<(Tid, osis_base::Role, osis_crypto::Epoch), SealedAt>,
     /// Actors lost by an `until` passing alone, waiting for node-sync to hear their sync IDs out
     /// (`rotation::lost::TIMED_LOST`): actor -> when first judged (engine ms).
     pub timed_lost: JMap<Tid, u64>,
@@ -1558,6 +1555,11 @@ impl Core {
         self.ix.sealed.run(actor_run(a), (*a, osis_base::Role::Sync, osis_crypto::Epoch::ZERO)..).take_while(move |(k, _)| k.0 == *a).map(|(k, v)| (k.1, k.2, v))
     }
 
+    /// Every epoch of actor `a` a valid `secrets.0` body puts a box at (`Indexes::boxed`).
+    pub(crate) fn boxed_noted(&self, a: &Tid) -> impl Iterator<Item = (osis_base::Role, osis_crypto::Epoch, &SealedAt)> {
+        self.ix.boxed.run(actor_run(a), (*a, osis_base::Role::Sync, osis_crypto::Epoch::ZERO)..).take_while(move |(k, _)| k.0 == *a).map(|(k, v)| (k.1, k.2, v))
+    }
+
     /// Held valid keyset `e` of role `r` of actor `m` (spec/crypto.md §4, Held keyset): a valid
     /// body of it noted (`Indexes::keysets`), and the demotions it carries held here (Carried
     /// demotions; not the left-out causes it records, which count unheld): until then it counts
@@ -2222,6 +2224,7 @@ impl Core {
                 keysets: JMap::by_run(|k| actor_run(&k.0)),
                 keysets_invalid: JMap::by_run(|k| actor_run(&k.0)),
                 sealed: JMap::by_run(|k| actor_run(&k.0)),
+                boxed: JMap::by_run(|k| actor_run(&k.0)),
                 by_thing: JSetMap::by_run(|k| actor_run(&k.0)),
                 by_actor: JSetMap::by_run(|k| actor_run(&k.0)),
                 ..Indexes::default()

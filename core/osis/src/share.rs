@@ -753,7 +753,7 @@ impl Osis {
     pub fn take_keys(&self, k: &Keys) -> Result<Tid> {
         self.local("take_keys")?;
         let t = k.thing;
-        let taken = self.engine(|e| e.take_holder_keys(&t, &k.certs, None).map(|_| !e.current_keys(&t).is_empty()))?;
+        let taken = self.engine(|e| e.take_holder_keys(&t, &k.certs, None).and_then(|_| e.current_keys(&t)).map(|k| !k.is_empty()))?;
         if !taken {
             return Err(Error::Invalid(format!("the keys shown are no keys of {t}")));
         }

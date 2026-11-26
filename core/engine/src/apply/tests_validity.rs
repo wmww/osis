@@ -427,12 +427,12 @@ mod tests {
         assert!(e.read.epochs().any(|(_, x)| x.rotations.contains_key(&mine)), "the admin's rotation counts");
         assert_ne!(e.read.current(), before);
     }
-    // spec/permissions.md §2 (may-grant grant: its keys.0 only the records of its boxes), spec/crypto.md §4 (Stale: every box to a holder
-    // actor is recorded beside it, whoever boxes): an may-grant holder granting an organization carries the
-    // organization's box records in `keys.0` as puts keyed to its grantee: valid at a receiver, which
-    // notes them. One also recording a box keyed to another holder gets no may-grant exemption.
+    // spec/permissions.md §2 (may-grant grant: no `keys.0`), spec/crypto.md §4 (Box records: a
+    // rotation's alone): a may-grant holder granting an organization writes nothing in `keys.0`.
+    // One also recording its grantee's box there gets no may-grant exemption: a record needs at
+    // least write, which a reader lacks.
     #[test]
-    fn may_grant_grant_records_its_grantees_boxes_spec_perm_2() {
+    fn may_grant_grant_writes_no_keys_spec_perm_2() {
         let mut lp = LocalPeer::fresh(4, WallMs(1_700_000_000_000));
         lp.sync_all().unwrap();
         let (a, b, c) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
@@ -450,24 +450,23 @@ mod tests {
         let id = *done.commits.last().unwrap();
         lp.sync_all().unwrap();
         let h = lp.peers[3].engine.header(&id).unwrap();
-        let ki = h.aspects.iter().position(|x| x.ak.as_str() == "keys.0" && x.tid == t).unwrap();
-        assert!(lp.peers[3].engine.core.ix.commits.get(&id).unwrap().valid()[ki], "the may-grant grant's records are valid");
-        let noted = lp.peers[3].engine.core.ix.sealed.iter().any(|(k, v)| k.0 == t && v.by.contains(&id) && v.keysets.contains_key(&holder));
-        assert!(noted, "the receiver notes the organization's records");
-        // the may-grant holder grants c and records a box keyed to the admin as well
+        assert!(h.aspect_index(&t, "keys.0").is_none(), "the may-grant grant writes no keys.0");
+        assert!(lp.peers[3].engine.core.ix.commits.get(&id).unwrap().valid().iter().all(|v| *v), "the may-grant grant is valid");
+        // the may-grant holder grants c and records c's box in keys.0 as well
         let s = lp.peers[1].engine.get_typed(&t, &ct::SECRETS).unwrap().unwrap();
-        let ak = s.boxes.keys().find(|k| k.holder == osis_base::Weak(a)).unwrap().clone();
+        let e = s.boxes.keys().find(|k| k.holder == osis_base::Weak(a) && k.role == Role::Read).unwrap().epoch.clone();
         let mut m = Mutation::new();
         crate::flows::put_edge(&mut m, t, c, &read).unwrap();
-        let w = osis_keys::SecretsWrite { sealed: [(ak, Default::default())].into_iter().collect(), ..Default::default() };
-        crate::flows::put_secrets(&mut m, t, &w, true).unwrap();
+        let ck = ct::BoxKey { holder: osis_base::Weak(c), role: Role::Read, epoch: e };
+        let w = osis_keys::KeysWrite { sealed: [(ck, Default::default())].into_iter().collect(), ..Default::default() };
+        crate::flows::put_keysets(&mut m, t, &w).unwrap();
         m.unchecked = true;
         lp.peers[1].engine.core.skip_writer_rules = true;
         let id = lp.peers[1].commit(m).unwrap().unwrap();
         lp.sync_all().unwrap();
         let h = lp.peers[3].engine.header(&id).unwrap();
         let ki = h.aspects.iter().position(|x| x.ak.as_str() == "keys.0").unwrap();
-        assert!(!lp.peers[3].engine.core.ix.commits.get(&id).unwrap().valid()[ki], "a record past its grantee is invalid");
+        assert!(!lp.peers[3].engine.core.ix.commits.get(&id).unwrap().valid()[ki], "a may-grant grant's record is invalid");
     }
     // spec/permissions.md §2 (writing inside an entry it does not create is bad input; a new entry holding the whole grant): a received `roles.0` delta
     // writing inside an entry it did not create is bad input, whoever signed it.
@@ -695,13 +694,13 @@ mod tests {
         let (d, range) = builder.finish().unwrap();
         let own = crate::engine::Owned::Range { src: Source::session(osis_crdt::Session { node: b, nonce: [0; osis_crdt::SESSION_NONCE_LEN] }), lo: range.lo, hi: range.hi };
         let granted = std::collections::BTreeMap::from([((t, g), Role::Read)]);
-        assert!(super::super::validity::grantee_boxes_only(&t, "secrets.0", &d, &granted, &own), "an honest put");
+        assert!(super::super::validity::grantee_boxes_only(&t, &d, &granted, &own), "an honest put");
         // the same put written at the admin's entry dot
         let mut builder = DeltaBuilder::new(&st, Writer::new(ts, a_dot.src.clone(), a_dot.ctr));
         builder.apply(&PathOp { path: vec![PathSeg::Field(0), PathSeg::Key(g_key.to_value())], op: Op::Put(bx.to_value()) }, &view).unwrap();
         let (forged, _) = builder.finish().unwrap();
         assert_eq!(box_entries(&forged).remove(0).0, a_dot);
-        assert!(!super::super::validity::grantee_boxes_only(&t, "secrets.0", &forged, &granted, &own), "a write into the admin's entry");
+        assert!(!super::super::validity::grantee_boxes_only(&t, &forged, &granted, &own), "a write into the admin's entry");
     }
     // spec/permissions.md §1: a record chain reaches its top within `MAX_CHAIN_DEPTH`
     // links; a delta written on a thing deeper is invalid and the rest of its commit applies, at

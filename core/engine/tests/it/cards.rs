@@ -132,7 +132,7 @@ fn a_keys_refresh_does_not_undo_a_move_spec_sync_inbox_1() {
     }
     for i in 0..2 {
         let e = &mut lp.peers[i].engine;
-        let keys = e.current_keys(&acc.thing);
+        let keys = e.current_keys(&acc.thing).unwrap();
         let cards = e.cards_of(&acc.thing).unwrap();
         assert_eq!(cards.len(), 2, "node {i}");
         assert!(named(e, &acc.thing).iter().all(|x| x.1 == i2), "node {i}: every card names the moved inbox");
@@ -202,21 +202,18 @@ fn a_card_snapshot_off_its_path_is_invalid_spec_permissions_5_2() {
     assert!(!lp.peers[0].engine.cards_of(&accs[0]).unwrap().iter().any(|(h, _)| *h == c), "the card is gone at node 0");
 }
 
-// spec/sync-inbox.md §1 (Card): a fresh node paired into A holds the pairing grant (a
-// `keys.0` commit of A) as its offer carries it, without its `keys.0` part, so no card it writes
-// carries that commit. A's card on the profile reaching it first, staleness is judged by what a
-// rewrite would carry: the paired node rewrites the card once and settles, not due again each
-// round. Control: once the grant itself arrives, the card is rewritten carrying it.
+// spec/sync-inbox.md §1 (Card), spec/permissions.md §4 (current `keys.0` commits): a fresh node
+// paired into A, A's card on the profile reaching it before the pairing grant (which writes
+// nothing in A's `keys.0`), rewrites the card once and settles, not due again each round; the
+// grant arriving moves nothing.
 #[test]
-fn a_card_rewrite_settles_on_a_keys_commit_held_by_header_spec_sync_inbox_1() {
+fn a_card_rewrite_settles_for_a_paired_node_spec_sync_inbox_1() {
     let (mut lp, acc) = LocalPeer::one_account(1, 0, T0).unwrap();
     let mut p = osis_engine::local_peer::Peer::new(7, lp.peers[0].engine.now()).unwrap();
     let (node, keys) = (p.engine.tid(), p.engine.node_keys().unwrap());
     let (offer, done) = lp.peers[0].engine.pair(&acc.thing, &node, &keys, Role::Admin).unwrap();
     p.engine.take_pairing(&offer).unwrap();
     p.know(&[acc.thing, acc.profile]).unwrap();
-    let carries = |e: &mut Engine, c: &osis_base::CommitId| e.cards_of(&acc.thing).unwrap().iter().all(|(_, card)| card.keys.iter().filter_map(|b| osis_commit::CommitBlob::decode(b).ok()).any(|b| b.id() == *c));
-    let grant = *done.commits.first().unwrap();
     for id in lp.peers[0].engine.commit_ids() {
         if !done.commits.contains(&id) {
             let pk = lp.peers[0].engine.package(&id).unwrap().unwrap();
@@ -225,12 +222,33 @@ fn a_card_rewrite_settles_on_a_keys_commit_held_by_header_spec_sync_inbox_1() {
     }
     p.engine.refresh_cards().unwrap();
     assert!(!p.engine.refresh_cards().unwrap(), "settled: nothing left to rewrite");
-    assert!(!carries(&mut p.engine, &grant), "the grant, held by its header alone, is not carried");
     for id in &done.commits {
         let pk = lp.peers[0].engine.package(id).unwrap().unwrap();
         p.engine.ingest(&pk.bytes, pk.blobs).unwrap();
     }
-    assert!(p.engine.refresh_cards().unwrap(), "the grant held whole: the card is rewritten");
-    assert!(carries(&mut p.engine, &grant), "carrying the grant");
+    assert!(!p.engine.refresh_cards().unwrap(), "the grant writes no keys.0: nothing to rewrite");
     assert_eq!(p.engine.inbox_of(&acc.thing).unwrap(), Some(acc.inbox));
+}
+
+// spec/permissions.md §4 (current `keys.0` commits: every commit with a write live in the
+// `keys.0` state), spec/sync-inbox.md §1 (Card), spec/wire.md §9 (Holder keys): every role of
+// A0's inbox is rotated after the commit that wrote its sync ID, deposit seed and step. A fresh node
+// taking only the inbox's holder keys (what a card of A0 carries of it) rebuilds its `keys.0`
+// whole, the step's read key among it, so a read key is in force to seal a fire to. Failed when
+// the current commits were the newest rotation commits and the newest `keys.0` commit alone (the
+// sync differential's `New(1), Pair(1), Unpair(0, 2), Run, Strong(0, None, 0), Give(3, 0,
+// Node(0), Reads)`: a stranger never sealed its grant fire).
+#[test]
+fn holder_keys_rebuild_the_whole_keys_state_after_a_rotation_spec_permissions_4() {
+    let mut lp = LocalPeer::new_apart(1, 0, T0).unwrap();
+    let (acc, _) = osis_engine::local_peer::make_account(&mut lp.peers[0].engine).unwrap();
+    let e0 = &mut lp.peers[0].engine;
+    let made = e0.get_typed(&acc.inbox, &ct::KEYS).unwrap().unwrap();
+    e0.rotate_leaving_out(&acc.inbox, &[Role::Sync, Role::Read, Role::Write, Role::Admin], &[]).unwrap().unwrap();
+    let want = e0.get_typed(&acc.inbox, &ct::KEYS).unwrap().unwrap();
+    assert!(want.read != made.read && want.sync_id.is_some() && want.step.is_some(), "every keyset rotated, the rest kept");
+    let keys = e0.holder_keys(&acc.inbox).unwrap();
+    let mut q = osis_engine::local_peer::Peer::new(8, T0).unwrap();
+    q.engine.take_holder_keys(&acc.inbox, &keys, None).unwrap();
+    assert_eq!(q.engine.get_typed(&acc.inbox, &ct::KEYS).unwrap(), Some(want), "the inbox's keys.0 rebuilt whole from its holder keys");
 }

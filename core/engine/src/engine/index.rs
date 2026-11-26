@@ -38,6 +38,7 @@ const BOXES_TO: &[u8] = b"node/boxes to";
 const EPOCH_INTRO: &[u8] = b"node/epoch intro";
 const KEYSETS: &[u8] = b"node/keysets";
 const SEALED: &[u8] = b"node/sealed";
+const BOXED: &[u8] = b"node/boxed";
 const KEYSETS_INVALID: &[u8] = b"node/invalid-keysets";
 const RETENTION: &[u8] = b"node/retention";
 const ORIGINALS: &[u8] = b"node/originals";
@@ -150,12 +151,10 @@ fn by_holder_from(x: &Value) -> Option<BTreeMap<Tid, BTreeSet<osis_crypto::Epoch
 }
 impl Rec for super::SealedAt {
     fn to(&self) -> Value {
-        Value::List(vec![by_holder_to(&self.keysets), by_holder_to(&self.own), self.by.to()])
+        by_holder_to(&self.keysets)
     }
     fn from(v: &Value) -> Option<Self> {
-        let Value::List(f) = v else { return None };
-        let [keysets, own, by] = f.as_slice() else { return None };
-        Some(super::SealedAt { keysets: by_holder_from(keysets)?, own: by_holder_from(own)?, by: Rec::from(by)? })
+        Some(super::SealedAt { keysets: by_holder_from(v)? })
     }
 }
 impl Rec for BoxKey {
@@ -927,6 +926,7 @@ fn write(tx: &mut Tx<'_>, all: bool) -> Result<()> {
     put_map(txn, EPOCH_INTRO, &c.ix.epoch_intro, all)?;
     put_map(txn, KEYSETS, &c.ix.keysets, all)?;
     put_map(txn, SEALED, &c.ix.sealed, all)?;
+    put_map(txn, BOXED, &c.ix.boxed, all)?;
     put_map(txn, KEYSETS_INVALID, &c.ix.keysets_invalid, all)?;
     put_map(txn, RETENTION, &c.ix.retention, all)?;
     put_setmap(txn, ORIGINALS, &c.ix.originals, all)?;
@@ -1107,6 +1107,9 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
     }
     for (k, v) in scan::<(Tid, Role, osis_crypto::Epoch)>(tx, SEALED)? {
         tx.core.ix.sealed.insert(k, dec(&v)?);
+    }
+    for (k, v) in scan::<(Tid, Role, osis_crypto::Epoch)>(tx, BOXED)? {
+        tx.core.ix.boxed.insert(k, dec(&v)?);
     }
     for (k, v) in scan::<(Tid, Role, osis_crypto::Epoch)>(tx, KEYSETS_INVALID)? {
         tx.core.ix.keysets_invalid.insert(k, dec(&v)?);

@@ -103,10 +103,6 @@ fn box_items(actor: &Tid, rcpt: &Recipient, items: &[Item], rng: &mut dyn Crypto
                 }
             },
         };
-        // a holder actor's keysets the box names, recorded beside it in `keys.0` where every
-        // node holding the actor's keysets reads them (spec/crypto.md §4, Stale): a node holding
-        // none of the actor's boxes judges its epochs stale by them
-        out.sealed.insert(key.clone(), box_keysets(&b).iter().copied().collect());
         out.boxes.insert(key, b);
     }
     Ok(true)
@@ -337,6 +333,10 @@ pub fn rotate_leaving_out(actor: &Tid, roles: &BTreeSet<Role>, held: &ActorEpoch
             unboxed.push(m.holder);
         }
     }
+    // each box to a holder actor recorded beside its keyset, naming the keysets the box names
+    // (spec/crypto.md §4 Box records): what makes the new epoch foreign where one is held
+    // invalid or foreign
+    keys.sealed = secrets.boxes.iter().filter(|(k, _)| !k.holder.0.is_public()).map(|(k, b)| (k.clone(), box_keysets(b).into_iter().collect())).collect();
     Ok(Rotation { rotated, secrets, keys, unboxed, names: names.clone(), wrap })
 }
 

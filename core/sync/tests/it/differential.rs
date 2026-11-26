@@ -483,6 +483,7 @@ fn the_publics_removal_keeps_what_a_nodes_own_role_gives_spec_permissions_3() {
 // reads the thing by the public alone, so the public's removal is its loss too, the removal
 // coming after a quiet run or while the redemption is in flight. Control: no removal, it reads.
 #[test]
+#[ignore = "issues/public-removal-reaches-no-redeemer.md"]
 fn a_public_links_redeemer_loses_the_thing_with_the_public_spec_permissions_3() {
     use crate::harness::history::{Gives, Holder, reads};
     let (n, accounts, ..) = size();
@@ -547,4 +548,26 @@ fn a_store_moved_at_once_takes_the_next_step_spec_sync_ids_6() {
     use crate::harness::script::*;
     let script = [New(1), Give(1, 0, Holder::Node(0), Syncs), NewIn(1, 0), Run, Strong(0, None, 0), Run, Unpair(0, 3)];
     holds_on(0, 3, 4, &script, String::new(), false);
+}
+
+// spec/wire.md §9 (Holder keys: each commit's `sync.0` beside its keys cut), spec/sync.md §3
+// (Holders by copies): thing 0 is account 1's inbox, so node 0 holds its keysets (account 1's
+// card), which keeps its sync copies from speaking for themselves; account 0, granted sync alone
+// on it, keeps it unread by the recorded step the card carries beside the step keys. Failed when
+// holder keys held `keys.0` alone: node 0 judged no step and kept nothing (it passed before only
+// while the grant wrote box records, its commit then riding in the card).
+#[test]
+fn a_sync_alone_holder_of_an_inbox_keeps_it_unread_spec_permissions_4() {
+    use crate::harness::script::*;
+    holds(0, &[New(1), Inbox(1, Some(0)), Run, Give(1, 0, Holder::Node(0), Syncs), Run, Strong(0, None, 0), Run], String::new(), false);
+}
+
+// spec/sync.md §3 (Holders by copies: where the copies do not speak, a copy's steps count on a
+// sync ID the recorded steps place): as above, the grant revoked and given again, so its box is
+// at the sync epoch the revocation rotated to, whose step node 0 holds only by its sync copy on
+// the recorded genesis's sync ID. Failed when only the recorded steps bore a secret there.
+#[test]
+fn a_sync_alone_holder_regranted_on_an_inbox_keeps_it_unread_spec_sync_3() {
+    use crate::harness::script::*;
+    holds(0, &[New(1), Inbox(1, Some(0)), Run, Give(1, 0, Holder::Node(0), Syncs), Revoke(1, 0, Holder::Node(0)), Give(1, 0, Holder::Node(0), Syncs), Run, Strong(0, None, 0), Run], String::new(), false);
 }

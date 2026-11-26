@@ -526,7 +526,7 @@ pub(crate) fn cut_into(tx: &mut Tx<'_>, m: &mut Mutation, a: Tid, roles: &BTreeS
     let bare = kem::bare(tx, &a, roles)?;
     let rot = osis_keys::rotate_leaving_out(&a, roles, held, &secrets, &boxing.holders, &boxing.left_out, &carried, &bare, &names, cut, seed, &mut *tx.rng)?;
     put_secrets(m, a, &rot.secrets, false)?;
-    flows::unseal(tx, m, a, &rot.secrets.removed)?;
+    flows::unseal(tx, m, a, roles)?;
     put_keysets(m, a, &rot.keys)?;
     Ok(rot)
 }

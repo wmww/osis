@@ -331,9 +331,11 @@ impl Engine {
     /// `sync.0`; holder H's edge piece, its `roles.0` writing H's edge, its `secrets.0` piece of
     /// H (spec/wire.md §4 Pieces: the part whose box records are keyed with H) with, beside it
     /// where H reads `x`, the rest piece (the history boxes), and its `sync.0`; keys, its
-    /// `keys.0`. Beside a `secrets.0` or `keys.0` part, the commit's edge-class parts on `x`, which that part's
-    /// verdict reads (a may-grant grant's boxes and records are judged from its commit's
-    /// `roles.0` alone, `validity::rotation_required`, `note_required`).
+    /// `keys.0`. Beside a `secrets.0` or `keys.0` part, the commit's edge-class parts on `x`: a
+    /// `secrets.0` part's verdict reads them (a may-grant grant's boxes are judged from its
+    /// commit's `roles.0` alone, `validity::note_required`), and beside `keys.0` they carry the
+    /// edge writes its rotation makes (a removal: a public link's redeemer learns the public's
+    /// removal so, `differential::a_public_links_redeemer_loses_the_thing_with_the_public_*`).
     /// Invariant (security): nothing outside `x`; a box part only beside its edge-class parts;
     /// of `secrets.0` H's piece and, only where H reads `x`, the rest (its history boxes name
     /// `x`'s departed holders), never another holder's: a piece holding another
@@ -521,35 +523,13 @@ impl Engine {
         crate::retention::destroy::mintings(&self.core, t)
     }
 
-    /// The commits of `t`'s current `keys.0` (spec/permissions.md §4): the newest, the rotation
-    /// commits of its newest keyset per role, forks included, and the commits recording boxes
-    /// at those keysets' epochs (spec/crypto.md §4, Stale: a grant's or re-seal's to a holder
-    /// actor). The newest may be a write carrying no keyset (a deposit seed), and a rotation of what `t`
-    /// holds names `t`'s keyset (spec/crypto.md §4).
-    pub fn current_keys(&self, t: &Tid) -> BTreeSet<CommitId> {
-        // per role: the newest n, its keysets' rotation commits, the commits recording boxes there
-        let mut newest: BTreeMap<osis_base::Role, (u64, BTreeSet<CommitId>, BTreeSet<CommitId>)> = BTreeMap::new();
-        let mut intros = BTreeSet::new();
-        for (r, e, _) in self.core.keysets_of(t) {
-            let (r, e) = (&r, &e);
-            let Some((_, c)) = self.core.ix.epoch_intro.get(&(*t, *r, *e)) else { continue };
-            intros.insert(*c);
-            let n = newest.entry(*r).or_default();
-            if e.n() > n.0 {
-                *n = (e.n(), BTreeSet::new(), BTreeSet::new());
-            }
-            if e.n() == n.0 {
-                n.1.insert(*c);
-                n.2.extend(self.core.ix.sealed.get(&(*t, *r, *e)).into_iter().flat_map(|x| x.by.iter().copied()));
-            }
-        }
-        let rotations: BTreeSet<CommitId> = newest.values().flat_map(|x| x.1.iter().copied()).collect();
-        let records: BTreeSet<CommitId> = newest.values().flat_map(|x| x.2.iter().copied()).collect();
-        // the newest but one writing only box records (a grant's or re-seal's, at any epoch): what
-        // carries the deposit seed
-        let recorders: BTreeSet<CommitId> = self.core.sealed_noted(t).flat_map(|x| x.2.by.iter().copied()).collect();
-        let card = self.latest_where(t, "keys.0", |c| intros.contains(c) || !recorders.contains(c));
-        rotations.iter().chain(&records).copied().chain(card).collect()
+    /// `t`'s current `keys.0` commits (spec/permissions.md §4): every held commit whose `keys.0`
+    /// body on `t` has a write live in `t`'s state, a compaction snapshot among them. So they rebuild
+    /// the state whole: the newest keyset per role (forks included) with its box records, and
+    /// whichever commits last wrote the other fields (`sync_id`, `deposit_seed`, `step`).
+    pub fn current_keys(&mut self, t: &Tid) -> Result<BTreeSet<CommitId>> {
+        let t = *t;
+        self.read(|tx| current_keys_in(tx, &t))
     }
 
     /// `t`'s public key record (spec/sync-inbox.md §1): its record and current `keys.0` commits
@@ -559,7 +539,7 @@ impl Engine {
     fn public_key_record_into(&mut self, ev: &Ev, t: &Tid, out: &mut Certs) {
         out.records.insert(*t);
         let mut seeds = BTreeSet::new();
-        for c in self.current_keys(t) {
+        for c in self.current_keys(t).unwrap_or_default() {
             out.add(c, self.cut_parts(&c, t, Cut::Keys));
             self.carried_demotions(ev, t, &c, out);
             seeds.insert((c, *t));
@@ -630,6 +610,32 @@ impl Engine {
 
 /// `Engine::judged_valid`: parts `parts` of `c` are valid here and, for a role commit, every edge
 /// write it makes is applied.
+/// `Engine::current_keys` in `tx`.
+pub(crate) fn current_keys_in(tx: &mut crate::engine::Tx<'_>, t: &Tid) -> Result<BTreeSet<CommitId>> {
+    let ak = Ak::new("keys.0").map_err(|_| crate::Error::Misuse("ak"))?;
+    let Some(dots) = tx.state(t, &ak)?.map(|f| f.live_writes().into_iter().map(|(d, _)| d).collect::<BTreeSet<_>>()) else { return Ok(BTreeSet::new()) };
+    let live: BTreeSet<CommitId> = dots.iter().filter_map(|d| match d.src.kind() {
+        osis_crdt::SourceKind::Commit(c) => Some(*c),
+        _ => None,
+    }).collect();
+    let held: Vec<CommitId> = tx.core.ix.by_aspect.get(&(*t, ak.clone())).into_iter().flatten().map(|x| x.1).collect();
+    let mut out: BTreeSet<CommitId> = held.iter().copied().filter(|c| live.contains(c) && tx.core.ix.commits.contains_key(c)).collect();
+    // a compaction snapshot holds its writes by their own stamps: current where its body holds one
+    for c in held {
+        let Some(m) = tx.core.ix.commits.get(&c).cloned() else { continue };
+        if m.header.kind != osis_commit::Kind::RoleSnapshot {
+            continue;
+        }
+        for ai in m.view.aspect_parts(t, "keys.0").collect::<Vec<_>>() {
+            let Some(f) = crate::apply::held_fragment(tx, &c, ai)? else { continue };
+            if f.live_writes().into_iter().any(|(d, _)| dots.contains(&d)) {
+                out.insert(c);
+            }
+        }
+    }
+    Ok(out)
+}
+
 pub(crate) fn judged_valid(core: &crate::engine::Core, c: &CommitId, parts: &[usize]) -> bool {
     let Some(m) = core.ix.commits.get(c) else { return false };
     if core.ix.pending.contains_key(c) || parts.iter().any(|ai| !m.valid_at(*ai)) {
@@ -686,46 +692,6 @@ mod tests {
         assert!(e.header(&bad).is_some_and(|h| h.ts > e.header(&good).unwrap().ts), "the reader's write is held, later");
         assert_eq!(e.latest_by(&t, "x:a.0", None), Some(good));
         assert_eq!(e.latest_by(&t, "x:a.0", Some(&b)), None);
-    }
-
-    // spec/permissions.md §4 Copies (keys: beside a `keys.0` part, its commit's edge-class parts
-    // on the thing), §2 (May-grant grant: its boxes and records judged from its commit alone):
-    // peer 1, a may-grant reader of A, grants peer 2 on A, recording its box in A's `keys.0`. T,
-    // which A reads, carries A's public key record to peer 3, a reader of T that reads nothing of
-    // A: peer 3 holds the grant's records judged as its granter does. Fails with the keys copy
-    // cut to `keys.0` alone (the records judged an overreach there: no grant beside them).
-    #[test]
-    fn a_may_grant_grants_records_count_beside_its_grant_spec_permissions_4() {
-        use crate::rotation::tests::{edge, independent_thing, synced};
-        use std::collections::BTreeSet;
-        let mut lp = synced(4);
-        let (p1, p2, p3) = (lp.peers[1].engine.tid(), lp.peers[2].engine.tid(), lp.peers[3].engine.tid());
-        let a = independent_thing(&mut lp, 0);
-        lp.peers[0].engine.grant(&a, &p1, &ct::Edge { may_grant: true, ..edge(Role::Read) }).unwrap();
-        lp.sync(0, 1).unwrap();
-        let g = *lp.peers[1].engine.grant(&a, &p2, &edge(Role::Read)).unwrap().commits.last().unwrap();
-        lp.sync(1, 0).unwrap();
-        let t = independent_thing(&mut lp, 0);
-        lp.peers[0].engine.grant(&t, &a, &edge(Role::Read)).unwrap();
-        lp.peers[0].engine.grant(&t, &p3, &edge(Role::Read)).unwrap();
-        let ai = lp.peers[0].engine.header(&g).unwrap().aspect_index(&a, "keys.0").expect("the grant records its box in A's keys.0");
-        assert!(lp.peers[0].engine.judged_valid(&g, &[ai]), "valid at T's admin");
-        assert!(lp.peers[0].engine.certificates(&t).unwrap().commits.get(&g).is_some_and(|p| p.contains(&ai)), "A's public key record under T carries the grant's records");
-        // T's own commits, whole: its unit's bodies
-        let on_t: Vec<_> = lp.peers[0].engine.commit_ids().into_iter().filter(|c| lp.peers[0].engine.header(c).is_some_and(|h| h.aspects.iter().any(|x| x.tid == t))).collect();
-        for c in on_t {
-            let pk = lp.peers[0].engine.package(&c).unwrap().unwrap();
-            lp.deliver(3, &pk).unwrap();
-        }
-        lp.send_certificates(0, 3, &t).unwrap();
-        // A's record, as the record blob under T carries it
-        let e0 = &mut lp.peers[0].engine;
-        let minting = e0.mintings_of(&a)[0].commit;
-        let created = e0.header(&minting).unwrap().aspect_index(&a, "created.0").unwrap();
-        let pk = e0.package_of_parts(&minting, &BTreeSet::from([created])).unwrap().unwrap();
-        lp.deliver(3, &pk).unwrap();
-        // held and valid (cut to `keys.0` alone, invalid there: the copy is not even kept)
-        assert!(lp.peers[3].engine.judged_valid(&g, &[ai]), "the records count at a reader outside A");
     }
 
     /// The keyset of `m` that `t`'s box to `m` at read epoch `e` names, at peer `i`.

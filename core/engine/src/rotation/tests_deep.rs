@@ -1,12 +1,13 @@
 //! A departure below a holder actor, judged by a writer above it (spec/crypto.md §4, Encrypting
-//! under: the box clause, stale boxes at any epoch it follows; model Depth0 `NoLeakDeep`). G holds
-//! a chain of holder actors (X1 in G, X2 in X1, maybe X3 in X2), each with its own admin and
-//! readers; V reads X1 or X2 only and is removed from it. Peers then act in a random order on
-//! partial knowledge (pairwise syncs, rotations due, re-seals). Invariant: a writer of G holding
-//! every commit any peer holds (so every keyset and box record of the chain: no stated limit
-//! applies) writes, after rotating what is due, under no epoch V opens from the secrets it kept
-//! and every box written. Liveness: once every peer but V settles, no epoch is blocked at G's
-//! admin and every holder with key access is boxed.
+//! under: the box clause, stale boxes at any epoch it follows; spec/requirements.md Permissions,
+//! model Depth0 `NoLeakKnowing`). G holds a chain of holder actors (X1 in G, X2 in X1, maybe X3
+//! in X2), each with its own admin and readers; V reads X1 or X2 only and is removed from it.
+//! Peers then act in a random order on partial knowledge (pairwise syncs, rotations due,
+//! re-seals). Invariant (the requirement as written): a writer of G holding every commit any peer
+//! holds (so a knowing keyset of each holder actor above the removal, and every box of the
+//! chain) writes, after rotating what is due, under no epoch V opens from the secrets it kept and
+//! every box written. Liveness: once every peer but V settles, no epoch is blocked at G's admin
+//! and every holder with key access is boxed.
 
 #![allow(clippy::unwrap_used)]
 use super::tests::{Key, Rng, all_boxed, blocked_at, edge, independent_thing, held_by, newest_read, opens_in, settle, synced};
@@ -160,7 +161,7 @@ fn replay(s: u64) -> String {
     format!("OSIS_DEEP_START={s} OSIS_DEEP_SEEDS=1 cargo test -p osis-engine --lib -- --ignored --exact rotation::tests_deep::deep_departure_holds_large_spec_crypto_4")
 }
 
-// spec/crypto.md §4 (encrypting under; holder actors: stale): module doc. The quick size (a property): seeds
+// spec/crypto.md §4 (encrypting under; holder actors: stale), spec/requirements.md Permissions: module doc. The quick size (a property): seeds
 // 0..4.
 #[test]
 #[ignore = "property"]

@@ -153,7 +153,7 @@ fn invalid_writers(core: &Core, m: &Tid, r: Role, k: &Epoch) -> BTreeSet<CommitI
 }
 
 /// Foreign keysets (spec/crypto.md §4 Holder actors, Foreign): a held valid keyset k of role r of
-/// thing x is foreign when its own box records (`SealedAt::own`: written by a commit writing
+/// thing x is foreign when its box records (`Indexes::sealed`: written by a commit writing
 /// k's keyset) name a keyset held invalid or foreign here. So k is foreign when the own records,
 /// followed through held valid keysets, reach one held invalid. One `Foreign` judges any number
 /// of keysets, each (thing, role, keyset) walked once: one found to reach nothing invalid is
@@ -197,7 +197,7 @@ impl Foreign {
         let mut todo = vec![(*x, *k)];
         while let Some((y, j)) = todo.pop() {
             let Some(at) = core.ix.sealed.get(&(y, r, j)) else { continue };
-            for (h, js) in &at.own {
+            for (h, js) in &at.keysets {
                 for i in js {
                     if core.keyset_invalid(h, r, i) {
                         return true;
@@ -582,16 +582,16 @@ pub(crate) fn boxed_keysets(tx: &mut Tx<'_>, a: &Tid, r: Role, e: &Epoch) -> Res
 }
 
 /// The box clauses of `a`'s epoch `e` of role `r` (spec/crypto.md §4, Encrypting under), with
-/// their causes (Left out), `None` when none holds: a stale box (rule 2), a box of its
-/// `secrets.0` state to a holder actor, or a keyset of it a box record of `a`'s `keys.0` names at
-/// `e` (what a node holding none of `a`'s boxes judges by: every box, whoever wrote it, is
-/// recorded beside it), naming a keyset of it held invalid, tainted, or listed by a held valid
-/// keyset of it; or a box so naming a keyset `a` leaves its holder out at (`left_out_at`). The
-/// causes: each listing keyset's rotation commit, the invalid rotation commits of a keyset held
-/// invalid, each keyless grant behind a taint, each counting record's causes.
+/// their causes (Left out), `None` when none holds: a stale box (rule 2), a box to a holder
+/// actor that a held valid `secrets.0` body of `a` puts at `e` (`Indexes::boxed`: whatever later
+/// bodies write at its key, so a rotation foreign here removing it hides nothing) naming a
+/// keyset of it held invalid, tainted, or listed by a held valid keyset of it; or a box so
+/// naming a keyset `a` leaves its holder out at (`left_out_at`). The causes: each listing keyset's rotation commit, the invalid rotation
+/// commits of a keyset held invalid, each keyless grant behind a taint, each left-out record's
+/// causes.
 pub(crate) fn box_blocked(tx: &mut Tx<'_>, a: &Tid, r: Role, e: &Epoch) -> Result<Option<BTreeSet<CommitId>>> {
     let mut named: Vec<(Tid, Epoch)> = boxed_keysets(tx, a, r, e)?.into_iter().flat_map(|(m, ks)| ks.into_iter().map(move |k| (m, k))).collect();
-    named.extend(tx.core.ix.sealed.get(&(*a, r, *e)).into_iter().flat_map(|x| x.keysets.iter().flat_map(|(m, ks)| ks.iter().map(move |k| (*m, *k)))));
+    named.extend(tx.core.ix.boxed.get(&(*a, r, *e)).into_iter().flat_map(|x| x.keysets.iter().flat_map(|(m, ks)| ks.iter().map(move |k| (*m, *k)))));
     named.sort();
     named.dedup();
     let (mut hit, mut causes) = (false, BTreeSet::new());
@@ -656,9 +656,7 @@ pub(crate) fn carried(core: &Core, w: &osis_keys::SecretsWrite, keys: Option<&os
         .chain(out)
         .flat_map(|(m, r, e)| {
             let carries = core.keyset(&m.0, r, &e).into_iter().flat_map(|x| x.demotions.iter().copied());
-            // the epoch's box records travel with its keyset (spec/crypto.md §4, Stale)
-            let records = core.ix.sealed.get(&(m.0, r, e)).into_iter().flat_map(|x| x.by.iter().copied());
-            core.ix.epoch_intro.get(&(m.0, r, e)).map(|x| x.1).into_iter().chain(carries).chain(records).collect::<Vec<_>>()
+            core.ix.epoch_intro.get(&(m.0, r, e)).map(|x| x.1).into_iter().chain(carries).collect::<Vec<_>>()
         })
         .chain(causes)
         .collect();

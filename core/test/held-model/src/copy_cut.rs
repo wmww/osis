@@ -13,11 +13,11 @@
 //! node in the nodes' own world would).
 //!
 //! What R judges (`Seen`): each body's verdict, which of T's epochs it may encrypt under (blocked
-//! where T's box to A names an epoch of A that is superseded or has a stale box or record at R),
+//! where T's box to A names an epoch of A that is superseded or has a stale box at R: R holds
+//! none of A's boxes, so by order alone; a rotation's box records are for Foreign, not modelled),
 //! A's keysets it holds valid (what it seals T to A at), the epochs of X whose secret it takes
 //! from boxes to T, and X's steps. `whole` is every role-class part of each commit a cut names;
-//! `cut` is the rule (`Rule::Spec`) or a control. Honest box records only (a record names what its
-//! commit's box names): a writer recording what it likes is spec/crypto.md §4's stated case.
+//! `cut` is the rule (`Rule::Spec`) or a control.
 use crate::gen::Rng;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -57,7 +57,7 @@ pub struct Edge {
 }
 
 /// A box of the commit's thing at `epoch`, role `role`, to `holder`, naming the holder's keyset
-/// `keyset` (0 for a holder whose keysets are not modelled); in `keys.0`, its record.
+/// `keyset` (0 for a holder whose keysets are not modelled).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct BoxAt {
     pub holder: Id,
@@ -70,8 +70,8 @@ pub struct BoxAt {
 pub enum Delta {
     Roles(Vec<Edge>),
     Secrets(Vec<BoxAt>),
-    /// A keyset of `epoch` (listing every earlier epoch) and box records.
-    Keys { keyset: Option<u32>, records: Vec<BoxAt> },
+    /// A keyset of `epoch` (listing every earlier epoch).
+    Keys { keyset: u32 },
     Sync,
     Content,
 }
@@ -120,15 +120,9 @@ pub struct World {
 pub enum Rule {
     /// spec/permissions.md §4 Copies.
     Spec,
-    /// Control: a `secrets.0` or `keys.0` part without its commit's `roles.0` part on the thing
-    /// (a may-grant grant's boxes and records are judged from the commit alone, §2).
-    NoGrantRoles,
     /// Control: evidence closed over edge-class and `sync.0` parts only (a `keys.0` or `secrets.0`
     /// part brings none).
     NoPartEvidence,
-    /// Control, finding 1's lever: grants and re-seals record nothing a sync ID carries (keys
-    /// carried as keysets alone).
-    NoRecords,
 }
 
 pub type Held = BTreeSet<(Cid, Ak)>;
@@ -183,10 +177,10 @@ impl World {
                 }
             }
         }
-        // A's keys (A holds a role on T): its current `keys.0` commits (the newest keysets and
-        // the records at their epoch) and, carried, those of the epochs T's boxes to A name
+        // A's keys (A holds a role on T): its current `keys.0` commits (the newest keysets) and,
+        // carried, those of the epochs T's boxes to A name
         let newest = self.commits.iter().filter(|c| c.thing == A).filter_map(|c| match c.part(Ak::Keys) {
-            Some(Delta::Keys { keyset: Some(e), .. }) => Some(*e),
+            Some(Delta::Keys { keyset }) => Some(*keyset),
             _ => None,
         });
         let mut epochs: BTreeSet<u32> = newest.max().into_iter().collect();
@@ -196,19 +190,16 @@ impl World {
             }
         }
         for c in self.commits.iter().filter(|c| c.thing == A) {
-            if let Some(Delta::Keys { keyset, records }) = c.part(Ak::Keys) {
-                let writes_keyset = keyset.is_some_and(|e| epochs.contains(&e));
-                let records_there = records.iter().any(|r| epochs.contains(&r.epoch));
-                if writes_keyset || (records_there && rule != Rule::NoRecords) {
+            if let Some(Delta::Keys { keyset }) = c.part(Ak::Keys) {
+                if epochs.contains(keyset) {
                     need.insert((c.id, Ak::Keys));
                 }
             }
         }
-        // a box or record travels with its commit's edge writes on the thing
-        if rule != Rule::NoGrantRoles {
-            let deps: Vec<(Cid, Ak)> = need.iter().filter(|(c, ak)| matches!(ak, Ak::Secrets | Ak::Keys) && self.commit(*c).part(Ak::Roles).is_some()).map(|(c, _)| (*c, Ak::Roles)).collect();
-            need.extend(deps);
-        }
+        // a box travels with its commit's edge writes on the thing (an edge piece holds them
+        // already: the `roles.0` part naming its holder)
+        let deps: Vec<(Cid, Ak)> = need.iter().filter(|(c, ak)| *ak == Ak::Secrets && self.commit(*c).part(Ak::Roles).is_some()).map(|(c, _)| (*c, Ak::Roles)).collect();
+        need.extend(deps);
         // closed over the evidence of each named part
         let mut work: Vec<(Cid, Ak)> = need.iter().copied().collect();
         while let Some((c, ak)) = work.pop() {
@@ -352,7 +343,7 @@ impl<'a> Judge<'a> {
     }
 
     /// A role-class part other than `roles.0` (spec/permissions.md §3; §2 May-grant grant: boxes
-    /// and records to its grantees only, judged from the commit alone).
+    /// to its grantees only, judged from the commit alone).
     fn part(&self, c: &Commit, ak: Ak) -> V {
         if c.hops.is_empty() {
             // a thing minted with a key writing itself by its record's key
@@ -360,7 +351,7 @@ impl<'a> Judge<'a> {
         }
         let boxes: Vec<BoxAt> = match c.part(ak) {
             Some(Delta::Secrets(bs)) => bs.clone(),
-            Some(Delta::Keys { records, .. }) => records.clone(),
+            Some(Delta::Keys { .. }) => Vec::new(),
             Some(Delta::Sync) => return self.along(c, Role::Admin),
             _ => return V::Invalid,
         };
@@ -379,32 +370,16 @@ impl<'a> Judge<'a> {
         let w = self.w;
         let mut out = Seen::default();
         let valid = |c: &Commit, ak: Ak| self.held.contains(&(c.id, ak)) && self.part(c, ak) == V::Valid;
-        // the nodes' keysets R holds: a keyset is superseded below the newest held
-        let mut newest: BTreeMap<Id, u32> = BTreeMap::new();
-        for c in w.commits.iter().filter(|c| w.known.contains(&c.id)) {
-            if let Some(Delta::Keys { keyset: Some(m), .. }) = c.part(Ak::Keys) {
-                let n = newest.entry(c.thing).or_insert(0);
-                *n = (*n).max(*m);
-            }
-        }
-        let superseded = |b: &BoxAt| newest.get(&b.holder).is_some_and(|m| b.keyset < *m);
-        // A's keysets, superseded epochs and stale boxes (spec/crypto.md §4 Stale, Box records)
-        let mut stale: BTreeSet<u32> = BTreeSet::new();
+        // A's keysets: R reads none of A's boxes, so an epoch of A is blocked by order alone
         for c in w.commits.iter().filter(|c| c.thing == A) {
             if valid(c, Ak::Keys) {
-                if let Some(Delta::Keys { keyset, records }) = c.part(Ak::Keys) {
-                    out.a_keysets.extend(*keyset);
-                    stale.extend(records.iter().filter(|b| superseded(b)).map(|b| b.epoch));
-                }
-            }
-            if valid(c, Ak::Secrets) {
-                if let Some(Delta::Secrets(bs)) = c.part(Ak::Secrets) {
-                    stale.extend(bs.iter().filter(|b| superseded(b)).map(|b| b.epoch));
+                if let Some(Delta::Keys { keyset }) = c.part(Ak::Keys) {
+                    out.a_keysets.insert(*keyset);
                 }
             }
         }
         let newest_a = out.a_keysets.iter().max().copied();
-        let blocked_a = |e: u32| stale.contains(&e) || newest_a.is_some_and(|n| e < n);
+        let blocked_a = |e: u32| newest_a.is_some_and(|n| e < n);
         // T: bodies along [node, A, T]; rotations boxing A
         for c in w.commits.iter().filter(|c| c.thing == T) {
             match c.part(Ak::Secrets) {
@@ -472,8 +447,8 @@ pub fn world(seed: u64) -> World {
     let rd = |holder, epoch, keyset| BoxAt { holder, role: Role::Read, epoch, keyset };
     // A's and X's mintings, T's first rotation boxing A
     let b = vec![rd(1, 0, 0)];
-    push(&mut w, 1, A, vec![(1, A)], vec![Delta::Keys { keyset: Some(0), records: b.clone() }, Delta::Secrets(b), Delta::Sync]);
-    push(&mut w, XA, X, vec![(XA, X)], vec![Delta::Keys { keyset: Some(0), records: vec![] }, Delta::Secrets(vec![]), Delta::Sync]);
+    push(&mut w, 1, A, vec![(1, A)], vec![Delta::Keys { keyset: 0 }, Delta::Secrets(b), Delta::Sync]);
+    push(&mut w, XA, X, vec![(XA, X)], vec![Delta::Keys { keyset: 0 }, Delta::Secrets(vec![]), Delta::Sync]);
     push(&mut w, 1, T, vec![(1, A), (A, T)], vec![Delta::Secrets(vec![rd(A, 0, 0)])]);
     let events = 4 + r.below(11);
     for _ in 0..events {
@@ -508,7 +483,7 @@ pub fn world(seed: u64) -> World {
                         boxes.push(rd(o, t.a_epoch, t.keyset[&o]));
                     }
                 }
-                push(&mut w, s, A, vec![(s, A)], vec![Delta::Roles(vec![Edge { holder: g, role: Some(role), may_grant: mg }]), Delta::Secrets(boxes.clone()), Delta::Keys { keyset: None, records: boxes }]);
+                push(&mut w, s, A, vec![(s, A)], vec![Delta::Roles(vec![Edge { holder: g, role: Some(role), may_grant: mg }]), Delta::Secrets(boxes)]);
                 if sr == Role::Admin || !t.a.contains_key(&g) {
                     t.a.insert(g, (role, mg));
                 }
@@ -520,7 +495,7 @@ pub fn world(seed: u64) -> World {
                 t.a_epoch += 1;
                 let holders: Vec<Id> = t.a.keys().copied().collect();
                 let boxes: Vec<BoxAt> = holders.into_iter().map(|n| rd(n, t.a_epoch, seen_keyset(&mut r, &t, n))).collect();
-                push(&mut w, s, A, vec![(s, A)], vec![Delta::Keys { keyset: Some(t.a_epoch), records: boxes.clone() }, Delta::Secrets(boxes)]);
+                push(&mut w, s, A, vec![(s, A)], vec![Delta::Keys { keyset: t.a_epoch }, Delta::Secrets(boxes)]);
             }
             5 => {
                 // an admin removes a node
@@ -539,7 +514,7 @@ pub fn world(seed: u64) -> World {
                 let n = r.pick(&nodes);
                 let m = t.keyset[&n] + 1;
                 t.keyset.insert(n, m);
-                let c = push(&mut w, n, n, vec![], vec![Delta::Keys { keyset: Some(m), records: vec![] }]);
+                let c = push(&mut w, n, n, vec![], vec![Delta::Keys { keyset: m }]);
                 if r.chance(60) {
                     w.known.push(c);
                 }
@@ -577,7 +552,7 @@ pub fn world(seed: u64) -> World {
                 if r.chance(60) {
                     t.x_epoch += 1;
                     let boxes: Vec<BoxAt> = t.x.keys().filter(|n| **n != XA).map(|n| rd(*n, t.x_epoch, 0)).collect();
-                    push(&mut w, XA, X, vec![(XA, X)], vec![Delta::Keys { keyset: Some(t.x_epoch), records: vec![] }, Delta::Secrets(boxes)]);
+                    push(&mut w, XA, X, vec![(XA, X)], vec![Delta::Keys { keyset: t.x_epoch }, Delta::Secrets(boxes)]);
                 } else {
                     let s = if t.x.contains_key(&H) && r.chance(40) { H } else { XA };
                     push(&mut w, s, X, vec![(s, X)], vec![Delta::Sync]);

@@ -1487,7 +1487,7 @@ impl Engine {
             return Err(crate::error::Error::Permission { tid: *a, needs: osis_base::Role::Admin });
         }
         self.take_holder_keys(node, keys, None)?;
-        if self.current_keys(node).is_empty() {
+        if self.current_keys(node)?.is_empty() {
             return Err(crate::error::Error::BadInput("pairing: the keys shown are not the node's"));
         }
         let edge = osis_schema::core_types::Edge { role, until: None, may_grant: false, retain: false, floor: None };

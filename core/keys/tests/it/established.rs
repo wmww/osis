@@ -400,7 +400,7 @@ fn rewrite_then_invalidated_keeps_rotation() {
     let s0 = v.read.secret(&w.e0).unwrap().clone();
     let mut again = osis_keys::SecretsWrite::default();
     again.history.insert(history_key(Role::Read, &w.e0), osis_crypto::seal_history(&s0, &w.a, Role::Read, &w.e0, &osis_crypto::HistoryEntry { earlier: Vec::new(), names: osis_keys::Names::default().to_value(), floor: 0, roles: Vec::new() }).unwrap());
-    let ks = KeysWrite { keysets: [(Role::Read, osis_keys::keyset(&w.e0, &s0, &Default::default(), &Default::default(), true))].into_iter().collect() };
+    let ks = KeysWrite { keysets: [(Role::Read, osis_keys::keyset(&w.e0, &s0, &Default::default(), &Default::default(), true))].into_iter().collect(), ..Default::default() };
     assert!(again.applied(&mut v, cid(2), &ks).unwrap());
     assert_eq!(v.read.get(&w.e0).unwrap().rotations.len(), 2);
     v.invalidate(&cid(2));

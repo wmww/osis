@@ -83,40 +83,34 @@ pub(crate) fn put_secrets(m: &mut Mutation, actor: Tid, w: &SecretsWrite, new_on
     for (k, h) in &w.history {
         put(m, 1, k.to_value(), Value::Bytes(h.clone()))?;
     }
-    // each box's record (spec/crypto.md §4, Stale), written as the box is
-    for (k, ks) in &w.sealed {
-        let v = ks.iter().map(osis_keys::aspects::to_schema).collect::<BTreeSet<ct::Epoch>>().to_value();
-        if new_only {
-            m.op(actor, &ct::KEYS, PathOp { path: vec![PathSeg::Field(SEALED), PathSeg::Key(k.to_value())], op: Op::Put(v) })?;
-        } else {
-            m.op(actor, &ct::KEYS, PathOp { path: vec![PathSeg::Field(SEALED)], op: Op::Remove(k.to_value()) })?;
-            m.op(actor, &ct::KEYS, PathOp { path: vec![PathSeg::Field(SEALED), PathSeg::Key(k.to_value())], op: Op::Set(v) })?;
-        }
-    }
     Ok(())
 }
 
-/// `keys.0`'s field of box records (spec/crypto.md §4, Stale; spec/wire.md §7).
+/// `keys.0`'s field of box records (spec/crypto.md §4 Box records; spec/wire.md §7).
 pub(crate) const SEALED: u64 = 8;
 
-/// Removes from `m` the records of `actor`'s boxes `removed` that its `keys.0` state holds: a
-/// record goes with its box (a rotation removing the boxes at the epochs it supersedes).
-pub(crate) fn unseal(tx: &mut Tx<'_>, m: &mut Mutation, actor: Tid, removed: &BTreeSet<ct::BoxKey>) -> Result<()> {
-    if removed.is_empty() {
-        return Ok(());
-    }
+/// Removes from `m` every record of `actor`'s `keys.0` state at the roles `roles` a rotation
+/// rotates: its records replace them, as its keysets replace theirs (spec/crypto.md §4 Box
+/// records).
+pub(crate) fn unseal(tx: &mut Tx<'_>, m: &mut Mutation, actor: Tid, roles: &BTreeSet<osis_base::Role>) -> Result<()> {
     let held = Core::keys_in(tx, &actor)?.map(|k| k.sealed).unwrap_or_default();
-    for k in removed.iter().filter(|k| held.contains_key(k)) {
+    for k in held.keys().filter(|k| roles.contains(&k.role)) {
         m.op(actor, &ct::KEYS, PathOp { path: vec![PathSeg::Field(SEALED)], op: Op::Remove(k.to_value()) })?;
     }
     Ok(())
 }
 
-/// Writes the rotated roles' keysets into `m` (whole keysets: the field is replaced).
+/// Writes the rotated roles' keysets into `m` (whole keysets: the field is replaced) and the
+/// records of the rotation's boxes, each as remove + put (spec/crypto.md §4 Box records).
 pub(crate) fn put_keysets(m: &mut Mutation, actor: Tid, w: &KeysWrite) -> Result<()> {
     for (role, ks) in &w.keysets {
         let f = osis_keys::aspects::keyset_field(*role);
         m.op(actor, &ct::KEYS, PathOp { path: vec![PathSeg::Field(f)], op: Op::Replace(Some(ks.clone()).to_value()) })?;
+    }
+    for (k, ks) in &w.sealed {
+        let v = ks.iter().map(osis_keys::aspects::to_schema).collect::<BTreeSet<ct::Epoch>>().to_value();
+        m.op(actor, &ct::KEYS, PathOp { path: vec![PathSeg::Field(SEALED)], op: Op::Remove(k.to_value()) })?;
+        m.op(actor, &ct::KEYS, PathOp { path: vec![PathSeg::Field(SEALED), PathSeg::Key(k.to_value())], op: Op::Set(v) })?;
     }
     Ok(())
 }

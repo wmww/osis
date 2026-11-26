@@ -462,7 +462,7 @@ impl Engine {
     }
 
     /// Whether held commit `c` introduces a keyset of `t` (its rotation, `Indexes::epoch_intro`):
-    /// not merely a `keys.0` part (a grant's box records write one too). Tests: delivering the
+    /// not merely a `keys.0` part (a deposit seed or step write is one too). Tests: delivering the
     /// keyset commits apart.
     pub fn writes_keyset(&self, t: &Tid, c: &CommitId) -> bool {
         self.core.ix.epoch_intro.iter().any(|(k, v)| k.0 == *t && v.1 == *c)
@@ -743,6 +743,7 @@ fn tables(ix: &super::Indexes) -> Vec<(&'static str, &dyn Table)> {
         ("own_held", &*ix.own_held),
         ("own_replaces", &*ix.own_replaces),
         ("sealed", &*ix.sealed),
+        ("boxed", &*ix.boxed),
         ("leaving", &*ix.leaving),
         ("dated", &*ix.dated),
         ("leave_from", &*ix.leave_from),

@@ -120,9 +120,9 @@ fn commits_of(f: &Fragment) -> std::collections::BTreeSet<CommitId> {
 }
 
 /// The box records a `keys.0` body puts (a delta's puts, a snapshot's live entries;
-/// spec/crypto.md §4, Stale), each naming the keysets its box names, and whether it is its
-/// epoch's own (`SealedRec::own`): written by a commit that wrote the keyset of that epoch the body
-/// writes (`written`, per role).
+/// spec/crypto.md §4 Box records), each naming the keysets its box names, that a commit wrote
+/// with the keyset of its epoch the body writes (`written`, per role): a record written
+/// otherwise counts for nothing.
 fn sealed_recs(body: &Fragment, written: &std::collections::BTreeMap<Role, (osis_crypto::Epoch, std::collections::BTreeSet<CommitId>)>) -> Vec<SealedRec> {
     let Some(m) = map(field(body, crate::flows::SEALED)) else { return Vec::new() };
     let set = Type::Set(Box::new(Type::Named("epoch".into(), Vec::new())));
@@ -138,8 +138,10 @@ fn sealed_recs(body: &Fragment, written: &std::collections::BTreeMap<Role, (osis
             if let osis_crdt::SourceKind::Commit(c) = dot.src.kind() {
                 by.insert(*c);
             }
-            let own = written.get(&k.role).is_some_and(|(e, cs)| *e == epoch && !cs.is_disjoint(&by));
-            Some(SealedRec { role: k.role, epoch, holder: k.holder.0, keysets: ks.iter().filter_map(|x| osis_keys::aspects::from_schema(x).ok()).collect(), own })
+            if !written.get(&k.role).is_some_and(|(e, cs)| *e == epoch && !cs.is_disjoint(&by)) {
+                return None;
+            }
+            Some(SealedRec { role: k.role, epoch, holder: k.holder.0, keysets: ks.iter().filter_map(|x| osis_keys::aspects::from_schema(x).ok()).collect() })
         })
         .collect();
     out.sort();
@@ -175,8 +177,12 @@ pub(crate) fn forget_dropped(tx: &mut Tx<'_>, h: &Header, ai: usize, bodies: &[F
     if a.ak.as_str() == "keys.0" {
         return rebuild_keysets(tx, &std::collections::BTreeSet::from([a.tid]));
     }
-    if h.kind != Kind::Role || a.ak.as_str() != "secrets.0" {
+    if a.ak.as_str() != "secrets.0" {
         return Ok(());
+    }
+    if h.kind != Kind::Role {
+        // the boxes Stale reads go with the body (`Indexes::boxed`)
+        return rebuild_keysets(tx, &std::collections::BTreeSet::from([a.tid]));
     }
     let mut gone: std::collections::BTreeSet<(Tid, Value)> = bodies.iter().flat_map(written_boxes).map(|(bk, k)| (bk.holder.0, k.clone())).collect();
     let ids: Vec<CommitId> = tx.core.ix.by_aspect.get(&(a.tid, a.ak.clone())).into_iter().flatten().map(|x| x.1).collect();
@@ -196,7 +202,8 @@ pub(crate) fn forget_dropped(tx: &mut Tx<'_>, h: &Header, ai: usize, bodies: &[F
     for (m, k) in gone {
         tx.core.ix.boxes_to.remove(&m, &(a.tid, k));
     }
-    Ok(())
+    // the boxes Stale reads go with the body (`Indexes::boxed`)
+    rebuild_keysets(tx, &std::collections::BTreeSet::from([a.tid]))
 }
 
 /// Notes the keysets a valid `keys.0` body of `actor` writes (`KeysBody::recs`, or a dropped part's
@@ -248,20 +255,37 @@ pub(crate) fn keyset_kem(tx: &mut Tx<'_>, m: &Tid, r: Role, e: &osis_crypto::Epo
     Ok(super::held_part(tx, &id, ai)?.and_then(|d| pick(&KeysBody::of(d.fragment()).recs)))
 }
 
-/// Notes the box records a valid `keys.0` body of `actor` (commit `id`) puts (`KeysBody::sealed`):
-/// what Stale reads at the epochs they key, and the commit placed with those epochs' keysets.
-pub(crate) fn note_sealed(core: &mut Core, id: &CommitId, actor: &Tid, recs: &[SealedRec]) {
+/// Notes the box records a valid `keys.0` body of `actor` puts (`KeysBody::sealed`): what
+/// Foreign reads at the epochs they key.
+pub(crate) fn note_sealed(core: &mut Core, actor: &Tid, recs: &[SealedRec]) {
     for x in recs {
         let key = (*actor, x.role, x.epoch);
         let mut at = core.ix.sealed.get(&key).cloned().unwrap_or_default();
         let before = at.clone();
         at.keysets.entry(x.holder).or_default().extend(x.keysets.iter().copied());
-        if x.own {
-            at.own.entry(x.holder).or_default().extend(x.keysets.iter().copied());
-        }
-        at.by.insert(*id);
         if at != before {
             core.ix.sealed.insert(key, at);
+            core.touch();
+        }
+    }
+}
+
+/// Notes the boxes to holder actors a valid `secrets.0` body of `actor` puts: what Stale reads at
+/// the epochs they key, kept whatever later bodies write at their keys (a rotation foreign here
+/// removes boxes at epochs it does not supersede here; spec/crypto.md §4 Stale).
+fn note_boxed(core: &mut Core, actor: &Tid, body: &Fragment) {
+    for (k, b) in secrets_write(body).boxes {
+        let Ok(epoch) = osis_keys::aspects::from_schema(&k.epoch) else { continue };
+        let ks = osis_keys::box_keysets(&b);
+        if ks.is_empty() {
+            continue;
+        }
+        let key = (*actor, k.role, epoch);
+        let mut at = core.ix.boxed.get(&key).cloned().unwrap_or_default();
+        let before = at.clone();
+        at.keysets.entry(k.holder.0).or_default().extend(ks);
+        if at != before {
+            core.ix.boxed.insert(key, at);
             core.touch();
         }
     }
@@ -280,9 +304,10 @@ fn note_invalid(core: &mut Core, id: &CommitId, actor: &Tid, keysets: &[KeysetRe
     }
 }
 
-/// Re-derives `epoch_intro` and `keysets` of `actors` from their valid `keys.0` parts
-/// (after validity flips, drops, and at load once validity is judged): an invalid write (a
-/// removed admin's backdated rotation) never introduces an epoch nor makes one held.
+/// Re-derives `epoch_intro`, `keysets`, `sealed` and `boxed` of `actors` from their valid
+/// `keys.0` and `secrets.0` parts (after validity flips, drops, and at load once validity is
+/// judged): an invalid write (a removed admin's backdated rotation) never introduces an epoch,
+/// makes one held, or puts a box Stale reads.
 pub(crate) fn rebuild_keysets(tx: &mut Tx<'_>, actors: &std::collections::BTreeSet<Tid>) -> Result<()> {
     if actors.is_empty() {
         return Ok(());
@@ -297,6 +322,10 @@ pub(crate) fn rebuild_keysets(tx: &mut Tx<'_>, actors: &std::collections::BTreeS
         let sealed: Vec<(Role, osis_crypto::Epoch)> = tx.core.sealed_noted(a).map(|x| (x.0, x.1)).collect();
         for (r, e) in sealed {
             tx.core.ix.sealed.remove(&(*a, r, e));
+        }
+        let boxed: Vec<(Role, osis_crypto::Epoch)> = tx.core.boxed_noted(a).map(|x| (x.0, x.1)).collect();
+        for (r, e) in boxed {
+            tx.core.ix.boxed.remove(&(*a, r, e));
         }
         let invalid: Vec<(Role, osis_crypto::Epoch)> = tx.core.keysets_invalid_noted(a).map(|x| (x.0, x.1)).collect();
         for (r, e) in invalid {
@@ -324,7 +353,21 @@ pub(crate) fn rebuild_keysets(tx: &mut Tx<'_>, actors: &std::collections::BTreeS
             if let Some(d) = super::held_part(tx, &id, ai)? {
                 let body = KeysBody::of(d.fragment());
                 note_keysets(tx.core, &m.header, &id, a, &body.recs);
-                note_sealed(tx.core, &id, a, &body.sealed);
+                note_sealed(tx.core, a, &body.sealed);
+            }
+        }
+        // the boxes of every valid `secrets.0` part held (each piece, or a snapshot)
+        let sk = osis_base::Ak::new("secrets.0").map_err(|_| crate::Error::Misuse("ak"))?;
+        let ids: Vec<CommitId> = tx.core.ix.by_aspect.get(&(*a, sk.clone())).into_iter().flatten().map(|x| x.1).collect();
+        for id in ids {
+            let Some(m) = tx.core.ix.commits.get(&id).cloned().filter(|m| m.header.kind.is_role()) else { continue };
+            for ai in m.aspect_parts(a, &sk).collect::<Vec<_>>() {
+                if !m.valid_at(ai) {
+                    continue;
+                }
+                if let Some(d) = super::held_part(tx, &id, ai)? {
+                    note_boxed(tx.core, a, d.fragment());
+                }
             }
         }
     }
@@ -558,9 +601,18 @@ pub(crate) fn before_join(tx: &mut Tx<'_>, h: &Header, id: &CommitId, parts: &su
         let (Some(a), Some(k)) = (h.aspects.get(*ai), parts.keys(i)) else { continue };
         if valid.get(*ai).copied().unwrap_or(false) {
             note_keysets(tx.core, h, id, &a.tid, &k.recs);
-            note_sealed(tx.core, id, &a.tid, &k.sealed);
+            note_sealed(tx.core, &a.tid, &k.sealed);
         } else {
             note_invalid(tx.core, id, &a.tid, &k.recs);
+        }
+    }
+    // the boxes every valid `secrets.0` part puts, a snapshot's included (`Indexes::boxed`)
+    for (ai, d) in parts.all() {
+        if let Some(a) = h.aspects.get(*ai).filter(|a| a.ak.as_str() == "secrets.0")
+            && h.kind.is_role()
+            && valid.get(*ai).copied().unwrap_or(false)
+        {
+            note_boxed(tx.core, &a.tid, d.fragment());
         }
     }
     if h.kind != Kind::Role {

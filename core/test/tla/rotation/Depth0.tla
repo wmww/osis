@@ -143,10 +143,8 @@ GNow(dn) == GAll \ {<<dp[2], dp[1]>> : dp \in {q \in dn : ActDep(q)}}
 \* be learned before the keysets its boxes name (carried as separate blobs);
 \* FALSE: they come along
 Late == FALSE
-\* box records (spec/crypto.md \S 4, Stale): a rotation records the
-\* keyset it seals each holder actor at (pf, every node holding the keyset
-\* reads it), and a record naming a stale keyset makes its epoch stale as a
-\* box does
+\* pf: the keysets a rotation seals each holder actor at, read only by the
+\* rejected AsOf rule below (Stale reads boxes alone, spec/crypto.md \S 4)
 \* a writer through holder actors whose proofs are not judged (under the
 \* rejected Possession rule, a keyset the node holds no valid body of before
 \* the commit shows its holder there): Bogus {<<node, actor, how>>} (Eager
@@ -180,29 +178,11 @@ Possession == FALSE
 \* the newest keyset it holds the secret of, then rotates a sealing h at that
 \* keyset (notes/holder-actors.md, Carried demotions, the first leak)
 Rogue == {}
-\* box records, judged alone (spec/crypto.md \S 4 Stale, Seal): BoxBlind
-\* {<<node, actor>>}: the node holds the actor's keysets (certificates under
-\* a target's sync ID) and none of its boxes, so it judges the actor's epochs by
-\* their records (pf) alone; PfJudge: an epoch whose secret a node lacks is
-\* blocked there when its record names a stale keyset (whatever the node's
-\* role on the actor); FALSE: such an epoch is judged by order only
+\* a node that holds an actor's keysets (certificates under a target's sync
+\* ID) and none of its boxes: BoxBlind {<<node, actor>>}; it judges that
+\* actor's epochs by order (spec/crypto.md \S 4 Stale reads boxes alone; a
+\* grant or re-seal records nothing)
 BoxBlind == {}
-PfJudge == FALSE
-\* PfJudge for encrypting as for sealing (built: one rule); FALSE (negative
-\* control): only for sealing a holder actor, so an epoch boxing such an
-\* epoch is judged by order alone for encrypting under it
-PfEnc == TRUE
-\* LiePf {<<node, actor>>}: the node's rotations and re-seals of the actor
-\* record no keyset (a writer records what it likes: a record naming nothing,
-\* or keysets nobody holds, or fresh ones, is never stale) while boxing as Seal
-\* gives it
-LiePf == {}
-\* box records, written by every box (spec/crypto.md \S 4 Stale): a re-seal (a
-\* grant too: a Hidden grant's box is a knowing admin's re-seal) records the
-\* keyset it boxes an actor at, and a node learning the re-seal holds the
-\* record whether or not it holds the box (BoxBlind); FALSE: only rotations
-\* record (a grant's or re-seal's record is missing)
-RsPf == TRUE
 \* spec/crypto.md §4 Encrypting under: a box carrying an epoch's secret is
 \* encrypted under its recipient's key, not under that epoch, so a re-seal
 \* boxes a current holder at every current epoch whose secret the node holds,
@@ -349,9 +329,6 @@ StaleK(x, k) == k \in kn[x] /\ (~Valid(x, k) \/ Keyless(x, k)
 \* keysets precede every rotation; a backdated rotation follows none
 Prior(x, k, e) == k \in kn[x] /\ (k <= Len(ActSeq) \/ (k < e /\ ep[e].bog # "back"))
 StaleAt(x, e) == \/ \E b \in BoxesAt(x, e) : b.key.t = "k" /\ StaleK(x, b.key.k)
-                 \/ \E k \in ep[e].pf : StaleK(x, k)
-                 \/ RsPf /\ \E r \in krs[x] : /\ r.e = e /\ r.key.t = "k" /\ <<r.by, ep[e].act>> \notin LiePf
-                                            /\ StaleK(x, r.key.k)
                  \/ AsOf /\ \E k \in ep[e].pf : ~Prior(x, k, e) /\ KOf(x, ep[k].act) # {}
 \* an epoch whose secret x lacks covers nothing (its history box is closed)
 Covers(x, e, a) == \A dp \in Known(x) : dp[2] = a => (e \in Sec(x) /\ dp \in ep[e].knows)
@@ -371,21 +348,17 @@ Before(x, k) == \E dp \in Known(x) : /\ dp[2] = ep[k].act /\ dp \notin ep[k].at
 \* epochs x may not encrypt under, of those whose secret it holds: missing a
 \* departure it knows; for an admin, stale or keyless; boxing an actor at
 \* one (sealing there was encrypting under it), any depth: for an admin
-\* (Walk "rotator") or for any holder of the secret; enc: for encrypting
-\* (~PfEnc judges stale records only for sealing)
-BlockedAs(x, enc) ==
+\* (Walk "rotator") or for any holder of the secret; one rule for sealing a
+\* holder actor at a keyset (Rotate, Reseal) and for encrypting under an epoch
+\* (Write, a rotation due, a history add)
+Blocked(x) ==
   LET sx == Sec(x)
   IN Fix(LAMBDA S : S \cup {k \in sx : (Walk # "rotator" \/ IsAdm(x, ep[k].act)) /\
                                      \E b \in BoxesAt(x, k) : b.key.t = "k" /\ b.key.k \in S},
          {k \in sx : \/ ~CoversBlk(x, k, ep[k].act) /\ Judged(x, ep[k].act)
                      \/ IsAdm(x, ep[k].act) /\ (StaleAt(x, k) \/ Keyless(x, k))
                      \/ GoneBox(x, k)}
-         \cup {k \in kn[x] \ sx : Order /\ Before(x, k)}
-         \cup {k \in kn[x] \ sx : PfJudge /\ (PfEnc \/ ~enc) /\ StaleAt(x, k)})
-\* for sealing a holder actor at a keyset (Rotate, Reseal)
-Blocked(x) == BlockedAs(x, FALSE)
-\* for encrypting under an epoch (Write, a rotation due, a history add)
-BlockedEnc(x) == BlockedAs(x, TRUE)
+         \cup {k \in kn[x] \ sx : Order /\ Before(x, k)})
 
 Anchors(x, a, h) ==
   {k \in Named({b \in UNION {BoxesAt(x, e) : e \in Cur(x, a)} : b.h = h}) :
@@ -426,7 +399,7 @@ Rotate(x, a, extra, race) ==
               by |-> x,
               bx |-> {[h |-> h, key |-> seal(h), by |-> x] :
                         h \in boxed},
-              pf |-> IF <<x, a>> \in LiePf THEN {} ELSE {SealK(x, a, h) : h \in boxed \cap Acts},
+              pf |-> {SealK(x, a, h) : h \in boxed \cap Acts},
               hist |-> {e \in Sec(x) : ep[e].act = a},
               dhist |-> IF a \in DepActs THEN DSec(Sec(x), a) ELSE {},
               knows |-> {dp \in Known(x) \cup extra : dp[2] = a},
@@ -480,7 +453,7 @@ MayRot(x, y, a) == IsAdm(y, a) \/ (y \in Learners /\ Through(y, a) /\ ~OffPath(x
 \* departure, with a stale box, or boxing a keyless holder
 OtherDue(x, a) ==
   LET e == NewestV(x, a)
-  IN \/ e \in BlockedEnc(x)
+  IN \/ e \in Blocked(x)
      \/ \E f \in Cur(x, a) : (IF f \in Sec(x) THEN ~Covers(x, f, a) ELSE Before(x, f)) \/ StaleAt(x, f)
      \/ \E f \in Cur(x, a) : Keyless(x, f) \/ GoneBox(x, f)
 \* a dependent thing made independent: x wrote it under a derived secret
@@ -672,7 +645,7 @@ LogAt(x, dp, l) ==
 Reseal(x, a, h) ==
   /\ a \notin dst /\ Writer(x, a) /\ h \in MemV(x, a, {})
   /\ \E e \in Cur(x, a) \cap Sec(x) :
-       /\ CarryFree \/ (Covers(x, e, a) /\ e \notin BlockedEnc(x))
+       /\ CarryFree \/ (Covers(x, e, a) /\ e \notin Blocked(x))
        /\ ~\E b \in BoxesAt(x, e) : b.h = h
        /\ LET k == IF h \in Acts THEN SealK(x, a, h) ELSE 0
               r == [e |-> e, h |-> h, key |-> IF h \in Acts THEN KK(k) ELSE DK(h),
@@ -692,7 +665,7 @@ Carry(x, e) == {f \in Sec(x) \ Cur(x, ep[e].act) : ep[e].act = ep[f].act /\ Hone
 \* lists: a history add is due (spec/crypto.md §4, History box)
 AddDue(x, a, e) ==
   /\ a \notin dst
-  /\ e \in Cur(x, a) \cap Sec(x) /\ Covers(x, e, a) /\ e \notin BlockedEnc(x)
+  /\ e \in Cur(x, a) \cap Sec(x) /\ Covers(x, e, a) /\ e \notin Blocked(x)
   /\ ~(Carry(x, e) \subseteq ListedAt(x, e))
 HistAdd(x, a, e) ==
   /\ AddDue(x, a, e)
@@ -723,18 +696,6 @@ Beaten(x, a, dp) ==
   /\ \A h \in KeyAct(a) : \E j \in kn[x] :
         /\ ep[j].act = h /\ Honest(j) /\ j \notin ReachP(dp[1])
         /\ \A k \in Ids : (ep[k].act = h /\ Honest(k) /\ k \in ReachP(dp[1])) => k \in AncH(j)
-\* the stated limit below a holder actor (spec/crypto.md \S 4, the depth
-\* Limit): x holds, for some actor h at or above the removal and below a, a
-\* keyset of h the removed node does not open listing every honest keyset
-\* of h it opens (h's knowing keyset reached x, whose holder actors' epochs
-\* boxing h at an earlier keyset are then stale, by their records where x
-\* holds none of their boxes)
-DeepBeaten(x, a, dp) ==
-  /\ dp \in done /\ dp[2] \in HClos(a)
-  /\ \E h \in HClos(a) : /\ dp[2] = h \/ dp[2] \in HClos(h)
-                        /\ \E j \in kn[x] :
-                             /\ ep[j].act = h /\ Honest(j) /\ j \notin ReachP(dp[1])
-                             /\ \A k \in Ids : (ep[k].act = h /\ Honest(k) /\ k \in ReachP(dp[1])) => k \in AncH(j)
 \* every node holds what it syncs, logs what it must and needs no rotation
 Settled ==
   /\ \A y \in Learners :
@@ -749,7 +710,7 @@ Write(x, a) ==
   /\ LET der == DependentAt(x, a)
          ea == IF der THEN MintAdmOf(a) ELSE a
          e == NewestV(x, ea)
-     IN /\ e \in Sec(x) /\ Covers(x, e, ea) /\ ~StaleAt(x, e) /\ e \notin BlockedEnc(x)
+     IN /\ e \in Sec(x) /\ Covers(x, e, ea) /\ ~StaleAt(x, e) /\ e \notin Blocked(x)
         /\ ~Keyless(x, e)
         /\ wr' = wr \cup {[a |-> a, e |-> e, w |-> x, der |-> der,
                            p1 |-> {dp \in Known(x) : dp[2] = a},
@@ -780,12 +741,6 @@ Write(x, a) ==
                                    THEN {dp \in done : dp[1] # x /\ dp[2] \in HClos(a) /\
                                            \A h \in KeyAct(a) : (dp[2] = h \/ dp[2] \in HClos(h)) =>
                                              \E j \in kn[x] : ep[j].act = h /\ dp \in ep[j].kw}
-                                   ELSE {},
-                           p12 |-> IF /\ BoxBlind # {} /\ {r \in rs : r.e = e} \subseteq krs[x]
-                                      \* every re-seal record x could have learned (one not
-                                      \* yet arrived is a commit not held: the limit)
-                                      /\ \A r \in rs : Vis(x, ep[r.e].act) => r \in krs[x]
-                                   THEN {dp \in done : dp[1] # x /\ DeepBeaten(x, a, dp)}
                                    ELSE {}]}
   /\ nw' = nw + 1
   /\ UNCHANGED <<kg, ep, rs, kn, krs, ha, done, evd, dst, pl, kpl>>
@@ -861,11 +816,6 @@ NoLeakSettled == \A c \in wr : \A dp \in c.p7 : ~Opens(RD(dp[1], c.a), c)
 \* rotator knew it (and every re-seal box of its epoch); unlike NoLeakLimit,
 \* a keyset descending from the knowing one counts for nothing
 NoLeakKnowing == \A c \in wr : \A dp \in c.p11 : ~Opens(RD(dp[1], c.a), c)
-\* (BoxBlind) a node removed below a holder actor h of a reads no content of
-\* a written by a writer holding the knowing keyset of an actor between
-\* (DeepBeaten), where the writer holds none of h's boxes (BoxBlind)
-NoLeakDeep == \A c \in wr : \A dp \in c.p12 : ~Opens(RD(dp[1], c.a), c)
-ProbeDeepWrite == ~\E c \in wr : c.p12 # {}
 \* probes (expected to fail where the attack and the premise are reachable):
 \* content written under a Bogus or Rogue node's epoch; content written by
 \* a writer the knowing keysets reached

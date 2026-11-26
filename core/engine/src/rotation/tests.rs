@@ -821,7 +821,7 @@ fn forge_rotation(lp: &mut LocalPeer, w: usize, g: Tid, s: osis_crypto::Epoch, h
             let bk = ct::BoxKey { holder: osis_base::Weak(holder), role: Role::Read, epoch: at };
             let w = osis_keys::SecretsWrite { history: [(key.clone(), state.history[&key].clone())].into(), boxes: [(bk.clone(), state.boxes[&bk].clone())].into(), ..Default::default() };
             let mut m = Mutation::new();
-            crate::flows::put_keysets(&mut m, g, &osis_keys::KeysWrite { keysets: [(Role::Read, ks)].into() })?;
+            crate::flows::put_keysets(&mut m, g, &osis_keys::KeysWrite { keysets: [(Role::Read, ks)].into(), ..Default::default() })?;
             crate::flows::put_secrets(&mut m, g, &w, false)?;
             crate::engine::Engine::commit_tx(tx, m).map(|_| ())
         })

@@ -2517,9 +2517,9 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
     } else {
         tx.core.stale_all = true;
         validity::rejudge_all(tx, false)?;
-        // the held keysets from the valid `keys.0` parts, now judged (nothing judges by them
-        // before)
-        let actors: BTreeSet<Tid> = tx.core.ix.commits.values().flat_map(|m| m.view.aspects.iter().filter(|a| a.ak.as_str() == "keys.0").map(|a| a.tid)).collect();
+        // the held keysets and boxes from the valid `keys.0` and `secrets.0` parts, now judged
+        // (nothing judges by them before)
+        let actors: BTreeSet<Tid> = tx.core.ix.commits.values().flat_map(|m| m.view.aspects.iter().filter(|a| matches!(a.ak.as_str(), "keys.0" | "secrets.0")).map(|a| a.tid)).collect();
         keys::rebuild_keysets(tx, &actors)?;
     }
     // the split commits' paths the loaded secrets open (`paths::refresh`); persisted, as decided

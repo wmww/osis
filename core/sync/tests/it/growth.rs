@@ -1063,3 +1063,48 @@ fn record_blobs_at_a_store_stay_flat_spec_sync_ids_6() {
     }
     assert_eq!(held[0], held[9], "store entries after 1 and 10 rounds: {held:?}");
 }
+
+/// Node 1's first sync of `k` things of node 0's account, granted it read; `held`: node 2's
+/// account holds read on each as well, so each unit carries account 2's public key record
+/// (spec/sync-inbox.md §1). (bytes every other node sent it, distinct blobs fetched, fetches.)
+fn key_record_wire(k: usize, held: bool) -> (u64, u64, u64) {
+    let mut w = world_of(0, 3, 3);
+    w.cap = 4_000_000;
+    let mut steps = Vec::new();
+    for t in 0..k {
+        steps.push(New(0));
+        if held {
+            steps.push(Give(0, t, history::Holder::Node(2), Gives::Reads));
+        }
+    }
+    steps.push(Run);
+    let _ = play(&mut w, &steps, String::new());
+    let sum = |f: &BTreeMap<(usize, usize, &'static str), (u64, u64)>| f.iter().filter(|((a, b, _), _)| *b == 1 && *a != 1).map(|(_, v)| v.1).sum::<u64>();
+    let before = sum(&w.net.frames);
+    w.net.count_fetched = true;
+    let grants: Vec<_> = (0..k).map(|t| Grant(0, t, 1, Gives::Reads)).chain([Run]).collect();
+    let _ = play(&mut w, &grants, String::new());
+    let mut per_blob: BTreeMap<osis_base::BlobId, u64> = BTreeMap::new();
+    for ((_, to), m) in &w.net.fetched {
+        if *to == 1 {
+            for (b, n) in m {
+                *per_blob.entry(*b).or_default() += n;
+            }
+        }
+    }
+    (sum(&w.net.frames) - before, per_blob.len() as u64, per_blob.values().sum())
+}
+
+// spec/permissions.md §4 (Copies: one blob per distinct cut), spec/sync-inbox.md §1 (Public key
+// record): a reader of
+// k things another account holds a role on fetches that account's public key record once, not
+// once per thing. Printed: bytes sent to the reader, distinct blobs and fetches, with and without
+// the holder, at 1 and 4 things.
+#[test]
+#[ignore = "by hand: prints counts (four worlds, about 10 s)"]
+fn a_holders_key_record_crosses_the_wire_once_spec_permissions_4() {
+    for k in [1, 4] {
+        let (with, without) = (key_record_wire(k, true), key_record_wire(k, false));
+        eprintln!("{k} things: (bytes, distinct blobs, fetches) to the reader: {with:?} with the holder, {without:?} without");
+    }
+}

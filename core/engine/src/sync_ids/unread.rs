@@ -261,6 +261,15 @@ fn borne(steps: &ct::SyncIds) -> BTreeSet<[u8; 32]> {
     out
 }
 
+/// The sync keys the copies' steps bear where the copies do not speak (`copies_speak`): the steps
+/// of a path verified from its sync ID's genesis, on a sync ID `recorded` places (spec/sync.md §3
+/// Holders by copies), as `head_keys` takes a copy's head there.
+fn borne_placed(steps: &ct::SyncIds, recorded: &crate::sync_ids::steps::Recorded) -> BTreeSet<[u8; 32]> {
+    let placed: BTreeSet<osis_base::SyncId> = recorded.steps.values().map(|s| s.sync_id).collect();
+    let on: ct::SyncIds = steps.iter().filter(|(id, _)| placed.contains(id)).map(|(id, e)| (*id, e.clone())).collect();
+    borne(&on)
+}
+
 /// The sync keys the heads bear (`Unread::holders`): per sync ID, its newest step held, of
 /// `recorded` or carried by a copy (`steps`, on a path verified from the sync ID's genesis), the
 /// deepest, ties by lowest step ID (`sync_ids::actors::head_of`). With `recorded` (where the
@@ -422,8 +431,18 @@ impl Core {
         for (_, _, o) in &given {
             candidates.extend(o.iter().cloned());
         }
-        let bearing = borne(&out.steps);
         let recorded = self.ix.steps.get(t);
+        let bearing = match (speak, recorded.as_ref()) {
+            (true, _) => borne(&out.steps),
+            (false, Some(r)) => {
+                let mut joined = ct::SyncIds::default();
+                for c in copies.values() {
+                    join_steps(&mut joined, &c.steps);
+                }
+                borne_placed(&joined, r)
+            }
+            (false, None) => BTreeSet::new(),
+        };
         let bears = |s: &Secret32| {
             let k = sync_key(s);
             bearing.contains(&k) || recorded.as_ref().is_some_and(|r| r.bears_sync(&k))

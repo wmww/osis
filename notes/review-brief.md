@@ -35,7 +35,7 @@ One line each: the ruling, its state on main (dd5c0a3e4), where to look. "Applie
 - A miskeyed part never drops as invalid (a writer listing made-up keys leaves parts unapplied for good): applies. `sync_ids/steps.rs` `wrong_keys`/`rekey`; spec/commits.md §4 Pending storage.
 - Remover sealing to an ignorant fork (Tess accepted); the names-digest check unstudied: applies. notes/holder-actors.md, Judged by order where the secret is lacking.
 - Destroyed holder actor: holds no keys and nobody stands in its place, so access through it ends as at a removal: applies. `Core::key_holders`, `members::key_skip`.
-- Box records: an admin snapshot covering one drops it ("not defended"); per-unit cost a tess-call: applies. issues/account-evidence-per-unit.md.
+- Stale boxes: read from held valid `secrets.0` bodies (a rotation foreign here strips the state's); an admin snapshot covering a body drops its boxes ("not defended"); grants and re-seals record nothing in `keys.0` (Tess chose the per-unit cost cut): applies. notes/holder-actors.md.
 - A left-out cause later invalidated keeps M out until one re-key; invalidators voided in turn unmodelled: applies. Tail.tla `T_chain`.
 - A wrong-form box to the public counts as present for the re-seal trigger: applies. `osis_keys::covers::reseal_missing`.
 - Seal skipping KEM-less keysets has no test of its own; a removal's own rotation may write a KEM-less keyset, fixed by KEM key due next pass: applies. `rotation/kem.rs`; KemKeys.tla `KK_fallback`.
@@ -52,7 +52,7 @@ One line each: the ruling, its state on main (dd5c0a3e4), where to look. "Applie
 8. Miskeyed never invalid: agree in validity, but the sync judgement judged such bodies invalid and unlogged them: fixed ae9708ca4 (`sync/bodies.rs`, test `validity::a_body_listing_an_unplaced_key_is_not_judged_invalid_spec_commits_4`). Held outside Pending storage, unbounded: fixed (spar-fix-security: a received miskeyed part is unjudgeable in `examine`, `Reason::Miskeyed`, woken by `Wake::Steps`; test `validity::miskeyed_writes_pend_and_go_with_their_entries_spec_commits_4`).
 9. Remover sealing to an ignorant fork: agree (accepted). The names-digest option proves knowing only on a match with the departure, ignorance only on a match without; any other set the rotator held matches neither and proves nothing.
 10. Destroyed holder with a passed `until`: no case: a destroyed thing has no stand-ins (spec/crypto.md §4 Destroyed).
-11. Box records dropped by an admin snapshot: agree (hostile admins not defended).
+11. Boxes Stale reads dropped by an admin snapshot covering their body: agree (hostile admins not defended).
 12. Invalidated left-out cause: agree (`left_out_on_an_invalidated_rotation_ends_with_one_rekey`).
 13. Wrong-form box to the public: spec says ignored, the trigger counts it present: fixed in spar-fix-rotation (`osis_keys::has_box`).
 14. Seal skipping KEM-less keysets: agree; still no test of its own (extend `tests_kem::kem_key_due_ends_a_lockout`: before KEM key due, a rotation leaves M out, never seals at the older keyset).

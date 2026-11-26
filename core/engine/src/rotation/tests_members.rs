@@ -5,7 +5,7 @@
 //! (core/test/tla/rotation/Depth0.tla).
 
 #![allow(clippy::unwrap_used)]
-use super::tests::{Rng, all_boxed, blocked_at, commit_ids, deliver_without_secrets, edge, independent_thing, held_by, leaked, newest_read, openable, rotate_as, rotate_leaving_out, rotate_unchecked, send_skipping, settle, synced};
+use super::tests::{all_boxed, blocked_at, commit_ids, deliver_without_secrets, edge, independent_thing, held_by, leaked, newest_read, openable, rotate_as, rotate_leaving_out, rotate_unchecked, send_skipping, settle, synced};
 use crate::Mutation;
 use crate::flows::Demotion;
 use crate::local_peer::LocalPeer;
@@ -1866,218 +1866,30 @@ fn boxes_at(lp: &mut LocalPeer, i: usize, a: Tid, h: Tid, e: Epoch) -> bool {
     lp.peers[i].engine.get_typed(&a, &ct::SECRETS).unwrap().is_some_and(|s| s.boxes.keys().any(|k| k.holder == osis_base::Weak(h) && k.role == Role::Read && osis_keys::aspects::from_schema(&k.epoch).is_ok_and(|x| x == e)))
 }
 
-/// Every box of `a`'s `secrets.0` state at peer `boxer` to a holder actor, at an epoch current
-/// there, missing from the box records peer `other` noted (`Indexes::sealed`): (holder, role,
-/// epoch) with the keysets it names. Empty where every box is recorded.
-fn unrecorded(lp: &mut LocalPeer, boxer: usize, other: usize, a: Tid) -> Vec<(Tid, Role, Epoch, Vec<Epoch>)> {
-    let Some(s) = lp.peers[boxer].engine.get_typed(&a, &ct::SECRETS).unwrap() else { return Vec::new() };
-    let Some(epochs) = lp.peers[boxer].engine.epochs(&a) else { return Vec::new() };
-    let core = &lp.peers[other].engine.core;
-    let mut out = Vec::new();
-    for (k, b) in &s.boxes {
-        let e = osis_keys::aspects::from_schema(&k.epoch).unwrap();
-        if !epochs.role(k.role).current().contains(&e) {
-            continue;
-        }
-        let ks = osis_keys::box_keysets(b);
-        let rec = core.ix.sealed.get(&(a, k.role, e)).and_then(|x| x.keysets.get(&k.holder.0));
-        if !ks.iter().all(|x| rec.is_some_and(|r| r.contains(x))) {
-            out.push((k.holder.0, k.role, e, ks));
-        }
-    }
-    out
-}
-
-/// The world of the box-record tests: G {a1, W, A}, A {a1}, holders T0, T1 {t1, P, Q}; peers a1,
-/// t1, P, Q, W. Returns it with P, Q, the holders and A.
-fn boxes_world() -> (LocalPeer, [Tid; 2], [Tid; 2], Tid) {
-    let mut lp = synced(5);
-    let [_, _, p, q, w] = std::array::from_fn(|i| lp.peers[i].engine.tid());
-    let holders: Vec<Tid> = (0..2).map(|_| independent_thing(&mut lp, 1)).collect();
-    for t in &holders {
-        for h in [p, q] {
-            lp.peers[1].engine.grant(t, &h, &edge(Role::Read)).unwrap();
-        }
-    }
-    lp.sync_all().unwrap();
-    let a = independent_thing(&mut lp, 0);
-    let g = independent_thing(&mut lp, 0);
-    lp.peers[0].engine.grant(&g, &a, &edge(Role::Read)).unwrap();
-    lp.peers[0].engine.grant(&g, &w, &edge(Role::Admin)).unwrap();
-    lp.sync_all().unwrap();
-    (lp, [p, q], [holders[0], holders[1]], a)
-}
-
-/// A step of the box-record tests on A.
-#[derive(Clone, Copy, Debug)]
-enum BoxStep {
-    /// a1 grants `holder` read on A, or removes it when on A.
-    Flip(Tid),
-    /// t1 grants member `m` on holder `t`, or removes it (rotating the holder) when on it.
-    Member(Tid, Tid),
-    /// a1 rotates A.
-    Rotate,
-    /// t1 rotates both holders.
-    RotateHolders,
-    /// a1 re-seals A.
-    Reseal,
-}
-
-/// Runs `step` and syncs every peer; `Err` naming what it did and every box of A's current epochs
-/// to a holder actor left unrecorded at W, G's admin, if any.
-fn box_step(lp: &mut LocalPeer, holders: [Tid; 2], a: Tid, step: BoxStep) -> Result<(), String> {
-    let did = match step {
-        BoxStep::Flip(holder) if !lp.peers[0].engine.roster(&a).contains_key(&holder) => format!("grant {holder:?}: {:?}", lp.peers[0].engine.grant(&a, &holder, &edge(Role::Read)).map(|d| d.commits.len())),
-        BoxStep::Flip(holder) => format!("remove {holder:?}: {:?}", lp.peers[0].engine.demote(&a, &Demotion { holder, new: None, retain: None }).map(|d| d.commits.len())),
-        BoxStep::Member(t, m) if lp.peers[1].engine.roster(&t).contains_key(&m) => format!("t1 removes {m:?} from {t:?}: {:?}", lp.peers[1].engine.demote(&t, &Demotion { holder: m, new: None, retain: None }).map(|d| d.commits.len())),
-        BoxStep::Member(t, m) => format!("t1 grants {m:?} on {t:?}: {:?}", lp.peers[1].engine.grant(&t, &m, &edge(Role::Read)).map(|d| d.commits.len())),
-        BoxStep::Rotate => format!("a1 rotates: {:?}", lp.peers[0].engine.ensure_rotated(&a).map(|d| d.0.commits.len())),
-        BoxStep::RotateHolders => format!("t1 rotates: {:?}", holders.iter().map(|t| lp.peers[1].engine.ensure_rotated(t).map(|d| d.0.commits.len()).ok()).collect::<Vec<_>>()),
-        BoxStep::Reseal => format!("a1 re-seals: {:?}", lp.peers[0].engine.reseal_after_pass(&a).map(|d| d.commits.len())),
-    };
-    lp.sync_all().unwrap();
-    let missing = unrecorded(lp, 0, 4, a);
-    if missing.is_empty() { Ok(()) } else { Err(format!("{did}: unrecorded at W {missing:?}")) }
-}
-
-// spec/crypto.md §4 (Stale: every box to a holder actor is recorded beside it, whoever writes it):
-// after each of a1's grants on A (a holder, an account), a holder's member removed (the holder rotates)
-// and granted again, a1's re-seal and rotation of A, t1's rotation of the holders and a1's removals,
-// W, G's admin, holds a record of every box at A's current epochs naming the keysets the box
-// names. (Which sync IDs carry the records is the osis `sharing` tests': LocalPeer delivers every
-// commit.)
+// spec/crypto.md §4 (Box records: a rotation's alone), spec/permissions.md §4 (current `keys.0`
+// commits: every commit with a write live in the `keys.0` state): grants on A write nothing in
+// A's `keys.0`, so after a deposit seed refresh and holder actor grants A's current `keys.0`
+// commits are the refresh and A's rotation, the same at 2 and at 20 holder actors granted.
 #[test]
-fn every_box_is_recorded_beside_it_spec_crypto_4() {
-    use BoxStep::*;
-    let (mut lp, [p, q], holders, a) = boxes_world();
-    let steps = [Flip(holders[0]), Flip(p), Member(holders[0], q), Reseal, Member(holders[0], q), Flip(holders[1]), Rotate, Member(holders[1], p), RotateHolders, Reseal, Flip(p), Flip(holders[0])];
-    for (i, step) in steps.into_iter().enumerate() {
-        box_step(&mut lp, holders, a, step).unwrap_or_else(|e| panic!("step {i}, {e}"));
-    }
-}
-
-// As above, over random steps: grants, removals, rotations and re-seals of A's holder actors
-// (holders and accounts), and removals inside the holders; 12 steps a seed. Small size (a tenth of
-// large) or large under `OSIS_FULL=1`; seeds: OSIS_ROTATION_START, OSIS_ROTATION_SEEDS.
-#[test]
-#[ignore = "property"]
-fn every_box_is_recorded_beside_it_randomized_plain_spec_crypto_4() {
-    let name = "rotation::tests_members::every_box_is_recorded_beside_it_randomized_plain_spec_crypto_4";
-    let s = osis_base::testenv::Seeds::from_env("OSIS_ROTATION_START", "OSIS_ROTATION_SEEDS", osis_base::testenv::large(0..60));
-    let replay = |s: u64| format!("OSIS_ROTATION_START={s} OSIS_ROTATION_SEEDS=1 cargo test -p osis-engine --lib -- --ignored --exact {name}");
-    s.run(name, replay, |seed| {
-        let (mut lp, [p, q], holders, a) = boxes_world();
-        let mut rng = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
-        for i in 0..12 {
-            let pick = rng.next(6);
-            let holder = [p, q, holders[0], holders[1]][rng.next(4) as usize];
-            let step = match pick {
-                0 | 1 => BoxStep::Flip(holder),
-                2 => BoxStep::Member(holders[rng.next(2) as usize], if rng.next(2) == 0 { p } else { q }),
-                3 => BoxStep::Rotate,
-                4 => BoxStep::RotateHolders,
-                _ => BoxStep::Reseal,
-            };
-            box_step(&mut lp, holders, a, step).unwrap_or_else(|e| panic!("seed {seed} step {i}, {e}"));
-        }
-    });
-}
-
-// spec/crypto.md §4 (Box records: whatever later bodies write at its key): a writer of A
-// replacing the record of an honest grant's box (naming a keyset nobody holds) hides nothing:
-// every node reads the records
-// of every valid body noted at the epoch, so the honest one still makes the epoch stale once the
-// holder moves on. A false record can only add staleness, which A's next rotation ends.
-#[test]
-fn a_false_record_hides_no_honest_one_spec_crypto_4() {
-    let mut lp = synced(4);
-    let [_, _, w, d] = std::array::from_fn(|i| lp.peers[i].engine.tid());
-    let holder = independent_thing(&mut lp, 1);
-    lp.peers[1].engine.grant(&holder, &d, &edge(Role::Read)).unwrap();
-    lp.sync_all().unwrap();
-    let a = independent_thing(&mut lp, 0);
-    lp.peers[0].engine.grant(&a, &w, &edge(Role::Write)).unwrap();
-    lp.peers[0].engine.grant(&a, &holder, &edge(Role::Read)).unwrap();
-    lp.sync_all().unwrap();
-    let e = newest_read(&lp, 0, a).unwrap();
-    let k = sealed_at(&mut lp, 0, a, holder).unwrap();
-    let key = osis_keys::aspects::box_key(holder, Role::Read, &e);
-    let fake = Epoch::derive(&holder, Role::Read, 99, &osis_crypto::Secret32::from_bytes([5; 32])).unwrap();
-    lp.peers[2]
-        .engine
-        .run(|tx| {
-            let mut m = Mutation::new();
-            let w = osis_keys::SecretsWrite { sealed: [(key, BTreeSet::from([fake]))].into(), ..Default::default() };
-            crate::flows::put_secrets(&mut m, a, &w, false)?;
-            crate::engine::Engine::commit_tx(tx, m).map(|_| ())
-        })
-        .unwrap();
-    lp.sync_all().unwrap();
-    for i in [0, 3] {
-        let rec = lp.peers[i].engine.core.ix.sealed.get(&(a, Role::Read, e)).unwrap().keysets.get(&holder).cloned().unwrap();
-        assert!(rec.contains(&k) && rec.contains(&fake), "peer {i}: both records read: {rec:?}");
-    }
-    // the holder moves on: A's epoch is stale by the honest record
-    removal(&mut lp, 1, holder, d);
-    lp.sync_all().unwrap();
-    let stale = lp.peers[3].engine.run(|tx| super::members::box_blocked(tx, &a, Role::Read, &e)).unwrap();
-    assert!(stale.is_some(), "A's epoch stale where its records are read");
-}
-
-// spec/crypto.md §4 (Stale), counted: a holder's grant on A records only its own boxes, one per
-// role and current epoch, whatever A's size: the same at 2 and at 20 holder actors on A. (A
-// rotation records each holder actor it boxes, as it boxes each.)
-#[test]
-fn a_grants_records_do_not_grow_with_the_actor_spec_crypto_4() {
-    let records = |n: usize| {
+fn grants_leave_the_current_keys_as_they_were_spec_permissions_4() {
+    let current = |n: usize| {
         let mut lp = synced(1);
         let a = independent_thing(&mut lp, 0);
+        let seed = *lp.peers[0].engine.refresh_deposit_seed(&a).unwrap().commits.last().unwrap();
+        let before = lp.peers[0].engine.current_keys(&a).unwrap();
+        assert!(before.contains(&seed), "the deposit seed refresh among A's current keys.0 commits");
         for _ in 0..n {
             let t = independent_thing(&mut lp, 0);
-            lp.peers[0].engine.grant(&a, &t, &edge(Role::Read)).unwrap();
+            let done = lp.peers[0].engine.grant(&a, &t, &edge(Role::Read)).unwrap();
+            for c in &done.commits {
+                let h = lp.peers[0].engine.header(c).unwrap();
+                assert!(h.aspect_index(&a, "keys.0").is_none(), "a grant writes no keys.0 on A");
+            }
         }
-        let t = independent_thing(&mut lp, 0);
-        let c = *lp.peers[0].engine.grant(&a, &t, &edge(Role::Read)).unwrap().commits.last().unwrap();
-        let core = &lp.peers[0].engine.core;
-        core.sealed_noted(&a).filter(|x| x.2.by.contains(&c)).count()
+        assert_eq!(lp.peers[0].engine.current_keys(&a).unwrap(), before, "A's current keys.0 commits unmoved by {n} grants");
+        before.len()
     };
-    let (small, large) = (records(2), records(20));
-    assert_eq!((small, large), (2, 2), "read and sync, one current epoch each");
-}
-
-// spec/crypto.md §4 (Carried: with the keysets a commit's boxes name go those epochs' box
-// records; Stale): G's grant boxing A at its epoch e is logged (the sync facade's
-// `logged_with`), beside e's rotation commit, with the commit recording A's box to holder M at e
-// (M's grant on A), whose `keys.0` holds a box record and no keyset. A node reading
-// G's sync IDs but none of A's holds e's records so. Certificates carry A's newest keysets only, so
-// for a keyset of A below its newest n (a fork G seals jointly) this is the one way they arrive.
-#[test]
-fn a_keysets_records_travel_with_it_spec_crypto_4() {
-    let mut lp = synced(2);
-    let m = independent_thing(&mut lp, 1);
-    lp.sync_all().unwrap();
-    let a = independent_thing(&mut lp, 0);
-    let c = *lp.peers[0].engine.grant(&a, &m, &edge(Role::Read)).unwrap().commits.last().unwrap();
-    assert!(lp.peers[0].engine.core.sealed_noted(&a).any(|x| x.2.by.contains(&c)), "M's grant records its box");
-    let g = independent_thing(&mut lp, 0);
-    let done = lp.peers[0].engine.grant(&g, &a, &edge(Role::Read)).unwrap();
-    let with: BTreeSet<CommitId> = done.commits.iter().flat_map(|x| lp.peers[0].engine.logged_with(x).unwrap().iter().copied().collect::<Vec<_>>()).collect();
-    assert!(with.contains(&c), "M's record logged with G's grant of A, beside A's keyset: {with:?}");
-}
-
-// spec/permissions.md §4 (current `keys.0` commits: the newest writing more than box records):
-// a deposit seed refresh, then holder grants on A recording their boxes; A's current `keys.0`
-// commits still carry the refresh (the inbox and deposit seed a stranded report deposits under).
-#[test]
-fn box_records_do_not_displace_the_newest_card_spec_permissions_4() {
-    let mut lp = synced(2);
-    let m = independent_thing(&mut lp, 1);
-    lp.sync_all().unwrap();
-    let a = independent_thing(&mut lp, 0);
-    let seed = *lp.peers[0].engine.refresh_deposit_seed(&a).unwrap().commits.last().unwrap();
-    lp.peers[0].engine.grant(&a, &m, &edge(Role::Read)).unwrap();
-    let keys = lp.peers[0].engine.current_keys(&a);
-    assert!(keys.contains(&seed), "the deposit seed refresh among A's current keys.0 commits");
+    assert_eq!(current(2), current(20));
 }
 
 /// What osis-sync's driver runs at peer `i` with nothing written: the role commits owed on each
