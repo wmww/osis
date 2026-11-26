@@ -73,7 +73,7 @@ fn learned_nothing(w: &mut World, s: &osis_base::SyncId) -> bool {
 // head's sync key and learns nothing until `learn_grant`.
 #[test]
 fn a_static_grant_is_verified_before_it_is_learned_spec_sync_opens_5() {
-    use osis_crypto::{BoxSlot, EntryItem, Epoch, Secret32, SeededRng};
+    use osis_crypto::{BoxSlot, EntryItem, EntryRead, Epoch, Secret32, SeededRng};
     let (mut w, link) = followed();
     let s = link.k_sync_id;
     let path = w.engine(0).sync_ids(&link.k).unwrap().iter().find(|o| o.id == s).unwrap().path.steps.clone();
@@ -83,7 +83,7 @@ fn a_static_grant_is_verified_before_it_is_learned_spec_sync_opens_5() {
     let entry = osis_crypto::static_entry(&s, &lkey.signing().verifying_key());
     let real = path.last().unwrap().1.as_ref().unwrap().entries.get(&entry).unwrap().clone();
     let (x, y) = (Secret32::from_bytes([9; 32]), Secret32::from_bytes([8; 32]));
-    let item = EntryItem { epoch: Epoch::derive(&link.k, Role::Read, 1, &x).unwrap(), secret: x, earlier: None, sync: (Epoch::derive(&link.k, Role::Sync, 1, &y).unwrap(), y) };
+    let item = EntryItem { read: Some(EntryRead { epoch: Epoch::derive(&link.k, Role::Read, 1, &x).unwrap(), secret: x, earlier: None }), sync: (Epoch::derive(&link.k, Role::Sync, 1, &y).unwrap(), y) };
     let slot = BoxSlot::Entry { sync_id: s, step_key: head.step_key, actor: link.k };
     let sealed = osis_crypto::seal_entry(lkey.link_read_kem().unwrap().public(), &slot, &item, &mut SeededRng::from_u64(1)).unwrap();
     let osis_schema::core_types::SecretBox::Sealed(mut sb) = real.clone() else { panic!("a sealed entry box") };

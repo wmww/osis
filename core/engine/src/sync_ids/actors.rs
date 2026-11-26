@@ -285,8 +285,9 @@ impl Engine {
 
 /// The sync IDs this node holds for `g`, its `sync.0` recording `m`: those `m` records that `g`
 /// owns here (`owned_in`), else a followed link's (`followed`), else, `g` followed by the public
-/// entry (spec/sync-set.md §2), each `m` records as hints: the secrets its entry box gave bear
-/// the newest steps, which the recorded `sync.0` reaches only once the pass brings them.
+/// entry (spec/sync-set.md §2) or kept unread by the public entry its head lists
+/// (`Core::public_listed`), each `m` records as hints: the secrets its entry box gave bear the
+/// newest steps, which the recorded `sync.0` reaches only once the pass brings them.
 pub(crate) fn held_sync_ids(core: &Core, g: &Tid, m: &ct::SyncIds) -> Vec<OwnedSyncId> {
     let out = owned_in(core, g, m);
     if !out.is_empty() {
@@ -295,7 +296,7 @@ pub(crate) fn held_sync_ids(core: &Core, g: &Tid, m: &ct::SyncIds) -> Vec<OwnedS
     if let Some(h) = followed(core, g) {
         return vec![h];
     }
-    match core.ix.closure.follows_public(g) {
+    match core.ix.closure.follows_public(g) || core.public_listed(g) {
         true => recorded_in(core, g, m, true),
         false => Vec::new(),
     }

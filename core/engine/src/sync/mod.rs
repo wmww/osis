@@ -381,10 +381,12 @@ pub struct ReadCredentials {
     /// The signing keys of the link keys this node acts for on S (the link it redeems): their
     /// static entries are tested (spec/sync-opens.md §4).
     pub acting: Vec<osis_crypto::SigningSecret>,
-    /// The public reads S's thing: its public entry is shown (spec/sync-opens.md §4).
+    /// The public holds a role on S's thing: its public entry is shown (spec/sync-opens.md §4).
     pub shows_public: bool,
-    /// The public reads S's thing as held here, or this node redeems a public link to it: its
-    /// public entry is tested.
+    /// The public reads S's thing (else, shown, it holds sync alone there).
+    pub public_reads: bool,
+    /// The public holds a role on S's thing as held here, this node redeems a public link to it,
+    /// or it follows S's thing by the public entry: its public entry is tested.
     pub tests_public: bool,
     /// The public is named on S's thing and reads it no more (its removal held): its read secrets
     /// at superseded epochs are shown lapsed, to every peer, each opening a member ended at once
@@ -399,7 +401,7 @@ pub struct ReadCredentials {
     pub sync_keys: Vec<(Epoch, SigningSecret)>,
 }
 
-type PublicCredentials<'a> = (Option<StepId>, &'a BTreeMap<StepId, HeadKeys>, [&'a [(Epoch, Secret32)]; 2], &'a BTreeSet<[u8; 32]>, Vec<osis_crypto::VerifyingKey>, &'a [(StepId, [u8; 32])], Vec<(Epoch, osis_crypto::VerifyingKey)>, (bool, bool, bool));
+type PublicCredentials<'a> = (Option<StepId>, &'a BTreeMap<StepId, HeadKeys>, [&'a [(Epoch, Secret32)]; 2], &'a BTreeSet<[u8; 32]>, Vec<osis_crypto::VerifyingKey>, &'a [(StepId, [u8; 32])], Vec<(Epoch, osis_crypto::VerifyingKey)>, (bool, bool, bool, bool));
 
 impl ReadCredentials {
     /// What tells two apart (`Engine::read_credentials` is a memo): signing keys by their public
@@ -407,7 +409,7 @@ impl ReadCredentials {
     fn public(&self) -> PublicCredentials<'_> {
         let acting = self.acting.iter().map(SigningSecret::verifying_key).collect();
         let sync_keys = self.sync_keys.iter().map(|(e, k)| (*e, k.verifying_key())).collect();
-        (self.head.as_ref().map(Step::id), &self.keys, [&self.read_secrets, &self.old_read_secrets], &self.statics, acting, &self.proofs, sync_keys, (self.shows_public, self.tests_public, self.lapsed_public))
+        (self.head.as_ref().map(Step::id), &self.keys, [&self.read_secrets, &self.old_read_secrets], &self.statics, acting, &self.proofs, sync_keys, (self.shows_public, self.public_reads, self.tests_public, self.lapsed_public))
     }
 }
 
@@ -423,14 +425,6 @@ impl std::fmt::Debug for ReadCredentials {
     }
 }
 
-/// The secrets an entry box held (spec/sync-ids.md §3 Entry boxes).
-#[derive(Clone)]
-pub struct EntryBoxSecrets {
-    pub read: (Epoch, Secret32),
-    pub superseded: Option<(Epoch, Secret32)>,
-    pub sync: (Epoch, Secret32),
-}
-
 /// A static entry's grant opened, not yet learned (`Engine::open_grant`).
 #[derive(Clone)]
 pub struct OpenedGrant {
@@ -438,7 +432,10 @@ pub struct OpenedGrant {
     pub thing: Tid,
     /// The head's sync key the box's sync secret derives: the answer's `sig` verifies under it.
     pub key: [u8; 32],
-    pub secrets: EntryBoxSecrets,
+    /// S and that head.
+    pub head: (SyncId, osis_blob::StepId),
+    /// The secrets the entry box held (spec/sync-ids.md §3 Entry boxes).
+    pub secrets: osis_crypto::EntryItem,
     /// The party the entry admits: the public, or the link key whose static entry it is.
     pub party: Tid,
 }
@@ -758,35 +755,65 @@ impl Engine {
         if key != head.keys.sync.to_bytes() {
             return Ok(None);
         }
-        Ok(Some(OpenedGrant { thing, key, secrets: EntryBoxSecrets { read: (item.epoch, item.secret), superseded: item.earlier, sync: item.sync }, party }))
+        Ok(Some(OpenedGrant { thing, key, head: (*s, head.id()), secrets: item, party }))
     }
 
     /// Learns an opened grant's secrets (`learn_secret`), once its answer's signature verified.
+    /// The public's: its head lists the public entry, so the public holds sync there as this node
+    /// knows it (`Core::public_listed`), noted first so its role there lets it take the sync
+    /// secret.
     pub fn learn_grant(&mut self, g: &OpenedGrant) -> Result<()> {
+        if g.party.is_public() {
+            let (t, head) = (g.thing, g.head);
+            self.run(|tx| {
+                if tx.core.ix.public_listed.get(&t) != Some(&head) {
+                    tx.core.ix.public_listed.insert(t, head);
+                }
+                Ok(())
+            })?;
+        }
         let x = &g.secrets;
-        self.learn_secret(&g.thing, osis_base::Role::Read, x.read.0, x.read.1.clone(), &g.party)?;
-        if let Some((e, v)) = &x.superseded {
-            self.learn_secret(&g.thing, osis_base::Role::Read, *e, v.clone(), &g.party)?;
+        // the public's box where it holds sync alone carries no read secret
+        if let Some(r) = &x.read {
+            self.learn_secret(&g.thing, osis_base::Role::Read, r.epoch, r.secret.clone(), &g.party)?;
+            if let Some((e, v)) = &r.earlier {
+                self.learn_secret(&g.thing, osis_base::Role::Read, *e, v.clone(), &g.party)?;
+            }
         }
         self.learn_secret(&g.thing, osis_base::Role::Sync, x.sync.0, x.sync.1.clone(), &g.party)?;
         Ok(())
     }
 
-    /// A node keeping `s` unread takes the public entry's box of `head`, its store's head (spec/sync-opens.md
-    /// §4 Admissible, keeping S unread): the open box's secrets, once its sync secret derives the
-    /// head's sync key. Whether it learned anything. The caller judges that `head` is current
-    /// (its sync key a held secret's, no held sync epoch of a later number).
-    pub fn take_public_entry(&mut self, s: &SyncId, head: &Step, claims: &osis_blob::ClaimSet) -> Result<bool> {
-        let Some(b) = claims.entries.get(&osis_crypto::public_entry(s)) else { return Ok(false) };
-        for t in self.sync_things_of(s)? {
-            let Ok(item) = osis_blob::read_public_entry_box(b, head, &t) else { continue };
-            let key = osis_crypto::role_key(osis_crypto::RoleKey::Sync, &item.sync.1).verifying_key();
-            if key != head.keys.sync {
+    /// A node keeping `s` unread judged its head (spec/sync.md §3 Holders by copies,
+    /// spec/sync-opens.md §4 Admissible, keeping S unread): `head` its head with its claim set,
+    /// none where the head lists no public entry. Where the set lists S's public entry with a box
+    /// whose sync secret derives the head's sync key and no sync epoch held here has a later
+    /// number, the public holds sync on S's thing as this node knows it (`Core::public_listed`)
+    /// and it takes the box's sync secret (a head past its keys moves to it); `read` (the head is
+    /// its step, current, not the one it was lowered at) also its read secrets. Else, where `path`
+    /// (S's verified path as registered here, its head last) passes the head this node knew
+    /// listing the public, the public holds nothing there as this node knows it: a head past the
+    /// public's box is its removal; a head behind it says nothing. Whether it took read secrets.
+    pub fn public_head(&mut self, s: &SyncId, head: Option<(&Step, &osis_blob::ClaimSet)>, read: bool, path: &[osis_blob::StepId]) -> Result<bool> {
+        let things = self.sync_things_of(s)?;
+        let b = head.and_then(|(_, c)| c.entries.get(&osis_crypto::public_entry(s)));
+        for t in things {
+            let opened = head.zip(b).and_then(|((h, _), b)| osis_blob::read_public_entry_box(b, h, &t).ok().map(|i| (h, i)));
+            let current = |e: &Engine, i: &osis_crypto::EntryItem| e.core.epochs(&t).is_none_or(|x| x.role(osis_base::Role::Sync).held().all(|(ep, _)| ep.n() <= i.sync.0.n()));
+            let Some((h, item)) = opened.filter(|(h, i)| osis_crypto::role_key(osis_crypto::RoleKey::Sync, &i.sync.1).verifying_key() == h.keys.sync && current(self, i)) else {
+                self.run(|tx| {
+                    if tx.core.ix.public_listed.get(&t).is_some_and(|(_, h)| path.contains(h)) {
+                        tx.core.ix.public_listed.remove(&t);
+                    }
+                    Ok(())
+                })?;
                 continue;
-            }
-            let g = OpenedGrant { thing: t, key: key.to_bytes(), secrets: EntryBoxSecrets { read: (item.epoch, item.secret), superseded: item.earlier, sync: item.sync }, party: Tid::PUBLIC };
+            };
+            let reads = read && item.read.is_some();
+            let item = if reads { item } else { osis_crypto::EntryItem { read: None, ..item } };
+            let g = OpenedGrant { thing: t, key: h.keys.sync.to_bytes(), head: (*s, h.id()), secrets: item, party: Tid::PUBLIC };
             self.learn_grant(&g)?;
-            return Ok(true);
+            return Ok(reads);
         }
         Ok(false)
     }

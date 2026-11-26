@@ -92,9 +92,14 @@ fn holds_at(core: &Core, a: &Tid, min: Role) -> bool {
 /// node write nothing. It counts wherever the node holds the grant, synced or not (a unit's public
 /// piece on a thing it does not sync, spec/sync-set.md §2 Public pieces): it is every party's,
 /// so it gives no node a secret anyone else lacks, and an outdated grant held gives only the open
-/// boxes of epochs that were every party's.
+/// boxes of epochs that were every party's. The public's sync also where the node holds no read
+/// secret of `a` (keeps it unread or follows it) and the head of its sync ID lists the public
+/// entry (`Core::public_listed`, spec/sync.md §3 Holders by copies): such a node reads no grant
+/// of `a`; one reading `a` judges the public by the grants it reads.
 pub(crate) fn role_here(core: &Core, a: &Tid) -> Option<Role> {
-    let public = core.keyed_role_now(&Tid::PUBLIC, a);
+    let unread = !core.ix.secrets.get(a).is_some_and(|e| e.role(Role::Read).holds_any());
+    let listed = (unread && core.public_listed(a)).then_some(Role::Sync);
+    let public = core.keyed_role_now(&Tid::PUBLIC, a).max(listed);
     if !grants_count(core, a) {
         return public;
     }
@@ -153,6 +158,14 @@ fn own_things(core: &Core) -> Vec<Tid> {
     std::iter::once(core.tid()).chain(core.link_keys.keys().copied()).collect()
 }
 
+/// Whether the node's roles give it `a`'s sync secrets (spec/permissions.md §3 Lost access): sync
+/// or above (`holds_at`), or the public's sync its head of `a`'s sync ID lists
+/// (`Core::public_listed`), counted here also while the node holds read secrets of `a` a loss
+/// not carried out yet keeps: dropping them keeps the sync secret the public's box gave.
+fn holds_sync(core: &Core, a: &Tid) -> bool {
+    holds_at(core, a, Role::Sync) || core.public_listed(a)
+}
+
 /// Whether the node (`holds_at`) reads `a` now: read or above.
 pub(crate) fn readable(core: &Core, a: &Tid) -> bool {
     holds_at(core, a, Role::Read)
@@ -180,7 +193,7 @@ pub(crate) fn may_take(core: &Core, a: &Tid) -> bool {
 /// taken back): every role's where it may take (`may_take`), the sync secret where its roles
 /// give sync alone.
 pub(crate) fn may_take_role(core: &Core, a: &Tid, r: Role) -> bool {
-    may_take(core, a) || r == Role::Sync && holds_at(core, a, Role::Sync)
+    may_take(core, a) || r == Role::Sync && holds_sync(core, a)
 }
 
 /// Whether an entry box admitting `party` (the public, or a link key: spec/sync-ids.md §3) may
@@ -209,8 +222,7 @@ fn ended_ours(core: &Core, a: &Tid) -> bool {
 /// sync secret below sync (`holds_at`), any other below read (`may_hold`).
 fn over_held(core: &Core, a: &Tid) -> bool {
     let Some(e) = core.ix.secrets.get(a) else { return false };
-    let need = |r: Role| if r == Role::Sync { Role::Sync } else { Role::Read };
-    ROLES.iter().any(|r| e.role(*r).holds_any() && !holds_at(core, a, need(*r)))
+    ROLES.iter().any(|r| e.role(*r).holds_any() && !if *r == Role::Sync { holds_sync(core, a) } else { holds_at(core, a, Role::Read) })
 }
 
 /// Whether all that ended the node's (or a held link key's) role on `a` is an `until` passing:
@@ -517,7 +529,7 @@ fn drop_actors(tx: &mut Tx<'_>, lost: Vec<Tid>, dropped: &[Tid], rejudge: bool) 
     let opened = crate::retention::forget::deriving_from(tx.core, &lost.iter().copied().collect());
     for a in &lost {
         // lowered to sync: its sync secrets stay, so it is kept unread (spec/sync-judgement.md §6 Read and unread move, spec/sync-set.md §1)
-        let sync = tx.core.ix.secrets.get(a).filter(|_| holds_at(tx.core, a, Role::Sync)).map(|e| e.role(Role::Sync).clone()).filter(|r| r.holds_any());
+        let sync = tx.core.ix.secrets.get(a).filter(|_| holds_sync(tx.core, a)).map(|e| e.role(Role::Sync).clone()).filter(|r| r.holds_any());
         #[cfg(debug_assertions)]
         osis_base::trace::note(|| {
             let went = tx.core.ix.secrets.get(a).map_or("none".into(), |e| secrets_brief(e, sync.is_some()));

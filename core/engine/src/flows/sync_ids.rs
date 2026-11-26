@@ -24,8 +24,10 @@ pub(crate) enum ReaderKey {
     /// A link key of the sync ID's thing: its static entry, by its signing key, with an entry
     /// box sealed to its read KEM key (spec/sync-ids.md §3).
     Static(VerifyingKey, KemPublicKey),
-    /// The public, by its public entry with an open entry box (spec/sync-ids.md §3).
-    Public,
+    /// The public, by its public entry with an open entry box of its role's secrets: the read
+    /// secrets and the sync secret where it reads (`reads`), the sync secret alone where it holds
+    /// sync alone (spec/sync-ids.md §3).
+    Public { reads: bool },
 }
 
 fn kem_of(k: &KemKey) -> Result<KemPublicKey> {
@@ -35,7 +37,8 @@ fn kem_of(k: &KemKey) -> Result<KemPublicKey> {
 
 /// The readers of `t`'s read epoch `e` (spec/sync-ids.md §3): holders of read boxes at `e`, its
 /// mint admin included while its record edge stands; each by its newest read keyset, a link key
-/// of `t` by its static entry, the public (an open box) by its public entry.
+/// of `t` by its static entry, the public (an open box) by its public entry. The public holding
+/// sync alone: `listed`.
 pub(crate) fn readers(tx: &mut Tx<'_>, t: &Tid, e: &Epoch) -> Result<Vec<ReaderKey>> {
     let mut holders: Vec<Tid> = Vec::new();
     if let Some(o) = tx.core.mint_admin(t).filter(|a| tx.core.key_holders(t).iter().any(|(m, _)| m == a)) {
@@ -56,6 +59,21 @@ pub(crate) fn readers(tx: &mut Tx<'_>, t: &Tid, e: &Epoch) -> Result<Vec<ReaderK
     Ok(out)
 }
 
+/// What a step of `t` registering read epoch `re` and sync epoch `se` lists (spec/sync-ids.md
+/// §3): the readers of `re` (`readers`), and the public where it holds sync alone, boxed at `se`
+/// (its entry box the sync secret alone).
+pub(crate) fn listed(tx: &mut Tx<'_>, t: &Tid, re: &Epoch, se: &Epoch) -> Result<Vec<ReaderKey>> {
+    let mut out = readers(tx, t, re)?;
+    if !out.iter().any(|r| matches!(r, ReaderKey::Public { .. })) {
+        let secrets = super::secrets_in(tx, t)?;
+        let boxed = secrets.boxes.keys().any(|k| k.holder.0.is_public() && k.role == Role::Sync && osis_keys::aspects::from_schema(&k.epoch).is_ok_and(|ke| ke == *se));
+        if boxed {
+            out.push(ReaderKey::Public { reads: false });
+        }
+    }
+    Ok(out)
+}
+
 /// Reader `m` of `t`'s sync ID as the registrar lists it (`readers`): by its newest read keyset
 /// held here; a link key of `t` (its record names `t` as its K) by its static entry, the one
 /// reader so listed (spec/sync-ids.md §3: a bearer secret opens `t` from a store with nothing
@@ -63,7 +81,7 @@ pub(crate) fn readers(tx: &mut Tx<'_>, t: &Tid, e: &Epoch) -> Result<Vec<ReaderK
 /// §3: nothing is sealed to it; its claim key is unpublished).
 pub(crate) fn reader_key(tx: &mut Tx<'_>, t: &Tid, m: &Tid) -> Result<Option<ReaderKey>> {
     if m.is_public() {
-        return Ok(Some(ReaderKey::Public));
+        return Ok(Some(ReaderKey::Public { reads: true }));
     }
     let Some(ks) = Core::keys_in(tx, m)?.and_then(|k| k.read) else { return Ok(None) };
     let Some(kem) = ks.kem_key.as_ref() else { return Ok(None) };
@@ -119,7 +137,7 @@ pub(crate) fn issue(tx: &mut Tx<'_>, t: &Tid, epochs: &ActorEpochs, parent: Opti
         .map(|r| match r {
             ReaderKey::Dh(x) => Reader::Dh(*x),
             ReaderKey::Static(vk, kem) => Reader::Static { signing: *vk, kem },
-            ReaderKey::Public => Reader::Public,
+            ReaderKey::Public { reads } => Reader::Public { reads: *reads },
         })
         .collect();
     let del = role_key(RoleKey::Delete, parent.map_or(adm, |(_, a)| a));
@@ -305,18 +323,22 @@ pub(crate) fn step_due(tx: &mut Tx<'_>, g: &Tid, l: &SyncId, fresh: bool) -> Res
     // step, so it is due (spec/permissions.md §3), whoever wrote the keyset
     let keyset = Core::keys_in(tx, g)?.and_then(|k| k.read);
     let read_moved = read_key_in_force(tx, g)?.is_none() && vouched(&epochs, keyset.as_ref()).is_some();
-    // the public reads `g` and the head does not list it: a stranger holding a public link opens
-    // the sync ID only by the public entry (spec/permissions.md §3), so a step is due. Its
-    // removal or lowering rotates read, which makes one due anyway. Due only where a step lists
-    // it, as a reader of the newest read epoch (`readers`): the public left out of that epoch
+    // the public holds a role on `g` and the head does not list it at that role: a party opens
+    // the sync ID by the public's role only by the public entry (spec/permissions.md §3), so a
+    // step is due. Its removal or lowering rotates a role, which makes one due anyway. Due only
+    // where a step lists it (`listed`, boxed at the newest epochs): the public left out of one
     // (spec/permissions.md §3 Left out) is listed once re-sealed, and a step before then, listing
-    // it no more than the head does, would be due again at once, a step per settle round.
-    let unlisted = claims.is_some_and(|c| !c.lists_public(l)) && tx.core.roster_of(g).get(&Tid::PUBLIC).is_some_and(|e| e.role >= Role::Read) && {
-        let read = epochs.role(Role::Read).newest();
-        match read {
-            Some(re) => readers(tx, g, &re)?.iter().any(|r| matches!(r, ReaderKey::Public)),
-            None => false,
-        }
+    // it no differently than the head does, would be due again at once, a step per settle round.
+    let unlisted = tx.core.roster_of(g).get(&Tid::PUBLIC).is_some_and(|e| e.role >= Role::Sync) && {
+        let want = match registration_epochs(&epochs) {
+            Some([(se, _), (re, _), _, _]) => listed(tx, g, &re, &se)?.into_iter().find_map(|r| match r {
+                ReaderKey::Public { reads } => Some(reads),
+                _ => None,
+            }),
+            None => None,
+        };
+        let has = claims.as_ref().and_then(|c| c.entries.get(&osis_crypto::public_entry(l))).map(|b| osis_blob::read_public_entry_box(b, &head, g).is_ok_and(|i| i.read.is_some()));
+        want.is_some() && want != has
     };
     let read_moved = read_moved || unlisted;
     let Some(head_admin) = due_at(&epochs, &head, &deposit, read_moved, fresh) else { return Ok(None) };
@@ -335,8 +357,8 @@ pub(crate) fn step_due(tx: &mut Tx<'_>, g: &Tid, l: &SyncId, fresh: bool) -> Res
 /// the newest epochs with the current readers.
 fn step_into(tx: &mut Tx<'_>, m: &mut Mutation, g: Tid, l: SyncId, fresh: bool) -> Result<Option<(Step, ClaimSet)>> {
     let Some(due) = step_due(tx, &g, &l, fresh)? else { return Ok(None) };
-    let [_, (re, _), _, _] = registration_epochs(&due.epochs).ok_or(Error::Misuse("an admin registers: every role's newest secret is needed"))?;
-    let rs = readers(tx, &g, &re)?;
+    let [(se, _), (re, _), _, _] = registration_epochs(&due.epochs).ok_or(Error::Misuse("an admin registers: every role's newest secret is needed"))?;
+    let rs = listed(tx, &g, &re, &se)?;
     let keyset = Core::keys_in(tx, &g)?.and_then(|k| k.read);
     let issued = issue(tx, &g, &due.epochs, Some((&due.head, &due.admin)), &rs, &due.deposit, keyset.as_ref())?;
     put_step(m, g, l, &issued, false)?;

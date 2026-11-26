@@ -315,6 +315,8 @@ impl Engine {
                         role_lines(tx, &a, &mut sub)?;
                         out.push_str(&sub.replace('\n', "\n  "));
                     }
+                    let public = tx.core.keyed_role_now(&Tid::PUBLIC, &t);
+                    let _ = write!(out, "\n  the public: {public:?} by its grant, listed at the head {:?}", tx.core.ix.public_listed.get(&t).map(|(s, h)| (s, h.0[..4].to_vec())));
                     let due = crate::rotation::explain_due(tx, &a)?;
                     let _ = write!(out, "\n  lost access ({}): {due}", label(tx.core, &a));
                     let u = tx.core.unread(&t);

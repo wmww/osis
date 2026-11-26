@@ -19,7 +19,7 @@ mod sign;
 
 pub use blob::{BlobKey, NOTICE_BOX_LEN, SECTION_WRAP_LEN, Trial, WRAP_LEN, blob_id, blob_len, decrypt_blob, encrypt_blob, filler_wrap, notice_box_is, notice_key, open_fire, open_notice, open_section, pad, padme, reseal_section, seal_fire, seal_notice, seal_section, unpad, unwrap, unwrap_order, unwrap_section, wrap, wrap_section};
 pub use delete::{DeleteSecret, blind, commitment, link_blind, thing_blind, verify_delete};
-pub use boxes::{BoxForm, BoxItem, BoxSlot, EntryItem, Epoch, HistoryEntry, open_box, open_entry, open_form_box, open_form_entry, read_open_box, read_open_entry, open_history, open_joint_box, open_symmetric_box, roles_secret, seal_box, seal_entry, seal_history, seal_joint_box, wrap_symmetric_box};
+pub use boxes::{BoxForm, BoxItem, BoxSlot, EntryItem, EntryRead, Epoch, HistoryEntry, open_box, open_entry, open_form_box, open_form_entry, read_open_box, read_open_entry, open_history, open_joint_box, open_symmetric_box, roles_secret, seal_box, seal_entry, seal_history, seal_joint_box, wrap_symmetric_box};
 pub use error::Error;
 pub use kem::{KEM_PUBLIC_LEN, KemPublicKey, KemSecret, MLKEM_CT_LEN, SEALED_OVERHEAD, X25519Secret, open_sealed, seal, seal_with};
 pub use keys::{creation_nonce, dedup_secret, delta_hash, link_hash, link_key_role_secret, link_tree_hash, RoleSecret, role_kem, signing_key, thing_role_secret};

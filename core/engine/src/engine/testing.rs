@@ -1036,8 +1036,9 @@ mod tests {
         // (`forgotten`); events, not the held set (`falls`, `passes`, `role_arrivals`,
         // `cause_at`, `reseal_asks`, `carriers`, `carrying`); the node closure, built again after an open (`closure`);
         // the removals to judge for addenda, all of them again at an open (`addenda_due`,
-        // `addenda_gathered`, `addenda_wake`).
-        const LEFT_OUT: &[&str] = &["rekeyed", "keys_due", "fires_due", "cards_due", "cards_stale", "forgotten", "pending", "pend_on", "pend_keys", "pend_by", "pend_needs", "falls", "passes", "role_arrivals", "cause_at", "setting_waits", "reseal_asks", "carriers", "carrying", "cover_waits", "closure", "addenda_due", "addenda_gathered", "addenda_wake"];
+        // `addenda_gathered`, `addenda_wake`); the heads listing the public, fed again after an open
+        // (`public_listed`).
+        const LEFT_OUT: &[&str] = &["rekeyed", "keys_due", "fires_due", "cards_due", "cards_stale", "forgotten", "pending", "pend_on", "pend_keys", "pend_by", "pend_needs", "falls", "passes", "role_arrivals", "cause_at", "setting_waits", "reseal_asks", "carriers", "carrying", "cover_waits", "closure", "addenda_due", "addenda_gathered", "addenda_wake", "public_listed"];
         let ix = super::super::Indexes::default();
         let compared: BTreeSet<&str> = tables(&ix).into_iter().map(|(n, _)| n).collect();
         for n in super::super::INDEX_NAMES {

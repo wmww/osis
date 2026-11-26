@@ -62,13 +62,27 @@ pub struct Kept {
     pub stranded: bool,
     /// `None` when it shows no sync key.
     pub credentials: Option<Arc<UnreadCredentials>>,
-    /// Its head with its claim set, where the set lists S's public entry and the head bears a sync
-    /// epoch of the latest number held: the node reads S by that entry's open box
-    /// (spec/sync-opens.md §4 Admissible). A head behind a later sync epoch held is one it knows
-    /// superseded and proves nothing (a public's removal since included), and so is the head it
-    /// was lowered to sync at (it read there what ended the public's read, a lowering of it
-    /// included, which rotates no sync epoch): it waits for the Register moving it.
-    pub public: Option<(Step, ClaimSet)>,
+    /// What its head says of the public (`Engine::public_head`).
+    pub public: Public,
+}
+
+/// What a node keeping S unread reads of the public at its head (spec/sync.md §3 Holders by
+/// copies, spec/sync-opens.md §4 Admissible).
+#[derive(Clone, Debug, PartialEq)]
+pub enum Public {
+    /// No step registered yet: nothing said.
+    NoHead,
+    /// The head lists no public entry: the public holds nothing there as this node knows it.
+    Unlisted,
+    /// The head with its claim set (`at`), which lists S's public entry: the public holds sync there,
+    /// and the entry's box gives its sync secret (a head past this node's keys among such).
+    /// `reads`: the head bears a sync epoch of the latest number held and is not the head it
+    /// was lowered to sync at, so the node also reads S by the box's read secrets. A head behind
+    /// a later sync epoch held is one it knows superseded and proves nothing (a public's removal
+    /// since included), and so, for reading, is the head it was lowered to sync at (it read there
+    /// what ended the public's read, a lowering of it included, which rotates no sync epoch): it
+    /// waits for the Register moving it.
+    Listed { at: Box<(Step, ClaimSet)>, reads: bool },
 }
 
 /// What one S is judged on, every value read by key (spec/sync-judgement.md §6).
@@ -96,23 +110,29 @@ pub fn judge(j: &Judged) -> Kept {
     let latest = secrets.first().map(|(e, _)| e.n());
     let current: Vec<_> = secrets.iter().filter(|(e, _)| Some(e.n()) == latest).map(|(_, x)| role_key(RoleKey::Sync, x).verifying_key()).collect();
     let held: Vec<(SigningSecret, Secret32)> = secrets.into_iter().map(|(_, x)| (role_key(RoleKey::Sync, x), Secret32::from_bytes(sync_proof(&role_key_seed(RoleKey::Sync, x))))).collect();
-    let keep = |stranded: bool, credentials: Option<UnreadCredentials>| Kept { stranded, credentials: credentials.map(Arc::new), public: None };
+    let keep = |stranded: bool, credentials: Option<UnreadCredentials>| Kept { stranded, credentials: credentials.map(Arc::new), public: Public::NoHead };
     let Some(head) = j.steps.last() else {
         // no step registered yet: each sync secret it holds counts as its step, so a reader's
         // test finds S here and registers its path, and a box at a self-made epoch hides no
         // genuine one (spec/sync-opens.md §4 Admissible)
         return keep(false, (!held.is_empty()).then(|| UnreadCredentials { step: None, keys: held, deposit: None, claims: None }));
     };
+    let public = |reads: bool| match head.1.as_ref().filter(|c| c.lists_public(j.s)) {
+        Some(c) => Public::Listed { at: Box::new((head.0.clone(), c.clone())), reads },
+        None => Public::Unlisted,
+    };
     if let Some(k) = held.iter().find(|(k, _)| k.verifying_key() == head.0.keys.sync) {
-        let public = head.1.as_ref().filter(|c| c.lists_public(j.s) && current.contains(&head.0.keys.sync) && j.lowered_at != Some(&head.0.id())).map(|c| (head.0.clone(), c.clone()));
         let mut kept = keep(false, Some(UnreadCredentials { step: Some(head.0.id()), keys: vec![k.clone()], deposit: Some(head.0.keys.deposit), claims: head.1.clone() }));
-        kept.public = public;
+        kept.public = public(current.contains(&head.0.keys.sync) && j.lowered_at != Some(&head.0.id()));
         return kept;
     }
     // its head is past its keys: it shows only the secrets no step of its path bears (a re-grant
-    // past its head, which a reader holding it moves it to), so a node removed shows nothing
+    // past its head, which a reader holding it moves it to), so a node removed shows nothing;
+    // where the head lists the public entry, its box gives the head's sync secret
     let keys: Vec<_> = held.into_iter().filter(|(k, _)| !j.steps.iter().any(|(st, _)| st.keys.sync == k.verifying_key())).collect();
-    keep(true, (!keys.is_empty()).then_some(UnreadCredentials { step: None, keys, deposit: None, claims: None }))
+    let mut kept = keep(true, (!keys.is_empty()).then_some(UnreadCredentials { step: None, keys, deposit: None, claims: None }));
+    kept.public = public(false);
+    kept
 }
 
 #[derive(Clone)]
@@ -181,10 +201,21 @@ impl Unread {
             acted = true;
             // at a head past its keys its copy goes and it takes nothing (§6)
             cx.store.set_unheld(&s, k.stranded)?;
-            // read by the public entry its head lists: S becomes read (`syncs` follows it)
-            if let Some((head, claims)) = &k.public
-                && cx.engine.take_public_entry(&s, head, claims)?
-            {
+            // what the head says of the public: listed, it holds sync there (its box's sync
+            // secret taken) and, `reads`, S becomes read by the box (`syncs` follows it)
+            let path = || -> Result<Vec<_>> { Ok(cx.store.path(&s)?.map(|p| p.steps.iter().map(|(st, _)| st.id()).collect()).unwrap_or_default()) };
+            let read = match &k.public {
+                Public::NoHead => false,
+                Public::Unlisted => {
+                    let path = path()?;
+                    cx.engine.public_head(&s, None, false, &path)?
+                }
+                Public::Listed { at, reads } => {
+                    let path = path()?;
+                    cx.engine.public_head(&s, Some((&at.0, &at.1)), *reads, &path)?
+                }
+            };
+            if read {
                 osis_base::costs::count("unread: read by its head's public entry", 1);
             }
             self.kept.insert(s, k);
@@ -224,12 +255,13 @@ mod tests {
         for (i, (e, x)) in held.iter().take(2).enumerate() {
             let keys = StepKeys::derive(x, &write, &admin, &deposit, &s);
             let read_at = (&t, Epoch::derive(&t, Role::Read, 3, &read).unwrap(), &read);
-            let step = register(Parent::Genesis(&role_key(RoleKey::Delete, &admin)), keys, &[Reader::Public], read_at, (*e, x), &mut SeededRng::from_u64(0)).unwrap();
+            let step = register(Parent::Genesis(&role_key(RoleKey::Delete, &admin)), keys, &[Reader::Public { reads: true }], read_at, (*e, x), &mut SeededRng::from_u64(0)).unwrap();
             let steps = [(step.0, Some(step.1))];
-            assert!(judge(&Judged { s: &s, secrets: &held[..2], steps: &steps, lowered_at: None }).public.is_some(), "head at concurrent epoch {i}");
-            assert!(judge(&Judged { s: &s, secrets: &held, steps: &steps, lowered_at: None }).public.is_none(), "head at {i} behind a later epoch");
+            let reads = |k: super::Kept| matches!(k.public, super::Public::Listed { reads: true, .. });
+            assert!(reads(judge(&Judged { s: &s, secrets: &held[..2], steps: &steps, lowered_at: None })), "head at concurrent epoch {i}");
+            assert!(!reads(judge(&Judged { s: &s, secrets: &held, steps: &steps, lowered_at: None })), "head at {i} behind a later epoch");
             let head = steps.first().map(|x| x.0.id());
-            assert!(judge(&Judged { s: &s, secrets: &held[..2], steps: &steps, lowered_at: head.as_ref() }).public.is_none(), "head at {i} it was lowered at");
+            assert!(!reads(judge(&Judged { s: &s, secrets: &held[..2], steps: &steps, lowered_at: head.as_ref() })), "head at {i} it was lowered at");
         }
     }
 }

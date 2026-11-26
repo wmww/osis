@@ -7,7 +7,7 @@ use osis_base::cbor::{Limits, decode, encode};
 use osis_base::format::{MAX_CLAIMS, MAX_MESSAGE, MAX_OBJECT_DEPTH};
 use osis_base::{SyncId, Tid, Value};
 use osis_crypto::{
-    BoxForm, BoxSlot, CryptoRngCore, Domain, EntryItem, Epoch, KemPublicKey, KemSecret, RoleKey, Secret32, Signature, SigningSecret,
+    BoxForm, BoxSlot, CryptoRngCore, Domain, EntryItem, EntryRead, Epoch, KemPublicKey, KemSecret, RoleKey, Secret32, Signature, SigningSecret,
     VerifyingKey, X25519Secret, claim_key, deposit_key, role_key, open_entry, open_form_entry, public_entry, read_open_entry, seal_entry, static_entry, sync_id,
 };
 use osis_schema::Codec;
@@ -294,8 +294,9 @@ pub enum Reader<'a> {
     Dh([u8; 32]),
     /// A link key, by static entry, with an entry box sealed to its first read keyset's KEM key.
     Static { signing: VerifyingKey, kem: &'a KemPublicKey },
-    /// The public, by its public entry, with an open-form entry box.
-    Public,
+    /// The public, by its public entry, with an open-form entry box: the read secrets and the
+    /// sync secret where it reads (`reads`), the sync secret alone where it holds sync alone.
+    Public { reads: bool },
 }
 
 /// Who signs a new step.
@@ -338,7 +339,7 @@ pub fn register_with(parent: Parent, keys: StepKeys, readers: &[Reader], read: (
     let step_secret = X25519Secret::random(rng);
     let step_key = step_secret.public();
     let slot = BoxSlot::Entry { sync_id, step_key, actor: *read.0 };
-    let item = EntryItem { epoch: read.1, secret: read.2.clone(), earlier: earlier.map(|(e, s)| (e, s.clone())), sync: (sync.0, sync.1.clone()) };
+    let item = EntryItem { read: Some(EntryRead { epoch: read.1, secret: read.2.clone(), earlier: earlier.map(|(e, s)| (e, s.clone())) }), sync: (sync.0, sync.1.clone()) };
     let mut claims = Vec::new();
     let mut entries = BTreeMap::new();
     for r in readers {
@@ -353,10 +354,11 @@ pub fn register_with(parent: Parent, keys: StepKeys, readers: &[Reader], read: (
                 claims.push(e);
                 entries.insert(e, seal_entry_box(&slot, kem, &item, rng)?);
             }
-            Reader::Public => {
+            Reader::Public { reads } => {
                 let e = public_entry(&sync_id);
                 claims.push(e);
-                entries.insert(e, SecretBox::Open(open_form_entry(&slot, &item)?));
+                let alone = EntryItem { read: None, sync: item.sync.clone() };
+                entries.insert(e, SecretBox::Open(open_form_entry(&slot, if *reads { &item } else { &alone })?));
             }
         }
     }
@@ -403,7 +405,8 @@ pub fn open_entry_box(b: &SecretBox, step: &Step, kem: &KemSecret, t: &Tid) -> R
 }
 
 /// Reads the public entry's box of `step` of `t`'s sync ID (open form, spec/sync-ids.md §3):
-/// the read secrets it carries, with the epochs of `t` they name. Anyone reads it.
+/// the secrets of the public's role it carries (read and sync, or sync alone), with the epochs of
+/// `t` they name. Anyone reads it.
 pub fn read_public_entry_box(b: &SecretBox, step: &Step, t: &Tid) -> Result<EntryItem, Error> {
     let slot = BoxSlot::Entry { sync_id: step.sync_id, step_key: step.step_key, actor: *t };
     let SecretBox::Open(payload) = b else { return Err(Error::Malformed("entry box form")) };
@@ -541,11 +544,12 @@ pub(crate) mod tests {
         let outsider = KemSecret::derive(&Secret32::from_bytes([6; 32]));
         assert!(!c0.contains(&s0.claim_key(outsider.x25519()).unwrap().verifying_key().to_bytes()));
         let b = c0.entry_box(&s0.sync_id, &card.signing.verifying_key()).unwrap();
-        let want = EntryItem { epoch: e3, secret: g.read.clone(), earlier: None, sync: (g.sync_at().0, g.sync.clone()) };
+        let r3 = EntryRead { epoch: e3, secret: g.read.clone(), earlier: None };
+        let want = EntryItem { read: Some(r3.clone()), sync: (g.sync_at().0, g.sync.clone()) };
         assert_eq!(open_entry_box(b, &s0, &card.kem, &THING).unwrap(), want);
         // read as another thing's, the secret names that thing's epoch (spec/crypto.md §4)
         let other = Tid::from_bytes([1; 15]);
-        assert_ne!(open_entry_box(b, &s0, &card.kem, &other).unwrap().epoch, e3);
+        assert_ne!(open_entry_box(b, &s0, &card.kem, &other).unwrap().read.unwrap().epoch, e3);
         // a registrar naming an epoch the secret does not name boxes nothing
         assert!(register(Parent::Genesis(&g.delete()), g.keys(), &readers, (&THING, epoch(3), &g.read), g.sync_at(), &mut rng).is_err());
         let b = c0.entry_box(&s0.sync_id, &link.signing.verifying_key()).unwrap();
@@ -559,24 +563,27 @@ pub(crate) mod tests {
         let e2 = Epoch::derive(&THING, osis_base::Role::Read, 2, &g.write).unwrap();
         let (s2, c2) = register_with(Parent::Child { step: &s0, delete: &g.delete() }, s0.keys, &readers, (&THING, e3, &g.read), g.sync_at(), Some((e2, &g.write)), &mut rng).unwrap();
         let b = c2.entry_box(&s2.sync_id, &card.signing.verifying_key()).unwrap();
-        assert_eq!(open_entry_box(b, &s2, &card.kem, &THING).unwrap(), EntryItem { earlier: Some((e2, g.write.clone())), ..want });
+        assert_eq!(open_entry_box(b, &s2, &card.kem, &THING).unwrap(), EntryItem { read: Some(EntryRead { earlier: Some((e2, g.write.clone())), ..r3 }), ..want });
     }
 
     // spec/sync-ids.md §3 (Entry boxes), spec/wire.md §7: the public listed by its public entry
-    // with an open entry box, which anyone reads; the set fits its sync ID only with the open box
-    // under that sync ID's public entry.
+    // with an open entry box, which anyone reads, carrying its role's secrets: the read secrets
+    // and the sync secret where it reads, the sync secret alone where it holds sync alone; the set
+    // fits its sync ID only with the open box under that sync ID's public entry.
     #[test]
     fn the_public_entry_box_is_open() {
         let mut rng = SeededRng::from_u64(0);
         let g = Secrets::new(40);
         let e = Epoch::derive(&THING, Role::Read, 0, &g.read).unwrap();
-        let (s0, c0) = register(Parent::Genesis(&g.delete()), g.keys(), &[Reader::Public], (&THING, e, &g.read), g.sync_at(), &mut rng).unwrap();
-        assert!(c0.lists_public(&s0.sync_id) && c0.fits(&s0.sync_id));
-        assert!(!c0.fits(&SyncId([1; 16])), "the open box under another sync ID's entry");
-        assert_eq!(ClaimSet::parse(&c0.to_bytes()).unwrap(), c0);
-        let b = c0.entries.get(&public_entry(&s0.sync_id)).unwrap();
-        let want = EntryItem { epoch: e, secret: g.read.clone(), earlier: None, sync: (g.sync_at().0, g.sync.clone()) };
-        assert_eq!(read_public_entry_box(b, &s0, &THING).unwrap(), want);
+        for reads in [true, false] {
+            let (s0, c0) = register(Parent::Genesis(&g.delete()), g.keys(), &[Reader::Public { reads }], (&THING, e, &g.read), g.sync_at(), &mut rng).unwrap();
+            assert!(c0.lists_public(&s0.sync_id) && c0.fits(&s0.sync_id));
+            assert!(!c0.fits(&SyncId([1; 16])), "the open box under another sync ID's entry");
+            assert_eq!(ClaimSet::parse(&c0.to_bytes()).unwrap(), c0);
+            let b = c0.entries.get(&public_entry(&s0.sync_id)).unwrap();
+            let read = reads.then(|| EntryRead { epoch: e, secret: g.read.clone(), earlier: None });
+            assert_eq!(read_public_entry_box(b, &s0, &THING).unwrap(), EntryItem { read, sync: (g.sync_at().0, g.sync.clone()) });
+        }
     }
 
     // spec/wire.md §8: claim set rejections: count not a power of two, entry key not among the

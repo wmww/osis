@@ -30,7 +30,7 @@ use crate::engine::journal::{JMap, JSet, JSetMap, Journaled};
 use crate::engine::{Core, Engine, Tx};
 use crate::error::Result;
 use osis_base::memo::Effects;
-use osis_base::{Role, Tid};
+use osis_base::{Role, SyncId, Tid};
 use std::collections::{BTreeSet, VecDeque};
 use std::sync::Arc;
 
@@ -818,6 +818,25 @@ impl Core {
         self.roster_of(a).get(&Tid::PUBLIC).is_some_and(|e| e.role >= Role::Read)
     }
 
+    /// Whether the public holds a role on `a` by its own grant there (sync or read), as `a`'s role
+    /// commits held here show it (`public_reads`): its sync ID's steps list it (spec/sync-ids.md §3).
+    pub(crate) fn public_syncs(&self, a: &Tid) -> bool {
+        self.roster_of(a).get(&Tid::PUBLIC).is_some_and(|e| e.role >= Role::Sync)
+    }
+
+    /// Whether the head of `a`'s sync ID, as this node keeps or follows it, lists the public entry
+    /// with a box whose sync secret the head's sync key comes from (`Indexes::public_listed`):
+    /// the public holds sync on `a` as a node holding no grant of it knows (spec/sync.md §3
+    /// Holders by copies). Who writes it: `a`'s admins, the step (a path verified from genesis).
+    pub(crate) fn public_listed(&self, a: &Tid) -> bool {
+        self.ix.public_listed.contains_key(a)
+    }
+
+    /// The sync ID of `a` whose head lists the public entry here (`public_listed`).
+    pub(crate) fn public_listed_id(&self, a: &Tid) -> Option<SyncId> {
+        self.ix.public_listed.get(a).map(|(s, _)| *s)
+    }
+
     /// Whether the node opens dependent thing `y` (spec/sync-set.md §2 local part): it holds a read
     /// secret of the independent thing `y`'s secrets derive from. A tid the node holds no record
     /// of opens nothing.
@@ -832,7 +851,7 @@ impl Core {
     /// one). Established or not: a grantee holds the grant's box before it syncs `y`, where the
     /// rotation that made the epoch is (spec/permissions.md §4 Key part).
     pub(crate) fn counts_independent(&self, y: &Tid) -> bool {
-        self.is_independent(y) || self.own_record(y).is_some_and(|e| Role::ALL.iter().any(|r| e.role(*r).held().next().is_some())) || self.unread(y).holds_any()
+        self.is_independent(y) || self.public_listed(y) || self.own_record(y).is_some_and(|e| Role::ALL.iter().any(|r| e.role(*r).held().next().is_some())) || self.unread(y).holds_any()
     }
 
     /// How the walk enters independent thing `y` at a strong from a context that does not
@@ -844,9 +863,9 @@ impl Core {
         let e = self.own_record(y).and_then(|_| self.epochs(y));
         if e.as_ref().is_some_and(|e| e.role(Role::Read).holds_any()) {
             Some(Ctx::Read(*y))
-        } else if e.as_ref().is_some_and(|e| e.role(Role::Sync).holds_any()) || self.unread(y).holds_any() {
-            // kept unread: a sync secret alone, given by a box applied or a sync copy
-            // (`sync_ids::unread`)
+        } else if e.as_ref().is_some_and(|e| e.role(Role::Sync).holds_any()) || self.unread(y).holds_any() || self.public_listed(y) && self.ix.secrets.get(y).is_some_and(|e| e.role(Role::Sync).holds_any()) {
+            // kept unread: a sync secret alone, given by a box applied, a sync copy
+            // (`sync_ids::unread`) or the public entry its head lists (`public_listed`)
             Some(Ctx::Unread(*y))
         } else {
             None
@@ -926,7 +945,7 @@ fn given(core: &Core, v: Vx, y: Tid) -> (BTreeSet<Vx>, Carry) {
     }
     let mut how = Carry::Plain;
     if independent && Ctx::Read(y) != c && let Some(e) = core.enter(&y) {
-        let carry = if core.is_own(&y) || edge_carries(core, v, &y) || own_carried(core, &y, false) {
+        let carry = if core.is_own(&y) || edge_carries(core, v, &y) || own_carried(core, &y, false) || listed_carries(core, v, &y) {
             Some(Carry::Plain)
         } else if own_carried(core, &y, true) {
             Some(Carry::Pending)
@@ -966,6 +985,25 @@ fn edge_carries(core: &Core, v: Vx, y: &Tid) -> bool {
         Ctx::Read(u) if u != *y => core.keys_open(&u, y) || core.keyed_role_now(&u, y) >= Some(Role::Sync) || core.syncs_by_copies(&u, y),
         _ => false,
     }
+}
+
+/// Whether `v`'s unit carries `y` kept unread by the public's sync (spec/sync-set.md §2
+/// Following by the public entry, spec/sync.md §3 Holders by copies): `v` is in the read unit of a
+/// thing whose key part names `y`'s sync ID, as it does for a thing followed by the public entry,
+/// and `y`'s head lists the public entry (`Core::public_listed`). Where the public holds sync, a
+/// thing so followed is kept unread instead.
+fn listed_carries(core: &Core, v: Vx, y: &Tid) -> bool {
+    match v.0 {
+        Ctx::Read(g) if g != *y => core.public_listed(y) && names_sync_id(core, &g, y),
+        _ => false,
+    }
+}
+
+/// Whether `g`'s key part names `x`'s sync ID (`follows_public`): an edge piece of `g` on `x`,
+/// standing or since lowered or removed, as edge writes, sync copies or `x`'s record naming `g`
+/// its mint admin.
+fn names_sync_id(core: &Core, g: &Tid, x: &Tid) -> bool {
+    core.ix.held.is_named(g, x) || core.ix.sync_copies.get(x).is_some_and(|m| m.values().any(|c| c.holder == c.under && c.under == *g && !c.steps.is_empty())) || core.copies_naming(g).contains(x)
 }
 
 /// Whether an offer of `y` or an edge piece in the key part of an own thing or a followed link
@@ -1274,9 +1312,7 @@ fn follows_public(core: &Core, y: &Tid) -> Option<Tid> {
     let recorded = |x: &Tid| core.ix.sync_recorded_ids.get(x).is_some_and(|s| !s.is_empty()) || !copies(x).is_empty();
     // `y` itself where its sync ID is held (independent by it, its keyset commit held or not)
     let x = if recorded(y) { *y } else { core.secret_actor(y)? };
-    let under = copies(&x);
-    let named = |g: &Tid| core.ix.held.is_named(g, &x) || under.contains(g) || core.copies_naming(g).contains(&x);
-    let beyond = cl.targeting(y).any(|v| matches!(v.0, Ctx::Read(g) if named(&g)) && cl.beyond.contains(&v.0, &(*y, v.1)));
+    let beyond = cl.targeting(y).any(|v| matches!(v.0, Ctx::Read(g) if names_sync_id(core, &g, &x)) && cl.beyond.contains(&v.0, &(*y, v.1)));
     let unread = cl.contexts(&x).iter().any(|c| matches!(c, Ctx::Unread(_)));
     (beyond && recorded(&x) && !unread).then_some(x)
 }

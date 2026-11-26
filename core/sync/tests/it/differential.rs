@@ -781,3 +781,36 @@ fn a_holder_left_out_is_re_sealed_once_its_keyset_arrives_spec_permissions_3() {
     use crate::harness::script::*;
     holds_on(0, 2, 3, &[New(1), Give(1, 0, Holder::Node(0), Syncs), Pair(0), Run, Strong(3, None, 0), Unpair(3, 2)], String::new(), false);
 }
+
+// spec/sync-ids.md §3 (public entry), spec/sync.md §3 (Holders by copies), spec/sync-set.md §2
+// (Following by the public entry): the public holds sync alone on node 2's thing; node 0's
+// account, a writer, is removed while node 3's strong names the thing. Node 0, holding no grant of
+// it, follows it by the public entry, whose box gives the public's role there, the sync secret
+// alone, and its head listing the public entry shows it that role: it keeps the thing unread as
+// every party may (the model's Unread) and reads nothing. The public's sync removed, node 0's
+// head moves past the public's box: it keeps the thing unread no more.
+#[test]
+fn a_follower_keeps_a_public_sync_thing_unread_by_the_public_entry_spec_sync_ids_3() {
+    use crate::harness::history::{Gives, Holder, reads};
+    let script = [Step::New(2), Step::Give(2, 0, Holder::Node(0), Gives::Writes), Step::Give(2, 0, Holder::Public, Gives::Syncs), Step::Strong(3, None, 0), Step::Revoke(2, 0, Holder::Node(0))];
+    let mut w = holds_on(0, 3, 4, &script, String::new(), false);
+    let t = w.history.things[0].0;
+    assert!(reads(w.engine(0), &t).value.is_none(), "node 0 reads nothing of the thing");
+    let unread = |w: &mut crate::harness::World| w.engine(0).sync_set().unwrap().ids.values().any(|(ts, h)| ts.contains(&t) && *h == osis_engine::sync::Holding::Unread);
+    assert!(unread(&mut w), "kept unread by the public's sync");
+    play(&mut w, &[Step::Revoke(2, 0, Holder::Public), Step::Run], String::new());
+    assert!(!unread(&mut w), "the public's sync removed: kept unread no more");
+}
+
+// spec/permissions.md §3 (Lost access: its role there counts the public's sync its head lists),
+// spec/sync.md §3 (Holders by copies): node 0's account, a reader, is removed after the public is
+// given sync alone and node 0's strong names the thing. Node 0 follows it by the public entry and
+// takes the public's box, the sync secret alone, while it still holds the read secrets its loss
+// has not dropped: the drop keeps that sync secret, so it keeps the thing unread as the model says.
+// Failed while lost access judged the sync secret by the grants alone: it dropped the public's
+// sync secret with the rest and followed the thing again, holding nothing.
+#[test]
+fn a_removed_reader_keeps_the_publics_sync_secret_through_its_loss_spec_permissions_3() {
+    use crate::harness::script::*;
+    holds_on(0, 3, 4, &[New(2), Give(2, 0, Holder::Node(0), Reads), Give(2, 0, Holder::Node(1), Reads), Revoke(2, 0, Holder::Node(1)), Give(2, 0, Holder::Public, Syncs), Strong(0, None, 0), Revoke(2, 0, Holder::Node(0))], String::new(), false);
+}

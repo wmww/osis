@@ -55,7 +55,7 @@ pub fn steps() -> VecFile {
     let entry = static_entry(&s0.sync_id, &link.verifying_key());
     assert!(c0.contains(&k1) && c0.contains(&k2) && c0.contains(&entry));
     let b = c0.entries.get(&entry).unwrap();
-    assert_eq!(open_entry_box(b, &s0, &link_kem, &actor).unwrap(), osis_crypto::EntryItem { epoch, secret: read.clone(), earlier: None, sync: (sync_epoch, sync.clone()) });
+    assert_eq!(open_entry_box(b, &s0, &link_kem, &actor).unwrap(), osis_crypto::EntryItem { read: Some(osis_crypto::EntryRead { epoch, secret: read.clone(), earlier: None }), sync: (sync_epoch, sync.clone()) });
     let mut cases = vec![step_fields(
         case("genesis step with two DH readers and one static entry", SPEC)
             .with("read-secret", hex(read.expose()))

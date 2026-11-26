@@ -589,6 +589,12 @@ indexes! {
     /// The things whose `sync_copies` carry a step of each sync ID: what keeps a thing whose copies
     /// speak (`Core::copies_speak`) among a sync ID's things (`Engine::sync_things_of`).
     pub sync_copy_ids: JSetMap<SyncId, Tid>,
+    /// Per thing whose sync ID's head, as this node keeps or follows it, lists the public entry
+    /// with a box whose sync secret the head's sync key comes from: that sync ID and head (spec/sync.md §3
+    /// Holders by copies: the public holds sync there). Fed by an open by the public entry
+    /// (`Engine::learn_grant`) and the unread judgement at each head move (`Engine::public_head`);
+    /// in memory, fed again after an open.
+    pub public_listed: JMap<Tid, (SyncId, osis_blob::StepId)>,
     /// Per holder, the things `sync_copies` hold a copy of it on (counted or not: readers ask
     /// `Unread::holders`).
     pub sync_copy_holders: JSetMap<Tid, Tid>,

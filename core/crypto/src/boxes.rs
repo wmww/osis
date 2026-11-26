@@ -156,28 +156,38 @@ pub fn seal_box(recipient: &KemPublicKey, slot: &BoxSlot, keyset: Option<Epoch>,
     seal(recipient, &ad, &payload, rng)
 }
 
-/// What an entry box carries (spec/sync-ids.md §3): the read secret of the epoch its step registers
-/// and, when that epoch supersedes one, the earlier secret its rotation commit is wrapped under;
-/// and the sync secret whose role key the step registers.
+/// What an entry box carries (spec/sync-ids.md §3): the read secrets (`read`; none in the
+/// public's box where it holds sync alone) and the sync secret whose role key the step registers.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct EntryItem {
+    pub read: Option<EntryRead>,
+    pub sync: (Epoch, Secret32),
+}
+
+/// An entry box's read secrets: the read secret of the epoch its step registers and, when that
+/// epoch supersedes one, the earlier secret its rotation commit is wrapped under.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct EntryRead {
     pub epoch: Epoch,
     pub secret: Secret32,
     pub earlier: Option<(Epoch, Secret32)>,
-    pub sync: (Epoch, Secret32),
 }
 
 /// An entry box at `slot`: payload `[role, n, secret, earlier, sync]`, `earlier` `[n, secret]` or
 /// `[]`, `sync` `[n, secret]` (spec/wire.md §7). Each secret must name its epoch of the slot's
-/// actor.
+/// actor. A sealed entry box is a reader's: it carries the read secrets.
 pub fn seal_entry(recipient: &KemPublicKey, slot: &BoxSlot, item: &EntryItem, rng: &mut dyn CryptoRngCore) -> Result<Vec<u8>, Error> {
+    if item.read.is_none() {
+        return Err(Error::Malformed("entry box item"));
+    }
     let payload = entry_payload(slot, item)?;
     let ad = slot.ad(BoxForm::Sealed { keyset: None, suite: u64::from(SUITE_1) })?;
     seal(recipient, &ad, &payload, rng)
 }
 
 /// The public entry's box at `slot` (spec/sync-ids.md §3 Entry boxes): the open form, its payload
-/// `[role, n, secret, earlier, sync]` in clear, checked as `seal_entry` checks it.
+/// in clear, checked as `seal_entry` checks it: `[role, n, secret, earlier, sync]` where the public
+/// reads, `[role, sync]` where it holds sync alone.
 pub fn open_form_entry(slot: &BoxSlot, item: &EntryItem) -> Result<Vec<u8>, Error> {
     Ok(entry_payload(slot, item)?.to_vec())
 }
@@ -198,18 +208,25 @@ pub fn read_open_entry(slot: &BoxSlot, payload: &[u8]) -> Result<EntryItem, Erro
 fn entry_payload(slot: &BoxSlot, item: &EntryItem) -> Result<Zeroizing<Vec<u8>>, Error> {
     let actor = slot.actor();
     let named = |e: &Epoch, s: &Secret32| e.names(actor, Role::Read, s);
-    if slot.key().is_some() || !named(&item.epoch, &item.secret) || item.earlier.as_ref().is_some_and(|(e, s)| !named(e, s)) || !item.sync.0.names(actor, Role::Sync, &item.sync.1) {
+    let bad_read = item.read.as_ref().is_some_and(|r| !named(&r.epoch, &r.secret) || r.earlier.as_ref().is_some_and(|(e, s)| !named(e, s)));
+    if slot.key().is_some() || bad_read || !item.sync.0.names(actor, Role::Sync, &item.sync.1) {
         return Err(Error::Malformed("entry box item"));
     }
-    let earlier = item.earlier.iter().flat_map(|(e, s)| [Value::Int(e.n), Value::Bytes(s.expose().to_vec())]).collect();
-    let sync = vec![Value::Int(item.sync.0.n), Value::Bytes(item.sync.1.expose().to_vec())];
-    let value = Value::List(vec![role_value(Role::Read), Value::Int(item.epoch.n), Value::Bytes(item.secret.expose().to_vec()), Value::List(earlier), Value::List(sync)]);
+    let sync = Value::List(vec![Value::Int(item.sync.0.n), Value::Bytes(item.sync.1.expose().to_vec())]);
+    let value = match &item.read {
+        Some(r) => {
+            let earlier = r.earlier.iter().flat_map(|(e, s)| [Value::Int(e.n), Value::Bytes(s.expose().to_vec())]).collect();
+            Value::List(vec![role_value(Role::Read), Value::Int(r.epoch.n), Value::Bytes(r.secret.expose().to_vec()), Value::List(earlier), sync])
+        }
+        None => Value::List(vec![role_value(Role::Sync), sync]),
+    };
     let payload = Zeroizing::new(encode(&value));
     wipe_value(value);
     Ok(payload)
 }
 
 /// Opens an entry box at `slot`. Each epoch is the one its secret names under the slot's actor.
+/// A sealed entry box carries the read secrets.
 pub fn open_entry(kem: &KemSecret, slot: &BoxSlot, form: BoxForm, sealed: &[u8]) -> Result<EntryItem, Error> {
     if slot.key().is_some() {
         return Err(Error::Malformed("not an entry box slot"));
@@ -219,28 +236,36 @@ pub fn open_entry(kem: &KemSecret, slot: &BoxSlot, form: BoxForm, sealed: &[u8])
     let value = decode(&payload, &Limits::DEFAULT).map_err(|_| Error::Malformed("box payload"))?;
     let out = parse_entry_item(&value, slot.actor());
     wipe_value(value);
-    out
+    match out {
+        Ok(i) if i.read.is_none() => Err(Error::Malformed("entry box carries other than the read secret")),
+        o => o,
+    }
 }
 
 fn parse_entry_item(v: &Value, actor: &Tid) -> Result<EntryItem, Error> {
     let Value::List(f) = v else { return Err(Error::Malformed("box payload")) };
-    let [role, n, secret, Value::List(earlier), Value::List(sync)] = f.as_slice() else { return Err(Error::Malformed("box payload")) };
-    if get_role(role)? != Role::Read {
-        return Err(Error::Malformed("entry box carries other than the read secret"));
-    }
     let at = |r: Role, n: &Value, s: &Value| -> Result<(Epoch, Secret32), Error> {
         let s = Secret32::from_bytes(get_array(s)?);
         Ok((Epoch::derive(actor, r, get_uint(n)?, &s)?, s))
     };
-    let (epoch, secret) = at(Role::Read, n, secret)?;
-    let earlier = match earlier.as_slice() {
-        [] => None,
-        [n, s] => Some(at(Role::Read, n, s)?),
-        _ => return Err(Error::Malformed("box payload")),
+    let sync_of = |sync: &[Value]| -> Result<(Epoch, Secret32), Error> {
+        let [n, s] = sync else { return Err(Error::Malformed("box payload")) };
+        at(Role::Sync, n, s)
     };
-    let [n, s] = sync.as_slice() else { return Err(Error::Malformed("box payload")) };
-    let sync = at(Role::Sync, n, s)?;
-    Ok(EntryItem { epoch, secret, earlier, sync })
+    match f.as_slice() {
+        [role, n, secret, Value::List(earlier), Value::List(sync)] if get_role(role)? == Role::Read => {
+            let (epoch, secret) = at(Role::Read, n, secret)?;
+            let earlier = match earlier.as_slice() {
+                [] => None,
+                [n, s] => Some(at(Role::Read, n, s)?),
+                _ => return Err(Error::Malformed("box payload")),
+            };
+            Ok(EntryItem { read: Some(EntryRead { epoch, secret, earlier }), sync: sync_of(sync)? })
+        }
+        [role, Value::List(sync)] if get_role(role)? == Role::Sync => Ok(EntryItem { read: None, sync: sync_of(sync)? }),
+        [_, _, _, _, _] | [_, _] => Err(Error::Malformed("entry box carries other than the read or sync secrets")),
+        _ => Err(Error::Malformed("box payload")),
+    }
 }
 
 /// Opens a sealed-form box at `slot` with the form fields read beside it. The AD is built here,
@@ -635,21 +660,27 @@ mod tests {
         let form = BoxForm::Sealed { keyset: None, suite: 1 };
         let read = |n, s: u8| Epoch::derive(&g, Role::Read, n, &sec(s)).unwrap();
         let sync = (Epoch::derive(&g, Role::Sync, 4, &sec(6)).unwrap(), sec(6));
-        let bare = EntryItem { epoch: read(4, 7), secret: sec(7), earlier: None, sync: sync.clone() };
-        let both = EntryItem { earlier: Some((read(3, 8), sec(8))), ..bare.clone() };
+        let r = EntryRead { epoch: read(4, 7), secret: sec(7), earlier: None };
+        let bare = EntryItem { read: Some(r.clone()), sync: sync.clone() };
+        let both = EntryItem { read: Some(EntryRead { earlier: Some((read(3, 8), sec(8))), ..r.clone() }), sync: sync.clone() };
         for i in [&bare, &both] {
             let b = seal_entry(kem.public(), &entry, i, &mut rng).unwrap();
             assert_eq!(&open_entry(&kem, &entry, form, &b).unwrap(), i);
             assert!(open_box(&kem, &entry, form, &b).is_err());
+            assert_eq!(&read_open_entry(&entry, &open_form_entry(&entry, i).unwrap()).unwrap(), i);
         }
-        let lying = EntryItem { earlier: Some((read(3, 8), sec(9))), ..bare.clone() };
+        // the public's box where it holds sync alone: the sync secret, nothing sealed so
+        let alone = EntryItem { read: None, sync: sync.clone() };
+        assert_eq!(read_open_entry(&entry, &open_form_entry(&entry, &alone).unwrap()).unwrap(), alone);
+        assert_eq!(seal_entry(kem.public(), &entry, &alone, &mut rng), Err(Error::Malformed("entry box item")));
+        let lying = EntryItem { read: Some(EntryRead { earlier: Some((read(3, 8), sec(9))), ..r.clone() }), sync: sync.clone() };
         assert_eq!(seal_entry(kem.public(), &entry, &lying, &mut rng), Err(Error::Malformed("entry box item")));
         let read_as_sync = EntryItem { sync: (read(4, 7), sec(7)), ..bare.clone() };
         assert_eq!(seal_entry(kem.public(), &entry, &read_as_sync, &mut rng), Err(Error::Malformed("entry box item")), "the sync secret names a sync epoch");
         assert!(seal_entry(kem.public(), &slot(1, 2, Role::Read, read(4, 7)), &bare, &mut rng).is_err());
         let ad = entry.ad(form).unwrap();
         let s = || Value::List(vec![Value::Int(4), Value::Bytes(vec![6; 32])]);
-        for v in [vec![Value::Int(0), Value::Int(4), Value::Bytes(vec![7; 32]), Value::List(vec![])], vec![Value::Int(1), Value::Int(4), Value::Bytes(vec![7; 32]), Value::List(vec![]), s()], vec![Value::Int(0), Value::Int(4), Value::Bytes(vec![7; 32]), Value::List(vec![Value::Int(3)]), s()]] {
+        for v in [vec![Value::Int(0), Value::Int(4), Value::Bytes(vec![7; 32]), Value::List(vec![])], vec![Value::Int(1), Value::Int(4), Value::Bytes(vec![7; 32]), Value::List(vec![]), s()], vec![Value::Int(0), Value::Int(4), Value::Bytes(vec![7; 32]), Value::List(vec![Value::Int(3)]), s()], vec![role_value(Role::Sync), s()], vec![role_value(Role::Read), s()]] {
             let b = seal(kem.public(), &ad, &encode(&Value::List(v)), &mut rng).unwrap();
             assert!(open_entry(&kem, &entry, form, &b).is_err());
         }

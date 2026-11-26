@@ -146,8 +146,10 @@ impl Engine {
         // kept unread: in the node closure by a sync secret alone (spec/sync.md §3)
         if self.kept_unread(t) {
             // every sync ID kept for it (spec/sync.md §3): one a forged copy names never
-            // displaces the thing's own (`sync_ids::unread`)
-            let ids: Vec<SyncId> = self.owned_sync_ids(t)?.iter().filter(|o| !o.hint).map(|o| o.id).collect();
+            // displaces the thing's own (`sync_ids::unread`); the one whose head lists the public
+            // entry (a path verified from its genesis, `public_listed`)
+            let listed = self.core.public_listed_id(t);
+            let ids: Vec<SyncId> = self.owned_sync_ids(t)?.iter().filter(|o| !o.hint || Some(o.id) == listed).map(|o| o.id).collect();
             if !ids.is_empty() {
                 return Ok(ThingSync::Unread(ids));
             }
@@ -251,12 +253,14 @@ impl Engine {
         for k in self.static_listed(t)? {
             c.statics.insert(osis_crypto::static_entry(s, &k));
         }
-        // the public entry shown and tested while the public reads S's thing, tested while S's
-        // thing is followed by it; once its removal is held, the superseded read secrets lapsed
-        // (spec/sync-opens.md §4)
+        // the public entry shown and tested while the public holds a role on S's thing (its box
+        // that role's secrets), tested while S's thing is followed by it; once the public's read
+        // is removed, the superseded read secrets lapsed (spec/sync-opens.md §4)
         let public = self.core.public_reads(t);
-        c.shows_public |= public;
-        c.tests_public |= public || self.core.ix.closure.follows_public(t);
+        let listed = self.core.public_syncs(t);
+        c.shows_public |= listed;
+        c.public_reads |= public;
+        c.tests_public |= listed || self.core.ix.closure.follows_public(t);
         c.lapsed_public |= !public && self.core.ix.held.is_named(&Tid::PUBLIC, t);
         if let Some((fs, l)) = self.core.followed_links.get(t)
             && fs == *s
