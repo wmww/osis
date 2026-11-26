@@ -256,8 +256,7 @@ impl Hold {
 pub type Decided = BTreeMap<Tid, Option<osis_commit::Path>>;
 
 /// What the per-commit indexes (`apply::index_commit`, validity, the role filter) read of
-/// a header; persisted in the commit's parts row (`engine::index`), so an open builds them
-/// without decoding headers.
+/// a header (`View::of`), with what this node decided of a split commit's paths.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct View {
     pub ts: Ts,
@@ -273,8 +272,6 @@ pub struct View {
     /// In a split commit, what this node decided of each thing's path (`Decided`): a part on a
     /// thing whose path is not known is judged invalid. `None` where the path is in the clear.
     pub paths: Option<Arc<Decided>>,
-    /// Some list goes by link: the header is resolved from blobs at open (decoded there).
-    pub linked: bool,
     /// A memory commit (the ephemeral marker): held in memory, never durable to node-sync,
     /// receipts or demotion frontiers.
     pub memory: bool,
@@ -314,7 +311,6 @@ impl View {
             key: h.key,
             purge_author: h.purge_author(),
             paths,
-            linked: h.links != osis_commit::Links::default(),
             memory: h.ephemeral.is_some(),
             aspects: h.aspects.iter().map(|a| AspectView { tid: a.tid, ak: a.ak.clone(), lo: a.lo, hi: a.hi, replaces: a.replaces, original_floor: a.original_floor }).collect(),
             frontier: if h.kind == osis_commit::Kind::Role { crate::apply::validity::header_frontier(h) } else { None },
@@ -3381,7 +3377,7 @@ impl Engine {
 
     /// An open from the persisted index and a rebuild from the commit records each compute the
     /// indexes and role timelines this node holds (spec/permissions.md §5.1 step 5: validity is
-    /// a function of the held set), the open decoding no header, reading no blob (what a held
+    /// a function of the held set), the open reading no blob (what a held
     /// record needs is in the store, whatever blobs expiry or a drop took) and judging every
     /// part as held. Both load in a transaction that is dropped, so the store is as it was. Panics with the
     /// difference. Debug builds run it at the end of the engine's history (its drop), with the

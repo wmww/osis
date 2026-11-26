@@ -27,10 +27,7 @@ use std::sync::Arc;
 /// Whether the index on disk was written by a build with these rules.
 pub(super) const VERSION_KEY: &[u8] = b"i/v";
 const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "/", env!("OSIS_INDEX_RULES"));
-/// Per commit (`meta_row`): one byte per part (bit 0 valid, bits 1-2 the rotation role it
-/// needs: 0 none, 1 read, 2 write, 3 admin; bit 3 an overreach), then its header's
-/// `View` (a role commit's frontier with it), so an open indexes and adapts the commit
-/// without decoding its header.
+/// Per commit (`meta_row`): what this node judged of it, the rest of its `View` its header's.
 pub(super) const METAS: &[u8] = b"node/metas";
 // The derived indexes live in rebuildable store index tables of their own (a node's local
 // records table is not deepened by them).

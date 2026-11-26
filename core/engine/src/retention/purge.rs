@@ -334,8 +334,8 @@ fn aspect_requests(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Vec<CommitId>>
     Ok(out)
 }
 
-/// The held commits on `item`'s aspect it may name, for a request stamped `at`, off the views: a
-/// walk of an aspect decodes no header (`names` decides).
+/// The held commits on `item`'s aspect it may name, for a request stamped `at`, off the views
+/// (`names` decides).
 fn named_by(core: &Core, item: &PurgeItem, at: Ts) -> Vec<CommitId> {
     if let PurgeItem::Commit { tid, ak, ts, src } = item {
         return super::snapshot::held_by_stamp(core, tid, ak, *ts, src).into_iter().map(|x| x.0).collect();

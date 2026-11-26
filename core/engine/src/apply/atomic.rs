@@ -1147,6 +1147,9 @@ pub(crate) fn check_states(tx: &mut Tx<'_>, aspects: BTreeSet<(Tid, Ak)>) -> Res
         // the state as stored, through the one reader (`Tx::load_lazy`), not the cache
         let cached = (tx.core.states.remove(&k), tx.core.pages.remove(&k));
         let (want, got) = osis_base::costs::paused(|| -> Result<_> { Ok((rebuilt(tx, &tid, &ak, None)?, tx.state(&tid, &ak)?.cloned())) })?;
+        // an aspect has a unit exactly while it has a state (what lists aspects, `Tx::state_aks`)
+        let unit = osis_base::costs::paused(|| tx.txn.get_aspect(&tid, &ak))?.is_some();
+        debug_assert_eq!(unit, got.is_some(), "{tid:?} {ak:?}: an aspect unit without a state, or a state without one");
         // and the reference index, derived from it (a signal's from its held fires)
         osis_base::costs::paused(|| if ak.signal() { crate::engine::refs::check_fires(tx, &tid, &ak) } else { crate::engine::refs::check(tx, &tid, &ak, got.as_ref()) })?;
         // and the strongs its held bodies hold where its history holds them (`refs::kept`)

@@ -349,4 +349,40 @@ mod tests {
         assert_eq!(e.get(&g, &ak("t:s+.0")).unwrap(), None, "gone at its expiry");
         assert!(e.core.ix.commits.get(&c).is_none_or(|m| m.stripped_parts().count() == 0 && (0..m.view.aspects.len()).all(|ai| !m.holds(ai))), "nothing of it held");
     }
+
+    // notes/engine-store.md Aspect units: an aspect is listed (its unit) exactly while it has a
+    // state. A durable and a memory value going at their expiry leave no unit, live or after a
+    // reload; the aspects that keep a state stay listed. spec: none (internal)
+    #[test]
+    fn an_expired_state_leaves_no_unit() {
+        let mut lp = LocalPeer::fresh(1, WallMs(1_700_000_000_000));
+        let e = &mut lp.peers[0].engine;
+        let me = e.tid();
+        let mut m = Mutation::new();
+        let g = e.new_thing(&mut m, me);
+        m.set(g, &ak("t:reg.0"), &Value::Str("g".into())).unwrap();
+        e.commit(m).unwrap();
+        let t = WallMs(e.now().0 + 3_600_000);
+        let mut m = Mutation::new();
+        m.set(g, &ak("t:d.0"), &Value::Int(1)).unwrap();
+        m.expires(g, &ak("t:d.0"), t).unwrap();
+        e.commit(m).unwrap();
+        let mut m = Mutation::new();
+        m.set(g, &ak("t:m+.0"), &Value::Int(2)).unwrap();
+        m.expires(g, &ak("t:m+.0"), t).unwrap();
+        e.commit_in_memory(m).unwrap();
+        let listed = |e: &mut Engine| e.all_aspects().unwrap().into_iter().filter(|x| x.0 == g).map(|x| x.1.as_str().to_string()).collect::<Vec<_>>();
+        let before = listed(e);
+        assert!(before.iter().any(|a| a == "t:d.0") && before.iter().any(|a| a == "t:m+.0"), "{before:?}");
+        lp.advance(3_600_001);
+        lp.peers[0].tick().unwrap();
+        let e = &mut lp.peers[0].engine;
+        assert_eq!(e.get(&g, &ak("t:d.0")).unwrap(), None);
+        let after = listed(e);
+        assert!(after.iter().any(|a| a == "t:reg.0") && !after.iter().any(|a| a == "t:d.0" || a == "t:m+.0"), "{after:?}");
+        assert!(e.run(|tx| Ok(tx.txn.get_aspect(&g, &ak("t:d.0"))?)).unwrap().is_none(), "no unit");
+        e.check_index();
+        e.reload().unwrap();
+        assert_eq!(listed(e), after, "a reload lists the same");
+    }
 }
