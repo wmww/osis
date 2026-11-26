@@ -1,0 +1,12 @@
+# A chain's last grant is hidden from a node syncing its target
+> Summary: an account with read on H, where H is admin of X and the account holds X by a strong and a sync grant, reads X in the model (chains count) but not in the engine: syncing X with sync alone it learns none of X's grants, so it never sees H's admin on X, and H is never held for keys.
+> Priority: normal
+> Tags: sync, engine
+
+Script, at `holds_on(0, 3, 4, ..)`: `New(2), New(0), New(1), NewIn(1, 2), Give(1, 3, Holder::Node(2), Syncs), Strong(2, None, 3), Give(1, 2, Holder::Node(2), Reads)`. Thing 3 is minted in thing 2, so thing 2 is its admin, and node 2's account holds sync on thing 3, a strong to it and read on thing 2 (an offer; no strong to thing 2). Its effective role on thing 3 is read through thing 2 (spec/permissions.md §1: the lowest role along a chain), so the model, held-model and the reference read thing 3 at node 2, and hold thing 2 for keys. Node 2 holds thing 2 as nothing and reads nothing of thing 3. The first failure is "node 2's sync set holds thing 2 as None, the model Some(Keys)". Seed 10 at full size shrinks to it; 38, 78 and 151 fail with the same first panic, not yet shrunk.
+
+Cause: keys are found from a synced thing up (spec/sync-set.md §2 Held for keys). For a thing kept unread the node holds only the edge pieces its holders' key parts give it, and a node syncing a thing with sync alone learns no other holder (spec/sync-ids.md §2 What a sync holder learns). Thing 2's admin edge on thing 3 is in thing 2's key part, which node 2 fetches only once it holds thing 2 for keys. So the walk never starts. held-model's key-part walk (`entry::Net::step`, `keyparts`) hops every grant on a kept thing, as if the node held them all.
+
+The engine is founded on what it holds, as the spec says. held-model matches the model, not the spec. Making held-model match the spec would only accept a node that cannot read what its account may read. Possible fixes, a design call:
+- a node holds the key part (by role entries alone) of each thing an own thing holds read or above on, by any grant it holds (an offer included). It then sees that thing's grants on things below it, as for a holder held for keys. The cost is a key part per thing granted to the account, held or not;
+- or a node syncing X sync-alone takes X's roster when an own thing's role through some chain could reach read. This is circular and risks the What a sync holder learns invariant.
