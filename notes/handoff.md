@@ -12,7 +12,7 @@
 
 ## The route (Tess)
 Target: osis basically works, the big pieces in place, the architecture sensible and mostly settled; what is left is fixes, tweaks and verification. In order:
-1. **The design changes in flight**: destroying a thing ends access through it (issue destroyed-holder-timed-edge), grant box records dropped, steps' needs.
+1. **The design changes in flight**: destroying a thing ends access through it (issue destroyed-holder-timed-edge), steps' needs.
 2. **The final review and gate** over everything since the sync rewrite (notes/gate.md: a big change on main is gated from a fresh claim with `--base`), fixes on main. It marks the turn from bringing the implementation in line with the design to optimizing it; from then on every job is reviewed and gated.
 3. **Architectural slimming before dogfooding** (notes/priorities.md Slimmer things): it may churn the set of unknown issues, so it goes first. Philosophically sound changes that also work; usually less code.
 4. **A light local dogfood pass** (chat between accounts, pairing, removing a node): testing finds problems; fix each at its level (mistake, architecture, or the model), never a workaround; where building it right is unclear, a design pass or a question for Tess. Many QA passes come later, before release.

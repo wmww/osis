@@ -468,6 +468,41 @@ mod tests {
         let ki = h.aspects.iter().position(|x| x.ak.as_str() == "keys.0").unwrap();
         assert!(!lp.peers[3].engine.core.ix.commits.get(&id).unwrap().valid()[ki], "a may-grant grant's record is invalid");
     }
+    // spec/permissions.md §3 (a `keys.0` delta's box records ride with the keysets of their
+    // roles), §4 (Current `keys.0` commits): a writer recording boxes in `keys.0` without
+    // rotating is judged as admin, so its records never become current and every card, holder
+    // keys and public key record carrying the thing's keys stays at its rotations, whatever a
+    // writer writes. Failed when a bare record needed write: each one a current commit more.
+    #[test]
+    fn bare_box_records_need_admin_and_stay_out_of_the_current_keys_spec_perm_3() {
+        let mut lp = LocalPeer::fresh(4, WallMs(1_700_000_000_000));
+        lp.sync_all().unwrap();
+        let (a, b) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
+        let t = thing(&mut lp, a);
+        let write = ct::Edge { role: Role::Write, until: None, may_grant: false, retain: false, floor: None };
+        lp.peers[0].engine.grant(&t, &b, &write).unwrap();
+        lp.sync_all().unwrap();
+        let before = lp.peers[0].engine.current_keys(&t).unwrap();
+        let e = lp.peers[1].engine.get_typed(&t, &ct::SECRETS).unwrap().unwrap().boxes.keys().find(|k| k.role == Role::Read).unwrap().epoch.clone();
+        let mut junk = Vec::new();
+        for i in 1..4 {
+            let holder = lp.peers[i].engine.tid();
+            let k = ct::BoxKey { holder: osis_base::Weak(holder), role: Role::Read, epoch: e.clone() };
+            let w = osis_keys::KeysWrite { sealed: [(k, Default::default())].into_iter().collect(), ..Default::default() };
+            let mut m = Mutation::new();
+            crate::flows::put_keysets(&mut m, t, &w).unwrap();
+            m.unchecked = true;
+            lp.peers[1].engine.core.skip_writer_rules = true;
+            junk.push(lp.peers[1].commit(m).unwrap().unwrap());
+        }
+        lp.sync_all().unwrap();
+        for id in &junk {
+            let h = lp.peers[0].engine.header(id).unwrap();
+            let ki = h.aspect_index(&t, "keys.0").unwrap();
+            assert!(!lp.peers[0].engine.core.ix.commits.get(id).unwrap().valid()[ki], "a bare record by a writer is invalid");
+        }
+        assert_eq!(lp.peers[0].engine.current_keys(&t).unwrap(), before, "the current keys stay at the rotations");
+    }
     // spec/permissions.md §2 (writing inside an entry it does not create is bad input; a new entry holding the whole grant): a received `roles.0` delta
     // writing inside an entry it did not create is bad input, whoever signed it.
     #[test]

@@ -660,7 +660,7 @@ pub(crate) fn resolved(core: &Core, h: &Header, id: &CommitId, ai: usize, es: &[
 
 /// The role a `keys.0` or `secrets.0` delta needs (spec/permissions.md §3). `keys.0`: a writer
 /// rotates sync, read and write, only an admin the admin role; a box record needs the role its
-/// key names, as its box does; at least write. A delta that is not a plain struct (a write or
+/// key names, as its box does, beside that role's keyset (else admin); at least write. A delta that is not a plain struct (a write or
 /// reset of the whole value) replaces every field: admin.
 fn rotation_required(ak: &str, f: &Fragment) -> Option<Role> {
     match ak {
@@ -683,10 +683,13 @@ fn rotation_required(ak: &str, f: &Fragment) -> Option<Role> {
     }
     let Some(field) = st.field(crate::flows::SEALED) else { return Some(Role::Write) };
     let Some(osis_crdt::SlotRef::Frag(Fragment::Map(m))) = field.slot(osis_crdt::Encoding::Map).filter(|_| !field.has_reset()) else { return Some(Role::Admin) };
+    // a record rides with the keyset of its role, a rotation's (spec/crypto.md §4 Box records):
+    // one beside none is no rotation, admin (else a writer's bare records, each live, grow the
+    // current `keys.0` commits without bound)
     let mut top = Role::Write;
     for (_, _, k, _) in m.entries() {
         let role = k.and_then(|k| typed(k, "box_key")).and_then(|k| ct::BoxKey::from_value(&k).ok()).map(|k| k.role);
-        top = top.max(role.unwrap_or(Role::Admin));
+        top = top.max(role.filter(|r| st.field(osis_keys::aspects::keyset_field(*r)).is_some()).unwrap_or(Role::Admin));
     }
     Some(top)
 }
