@@ -292,9 +292,9 @@ expect("resumed only after the waiter's hold", backs and backs[0]["t"] >= wrel -
 acq, rel = next(o for o in ev if o["ev"] == "acq"), next(o for o in ev if o["ev"] == "rel")
 expect("retake wait left out of held", bool(backs) and abs(rel["held"] + backs[0]["wait"] - (rel["t"] - acq["t"])) < 0.2, True)
 expect("retake wait in the wait file", bool(backs) and open(waitf).read().strip() == f"{acq['wait'] + backs[0]['wait']:.0f}", True)
-# a busy run keeps the lock with a waiter (two spinners: over 0.5 cores at any load); a quiet one
-# keeps it with none
-rc, ev, (wacq, _), end = yielding(0.5, spinners(2, 1.5))
+# a busy run keeps the lock with a waiter (four spinners: over 0.1 cores up to a load of 40 per
+# core; two over 0.5 cores yielded at load 100 on 16); a quiet one keeps it with none
+rc, ev, (wacq, _), end = yielding(0.1, spinners(4, 1.5))
 expect("busy keeps the lock", (rc, [o["ev"] for o in ev if o["ev"] == "yld"], wacq >= end - 0.5), (["0"], [], True))
 rc, ev, _, _ = yielding(1.5, "sleep 1", waiter=False)
 expect("no waiter: no yield", (rc, [o["ev"] for o in ev if o["ev"] == "yld"]), (["0"], []))
