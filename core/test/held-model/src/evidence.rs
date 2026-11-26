@@ -328,7 +328,7 @@ impl World {
     fn seeds(&self, rule: &Rule, s: Sid, unit: &Things, h: &Set, reads: &BTreeSet<Edge>) -> Set {
         // the things whose holder roles travel under S: its own, and under Role changes travel
         // those S's thing holds read or above on, at any time
-        let open = self.opened_by(rule, s, reads);
+        let open = self.opened(rule, s, reads);
         // S's own thing's: its key part, every edge write naming it (`Rule::key_part_whole`);
         // another open thing's
         // travel only on an edge that gives its holder read (a held write giving read or above
@@ -360,7 +360,7 @@ impl World {
     /// edges; a dependent's secrets derive from its mint admin's), standing since the thing's
     /// creation, ordered before every write (spec/crypto.md §4 Key access), and read at any time as
     /// grants are: a record edge removed later still opens (as a grant removed later does).
-    fn opened_by(&self, rule: &Rule, s: Sid, reads: &BTreeSet<Edge>) -> Things {
+    fn opened(&self, rule: &Rule, s: Sid, reads: &BTreeSet<Edge>) -> Things {
         let mut open = Things::from([s]);
         if rule.keys_open {
             let edges: Vec<Edge> = self.records(rule).chain(reads.iter().copied()).collect();
