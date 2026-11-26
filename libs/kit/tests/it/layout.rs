@@ -10,10 +10,8 @@ use osis_kit::masonry::app::{RenderRoot, RenderRootSignal};
 use osis_kit::masonry::core::{PointerEvent, PointerId, PointerInfo, PointerScrollEvent, PointerState, PointerType, ScrollDelta, Widget, WidgetId, WidgetRef, WindowEvent};
 use osis_kit::masonry::dpi::{PhysicalPosition, PhysicalSize};
 use osis_kit::masonry::kurbo::{Point, Rect};
-use osis_kit::platform::{Platform, SelectionMenu, Thresholds};
-use std::cell::RefCell;
+use osis_kit::platform::Platform;
 use std::collections::{BTreeSet, HashMap, HashSet};
-use std::rc::Rc;
 use std::sync::mpsc::Receiver;
 use osis_kit::render::{ROOT, Started, Ui, rail_needs, tree};
 use osis_kit::store::Data;
@@ -409,29 +407,6 @@ fn scroll_into_view_shows_it() {
     assert!(r.y0 >= 0.0 && r.y1 <= 190.0, "in the window: {r:?}");
 }
 
-/// A platform that shares what the keyboard was asked with the test.
-struct Keys(Rc<RefCell<Vec<bool>>>);
-
-impl Platform for Keys {
-    fn clipboard(&mut self) -> Option<String> {
-        None
-    }
-    fn has_clipboard_text(&mut self) -> bool {
-        false
-    }
-    fn set_clipboard(&mut self, _: String) {}
-    fn keyboard(&mut self, wanted: bool) {
-        self.0.borrow_mut().push(wanted);
-    }
-    fn show_selection_menu(&mut self, _: &SelectionMenu) -> bool {
-        false
-    }
-    fn hide_selection_menu(&mut self) {}
-    fn thresholds(&self) -> Thresholds {
-        crate::input::THRESHOLDS
-    }
-}
-
 /// Runs the actions widgets reported, as a shell does.
 fn pump(ui: &mut Started, rr: &mut RenderRoot, signals: &Receiver<RenderRootSignal>) {
     for _ in 0..8 {
@@ -475,8 +450,9 @@ fn a_new_things_title_asks_for_the_keyboard_once() {
     let d = data();
     let first = d.create_note().unwrap();
     d.set_open(Some(first)).unwrap();
-    let keys = Rc::new(RefCell::new(Vec::new()));
-    let mut s = Screen::with_platform(d, 1200, 700, Box::new(Keys(keys.clone())));
+    let platform = crate::input::Recorder::default();
+    let keys = platform.keyboard.clone();
+    let mut s = Screen::with_platform(d, 1200, 700, Box::new(platform));
     s.ui.wake(&mut s.rr);
     let mut seen = Vec::new();
     press(&mut s.ui, &mut s.rr, &s.signals, &mut seen, "New");

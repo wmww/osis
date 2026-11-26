@@ -12,6 +12,8 @@ use osis_kit::masonry::properties::types::CrossAxisAlignment;
 use osis_kit::masonry::widgets::{Flex, TextArea};
 use osis_kit::platform::{Platform, SelectionMenu, Thresholds};
 use std::sync::mpsc::Receiver;
+use std::cell::RefCell;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -28,7 +30,8 @@ pub(crate) const THRESHOLDS: Thresholds = Thresholds { double_tap: Duration::fro
 /// A platform that records what it was asked.
 #[derive(Default)]
 pub(crate) struct Recorder {
-    pub(crate) keyboard: Vec<bool>,
+    /// Each ask for the keyboard, shared with the test.
+    pub(crate) keyboard: Rc<RefCell<Vec<bool>>>,
     pub(crate) clipboard: Option<String>,
     /// Selection menus asked for, each showing or changing the one shown.
     pub(crate) menus: Vec<SelectionMenu>,
@@ -48,7 +51,7 @@ impl Platform for Recorder {
         self.clipboard = Some(text);
     }
     fn keyboard(&mut self, wanted: bool) {
-        self.keyboard.push(wanted);
+        self.keyboard.borrow_mut().push(wanted);
     }
     fn show_selection_menu(&mut self, menu: &SelectionMenu) -> bool {
         self.menus.push(menu.clone());
@@ -157,7 +160,7 @@ fn focus_alone_wants_no_keyboard() {
     assert!(s.root.focus_on(Some(a)));
     assert_eq!(s.focused(), Some(a));
     s.input.text_focus(&s.root, &mut s.platform);
-    assert_eq!(s.platform.keyboard, Vec::<bool>::new());
+    assert_eq!(*s.platform.keyboard.borrow(), Vec::<bool>::new());
 }
 
 #[test]
@@ -166,11 +169,11 @@ fn a_tap_on_a_field_wants_the_keyboard_and_so_does_a_tap_on_the_focused_one() {
     let p = s.at(A, 4.0);
     s.tap(p, 1000);
     assert_eq!(s.focused(), Some(s.id(A)));
-    assert_eq!(s.platform.keyboard, vec![true]);
+    assert_eq!(*s.platform.keyboard.borrow(), vec![true]);
     // the keyboard put away, the field kept the focus: a tap brings it back
     let p = s.at(A, 30.0);
     s.tap(p, 1000);
-    assert_eq!(s.platform.keyboard, vec![true, true]);
+    assert_eq!(*s.platform.keyboard.borrow(), vec![true, true]);
 }
 
 #[test]
@@ -179,7 +182,7 @@ fn a_field_marked_for_typing_takes_focus_and_wants_the_keyboard() {
     let b = s.id(B);
     s.input.type_in(&mut s.root, &mut s.platform, b);
     assert_eq!(s.focused(), Some(b));
-    assert_eq!(s.platform.keyboard, vec![true]);
+    assert_eq!(*s.platform.keyboard.borrow(), vec![true]);
 }
 
 #[test]
@@ -189,7 +192,7 @@ fn losing_the_text_field_does_not_want_the_keyboard() {
     s.tap(p, 1000);
     s.root.focus_on(None);
     s.input.text_focus(&s.root, &mut s.platform);
-    assert_eq!(s.platform.keyboard, vec![true, false]);
+    assert_eq!(*s.platform.keyboard.borrow(), vec![true, false]);
 }
 
 #[test]

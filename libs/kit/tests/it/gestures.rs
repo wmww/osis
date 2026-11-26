@@ -330,7 +330,7 @@ fn a_touch_drag_in_text_scrolls_without_selecting() {
     assert!((s.rect(FIELD).y0 - (top - 80.0)).abs() < 1.0, "{top} -> {}", s.rect(FIELD).y0);
     let (_, t) = s.root.focused_ime_text().unwrap();
     assert_eq!(t.selection(), caret);
-    assert_eq!(s.platform.keyboard, vec![true]);
+    assert_eq!(*s.platform.keyboard.borrow(), vec![true]);
 }
 
 /// A long press selects the word under it and shows handles; dragging a handle moves that end.
@@ -346,7 +346,7 @@ fn a_long_press_selects_a_word_and_its_handles_adjust_it() {
     assert!(s.field().has_handles());
     // the selection menu is asked for; the keyboard is not
     assert_eq!(s.platform.menus.len(), 1);
-    assert_eq!(s.platform.keyboard, Vec::<bool>::new());
+    assert_eq!(*s.platform.keyboard.borrow(), Vec::<bool>::new());
     // the focus handle dragged to the end of the line takes the selection there
     let h = s.handle(SelectionEnd::Focus);
     s.down(PointerType::Touch, h, 1000);
@@ -391,10 +391,10 @@ fn only_a_tap_on_a_field_wants_the_keyboard() {
     s.hold();
     s.up(PointerType::Touch, a, 50);
     s.drag(PointerType::Touch, b, b + (0.0, 50.0), 300);
-    assert_eq!(s.platform.keyboard, Vec::<bool>::new());
+    assert_eq!(*s.platform.keyboard.borrow(), Vec::<bool>::new());
     s.down(PointerType::Mouse, a, 1000);
     s.up(PointerType::Mouse, a, 50);
-    assert_eq!(s.platform.keyboard, vec![true]);
+    assert_eq!(*s.platform.keyboard.borrow(), vec![true]);
 }
 
 /// A secondary mouse drag is no drag: it reorders nothing (a long press is a touch's alone).
