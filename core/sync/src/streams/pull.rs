@@ -797,7 +797,7 @@ impl Streams {
         // what a message in hand settled of S kept unread without taking it (a refusal) is asked
         // again: counted settled, the listing's place would pass it unjudged, its mark not set
         // again (and room grown, never fetched); asked, the messages owing it still settle
-        let again: Vec<(SyncId, BlobId)> = p.settled.iter().filter(|(s, b)| from_start.contains(s) && ctx.store.holding(s) == Some(Holding::Unread) && ctx.store.bytes(b).ok().flatten().is_none()).copied().collect();
+        let again: Vec<(SyncId, BlobId)> = p.settled.iter().filter(|(s, b)| from_start.contains(s) && ctx.store.holding(s) == Some(Holding::Unread) && ctx.store.blob_len(b).ok().flatten().is_none()).copied().collect();
         for (s, b) in again {
             p.settled.remove(&(s, b));
             if let Some(c) = class(Rank::Unopened, false) {
@@ -935,7 +935,7 @@ impl Streams {
     /// what this node lacks and may take (spec/sync-streams.md §4 Bodies); one held is taken now.
     fn wanted(&mut self, ctx: &mut Ctx, conn: ConnId, s: &SyncId, b: &BlobId, wrap: &Wrap, stamp: Option<Stamp>) -> Option<(u8, u64)> {
         let holding = ctx.store.holding(s)?;
-        let held = ctx.store.bytes(b).ok().flatten();
+        let held = ctx.ground.bytes(ctx.store, b).ok().flatten();
         let tomb = ctx.store.tombstone(s, b).ok().flatten().is_some();
         match holding {
             Holding::Unread => {
@@ -1012,7 +1012,7 @@ impl Streams {
         if !ctx.shared.members(conn).contains_key(&s) || !ctx.store.holding(&s).is_some_and(Holding::opens) {
             return;
         }
-        if ctx.store.bytes(&b).ok().flatten().is_some() || ctx.store.tombstone(&s, &b).ok().flatten().is_some() {
+        if ctx.store.blob_len(&b).ok().flatten().is_some() || ctx.store.tombstone(&s, &b).ok().flatten().is_some() {
             return;
         }
         let Some(p) = self.pull.get_mut(&conn) else { return };
@@ -1063,7 +1063,7 @@ impl Streams {
             }
             if let Some((bytes, wrap, stamp)) = w.entry {
                 let b = osis_blob::blob_id(&bytes);
-                if ctx.store.bytes(&b).ok().flatten().is_none() {
+                if ctx.store.blob_len(&b).ok().flatten().is_none() {
                     self.take_body(ctx, conn, s, b, wrap, stamp, &bytes);
                 }
             }
@@ -1335,7 +1335,7 @@ impl Streams {
                     continue;
                 }
                 if let Some((wrap, stamp)) = *announced
-                    && let Some(bytes) = ctx.store.bytes(b).ok().flatten()
+                    && let Some(bytes) = ctx.ground.bytes(ctx.store, b).ok().flatten()
                 {
                     held.push((*k, *s, *b, wrap, stamp, bytes));
                     continue;

@@ -320,6 +320,7 @@ pub(crate) fn forget(tx: &mut Tx<'_>, scope: Scope<'_>, held: &BTreeMap<Tid, u64
             for (ai, a) in blob.header.aspects.iter().enumerate() {
                 super::leftover::remove(tx, &a.tid, &a.ak, &id, ai)?;
             }
+            crate::sync::bodies::unseal_pending(tx, &id, None)?;
             tx.txn.remove_pending(&id, Shred::Yes)?;
             crate::apply::pending_left(tx.core, &id);
             crate::apply::set_pending(tx.core, &id, None);
@@ -343,6 +344,7 @@ pub(crate) fn forget(tx: &mut Tx<'_>, scope: Scope<'_>, held: &BTreeMap<Tid, u64
                 super::leftover::remove(tx, &a.tid, &a.ak, &id, *ai)?;
             }
         }
+        crate::sync::bodies::unseal_pending(tx, &id, (!rest.parts.is_empty()).then_some(&rest))?;
         tx.txn.remove_pending(&id, Shred::Yes)?;
         if rest.parts.is_empty() {
             crate::apply::pending_left(tx.core, &id);

@@ -860,6 +860,12 @@ impl World {
         self.node(i).node.store()
     }
 
+    /// Blob `b`'s bytes at node `i` (`osis_sync::store::blob_bytes`: made again where its engine
+    /// keeps the blob's seal).
+    pub fn bytes(&mut self, i: usize, b: &osis_base::BlobId) -> Option<Vec<u8>> {
+        self.nodes.get_mut(i).expect("no such node").node.blob_bytes(b).expect("bytes")
+    }
+
     /// Runs `f` on node `i`'s engine, then tells the node it wrote (or, when the write crashed
     /// its device, restarts it in place).
     pub fn write<T>(&mut self, i: usize, f: impl FnOnce(&mut Engine) -> T) -> T {
@@ -1295,7 +1301,7 @@ impl World {
             let peers: BTreeMap<ConnId, usize> = self.net.links.iter().filter(|((m, _), _)| *m == j).map(|((_, c), (t, _))| (*c, *t)).collect();
             let status = self.node(j).node.status();
             for b in wants {
-                if self.store(j).bytes(&b).unwrap().is_some() {
+                if self.store(j).blob_len(&b).unwrap().is_some() {
                     stalled.push((j, j, None, b));
                 }
                 for (s, st) in &status {

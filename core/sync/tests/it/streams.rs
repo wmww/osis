@@ -1132,7 +1132,7 @@ fn a_body_taken_before_is_not_fetched_again_spec_sync_streams_4() {
     let s = sid(1);
     let (x, y) = (p.a.log(s, 40_001), p.a.log(s, 40_002));
     let e = p.a.store.entry(&s, &x).unwrap().unwrap();
-    let bytes = p.a.store.bytes(&x).unwrap();
+    let bytes = p.a.store.kept_bytes(&x).unwrap();
     p.b.store.log(&s, Entry { own: false, ..e }, bytes, None).unwrap();
     p.shared_read(s);
     p.run();
@@ -1213,7 +1213,7 @@ fn a_body_held_under_another_sync_id_is_taken_spec_sync_streams_4() {
     let (s, other) = (sid(1), sid(2));
     let x = p.a.log(s, 40_001);
     let e = p.a.store.entry(&s, &x).unwrap().unwrap();
-    let bytes = p.a.store.bytes(&x).unwrap();
+    let bytes = p.a.store.kept_bytes(&x).unwrap();
     p.b.hold(other, Holding::Read);
     p.b.store.log(&other, Entry { own: true, wrap: [9; WRAP_LEN], ..e }, bytes, None).unwrap();
     p.b.table.held = Some(false);
@@ -1544,7 +1544,7 @@ fn a_listing_from_the_start_judges_again_what_a_message_in_hand_refused_spec_syn
     // a message in hand on C: the refused entry inline (refused again, settled) and one a lacks,
     // whose fetch's answer is held back
     let e = p.a.store.entry(&k.id, &refused).unwrap().unwrap();
-    let bytes = p.a.store.bytes(&refused).unwrap().unwrap();
+    let bytes = p.a.store.kept_bytes(&refused).unwrap().unwrap();
     let lacked = BlobId([0x99; 32]);
     let events = vec![(k.id, Event::Added { blob_id: refused, blob: Some(bytes), wrap: e.wrap, stamp: e.stamp }), (k.id, Event::Added { blob_id: lacked, blob: None, wrap: e.wrap, stamp: e.stamp })];
     let st = osis_proto::Stream { events, cursor: cursor.borrow().clone(), report: false, seq: 0 };

@@ -115,7 +115,7 @@ fn a_delete_by_levels_needs_the_right_over_every_delta_of_the_blob_spec_sync_ids
     let c = write(&mut w, 2, t, &[("u:a.0", PurgeBy::Admin), ("u:b.0", PurgeBy::AuthorOrAdmin)]);
     w.run();
     let b = entry(&mut w, 2, &s, &c);
-    assert_eq!(w.store(1).bytes(&b).unwrap().map(|x| osis_blob::clear_prefix(&x).unwrap().unwrap().groups().len()), Some(2), "two groups");
+    assert_eq!(w.bytes(1, &b).map(|x| osis_blob::clear_prefix(&x).unwrap().unwrap().groups().len()), Some(2), "two groups");
     assert!(by_levels(&mut w, 2, t, &s, &b).is_none(), "the author covers no choice of both groups");
     let keys = head_keys(&mut w, 2, t, &s);
     let two = secret(&mut w, 2, &b, 2);
@@ -238,7 +238,7 @@ fn a_demoted_writers_old_keys_keep_its_writes_out_of_an_unread_store_spec_permis
         assert!(!again.is_empty() && !again.contains(&b), "the holders logged it again, fresh");
         let sync = role(&head_keys(&mut w, 2, t, &s), RoleKey::Sync).expect("a reader holds the sync key");
         for e in &again {
-            let bytes = w.store(1).bytes(e).unwrap().unwrap();
+            let bytes = w.bytes(1, e).unwrap();
             let salt = *osis_blob::clear_prefix(&bytes).unwrap().unwrap().salt();
             let item = DeleteItem::sign_by(&sync, &[(2, &two)], &salt, &blind, &s, *e).unwrap();
             assert_eq!(take(&w, &s, item), Code::OK, "its key deletes each logging again");
@@ -289,7 +289,7 @@ fn a_delete_naming_another_sync_ids_or_things_blob_is_refused_spec_sync_ids_6() 
     let dks: Vec<(Level, &DeleteSecret)> = all.iter().map(|(l, d)| (*l, d)).collect();
     let item = forged(&mut w, 2, &b, &k1, &dks[..1], &s1, &b);
     assert_eq!(take(&w, &s1, item), Code::REFUSED, "S0's blob under S1");
-    let salt = *osis_blob::clear_prefix(&w.store(1).bytes(&bu).unwrap().unwrap()).unwrap().unwrap().salt();
+    let salt = *osis_blob::clear_prefix(&w.bytes(1, &bu).unwrap()).unwrap().unwrap().salt();
     let blind = w.engine(0).blob_delete_basis(&bu).unwrap().blind;
     let write_key = role(&k1, RoleKey::Write).or_else(|| role(&k1, RoleKey::Sync)).unwrap();
     let item = DeleteItem::sign_by(&write_key, &dks, &salt, &blind, &s1, bu).unwrap();
@@ -323,7 +323,7 @@ fn nothing_deletes_a_header_lists_chunks_by_level_2_spec_crypto_7() {
     let chunks: Vec<BlobId> = w.engine(2).header_list_blobs(&c).unwrap().into_iter().collect();
     assert!(!chunks.is_empty() && chunks.iter().all(|x| held(&w, &s, x)), "node 1 holds the list's chunks");
     for x in &chunks {
-        let p = osis_blob::clear_prefix(&w.store(1).bytes(x).unwrap().unwrap()).unwrap().unwrap();
+        let p = osis_blob::clear_prefix(&w.bytes(1, x).unwrap()).unwrap().unwrap();
         assert!(p.groups().len() == 1 && p.groups()[0].is_empty(), "a chunk carries one empty group");
     }
     let (keys, two) = (head_keys(&mut w, 2, t, &s), secret(&mut w, 2, &b, 2));
@@ -341,7 +341,7 @@ fn nothing_deletes_a_header_lists_chunks_by_level_2_spec_crypto_7() {
     assert!(!held(&w, &s, &b), "node 2's purge deleted the commit's blob at node 1");
     assert!(chunks.iter().all(|x| held(&w, &s, x)), "the list's chunks stay");
     for x in &chunks {
-        let p = osis_blob::clear_prefix(&w.store(1).bytes(x).unwrap().unwrap()).unwrap().unwrap();
+        let p = osis_blob::clear_prefix(&w.bytes(1, x).unwrap()).unwrap().unwrap();
         let blind = w.engine(2).header(&c).unwrap().blind;
         let item = DeleteItem::sign_by(&role(&keys, RoleKey::Sync).unwrap(), &[(2, &two)], p.salt(), &blind, &s, *x).unwrap();
         assert_eq!(take(&w, &s, item), Code::REFUSED, "a level-2 Delete of a chunk");

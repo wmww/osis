@@ -272,6 +272,11 @@ impl Node {
         &self.store
     }
 
+    /// Blob `b`'s bytes held here (`store::blob_bytes`).
+    pub fn blob_bytes(&mut self, b: &osis_base::BlobId) -> Result<Option<Vec<u8>>> {
+        crate::store::blob_bytes(&mut self.engine, &self.store, b)
+    }
+
     pub fn config(&self) -> &SyncConfig {
         &self.cfg
     }

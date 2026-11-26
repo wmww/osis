@@ -115,7 +115,7 @@ fn framed(key: osis_crypto::BlobKey, env: &Envelope, seals: Option<Vec<osis_comm
     let (key, blob) = osis_blob::frame_under(key, &prefix, &env.encode())?;
     let parts: Vec<usize> = from.parts.iter().filter(|p| ais.contains(&p.ai)).map(|p| p.ai).collect();
     let unopened = env.sections.iter().filter(|s| !s.ais.iter().any(|ai| parts.contains(ai))).map(|s| s.digest()).collect();
-    let seal = seals.map(|sections| Arc::new(crate::sync::BlobSeal { key: key.clone(), sections }));
+    let seal = seals.map(|sections| Arc::new(crate::sync::BlobSeal { len: blob.len() as u64, key: key.clone(), sections }));
     Ok(Sealed { id: osis_blob::blob_id(&blob), blob, key, salt, ais, parts, unopened, seal })
 }
 

@@ -16,7 +16,17 @@ pub(super) fn request(h: &mut Here<'_>, net: &mut impl Net, conn: ConnId, id: Re
         }
         Msg::Delete { sync_id, items, .. } => {
             let by_store = net.member(conn, &sync_id).is_some_and(|m| store_credential(m.by));
-            let codes = h.store.take_delete(&sync_id, &items, by_store).unwrap_or_else(|_| vec![Code::REFUSED; items.len()]);
+            // a blob the engine makes on demand shows its prefix made again
+            let mut made = std::collections::BTreeMap::new();
+            for d in &items {
+                if h.store.made(&d.blob).unwrap_or(false)
+                    && let Ok(Some(v)) = crate::store::blob_bytes(h.engine, h.store, &d.blob)
+                    && let Ok(p) = osis_blob::Prefix::parse(&v)
+                {
+                    made.insert(d.blob, p);
+                }
+            }
+            let codes = h.store.take_delete_made(&sync_id, &items, by_store, &made).unwrap_or_else(|_| vec![Code::REFUSED; items.len()]);
             Msg::Status { id, codes }
         }
         // judged by this node alone (`Engine::take_stranded`: only a current holder of an actor

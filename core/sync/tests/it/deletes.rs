@@ -91,7 +91,7 @@ fn a_writers_purge_of_its_own_write_deletes_it_at_a_node_keeping_s_unread_spec_s
     let held = at_unread(&mut w, 2, &s, &c);
     assert!(!held.is_empty(), "node 1 holds the write");
     for b in &held {
-        let bytes = w.store(1).bytes(b).unwrap().unwrap();
+        let bytes = w.bytes(1, b).unwrap();
         let real = osis_blob::clear_prefix(&bytes).unwrap().unwrap();
         let basis = w.engine(2).blob_delete_basis(b).unwrap();
         let set = |p: &osis_blob::Prefix| p.groups().iter().cloned().collect::<std::collections::BTreeSet<_>>();
@@ -401,6 +401,60 @@ fn a_purged_or_replaced_part_is_unrecoverable_from_the_sync_store_spec_commits_5
     }
 }
 
+// spec/commits.md §5 (Dropping a body; Purge request): a part already dropped as covered on an
+// aspect that does not purge on replace, its blob kept as the commit's (it holds a part that
+// stays), is named by a purge request: every local copy goes, the blob's included, at both
+// nodes; the part beside it still reads. Fails if a blob keeps a purged part it carried while
+// its part was dropped as covered.
+#[test]
+fn a_purge_strips_a_part_dropped_as_covered_from_its_blobs_spec_commits_5() {
+    let mut w = World::new(0);
+    w.record = true;
+    w.add_node();
+    w.pair(0);
+    w.run();
+    let a = w.node(0).account.unwrap();
+    let t = w.write(0, |e| {
+        let mut m = Mutation::new();
+        let t = e.new_thing(&mut m, a);
+        e.commit(m).unwrap();
+        t
+    });
+    w.run();
+    let stays = Ak::new("u:k.0").unwrap();
+    let purged = format!("COVERED-PURGED-9a{}", "x".repeat(300));
+    let kept = format!("KEPT-BESIDE-4d1e{}", "x".repeat(300));
+    let c = w.write(0, |e| {
+        let mut m = Mutation::new();
+        m.set(t, &value_ak(), &Value::Str(purged.clone())).unwrap();
+        m.set(t, &stays, &Value::Str(kept.clone())).unwrap();
+        e.commit(m).unwrap().unwrap()
+    });
+    w.run();
+    w.advance(10);
+    w.write(0, |e| {
+        let mut m = Mutation::new();
+        m.set(t, &value_ak(), &Value::Str("final".into())).unwrap();
+        e.commit(m).unwrap();
+        e.snapshot(&t, &value_ak()).unwrap();
+    });
+    w.run();
+    for i in 0..2 {
+        let d = w.describe_commit(&c);
+        assert!(w.engine(i).holds_commit(&c), "node {i} keeps the commit: {d}");
+    }
+    w.advance(10);
+    purge(&mut w, 0, t, c);
+    w.run();
+    for i in 0..2 {
+        let attack = w.forensic(i);
+        let found = |marker: &str| attack.iter().any(|r| r.plain.windows(16).any(|x| x == &marker.as_bytes()[..16]));
+        assert!(found(&kept), "node {i}: the attack finds the live part");
+        assert!(!found(&purged), "node {i}: the purged part recovered: {}", w.describe_commit(&c));
+        assert_eq!(w.engine(i).get(&t, &stays).unwrap(), Some(Value::Str(kept.clone())), "node {i} reads the other part");
+    }
+}
+
 // spec/commits.md §5 (Covered: a part not held that a held valid snapshot covers by its tables
 // drops as covered), spec/sync-judgement.md §2 (Per blob): a new node reading the account
 // after the strip receives the commit without its replaced part and the snapshot covering it;
@@ -545,6 +599,53 @@ fn every_held_blob_is_made_again_from_its_seal() {
     }
 }
 
+// notes/slim-design.md B (one stored form per commit): a node keeps no bytes of a blob it makes
+// again from its seal, and serves it byte for byte; once it cannot make it (access lost, the
+// commit forgotten) the entries it keeps have their bytes again. Node 2 writes thing 0, node 1
+// keeps it unread: each commit blob node 2 holds with a seal has no bytes in its store and is made
+// to the bytes node 1 serves. Node 0 then lowers node 2 to keeping S unread: node 2 forgets the
+// commits and keeps their entries, each with its bytes. Fails if a sealed blob's bytes stay beside
+// its seal, if a made blob differs from the one served, or if a lost commit's entries are left
+// without bytes.
+#[test]
+fn a_reader_keeps_no_bytes_of_what_it_makes_again() {
+    let (mut w, t, s) = three_of(Gives::Writes, 1);
+    for (i, v) in [(0, "v"), (2, "w")] {
+        w.write(i, |e| {
+            let mut m = Mutation::new();
+            m.set(t, &Ak::new(format!("u:n{i}.0")).unwrap(), &Value::Str(v.into())).unwrap();
+            e.commit(m).unwrap();
+        });
+        w.run();
+    }
+    let mut made = 0;
+    for e in w.store(2).entries(&s).unwrap() {
+        if w.engine(2).blob_of(&e.blob).is_none_or(|r| r.seal.is_none()) {
+            continue;
+        }
+        made += 1;
+        assert!(w.store(2).kept_bytes(&e.blob).unwrap().is_none(), "no bytes beside a seal");
+        let bytes = w.bytes(2, &e.blob).expect("made again");
+        assert_eq!(osis_blob::blob_id(&bytes), e.blob);
+        if w.store(1).entry(&s, &e.blob).unwrap().is_some() {
+            assert_eq!(w.bytes(1, &e.blob), Some(bytes), "served byte for byte");
+        }
+    }
+    assert!(made > 0, "node 2 makes some blob again");
+    let _ = play(&mut w, &[Lower(0, 0, crate::harness::history::Holder::Node(2), Gives::Syncs), Run], String::new());
+    let mut lost = 0;
+    for e in w.store(2).entries(&s).unwrap() {
+        let bytes = w.bytes(2, &e.blob).expect("every entry kept has its bytes");
+        assert_eq!(osis_blob::blob_id(&bytes), e.blob);
+        let c = w.engine(2).blob_commit(&e.blob);
+        if c.is_some_and(|c| !w.engine(2).holds_commit(&c)) {
+            lost += 1;
+            assert_eq!(w.store(2).kept_bytes(&e.blob).unwrap(), Some(bytes), "a lost commit's blob kept as bytes");
+        }
+    }
+    assert!(lost > 0, "node 2 keeps entries of commits it lost");
+}
+
 // spec/sync-judgement.md §1 (One blob per commit: a section a node cannot open goes into its
 // fresh encryption only where every held blob of the commit carries it), §2 (Per blob):
 // `Engine::held_sections`. Node 0's commit writes A, B and C, each independent;
@@ -590,7 +691,7 @@ fn strips_of_two_parts_by_nodes_apart_meet_at_a_node_reading_neither_spec_sync_j
     // node i's entry of the commit, its own where `own`
     let entry = |w: &mut World, i: usize, own: bool| {
         let e = w.store(i).entries(&s).unwrap().into_iter().find(|e| (e.own || !own) && w.engine(i).blob_commit(&e.blob) == Some(x)).expect("a blob of the commit");
-        let bytes = w.store(i).bytes(&e.blob).unwrap().unwrap();
+        let bytes = w.bytes(i, &e.blob).unwrap();
         (e.blob, osis_engine::sync::HeldBlob { sync_id: s, wrap: e.wrap, bytes })
     };
     let (_, first) = entry(&mut w, 3, false);

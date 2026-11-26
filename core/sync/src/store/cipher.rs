@@ -136,6 +136,23 @@ impl osis_store::CipherStore for Inner {
         })
     }
 
+    /// Written in the part the blob's entries are (`memory`), after the engine's store committed.
+    fn made(&mut self, id: &BlobId, len: u64, memory: bool) -> Res<()> {
+        let made = |t: &mut Transaction<'_>, env: &mut super::Env<'_>| super::entries::made(t, env, id, len);
+        match memory {
+            true => self.write_in(true, made).map_err(to_store),
+            false => self.engine_tx(made),
+        }
+    }
+
+    fn unmade(&mut self, id: &BlobId, bytes: Option<Vec<u8>>, memory: bool) -> Res<()> {
+        let unmade = |t: &mut Transaction<'_>, env: &mut super::Env<'_>| super::entries::unmade(t, env, id, bytes);
+        match memory {
+            true => self.write_in(true, unmade).map_err(to_store),
+            false => self.engine_tx(unmade),
+        }
+    }
+
     fn local(&mut self, f: &mut dyn FnMut(&mut Transaction<'_>) -> Res<()>) -> Res<()> {
         self.engine_tx(|t, _| Ok(f(t)?))
     }

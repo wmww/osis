@@ -162,6 +162,11 @@ pub trait Ground {
         let _ = (store, b);
         Ok(())
     }
+    /// Blob `b`'s bytes held here (`store::blob_bytes`: made again where the engine keeps its
+    /// seal).
+    fn bytes(&mut self, store: &crate::store::Store, b: &BlobId) -> Result<Option<Vec<u8>>> {
+        store.kept_bytes(b)
+    }
     /// An entry of commit `c`'s body under S this node holds or makes, whatever its own judgement
     /// of the body (spec/sync-judgement.md §3 Asked by ID): its store's entry holding the body,
     /// else a fresh encryption of the body under S; none where it holds no whole body.
@@ -648,6 +653,10 @@ impl Ground for EngineGround<'_> {
         Ok(())
     }
 
+    fn bytes(&mut self, store: &crate::store::Store, b: &BlobId) -> Result<Option<Vec<u8>>> {
+        crate::store::blob_bytes(self.engine, store, b)
+    }
+
     fn head_write(&mut self, s: &SyncId) -> Option<osis_crypto::VerifyingKey> {
         Some(self.engine.read_credentials(s).ok()??.head.as_ref()?.keys.write)
     }
@@ -678,7 +687,7 @@ impl Ground for EngineGround<'_> {
         let blobs = self.engine.commit_blobs(c)?;
         let mut held = Vec::new();
         for b in blobs.iter() {
-            let Some(bytes) = store.bytes(b)? else { continue };
+            let Some(bytes) = crate::store::blob_bytes(self.engine, store, b)? else { continue };
             if let Some(e) = store.entry(s, b)?
                 && self.engine.blob_body(s, b)? == Some(id)
                 && self.engine.body_held_by(&meta, b)

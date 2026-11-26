@@ -67,7 +67,7 @@ Every figure is marked: **[M]** measured, **[C]** computed from spec/wire.md, **
 
 | row | maker | second | what | per |
 |---|---|---|---|---|
-| sync store blob | 846 | 846 | the sealed blob: a second copy of the commit beside `c/` | blob |
+| sync store blob | 0 | 0 | none since B: the blob is made again from its seal in `bp/` and the record (`M/` 42 B marks it, notes/slim-design.md B) | blob |
 | `c/` | 637 | 637 | key 34, record head, the opened commit | commit |
 | `node/metas` | 39 | 39 | key 32, part count 4, a judgment byte per part (the view is the header's, decoded at open) | commit, part |
 | `bp/` | 117 | 117 | key commit ID and blob ID; the prefix salt again, the aspects its sections list, the parts held | commit |
@@ -81,7 +81,7 @@ Every figure is marked: **[M]** measured, **[C]** computed from spec/wire.md, **
 | `dw/` | 59 | – | the derived epoch t was sealed under while dependent | dependent thing |
 | counters | 102 | – | 51 per (aspect, session); memory rows, the census counts them | aspect per session |
 
-Totals: maker 1557 engine + 324 sync store + 846 blob = 2727 B logical; second node 1876 + 274 + 846 = 2996 logical.
+Totals as surveyed, with the blob stored: maker 1557 engine + 324 sync store + 846 blob = 2727 B logical; second node 1876 + 274 + 846 = 2996 logical. The blob is now its seal in `bp/` (about 170 B more there) and `M/` 42 B: about 2090 and 2360 [E] (notes/slim-design.md, Today).
 
 ### Marginal units [M]
 Wire is maker to second node (back in brackets); stored is logical, engine rows + sync store rows + sealed blob. The engine rows are the sync-world measurement less what slim design D deleted (notes/slim-design.md; `a/`, `node/metas` down to its part bytes), each measured in the engine census (`thing_cost::`); the 100-commit row's estimate is marked.
@@ -110,7 +110,7 @@ Wire is maker to second node (back in brackets); stored is logical, engine rows 
 ### What each cost is
 (a) a job nothing else does, (b) a second copy or a pointer bigger than its data, (c) a job something present could do, (d) removed by a decided change.
 - (a) Load-bearing, keep: `blind` (unlinks a commit's commitments across blobs, spec/crypto.md §7); the delete key and its prefix commitment (Delete and shredding by level); the delta hash per aspect (a part dropped or purged alone leaves a header that still verifies, spec/commits.md §5); the delta nonce of a sealed part (readers of the commit's other sections must not confirm a guessed small value from its hash); padding (size leakage); the stamp (a node keeping the sync ID unread checks a write came from a writer without learning who); the blob wrap (one ciphertext serves several sync IDs); the section chain (derivation without the record); the prefix salt; signatures; `t/`, `refs from` and `dw/` (each the only fast way to answer its reads: notes/slim-design.md D).
-- (b) The sealed blob and `c/` (two copies of each commit at every node, `bp/` relating them); `ou/`'s delta hash; `bp/`'s salt; `E/`'s expiry and class; a state row naming a body smaller than itself; the entry echoed back; the blob ID beside an inline blob.
+- (b) `ou/`'s delta hash; `bp/`'s salt; `E/`'s expiry and class; a state row naming a body smaller than itself; the entry echoed back; the blob ID beside an inline blob.
 - (c) the tid in every aspect entry of one thing; the section wrap where a key could be derived; `X/` for a blob under one sync ID; the 33 B stamp verdict; the record's 32 B nonce behind a 15 B tid; the `created.0` delta nonce (the record carries its own).
 - (d) Stated paths cost 2 B (`[0]`) plus 16 B per listed thing for a commit whose things are all written along one path, whatever their number (none for what the node minting A writes on A's dependents, its record edges descending to them; `[0, A]` for a paired node's, 16 B more), and in the split form (notes/path-form.md, Bytes) 3 B plus 115 B per thing in the header (32 B of it the entry's key commitment) and 38 B per section (its thing's path key) only where one path does not serve; their evidence is not counted here.
 

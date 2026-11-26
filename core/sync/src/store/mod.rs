@@ -28,6 +28,7 @@ pub(crate) mod source;
 mod follow;
 
 pub use follow::Follow;
+pub use follow::blob_bytes;
 pub(crate) use follow::{open_entry, pends, release};
 pub use path::{Behind, Cred};
 pub use rows::{Source, Tombstone, Usage};
@@ -754,10 +755,17 @@ impl Store {
         Ok(parts.concat())
     }
 
-    /// The length of blob `b`'s bytes held, if any (sizing deposits, spec/sync-inbox.md §4).
+    /// The length of blob `b` where it is held here, its bytes kept or made by the engine on
+    /// demand (`rows::MADE`), if it is.
     pub fn blob_len(&self, b: &BlobId) -> Result<Option<u64>> {
-        let [d, m] = self.lock().each(|t, _| Ok(t.blob_len(b)?))?;
+        let [d, m] = self.lock().each(|t, _| entries::stored_len(t, b))?;
         Ok(d.or(m))
+    }
+
+    /// Whether the engine makes blob `b` on demand here (`rows::MADE`): no bytes of it are kept.
+    pub fn made(&self, b: &BlobId) -> Result<bool> {
+        let [d, m] = self.lock().each(|t, _| entries::made_len(t, b))?;
+        Ok(d.or(m).is_some())
     }
 
     /// A reader's cursor over the entries added, removed (reading absent) or whose wrap, stamp
@@ -839,8 +847,9 @@ impl Store {
         (feed, owed)
     }
 
-    /// Blob `b`'s bytes, whoever holds them.
-    pub fn bytes(&self, b: &BlobId) -> Result<Option<Vec<u8>>> {
+    /// Blob `b`'s bytes kept here, whoever holds them: never one the engine makes on demand
+    /// (`rows::MADE`), so read through `blob_bytes`.
+    pub fn kept_bytes(&self, b: &BlobId) -> Result<Option<Vec<u8>>> {
         let [d, m] = self.lock().each(|t, _| Ok(t.get_blob(b)?))?;
         Ok(d.or(m))
     }
@@ -936,7 +945,7 @@ impl Store {
     /// verdict answers for it, and the new one is checked once.
     pub fn take_stamp(&mut self, s: &SyncId, b: &BlobId, wrap: &crate::types::Wrap, stamp: &osis_crypto::Signature, head: Option<osis_crypto::VerifyingKey>, from: Source) -> Result<()> {
         let Some(e) = self.entry(s, b)? else { return Ok(()) };
-        if e.stamp == Some(*stamp) || e.wrap != *wrap || self.bytes(b)?.is_none() {
+        if e.stamp == Some(*stamp) || e.wrap != *wrap || self.blob_len(b)?.is_none() {
             return Ok(());
         }
         let at_head = match head {
@@ -1006,7 +1015,7 @@ impl Store {
             let Some(old) = entries::get(t, s, &b)? else {
                 let size = match &bytes {
                     Some(v) => Some(v.len() as u64),
-                    None => t.blob_len(&b)?,
+                    None => entries::stored_len(t, &b)?,
                 };
                 // an ephemeral entry is held with its bytes alone (it has no time to wait for them)
                 if memory && size.is_none() {
@@ -1021,7 +1030,7 @@ impl Store {
                 return Ok(Code::OK);
             };
             if let Some(v) = bytes
-                && t.blob_len(&b)?.is_none()
+                && entries::stored_len(t, &b)?.is_none()
             {
                 t.put_blob(&b, v)?;
                 entries::bytes_arrived(t, env, &b)?;
@@ -1232,8 +1241,15 @@ impl Store {
     /// the delete key where a tombstone of the blob exists (a repeat), else 1 (by levels always:
     /// the prefix is gone), so no peer adds a row for a blob this node does not hold. One
     /// verifying under an earlier step's keys only is 9, any other 1. 13: S not held; 14: S read.
-    /// One transaction for the durable items; each reads only its blob's prefix.
+    /// One transaction for the durable items; each reads only its blob's prefix: a blob the
+    /// engine makes on demand (`rows::MADE`) has its prefix in `made` (`take_delete_made`).
     pub fn take_delete(&mut self, s: &SyncId, items: &[DeleteItem], by_store_credential: bool) -> Result<Vec<Code>> {
+        self.take_delete_made(s, items, by_store_credential, &BTreeMap::new())
+    }
+
+    /// `take_delete`, with the prefixes of the blobs the engine makes on demand (read through
+    /// `blob_bytes` by the caller).
+    pub fn take_delete_made(&mut self, s: &SyncId, items: &[DeleteItem], by_store_credential: bool, made: &BTreeMap<BlobId, Prefix>) -> Result<Vec<Code>> {
         let mut g = self.lock();
         let all = |c: Code| Ok(vec![c; items.len()]);
         match g.holding(s) {
@@ -1265,7 +1281,7 @@ impl Store {
                 let (mem_held, mem_tomb, mem_prefix) = in_mem.get(&b).cloned().unwrap_or_default();
                 let prefix = match mem_prefix {
                     Some(p) => Some(p),
-                    None => read_prefix(t, &b)?,
+                    None => read_prefix(t, &b)?.or_else(|| made.get(&b).cloned()),
                 };
                 let code = if d.verify(&head, prefix.as_ref()).is_ok() {
                     if mem_held {

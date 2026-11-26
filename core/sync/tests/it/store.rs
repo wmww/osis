@@ -411,7 +411,7 @@ fn stamped_entries_refused_and_taken_spec_sync_ids_6() {
     let good = stamped(&s, b, false);
     assert_eq!(st.take_stamped(&s.id, &good, bytes.clone(), &[]).unwrap(), Code::OK);
     assert_eq!(st.entry(&s.id, &b).unwrap().unwrap(), good);
-    assert_eq!(st.bytes(&b).unwrap().unwrap(), bytes);
+    assert_eq!(st.kept_bytes(&b).unwrap().unwrap(), bytes);
 }
 
 // spec/sync-judgement.md §6 (stops): at a head whose sync key it holds no box for, a node keeping
@@ -429,7 +429,7 @@ fn a_head_past_its_keys_drops_the_copy_and_takes_nothing_spec_sync_judgement_6()
     let events = events_of(&st, &s.id).len();
     st.set_unheld(&s.id, true).unwrap();
     assert!(st.entries(&s.id).unwrap().is_empty() && st.entry(&s.id, &e).unwrap().is_none(), "its copy dropped");
-    assert!(st.bytes(&b).unwrap().is_none(), "the bytes too");
+    assert!(st.kept_bytes(&b).unwrap().is_none(), "the bytes too");
     assert!(st.head(&s.id).unwrap().is_some(), "its path stays");
     assert!(events_of(&st, &s.id).len() <= events, "no deletion event");
     let (c, cbytes) = blob(102, Class::Durable, None, &[]);
@@ -916,7 +916,7 @@ fn delete_needs_a_store_credential_spec_sync_ids_6() {
     assert_eq!(st.take_delete(&s.id, &[del], true).unwrap(), [Code::OK]);
     assert!(st.entry(&s.id, &b).unwrap().is_none());
     assert!(st.tombstone(&s.id, &b).unwrap().unwrap().deleted);
-    assert!(st.bytes(&b).unwrap().is_none(), "its bytes went with the last entry naming them");
+    assert!(st.kept_bytes(&b).unwrap().is_none(), "its bytes went with the last entry naming them");
 }
 
 // spec/wire.md §11.2 (an item whose entry is not held): a Delete of an entry not held changes nothing: by the
@@ -1019,7 +1019,7 @@ fn expiry_leaves_no_tombstone_spec_sync_ids_6() {
     st.settle_at(WallMs(1000)).unwrap();
     assert!(st.entry(&s.id, &b).unwrap().is_none());
     assert!(st.tombstone(&s.id, &b).unwrap().is_none());
-    assert!(st.bytes(&b).unwrap().is_none());
+    assert!(st.kept_bytes(&b).unwrap().is_none());
     assert_eq!(events_of(&st, &s.id), [NodeEvent::Head(s.id)]);
 }
 
@@ -1076,7 +1076,7 @@ fn bytes_once_per_node_spec_sync_ids_5() {
     assert_eq!(st.log(&s1.id, e.clone(), Some(x.clone()), None).unwrap(), Code::OK);
     assert_eq!(events_of(&st, &s2.id), [NodeEvent::Added(s2.id, b)], "taken under the other sync ID naming it");
     st.drop_entry(&s1.id, &b, Vec::new()).unwrap();
-    assert_eq!(st.bytes(&b).unwrap().unwrap(), x, "still named under s2");
+    assert_eq!(st.kept_bytes(&b).unwrap().unwrap(), x, "still named under s2");
     // the engine holds it too
     let door = st.cipher();
     {
@@ -1085,13 +1085,13 @@ fn bytes_once_per_node_spec_sync_ids_5() {
         tx.commit().unwrap();
     }
     st.drop_entry(&s2.id, &b, Vec::new()).unwrap();
-    assert!(st.bytes(&b).unwrap().is_some(), "the engine still holds it");
+    assert!(st.kept_bytes(&b).unwrap().is_some(), "the engine still holds it");
     {
         let mut tx = door.begin();
         tx.release(&b, false).unwrap();
         tx.commit().unwrap();
     }
-    assert!(st.bytes(&b).unwrap().is_none());
+    assert!(st.kept_bytes(&b).unwrap().is_none());
 }
 
 // spec/sync-ids.md §5 (Across sync IDs): ephemeral entries and their tombstones are held in memory
@@ -1119,14 +1119,14 @@ fn ephemeral_entries_live_in_memory_spec_sync_ids_5() {
     assert_eq!(st.take_delete(&s.id, &[DeleteItem::sign(&s.delete(), &s.id, b2)], true).unwrap(), vec![Code::OK]);
     let before = st.usage(&s.id).unwrap().1.bytes;
     st.drop_entry(&s.id, &b, Vec::new()).unwrap();
-    assert!(st.bytes(&b).unwrap().is_some(), "the engine still holds it in memory");
+    assert!(st.kept_bytes(&b).unwrap().is_some(), "the engine still holds it in memory");
     {
         // released by a transaction working on durable data: it goes from memory all the same
         let mut tx = door.begin();
         tx.release(&b, false).unwrap();
         tx.commit().unwrap();
     }
-    assert!(st.bytes(&b).unwrap().is_none(), "released from memory");
+    assert!(st.kept_bytes(&b).unwrap().is_none(), "released from memory");
     // spec/sync-ids.md §6: a tombstone's overhead counts toward the memory cap
     let after = st.usage(&s.id).unwrap().1.bytes;
     assert!(after > 0 && after < before - 5_000, "the entry left at its charge; what counts now is the two tombstones");
@@ -1150,8 +1150,8 @@ fn ephemeral_entries_live_in_memory_spec_sync_ids_5() {
     drop(door);
     drop(st);
     let st = dev.open();
-    assert!(st.entry(&s.id, &b2).unwrap().is_none() && st.bytes(&b2).unwrap().is_none(), "lost at a restart");
-    assert!(st.entry(&s.id, &d).unwrap().is_some() && st.bytes(&d).unwrap() == Some(dx), "the durable entry stays");
+    assert!(st.entry(&s.id, &b2).unwrap().is_none() && st.kept_bytes(&b2).unwrap().is_none(), "lost at a restart");
+    assert!(st.entry(&s.id, &d).unwrap().is_some() && st.kept_bytes(&d).unwrap() == Some(dx), "the durable entry stays");
     let (r, rx) = blob(60, Class::Relay, Some(10), &[]);
     let mut st = unread(&Dev::new(), &s);
     assert_eq!(st.take_stamped(&s.id, &stamped(&s, r, false), rx, &[]).unwrap(), Code::DECLINED, "relay-only is never held");
@@ -1370,7 +1370,7 @@ fn shred_drops_everything_of_s_spec_sync_set_3() {
     assert!(st.with_tx(|t| t.record_get_row(&rec, b'O', &s.id, b"k")).unwrap().is_none(), "S's rows in every record go");
     assert!(st.with_tx(|t| t.record_get_row(&rec, b'O', &other, b"k")).unwrap().is_some());
     assert!(st.entries(&s.id).unwrap().is_empty() && st.path(&s.id).unwrap().is_none());
-    assert!(st.tombstone(&s.id, &b2).unwrap().is_none() && st.bytes(&b).unwrap().is_none());
+    assert!(st.tombstone(&s.id, &b2).unwrap().is_none() && st.kept_bytes(&b).unwrap().is_none());
     assert!(events_of(&st, &s.id).is_empty());
     assert_eq!(st.usage(&s.id).unwrap().0, osis_sync::store::Usage::default());
     assert!(!st.seen_deleted(Source::Record(rec), &s.id, &b2).unwrap());
@@ -1425,7 +1425,7 @@ fn observe(st: &Store, s: &Sid, rec: RecordId, n: usize) -> String {
     let mut out = format!("{:?}\n{:?}\n{:?}\n", st.entries(&s.id).unwrap(), events_of(st, &s.id), st.path(&s.id).unwrap());
     for i in 0..n {
         let (b, _) = blob(100 + i, Class::Durable, Some(5_000), &[]);
-        out += &format!("{:?} {:?}\n", st.tombstone(&s.id, &b).unwrap(), st.bytes(&b).unwrap().map(|v| v.len()));
+        out += &format!("{:?} {:?}\n", st.tombstone(&s.id, &b).unwrap(), st.kept_bytes(&b).unwrap().map(|v| v.len()));
     }
     out += &format!("{:?}", st.usage(&s.id).unwrap().0);
     let b8 = blob(108, Class::Durable, Some(5_000), &[]).0;

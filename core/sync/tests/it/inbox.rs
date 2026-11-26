@@ -741,7 +741,7 @@ fn a_writer_promotes_a_deposit_spec_sync_inbox_4() {
     let mut gone = Vec::new();
     for x in w.engine(0).commit_blobs(&cc).unwrap().iter() {
         if let Some(e) = st.entry(&s, x).unwrap() {
-            gone.push((e, st.bytes(x).unwrap()));
+            gone.push((e, w.bytes(0, x)));
             st.unlog_entry(&s, x).unwrap();
         }
     }

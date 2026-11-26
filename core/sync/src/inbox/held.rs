@@ -281,7 +281,7 @@ fn deposit_commit(engine: &mut Engine, store: &Store, taken: &mut BTreeSet<Key>,
     if taken.contains(&(*s, e.blob)) {
         return Ok(None);
     }
-    let Some(bytes) = store.bytes(&e.blob)? else { return Ok(None) };
+    let Some(bytes) = crate::store::blob_bytes(engine, store, &e.blob)? else { return Ok(None) };
     osis_base::costs::count("inbox: deposit opened", 1);
     Ok(match crate::store::open_entry(engine, store, s, &e.blob, &e.wrap, &bytes)? {
         Opened::Commit(c, _) => {

@@ -87,7 +87,7 @@ fn a_large_value_reads_whole_through_a_node_keeping_it_unread_and_a_purge_delete
         assert!(pieces.is_disjoint(&entries(&w, i, &s)), "node {i}: no piece left under S");
     }
     assert!(w.engine(0).freed_rows().is_empty(), "the freed set emptied once no entry is known");
-    assert!(pieces.iter().all(|b| w.store(0).bytes(b).unwrap().is_none()), "their bytes gone at the purger");
+    assert!(pieces.iter().all(|b| w.bytes(0, b).is_none()), "their bytes gone at the purger");
 }
 
 // spec/sync-ids.md §1 (Repair): node 2 edits node 0's large value, reusing most of its chunks,

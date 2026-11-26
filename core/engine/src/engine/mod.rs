@@ -150,8 +150,8 @@ pub struct Dropped {
     /// A part dropped as covered that its blobs drop too (spec/sync-judgement.md §2 Per blob,
     /// `sync::bodies::strips`): set, for good, by the purge-on-replace re-judge of its aspect
     /// (`retention::replace::settle_none`) once a held valid snapshot reaches it by its tables
-    /// while a setting purges on replace, so a strip is an event of the transaction making it
-    /// true.
+    /// while a setting purges on replace, or by a purge request standing on it
+    /// (`retention::purge::purge_one`), so a strip is an event of the transaction making it true.
     pub strips: bool,
 }
 
@@ -2989,6 +2989,12 @@ impl Engine {
             let undo = if n.seq <= committed { &n.releases } else { &n.holds };
             for id in undo {
                 t.release(id, false)?;
+            }
+            // what the engine makes again: as its committed store says (a seal noted, or gone
+            // with its bytes kept again)
+            let made = if n.seq <= committed { &n.made } else { &n.unmade };
+            for (id, len) in made {
+                t.made(id, *len, false)?;
             }
             t.unnote(n.seq)?;
             last = last.max(n.seq);

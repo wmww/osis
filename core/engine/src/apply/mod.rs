@@ -1187,6 +1187,11 @@ fn settled_boxes(tx: &Tx<'_>, id: &CommitId) -> bool {
 fn pend(tx: &mut Tx<'_>, id: &CommitId, kind: PendingKind, signed: Option<osis_commit::Signed>, bytes: &[u8], reason: Reason, h: Option<&Header>) -> Result<()> {
     tx.core.touch();
     let received = first_received(tx, id)?;
+    let copy = match kind {
+        PendingKind::Parked => osis_commit::CommitBlob::decode(bytes).ok(),
+        _ => osis_commit::CommitBlob::decode_stored(bytes).ok(),
+    };
+    crate::sync::bodies::unseal_pending(tx, id, copy.as_ref())?;
     tx.txn.put_pending(id, kind, signed.map(osis_commit::Signed::to_bytes), received.0, bytes)?;
     // unchanged at a look that keeps it waiting: what read it holds (`Core::waiting_carried`)
     set_pending(tx.core, id, Some((reason, h)));
@@ -1258,6 +1263,7 @@ fn unpend(tx: &mut Tx<'_>, id: &CommitId) -> Result<bool> {
     if was {
         set_pending(tx.core, id, None);
         tx.core.touch();
+        crate::sync::bodies::unseal_pending(tx, id, None)?;
         tx.txn.remove_pending(id, Shred::Yes)?;
     }
     Ok(was)

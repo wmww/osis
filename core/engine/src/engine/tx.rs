@@ -670,10 +670,12 @@ impl Tx<'_> {
         for ai in &leaving {
             crate::apply::remove_page_index(self, id, Some(*ai))?;
         }
+        // a blob made again from what the record carries is made a last time first
+        let keep = crate::sync::bodies::carried_with(self, id, Some(blob))?;
+        crate::sync::bodies::unseal(self, id, keep.as_ref())?;
         let v = [index::record_head(meta), blob.encode()].concat();
         self.txn.put_local(&records::commit_key(id), &v, shred)?;
         crate::sync_ids::opened::prune(self, id, meta)?;
-        crate::sync::bodies::unseal(self, id, Some(blob))?;
         if meta.header.kind.is_role() {
             // perm's reading of it, persisted beside the record (an open decodes no body)
             match edges {
@@ -694,8 +696,9 @@ impl Tx<'_> {
 
     /// Removes a commit record (shredded) with what the index keeps beside it.
     pub fn remove_commit(&mut self, id: &CommitId) -> Result<()> {
+        let keep = crate::sync::bodies::carried_with(self, id, None)?;
+        crate::sync::bodies::unseal(self, id, keep.as_ref())?;
         self.txn.remove_local(&records::commit_key(id), Shred::Yes)?;
-        crate::sync::bodies::unseal(self, id, None)?;
         crate::apply::remove_page_index(self, id, None)?;
         crate::sync_ids::opened::forget(self, id)?;
         index::remove_perm(self, id)?;

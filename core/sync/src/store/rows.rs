@@ -1,7 +1,7 @@
 //! The store's rows: their keys and their bytes. Every row is a local record of the node's
 //! ciphertext store (`osis_store::Transaction::put_local`), keyed by a two-byte tag so each kind is
 //! its own stamp family; a memo reading one row moves only when that row (or a scan's prefix)
-//! is written. The memory part (`Inner::ram`) keeps the entry rows (`E X G W B T t Y x U u S`)
+//! is written. The memory part (`Inner::ram`) keeps the entry rows (`E X G M W B T t Y x U u S`)
 //! of ephemeral entries alike, and every source's memory rows (`store::source`: `C/`, `K/`) with
 //! their aging rows (`w`); the rest are the durable store's alone.
 //!
@@ -10,6 +10,9 @@
 //!   engine holds it no more.
 //! - `G/ b` the engine holds blob `b` (`osis_store::CipherStore::hold`; in the memory part, held in
 //!   memory).
+//! - `M/ b` the engine makes blob `b` again whenever asked (`osis_store::CipherStore::made`: a
+//!   commit blob from its seal), value its length (u64): no bytes of it are kept but those the
+//!   engine holds; read through `store::blob_bytes`.
 //! - `W/ src s b` an entry charged to a source (`source_bytes`): a connection's go when it closes
 //!   or at a start, a record's when the record is dropped; `V/ conn` the bytes charged to a
 //!   connection in all (a record's total is in the record).
@@ -56,6 +59,7 @@ use osis_store::RecordId;
 pub(crate) const ENTRY: &[u8] = b"E/";
 pub(crate) const BY_BLOB: &[u8] = b"X/";
 pub(crate) const ENGINE: &[u8] = b"G/";
+pub(crate) const MADE: &[u8] = b"M/";
 pub(crate) const CHARGED: &[u8] = b"W/";
 pub(crate) const BROUGHT: &[u8] = b"B/";
 pub(crate) const CONN_TOTAL: &[u8] = b"V/";
@@ -142,6 +146,9 @@ pub(crate) fn by_blob_key(b: &BlobId, s: &SyncId) -> Vec<u8> {
 }
 pub(crate) fn engine_key(b: &BlobId) -> Vec<u8> {
     [ENGINE, &b.0].concat()
+}
+pub(crate) fn made_key(b: &BlobId) -> Vec<u8> {
+    [MADE, &b.0].concat()
 }
 /// A source as a key or row part (`R::source` reads it): 1 and a record, or `CONN` and a
 /// connection.

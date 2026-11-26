@@ -142,7 +142,7 @@ impl Live<'_, '_> {
     fn fresh(&mut self, s: &SyncId, c: &BodyId) -> Result<Option<(osis_engine::sync_ids::Sealed, crate::types::Wrap)>> {
         let mut held = Vec::new();
         for (b, x, e) in self.held_blobs(&c.commit)? {
-            let Some(bytes) = self.cx.store.bytes(&b)? else { continue };
+            let Some(bytes) = crate::store::blob_bytes(self.cx.engine, self.cx.store, &b)? else { continue };
             held.push(HeldBlob { sync_id: x, wrap: e.wrap, bytes });
         }
         Ok(self.cx.engine.seal_body(s, c, &held, self.cx.rng)?)
@@ -771,7 +771,7 @@ impl Ground for Live<'_, '_> {
             }
             return Ok(());
         }
-        let Some(bytes) = self.cx.store.bytes(b)? else { return Ok(()) };
+        let Some(bytes) = crate::store::blob_bytes(self.cx.engine, self.cx.store, b)? else { return Ok(()) };
         let wrap = osis_crypto::filler_wrap(&mut *self.cx.rng);
         // class and expiry come from the bytes' prefix
         let role = self.cx.engine.role_entry(s, b);
@@ -780,13 +780,13 @@ impl Ground for Live<'_, '_> {
         Ok(())
     }
     fn take(&mut self, s: &SyncId, b: &BlobId) -> Result<()> {
-        let (Some(e), Some(bytes)) = (self.cx.store.entry(s, b)?, self.cx.store.bytes(b)?) else { return Ok(()) };
+        let (Some(e), Some(bytes)) = (self.cx.store.entry(s, b)?, crate::store::blob_bytes(self.cx.engine, self.cx.store, b)?) else { return Ok(()) };
         crate::store::open_entry(self.cx.engine, self.cx.store, s, b, &e.wrap, &bytes)?;
         Ok(())
     }
     fn take_piece(&mut self, s: &SyncId, b: &BlobId) -> Result<()> {
         let _ = s;
-        if let Some(bytes) = self.cx.store.bytes(b)? {
+        if let Some(bytes) = crate::store::blob_bytes(self.cx.engine, self.cx.store, b)? {
             self.cx.engine.take_piece(b, bytes)?;
         }
         Ok(())

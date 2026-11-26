@@ -270,7 +270,7 @@ fn a_stripping_blob_carrying_a_missing_part_gives_it_spec_sync_judgement_3() {
     let (p0, p1) = (on("x:a0.0"), on("x:a1.0"));
     let noted = |e: &mut crate::Engine, b: u8, parts: &[usize]| {
         let (id, ps) = (BlobId([b; 32]), parts.iter().copied().collect::<PartSet>());
-        e.run(|tx| note_blob(tx, &id, super::BlobOf { commit: c, parts: ps.clone(), sealed: Default::default(), copy: false, unchecked: false, salt: [0; 16], ais: ps })).unwrap();
+        e.run(|tx| note_blob(tx, &id, super::BlobOf { commit: c, parts: ps.clone(), sealed: Default::default(), copy: false, unchecked: false, salt: [0; 16], ais: ps, seal: None })).unwrap();
         id
     };
     let (both, purged) = (noted(e, 1, &[p0, p1]), noted(e, 2, &[p1]));

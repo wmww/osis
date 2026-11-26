@@ -72,6 +72,10 @@ pub trait Judge {
     /// The things `named`'s claims prove now, each with a role by its path (spec/sync-opens.md
     /// §2), ascending.
     fn proven(&mut self, named: &osis_store::Named) -> Vec<Tid>;
+    /// Blob `b`'s bytes held here (`store::blob_bytes`).
+    fn bytes(&mut self, store: &Store, b: &BlobId) -> Result<Option<Vec<u8>>> {
+        store.kept_bytes(b)
+    }
 }
 
 impl Judge for osis_engine::Engine {
@@ -90,6 +94,9 @@ impl Judge for osis_engine::Engine {
         v.sort();
         v.dedup();
         v
+    }
+    fn bytes(&mut self, store: &Store, b: &BlobId) -> Result<Option<Vec<u8>>> {
+        crate::store::blob_bytes(self, store, b)
     }
 }
 
@@ -584,7 +591,7 @@ fn item(store: &Store, loose: &BTreeMap<Key, (Arc<Vec<u8>>, Wrap)>, judge: &mut 
     if !matches!(target, Target::On(_)) && (!e.deposited || !e.own) {
         return Ok(None);
     }
-    let Some(blob) = store.bytes(b)? else { return Ok(None) };
+    let Some(blob) = judge.bytes(store, b)? else { return Ok(None) };
     let Some(key) = signing_key(judge, k, target, conn)? else { return Ok(None) };
     let role = match target {
         Target::On(_) => judge.role_entry(s, b),

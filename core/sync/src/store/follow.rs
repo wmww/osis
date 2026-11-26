@@ -143,6 +143,16 @@ struct Carriers {
     woken: Option<Feed<CommitId>>,
 }
 
+/// Blob `b`'s bytes held here: made again by the engine where it keeps the blob's seal
+/// (`Engine::regenerate`, notes/slim-design.md B), else as the store keeps them. The one way sync
+/// reads a blob's bytes.
+pub fn blob_bytes(engine: &mut Engine, store: &Store, b: &BlobId) -> Result<Option<Vec<u8>>> {
+    if let Some(v) = engine.regenerate(b)? {
+        return Ok(Some(v));
+    }
+    store.kept_bytes(b)
+}
+
 /// `Engine::open_entry` of entry `b` of read S, an ephemeral commit within the room S's memory
 /// cap leaves (`Store::memory_room`); one held, its entry here counts at what it costs held. The
 /// one way sync opens an entry.
@@ -425,7 +435,7 @@ impl Follow {
         // the next settle
         let mut wanted = Vec::new();
         for b in engine.take_wanted() {
-            if let Some(bytes) = store.bytes(&b)? {
+            if let Some(bytes) = blob_bytes(engine, store, &b)? {
                 wanted.push((b, bytes));
             }
         }
@@ -483,7 +493,7 @@ impl Follow {
 fn reopen(engine: &mut Engine, store: &mut Store, c: &CommitId) -> Result<bool> {
     let mut opened = false;
     for b in engine.commit_blobs(c)?.iter() {
-        let Some(bytes) = store.bytes(b)? else { continue };
+        let Some(bytes) = blob_bytes(engine, store, b)? else { continue };
         for s in store.naming(b)? {
             let Some(e) = store.entry(&s, b)? else { continue };
             open_held(engine, store, &s, b, &e.wrap, &bytes)?;
@@ -580,7 +590,7 @@ fn open_these(engine: &mut Engine, store: &mut Store, parked: &mut Parked, creds
             parked.set(creds, s, b, BTreeSet::new());
             continue;
         };
-        let Some(bytes) = store.bytes(&b)? else { continue };
+        let Some(bytes) = blob_bytes(engine, store, &b)? else { continue };
         let o = open_held(engine, store, &s, &b, &e.wrap, &bytes)?;
         // still parked: what does not open yet, and a commit opened but thrown out or with a
         // section still sealed on a part it lacks

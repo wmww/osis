@@ -667,6 +667,16 @@ pub(super) fn purge_one(tx: &mut Tx<'_>, pc: &CommitId, c: &CommitId, ai: usize,
     // every held body carrying the purged values, snapshots included, is stripped of them by the
     // rebuild this runs (`apply::rebuild`, spec/commits.md §5)
     hold_gone(tx, c, ai, true, changed)?;
+    // one dropped as covered, its blobs keeping it, has them as local copies: they drop it too
+    // (spec/commits.md §5 Dropping a body), for good (`Dropped::strips`)
+    if let Some(m) = tx.core.ix.commits.get(c).filter(|m| m.dropped(ai).is_some_and(|d| d.as_cover() && !d.strips)) {
+        let mut m = m.clone();
+        if let Some(d) = m.dropped_mut(ai) {
+            d.strips = true;
+        }
+        tx.core.touch();
+        tx.in_class(m.view.memory, |tx| tx.put_meta_record(c, m))?;
+    }
     Ok(true)
 }
 

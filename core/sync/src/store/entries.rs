@@ -268,13 +268,13 @@ fn charge(t: &mut Transaction<'_>, env: &mut Env<'_>, r: &EntryRow, s: &SyncId, 
 /// Stores a new entry `row` of S (no entry of `b` there yet), with `bytes` when they come with it.
 pub(crate) fn insert(t: &mut Transaction<'_>, env: &mut Env<'_>, s: &SyncId, b: &BlobId, mut row: EntryRow, bytes: Option<Vec<u8>>) -> Result<()> {
     let fresh = match bytes {
-        Some(bytes) if t.blob_len(b)?.is_none() => {
+        Some(bytes) if stored_len(t, b)?.is_none() => {
             t.put_blob(b, bytes)?;
             true
         }
         _ => false,
     };
-    row.size = t.blob_len(b)?.unwrap_or(0);
+    row.size = stored_len(t, b)?.unwrap_or(0);
     t.put_local(&rows::entry_key(s, b), &row.encode(), Shred::Yes)?;
     t.put_local(&rows::by_blob_key(b, s), &[], Shred::No)?;
     if let Some(at) = row.expires {
@@ -394,7 +394,7 @@ pub(crate) fn unref(t: &mut Transaction<'_>, env: &mut Env<'_>, b: &BlobId) -> R
 /// whose bytes were missing becomes servable, under every sync ID (spec/sync-ids.md §5: a blob
 /// fetched under one sync ID is taken under every other naming it).
 pub(crate) fn bytes_arrived(t: &mut Transaction<'_>, env: &mut Env<'_>, b: &BlobId) -> Result<()> {
-    let Some(size) = t.blob_len(b)? else { return Ok(()) };
+    let Some(size) = stored_len(t, b)? else { return Ok(()) };
     for s in naming(t, b)? {
         if let Some(old) = get(t, &s, b)?
             && old.size == 0
@@ -403,6 +403,65 @@ pub(crate) fn bytes_arrived(t: &mut Transaction<'_>, env: &mut Env<'_>, b: &Blob
             recount(t, env, &s, b, &old, &new)?;
             t.put_local(&rows::entry_key(&s, b), &new.encode(), Shred::Yes)?;
             log(t, env, &s, b, Ev::Added)?;
+        }
+    }
+    Ok(())
+}
+
+/// Blob `b`'s length where this part has it: its bytes held, or made by the engine on demand
+/// (`rows::MADE`).
+pub(crate) fn stored_len(t: &mut Transaction<'_>, b: &BlobId) -> Result<Option<u64>> {
+    if let Some(n) = t.blob_len(b)? {
+        return Ok(Some(n));
+    }
+    made_len(t, b)
+}
+
+/// Blob `b`'s length where the engine makes it on demand (`rows::MADE`).
+pub(crate) fn made_len(t: &mut Transaction<'_>, b: &BlobId) -> Result<Option<u64>> {
+    let Some(v) = t.get_local(&rows::made_key(b))? else { return Ok(None) };
+    let n: [u8; 8] = v.as_slice().try_into().map_err(|_| crate::types::Error::Store(osis_store::Error::Corrupt("made row")))?;
+    Ok(Some(u64::from_be_bytes(n)))
+}
+
+/// The engine makes blob `b` (`len` bytes) on demand (`CipherStore::made`): its bytes go unless the
+/// engine holds them too, and every entry naming it is servable.
+pub(crate) fn made(t: &mut Transaction<'_>, env: &mut Env<'_>, b: &BlobId, len: u64) -> Result<()> {
+    t.put_local(&rows::made_key(b), &len.to_be_bytes(), Shred::No)?;
+    if t.get_local(&rows::engine_key(b))?.is_none() {
+        t.delete_blob(b);
+    }
+    // one no entry names (sealed and never logged) is told as one whose last entry went, so the
+    // engine makes it for nobody no more (`Engine::unnamed_blob`)
+    if naming(t, b)?.is_empty() {
+        env.mem.unnamed.wrote_added(b, true, true);
+    }
+    bytes_arrived(t, env, b)
+}
+
+/// The engine makes blob `b` no more (`CipherStore::unmade`): `bytes` kept where an entry names
+/// it or the engine holds it; with none (the blob gone here), each entry naming it is held
+/// without bytes.
+pub(crate) fn unmade(t: &mut Transaction<'_>, env: &mut Env<'_>, b: &BlobId, bytes: Option<Vec<u8>>) -> Result<()> {
+    if made_len(t, b)?.is_none() {
+        return Ok(());
+    }
+    t.remove_local(&rows::made_key(b), Shred::No)?;
+    let names = naming(t, b)?;
+    match bytes {
+        Some(v) if t.blob_len(b)?.is_none() && (!names.is_empty() || t.get_local(&rows::engine_key(b))?.is_some()) => t.put_blob(b, v)?,
+        Some(_) => {}
+        None if t.blob_len(b)?.is_some() => {}
+        None => {
+            for s in names {
+                if let Some(old) = get(t, &s, b)?
+                    && old.size > 0
+                {
+                    let new = EntryRow { size: 0, ..old.clone() };
+                    recount(t, env, &s, b, &old, &new)?;
+                    t.put_local(&rows::entry_key(&s, b), &new.encode(), Shred::Yes)?;
+                }
+            }
         }
     }
     Ok(())

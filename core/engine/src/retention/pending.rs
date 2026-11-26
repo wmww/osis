@@ -121,6 +121,7 @@ fn rewrite_stored(tx: &mut Tx<'_>, id: &CommitId, edit: impl FnOnce(&mut osis_co
     let Ok(mut b) = osis_commit::CommitBlob::decode_stored(&bytes) else { return Ok(None) };
     let changed = edit(&mut b);
     if changed {
+        crate::sync::bodies::unseal_pending(tx, id, Some(&b))?;
         tx.in_class(b.header.ephemeral.is_some(), |tx| {
             tx.txn.remove_pending(id, Shred::Yes)?;
             // its signatures unchanged: their verdict stays

@@ -659,7 +659,7 @@ fn a_reader_lowered_to_sync_opens_no_later_removals_notice_spec_permissions_4() 
     assert!(!carols.is_empty(), "Alice logs a notice of Carol's removal");
     for b in &carols {
         let e = w.store(1).entry(&s, b).unwrap().expect("Bob's store holds the notice");
-        let bytes = w.store(1).bytes(b).unwrap().unwrap();
+        let bytes = w.bytes(1, b).unwrap();
         for (ep, sec) in &kept {
             assert!(osis_crypto::unwrap(sec.secret(), b, &e.wrap).is_err(), "a kept secret opens no notice's wrap");
             assert!(osis_blob::open_fire(&bytes, &t, ep, sec.kem()).is_err(), "nor its seal");
@@ -1175,7 +1175,7 @@ fn refile(w: &mut World, from: usize, to: usize, s: &osis_base::SyncId, back: bo
         es.reverse();
     }
     for e in es {
-        let Some(bytes) = w.store(from).bytes(&e.blob).unwrap() else { continue };
+        let Some(bytes) = w.bytes(from, &e.blob) else { continue };
         w.engine(to).open_entry(s, &e.blob, &e.wrap, &bytes, u64::MAX).unwrap();
     }
     w.run();

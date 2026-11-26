@@ -404,7 +404,7 @@ impl Streams {
                 if !shown(ctx, conn, &s, &entry) {
                     return Ok(None);
                 }
-                let blob = if inline > 0 && !page.inlined.contains(&b) { ctx.store.bytes(&b)?.filter(|v| v.len() as u64 <= inline) } else { None };
+                let blob = if inline > 0 && !page.inlined.contains(&b) { ctx.ground.bytes(ctx.store, &b)?.filter(|v| v.len() as u64 <= inline) } else { None };
                 let blob = blob.filter(|_| !self.shown_by_peer(ctx, conn, &s, &b));
                 let inlined = blob.is_some();
                 Some((s, Event::Added { blob_id: b, blob, wrap: entry.wrap, stamp: entry.stamp }, inlined))
@@ -469,7 +469,7 @@ impl Streams {
                 }
                 for (n, b, present) in evs {
                     let ev = if present {
-                        let (Some(entry), Some(bytes)) = (ctx.store.entry(&s, &b)?, ctx.store.bytes(&b)?) else {
+                        let (Some(entry), Some(bytes)) = (ctx.store.entry(&s, &b)?, ctx.ground.bytes(ctx.store, &b)?) else {
                             at = n;
                             continue;
                         };
@@ -741,6 +741,6 @@ impl Streams {
         {
             return Ok(None);
         }
-        Ok(ctx.store.bytes(b)?.map(|v| (v, e.wrap, e.stamp)))
+        Ok(ctx.ground.bytes(ctx.store, b)?.map(|v| (v, e.wrap, e.stamp)))
     }
 }
