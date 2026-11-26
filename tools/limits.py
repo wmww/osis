@@ -148,9 +148,9 @@ def split():
 
 
 def runs(top, n):
-    """This box's last n checks of `top`, each with {name: (cpu, wall)} of the checks made in its
-    directory since its run began (its `since`, as gate.sh passes it; without one, since the check
-    of `top` before it there, at most WINDOW_H back), a name checked twice summed."""
+    """This box's last n checks of `top`, each with {name: [(cpu, wall), ...]}: the checks made in
+    its directory since its run began (its `since`, as gate.sh passes it; without one, since the
+    check of `top` before it there, at most WINDOW_H back), in order."""
     ev = [o for o in jsonl([LOG]) if o.get("box") == BOX and not o.get("what")]
     out, prev = [], {}
     for o in ev:
@@ -161,19 +161,20 @@ def runs(top, n):
         got = {}
         for x in ev:
             if x.get("who") == o.get("who") and lo < x["t"] <= o["t"] and x is not o:
-                c, w = got.get(x["name"], (0, 0))
-                got[x["name"]] = (c + x["cpu"], w + x["wall"])
-        got[top] = (o["cpu"], o["wall"])
+                got.setdefault(x["name"], []).append((x["cpu"], x["wall"]))
+        got[top] = [(o["cpu"], o["wall"])]
         out.append(got)
     return out[-n:]
 
 
 def derive(n):
-    """Each whole's shares in proportion to its parts' median CPU-s and wall over the last n runs of
-    the top whole (a part that did not run is left out of its median): the parts get the whole's
-    limit times the fraction of the whole they took (the rest is the time between them), split by
-    their medians. A part never measured keeps its share, taken off the top. Floors, so the shares
-    still sum to at most their whole. Prints table rows in u; returns {name: (cpu_u, wall_u)}."""
+    """Each whole's shares from the last n runs of the top whole: a part's share is the whole's limit
+    times the median fraction of the whole it took in the runs where it ran (a stage that runs in
+    few gates, as the unification check, is judged by those alone, and the others' shares do not
+    move for it), so the rest is the time between the parts. Fractions summing over 1 are scaled
+    down to fit. A part never measured keeps its share, taken off the top. Floors, so the shares
+    still sum to at most their whole. Prints table rows in u, then each limit of its own seen in
+    those runs with its spread; returns {name: (cpu_u, wall_u)}."""
     units, limits = tables()
     if BOX not in units:
         sys.exit(f"limits: no base unit for box {BOX}")
@@ -185,17 +186,17 @@ def derive(n):
 
     def split_whole(whole, budget, rs):
         parts = [k for k, w in whole_of.items() if w == whole]
-        med = {k: [statistics.median(r[k][i] for r in rs if k in r) / u for i in (0, 1)] for k in parts + [whole] if any(k in r for r in rs)}
+        ran = {k: [r for r in rs if k in r and whole in r] for k in parts}
+        frac = {k: [statistics.median(r[k][i] / r[whole][i] if r[whole][i] else 0 for r in ran[k]) for i in (0, 1)] for k in parts if ran[k]}
         for i in (0, 1):
-            fixed = sum(limits[k][i] for k in parts if k not in med)
-            took = sum(med[k][i] for k in parts if k in med)
-            avail = (budget[i] - fixed) * min(1.0, took / med[whole][i]) if whole in med and med[whole][i] else budget[i] - fixed
+            avail = budget[i] - sum(limits[k][i] for k in parts if k not in frac)
+            scale = 1 / max(1.0, sum(f[i] for f in frac.values()))
             for k in parts:
                 out.setdefault(k, list(limits[k][:2]))
-                if k in med and took:
-                    out[k][i] = floor(med[k][i] * avail / took)
+                if k in frac:
+                    out[k][i] = floor(avail * frac[k][i] * scale)
         for k in parts:
-            print(f"| `{k}` | {out[k][0]:g} | {out[k][1]:g} | `{whole}` |   (median {med[k][0]:.0f} u CPU, {med[k][1]:.0f} u wall)" if k in med
+            print(f"| `{k}` | {out[k][0]:g} | {out[k][1]:g} | `{whole}` |   ({frac[k][0]:.0%} of its CPU, {frac[k][1]:.0%} of its wall in the {len(ran[k])} runs it ran)" if k in frac
                   else f"| `{k}` | {out[k][0]:g} | {out[k][1]:g} | `{whole}` |   (not measured: kept)")
         for k in parts:
             if k in whole_of.values():
@@ -205,12 +206,20 @@ def derive(n):
         rs = runs(top, n)
         print(f"{top}: {len(rs)} runs on {BOX}")
         if rs:
-            split_whole(top, limits[top][:2], rs)
+            # a part's time in a run is its checks summed (a stage checked twice in one gate)
+            split_whole(top, limits[top][:2], [{k: tuple(map(sum, zip(*v))) for k, v in r.items()} for r in rs])
+        # a limit of its own holds each check (each rate replay), so its spread is over checks
         for k in sorted({k for r in rs for k in r if k in limits and k not in whole_of and k != top}):
-            v = [r[k] for r in rs if k in r]
-            print(f"   `{k}`, its own limit {limits[k][0]:g} u CPU, {limits[k][1]:g} u wall: median {statistics.median(c for c, _ in v) / u:.0f} u CPU, "
-                  f"{statistics.median(w for _, w in v) / u:.0f} u wall, most {max(c for c, _ in v) / u:.0f} u CPU, {max(w for _, w in v) / u:.0f} u wall")
+            v = [x for r in rs for x in r.get(k, [])]
+            spread = lambda i: ", ".join(f"{q} {f(x[i] for x in v) / u:.1f}" for q, f in (("median", statistics.median), ("p90", p90), ("most", max)))
+            print(f"   `{k}`, its own limit {limits[k][0]:g} u CPU, {limits[k][1]:g} u wall, {len(v)} checks: CPU {spread(0)} u; wall {spread(1)} u")
     return {k: tuple(v) for k, v in out.items()}
+
+
+def p90(xs):
+    """The 90th percentile (nearest rank) of xs."""
+    xs = sorted(xs)
+    return xs[max(0, -(-9 * len(xs) // 10) - 1)]
 
 
 def tests(jobs):

@@ -5,7 +5,8 @@
 # gate: a conflict in notes/handoff.md alone takes main's side, any other stops before the gate as
 # does a policy failure; the gate's exit, log and summary come back. land: lands, deletes the pushed
 # copy, releases the worktree and deletes the branch; refuses after a failed gate unless --fixed or
-# its kept summary, read again against main's known failures and cost lines, passes; when
+# its kept summary, read again against main's known failures and cost lines, passes (both sides
+# having changed one test's known lines: the branch's removals and main's additions); when
 # main moved, rebases and runs clippy and the tests of the packages both sides changed only (again
 # while main moves during them), a failure stopping the landing; the summary's KNOWN-BUT-PASSED and STALE-COST lines are applied in a commit
 # landed with it (STALE-RATE too). Exit 1 on a mismatch.
@@ -64,6 +65,8 @@ printf '%s\n' 'import re, sys' 'r = sys.argv[3] + "/tools/"' 'b = re.findall(r"^
 printf '[workspace]\nmembers = ["core/*"]\ndefault-members = ["core/*"]\n' > Cargo.toml
 for p in x y; do printf '[package]\nname = "%s"\n' $p > core/$p/Cargo.toml; printf '1\n2\n3\n4\n5\n' > core/$p/f; cp core/$p/f core/$p/g; done
 echo base > notes/handoff.md
+# the known list merges as the repo's does (tools/claim sets the driver)
+echo 'tools/known_failures.txt merge=known-failures' > .gitattributes
 git add -A && git commit -qm base && git push -q origin HEAD:main
 mb="$d/a/tools/merge-branch"
 tip() { git --git-dir="$d/origin.git" rev-parse main; }
@@ -140,6 +143,25 @@ git checkout -q --detach origin/main && printf 'probe/a 5\nprobe/b 3\n' > tools/
 git commit -qam raised && git push -q origin HEAD:main && git fetch -q
 "$mb" land t8 > /dev/null 2> "$d/err" && rc=0 || rc=$?
 check "failed gate, cost raised on main since: landed" "$rc $(git --git-dir="$d/origin.git" log --format=%s -1 main)" "0 t8"
+rm -f "$CARGO_LOG"
+git fetch -q
+
+# land after a failed gate when both sides changed one test's known lines: the branch dropped
+# probe/x's rate:1 line, main replaced it with rate:5 since (keeping rate:1 beside it, which must
+# not come back). The re-read and the rebase both take the branch's removals and main's additions
+git checkout -q --detach origin/main && printf 'probe/x rate:1 issues/p.md fails\nprobe/z - issues/p.md z\n' > tools/known_failures.txt
+git commit -qam known11 && git push -q origin HEAD:main && git fetch -q
+git checkout -q -b t11 origin/main && printf 'probe/z - issues/p.md z\n' > tools/known_failures.txt && sed -i 1s/.*/t11/ core/x/f
+git commit -qam t11 && git push -q origin t11:coord-t11 && git checkout -q --detach origin/main
+GATE_RC=1 GATE_KEEP="$d/keep11" "$mb" gate t11 > /dev/null 2>&1 && rc=0 || rc=$?
+printf 'probe/x rate:1 issues/p.md fails\nprobe/z - issues/p.md z\nprobe/x rate:5 issues/p.md fails\n' > tools/known_failures.txt
+git commit -qam relisted && git push -q origin HEAD:main && git fetch -q
+"$mb" land t11 > /dev/null 2> "$d/err" && rc=0 || rc=$?
+check "both changed one test's lines: landed" "$rc $(git --git-dir="$d/origin.git" log --format=%s -1 main)" "0 t11"
+check "both changed: re-read said" "$(grep -c 'read again against origin/main.s known failures exits 3' "$d/err")" "1"
+check "both changed: rebase set-merged" "$(grep -c 'known_failures.txt conflicted' "$d/err")" "1"
+check "both changed: known list" "$(git --git-dir="$d/origin.git" show main:tools/known_failures.txt)" "probe/z - issues/p.md z
+probe/x rate:5 issues/p.md fails"
 rm -f "$CARGO_LOG"
 git fetch -q
 

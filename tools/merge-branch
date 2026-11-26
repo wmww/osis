@@ -4,7 +4,8 @@ The task loop), every step checked and reported, run from any checkout of the re
 
   gate NAME [GATE ARGS]   W = NAME's worktree (the one `wt list` shows holding NAME, else
       `tools/claim NAME`); `git fetch`; rebase W on origin/main (rerere off), a conflict in
-      notes/handoff.md alone taking main's side, any other stopping with its files (the rebase left in
+      notes/handoff.md taking main's side and one in tools/known_failures.txt its set merge (both
+      sides' removals and additions), any other stopping with its files (the rebase left in
       progress in W); prints `git diff origin/main` of the merge-driven lists (check it shows only the
       branch's own change); W's `tools/policy.py`; W's `tools/gate.sh GATE ARGS` with its log in
       LOGS/NAME/gate-N.log; prints the gate's summary, the log's path and `gate=EXIT`, and records
@@ -34,6 +35,7 @@ import fnmatch, glob, importlib.machinery, importlib.util, json, os, re, shutil,
 sys.dont_write_bytecode = True
 TOOLS = os.path.dirname(os.path.abspath(__file__))
 HANDOFF = "notes/handoff.md"
+KNOWN = "tools/known_failures.txt"
 
 
 def load(name):
@@ -104,18 +106,27 @@ def mid_rebase(w):
 
 
 def rebase(w, code):
-    """Rebase W on origin/main; a conflict in notes/handoff.md alone takes main's side (`--ours`
-    in a rebase); any other stops, the rebase left in progress, exiting CODE."""
+    """Rebase W on origin/main; a conflict in notes/handoff.md takes main's side (`--ours` in a
+    rebase), one in tools/known_failures.txt (both sides changed one test's lines) the set merge
+    (tools/known_failures_merge.py: each side's removals and additions, never a removed line back),
+    its report shown; any other stops, the rebase left in progress, exiting CODE."""
     r = run("git", "-c", "rerere.enabled=false", "rebase", "origin/main", cwd=w, check=False)
     while r.returncode:
         conflicts = git("diff", "--name-only", "--diff-filter=U", cwd=w).split()
-        if conflicts != [HANDOFF]:
+        if not conflicts or set(conflicts) - {HANDOFF, KNOWN}:
             stop(f"rebase on origin/main stopped in {w} with conflicts in: {' '.join(conflicts) or '(none listed)'}\n"
                  f"{(r.stderr or r.stdout).strip()}\nresolve them there (`git -c rerere.enabled=false rebase --continue`), "
                  f"or `git rebase --abort`; then run this again", code)
-        git("checkout", "--ours", "--", HANDOFF, cwd=w)
-        git("add", "--", HANDOFF, cwd=w)
-        say(f"rebase: {HANDOFF} conflicted alone: took main's version")
+        if HANDOFF in conflicts:
+            git("checkout", "--ours", "--", HANDOFF, cwd=w)
+            git("add", "--", HANDOFF, cwd=w)
+            say(f"rebase: {HANDOFF} conflicted: took main's version")
+        if KNOWN in conflicts:
+            m = run("python3", os.path.join(TOOLS, "known_failures_merge.py"), cwd=w, check=False)
+            if m.returncode:
+                stop(f"rebase: {KNOWN} conflicted and its set merge failed in {w}:\n{m.stderr.strip()}", code)
+            git("add", "--", KNOWN, cwd=w)
+            say(f"rebase: {KNOWN} conflicted (both sides changed one test's lines): set-merged, read it:\n{m.stderr.strip()}")
         # the commit may hold nothing else: then there is nothing left to commit
         step = "--continue" if run("git", "diff", "--cached", "--quiet", cwd=w, check=False).returncode else "--skip"
         r = run("git", "-c", "core.editor=true", "-c", "rerere.enabled=false", "rebase", step, cwd=w, check=False)
@@ -216,7 +227,6 @@ def checks(w, base, head):
     return True
 
 
-KNOWN = "tools/known_failures.txt"
 COST = "tools/test_cost.txt"
 
 
@@ -245,8 +255,9 @@ def reread(w, rec, main):
     """(exit, summary) of the last gate's summary read again (tools/gate_failures.py on the files the
     gate kept) against the known list the landing carries: HEAD's merged with MAIN's over the gated
     base (tools/known_failures_merge.py), an issue kept when MAIN has it or the branch added it,
-    and the cost lines merged likewise (merge_costs).
-    None when there is nothing to read: no kept files, or both sides changed one test's lines."""
+    and the cost lines merged likewise (merge_costs); a test whose lines both sides changed gets the
+    branch's removals and main's additions, as the land's rebase resolves it.
+    None when there is nothing to read: no kept files."""
     log = rec.get("log")
     text = open(log, errors="replace").read() if log and os.path.exists(log) else ""
     m = re.findall(r"^== summary again .*: python3 \S*gate_failures\.py (\S+) (\S+)$", text, re.M)
@@ -255,8 +266,6 @@ def reread(w, rec, main):
     show = lambda rev, path: run("git", "show", f"{rev}:{path}", cwd=w, check=False)
     texts = [show(rev, KNOWN).stdout for rev in (rec["base"], rec["head"], main)]
     kfm = load("known_failures_merge.py")
-    if kfm.both_changed(*texts):
-        return None
     has = lambda rev, path: show(rev, path).returncode == 0
     exists = lambda issue: has(main, issue) or (has(rec["head"], issue) and not has(rec["base"], issue))
     merged, _ = kfm.merge(*texts, exists)
