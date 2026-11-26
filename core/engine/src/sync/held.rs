@@ -78,11 +78,22 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
 }
 
 /// Role commit `c`, applied from elsewhere in this transaction (or late parts of it), arrived:
-/// each thing whose `roles.0`, `secrets.0` or `keys.0` it writes, its record held, gives its
-/// actor (`reader_of`: a dependent thing's sync IDs are its independent's) the next pass place
-/// (a part on a thing whose record is not held is on nothing here).
-pub(crate) fn note_arrival(tx: &mut Tx<'_>, h: &osis_commit::Header) -> Result<()> {
-    let actors: BTreeSet<Tid> = h.aspects.iter().filter(|a| ROLE_ASPECTS.contains(&a.ak.as_str()) && tx.core.created(&a.tid).is_some()).map(|a| tx.core.reader_of(&a.tid)).collect();
+/// each thing whose `roles.0`, `secrets.0` or `keys.0` it writes, and each dependent thing it
+/// writes an edge to (a holder that may be due secrets of its own, spec/permissions.md §3), its
+/// record held, gives its actor (`reader_of`: a dependent thing's sync IDs are its
+/// independent's) the next pass place (a part on a thing whose record is not held is on nothing
+/// here).
+pub(crate) fn note_arrival(tx: &mut Tx<'_>, c: &CommitId, h: &osis_commit::Header) -> Result<()> {
+    let held = |tx: &Tx<'_>, t: &Tid| tx.core.created(t).is_some();
+    let mut actors: BTreeSet<Tid> = h.aspects.iter().filter(|a| ROLE_ASPECTS.contains(&a.ak.as_str()) && held(tx, &a.tid)).map(|a| tx.core.reader_of(&a.tid)).collect();
+    if let Some(rc) = tx.core.timelines().role_commit(c) {
+        for m in rc.ops.iter().filter_map(|op| op.holder.thing()) {
+            let a = tx.core.reader_of(&m);
+            if a != m && held(tx, &m) {
+                actors.insert(a);
+            }
+        }
+    }
     if actors.is_empty() {
         return Ok(());
     }

@@ -632,7 +632,7 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, o
     // drops what it lost once sync is done waiting
     crate::sync::held::wait_if_own(tx, &id, &rosters)?;
     if origin == Origin::Remote && h.kind.is_role() {
-        crate::sync::held::note_arrival(tx, &h)?;
+        crate::sync::held::note_arrival(tx, &id, &h)?;
     }
     // a memory commit is ephemeral state to watchers; sync carries its bodies as any
     // commit's
@@ -809,7 +809,7 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
     let flipped = rejudged(tx, held_changed)?;
     // late role parts pass_due: a pass after them is one after the commit (spec/permissions.md §3)
     if meta.origin == Origin::Remote && h.kind.is_role() {
-        crate::sync::held::note_arrival(tx, &h)?;
+        crate::sync::held::note_arrival(tx, id, &h)?;
     }
     if edges {
         let rosters: BTreeSet<Tid> = h.aspects.iter().filter(|a| validity::edge_ak(a.ak.as_str())).map(|a| a.tid).collect();

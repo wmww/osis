@@ -2959,3 +2959,66 @@ fn two_admins_giving_secrets_of_its_own_at_once_converge_spec_perm_3() {
     assert_eq!(read_at(&mut lp, 4, t, "x:a.0"), Some(osis_base::Value::Int(1)), "Z reads 0's write");
     assert_eq!(read_at(&mut lp, 4, t, "x:b.0"), Some(osis_base::Value::Int(2)), "Z reads Y's write");
 }
+
+// spec/permissions.md §3 (Complete pass: concurrent ones fork, spec/crypto.md §4): G's admins 0
+// and Y each make T independent at their pass ends and write on T under their own fork before
+// either hears of the other's; once all is held every node reads both writes (none is stranded
+// under the sync ID pruned) and agrees on T's sync ID.
+#[test]
+fn writes_under_both_forks_of_own_secrets_are_read_spec_perm_3() {
+    let (mut lp, _, t, _) = dependent_with_a_holder();
+    super::tests_members::driver_duties(&mut lp, 0);
+    super::tests_members::driver_duties(&mut lp, 3);
+    for (i, ak, v) in [(0, "x:a.0", 1), (3, "x:b.0", 2)] {
+        let mut m = Mutation::new();
+        m.set(t, &osis_base::Ak::new(ak).unwrap(), &osis_base::Value::Int(v)).unwrap();
+        lp.peers[i].engine.commit(m).unwrap();
+    }
+    lp.sync_all().unwrap();
+    for i in 0..5 {
+        super::tests_members::driver_duties(&mut lp, i);
+    }
+    lp.sync_all().unwrap();
+    let s = lp.peers[0].engine.sync_id_of(&t).unwrap();
+    // peer 2 holds nothing
+    for i in [0, 1, 3, 4] {
+        assert_eq!(lp.peers[i].engine.sync_id_of(&t).unwrap(), s, "peer {i}: T's sync ID");
+        assert_eq!(read_at(&mut lp, i, t, "x:a.0"), Some(osis_base::Value::Int(1)), "peer {i} reads 0's write");
+        assert_eq!(read_at(&mut lp, i, t, "x:b.0"), Some(osis_base::Value::Int(2)), "peer {i} reads Y's write");
+    }
+}
+
+// spec/permissions.md §3 (Complete pass, a dependent thing holding a role with key access): peer
+// 2, no admin of G, grants T read on X, an independent thing of its own, past the writer rules (it
+// cannot make T independent first). Only G's admin nodes make T independent at their pass ends;
+// peer 2 and Z make no rotation of T; afterwards peer 0 reads X's writes through T.
+#[test]
+fn a_foreign_grant_to_a_dependent_thing_gets_it_secrets_from_its_admins_alone_spec_perm_3() {
+    let (mut lp, g, t, _) = dependent_of_g();
+    let x = independent_thing(&mut lp, 2);
+    lp.sync_all().unwrap();
+    lp.peers[2]
+        .engine
+        .run(|tx| {
+            let mut m = Mutation::new();
+            crate::flows::put_edge(&mut m, x, t, &edge(Role::Read))?;
+            tx.core.skip_writer_rules = true;
+            let c = crate::engine::Engine::commit_tx(tx, m);
+            tx.core.skip_writer_rules = false;
+            c.map(|_| ())
+        })
+        .unwrap();
+    lp.sync_all().unwrap();
+    for i in 0..5 {
+        assert!(!lp.peers[i].engine.core.is_independent(&t), "peer {i}: T dependent");
+        assert_eq!(lp.peers[i].engine.core.role_now(&t, &x), Some(Role::Read), "peer {i}: T holds X");
+    }
+    for i in [2, 4] {
+        super::tests_members::driver_duties(&mut lp, i);
+        assert!(!lp.peers[i].engine.core.is_independent(&t), "peer {i}, no admin of G, leaves T dependent");
+    }
+    pass_end_at_0(&mut lp, g, t);
+    lp.peers[2].engine.rotate_leaving_out(&x, &[Role::Read], &[]).unwrap();
+    write_on(&mut lp, 2, x, "x:a.0", 1);
+    assert_eq!(read_at(&mut lp, 0, x, "x:a.0"), Some(osis_base::Value::Int(1)), "peer 0 reads X through T");
+}
