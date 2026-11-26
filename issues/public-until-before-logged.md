@@ -1,5 +1,5 @@
 # A public reader's member is ended at a removal not yet logged in S
-> Summary: osis-sync opens: a member opened on S's public entry is judged at the public's removal before the removal's entry in S is logged here (the remover's own write; a reader that took the removal under another sync ID first), so `member_until` (`public_removed_at`) finds only the earlier grant and the member closes at once, the removal unserved. The redeemer still learns it by the lapsed read secrets on its next Offer; the open member should carry it.
+> Summary: osis-sync opens: a member opened on S's public entry is judged at the public's removal before the removal's entry in S is logged here (the remover's own write; a reader that took the removal under another sync ID first), so `member_until` (`public_edge_at`) finds only the earlier grant and the member closes at once, the removal unserved. The redeemer still learns it by the lapsed read secrets on its next Offer; the open member should carry it.
 > Priority: low
 > Tags: sync
 

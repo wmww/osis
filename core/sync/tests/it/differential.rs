@@ -713,7 +713,8 @@ fn a_removed_reader_takes_from_the_publics_box_no_more_than_a_stranger_spec_perm
     }
 }
 
-// spec/sync-opens.md §6 (a departed member is served its notices and the public's edge): node 0's
+// spec/sync-opens.md §6 (A member whose peer J judges departed is ended too: served its notices
+// and the public's edge): node 0's
 // account reads node 1's public thing and strongs it; both removed (the public's first, with no
 // run between; or node 0's, a run, then the public's), node 0 is departed at every reader, so a
 // notice tells it its own removal, and the public's removal, which has no notice (the public
@@ -731,8 +732,8 @@ fn a_departed_public_reader_holds_the_publics_removal_spec_sync_opens_6() {
     }
 }
 
-// spec/crypto.md §4 (Seal: a holder actor left out is re-sealed once a keyset exists),
-// spec/permissions.md §3 (Re-seal, Complete pass): node 1 grants node 0's account sync on its
+// spec/permissions.md §3 (Complete pass: a holder's keyset arriving), spec/crypto.md §4 (Seal: a
+// holder actor left out is re-sealed once a keyset exists): node 1 grants node 0's account sync on its
 // thing, which node 3 (paired into that account) strongs; node 3 removes node 2 from the account.
 // Node 1, rotating its thing for node 2's departure before it holds the account's new keyset,
 // leaves the account out, so the account's nodes are at a head past their keys; the keyset's
