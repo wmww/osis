@@ -1,7 +1,7 @@
 # What a commit pays per enclosing unit
-> Summary: A small commit on an independent thing carried under one enclosing unit cost about 1230 B more on the wire per reader pair, one sign and two stamp verifications more than the same commit on the root (counted once, before the sync rewrite); the entry it adds under the enclosing sync ID accounts for well under half. Find the rest and cut what the built unit does not need.
+> Summary: A small commit on an independent thing carried under one enclosing unit cost about 1230 B more on the wire per reader pair, one sign and two stamp verifications more than the same commit on the root (counted once, on an earlier sync build: count again first); the entry it adds under the enclosing sync ID accounts for well under half. Find the rest and cut what the built unit does not need.
 > Priority: normal
-> Tags: sync, engine, perf
+> Tags: sync, engine, performance
 
 Inherent per enclosing unit (notes/sync-unit-scope.md): the entry (blob ID 32 B, wrap 57 B, stamp 64 B, about 153 B, spec/wire.md §5), its frame, the stamp's sign and its check at each receiver (notes/thing-cost.md, Survey).
 

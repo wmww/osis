@@ -3,6 +3,4 @@
 > Priority: low
 > Tags: notes, engine
 
-The delete-key check is built (notes/delete-keys.md: header keys and page links). What is left of it:
-- notes/disputes.md, Storage under a fork, still assumes a party's writes stay valid on both sides (its delete check, branches, members carrying clean bodies). Under F6 a writer's commits list its side's step and apply nowhere on the other; rewrite the section, and the coherence rule's item 3, from that.
-- The demoted writer's level-2 residue is its own issue: issues/demoted-writer-deletes-at-stores.md.
+The section's delete check, branches and members carrying clean bodies all assume a party's writes stay valid on both sides; rewrite them, and the coherence rule's item 3, from F6. The delete-key check itself is built (notes/delete-keys.md); the demoted writer's level-2 residue is issues/demoted-writer-deletes-at-stores.md.

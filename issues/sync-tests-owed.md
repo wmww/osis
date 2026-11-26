@@ -1,5 +1,5 @@
 # Sync tests still owed
-> Summary: The rebuilt sync's tests still missing: the reference graph's properties with no sync world test, from the old sync's issues, the API tests the rebuild dropped, the simulation set and the scale checks; drop a line when its test lands. Also the dead public items left unused by the rebuild.
+> Summary: The rebuilt sync's tests still missing: reference-graph properties with no sync world test, scenarios from the old sync's issues, API tests the rebuild dropped, simulations and scale checks; drop a line when its test lands. Also public items only their own tests use.
 > Priority: normal
 > Tags: sync, tests
 
@@ -8,7 +8,7 @@ Test conventions: notes/sync-test-harness.md (one harness, one fast test per spe
 ## Reference graph properties with no sync world test
 Each needs a sync world (three nodes, contacts or siblings, inbox delivery) unless it says otherwise.
 - Security on a recording world (`w.record`; the old metadata and shred modules are in git at e499872aa^ core/sync/tests/it): a node keeping S unread holds in clear, live or overwritten, no value, map key, content or core AK, role secret, or writer's node tid or signing key, and every blob it keeps has a Padmé length (by hand: what an attack on its whole device decrypts holds none of them but the core AKs its own things carry); a purge reaching a reader while away, and a dropped blob's wraps and key row (one sync ID or several), leave nothing the forensic attack recovers; a crash at every write of sync's forget (notes/test-security.md).
-- Across a node removal (accounts piece 4): a reader outside the account keeps reading its writes, and the removed node's deposit to the inbox is refused (the deposit seed is fresh: engine `flows::removal_refreshes_deposit_seed_*`).
+- Across a node removal: a reader outside the account keeps reading its writes, and the removed node's deposit to the inbox is refused (the deposit seed is fresh: engine `flows::removal_refreshes_deposit_seed_*`).
 
 ## Scenarios from the old sync's issues
 Each readable with `git show e1bafb8ca^:issues/<name>.md` (`refused-memory-entry-holds-label-unsettled` for the one named by sync ID).
@@ -56,4 +56,4 @@ Names from `git show 28641727e`; each goes through the facade.
 The sync-shaped scale checks the deletion removed: notes/test-scale.md, Checks to restore (engine-level ones go in core/engine/tests/it; the old ones are in git at 680a85188 core/node/tests/it `scale`, `growth`).
 
 ## Dead public items
-Public items the old sync used and nothing calls now (osis-proto `OFFSET_DIAGNOSTIC_MS`; osis-store `log_heads`, `table_len`; osis-transport `recheck_relayed`, `relaying`; osis-sync `status_of`): each is used by a test above or deleted.
+Public items the old sync used that only their own crate's tests call now (osis-store `log_heads`, `table_len`; osis-transport `recheck_relayed`, `relaying`): each is used by a test above or deleted.

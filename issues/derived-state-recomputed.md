@@ -17,7 +17,7 @@
 
 ## Not memos, by audit
 - Clock-relative, per ask: `rotation::blocked_roles_of`, `Engine::pass_end`, `rotation_due`, `own_secrets_candidates`, `Core::may_read`, `finalizable`, `roster_of`, `links_due`.
-- Not clock-relative, per ask: `sync_ids::certs::{latest_by, destroyed_upstream, history_certificates}`, `giving_wrap_epoch`, `part_body`, `deposit_seed`, `keys_write_unapplied`, `Engine::epochs`' fallback.
+- Not clock-relative, per ask: `sync_ids::certs::{latest_by, destroyed_upstream}`, `giving_wrap_epoch`, `part_body`, `deposit_seed`, `keys_write_unapplied`, `Engine::epochs`' fallback.
 - Blocked by unstamped reads: `readable_by` (`sourced_elsewhere`), `next_timer`/`timers_due`, `freed_wants`.
 
 Each change is checked by counted work (a step with nothing new derives no key, checks no signature, decodes no commit), never time.

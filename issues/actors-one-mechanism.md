@@ -33,5 +33,6 @@ Not features to build: a check on the design, each an account thing with some ar
 ## Open
 - The nestable hiding rule (Direction): offered generally and paid for where used, or not at all.
 - Which mode is the default, and whether the other is opt-in, a toggle, or unexposed to end users.
+- The contact-only dial list (Answers) is unbuilt: an account's nodes keep their `dial.0` entries on its public profile (spec/sync-set.md §1).
 - A thought, not for building (Tess): a writer minting a dependent of a realm is not its admin, so cannot set its admin-only aspects; perhaps creation carries arbitrary data, admin-only included, which only admins change afterwards; likely the answer is per use (a member makes a sub-realm, grants the main realm a role on it, and mints documents with the sub-realm as admin).
 - **The build**: notes/accounts-switch-brief.md (How it is built, Left), notes/public-and-cards-brief.md.

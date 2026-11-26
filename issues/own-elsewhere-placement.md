@@ -1,5 +1,5 @@
 # Leave and a timed loss disagree on waiting for own writes
-> Summary: `leave::own_elsewhere` (every own commit with an entry under S recorded held elsewhere) is in core/sync/src/leave.rs, but leave never waits on it (a thing goes after the pass in flight, own unsynced writes included); its one caller is the driver's timed loss (`LifeHears::timed_heard`). Either it is misplaced or the two duties disagree on whether own writes not held elsewhere are waited for.
+> Summary: `leave::own_elsewhere` (every own commit with an entry under S recorded held elsewhere) is in core/sync/src/leave.rs, but leave never waits on it (a thing goes after the pass in flight, own unsynced writes included); its one caller is the driver's timed loss (`Hears::timed_heard`, core/sync/src/driver/mod.rs). Either it is misplaced or the two duties disagree on whether own writes not held elsewhere are waited for.
 > Priority: low
 > Tags: sync
 

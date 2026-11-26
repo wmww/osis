@@ -7,5 +7,3 @@
 - **A tick's own work** faulting (`dated_replaced_at` at a tick or a setting change) fails every tick. Fix: judge per body as a step; a body whose judging faults keeps its last verdict until the next open, reported.
 - **An arrival whose transaction faults outside the commit** (end work about other state) faults again in the set-aside transaction: the step fails for good. Fix: find the state the end work faulted on and set that aside, as the round case.
 - **The set-aside transaction keeps the bytes alone**: blobs handed in with the commit (`Engine::ingest`'s) roll back with the failed one, so after a fixed build's open the commit may wait for blobs nothing fetches (sync's path brings none). Fix: store them in the set-aside transaction too.
-
-Also owed (notes/sync-facade.md, Pending): one small world per wait reason and waking event asserting `lost_wakes` empty; a box the reading-only budget refused, freed by room alone, has no wake until the next arrival or tick.

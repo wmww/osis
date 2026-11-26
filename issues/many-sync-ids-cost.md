@@ -10,7 +10,7 @@ Counts at n and 10n shared sync IDs: core/sync/tests/it/idle.rs (an idle reconne
 - **Fixed rows per input**: `Store::next_wake` scans one row of each of four time indexes and the log's next due at every handled input. A kept next wake (updated where a time row or the log's due is written) makes it O(1); a store change of its own.
 - **First sync, per member**: about 22 step verifications (`verify: sync step`; a member's sync ID has one or two steps: who verifies them again per message is not established) and about 2,900 store rows read (read and streams most); whether any is per member squared needs a third size.
 - **The echo**: both sides pull every shared member (spec/sync-streams.md §4 Stream), so a new reader lists back each entry it took; candidate 3 of notes/thing-cost.md (no entry echoed to the peer it came from), a spec change.
-- **The first reconnect after first contact** re-tests every credential and sends whole filters (spec/sync-opens.md §3): O(shared sync IDs) once per contact; connection proofs change with accounts piece 5.
+- **The first reconnect after first contact** re-tests every credential and sends whole filters (spec/sync-opens.md §3): O(shared sync IDs) once per contact.
 - **By design**: a member's keyset is fetched under the root's sync ID and again under its own (per-sync-ID copies, spec/sync-judgement.md §1); its size is A5's (cards). Certificate copies are logged under each member's sync ID at a grant (per (commit, thing), notes/evidence-derivation.md): recount.
 
 ## Still to count

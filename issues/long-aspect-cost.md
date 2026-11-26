@@ -1,7 +1,7 @@
 # One aspect with very many kept writes: what is left
 > Summary: On one long kept aspect (a chat, 10^6 messages) a write and its arrival are flat, but a removal over about 1.9*10^6 commits cannot be sent (its list passes `MAX_LIST_BYTES`), every validity flip walks the thing's commits, open is O(commits), an aspect written in parts reads every body on a rise, a purge by author is one unbounded transaction, and store writes per message grow with the aspect.
 > Priority: low
-> Tags: engine, permissions, performance
+> Tags: engine, perm, performance
 
 Counted in default tests: osis-engine `scale::long_aspect_writes_are_flat`, `scale::purge_rejudge_is_linear_in_requests_spec_permissions_6`, `scale::grant_is_flat_in_content_commits`, `scale::validity_flip_is_linear_and_invalid_arrival_flat_spec_permissions_5_2`. Release figures by hand, at 10^6.
 

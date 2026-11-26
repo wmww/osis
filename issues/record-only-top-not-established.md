@@ -5,4 +5,4 @@
 
 No test fails either way: the model judges the thing's content absent. Seen by a probe in `held::compare` printing, per thing, `Walk::closure` against the engine's closure, the held commits and the epochs (`rotations` empty at both read epochs).
 
-To do: find whether the role commits are the rotations of the held epochs (then the engine misses establishment, perhaps because the trimmed delivery's `secrets.0` part lacks the keyset epoch's history box), or whether the held secrets came from another commit's box (then `Walk` must model establishment, or skip such things). Re-check after accounts piece 1 (minting with a key), which changes how such a thing gets its epochs.
+To do: find whether the role commits are the rotations of the held epochs (then the engine misses establishment, perhaps because the trimmed delivery's `secrets.0` part lacks the keyset epoch's history box), or whether the held secrets came from another commit's box (then `Walk` must model establishment, or skip such things). Probe again first: minting with a key (accounts) changed how such a thing gets its epochs.

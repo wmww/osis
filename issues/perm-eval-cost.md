@@ -1,7 +1,7 @@
 # Evaluating the role timeline: what an update costs
 > Summary: The walk along stated paths replays a component's role history from the earliest key an update touches (a backdated or forgotten edge write, a lowering applying with drops); k lowerings each dropping an early write cost about k times the history between; an open rebuilds the whole walk from every held commit's header.
 > Priority: normal
-> Tags: permissions, performance
+> Tags: perm, performance
 
 Cost shapes and their count tests: notes/perm-paths.md (Cost shapes, Counts, The switch: cost shapes of the layer).
 

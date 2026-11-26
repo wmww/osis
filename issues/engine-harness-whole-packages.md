@@ -1,5 +1,5 @@
 # Engine test harness: whole hand deliveries and broadcast certificates
-> Summary: Engine tests hand commits over whole through `Engine::package` (about 270 sites) and give certificates to every node; each can hide a carried-set bug: content outside the closure waits forever under a `LocalPeer` carrier, and a certificate no real route brings can make a test pass.
+> Summary: Engine tests hand commits over whole through `Engine::package` (about 285 sites) and give certificates to every node; each can hide a carried-set bug: content outside the closure waits forever under a `LocalPeer` carrier, and a certificate no real route brings can make a test pass.
 > Priority: normal
 > Tags: engine, tests
 

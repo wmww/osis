@@ -1,5 +1,5 @@
 # Tool and harness fixes owed
-> Summary: Fixes to test harnesses and tools that agents asked for and that are too large for a quick fix: failure messages and dumps that name what failed, quiet checks that miss stuck states, a generator census. Ordered by how much time each cost.
+> Summary: Fixes to test harnesses and tools that agents asked for and that are too large for a quick fix: failure messages and dumps that name what failed, a quiet check that misses stuck states, a generator census. Ordered by how much time each cost.
 > Priority: low
 > Tags: tests, tools
 
@@ -11,10 +11,8 @@
    - `Effects` causes: the key, not only the table, and whether a moved read came from the settle's own rollback;
    - the sync trace: an entry that stays NotOpen shows `+entry` without `+commit` and nothing says why;
    - a held-in-part placement reports misses and bail-outs as bare bools.
-2. **Quiet checks that miss stuck states** (a test passed vacuously at half the seeds; a stale-read bug hid behind the second): a quiet end with a commit pending `WaitBlobs` on blobs a source shows; `World::parks` skipping store entries never opened.
+2. **Quiet checks that miss stuck states**: `World::parks` skips store entries never opened (issues/sync-parks-check.md).
 3. **Generator census and a no-room knob**: which of a model's generators write a shape took a temporary panic in `World::put`; the sync harness has no knob holding pushes back, so a test cannot tell an at-once lost-access drop from release's pass wait.
 
 
 Seed-dependent fixtures (a fixture seed taken from an env var): issues/fixture-seed-luck.md.
-
-- **Landing after main fixes a gate's failures**: a gate's NEW failures fixed by commits main gained during the gate leave `merge-branch land` refusing (the rebased branch is no descendant of the gated commit); a reviewer reset to the gated commit and cherry-picked. Wanted: land rebases, reruns the failing tests by name on the rebased tree, and lands when they pass (or a documented `--rebased` path).

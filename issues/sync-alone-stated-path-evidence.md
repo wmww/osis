@@ -1,7 +1,7 @@
 # A writer of a sync-alone holder shows its readers the holder's grant by a stated path
 > Summary: a writer of H, where H holds sync alone on X, signs a body under H's sync ID stating a path through (H, X); evidence takes every write on that edge whatever its validity, so every node reading H and holding X's role commits logs X's grant to H (header, signer, path) and X's record as certificate copies, which spec/sync-ids.md §2 What a sync holder learns keeps from H's readers.
 > Priority: low
-> Tags: security, engine, permissions
+> Tags: security, engine, perm
 
 **Decided (Tess):** accepted, a violation of the strict model not acted on before shipping (only H's own writers can do it); fix it if a way comes up with no added complexity or other tradeoff.
 

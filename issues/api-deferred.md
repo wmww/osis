@@ -1,5 +1,5 @@
 # API pieces not built yet
-> Summary: What an app developer cannot do with the `osis` crate yet, and the workaround: list or search things (read a container's references and every target), restore deleted text or cut/paste it (undo), read a link without an account (redeem it), stream a huge value in (it is read into memory), see writes not yet held elsewhere in status (`wait_synced`), pair over a direct connection. Client conveniences; nothing on the wire depends on them.
+> Summary: What an app developer cannot do with the `osis` crate yet, and the workaround: list or search things (read a container's references and every target), restore deleted text or cut/paste it (undo), read a link without an account (redeem it), stream a huge value in (it is read into memory), see writes not yet held elsewhere in status (`wait_synced`), pair without carrying the texts by hand. Client conveniences; nothing on the wire depends on them.
 > Priority: low
 > Tags: api
 
@@ -10,5 +10,5 @@ No failing test: these are missing calls (the CLI's `op ... undelete` reports no
 - **Bearer `open_link`**: read-only use of a link without an account.
 - **Streaming writes**: `set_stream` reads the value into memory before the commit; a chunk tree built while reading needs the commit's framing (delete keys, header blind, expiry) known up front.
 - **Pending count** in status: how many own commits are not yet held elsewhere per thing; sync's `status` knows held elsewhere per commit (spec/sync-status.md §2), the API shows only whether a thing is synced.
-- **Pairing over a direct connection**: pairing answers `Unsupported` until accounts piece 3 (notes/accounts-switch-brief.md), which carries the offer over the pairing channel; a convenience that listens on a transport and carries it itself goes with it.
+- **Pairing over a direct connection**: pairing is three texts the caller carries (osis-account `offer_pairing`/`pair`); no convenience listens on a transport and carries them itself.
 - No lookup of one commit by id at an address: a lookup is a walk from `After(CommitPos::time(pos.at()))`, so an id must carry its place.

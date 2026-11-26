@@ -9,7 +9,7 @@ Rejected (Tess): deletions final against later revocation (a removed or stolen n
 
 Built (notes/engine-validity.md, notes/engine-retention-purge.md Leftovers, notes/sync-read.md Fetching again, Role entries first, notes/test-harnesses.md Rebuild check): 1 one path (`apply::rebuild`), 2 leftovers are held bodies, 3 the holder logs it (a snapshot leftover through its purge's fall counts missing while short; a logging again waits for every role commit held, so a node lacking the revocation fetches it before deleting the body logged again), 4 asked by ID (a Want per connection from every reader peer, answered from whatever the peer holds), 5 the rebuild check.
 
-Not covered by end-to-end world tests: the multi-account sync worlds are ignored while the accounts work lands; the pieces are tested at their boundaries (read's fake ground, streams' pair, the engine's fallen-snapshot rig). Once worlds run, a world per class (unread peers deleting in the same sync; the revoker not holding it; a node without the revocation deleting a body logged again; stacked drops) belongs in osis-sync.
+Not covered by end-to-end world tests: the pieces are tested at their boundaries (read's fake ground, streams' pair, the engine's fallen-snapshot rig). A world per class (unread peers deleting in the same sync; the revoker not holding it; a node without the revocation deleting a body logged again; stacked drops) belongs in osis-sync.
 
 Left, each its own task, in the order 7, with 6 alongside:
 7. **Revoker snapshot** (notes/revocation.md, Frontiers; not built): the revoker compacts the aspects the demoted node wrote before stamping, so its snapshot carries content a node wrongly dropped. Shrinks the frontier only for data whose history may be dropped.

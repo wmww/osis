@@ -1,7 +1,7 @@
 # Purge-author indexes and waits along stated paths
 > Summary: The engine indexes a commit's purge author (where not its signer) as the one extra thing written as, and a commit waits for its signer's and purge author's records alone; spec/permissions.md §4 wants every listed thing of each stated path (its record needed and in the evidence). Left from stage A1.
 > Priority: normal
-> Tags: engine, permissions
+> Tags: engine, perm
 
 What stands in, each site marked `Interim (issues/stated-path-certificates.md)`:
 - `Indexes::by_actor`, filled in `apply::atomic::index_acting`, emptied in `apply::unindex`; `retention::needed` keeps by it each thing a held commit acts as.

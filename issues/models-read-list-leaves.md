@@ -1,7 +1,7 @@
 # The models judge lists by per-thing leaves
 > Summary: A lowering's list names each commit whole (notes/a1-spec/README.md Open 25), but roles-model, held-model and osis-perm's tests still cut lists into per-thing leaves that a reader may see apart; making them whole changes model verdicts, so it waits on a model change.
 > Priority: normal
-> Tags: permissions, tests
+> Tags: perm, tests
 
 The engine builds whole lists only (osis-perm `paths::List::whole`, from `timeline`). Everything else that builds or reads leaves:
 - **roles-model `paths`**: `Kind::Edge::frontier` is `BTreeMap<Thing, Set>`, cut by each listed part's thing (`World::cut`, `World::edge`); `in_frontier`/`in_leaves` name a part only from the leaf of its own thing, so a split commit listed in one leaf keeps its other parts unnamed. `View::leaves` lets a node see only some leaves: the story's views (`story::view_choosing`, `leaves`: the things a node syncs, plus with `Rules::evidence_leaves` those a held edge write is on), and hand tests with `leaves: Some(..)` in `paths/tests.rs` (`a_removal_logged_only_where_the_node_wrote_leaves_a_window`, `reader_of_t1`).
