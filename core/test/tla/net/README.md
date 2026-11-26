@@ -37,8 +37,8 @@ TLC 2.19, 12 workers. Positive cfgs pass; each `*N_*` fails with the listed prop
 | S_join | a second sync ID joins a running stream, paged | pass | 1,379,328 |
 | S_oneway | only the far side can dial | pass, `Settles` | 12,019 |
 | S_live | settles after restart and drop | pass, `Settles` | 27,461 |
-| S_echo | `Echo` "applied": restart, record loss, delete, expiry with trimmed replies, drop; `PresenceSound`, `PresenceComplete` (about 3 min at 8 workers; the echo passes it too) | pass | 5,709,199 |
-| SN_echotold, SN_echocount, SN_echodurable | an applied send counted though not held and not told; the filter with no send counted; the count kept with the record across connections | fail `PresenceSound` or `PresenceComplete` | |
+| S_echo | `Echo` "applied": record loss, delete, expiry with trimmed replies, drop; `PresenceSound`, `PresenceComplete` (105 s at 4 workers; the echo passes it too) | pass | 622,255 |
+| SN_echotold, SN_echocount, SN_echodurable | an applied send counted though not held and not told; the filter with no send counted; the count kept with the record across connections | fail `PresenceSound`, `PresenceComplete`, `PresenceComplete` | |
 | SN_echorestore | `Echo` "applied" in `S_pres`'s world (finding, below) | fail `PresenceSound` | |
 | S_pres | presence: deletes, expiry with trimmed replies, b restored from a backup (by name; `DeletionsArrive` off: a deletion the restored copy still logs lies below a cursor read past its expiry at b, the stated limit) | pass (89 s at 12 workers) | 4,597,182 |
 | T_cred | two nodes, one credential, no role knowledge | pass | 2,944 |
