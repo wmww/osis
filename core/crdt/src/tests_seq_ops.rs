@@ -1275,6 +1275,78 @@ fn cached_placement_follows_an_insert_into_its_own_run_spec_6_1() {
     assert_eq!(read_str(&d.state), "aPRQb");
 }
 
+/// §6.1 sibling order (`seq_lin`): one delta inserting into what it inserted, nested (new under new
+/// under new, a run's middle and its end, a newer child ahead of an older), on its own, beside a
+/// concurrent delta into the same spot, and with moves: a cached placement equals a whole pass;
+/// an insert-only one is followed, whole and held in part.
+#[test]
+fn cached_placement_follows_nested_inserts_in_one_delta_spec_6_1() {
+    for seed in 0..120u64 {
+        let mut r = Rng(seed);
+        let moves = seed % 3 == 2;
+        let mut w = Replica::new(1);
+        w.commit(1, &[op(Op::Set(s("abcd")))], &text_view());
+        let (mut d, mut o) = (w.fork(2), w.fork(3));
+        // each op inserts at or beside the last one's spot, so later ones land inside earlier runs
+        let mut at = 1 + r.below(3);
+        let mut n = 4;
+        let mut ops = Vec::new();
+        for _ in 0..3 + r.below(6) {
+            if moves && n > 2 && r.chance(1, 3) {
+                let from = r.below(n - 1);
+                ops.push(op(Op::Move { at: from, len: 1, to: r.below(n) }));
+                continue;
+            }
+            let k = 1 + r.below(3);
+            ops.push(op(Op::Insert { at, items: vec![s(&"PQRSTUVW"[..k])] }));
+            n += k;
+            at += r.below(k + 1);
+        }
+        let (delta, _, _) = w.commit(2, &ops, &text_view()).unwrap();
+        let ctx = format!("seed {seed}: {ops:?}");
+        let (Fragment::Seq(st), Fragment::Seq(ds)) = (&d.state, &delta) else { panic!("text") };
+        if !moves {
+            assert!(crate::testutil::partial_follow(st, ds, 1).is_some(), "{ctx}: followed in part");
+        }
+        let _ = read_str(&d.state);
+        d.state.join(delta.clone());
+        crate::testutil::check_lin(&d.state);
+        assert!(moves || cached(&d.state), "{ctx}: followed");
+        assert_eq!(read_str(&d.state), read_str(&w.state), "{ctx}");
+        // a concurrent delta into the same spot, joined after
+        let (od, _, _) = o.commit(3, &[op(Op::Insert { at: 2, items: vec![s("xy")] }), op(Op::Insert { at: 3, items: vec![s("z")] })], &text_view()).unwrap();
+        let _ = read_str(&d.state);
+        d.state.join(od.clone());
+        crate::testutil::check_lin(&d.state);
+        o.state.join(delta);
+        assert_eq!(read_str(&d.state), read_str(&o.state), "{ctx}: concurrent");
+    }
+}
+
+/// §6.1 sibling order (`seq_lin`): one joined delta creating `P` and two children of it by two
+/// writers, the newer child earlier in dot order (it continues `P`'s run) and the older one the
+/// newest run start of the delta: the older still goes after the newer.
+#[test]
+fn cached_placement_follows_children_of_a_new_element_by_two_writers_spec_6_1() {
+    for (q, r) in [(2, 3), (3, 2)] {
+        let mut w = Replica::new(1);
+        w.commit(1, &[op(Op::Set(s("ab")))], &text_view());
+        let mut d = w.fork(4);
+        let (dp, _, _) = w.commit(2, &[op(Op::Insert { at: 1, items: vec![s("P")] })], &text_view()).unwrap();
+        let (mut wq, mut wr) = (w.fork(q), w.fork(r));
+        let (dq, _, _) = wq.commit(9, &[op(Op::Insert { at: 2, items: vec![s("Q")] })], &text_view()).unwrap();
+        let (dr, _, _) = wr.commit(5, &[op(Op::Insert { at: 2, items: vec![s("R")] })], &text_view()).unwrap();
+        let mut all = dp;
+        all.join(dq);
+        all.join(dr);
+        let _ = read_str(&d.state);
+        d.state.join(all);
+        crate::testutil::check_lin(&d.state);
+        assert!(cached(&d.state), "Q by {q}: followed");
+        assert_eq!(read_str(&d.state), "aPQRb", "Q by {q}");
+    }
+}
+
 /// §4.5 (net effect): `DeltaBuilder`'s sequence ops at one position resolve against a kept view of it once the
 /// delta has written there; an op elsewhere drops it; the result equals one-by-one commits.
 #[test]
