@@ -599,6 +599,8 @@ pub(crate) struct Played {
     /// (`share_top`), given what its access to them needs (`setup`), so it keeps what it receives
     /// of them in any order.
     reader: std::sync::Arc<std::sync::Mutex<Peer>>,
+    /// The history's three peers as it left them: what an author shows of its own commits.
+    writers: std::sync::Arc<std::sync::Mutex<Vec<Peer>>>,
     /// The grants on the things outside G (`share_top`), each with the holder it names: setup,
     /// never played.
     pub(crate) access: Vec<(Tid, Package)>,
@@ -1645,7 +1647,7 @@ fn play_in(seed: u64, steps: &[Step], addenda: bool, written: bool) -> Played {
     settled_last.retain(|k| !apart.iter().any(|t| format!("{t:?}") == k.0));
     let walk = std::sync::Arc::new(crate::held::Walk { roots, minted });
     let expires = packs.iter().map(|pk| osis_commit::CommitBlob::decode(&pk.bytes).ok().and_then(|b| b.header.expires)).collect();
-    Played { walk, access, fires, packs, expires, authors, base, things, now, tally, restored: Default::default(), judged: Default::default(), moved: Default::default(), dropped: Default::default(), steps_at, own_sets, settle_from: None, settled_last, withheld: 0, model: None, ingests: Default::default(), copies: Default::default(), reader: std::sync::Arc::new(std::sync::Mutex::new(reader)), setup }
+    Played { walk, access, fires, packs, expires, authors, base, things, now, tally, restored: Default::default(), judged: Default::default(), moved: Default::default(), dropped: Default::default(), steps_at, own_sets, settle_from: None, settled_last, withheld: 0, model: None, ingests: Default::default(), copies: Default::default(), reader: std::sync::Arc::new(std::sync::Mutex::new(reader)), writers: std::sync::Arc::new(std::sync::Mutex::new(std::mem::take(&mut lp.peers))), setup }
 }
 
 /// The node `build` makes, built once per process under `key` (`osis_base::copying::cached`):
@@ -5197,4 +5199,31 @@ fn a_grant_pends_again_once_its_listed_step_falls_spec_commits_4() {
     use Step::*;
     let h = vec![Aim(Box::new(New { by: 0, admin: 3, write: false })), NewTop { by: 0 }, Aim(Box::new(RemoveFlow { by: 2, t: 3, holder: 0, lower: true })), Aim(Box::new(GrantFlow { by: 0, t: 4, holder: 1, role: Role::Admin })), Aim(Box::new(PurgeNamed { by: 0, t: 1, of: 0, back: 2, v: 7 }))];
     check(0, &h, Cfg { random: 6, partial: 6, addenda: true, ..ORDERS }).unwrap();
+}
+
+// spec/commits.md §4 Unjudgeable (a node's own applied commit does not pend): the history of
+// `a_commit_pends_again_when_its_every_part_turns_unjudgeable_spec_commits_4` at 2, the grant's
+// author, given every commit: the grant every other node pends stays held there, its parts
+// invalid, as an own invalid part is kept (spec/permissions.md §6).
+#[test]
+fn an_own_commit_turning_unjudgeable_stays_at_its_node_spec_commits_4() {
+    use Step::*;
+    let h = vec![Demote { by: 0, t: 0, holder: 1, at: 0, to_read: false }, Aim(Box::new(Typed { by: 0, t: 1, op: 26, k: 0, v: 2 })), Mixed { by: 1, t: 0, op: 18, k: 2, v: 9 }, Aim(Box::new(Demote { by: 0, t: 5, holder: 2, at: 1, to_read: false })), Aim(Box::new(RemoveFlow { by: 0, t: 7, holder: 1, lower: false })), Aim(Box::new(GrantFlow { by: 1, t: 6, holder: 2, role: Role::Admin })), Aim(Box::new(New { by: 0, admin: 0, write: true })), Forged { by: 2, a: 7, b: 7, how: 0, op: 25, k: 1, v: 1 }, Aim(Box::new(GrantFlow { by: 2, t: 7, holder: 2, role: Role::Write }))];
+    let played = play_with(0, &h, true);
+    let (i, pk) = played.packs.iter().enumerate().rev().find(|(i, pk)| played.authors[*i] == 2 && osis_commit::CommitBlob::decode(&pk.bytes).is_ok_and(|b| b.header.aspects.iter().any(|a| a.ak.as_str() == "roles.0"))).expect("2's grant");
+    let id = pk.id;
+    // a fresh node given every commit pends it
+    let mut fresh = played.reader.lock().unwrap().copy().unwrap();
+    for pk in &played.packs {
+        let _ = fresh.receive(&pk.bytes, pk.blobs.clone());
+    }
+    assert!(fresh.engine.header(&id).is_none() && fresh.engine.pending().iter().any(|(c, _)| *c == id), "#{i} pends at a fresh node");
+    let mut w = played.writers.lock().unwrap();
+    let p = &mut w[2];
+    for pk in &played.packs {
+        let _ = p.receive(&pk.bytes, pk.blobs.clone());
+    }
+    let n = p.engine.header(&id).expect("held at its author").aspects.len();
+    assert!(!p.engine.pending().iter().any(|(c, _)| *c == id), "#{i} does not pend at its author");
+    assert!((0..n).all(|ai| p.engine.part_valid(&id, ai) != Some(true)), "#{i}: no part valid at its author");
 }

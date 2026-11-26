@@ -736,9 +736,9 @@ pub(crate) fn rejudged(tx: &mut Tx<'_>, held_changed: bool) -> Result<Vec<(Tid, 
 /// (Pending storage). Its parts' flags read false meanwhile, so what it gave the states went with
 /// them; its edge writes leave the timelines here, marking stale what they reached.
 ///
-/// Not this node's own: its own commits apply at once and stay, its user told of each fall
-/// (`retention::goes_invalid`). O(`judged`), a held part read only for a commit holding no valid
-/// one.
+/// Not this node's own: one turning unjudgeable counts as its own invalid part, kept and its user
+/// told (spec/commits.md §4, `retention::goes_invalid`). O(`judged`), a held part read only for a
+/// commit holding no valid one.
 fn pend_again(tx: &mut Tx<'_>, judged: &BTreeSet<CommitId>) -> Result<()> {
     let me = tx.core.tid();
     let mut gone = false;
