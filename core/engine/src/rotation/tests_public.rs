@@ -161,3 +161,40 @@ fn a_replayed_open_box_is_resealed_over_once() {
         assert!(lp.peers[i].engine.reseal_after_pass(&g).unwrap().commits.is_empty(), "peer {i}: the trigger settles");
     }
 }
+
+// spec/permissions.md §2 (May-grant grant; Granting to the public; Finalize): the public is a
+// holder as any there. Writer W (1), holding the may-grant flag, makes g public (at most read,
+// never the flag: refused above), and stranger S (2), granted nothing, redeems a public link and
+// reads g. Holders by may-grant remove no other edge: W cannot take the public's grant away; past
+// its `until` a writer finalizes it, and the admin (0) removes W's grant made again.
+#[test]
+fn a_may_grant_holder_makes_a_thing_public_spec_permissions_2() {
+    let (mut lp, g, tids) = granted(3, &[]);
+    lp.peers[0].engine.grant(&g, &tids[1], &ct::Edge { may_grant: true, ..edge(Role::Write) }).unwrap();
+    put_on(&mut lp, 0, g, "open", 1);
+    lp.sync_all().unwrap();
+    for e in [edge(Role::Write), ct::Edge { may_grant: true, ..edge(Role::Read) }] {
+        assert!(lp.peers[1].engine.grant(&g, &Tid::PUBLIC, &e).is_err(), "{e:?} refused");
+    }
+    let until = osis_base::WallMs(lp.peers[1].engine.core.now().0 + 100);
+    lp.peers[1].engine.grant(&g, &Tid::PUBLIC, &ct::Edge { until: Some(until), ..edge(Role::Read) }).unwrap();
+    lp.sync_all().unwrap();
+    let public = |lp: &LocalPeer, i: usize| lp.peers[i].engine.roster(&g).get(&Tid::PUBLIC).map(|e| e.role);
+    assert_eq!(public(&lp, 0), Some(Role::Read), "the may-grant grant applies");
+    assert!(lp.peers[2].engine.public_reads(&g));
+    let link = lp.peers[1].engine.public_link(&g, Vec::new()).unwrap().unwrap();
+    lp.peers[2].engine.redeem_public(&link, &tids[2]).unwrap();
+    lp.sync_all().unwrap();
+    assert!(reads_key(&mut lp, 2, g, "open"), "a stranger reads g by the link");
+    assert!(lp.peers[1].engine.demote(&g, &Demotion { holder: Tid::PUBLIC, new: None, retain: None }).is_err(), "W removes no other edge");
+    lp.peers[1].clock.advance(1_000);
+    lp.peers[1].engine.ensure_rotated(&g).unwrap();
+    lp.sync_all().unwrap();
+    assert_eq!(public(&lp, 0), None, "W finalizes the ended grant");
+    lp.peers[1].engine.grant(&g, &Tid::PUBLIC, &edge(Role::Read)).unwrap();
+    lp.sync_all().unwrap();
+    assert_eq!(public(&lp, 0), Some(Role::Read), "granted again by may-grant");
+    lp.peers[0].engine.demote(&g, &Demotion { holder: Tid::PUBLIC, new: None, retain: None }).unwrap();
+    lp.sync_all().unwrap();
+    assert_eq!(public(&lp, 1), None, "the admin removes it");
+}
