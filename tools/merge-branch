@@ -4,8 +4,8 @@ The task loop), every step checked and reported, run from any checkout of the re
 
   gate NAME [GATE ARGS]   W = NAME's worktree (the one `wt list` shows holding NAME, else
       `tools/claim NAME`); `git fetch`; rebase W on origin/main (rerere off), a conflict in
-      notes/handoff.md taking main's side and one in tools/known_failures.txt its set merge (both
-      sides' removals and additions), any other stopping with its files (the rebase left in
+      notes/handoff.md taking main's side (tools/known_failures.txt set-merges by its driver, its
+      report printed), any other stopping with its files (the rebase left in
       progress in W); prints `git diff origin/main` of the merge-driven lists (check it shows only the
       branch's own change); W's `tools/policy.py`; W's `tools/gate.sh GATE ARGS` with its log in
       LOGS/NAME/gate-N.log; prints the gate's summary, the log's path and `gate=EXIT`, and records
@@ -107,13 +107,17 @@ def mid_rebase(w):
 
 def rebase(w, code):
     """Rebase W on origin/main; a conflict in notes/handoff.md takes main's side (`--ours` in a
-    rebase), one in tools/known_failures.txt (both sides changed one test's lines) the set merge
-    (tools/known_failures_merge.py: each side's removals and additions, never a removed line back),
-    its report shown; any other stops, the rebase left in progress, exiting CODE."""
+    rebase); any other stops, the rebase left in progress, exiting CODE. tools/known_failures.txt
+    merges by its driver (tools/known_failures_merge.py: each side's removals and additions, never
+    a removed line back), its report shown."""
     r = run("git", "-c", "rerere.enabled=false", "rebase", "origin/main", cwd=w, check=False)
-    while r.returncode:
+    report = []
+    while True:
+        report += [l for l in r.stderr.splitlines() if l.startswith("known_failures_merge:")]
+        if not r.returncode:
+            break
         conflicts = git("diff", "--name-only", "--diff-filter=U", cwd=w).split()
-        if not conflicts or set(conflicts) - {HANDOFF, KNOWN}:
+        if not conflicts or set(conflicts) - {HANDOFF}:
             stop(f"rebase on origin/main stopped in {w} with conflicts in: {' '.join(conflicts) or '(none listed)'}\n"
                  f"{(r.stderr or r.stdout).strip()}\nresolve them there (`git -c rerere.enabled=false rebase --continue`), "
                  f"or `git rebase --abort`; then run this again", code)
@@ -121,15 +125,11 @@ def rebase(w, code):
             git("checkout", "--ours", "--", HANDOFF, cwd=w)
             git("add", "--", HANDOFF, cwd=w)
             say(f"rebase: {HANDOFF} conflicted: took main's version")
-        if KNOWN in conflicts:
-            m = run("python3", os.path.join(TOOLS, "known_failures_merge.py"), cwd=w, check=False)
-            if m.returncode:
-                stop(f"rebase: {KNOWN} conflicted and its set merge failed in {w}:\n{m.stderr.strip()}", code)
-            git("add", "--", KNOWN, cwd=w)
-            say(f"rebase: {KNOWN} conflicted (both sides changed one test's lines): set-merged, read it:\n{m.stderr.strip()}")
         # the commit may hold nothing else: then there is nothing left to commit
         step = "--continue" if run("git", "diff", "--cached", "--quiet", cwd=w, check=False).returncode else "--skip"
         r = run("git", "-c", "core.editor=true", "-c", "rerere.enabled=false", "rebase", step, cwd=w, check=False)
+    if report:
+        say(f"rebase: {KNOWN} set-merged, read it:\n" + "\n".join(report))
     say(f"rebased on origin/main: {git('log', '--oneline', '-1', cwd=w)}")
 
 

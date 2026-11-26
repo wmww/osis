@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Merges tools/known_failures.txt as a set of records, three ways (notes/gate.md, Policy checks):
 a line either side removed stays removed (its failure was fixed, or its line went stale), a line
-either side added is kept; a test whose lines both sides changed conflicts as git's text merge
-does (a person reads which pattern and seed hold), as driver; resolving a conflict in a checkout (no arguments), a line whose issue
+either side added is kept, also for a test whose lines both sides changed (said so: read which
+pattern and seed hold); resolving a conflict in a checkout (no arguments), a line whose issue
 file the merged tree lacks is dropped too (the fix deleted it). Union merge would bring a removed line back beside the other side's change, and a
 revived line for a test that still fails passes every check and hides the next failure there.
 Prints each line it dropped and each it kept from one side only, so the resolution is read.
@@ -13,8 +13,7 @@ Prints each line it dropped and each it kept from one side only, so the resoluti
 
 The driver is `.gitattributes` `merge=known-failures` with `merge.known-failures.driver` in the
 repo's git config (tools/claim sets it; the worktrees share it). Without it git falls back to its
-text merge, which conflicts; then run this with no arguments. Exit 0 merged, 1 a conflict left
-(driver) or a side unreadable."""
+text merge, which conflicts; then run this with no arguments. Exit 0 merged, 1 a side unreadable."""
 import os, subprocess, sys
 
 KNOWN = "tools/known_failures.txt"
@@ -56,7 +55,7 @@ def merge(base, ours, theirs, issue_exists):
 
 def both_changed(base, ours, theirs):
     """The NAMEs (first field) whose lines both sides changed: a concurrent edit of one test's
-    record, which a person reads (each side's pattern and seed may be the right one)."""
+    record, which a person reads after the merge (each side's pattern and seed may be the right one)."""
     _, b = records(base)
     bs = set(b)
     changed = [{x.split()[0] for x in set(side) ^ bs} for side in (records(ours)[1], records(theirs)[1])]
@@ -72,16 +71,10 @@ def main(argv):
         except OSError as e:
             print(f"known_failures_merge: {e}", file=sys.stderr)
             return 1
-        both = both_changed(*texts)
-        if both:
-            # git's own conflict, markers and all, for a person to read
-            subprocess.run(["git", "merge-file", "-L", "ours", "-L", "base", "-L", "theirs", argv[1], argv[0], argv[2]])
-            print(f"known_failures_merge: both sides changed the lines of {', '.join(both)}: resolve by hand "
-                  f"(or `tools/known_failures_merge.py` for the set merge, then read it)", file=sys.stderr)
-            return 1
         # mid-merge the checkout is neither side's tree, so issue files are not judged here
         # (tools/policy.py refuses a line whose issue is gone)
         text, report = merge(*texts, lambda _: True)
+        report += [f"both sides changed the lines of {n}: read what was kept" for n in both_changed(*texts)]
         with open(argv[1], "w") as f:
             f.write(text)
     elif not argv:

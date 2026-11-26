@@ -34,7 +34,7 @@ expect("concurrent additions", text, base + f"{d}\ncrate/t_e - issues/e.md pate\
 text, report = merge(base, base, base + f"{d}\n", lambda i: i != "issues/d.md")
 expect("gone issue dropped", (text, report[-1].startswith("dropped (issues/d.md is gone)")), (base, True))
 
-# a test's lines changed on both sides are a conflict the driver leaves to a person
+# a test's lines changed on both sides: set-merged, named for a person to read
 import known_failures_merge as kfm  # noqa: E402
 expect("both changed", kfm.both_changed(base, HEAD + f"{a} x\n{b}\n{c}\n", HEAD + f"{a} y\n{b}\n{c}\n{d}\n"), ["crate/t_a"])
 expect("apart", kfm.both_changed(base, HEAD + f"{b}\n{c}\n", HEAD + f"{a}\n{b}\n{c}\n{d}\n"), [])
@@ -85,6 +85,18 @@ git("reset", "-q", "--hard", "ORIG_HEAD")
 expect("conflicts without the driver", git("rebase", "main", check=False).returncode, 1)
 r = subprocess.run([sys.executable, f"{HERE}/known_failures_merge.py"], cwd=t, capture_output=True, text=True)
 expect("resolved from the stages", (r.returncode, open(kf).read()), (0, HEAD + f"{a}\n{b}\n{d}\n"))
+# both sides changed a's line (main to `a y`, the branch to `a x`): still merged as a set, a named
+git("rebase", "--abort", check=False)
+git("config", "merge.known-failures.driver", f"{sys.executable} {HERE}/known_failures_merge.py %O %A %B")
+git("checkout", "-q", "main")
+write(HEAD + f"{a} y\n{b}\n{c}\n{d}\n")
+git("commit", "-qam", "a y")
+git("checkout", "-q", "branch")
+write(HEAD + f"{a} x\n{b}\n")
+git("commit", "-qam", "a x")
+r = git("rebase", "main", check=False)
+expect("both changed: rebase clean, named", (r.returncode, "both sides changed the lines of crate/t_a" in r.stderr), (0, True))
+expect("both changed: set-merged", open(kf).read(), HEAD + f"{a} y\n{b}\n{d}\n{a} x\n")
 subprocess.run(["rm", "-rf", t])
 print("known_failures_merge_test: ok" if not fails else f"known_failures_merge_test: {fails} failed")
 sys.exit(1 if fails else 0)

@@ -159,7 +159,7 @@ git commit -qam relisted && git push -q origin HEAD:main && git fetch -q
 "$mb" land t11 > /dev/null 2> "$d/err" && rc=0 || rc=$?
 check "both changed one test's lines: landed" "$rc $(git --git-dir="$d/origin.git" log --format=%s -1 main)" "0 t11"
 check "both changed: re-read said" "$(grep -c 'read again against origin/main.s known failures exits 3' "$d/err")" "1"
-check "both changed: rebase set-merged" "$(grep -c 'known_failures.txt conflicted' "$d/err")" "1"
+check "both changed: rebase set-merged" "$(grep -c 'both sides changed the lines of probe/x' "$d/err")" "1"
 check "both changed: known list" "$(git --git-dir="$d/origin.git" show main:tools/known_failures.txt)" "probe/z - issues/p.md z
 probe/x rate:5 issues/p.md fails"
 rm -f "$CARGO_LOG"
