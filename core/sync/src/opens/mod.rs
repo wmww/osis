@@ -1281,34 +1281,23 @@ impl Opens {
     /// members and makes filters and tests due; then each connection's due work runs.
     pub fn tick(&mut self, ctx: &mut Ctx, moved: &mut Vec<Moved>) -> bool {
         let before = moved.len();
-        // S left this node (spec/sync-set.md §3): its record rows went with the shred; where a
-        // member stopped goes from memory too, before anything rejoins, so a later join is from
-        // the start
-        let shreds = self.shreds.get_or_insert_with(|| ctx.store.shred_feed()).added();
-        for s in shreds {
-            // it stopped holding S (spec/sync-opens.md §6 Where it stopped), even when synced
-            // again before this tick saw it leave: members on a connection close and each stop
-            // kept is told, so a peer keeps nothing of what this node showed of S (its head
-            // among it) and joins and registers from the start
-            let on: Vec<ConnId> = self.conns.keys().copied().filter(|c| self.members_unstamped(*c).contains_key(&s)).collect();
-            self.lost_here(ctx, s, on, moved);
-            for r in self.records.values_mut() {
-                r.stopped.remove(&s);
-                r.basis.remove(&s);
-            }
-        }
         let loaded = self.load_first(ctx.store);
         if self.ok(loaded).is_none() {
             return false;
         }
-        for s in ctx.holds.due() {
+        // S's rows shredded (spec/sync-set.md §3) left this node even when synced again before
+        // this tick saw it leave: it holds S no more, then takes S's credentials as new
+        let shreds: BTreeSet<SyncId> = self.shreds.get_or_insert_with(|| ctx.store.shred_feed()).added().into_iter().collect();
+        let mut due: BTreeSet<SyncId> = ctx.holds.due().into_iter().collect();
+        due.extend(shreds.iter().copied());
+        for s in due {
             self.work.creds += 1;
             let now = ctx.holds.creds(&s);
             let digest = now.as_ref().map(|c| c.digest());
-            if digest == self.changed.at.get(&s).map(|(_, d, _)| *d) {
+            if !shreds.contains(&s) && digest == self.changed.at.get(&s).map(|(_, d, _)| *d) {
                 continue;
             }
-            self.moved_creds(ctx, s, now, moved);
+            self.moved_creds(ctx, s, now, shreds.contains(&s), moved);
         }
         if !self.following {
             let read = self.follow_kept(ctx, moved);
@@ -1366,10 +1355,13 @@ impl Opens {
         moved.len() > before
     }
 
-    /// This node holds S no more (spec/sync-opens.md §6 Where it stopped): S's members on `on`
-    /// close with a Lost, and each connection whose record keeps a stop of S is told nothing of S
-    /// is kept here.
-    fn lost_here(&mut self, ctx: &mut Ctx, s: SyncId, on: Vec<ConnId>, moved: &mut Vec<Moved>) {
+    /// This node holds S no more (spec/sync-set.md §3 Stopping, spec/sync-opens.md §3, §6 Where it
+    /// stopped): S's credentials went to none, or its rows went with a shred. S drops from every
+    /// record in this step: its members on a connection close with a Lost naming none, each
+    /// connection whose record keeps a stop of S is told nothing of S is kept here, and what is
+    /// kept of S for a record no connection holds goes.
+    fn left(&mut self, ctx: &mut Ctx, s: SyncId, moved: &mut Vec<Moved>) {
+        let on: Vec<ConnId> = self.held.get(&s).into_iter().flatten().filter_map(|r| self.conn_on(*r)).collect();
         for c in on {
             self.close_member(ctx, c, s, Close::Left, moved);
         }
@@ -1377,77 +1369,73 @@ impl Opens {
         for c in kept {
             self.send_lost(ctx, c, vec![(s, None)]);
         }
+        self.peers.wrote(&s, false);
+        for k in self.conns.values_mut() {
+            k.walks.remove(&s);
+            k.retries.retain(|(_, x)| *x != s);
+        }
+        self.stops.remove(&s);
+        // the record rows of S go with S in the store
+        for c in self.conns.keys() {
+            self.member_stamps.wrote(&(*c, s), false);
+            if let Some(src) = self.source_of(*c) {
+                self.record_members.wrote(&(src, s), false);
+            }
+        }
+        // a record no connection holds: what is kept of S for it goes too
+        for id in self.held.get(&s).cloned().unwrap_or_default() {
+            self.hold(s, id, None);
+            if self.records.get(&id).is_some_and(|r| r.kept && r.members.contains_key(&s)) {
+                self.record_members.wrote(&(Source::Record(id), s), false);
+                moved.push(Moved::Gone(id, s));
+            }
+        }
+        let gone: Vec<RecordId> = self.followed.iter().filter(|(_, m)| m.contains(&s)).map(|(r, _)| *r).collect();
+        for r in gone {
+            self.unfollow_member(r, s);
+            ctx.holds.unfollow(r, &s);
+        }
+        for r in self.records.values_mut() {
+            r.walk.remove(&s);
+            r.members.remove(&s);
+            r.basis.remove(&s);
+            r.stopped.remove(&s);
+        }
+        for d in self.dirty.values_mut() {
+            d.members.remove(&s);
+            d.walk.remove(&s);
+        }
+        let r = ctx.store.with_tx(|t| t.changed_forget(&s));
+        self.ok(r);
     }
 
-    /// S's credentials moved to `now` (none: S left the sync set).
-    fn moved_creds(&mut self, ctx: &mut Ctx, s: SyncId, now: Option<Arc<Creds>>, moved: &mut Vec<Moved>) {
+    /// S's credentials moved to `now` (none: S left the sync set); `shredded`: S's rows went
+    /// meanwhile, so S left this node whatever `now` is.
+    fn moved_creds(&mut self, ctx: &mut Ctx, s: SyncId, now: Option<Arc<Creds>>, shredded: bool, moved: &mut Vec<Moved>) {
+        if shredded || now.is_none() {
+            self.left(ctx, s, moved);
+        }
         let known = self.changed.at.remove(&s);
         if let Some((p, ..)) = &known {
             self.changed.order.remove(p);
         }
-        match now {
-            Some(c) => {
-                // the store's `changed_at` moves only for credentials that moved since it was
-                // written: a restart finds the rest as they were
-                let digest = c.digest();
-                let r = ctx.store.with_tx(|t| match t.changed_note(s, &digest)? {
-                    Some(p) => Ok((p, true)),
-                    None => Ok((t.changed_at(&s)?.unwrap_or(0), false)),
-                });
-                let Some((pos, advanced)) = self.ok(r) else { return };
-                self.changed.end = self.changed.end.max(pos);
-                self.changed.at.insert(s, (pos, digest, c));
-                self.changed.order.insert(pos, s);
-                if known.as_ref().is_none_or(|(p, ..)| *p != pos) {
-                    self.peers.wrote(&s, true);
-                }
-                if !advanced && known.is_none() {
-                    return;
-                }
+        if let Some(c) = now {
+            // the store's `changed_at` moves only for credentials that moved since it was
+            // written: a restart finds the rest as they were
+            let digest = c.digest();
+            let r = ctx.store.with_tx(|t| match t.changed_note(s, &digest)? {
+                Some(p) => Ok((p, true)),
+                None => Ok((t.changed_at(&s)?.unwrap_or(0), false)),
+            });
+            let Some((pos, advanced)) = self.ok(r) else { return };
+            self.changed.end = self.changed.end.max(pos);
+            self.changed.at.insert(s, (pos, digest, c));
+            self.changed.order.insert(pos, s);
+            if known.as_ref().is_none_or(|(p, ..)| *p != pos) {
+                self.peers.wrote(&s, true);
             }
-            None => {
-                // spec/sync-opens.md §3: a node that stops holding S drops S from every record in
-                // the step that stops it; members on a connection close with a Lost (§6).
-                let on: Vec<ConnId> = self.held.get(&s).into_iter().flatten().filter_map(|r| self.conn_on(*r)).collect();
-                self.lost_here(ctx, s, on, moved);
-                self.peers.wrote(&s, false);
-                for k in self.conns.values_mut() {
-                    k.walks.remove(&s);
-                    k.retries.retain(|(_, x)| *x != s);
-                }
-                self.stops.remove(&s);
-                // the record rows of S go with S in the store
-                for c in self.conns.keys() {
-                    self.member_stamps.wrote(&(*c, s), false);
-                    if let Some(src) = self.source_of(*c) {
-                        self.record_members.wrote(&(src, s), false);
-                    }
-                }
-                // a record no connection holds: what is kept of S for it goes too
-                for id in self.held.get(&s).cloned().unwrap_or_default() {
-                    self.hold(s, id, None);
-                    if self.records.get(&id).is_some_and(|r| r.kept && r.members.contains_key(&s)) {
-                        self.record_members.wrote(&(Source::Record(id), s), false);
-                        moved.push(Moved::Gone(id, s));
-                    }
-                }
-                let gone: Vec<RecordId> = self.followed.iter().filter(|(_, m)| m.contains(&s)).map(|(r, _)| *r).collect();
-                for r in gone {
-                    self.unfollow_member(r, s);
-                    ctx.holds.unfollow(r, &s);
-                }
-                for r in self.records.values_mut() {
-                    r.walk.remove(&s);
-                    r.members.remove(&s);
-                    r.basis.remove(&s);
-                    r.stopped.remove(&s);
-                }
-                for d in self.dirty.values_mut() {
-                    d.members.remove(&s);
-                    d.walk.remove(&s);
-                }
-                let r = ctx.store.with_tx(|t| t.changed_forget(&s));
-                self.ok(r);
+            if !advanced && known.is_none() {
+                return;
             }
         }
         // spec/sync-opens.md §6: every record holding S, connected or not, in this step

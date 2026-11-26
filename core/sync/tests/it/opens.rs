@@ -1099,19 +1099,27 @@ fn an_until_is_the_position_of_the_change_while_away_spec_sync_opens_6() {
 }
 
 // spec/sync-opens.md §3 (`changed_at`: a node that stops holding S drops S from every record in
-// the step that stops it): S leaving the sync set while no connection holds the record drops the member there,
-// and what the other modules keep of it for that record goes (`Moved::Gone`).
+// the step that stops it), spec/sync-set.md §3 (Stopping): S leaving while no connection holds the
+// record drops the member there, and what the other modules keep of it for that record goes
+// (`Moved::Gone`), whether its credentials went to none or its rows were shredded while it stays
+// synced (left and synced again before a settle saw it go).
 #[test]
 fn s_leaving_the_sync_set_while_away_drops_it_from_the_record_spec_sync_opens_3() {
-    let mut p = readers();
-    let rid = p.a.opens.record(p.ca).unwrap();
-    p.close();
-    p.a.settle();
-    p.a.moved.clear();
-    p.a.table.set(S, None);
-    p.a.settle();
-    assert!(p.a.opens.member_at(osis_sync::store::Source::Record(rid), &S).is_none());
-    assert!(p.a.moved.contains(&Moved::Gone(rid, S)), "{:?}", p.a.moved);
+    for shred in [false, true] {
+        let mut p = readers();
+        let rid = p.a.opens.record(p.ca).unwrap();
+        p.close();
+        p.a.settle();
+        p.a.moved.clear();
+        if shred {
+            p.a.store.shred(&S).unwrap();
+        } else {
+            p.a.table.set(S, None);
+        }
+        p.a.settle();
+        assert!(p.a.opens.member_at(osis_sync::store::Source::Record(rid), &S).is_none(), "shred {shred}");
+        assert!(p.a.moved.contains(&Moved::Gone(rid, S)), "shred {shred}: {:?}", p.a.moved);
+    }
 }
 
 /// The work done at a side since `before`.
