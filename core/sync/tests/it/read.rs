@@ -192,6 +192,8 @@ struct Fake {
     blobs: Stamped<BlobId, Option<BlobInfo>>,
     /// Blobs holding a part dropped here for good (a purge).
     gone: Stamped<BlobId, Strip>,
+    /// (b, o): blob b loses as spare to blob o (`Ground::loses`).
+    spare: Stamped<(BlobId, BlobId), ()>,
     /// Whether each logging was a fresh encryption.
     fresh: Vec<bool>,
     all: Stamped<(Source, SyncId), BTreeSet<BlobId>>,
@@ -426,10 +428,10 @@ impl Ground for Fake {
     fn gone(&mut self, b: &BlobId) -> Option<Strip> {
         self.gone.get(b).cloned()
     }
-    // every entry of a commit carries its whole body here: none loses to another (the engine's
-    // own judgement: core/engine/src/sync/tests_facts.rs)
-    fn loses(&mut self, _s: &SyncId, _b: &BlobId, _o: &BlobId, _stands: (bool, bool)) -> Result<Option<Loss>> {
-        Ok(None)
+    // every entry of a commit carries its whole body here: none loses to another but as `spare`
+    // says (the engine's own judgement: core/engine/src/sync/tests_facts.rs)
+    fn loses(&mut self, _s: &SyncId, b: &BlobId, o: &BlobId, _stands: (bool, bool)) -> Result<Option<Loss>> {
+        Ok(self.spare.get(&(*b, *o)).map(|_| Loss::Spare))
     }
     fn neither(&mut self, _s: &SyncId, _c: &BodyId, there: &BTreeSet<BlobId>) -> Result<bool> {
         Ok(!there.is_empty())
@@ -1400,6 +1402,38 @@ fn missing_again_lifts_own_tombstones() {
     f.missing = true;
     w.judge(S, cid(1), f);
     assert_eq!(w.g.tombs.get(&(S, cid(1))).cloned(), Some(vec![]));
+}
+
+// spec/sync-judgement.md §3 (Dropped bodies), §2 (Per blob): a body counting missing keeps its
+// own tombstone of an entry that would leave again at once on arrival (it strips here, or loses
+// as spare to an entry held) and does not fetch it where shown: else fetch, drop and lift go
+// round for as long as the body counts missing. Control: an entry that would stay is lifted and
+// fetched.
+#[test]
+fn missing_body_keeps_out_an_entry_that_would_leave_at_once() {
+    for case in ["strips", "spare", "control"] {
+        let mut w = W::new();
+        w.source(S, Source::Conn(RC), RC, false);
+        w.hold(cid(1), &[S], uncovered());
+        let held = w.own_blobs(S, cid(1))[0];
+        let b = BlobId([77; 32]);
+        match case {
+            "strips" => drop(w.g.gone.insert(b, Strip { live: Default::default(), covers: Vec::new(), from: 0 })),
+            "spare" => drop(w.g.spare.insert((b, held), ())),
+            _ => {}
+        }
+        w.g.tombs.insert((S, cid(1)), vec![b]);
+        w.g.put_seen((Source::Conn(RC), S, cid(1)), Seen { present: [b].into(), deleted: BTreeSet::new() });
+        let mut f = uncovered();
+        f.missing = true;
+        w.judge(S, cid(1), f);
+        let kept = w.g.tombs.get(&(S, cid(1))).is_some_and(|t| t.contains(&b));
+        let fetched = w.g.sent.contains(&Sent::Fetch(RC, b));
+        match case {
+            "control" => assert!(!kept && fetched, "{case}: lifted and fetched"),
+            _ => assert!(kept && !fetched, "{case}: its tombstone stays and it is not fetched: {:?}", w.g.sent),
+        }
+    }
 }
 
 // spec/sync-judgement.md §3 (Dropped bodies: a body counting as never received again is fetched

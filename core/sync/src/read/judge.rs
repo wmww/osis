@@ -435,21 +435,28 @@ pub(crate) fn body(g: &mut impl Ground, mine: &Mine, s: &SyncId, c: &BodyId) -> 
     // a body counting missing again: its own tombstones end, an entry of it held here is taken
     // again, it is fetched again where a source shows another entry of it present, and asked
     // for by ID from each source reading S (§3 Asked by ID; a source joining or showing one
-    // judges it again)
+    // judges it again). An entry opened here that would leave again at once on arrival (Per
+    // blob: it strips here, or loses to a live entry held) keeps its tombstone and is not
+    // fetched: it gives nothing that entry does not, and fetching it would go round and round
     if f.as_ref().is_some_and(|f| f.missing) {
-        j.acts.extend(g.own_tombstones(s, c)?.into_iter().map(Act::Lift));
-        j.acts.extend(own.iter().filter(|e| !stale.contains(&e.blob)).map(|e| Act::Take(e.blob)));
+        let tombs = g.own_tombstones(s, c)?;
+        let mut shown = Vec::new();
         for src in g.sources(s).iter() {
             let at = src.at;
-            for b in g.seen(&at, s, c)?.present {
-                if !own.iter().any(|e| e.blob == b) {
-                    j.acts.insert(Act::Fetch { at, blob: b });
-                }
-            }
+            shown.extend(g.seen(&at, s, c)?.present.into_iter().filter(|b| !own.iter().any(|e| e.blob == *b)).map(|b| (at, b)));
             if !src.store && c.on.is_none() {
                 j.acts.insert(Act::Want { at });
             }
         }
+        let mut leaves = BTreeSet::new();
+        for b in tombs.iter().chain(shown.iter().map(|(_, b)| b)) {
+            if !leaves.contains(b) && would_leave(g, mine, s, c, b, &live, &stands)? {
+                leaves.insert(*b);
+            }
+        }
+        j.acts.extend(tombs.into_iter().filter(|b| !leaves.contains(b)).map(Act::Lift));
+        j.acts.extend(own.iter().filter(|e| !stale.contains(&e.blob)).map(|e| Act::Take(e.blob)));
+        j.acts.extend(shown.into_iter().filter(|(_, b)| !leaves.contains(b)).map(|(at, blob)| Act::Fetch { at, blob }));
     }
     j.wait = j.wait.or(unnamed_wait);
     let present = g.present_anywhere(s, c)?;
@@ -557,6 +564,27 @@ pub(crate) fn body(g: &mut impl Ground, mine: &Mine, s: &SyncId, c: &BodyId) -> 
         j.fresh = f.as_ref().map(|f| f.repair_fresh.clone()).unwrap_or_default();
     }
     Ok(j)
+}
+
+/// Whether entry `b` of body `c` under S, not held here, would leave the own store again at once
+/// on arrival (§2 Per blob, judged on what its opening here noted): it strips here, or loses to
+/// one of `live`, the entries held that stay (`stands`: those that may stand as the body's log).
+/// One never opened here (no parts noted) leaves for neither.
+fn would_leave(g: &mut impl Ground, mine: &Mine, s: &SyncId, c: &BodyId, b: &BlobId, live: &[BlobId], stands: &BTreeSet<BlobId>) -> Result<bool> {
+    if g.gone(b).is_some() {
+        return Ok(true);
+    }
+    // fetched, it comes stamped: it may stand where it holds the body
+    let may_stand = match mine.meta(s, c) {
+        Some(m) => g.holds_body(m, b)?,
+        None => false,
+    };
+    for o in live {
+        if g.loses(s, b, o, (may_stand, stands.contains(o)))?.is_some() {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// One piece of the must-hold bodies at S (§1: their linked blobs go under S beside them): a held
