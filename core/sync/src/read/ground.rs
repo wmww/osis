@@ -180,6 +180,9 @@ pub trait Ground {
     /// Held blob `b` loses to `o`, another held blob of its commit, under S (`Engine::blob_loses`,
     /// spec/sync-judgement.md §2 Per blob); `stands`: whether each may stand as the body's log.
     fn loses(&mut self, s: &SyncId, b: &BlobId, o: &BlobId, stands: (bool, bool)) -> Result<Option<Loss>>;
+    /// Blob `b`, as opened here, carries a part counting as never received here
+    /// (`Engine::blob_gives_missing`): fetched, it gives that part.
+    fn gives_missing(&mut self, b: &BlobId) -> bool;
     /// `there`, the blobs of `c` held at a place, carry what only a blob carries of its body and
     /// no purge request reopens it (`Engine::neither`, spec/sync-judgement.md §3 Neither): a delete
     /// of it there stands, and nothing of it is relayed there.

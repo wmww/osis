@@ -34,6 +34,16 @@ impl Engine {
         self.read(|tx| Ok(crate::retention::leftover::get(tx, &a.tid, &a.ak, c, ai)?.is_some_and(|l| l.short(&list)))).unwrap_or(false)
     }
 
+    /// Whether blob `b`, as opened here, carries a part of its commit that counts as never
+    /// received here (`body_missing`, a short leftover among them): fetched, it gives that part,
+    /// whether or not it would then leave (spec/sync-judgement.md §3 Dropped bodies).
+    pub fn blob_gives_missing(&mut self, b: &BlobId) -> bool {
+        let Some(x) = self.blob_of(b) else { return false };
+        let Some(m) = self.core.ix.commits.get(&x.commit).cloned() else { return false };
+        let (missing, leftovers) = self.body_missing(&x.commit, &m, x.parts.iter().copied());
+        missing || leftovers.into_iter().any(|ai| self.part_short(&x.commit, ai))
+    }
+
     /// The things whose read secrets may open what opened blob `b` holds sealed here: the thing
     /// of each part it carries in a section not opened (`BlobOf::parts` lacks it) and not sealed
     /// below this node's floor (it never opens here), whether or not a read secret of it is held

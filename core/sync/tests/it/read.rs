@@ -194,6 +194,8 @@ struct Fake {
     gone: Stamped<BlobId, Strip>,
     /// (b, o): blob b loses as spare to blob o (`Ground::loses`).
     spare: Stamped<(BlobId, BlobId), ()>,
+    /// Blobs carrying a part counting missing here (`Ground::gives_missing`).
+    gives: Stamped<BlobId, ()>,
     /// Whether each logging was a fresh encryption.
     fresh: Vec<bool>,
     all: Stamped<(Source, SyncId), BTreeSet<BlobId>>,
@@ -432,6 +434,9 @@ impl Ground for Fake {
     // says (the engine's own judgement: core/engine/src/sync/tests_facts.rs)
     fn loses(&mut self, _s: &SyncId, b: &BlobId, o: &BlobId, _stands: (bool, bool)) -> Result<Option<Loss>> {
         Ok(self.spare.get(&(*b, *o)).map(|_| Loss::Spare))
+    }
+    fn gives_missing(&mut self, b: &BlobId) -> bool {
+        self.gives.get(b).is_some()
     }
     fn neither(&mut self, _s: &SyncId, _c: &BodyId, there: &BTreeSet<BlobId>) -> Result<bool> {
         Ok(!there.is_empty())
@@ -1408,19 +1413,24 @@ fn missing_again_lifts_own_tombstones() {
 // own tombstone of an entry that would leave again at once on arrival (it strips here, or loses
 // as spare to an entry held) and does not fetch it where shown: else fetch, drop and lift go
 // round for as long as the body counts missing. Control: an entry that would stay is lifted and
-// fetched.
+// fetched, and so is one that would leave but carries a part counting missing here (it gives that
+// part: kept out, a body whose only copies strip here would count missing for good).
 #[test]
 fn missing_body_keeps_out_an_entry_that_would_leave_at_once() {
-    for case in ["strips", "spare", "control"] {
+    for case in ["strips", "spare", "control", "strips, gives", "spare, gives"] {
         let mut w = W::new();
         w.source(S, Source::Conn(RC), RC, false);
         w.hold(cid(1), &[S], uncovered());
         let held = w.own_blobs(S, cid(1))[0];
         let b = BlobId([77; 32]);
-        match case {
-            "strips" => drop(w.g.gone.insert(b, Strip { live: Default::default(), covers: Vec::new(), from: 0 })),
-            "spare" => drop(w.g.spare.insert((b, held), ())),
-            _ => {}
+        if case.starts_with("strips") {
+            drop(w.g.gone.insert(b, Strip { live: Default::default(), covers: Vec::new(), from: 0 }));
+        }
+        if case.starts_with("spare") {
+            w.g.spare.insert((b, held), ());
+        }
+        if case.ends_with("gives") {
+            w.g.gives.insert(b, ());
         }
         w.g.tombs.insert((S, cid(1)), vec![b]);
         w.g.put_seen((Source::Conn(RC), S, cid(1)), Seen { present: [b].into(), deleted: BTreeSet::new() });
@@ -1430,8 +1440,8 @@ fn missing_body_keeps_out_an_entry_that_would_leave_at_once() {
         let kept = w.g.tombs.get(&(S, cid(1))).is_some_and(|t| t.contains(&b));
         let fetched = w.g.sent.contains(&Sent::Fetch(RC, b));
         match case {
-            "control" => assert!(!kept && fetched, "{case}: lifted and fetched"),
-            _ => assert!(kept && !fetched, "{case}: its tombstone stays and it is not fetched: {:?}", w.g.sent),
+            "strips" | "spare" => assert!(kept && !fetched, "{case}: its tombstone stays and it is not fetched: {:?}", w.g.sent),
+            _ => assert!(!kept && fetched, "{case}: lifted and fetched"),
         }
     }
 }

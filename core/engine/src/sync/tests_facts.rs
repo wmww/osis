@@ -254,3 +254,40 @@ fn a_strip_names_its_live_parts_and_covers_spec_sync_judgement_2() {
     assert!(st.covers.len() == 1 && !st.covers[0].is_empty(), "replaced: covered by what reaches it: {:?}", st.covers);
 }
 
+
+// spec/sync-judgement.md §3 (Dropped bodies: an entry that would leave again at once is not
+// fetched while its body counts missing, but one carrying a part that counts missing gives it): a
+// blob of a commit whose purged part strips here still gives its other part once that part counts
+// missing; a blob of the purged part alone gives nothing. Fails if a stripping blob counts as
+// giving nothing whatever it carries (its body's only copies stripping here, missing for good).
+#[test]
+fn a_stripping_blob_carrying_a_missing_part_gives_it_spec_sync_judgement_3() {
+    let (mut lp, d) = two_nodes();
+    let (t, c) = wide_commit(&mut lp, d, 2);
+    let e = &mut lp.peers[0].engine;
+    let h = e.header(&c).unwrap();
+    let on = |k: &str| h.aspects.iter().position(|a| a.tid == t && a.ak.as_str() == k).unwrap();
+    let (p0, p1) = (on("x:a0.0"), on("x:a1.0"));
+    let noted = |e: &mut crate::Engine, b: u8, parts: &[usize]| {
+        let (id, ps) = (BlobId([b; 32]), parts.iter().copied().collect::<PartSet>());
+        e.run(|tx| note_blob(tx, &id, super::BlobOf { commit: c, parts: ps.clone(), sealed: Default::default(), copy: false, unchecked: false, salt: [0; 16], ais: ps })).unwrap();
+        id
+    };
+    let (both, purged) = (noted(e, 1, &[p0, p1]), noted(e, 2, &[p1]));
+    let mut m = Mutation::new();
+    m.purge_commit(c, t, ak("x:a1.0"));
+    m.set(t, &ak("x:a1.0"), &Value::Int(3)).unwrap();
+    e.commit(m).unwrap();
+    assert!(e.strip_of(&both).is_some(), "the purged part strips");
+    assert!(!e.blob_gives_missing(&both), "nothing counts missing yet");
+    // part 0 counts never received, as once its cover fell
+    e.run(|tx| {
+        crate::retention::drop_part(tx, &c, p0)?;
+        let mut m = tx.core.ix.commits.get(&c).cloned().unwrap();
+        crate::retention::reopen_in(tx, &c, &mut m, p0);
+        tx.in_class(m.view.memory, |tx| tx.put_meta_record(&c, m.clone()))
+    })
+    .unwrap();
+    assert!(e.blob_gives_missing(&both), "it carries the missing part");
+    assert!(!e.blob_gives_missing(&purged), "the purged part alone gives nothing");
+}

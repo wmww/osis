@@ -436,8 +436,9 @@ pub(crate) fn body(g: &mut impl Ground, mine: &Mine, s: &SyncId, c: &BodyId) -> 
     // again, it is fetched again where a source shows another entry of it present, and asked
     // for by ID from each source reading S (§3 Asked by ID; a source joining or showing one
     // judges it again). An entry opened here that would leave again at once on arrival (Per
-    // blob: it strips here, or loses to a live entry held) keeps its tombstone and is not
-    // fetched: it gives nothing that entry does not, and fetching it would go round and round
+    // blob: it strips here, or loses to a live entry held) and carries no part counting missing
+    // here keeps its tombstone and is not fetched: it gives nothing, and fetching it would go
+    // round and round
     if f.as_ref().is_some_and(|f| f.missing) {
         let tombs = g.own_tombstones(s, c)?;
         let mut shown = Vec::new();
@@ -569,8 +570,12 @@ pub(crate) fn body(g: &mut impl Ground, mine: &Mine, s: &SyncId, c: &BodyId) -> 
 /// Whether entry `b` of body `c` under S, not held here, would leave the own store again at once
 /// on arrival (§2 Per blob, judged on what its opening here noted): it strips here, or loses to
 /// one of `live`, the entries held that stay (`stands`: those that may stand as the body's log).
-/// One never opened here (no parts noted) leaves for neither.
+/// One never opened here (no parts noted) leaves for neither; one carrying a part counting
+/// missing here gives that part, whatever it does after.
 fn would_leave(g: &mut impl Ground, mine: &Mine, s: &SyncId, c: &BodyId, b: &BlobId, live: &[BlobId], stands: &BTreeSet<BlobId>) -> Result<bool> {
+    if g.gives_missing(b) {
+        return Ok(false);
+    }
     if g.gone(b).is_some() {
         return Ok(true);
     }

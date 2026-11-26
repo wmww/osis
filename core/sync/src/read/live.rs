@@ -417,6 +417,9 @@ impl Ground for Live<'_, '_> {
     fn loses(&mut self, s: &SyncId, b: &BlobId, o: &BlobId, stands: (bool, bool)) -> Result<Option<Loss>> {
         Ok(self.cx.engine.blob_loses(s, b, o, stands)?)
     }
+    fn gives_missing(&mut self, b: &BlobId) -> bool {
+        self.cx.engine.blob_gives_missing(b)
+    }
     fn neither(&mut self, s: &SyncId, c: &BodyId, there: &BTreeSet<BlobId>) -> Result<bool> {
         Ok(self.cx.engine.neither(s, c, there)?)
     }
