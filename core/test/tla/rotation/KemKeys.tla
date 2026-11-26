@@ -3,8 +3,9 @@
 (* Published KEM keys), Seal's candidates (§4 Holder actors, Seal) and the    *)
 (* granter's check (spec/permissions.md §2 Granting to a thing). Holder actor *)
 (* M of thing A, read role, M's keysets a line (no forks). m, an admin of M,  *)
-(* rotates M; it learns M's grant on A when the grant's edge piece reaches   *)
-(* M's sync ID (Deliver). g, a writer of A that may not rotate M, grants M   *)
+(* rotates M; it learns M's grant on A only from a signal or a stub of A it *)
+(* holds (Learn: fair where Told, else it may never). g, a writer of A that *)
+(* may not rotate M, grants M                                                *)
 (* read on A and seals M at each rotation or re-seal of A, by the newest     *)
 (* keyset of M it holds (from a card or M's readers' reports: Report).       *)
 (* x is a party removed from M (RemoveX, a rotation knowing it), or the      *)
@@ -16,6 +17,8 @@
 (*   "written"  a keyset's KEM key decided when written, nothing more;      *)
 (*   "due"      also: a node that may rotate M rotates it while M's current *)
 (*              keyset lacks a KEM key the rule gives by what it holds now; *)
+(*   "sticky"   "due", and a keyset carries a KEM key wherever the keyset   *)
+(*              it supersedes does: no node need know of a grant;           *)
 (*   "fallback" "due", but Seal takes the newest keyset carrying a KEM key  *)
 (*              below a KEM-less newest one (control: a stale box).          *)
 (* Check: g grants only where the newest keyset of M it holds carries a KEM *)
@@ -28,14 +31,14 @@
 (* boxed at its newest keyset for good.                                      *)
 EXTENDS Naturals, Sequences
 
-CONSTANTS Rule, Check, StaleCard, Other0, MaxM
+CONSTANTS Rule, Check, StaleCard, Other0, MaxM, Told
 
 VARIABLES ks, other, mGrant, xRemoved, gk, granted, box, rotsM, leak, leakAll
 vars == <<ks, other, mGrant, xRemoved, gk, granted, box, rotsM, leak, leakAll>>
 
 K(kem, x) == [kem |-> kem, x |-> x]
 Newest == Len(ks)
-\* m's KEM rule by what it holds now: M holds read on A for keys (it learned
+\* m's KEM rule by what it holds now: M holds a role on A (it learned
 \* the grant), or another reason stands
 KemNow == other \/ mGrant
 
@@ -80,7 +83,7 @@ Seal ==
   /\ SealAt(Target)
   /\ UNCHANGED <<ks, other, mGrant, xRemoved, gk, granted, rotsM>>
 
-Deliver ==
+Learn ==
   /\ granted /\ ~mGrant
   /\ mGrant' = TRUE
   /\ UNCHANGED <<ks, other, xRemoved, gk, granted, box, rotsM, leak, leakAll>>
@@ -95,27 +98,30 @@ EndOther ==
   /\ other' = FALSE
   /\ UNCHANGED <<ks, mGrant, xRemoved, gk, granted, box, rotsM, leak, leakAll>>
 
+\* the KEM key a keyset m writes now carries
+KemW == KemNow \/ (Rule = "sticky" /\ ks[Newest].kem)
+
 RotM ==
   /\ rotsM < MaxM
-  /\ ks' = Append(ks, K(KemNow, ~xRemoved))
+  /\ ks' = Append(ks, K(KemW, ~xRemoved))
   /\ rotsM' = rotsM + 1
   /\ UNCHANGED <<other, mGrant, xRemoved, gk, granted, box, leak, leakAll>>
 
 RemoveX ==
   /\ ~xRemoved
   /\ xRemoved' = TRUE
-  /\ ks' = Append(ks, K(KemNow, FALSE))
+  /\ ks' = Append(ks, K(KemW, FALSE))
   /\ UNCHANGED <<other, mGrant, gk, granted, box, rotsM, leak, leakAll>>
 
 DueM ==
-  /\ Rule \in {"due", "fallback"}
+  /\ Rule \in {"due", "sticky", "fallback"}
   /\ KemNow /\ ~ks[Newest].kem
   /\ ks' = Append(ks, K(TRUE, ~xRemoved))
   /\ UNCHANGED <<other, mGrant, xRemoved, gk, granted, box, rotsM, leak, leakAll>>
 
-Next == Grant \/ Seal \/ Deliver \/ Report \/ EndOther \/ RotM \/ RemoveX \/ DueM
+Next == Grant \/ Seal \/ Learn \/ Report \/ EndOther \/ RotM \/ RemoveX \/ DueM
 
-Fair == WF_vars(Grant) /\ WF_vars(Seal) /\ WF_vars(Deliver) /\ WF_vars(Report) /\ WF_vars(DueM)
+Fair == WF_vars(Grant) /\ WF_vars(Seal) /\ (Told => WF_vars(Learn)) /\ WF_vars(Report) /\ WF_vars(DueM)
 
 Spec == Init /\ [][Next]_vars /\ Fair
 

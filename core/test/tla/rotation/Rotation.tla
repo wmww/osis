@@ -45,15 +45,16 @@ VARIABLES ep,       \* ep[e] = [n, sup, ob, hist, rem, nm]; ob = holders the
                     \* [m: holder boxed, eps: epochs boxed, w: wrap epoch, g: grant]
           rd,       \* rd[x]: the commits of bx that x has read
           steps,    \* registration path: <<[ep, cl, dr]>>; dr = claim set dropped
-          inbox,    \* grant and re-seal boxes in flight: <<holder, epoch>>
-          inRot,    \* rotation commits in flight by inbox: <<holder, rotation>>
+          sealed,   \* grant and re-seal boxes whose commit's blob key is sealed
+                    \* to the holder, served by role (Entry.tla): <<holder, epoch>>
+          sealedRot, \* rotations sealed so: <<holder, rotation>>
           via,      \* via[x]: co-reader peers x received rotation commits from
           stranded, \* holders whose stranded notice is under the sync ID
           enc,      \* content written: <<epoch, departures the writer knew>>
           leakP,    \* TRUE once something was encrypted under a planted secret
           online, budget
 vars == <<ep, made, kn, sec, fsec, dep, hld, removed, granted, storeRot, before, bx, rd,
-          steps, inbox, inRot, via, stranded, enc, leakP, online, budget>>
+          steps, sealed, sealedRot, via, stranded, enc, leakP, online, budget>>
 
 ep_n(e) == ep[e].n
 \* crypto §4: newest = greatest n, ties by lowest nonce (here: lowest id).
@@ -154,7 +155,7 @@ Init ==
   /\ removed = {} /\ granted = {}
   /\ storeRot = {} /\ before = [k \in Ids |-> {}] /\ bx = {} /\ rd = [x \in Nodes |-> {}]
   /\ steps = <<[ep |-> 0, cl |-> Nodes \ Late, dr |-> FALSE]>>
-  /\ inbox = {} /\ inRot = {} /\ via = [x \in Nodes |-> {}] /\ stranded = {}
+  /\ sealed = {} /\ sealedRot = {} /\ via = [x \in Nodes |-> {}] /\ stranded = {}
   /\ enc = {} /\ leakP = FALSE
   /\ online = [x \in Nodes |-> TRUE]
   /\ budget = [w |-> 0, off |-> 0, p |-> 0]
@@ -164,7 +165,8 @@ Init ==
 \* every established secret it holds. R: the removals this commit carries
 \* (commits §2: a removal and the rotation it requires are one commit).
 \* permissions §3: a holder it boxes that holds no box at a current read epoch
-\* before it (as the rotator knows) also gets the rotation by inbox.
+\* before it (as the rotator knows) also opens the rotation: its blob key
+\* is sealed to it (Entry.tla).
 \* crypto §4 names: the removals the rotator holds (its applied rotation
 \* commits carrying one).
 RotateR(a, R) ==
@@ -181,10 +183,10 @@ RotateR(a, R) ==
         /\ sec' = [sec EXCEPT ![a] = @ \cup {k}]
         /\ dep' = [dep EXCEPT ![a] = d]
         /\ removed' = removed \cup R
-        /\ inRot' = inRot \cup {<<m, k>> : m \in {y \in ob \ {a} :
+        /\ sealedRot' = sealedRot \cup {<<m, k>> : m \in {y \in ob \ {a} :
                                    \A e \in sup : y \notin Holders(a, e)}}
         /\ leakP' = (leakP \/ ~(Hist(a) \subseteq sec[a]))
-  /\ UNCHANGED <<fsec, hld, granted, storeRot, before, bx, rd, steps, inbox, via, stranded, enc,
+  /\ UNCHANGED <<fsec, hld, granted, storeRot, before, bx, rd, steps, sealed, via, stranded, enc,
                  online, budget>>
 Rotate(a) == RotateR(a, {})
 \* A Late holder is removed only once granted, and never granted again (a
@@ -206,7 +208,7 @@ Register(a) ==
   /\ steps' = Append(steps, [ep |-> EncEp(a), cl |-> Holders(a, EncEp(a)), dr |-> FALSE])
   /\ leakP' = (leakP \/ ~({Top.ep, EncEp(a)} \subseteq sec[a]))
   /\ UNCHANGED <<ep, made, kn, sec, fsec, dep, hld, removed, granted, storeRot, before, bx, rd,
-                 inbox, inRot, via, stranded, enc, online, budget>>
+                 sealed, sealedRot, via, stranded, enc, online, budget>>
 
 \* sync §5: rotation commits go up under the head's keys (write key never
 \* rotated here), before the step.
@@ -216,19 +218,19 @@ LogRot(a, k) ==
   /\ \A j \in kn[a] \ storeRot : ep[j].rem # {} => j = k
   /\ storeRot' = storeRot \cup {k}
   /\ before' = [before EXCEPT ![k] = storeRot]
-  /\ UNCHANGED <<ep, made, kn, sec, fsec, dep, hld, removed, granted, bx, rd, steps, inbox,
-                 inRot, via, stranded, enc, leakP, online, budget>>
+  /\ UNCHANGED <<ep, made, kn, sec, fsec, dep, hld, removed, granted, bx, rd, steps, sealed,
+                 sealedRot, via, stranded, enc, leakP, online, budget>>
 
 \* A grant or re-seal commit b by a: logged under the sync ID (wrapped under a's
-\* newest epoch), read by a at once, boxes delivered to b.m by inbox.
+\* newest epoch), read by a at once, its blob key sealed to b.m.
 LogBox(a, b) ==
   /\ bx' = bx \cup {b}
   /\ rd' = [rd EXCEPT ![a] = @ \cup {b}]
-  /\ inbox' = inbox \cup {<<b.m, e>> : e \in b.eps}
+  /\ sealed' = sealed \cup {<<b.m, e>> : e \in b.eps}
   /\ leakP' = (leakP \/ ~(b.eps \cup {b.w} \subseteq sec[a]))
 
 \* crypto §4: a grant writes the grantee's boxes at each current epoch (with
-\* their history boxes), delivered by inbox; the grant commit goes under the
+\* their history boxes), the commit's blob key sealed to it; the grant commit goes under the
 \* sync ID wrapped under the granter's newest epoch. Unfair (a choice).
 Grant(a, m) ==
   /\ online[a] /\ m \in Late \ granted /\ ~NeedsReg(a) /\ HeldCur(a) # {}
@@ -236,7 +238,7 @@ Grant(a, m) ==
   /\ granted' = granted \cup {m}
   /\ hld' = [hld EXCEPT ![a] = @ \cup {m}]
   /\ LogBox(a, [m |-> m, eps |-> HeldCur(a), w |-> EncEp(a), g |-> TRUE])
-  /\ UNCHANGED <<ep, made, kn, sec, fsec, dep, removed, storeRot, before, steps, inRot, via,
+  /\ UNCHANGED <<ep, made, kn, sec, fsec, dep, removed, storeRot, before, steps, sealedRot, via,
                  stranded, enc, online, budget>>
 
 \* Reading a grant or re-seal commit from the sync ID: a grant teaches the
@@ -248,7 +250,7 @@ RecvBox(x, b) ==
   /\ sec' = IF b.m = x THEN [sec EXCEPT ![x] = @ \cup b.eps \cup UNION {ep[e].hist : e \in b.eps}]
             ELSE sec
   /\ UNCHANGED <<ep, made, kn, fsec, dep, removed, granted, storeRot, before, bx, steps,
-                 inbox, inRot, via, stranded, enc, leakP, online, budget>>
+                 sealed, sealedRot, via, stranded, enc, leakP, online, budget>>
 
 \* crypto §4: never encrypt under an epoch that does not cover a known
 \* departure; crypto §5: a node holding no current secret writes nothing.
@@ -259,7 +261,7 @@ WriteContent(a) ==
   /\ leakP' = (leakP \/ EncEp(a) \notin sec[a])
   /\ budget' = [budget EXCEPT !.w = @ + 1]
   /\ UNCHANGED <<ep, made, kn, sec, fsec, dep, hld, removed, granted, storeRot, before, bx, rd,
-                 steps, inbox, inRot, via, stranded, online>>
+                 steps, sealed, sealedRot, via, stranded, online>>
 
 \* A box for x gives the new secret and, by the history box, every secret the
 \* rotator held; the removals it carries become known.
@@ -269,23 +271,24 @@ Apply(x, k) ==
   /\ dep' = [dep EXCEPT ![x] = @ \cup ep[k].rem]
 RecvStore(x, k) ==
   /\ online[x] /\ FromStore(x, k) /\ Apply(x, k)
-  /\ UNCHANGED <<ep, made, fsec, hld, removed, granted, storeRot, before, bx, rd, steps, inbox,
-                 inRot, via, stranded, enc, leakP, online, budget>>
+  /\ UNCHANGED <<ep, made, fsec, hld, removed, granted, storeRot, before, bx, rd, steps, sealed,
+                 sealedRot, via, stranded, enc, leakP, online, budget>>
 RecvPeer(x, y, k) ==
   /\ online[x] /\ FromPeer(x, y, k) /\ Apply(x, k)
   /\ via' = [via EXCEPT ![x] = @ \cup {y}]
-  /\ UNCHANGED <<ep, made, fsec, hld, removed, granted, storeRot, before, bx, rd, steps, inbox,
-                 inRot, stranded, enc, leakP, online, budget>>
-\* permissions §3: a rotation delivered by inbox (no sync ID access needed).
-InboxRot(x, k) ==
-  /\ online[x] /\ <<x, k>> \in inRot /\ ~Withheld(x, k) /\ Apply(x, k)
-  /\ inRot' = inRot \ {<<x, k>>}
-  /\ UNCHANGED <<ep, made, fsec, hld, removed, granted, storeRot, before, bx, rd, steps, inbox,
+  /\ UNCHANGED <<ep, made, fsec, hld, removed, granted, storeRot, before, bx, rd, steps, sealed,
+                 sealedRot, stranded, enc, leakP, online, budget>>
+\* permissions §3: a rotation whose blob key is sealed to the holder, served to
+\* it by role (Entry.tla; nothing kept with the holder).
+TakeSealedRot(x, k) ==
+  /\ online[x] /\ <<x, k>> \in sealedRot /\ ~Withheld(x, k) /\ Apply(x, k)
+  /\ sealedRot' = sealedRot \ {<<x, k>>}
+  /\ UNCHANGED <<ep, made, fsec, hld, removed, granted, storeRot, before, bx, rd, steps, sealed,
                  via, stranded, enc, leakP, online, budget>>
 Recv(x, k) == RecvStore(x, k) \/ \E y \in Nodes : RecvPeer(x, y, k)
 
 \* permissions §3: SHOULD re-seal (treated as done: fair), with the epochs'
-\* history boxes, delivered by inbox and logged under the actor's sync IDs like
+\* history boxes, its blob key sealed to the holder, and logged under the actor's sync IDs like
 \* any role commit (wrapped under the newest epoch); boxing and that
 \* wrap are encrypting under, so only at epochs covering every departure the
 \* re-sealer knows.
@@ -295,15 +298,15 @@ Reseal(a, m) ==
   /\ LogBox(a, [m |-> m, eps |-> ResealE(a, m), w |-> EncEp(a), g |-> FALSE])
   /\ stranded' = stranded \ {m}
   /\ UNCHANGED <<ep, made, kn, sec, fsec, dep, hld, removed, granted, storeRot, before, steps,
-                 inRot, via, enc, online, budget>>
+                 sealedRot, via, enc, online, budget>>
 
 \* crypto §4: the grant or re-seal re-writes each boxed epoch's history box.
-InboxRecv(m, e) ==
-  /\ online[m] /\ <<m, e>> \in inbox
+TakeSealed(m, e) ==
+  /\ online[m] /\ <<m, e>> \in sealed
   /\ sec' = [sec EXCEPT ![m] = @ \cup {e} \cup ep[e].hist]
-  /\ inbox' = inbox \ {<<m, e>>}
+  /\ sealed' = sealed \ {<<m, e>>}
   /\ UNCHANGED <<ep, made, kn, fsec, dep, hld, removed, granted, storeRot, before, bx, rd, steps,
-                 inRot, via, stranded, enc, leakP, online, budget>>
+                 sealedRot, via, stranded, enc, leakP, online, budget>>
 
 \* Adversary (crypto §4): anyone can seal a box to a holder's keys.0 in a
 \* commit that stays pending or is invalid, naming an existing epoch with a
@@ -313,7 +316,7 @@ Plant(x, e) ==
   /\ fsec' = [fsec EXCEPT ![x] = @ \cup {e}]
   /\ budget' = [budget EXCEPT !.p = @ + 1]
   /\ UNCHANGED <<ep, made, kn, sec, dep, hld, removed, granted, storeRot, before, bx, rd, steps,
-                 inbox, inRot, via, stranded, enc, leakP, online>>
+                 sealed, sealedRot, via, stranded, enc, leakP, online>>
 
 \* permissions §4: MUST fire a stranded notice when it cannot read the
 \* current epoch: it reached the head and after a complete pass there cannot
@@ -330,22 +333,22 @@ Notice(x) ==
   /\ stranded' = stranded \cup {x}
   /\ leakP' = (leakP \/ NewestOf(Enc(x) \cap Est(x)) \notin sec[x])
   /\ UNCHANGED <<ep, made, kn, sec, fsec, dep, hld, removed, granted, storeRot, before, bx, rd,
-                 steps, inbox, inRot, via, enc, online, budget>>
+                 steps, sealed, sealedRot, via, enc, online, budget>>
 
 \* sync §4: a superseded step's claim set is kept ROLE_KEEP, then may go.
 Drop(i) ==
   /\ DropClaims /\ i < Len(steps) /\ ~steps[i].dr
   /\ steps' = [steps EXCEPT ![i].dr = TRUE]
   /\ UNCHANGED <<ep, made, kn, sec, fsec, dep, hld, removed, granted, storeRot, before, bx, rd,
-                 inbox, inRot, via, stranded, enc, leakP, online, budget>>
+                 sealed, sealedRot, via, stranded, enc, leakP, online, budget>>
 
 GoOff(x) == /\ online[x] /\ budget.off < Offs
             /\ online' = [online EXCEPT ![x] = FALSE] /\ budget' = [budget EXCEPT !.off = @ + 1]
             /\ UNCHANGED <<ep, made, kn, sec, fsec, dep, hld, removed, granted, storeRot, before,
-                           bx, rd, steps, inbox, inRot, via, stranded, enc, leakP>>
+                           bx, rd, steps, sealed, sealedRot, via, stranded, enc, leakP>>
 GoOn(x) == /\ ~online[x] /\ online' = [online EXCEPT ![x] = TRUE]
            /\ UNCHANGED <<ep, made, kn, sec, fsec, dep, hld, removed, granted, storeRot, before,
-                          bx, rd, steps, inbox, inRot, via, stranded, enc, leakP, budget>>
+                          bx, rd, steps, sealed, sealedRot, via, stranded, enc, leakP, budget>>
 
 Next ==
   \/ \E a \in Admins : Rotate(a) \/ Register(a) \/ WriteContent(a)
@@ -353,7 +356,7 @@ Next ==
                        \/ (\E m \in Nodes : Reseal(a, m) \/ Grant(a, m))
   \/ \E m \in Departing : Remove(m)
   \/ \E x \in Nodes : \/ Notice(x) \/ GoOff(x) \/ GoOn(x)
-                      \/ (\E k \in Ids : Recv(x, k) \/ InboxRecv(x, k) \/ InboxRot(x, k)
+                      \/ (\E k \in Ids : Recv(x, k) \/ TakeSealed(x, k) \/ TakeSealedRot(x, k)
                                          \/ Plant(x, k))
                       \/ (\E b \in bx : RecvBox(x, b))
   \/ \E i \in 1..Len(steps) : Drop(i)
@@ -365,8 +368,8 @@ Fairness ==
                        /\ \A k \in Ids : WF_vars(LogRot(a, k))
                        /\ \A m \in Nodes : WF_vars(Reseal(a, m))
   /\ \A x \in Nodes : /\ WF_vars(Notice(x)) /\ WF_vars(GoOn(x))
-                      /\ \A k \in Ids : /\ WF_vars(Recv(x, k)) /\ WF_vars(InboxRecv(x, k))
-                                       /\ WF_vars(InboxRot(x, k))
+                      /\ \A k \in Ids : /\ WF_vars(Recv(x, k)) /\ WF_vars(TakeSealed(x, k))
+                                       /\ WF_vars(TakeSealedRot(x, k))
                       /\ WF_vars(\E b \in bx : RecvBox(x, b))
 
 Spec == Init /\ [][Next]_vars /\ Fairness

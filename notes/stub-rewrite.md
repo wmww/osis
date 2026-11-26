@@ -8,7 +8,7 @@ Tess approved building this shape, taking the recommendations below as working a
 |---|---|
 | M1 held-model | done (Model findings) |
 | R1 delete | landed; placeholders owed below |
-| M2 TLA | after M1/R1 |
+| M2 TLA | done (Model findings M2); Q1/Q2 answer changed: notice form, for Tess |
 | R2 stubs, R3 entry, R4 tests/notes | not started |
 
 
@@ -200,6 +200,23 @@ Findings:
 - The actor's own reading still matters: `Joint::WorldPaths` fails in generated worlds, though a stub carries a lowering with the hop it undoes.
 - Not modelled: bridges (a dependent of another independent thing counts as that thing), rotation and re-seals (Q2), notices (Q6), the Dependent-entry oracle gap.
 
+### Model findings (M2)
+What TLA checks (core/test/tla/rotation/README.md, `Entry.tla`, `run.sh entry`): one thing X, an admin, a granter that is no admin, readers and sync-only holders; rotations, removals, holders granted beside the admin's knowledge (left out until it learns them), signalled grants entering late, signals expiring, claim sets dropped, sync-only stores stopping at a step past their keys. Properties, each with a failing control: `Live` (a current holder that entered holds the current epoch for good, a sync-only store back at the head), `SigLive` (a signal standing for good brings its holder in), `NoGain` (a removed holder holds no epoch from its removal on), `NothingKept` (nothing under the holder), `StepsBare` (a step carries no per-holder box, so a store keeping X unread counts no holders or grants).
+
+Findings:
+- **Q2(a) as written fails.** A reader stopped at a step past its keys knows only that step (Behind moves one sync key past its credentials) and holds no credential of it, so a claim-keyed box in a later step is never found (`EN_left_next`). The same strands an ordinary reader whose claim set at that step was dropped. A box only in the step bearing a new sync key leaves a sync-only holder learned late stopped for good (`EN_sync_next`).
+- **Entry boxes can be made live, but they count holders.** They pass when a stranded reader makes its own static entry and sends its public half in its Stranded message, the admin listing it in every step until it lapses, and every step boxes every sync-only holder (`EN_left`, `EN_sync`); a signal's entry must stand in every step while the signal does, and only while its holder is current (`EN_sig_once`, `EN_rem_nojudge`). But each such box is visible in every step to every store keeping X unread (`EN_sig_bare` fails `StepsBare`): the count of sync-only holders, standing signals and stranded requests. That is the leak Tess rejected (notes/sync-opens.md, Credentials as built). Links already leak this way: a step holds one entry box per static entry (spec/wire.md §8), so every store counts X's link keys.
+- **What passes everything (`NT_*`): the notice form, served by role (Q2(b), extended to Q1).** Steps carry no per-holder box. A role commit that boxes a holder unable to open its wrap also seals its blob key to that holder, as a notice does: a grant (to its grantee), a re-seal (to the re-sealed holder), a rotation (to each sync-only holder it boxes, and to each holder holding no box at the epoch it is wrapped under, as the rotator knows). The sealed keys are part of the commit, so a store sees only that commit's padded size, which already grows with its boxes. A reader opening X's sync ID toward the holder by its role (ByRole, J judged on X's roster) serves it; the holder opens those commits by its KEM key and the rotations after them by their wraps. Dropped claim sets stop nobody. A control without the rotation's sealing to sync-only holders fails (`NT_sync_next`); one sealing to a removed holder fails `NoGain` (`NT_rem_nojudge`).
+- **What that changes in the design:**
+  - Q1: the signal carries X's tid, X's sync ID and peer hints, no entry credential: no per-grant entry in X's steps. The receiver opens X's sync ID by role at a reader of X and takes the grant commit sealed to it; it judges nothing of the serving peer (the secrets it opens must derive a step's sync key, spec/sync-ids.md §4 Owner).
+  - Spec deltas (R3): ByRole taken from a holder that does not yet hold S (a signal) and from sync holders (J reader or sync holder), not only reader-to-reader (spec/sync-opens.md §4, §5); the stopped store's node opens commits sealed to it from such a member and keeps S again once it holds its head's sync secret (spec/sync-judgement.md §6 Stops); a role commit's sealed blob keys (spec/crypto.md §5, spec/wire.md beside the notice form); a sealed re-seal or sync-only rotation is retained as the role entry it is.
+  - Cost: a holder catches up or enters only by meeting a reader (or writer) of X, never a store alone; a holder behind already gets back in only by role (notes/sync-opens.md). One sealed key per such holder per commit.
+  - Open for Tess: whether link keys move to the same form (the redeemer proves K by role at a reader) to end the link-count leak, at the price of links redeemable only at readers.
+- **KEM keys (`KemKeys.tla`).** The rule "a KEM key where the thing holds a role" judged by what the rotator holds needs the rotator to learn of M's grants, which nothing guarantees now (`KK_untold` fails `Live`: M's readers that entered A elsewhere lose it). The simplest rule that passes: a keyset carries a KEM key also wherever the keyset it supersedes does (`KK_sticky_untold`, `KK_sticky_stale`), for spec/crypto.md §3 Published KEM keys.
+- **Depth0 `pl`/`kpl` are not key parts:** they are removals from a holder actor logged under the sync IDs of what it holds a role on, i.e. its chain stub's role entries (rule 2). Kept, renamed in comments; the model logs only the removals of authors of epochs there (logging every role entry multiplies D0_nc3's states past 20× and changes no rule).
+- **Rotation.tla's inbox paths** (grant, re-seal and rotation boxes delivered to the holder) are the sealed-to-holder commits served by role; renamed, results unchanged.
+- **roles-model `told.rs`** fits Q6 as is: notices are X's entries opened by the departed member's key. Its `Hear` event (role commits heard by another route) reads as A's stub carried in another unit; doc reworded, no change in what it checks.
+
 ## 9. Jobs (one agent, one session each)
 
 | Job | What it delivers | Runs |
@@ -313,7 +330,7 @@ Also owed: `tools/policy.py` `STUB_DEAD_WORDS` refuses the deleted words in spec
 | Retention of pieces | engine `retention/needed.rs` (`Need::Offered`, key-part needs), `sync/bodies.rs`, `sync/certblobs.rs` | Re-derive needs from stubs and held fires. |
 | Lost access and role | engine `rotation/lost.rs` (`grants_count`, `role_here`), `rotation/*` | `grants_count`: where the node syncs the thing or holds its stub. |
 | Tests | engine `flows/tests_delivery.rs` (1,268; 90 hits), `apply/tests_validity.rs`, `tests/it/{external,accounts,pairing,closure,scale}.rs`; osis-sync `tests/it/{holding,differential,harness/history,streams,flows,store,grants,growth}.rs` | Delete tests of deleted mechanisms wholesale (tests_delivery mostly goes). Rewrite slimmer around the stub properties (part 4). |
-| Models | held-model `closure::entry`, `evidence`, `box_cut`, `copy_cut`, `independent`; TLA `rotation/KemKeys.tla` (an edge piece is how M learns its grant) | M1 done (Model findings); KemKeys is M2's. |
+| Models | held-model `closure::entry`, `evidence`, `box_cut`, `copy_cut`, `independent`; TLA `rotation/KemKeys.tla`, `Entry.tla` | M1, M2 done (Model findings). |
 
 Detail: Appendix A.
 
@@ -339,4 +356,4 @@ Not in scope though the grep hits: sync-opens `Msg::Offer`/`OfferItem`; osis-syn
   - Harness `history.rs` (`unoffered`/`pieces`/`named`, the `for_keys` check), `harness/mod.rs` 1236.
   - Indirect (pair through offers): osis-account, chat and app sync tests.
   - Ignored "sync rewrite" tests plausibly touching these (guess): `holding.rs` 537, `retention.rs` 106, `inbox.rs` 923/934, engine `order.rs` 4797/5169.
-- **Models**: held-model done (M1); roles-model `told.rs`; TLA `KemKeys.tla` (`Deliver`: the edge piece reaching M), `Depth0.tla` (`pl`/`kpl`, guess). sim: nothing specific.
+- **Models**: held-model done (M1); TLA `Entry.tla`, `KemKeys.tla`, `Depth0.tla` `pl`/`kpl` and roles-model `told.rs` done (M2). sim: nothing specific.

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Run one TLA+ module's TLC instances. Usage: run.sh <module> [cfg...]
-#   <module>: sync, sides, rotation, reseal, joint, jointrule, depth0, lockout, cut, finalize, cover, tail, withdrawn, leftout, forkrot, forkdepth, planted, firekey, kemkeys, netstream, netshared, netopen, nethold, netkeep
+#   <module>: sync, sides, rotation, reseal, joint, jointrule, depth0, lockout, cut, finalize, cover, tail, withdrawn, leftout, forkrot, forkdepth, planted, firekey, kemkeys, entry, netstream, netshared, netopen, nethold, netkeep
 #   no cfg: the module's instances listed below (each module under 3 min at
 #   one worker, but depth0: 10-20 min); with cfg names: those instances instead
 #   (the larger ones in the module's README, by hand), judged only if listed
@@ -166,6 +166,26 @@ instances=(
   "kemkeys rotation KemKeys KK_written.cfg fail:temporal" # negative control: KEM keys decided when written only: a keyset written before M's rotator learns the grant leaves M out of A for good
   "kemkeys rotation KemKeys KK_fallback.cfg fail:NoLeak"  # negative control: Seal falls back below a KEM-less newest keyset, the removed party (or the public) opens content
   "kemkeys rotation KemKeys KK_stale_all.cfg fail:NoLeakAll" # stated limit: a stale card's keyset is sealed to until M's newer keyset reaches the granter
+  "kemkeys rotation KemKeys KK_untold.cfg fail:temporal"  # finding: "due" with M's rotator never told of the grant (no signal or stub): a KEM-less keyset leaves M out of A for good
+  "kemkeys rotation KemKeys KK_sticky_untold.cfg pass"    # ... a keyset carrying a KEM key wherever the one it supersedes does: M boxed for good, untold
+  "kemkeys rotation KemKeys KK_sticky_stale.cfg pass"     # ... from a stale card
+  "entry rotation Entry NT_left.cfg pass"                 # a holder that cannot open X's newest rotation by its wrap (notes/stub-rewrite.md Q1/Q2), the design: the role commit boxing it also seals its blob key to it, served by a reader opening S toward it by role: a left-out reader, one past a dropped claim set, catch up; steps carry no per-holder box
+  "entry rotation Entry NT_sync.cfg pass"                 # ... sync-only holders (one left out at first): no store stops for good
+  "entry rotation Entry NT_sync_next.cfg fail:temporal" # negative control: a rotation not sealed to the sync-only holders it boxes: their stores stop
+  "entry rotation Entry NT_sig.cfg pass"                  # ... a signalled reader enters while its signal stands
+  "entry rotation Entry NT_sig_sync.cfg pass"             # ... a signalled sync-only holder
+  "entry rotation Entry NT_rem.cfg pass"                  # ... a removed holder holds no later epoch
+  "entry rotation Entry NT_rem_nojudge.cfg fail:NoGain"   # negative control: a rotation sealing to a removed holder
+  "entry rotation Entry EN_left.cfg pass"                 # entry boxes in X's steps (Q1(a)/Q2(a)): a stranded reader's own static entry, sent with its Stranded message, gets it in
+  "entry rotation Entry EN_left_next.cfg fail:temporal"   # finding: Q2(a) as written, a claim-keyed box in the next step: the reader stuck at the step past its keys never finds it
+  "entry rotation Entry EN_sync.cfg pass"                 # entry boxes: sync-only holders boxed in every step
+  "entry rotation Entry EN_sync_next.cfg fail:temporal"   # finding: boxed only where a step bears a new sync key: a left-out sync-only store stays stopped
+  "entry rotation Entry EN_sig.cfg pass"                  # entry boxes: a signal's static entry standing in every step while the signal does
+  "entry rotation Entry EN_sig_once.cfg fail:temporal"    # negative control: the signal's entry in one step only
+  "entry rotation Entry EN_sig_bare.cfg fail:StepsBare"   # finding: entry boxes put a box per signalled grant in X's steps, which a store keeping X unread counts
+  "entry rotation Entry EN_rem.cfg pass"                  # entry boxes: a removed holder (signalled, requesting) holds no later epoch
+  "entry rotation Entry EN_rem_nojudge.cfg fail:NoGain"   # negative control: entries listed for a removed holder's seed
+  "entry rotation Entry EN_copies.cfg fail:NothingKept"   # negative control: the deleted design, copies kept under the holder
   "netstream net MCStream S_loss.cfg pass"
   "netstream net MCStream S_restore.cfg pass"
   "netstream net MCStream S_copies.cfg pass"
@@ -291,7 +311,7 @@ for line in "${instances[@]}"; do
   [ "$m" = "$module" ] && dir=$d tla=$t
 done
 if [ -z "$dir" ]; then
-  echo "usage: $0 sync|sides|rotation|reseal|joint|jointrule|depth0|lockout|cut|finalize|cover|tail|withdrawn|leftout|forkrot|forkdepth|planted|firekey|kemkeys|netstream|netshared|netopen|nethold|netkeep [cfg...]" >&2
+  echo "usage: $0 sync|sides|rotation|reseal|joint|jointrule|depth0|lockout|cut|finalize|cover|tail|withdrawn|leftout|forkrot|forkdepth|planted|firekey|kemkeys|entry|netstream|netshared|netopen|nethold|netkeep [cfg...]" >&2
   exit 2
 fi
 

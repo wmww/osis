@@ -15,7 +15,7 @@
 //! sync (a store of A). N0 to N2 hold epoch 0 and each other's records; N3 knows N0's
 //! and its own. Events: syncs of two nodes (each side logs what it holds and serves the other what
 //! it judges it may hold, repeated until nothing moves), N0 and N1 hearing each other's role commits
-//! by another route (their account's sync ID: nothing logged under A), N1 or N2 writing content,
+//! by another route (A's stub in another unit both read: A's own role entries, nothing logged under A), N1 or N2 writing content,
 //! N0 or N1 rotating (boxing every member it judges one), N0 pairing N3, a node's reset (gone: no
 //! designated device), and one removal of N2 or N3 by N0 or N1. A remover holding the removed
 //! node's grant knows the departure: its removal rotates, boxing the node nothing (a **knowing**

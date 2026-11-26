@@ -66,7 +66,7 @@ CONSTANTS ActSeq,     \* actor names; initial epoch i is ActSeq[i]'s
                       \* not know a removal of theirs from an actor holding it)
           NoSync,     \* {<<node, actor>>}: sync IDs a node does not sync; it
                       \* learns an actor's commits under its own sync ID or a
-                      \* target's (keys.0 of a holder), logged copies under its own
+                      \* target's (keys.0 of a holder), logged removals under its sync IDs
           Split,      \* TRUE: a holder's keys.0 under a target's sync ID
                       \* arrives without the keysets it names (they are
                       \* carried under the holder's own sync ID only)
@@ -233,8 +233,9 @@ VARIABLES ep,     \* epochs: [act, n, par, by, bx, hist, knows, forged, race, ou
           krs,    \* krs[x]: re-seal commits x holds
           wr,     \* content: [a, e, w, p1..p5] (p: premises held)
           kg,     \* kg[x]: grants x holds (rule 4)
-          pl,     \* removal logged copies <<dep, sync ID>>
-          kpl,    \* kpl[x]: logged copies x holds
+          pl,     \* removals logged under a sync ID <<dep, sync ID>>: the
+                  \* actor's own, or in the stub of a holder on its chain
+          kpl,    \* kpl[x]: logged removals x holds
           done,   \* removals made
           dst,     \* destroyed actors
           evd,    \* Eager pairs, Forgers, Bogus and Rogue used
@@ -474,9 +475,9 @@ Remove(dp) ==
   /\ IsAdm(dp[3], dp[2])
   /\ \/ /\ Len(ep) < MaxE
         /\ Rotate(dp[3], dp[2], {dp}, FALSE)
-        \* the remover logs it under the sync IDs it syncs the removed party
-        \* read; logged copies only judge writers through holder actors (none:
-        \* left out, a smaller state space)
+        \* the remover logs it in the stub of dp[2] under each sync ID it syncs that
+        \* dp[2] holds a role on; logged removals only judge writers through holder
+        \* actors (none: left out, a smaller state space)
         /\ pl' = IF Via = {} THEN pl
                 ELSE pl \cup {<<dp, l>> : l \in {l2 \in Acts : dp[2] \in HClos(l2) /\ Syncs(dp[3], l2)}}
         /\ UNCHANGED kpl
@@ -629,8 +630,11 @@ LearnPl(x, p) ==
   /\ kpl' = [kpl EXCEPT ![x] = @ \cup {p}]
   /\ UNCHANGED <<kg, ep, rs, kn, krs, ha, wr, done, evd, nw, dst, pl>>
 
-\* x logs dp under sync ID l (spec/permissions.md \S 4 Logging certificates: about
-\* the author of an entry there)
+\* x logs dp under sync ID l: dp is a role entry of dp[2], a holder on l's
+\* chain, so in dp[2]'s stub in l's unit (notes/stub-rewrite.md \S 2 rule 2;
+\* spec/sync-judgement.md \S 2 required set). The stub carries every role
+\* entry of dp[2]; the model logs only the removals of authors of epochs of l,
+\* the ones a judgement under l reads (the rest only add states)
 LogAtOK(x, dp, l) ==
   /\ x # dp[1] /\ Syncs(x, l) /\ dp \in Known(x) /\ dp[2] \in HClos(l)
   /\ <<dp, l>> \notin pl
