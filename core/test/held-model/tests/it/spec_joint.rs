@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 fn joint(w: World, j: Joint) -> Vec<Fail> {
     let rule = Rule::fixed();
     let mut out = vec![];
-    w.run(&rule, |st| out.extend(w.joint(&rule, st, j)));
+    roles_model::paths::judging_once(&w.w, || w.run(&rule, |st| out.extend(w.joint(&rule, st, j))));
     out
 }
 

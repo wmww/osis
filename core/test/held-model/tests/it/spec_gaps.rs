@@ -171,14 +171,16 @@ fn gaps_explore() {
     let runs = crate::util::par_map(&jobs, |(g, j)| {
         let (name, w, _) = j();
         let trusts = trust_sets(&w, name_seed(&name));
-        let per: Vec<(&'static str, Vec<Fail>)> = deliveries()
-            .into_iter()
-            .map(|(d, r)| {
-                let (mut f, gp) = (gap_fails(&w, &r, &trusts), gaps_under(&w, &r));
-                f.extend(gp);
-                (d, f)
-            })
-            .collect();
+        let per: Vec<(&'static str, Vec<Fail>)> = roles_model::paths::judging_once(&w.w, || {
+            deliveries()
+                .into_iter()
+                .map(|(d, r)| {
+                    let (mut f, gp) = (gap_fails(&w, &r, &trusts), gaps_under(&w, &r));
+                    f.extend(gp);
+                    (d, f)
+                })
+                .collect()
+        });
         (g, name, per)
     });
     let mut out = BTreeMap::<(String, &str), BTreeMap<&str, (usize, String)>>::new();
@@ -207,8 +209,10 @@ fn search(per: u64) {
     }
     let runs = crate::util::par_map(&jobs, |j| {
         let (name, w, _) = j();
-        let first = gap_fails(&w, &Rule::fixed(), &trust_sets(&w, name_seed(&name))).first().map(|f| format!("{name}: {f:?}"));
-        (first, !gaps_under(&w, &Rule::fixed()).is_empty())
+        roles_model::paths::judging_once(&w.w, || {
+            let first = gap_fails(&w, &Rule::fixed(), &trust_sets(&w, name_seed(&name))).first().map(|f| format!("{name}: {f:?}"));
+            (first, !gaps_under(&w, &Rule::fixed()).is_empty())
+        })
     });
     // the gap, counted (issues/removed-key-writes-show-far.md)
     eprintln!("{} worlds; {} with the gap", jobs.len(), runs.iter().filter(|r| r.1).count());

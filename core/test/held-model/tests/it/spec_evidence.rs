@@ -15,18 +15,20 @@ pub fn fails(w: &World, rule: &Rule) -> Vec<Fail> {
 
 /// `fails`, the per-step checks at the steps `at` (the state after that many events).
 pub fn fails_at(w: &World, rule: &Rule, at: &std::collections::BTreeSet<usize>) -> Vec<Fail> {
-    let mut out = vec![];
-    let st = w.run(rule, |st| {
-        if at.contains(&st.step) {
-            out.extend(w.p1(rule, st));
-            out.extend(w.p11_keysets(rule, st));
-        }
-    });
-    assert!(!st.unsettled, "logging settles");
-    out.extend(w.p4(rule, &st, true));
-    out.extend(w.p5_order(rule, &st, 5).0);
-    out.extend(w.p8_promotions(rule, &st, PromoteWhen::AfterPass, 0));
-    out
+    roles_model::paths::judging_once(&w.w, || {
+        let mut out = vec![];
+        let st = w.run(rule, |st| {
+            if at.contains(&st.step) {
+                out.extend(w.p1(rule, st));
+                out.extend(w.p11_keysets(rule, st));
+            }
+        });
+        assert!(!st.unsettled, "logging settles");
+        out.extend(w.p4(rule, &st, true));
+        out.extend(w.p5_order(rule, &st, 5).0);
+        out.extend(w.p8_promotions(rule, &st, PromoteWhen::AfterPass, 0));
+        out
+    })
 }
 
 /// P8 and finding 5: D's reader holding the thief's write and K's grant but not X's earlier
@@ -354,7 +356,7 @@ fn search(family_step: usize, random_worlds: u64) {
     let mut jobs: Vec<Box<dyn Fn() -> (String, Vec<Fail>, usize, usize) + Sync>> = vec![];
     let rule = Rule::fixed();
     // the failures, whether the world has the gap, its keysets carrying a demotion
-    let run = move |w: World| (fails(&w, &rule), usize::from(!gaps(&w, &rule).is_empty()), w.keysets.values().filter(|c| !c.is_empty()).count());
+    let run = move |w: World| roles_model::paths::judging_once(&w.w, || (fails(&w, &rule), usize::from(!gaps(&w, &rule).is_empty()), w.keysets.values().filter(|c| !c.is_empty()).count()));
     for i in (0..FAMILY).step_by(family_step) {
         jobs.push(Box::new(move || {
             let (f, g, k) = run(family(Shape::nth(i)));

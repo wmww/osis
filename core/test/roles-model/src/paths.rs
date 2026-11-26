@@ -1857,7 +1857,11 @@ thread_local! {
 /// it makes and answers the same rules and view again from it (`w` is borrowed for the whole
 /// call, so it cannot change). A search asks many questions of one fixed world, many alike.
 /// Readings of any other world are judged as always; the readings kept before are back after.
+/// Inside a call for the same world it runs `f` on that call's readings.
 pub fn judging_once<T>(w: &World, f: impl FnOnce() -> T) -> T {
+    if KEPT.with(|k| k.borrow().as_ref().is_some_and(|k| std::ptr::eq(k.0, w))) {
+        return f();
+    }
     struct Restore(Option<Kept>);
     impl Drop for Restore {
         fn drop(&mut self) {
