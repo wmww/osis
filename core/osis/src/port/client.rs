@@ -20,7 +20,7 @@
 //! a caller blocked on it, so bounded by the callers), the live watches (each a `Subscription`
 //! the app holds; one dropped goes at its next Notify, with an Unsub).
 
-use super::codec::{self, Form, fixed, list, outcome_from, result_of};
+use super::codec::{Form, fixed, limit_of, list, outcome_from, result_of};
 use super::method;
 use crate::error::{Error, Result};
 use crate::handle::{Locked, ReadOnly};
@@ -588,10 +588,6 @@ type Read = Result<Option<Value>>;
 /// One aspect a thing watch tells: its key, value and origin.
 type Told = (Ak, Read, Origin);
 
-/// A delivery's `limit` (a `[2, source]` Notify of a value filter).
-fn limit_of(source: &Value) -> usize {
-    source.as_uint().map_or(0, |n| usize::try_from(n).unwrap_or(usize::MAX))
-}
 
 /// A status as nothing reaches its node now: no connection, each thing not connected.
 fn unreachable(s: &Status) -> Status {
@@ -671,7 +667,7 @@ impl crate::Osis {
     /// A value watch at the node at `at`: `f` hears the value at `path` of `tid`'s `ak` once,
     /// then each time it reads otherwise (a lost connection as an `Err`, then the value again).
     pub(crate) fn remote_watch(&self, at: &Address, tid: Tid, ak: Ak, path: &Path, mut f: impl FnMut(&crate::Osis, Change<Value>) + Send + 'static) -> Result<Subscription> {
-        let filter = Value::List(vec![Value::uint(super::filter::VALUE), codec::tid_to(&tid), codec::ak_to(&ak), path.to_wire()]);
+        let filter = Value::List(vec![Value::uint(super::filter::VALUE), tid.to_wire(), ak.to_wire(), path.to_wire()]);
         let mut last = None;
         self.remote_sub(std::slice::from_ref(at), filter, true, move |db, _, got| {
             let (value, origin) = match got {
@@ -695,7 +691,7 @@ impl crate::Osis {
     /// `on_thing_change` at the node at `at`: each aspect once, then each change; a lost
     /// connection as an `Err` for each aspect it told, then each that reads otherwise once back.
     pub(crate) fn remote_thing_watch(&self, at: &Address, tid: Tid, mut f: impl FnMut(&crate::Osis, Change<Value>) + Send + 'static) -> Result<Subscription> {
-        let filter = Value::List(vec![Value::uint(super::filter::THING), codec::tid_to(&tid)]);
+        let filter = Value::List(vec![Value::uint(super::filter::THING), tid.to_wire()]);
         let mut last: BTreeMap<Ak, Option<crate::watch::Digest>> = BTreeMap::new();
         self.remote_sub(std::slice::from_ref(at), filter, true, move |db, _, got| {
             let told: Result<Vec<Told>> = match got {
@@ -704,15 +700,15 @@ impl crate::Osis {
                     let mut now = BTreeMap::new();
                     for a in all {
                         let [k, read] = fixed::<2>(a, "aspect")?;
-                        now.insert(codec::ak(&k)?, Read::from_wire(read)?);
+                        now.insert(Ak::from_wire(k)?, Read::from_wire(read)?);
                     }
                     for k in last.keys() {
                         now.entry(k.clone()).or_insert(Ok(None));
                     }
                     Ok(now.into_iter().map(|(k, v)| (k, v, Origin::Initial)).collect())
                 }),
-                Pushed::Delivery(v) => fixed::<3>(v, "delivery").and_then(|[k, read, o]| Ok(vec![(codec::ak(&k)?, Read::from_wire(read)?, Origin::from_wire(o)?)])),
-                Pushed::TooLarge(source) => fixed::<2>(source, "source").and_then(|[k, n]| Ok(vec![(codec::ak(&k)?, Err(Error::TooLarge { limit: limit_of(&n) }), Origin::Initial)])),
+                Pushed::Delivery(v) => fixed::<3>(v, "delivery").and_then(|[k, read, o]| Ok(vec![(Ak::from_wire(k)?, Read::from_wire(read)?, Origin::from_wire(o)?)])),
+                Pushed::TooLarge(source) => fixed::<2>(source, "source").and_then(|[k, n]| Ok(vec![(Ak::from_wire(k)?, Err(Error::TooLarge { limit: limit_of(&n) }), Origin::Initial)])),
                 Pushed::Failed(e) => Ok(last.keys().map(|k| (k.clone(), Err(e.clone()), Origin::Initial)).collect()),
             };
             let told = told.unwrap_or_else(|e| last.keys().map(|k| (k.clone(), Err(e.clone()), Origin::Initial)).collect());
@@ -725,7 +721,7 @@ impl crate::Osis {
     /// `on_grants_change` at the node at `at`: the grants once, then each time they read
     /// otherwise; a lost connection as an `Err`, then the grants again once back.
     pub(crate) fn remote_grants_watch(&self, at: &Address, thing: Tid, mut f: impl FnMut(&crate::Osis, Result<crate::Grants>) + Send + 'static) -> Result<Subscription> {
-        let filter = Value::List(vec![Value::uint(super::filter::GRANTS), codec::tid_to(&thing)]);
+        let filter = Value::List(vec![Value::uint(super::filter::GRANTS), thing.to_wire()]);
         let mut last = None;
         self.remote_sub(std::slice::from_ref(at), filter, true, move |db, _, got| {
             let now = match got {

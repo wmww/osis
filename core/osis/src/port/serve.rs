@@ -593,7 +593,7 @@ fn aspect_told(db: &ReadOnly, last: &mut BTreeMap<Ak, Option<Digest>>, t: Tid, a
         return None;
     }
     last.insert(ak.clone(), now);
-    Some(((ak.clone(), value, *origin).to_wire(), Value::List(vec![codec::ak_to(&ak), limit])))
+    Some(((ak.clone(), value, *origin).to_wire(), Value::List(vec![ak.to_wire(), limit])))
 }
 
 /// The value a Sub's Reply carries and how it goes on: each kind read as `ra`, the session's
