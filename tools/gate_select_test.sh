@@ -132,6 +132,11 @@ held "every run, stdin closed" "exit 0: == sh -c echo 1 >> ran|== sh -c cat; ech
 printf '%s\n' "run a echo 1 >> ran" "run b echo out; exit 7" "run c echo 3 >> ran" > runs
 held "a failure ends nothing" "exit 1: == sh -c echo 1 >> ran|== sh -c echo out; exit 7|out|== sh -c echo 3 >> ran|ran: 1 3 res: a 0 b 7 c 0 " HEAVY_HELD=1
 [ "$(cat runs.2.log)" = out ] || { echo "FAIL held: runs.2.log is '$(cat runs.2.log)', want 'out'"; fail=1; }
+# replays side by side after the rest (the first waits for the second's file), output and results in order
+rm -f b
+printf '%s\n' 'run gate.replay i=0; while [ ! -e b ] && [ $i -lt 50 ]; do sleep 0.1; i=$((i + 1)); done; [ -e b ] && echo A >> ran' 'run t echo 1 >> ran' 'run gate.replay touch b; echo B >> ran; exit 3' > runs
+held "replays side by side" "exit 1: == sh -c echo 1 >> ran|== sh -c i=0; while [ ! -e b ] && [ \$i -lt 50 ]; do sleep 0.1; i=\$((i + 1)); done; [ -e b ] && echo A >> ran|== sh -c touch b; echo B >> ran; exit 3|ran: 1 B A res: t 0 gate.replay 0 gate.replay 3 " HEAVY_HELD=1
+[ ! -e runs.1.out ] && [ ! -e runs.3.res ] || { echo "FAIL held: replay scratch files left"; fail=1; }
 # a default-tests stage whose target hangs (a fake cargo: target a's "binary" sleeps after
 # libtest's 60-second notice): stopped after GATE_HANG_S, its running test named, target b still run
 mkdir fakebin

@@ -58,16 +58,24 @@ tested() {
 # Inside the one heavy-lock hold (the tests step at the end): each `run LIMIT CMD` line of the
 # selection file SEL as a test stage, every one run; results in SEL.res, logs SEL.N.log; exits 1
 # if any failed. Internal: the gate calls itself this way under tools/heavy, which sets
-# HEAVY_HELD; without it this would run the tests unlocked.
+# HEAVY_HELD; without it this would run the tests unlocked. The `gate.replay` runs (one seed each,
+# mostly on one thread) run side by side after the rest, each in its own subshell (its `times`
+# start at 0), their output and results printed in order once all end: their wall is the slowest's.
 if [ -n "$held" ]; then
   [ -n "$HEAVY_HELD" ] || { echo "gate: --held is internal: only the gate's tools/heavy hold runs it" >&2; exit 2; }
-  results=$held.res
-  : > "$results"
+  : > "$held.res"
   i=0
+  side=
   while IFS= read -r l; do
-    case "$l" in "run "*) l=${l#run }; i=$((i + 1)); tested "${l%% *}" "$held.$i.log" sh -c "${l#* }" ;; esac
+    case "$l" in
+      "run gate.replay "*) l=${l#run }; i=$((i + 1)); side="$side $i"
+        ( results=$held.$i.res; : > "$results"; tested "${l%% *}" "$held.$i.log" sh -c "${l#* }" ) > "$held.$i.out" 2>&1 & ;;
+      "run "*) l=${l#run }; i=$((i + 1)); results=$held.res; tested "${l%% *}" "$held.$i.log" sh -c "${l#* }" ;;
+    esac
   done < "$held"
-  awk '$2 != 0 { f = 1 } END { exit f }' "$results"
+  wait
+  for j in $side; do cat "$held.$j.out"; cat "$held.$j.res" >> "$held.res"; rm -f "$held.$j.out" "$held.$j.res"; done
+  awk '$2 != 0 { f = 1 } END { exit f }' "$held.res"
   exit
 fi
 # origin's main, fetched: the base of the selection and what HEAD must contain. Local main lags (the
