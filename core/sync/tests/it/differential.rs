@@ -185,6 +185,28 @@ fn an_inbox_moved_takes_grants_from_outside_spec_sync_inbox_1() {
     assert_eq!(w.engine(1).inbox_of(&a).unwrap(), w.node(0).inbox, "control: a card on a thing moves no inbox");
 }
 
+// spec/crypto.md §3 (KEM key due), spec/sync-inbox.md §5 (Grant from outside): node 1, its
+// account's one node, moves its inbox to a thing of its own (made independent, then its setting
+// takes the inbox signals: the read keyset written before carries no KEM key); node 0 grants its
+// account read on a thing and node 1 holds it. The KEM key is due at node 1, which wants a complete
+// pass for it and rotates at its end, so node 0's grant fire is sealed and taken (failed: no peer
+// syncs the inbox, no pass was wanted, the fire waited for good). Control: with no move it is
+// taken at the inbox the account was made with.
+#[test]
+fn a_lone_node_moving_its_inbox_takes_grants_from_outside_spec_crypto_3() {
+    use crate::harness::history::{Gives, Holder, reads};
+    for moved in [true, false] {
+        let mut script = vec![Step::New(1)];
+        if moved {
+            script.push(Step::Inbox(1, Some(0)));
+        }
+        script.extend([Step::Run, Step::New(0), Step::Give(0, 1, Holder::Node(1), Gives::Reads), Step::Strong(1, None, 1), Step::Run]);
+        let mut w = holds_on(0, 3, 4, &script, String::new(), false);
+        let t = w.history.things[1].0;
+        assert!(reads(w.engine(1), &t).value.is_some(), "node 1 takes the grant from outside (moved: {moved})");
+    }
+}
+
 // spec/sync-opens.md §4 (lapsed secrets), §6 (A reader tells a public reader the public's removal):
 // node 0 makes a thing public, node 1 of another account redeems a public link to it, then node 0
 // removes the public and writes again while node 1 is off. Node 1 holds the removal and reads the

@@ -16,7 +16,9 @@
 //!   (`Hears::timed_heard`: with a source, a complete pass begun after the loss ended and what
 //!   this node logged itself there is elsewhere; or no peer to be waited for on it), or at its
 //!   wait's end (`LOST_HEARD_WAIT_MS`, read on the memo clock). One key over `Engine::copies_due` judges the kept copies again
-//!   (`Engine::rejudge_copies`) where a role commit moved what one hangs on.
+//!   (`Engine::rejudge_copies`) where a role commit moved what one hangs on. A third key per held
+//!   actor over `Engine::kem_due` (spec/crypto.md §3 KEM key due) notes the cause a complete pass
+//!   is wanted after; that pass's end makes the rotation.
 //! - **Joiner's leave** (spec/permissions.md §7): per thing named a holder, whether it is a link
 //!   this account joined whose K's edge on its target ended (`Engine::joined_link_ended`); one
 //!   that became so is left (`Engine::leave_link`).
@@ -48,6 +50,9 @@ pub struct Life {
     copies: Effects<(), bool>,
     /// Per actor held, whether its drop is due and its pass done (`lost_due`, `lost_passed`).
     lost: Effects<Tid, bool>,
+    /// Per actor held, whether a KEM key is due on it (`Engine::kem_due`, which notes the cause
+    /// a complete pass is wanted after).
+    kem: Effects<Tid, bool>,
     /// The actors whose secrets the engine comes to hold (`None` before the first settle: every
     /// one held then is wanted).
     actors: Option<Feed<Tid>>,
@@ -64,7 +69,7 @@ impl Default for Life {
     fn default() -> Life {
         let mut copies = Effects::new("life: kept copies");
         copies.want(());
-        Life { copies, lost: Effects::new("life: lost access"), actors: None, owed: Effects::new("life: role duty owed"), pairs: None, leaves: Effects::new("life: joiner's leave") }
+        Life { copies, lost: Effects::new("life: lost access"), kem: Effects::new("life: KEM key due"), actors: None, owed: Effects::new("life: role duty owed"), pairs: None, leaves: Effects::new("life: joiner's leave") }
     }
 }
 
@@ -84,6 +89,9 @@ impl Life {
             return Ok(true);
         }
         if self.drop_lost(engine, hears)? {
+            return Ok(true);
+        }
+        if self.kem(engine)? {
             return Ok(true);
         }
         if !self.copies.due().is_empty()
@@ -118,6 +126,7 @@ impl Life {
         for a in added {
             self.owed.want(a);
             self.lost.want(a);
+            self.kem.want(a);
         }
         let mut ran = false;
         // one actor's error is its own: a store failure fails the step, any other parks that
@@ -162,6 +171,21 @@ impl Life {
             }
         }
         Ok(false)
+    }
+
+    /// Notes each held actor whose KEM key due moved (`Engine::kem_due`): the pass it wants is
+    /// run by status, and its end makes the rotation; whether one came due (the engine's rows
+    /// moved). O(actors added and keys moved).
+    fn kem(&mut self, engine: &mut Engine) -> Result<bool> {
+        let mut noted = false;
+        for a in self.kem.due() {
+            match self.kem.try_settle(&a, || isolate(engine.kem_due(&a)).map(|v| v.unwrap_or(false)))? {
+                Some((_, true)) => noted = true,
+                Some((_, false)) if !engine.held_actors_has(&a) => self.kem.unwant(&a),
+                _ => {}
+            }
+        }
+        Ok(noted)
     }
 
     /// The holder duty: each thing named a holder whose value moved, a joined link that ended

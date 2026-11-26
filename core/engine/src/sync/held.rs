@@ -9,7 +9,7 @@
 //! place above `n` (spec/permissions.md §3 Complete pass: a Pull sent before a commit arrived
 //! ends no pass after it), whatever the clock reads.
 //!
-//! A rule that waits for a pass after its cause (the lost-access drop) waits for one begun after the place this node first judged the cause at
+//! A rule that waits for a pass after its cause (the lost-access drop, a KEM key due) waits for one begun after the place this node first judged the cause at
 //! (`Cause`), not after the newest role arrival: role commits arriving faster than a pass ends
 //! never hold it off. The place is kept while the cause holds and forgotten once it does not.
 
@@ -33,17 +33,22 @@ const ARRIVALS: &[u8] = b"ra/";
 /// `jc/` + cause: the place this node first judged it at (u64 BE).
 const CAUSES: &[u8] = b"jc/";
 
-/// A cause a rule waits a complete pass after (spec/permissions.md §3 Lost access).
+/// A cause a rule waits a complete pass after (spec/permissions.md §3 Lost access, spec/crypto.md
+/// §3 KEM key due).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Cause {
     /// Read access to the actor lost by every path (`lost_due`).
     Lost(Tid),
+    /// A current keyset of the actor this node may rotate lacks the KEM key the rule gives
+    /// (`kem_due`): its rotation is made at the end of a pass begun after.
+    Kem(Tid),
 }
 
 impl Cause {
     pub(crate) fn key(&self) -> Vec<u8> {
         match self {
             Cause::Lost(a) => [CAUSES, b"l", a.as_bytes()].concat(),
+            Cause::Kem(a) => [CAUSES, b"k", a.as_bytes()].concat(),
         }
     }
 
@@ -51,6 +56,7 @@ impl Cause {
         let tid = |b: &[u8]| Some(Tid::from_bytes(b.try_into().ok()?));
         match k.split_first()? {
             (b'l', a) => Some(Cause::Lost(tid(a)?)),
+            (b'k', a) => Some(Cause::Kem(tid(a)?)),
             _ => None,
         }
     }
@@ -118,15 +124,16 @@ pub(crate) fn note_arrival(tx: &mut Tx<'_>, c: &CommitId, h: &osis_commit::Heade
     Ok(())
 }
 
-/// Actor `a`'s secrets go (a loss, a destruction): its role arrival and its loss's cause go with
-/// them, so nothing left names it.
+/// Actor `a`'s secrets go (a loss, a destruction): its role arrival and its causes go with them,
+/// so nothing left names it.
 pub(crate) fn forget_actor(tx: &mut Tx<'_>, a: &Tid) -> Result<()> {
     if tx.core.ix.role_arrivals.remove(a).is_some() {
         tx.txn.remove_local(&[ARRIVALS, a.as_bytes()].concat(), Shred::No)?;
     }
-    let c = Cause::Lost(*a);
-    if tx.core.ix.cause_at.remove(&c).is_some() {
-        tx.txn.remove_local(&c.key(), Shred::No)?;
+    for c in [Cause::Lost(*a), Cause::Kem(*a)] {
+        if tx.core.ix.cause_at.remove(&c).is_some() {
+            tx.txn.remove_local(&c.key(), Shred::No)?;
+        }
     }
     Ok(())
 }
@@ -263,6 +270,7 @@ impl Engine {
     ///   on S's actor;
     /// - spec/permissions.md §3 Lost access: the loss of S's actor, from when it was judged
     ///   (`Cause::Lost`);
+    /// - spec/crypto.md §3 KEM key due: from when it was judged (`Cause::Kem`);
     /// - spec/commits.md §5 Waiting for it: every read sync ID carrying a thing whose setting this
     ///   node waits for, from where the wait began (`sync::setting`);
     /// - spec/sync-status.md §3 History complete: one pass of every sync ID read here.
@@ -281,7 +289,7 @@ impl Engine {
         let mut since = self.setting_wants()?.get(s).copied().unwrap_or(0);
         for t in &things {
             let a = self.core.reader_of(t);
-            since = [self.role_arrival(&a), self.cause_place(&Cause::Lost(a)), self.asked_at(&a)].into_iter().flatten().fold(since, u64::max);
+            since = [self.role_arrival(&a), self.cause_place(&Cause::Lost(a)), self.cause_place(&Cause::Kem(a)), self.asked_at(&a)].into_iter().flatten().fold(since, u64::max);
         }
         Ok(self.core.ix.passes.get(s).is_none_or(|b| *b <= since).then_some(since))
     }
@@ -340,7 +348,7 @@ impl Engine {
     /// follower judged it again (a loss of an actor no longer held): rows `jc/` stay bounded by what is held.
     pub(crate) fn forget_gone_causes(&mut self) -> Result<()> {
         let gone: Vec<Cause> = self.core.ix.cause_at.keys().filter(|c| match c {
-            Cause::Lost(a) => !self.core.ix.secrets.contains_key(a),
+            Cause::Lost(a) | Cause::Kem(a) => !self.core.ix.secrets.contains_key(a),
         }).copied().collect();
         for c in gone {
             self.judge_cause(c, false)?;

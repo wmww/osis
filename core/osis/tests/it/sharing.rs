@@ -254,7 +254,9 @@ fn the_owners_rule_one_write_through_different_actors_is_one_commit_spec_wire_4(
     let x = w.create_held_with_admin(g).unwrap();
     w.at(x, k()).set(&s("of g")).unwrap();
     w.commit().unwrap().unwrap();
-    let new: Vec<_> = bob.engine(|e| e.commit_ids()).into_iter().filter(|id| !before.contains(id)).collect();
+    // the write's commits: a role commit after it is a duty it made due (G, minting X, now holds
+    // admin for keys, so a KEM key is due on G: spec/crypto.md §3), no part of the write
+    let new: Vec<_> = bob.engine(|e| e.commit_ids()).into_iter().filter(|id| !before.contains(id) && !bob.engine(|e| e.header(id)).is_some_and(|h| h.kind.is_role())).collect();
     assert_eq!(new.len(), 1, "one commit");
     assert!(bob.engine(|e| e.header(&new[0]).unwrap().is_split()), "each thing its own path");
     mesh(&all);

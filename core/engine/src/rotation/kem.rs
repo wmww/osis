@@ -85,6 +85,28 @@ fn rotate_due(tx: &mut Tx<'_>, a: Tid, done: &mut crate::flows::Done) -> Result<
 }
 
 impl crate::engine::Engine {
+    /// Whether a current keyset of held actor `a`, of a role this node may rotate, lacks the KEM
+    /// key the rule gives (`due`; spec/crypto.md §3 KEM key due): noted as a cause a complete pass
+    /// waits after (`Cause::Kem`), so one is wanted (`pass_wanted`) and its end makes the rotation
+    /// (`pass_end`), whatever else wants a pass: what makes it due (a setting enabling a signal, a
+    /// card, a role for keys) may be an own write, which wants none otherwise. A value of the
+    /// state, followed per held actor by sync's `Life`; the place is forgotten once not due.
+    pub fn kem_due(&mut self, a: &Tid) -> Result<bool> {
+        let a = *a;
+        let due_now = self.read(|tx| {
+            let me = tx.core.tid();
+            let may = may_rotate(tx.core, &me, &a);
+            for r in ROLES.into_iter().filter(|r| may.contains(r)) {
+                if due(tx, &a, r)? {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        })?;
+        self.judge_cause(crate::sync::held::Cause::Kem(a), due_now)?;
+        Ok(due_now)
+    }
+
     /// The rotation KEM key due makes of `a` (spec/crypto.md §3), now (harnesses: a holder
     /// readied for grants from outside without waiting for a pass's end).
     #[doc(hidden)]
