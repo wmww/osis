@@ -1,16 +1,24 @@
-# Small suspects and untested rules from the review since the sync rewrite
-> Summary: Leftovers of the review of everything since the sync rewrite, each too small for an issue of its own: rules with no test that fails without them, and suspects not reproduced. Each is a hand-written test first; a fix only if it fails.
-> Priority: low
-> Tags: tests, engine, keys, security
+# Small suspects and open questions from the review since the sync rewrite
+> Summary: Leftovers of the review of everything since the sync rewrite, each too small for an issue of its own: a writer moving a thing's inbox (security), a removed node still reading as acting for its account, the KEM-less seal skip with no observable effect found, the boxed/unboxed split after a demoted admin's plant, and two unreproduced suspects.
+> Priority: normal
+> Tags: engine, keys, security, account
 
-Rules with no test of their own:
-- **Seal skips KEM-less keysets** (`rotation/kem.rs`; KemKeys.tla `KK_fallback`): extend `tests_kem::kem_key_due_ends_a_lockout`: before KEM key due, a rotation leaves M out and never seals at the older keyset.
-- **Left-out causes**: no test fails if `rotation::members` checks the edge before `writes_keyset` (a removal rotating in the same commit stands as a rotation, LeftOut.tla `LO_rot`).
-- **Dependent box, demoted admin**: an admin's step and box with no keyset, the admin demoted after the plant, behaves as spec/sync-set.md §2 says (the `sync.0` write judged at its point stays valid), but no rule reconciles boxed and unboxed nodes (the planted epochs are never established, so nothing re-seals). Only demotion before the plant is tested (`tests_planted`). `engine/secrets.rs` `own_record`, `stepped`.
+## Any writer of A may move A's inbox (security)
+A card's `inbox` and `since` are written by any writer of A (spec/sync-inbox.md §1 Card, spec/permissions.md §5.2: a card delta counts along any path through A at write). For a realm that is every write member. A writer pointing A's card at a thing it controls gets every later `grant@~0` offer to A fired there: A's other members never see them, and once the writer is removed (A rotated) it still learns who grants A what on which target, and suppresses it. A refresh does not undo it: cards are rewritten with the inbox of greatest `since`, the writer's. Removing a card is also a writer's power, but loud (A stops being externally grantable); the move is silent and survives removal.
 
-Suspects:
+Rule (by the model, as `retention^.0`, which decides whether the inbox takes the signals at all): choosing A's inbox needs admin on A. Writers keep refreshing a card's keys. Two ways to build it:
+- **Per-hop need**: a card delta writing `inbox` or `since` needs admin on the path up to A and write past it. osis-perm judges a delta by one `needs` over its whole path; this needs a per-hop threshold in the walk, cuts, re-grants and addenda, and in roles-model/held-model. Heavy, and a second shape of need for one aspect.
+- **The inbox in A's own admin data** (preferred: one mechanism): A's inbox becomes a field of A's `keys.0` (plaintext, already carried by every card and public key record, judged on A's authority chain by every taker), its delta needing admin. The card drops `inbox` and `since`: it carries A's and the inbox's `keys.0` commits, and A's inbox at a node is the value of that field in the newest valid `keys.0` it holds of A (LWW, so `since` and the since-not-after-`ts` rule go). `Osis::set_card` stops naming an inbox; a separate admin call moves it. Touches spec/sync-inbox.md §1, spec/data-model.md §9 (`card`, `keys`), spec/permissions.md (the `keys.0` field's need), `flows/cards.rs`, `apply/validity.rs` `note_cards`, osis-account `make`.
+
+## A removed node still reads as acting for its account
+`Account::of` is `settings^.0` on the node root, which nothing clears: after `remove_node` and its sync the removed node has no role on A (`role_on(A) == None`) and `Account::of` still returns A (probed in `pairing_and_removing_a_node_spec_permissions_8`). Gating it on `role_on(A)` is not enough: on a client (thin) handle `role_on` reads the client's thing's role, and `Account::make` on such a node refuses ("acts for A already"). Decide what a node does on learning its removal (clear `settings^.0`, or `of` reading the node thing's grant on A) and test both API sides.
+
+## The KEM-less seal skip has no observable effect found
+`members::sealing_at` and `notice_keyset` skip KEM-less keysets as Seal candidates (`bare`). With the skip removed, every rotation test passes, `tests_kem::a_kem_less_keyset_leaves_its_holder_out_spec_crypto_4` included: without it Seal gives the KEM-less newest keyset, and the loop's missing KEM key leaves the holder out alike. The skip could matter only for a joint seal (anchors forked, one anchor's newest descendant KEM-less): with it, Seal falls to the anchor itself and may seal jointly; without it, the holder is left out. Build that case; if it shows no difference, delete `bare` and say so in `kem.rs`'s invariant.
+
+## Dependent box after a demoted admin's plant
+An admin's step and box on a dependent Y with no keyset, the admin demoted after the plant, stays valid (judged at its point): Y counts independent at the boxed node and dependent elsewhere, for good (`tests_planted::an_admins_step_counts_at_the_boxed_node_after_its_demotion_spec_sync_set_2`). Nothing reconciles the two (the planted epochs are never established, so nothing re-seals). Hostile admin only; a rotation by an honest admin would make Y independent everywhere. Decide whether the step alone should count, or only with a keyset.
+
+## Suspects not reproduced
 - **The public's role wherever held** (`rotation::lost::role_here`) also feeds `may_take`/`readable` for the node's own sealed boxes, so a public grant whose removal the node lacks could keep a removed reader's sealed secrets. Harmless if a role through the public gives only open boxes.
 - **A step's `since`** (`sync_ids::steps` `Recorded::of`) is the current write's stamp: an admin re-putting a step entry later leaves commits stamped in between miskeyed for good (hostile admin only).
-- **`take_offer` ingests before refusing** (`flows/offers.rs`): an offer giving this node no role has its records and commits taken first, held until the pass ends if released at all.
-- **`Account::nodes`** (libs/account) lists every write or admin holder of A (a client's thing, a realm) as a node; a removed node keeps `settings^.0` naming A, so `Account::of` still says it acts for A.
-- **Any writer of A may move A's inbox** (a card's `since` is bounded by its write's `ts`, and any later move undoes it): for a realm that is every write member. Design, not a bug; decide whether moving the inbox should need admin.
