@@ -38,5 +38,5 @@ osis-sync/osis_sync 0.71
 osis-transport/it 5.7
 osis-transport/osis_transport 0.035
 osis-vectors/vectors 12
-osis/it 600
+osis/it 430
 roles-model/roles_model 1.7

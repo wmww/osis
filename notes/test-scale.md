@@ -19,7 +19,7 @@ Engine checks live in core/engine/tests/it/scale.rs (`scale::*`), one per proper
 | held-writes edit below a deep path | crdt `row_pages::tests::deep_edit_is_flat` |
 | text joins at the crdt | crdt `small_joins_follow_cached_placement_spec_6` |
 | large value read | osis `scale::large_value_read_work_is_linear` |
-| one commit on many things | osis `commits::commit_work_linear_in_things_spec_requirements_decentralization` |
+| one commit on many things | osis `commits::changes_on_as_many_things_spec_requirements_decentralization` |
 
 `scale::text_edits_are_flat` is by hand (minutes in a debug build).
 

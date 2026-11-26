@@ -5228,7 +5228,8 @@ fn a_path_opened_up_a_released_things_record_chain_waits_spec_wire_4() {
 fn a_leftover_short_of_a_fallen_purge_is_fetched_in_the_exchange_spec_permissions_6() {
     use Step::*;
     let h = vec![Setting { by: 0, t: 0, op: 16, rule: 3 }, Setting { by: 2, t: 0, op: 16, rule: 2 }, Aim(Box::new(Purge { by: 2, t: 1, of: 1, back: 3, v: 7 })), Aim(Box::new(Demote { by: 0, t: 0, holder: 2, at: 2, to_read: false }))];
-    check(0, &h, Cfg { random: 6, partial: 6, ..ORDERS }).unwrap();
+    // the case is a partial held set's (a node that took the purge): six of them (`held_sets`)
+    check(0, &h, Cfg { model: true, partial: 6, ..NAMED }).unwrap();
 }
 
 // spec/commits.md §4 Unjudgeable (a commit whose every held part is unjudgeable pends): 2 makes a
@@ -5241,7 +5242,7 @@ fn a_leftover_short_of_a_fallen_purge_is_fetched_in_the_exchange_spec_permission
 fn a_commit_pends_again_when_its_every_part_turns_unjudgeable_spec_commits_4() {
     use Step::*;
     let h = vec![Demote { by: 0, t: 0, holder: 1, at: 0, to_read: false }, Aim(Box::new(Typed { by: 0, t: 1, op: 26, k: 0, v: 2 })), Mixed { by: 1, t: 0, op: 18, k: 2, v: 9 }, Aim(Box::new(Demote { by: 0, t: 5, holder: 2, at: 1, to_read: false })), Aim(Box::new(RemoveFlow { by: 0, t: 7, holder: 1, lower: false })), Aim(Box::new(GrantFlow { by: 1, t: 6, holder: 2, role: Role::Admin })), Aim(Box::new(New { by: 0, admin: 0, write: true })), Forged { by: 2, a: 7, b: 7, how: 0, op: 25, k: 1, v: 1 }, Aim(Box::new(GrantFlow { by: 2, t: 7, holder: 2, role: Role::Write }))];
-    check(0, &h, Cfg { random: 6, partial: 6, addenda: true, ..ORDERS }).unwrap();
+    check(0, &h, Cfg { model: true, addenda: true, ..NAMED }).unwrap();
 }
 
 // spec/commits.md §4 Unjudgeable, as above: 0 grants 1 admin and writes a register in a purge,
@@ -5252,7 +5253,7 @@ fn a_commit_pends_again_when_its_every_part_turns_unjudgeable_spec_commits_4() {
 fn a_grant_pends_again_once_its_listed_step_falls_spec_commits_4() {
     use Step::*;
     let h = vec![Aim(Box::new(New { by: 0, admin: 3, write: false })), NewTop { by: 0 }, Aim(Box::new(RemoveFlow { by: 2, t: 3, holder: 0, lower: true })), Aim(Box::new(GrantFlow { by: 0, t: 4, holder: 1, role: Role::Admin })), Aim(Box::new(PurgeNamed { by: 0, t: 1, of: 0, back: 2, v: 7 }))];
-    check(0, &h, Cfg { random: 6, partial: 6, addenda: true, ..ORDERS }).unwrap();
+    check(0, &h, Cfg { model: true, addenda: true, ..NAMED }).unwrap();
 }
 
 // spec/commits.md §4 Unjudgeable (a node's own applied commit does not pend): the history of

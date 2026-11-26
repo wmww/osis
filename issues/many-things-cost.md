@@ -1,5 +1,5 @@
 # What a node holding many things still pays per write
-> Summary: Making one dependent thing still does some work in proportion to what the node holds: the certificates follow merges and diffs the account's whole certificate (set operations, no derivation), debug whole checks, and covered body drops and forgetting (not yet traced). A 2000-thing commit costs about 17 M instructions per thing (debug).
+> Summary: Making one dependent thing still does some work in proportion to what the node holds: the certificates follow merges and diffs the account's whole certificate (set operations, no derivation), debug whole checks, and covered body drops and forgetting (not yet traced). Making 2 000 things, then writing and applying one commit on all of them, costs about 45 M instructions per thing (debug), most in the certificates follow (`follow_certificates`, `close_records`, `Evidence::closure_of`, and the memo comparisons of its per-thing answers).
 > Priority: normal
 > Tags: engine, sync, performance
 

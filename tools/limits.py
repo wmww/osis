@@ -14,7 +14,9 @@
   tools/limits.py split                every whole's shares sum to at most it (exits 1 if not)
   tools/limits.py derive [--gates N]   shares re-derived from this box's last N (default 10) gates
                                        in limits.log, as table rows to copy into the note
-  tools/limits.py tests [--jobs N]     every default test against the `test` limit (under tools/heavy)
+  tools/limits.py tests [--jobs N] [--part I/N]
+                                       every default test against the `test` limit (under tools/heavy;
+                                       --part: the I-th of N slices, one hold each)
 
 Limits are multiples of the box's base unit u (tools/baseunit.c: the CPU-s of one fixed work
 quantum with every hardware thread busy), both read from the tables in notes/time-limits.md: a CPU limit
@@ -222,7 +224,7 @@ def p90(xs):
     return xs[max(0, -(-9 * len(xs) // 10) - 1)]
 
 
-def tests(jobs):
+def tests(jobs, part=(1, 1)):
     """Every default test as its own process, `jobs` at a time, against the `test` CPU limit; the
     ones over either limit (or near the wall limit, which this concurrent run inflates) again
     alone, each the box's only test. Take the heavy lock first."""
@@ -233,6 +235,7 @@ def tests(jobs):
                  "run it from a task worktree under tools/heavy")
     from pertest import default_tests, test_env, timed
     todo, env = default_tests(ROOT), test_env()
+    todo = sorted(todo, key=lambda t: (t[2], t[3]))[part[0] - 1::part[1]]
     print(f"{len(todo)} default tests in {len({t[2] for t in todo})} binaries, {jobs} at a time")
     lim, why = limit("test")
     if lim is None:
@@ -365,7 +368,8 @@ if __name__ == "__main__":
         h = float(a[a.index("--since") + 1]) if "--since" in a else 0
         summary(h, "--all" in a)
     elif a[:1] == ["tests"]:
-        tests(int(a[a.index("--jobs") + 1]) if "--jobs" in a else max(1, os.cpu_count() // 2))
+        part = tuple(map(int, a[a.index("--part") + 1].split("/"))) if "--part" in a else (1, 1)
+        tests(int(a[a.index("--jobs") + 1]) if "--jobs" in a else max(1, os.cpu_count() // 2), part)
     elif a == ["unit"]:
         unit()
     elif a == ["table"]:

@@ -252,54 +252,19 @@ fn purged_part_lists_until_its_expiry_spec_commits_7() {
 }
 
 // spec/requirements.md (Decentralization: a commit holds at least 2 000 changes, of values of
-// any size): the worst shape for the floor, one change on each of 2 000 different things (each its
-// own secrets and framing), with one large value beside them (in blobs of its own, past `MAX_BLOB`
-// itself), is one commit within `MAX_BLOB` that another node applies whole.
+// any size), notes/principles.md (Check scaling): the worst shape for the floor, one change on
+// each of 2 000 different things (each its own secrets and framing), with one large value beside
+// them (in blobs of its own, past `MAX_BLOB` itself), is one commit within `MAX_BLOB` that another
+// node applies whole; and the work of making the things, writing that commit and applying it is
+// linear in the things, every counted kind of it (engine phases and counts, perm's role walks,
+// debug checks' walks included), counted at a tenth of the floor and at the floor.
 #[test]
 fn changes_on_as_many_things_spec_requirements_decentralization() {
-    let n = 2_000;
-    let (a, b, _c) = shared();
-    let mut things = Vec::new();
-    while things.len() < n {
-        let mut w = a.write();
-        let k = (n - things.len()).min(500);
-        // plain: minted with the account as admin, whose keys they take
-        things.extend((0..k).map(|_| w.create_held_with_admin(crate::common::home(&a)).unwrap()));
-        w.commit().unwrap();
-    }
-    deliver(&a, &b);
-    let key = untyped("t:x.0");
-    let big: Vec<u8> = (0..osis_base::format::MAX_BLOB + 1).map(|i| (i % 251) as u8).collect();
-    let before: std::collections::BTreeSet<_> = a.engine(|e| e.commit_ids()).into_iter().collect();
-    let mut w = a.write();
-    let large = w.create_held_with_admin(crate::common::home(&a)).unwrap();
-    w.at(large, key.clone()).path(osis::p![]).set_stream(&big[..]).unwrap();
-    for (i, t) in things.iter().enumerate() {
-        w.at(*t, key.clone()).set(&Value::Int(i as i64)).unwrap();
-    }
-    w.commit().unwrap();
-    let new: Vec<_> = a.engine(|e| e.commit_ids()).into_iter().filter(|id| !before.contains(id)).collect();
-    assert_eq!(new.len(), 1, "one commit");
-    let pk = a.engine(|e| e.package(&new[0]).unwrap().unwrap());
-    assert!(pk.bytes.len() <= osis_base::format::MAX_BLOB, "{} bytes", pk.bytes.len());
-    b.engine(|e| e.ingest(&pk.bytes, pk.blobs.clone()).unwrap());
-    for (i, t) in things.iter().enumerate() {
-        assert_eq!(b.at(*t, key.clone()).get().unwrap(), Some(Value::Int(i as i64)), "thing {i}");
-    }
-    assert_eq!(b.at(large, key).get().unwrap(), Some(Value::Bytes(big)));
-}
-
-// notes/principles.md (Check scaling), spec/requirements.md (Decentralization): writing and
-// applying one commit on n things does work linear in n, every counted kind of it (engine
-// phases and counts, perm's role walks, debug checks' walks included).
-#[test]
-fn commit_work_linear_in_things_spec_requirements_decentralization() {
     // per kind summed over the three steps: which step does some work depends on size, not on a
-    // per-step cost. At n the create's listing in home passes the compaction trigger (a few
-    // bodies against the snapshot, spec/sync-compaction.md §1), so a snapshot of home's holds.0
-    // is written and b derives each listed thing's epochs while it applies it; at 10n the one big
-    // body is within the trigger and b derives them in the write's apply. Once per thing either
-    // way, and a superlinear step still shows in the sum.
+    // per-step cost. The things are made in four commits of n / 4 (at the floor 500 each), each
+    // listing them in home: which make passes home's compaction trigger (a snapshot of its
+    // holds.0, whose apply derives each listed thing's epochs at b) depends on the size, the
+    // epochs derived once per thing either way, and a superlinear step still shows in the sum.
     let total = |w: std::collections::BTreeMap<String, u64>| {
         let mut t = std::collections::BTreeMap::<String, u64>::new();
         for (k, n) in w {
@@ -307,14 +272,15 @@ fn commit_work_linear_in_things_spec_requirements_decentralization() {
         }
         t
     };
-    let (small, big) = (total(commit_work(100)), total(commit_work(1000)));
+    let (small, big) = (total(commit_work(200)), total(commit_work(2_000)));
     // `linear` as notes/test-scale.md (Scale checks) has it: at 10n at most 15x + 15 the count at n
     let over: Vec<_> = big.iter().map(|(k, n)| (k, small.get(k).copied().unwrap_or(0), *n)).filter(|(_, s, b)| *b > 15 * s + 15).collect();
     assert!(over.is_empty(), "work at n and 10n (kind, n, 10n): {over:?}");
 }
 
-/// Per kind, the work of creating `n` things in one commit and delivering it, then of writing
-/// one commit with a change on each of them and of applying it on another node.
+/// Per kind, the work of making `n` things (four commits, delivered), then of writing one
+/// commit with a change on each of them beside one value past `MAX_BLOB`, and of applying it on
+/// another node, which reads every value written.
 fn commit_work(n: usize) -> std::collections::BTreeMap<String, u64> {
     use osis::internals::costs;
     let (a, b, _c) = shared();
@@ -325,31 +291,43 @@ fn commit_work(n: usize) -> std::collections::BTreeMap<String, u64> {
         }
         work.insert(format!("{side} perm: roles reached"), reached);
     };
-    // creating the n things: one commit, written and delivered
+    let key = untyped("t:x.0");
+    let big: Vec<u8> = (0..osis_base::format::MAX_BLOB + 1).map(|i| (i % 251) as u8).collect();
+    // the large value's thing, made before the counts: its making is the same at every n
+    let large = a.commit_with(|w| w.create_held_with_admin(crate::common::home(&a))).unwrap();
     costs::take();
     let r0 = osis_perm::roles_reached();
-    let mut w = a.write();
-    // plain: minted with the account as admin, whose keys they take
-    let things: Vec<_> = (0..n).map(|_| w.create_held_with_admin(crate::common::home(&a)).unwrap()).collect();
-    w.commit().unwrap();
+    let mut things = Vec::new();
+    while things.len() < n {
+        let mut w = a.write();
+        let k = (n - things.len()).min(n / 4);
+        // plain: minted with the account as admin, whose keys they take
+        things.extend((0..k).map(|_| w.create_held_with_admin(crate::common::home(&a)).unwrap()));
+        w.commit().unwrap();
+    }
     deliver(&a, &b);
     add("create", costs::take(), osis_perm::roles_reached() - r0);
-    let key = untyped("t:x.0");
     let before: std::collections::BTreeSet<_> = a.engine(|e| e.commit_ids()).into_iter().collect();
     costs::take();
     let r0 = osis_perm::roles_reached();
     let mut w = a.write();
+    w.at(large, key.clone()).path(osis::p![]).set_stream(&big[..]).unwrap();
     for (i, t) in things.iter().enumerate() {
         w.at(*t, key.clone()).set(&Value::Int(i as i64)).unwrap();
     }
     w.commit().unwrap();
     add("write", costs::take(), osis_perm::roles_reached() - r0);
     let new: Vec<_> = a.engine(|e| e.commit_ids()).into_iter().filter(|id| !before.contains(id)).collect();
+    assert_eq!(new.len(), 1, "one commit");
     let pk = a.engine(|e| e.package(&new[0]).unwrap().unwrap());
+    assert!(pk.bytes.len() <= osis_base::format::MAX_BLOB, "{} bytes", pk.bytes.len());
     costs::take();
     let r0 = osis_perm::roles_reached();
     b.engine(|e| e.ingest(&pk.bytes, pk.blobs.clone()).unwrap());
     add("apply", costs::take(), osis_perm::roles_reached() - r0);
-    assert_eq!(b.at(things[n - 1], key).get().unwrap(), Some(Value::Int(n as i64 - 1)));
+    for (i, t) in things.iter().enumerate() {
+        assert_eq!(b.at(*t, key.clone()).get().unwrap(), Some(Value::Int(i as i64)), "thing {i}");
+    }
+    assert_eq!(b.at(large, key).get().unwrap(), Some(Value::Bytes(big)));
     work
 }
