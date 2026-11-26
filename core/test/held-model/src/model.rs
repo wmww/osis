@@ -925,9 +925,12 @@ fn judge(h: &Held, ov: &Overlap) -> (Outcome, Timeline) {
 
     // Replaced bodies (spec/commits.md §5 Bodies and deaths): a held valid body holding a write
     // dead in the state (not held there, or held there and not winning, spec/crdt.md §4.8),
-    // joining into the state leaving it unchanged (the write is dead, not un-merged). An expiring delta is judged
-    // against the state without its writes (a snapshot carries none of them, spec/crdt.md §8): replaced only once
-    // others' writes supersede all of it.
+    // joining into the state leaving it unchanged (the write is dead, not un-merged). Only writes
+    // lasting at least as long as the body's own supersede it (spec/crdt.md §4.8): a body is
+    // judged against the state of those alone (a lasting one against what a snapshot carries).
+    // An expiring delta is judged also without its own writes (a snapshot carries none of them,
+    // spec/crdt.md §8): replaced only once others' writes supersede all of it.
+    let expiry: BTreeMap<CommitId, u64> = h.commits.iter().filter_map(|k| k.expires.map(|e| (k.id, e))).collect();
     for c in view.iter().filter(|c| !c.is_role()) {
         for (i, p) in c.parts.iter().enumerate() {
             let Some(f) = body(p) else { continue };
@@ -946,13 +949,15 @@ fn judge(h: &Held, ov: &Overlap) -> (Outcome, Timeline) {
                 }
                 continue;
             }
-            let (Some(st), Some(bodies)) = (o.states.get(&(t, a)), contrib.get(&(t, a))) else { continue };
+            let Some(bodies) = contrib.get(&(t, a)) else { continue };
             if valid_m.get(&(c.id, i)) != Some(&true) || never_received(c, p) {
                 continue;
             }
-            let own = |x: CommitId| is_gone(x, t, a) || (x == c.id && c.expires.is_some());
+            let lasts = c.expires.unwrap_or(NEVER);
+            let shorter = |x: CommitId| is_gone(x, t, a) || expiry.get(&x).is_some_and(|&e| e < lasts) || (x == c.id && c.expires.is_some());
             let b = dots.strip(t, a, f, &|x| is_gone(x, t, a));
-            let st = if c.expires.is_some() { dots.strip(t, a, st, &own) } else { st.clone() };
+            let bodies: Vec<(CommitId, Frag)> = bodies.iter().map(|(id, bf)| (*id, dots.strip(t, a, bf, &shorter))).collect();
+            let st = join(bodies.iter().map(|x| x.1.clone()));
             // a write it holds that is dead in the state: not held there, or winning in the body
             // and held there but not winning (spec/crdt.md §4.8: a text element's creation under
             // a winning delete or pruned by a reset while its element's record stays for a later
@@ -984,7 +989,7 @@ fn judge(h: &Held, ov: &Overlap) -> (Outcome, Timeline) {
                 });
                 let mut first: Option<u64> = None;
                 let mut own_ts: Option<u64> = None;
-                for (b_id, bf) in bodies {
+                for (b_id, bf) in &bodies {
                     for (n, x) in writes(bf) {
                         if at.as_ref().is_some_and(|s| death::stamp(&n) < s) || !supersedes(&x, w) {
                             continue;

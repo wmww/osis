@@ -309,7 +309,7 @@ Rules:
 - **Ephemeral data** (spec/sync-compaction.md §2) follows these rules as durable data does.
 
 ### 4.8 Death of a write
-A write is **dead** at a node once the join has superseded it:
+A write is **dead** at a node once the join of the writes lasting at least as long as it has superseded it (those with no expiry and, for a write with one, those expiring no sooner):
 - pruned by a reset (§4.2), a register's reset implied by its later write (§5.1) included;
 - beaten as a register, case, flag or position winner by a greater stamp;
 - its element deleted or tombstoned, or a set element hidden by a value removal (§5.5).
@@ -326,7 +326,7 @@ Copies of one write (§4.1) are one write: what copy order decides (a key, a val
 
 A write of fragment `A` is dead in `A ⊔ B` iff it wins in `A` and not in `A ⊔ B`.
 
-**When.** It dies at the earliest `ts` among the valid writes the node holds that supersede it.
+**When.** It dies at the earliest `ts` among the valid writes the node holds, lasting at least as long, that supersede it. A write only writes ending sooner supersede has no death: once they end it reads again (§4.7).
 - Each is judged against the write alone, so the order of arrival does not matter; a write is held while any held body holds a copy of it (its own commit, or a snapshot carrying it; a register write also by a copy of its embedding, §7, which supersedes as the register write does).
 - A write's `ts` is its own commit's, also when a snapshot carries it: a valid snapshot's copy of a write whose own delta is held invalid counts as the write itself.
 - A text element's creation dies only by a delete beating the latest undelete of the element the node holds: stamped after it, or a copy of its stamp (a delete wins the tie, §4.1).

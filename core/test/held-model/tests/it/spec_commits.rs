@@ -218,6 +218,37 @@ fn snapshot_under_purge_on_replace_drops_covered_spec_commits_5() {
     assert_eq!(fate(&h2, 12), Fate::MustDrop(DropWhy::Covered { by: 14 }));
 }
 
+// spec/crdt.md §4.8 (When), spec/commits.md §5 (Bodies and deaths): only a write lasting at least
+// as long supersedes. Under purge on replace a value overwritten only by an expiring one is not
+// replaced: a cover carries it, settles (owes nothing more) and it reads again once the other expires;
+// a lasting overwrite, or an expiring one outlasted, still replaces
+#[test]
+fn a_write_beaten_only_by_a_shorter_one_lives_spec_crdt_4_8() {
+    let mut e = reg(11, MINT_ADMIN, 2, REG, PurgeBy::AuthorOrAdmin, 2);
+    e.expires = Some(at(5));
+    let cs = vec![setting(5, 0, REG, Opt::Purge), reg(10, MINT_ADMIN, 1, REG, PurgeBy::AuthorOrAdmin, 1), e.clone()];
+    let h = held(3, cs.clone());
+    let o = evaluate(&h);
+    assert!(!o.replaced.contains(&(10, 0)) && o.owed.is_empty(), "beaten only by an expiring write: not replaced");
+    let mut h2 = h.clone();
+    h2.commits.push(cover(&h, &o, T, REG, 14, ts(3) + 1));
+    let o2 = evaluate(&h2);
+    assert!(!o2.replaced.contains(&(14, 0)) && o2.owed.is_empty(), "the cover settles");
+    let h3 = act(&h2, &o2, Some((10, 0)));
+    assert_eq!(read(&h3, REG), int(2));
+    assert_eq!(read(&Held { now: at(6), ..h3 }, REG), int(1), "back once the expiring write ends");
+    // controls: a lasting overwrite replaces; so does an expiring one lasting longer
+    let mut c = cs.clone();
+    c.push(reg(12, MINT_ADMIN, 2, REG, PurgeBy::AuthorOrAdmin, 3));
+    assert!(evaluate(&held(3, c)).under_purge.contains(&(10, 0)));
+    let mut f = reg(12, MINT_ADMIN, 3, REG, PurgeBy::AuthorOrAdmin, 3);
+    f.expires = Some(at(6));
+    let mut c = cs;
+    c.push(f);
+    let o = evaluate(&held(4, c));
+    assert!(o.replaced.contains(&(11, 0)) && !o.replaced.contains(&(10, 0)));
+}
+
 // spec/sync-compaction.md §1 (covered-equal): of two snapshots at one `ts` covering each other, only the lower
 // commit ID covers: the higher goes, the lower stays
 #[test]

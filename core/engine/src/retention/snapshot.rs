@@ -236,6 +236,55 @@ fn superseded(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, all: &[Owned], ends: &[Ends])
 /// holder granted without history holds no delta of them; their copies end at its expiry,
 /// spec/crdt.md §4.7).
 fn expiring_writes(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Vec<Owned>> {
+    ending_before(tx, tid, ak, None)
+}
+
+/// What a body of `(tid, ak)` lasting to `life` (`None`: no expiry) is judged against for death
+/// (spec/crdt.md §4.8: only a write lasting at least as long supersedes): the writes ending
+/// sooner, sorted, and what only they superseded (`superseded`). A piece of the state without
+/// those writes, joined with that, is the join of the held bodies without them at the piece
+/// (`Outlived::at`): for a lasting body, what a snapshot carries. `None`: no write ends sooner,
+/// the state as it is.
+pub(crate) fn outlived(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, life: Option<u64>) -> Result<Option<Outlived>> {
+    let sooner = ending_before(tx, tid, ak, life)?;
+    if sooner.is_empty() {
+        return Ok(None);
+    }
+    let ends = Ends { all: sooner.clone(), keep: Vec::new() };
+    let over = superseded(tx, tid, ak, &sooner, std::slice::from_ref(&ends))?.pop().unwrap_or_default();
+    Ok(Some(Outlived { sooner, over }))
+}
+
+/// The writes ending sooner than a body, and what only they superseded (`outlived`).
+pub(crate) struct Outlived {
+    sooner: Vec<Owned>,
+    over: Fragment,
+}
+
+impl Outlived {
+    /// Piece `st` of the state as the body is judged against: without the writes ending sooner,
+    /// joined with what only they superseded.
+    pub(crate) fn at(&self, st: &mut Fragment) {
+        st.remove_writes(&|d| super::sorted_owns(&self.sooner, d));
+        st.join(self.over.clone());
+    }
+}
+
+/// `outlived`'s judging state at piece `f`: `Tx::state_part_at` (`part`) or `Tx::state_at`.
+pub(crate) fn judged_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, f: &Fragment, by: Option<&Outlived>, part: bool) -> Result<Option<Fragment>> {
+    let st = if part { tx.state_part_at(tid, ak, f)? } else { tx.state_at(tid, ak, f)? };
+    Ok(st.map(|mut st| {
+        if let Some(o) = by {
+            o.at(&mut st);
+        }
+        st
+    }))
+}
+
+/// The writes of `(tid, ak)` ending before `life` (`None`: every write with an end), sorted
+/// (`expiring_writes`).
+fn ending_before(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, life: Option<u64>) -> Result<Vec<Owned>> {
+    let sooner = |t: u64| life.is_none_or(|l| t < l);
     let mut expiring: Vec<Owned> = tx
         .core
         .ix
@@ -247,11 +296,11 @@ fn expiring_writes(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Vec<Owned>> {
             let m = tx.core.ix.commits.get(c)?;
             let ai = m.aspect(tid, ak)?;
             m.header.aspects.get(ai)?;
-            m.header.expires?;
+            m.header.expires.filter(|t| sooner(*t))?;
             Owned::of(&m.header, c, ai)
         })
         .collect();
-    expiring.extend(expiring_copies(tx, tid, ak)?.into_values().flatten());
+    expiring.extend(expiring_copies(tx, tid, ak)?.into_iter().filter(|x| sooner(x.0)).flat_map(|x| x.1));
     expiring.sort();
     expiring.dedup();
     Ok(expiring)

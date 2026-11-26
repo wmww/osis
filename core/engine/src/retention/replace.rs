@@ -47,22 +47,27 @@ fn coverer(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak, right: bool) -> Re
 /// write is not identified by its stamp or dot (a map entry's creation and its values share one),
 /// so dots alone miss an overwritten value. A write the state holds as it is (a root reset a later
 /// write implies, kept by canonical form) wins in both, so a snapshot of the state is never
-/// replaced by its own content and writers' covers do not chase each other. A delta with an
-/// expiry is judged against the state without its writes, as no snapshot carries them
-/// (spec/crdt.md §8): replaced only once none of its writes lives, when a
-/// snapshot of the state covers it (spec/commits.md §5).
+/// replaced by its own content and writers' covers do not chase each other. Only writes lasting
+/// at least as long as its own supersede (spec/crdt.md §4.8): it is judged against the state
+/// without the writes ending sooner (`snapshot::outlived`; a lasting body: what a snapshot
+/// carries, so a snapshot is not replaced by an expiring write either). A delta with an expiry
+/// is judged also without its own writes, as no snapshot carries them (spec/crdt.md §8):
+/// replaced only once none of its writes lives, when a snapshot of the state covers it
+/// (spec/commits.md §5).
 pub(super) fn replaced(tx: &mut Tx<'_>, c: &CommitId, ai: usize, tid: &Tid, ak: &Ak) -> Result<bool> {
     let Some(m) = tx.core.ix.commits.get(c) else { return Ok(false) };
     if !m.valid_at(ai) {
         return Ok(false);
     }
-    let own = (m.header.expires.is_some() && !super::is_gone(tx.core, c, ai)).then(|| super::writes_of(&m.header, c, ai));
+    let life = m.header.expires;
+    let own = (life.is_some() && !super::is_gone(tx.core, c, ai)).then(|| super::writes_of(&m.header, c, ai));
+    let by = super::snapshot::outlived(tx, tid, ak, life)?;
     let mut out = false;
     super::each_body_piece(tx, c, ai, &mut |tx, f| {
         if out {
             return Ok(());
         }
-        let Some(mut st) = tx.state_at(tid, ak, &f)? else { return Ok(()) };
+        let Some(mut st) = super::snapshot::judged_state(tx, tid, ak, &f, by.as_ref(), false)? else { return Ok(()) };
         if let Some(own) = &own {
             st.remove_gone(&|d| own.iter().any(|o| o.owns(d)));
         }

@@ -294,6 +294,49 @@ fn late_purge_on_replace_setting_makes_holders_cover_spec_commits_5() {
     assert!(!listed(&mut lp.peers[1], &v1, d));
 }
 
+// spec/crdt.md §4.8 (When), spec/commits.md §5 (Bodies and deaths): only a write lasting at least
+// as long supersedes. Under purge on replace a value overwritten only by an expiring one is not
+// replaced: no cover is owed for it, a later write on the aspect owes none either (covers do not
+// chase each other), and the value reads again once the expiring one ends
+#[test]
+fn value_beaten_only_by_an_expiring_one_lives_spec_crdt_4_8() {
+    let (mut lp, d) = setup();
+    set(&mut lp, 2, d, &setting(&[(A, History::PurgeOnReplace)]));
+    lp.sync_all().unwrap();
+    let snaps = |p: &mut Peer| p.engine.commit_ids().iter().filter(|c| p.engine.header(c).is_some_and(|h| h.kind == osis_commit::Kind::ContentSnapshot && h.aspects.iter().any(|x| x.ak == ak(A)))).count();
+    let v1 = put(&mut lp, 1, d, "one");
+    lp.sync_all().unwrap();
+    let mut m = Mutation::new();
+    let end = lp.peers[1].engine.now().0 + HOUR;
+    m.expires(d, &ak(A), WallMs(end)).unwrap();
+    m.set(d, &ak(A), &s("brief")).unwrap();
+    lp.peers[1].commit(m).unwrap().unwrap();
+    lp.sync_all().unwrap();
+    lp.advance(1_000);
+    assert_eq!(snaps(&mut lp.peers[1]), 0, "nothing replaced: no cover owed");
+    assert!(lp.peers[1].engine.body_not_dropped(&v1, &d, &ak(A)));
+    // each later transaction on the aspect writes no cover
+    for v in ["x", "y"] {
+        let mut m = Mutation::new();
+        m.set(d, &ak("t:other.0"), &s(v)).unwrap();
+        lp.peers[1].commit(m).unwrap().unwrap();
+        lp.sync_all().unwrap();
+    }
+    assert_eq!(snaps(&mut lp.peers[1]), 0);
+    assert_eq!(lp.peers[0].engine.get(&d, &ak(A)).unwrap(), Some(s("brief")));
+    lp.advance(2 * HOUR);
+    for i in 0..3 {
+        lp.peers[i].tick().unwrap();
+    }
+    for i in 0..3 {
+        assert_eq!(lp.peers[i].engine.get(&d, &ak(A)).unwrap(), Some(s("one")), "peer {i}: back once it ends");
+    }
+    // control: a lasting overwrite replaces, and the writer covers it
+    put(&mut lp, 1, d, "two");
+    lp.sync_all().unwrap();
+    assert!(!lp.peers[1].engine.body_not_dropped(&v1, &d, &ak(A)), "a lasting overwrite: under purge on replace");
+}
+
 // spec/commits.md §5 One way: a keep after purge on replace carries a floor at its own stamp, so
 // what was written before it is under purge on replace when replaced, at every node; what is
 // written after it is kept

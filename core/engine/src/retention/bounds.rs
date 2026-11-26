@@ -730,14 +730,16 @@ pub(crate) fn mark_bounded(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) {
 }
 
 /// `Engine::delta_live` of delta `ai` of `c`, judged against the state in
-/// `tx`: a function of the commits applied (the join's), so alike at nodes that applied the
-/// same ones.
+/// `tx` without the writes ending sooner than it (`snapshot::outlived`: only a write lasting at
+/// least as long supersedes, spec/crdt.md §4.8): a function of the commits applied (the
+/// join's), so alike at nodes that applied the same ones.
 pub(super) fn live(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<bool> {
     let Some(h) = tx.core.ix.commits.get(c).map(|m| m.header.clone()) else { return Ok(true) };
     if h.kind.is_compaction() {
         return snapshot_live(tx, &h, c, ai);
     }
     let Some(a) = h.aspects.get(ai) else { return Ok(false) };
+    let by = super::snapshot::outlived(tx, &a.tid, &a.ak, h.expires)?;
     let own = writes_of(&h, c, ai);
     let owns = |st: &Fragment| st.holds_owned_write(&|src, lo, hi| own.iter().any(|o| o.owns_range(src, lo, hi)));
     // per piece of the delta, the state at its positions (O(piece), whatever the state's size;
@@ -746,7 +748,7 @@ pub(super) fn live(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<bool> {
     // pages up to it, not every page
     let mut live = false;
     let held = match super::each_body_piece(tx, c, ai, &mut |tx, f| {
-        live = tx.state_part_at(&a.tid, &a.ak, &f)?.as_ref().is_some_and(owns);
+        live = super::snapshot::judged_state(tx, &a.tid, &a.ak, &f, by.as_ref(), true)?.as_ref().is_some_and(owns);
         if live { Err(Error::Misuse("live: stream stopped")) } else { Ok(()) }
     }) {
         Ok(held) => held.is_some(),
@@ -754,7 +756,13 @@ pub(super) fn live(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<bool> {
         Err(e) => return Err(e),
     };
     if !held {
-        live = tx.state(&a.tid, &a.ak)?.is_some_and(owns);
+        live = match &by {
+            Some(o) => tx.state(&a.tid, &a.ak)?.cloned().is_some_and(|mut st| {
+                o.at(&mut st);
+                owns(&st)
+            }),
+            None => tx.state(&a.tid, &a.ak)?.is_some_and(owns),
+        };
     }
     Ok(live)
 }
@@ -770,6 +778,7 @@ pub(super) fn snapshot_live(tx: &mut Tx<'_>, h: &Header, c: &CommitId, ai: usize
     let Some(a) = h.aspects.get(ai) else { return Ok(false) };
     // by dot: records without a `ts` count too
     let valid = crate::apply::copies::snapshot_valid(tx.core, c, &a.tid, &a.ak);
+    let by = super::snapshot::outlived(tx, &a.tid, &a.ak, h.expires)?;
     let mut live = false;
     let held = crate::apply::each_held_piece(tx, c, ai, &mut |tx, f| {
         let carried: BTreeSet<osis_crdt::Dot> = f.live_writes().into_iter().map(|(d, _)| d).collect();
@@ -777,7 +786,7 @@ pub(super) fn snapshot_live(tx: &mut Tx<'_>, h: &Header, c: &CommitId, ai: usize
             // a valid snapshot is joined in the state, so a dot it shares with the state sits
             // at a position it holds; an invalid one's may sit elsewhere (one delta stamp
             // covers many positions)
-            let st = if valid { tx.state_part_at(&a.tid, &a.ak, &f)? } else { tx.state_at(&a.tid, &a.ak, &f)? };
+            let st = super::snapshot::judged_state(tx, &a.tid, &a.ak, &f, by.as_ref(), valid)?;
             live = st.is_some_and(|st| st.live_writes().into_iter().any(|(d, _)| carried.contains(&d)));
         }
         Ok(())
@@ -785,7 +794,10 @@ pub(super) fn snapshot_live(tx: &mut Tx<'_>, h: &Header, c: &CommitId, ai: usize
     if live || held.is_some() {
         return Ok(live);
     }
-    let Some(st) = tx.state(&a.tid, &a.ak)? else { return Ok(false) };
+    let Some(mut st) = tx.state(&a.tid, &a.ak)?.cloned() else { return Ok(false) };
+    if let Some(o) = &by {
+        o.at(&mut st);
+    }
     Ok(st.live_writes().iter().any(|(_, t)| t.is_none_or(|t| t <= h.ts)))
 }
 

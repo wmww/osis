@@ -1,0 +1,9 @@
+# The engine dates a write dead by a superseder ending sooner
+> Summary: spec/crdt.md §4.8 counts only superseders lasting at least as long, but `osis_crdt::Held` (the engine's dating rows) dates a write at its earliest superseder of any lifetime, so a lasting body overwritten only by an expiring write is dated replaced (listed as history, out after D) where the spec and held-model say it is live.
+> Priority: normal
+> Tags: engine, crdt
+
+- Shape: keep-for-D on a register; a lasting write, then an expiring write over it. `Engine::replaced_at` of the lasting body gives the expiring write's `ts`; held-model's `replaced_at` gives none. Reads are unaffected (a cover carries the lasting write); history listing and keep bounds differ. `order::held_set_decides_plain` does not reach it.
+- The state-based judgments follow the rule (`retention::replace::replaced`, `bounds::live`, via `snapshot::outlived`); `Held` does not, so the rule lives in two places.
+- Why not a small patch: `Held`'s death walks (`succ`, `above`, `floor`, `moved_by`) assume any later write at or above a position supersedes every earlier one, the basis of its row-read pruning; with lifetimes that holds only for a superseder lasting at least as long (a lasting floor still prunes). Expiry in place (`retention::gone_in_place`) reads a revival as a death going to none, which plain supersession gives; under the lifetime rule a write only an expiring one superseded has no death, so the revival signal must come from elsewhere (plain supersession kept beside, or a rebuild whenever the expiring writes superseded a held longer-lived one).
+- Fix: cells carry their write's lifetime, deaths read superseders lasting at least as long, the pruning keyed on lasting writes, expiry in place given its own revival test; a hand test of the shape above, and the dating debug check (`bounds::whole_date`) judged against `outlived`'s state.
