@@ -110,8 +110,10 @@ opt-level = 2
 # `lto = "off"`, a build-time-only one does not: a dependency both sides reach in one selection
 # (unicode-ident: naga in the GUI, proc-macro2 everywhere) otherwise gives every build-time unit
 # above it, osis-schema and so every osis crate, a second copy (notes/build-internals.md, Feature unification).
+# The setting that keeps them apart must be one `package."*"` leaves unset (it outranks
+# build-override for dependencies): any codegen-units but run-time's 256; 16 is rustc's own default.
 [profile.dev.build-override]
-debug-assertions = false
+codegen-units = 16
 
 [profile.release]
 codegen-units = 16
