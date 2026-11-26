@@ -22,8 +22,6 @@ pub const HOUR: u64 = 3_600_000;
 /// spec/wire.md §1 constants, in wall ms.
 pub const MAX_DRIFT: u64 = HOUR;
 pub const ROLE_KEEP: u64 = 90 * 24 * HOUR;
-/// An absolute keep-at-least of forever (`abs` forever).
-pub const FOREVER: u64 = u64::MAX;
 
 /// An aspect key: a name plus the markers an AK carries (spec/data-model.md §2). Its encodings
 /// are its fragments' own (a write of another encoding joins as spec/crdt.md §7 says).
@@ -378,9 +376,6 @@ pub type Key = (u64, NodeId, CommitId);
 impl Commit {
     pub fn key(&self) -> Key {
         (self.ts, self.signer, self.id)
-    }
-    pub fn lists(&self, c: CommitId) -> bool {
-        self.frontier.as_ref().is_some_and(|f| f.contains(&c))
     }
     pub fn is_role(&self) -> bool {
         self.kind == CommitKind::Role

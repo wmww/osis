@@ -353,16 +353,13 @@ impl World {
     fn req_with(&self, rule: &Rule, s: Sid, units: &BTreeMap<Sid, Things>, h: &Set, reads: &BTreeSet<Edge>) -> Set {
         self.closure(rule, &self.seeds(rule, s, &units[&s], h, reads), h)
     }
-    /// The things whose holder roles travel under S over held set `h`: S's own, and under
+    /// The things whose holder roles travel under S over read graph edges `reads`: S's own, and under
     /// `keys_open` those S's thing holds read or above on through them and through record edges,
     /// at any time. A record edge opens as a grant of admin from the mint admin to the thing it
     /// minted (spec/sync-set.md §2 T's keys open: effective role over paths that climb record
     /// edges; a dependent's secrets derive from its mint admin's), standing since the thing's
     /// creation, ordered before every write (spec/crypto.md §4 Key access), and read at any time as
     /// grants are: a record edge removed later still opens (as a grant removed later does).
-    pub fn opened(&self, rule: &Rule, s: Sid, h: &Set) -> Things {
-        self.opened_by(rule, s, &self.read_edges(h))
-    }
     fn opened_by(&self, rule: &Rule, s: Sid, reads: &BTreeSet<Edge>) -> Things {
         let mut open = Things::from([s]);
         if rule.keys_open {

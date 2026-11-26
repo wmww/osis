@@ -126,11 +126,6 @@ impl World {
     pub fn ring(&self, reads: &Set) -> Set {
         reads.iter().flat_map(|&r| self.keys_of(r)).collect()
     }
-    /// The independent things a node reading every thing in `reads` holds a sync secret of: those they
-    /// hold sync or above on.
-    pub fn sync_ring(&self, reads: &Set) -> Set {
-        reads.iter().flat_map(|&r| self.roles_from(r).into_keys().filter(|&u| self.independent(u))).collect()
-    }
     /// Whether `keys` open `x`: its secrets come from an independent thing among them.
     pub fn opens(&self, keys: &Set, x: T) -> bool {
         match self.kinds[x] {

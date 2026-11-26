@@ -77,7 +77,6 @@ fn arrive(h: &mut Held, v: Commit) {
 pub struct Fetched {
     pub held: Held,
     pub keys: BTreeSet<SyncId>,
-    pub fetches: u64,
 }
 
 /// Runs the node's fetch loop to quiescence. `order` shuffles a pass's entries (arrival order);
@@ -86,7 +85,6 @@ pub fn settle(lib: &Library, order: &mut dyn FnMut(&mut Vec<(SyncId, CommitId)>)
     let mut held = Held { now: lib.now, me: lib.me, records: lib.records.clone(), commits: vec![], dots: vec![], external_fires: ExternalFires::Any };
     // reading-only keys by the commit they are sourced from
     let mut reading: BTreeMap<CommitId, BTreeSet<SyncId>> = BTreeMap::new();
-    let mut fetches = 0;
     loop {
         let keys = key_set(lib, &held, &reading);
         let before = (held.clone(), keys.clone());
@@ -98,7 +96,6 @@ pub fn settle(lib: &Library, order: &mut dyn FnMut(&mut Vec<(SyncId, CommitId)>)
             if holds_all(&held, &v) {
                 continue;
             }
-            fetches += 1;
             let boxes = v.boxes.clone();
             arrive(&mut held, v);
             if reading_only {
@@ -116,7 +113,7 @@ pub fn settle(lib: &Library, order: &mut dyn FnMut(&mut Vec<(SyncId, CommitId)>)
         }
         let keys = key_set(lib, &held, &reading);
         if (held.clone(), keys.clone()) == before {
-            return Fetched { held, keys, fetches };
+            return Fetched { held, keys };
         }
     }
 }

@@ -140,8 +140,6 @@ pub struct Timeline {
     rd: paths::Reading,
     rights: BTreeMap<Id, paths::Right>,
     names: Interned,
-    /// `ts` values in order: a commit's `ts`, an `until` in `ts` units.
-    times: Vec<u64>,
     ids: BTreeMap<Of, Vec<Id>>,
     writes: BTreeMap<Id, EdgeWrite>,
     probes: BTreeMap<ThingId, Vec<(Id, Path)>>,
@@ -170,7 +168,7 @@ impl Timeline {
         let until = |u: u64| u.saturating_mul(MS);
         let times: Vec<u64> = commits().map(|c| c.ts).chain(commits().flat_map(|c| edges(c)).filter_map(|e| e.until).map(until)).chain([u64::MAX]).collect::<BTreeSet<_>>().into_iter().collect();
         let time = |t: u64| times.binary_search(&t).expect("a listed time") as u32 + 1;
-        let mut tl = Timeline { w: paths::World::new(&world.record_edges(&names)), world, rd: Default::default(), rights: BTreeMap::new(), names, times: times.clone(), ids: BTreeMap::new(), writes: BTreeMap::new(), probes: BTreeMap::new() };
+        let mut tl = Timeline { w: paths::World::new(&world.record_edges(&names)), world, rd: Default::default(), rights: BTreeMap::new(), names, ids: BTreeMap::new(), writes: BTreeMap::new(), probes: BTreeMap::new() };
 
         // each commit as joined (a waiting or thrown part is not received), else as held, in id
         // order: world ids are given by the order pushed, and keys tie on `ts` and signer by id
@@ -420,10 +418,5 @@ impl Timeline {
     /// The addenda that vouch: valid, their path giving write at their key.
     pub fn vouching(&self) -> usize {
         self.rd.vouching.len()
-    }
-
-    /// The `ts` values the world orders (a commit's `ts`, an `until` in `ts` units).
-    pub fn times(&self) -> &[u64] {
-        &self.times
     }
 }
