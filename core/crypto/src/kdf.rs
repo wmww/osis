@@ -99,12 +99,16 @@ pub const SYNC_PROOF: &str = "sync proof";
 pub const PATH: &str = "path";
 /// A split entry's commitment to its path key (spec/crypto.md §5 Path entry).
 pub const PATH_COMMIT: &str = "path commit";
+/// A notice box's X25519 ephemeral key from its blob key (spec/wire.md §9 Notice).
+pub const NOTICE_EPH: &str = "notice eph";
+/// A notice box's ML-KEM encapsulation randomness from its blob key (spec/wire.md §9 Notice).
+pub const NOTICE_KEM: &str = "notice kem";
 
 /// Every kdf purpose, for distinctness checks and vectors.
-pub const PURPOSES: [&str; 35] = [
+pub const PURPOSES: [&str; 37] = [
     THING_SYNC, THING_READ, THING_WRITE, THING_ADMIN, ROLE_SYNC, ROLE_READ, ROLE_WRITE, ROLE_ADMIN, SIGN, KEM, CREATION_NONCE, BOX, HISTORY, EPOCH, ROLES, WRAP, SECTION,
     DELTA, LINK, LINK_TREE, DELETE_BLIND, DELETE_NONCE, LINK_BLIND, THING_BLIND, SYNC_KEY, SYNC_WRITE, SYNC_DELETE, SYNC_DEPOSIT, SYNC_CLAIM,
-    BEACON, BEACON_HIT, BEACON_REPLY, SYNC_PROOF, PATH, PATH_COMMIT,
+    BEACON, BEACON_HIT, BEACON_REPLY, SYNC_PROOF, PATH, PATH_COMMIT, NOTICE_EPH, NOTICE_KEM,
 ];
 
 // Full derive_key contexts used directly (not through `kdf`).

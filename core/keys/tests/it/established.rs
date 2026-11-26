@@ -18,25 +18,9 @@ fn r1_name(w: &World) -> osis_keys::Name {
     osis_keys::Name::applied(osis_keys::Key { ts: 4, node: tid(9), commit: cid(4) }, w.m1)
 }
 
-/// Holds the commits listed; every rotator holds its role.
-struct Holding(BTreeSet<osis_base::CommitId>);
-
-impl osis_keys::Held for Holding {
-    fn met(&self, n: &osis_keys::Name) -> bool {
-        self.0.contains(&n.key.commit)
-    }
-    fn holds(&self, _: &osis_base::Tid, _: Role) -> bool {
-        true
-    }
-    fn departed(&self, own: &osis_keys::Own) -> bool {
-        u8::try_from(own.ts).is_ok_and(|b| self.0.contains(&cid(b)))
-    }
-    fn marks(&self, o: &osis_keys::Own, k: &osis_keys::Key) -> bool {
-        o.ts == k.ts && o.author == k.node
-    }
-    fn publishes(&self, _: Role, _: &Epoch, _: &osis_keys::NamesDigest) -> bool {
-        true
-    }
+/// Holds the commits `c` (a departs mark's by its `ts`: `cid(ts)`).
+fn holding(c: &BTreeSet<osis_base::CommitId>) -> impl osis_keys::Held + '_ {
+    Judge(|k: &osis_keys::Key| c.contains(&k.commit), |ts| u8::try_from(ts).is_ok_and(|b| c.contains(&cid(b))))
 }
 
 /// Actor A (mint admin P); holders a2 (admin, a co-admin's actor) and m1 (read). Node a1 (one of
@@ -188,7 +172,8 @@ fn reorder_holding_e2_without_e1() {
     reseal.apply(&mut s2);
     r2.secrets.apply(&mut s2);
     let mut a2v = w.a2v.clone();
-    let without_r1 = Holding([cid(1), cid(3), cid(5)].into());
+    let held = [cid(1), cid(3), cid(5)].into();
+    let without_r1 = holding(&held);
     reseal.rotated(&mut a2v, cid(3), &KeysWrite::default()).unwrap();
     r2.secrets.rotated(&mut a2v, cid(5), &r2.keys).unwrap();
     ingest(&w.a, &s2, &Opener { holder: w.a2, epochs: &w.a2e }, &mut a2v, None).unwrap();
@@ -242,7 +227,7 @@ fn snapshot_established_needs_departure() {
     assert!(snapshot_keyed(&s1, osis_base::CommitId([1; 32]), &mut v).unwrap());
     let holders = [Holder { holder: g, role: Role::Read }];
     let rc = actor_rcpt(g, Role::Read, &ge);
-    v.establish(&Holding(BTreeSet::new()));
+    v.establish(&holding(&BTreeSet::new()));
     assert!(!v.read.is_established(&e1), "the removal not held");
     assert!(unvouched(&s1, &v).unwrap().is_empty(), "names aside, a held snapshot keys e1");
     // e0 (keyed by its history box, its names met) is current: boxed there only
@@ -250,7 +235,7 @@ fn snapshot_established_needs_departure() {
     let out = box_holder(&w.a, &v, &hist(&w.a, &v, &s1), &rc, &roles(&[Role::Read]), &mut w.rng).unwrap().unwrap();
     assert!(out.boxes.keys().all(|k| k.epoch == to_schema(&w.e0)));
     // the removal held (its edge write: its secrets.0 body may be compacted away)
-    v.establish(&Holding([cid(4)].into()));
+    v.establish(&holding(&[cid(4)].into()));
     assert_eq!(v.read.provenance(&e1), Some(Provenance::Rotated));
     assert_eq!(v.read.current(), vec![e1]);
     assert!(unvouched(&s1, &v).unwrap().is_empty());

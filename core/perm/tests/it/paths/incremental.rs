@@ -53,7 +53,7 @@ impl Tracked {
         self.renewing(&BTreeSet::new(), f)
     }
 
-    /// `step`, where every part of a commit in `renewed` (updated in place: `Paths::update`) may
+    /// `step`, where every part of a commit in `renewed` (updated in place: `Paths::sync`) may
     /// be reported as new.
     pub(super) fn renewing(&mut self, renewed: &BTreeSet<CommitId>, f: impl FnOnce(&mut Paths) -> Changed) -> Option<String> {
         let (before, ch) = self.update(f);
@@ -423,7 +423,7 @@ fn leaves_arriving(w: &m::World, v: &m::View, seed: u64) -> Option<String> {
         let (batch, more) = rest.split_at((1 + rng.below(3)).min(rest.len()));
         let cs: Vec<Commit> = batch.iter().map(|&i| b.commits[i].clone()).collect();
         let renewed: BTreeSet<CommitId> = cs.iter().map(|c| c.id).collect();
-        if let Some(d) = t.renewing(&renewed, |p| p.update(&cs)) {
+        if let Some(d) = t.renewing(&renewed, |p| p.sync(&[], &[], &[], &cs, &Default::default())) {
             return Some(format!("updating {renewed:?}: {d}\n{}", m::tiny_trace(w)));
         }
         rest = more;

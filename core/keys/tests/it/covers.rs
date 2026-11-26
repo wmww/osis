@@ -4,10 +4,9 @@
 use crate::common::*;
 use osis_base::{Role, Tid};
 use osis_keys::{
-    ActorEpochs, AllHeld, Departure, EdgeLog, EdgeWrite, Holder, Key, Name, Names, Opener, Own, Recipient, box_holder, ingest, pins,
+    ActorEpochs, AllHeld, Departure, EdgeLog, EdgeWrite, Holder, Key, Name, Names, Opener, Own, box_holder, ingest, pins,
     reseal_needed, roles_up_to, rotate, uncovered,
 };
-use osis_schema::core_types::Secrets;
 use std::collections::BTreeSet;
 
 /// The roles a reader holds.
@@ -30,26 +29,14 @@ fn naming(n: Name) -> Names {
     Names { list: [n].into(), departs: None }
 }
 
-/// Actor `a` (mint admin P) after its own-secrets switch boxing `extra` holders too.
-fn switched(a: Tid, p: Tid, pe: &ActorEpochs, extra: &[Recipient], rg: &mut osis_crypto::SeededRng) -> (ActorEpochs, Secrets) {
-    let mut view = ActorEpochs::derived(pe, &a);
-    let mut holders = vec![admin_rcpt(p, pe)];
-    holders.extend_from_slice(extra);
-    let r = rotate(&a, &roles_up_to(Role::Admin), &view, &Secrets::default(), &holders, &osis_keys::Names::default(), &mut *rg).unwrap();
-    let mut s = Secrets::default();
-    r.secrets.apply(&mut s);
-    view = r.preview(&view).unwrap();
-    (view, s)
-}
-
 // spec/permissions.md §3: a grant raced by a rotation leaves the grantee without a box at the
 // current epoch; the re-seal trigger finds it, and the re-seal clears it.
 #[test]
 fn grant_raced_by_rotation() {
     let rg = &mut rng(0);
-    let (a, p, g) = (tid(1), tid(2), tid(5));
-    let (pe, ge) = (actor_epochs(0x20), actor_epochs(0x50));
-    let (view, base) = switched(a, p, &pe, &[], rg);
+    let g = tid(5);
+    let ge = actor_epochs(0x50);
+    let (a, p, pe, view, base) = switched(&[], rg);
     let grant = box_holder(&a, &view, &hist(&a, &view, &base), &actor_rcpt(g, Role::Read, &ge), &read(), &mut *rg).unwrap().unwrap();
     let rot = rotate(&a, &read(), &view, &base, &[admin_rcpt(p, &pe)], &osis_keys::Names::default(), &mut *rg).unwrap();
     let mut s = base.clone();
@@ -74,9 +61,8 @@ fn grant_raced_by_rotation() {
 #[test]
 fn rotation_held_before_the_removal() {
     let rg = &mut rng(0);
-    let (a, p, m) = (tid(1), tid(2), tid(3));
-    let (pe, me) = (actor_epochs(0x20), actor_epochs(0x30));
-    let (view, base) = switched(a, p, &pe, &[actor_rcpt(m, Role::Read, &me)], rg);
+    let (m, me) = (tid(3), actor_epochs(0x30));
+    let (a, p, pe, view, base) = switched(&[actor_rcpt(m, Role::Read, &me)], rg);
     let with_m = [admin_rcpt(p, &pe), actor_rcpt(m, Role::Read, &me)];
     let (dep, removed) = removal(m, 7);
     let eager = rotate(&a, &read(), &view, &base, &with_m, &Names::default(), &mut *rg).unwrap();
@@ -125,9 +111,8 @@ fn rotation_held_before_the_removal() {
 #[test]
 fn missing_box_covers_nothing() {
     let rg = &mut rng(0);
-    let (a, p, m) = (tid(1), tid(2), tid(3));
-    let pe = actor_epochs(0x20);
-    let (view, base) = switched(a, p, &pe, &[], rg);
+    let m = tid(3);
+    let (a, p, pe, view, base) = switched(&[], rg);
     let rot = rotate(&a, &read(), &view, &base, &[admin_rcpt(p, &pe)], &Names::default(), &mut *rg).unwrap();
     let v = rot.preview(&view).unwrap();
     let e1 = rot.role(Role::Read).unwrap().epoch;
@@ -139,25 +124,8 @@ fn missing_box_covers_nothing() {
     let v2 = named.preview(&v).unwrap();
     let e2 = named.role(Role::Read).unwrap().epoch;
     assert!(uncovered(&v2, Role::Read, &e2, &dep, &AllHeld).is_empty());
-    struct Unmet;
-    impl osis_keys::Held for Unmet {
-        fn met(&self, _: &Name) -> bool {
-            false
-        }
-        fn holds(&self, _: &osis_base::Tid, _: Role) -> bool {
-            true
-        }
-        fn departed(&self, _: &osis_keys::Own) -> bool {
-            true
-        }
-        fn marks(&self, o: &osis_keys::Own, k: &osis_keys::Key) -> bool {
-            o.ts == k.ts && o.author == k.node
-        }
-        fn publishes(&self, _: Role, _: &osis_crypto::Epoch, _: &osis_keys::NamesDigest) -> bool {
-            true
-        }
-    }
-    assert!(!osis_keys::covers(&v2, Role::Read, &e2, &dep[0], &Unmet));
+    let unmet = Judge(|_: &Key| false, |_| true);
+    assert!(!osis_keys::covers(&v2, Role::Read, &e2, &dep[0], &unmet));
     assert!(!uncovered(&v2, Role::Read, &e2, &[Departure::holder(m, Role::Read)], &AllHeld).is_empty());
 }
 
@@ -175,25 +143,10 @@ fn edge_dep(m: Tid, start: Option<Role>, ws: &[(u8, Option<Role>, bool, bool, bo
     Departure::holder(m, from).upto(Role::Admin).edge(edge)
 }
 
-/// Marks every key whose `ts` is 9 (the rotation commit's own writes).
-struct Marking;
-
-impl osis_keys::Held for Marking {
-    fn met(&self, _: &Name) -> bool {
-        true
-    }
-    fn holds(&self, _: &Tid, _: Role) -> bool {
-        true
-    }
-    fn departed(&self, _: &Own) -> bool {
-        true
-    }
-    fn marks(&self, o: &Own, k: &Key) -> bool {
-        o.ts == k.ts
-    }
-    fn publishes(&self, _: Role, _: &osis_crypto::Epoch, _: &osis_keys::NamesDigest) -> bool {
-        true
-    }
+/// Every name met; a departs mark marks only the commit of its `ts` and author (unlike
+/// `AllHeld`).
+fn marking() -> impl osis_keys::Held {
+    Judge(|_: &Key| true, |_| true)
 }
 
 // spec/crypto.md §4 (Covers: an entry pins M below r over its tail): what the names must hold,
@@ -224,13 +177,13 @@ fn pins_hold_the_tail_spec_crypto_4() {
     let twice = edge_dep(m, Some(Role::Read), &[(1, None, true, true, false), (9, None, false, true, false)]);
     assert!(pins(&names(&[f]), Role::Read, &twice, &AllHeld), "F named by a rotator lacking L");
     let marked = Names { list: BTreeSet::new(), departs: Some(Own { ts: 9, author: tid(9), blind: [0; 16] }) };
-    assert!(pins(&marked, Role::Read, &twice, &Marking), "F is the rotation commit's own write");
+    assert!(pins(&marked, Role::Read, &twice, &marking()), "F is the rotation commit's own write");
     let voided = edge_dep(m, Some(Role::Read), &[(1, None, true, true, false), (9, None, false, false, true)]);
-    assert!(!pins(&names(&[f]), Role::Read, &voided, &AllHeld) && !pins(&marked, Role::Read, &voided, &Marking), "F voided by its author's demotion");
+    assert!(!pins(&names(&[f]), Role::Read, &voided, &AllHeld) && !pins(&marked, Role::Read, &voided, &marking()), "F voided by its author's demotion");
     // L, F, then G raising M back (void, counting): F pins nothing without G void
     let back = edge_dep(m, Some(Role::Read), &[(1, None, true, true, false), (9, None, false, true, false), (12, Some(Role::Read), false, false, true)]);
-    assert!(!pins(&marked, Role::Read, &back, &Marking));
-    assert!(pins(&Names { list: [Name::void(key(12), m)].into(), ..marked }, Role::Read, &back, &Marking));
+    assert!(!pins(&marked, Role::Read, &back, &marking()));
+    assert!(pins(&Names { list: [Name::void(key(12), m)].into(), ..marked }, Role::Read, &back, &marking()));
 }
 
 /// The merge rule (spec/crypto.md §4, Encrypting under) at a node that may rotate `r`: some

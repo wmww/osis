@@ -2,7 +2,7 @@
 
 use crate::aead::{self, TAG_LEN, ZERO_NONCE};
 use crate::kdf::{HYBRID_KEM, KEM, kdf_xof};
-use crate::{Error, Secret32, agility_bytes, agility_value};
+use crate::{Error, Secret32, agility_value};
 use libcrux_ml_kem::mlkem768;
 use osis_base::Value;
 use rand_core::CryptoRngCore;
@@ -81,9 +81,6 @@ impl KemPublicKey {
     }
     pub fn to_value(&self) -> Value {
         agility_value(&self.0[..])
-    }
-    pub fn from_value(v: &Value) -> Result<KemPublicKey, Error> {
-        KemPublicKey::from_slice(agility_bytes(v, Some(KEM_PUBLIC_LEN))?)
     }
 }
 
@@ -368,7 +365,6 @@ mod tests {
         big[32] = 0xff;
         big[33] |= 0x0f; // first 12-bit coefficient = 4095 >= q
         assert_eq!(KemPublicKey::from_slice(&big), Err(Error::BadKey));
-        assert_eq!(KemPublicKey::from_value(&k.public().to_value()), Ok(k.public().clone()));
     }
 
     // spec/crypto.md §1: the low-order check by comparison is the non-contributory DH check: on

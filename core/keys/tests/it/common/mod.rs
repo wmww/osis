@@ -74,6 +74,19 @@ pub fn applied(rot: &osis_keys::Rotation, view: &ActorEpochs, id: u8) -> ActorEp
     a
 }
 
+/// Actor A (mint admin P) after its own-secrets switch, boxing `extra` too.
+pub fn switched(extra: &[Recipient], rg: &mut osis_crypto::SeededRng) -> (Tid, Tid, ActorEpochs, ActorEpochs, osis_schema::core_types::Secrets) {
+    let (a, p, pe) = (tid(1), tid(2), actor_epochs(0x20));
+    let mut view = ActorEpochs::derived(&pe, &a);
+    let mut holders = vec![admin_rcpt(p, &pe)];
+    holders.extend_from_slice(extra);
+    let r = osis_keys::rotate(&a, &osis_keys::roles_up_to(Role::Admin), &view, &osis_schema::core_types::Secrets::default(), &holders, &osis_keys::Names::default(), &mut *rg).unwrap();
+    let mut s = osis_schema::core_types::Secrets::default();
+    r.secrets.apply(&mut s);
+    view = applied(&r, &view, 1);
+    (a, p, pe, view, s)
+}
+
 /// A held valid rotation commit applied, then the view established with every name held (the
 /// fixtures hold every departure).
 pub trait Applied {
@@ -87,9 +100,30 @@ impl Applied for osis_keys::SecretsWrite {
     }
 }
 
-
 /// What `box_holder` writes as history: this node's history boxes from `view` and `s`, every
 /// name met (`AllHeld`).
 pub fn hist(a: &Tid, view: &ActorEpochs, s: &osis_schema::core_types::Secrets) -> osis_keys::HistoryBoxes {
     osis_keys::history_boxes(a, view, s, &osis_keys::HistoryAlts::new(), &osis_keys::AllHeld)
+}
+
+/// A `Held` meeting the names whose key `.0` takes and the departs marks whose `ts` `.1` takes; a
+/// departs mark marks the held commit of its `ts` and author, and every rotator holds its role.
+pub struct Judge<M, D>(pub M, pub D);
+
+impl<M: Fn(&osis_keys::Key) -> bool, D: Fn(u64) -> bool> osis_keys::Held for Judge<M, D> {
+    fn met(&self, n: &osis_keys::Name) -> bool {
+        (self.0)(&n.key)
+    }
+    fn holds(&self, _: &Tid, _: Role) -> bool {
+        true
+    }
+    fn departed(&self, o: &osis_keys::Own) -> bool {
+        (self.1)(o.ts)
+    }
+    fn marks(&self, o: &osis_keys::Own, k: &osis_keys::Key) -> bool {
+        o.ts == k.ts && o.author == k.node
+    }
+    fn publishes(&self, _: Role, _: &Epoch, _: &osis_keys::NamesDigest) -> bool {
+        true
+    }
 }

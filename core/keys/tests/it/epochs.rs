@@ -41,7 +41,6 @@ fn own_secrets_switch() {
     let w = World::new();
     let derived = ActorEpochs::derived(&w.pe, &w.a);
     let rot = rotate(&w.a, &roles(&ROLES), &derived, &Secrets::default(), &w.holders(), &osis_keys::Names::default(), &mut *rg).unwrap();
-    assert!(rot.unboxed.is_empty());
     let mut s = Secrets::default();
     rot.secrets.apply(&mut s);
     let e = |r: Role| rot.rotated.iter().find(|x| x.role == r).unwrap().epoch;

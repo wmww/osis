@@ -38,16 +38,16 @@ pub const SUITE_1: u8 = 1;
 /// Agility enum case of every suite 1 key, signature and sealed box (spec/wire.md §3).
 const CASE_1: u64 = 1;
 
-/// Bytes of a case 1 agility enum value `1617([1, h'..'])`, of length `len` if given;
-/// another case parks (spec/crypto.md §8).
-fn agility_bytes(v: &osis_base::Value, len: Option<usize>) -> Result<&[u8], Error> {
+/// Bytes of a case 1 agility enum value `1617([1, h'..'])`, of length `len`; another case parks
+/// (spec/crypto.md §8).
+fn agility_bytes(v: &osis_base::Value, len: usize) -> Result<&[u8], Error> {
     use osis_base::Value;
     let Value::Enum(case, payload) = v else { return Err(Error::Malformed("not an enum")) };
     if *case != CASE_1 {
         return Err(Error::UnknownCase(*case));
     }
     match payload.as_deref() {
-        Some(Value::Bytes(b)) if len.is_none_or(|l| l == b.len()) => Ok(b),
+        Some(Value::Bytes(b)) if b.len() == len => Ok(b),
         _ => Err(Error::Malformed("agility payload")),
     }
 }

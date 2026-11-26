@@ -187,7 +187,7 @@ impl Signature {
         agility_value(&self.0)
     }
     pub fn from_value(v: &Value) -> Result<Signature, Error> {
-        Signature::from_slice(agility_bytes(v, Some(64))?)
+        Signature::from_slice(agility_bytes(v, 64)?)
     }
 }
 

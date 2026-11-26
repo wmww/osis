@@ -311,8 +311,8 @@ pub fn seal_notice(prefix: &[u8], holder: &Tid, epoch: &crate::Epoch, kem: &KemP
 }
 
 fn notice_box(prefix: &[u8], holder: &Tid, epoch: &crate::Epoch, kem: &KemPublicKey, key: &Secret32) -> Result<Vec<u8>, Error> {
-    let m = kdf("notice kem", key.expose(), b"");
-    crate::seal_with(kem, &sealed_ad(holder, "notice", epoch, prefix), key.expose(), &kdf("notice eph", key.expose(), b""), m.expose())
+    let m = kdf(kdf::NOTICE_KEM, key.expose(), b"");
+    crate::seal_with(kem, &sealed_ad(holder, "notice", epoch, prefix), key.expose(), &kdf(kdf::NOTICE_EPH, key.expose(), b""), m.expose())
 }
 
 /// A notice's head (prefix, then box: its body's AD) and body (`seal_notice`).

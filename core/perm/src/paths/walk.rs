@@ -41,9 +41,8 @@ pub struct Applied {
     pub before: Option<Edge>,
     /// An explicit write (§2): not a self-removal, a finalize or a may-grant grant.
     pub explicit: bool,
-    /// The edge as restored just before it: what it gave and what it let grant (§5.1).
+    /// What the edge as restored just before it gave (§5.1).
     pub restored: Option<Role>,
-    pub restored_grant: Option<Role>,
 }
 
 impl Applied {
@@ -995,7 +994,7 @@ impl Walk {
             How::Flag => (stored.max(raw), stored_grant.max(raw_grant)),
             _ => (stored, stored_grant),
         };
-        let a = Applied { key: it.key, value: it.value, before: old, explicit, restored, restored_grant: rgrant };
+        let a = Applied { key: it.key, value: it.value, before: old, explicit, restored };
         self.apply(s, how, Entry { a, slot: s, restored: new, rgrant: new_grant });
         for j in drops {
             self.note(j);

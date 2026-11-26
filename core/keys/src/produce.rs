@@ -170,8 +170,6 @@ pub struct Rotation {
     pub rotated: Vec<Rotated>,
     pub secrets: SecretsWrite,
     pub keys: KeysWrite,
-    /// Holders with no keyset known for a role they hold: left unboxed (re-seal later).
-    pub unboxed: Vec<Tid>,
     /// The names every history box it writes carries (spec/crypto.md §4).
     pub names: Names,
     wrap: Option<Epoch>,
@@ -324,20 +322,20 @@ pub fn rotate_leaving_out(actor: &Tid, roles: &BTreeSet<Role>, held: &ActorEpoch
         rotated.push(Rotated { role: r, epoch, secret, supersedes, floor });
     }
     secrets.removed = removals(&in_history, held_secrets);
-    let mut unboxed = Vec::new();
+    // a holder with no keyset known for a role it holds is left unboxed (re-sealed later)
     for m in holders {
         // the boxing rule (spec/crypto.md §4): at a read epoch of floor at least the holder's
         let allowed = |x: &&Rotated| !held.role(x.role).has_floors() || floors.get(&x.role).is_some_and(|f| *f >= m.floor);
         let items: Vec<Item> = rotated.iter().filter(|x| x.role <= m.role).filter(allowed).map(|x| Item { role: x.role, epoch: x.epoch, secret: &x.secret }).collect();
-        if !items.is_empty() && !box_items(actor, m, &items, rng, &mut secrets)? {
-            unboxed.push(m.holder);
+        if !items.is_empty() {
+            box_items(actor, m, &items, rng, &mut secrets)?;
         }
     }
     // each box to a holder actor recorded beside its keyset, naming the keysets the box names
     // (spec/crypto.md §4 Box records): what makes the new epoch foreign where one is held
     // invalid or foreign
     keys.sealed = secrets.boxes.iter().filter(|(k, _)| !k.holder.0.is_public()).map(|(k, b)| (k.clone(), box_keysets(b).into_iter().collect())).collect();
-    Ok(Rotation { rotated, secrets, keys, unboxed, names: names.clone(), wrap })
+    Ok(Rotation { rotated, secrets, keys, names: names.clone(), wrap })
 }
 
 /// What a node writes as the history box of one current epoch (spec/crypto.md §4, History box):
@@ -468,13 +466,6 @@ pub fn box_holder(
         return Ok(None);
     }
     Ok(out)
-}
-
-/// A box of `role`'s secret `secret` at `epoch` of `actor` to `rcpt` alone.
-/// `Ok(None)` when a needed keyset is unknown.
-pub fn box_epoch(actor: &Tid, rcpt: &Recipient, role: Role, epoch: Epoch, secret: &Secret32, rng: &mut dyn CryptoRngCore) -> Result<Option<SecretsWrite>, Error> {
-    let mut out = SecretsWrite::default();
-    Ok(box_items(actor, rcpt, &[Item { role, epoch, secret }], rng, &mut out)?.then_some(out))
 }
 
 /// The **tip add** (spec/crypto.md §4, Floors): boxes of the dropped epochs `epochs` (secrets

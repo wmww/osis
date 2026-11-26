@@ -671,13 +671,6 @@ impl RoleEpochs {
         i.covering_names(r, e, held).next().or_else(|| i.met_names(held).next()).cloned()
     }
 
-    /// The newest established epoch whose secret is held among those `keep` keeps, current or
-    /// not (a rotation's thing lists wrap under the epoch current when it was made, spec/crypto.md
-    /// §5 Who wraps under what).
-    pub fn newest_held_where(&self, keep: impl Fn(&Epoch) -> bool) -> Option<(Epoch, &RoleSecret)> {
-        self.newest_with(self.held_established().filter(|(e, _)| keep(e)))
-    }
-
     /// The newest current epoch whose secret is held, not foreign (spec/crypto.md §4, Newest).
     pub fn newest_held(&self) -> Option<(Epoch, &RoleSecret)> {
         let current = self.current();

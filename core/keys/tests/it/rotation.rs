@@ -2,25 +2,12 @@
 //! (spec/crypto.md §4, §5; spec/permissions.md §3).
 
 use crate::common::*;
-use osis_base::{Role, Tid};
+use osis_base::Role;
 use osis_crypto::Epoch;
 use osis_keys::aspects::box_key;
 use osis_keys::{ActorEpochs, Holder, Opener, Recipient, SecretsWrite, box_holder, ingest, reseal_needed, roles_up_to, rotate};
 use osis_schema::core_types::Secrets;
 use std::collections::BTreeSet;
-
-/// Actor A (mint admin P) after its own-secrets switch, boxing `extra` too.
-fn switched(extra: &[Recipient], rg: &mut osis_crypto::SeededRng) -> (Tid, Tid, ActorEpochs, ActorEpochs, Secrets) {
-    let (a, p, pe) = (tid(1), tid(2), actor_epochs(0x20));
-    let mut view = ActorEpochs::derived(&pe, &a);
-    let mut holders = vec![admin_rcpt(p, &pe)];
-    holders.extend_from_slice(extra);
-    let r = rotate(&a, &roles_up_to(Role::Admin), &view, &Secrets::default(), &holders, &osis_keys::Names::default(), &mut *rg).unwrap();
-    let mut s = Secrets::default();
-    r.secrets.apply(&mut s);
-    view = applied(&r, &view, 1);
-    (a, p, pe, view, s)
-}
 
 // spec/permissions.md §3: a grant raced by a read-only rotation (made unaware of it) keeps its
 // box at the superseded read epoch only: the re-seal trigger asks for the new one.

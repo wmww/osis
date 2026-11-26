@@ -16,12 +16,6 @@ pub struct Opener<'a> {
     pub epochs: &'a ActorEpochs,
 }
 
-impl Opener<'_> {
-    pub fn holder(&self) -> Tid {
-        self.holder
-    }
-}
-
 /// One role secret recovered.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Opened {
@@ -38,7 +32,7 @@ pub fn open_boxes(actor: &Tid, secrets: &Secrets, opener: &Opener) -> (Vec<Opene
 
 /// `open_boxes` over the boxes whose key `try_key` takes.
 fn open_boxes_where(actor: &Tid, secrets: &Secrets, opener: &Opener, try_key: impl Fn(&BoxKey) -> bool) -> (Vec<Opened>, Vec<(BoxKey, Error)>) {
-    let holder = opener.holder();
+    let holder = opener.holder;
     let mut out = Vec::new();
     let mut failed = Vec::new();
     for (k, b) in secrets.boxes.iter().filter(|(k, _)| k.holder.0 == holder && try_key(k)) {

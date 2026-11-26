@@ -10,7 +10,6 @@
 
 use osis_base::{CommitId, Tid};
 use osis_crypto::{Epoch, Secret32};
-use osis_base::Role;
 use osis_keys::{Held, Key, Name, Names, Own, Provenance, RoleEpochs, Unchecked};
 use proptest::prelude::*;
 use std::collections::BTreeSet;
@@ -89,24 +88,9 @@ impl History {
     }
 }
 
-struct Observer<'a>(&'a History);
-
-impl Held for Observer<'_> {
-    fn met(&self, n: &Name) -> bool {
-        self.0.met(n.key.ts as usize - 1)
-    }
-    fn holds(&self, _: &Tid, _: Role) -> bool {
-        true
-    }
-    fn departed(&self, own: &Own) -> bool {
-        self.0.met(own.ts as usize - 1)
-    }
-    fn marks(&self, o: &Own, k: &osis_keys::Key) -> bool {
-        o.ts == k.ts && o.author == k.node
-    }
-    fn publishes(&self, _: Role, _: &Epoch, _: &osis_keys::NamesDigest) -> bool {
-        true
-    }
+/// What the observer of `h` holds.
+fn observer(h: &History) -> impl Held + '_ {
+    crate::common::Judge(|k: &Key| h.met(k.ts as usize - 1), |ts| h.met(ts as usize - 1))
 }
 
 const LEVELS: u64 = 4;
@@ -224,7 +208,7 @@ fn apply(h: &History, steps: &[Step]) -> RoleEpochs {
         for (e, names, list) in opened {
             r.set_history(e, names, list, None);
         }
-        r.establish(&Observer(h));
+        r.establish(&observer(h));
     }
     r
 }
@@ -313,10 +297,10 @@ fn forged_entry_by_a_holder_is_accepted() {
     let h = History { commits: Vec::new(), held: BTreeSet::new(), secrets: BTreeSet::new(), reading: BTreeSet::new(), snapshots: BTreeSet::new() };
     let genuine = Names { list: [Name::applied(key(0), THING)].into(), departs: None };
     r.set_history(e, [genuine.clone()].into(), [], None);
-    r.establish(&Observer(&h));
+    r.establish(&observer(&h));
     assert!(!r.is_established(&e));
     r.set_history(e, [genuine, Names::default()].into(), [], None);
-    r.establish(&Observer(&h));
+    r.establish(&observer(&h));
     assert!(r.is_established(&e));
 }
 

@@ -300,17 +300,6 @@ impl<'a> View<'a> {
             || self.edges.is_cut(holder, target)
     }
 
-    /// The edge (holder, target) in force.
-    pub fn get(&self, holder: &Tid, target: &Tid) -> Option<&Edge> {
-        if let Some(p) = self.patch.as_ref().filter(|p| p.0 == *holder && p.1 == *target) {
-            return p.2.as_ref();
-        }
-        if let Some(e) = self.over.and_then(|o| o.get(holder, target)) {
-            return e.as_ref();
-        }
-        self.edges.get(self.records, holder, target)
-    }
-
     /// `f` on each edge of `holder`: (target, value).
     fn each_target(&self, holder: &Tid, mut f: impl FnMut(&Tid, &Edge)) {
         let patch = self.patch.as_ref().filter(|p| p.0 == *holder);
@@ -365,7 +354,7 @@ impl<'a> View<'a> {
     /// Effective role of `x` on every thing it reaches (spec/permissions.md §1): the maximum
     /// over paths of the minimum role along the path; `x` is admin of itself.
     pub fn roles_from(&self, x: &Tid) -> BTreeMap<Tid, Role> {
-        self.roles_expiring(x).0
+        self.roles_walk(x, &BTreeSet::new()).0
     }
 
     /// `roles_from` over the edges not in `skip`, each named (target, holder).
@@ -373,13 +362,8 @@ impl<'a> View<'a> {
         self.roles_walk(x, skip).0
     }
 
-    /// `roles_from` and the earliest `until` of an edge it followed: the answer holds at any
-    /// later ts before that, while no edge of a node it reaches changes.
-    pub(crate) fn roles_expiring(&self, x: &Tid) -> (BTreeMap<Tid, Role>, Option<WallMs>) {
-        self.roles_walk(x, &BTreeSet::new())
-    }
-
-    /// `roles_expiring`, not walking over an edge in `skip` (target, holder).
+    /// `roles_from`, not walking over an edge in `skip` (target, holder), and the earliest
+    /// `until` of an edge it followed.
     fn roles_walk(&self, x: &Tid, skip: &BTreeSet<(Tid, Tid)>) -> (BTreeMap<Tid, Role>, Option<WallMs>) {
         let mut expires: Option<WallMs> = None;
         let mut best: BTreeMap<Tid, Role> = BTreeMap::from([(*x, Role::Admin)]);
@@ -406,57 +390,14 @@ impl<'a> View<'a> {
         (best, expires)
     }
 
-    /// What `x`'s roles gain over `best`, its roles over edges this view dominates (every
-    /// edge here at least as wide, alive at `ts`), where only edges out of `seeds` may be
-    /// wider: the raised entries. `best` with them equals `roles_from` on this view.
-    pub fn roles_raised(&self, best: &BTreeMap<Tid, Role>, seeds: &[Tid]) -> BTreeMap<Tid, Role> {
-        self.roles_raised_expiring(best, seeds).0
-    }
-
-    /// `roles_raised` and the earliest `until` of an edge it followed.
-    pub(crate) fn roles_raised_expiring(&self, best: &BTreeMap<Tid, Role>, seeds: &[Tid]) -> (BTreeMap<Tid, Role>, Option<WallMs>) {
+    /// Every entity's effective role on `y` (`roles_from(x)[y]` for each `x`), the widest paths
+    /// searched backward from `y` over the edges not in `skip`, each named (target, holder), and
+    /// the earliest `until` of an edge it followed: the answer holds at any later ts before that,
+    /// while no edge into a node it reaches changes.
+    pub(crate) fn roles_to(&self, y: &Tid, skip: &BTreeSet<(Tid, Tid)>) -> (BTreeMap<Tid, Role>, Option<WallMs>) {
         let mut expires: Option<WallMs> = None;
-        let mut raised: BTreeMap<Tid, Role> = BTreeMap::new();
-        let mut stack: Vec<Tid> = seeds.iter().filter(|s| best.contains_key(s)).copied().collect();
-        while let Some(e) = stack.pop() {
-            let Some(level) = raised.get(&e).or_else(|| best.get(&e)).copied() else { continue };
-            self.each_target(&e, |t, edge| {
-                if edge.alive_at(self.ts) {
-                    expires = earliest(expires, edge.until);
-                    let (y, v) = (*t, level.min(edge.role));
-                    if raised.get(&y).or_else(|| best.get(&y)).is_none_or(|&b| v > b) {
-                        raised.insert(y, v);
-                        stack.push(y);
-                    }
-                }
-            });
-        }
-        (raised, expires)
-    }
-
-    /// Every entity's effective role on `y` (`roles_from(x)[y]` for each `x`): the widest
-    /// paths searched backward from `y`.
-    pub fn roles_to(&self, y: &Tid) -> BTreeMap<Tid, Role> {
-        self.roles_to_any(&[*y])
-    }
-
-    /// Every entity's highest effective role on any of `ys`.
-    pub(crate) fn roles_to_any(&self, ys: &[Tid]) -> BTreeMap<Tid, Role> {
-        self.roles_back(ys, &BTreeSet::new()).0
-    }
-
-    /// `roles_to` over the edges not in `skip`, each named (target, holder), and the earliest
-    /// `until` of an edge it followed: the answer holds at any later ts before that, while no
-    /// edge into a node it reaches changes.
-    pub(crate) fn roles_to_expiring(&self, y: &Tid, skip: &BTreeSet<(Tid, Tid)>) -> (BTreeMap<Tid, Role>, Option<WallMs>) {
-        self.roles_back(&[*y], skip)
-    }
-
-    /// `roles_to_any` over the edges not in `skip`, with the earliest `until` it followed.
-    fn roles_back(&self, ys: &[Tid], skip: &BTreeSet<(Tid, Tid)>) -> (BTreeMap<Tid, Role>, Option<WallMs>) {
-        let mut expires: Option<WallMs> = None;
-        let mut best: BTreeMap<Tid, Role> = ys.iter().map(|y| (*y, Role::Admin)).collect();
-        let mut stack = ys.to_vec();
+        let mut best: BTreeMap<Tid, Role> = BTreeMap::from([(*y, Role::Admin)]);
+        let mut stack = vec![*y];
         while let Some(t) = stack.pop() {
             let Some(&level) = best.get(&t) else { continue };
             let mut up: Vec<(Tid, Role)> = Vec::new();
@@ -534,36 +475,6 @@ impl<'a> View<'a> {
             }
         });
         top
-    }
-
-    /// Things reachable from `start` (included) by edges of any role and `until`.
-    pub fn reach_forward(&self, start: &Tid) -> BTreeSet<Tid> {
-        let mut seen = BTreeSet::from([*start]);
-        let mut stack = vec![*start];
-        while let Some(e) = stack.pop() {
-            self.each_target(&e, |y, _| {
-                if seen.insert(*y) {
-                    stack.push(*y);
-                }
-            });
-        }
-        seen
-    }
-
-    /// Entities that reach `start` (included) by edges of any role and `until`.
-    pub fn reach_backward(&self, start: &Tid) -> BTreeSet<Tid> {
-        let mut seen = BTreeSet::from([*start]);
-        let mut stack = vec![*start];
-        while let Some(e) = stack.pop() {
-            let mut up: Vec<Tid> = Vec::new();
-            self.each_holder(&e, |m, _| up.push(*m));
-            for y in up {
-                if seen.insert(y) {
-                    stack.push(y);
-                }
-            }
-        }
-        seen
     }
 }
 

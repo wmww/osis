@@ -358,39 +358,11 @@ impl<S: Store> Paths<S> {
         self.finish(gone)
     }
 
-    /// Replaces held commits by the versions given (a chunked frontier's leaf arriving: the same
-    /// commit, its frontier read further), adding those not held, as one update: every part of
-    /// a commit given is reported as new.
-    pub fn update(&mut self, commits: &[Commit]) -> Changed {
-        let mut seen = BTreeSet::new();
-        let given: Vec<&Commit> = commits.iter().filter(|c| seen.insert(c.id)).collect();
-        if given.is_empty() {
-            return Changed::default();
-        }
-        self.begin();
-        let held: Vec<CommitId> = given.iter().map(|c| c.id).filter(|c| self.holds(c)).collect();
-        let mut taken = self.let_go(&held);
-        let t = self.take(&given);
-        // a list read further names more with the walk unchanged: what it names is reported
-        for c in &given {
-            for p in &c.parts {
-                if let PartKind::Edge(EdgeWrite { frontier: Some(f), .. }) = &p.kind {
-                    taken.listed.extend(f.keys().map(|(_, c)| c));
-                }
-            }
-        }
-        taken.listed.extend(t.listed);
-        taken.deltas.extend(t.deltas);
-        taken.addenda.extend(t.addenda);
-        taken.snapshots.extend(t.snapshots);
-        self.timeline.settle(&self.trust, &BTreeSet::new());
-        self.finish(taken)
-    }
-
     /// One update of everything that moved: the records that came (thing, its record's holder) and went
     /// (a held part whose hops read one is the caller's to give again: `through`), the
     /// commits no longer held, and the commits held now, each added or, where held already,
-    /// replaced by the version given (`update`); then, per commit of `carriers`, the held
+    /// replaced by the version given (a chunked frontier's leaf arriving: the same commit, its
+    /// frontier read further; every part of a commit given is reported as new); then, per commit of `carriers`, the held
     /// snapshots carrying it are those given (none for one that went): a snapshot's reading lists
     /// the commits it carries among those held when it is read, and a carried commit that comes
     /// or goes later moves that list by itself alone.
@@ -409,6 +381,7 @@ impl<S: Store> Paths<S> {
         let held: Vec<CommitId> = given.iter().map(|c| c.id).chain(gone.iter().copied()).filter(|c| self.holds(c)).collect::<BTreeSet<_>>().into_iter().collect();
         let mut taken = self.let_go(&held);
         let t = self.take(&given);
+        // a list read further names more with the walk unchanged: what it names is reported
         for c in &given {
             for p in &c.parts {
                 if let PartKind::Edge(EdgeWrite { frontier: Some(f), .. }) = &p.kind {

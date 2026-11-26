@@ -93,7 +93,6 @@ impl Sim {
     fn rotate(&mut self, roles: &BTreeSet<Role>) {
         let mut r = self.next_rng();
         let rot = rotate(&self.a, roles, &self.view, &self.s, &self.holders(), &osis_keys::Names::default(), &mut r).unwrap();
-        assert!(rot.unboxed.is_empty());
         rot.secrets.apply(&mut self.s);
         self.view = rot.preview(&self.view).unwrap();
     }

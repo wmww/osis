@@ -407,7 +407,7 @@ fn every_order_and_forget_of_a_destruction_racing_a_cut_reads_as_from_scratch() 
     in_every_order(&recs(), &c, |t, order| assert!(t.r == scratch, "order {order:?}"));
 }
 
-// A frontier leaf arriving (`update`) that makes a lowering list what it dropped, and going again:
+// A frontier leaf arriving (`Paths::sync`) that makes a lowering list what it dropped, and going again:
 // each as from scratch, `Changed` exact, under every trust of the world.
 #[test]
 fn a_leaf_arriving_that_lists_a_drop_reads_as_from_scratch() {
@@ -417,7 +417,7 @@ fn a_leaf_arriving_that_lists_a_drop_reads_as_from_scratch() {
     for trust in [BTreeSet::new(), BTreeSet::from([WriteId(cid(5), 0)])] {
         let mut t = Tracked::new(Paths::evaluate(&recs(), trust.clone(), &c));
         for (now, version) in [(&listing, &listing[4]), (&c, &c[4])] {
-            assert_eq!(t.renewing(&BTreeSet::from([cid(5)]), |p| p.update(std::slice::from_ref(version))), None);
+            assert_eq!(t.renewing(&BTreeSet::from([cid(5)]), |p| p.sync(&[], &[], &[], std::slice::from_ref(version), &Default::default())), None);
             let mut scratch = Paths::evaluate(&recs(), trust.clone(), now);
             assert_eq!(differs(&mut t.p, &mut scratch, true), None);
         }
