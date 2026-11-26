@@ -34,14 +34,15 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 
-/// Deliveries one world may make before it panics as a storm, unless a test sets its own
+/// Deliveries one `run` may make before it panics as a storm, unless a test sets its own
 /// (`World::cap`). The rule-test layer's cap (notes/sync-test-harness.md, Enforcement).
 pub const RULE_CAP: u64 = 2_000;
 
-/// Deliveries a differential history, simulation or flow world may make before it panics as a
-/// storm: about 5x the most any default seed makes (5,800; median 740). At 0 every history
-/// storms; at infinity a livelock runs until the seed timeout (600 CPU-s) instead of failing in
-/// seconds.
+/// Deliveries one `run` of a differential history, simulation or flow world may make before it
+/// panics as a storm: about 5x the most any default seed's whole history makes (5,800; median
+/// 740). A run is bounded in time by its horizon, so what is paced by time (redials toward an
+/// unreachable peer) stays under it, however many runs a history has. At 0 every history storms;
+/// at infinity a livelock runs until the seed timeout (600 CPU-s) instead of failing in seconds.
 pub const STORM_CAP: u64 = 30_000;
 
 /// Settle rounds one step may take before the world panics: a settle loop that never ends is
@@ -535,9 +536,12 @@ pub struct World {
     /// Nodes that lied in their own log (`Lie::Withhold`, `Lie::Forget`) at some point: what
     /// their peers recorded of their logs stays as told after they tell the truth again.
     pub(crate) lied_log: BTreeSet<usize>,
-    /// Deliveries so far; past `cap` the world panics as a storm.
+    /// Deliveries so far.
     pub deliveries: u64,
-    /// Deliveries so far by node (the storm panic names the busiest).
+    /// `deliveries` when the last `run` began; past `cap` more the world panics as a storm (a
+    /// delivery outside any run counts toward the run before it).
+    run_from: u64,
+    /// Deliveries by node since the last `run` began (the storm panic names the busiest).
     delivered: BTreeMap<usize, u64>,
     pub cap: u64,
     pub horizon_ms: u64,
@@ -595,6 +599,7 @@ impl World {
             liars: BTreeMap::new(),
             lied_log: BTreeSet::new(),
             deliveries: 0,
+            run_from: 0,
             delivered: BTreeMap::new(),
             cap: RULE_CAP,
             horizon_ms: HORIZON_MS,
@@ -882,12 +887,12 @@ impl World {
         if CANDIDATE_CAP.get().is_some_and(|c| self.deliveries > c && c < self.cap) {
             std::panic::panic_any(Capped);
         }
-        if self.deliveries > self.cap {
+        if self.deliveries - self.run_from > self.cap {
             let flowing: Vec<Seen> = self.net.queue.iter().take(8).map(|(n, x)| Seen::of(*n, x, self.node(*n).clock.mono())).collect();
             let off: Vec<usize> = (0..self.net.online.len()).filter(|n| !self.online(*n)).collect();
             let (busiest, most) = self.delivered.iter().max_by_key(|x| *x.1).map_or((0, 0), |(n, k)| (*n, *k));
             panic!(
-                "storm: past the cap of {} deliveries over this world's whole run (not one `run`: a long test or the dial ticks toward a partitioned or powered-off peer add up; `World::cap` raises it, `flush()` delivers without firing wakes); node {busiest} stepped most ({most} deliveries), its wake {:?} at {:?}; partitioned {:?}, powered off {off:?}; still flowing (first 8 of {}): {flowing:?}; wakes {:?}",
+                "storm: past the cap of {} deliveries in one run (counted from the last `run`'s start: deliveries outside a run add to it; `World::cap` raises it, `flush()` delivers without firing wakes); node {busiest} stepped most ({most} deliveries), its wake {:?} at {:?}; partitioned {:?}, powered off {off:?}; still flowing (first 8 of {}): {flowing:?}; wakes {:?}",
                 self.cap, self.net.wakes.get(&busiest), self.now(), self.net.cut_off, self.net.queue.len(), self.net.wakes
             );
         }
@@ -1106,6 +1111,8 @@ impl World {
     /// its way), until neither is left. A complete pass still under way
     /// there ends within `PASS_WAIT_MS` (spec/sync-status.md §1): quiet waits it out, once.
     pub fn run(&mut self) {
+        self.run_from = self.deliveries;
+        self.delivered.clear();
         let mut horizon = WallMs(self.now().0.saturating_add(self.horizon_ms));
         let mut waited = false;
         loop {
@@ -1461,6 +1468,7 @@ impl World {
             liars: self.liars.clone(),
             lied_log: self.lied_log.clone(),
             deliveries: 0,
+            run_from: 0,
             delivered: BTreeMap::new(),
             cap: self.cap,
             horizon_ms: self.horizon_ms,

@@ -132,9 +132,24 @@ fn a_shrink_finds_a_planted_failure_in_few_candidates() {
     assert!(s.candidates < 60, "{} candidates", s.candidates);
 }
 
+// spec: none (test harness): the storm cap counts one run, a run being bounded in time by its
+// horizon: a node powered off across runs is redialed through each (spec/sync-opens.md §1
+// Redial), which adds up past the cap over several runs with no run looping, and storms none.
+#[test]
+fn the_storm_cap_counts_one_run() {
+    use crate::harness::{Step::*, contacts, play};
+    let mut w = contacts();
+    let _ = play(&mut w, &[PowerOff(1), Run], String::new());
+    let one = w.deliveries;
+    assert!(one > 10, "redials toward the node powered off: {one} deliveries");
+    w.cap = 2 * one;
+    let _ = play(&mut w, &[Run, Run, Run, Run], String::new());
+    assert!(w.deliveries > w.cap, "the runs together pass the cap: {} of {}", w.deliveries, w.cap);
+}
+
 // spec: none (test harness): a shrink candidate past its delivery cap stops and counts as not
 // failing (`capped`); under the cap it runs as ever, and a world's own lower cap still panics as
-// a storm, its message naming the cap and that it counts the world's whole run.
+// a storm, its message naming the cap and that it counts one run.
 #[test]
 fn a_shrink_candidate_past_its_cap_does_not_fail() {
     use crate::harness::{Step::*, capped, contacts, play};
@@ -157,6 +172,6 @@ fn a_shrink_candidate_past_its_cap_does_not_fail() {
     });
     let e = storm.expect_err("the world's own cap");
     let m = e.downcast_ref::<String>().expect("a message");
-    assert!(m.contains("storm: past the cap of 2 deliveries over this world's whole run"), "{m}");
+    assert!(m.contains("storm: past the cap of 2 deliveries in one run"), "{m}");
     assert!(m.contains(" stepped most (2 deliveries), its wake "), "the busiest node and its wake against the clock: {m}");
 }
