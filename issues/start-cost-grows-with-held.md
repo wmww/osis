@@ -1,0 +1,10 @@
+# A node start judges everything it holds
+> Summary: Opening a store re-judges every held body (2 × bodies + ~18 judgements per open) and loads O(held) in the engine, because read's memo dependencies live only in memory. A start doing work in proportion to what changed needs a durable memo across osis-base, store, engine index and sync read: a requirements-level question first.
+> Priority: normal
+> Tags: tess-call, sync, engine, performance
+
+Measured (probe: k CLI `create` calls on a directory store, then one `get`): 62, 122, 362 judgements at 22, 52, 172 bodies; 160 creates took 274 s in a debug build. A store whose writes are superseded stays flat; only a growing store shows the O(k²) a test of k calls pays. Profile of osis-cli `named_keys_with_schema_plan_cli_1`: `Node::settle` 47% (`Read::settle` 28%, mostly `may_log` deriving keys afresh per process), engine `apply::load` 18% (O(held): index rows, timelines, `verify_genesis`), the debug `checked_index` 15%, redb's close saving allocator state 14%.
+
+Why: each judgement is an `Effects` key whose reads are recorded only in this process (container ids, seeded hashes, stamps from 0). Persisting verdicts alone gains nothing: a key loaded from disk with no recorded reads would never come due again, and acts toward peers would never form.
+
+**Question for Tess**: should a node start cost what changed (a requirement)? If yes, the shape: every followed key persists its value, its reads by durable container name and key bytes, and its clock bound, written in the transaction of the acts it causes; every container a judgement reads gets a durable name and change count; sync's in-memory pass state that judgements read (`arrived`, `moved`, `waits`, `passed`, `known` replay, opens' records, `owed`) becomes durable or leaves those judgements; the engine's open becomes O(change) too, else the gain caps at about half. A multi-crate primary job. Rejected: a coarse per-sync-ID dependency (the first write re-judges everything); a hand-written change-to-key map (gives up exact reads); making each item cheaper (hot-path tuning).
