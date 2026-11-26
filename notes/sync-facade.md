@@ -29,7 +29,7 @@ Sync's modules follow facade values with `Effects` (notes/engine.md, `Effects<K,
 
 Values derived from walks whose reads move far more often than the value are kept per key (notes/engine.md, Per-key rows):
 - `sync::certified`: each read thing's certificates as pieces (Certificate bodies below), its module doc says how; kept equal to the whole derivation (`Engine::sync_certificates`): `sync::certified::tests`.
-- `sync_bodies(c)` per commit (`Core::sync_bodies`); `sync_body(s, b)` is a lookup in it. Read keeps each (S, commit)'s body as its `bodies` effect last settled it (`Mine::meta`) and a body's facts are a row of their own (`read_facts`), so a body coming at one sync ID re-judges nothing at another.
+- `sync_bodies(c)` per commit (`Core::sync_bodies`); `sync_body(s, b)` is a lookup in it, a read of the commit's whole row. Read keeps each (S, commit)'s body as its `bodies` effect last settled it (`Mine::meta`) and a body's facts are a row of their own (`read_facts`), so a body coming at one sync ID moves neither at another. The engine calls a judgement makes past them (`may_log`, `neither`, `log_own`'s `sync_body`) read the row: a body of the commit moving at any sync ID re-runs them, as many as the row's own rebuild costs (one per sync ID it names).
 - `wrap_blocked` per (actor, walk) (`Core::wrap_blocks`), so a role change re-judges only the bodies whose wrap it blocks or unblocks.
 - What the node syncs per sync ID is the store's `synced`, written by leave (notes/sync-leave.md).
 

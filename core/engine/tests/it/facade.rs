@@ -726,3 +726,39 @@ fn a_step_on_the_delete_base_travels_as_a_certificate_copy_spec_permissions_4() 
     let b = e.sync_bodies(&step).unwrap();
     assert!(b.iter().any(|((s, on), m)| *s == ds && *on == Some(g) && m.certificate && !m.parts.is_empty()), "the step as a certificate copy on G: {b:?}");
 }
+
+// spec/permissions.md §4 (Copies), notes/engine.md (Per-key rows: a follower moves after `follow`
+// alone): a commit's bodies are a row refreshed by `Engine::follow`. A follower of the step's
+// bodies settled before D exists is due once D's grant makes it a copy under D's sync ID and
+// `follow` runs, with nothing asking the bodies meanwhile, and reads them as a fresh engine over
+// the same state does.
+#[test]
+fn a_follower_of_a_commits_bodies_moves_after_follow_alone_spec_permissions_4() {
+    let (mut lp, ps) = people(2);
+    let g = thing_of(&mut lp, 0, ps[0]);
+    lp.peers[0].engine.make_independent(&g).unwrap();
+    let gs = lp.peers[0].engine.sync_id_of(&g).unwrap().unwrap();
+    lp.advance(1000);
+    let before: BTreeSet<_> = lp.peers[0].engine.commit_ids().into_iter().collect();
+    lp.peers[0].engine.issue_step(&g, &gs, true).unwrap().unwrap();
+    let step: Vec<_> = lp.peers[0].engine.commit_ids().into_iter().filter(|c| !before.contains(c)).collect();
+    let [step] = step[..] else { panic!("one commit records the step: {step:?}") };
+    let ids = |e: &mut osis_engine::Engine| e.sync_bodies(&step).unwrap().keys().map(|k| k.0).collect::<BTreeSet<_>>();
+    let mut fx: osis_base::memo::Effects<(), BTreeSet<osis_base::SyncId>> = osis_base::memo::Effects::new("the step's bodies");
+    fx.want(());
+    let e = &mut lp.peers[0].engine;
+    let Some((None, was)) = fx.settle(&(), || ids(e)) else { panic!("settled once") };
+    assert!(was.contains(&gs), "a body under G's sync ID: {was:?}");
+    lp.peers[0].engine.follow().unwrap();
+    assert!(fx.due().is_empty(), "nothing moved");
+    let d = thing_of(&mut lp, 0, g);
+    lp.peers[0].engine.grant(&d, &ps[1], &edge_of(Role::Write)).unwrap();
+    let e = &mut lp.peers[0].engine;
+    let ds = e.sync_id_of(&d).unwrap().unwrap();
+    e.follow().unwrap();
+    assert_eq!(fx.due(), vec![()], "due after follow alone");
+    let Some((Some(_), now)) = fx.settle(&(), || ids(e)) else { panic!("moved") };
+    assert!(now.contains(&ds), "a copy under D's sync ID: {now:?}");
+    let fresh = ids(&mut lp.peers[0].fork(9).unwrap().engine);
+    assert_eq!(now, fresh, "as a fresh engine over the same state reads them");
+}
