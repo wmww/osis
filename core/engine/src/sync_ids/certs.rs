@@ -81,23 +81,6 @@ impl Certs {
 }
 
 impl Engine {
-    /// The newest applied commit whose delta on `(tid, ak)` is valid here, written by `author`
-    /// when given: `ts` is the author's to choose, so an invalid write never stands for the
-    /// current one.
-    pub fn latest_by(&self, tid: &Tid, ak: &str, author: Option<&Tid>) -> Option<CommitId> {
-        self.latest_where(tid, ak, |c| author.is_none_or(|a| self.core.ix.commits.get(c).is_some_and(|m| m.header.signer == *a)))
-    }
-
-    /// `latest_by` among the commits `keep` passes.
-    fn latest_where(&self, tid: &Tid, ak: &str, keep: impl Fn(&CommitId) -> bool) -> Option<CommitId> {
-        let k = Ak::new(ak).ok()?;
-        let held = self.core.ix.by_aspect.get(&(*tid, k))?;
-        held.iter().rev().map(|(_, c)| *c).find(|c| {
-            let Some(m) = self.core.ix.commits.get(c) else { return false };
-            !self.core.ix.pending.contains_key(c) && keep(c) && m.view.aspect_parts(tid, ak).any(|i| m.valid_at(i))
-        })
-    }
-
     /// The parts of commit `c` on `(tid, ak)` for any of `aks`.
     pub(crate) fn parts_of(&self, c: &CommitId, tids: &BTreeSet<Tid>, aks: &[&str]) -> Parts {
         let Some(h) = self.header(c) else { return Parts::new() };
@@ -688,10 +671,9 @@ mod tests {
         lp.peers[1].engine.core.skip_writer_rules = true;
         let bad = lp.peers[1].commit(m).unwrap().unwrap();
         lp.sync(1, 2).unwrap();
-        let e = &lp.peers[2].engine;
+        let e = &mut lp.peers[2].engine;
         assert!(e.header(&bad).is_some_and(|h| h.ts > e.header(&good).unwrap().ts), "the reader's write is held, later");
-        assert_eq!(e.latest_by(&t, "x:a.0", None), Some(good));
-        assert_eq!(e.latest_by(&t, "x:a.0", Some(&b)), None);
+        assert_eq!(e.get(&t, &ak).unwrap(), Some(Value::Int(1)), "the valid write stands");
     }
 
     /// The keyset of `m` that `t`'s box to `m` at read epoch `e` names, at peer `i`.

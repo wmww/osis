@@ -621,7 +621,7 @@ indexes! {
     /// Held commits per aspect their header lists: (`ts`, commit), whatever the part's validity
     /// and whether its body is held. Invariant (also for `by_thing`): it finds
     /// commits, never decides anything alone, since any signer's header can list any aspect.
-    /// What a thing has reads the state (`Tx::has_state`); what a commit counts for (a field's retention) reads its parts valid here
+    /// What a thing has reads the state (`Tx::state`); what a commit counts for (a field's retention) reads its parts valid here
     /// (`Meta::valid_at`), body held or not.
     pub by_aspect: JSetMap<(Tid, Ak), (Ts, CommitId)>,
     /// `by_aspect`'s keys, aspect first: the things holding a commit on each aspect, read per

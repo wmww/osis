@@ -122,20 +122,8 @@ impl Held {
         self.holders.get(holder).is_some_and(|m| m.contains_key(thing))
     }
 
-    /// Whether an edge write on `thing` (of any validity) names `holder`: `is_named` but for a
-    /// creation record naming its mint admin alone. O(the edge commits on `thing`).
-    pub fn named_by_write(&self, holder: &Tid, thing: &Tid) -> bool {
-        self.commits_on(thing).iter().any(|r| r.ops.iter().any(|o| o.target == *thing && o.holder == Holder::Thing(*holder)))
-    }
-
-    /// Whether `holder` is named on `thing` by an edge write (`named_by_write`), not by `thing`'s
-    /// record alone: where holder rules apply (spec/permissions.md §4 Key part).
-    pub fn is_holder_by_write(&self, holder: &Tid, thing: &Tid) -> bool {
-        self.is_named(holder, thing) && (self.created(thing).and_then(CreationRecord::mint_admin) != Some(*holder) || self.named_by_write(holder, thing))
-    }
-
     /// A reader's cursor over the (holder, thing) pairs a naming is added to from now on
-    /// (`is_named`, `is_holder_by_write`): one named and then undone is given too.
+    /// (`is_named`): one named and then undone is given too.
     pub fn pairs_feed(&self) -> osis_base::memo::Feed<(Tid, Tid)> {
         self.pairs.feed()
     }
@@ -291,9 +279,7 @@ impl Held {
             let n = e.entry(t).or_default();
             if add {
                 *n += 1;
-                // every naming added feeds the pair, not only its first: an edge write naming a
-                // mint admin its record names already makes it a holder by write
-                // (`is_holder_by_write`)
+                // every naming added feeds the pair, not only its first
                 self.pairs.wrote_added(&(m, t), true, true);
                 self.named.entry(t).or_default().insert(m);
             } else {

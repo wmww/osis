@@ -351,13 +351,6 @@ pub(crate) fn signature(core: &crate::engine::Core, id: &CommitId, sigs: &osis_c
     osis_commit::verify_signature(id, sigs, key).ok()
 }
 
-/// Whether `sigs` are the signature of commit `id` (header `h`) by its key (`commit_key`), from
-/// what is held: `false` when that cannot be told.
-pub fn signed_at(core: &crate::engine::Core, id: &CommitId, h: &Header, sigs: &osis_commit::Sigs) -> bool {
-    let Some(r) = core.created(&h.signer) else { return false };
-    commit_key(h, r).is_ok_and(|vk| signature(core, id, sigs, &vk, None).is_some())
-}
-
 /// Whether `blob`'s signature is by its key (`commit_key`), the signer's record from `record`,
 /// `known` a verdict kept for it (`signature`): `None` when that cannot be told yet (no record).
 pub(crate) fn signed_by_author(core: &crate::engine::Core, blob: &CommitBlob, id: &CommitId, record: Option<&CreationRecord>, known: Option<osis_commit::Signed>) -> Option<bool> {
@@ -1513,41 +1506,6 @@ pub(crate) fn apply_local(tx: &mut Tx<'_>, blob: &CommitBlob, signed: osis_commi
 }
 
 impl Engine {
-    /// Whether `blob` is a true copy of its commit: every delta hashes to its entry in the commit's
-    /// header (the applied, resolved one when held; spec/commits.md §4) and its signature verifies: a
-    /// blob of a held commit is otherwise never checked, its parts being skipped as held. `Some(false)`
-    /// as soon as anything that can be checked here fails, with the records `examine` would read
-    /// (those carried included), so a copy `examine` drops anything of is never `None`. `None` while
-    /// nothing failed but a thing's `created.0` (its dedup secret), the author's or the resolved
-    /// header is unknown (or fails to decode).
-    pub fn parts_genuine(&mut self, blob: &CommitBlob) -> Option<bool> {
-        let id = blob.id();
-        let h = match self.core.ix.commits.get(&id) {
-            Some(m) => m.header.decoded()?,
-            None => Arc::new(self.held_resolved(blob.header.clone())?),
-        };
-        let pending: Vec<osis_commit::Part> = self.run(|tx| Ok(tx.txn.get_pending(&id)?.and_then(|p| CommitBlob::decode_stored(&p.bytes).ok()).map(|b| b.parts))).ok().flatten().unwrap_or_default();
-        let mut all = blob.clone();
-        all.parts.extend(pending);
-        let carried = carried_records(&h, &all, &id);
-        let record = |core: &crate::engine::Core, t: &Tid| core.created(t).cloned().or_else(|| carried.get(t).cloned());
-        let mut known = true;
-        for p in &blob.parts {
-            let Some(a) = h.aspects.get(p.ai) else { return Some(false) };
-            match record(&self.core, &a.tid) {
-                Some(r) if osis_crypto::delta_hash(&dedup_secret(r.nonce()), &p.delta) != a.hash => return Some(false),
-                Some(_) => {}
-                None => known = false,
-            }
-        }
-        match signed_by_author(&self.core, blob, &id, record(&self.core, &h.signer).as_ref(), None) {
-            Some(true) => {}
-            Some(false) => return Some(false),
-            None => known = false,
-        }
-        known.then_some(true)
-    }
-
     /// `h` with its lists resolved from held blobs (`resolve_held`, in a transaction kept only
     /// when they resolve): `None` while one is away.
     pub(crate) fn held_resolved(&mut self, mut h: Header) -> Option<Header> {
@@ -3041,10 +2999,17 @@ mod tests {
         }
     }
 
+    /// Whether `sigs` are the signature of commit `id` (header `h`) by its key (`commit_key`), from
+    /// what is held: `false` when that cannot be told.
+    fn signed_at(core: &crate::engine::Core, id: &osis_base::CommitId, h: &osis_commit::Header, sigs: &osis_commit::Sigs) -> bool {
+        let Some(r) = core.created(&h.signer) else { return false };
+        super::commit_key(h, r).is_ok_and(|vk| super::signature(core, id, sigs, &vk, None).is_some())
+    }
+
     // spec/crypto.md §2: a node checks each commit's signature once. Invariant (`signature`): a
     // commit is treated as verified only if these exact signature bytes verified under the key
     // that signed them. The writer checks none (it signed them); a receiver one per commit, at n
-    // and 10n commits, asked again (`parts_genuine`, `signed_at`) or after a restart none; a copy
+    // and 10n commits, asked again (`signed_at`) or after a restart none; a copy
     // with forged signature bytes after the genuine one, and the genuine bytes under another key,
     // are refused.
     #[test]
@@ -3074,8 +3039,7 @@ mod tests {
                 let pk = lp.peers[0].engine.package(id).unwrap().unwrap();
                 assert_eq!(lp.deliver(1, &pk).unwrap(), Ingested::Applied(*id));
                 let b = held(&mut lp, id);
-                assert_eq!(lp.peers[1].engine.parts_genuine(&b), Some(true));
-                assert!(super::signed_at(&lp.peers[1].engine.core, id, &b.header, &b.sigs));
+                assert!(signed_at(&lp.peers[1].engine.core, id, &b.header, &b.sigs));
             }
             assert_eq!(verifies(), n as u64, "round {round}: one per commit at the receiver");
             ids.extend(new);
@@ -3084,7 +3048,7 @@ mod tests {
         verifies();
         for id in &ids {
             let b = held(&mut lp, id);
-            assert_eq!(lp.peers[1].engine.parts_genuine(&b), Some(true));
+            assert!(signed_at(&lp.peers[1].engine.core, id, &b.header, &b.sigs));
         }
         assert_eq!(verifies(), 0, "kept with the record across a restart");
         let other = lp.peers[1].engine.tid();
@@ -3093,11 +3057,10 @@ mod tests {
             let mut forged = genuine.clone();
             forged.sigs.signature.0[0] ^= 1;
             let e = &mut lp.peers[1].engine;
-            assert_eq!(e.parts_genuine(&forged), Some(false), "forged signature bytes");
-            assert!(!super::signed_at(&e.core, id, &genuine.header, &forged.sigs));
-            assert!(super::signed_at(&e.core, id, &genuine.header, &genuine.sigs));
+            assert!(!signed_at(&e.core, id, &genuine.header, &forged.sigs), "forged signature bytes");
+            assert!(signed_at(&e.core, id, &genuine.header, &genuine.sigs));
             let as_other = osis_commit::Header { signer: other, ..genuine.header.clone() };
-            assert!(!super::signed_at(&e.core, id, &as_other, &genuine.sigs), "the genuine bytes under another key");
+            assert!(!signed_at(&e.core, id, &as_other, &genuine.sigs), "the genuine bytes under another key");
         }
     }
 
@@ -3157,13 +3120,11 @@ mod tests {
         let t = p0.engine.new_thing(&mut m, me);
         m.set(t, &Ak::new("x:a.0").unwrap(), &Value::Int(1)).unwrap();
         let id = p0.commit(m).unwrap().unwrap();
-        let blob = p0.engine.run(|tx| tx.get_commit(&id)).unwrap().unwrap();
         let c = &mut p0.engine.core;
         let mut meta = c.ix.commits.get(&id).unwrap().clone();
         meta.header = crate::engine::LazyHeader::stored(id, vec![0x80].into(), meta.view.clone(), c.header_fault.clone());
         c.ix.commits.insert(id, meta);
         assert!(p0.engine.header(&id).is_none());
-        assert_eq!(p0.engine.parts_genuine(&blob), None);
         let mut m = Mutation::new();
         m.set(t, &Ak::new("x:a.0").unwrap(), &Value::Int(2)).unwrap();
         assert!(matches!(p0.engine.commit(m), Err(crate::Error::Corrupt(_))));

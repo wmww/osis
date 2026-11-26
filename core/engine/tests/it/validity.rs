@@ -1619,7 +1619,7 @@ fn differing_copies_join_by_copy_order_alike_spec_perm_5_2() {
             assert_eq!(lp.peers[i].engine.get(&d, &reg).unwrap(), Some(want), "peer {i}");
             // history: from verified commits only
             let e = &lp.peers[i].engine;
-            let by_bob = e.held_commits(Some(&[(d, reg.clone())])).iter().any(|x| x.header.signer == b);
+            let by_bob = e.held_commits(&[(d, reg.clone())]).iter().any(|x| x.header.signer == b);
             assert_eq!(by_bob, real_first.is_some(), "peer {i}: Bob's commit listed only where held");
             let ch = e.changed(&d).unwrap();
             assert_eq!(ch.commit == real, real_first.is_some(), "peer {i}: last change");

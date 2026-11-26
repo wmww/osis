@@ -571,14 +571,6 @@ impl Tx<'_> {
         })
     }
 
-    /// Whether `(tid, ak)` has a state: a valid write on it applied here. What a thing has is
-    /// read here (or from an index derived from states: `Indexes::sync_recorded`),
-    /// never from `Indexes::by_aspect`, which any signer's header adds to.
-    pub fn has_state(&mut self, tid: &Tid, ak: &Ak) -> Result<bool> {
-        self.load_lazy(tid, ak)?;
-        Ok(self.cached(tid, ak).is_some())
-    }
-
     /// The whole state of `(tid, ak)`.
     pub fn state(&mut self, tid: &Tid, ak: &Ak) -> Result<Option<&Fragment>> {
         self.load(tid, ak)?;

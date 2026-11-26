@@ -745,9 +745,9 @@ impl crate::handle::ReadOnly {
     fn found(&self, scope: &Scope) -> Result<Vec<Found>> {
         let aks = self.scope_aspects(scope)?;
         let found = self.engine(|e| {
-            let base = e.held_commits(Some(&aks));
+            let base = e.held_commits(&aks);
             let touched: BTreeSet<(Tid, Ak)> = base.iter().flat_map(|c| e.revert_reach(&c.id)).collect();
-            let related = e.held_commits(Some(&touched.into_iter().collect::<Vec<_>>()));
+            let related = e.held_commits(&touched.into_iter().collect::<Vec<_>>());
             let undoes = |h: &osis_commit::Header| h.undoes.filter(|_| h.kind == Kind::Content).map(CommitId);
             // relations over the related commits, oldest first
             let rel: BTreeMap<(Ts, CommitId), Option<CommitId>> = related.iter().map(|c| ((c.header.ts, CommitId(c.id)), undoes(&c.header))).collect();

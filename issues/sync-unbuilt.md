@@ -11,6 +11,7 @@ The module notes (notes/sync-*.md) point here. Untested built parts: issues/sync
 ## Convergence
 - **Stale copies** (spec/permissions.md §3: `open_entry` takes none, `Opened::NotOpen`) are opened again only when S's read secrets move, not when this node gets secrets of the part's actor (`Engine::take_wakes` names such waits; nothing in osis-sync takes them).
 - **Freed links** (spec/sync-compaction.md §1): a judgment waiting on a node blob not held (`Engine::freed_wants`) is not fetched; no start judgment of every freed row is built (`judge_freed` is the tests'), so a start judges no waiting row; freed deletes do not wait on Role entries first (spec/sync-judgement.md §3); a row is judged once, so a later body reusing the blob neither stops deletes nor un-frees it here (the reuser's repair restores it).
+- **Own secrets again** (spec/permissions.md §3, notes/engine-roles.md): nothing calls `Engine::own_secrets_candidates` and `make_independent_again` at a pass end (only tests do), so a dependent thing with a current holder other than its mint admin stays dependent, and a dependent holder actor gets no boxes from rotations of what it holds.
 - `SrcView::role_unheld` is always false: deletes toward a source do not wait for a role commit it lacks (spec/sync-judgement.md §3 Role entries first).
 - **Pieces** (Retag, spec/sync-judgement.md §1): a thing leaving a sync unit leaves its pieces under the old sync ID; a non-writer's pieces reach a store source only as deposits, never relayed under the writer's stamp.
 - **A source that drops S and keeps it again** (shred, listed again) stays at the step its stream last named for a registrar resuming a stored position: its log forgot S's events, and spec/sync-streams.md §3 names no event for a head gone, so it takes nothing until a registrar with no stored position registers the genesis. A listing from the start naming no head could clear it.
@@ -25,7 +26,7 @@ The module notes (notes/sync-*.md) point here. Untested built parts: issues/sync
 
 ## Cost
 - **Unjudgeable bodies fetched again** (spec/commits.md §4, spec/sync-judgement.md §3 Dropped bodies): needs byte-less entries (`Streams::ask`, notes/sync-read.md); until then an awaiting entry keeps its bytes.
-- **`SETTLE_MS`** (spec/wire.md §2, a MAY wait: spec/permissions.md §3, §4): nothing waits it, so every holder copies another node's demotion or `keys.0` at once (3.3 KB per holder per removal, notes/certificates.md), and every admin makes a dependent thing with holders independent at its pass end (`own_secrets_candidates`), concurrent ones forking.
+- **`SETTLE_MS`** (spec/wire.md §2, a MAY wait: spec/permissions.md §3, §4): nothing waits it, so every holder copies another node's demotion or `keys.0` at once (3.3 KB per holder per removal, notes/certificates.md); once own secrets again is wired (Convergence), every admin would make a dependent thing with holders independent at its pass end, concurrent ones forking.
 - `Rank::Never` (a keyset without history) has no facade call; when built, an entry ranked never is neither held nor taken, so `pull::concerns` keeps no presence of it (spec/sync-judgement.md §3 `known` must count it).
 - **Past-cap registers** keep `past_cap` per sync ID in memory, lost at a restart (spec/sync-ids.md §6 Storage caps: at most once per interval).
 

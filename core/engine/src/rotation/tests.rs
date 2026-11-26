@@ -1831,7 +1831,7 @@ fn grant_rotates_first_boxes_grantee_only_spec_crypto_4() {
 
 // spec/permissions.md §2 (finalize), §3 (re-seal a current holder): admin X (2) lacks write
 // (rotated leaving it out), so it may finalize writer D's (1) ended edge but cannot; A then
-// rotated read leaving D out. X boxes D nothing (a re-seal or re-share of an ended grant it
+// rotated read leaving D out. X boxes D nothing (a re-seal of an ended grant it
 // must finalize is no box to a current holder), so D never reads the new read epoch.
 #[test]
 fn ended_holder_not_resealed_spec_permissions_2() {
@@ -1847,7 +1847,6 @@ fn ended_holder_not_resealed_spec_permissions_2() {
     assert!(!lp.peers[2].engine.run(|tx| Ok(crate::flows::edges::finalizable(tx.core, &me, &g))).unwrap().is_empty(), "X may finalize D");
     let (e, _) = lp.peers[2].engine.epochs(&g).unwrap().read.newest_held().unwrap();
     let _ = lp.peers[2].engine.reseal_after_pass(&g);
-    let _ = lp.peers[2].engine.reshare(&g, &tids[1]);
     let d = tids[1];
     let _ = lp.peers[2].engine.run(|tx| super::reseal_one(tx, g, d, &BTreeSet::from([Role::Read]), super::Reseal::Missing));
     assert!(!boxes_of(&mut lp, 2, g, tids[1]).contains(&osis_keys::aspects::box_key(tids[1], Role::Read, &e)), "X boxed ended D at the new read epoch");

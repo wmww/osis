@@ -503,17 +503,13 @@ fn schema_of(core: &Core, ak: &Ak) -> Option<std::sync::Arc<osis_schema::Schema>
     core.schemas.get(ak.as_str()).cloned().or_else(|| osis_schema::core_types::is_core_key(ak.as_str()).then(|| std::sync::Arc::new(osis_schema::core_schema().clone())))
 }
 
-/// A held commit as the `osis` commit query reads it: its signed header and, per aspect it
-/// validly touches, whether the body is still held.
+/// A held commit as the `osis` commit query reads it: its signed header and purge author.
 #[derive(Clone, Debug)]
 pub struct HeldCommit {
     pub id: CommitId,
     pub header: std::sync::Arc<osis_commit::Header>,
     /// Its purge author (`View::purge_author`).
     pub purge_author: Tid,
-    pub received: osis_base::WallMs,
-    /// `(tid, ak, body held)` of each valid aspect (in scope, when one is given).
-    pub aspects: Vec<(Tid, Ak, bool)>,
 }
 
 impl Engine {
@@ -572,28 +568,17 @@ impl Engine {
         }
     }
 
-    /// Held commits validly touching `scope` (every held commit with `None`: decodes every header),
-    /// newest first by `(ts, ID)`. Commits valid on no aspect in scope are left out.
-    pub fn held_commits(&self, scope: Option<&[(Tid, Ak)]>) -> Vec<HeldCommit> {
-        let ids: BTreeSet<(Ts, CommitId)> = match scope {
-            Some(sc) => sc.iter().flat_map(|k| self.core.ix.by_aspect.get(k).into_iter().flatten().copied()).collect(),
-            None => self.core.ix.commits.iter().map(|(id, m)| (m.view.ts, *id)).collect(),
-        };
-        let keep: Option<BTreeSet<&(Tid, Ak)>> = scope.map(|sc| sc.iter().collect());
+    /// Held commits validly touching `scope`, newest first by `(ts, ID)`.
+    pub fn held_commits(&self, scope: &[(Tid, Ak)]) -> Vec<HeldCommit> {
+        let ids: BTreeSet<(Ts, CommitId)> = scope.iter().flat_map(|k| self.core.ix.by_aspect.get(k).into_iter().flatten().copied()).collect();
+        let keep: BTreeSet<&(Tid, Ak)> = scope.iter().collect();
         ids.into_iter()
             .rev()
             .filter_map(|(_, id)| {
                 let m = self.core.ix.commits.get(&id)?;
                 let header = m.header.decoded()?;
-                let aspects: Vec<(Tid, Ak, bool)> = header
-                    .aspects
-                    .iter()
-                    .enumerate()
-                    .filter(|(ai, a)| m.valid_at(*ai) && keep.as_ref().is_none_or(|k| k.contains(&(a.tid, a.ak.clone()))))
-                    .map(|(ai, a)| (a.tid, a.ak.clone(), !m.body_gone(ai)))
-                    .collect();
-                let purge_author = m.view.purge_author;
-                (!aspects.is_empty()).then_some(HeldCommit { id, header, purge_author, received: m.received, aspects })
+                let touches = header.aspects.iter().enumerate().any(|(ai, a)| m.valid_at(ai) && keep.contains(&(a.tid, a.ak.clone())));
+                touches.then_some(HeldCommit { id, header, purge_author: m.view.purge_author })
             })
             .collect()
     }

@@ -1024,12 +1024,9 @@ pub(crate) enum Reseal {
     /// The trigger's (`pass_end`): at the current epochs the holder has no box at, whose
     /// secret this node holds; it replaces no box (`osis_keys::reseal_holder`).
     Missing,
-    /// A re-share (`Engine::reshare`): at every current epoch held, replacing the holder's boxes
-    /// there (a re-paired node's).
-    All,
-    /// A stranded report's ask (spec/permissions.md §3, §4): as `All` at every current epoch held,
-    /// written only when a box differs from the one Seal gives now or is missing, so asking
-    /// again changes nothing once met.
+    /// A stranded report's ask (spec/permissions.md §3, §4): at every current epoch held,
+    /// replacing the holder's boxes there, written only when a box differs from the one Seal
+    /// gives now or is missing, so asking again changes nothing once met.
     Asked,
 }
 
@@ -1073,7 +1070,6 @@ pub(crate) fn reseal_one_into(tx: &mut Tx<'_>, a: Tid, holder: Tid, roles: &BTre
         .filter(|r| *r <= rcpt.role)
         .filter(|r| match which {
             Reseal::Missing => missing(*r),
-            Reseal::All => !rotated || missing(*r),
             Reseal::Asked => held(*r) && (!rotated || missing(*r)),
         })
         .collect();
@@ -1083,7 +1079,7 @@ pub(crate) fn reseal_one_into(tx: &mut Tx<'_>, a: Tid, holder: Tid, roles: &BTre
     let hist = history_boxes(tx, &me, &a)?;
     let w = match which {
         Reseal::Missing => osis_keys::reseal_holder(&a, &epochs, &secrets, &hist, &rcpt, &roles, &mut *tx.rng)?,
-        Reseal::All | Reseal::Asked => osis_keys::box_holder(&a, &epochs, &hist, &rcpt, &roles, &mut *tx.rng)?,
+        Reseal::Asked => osis_keys::box_holder(&a, &epochs, &hist, &rcpt, &roles, &mut *tx.rng)?,
     };
     // asked: nothing to write when every box is there at the keysets Seal gives now
     if which == Reseal::Asked
@@ -1393,7 +1389,7 @@ impl Engine {
             }
             // the re-seals stranded reports asked for (spec/permissions.md §4), each judged now:
             // an ask of a holder no longer current goes, met or not; one refused (nothing to seal
-            // to, the grant ended, a rewrite Authority refuses: issues/reshare-rewrite-refused.md)
+            // to, the grant ended, a rewrite Authority refuses: issues/asked-reseal-refused.md)
             // stays asked, tried again at the actor's next pass end, the rest of this one standing
             let holders: BTreeMap<Tid, Role> = tx.core.key_holders(&a).into_iter().collect();
             crate::sync::stranded::drop_asks(tx, &a, |m| holders.contains_key(m))?;
@@ -1433,24 +1429,6 @@ impl Engine {
             Ok(done)
         })
     }
-
-    /// "Re-share with M" by hand (issue reseal-triggers, closed: a manual re-share, notes/sync-access.md): re-seals current holder `holder`
-    /// of `actor` for every role it holds that this node may rotate, whatever the trigger says
-    /// (a holder whose deposits are refused, a stranded report, a re-paired node).
-    pub fn reshare(&mut self, actor: &Tid, holder: &Tid) -> Result<Done> {
-        let (a, m) = (*actor, *holder);
-        self.run(|tx| {
-            let role = tx.core.key_holders(&a).into_iter().find(|(x, _)| *x == m).map(|x| x.1).ok_or(Error::Misuse("not a current holder"))?;
-            let me = tx.core.tid();
-            let may = may_rotate(tx.core, &me, &a);
-            let roles: BTreeSet<Role> = ROLES.into_iter().filter(|r| *r <= role && may.contains(r)).collect();
-            if roles.is_empty() {
-                return Err(Error::Misuse("this node may not re-seal that holder"));
-            }
-            reseal_one(tx, a, m, &roles, Reseal::All)
-        })
-    }
-
 }
 
 #[cfg(test)]

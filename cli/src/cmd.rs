@@ -1177,7 +1177,7 @@ fn inspect(ctx: &mut Ctx<'_>, i: InspectCmd) -> anyhow::Result<()> {
             let aks = db.aspects(t)?;
             for ak in aks {
                 let (changes, size, frag) = db.engine(|e| {
-                    let ch = e.held_commits(Some(&[(t, ak.clone())]));
+                    let ch = e.held_commits(&[(t, ak.clone())]);
                     let size = e.get(&t, &ak).ok().flatten().map(|v| osis_schema::osis_base::encode(&v).len());
                     let frag = e.state(&t, &ak).ok().flatten().map(|f| format!("{f:?}"));
                     (ch, size, frag)
