@@ -446,11 +446,6 @@ impl Node {
         self.inbox.redeeming(k)
     }
 
-    /// No request, fill or Hello outstanding on any connection (spec/sync-status.md §3).
-    pub fn idle(&self) -> bool {
-        self.driver.sessions.idle()
-    }
-
     /// Where a wait on `scope` stands (spec/sync-status.md §3): status's for its sync IDs.
     pub fn wait(&mut self, scope: Scope) -> Waiting {
         let net = NetView { streams: &self.streams, unread: &self.unread };

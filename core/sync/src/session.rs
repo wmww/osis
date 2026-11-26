@@ -1110,12 +1110,6 @@ impl Sessions {
         out
     }
 
-    /// No request outstanding and no Hello awaited on any connection, no dial waiting
-    /// (spec/sync-status.md §3 idle): exactly when no deadline is kept. As of the last step's end.
-    pub fn idle(&self) -> bool {
-        self.deadlines.is_empty() && self.waiting.is_empty()
-    }
-
     /// The earliest deadline, a wait for the bound's room's included.
     pub fn next_wake(&self) -> Option<Mono> {
         let room = self.room_wait().map(|(_, since, _)| since.after(STALL_TIMEOUT_MS / 2));
