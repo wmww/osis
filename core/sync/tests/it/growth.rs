@@ -75,10 +75,11 @@ fn at(w: &mut World, t: Tid, by: &[usize], from: usize, to: usize) -> Vec<Held> 
 }
 
 /// A store's per-entry attribution rows: who brought an entry uncharged (`B/`), who it is charged
-/// to (`W/`). One per entry at most, and which peer's copy came first is the run's order, not the
-/// number of writes (an author whose own entry went and came back holds a peer's copy, or logs
-/// its own, by which arrives first): each is bounded by the entries (`E/`), not compared.
-const ATTRIBUTION: [&str; 2] = ["B/", "W/"];
+/// to (`W/`), whether it is unstamped (`D/`). One per entry at most, and which peer's copy came
+/// first is the run's order, not the number of writes (an author whose own entry went and came
+/// back holds a peer's copy, or logs its own, by which arrives first; a lowered writer's own copy
+/// is unstamped): each is bounded by the entries (`E/`), not compared.
+const ATTRIBUTION: [&str; 3] = ["B/", "W/", "D/"];
 
 /// No more rows of any kind at 10n than at n, nor blobs (a few bytes for a counter that
 /// widened); a store's attribution rows at most one per entry.
@@ -1013,7 +1014,6 @@ fn a_released_things_forgotten_commits_leave_no_own_entry_spec_sync_judgement_3(
 // of S's records at once, its own store holding no other (as each logs one before it holds
 // another's).
 #[test]
-#[ignore = "a dropped own loser stays at a store (issues/record-blob-forgotten-loser.md)"]
 fn record_blobs_at_a_store_stay_flat_spec_sync_ids_6() {
     let (mut w, _, s) = crate::deletes::four();
     let records: std::collections::BTreeSet<Tid> = w.engine(0).certificate_records(&s).unwrap().iter().copied().collect();
@@ -1026,7 +1026,7 @@ fn record_blobs_at_a_store_stay_flat_spec_sync_ids_6() {
             for b in noted.keys() {
                 w.store(i).clone().unlog_entry(&s, b).unwrap();
             }
-            let mut rng = osis_crypto::SeededRng::from_u64((round * 3 + i) as u64);
+            let mut rng = osis_crypto::SeededRng::from_u64((round * 4 + i) as u64);
             let (blob, bytes, wrap) = w.engine(i).seal_records(&s, &records, &mut rng).unwrap().expect("sealed");
             let e = osis_sync::types::Entry { blob, wrap, stamp: None, deposited: false, own: true, role: false, class: osis_blob::Class::Durable, expires: None };
             w.store(i).clone().log(&s, e, Some(bytes), None).unwrap();

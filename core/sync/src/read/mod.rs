@@ -94,6 +94,9 @@ pub struct Read {
     /// (spec/permissions.md §4, spec/sync-judgement.md §1): one record blob of them is logged as
     /// they move.
     cert_blobs: Effects<SyncId, Arc<CertBlobsMissing>>,
+    /// Per S, the records S carries as certificates (`Ground::certificate_records`): what decides
+    /// its record blobs, whose moves `records_moved` dates.
+    cert_records: Effects<SyncId, Arc<BTreeSet<Tid>>>,
     /// Per S, the sync copies S carries set against their logs in the own store: each missing
     /// one logged, a duplicate or one carried no more unlogged (`Ground::sync_copies_due`).
     sync_copies: Effects<SyncId, Arc<SyncCopiesDue>>,
@@ -128,6 +131,10 @@ pub struct Read {
     /// what a new reader logs of them waits for a complete pass begun after it, unless S's
     /// first sync here ended (`cert_blobs_missing`).
     cert_since: BTreeMap<SyncId, u64>,
+    /// Per S, the pass place the records S carries last moved: a record blob of them waits as
+    /// at `cert_since`, for a pass begun after this too (spec/sync-judgement.md §3 Own store:
+    /// a complete pass begun after what decides it last moved).
+    records_moved: BTreeMap<SyncId, u64>,
     /// The engine's commits held, followed from the first settle (`Live`).
     commits: Option<osis_base::memo::Feed<CommitId>>,
     /// The acts owed each source, carried out on its record's connection (`read/owed.rs`).
@@ -148,6 +155,7 @@ impl Default for Read {
             mints: Stamped::default(),
             toward: Effects::new("read: toward"),
             cert_blobs: Effects::new("read: certificate blobs"),
+            cert_records: Effects::new("read: certificate records"),
             sync_copies: Effects::new("read: sync copies"),
             steps: Effects::new("read: steps"),
             step_since: BTreeMap::new(),
@@ -161,6 +169,7 @@ impl Default for Read {
             moved: Stamped::default(),
             waits: Stamped::default(),
             cert_since: BTreeMap::new(),
+            records_moved: BTreeMap::new(),
             commits: None,
             owed: owed::Owed::default(),
             feeds: live::Feeds::default(),
@@ -217,6 +226,7 @@ impl Read {
         if !self.cert_blobs.wants(s) {
             self.cert_since.insert(*s, g.place());
             self.cert_blobs.want(*s);
+            self.cert_records.want(*s);
             self.sync_copies.want(*s);
         }
     }
@@ -300,15 +310,23 @@ impl Read {
         // the records each S carries, as one record blob of those its own store lacks, while a
         // reader can pull it (spec/permissions.md §4, spec/sync-judgement.md §3 Own store)
         let mut unread = BTreeSet::new();
+        // dated first, so a log they hold back is held back in the same settle
+        for s in self.cert_records.due() {
+            if self.cert_records.try_settle(&s, || g.certificate_records(&s))?.is_some() {
+                self.records_moved.insert(s, place);
+            }
+        }
         for s in self.cert_blobs.due() {
             if !g.reads(&s) {
                 self.cert_blobs.unwant(&s);
+                self.cert_records.unwant(&s);
                 self.cert_since.remove(&s);
+                self.records_moved.remove(&s);
                 unread.insert(s);
                 continue;
             }
             // pullable read inside: a sync ID a reader cannot pull yet is due again once it can
-            let since = self.cert_since.get(&s).copied().unwrap_or(0);
+            let since = self.cert_since.get(&s).copied().unwrap_or(0).max(self.records_moved.get(&s).copied().unwrap_or(0));
             let Some((was, now)) = self.cert_blobs.try_settle(&s, || cert_blobs_missing(g, &s, since).map(Arc::new))? else { continue };
             if let Some(w) = now.wait {
                 wait_pass(&mut self.waits, s, w);

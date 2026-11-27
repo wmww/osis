@@ -260,6 +260,12 @@ pub trait Ground {
     fn deposit(&mut self, conn: ConnId, s: &SyncId, c: &BodyId, head: &StepId, b: &BlobId) -> Result<bool>;
     fn set_stand(&mut self, at: &Source, s: &SyncId, c: &BodyId, stand: &Stand) -> Result<()>;
 
+    /// The records S carries as certificates (spec/permissions.md §4 Logging certificates): what
+    /// decides its record blobs.
+    fn certificate_records(&mut self, s: &SyncId) -> Result<Arc<BTreeSet<Tid>>> {
+        let _ = s;
+        Ok(Arc::default())
+    }
     /// What S carries as certificates that no certificate blob in the own store carries,
     /// whoever logged it (spec/permissions.md §4 Logging certificates: the records missing), and
     /// what becomes of each such blob the engine noted under S.

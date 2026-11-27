@@ -119,8 +119,8 @@ pub struct Known {
     entries: Feed<(SyncId, BlobId)>,
     /// `in_hand` per (S, blob).
     stamps: Stamps,
-    /// Entries a message in hand shows present and owes a body of, per (S, blob) the number of
-    /// such messages: shown, not recorded until the message applies (`shown`).
+    /// Entries a message in hand shows present, per (S, blob) the number of such messages:
+    /// shown, not recorded until the message applies (`shown`).
     in_hand: BTreeMap<(SyncId, BlobId), usize>,
     /// Every presence row written (shown present or removed, any source): `feed` readers take
     /// each (read, judging what a source showed of a commit).
@@ -197,8 +197,8 @@ impl Known {
         self.read(home(src), |t| Ok(source::get(t, src, PRESENT, s, &b.0)?.is_some()))
     }
 
-    /// A message in hand showing `b` present under S, owing its body, was held (`true`) or
-    /// applied or dropped (`false`).
+    /// A message in hand showing `b` present under S was held (`true`) or applied or dropped
+    /// (`false`).
     pub(super) fn hand(&mut self, s: &SyncId, b: &BlobId, held: bool) {
         let k = (*s, *b);
         let was = self.in_hand.get(&k).copied().unwrap_or(0);
@@ -214,7 +214,8 @@ impl Known {
     }
 
     /// Whether some source shows `b` present under S: `present`, or a message in hand showing it
-    /// whose body is owed (a body taken for it is opened before the message applies).
+    /// (spec/permissions.md §4 Logging certificates: a record blob counts while one is; a body
+    /// taken for it is opened before the message applies).
     pub fn shown(&self, s: &SyncId, b: &BlobId) -> bool {
         self.stamps.read(&(*s, *b));
         self.present(s, b) || self.in_hand.contains_key(&(*s, *b))

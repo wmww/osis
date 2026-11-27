@@ -213,6 +213,8 @@ struct Fake {
     /// Per (S, kind), the records or a rotation's lists it carries that no own certificate blob
     /// does, and own certificate blobs gone.
     records: Stamped<SyncId, CertBlobsMissing>,
+    /// Per S, the records it carries as certificates (`Ground::certificate_records`).
+    carried: Stamped<SyncId, Arc<BTreeSet<osis_base::Tid>>>,
     /// Certificate blobs logged, and rows of gone ones forgotten.
     record_logs: CertLogs,
     records_forgotten: Vec<(SyncId, BlobId)>,
@@ -403,6 +405,9 @@ impl Ground for Fake {
     fn may_log(&mut self, s: &SyncId, c: &BodyId) -> Result<bool> {
         let c = &c.commit;
         Ok(!self.unloggable.contains_key(&(*s, *c)))
+    }
+    fn certificate_records(&mut self, s: &SyncId) -> Result<Arc<BTreeSet<osis_base::Tid>>> {
+        Ok(self.carried.get(s).cloned().unwrap_or_default())
     }
     fn cert_blobs_missing(&mut self, s: &SyncId) -> Result<CertBlobsMissing> {
         Ok(self.records.get(s).cloned().unwrap_or_default())
@@ -2559,6 +2564,35 @@ fn a_body_read_again_unchanged_holds_back_no_log_spec_sync_judgement_3() {
     w.settle();
     w.pass(6);
     assert_eq!(w.logs(S, c), 1, "a pass begun after the bodies last moved ends the wait");
+}
+
+// spec/sync-judgement.md §3 (Own store: a record blob, another's certificate, is logged before
+// S's first sync here ends only once a complete pass of S begun after what decides it last moved
+// did), spec/permissions.md §4 (Logging certificates): S's record blobs first followed at place
+// 5, the records S carries move at place 7 (a commit under another sync ID names one more); a
+// pass begun at 6 logs nothing, one begun at 8 logs the record blob of what S carries then.
+// Fails with the wait counted from where S's record blobs were first followed: a new reader logs
+// a record blob of the records it has learned so far, which loses to its source's once the rest
+// arrive.
+#[test]
+fn a_record_blob_waits_a_pass_after_the_records_last_moved_spec_sync_judgement_3() {
+    let mut w = W::new();
+    let (r1, r2) = (osis_base::Tid::from_bytes([1; 15]), osis_base::Tid::from_bytes([2; 15]));
+    w.g.first_syncing.insert(S, ());
+    w.g.done.insert(S, 0);
+    w.g.place = 5;
+    w.g.carried.insert(S, Arc::new([r1].into()));
+    w.g.records.insert(S, CertBlobsMissing { missing: [r1].into(), ..Default::default() });
+    w.hold(cid(1), &[S], uncovered());
+    assert!(w.g.record_logs.is_empty(), "held back until a pass begun after place 5");
+    w.g.place = 7;
+    w.g.carried.insert(S, Arc::new([r1, r2].into()));
+    w.g.records.insert(S, CertBlobsMissing { missing: [r1, r2].into(), ..Default::default() });
+    w.settle();
+    w.pass(6);
+    assert!(w.g.record_logs.is_empty(), "a pass begun before the records moved ends no wait");
+    w.pass(8);
+    assert_eq!(w.g.record_logs, vec![(S, [r1, r2].into())], "logged once a pass begun after the move ended");
 }
 
 // spec/sync-judgement.md §2, §3 (Own store): judged outside S wrongly (its bodies' inputs had

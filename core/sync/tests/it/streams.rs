@@ -1149,21 +1149,27 @@ fn a_counted_record_blob_is_not_fetched_again_spec_sync_streams_4() {
     assert!(p.b.streams.caught_up(C, &s));
 }
 
-// spec/permissions.md §4 (Logging certificates: a record or list blob counts while held at a source): a message in hand
-// showing x, its body owed, shows x before it applies (`Known::shown`: what the body opens to is
-// judged before the message's cursor is stored); dropped unapplied (the connection ends), it
-// shows it no more.
+// spec/permissions.md §4 (Logging certificates: a record blob counts while a source shows it, a
+// message showing it in hand included): a message in hand showing x, which b counts and does not
+// fetch, and y, its body owed, shows both before it applies (`Known::shown`), so b's count of x
+// holds while the message waits on y; dropped unapplied (the connection ends), it shows neither.
+// Fails with only owed bodies shown in hand: b's judgement forgets x before a's showing is kept.
 #[test]
-fn a_message_in_hand_shows_what_it_owes_spec_permissions_4() {
+fn a_message_in_hand_shows_each_entry_it_lists_spec_permissions_4() {
     let mut p = Pair::new();
     let s = sid(1);
-    let x = p.a.log(s, 40_001);
+    let (x, y) = (p.a.log(s, 40_001), p.a.log(s, 40_002));
+    p.b.table.counted.insert(x);
     p.shared_read(s);
     p.run_with(|ab, m| ab && matches!(m, Msg::FetchReply { .. }));
     let known = p.b.streams.known();
-    assert!(known.shown(&s, &x) && !known.present(&s, &x), "in hand: shown, not recorded");
+    for b in [x, y] {
+        assert!(known.shown(&s, &b) && !known.present(&s, &b), "in hand: shown, not recorded");
+    }
     p.b.streams.closed(C);
-    assert!(!p.b.streams.known().shown(&s, &x), "dropped with its connection");
+    for b in [x, y] {
+        assert!(!p.b.streams.known().shown(&s, &b), "dropped with its connection");
+    }
 }
 
 // spec/wire.md §11.2 (Fetch: blob IDs grouped by sync ID, each a member of the connection's

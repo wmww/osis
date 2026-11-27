@@ -581,6 +581,9 @@ impl Ground for Live<'_, '_> {
     fn set_stand(&mut self, at: &Source, s: &SyncId, c: &BodyId, stand: &Stand) -> Result<()> {
         self.cx.store.set_stand(*at, s, &stand_key(c), Some(stand))
     }
+    fn certificate_records(&mut self, s: &SyncId) -> Result<Arc<BTreeSet<Tid>>> {
+        Ok(self.cx.engine.certificate_records(s)?)
+    }
     fn cert_blobs_missing(&mut self, s: &SyncId) -> Result<CertBlobsMissing> {
         let carried = (*self.cx.engine.certificate_records(s)?).clone();
         let mut out = CertBlobsMissing::default();

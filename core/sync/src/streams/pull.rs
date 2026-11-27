@@ -170,6 +170,9 @@ struct Batch {
     report: bool,
     reply: Option<ReplyInfo>,
     owed: Vec<(SyncId, BlobId)>,
+    /// Every entry it shows present under a member, owed or not: shown while it is in hand
+    /// (`Known::shown`).
+    shows: Vec<(SyncId, BlobId)>,
 }
 
 #[derive(Clone, Debug)]
@@ -828,7 +831,7 @@ impl Streams {
             }
         }
         let info = ReplyInfo { whole: r.whole, covered, more: r.more, joins, asked };
-        let batch = Batch { events: r.events, cursor: r.cursor.map(osis_proto::Cursor::into_bytes), report: r.report, reply: Some(info), owed: Vec::new() };
+        let batch = Batch { events: r.events, cursor: r.cursor.map(osis_proto::Cursor::into_bytes), report: r.report, reply: Some(info), owed: Vec::new(), shows: Vec::new() };
         self.stage(ctx, conn, batch);
     }
 
@@ -890,13 +893,13 @@ impl Streams {
         }
         p.seq += 1;
         p.recv = Some(cursor.as_bytes().to_vec());
-        let batch = Batch { events: st.events, cursor: Some(cursor.into_bytes()), report: st.report, reply: None, owed: Vec::new() };
+        let batch = Batch { events: st.events, cursor: Some(cursor.into_bytes()), report: st.report, reply: None, owed: Vec::new(), shows: Vec::new() };
         self.stage(ctx, conn, batch);
     }
 
     /// The messages `p` held in hand are dropped unapplied: what they showed is shown no more.
     pub(super) fn dropped_in_hand(&mut self, p: &Pulling) {
-        for (s, b) in p.pending.iter().flat_map(|m| m.owed.iter()) {
+        for (s, b) in p.pending.iter().flat_map(|m| m.shows.iter()) {
             self.known.hand(s, b, false);
         }
     }
@@ -913,6 +916,7 @@ impl Streams {
             if let Some(p) = self.pull.get_mut(&conn) {
                 p.failed.remove(&(*s, *b));
             }
+            batch.shows.push((*s, *b));
             if let Some(bytes) = blob {
                 self.take_body(ctx, conn, *s, *b, *wrap, *stamp, bytes);
             } else if let Some(c) = self.wanted(ctx, conn, s, b, wrap, *stamp) {
@@ -923,7 +927,7 @@ impl Streams {
             }
         }
         if let Some(p) = self.pull.get_mut(&conn) {
-            for (s, b) in &batch.owed {
+            for (s, b) in &batch.shows {
                 self.known.hand(s, b, true);
             }
             p.hold(batch);
@@ -1443,7 +1447,7 @@ impl Streams {
                 return;
             }
             let Some(batch) = self.pull.get_mut(&conn).and_then(|p| p.next_held()) else { return };
-            for (s, b) in &batch.owed {
+            for (s, b) in &batch.shows {
                 self.known.hand(s, b, false);
             }
             self.apply(ctx, conn, batch);

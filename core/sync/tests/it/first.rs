@@ -108,7 +108,6 @@ fn cost(n: usize) -> Cost {
 // what the maker holds under each member's sync ID, so the maker fetches nothing back from it:
 // as many bodies at 5n members as at n.
 #[test]
-#[ignore = "a dropped own loser stays at a store (issues/record-blob-forgotten-loser.md)"]
 fn a_new_reader_logs_no_copy_of_what_its_source_holds_spec_sync_judgement_3() {
     let (small, large) = (cost(N), cost(LARGE));
     let (asked, answered) = ((small.sent(0, 2, "Fetch"), large.sent(0, 2, "Fetch")), (small.sent(2, 0, "FetchReply"), large.sent(2, 0, "FetchReply")));
@@ -154,7 +153,6 @@ fn a_blob_is_fetched_once_whatever_sync_ids_carry_it_spec_sync_streams_4() {
 // the store keeping the root unread still lists until the maker's Delete reaches it), once each
 // and as many at 5n members as at n.
 #[test]
-#[ignore = "a dropped own loser stays at a store (issues/record-blob-forgotten-loser.md)"]
 fn what_a_reader_fetches_and_drops_does_not_grow_spec_permissions_4() {
     let (small, large) = (cost(N), cost(LARGE));
     let count = |c: &Cost| c.unkept.values().map(Vec::len).sum::<usize>();
