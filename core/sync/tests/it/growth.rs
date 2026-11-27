@@ -1094,13 +1094,13 @@ type Frames = BTreeMap<(usize, &'static str), (u64, u64)>;
 /// Node 0 makes `n` things of its account A by `make` (each held by A's `holds.0`, a small value),
 /// run to quiet after each: the frames between it and A's second node, node 1, and the sync IDs
 /// node 1 pulled anew.
-fn makes(w: &mut World, n: u64, make: fn(&mut osis_engine::Engine, Tid)) -> (Frames, u64) {
+fn makes(w: &mut World, n: u64, make: impl FnMut(&mut osis_engine::Engine, Tid)) -> (Frames, u64) {
     let (f, anew, _) = makes_counting(w, n, make);
     (f, anew)
 }
 
 /// `makes` with the filters' false positives the makes met (Hits on nothing shown, each declined).
-fn makes_counting(w: &mut World, n: u64, make: fn(&mut osis_engine::Engine, Tid)) -> (Frames, u64, u64) {
+fn makes_counting(w: &mut World, n: u64, mut make: impl FnMut(&mut osis_engine::Engine, Tid)) -> (Frames, u64, u64) {
     let a = w.node(0).account.unwrap();
     let frames = |w: &World| -> Frames { w.net.frames.iter().filter(|((x, y, _), _)| (*x, *y) == (0, 1) || (*x, *y) == (1, 0)).map(|((x, _, k), v)| ((*x, *k), *v)).collect() };
     osis_base::costs::take();
@@ -1212,6 +1212,78 @@ fn an_independent(e: &mut osis_engine::Engine, a: Tid) {
         Ok(vec![m])
     })
     .unwrap();
+}
+
+/// One unit of notes/slim-design.md's Today table in a world of its own (`World::new(0)`,
+/// `add_node`, `pair(0)`): three warm-up makes by `make`, then per make over 10, A's `holds.0`
+/// compactions included. Printed: frames each way (count, bytes, by kind), stored rows at the
+/// maker (node 0) and the second node (node 1), engine local rows (`local_census`: no index
+/// rows or states) plus sync store rows (`scan_local`), with the families moving most, and blob
+/// bytes on each node's disks.
+fn today_row(name: &str, mut make: impl FnMut(&mut World) -> Box<dyn FnMut(&mut osis_engine::Engine, Tid)>) {
+    let mut w = World::new(0);
+    w.add_node();
+    w.pair(0);
+    w.run();
+    let mut m = make(&mut w);
+    makes(&mut w, 3, &mut m);
+    let before = [held(&mut w, 0), held(&mut w, 1)];
+    let (f, _) = makes(&mut w, 10, &mut m);
+    let after = [held(&mut w, 0), held(&mut w, 1)];
+    let per = |x: i64| x as f64 / 10.0;
+    eprintln!("{name}, per make:");
+    for x in [0, 1] {
+        let (c, b): (u64, u64) = f.iter().filter(|(k, _)| k.0 == x).fold((0, 0), |a, (_, v)| (a.0 + v.0, a.1 + v.1));
+        let mut kinds: Vec<_> = f.iter().filter(|(k, _)| k.0 == x).map(|(k, v)| (v.1, v.0, k.1)).collect();
+        kinds.sort_unstable_by(|a, b| b.cmp(a));
+        let kinds: Vec<String> = kinds.iter().map(|(b, c, k)| format!("{k} {}/{}", per(*c as i64), per(*b as i64))).collect();
+        eprintln!("  wire {x}->{}: {} frames, {} B ({})", 1 - x, per(c as i64), per(b as i64), kinds.join(", "));
+    }
+    for (x, who) in [(0, "maker"), (1, "second")] {
+        let (b, a) = (&before[x], &after[x]);
+        let mut fams: Vec<(i64, String)> = Vec::new();
+        for (side, (cb, ca)) in [("", (&b.0, &a.0)), ("sync ", (&b.1, &a.1))] {
+            for k in cb.keys().chain(ca.keys()).collect::<std::collections::BTreeSet<_>>() {
+                let d = ca.get(k).map_or(0, |v| v.1 as i64) - cb.get(k).map_or(0, |v| v.1 as i64);
+                if d != 0 {
+                    fams.push((d, format!("{side}{k}")));
+                }
+            }
+        }
+        let total: i64 = fams.iter().map(|f| f.0).sum();
+        fams.sort_unstable_by(|p, q| q.0.abs().cmp(&p.0.abs()).then(p.1.cmp(&q.1)));
+        let fams: Vec<String> = fams.iter().map(|(d, k)| format!("{k} {}", per(*d))).collect();
+        let blobs = |d: usize| format!("{}/{} B", per(a.2[d].0 as i64 - b.2[d].0 as i64), per(a.2[d].1 as i64 - b.2[d].1 as i64));
+        eprintln!("  stored, {who}: {} B ({}); blobs (count/bytes): engine disk {}, sync store disk {}", per(total), fams.join(", "), blobs(0), blobs(1));
+    }
+}
+
+// spec: none (measurement: spec/requirements.md Scale; notes/slim-design.md, Today).
+// What a dependent make, a 1-byte change and an independent make cost per make over real sync
+// (`today_row`), so a slimming job and its base are each one run.
+#[test]
+#[ignore = "by hand: prints notes/slim-design.md's Today table (three worlds)"]
+fn today_table() {
+    today_row("one dependent, one small value, alone", |_| Box::new(a_dependent));
+    today_row("a 1-byte change on one dependent", |w| {
+        let a = w.node(0).account.unwrap();
+        let t = w.write(0, |e| {
+            let mut m = Mutation::new();
+            let t = e.new_thing(&mut m, a);
+            m.set(t, &value_ak(), &Value::Str("a".into())).unwrap();
+            e.commit(m).unwrap();
+            t
+        });
+        w.run();
+        let mut i = 0u8;
+        Box::new(move |e, _| {
+            i += 1;
+            let mut m = Mutation::new();
+            m.set(t, &value_ak(), &Value::Str(char::from(b'a' + i % 26).to_string())).unwrap();
+            e.commit(m).unwrap();
+        })
+    });
+    today_row("one independent (`mint_independent`, held by A's `holds.0`)", |_| Box::new(an_independent));
 }
 
 // spec/sync-judgement.md §3 Dropped bodies, spec/requirements.md Scale: an independent thing

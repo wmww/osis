@@ -67,7 +67,7 @@ Every figure is marked: **[M]** measured, **[C]** computed from spec/wire.md, **
 
 | row | maker | second | what | per |
 |---|---|---|---|---|
-| sync store blob | 0 | 0 | none since B: the blob is made again from its seal in `bp/` and the record (`M/` 42 B marks it, notes/slim-design.md B) | blob |
+| sync store blob | 0 | 0 | none while the record holds its parts: made again from its seal in `bp/` (`M/` 42 B marks it, notes/slim-design.md B); handed back as bytes once a compaction covers its `holds.0` part (notes/slim-design.md, Today) | blob |
 | `c/` | 637 | 637 | key 34, record head, the opened commit | commit |
 | `node/metas` | 39 | 39 | key 32, part count 4, a judgment byte per part (the view is the header's, decoded at open) | commit, part |
 | `bp/` | 117 | 117 | key commit ID and blob ID; the prefix salt again, the aspects its sections list, the parts held | commit |
@@ -116,7 +116,7 @@ Wire is maker to second node (back in brackets); stored is logical, engine rows 
 
 ### Floors
 - **Empty dependent thing [E]**, from the format with notes/slim-design.md B, D and E as far as built. Batched, its record (about 52 B: admin 15, nonce 32) embedded as `created.0` with its aspect entry (about 20 B) and an element of its holder's `holds.0` (about 20 B): about 80 B on the wire, about 320 B stored per node (record and entry in the stored commit, state rows, `t/`, both reference orders). Alone in a commit, add the commit floor below: about 550 B on the wire, 800 B stored per node. Today, with one value: 1355 B (180 back), and 1.5-1.8 KB of local and sync store rows besides the index (notes/slim-design.md, Today).
-- **Small commit [E]**: blob about 320 B (prefix 62, tag 16, header about 170 with the value embedded, signature 66, padding); on the wire about 470 B with its entry (wrap 57, stamp 64, sync ID and heads 30) and no echo; stored per node about 600 B (blob, entry row about 150, record head and meta about 100). Today: 801 B (213 back) on the wire, sealed blob 415 B (notes/slim-design.md, Today). Below that, each further byte is the author's signature, the stamp, the delete key with its commitment, or the wrap: jobs nothing else does.
+- **Small commit [E]**: blob about 320 B (prefix 62, tag 16, header about 170 with the value embedded, signature 66, padding); on the wire about 470 B with its entry (wrap 57, stamp 64, sync ID and heads 30) and no echo; stored per node about 600 B (blob, entry row about 150, record head and meta about 100). Today: 802 B (213 back) on the wire, sealed blob 415 B (notes/slim-design.md, Today). Below that, each further byte is the author's signature, the stamp, the delete key with its commitment, or the wrap: jobs nothing else does.
 
 ## Why the big lines are what they are
 - **The keyset index names its body, not its KEM key** (`HeldKeyset::kem_in`, the earliest body carrying one; `apply::keys::keyset_kem` reads the key from that body or its dropped record when sealing, a rare path): a copy would cost 4.9 KB stored per independent thing at every node, and the same in memory (`Indexes::keysets` is in memory). The key sealed to is still one a valid noted body of the keyset carries. Earliest by body order, so two bodies of one epoch naming different keys (a writer re-publishing a keyset with junk) give every node the same key in any arrival order (`parts::` index checks compare a rebuild with the live index).

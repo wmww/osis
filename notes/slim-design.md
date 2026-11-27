@@ -4,15 +4,15 @@
 Principle (Tess): fixed overhead per thing, aspect, reference and commit is paid on everything forever, so whatever need not be there goes; nothing is assumed sensible as built. A change here must be sound at the model's level (one representation instead of two, a derived fact not stored, a concept merged) and usually deletes code; one that pays off only through a cache or a special case ranks low. Measurements and the byte-by-byte survey: notes/thing-cost.md.
 
 ## Today (measured)
-Sync-harness world (`World::new(0)`, `add_node`, `pair(0)`), node 0 makes, node 1 is its account's second node; a throwaway probe over `growth::makes`: three warm-up makes, then per make over 10, A's `holds.0` compactions included (rows by family and how to measure: notes/thing-cost.md, Survey). Wire is `net.frames` bytes each way; stored is logical bytes of the engine's local rows (`local_census`: index rows and states not counted) plus the sync store's rows (`scan_local`).
+By hand, osis-sync `growth::today_table` (debug, a few seconds): `cargo test -p osis-sync --test it growth::today_table -- --ignored --nocapture`. At a base (a slimming job's merge base), the probe taken from this tree: `tools/bin-at BASE OUT -p osis-sync --take core/sync/tests/it/growth.rs`, then `OUT growth::today_table --ignored --nocapture` from `core/sync`. Per unit a world of its own (`World::new(0)`, `add_node`, `pair(0)`), node 0 makes, node 1 is its account's second node: three warm-up makes, then per make over 10, A's `holds.0` compactions included. Wire is `net.frames` bytes each way (by kind in the output); stored is logical bytes of the engine's local rows (`local_census`: index rows and states not counted) plus the sync store's rows (`scan_local`), by family in the output; blobs are bytes the sync store's disk keeps (sealed blobs it does not make again from a seal).
 
-| unit | wire 0→1 | wire 1→0 | stored, maker | stored, second |
-|---|---|---|---|---|
-| one dependent, one small value, alone | 1355 | 180 | 1538 | 1820 |
-| a 1-byte change on one dependent | 801 | 213 | 849 | 902 |
-| one independent (`mint_independent`, held by A's `holds.0`) | 18.6 KB | 1.3 KB | 16.0 KB | 17.3 KB |
+| unit | wire 0→1 | wire 1→0 | stored, maker | stored, second | blobs, each node |
+|---|---|---|---|---|---|
+| one dependent, one small value, alone | 1355 | 181 | 1539 | 1821 | 647 |
+| a 1-byte change on one dependent | 802 | 213 | 850 | 903 | 0 |
+| one independent (`mint_independent`, held by A's `holds.0`) | 18.5 KB | 1.3 KB | 16.0 KB | 17.3 KB | 907 |
 
-Where it goes, per make (maker / second node): a dependent make `c/` 777, `bp/` 169, `t/` 73, `dw/` 58 (maker), `ou/` 390 (second), `E/` 224, `X/` 50, `S/` 50 (maker, per peer), `q/` 50 and tombstone rows; a 1-byte change `c/` 411 / 392, `bp/` 115, `ou/` 107 (second), and tombstone rows of replaced bodies (`T/`, `Y/`, `t/`, `w/` about 250). A small commit's sealed blob is 415 B (opened 270, header 174).
+Where it goes, per make (maker / second node): a dependent make `c/` 777, `bp/` 169, `t/` 73, `dw/` 58 (maker), `ou/` 390 (second), `E/` 224, `X/` 50, `S/` 50 (maker, per peer), `q/` 50 and tombstone rows; a 1-byte change `c/` 411 / 392, `bp/` 115, `ou/` 107 (second), and tombstone rows of replaced bodies (`T/`, `Y/`, `t/`, `w/` about 250). A small commit's sealed blob is 415 B (opened 270, header 174). A dependent make's 719 B blob keeps its bytes (about 9 in 10 makes) once a compaction snapshot of A's `holds.0` covers its `holds.0` part: the part leaves the record without stripping, so the blob is handed back (B); a replaced value's blob goes with its entry instead.
 
 ## Candidates
 Each: cost now; why it is there (the concept); the change; what it deletes; wire and disk (spec sections); risks.
