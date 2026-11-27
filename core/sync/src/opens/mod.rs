@@ -57,7 +57,7 @@ pub struct Member {
     /// Being ended: served up to this position.
     pub until: Option<Position>,
     /// Ended for its peer's departure (spec/sync-opens.md §6), with the things the peer proved:
-    /// told their removals (`tell`) and served the public's edge alone; at a store source it closes on the peer's
+    /// told by notices alone (`tell`), served nothing; at a store source it closes on the peer's
     /// Lost alone, and registering there waits on no role commit.
     pub departed: Option<Arc<BTreeSet<osis_base::Tid>>>,
 }
@@ -94,7 +94,7 @@ pub struct LeftAt {
     /// The record it left: where its rows live (a record kept nowhere: the connection).
     pub src: Source,
     /// Its reported position (spec/sync-opens.md §6 Lost), as it tells what the peer holds
-    /// (spec/sync-status.md §2): none for one ended for its departure, shown the public's edge alone.
+    /// (spec/sync-status.md §2): none for one ended for its departure, shown nothing.
     pub reported: Option<Position>,
     /// Its `until`, an ended member's.
     pub until: Option<Position>,
@@ -1066,10 +1066,10 @@ impl Opens {
         let until = match m.until {
             Some(u) => u,
             None if m.departed.is_some() => {
-                if !self.tell(ctx, conn, s, true) {
+                if !self.tell(ctx, conn, s) {
                     return;
                 }
-                let u = ctx.holds.departure_until(&s);
+                let u = 0;
                 let Some(rid) = self.conns.get(&conn).and_then(|c| c.rec) else { return };
                 self.set_until(rid, &s, u, moved);
                 u
@@ -1690,7 +1690,7 @@ impl Opens {
         }
         // each member a holder's: told its notices on this connection (`tell`)
         for s in members.clone() {
-            self.tell(ctx, conn, s, false);
+            self.tell(ctx, conn, s);
         }
         for s in &members {
             self.member_stamps.wrote(&(conn, *s), true);
@@ -2520,7 +2520,7 @@ impl Opens {
         // told its removals, `judge`)
         if walk && matches!(shown, Shown::Read(..)) && let Some(u) = self.conns.get(&conn).and_then(|c| c.served.get(&s)).copied() {
             let until = match adm.j {
-                J::Departed => self.conns.get(&conn).is_some_and(|c| c.told_departed.contains(&s)).then(|| ctx.holds.departure_until(&s)),
+                J::Departed => self.conns.get(&conn).is_some_and(|c| c.told_departed.contains(&s)).then_some(0),
                 _ => Some(ctx.holds.until(&s, &by)),
             };
             if until.is_some_and(|x| u >= x) {
@@ -2602,18 +2602,21 @@ impl Opens {
         self.peers.wrote(&s, true);
         moved.push(Moved::Joined(conn, s, rejoin));
         self.set_stop(conn, s, None);
-        self.tell(ctx, conn, s, false);
+        self.tell(ctx, conn, s);
         true
     }
 
     /// Sends the peer on `conn` the notices S's things tell it (spec/permissions.md §4 Notices,
-    /// `Holds::notices`) not yet sent on this connection: to a member opened by role or at a
-    /// store source (`departed` false), the newest box of each holder it reaches that cannot open
-    /// it by its wrap; to one ended for its departure, its departure. Whether a notice of its
-    /// departure went.
+    /// `Holds::notices`) not yet sent on this connection: to a peer J judges departed, whatever
+    /// opened S toward it, its departure and the public's edge; to a member opened by role or at a
+    /// store source, the newest box of each holder it reaches that cannot open it by its wrap.
+    /// Whether a notice of its departure went on this connection.
     /// Cost: one `Engine::notices_for` per open and per member judged; a notice sealed once per
     /// connection.
-    fn tell(&mut self, ctx: &mut Ctx, conn: ConnId, s: SyncId, departed: bool) -> bool {
+    fn tell(&mut self, ctx: &mut Ctx, conn: ConnId, s: SyncId) -> bool {
+        let Some(c) = self.conns.get(&conn) else { return false };
+        let counted = ctx.holds.counts(&c.named, &c.proven.copies);
+        let departed = ctx.holds.judge(&s, &counted) == J::Departed;
         // a member by a read secret holds the epoch it shows: its boxes open by their wraps
         if !departed && self.member(conn, &s).is_some_and(|m| m.by != Credential::J && m.class != SourceClass::Store) {
             return false;
@@ -2643,7 +2646,7 @@ impl Opens {
     /// holds the record: J reader or sync holder stays; an open by a credential stays while it is
     /// admissible; one no longer admissible whose peer J judges neither holder nor departed is
     /// ended (`until`, judged now), and stays ended until it closes; one whose peer J judges
-    /// departed is ended too (`Member::departed`: told its departure, served the public's edge alone; at a store source it
+    /// departed is ended too (`Member::departed`: told by notices, served nothing; at a store source it
     /// closes on the peer's Lost alone), and closes at once once its peer is not; any other closes at once (with a Lost where a connection
     /// holds the record), as does any whose peer is no one once no connection holds the record.
     /// One that stays, not ended, closes keeping where it stopped once this side's class is not
@@ -2678,7 +2681,7 @@ impl Opens {
         let admissible = m.by != Credential::J
             && basis.is_some_and(|b| adm.shows.iter().any(|x| beacon_of(x.matched(), &s, &rr) == b) || adm.tests.iter().any(|t| beacon_of(&t.matched(&s), &s, &rr) == b));
         let stays = holder || admissible;
-        // a peer no longer departed: its stream skipped all but the public's edge, so its member closes
+        // a peer no longer departed: its stream skipped everything, so its member closes
         // at once, naming no position (`close_member`)
         if m.departed.is_some() && adm.j != J::Departed {
             self.end_member(ctx, rid, conn, s, Close::AtOnce, moved);
@@ -2690,22 +2693,22 @@ impl Opens {
             if m.own != adm.own && m.until.is_none() {
                 self.end_member(ctx, rid, conn, s, Close::Class, moved);
             } else if let Some(c) = conn {
-                self.tell(ctx, c, s, false);
+                self.tell(ctx, c, s);
             }
         } else if adm.j == J::Departed {
-            // ended for its departure: told its departure, served the public's edge alone (a reader learns
-            // its removal there); a store learns it only by a Register, so it stays while this
-            // side registers past its keys, until its own Lost
+            // ended for its departure: told by notices (its removal, the public's edge), served
+            // nothing; a store learns it only by a Register, so it stays while this side
+            // registers past its keys, until its own Lost
             if m.departed.is_none() {
-                // at a store the position of its head's event; at a reader the public's edge's,
-                // once its notices went on a connection (`tell`)
+                // at a store the position of its head's event; at a reader 0, once its notices
+                // went on a connection (`tell`)
                 let none = osis_blob::Certificates::default();
                 let copies = conn.and_then(|c| self.conns.get(&c)).map_or(&none, |k| &k.proven.copies);
                 let proven = proven_things(ctx, &named, copies);
                 self.set_departed(rid, &s, Arc::new(proven));
                 let until = match m.class {
                     SourceClass::Store => Some(m.until.unwrap_or_else(|| ctx.holds.until(&s, &m.by))),
-                    _ => m.until.or_else(|| conn.is_some_and(|c| self.tell(ctx, c, s, true)).then(|| ctx.holds.departure_until(&s))),
+                    _ => m.until.or_else(|| conn.is_some_and(|c| self.tell(ctx, c, s)).then_some(0)),
                 };
                 if let Some(u) = until {
                     self.set_until(rid, &s, u, moved);
@@ -2842,7 +2845,7 @@ impl Opens {
             let at = c.served.entry(s).or_insert(u);
             *at = (*at).max(u);
         }
-        // one ended for its departure was shown the public's edge alone: its position past the rest
+        // one ended for its departure was shown nothing: its position
         // names nothing it holds, so its peer rejoins from the start
         let cursor = match why {
             Close::Left => None,

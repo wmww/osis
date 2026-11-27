@@ -200,9 +200,6 @@ impl Holds for Table {
     fn until(&mut self, _s: &SyncId, _by: &Credential) -> Position {
         self.until
     }
-    fn departure_until(&mut self, _s: &SyncId) -> Position {
-        self.until
-    }
     fn notices(&mut self, s: &SyncId, proven: &std::collections::BTreeSet<osis_base::Tid>) -> Vec<osis_sync::opens::holds::Told> {
         let departed = proven.iter().any(|p| self.j.get(&(*s, *p)) == Some(&J::Departed));
         let told = osis_sync::opens::holds::Told { key: [0; 32], holder: osis_base::Tid::from_bytes([0; 15]), epoch: osis_crypto::Epoch::new(1, [0; 32]).expect("small epoch"), bytes: vec![0], departs: true };

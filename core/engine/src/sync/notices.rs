@@ -37,7 +37,8 @@ impl Notice {
 impl Engine {
     /// The notices a peer proving `proven` is told under sync ID `s` (spec/permissions.md §4
     /// Notices), per independent thing X reading `s`: per holder of X the peer reaches
-    /// (`reaches`) that departed X, the commit taking its read; per current holder it reaches,
+    /// (`departed_reaches`) that departed X, the commit taking its read, and the public's edge
+    /// (`public_told`); per current holder it reaches,
     /// the newest held commit telling it its boxes (`boxed_unopened`): every later box of it opens
     /// by its wrap from there; and, where an older one, the newest such commit writing its edge
     /// (its role, which no later box carries). Each to the holder's read keyset this node seals to
@@ -52,9 +53,17 @@ impl Engine {
             let deps = self.read(|tx| crate::rotation::departures::departures(tx, &t))?;
             let mut told: Vec<(CommitId, Tid, bool)> = Vec::new();
             for d in deps.iter().filter(|d| d.concerns(Role::Read) && !self.core.is_own(&d.holder)) {
-                let Some(c) = d.edge.as_ref().and_then(taking) else { continue };
+                let Some(c) = d.edge.as_ref().and_then(|l| taking(l, Role::Read)) else { continue };
                 if self.core.ix.commits.contains_key(&c) && self.departed_reaches(&t, &c, &d.holder, proven) {
                     told.push((c, d.holder, true));
+                }
+            }
+            // the public's edge, to each proven thing that left `t` (J's departed, `judge_peer`):
+            // the public's role is every party's, that thing's too, whatever epochs it can open
+            let gone: BTreeSet<Tid> = proven.iter().filter(|p| !self.core.is_own(p) && self.core.role_now(p, &t).is_none() && self.core.timelines().get(p).is_some_and(|tl| tl.roles_ever(p).contains_key(&t))).copied().collect();
+            if !gone.is_empty() {
+                for c in self.public_told(&t) {
+                    told.extend(gone.iter().map(|m| (c, *m, true)));
                 }
             }
             // per holder, the newest box and the newest edge write on it (its role), which a later
@@ -126,12 +135,22 @@ impl Engine {
         proven.contains(holder) || tl.roles_on(holder, at).iter().any(|(p, r)| proven.contains(p) && *r >= Role::Read)
     }
 
-    /// Whether held blob `b` under `s` is shown a peer this node judges departed
-    /// (spec/sync-opens.md §6): a blob of a commit of the public's edge on `s`'s things
-    /// (`public_edge`): the public's role is every party's, that peer's too. Its notices go
-    /// beside the stream (`notices_for`).
-    pub fn departed_shown(&mut self, s: &SyncId, b: &osis_base::BlobId) -> bool {
-        self.blob_commit(b).is_some_and(|c| self.public_edge(s).is_ok_and(|e| e.contains(&c)))
+    /// What a departed holder is told of the public's edge on `t` (spec/permissions.md §4
+    /// Notices): the newest held commit boxing the public and, where older, the newest writing its
+    /// edge (its role, which no later box carries).
+    fn public_told(&mut self, t: &Tid) -> BTreeSet<CommitId> {
+        let mut newest: BTreeMap<&str, (osis_base::Ts, CommitId)> = BTreeMap::new();
+        for c in self.edge_on(&Tid::PUBLIC, t) {
+            let Some(h) = self.header(&c) else { continue };
+            let (ts, named) = (h.ts, self.holders_named(&c));
+            for ak in ["secrets.0", "roles.0"] {
+                let names = h.aspect_parts(t, ak).any(|ai| named.get(&ai).is_some_and(|hs| hs.contains(&Tid::PUBLIC)));
+                if names && newest.get(ak).is_none_or(|(x, _)| ts > *x) {
+                    newest.insert(ak, (ts, c));
+                }
+            }
+        }
+        newest.into_values().map(|(_, c)| c).collect()
     }
 
     /// Whether current holder `m` of `t` reaches a peer proving `proven`: `m` is among `proven`,
@@ -214,13 +233,13 @@ impl Engine {
     }
 }
 
-/// On a holder's edge log, the commit taking its read: the first applied write leaving it below
-/// read after the newest giving it read (or after its start).
-fn taking(log: &osis_keys::EdgeLog) -> Option<CommitId> {
-    let after = match log.writes.iter().rposition(|w| w.applied && w.role >= Some(Role::Read)) {
+/// On a holder's edge log, the commit taking role `r` from it: the first applied write leaving it
+/// below `r` after the newest giving it `r` or above (or after its start).
+fn taking(log: &osis_keys::EdgeLog, r: Role) -> Option<CommitId> {
+    let after = match log.writes.iter().rposition(|w| w.applied && w.role >= Some(r)) {
         Some(i) => log.writes.get(i + 1..)?,
-        None if log.start >= Some(Role::Read) => log.writes.as_slice(),
+        None if log.start >= Some(r) => log.writes.as_slice(),
         None => return None,
     };
-    after.iter().find(|w| w.applied && w.role < Some(Role::Read)).map(|w| w.key.commit)
+    after.iter().find(|w| w.applied && w.role < Some(r)).map(|w| w.key.commit)
 }

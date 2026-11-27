@@ -507,11 +507,14 @@ impl Engine {
     /// `key`, that key sealed to `kem`, the read KEM key of the holder's keyset at the notice's
     /// epoch (spec/wire.md §9 Notice). `None` while the removal is not applied here.
     pub(crate) fn sealed_notice(&mut self, n: &crate::sync::notices::Notice, kem: &osis_crypto::KemPublicKey, key: &osis_crypto::Secret32) -> Result<Option<Vec<u8>>> {
-        // a commit boxing the holder tells it its box; a removal, its edge-class parts
-        let pieces = self.header(&n.commit).map(|h| h.aspect_parts(&n.thing, "secrets.0")).unwrap_or(0..0);
+        // a commit boxing the holder tells it its box; else one boxing the public, the public's
+        // (every party's); a removal, its edge-class parts
         let named = self.holders_named(&n.commit);
-        let boxes = pieces.filter_map(|ai| named.get(&ai)).any(|hs| hs.contains(&n.holder));
-        let cut = if boxes { crate::sync_ids::Cut::Told { holder: n.holder } } else { crate::sync_ids::Cut::Evidence { step: false } };
+        let boxes = |m: &Tid| self.header(&n.commit).is_some_and(|h| h.aspect_parts(&n.thing, "secrets.0").filter_map(|ai| named.get(&ai)).any(|hs| hs.contains(m)));
+        let cut = match [n.holder, Tid::PUBLIC].into_iter().find(|m| boxes(m)) {
+            Some(holder) => crate::sync_ids::Cut::Told { holder },
+            None => crate::sync_ids::Cut::Evidence { step: false },
+        };
         let Some(p) = self.cert_copy(&n.commit, &n.thing, cut)? else { return Ok(None) };
         let limits = osis_base::Limits::new(osis_base::format::MAX_OBJECT_DEPTH, osis_base::format::MAX_BLOB);
         let as_value = |b: &[u8]| osis_base::decode(b, &limits).map_err(|_| Error::Corrupt("commit blob"));

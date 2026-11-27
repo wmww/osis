@@ -7,4 +7,4 @@ spec/sync-opens.md §6 (A reader tells a public reader the public's removal): `u
 
 Seen in `differential::a_locators_redeemer_loses_the_thing_with_the_public_*` (trace of node 0 at the Revoke: `until` 99, the removal's S entry logged at 110, a Lost at once).
 
-The fix needs `until` set once the removal's S entry is logged, as Departed does for notices (`departure_until`, `close_if_reached`). Open question: what the member is served meanwhile (everything logged until then is below the eventual `until`, but if the entry never logs here the member is never bounded). The same timing applies to `superseded_at` for a member ended by a read secret when the rotation is judged before it is logged.
+The fix needs `until` set once the removal's S entry is logged, as Departed sets its `until` only once its notice went (`close_if_reached`). Open question: what the member is served meanwhile (everything logged until then is below the eventual `until`, but if the entry never logs here the member is never bounded). The same timing applies to `superseded_at` for a member ended by a read secret when the rotation is judged before it is logged.

@@ -129,12 +129,6 @@ pub trait Ground {
         let _ = (s, b);
         false
     }
-    /// Whether held blob `b` under S is shown a departed peer (`Engine::departed_shown`): the
-    /// public's edge.
-    fn departed_shown(&mut self, s: &SyncId, b: &BlobId) -> bool {
-        let _ = (s, b);
-        false
-    }
     /// The write key of the head S's `sync.0` records here (`ReadCredentials::head`), which the
     /// store's served path follows.
     fn head_write(&mut self, s: &SyncId) -> Option<osis_crypto::VerifyingKey> {
@@ -670,10 +664,6 @@ impl Ground for EngineGround<'_> {
 
     fn role_entry(&mut self, s: &SyncId, b: &BlobId) -> bool {
         self.engine.role_entry(s, b)
-    }
-
-    fn departed_shown(&mut self, s: &SyncId, b: &BlobId) -> bool {
-        self.engine.departed_shown(s, b)
     }
 
     fn want(&mut self, store: &crate::store::Store, s: &SyncId, c: &osis_base::CommitId) -> Result<Option<Given>> {

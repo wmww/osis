@@ -537,14 +537,12 @@ fn a_removed_reader_takes_from_the_publics_box_no_more_than_a_stranger_spec_perm
     }
 }
 
-// spec/sync-opens.md §6 (A member whose peer J judges departed is ended too: served its notices
-// and the public's edge): node 0's
-// account reads node 1's public thing and strongs it; both removed (the public's first, with no
-// run between; or node 0's, a run, then the public's), node 0 is departed at every reader, so a
-// notice tells it its own removal, and the public's removal, which has no notice (the public
-// holds no keys), reaches it only as the public's edge: it reads the thing no more, as the model
-// says. Failed while a departed member was served its notices alone: node 0 kept reading at the
-// public's role, its roster still listing the public.
+// spec/sync-opens.md §6 (A member whose peer J judges departed is ended too: told its removal
+// and the public's edge by notices): node 0's account reads node 1's public thing and strongs it;
+// both removed (the public's first, with no run between; or node 0's, a run, then the public's),
+// node 0 is departed at every reader, so notices tell it its own removal and the public's: it
+// reads the thing no more, as the model says. Failed while a departed member was told its own
+// removal alone: node 0 kept reading at the public's role, its roster still listing the public.
 #[test]
 fn a_departed_public_reader_holds_the_publics_removal_spec_sync_opens_6() {
     use crate::harness::history::{Gives, Holder};
@@ -731,4 +729,32 @@ fn a_strong_in_an_inboxs_held_history_holds_its_target_spec_data_model_8() {
 fn a_removed_reader_keeps_a_thing_the_public_syncs_unread_spec_sync_set_2() {
     use crate::harness::script::*;
     holds_on(0, 3, 4, &[New(2), Give(2, 0, Holder::Node(0), Reads), Give(2, 0, Holder::Public, Syncs), Strong(0, None, 0), Run, Revoke(2, 0, Holder::Node(0))], String::new(), false);
+}
+
+// spec/sync-opens.md §6 (A member whose peer J judges departed: told the public's edge by
+// notices), spec/sync-set.md §2 (Own things: the public's role where the node holds its grant):
+// node 0 makes thing 0 and thing 1 under it, gives node 1's account sync on thing 0, which node
+// 1 strongs; node 0 gives the public sync, removes node 1's account, then grants it read on thing
+// 1, so node 1 holds thing 0 as a stub (thing 0 is thing 1's admin) as well as by its strong. A
+// sync-only holder opens none of thing 0's role commits, so it learns the public's grant only from
+// a notice sealed to it: it keeps thing 0 unread by the public's sync, as the model says. Failed
+// while a departed peer was served the public's edge as stream entries (it holds no read epoch
+// they are wrapped under) and told its notices only on a member ended for its departure (node 1
+// opened thing 0's sync ID by the public entry): node 1 held thing 0 as a stub alone.
+#[test]
+fn a_removed_sync_holder_is_told_the_publics_sync_spec_sync_opens_6() {
+    use crate::harness::script::*;
+    holds_on(0, 2, 3, &[New(0), NewIn(0, 0), Give(0, 0, Holder::Node(1), Syncs), Strong(1, None, 0), Run, Give(0, 0, Holder::Public, Syncs), Revoke(0, 0, Holder::Node(1)), Give(0, 1, Holder::Node(1), Reads)], String::new(), false);
+}
+
+// spec/sync-opens.md §6 (whatever opened S toward it): as above,
+// but node 2 (node 0's account) gives the public sync while node 0 removes node 1's account, no
+// run between, so the removal's rotation leaves the public out until a re-seal. Node 1 opens thing
+// 0's sync ID at node 2 by the public entry and is told there; it keeps thing 0 unread, as the
+// model says. Failed while the public's edge went as stream entries, and while a departed peer
+// was told nothing on a member the public entry opened.
+#[test]
+fn a_removed_sync_holder_is_told_the_publics_sync_granted_meanwhile_spec_sync_opens_6() {
+    use crate::harness::script::*;
+    holds_on(0, 2, 3, &[New(0), NewIn(0, 0), Give(0, 0, Holder::Node(1), Syncs), Strong(1, None, 0), Run, Give(2, 0, Holder::Public, Syncs), Revoke(0, 0, Holder::Node(1)), Give(0, 1, Holder::Node(1), Reads)], String::new(), false);
 }

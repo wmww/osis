@@ -152,10 +152,6 @@ pub trait Holds {
     /// in S of a rotation superseding `by`'s epoch was first logged, else the node log's end; at
     /// a node keeping S unread the position of its head's event.
     fn until(&mut self, s: &SyncId, by: &Credential) -> Position;
-    /// A member ended for its peer's departure at a reader, once its notices went: the highest
-    /// position at which an entry of the public's edge (`Engine::public_edge`) was first logged,
-    /// else 0.
-    fn departure_until(&mut self, s: &SyncId) -> Position;
     /// The notices S's things tell a peer proving `proven` (`Engine::notices_for`), each sealed
     /// afresh for this connection: its content key, its bytes, and whether it tells a departure.
     fn notices(&mut self, s: &SyncId, proven: &BTreeSet<osis_base::Tid>) -> Vec<Told>;
@@ -457,10 +453,6 @@ impl Holds for NodeHolds<'_, '_> {
     fn until(&mut self, s: &SyncId, by: &Credential) -> Position {
         // a store failure ends the member at the log's end read before it (0: nothing served)
         member_until(self.cx, s, by).unwrap_or(0)
-    }
-
-    fn departure_until(&mut self, s: &SyncId) -> Position {
-        public_edge_at(self.cx, s).ok().flatten().unwrap_or(0)
     }
 
     fn notices(&mut self, s: &SyncId, proven: &BTreeSet<osis_base::Tid>) -> Vec<Told> {

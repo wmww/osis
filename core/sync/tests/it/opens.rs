@@ -355,8 +355,9 @@ fn a_digest_difference_closes_one_sided_members_spec_sync_opens_3() {
 
 // spec/sync-opens.md §4 Admissible, §6 (A reader tells a removed reader its departure): b, away
 // at its removal, comes back holding the read secret of the epoch a's rotation superseded. a shows
-// it toward b alone (J departed): b's Hit opens S ended at once, served up to its `until`; closed
-// there, b's next Hit on it opens nothing on that connection. Control: a peer a judges unknown,
+// it toward b alone (J departed): b's Hit opens S ended at once, `until` 0 (told by notices,
+// served nothing); closed once b's join names a position, b's next Hit on it opens nothing on
+// that connection. Control: a peer a judges unknown,
 // holding the same secret, opens nothing.
 #[test]
 fn a_departed_reader_opens_ended_on_its_superseded_epoch_spec_sync_opens_6() {
@@ -375,26 +376,25 @@ fn a_departed_reader_opens_ended_on_its_superseded_epoch_spec_sync_opens_6() {
             continue;
         }
         let m = p.a.opens.members(p.ca)[&S].clone();
-        assert!(m.departed.is_some() && m.until == Some(p.a.table.until) && m.by == Credential::ReadSecret(old.0), "ended at once: {m:?}");
+        assert!(m.departed.is_some() && m.until == Some(0) && m.by == Credential::ReadSecret(old.0), "ended at once: {m:?}");
         assert!(p.b.open(p.cb, &S), "b opens on a's answer");
-        let until = p.a.table.until;
-        p.a.reported(p.ca, S, until);
+        p.a.reported(p.ca, S, 0);
         p.run();
         assert!(!p.a.open(p.ca, &S) && !p.b.open(p.cb, &S), "closed at its until, and not opened again on this connection");
     }
 }
 
 // spec/sync-opens.md §6 (Lost: a member opened after the first Pull has no reported position
-// until a join names it; A reader tells a public reader the public's removal; A reader tells a
-// removed reader its departure): b's stream already stands past S's `until` (it took a's log
-// there while S was closed) when it hits a superseded read secret a shows, lapsed or toward a
-// departed peer. The member opens ended and closes only once b's join names a position at or past
+// until a join names it; A reader tells a public reader the public's removal): b's stream already
+// stands past S's `until` (it took a's log there while S was closed) when it hits a lapsed read
+// secret a shows. The member opens ended and closes only once b's join names a position at or past
 // `until`, never on the stream's: b never held S's entries the stream passed (failed: closed at
 // once with a Lost at `until`, b served nothing it lacked). Closed there, b's next Hit on it
-// opens nothing on that connection, lapsed as departed.
+// opens nothing on that connection.
 #[test]
 fn an_ended_member_closes_on_its_join_not_the_streams_position_spec_sync_opens_6() {
-    for departed in [true, false] {
+    {
+        let departed = false;
         let mut p = reader_pair(account(1), account(2));
         p.a.reported_stream(p.ca, 20);
         p.a.table.judge_as(S, tid(2), if departed { J::Departed } else { J::Unknown });
@@ -925,16 +925,16 @@ fn a_j_open_closes_when_its_peer_stops_counting_spec_sync_opens_6() {
         assert_eq!(of_kind(&r.sent(), 38).len(), usize::from(!stays), "{j:?}: a Lost");
         if j == J::Departed {
             let m = &r.opens.members(adv.peer)[&S];
-            assert!(m.departed.is_some() && m.until == Some(r.table.until), "ended for its departure: {m:?}");
-            r.reported(adv.peer, S, r.table.until);
+            assert!(m.departed.is_some() && m.until == Some(0), "ended for its departure: {m:?}");
+            r.reported(adv.peer, S, 0);
             assert!(!r.open(adv.peer, &S) && of_kind(&r.sent(), 38).len() == 1, "closed at its until with a Lost");
         }
     }
 }
 
 // ON_peermoves (spec/sync-opens.md §4 Departed, §6): a peer removed while connected, its removal
-// held here before any rotation (no credential of S moves), is ended: served S's role entries
-// alone up to its departure, it closes once it reports that position, and its Hit on the read
+// held here before any rotation (no credential of S moves), is ended: told by notices and served
+// nothing, it closes once it reports a position, and its Hit on the read
 // secret it holds, at an epoch not covering its departure, opens nothing again. Across a restart
 // the record keeps the member ended for its departure; with no connection to send its notice on,
 // it has no `until` yet (the next connection tells it, then closes it there).
@@ -944,9 +944,8 @@ fn a_removal_held_here_ends_a_credential_open_spec_sync_opens_6() {
     p.a.table.judge_as(S, tid(2), J::Departed);
     p.a.settle();
     let m = p.a.opens.members(p.ca)[&S].clone();
-    assert!(m.departed.is_some() && m.until == Some(p.a.table.until), "ended, before any rotation: {m:?}");
-    let until = p.a.table.until;
-    p.a.reported(p.ca, S, until);
+    assert!(m.departed.is_some() && m.until == Some(0), "ended, before any rotation: {m:?}");
+    p.a.reported(p.ca, S, 0);
     p.run();
     assert!(!p.a.open(p.ca, &S) && !p.b.open(p.cb, &S), "closed at its until; b's Hit refused: a judges it departed");
     // held while away (the record keeps the member), then a restart: the reconnect closes it

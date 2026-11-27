@@ -59,8 +59,6 @@ struct Table {
     asked: usize,
     /// Role entries by this node's judgement (`Ground::role_entry`).
     role: std::collections::BTreeSet<BlobId>,
-    /// Entries of the public's edge (`Ground::departed_shown`).
-    public_edge: std::collections::BTreeSet<BlobId>,
 }
 
 impl Ground for Table {
@@ -90,9 +88,6 @@ impl Ground for Table {
     }
     fn role_entry(&mut self, _s: &SyncId, b: &BlobId) -> bool {
         self.role.contains(b)
-    }
-    fn departed_shown(&mut self, _s: &SyncId, b: &BlobId) -> bool {
-        self.public_edge.contains(b)
     }
     fn open_relay(&mut self, _s: &SyncId, _e: &Entry, _bytes: &[u8]) -> Result<osis_engine::sync::RelayOpened> {
         Ok(self.relay.unwrap_or(osis_engine::sync::RelayOpened::NotOpen))
@@ -546,14 +541,13 @@ fn listed_then_pushed_spec_sync_streams_4() {
     assert!(p.b.streams.known().present(&s, &y));
 }
 
-// spec/sync-opens.md §6, spec/sync-streams.md §4: a's log holds a role entry, a plain entry, an
-// entry of the public's edge, and the deletion of another entry. Toward a departed peer a lists
-// the public's edge alone (its notices go beside the stream): no role entry (served up to a
-// rotation's `until`, a role commit made knowing the removal leaked), no `Deleted` (when S
+// spec/sync-opens.md §6, spec/sync-streams.md §4: a's log holds a role entry, a plain entry and
+// the deletion of another entry. Toward a departed peer a lists nothing (it is told by notices
+// alone): no role entry (a role commit made knowing the removal leaked), no `Deleted` (when S
 // deletes) and no head event (when S's sync ID steps); toward a member, the deletion and the head
 // go.
 #[test]
-fn a_departed_peer_is_served_the_publics_edge_alone_spec_sync_opens_6() {
+fn a_departed_peer_is_served_nothing_spec_sync_opens_6() {
     let mut p = Pair::new();
     let k = Sid::new(10);
     let s = k.id;
@@ -563,15 +557,13 @@ fn a_departed_peer_is_served_the_publics_edge_alone_spec_sync_opens_6() {
     let peer = osis_base::Tid::from_bytes([1; 15]);
     let role = p.a.log(s, 100);
     p.a.log(s, 101);
-    let public = p.a.log(s, 103);
     let gone = p.a.log(s, 104);
     p.a.store.drop_entry(&s, &gone, Vec::new()).unwrap();
     p.a.table.role.insert(role);
-    p.a.table.public_edge.insert(public);
     let head = |r: &osis_proto::PullReply| r.events.iter().any(|(x, e)| *x == s && matches!(e, Event::Head(_)));
     p.a.open.members.entry(C).or_default().insert(s, Member { departed: Some(std::sync::Arc::new([peer].into())), ..member() });
     let r = pull_at(&mut p.a, 0, plain_pull(None, vec![], 1 << 20));
-    assert_eq!(added(&r.events), [public], "the public's edge alone");
+    assert!(added(&r.events).is_empty(), "no entry");
     assert!(!r.events.contains(&(s, Event::Deleted(gone))), "no deletion");
     assert!(!head(&r), "no head");
     p.a.open.members.entry(C).or_default().insert(s, member());
