@@ -3,7 +3,7 @@
 > Priority: normal
 > Tags: engine, sync, tests
 
-Decided (Sheave): being handed role commits is not entry.
+Decided (Sheave): being handed role commits is not entry. Option chosen: the local-part log (the local part is a unit like any other: what it carries is what the node logged there), not a gate on arrival.
 
 Reproducer (engine `tests/it/closure.rs`, fails today): `LocalPeer::fresh(2, T0)`, `sync_all`; peer 0 makes t (`new_thing` with its node thing, a value), grants peer 1's node thing read on t, delivers the grant's packages to peer 1 (`deliver`), then `hold_at(1, t)` and `sync_all`: peer 1 `closure_holds(&t)`, and reads t.
 
