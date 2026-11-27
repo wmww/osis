@@ -1008,7 +1008,6 @@ mod tests {
     // A genuine grant past the cap reads its boxes once an applied one frees a place, or it waits
     // for good on the sync ID those secrets open.
     #[test]
-    #[ignore = "stub rewrite: the grant delivered by hand never applies at the grantee (cause not sorted)"]
     fn refused_boxes_read_when_a_grant_applies_spec_crypto_4() {
         let (mut lp, ps) = LocalPeer::accounts(2, 0, WallMs(1_700_000_000_000)).unwrap();
         let (me, b) = (ps[0], ps[1]);
@@ -1023,9 +1022,15 @@ mod tests {
         };
         let ((t1, c1), (t2, _)) = (thing(&mut lp), thing(&mut lp));
         let edge = ct::Edge { role: Role::Read, until: None, may_grant: false, retain: false, floor: None };
-        let g1 = *lp.peers[0].engine.grant(&t1, &b, &edge).unwrap().commits.last().unwrap();
-        let g2 = *lp.peers[0].engine.grant(&t2, &b, &edge).unwrap().commits.last().unwrap();
-        let (p1, p2) = (lp.peers[0].engine.package(&g1).unwrap().unwrap(), lp.peers[0].engine.package(&g2).unwrap().unwrap());
+        // each grant's commits (making the thing independent, then the edge), and its signal
+        let mut grant = |t: &Tid| {
+            let e = &mut lp.peers[0].engine;
+            let cs = e.grant(t, &b, &edge).unwrap().commits;
+            e.signal_grant(t, &b, &[]).unwrap();
+            cs.iter().map(|c| e.package(c).unwrap().unwrap()).collect::<Vec<_>>()
+        };
+        let (p1, p2) = (grant(&t1), grant(&t2));
+        let g1 = p1.last().unwrap().id;
         lp.peers[1].engine.index_poked = true;
         for n in 0..MAX_READING_ACTORS - 1 {
             let n = u8::try_from(n).unwrap();
@@ -1033,8 +1038,9 @@ mod tests {
         }
         // the grants' commits reach the grantee before their fires
         lp.hold_fires(true);
-        lp.deliver(1, &p1).unwrap();
-        lp.deliver(1, &p2).unwrap();
+        for pk in p1.iter().chain(&p2) {
+            lp.deliver(1, pk).unwrap();
+        }
         let held = |lp: &LocalPeer, t: &Tid| lp.peers[1].engine.core.ix.secrets.get(t).is_some_and(|e| e.read.holds_any());
         assert!(held(&lp, &t1));
         assert!(!held(&lp, &t2), "past the cap");
