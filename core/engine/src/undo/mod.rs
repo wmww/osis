@@ -599,7 +599,7 @@ mod tests {
     // changes nothing, whatever it answers. A creates a thing writing `x` on it, keeping history
     // (its creation's undo clears it), and sets register `x` twice keeping history, C overwriting the first. Probing the creation, the
     // first set (superseded) and the second (revertible) leaves the state, the clock, the
-    // generations, the session counters and the events as they were; the revert then writes.
+    // store's commits, the indexes, the session counters and the events as they were; the revert then writes.
     #[test]
     fn check_revertible_changes_nothing() {
         let (mut lp, t, _, keep) = two();
@@ -627,7 +627,7 @@ mod tests {
         let nonce = p.engine.core.session.nonce;
         let seen = |e: &mut crate::Engine| {
             let ctr = e.run(|tx| Ok((tx.txn.counter(&t, &x, &nonce)?, tx.txn.counter(&n, &x, &nonce)?))).unwrap();
-            (e.get(&t, &x).unwrap(), e.get(&n, &x).unwrap(), e.core.hlc.last(), e.core.generation, e.core.memory_generation, ctr, e.commit_ids().len())
+            (e.get(&t, &x).unwrap(), e.get(&n, &x).unwrap(), e.core.hlc.last(), e.store_writes().committed, e.index_digest(), ctr, e.commit_ids().len())
         };
         let before = seen(&mut p.engine);
         assert!(p.engine.check_revertible(&made).unwrap());

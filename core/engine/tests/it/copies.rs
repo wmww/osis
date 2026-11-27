@@ -72,7 +72,7 @@ fn observe(lp: &mut LocalPeer, t: Tid) -> Vec<String> {
         let reads: Vec<_> = p.engine.aspects(&t).unwrap().into_iter().map(|ak| (ak.clone(), p.engine.get(&t, &ak).unwrap())).collect();
         out.push(format!("{:?}", p.engine.index_digest()));
         out.push(p.engine.perm_digest(false));
-        out.push(format!("{reads:?} {:?} {:?}", p.drain_events(), p.engine.point().3));
+        out.push(format!("{reads:?} {:?} {:?}", p.drain_events(), p.engine.now()));
         out.push(format!("{:?} {:?} {:?}", p.backend.dump(), p.backend.io(), p.backend.syncs()));
         out.push(format!("{:?}", p.engine.store_dump().unwrap()));
     }

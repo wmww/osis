@@ -71,6 +71,7 @@ impl Engine {
     pub fn test_copy(&self, clock: std::sync::Arc<dyn osis_base::Clock>) -> Result<Engine> {
         osis_base::copying::copying(|| {
             Ok(Engine {
+                instance: self.instance,
                 store: self.store.test_copy()?,
                 blobs: self.blobs.clone().test_copy(clock.clone())?,
                 blob_stamps: self.blob_stamps.clone(),

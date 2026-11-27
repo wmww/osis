@@ -359,8 +359,25 @@ impl View {
     }
 }
 
-/// `Engine::point`.
-pub type ReadPoint = (u64, u64, u64, u64);
+/// Answers of `Engine::memo`, kept per engine: one memo shared by several engines (a harness's,
+/// over its nodes) never gives one engine's answer for another's, whose own stamps may stand.
+pub struct Kept<K, V>(memo::Memo<(u64, K), V>);
+
+impl<K: std::hash::Hash + Eq + Clone, V: Clone + PartialEq + std::fmt::Debug> Kept<K, V> {
+    pub fn new(name: &'static str) -> Self {
+        Kept(memo::Memo::new(name))
+    }
+}
+
+/// A copy keeps the answers inside a world copy, as `Memo` does.
+impl<K: std::hash::Hash + Eq + Clone, V: Clone> Clone for Kept<K, V> {
+    fn clone(&self) -> Self {
+        Kept(self.0.clone())
+    }
+}
+
+/// `Engine::instance`: one sequence for the process.
+static INSTANCES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// The header whose canonical bytes are `bytes`, if they hash to `id` and decode.
 pub(crate) fn decode_stored_header(id: &CommitId, bytes: &[u8]) -> Option<Header> {
@@ -1260,12 +1277,10 @@ pub struct Core {
     /// Stored commit records and their parts, decoded once per write of the record
     /// (`decoded::DecodedCommits`).
     pub(crate) decoded: decoded::DecodedCommits,
-    /// Bumped whenever a transaction changes the indexes or a state, rolls back, or the caches
-    /// reload (it never goes back): caches derived from them (the sync engine's) compare it.
+    /// Bumped whenever a transaction changes the indexes or a state, or the caches reload (it
+    /// never goes back): `Certified`'s follow runs only once it moved (`certificates_quiet`),
+    /// a fixed point per engine (issues/derived-state-recomputed.md).
     pub generation: u64,
-    /// `generation` for memory transactions (`Tx::set_memory`): what they change is in memory
-    /// only, so durable-derived caches (node-sync's) keep theirs.
-    pub memory_generation: u64,
     /// The running transaction is a memory one (`Tx::set_memory`).
     pub memory_tx: bool,
     /// The room node-sync gave the memory commit being ingested (spec/sync-compaction.md §2 caps,
@@ -1634,11 +1649,7 @@ impl Core {
 
     /// Notes that the running transaction changes the indexes or a state (drops derived caches).
     pub fn touch(&mut self) {
-        if self.memory_tx {
-            self.memory_generation += 1;
-        } else {
-            self.generation += 1;
-        }
+        self.generation += 1;
         self.dirty = true;
     }
 
@@ -1897,7 +1908,6 @@ impl Core {
             generation: _,
             // the store's count, read by `changed_since`
             store_rows: _,
-            memory_generation: _,
             // work lists and hints a superset of which is harmless (the consumer re-checks each
             // entry against the restored state), and what a step only moves forward
             place: _,
@@ -2270,9 +2280,8 @@ impl Core {
             death_walks: 0,
             rebuilds: 0,
             decoded: Default::default(),
-            generation: 0,
-            memory_generation: 0,
             memory_tx: false,
+            generation: 0,
             memory_room: None,
             memory_waits: BTreeSet::new(),
             walks: Default::default(),
@@ -2655,6 +2664,9 @@ pub(crate) fn decode_commit_record(v: &[u8]) -> Result<CommitRecord> {
 
 /// One node's engine.
 pub struct Engine {
+    /// This engine among every one built in the process (`Kept`); a test copy keeps its
+    /// original's, as it keeps its memos' answers.
+    instance: u64,
     store: Store,
     store_rng: SeededRng,
     /// The node's one store of ciphertext (`osis_store::Ciphertext`): every blob the engine
@@ -2986,10 +2998,21 @@ impl Engine {
         Ok(out)
     }
 
-    /// While this stands (no commit changed the store, the indexes stand, the clock stands) a
-    /// read of the engine repeats itself.
-    pub fn point(&self) -> ReadPoint {
-        (self.store.changes(), self.core.generation, self.core.memory_generation, self.core.now().0)
+    /// `f`'s answer for `k`, kept in `memo` while everything it read stands (`osis_base::memo`):
+    /// how a caller outside the engine keeps what it read of it. Outside a memo's computation the
+    /// memo clock and the blobs are brought to now first, as a read does, so a kept answer never
+    /// outlives an expiry or `until` it read.
+    pub fn memo<K: std::hash::Hash + Eq + Clone, V: Clone + PartialEq + std::fmt::Debug>(&mut self, kept: &Kept<K, V>, k: &K, f: impl Fn(&mut Engine) -> Result<V>) -> Result<V> {
+        if !memo::computing() {
+            if self.blobs_unsettled {
+                memo::unrecorded(|| self.settle_blobs())?;
+            }
+            let now = self.core.hlc.wall().0;
+            self.core.time.set(now);
+        }
+        let k = (self.instance, k.clone());
+        let mut at = (self, kept);
+        memo::Memo::get_in(&mut at, |c| &c.1.0, &k, |c| f(&mut *c.0))
     }
 
     /// The engine of node `id` over `store`, its indexes empty (`create` writes them, `open`
@@ -2999,7 +3022,7 @@ impl Engine {
         let rows = store.row_changes();
         // its one writer is `run`, each transaction undone whole (`memo::Undoable`)
         let store = store.undoable();
-        Engine { store, store_rng, blobs, blob_stamps: Default::default(), blob_seq: 1, blobs_unsettled: false, failed_seen: (0, 0), taken_failed: false, loads: 0, rng, core: Core::new(id, clock.clone(), session, expiring, rows), eph: crate::ephemeral::Eph::default(), clock, cfg, #[cfg(debug_assertions)] index_unchecked: false, #[cfg(debug_assertions)] verdicts_unchecked: false, #[cfg(debug_assertions)] last_tx_wall: None, #[cfg(debug_assertions)] loading: false, #[cfg(test)] index_poked: false, #[cfg(test)] check_every_tx: false }
+        Engine { instance: INSTANCES.fetch_add(1, std::sync::atomic::Ordering::Relaxed), store, store_rng, blobs, blob_stamps: Default::default(), blob_seq: 1, blobs_unsettled: false, failed_seen: (0, 0), taken_failed: false, loads: 0, rng, core: Core::new(id, clock.clone(), session, expiring, rows), eph: crate::ephemeral::Eph::default(), clock, cfg, #[cfg(debug_assertions)] index_unchecked: false, #[cfg(debug_assertions)] verdicts_unchecked: false, #[cfg(debug_assertions)] last_tx_wall: None, #[cfg(debug_assertions)] loading: false, #[cfg(test)] index_poked: false, #[cfg(test)] check_every_tx: false }
     }
 
     /// A new node over an empty backend: a fresh signing key, its node thing and node root
@@ -3485,7 +3508,7 @@ impl Engine {
         fresh.refs_watched = self.core.refs_watched;
         fresh.commit_listeners = self.core.commit_listeners.clone();
         fresh.skip_writer_rules = self.core.skip_writer_rules;
-        // caches keyed on it (the sync engine's sync IDs and co-readers) never see an old value again
+        // `Certified` never takes an old value for current
         fresh.generation = self.core.generation.wrapping_add(1);
         #[cfg(test)]
         {

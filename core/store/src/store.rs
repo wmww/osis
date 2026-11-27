@@ -373,13 +373,6 @@ impl Store {
         osis_base::copying::copying(|| Ok(Store { pager: self.pager.test_copy()?, mem: self.mem.clone(), stamping: self.stamping.clone() }))
     }
 
-    /// A stamp of the last commit that changed anything, memory rows included; unique in the
-    /// process across stores and opens. While it stands, a read of the store repeats itself
-    /// (`Engine::point`).
-    pub fn changes(&self) -> u64 {
-        self.pager.changes()
-    }
-
     /// Bytes the memory overlay holds (its rows and blobs, at an estimate of their cost held:
     /// `MEM_ROW_COST`): O(rows).
     pub fn memory_held(&self) -> u64 {
@@ -563,9 +556,6 @@ impl Transaction<'_> {
             return Err(Error::Misuse("commit with a savepoint open"));
         }
         let Transaction { pager, d, rng, mut mem, mut st, .. } = self;
-        if !mem.undo.is_empty() {
-            pager.note_change();
-        }
         // a failed commit leaves the store as before the transaction: its rows are undone
         pager.commit(d, rng)?;
         mem.done = true;

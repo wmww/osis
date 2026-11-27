@@ -10,6 +10,7 @@ use osis_commit::Header;
 use osis_base::format::MAX_DRIFT_MS;
 use osis_base::{Ak, CommitId, Tid, Ts, Value};
 use osis_crdt::Source;
+use osis_engine::engine::Kept;
 use osis_engine::{Engine, Event, Origin, Result};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -110,49 +111,44 @@ pub fn held(e: &Engine) -> Held {
     e.commit_parts_missing()
 }
 
-/// A node's held set and reads (taken once it shares its held set with another node), at the
-/// engine (its restart count) and read point (`Engine::point`: a read repeats while it stands)
-/// they were taken at.
-pub struct View {
-    at: (u64, osis_engine::engine::ReadPoint),
-    held: Held,
-    reads: Option<Reads>,
+/// Each node's held set and reads, each kept while what it read stands (`Engine::memo`).
+#[derive(Clone)]
+pub struct Views {
+    held: Kept<(), Held>,
+    reads: Kept<(), Reads>,
+}
+
+impl Default for Views {
+    fn default() -> Self {
+        Views { held: Kept::new("sim: held"), reads: Kept::new("sim: reads") }
+    }
 }
 
 /// spec/requirements.md (convergence): within every group of nodes holding the same parts of
-/// the same commits, reads agree. `nodes` are (index, restart count, engine) of the nodes that
-/// are up. A node's held set is taken again only when its engine or read point moved since
-/// `views` saw it, and its reads only then and while another node holds what it holds: the same
+/// the same commits, reads agree. `nodes` are (index, engine) of the nodes that are up. A node's reads are taken only while another node holds what it holds: the same
 /// judgment as reading every node at every check.
-pub fn convergence(nodes: &mut [(usize, u64, &mut Engine)], views: &mut BTreeMap<usize, View>) -> std::result::Result<(), String> {
-    for (i, restarts, e) in nodes.iter_mut() {
-        let at = (*restarts, e.point());
-        if views.get(i).is_some_and(|v| v.at == at) {
-            continue;
-        }
-        views.insert(*i, View { at, held: held(e), reads: None });
-    }
+pub fn convergence(nodes: &mut [(usize, &mut Engine)], views: &Views) -> std::result::Result<(), String> {
     let mut groups: BTreeMap<Held, Vec<usize>> = BTreeMap::new();
-    for (i, _, _) in nodes.iter() {
-        let v = views.get(i).ok_or_else(|| format!("node {i}: no view"))?;
-        groups.entry(v.held.clone()).or_default().push(*i);
+    for (i, e) in nodes.iter_mut() {
+        let h = e.memo(&views.held, &(), |e| Ok(held(e))).map_err(|x| format!("node {i}: held set failed: {x}"))?;
+        groups.entry(h).or_default().push(*i);
     }
-    for (i, _, e) in nodes.iter_mut() {
-        let shared = groups.values().any(|g| g.len() > 1 && g.contains(i));
-        if let Some(v) = views.get_mut(i).filter(|v| shared && v.reads.is_none()) {
-            v.reads = Some(reads(e).map_err(|x| format!("node {i}: read failed: {x}"))?);
+    let mut read: BTreeMap<usize, Reads> = BTreeMap::new();
+    for (i, e) in nodes.iter_mut() {
+        if groups.values().any(|g| g.len() > 1 && g.contains(i)) {
+            read.insert(*i, e.memo(&views.reads, &(), reads).map_err(|x| format!("node {i}: read failed: {x}"))?);
         }
     }
     for holders in groups.values() {
         let Some((j, rest)) = holders.split_first() else { continue };
-        let first = views.get(j).and_then(|v| v.reads.as_ref());
-        let Some(&i) = rest.iter().find(|i| views.get(i).and_then(|v| v.reads.as_ref()) != first) else { continue };
-        let (f, r) = (first.cloned().unwrap_or_default(), views.get(&i).and_then(|v| v.reads.clone()).unwrap_or_default());
+        let first = read.get(j);
+        let Some(&i) = rest.iter().find(|i| read.get(i) != first) else { continue };
+        let (f, r) = (first.cloned().unwrap_or_default(), read.get(&i).cloned().unwrap_or_default());
         let (d, key) = diff(&f, &r);
         // divergence dump: the differing aspect's parts and state on each of them
         let mut dump = String::new();
         if let Some((t, ak)) = key {
-            for (n, _, e) in nodes.iter_mut().filter(|x| holders.contains(&x.0)) {
+            for (n, e) in nodes.iter_mut().filter(|x| holders.contains(&x.0)) {
                 dump.push_str(&format!("node {n} on {t} {}:\n{}", ak.as_str(), e.aspect_dump(&t, &ak)));
             }
         }

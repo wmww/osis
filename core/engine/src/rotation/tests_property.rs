@@ -108,9 +108,35 @@ struct Run {
     /// Whether an actor holding a role on another rotated: the epochs boxing or proving its
     /// old keyset go stale, which only a rotation clears (spec/crypto.md §4, Stale).
     holder_rotated: bool,
-    /// Each peer's read point and actor count at its last `note`: a peer whose engine stands
-    /// since (`Engine::point`) holds what it held then, so is not read again.
-    noted: Vec<Option<(crate::engine::ReadPoint, usize)>>,
+    /// Per actors of a peer, what it holds of them (`holds`), kept while what it read stands.
+    holds: crate::engine::Kept<Vec<Tid>, Holds>,
+    /// Each peer's `holds` at its last `note`: noted again only once it moved.
+    noted: Vec<Option<Holds>>,
+}
+
+/// What a peer holds of the actors: the keys it holds secrets of, and its `secrets.0` state of each.
+type Holds = (BTreeSet<Key>, Vec<(Tid, Option<ct::Secrets>)>);
+
+/// `Holds` of engine `e` over actors `all`.
+fn holds(e: &mut crate::Engine, all: &[Tid]) -> crate::Result<Holds> {
+    let mut states = Vec::new();
+    for a in all {
+        states.push((*a, e.get_typed(a, &ct::SECRETS)?));
+    }
+    Ok((held_keys(e, all), states))
+}
+
+/// The keys engine `e` holds secrets of, of actors `all`.
+fn held_keys(e: &crate::Engine, all: &[Tid]) -> BTreeSet<Key> {
+    let mut out = BTreeSet::new();
+    for t in all {
+        if let Some(e) = e.epochs(t) {
+            for r in ROLES {
+                out.extend(e.role(r).epochs().filter(|(_, x)| x.secret.is_some()).map(|(x, _)| (*t, r, *x)));
+            }
+        }
+    }
+    out
 }
 
 impl Drop for Run {
@@ -132,7 +158,7 @@ impl Drop for Run {
 impl Run {
     fn new(lp: LocalPeer, actors: Vec<(Tid, usize)>, rng: Rng) -> Run {
         let tids: Vec<Tid> = (0..N).map(|i| lp.peers[i].engine.tid()).collect();
-        let mut run = Run { lp, tids, actors, ever: vec![BTreeSet::new(); N], handed: vec![BTreeMap::new(); N], made: BTreeMap::new(), resealed: Vec::new(), boxed: BTreeMap::new(), states: Vec::new(), state_step: Vec::new(), stale: BTreeSet::new(), secrets: BTreeMap::new(), rng, hostile: BTreeSet::new(), log: Vec::new(), first: BTreeMap::new(), holder_rotated: false, noted: vec![None; N] };
+        let mut run = Run { lp, tids, actors, ever: vec![BTreeSet::new(); N], handed: vec![BTreeMap::new(); N], made: BTreeMap::new(), resealed: Vec::new(), boxed: BTreeMap::new(), states: Vec::new(), state_step: Vec::new(), stale: BTreeSet::new(), secrets: BTreeMap::new(), rng, hostile: BTreeSet::new(), log: Vec::new(), first: BTreeMap::new(), holder_rotated: false, holds: crate::engine::Kept::new("rotation property: holds"), noted: vec![None; N] };
         run.log.push(format!("actors {:?} (owners), peers {:?}", run.actors, run.tids));
         run.note();
         run
@@ -158,8 +184,8 @@ impl Run {
             secrets: self.secrets.clone(),
             first: self.first.clone(),
             holder_rotated: self.holder_rotated,
-            // the copies' engines count their points afresh
-            noted: vec![None; N],
+            holds: crate::engine::Kept::new("rotation property: holds"),
+            noted: self.noted.clone(),
         }
     }
 
@@ -168,15 +194,7 @@ impl Run {
     }
 
     fn held(&self, p: usize) -> BTreeSet<Key> {
-        let mut out = BTreeSet::new();
-        for t in self.all() {
-            if let Some(e) = self.lp.peers[p].engine.epochs(&t) {
-                for r in ROLES {
-                    out.extend(e.role(r).epochs().filter(|(_, x)| x.secret.is_some()).map(|(x, _)| (t, r, *x)));
-                }
-            }
-        }
-        out
+        held_keys(&self.lp.peers[p].engine, &self.all())
     }
 
     /// Notes what each peer holds: its secrets (`ever`, `first`, `secrets`) and its `secrets.0`
@@ -184,22 +202,23 @@ impl Run {
     fn note(&mut self) {
         let all = self.all();
         for p in 0..N {
-            let at = Some((self.lp.peers[p].engine.point(), all.len()));
-            if std::mem::replace(&mut self.noted[p], at) == at {
+            let seen = self.lp.peers[p].engine.memo(&self.holds, &all, |e| holds(e, &all)).unwrap();
+            if self.noted[p].as_ref() == Some(&seen) {
                 continue;
             }
-            let h = self.held(p);
+            self.noted[p] = Some(seen.clone());
+            let (h, states) = seen;
             for k in &h {
                 self.first.entry((p, *k)).or_insert(self.log.len());
             }
             self.ever[p].extend(h);
             self.secrets.extend(super::tests::held_secrets(&self.lp.peers[p], &all));
-            for a in &all {
-                if let Some(s) = self.lp.peers[p].engine.get_typed(a, &ct::SECRETS).unwrap()
-                    && !self.states.iter().any(|x| x.0 == *a && x.1 == s)
+            for (a, s) in states {
+                if let Some(s) = s
+                    && !self.states.iter().any(|x| x.0 == a && x.1 == s)
                 {
-                    self.stale.extend(self.stale_boxes(p, *a, &s));
-                    self.states.push((*a, s));
+                    self.stale.extend(self.stale_boxes(p, a, &s));
+                    self.states.push((a, s));
                     self.state_step.push(self.log.len());
                 }
             }

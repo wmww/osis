@@ -1126,6 +1126,18 @@ fn set_aside(tx: &mut Tx<'_>, id: &CommitId, bytes: Option<&[u8]>, e: &Error) ->
 /// await the record whose dedup secret that hash is under, and a part differing from the stored
 /// one (forged, or the true one where junk came first) is judged (`with_pending`). A parked
 /// copy has its own path (`park`), and a memory commit is `memory_gate`'s: an arrival brings a room.
+/// Whether a copy of `blob` arriving with the blobs `blobs` would bring nothing here: each blob
+/// held already, and the commit held with every part it carries as its body (`rearrival`'s
+/// `Duplicate`). A read.
+pub(crate) fn brings_nothing(tx: &mut Tx<'_>, blob: &CommitBlob, blobs: &[BlobId]) -> Result<bool> {
+    for b in blobs {
+        if !tx.blobs.held(b)? {
+            return Ok(false);
+        }
+    }
+    Ok(matches!(rearrival(tx, &blob.id(), blob)?, Some(Ingested::Duplicate(_))))
+}
+
 fn rearrival(tx: &mut Tx<'_>, id: &CommitId, blob: &CommitBlob) -> Result<Option<Ingested>> {
     if blob.header.ephemeral.is_some() {
         return Ok(None);

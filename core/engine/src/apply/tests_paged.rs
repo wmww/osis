@@ -46,9 +46,13 @@ struct World {
     lp: LocalPeer,
     t: Tid,
     log: Vec<String>,
-    /// Per node and aspect, the read point and cached state at its last stored check (`seen`).
-    checked: BTreeMap<(usize, Ak), (crate::engine::ReadPoint, Option<osis_crdt::Fragment>)>,
+    /// Per (aspect, stored) of a node, what `seen` checks the cached state against: the stored
+    /// pages' writes their skeletons prune, and with `stored` the state loaded afresh.
+    stored: crate::engine::Kept<(Ak, bool), StoredCheck>,
 }
+
+/// The stored pages' writes their skeletons prune, and the state loaded afresh if asked (`seen`).
+type StoredCheck = (usize, Option<Option<osis_crdt::Fragment>>);
 
 /// The four nodes: node 0 creates the thing with its retention and makes nodes 1-3 writers,
 /// and all sync.
@@ -80,7 +84,7 @@ fn of(mut lp: LocalPeer, t: Tid, whole: bool) -> World {
     }
     // a hand-built commit stamped `now` comes after the steps whose keys it lists (notes/delete-keys.md, Tests)
     lp.advance(1);
-    World { lp, t, log: Vec::new(), checked: BTreeMap::new() }
+    World { lp, t, log: Vec::new(), stored: crate::engine::Kept::new("paged world: stored checks") }
 }
 
 /// A copy of the one shared world (`build(0)`).
@@ -297,19 +301,12 @@ impl World {
         for (i, p) in self.lp.peers.iter_mut().enumerate() {
             for a in aks() {
                 let st = p.engine.state(&t, &a).unwrap();
-                // both checks below are reads: while the read point stands they repeat
-                // themselves (`Engine::point`), so a node and aspect checked at this point with
-                // this cached state passes again
-                let at = p.engine.point();
-                let repeat = stored && self.checked.get(&(i, a.clone())).is_some_and(|(x, s)| *x == at && *s == st);
-                if !repeat {
-                    // the stored pages, not only what loading them gives (it prunes again)
-                    assert_eq!(p.engine.stale_page_writes(&t, &a).unwrap(), 0, "node {i} {a}: a page holds writes its skeleton prunes");
-                }
-                if stored && !repeat {
-                    let s = p.engine.stored_state(&t, &a).unwrap();
+                // both are reads, kept while what they read stands
+                let (stale, s) = p.engine.memo(&self.stored, &(a.clone(), stored), |e| Ok((e.stale_page_writes(&t, &a)?, if stored { Some(e.stored_state(&t, &a)?) } else { None }))).unwrap();
+                // the stored pages, not only what loading them gives (it prunes again)
+                assert_eq!(stale, 0, "node {i} {a}: a page holds writes its skeleton prunes");
+                if let Some(s) = s {
                     assert!(s == st, "node {i} {a}: the store does not hold the cached state\n{}", first_diff(&format!("{s:#?}"), &format!("{st:#?}"), ["stored", "cached"]));
-                    self.checked.insert((i, a.clone()), (at, st.clone()));
                 }
                 out.push(if pretty { format!("{i} {a} state {st:#?}") } else { format!("{i} {a} state {st:?}") });
                 if judged {

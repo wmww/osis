@@ -530,15 +530,6 @@ pub(crate) struct Pager {
     lost: Option<Retry>,
     /// `Store::writes`.
     writes: crate::Writes,
-    /// `Store::changes`.
-    changes: u64,
-}
-
-/// `Store::changes` stamps: one sequence for the process, so no two stores or opens share one.
-static CHANGES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
-fn next_change() -> u64 {
-    CHANGES.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
 /// The wait after a store whose write's outcome is unknown first fails to recover, doubling up
@@ -588,7 +579,7 @@ impl Pager {
 
     #[allow(clippy::too_many_arguments)]
     fn new(backend: Box<dyn Backend>, root: Box<dyn RootStorage>, cfg: StoreConfig, epoch: u64, root_key: Secret32, top_ver: u64, meta: Meta, top: Node) -> Pager {
-        Pager { backend, root, cfg, epoch, root_key, top_ver, next_ver: meta.next_ver, open_spills: BTreeSet::new(), meta, top, nodes: HashMap::new(), units: HashMap::new(), unit_bytes: 0, decoded: 0, failed: false, lost: None, writes: crate::Writes::default(), changes: next_change() }
+        Pager { backend, root, cfg, epoch, root_key, top_ver, next_ver: meta.next_ver, open_spills: BTreeSet::new(), meta, top, nodes: HashMap::new(), units: HashMap::new(), unit_bytes: 0, decoded: 0, failed: false, lost: None, writes: crate::Writes::default() }
     }
 
     /// Opens a store, finishing or rolling back an interrupted commit. The stored shape wins
@@ -621,12 +612,7 @@ impl Pager {
         self.unit_bytes = 0;
         self.failed = false;
         self.lost = None;
-        self.changes = next_change();
         Ok(())
-    }
-
-    pub fn changes(&self) -> u64 {
-        self.changes
     }
 
     pub fn writes(&self) -> crate::Writes {
@@ -658,11 +644,6 @@ impl Pager {
         let backend = self.backend.test_copy_boxed().ok_or_else(none)?;
         let root = self.root.test_copy_boxed().ok_or_else(none)?;
         Ok(Pager { backend, root, root_key: self.root_key.clone(), open_spills: self.open_spills.clone(), top: self.top.clone(), nodes: self.nodes.clone(), units: self.units.clone(), ..*self })
-    }
-
-    /// The memory overlay changed in a commit (`Store::changes`).
-    pub fn note_change(&mut self) {
-        self.changes = next_change();
     }
 
     pub fn cfg(&self) -> &StoreConfig {
@@ -984,7 +965,6 @@ impl Pager {
         if d.units.values().any(|u| matches!(u, DirtyUnit::Taken { .. })) {
             return Err(Error::Corrupt("table page left out for change"));
         }
-        self.changes = next_change();
         let ver = d.ver;
         let Err(e) = self.commit_inner(d, rng) else {
             self.writes.committed += 1;

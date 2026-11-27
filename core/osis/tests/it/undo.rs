@@ -234,7 +234,7 @@ fn takings_undo_while_kept_spec_commits_7() {
 fn ephemeral_undo_from_kept_history_spec_crdt_4_6() {
     let db = setup(5);
     let t = kept_thing(&db);
-    let marks = || db.engine(|e| (e.commit_ids().len(), e.core.generation));
+    let marks = || db.engine(|e| (e.commit_ids().len(), e.store_writes().committed));
     let before = marks();
     sets(&db, t, "app:ke+.0", &[1, 2]);
     let plain = sets(&db, t, "app:ne+.0", &[1, 2]);

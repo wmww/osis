@@ -151,7 +151,7 @@ pub struct Sim {
     trace: VecDeque<String>,
     check: Checker,
     /// Each node's held set and reads at its last convergence check.
-    views: BTreeMap<usize, check::View>,
+    views: check::Views,
     /// What the run played: the oracle of what each node holds at quiet (`check_history`).
     history: History,
 }
@@ -231,7 +231,7 @@ impl Sim {
             queue: Vec::new(),
             trace: VecDeque::new(),
             check: Checker::default(),
-            views: BTreeMap::new(),
+            views: check::Views::default(),
             history: History::default(),
         };
         for i in 0..s.cfg.nodes {
@@ -740,8 +740,8 @@ impl Sim {
 
     /// spec/requirements.md (convergence) over the nodes that are up.
     pub fn check_convergence(&mut self) -> Res<()> {
-        let mut es: Vec<(usize, u64, &mut Engine)> = self.nodes.iter_mut().enumerate().filter(|(_, n)| n.up).map(|(i, n)| (i, n.peer.restarts, &mut n.peer.engine)).collect();
-        let r = check::convergence(&mut es, &mut self.views);
+        let mut es: Vec<(usize, &mut Engine)> = self.nodes.iter_mut().enumerate().filter(|(_, n)| n.up).map(|(i, n)| (i, &mut n.peer.engine)).collect();
+        let r = check::convergence(&mut es, &self.views);
         r.map_err(|w| self.fail(w))
     }
 
@@ -802,8 +802,8 @@ impl Sim {
             }
         }
         self.check_history()?;
-        // read every node afresh: the per-step views trust `Engine::point`, this does not
-        self.views.clear();
+        // read every node afresh: the per-step views trust what their reads recorded, this does not
+        self.views = check::Views::default();
         self.check_convergence()?;
         self.finish_report()
     }

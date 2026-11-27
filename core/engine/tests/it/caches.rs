@@ -91,10 +91,10 @@ fn damaged_caches_are_rebuilt() {
     }
 }
 
-// spec: none (notes/engine-store.md, Open): a reopen of the caches never takes the engine's generation
-// back, so a cache keyed on it (the sync engine's sync IDs) is never taken for current afterwards
+// spec: none (notes/engine.md, Stamps): a reload or rebuild of the indexes builds them anew, so
+// no answer kept of the old ones (`Engine::memo`) is taken for current afterwards
 #[test]
-fn reload_never_takes_generation_back() {
+fn a_reload_moves_every_read_of_the_indexes() {
     let mut lp = net(1, 0);
     let e = &mut lp.peers[0].engine;
     let mut m = Mutation::new();
@@ -104,14 +104,26 @@ fn reload_never_takes_generation_back() {
     for i in 0..10u8 {
         try_edge(e, t, Tid::from_bytes([60 + i; 15]), Some(Role::Read));
     }
+    let memo = osis_engine::engine::Kept::new("test: commit ids");
+    let runs = std::cell::Cell::new(0);
+    let read = |e: &mut osis_engine::Engine| {
+        e.memo(&memo, &(), |e| {
+            runs.set(runs.get() + u32::from(!osis_base::memo::comparing()));
+            Ok(e.commit_ids())
+        })
+        .unwrap()
+    };
     for rebuild in [false, true] {
-        let before = e.core.generation;
+        let ids = read(e);
+        assert_eq!(read(e), ids);
+        let before = runs.get();
         if rebuild {
             e.rebuild_index().unwrap();
         } else {
             e.reload().unwrap();
         }
-        assert!(e.core.generation > before, "rebuild {rebuild}: {} after {before}", e.core.generation);
+        assert_eq!(read(e), ids);
+        assert_eq!(runs.get(), before + 1, "rebuild {rebuild}: the kept ids read again once");
     }
 }
 

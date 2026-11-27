@@ -59,7 +59,7 @@ Rejected: `opt-level` 2 for the workspace (3-10%); `opt-level` 3 for dependencie
 - **Per-whole work redone per member**: a commit's reading built again for each part (`part_valid` in a loop instead of one `Judge`), a search from a root over every thing it minted per thing asked: linear at small n, 10-40x at a requirement's 2,000.
 - **A harness loop that cannot tell progress from a repeat**: a pending commit handed again comes back `Pending` every round, so a hand-until-quiet loop runs its whole bound.
 - **Per-receiver work that is per-sender**: build once per sender state, trim per receiver.
-- **A harness reading a whole engine per step while it stands**: key what it read by `Engine::point` (rotation `Run::note`, `LocalPeer`'s `SyncMemo::needed`, `duplicate`); a copy keeps the points of what it copies.
+- **A harness reading a whole engine per step while it stands**: keep each read with `Engine::memo` (rotation `Run::note`, `LocalPeer`'s `SyncMemo`, the sim's `Views`), read as narrowly as what decides it.
 - **The engine's fixed cost per `Engine::read`**: a mark and rollback of every journal (`Core::mark`, `rollback_to`, `walk_held`), about 2-3% of the order properties: a harness asking one aspect per read pays it per aspect (`order::shown`, `get_within`).
 - **A flip-prone input read before the answer needs it**: read it last; a small map read whole where one key is asked: index it.
 - **Derived values whose inputs move far more often than their answers**: `Cutoff` rows or narrower reads (n readers of an aggregate over n inputs record O(n²) reads per change).

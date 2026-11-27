@@ -32,16 +32,15 @@ pub struct Tx<'a> {
 }
 
 impl Tx<'_> {
-    /// Makes this a memory transaction: every new row in the store's memory overlay, the
-    /// change counter `memory_generation`.
+    /// Makes this a memory transaction: every new row in the store's memory overlay.
     pub fn set_memory(&mut self) {
         self.txn.set_memory(true);
         self.core.memory_tx = true;
     }
 
     /// Runs `f` as work on data of class `memory`: rows it creates for a
-    /// memory commit or aspect inside a durable transaction go to memory, and it neither steps
-    /// `generation` nor marks node-sync's changes. A memory transaction stays memory.
+    /// memory commit or aspect inside a durable transaction go to memory, and it marks none of
+    /// node-sync's changes. A memory transaction stays memory.
     pub fn in_class<T>(&mut self, memory: bool, f: impl FnOnce(&mut Tx<'_>) -> Result<T>) -> Result<T> {
         let was = self.core.memory_tx;
         let on = was || memory;

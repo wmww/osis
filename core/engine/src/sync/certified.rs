@@ -67,8 +67,8 @@ impl Default for Follow {
 /// The certificates of the things this node reads, indexed by commit and by read thing.
 #[derive(Clone, Default)]
 pub(crate) struct Certified {
-    /// `Core::generation` and `memory_generation` at the last follow that succeeded.
-    at: Option<(u64, u64)>,
+    /// `Core::generation` at the last follow that succeeded.
+    at: Option<u64>,
     follow: Follow,
     /// Read things whose certificates were derived so far: what a count test reads.
     pub(crate) derived: u64,
@@ -177,8 +177,8 @@ impl Engine {
         Ok(self.core.certified.at == Some(self.generations()) && self.core.certified.read.iter().eq(self.core.sync_rows.read.iter()))
     }
 
-    fn generations(&self) -> (u64, u64) {
-        (self.core.generation, self.core.memory_generation)
+    fn generations(&self) -> u64 {
+        self.core.generation
     }
 
     /// The certificates of each read thing whose inputs moved since the last follow derived

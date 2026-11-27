@@ -6,11 +6,12 @@
 //! sync ID carries: each body sealed and wrapped under its independent's read secret as node-sync
 //! places it, opened only with the read secrets the receiver holds.
 
-use crate::engine::{Config, Engine, ReadPoint};
+use crate::engine::{Config, Engine};
 use crate::error::Result;
 use crate::events::Event;
 use crate::{Ingested, Mutation};
 use osis_base::{BlobId, Classified, Clock, CommitId, Link, ManualClock, Tid, WallMs};
+use crate::engine::Kept;
 use osis_commit::CommitBlob;
 use osis_crypto::SeededRng;
 use osis_store::{MemoryBackend, MemoryRoot};
@@ -20,7 +21,7 @@ use std::sync::Arc;
 use std::sync::mpsc::Receiver;
 
 /// A commit as it travels: its plaintext blob and the blobs it references.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Package {
     pub id: CommitId,
     pub bytes: Vec<u8>,
@@ -122,31 +123,6 @@ fn misses(core: &crate::engine::Core, id: &CommitId, b: &CommitBlob) -> bool {
 }
 
 impl Peer {
-    /// Which of `on` anything held or pending here needs (`retention::needed::needs`): a package
-    /// on them this node dropped at a pass end is wanted no more than then while that stands
-    /// (`LocalPeer::sync`).
-    /// `known`: the answers kept at a point of this engine (`SyncMemo::needed`).
-    fn needed<'a>(&mut self, on: impl IntoIterator<Item = &'a Tid>, known: &mut Option<(ReadPoint, BTreeMap<Tid, bool>)>) -> Result<BTreeSet<Tid>> {
-        let on: BTreeSet<Tid> = on.into_iter().copied().collect();
-        if on.is_empty() {
-            return Ok(on);
-        }
-        let point = self.engine.point();
-        let mut kept = known.take().filter(|k| k.0 == point).map(|k| k.1).unwrap_or_default();
-        let ask: Vec<Tid> = on.iter().filter(|t| !kept.contains_key(*t)).copied().collect();
-        if !ask.is_empty() {
-            let fresh = self.engine.read(|tx| ask.into_iter().map(|t| Ok((t, !crate::retention::needed::needs(tx, &t)?.is_empty()))).collect::<Result<Vec<_>>>())?;
-            // a read settling blobs first moves the point: its answers are the new point's
-            if self.engine.point() != point {
-                kept.clear();
-            }
-            kept.extend(fresh);
-        }
-        let out = on.into_iter().filter(|t| kept.get(t) == Some(&true)).collect();
-        *known = Some((self.engine.point(), kept));
-        Ok(out)
-    }
-
     /// Receives a package and stands in for node-sync's carriers and fetches: a carrier of what
     /// pends is ingested again when the engine names its commit, a copy of a missing part when
     /// `Wakes` names it. The test's `Engine::ingest` is what
@@ -258,7 +234,6 @@ impl Peer {
             if now.is_empty() {
                 return Ok(());
             }
-            let point = self.engine.point();
             let ingested: Vec<CommitId> = now.iter().map(|d| d.commit).collect();
             for d in now {
                 self.redelivered += u64::from(d.carries);
@@ -272,8 +247,7 @@ impl Peer {
             for c in &again {
                 self.engine.redelivered(c)?;
             }
-            let moved = self.engine.point() != point;
-            guard.round((ingested, moved), || ((e + 1).pow(2), format!("{e} entries kept at the start")));
+            guard.round(ingested, || ((e + 1).pow(2), format!("{e} entries kept at the start")));
         }
     }
 
@@ -584,8 +558,8 @@ pub struct LocalPeer {
     memo: SyncMemo,
 }
 
-/// What `sync_all` need not do again (`Engine::point`: nothing a delivery reads moved).
-#[derive(Clone, Default)]
+/// What `sync_all` need not do again: each derivation kept while what it read stands.
+#[derive(Clone)]
 struct SyncMemo {
     /// No fire passes (`LocalPeer::hold_fires`).
     fires_held: bool,
@@ -595,28 +569,53 @@ struct SyncMemo {
     fired: BTreeSet<(usize, crate::flows::inbox::FireId, usize)>,
     /// The sealed fires a peer refused, its setting not enabling their signal (`pass_fires`).
     refused: BTreeSet<(usize, crate::flows::inbox::FireId, usize)>,
-    /// Per sender: every commit it sends whole (`packages`), each followed by what packaging it
-    /// read, so a move of the sender's engine packages again only the commits whose reads it moved;
-    /// each set of sync IDs trims these (`sent`), so a commit is packaged once per change, not once
-    /// per receiver.
-    whole: HashMap<usize, Packaged>,
-    /// Per sender and sync IDs synced: its packages under them, with a hash of each, at a point
-    /// of its engine, and each trimmed package kept by the whole package and parts it was cut from.
-    sent: HashMap<(usize, Vec<osis_base::SyncId>), Trimmed>,
-    /// (receiver, package hash): delivered as a duplicate that changed nothing, at this point.
-    duplicate: HashMap<(usize, u64), ReadPoint>,
+    /// Per commit a sender holds: packaged whole, `None` where it sends none (`package_whole`),
+    /// so a move of the sender's engine packages again only the commits whose reads it moved.
+    packaged: Kept<CommitId, Option<Arc<Whole>>>,
+    /// Per sender: `packaged` of every commit it holds, in (`ts`, ID) order (`whole_of`).
+    whole: Kept<(), Arc<Vec<Arc<Whole>>>>,
+    /// Per (sync IDs synced, commit) of a sender: its whole package holding the parts sent
+    /// (`trim`), so a commit is trimmed once per change, not once per receiver.
+    trimmed: Kept<(Vec<osis_base::SyncId>, CommitId), Option<Arc<Sent>>>,
+    /// Per sync IDs synced of a sender: its packages under them (`sent_of`).
+    sent: Kept<Vec<osis_base::SyncId>, Hashed>,
+    /// (receiver, package hash): delivered and came back a duplicate.
+    duplicate: HashSet<(usize, u64)>,
+    /// Per package hash at a receiver: whether delivering it would bring nothing there
+    /// (`apply::brings_nothing`).
+    nothing: Kept<u64, bool>,
     /// (receiver, package hash): delivered, then dropped at the end of its pass (whole or some
     /// parts) on things outside the receiver's node closure, needed by nothing held there
     /// (`Engine::settle_needs`), with which of those things something needed then
-    /// (`Peer::needed`): offered again only once that moved, as a real node fetches only what
+    /// (`LocalPeer::needed`): offered again only once that moved, as a real node fetches only what
     /// its sync set carries. Without it every pass delivered other accounts' roots again, to
     /// drop them again at its end.
     dropped: HashMap<(usize, u64), BTreeSet<Tid>>,
     /// Per receiver: the packages delivered (not as duplicates) since its last pass end.
     in_pass: HashMap<usize, Vec<(u64, CommitId, Vec<Tid>)>>,
-    /// Per receiver: which things something held needs (`Peer::needed`), at this point: asked
-    /// by every sender while its engine stands.
-    needed: HashMap<usize, (ReadPoint, BTreeMap<Tid, bool>)>,
+    /// Per thing of a receiver: whether anything held or pending there needs it
+    /// (`retention::needed::needs`), asked by every sender.
+    needed: Kept<Tid, bool>,
+}
+
+impl Default for SyncMemo {
+    fn default() -> Self {
+        SyncMemo {
+            fires_held: false,
+            fires_held_of: BTreeSet::new(),
+            fired: BTreeSet::new(),
+            refused: BTreeSet::new(),
+            packaged: Kept::new("peer: package whole"),
+            whole: Kept::new("peer: packages whole"),
+            trimmed: Kept::new("peer: package trimmed"),
+            sent: Kept::new("peer: packages sent"),
+            duplicate: HashSet::new(),
+            nothing: Kept::new("peer: brings nothing"),
+            dropped: HashMap::new(),
+            in_pass: HashMap::new(),
+            needed: Kept::new("peer: needed"),
+        }
+    }
 }
 
 /// A package as sent: with a hash of it and the things its commit is on.
@@ -629,29 +628,57 @@ type Hashed = Arc<Vec<Arc<Sent>>>;
 /// package's hash beside it.
 type Whole = (Sent, Arc<CommitBlob>);
 
-/// A sender's commits packaged whole (`SyncMemo::whole`).
-#[derive(Clone)]
-struct Packaged {
-    /// Per held commit: its package's hash, `None` where it sends none (on its node root alone).
-    each: osis_base::memo::Effects<CommitId, Option<u64>>,
-    /// The packages `each` settled.
-    held: HashMap<CommitId, Arc<Whole>>,
-    /// The packages in (`ts`, ID) order, at a point of the engine.
-    at: Option<(ReadPoint, Arc<Vec<Arc<Whole>>>)>,
+/// Every commit engine `e` holds (applied), packaged whole, but those on its node root
+/// alone (local: no sync ID carries them, spec/sync-set.md §1), in (`ts`, ID) order, with each
+/// commit's record, hash and things: what `sent_of` trims.
+fn whole_of(e: &mut Engine, m: &SyncMemo) -> Result<Arc<Vec<Arc<Whole>>>> {
+    e.memo(&m.whole, &(), |e| {
+        let mut out = Vec::new();
+        for c in e.commit_ids() {
+            out.extend(e.memo(&m.packaged, &c, |e| package_whole(e, &c))?);
+        }
+        Ok(Arc::new(out))
+    })
 }
 
-impl Default for Packaged {
-    fn default() -> Self {
-        Packaged { each: osis_base::memo::Effects::new("peer: packages whole"), held: HashMap::new(), at: None }
+/// Commit `c` packaged whole (`whole_of`).
+fn package_whole(e: &mut Engine, c: &CommitId) -> Result<Option<Arc<Whole>>> {
+    let root = e.node_root();
+    if e.header(c).is_some_and(|h| h.aspects.iter().all(|a| Some(a.tid) == root)) {
+        return Ok(None);
     }
+    let Some((pk, b)) = e.package_with_record(c)? else { return Ok(None) };
+    let n = hash_of(&pk);
+    let on = b.header.aspects.iter().map(|a| a.tid).collect();
+    Ok(Some(Arc::new(((pk, n, on), b))))
 }
 
-/// A sender's packages under one set of sync IDs (`SyncMemo::sent`).
-#[derive(Clone, Default)]
-struct Trimmed {
-    at: Option<(ReadPoint, Hashed)>,
-    /// Per commit: the whole package's hash and the parts sent, and what they gave.
-    each: HashMap<CommitId, (u64, BTreeSet<usize>, Arc<Sent>)>,
+/// `e`'s packages under `synced`, hashed: each whole package (`whole_of`) holding the parts
+/// sent (`Engine::sent_parts`, `trim`).
+fn sent_of(e: &mut Engine, m: &SyncMemo, synced: &BTreeSet<osis_base::SyncId>) -> Result<Hashed> {
+    let ids: Vec<osis_base::SyncId> = synced.iter().copied().collect();
+    e.memo(&m.sent, &ids, |e| {
+        let mut out = Vec::new();
+        for w in whole_of(e, m)?.iter() {
+            let c = w.0.0.id;
+            out.extend(e.memo(&m.trimmed, &(ids.clone(), c), |e| trim(e, m, &c, synced))?);
+        }
+        Ok(Arc::new(out))
+    })
+}
+
+/// Commit `c`'s whole package holding the parts `e` sends under `synced`; `None` where it sends
+/// none.
+fn trim(e: &mut Engine, m: &SyncMemo, c: &CommitId, synced: &BTreeSet<osis_base::SyncId>) -> Result<Option<Arc<Sent>>> {
+    let Some(w) = e.memo(&m.packaged, c, |e| package_whole(e, c))? else { return Ok(None) };
+    let ((pk, n, on), b) = &*w;
+    let Some(parts) = e.sent_parts(c, synced)? else { return Ok(None) };
+    if b.parts.iter().all(|x| parts.contains(&x.ai)) {
+        return Ok(Some(Arc::new((pk.clone(), *n, on.clone()))));
+    }
+    let t = holding(pk, b, &parts);
+    let h = hash_of(&t);
+    Ok(Some(Arc::new((t, h, on.clone()))))
 }
 
 /// A hash of what a package delivers.
@@ -1231,81 +1258,10 @@ impl LocalPeer {
         self.pass_end(to)
     }
 
-    /// Every commit `from` holds (applied), packaged whole, but those on its node root alone
-    /// (local: no sync ID carries them, spec/sync-set.md §1), in (`ts`, ID) order, with each
-    /// commit's record, hash and things (`SyncMemo::whole`): what `packages_hashed` trims.
-    fn whole(&mut self, from: usize) -> Result<Arc<Vec<Arc<Whole>>>> {
-        let Some(p) = self.peers.get_mut(from) else { return Ok(Arc::default()) };
-        let at = p.engine.point();
-        let m = self.memo.whole.entry(from).or_default();
-        if let Some((_, v)) = m.at.as_ref().filter(|(w, _)| *w == at) {
-            return Ok(v.clone());
-        }
-        let ids = p.engine.commit_ids();
-        let now: HashSet<CommitId> = ids.iter().copied().collect();
-        let gone: Vec<CommitId> = m.held.keys().filter(|c| !now.contains(c)).copied().collect();
-        for c in gone {
-            m.each.unwant(&c);
-            m.held.remove(&c);
-        }
-        for c in &ids {
-            m.each.want(*c);
-        }
-        let root = p.engine.node_root();
-        for c in m.each.due() {
-            let (e, mut made) = (&mut p.engine, None);
-            m.each.try_settle(&c, || -> Result<Option<u64>> {
-                if e.header(&c).is_some_and(|h| h.aspects.iter().all(|a| Some(a.tid) == root)) {
-                    return Ok(None);
-                }
-                let Some((pk, b)) = e.package_with_record(&c)? else { return Ok(None) };
-                let n = hash_of(&pk);
-                let on = b.header.aspects.iter().map(|a| a.tid).collect();
-                made = Some(Arc::new(((pk, n, on), b)));
-                Ok(Some(n))
-            })?;
-            match made {
-                Some(w) => m.held.insert(c, w),
-                None => m.held.remove(&c),
-            };
-        }
-        let v = Arc::new(ids.iter().filter_map(|c| m.held.get(c).cloned()).collect::<Vec<_>>());
-        m.at = Some((at, v.clone()));
-        Ok(v)
-    }
-
-    /// `packages_under(from, synced)`, hashed, kept while `from`'s engine stands: each whole
-    /// package (`whole`) holding the parts sent (`Engine::sent_parts`), trimmed again only where
-    /// the package or the parts moved.
+    /// `packages_under(from, synced)`, hashed (`sent_of`).
     fn packages_hashed(&mut self, from: usize, synced: &BTreeSet<osis_base::SyncId>) -> Result<Hashed> {
-        let at = self.peers.get(from).map(|p| p.engine.point()).unwrap_or_default();
-        let key = (from, synced.iter().copied().collect::<Vec<_>>());
-        if let Some((_, v)) = self.memo.sent.get(&key).and_then(|m| m.at.as_ref()).filter(|(p, _)| *p == at) {
-            return Ok(v.clone());
-        }
-        let whole = self.whole(from)?;
         let Some(p) = self.peers.get_mut(from) else { return Ok(Arc::default()) };
-        let m = self.memo.sent.entry(key).or_default();
-        let mut each = HashMap::new();
-        let mut out = Vec::new();
-        for w in whole.iter() {
-            let ((pk, n, on), b) = &**w;
-            let Some(parts) = p.engine.sent_parts(&pk.id, synced)? else { continue };
-            let sent = match m.each.remove(&pk.id).filter(|x| x.0 == *n && x.1 == parts) {
-                Some(x) => x.2,
-                None if b.parts.iter().all(|x| parts.contains(&x.ai)) => Arc::new((pk.clone(), *n, on.clone())),
-                None => {
-                    let t = holding(pk, b, &parts);
-                    let h = hash_of(&t);
-                    Arc::new((t, h, on.clone()))
-                }
-            };
-            out.push(sent.clone());
-            each.insert(pk.id, (*n, parts, sent));
-        }
-        let v: Hashed = Arc::new(out);
-        *m = Trimmed { at: Some((at, v.clone())), each };
-        Ok(v)
+        sent_of(&mut p.engine, &self.memo, synced)
     }
 
     /// `sync`; whether any delivery was more than a duplicate. `from` sends what the sync IDs
@@ -1389,42 +1345,58 @@ impl LocalPeer {
     /// it did then, none of them in its node closure or awaited since (one entering it is fetched again,
     /// spec/sync-judgement.md §3 Dropped bodies).
     fn still_dropped(&mut self, to: usize, pks: &[&Sent]) -> Result<HashSet<u64>> {
-        let Some(p) = self.peers.get_mut(to) else { return Ok(HashSet::new()) };
         if pks.is_empty() {
             return Ok(HashSet::new());
         }
-        let mut known = self.memo.needed.remove(&to);
-        let needed = p.needed(pks.iter().flat_map(|pk| pk.2.iter()), &mut known)?;
-        self.memo.needed.extend(known.map(|k| (to, k)));
+        let needed = self.needed(to, pks.iter().flat_map(|pk| pk.2.iter()))?;
+        let Some(p) = self.peers.get_mut(to) else { return Ok(HashSet::new()) };
         let dropped = &self.memo.dropped;
         // one of its things awaited there goes again: what awaits a record learns it from the
         // record blob a pass fetches first (spec/commits.md §4 Records)
         Ok(pks.iter().filter(|pk| dropped.get(&(to, pk.1)).is_some_and(|was| pk.2.iter().all(|t| needed.contains(t) == was.contains(t) && !p.engine.closure_holds(t) && !crate::apply::awaits_record(&p.engine.core, t)))).map(|pk| pk.1).collect())
     }
 
-    /// Delivers `pk` to `to` but where it came back a duplicate that changed nothing at `to` as
-    /// it stands, or `to` holds every body of it after such a duplicate; whether it changed
-    /// anything.
+    /// Which of `on` anything held or pending at `to` needs (`retention::needed::needs`): a
+    /// package on them `to` dropped at a pass end is wanted no more than then while that stands.
+    fn needed<'a>(&mut self, to: usize, on: impl IntoIterator<Item = &'a Tid>) -> Result<BTreeSet<Tid>> {
+        let on: BTreeSet<Tid> = on.into_iter().copied().collect();
+        let Some(p) = self.peers.get_mut(to) else { return Ok(BTreeSet::new()) };
+        let mut out = BTreeSet::new();
+        for t in on {
+            if p.engine.memo(&self.memo.needed, &t, |e| e.read(|tx| Ok(!crate::retention::needed::needs(tx, &t)?.is_empty())))? {
+                out.insert(t);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Delivers `pk` to `to` but where it came back a duplicate there and would bring nothing
+    /// there still; whether it changed anything.
     fn offer(&mut self, to: usize, (pk, hash, on): &Sent) -> Result<bool> {
         let key = (to, *hash);
-        let at = self.peers.get(to).map(|p| p.engine.point());
-        if at.is_some() && self.memo.duplicate.get(&key).copied() == at {
-            return Ok(false);
-        }
-        // once a no-op duplicate there, never sent again while `to` holds every body of it:
-        // what a sync sends is what the receiver lacks (a body-less part may come back late)
-        if self.memo.duplicate.contains_key(&key) && self.peers.get(to).is_some_and(|p| p.engine.holds_whole(&pk.id)) {
+        // once a duplicate there, never sent again while it would bring nothing: what a sync
+        // sends is what the receiver lacks (a body-less part may come back late)
+        if self.memo.duplicate.contains(&key) && self.brings_nothing(to, pk, *hash)? {
             return Ok(false);
         }
         let dup = matches!(self.deliver(to, pk)?, Ingested::Duplicate(_));
-        if let Some(after) = self.peers.get(to).map(|p| p.engine.point()).filter(|a| dup && Some(*a) == at) {
-            self.memo.duplicate.insert(key, after);
-        }
-        if !dup {
+        if dup {
+            self.memo.duplicate.insert(key);
+        } else {
             self.memo.dropped.remove(&key);
             self.memo.in_pass.entry(to).or_default().push((*hash, pk.id, on.clone()));
         }
         Ok(!dup)
+    }
+
+    /// Whether delivering `pk` (hashed `hash`) to `to` would bring nothing there.
+    fn brings_nothing(&mut self, to: usize, pk: &Package, hash: u64) -> Result<bool> {
+        let Some(p) = self.peers.get_mut(to) else { return Ok(false) };
+        let blobs: Vec<BlobId> = pk.blobs.iter().map(|b| b.0).collect();
+        p.engine.memo(&self.memo.nothing, &hash, |e| match CommitBlob::decode(&pk.bytes) {
+            Ok(b) => e.read(|tx| crate::apply::brings_nothing(tx, &b, &blobs)),
+            Err(_) => Ok(false),
+        })
     }
 
     /// Peer `to`'s pass ended (`Engine::settle_needs`): what it delivered that `to` dropped, on
@@ -1433,9 +1405,7 @@ impl LocalPeer {
         let Some(p) = self.peers.get_mut(to) else { return Ok(()) };
         p.engine.settle_needs()?;
         let gone: Vec<(u64, Vec<Tid>)> = self.memo.in_pass.remove(&to).unwrap_or_default().into_iter().filter(|(_, id, on)| !p.engine.core.ix.pending.contains_key(id) && !p.engine.holds_whole(id) && !on.iter().any(|t| p.engine.closure_holds(t))).map(|(h, _, on)| (h, on)).collect();
-        let mut known = self.memo.needed.remove(&to);
-        let needed = p.needed(gone.iter().flat_map(|(_, on)| on.iter()), &mut known)?;
-        self.memo.needed.extend(known.map(|k| (to, k)));
+        let needed = self.needed(to, gone.iter().flat_map(|(_, on)| on.iter()))?;
         for (hash, on) in gone {
             self.memo.dropped.insert((to, hash), on.into_iter().filter(|t| needed.contains(t)).collect());
         }
