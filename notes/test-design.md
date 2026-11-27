@@ -17,6 +17,7 @@ Rules for every test change:
 - Oracles compare observables: reads, rosters, promised history (`history()` within kept history), errors. Best-effort APIs (undo availability, `commits()`, `changed()`, `Change.origin`) are never compared across nodes. An excuse comes from the generated history, never from the node under test; exchanges between nodes run through real sync.
 - A generator does not steer around a known difference; a failure is a design question.
 - A test asserting an absence (nothing reaches a node, nothing is read) first asserts the presence that makes it meaningful (the node entered, read before): absence tests passed vacuously when entry broke.
+- A test comment citing the spec (`spec/x.md §N; name`) must use text of that section for each `;` piece: policy's spec-anchor check refuses it otherwise.
 - A disabled oracle answers "no model", never panics: a panic in a shared check breaks every test that plays.
 - Before deleting a harness, every open issue whose replay uses it gets a minimal example (`#[ignore] repro_*` naming the issue) or a replay that survives the change.
 - A change that removes or adds tests updates notes/testing.md where it describes them and compares the touched binaries' instruction counts before and after (notes/test-harnesses.md, Default-test cost). Only less work shortens the default tests.
@@ -34,6 +35,7 @@ osis-sync's module reviews (about 50 product bugs) split the same way. Reading a
 **Paged property cost**: `paged_apply_matches_whole_plain` seeds take 90-200 CPU-s each (ingest with its purge-on-replace snapshots about 30%, stored-state reloads after every step about 20%); the goal is the slowest large seed under a minute.
 
 **Small items**:
+- The osis-sync differential shrinker accepts any panic and keeps world-dependent failures near full length: a shrink often lands on another class's first panic. Wanted: keep only runs ending in the same panic kind, and print whether the shrunk script fails on seed 0's world (replaying it there by hand was faster each time).
 - A world-level dump of one node's view of one thing (roster, held commits on it, sync holding, opens members): debugging sync otherwise needs ad-hoc prints across engine and osis-sync.
 - A deterministic test of `close` on `Runtime::Tokio` (notes/api.md Handle and lifecycle: after `close` returns no driver poll touches a timer of a shut-down runtime). The one test, osis `runtime::close_then_runtime_shutdown_polls_no_dead_timer`, is a by-hand race caught about a third of runs; `num_alive_tasks() == 0` after `close` is wrong (the task is released after the guard drops). Needs a seam: a hook holding the driver inside an engine call while `close` runs, released after shutdown began.
 - Judgment vectors still missing: linked header lists (an aspect list past `CHUNK_THRESHOLD`) and the secrets-side rotation scenarios (core/test/vectors/README.md).

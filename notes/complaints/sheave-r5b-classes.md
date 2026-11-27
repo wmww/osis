@@ -1,3 +1,0 @@
-# sheave-r5b-classes
-- The differential shrinker keeps world-dependent failures near full length (seed 56: 14 steps to 13) and accepts any panic, so a shrink often lands on another class's first panic. Replaying the shrunk script on seed 0's world by hand was the faster route each time; a shrink option that keeps only runs ending in the same panic kind, and a printed "fails on seed 0 too" check, would have saved several rounds.
-- `tools/policy.py`'s spec-anchor check (each `;` piece's name must be text of the cited section) is easy to miss when writing a test comment; it surfaced only at commit. A one-line hint in notes/test-design.md would help.
