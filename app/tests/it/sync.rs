@@ -38,6 +38,9 @@ fn two_clocked() -> (Data, Data, Arc<ManualClock>) {
         }
         net.run();
     };
+    // the pairing's connection ends: a pass over a peer nobody runs would never end
+    net.set_online(0, false);
+    net.run();
     (osis_app::store::data(a).unwrap(), osis_app::store::data(b).unwrap(), clock)
 }
 
@@ -151,7 +154,6 @@ fn deleted_tag_is_gone() {
 /// The other node deletes the open thing: this one goes home, and the open editor's sessions,
 /// dropped then, do not bring it back.
 #[test]
-#[ignore = "stub rewrite: once paired by the account's link, after the delete syncs node a reads the deleted thing's body (not open, not in things; cause not found)"]
 fn remote_delete_of_the_open_thing() {
     let (a, b) = two();
     let n = a.create_note().unwrap();

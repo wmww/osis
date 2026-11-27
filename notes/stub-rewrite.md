@@ -260,8 +260,6 @@ Choices taken (simpler option; Tess may revise):
 
 Owed:
 - Weaks in held history holding stubs (spec/data-model.md §8 Held history, rule 4; `refs::kept` follows strongs alone): a held signal holds its stub by its own root instead (`Root::Signalled`).
-- `app sync::remote_delete_of_the_open_thing` (ignored): once paired by the account's link, after b's delete syncs, a reads the deleted thing's body (it is neither open nor in `things`); cause not found.
-- `read::a_start_after_a_session_finds_nothing_owed_*` (ignored): passes alone, fails in the full run (2 commits owed at node 1's first start at 10n). Causes not found.
 - Stopped-store ByRole (`Creds::stopped`) has no test of its own: `grants::a_stopped_sync_holder_catches_up_by_role_*` passes by the resumed member's notice; a test where the store meets a reader keeping no record of it is owed.
 
 ## R4 built
@@ -273,7 +271,7 @@ Owed:
 
 Still owed:
 - `differential::a_removed_reader_keeps_the_publics_sync_secret_*` (ignored): the removed reader holds the thing as a stub at quiet, the model kept unread; it holds the public's sync secret and no step of S bearing it, so kept unread never applies. `differential::a_node_lowered_with_the_public_reads_no_more_by_its_head_*` (ignored): keeps the thing unread at no step, its readers' head 4 deep. Causes not sorted.
-- Ignored with an observed failure and no cause yet (`tools/ignores.py "stub rewrite: "`, the `cause not sorted` ones): engine 8 (6 under rule 2, a grant delivered by hand, a paired node handed a unit by hand), osis-sync 31, app `remote_delete_of_the_open_thing` (R3b's).
+- Ignored with an observed failure and no cause yet (`tools/ignores.py "stub rewrite: "`, the `cause not sorted` ones): engine 8 (6 under rule 2, a grant delivered by hand, a paired node handed a unit by hand), osis-sync 31.
 - `public::removing_the_public_ends_*` (ignored): with node 0 cut off, P's removal never reaches node 2 through node 1's store of T. Including a unit's independent members in `Closure::unit_stubs` (carrying X whole includes its stub) did not change it; cause not found.
 
 Choices taken (Tess may revise):

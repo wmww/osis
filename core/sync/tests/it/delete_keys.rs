@@ -212,7 +212,6 @@ fn told(w: &mut World) {
 // instead: S's sync key rotates, and its old keys' Delete answers 9 (an earlier head's key): the
 // blob stays.
 #[test]
-#[ignore = "stub rewrite: told: the unread store's head does not move (cause not sorted)"]
 fn a_demoted_writers_old_keys_keep_its_writes_out_of_an_unread_store_spec_permissions_6() {
     for lower in [true, false] {
         let (mut w, t, s) = world_of_three();

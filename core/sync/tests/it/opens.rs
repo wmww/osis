@@ -2570,7 +2570,6 @@ fn removed(w: &mut crate::harness::World, _: osis_base::Tid) {
 
 // Its removal: at a reader by J, at a node keeping S unread by the step registered there.
 #[test]
-#[ignore = "stub rewrite: told: a node keeping S unread is served after its removal (cause not sorted)"]
 fn a_removal_while_away_serves_nothing_after_it_spec_sync_opens_6() {
     use crate::harness::history::Gives;
     assert!(!served_after_a_change_while_away(Gives::Reads, removed), "at a reader");
@@ -2690,7 +2689,6 @@ fn a_departed_peers_report_holds_nothing_elsewhere_spec_sync_status_2() {
 // once after the pairing, so the record names its account's new key and the reconnect's take
 // re-judges nothing.
 #[test]
-#[ignore = "stub rewrite: told: a self-removal does not end what is served (cause not sorted)"]
 fn a_self_removal_alone_ends_what_is_served_spec_sync_opens_6() {
     let (mut w, (t, s, n)) = paired_away_and_back();
     w.partition(0, 2);

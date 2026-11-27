@@ -157,7 +157,6 @@ fn a_history_is_a_function_of_its_seed() {
 // redeems a locator of it and reads it as the reference does, as held-model's closure says.
 // Control: never made public, the redeem writes nothing and node 1 reads nothing.
 #[test]
-#[ignore = "stub rewrite: a locator's redeemer reads nothing of the thing at quiet, the oracle says it reads (cause not sorted)"]
 fn a_public_thing_redeemed_is_read_until_the_public_goes_spec_sync_set_4() {
     use crate::harness::history::{Gives, Holder, reads};
     let (n, accounts, ..) = size();
@@ -294,7 +293,6 @@ fn a_public_left_out_of_a_rotation_is_listed_once_re_sealed_spec_permissions_3()
 // grant), reads thing 1 too, as the reference does (whose node role left the public out: it had
 // node 1 keep thing 1 unread).
 #[test]
-#[ignore = "stub rewrite: a node reads a dependent the oracle holds it no unit carries (cause not sorted)"]
 fn the_publics_read_through_a_holder_is_every_nodes_spec_sync_set_2() {
     use crate::harness::history::{Gives, Holder};
     let (n, accounts, ..) = size();
@@ -325,7 +323,6 @@ fn a_store_granted_past_genesis_is_moved_spec_sync_ids_6() {
 // alone: thing 0 dependent on its mint admin, of which node 1 holds nothing, so nothing fetched the
 // role commits and it dropped thing 0 for good).
 #[test]
-#[ignore = "stub rewrite: a locator's redeemer reads nothing of the thing at quiet, the oracle says it reads (cause not sorted)"]
 fn a_public_reader_keeps_a_thing_on_taking_its_record_spec_sync_3() {
     use crate::harness::history::{Gives, Holder};
     let (n, accounts, ..) = size();
@@ -381,7 +378,6 @@ fn the_publics_removal_keeps_what_a_nodes_own_role_gives_spec_permissions_3() {
 // reads the thing by the public alone, so the public's removal is its loss too, the removal
 // coming after a quiet run or while the redemption is in flight. Control: no removal, it reads.
 #[test]
-#[ignore = "stub rewrite: a locator's redeemer reads nothing of the thing at quiet, the oracle says it reads (cause not sorted)"]
 fn a_locators_redeemer_loses_the_thing_with_the_public_spec_permissions_3() {
     use crate::harness::history::{Gives, Holder, reads};
     let (n, accounts, ..) = size();
@@ -470,7 +466,7 @@ fn a_node_lowered_with_the_public_reads_no_more_by_its_head_spec_sync_opens_4() 
 // it keeps the thing unread, never reading it by that head's public entry again (a start judges
 // as the live node did).
 #[test]
-#[ignore = "stub rewrite: told: the lowered node is not lowered at the head it read (cause not sorted)"]
+#[ignore = "stub rewrite: node 1 never stands at the head it read, unread, once lowered with the public (cause not sorted)"]
 fn a_node_lowered_with_the_public_reads_no_more_after_a_start_spec_sync_opens_4() {
     use crate::harness::history::{Gives, Holder, reads};
     const TAKEN: &str = "unread: read by its head's public entry @node 1";
@@ -498,7 +494,7 @@ fn a_node_lowered_with_the_public_reads_no_more_after_a_start_spec_sync_opens_4(
 // moves it): node 1, lowered with the public as above, reads the thing again once the public is
 // granted read again (a new step listing the public entry is registered with it).
 #[test]
-#[ignore = "stub rewrite: a locator's redeemer reads nothing of the thing at quiet, the oracle says it reads (cause not sorted)"]
+#[ignore = "stub rewrite: node 1, lowered with the public and the public granted read again, holds the roster at sync and reads nothing (cause not sorted)"]
 fn a_node_lowered_with_the_public_reads_again_on_its_regrant_spec_sync_opens_4() {
     use crate::harness::history::{Gives, Holder};
     let script = [Step::New(2), Step::Run, Step::Give(2, 0, Holder::Public, Gives::Reads), Step::Give(0, 0, Holder::Node(1), Gives::Syncs), Step::Run, Step::Strong(1, None, 0), Step::Lower(0, 0, Holder::Public, Gives::Syncs), Step::Run, Step::Give(0, 0, Holder::Public, Gives::Reads), Step::Run];

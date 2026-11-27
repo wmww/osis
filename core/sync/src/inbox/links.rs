@@ -33,11 +33,12 @@
 //!
 //! A locator (spec/sync-set.md §4) has no join: `redeem_public` follows it in the engine
 //! (`Engine::follow_public`: the target's sync ID from the text read in the sync set, its public
-//! entry tested) until the public's grant on the target is held here, then writes the strong to
-//! the target in the joiner's `holds.0` (`Engine::redeem_public`) and forgets it: the strong brings
-//! the target into the joiner's sync unit from then on. It is kept as a share link's is (a row
-//! `I/r/` under its target, not shredded: no secret), so a restart goes on with it. Its follow
-//! time is a share link's.
+//! entry tested); once the locator reaches its target (`Engine::reaches`) it writes the strong to
+//! the target in the joiner's `holds.0` (`Engine::redeem_public`), and forgets it once the node
+//! closure holds the target: the strong brings it into the joiner's sync unit from then on, once
+//! the target's role entries are held here to carry it (spec/sync-set.md §2 Carriers). It is kept
+//! as a share link's is (a row `I/r/` under its target, not shredded: no secret), so a restart
+//! goes on with it. Its follow time is a share link's.
 //!
 //! Pairing (spec/permissions.md §8) hands over the account's locator: redeemed like any, so a
 //! node paired and restarted before it entered the account still dials the pairer.
@@ -276,8 +277,13 @@ impl Redemptions {
             let Some((_, stage)) = self.public_ready.settle(&t, stage) else { continue };
             match stage {
                 PublicStage::Waiting => continue,
-                // kept wanted until written: a failed write is tried again at the next change
-                PublicStage::Ready if h.engine.redeem_public(&p.link, &p.joiner).is_err() => continue,
+                // followed on until the strong brings the target in (`Held`): the strong carries
+                // it only once its role entries are held here (spec/sync-set.md §2 Carriers); a
+                // failed write is tried again at the next change
+                PublicStage::Ready => {
+                    acted |= h.engine.redeem_public(&p.link, &p.joiner).is_ok();
+                    continue;
+                }
                 _ => {}
             }
             self.public_ready.unwant(&t);

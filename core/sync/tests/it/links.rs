@@ -392,11 +392,11 @@ fn a_joined_links_peers_stay_dial_hints_while_it_holds_k_spec_permissions_7() {
     assert!(!hinted(&w), "the peer dropped with the join");
 }
 
-// spec/permissions.md §8 (Pairing): node 1, paired to node 0's account and configured to dial
-// nothing, restarts before it has met node 0: it still dials node 0 by the peers pairing handed
-// over and syncs the account; the peers stay hints across a later restart.
+// spec/permissions.md §8 (Pairing), spec/sync-set.md §4 (Redeeming: a locator is kept until
+// its target is held): node 1, paired to node 0's account and configured to dial nothing,
+// restarts before it has met node 0: it still dials node 0 by the peers pairing handed over and
+// syncs the account; across a later restart it dials node 0 as a dial peer of the account.
 #[test]
-#[ignore = "stub rewrite: pairing by the account's link: the paired node keeps no dial entry for the pairer across a restart (cause not sorted)"]
 fn a_paired_node_restarted_before_first_contact_still_dials_the_pairer_spec_sync_inbox_5() {
     use osis_sync::driver::dials::Why;
     let mut w = World::new(0);
@@ -419,7 +419,28 @@ fn a_paired_node_restarted_before_first_contact_still_dials_the_pairer_spec_sync
     w.power_off(1);
     w.power_on(1);
     w.run();
-    assert!(hinted(&w), "kept while a node of the account");
+    let s = w.engine(1).sync_id_of(&a).unwrap().unwrap();
+    assert!(w.dials(1).why(&pairer).contains(&Why::Sync(s)), "the pairer dialed as the account's");
+}
+
+// spec/sync-opens.md §5 (ByRole: a side following S by a locator alone sends ByRole beside
+// its public entry's Hit), spec/permissions.md §8 (Pairing): node 0's account is public at sync,
+// so the node it pairs Hits the account's public entry, which it sends as noise (`Lie::Miss`: a
+// filter's false positive, refused); it enters by role all the same. Failed with ByRole sent only
+// where no Hit on S went: the node never entered and gave the locator up.
+#[test]
+fn a_paired_node_whose_public_hit_is_refused_enters_by_role_spec_sync_opens_5() {
+    let mut w = World::new(0);
+    w.add_node();
+    let a = w.node(0).account.unwrap();
+    w.write(0, |e| e.grant(&a, &osis_base::Tid::PUBLIC, &edge(Role::Sync))).unwrap();
+    w.run();
+    let j = w.pair(0);
+    w.lie(j, Some(crate::harness::lies::Lie::Miss));
+    w.run();
+    assert!(w.missed_hits(j) > 0, "the paired node Hit the public entry");
+    let e = w.engine(j);
+    assert!(e.closure_holds(&a) && e.role_on(&a) == Some(Role::Admin), "the paired node entered its account");
 }
 
 // spec/sync-streams.md §4 (Fill order: an entry opening with a section it cannot open, holding a

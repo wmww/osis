@@ -2200,10 +2200,10 @@ impl Opens {
                     break;
                 }
             }
-            if adm.j == J::Reader || (adm.by_role && !hit) || adm.stopped {
+            if adm.j == J::Reader || adm.by_role || adm.stopped {
                 // ByRole for S still not open that J judges the peer reads, or that this side
-                // follows by a locator's value alone and Hits nothing of there (the public
-                // entry's box comes only with its Hit's answer), with this side's Hits of its
+                // follows by a locator's value alone (beside its public entry's Hit, which
+                // may be a false positive of the filter, refused), with this side's Hits of its
                 // read secrets and static entries (a Hit may be a false positive of the filter).
                 let hits = adm.tests.iter().filter(|t| matches!(t, Tested::Read(..) | Tested::Static { .. })).take(osis_proto::limits::MAX_ITEM_HITS).map(|t| {
                     let m = t.matched(&s);

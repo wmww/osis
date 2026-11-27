@@ -222,7 +222,6 @@ fn path_reads(w: &mut World, s: &osis_base::SyncId) -> Vec<u64> {
 // read again costs as much at 10n as at n: the store keeps S's path parsed and the engine its
 // steps' needs, each changed where what it reads moves (fails where a read parses every step).
 #[test]
-#[ignore = "stub rewrite: told: a sync-only holder misses one new sync secret of five (cause not sorted)"]
 fn rotations_keep_keysets_flat_spec_commits_5() {
     let (mut w, _) = setup(Gives::Reads);
     keysets_after_rotations(&mut w, 1);

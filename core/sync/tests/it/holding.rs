@@ -653,7 +653,6 @@ fn a_grant_after_its_thing_became_independent_brings_the_history_its_boxes_open_
 // 1 alone: its view still holds X, so it logs X's value there again; node 0, meeting node 1
 // alone, takes Y -> X and reads X again from the store.
 #[test]
-#[ignore = "stub rewrite: told: the leaving node's delete takes X's value at the node still holding it (cause not sorted)"]
 fn a_thing_left_by_one_view_is_logged_again_by_one_still_holding_it_spec_sync_set_3() {
     let (mut w, t, s) = crate::harness::history::three(crate::harness::history::Gives::Writes, 2);
     let x = make_in(&mut w, 0, t, "x");
@@ -1022,7 +1021,6 @@ fn a_reader_follows_a_forked_sync_id(cycle: bool) {
 
 // The fork alone: a re-seal of the sibling's epoch boxes Alice.
 #[test]
-#[ignore = "stub rewrite: told: Alice's roster of T1 differs from Bob's (cause not sorted)"]
 fn a_reader_follows_a_forked_sync_id_spec_sync_inbox_5() {
     a_reader_follows_a_forked_sync_id(false);
 }
@@ -1030,7 +1028,6 @@ fn a_reader_follows_a_forked_sync_id_spec_sync_inbox_5() {
 // Bob's grant of T1 on T0 closes a cycle with the sibling's (ordered first, it makes Bob's keyless):
 // a rotation of T1, which boxes Alice at the epoch it is wrapped under, replaces the re-seal.
 #[test]
-#[ignore = "stub rewrite: told: Alice's roster of T1 differs from Bob's (cause not sorted)"]
 fn a_reader_follows_a_forked_sync_id_through_a_rotation_spec_sync_inbox_5() {
     a_reader_follows_a_forked_sync_id(true);
 }
