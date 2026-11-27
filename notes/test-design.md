@@ -37,6 +37,7 @@ osis-sync's module reviews (about 50 product bugs) split the same way. Reading a
 **Paged property cost**: `paged_apply_matches_whole_plain` seeds take 90-200 CPU-s each (ingest with its purge-on-replace snapshots about 30%, stored-state reloads after every step about 20%); the goal is the slowest large seed under a minute.
 
 **Small items**:
+- A by-hand `#[ignore]` probe in osis-sync `growth` printing notes/slim-design.md's Today table (frames each way and rows per make), so re-measuring a slimming job and its base is one command each.
 - `tools/merge-branch gate` without a branch prints tools/claim's usage, not its own; say merge-branch's usage and point at `tools/gate.sh --plan` for a plan.
 - A test-only public way to forge a write (an invalid part) for integration tests: `Mutation::unchecked` is crate-private, so such reproducers take a roundabout route.
 - A `LocalPeer` helper that follows held grant signals as the sync layer does, so a cli or sync failure that needs a followed signal moves to an engine test cheaply. Built on the entries design (spec/sync-ids.md §3): a followed signal's holder gets into S by its entry, so a helper on notices would follow what that design deletes.
