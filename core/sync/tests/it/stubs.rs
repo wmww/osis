@@ -89,9 +89,8 @@ fn a_public_thing_referenced_is_read_by_the_referrers_reader_spec_sync_set_2() {
 // spec/sync-set.md §2 (Stubs: the holders on a unit's chains; Holding a stub), spec/permissions.md
 // §4 (A hop's removal): U strongs X; X grants R read, R grants U read. Node 1 reads X through the
 // chain, judging it by R's stub in U (R's grant to U is R's role entry, U's sync ID carries it)
-// and holds R as a stub, reading nothing of R's content. R's stub comes both as a chain holder's
-// and by X's roster naming R (a weak, spec/data-model.md §8 What counts): the chain rule alone is
-// `a_three_hop_chain_*`. R then removes U, and node 0 writes X
+// and holds R as a stub, a chain holder's (X's roster naming R brings nothing: a role-class
+// aspect's weaks bring no stub), reading nothing of R's content. R then removes U, and node 0 writes X
 // again: node 1 reads nothing written since. (How a departed stub holder is told its removal is
 // notes/stub-rewrite.md R3, Q6.)
 #[test]
@@ -115,9 +114,9 @@ fn a_two_hop_chain_is_read_by_its_holders_stub_and_ends_at_its_removal_spec_sync
 }
 
 // spec/sync-set.md §2 (Stubs: the holders on a unit's chains): U strongs X; X grants R1 read, R1
-// grants R2 read, R2 grants U read. R1 is named in X's roster (a weak, spec/data-model.md §8 What
-// counts), R2 only in R1's, whose stub gives nothing further: node 1 reads X by R2's stub alone, a
-// chain holder's (control: chain stubs given nowhere, node 1 reads nothing of X).
+// grants R2 read, R2 grants U read. Node 1 reads X by R1's and R2's stubs, chain holders', the
+// rosters naming them bringing nothing (control: chain stubs given nowhere, node 1 reads nothing
+// of X).
 #[test]
 fn a_three_hop_chain_is_read_by_its_far_holders_stub_spec_sync_set_2() {
     let (mut x, mut r2) = (Tid::PUBLIC, Tid::PUBLIC);
@@ -132,6 +131,25 @@ fn a_three_hop_chain_is_read_by_its_far_holders_stub_spec_sync_set_2() {
     });
     assert_eq!(reads(&mut w, 1, &x), Some(Value::Str("x".into())), "node 1 reads X through R1 and R2");
     assert_eq!(holding(&mut w, 1, &r2), Some(Holding::Stub), "R2 held as a stub");
+}
+
+// spec/sync-set.md §2 (Stubs: a role-class aspect's weaks aside, a thing is in no unit for having
+// been granted something): U strongs X, which grants U read and H sync; H grants U read.
+// X's roster names H, which U's keys open, but H is on no chain by which U reads X: node 1, reading
+// X, holds nothing of H (fails with a roster's holders counted as weaks: H held as a stub).
+#[test]
+fn a_holder_on_no_chain_is_no_stub_spec_sync_set_2() {
+    let (mut x, mut h) = (Tid::PUBLIC, Tid::PUBLIC);
+    let (mut w, _) = redeemed(|w, u| {
+        x = make(w, "x");
+        h = make(w, "h");
+        grant(w, x, u, Some(Role::Read));
+        grant(w, x, h, Some(Role::Sync));
+        grant(w, h, u, Some(Role::Read));
+        refer(w, u, Value::Strong(x));
+    });
+    assert_eq!(reads(&mut w, 1, &x), Some(Value::Str("x".into())), "node 1 reads X");
+    assert_eq!(holding(&mut w, 1, &h), None, "nothing of H");
 }
 
 // spec/sync-set.md §2 (Stubs: a weak to a thing the unit's keys open brings its stub; Holding a

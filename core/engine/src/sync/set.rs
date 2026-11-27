@@ -139,12 +139,12 @@ impl Engine {
     /// The sync IDs thing `t` of `sync_things` is synced under, each with how it is held
     /// (spec/sync.md §3): read by a read secret of a thing the node closure reads, as a stub by a
     /// read secret of a thing held as a stub alone (spec/sync-set.md §2 Holding a stub: its role
-    /// entries alone; so too a thing a held grant signal alone names, once entered, spec/sync-set.md
-    /// §2 First entry), kept unread by a sync secret alone. Reads `t`'s keys.
+    /// entries alone; so too a thing a held grant signal alone names, whatever the node holds of
+    /// it, spec/sync-set.md §2 First entry), kept unread by a sync secret alone. Reads `t`'s keys.
     pub(crate) fn thing_holdings(&mut self, t: &Tid) -> Result<Vec<(SyncId, Holding)>> {
         // a signalled thing no reference carries: followed for its role entries alone, whatever
         // the node holds of it (it enters by role, spec/sync-opens.md §5 ByRole)
-        let signalled = self.core.followed_links.signalled_only(t) && !self.core.ix.closure.synced(t) && self.holds_read(t);
+        let signalled = self.core.followed_links.signalled_only(t) && !self.core.ix.closure.synced(t);
         let read = if self.core.ix.closure.stub_only(t) || signalled { Holding::Stub } else { Holding::Read };
         Ok(match self.thing_sync(t)? {
             ThingSync::Read(ids) => ids.into_iter().map(|s| (s, read)).collect(),

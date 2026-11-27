@@ -38,9 +38,9 @@ pub(crate) fn holds_target(kind: RefKind, ak: &Ak) -> bool {
 }
 
 /// Whether a `kind` row on `ak` brings its target's stub as a weak in a current value does
-/// (spec/sync-set.md §2 Stubs).
+/// (spec/sync-set.md §2 Stubs): a role-class aspect's weaks (its holders, its inbox) bring none.
 pub(crate) fn holds_stub(kind: RefKind, ak: &Ak) -> bool {
-    kind == RefKind::Weak && !ak.signal()
+    kind == RefKind::Weak && !ak.signal() && !osis_schema::core_types::is_role_class(ak.as_str())
 }
 
 /// Whether `ak` is indexed: every aspect with a state, and every durable signal by its held

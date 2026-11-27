@@ -122,7 +122,6 @@ fn a_making_released_before_a_grantee_held_it_is_lost_spec_sync_set_3() {
 // builds the reference and the model without it, so node 2 reads the roster it holds (failed:
 // the reference, handed the public's grant, read a sync role node 2 can never learn of).
 #[test]
-#[ignore = "stub rewrite: a held grant signal holds S as Read whatever the node holds (R3b)"]
 fn a_grant_released_before_anyone_received_it_is_lost_spec_sync_set_3() {
     use crate::harness::history::{Gives, Holder};
     let script = [Step::New(1), Step::Give(1, 0, Holder::Public, Gives::Syncs), Step::Give(1, 0, Holder::Node(2), Gives::Reads), Step::Unstrong(1, None, 0), Step::Strong(2, None, 0)];
@@ -458,7 +457,7 @@ fn a_store_moved_at_once_takes_the_next_step_spec_sync_ids_6() {
 // its head, a storm past the world's cap. It reaches quiet, keeping the thing unread as the model
 // says, and its index rebuilds from what it holds once the role commits it read are forgotten.
 #[test]
-#[ignore = "stub rewrite: a held grant signal holds S as Read whatever the node holds (R3b)"]
+#[ignore = "stub rewrite: the lowered node keeps the thing unread at no step, its readers' head 4 deep (cause not sorted)"]
 fn a_node_lowered_with_the_public_reads_no_more_by_its_head_spec_sync_opens_4() {
     use crate::harness::history::{Gives, Holder};
     let script = [Step::New(2), Step::Run, Step::Give(2, 0, Holder::Public, Gives::Reads), Step::Give(0, 0, Holder::Node(1), Gives::Syncs), Step::Run, Step::Strong(1, None, 0), Step::Lower(0, 0, Holder::Public, Gives::Syncs)];
@@ -550,7 +549,6 @@ fn a_removed_reader_takes_from_the_publics_box_no_more_than_a_stranger_spec_perm
 // says. Failed while a departed member was served its notices alone: node 0 kept reading at the
 // public's role, its roster still listing the public.
 #[test]
-#[ignore = "stub rewrite: a held grant signal holds S as Read whatever the node holds (R3b)"]
 fn a_departed_public_reader_holds_the_publics_removal_spec_sync_opens_6() {
     use crate::harness::history::{Gives, Holder};
     let start = [Step::New(1), Step::Give(1, 0, Holder::Node(0), Gives::Reads), Step::Give(1, 0, Holder::Public, Gives::Reads), Step::Strong(0, None, 0), Step::Run];
@@ -584,7 +582,7 @@ fn a_holder_left_out_is_re_sealed_once_its_keyset_arrives_spec_permissions_3() {
 // Failed while lost access judged the sync secret by the grants alone: it dropped the public's
 // sync secret with the rest and followed the thing again, holding nothing.
 #[test]
-#[ignore = "stub rewrite: a held grant signal holds S as Read whatever the node holds (R3b)"]
+#[ignore = "stub rewrite: the removed reader holds the thing as a stub at quiet, the model kept unread (it holds the public's sync secret and no step of S bearing it; cause not sorted)"]
 fn a_removed_reader_keeps_the_publics_sync_secret_through_its_loss_spec_permissions_3() {
     use crate::harness::script::*;
     holds_on(0, 3, 4, &[New(2), Give(2, 0, Holder::Node(0), Reads), Give(2, 0, Holder::Node(1), Reads), Revoke(2, 0, Holder::Node(1)), Give(2, 0, Holder::Public, Syncs), Strong(0, None, 0), Revoke(2, 0, Holder::Node(0))], String::new(), false);

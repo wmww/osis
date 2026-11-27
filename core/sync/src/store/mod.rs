@@ -621,10 +621,12 @@ impl Store {
         }
         let anew: Vec<SyncId> = moved.iter().filter(|(s, now)| raised(g.holdings.get(s), now.as_ref()) && !g.unheld.contains(s)).map(|(s, _)| *s).collect();
         if !anew.is_empty() {
-            // a dropped copy's mark stands as it is: it is fetched anew once judged (`set_unheld`)
+            // a dropped copy's mark stands as it is: it is fetched anew once judged (`set_unheld`);
+            // S's first sync starts anew, a listing of what it holds now
             g.write(|t, _| {
                 for s in &anew {
                     t.put_local(&rows::anew_key(s), rows::ANEW_RAISED, Shred::No)?;
+                    t.remove_local(&rows::first_key(s), Shred::No)?;
                 }
                 Ok(())
             })?;
@@ -1495,7 +1497,8 @@ impl Store {
     }
 
     /// Whether S's first sync here ended (spec/sync-streams.md §5): a source's stream of S stood
-    /// at the end of a listing from the start since S was last shredded here. Stamped (row `F/`).
+    /// at the end of a listing from the start since S was last shredded or raised here. Stamped
+    /// (row `F/`).
     pub fn first_synced(&self, s: &SyncId) -> Result<bool> {
         self.lock().read(|t, _| Ok(t.get_local(&rows::first_key(s))?.is_some()))
     }
@@ -1507,7 +1510,7 @@ impl Store {
         v.map(|v| v.as_slice().try_into().map(StepId).map_err(|_| crate::types::Error::Store(osis_store::Error::Corrupt("lowered row")))).transpose()
     }
 
-    /// S's first sync here ended: kept until S is shredded (`first_synced`).
+    /// S's first sync here ended: kept until S is shredded or raised (`first_synced`).
     pub fn set_first_synced(&mut self, s: &SyncId) -> Result<()> {
         let k = rows::first_key(s);
         let mut g = self.lock();

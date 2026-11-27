@@ -13,7 +13,6 @@ use osis_engine::flows::Demotion;
 // rotation); once healed node 2 has no box at node 1's epoch, and an admin re-seals it at the end
 // of the complete pass a role commit from elsewhere began, so node 2 reads a write under it.
 #[test]
-#[ignore = "stub rewrite: a held grant signal holds S as Read whatever the node holds (R3b)"]
 fn a_raced_grant_is_resealed_at_a_complete_passs_end_spec_perm_3() {
     use crate::harness::Step::*;
     use crate::harness::history::{Gives, check, world_of};

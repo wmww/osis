@@ -1043,13 +1043,6 @@ impl Model {
         // per account a node: its node thing admin of the account, its root holding both
         let n = world.kinds.len();
         let mut net = entry::Net { w: world.clone(), strongs: edges.clone(), ..entry::Net::default() };
-        // an account's inbox, named by its `keys.0` (spec/sync-inbox.md §1): a weak to it
-        for (b, acct) in accounts.iter().enumerate() {
-            let inbox = refs.all().find_map(|r| r.engine.inbox_of(acct).ok().flatten());
-            if let Some(x) = inbox.and_then(|t| index(&t)).filter(|x| *x != b) {
-                net.weaks.insert((b, x));
-            }
-        }
         for b in 0..na {
             let (thing, root) = (n + 2 * b, n + 2 * b + 1);
             net.w.kinds.extend([hc::Kind::Independent, hc::Kind::Dependent(thing)]);
