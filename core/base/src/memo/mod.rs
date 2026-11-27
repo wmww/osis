@@ -173,6 +173,16 @@ impl Table {
         // a debug check's writes owe the measured code no follow
         if !crate::costs::pausing() {
             WRITES_HERE.set(WRITES_HERE.get() + 1);
+            #[cfg(debug_assertions)]
+            crate::trace::caller(|| {
+                let what = match &e {
+                    Logged::Key { h, present, .. } => format!("key {h:x}{}", if *present { "" } else { " removed" }),
+                    Logged::Bucket(h) => format!("bucket of {h:x}"),
+                    Logged::Whole => "whole".to_string(),
+                    Logged::All => "all".to_string(),
+                };
+                format!("stamp write {} {what}", self.cause(false))
+            });
         }
         if !self.marks.is_empty() {
             self.log.push_back((self.seq, e));

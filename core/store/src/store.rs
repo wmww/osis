@@ -409,6 +409,8 @@ impl Store {
     /// store first recovers in place as `open` would; after one whose outcome is unknown, at once
     /// and then after waits of 1 s doubling to 60 s while that fails (`Error::Broken` between).
     pub fn transaction<'a>(&'a mut self, rng: &'a mut dyn CryptoRngCore) -> Result<Transaction<'a>, Error> {
+        #[cfg(debug_assertions)]
+        osis_base::trace::caller(|| "tx begun".to_string());
         // a suspended transaction not resumed is dropped: what it wrote is undone
         self.stamping.undo_to(0);
         let d = self.pager.begin()?;
