@@ -203,6 +203,12 @@ impl Read {
         self.bodies.reads_held() + self.judged.reads_held() + self.toward.reads_held() + self.freed.reads_held() + self.local.reads_held()
     }
 
+    /// `reads_held`'s reads per followed key, by container (`Effects::held_reads`), for by-hand
+    /// probes of what a held commit keeps.
+    pub fn held_reads(&self) -> Vec<osis_base::memo::HeldReads> {
+        [self.bodies.held_reads(), self.judged.held_reads(), self.toward.held_reads(), self.freed.held_reads(), self.local.held_reads()].into_iter().flatten().collect()
+    }
+
     /// The product's step: over the engine, store, opens' members and streams' `known`. Entries
     /// to fetch again (a body counting missing again) go to `fetches`, for streams; entries given
     /// a source as deposits to `gives`, for inbox.

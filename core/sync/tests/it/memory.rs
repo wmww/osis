@@ -46,6 +46,54 @@ fn memory_per_commit_probe() {
     std::mem::forget(w);
 }
 
+// spec: none (measurement: issues/memory-per-commit.md).
+/// By hand: where a held commit's followed keys' reads come from. Node 0 writes `MEM_N` small
+/// values (default 3) as `memory_per_commit_probe` does; prints, per node, each followed key
+/// of the engine's per-commit rows and of sync read with its held reads by container
+/// (`memo::HeldReads`), then each (follower, container)'s reads in all.
+#[test]
+#[ignore = "by hand: prints what following each key holds"]
+fn held_reads_by_container_probe() {
+    let n: u64 = std::env::var("MEM_N").ok().and_then(|v| v.parse().ok()).unwrap_or(3);
+    let (mut w, t) = world();
+    write_values(&mut w, t, 0, n);
+    for i in 0..2 {
+        let held: Vec<_> = w.engine(i).sync_held_reads().into_iter().chain(w.node(i).node.read().held_reads()).collect();
+        let mut total = std::collections::BTreeMap::<(&str, &str), usize>::new();
+        for h in &held {
+            let reads: Vec<String> = h.reads.iter().map(|(c, k)| format!("{} {k}", unpathed(c))).collect();
+            eprintln!("n{i} {} {}: {}", h.follower, h.key, reads.join(", "));
+            for (c, k) in &h.reads {
+                *total.entry((h.follower, c)).or_default() += k;
+            }
+        }
+        eprintln!("n{i} reads by follower and container, {n} commits:");
+        for ((f, c), k) in total {
+            eprintln!("  {f} <- {}: {k}", unpathed(c));
+        }
+    }
+}
+
+/// `s` with each path's modules left out (`osis_base::memo::Stamped<osis_base::ids::Tid, ..>` as
+/// `Stamped<Tid, ..>`).
+fn unpathed(s: &str) -> String {
+    let mut out = String::new();
+    let mut word = String::new();
+    let mut rest = s.chars().peekable();
+    while let Some(c) = rest.next() {
+        if c == ':' && rest.peek() == Some(&':') {
+            rest.next();
+            word.clear();
+        } else if c.is_alphanumeric() || c == '_' {
+            word.push(c);
+        } else {
+            out.push_str(&std::mem::take(&mut word));
+            out.push(c);
+        }
+    }
+    out + &word
+}
+
 /// The reads both nodes' followers of held commits hold (engine rows and sync read).
 fn reads_held(w: &mut World) -> usize {
     (0..2).map(|i| w.engine(i).sync_reads_held() + w.node(i).node.read().reads_held()).sum()

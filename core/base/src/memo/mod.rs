@@ -27,7 +27,7 @@ use std::sync::{Arc, Mutex, MutexGuard, Weak};
 mod cutoff;
 mod effects;
 pub use cutoff::{Amended, Cutoff};
-pub use effects::{Effects, Feed, Removals};
+pub use effects::{Effects, Feed, HeldReads, Removals};
 
 /// Keys without a stamp of their own share one per bucket of their hash (`Table::absent`).
 /// Performance switch: at 1 every pruning moves what read any key without a stamp; at infinity

@@ -543,6 +543,13 @@ impl Engine {
         c.sync_bodies.reads_held() + c.sync_body_rows.reads_held() + c.read_facts.reads_held() + c.held_fates.reads_held()
     }
 
+    /// `sync_reads_held`'s reads per followed key, by container (`Effects::held_reads`), for
+    /// by-hand probes of what a held commit keeps.
+    pub fn sync_held_reads(&self) -> Vec<osis_base::memo::HeldReads> {
+        let c = &self.core;
+        [c.sync_bodies.held_reads(), c.sync_body_rows.held_reads(), c.read_facts.held_reads(), c.held_fates.held_reads()].into_iter().flatten().collect()
+    }
+
     /// What `read` judges `c`'s body under `s` on beside `BodyFacts` (`ReadFacts`). Kept per
     /// (sync ID, commit) from its first ask (`Core::read_facts`, a `memo::Cutoff`, refreshed by
     /// `follow`): a reader moves only when the facts do; `unfollow_facts` lets a key go.

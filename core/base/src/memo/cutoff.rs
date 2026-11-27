@@ -282,6 +282,11 @@ impl<K: Hash + Eq + Ord + Clone + std::fmt::Debug + Send + 'static, V: Clone + P
         self.fx().reads_held()
     }
 
+    /// Its rows' held reads per key, by container (`Effects::held_reads`).
+    pub fn held_reads(&self) -> Vec<super::HeldReads> {
+        self.fx().held_reads()
+    }
+
     /// How many rows it holds (unstamped: for counts of what it keeps).
     pub fn rows_held(&self) -> usize {
         self.rows.borrow().map.len()

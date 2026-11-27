@@ -6,10 +6,22 @@
 #[cfg(debug_assertions)]
 use super::at_power;
 use super::{Dep, Ids, Logged, Table, bucket, copied, lazy_of, lock, recorded_frame};
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::hash::Hash;
 use std::marker::PhantomData;
 use std::sync::{Arc, Mutex};
+
+/// What following one key keeps (`Effects::held_reads`).
+#[derive(Debug)]
+pub struct HeldReads {
+    /// The follower's name (`Effects::new`).
+    pub follower: &'static str,
+    /// The key, as `Debug` prints it.
+    pub key: String,
+    /// Its value's reads, counted by the container read: its name, else where its stamps were
+    /// made; `(whole)`: a read of all of it.
+    pub reads: BTreeMap<&'static str, usize>,
+}
 
 /// A function's value per followed key, acted on by its owner, with what each last value read.
 /// `settle(k, f)` runs `f` recording its reads (a memo's answer read inside counts as what that
@@ -168,6 +180,22 @@ impl<K: Hash + Eq + Clone + std::fmt::Debug, V: Clone + PartialEq + std::fmt::De
     /// following costs in memory beside the keys and values.
     pub fn reads_held(&self) -> usize {
         self.followed.values().map(|f| f.deps.len()).sum()
+    }
+
+    /// Each followed key's held reads (`reads_held`) by container, in want order: what following
+    /// each key keeps, for by-hand probes.
+    pub fn held_reads(&self) -> Vec<HeldReads> {
+        let mut fs: Vec<&Followed<K, V>> = self.followed.values().collect();
+        fs.sort_by_key(|f| f.seq);
+        fs.into_iter()
+            .map(|f| {
+                let mut reads = BTreeMap::new();
+                for d in &f.deps {
+                    *reads.entry(lock(&d.table).cause(d.whole)).or_default() += 1;
+                }
+                HeldReads { follower: self.name, key: format!("{:?}", f.key), reads }
+            })
+            .collect()
     }
 
     /// Whether no key is known due (wanted and never settled, given by `due` and not settled
