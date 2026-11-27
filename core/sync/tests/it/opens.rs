@@ -1699,11 +1699,11 @@ fn an_until_passing_while_away_serves_nothing_after_it_spec_sync_opens_6() {
 }
 
 // spec/sync-opens.md §3 (a node that stops holding S drops S from every record in the step that
-// stops it), §6 Where it stopped: node 1 lets t go (S shredded there) while node 2, which reads S
-// from it, is away; what streams kept of S for node 2's record goes with S's rows already gone
-// (`Moved::Gone`), and the two meet again with nothing of S open.
+// stops it), §6 Where it stopped, spec/sync-inbox.md §5 (Grant signal: followed while held):
+// node 1's grant signal expired, it lets t go (its strong dropped: S shredded there) while node 2,
+// which reads S from it, is away; what streams kept of S for node 2's record goes with S's rows
+// already gone (`Moved::Gone`), and the two meet again with nothing of S open.
 #[test]
-#[ignore = "stub rewrite: told: the reader does not let S go once shredded while away (cause not sorted)"]
 fn s_shredded_while_its_reader_is_away_spec_sync_opens_3() {
     use crate::harness::Step::*;
     use crate::harness::history::{Gives, world_of};
@@ -1714,6 +1714,10 @@ fn s_shredded_while_its_reader_is_away_spec_sync_opens_3() {
     let before = write_value(&mut w, t, &s, 1);
     w.advance(1000);
     assert!(!before.is_empty() && before.is_subset(&held_of(&w, 1, &s)) && before.is_subset(&held_of(&w, 2, &s)));
+    // the grant signals expire first, while everyone is connected: node 1 then holds t by its
+    // strong alone
+    w.advance(osis_base::format::INBOX_LIFETIME_MS + 1000);
+    w.run();
     w.partition(1, 2);
     let _ = crate::harness::play(&mut w, &[Unstrong(1, None, 0)], String::new());
     w.run();
