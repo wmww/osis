@@ -1,0 +1,2 @@
+# sheave-r5a-holding
+- osis-cli `cli::sharing_commands_local_plan_cli_4` fails on main (secrets index rebuild differs, issues/secrets-index-rebuild-differs.md) with no known_failures line, so it read as my regression until a `tools/bin-at` build of the base. A crate the gate does not run per change can stay red unseen: running every crate's tests at the gate, or a known_failures line once seen, would have saved the bisect.
