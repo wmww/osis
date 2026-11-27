@@ -1,116 +1,127 @@
-//! Notices (spec/permissions.md §4 Notices): how a holder that lost read on a thing X learns its
-//! removal by X's sync ID alone. Per commit c taking read from a holder M of X (the first applied
-//! write on M's edge leaving it below read after the newest giving it read), each reader of X
-//! judging M departed logs one notice under X's sync ID: c's certificate copy on X (its edge-class
-//! parts), the copies of its evidence and their records, under a fresh blob key wrapped as any
-//! entry (X's readers open it as they may encrypt now, never by an epoch M or an earlier departed
-//! reader holds), that key sealed to M's own read KEM key (`rotation::members::notice_keyset`):
-//! only M's readers open it otherwise. A departed member is served the notices of its removals
-//! and the public's edge alone (spec/sync-opens.md §6, `departed_shown`).
-//!
-//! A notice is no entry of its commit: it competes with none, and one is kept per (thing,
-//! commit, holder, holder's keyset) as sync copies are (one log of each content, `content`). Rows
-//! (`NOTICES`: one per blob, sealed here or opened) name what each is, across a restart, whoever
-//! logged it.
+//! Notices (spec/permissions.md §4 Notices): how a role commit on a thing X tells a holder M
+//! its departure or a box M cannot open by the commit's wrap. A notice is never logged: a reader
+//! of X opening X's sync ID toward M by role, or ending M's member for its departure, seals it
+//! there and then (`notices_for`, `seal_notice`) and sends it on that connection alone
+//! (spec/wire.md §11.2 Notice), so a store keeping X unread holds nothing per holder or grant.
+//! M takes one by its own read KEM key (`take_notice`).
 //!
 //! Who writes the input: c and the giving write are applied edge writes (X's admins); M's keysets
-//! are M's rotators'. Any reader of X may seal a notice; one counts as the sealed copy it carries
-//! is judged (`Engine::open_notice`): a forged one gives nothing, and a reader holding its key
-//! counts it only where its box is that key sealed to the holder it names
-//! (`osis_blob::open_notice`), so a forged one keeps no reader from logging the real one.
+//! are M's rotators'. The sender is any reader of X: a notice counts as the sealed copy it carries
+//! is judged (`Engine::open_notice`), so a forged one gives nothing.
 
-use crate::engine::{Engine, Tx};
-use crate::error::{Error, Result};
-use osis_base::{BlobId, CommitId, Role, SyncId, Tid};
+use crate::engine::Engine;
+use crate::error::Result;
+use osis_base::{CommitId, Role, SyncId, Tid};
 use osis_crypto::Epoch;
-use osis_store::Shred;
 use std::collections::{BTreeMap, BTreeSet};
 
-/// `nt/` + blob ID: the notice it is (`encode`).
-pub(crate) const NOTICES: &[u8] = b"nt/";
-
-/// What a notice blob is: removal `commit` of `holder` from `thing`, sealed to `holder`'s read
-/// keyset at `epoch`.
+/// What a notice is: role commit `commit` on `thing` telling `holder` its departure (`departs`)
+/// or its boxes, sealed to `holder`'s read keyset at `epoch`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Notice {
     pub thing: Tid,
     pub commit: CommitId,
     pub holder: Tid,
     pub epoch: Epoch,
+    pub departs: bool,
 }
 
 impl Notice {
-    /// Its content key: one notice of each logged (`Engine::notices_carried`).
+    /// Its content key: one notice of each sent per connection.
     pub fn content(&self) -> [u8; 32] {
         let e = [self.epoch.n().to_be_bytes().as_slice(), self.epoch.nonce()].concat();
         osis_base::hash::hash(&[b"notice".as_slice(), self.thing.as_bytes(), &self.commit.0, self.holder.as_bytes(), &e].concat())
     }
 }
 
-fn encode(n: &Notice) -> Vec<u8> {
-    [n.thing.as_bytes().as_slice(), &n.commit.0, n.holder.as_bytes(), &n.epoch.n().to_be_bytes(), n.epoch.nonce()].concat()
-}
-
-fn decode(v: &[u8]) -> Option<Notice> {
-    let (t, rest) = v.split_at_checked(15)?;
-    let (c, rest) = rest.split_at_checked(32)?;
-    let (h, rest) = rest.split_at_checked(15)?;
-    let (n, nonce) = rest.split_at_checked(8)?;
-    let epoch = Epoch::new(u64::from_be_bytes(n.try_into().ok()?), nonce.try_into().ok()?).ok()?;
-    Some(Notice { thing: Tid::from_bytes(t.try_into().ok()?), commit: CommitId(c.try_into().ok()?), holder: Tid::from_bytes(h.try_into().ok()?), epoch })
-}
-
-/// Loads the notice rows (an open or reload).
-pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
-    let bad = || Error::Corrupt("notice row");
-    let rows = tx.scan_rows(NOTICES, |k, v| {
-        let b = BlobId(k.try_into().map_err(|_| bad())?);
-        Ok((b, decode(&v).ok_or_else(bad)?))
-    })?;
-    for (b, n) in rows {
-        tx.core.ix.notices.insert(b, n);
-    }
-    Ok(())
-}
-
-pub(crate) fn note(tx: &mut Tx<'_>, b: &BlobId, n: Notice) -> Result<()> {
-    if tx.core.ix.notices.get(b) == Some(&n) {
-        return Ok(());
-    }
-    tx.txn.put_local(&[NOTICES, &b.0].concat(), &encode(&n), Shred::No)?;
-    tx.core.ix.notices.insert(*b, n);
-    Ok(())
-}
-
 impl Engine {
-    /// The notices sync ID `s` carries here, by content (`Notice::content`): per independent thing
-    /// X reading `s` and each departure from X's read this node knows whose edge shows the commit
-    /// taking it (`taking`), the notice of that commit to the departed holder's read keyset this
-    /// node seals to (`rotation::members::notice_keyset`). None of an own thing's: a node judging
-    /// its own removal erases X.
-    pub fn notices_carried(&mut self, s: &SyncId) -> Result<BTreeMap<[u8; 32], Notice>> {
-        let mut out = BTreeMap::new();
+    /// The notices a peer proving `proven` is told under sync ID `s` (spec/permissions.md §4
+    /// Notices), per independent thing X reading `s`: per holder of X the peer reaches
+    /// (`reaches`) that departed X, the commit taking its read; per current holder it reaches,
+    /// the newest held commit telling it its boxes (`boxed_unopened`): every later box of it opens
+    /// by its wrap from there. Each to the holder's read keyset this node seals to
+    /// (`rotation::members::notice_keyset`). None of an own thing's.
+    /// Cost: `boxed_unopened` per thing, on each open by role or departure judged.
+    pub fn notices_for(&mut self, s: &SyncId, proven: &BTreeSet<Tid>) -> Result<Vec<Notice>> {
+        let mut out = Vec::new();
         for t in self.read_things_of(s)? {
             if self.core.secret_actor(&t) != Some(t) {
                 continue;
             }
             let deps = self.read(|tx| crate::rotation::departures::departures(tx, &t))?;
-            let deps: Vec<_> = deps.iter().filter(|d| d.concerns(Role::Read) && !self.core.is_own(&d.holder)).cloned().collect();
-            let mut told: Vec<(CommitId, Tid)> = Vec::new();
-            for d in deps {
+            let mut told: Vec<(CommitId, Tid, bool)> = Vec::new();
+            for d in deps.iter().filter(|d| d.concerns(Role::Read) && !self.core.is_own(&d.holder)) {
                 let Some(c) = d.edge.as_ref().and_then(taking) else { continue };
-                if self.core.ix.commits.contains_key(&c) {
-                    told.push((c, d.holder));
+                if self.core.ix.commits.contains_key(&c) && self.departed_reaches(&t, &c, &d.holder, proven) {
+                    told.push((c, d.holder, true));
                 }
             }
-            told.extend(self.boxed_unopened(&t)?);
-            for (c, holder) in told {
+            let mut newest: BTreeMap<Tid, (osis_base::Ts, CommitId)> = BTreeMap::new();
+            for (c, m) in self.boxed_unopened(&t)? {
+                let Some(ts) = self.header(&c).map(|h| h.ts) else { continue };
+                if self.current_reaches(&m, proven) && newest.get(&m).is_none_or(|(x, _)| ts > *x) {
+                    newest.insert(m, (ts, c));
+                }
+            }
+            told.extend(newest.into_iter().map(|(m, (_, c))| (c, m, false)));
+            for (c, holder, departs) in told {
                 let Some((epoch, _)) = self.read(|tx| crate::rotation::members::notice_keyset(tx, &t, &holder))? else { continue };
-                let n = Notice { thing: t, commit: c, holder, epoch };
-                out.insert(n.content(), n);
+                out.push(Notice { thing: t, commit: c, holder, epoch, departs });
             }
         }
         Ok(out)
+    }
+
+    /// Notice `n` sealed afresh (spec/wire.md §9 Notice) under a fresh blob key: `None` while its
+    /// commit is not applied here or no notice keyset of its holder is held.
+    pub fn seal_notice(&mut self, n: &Notice, rng: &mut dyn osis_crypto::NodeRng) -> Result<Option<Vec<u8>>> {
+        let Some((epoch, kem)) = self.read(|tx| crate::rotation::members::notice_keyset(tx, &n.thing, &n.holder))? else { return Ok(None) };
+        if epoch != n.epoch {
+            return Ok(None);
+        }
+        let blob_key = osis_crypto::Secret32::random(rng);
+        self.sealed_notice(n, &kem, &blob_key)
+    }
+
+    /// Takes notice `bytes` sent under `s` (spec/permissions.md §4 Notices): opened by a read KEM
+    /// secret held here of a holder of one of `s`'s things or of a thing on this node's own chains
+    /// (a holder holding nothing of the thing yet), its copy taken on its own thing. Whether it
+    /// gave anything.
+    pub fn take_notice(&mut self, s: &SyncId, bytes: &[u8]) -> Result<bool> {
+        let things: Vec<Option<Tid>> = self.sync_things_of(s)?.into_iter().map(Some).chain([None]).collect();
+        for t in things {
+            match self.open_notice(t, bytes)? {
+                crate::sync::Opened::NotOpen => {}
+                crate::sync::Opened::Commit(_, crate::Ingested::Duplicate(_)) | crate::sync::Opened::Bad => return Ok(false),
+                _ => return Ok(true),
+            }
+        }
+        Ok(false)
+    }
+
+    /// Whether removal `c` of `holder` from `t` reaches a peer proving `proven`: `holder` is among
+    /// `proven`, or a proven thing held read or above on it just before `c`.
+    /// Invariant (privacy; spec/sync-hostile.md): a departed peer is told no removal past its own:
+    /// one it read the thing through when made, never one of a holder it had left by then.
+    fn departed_reaches(&self, t: &Tid, c: &CommitId, holder: &Tid, proven: &BTreeSet<Tid>) -> bool {
+        let Some(tl) = self.core.timelines().get(t) else { return false };
+        let removes = |o: &osis_perm::EdgeOp| o.holder.thing() == Some(*holder) && o.edge.as_ref().is_none_or(|e| e.role < Role::Read);
+        let Some(at) = tl.applied_on(t).find(|(mc, o)| mc.id == *c && removes(o)).map(|(mc, _)| osis_perm::At::before(mc.point())) else { return false };
+        proven.contains(holder) || tl.roles_on(holder, at).iter().any(|(p, r)| proven.contains(p) && *r >= Role::Read)
+    }
+
+    /// Whether held blob `b` under `s` is shown a peer this node judges departed
+    /// (spec/sync-opens.md §6): a blob of a commit of the public's edge on `s`'s things
+    /// (`public_edge`): the public's role is every party's, that peer's too. Its notices go
+    /// beside the stream (`notices_for`).
+    pub fn departed_shown(&mut self, s: &SyncId, b: &osis_base::BlobId) -> bool {
+        self.blob_commit(b).is_some_and(|c| self.public_edge(s).is_ok_and(|e| e.contains(&c)))
+    }
+
+    /// Whether current holder `m` of `t` reaches a peer proving `proven`: `m` is among `proven`,
+    /// or a proven thing holds read or above on `m` now.
+    fn current_reaches(&self, m: &Tid, proven: &BTreeSet<Tid>) -> bool {
+        proven.contains(m) || self.core.key_holders(m).iter().any(|(p, r)| proven.contains(p) && *r >= Role::Read)
     }
 
     /// The held role commits on independent thing `t` with each current holder of `t` they box
@@ -184,81 +195,6 @@ impl Engine {
             out.extend(boxed.into_iter().filter(|m| !boxed_by_another(c, m, &e) && !(derived && Some(*m) == up)).map(|m| (*c, m)));
         }
         Ok(out)
-    }
-
-    /// The notice rows of the things reading `s`.
-    pub fn notice_rows(&mut self, s: &SyncId) -> BTreeMap<BlobId, Notice> {
-        let things = self.read_things_of(s).unwrap_or_default();
-        self.core.ix.notices.iter().filter(|(_, n)| things.contains(&n.thing)).map(|(b, n)| (*b, *n)).collect()
-    }
-
-    /// The notice blob `b` is, noted here.
-    pub fn notice_of(&self, b: &BlobId) -> Option<Notice> {
-        self.core.ix.notices.get(b).copied()
-    }
-
-    /// A fresh blob of the notice of content `key` that `s` carries (`notices_carried`), its row
-    /// taken as this node's, with its wrap under the thing's read epoch this node encrypts under
-    /// now (`wrap_secret`): `None` where `s` carries none such, its commit is not applied here or
-    /// no epoch may be encrypted under.
-    pub fn seal_notice(&mut self, s: &SyncId, key: &[u8; 32], rng: &mut dyn osis_crypto::NodeRng) -> Result<Option<(BlobId, Vec<u8>, crate::sync::Wrap)>> {
-        let Some(n) = self.notices_carried(s)?.get(key).copied() else { return Ok(None) };
-        let Some(w) = self.wrap_secret(&n.thing, None)? else { return Ok(None) };
-        let Some((_, kem)) = self.read(|tx| crate::rotation::members::notice_keyset(tx, &n.thing, &n.holder))? else { return Ok(None) };
-        let blob_key = osis_crypto::Secret32::random(rng);
-        let Some(blob) = self.sealed_notice(&n, &kem, &blob_key)? else { return Ok(None) };
-        let id = osis_blob::blob_id(&blob);
-        let wrap = osis_crypto::wrap(&w, &id, &blob_key, 0)?;
-        self.run(|tx| note(tx, &id, n))?;
-        Ok(Some((id, blob, wrap)))
-    }
-
-    /// No store entry names blob `b` any more: its notice row, if any, goes.
-    pub(crate) fn unnamed_notice(&mut self, b: &BlobId) -> Result<()> {
-        if !self.core.ix.notices.contains_key(b) {
-            return Ok(());
-        }
-        let b = *b;
-        self.run(|tx| {
-            tx.txn.remove_local(&[NOTICES, &b.0].concat(), Shred::No)?;
-            tx.core.ix.notices.remove(&b);
-            Ok(())
-        })
-    }
-
-    /// The removals of `s`'s things whose notices a peer proving `proven` is served
-    /// (spec/sync-opens.md §6, `tells`).
-    pub fn told(&mut self, s: &SyncId, proven: &BTreeSet<Tid>) -> Result<BTreeSet<CommitId>> {
-        Ok(self.notice_rows(s).into_values().filter(|n| self.tells(n, proven)).map(|n| n.commit).collect())
-    }
-
-    /// Whether held blob `b` under `s` is a notice telling a peer proving `proven` (`told`).
-    pub fn notice_tells(&mut self, s: &SyncId, b: &BlobId, proven: &BTreeSet<Tid>) -> bool {
-        let Some(n) = self.notice_of(b) else { return false };
-        self.read_things_of(s).is_ok_and(|t| t.contains(&n.thing)) && self.tells(&n, proven)
-    }
-
-    /// Whether held blob `b` under `s` is shown a peer proving `proven` that this node judges
-    /// departed (spec/sync-opens.md §6): a notice telling it (`notice_tells`), or a blob of a
-    /// commit of the public's edge on `s`'s things (`public_edge`): the public's role is every
-    /// party's, that peer's too.
-    pub fn departed_shown(&mut self, s: &SyncId, b: &BlobId, proven: &BTreeSet<Tid>) -> bool {
-        self.notice_tells(s, b, proven) || self.blob_commit(b).is_some_and(|c| self.public_edge(s).is_ok_and(|e| e.contains(&c)))
-    }
-
-    /// Whether notice `n`'s commit applies a write leaving its holder below read, and that holder
-    /// is among `proven` or a proven thing held read or above on it just before: a peer that
-    /// opens it (by the holder's read keys).
-    /// Invariant (privacy; spec/sync-hostile.md): a departed peer is told no removal past its own:
-    /// one it read the thing through when made, never one of a holder it had left by then. The
-    /// holder a notice names is its sealer's word (any reader of the thing may seal one), so it
-    /// counts only where the commit removes that holder: a notice naming M on another holder's
-    /// removal tells M nothing, nor sets M's `until`.
-    fn tells(&self, n: &Notice, proven: &BTreeSet<Tid>) -> bool {
-        let Some(tl) = self.core.timelines().get(&n.thing) else { return false };
-        let removes = |o: &osis_perm::EdgeOp| o.holder.thing() == Some(n.holder) && o.edge.as_ref().is_none_or(|e| e.role < Role::Read);
-        let Some(at) = tl.applied_on(&n.thing).find(|(mc, o)| mc.id == n.commit && removes(o)).map(|(mc, _)| osis_perm::At::before(mc.point())) else { return false };
-        proven.contains(&n.holder) || tl.roles_on(&n.holder, at).iter().any(|(p, r)| proven.contains(p) && *r >= Role::Read)
     }
 }
 

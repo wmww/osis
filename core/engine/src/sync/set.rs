@@ -114,14 +114,6 @@ impl Engine {
                 return Ok(ThingSync::Read(ids));
             }
         }
-        // a link being redeemed: its sync ID read while followed, whatever is held of K yet, while
-        // it is K's (`followable`; from the link text until K's own `sync.0` records it)
-        if let Some((s, _)) = self.core.followed_links.get(t)
-            && crate::sync_ids::actors::followable(&self.core, t)
-            && self.owned_sync_ids(t)?.iter().any(|o| o.id == s)
-        {
-            return Ok(ThingSync::Read(vec![s]));
-        }
         // kept unread: in the node closure by a sync secret alone (spec/sync.md §3)
         if self.kept_unread(t) {
             // every sync ID kept for it (spec/sync.md §3): one a forged copy names never
@@ -132,6 +124,15 @@ impl Engine {
                 return Ok(ThingSync::Unread(ids));
             }
         }
+        // a link or signal followed, where no secret held syncs it: its sync ID read while
+        // followed, whatever is held of K yet, while it is K's (`followable`; from the link text
+        // until K's own `sync.0` records it)
+        if let Some((s, _)) = self.core.followed_links.get(t)
+            && crate::sync_ids::actors::followable(&self.core, t)
+            && self.owned_sync_ids(t)?.iter().any(|o| o.id == s)
+        {
+            return Ok(ThingSync::Read(vec![s]));
+        }
         Ok(if self.core.is_independent(t) { ThingSync::Unsyncable } else { ThingSync::Dependent })
     }
 
@@ -141,6 +142,8 @@ impl Engine {
     /// entries alone; so too a thing a held grant signal alone names, once entered, spec/sync-set.md
     /// §2 First entry), kept unread by a sync secret alone. Reads `t`'s keys.
     pub(crate) fn thing_holdings(&mut self, t: &Tid) -> Result<Vec<(SyncId, Holding)>> {
+        // a signalled thing no reference carries: followed for its role entries alone, whatever
+        // the node holds of it (it enters by role, spec/sync-opens.md §5 ByRole)
         let signalled = self.core.followed_links.signalled_only(t) && !self.core.ix.closure.synced(t) && self.holds_read(t);
         let read = if self.core.ix.closure.stub_only(t) || signalled { Holding::Stub } else { Holding::Read };
         Ok(match self.thing_sync(t)? {

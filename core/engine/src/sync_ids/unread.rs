@@ -461,10 +461,8 @@ impl crate::engine::Engine {
         Ok(true)
     }
 
-    /// No store entry names blob `b` any more: its sync copy row (`SYNC_COPIES`) or notice row
-    /// (`sync::notices`), if any, goes.
+    /// No store entry names blob `b` any more: its sync copy row (`SYNC_COPIES`), if any, goes.
     pub fn unnamed_copy(&mut self, b: &BlobId) -> Result<()> {
-        self.unnamed_notice(b)?;
         if !self.core.ix.sync_copy_on.contains_key(b) {
             return Ok(());
         }
@@ -472,9 +470,9 @@ impl crate::engine::Engine {
         self.run(|tx| drop_blob(tx, &b))
     }
 
-    /// The blobs of every sync copy and notice row (a start drops those the store does not hold).
+    /// The blobs of every sync copy row (a start drops those the store does not hold).
     pub fn copy_blobs(&self) -> Vec<BlobId> {
-        self.core.ix.sync_copy_on.keys().chain(self.core.ix.notices.keys()).copied().collect()
+        self.core.ix.sync_copy_on.keys().copied().collect()
     }
 
     /// The sync copies read sync ID `s` carries (spec/wire.md §4), by content

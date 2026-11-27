@@ -243,7 +243,7 @@ impl Carriers {
             }
             None => {
                 self.unnamed = Some(store.unnamed_feed());
-                // a sync copy or notice row whose entry went before a crash let the engine follow
+                // a sync copy row whose entry went before a crash let the engine follow
                 for b in engine.copy_blobs() {
                     if !store.named(&b)? {
                         engine.unnamed_copy(&b)?;

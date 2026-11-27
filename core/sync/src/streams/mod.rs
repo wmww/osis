@@ -129,11 +129,10 @@ pub trait Ground {
         let _ = (s, b);
         false
     }
-    /// Whether held blob `b` under S is shown a departed peer proving `proven`
-    /// (`Engine::departed_shown`): a notice of a removal of a holder it reaches, or the public's
-    /// edge.
-    fn departed_shown(&mut self, s: &SyncId, b: &BlobId, proven: &std::collections::BTreeSet<osis_base::Tid>) -> bool {
-        let _ = (s, b, proven);
+    /// Whether held blob `b` under S is shown a departed peer (`Engine::departed_shown`): the
+    /// public's edge.
+    fn departed_shown(&mut self, s: &SyncId, b: &BlobId) -> bool {
+        let _ = (s, b);
         false
     }
     /// The write key of the head S's `sync.0` records here (`ReadCredentials::head`), which the
@@ -604,10 +603,6 @@ pub fn opening(engine: &mut Engine, store: &crate::store::Store, s: &SyncId, e: 
         // is held, `Core::copies_speak`):
         // charged to its bringer unless stamped (spec/sync-ids.md §5 Peer budget)
         Ok(Opened::SyncCopy) => Ok(Opening::Held { gave: false }),
-        // a notice: anyone holding its epoch seals one, so it is kept as its commit's blob is,
-        // charged to its bringer unless it gave the commit or is stamped (spec/sync-ids.md §5
-        // Peer budget)
-        Ok(Opened::Notice(_, i)) => Ok(Opening::Held { gave: !matches!(i, osis_engine::Ingested::Duplicate(_)) }),
         Ok(Opened::Linked) => Ok(Opening::Taken),
         Ok(Opened::NotOpen) => Ok(Opening::NotOpen),
         Ok(Opened::Bad) => Ok(Opening::Bad),
@@ -677,8 +672,8 @@ impl Ground for EngineGround<'_> {
         self.engine.role_entry(s, b)
     }
 
-    fn departed_shown(&mut self, s: &SyncId, b: &BlobId, proven: &std::collections::BTreeSet<osis_base::Tid>) -> bool {
-        self.engine.departed_shown(s, b, proven)
+    fn departed_shown(&mut self, s: &SyncId, b: &BlobId) -> bool {
+        self.engine.departed_shown(s, b)
     }
 
     fn want(&mut self, store: &crate::store::Store, s: &SyncId, c: &osis_base::CommitId) -> Result<Option<Given>> {

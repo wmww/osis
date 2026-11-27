@@ -1015,7 +1015,6 @@ fn a_released_things_forgotten_commits_leave_no_own_entry_spec_sync_judgement_3(
 // of S's records at once, its own store holding no other (as each logs one before it holds
 // another's).
 #[test]
-#[ignore = "stub rewrite: a held grant signal holds S as Read whatever the node holds (R3b)"]
 fn record_blobs_at_a_store_stay_flat_spec_sync_ids_6() {
     let (mut w, _, s) = crate::deletes::four();
     let records: std::collections::BTreeSet<Tid> = w.engine(0).certificate_records(&s).unwrap().iter().copied().collect();

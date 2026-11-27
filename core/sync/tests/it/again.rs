@@ -76,7 +76,6 @@ fn restart(w: &mut World, i: usize) {
 // waits; node 0 restarts, then node 1 tells it is full for S, which ends the wait: node 0 logs
 // the write there again once.
 #[test]
-#[ignore = "stub rewrite: a held grant signal holds S as Read whatever the node holds (R3b)"]
 fn a_delete_seen_before_a_restart_is_logged_again_once_after_spec_sync_judgement_4() {
     let (mut w, t, s, c) = setup();
     let before = encryptions(&mut w, &c);

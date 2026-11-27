@@ -284,7 +284,7 @@ fn spec_decode(body: &[u8]) -> Result<(), &'static str> {
     let a = &all[2..];
     // spec/wire.md §11.1, §11.2: pushes 0; requests and replies nonzero but an Error; the shared
     // set's and the stream's requests and answers (every Fetch, Want) top-bit; NoRecord 2^31
-    let push = matches!(kind, 29 | 43..=46);
+    let push = matches!(kind, 29 | 43..=46 | 49);
     let id_ok = match kind {
         0 => true,
         _ if push => id == 0,
@@ -399,6 +399,7 @@ fn spec_decode(body: &[u8]) -> Result<(), &'static str> {
         44 => n(1).and_then(|_| cursor(&a[0])),
         45 => n(1).and_then(|_| b(&a[0], 32)),
         46 => n(2).and_then(|_| list(&a[0], 0, 4096, |s| b(s, 16))).and_then(|_| boolean(&a[1])),
+        49 => n(2).and_then(|_| b(&a[0], 16)).and_then(|_| bmax(&a[1], MAX_BLOB)),
         47 => n(2).and_then(|_| max_reply(&a[0])).and_then(|_| {
             // groups of a sync ID and its commit IDs, each once per group, 1024 IDs in all
             let total = std::cell::Cell::new(0usize);

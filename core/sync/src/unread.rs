@@ -43,6 +43,9 @@ pub struct UnreadCredentials {
     pub deposit: Option<VerifyingKey>,
     /// The head's claim set.
     pub claims: Option<ClaimSet>,
+    /// Its head is past its keys (spec/sync-judgement.md §6 Stops): S is asked of every peer by
+    /// role (spec/sync-opens.md §5 ByRole), a reader there telling it the rotation's box.
+    pub stopped: bool,
 }
 
 impl PartialEq for UnreadCredentials {
@@ -115,14 +118,14 @@ pub fn judge(j: &Judged) -> Kept {
         // no step registered yet: each sync secret it holds counts as its step, so a reader's
         // test finds S here and registers its path, and a box at a self-made epoch hides no
         // genuine one (spec/sync-opens.md §4 Admissible)
-        return keep(false, (!held.is_empty()).then(|| UnreadCredentials { step: None, keys: held, deposit: None, claims: None }));
+        return keep(false, (!held.is_empty()).then(|| UnreadCredentials { step: None, keys: held, deposit: None, claims: None, stopped: false }));
     };
     let public = |reads: bool| match head.1.as_ref().filter(|c| c.lists_public(j.s)) {
         Some(c) => Public::Listed { at: Box::new((head.0.clone(), c.clone())), reads },
         None => Public::Unlisted,
     };
     if let Some(k) = held.iter().find(|(k, _)| k.verifying_key() == head.0.keys.sync) {
-        let mut kept = keep(false, Some(UnreadCredentials { step: Some(head.0.id()), keys: vec![k.clone()], deposit: Some(head.0.keys.deposit), claims: head.1.clone() }));
+        let mut kept = keep(false, Some(UnreadCredentials { step: Some(head.0.id()), keys: vec![k.clone()], deposit: Some(head.0.keys.deposit), claims: head.1.clone(), stopped: false }));
         kept.public = public(current.contains(&head.0.keys.sync) && j.lowered_at != Some(&head.0.id()));
         return kept;
     }
@@ -130,7 +133,7 @@ pub fn judge(j: &Judged) -> Kept {
     // past its head, which a reader holding it moves it to), so a node removed shows nothing;
     // where the head lists the public entry, its box gives the head's sync secret
     let keys: Vec<_> = held.into_iter().filter(|(k, _)| !j.steps.iter().any(|(st, _)| st.keys.sync == k.verifying_key())).collect();
-    let mut kept = keep(true, (!keys.is_empty()).then_some(UnreadCredentials { step: None, keys, deposit: None, claims: None }));
+    let mut kept = keep(true, (!keys.is_empty()).then_some(UnreadCredentials { step: None, keys, deposit: None, claims: None, stopped: true }));
     kept.public = public(false);
     kept
 }

@@ -116,7 +116,7 @@ impl Incoming {
             Incoming::Proved => Some(To::Opens),
             Incoming::Reply(to, ..) => Some(*to),
             Incoming::Request(_, m) | Incoming::Push(m) => match m.kind() {
-                34 | 36 | 37 | 38 | 40 | 45 | 46 => Some(To::Opens),
+                34 | 36 | 37 | 38 | 40 | 45 | 46 | 49 => Some(To::Opens),
                 19 | 41 | 43 | 44 | 47 => Some(To::Streams),
                 7 | 14 | 30 => Some(To::Inbox),
                 24 | 25 | 27 | 28 if matches!(self, Incoming::Request(..)) => Some(To::Port),

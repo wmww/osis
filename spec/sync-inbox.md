@@ -20,7 +20,7 @@
 - A sender that does not sync T, or cannot read T's current epoch, keeps the sealed fire outside any store while its **delivery** is pending: shown, never "sent", until a peer takes its Deposit item (answer 0, §3); then it ends. A fire to a thing whose nodes the sender never meets stays pending. A fire on T pending once the sender holds nothing of T (spec/commits.md §5 What a held thing needs) goes: no key of T is left to seal it to.
   - A fire not yet taken by any peer is kept durably by its sender and survives a restart. If T's read key in force changes before a peer takes it, the sender seals it again (to the one it then holds), offering what it sealed before no more; while none is in force it offers nothing.
 - Who fired is the commit's signer, verified by its evidence; a fire grants nothing. Blocking a sender is the app's.
-- **Notice** (spec/permissions.md §4 Notices): it carries a copy on the thing whose sync ID it is under, taken as a sealed fire's commit is taken (§4), whole or not at all, and held as any role commit (spec/commits.md §5 What a held thing needs); it is logged as itself, never as an entry of its commit.
+- **Notice** (spec/permissions.md §4 Notices): it carries a certificate copy on a thing, taken on that thing as a sealed fire's commit is taken (§4), whole or not at all, and held as any role commit (spec/commits.md §5 What a held thing needs); the notice itself is kept nowhere.
 - A node keeping T unread cannot read T's setting: it takes a fire's Deposit item by signature and budget alone (§3), as any deposit. A fire T's writers judge invalid (a signal T does not enable) is never promoted (§4) and leaves the budget by clearing or at its expiry.
 
 ## 3. Deposits

@@ -143,8 +143,6 @@ pub enum Opened {
     Records(BTreeSet<Tid>),
     /// A sync copy (spec/wire.md §4): taken for its box and steps (`sync_ids::unread`).
     SyncCopy,
-    /// A notice of removal commit `c` (`notices`): `c`'s certificate copy taken.
-    Notice(CommitId, Ingested),
     /// No held secret opens it (or nothing held links it).
     NotOpen,
     /// It opened and is bad (its sender is to blame).

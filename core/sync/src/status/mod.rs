@@ -194,7 +194,7 @@ pub trait Ground: Net {
     /// connection read only where its rows show nothing).
     fn knows_now(&self, at: Source, s: &SyncId, b: &BlobId) -> bool;
     /// The position of this node's log the peer on `conn` reported for S (opens' Positions); none
-    /// for a member ended for its departure (shown its notices and the public's edge alone, spec/sync-status.md §2).
+    /// for a member ended for its departure (shown the public's edge alone, spec/sync-status.md §2).
     fn reported(&self, conn: ConnId, s: &SyncId) -> Option<Position>;
     /// The `until` of member S on `conn` (opens: a member being ended).
     fn until(&self, conn: ConnId, s: &SyncId) -> Option<Position>;

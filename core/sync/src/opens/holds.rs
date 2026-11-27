@@ -53,6 +53,9 @@ pub struct Creds {
     /// S's thing is followed by a public link's value and none of its read secrets is held: S is
     /// asked of every peer by role, opened on its acceptance (spec/sync-opens.md §5 ByRole).
     pub by_role: bool,
+    /// S is kept unread at a head past its keys (spec/sync-judgement.md §6 Stops): S is asked of
+    /// every peer by role, beside its Hits, opened on its acceptance (spec/sync-opens.md §5 ByRole).
+    pub stopped: bool,
 }
 
 impl Creds {
@@ -83,6 +86,7 @@ impl Creds {
             c.tests.push((Tested::Proof(*p.expose(), k.verifying_key().to_bytes()), None));
         }
         c.step = uc.keys.first().map(|(k, _)| (k.clone(), None));
+        c.stopped = uc.stopped;
         c
     }
 
@@ -103,7 +107,7 @@ impl Creds {
         for c in &self.lapsed {
             h.update(b"l").update(c.matched());
         }
-        h.update(&[u8::from(self.by_role)]);
+        h.update(&[u8::from(self.by_role), u8::from(self.stopped)]);
         h.finalize()
     }
 }
@@ -148,11 +152,15 @@ pub trait Holds {
     /// in S of a rotation superseding `by`'s epoch was first logged, else the node log's end; at
     /// a node keeping S unread the position of its head's event.
     fn until(&mut self, s: &SyncId, by: &Credential) -> Position;
-    /// A member ended for its peer's departure at a reader, the peer proving `proven`: the
-    /// highest position at which a notice in S of their removals (`Engine::told`) or an entry of
-    /// the public's edge (`Engine::public_edge`) was first logged; none while no such notice is
-    /// logged here.
-    fn departure_until(&mut self, s: &SyncId, proven: &BTreeSet<osis_base::Tid>) -> Option<Position>;
+    /// A member ended for its peer's departure at a reader, once its notices went: the highest
+    /// position at which an entry of the public's edge (`Engine::public_edge`) was first logged,
+    /// else 0.
+    fn departure_until(&mut self, s: &SyncId) -> Position;
+    /// The notices S's things tell a peer proving `proven` (`Engine::notices_for`), each sealed
+    /// afresh for this connection: its content key, its bytes, and whether it tells a departure.
+    fn notices(&mut self, s: &SyncId, proven: &BTreeSet<osis_base::Tid>) -> Vec<Told>;
+    /// Takes a notice a peer sent under S (`Engine::take_notice`).
+    fn take_notice(&mut self, s: &SyncId, notice: &[u8]);
     /// The cursor naming `pos` of this node's log, for a Lost.
     fn cursor_at(&mut self, pos: Position) -> Option<Cursor>;
     /// The grant a static entry's answer carries (spec/sync-opens.md §5): the head's entry box
@@ -328,19 +336,18 @@ pub(crate) fn member_until(cx: &mut Cx, s: &SyncId, by: &Credential) -> crate::t
     }
 }
 
-/// `Holds::departure_until`.
-pub(crate) fn departure_until(cx: &mut Cx, s: &SyncId, proven: &BTreeSet<osis_base::Tid>) -> crate::types::Result<Option<Position>> {
-    let told = cx.engine.told(s, proven)?;
+/// A notice sealed for one connection: its content key, its bytes, whether it tells a departure.
+pub type Told = ([u8; 32], Vec<u8>, bool);
 
-    let mut at = None;
-    for (b, n) in cx.engine.notice_rows(s) {
-        if told.contains(&n.commit) {
-            at = at.max(cx.store.first_logged(s, &b)?);
+/// `Holds::notices`.
+fn notices(cx: &mut Cx, s: &SyncId, proven: &BTreeSet<osis_base::Tid>) -> crate::types::Result<Vec<Told>> {
+    let mut out = Vec::new();
+    for n in cx.engine.notices_for(s, proven)? {
+        if let Some(b) = cx.engine.seal_notice(&n, cx.rng)? {
+            out.push((n.content(), b, n.departs));
         }
     }
-    // the public's edge goes with them (`Engine::departed_shown`)
-    let Some(at) = at else { return Ok(None) };
-    Ok(Some(at.max(public_edge_at(cx, s)?.unwrap_or(0))))
+    Ok(out)
 }
 
 /// The highest position at which an entry in S of a commit of the public's edge on S's thing
@@ -442,8 +449,16 @@ impl Holds for NodeHolds<'_, '_> {
         member_until(self.cx, s, by).unwrap_or(0)
     }
 
-    fn departure_until(&mut self, s: &SyncId, proven: &BTreeSet<osis_base::Tid>) -> Option<Position> {
-        departure_until(self.cx, s, proven).ok().flatten()
+    fn departure_until(&mut self, s: &SyncId) -> Position {
+        public_edge_at(self.cx, s).ok().flatten().unwrap_or(0)
+    }
+
+    fn notices(&mut self, s: &SyncId, proven: &BTreeSet<osis_base::Tid>) -> Vec<Told> {
+        notices(self.cx, s, proven).unwrap_or_default()
+    }
+
+    fn take_notice(&mut self, s: &SyncId, notice: &[u8]) {
+        let _ = self.cx.engine.take_notice(s, notice);
     }
 
     fn cursor_at(&mut self, pos: Position) -> Option<Cursor> {

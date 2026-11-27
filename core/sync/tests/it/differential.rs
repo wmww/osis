@@ -252,7 +252,6 @@ fn a_public_link_redeemed_after_the_removal_opens_nothing_spec_sync_opens_4() {
 // it takes nothing there (failed taking any head's box: it read again, dropped again, and the pair
 // churned past the storm cap).
 #[test]
-#[ignore = "stub rewrite: a held grant signal holds S as Read whatever the node holds (R3b)"]
 fn a_sync_holder_reads_a_thing_made_public_spec_sync_opens_4() {
     use crate::harness::history::{Gives, Holder};
     let (n, accounts, ..) = size();
@@ -312,7 +311,6 @@ fn the_publics_read_through_a_holder_is_every_nodes_spec_sync_set_2() {
 // at once while the store is past the keys S opened there by, and it stands at the readers' head
 // (failed without: it stayed at genesis for good, which the end check flags).
 #[test]
-#[ignore = "stub rewrite: a held grant signal holds S as Read whatever the node holds (R3b)"]
 fn a_store_granted_past_genesis_is_moved_spec_sync_ids_6() {
     use crate::harness::history::{Gives, Holder};
     let (n, accounts, ..) = size();
@@ -430,7 +428,6 @@ fn the_public_granted_again_is_read_again_spec_permissions_3() {
 // and registered onto an empty path (13), or tested the newest step's key first forever, a beacon
 // node 0's filter keeps showing.
 #[test]
-#[ignore = "stub rewrite: a held grant signal holds S as Read whatever the node holds (R3b)"]
 fn a_store_that_stops_and_syncs_again_is_registered_from_genesis_spec_sync_opens_6() {
     use crate::harness::script::*;
     let script = [New(1), Give(1, 0, Holder::Node(0), Syncs), NewIn(1, 0), Run, Strong(0, None, 0), Unpair(0, 3)];
@@ -446,7 +443,6 @@ fn a_store_that_stops_and_syncs_again_is_registered_from_genesis_spec_sync_opens
 // Failed while a writer gave a store nothing but what it pulls: node 0 refused the genesis stamp
 // (a superseded write key) and kept thing 0 unread at step 2; node 1 now deposits the entry.
 #[test]
-#[ignore = "stub rewrite: a held grant signal holds S as Read whatever the node holds (R3b)"]
 fn a_store_moved_at_once_takes_the_next_step_spec_sync_ids_6() {
     use crate::harness::script::*;
     let script = [New(1), Give(1, 0, Holder::Node(0), Syncs), NewIn(1, 0), Run, Strong(0, None, 0), Run, Unpair(0, 3)];
@@ -575,7 +571,6 @@ fn a_departed_public_reader_holds_the_publics_removal_spec_sync_opens_6() {
 // a pass due: node 1 held the keyset and never re-sealed, and node 0 followed the thing by the
 // public entry.
 #[test]
-#[ignore = "stub rewrite: a held grant signal holds S as Read whatever the node holds (R3b)"]
 fn a_holder_left_out_is_re_sealed_once_its_keyset_arrives_spec_permissions_3() {
     use crate::harness::script::*;
     holds_on(0, 2, 3, &[New(1), Give(1, 0, Holder::Node(0), Syncs), Pair(0), Run, Strong(3, None, 0), Unpair(3, 2)], String::new(), false);
@@ -616,7 +611,6 @@ fn a_reader_by_the_publics_box_reads_no_more_once_lowered_spec_sync_3() {
 // spec/sync.md §3 (Holders by copies): node 1, granted sync, reads thing 0 by its head's public
 // entry box, and started again still reads its latest write.
 #[test]
-#[ignore = "stub rewrite: once node 2 (paired) enters account 0 by role, node 1 holds thing 0's minting and no role entry of it (cause not found, R4)"]
 fn a_reader_by_the_publics_box_reads_across_a_start_spec_sync_3() {
     use crate::harness::history::{Gives, Holder, reads};
     let (n, accounts, ..) = size();

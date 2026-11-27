@@ -199,7 +199,6 @@ fn a_told_grant_holds_a_stub_until_the_strong_spec_sync_inbox_5() {
 // Bob keeps T unread by a sync grant; Alice rotates T's keys
 // and writes: Bob still keeps it unread and his store takes the write.
 #[test]
-#[ignore = "stub rewrite: a held grant signal holds S as Read whatever the node holds (R3b)"]
 fn a_key_change_keeps_a_sync_only_holder_spec_sync_set_2() {
     let mut w = contacts();
     let t = make(&mut w, 0, None, "hi");
@@ -228,7 +227,6 @@ fn a_key_change_keeps_a_sync_only_holder_spec_sync_set_2() {
 // He keeps T's sync secrets, and what he holds of their history is what a fresh load of his
 // store reads.
 #[test]
-#[ignore = "stub rewrite: a held grant signal holds S as Read whatever the node holds (R3b)"]
 fn a_reader_lowered_to_sync_keeps_its_sync_epochs_as_a_load_reads_them_spec_permissions_3() {
     let mut w = crate::harness::history::world_of(0, 3, 3);
     let t = make(&mut w, 0, None, "hi");
@@ -445,55 +443,11 @@ fn a_removal_its_writer_made_blind_reaches_the_removed_reader_spec_permissions_4
     assert_eq!(value(&mut w, 0, &t), None, "Alice reads T no more");
 }
 
-// spec/permissions.md §4 (Notices), spec/sync-hostile.md (a removed reader learns at most one
-// rotation past what it read): Alice grants Bob and Carol read on T, lowers Bob to sync (his node
-// keeps T's sync ID as a store, every entry) and then removes Carol. Bob kept the read secrets he
-// held, as a hostile node would: none opens a notice of Carol's removal in his store, by its wrap
-// or its seal. Carol's node opens one by her account's key and reads T no more.
-#[test]
-#[ignore = "stub rewrite: a held grant signal holds S as Read whatever the node holds (R3b)"]
-fn a_reader_lowered_to_sync_opens_no_later_removals_notice_spec_permissions_4() {
-    let mut w = World::new(0);
-    for _ in 0..3 {
-        w.add_node();
-    }
-    crate::harness::history::introduce(&mut w);
-    w.run();
-    let t = make(&mut w, 0, None, "v1");
-    let (bob, carol) = (w.node(1).account.unwrap(), w.node(2).account.unwrap());
-    for (i, h) in [(1, bob), (2, carol)] {
-        w.write(0, |e| told(e, &t, &h, &edge(Role::Read))).unwrap();
-        strong(&mut w, i, None, t, true);
-    }
-    w.run();
-    assert_eq!(value(&mut w, 1, &t), Some(Value::Str("v1".into())), "Bob reads T");
-    let kept: Vec<(osis_crypto::Epoch, osis_crypto::RoleSecret)> = w.engine(1).epochs(&t).map(|e| e.read.held().map(|(e, s)| (e, s.clone())).collect()).unwrap_or_default();
-    w.write(0, |e| e.demote(&t, &osis_engine::flows::Demotion { holder: bob, new: Some(edge(Role::Sync)), retain: None })).unwrap();
-    w.run();
-    assert_eq!(holding(&mut w, 1, &t), Some(Holding::Unread), "Bob keeps T unread");
-    let s = w.engine(0).sync_id_of(&t).unwrap().unwrap();
-    let bobs = w.engine(0).notice_rows(&s);
-    w.write(0, |e| e.demote(&t, &osis_engine::flows::Demotion { holder: carol, new: None, retain: None })).unwrap();
-    w.run();
-    assert_eq!(value(&mut w, 2, &t), None, "Carol reads T no more");
-    let carols: Vec<_> = w.engine(0).notice_rows(&s).into_keys().filter(|b| !bobs.contains_key(b)).collect();
-    assert!(!carols.is_empty(), "Alice logs a notice of Carol's removal");
-    for b in &carols {
-        let e = w.store(1).entry(&s, b).unwrap().expect("Bob's store holds the notice");
-        let bytes = w.bytes(1, b).unwrap();
-        for (ep, sec) in &kept {
-            assert!(osis_crypto::unwrap(sec.secret(), b, &e.wrap).is_err(), "a kept secret opens no notice's wrap");
-            assert!(osis_blob::open_fire(&bytes, &t, ep, sec.kem()).is_err(), "nor its seal");
-        }
-    }
-}
-
 // spec/permissions.md §3 (Lost access; No secret taken back): Bob mints T1 with admin T0 and grants
 // Alice read on T0, so she reads T1 through T0. Cut off from his sibling, one of Bob's nodes
 // removes her from T0 while the other grants her sync on T1, still boxing her T1's read secret;
 // Alice holds T1. Her role there shows only sync, so she keeps T1 unread and reads none of it.
 #[test]
-#[ignore = "stub rewrite: a held grant signal holds S as Read whatever the node holds (R3b)"]
 fn a_read_secret_boxed_beside_a_removal_goes_once_the_role_shows_sync_spec_permissions_3() {
     let mut w = siblings();
     let t0 = make(&mut w, 1, None, "v1");
@@ -899,7 +853,6 @@ fn a_reader_down_a_chain_lowered_to_sync_reads_the_thing_no_more_spec_permission
 // store), spec/permissions.md §3 (Lost access): Bob reads T; lowered to sync he reads nothing and
 // keeps T unread, holding none of its content, and so across a restart.
 #[test]
-#[ignore = "stub rewrite: a held grant signal holds S as Read whatever the node holds (R3b)"]
 fn a_reader_lowered_to_sync_holds_no_content_across_a_restart_spec_permissions_3() {
     let (mut w, (t, bob)) = granted();
     strong(&mut w, 1, None, t, true);
@@ -928,7 +881,6 @@ fn a_reader_lowered_to_sync_holds_no_content_across_a_restart_spec_permissions_3
 // She reads T2 through T0. Bob removes T0's record edge: she keeps T2 unread by her own sync
 // grant and holds none of its content.
 #[test]
-#[ignore = "stub rewrite: a held grant signal holds S as Read whatever the node holds (R3b)"]
 fn a_thing_read_through_one_unit_and_kept_unread_directly_spec_sync_set_2() {
     let (mut w, (alice, bob, t0)) = alice_reads_t0();
     let t2 = make_in(&mut w, 1, t0, "t2");

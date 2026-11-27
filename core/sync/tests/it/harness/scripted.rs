@@ -77,14 +77,14 @@ pub fn reader(s: &SyncId, read: &(Epoch, Secret32), step: &StepKeys, older: &[St
 /// with no claim set.
 pub fn store(head: &StepKeys) -> Creds {
     // with no claim set, which sync ID it is says nothing
-    Creds::kept_unread(&SyncId([0; 16]), &osis_sync::unread::UnreadCredentials { step: Some(head.id), keys: vec![(head.sync.clone(), Secret32::from_bytes(head.proof))], deposit: Some(SigningSecret::from_seed(&Secret32::from_bytes(head.proof)).verifying_key()), claims: None })
+    Creds::kept_unread(&SyncId([0; 16]), &osis_sync::unread::UnreadCredentials { step: Some(head.id), keys: vec![(head.sync.clone(), Secret32::from_bytes(head.proof))], deposit: Some(SigningSecret::from_seed(&Secret32::from_bytes(head.proof)).verifying_key()), claims: None, stopped: false })
 }
 
 /// What a node keeping S unread holds before any step is registered there, granted the sync
 /// secrets of `steps` (newest first): the product's own, with no head.
 pub fn store_no_head(steps: &[&StepKeys]) -> Creds {
     let keys = steps.iter().map(|st| (st.sync.clone(), Secret32::from_bytes(st.proof))).collect();
-    Creds::kept_unread(&SyncId([0; 16]), &osis_sync::unread::UnreadCredentials { step: None, keys, deposit: None, claims: None })
+    Creds::kept_unread(&SyncId([0; 16]), &osis_sync::unread::UnreadCredentials { step: None, keys, deposit: None, claims: None, stopped: false })
 }
 
 /// What a link holder holds: its own static entry to test, no secret of S.
@@ -104,7 +104,7 @@ pub struct Table {
     /// Epochs covering every departure, per S.
     pub covering: BTreeSet<(SyncId, Epoch)>,
     pub until: Position,
-    /// Whether a departure's rotation is logged (`Holds::departure_until`: `until`, else none).
+    /// Whether a departure notice can be sealed (`Holds::notices`).
     pub departure_logged: bool,
     /// What `take_grant` gives: the head's sync key, per S.
     pub grants: BTreeMap<SyncId, [u8; 32]>,
@@ -200,9 +200,14 @@ impl Holds for Table {
     fn until(&mut self, _s: &SyncId, _by: &Credential) -> Position {
         self.until
     }
-    fn departure_until(&mut self, _s: &SyncId, _proven: &std::collections::BTreeSet<osis_base::Tid>) -> Option<Position> {
-        self.departure_logged.then_some(self.until)
+    fn departure_until(&mut self, _s: &SyncId) -> Position {
+        self.until
     }
+    fn notices(&mut self, s: &SyncId, proven: &std::collections::BTreeSet<osis_base::Tid>) -> Vec<osis_sync::opens::holds::Told> {
+        let departed = proven.iter().any(|p| self.j.get(&(*s, *p)) == Some(&J::Departed));
+        if self.departure_logged && departed { vec![([0; 32], vec![0], true)] } else { Vec::new() }
+    }
+    fn take_notice(&mut self, _s: &SyncId, _notice: &[u8]) {}
     fn cursor_at(&mut self, pos: Position) -> Option<Cursor> {
         Some(pos.to_be_bytes().to_vec())
     }

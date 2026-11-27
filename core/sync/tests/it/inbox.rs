@@ -697,7 +697,6 @@ fn register_refusals_spec_sync_ids_6() {
 // (stamped in its store under the new head), and node 1 takes the stamped entry in place of the
 // deposit (what readers pull).
 #[test]
-#[ignore = "stub rewrite: a held grant signal holds S as Read whatever the node holds (R3b)"]
 fn a_writer_promotes_a_deposit_spec_sync_inbox_4() {
     use crate::harness::history::{Gives, three, value_ak};
     use osis_base::{Role, Value};

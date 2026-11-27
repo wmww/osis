@@ -539,8 +539,14 @@ impl Node {
         let now = self.mono;
         let d = &mut self.driver;
         d.dials.settle_peers(&mut NodePeers { engine: &mut self.engine, store: &self.store, fx: &mut d.fx }, now);
-        let inbox = &self.inbox;
-        if let Some(hints) = d.fx.hints_moved(|| inbox.dial_hints().into_iter().filter_map(|h| Some(Address { url: h.urls.first()?.clone(), key: h.dialable })).collect()) {
+        let (inbox, engine) = (&self.inbox, &mut self.engine);
+        // the links' peers and the held grant signals' (spec/sync-inbox.md §5 Grant signal)
+        let all = || {
+            let mut hs = inbox.dial_hints();
+            hs.extend(engine.signal_hints().unwrap_or_default());
+            hs.into_iter().filter_map(|h| Some(Address { url: h.urls.first()?.clone(), key: h.dialable })).collect()
+        };
+        if let Some(hints) = d.fx.hints_moved(all) {
             d.dials.hint(&hints, now);
         }
         let changed = self.opens.changed_end();

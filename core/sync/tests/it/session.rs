@@ -238,7 +238,7 @@ fn malformed_messages_spec_wire_11_1() {
     let list = osis_base::Value::List;
     let bytes = [
         cbor(list(vec![int(2), int(5)])),                // Ping without wall_ms
-        cbor(list(vec![int(49), int(6), int(0)])),       // unknown kind
+        cbor(list(vec![int(60), int(6), int(0)])),       // unknown kind
         cbor(list(vec![int(2), int(1 << 32), int(0)])),  // id past 2^32
         cbor(list(vec![int(3), int(9)])),                // a malformed Pong: dropped
         cbor(list(vec![int(45), int(0)])),               // a malformed Digest: dropped

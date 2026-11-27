@@ -602,8 +602,6 @@ indexes! {
     /// The certificate blobs sealed here per sync ID, each with what it carries
     /// (`sync::certblobs`).
     pub cert_blobs: JMap<SyncId, Arc<crate::sync::CertBlobs>>,
-    /// The notices sealed or opened here, by blob (`sync::notices`).
-    pub notices: JMap<osis_base::BlobId, crate::sync::notices::Notice>,
     /// Fall marks per aspect (`sync::falls`, spec/sync-judgement.md §4): a count of events, not
     /// derived from the commits held, so no rebuild compares it.
     pub falls: JMap<(Tid, Ak), u64>,

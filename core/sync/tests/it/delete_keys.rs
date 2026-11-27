@@ -110,7 +110,6 @@ fn world_of_three() -> (World, Tid, SyncId) {
 // admin's level-1 key covers both and deletes it. Fails with the store taking a Delete that
 // covers some group.
 #[test]
-#[ignore = "stub rewrite: a held grant signal holds S as Read whatever the node holds (R3b)"]
 fn a_delete_by_levels_needs_the_right_over_every_delta_of_the_blob_spec_sync_ids_6() {
     let (mut w, t, s) = world_of_three();
     let c = write(&mut w, 2, t, &[("u:a.0", PurgeBy::Admin), ("u:b.0", PurgeBy::AuthorOrAdmin)]);
@@ -143,7 +142,6 @@ fn a_delete_by_levels_needs_the_right_over_every_delta_of_the_blob_spec_sync_ids
 // connection, so the refusals are the levels'. Fails with the peer's path taking a Delete the
 // store's own check refuses.
 #[test]
-#[ignore = "stub rewrite: a held grant signal holds S as Read whatever the node holds (R3b)"]
 fn a_party_without_the_right_signs_no_delete_a_store_or_its_peer_path_takes_spec_sync_ids_6() {
     let (mut w, t, s) = crate::deletes::four();
     let theirs = write(&mut w, 2, t, &[("u:a.0", PurgeBy::AuthorOrAdmin)]);
@@ -277,7 +275,6 @@ fn two_things() -> (World, [(Tid, SyncId); 2]) {
 // author's) is refused. Every blob stays where it was. Fails with a store taking a Delete for an
 // entry of another sync ID, or checking levels without the blob's own commitments.
 #[test]
-#[ignore = "stub rewrite: a held grant signal holds S as Read whatever the node holds (R3b)"]
 fn a_delete_naming_another_sync_ids_or_things_blob_is_refused_spec_sync_ids_6() {
     let (mut w, [(t0, s0), (t1, s1)]) = two_things();
     assert_ne!(s0, s1);
@@ -309,7 +306,6 @@ fn a_delete_naming_another_sync_ids_or_things_blob_is_refused_spec_sync_ids_6() 
 // that level-2 key is refused. Fails with a chunk committing to the commit's delete keys or a
 // store taking a Delete of a blob with an empty group.
 #[test]
-#[ignore = "stub rewrite: a held grant signal holds S as Read whatever the node holds (R3b)"]
 fn nothing_deletes_a_header_lists_chunks_by_level_2_spec_crypto_7() {
     let (mut w, t, s) = world_of_three();
     let name = |i: usize| Ak::new(format!("u:{}{i:05}.0", "a".repeat(1000))).unwrap();
@@ -362,7 +358,6 @@ fn nothing_deletes_a_header_lists_chunks_by_level_2_spec_crypto_7() {
 // key alike: osis-commit `a_split_commit_lists_one_level_2_key`.) Fails with level 2 keyed to
 // the signer.
 #[test]
-#[ignore = "stub rewrite: a held grant signal holds S as Read whatever the node holds (R3b)"]
 fn a_purge_author_other_than_the_signer_keys_level_2_spec_crypto_7() {
     let (mut w, t, s) = world_of_three();
     let _ = play(&mut w, &[New(0), Grant(0, 1, 2, Gives::Writes), Give(0, 0, Holder::Thing(1), Gives::Writes), Run], String::new());

@@ -197,6 +197,7 @@ pub fn messages() -> Vec<(&'static str, Msg)> {
         ("stream with no cursor", Msg::Stream(Box::new(Stream { events: vec![(l, Event::Full(true)), (l, Event::Refused(id(0xb1), Code::NOT_HEAD_KEY)), (l, added)], cursor: None, report: false, seq: 0 }))),
         ("applied", Msg::Applied { cursor: cursor(0x30) }),
         ("digest", Msg::Digest { digest: [0x31; 32] }),
+        ("notice", Msg::Notice { sync_id: l, notice: vec![0x33; 4] }),
         ("members", Msg::Members { sync_ids: vec![l, other], more: false }),
     ]
 }
@@ -294,5 +295,6 @@ pub fn rejections() -> Vec<(&'static str, &'static str, Vec<u8>)> {
         ("applied with a cursor of 257 bytes", "size", with(&m("applied"), 2, Some(bytes(257, 0)))),
         ("digest of 31 bytes", "size", with(&m("digest"), 2, Some(bytes(31, 0)))),
         ("members with a sync ID of 17 bytes", "size", with(&m("members"), 2, Some(list(vec![bytes(17, 0)])))),
+        ("notice with a sync ID of 17 bytes", "size", with(&m("notice"), 2, Some(bytes(17, 0)))),
     ]
 }

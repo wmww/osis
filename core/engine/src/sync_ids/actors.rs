@@ -324,6 +324,9 @@ pub(crate) struct FollowedLinks {
     /// such signal names it and the signals naming it: followed as a public link's target while
     /// any is held.
     signals: BTreeMap<Tid, (SyncId, BTreeSet<CommitId>)>,
+    /// A count written at each change of `signals`: what a reader of them all reads
+    /// (`signals_read`), so it moves as any signal is followed or let go.
+    signals_moved: Stamped<(), u64>,
     /// Whether `signals` was read from its rows (`Engine::take_carried`, once per engine).
     pub(crate) signals_loaded: bool,
 }
@@ -387,6 +390,7 @@ impl FollowedLinks {
         let e = self.signals.entry(x).or_insert_with(|| (s, BTreeSet::new()));
         e.0 = s;
         e.1.insert(c);
+        self.bump();
         if !self.linked.contains(&x) {
             self.set(x, s, None);
         }
@@ -397,7 +401,9 @@ impl FollowedLinks {
     pub(crate) fn unfollow_signal(&mut self, x: &Tid, c: &CommitId) {
         let Some(e) = self.signals.get_mut(x) else { return };
         e.1.remove(c);
-        if e.1.is_empty() {
+        let empty = e.1.is_empty();
+        self.bump();
+        if empty {
             self.signals.remove(x);
             if !self.linked.contains(x) {
                 self.unset(x);
@@ -408,6 +414,17 @@ impl FollowedLinks {
     /// The held grant signals followed, per thing they name.
     pub(crate) fn signals(&self) -> &BTreeMap<Tid, (SyncId, BTreeSet<CommitId>)> {
         &self.signals
+    }
+
+    /// `signals`, read as a whole: a memo over it moves at any change.
+    pub(crate) fn signals_read(&self) -> &BTreeMap<Tid, (SyncId, BTreeSet<CommitId>)> {
+        let _ = self.signals_moved.get(&());
+        &self.signals
+    }
+
+    fn bump(&mut self) {
+        let n = self.signals_moved.get(&()).copied().unwrap_or(0);
+        self.signals_moved.insert((), n.wrapping_add(1));
     }
 
     /// Whether `x` is followed for held grant signals alone (no link being redeemed names it).

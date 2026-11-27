@@ -69,7 +69,6 @@ fn entries(w: &World, i: usize, s: &SyncId) -> BTreeSet<BlobId> {
 // of it, its bytes dropped. Healed, node 0 purges its large write; its pieces leave every store
 // and the engine's.
 #[test]
-#[ignore = "stub rewrite: a held grant signal holds S as Read whatever the node holds (R3b)"]
 fn a_large_value_reads_whole_through_a_node_keeping_it_unread_and_a_purge_deletes_its_pieces_spec_sync_judgement_1() {
     let (mut w, t, s) = three(Gives::Reads);
     w.partition(0, 2);
@@ -96,7 +95,6 @@ fn a_large_value_reads_whole_through_a_node_keeping_it_unread_and_a_purge_delete
 // deletes them at node 1. Node 2 comes back, finds the reused chunks deleted at every source, and
 // writes the value again with them re-encrypted; node 0, reaching only node 1, reads it whole.
 #[test]
-#[ignore = "stub rewrite: a held grant signal holds S as Read whatever the node holds (R3b)"]
 fn a_reused_chunk_a_purger_deleted_is_repaired_spec_sync_ids_1() {
     let (mut w, t, s) = three(Gives::Writes);
     let mut v = big(3);

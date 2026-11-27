@@ -123,9 +123,10 @@ impl Engine {
         Ok(true)
     }
 
-    /// The peers the held grant signals name, as dial hints.
+    /// The peers the held grant signals name, as dial hints (spec/sync-inbox.md §5 Grant
+    /// signal), read so a memo over them moves as signals are followed or let go.
     pub fn signal_hints(&mut self) -> Result<Vec<osis_blob::DialHint>> {
-        let cs: Vec<CommitId> = self.core.followed_links.signals().values().flat_map(|(_, cs)| cs.iter().copied()).collect();
+        let cs: Vec<CommitId> = self.core.followed_links.signals_read().values().flat_map(|(_, cs)| cs.iter().copied()).collect();
         let mut out = Vec::new();
         for c in cs {
             if let Some(v) = self.read(|tx| fire_value(tx, &c, GRANT_FIRE))?
@@ -673,31 +674,22 @@ impl Engine {
             osis_blob::Sealed::SyncCopy(_) => return Ok(Opened::Bad),
             osis_blob::Sealed::Fire(f) => f,
         };
-        self.take_sealed(t, b, prefix, fire, Some(under), None)
+        self.take_sealed(t, b, prefix, fire, Some(under), false)
     }
 
     /// Opens entry `b` (`bytes`) of thing `t`'s sync ID as a notice (spec/permissions.md §4
-    /// Notices, spec/wire.md §9): by its blob key `key` where the entry's wrap opened here (its
-    /// box checked against the holder it names, `osis_blob::open_notice`), else by the read KEM
-    /// secrets this node holds of a holder of `t` (`notice_key_held`); takes the copy it carries,
-    /// on `t` itself, as a sealed copy. `NotOpen` when nothing held opens it, or its box cannot be
-    /// checked here.
-    pub(crate) fn open_notice(&mut self, t: &Tid, b: &osis_base::BlobId, bytes: &[u8], key: Option<osis_crypto::Secret32>) -> Result<crate::sync::Opened> {
-        self.bringing(|e| e.open_notice_in(t, b, bytes, key))
+    /// Opens notice `bytes` (spec/permissions.md §4 Notices, spec/wire.md §9) by the read KEM
+    /// secrets this node holds of a holder of `t` or a thing on its own chains
+    /// (`notice_key_held`; no `t`: a node holding nothing of the thing yet, the latter alone) and
+    /// takes the copy it carries, on its own thing, as a sealed copy. `NotOpen` when nothing held
+    /// opens it.
+    pub(crate) fn open_notice(&mut self, t: Option<Tid>, bytes: &[u8]) -> Result<crate::sync::Opened> {
+        self.bringing(|e| e.open_notice_in(t, bytes))
     }
 
-    fn open_notice_in(&mut self, t: &Tid, b: &osis_base::BlobId, bytes: &[u8], key: Option<osis_crypto::Secret32>) -> Result<crate::sync::Opened> {
+    fn open_notice_in(&mut self, t: Option<Tid>, bytes: &[u8]) -> Result<crate::sync::Opened> {
         use crate::sync::Opened;
-        // opened by its wrap: a reader of `t`, holding what it tells already or reaching it by
-        // `t`'s own entries; it notes what the notice is and takes nothing of it
-        let by_wrap = key.is_some();
-        let key = match key {
-            Some(k) => k,
-            None => match self.notice_key_held(t, bytes)? {
-                Some(k) => k,
-                None => return Ok(Opened::NotOpen),
-            },
-        };
+        let Some(key) = self.notice_key_held(t, bytes)? else { return Ok(Opened::NotOpen) };
         let kem_of = |h: &Tid, e: &osis_crypto::Epoch| {
             let own = self.epochs(h).and_then(|x| x.read.secret(e).map(|s| s.kem().public().clone()));
             own.or_else(|| self.read(|tx| crate::apply::keys::keyset_kem(tx, h, Role::Read, e)).ok().flatten())
@@ -705,17 +697,10 @@ impl Engine {
         match osis_blob::open_notice(bytes, &key, kem_of) {
             Err(_) => Ok(Opened::Bad),
             Ok(None) => Ok(Opened::NotOpen),
-            Ok(Some((_, body))) if by_wrap => {
-                let Ok(copy) = osis_commit::CommitBlob::decode(&osis_base::encode(&body.copy.commit)) else { return Ok(Opened::Bad) };
-                if CertCopy::target(&copy) != Some(*t) {
-                    return Ok(Opened::Bad);
-                }
-                let n = crate::sync::notices::Notice { thing: *t, commit: copy.id(), holder: body.holder, epoch: body.epoch };
-                let b = *b;
-                self.run(|tx| crate::sync::notices::note(tx, &b, n))?;
-                Ok(Opened::Notice(n.commit, crate::Ingested::Duplicate(n.commit)))
+            Ok(Some((prefix, body))) => {
+                let Some(t) = osis_commit::CommitBlob::decode(&osis_base::encode(&body.copy.commit)).ok().and_then(|c| CertCopy::target(&c)) else { return Ok(Opened::Bad) };
+                self.take_sealed(&t, &osis_blob::blob_id(bytes), prefix, body.copy, None, true)
             }
-            Ok(Some((prefix, body))) => self.take_sealed(t, b, prefix, body.copy, None, Some((body.holder, body.epoch))),
         }
     }
 
@@ -724,14 +709,11 @@ impl Engine {
     /// departed holder learns its removal so, holding no epoch of `t` its notice's wrap is under,
     /// and a holder that cannot open a commit boxing it (a grantee entering `t`, holding none of
     /// its roster yet) its box.
-    /// Cost: tried on every entry under `t`'s sync ID no wrap opens here (anyone may put one there,
-    /// within its bringer's budget: kept unopened, charged as any), one decapsulation per read
-    /// epoch held of each such holder, beside `open_fire_in`'s one per epoch of `t`: of the same
-    /// order, and nothing a bringer's bytes choose.
-    fn notice_key_held(&mut self, t: &Tid, bytes: &[u8]) -> Result<Option<osis_crypto::Secret32>> {
-        let mut holders: BTreeSet<Tid> = self.core.key_holders(t).into_iter().map(|(h, _)| h).collect();
+    /// Cost: one decapsulation per read epoch held of each such holder, per notice sent here.
+    fn notice_key_held(&mut self, t: Option<Tid>, bytes: &[u8]) -> Result<Option<osis_crypto::Secret32>> {
+        let mut holders: BTreeSet<Tid> = t.map(|t| self.core.key_holders(&t)).unwrap_or_default().into_iter().map(|(h, _)| h).collect();
         holders.extend(self.own_chains());
-        holders.retain(|h| h != t && !h.is_public());
+        holders.retain(|h| Some(*h) != t && !h.is_public());
         for h in holders {
             for (e, s) in self.epochs(&h).map(|x| x.read.held().map(|(e, s)| (e, s.clone())).collect::<Vec<_>>()).unwrap_or_default().into_iter().rev() {
                 if let Ok(k) = osis_blob::notice_key(bytes, &h, &e, s.kem()) {
@@ -758,15 +740,15 @@ impl Engine {
     }
 
     /// Takes sealed fire or notice copy `fire` opened from entry `b` of `t`'s sync ID behind `prefix`
-    /// (`open_fire_in`, under read epoch `under` of `t`; `open_notice_in`, a notice to `notice`'s
-    /// holder and keyset): the commit, all or nothing: `Bad` unless it applies valid.
-    fn take_sealed(&mut self, t: &Tid, b: &osis_base::BlobId, prefix: osis_blob::Prefix, fire: osis_blob::SealedFire, under: Option<osis_crypto::Epoch>, notice: Option<(Tid, osis_crypto::Epoch)>) -> Result<crate::sync::Opened> {
+    /// (`open_fire_in`, under read epoch `under` of `t`; `open_notice_in`, a notice: no entry, so
+    /// no blob row): the commit, all or nothing: `Bad` unless it applies valid.
+    fn take_sealed(&mut self, t: &Tid, b: &osis_base::BlobId, prefix: osis_blob::Prefix, fire: osis_blob::SealedFire, under: Option<osis_crypto::Epoch>, notice: bool) -> Result<crate::sync::Opened> {
         use crate::sync::Opened;
         let Ok(commit) = osis_commit::CommitBlob::decode(&osis_base::encode(&fire.commit)) else { return Ok(Opened::Bad) };
         let h = &commit.header;
         // a sealed fire: one delta, a fire of an external signal of `t`; a notice: a certificate
         // copy on `t` itself (spec/permissions.md §4 Notices)
-        let one = match (fire.copy, notice.is_some()) {
+        let one = match (fire.copy, notice) {
             (false, false) => matches!(commit.parts.as_slice(), [p] if h.aspects.get(p.ai).is_some_and(|a| a.tid == *t && a.ak.external())),
             (true, true) => CertCopy::target(&commit) == Some(*t),
             _ => false,
@@ -823,13 +805,10 @@ impl Engine {
                 Ok(())
             })?;
         }
-        let b = *b;
-        // a notice is no blob of its commit: kept as what it is (`sync::notices`)
-        if let Some((holder, epoch)) = notice {
-            let n = crate::sync::notices::Notice { thing: *t, commit: id, holder, epoch };
-            self.run(|tx| crate::sync::notices::note(tx, &b, n))?;
-            return Ok(Opened::Notice(id, ingested));
+        if notice {
+            return Ok(Opened::Commit(id, ingested));
         }
+        let b = *b;
         let row = crate::sync::BlobOf { commit: id, parts: parts.into_iter().collect(), sealed: Default::default(), copy: fire.copy, unchecked: false, salt: *prefix.salt(), ais: ais.into_iter().collect(), seal: None };
         self.run(|tx| crate::sync::bodies::note_blob(tx, &b, row))?;
         Ok(Opened::Commit(id, ingested))
