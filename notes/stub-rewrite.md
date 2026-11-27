@@ -17,6 +17,7 @@ On main: spec, engine, osis-sync and the models. Tess approved the shape and too
 ## Owed
 - Entries do not page: issues/entry-blocks-unpaged.md.
 - **Tests**: a removed stub holder served its removal by its older proof (`stubs::a_two_hop_chain_*` asserts only that nothing written since is read); a new node syncing a unit catching up from the stub it carries.
-- **Ignored, cause not sorted**: what `tools/ignores.py "stub rewrite: "` lists.
+- **Hand-delivered grants**: engine tests handing a node a grant's commits directly (`LocalPeer::share` and its users) enter the thing from the node root with no grant signal; whether that is a held role entry (fine) or self-supporting entry (spec/sync-set.md §2 First entry: Entry is founded) is unsettled. Judge before relying on it in new tests.
+- Where a record edge's removal travels once it takes a thing out of its mint admin's unit: issues/record-edge-removal-carriage.md (Tess).
 - **Full-size differential classes**: issues/differential-full-size-classes.md.
 - An external signal on a dependent thing: issues/behaviour-depends-on-own-keys.md. Each stub one more followed sync ID: issues/many-sync-ids-cost.md.
