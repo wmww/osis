@@ -9,7 +9,7 @@
 - A tid is never a value: a value names a thing only by a reference (§8), which may dangle, and the thing may lack the expected aspects.
 - A received record that hashes to a tid the node already holds a different record for is bad input: keep the held record, ignore the new one, report a diagnostic. Never panic on it.
 - A thing never changes its record; its admins change by grants.
-- A thing is made by a durable commit carrying its `created.0` (spec/commits.md §2); no ephemeral commit carries a record. Ephemeral writes (§2) are on things already made.
+- A thing is minted by a durable commit carrying its `created.0` (spec/commits.md §2); no ephemeral commit carries a record. Ephemeral writes (§2) are on things already minted.
 
 ## 2. Aspects
 - An aspect is identified by (tid, AK). An **AK** is a string (text on the wire) of the grammar `ak = [":" tid ":"] name *(":" name) (["+"] ["^"] ("." / "~") / "@~") version`, `name = [a-z_][a-z0-9_]*`, `tid` its 20-character text form (§1), `version` a decimal u64 without leading zeros: `name.0`, `contact:names.0`, `:<tid>:foo:bar+^.1`, `call:ring+~0`, `call:knock@~0`. Anything else, or longer than the AK limit (spec/wire.md §4), is not an AK.
