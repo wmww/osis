@@ -56,6 +56,7 @@ Seed breadth belongs to the release checks, not to jobs: reading and targeted ne
 ## Briefs
 A brief is the only context its agent has. Say the goal and why, what is already ruled out, where to read, and what done looks like; then get out of the way.
 - **No waiting on another job.** A brief never has its agent wait for another job's landing: it lands what stands alone, or reports and stops (a watch for a landing sat silent for hours once).
+- **A test that fails without each fix**: with several fixes, `tools/mutate.py` with a revert-to-old expression per fix checks which a test needs, in one build.
 - **Main keeps compiling**, even while broken in behaviour: a job that changes an API other crates use (a test model included) runs `cargo test --workspace --no-run` before landing.
 - **One session.** Pieces in order, each ending pushed; "stop at the first such point once the session is long, push, report what is left".
 - **Facts are measured or marked as guesses.** A failure is replayed on current main before it is briefed; a cause someone claimed is a lead, not the task; a count says how well a sample reaches a case, never that the case may be dropped (notes/principles.md, How often is not whether).
