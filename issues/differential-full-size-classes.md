@@ -28,6 +28,7 @@ Seeds move whenever commit bytes or delivery order change: work from the scripts
 
 ## Other classes
 Not shrunk: one seed each, probe lines in a full run's log.
+- Default size too: `OSIS_SYNC_START=2 OSIS_SYNC_SEEDS=1` (no `OSIS_FULL`) fails "node 0's sync set holds thing 0 as Some(Stub), the model Some(Unread)", at 9f959ed3b with or without the two fixes after it; not shrunk.
 
 ## Small size
 tools/known_failures.txt lists one gate seed against this issue: 527365123461, "node 1 reads thing 1 unlike the reference" (not shrunk).
