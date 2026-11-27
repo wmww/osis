@@ -462,8 +462,8 @@ fn role_entries_pass_the_caps_spec_sync_ids_6() {
 fn role_domain_deposits_share_the_one_deposit_budget_spec_sync_ids_6() {
     let (_dev, s, mut st) = one_unread();
     st.set_caps(&caps(&[("entries", 0)]));
-    // the genesis claim set holds one key: 68 entries
-    for i in 0..68 {
+    // no head claims: 64 entries
+    for i in 0..64 {
         let (_, x) = blob(64 + i, Class::Durable, None, &[]);
         assert_eq!(st.take_deposit(&deposit(&s, &x, true), None).unwrap(), Code::OK, "role-domain deposit {i}");
     }
@@ -692,14 +692,14 @@ fn deposit_answers_spec_sync_inbox_3() {
 }
 
 // spec/sync-inbox.md §3 (deposit budget): one budget per sync ID for durable and ephemeral
-// deposits alike, at least `64 + 4 ×` the head's claim-set size entries; past it, 5. An entry
+// deposits alike, at least `64 + 4 ×` the head claims' count entries; past it, 5. An entry
 // leaves the budget when stamped or deleted.
 #[test]
 fn deposit_budget_spec_sync_inbox_3() {
     let (_dev, s, mut st) = one_unread();
-    // the genesis claim set holds one key: 68 entries
+    // no head claims: 64 entries
     let mut taken = Vec::new();
-    for i in 0..68 {
+    for i in 0..64 {
         let class = if i % 2 == 0 { Class::Durable } else { Class::Ephemeral };
         let (b, x) = blob(64 + i, class, Some(10_000_000), &[]);
         assert_eq!(st.take_deposit(&deposit(&s, &x, false), None).unwrap(), Code::OK, "deposit {i}");

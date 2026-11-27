@@ -1,4 +1,4 @@
-//! Connection proofs judged (spec/sync-opens.md §2, §4 J; spec/permissions.md §4 Stranded): a
+//! Connection proofs judged (spec/sync-opens.md §2; spec/permissions.md §4 Stranded): a
 //! claim's path judged with the proof's copies taken in as a trial, the guard, and the proven role.
 //! The model: roles-model `paths::proofs` (notes/accounts-switch-brief.md, Models).
 

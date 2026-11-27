@@ -4,10 +4,9 @@
 //! member of class `Store`), the steps its `sync.0` records after the source's step (the head its
 //! stream names), in order, one Register out at a time; each only once the source's stream showed
 //! every role commit the step waits on (`Engine::step_needs`, a blob of each present by
-//! `Net::present`), but at once at a source that takes nothing: a departed peer's, and one on a
-//! step past its keys (S open there by a sync key, or the proof of one, its step does not bear: a
-//! store granted after S's epochs moved on stands at genesis holding a later key) until it stands
-//! at a step bearing that key. At a source whose step is not known (its stream named no head yet) the
+//! `Net::present`), but at once at a source that takes nothing: one on a step past its keys (S
+//! open there by the proof of a sync key its step does not bear: a store granted after S's epochs
+//! moved on stands at genesis holding a later key) until it stands at a step bearing that key. At a source whose step is not known (its stream named no head yet) the
 //! genesis step goes first, at once: a source holding no step takes it before anything it pulls
 //! (it can take no entry of S without a head), one holding a step refuses it (9) and waits for
 //! its head event, which comes with its first Pull reply. Ok moves on to the

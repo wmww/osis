@@ -1,5 +1,5 @@
-//! The public in sync (spec/sync-set.md §2 T's keys open; spec/sync-ids.md §3 the
-//! public entry; spec/sync-opens.md §4-§5; spec/wire.md §10 locators): what the public reads
+//! The public in sync (spec/sync-set.md §2 T's keys open; spec/sync-opens.md §4-§5; spec/wire.md
+//! §10 locators): what the public reads
 //! is carried whole by every unit whose strongs reach it, entered by readers served only that
 //! unit, and opened by anyone holding a locator.
 
@@ -77,27 +77,6 @@ fn removing_the_public_ends_what_a_reader_of_the_referrer_reads_spec_sync_set_2(
     assert_ne!(reads(&mut w, 2, &p), Some(Value::Str("p2".into())), "nothing written since the removal");
 }
 
-// spec/sync-set.md §4 (Redeeming a locator), spec/sync-opens.md §4 (Departed), §5 (Opening),
-// spec/permissions.md §3 (No secret taken back): node 1 grants node 0's account write on X (no
-// strong to it), makes X public and removes that grant. Node 0, a departed peer of X at node 1,
-// redeems a locator of X: node 1 shows it the public entry at X's newest read epoch, which
-// covers its departure; node 0 takes the answer's box though it judges node 1 a holder, and the
-// box's secret though its removal is held (the epoch covers it), and reads X. Each rule undone
-// leaves it pending.
-#[test]
-fn a_removed_grantee_redeems_a_locator_spec_sync_set_4() {
-    use crate::harness::Step::*;
-    use crate::harness::history::Holder;
-    let mut w = crate::harness::contacts();
-    let _ = crate::harness::play(&mut w, &[New(1), Give(1, 0, Holder::Node(0), Gives::Writes), Run, Give(1, 0, Holder::Public, Gives::Reads), Revoke(1, 0, Holder::Node(0)), Run], String::new());
-    let t = w.history.things[0].0;
-    let link = w.locator(1, t).expect("X is public");
-    assert_eq!(w.redeem_any(0, &link), osis_sync::types::Waiting::Pending);
-    w.run();
-    assert!(reads(&mut w, 0, &t).is_some(), "node 0 reads X by the locator");
-    assert!(!w.node(0).node.redeeming(&t), "redeemed");
-}
-
 // spec/sync-inbox.md §6 (First contact): node 1
 // redeems a locator of P while node 0 is unreachable and restarts: the redeem goes on from its
 // kept row (as a share link's), and once node 0 is back node 1 reads P.
@@ -127,9 +106,8 @@ fn a_public_redeem_goes_on_across_a_restart_spec_sync_inbox_6() {
 }
 
 // spec/wire.md §10, spec/sync-set.md §4, spec/sync-opens.md §4-§5: redeeming a locator writes
-// a strong to its target; the public entry is shown where the public reads S's thing and tested
-// by its redeemer, its Hit carries no proof and its answer the head's open entry box. Node 1, holding no
-// role of node 0's and nothing of P, redeems a locator of P and reads it.
+// a strong to its target. Node 1, holding no role of node 0's and nothing of P, redeems a locator
+// of P and reads it.
 #[test]
 fn a_stranger_opens_a_public_thing_by_a_locator_spec_wire_10() {
     let mut w = two_nodes();
@@ -175,8 +153,7 @@ fn a_stranger_redeems_a_locator_to_a_dependent_and_follows_it_spec_sync_set_2() 
 }
 
 // spec/sync-opens.md §5 (Opening), spec/crypto.md §4 (Roles secrets): X rotates after the public's
-// grant, so the grant's commit is wrapped under an epoch older than those the head's open entry box
-// gives. A stranger redeeming a locator of X opens it by the roles secrets the history of the
+// grant, so the grant's commit is wrapped under an epoch older than the current one. A stranger redeeming a locator of X opens it by the roles secrets the history of the
 // box's epoch carries, holding no role yet, and reads X.
 #[test]
 fn a_stranger_redeems_a_locator_after_a_rotation_spec_crypto_4() {

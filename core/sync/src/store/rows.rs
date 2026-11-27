@@ -413,7 +413,7 @@ impl Tombstone {
 
 /// What a sync ID uses of the store (spec/sync-ids.md §6 Caps, spec/sync-inbox.md §3 Budget):
 /// entries and bytes outside role entries (each entry's and tombstone's overhead, its blob, its
-/// path's steps and claim sets), of those the entries' (what give-way frees), and its deposits
+/// path's steps), of those the entries' (what give-way frees), and its deposits
 /// waiting for a stamp. Kept beside the rows it counts, in their transaction.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Usage {
@@ -425,7 +425,7 @@ pub struct Usage {
 }
 
 impl Usage {
-    /// The bytes no give-way frees: tombstones, path steps and claim sets.
+    /// The bytes no give-way frees: tombstones and path steps.
     pub(crate) fn fixed(&self) -> u64 {
         self.bytes.saturating_sub(self.entry_bytes)
     }

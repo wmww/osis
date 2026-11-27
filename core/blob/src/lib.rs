@@ -1,6 +1,6 @@
 //! osis-blob: what every node knows of blobs and sync IDs, read or not: blob framing and
-//! wraps, chunk trees and blob-backed pages, large values, registration steps, claim sets, entry
-//! boxes, stamp/deposit/delete signatures, delete-key checks, the `sync.0` types,
+//! wraps, chunk trees and blob-backed pages, large values, registration steps,
+//! stamp/deposit/delete signatures, delete-key checks, the `sync.0` types,
 //! addresses, links (spec/sync.md, spec/wire.md §5, §6, §8-§10, spec/crypto.md §5-§7). Pure
 //! functions; randomness injected.
 //! Layer 4 (notes/architecture.md). Notes: notes/sync-protocol.md (osis-blob); notes/data-model.md (Large values).

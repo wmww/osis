@@ -178,9 +178,7 @@ fn root_strong(w: &mut World, i: usize, t: Tid, on: bool) {
 // spec/permissions.md §2, spec/sync-set.md §2: a re-granted reader reads again; the node enters
 // at its role as the role commits it holds show. Alice removes Bob from T (or lowers
 // him to sync), then grants him read again and tells him; Bob, his strong kept, reads her next
-// write: the new grant's notice reaches him (Alice, having refused his ByRole while he was
-// departed, tests T toward him again once she judges him a reader; lowered, his store's open by its
-// sync key is told it), so the role commits he holds give read again.
+// write: the role commits he holds give read again.
 #[test]
 fn a_reader_granted_again_reads_again_spec_sync_set_2() {
     for lowered in [false, true] {
@@ -213,7 +211,7 @@ fn granted_told(tell: bool) -> (World, Tid) {
 
 // spec/sync-inbox.md §5 (Grant signal), spec/sync-set.md §2 First entry: a grant nobody is told
 // of is valid and gives its holder's nodes nothing: Bob, holding T by a strong, reads nothing of
-// it; told, he enters T by role at Alice's node and reads it.
+// it; told, he enters T at Alice's node and reads it.
 #[test]
 fn an_untold_grant_holds_nothing_spec_sync_set_2() {
     for tell in [false, true] {
@@ -238,32 +236,6 @@ fn a_signal_holds_its_stub_until_it_expires_spec_sync_inbox_5() {
     w.run();
     assert_eq!(w.engine(1).sync_holder(&s).unwrap(), None, "the signal expired: nothing held");
     assert_eq!(w.engine(1).role_on(&t), None);
-}
-
-// spec/sync-judgement.md §6 (Stops), spec/sync-opens.md §5 (ByRole), spec/permissions.md §4
-// (Notices: a sync-only holder cannot open a rotation boxing it by its wrap): Bob keeps T unread
-// at sync. Cut off from him, Alice removes G's sync on T (T's sync epoch rotates); the notice she
-// sends while the link is down is lost. Back, his store's member resumes on a new connection and
-// Alice tells it the rotation's box there: it holds T's new sync epoch and keeps T. Fails with
-// notices told once per record instead of per connection, or with a resumed member told nothing.
-#[test]
-fn a_stopped_sync_holder_catches_up_by_role_spec_sync_judgement_6() {
-    let (mut w, t) = held(Role::Sync);
-    let g = make(&mut w, 0, "g");
-    w.write(0, |e| e.grant(&t, &g, &edge(Role::Sync))).unwrap();
-    w.run();
-    let s = w.engine(0).sync_id_of(&t).unwrap().expect("T's sync ID");
-    assert_eq!(w.engine(1).sync_holder(&s).unwrap(), Some(([t].into(), Holding::Unread)), "Bob keeps T unread");
-    w.partition(0, 1);
-    w.write(0, |e| e.demote(&t, &osis_engine::flows::Demotion { holder: g, new: None, retain: None })).unwrap();
-    w.run();
-    let newest = |w: &mut World, i: usize| w.engine(i).epochs(&t).and_then(|e| e.sync.held().map(|(e, _)| e).max());
-    let rotated = newest(&mut w, 0);
-    assert_ne!(newest(&mut w, 1), rotated, "Bob holds no rotated sync epoch while cut off");
-    w.heal();
-    w.run();
-    assert_eq!(newest(&mut w, 1), rotated, "Bob holds T's new sync epoch");
-    assert_eq!(w.engine(1).sync_holder(&s).unwrap(), Some(([t].into(), Holding::Unread)), "and keeps T");
 }
 
 // spec/sync-inbox.md §5 (Grant signal: its peers are dial hints once the app accepts it),

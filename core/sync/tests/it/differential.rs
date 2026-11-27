@@ -307,7 +307,7 @@ fn the_public_granted_again_is_read_again_spec_permissions_3() {
 // spec/sync-ids.md §6 (Walk: a Hit refused counts as that credential not shown): node 1 grants
 // node 0's account sync on thing 0, a thing made in thing 0 beside it; node 0 holds thing 0 and
 // removes its account's other node, so node 1 rotates thing 0's sync role and issues a step.
-// Node 0 takes the step's sync copy before the box under it, judges itself past its keys, stops
+// Node 0 takes the step before the box under it, judges itself past its keys, stops
 // S (its store shredded) and syncs it again before its sync modules see it leave. Node 0 keeps
 // thing 0 unread at its readers' head. Failed without either rule: node 1 kept node 0's old head
 // and registered onto an empty path (13), or tested the newest step's key first forever, a beacon
@@ -342,8 +342,7 @@ fn a_store_moved_at_once_takes_the_next_step_spec_sync_ids_6() {
 // leaves the account out, so the account's nodes are at a head past their keys; the keyset's
 // arrival makes a pass of the thing due, at whose end node 1 re-seals the account, and node 0
 // keeps the thing unread, as the model says. Failed while only the thing's own role commits made
-// a pass due: node 1 held the keyset and never re-sealed, and node 0 followed the thing by the
-// public entry.
+// a pass due: node 1 held the keyset and never re-sealed.
 #[test]
 fn a_holder_left_out_is_re_sealed_once_its_keyset_arrives_spec_permissions_3() {
     use crate::harness::script::*;
@@ -398,10 +397,10 @@ fn a_signal_only_a_removed_node_took_is_lost_spec_sync_inbox_2() {
 }
 
 // spec/sync-ids.md §2 (What a sync holder learns: never the tids of what its sync unit holds),
-// spec/sync-set.md §2 (Stubs; Holding a stub: a sync-only stub is its sync copies): node 2 reads thing 0,
+// spec/sync-set.md §2 (Stubs; Holding a stub): node 2 reads thing 0,
 // which holds sync on thing 1 (an untold grant to a thing) and strongs thing 2, a dependent of
 // thing 1. Thing 0's readers cannot know thing 2 is thing 1's: the strong brings thing 1's sync-only
-// stub (its sync copies), never thing 1 kept unread, and node 2 follows nothing of it, as
+// stub (its sync-only cut), never thing 1 kept unread, and node 2 follows nothing of it, as
 // the model says (failed: the model counted the strong to thing 2 as one naming thing 1 and kept
 // thing 1 unread at node 2).
 #[test]
@@ -452,9 +451,9 @@ fn a_removed_reader_keeps_a_thing_the_public_syncs_unread_spec_sync_set_2() {
 
 // spec/crypto.md §4 (History box: what a node holds is a function of the secrets it holds,
 // however it learned them), spec/sync-opens.md §6: node 0 grants node 1's account sync on its thing (a signal; no
-// strong) and the public sync, then removes node 1's account. Node 1 is told the public's edge,
-// the box's history under the public's sync epoch with it, and learns that epoch's secret from
-// the public entry: it opens the history it holds, as an open of its store does. Failed while a
+// strong) and the public sync, then removes node 1's account. Node 1 holds the box's history
+// under the public's sync epoch and learns that epoch's secret: it opens the history it holds,
+// as an open of its store does. Failed while a
 // sync secret learned by a node reading nothing of the thing opened nothing: the live index
 // lacked the epoch's superseded epochs and names a rebuild gave.
 #[test]

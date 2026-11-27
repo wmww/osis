@@ -164,8 +164,7 @@ fn a_node_things_secrets_are_its_nodes_alone_spec_permissions_3() {
 }
 
 // spec/permissions.md §7, spec/crypto.md §3, spec/sync-ids.md §3: a link key's first secrets
-// are its seed's: its published read keyset is the one the seed derives, which its entry boxes
-// are sealed to, so a store holding nothing but the seed opens K.
+// are its seed's: its published read keyset is the one the seed derives.
 #[test]
 fn a_link_keys_keysets_are_its_seeds_spec_permissions_7() {
     let mut lp = net(1, 0);

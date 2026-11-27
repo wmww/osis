@@ -238,8 +238,7 @@ impl CreationRecord {
     pub fn link_target(&self) -> Option<Tid> {
         self.mint_admin().and(self.link)
     }
-    /// The K a link key holds a grant on (spec/permissions.md §7): what scopes its static entry
-    /// (spec/sync-ids.md §3).
+    /// The K a link key holds a grant on (spec/permissions.md §7).
     pub fn link_key_of(&self) -> Option<Tid> {
         self.key().and(self.link)
     }

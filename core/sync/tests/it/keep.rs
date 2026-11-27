@@ -147,8 +147,7 @@ fn a_store_moved_step_by_step_holds_what_each_step_waits_on_spec_sync_ids_6() {
     }
 }
 
-// spec/sync-opens.md §6 (whose peer J judges departed is ended too; this side registers there
-// the recorded steps after the source's step), spec/sync-judgement.md §6 (Stops): node 1 keeps t's sync ID S
+// spec/sync-ids.md §6 (Moving it), spec/sync-judgement.md §6 (Stops): node 1 keeps t's sync ID S
 // unread and node 2 reads it. Node 0 removes node 1's account while cut off from node 1, so only
 // node 2, learning the removal from node 0, can tell node 1: it registers the removal's step
 // there, and node 1 drops its copy.
@@ -174,13 +173,13 @@ fn a_reader_moves_a_removed_store_past_its_keys_spec_sync_opens_6() {
     }
 }
 
-// spec/sync-opens.md §4 (Admissible: toward a peer J judges departed, a reader shows the sync
-// proofs of its recorded steps), §6 (A reader moves a removed store past its keys): node 1 keeps
-// t's sync ID S unread, fetched from node 0 alone, and node 2 reads it. Node 0 removes node 1
-// while cut off from it; node 2, learning the removal, has never shown node 1 its step (node 1
-// was cut off from it while that step was the newest), so only a filter showing every recorded
-// step lets node 1's Hit on its step open S there to be moved past its keys. Fails when a
-// departed peer is shown nothing: node 1 keeps its copy.
+// spec/sync-opens.md §4 (Admissible: a reader shows the sync proof of each distinct sync key on
+// its path), spec/sync-ids.md §6 (Test: an older step's proof opens S served up to that step's
+// end; Moving it): node 1 keeps t's sync ID S unread, fetched from node 0 alone, and node 2 reads
+// it. Node 0 removes node 1 while cut off from it; node 2, learning the removal, has never shown
+// node 1 its step (node 1 was cut off from it while that step was the newest), so only a filter
+// showing every recorded step lets node 1's Hit on its step open S there to be moved past its
+// keys.
 #[test]
 fn a_reader_moves_a_removed_store_it_never_showed_its_step_spec_sync_opens_6() {
     use crate::harness::Step::*;
@@ -200,12 +199,11 @@ fn a_reader_moves_a_removed_store_it_never_showed_its_step_spec_sync_opens_6() {
     assert!(w.store(1).entries(&s).unwrap().is_empty(), "node 1 stopped: {} entries kept", w.store(1).entries(&s).unwrap().len());
 }
 
-// spec/sync-opens.md §6 (A reader moves a removed store past its keys; whether or not S was open
-// there at the removal): node 0 lowers node 1 from write to sync and removes it at once, so node
-// 0 judges node 1 departed while still a reader source there and closes S at once; node 1 then
-// keeps S unread at the lowering's step and cannot read the removal. Its Hit on that step's sync
-// proof, which node 0's filter shows toward a departed peer, opens S ended at node 0, which
-// registers past node 1's keys, and node 1 drops its copy.
+// spec/sync-ids.md §6 (Test: an older step's proof opens S served up to that step's end; Moving
+// it): node 0 lowers node 1 from write to sync and removes it at once while node 1 is still a
+// reader source there; node 1 then keeps S unread at the lowering's step and cannot read the
+// removal. Its Hit on that step's sync proof, which node 0's filter shows, opens S ended at node
+// 0, which registers past node 1's keys, and node 1 drops its copy.
 #[test]
 fn a_reader_moves_a_store_departed_before_it_kept_s_unread_spec_sync_opens_6() {
     use crate::harness::Step::*;

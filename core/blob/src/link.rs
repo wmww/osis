@@ -179,8 +179,7 @@ impl Link {
 
 /// `Link := [2, target, target_sync_id, [peer*], ? independent]` (spec/wire.md §10): a thing the
 /// public reads, its independent's sync ID and the nodes to dial; no secret; `independent` the
-/// thing the sync ID is of where the target is a dependent of it. Its redeemer opens the sync ID by
-/// its public entry (spec/sync-opens.md §4).
+/// thing the sync ID is of where the target is a dependent of it (spec/sync-set.md §4).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Locator {
     pub target: Tid,

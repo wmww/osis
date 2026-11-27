@@ -416,33 +416,6 @@ fn a_self_removal_of_the_makers_only_path_reaches_the_reader_spec_permissions_3(
     assert_eq!(roster, vec![bob], "Bob holds the removal");
 }
 
-// spec/permissions.md §4 (Notices): cut off from his sibling and from Alice, one of Bob's nodes
-// removes Alice from T, never having seen the grant his other node gives her: it sends her
-// nothing (no fire, so no header of T's goes to her readers). Alice takes the grant by its fire
-// and reads T; after the heal Bob's other node judges her departed and logs a notice of the
-// removal under the epoch her grant boxed her, which it serves her alone: she applies the removal
-// and reads T no more.
-#[test]
-fn a_removal_its_writer_made_blind_reaches_the_removed_reader_spec_permissions_4() {
-    let mut w = siblings();
-    let t = make(&mut w, 1, None, "v1");
-    let alice = w.node(0).account.unwrap();
-    strong(&mut w, 0, None, t, true);
-    w.run();
-    w.partition(1, 2);
-    w.partition(0, 2);
-    w.write(1, |e| told(e, &t, &alice, &edge(Role::Read))).unwrap();
-    // the removal orders after the grant (spec/permissions.md §5.1 key order)
-    w.advance(10);
-    w.write(2, |e| e.demote(&t, &osis_engine::flows::Demotion { holder: alice, new: None, retain: None })).unwrap();
-    assert!(w.engine(2).fires_owed().is_empty(), "the blind remover sends Alice nothing");
-    w.run();
-    assert_eq!(value(&mut w, 0, &t), Some(Value::Str("v1".into())), "Alice reads T by the grant");
-    w.heal();
-    w.run();
-    assert_eq!(value(&mut w, 0, &t), None, "Alice reads T no more");
-}
-
 // spec/permissions.md §3 (Lost access; No secret taken back): Bob mints T1 with admin T0 and grants
 // Alice read on T0, so she reads T1 through T0. Cut off from his sibling, one of Bob's nodes
 // removes her from T0 while the other grants her sync on T1, still boxing her T1's read secret;

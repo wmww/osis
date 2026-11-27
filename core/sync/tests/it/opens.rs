@@ -1631,8 +1631,7 @@ fn away_and_back(one: crate::harness::history::Gives) -> (crate::harness::World,
 /// the first reconnect after first contact names other actors than the record (issues/
 /// many-sync-ids-cost.md), and a take naming other actors judges every member. These check the
 /// outcome, not which judgement gives it: each change here also moves what node 1 holds of S
-/// (the rotation it brings), which judges every record holding S in its step; the per-member
-/// standing path is isolated by the `Pair` tests above and `a_self_removal_alone_ends_what_is_served_*` below.
+/// (the rotation it brings), which judges every record holding S in its step.
 fn served_after_a_change_while_away(one: crate::harness::history::Gives, change: impl FnOnce(&mut crate::harness::World, osis_base::Tid)) -> bool {
     let (w, (t, s)) = away_and_back(one);
     served_after_a_change(w, t, s, change)
@@ -1649,19 +1648,8 @@ fn served_after_a_change(mut w: crate::harness::World, t: osis_base::Tid, s: Syn
     served_at_reconnect(&mut w, &s, &after)
 }
 
-/// `away_and_back(Gives::Reads)` with node 2's account paired to a new node `n`, quiet. Built once
-/// per process (`fixture_with`): the world, t, S and `n`.
-fn paired_away_and_back() -> (crate::harness::World, (osis_base::Tid, SyncId, usize)) {
-    crate::harness::fixture_with("opens away and back paired", || {
-        let (mut w, (t, s)) = away_and_back(crate::harness::history::Gives::Reads);
-        let n = w.pair(2);
-        w.run();
-        (w, (t, s, n))
-    })
-}
-
 // spec/sync-opens.md §6 (whether or not a connection holds its record): a member is re-judged at
-// each change of J of its peer or of what this node holds that touches S. In each test below
+// each change of what this node holds that touches S. In each test below
 // node 2's right to t ends while it is away from both other nodes, node 1 hearing of it from node
 // 0; meeting node 1 again it is served nothing written after.
 
@@ -1707,39 +1695,6 @@ fn an_until_passing_while_away_serves_nothing_after_it_spec_sync_opens_6() {
         assert!(w.now() >= until);
     };
     assert!(!served_after_a_change_while_away(crate::harness::history::Gives::Reads, expire));
-}
-
-// spec/sync-opens.md §4 Departed, §6 (at each change of J of its peer): node 2's account
-// self-removes from t by its other node while node 2 is away, reaching node 1 alone. A
-// self-removal carries no rotation (spec/permissions.md §3) and node 1 may rotate nothing, so
-// node 1's credentials of S stay as they were and only J of node 2's record moves, to departed:
-// the member is ended there, served S's role entries alone up to the self-removal, so node 2 is
-// served nothing node 1 took meanwhile and learns the self-removal. Node 2 goes away and back
-// once after the pairing, so the record names its account's new key and the reconnect's take
-// re-judges nothing.
-#[test]
-fn a_self_removal_alone_ends_what_is_served_spec_sync_opens_6() {
-    let (mut w, (t, s, n)) = paired_away_and_back();
-    w.partition(0, 2);
-    w.partition(1, 2);
-    w.advance(1000);
-    w.rejoin(0, 2);
-    w.rejoin(1, 2);
-    w.advance(30_000);
-    for x in [0, 1, n] {
-        w.partition(x, 2);
-    }
-    let before = write_value(&mut w, t, &s, 2);
-    w.run();
-    assert!(!before.is_empty() && before.is_subset(&held_of(&w, 1, &s)), "node 1 took the write");
-    w.partition(0, 1);
-    w.partition(0, n);
-    let a2 = w.node(2).account.unwrap();
-    let left = w.write(n, |e| e.demote(&t, &osis_engine::flows::edges::Demotion { holder: a2, new: None, retain: None })).unwrap().commits[0];
-    w.run();
-    assert!(w.engine(1).holds_commit(&left), "node 1 took the self-removal");
-    assert!(!served_at_reconnect(&mut w, &s, &before), "nothing node 1 took meanwhile");
-    assert!(w.engine(2).holds_commit(&left), "but the self-removal");
 }
 
 // spec/sync-opens.md §3 (a node that stops holding S drops S from every record in the step that

@@ -31,8 +31,7 @@ fn wrap_epochs() {
     assert_eq!(w.wrap_epoch(), None);
 }
 
-// spec/sync-ids.md §2, spec/sync-ids.md §6: role keys come from the sync, write and admin roles' newest epochs (the
-// read epoch gives the claim set only); a node finds the held epoch a head registered by its key;
+// spec/sync-ids.md §2, spec/sync-ids.md §6: role keys come from the sync, write and admin roles' newest epochs; a node finds the held epoch a head registered by its key;
 // an admin holding a newer sync, write or admin epoch than the head re-registers, a newer read
 // epoch alone makes no step.
 #[test]

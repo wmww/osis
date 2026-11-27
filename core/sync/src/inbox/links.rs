@@ -2,7 +2,7 @@
 //!
 //! `redeem` keeps the link durably (store rows `I/r/`, shredded: they hold the seed) and follows
 //! it in the engine for this start (`Engine::follow_link`: L held, K's sync ID read in the sync
-//! set), so the node proves L, opens K by L's static entry (opens) and its boxes open; the
+//! set), so the node proves L and its boxes open; the
 //! link's peers are dial hints. Once the join can be written
 //! (`Engine::redeemable`: the target's roster lists K, K's lists L, K's keyset is held) it is
 //! written (`Engine::redeem`, which writes strongs to K and the target in D, so

@@ -210,7 +210,7 @@ fn engine_errors_map_to_their_api_error_spec_api_errors() {
     assert_eq!(Error::from(E::PastBound { bound: 1000 }), Error::TooLarge { limit: 1000 });
     assert_eq!(Error::from(E::NotKept(raw)), Error::NotUndoable { commit: osis::CommitId::from(raw), reason: osis::NotUndoableReason::NotKept });
     assert!(matches!(Error::from(E::Data(Data::Storage("blob"))), Error::Storage(_)));
-    assert!(matches!(Error::from(E::Data(Data::TooLarge("claim set"))), Error::Invalid(_)), "a format cap is no read bound");
+    assert!(matches!(Error::from(E::Data(Data::TooLarge("a format cap"))), Error::Invalid(_)), "a format cap is no read bound");
 }
 
 // notes/decode-bounds.md (a read holds at most its bound), spec/wire.md §12: a whole read of an

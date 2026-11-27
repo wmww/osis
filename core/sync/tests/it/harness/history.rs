@@ -952,8 +952,8 @@ pub struct View {
     /// The independent things it holds as a stub alone (their role entries).
     stubs: hc::Set,
     /// The stubs it follows (its sync set's stubs): those a unit's keys open or a held signal
-    /// names. A unit carrying a sync-only stub carries its sync copies, which the node follows
-    /// nothing of (notes/stub-rewrite.md, Decided (Tess), to build).
+    /// names. A unit carrying a sync-only stub carries its sync-only cut, which the node follows
+    /// nothing of.
     followed: hc::Set,
 }
 
@@ -1323,7 +1323,7 @@ fn closure_clauses(w: &mut World, refs: &mut Refs, m: &Model, gone: &BTreeSet<St
                 } else {
                     None
                 };
-                // under its own sync IDs (another's may carry its sync copies)
+                // under its own sync IDs (another's may carry its sync-only cut)
                 let own: BTreeSet<osis_base::SyncId> = w.engine(i).sync_ids(t).expect("sync ids").iter().map(|o| o.id).collect();
                 let held: Vec<Holding> = set.ids.iter().filter(|(s, (ts, _))| own.contains(s) && ts.contains(t)).map(|(_, (_, h))| *h).collect();
                 let held = held.iter().copied().max_by_key(|h| match h {

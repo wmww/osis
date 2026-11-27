@@ -15,7 +15,7 @@
 //! Every operation is one transaction of the underlying store, so a crash keeps all of its rows
 //! or none (an entry and its log event, a removal and its tombstone). Every row change stamps
 //! (osis-store `Stamping`; the memory log and feeds their own `Stamps`), so memos may read it. Expiry,
-//! tombstone ends, claim sets' `ROLE_KEEP` and the caps giving way run in `settle`. It decrypts
+//! tombstone ends and the caps giving way run in `settle`. It decrypts
 //! nothing and judges no open: every secret lives above it. It learns which sync IDs the node
 //! holds, and how, from the engine's sync set, and its caps from the engine's `caps^.0`.
 
@@ -96,7 +96,7 @@ pub struct Policy {
     /// The deposit budget per sync ID, raised to the spec's recommended minimum.
     pub deposit_entries: u64,
     pub deposit_bytes: u64,
-    /// A child step past the caps even without its claim set is taken at most once per sync ID
+    /// A child step past the caps is taken at most once per sync ID
     /// per this many ms (spec/sync-ids.md §6 Storage caps; 0: always; infinity: once).
     pub register_every_ms: u64,
 }

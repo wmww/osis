@@ -1,6 +1,5 @@
 //! A link's first contact over real connections (spec/sync-inbox.md §6, spec/permissions.md §7):
-//! the redeemer dials the sharer node by the link's hints, opens K by the link key's static entry,
-//! takes the head's entry box, pulls K and joins.
+//! the redeemer dials the sharer node by the link's hints, opens K, pulls K and joins.
 
 use crate::harness::{World, edge, fixture, two_nodes};
 use osis_base::Role;

@@ -1531,8 +1531,7 @@ fn write_link_rotates_as_signer_spec_perm_3() {
     assert_eq!(sealed_write(&mut lp, 0, d, "after"), BTreeSet::from([2]), "the removed joiner reads nothing new");
 }
 
-// spec/crypto.md §4, spec/sync-ids.md §6: signing a step and sealing its entry boxes encrypt under
-// the holder's epochs: after a node left the account that administers the holder, no step is issued
+// spec/crypto.md §4, spec/sync-ids.md §6: signing a step takes the holder's epochs: after a node left the account that administers the holder, no step is issued
 // until the holder rotates (its roles blocked meanwhile); then its step is, at the new epochs.
 #[test]
 fn issue_step_after_inside_removal_spec_sync_5() {
