@@ -116,7 +116,7 @@ fn finding_19(record: bool, wider: bool) -> (World, paths::Id) {
     (w, late)
 }
 
-/// Finding 19's gap under stubs (notes/stub-rewrite.md, Open for Tess 4): no unit carries anything through O
+/// Finding 19's gap under stubs (notes/stub-rewrite.md, Decided (Tess), to build): no unit carries anything through O
 /// and D, so no node holding the removal holds R, and R's reader shows K's late write under every
 /// rule. With a unit reading through them (`wider`), the chain stubs carry the removal under A
 /// and N takes it to R; carrying bodies' evidence alone leaves the gap.

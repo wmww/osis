@@ -956,7 +956,7 @@ pub struct View {
     stubs: hc::Set,
     /// The stubs it follows (its sync set's stubs): those a unit's keys open or a held signal
     /// names. A unit carrying a sync-only stub carries its sync copies, which the node follows
-    /// nothing of (notes/stub-rewrite.md, Open for Tess 8).
+    /// nothing of (notes/stub-rewrite.md, Decided (Tess), to build).
     followed: hc::Set,
 }
 
