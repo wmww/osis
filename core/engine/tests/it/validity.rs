@@ -3880,6 +3880,8 @@ fn two_paths_world() -> (LocalPeer, Tid, Tid, Tid) {
         set_edge(&mut lp.peers[0].engine, d, h, Some(edge(Role::Write)), None);
         set_edge(&mut lp.peers[0].engine, p, b, Some(edge(Role::Write)), None);
         set_edge(&mut lp.peers[0].engine, p, c, Some(edge(Role::Read)), None);
+        // Bob is told of D by H, the holder he reads it through
+        lp.refer(0, h, d);
         lp.sync_all().unwrap();
         lp.advance(1_000);
         (lp, (h, d, p))
@@ -4891,6 +4893,10 @@ fn holders_world(n: usize) -> (LocalPeer, Vec<Tid>, Tid, Tid) {
     let mut holder = b;
     for x in chain.iter().copied().chain([t]) {
         set_edge(&mut lp.peers[0].engine, x, holder, Some(edge(Role::Write)), None);
+        // each holder after Bob refers to what it holds, so Bob finds it through the chain
+        if holder != b {
+            lp.refer(0, holder, x);
+        }
         holder = x;
     }
     set_edge(&mut lp.peers[0].engine, d, b, Some(edge(Role::Write)), None);
@@ -5018,6 +5024,7 @@ fn a_writes_path_is_a_function_of_the_held_edges_spec_wire_4() {
             set_edge(&mut lp.peers[0].engine, hs[i], b, Some(edge(Role::Write)), None);
             lp.sync_all().unwrap();
             set_edge(&mut lp.peers[0].engine, t, hs[i], Some(edge(Role::Write)), None);
+            lp.refer(0, hs[i], t);
             lp.sync_all().unwrap();
         }
         lp.advance(1_000);
@@ -5044,6 +5051,7 @@ fn one_path_in_the_clear_only_where_it_shows_no_reader_another_roster_spec_wire_
     set_edge(&mut lp.peers[0].engine, h, b, Some(edge(Role::Write)), None);
     for t in [d, p] {
         set_edge(&mut lp.peers[0].engine, t, h, Some(edge(Role::Admin)), None);
+        lp.refer(0, h, t);
     }
     lp.sync_all().unwrap();
     let mut m = Mutation::new();

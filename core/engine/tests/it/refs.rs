@@ -109,7 +109,7 @@ fn a_reference_in_a_chunked_element_counts_as_one_inline_spec_data_model_6() {
         let chunked = matches!(lp.peers[0].engine.get(&s, &a).unwrap(), Some(Value::Set(v)) if v.iter().all(|v| matches!(v, Value::Link(_))));
         assert_eq!(chunked, over, "over {over}: chunked as sized");
         let row = (s, "x:a.0".to_string(), RefKind::Strong, 1);
-        assert_eq!(rows(&mut lp, 0, &x), vec![row.clone()], "over {over}: the writer's backlink");
+        assert_eq!(rows(&mut lp, 0, &x).into_iter().filter(|r| r.0 == s).collect::<Vec<_>>(), vec![row.clone()], "over {over}: the writer's backlink");
         assert!(lp.peers[0].engine.closure_holds(&x), "over {over}: the writer holds X");
         // the reader: every new commit, the write's chunks held back
         let mut late = Vec::new();
@@ -122,10 +122,10 @@ fn a_reference_in_a_chunked_element_counts_as_one_inline_spec_data_model_6() {
         }
         assert_eq!(late.is_empty(), !over, "over {over}: the write's chunks held back");
         let seen = if over { vec![] } else { vec![row.clone()] };
-        assert_eq!(rows(&mut lp, 1, &x), seen, "over {over}: the reader, the write's chunks not held");
+        assert_eq!(rows(&mut lp, 1, &x).into_iter().filter(|r| r.0 == s).collect::<Vec<_>>(), seen, "over {over}: the reader, the write's chunks not held");
         lp.peers[1].engine.put_blobs(late).unwrap();
         lp.peers[1].reexamine().unwrap();
-        assert_eq!(rows(&mut lp, 1, &x), vec![row], "over {over}: the reader, its chunks held");
+        assert_eq!(rows(&mut lp, 1, &x).into_iter().filter(|r| r.0 == s).collect::<Vec<_>>(), vec![row], "over {over}: the reader, its chunks held");
         assert!(lp.peers[1].engine.closure_holds(&x), "over {over}: the reader holds X");
         assert_eq!(lp.peers[1].engine.get(&x, &ak("t:reg.0")).unwrap(), Some(Value::Str("x".into())), "over {over}: the reader reads X");
         let mut m = Mutation::new();
@@ -134,7 +134,7 @@ fn a_reference_in_a_chunked_element_counts_as_one_inline_spec_data_model_6() {
         let pk = lp.peers[0].engine.package(&r).unwrap().unwrap();
         lp.deliver(1, &pk).unwrap();
         for i in 0..2 {
-            assert_eq!(rows(&mut lp, i, &x), vec![], "over {over}: node {i}, removed");
+            assert_eq!(rows(&mut lp, i, &x).into_iter().filter(|r| r.0 == s).collect::<Vec<_>>(), vec![], "over {over}: node {i}, removed");
             assert!(!lp.peers[i].engine.closure_holds(&x), "over {over}: node {i} lets X go");
         }
     }

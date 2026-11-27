@@ -776,6 +776,9 @@ indexes! {
     pub resnapshots_owed: JNested<Tid, Ak, BTreeSet<CommitId>>,
     /// The node closure (`sync::units`): derived, built again by an open.
     pub closure: crate::sync::units::Closure,
+    /// The independent things the local part carries, as this node logged them there
+    /// (`sync::local_log`, rows `ll/`): an event, not derived from the commits held.
+    pub local_log: JSet<Tid>,
     /// Sealed fires this node owes until a peer takes one (`flows::inbox`, spec/sync-inbox.md §2),
     /// by fire ID: durable (`flows::inbox::FIRES`).
     pub fires: JMap<crate::flows::inbox::FireId, Arc<crate::flows::inbox::OwedFire>>,
@@ -832,6 +835,7 @@ pub(crate) struct CoreMark {
     died: usize,
     /// `wrote_on`'s length: a write undone owes no holding.
     wrote_on: usize,
+    made: usize,
     stale: (BTreeSet<Tid>, BTreeSet<Tid>, BTreeSet<Tid>, BTreeSet<CommitId>, bool),
     batched: Option<BTreeMap<(Tid, Ak), Batched>>,
     /// `fallen`: a snapshot a rolled-back flip owed is owed no more.
@@ -1003,6 +1007,9 @@ pub struct Core {
     pub written: Vec<(Tid, Ak)>,
     /// Tests: let local commits break the writer-side role rules (to test receivers).
     pub skip_writer_rules: bool,
+    /// Test harnesses: each grant by the flow also signals its holder (`Engine::signal_grant`),
+    /// as the `osis` library's grant does unless quiet (`Engine::set_signal_grants`).
+    pub signal_grants: bool,
     /// The edge writes signed meanwhile may leave a thing adminless, marked (`Engine::leaving_adminless`).
     pub(crate) leave_adminless: bool,
     /// Someone may listen to commit changes (`Engine::watch_commits`).
@@ -1327,6 +1334,10 @@ pub struct Core {
     /// The things the running transaction's own commits made or wrote, each held at its end as
     /// it says (spec/sync-set.md §2 Writing, Making a thing).
     pub(crate) wrote_on: Vec<Written>,
+    /// The things the running transaction's own commits made (minted, or gave a keyset): their
+    /// role entries are the node's own, a route by which the local part's log takes them
+    /// (`sync::local_log`).
+    pub(crate) made: Vec<Tid>,
     /// Sync units the handle reads and writes at another node (`osis` sources): what is here of them
     /// may be behind, syncing or not (`readable_by`). `Engine::set_sourced` sets it.
     pub(crate) sourced_elsewhere: BTreeSet<Tid>,
@@ -1701,6 +1712,7 @@ impl Core {
             bodies_rewritten: self.bodies_rewritten.len(),
             died: self.died.len(),
             wrote_on: self.wrote_on.len(),
+            made: self.made.len(),
             stale: (self.stale_things.clone(), self.stale_authors.clone(), self.stale_under.clone(), self.stale_commits.clone(), self.stale_all),
             batched: self.batched.clone(),
             fallen: self.fallen.clone(),
@@ -1737,6 +1749,7 @@ impl Core {
             ("bodies_rewritten", self.bodies_rewritten.len() != m.bodies_rewritten),
             ("died", self.died.len() != m.died),
             ("wrote_on", self.wrote_on.len() != m.wrote_on),
+            ("made", self.made.len() != m.made),
             ("stale", stale != (&m.stale.0, &m.stale.1, &m.stale.2, &m.stale.3, m.stale.4)),
             ("batched", self.batched != m.batched),
             ("memory_tx", self.memory_tx != m.memory_tx),
@@ -1792,6 +1805,7 @@ impl Core {
         self.died.truncate(m.died);
         self.index_settled.clear();
         self.wrote_on.truncate(m.wrote_on);
+        self.made.truncate(m.made);
         self.batched = m.batched;
         self.fallen = m.fallen;
         self.memory_tx = m.memory_tx;
@@ -1821,6 +1835,7 @@ impl Core {
             died: _,
             revivals: _,
             wrote_on: _,
+            made: _,
             written: _,
             stale_things: _,
             stale_authors: _,
@@ -1966,6 +1981,7 @@ impl Core {
             key_salt,
             addenda_on,
             skip_writer_rules,
+            signal_grants,
             leave_adminless,
             commits_watched,
             refs_watched,
@@ -2016,7 +2032,7 @@ impl Core {
         format!(
             "{:?}",
             (
-                (id.tid(), detect, key_salt, addenda_on, skip_writer_rules, leave_adminless),
+                (id.tid(), detect, key_salt, addenda_on, skip_writer_rules, signal_grants, leave_adminless),
                 (commits_watched, refs_watched, commit_listeners.is_some(), forge_bad, keep_bodies, list_bound, sourced_elsewhere),
                 (actors(&mut link_keys.keys()), actors(&mut held_link_keys.keys()), followed_links.all()),
             )
@@ -2176,6 +2192,7 @@ impl Core {
             events: Events::default(),
             written: Vec::new(),
             skip_writer_rules: false,
+            signal_grants: false,
             leave_adminless: false,
             commits_watched: false,
             refs_watched: false,
@@ -2304,6 +2321,7 @@ impl Core {
             unit_of: memo::Memo::new("sync: unit of"),
             node_root: None,
             wrote_on: Vec::new(),
+            made: Vec::new(),
             sourced_elsewhere: BTreeSet::new(),
         };
         // the memo clock starts at the wall clock: a load judges at the time it runs
@@ -3516,6 +3534,7 @@ impl Engine {
         fresh.refs_watched = self.core.refs_watched;
         fresh.commit_listeners = self.core.commit_listeners.clone();
         fresh.skip_writer_rules = self.core.skip_writer_rules;
+        fresh.signal_grants = self.core.signal_grants;
         #[cfg(test)]
         {
             fresh.check_ingest = self.core.check_ingest;

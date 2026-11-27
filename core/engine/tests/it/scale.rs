@@ -2152,15 +2152,17 @@ fn unit_evidence(n: usize) -> [[u64; 3]; 2] {
     .unwrap();
     let t = ts[0];
     let mut out = [[0; 3]; 2];
-    // what a node of A writes on T with: node 0's and A's records, its own pairing (A's role
-    // commits are the pairings, in order), T's minting and A's strong to T (A's unit, which the
+    // what a node of A writes on T with: node 0's and A's records (and node 0's inbox naming),
+    // its own pairing (A's role commits are the pairings, in order), T's minting and A's strong to T (A's unit, which the
     // node reads, carries T)
     let e = &lp.peers[0].engine;
     let n0 = e.tid();
     let mut roles: Vec<_> = e.commit_ids().into_iter().filter(|c| e.header(c).is_some_and(|h| h.kind.is_role() && h.aspects.iter().any(|x| x.tid == a || x.tid == n0))).collect();
     roles.retain(|c| !minting.commits.contains(c));
     roles.sort_by_key(|c| e.header(c).map(|h| h.ts));
-    let (made, pairings) = roles.split_at(2);
+    // made: node 0's first start, its node thing naming its inbox (the harness's, `node_inbox`),
+    // A's making
+    let (made, pairings) = roles.split_at(3);
     assert_eq!(pairings.len(), n - 1, "a role commit per pairing");
     for k in 1..n {
         for c in made.iter().chain([&pairings[k - 1]]).chain(&minting.commits) {

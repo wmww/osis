@@ -115,6 +115,8 @@ fn f9_a_removal_of_two_holders_waits_for_both_creations_at_a_reader_spec_permiss
     let d = thing_of(&mut lp, 0, px);
     among(&mut lp, 3);
     let ga = lp.peers[0].engine.grant(&d, &a, &edge_of(Role::Write)).unwrap().commits;
+    // A refers to D, which its writers reach through it
+    lp.refer(0, a, d);
     // the readers read D (their grants are bodies of D)
     for r in [ps[3], ps[4]] {
         lp.peers[0].engine.grant(&d, &r, &edge_of(Role::Read)).unwrap();

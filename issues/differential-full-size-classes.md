@@ -1,5 +1,5 @@
 # Sync differential: failure classes beyond the gate's seeds
-> Summary: the sync differential at full size: 10 of 100 seeds fail, by class with a shrunk script and diagnosis where one was made; the largest is holding less than the model (probe lines only, not shrunk), then a chain hop only evidence shows (issues/evidence-grants-count.md); the gate seed tools/known_failures.txt lists.
+> Summary: the sync differential at full size: 10 of 100 seeds fail, by class with a shrunk script and diagnosis where one was made; the largest is holding less than the model (probe lines only, not shrunk); the gate seed tools/known_failures.txt lists.
 > Priority: normal
 > Tags: sync, engine, tests
 
@@ -8,16 +8,12 @@ Seeds move whenever commit bytes or delivery order change: work from the scripts
 | Class | Seeds |
 |---|---|
 | Holds less than the model: reads unlike the reference, or None or a stub where it keeps unread or holds a stub | 29, 41, 45, 68, 86, 99 |
-| Holds a chain stub through a hop only evidence shows | 59 |
 | Reads a thing the model does not hold | 34 |
 | Must-hold bodies with no entry at quiet | 35 |
 | Entries waiting for a read secret, not parked | 82 |
 
 ## Holds less than the model (not shrunk)
 Probe lines: 29 and 86 "node 2 (0) reads thing 0 unlike the reference"; 99 "node 1's sync set holds thing 0 as Some(Stub), the model Some(Unread)"; 45 and 68 "... as None, the model Some(Unread)"; 41 "... as None, the model Some(Stub)". Shrink each first: some may be the oracle counting a grant a node cannot learn by another route than the chains `entry::Know` covers.
-
-## Chain hop only evidence shows (59 shrunk)
-issues/evidence-grants-count.md.
 
 ## Reads a thing the model does not hold (34 shrunk, not diagnosed)
 `New(0), New(0), Give(0, 1, Node(1), Syncs), Run, Unpair(0, 3), Run, NewIn(0, 1), Run, Give(0, 1, Node(1), Writes), Strong(1, None, 1), Run, NewIn(1, 1)` (world 0): node 0 reads thing 3 (minted by node 1 in thing 1, whose admin is node 0's account), which the model does not hold. The model's strongs lack thing 1's strong to thing 3 and the reference for node 0's account reads no value of it, so the reference judges node 1's minting commit apart from node 0's engine: start at the reference.

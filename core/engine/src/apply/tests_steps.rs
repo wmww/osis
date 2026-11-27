@@ -67,8 +67,9 @@ fn pending_setup() -> (LocalPeer, (CommitId, CommitId)) {
     let t = lp.peers[0].engine.new_thing(&mut m, me);
     m.set(t, &ak("x:a.0"), &Value::Int(1)).unwrap();
     let c1 = lp.peers[0].commit(m).unwrap().unwrap();
+    // peer 1 is granted T, told by the grant's signal, and syncs it
     lp.share(0, t);
-    lp.send_certificates(0, 1, &t).unwrap();
+    lp.sync(0, 1).unwrap();
     lp.peers[0].clock.advance(3 * osis_base::format::MAX_DRIFT_MS);
     let mut m = Mutation::new();
     m.set(t, &ak("x:a.0"), &Value::Int(2)).unwrap();

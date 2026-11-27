@@ -72,10 +72,13 @@ fn dedup_and_events_spec_commits_4() {
 #[test]
 fn pending_until_created_spec_commits_4() {
     let mut lp = net_apart(2, 0);
-    // 1 reads t; it holds nothing of 0's
-    sync(&mut lp, 1, 0);
-    let t = new_thing(&mut lp, 0);
     let r = lp.peers[1].engine.tid();
+    // 1 reads t; it holds nothing of 0's; 0 keeps 1, its inbox among it, to signal its grant
+    for _ in 0..2 {
+        lp.peers[0].know(&[r]).unwrap();
+        sync(&mut lp, 1, 0);
+    }
+    let t = new_thing(&mut lp, 0);
     set_edge(&mut lp.peers[0].engine, t, r, Some(edge(Role::Read)), None);
     let mut m = Mutation::new();
     m.set(t, &REG, &s("second")).unwrap();
@@ -100,6 +103,8 @@ fn pending_until_created_spec_commits_4() {
     for p in &pks[c + 1..pks.len() - 1] {
         lp.deliver(1, p).unwrap();
     }
+    // the grant's signal, then the creation
+    lp.hold_fires(false);
     lp.deliver(1, &pks[c]).unwrap();
     assert!(lp.peers[1].engine.pending().is_empty());
     assert_eq!(lp.peers[1].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("second")));
@@ -441,6 +446,8 @@ fn role_commits_before_their_creation_pend_then_apply_spec_commits_4() {
     }
     assert_eq!(lp.peers[2].engine.pending().len(), roles.len(), "each kept pending");
     lp.peers[2].receive(&pks[c].bytes, pks[c].blobs.clone()).unwrap();
+    // the grant's signal: 2 follows t
+    lp.pass_fires(2).unwrap();
     let e = &mut lp.peers[2].engine;
     assert!(e.pending().is_empty(), "{:?}", e.pending());
     assert_eq!(e.roster(&t).get(&ps[1]).map(|x| x.role), Some(Role::Write));

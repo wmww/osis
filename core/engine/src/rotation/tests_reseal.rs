@@ -861,9 +861,9 @@ fn a_duty_down_a_holder_chain_is_due_at_its_until_spec_permissions_2() {
     let (mut lp, g, tids) = granted(2, &[]);
     let m1 = super::tests::independent_thing(&mut lp, 0);
     let m2 = super::tests::independent_thing(&mut lp, 0);
+    lp.grant_through(0, g, m1, &edge(Role::Read));
+    lp.grant_through(0, m1, m2, &edge(Role::Read));
     let e0 = &mut lp.peers[0].engine;
-    e0.grant(&g, &m1, &edge(Role::Read)).unwrap();
-    e0.grant(&m1, &m2, &edge(Role::Read)).unwrap();
     let until = osis_base::WallMs(e0.core.now().0 + 1_000);
     e0.grant(&m2, &tids[1], &osis_schema::core_types::Edge { until: Some(until), ..edge(Role::Read) }).unwrap();
     lp.sync_all().unwrap();
@@ -889,9 +889,9 @@ fn access_down_a_holder_chain_is_lost_at_its_until_spec_permissions_2() {
     let (mut lp, g, tids) = granted(2, &[]);
     let m1 = super::tests::independent_thing(&mut lp, 0);
     let m2 = super::tests::independent_thing(&mut lp, 0);
+    lp.grant_through(0, g, m1, &edge(Role::Read));
+    lp.grant_through(0, m1, m2, &edge(Role::Read));
     let e0 = &mut lp.peers[0].engine;
-    e0.grant(&g, &m1, &edge(Role::Read)).unwrap();
-    e0.grant(&m1, &m2, &edge(Role::Read)).unwrap();
     let until = osis_base::WallMs(e0.core.now().0 + 1_000);
     e0.grant(&m2, &tids[1], &osis_schema::core_types::Edge { until: Some(until), ..edge(Role::Read) }).unwrap();
     lp.sync_all().unwrap();

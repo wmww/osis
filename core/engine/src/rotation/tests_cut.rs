@@ -1008,6 +1008,8 @@ fn cut_holder_reads_what_expiring_writes_superseded_once_they_end_spec_crdt_8() 
     lp.sync(0, 1).unwrap();
     let ak = osis_base::Ak::new("x:m.0").unwrap();
     let delta_on_m = |h: &osis_commit::Header| !h.kind.is_compaction() && h.aspects.iter().any(|a| a.tid == g && a.ak == ak);
+    // N is told of its grant by its signal
+    lp.pass_fires(2).unwrap();
     for c in lp.peers[0].engine.commit_ids() {
         let h = lp.peers[0].engine.header(&c).unwrap();
         if !delta_on_m(&h) {

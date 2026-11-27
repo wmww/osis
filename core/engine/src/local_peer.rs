@@ -253,19 +253,27 @@ impl Peer {
 
     /// This node keeps the nodes `who` (a contact, a peer it will grant): a strong to each in its
     /// node root's `holds.0`, so their records stay once received (spec/commits.md §5 What a held
-    /// thing needs; a strong to a thing it holds no role on enters nothing). One commit; none when it keeps each
-    /// already.
-    pub fn know(&mut self, who: &[osis_base::Tid]) -> Result<()> {
+    /// thing needs; a strong to a thing it holds no role on enters nothing), and to each one's
+    /// inbox its `keys.0` names here (its keys seal a grant's signal to it). One commit; none
+    /// when it keeps each already. Whether it wrote.
+    pub fn know(&mut self, who: &[osis_base::Tid]) -> Result<bool> {
         let root = self.engine.node_root().ok_or(crate::error::Error::Misuse("no node root"))?;
         let kept: BTreeSet<osis_base::Tid> = self.engine.references_from(&root)?.into_iter().filter(|r| r.kind == osis_base::RefKind::Strong && r.ak.as_str() == "holds.0").map(|r| r.target).collect();
+        // each one's inbox too, once its `keys.0` naming it is held: its keys, to seal a grant's
+        // signal to it (`node_inbox`)
+        let mut who: Vec<osis_base::Tid> = who.to_vec();
+        for t in who.clone() {
+            who.extend(self.engine.inbox_of(&t)?);
+        }
         let mut m = Mutation::new();
         for t in who.iter().filter(|t| **t != self.engine.tid() && !kept.contains(*t)) {
             m.op(root, &osis_schema::core_types::HOLDS, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Add(osis_base::Value::Strong(*t)) })?;
         }
-        if !m.is_empty() {
+        let wrote = !m.is_empty();
+        if wrote {
             self.commit(m)?;
         }
-        Ok(())
+        Ok(wrote)
     }
 
     /// This node's account imports a contact card (spec/sync-inbox.md §5), `link` to a public
@@ -286,6 +294,7 @@ impl Peer {
         let blob_disk = (MemoryBackend::new(), MemoryRoot::new());
         let c: Arc<dyn Clock> = clock.clone();
         let mut engine = Engine::create(Box::new(backend.clone()), Box::new(root.clone()), blob_area(&blob_disk, seed)?, Config::default(), c, Box::new(SeededRng::from_u64(seed)))?;
+        harness_node(&mut engine)?;
         engine.take_wakes();
         let events = engine.subscribe();
         Ok(Peer { engine, clock, backend, root, blob_disk, events, restarts: 0, discarded: Vec::new(), discards: 0, redelivered: 0, pulled_anew: BTreeSet::new(), given: BTreeSet::new(), offers: FireOffers::default(), entries: BTreeMap::new() })
@@ -302,6 +311,7 @@ impl Peer {
         self.restarts += 1;
         let seed = seed.wrapping_add(self.restarts.wrapping_mul(0x9e37_79b9_7f4a_7c15));
         let mut engine = Engine::open(Box::new(self.backend.clone()), Box::new(self.root.clone()), blob_area(&self.blob_disk, seed)?, cfg, c, Box::new(SeededRng::from_u64(seed)))?;
+        engine.set_signal_grants(true);
         self.events = engine.subscribe();
         engine.take_wakes();
         self.engine = engine;
@@ -318,6 +328,7 @@ impl Peer {
         let c: Arc<dyn Clock> = clock.clone();
         let seed = seed.wrapping_add((self.restarts + 1).wrapping_mul(0x9e37_79b9_7f4a_7c15));
         let mut engine = Engine::open(Box::new(backend.clone()), Box::new(root.clone()), blob_area(&blob_disk, seed)?, Config::default(), c, Box::new(SeededRng::from_u64(seed)))?;
+        engine.set_signal_grants(true);
         let events = engine.subscribe();
         engine.take_wakes();
         let mut p = Peer { engine, clock, backend, root, blob_disk, events, restarts: self.restarts + 1, discarded: self.discarded.clone(), discards: self.discards, redelivered: self.redelivered, pulled_anew: self.pulled_anew.clone(), given: self.given.clone(), offers: FireOffers::default(), entries: self.entries.clone() };
@@ -715,6 +726,38 @@ pub struct Account {
 /// profile minted with admin A, each independent, held by strongs from A's `holds.0`; the inbox's
 /// setting enabling both inbox signals; A's `keys.0` naming the inbox in the commit holding them; A's card on the profile; the node root's strong to A
 /// and its `settings^.0` naming A. Then the public's read on the profile, in its own transaction.
+/// Makes freshly created `e` a test peer: its node thing takes grant signals (`node_inbox`) and
+/// its grants by the flow signal their holders (`Engine::set_signal_grants`), as the `osis`
+/// library's do. An engine opened again needs `set_signal_grants` alone.
+pub fn harness_node(e: &mut Engine) -> Result<()> {
+    node_inbox(e)?;
+    e.set_signal_grants(true);
+    Ok(())
+}
+
+/// Gives a fresh node's node thing an inbox taking grant signals (spec/sync-inbox.md §1, §5),
+/// held by the node thing: a test peer granted a role by the flow is told by a signal (the
+/// harness's grants signal, `Engine::set_signal_grants`), as an account is, and enters only so
+/// or by a reference (spec/sync-set.md §2 First entry).
+fn node_inbox(e: &mut Engine) -> Result<()> {
+    use osis_crdt::{Op, PathOp};
+    use osis_schema::core_types as ct;
+    let n = e.tid();
+    e.mint_independent(&[crate::MintAdmin::Thing(n)], |ts| {
+        let [inbox] = ts else { return Err(crate::Error::Misuse("one minted")) };
+        let mut held = Mutation::new();
+        held.op(n, &ct::HOLDS, PathOp { path: Vec::new(), op: Op::Add(osis_base::Value::Strong(*inbox)) })?;
+        let mut named = Mutation::new();
+        crate::flows::cards::put_inbox(&mut named, n, *inbox)?;
+        let mut signals = Mutation::new();
+        let mut setting = ct::RetentionSetting::default();
+        setting.take_inbox_signals();
+        signals.set(*inbox, &ct::RETENTION, &setting)?;
+        Ok(vec![held, named, signals])
+    })?;
+    Ok(())
+}
+
 pub fn make_account(e: &mut Engine) -> Result<(Account, crate::flows::Done)> {
     use osis_crdt::{Op, PathOp};
     use osis_schema::core_types as ct;
@@ -832,13 +875,16 @@ impl LocalPeer {
     }
 
     /// Pairs fresh node `p` into peer `by`'s account at admin (spec/permissions.md §8 Pairing):
-    /// `p` shows its node thing's public key record, `by` writes the grant and hands back the
-    /// offer, which `p` takes. The account's things reach `p` by sync after.
+    /// `p` shows its node thing's public key record, `by` writes the grant and hands over A's
+    /// locator, which `p` redeems (following A) as it takes the pairing. The account's things reach `p` by sync after.
     #[allow(clippy::indexing_slicing)] // test harness: a peer index past the net panics
     pub fn pair_into(&mut self, by: usize, p: &mut Peer) -> Result<osis_base::Tid> {
         let a = self.peers[by].engine.settings_thing()?.ok_or(crate::error::Error::Misuse("the pairer acts for no account"))?;
         let (node, keys) = (p.engine.tid(), p.engine.node_keys()?);
         self.peers[by].engine.pair(&a, &node, &keys, osis_base::Role::Admin)?;
+        // `by` hands over A's locator, which `p` redeems for its node root
+        let link = self.peers[by].engine.locator(&a, Vec::new())?.ok_or(crate::error::Error::Misuse("the account has no sync ID"))?;
+        p.engine.follow_public(&link);
         p.engine.take_pairing(&a)?;
         Ok(a)
     }
@@ -850,12 +896,14 @@ impl LocalPeer {
     }
 
     /// Every peer keeps every other peer (`Peer::know`).
-    pub fn know_all(&mut self) -> Result<()> {
+    /// Whether any peer came to keep another (or its inbox).
+    pub fn know_all(&mut self) -> Result<bool> {
         let all: Vec<osis_base::Tid> = self.peers.iter().map(|p| p.engine.tid()).collect();
+        let mut wrote = false;
         for p in self.peers.iter_mut() {
-            p.know(&all)?;
+            wrote |= p.know(&all)?;
         }
-        Ok(())
+        Ok(wrote)
     }
 
     /// `new(n, 0, t)`, a copy of the one built per test process (`cached`): a copy costs about
@@ -902,28 +950,18 @@ impl LocalPeer {
     }
 
     /// Every other peer holding no role on `t` is granted read on it through the flow by peer
-    /// `admin`, an admin of it, given the grant's commits (as its grant fire carries them), and
-    /// holds it (`hold`): each keeps what it receives of `t`, as only content of a thing in the
-    /// node closure applies (spec/commits.md §4 Outside the node closure).
+    /// `admin`, an admin of it, which signals each (`Engine::set_signal_grants`), and holds it
+    /// (`hold`): each enters `t` by the signal it follows and its strong, at its next sync.
     #[allow(clippy::panic, clippy::indexing_slicing)] // test harness: a grant that fails fails the test (and a peer index past the net)
     pub fn share(&mut self, admin: usize, t: Tid) {
-        let mut given = Vec::new();
         for j in (0..self.peers.len()).filter(|j| *j != admin) {
             let who = self.peers[j].engine.tid();
             if self.peers[admin].engine.key_role(&t, &who).is_none() {
                 let edge = osis_schema::core_types::Edge { role: osis_base::Role::Read, until: None, may_grant: false, retain: false, floor: None };
-                let done = self.peers[admin].engine.grant(&t, &who, &edge).unwrap_or_else(|e| panic!("grant {t:?}: {e}"));
-                given.push((j, done.commits));
+                self.peers[admin].engine.grant(&t, &who, &edge).unwrap_or_else(|e| panic!("grant {t:?}: {e}"));
             }
         }
         self.hold(t);
-        for (j, commits) in given {
-            for c in commits {
-                if let Some(pk) = self.peers[admin].engine.package(&c).unwrap_or_else(|e| panic!("package: {e}")) {
-                    self.deliver(j, &pk).unwrap_or_else(|e| panic!("deliver: {e}"));
-                }
-            }
-        }
     }
 
     /// A fresh node with an account of its own (`Peer::new` at peer `admin`'s time, seeded
@@ -956,6 +994,49 @@ impl LocalPeer {
             }
         }
         p
+    }
+
+    /// Peer `i` keeps node `f` (`Peer::know`), given `f`'s commits: its node thing, then the inbox
+    /// its `keys.0` names, so `i` can seal a grant's signal to it.
+    pub fn meet(&mut self, i: usize, f: &mut Peer) -> Result<()> {
+        let pks: Vec<Package> = f.engine.commit_ids().iter().filter_map(|id| f.engine.package(id).transpose()).collect::<Result<_>>()?;
+        for _ in 0..2 {
+            if let Some(p) = self.peers.get_mut(i) {
+                p.know(&[f.engine.tid()])?;
+            }
+            for pk in &pks {
+                self.deliver(i, pk)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Peer `i` grants `holder` `edge` on `t` by the flow; where `holder` is no peer's node
+    /// thing, a peer writing `holder` refers it to `t` (`refer`): a grant to a plain thing tells
+    /// nobody, so its readers find `t` by that reference.
+    #[allow(clippy::panic)] // test harness: a grant that fails fails the test
+    pub fn grant_through(&mut self, i: usize, t: osis_base::Tid, holder: osis_base::Tid, edge: &osis_schema::core_types::Edge) -> crate::flows::Done {
+        let Some(p) = self.peers.get_mut(i) else { panic!("no peer {i}") };
+        let done = p.engine.grant(&t, &holder, edge).unwrap_or_else(|e| panic!("grant {t:?}: {e}"));
+        if holder != osis_base::Tid::PUBLIC && !self.peers.iter().any(|p| p.engine.tid() == holder) {
+            let writer = self.peers.iter().position(|p| p.engine.role_on(&holder) >= Some(osis_base::Role::Write));
+            if let Some(j) = writer {
+                self.refer(j, holder, t);
+            }
+        }
+        done
+    }
+
+    /// Peer `i`, a writer of `h`, adds a strong from `h` to `t`: `h`'s sync unit carries `t`, so a
+    /// node reading `h` enters `t` through it (spec/sync-set.md §2 First entry: a grant to a plain
+    /// holder tells nobody, a reference finds it).
+    #[allow(clippy::panic)] // test harness: a write that fails fails the test
+    pub fn refer(&mut self, i: usize, h: osis_base::Tid, t: osis_base::Tid) {
+        let mut m = Mutation::new();
+        let op = osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Add(osis_base::Value::Strong(t)) };
+        m.op(h, &osis_schema::core_types::HOLDS, op).unwrap_or_else(|e| panic!("refer {t:?}: {e}"));
+        let Some(p) = self.peers.get_mut(i) else { panic!("no peer {i}") };
+        p.commit(m).unwrap_or_else(|e| panic!("refer {t:?}: {e}"));
     }
 
     /// Every peer not holding `t` holds it from its node root (`hold_at`).
@@ -1126,7 +1207,13 @@ impl LocalPeer {
                     }
                     // sealed to a keyset `to` does not hold yet: offered again
                     crate::sync::Opened::NotOpen => {}
-                    _ => drop(self.memo.fired.insert((from, id, to))),
+                    _ => {
+                        self.memo.fired.insert((from, id, to));
+                        // what it carries is taken (a grant signal followed), as sync's follow does
+                        if let Some(p) = self.peers.get_mut(to) {
+                            p.wake()?;
+                        }
+                    }
                 }
             }
         }
@@ -1417,10 +1504,10 @@ impl LocalPeer {
     /// (`Engine::settle_needs`). A round in which every delivery was a duplicate is a fixpoint:
     /// the next would deliver the same packages to the same states.
     pub fn sync_all(&mut self) -> Result<()> {
-        self.know_all()?;
         let n = self.peers.len();
-        for _ in 0..n.max(1) {
-            let mut changed = false;
+        // known each round: a node thing's inbox is known once its `keys.0` arrived
+        for _ in 0..n.max(1) + 1 {
+            let mut changed = self.know_all()?;
             for a in 0..n {
                 for b in 0..n {
                     if a != b {

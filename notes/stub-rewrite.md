@@ -12,7 +12,6 @@ On main: spec, engine, osis-sync and the models. Tess approved the shape and too
 
 ## Owed
 - **Tests**: a new node syncing a unit catching up from the stub it carries.
-- **Hand-delivered grants** (Sheave: not entry): the engine still enters by them; issues/evidence-grants-count.md.
 - Where a record edge's removal travels once it takes a thing out of its mint admin's unit: issues/record-edge-removal-carriage.md (Tess).
 - **Full-size differential classes**: issues/differential-full-size-classes.md.
 - An external signal on a dependent thing: issues/behaviour-depends-on-own-keys.md. Each stub one more followed sync ID: issues/many-sync-ids-cost.md.

@@ -198,7 +198,7 @@ impl Engine {
             if self.core.keys_open(g, &x) {
                 let role = |ak: &str| matches!(ak, "roles.0" | "signers.0" | "secrets.0" | "sync.0");
                 let cs: BTreeSet<CommitId> = self.core.aspects_of(&x).filter(|((_, ak), _)| role(ak.as_str())).flat_map(|(_, cs)| cs.iter().map(|(_, c)| *c).collect::<Vec<_>>()).collect();
-                let mut open = crate::sync::units::chain_holders(&self.core, g, &x, osis_base::Role::Read);
+                let mut open = crate::sync::units::chain_holders(&self.core, crate::sync::units::Ctx::Read(*g), g, &x, osis_base::Role::Read);
                 open.extend([*g, Tid::PUBLIC]);
                 let mut seeds = BTreeSet::new();
                 for c in cs {
@@ -213,7 +213,7 @@ impl Engine {
                 self.add_closure(ev, &seeds, out);
                 self.public_key_record_into(ev, &x, out);
             } else if self.core.keyed_role_now(g, &x) >= Some(osis_base::Role::Sync) {
-                out.sync_cuts.insert(x, crate::sync::units::chain_holders(&self.core, g, &x, osis_base::Role::Sync));
+                out.sync_cuts.insert(x, crate::sync::units::chain_holders(&self.core, crate::sync::units::Ctx::Read(*g), g, &x, osis_base::Role::Sync));
             }
         }
     }

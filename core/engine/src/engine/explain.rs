@@ -75,6 +75,7 @@ fn path(core: &Core, t: &Tid) -> String {
 fn root(core: &Core, x: &Tid, r: &Root) -> String {
     match r {
         Root::Held if core.ix.closure.holds(x) => format!("in the node closure: {}", path(core, x)),
+        Root::Held if core.ix.closure.stub_only(x) => format!("held as a stub: {}", path(core, x)),
         Root::Held => "leaving the node closure, not released yet".into(),
         Root::Copy(a) if a == x => "a retained copy".into(),
         Root::Copy(a) => format!("the retained copy of {}", label(core, a)),

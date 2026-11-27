@@ -66,10 +66,13 @@ fn shape(d: usize) -> Shape {
         lp.peers[B].engine.grant(&xd, &r, &edge(Role::Read)).unwrap();
         for i in (0..d - 1).rev() {
             lp.peers[B].engine.grant(&xs[i], &xs[i + 1], &edge(Role::Write)).unwrap();
+            // each holder refers to what it holds: W and R find the chain by references
+            lp.refer(B, xs[i + 1], xs[i]);
         }
         lp.sync_all().unwrap();
         let g = independent_thing(&mut lp, A);
         lp.peers[A].engine.grant(&g, &xs[0], &edge(Role::Write)).unwrap();
+        lp.refer(B, xs[0], g);
         lp.sync_all().unwrap();
         assert_eq!(lp.peers[W].engine.core.role_now(&w, &g), Some(Role::Write));
         assert!(held_by(&lp, W, &[g]).contains(&(g, Role::Read, newest_read(&lp, A, g).unwrap())), "W reads G");
@@ -441,10 +444,10 @@ fn route_shape() -> (LocalPeer, Tid, Tid, Tid) {
         let s = independent_thing(&mut lp, 2);
         let m = independent_thing(&mut lp, 1);
         lp.sync_all().unwrap();
-        lp.peers[1].engine.grant(&m, &s, &edge(Role::Write)).unwrap();
+        lp.grant_through(1, m, s, &edge(Role::Write));
         let a = independent_thing(&mut lp, 0);
         lp.sync_all().unwrap();
-        lp.peers[0].engine.grant(&a, &m, &edge(Role::Read)).unwrap();
+        lp.grant_through(0, a, m, &edge(Role::Read));
         lp.sync_all().unwrap();
         assert!(held_by(&lp, 2, &[a]).contains(&(a, Role::Read, newest_read(&lp, 0, a).unwrap())), "f reads A through M");
         (lp, (a, m, s))

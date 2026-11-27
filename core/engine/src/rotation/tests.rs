@@ -2309,10 +2309,10 @@ fn raise_invalid_through_holder_actor_resealed_spec_crypto_4() {
     let tids: Vec<Tid> = (0..4).map(|i| lp.peers[i].engine.tid()).collect();
     let g = independent_thing(&mut lp, 0);
     let k = independent_thing(&mut lp, 3);
-    lp.peers[3].engine.grant(&k, &tids[1], &edge(Role::Admin)).unwrap();
+    lp.grant_through(3, k, tids[1], &edge(Role::Admin));
     lp.sync_all().unwrap();
-    lp.peers[0].engine.grant(&g, &k, &edge(Role::Admin)).unwrap();
-    lp.peers[0].engine.grant(&g, &tids[2], &edge(Role::Read)).unwrap();
+    lp.grant_through(0, g, k, &edge(Role::Admin));
+    lp.grant_through(0, g, tids[2], &edge(Role::Read));
     lp.sync_all().unwrap();
     lp.peers[0].engine.demote(&g, &Demotion { holder: tids[2], new: None, retain: None }).unwrap();
     lp.sync_all().unwrap();
@@ -2321,7 +2321,7 @@ fn raise_invalid_through_holder_actor_resealed_spec_crypto_4() {
     let dem: BTreeSet<_> = commit_ids(&mut lp, 3).difference(&before).copied().collect();
     lp.sync(3, 0).unwrap();
     lp.peers[1].clock.advance(5_000);
-    lp.peers[1].engine.grant(&g, &tids[2], &edge(Role::Read)).unwrap();
+    lp.grant_through(1, g, tids[2], &edge(Role::Read));
     assert!(lp.peers[1].engine.core.role_now(&tids[2], &g).is_some(), "R applies at P");
     lp.sync(1, 0).unwrap();
     assert!(lp.peers[0].engine.core.role_now(&tids[2], &g).is_none(), "R applies nothing at A");
@@ -2561,7 +2561,7 @@ fn through_holder_actor() -> (LocalPeer, Vec<Tid>, Tid, BTreeSet<osis_base::Comm
     let k = independent_thing(&mut lp, 5);
     lp.peers[5].engine.grant(&k, &tids[3], &edge(Role::Admin)).unwrap();
     lp.sync_all().unwrap();
-    lp.peers[0].engine.grant(&g, &k, &edge(Role::Admin)).unwrap();
+    lp.grant_through(0, g, k, &edge(Role::Admin));
     for (i, r) in [(1, Role::Admin), (2, Role::Read), (4, Role::Admin)] {
         lp.peers[0].engine.grant(&g, &tids[i], &edge(r)).unwrap();
     }
@@ -2898,6 +2898,8 @@ fn dependent_with_a_holder() -> (LocalPeer, Tid, Tid, Tid) {
             c.map(|_| ())
         })
         .unwrap();
+    // Z is told, as a grant by the flow tells its holder
+    lp.peers[3].engine.signal_grant(&t, &tids[4], &[]).unwrap();
     lp.sync_all().unwrap();
     for i in 0..5 {
         let core = &lp.peers[i].engine.core;
@@ -2905,6 +2907,13 @@ fn dependent_with_a_holder() -> (LocalPeer, Tid, Tid, Tid) {
         assert!(core.key_holders(&t).iter().any(|(h, _)| *h == tids[4]), "peer {i}: Z holds T");
     }
     (lp, g, t, tids[4])
+}
+
+/// Peer 0, an admin, signals Z its role on T once T holds secrets of its own: the signal it had
+/// named T's independent G, which Z does not read.
+fn tell(lp: &mut LocalPeer, t: Tid, z: Tid) {
+    lp.peers[0].engine.signal_grant(&t, &z, &[]).unwrap();
+    lp.sync_all().unwrap();
 }
 
 /// Peer `i` writes `v` on `t` at `ak`; all sync.
@@ -2941,8 +2950,9 @@ fn pass_end_at_0(lp: &mut LocalPeer, g: Tid, t: Tid) {
 // not hold), or if a role commit on a dependent thing wants no pass of its independent.
 #[test]
 fn a_dependent_thing_with_a_holder_gets_secrets_of_its_own_at_a_pass_end_spec_perm_3() {
-    let (mut lp, g, t, _) = dependent_with_a_holder();
+    let (mut lp, g, t, z) = dependent_with_a_holder();
     pass_end_at_0(&mut lp, g, t);
+    tell(&mut lp, t, z);
     write_on(&mut lp, 0, t, "x:a.0", 1);
     assert_eq!(read_at(&mut lp, 4, t, "x:a.0"), Some(osis_base::Value::Int(1)), "Z reads T");
 }
@@ -2964,12 +2974,12 @@ fn a_dependent_holder_left_so_by_an_invalid_keyset_gets_secrets_of_its_own_spec_
     lp.peers[0].engine.demote(&g, &Demotion { holder: tids[1], new: None, retain: None }).unwrap();
     // A's clock runs ahead: its grant is stamped after its removal
     lp.peers[1].clock.advance(120_000);
-    lp.peers[1].engine.grant(&t, &tids[2], &edge(Role::Read)).unwrap();
+    lp.grant_through(1, t, tids[2], &edge(Role::Read));
     lp.sync(1, 3).unwrap();
     assert!(lp.peers[3].engine.core.is_independent(&t), "Y sees T independent");
     let first = lp.peers[3].engine.sync_id_of(&t).unwrap();
     assert!(first.is_some());
-    lp.peers[3].engine.grant(&x, &t, &edge(Role::Read)).unwrap();
+    lp.grant_through(3, x, t, &edge(Role::Read));
     lp.sync_all().unwrap();
     for i in 0..5 {
         let core = &lp.peers[i].engine.core;
@@ -2990,10 +3000,11 @@ fn a_dependent_holder_left_so_by_an_invalid_keyset_gets_secrets_of_its_own_spec_
 // writes after, and no pass end owes more.
 #[test]
 fn two_admins_giving_secrets_of_its_own_at_once_converge_spec_perm_3() {
-    let (mut lp, g, t, _) = dependent_with_a_holder();
+    let (mut lp, g, t, z) = dependent_with_a_holder();
     super::tests_members::driver_duties(&mut lp, 0);
     super::tests_members::driver_duties(&mut lp, 3);
     assert!(lp.peers[0].engine.core.is_independent(&t) && lp.peers[3].engine.core.is_independent(&t), "both made T independent");
+    tell(&mut lp, t, z);
     let apart = lp.peers[0].engine.sync_id_of(&t).unwrap();
     assert!(apart.is_some());
     assert_eq!(lp.peers[3].engine.sync_id_of(&t).unwrap(), apart, "apart, both give T one sync ID");
@@ -3021,9 +3032,10 @@ fn two_admins_giving_secrets_of_its_own_at_once_converge_spec_perm_3() {
 // under the sync ID pruned) and agrees on T's sync ID.
 #[test]
 fn writes_under_both_forks_of_own_secrets_are_read_spec_perm_3() {
-    let (mut lp, _, t, _) = dependent_with_a_holder();
+    let (mut lp, _, t, z) = dependent_with_a_holder();
     super::tests_members::driver_duties(&mut lp, 0);
     super::tests_members::driver_duties(&mut lp, 3);
+    tell(&mut lp, t, z);
     for (i, ak, v) in [(0, "x:a.0", 1), (3, "x:b.0", 2)] {
         let mut m = Mutation::new();
         m.set(t, &osis_base::Ak::new(ak).unwrap(), &osis_base::Value::Int(v)).unwrap();
@@ -3063,6 +3075,8 @@ fn a_foreign_grant_to_a_dependent_thing_gets_it_secrets_from_its_admins_alone_sp
             c.map(|_| ())
         })
         .unwrap();
+    // T refers to X, which its readers read through it
+    lp.refer(0, t, x);
     lp.sync_all().unwrap();
     for i in 0..5 {
         assert!(!lp.peers[i].engine.core.is_independent(&t), "peer {i}: T dependent");

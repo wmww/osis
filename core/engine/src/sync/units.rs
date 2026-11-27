@@ -148,6 +148,9 @@ pub struct Closure {
     by: JSetMap<(Vx, Vx), Tid>,
     /// Per (vertex, target), what its edge gives as last settled (`by` read back).
     gave: JMap<(Vx, Tid), BTreeSet<Vx>>,
+    /// The things an edge from the local part to a vertex of theirs was linked to or unlinked
+    /// from since the last settle's end: judged then for the local part's log (`local_log`).
+    local_moved: JSet<Tid>,
 }
 
 impl Default for Closure {
@@ -166,6 +169,7 @@ impl Default for Closure {
             cut: JSet::default(),
             by: JSetMap::default(),
             gave: JMap::default(),
+            local_moved: JSet::default(),
         }
     }
 }
@@ -213,7 +217,7 @@ impl Follow {
 }
 
 impl Journaled for Closure {
-    type Mark = ([usize; 4], [usize; 4], [usize; 11]);
+    type Mark = ([usize; 4], [usize; 4], [usize; 12]);
     fn commit(&mut self) {
         self.targeted.commit();
         self.unknown.commit();
@@ -228,9 +232,10 @@ impl Journaled for Closure {
         self.cut.commit();
         self.by.commit();
         self.gave.commit();
+        self.local_moved.commit();
     }
     fn mark(&mut self) -> Self::Mark {
-        (self.tree.mark(), self.synced.mark(), [self.out.mark(), self.inn.mark(), self.moved.mark(), self.rows.mark(), self.members.mark(), self.left.mark(), self.cut.mark(), self.unknown.mark(), self.targeted.mark(), self.by.mark(), self.gave.mark()])
+        (self.tree.mark(), self.synced.mark(), [self.out.mark(), self.inn.mark(), self.moved.mark(), self.rows.mark(), self.members.mark(), self.left.mark(), self.cut.mark(), self.unknown.mark(), self.targeted.mark(), self.by.mark(), self.gave.mark(), self.local_moved.mark()])
     }
     fn rollback_to(&mut self, (t, s, m): Self::Mark) {
         self.tree.rollback_to(t);
@@ -246,6 +251,7 @@ impl Journaled for Closure {
         self.targeted.rollback_to(m[8]);
         self.by.rollback_to(m[9]);
         self.gave.rollback_to(m[10]);
+        self.local_moved.rollback_to(m[11]);
     }
     fn name(&mut self, _name: &'static str) {
         self.tree.name("index: closure held");
@@ -552,6 +558,21 @@ impl Closure {
         self.members.contains(&c, h) || self.inn.get(&(Ctx::Read(*h), *h)).is_some_and(|vs| vs.iter().any(|v| v.0 == c))
     }
 
+    /// The things noted in `local_moved` since the last call, taken.
+    pub(crate) fn take_local_moved(&mut self) -> Vec<Tid> {
+        let xs: Vec<Tid> = self.local_moved.iter().copied().collect();
+        for x in &xs {
+            self.local_moved.remove(x);
+        }
+        xs
+    }
+
+    /// Whether an edge of a held vertex of the local part gives a vertex of `x`: the local part
+    /// carries `x` (whole, kept unread or as a stub).
+    pub(crate) fn local_carries(&self, x: &Tid) -> bool {
+        self.contexts(x).into_iter().any(|c| self.inn.get(&(c, *x)).is_some_and(|vs| vs.iter().any(|v| v.0 == Ctx::Local && self.is_held(v))))
+    }
+
     /// The independent things outside `g`'s sync unit that the walk gives from it (its entries
     /// and the stubs it carries, spec/sync-set.md §2 Stubs): what `g`'s sync ID carries the stubs
     /// of (`Engine::stub_certificates`). O(the unit's out-lists).
@@ -567,6 +588,11 @@ impl Closure {
             }
         }
         out
+    }
+
+    /// Whether the local part holds `t` (whole): a read of that member alone.
+    pub(crate) fn local_holds(&self, t: &Tid) -> bool {
+        self.members.contains(&Ctx::Local, t)
     }
 
     /// Whether `t` is in `g`'s sync unit (`Engine::sync_unit`): a read of that member alone.
@@ -632,18 +658,27 @@ impl Closure {
         self.tree.is_held(v)
     }
 
+    /// Notes an edge from `v` to `w` linked or unlinked: from the local part, one for the local
+    /// part's log (`local_moved`).
+    fn moved_edge(&mut self, v: Vx, w: Vx) {
+        self.moved.insert((v, w));
+        if v.0 == Ctx::Local {
+            self.local_moved.insert(w.1);
+        }
+    }
+
     fn link(&mut self, v: Vx, w: Vx) {
         osis_base::costs::count("closure: edges examined", 1);
         self.out.insert(v, w);
         self.inn.insert(w, v);
-        self.moved.insert((v, w));
+        self.moved_edge(v, w);
     }
 
     fn unlink(&mut self, v: Vx, w: Vx) {
         osis_base::costs::count("closure: edges examined", 1);
         self.out.remove(&v, &w);
         self.inn.remove(&w, &v);
-        self.moved.insert((v, w));
+        self.moved_edge(v, w);
         for y in self.by.get(&(v, w)).cloned().unwrap_or_default() {
             self.by.remove(&(v, w), &y);
             self.gave.remove(&(v, y));
@@ -667,7 +702,7 @@ impl Closure {
             if !self.by.get(&(v, *w)).is_some_and(|s| !s.is_empty()) {
                 self.out.remove(&v, w);
                 self.inn.remove(w, &v);
-                self.moved.insert((v, *w));
+                self.moved_edge(v, *w);
                 osis_base::costs::count("closure: edges examined", 1);
                 gone.push(*w);
             }
@@ -951,7 +986,7 @@ fn stubs_by(core: &Core, (c, x): Vx, y: Tid, independent: bool, strong: bool, ou
     let fired = !strong && core.followed_links.fired_on(&y, &x);
     // a sync-only cut of `y` under the unit's thing names `y` as independent (by its sync ID),
     // record or none (spec/permissions.md §4 Stub)
-    let cut = owners(core, c, &[y]).iter().any(|o| core.cut_under(o, &y));
+    let cut = owners(core, c, &[y]).iter().any(|o| cut_under(core, c, o, &y));
     let Some(a) = (if independent || fired || cut { Some(y) } else { core.secret_actor(&y) }) else { return };
     // the unit's own thing, or the node's: no stub (read before the link keys, which the local
     // part's other owners are)
@@ -964,21 +999,23 @@ fn stubs_by(core: &Core, (c, x): Vx, y: Tid, independent: bool, strong: bool, ou
     }
     let cl = &core.ix.closure;
     let stub = |h: Tid| (!cl.carries_whole(c, &h)).then_some((Ctx::Stub(h), h));
-    let opens: Vec<Tid> = own.iter().copied().filter(|o| core.keys_open(o, &a)).collect();
+    let opens: Vec<Tid> = own.iter().copied().filter(|o| keys_open(core, c, o, &a)).collect();
     // a strong brings X whole or enters it where it names X or the unit's keys open X; one to a
     // dependent of an X they do not open names nothing the unit's readers know of X (spec/sync-ids.md
     // §2 What a sync holder learns), so it brings X's stub as a weak does
     let enters = strong && (independent || !opens.is_empty());
-    if !enters && (!opens.is_empty() || own.iter().any(|o| core.keyed_role_now(o, &a) >= Some(Role::Sync) || core.cut_under(o, &a)) || fired) {
+    if !enters && (!opens.is_empty() || own.iter().any(|o| role_on(core, c, o, &a) >= Some(Role::Sync) || cut_under(core, c, o, &a)) || fired) {
         out.extend(stub(a));
     }
     for o in &own {
         let chain = if opens.contains(o) {
-            chain_holders(core, o, &a, Role::Read)
-        } else if core.keyed_role_now(o, &a) >= Some(Role::Sync) || core.cut_under(o, &a) {
-            let mut hs = chain_holders(core, o, &a, Role::Sync);
+            chain_holders(core, c, o, &a, Role::Read)
+        } else if role_on(core, c, o, &a) >= Some(Role::Sync) || cut_under(core, c, o, &a) {
+            let mut hs = chain_holders(core, c, o, &a, Role::Sync);
             // a holder a cut names is independent by its role, as a cut names its own thing
-            hs.extend(core.cut_named(o, &a).into_iter().filter(|h| h != o));
+            if c != Ctx::Local || crate::sync::local_log::counts(core, &a) {
+                hs.extend(core.cut_named(o, &a).into_iter().filter(|h| h != o));
+            }
             hs
         } else {
             BTreeSet::new()
@@ -988,16 +1025,98 @@ fn stubs_by(core: &Core, (c, x): Vx, y: Tid, independent: bool, strong: bool, ou
 }
 
 /// The independent holders on `o`'s chains of grants with key access giving `r` or above on
-/// independent `a` (spec/sync-set.md §2 Stubs), neither `o` nor `a`: each holds `r` on `a` and
-/// `o` holds `r` on it, by `a`'s and its grants as the node holds them (`Core::keyed_role_now`).
-/// The public is no holder.
-pub(crate) fn chain_holders(core: &Core, o: &Tid, a: &Tid, r: Role) -> BTreeSet<Tid> {
+/// independent `a` (spec/sync-set.md §2 Stubs), as unit `c` judges them, neither `o` nor `a`:
+/// each holds `r` on `a` and `o` holds `r` on it, over the grants `c` reads (`counted`). The
+/// public is no holder.
+pub(crate) fn chain_holders(core: &Core, c: Ctx, o: &Tid, a: &Tid, r: Role) -> BTreeSet<Tid> {
     let roles = core.time.at(|now| {
         let (r, until) = core.timelines().roles_now(a, crate::flows::ts_at(now));
         (r, until.map(|u| u.0))
     });
-    let at = |x: &Tid, y: &Tid| core.keyed_role_now(x, y) >= Some(r);
+    let counts = |y: &Tid, h: &Tid| counted(core, c, o, a, r, y, h);
+    let at = |x: &Tid, y: &Tid| role_counted(core, x, y, &counts) >= Some(r);
     roles.iter().filter(|(h, role)| **role >= r && *h != o && *h != a && **h != Tid::PUBLIC && core.is_independent(h) && at(o, h) && at(h, a)).map(|(h, _)| *h).collect()
+}
+
+/// Whether unit `c`'s judgement of a chain from its owner `o` to independent `a` at `r` reads the
+/// grant to holder `h` on `y` (spec/sync-set.md §2 Stubs): in the local part, a grant on a thing
+/// its log counts (`local_log::counts`); in a sync unit's chain of sync, the grants on `a`, those
+/// naming `o` (its own entries) and those on a thing whose role entries the node holds by another
+/// unit than `c` (`given_elsewhere`): a reader of `c` learns of a sync chain only the holders its
+/// sync-only cut names (spec/permissions.md §4 Stub), so a hop shown only by evidence the node
+/// holds is no hop of it; in a read chain, every grant held (each holder's stub carries its role
+/// entries).
+fn counted(core: &Core, c: Ctx, o: &Tid, a: &Tid, r: Role, y: &Tid, h: &Tid) -> bool {
+    match c {
+        Ctx::Local => crate::sync::local_log::counts(core, y),
+        Ctx::Read(t) if r == Role::Sync => {
+            let yi = core.secret_actor(y).unwrap_or(*y);
+            yi == *a || h == o || yi == t || core.ix.closure.unit_holds(&t, y) || given_elsewhere_than(core, &yi, c)
+        }
+        _ => true,
+    }
+}
+
+/// `x`'s keyed role on independent `a` (`Core::keyed_role_now`) over the grants `counts` admits,
+/// by (target, holder): the walk back from `a` skips every other edge into a thing it reaches.
+fn role_counted(core: &Core, x: &Tid, a: &Tid, counts: &dyn Fn(&Tid, &Tid) -> bool) -> Option<Role> {
+    let (role, skip) = core.time.at(|now| {
+        let ts = crate::flows::ts_at(now);
+        let (all, until) = core.timelines().roles_now(a, ts);
+        let mut skip = BTreeSet::new();
+        for y in std::iter::once(*a).chain(all.keys().copied()) {
+            for h in core.roster_of(&y).into_keys() {
+                if !counts(&y, &h) {
+                    skip.insert((y, h));
+                }
+            }
+        }
+        let role = match skip.is_empty() {
+            true => all.get(x).copied(),
+            false => core.timelines().roles_on(a, osis_perm::At::now(ts), &skip).get(x).copied(),
+        };
+        ((role, skip), until.map(|u| u.0))
+    });
+    let keyless = crate::rotation::members::key_skip(core);
+    if role.is_none() || keyless.is_empty() {
+        return role;
+    }
+    let skip: BTreeSet<(Tid, Tid)> = skip.into_iter().chain(keyless.iter().copied()).collect();
+    role.min(core.timelines().roles_on(a, osis_perm::At::KEYS, &skip).get(x).copied())
+}
+
+/// Whether unit `c`'s owner `o`'s keys open `x` (`Core::keys_open`) as `c` judges it: the local
+/// part reads the grants of what its log counts, the public's among them.
+fn keys_open(core: &Core, c: Ctx, o: &Tid, x: &Tid) -> bool {
+    if c != Ctx::Local {
+        return core.keys_open(o, x);
+    }
+    let Some(a) = core.secret_actor(x) else { return false };
+    let counts = |y: &Tid, _: &Tid| crate::sync::local_log::counts(core, y);
+    a == *o || crate::sync::local_log::counts(core, &a) && (role_counted(core, o, &a, &counts) >= Some(Role::Read) || core.public_reads(&a))
+}
+
+/// Unit `c`'s owner `o`'s role on `a` (`Core::keyed_role_now`) as `c` judges it (`keys_open`).
+fn role_on(core: &Core, c: Ctx, o: &Tid, a: &Tid) -> Option<Role> {
+    if c != Ctx::Local {
+        return core.keyed_role_now(o, a);
+    }
+    let counts = |y: &Tid, _: &Tid| crate::sync::local_log::counts(core, y);
+    if !crate::sync::local_log::counts(core, a) {
+        return None;
+    }
+    role_counted(core, o, a, &counts)
+}
+
+/// Whether a sync-only cut of `y` taken under `o` counts for unit `c` (`Core::cut_under`): in the
+/// local part, of what its log counts.
+fn cut_under(core: &Core, c: Ctx, o: &Tid, y: &Tid) -> bool {
+    core.cut_under(o, y) && (c != Ctx::Local || crate::sync::local_log::counts(core, y))
+}
+
+/// Whether the public syncs `y` by its grant (`Core::public_syncs`) as unit `c` reads it.
+fn public_syncs(core: &Core, c: Ctx, y: &Tid) -> bool {
+    core.public_syncs(y) && (c != Ctx::Local || crate::sync::local_log::counts(core, y))
 }
 
 /// Whether a held strong reaches `y` where First entry carries it (spec/sync-set.md §2 Own
@@ -1010,6 +1129,21 @@ pub(crate) fn reached_carried(core: &Core, y: &Tid) -> bool {
     cl.contexts(y).iter().any(|c| matches!(c, Ctx::Stub(_))) || cl.targeted(y) && (core.is_own(y) || cl.targeting(y).any(|v| edge_carries(core, *v, y) && founded(core, *v, &avoid)))
 }
 
+/// Whether an edge of a unit other than the local part gives a vertex of independent `a`, from a
+/// held vertex on a path avoiding `a` (`founded`): a unit the node syncs carries `a` whole or
+/// as a stub, so the node holds `a`'s role entries by that unit (`local_log::counts`).
+pub(crate) fn given_elsewhere(core: &Core, a: &Tid) -> bool {
+    given_elsewhere_than(core, a, Ctx::Local)
+}
+
+/// Whether an edge of a unit other than `c` gives a vertex of independent `a`, from a held vertex
+/// on a path avoiding `a` (`given_elsewhere`).
+fn given_elsewhere_than(core: &Core, a: &Tid, c: Ctx) -> bool {
+    let cl = &core.ix.closure;
+    let avoid = [*a];
+    cl.contexts(a).into_iter().any(|x| cl.inn.get(&(x, *a)).is_some_and(|vs| vs.iter().any(|v| v.0 != c && founded(core, *v, &avoid))))
+}
+
 /// Whether held vertex `v`'s unit carries `y`, a target of its thing's strongs (spec/sync-set.md
 /// §2 Stubs): `v` is in the read sync unit of a thing `u` other than `y`, or in the local part
 /// with `u` an own thing, whose keys open `y` (whole) or whose effective role on `y` is sync or
@@ -1019,7 +1153,8 @@ pub(crate) fn reached_carried(core: &Core, y: &Tid) -> bool {
 /// founds it: an entry by `u`'s unit goes when `u`'s does, whatever `u` reaches back.
 /// Invariant: `y`'s own unit never carries it (`u != y`).
 fn edge_carries(core: &Core, v: Vx, y: &Tid) -> bool {
-    owners(core, v.0, &[*y]).iter().any(|u| u != y && (core.keys_open(u, y) || core.keyed_role_now(u, y) >= Some(Role::Sync) || core.public_syncs(y) || core.cut_under(u, y)))
+    let c = v.0;
+    owners(core, c, &[*y]).iter().any(|u| u != y && (keys_open(core, c, u, y) || role_on(core, c, u, y) >= Some(Role::Sync) || public_syncs(core, c, y) || cut_under(core, c, u, y)))
 }
 
 /// Whether the node closure holds `t` within the local part or another thing's sync unit
@@ -1075,10 +1210,12 @@ pub(crate) fn settle(tx: &mut Tx<'_>) -> Result<()> {
         let r = settle_with(tx, &mut f, rv);
         tx.core.closure_follow = f;
         r?;
+        // the local part's log follows its edges, and its judgements read it
+        let logged = crate::sync::local_log::settle(tx)?;
         // the grants of what the node newly syncs count (`rotation::grants_count`: a thing a
         // strong reaches where it is carried), so a box its roles had kept out opens, and
         // the walk enters by the secret it gives: the two settle together
-        if !crate::flows::retake(tx)? {
+        if !crate::flows::retake(tx)? && !logged {
             return Ok(());
         }
     }
@@ -1328,8 +1465,10 @@ pub(crate) enum Written {
 pub(crate) fn check_written(tx: &mut Tx<'_>) -> Result<()> {
     if tx.core.node_root.is_none() || tx.core.skip_writer_rules {
         tx.core.wrote_on.clear();
+        tx.core.made.clear();
         return Ok(());
     }
+    tx.core.made.clear();
     let written = std::mem::take(&mut tx.core.wrote_on);
     let core = &*tx.core;
     let holder = |t: &Tid| core.ix.held.named_on(t).any(|y| core.ix.closure.holds(y) && core.keyed_role_now(t, y).is_some());

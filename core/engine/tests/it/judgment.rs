@@ -181,12 +181,24 @@ fn replay(bytes: &[u8], setup: usize, reads: &[Secret32], now: WallMs, order: &[
             held.extend(cb.header.aspects.iter().map(|a| a.tid));
         }
     }
+    // it syncs those things' sync IDs: it follows each held thing's locator once its sync ID is
+    // known (a link it redeems, spec/sync-set.md §2 First entry), as a node handed them would
+    let follow = |p: &mut osis_engine::local_peer::Peer| {
+        for t in &held {
+            if let Ok(Some(l)) = p.engine.locator(t, Vec::new()) {
+                p.engine.follow_public(&l);
+            }
+        }
+    };
     let ingest = |p: &mut osis_engine::local_peer::Peer, i: usize| match open(i) {
         Some((pt, _)) => {
+            follow(p);
             let _ = p.engine.ingest(pt, Vec::new());
+            follow(p);
         }
         None => {
             p.engine.put_blobs(vec![(ents[i].0, ents[i].2.clone())]).unwrap();
+            follow(p);
             p.reexamine().unwrap();
         }
     };
@@ -207,6 +219,7 @@ fn replay(bytes: &[u8], setup: usize, reads: &[Secret32], now: WallMs, order: &[
     .0
     .peers
     .remove(0);
+    follow(&mut p);
     for (at, t) in order.iter().enumerate() {
         match *t {
             Tok::In(i) => {

@@ -267,8 +267,8 @@ fn holder_actor_demoted_by_its_own_admin_spec_crypto_4() {
     let a = independent_thing(&mut lp, 0);
     let m = independent_thing(&mut lp, 1);
     lp.sync_all().unwrap();
-    lp.peers[0].engine.grant(&a, &m, &edge(Role::Admin)).unwrap();
-    lp.peers[0].engine.grant(&a, &p2, &edge(Role::Read)).unwrap();
+    lp.grant_through(0, a, m, &edge(Role::Admin));
+    lp.grant_through(0, a, p2, &edge(Role::Read));
     lp.sync_all().unwrap();
     let made = lp.peers[1]
         .engine

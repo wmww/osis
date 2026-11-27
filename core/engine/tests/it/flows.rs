@@ -181,6 +181,7 @@ pub(crate) fn forensic_peer(seed: u64, faults: &osis_store::Faults) -> osis_engi
     blob_disk.0.record_history();
     let c: std::sync::Arc<dyn osis_base::Clock> = clock.clone();
     let mut engine = osis_engine::Engine::create(Box::new(backend.clone()), Box::new(root.clone()), osis_engine::local_peer::blob_area(&blob_disk, seed).unwrap(), forensic_cfg(), c, Box::new(osis_crypto::SeededRng::from_u64(seed))).unwrap();
+    osis_engine::local_peer::harness_node(&mut engine).unwrap();
     let events = engine.subscribe();
     osis_engine::local_peer::Peer { engine, clock, backend, root, blob_disk, events, restarts: 0, discarded: Vec::new(), discards: 0, redelivered: 0, pulled_anew: Default::default(), given: Default::default(), offers: Default::default(), entries: Default::default() }
 }
@@ -197,6 +198,7 @@ pub(crate) fn reopen(lp: &mut LocalPeer, i: usize) -> osis_engine::Result<()> {
     let seed = p.restarts.wrapping_mul(0x9e37_79b9_7f4a_7c15).wrapping_add(i as u64);
     let c: std::sync::Arc<dyn osis_base::Clock> = p.clock.clone();
     let mut engine = osis_engine::Engine::open(Box::new(p.backend.clone()), Box::new(p.root.clone()), osis_engine::local_peer::blob_area(&p.blob_disk, seed)?, forensic_cfg(), c, Box::new(osis_crypto::SeededRng::from_u64(seed)))?;
+    engine.set_signal_grants(true);
     p.events = engine.subscribe();
     p.engine = engine;
     Ok(())
@@ -295,6 +297,8 @@ fn lost_built(from_e: bool) -> (LocalPeer, (Tid, Tid, Tid, Tid)) {
     let f = thing_of(&mut lp, 0, pa);
     lp.peers[0].engine.grant(&f, &d, &edge_of(Role::Read)).unwrap();
     lp.peers[0].engine.grant(&d, &f, &edge_of(Role::Read)).unwrap();
+    // D refers to F, which bob reads through it
+    lp.refer(0, d, f);
     // bob holds what alice shares
     for t in [d, e, f] {
         lp.hold_at(1, t);
@@ -864,6 +868,7 @@ fn cascade_two_hops_spec_perm_3() {
     let u = thing_of(&mut lp, 2, pa);
     lp.peers[2].engine.grant(&t, &p, &edge_of(Role::Write)).unwrap();
     lp.peers[2].engine.grant(&u, &t, &edge_of(Role::Write)).unwrap();
+    lp.refer(2, t, u);
     spread(&mut lp);
     let (t0, u0) = (newest_read(&lp, 1, t).unwrap(), newest_read(&lp, 1, u).unwrap());
     assert_eq!(newest_read(&lp, 0, u), Some(u0), "d1 reads U through P and T");
@@ -1213,6 +1218,7 @@ fn two_links(late_reads_k1: bool) -> (LocalPeer, Tid, Tid, Tid) {
     let k2 = thing_of(&mut lp, 0, pa);
     for k in [k1, k2] {
         lp.peers[0].engine.grant(&c, &k, &edge_of(Role::Write)).unwrap();
+        lp.refer(0, k, c);
     }
     lp.peers[0].engine.grant(&k1, &po, &edge_of(Role::Write)).unwrap();
     lp.peers[0].engine.grant(&k2, &pl, &edge_of(Role::Write)).unwrap();
@@ -1845,6 +1851,7 @@ fn a_writer_left_unboxed_writes_through_different_actors_in_one_commit_spec_cryp
     lp.peers[0].engine.grant(&d, &ps[1], &edge_of(Role::Write)).unwrap();
     lp.peers[0].engine.grant(&h, &ps[2], &edge_of(Role::Write)).unwrap();
     lp.peers[0].engine.grant(&d, &h, &edge_of(Role::Write)).unwrap();
+    lp.refer(0, h, d);
     spread(&mut lp);
     lp.peers[1].engine.rotate_boxing_only(&[d], &[Role::Read, Role::Write], &[ps[1]]).unwrap().unwrap();
     spread_sealed(&mut lp);
@@ -2050,6 +2057,7 @@ fn rekey_reseals_holder_actor_spec_perm_3() {
     spread(&mut lp);
     let (d, e0, _) = locked_out(&mut lp, &ps[..3], 0);
     lp.peers[0].engine.grant(&d, &t, &edge_of(Role::Read)).unwrap();
+    lp.refer(3, t, d);
     spread(&mut lp);
     assert_eq!(newest_read(&lp, 3, d), Some(e0), "the holder's mint admin reads through it");
     lp.peers[1].engine.rotate_boxing_only(&[d], &[Role::Read, Role::Write], &[ps[1]]).unwrap().unwrap();
@@ -2161,6 +2169,7 @@ fn rekey_reaches_thing_below_spec_perm_3() {
     let (mut lp, ps, d, _, _) = lockout(3, 3, 0);
     let t = thing_of(&mut lp, 0, ps[0]);
     lp.peers[0].engine.grant(&t, &d, &edge_of(Role::Write)).unwrap();
+    lp.refer(0, d, t);
     spread(&mut lp);
     let et = newest_read(&lp, 0, t).unwrap();
     lp.peers[1].engine.rotate_boxing_only(&[d], &[Role::Read, Role::Write], &[ps[1]]).unwrap().unwrap();

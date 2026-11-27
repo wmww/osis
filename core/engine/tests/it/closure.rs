@@ -570,9 +570,9 @@ fn a_take_up_costs_what_the_opener_opens_spec_sync_set_2() {
 // node holds outside its node closure at quiet does not depend on arrival order. Account Q (peer
 // 1, never met by peer 0) makes T and grants peer 0's account read; peer 0 holds T, takes Q's
 // commits, then releases T. Q's write on its own profile arrives before the release, or after
-// it; Q ends the grant and its last fire leaves peer 0's inbox (a held fire keeps T's edge
-// piece): either way, at the pass's end nothing held needs Q's chain or that write, and peer 0
-// holds the same.
+// it; Q ends the grant and its fire leaves peer 0's inbox (the held signal keeps T's stub until
+// then, released after): either way, at the pass's end nothing held needs Q's chain or that
+// write, and peer 0 holds the same.
 #[test]
 fn what_nothing_needs_goes_whatever_the_arrival_order_spec_commits_5() {
     let mut lp = LocalPeer::new_apart(2, 0, crate::common::T0).unwrap();
@@ -614,6 +614,8 @@ fn what_nothing_needs_goes_whatever_the_arrival_order_spec_commits_5() {
         lp.advance(osis_base::format::INBOX_LIFETIME_MS + 3_600_000);
         lp.peers[0].tick().unwrap();
         let e0 = &mut lp.peers[0].engine;
+        // T's stub, which the grant's signal held, went with the fire: released now
+        e0.released(&[t].into()).unwrap();
         e0.settle_needs().unwrap();
         // of Q's commits (peer 0's own hold and unhold differ by their stamps)
         let qs: BTreeSet<_> = rest.iter().copied().chain([x]).collect();
@@ -1687,4 +1689,38 @@ fn every_order_of_a_commit_its_record_and_its_minting_ends_alike_spec_commits_4(
     for e in &ends[1..] {
         assert_eq!((&e.2, &e.3), (&first.2, &first.3), "{} ends as {}", e.0, first.0);
     }
+}
+
+// spec/sync-set.md §2 (The local part's log; First entry): a signal then a reference. Peer 0
+// makes T and grants peer 1's node thing read, signalling it; peer 1 follows the signal (T's
+// stub), then its node root strongs T: the local part carries T, logged there while the signal
+// gave T's role entries. The signal then goes (its fire past the inbox's lifetime): T stays held,
+// the log carrying it, and stays so across a restart (held-model
+// `entry_a_signal_then_a_reference_outlives_the_signal`). Fails with the log kept nowhere: T
+// leaves with the signal.
+#[test]
+fn a_signal_then_a_reference_outlives_the_signal_spec_sync_set_2() {
+    let mut lp = LocalPeer::fresh(2, crate::common::T0);
+    lp.sync_all().unwrap();
+    let me = lp.peers[0].engine.tid();
+    let mut m = Mutation::new();
+    let t = lp.peers[0].engine.new_thing(&mut m, me);
+    m.set(t, &crate::common::REG, &Value::Str("new".into())).unwrap();
+    lp.peers[0].commit(m).unwrap();
+    lp.hold_at(0, t);
+    let who = lp.peers[1].engine.tid();
+    lp.peers[0].engine.grant(&t, &who, &crate::common::edge(osis_base::Role::Read)).unwrap();
+    lp.sync_all().unwrap();
+    assert!(!lp.peers[1].engine.closure_holds(&t), "the signal alone: a stub");
+    lp.hold_at(1, t);
+    lp.sync_all().unwrap();
+    assert!(lp.peers[1].engine.closure_holds(&t), "the signal and the reference: T");
+    lp.advance(osis_base::format::INBOX_LIFETIME_MS + 3_600_000);
+    lp.peers[1].tick().unwrap();
+    lp.sync_all().unwrap();
+    assert!(lp.peers[1].engine.closure_holds(&t), "the signal gone: T held, logged");
+    lp.peers[1].restart(7).unwrap();
+    lp.peers[1].engine.check_closure();
+    assert!(lp.peers[1].engine.closure_holds(&t), "and after a restart");
+    assert_eq!(lp.peers[1].engine.get(&t, &crate::common::REG.name()).unwrap(), Some(Value::Str("new".into())));
 }

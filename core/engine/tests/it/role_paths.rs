@@ -20,8 +20,9 @@ pub(crate) struct World {
     pub lp: LocalPeer,
 }
 
+/// Peer `by` grants `to` `e` on `t` (`LocalPeer::grant_through`: a holder thing refers to `t`).
 fn grant(lp: &mut LocalPeer, by: usize, t: Tid, to: Tid, e: ct::Edge) {
-    lp.peers[by].engine.grant(&t, &to, &e).unwrap();
+    lp.grant_through(by, t, to, &e);
     lp.advance(1000);
     spread(lp);
 }

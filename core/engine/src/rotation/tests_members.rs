@@ -82,9 +82,9 @@ fn removal_twelve_deep_rotates_every_level_spec_crypto_4() {
     let d = lp.peers[1].engine.tid();
     let gs: Vec<Tid> = (0..12).map(|_| independent_thing(&mut lp, 0)).collect();
     for w in gs.windows(2) {
-        lp.peers[0].engine.grant(&w[0], &w[1], &edge(Role::Write)).unwrap();
+        lp.grant_through(0, w[0], w[1], &edge(Role::Write));
     }
-    lp.peers[0].engine.grant(&gs[11], &d, &edge(Role::Write)).unwrap();
+    lp.grant_through(0, gs[11], d, &edge(Role::Write));
     lp.sync(0, 1).unwrap();
     assert!(newest_read(&lp, 1, gs[0]).is_some(), "d reads G0 through 11 actors");
     let before: Vec<_> = gs.iter().map(|g| newest_read(&lp, 0, *g)).collect();
@@ -147,10 +147,10 @@ fn cycle(lp: &mut LocalPeer, len: usize) -> Vec<Tid> {
     let cyc: Vec<Tid> = (0..len).map(|_| independent_thing(lp, 0)).collect();
     for i in 0..len {
         lp.peers[0].clock.advance(1);
-        lp.peers[0].engine.grant(&cyc[i], &cyc[(i + 1) % len], &edge(Role::Read)).unwrap();
+        lp.grant_through(0, cyc[i], cyc[(i + 1) % len], &edge(Role::Read));
     }
     for x in [d, n] {
-        lp.peers[0].engine.grant(&cyc[len - 1], &x, &edge(Role::Read)).unwrap();
+        lp.grant_through(0, cyc[len - 1], x, &edge(Role::Read));
     }
     cyc
 }
@@ -259,9 +259,9 @@ fn departure_below_cycle_spec_crypto_4() {
     let [x, y, z] = [0; 3].map(|_| independent_thing(&mut lp, 0));
     for (t, m) in [(y, x), (x, y), (x, z)] {
         lp.peers[0].clock.advance(1);
-        lp.peers[0].engine.grant(&t, &m, &edge(Role::Read)).unwrap();
+        lp.grant_through(0, t, m, &edge(Role::Read));
     }
-    lp.peers[0].engine.grant(&z, &d, &edge(Role::Read)).unwrap();
+    lp.grant_through(0, z, d, &edge(Role::Read));
     lp.sync(0, 1).unwrap();
     let all = [x, y, z];
     let start = held_by(&lp, 1, &all);
@@ -288,11 +288,11 @@ fn cycle_with_disjoint_admins_converges_spec_permissions_3() {
     let x = independent_thing(&mut lp, 0);
     let y = independent_thing(&mut lp, 2);
     lp.sync_all().unwrap();
-    lp.peers[0].engine.grant(&x, &y, &edge(Role::Read)).unwrap();
+    lp.grant_through(0, x, y, &edge(Role::Read));
     lp.sync_all().unwrap();
     lp.peers[2].clock.advance(1_000);
-    lp.peers[2].engine.grant(&y, &x, &edge(Role::Read)).unwrap();
-    lp.peers[2].engine.grant(&y, &d, &edge(Role::Read)).unwrap();
+    lp.grant_through(2, y, x, &edge(Role::Read));
+    lp.grant_through(2, y, d, &edge(Role::Read));
     lp.sync_all().unwrap();
     for i in [0, 2] {
         assert!(!boxes(&mut lp, i, y, x), "peer {i}: X's grant on Y keyless");
@@ -359,11 +359,11 @@ fn two_admin_holder() -> (LocalPeer, Tid, Tid) {
         let (d, m2, a2) = (lp.peers[1].engine.tid(), lp.peers[2].engine.tid(), lp.peers[4].engine.tid());
         let m = independent_thing(&mut lp, 0);
         let a = independent_thing(&mut lp, 3);
-        lp.peers[0].engine.grant(&m, &m2, &edge(Role::Admin)).unwrap();
-        lp.peers[0].engine.grant(&m, &d, &edge(Role::Read)).unwrap();
-        lp.peers[3].engine.grant(&a, &a2, &edge(Role::Admin)).unwrap();
+        lp.grant_through(0, m, m2, &edge(Role::Admin));
+        lp.grant_through(0, m, d, &edge(Role::Read));
+        lp.grant_through(3, a, a2, &edge(Role::Admin));
         lp.sync_all().unwrap();
-        lp.peers[3].engine.grant(&a, &m, &edge(Role::Read)).unwrap();
+        lp.grant_through(3, a, m, &edge(Role::Read));
         lp.sync_all().unwrap();
         (lp, (m, a))
     });
@@ -407,7 +407,7 @@ fn member_world(d_role: Role) -> MemberWorld {
         let a = independent_thing(&mut lp, 0);
         lp.peers[0].engine.grant(&a, &tids[4], &edge(Role::Admin)).unwrap();
         lp.sync_all().unwrap();
-        lp.peers[0].engine.grant(&a, &m, &edge(Role::Read)).unwrap();
+        lp.grant_through(0, a, m, &edge(Role::Read));
         lp.sync_all().unwrap();
         let start = held_by(&lp, 2, &[m, a]);
         let k0 = newest_read(&lp, 1, m).unwrap();
@@ -1108,10 +1108,10 @@ fn rotator_lacking_read_rotates_read_too_spec_permissions_3() {
     let a = independent_thing(&mut lp, 0);
     let m = independent_thing(&mut lp, 2);
     lp.sync_all().unwrap();
-    lp.peers[2].engine.grant(&m, &p, &edge(Role::Write)).unwrap();
+    lp.grant_through(2, m, p, &edge(Role::Write));
     lp.sync_all().unwrap();
-    lp.peers[0].engine.grant(&a, &m, &edge(Role::Write)).unwrap();
-    lp.peers[0].engine.grant(&a, &e, &edge(Role::Write)).unwrap();
+    lp.grant_through(0, a, m, &edge(Role::Write));
+    lp.grant_through(0, a, e, &edge(Role::Write));
     lp.sync_all().unwrap();
     assert!(newest_read(&lp, 1, a).is_some(), "P reads A through M");
     rotate_skipping(&mut lp, 0, a, &BTreeSet::from([Role::Read]), &[m]);
@@ -1149,6 +1149,7 @@ fn lacking_write() -> (LocalPeer, Tid, Tid) {
         lp.peers[2].engine.grant(&m, &p, &edge(Role::Admin)).unwrap();
         lp.sync_all().unwrap();
         lp.peers[0].engine.grant(&a, &m, &edge(Role::Admin)).unwrap();
+        lp.refer(2, m, a);
         lp.peers[0].engine.grant(&a, &f, &edge(Role::Admin)).unwrap();
         lp.sync_all().unwrap();
         rotate_skipping(&mut lp, 0, a, &BTreeSet::from([Role::Write]), &[m]);
@@ -1213,10 +1214,10 @@ fn removal_through_a_holder_it_cannot_open_rotates_spec_crypto_4() {
     let a = independent_thing(&mut lp, 0);
     let m = independent_thing(&mut lp, 2);
     lp.sync_all().unwrap();
-    lp.peers[2].engine.grant(&m, &p, &edge(Role::Admin)).unwrap();
+    lp.grant_through(2, m, p, &edge(Role::Admin));
     lp.sync_all().unwrap();
-    lp.peers[0].engine.grant(&a, &m, &edge(Role::Admin)).unwrap();
-    lp.peers[0].engine.grant(&a, &f, &edge(Role::Admin)).unwrap();
+    lp.grant_through(0, a, m, &edge(Role::Admin));
+    lp.grant_through(0, a, f, &edge(Role::Admin));
     lp.sync_all().unwrap();
     rotate_skipping(&mut lp, 2, m, &BTreeSet::from(Role::ALL), &[p]);
     lp.sync_all().unwrap();
@@ -1254,13 +1255,13 @@ fn own_removal_from_holder_actor_keeps_sealing_it_spec_crypto_4() {
     let [_, b, c, e] = std::array::from_fn(|i| lp.peers[i].engine.tid());
     let t = independent_thing(&mut lp, 0);
     for h in [b, c] {
-        lp.peers[0].engine.grant(&t, &h, &edge(Role::Read)).unwrap();
+        lp.grant_through(0, t, h, &edge(Role::Read));
     }
     lp.sync_all().unwrap();
     let x = independent_thing(&mut lp, 2);
     lp.sync_all().unwrap();
-    lp.peers[2].engine.grant(&x, &t, &edge(Role::Read)).unwrap();
-    lp.peers[2].engine.grant(&x, &e, &edge(Role::Read)).unwrap();
+    lp.grant_through(2, x, t, &edge(Role::Read));
+    lp.grant_through(2, x, e, &edge(Role::Read));
     lp.sync_all().unwrap();
     assert_eq!(newest_read(&lp, 1, x), newest_read(&lp, 2, x), "B reads X through T");
     let t1 = newest_read(&lp, 2, t).unwrap();
@@ -1296,10 +1297,10 @@ fn departure_from_an_unread_holder_is_judged_by_order_spec_crypto_4() {
     let mut lp = synced(3);
     let e = lp.peers[2].engine.tid();
     let m = independent_thing(&mut lp, 1);
-    lp.peers[1].engine.grant(&m, &e, &edge(Role::Read)).unwrap();
+    lp.grant_through(1, m, e, &edge(Role::Read));
     let a = independent_thing(&mut lp, 0);
     lp.sync_all().unwrap();
-    lp.peers[0].engine.grant(&a, &m, &edge(Role::Read)).unwrap();
+    lp.grant_through(0, a, m, &edge(Role::Read));
     lp.sync_all().unwrap();
     let k1 = newest_read(&lp, 1, m).unwrap();
     assert!(lp.peers[0].engine.epochs(&m).is_none_or(|x| x.read.secret(&k1).is_none()), "X holds none of M's secrets");
@@ -1389,7 +1390,7 @@ fn lowered_maker_rotates_once_spec_crypto_4() {
     let m = independent_thing(&mut lp, 0);
     for (x, h) in [(m, t), (t, p)] {
         lp.peers[0].clock.advance(1);
-        lp.peers[0].engine.grant(&x, &h, &edge(Role::Write)).unwrap();
+        lp.grant_through(0, x, h, &edge(Role::Write));
     }
     lp.sync_all().unwrap();
     assert!(boxes(&mut lp, 0, m, t), "M's grant to T is keyed");
@@ -1407,7 +1408,7 @@ fn lowered_maker_rotates_once_spec_crypto_4() {
     let first = rotations(&mut lp);
     assert!(first[0] > 0 && first[1..].iter().all(|n| *n == 0), "one round of rotations, then none: {first:?}");
     assert_eq!(newest_read(&lp, 0, m), k, "M's read epoch P made stands: P still reads M");
-    lp.peers[0].engine.grant(&t, &p, &edge(Role::Write)).unwrap();
+    lp.grant_through(0, t, p, &edge(Role::Write));
     lp.sync_all().unwrap();
     assert_eq!(rotations(&mut lp), vec![0, 0, 0], "re-granted: nothing more rotates");
 }
@@ -1712,10 +1713,10 @@ fn destroyed_world() -> (LocalPeer, Tid, Tid, Tid, Tid) {
     lp.peers[0].know(&[n1]).unwrap();
     lp.peers[2].know(&[n3]).unwrap();
     lp.sync_all().unwrap();
-    lp.peers[0].engine.grant(&x, &t, &edge(Role::Read)).unwrap();
-    lp.peers[0].engine.grant(&t, &g, &edge(Role::Read)).unwrap();
-    lp.peers[0].engine.grant(&t, &n1, &edge(Role::Read)).unwrap();
-    lp.peers[2].engine.grant(&g, &n3, &edge(Role::Read)).unwrap();
+    lp.grant_through(0, x, t, &edge(Role::Read));
+    lp.grant_through(0, t, g, &edge(Role::Read));
+    lp.grant_through(0, t, n1, &edge(Role::Read));
+    lp.grant_through(2, g, n3, &edge(Role::Read));
     lp.sync_all().unwrap();
     (lp, t, x, g, d)
 }
@@ -1785,8 +1786,8 @@ fn a_destruction_that_falls_gives_access_through_it_back_spec_crypto_4() {
     let (n1, n2) = (lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
     lp.peers[0].know(&[n2]).unwrap();
     lp.sync_all().unwrap();
-    lp.peers[0].engine.grant(&t, &n1, &edge(Role::Admin)).unwrap();
-    lp.peers[0].engine.grant(&x, &n2, &edge(Role::Admin)).unwrap();
+    lp.grant_through(0, t, n1, &edge(Role::Admin));
+    lp.grant_through(0, x, n2, &edge(Role::Admin));
     lp.sync_all().unwrap();
     let start = held_by(&lp, 1, &[t, x]);
     lp.advance(1_000);
@@ -2533,15 +2534,15 @@ fn a_maker_departure_alone_is_recorded_with_its_rotation_spec_crypto_4() {
     let mut lp = synced(5);
     let [_, p, _, w, _] = std::array::from_fn(|i| lp.peers[i].engine.tid());
     let n = independent_thing(&mut lp, 2);
-    lp.peers[2].engine.grant(&n, &p, &edge(Role::Write)).unwrap();
+    lp.grant_through(2, n, p, &edge(Role::Write));
     lp.sync_all().unwrap();
     let m = independent_thing(&mut lp, 0);
-    lp.peers[0].engine.grant(&m, &n, &edge(Role::Write)).unwrap();
-    lp.peers[0].engine.grant(&m, &w, &edge(Role::Read)).unwrap();
+    lp.grant_through(0, m, n, &edge(Role::Write));
+    lp.grant_through(0, m, w, &edge(Role::Read));
     lp.sync_all().unwrap();
     let g = independent_thing(&mut lp, 4);
-    lp.peers[4].engine.grant(&g, &w, &edge(Role::Admin)).unwrap();
-    lp.peers[4].engine.grant(&g, &m, &edge(Role::Read)).unwrap();
+    lp.grant_through(4, g, w, &edge(Role::Admin));
+    lp.grant_through(4, g, m, &edge(Role::Read));
     lp.sync_all().unwrap();
     assert!(boxes(&mut lp, 0, m, n), "M's grant to N is keyed");
     lp.peers[1].clock.advance(1_000);

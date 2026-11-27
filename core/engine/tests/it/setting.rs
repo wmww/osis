@@ -38,11 +38,7 @@ fn setup_seeded(seed: u64) -> (LocalPeer, Tid) {
     // the fresh node's account, granted read on D: what it is handed of D applies (content of a
     // thing outside its node closure waits, spec/commits.md §4 Outside the node closure)
     let mut f = fresh_account();
-    lp.peers[0].know(&[f.engine.tid()]).unwrap();
-    for id in f.engine.commit_ids() {
-        let pk = f.engine.package(&id).unwrap().unwrap();
-        lp.deliver(0, &pk).unwrap();
-    }
+    lp.meet(0, &mut f).unwrap();
     set_edge(&mut lp.peers[0].engine, d, f.engine.tid(), Some(edge(Role::Read)), None);
     lp.sync_all().unwrap();
     lp.advance(1_000);

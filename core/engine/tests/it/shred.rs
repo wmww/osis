@@ -33,6 +33,7 @@ fn peer_bare(seed: u64) -> Peer {
     let blob_disk = (MemoryBackend::new(), MemoryRoot::new());
     blob_disk.0.record_history();
     let mut engine = Engine::create(Box::new(backend.clone()), Box::new(root.clone()), osis_engine::local_peer::blob_area(&blob_disk, seed).unwrap(), cfg, c, Box::new(SeededRng::from_u64(seed))).unwrap();
+    osis_engine::local_peer::harness_node(&mut engine).unwrap();
     engine.take_wakes();
     let events = engine.subscribe();
     Peer { engine, clock, backend, root, blob_disk, events, restarts: 0, discarded: Vec::new(), discards: 0, redelivered: 0, pulled_anew: Default::default(), given: Default::default(), offers: Default::default(), entries: Default::default() }
@@ -44,6 +45,7 @@ fn reopened(p: Peer, seed: u64) -> Peer {
     let cfg = Config { store: StoreConfig { arity: 4, page_max: 512, ..StoreConfig::default() } };
     let c: Arc<dyn Clock> = clock.clone();
     let mut engine = Engine::open(Box::new(backend.clone()), Box::new(root.clone()), osis_engine::local_peer::blob_area(&blob_disk, seed).unwrap(), cfg, c, Box::new(SeededRng::from_u64(seed))).unwrap();
+    engine.set_signal_grants(true);
     let events = engine.subscribe();
     let mut p = Peer { engine, clock, backend, root, blob_disk, events, restarts: 0, discarded, discards: 0, redelivered: 0, pulled_anew: Default::default(), given: Default::default(), offers: Default::default(), entries: Default::default() };
     p.fetch_discarded().unwrap();

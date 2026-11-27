@@ -195,7 +195,8 @@ fn link_key_opens_deep_holder_chain_spec_crypto_4() {
     chain.sort_by(|a, b| b.cmp(a));
     let read = edge(Role::Read);
     for w in chain.windows(2) {
-        lp.peers[0].engine.grant(&w[1], &w[0], &read).unwrap();
+        // each holder refers to what it holds: the reader finds the chain by references
+        lp.grant_through(0, w[1], w[0], &read);
     }
     let sharer = new_thing(&mut lp, 0);
     let spec = osis_engine::flows::LinkSpec { target: chain[0], role: Role::Read, until: None, peers: Vec::new(), single_use: false };
@@ -207,6 +208,8 @@ fn link_key_opens_deep_holder_chain_spec_crypto_4() {
     lp.peers[1].engine.follow_link(&link).unwrap();
     lp.peers[1].engine.hold_link_key(link.seed.clone(), link.k).unwrap();
     assert!(held(&lp, &link.k), "K, boxed to L");
+    // the chain's references, content it now reads
+    sync(&mut lp, 0, 1);
     let missing: Vec<usize> = (0..chain.len()).filter(|i| !held(&lp, &chain[*i])).collect();
     assert!(missing.is_empty(), "levels left unopened: {missing:?}");
 }

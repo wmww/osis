@@ -427,7 +427,18 @@ impl Engine {
     /// grant without it is a cut, so `holder` reads only what is written under its epoch and
     /// those after it. An admin's grant to a holder holding no role on the target.
     pub fn grant_with(&mut self, target: &Tid, holder: &Tid, edge: &Edge, history: History) -> Result<Done> {
-        self.grant_signed_then(None, *target, *holder, edge, false, history, |_| Ok(()))
+        let done = self.grant_signed_then(None, *target, *holder, edge, false, history, |_| Ok(()))?;
+        if self.core.signal_grants {
+            self.signal_grant(target, holder, &[])?;
+        }
+        Ok(done)
+    }
+
+    /// Test harnesses: whether each grant by the flow (`grant`, `grant_with`) also signals its
+    /// holder, as the `osis` library's grant does unless quiet (`Core::signal_grants`).
+    #[doc(hidden)]
+    pub fn set_signal_grants(&mut self, on: bool) {
+        self.core.signal_grants = on;
     }
 
     /// Writes `key`'s grant on `target` (spec/permissions.md §1 Key grant, §2 Key grants): `edge`

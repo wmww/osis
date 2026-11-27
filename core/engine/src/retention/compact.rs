@@ -990,15 +990,17 @@ mod tests {
                 p.commit(m).unwrap();
             }
             p.backend.faults().at(n, osis_store::Fault::Fail);
+            // T's compactions (the peer's node thing, holding its inbox, may be due too)
+            let of_t = |cs: Vec<(Tid, Ak, osis_base::CommitId)>| cs.into_iter().filter(|c| c.0 == t).count();
             let r = p.engine.compactions();
             if p.backend.faults().writes() <= n {
-                assert_eq!(r.unwrap().len(), 1, "compacted");
+                assert_eq!(of_t(r.unwrap()), 1, "compacted");
                 assert!(n >= 1, "a snapshot is a write: {n}");
                 break;
             }
             p.backend.faults().revive();
-            let first = r.map_or(0, |s| s.len());
-            let next = p.engine.compactions().unwrap().len();
+            let first = r.map_or(0, of_t);
+            let next = of_t(p.engine.compactions().unwrap());
             assert_eq!(first + next, 1, "write {n}: compacted once, at the failed step or the next");
         }
     }
@@ -1033,7 +1035,8 @@ mod tests {
         p.engine.core.snapshot_fault = Some((t, x.clone()));
         let rx = p.engine.subscribe();
         osis_base::costs::take();
-        let done = p.engine.compactions().unwrap().into_iter().map(|c| c.1).collect::<Vec<_>>();
+        // T's (the peer's node thing, holding its inbox, may be due too)
+        let done = p.engine.compactions().unwrap().into_iter().filter(|c| c.0 == t).map(|c| c.1).collect::<Vec<_>>();
         let failed = osis_base::costs::take().iter().find(|c| c.0 == "compact: snapshots failed").map_or(0, |c| c.2);
         assert_eq!(done, std::slice::from_ref(&y), "y compacted, the step not failed");
         assert_eq!(failed, 1);

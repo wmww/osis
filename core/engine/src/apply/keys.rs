@@ -1150,7 +1150,8 @@ mod tests {
     fn grantee_build(n: usize) -> (LocalPeer, Tid) {
         let mut lp = LocalPeer::fresh(n, WallMs(1_700_000_000_000));
         let me = lp.peers[0].engine.tid();
-        // the granter holds the grantee's keys
+        // the granter holds the grantee's keys, then its inbox's (named by them): to signal it
+        lp.sync(1, 0).unwrap();
         lp.sync(1, 0).unwrap();
         let mut m = Mutation::new();
         let t = lp.peers[0].engine.new_thing(&mut m, me);

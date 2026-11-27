@@ -771,6 +771,13 @@ fn grant_fresh(lp: &mut LocalPeer, by: usize, g: Tid) -> Vec<CommitId> {
     for pk in &pks {
         lp.deliver(by, pk).unwrap();
     }
+    // its inbox kept too, now its `keys.0` naming it is held: the grant's signal is sealed to it
+    for p in &mut lp.peers {
+        p.know(&[reader]).unwrap();
+    }
+    for pk in &pks {
+        lp.deliver(by, pk).unwrap();
+    }
     lp.peers[by].engine.grant(&g, &reader, &edge(Role::Read)).unwrap().commits
 }
 
@@ -4405,12 +4412,18 @@ fn purged_covered_write_stays_gone_when_its_cover_falls_spec_perm_5_2() {
     let now = lp.peers.iter().map(|p| p.engine.now()).max().unwrap();
     // the history from peer 1, which holds the write whole (peer 0 purged it), then the
     // snapshot, then peer 0's purge and demotion
-    let base = lp.packages_to_peer(1, &mut fresh_holding(now, g)).unwrap();
-    let pks = lp.packages_to_peer(0, &mut fresh_holding(now, g)).unwrap();
+    // a fresh node told of its grant by the grant's signal
+    let fires = owed_fires(&mut lp.peers[0].engine);
+    let told = || {
+        let mut p = fresh_holding(now, g);
+        take_fires(&mut p, &fires);
+        p
+    };
+    let base = lp.packages_to_peer(1, &mut told()).unwrap();
+    let pks = lp.packages_to_peer(0, &mut told()).unwrap();
     let by = |id: CommitId| pks.iter().find(|p| p.id == id).unwrap().clone();
     let snap_pk = lp.peers[2].engine.package(&snap).unwrap().unwrap();
-    let mut p = fresh_holding(now, g);
-    take_fires(&mut p, &owed_fires(&mut lp.peers[0].engine));
+    let mut p = told();
     for pk in base.iter().filter(|pk| ![snap, purge, demote].contains(&pk.id)) {
         p.receive(&pk.bytes, pk.blobs.clone()).unwrap();
     }
@@ -4461,8 +4474,10 @@ fn expired_late_part_reads_alike_spec_crdt_4_7() {
     let packs: Vec<Package> = lp.peers[0].engine.commit_ids().iter().map(|id| lp.peers[0].engine.package(id).unwrap().unwrap()).collect();
     let now = lp.peers.iter().map(|p| p.engine.now()).max().unwrap();
     let mut got = Vec::new();
+    let fires = owed_fires(&mut lp.peers[0].engine);
     for split in [false, true] {
         let mut p = fresh_holding(now, g);
+        take_fires(&mut p, &fires);
         for pk in packs.iter().filter(|pk| pk.id != c) {
             p.receive(&pk.bytes, pk.blobs.clone()).unwrap();
         }

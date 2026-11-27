@@ -245,12 +245,14 @@ fn a_grant_standing_again_by_an_invalid_removal_gives_its_role_again_spec_sync_s
     assert_eq!(lp.peers[1].engine.role_on(&x), Some(Role::Read), "Bob reads X again");
 }
 
-// spec/sync-set.md §2 Own things (a grant is its target's own data: a node judges its role on a
-// thing by what it syncs): Alice grants Bob read on X. No offer reaches him and he references X
-// nowhere, so the grant's commits handed to his node are held as another thing's certificate
-// would be: they name him on X's roster and give no role and no secret of X. A strong to X makes
-// X his to sync, and the same commits give him read and X's secrets. Fails with a role read
-// from every held edge write.
+// spec/sync-set.md §2 Own things, First entry, The local part's log (a grant is its target's own
+// data: a node judges its role on a thing by what it syncs, and enters it only by a route that
+// gives it the thing's role entries): Alice grants Bob read on X, its signal held back. The
+// grant's commits handed to his node are held as another thing's certificate would be: they name
+// him on X's roster and give no role and no secret of X, and a strong to X from his node root
+// changes nothing (being handed role commits is no entry). The grant's signal then reaches him:
+// he follows X, and the same commits give him read, X's secrets and X. Fails with a role read
+// from every held edge write (or the local part judged from them).
 #[test]
 fn a_held_grant_counts_only_where_its_thing_is_synced_spec_sync_set_2() {
     let (mut lp, ps) = people(2);
@@ -277,7 +279,13 @@ fn a_held_grant_counts_only_where_its_thing_is_synced_spec_sync_set_2() {
     assert!(!held(&lp), "and no secret of it");
     lp.hold_at(1, x);
     hand(&mut lp);
-    assert_eq!(lp.peers[1].engine.role_on(&x), Some(Role::Read), "synced, X's grants count");
+    assert_eq!(lp.peers[1].engine.role_on(&x), None, "a strong alone: still no role");
+    assert!(!held(&lp), "nor a secret");
+    assert_eq!(lp.peers[1].engine.get(&x, &ak("t:reg.0")).unwrap(), None, "nor X");
+    lp.hold_fires(false);
+    lp.pass_fires(1).unwrap();
+    hand(&mut lp);
+    assert_eq!(lp.peers[1].engine.role_on(&x), Some(Role::Read), "signalled, X's grants count");
     assert!(held(&lp), "and its boxes open");
     assert_eq!(lp.peers[1].engine.get(&x, &ak("t:reg.0")).unwrap(), Some(s("x")), "Bob reads X");
 }

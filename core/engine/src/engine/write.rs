@@ -1233,6 +1233,9 @@ pub(crate) fn commit_or_build(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option
         let unheld = m.aspects.keys().map(|(t, _)| *t).filter(|t| !m.creates.contains_key(t) && !cl.holds(t) && !(cl.holds_any(t) && role_only(t))).map(Written::Held);
         let written: Vec<Written> = made.chain(unheld).collect();
         tx.core.wrote_on.extend(written);
+        // what they make: things minted, and things given a keyset (secrets of their own) here
+        let keyed = m.aspects.keys().filter(|(_, ak)| ak.as_str() == osis_schema::core_types::KEYS.ak()).map(|(t, _)| *t);
+        tx.core.made.extend(m.creates.keys().copied().chain(keyed));
     }
     // every minting's commit expires with its record (spec/commits.md §5 Destruction)
     for (&t, rec) in &m.creates {

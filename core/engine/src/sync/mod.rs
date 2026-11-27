@@ -30,6 +30,7 @@ pub(crate) mod set;
 pub(crate) mod setting;
 pub(crate) mod stranded;
 pub(crate) mod units;
+pub(crate) mod local_log;
 pub use stranded::Stranding;
 pub use crate::flows::inbox::{FireId, SealedFireOut};
 #[cfg(test)]
