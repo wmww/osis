@@ -401,8 +401,8 @@ fn lacking_is_kept_per_record_across_connections_spec_sync_status_1() {
 }
 
 // spec/sync-status.md §2 (held elsewhere: a report from a source): a reader's report and the
-// close that follows it in one step (a peer that judges this node departed by the self-removal it
-// just applied closes S at once) still count: the source's position as it left is judged at the
+// close that follows it in one step (a peer applying this node's self-removal closes S toward it at
+// once: its credential no longer admissible) still count: the source's position as it left is judged at the
 // next settle, then nothing of it is kept.
 #[test]
 fn a_report_counts_when_its_source_leaves_in_the_same_step() {

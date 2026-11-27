@@ -98,7 +98,10 @@ _LOCK = []
 
 def worktree_lock():
     """One run per worktree: a second one's plants land in the first's tree mid-build (each run
-    then tests the other's plants), so it is refused. The lock is in the worktree's own git dir."""
+    then tests the other's plants), so it is refused. The lock is in the worktree's own git dir;
+    a rebuild's own `main` (the batch's broken mutations, each alone) keeps the one it holds."""
+    if _LOCK:
+        return
     r = subprocess.run(["git", "rev-parse", "--absolute-git-dir"], capture_output=True, text=True)
     if r.returncode:
         return

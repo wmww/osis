@@ -91,8 +91,10 @@ fn a_public_thing_referenced_is_read_by_the_referrers_reader_spec_sync_set_2() {
 // chain, judging it by R's stub in U (R's grant to U is R's role entry, U's sync ID carries it)
 // and holds R as a stub, a chain holder's (X's roster naming R brings nothing: a role-class
 // aspect's weaks bring no stub), reading nothing of R's content. R then removes U, and node 0 writes X
-// again: node 1 reads nothing written since. (How a departed stub holder is told its removal is
-// notes/stub-rewrite.md, Owed.)
+// again: node 1 reads nothing written since, and takes R's removal of U by its older step's proof
+// (spec/sync-opens.md §4 One open rule: served up to that step's end, the rotation wrapped under
+// the epoch it holds): R's roster there names U no more, so X is read no more and R is no chain
+// holder.
 #[test]
 fn a_two_hop_chain_is_read_by_its_holders_stub_and_ends_at_its_removal_spec_sync_set_2() {
     let (mut x, mut r) = (Tid::PUBLIC, Tid::PUBLIC);
@@ -111,6 +113,9 @@ fn a_two_hop_chain_is_read_by_its_holders_stub_and_ends_at_its_removal_spec_sync
     set(&mut w, x, "x2");
     w.run();
     assert_ne!(reads(&mut w, 1, &x), Some(Value::Str("x2".into())), "nothing of X written since");
+    assert!(!w.engine(1).roster(&r).contains_key(&u), "R's removal of U taken");
+    assert_ne!(holding(&mut w, 1, &x), Some(Holding::Read), "X read no more");
+    assert_eq!(holding(&mut w, 1, &r), None, "R no chain holder");
 }
 
 // spec/sync-set.md §2 (Stubs: the holders on a unit's chains): U strongs X; X grants R1 read, R1

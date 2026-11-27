@@ -413,12 +413,13 @@ pub struct ReadCredentials {
 }
 
 /// The holders a node reaches S's thing through (spec/sync-opens.md §4 Admissible, tests): the
-/// read KEM key pair of each read keyset of each such holder it holds (newest first, each once),
+/// KEM key pair of each read, then sync, keyset of each such holder it holds (newest first, each
+/// once),
 /// and whether the public is one (it tests the public's claim): at every step, or at its head
 /// alone where it holds S without reading it.
 #[derive(Clone, Default)]
 pub(crate) struct Claimants {
-    /// Each holder's read KEM key pair, with the holder (none: a link's key).
+    /// Each holder's KEM key pairs, with the holder (none: a link's key).
     pub(crate) keys: Vec<(Option<Tid>, osis_crypto::KemSecret)>,
     pub(crate) public: bool,
     /// S held without reading it (kept unread, or its thing as a stub): the public's entry at its
@@ -426,7 +427,7 @@ pub(crate) struct Claimants {
     pub(crate) public_at_head: bool,
 }
 
-/// A claim of a holder (`key`, its read KEM key pair; none: the public's) at a step of key
+/// A claim of a holder (`key`, one of its KEM key pairs; none: the public's) at a step of key
 /// `step_key` of `s` (spec/sync-ids.md §3 Claim).
 pub(crate) fn claim_at(key: Option<&osis_crypto::KemSecret>, s: &SyncId, step_key: &[u8; 32]) -> Option<SigningSecret> {
     match key {

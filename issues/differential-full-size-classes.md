@@ -7,7 +7,7 @@ Seeds move whenever commit bytes or delivery order change: work from the scripts
 
 | Class | Seeds |
 |---|---|
-| Holds nothing (or a stub) where the model reads or keeps a thing: a holder's grant it cannot learn | 10, 23, 28, 29, 81, 86, 99 |
+| Holds nothing (or a stub) where the model reads or keeps a thing: a holder's grant it cannot learn | 10, 23, 29, 86, 99 (rerun owed) |
 | Reads the thing, holds none of its content | 15, 68 |
 | Reads a thing the model does not hold | 34 |
 | None, the model Stub | 41 |
@@ -15,10 +15,8 @@ Seeds move whenever commit bytes or delivery order change: work from the scripts
 | Must-hold bodies with no entry at quiet | 35 |
 | Entries waiting for a read secret, not parked | 82 |
 
-## A holder's grant the node cannot learn (28, 81 shrunk; 10, 23, 29, 86 by their probe lines)
-- 28: `New(1), New(2), Give(2, 1, Node(1), Writes), Give(2, 1, Node(0), Reads), Strong(1, Some(0), 1), Run, Give(1, 0, Node(0), Syncs), Give(1, 0, Thing(1), Reads), Strong(0, None, 0)` (world 0). Node 0 reads thing 1 and keeps thing 0 unread by its own sync grant; thing 1 holds read on thing 0, so the model has node 0 read thing 0. Node 0 cannot open thing 0's roster (it holds thing 0's sync secret alone), the grant to thing 1 tells nobody (a plain thing names no inbox), and no unit node 0 reads carries thing 0 through thing 1: nothing names thing 1 to node 0 as a holder it reaches thing 0 through.
-- 81: `New(1), New(1), Give(1, 1, Node(2), Syncs), Give(1, 0, Node(2), Syncs), Strong(2, None, 0), Give(1, 0, Thing(1), Syncs), Revoke(1, 0, Node(2)), Strong(2, None, 1)` (world 0): the same at sync (node 2 keeps thing 1 unread; thing 1 holds sync on thing 0). Its script is the hand test, with an assertion of how node 2 holds thing 0, once decided.
-- held-model abstracts the gap away ("every node follows the stubs it holds, so the grants it knows are the world's current ones"). Options and the sealing decision: notes/stub-rewrite.md (Open, Tess).
+## A holder's grant the node cannot learn
+Settled (notes/stubs.md, Why the rules have this shape): a sync-only cut names its unit's chain holders, chain stubs follow every hop, an entry per boxed role, and where no reader of the unit reads the target's roster the oracle counts only the grants a node can learn (held-model `entry::Know`). Seeds 28 and 81 are the hand tests `differential::a_read_chain_no_reader_can_name_*` and `a_sync_chain_no_reader_can_name_*`; 10, 23, 29, 86 and 99 shared the probe shape, to be rerun.
 
 ## Reads the thing, holds none of its content (15 shrunk)
 `New(1), Give(1, 0, Public, Reads), Run, Give(1, 0, Node(2), Syncs), Unstrong(1, None, 0), Strong(2, None, 0)` (world 0; its first failure there is a bare stub where the model gives node 2 the public's read). Node 1's account releases thing 0 everywhere before node 2 holds it, so no node syncs thing 0 and node 2 holds a bare stub (by its grant signal): the engine is right. The oracle (`lost_writes`) keeps the public's grant: the grant's event counts as surely received by node 2 (it got the commit while holding nothing of thing 0, so kept none) and node 2's account holds thing 0 at the end (the stub), so `shared` holds. Fix in the oracle: count a node as having kept a write only where its account held the thing when the write froze, from the history. 68 has the same probe shape (role right, content held false), not shrunk.

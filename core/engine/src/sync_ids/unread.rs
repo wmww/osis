@@ -45,7 +45,7 @@ pub fn content_key(cut: &SyncOnlyCut) -> ContentKey {
 pub type Carried = BTreeMap<ContentKey, (Tid, SyncOnlyCut)>;
 
 /// A sync-only cut taken here: the thing it came under and the cut.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HeldCut {
     pub under: Tid,
     pub cut: SyncOnlyCut,
@@ -98,11 +98,11 @@ pub(crate) fn note_entry(tx: &mut Tx<'_>, thing: Tid, under: Tid, s: SyncId) -> 
 }
 
 fn index(tx: &mut Tx<'_>, b: BlobId, c: HeldCut) {
-    tx.core.ix.sync_cuts.insert(b, c);
     tx.core.ix.sync_cuts_under.insert(c.under, b);
     tx.core.ix.sync_cuts_of.insert(c.cut.thing, b);
     tx.core.ix.sync_cut_ids.insert(c.cut.thing, c.cut.sync_id);
     tx.core.ix.sync_cut_things.insert(c.cut.sync_id, c.cut.thing);
+    tx.core.ix.sync_cuts.insert(b, c);
 }
 
 /// Takes cut `c`, blob `b` (one taken already changes nothing).
@@ -118,7 +118,7 @@ pub(crate) fn note(tx: &mut Tx<'_>, b: &BlobId, c: HeldCut) -> Result<()> {
 
 /// Cut blob `b`'s row goes (the store holds no entry of it).
 pub(crate) fn drop_blob(tx: &mut Tx<'_>, b: &BlobId) -> Result<()> {
-    let Some(c) = tx.core.ix.sync_cuts.get(b).copied() else { return Ok(()) };
+    let Some(c) = tx.core.ix.sync_cuts.get(b).cloned() else { return Ok(()) };
     tx.txn.remove_local(&[SYNC_CUTS, &b.0].concat(), Shred::No)?;
     tx.core.ix.sync_cuts.remove(b);
     tx.core.ix.sync_cuts_under.remove(&c.under, b);
@@ -133,7 +133,7 @@ pub(crate) fn drop_blob(tx: &mut Tx<'_>, b: &BlobId) -> Result<()> {
 
 /// The sync-only cuts of `t` go (it is forgotten whole).
 pub(crate) fn forget(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
-    let blobs: Vec<(BlobId, HeldCut)> = tx.core.ix.sync_cuts_of.get(t).into_iter().flatten().filter_map(|b| tx.core.ix.sync_cuts.get(b).map(|c| (*b, *c))).collect();
+    let blobs: Vec<(BlobId, HeldCut)> = tx.core.ix.sync_cuts_of.get(t).into_iter().flatten().filter_map(|b| tx.core.ix.sync_cuts.get(b).map(|c| (*b, c.clone()))).collect();
     for (b, c) in blobs {
         tx.txn.remove_local(&[SYNC_CUTS, &b.0].concat(), Shred::No)?;
         tx.core.ix.sync_cuts.remove(&b);
@@ -210,6 +210,13 @@ impl Core {
         cuts.chain(self.ix.entry_syncs.get(x).into_iter().flatten().map(|(h, _)| *h))
     }
 
+    /// The chain holders the sync-only cuts of `x` taken under `u` name (spec/permissions.md §4
+    /// Stub): the holders on `u`'s chains to `x` as their loggers held `x`'s role entries.
+    pub(crate) fn cut_named(&self, u: &Tid, x: &Tid) -> BTreeSet<Tid> {
+        let cuts = self.ix.sync_cuts_of.get(x).into_iter().flatten().filter_map(|b| self.ix.sync_cuts.get(b));
+        cuts.filter(|c| c.under == *u).flat_map(|c| c.cut.holders.iter().copied()).collect()
+    }
+
     /// The sync IDs the sync-only cuts taken here give `t` (`SYNC_CUTS`).
     pub(crate) fn cut_sync_ids(&self, t: &Tid) -> BTreeSet<SyncId> {
         self.ix.sync_cut_ids.get(t).into_iter().flatten().copied().collect()
@@ -253,24 +260,27 @@ impl crate::engine::Engine {
 
     /// The sync-only cuts read sync ID `s` carries (spec/permissions.md §4 Stub, Logging
     /// certificates), by content, each with the thing reading `s` it is under: per stub its
-    /// read things' certificates carry as sync-only (`Certs::sync_cuts`), the stub's thing and
-    /// the sync ID this node holds for it, and each cut taken under one of them whose stub they
-    /// carry so.
+    /// read things' certificates carry as sync-only (`Certs::sync_cuts`), the stub's thing, the
+    /// sync ID this node holds for it and the chain holders those certificates name, and each cut
+    /// taken under one of them whose stub they carry so, of a sync ID they name none for (a cut
+    /// of the same sync ID naming other holders is an older word, dropped).
     pub fn sync_cuts_carried(&mut self, s: &SyncId) -> Result<Arc<Carried>> {
         self.follow_certificates()?;
         let mut out = BTreeMap::new();
         for t in self.read_things_of(s)? {
-            let stubs: Vec<Tid> = self.core.certified.sync_cuts.get(&t).into_iter().flat_map(|x| x.iter().copied()).collect();
-            for x in &stubs {
+            let stubs: Vec<(Tid, BTreeSet<Tid>)> = self.core.certified.sync_cuts.get(&t).into_iter().flat_map(|x| x.iter().map(|(x, hs)| (*x, hs.clone())).collect::<Vec<_>>()).collect();
+            let mut named = BTreeSet::new();
+            for (x, hs) in &stubs {
                 for o in self.sync_ids(x)?.iter().filter(|o| !o.hint) {
-                    let cut = SyncOnlyCut { thing: *x, sync_id: o.id };
+                    let cut = SyncOnlyCut { thing: *x, sync_id: o.id, holders: hs.iter().copied().collect() };
+                    named.insert((*x, o.id));
                     out.insert(content_key(&cut), (t, cut));
                 }
             }
             let blobs: Vec<BlobId> = self.core.ix.sync_cuts_under.get(&t).into_iter().flatten().copied().collect();
             for b in blobs {
-                let Some(c) = self.core.ix.sync_cuts.get(&b).copied() else { continue };
-                if stubs.contains(&c.cut.thing) {
+                let Some(c) = self.core.ix.sync_cuts.get(&b).cloned() else { continue };
+                if stubs.iter().any(|(x, _)| *x == c.cut.thing) && !named.contains(&(c.cut.thing, c.cut.sync_id)) {
                     out.entry(content_key(&c.cut)).or_insert((t, c.cut));
                 }
             }
@@ -297,7 +307,7 @@ impl crate::engine::Engine {
     /// `s` carries none such or nothing may be wrapped for it now.
     pub fn seal_sync_cut(&mut self, s: &SyncId, key: &ContentKey, rng: &mut dyn osis_crypto::NodeRng) -> Result<Option<(BlobId, Vec<u8>, crate::sync::Wrap)>> {
         let carried = self.sync_cuts_carried(s)?;
-        let Some((t, cut)) = carried.get(key).copied() else { return Ok(None) };
+        let Some((t, cut)) = carried.get(key).cloned() else { return Ok(None) };
         let Some(w) = self.wrap_secret(&t, None)? else { return Ok(None) };
         let Some(dk) = self.read(|tx| crate::engine::secrets::writer_delete_key_in(tx, &t))? else { return Ok(None) };
         let (id, blob, wrap, _) = crate::sync::certblobs::seal_cert_blob(&w, &dk, &cut.encode(), BTreeSet::new(), rng)?;

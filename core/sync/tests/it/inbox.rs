@@ -582,12 +582,15 @@ fn registers_steps_after_source_step_spec_sync_ids_6() {
 
 // spec/sync-ids.md §6 (walk: moving it, from genesis while the source's step is not known): a
 // source whose stream named no head gets the genesis step at once, whatever it holds; refused
-// there, nothing until its head event; once registered there, the next.
+// there, nothing goes until its head event, a Register still owed (spec/sync-opens.md §6: its
+// ended member stays: Stuck, owing none, closed it at its `until` before the head arrived and the
+// source was never moved, keep::a_reader_moves_a_removed_store_it_never_showed_its_step_*); once
+// registered there, the next.
 #[test]
 fn a_source_holding_no_step_gets_genesis_first_spec_sync_ids_6() {
     let st = Steps::new(3);
     assert_eq!(sends(&plan_at(&st, None, Progress::default(), &[])), Some(st.id(0)), "genesis, at once");
-    assert_eq!(plan_at(&st, None, Progress { stuck: Some(None), ..Progress::default() }, &[]), Plan::Stuck, "refused: waits for a head event");
+    assert_eq!(plan_at(&st, None, Progress { stuck: Some(None), ..Progress::default() }, &[]), Plan::Wait, "refused: waits for a head event, owed");
     let all = [st.id(0), st.id(1), st.id(2)];
     let at = Progress { at: Some(st.id(0)), ..Progress::default() };
     assert_eq!(sends(&plan_at(&st, None, at, &all)), Some(st.id(1)), "then the next");

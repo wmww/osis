@@ -14,7 +14,7 @@ use crate::evidence::held::Ev;
 use crate::sync_ids::{Certs, Parts};
 use osis_base::memo::{Effects, Feed, Quiet, Stamped, StampedSet, Unrecorded};
 use osis_base::{CommitId, Tid};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 /// What one thing's certificates name of a commit: parts to carry, whether its header goes alone
@@ -84,8 +84,9 @@ pub(crate) struct Certified {
     pub(crate) namers: Stamped<Tid, Arc<BTreeSet<Tid>>>,
     /// Per read thing, the records its role entries' evidence names (`Certs::role_records`).
     pub(crate) role_records: Stamped<Tid, Arc<BTreeSet<Tid>>>,
-    /// Per read thing, the stubs whose sync-only cut its certificates carry (`Certs::sync_cuts`).
-    pub(crate) sync_cuts: Stamped<Tid, Arc<BTreeSet<Tid>>>,
+    /// Per read thing, the stubs whose sync-only cut its certificates carry, each with the chain
+    /// holders it names (`Certs::sync_cuts`).
+    pub(crate) sync_cuts: Stamped<Tid, Arc<BTreeMap<Tid, BTreeSet<Tid>>>>,
 }
 
 /// Adds `t` to the set at `k` (`add`) or takes it out, an emptied set leaving; `fed`: a key new

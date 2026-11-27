@@ -156,6 +156,9 @@ pub struct Made {
     /// writes the strong). A logged stub stays while rule 2 carries it: carriage outlives its
     /// carrier.
     logged: BTreeSet<(Tid, Tid)>,
+    /// The entries of `logged` whose loggers all held the thing by entries alone, its role
+    /// entries unread (`entry::Net::entry_only`).
+    entry_only: BTreeSet<(Tid, Tid)>,
     /// The reference `quiet_model` reads, fed what was handed since its last quiet run (made at
     /// the first; a copy of the world copies it).
     quiet: Option<QuietRef>,
@@ -392,6 +395,7 @@ fn model_now(w: &mut World) -> Option<Model> {
     // a stub logged of a thing still dependent of its unit's is judged once it is independent
     let unjudged: Vec<(Tid, Tid)> = w.history.logged.iter().copied().filter(|e| m.judges(w, e) == Some(false)).collect();
     w.history.logged = m.logged_of(w);
+    w.history.entry_only = m.entry_only_of(w);
     w.history.logged.extend(unjudged);
     w.history.quiet = Some(qr);
     Some(m)
@@ -746,9 +750,15 @@ fn strong(w: &mut World, i: usize, from: Option<usize>, k: usize, on: bool) -> R
         strong_in(&mut m, from, t, on)?;
         e.commit(m)
     });
-    // its writer, holding the thing, logs its stub under the source's sync ID
+    // its writer, holding the thing, logs its stub under the source's sync ID: a sync-only cut
+    // naming no holder where it reads none of the thing's role entries
     if r.is_ok() && on && w.online(i) && w.engine(i).closure_holds(&t) {
-        w.history.logged.insert((from, t));
+        let rostered = !w.engine(i).roster(&t).is_empty();
+        if w.history.logged.insert((from, t)) && !rostered {
+            w.history.entry_only.insert((from, t));
+        } else if rostered {
+            w.history.entry_only.remove(&(from, t));
+        }
     }
     r.map(|_| String::new()).map_err(|e| e.to_string())
 }
@@ -952,9 +962,9 @@ pub struct View {
     unread: hc::Set,
     /// The independent things it holds as a stub alone (their role entries).
     stubs: hc::Set,
-    /// The stubs it follows (its sync set's stubs): those a unit's keys open or a held signal
-    /// names. A unit carrying a sync-only stub carries its sync-only cut, which the node follows
-    /// nothing of.
+    /// The stubs it follows (its sync set's stubs, spec/sync-set.md §2 Sync set): those a unit's
+    /// keys open, a held signal names, or a unit's reference or chain names (a sync-only stub
+    /// brought by a reference to a dependent alone names nothing its readers can tie to it).
     followed: hc::Set,
 }
 
@@ -1086,6 +1096,7 @@ impl Model {
         net.signals = signals.filter(|(b, _)| *b < na).map(|(b, x)| entry::Signal { at: entry::At::Node(b), holder: b, target: x }).collect();
         let logged: Vec<(usize, usize)> = h.logged.iter().filter_map(|(u, x)| Some((net.indep(index(u)?), net.indep(index(x)?)))).collect();
         net.logged.extend(logged.into_iter().filter(|(u, x)| u != x));
+        net.entry_only = h.entry_only.iter().filter_map(|(u, x)| Some((net.indep(index(u)?), net.indep(index(x)?)))).filter(|e| net.logged.contains(e)).collect();
         net.settle(entry::Rule::SPEC);
         Model { accounts, world, edges, net }
     }
@@ -1100,9 +1111,18 @@ impl Model {
 
     /// The stubs logged under accounts and history things, as their tids, for `Made::logged`.
     fn logged_of(&self, w: &World) -> BTreeSet<(Tid, Tid)> {
+        self.tids_of(w, &self.net.logged)
+    }
+
+    /// `logged_of`'s entries logged by entries alone (`entry::Net::entry_only`).
+    fn entry_only_of(&self, w: &World) -> BTreeSet<(Tid, Tid)> {
+        self.tids_of(w, &self.net.entry_only)
+    }
+
+    fn tids_of(&self, w: &World, of: &BTreeSet<(usize, usize)>) -> BTreeSet<(Tid, Tid)> {
         let na = self.accounts.len();
         let tid = |x: usize| if x < na { Some(self.accounts[x]) } else { w.history.things.get(x - na).map(|t| t.0) };
-        self.net.logged.iter().filter_map(|&(u, x)| Some((tid(u)?, tid(x)?))).collect()
+        of.iter().filter_map(|&(u, x)| Some((tid(u)?, tid(x)?))).collect()
     }
 
     /// What account `a`'s node holds (spec/sync-set.md §2): held-model's first entry
@@ -1114,7 +1134,8 @@ impl Model {
         for &x in &h.unread {
             holds.extend(self.net.carry(entry::Rule::SPEC, x, &h.entries()).whole);
         }
-        let by: hc::Set = h.opened.iter().copied().chain(h.fetched.iter().map(|s| s.target)).collect();
+        let named = h.units.iter().flat_map(|&u| self.net.carry(entry::Rule::SPEC, u, &h.entries()).named);
+        let by: hc::Set = h.opened.iter().copied().chain(h.fetched.iter().map(|s| s.target)).chain(named).collect();
         let followed = h.stubs.intersection(&by).copied().collect();
         View { read: h.whole, holds, unread: h.unread, stubs: h.stubs, followed }
     }

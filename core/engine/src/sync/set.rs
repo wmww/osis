@@ -205,8 +205,9 @@ impl Engine {
     /// The holders this node reaches `s`'s things `things` through (spec/sync-opens.md §4
     /// Admissible, tests): its own things (its node thing, the things it holds a grant on, its
     /// link keys), each holder of a thing's independent it holds a read secret of (by the role
-    /// entries held), each thing naming `s` to it (a followed signal's holder, a followed link's
-    /// key), and the public where it redeems a locator or the public holds a role there (at any
+    /// entries held), each thing naming `s` to it (a sync-only cut's unit's thing and the chain
+    /// holders it names, a holder whose entry gave it a sync secret, a followed signal's holder, a
+    /// followed link's key), and the public where it redeems a locator or the public holds a role there (at any
     /// step), or where it holds `s` without reading it (at its head).
     pub(crate) fn claimants(&mut self, s: &SyncId, things: &[Tid]) -> super::Claimants {
         let me = self.core.tid();
@@ -224,8 +225,12 @@ impl Engine {
                 }
             }
             holders.extend(self.core.followed_links.signal_holders(t, s));
-            // a held stub's carrying unit's thing: the thing a sync-only cut naming `s` came under
-            holders.extend(self.core.ix.sync_cuts_of.get(t).into_iter().flatten().filter_map(|b| self.core.ix.sync_cuts.get(b)).filter(|c| c.cut.sync_id == *s).map(|c| c.under));
+            // a held stub's carrying unit's thing, and the chain holders it names: the thing a
+            // sync-only cut naming `s` came under, and its holders
+            for c in self.core.ix.sync_cuts_of.get(t).into_iter().flatten().filter_map(|b| self.core.ix.sync_cuts.get(b)).filter(|c| c.cut.sync_id == *s) {
+                holders.insert(c.under);
+                holders.extend(c.cut.holders.iter().copied());
+            }
             // a holder whose entry gave this node a sync secret of it
             holders.extend(self.core.ix.entry_syncs.get(t).into_iter().flatten().filter(|(_, x)| x == s).map(|(h, _)| *h));
             match self.core.followed_links.link_of(t, s) {
@@ -234,9 +239,11 @@ impl Engine {
                 None => {}
             }
         }
+        // an entry is sealed to the keyset its box of its role is to: a read entry to a read
+        // keyset, a sync entry to a sync keyset (spec/sync-ids.md §3 Entries)
         for m in holders {
             let Some(e) = self.core.epochs(&m) else { continue };
-            for (_, x) in e.role(Role::Read).held_newest_first() {
+            for (_, x) in e.role(Role::Read).held_newest_first().into_iter().chain(e.role(Role::Sync).held_newest_first()) {
                 let k = x.kem();
                 if !keys.iter().any(|(_, y)| y.public() == k.public()) {
                     keys.push((Some(m), k.clone()));

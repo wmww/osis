@@ -40,9 +40,9 @@ pub struct Certs {
     /// stub judges those entries and takes no other body (spec/sync-set.md §2 Holding a stub), so
     /// each goes as a record whatever body carries it (spec/permissions.md §4 Logging certificates).
     pub role_records: BTreeSet<Tid>,
-    /// The things whose stub's sync-only cut goes (spec/permissions.md §4 Stub, spec/wire.md §4):
-    /// no header, record or evidence goes with it.
-    pub sync_cuts: BTreeSet<Tid>,
+    /// The things whose stub's sync-only cut goes, each with the chain holders it names
+    /// (spec/permissions.md §4 Stub, spec/wire.md §4): no header, record or evidence goes with it.
+    pub sync_cuts: BTreeMap<Tid, BTreeSet<Tid>>,
 }
 
 impl Certs {
@@ -65,7 +65,9 @@ impl Certs {
         }
         self.records.extend(other.records.iter().copied());
         self.role_records.extend(other.role_records.iter().copied());
-        self.sync_cuts.extend(other.sync_cuts.iter().copied());
+        for (x, hs) in &other.sync_cuts {
+            self.sync_cuts.entry(*x).or_default().extend(hs.iter().copied());
+        }
     }
 
     /// Adds `other`'s commits, headers, mintings and records.
@@ -79,7 +81,9 @@ impl Certs {
         }
         self.records.extend(other.records);
         self.role_records.extend(other.role_records);
-        self.sync_cuts.extend(other.sync_cuts);
+        for (x, hs) in other.sync_cuts {
+            self.sync_cuts.entry(x).or_default().extend(hs);
+        }
     }
 }
 
@@ -187,13 +191,14 @@ impl Engine {
     /// X the walk gives from `g`'s unit, outside it. Where `g`'s keys open X: each held commit
     /// with a role-class part on X, cut to the stub (`stub_parts`: the pieces boxing `g`, the
     /// holders on its chains to X or the public), with its evidence, and X's public key record
-    /// (its sync ID and step keys); else, `g` holding sync on X, X's sync-only cut.
+    /// (its sync ID and step keys); else, `g` holding sync on X, X's sync-only cut naming the
+    /// holders on `g`'s chains of sync to X.
     fn stub_certificates(&mut self, ev: &Ev, g: &Tid, out: &mut Certs) {
         for x in self.core.ix.closure.unit_stubs(g) {
             if self.core.keys_open(g, &x) {
                 let role = |ak: &str| matches!(ak, "roles.0" | "signers.0" | "secrets.0" | "sync.0");
                 let cs: BTreeSet<CommitId> = self.core.aspects_of(&x).filter(|((_, ak), _)| role(ak.as_str())).flat_map(|(_, cs)| cs.iter().map(|(_, c)| *c).collect::<Vec<_>>()).collect();
-                let mut open = crate::sync::units::chain_holders(&self.core, g, &x);
+                let mut open = crate::sync::units::chain_holders(&self.core, g, &x, osis_base::Role::Read);
                 open.extend([*g, Tid::PUBLIC]);
                 let mut seeds = BTreeSet::new();
                 for c in cs {
@@ -208,7 +213,7 @@ impl Engine {
                 self.add_closure(ev, &seeds, out);
                 self.public_key_record_into(ev, &x, out);
             } else if self.core.keyed_role_now(g, &x) >= Some(osis_base::Role::Sync) {
-                out.sync_cuts.insert(x);
+                out.sync_cuts.insert(x, crate::sync::units::chain_holders(&self.core, g, &x, osis_base::Role::Sync));
             }
         }
     }

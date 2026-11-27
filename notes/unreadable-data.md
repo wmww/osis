@@ -18,7 +18,7 @@ AKs, tids other than the things its dialers proved and the things it keeps unrea
 ## Costs
 - Padmé padding costs at most about 12% under 256 B, 6% up to 64 KB, 3% above; 1-4% on average.
 - The wrap costs about 25% on a minimal commit, under 5% on typical edits. Chunk, tree-node, page and inbox entries carry a filler wrap (57 random bytes) that hides nothing; it could be dropped for those kinds (a wire change).
-- Entries: 1,233 B per holder per sync epoch in each boxing commit, padded to a power of two (spec/wire.md §5 Entry blocks).
+- Entries: 1,233 B per boxed role (a read holder two, a sync holder one) per holder per sync epoch in each boxing commit, padded to a power of two (spec/wire.md §5 Entry blocks).
 
 ## Choices that keep it so
 - Delete-key commitments are blinded per blob, so a node cannot tell which blobs carry one author's or actor's deletes (notes/sync-reasons.md, Blob prefix).

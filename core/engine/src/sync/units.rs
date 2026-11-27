@@ -943,8 +943,9 @@ fn given_by(core: &Core, v: Vx, y: Tid, strong: bool) -> BTreeSet<Vx> {
 /// secrets derive from), unless an owner is X: a weak's, or a strong's to a dependent of an X
 /// the unit's keys do not open, where the unit's keys open X or it holds sync or above there (any
 /// other strong brings X whole or enters it, never a stub), or where the weak is the fire of a
-/// grant signal on `x` the node follows (First entry: X named by its sync ID, record or none); and,
-/// where the unit's keys open X, the stub of each holder on an owner's chains of read grants to X.
+/// grant signal on `x` the node follows (First entry: X named by its sync ID, record or none); and
+/// the stub of each holder on the chains by which an owner holds its role on X: of read grants
+/// where its keys open X, else of sync or above, with the holders its sync-only cuts of X name.
 fn stubs_by(core: &Core, (c, x): Vx, y: Tid, independent: bool, strong: bool, out: &mut BTreeSet<Vx>) {
     // a held signal followed names its thing as independent (by its sync ID), record or none
     let fired = !strong && core.followed_links.fired_on(&y, &x);
@@ -971,20 +972,32 @@ fn stubs_by(core: &Core, (c, x): Vx, y: Tid, independent: bool, strong: bool, ou
     if !enters && (!opens.is_empty() || own.iter().any(|o| core.keyed_role_now(o, &a) >= Some(Role::Sync) || core.cut_under(o, &a)) || fired) {
         out.extend(stub(a));
     }
-    for o in &opens {
-        out.extend(chain_holders(core, o, &a).into_iter().filter_map(stub));
+    for o in &own {
+        let chain = if opens.contains(o) {
+            chain_holders(core, o, &a, Role::Read)
+        } else if core.keyed_role_now(o, &a) >= Some(Role::Sync) || core.cut_under(o, &a) {
+            let mut hs = chain_holders(core, o, &a, Role::Sync);
+            // a holder a cut names is independent by its role, as a cut names its own thing
+            hs.extend(core.cut_named(o, &a).into_iter().filter(|h| h != o));
+            hs
+        } else {
+            BTreeSet::new()
+        };
+        out.extend(chain.into_iter().filter_map(stub));
     }
 }
 
-/// The independent holders on `o`'s chains of read grants with key access to independent `a`
-/// (spec/sync-set.md §2 Stubs), neither `o` nor `a`: each reads `a` and `o` reads it, by `a`'s
-/// and its grants as the node holds them (`Core::keyed_role_now`). The public is no holder.
-pub(crate) fn chain_holders(core: &Core, o: &Tid, a: &Tid) -> BTreeSet<Tid> {
+/// The independent holders on `o`'s chains of grants with key access giving `r` or above on
+/// independent `a` (spec/sync-set.md §2 Stubs), neither `o` nor `a`: each holds `r` on `a` and
+/// `o` holds `r` on it, by `a`'s and its grants as the node holds them (`Core::keyed_role_now`).
+/// The public is no holder.
+pub(crate) fn chain_holders(core: &Core, o: &Tid, a: &Tid, r: Role) -> BTreeSet<Tid> {
     let roles = core.time.at(|now| {
         let (r, until) = core.timelines().roles_now(a, crate::flows::ts_at(now));
         (r, until.map(|u| u.0))
     });
-    roles.iter().filter(|(h, r)| **r >= Role::Read && *h != o && *h != a && **h != Tid::PUBLIC && core.is_independent(h) && core.reads_now(o, h) && core.reads_now(h, a)).map(|(h, _)| *h).collect()
+    let at = |x: &Tid, y: &Tid| core.keyed_role_now(x, y) >= Some(r);
+    roles.iter().filter(|(h, role)| **role >= r && *h != o && *h != a && **h != Tid::PUBLIC && core.is_independent(h) && at(o, h) && at(h, a)).map(|(h, _)| *h).collect()
 }
 
 /// Whether a held strong reaches `y` where First entry carries it (spec/sync-set.md §2 Own

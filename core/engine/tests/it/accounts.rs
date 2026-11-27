@@ -108,7 +108,7 @@ fn a_units_stub_is_carried_as_its_sync_only_cut_spec_sync_set_2() {
     let on_x = |e: &mut osis_engine::Engine| {
         let c = e.certificates(&g).unwrap();
         let aks: BTreeSet<String> = c.commits.iter().filter_map(|(id, parts)| Some((e.header(id)?, parts))).flat_map(|(h, parts)| parts.iter().filter_map(|ai| h.aspects.get(*ai)).filter(|a| a.tid == x).map(|a| a.ak.as_str().to_string()).collect::<Vec<_>>()).collect();
-        (aks, c.sync_cuts.contains(&x))
+        (aks, c.sync_cuts.contains_key(&x))
     };
     e.grant(&x, &z, &edge(Role::Read)).unwrap();
     assert_eq!(on_x(e), (BTreeSet::new(), false), "no role on X: no stub");

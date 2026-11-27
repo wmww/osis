@@ -24,18 +24,14 @@ use std::collections::BTreeSet;
 
 /// Whether a keyset of role `r` of `t` written now carries its KEM key (spec/crypto.md §3,
 /// Published KEM keys), judged by what this node holds and what the transaction gives things
-/// (`Tx::publishing`): minted with a key, holding `r` or above for keys (read: any role), a card
-/// of it standing
+/// (`Tx::publishing`): minted with a key, holding `r` or above for keys, a card of it standing
 /// here (`flows::cards`), for read a setting enabling an external signal, or its current keyset
 /// of `r` carrying one (sticky: a holder granted beside this node's knowledge stays sealable).
 pub(crate) fn publishes(tx: &mut Tx<'_>, t: &Tid, r: Role) -> Result<bool> {
     let core = &*tx.core;
-    // a read keyset wherever the thing holds any role: its entries are sealed to its read KEM key
-    // and its claims computed with it (spec/crypto.md §3 Independent thing)
-    let needs = if r == Role::Read { Role::Sync } else { r };
     let cheap = core.created(t).is_some_and(|c| c.key().is_some())
-        || tx.publishing.iter().any(|(h, role)| h == t && *role >= needs)
-        || holds_for_keys(core, t, needs)
+        || tx.publishing.iter().any(|(h, role)| h == t && *role >= r)
+        || holds_for_keys(core, t, r)
         || crate::apply::validity::setting_now(core, t).and_then(|s| by_setting(&s)).is_some_and(|x| x >= r);
     Ok(cheap || crate::flows::cards::stands(tx, t)? || carries(tx, t, r)?)
 }

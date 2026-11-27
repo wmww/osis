@@ -2164,7 +2164,7 @@ impl Opens {
             }
         }
         // Once all answers are read: Lost each S the peer accepted and this side did not open.
-        let lost: Vec<SyncId> = accepted.into_iter().filter(|s| self.member(conn, s).is_none()).collect();
+        let lost: Vec<SyncId> = accepted.iter().copied().filter(|s| self.member(conn, s).is_none()).collect();
         if !lost.is_empty() {
             let items = lost.iter().map(|s| (*s, self.reported_at(conn, s).map(|(_, c)| c.clone()))).collect();
             self.send_lost(ctx, conn, items);
@@ -2172,6 +2172,10 @@ impl Opens {
         for s in crossed {
             self.close_member(ctx, conn, s, Close::Class, moved);
         }
+        // a refusal beside a Hit of the same Offer the peer accepted (a holder's two claims, read
+        // and sync) says nothing of its head
+        refused.retain(|s| !accepted.contains(s));
+        refused.dedup();
         for s in refused {
             self.ask_head(ctx, conn, s);
         }
@@ -2226,7 +2230,11 @@ impl Opens {
     fn accept_hit(&mut self, ctx: &mut Ctx, conn: ConnId, hit: &[u8; 32], sig: Option<&osis_crypto::Signature>, class: SourceClass, moved: &mut Vec<Moved>) -> SharedItem {
         let refuse = SharedItem::code(Code::DECLINED);
         let Some(c) = self.conns.get(&conn) else { return refuse };
-        let Some((s, shown, beacon)) = c.shown.get(hit).cloned() else { return refuse };
+        // a filter's false positive (spec/sync-opens.md §5 Testing): a Hit on nothing shown
+        let Some((s, shown, beacon)) = c.shown.get(hit).cloned() else {
+            osis_base::costs::count("opens: hits on nothing shown", 1);
+            return refuse;
+        };
         let bind = c.bind;
         // Judged on what this side holds now: a credential no longer shown proves nothing.
         let Some(adm) = self.admissible(&s) else { return refuse };

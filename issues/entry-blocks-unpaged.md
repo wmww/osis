@@ -1,5 +1,5 @@
-# Entry blocks do not page: a commit boxes at most about 4000 holders
-> Summary: a commit's entries sit in its blob's clear prefix (spec/wire.md §5 Entry blocks), which does not page as deltas do, so a rotation of a thing with more than about 4000 holders (8 MiB / 1,233 bytes per entry, padded to a power of two) cannot be made; options below.
+# Entry blocks do not page: a commit boxes at most about 2000 read holders
+> Summary: a commit's entries sit in its blob's clear prefix (spec/wire.md §5 Entry blocks), which does not page as deltas do, so a rotation of a thing with more than about 2000 read holders or 4000 sync holders (8 MiB / 1,233 bytes per entry, a read holder's two, padded to a power of two) cannot be made; options below.
 > Priority: normal
 > Tags: sync
 

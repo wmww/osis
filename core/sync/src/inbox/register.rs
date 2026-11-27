@@ -250,6 +250,11 @@ fn judge(engine: &mut Engine, net: &impl Net, progress: &Stamped<Key, Progress>,
 /// step, at once. Nothing goes when the steps do not fit `MAX_MESSAGE`.
 pub fn plan(source: Option<StepId>, o: &OwnedSyncId, p: &Progress, key: Option<[u8; 32]>, held: &mut dyn FnMut(&StepId) -> Result<bool>) -> Result<Plan> {
     let (path, tree): (&Path, &BTreeMap<StepId, Step>) = (&o.path, &o.tree);
+    // refused before the source's step was known (the genesis sent at once): its head is waited
+    // for, a Register still owed (spec/sync-opens.md §6: its ended member stays)
+    if p.stuck == Some(None) && source.is_none() {
+        return Ok(Plan::Wait);
+    }
     if p.stuck.is_some_and(|x| x == source) {
         return Ok(Plan::Stuck);
     }

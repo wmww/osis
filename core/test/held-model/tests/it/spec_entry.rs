@@ -166,6 +166,26 @@ fn entry_a_strong_at_sync_keeps_the_thing_unread() {
     assert!(h.unread.contains(&X) && !h.whole.contains(&X), "{h:?}");
 }
 
+/// A sync chain is learned only from a cut a roster reader logged: A holds sync on R, R sync on X,
+/// A strongly references both. X's stub logged under A by entries alone teaches A's readers only
+/// A's own grant (none), so nothing of X is held; logged by a reader of X's role entries, its cut
+/// names R and X is kept unread.
+#[test]
+fn entry_a_sync_chain_is_learned_from_a_roster_readers_cut() {
+    for (entry_only, unread) in [(true, false), (false, true)] {
+        let mut net = account(2);
+        net.w.grants.insert((A, R), Role::Sync);
+        net.w.grants.insert((R, X), Role::Sync);
+        net.strongs.extend([(A, R), (A, X)]);
+        net.logged.extend([(A, R), (A, X)]);
+        if entry_only {
+            net.entry_only.insert((A, X));
+        }
+        let h = net.held(Rule::SPEC, 1);
+        assert_eq!((h.unread.contains(&X), h.stubs.contains(&X)), (unread, false), "entry only: {entry_only}: {h:?}");
+    }
+}
+
 const SEEDS: u64 = 120;
 const LEN: usize = 14;
 

@@ -1682,9 +1682,8 @@ fn a_removal_after_a_restart_serves_nothing_after_it_spec_sync_opens_6() {
 }
 
 // Its grant's `until` passing (granted while it is away, so it still asks for S), the finalize's
-// rotation reaching node 1. The until's time alone judges it departed, but its read secret's
-// epoch still covers every departure node 1 knows of (§4 Departed): a credential open toward it
-// stays until the rotation, and what it is served is what it held the secret for.
+// rotation reaching node 1. Its read secret's sync proof stays of the head until the rotation's
+// step (§4 One open rule), so what it is served is what it held the secret for.
 #[test]
 fn an_until_passing_while_away_serves_nothing_after_it_spec_sync_opens_6() {
     let expire = |w: &mut crate::harness::World, t: osis_base::Tid| {

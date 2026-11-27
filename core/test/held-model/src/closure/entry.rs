@@ -5,13 +5,17 @@
 //!
 //! A unit is a thing's unit or a node's local part (its node root's references, in its own store;
 //! the root is a dependent of the node thing, read by that node alone). What a unit `u` carries
-//! (`carry`, rule 2), judged from `u`'s own data alone: the role entries of every thing it carries
-//! (whole or as a stub) tell `u`'s keys and roles (its owner's effective role over those grants,
-//! the public's read and sync on a thing whose entries it carries, never through holders).
+//! (`carry`, rule 2), judged from `u`'s own data alone: the grants it teaches (`Know`) tell `u`'s
+//! keys and roles (its owner's effective role over those grants, the public's read and sync on a
+//! thing whose sync ID it holds, never through holders): the role entries of what it carries whole
+//! or opens, its owner's own grants (its entries) on what it names, and the chain grants a cut
+//! logged by a reader of the target's role entries names; a thing logged by entries alone
+//! (`Net::entry_only`) teaches only the owner's grant.
 //! - A strong to X that `u`'s keys open brings X whole (the walk goes on from it), a weak its
 //!   stub; a reference to an X they do not open, where `u`'s owner holds sync or above on it,
 //!   its stub; otherwise nothing.
-//! - Each holder on a chain by which `u`'s keys open a thing `u` carries is a stub in `u`.
+//! - Each holder on a chain by which `u`'s owner holds its role on a thing `u` carries (read
+//!   grants where `u`'s keys open it, else sync or above) is a stub in `u`.
 //! - Carriers: X is under `u` only as some node reading `u` logged it there, holding X's role
 //!   entries (`Net::logged`): X whole or as a stub at that node. What nobody logged is not
 //!   carried. A logged entry stays while the rule carries it (`settle`), being followed.
@@ -31,7 +35,8 @@
 //!
 //! Abstracted: a reference to a dependent of another independent thing counts as one to that
 //! thing (its data is under that thing's sync ID; bridges are left out); every node follows the
-//! stubs it holds, so the grants it knows are the world's current ones; the key-access graph has
+//! stubs it holds, so the grants it can learn of a thing are the world's current ones (a cut a
+//! roster reader logged stays current); the key-access graph has
 //! no cycles (`keyless_of`), so a chain is any path of grants giving read; boxes, validity,
 //! rotation, timing and the wire are left out (`box_cut`, `copy_cut` and `evidence` cut and judge
 //! what a stub holds).
@@ -75,6 +80,10 @@ pub struct Net {
     /// `(u, x)`: X's stub logged under unit `u` (a thing, or a node root for its local part).
     /// History: `settle` keeps what the rule still carries and adds what nodes log.
     pub logged: BTreeSet<(T, T)>,
+    /// The entries of `logged` that only nodes holding X by entries alone logged (none reading
+    /// X's role entries): a sync-only cut naming no chain holder, so `u`'s readers learn of X's
+    /// grants only `u`'s owner's own (its entry).
+    pub entry_only: BTreeSet<(T, T)>,
     /// `Rule::keep_fetched` (control): `(node, x)` stubs a node fetched by a signal and keeps.
     pub kept: BTreeSet<(usize, T)>,
 }
@@ -87,8 +96,8 @@ pub enum Fix {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Chains {
-    /// The holders on a path of grants giving read from the unit's owner to a thing it carries
-    /// and opens.
+    /// The holders on a path of grants from the unit's owner to a thing it carries: giving read
+    /// where it opens the thing, else sync.
     Spec,
     /// Control: every holder the grants of a thing the unit carries name (the walk up from the
     /// carried things, whether or not the owner reaches it).
@@ -120,6 +129,35 @@ impl Rule {
     pub const PRIVATE: Rule = Rule { log_units: false, keep_fetched: true, ..Rule::SPEC };
 }
 
+/// The grants a judge can learn (spec/sync-set.md §2: a thing's grants count where its role
+/// entries are held; spec/permissions.md §4 Stub): every grant on a thing of `full` (its roster
+/// read), each grant of `edges` (an entry of its holder taken, or a sync-only cut naming its holder
+/// on the judge's chain), and the public's on a thing of `ids` (its sync ID held: the public's
+/// entry is at the head).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Know {
+    pub full: Set,
+    pub edges: BTreeSet<(T, T)>,
+    pub ids: Set,
+}
+
+impl Know {
+    /// Knowing every grant on `known` things.
+    pub fn all(known: &Set) -> Know {
+        Know { full: known.clone(), edges: BTreeSet::new(), ids: known.clone() }
+    }
+
+    fn grant(&self, net: &Net, a: T, b: T) -> bool {
+        self.full.contains(&net.indep(b)) || self.edges.contains(&(a, net.indep(b)))
+    }
+
+    fn extend(&mut self, other: &Know) {
+        self.full.extend(&other.full);
+        self.edges.extend(&other.edges);
+        self.ids.extend(&other.ids);
+    }
+}
+
 /// What a unit carries.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Carried {
@@ -131,8 +169,13 @@ pub struct Carried {
     pub chain: Set,
     /// The things among `stubs` a strong naming them brings.
     pub strong: Set,
+    /// The things among `stubs` a reference names (not only a dependent of it) or a chain holds:
+    /// those the unit's readers can name, with the opened ones.
+    pub named: Set,
     /// The opened things carried (whole independents and opened stubs): a chain ends at one.
     pub opened: Set,
+    /// The grants the unit's readers learn from it (`Know`).
+    pub know: Know,
 }
 
 /// What a node holds.
@@ -156,9 +199,19 @@ pub struct Held {
 }
 
 impl Held {
-    /// The independent things whose role entries the node holds.
+    /// The independent things the node holds (their role entries, or by entries alone).
     pub fn entries(&self) -> Set {
         self.whole.iter().chain(&self.stubs).chain(&self.unread).copied().collect()
+    }
+}
+
+impl Net {
+    /// The things whose role entries node `h` reads: what it holds whole, a stub its units' keys
+    /// open, and a signal's target its holder reads (the entry box gives the secrets to read the
+    /// target's role entries).
+    pub fn rosters(&self, h: &Held) -> Set {
+        let signalled = h.fetched.iter().filter(|s| self.w.grants.get(&(s.holder, s.target)).is_some_and(|&r| r >= Role::Read)).map(|s| s.target);
+        h.whole.iter().copied().chain(h.stubs.intersection(&h.opened).copied()).chain(signalled).collect()
     }
 }
 
@@ -182,16 +235,16 @@ impl Net {
         s.chain(w).collect()
     }
 
-    /// `from`'s role on each thing over the grants on `known` things (keyed, best chain, lowest
-    /// hop), then the public's read and sync on `known` things. A dependent thing's role entries
-    /// are its independent's data: known with it (a chain through a dependent admin, such as a
-    /// thing minted with a dependent, is read where its independent is).
-    pub fn roles(&self, from: T, known: &Set) -> BTreeMap<T, Role> {
+    /// `from`'s role on each thing over the grants `known` learns (keyed, best chain, lowest
+    /// hop), then the public's read and sync on the things whose sync IDs it holds. A dependent
+    /// thing's role entries are its independent's data: known with it (a chain through a
+    /// dependent admin, such as a thing minted with a dependent, is read where its independent is).
+    pub fn roles(&self, from: T, known: &Know) -> BTreeMap<T, Role> {
         let mut best = BTreeMap::from([(from, Role::Admin)]);
         loop {
             let mut changed = false;
             for (&(a, b), &r) in &self.w.grants {
-                if self.w.keyless.contains(&(a, b)) || !known.contains(&self.indep(b)) {
+                if self.w.keyless.contains(&(a, b)) || !known.grant(self, a, b) {
                     continue;
                 }
                 if let Some(&ra) = best.get(&a) {
@@ -207,7 +260,7 @@ impl Net {
             }
         }
         for (set, r) in [(&self.w.public, Role::Read), (&self.w.public_sync, Role::Sync)] {
-            for &x in set.iter().filter(|x| known.contains(x)) {
+            for &x in set.iter().filter(|x| known.ids.contains(x)) {
                 if best.get(&x).is_none_or(|&o| o < r) {
                     best.insert(x, r);
                 }
@@ -216,16 +269,16 @@ impl Net {
         best
     }
 
-    /// The things reachable from `from` over keyed grants giving read on `known` things
+    /// The things reachable from `from` over keyed grants giving `min` or above on `known` things
     /// (`back`: the things reaching `from`).
-    fn reach(&self, from: &Set, known: &Set, back: bool) -> Set {
+    fn reach(&self, from: &Set, known: &Know, back: bool, min: Role) -> Set {
         let mut seen = from.clone();
         loop {
             let more: Vec<T> = self
                 .w
                 .grants
                 .iter()
-                .filter(|&(&(a, b), &r)| r >= Role::Read && known.contains(&b) && !self.w.keyless.contains(&(a, b)))
+                .filter(|&(&(a, b), &r)| r >= min && known.grant(self, a, b) && !self.w.keyless.contains(&(a, b)))
                 .filter_map(|(&(a, b), _)| match back {
                     false => (seen.contains(&a) && !seen.contains(&b)).then_some(b),
                     true => (seen.contains(&b) && !seen.contains(&a)).then_some(a),
@@ -238,18 +291,33 @@ impl Net {
         }
     }
 
-    /// What unit `u` carries with `logged` (`view`: the judge's other role entries, read only
-    /// under `Rule::reader_view`).
-    pub fn carry_with(&self, rule: Rule, u: T, logged: &BTreeSet<(T, T)>, view: &Set) -> Carried {
+    /// The grants on `x` a cut logged by a reader of its roster names for owner `o`: `o`'s and
+    /// those of each holder on `o`'s chains (`o` reaching it at sync or above), as that reader
+    /// holds them.
+    fn chain_edges(&self, o: T, x: T) -> BTreeSet<(T, T)> {
+        let all: Set = (0..self.w.kinds.len()).collect();
+        let on = self.reach(&Set::from([o]), &Know::all(&all), false, Role::Sync);
+        self.w.grants.iter().filter(|&(&(a, b), &r)| r >= Role::Sync && b == x && on.contains(&a) && !self.w.keyless.contains(&(a, b))).map(|(&e, _)| e).collect()
+    }
+
+    /// What unit `u` carries with `logged`, of which `entry_only` were logged by entries alone
+    /// (`view`: the judge's other role entries, read only under `Rule::reader_view`).
+    pub fn carry_with(&self, rule: Rule, u: T, logged: &BTreeSet<(T, T)>, entry_only: &BTreeSet<(T, T)>, view: &Set) -> Carried {
         let o = self.indep(u);
         let logs: Set = logged.range((u, 0)..=(u, T::MAX)).map(|&(_, x)| x).collect();
+        let cut_edges: BTreeSet<(T, T)> = logs.iter().filter(|&&x| !entry_only.contains(&(u, x))).flat_map(|&x| self.chain_edges(o, x)).collect();
         let mut c = Carried { whole: Set::from([u]), ..Carried::default() };
         loop {
             let before = c.clone();
-            let mut known: Set = c.whole.iter().map(|&x| self.indep(x)).chain(c.stubs.iter().copied()).chain(logs.iter().copied()).collect();
-            known.insert(o);
+            // what `u`'s readers learn: the rosters of what it carries whole and what its keys
+            // open, its owner's own grants (its entries) on what it names, and the chain grants
+            // a cut logged by a roster reader names
+            let ids: Set = c.whole.iter().map(|&x| self.indep(x)).chain(c.stubs.iter().copied()).chain(logs.iter().copied()).chain([o]).collect();
+            let mut known = Know { full: c.whole.iter().map(|&x| self.indep(x)).chain(c.opened.iter().copied()).chain([o]).collect(), edges: ids.iter().map(|&x| (o, x)).collect(), ids };
+            known.edges.extend(cut_edges.iter().copied());
             if rule.reader_view {
-                known.extend(view);
+                known.full.extend(view);
+                known.ids.extend(view);
             }
             let roles = self.roles(o, &known);
             let at = |x: T, r: Role| roles.get(&x).is_some_and(|&v| v >= r);
@@ -269,6 +337,9 @@ impl Net {
                         c.whole.extend([x, y]);
                     } else if at(x, Role::Sync) {
                         c.stubs.insert(x);
+                        if y == x {
+                            c.named.insert(x);
+                        }
                         // by role only by a strong naming X: one to a dependent of X tells
                         // `u`'s readers nothing of X (spec/sync-ids.md §2 What a sync holder learns)
                         if strong && y == x {
@@ -279,17 +350,26 @@ impl Net {
             }
             c.opened = c.whole.iter().map(|&x| self.indep(x)).chain(c.stubs.iter().copied()).filter(|&x| x != o && at(x, Role::Read)).collect();
             let ends = match rule.chains {
-                Chains::Spec => self.reach(&c.opened, &known, true).intersection(&self.reach(&Set::from([o]), &known, false)).copied().collect(),
+                // the chains giving `o` its role on each carried thing: read where its keys open
+                // it, else sync (spec/sync-set.md §2 Stubs)
+                Chains::Spec => {
+                    let syncs: Set = c.stubs.difference(&c.opened).copied().collect();
+                    let on = |ends: &Set, min: Role| -> Set { self.reach(ends, &known, true, min).intersection(&self.reach(&Set::from([o]), &known, false, min)).copied().collect() };
+                    on(&c.opened, Role::Read).union(&on(&syncs, Role::Sync)).copied().collect()
+                }
                 Chains::Up => self.w.grants.keys().filter(|(_, b)| c.opened.contains(b)).map(|&(a, _)| a).collect::<Set>(),
             };
             for &h in ends.iter().filter(|&&h| h != o && logs.contains(&h) && self.w.independent(h)) {
                 if !c.whole.contains(&h) && c.stubs.insert(h) {
                     c.chain.insert(h);
+                    c.named.insert(h);
                 }
             }
             c.stubs.retain(|x| !c.whole.contains(x));
             c.chain.retain(|x| c.stubs.contains(x));
             c.strong.retain(|x| c.stubs.contains(x));
+            c.named.retain(|x| c.stubs.contains(x));
+            c.know = known;
             if c == before {
                 return c;
             }
@@ -297,19 +377,28 @@ impl Net {
     }
 
     pub fn carry(&self, rule: Rule, u: T, view: &Set) -> Carried {
-        self.carry_with(rule, u, &self.logged, view)
+        self.carry_with(rule, u, &self.logged, &self.entry_only, view)
     }
 
     /// What node `i` holds with what is logged now.
     pub fn held(&self, rule: Rule, i: usize) -> Held {
         let n = &self.nodes[i];
         let mut h = Held { whole: Set::from([n.thing]), members: Set::from([n.thing, n.root]), units: Set::from([n.thing, n.root]), ..Held::default() };
+        let mut know = Know::default();
         loop {
-            let before = h.clone();
+            let before = (h.clone(), know.clone());
             let view = h.entries();
-            let own = self.roles(n.thing, &view);
+            // the node's own role over the grants its units teach it and its held signals' entries
+            let mut k = know.clone();
+            k.full.extend(self.rosters(&h));
+            k.full.insert(n.thing);
+            k.ids.extend(view.iter().copied());
+            let own = self.roles(n.thing, &k);
+            know = Know::default();
+            know.edges.extend(h.fetched.iter().map(|s| (s.holder, s.target)));
             for u in h.units.clone() {
                 let c = self.carry(rule, u, &view);
+                know.extend(&c.know);
                 for &x in &c.strong {
                     match own.get(&x) {
                         Some(&r) if r >= Role::Read => {
@@ -350,36 +439,46 @@ impl Net {
             h.unread.retain(|x| !whole.contains(x));
             let unread = h.unread.clone();
             h.stubs.retain(|x| !whole.contains(x) && !unread.contains(x));
-            if h == before {
+            if (h.clone(), know.clone()) == before {
                 return h;
             }
         }
     }
 
     /// What node `i`, holding `h`, logs: under each unit it reads (its local part alone without
-    /// `Rule::log_units`), each thing whose role entries it holds that the unit would carry were
-    /// they logged there.
-    pub fn logs(&self, rule: Rule, i: usize, h: &Held) -> BTreeSet<(T, T)> {
+    /// `Rule::log_units`), each thing it holds (its role entries, or by entries alone, unread or a
+    /// sync-only stub) that the unit would carry were they logged there; `true` where it reads the
+    /// thing's role entries (whole, or a stub its units' keys open).
+    pub fn logs(&self, rule: Rule, i: usize, h: &Held) -> BTreeMap<(T, T), bool> {
         let entries = h.entries();
-        let mut out = BTreeSet::new();
+        let roster = self.rosters(h);
+        let mut out = BTreeMap::new();
         for &u in h.units.iter().filter(|&&u| rule.log_units || u == self.nodes[i].root) {
             let mut with = self.logged.clone();
-            with.extend(entries.iter().map(|&x| (u, x)));
-            let c = self.carry_with(rule, u, &with, &entries);
-            out.extend(c.whole.iter().map(|&x| self.indep(x)).chain(c.stubs).filter(|x| *x != self.indep(u) && entries.contains(x)).map(|x| (u, x)));
+            let mut eo = self.entry_only.clone();
+            for &x in &entries {
+                if with.insert((u, x)) && !roster.contains(&x) {
+                    eo.insert((u, x));
+                }
+                if roster.contains(&x) {
+                    eo.remove(&(u, x));
+                }
+            }
+            let c = self.carry_with(rule, u, &with, &eo, &entries);
+            out.extend(c.whole.iter().map(|&x| self.indep(x)).chain(c.stubs).filter(|x| *x != self.indep(u) && entries.contains(x)).map(|x| ((u, x), roster.contains(&x))));
         }
         out
     }
 
     /// What every unit carries as far as `logged` goes: each logged entry the rule no longer
     /// carries dropped, until none is.
-    fn kept_by_rule(&self, rule: Rule, mut logged: BTreeSet<(T, T)>) -> BTreeSet<(T, T)> {
+    fn kept_by_rule(&self, rule: Rule, mut logged: BTreeSet<(T, T)>, entry_only: &BTreeSet<(T, T)>) -> BTreeSet<(T, T)> {
         loop {
             let keep: BTreeSet<(T, T)> = logged
                 .iter()
                 .copied()
                 .filter(|&(u, x)| {
-                    let c = self.carry_with(rule, u, &logged, &Set::new());
+                    let c = self.carry_with(rule, u, &logged, entry_only, &Set::new());
                     c.stubs.contains(&x) || c.whole.iter().any(|&y| self.indep(y) == x)
                 })
                 .collect();
@@ -401,22 +500,30 @@ impl Net {
         }
         for _ in 0..8 * self.w.kinds.len() + 8 {
             let held: Vec<Held> = (0..self.nodes.len()).map(|i| self.held(rule, i)).collect();
-            let mut next: BTreeSet<(T, T)> = (0..self.nodes.len()).flat_map(|i| self.logs(rule, i, &held[i])).collect();
+            let logs: Vec<BTreeMap<(T, T), bool>> = (0..self.nodes.len()).map(|i| self.logs(rule, i, &held[i])).collect();
+            let mut next: BTreeSet<(T, T)> = logs.iter().flat_map(|l| l.keys().copied()).collect();
+            // entry-only while no roster reader logs it
+            let rostered: BTreeSet<(T, T)> = logs.iter().flat_map(|l| l.iter().filter(|(_, r)| **r).map(|(e, _)| *e)).collect();
+            let mut eo: BTreeSet<(T, T)> = next.iter().copied().filter(|e| !self.logged.contains(e) || self.entry_only.contains(e)).collect();
             if rule.fix == Fix::Least {
                 next.extend(self.logged.iter().copied());
+                eo.extend(self.entry_only.iter().copied());
             } else {
                 next.retain(|e| self.logged.contains(e));
             }
-            let next = self.kept_by_rule(rule, next);
+            eo.retain(|e| !rostered.contains(e) && next.contains(e));
+            let next = self.kept_by_rule(rule, next, &eo);
+            eo.retain(|e| next.contains(e));
             if rule.keep_fetched {
                 for (i, h) in held.iter().enumerate() {
                     self.kept.extend(h.fetched.iter().map(|s| (i, s.target)));
                 }
             }
-            if next == self.logged {
+            if next == self.logged && eo == self.entry_only {
                 return;
             }
             self.logged = next;
+            self.entry_only = eo;
         }
         panic!("logging does not settle under {rule:?}");
     }
@@ -425,7 +532,7 @@ impl Net {
 
     /// The independent things node `i` could find at all: what references reach from its root and
     /// node thing, and what held signals name and their references reach, whatever the keys; with
-    /// the holders on a path of grants giving read between two of them.
+    /// the holders on a path of grants between two of them.
     pub fn findable(&self, i: usize) -> Set {
         let n = &self.nodes[i];
         let mut seen = Set::from([n.thing, n.root]);
@@ -444,33 +551,33 @@ impl Net {
             }
             let all: Set = (0..self.w.kinds.len()).collect();
             let found: Set = seen.iter().map(|&x| self.indep(x)).collect();
-            seen.extend(self.reach(&found, &all, false).intersection(&self.reach(&found, &all, true)));
+            seen.extend(self.reach(&found, &Know::all(&all), false, Role::Sync).intersection(&self.reach(&found, &Know::all(&all), true, Role::Sync)));
             if seen.len() == before {
                 return seen.into_iter().filter(|&x| self.w.independent(x)).collect();
             }
         }
     }
 
-    /// The holders on the simple paths of keyed grants giving read from `o` to a thing of `ends`,
-    /// `o` and the ends aside: enumerated path by path (the chain oracle).
-    pub fn on_paths(&self, o: T, ends: &Set) -> Set {
+    /// The holders on the simple paths of keyed grants giving `min` or above from `o` to a thing
+    /// of `ends`, `o` and the ends aside: enumerated path by path (the chain oracle).
+    pub fn on_paths(&self, o: T, ends: &Set, min: Role) -> Set {
         let mut out = Set::new();
         let mut path = vec![o];
-        self.extend_paths(ends, &mut path, &mut out);
+        self.extend_paths(ends, min, &mut path, &mut out);
         out
     }
 
-    fn extend_paths(&self, ends: &Set, path: &mut Vec<T>, out: &mut Set) {
+    fn extend_paths(&self, ends: &Set, min: Role, path: &mut Vec<T>, out: &mut Set) {
         let Some(&at) = path.last() else { return };
         for (&(a, b), &r) in &self.w.grants {
-            if a != at || r < Role::Read || path.contains(&b) || self.w.keyless.contains(&(a, b)) {
+            if a != at || r < min || path.contains(&b) || self.w.keyless.contains(&(a, b)) {
                 continue;
             }
             if ends.contains(&b) {
                 out.extend(path[1..].iter().copied());
             }
             path.push(b);
-            self.extend_paths(ends, path, out);
+            self.extend_paths(ends, min, path, out);
             path.pop();
         }
     }
@@ -493,7 +600,8 @@ pub struct Fail {
 /// - `siblings`: two nodes reading one account through their roots alone (their node things
 ///   referencing nothing), holding the same signals, hold the same.
 /// - `chains`: with every allowed stub logged, each unit's chain holders are the holders on its
-///   simple paths (`on_paths`) not otherwise carried.
+///   simple paths (`on_paths`: of read grants to what it opens, of sync or above to the stubs it
+///   holds only sync on) not otherwise carried.
 /// - `signal lifetime`: a node holds a stub only where a unit it reads carries it or a signal it
 ///   holds gives it.
 /// `founded` is a property of a world, not a state: `founded`.
@@ -536,11 +644,14 @@ pub fn check(net: &Net, rule: Rule) -> Vec<Fail> {
     let mut ideal = net.clone();
     let units = net.units();
     ideal.logged = units.iter().flat_map(|&u| all.iter().map(move |&x| (u, x))).collect();
+    ideal.entry_only.clear();
     for u in units {
         let c = ideal.carry(rule, u, &Set::new());
         let o = net.indep(u);
         let by_refs: Set = c.whole.iter().map(|&x| net.indep(x)).chain(c.stubs.difference(&c.chain).copied()).collect();
-        let oracle: Set = net.on_paths(o, &c.opened).into_iter().filter(|x| !by_refs.contains(x) && *x != o).collect();
+        let syncs: Set = c.stubs.difference(&c.opened).copied().collect();
+        let paths = net.on_paths(o, &c.opened, Role::Read).into_iter().chain(net.on_paths(o, &syncs, Role::Sync));
+        let oracle: Set = paths.filter(|x| !by_refs.contains(x) && *x != o).collect();
         if c.chain != oracle {
             out.push(Fail { prop: "chains", node: usize::MAX, thing: u });
         }

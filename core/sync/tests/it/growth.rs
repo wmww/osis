@@ -1095,6 +1095,12 @@ type Frames = BTreeMap<(usize, &'static str), (u64, u64)>;
 /// run to quiet after each: the frames between it and A's second node, node 1, and the sync IDs
 /// node 1 pulled anew.
 fn makes(w: &mut World, n: u64, make: fn(&mut osis_engine::Engine, Tid)) -> (Frames, u64) {
+    let (f, anew, _) = makes_counting(w, n, make);
+    (f, anew)
+}
+
+/// `makes` with the filters' false positives the makes met (Hits on nothing shown, each declined).
+fn makes_counting(w: &mut World, n: u64, make: fn(&mut osis_engine::Engine, Tid)) -> (Frames, u64, u64) {
     let a = w.node(0).account.unwrap();
     let frames = |w: &World| -> Frames { w.net.frames.iter().filter(|((x, y, _), _)| (*x, *y) == (0, 1) || (*x, *y) == (1, 0)).map(|((x, _, k), v)| ((*x, *k), *v)).collect() };
     osis_base::costs::take();
@@ -1104,14 +1110,31 @@ fn makes(w: &mut World, n: u64, make: fn(&mut osis_engine::Engine, Tid)) -> (Fra
         w.run();
         w.advance(1_000);
     }
-    let anew = osis_base::costs::take().into_iter().filter(|(k, ..)| *k == "sync IDs pulled anew").map(|(.., n)| n).sum::<u64>();
+    let costs = osis_base::costs::take();
+    let sum = |name: &str| costs.iter().filter(|(k, ..)| *k == name).map(|(.., n)| n).sum::<u64>();
     let mut out = frames(w);
     for (k, v) in &mut out {
         let b = before.get(k).copied().unwrap_or((0, 0));
         *v = (v.0 - b.0, v.1 - b.1);
     }
     out.retain(|_, v| v.0 > 0);
-    (out, anew)
+    (out, sum("sync IDs pulled anew"), sum("opens: hits on nothing shown"))
+}
+
+/// Frame counts by kind with what filter false positives add taken out (at most `fp` of them):
+/// each Head asked after a declined Hit (spec/sync-ids.md §6 Head), its answer, and the Offer
+/// testing again once it is answered.
+fn less_false_positives(f: &Frames, fp: u64) -> BTreeMap<(usize, &'static str), u64> {
+    let mut out: BTreeMap<(usize, &'static str), u64> = f.iter().map(|(k, v)| (*k, v.0)).collect();
+    for x in [0, 1] {
+        let heads = out.remove(&(x, "Head")).unwrap_or(0);
+        assert!(heads <= fp, "node {x} asked {heads} Heads beside {fp} false positives");
+        out.remove(&(1 - x, "HeadReply"));
+        if let Some(o) = out.get_mut(&(x, "Offer")) {
+            *o -= heads.min(*o);
+        }
+    }
+    out
 }
 
 // spec/sync-judgement.md §3 Dropped bodies, spec/requirements.md Scale: a thing another node of
@@ -1195,8 +1218,8 @@ fn an_independent(e: &mut osis_engine::Engine, a: Tid) {
 // another node of the account makes reaches its second node as its rotation (its minting) and
 // then its content commit, carrying A's strong to it, in a later transaction of the same pass:
 // nothing of the thing was forgotten between them, so A's unit is not pulled anew. At 3 and 30
-// makes after 3 no sync ID is pulled anew, and the frames and PullReply bytes per make (the new
-// thing's own sync ID's first sync) are the same at n and 10n.
+// makes after 3 no sync ID is pulled anew, and the frames (but what filter false positives add)
+// and PullReply bytes per make (the new thing's own sync ID's first sync) are the same at n and 10n.
 #[test]
 fn an_independent_thing_another_node_makes_pulls_nothing_anew_spec_sync_judgement_3() {
     let mut w = World::new(0);
@@ -1204,11 +1227,11 @@ fn an_independent_thing_another_node_makes_pulls_nothing_anew_spec_sync_judgemen
     w.pair(0);
     w.run();
     makes(&mut w, 3, an_independent);
-    let ((n, a), (n10, a10)) = (makes(&mut w, 3, an_independent), makes(&mut w, 30, an_independent));
+    let ((n, a, fp), (n10, a10, fp10)) = (makes_counting(&mut w, 3, an_independent), makes_counting(&mut w, 30, an_independent));
     assert_eq!((a, a10), (0, 0), "sync IDs pulled anew at n and 10n");
-    let kinds = |f: &Frames| f.iter().map(|(k, v)| (*k, v.0)).collect::<BTreeMap<_, _>>();
-    let per = |f: &Frames, by: u64| kinds(f).into_iter().map(|(k, c)| (k, c / by)).collect::<BTreeMap<_, _>>();
-    assert_eq!(per(&n, 3), per(&n10, 30), "frames per make: {n:?} at n, {n10:?} at 10n");
+    // a filter's false positive costs a declined Hit and a Head: chance, not growth
+    let per = |f: &Frames, fp: u64, by: u64| less_false_positives(f, fp).into_iter().map(|(k, c)| (k, c / by)).collect::<BTreeMap<_, _>>();
+    assert_eq!(per(&n, fp, 3), per(&n10, fp10, 30), "frames per make: {n:?} at n, {n10:?} at 10n");
     // a Pull each way per make: the new thing's own sync ID's first sync, the same bytes each make
     let pulled = |f: &Frames, by: u64| f.iter().filter(|(k, _)| k.1 == "PullReply").map(|(k, v)| (k.0, v.1 / by)).collect::<BTreeMap<_, _>>();
     assert_eq!(pulled(&n, 3), pulled(&n10, 30), "PullReply bytes per make at n and 10n");

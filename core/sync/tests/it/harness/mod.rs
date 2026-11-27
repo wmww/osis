@@ -936,7 +936,7 @@ impl World {
     /// Debug builds: per node, each open member of a sync ID its sync store syncs with `t` among its
     /// things, one line each: the connection (as the trace prints it) and its peer, the sync ID,
     /// and the member as `osis_sync::opens::Member` shows it (its class and own, what opened it,
-    /// `until`, departed), so what each serving side holds open is seen at once beside
+    /// `until`), so what each serving side holds open is seen at once beside
     /// `why_role`; `n<i>: no open member` for a node with none.
     #[cfg(debug_assertions)]
     pub fn members_of(&self, t: &Tid) -> String {

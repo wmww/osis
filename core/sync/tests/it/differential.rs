@@ -429,6 +429,65 @@ fn a_grant_on_an_inbox_its_account_releases_first_is_lost_spec_sync_set_3() {
     holds_on(0, 3, 4, &[New(1), Inbox(1, Some(0)), Give(1, 0, Holder::Node(2), Reads), Unstrong(1, None, 0), Strong(2, None, 0)], String::new(), false);
 }
 
+// spec/permissions.md §4 (Stub: the sync-only cut names the holders on the unit's chains),
+// spec/sync-set.md §2 (Stubs: chain holders at every hop), spec/sync-ids.md §3 (Entries: a sync
+// entry sealed to the holder's sync keyset, a read holder's too): node 1 makes things 0, 1 and 2,
+// grants node 2's account read on thing 2, thing 2 sync on thing 1, thing 1 read on thing 0 and
+// node 3's account sync on thing 0, and strongs thing 0 from thing 2. Node 2 holds sync on thing 0
+// only through thing 1, whose grant it cannot read: node 1, reading thing 0's roster, logs thing
+// 0's cut under thing 2 naming thing 1 alone (never node 3's account, on no chain of thing 2's),
+// and thing 1's stub; node 2 takes thing 1's sync secret by thing 2's sync entry there and thing
+// 0's by thing 1's sync entry, and keeps thing 0 unread (failed with a cut naming no holder, chain
+// stubs at read hops alone, or a read holder's one entry sealed to its read keyset: node 2 held a
+// stub).
+#[test]
+fn a_sync_only_chain_is_entered_by_the_holders_its_cut_names_spec_permissions_4() {
+    use crate::harness::script::*;
+    let script = [New(1), New(1), New(1), Give(1, 2, Holder::Node(2), Reads), Give(1, 1, Holder::Thing(2), Syncs), Give(1, 0, Holder::Thing(1), Reads), Give(1, 0, Holder::Node(3), Syncs), Strong(1, Some(2), 0), Run, Strong(2, None, 2)];
+    let mut w = holds_on(0, 4, 4, &script, String::new(), false);
+    let things: Vec<_> = w.history.things.iter().map(|t| t.0).collect();
+    let held: Vec<_> = w.engine(2).sync_set().unwrap().ids.values().filter(|(ts, _)| ts.contains(&things[0])).map(|(_, h)| *h).collect();
+    assert_eq!(held, vec![osis_engine::sync::Holding::Unread], "node 2 keeps thing 0 unread");
+    let s = w.engine(1).sync_id_of(&things[2]).unwrap().unwrap();
+    let named: Vec<_> = w.engine(1).sync_cuts_carried(&s).unwrap().values().filter(|(_, c)| c.thing == things[0]).map(|(_, c)| c.holders.clone()).collect();
+    assert_eq!(named, vec![vec![things[1]]], "thing 0's cut under thing 2 names thing 1 alone");
+}
+
+// spec/requirements.md (a grant's holder may not know of it), spec/sync-set.md §2 (Stubs: a
+// chain holder only as some reader of the unit holding the target's role entries logs it): node 1
+// grants node 2's account sync on things 1 and 0, node 2 strongs thing 0, node 1 grants thing 1
+// sync on thing 0 and removes node 2's account from it, and node 2 strongs thing 1. No node
+// reading node 2's account reads thing 0's roster, so nothing names thing 1 to node 2 as a holder
+// it reaches thing 0 through: node 2 keeps thing 1 unread and holds thing 0 as a stub, as the model
+// says (failed while the model gave every unit the grants of each thing it logged, whoever
+// logged it: it had node 2 keep thing 0 unread).
+#[test]
+fn a_sync_chain_no_reader_can_name_enters_nothing_spec_sync_set_2() {
+    use crate::harness::script::*;
+    let script = [New(1), New(1), Give(1, 1, Holder::Node(2), Syncs), Give(1, 0, Holder::Node(2), Syncs), Strong(2, None, 0), Give(1, 0, Holder::Thing(1), Syncs), Revoke(1, 0, Holder::Node(2)), Strong(2, None, 1)];
+    let mut w = holds_on(0, 3, 4, &script, String::new(), false);
+    let things: Vec<_> = w.history.things.iter().map(|t| t.0).collect();
+    let set = w.engine(2).sync_set().unwrap();
+    let held = |t| set.ids.values().filter(|(ts, _)| ts.contains(t)).map(|(_, h)| *h).collect::<Vec<_>>();
+    assert_eq!((held(&things[0]), held(&things[1])), (vec![osis_engine::sync::Holding::Stub], vec![osis_engine::sync::Holding::Unread]));
+}
+
+// spec/sync-set.md §2 (Stubs: a chain holder only as some reader of the unit holding the
+// target's role entries logs it), the same at read: node 2 grants node 1's account write and node 0's read on thing 1, node 1
+// strongs thing 1 from thing 0, node 1 grants node 0's account sync on thing 0 (told) and thing 1
+// read on thing 0 (told to nobody), and node 0 strongs thing 0. Node 0 reads thing 1 but no reader
+// of its account reads thing 0's roster: it keeps thing 0 unread by its own grant, as the model
+// says (failed while the model had node 0 read thing 0 through thing 1).
+#[test]
+fn a_read_chain_no_reader_can_name_reads_nothing_spec_sync_set_2() {
+    use crate::harness::script::*;
+    let script = [New(1), New(2), Give(2, 1, Holder::Node(1), Writes), Give(2, 1, Holder::Node(0), Reads), Strong(1, Some(0), 1), Run, Give(1, 0, Holder::Node(0), Syncs), Give(1, 0, Holder::Thing(1), Reads), Strong(0, None, 0)];
+    let mut w = holds_on(0, 3, 4, &script, String::new(), false);
+    let t = w.history.things[0].0;
+    let held: Vec<_> = w.engine(0).sync_set().unwrap().ids.values().filter(|(ts, _)| ts.contains(&t)).map(|(_, h)| *h).collect();
+    assert_eq!(held, vec![osis_engine::sync::Holding::Unread]);
+}
+
 // spec/sync-judgement.md §6 (Stops), spec/sync-inbox.md §5 (Grant signal: followed while held): node 3 grants node 2's account sync on its thing (told) and removes it once node 2 keeps
 // the thing unread. Node 2 is no reader, so is told no departure: it stops at the step its sync
 // secrets no longer derive and keeps the thing unread there, while the model, holding the signal,
@@ -519,3 +578,4 @@ fn a_grantee_judges_a_thing_minted_in_another_by_its_record_blob_spec_permission
     let t = w.history.things[1].0;
     assert!(crate::harness::history::reads(w.engine(0), &t).value.is_some(), "node 0 reads thing 1 by its account's grant");
 }
+
