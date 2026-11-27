@@ -163,9 +163,12 @@ impl Core {
     }
 
     /// The sync ID `g`'s genesis seed gives, where this node holds the seed (spec/sync-ids.md §4
-    /// Owner).
+    /// Owner) and `g` has a sync ID: its `keys.0` names one or its `sync.0` records that one (a
+    /// dependent thing's seed derives, but it has no sync ID of its own).
     pub(crate) fn seeded_sync_id(&self, g: &Tid) -> Option<SyncId> {
-        self.epochs(g).and_then(|e| e.genesis().map(osis_blob::genesis_sync_id))
+        let id = self.epochs(g).and_then(|e| e.genesis().map(osis_blob::genesis_sync_id))?;
+        let recorded = self.ix.steps.get(g).is_some_and(|r| r.steps.values().any(|s| s.sync_id == id));
+        (self.ix.keys_sync_id.contains_key(g) || recorded).then_some(id)
     }
 
     /// The sync keys (spec/sync-ids.md §3) of the sync secrets of `g` held here, reading-only

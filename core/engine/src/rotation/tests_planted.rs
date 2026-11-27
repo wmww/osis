@@ -279,7 +279,7 @@ fn box_on_a_dependent_thing_splits_nobody_spec_sync_set_2() {
 
 // spec/sync-set.md §2: a grantee holds no rotation that made a granted epoch current. G (peer 1)
 // is granted read on g and holds everything of g but its keysets (each `keys.0` part on g withheld). g counts independent at G by its box and the
-// step of g's `sync.0` bearing its sync key: G syncs g's sync ID, and reads g once it does.
+// step of g's `sync.0` bearing its sync key, and G reads g once synced.
 #[test]
 fn a_grantee_counts_its_target_independent_before_the_keyset_spec_permissions_4() {
     let mut lp = super::tests::synced(2);
@@ -300,8 +300,6 @@ fn a_grantee_counts_its_target_independent_before_the_keyset_spec_permissions_4(
     assert!(e1.core.counts_independent(&g), "G's box and g's step leave g dependent at G");
     lp.peers[1].restart(7).unwrap();
     assert!(lp.peers[1].engine.core.counts_independent(&g), "a fresh load of G counts g dependent");
-    let s = lp.peers[0].engine.sync_ids(&g).unwrap()[0].id;
-    assert!(lp.synced(1).unwrap().contains(&s), "G does not sync g's sync ID");
     lp.sync_all().unwrap();
     assert!(reads_key(&mut lp, 1, g, "k"));
 }
