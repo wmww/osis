@@ -199,7 +199,7 @@ impl Engine {
             // a node that may not write the aspect leaves it to the authors
             match self.snapshot(tid, ak) {
                 Ok(_) | Err(Error::Permission { .. }) => {}
-                // its unit of work set aside until it falls again (`Engine::take_units`)
+                // told; the aspect leaves `fallen` until it falls again
                 Err(e) if e.is_fault() => crate::apply::tell_fault(&mut self.core, None, vec![*tid], &e),
                 Err(e) => return Err(e),
             }
