@@ -12,7 +12,7 @@
 - **Pushed, awaiting review and gate**: `spar-slim-c2` (echo removed, anchored by a log cursor of the requester's own log; the NetStream TLA model passes with the anchor, its controls fail; return direction per dependent make 403 → 180 B). Streams only: nothing the stub rewrite touches, so it can be reviewed now.
 
 ## First: the stub rewrite (Tess: go-ahead)
-Reference-driven stubs are on main (Tess's model: grants belong to the granted thing; signal → reference → sync → permissions; a grant nobody is told of is valid). Sync IDs are fixed at minting. Opening by entries (notes/sync-opens.md, notes/stubs.md) is landing in chunks as job sheave-r13-entries; tests it breaks mid-way are in tools/known_failures.txt. What else is decided and owed: notes/stub-rewrite.md. Sheave coordinates it.
+Reference-driven stubs are on main (Tess's model: grants belong to the granted thing; signal → reference → sync → permissions; a grant nobody is told of is valid). Sync IDs are fixed at minting. Opening by entries is on main (notes/stubs.md, notes/sync-access.md, notes/sync-opens.md); the tests still failing since are issues/entries-open-failures.md, the full-size differential's classes issues/differential-full-size-classes.md. What else is decided and owed: notes/stub-rewrite.md. Sheave coordinates it.
 - **Waiting on Tess**: the spec/requirements.md wording (stores may learn a padded holder count; "the grant's notice" → a grant signal; notes/stub-rewrite.md); issues/demoted-writer-deletes-at-stores.md (every Delete needs the current write key, recommended); issues/shared-things-refuse-readers-stranded-notices.md (let shared things take stranded notices, recommended).
 
 ## The route (Tess)
