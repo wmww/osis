@@ -4,7 +4,7 @@
 > Tags: sync, engine, tests
 
 Each is in tools/known_failures.txt against this issue.
-- `differential::the_public_granted_again_is_read_again_*` (no quiet run between the public's removal and its re-grant): node 0 reads thing 1 (made in thing 0, made independent by a grant to node 0) and through it thing 0 by the public; after the public's revoke and re-grant on thing 0 it holds thing 1 as a stub with role none, its grant "kept by a pending grant", so it reads neither. Not traced past that.
+- `differential::the_public_granted_again_is_read_again_*` (no quiet run between the public's removal and its re-grant): node 0 reads thing 1 (made in thing 0, made independent by a grant to node 0) and through it thing 0 by the public; after the public's revoke and re-grant on thing 0 it sees the public's read and the admin on thing 0 but reads no value of it. Not traced past that.
 - `differential::the_publics_read_through_a_holder_is_every_nodes_*`: node 1 reads nothing of thing 0 (role none). Not traced.
 - `keep::a_grant_from_outside_reaches_an_account_that_removed_a_node`: node 1 reads nothing of the thing granted to its account after the account rotated for a removal. Not traced (suspect: the grant's entry sealed to the account's KEM key node 0 holds from before the rotation, and node 1 not trying that keyset's claim).
 - `differential::a_signal_only_a_removed_node_took_is_lost_*` (removed case): node 0 holds thing 0 as a stub with the entry's sync secret. Likely node 0 pulled the fire from node 3 before node 3 learned its removal (a valid fire, relayed), so the engine holds a signal the model says no node of the account holds: an oracle question (does a removed node's relay of a fire it took count as delivery?).
