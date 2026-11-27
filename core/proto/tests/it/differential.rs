@@ -8,8 +8,6 @@ use osis_base::format::{MAX_BLOB, MAX_MESSAGE, MAX_PATH_THINGS, MAX_VALUE_DEPTH}
 use osis_base::{Ak, CreationRecord, Limits, Value, cbor};
 use osis_proto::Msg;
 use osis_proto::examples::messages;
-use osis_schema::Codec;
-use osis_schema::core_types::SecretBox;
 
 const REPLY_BUDGET: u64 = (MAX_MESSAGE - 64 * 1024) as u64;
 const SMALL_REPLY: u64 = 16 * 1024;
@@ -88,34 +86,13 @@ fn canonical(v: &Value, max: usize) -> Result<Value, &'static str> {
 /// spec/wire.md §8 `Step`, its canonical bytes.
 fn step(v: &Value) -> R {
     let s = canonical(v, MAX_MESSAGE)?;
-    let a = tuple(&s, 9)?;
+    let a = tuple(&s, 8)?;
     b(&a[0], 16)?;
     opt_of(&a[1], |p| b(p, 32))?;
-    a[2..8].iter().try_for_each(|k| b(k, 32))?;
+    a[2..7].iter().try_for_each(|k| b(k, 32))?;
     // the four role keys are Ed25519 public keys: bytes that are none are malformed
     a[2..6].iter().try_for_each(|k| ok(matches!(k, Value::Bytes(x) if osis_crypto::VerifyingKey::from_slice(x).is_ok()), "role key"))?;
-    b(&a[8], 64)
-}
-
-/// spec/wire.md §7: an entry box is a `box` value in the sealed form.
-fn sealed_box(v: &Value) -> R {
-    let x = SecretBox::from_value(v).map_err(|_| "box")?;
-    ok(matches!(x, SecretBox::Sealed(_)) && x.to_value() == *v, "entry box")
-}
-
-/// spec/wire.md §8 `ClaimSet := [[claim+], {entry: box}]`.
-fn claim_set(v: &Value) -> R {
-    let s = canonical(v, MAX_MESSAGE - 64 * 1024)?;
-    let a = tuple(&s, 2)?;
-    let claims = arr(&a[0])?;
-    ok(claims.len().is_power_of_two() && claims.len() <= 65_536, "claim count")?;
-    claims.iter().try_for_each(|c| b(c, 32))?;
-    let Value::Map(m) = &a[1] else { return Err("entries") };
-    m.iter().try_for_each(|(k, x)| {
-        b(k, 32)?;
-        ok(claims.contains(k), "entry not a claim")?;
-        sealed_box(x)
-    })
+    b(&a[7], 64)
 }
 
 fn val(v: &Value) -> R {
@@ -190,33 +167,22 @@ fn item(v: &Value) -> R {
     let a = arr(v)?;
     match (a.first().and_then(uint), a.len()) {
         (Some(0), 4) => b(&a[1], 32).and(opt_of(&a[2], |s| b(s, 64))).and(class(&a[3])),
-        (Some(1), 4) => b(&a[1], 16).and(list(&a[2], 0, 256, |h| b(h, 32))).and(class(&a[3])),
         (Some(2), 5) => b(&a[1], 16).and(bmax(&a[2], MAX_BLOB)).and(b(&a[3], 57)).and(b(&a[4], 64)),
-        (Some(3), 5) => b(&a[1], 16).and(opt_of(&a[2], |s| b(s, 32))).and(b(&a[3], 32)).and(b(&a[4], 64)),
-        (Some(4), 5) => b(&a[1], 32).and(b(&a[2], 32)).and(b(&a[3], 64)).and(class(&a[4])),
         _ => Err("item"),
     }
-}
-
-fn grant(v: &Value) -> R {
-    let a = tuple(v, 2)?;
-    opt_of(&a[0], |e| canonical(e, MAX_MESSAGE).and_then(|x| sealed_box(&x)))?;
-    list(&a[1], 1, usize::MAX, step)
 }
 
 /// A Shared answer: only code 0 carries anything (a class other than 0 included), and a `sig` only
 /// beside a tag.
 fn shared(v: &Value) -> R {
-    let a = tuple(v, 5)?;
+    let a = tuple(v, 4)?;
     let code = uint(&a[0]).ok_or("code")?;
     let tag = opt(&a[1])?;
     tag.map_or(Ok(()), |t| b(t, 32))?;
-    let g = opt(&a[2])?;
-    g.map_or(Ok(()), grant)?;
-    let sig = opt(&a[3])?;
+    let sig = opt(&a[2])?;
     sig.map_or(Ok(()), |s| b(s, 64))?;
-    class(&a[4])?;
-    ok(code == 0 || (tag.is_none() && g.is_none() && sig.is_none() && uint(&a[4]) == Some(0)), "refusal carrying")?;
+    class(&a[3])?;
+    ok(code == 0 || (tag.is_none() && sig.is_none() && uint(&a[3]) == Some(0)), "refusal carrying")?;
     ok(sig.is_none() || tag.is_some(), "sig without tag")
 }
 
@@ -284,7 +250,7 @@ fn spec_decode(body: &[u8]) -> Result<(), &'static str> {
     let a = &all[2..];
     // spec/wire.md §11.1, §11.2: pushes 0; requests and replies nonzero but an Error; the shared
     // set's and the stream's requests and answers (every Fetch, Want) top-bit; NoRecord 2^31
-    let push = matches!(kind, 29 | 43..=46 | 49);
+    let push = matches!(kind, 29 | 43..=46);
     let id_ok = match kind {
         0 => true,
         _ if push => id == 0,
@@ -297,11 +263,8 @@ fn spec_decode(body: &[u8]) -> Result<(), &'static str> {
         1 | 40 => n(0),
         2 | 3 => n(1).and_then(|_| u(&a[0])),
         7 => n(3).and_then(|_| b(&a[0], 16)).and_then(|_| {
-            // `[[step, Opt(claim_set)]+]`, as many as fit the message, then `Opt(endorsement)`
-            list(&a[1], 1, usize::MAX, |x| {
-                let t = tuple(x, 2)?;
-                step(&t[0]).and_then(|_| opt_of(&t[1], claim_set))
-            })?;
+            // `[step+]`, as many as fit the message, then `Opt(endorsement)`
+            list(&a[1], 1, usize::MAX, step)?;
             opt_of(&a[2], |e| b(e, 64))
         }),
         11 => n(1).and_then(|_| list(&a[0], 1, 1024, u)),
@@ -399,7 +362,6 @@ fn spec_decode(body: &[u8]) -> Result<(), &'static str> {
         44 => n(1).and_then(|_| cursor(&a[0])),
         45 => n(1).and_then(|_| b(&a[0], 32)),
         46 => n(2).and_then(|_| list(&a[0], 0, 4096, |s| b(s, 16))).and_then(|_| boolean(&a[1])),
-        49 => n(4).and_then(|_| b(&a[0], 16)).and_then(|_| b(&a[1], 15)).and_then(|_| tuple(&a[2], 2).and_then(|e| u(&e[0]).and_then(|_| b(&e[1], 32)))).and_then(|_| bmax(&a[3], MAX_BLOB)),
         47 => n(2).and_then(|_| max_reply(&a[0])).and_then(|_| {
             // groups of a sync ID and its commit IDs, each once per group, 1024 IDs in all
             let total = std::cell::Cell::new(0usize);
@@ -491,7 +453,7 @@ fn nodes(v: &Value) -> usize {
     }
 }
 
-/// Mutates also inside the canonical bytes a byte string carries (steps, claim sets, boxes),
+/// Mutates also inside the canonical bytes a byte string carries (steps),
 /// so their layouts are reached.
 fn mutate_embedded(v: &mut Value, r: &mut Rng) {
     fn paths(v: &Value, here: &mut Vec<usize>, out: &mut Vec<Vec<usize>>) {

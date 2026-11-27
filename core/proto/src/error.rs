@@ -16,7 +16,7 @@ pub enum Error {
     UnknownKind(u64),
     /// The Hellos share no protocol version.
     NoCommonVersion,
-    /// A sync ID object inside a message (step, claim set, entry box, proof, delete item).
+    /// A sync ID object inside a message (step, proof, delete item).
     Blob(osis_blob::Error),
 }
 

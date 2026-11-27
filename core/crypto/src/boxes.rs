@@ -1,4 +1,4 @@
-//! `secrets.0` boxes, entry boxes and history boxes (spec/crypto.md §4, spec/wire.md §7).
+//! `secrets.0` boxes and history boxes (spec/crypto.md §4, spec/wire.md §7).
 //! The `box` value itself (spec/data-model.md §9) is osis-keys'; this module builds the AD
 //! tuples and seals, wraps and opens the payloads.
 
@@ -6,7 +6,7 @@ use crate::aead::{self, SUITE_KEY_LEN, ZERO_NONCE};
 use crate::kdf::{self, kdf};
 use crate::{Error, KemPublicKey, KemSecret, SUITE_1, Secret32, open_sealed, seal};
 use osis_base::cbor::{Limits, decode, encode};
-use osis_base::{SyncId, Role, Tid, Value};
+use osis_base::{Role, Tid, Value};
 use rand_core::CryptoRngCore;
 use zeroize::Zeroizing;
 
@@ -76,7 +76,7 @@ impl Epoch {
 /// Form fields of a box, as they enter its AD.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum BoxForm<'a> {
-    /// To the holder's KEM key of the keyset `keyset` (none for an entry box), under `suite`.
+    /// To the holder's KEM key of the keyset `keyset` (none: the form names no keyset), under `suite`.
     Sealed { keyset: Option<Epoch>, suite: u64 },
     /// Wrap under `kdf("box", s)`, s the holder's own secret of epoch `epoch_s`.
     Symmetric { epoch_s: Epoch },
@@ -97,45 +97,30 @@ impl BoxForm<'_> {
     }
 }
 
-/// Where a box sits: the AD fields before the form (spec/wire.md §7).
+/// Where a box sits: the AD fields before the form (spec/wire.md §7): a `secrets.0` box of
+/// `actor` to `holder` for (role, epoch).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum BoxSlot {
-    /// A `secrets.0` box of `actor` to `holder` for (role, epoch).
-    Secrets { actor: Tid, holder: Tid, role: Role, epoch: Epoch },
-    /// An entry box of a sync ID step; `actor`, the sync ID's thing, is the actor whose epoch
-    /// the payload names (not in the AD).
-    Entry { sync_id: SyncId, step_key: [u8; 32], actor: Tid },
+pub struct BoxSlot {
+    pub actor: Tid,
+    pub holder: Tid,
+    pub role: Role,
+    pub epoch: Epoch,
 }
 
 impl BoxSlot {
     /// The actor whose epochs the box carries.
     pub fn actor(&self) -> &Tid {
-        match self {
-            BoxSlot::Secrets { actor, .. } | BoxSlot::Entry { actor, .. } => actor,
-        }
+        &self.actor
     }
 
-    /// The (role, epoch) of a `secrets.0` box's key: what its payload must name.
-    fn key(&self) -> Option<(Role, Epoch)> {
-        match self {
-            BoxSlot::Secrets { role, epoch, .. } => Some((*role, *epoch)),
-            BoxSlot::Entry { .. } => None,
-        }
-    }
-
-    /// AD `[actor, holder, role, n, nonce, form]` or `[sync_id, step_key, form]`.
+    /// AD `[actor, holder, role, n, nonce, form]`.
     pub fn ad(&self, form: BoxForm) -> Result<Vec<u8>, Error> {
         Ok(encode(&Value::List(self.ad_items(form)?)))
     }
 
     fn ad_items(&self, form: BoxForm) -> Result<Vec<Value>, Error> {
         let form = form.to_wire()?;
-        Ok(match self {
-            BoxSlot::Secrets { actor, holder, role, epoch } => {
-                vec![tid(actor), tid(holder), role_value(*role), Value::Int(epoch.n), Value::Bytes(epoch.nonce.to_vec()), form]
-            }
-            BoxSlot::Entry { sync_id, step_key, .. } => vec![Value::Bytes(sync_id.0.to_vec()), Value::Bytes(step_key.to_vec()), form],
-        })
+        Ok(vec![tid(&self.actor), tid(&self.holder), role_value(self.role), Value::Int(self.epoch.n), Value::Bytes(self.epoch.nonce.to_vec()), form])
     }
 }
 
@@ -148,7 +133,7 @@ pub struct BoxItem {
 }
 
 /// Sealed form, payload `[role, n, secret]`, to `recipient` (the KEM key of keyset `keyset`,
-/// none for an entry box) under suite 1. Returns the raw sealed box. The item's epoch must be the
+/// none for a box sealed outside any keyset) under suite 1. Returns the raw sealed box. The item's epoch must be the
 /// one its secret names (spec/crypto.md §4); at a `secrets.0` slot, its key's (role, epoch).
 pub fn seal_box(recipient: &KemPublicKey, slot: &BoxSlot, keyset: Option<Epoch>, item: &BoxItem, rng: &mut dyn CryptoRngCore) -> Result<Vec<u8>, Error> {
     let payload = box_payload(slot, item)?;
@@ -156,126 +141,11 @@ pub fn seal_box(recipient: &KemPublicKey, slot: &BoxSlot, keyset: Option<Epoch>,
     seal(recipient, &ad, &payload, rng)
 }
 
-/// What an entry box carries (spec/sync-ids.md §3): the read secrets (`read`; none in the
-/// public's box where it holds only sync) and the sync secret whose role key the step registers.
-#[derive(Clone, PartialEq, Eq, Debug)]
-pub struct EntryItem {
-    pub read: Option<EntryRead>,
-    pub sync: (Epoch, Secret32),
-}
-
-/// An entry box's read secrets: the read secret of the epoch its step registers and, when that
-/// epoch supersedes one, the earlier secret its rotation commit is wrapped under.
-#[derive(Clone, PartialEq, Eq, Debug)]
-pub struct EntryRead {
-    pub epoch: Epoch,
-    pub secret: Secret32,
-    pub earlier: Option<(Epoch, Secret32)>,
-}
-
-/// An entry box at `slot`: payload `[role, n, secret, earlier, sync]`, `earlier` `[n, secret]` or
-/// `[]`, `sync` `[n, secret]` (spec/wire.md §7). Each secret must name its epoch of the slot's
-/// actor. A sealed entry box is a reader's: it carries the read secrets.
-pub fn seal_entry(recipient: &KemPublicKey, slot: &BoxSlot, item: &EntryItem, rng: &mut dyn CryptoRngCore) -> Result<Vec<u8>, Error> {
-    if item.read.is_none() {
-        return Err(Error::Malformed("entry box item"));
-    }
-    let payload = entry_payload(slot, item)?;
-    let ad = slot.ad(BoxForm::Sealed { keyset: None, suite: u64::from(SUITE_1) })?;
-    seal(recipient, &ad, &payload, rng)
-}
-
-/// The public entry's box at `slot` (spec/sync-ids.md §3 Entry boxes): the open form, its payload
-/// in clear, checked as `seal_entry` checks it: `[role, n, secret, earlier, sync]` where the public
-/// reads, `[role, sync]` where it holds only sync.
-pub fn open_form_entry(slot: &BoxSlot, item: &EntryItem) -> Result<Vec<u8>, Error> {
-    Ok(entry_payload(slot, item)?.to_vec())
-}
-
-/// Reads an open-form entry box at `slot`: each epoch the one its secret names under the slot's
-/// actor.
-pub fn read_open_entry(slot: &BoxSlot, payload: &[u8]) -> Result<EntryItem, Error> {
-    if slot.key().is_some() {
-        return Err(Error::Malformed("not an entry box slot"));
-    }
-    let value = decode(payload, &Limits::DEFAULT).map_err(|_| Error::Malformed("box payload"))?;
-    let out = parse_entry_item(&value, slot.actor());
-    wipe_value(value);
-    out
-}
-
-/// An entry box's payload (spec/wire.md §7), each secret naming its epoch of the slot's actor.
-fn entry_payload(slot: &BoxSlot, item: &EntryItem) -> Result<Zeroizing<Vec<u8>>, Error> {
-    let actor = slot.actor();
-    let named = |e: &Epoch, s: &Secret32| e.names(actor, Role::Read, s);
-    let bad_read = item.read.as_ref().is_some_and(|r| !named(&r.epoch, &r.secret) || r.earlier.as_ref().is_some_and(|(e, s)| !named(e, s)));
-    if slot.key().is_some() || bad_read || !item.sync.0.names(actor, Role::Sync, &item.sync.1) {
-        return Err(Error::Malformed("entry box item"));
-    }
-    let sync = Value::List(vec![Value::Int(item.sync.0.n), Value::Bytes(item.sync.1.expose().to_vec())]);
-    let value = match &item.read {
-        Some(r) => {
-            let earlier = r.earlier.iter().flat_map(|(e, s)| [Value::Int(e.n), Value::Bytes(s.expose().to_vec())]).collect();
-            Value::List(vec![role_value(Role::Read), Value::Int(r.epoch.n), Value::Bytes(r.secret.expose().to_vec()), Value::List(earlier), sync])
-        }
-        None => Value::List(vec![role_value(Role::Sync), sync]),
-    };
-    let payload = Zeroizing::new(encode(&value));
-    wipe_value(value);
-    Ok(payload)
-}
-
-/// Opens an entry box at `slot`. Each epoch is the one its secret names under the slot's actor.
-/// A sealed entry box carries the read secrets.
-pub fn open_entry(kem: &KemSecret, slot: &BoxSlot, form: BoxForm, sealed: &[u8]) -> Result<EntryItem, Error> {
-    if slot.key().is_some() {
-        return Err(Error::Malformed("not an entry box slot"));
-    }
-    sealed_form(form, "entry box form")?;
-    let payload = open_sealed(kem, &slot.ad(form)?, sealed)?;
-    let value = decode(&payload, &Limits::DEFAULT).map_err(|_| Error::Malformed("box payload"))?;
-    let out = parse_entry_item(&value, slot.actor());
-    wipe_value(value);
-    match out {
-        Ok(i) if i.read.is_none() => Err(Error::Malformed("entry box carries other than the read secret")),
-        o => o,
-    }
-}
-
-fn parse_entry_item(v: &Value, actor: &Tid) -> Result<EntryItem, Error> {
-    let Value::List(f) = v else { return Err(Error::Malformed("box payload")) };
-    let at = |r: Role, n: &Value, s: &Value| -> Result<(Epoch, Secret32), Error> {
-        let s = Secret32::from_bytes(get_array(s)?);
-        Ok((Epoch::derive(actor, r, get_uint(n)?, &s)?, s))
-    };
-    let sync_of = |sync: &[Value]| -> Result<(Epoch, Secret32), Error> {
-        let [n, s] = sync else { return Err(Error::Malformed("box payload")) };
-        at(Role::Sync, n, s)
-    };
-    match f.as_slice() {
-        [role, n, secret, Value::List(earlier), Value::List(sync)] if get_role(role)? == Role::Read => {
-            let (epoch, secret) = at(Role::Read, n, secret)?;
-            let earlier = match earlier.as_slice() {
-                [] => None,
-                [n, s] => Some(at(Role::Read, n, s)?),
-                _ => return Err(Error::Malformed("box payload")),
-            };
-            Ok(EntryItem { read: Some(EntryRead { epoch, secret, earlier }), sync: sync_of(sync)? })
-        }
-        [role, Value::List(sync)] if get_role(role)? == Role::Sync => Ok(EntryItem { read: None, sync: sync_of(sync)? }),
-        [_, _, _, _, _] | [_, _] => Err(Error::Malformed("entry box carries other than the read or sync secrets")),
-        _ => Err(Error::Malformed("box payload")),
-    }
-}
-
 /// Opens a sealed-form box at `slot` with the form fields read beside it. The AD is built here,
 /// so a box opens only under its own slot and form. An unknown suite parks before decryption.
 /// The item's epoch is the one its secret names (spec/crypto.md §4); a `secrets.0` box whose
 /// item is not its key's (role, epoch) is `Malformed`.
 pub fn open_box(kem: &KemSecret, slot: &BoxSlot, form: BoxForm, sealed: &[u8]) -> Result<BoxItem, Error> {
-    if slot.key().is_none() {
-        return Err(Error::Malformed("an entry box is opened by open_entry"));
-    }
     sealed_form(form, "not the sealed form")?;
     let payload = open_sealed(kem, &slot.ad(form)?, sealed)?;
     box_item(slot, &payload)
@@ -312,7 +182,7 @@ pub fn open_joint_box(kems: &[&KemSecret], slot: &BoxSlot, keysets: &[Epoch], su
     if suite != u64::from(SUITE_1) {
         return Err(Error::UnknownSuite(suite));
     }
-    if kems.len() != keysets.len() || !joint_keysets(keysets) || slot.key().is_none() {
+    if kems.len() != keysets.len() || !joint_keysets(keysets) {
         return Err(Error::Malformed("joint box keysets"));
     }
     let ad = slot.ad(BoxForm::Joint { keysets, suite })?;
@@ -332,9 +202,6 @@ pub fn open_form_box(slot: &BoxSlot, item: &BoxItem) -> Result<Vec<u8>, Error> {
 
 /// Reads an open-form box at `slot`: its item must name the slot's (role, epoch).
 pub fn read_open_box(slot: &BoxSlot, payload: &[u8]) -> Result<BoxItem, Error> {
-    if slot.key().is_none() {
-        return Err(Error::Malformed("an entry box is read by its own rule"));
-    }
     box_item(slot, payload)
 }
 
@@ -345,11 +212,10 @@ fn joint_keysets(keysets: &[Epoch]) -> bool {
 
 /// The sealed payload `[role, n, secret]` of `item`, checked against `slot`.
 fn box_payload(slot: &BoxSlot, item: &BoxItem) -> Result<Zeroizing<Vec<u8>>, Error> {
-    let key = slot.key().ok_or(Error::Malformed("an entry box is sealed by seal_entry"))?;
     if !item.epoch.names(slot.actor(), item.role, &item.secret) {
         return Err(Error::Malformed("box item epoch"));
     }
-    if key != (item.role, item.epoch) {
+    if (slot.role, slot.epoch) != (item.role, item.epoch) {
         return Err(Error::Malformed("box carries no secret of its key"));
     }
     let value = Value::List(vec![role_value(item.role), Value::Int(item.epoch.n), Value::Bytes(item.secret.expose().to_vec())]);
@@ -364,7 +230,7 @@ fn box_item(slot: &BoxSlot, payload: &[u8]) -> Result<BoxItem, Error> {
     let out = parse_box_item(&value, slot.actor());
     wipe_value(value);
     let out = out?;
-    if slot.key().is_some_and(|k| k != (out.role, out.epoch)) {
+    if (slot.role, slot.epoch) != (out.role, out.epoch) {
         return Err(Error::Malformed("box item does not name its key's epoch"));
     }
     Ok(out)
@@ -380,14 +246,14 @@ fn parse_box_item(v: &Value, actor: &Tid) -> Result<BoxItem, Error> {
 }
 
 /// Symmetric form at `slot`: wrap of `secret` under `kdf("box", s)`, s of epoch `epoch_s`;
-/// nonce = BLAKE3(AD)[..24]. At a `secrets.0` slot, `secret` must name the key's epoch.
+/// nonce = BLAKE3(AD)[..24]. `secret` must name the key's epoch.
 pub fn wrap_symmetric_box(s: &Secret32, slot: &BoxSlot, epoch_s: Epoch, secret: &Secret32) -> Result<[u8; SUITE_KEY_LEN], Error> {
     check_names(slot, secret)?;
     let ad = slot.ad(BoxForm::Symmetric { epoch_s })?;
     aead::seal_suite_key(kdf(kdf::BOX, s.expose(), b"").expose(), &ad_nonce(&ad), &ad, secret)
 }
 
-/// Opens a symmetric box; at a `secrets.0` slot a secret that does not name the key's epoch is
+/// Opens a symmetric box; a secret that does not name the key's epoch is
 /// `Malformed` (spec/crypto.md §4).
 pub fn open_symmetric_box(s: &Secret32, slot: &BoxSlot, epoch_s: Epoch, wrap: &[u8]) -> Result<Secret32, Error> {
     let ad = slot.ad(BoxForm::Symmetric { epoch_s })?;
@@ -397,10 +263,10 @@ pub fn open_symmetric_box(s: &Secret32, slot: &BoxSlot, epoch_s: Epoch, wrap: &[
 }
 
 fn check_names(slot: &BoxSlot, secret: &Secret32) -> Result<(), Error> {
-    match slot.key() {
-        Some((r, e)) if !e.names(slot.actor(), r, secret) => Err(Error::Malformed("box secret does not name its key's epoch")),
-        _ => Ok(()),
+    if !slot.epoch.names(&slot.actor, slot.role, secret) {
+        return Err(Error::Malformed("box secret does not name its key's epoch"));
     }
+    Ok(())
 }
 
 fn ad_nonce(ad: &[u8]) -> [u8; 24] {
@@ -560,7 +426,7 @@ mod tests {
     }
 
     fn slot(a: u8, holder: u8, role: Role, epoch: Epoch) -> BoxSlot {
-        BoxSlot::Secrets { actor: actor(a), holder: actor(holder), role, epoch }
+        BoxSlot { actor: actor(a), holder: actor(holder), role, epoch }
     }
 
     // spec/crypto.md §4: the nonce rule binds the secret (through its roles secret), actor, role
@@ -662,42 +528,6 @@ mod tests {
         assert_eq!(open_box(&kem, &at, BoxForm::Sealed { keyset: None, suite: 1 }, &b), Err(Error::Malformed("box item does not name its key's epoch")));
     }
 
-    // spec/wire.md §7, spec/sync-ids.md §3: an entry box names epochs of the sync ID's thing, with or without the earlier secret; a box of the wrong payload or slot, a write secret, or a secret its epoch does not name, stays shut
-    #[test]
-    fn entry_box_round_trip() {
-        let mut rng = SeededRng::from_u64(0);
-        let kem = KemSecret::derive(&sec(0x31));
-        let g = actor(5);
-        let entry = BoxSlot::Entry { sync_id: SyncId([3; 16]), step_key: [5; 32], actor: g };
-        let form = BoxForm::Sealed { keyset: None, suite: 1 };
-        let read = |n, s: u8| Epoch::derive(&g, Role::Read, n, &sec(s)).unwrap();
-        let sync = (Epoch::derive(&g, Role::Sync, 4, &sec(6)).unwrap(), sec(6));
-        let r = EntryRead { epoch: read(4, 7), secret: sec(7), earlier: None };
-        let bare = EntryItem { read: Some(r.clone()), sync: sync.clone() };
-        let both = EntryItem { read: Some(EntryRead { earlier: Some((read(3, 8), sec(8))), ..r.clone() }), sync: sync.clone() };
-        for i in [&bare, &both] {
-            let b = seal_entry(kem.public(), &entry, i, &mut rng).unwrap();
-            assert_eq!(&open_entry(&kem, &entry, form, &b).unwrap(), i);
-            assert!(open_box(&kem, &entry, form, &b).is_err());
-            assert_eq!(&read_open_entry(&entry, &open_form_entry(&entry, i).unwrap()).unwrap(), i);
-        }
-        // the public's box where it holds only sync: the sync secret, nothing sealed so
-        let alone = EntryItem { read: None, sync: sync.clone() };
-        assert_eq!(read_open_entry(&entry, &open_form_entry(&entry, &alone).unwrap()).unwrap(), alone);
-        assert_eq!(seal_entry(kem.public(), &entry, &alone, &mut rng), Err(Error::Malformed("entry box item")));
-        let lying = EntryItem { read: Some(EntryRead { earlier: Some((read(3, 8), sec(9))), ..r.clone() }), sync: sync.clone() };
-        assert_eq!(seal_entry(kem.public(), &entry, &lying, &mut rng), Err(Error::Malformed("entry box item")));
-        let read_as_sync = EntryItem { sync: (read(4, 7), sec(7)), ..bare.clone() };
-        assert_eq!(seal_entry(kem.public(), &entry, &read_as_sync, &mut rng), Err(Error::Malformed("entry box item")), "the sync secret names a sync epoch");
-        assert!(seal_entry(kem.public(), &slot(1, 2, Role::Read, read(4, 7)), &bare, &mut rng).is_err());
-        let ad = entry.ad(form).unwrap();
-        let s = || Value::List(vec![Value::Int(4), Value::Bytes(vec![6; 32])]);
-        for v in [vec![Value::Int(0), Value::Int(4), Value::Bytes(vec![7; 32]), Value::List(vec![])], vec![Value::Int(1), Value::Int(4), Value::Bytes(vec![7; 32]), Value::List(vec![]), s()], vec![Value::Int(0), Value::Int(4), Value::Bytes(vec![7; 32]), Value::List(vec![Value::Int(3)]), s()], vec![role_value(Role::Sync), s()], vec![role_value(Role::Read), s()]] {
-            let b = seal(kem.public(), &ad, &encode(&Value::List(v)), &mut rng).unwrap();
-            assert!(open_entry(&kem, &entry, form, &b).is_err());
-        }
-    }
-
     // spec/wire.md §7: AD layout `[actor, holder, role, n, nonce, [0, Opt(epoch), suite]]`;
     // spec/wire.md §1: ints beyond i64 are not encodable.
     #[test]
@@ -712,11 +542,11 @@ mod tests {
         expect.extend([4; 32]);
         expect.extend([0x83, 0x00, 0x80, 0x01]);
         assert_eq!(ad, expect);
-        let entry = BoxSlot::Entry { sync_id: SyncId([3; 16]), step_key: [5; 32], actor: actor(9) };
-        let sym = entry.ad(BoxForm::Symmetric { epoch_s: Epoch::new(1, [1; 32]).unwrap() }).unwrap();
-        assert_eq!(sym[..2], [0x83, 0x50]);
+        let at = slot(1, 2, Role::Admin, e);
+        let sym = at.ad(BoxForm::Symmetric { epoch_s: Epoch::new(1, [1; 32]).unwrap() }).unwrap();
+        assert_eq!(sym[..2], [0x86, 0x4f]);
         assert_eq!(sym[sym.len() - 38..sym.len() - 33], [0x82, 0x01, 0x82, 0x01, 0x58]);
-        assert_eq!(entry.ad(BoxForm::Sealed { keyset: None, suite: u64::MAX }), Err(Error::TooLarge));
+        assert_eq!(at.ad(BoxForm::Sealed { keyset: None, suite: u64::MAX }), Err(Error::TooLarge));
     }
 
     // spec/wire.md §7: symmetric form is deterministic, binds its slot and epoch of s, fails

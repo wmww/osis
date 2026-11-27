@@ -1,7 +1,7 @@
 //! Role keys, the sync ID, claim keys, static entries and the open signature (spec/sync-ids.md §2, §3, spec/sync-opens.md §4,
 //! spec/wire.md §8, §11.2).
 
-use crate::kdf::{self, PUBLIC_CLAIM, SYNC_ID, STATIC_CLAIM, kdf};
+use crate::kdf::{self, SYNC_ID, kdf};
 use crate::{Domain, Error, Secret32, Signature, SigningSecret, VerifyingKey, X25519Secret};
 use osis_base::{SyncId, Role, Value, encode};
 
@@ -75,21 +75,6 @@ pub fn claim_key(own: &X25519Secret, their: &[u8; 32], sync_id: &SyncId, step_ke
     Ok(SigningSecret::from_seed(&kdf(kdf::SYNC_CLAIM, dh.expose(), &input)))
 }
 
-/// Static entry of a link key (spec/sync-ids.md §3): BLAKE3("osis v1 static claim" || sync ID || signing key).
-pub fn static_entry(sync_id: &SyncId, signing: &VerifyingKey) -> [u8; 32] {
-    let mut h = blake3::Hasher::new();
-    h.update(STATIC_CLAIM.as_bytes()).update(&sync_id.0).update(&signing.to_bytes());
-    *h.finalize().as_bytes()
-}
-
-/// The public entry of a sync ID (spec/sync-ids.md §3): BLAKE3("osis v1 public claim" || sync ID).
-/// Every node derives it: listed, it says the public reads the sync ID's thing.
-pub fn public_entry(sync_id: &SyncId) -> [u8; 32] {
-    let mut h = blake3::Hasher::new();
-    h.update(PUBLIC_CLAIM.as_bytes()).update(&sync_id.0);
-    *h.finalize().as_bytes()
-}
-
 /// Digest of an open: BLAKE3(canonical `[side, sync_id, challenge, static_key]`) (spec/wire.md
 /// §11.2), `side` the signer's (`by_listener`: 0 the dialer, 1 the listener), `challenge` the
 /// other side's Hello challenge. Invariant, as for `proof_digest`: an open signature made as one
@@ -123,7 +108,7 @@ pub fn verify_open(key: &VerifyingKey, by_listener: bool, sync_id: &SyncId, chal
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{KemSecret, SeededRng, signing_key};
+    use crate::{KemSecret, SeededRng};
 
     // spec/sync-ids.md §2: role keys differ per role and secret; deposit keys per sync ID.
     #[test]
@@ -156,9 +141,6 @@ mod tests {
         let other = claim_key(&step, &kem.public().x25519(), &SyncId([8; 16]), &step.public()).unwrap();
         assert_ne!(other.verifying_key(), by_holder.verifying_key());
         assert_eq!(claim_key(&step, &[0; 32], &sync_id, &step.public()).err(), Some(Error::NonContributory));
-        let signing = signing_key(&Secret32::from_bytes([6; 32])).verifying_key();
-        let e = static_entry(&sync_id, &signing);
-        assert_ne!(e, static_entry(&SyncId([8; 16]), &signing));
     }
 
     // spec/wire.md §11.2: an open signature binds sync ID, challenge and static key.

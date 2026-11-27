@@ -44,8 +44,6 @@ pub const MAX_DELETE_ITEMS: usize = 1024;
 pub const MAX_FETCH_IDS: usize = 1024;
 /// Items in one Offer or Lost, and so answers in its Shared (spec/wire.md §11.2).
 pub const MAX_OFFER_ITEMS: usize = 1024;
-/// Hits in one ByRole item (spec/wire.md §11.2 Offer).
-pub const MAX_ITEM_HITS: usize = 256;
 /// Sync IDs in one Members page (spec/wire.md §11.2 Digest).
 pub const MAX_MEMBERS: usize = 4096;
 /// An opaque node-log cursor (spec/wire.md §11.2 Pull, Lost).
@@ -55,13 +53,10 @@ pub const CLIENT_SECRET_LEN: usize = 32;
 /// A client-port session id, exactly (spec/wire.md §11.2 Client port).
 pub const SESSION_ID_LEN: usize = 16;
 
-/// A step's greatest canonical encoding: nine fixed-size items, `prev` present (spec/wire.md §8).
-pub const MAX_STEP_BYTES: usize = 323;
+/// A step's greatest canonical encoding: eight fixed-size items, `prev` present (spec/wire.md §8).
+pub const MAX_STEP_BYTES: usize = 289;
 /// A step's greatest encoding as a byte string in a message (spec/wire.md §11.2 Offer: 326).
 pub const MAX_STEP_WIRE: usize = MAX_STEP_BYTES + 3;
-/// Steps a Behind item's answer carries at most: ⌊`REPLY_BUDGET` / 326⌋ (spec/wire.md §11.2
-/// Offer, the step bound; past it the item is answered 4).
-pub const MAX_BEHIND_STEPS: usize = REPLY_BUDGET / MAX_STEP_WIRE;
 
 /// Golomb-Rice parameter of a beacon filter (spec/wire.md §11.2 Beacons).
 pub const BEACON_P: u32 = 8;
@@ -82,8 +77,8 @@ pub const MAX_MESSAGE_ITEMS: usize = 1 << 20;
 /// How long a complete pass waits for a peer whose record holds the sync ID: recommended
 /// 1 hour (spec/wire.md §2, spec/sync-status.md §1).
 pub const PASS_WAIT_MS: u64 = 60 * 60 * 1000;
-/// The recommended minimum deposit budget of a sync ID whose current step lists `claims`
-/// claims: `64 + 4 × claims` entries and that many × 32 KiB bytes (spec/wire.md §2,
+/// The recommended minimum deposit budget of a sync ID whose head has `claims` head claims
+/// (spec/sync-ids.md §3): `64 + 4 × claims` entries and that many × 32 KiB bytes (spec/wire.md §2,
 /// spec/sync-inbox.md §3).
 pub fn deposit_budget(claims: usize) -> (usize, usize) {
     let entries = 64 + 4 * claims;
@@ -100,7 +95,6 @@ mod tests {
         assert_eq!(MAX_MESSAGE, 9_437_184);
         assert_eq!(REPLY_BUDGET, 9_437_184 - 65_536);
         assert_eq!(MAX_RESUME_TAGS, 277_562);
-        assert_eq!(MAX_BEHIND_STEPS, 28_747);
         assert_eq!(deposit_budget(4), (80, 80 * 32 * 1024));
     }
 }

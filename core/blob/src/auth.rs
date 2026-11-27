@@ -237,21 +237,16 @@ fn by_from_value(v: &Value) -> Result<Vec<(Level, Signature)>, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::step::tests::{Secrets, THING};
+    use crate::step::tests::Secrets;
     use crate::step::{genesis, register};
-    use osis_crypto::{Epoch, SeededRng, Secret32, role_key};
-
-    fn epoch(n: u64) -> Epoch {
-        Epoch::new(n, [n as u8; 32]).unwrap()
-    }
+    use osis_crypto::{Secret32, role_key};
 
     // spec/sync-ids.md §6, spec/wire.md §11.2: stamps and deposits verify
     // under their own key and domain only.
     #[test]
     fn entry_signatures() {
         let g = Secrets::new(30);
-        let mut rng = SeededRng::from_u64(0);
-        let (s0, _) = register(&genesis(&g.admin).0, &g.delete(), g.keys(), &[], (&THING, epoch(0), &g.read), g.sync_at(), &mut rng).unwrap();
+        let s0 = register(&genesis(&g.admin), &g.delete(), g.keys(), [0; 32]).unwrap();
         let (l, b, w) = (s0.sync_id, BlobId([1; 32]), [2u8; 49]);
         let write = role_key(RoleKey::Write, &g.write);
         let stamp = sign_stamp(&write, &l, &b, &w, false);
@@ -276,8 +271,7 @@ mod tests {
     #[test]
     fn cover_levels_signs_what_the_store_takes() {
         let g = Secrets::new(40);
-        let mut rng = SeededRng::from_u64(0);
-        let (s0, _) = register(&genesis(&g.admin).0, &g.delete(), g.keys(), &[], (&THING, epoch(0), &g.read), g.sync_at(), &mut rng).unwrap();
+        let s0 = register(&genesis(&g.admin), &g.delete(), g.keys(), [0; 32]).unwrap();
         let l = s0.sync_id;
         let (sync, write) = (role_key(RoleKey::Sync, &g.sync), role_key(RoleKey::Write, &g.write));
         let dk = |b: u8| DeleteSecret::write(&Secret32::from_bytes([b; 32]));
@@ -333,8 +327,7 @@ mod tests {
     #[test]
     fn deletes() {
         let g = Secrets::new(40);
-        let mut rng = SeededRng::from_u64(0);
-        let (s0, _) = register(&genesis(&g.admin).0, &g.delete(), g.keys(), &[], (&THING, epoch(0), &g.read), g.sync_at(), &mut rng).unwrap();
+        let s0 = register(&genesis(&g.admin), &g.delete(), g.keys(), [0; 32]).unwrap();
         let l = s0.sync_id;
         let (sync, write) = (role_key(RoleKey::Sync, &g.sync), role_key(RoleKey::Write, &g.write));
         let salt = [5u8; 16];

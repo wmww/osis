@@ -1,6 +1,6 @@
 //! Protocol version 1 messages (spec/wire.md §11.2) with their caps and decoder limits (§12).
-//! Steps, claim sets, delete items and holder keys are osis-blob's types; the wire carries
-//! steps, claim sets and entry boxes as their canonical bytes in byte strings. Decoding takes
+//! Steps, delete items and holder keys are osis-blob's types; the wire carries steps as their
+//! canonical bytes in byte strings. Decoding takes
 //! only canonical CBOR (spec/data-model.md §5) in each kind's exact layout, so whatever decodes
 //! re-encodes to the bytes it came from.
 
@@ -11,10 +11,8 @@ use crate::limits::*;
 use crate::{Proof, SyncId};
 use osis_base::{BlobId, CommitId, Limits, Tid, Value, cbor};
 pub use osis_crypto::Signature;
-pub use osis_blob::{Certificates, ClaimSet, DeleteItem, Step, StepId};
-use osis_schema::Codec;
+pub use osis_blob::{Certificates, DeleteItem, Step, StepId};
 use std::cell::Cell;
-pub use osis_schema::core_types::SecretBox;
 
 pub const WRAP_LEN: usize = osis_crypto::WRAP_LEN;
 /// A wrap: 57 bytes (spec/wire.md §5).
@@ -85,7 +83,7 @@ pub enum Event {
     /// The sender is full for the sync ID (true) or has room again (false). Only in a Stream
     /// with no cursor.
     Full(bool),
-    /// A new head, without claim set.
+    /// A new head.
     Head(Step),
     /// The sender refused a pulled entry for anything but room, with the refusal's code. Only
     /// in a Stream with no cursor.
@@ -162,17 +160,6 @@ pub struct DepositItem {
     pub sig: Signature,
 }
 
-/// A Behind item `[3, sync_id, Opt(step_id), key, sig]` (spec/wire.md §11.2 Offer,
-/// spec/sync-ids.md §6): a credential key of the step it names (none: by a sync key or a key
-/// actor's signing key) and an open signature by it.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct BehindItem {
-    pub sync_id: SyncId,
-    pub step: Option<StepId>,
-    pub key: [u8; 32],
-    pub sig: Signature,
-}
-
 /// What a side does with S, as it declares opening S (spec/sync-opens.md §4 Source; `class`,
 /// spec/wire.md §11.2 Offer): how it holds S (spec/sync.md §3).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -204,46 +191,31 @@ impl SourceClass {
     }
 }
 
-/// `item := [0, hit, Opt(sig), class] | [1, sync_id, [hit*], class] | [2, ...] | [3, ...] |
-/// [4, hit, signing_pk, sig, class]`.
+/// `item := [0, hit, Opt(sig), class] | [2, sync_id, blob, wrap, sig]`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum OfferItem {
     /// A Hit with the open signature proving its credential, where it needs one; `class`: the
     /// sender's (spec/sync-opens.md §4 Source).
     Hit { hit: [u8; 32], sig: Option<Signature>, class: SourceClass },
-    /// A sync ID the sender judged the peer reads, with the sender's Hits.
-    ByRole { sync_id: SyncId, hits: Vec<[u8; 32]>, class: SourceClass },
     Deposit(DepositItem),
-    Behind(BehindItem),
-    /// A Hit on a link key's static entry with its signing key and an open signature by it.
-    Static { hit: [u8; 32], signing_pk: [u8; 32], sig: Signature, class: SourceClass },
 }
 
-/// `grant := [Opt(entry_box), [step+]]`: the head's entry box for a static entry and the path to
-/// that head, or the steps after a Behind item's (each without claim set).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Grant {
-    pub entry_box: Option<SecretBox>,
-    pub steps: Vec<Step>,
-}
-
-/// One answer of a Shared: `[code, Opt(tag), Opt(grant), Opt(sig), class]`. Only code 0 carries
-/// anything (any other names class 0), and a `sig` only beside a tag.
+/// One answer of a Shared: `[code, Opt(tag), Opt(sig), class]`. Only code 0 carries anything
+/// (any other names class 0), and a `sig` only beside a tag.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SharedItem {
     pub code: Code,
     pub tag: Option<[u8; 32]>,
-    pub grant: Option<Grant>,
     /// An open signature by the sync key of the replier's step.
     pub sig: Option<Signature>,
-    /// Accepting a Hit, Static or ByRole item: the replier's class.
+    /// Accepting a Hit: the replier's class.
     pub class: SourceClass,
 }
 
 impl SharedItem {
     /// An answer carrying its code alone.
     pub fn code(code: Code) -> SharedItem {
-        SharedItem { code, tag: None, grant: None, sig: None, class: SourceClass::Reader }
+        SharedItem { code, tag: None, sig: None, class: SourceClass::Reader }
     }
 }
 
@@ -255,10 +227,9 @@ pub enum Msg {
     Ok { id: Id },
     Ping { id: Id, wall_ms: u64 },
     Pong { id: Id, wall_ms: u64 },
-    /// Steps in order, each child of the one before, each with its claim set when carried, and
-    /// an endorsement of the last by the receiver's head's delete key (spec/sync-ids.md §6
+    /// Steps in order, each child of the one before, and an endorsement of the last by the receiver's head's delete key (spec/sync-ids.md §6
     /// Register).
-    Register { id: Id, sync_id: SyncId, steps: Vec<(Step, Option<ClaimSet>)>, endorsement: Option<Signature> },
+    Register { id: Id, sync_id: SyncId, steps: Vec<Step>, endorsement: Option<Signature> },
     /// One code per item of a Delete, in order.
     Status { id: Id, codes: Vec<Code> },
     Delete { id: Id, sync_id: SyncId, items: Vec<DeleteItem> },
@@ -299,9 +270,6 @@ pub enum Msg {
     Applied { cursor: Cursor },
     Digest { digest: [u8; 32] },
     Members { sync_ids: Vec<SyncId>, more: bool },
-    /// A notice to `holder` of S's thing, sealed to its read keyset at `epoch` by the sender for
-    /// this connection alone (spec/wire.md §9 Notice, spec/sync-opens.md §6).
-    Notice { sync_id: SyncId, holder: Tid, epoch: osis_crypto::Epoch, notice: Vec<u8> },
 }
 
 /// How a kind travels (spec/wire.md §11.1).
@@ -320,7 +288,7 @@ pub fn flow(kind: u64) -> Option<Flow> {
     Some(match kind {
         2 | 7 | 14 | 19 | 24 | 25 | 27 | 28 | 30 | 32 | 34 | 36 | 37 | 38 | 40 | 41 | 47 => Flow::Request,
         0 | 1 | 3 | 11 | 20 | 26 | 33 | 35 | 39 | 42 | 48 => Flow::Reply,
-        29 | 43 | 44 | 45 | 46 | 49 => Flow::Push,
+        29 | 43 | 44 | 45 | 46 => Flow::Push,
         _ => return None,
     })
 }
@@ -442,7 +410,6 @@ impl Msg {
             Members { .. } => 46,
             Want { .. } => 47,
             Wanted { .. } => 48,
-            Notice { .. } => 49,
         }
     }
 
@@ -453,7 +420,7 @@ impl Msg {
             Error { id, .. } | Ok { id } | Ping { id, .. } | Pong { id, .. } | Register { id, .. } | Status { id, .. } | Delete { id, .. } | Fetch { id, .. } | FetchReply { id, .. } | Want { id, .. } | Wanted { id, .. } | Auth { id, .. } | Call { id, .. } | Reply { id, .. } | Sub { id, .. } | Unsub { id, .. } | Stranded { id, .. } | Prove { id, .. } | Proved { id, .. } | Resume { id, .. } | Resumed { id, .. } | Beacons { id, .. } | Offer { id, .. } | Lost { id, .. } | Shared { id, .. } | NoRecord { id } => *id,
             Pull(p) => p.id,
             PullReply(r) => r.id,
-            Notify { .. } | Stream(_) | Applied { .. } | Digest { .. } | Members { .. } | Notice { .. } => 0,
+            Notify { .. } | Stream(_) | Applied { .. } | Digest { .. } | Members { .. } => 0,
         }
     }
 
@@ -468,7 +435,7 @@ impl Msg {
             Error { id, .. } | Ok { id } | Ping { id, .. } | Pong { id, .. } | Register { id, .. } | Status { id, .. } | Delete { id, .. } | Fetch { id, .. } | FetchReply { id, .. } | Want { id, .. } | Wanted { id, .. } | Auth { id, .. } | Call { id, .. } | Reply { id, .. } | Sub { id, .. } | Unsub { id, .. } | Stranded { id, .. } | Prove { id, .. } | Proved { id, .. } | Resume { id, .. } | Resumed { id, .. } | Beacons { id, .. } | Offer { id, .. } | Lost { id, .. } | Shared { id, .. } | NoRecord { id } => *id = new,
             Pull(p) => p.id = new,
             PullReply(r) => r.id = new,
-            Notify { .. } | Stream(_) | Applied { .. } | Digest { .. } | Members { .. } | Notice { .. } => {}
+            Notify { .. } | Stream(_) | Applied { .. } | Digest { .. } | Members { .. } => {}
         }
     }
 
@@ -485,7 +452,7 @@ impl Msg {
                 k,
                 id,
                 s(sync_id),
-                Value::List(steps.iter().map(|(st, c)| Value::List(vec![step_value(st), Value::opt(c.as_ref().map(|c| Value::Bytes(c.to_bytes())))])).collect()),
+                Value::List(steps.iter().map(step_value).collect()),
                 Value::opt(endorsement.map(|e| Value::bytes(&e.0))),
             ],
             M::Status { codes, .. } => vec![k, id, Value::List(codes.iter().map(|c| Value::uint(c.0)).collect())],
@@ -520,7 +487,6 @@ impl Msg {
             M::Applied { cursor } => vec![k, id, Value::bytes(cursor.as_bytes())],
             M::Digest { digest } => vec![k, id, Value::bytes(digest)],
             M::Members { sync_ids, more } => vec![k, id, Value::List(sync_ids.iter().map(s).collect()), Value::Bool(*more)],
-            M::Notice { sync_id, holder, epoch, notice } => vec![k, id, s(sync_id), Value::bytes(holder.as_bytes()), Value::List(vec![Value::uint(epoch.n()), Value::bytes(epoch.nonce())]), Value::bytes(notice)],
         };
         Value::List(items)
     }
@@ -532,7 +498,7 @@ impl Msg {
 
     /// Decodes a frame body, enforcing every layout rule and cap of spec/wire.md §11.2 and the
     /// limits of §13. Memory: items are counted before they are built, those of the canonical
-    /// bytes a byte string carries (steps, claim sets, entry boxes) included, so a message builds
+    /// bytes a byte string carries (steps) included, so a message builds
     /// at most `MAX_MESSAGE_ITEMS` values in all beside its bytes.
     pub fn decode(body: &[u8]) -> Result<Msg, Rejected> {
         // a body that is not canonical CBOR may still show its kind and id
@@ -597,7 +563,7 @@ fn decode_body(kind: u64, id: Id, v: Value, n: &Items) -> Result<Msg, Error> {
         3 => Msg::Pong { id, wall_ms: f.uint()? },
         7 => {
             let sync_id = sync_id(&mut f)?;
-            let steps = f.list(1, usize::MAX, "register steps")?.into_iter().map(|v| register_step(v, n)).collect::<Result<_, _>>()?;
+            let steps = f.list(1, usize::MAX, "register steps")?.into_iter().map(|v| step(v, n)).collect::<Result<_, _>>()?;
             let endorsement = f.opt()?.map(|v| dec::fixed(v, "endorsement").map(Signature)).transpose()?;
             Msg::Register { id, sync_id, steps, endorsement }
         }
@@ -639,7 +605,7 @@ fn decode_body(kind: u64, id: Id, v: Value, n: &Items) -> Result<Msg, Error> {
         36 => beacons(id, &mut f)?,
         37 => Msg::Offer { id, items: f.list(1, MAX_OFFER_ITEMS, "offer items")?.into_iter().map(offer_item).collect::<Result<_, _>>()? },
         38 => Msg::Lost { id, items: joins(f.list(1, MAX_OFFER_ITEMS, "lost items")?)? },
-        39 => Msg::Shared { id, items: f.list(1, MAX_OFFER_ITEMS, "shared items")?.into_iter().map(|v| shared_item(v, n)).collect::<Result<_, _>>()? },
+        39 => Msg::Shared { id, items: f.list(1, MAX_OFFER_ITEMS, "shared items")?.into_iter().map(shared_item).collect::<Result<_, _>>()? },
         40 => Msg::NoRecord { id },
         41 => Msg::Pull(Box::new(Pull {
             id,
@@ -671,14 +637,6 @@ fn decode_body(kind: u64, id: Id, v: Value, n: &Items) -> Result<Msg, Error> {
         44 => Msg::Applied { cursor: Cursor::new(f.bytes(MAX_CURSOR_BYTES)?)? },
         45 => Msg::Digest { digest: f.fixed()? },
         46 => Msg::Members { sync_ids: f.list(0, MAX_MEMBERS, "members")?.into_iter().map(|v| dec::fixed(v, "sync id").map(SyncId)).collect::<Result<_, _>>()?, more: f.bool()? },
-        49 => {
-            let sync_id = sync_id(&mut f)?;
-            let holder = Tid::from_bytes(f.fixed()?);
-            let bad = || Error::Malformed("notice epoch");
-            let Ok::<[Value; 2], _>([n, nonce]) = f.list(2, 2, "notice epoch")?.try_into() else { return Err(bad()) };
-            let epoch = osis_crypto::Epoch::new(dec::uint(n, "epoch n")?, dec::fixed(nonce, "epoch nonce")?).map_err(|_| bad())?;
-            Msg::Notice { sync_id, holder, epoch, notice: f.bytes(MAX_BLOB)? }
-        }
         _ => return Err(Error::UnknownKind(kind)),
     };
     f.end()?;
@@ -746,29 +704,15 @@ fn step(v: Value, n: &Items) -> Result<Step, Error> {
     Ok(Step::from_value(&n.decode(&bytes, MAX_OBJECT_DEPTH)?)?)
 }
 
-/// `[step, Opt(claim_set)]`, an item of a Register.
-fn register_step(v: Value, n: &Items) -> Result<(Step, Option<ClaimSet>), Error> {
-    let mut f = Fields::range(v, 2, 2, "register step")?;
-    Ok((step(f.next()?, n)?, f.opt()?.map(|v| claim_set(v, n)).transpose()?))
-}
-
 fn step_value(s: &Step) -> Value {
     Value::Bytes(s.to_bytes())
-}
-
-fn claim_set(v: Value, n: &Items) -> Result<ClaimSet, Error> {
-    let bytes = dec::bytes(v, osis_blob::step::MAX_CLAIM_SET, "claim set")?;
-    Ok(ClaimSet::from_value(&n.decode(&bytes, MAX_OBJECT_DEPTH)?)?)
 }
 
 fn offer_item(v: Value) -> Result<OfferItem, Error> {
     let mut f = Fields::range(v, 4, 5, "offer item")?;
     let item = match (f.uint()?, f.remaining()) {
         (0, 3) => OfferItem::Hit { hit: f.fixed()?, sig: f.opt()?.map(|v| dec::fixed(v, "open signature").map(Signature)).transpose()?, class: SourceClass::of(f.uint()?)? },
-        (1, 3) => OfferItem::ByRole { sync_id: sync_id(&mut f)?, hits: f.list(0, MAX_ITEM_HITS, "hits")?.into_iter().map(|v| dec::fixed(v, "hit")).collect::<Result<_, _>>()?, class: SourceClass::of(f.uint()?)? },
         (2, 4) => OfferItem::Deposit(DepositItem { sync_id: sync_id(&mut f)?, blob: f.bytes(MAX_BLOB)?, wrap: f.fixed()?, sig: Signature(f.fixed()?) }),
-        (3, 4) => OfferItem::Behind(BehindItem { sync_id: sync_id(&mut f)?, step: f.opt()?.map(|v| dec::fixed(v, "behind step").map(StepId)).transpose()?, key: f.fixed()?, sig: Signature(f.fixed()?) }),
-        (4, 4) => OfferItem::Static { hit: f.fixed()?, signing_pk: f.fixed()?, sig: Signature(f.fixed()?), class: SourceClass::of(f.uint()?)? },
         _ => return Err(Error::Malformed("offer item")),
     };
     f.end()?;
@@ -779,23 +723,19 @@ fn offer_item_value(i: &OfferItem) -> Value {
     let sig = |s: &Signature| Value::bytes(&s.0);
     Value::List(match i {
         OfferItem::Hit { hit, sig: s, class } => vec![Value::uint(0), Value::bytes(hit), Value::opt(s.as_ref().map(sig)), class.value()],
-        OfferItem::ByRole { sync_id, hits, class } => vec![Value::uint(1), Value::bytes(&sync_id.0), Value::List(hits.iter().map(|h| Value::bytes(h)).collect()), class.value()],
         OfferItem::Deposit(d) => vec![Value::uint(2), Value::bytes(&d.sync_id.0), Value::bytes(&d.blob), Value::bytes(&d.wrap), sig(&d.sig)],
-        OfferItem::Behind(b) => vec![Value::uint(3), Value::bytes(&b.sync_id.0), Value::opt(b.step.as_ref().map(|s| Value::bytes(&s.0))), Value::bytes(&b.key), sig(&b.sig)],
-        OfferItem::Static { hit, signing_pk, sig: s, class } => vec![Value::uint(4), Value::bytes(hit), Value::bytes(signing_pk), sig(s), class.value()],
     })
 }
 
-fn shared_item(v: Value, n: &Items) -> Result<SharedItem, Error> {
-    let mut g = Fields::exact(v, 5, "shared item")?;
+fn shared_item(v: Value) -> Result<SharedItem, Error> {
+    let mut g = Fields::exact(v, 4, "shared item")?;
     let item = SharedItem {
         code: Code(g.uint()?),
         tag: g.opt()?.map(|v| dec::fixed(v, "tag")).transpose()?,
-        grant: g.opt()?.map(|v| grant(v, n)).transpose()?,
         sig: g.opt()?.map(|v| dec::fixed(v, "open signature").map(Signature)).transpose()?,
         class: SourceClass::of(g.uint()?)?,
     };
-    let carries = item.tag.is_some() || item.grant.is_some() || item.sig.is_some() || item.class != SourceClass::Reader;
+    let carries = item.tag.is_some() || item.sig.is_some() || item.class != SourceClass::Reader;
     if (item.code != Code::OK && carries) || (item.sig.is_some() && item.tag.is_none()) {
         return Err(Error::Malformed("shared item"));
     }
@@ -806,23 +746,9 @@ fn shared_item_value(i: &SharedItem) -> Value {
     Value::List(vec![
         Value::uint(i.code.0),
         Value::opt(i.tag.as_ref().map(|t| Value::bytes(t))),
-        Value::opt(i.grant.as_ref().map(|g| Value::List(vec![Value::opt(g.entry_box.as_ref().map(|e| Value::Bytes(cbor::encode(&e.to_value())))), Value::List(g.steps.iter().map(step_value).collect())]))),
         Value::opt(i.sig.as_ref().map(|s| Value::bytes(&s.0))),
         i.class.value(),
     ])
-}
-
-fn grant(v: Value, n: &Items) -> Result<Grant, Error> {
-    let mut f = Fields::exact(v, 2, "grant")?;
-    let entry_box = f.opt()?.map(|v| entry_box(v, n)).transpose()?;
-    let steps = f.list(1, usize::MAX, "grant steps")?.into_iter().map(|v| step(v, n)).collect::<Result<_, _>>()?;
-    Ok(Grant { entry_box, steps })
-}
-
-/// An entry box: the canonical bytes of a `box` value in the sealed form (spec/wire.md §7).
-fn entry_box(v: Value, n: &Items) -> Result<SecretBox, Error> {
-    let bytes = dec::bytes(v, MAX_MESSAGE, "entry box")?;
-    Ok(osis_blob::step::entry_box_from_value(&n.decode(&bytes, MAX_VALUE_DEPTH)?)?)
 }
 
 /// An entry of a FetchReply or Wanted: `[blob, wrap, Opt(stamp)]`.

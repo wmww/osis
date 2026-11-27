@@ -1,4 +1,4 @@
-//! A fixed sync ID (steps, claim set with an entry box, keys) from fixed seeds, one message of
+//! A fixed sync ID (steps, keys) from fixed seeds, one message of
 //! every kind built on it and one rejection per kind (spec/wire.md §8, §11.2), shared by tests,
 //! conformance vectors and fuzz seeds. Fixed inputs only, so construction cannot fail on data.
 #![allow(clippy::expect_used)]
@@ -7,8 +7,8 @@ use crate::api::{Outcome, Payload};
 use crate::msg::*;
 use crate::{Proof, Prover, SyncId};
 use osis_base::{BlobId, CreationRecord, Tid, Value, WallMs, cbor};
-use osis_crypto::{Epoch, KemSecret, RoleKey, SeededRng, Secret32, SigningSecret, X25519Secret, role_key};
-use osis_blob::{Prefix, Reader, StepKeys, genesis, genesis_sync_id, register, sign_stamp};
+use osis_crypto::{RoleKey, SeededRng, Secret32, SigningSecret, X25519Secret, role_key};
+use osis_blob::{Prefix, StepKeys, genesis, genesis_sync_id, register, sign_stamp};
 
 /// The listener's static key and the Hello challenge the examples sign opens and proofs for.
 pub const STATIC_KEY: [u8; 32] = [0x5e; 32];
@@ -18,52 +18,35 @@ fn s32(b: u8) -> Secret32 {
     Secret32::from_bytes([b; 32])
 }
 
-/// One thing's sync ID: its genesis step (the admin secret its genesis seed) and a child
-/// without rotation, whose claim set lists one DH reader and one link key (entry box sealed to
-/// a KEM key from `b+6`).
+/// One thing's sync ID: its genesis step (the admin secret its genesis seed) and a child of it.
 pub struct Fixture {
     pub sync_id: SyncId,
     pub genesis: Step,
-    pub genesis_claims: ClaimSet,
     pub child: Step,
-    pub child_claims: ClaimSet,
     pub sync: SigningSecret,
     pub write: SigningSecret,
     pub delete: SigningSecret,
     pub deposit: SigningSecret,
-    /// The link key listed by static entry.
-    pub link_key: SigningSecret,
 }
 
 impl Fixture {
-    /// The thing's role secrets from bytes `b..b+3`, deposit seed `b+3`; reader `b+4`; link key `b+5`;
-    /// sync secret `b+8`.
+    /// The thing's role secrets from bytes `b+1`, `b+2`, deposit seed `b+3`; the child's step key
+    /// from `b+4`; sync secret `b+8`.
     pub fn new(b: u8) -> Fixture {
-        let (read, write, admin, dseed, sync) = (s32(b), s32(b + 1), s32(b + 2), s32(b + 3), s32(b + 8));
+        let (write, admin, dseed, sync) = (s32(b + 1), s32(b + 2), s32(b + 3), s32(b + 8));
         let sync_id = genesis_sync_id(&admin);
         let keys = StepKeys::derive(&sync, &write, &admin, &dseed, &sync_id);
         let delete = role_key(RoleKey::Delete, &admin);
-        let reader = X25519Secret::from_secret(&s32(b + 4));
-        let link_key = SigningSecret::from_seed(&s32(b + 5));
-        let kem = KemSecret::derive(&s32(b + 6));
-        let thing = osis_base::Tid::from_bytes([b; 15]);
-        let read_epoch = Epoch::derive(&thing, osis_base::Role::Read, 1, &read).expect("small epoch");
-        let sync_epoch = Epoch::derive(&thing, osis_base::Role::Sync, 1, &sync).expect("small epoch");
-        let readers = [Reader::Dh(reader.public()), Reader::Static { signing: link_key.verifying_key(), kem: kem.public() }];
-        let mut rng = SeededRng::from_seed([b + 7; 32]);
-        let (genesis, genesis_claims) = genesis(&admin);
-        let (child, child_claims) = register(&genesis, &delete, keys, &readers, (&thing, read_epoch, &read), (sync_epoch, &sync), &mut rng).expect("fixed child");
+        let genesis = genesis(&admin);
+        let child = register(&genesis, &delete, keys, X25519Secret::from_secret(&s32(b + 4)).public()).expect("fixed child");
         Fixture {
             sync_id,
             genesis,
-            genesis_claims,
             child,
-            child_claims,
             sync: role_key(RoleKey::Sync, &sync),
             write: role_key(RoleKey::Write, &write),
             delete,
             deposit: osis_crypto::deposit_key(&dseed, &sync_id),
-            link_key,
         }
     }
 
@@ -114,7 +97,6 @@ pub fn messages() -> Vec<(&'static str, Msg)> {
     let top = |n: u32| crate::limits::TOP_BIT | n;
     let entry = f.entry(Fixture::blob(1));
     let added = Event::Added { blob_id: osis_blob::blob_id(&entry.blob), blob: Some(entry.blob.clone()), wrap: entry.wrap, stamp: Some(entry.stamp) };
-    let entry_box = f.child_claims.entry_box(&l, &f.link_key.verifying_key()).cloned().expect("the link key is listed");
     let deposited = Fixture::blob(2);
     let dep_wrap = [0x78; WRAP_LEN];
     let dep_sig = osis_blob::sign_deposit(&f.deposit, &l, &osis_blob::blob_id(&deposited), &dep_wrap, false);
@@ -127,10 +109,10 @@ pub fn messages() -> Vec<(&'static str, Msg)> {
         ("ok", Msg::Ok { id: 2 }),
         ("ping", Msg::Ping { id: 3, wall_ms: 1_700_000_000_000 }),
         ("pong", Msg::Pong { id: 3, wall_ms: 1_700_000_000_123 }),
-        ("register", Msg::Register { id: 7, sync_id: l, steps: vec![(f.genesis.clone(), Some(f.genesis_claims.clone()))], endorsement: None }),
-        ("register a child without its claim set", Msg::Register { id: 8, sync_id: l, steps: vec![(f.child.clone(), None)], endorsement: None }),
-        ("register a branch", Msg::Register { id: 9, sync_id: l, steps: vec![(f.genesis.clone(), None), (f.child.clone(), None)], endorsement: None }),
-        ("register a branch by an endorsement", Msg::Register { id: 10, sync_id: l, steps: vec![(f.child.clone(), None)], endorsement: Some(f.child.endorse(&f.delete)) }),
+        ("register", Msg::Register { id: 7, sync_id: l, steps: vec![f.genesis.clone()], endorsement: None }),
+        ("register a child", Msg::Register { id: 8, sync_id: l, steps: vec![f.child.clone()], endorsement: None }),
+        ("register a branch", Msg::Register { id: 9, sync_id: l, steps: vec![f.genesis.clone(), f.child.clone()], endorsement: None }),
+        ("register a branch by an endorsement", Msg::Register { id: 10, sync_id: l, steps: vec![f.child.clone()], endorsement: Some(f.child.endorse(&f.delete)) }),
         ("status", Msg::Status { id: 14, codes: vec![Code::OK, Code::NOT_HEAD_KEY] }),
         ("delete", Msg::Delete { id: 14, sync_id: l, items: vec![DeleteItem::sign(&f.delete, &l, id(0xd1)), DeleteItem::sign_by(&f.sync, &[(2, &dk)], &[0x7d; 16], &[0x7e; 16], &l, id(0xd2)).expect("fixed delete")] }),
         ("fetch", Msg::Fetch { id: top(19), max_reply: 32_768, ids: vec![(l, vec![id(0xb2), id(0xb5)])] }),
@@ -169,26 +151,11 @@ pub fn messages() -> Vec<(&'static str, Msg)> {
         ("resumed", Msg::Resumed { id: 34, nonce: [0x37; 32], tag: Some([0x35; 32]) }),
         ("beacons", Msg::Beacons { id: top(36), generation: 1, base: None, f: 9, lo: 0, hi: 512, gcs, more: false }),
         ("beacons additions", Msg::Beacons { id: top(37), generation: 2, base: Some(1), f: 9, lo: 0, hi: 512, gcs: vec![], more: false }),
-        ("offer", Msg::Offer { id: top(37), items: vec![OfferItem::Hit { hit: [9; 32], sig: None, class: SourceClass::Reader }, OfferItem::Hit { hit: [10; 32], sig: Some(open(&f.sync)), class: SourceClass::Store }, OfferItem::ByRole { sync_id: l, hits: vec![[8; 32]], class: SourceClass::Reader }] }),
+        ("offer", Msg::Offer { id: top(37), items: vec![OfferItem::Hit { hit: [9; 32], sig: None, class: SourceClass::Reader }, OfferItem::Hit { hit: [10; 32], sig: Some(open(&f.sync)), class: SourceClass::Stub }] }),
         ("offer with a deposit", Msg::Offer { id: top(38), items: vec![OfferItem::Deposit(DepositItem { sync_id: l, blob: deposited, wrap: dep_wrap, sig: dep_sig })] }),
-        ("offer static", Msg::Offer { id: top(39), items: vec![OfferItem::Static { hit: [12; 32], signing_pk: f.link_key.verifying_key().to_bytes(), sig: open(&f.link_key), class: SourceClass::Stub }] }),
-        (
-            "offer behind",
-            Msg::Offer {
-                id: top(40),
-                items: vec![
-                    OfferItem::Behind(BehindItem { sync_id: l, step: Some(f.genesis.id()), key: f.sync.verifying_key().to_bytes(), sig: open(&f.sync) }),
-                    OfferItem::Behind(BehindItem { sync_id: l, step: None, key: f.sync.verifying_key().to_bytes(), sig: open(&f.sync) }),
-                ],
-            },
-        ),
         ("lost", Msg::Lost { id: top(38), items: vec![(l, None), (other, Some(cursor(0x38)))] }),
-        ("shared", Msg::Shared { id: top(37), items: vec![SharedItem { code: Code::OK, tag: Some([7; 32]), grant: None, sig: None, class: SourceClass::Store }, SharedItem::code(Code::DECLINED)] }),
-        (
-            "shared with an entry grant",
-            Msg::Shared { id: top(39), items: vec![SharedItem { code: Code::OK, tag: Some([7; 32]), grant: Some(Grant { entry_box: Some(entry_box), steps: vec![f.genesis.clone(), f.child.clone()] }), sig: Some(open(&f.sync)), class: SourceClass::Store }] },
-        ),
-        ("shared with a child step", Msg::Shared { id: top(40), items: vec![SharedItem { code: Code::OK, tag: None, grant: Some(Grant { entry_box: None, steps: vec![f.child.clone()] }), sig: None, class: SourceClass::Reader }, SharedItem::code(Code::UNKNOWN_SYNC_ID)] }),
+        ("shared", Msg::Shared { id: top(37), items: vec![SharedItem { code: Code::OK, tag: Some([7; 32]), sig: None, class: SourceClass::Store }, SharedItem::code(Code::DECLINED)] }),
+        ("shared on a claim", Msg::Shared { id: top(39), items: vec![SharedItem { code: Code::OK, tag: Some([7; 32]), sig: Some(open(&f.sync)), class: SourceClass::Stub }, SharedItem::code(Code::UNKNOWN_SYNC_ID)] }),
         ("no record", Msg::NoRecord { id: crate::limits::NO_RECORD_ID }),
         ("pull", Msg::Pull(Box::new(Pull { id: top(41), cursor: Some(cursor(0x2c)), joins: vec![(l, None), (other, Some(cursor(0x2d)))], inline_limit: 0, max_reply: 65_536, follow: true, ephemeral: true }))),
         (
@@ -200,7 +167,6 @@ pub fn messages() -> Vec<(&'static str, Msg)> {
         ("stream with no cursor", Msg::Stream(Box::new(Stream { events: vec![(l, Event::Full(true)), (l, Event::Refused(id(0xb1), Code::NOT_HEAD_KEY)), (l, added)], cursor: None, report: false, seq: 0 }))),
         ("applied", Msg::Applied { cursor: cursor(0x30) }),
         ("digest", Msg::Digest { digest: [0x31; 32] }),
-        ("notice", Msg::Notice { sync_id: l, holder: Tid::from_bytes([0x34; 15]), epoch: Epoch::new(2, [0x35; 32]).expect("small epoch"), notice: vec![0x33; 4] }),
         ("members", Msg::Members { sync_ids: vec![l, other], more: false }),
     ]
 }
@@ -254,10 +220,10 @@ pub fn rejections() -> Vec<(&'static str, &'static str, Vec<u8>)> {
         ("ping with id 0", "id", with(&m("ping"), 1, Some(int(0)))),
         ("pong without wall_ms", "shape", with(&m("pong"), 2, None)),
         ("register with a sync ID of 15 bytes", "size", with(&m("register"), 2, Some(bytes(15, 1)))),
-        ("register with a step that does not parse", "step", with(&m("register"), 3, Some(list(vec![list(vec![bytes(300, 0), list(vec![])])])))),
+        ("register with a step that does not parse", "step", with(&m("register"), 3, Some(list(vec![bytes(200, 0)])))),
         ("register of no steps", "count", with(&m("register"), 3, Some(list(vec![])))),
         ("register with an endorsement of 63 bytes", "size", with(&m("register a branch by an endorsement"), 4, Some(list(vec![bytes(63, 0)])))),
-        ("register with a step item of one field", "shape", with(&m("register"), 3, Some(list(vec![list(vec![bytes(300, 0)])])))),
+        ("register with a step that is no byte string", "shape", with(&m("register"), 3, Some(list(vec![list(vec![bytes(200, 0)])])))),
         ("status of no codes", "count", with(&m("status"), 2, Some(list(vec![])))),
         ("delete of no items", "count", with(&m("delete"), 3, Some(list(vec![])))),
         ("delete with levels descending", "order", with(&m("delete"), 3, Some(list(vec![list(vec![bytes(32, 1), list(vec![list(vec![int(2), bytes(64, 2)]), list(vec![int(1), bytes(64, 2)])]), bytes(64, 3)])])))),
@@ -287,8 +253,8 @@ pub fn rejections() -> Vec<(&'static str, &'static str, Vec<u8>)> {
         ("offer deposit with a wrap of 48 bytes", "size", with(&m("offer"), 2, Some(list(vec![list(vec![int(2), bytes(16, 1), bytes(1, 1), bytes(48, 0), bytes(64, 0)])])))),
         ("offer of an unknown item", "shape", with(&m("offer"), 2, Some(list(vec![list(vec![int(5), bytes(32, 1)])])))),
         ("lost with a cursor of 257 bytes", "size", with(&m("lost"), 2, Some(list(vec![list(vec![bytes(16, 1), list(vec![bytes(257, 0)])])])))),
-        ("shared refusal carrying a tag", "shape", with(&m("shared"), 2, Some(list(vec![list(vec![int(14), list(vec![bytes(32, 0)]), list(vec![]), list(vec![])])])))),
-        ("shared with a sig and no tag", "shape", with(&m("shared"), 2, Some(list(vec![list(vec![int(0), list(vec![]), list(vec![]), list(vec![bytes(64, 0)])])])))),
+        ("shared refusal carrying a tag", "shape", with(&m("shared"), 2, Some(list(vec![list(vec![int(14), list(vec![bytes(32, 0)]), list(vec![]), int(0)])])))),
+        ("shared with a sig and no tag", "shape", with(&m("shared"), 2, Some(list(vec![list(vec![int(0), list(vec![]), list(vec![bytes(64, 0)]), int(0)])])))),
         ("no record with another id", "id", with(&m("no record"), 1, Some(int(u64::from(crate::limits::TOP_BIT | 1))))),
         ("pull with max_reply 0", "range", with(&m("pull"), 6, Some(int(0)))),
         ("pull reply with a full event", "shape", event_in("pull reply", 2, list(vec![int(2), Value::Bool(true)]))),
@@ -298,6 +264,5 @@ pub fn rejections() -> Vec<(&'static str, &'static str, Vec<u8>)> {
         ("applied with a cursor of 257 bytes", "size", with(&m("applied"), 2, Some(bytes(257, 0)))),
         ("digest of 31 bytes", "size", with(&m("digest"), 2, Some(bytes(31, 0)))),
         ("members with a sync ID of 17 bytes", "size", with(&m("members"), 2, Some(list(vec![bytes(17, 0)])))),
-        ("notice with a sync ID of 17 bytes", "size", with(&m("notice"), 2, Some(bytes(17, 0)))),
     ]
 }

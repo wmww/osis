@@ -85,11 +85,10 @@ pub const SYNC_WRITE: &str = "sync write";
 pub const SYNC_DELETE: &str = "sync delete";
 pub const SYNC_DEPOSIT: &str = "sync deposit";
 pub const SYNC_CLAIM: &str = "sync claim";
-/// A thing's genesis seed from its mint admin's, its genesis step's key and pad claim
+/// A thing's genesis seed from its mint admin's, and its genesis step's key
 /// (spec/crypto.md §3 Genesis seed, spec/wire.md §8).
 pub const SYNC_GENESIS: &str = "sync genesis";
 pub const GENESIS_STEP: &str = "genesis step";
-pub const GENESIS_CLAIM: &str = "genesis claim";
 /// The pair key of a record, or of a connection with none (`pair_key`).
 pub const PAIR_KEY: &str = "pair key";
 /// A beacon's key over its match value and sync ID (spec/sync-opens.md §5).
@@ -104,16 +103,12 @@ pub const SYNC_PROOF: &str = "sync proof";
 pub const PATH: &str = "path";
 /// A split entry's commitment to its path key (spec/crypto.md §5 Path entry).
 pub const PATH_COMMIT: &str = "path commit";
-/// A notice box's X25519 ephemeral key from its blob key (spec/wire.md §9 Notice).
-pub const NOTICE_EPH: &str = "notice eph";
-/// A notice box's ML-KEM encapsulation randomness from its blob key (spec/wire.md §9 Notice).
-pub const NOTICE_KEM: &str = "notice kem";
 
 /// Every kdf purpose, for distinctness checks and vectors.
-pub const PURPOSES: [&str; 40] = [
+pub const PURPOSES: [&str; 37] = [
     THING_SYNC, THING_READ, THING_WRITE, THING_ADMIN, ROLE_SYNC, ROLE_READ, ROLE_WRITE, ROLE_ADMIN, SIGN, KEM, CREATION_NONCE, BOX, HISTORY, EPOCH, ROLES, WRAP, SECTION,
-    DELTA, LINK, LINK_TREE, DELETE_BLIND, DELETE_NONCE, LINK_BLIND, THING_BLIND, SYNC_KEY, SYNC_WRITE, SYNC_DELETE, SYNC_DEPOSIT, SYNC_CLAIM, SYNC_GENESIS, GENESIS_STEP, GENESIS_CLAIM,
-    BEACON, BEACON_HIT, BEACON_REPLY, SYNC_PROOF, PATH, PATH_COMMIT, NOTICE_EPH, NOTICE_KEM,
+    DELTA, LINK, LINK_TREE, DELETE_BLIND, DELETE_NONCE, LINK_BLIND, THING_BLIND, SYNC_KEY, SYNC_WRITE, SYNC_DELETE, SYNC_DEPOSIT, SYNC_CLAIM, SYNC_GENESIS, GENESIS_STEP,
+    BEACON, BEACON_HIT, BEACON_REPLY, SYNC_PROOF, PATH, PATH_COMMIT,
 ];
 
 // Full derive_key contexts used directly (not through `kdf`).
@@ -125,10 +120,6 @@ pub const HYBRID_KEM: &str = "osis v1 hybrid kem";
 // Unkeyed hash prefixes.
 /// Sync ID = BLAKE3(SYNC_ID || genesis delete key)[..16] (spec/wire.md §8).
 pub const SYNC_ID: &str = "osis v1 sync id";
-/// Static entry = BLAKE3(STATIC_CLAIM || sync ID || signing key) (spec/wire.md §8).
-pub const STATIC_CLAIM: &str = "osis v1 static claim";
-/// Public entry = BLAKE3(PUBLIC_CLAIM || sync ID) (spec/wire.md §8).
-pub const PUBLIC_CLAIM: &str = "osis v1 public claim";
 
 pub fn thing_purpose(role: Role) -> &'static str {
     match role {
@@ -246,11 +237,11 @@ mod tests {
     #[test]
     fn strings_distinct() {
         let mut all: Vec<String> = PURPOSES.iter().map(|p| format!("{PREFIX}{p}")).collect();
-        all.extend([DEDUP, HYBRID_KEM, SYNC_ID, STATIC_CLAIM, PUBLIC_CLAIM, "osis v1 gear table"].map(String::from));
+        all.extend([DEDUP, HYBRID_KEM, SYNC_ID, "osis v1 gear table"].map(String::from));
         all.extend(Domain::ALL.iter().map(|d| d.as_str().to_string()));
         let set: BTreeSet<&String> = all.iter().collect();
         assert_eq!(set.len(), all.len());
-        assert_eq!(all.len(), PURPOSES.len() + 6 + Domain::ALL.len());
+        assert_eq!(all.len(), PURPOSES.len() + 4 + Domain::ALL.len());
     }
 
     // spec/crypto.md §1: kdf = keyed_hash(derive_key("osis v1 " + purpose, secret), input).

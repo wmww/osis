@@ -72,8 +72,6 @@ pub const DELETE_ADMIN: u8 = 1;
 pub const DELETE_AUTHOR: u8 = 2;
 /// See `DELETE_ADMIN`. fixed.
 pub const DELETE_WRITER: u8 = 3;
-/// Most keys in a claim set (spec/wire.md §2, §8). fixed.
-pub const MAX_CLAIMS: usize = 65_536;
 
 /// Largest relay-only blob, prefix included (spec/wire.md §2, spec/sync-ids.md §6, spec/sync-compaction.md §2). fixed.
 /// Resource bound: each relay goes to every subscriber, so it bounds the traffic one relay

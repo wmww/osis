@@ -25,8 +25,8 @@ pub use blob::{Class, Group, Level, Prefix, blob_id, check_size, frame, frame_un
 pub use chunks::{LargeParams, chunk_value, read_value, string_head};
 pub use error::Error;
 pub use sync_ids::{StepRecord, SyncEntry, SyncIds, parse_record, step_record, sync_endorsements, sync_steps};
-pub use fire::{NoticeBody, Sealed, SealedFire, notice_key, open_fire, open_notice, seal_fire, seal_notice};
+pub use fire::{Sealed, open_fire, seal_fire};
 pub use certificates::Certificates;
 pub use link::{DialHint, Link, Locator, ShareLink, link_peers, peers_from, peers_value};
-pub use step::{ClaimSet, Reader, Step, StepId, StepKeys, genesis, genesis_sync_id, open_entry_box, read_public_entry_box, register, register_with, verify_path};
+pub use step::{Step, StepId, StepKeys, genesis, genesis_sync_id, register, verify_path};
 pub use tree::{BlobFetch, BlobReader, BlobSink, BlobStore, BlobWriter, Framing, Reuse, HashSink, LinkSource, MemoryBlobs, TreeReader, TreeSink, TreeWriter, Written, linked_prefix_inputs, read_tree, write_tree};
