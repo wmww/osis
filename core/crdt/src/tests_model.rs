@@ -568,7 +568,7 @@ fn check(k: u64) -> BTreeSet<&'static str> {
         let (r, c) = case(k);
         check_case(r, &Case { deltas: deltas.to_vec(), ..c });
     };
-    osis_base::testenv::shrinking(SHRINK, run, replay, |_| vec![]);
+    osis_base::testenv::shrinking(SHRINK, run, replay, |_| vec![], &[]);
     seen
 }
 

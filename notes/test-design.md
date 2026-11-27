@@ -35,7 +35,6 @@ osis-sync's module reviews (about 50 product bugs) split the same way. Reading a
 **Paged property cost**: `paged_apply_matches_whole_plain` seeds take 90-200 CPU-s each (ingest with its purge-on-replace snapshots about 30%, stored-state reloads after every step about 20%); the goal is the slowest large seed under a minute.
 
 **Small items**:
-- The osis-sync differential shrinker accepts any panic and keeps world-dependent failures near full length: a shrink often lands on another class's first panic. Wanted: keep only runs ending in the same panic kind, and print whether the shrunk script fails on seed 0's world (replaying it there by hand was faster each time).
 - Sync trace: an option printing a delivery's whole Offer/Shared pairing; `t<k>` alone hides `Shared`, `Lost` and `Notice` answers (add `Shared,Notice,Lost` to `<only>` meanwhile).
 - A probe line per open member at each reader (class, opened by, departed, `until`): `why_role` shows no member state at the serving side.
 - Which of several fixes a test needs: `tools/mutate.py` with a revert-to-old expression per fix answers it in one build.

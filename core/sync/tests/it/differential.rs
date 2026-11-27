@@ -81,7 +81,8 @@ fn histories_hold_their_closure_plain() {
 }
 
 /// `holds` for each seed of `OSIS_SYNC_START`/`OSIS_SYNC_SEEDS` (default: the size's range) on
-/// the history `steps_of(seed)`, each failure shrunk under `OSIS_SYNC_SHRINK=1`. A shrunk script
+/// the history `steps_of(seed)`, each failure shrunk under `OSIS_SYNC_SHRINK=1`, the shrunk script
+/// then played on seed 0's world too (printed: whether it fails the same way there). A shrunk script
 /// replays over many worlds, or shrinks further from where a seed timeout cut it, in a scratch
 /// test: `differential::worlds("scratch", |_| vec![New(2), ..])` (notes/sync-test-harness.md,
 /// Replaying a script).
@@ -98,6 +99,7 @@ pub(crate) fn worlds(name: &str, steps_of: impl Fn(u64) -> Vec<Step> + Sync) {
             |steps, again| {
                 holds(seed, steps, replay.clone(), again && twice);
             },
+            if seed == 0 { &[] } else { &[("seed 0's world", &|steps: &[Step]| drop(holds(0, steps, String::new(), false)))] },
         );
     });
 }
@@ -774,3 +776,4 @@ fn a_learned_sync_secret_opens_the_history_held_spec_crypto_4() {
         w.engine(i).check_index();
     }
 }
+

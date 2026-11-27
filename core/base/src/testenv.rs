@@ -893,9 +893,11 @@ pub fn failure_class(msg: &str) -> String {
 
 /// Runs `run`, which records its steps in a `Script<A>`; with `shrink_var` set nonzero, a failing
 /// run's script is shrunk (`shrink_failure`), each smaller failing script printed as found, past
-/// libtest's capture. Then the shrunk run is replayed with `replay(steps, true)` and fails as the
+/// libtest's capture. Each of `elsewhere` (a name and a replay, such as the script on another
+/// seed's world) then plays the shrunk script silent and once, and whether it fails the same way
+/// is printed. Then the shrunk run is replayed with `replay(steps, true)` and fails as the
 /// original failure, printing its script.
-pub fn shrinking<A: std::fmt::Debug + Clone + 'static>(shrink_var: &str, run: impl FnOnce(), replay: impl Fn(&[A], bool), simpler: impl Fn(&A) -> Vec<A>) {
+pub fn shrinking<A: std::fmt::Debug + Clone + 'static>(shrink_var: &str, run: impl FnOnce(), replay: impl Fn(&[A], bool), simpler: impl Fn(&A) -> Vec<A>, elsewhere: &[(&str, &dyn Fn(&[A]))]) {
     use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
     if !u64_var(shrink_var).is_some_and(|n| n != 0) {
         return run();
@@ -905,9 +907,51 @@ pub fn shrinking<A: std::fmt::Debug + Clone + 'static>(shrink_var: &str, run: im
     let n = steps.len();
     let Some(shrunk) = shrink_failure(panic_message(&*first), steps, &replay, simpler) else { resume_unwind(first) };
     let cut = if shrunk.candidates >= SHRINK_CANDIDATES { " (budget spent: SHRINK_CANDIDATES)" } else { "" };
-    eprintln!("shrunk from {n} to {} steps in {} candidates{cut}; the shrunk run:", shrunk.steps.len(), shrunk.candidates);
+    eprintln!("shrunk from {n} to {} steps in {} candidates{cut}", shrunk.steps.len(), shrunk.candidates);
+    let same = same_failure(panic_message(&*first));
+    for (name, play) in elsewhere {
+        let outcome = match quiet_failure(|| play(&shrunk.steps)) {
+            None => "passes".to_string(),
+            Some(m) if same(&m) => "fails the same way".to_string(),
+            Some(m) => format!("fails otherwise: {}", m.lines().next().unwrap_or("")),
+        };
+        eprintln!("the shrunk script on {name}: {outcome}");
+    }
+    eprintln!("the shrunk run:");
     replay(&shrunk.steps, true);
     resume_unwind(first)
+}
+
+/// Whether a failure's message counts as the failure `first` again (`shrink_failure`): of its
+/// kind (`failure_class`), containing `OSIS_SHRINK_MATCH` when set, any with `OSIS_SHRINK_ANY=1`.
+fn same_failure(first: &str) -> impl Fn(&str) -> bool + use<> {
+    let pattern = str_var("OSIS_SHRINK_MATCH");
+    let any = u64_var("OSIS_SHRINK_ANY").is_some_and(|n| n != 0);
+    let class = failure_class(first);
+    move |m: &str| match &pattern {
+        Some(p) => m.contains(p.as_str()),
+        None => any || failure_class(m) == class,
+    }
+}
+
+/// `f` played silent (nothing printed, no script kept): its panic's message, if it panicked.
+fn quiet_failure(f: impl FnOnce()) -> Option<String> {
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+    // a hook that stays silent for quiet replays, installed once for the process
+    static HOOK: std::sync::Once = std::sync::Once::new();
+    HOOK.call_once(|| {
+        let prev = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            if !QUIET.get() {
+                prev(info)
+            }
+        }));
+    });
+    QUIET.set(true);
+    let r = catch_unwind(AssertUnwindSafe(f));
+    QUIET.set(false);
+    FAILED.take();
+    r.err().map(|p| panic_message(&*p).to_string())
 }
 
 /// Shrinks `steps`, whose run failed with message `first` (`shrink`, `SHRINK_CANDIDATES`), while
@@ -918,36 +962,15 @@ pub fn shrinking<A: std::fmt::Debug + Clone + 'static>(shrink_var: &str, run: im
 /// that text instead; with `OSIS_SHRINK_ANY=1`, any panic. `None` when `first` does not contain
 /// `OSIS_SHRINK_MATCH` (said on stderr).
 pub fn shrink_failure<A: std::fmt::Debug + Clone>(first: &str, steps: Vec<A>, replay: impl Fn(&[A], bool), simpler: impl Fn(&A) -> Vec<A>) -> Option<Shrunk<A>> {
-    use std::panic::{AssertUnwindSafe, catch_unwind};
     let pattern = str_var("OSIS_SHRINK_MATCH");
     let any = u64_var("OSIS_SHRINK_ANY").is_some_and(|n| n != 0);
-    let class = failure_class(first);
-    let matches = |m: &str| match &pattern {
-        Some(p) => m.contains(p.as_str()),
-        None => any || failure_class(m) == class,
-    };
     if pattern.as_ref().is_some_and(|p| !first.contains(p.as_str())) {
         eprintln!("shrink: the failure does not contain OSIS_SHRINK_MATCH={pattern:?}; not shrunk");
         return None;
     }
-    eprintln!("shrink: keeping to {}", pattern.as_ref().map_or(if any { "any failure".to_string() } else { format!("failures of the kind {class:?}") }, |p| format!("failures containing {p:?}")));
-    // a hook that stays silent for a shrink's replays, installed once for the process
-    static HOOK: std::sync::Once = std::sync::Once::new();
-    HOOK.call_once(|| {
-        let prev = std::panic::take_hook();
-        std::panic::set_hook(Box::new(move |info| {
-            if !QUIET.get() {
-                prev(info)
-            }
-        }));
-    });
-    let fails = |h: &[A]| {
-        QUIET.set(true);
-        let failed = catch_unwind(AssertUnwindSafe(|| replay(h, false))).is_err_and(|p| matches(panic_message(&*p)));
-        QUIET.set(false);
-        FAILED.take();
-        failed
-    };
+    eprintln!("shrink: keeping to {}", pattern.as_ref().map_or(if any { "any failure".to_string() } else { format!("failures of the kind {:?}", failure_class(first)) }, |p| format!("failures containing {p:?}")));
+    let same = same_failure(first);
+    let fails = |h: &[A]| quiet_failure(|| replay(h, false)).is_some_and(|m| same(&m));
     let found = |h: &[A], tried: u64| visible(true, &format!("shrink: {} steps fail after {tried} candidates: {h:?}", h.len()));
     Some(shrink(steps, SHRINK_CANDIDATES, fails, simpler, found))
 }
