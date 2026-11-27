@@ -4040,7 +4040,7 @@ fn wake_for_a_chain_entering_the_node_closure_stays_in_bound_spec_commits_4() {
 // closure until it fetches the strong: the settled check spares that thing's text, though a writer
 // of it compacted it last, and the node reads "x" after its sync exchange.
 #[test]
-#[ignore = "stub rewrite: fails under rule 2, cause not sorted (R4)"]
+#[ignore = "its scripted dispute no longer reaches the case: issues/settled-writers-dispute-script.md"]
 fn settled_check_spares_things_held_through_unsettled_holds_spec_commits_5() {
     use Step::*;
     let aim = |x: Step| Aim(Box::new(x));
