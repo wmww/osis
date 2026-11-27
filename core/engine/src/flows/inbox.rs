@@ -166,9 +166,15 @@ impl Engine {
     }
 
     /// The peers the followed grant signals name, as dial hints (spec/sync-inbox.md §5 Grant
-    /// signal), read so a memo over them moves as signals are followed or let go.
+    /// signal), of those whose thing the app accepted: a held strong reaches it. Read so a memo
+    /// over them moves as signals are followed or let go and as such strongs come or go.
+    ///
+    /// Invariant: a signal's values are its sender's (anyone holding the holder's card), so its
+    /// peers are dialed only once this node's own references chose its thing; a held signal
+    /// alone makes the node dial nothing.
     pub fn signal_hints(&mut self) -> Result<Vec<osis_blob::DialHint>> {
-        let cs: Vec<CommitId> = self.core.followed_links.signals_read().values().flat_map(|m| m.values().flatten().copied()).collect();
+        let closure = &self.core.ix.closure;
+        let cs: Vec<CommitId> = self.core.followed_links.signals_read().iter().filter(|(x, _)| closure.targeted(x)).flat_map(|(_, m)| m.values().flatten().copied()).collect();
         let mut out = Vec::new();
         for c in cs {
             if let Some(v) = self.read(|tx| fire_value(tx, &c, GRANT_FIRE))?

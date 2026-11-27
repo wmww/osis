@@ -258,11 +258,12 @@ fn a_stopped_sync_holder_catches_up_by_role_spec_sync_judgement_6() {
     assert_eq!(w.engine(1).sync_holder(&s).unwrap(), Some(([t].into(), Holding::Unread)), "and keeps T");
 }
 
-// spec/sync-inbox.md §5 (Grant signal: its peers are dial hints while it is held): Alice tells Bob
-// of T naming her node; Bob's node dials it as a hint (beside its other reasons) while the signal
-// is held, and not once it expires. Fails with the signal's peers left unread.
+// spec/sync-inbox.md §5 (Grant signal: its peers are dial hints once the app accepts it),
+// spec/sync-hostile.md §1: Alice tells Bob of T naming her node; held alone the signal makes Bob's
+// node dial nothing (its peers are the sender's word); once Bob holds T by a strong his node dials
+// it as a hint (beside its other reasons) while the signal is held, and not once it expires.
 #[test]
-fn a_held_signals_peers_are_dial_hints_spec_sync_inbox_5() {
+fn an_accepted_signals_peers_are_dial_hints_spec_sync_inbox_5() {
     use osis_sync::driver::dials::Why;
     let mut w = crate::harness::contacts();
     let t = make(&mut w, 0, "hi");
@@ -272,7 +273,9 @@ fn a_held_signals_peers_are_dial_hints_spec_sync_inbox_5() {
     w.write(0, |e| e.grant(&t, &bob, &edge(Role::Read)).and_then(|_| e.signal_grant(&t, &bob, &hints))).unwrap();
     w.run();
     let hinted = |w: &World| w.dials(1).why(&peer).contains(&Why::Hint);
-    assert!(hinted(&w), "the signal's peer is a dial hint");
+    assert!(!hinted(&w), "held, not accepted: no dial hint");
+    root_strong(&mut w, 1, t, true);
+    assert!(hinted(&w), "accepted: the signal's peer is a dial hint");
     w.advance(osis_base::format::INBOX_LIFETIME_MS + 1);
     w.run();
     assert!(!hinted(&w), "gone with the signal");
