@@ -18,7 +18,7 @@
 //! Work follows change: each judgement is an `Effects` key over the ground's per-key memo
 //! values, stamped rows and read's clock (`Ground`), and read acts only on what a new value adds,
 //! once judging reached its fixpoint; nothing re-judges every commit of S per step. A source is
-//! judged by what its stream shows (`seen_added`), and for a non-writer there by every must-hold
+//! judged by what it is known to hold (`seen_added`), and for a non-writer there by every must-hold
 //! body as it joins. State: the effects, the clock and two stamped maps (verdicts, own role
 //! commits S must hold); nothing durable of its own (stands live in the store's
 //! record rows), so a start judges every held commit once.

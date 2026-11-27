@@ -3,7 +3,7 @@
 
 ## 1. Words
 - **Sync ID** (S): the unit nodes sync, made by an independent thing (spec/sync-ids.md §2). Each independent thing has exactly one, for its life.
-- **Entry**: a blob held under S in a node's own store, with its wrap and its stamp or deposit flag (spec/sync-ids.md §5). A node **logs** an entry in its own store; an entry is **held at** a peer when that peer's stream showed it there (spec/sync-streams.md §4); a peer **pulls** what it lacks.
+- **Entry**: a blob held under S in a node's own store, with its wrap and its stamp or deposit flag (spec/sync-ids.md §5). A node **logs** an entry in its own store; an entry is **held at** a peer when this node knows it there (spec/sync-judgement.md §3 `known`: that peer's stream showed it, or it reported applied a message carrying it, spec/sync-streams.md §4); a peer **pulls** what it lacks.
 - **Peer**: another node a node has a connection to. A **source** of S at a node: a peer with S open on a connection up now (spec/sync-opens.md §4). Connections, peers and sources are the only network roles; no node is of a kind.
 - **Node closure**: what a node holds, walked from its node root by strongs (spec/sync-set.md §2); its **sync set** is the sync IDs it syncs; a sync ID carries its thing's **sync unit**.
 - **Read secret** of a thing: its read-role secret at some epoch (spec/crypto.md §4). **Sync secret**: its sync-role secret, held by every holder of sync or above (spec/permissions.md §1).

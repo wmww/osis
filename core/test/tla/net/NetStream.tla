@@ -66,7 +66,7 @@ Rec0 == [rid |-> 0, cur |-> NoCur, mem |-> [l \in Ls |-> Mem0], srv |-> [l \in L
 Store0(sid, inc) == [log |-> {}, end |-> 0, held |-> {}, tomb |-> {}, lid |-> sid, inc |-> inc, sid |-> sid, draws |-> 0,
                      pend |-> FALSE, hist |-> {[inc |-> inc, end |-> Inf]}, rec |-> Rec0, hz |-> 0]
 NoReply == [on |-> FALSE, items |-> {}, whole |-> FALSE, listing |-> FALSE, more |-> FALSE, cur |-> NoCur, refused |-> {}, stale |-> FALSE, asked |-> {},
-            lfrom |-> {}, ltrim |-> {}, snap |-> {}, acks |-> [took |-> {}, gone |-> {}, anc |-> NoCur]]
+            lfrom |-> {}, ltrim |-> {}, snap |-> {}, acks |-> [took |-> {}, gone |-> {}, anc |-> NoCur], named |-> NoCur]
 
 VARIABLES st, link, dialer, inflight, active, cloned, cu, dirty, ever, written,
           rights, cnt, unforced, lostW, badServe, dig, ctd
@@ -182,7 +182,7 @@ Pull(x) ==
              cur |-> [lid |-> s.lid, inc |-> s.inc, pos |-> p], refused |-> refused, stale |-> FALSE, asked |-> {l \in Ls : r.mem[l].st # "out"},
              lfrom |-> IF TrackPres THEN lfrom ELSE {}, ltrim |-> IF TrackPres THEN ltrim ELSE {},
              snap |-> IF TrackPres THEN {e \in s.held : Shared(EL[e])} ELSE {},
-             acks |-> [took |-> {}, gone |-> {}, anc |-> NoCur]]]
+             acks |-> [took |-> {}, gone |-> {}, anc |-> NoCur], named |-> r.anc]]
     /\ st' = [st EXCEPT ![y].rec.last = r.cur,
                         ![x].rec.cur = IF CursorOnApply THEN @ ELSE inflight'[x].cur,
                         ![x].rec.everCur = IF CursorOnApply THEN @ ELSE TRUE]
@@ -234,8 +234,9 @@ Apply(x) ==
         queued == inflight[y].on
         Acked(p, a) == (p \cup a.took) \ a.gone
         \* this reply checked x's held anchor: a newer one replaces it, a listing from the start
-        \* spends it (its end replaces presence); then the Applied that waited for it (y's)
-        anc1 == IF r.anew # NoCur THEN r.anew ELSE IF rp.whole THEN NoCur ELSE r.anc
+        \* spends the one its Pull named (its end replaces presence; one held since stays); then the
+        \* Applied that waited for it (y's)
+        anc1 == IF r.anew # NoCur THEN r.anew ELSE IF rp.whole /\ rp.named = r.anc THEN NoCur ELSE r.anc
         anc2 == IF rp.acks.anc # NoCur THEN rp.acks.anc ELSE anc1
         \* y's anchor from this Applied: replaces y's once a reply checked it, else waits
         yr == st[y].rec

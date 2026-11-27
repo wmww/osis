@@ -109,12 +109,13 @@ impl Place {
     }
 
     /// A reply on the connection checked the anchor held: a newer one replaces it; a listing from
-    /// the start (`whole`) spends it, its end replacing what the source holds as present.
-    fn anchor_checked(&mut self, whole: bool) {
+    /// the start (`whole`) spends the one its Pull named (`named`), its end replacing what the
+    /// source holds as present. One held after that Pull went stays, whichever came first.
+    fn anchor_checked(&mut self, whole: bool, named: &Option<Cursor>) {
         let was = (self.anchor.clone(), self.anchor_new.clone());
         match self.anchor_new.take() {
             Some(a) => self.anchor = Some(a),
-            None if whole => self.anchor = None,
+            None if whole && self.anchor == *named => self.anchor = None,
             None => {}
         }
         self.anchor_moved |= was != (self.anchor.clone(), self.anchor_new.clone());
@@ -229,6 +230,8 @@ struct ReplyInfo {
     more: bool,
     joins: BTreeMap<SyncId, Option<Cursor>>,
     asked: Vec<(SyncId, u64)>,
+    /// The anchor its Pull named.
+    named: Option<Cursor>,
 }
 
 /// The members a whole reply covers (spec/sync-streams.md §4 Applying): each shared now whose
@@ -241,11 +244,14 @@ fn covered(members: &BTreeMap<SyncId, crate::opens::Member>, p: &Pulling, asked:
 /// A body queued for fetching: its sync ID, blob and the announcement's wrap and stamp.
 type Queued = (SyncId, BlobId, Option<(Wrap, Option<Stamp>)>);
 
+/// What a Pull named: its joins (by generation) and the source's anchor.
+type Asked = (Vec<(SyncId, u64)>, Option<Cursor>);
+
 #[derive(Clone, Debug)]
 pub(super) struct Pulling {
     pub src: Source,
-    /// The Pull out, with the joins it named.
-    out: Option<(Id, Vec<(SyncId, u64)>)>,
+    /// The Pull out, with the joins and the anchor it named.
+    out: Option<(Id, Asked)>,
     first_sent: bool,
     eph_next: bool,
     /// The latest cursor received (applied or in hand): what the next Pull names.
@@ -809,6 +815,7 @@ impl Streams {
         let asked = p.joins.iter().map(|(s, j)| (*s, j.generation)).collect();
         // the anchor held, until a reply on the connection checked it
         let anchor = if p.checked { None } else { self.places.get(&p.src).and_then(|pl| pl.anchor.clone()).and_then(|c| osis_proto::Cursor::new(c).ok()) };
+        let named = anchor.as_ref().map(|c| c.as_bytes().to_vec());
         let pull = Pull { id: 0, cursor: p.recv.clone().and_then(|c| osis_proto::Cursor::new(c).ok()), joins, inline_limit: p.inline, max_reply: REPLY_BUDGET as u64, follow: true, ephemeral: !p.first_sent || p.eph_next, anchor };
         let Some(id) = ctx.wire.request(conn, Msg::Pull(Box::new(pull))) else { return };
         let first = !p.first_sent;
@@ -816,7 +823,7 @@ impl Streams {
         p.eph_next = false;
         p.again = false;
         p.quiet = false;
-        p.out = Some((id, asked));
+        p.out = Some((id, (asked, named)));
         self.pulls_sent += 1;
         p.out_at = self.pulls_sent;
         // the first Pull covers only the members shared now: one the place holds at the stream
@@ -859,14 +866,14 @@ impl Streams {
         if p.out.as_ref().is_none_or(|(x, _)| *x != id) {
             return;
         }
-        let (_, asked) = p.out.take().unwrap_or_default();
+        let (_, (asked, named)) = p.out.take().unwrap_or_default();
         match m {
-            Msg::PullReply(r) => self.on_pull_reply(ctx, conn, *r, asked),
+            Msg::PullReply(r) => self.on_pull_reply(ctx, conn, *r, asked, named),
             _ => p.retry_at = Some(ctx.mono.after(RESYNC_MS)),
         }
     }
 
-    fn on_pull_reply(&mut self, ctx: &mut Ctx, conn: ConnId, r: PullReply, asked: Vec<(SyncId, u64)>) {
+    fn on_pull_reply(&mut self, ctx: &mut Ctx, conn: ConnId, r: PullReply, asked: Vec<(SyncId, u64)>, named: Option<Cursor>) {
         let members = ctx.shared.members(conn);
         let Some(p) = self.pull.get_mut(&conn) else { return };
         let covered = covered(members, p, &asked);
@@ -917,7 +924,7 @@ impl Streams {
                 }
             }
         }
-        let info = ReplyInfo { whole: r.whole, covered, more: r.more, joins, asked };
+        let info = ReplyInfo { whole: r.whole, covered, more: r.more, joins, asked, named };
         let batch = Batch { events: r.events, cursor: r.cursor.map(osis_proto::Cursor::into_bytes), report: r.report, reply: Some(info), owed: Vec::new(), shows: Vec::new(), after: Vec::new() };
         self.stage(ctx, conn, batch);
     }
@@ -1599,7 +1606,7 @@ impl Streams {
         let mut join_listing = std::mem::take(&mut p.join_listing);
         // a reply on the connection checked the source's anchor (its Pull named it): stored with
         // what the reply covers
-        let check = batch.reply.as_ref().filter(|_| !p.checked).map(|r| r.whole);
+        let check = batch.reply.as_ref().filter(|_| !p.checked).map(|r| (r.whole, r.named.clone()));
         p.checked |= check.is_some();
         let mut ops = Vec::new();
         // the members a deletion here shows a refused entry of may be gone at this source
@@ -1677,8 +1684,8 @@ impl Streams {
         // presence is always a whole one (spec/sync-streams.md §4 Applying)
         let mid_listing = batch.reply.as_ref().is_some_and(|r| r.more) && listing.is_some();
         let place = self.place(ctx.store, src);
-        if let Some(whole) = check {
-            place.anchor_checked(whole);
+        if let Some((whole, named)) = &check {
+            place.anchor_checked(*whole, named);
         }
         let cursor = (batch.cursor.is_some() || batch.reply.as_ref().is_some_and(|r| r.whole)) && !mid_listing;
         let was_cursor = place.cursor.clone();

@@ -1631,7 +1631,7 @@ impl Store {
 
     /// A source went: a connection closed, or a peer's record was dropped (spec/sync-ids.md §5
     /// Peer budget: a lost record is a first contact). Each entry charged to it that still gives
-    /// nothing held moves to a record whose stream showed it present (`heir`), else goes (fetched
+    /// nothing held moves to a record known to hold it (`heir`), else goes (fetched
     /// again where present), and what was kept for a connection alone goes. One transaction.
     pub fn gone(&mut self, src: Source) -> Result<()> {
         let mut g = self.lock();
@@ -1879,7 +1879,7 @@ fn drop_entries(t: &mut Transaction<'_>, env: &mut Env<'_>, s: &SyncId) -> Resul
 }
 
 /// Where entry `b` of S that `src` brought goes when `src` does (spec/sync-ids.md §5 Peer budget):
-/// a peer's record, not `src`, whose stream showed it present, with room for its `size` when it
+/// a peer's record, not `src`, known to hold it, with room for its `size` when it
 /// is charged. Else nobody: the entry goes, and a stream that passed it would not bring it
 /// again. O(records that showed it).
 fn heir(t: &mut Transaction<'_>, env: &Env<'_>, src: Source, s: &SyncId, b: &BlobId, size: Option<u64>) -> Result<Option<Source>> {

@@ -8,8 +8,7 @@
 
 ## State
 - **Coordinator**: Sheave, on the stub rewrite. Agents run on main (no kept branches); every job is reviewed and gated as it lands (notes/coordination.md).
-- **Reviewed and gated**: everything on main, the final gate over the whole tree included. Slimming landed: no pull anew for a thing another node makes (attach left, issue attach-pulls-unit-anew), index rows repeating stored facts, one stored form per commit (~35% storage), a blob's bytes once per connection, memory per commit 128 → 70 KB (issue memory-per-commit). The full-size differential: 25 of 200 (issue differential-full-size-classes).
-- **Pushed, awaiting review and gate**: `spar-slim-c2` (echo removed, anchored by a log cursor of the requester's own log; the NetStream TLA model passes with the anchor, its controls fail; return direction per dependent make 403 → 180 B). Streams only: nothing the stub rewrite touches, so it can be reviewed now.
+- **Reviewed and gated**: everything on main, the final gate over the whole tree included. Slimming landed: no pull anew for a thing another node makes (attach left, issue attach-pulls-unit-anew), index rows repeating stored facts, one stored form per commit (~35% storage), a blob's bytes once per connection, no entry streamed back to its sender (a dependent make's return way 403 → 180 B), memory per commit 128 → 70 KB (issue memory-per-commit). The full-size differential: 25 of 200 (issue differential-full-size-classes).
 
 ## First: the stub rewrite (Tess: go-ahead)
 Reference-driven stubs are on main (Tess's model: grants belong to the granted thing; signal → reference → sync → permissions; a grant nobody is told of is valid). Sync IDs are fixed at minting. Opening by entries is on main (notes/stubs.md, notes/sync-access.md, notes/sync-opens.md); the full-size differential's classes are issues/differential-full-size-classes.md. What else is decided and owed: notes/stub-rewrite.md. Sheave coordinates it.
