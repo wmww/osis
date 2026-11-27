@@ -619,7 +619,7 @@ impl Drop for World {
     fn drop(&mut self) {
         // the trace's summary
         if self.tracer.is_some() && !osis_base::testenv::quiet() {
-            eprintln!("{}", self.net.census());
+            eprintln!("w{} {}", self.id, self.net.census());
         }
         if let Some(k) = self.fixture.take() {
             LIVE.with(|l| l.borrow_mut().remove(&k));
@@ -1159,7 +1159,7 @@ impl World {
                 things.push(s);
             }
         }
-        t.flush(self.deliveries, self.now().0.saturating_sub(START.0), &things);
+        t.flush(self.id, self.deliveries, self.now().0.saturating_sub(START.0), &things);
         self.tracer = Some(t);
     }
 
@@ -1902,7 +1902,7 @@ pub fn play(w: &mut World, steps: &[Step], replay: String) -> Script<Step> {
     let mut script = Script::new("crate::harness::script", SHRINK_VAR, replay);
     for (k, s) in steps.iter().enumerate() {
         if w.tracer.is_some() && !osis_base::testenv::quiet() {
-            eprintln!("step {k}: {s:?}");
+            eprintln!("w{} step {k}: {s:?}", w.id);
         }
         script.push(s.clone(), String::new());
         let note = step(w, s);

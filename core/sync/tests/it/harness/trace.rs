@@ -7,7 +7,8 @@
 //! tokens joined by `,`, keeps the lines holding any of them: `t<k>` stands for thing k's sync
 //! IDs (as `S` and 6 hex digits), any other token is matched as text (`S1a2b3c`, `B..`, `Stream`).
 //! Off (unset), the world holds no tracer and pays one branch per delivery. Lines are a function
-//! of the seed: delivery number, world time since the start, node indices.
+//! of the seed: world number (`World::id`), delivery number, world time since the start, node
+//! indices.
 
 use osis_base::{BlobId, CommitId, SyncId};
 use osis_proto::{FrameDecoder, Msg};
@@ -160,15 +161,16 @@ impl Tracer {
     }
 
     /// Prints the step's lines that pass the filter (`things`: the text thing tokens stand for),
-    /// headed by delivery `d` at `ms` since the start.
-    pub fn flush(&mut self, d: u64, ms: u64, things: &[String]) {
+    /// headed by world `w` (`World::id`: a fixture's copy counts its deliveries from 1 again),
+    /// delivery `d` at `ms` since the start.
+    pub fn flush(&mut self, w: u32, d: u64, ms: u64, things: &[String]) {
         let lines = std::mem::take(&mut self.lines);
         if osis_base::testenv::quiet() {
             return;
         }
         for l in lines {
             if self.only.is_empty() || self.only.iter().filter(|t| !is_thing(t)).chain(things).any(|t| l.contains(t.as_str())) {
-                eprintln!("d{d} +{ms}ms {l}");
+                eprintln!("w{w} d{d} +{ms}ms {l}");
             }
         }
     }
