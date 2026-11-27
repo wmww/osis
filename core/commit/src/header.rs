@@ -363,12 +363,10 @@ fn put_idxs(out: &mut Vec<u8>, v: &[usize]) {
     v.iter().for_each(|i| put_uint(out, *i as u64));
 }
 
-/// An aspect on the wire: `pieces` its parts' entries (one, or its pieces), the first's fields
-/// with every hash (spec/wire.md §4 Pieces).
+/// An aspect's seven items on the wire, inside its thing's group: `pieces` its parts' entries
+/// (one, or its pieces), the first's fields but its tid, with every hash (spec/wire.md §4 Pieces).
 fn put_aspect(out: &mut Vec<u8>, pieces: &[AspectEntry]) {
     let Some(a) = pieces.first() else { return };
-    put_array(out, 8);
-    put_tid_bytes(out, &a.tid);
     put_text(out, a.ak.as_str());
     put_uint(out, a.lo);
     put_uint(out, a.hi);
@@ -447,9 +445,21 @@ impl Header {
     fn put_list(&self, out: &mut Vec<u8>, f: ListField) -> bool {
         match f {
             ListField::Aspects => {
-                let wire: Vec<std::ops::Range<usize>> = self.wire_aspects().map(|(_, r)| r).collect();
-                put_array(out, wire.len());
-                wire.into_iter().for_each(|r| put_aspect(out, self.aspects.get(r).unwrap_or_default()));
+                // `[Group+]`, `Group := [tid, (seven items per aspect)+]`: one per thing, its aspects
+                // as the wire lists them
+                let mut groups: Vec<(Tid, Vec<std::ops::Range<usize>>)> = Vec::new();
+                for (a, r) in self.wire_aspects() {
+                    match groups.last_mut() {
+                        Some((t, rs)) if *t == a.tid => rs.push(r),
+                        _ => groups.push((a.tid, vec![r])),
+                    }
+                }
+                put_array(out, groups.len());
+                for (t, rs) in groups {
+                    put_array(out, 1 + ASPECT_ITEMS * rs.len());
+                    put_tid_bytes(out, &t);
+                    rs.into_iter().for_each(|r| put_aspect(out, self.aspects.get(r).unwrap_or_default()));
+                }
             }
             ListField::Purge => {
                 put_array(out, self.purge.len());
@@ -621,7 +631,7 @@ impl Signed {
 
 // About the fewest bytes an item takes: what a list reserves for by its count, so a count the bytes
 // cannot pay for reserves nothing. A wrong value only costs a reallocation.
-const MIN_ASPECT: usize = 58;
+const MIN_GROUP: usize = 58;
 const MIN_PURGE: usize = 20;
 const MIN_KEY: usize = 35;
 const MIN_ID: usize = 33;
@@ -662,13 +672,52 @@ fn read_purge_by(r: &mut Reader<'_>) -> Result<PurgeBy, Error> {
     Ok(by)
 }
 
-/// A wire aspect: its entry, one per hash (spec/wire.md §4 Pieces: a list of two or more, ascending
-/// and distinct, on `secrets.0` alone).
-fn read_aspect(r: &mut Reader<'_>) -> Result<Vec<AspectEntry>, Error> {
-    if r.array()? != 8 {
-        return Err(Error::Malformed("aspect arity"));
+/// Items per aspect in a group (spec/wire.md §4 `Group`).
+const ASPECT_ITEMS: usize = 7;
+
+/// A thing's group of wire aspects `[tid, (ak, lo, hi, by, keys, hash, replaces)+]`: their
+/// entries, the aspects strictly ascending by `ak` (`aspect_order`).
+fn read_group(r: &mut Reader<'_>) -> Result<(Tid, Vec<AspectEntry>), Error> {
+    let n = r.array()?;
+    if n <= 1 || (n - 1) % ASPECT_ITEMS != 0 {
+        return Err(Error::Malformed("aspect group arity"));
     }
-    let (tid, ak, lo, hi) = (read_tid(r)?, read_ak(r)?, r.uint()?, r.uint()?);
+    let tid = read_tid(r)?;
+    let mut aspects: Vec<AspectEntry> = Vec::new();
+    for _ in 0..(n - 1) / ASPECT_ITEMS {
+        let next = read_aspect(r, tid)?;
+        if let (Some(p), Some(a)) = (aspects.last(), next.first())
+            && aspect_order(&tid, p.ak.as_str()) >= aspect_order(&tid, a.ak.as_str())
+        {
+            return Err(Error::Malformed("aspects not sorted and distinct"));
+        }
+        aspects.extend(next);
+    }
+    Ok((tid, aspects))
+}
+
+/// The groups of an aspect list, by tid strictly ascending (as `read_items` holds other lists'
+/// items by their bytes, which a group's length head would order instead): a repeated chunk of the
+/// list ends the read where it starts.
+fn read_groups(r: &mut Reader<'_>) -> Result<Vec<AspectEntry>, Error> {
+    let n = r.array()?;
+    let mut out = Vec::with_capacity(n.min(r.remaining() / MIN_GROUP));
+    let mut prev: Option<Tid> = None;
+    for _ in 0..n {
+        let (tid, aspects) = read_group(r)?;
+        if prev.is_some_and(|p| p >= tid) {
+            return Err(Error::Malformed("aspect groups not sorted and distinct"));
+        }
+        prev = Some(tid);
+        out.extend(aspects);
+    }
+    Ok(out)
+}
+
+/// A wire aspect of thing `tid`, its seven items: its entry, one per hash (spec/wire.md §4 Pieces:
+/// a list of two or more, ascending and distinct, on `secrets.0` alone).
+fn read_aspect(r: &mut Reader<'_>, tid: Tid) -> Result<Vec<AspectEntry>, Error> {
+    let (ak, lo, hi) = (read_ak(r)?, r.uint()?, r.uint()?);
     let (purge_by, keys) = (read_purge_by(r)?, read_idxs(r)?);
     let hashes = match r.peek_major() {
         Some(osis_base::cbor::MAJOR_ARRAY) => {
@@ -772,7 +821,7 @@ impl Header {
         }
         let r = &mut Reader::new(bytes);
         match f {
-            ListField::Aspects => self.aspects = read_items(r, MIN_ASPECT, read_aspect)?.into_iter().flatten().collect(),
+            ListField::Aspects => self.aspects = read_groups(r)?,
             ListField::Purge => self.purge = read_items(r, MIN_PURGE, read_purge)?,
             ListField::Keys => self.keys = read_items(r, MIN_KEY, |r| read_key(r, check))?,
             ListField::Frontier => {}

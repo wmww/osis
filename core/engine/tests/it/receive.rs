@@ -24,10 +24,7 @@ fn bad_signature_rejected_spec_commits_4() {
     let pks = packages_to(&mut lp, 0, 1);
     let at = creation_of(&mut lp, &pks, t);
     let mut blob = CommitBlob::decode(&pks[at].bytes).unwrap();
-    let Value::Enum(c, Some(p)) = blob.sigs.signature.to_value() else { panic!() };
-    let Value::Bytes(mut sig) = *p else { panic!() };
-    sig[0] ^= 1;
-    blob.sigs.signature = osis_crypto::Signature::from_value(&Value::Enum(c, Some(Box::new(Value::Bytes(sig))))).unwrap();
+    blob.sigs.signature.0[0] ^= 1;
     for p in &pks[..at] {
         lp.deliver(1, p).unwrap();
     }

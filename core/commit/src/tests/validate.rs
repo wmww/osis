@@ -249,10 +249,10 @@ fn purge_by_encoding_spec_wire_4() {
     for bad in [Value::Int(0), Value::Int(4), Value::List(vec![Value::Int(2), Value::Int(0)])] {
         let mut v = crate::tests::header_value(&h);
         if let Value::List(items) = &mut v
-            && let Some(Value::List(aspects)) = items.get_mut(7)
-            && let Some(Value::List(a)) = aspects.first_mut()
+            && let Some(Value::List(groups)) = items.get_mut(7)
+            && let Some(Value::List(g)) = groups.first_mut()
         {
-            a[4] = bad.clone();
+            g[4] = bad.clone();
         }
         assert!(Header::decode(&osis_base::encode(&v)).is_err(), "{bad:?}");
     }

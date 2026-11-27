@@ -516,10 +516,7 @@ fn dropped_pending_grant_drops_reading_secrets_spec_crypto_4() {
     let grant = *done.commits.last().unwrap();
     let pk = lp.peers[0].engine.package(&grant).unwrap().unwrap();
     let mut blob = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
-    let Value::Enum(c, Some(p)) = blob.sigs.signature.to_value() else { panic!() };
-    let Value::Bytes(mut sig) = *p else { panic!() };
-    sig[0] ^= 1;
-    blob.sigs.signature = osis_crypto::Signature::from_value(&Value::Enum(c, Some(Box::new(Value::Bytes(sig))))).unwrap();
+    blob.sigs.signature.0[0] ^= 1;
     lp.peers[1].receive(&blob.encode(), pk.blobs.clone()).unwrap();
     assert!(!lp.peers[1].engine.commit_ids().contains(&grant), "its author is unknown: not judged");
     assert!(lp.peers[1].engine.epochs(&g).is_some_and(|e| e.read.holds_any()), "read from the planted box");

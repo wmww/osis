@@ -167,12 +167,26 @@ fn header_rejects_malformed() {
     short.pop();
     assert!(Header::decode(&osis_base::encode(&Value::List(short))).is_err());
     // an aspect's delta hash: one 32-byte string
-    let Value::List(aspects) = &items[7] else { unreachable!() };
-    let Value::List(aspect) = &aspects[0] else { unreachable!() };
-    let hash = aspect[6].clone();
+    let Value::List(groups) = &items[7] else { unreachable!() };
+    let Value::List(group) = &groups[0] else { unreachable!() };
+    let groups_of = |gs: Vec<Vec<Value>>| Value::List(gs.into_iter().map(Value::List).collect());
+    let hash = group[6].clone();
     for bad in [Value::Bytes(vec![0; 31]), Value::List(vec![hash])] {
-        let mut a = aspect.clone();
-        a[6] = bad;
-        assert_eq!(osis_base::Classified::class(&mutate(7, Value::List(vec![Value::List(a)]))), osis_base::ErrorClass::BadInput);
+        let mut g = group.clone();
+        g[6] = bad;
+        assert_eq!(osis_base::Classified::class(&mutate(7, groups_of(vec![g]))), osis_base::ErrorClass::BadInput);
     }
+    // a group of no aspect or of a partial one, or two groups of one thing
+    assert!(matches!(mutate(7, groups_of(vec![group[..1].to_vec()])), Error::Malformed(_)));
+    assert!(matches!(mutate(7, groups_of(vec![group[..7].to_vec()])), Error::Malformed(_)));
+    let mut later = group.clone();
+    later[1] = Value::Str("app:titles.0".into());
+    assert!(matches!(mutate(7, groups_of(vec![group.clone(), later.clone()])), Error::Malformed(_)));
+    // one group of the two aspects decodes; their order reversed does not
+    let both = |a: &[Value], b: &[Value]| groups_of(vec![[a, &b[1..]].concat()]);
+    let Value::List(items2) = header_value(&sample_header()) else { unreachable!() };
+    let mut two = items2.clone();
+    two[7] = both(group, &later);
+    Header::decode(&osis_base::encode(&Value::List(two))).unwrap();
+    assert!(matches!(mutate(7, both(&later, group)), Error::Malformed(_)));
 }

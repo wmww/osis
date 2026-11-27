@@ -224,7 +224,7 @@ fn a_blob_framed_under_other_commitments_is_dropped_once_its_lists_resolve_spec_
     w.partition(0, 1);
     let c = w.write(0, |e| {
         let mut m = Mutation::new();
-        for i in 0..2500 {
+        for i in 0..3000 {
             m.set(t, &Ak::new(format!("u:a{i}.0")).unwrap(), &Value::Int(1)).unwrap();
         }
         e.commit(m).unwrap().unwrap()

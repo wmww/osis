@@ -1,4 +1,4 @@
-//! Commit blob plaintext `[Header, signature, [Section*]]` and its
+//! Commit blob plaintext `[Header, sig, [Section*]]` and its
 //! opened form, the commit's held parts (spec/wire.md §4).
 //!
 //! Confidentiality invariants (spec/wire.md §4, spec/sync-judgement.md §1):
@@ -16,7 +16,7 @@ use crate::cbor::{item, strictly_ascending};
 use crate::header::{Header, LIMITS};
 use crate::path::{Paths, ThingPath};
 use crate::Error;
-use osis_base::cbor::{Item, MAJOR_ARRAY, MAJOR_UINT, encode_into, head, put_array, put_bytes, put_uint};
+use osis_base::cbor::{Item, MAJOR_ARRAY, MAJOR_UINT, head, put_array, put_bytes, put_uint};
 use osis_base::{CommitId, Tid};
 use osis_crypto::{CryptoRngCore, Domain, SECTION_NONCE_LEN, Secret32, Signature, SigningSecret};
 use std::borrow::Borrow;
@@ -31,7 +31,7 @@ pub struct Part {
 
 /// A commit as a node holds it: the header, its signatures, the parts it opened and, where it
 /// states the split form, the path keys its opened encryptions carried (its stored form,
-/// `[Header, signature, [Part*]]`, then `[PathKey+]` where it holds
+/// `[Header, sig, [Part*]]`, then `[PathKey+]` where it holds
 /// one; a sealed fire's payload too, spec/wire.md §9, and a header-only copy of a commit stating
 /// one path is the commit blob plaintext without sections).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -46,7 +46,7 @@ pub struct CommitBlob {
     pub keys: BTreeMap<usize, [u8; 32]>,
 }
 
-/// A commit's signature (spec/wire.md §4): the signer's key's, over the commit ID.
+/// A commit's signature (spec/wire.md §4 `sig`): the signer's key's, raw, over the commit ID.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Sigs {
     pub signature: Signature,
@@ -66,11 +66,12 @@ impl Sigs {
     }
 
     fn encode_into(&self, out: &mut Vec<u8>) {
-        encode_into(&self.signature.to_value(), out);
+        put_bytes(out, &self.signature.0);
     }
 
+    // raw: the signing key's case fixes its form (spec/wire.md §4 `sig`)
     fn read(sv: Item) -> Result<Sigs, Error> {
-        Ok(Sigs { signature: Signature::from_value(&sv.to_value()?)? })
+        Ok(Sigs { signature: Signature::from_slice(sv.as_bytes().ok_or(Error::Malformed("commit signature"))?)? })
     }
 }
 

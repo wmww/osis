@@ -155,7 +155,7 @@ fn framed_entry(lp: &mut LocalPeer, d: Tid, c: &CommitId, junk: bool) -> (BlobId
 fn a_blob_opened_before_its_lists_resolve_is_checked_once_they_do_spec_commits_4() {
     for junk in [true, false] {
         let (mut lp, d) = two_nodes();
-        let (t, c) = wide_commit(&mut lp, d, 2500);
+        let (t, c) = wide_commit(&mut lp, d, 3000);
         assert!(!lp.peers[0].engine.header_list_blobs(&c).unwrap().is_empty(), "the aspect list goes by link");
         let s = lp.peers[1].engine.sync_id_of(&d).unwrap().unwrap();
         let (b, wrap, bytes) = framed_entry(&mut lp, d, &c, junk);
