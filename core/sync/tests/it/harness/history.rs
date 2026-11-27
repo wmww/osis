@@ -1420,12 +1420,12 @@ fn card_clauses(w: &mut World, refs: &mut Refs, m: &Model) {
     }
 }
 
-/// Debug builds: node `i`'s role on `t` and its secrets (`World::why_role`), for a role or read
-/// clause that fails.
+/// Debug builds: node `i`'s role on `t` and its secrets (`World::why_role`) and every node's open
+/// members of `t`'s sync IDs (`World::members_of`), for a role or read clause that fails.
 fn why_role(w: &mut World, i: usize, t: &Tid) -> String {
     #[cfg(debug_assertions)]
     {
-        format!("why role (node {i}):\n{}", w.why_role(i, t))
+        format!("why role (node {i}):\n{}\nopen members:\n{}", w.why_role(i, t), w.members_of(t))
     }
     #[cfg(not(debug_assertions))]
     {

@@ -76,14 +76,14 @@ impl Tracer {
         let line = match input {
             Input::Bytes { conn, bytes } => {
                 for m in self.decode(i, *conn, false, bytes) {
-                    self.lines.push(format!("n{i} <-{from} {}: {m}", c(*conn)));
+                    self.lines.push(format!("n{i} <-{from} {}: {m}", conn_name(*conn)));
                 }
                 return;
             }
-            Input::Up { conn, rank, dialed, .. } => format!("n{i} up{from} {} rank {rank}{}", c(*conn), if *dialed { " dialed" } else { "" }),
+            Input::Up { conn, rank, dialed, .. } => format!("n{i} up{from} {} rank {rank}{}", conn_name(*conn), if *dialed { " dialed" } else { "" }),
             Input::Taken { .. } => return,
-            Input::Closed { conn } => format!("n{i} closed{from} {}", c(*conn)),
-            Input::Down { conn, .. } => format!("n{i} down {}", c(*conn)),
+            Input::Closed { conn } => format!("n{i} closed{from} {}", conn_name(*conn)),
+            Input::Down { conn, .. } => format!("n{i} down {}", conn_name(*conn)),
             Input::Tick => format!("n{i} tick"),
             Input::Wrote => format!("n{i} wrote"),
             Input::Discovered { addr } => format!("n{i} discovered {}", hex(&addr.key)),
@@ -98,16 +98,16 @@ impl Tracer {
                 Out::Send(conn, bytes) => {
                     let to = peer(*conn).map_or(String::new(), |p| format!(" n{p}"));
                     for m in self.decode(i, *conn, true, bytes) {
-                        self.lines.push(format!("n{i} ->{to} {}: {m}", c(*conn)));
+                        self.lines.push(format!("n{i} ->{to} {}: {m}", conn_name(*conn)));
                     }
                 }
-                Out::Dial(conn, to) => self.lines.push(format!("n{i} dial {} {}", c(*conn), hex(&to.key))),
+                Out::Dial(conn, to) => self.lines.push(format!("n{i} dial {} {}", conn_name(*conn), hex(&to.key))),
                 Out::Close(conn) => {
                     self.frames.retain(|(n, c, _), _| (*n, *c) != (i, *conn));
                     self.asked.retain(|(n, c, ..), _| (*n, *c) != (i, *conn));
-                    self.lines.push(format!("n{i} close {}", c(*conn)));
+                    self.lines.push(format!("n{i} close {}", conn_name(*conn)));
                 }
-                Out::Read(conn, on) => self.lines.push(format!("n{i} read {} {on}", c(*conn))),
+                Out::Read(conn, on) => self.lines.push(format!("n{i} read {} {on}", conn_name(*conn))),
                 Out::Wake(_) => {}
             }
         }
@@ -225,7 +225,7 @@ pub fn kind_name(body: &[u8]) -> &'static str {
 }
 
 /// A connection end as the trace prints it: `c<n>` dialed, `a<n>` accepted.
-fn c(conn: ConnId) -> String {
+pub fn conn_name(conn: ConnId) -> String {
     if conn.accepted() { format!("a{}", conn.0 & !ConnId::ACCEPTED) } else { format!("c{}", conn.0) }
 }
 

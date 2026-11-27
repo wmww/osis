@@ -50,7 +50,8 @@ Debug builds only, for a count, retention, role or read test that fails; each re
 - `Engine::rows(prefix, tid)` (osis-sync `World::rows` adds the sync store's rows): each row's family, decoded key, the tids it names and bytes. `Engine::describe_rows` describes another store's rows.
 - `Engine::why_role(t)`: roles, paths, secrets and `lost_due`'s clauses (`rotation::lost::explain_due`); its `kept copy` line is the retain decision (`retention::forget`). Dump the unshrunk history too: a shrink drops words and grants that matter.
 - `Engine::describe_commit(c)` names a trace's `C..`. `World::sync_ids_of(t)` (any build): how each node syncs `t`.
-- Printed on failure: S1 (`growth::releasing_own_things_*`) prints the rows a fresh world's node lacks and `why_kept` of each thing they name (`growth::leaked`); the sync differential's role and read clauses (`history::closure_clauses`) print `why_role`.
+- `World::members_of(t)`: each node's open members of `t`'s sync IDs, a line per (connection, sync ID): `n<i> <conn> n<peer> S..: Member { class, own, by, until, departed }` (the member's `Debug`, so it follows the opens code as it changes).
+- Printed on failure: S1 (`growth::releasing_own_things_*`) prints the rows a fresh world's node lacks and `why_kept` of each thing they name (`growth::leaked`); the sync differential's role and read clauses (`history::closure_clauses`) print `why_role` and `members_of`.
 - **Replaying without the end checks**: `OSIS_NO_END_CHECKS=1` (by hand only) also skips `World::run`'s quiet checks, so `differential::holds` and scenarios calling `check` return their world for inspection. Never set it while shrinking: a candidate whose failure is the check then passes.
 
 ## Loop guards

@@ -53,7 +53,8 @@ fn a_granted_thing_held_by_a_strong_syncs_spec_sync_inbox_5() {
 
 // spec: none (debug dumps, notes/test-harnesses.md): after Bob holds Alice's grant, `sync_ids_of`
 // shows each node syncing T's sync ID; `describe_commit` names Alice's next write on T and its
-// signer, her node thing; the settle round counters count that write's steps.
+// signer, her node thing; `members_of` shows each node holding T's sync ID open to the other; the
+// settle round counters count that write's steps.
 #[test]
 fn debug_dumps_name_sync_ids_commits_and_rounds() {
     let (mut w, t) = granted();
@@ -77,6 +78,10 @@ fn debug_dumps_name_sync_ids_commits_and_rounds() {
     {
         let d = w.describe_commit(&c);
         assert!(d.contains("Content by ") && d.contains("by ") && d.contains(" (n0) (node thing)") && d.contains(&format!("{t} x:v.0")), "{d}");
+        let m = w.members_of(&t);
+        for (i, j) in [(0, 1), (1, 0)] {
+            assert!(m.lines().any(|l| l.starts_with(&format!("n{i} ")) && l.contains(&format!(" n{j} {s}: Member {{"))), "n{i} holds T's sync ID open to n{j}: {m}");
+        }
     }
     let _ = c;
 }

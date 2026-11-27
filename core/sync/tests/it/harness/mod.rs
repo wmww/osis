@@ -882,6 +882,39 @@ impl World {
         out.join("\n")
     }
 
+    /// Debug builds: per node, each open member of a sync ID its sync store syncs with `t` among its
+    /// things, one line each: the connection (as the trace prints it) and its peer, the sync ID,
+    /// and the member as `osis_sync::opens::Member` shows it (its class and own, what opened it,
+    /// `until`, departed), so what each serving side holds open is seen at once beside
+    /// `why_role`; `n<i>: no open member` for a node with none.
+    #[cfg(debug_assertions)]
+    pub fn members_of(&self, t: &Tid) -> String {
+        let mut out = Vec::new();
+        for i in 0..self.nodes.len() {
+            let ss: BTreeSet<osis_base::SyncId> = self.store(i).syncs().into_iter().filter(|(_, (ts, _))| ts.contains(t)).map(|(x, _)| x).collect();
+            let lines = self.open_members(i, &ss);
+            if lines.is_empty() {
+                out.push(format!("n{i}: no open member"));
+            }
+            out.extend(lines);
+        }
+        out.join("\n")
+    }
+
+    /// Node `i`'s open members of `ss`, a line each (`members_of`).
+    #[cfg(debug_assertions)]
+    fn open_members(&self, i: usize, ss: &BTreeSet<osis_base::SyncId>) -> Vec<String> {
+        let mut out = Vec::new();
+        for (&(_, conn), &(peer, _)) in self.net.links.range((i, ConnId(0))..).take_while(|((n, _), _)| *n == i) {
+            for (s, m) in self.node(i).node.opens().members(conn) {
+                if ss.contains(s) {
+                    out.push(format!("n{i} {} n{peer} {}: {}", trace::conn_name(conn), trace::short(s), trace::brief(&format!("{m:?}"))));
+                }
+            }
+        }
+        out
+    }
+
     /// Debug builds: commit `c` named, for a trace's `C..` (`Engine::describe_commit`, by the
     /// first node holding its record), each node's tid marked `(n<j>)`.
     #[cfg(debug_assertions)]
