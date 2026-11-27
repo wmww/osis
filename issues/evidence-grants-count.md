@@ -1,5 +1,5 @@
-# Handed grant commits enter the thing
-> Summary: a node handed a grant's commits directly (no signal, no unit it syncs carrying the thing) enters the thing once its node root strongs it, against spec/sync-set.md §2 First entry (Entry is founded); a correct rule needs a durable record of the stubs a node logged in its local part. Engine tests rely on it through `LocalPeer::share`.
+# Grants held only as evidence count for carriage
+> Summary: the engine judges a unit's carriage (keys open, roles, chain holders) from every grant it holds, evidence included, where the spec counts only role entries held as the thing's stub or whole: handed grant commits enter a thing (against First entry), and a chain is counted through a hop only evidence shows (full-size seed 59). A correct rule needs to know which role entries a unit carries, the local part's logged stubs among them. Engine tests rely on the first through `LocalPeer::share`.
 > Priority: normal
 > Tags: engine, sync, tests
 
@@ -16,3 +16,6 @@ Options:
 - **Gate on arrival**: role parts outside the node closure that no synced sync ID carries wait (as content does); LocalPeer delivers without sync IDs, so its delivery would have to name them.
 
 Then rewrite `LocalPeer::share`'s users (15 engine tests) to enter by a signal (as `fresh_reader` does) or a reference.
+
+## A chain hop only evidence shows (full-size seed 59)
+`New(1), Give(1, 0, Holder::Node(0), Syncs), Give(1, 0, Holder::Public, Reads), New(1), NewIn(1, 0), NewIn(1, 0), Give(1, 3, Holder::Node(0), Syncs), Give(1, 3, Holder::Thing(2), Syncs)` (world 0): node 0's account holds sync on thing 3 directly and through things 0 and 2 (0 public, the mint admin of 2; 2 holds sync on 3). Node 0 holds thing 2's record edge only as evidence, yet `sync::units::chain_holders` counts the hop and node 0 holds thing 2 as a chain stub; held-model counts only grants on things the unit carries, so holds nothing of thing 2. Filtering chain holders to things already held is circular (a chain holder is held for being one: `stubs::a_two_hop_chain_*` fails): the rule is the unit's carried role entries, as above.
