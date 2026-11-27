@@ -651,6 +651,20 @@ impl Ground for Live<'_, '_> {
         if !deletes.is_empty() && self.heard_out(s)? {
             out.deletes = deletes;
         }
+        // the harness trace's record-blob line (notes/sync-test-harness.md, Trace)
+        osis_base::trace::note(|| {
+            let ids = |x: &mut dyn Iterator<Item = &BlobId>| x.map(|b| format!("{b:?}")).collect::<Vec<_>>().join(" ");
+            let deletes: Vec<String> = out.deletes.iter().map(|(at, _, b)| format!("{b:?}@{at:?}")).collect();
+            format!(
+                "record blobs {s:?}: rows [{}] held [{}] shown [{}] unneeded [{}] gone [{}] deletes [{}]",
+                ids(&mut rows.keys()),
+                ids(&mut held.keys()),
+                ids(&mut counted.iter().filter(|b| !held.contains_key(*b))),
+                ids(&mut out.unneeded.iter()),
+                ids(&mut out.gone.iter()),
+                deletes.join(" ")
+            )
+        });
         Ok(out)
     }
     fn sync_copies_due(&mut self, s: &SyncId) -> Result<SyncCopiesDue> {

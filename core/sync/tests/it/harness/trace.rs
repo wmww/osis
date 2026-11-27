@@ -2,7 +2,8 @@
 //! prints, for each delivery to a named node, what it received, what it sent (decoded messages,
 //! after any lie), and what the step applied (store entries and engine commits gained or lost),
 //! plus each script step played, and what the engine and node noted (`osis_base::trace`: a
-//! body's verdict moving, lost access firing, a transaction refused). `<nodes>` is `all` or node indices joined by `,`; `<only>`,
+//! body's verdict moving, lost access firing, a transaction refused, a record-blob judgement
+//! changing). `<nodes>` is `all` or node indices joined by `,`; `<only>`,
 //! tokens joined by `,`, keeps the lines holding any of them: `t<k>` stands for thing k's sync
 //! IDs (as `S` and 6 hex digits), any other token is matched as text (`S1a2b3c`, `B..`, `Stream`).
 //! Off (unset), the world holds no tracer and pays one branch per delivery. Lines are a function
@@ -38,6 +39,8 @@ pub struct Tracer {
     /// Offers and Losts on traced connections not answered yet, per (node, its conn, whether it
     /// sent the request, id): the request's kind and items, for its answer's line (`paired`).
     asked: BTreeMap<Asking, (&'static str, Vec<String>)>,
+    /// Per (node, sync ID's text), the last record-blob judgement printed (`noted`).
+    records: BTreeMap<(usize, String), String>,
     /// Lines of the step being traced.
     lines: Vec<String>,
 }
@@ -58,7 +61,7 @@ impl Tracer {
             ns => Some(ns.split(',').map(|n| n.trim().parse().unwrap_or_else(|_| panic!("{TRACE_VAR}: {n:?} is no node index"))).collect()),
         };
         let only = only.split(',').map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).collect();
-        Some(Tracer { nodes, only, frames: BTreeMap::new(), held: BTreeMap::new(), asked: BTreeMap::new(), lines: Vec::new() })
+        Some(Tracer { nodes, only, frames: BTreeMap::new(), held: BTreeMap::new(), asked: BTreeMap::new(), records: BTreeMap::new(), lines: Vec::new() })
     }
 
     pub fn traces(&self, i: usize) -> bool {
@@ -131,16 +134,28 @@ impl Tracer {
         self.held.insert(i, Held { entries, commits });
     }
 
-    /// Lines node `i`'s engine and node noted (`World::noted`; `None`: outside a step).
+    /// Lines node `i`'s engine and node noted (`World::noted`; `None`: outside a step). A
+    /// record-blob judgement (`record blobs S..: ..`, noted each time it runs) is kept only where
+    /// it differs from the node's last one under that S.
     pub fn noted(&mut self, i: Option<usize>, lines: Vec<String>) {
         let who = i.map_or("n?".to_string(), |i| format!("n{i}"));
-        self.lines.extend(lines.into_iter().map(|l| format!("{who} {}", brief(&l))));
+        for l in lines {
+            let l = brief(&l);
+            if let (Some(i), Some((s, _))) = (i, l.strip_prefix("record blobs ").and_then(|r| r.split_once(':'))) {
+                if self.records.get(&(i, s.to_string())) == Some(&l) {
+                    continue;
+                }
+                self.records.insert((i, s.to_string()), l.clone());
+            }
+            self.lines.push(format!("{who} {l}"));
+        }
     }
 
     /// Node `i` restarted: its connections' frames are gone.
     pub fn restarted(&mut self, i: usize) {
         self.frames.retain(|(n, ..), _| *n != i);
         self.asked.retain(|(n, ..), _| *n != i);
+        self.records.retain(|(n, _), _| *n != i);
         self.lines.push(format!("n{i} restarted"));
     }
 
