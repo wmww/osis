@@ -1905,6 +1905,10 @@ impl Opens {
             let Some(adm) = self.admissible(&s) else { continue };
             self.work.tested += 1;
             for t in &adm.tests {
+                // one it would not open by is not sent (spec/sync-opens.md §6)
+                if self.served_past(ctx, conn, &s, &adm, &t.credential()) {
+                    continue;
+                }
                 let m = t.matched();
                 let b = beacon_of(&m, &s, &rr);
                 self.work.beacons += 1;
@@ -1976,6 +1980,9 @@ impl Opens {
                 continue;
             }
             let by = cred.credential();
+            if self.served_past(ctx, conn, &s, &adm, &by) {
+                continue;
+            }
             if self.open(conn, s, Member { class: a.class, own, by, until: None }, beacon, moved) {
                 self.rejudge(ctx, conn, s, moved);
             }
@@ -2024,6 +2031,12 @@ impl Opens {
         ctx.wire.answer(conn, id, Msg::Shared { id, items: answers });
     }
 
+    /// Whether `by`, an older step's sync proof, opens nothing on `conn`: an ended member reached
+    /// its `until` there already, and `by`'s is no later (spec/sync-opens.md §6).
+    fn served_past(&self, ctx: &mut Ctx, conn: ConnId, s: &SyncId, adm: &Adm, by: &Credential) -> bool {
+        !adm.of_head(by) && self.conns.get(&conn).and_then(|c| c.served.get(s)).copied().is_some_and(|u| u >= ctx.holds.until(s, by))
+    }
+
     /// A Hit (spec/sync-opens.md §5 Opening); `class`: the class the peer declared in it.
     fn accept_hit(&mut self, ctx: &mut Ctx, conn: ConnId, hit: &[u8; 32], sig: Option<&osis_crypto::Signature>, class: SourceClass, moved: &mut Vec<Moved>) -> SharedItem {
         let refuse = SharedItem::code(Code::DECLINED);
@@ -2047,12 +2060,7 @@ impl Opens {
             }
             Shown::Deposit(_) => return refuse,
         };
-        // an older step's proof, once an ended member reached its `until` here, opens S again
-        // only for a later one (spec/sync-opens.md §6)
-        if !adm.of_head(&by)
-            && let Some(u) = self.conns.get(&conn).and_then(|c| c.served.get(&s)).copied()
-            && u >= ctx.holds.until(&s, &by)
-        {
+        if self.served_past(ctx, conn, &s, &adm, &by) {
             return refuse;
         }
         let m = Member { class, own: adm.own, by, until: None };

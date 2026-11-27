@@ -56,7 +56,13 @@ pub fn reader(step: &StepKeys, older: &[StepKeys]) -> Creds {
 
 /// What a node keeping S unread at head `head` holds: the product's own (`Creds::kept_unread`).
 pub fn store(head: &StepKeys) -> Creds {
-    Creds::kept_unread(&osis_sync::unread::UnreadCredentials { step: Some(head.id), keys: vec![(head.sync.clone(), Secret32::from_bytes(head.proof))], deposit: Some(SigningSecret::from_seed(&Secret32::from_bytes(head.proof)).verifying_key()), head: Some(head.pk()) })
+    store_with(head, &[])
+}
+
+/// `store` holding the sync secrets of `older` steps of its path too.
+pub fn store_with(head: &StepKeys, older: &[&StepKeys]) -> Creds {
+    let keys = std::iter::once(head).chain(older.iter().copied()).map(|st| (st.sync.clone(), Secret32::from_bytes(st.proof))).collect();
+    Creds::kept_unread(&osis_sync::unread::UnreadCredentials { step: Some(head.id), keys, deposit: Some(SigningSecret::from_seed(&Secret32::from_bytes(head.proof)).verifying_key()), head: Some(head.pk()) })
 }
 
 /// What a node keeping S unread holds before any step is registered there, granted the sync

@@ -34,9 +34,10 @@ pub struct UnreadCredentials {
     /// Its step (spec/sync-opens.md §4 Admissible): the head when a held secret derives its sync
     /// key, else none.
     pub step: Option<StepId>,
-    /// The sync key and sync proof (spec/sync-ids.md §2) of each sync secret it shows: the
-    /// head's alone; else those of every sync secret held whose sync key no step of its path
-    /// bears (with no head, every one), newest first.
+    /// The sync key and sync proof (spec/sync-ids.md §2) of each sync secret it shows: with the
+    /// head's held, of each distinct sync key on its path held, the head's first; else those of
+    /// every sync secret held whose sync key no step of its path bears (with no head, every one),
+    /// newest first.
     pub keys: Vec<(SigningSecret, Secret32)>,
     /// The head's deposit key (public: a node keeping S unread signs no deposit).
     pub deposit: Option<VerifyingKey>,
@@ -88,8 +89,16 @@ pub fn judge(j: &Judged) -> Kept {
         // genuine one (spec/sync-opens.md §4 Admissible)
         return keep(false, (!held.is_empty()).then(|| UnreadCredentials { step: None, keys: held, deposit: None, head: None }));
     };
-    if let Some(k) = held.iter().find(|(k, _)| k.verifying_key() == head.keys.sync) {
-        return keep(false, Some(UnreadCredentials { step: Some(head.id()), keys: vec![k.clone()], deposit: Some(head.keys.deposit), head: Some(head.keys.sync.to_bytes()) }));
+    if held.iter().any(|(k, _)| k.verifying_key() == head.keys.sync) {
+        let mut keys: Vec<(SigningSecret, Secret32)> = Vec::new();
+        for st in j.steps.iter().rev() {
+            if let Some(k) = held.iter().find(|(k, _)| k.verifying_key() == st.keys.sync)
+                && !keys.iter().any(|(x, _)| x.verifying_key() == st.keys.sync)
+            {
+                keys.push(k.clone());
+            }
+        }
+        return keep(false, Some(UnreadCredentials { step: Some(head.id()), keys, deposit: Some(head.keys.deposit), head: Some(head.keys.sync.to_bytes()) }));
     }
     // its head is past its keys: it shows only the secrets no step of its path bears (a re-grant
     // past its head, which a reader holding it moves it to), so a node removed shows nothing

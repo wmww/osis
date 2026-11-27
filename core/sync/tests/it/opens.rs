@@ -351,7 +351,7 @@ fn no_offer_before_the_peers_digest_spec_sync_opens_3() {
 }
 
 // spec/sync-opens.md §5 (Filter): every shown credential's beacon goes to every connection, one
-// whose peer proved no actor included: a read secret's and a sync proof's.
+// whose peer proved no actor included: a sync proof's.
 #[test]
 fn every_beacon_goes_to_every_peer_spec_sync_opens_5() {
     let st = StepKeys::new(1, 0);
@@ -359,7 +359,7 @@ fn every_beacon_goes_to_every_peer_spec_sync_opens_5() {
     r.table.set(S, Some(reader(&st, &[])));
     r.settle();
     let (_adv, sent) = Adv::dials(&mut r, Proven::default(), [2; 32]);
-    assert_eq!(filter_values(&sent).0.len(), 2, "the read secret and the proof");
+    assert_eq!(filter_values(&sent).0.len(), 1, "the proof");
 }
 
 // spec/sync-opens.md §5 (filter): additions naming a base the receiver does not hold are
@@ -492,7 +492,7 @@ fn a_refused_hit_is_tried_again_only_when_remarked_spec_sync_opens_5() {
     r.table.set(S, Some(reader(&st, &[])));
     r.settle();
     let (mut adv, sent) = Adv::dials(&mut r, account(9), [2; 32]);
-    // Adv acknowledges r's filter and shows r's read secret: r Hits, Adv refuses.
+    // Adv acknowledges r's filter and shows r's sync proof: r Hits, Adv refuses.
     for m in of_kind(&sent, 36) {
         let id = m.id();
         adv.send(&mut r, Msg::Shared { id, items: vec![osis_proto::SharedItem::code(Code::OK)] });
@@ -508,7 +508,7 @@ fn a_refused_hit_is_tried_again_only_when_remarked_spec_sync_opens_5() {
     adv.send(&mut r, Msg::Beacons { id, generation: 2, base: Some(1), f: 8, lo: 0, hi: 256, gcs: Vec::new(), more: false });
     assert_eq!(offered_hits(&r.sent()), 0, "not tried again without a re-mark");
     // `changed_at(S)` moving tries it again
-    r.table.set(S, Some(reader(&StepKeys::new(1, 1), &[])));
+    r.table.set(S, Some(reader(&StepKeys::new(1, 1), std::slice::from_ref(&st))));
     r.settle();
     assert_eq!(offered_hits(&r.sent()), 1, "tried again once changed_at(S) moved");
 }
@@ -556,7 +556,7 @@ fn an_ended_member_closes_when_the_stream_passes_until_spec_sync_opens_6() {
     let (s0, s1) = (StepKeys::new(1, 0), StepKeys::new(1, 1));
     let (mut k, mut adv) = store_dialed_by_adv(&s0, [2; 32]);
     adv.offer(&mut k, vec![proof_hit(&adv, &s0)]);
-    k.table.set(S, Some(store(&s1)));
+    k.table.set(S, Some(store_with(&s1, &[&s0])));
     k.settle();
     let until = k.table.until;
     assert!(k.moved.contains(&Moved::Until(adv.peer, S)));
@@ -576,7 +576,7 @@ fn a_proof_open_ends_at_a_rotation_spec_sync_opens_6() {
     let (s0, s1) = (StepKeys::new(1, 0), StepKeys::new(1, 1));
     let (mut k, mut adv) = store_dialed_by_adv(&s0, [2; 32]);
     assert_eq!(adv.offer(&mut k, vec![OfferItem::Hit { hit: adv.hit_on(&s0.proof, &S), sig: None, class: osis_proto::SourceClass::Reader }])[0].code, Code::OK);
-    k.table.set(S, Some(store(&s1)));
+    k.table.set(S, Some(store_with(&s1, &[&s0])));
     k.settle();
     assert!(k.opens.members(adv.peer)[&S].until.is_some(), "ended");
 }
@@ -741,7 +741,7 @@ fn a_lost_for_an_open_member_is_answered_with_a_lost_spec_sync_opens_6() {
         adv.offer(&mut k, vec![proof_hit(&adv, &s0)]);
         k.reported(adv.peer, S, 3);
         if ending {
-            k.table.set(S, Some(store(&s1)));
+            k.table.set(S, Some(store_with(&s1, &[&s0])));
             k.settle();
         }
         k.sent();
@@ -766,7 +766,7 @@ fn an_ended_member_admissible_again_stays_ended_spec_sync_opens_6() {
     let (s0, s1) = (StepKeys::new(1, 0), StepKeys::new(1, 1));
     let (mut k, mut adv) = store_dialed_by_adv(&s0, [2; 32]);
     adv.offer(&mut k, vec![proof_hit(&adv, &s0)]);
-    k.table.set(S, Some(store(&s1)));
+    k.table.set(S, Some(store_with(&s1, &[&s0])));
     k.settle();
     let until = k.opens.members(adv.peer)[&S].until.expect("ended");
     k.table.set(S, Some(store(&s0)));
@@ -1374,7 +1374,7 @@ fn a_member_closed_at_its_until_rejoins_from_the_peers_lost_spec_sync_opens_6() 
         let (s0, s1) = (StepKeys::new(1, 0), StepKeys::new(1, 1));
         let (mut k, mut adv) = store_dialed_by_adv(&s0, [2; 32]);
         adv.offer(&mut k, vec![proof_hit(&adv, &s0)]);
-        k.table.set(S, Some(store(&s1)));
+        k.table.set(S, Some(store_with(&s1, &[&s0])));
         k.settle();
         k.reported(adv.peer, S, k.table.until);
         assert!(!k.open(adv.peer, &S));
@@ -1433,7 +1433,7 @@ fn a_node_leaving_s_tells_each_connection_keeping_its_stop_spec_sync_opens_6() {
     let (s0, s1) = (StepKeys::new(1, 0), StepKeys::new(1, 1));
     let (mut k, mut adv) = store_dialed_by_adv(&s0, [2; 32]);
     adv.offer(&mut k, vec![proof_hit(&adv, &s0)]);
-    k.table.set(S, Some(store(&s1)));
+    k.table.set(S, Some(store_with(&s1, &[&s0])));
     k.settle();
     k.reported(adv.peer, S, k.table.until);
     assert_eq!(left_how(&k.moved, adv.peer, S), Some(Leaving::Kept));
@@ -1444,7 +1444,7 @@ fn a_node_leaving_s_tells_each_connection_keeping_its_stop_spec_sync_opens_6() {
     // and k, leaving S with a stop kept, tells the peer
     let (mut k, mut adv) = store_dialed_by_adv(&s0, [2; 32]);
     adv.offer(&mut k, vec![proof_hit(&adv, &s0)]);
-    k.table.set(S, Some(store(&s1)));
+    k.table.set(S, Some(store_with(&s1, &[&s0])));
     k.settle();
     k.reported(adv.peer, S, k.table.until);
     k.sent();

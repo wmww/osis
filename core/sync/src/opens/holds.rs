@@ -39,7 +39,7 @@ pub struct Creds {
 impl Creds {
     /// What a node keeping S unread holds (spec/sync-opens.md §4 Admissible): it shows and tests
     /// the sync proof of each sync secret it shows (`UnreadCredentials::keys`), and shows its
-    /// head's deposit key.
+    /// head's deposit key; its head's sync key, held, answers.
     pub fn kept_unread(uc: &UnreadCredentials) -> Creds {
         let mut c = Creds { holding: Some(Holding::Unread), ..Creds::default() };
         for (k, p) in &uc.keys {
