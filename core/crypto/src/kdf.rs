@@ -66,7 +66,7 @@ pub const EPOCH: &str = "epoch";
 pub const ROLES: &str = "roles";
 /// Wrap key from a sync ID read secret (spec/crypto.md §5).
 pub const WRAP: &str = "wrap";
-/// Section wrap key from a thing's read secret (spec/wire.md §4).
+/// Section key from a thing's read or roles secret or a copy's blob key (spec/crypto.md §5).
 pub const SECTION: &str = "section";
 /// Keyed content hashes (spec/crypto.md §6).
 pub const DELTA: &str = "delta";

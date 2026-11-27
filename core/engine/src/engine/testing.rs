@@ -976,12 +976,12 @@ const FORENSIC_CIPHERS: osis_store::Ciphers = osis_store::Ciphers {
     sections: |plain| {
         let Ok(env) = osis_commit::Envelope::decode(plain) else { return Vec::new() };
         let id = env.id();
-        env.sections.into_iter().map(|s| Box::new(ForensicSection { bytes: [&id.0[..], &s.wrap, &s.ciphertext].concat(), id, s }) as Box<dyn osis_store::Section>).collect()
+        env.sections.into_iter().map(|s| Box::new(ForensicSection { bytes: [&id.0[..], &s.nonce, &s.ciphertext].concat(), id, s }) as Box<dyn osis_store::Section>).collect()
     },
 };
 
 /// A section of a commit blob as the forensic attack tries it (`osis_store::Section`): its
-/// bytes are the commit ID, the wrap and the ciphertext, all `open` reads (the ID and the wrap
+/// bytes are the commit ID, the nonce and the ciphertext, all `open` reads (the ID and the nonce
 /// of fixed length, `Envelope::decode` checks, so no two sections join to the same bytes).
 struct ForensicSection {
     id: CommitId,
@@ -994,16 +994,14 @@ impl osis_store::Section for ForensicSection {
         &self.bytes
     }
 
-    // as its wrap's read secret, or as the key itself (only if its first plaintext bytes can
-    // begin a section)
+    // as its read secret or as the key itself, each key only if its first plaintext bytes can
+    // begin a section (either `Contents` form: a commit stating one path, or the split form)
     fn open(&self, t: &osis_crypto::Trial) -> Option<Vec<u8>> {
-        let sk = match t.unwrap_section(&self.id, &self.s.wrap) {
-            Ok(sk) => sk,
-            // either `Contents` form: a commit stating one path, or the split form
-            Err(_) if self.s.may_open_with(t.zero(), false) || self.s.may_open_with(t.zero(), true) => t.key().clone(),
-            Err(_) => return None,
-        };
-        osis_crypto::open_section(&self.id, &sk, &self.s.ciphertext).ok()
+        let may = |z: &osis_crypto::aead::Keystream| self.s.may_open_with(z, false) || self.s.may_open_with(z, true);
+        let open = |k: &osis_crypto::Secret32| osis_crypto::open_section(&self.id, k, &self.s.ciphertext).ok();
+        let derived = t.section_key(&self.id, &self.s.nonce);
+        let dz = osis_crypto::aead::Keystream::new(derived.expose(), &osis_crypto::aead::ZERO_NONCE);
+        may(&dz).then(|| open(&derived)).flatten().or_else(|| may(t.zero()).then(|| open(t.key())).flatten())
     }
 }
 
@@ -1106,7 +1104,7 @@ mod tests {
         assert!(!has(&attack(vec![*bk.expose()]), b"PLANTED"), "shut without its key");
         let mut tried = Vec::new();
         for s in &env.sections {
-            let Some(key) = reads.iter().find_map(|r| osis_crypto::unwrap_section(r, &env.id(), &s.wrap).ok()) else { continue };
+            let Some(key) = reads.iter().find(|r| s.opens_under(&env.id(), r)).map(|r| osis_crypto::section_key(r, &env.id(), &s.nonce)) else { continue };
             let found = attack(vec![*bk.expose(), *key.expose()]);
             let marker: &[u8] = if s.ais.len() >= 24 { b"PLANTED-MANY-29" } else { b"PLANTED-ONE" };
             assert!(has(&found, marker), "{} parts", s.ais.len());
@@ -1134,7 +1132,7 @@ mod tests {
         let mut seal = |seed| {
             let sealed = e.seal(&body, osis_blob::Class::Durable, &[], &mut osis_crypto::SeededRng::from_u64(seed)).unwrap().unwrap();
             let env = osis_commit::Envelope::decode(&osis_blob::open(&sealed.blob, &sealed.key).unwrap().1).unwrap();
-            let keys: Vec<[u8; 32]> = env.sections.iter().filter_map(|s| reads.iter().find_map(|r| osis_crypto::unwrap_section(r, &env.id(), &s.wrap).ok())).map(|k| *k.expose()).collect();
+            let keys: Vec<[u8; 32]> = env.sections.iter().filter_map(|s| reads.iter().find(|r| s.opens_under(&env.id(), r)).map(|r| osis_crypto::section_key(r, &env.id(), &s.nonce))).map(|k| *k.expose()).collect();
             (sealed, env, keys)
         };
         let (a, env_a, keys_a) = seal(0);

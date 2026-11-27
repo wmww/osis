@@ -60,16 +60,16 @@ fn encode_row(row: &BlobOf) -> Vec<u8> {
     v
 }
 
-/// One section of a seal: 0, its aspect list, its chain (a count byte, then tids), its wrap and
+/// One section of a seal: 0, its aspect list, its chain (a count byte, then tids), its nonce and
 /// key; or 1, the section's canonical bytes (length u32 first).
 fn seal_bytes(v: &mut Vec<u8>, s: &osis_commit::SectionSeal) {
     match s {
-        osis_commit::SectionSeal::Keyed { ais, chain, wrap, key } => {
+        osis_commit::SectionSeal::Keyed { ais, chain, nonce, key } => {
             v.push(0);
             put_indices(v, ais.iter().copied());
             v.push(chain.len() as u8);
             chain.iter().for_each(|t| v.extend(t.as_bytes()));
-            v.extend(wrap);
+            v.extend(nonce);
             v.extend(key.expose());
         }
         osis_commit::SectionSeal::Verbatim(sec) => {
@@ -111,9 +111,9 @@ fn decode_row(commit: CommitId, v: &[u8]) -> Option<BlobOf> {
                         let (n, r) = r.split_first()?;
                         let (chain, r) = r.split_at_checked(*n as usize * 15)?;
                         let chain = chain.as_chunks::<15>().0.iter().map(|t| Tid::from_bytes(*t)).collect();
-                        let (wrap, r) = r.split_at_checked(osis_crypto::SECTION_WRAP_LEN)?;
+                        let (nonce, r) = r.split_first_chunk::<{ osis_crypto::SECTION_NONCE_LEN }>()?;
                         let (k, r) = r.split_first_chunk::<32>()?;
-                        (osis_commit::SectionSeal::Keyed { ais: ais.into_iter().collect(), chain, wrap: wrap.to_vec(), key: osis_crypto::Secret32::from_bytes(*k) }, r)
+                        (osis_commit::SectionSeal::Keyed { ais: ais.into_iter().collect(), chain, nonce: *nonce, key: osis_crypto::Secret32::from_bytes(*k) }, r)
                     }
                     1 => {
                         let (n, r) = r.split_first_chunk::<4>()?;
@@ -1042,7 +1042,7 @@ impl Engine {
             if env.id() != *c {
                 continue;
             }
-            for sec in env.sections.into_iter().filter(|sec| osis_crypto::unwrap_section(&key, c, &sec.wrap).is_err()) {
+            for sec in env.sections.into_iter().filter(|sec| !sec.opens_under(c, &key)) {
                 let d = sec.digest();
                 if !row.sealed.contains(&d) {
                     opened.insert(d);

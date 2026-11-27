@@ -59,7 +59,7 @@ pub(crate) fn blob_bound(c: &CommitBlob) -> usize {
     // in a split commit each section's `Contents` head and key list head, and each thing's path
     // key in its content and its role section (`[index, bytes]` at its widest)
     let keyed = if h.is_split() { things.saturating_mul(2 * (2 + 2 * 9 + 1 + 9 + 32)) } else { 0 };
-    let section = Section { ais: Vec::new(), chain: vec![osis_base::Tid::from_bytes([0; 15]); osis_base::format::MAX_CHAIN_DEPTH], wrap: vec![0; osis_crypto::SECTION_WRAP_LEN], ciphertext: vec![0; 16 + 9] }.encoded_len();
+    let section = Section { ais: Vec::new(), chain: vec![osis_base::Tid::from_bytes([0; 15]); osis_base::format::MAX_CHAIN_DEPTH], nonce: [0; osis_crypto::SECTION_NONCE_LEN], ciphertext: vec![0; 16 + 9] }.encoded_len();
     let heads = h.aspects.len().saturating_add(things).saturating_mul(head_len(h.aspects.len() as u64)).saturating_add(things.saturating_mul(8));
     let parts: usize = c.parts.iter().map(part_len).fold(0, usize::saturating_add);
     // the entry-block count byte, and per thing its role parts are on the least block (two

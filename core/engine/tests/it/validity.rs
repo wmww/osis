@@ -4385,22 +4385,23 @@ fn a_roles_secret_opens_an_entry_only_as_its_committed_key_spec_wire_4() {
     }
 }
 
-/// A section wrap (spec/wire.md §4: nonce, then the section key sealed under `kdf("section", read
-/// secret)`, AD the commit ID) that opens under both `e1` and `e2`: under `e1` to the returned
-/// section key, under `e2` to another. XChaCha20-Poly1305 commits to no key, and the section key
-/// is the writer's free choice, so one Poly1305 equation solved for its second block does it.
-fn section_wrap_under_two_secrets(e1: &osis_crypto::Secret32, e2: &osis_crypto::Secret32, id: &osis_base::CommitId) -> (Vec<u8>, [u8; 32]) {
-    use osis_crypto::aead::{Keystream, open};
+/// A section's nonce and 32-byte ciphertext (spec/wire.md §4: its key `kdf("section", read secret,
+/// commit ID || nonce)`, AEAD nonce zero, AD the commit ID) that opens under the keys of both `e1`
+/// and `e2`, to two plaintexts. XChaCha20-Poly1305 commits to no key, so one Poly1305 equation
+/// solved for the ciphertext's second block does it: that block is free, so neither plaintext is
+/// one the writer chose.
+fn section_under_two_secrets(e1: &osis_crypto::Secret32, e2: &osis_crypto::Secret32, id: &osis_base::CommitId) -> ([u8; 16], Vec<u8>) {
+    use osis_crypto::aead::{Keystream, ZERO_NONCE, open};
     use p1305::*;
-    let wk = |e: &osis_crypto::Secret32| *osis_crypto::kdf::kdf(osis_crypto::kdf::SECTION, e.expose(), b"").expose();
-    let (w1, w2) = (wk(e1), wk(e2));
     let mut lens = [0u8; 16];
     lens[..8].copy_from_slice(&32u64.to_le_bytes());
     lens[8..].copy_from_slice(&32u64.to_le_bytes());
     for n in 0u64..1_000 {
-        let mut nonce = [0u8; 24];
-        nonce.copy_from_slice(&osis_base::hash::hash(&n.to_le_bytes())[..24]);
-        let (ks1, ks2) = (Keystream::new(&w1, &nonce), Keystream::new(&w2, &nonce));
+        let mut nonce = [0u8; 16];
+        nonce.copy_from_slice(&osis_base::hash::hash(&n.to_le_bytes())[..16]);
+        let wk = |e: &osis_crypto::Secret32| *osis_crypto::section_key(e, id, &nonce).expose();
+        let (w1, w2) = (wk(e1), wk(e2));
+        let (ks1, ks2) = (Keystream::new(&w1, &ZERO_NONCE), Keystream::new(&w2, &ZERO_NONCE));
         let ((r1, s1), (r2, s2)) = (r_s(&ks1), r_s(&ks2));
         // the MAC's blocks: AD (two), ciphertext (two), lengths; ciphertext block 1 solved for
         let coef = |r: &N, i: usize| pow(r, &[5 - i as u64, 0, 0]);
@@ -4428,44 +4429,32 @@ fn section_wrap_under_two_secrets(e1: &osis_crypto::Secret32, e2: &osis_crypto::
                 continue;
             }
             sealed.extend_from_slice(&tag(&r1, s1).to_le_bytes());
-            let (Ok(k1), Ok(k2)) = (open(&w1, &nonce, &id.0, &sealed), open(&w2, &nonce, &id.0, &sealed)) else { continue };
-            assert_ne!(k1, k2);
-            return ([nonce.to_vec(), sealed].concat(), k1.try_into().unwrap());
+            let (Ok(p1), Ok(p2)) = (open(&w1, &ZERO_NONCE, &id.0, &sealed), open(&w2, &ZERO_NONCE, &id.0, &sealed)) else { continue };
+            assert_ne!(p1, p2);
+            return (nonce, sealed);
         }
     }
-    panic!("no section wrap opening under both secrets");
+    panic!("no section opening under both secrets");
 }
 
-// spec/wire.md §4 (taking the first whose wrap gives a key that opens the ciphertext),
-// spec/crypto.md §5 Section, spec/commits.md §4 (No local error from peer bytes: judged a
-// function of the held set, never of the order secrets are tried in): a section wrap commits to
-// no key, so Bob seals D's section under a wrap that opens to its key under D's
-// epoch e1 and to another key under e2. A reader holding e1 alone, e2 and e1 (tried newest first),
-// or e1 and e2, reads D's parts alike; one holding e2 alone, whose key opens nothing, reads the
-// encryption as bad input, as any section a held secret unwraps to a key opening nothing.
+// spec/wire.md §4 (taking the first whose key opens the ciphertext), spec/crypto.md §5 Section,
+// spec/commits.md §4 (No local error from peer bytes: judged a function of the held set, never
+// of the order secrets are tried in): a section key commits to no ciphertext, so Bob seals D's
+// section as a ciphertext opening under the keys of both D's epochs e1 and e2. Its second block
+// is free, so it opens to no contents under either: a reader holding e1, e2, or both in either
+// order reads the encryption as bad input alike; one holding neither keeps it sealed.
 #[test]
-fn a_section_wrap_opening_under_two_epochs_reads_alike_spec_wire_4() {
+fn a_section_opening_under_two_epochs_reads_alike_spec_wire_4() {
     let (_, (d, _, _, c)) = split_world();
     let id = c.id();
-    let i = place(&c, d);
-    let (e1, e2) = (osis_crypto::Secret32::from_bytes([0xe1; 32]), osis_crypto::Secret32::from_bytes([0xe2; 32]));
-    // D's section as the writer seals it, its contents taken and sealed again under the solved key
-    let ps: Vec<&osis_commit::Part> = c.parts.iter().filter(|p| c.header.aspects[p.ai].tid == d).collect();
-    let honest = osis_commit::Section::seal(&id, &ps, Some(&own(&c)(i)), Vec::new(), &e1, &mut osis_crypto::SeededRng::from_u64(0)).unwrap();
-    let sk = osis_crypto::unwrap_section(&e1, &id, &honest.wrap).unwrap();
-    let contents = osis_crypto::open_section(&id, &sk, &honest.ciphertext).unwrap();
-    let (wrap, k1) = section_wrap_under_two_secrets(&e1, &e2, &id);
-    let ciphertext = osis_crypto::aead::seal(&k1, &osis_crypto::aead::ZERO_NONCE, &id.0, &contents).unwrap();
-    let k2 = osis_crypto::unwrap_section(&e2, &id, &wrap).unwrap();
-    assert!(osis_crypto::open_section(&id, &k2, &ciphertext).is_err(), "e2's key opens nothing");
-    let env = osis_commit::Envelope { header: c.header.clone(), sigs: c.sigs.clone(), sections: vec![osis_commit::Section { ciphertext, wrap, ..honest }] };
-    let theirs = |o: &osis_commit::CommitBlob| o.parts.iter().filter(|p| c.header.aspects[p.ai].tid == d).count();
-    for (held, name) in [(vec![e1.clone()], "e1"), (vec![e2.clone(), e1.clone()], "e2 then e1"), (vec![e1.clone(), e2.clone()], "e1 then e2")] {
-        let o = env.open(|_| held.clone()).unwrap_or_else(|e| panic!("{name}: {e:?}")).commit;
-        assert_eq!((theirs(&o), o.keys.get(&i)), (ps.len(), Some(&c.keys[&i])), "{name}: D's parts and path key");
-        assert!(matches!(o.path(&d), Some(osis_commit::ThingPath::Known(_))), "{name}");
+    let (e1, e2, e3) = (osis_crypto::Secret32::from_bytes([0xe1; 32]), osis_crypto::Secret32::from_bytes([0xe2; 32]), osis_crypto::Secret32::from_bytes([0xe3; 32]));
+    let ais: Vec<usize> = c.parts.iter().filter(|p| c.header.aspects[p.ai].tid == d).map(|p| p.ai).collect();
+    let (nonce, ciphertext) = section_under_two_secrets(&e1, &e2, &id);
+    let env = osis_commit::Envelope { header: c.header.clone(), sigs: c.sigs.clone(), sections: vec![osis_commit::Section { ais, chain: Vec::new(), nonce, ciphertext }] };
+    for (held, name) in [(vec![e1.clone()], "e1"), (vec![e2.clone()], "e2"), (vec![e2.clone(), e1.clone()], "e2 then e1"), (vec![e1.clone(), e2.clone()], "e1 then e2")] {
+        assert!(env.open(|_| held.clone()).is_err(), "{name}: bad input");
     }
-    assert!(env.open(|_| vec![e2.clone()]).is_err(), "e2 alone: bad input");
+    assert_eq!(env.open(|_| vec![e3.clone()]).unwrap().sealed.len(), 1, "neither: sealed");
 }
 
 // notes/path-form.md, Whom a write is by (a commit's one purge author is a member of each thing's stated path), spec/wire.md §4:

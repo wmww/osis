@@ -18,7 +18,7 @@ mod rng;
 mod secret;
 mod sign;
 
-pub use blob::{BlobKey, SECTION_WRAP_LEN, Trial, WRAP_LEN, blob_id, blob_len, decrypt_blob, encrypt_blob, filler_wrap, open_fire, open_section, pad, padme, reseal_section, seal_fire, seal_section, unpad, unwrap, unwrap_order, unwrap_section, wrap, wrap_section};
+pub use blob::{BlobKey, SECTION_NONCE_LEN, Trial, WRAP_LEN, blob_id, blob_len, decrypt_blob, encrypt_blob, filler_wrap, open_fire, open_section, pad, padme, reseal_section, seal_fire, seal_section, section_key, unpad, unwrap, unwrap_order, wrap};
 pub use delete::{DeleteSecret, blind, commitment, link_blind, thing_blind, verify_delete};
 pub use boxes::{BoxForm, BoxItem, BoxSlot, Epoch, HistoryEntry, open_box, open_form_box, read_open_box, open_history, open_joint_box, open_symmetric_box, roles_secret, seal_box, seal_history, seal_joint_box, wrap_symmetric_box};
 pub use error::Error;

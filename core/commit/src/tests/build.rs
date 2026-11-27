@@ -260,20 +260,21 @@ fn sections_per_reader() {
     // a fresh encryption by reader 1 carries reader 0's section byte for byte
     let again = seal_commit(&o1.commit, &c.header, reader, |r, _| Some((secret(r), vec![])), &o1.sealed, &mut rng).unwrap();
     assert_eq!(again.sections[1], env.sections[1]);
-    assert_ne!(again.sections[0], env.sections[0], "a fresh section key and wrap");
+    assert_ne!(again.sections[0], env.sections[0], "a fresh nonce and section key");
     let o = again.open(|_| vec![secret(&0), secret(&1)]).unwrap();
     assert_eq!(o.commit, c);
     // the section key encrypts one plaintext under the commit's ID only: another commit ID or
-    // a byte of the wrap or ciphertext changed opens nothing
+    // a byte of the nonce or ciphertext changed opens nothing, the section kept sealed
     let mut other = env.clone();
     other.header.blind = [0xee; 16];
     assert!(other.open(|_| vec![secret(&1)]).unwrap().commit.parts.is_empty());
+    let sealed_first = |e: &Envelope| e.open(|_| vec![secret(&0), secret(&1)]).unwrap().sealed == vec![e.sections[0].clone()];
     let mut bent = env.clone();
     bent.sections[0].ciphertext[3] ^= 1;
-    assert!(bent.open(|_| vec![secret(&1)]).is_err());
+    assert!(sealed_first(&bent));
     let mut bent = env.clone();
-    bent.sections[0].wrap[30] ^= 1;
-    assert!(bent.open(|_| vec![secret(&1)]).unwrap().commit.parts.is_empty());
+    bent.sections[0].nonce[3] ^= 1;
+    assert!(sealed_first(&bent));
     // a section whose list disagrees with its parts is bad input
     let mut lied = env.clone();
     lied.sections[0].ais = vec![0];
@@ -287,7 +288,7 @@ fn sections_per_reader() {
     assert!(prefix_groups(&c.header, [6]).is_err());
 }
 
-// spec/wire.md §4: sections sorted by first aspect, no aspect twice, a wrap of its length.
+// spec/wire.md §4: sections sorted by first aspect, no aspect twice, a nonce of its length.
 #[test]
 fn envelope_rejections() {
     let c = mixed();
@@ -308,9 +309,12 @@ fn envelope_rejections() {
     assert!(Envelope::decode(&chain.encode()).is_err());
     chain.sections[0].chain = vec![t(7), t(8), t(7)];
     assert!(Envelope::decode(&chain.encode()).is_err());
-    let mut short = env.clone();
-    short.sections[0].wrap.pop();
-    assert!(Envelope::decode(&short.encode()).is_err());
+    // a nonce of another length
+    let b = env.encode();
+    let n = env.sections[0].nonce;
+    let at = b.windows(17).position(|w| w[0] == 0x50 && w[1..] == n).unwrap();
+    let short = [&b[..at], &[0x4f], &n[..15], &b[at + 17..]].concat();
+    assert!(Envelope::decode(&short).is_err());
     // a section whose secret is not held is left out
     assert!(seal_commit(&c, &c.header, |_| (), |_, _| None::<(Secret32, Vec<osis_base::Tid>)>, &[], &mut rng).unwrap().sections.is_empty());
     assert_eq!(seal_commit(&c, &c.header, |ai| ai % 2, |r, _| (*r == 0).then(|| (Secret32::from_bytes([1; 32]), vec![])), &[], &mut rng).unwrap().ais(), vec![0, 2, 4]);
@@ -493,7 +497,7 @@ fn section_key_filter_keeps_the_key() {
         for n in [0usize, 1, 3, 23, 24, 30] {
             let parts: Vec<Part> = (0..n).map(|ai| Part { ai: ai * 30, delta: osis_base::encode(&Value::Int(ai as i64)) }).collect();
             let s = Section::seal(&commit, &parts, split.then_some(&keys), vec![t(1)], &secret, &mut rng).unwrap();
-            let key = osis_crypto::unwrap_section(&secret, &commit, &s.wrap).unwrap();
+            let key = osis_crypto::section_key(&secret, &commit, &s.nonce);
             let zero = |k: &[u8; 32]| osis_crypto::aead::Keystream::new(k, &osis_crypto::aead::ZERO_NONCE);
             assert!(s.may_open_with(&zero(key.expose()), split), "{n} parts");
             wrong += (0..64u8).filter(|i| s.may_open_with(&zero(&[*i; 32]), split)).count();

@@ -458,7 +458,6 @@ impl Engine {
             }
             v
         };
-        let copy = env.sections.iter().any(|sec| osis_crypto::unwrap_section(key, &id, &sec.wrap).is_ok());
         // a section of a thing not held here opens under the blob key alone (a copy's, whose
         // parts the sync ID's own readers judge); the record of one whose record is not held is
         // taken alone (spec/sync-judgement.md §1 Sealed sections)
@@ -482,15 +481,16 @@ impl Engine {
             v.push(key.clone());
             v
         }, section_keys)?;
+        let copy = opened.by.iter().any(|b| b.as_ref() == Some(key));
         // the epoch each section under a read secret opened under (`sync_ids::opened`)
         if let Some(h) = &header {
             let mut under = Vec::new();
-            for sec in &env.sections {
-                let Some(t) = thing_of(sec) else { continue };
-                if opened.sealed.contains(sec) || osis_crypto::unwrap_section(key, &id, &sec.wrap).is_ok() {
+            for (sec, by) in env.sections.iter().zip(&opened.by) {
+                let (Some(t), Some(by)) = (thing_of(sec), by) else { continue };
+                if by == key {
                     continue;
                 }
-                let Some((e, _)) = self.read_epochs(&t, &sec.chain).into_iter().find(|(_, s)| osis_crypto::unwrap_section(s, &id, &sec.wrap).is_ok()) else { continue };
+                let Some((e, _)) = self.read_epochs(&t, &sec.chain).into_iter().find(|(_, s)| **s == *by) else { continue };
                 under.push((t, e, opened.commit.parts.iter().filter(|p| sec.ais.contains(&p.ai)).collect::<Vec<_>>()));
             }
             self.note_opened(h, &under);

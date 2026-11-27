@@ -24,7 +24,7 @@ mod verify;
 #[cfg(test)]
 mod tests;
 
-pub use blob::{CommitBlob, Contents, Envelope, Opened, Part, Section, SectionSeal, Sigs, regenerate, seal_commit, seal_commit_keyed, seal_header_only, seal_header_only_keyed};
+pub use blob::{CommitBlob, Contents, Envelope, Opened, OpenedSection, Part, Section, SectionSeal, Sigs, regenerate, seal_commit, seal_commit_keyed, seal_header_only, seal_header_only_keyed};
 pub use builder::{AspectWrite, Built, CommitBuilder, SplitWrite};
 pub use groups::{COMMIT_PAST_BLOB, blob_expiry, prefix_expiry, prefix_groups, rewrite};
 #[cfg(test)]
