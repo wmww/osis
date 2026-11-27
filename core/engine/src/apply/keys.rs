@@ -1027,7 +1027,7 @@ mod tests {
     // A genuine grant past the cap reads its boxes once an applied one frees a place, or it waits
     // for good on the sync ID those secrets open.
     #[test]
-    #[ignore = "stub rewrite: a grant signal of values (R3) reaches the grantee"]
+    #[ignore = "stub rewrite: the grant delivered by hand never applies at the grantee (cause not sorted)"]
     fn refused_boxes_read_when_a_grant_applies_spec_crypto_4() {
         let (mut lp, ps) = LocalPeer::accounts(2, 0, WallMs(1_700_000_000_000)).unwrap();
         let (me, b) = (ps[0], ps[1]);

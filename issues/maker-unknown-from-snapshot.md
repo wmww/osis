@@ -3,6 +3,6 @@
 > Priority: low
 > Tags: security, engine, keys
 
-The leak `tests_members::maker_through_keyless_grant_opens_nothing_new_spec_crypto_4` closes, reopened at a node that joined after the rotation commit's `keys.0` part was compacted away (a snapshot's keyset body records the compactor, not the rotator). It lasts until a node holding the commit rotates and that reaches the snapshot-only node. Only a dishonest maker reaches it (`may_rotate` counts keyed grants only).
+The maker departure closes the leak of a maker whose role ran through a keyless grant (such a maker holds the target only by another way: a keyless grant carries nothing, spec/sync-set.md §2); it reopens at a node that joined after the rotation commit's `keys.0` part was compacted away (a snapshot's keyset body records the compactor, not the rotator). It lasts until a node holding the commit rotates and that reaches the snapshot-only node. Only a dishonest maker reaches it (`may_rotate` counts keyed grants only).
 
 Options: keep a current epoch's rotation commit whole while it is current (its maker is a judgment input); or record the maker in the snapshot's keyset.

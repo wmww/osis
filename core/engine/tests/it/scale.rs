@@ -2115,8 +2115,7 @@ fn removing_a_node_spec_permissions_8() {
     let [small, big] = REMOVAL_NODES.map(removal);
     flat("removal: commits", small.commits, big.commits);
     linear("removal: commit bytes", small.bytes, big.bytes);
-    // Stub rewrite (notes/stub-rewrite.md): a unit carrying one node's stub pays that node's
-    // boxes, never the others' (R4)
+    // a box per node: a unit carrying one node's stub pays that node's boxes, never the others'
     for (r, n) in [(&small, REMOVAL_NODES[0]), (&big, REMOVAL_NODES[1])] {
         assert_eq!(r.remover.n("kem: encapsulate"), 4 * (n as u64 - 2), "a box a role to each node left but the remover");
     }
@@ -2186,7 +2185,7 @@ fn unit_evidence(n: usize) -> [[u64; 3]; 2] {
 // writes (spec/crypto.md §4 Box records: a rotation's alone). So one writer's unit is flat in A's
 // nodes; with every node writing, linear in the writers.
 #[test]
-#[ignore = "stub rewrite: pairing hands over A's values (R3)"]
+#[ignore = "stub rewrite: a paired node handed T's unit by hand knows no T (UnknownThing at its write; cause not sorted)"]
 fn evidence_per_unit_spec_permissions_4() {
     let [small, big] = NODES.map(unit_evidence);
     println!("unit certificates (copies, records, copy bytes), one writer then every node: {small:?} at n, {big:?} at 10n");

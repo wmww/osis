@@ -164,8 +164,6 @@ mod tests {
         }
         assert!(pieces.contains(&BTreeSet::new()), "the rest, always: {pieces:?}");
         assert_eq!(lp.peers[0].engine.covered(&s, &gb, &t, &secrets).unwrap(), Some(true), "the snapshot covers the grant");
-        // Stub rewrite (notes/stub-rewrite.md): b's stub cut carries its piece and the rest,
-        // covering as the whole does (R4)
         // a snapshot written whole (b's and c's boxes in one piece, a hostile admin's) holds
         // nothing: its piece fails the shape check every receiver runs, its writer's own first
         lp.peers[0].engine.core.whole_secrets_snapshots = true;

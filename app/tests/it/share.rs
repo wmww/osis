@@ -61,7 +61,6 @@ fn tagging_shares_nothing() {
 /// note in Alice's tag names Alice (the tag's mint admin); Alice's note shared with Bob names her
 /// (its mint admin).
 #[test]
-#[ignore = "stub rewrite: entry by references and chain-holder stubs (R2)"]
 fn reach_through_someone_elses_tag() {
     let (a, b) = two_people();
     let tag = shared_tag(&a, &b, Role::Write);

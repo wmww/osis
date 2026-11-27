@@ -122,7 +122,7 @@ fn a_making_released_before_a_grantee_held_it_is_lost_spec_sync_set_3() {
 // builds the reference and the model without it, so node 2 reads the roster it holds (failed:
 // the reference, handed the public's grant, read a sync role node 2 can never learn of).
 #[test]
-#[ignore = "stub rewrite: entry by references and stubs, pairing by values (R2, R3)"]
+#[ignore = "stub rewrite: a held grant signal holds S as Read whatever the node holds (R3b)"]
 fn a_grant_released_before_anyone_received_it_is_lost_spec_sync_set_3() {
     use crate::harness::history::{Gives, Holder};
     let script = [Step::New(1), Step::Give(1, 0, Holder::Public, Gives::Syncs), Step::Give(1, 0, Holder::Node(2), Gives::Reads), Step::Unstrong(1, None, 0), Step::Strong(2, None, 0)];
@@ -158,7 +158,7 @@ fn a_history_is_a_function_of_its_seed() {
 // redeems a public link to it and reads it as the reference does, as held-model's closure says.
 // Control: never made public, the redeem writes nothing and node 1 reads nothing.
 #[test]
-#[ignore = "stub rewrite: entry by references and stubs, pairing by values (R2, R3)"]
+#[ignore = "stub rewrite: a public link's redeemer reads nothing of the thing at quiet, the oracle says it reads (cause not sorted)"]
 fn a_public_thing_redeemed_is_read_until_the_public_goes_spec_sync_set_4() {
     use crate::harness::history::{Gives, Holder, reads};
     let (n, accounts, ..) = size();
@@ -252,7 +252,7 @@ fn a_public_link_redeemed_after_the_removal_opens_nothing_spec_sync_opens_4() {
 // it takes nothing there (failed taking any head's box: it read again, dropped again, and the pair
 // churned past the storm cap).
 #[test]
-#[ignore = "stub rewrite: a signalled sync-only holder holds S as Read (R3b)"]
+#[ignore = "stub rewrite: a held grant signal holds S as Read whatever the node holds (R3b)"]
 fn a_sync_holder_reads_a_thing_made_public_spec_sync_opens_4() {
     use crate::harness::history::{Gives, Holder};
     let (n, accounts, ..) = size();
@@ -296,7 +296,7 @@ fn a_public_left_out_of_a_rotation_is_listed_once_re_sealed_spec_permissions_3()
 // grant), reads thing 1 too, as the reference does (whose node role left the public out: it had
 // node 1 keep thing 1 unread).
 #[test]
-#[ignore = "stub rewrite: entry by references and stubs, pairing by values (R2, R3)"]
+#[ignore = "stub rewrite: a node reads a dependent the oracle holds it no unit carries (cause not sorted)"]
 fn the_publics_read_through_a_holder_is_every_nodes_spec_sync_set_2() {
     use crate::harness::history::{Gives, Holder};
     let (n, accounts, ..) = size();
@@ -312,7 +312,7 @@ fn the_publics_read_through_a_holder_is_every_nodes_spec_sync_set_2() {
 // at once while the store is past the keys S opened there by, and it stands at the readers' head
 // (failed without: it stayed at genesis for good, which the end check flags).
 #[test]
-#[ignore = "stub rewrite: a signalled sync-only holder holds S as Read (R3b)"]
+#[ignore = "stub rewrite: a held grant signal holds S as Read whatever the node holds (R3b)"]
 fn a_store_granted_past_genesis_is_moved_spec_sync_ids_6() {
     use crate::harness::history::{Gives, Holder};
     let (n, accounts, ..) = size();
@@ -328,7 +328,7 @@ fn a_store_granted_past_genesis_is_moved_spec_sync_ids_6() {
 // alone: thing 0 dependent on its mint admin, of which node 1 holds nothing, so nothing fetched the
 // role commits and it dropped thing 0 for good).
 #[test]
-#[ignore = "stub rewrite: entry by references and stubs, pairing by values (R2, R3)"]
+#[ignore = "stub rewrite: a public link's redeemer reads nothing of the thing at quiet, the oracle says it reads (cause not sorted)"]
 fn a_public_reader_keeps_a_thing_on_taking_its_record_spec_sync_3() {
     use crate::harness::history::{Gives, Holder};
     let (n, accounts, ..) = size();
@@ -384,7 +384,7 @@ fn the_publics_removal_keeps_what_a_nodes_own_role_gives_spec_permissions_3() {
 // reads the thing by the public alone, so the public's removal is its loss too, the removal
 // coming after a quiet run or while the redemption is in flight. Control: no removal, it reads.
 #[test]
-#[ignore = "stub rewrite: entry by references and stubs, pairing by values (R2, R3)"]
+#[ignore = "stub rewrite: a public link's redeemer reads nothing of the thing at quiet, the oracle says it reads (cause not sorted)"]
 fn a_public_links_redeemer_loses_the_thing_with_the_public_spec_permissions_3() {
     use crate::harness::history::{Gives, Holder, reads};
     let (n, accounts, ..) = size();
@@ -430,7 +430,7 @@ fn the_public_granted_again_is_read_again_spec_permissions_3() {
 // and registered onto an empty path (13), or tested the newest step's key first forever, a beacon
 // node 0's filter keeps showing.
 #[test]
-#[ignore = "stub rewrite: a signalled sync-only holder holds S as Read (R3b)"]
+#[ignore = "stub rewrite: a held grant signal holds S as Read whatever the node holds (R3b)"]
 fn a_store_that_stops_and_syncs_again_is_registered_from_genesis_spec_sync_opens_6() {
     use crate::harness::script::*;
     let script = [New(1), Give(1, 0, Holder::Node(0), Syncs), NewIn(1, 0), Run, Strong(0, None, 0), Unpair(0, 3)];
@@ -446,7 +446,7 @@ fn a_store_that_stops_and_syncs_again_is_registered_from_genesis_spec_sync_opens
 // Failed while a writer gave a store nothing but what it pulls: node 0 refused the genesis stamp
 // (a superseded write key) and kept thing 0 unread at step 2; node 1 now deposits the entry.
 #[test]
-#[ignore = "stub rewrite: a signalled sync-only holder holds S as Read (R3b)"]
+#[ignore = "stub rewrite: a held grant signal holds S as Read whatever the node holds (R3b)"]
 fn a_store_moved_at_once_takes_the_next_step_spec_sync_ids_6() {
     use crate::harness::script::*;
     let script = [New(1), Give(1, 0, Holder::Node(0), Syncs), NewIn(1, 0), Run, Strong(0, None, 0), Run, Unpair(0, 3)];
@@ -462,7 +462,7 @@ fn a_store_moved_at_once_takes_the_next_step_spec_sync_ids_6() {
 // its head, a storm past the world's cap. It reaches quiet, keeping the thing unread as the model
 // says, and its index rebuilds from what it holds once the role commits it read are forgotten.
 #[test]
-#[ignore = "stub rewrite: entry by references and stubs, pairing by values (R2, R3)"]
+#[ignore = "stub rewrite: a held grant signal holds S as Read whatever the node holds (R3b)"]
 fn a_node_lowered_with_the_public_reads_no_more_by_its_head_spec_sync_opens_4() {
     use crate::harness::history::{Gives, Holder};
     let script = [Step::New(2), Step::Run, Step::Give(2, 0, Holder::Public, Gives::Reads), Step::Give(0, 0, Holder::Node(1), Gives::Syncs), Step::Run, Step::Strong(1, None, 0), Step::Lower(0, 0, Holder::Public, Gives::Syncs)];
@@ -475,7 +475,7 @@ fn a_node_lowered_with_the_public_reads_no_more_by_its_head_spec_sync_opens_4() 
 // it keeps the thing unread, never reading it by that head's public entry again (a start judges
 // as the live node did).
 #[test]
-#[ignore = "stub rewrite: entry by references and stubs, pairing by values (R2, R3)"]
+#[ignore = "stub rewrite: told: the lowered node is not lowered at the head it read (cause not sorted)"]
 fn a_node_lowered_with_the_public_reads_no_more_after_a_start_spec_sync_opens_4() {
     use crate::harness::history::{Gives, Holder, reads};
     const TAKEN: &str = "unread: read by its head's public entry @node 1";
@@ -503,7 +503,7 @@ fn a_node_lowered_with_the_public_reads_no_more_after_a_start_spec_sync_opens_4(
 // moves it): node 1, lowered with the public as above, reads the thing again once the public is
 // granted read again (a new step listing the public entry is registered with it).
 #[test]
-#[ignore = "stub rewrite: entry by references and stubs, pairing by values (R2, R3)"]
+#[ignore = "stub rewrite: a public link's redeemer reads nothing of the thing at quiet, the oracle says it reads (cause not sorted)"]
 fn a_node_lowered_with_the_public_reads_again_on_its_regrant_spec_sync_opens_4() {
     use crate::harness::history::{Gives, Holder};
     let script = [Step::New(2), Step::Run, Step::Give(2, 0, Holder::Public, Gives::Reads), Step::Give(0, 0, Holder::Node(1), Gives::Syncs), Step::Run, Step::Strong(1, None, 0), Step::Lower(0, 0, Holder::Public, Gives::Syncs), Step::Run, Step::Give(0, 0, Holder::Public, Gives::Reads), Step::Run];
@@ -554,7 +554,7 @@ fn a_removed_reader_takes_from_the_publics_box_no_more_than_a_stranger_spec_perm
 // says. Failed while a departed member was served its notices alone: node 0 kept reading at the
 // public's role, its roster still listing the public.
 #[test]
-#[ignore = "stub rewrite: entry by references and stubs, pairing by values (R2, R3)"]
+#[ignore = "stub rewrite: a held grant signal holds S as Read whatever the node holds (R3b)"]
 fn a_departed_public_reader_holds_the_publics_removal_spec_sync_opens_6() {
     use crate::harness::history::{Gives, Holder};
     let start = [Step::New(1), Step::Give(1, 0, Holder::Node(0), Gives::Reads), Step::Give(1, 0, Holder::Public, Gives::Reads), Step::Strong(0, None, 0), Step::Run];
@@ -575,7 +575,7 @@ fn a_departed_public_reader_holds_the_publics_removal_spec_sync_opens_6() {
 // a pass due: node 1 held the keyset and never re-sealed, and node 0 followed the thing by the
 // public entry.
 #[test]
-#[ignore = "stub rewrite: a signalled sync-only holder holds S as Read (R3b)"]
+#[ignore = "stub rewrite: a held grant signal holds S as Read whatever the node holds (R3b)"]
 fn a_holder_left_out_is_re_sealed_once_its_keyset_arrives_spec_permissions_3() {
     use crate::harness::script::*;
     holds_on(0, 2, 3, &[New(1), Give(1, 0, Holder::Node(0), Syncs), Pair(0), Run, Strong(3, None, 0), Unpair(3, 2)], String::new(), false);
@@ -589,7 +589,7 @@ fn a_holder_left_out_is_re_sealed_once_its_keyset_arrives_spec_permissions_3() {
 // Failed while lost access judged the sync secret by the grants alone: it dropped the public's
 // sync secret with the rest and followed the thing again, holding nothing.
 #[test]
-#[ignore = "stub rewrite: entry by references and stubs, pairing by values (R2, R3)"]
+#[ignore = "stub rewrite: a held grant signal holds S as Read whatever the node holds (R3b)"]
 fn a_removed_reader_keeps_the_publics_sync_secret_through_its_loss_spec_permissions_3() {
     use crate::harness::script::*;
     holds_on(0, 3, 4, &[New(2), Give(2, 0, Holder::Node(0), Reads), Give(2, 0, Holder::Node(1), Reads), Revoke(2, 0, Holder::Node(1)), Give(2, 0, Holder::Public, Syncs), Strong(0, None, 0), Revoke(2, 0, Holder::Node(0))], String::new(), false);

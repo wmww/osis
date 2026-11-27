@@ -20,7 +20,7 @@ use osis_engine::sync::Holding;
 // first) or its new one, and registers the step only once node 1 holds the write rotation (holding
 // no write secret to tell the step's write epoch, it reads the current one), so nothing is refused.
 #[test]
-#[ignore = "stub rewrite: a signalled sync-only holder holds S as Read (R3b)"]
+#[ignore = "stub rewrite: a held grant signal holds S as Read whatever the node holds (R3b)"]
 fn a_head_move_restamps_own_entries_and_readers_deposit_nothing_spec_sync_judgement_3() {
     use crate::harness::history::{Gives, three, value_ak};
     let (mut w, t, s) = three(Gives::Reads, 2);
@@ -109,7 +109,7 @@ fn a_head_move_restamps_own_entries_and_readers_deposit_nothing_spec_sync_judgem
 // so it may register the first step before node 1 took that step's rotation, stamped by node 0
 // under genesis; node 0 then gives it as a deposit.
 #[test]
-#[ignore = "stub rewrite: a signalled sync-only holder holds S as Read (R3b)"]
+#[ignore = "stub rewrite: a held grant signal holds S as Read whatever the node holds (R3b)"]
 fn a_store_moved_step_by_step_holds_what_each_step_waits_on_spec_sync_ids_6() {
     use crate::harness::history::{Gives, three};
     let (mut w, t, s) = three(Gives::Reads, 2);
@@ -160,7 +160,7 @@ fn a_store_moved_step_by_step_holds_what_each_step_waits_on_spec_sync_ids_6() {
 // a report, not on a message): at quiet neither node counts the other a source of S on a
 // connection where S is no member (`World::run` checks every node).
 #[test]
-#[ignore = "stub rewrite: a signalled sync-only holder holds S as Read (R3b)"]
+#[ignore = "stub rewrite: a held grant signal holds S as Read whatever the node holds (R3b)"]
 fn a_reader_moves_a_removed_store_past_its_keys_spec_sync_opens_6() {
     use crate::harness::Step::*;
     use crate::harness::history::{Gives, Holder, three};
@@ -185,7 +185,7 @@ fn a_reader_moves_a_removed_store_past_its_keys_spec_sync_opens_6() {
 // step lets node 1's Hit on its step open S there to be moved past its keys. Fails when a
 // departed peer is shown nothing: node 1 keeps its copy.
 #[test]
-#[ignore = "stub rewrite: a signalled sync-only holder holds S as Read (R3b)"]
+#[ignore = "stub rewrite: a held grant signal holds S as Read whatever the node holds (R3b)"]
 fn a_reader_moves_a_removed_store_it_never_showed_its_step_spec_sync_opens_6() {
     use crate::harness::Step::*;
     use crate::harness::history::{Gives, Holder, world_of};
@@ -211,7 +211,7 @@ fn a_reader_moves_a_removed_store_it_never_showed_its_step_spec_sync_opens_6() {
 // proof, which node 0's filter shows toward a departed peer, opens S ended at node 0, which
 // registers past node 1's keys, and node 1 drops its copy.
 #[test]
-#[ignore = "stub rewrite: a signalled sync-only holder holds S as Read (R3b)"]
+#[ignore = "stub rewrite: a held grant signal holds S as Read whatever the node holds (R3b)"]
 fn a_reader_moves_a_store_departed_before_it_kept_s_unread_spec_sync_opens_6() {
     use crate::harness::Step::*;
     use crate::harness::history::{Gives, Holder, world_of};
@@ -355,7 +355,7 @@ fn a_reader_keeps_a_losing_record_blob_until_it_holds_the_winner_spec_permission
 // unread) is apart from every reader, its record held by no connection; once they meet again the
 // step is registered there, with nothing else moving.
 #[test]
-#[ignore = "stub rewrite: a signalled sync-only holder holds S as Read (R3b)"]
+#[ignore = "stub rewrite: a held grant signal holds S as Read whatever the node holds (R3b)"]
 fn a_step_issued_while_a_store_is_away_is_registered_when_it_is_back_spec_sync_ids_6() {
     use crate::harness::history::{Gives, three};
     let (mut w, t, s) = three(Gives::Reads, 2);
@@ -379,7 +379,7 @@ fn a_step_issued_while_a_store_is_away_is_registered_when_it_is_back_spec_sync_i
 // connection; the plan, judged again while no connection holds the record, waits, and the step
 // goes once they meet again.
 #[test]
-#[ignore = "stub rewrite: a signalled sync-only holder holds S as Read (R3b)"]
+#[ignore = "stub rewrite: a held grant signal holds S as Read whatever the node holds (R3b)"]
 fn a_register_lost_with_its_connection_goes_again_at_the_reconnect_spec_sync_ids_6() {
     use crate::harness::history::{Gives, three};
     let (mut w, t, s) = three(Gives::Reads, 2);

@@ -5,7 +5,7 @@
 //! (core/test/tla/rotation/Depth0.tla).
 
 #![allow(clippy::unwrap_used)]
-use super::tests::{all_boxed, blocked_at, commit_ids, deliver_without_secrets, edge, independent_thing, held_by, leaked, newest_read, openable, rotate_as, rotate_leaving_out, rotate_unchecked, send_skipping, settle, synced};
+use super::tests::{all_boxed, blocked_at, commit_ids, deliver_without_secrets, edge, independent_thing, held_by, leaked, newest_read, openable, rotate_as, rotate_leaving_out, send_skipping, settle, synced};
 use crate::Mutation;
 use crate::flows::Demotion;
 use crate::local_peer::LocalPeer;
@@ -1351,49 +1351,6 @@ fn box_walk_passes_actors_the_node_may_not_rotate_spec_crypto_4() {
     settle(&mut lp, &[2, 1, 0], &[m, a, g]);
     assert!(all_boxed(&mut lp, 0, &[m, a, g]), "A boxed at G again");
     assert_eq!(leaked(&mut lp, 0, &[m, a, g], e, start), Vec::<Tid>::new());
-}
-
-// spec/crypto.md §4 (Holds; Departure; maker): over grants with key access, spec/requirements.md
-// Permissions (a keyless grant gives no read through it): A and M in a cycle (M holds write on
-// A first, so A's grant on M is keyless: M boxes A nothing). P writes A, so M through it, but
-// reads nothing of M. Demoted to read on A, P, unaware, rotates M (its maker holds M's epoch with
-// no box naming it); re-granted write, P's rotation stands (its frontier, spec/permissions.md
-// §5.2). P holds M only through the keyless grant: the epoch it made is uncovered at once, the
-// admin rotates M off it, and P opens nothing written under A or M after its removal from A.
-#[test]
-#[ignore = "stub rewrite: P holds M only through a keyless grant, which carries nothing (rule 2): re-judge the property (R4)"]
-fn maker_through_keyless_grant_opens_nothing_new_spec_crypto_4() {
-    let mut lp = synced(2);
-    let p = lp.peers[1].engine.tid();
-    let a = independent_thing(&mut lp, 0);
-    let m = independent_thing(&mut lp, 0);
-    for (t, h) in [(a, m), (m, a), (a, p)] {
-        lp.peers[0].clock.advance(1);
-        lp.peers[0].engine.grant(&t, &h, &edge(Role::Write)).unwrap();
-    }
-    lp.sync_all().unwrap();
-    assert!(!boxes(&mut lp, 0, m, a), "A's grant on M is keyless");
-    lp.peers[0].engine.demote(&a, &Demotion { holder: p, new: Some(edge(Role::Read)), retain: None }).unwrap();
-    lp.peers[1].clock.advance(1_000);
-    let made = rotate_unchecked(&mut lp, 1, m, &BTreeSet::from([Role::Read, Role::Write])).1;
-    let k2 = made.iter().find(|x| x.1 == Role::Read).map(|x| x.2);
-    let start: Opened = held_by(&lp, 1, &[m, a]).into_iter().chain(made).collect();
-    lp.sync_all().unwrap();
-    lp.peers[0].engine.grant(&a, &p, &edge(Role::Write)).unwrap();
-    lp.sync_all().unwrap();
-    assert_eq!(newest_read(&lp, 0, m), k2, "P's epoch of M stands");
-    assert!(blocked_at(&mut lp, 0, m).contains(&Role::Read), "P made it, reading nothing of M");
-    removal(&mut lp, 0, a, p);
-    lp.sync_all().unwrap();
-    let (_, still) = lp.peers[0].engine.ensure_rotated(&a).unwrap();
-    assert!(still.is_empty(), "{still:?}");
-    lp.peers[0].engine.ensure_rotated(&m).unwrap();
-    assert_eq!(leaked(&mut lp, 0, &[m, a], p, start), Vec::<Tid>::new());
-    assert_ne!(newest_read(&lp, 0, m), k2, "M rotated off P's epoch");
-    lp.sync_all().unwrap();
-    for x in [m, a] {
-        assert!(lp.peers[0].engine.ensure_rotated(&x).unwrap().0.commits.is_empty(), "one rotation, no churn");
-    }
 }
 
 // spec/crypto.md §4 (History box: any holder of the epoch's role adds): W, demoted to read, still

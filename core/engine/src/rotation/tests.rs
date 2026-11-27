@@ -1062,29 +1062,6 @@ pub(super) fn rotate_leaving_out(lp: &mut LocalPeer, i: usize, g: Tid, rot: &BTr
     let _ = rotate_as(lp, i, g, rot, &skip);
 }
 
-/// Peer `i` rotates `rot` of `g` boxing every holder it can, past its own writer rules (a
-/// rotation its receivers judge): the commit and the epochs it made.
-pub(crate) fn rotate_unchecked(lp: &mut LocalPeer, i: usize, g: Tid, rot: &BTreeSet<Role>) -> (osis_base::CommitId, BTreeSet<(Tid, Role, osis_crypto::Epoch)>) {
-    let before = commit_ids(lp, i);
-    let made = lp.peers[i]
-        .engine
-        .run(|tx| {
-            let held = tx.core.epochs(&g).unwrap();
-            let holders = super::recipients(tx, &tx.core.tid(), &g, &[])?;
-            let mut m = Mutation::new();
-            let r = super::rotation_into(tx, &mut m, g, rot, &held, &holders, crate::rotation::Departs::No)?;
-            m.unchecked();
-            tx.core.skip_writer_rules = true;
-            let c = crate::engine::Engine::commit_tx(tx, m);
-            tx.core.skip_writer_rules = false;
-            c?;
-            super::record(tx, g, &r)?;
-            Ok(r.rotated.iter().map(|x| (g, x.role, x.epoch)).collect())
-        })
-        .unwrap();
-    (*commit_ids(lp, i).difference(&before).next().unwrap(), made)
-}
-
 /// Syncs everything, then runs rounds of every remaining node's re-seals and rotations until
 /// nothing is written, and checks the re-seal invariant (`reseal_candidates`), history adds and
 /// that no departed peer holds an epoch a remaining holder encrypts under (`was`: the highest

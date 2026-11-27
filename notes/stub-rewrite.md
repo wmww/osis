@@ -266,14 +266,14 @@ Owed (R4, or a fresh R3b):
 
 ## R4 built
 - **Differential oracle** (osis-sync `harness/history.rs`; notes/test-properties.md, Reference-graph differential): held-model `closure::entry` under `Rule::BUILT` (R2's strong-by-role choice as a rule of the model), one node per account; a grant to an account is told (`Engine::signal_grant`), one to a thing or the public is not. Default size: 5 of 6 seeds hold, seed 2 is R3b's class. Full size: issues/differential-full-size-classes.md.
-- **Tests**: a grant a test means told is told (`harness::told`, the history's `give`); ignored tests are re-judged, each still ignored naming its cause (`tools/ignores.py "stub rewrite: "`). Tests asserting only that nothing reaches a grantee passed vacuously while grants were untold; those now failing name their cause.
+- **Tests**: tests asserting on a removed holder assert on the nodes still holding the thing (engine addenda, validity); the keyless-maker rotation test went (a keyless grant carries nothing, so its maker holds nothing to rotate). A grant a test means told is told (`harness::told`, the history's `give`); ignored tests are re-judged, each still ignored naming its cause (`tools/ignores.py "stub rewrite: "`). Tests asserting only that nothing reaches a grantee passed vacuously while grants were untold; those now failing name their cause.
 - **Controls**: `stubs::a_three_hop_chain_*` proves chain stubs (R2 named only in a stub's roster); `differential::a_reader_by_the_publics_box_reads_no_more_once_lowered_*` fails with the listing counted whatever its head.
 - **Pairing checked**: `World::pairs_entered`, at each quiet run.
 - `tools/policy.py` refuses the deleted words in every file.
 
 Still owed:
 - **R3b**: a held grant signal holds S as Read whatever the node holds (`thing_sync_now`'s followed-link branch; `thing_holdings` gives Stub only with a read secret): sync-only grantees and removed holders. Tests ignored `stub rewrite: a signalled sync-only holder holds S as Read (R3b)`; 46 of the full-size differential's 70 failing seeds.
-- Engine ignored tests (13: removed holders, keyless grants, unsorted) and app `remote_delete_of_the_open_thing`, not re-judged.
+- Ignored with an observed failure and no cause yet (`tools/ignores.py "stub rewrite: "`, the `cause not sorted` ones): engine 8 (6 under rule 2, a grant delivered by hand, a paired node handed a unit by hand), osis-sync 31, app `remote_delete_of_the_open_thing` (R3b's).
 - `public::removing_the_public_ends_*` (ignored): with node 0 cut off, P's removal never reaches node 2 through node 1's store of T. Including a unit's independent members in `Closure::unit_stubs` (carrying X whole includes its stub) did not change it; cause not found.
 
 Open for Tess (simpler option taken: the spec as written):

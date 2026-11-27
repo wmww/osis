@@ -2335,7 +2335,7 @@ fn classes(w: &mut crate::harness::World, i: usize, j: usize, s: &SyncId) -> Vec
 // node 1 a store and nodes 0 and 1 class node 2 a reader, after a reconnect and a restart too;
 // and node 2's purge of its own write deletes it at node 1.
 #[test]
-#[ignore = "stub rewrite: entry by references and stubs, pairing by values (R2, R3)"]
+#[ignore = "stub rewrite: a held grant signal holds S as Read whatever the node holds (R3b)"]
 fn a_sources_class_follows_what_the_peer_holds_spec_sync_opens_4() {
     use crate::harness::Step::*;
     use crate::harness::history::{Gives, three, value_ak};
@@ -2569,7 +2569,7 @@ fn removed(w: &mut crate::harness::World, _: osis_base::Tid) {
 
 // Its removal: at a reader by J, at a node keeping S unread by the step registered there.
 #[test]
-#[ignore = "stub rewrite: entry by references and stubs, pairing by values (R2, R3)"]
+#[ignore = "stub rewrite: told: a node keeping S unread is served after its removal (cause not sorted)"]
 fn a_removal_while_away_serves_nothing_after_it_spec_sync_opens_6() {
     use crate::harness::history::Gives;
     assert!(!served_after_a_change_while_away(Gives::Reads, removed), "at a reader");
@@ -2689,7 +2689,7 @@ fn a_departed_peers_report_holds_nothing_elsewhere_spec_sync_status_2() {
 // once after the pairing, so the record names its account's new key and the reconnect's take
 // re-judges nothing.
 #[test]
-#[ignore = "stub rewrite: entry by references and stubs, pairing by values (R2, R3)"]
+#[ignore = "stub rewrite: told: a self-removal does not end what is served (cause not sorted)"]
 fn a_self_removal_alone_ends_what_is_served_spec_sync_opens_6() {
     let (mut w, (t, s, n)) = paired_away_and_back();
     w.partition(0, 2);
@@ -2719,7 +2719,7 @@ fn a_self_removal_alone_ends_what_is_served_spec_sync_opens_6() {
 // from it, is away; what streams kept of S for node 2's record goes with S's rows already gone
 // (`Moved::Gone`), and the two meet again with nothing of S open.
 #[test]
-#[ignore = "stub rewrite: entry by references and stubs, pairing by values (R2, R3)"]
+#[ignore = "stub rewrite: told: the reader does not let S go once shredded while away (cause not sorted)"]
 fn s_shredded_while_its_reader_is_away_spec_sync_opens_3() {
     use crate::harness::Step::*;
     use crate::harness::history::{Gives, world_of};

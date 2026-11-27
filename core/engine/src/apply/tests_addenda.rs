@@ -327,7 +327,6 @@ fn build_holder() -> (LocalPeer, Tid, Tid, CommitId, CommitId) {
 // write states: the write counts. A writer can always vouch for the removed side's earlier
 // writes on a thing it writes (stated limit, notes/revocation.md).
 #[test]
-#[ignore = "stub rewrite: a removed holder judges nothing of the thing; which peers to assert on (R4)"]
 fn lying_writer_vouches_for_a_removed_holders_write_spec_perm_5_2() {
     let (mut lp, n, _, r, e) = holder_world();
     lp.sync(1, 2).unwrap();
@@ -335,7 +334,7 @@ fn lying_writer_vouches_for_a_removed_holders_write_spec_perm_5_2() {
     assert!(!valid(&lp, 2, &e, n, "x:e.0"), "Mallory received it after the removal");
     let a = forge_addendum(&mut lp, 2, n, r, &[e]);
     lp.sync_all().unwrap();
-    for p in [0, 2, 3] {
+    for p in holding(&lp, n) {
         assert!(valid(&lp, p, &a, n, ct::ADDENDA_AK), "peer {p}");
         assert!(valid(&lp, p, &e, n, "x:e.0"), "peer {p}: vouched on N");
     }
@@ -794,7 +793,6 @@ fn a_write_at_its_authors_grants_ts_is_before_the_grant_spec_perm_5_2() {
 // of her addendum's `ts`, and Dave, who received it in time, vouches for it: it counts, and Bob's
 // edit with it, at every peer whatever the tids.
 #[test]
-#[ignore = "stub rewrite: a removed holder judges nothing of the thing; which peers to assert on (R4)"]
 fn an_addendum_at_its_authors_removals_ts_counts_when_vouched_for_spec_perm_5_2() {
     for [a, b, c, d] in [[0, 1, 2, 3], [2, 1, 0, 3]] {
         let mut lp = LocalPeer::fresh(4, T0);
@@ -827,7 +825,7 @@ fn an_addendum_at_its_authors_removals_ts_counts_when_vouched_for_spec_perm_5_2(
         for _ in 0..3 {
             lp.sync_all().unwrap();
         }
-        for p in 0..4 {
+        for p in holding(&lp, t) {
             assert!(valid(&lp, p, &ad, t, ct::ADDENDA_AK), "{at}: peer {p}: Carol's addendum");
             assert!(valid(&lp, p, &e, t, "x:e.0"), "{at}: peer {p}: Bob's edit");
             assert_eq!(reads(&mut lp, p, t, "x:e.0"), Some(Value::Int(7)), "{at}: peer {p}");
@@ -1248,7 +1246,6 @@ fn admin_only_content_is_kept_by_an_admin_witness_spec_perm_5_2() {
 // delta needs admin): as above, but only Dave, a writer, received Bob's admin-only write; his
 // addendum listing it (written by hand: the state rule writes none) keeps nothing.
 #[test]
-#[ignore = "stub rewrite: a removed holder judges nothing of the thing; which peers to assert on (R4)"]
 fn admin_only_content_is_not_kept_by_a_writers_addendum_spec_perm_5_2() {
     let (mut lp, t) = world(4, &[Role::Admin, Role::Admin, Role::Write]);
     for p in &mut lp.peers {
@@ -1265,7 +1262,7 @@ fn admin_only_content_is_not_kept_by_a_writers_addendum_spec_perm_5_2() {
     let a = lp.peers[3].commit(m).unwrap().unwrap();
     lp.advance(1000);
     lp.sync_all().unwrap();
-    for p in 0..4 {
+    for p in holding(&lp, t) {
         assert!(valid(&lp, p, &a, t, ct::ADDENDA_AK), "peer {p}: Dave's addendum is a valid write of his");
         assert!(!valid(&lp, p, &e, t, "x:p^.0"), "peer {p}: a writer's addendum keeps no admin-only write");
     }

@@ -222,7 +222,7 @@ fn path_reads(w: &mut World, s: &osis_base::SyncId) -> Vec<u64> {
 // read again costs as much at 10n as at n: the store keeps S's path parsed and the engine its
 // steps' needs, each changed where what it reads moves (fails where a read parses every step).
 #[test]
-#[ignore = "stub rewrite: entry by references and stubs, pairing by values (R2, R3)"]
+#[ignore = "stub rewrite: told: a sync-only holder misses one new sync secret of five (cause not sorted)"]
 fn rotations_keep_keysets_flat_spec_commits_5() {
     let (mut w, _) = setup(Gives::Reads);
     keysets_after_rotations(&mut w, 1);
@@ -1015,7 +1015,7 @@ fn a_released_things_forgotten_commits_leave_no_own_entry_spec_sync_judgement_3(
 // of S's records at once, its own store holding no other (as each logs one before it holds
 // another's).
 #[test]
-#[ignore = "stub rewrite: a signalled sync-only holder holds S as Read (R3b)"]
+#[ignore = "stub rewrite: a held grant signal holds S as Read whatever the node holds (R3b)"]
 fn record_blobs_at_a_store_stay_flat_spec_sync_ids_6() {
     let (mut w, _, s) = crate::deletes::four();
     let records: std::collections::BTreeSet<Tid> = w.engine(0).certificate_records(&s).unwrap().iter().copied().collect();

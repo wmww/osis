@@ -13,7 +13,7 @@ use osis_engine::flows::Demotion;
 // rotation); once healed node 2 has no box at node 1's epoch, and an admin re-seals it at the end
 // of the complete pass a role commit from elsewhere began, so node 2 reads a write under it.
 #[test]
-#[ignore = "stub rewrite: entry by references and stubs, pairing by values (R2, R3)"]
+#[ignore = "stub rewrite: a held grant signal holds S as Read whatever the node holds (R3b)"]
 fn a_raced_grant_is_resealed_at_a_complete_passs_end_spec_perm_3() {
     use crate::harness::Step::*;
     use crate::harness::history::{Gives, check, world_of};
@@ -80,7 +80,7 @@ fn a_paired_node_pairs_another_spec_sync_inbox_1() {
 // history; node 1 holds t. Through only sync it reads t's current value, holds no body carrying
 // an earlier write of it, and reads what node 0 writes next.
 #[test]
-#[ignore = "stub rewrite: entry by references and stubs, pairing by values (R2, R3)"]
+#[ignore = "stub rewrite: a from-now grantee reads nothing (cause not sorted)"]
 fn a_from_now_grantee_reads_the_current_state_and_no_earlier_write_spec_crypto_4() {
     use crate::harness::Step::*;
     use crate::harness::history::{value_ak, world_of};
@@ -117,7 +117,7 @@ fn a_from_now_grantee_reads_the_current_state_and_no_earlier_write_spec_crypto_4
 // which every node drops. Node 3, granted afterwards, holds what the others hold and judges every
 // commit as they do (the reference), reading t.
 #[test]
-#[ignore = "stub rewrite: entry by references and stubs, pairing by values (R2, R3)"]
+#[ignore = "stub rewrite: a reader joining after role compaction holds no stub the oracle says it holds (cause not sorted)"]
 fn a_reader_joining_after_role_compaction_judges_alike_spec_commits_5() {
     use crate::harness::Step::*;
     use crate::harness::history::{Gives, check, value_ak, world_of};
@@ -141,7 +141,7 @@ fn a_reader_joining_after_role_compaction_judges_alike_spec_commits_5() {
 // owes the card aspect's snapshot like any aspect's, so node 1 reads the card on t through sync
 // alone, carrying the account's keys.
 #[test]
-#[ignore = "stub rewrite: entry by references and stubs, pairing by values (R2, R3)"]
+#[ignore = "stub rewrite: a from-now grantee reads nothing (cause not sorted)"]
 fn a_from_now_grantee_reads_a_card_written_before_its_cut_spec_crypto_4() {
     use crate::harness::Step::*;
     use crate::harness::history::world_of;
@@ -166,7 +166,7 @@ fn a_from_now_grantee_reads_a_card_written_before_its_cut_spec_crypto_4() {
 // record blob, which node 1 learns for t's strong to p. A thing q made after the cut is minted
 // above it: its record goes in its minting alone.
 #[test]
-#[ignore = "stub rewrite: entry by references and stubs, pairing by values (R2, R3)"]
+#[ignore = "stub rewrite: a from-now grantee reads nothing (cause not sorted)"]
 fn a_from_now_grantee_reads_a_dependent_thing_minted_with_it_spec_crypto_4() {
     use crate::harness::Step::*;
     use crate::harness::history::{value_ak, world_of};

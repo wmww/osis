@@ -396,7 +396,7 @@ fn a_joined_links_peers_stay_dial_hints_while_it_holds_k_spec_permissions_7() {
 // nothing, restarts before it has met node 0: it still dials node 0 by the peers pairing handed
 // over and syncs the account; the peers stay hints across a later restart.
 #[test]
-#[ignore = "stub rewrite: entry by references and stubs, pairing by values (R2, R3)"]
+#[ignore = "stub rewrite: pairing by the account's link: the paired node keeps no dial entry for the pairer across a restart (cause not sorted)"]
 fn a_paired_node_restarted_before_first_contact_still_dials_the_pairer_spec_sync_inbox_5() {
     use osis_sync::driver::dials::Why;
     let mut w = World::new(0);

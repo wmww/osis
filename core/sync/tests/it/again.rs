@@ -76,7 +76,7 @@ fn restart(w: &mut World, i: usize) {
 // waits; node 0 restarts, then node 1 tells it is full for S, which ends the wait: node 0 logs
 // the write there again once.
 #[test]
-#[ignore = "stub rewrite: a signalled sync-only holder holds S as Read (R3b)"]
+#[ignore = "stub rewrite: a held grant signal holds S as Read whatever the node holds (R3b)"]
 fn a_delete_seen_before_a_restart_is_logged_again_once_after_spec_sync_judgement_4() {
     let (mut w, t, s, c) = setup();
     let before = encryptions(&mut w, &c);
@@ -103,7 +103,7 @@ fn a_delete_seen_before_a_restart_is_logged_again_once_after_spec_sync_judgement
 // past node 1's delete, node 1 deleted that too, and node 0 restarted: the restart allows nothing,
 // and S's head moving there afterwards (a reader removed) allows exactly one more.
 #[test]
-#[ignore = "stub rewrite: entry by references and stubs, pairing by values (R2, R3)"]
+#[ignore = "stub rewrite: told: one log again, not two, after a head move past a restart (cause not sorted)"]
 fn a_head_move_after_a_restart_logs_again_once_more_spec_sync_judgement_4() {
     let (mut w, t, s, c) = setup();
     let x = grant_reader(&mut w, t);

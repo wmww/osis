@@ -3708,7 +3708,6 @@ fn delete_falls_after_reopen_reads_text_spec_crdt_5_7() {
 // either order of Alice's and Bob's tids (the tied pair; the addenda property draws every
 // assignment). Ordering v5 after the removal by tid made the outcome depend on whose tid was lower.
 #[test]
-#[ignore = "stub rewrite: a removed holder judges nothing of the thing; which peers to assert on (R4)"]
 fn a_removed_writers_write_at_the_removals_ts_reads_alike_whatever_the_tids_spec_perm_5_2() {
     for [a, b, c] in [[0, 1, 2], [1, 0, 2]] {
         for carol_first in [true, false] {
@@ -3750,10 +3749,13 @@ fn a_removed_writers_write_at_the_removals_ts_reads_alike_whatever_the_tids_spec
                 }
             }
             lp.peers[3].reexamine().unwrap();
-            // each keeps its own roots' commits and the chains it needs: compared on t
+            // each keeps its own roots' commits and the chains it needs: compared on t, among the
+            // nodes holding it (removed, Bob holds it no more: spec/sync-set.md §2)
+            let holders: Vec<usize> = (0..3).filter(|i| lp.peers[*i].engine.closure_holds(&t)).collect();
+            assert_eq!(holders, [a, c].into_iter().collect::<BTreeSet<_>>().into_iter().collect::<Vec<_>>(), "Alice and Carol hold t");
             let on_t = |e: &osis_engine::Engine, c: &osis_base::CommitId| e.header(c).is_some_and(|h| h.aspects.iter().any(|x| x.tid == t));
-            let held: Vec<BTreeSet<_>> = (0..3).map(|i| lp.peers[i].engine.commit_ids().into_iter().filter(|c| on_t(&lp.peers[i].engine, c)).collect()).collect();
-            let reads: Vec<_> = (0..4).map(|i| lp.peers[i].engine.get_typed(&t, &REG).unwrap()).collect();
+            let held: Vec<BTreeSet<_>> = holders.iter().map(|&i| lp.peers[i].engine.commit_ids().into_iter().filter(|c| on_t(&lp.peers[i].engine, c)).collect()).collect();
+            let reads: Vec<_> = holders.iter().copied().chain([3]).map(|i| lp.peers[i].engine.get_typed(&t, &REG).unwrap()).collect();
             let at = format!("Alice {a}, Bob {b}, Carol {c}, Carol first {carol_first}");
             assert!(held.iter().all(|h| *h == held[0]), "{at}: every node holds the same commits on t");
             let want = s(if carol_first { "v5" } else { "v4" });
