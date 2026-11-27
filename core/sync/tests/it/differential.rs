@@ -578,7 +578,7 @@ fn a_holder_left_out_is_re_sealed_once_its_keyset_arrives_spec_permissions_3() {
 // Failed while lost access judged the sync secret by the grants alone: it dropped the public's
 // sync secret with the rest and followed the thing again, holding nothing.
 #[test]
-#[ignore = "stub rewrite: the removed reader holds the thing as a stub at quiet, the model kept unread (it holds the public's sync secret and no step of S bearing it; cause not sorted)"]
+#[ignore = "stub rewrite: the account's unit carries the thing by the public's grant alone, not by its heads listing the public at sync (`edge_carries`), so node 0 holds it as its signal's stub; counting the heads makes a redeemer enter by the listing and miss the public's grant (issues/differential-full-size-classes.md)"]
 fn a_removed_reader_keeps_the_publics_sync_secret_through_its_loss_spec_permissions_3() {
     use crate::harness::script::*;
     holds_on(0, 3, 4, &[New(2), Give(2, 0, Holder::Node(0), Reads), Give(2, 0, Holder::Node(1), Reads), Revoke(2, 0, Holder::Node(1)), Give(2, 0, Holder::Public, Syncs), Strong(0, None, 0), Revoke(2, 0, Holder::Node(0))], String::new(), false);
@@ -644,4 +644,76 @@ fn a_grantee_on_a_sync_id_forks_lesser_side_follows_the_greater_spec_sync_ids_2(
     use crate::harness::history::{Gives, Holder};
     let script = [Step::New(0), Step::Run, Step::Partition(0, 3), Step::Give(0, 0, Holder::Node(1), Gives::Reads), Step::Give(3, 0, Holder::Node(2), Gives::Reads), Step::Strong(1, None, 0), Step::Strong(2, None, 0)];
     holds_on(0, 3, 4, &script, String::new(), false);
+}
+
+// spec/sync-inbox.md §2 (delivery: it ends at the first peer taking it), spec/sync-set.md §3: node 1 grants node 0's account sync on its thing, told by a grant signal; node 0 removes
+// node 3 from the account before any run, so node 3, not yet knowing it, takes the fire and node
+// 1's delivery ends; node 3 then erases it. The grant is one nobody was told of: node 0 holds
+// nothing of the thing, as the model says of a signal no node of the account holds (failed: the
+// model held the signal for good and gave node 0 its stub). Control: no removal, node 0 holds
+// the stub.
+#[test]
+fn a_signal_only_a_removed_node_took_is_lost_spec_sync_inbox_2() {
+    use crate::harness::script::*;
+    for removed in [true, false] {
+        let mut script = vec![New(1), Give(1, 0, Holder::Node(0), Syncs)];
+        script.extend(removed.then_some(Unpair(0, 3)));
+        let mut w = holds_on(0, 3, 4, &script, String::new(), false);
+        let t = w.history.things[0].0;
+        let held = w.engine(0).sync_set().unwrap().ids.values().any(|(ts, _)| ts.contains(&t));
+        assert_eq!(held, !removed, "node 0 holds thing 0 (node 3 removed: {removed})");
+    }
+}
+
+// spec/permissions.md §4 (Notices: a role commit tells a holder its boxes), spec/sync-opens.md
+// §5 (ByRole): node 2 grants node 0's account sync on its thing (told), then grants node 1's
+// account read and removes it, a rotation boxing node 0's account again; node 0 holds it by a
+// strong. Node 0 enters by
+// role, is told the rotation (the newest box) and the grant (its role, which the rotation does not
+// carry), and keeps the thing unread as the model says (failed told the newest box alone: node 0
+// held no roster of the thing, judged it dependent and held it as a stub).
+#[test]
+fn a_grantee_entering_by_role_is_told_its_grant_beside_a_later_box_spec_permissions_4() {
+    use crate::harness::script::*;
+    holds_on(0, 3, 4, &[New(2), Give(2, 0, Holder::Node(0), Syncs), Give(2, 0, Holder::Node(1), Reads), Revoke(2, 0, Holder::Node(1)), Strong(0, None, 0)], String::new(), false);
+}
+
+// spec/sync-ids.md §2 (What a sync holder learns: never the tids of what its sync unit holds),
+// spec/sync-set.md §2 (Stubs; Holding a stub: a sync-only stub is its sync copies): node 2 reads thing 0,
+// which holds sync on thing 1 (an untold grant to a thing) and strongs thing 2, a dependent of
+// thing 1. Thing 0's readers cannot know thing 2 is thing 1's: the strong brings thing 1's sync-only
+// stub (its sync copies), never thing 1 kept unread, and node 2 follows nothing of it, as
+// the model says (failed: the model counted the strong to thing 2 as one naming thing 1 and kept
+// thing 1 unread at node 2).
+#[test]
+fn a_strong_to_a_dependent_of_a_thing_held_at_sync_enters_nothing_spec_sync_ids_2() {
+    use crate::harness::script::*;
+    let mut w = holds_on(0, 3, 4, &[New(0), Strong(2, None, 0), Give(0, 0, Holder::Node(2), Reads), New(0), NewIn(0, 1), Strong(0, Some(0), 2), Give(0, 1, Holder::Thing(0), Syncs)], String::new(), false);
+    let t = w.history.things[1].0;
+    assert!(!w.engine(2).sync_set().unwrap().ids.values().any(|(ts, _)| ts.contains(&t)), "node 2 holds nothing of thing 1");
+}
+
+// spec/sync-judgement.md §6 (Stops), spec/sync-inbox.md §5 (Grant signal: followed while held): node 3 grants node 2's account sync on its thing (told) and removes it once node 2 keeps
+// the thing unread. Node 2 is no reader, so is told no departure: it stops at the step its sync
+// secrets no longer derive and keeps the thing unread there, while the model, holding the signal,
+// gives it the thing's stub. The oracle takes the stop as it does where the model holds nothing
+// (failed: it flagged the stopped store against the signal's stub).
+#[test]
+fn a_removed_sync_holder_still_signalled_stops_spec_sync_judgement_6() {
+    use crate::harness::script::*;
+    holds_on(0, 3, 4, &[New(3), Give(3, 0, Holder::Node(2), Syncs), Run, Strong(2, None, 0), Revoke(3, 0, Holder::Node(2))], String::new(), false);
+}
+
+// spec/data-model.md §8 (Held history: a strong in a held body of a thing whose setting holds its
+// targets counts as one in a current value), spec/sync-inbox.md §1: node 2's account makes thing
+// 0 its inbox (whose setting holds its targets), strongs thing 1 from it and removes the strong
+// once node 3 grants it read on thing 1. The removed strong is still in thing 0's held history,
+// so node 2 reads thing 1, as the model says (failed: the model counted current strongs alone).
+#[test]
+fn a_strong_in_an_inboxs_held_history_holds_its_target_spec_data_model_8() {
+    use crate::harness::history::reads;
+    use crate::harness::script::*;
+    let mut w = holds_on(0, 3, 4, &[New(2), Inbox(2, Some(0)), New(0), Run, Strong(2, Some(0), 1), Give(3, 1, Holder::Node(2), Reads), Unstrong(2, Some(0), 1)], String::new(), false);
+    let t = w.history.things[1].0;
+    assert!(reads(w.engine(2), &t).value.is_some(), "node 2 reads thing 1");
 }

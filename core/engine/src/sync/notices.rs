@@ -39,7 +39,8 @@ impl Engine {
     /// Notices), per independent thing X reading `s`: per holder of X the peer reaches
     /// (`reaches`) that departed X, the commit taking its read; per current holder it reaches,
     /// the newest held commit telling it its boxes (`boxed_unopened`): every later box of it opens
-    /// by its wrap from there. Each to the holder's read keyset this node seals to
+    /// by its wrap from there; and, where an older one, the newest such commit writing its edge
+    /// (its role, which no later box carries). Each to the holder's read keyset this node seals to
     /// (`rotation::members::notice_keyset`). None of an own thing's.
     /// Cost: `boxed_unopened` per thing, on each open by role or departure judged.
     pub fn notices_for(&mut self, s: &SyncId, proven: &BTreeSet<Tid>) -> Result<Vec<Notice>> {
@@ -56,14 +57,25 @@ impl Engine {
                     told.push((c, d.holder, true));
                 }
             }
-            let mut newest: BTreeMap<Tid, (osis_base::Ts, CommitId)> = BTreeMap::new();
+            // per holder, the newest box and the newest edge write on it (its role), which a later
+            // box need not carry
+            let mut newest: BTreeMap<(Tid, bool), (osis_base::Ts, CommitId)> = BTreeMap::new();
             for (c, m) in self.boxed_unopened(&t)? {
-                let Some(ts) = self.header(&c).map(|h| h.ts) else { continue };
-                if self.current_reaches(&m, proven) && newest.get(&m).is_none_or(|(x, _)| ts > *x) {
-                    newest.insert(m, (ts, c));
+                let Some(h) = self.header(&c) else { continue };
+                let (ts, edges): (osis_base::Ts, Vec<usize>) = (h.ts, h.aspect_parts(&t, "roles.0").collect());
+                if !self.current_reaches(&m, proven) {
+                    continue;
+                }
+                let named = self.holders_named(&c);
+                let writes_edge = edges.iter().any(|ai| named.get(ai).is_some_and(|hs| hs.contains(&m)));
+                for k in std::iter::once(false).chain(writes_edge.then_some(true)) {
+                    if newest.get(&(m, k)).is_none_or(|(x, _)| ts > *x) {
+                        newest.insert((m, k), (ts, c));
+                    }
                 }
             }
-            told.extend(newest.into_iter().map(|(m, (_, c))| (c, m, false)));
+            let mut seen = BTreeSet::new();
+            told.extend(newest.into_iter().filter(|((m, _), (_, c))| seen.insert((*m, *c))).map(|((m, _), (_, c))| (c, m, false)));
             for (c, holder, departs) in told {
                 let Some((epoch, _)) = self.read(|tx| crate::rotation::members::notice_keyset(tx, &t, &holder))? else { continue };
                 out.push(Notice { thing: t, commit: c, holder, epoch, departs });

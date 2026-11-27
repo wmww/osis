@@ -132,7 +132,7 @@ pub struct Carried {
     pub stubs: Set,
     /// The chain holders among `stubs` that no reference brings.
     pub chain: Set,
-    /// The things among `stubs` a strong brings.
+    /// The things among `stubs` a strong naming them brings.
     pub strong: Set,
     /// The opened things carried (whole independents and opened stubs): a chain ends at one.
     pub opened: Set,
@@ -272,7 +272,9 @@ impl Net {
                         c.whole.extend([x, y]);
                     } else if at(x, Role::Sync) {
                         c.stubs.insert(x);
-                        if strong {
+                        // by role only by a strong naming X: one to a dependent of X tells
+                        // `u`'s readers nothing of X (spec/sync-ids.md §2 What a sync holder learns)
+                        if strong && y == x {
                             c.strong.insert(x);
                         }
                     }
