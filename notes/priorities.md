@@ -12,7 +12,7 @@
 ## Failing on main
 Found by random seeds, each with its issue and a line in tools/known_failures.txt. They run beside the primary work, not before it; each starts with a hand-written minimal reproducer (notes/principles.md, Never pin a seed):
 - Purge by ID read differently forgotten or not (purge-by-id-forgetting: three seeds).
-- The sync differential (differential-full-size-classes: 12 of 100 full-size seeds in small classes; one gate seed known). Re-judge after the opening rewrite (notes/opening-design.md).
+- The sync differential (differential-full-size-classes: 12 of 100 full-size seeds in small classes; one gate seed known). Rewritten after opening by entries.
 - Held-model's late-commit property (held-model-late-commit-read-lost: a tess-call, not a code bug).
 
 ## Core, in order

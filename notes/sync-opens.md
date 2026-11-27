@@ -42,6 +42,10 @@ A member's class (spec/sync-opens.md §4 Source: reader, store or stub, notes/sy
 - **Read S** (`Creds::reader` over `Engine::read_credentials`): shows the sync proof of each distinct sync key on its path whose sync secret it holds and its head's deposit key; tests the sync proofs of the sync secrets it holds, newest first. A stub holder judges as a reader.
 - **Kept unread**: `Creds::kept_unread` over `Unread::credentials` (notes/sync-unread.md, The rule). Showing nothing, `Creds` is empty; S stays synced, so its `changed_at` moves and the peer gets a generation. The scripted tests build their fake from the same function, so a test cannot pass on credentials the product lacks.
 - A claim's Hit is answered signed by the head's sync key (`Creds::step`); `Adm::of_head` says whether a credential is of the head.
+- **Claims**: both kinds also show their head claims (`Store::head_claims`, from `store/claims.rs`: each entry's blocks indexed by the sync key they are bound to when its bytes arrive, each block verified once, rows dropped with the entry) and test the claims of the holders they reach S's thing through (engine `sync_ids/entries.rs`).
+- **Head**: a node holding no path for S, a claim Hit refused at a peer that is no store, or a test finding none of its claims shown asks the peer Head (`Opens::ask_head`, once per change of S there); any node holding S answers (`head_answer`). The path an answer gives is held in memory, per connection; a node keeping S unread uses its store's path.
+- **A filter arrival tests anew** the sync IDs whose tested beacons its new entries may show (a per-connection index of tested beacons), so a claim written at the peer after this side tested is found.
+- **Stores owed a Register**: an ended member at a store source closes at its `until` only once the registrar (`inbox`, `Opens::on_owed`) owes it no Register; a class moved since an `until` was reached opens anew (spec/sync-opens.md §6).
 - A Deposit item goes into the store charged to the peer's record, else the connection.
 
 ## One connection per pair

@@ -50,8 +50,8 @@ Nothing searches for these: a word here may come back with a new, legitimate sen
 - The models' **chained** sets (a write chained by a right) and the evidence closure variants built on them: evidence takes every edge write on a stated path's edges (spec/permissions.md §4); a reset names its entry's creation (spec/permissions.md §2).
 - **key part** and its **edge pieces** (copies of every grant naming a holder under the holder's sync ID), the mint admin's **record-edge piece**, **public pieces**, **held for keys** (refused by `tools/policy.py` `STUB_DEAD_WORDS`, with **sealed copy** and `EdgePiece`): a unit carries what it references, whole or as a stub, and the stubs of the holders on its chains (spec/sync-set.md §2 Stubs); nothing is kept with a holder for having been granted something (notes/stubs.md).
 - **Delivering an edge piece**, **sealed copy** (to a holder's own sync ID), **carried commits** of a grant fire, the writer-of-H branch: a grant need not reach its holder; a grant signal, when sent, carries values only (spec/sync-inbox.md §5); a holder that cannot open a rotation, grant or re-seal boxing it by its wrap takes it by its entry (spec/sync-ids.md §3).
-- **Following by the public entry** (`follows_public`, `by_public`): X's stub carries the public's grant (spec/permissions.md §4 Stub; notes/stub-rewrite.md, Open).
-- **Keys-open travel** (Role changes travel's keys-open half): the chain-holder stubs carry a hop's removal (spec/permissions.md §4 A hop's removal; notes/stub-rewrite.md, Open).
+- **Following by the public entry** (`follows_public`, `by_public`): X's stub carries the public's grant (spec/permissions.md §4 Stub).
+- **Keys-open travel** (Role changes travel's keys-open half): the chain-holder stubs carry a hop's removal (spec/permissions.md §4 A hop's removal).
 - The **keys** source class: the stub class (spec/sync-opens.md §4 Source).
 - **sync alone** as a holder kind with its own copies: the sync-only cut of a stub; "holding only sync" for the role.
 

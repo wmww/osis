@@ -14,4 +14,4 @@ Options:
 The public's role now has this one source, its grant (a head listing it is gone, spec/sync-set.md §2 Own things).
 
 ## A revoked store never reopened (latent, no reproducer)
-After a revocation nothing reopens S at a store whose credentials and `changed_at(S)` did not move, so it is never tested again (spec/sync-opens.md §5 Testing) and keeps S's entries. Rewritten by the opening design (notes/opening-design.md): judge against its open rule once it lands.
+After a revocation nothing reopens S at a store whose credentials and `changed_at(S)` did not move, so it is never tested again (spec/sync-opens.md §5 Testing) and keeps S's entries. Rewritten by the opening design (spec/sync-opens.md §4-§6): judge against its open rule once it lands.
