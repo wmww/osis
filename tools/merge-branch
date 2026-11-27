@@ -431,6 +431,9 @@ def land(name, fixed):
 
 
 def main(argv):
+    if argv[:1] == ["gate"] and (len(argv) < 2 or argv[1].startswith("-")):
+        # a flag in NAME's place would reach tools/claim as a branch name
+        sys.exit(f"{__doc__}\ngate needs a branch NAME; for a plan without one run `tools/gate.sh --plan`.")
     if len(argv) >= 2 and argv[0] == "gate":
         gate(argv[1], argv[2:])
     elif argv[:1] == ["land"] and len(argv) in (2, 3) and argv[2:] in ([], ["--fixed"]):

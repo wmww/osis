@@ -246,4 +246,9 @@ check "stale lines: cost list" "$(git --git-dir="$d/origin.git" show main:tools/
 probe/b 3
 probe/c 1.5
 probe/d 20"
+# gate without a branch (or a flag in its place): merge-branch's own usage, pointing at gate.sh --plan
+for a in "" --plan; do
+    "$mb" gate $a > /dev/null 2> "$d/err" && rc=0 || rc=$?
+    check "gate '$a': own usage" "$rc $(grep -c '^tools/merge-branch gate|land' "$d/err") $(grep -c 'tools/gate.sh --plan' "$d/err") $(grep -c 'tools/claim BRANCH' "$d/err")" "1 1 1 0"
+done
 exit $fail
