@@ -62,18 +62,23 @@ fn reaching_public() -> (World, Tid, Tid, Tid) {
 
 // spec/permissions.md §1 (The public): the public's removal is carried while a strong reaches the
 // thing, and the public's departure rotates read as any. Node 0 removes the public from P and
-// writes again. Node 2 learns the removal from what T carries of P (P leaves T's unit there as at
-// node 0) and reads nothing written since (model control `WhileRead`: without the removal it
-// would keep P in the unit).
+// writes again while cut off from node 2, whose one source is node 1's store of T. P's removal is
+// P's own role entry, under P's sync ID, which node 1 does not keep: until it reaches node 2,
+// node 2's view still carries P in T's unit (spec/sync-set.md §3 A thing leaving a sync unit: each
+// holder by its own view), and it reads nothing written since. Once node 0 is back the removal
+// reaches node 2 and P leaves T's unit there as at node 0 (model control `WhileRead`: without the
+// removal it would keep P in the unit).
 #[test]
-#[ignore = "stub rewrite: with node 0 cut off, P's removal never reaches node 2 through node 1's store of T (passes unpartitioned; cause not found)"]
 fn removing_the_public_ends_what_a_reader_of_the_referrer_reads_spec_sync_set_2() {
     let (mut w, t, p, _) = reaching_public();
     w.write(0, |e| e.demote(&p, &osis_engine::flows::Demotion { holder: Tid::PUBLIC, new: None, retain: None })).unwrap();
     set(&mut w, 0, p, "p2");
     w.run();
     assert!(!w.engine(0).sync_unit(&t).contains(&p), "P left T's unit at its logger");
-    assert!(!w.engine(2).sync_unit(&t).contains(&p), "and at the reader");
+    assert_ne!(reads(&mut w, 2, &p), Some(Value::Str("p2".into())), "nothing written since the removal");
+    w.heal();
+    w.run();
+    assert!(!w.engine(2).sync_unit(&t).contains(&p), "and at the reader, once the removal reaches it");
     assert_ne!(reads(&mut w, 2, &p), Some(Value::Str("p2".into())), "nothing written since the removal");
 }
 

@@ -128,11 +128,11 @@ pub struct Made {
     written: u64,
     /// Things whose record edge a removal took (the roster then shows no mint admin either).
     record_gone: BTreeSet<usize>,
-    /// The grants signalled (`give`): `(holder account, target)` to the holder's inbox then, and
-    /// whether a node of the holder's account was removed since. Held for good (a history is
-    /// shorter than any signal's lifetime), but one a removed node alone took is lost
-    /// (`signal_lost`).
-    signals: BTreeMap<(Tid, Tid), (Tid, bool)>,
+    /// The grants signalled (`give`): `(holder account, target)` to the holder's inbox then,
+    /// whether a node of the holder's account was removed since, and the wall time of its latest
+    /// fire. Held until `INBOX_LIFETIME_MS` past that fire (the inbox's setting keeps it so long,
+    /// spec/sync-inbox.md §1), but one a removed node alone took is lost (`signal_lost`).
+    signals: BTreeMap<(Tid, Tid), (Tid, bool, u64)>,
     /// Grants to accounts and changes of keys, in the order made.
     events: Vec<Event>,
     /// Per node, the events it surely received: its own, and each held by a node it shared a run
@@ -540,7 +540,7 @@ fn unpair(w: &mut World, i: usize, j: usize) -> Result<String, String> {
         // node j erases what it holds: the account's writes not surely received elsewhere may go
         freeze(w, i);
         w.nodes[j].account = None;
-        for ((h, _), (_, removed)) in w.history.signals.iter_mut() {
+        for ((h, _), (_, removed, _)) in w.history.signals.iter_mut() {
             *removed |= *h == a;
         }
     }
@@ -690,7 +690,8 @@ fn give(w: &mut World, i: usize, k: usize, h: Holder, g: Gives) -> Result<String
     let r = w.write(i, |e| e.grant(&t, &holder, &edge).and_then(|d| if tell { e.signal_grant(&t, &holder, &[]).map(|_| d) } else { Ok(d) })).map_err(|e| e.to_string());
     if r.is_ok() || stands(w, i, &t, &holder, Some(g.role())) {
         if let Some(inbox) = inbox.filter(|_| r.is_ok()) {
-            w.history.signals.insert((holder, t), (inbox, false));
+            let at = w.now().0;
+            w.history.signals.insert((holder, t), (inbox, false, at));
         }
         let account = matches!(h, Holder::Node(_)).then_some(holder);
         let hist = &mut w.history;
@@ -992,7 +993,8 @@ impl Model {
             }
         }
         let na = accounts.len();
-        let held: Vec<(Tid, Tid)> = w.history.signals.clone().into_iter().filter(|((holder, x), (inbox, removed))| !signal_lost(w, *holder, *x, *inbox, *removed)).map(|(k, _)| k).collect();
+        let now = w.now().0;
+        let held: Vec<(Tid, Tid)> = w.history.signals.clone().into_iter().filter(|((holder, x), (inbox, removed, at))| now < at.saturating_add(osis_base::format::INBOX_LIFETIME_MS) && !signal_lost(w, *holder, *x, *inbox, *removed)).map(|(k, _)| k).collect();
         let h = &w.history;
         let things: Vec<Tid> = h.things.iter().map(|x| x.0).collect();
         let index = |t: &Tid| -> Option<usize> { accounts.iter().position(|x| x == t).or_else(|| things.iter().position(|x| x == t).map(|k| na + k)) };
@@ -1150,8 +1152,9 @@ fn excused(w: &World, m: &Model, lost: &BTreeSet<CommitId>, a: Tid, k: usize) ->
 /// each commit of node i's write on thing k (a value, a grant, a lowering, a rotation), after
 /// which i's account took a strong away, lowered a role or removed a node (a step that may
 /// release k: a removed node erases), that no other node surely received by then (`Made::froze`)
-/// whose account's node closure holds k at the end, and that no node holds at the check (its
-/// value part, for a value write: i, holding k again, fetches what others hold). A thing's making
+/// whose account's node closure holds k at the end, and that no node whose account's node closure
+/// holds k holds at the check (its value part, for a value write: i, holding k again, fetches what
+/// others hold; a node holding the commit only as evidence of another thing serves none of k). A thing's making
 /// is such a write: released before another node received it, its value is gone. The reference
 /// and the model are built without the lost commits (a lost grant changes the roster, and a
 /// later commit on it stands without it where a node took it as a piece); a lost making the
@@ -1167,12 +1170,12 @@ fn lost_writes(w: &mut World, m: &Model) -> BTreeSet<CommitId> {
         let Some(knew) = w.history.froze.get(&n) else { continue };
         let shared = knew.iter().any(|&j| j != e.node && j < w.len() && holds(w.node(j).account, e.thing));
         if !shared {
-            lost.extend(e.commits.iter().map(|c| (*c, e.wrote.is_some())));
+            lost.extend(e.commits.iter().map(|c| (*c, e.wrote.is_some(), e.thing)));
         }
     }
     let on: Vec<usize> = (0..w.len()).filter(|i| w.online(*i)).collect();
-    lost.retain(|(c, value)| !on.iter().any(|&i| if *value { holds_value(w, i, c) } else { w.engine(i).holds_commit(c) }));
-    lost.into_iter().map(|(c, _)| c).collect()
+    lost.retain(|(c, value, k)| !on.iter().any(|&i| holds(w.node(i).account, *k) && if *value { holds_value(w, i, c) } else { w.engine(i).holds_commit(c) }));
+    lost.into_iter().map(|(c, ..)| c).collect()
 }
 
 /// Whether node `i` holds a value part (`value_ak`) of commit `c`.

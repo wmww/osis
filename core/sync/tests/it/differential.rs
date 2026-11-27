@@ -417,6 +417,18 @@ fn a_strong_to_a_dependent_of_a_thing_held_at_sync_enters_nothing_spec_sync_ids_
     assert!(!w.engine(2).sync_set().unwrap().ids.values().any(|(ts, _)| ts.contains(&t)), "node 2 holds nothing of thing 1");
 }
 
+// spec/sync-set.md §3 (Nothing of R stays: a release waits for no peer not connected),
+// spec/sync-inbox.md §1: node 1's account makes thing 0 its inbox, node 1 grants node 2's account
+// read on it and releases it before any run. Node 1 keeps the grant commit only as evidence of its
+// account's `keys.0` (spec/commits.md §5 What a held thing needs), under no sync ID of thing 0:
+// no node serves it, so node 2 never gets the grant, as the model says of a write held only by
+// nodes not holding its thing (failed while the model counted any node holding the commit).
+#[test]
+fn a_grant_on_an_inbox_its_account_releases_first_is_lost_spec_sync_set_3() {
+    use crate::harness::script::*;
+    holds_on(0, 3, 4, &[New(1), Inbox(1, Some(0)), Give(1, 0, Holder::Node(2), Reads), Unstrong(1, None, 0), Strong(2, None, 0)], String::new(), false);
+}
+
 // spec/sync-judgement.md §6 (Stops), spec/sync-inbox.md §5 (Grant signal: followed while held): node 3 grants node 2's account sync on its thing (told) and removes it once node 2 keeps
 // the thing unread. Node 2 is no reader, so is told no departure: it stops at the step its sync
 // secrets no longer derive and keeps the thing unread there, while the model, holding the signal,

@@ -115,7 +115,6 @@ fn a_from_now_grantee_reads_the_current_state_and_no_earlier_write_spec_crypto_4
 // which every node drops. Node 3, granted afterwards, holds what the others hold and judges every
 // commit as they do (the reference), reading t.
 #[test]
-#[ignore = "stub rewrite: a reader joining after role compaction holds no stub the oracle says it holds (cause not sorted)"]
 fn a_reader_joining_after_role_compaction_judges_alike_spec_commits_5() {
     use crate::harness::Step::*;
     use crate::harness::history::{Gives, check, value_ak, world_of};
