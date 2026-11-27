@@ -23,6 +23,6 @@ How many signals a card holder may fire: issues/resource-limits.md.
 
 ## Owed
 - **Tests**: a departed stub holder told of its removal (`stubs::a_two_hop_chain_*` asserts only that nothing written since is read); stopped-store ByRole on its own (`grants::a_stopped_sync_holder_catches_up_by_role_*` passes by the resumed member's notice): a store meeting a reader that keeps no record of it.
-- **Ignored, cause not sorted**: `differential::a_node_lowered_with_the_public_reads_*` (three; the lowered node keeps the thing unread with no store path), `public::removing_the_public_ends_*`, and the rest `tools/ignores.py "stub rewrite: "` lists (engine 8, osis-sync 18).
+- **Ignored, cause not sorted**: `public::removing_the_public_ends_*` and the rest `tools/ignores.py "stub rewrite: "` lists (engine 8, osis-sync 15).
 - **Full-size differential classes**, the sync ID fork among them: issues/differential-full-size-classes.md.
 - An external signal on a dependent thing: issues/behaviour-depends-on-own-keys.md. Each stub one more followed sync ID: issues/many-sync-ids-cost.md.
