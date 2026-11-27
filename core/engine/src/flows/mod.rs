@@ -208,10 +208,11 @@ pub(crate) fn recipient(tx: &mut Tx<'_>, holder: Tid, role: Role) -> Result<Reci
     Ok(Recipient { holder, role, keys, floor: 0 })
 }
 
-/// The sync ID of `tid`: the greatest of those it owns (two admins giving it secrets at once made
-/// two) (`sync_ids::owned_in`).
+/// The sync ID of `tid` (spec/sync-ids.md §2): of those it owns (`sync_ids::owned_in`), the one
+/// its genesis seed gives (`Core::pick_sync_id`).
 pub(crate) fn sync_id_of(tx: &mut Tx<'_>, tid: &Tid) -> Result<Option<SyncId>> {
-    Ok(sync_ids::owned_in(tx, tid)?.into_keys().next_back())
+    let owned = sync_ids::owned_in(tx, tid)?;
+    Ok(tx.core.pick_sync_id(tid, owned.into_keys()))
 }
 
 /// `secrets.0` of `actor`, decoded (`Core::secrets_read`).

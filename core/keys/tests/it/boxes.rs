@@ -407,7 +407,7 @@ fn poisoned(f: &mut Forked) -> (osis_base::Tid, ActorEpochs, Secrets, osis_keys:
     let mut alts = osis_keys::HistoryAlts::new();
     for e in f.forks {
         let k = history_key(Role::Read, &e);
-        let lie = osis_crypto::seal_history(f.view.read.secret(&e).unwrap(), &f.a, Role::Read, &e, &osis_crypto::HistoryEntry { earlier: garbage.to_vec(), names: osis_keys::Names::default().to_value(), floor: 0, roles: Vec::new() }).unwrap();
+        let lie = osis_crypto::seal_history(f.view.read.secret(&e).unwrap(), &f.a, Role::Read, &e, &osis_crypto::HistoryEntry { earlier: garbage.to_vec(), names: osis_keys::Names::default().to_value(), floor: 0, roles: Vec::new(), genesis: None }).unwrap();
         let genuine = std::mem::replace(s.history.get_mut(&k).unwrap(), lie.clone());
         alts.insert(k, vec![lie, genuine]);
     }

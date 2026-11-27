@@ -1583,7 +1583,7 @@ fn a_head_move_while_dropped_keeps_the_fetch_anew_spec_sync_judgement_6() {
     p.run();
     p.b.store.set_unheld(&k.id, true).unwrap();
     // a step under the same write key: x verifies under it
-    let one = k.child(&k.genesis().0, 1, 11);
+    let one = k.child(&k.genesis().0, 1, 10);
     assert_eq!(p.b.store.reg(&k, &[(&one.0, Some(&one.1))]), Code::OK);
     p.run();
     assert!(p.b.store.entry(&k.id, &x).unwrap().is_none(), "dropped");

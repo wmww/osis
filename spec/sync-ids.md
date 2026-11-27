@@ -1,7 +1,7 @@
 # Sync: sync IDs and the store
 > Summary: Area 2: blobs, sync IDs and their role keys, steps and claim sets, `sync.0`, the node's store per sync ID, and the operations a store takes (Register, Behind, stamps, wraps, Delete, expiry, relay-only, caps).
 
-**Principle:** a sync ID belongs to its thing: made once from the thing's own secrets, its keys derived from the thing's current role secrets, its path of steps verifiable from genesis by any node without trusting a peer. A store takes only what verifies under its own head.
+**Principle:** a sync ID belongs to its thing: fixed by the thing's genesis seed when it is minted, its keys derived from the thing's current role secrets, its path of steps verifiable from genesis by any node without trusting a peer. A store takes only what verifies under its own head.
 
 ## 1. Blobs
 - A **blob** is one of:
@@ -38,12 +38,13 @@
   - How often is local policy.
 
 ## 2. Sync IDs and role keys
-- **One sync ID per independent thing**: a commit that makes a thing independent (spec/permissions.md §3) MUST also create its sync ID (unless it already has one) and record it in `sync.0`, in that one commit. It is the thing's one sync ID, for its life: holders are removed, the sync ID is never replaced or retired. Two admins making it independent at once (a fork) each record one; both stand, and the thing's sync ID is then the greatest of those it owns, the one every node reading it syncs it through (§4 Owner); a node keeping it unread, or reading it while it holds none of its admins' word on its keys (spec/sync.md §3 Holders by copies), syncs every sync ID it keeps for it (spec/sync.md §3), so one a forged sync copy names never displaces the thing's own.
+- **One sync ID per thing**, fixed when it is minted: the sync ID of the genesis step of its genesis seed (spec/crypto.md §3). It is the thing's one sync ID, for its life: holders are removed, the sync ID is never replaced or retired. A commit that makes a thing independent (spec/permissions.md §3) MUST record in its `sync.0`, in that one commit, the genesis step and a child of it registering the commit's new epochs (§3). Every admin making it independent builds the same genesis step, so admins doing so at once give it one sync ID and sibling first steps: concurrent rotations of one sync ID (§6 Steps). A thing that becomes dependent again and then independent again gets the same sync ID. A node syncs every sync ID a thing owns (§4 Owner): it owns one, and one an admin or a forged sync copy names besides stands beside it, never in its place.
   - Every holder of a role on an independent thing syncs it through that sync ID, whatever else holds the thing.
-  - A dependent thing has none: it syncs under the sync IDs of the sync units holding it (spec/sync-set.md §2, spec/sync-judgement.md §1). A thing minted with a key creates its sync ID in its minting commit (spec/permissions.md §3). A link key's redeemer reaches K's sync ID from its link text (§3 static entry).
+  - A dependent thing has none: it syncs under the sync IDs of the sync units holding it (spec/sync-set.md §2, spec/sync-judgement.md §1). A thing minted with a key records its genesis step and first step in its minting commit (spec/permissions.md §3). A link key's redeemer reaches K's sync ID from its link text (§3 static entry).
   - A thing's `sync.0` and `created.0` writes go where its other parts go (spec/sync-judgement.md §1): no sync ID carries them for another thing up its record chain.
   - A link's sync ID is its K's sync ID.
-- **Sync ID** value: derived from the genesis step's delete public key (spec/wire.md §8). The genesis step derives from the admin secret current when the sync ID is created.
+- **Sync ID** value: derived from the genesis step's delete public key (spec/wire.md §8).
+- **Genesis step** of genesis seed g: every key from g (its role keys as below, g standing for each role secret and for the deposit seed), its step key and its claim set's one claim too (spec/wire.md §8), no entry box, signed by its own delete key: deterministic, so every holder of g builds the same bytes. It registers no epoch; only its first child does.
 - **Role keys**: Ed25519 keys, the first three from the thing's own role secrets (spec/crypto.md §3):
   - **sync** `kdf("sync key", sync secret, "")`: every holder of sync or above derives it (spec/permissions.md §1);
   - **write** `kdf("sync write", write secret, "")`;
@@ -57,11 +58,11 @@
 
 ## 3. Steps and claim sets
 - **Steps**: a tree. Layout, signature and **Step ID**: spec/wire.md §8.
-  - A step holds: sync ID, `prev` (the step ID of its parent; none in the genesis step), the four public keys (sync, write, delete, deposit), a fresh X25519 **step key**, BLAKE3 of the **claim set** (which holds the **entry boxes**), and a signature by the parent's delete key (the genesis step by its own).
+  - A step holds: sync ID, `prev` (the step ID of its parent; none in the genesis step), the four public keys (sync, write, delete, deposit), a fresh X25519 **step key** (the genesis step's from its seed, §2), BLAKE3 of the **claim set** (which holds the **entry boxes**), and a signature by the parent's delete key (the genesis step by its own).
   - Each step is carried with its claim set.
   - Every node holding S has one **head** per S: a node reading S the newest step its `sync.0` records (§4); a node keeping S unread the newest step registered with it (§6 Register).
   - An admin issues steps (§6 Steps).
-- **Claim set** of a step: padded with random keys to a power of two, in random order. It lists each **reader** M of the registered read epoch (the registrar's newest read epoch at registration): every thing holding its read secret as the registrar knows it at registration (the holders of boxes carrying it, the mint admin included while its record edge stands; a holder re-sealed later opens by sync key).
+- **Claim set** of a step but the genesis step (§2): padded with random keys to a power of two, in random order. It lists each **reader** M of the registered read epoch (the registrar's newest read epoch at registration): every thing holding its read secret as the registrar knows it at registration (the holders of boxes carrying it, the mint admin included while its record edge stands; a holder re-sealed later opens by sync key).
   - A reader is listed by its claim public key (derivation: spec/wire.md §8). M's X25519 key is the X25519 half of its read-role KEM key in the newest `keys.0` of M the registrar holds. A non-contributory DH result, or a read keyset carrying no KEM key (spec/crypto.md §3 Published KEM keys), omits M.
   - A reader that is a link key of S's thing (its creation record names that thing as its K, spec/wire.md §3) is listed instead by its **static entry** (spec/wire.md §8), the same 32 bytes.
   - The public (spec/permissions.md §1), where it holds a role (read, or only sync: boxed at the registered sync epoch), is listed by its **public entry** (spec/wire.md §8), which every node derives.
@@ -77,7 +78,7 @@
 ## 4. `sync.0`
 - **`sync.0`** on an independent thing: `map<sync ID, { steps: map<step ID, step> }>`. Role-class, admin-only.
   - Each step is held with its claim set and entry boxes, which an admin MAY drop once the step has been superseded for `ROLE_KEEP` (counted from the `ts` of the write recording its first child), and with its **endorsements** (§6 Register), by endorsing delete key, kept for good. A node ignores an endorsement that does not verify.
-  - **Owner**: a node takes an entry of a thing g's `sync.0` as g's sync ID only when some step on a verified path from the sync ID's genesis step (each step signed by its parent's delete key, the genesis by its own, whose delete key hashes to the sync ID) bears the sync key of a sync secret of g the node holds. It ignores any other entry wherever it reads `sync.0`; forgetting g without g's secrets, it keeps what a thing it keeps owns. While the node holds no sync secret of g's own (it reads g by derived secrets, spec/crypto.md §3), it opens g's entries as hints and takes one as g's once a sync secret it holds bears it so. A node keeping g unread takes g's sync IDs from the sync copies of g it holds (g's stub where its unit holds only sync, spec/permissions.md §4 Stub).
+  - **Owner**: a node takes an entry of a thing g's `sync.0` as g's sync ID only when some step on a verified path from the sync ID's genesis step (each step signed by its parent's delete key, the genesis by its own, whose delete key hashes to the sync ID) bears the sync key of a sync secret of g the node holds. It ignores any other entry wherever it reads `sync.0`; forgetting g without g's secrets, it keeps what a thing it keeps owns. While the node holds no sync secret of g's own (it reads g by derived secrets, spec/crypto.md §3), it opens g's entries as hints and takes one as g's once a sync secret it holds bears it so. A node keeping g unread takes g's sync IDs from the sync copies of g it holds (g's stub where its unit holds only sync, spec/permissions.md §4 Stub). Where g owns several (spec/sync-hostile.md §2, A second sync ID), the one g's sync ID is where one is needed: the one g's genesis seed gives at a node holding it, else the greatest.
   - A step enters `sync.0` only by an admin's write; no node records a step on a peer's word.
   - One role commit may carry the `sync.0` deltas of many things.
 

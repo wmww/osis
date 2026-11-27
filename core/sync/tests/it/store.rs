@@ -125,6 +125,25 @@ fn register_takes_genesis_then_children_of_the_head_spec_sync_ids_6() {
     assert_eq!(events_of(&st, &s.id), [NodeEvent::Head(s.id)], "one head event, the latest");
 }
 
+// spec/sync-hostile.md §2 (A holder of the genesis seed), spec/sync-ids.md §6 (Register):
+// a store standing at the genesis step takes any child of it its delete key signs, and that key
+// derives from the genesis seed, which a party removed from the thing's mint admin may hold. A
+// child bearing such a party's own keys, registered first, leaves the store refusing the thing's
+// real first step (an equal-depth sibling: 9): the store is blocked for the thing until an admin
+// moves it by a deeper branch off the genesis step (issues/genesis-squat.md).
+#[test]
+fn a_genesis_seed_holder_squats_a_store_at_genesis_spec_sync_hostile_2() {
+    let (_dev, s, mut st) = one_unread();
+    let (g, _) = s.genesis().clone();
+    // the squatter: the genesis step's delete key, keys of its own
+    let squat = Sid::new(90);
+    let (fake, fc) = osis_blob::register(&g, &s.delete(), squat.keys(), &[], (&crate::harness::sid::THING, osis_crypto::Epoch::derive(&crate::harness::sid::THING, osis_base::Role::Read, 1, &squat.write).unwrap(), &squat.write), (osis_crypto::Epoch::derive(&crate::harness::sid::THING, osis_base::Role::Sync, 1, &squat.sync).unwrap(), &squat.sync), &mut osis_crypto::SeededRng::from_u64(9)).unwrap();
+    assert_eq!(st.reg(&s, &[(&fake, Some(&fc))]), Code::OK, "a child of the genesis step its delete key signs");
+    let (real, rc) = s.child(&g, 1, 0x61);
+    assert_eq!(st.reg(&s, &[(&real, Some(&rc))]), Code::NOT_HEAD_KEY, "the real first step, an equal-depth sibling, refused");
+    assert_eq!(st.head(&s.id).unwrap().as_ref(), Some(&fake));
+}
+
 // spec/sync-ids.md §6 (register: a branch): a Register's steps chain from a step on the store's
 // path; it is taken in place of the path after that step when its last step is deeper than the
 // head and that step's delete key is the head's, each step verifying under the one before.

@@ -73,6 +73,10 @@ pub struct EpochInfo {
     /// The greatest floor a live entry of its history box opened under its secret writes
     /// (spec/crypto.md §4, Floors), set with `supersedes`; none opened: `None`.
     pub floor: Option<u64>,
+    /// At admin, the actor's genesis seed (spec/crypto.md §3 Genesis seed): what a live entry of
+    /// its history box opened under its secret carries (the least, where entries differ), set
+    /// with `supersedes`; a derived epoch's, from its base epoch's (`ActorEpochs::derived`).
+    pub genesis: Option<Secret32>,
     /// Established (spec/crypto.md §4): `Fixed` and `Derived` set and persisted; `Rotated`
     /// computed from the held state (`RoleEpochs::establish`), never persisted. Unestablished
     /// epochs are kept for reading only: never current, supersede nothing, never encrypted
@@ -262,7 +266,19 @@ impl RoleEpochs {
             i.names.clear();
             i.supersedes.clear();
             i.floor = None;
+            i.genesis = None;
         }
+    }
+
+    /// Sets the genesis seed `e`'s history box carries (spec/crypto.md §3 Genesis seed), with
+    /// `set_history`.
+    pub fn set_genesis(&mut self, e: Epoch, genesis: Option<Secret32>) {
+        self.observe(e).genesis = genesis;
+    }
+
+    /// The genesis seed this role's epochs carry (`ActorEpochs::genesis`): the least any carries.
+    pub fn genesis(&self) -> Option<&Secret32> {
+        self.map.values().filter_map(|i| i.genesis.as_ref()).min_by(|a, b| a.expose().cmp(b.expose()))
     }
 
     /// Sets `e`'s secret, known from a source that is no pending commit (an applied valid box, a
@@ -743,6 +759,12 @@ pub struct ActorEpochs {
 }
 
 impl ActorEpochs {
+    /// The actor's genesis seed as its admin epochs here carry it (spec/crypto.md §3 Genesis
+    /// seed): every admin writes the same one; where entries differ, the least.
+    pub fn genesis(&self) -> Option<&Secret32> {
+        self.admin.genesis()
+    }
+
     pub fn role(&self, r: Role) -> &RoleEpochs {
         match r {
             Role::Sync => &self.sync,
@@ -823,6 +845,8 @@ impl ActorEpochs {
                     reading: i.reading.clone(),
                     order: Some(o.order(e)).filter(|&x| x != de.n()),
                     foreign: i.foreign,
+                    // g(X) = kdf("sync genesis", g(mint admin), tid) (spec/crypto.md §3)
+                    genesis: i.genesis.as_ref().map(|g| osis_crypto::genesis_seed(g, tid)),
                     ..EpochInfo::default()
                 };
                 a.role_mut(r).map.insert(*de, info);

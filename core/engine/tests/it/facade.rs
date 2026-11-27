@@ -14,8 +14,8 @@ use std::collections::BTreeSet;
 
 // spec/sync-ids.md §3 (claim key: a listed reader derives it from its own key and the step key),
 // §4 (owner), spec/sync-opens.md §4 (admissible: read secrets at a current epoch, the head's sync
-// proof): of the node thing D's sync ID, whose genesis step lists no reader (its minting boxes
-// nobody: spec/permissions.md §3), so the node derives no claim key there.
+// proof): of the node thing D's sync ID, its genesis step and the first, which lists no reader
+// (its minting boxes nobody: spec/permissions.md §3), so the node derives no claim key there.
 #[test]
 fn read_credentials_and_claim_key_spec_sync_ids_3() {
     let (mut lp, _) = people(1);
@@ -25,14 +25,16 @@ fn read_credentials_and_claim_key_spec_sync_ids_3() {
     let ids = e.sync_ids(&d).unwrap();
     assert_eq!(ids.len(), 1);
     assert!(!ids[0].hint);
-    let head = ids[0].path.steps.last().unwrap().0.clone();
-    head.verify_genesis().unwrap();
+    let [(genesis, _), (head, _)] = ids[0].path.steps.as_slice() else { panic!("the genesis step and the first") };
+    genesis.verify_genesis().unwrap();
+    head.verify_child(genesis).unwrap();
+    let head = head.clone();
     let rc = e.read_credentials(&ds).unwrap().expect("a reader of D");
     assert_eq!(rc.head.as_ref().map(|s| s.id()), Some(head.id()));
     assert!(!rc.read_secrets.is_empty(), "a current read secret");
     assert_eq!(rc.proofs.first().map(|p| p.0), Some(head.id()), "the head's sync proof first");
-    assert!(e.claim_key(&ds, &head.id()).unwrap().is_none(), "nobody is listed at genesis");
-    assert!(matches!(&ids[0].path.steps[0], (_, Some(_))), "its claim set held");
+    assert!(e.claim_key(&ds, &head.id()).unwrap().is_none(), "nobody is listed at the first step");
+    assert!(matches!(&ids[0].path.steps[1], (_, Some(_))), "its claim set held");
 }
 
 // spec/data-model.md §9 (`caps^.0`: each node's entry, on the thing its node root's
@@ -276,7 +278,8 @@ fn a_crash_between_drop_and_clear_is_done_again_spec_perm_3() {
 
 
 // spec/sync-ids.md §6 (steps: registered only once the source holds the role commits its epochs
-// depend on): the genesis step's needs are the rotations of its epochs, held here.
+// depend on): the first step's needs are the rotations of its epochs, held here; the genesis
+// step registers no epoch and needs none.
 #[test]
 fn a_step_needs_its_epochs_rotations_spec_sync_ids_6() {
     let (mut lp, _) = people(1);
@@ -289,9 +292,10 @@ fn a_step_needs_its_epochs_rotations_spec_sync_ids_6() {
     };
     let d = e.mint_independent(&[osis_engine::MintAdmin::Thing(me)], |ts| Ok(vec![hold(ts[0])?])).unwrap().0[0];
     let ids = e.sync_ids(&d).unwrap();
-    let step = ids[0].path.steps[0].0.id();
+    let step = ids[0].path.steps[1].0.id();
     let needs = e.step_needs(&ids[0].id, &step).unwrap();
     assert!(!needs.is_empty());
+    assert!(e.step_needs(&ids[0].id, &ids[0].path.steps[0].0.id()).unwrap().is_empty());
     assert!(needs.iter().all(|c| e.core.ix.commits.contains_key(c)));
 }
 
@@ -594,9 +598,9 @@ fn a_loose_record_awaited_after_another_arrives_is_learned_spec_commits_4() {
     }
 }
 
-// spec/sync-ids.md §2 (One sync ID per independent thing): a commit that makes a thing independent also
-// creates its sync ID and records it in `sync.0`, in that one commit. A thing given secrets of its
-// own, by `make_independent` or by its first grant, has its sync ID, and the first commit
+// spec/sync-ids.md §2 (One sync ID per thing): a commit that makes a thing independent also
+// records its genesis step and a child of it in `sync.0`, in that one commit. A thing given secrets
+// of its own, by `make_independent` or by its first grant, has its sync ID, and the first commit
 // with a `secrets.0` part on it carries a `sync.0` write too.
 #[test]
 fn own_secrets_and_the_sync_id_come_in_one_commit_spec_sync_ids_2() {

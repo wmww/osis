@@ -146,7 +146,7 @@ pub fn boxes() -> VecFile {
     // a roles secret carried apart (spec/crypto.md §4, Roles secrets)
     let r23 = osis_crypto::roles_secret(&s32(0x23));
     let roles = vec![(named(&actor, Role::Read, 2, &s32(0x23)), r23)];
-    let entry = osis_crypto::HistoryEntry { earlier: earlier.clone(), names: names.clone(), floor: 2, roles: roles.clone() };
+    let entry = osis_crypto::HistoryEntry { earlier: earlier.clone(), names: names.clone(), floor: 2, roles: roles.clone(), genesis: None };
     let h = seal_history(&s32(0x09), &actor, Role::Read, &e3, &entry).unwrap();
     assert_eq!(open_history(&s32(0x09), &actor, Role::Read, &e3, &h).unwrap(), entry);
     let list = |v: &[(osis_crypto::Epoch, osis_crypto::Secret32)]| Value::List(v.iter().map(|(e, s)| Value::List(vec![Value::Int(e.n() as i64), Value::Bytes(s.expose().to_vec())])).collect());

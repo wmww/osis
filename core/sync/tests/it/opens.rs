@@ -2024,7 +2024,7 @@ fn a_reader_tests_each_held_sync_key_after_its_steps_spec_sync_ids_6() {
     use osis_crypto::{Epoch, RoleKey, Secret32, SeededRng, role_key};
     use osis_engine::sync_ids::HeadKeys;
     use osis_engine::sync::{Path, ReadCredentials};
-    use osis_blob::{Parent, StepKeys};
+    use osis_blob::StepKeys;
     use osis_sync::opens::cred::Tested;
     use osis_sync::opens::holds::walk_tests;
     let thing = osis_base::Tid::from_bytes([3; 15]);
@@ -2035,12 +2035,13 @@ fn a_reader_tests_each_held_sync_key_after_its_steps_spec_sync_ids_6() {
     let read = Epoch::derive(&thing, osis_base::Role::Read, 0, &old).unwrap();
     let se = |n: u64, x: &Secret32| Epoch::derive(&thing, osis_base::Role::Sync, n, x).unwrap();
     let d = role_key(RoleKey::Delete, &admin);
-    let (genesis, _) = osis_blob::register(Parent::Genesis(&d), keys, &[], (&thing, read, &old), (se(0, &old), &old), &mut SeededRng::from_u64(0)).unwrap();
+    let (genesis, _) = osis_blob::genesis(&admin);
+    let (first, _) = osis_blob::register(&genesis, &d, keys, &[], (&thing, read, &old), (se(0, &old), &old), &mut SeededRng::from_u64(0)).unwrap();
     let k = |x: &Secret32| role_key(RoleKey::Sync, x);
     let mut rc = ReadCredentials::default();
-    rc.keys.insert(genesis.id(), HeadKeys { sync: Some(k(&old)), epochs: [Some(se(0, &old)), None, None], ..HeadKeys::default() });
+    rc.keys.insert(first.id(), HeadKeys { sync: Some(k(&old)), epochs: [Some(se(0, &old)), None, None], ..HeadKeys::default() });
     rc.sync_keys = vec![(se(1, &new), k(&new)), (se(0, &old), k(&old))];
-    let path = Path { steps: vec![(genesis.clone(), None)] };
+    let path = Path { steps: vec![(genesis.clone(), None), (first.clone(), None)] };
     let tests = walk_tests(&rc, &path, &mut |_| None);
     let got: Vec<(Option<osis_blob::StepId>, [u8; 32])> = tests
         .iter()
@@ -2050,7 +2051,7 @@ fn a_reader_tests_each_held_sync_key_after_its_steps_spec_sync_ids_6() {
         })
         .collect();
     let pk = |x: &Secret32| k(x).verifying_key().to_bytes();
-    assert_eq!(got, vec![(Some(genesis.id()), pk(&old)), (None, pk(&new))]);
+    assert_eq!(got, vec![(Some(first.id()), pk(&old)), (None, pk(&new))]);
     // no recorded path: every held sync key, newest first
     let bare: Vec<_> = walk_tests(&rc, &Path::default(), &mut |_| None).into_iter().map(|(t, _)| t.step()).collect();
     assert_eq!(bare, vec![None, None]);

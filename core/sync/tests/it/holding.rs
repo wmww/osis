@@ -988,13 +988,16 @@ fn an_ended_way_found_keyless_drops_its_copy_spec_permissions_3() {
     assert_eq!(value(&mut w, 0, &t1), Some(Value::Str("t1".into())), "Alice reads T1");
 }
 
-// spec/sync-ids.md §2 (two admins making a thing independent at once: the greatest sync ID),
-// Bob's offline sibling grants T0 read on T1, making T1 independent with a sync ID of its own;
-// Bob, apart, grants Alice read on T1 (another sync ID), which she holds. Once the sibling is back, every writer syncs
-// T1 by the greater sync ID: Alice follows it and holds the sibling's grant as Bob does.
-fn a_reader_follows_a_forked_sync_id(cycle: bool) {
+// spec/sync-ids.md §2 (One sync ID per thing), spec/crypto.md §7 (Checked keys:
+// a step is recorded from the first valid write recording it): Bob's offline sibling grants T0
+// read on T1, making T1 independent; Bob, apart, grants Alice read on T1, making it independent
+// too, and Alice holds it. Both give T1 one sync ID, its genesis step recorded by both
+// promotions. Once the sibling is back, Alice and Bob hold the sibling's grant (failed with the
+// genesis step placed from the later promotion: the sibling's step counted as recorded after its
+// own grant, which listed its keys, so the grant waited miskeyed for good).
+fn a_reader_takes_a_concurrent_promotions_grant(cycle: bool) {
     // up to Bob's grants, built once per process (`fixture_with`)
-    let (mut w, (t0, t1)) = fixture_with("holding forked sync id", || {
+    let (mut w, (t0, t1)) = fixture_with("holding concurrent promotions", || {
         let mut w = siblings();
         let t0 = make(&mut w, 1, None, "t0");
         let t1 = make(&mut w, 1, None, "t1");
@@ -1019,17 +1022,17 @@ fn a_reader_follows_a_forked_sync_id(cycle: bool) {
     assert_eq!(w.engine(0).roster(&t1), w.engine(1).roster(&t1), "Alice's roster of T1 is Bob's: {}", w.why_role(0, &t1));
 }
 
-// The fork alone: a re-seal of the sibling's epoch boxes Alice.
+// The promotions alone: a re-seal of the sibling's epoch boxes Alice.
 #[test]
-fn a_reader_follows_a_forked_sync_id_spec_sync_inbox_5() {
-    a_reader_follows_a_forked_sync_id(false);
+fn a_reader_takes_a_concurrent_promotions_grant_spec_sync_ids_2() {
+    a_reader_takes_a_concurrent_promotions_grant(false);
 }
 
 // Bob's grant of T1 on T0 closes a cycle with the sibling's (ordered first, it makes Bob's keyless):
 // a rotation of T1, which boxes Alice at the epoch it is wrapped under, replaces the re-seal.
 #[test]
-fn a_reader_follows_a_forked_sync_id_through_a_rotation_spec_sync_inbox_5() {
-    a_reader_follows_a_forked_sync_id(true);
+fn a_reader_takes_a_concurrent_promotions_grant_through_a_rotation_spec_sync_ids_2() {
+    a_reader_takes_a_concurrent_promotions_grant(true);
 }
 
 // spec/permissions.md §3 (Retain: an ended way by a grant with key access just before its removal

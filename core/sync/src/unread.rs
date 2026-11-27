@@ -240,7 +240,7 @@ mod tests {
     #![allow(clippy::unwrap_used)]
     use super::{Judged, judge};
     use osis_base::{Role, Tid};
-    use osis_blob::{Parent, Reader, StepKeys, genesis_sync_id, register};
+    use osis_blob::{Reader, StepKeys, genesis, genesis_sync_id, register};
     use osis_crypto::{Epoch, RoleKey, Secret32, SeededRng, role_key};
 
     // spec/sync-opens.md §4 (Admissible: keeping S unread, the head bears a sync epoch no held one
@@ -258,12 +258,13 @@ mod tests {
         for (i, (e, x)) in held.iter().take(2).enumerate() {
             let keys = StepKeys::derive(x, &write, &admin, &deposit, &s);
             let read_at = (&t, Epoch::derive(&t, Role::Read, 3, &read).unwrap(), &read);
-            let step = register(Parent::Genesis(&role_key(RoleKey::Delete, &admin)), keys, &[Reader::Public { reads: true }], read_at, (*e, x), &mut SeededRng::from_u64(0)).unwrap();
-            let steps = [(step.0, Some(step.1))];
+            let step = register(&genesis(&admin).0, &role_key(RoleKey::Delete, &admin), keys, &[Reader::Public { reads: true }], read_at, (*e, x), &mut SeededRng::from_u64(0)).unwrap();
+            let (g, gc) = genesis(&admin);
+            let steps = [(g, Some(gc)), (step.0, Some(step.1))];
             let reads = |k: super::Kept| matches!(k.public, super::Public::Listed { reads: true, .. });
             assert!(reads(judge(&Judged { s: &s, secrets: &held[..2], steps: &steps, lowered_at: None })), "head at concurrent epoch {i}");
             assert!(!reads(judge(&Judged { s: &s, secrets: &held, steps: &steps, lowered_at: None })), "head at {i} behind a later epoch");
-            let head = steps.first().map(|x| x.0.id());
+            let head = steps.last().map(|x| x.0.id());
             assert!(!reads(judge(&Judged { s: &s, secrets: &held[..2], steps: &steps, lowered_at: head.as_ref() })), "head at {i} it was lowered at");
         }
     }

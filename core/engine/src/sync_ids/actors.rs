@@ -26,17 +26,14 @@ use std::sync::Arc;
 /// secrets this node holds. While this node holds no sync secret of g's own (it reads g by derived
 /// secrets, which no step bears) the entries are hints (`OwnedSyncId::hint`).
 pub(crate) fn owns(held: &BTreeSet<[u8; 32]>, id: &SyncId, steps: &BTreeMap<StepId, (Step, Option<ClaimSet>)>) -> bool {
-    // the genesis first (every holder holds the older secrets, so usually it bears one): one
-    // step verified; else the tree verified once (`verified_depths`), not a path per bearing step
-    let (genesis, deeper): (Vec<(&StepId, &Step)>, Vec<_>) = steps.iter().map(|(k, (s, _))| (k, s)).filter(|(_, s)| held.contains(&s.keys.sync.to_bytes())).partition(|(_, s)| s.prev.is_none());
-    if genesis.iter().any(|(k, s)| s.id() == **k && s.sync_id == *id && s.verify_genesis().is_ok()) {
-        return true;
-    }
-    if deeper.is_empty() {
+    // the genesis step bears no sync key a sync secret derives (spec/sync-ids.md §2): a step
+    // below it, the tree verified once (`verified_depths`), not a path per bearing step
+    let bearing: Vec<(&StepId, &Step)> = steps.iter().map(|(k, (s, _))| (k, s)).filter(|(_, s)| s.sync_id == *id && held.contains(&s.keys.sync.to_bytes())).collect();
+    if bearing.is_empty() {
         return false;
     }
     let depth = verified_depths(steps);
-    deeper.iter().any(|(k, s)| s.sync_id == *id && depth.contains_key(k))
+    bearing.iter().any(|(k, _)| depth.contains_key(*k))
 }
 
 /// The recorded path of a sync ID from its steps (spec/sync-ids.md §5 Path): genesis to head, the

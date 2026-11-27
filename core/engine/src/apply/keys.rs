@@ -875,17 +875,25 @@ pub(crate) fn read_pending_boxes(tx: &mut Tx<'_>, blob: &osis_commit::CommitBlob
     Ok(())
 }
 
-/// What `read_pending_boxes` reads of pending commit `id`.
+/// What `read_pending_boxes` reads of pending commit `id`: per actor, every piece of its
+/// `secrets.0` write together (spec/wire.md §4 Pieces), so a history box opens with the secret a
+/// box in another piece gives whatever order the pieces come in.
 pub(crate) fn pending_boxes(tx: &mut Tx<'_>, blob: &osis_commit::CommitBlob, id: &CommitId) -> Result<Vec<(Tid, ct::Secrets, osis_keys::Unchecked)>> {
-    let mut out = Vec::new();
+    let mut per: std::collections::BTreeMap<Tid, ct::Secrets> = std::collections::BTreeMap::new();
     for (a, w) in pending_secrets_writes(blob, id) {
-        if (w.boxes.is_empty() && w.history.is_empty()) || tx.txn.get_local(&sealed_key(id, &a))?.is_some() {
+        let s = per.entry(a).or_default();
+        s.boxes.extend(w.boxes);
+        s.history.extend(w.history);
+    }
+    let mut out = Vec::new();
+    for (a, s) in per {
+        if (s.boxes.is_empty() && s.history.is_empty()) || tx.txn.get_local(&sealed_key(id, &a))?.is_some() {
             continue;
         }
         // an author whose chain is not known here shares one budget with every such author (a
         // claimed grant earns nothing: its `roles.0` part is as unverified as the boxes)
         let author = if tx.core.created(&blob.header.signer).is_some() { blob.header.signer } else { osis_keys::UNKNOWN_AUTHOR };
-        out.push((a, ct::Secrets { boxes: w.boxes, history: w.history.into_iter().collect() }, osis_keys::Unchecked { author, commit: *id }));
+        out.push((a, s, osis_keys::Unchecked { author, commit: *id }));
     }
     Ok(out)
 }

@@ -8,7 +8,7 @@ use crate::msg::*;
 use crate::{Proof, Prover, SyncId};
 use osis_base::{BlobId, CreationRecord, Tid, Value, WallMs, cbor};
 use osis_crypto::{Epoch, KemSecret, RoleKey, SeededRng, Secret32, SigningSecret, X25519Secret, role_key};
-use osis_blob::{Parent, Prefix, Reader, StepKeys, genesis_sync_id, register, sign_stamp};
+use osis_blob::{Prefix, Reader, StepKeys, genesis, genesis_sync_id, register, sign_stamp};
 
 /// The listener's static key and the Hello challenge the examples sign opens and proofs for.
 pub const STATIC_KEY: [u8; 32] = [0x5e; 32];
@@ -18,13 +18,15 @@ fn s32(b: u8) -> Secret32 {
     Secret32::from_bytes([b; 32])
 }
 
-/// One thing's sync ID: a genesis step and a child without rotation, each with a claim
-/// set listing one DH reader and one link key (entry box sealed to a KEM key from `b+6`).
+/// One thing's sync ID: its genesis step (the admin secret its genesis seed) and a child
+/// without rotation, whose claim set lists one DH reader and one link key (entry box sealed to
+/// a KEM key from `b+6`).
 pub struct Fixture {
     pub sync_id: SyncId,
     pub genesis: Step,
     pub genesis_claims: ClaimSet,
     pub child: Step,
+    pub child_claims: ClaimSet,
     pub sync: SigningSecret,
     pub write: SigningSecret,
     pub delete: SigningSecret,
@@ -49,13 +51,14 @@ impl Fixture {
         let sync_epoch = Epoch::derive(&thing, osis_base::Role::Sync, 1, &sync).expect("small epoch");
         let readers = [Reader::Dh(reader.public()), Reader::Static { signing: link_key.verifying_key(), kem: kem.public() }];
         let mut rng = SeededRng::from_seed([b + 7; 32]);
-        let (genesis, genesis_claims) = register(Parent::Genesis(&delete), keys, &readers, (&thing, read_epoch, &read), (sync_epoch, &sync), &mut rng).expect("fixed genesis");
-        let (child, _) = register(Parent::Child { step: &genesis, delete: &delete }, keys, &readers, (&thing, read_epoch, &read), (sync_epoch, &sync), &mut rng).expect("fixed child");
+        let (genesis, genesis_claims) = genesis(&admin);
+        let (child, child_claims) = register(&genesis, &delete, keys, &readers, (&thing, read_epoch, &read), (sync_epoch, &sync), &mut rng).expect("fixed child");
         Fixture {
             sync_id,
             genesis,
             genesis_claims,
             child,
+            child_claims,
             sync: role_key(RoleKey::Sync, &sync),
             write: role_key(RoleKey::Write, &write),
             delete,
@@ -111,7 +114,7 @@ pub fn messages() -> Vec<(&'static str, Msg)> {
     let top = |n: u32| crate::limits::TOP_BIT | n;
     let entry = f.entry(Fixture::blob(1));
     let added = Event::Added { blob_id: osis_blob::blob_id(&entry.blob), blob: Some(entry.blob.clone()), wrap: entry.wrap, stamp: Some(entry.stamp) };
-    let entry_box = f.genesis_claims.entry_box(&l, &f.link_key.verifying_key()).cloned().expect("the link key is listed");
+    let entry_box = f.child_claims.entry_box(&l, &f.link_key.verifying_key()).cloned().expect("the link key is listed");
     let deposited = Fixture::blob(2);
     let dep_wrap = [0x78; WRAP_LEN];
     let dep_sig = osis_blob::sign_deposit(&f.deposit, &l, &osis_blob::blob_id(&deposited), &dep_wrap, false);

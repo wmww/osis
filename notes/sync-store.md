@@ -58,6 +58,8 @@ The engine keeps a loose record only while a store entry names a blob carrying i
 - **Deposits** per sync ID by the shared deposit budget (notes/sync-inbox.md).
 
 ## A reader's store of S
+Its served path is what its `sync.0` records (`path::serve`), but a superseded step's claim set is the store's to drop (the `ROLE_KEEP` sweep): one the store lacks that `sync.0` still records is no difference, else every start serves it again for the sweep to drop again (every thing has a superseded step from birth, its genesis step).
+
 Its own entries plus those it pulled:
 - one that opened to a commit held here (`Opening::Held`) is kept as it came, so readers pass the writer's blob on and encrypt afresh only where spec/crypto.md §5 requires. Charged to no one when it brought something new; a duplicate of what is held is charged to its bringer unless stamped, so a reader's fresh encryptions of held commits fill only its own peer budget;
 - one that did not open, or opened to a commit pending in the engine (`Engine::pends`): streams' `take_body` logs it as the commit's carrier, charged to the peer when unstamped;

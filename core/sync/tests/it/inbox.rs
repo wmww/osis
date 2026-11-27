@@ -9,7 +9,7 @@ use osis_base::memo::{Stamped, StampedSet};
 use osis_base::{BlobId, SyncId, Tid, WallMs};
 use osis_crypto::{Epoch, RoleKey, Secret32, SeededRng, SigningSecret, deposit_key, role_key};
 use osis_engine::sync::{Holding, Path, SyncSet};
-use osis_blob::{ClaimSet, Class, Parent, Prefix, Step, StepId, StepKeys};
+use osis_blob::{ClaimSet, Class, Prefix, Step, StepId, StepKeys};
 use osis_proto::{Code, Msg, OfferItem, SharedItem};
 use osis_store::{MemoryBackend, MemoryRoot};
 use osis_sync::Result;
@@ -487,7 +487,8 @@ fn one_stamped_copy_per_delta_spec_sync_inbox_4() {
     assert!(adds_delta(&need, &opened(&[0], &[]), &[]), "the first copy");
 }
 
-/// Steps of one sync ID: genesis and children, as an admin issues them.
+/// Steps of one sync ID: genesis (the admin secret its genesis seed) and children, as an admin
+/// issues them.
 struct Steps {
     steps: Vec<(Step, ClaimSet)>,
 }
@@ -497,18 +498,15 @@ impl Steps {
         let admin = Secret32::from_bytes([0xab; 32]);
         let id = osis_blob::genesis_sync_id(&admin);
         let d = role_key(RoleKey::Delete, &admin);
-        let mut steps: Vec<(Step, ClaimSet)> = Vec::new();
-        for i in 0..n {
+        let mut steps: Vec<(Step, ClaimSet)> = vec![osis_blob::genesis(&admin)];
+        for i in 1..n {
             let (sync, write) = (Secret32::from_bytes([i as u8; 32]), Secret32::from_bytes([i as u8 + 0x40; 32]));
             let keys = StepKeys::derive(&sync, &write, &admin, &deposit_seed(0), &id);
             let read = Epoch::derive(&THING, osis_base::Role::Read, i as u64, &write).unwrap();
             let se = Epoch::derive(&THING, osis_base::Role::Sync, i as u64, &sync).unwrap();
-            let parent = match steps.last() {
-                None => Parent::Genesis(&d),
-                Some((p, _)) => Parent::Child { step: p, delete: &d },
-            };
+            let (parent, _) = steps.last().unwrap();
             let mut rng = SeededRng::from_u64(i as u64);
-            steps.push(osis_blob::register(parent, keys, &[], (&THING, read, &write), (se, &sync), &mut rng).unwrap());
+            steps.push(osis_blob::register(parent, &d, keys, &[], (&THING, read, &write), (se, &sync), &mut rng).unwrap());
         }
         Steps { steps }
     }
@@ -528,7 +526,7 @@ impl Steps {
         let read = Epoch::derive(&THING, osis_base::Role::Read, i as u64 + 1, &write).unwrap();
         let se = Epoch::derive(&THING, osis_base::Role::Sync, i as u64 + 1, &sync).unwrap();
         let mut rng = SeededRng::from_u64(0x5000 + i as u64);
-        osis_blob::register(Parent::Child { step: &self.steps[i].0, delete: &role_key(RoleKey::Delete, &a) }, keys, &[], (&THING, read, &write), (se, &sync), &mut rng).unwrap().0
+        osis_blob::register(&self.steps[i].0, &role_key(RoleKey::Delete, &a), keys, &[], (&THING, read, &write), (se, &sync), &mut rng).unwrap().0
     }
     /// Every recorded step: the path's and `more`.
     fn tree(&self, more: &[&Step]) -> BTreeMap<StepId, Step> {

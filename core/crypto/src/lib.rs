@@ -23,7 +23,7 @@ pub use boxes::{BoxForm, BoxItem, BoxSlot, EntryItem, EntryRead, Epoch, HistoryE
 pub use error::Error;
 pub use kem::{KEM_PUBLIC_LEN, KemPublicKey, KemSecret, MLKEM_CT_LEN, SEALED_OVERHEAD, X25519Secret, open_sealed, seal, seal_with};
 pub use keys::{creation_nonce, dedup_secret, delta_hash, link_hash, link_key_role_secret, link_tree_hash, RoleSecret, role_kem, signing_key, thing_role_secret};
-pub use sync_id::{RoleKey, claim_key, deposit_key, role_key, role_key_seed, open_digest, proof_digest, public_entry, sign_open, static_entry, sync_id, verify_open};
+pub use sync_id::{RoleKey, claim_key, deposit_key, genesis_seed, role_key, role_key_seed, open_digest, proof_digest, public_entry, sign_open, static_entry, sync_id, verify_open};
 pub use rng::{NodeRng, SeededRng};
 pub use secret::Secret32;
 pub use sign::{Domain, Signature, SigningSecret, VerifyingKey};

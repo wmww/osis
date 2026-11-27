@@ -1743,7 +1743,7 @@ fn reader_history_add_valid_box_put_not_spec_permissions_3() {
         (e, s.clone())
     };
     let names = lp.peers[1].engine.run(|tx| Ok(tx.core.epochs(&g).unwrap().read.history_names(Role::Read, &e, &tx.core.names_held(&g)).unwrap())).unwrap();
-    let ct = osis_crypto::seal_history(&secret, &g, Role::Read, &e, &osis_crypto::HistoryEntry { earlier: Vec::new(), names: names.to_value(), floor: 0, roles: Vec::new() }).unwrap();
+    let ct = osis_crypto::seal_history(&secret, &g, Role::Read, &e, &osis_crypto::HistoryEntry { earlier: Vec::new(), names: names.to_value(), floor: 0, roles: Vec::new(), genesis: None }).unwrap();
     let mut m = Mutation::new();
     let history = [(osis_keys::aspects::history_key(Role::Read, &e), ct)].into_iter().collect();
     crate::flows::put_secrets(&mut m, g, &osis_keys::SecretsWrite { history, ..Default::default() }, true).unwrap();
@@ -2883,8 +2883,10 @@ fn a_dependent_thing_with_a_holder_gets_secrets_of_its_own_at_a_pass_end_spec_pe
 // by peer 0 concurrently, makes T independent by granting peer 2 read on it; Y, seeing T so,
 // grants T read on X, an independent thing of Y's. Once all is held A's rotation is invalid and T
 // dependent again, holding X: no rotation of X boxes it. Peer 0's pass end gives T secrets of its
-// own; Y's next rotation of X boxes T, so peer 0 (holding T through G) reads X's writes under it.
-// Fails if nothing decides at a pass end: peer 0 reads nothing under X's new epoch.
+// own, under the sync ID A's promotion gave it (spec/sync-ids.md §2: fixed at minting; failed with
+// one made afresh); Y's next rotation of X boxes T, so peer 0 (holding T through G) reads X's
+// writes under it. Fails if nothing decides at a pass end: peer 0 reads nothing under X's new
+// epoch.
 #[test]
 fn a_dependent_holder_left_so_by_an_invalid_keyset_gets_secrets_of_its_own_spec_perm_3() {
     let (mut lp, g, t, tids) = dependent_of_g();
@@ -2896,6 +2898,8 @@ fn a_dependent_holder_left_so_by_an_invalid_keyset_gets_secrets_of_its_own_spec_
     lp.peers[1].engine.grant(&t, &tids[2], &edge(Role::Read)).unwrap();
     lp.sync(1, 3).unwrap();
     assert!(lp.peers[3].engine.core.is_independent(&t), "Y sees T independent");
+    let first = lp.peers[3].engine.sync_id_of(&t).unwrap();
+    assert!(first.is_some());
     lp.peers[3].engine.grant(&x, &t, &edge(Role::Read)).unwrap();
     lp.sync_all().unwrap();
     for i in 0..5 {
@@ -2904,28 +2908,34 @@ fn a_dependent_holder_left_so_by_an_invalid_keyset_gets_secrets_of_its_own_spec_
         assert_eq!(core.role_now(&t, &x), Some(Role::Read), "peer {i}: T holds X");
     }
     pass_end_at_0(&mut lp, g, t);
+    assert_eq!(lp.peers[0].engine.sync_id_of(&t).unwrap(), first, "made independent again: the same sync ID");
     lp.peers[3].engine.rotate_leaving_out(&x, &[Role::Read], &[]).unwrap();
     write_on(&mut lp, 3, x, "x:a.0", 1);
     assert_eq!(read_at(&mut lp, 0, x, "x:a.0"), Some(osis_base::Value::Int(1)), "peer 0 reads X through T");
 }
 
-// spec/permissions.md §3 (Complete pass: concurrent ones fork, spec/crypto.md §4): G's admins 0 and Y both make
-// T independent at their pass ends before either hears of the other's; once all is held every
-// node agrees on T's sync ID, Z reads what either writes after, and no pass end owes more.
+// spec/sync-ids.md §2 (One sync ID per thing), spec/permissions.md §3
+// (concurrent rotations of the thing's one sync ID): G's admins 0 and Y both make T independent at their pass
+// ends before either hears of the other's: both give it the one sync ID its genesis seed fixes
+// (failed with a sync ID each). Once all is held every node agrees on it, Z reads what either
+// writes after, and no pass end owes more.
 #[test]
 fn two_admins_giving_secrets_of_its_own_at_once_converge_spec_perm_3() {
     let (mut lp, g, t, _) = dependent_with_a_holder();
     super::tests_members::driver_duties(&mut lp, 0);
     super::tests_members::driver_duties(&mut lp, 3);
     assert!(lp.peers[0].engine.core.is_independent(&t) && lp.peers[3].engine.core.is_independent(&t), "both made T independent");
+    let apart = lp.peers[0].engine.sync_id_of(&t).unwrap();
+    assert!(apart.is_some());
+    assert_eq!(lp.peers[3].engine.sync_id_of(&t).unwrap(), apart, "apart, both give T one sync ID");
     lp.sync_all().unwrap();
     for i in 0..5 {
         super::tests_members::driver_duties(&mut lp, i);
     }
     lp.sync_all().unwrap();
     let s = lp.peers[0].engine.sync_id_of(&t).unwrap();
-    assert!(s.is_some());
-    assert_eq!(lp.peers[0].engine.sync_ids(&t).unwrap().len(), 2, "a sync ID each");
+    assert_eq!(s, apart);
+    assert_eq!(lp.peers[0].engine.sync_ids(&t).unwrap().len(), 1, "one sync ID");
     for i in 0..5 {
         assert_eq!(lp.peers[i].engine.sync_id_of(&t).unwrap(), s, "peer {i}: T's sync ID");
         assert!(super::own_secrets_candidates(&lp.peers[i].engine.core, &g).is_empty(), "peer {i}: nothing left due");

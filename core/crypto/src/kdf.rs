@@ -85,6 +85,11 @@ pub const SYNC_WRITE: &str = "sync write";
 pub const SYNC_DELETE: &str = "sync delete";
 pub const SYNC_DEPOSIT: &str = "sync deposit";
 pub const SYNC_CLAIM: &str = "sync claim";
+/// A thing's genesis seed from its mint admin's, its genesis step's key and pad claim
+/// (spec/crypto.md §3 Genesis seed, spec/wire.md §8).
+pub const SYNC_GENESIS: &str = "sync genesis";
+pub const GENESIS_STEP: &str = "genesis step";
+pub const GENESIS_CLAIM: &str = "genesis claim";
 /// The pair key of a record, or of a connection with none (`pair_key`).
 pub const PAIR_KEY: &str = "pair key";
 /// A beacon's key over its match value and sync ID (spec/sync-opens.md §5).
@@ -105,9 +110,9 @@ pub const NOTICE_EPH: &str = "notice eph";
 pub const NOTICE_KEM: &str = "notice kem";
 
 /// Every kdf purpose, for distinctness checks and vectors.
-pub const PURPOSES: [&str; 37] = [
+pub const PURPOSES: [&str; 40] = [
     THING_SYNC, THING_READ, THING_WRITE, THING_ADMIN, ROLE_SYNC, ROLE_READ, ROLE_WRITE, ROLE_ADMIN, SIGN, KEM, CREATION_NONCE, BOX, HISTORY, EPOCH, ROLES, WRAP, SECTION,
-    DELTA, LINK, LINK_TREE, DELETE_BLIND, DELETE_NONCE, LINK_BLIND, THING_BLIND, SYNC_KEY, SYNC_WRITE, SYNC_DELETE, SYNC_DEPOSIT, SYNC_CLAIM,
+    DELTA, LINK, LINK_TREE, DELETE_BLIND, DELETE_NONCE, LINK_BLIND, THING_BLIND, SYNC_KEY, SYNC_WRITE, SYNC_DELETE, SYNC_DEPOSIT, SYNC_CLAIM, SYNC_GENESIS, GENESIS_STEP, GENESIS_CLAIM,
     BEACON, BEACON_HIT, BEACON_REPLY, SYNC_PROOF, PATH, PATH_COMMIT, NOTICE_EPH, NOTICE_KEM,
 ];
 

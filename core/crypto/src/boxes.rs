@@ -416,19 +416,21 @@ pub fn roles_secret(s: &Secret32) -> Secret32 {
 }
 
 /// What one history box entry holds (spec/crypto.md §4): the earlier secrets it carries, the
-/// rotation's names value (osis-keys encodes it), the epoch's floor (0 at every role but read) and
-/// the roles secrets of earlier epochs it carries apart from their secrets.
+/// rotation's names value (osis-keys encodes it), the epoch's floor (0 at every role but read),
+/// the roles secrets of earlier epochs it carries apart from their secrets, and at admin the
+/// thing's genesis seed (spec/crypto.md §3 Genesis seed).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HistoryEntry {
     pub earlier: Vec<(Epoch, Secret32)>,
     pub names: Value,
     pub floor: u64,
     pub roles: Vec<(Epoch, Secret32)>,
+    pub genesis: Option<Secret32>,
 }
 
 /// History box (role, epoch) of `actor`: AEAD under `kdf("history", secret)`, nonce zero,
-/// AD `[actor, role, n, nonce]`, plaintext `[[[n, secret]*], names, floor, [[n, roles secret]*]]`,
-/// each list ascending by the epochs it names (spec/crypto.md §4, spec/wire.md §7). Repeated
+/// AD `[actor, role, n, nonce]`, plaintext `[[[n, secret]*], names, floor, [[n, roles secret]*],
+/// Opt(genesis seed)]`, each list ascending by the epochs it names (spec/crypto.md §4, spec/wire.md §7). Repeated
 /// pairs collapse, as does a roles secret of an epoch whose secret the entry carries; an epoch its
 /// secret does not name, or whose n is not below `epoch`'s, is `Malformed`.
 pub fn seal_history(secret: &Secret32, actor: &Tid, role: Role, epoch: &Epoch, entry: &HistoryEntry) -> Result<Vec<u8>, Error> {
@@ -446,7 +448,8 @@ pub fn seal_history(secret: &Secret32, actor: &Tid, role: Role, epoch: &Epoch, e
     }
     let list = |v: &[&(Epoch, Secret32)]| Value::List(v.iter().map(|(e, s)| Value::List(vec![Value::Int(e.n), Value::Bytes(s.expose().to_vec())])).collect());
     let floor = Value::Int(i64::try_from(entry.floor).map_err(|_| Error::Malformed("history floor"))?);
-    let value = Value::List(vec![list(&sorted), entry.names.clone(), floor, list(&roles)]);
+    let genesis = Value::List(entry.genesis.iter().map(|g| Value::Bytes(g.expose().to_vec())).collect());
+    let value = Value::List(vec![list(&sorted), entry.names.clone(), floor, list(&roles), genesis]);
     let pt = Zeroizing::new(encode(&value));
     wipe_value(value);
     aead::seal(kdf(kdf::HISTORY, secret.expose(), b"").expose(), &ZERO_NONCE, &history_ad(actor, role, epoch), &pt)
@@ -459,15 +462,24 @@ pub fn open_history(secret: &Secret32, actor: &Tid, role: Role, epoch: &Epoch, c
     let pt = Zeroizing::new(aead::open(kdf(kdf::HISTORY, secret.expose(), b"").expose(), &ZERO_NONCE, &history_ad(actor, role, epoch), ct)?);
     let value = decode(&pt, &Limits::DEFAULT).map_err(|_| Error::Malformed("history"))?;
     let Value::List(mut parts) = value else { return Err(Error::Malformed("history")) };
-    let (Some(roles), Some(floor), Some(names), Some(pairs), None) = (parts.pop(), parts.pop(), parts.pop(), parts.pop(), parts.pop()) else {
+    let (Some(genesis), Some(roles), Some(floor), Some(names), Some(pairs), None) = (parts.pop(), parts.pop(), parts.pop(), parts.pop(), parts.pop(), parts.pop()) else {
         parts.into_iter().for_each(wipe_value);
         return Err(Error::Malformed("history"));
     };
     let earlier = parse_history(&pairs, actor, role, epoch, Epoch::derive);
     let roles_out = parse_history(&roles, actor, role, epoch, Epoch::derive_roles);
+    let genesis_out = match &genesis {
+        Value::List(g) => match g.as_slice() {
+            [] => Ok(None),
+            [b] => get_array(b).map(|b| Some(Secret32::from_bytes(b))),
+            _ => Err(Error::Malformed("history genesis")),
+        },
+        _ => Err(Error::Malformed("history genesis")),
+    };
     wipe_value(pairs);
     wipe_value(roles);
-    Ok(HistoryEntry { earlier: earlier?, names, floor: get_uint(&floor)?, roles: roles_out? })
+    wipe_value(genesis);
+    Ok(HistoryEntry { earlier: earlier?, names, floor: get_uint(&floor)?, roles: roles_out?, genesis: genesis_out? })
 }
 
 /// A list of `[n, secret]` pairs, each naming its epoch by `derive`.
@@ -734,7 +746,7 @@ mod tests {
     }
 
     fn entry(earlier: &[(Epoch, Secret32)]) -> HistoryEntry {
-        HistoryEntry { earlier: earlier.to_vec(), names: names(), floor: 0, roles: Vec::new() }
+        HistoryEntry { earlier: earlier.to_vec(), names: names(), floor: 0, roles: Vec::new(), genesis: None }
     }
 
     // spec/crypto.md §4: a history box under the new secret opens every distinct earlier one,
@@ -765,6 +777,9 @@ mod tests {
         let got = open_history(&s, &a, Role::Read, &e3, &ct).unwrap();
         assert_eq!((got.earlier, got.roles), (vec![(e2, sec(2))], vec![roles[1].clone()]));
         assert!(e2.names_roles(&a, Role::Read, &roles_secret(&sec(2))) && !e2.names_roles(&a, Role::Read, &sec(2)));
+        // the genesis seed round trips (spec/crypto.md §3 Genesis seed)
+        let ct = seal_history(&s, &a, Role::Admin, &e3, &HistoryEntry { genesis: Some(sec(9)), ..entry(&[]) }).unwrap();
+        assert_eq!(open_history(&s, &a, Role::Admin, &e3, &ct).unwrap().genesis, Some(sec(9)));
     }
 
     // spec/crypto.md §4: a history box lists only earlier epochs, each the one its secret names.
@@ -784,17 +799,17 @@ mod tests {
         let key = kdf(kdf::HISTORY, s.expose(), b"");
         let item = |n: i64, b: u8| Value::List(vec![Value::Int(n), Value::Bytes(vec![b; 32])]);
         let none = Value::List(vec![]);
-        let pt = encode(&Value::List(vec![Value::List(vec![item(3, 2)]), names(), Value::Int(0), none.clone()]));
+        let pt = encode(&Value::List(vec![Value::List(vec![item(3, 2)]), names(), Value::Int(0), none.clone(), none.clone()]));
         let ct = aead::seal(key.expose(), &ZERO_NONCE, &history_ad(&a, Role::Read, &e3), &pt).unwrap();
         assert_eq!(open_history(&s, &a, Role::Read, &e3, &ct), Err(Error::Malformed("history epoch not earlier")));
-        let pt = encode(&Value::List(vec![Value::List(vec![item(2, 2), item(1, 3)]), names(), Value::Int(0), none.clone()]));
+        let pt = encode(&Value::List(vec![Value::List(vec![item(2, 2), item(1, 3)]), names(), Value::Int(0), none.clone(), none.clone()]));
         let ct = aead::seal(key.expose(), &ZERO_NONCE, &history_ad(&a, Role::Read, &e3), &pt).unwrap();
         assert_eq!(open_history(&s, &a, Role::Read, &e3, &ct), Err(Error::Malformed("history order")));
-        let pt = encode(&Value::List(vec![none.clone(), names(), Value::Int(0), Value::List(vec![item(3, 2)])]));
+        let pt = encode(&Value::List(vec![none.clone(), names(), Value::Int(0), Value::List(vec![item(3, 2)]), none.clone()]));
         let ct = aead::seal(key.expose(), &ZERO_NONCE, &history_ad(&a, Role::Read, &e3), &pt).unwrap();
         assert_eq!(open_history(&s, &a, Role::Read, &e3, &ct), Err(Error::Malformed("history epoch not earlier")));
-        // the plaintext is exactly [pairs, names, floor, roles]
-        for pt in [Value::List(vec![item(1, 3)]), Value::List(vec![none.clone(), names(), Value::Int(0)])] {
+        // the plaintext is exactly [pairs, names, floor, roles, genesis]
+        for pt in [Value::List(vec![item(1, 3)]), Value::List(vec![none.clone(), names(), Value::Int(0), none.clone()])] {
             let ct = aead::seal(key.expose(), &ZERO_NONCE, &history_ad(&a, Role::Read, &e3), &encode(&pt)).unwrap();
             assert_eq!(open_history(&s, &a, Role::Read, &e3, &ct), Err(Error::Malformed("history")));
         }

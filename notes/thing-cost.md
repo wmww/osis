@@ -10,14 +10,14 @@ Engine, the maker (the node minting A) and its account's second node (`account_t
 
 | | dependent (mint admin A) | independent (`mint_independent` with admin A, held by A's `holds.0`) |
 |---|---|---|
-| commits | 1 (content: record, value, A's `holds.0`) | 2 (rotation: `created.0` 88 B, `keys.0` 1387 B, `secrets.0` 1409 B, `sync.0` 458 B; content: value, A's `holds.0`) |
-| commit as stored, opened (`Engine::package`) | 553 B (header 306 B) | 4208 B (3776 + 432; headers 353 and 275 B) |
-| stored, maker | 1205 B | 9.3 KB |
-| stored, second node | 1229 B (128 B of it the epochs its parts opened under, `ou/`, what passing them on needs) | 9.4 KB |
-| maker work | 1 sign | 3 signs, 1 sync-step verify, no KEM |
-| second node work | 1 commit verify | 2 commit verifies, 4 sync-step verifies, no KEM |
+| commits | 1 (content: record, value, A's `holds.0`) | 2 (rotation: `created.0`, `keys.0`, `secrets.0`, `sync.0` with the genesis step and the first; content: value, A's `holds.0`) |
+| commit as stored, opened (`Engine::package`) | 553 B (header 306 B) | 4743 B (4311 + 432) |
+| stored, maker | 1205 B | 9.8 KB |
+| stored, second node | 1229 B (128 B of it the epochs its parts opened under, `ou/`, what passing them on needs) | 9.9 KB |
+| maker work | 1 sign | 4 signs, 2 sync-step verifies, no KEM |
+| second node work | 1 commit verify | 2 commit verifies, 2 sync-step verifies, no KEM |
 
-Independent, stored rows at the maker: commit records `c/` 4380 (the two commits whole); aspect states 66-69 B each (`keys.0`, `secrets.0`, `sync.0`, `created.0`, content: each its one body, States stored as their body); `node/keysets` 944; `k/` (opened epochs) 1443; `node/metas` 79, `node/sealed` 808, `node/epoch intro` 408, `node/boxes to` 400, refs 354, `node/perm` 33, `g/` 50; small local rows about 190. Dependent: `c/` 639, `node/metas` 39, refs 178, states 136 (by body), `t/` 74, counters 104.
+Independent, stored rows at the maker: commit records `c/` 4915 (the two commits whole); aspect states 66-69 B each (`keys.0`, `secrets.0`, `sync.0`, `created.0`, content: each its one body, States stored as their body); `node/keysets` 704; `k/` (opened epochs) 1489; `node/metas` 79, `node/sealed` 448, `node/epoch intro` 408, `node/boxes to` 400, refs 354, `node/perm` 33, `g/` 50; small local rows about 190. Dependent: `c/` 639, `node/metas` 39, refs 178, states 136 (by body), `t/` 74, counters 104.
 
 The independent thing holds nothing and takes no external signal, so it publishes no KEM key (spec/crypto.md §3 Published KEM keys). A holder's keysets carry one per role (1216 B each) and its step keys' read key one more (the issuer derives it from the read secret, never copies it from the keyset): 6080 B more downloaded and stored at every holder (16.0 KB stored, 10.3 KB downloaded, 5 ML-KEM keygens at the maker). `thing_cost::an_independent_thing_nobody_seals_to_carries_no_kem_key` holds the figures alike at n and 10n.
 

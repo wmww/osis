@@ -172,6 +172,8 @@ pub struct Rotation {
     pub keys: KeysWrite,
     /// The names every history box it writes carries (spec/crypto.md §4).
     pub names: Names,
+    /// The genesis seed its admin history box carries (spec/crypto.md §3).
+    pub genesis: Option<Secret32>,
     wrap: Option<Epoch>,
 }
 
@@ -188,6 +190,9 @@ impl Rotation {
         for r in &self.rotated {
             let re = epochs.role_mut(r.role);
             re.set_history(r.epoch, [self.names.clone()].into(), r.supersedes.iter().copied(), Some(r.floor));
+            if r.role == Role::Admin {
+                re.set_genesis(r.epoch, self.genesis.clone());
+            }
             re.set_secret(r.epoch, r.secret.clone());
         }
     }
@@ -258,6 +263,9 @@ pub fn rotate_leaving_out(actor: &Tid, roles: &BTreeSet<Role>, held: &ActorEpoch
     let mut wrap = None;
     let mut in_history: BTreeMap<Role, BTreeSet<Epoch>> = BTreeMap::new();
     let mut floors: BTreeMap<Role, u64> = BTreeMap::new();
+    // the genesis seed (spec/crypto.md §3): the one held, or a thing minted with a key's first
+    // admin secret
+    let mut genesis = held.genesis().cloned();
     for &r in roles {
         let re = held.role(r);
         // current and unsuperseded: an epoch whose names this node does not meet is current
@@ -298,7 +306,10 @@ pub fn rotate_leaving_out(actor: &Tid, roles: &BTreeSet<Role>, held: &ActorEpoch
         floors.insert(r, floor);
         // every earlier roles secret held, the carry rule aside (spec/crypto.md §4, Roles secrets)
         let roles = re.held_roles().into_iter().filter(|(e, _)| e.n() <= n).collect();
-        let entry = HistoryEntry { earlier: earlier.clone(), names: names.to_value(), floor, roles };
+        if r == Role::Admin && genesis.is_none() && ROLES.iter().all(|q| held.role(*q).epochs().next().is_none()) {
+            genesis = Some(secret.secret().clone());
+        }
+        let entry = HistoryEntry { earlier: earlier.clone(), names: names.to_value(), floor, roles, genesis: genesis.clone().filter(|_| r == Role::Admin) };
         secrets.history.insert(history_key(r, &epoch), seal_history(&secret, actor, r, &epoch, &entry)?);
         // the keyset lists its current epochs but derived ones (held only where the mint admin's
         // secret is: superseded through the history box) and foreign ones (spec/crypto.md §4
@@ -335,7 +346,7 @@ pub fn rotate_leaving_out(actor: &Tid, roles: &BTreeSet<Role>, held: &ActorEpoch
     // (spec/crypto.md §4 Box records): what makes the new epoch foreign where one is held
     // invalid or foreign
     keys.sealed = secrets.boxes.iter().filter(|(k, _)| !k.holder.0.is_public()).map(|(k, b)| (k.clone(), box_keysets(b).into_iter().collect())).collect();
-    Ok(Rotation { rotated, secrets, keys, names: names.clone(), wrap })
+    Ok(Rotation { rotated, secrets, keys, names: names.clone(), genesis, wrap })
 }
 
 /// What a node writes as the history box of one current epoch (spec/crypto.md §4, History box):
@@ -358,6 +369,10 @@ pub struct HistoryBox {
     pub roles: BTreeMap<Epoch, Secret32>,
     /// The epochs whose roles secret the live entries list.
     pub roles_listed: BTreeSet<Epoch>,
+    /// At admin, the genesis seed (spec/crypto.md §3): the live entries' or the one held.
+    pub genesis: Option<Secret32>,
+    /// Some live entry carries it.
+    pub genesis_listed: bool,
 }
 
 impl HistoryBox {
@@ -368,12 +383,13 @@ impl HistoryBox {
             names: self.names.to_value(),
             floor: self.floor,
             roles: self.roles.iter().map(|(x, rx)| (*x, rx.clone())).collect(),
+            genesis: self.genesis.clone(),
         }
     }
 
     /// It carries a secret or roles secret no live entry lists (a history add is due).
     pub fn adds(&self) -> bool {
-        self.earlier.keys().any(|x| !self.listed.contains(x)) || self.roles.keys().any(|x| !self.roles_listed.contains(x) && !self.listed.contains(x))
+        self.earlier.keys().any(|x| !self.listed.contains(x)) || self.roles.keys().any(|x| !self.roles_listed.contains(x) && !self.listed.contains(x)) || (self.genesis.is_some() && !self.genesis_listed)
     }
 }
 
@@ -397,8 +413,10 @@ pub fn history_boxes(actor: &Tid, held: &ActorEpochs, secrets: &Secrets, alts: &
             let mut listed = BTreeSet::new();
             let mut roles: BTreeMap<Epoch, Secret32> = BTreeMap::new();
             let mut roles_listed = BTreeSet::new();
+            let mut genesis_listed = false;
             for ct in secrets.history.get(&k).into_iter().chain(alts.get(&k).into_iter().flatten()) {
                 let Ok(h) = open_history(s, actor, r, &e, ct) else { continue };
+                genesis_listed |= h.genesis.is_some();
                 for (x, sx) in h.earlier {
                     listed.insert(x);
                     earlier.insert(x, sx);
@@ -420,7 +438,8 @@ pub fn history_boxes(actor: &Tid, held: &ActorEpochs, secrets: &Secrets, alts: &
                 earlier.entry(x).or_insert_with(|| sx.secret().clone());
             }
             roles.retain(|x, _| !earlier.contains_key(x));
-            out.insert((r, e), HistoryBox { earlier, listed, names, floor: re.floor(&e), roles, roles_listed });
+            let genesis = held.genesis().cloned().filter(|_| r == Role::Admin);
+            out.insert((r, e), HistoryBox { earlier, listed, names, floor: re.floor(&e), roles, roles_listed, genesis, genesis_listed });
         }
     }
     out

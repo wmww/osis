@@ -102,14 +102,10 @@ impl Engine {
         // read: by its own secrets, independent by a box alone (a grantee holds no rotation that
         // made a granted epoch current: it is a body under the sync ID the box opens)
         if self.core.counts_independent(t) && self.holds_read(t) {
-            let owned = self.owned_sync_ids(t)?;
-            // judged by its sync copies alone (`Core::copies_speak`), no sync ID is `t`'s by an
-            // admin's word: each is synced, as kept unread, so a forged one stands beside its own,
-            // never in its place
-            let ids = match self.core.copies_speak(t) {
-                true => owned.iter().map(|o| o.id).collect(),
-                false => synced(&owned),
-            };
+            // every sync ID it owns (spec/sync-ids.md §4 Owner), as kept unread: a thing has one,
+            // and one an admin or a forged sync copy names besides stands beside it, never in its
+            // place; with the one a followed link names that no held `sync.0` records yet
+            let ids: Vec<SyncId> = self.owned_sync_ids(t)?.iter().map(|o| o.id).collect();
             if !ids.is_empty() {
                 return Ok(ThingSync::Read(ids));
             }
@@ -450,12 +446,3 @@ impl std::fmt::Debug for WriteKey {
     }
 }
 
-/// The sync IDs synced for a thing owning `ids`: its sync ID, the greatest a held `sync.0` records
-/// (two admins giving it secrets at once made two, as `flows::sync_id_of`), and
-/// the one a followed link names that no held `sync.0` records (the link text's word,
-/// `sync_ids::actors::followed`). Empty when it owns none.
-fn synced(ids: &[OwnedSyncId]) -> Vec<SyncId> {
-    let linked = |o: &&OwnedSyncId| o.hint && o.path.steps.is_empty();
-    let own = ids.iter().filter(|o| !linked(o)).map(|o| o.id).max();
-    own.into_iter().chain(ids.iter().filter(linked).map(|o| o.id)).collect()
-}

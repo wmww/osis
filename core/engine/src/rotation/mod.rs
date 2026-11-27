@@ -866,17 +866,16 @@ fn own_secrets_rot(tx: &mut Tx<'_>, t: Tid, rec: Option<osis_base::CreationRecor
         m.minted.insert(t, rot.preview(&held)?);
     }
     let deposit = fresh_deposit_seed(tx, &mut m, t)?;
-    // the rule (spec/sync-ids.md §2): its own role secrets and its one sync ID, in this one
-    // commit
-    if crate::flows::sync_id_of(tx, &t)?.is_none() {
-        let mut readers = Vec::new();
-        for r in &holders.holders {
-            readers.extend(crate::flows::sync_ids::reader_key(tx, &t, &r.holder)?);
-        }
-        let after = rot.preview(&held)?;
-        let readers: Vec<_> = readers.into_iter().chain(also.iter().cloned()).collect();
-        crate::flows::sync_ids::new_sync_id(tx, &mut m, t, &after, &readers, &deposit, rot.keys.keysets.get(&Role::Read))?;
+    // the rule (spec/sync-ids.md §2): its own role secrets, its genesis step and the step
+    // registering them, in this one commit
+    let mut readers = Vec::new();
+    for r in &holders.holders {
+        readers.extend(crate::flows::sync_ids::reader_key(tx, &t, &r.holder)?);
     }
+    let after = rot.preview(&held)?;
+    let readers: Vec<_> = readers.into_iter().chain(also.iter().cloned()).collect();
+    let g = rot.genesis.clone().ok_or(Error::Misuse("the genesis seed it derives from is not held"))?;
+    crate::flows::sync_ids::independent_steps(tx, &mut m, t, &g, &after, &readers, &deposit, rot.keys.keysets.get(&Role::Read))?;
     for op in keys {
         m.op(t, &osis_schema::core_types::KEYS, op)?;
     }

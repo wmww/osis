@@ -145,7 +145,7 @@ pub fn open_histories(actor: &Tid, secrets: &Secrets, alts: &HistoryAlts, epochs
             done.insert(k.clone(), checked);
             progress = true;
             let mut opened_any = false;
-            let (mut named, mut listed, mut floor) = (BTreeSet::new(), BTreeSet::new(), None);
+            let (mut named, mut listed, mut floor, mut genesis) = (BTreeSet::new(), BTreeSet::new(), None, None::<Secret32>);
             for c in std::iter::once(ct).chain(alts.get(k).into_iter().flatten()) {
                 let Ok(h) = open_history(&s, actor, k.role, &e, c) else { continue };
                 // an entry whose names do not parse opens nothing
@@ -154,6 +154,12 @@ pub fn open_histories(actor: &Tid, secrets: &Secrets, alts: &HistoryAlts, epochs
                 named.insert(names);
                 floor = floor.max(Some(h.floor));
                 listed.extend(h.earlier.iter().map(|(x, _)| *x));
+                // the genesis seed at admin alone (spec/crypto.md §3); the least where entries differ
+                if let Some(g) = h.genesis.filter(|_| k.role == Role::Admin)
+                    && genesis.as_ref().is_none_or(|x| g.expose() < x.expose())
+                {
+                    genesis = Some(g);
+                }
                 let re = epochs.role_mut(k.role);
                 for (x, sx) in h.earlier {
                     if checked {
@@ -178,6 +184,7 @@ pub fn open_histories(actor: &Tid, secrets: &Secrets, alts: &HistoryAlts, epochs
             }
             if checked {
                 epochs.role_mut(k.role).set_history(e, named, listed, floor);
+                epochs.role_mut(k.role).set_genesis(e, genesis);
             }
             if opened_any {
                 failed.remove(k);

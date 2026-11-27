@@ -364,7 +364,7 @@ fn pending_history_box_plants_nothing() {
     // (a history box lists only epochs below its own)
     let planted = osis_crypto::Secret32::from_bytes([0xee; 32]);
     let top = Epoch::derive(&w.a, Role::Read, w.e0.n() - 1, &planted).unwrap();
-    let ct = osis_crypto::seal_history(&s0, &w.a, Role::Read, &w.e0, &osis_crypto::HistoryEntry { earlier: vec![(top, planted)], names: osis_keys::Names::default().to_value(), floor: 0, roles: Vec::new() }).unwrap();
+    let ct = osis_crypto::seal_history(&s0, &w.a, Role::Read, &w.e0, &osis_crypto::HistoryEntry { earlier: vec![(top, planted)], names: osis_keys::Names::default().to_value(), floor: 0, roles: Vec::new(), genesis: None }).unwrap();
     let mut s = Secrets::default();
     s.history.insert(history_key(Role::Read, &w.e0), ct);
     let from = osis_keys::Unchecked { author: osis_keys::UNKNOWN_AUTHOR, commit: osis_base::CommitId([9; 32]) };
@@ -384,7 +384,7 @@ fn rewrite_then_invalidated_keeps_rotation() {
     let mut v = w.a2v.clone();
     let s0 = v.read.secret(&w.e0).unwrap().clone();
     let mut again = osis_keys::SecretsWrite::default();
-    again.history.insert(history_key(Role::Read, &w.e0), osis_crypto::seal_history(&s0, &w.a, Role::Read, &w.e0, &osis_crypto::HistoryEntry { earlier: Vec::new(), names: osis_keys::Names::default().to_value(), floor: 0, roles: Vec::new() }).unwrap());
+    again.history.insert(history_key(Role::Read, &w.e0), osis_crypto::seal_history(&s0, &w.a, Role::Read, &w.e0, &osis_crypto::HistoryEntry { earlier: Vec::new(), names: osis_keys::Names::default().to_value(), floor: 0, roles: Vec::new(), genesis: None }).unwrap());
     let ks = KeysWrite { keysets: [(Role::Read, osis_keys::keyset(&w.e0, &s0, &Default::default(), &Default::default(), true))].into_iter().collect(), ..Default::default() };
     assert!(again.applied(&mut v, cid(2), &ks).unwrap());
     assert_eq!(v.read.get(&w.e0).unwrap().rotations.len(), 2);

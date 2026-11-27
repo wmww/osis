@@ -24,7 +24,7 @@ fn made_up(g: &Tid, n: u64, seed: u8) -> (Epoch, Secret32) {
 
 /// Reader `i`'s history add at (read, e), naming nothing: valid (the role its key names).
 fn plant_history(lp: &mut LocalPeer, i: usize, g: Tid, e: &Epoch, s: &Secret32) -> CommitId {
-    let ct = osis_crypto::seal_history(s, &g, Role::Read, e, &osis_crypto::HistoryEntry { earlier: Vec::new(), names: osis_keys::Names::default().to_value(), floor: 0, roles: Vec::new() }).unwrap();
+    let ct = osis_crypto::seal_history(s, &g, Role::Read, e, &osis_crypto::HistoryEntry { earlier: Vec::new(), names: osis_keys::Names::default().to_value(), floor: 0, roles: Vec::new(), genesis: None }).unwrap();
     let history = [(osis_keys::aspects::history_key(Role::Read, e), ct)].into_iter().collect();
     let mut m = Mutation::new();
     crate::flows::put_secrets(&mut m, g, &osis_keys::SecretsWrite { history, ..Default::default() }, true).unwrap();
@@ -306,7 +306,7 @@ fn a_grantee_counts_its_target_independent_before_the_keyset_spec_permissions_4(
     assert!(reads_key(&mut lp, 1, g, "k"));
 }
 
-/// Peer `i`'s genesis step of a made-up sync ID on `y` and a box of the same made-up epochs to
+/// Peer `i`'s genesis step and first step of a made-up sync ID on `y` and a box of the same made-up epochs to
 /// `to` (read and sync), in one commit, with no keyset: what only an admin's word places.
 fn plant_step_box(lp: &mut LocalPeer, i: usize, y: Tid, to: Tid, seed: u8) -> CommitId {
     let mut fake = osis_keys::ActorEpochs::default();
@@ -319,10 +319,13 @@ fn plant_step_box(lp: &mut LocalPeer, i: usize, y: Tid, to: Tid, seed: u8) -> Co
     let m = lp.peers[i].engine.run(|tx| {
         let rcpt = crate::flows::recipient(tx, to, Role::Read)?;
         let w = osis_keys::box_holder(&y, &fake, &osis_keys::HistoryBoxes::new(), &rcpt, &[Role::Sync, Role::Read].into(), &mut *tx.rng)?.unwrap();
-        let issued = crate::flows::sync_ids::issue(tx, &y, &fake, None, &[], &Secret32::from_bytes([seed; 32]), None)?;
+        let g = Secret32::from_bytes([seed.wrapping_add(9); 32]);
+        let (genesis, set) = osis_blob::genesis(&g);
+        let issued = crate::flows::sync_ids::issue(tx, &y, &fake, (&genesis, &g), &[], &Secret32::from_bytes([seed; 32]), None)?;
         let mut m = Mutation::new();
         crate::flows::put_secrets(&mut m, y, &w, true)?;
-        crate::flows::sync_ids::put_step(&mut m, y, issued.step.sync_id, &issued, true)?;
+        crate::flows::sync_ids::put_steps(&mut m, y, genesis.sync_id, &[(&genesis, &set)])?;
+        crate::flows::sync_ids::put_step(&mut m, y, issued.step.sync_id, &issued)?;
         Ok(m)
     });
     lp.peers[i].engine.commit_hostile(m.unwrap()).unwrap().unwrap()

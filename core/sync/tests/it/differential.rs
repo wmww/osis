@@ -652,15 +652,14 @@ fn a_thing_minted_with_a_dependent_is_read_through_it_once_independent_spec_sync
     assert!(reads(w.engine(0), &t).value.is_some(), "node 0 reads thing 1");
 }
 
-// spec/sync-ids.md §2 (One sync ID per independent thing: two admins making it independent at
-// once each record one, both stand, the thing synced through the greatest): node 0 and node 3, of one account and apart, each make
-// thing 0 independent by a grant, to nodes 1 and 2's accounts; each holds it by a strong. Healed,
-// every node reads thing 0 with both grants. Fails: the grantee of the side whose sync ID is the
-// lesser holds that one alone, and once its granter moves to the greater and stops serving the
-// lesser, nobody tells it of the greater (issues/differential-full-size-classes.md, Sync ID fork).
+// spec/sync-ids.md §2 (One sync ID per thing), spec/permissions.md §3
+// (concurrent rotations of the thing's one sync ID): node 0 and node 3, of one account and apart, each make
+// thing 0 independent by a grant, to nodes 1 and 2's accounts; each holds it by a strong. Both
+// give it the one sync ID its genesis seed fixes, with sibling first steps; healed, every node
+// reads thing 0 with both grants (failed with a sync ID each: the grantee of the lesser one was
+// told of it alone, and once its granter moved to the greater nobody served the lesser).
 #[test]
-#[ignore = "stub rewrite: the grantee on a sync ID fork's lesser side never learns the greater (design question: issues/differential-full-size-classes.md, Sync ID fork)"]
-fn a_grantee_on_a_sync_id_forks_lesser_side_follows_the_greater_spec_sync_ids_2() {
+fn grantees_of_concurrent_promotions_read_on_one_sync_id_spec_sync_ids_2() {
     use crate::harness::history::{Gives, Holder};
     let script = [Step::New(0), Step::Run, Step::Partition(0, 3), Step::Give(0, 0, Holder::Node(1), Gives::Reads), Step::Give(3, 0, Holder::Node(2), Gives::Reads), Step::Strong(1, None, 0), Step::Strong(2, None, 0)];
     holds_on(0, 3, 4, &script, String::new(), false);
@@ -794,4 +793,3 @@ fn a_learned_sync_secret_opens_the_history_held_spec_crypto_4() {
         w.engine(i).check_index();
     }
 }
-

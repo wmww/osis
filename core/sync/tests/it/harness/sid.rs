@@ -1,10 +1,11 @@
 //! A sync ID's secrets and steps, as an admin issues them (the store's and streams' tests).
 
 use osis_base::{SyncId, Tid};
-use osis_blob::{ClaimSet, Parent, Reader, Step, StepKeys};
+use osis_blob::{ClaimSet, Reader, Step, StepKeys};
 use osis_crypto::{Epoch, RoleKey, Secret32, SeededRng, SigningSecret, role_key};
 
-/// A sync ID's role secrets and the steps issued so far.
+/// A sync ID's role secrets and the steps issued so far, from its genesis step: one secret is its
+/// genesis seed and its first secret of every role, so the genesis step bears its first keys.
 #[derive(Clone)]
 pub struct Sid {
     pub id: SyncId,
@@ -19,12 +20,9 @@ pub const THING: Tid = Tid::from_bytes([0x51; 15]);
 
 impl Sid {
     pub fn new(b: u8) -> Sid {
-        let (sync, write, admin, deposit) = (Secret32::from_bytes([b; 32]), Secret32::from_bytes([b + 1; 32]), Secret32::from_bytes([b + 2; 32]), Secret32::from_bytes([b + 3; 32]));
-        let id = osis_blob::genesis_sync_id(&admin);
-        let mut s = Sid { id, sync, write, admin, deposit, steps: Vec::new() };
-        let g = s.issue(&[]);
-        s.steps.push(g);
-        s
+        let g = Secret32::from_bytes([b; 32]);
+        let id = osis_blob::genesis_sync_id(&g);
+        Sid { id, sync: g.clone(), write: g.clone(), admin: g.clone(), deposit: g.clone(), steps: vec![osis_blob::genesis(&g)] }
     }
     pub fn keys(&self) -> StepKeys {
         StepKeys::derive(&self.sync, &self.write, &self.admin, &self.deposit, &self.id)
@@ -48,11 +46,8 @@ impl Sid {
         let n = self.steps.len() as u64;
         let read = Epoch::derive(&THING, osis_base::Role::Read, n, &self.write).unwrap();
         let sync = Epoch::derive(&THING, osis_base::Role::Sync, n, &self.sync).unwrap();
-        let parent = match self.steps.last() {
-            None => Parent::Genesis(d),
-            Some((p, _)) => Parent::Child { step: p, delete: d },
-        };
-        osis_blob::register(parent, self.keys(), readers, (&THING, read, &self.write), (sync, &self.sync), &mut rng).unwrap()
+        let (parent, _) = self.steps.last().unwrap();
+        osis_blob::register(parent, d, self.keys(), readers, (&THING, read, &self.write), (sync, &self.sync), &mut rng).unwrap()
     }
     /// Rotates the write and sync secrets and issues the next step.
     pub fn rotate(&mut self, b: u8) -> (Step, ClaimSet) {
@@ -69,7 +64,7 @@ impl Sid {
         let keys = StepKeys::derive(&self.sync, &write, &self.admin, &self.deposit, &self.id);
         let read = Epoch::derive(&THING, osis_base::Role::Read, n, &write).unwrap();
         let se = Epoch::derive(&THING, osis_base::Role::Sync, n, &self.sync).unwrap();
-        osis_blob::register(Parent::Child { step: parent, delete: &self.delete() }, keys, &[], (&THING, read, &write), (se, &self.sync), &mut SeededRng::from_u64(99 + n)).unwrap()
+        osis_blob::register(parent, &self.delete(), keys, &[], (&THING, read, &write), (se, &self.sync), &mut SeededRng::from_u64(99 + n)).unwrap()
     }
     pub fn genesis(&self) -> &(Step, ClaimSet) {
         &self.steps[0]

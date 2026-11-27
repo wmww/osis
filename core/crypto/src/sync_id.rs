@@ -50,6 +50,11 @@ pub fn deposit_key(deposit_seed: &Secret32, sync_id: &SyncId) -> SigningSecret {
     SigningSecret::from_seed(&kdf(kdf::SYNC_DEPOSIT, deposit_seed.expose(), &sync_id.0))
 }
 
+/// The genesis seed of thing `tid` minted by a thing whose genesis seed is `mint_admin` (spec/crypto.md §3 Genesis seed): `kdf("sync genesis", g, tid)`.
+pub fn genesis_seed(mint_admin: &Secret32, tid: &osis_base::Tid) -> Secret32 {
+    kdf(kdf::SYNC_GENESIS, mint_admin.expose(), tid.as_bytes())
+}
+
 /// Sync ID = BLAKE3("osis v1 sync id" || genesis delete key)[..16].
 pub fn sync_id(genesis_delete: &VerifyingKey) -> SyncId {
     let mut h = blake3::Hasher::new();

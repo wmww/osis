@@ -803,6 +803,7 @@ pub(crate) fn encode_epochs(a: &ActorEpochs) -> Vec<u8> {
                             Value::List(i.floor.iter().map(|f| Value::Int(i64::try_from(*f).unwrap_or(i64::MAX))).collect()),
                             Value::List(i.roles.iter().map(|s| Value::Bytes(s.expose().to_vec())).collect()),
                             sources(&i.roles_reading),
+                            Value::List(i.genesis.iter().map(|g| Value::Bytes(g.expose().to_vec())).collect()),
                         ])
                     })
                     .collect(),
@@ -883,7 +884,7 @@ pub(crate) fn decode_epochs(b: &[u8]) -> Result<ActorEpochs> {
         let Value::List(items) = items else { return Err(bad()) };
         for it in items {
             let Value::List(f) = it else { return Err(bad()) };
-            let [e, Value::List(rotations), Value::List(snapshots), Value::List(names), Value::Bool(fixed), Value::List(sup), Value::List(sec), Value::List(reading), Value::List(floor), Value::List(roles), Value::List(roles_reading)] = f.as_slice() else { return Err(bad()) };
+            let [e, Value::List(rotations), Value::List(snapshots), Value::List(names), Value::Bool(fixed), Value::List(sup), Value::List(sec), Value::List(reading), Value::List(floor), Value::List(roles), Value::List(roles_reading), Value::List(genesis)] = f.as_slice() else { return Err(bad()) };
             let e = Epoch::from_wire(e).map_err(|_| bad())?;
             let info = a.role_mut(*r).observe(e);
             for x in rotations {
@@ -916,6 +917,9 @@ pub(crate) fn decode_epochs(b: &[u8]) -> Result<ActorEpochs> {
             }
             if let [s] = roles.as_slice() {
                 info.roles = Some(secret(s)?);
+            }
+            if let [g] = genesis.as_slice() {
+                info.genesis = Some(secret(g)?);
             }
             let source = |c: &Value| -> Result<Unchecked> {
                 let Value::List(c) = c else { return Err(bad()) };
@@ -969,6 +973,7 @@ mod tests {
         let k = |n: u8| osis_keys::Key { ts: u64::from(n), node: Tid::from_bytes([n; 15]), commit: osis_base::CommitId([n; 32]) };
         a.read.set_snapshot(e2, osis_base::CommitId([8; 32]));
         a.read.set_history(e2, [osis_keys::Names { list: [Name::void(k(5), Tid::from_bytes([6; 15]))].into(), departs: Some(Own { ts: 7, author: Tid::from_bytes([7; 15]), blind: [0; 16] }) }].into(), [Epoch::new(1, [4; 32]).unwrap()], None);
+        a.admin.set_genesis(e1, Some(Secret32::from_bytes([5; 32])));
         let b = decode_epochs(&encode_epochs(&a)).unwrap();
         assert_eq!(b, a);
         assert!(b.read.is_reading_only(&e2) && b.read.secret(&e2).is_none());

@@ -233,9 +233,15 @@ fn truncate(t: &mut Transaction<'_>, env: &mut Env<'_>, s: &SyncId, keep: u32) -
 }
 
 /// A reader's served path: replaced whole by what its `sync.0` records, the head event logged
-/// when the head moved.
+/// when the head moved. A superseded step's claim set is this store's to drop (the sweep, after
+/// `ROLE_KEEP`): one it lacks that `sync.0` still records is no difference, else every start
+/// would serve it again for the sweep to drop again.
 pub(crate) fn serve(t: &mut Transaction<'_>, env: &mut Env<'_>, s: &SyncId, path: &Path) -> Result<()> {
-    if read(t, env, s)?.as_deref() == Some(path) {
+    let served = kept(t, env, s)?.is_some_and(|k| {
+        let last = path.steps.len().saturating_sub(1);
+        k.path.steps.len() == path.steps.len() && k.path.steps.iter().zip(&path.steps).enumerate().all(|(i, ((a, ac), (b, bc)))| a == b && (ac == bc || (ac.is_none() && i < last)))
+    });
+    if served {
         return Ok(());
     }
     erase(t, env, s)?;

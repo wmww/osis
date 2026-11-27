@@ -260,7 +260,7 @@ fn hostile_rotation(lp: &mut LocalPeer, i: usize, g: Tid, lists: &BTreeSet<Epoch
             let ks = rot.keys.keysets.get_mut(&Role::Read).unwrap();
             ks.supersedes = lists.iter().map(osis_keys::aspects::to_schema).collect();
             let x = &rot.rotated[0];
-            let entry = osis_crypto::seal_history(&x.secret, &g, Role::Read, &x.epoch, &osis_crypto::HistoryEntry { earlier: Vec::new(), names: names.to_value(), floor, roles: Vec::new() })?;
+            let entry = osis_crypto::seal_history(&x.secret, &g, Role::Read, &x.epoch, &osis_crypto::HistoryEntry { earlier: Vec::new(), names: names.to_value(), floor, roles: Vec::new(), genesis: None })?;
             rot.secrets.history.insert(osis_keys::aspects::history_key(Role::Read, &x.epoch), entry);
             let mut m = crate::Mutation::new();
             crate::flows::put_secrets(&mut m, g, &rot.secrets, false)?;
@@ -629,7 +629,7 @@ fn forged_floor_on_a_fork_beside_the_cut_carries_nothing_spec_crypto_4() {
             let mut m = crate::Mutation::new();
             crate::flows::put_keysets(&mut m, g, &w)?;
             let made_up_epoch = Epoch::derive(&g, Role::Read, fork.n(), &made_up).unwrap();
-            let entry = osis_crypto::seal_history(&made_up, &g, Role::Read, &made_up_epoch, &osis_crypto::HistoryEntry { earlier: Vec::new(), names: names.to_value(), floor: fork.n(), roles: Vec::new() })?;
+            let entry = osis_crypto::seal_history(&made_up, &g, Role::Read, &made_up_epoch, &osis_crypto::HistoryEntry { earlier: Vec::new(), names: names.to_value(), floor: fork.n(), roles: Vec::new(), genesis: None })?;
             let mut sw = osis_keys::SecretsWrite::default();
             sw.history.insert(osis_keys::aspects::history_key(Role::Read, &fork), entry);
             crate::flows::put_secrets(&mut m, g, &sw, false)?;

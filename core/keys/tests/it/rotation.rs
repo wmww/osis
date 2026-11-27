@@ -217,3 +217,42 @@ fn rotation_boxes_per_role_at_n_and_10n_spec_permissions_3() {
     let [(s4, r4s, r4r), (s40, r40s, r40r)] = [seen[0], seen[1]];
     assert_eq!((s40.0 - 1, r40s.0 - 1, r40r.0 - 1), (10 * (s4.0 - 1) + 9, 10 * (r4s.0 - 1) + 9, 10 * (r4r.0 - 1) + 9));
 }
+
+// spec/crypto.md §3 (Genesis seed), §4 (History box): a rotation from none carries its first
+// admin secret as the genesis seed; a dependent thing's derived view carries
+// kdf("sync genesis", g(mint admin), tid), its making independent writes that into its admin
+// history box, and an admin granted later opens it; an admin entry without it is a history add.
+#[test]
+fn admin_history_carries_the_genesis_seed() {
+    let rg = &mut rng(0);
+    let names = osis_keys::Names::default();
+    let (t, p, k, ke) = (tid(7), tid(2), tid(6), actor_epochs(0x60));
+    // minted with a key: from none
+    let first = rotate(&t, &roles_up_to(Role::Admin), &ActorEpochs::default(), &Secrets::default(), &[], &names, &mut *rg).unwrap();
+    let admin1 = first.role(Role::Admin).unwrap();
+    assert_eq!(first.genesis.as_ref(), Some(admin1.secret.secret()));
+    // dependent on P: derived from P's genesis seed
+    let mut pe = actor_epochs(0x20);
+    let g = osis_crypto::Secret32::from_bytes([0x33; 32]);
+    let pa = pe.admin.newest().unwrap();
+    pe.admin.set_genesis(pa, Some(g.clone()));
+    let a = tid(1);
+    let view = ActorEpochs::derived(&pe, &a);
+    let ga = osis_crypto::genesis_seed(&g, &a);
+    assert_eq!(view.genesis(), Some(&ga));
+    let r = rotate(&a, &roles_up_to(Role::Admin), &view, &Secrets::default(), &[admin_rcpt(p, &pe), actor_rcpt(k, Role::Admin, &ke)], &names, &mut *rg).unwrap();
+    assert_eq!(r.genesis.as_ref(), Some(&ga));
+    let mut s = Secrets::default();
+    r.secrets.apply(&mut s);
+    let mut kv = ActorEpochs::default();
+    ingest(&a, &s, &Opener { holder: k, epochs: &ke }, &mut kv, None).unwrap();
+    assert_eq!(kv.genesis(), Some(&ga), "an admin opens it from the history box");
+    // an admin entry carrying none is a history add for a holder of the seed
+    let v = applied(&r, &view, 1);
+    let ea = v.admin.newest().unwrap();
+    let bare = osis_crypto::seal_history(v.admin.secret(&ea).unwrap(), &a, Role::Admin, &ea, &osis_crypto::HistoryEntry { earlier: Vec::new(), names: names.to_value(), floor: 0, roles: Vec::new(), genesis: None }).unwrap();
+    let mut s2 = s.clone();
+    s2.history.insert(osis_keys::aspects::history_key(Role::Admin, &ea), bare);
+    assert!(hist(&a, &v, &s2).get(&(Role::Admin, ea)).is_some_and(osis_keys::HistoryBox::adds));
+    assert!(!hist(&a, &v, &s).get(&(Role::Admin, ea)).is_some_and(osis_keys::HistoryBox::adds));
+}

@@ -72,6 +72,26 @@ pub struct Recorded {
     keys: BTreeMap<(u8, [u8; 32]), Ts>,
 }
 
+/// The earliest write stamp at `path` in `f`, over every live record of each map key on the way:
+/// when a write first put it. A step one promotion records and another records again
+/// concurrently (the genesis step, spec/sync-ids.md §2) reads as the join of both writes, which
+/// keeps the later stamp; it is recorded from the earlier (spec/crypto.md §7 Checked keys).
+fn earliest_stamp(f: &Fragment, path: &[PathSeg]) -> Option<Ts> {
+    use osis_crdt::{Encoding, SlotRef};
+    let Some((seg, rest)) = path.split_first() else { return f.write_stamp().map(|s| s.ts) };
+    match seg {
+        PathSeg::Field(id) => match f.slot(Encoding::Struct) {
+            Some(SlotRef::Frag(Fragment::Struct(st))) => earliest_stamp(st.field(*id)?, rest),
+            _ => None,
+        },
+        PathSeg::Key(k) => match f.slot(Encoding::Map) {
+            Some(SlotRef::Frag(Fragment::Map(m))) => m.live(k).into_iter().filter_map(|(_, r)| earliest_stamp(r, rest)).min(),
+            _ => None,
+        },
+        _ => earliest_stamp(&f.at(std::slice::from_ref(seg))?, rest),
+    }
+}
+
 impl Recorded {
     /// The steps `f`, a `sync.0` state, places. `before`: the thing's placed steps so far, whose
     /// signatures are not verified again (a step's ID commits to its bytes and its parent's ID).
@@ -87,7 +107,7 @@ impl Recorded {
                     continue;
                 }
                 let path = [PathSeg::Key(sync_id.to_value()), PathSeg::Field(0), PathSeg::Key(Value::Bytes(id.to_vec())), PathSeg::Field(0)];
-                let Some(ts) = f.at(&path).and_then(|x| x.write_stamp().map(|s| s.ts)) else { continue };
+                let Some(ts) = earliest_stamp(f, &path) else { continue };
                 steps.insert(StepId(*id), (s, ts));
             }
             // from the genesis steps down, each child placed once its parent is
@@ -209,8 +229,8 @@ impl Core {
     /// Whether `h` records `t`'s first steps (spec/crypto.md §7 Checked keys, First steps): no
     /// step on `t`'s record chain is recorded before it, and it is `t`'s minting by its record's
     /// key (it carries `t`'s `created.0`, `t`'s record holds a key, and it is signed by that key
-    /// as `t`). It lists the keys of the genesis step its own `sync.0` delta records, which
-    /// nothing before it places.
+    /// as `t`). It lists the keys of the first step (the genesis step's child) its own `sync.0`
+    /// delta records, which nothing before it places.
     ///
     /// Invariant: a key so taken is one `t`'s admin from the start listed. Only the record's key
     /// signs as `t` in the first form, and before any step is recorded nothing ordered before the
@@ -270,16 +290,27 @@ impl Core {
     }
 
     /// The step whose keys a write lists for delete base `b` (spec/crypto.md §7 Header list): the
-    /// newest step of `b`'s sync ID its `sync.0` records here: the greatest sync ID `b` owns
-    /// (spec/sync-ids.md §4 Owner: one a step of which bears a sync key of a sync secret of `b`
-    /// held here; every placed one while this node holds no sync secret of `b`'s own). `None`:
-    /// none recorded, and this node cannot write under `b`.
+    /// newest step of `b`'s sync ID its `sync.0` records here (spec/sync-ids.md §4 Owner: one a
+    /// step of which bears a sync key of a sync secret of `b` held here; every placed one while
+    /// this node holds no sync secret of `b`'s own; `Core::pick_sync_id`). `None`: none recorded,
+    /// and this node cannot write under `b`.
     pub(crate) fn listed_step(&self, b: &Tid) -> Option<Placed> {
         let r = self.ix.steps.get(b)?;
         let held = self.holds_own_sync(b).then(|| self.held_sync_keys(b));
         let owned = |id: &SyncId| held.as_ref().is_none_or(|h| r.steps.values().any(|s| s.sync_id == *id && h.contains(&s.sync)));
-        let id = r.steps.values().map(|s| s.sync_id).filter(owned).max()?;
+        let ids: BTreeSet<SyncId> = r.steps.values().map(|s| s.sync_id).filter(owned).collect();
+        let id = self.pick_sync_id(b, ids.into_iter())?;
         r.head(&id).map(|(_, s)| s.clone())
+    }
+
+    /// Of sync IDs `ids` that `t` owns here, its sync ID (spec/sync-ids.md §2): the one its
+    /// genesis seed gives where this node holds that seed; else the greatest (a thing owns one:
+    /// more come only of an admin naming another, which a node without the seed cannot tell
+    /// from it, spec/sync-hostile.md §2).
+    pub(crate) fn pick_sync_id(&self, t: &Tid, ids: impl Iterator<Item = SyncId>) -> Option<SyncId> {
+        let ids: BTreeSet<SyncId> = ids.collect();
+        let seeded = self.epochs(t).and_then(|e| e.genesis().map(osis_blob::genesis_sync_id)).filter(|s| ids.contains(s));
+        seeded.or_else(|| ids.last().copied())
     }
 
     /// The admin and write delete keys of `listed_step(b)`, parsed (`memo`: every write on a
@@ -352,8 +383,8 @@ mod tests {
         let (lp, g, t) = world();
         for p in &lp.peers {
             let core = &p.engine.core;
-            let s = core.listed_step(&g).expect("g's sync.0 records its genesis step");
-            assert_eq!(s.depth, 0);
+            let s = core.listed_step(&g).expect("g's sync.0 records its genesis step and the first");
+            assert_eq!(s.depth, 1);
             let r = core.ix.steps.get(&g).unwrap();
             for (level, key) in [(DELETE_ADMIN, s.delete), (DELETE_WRITER, s.write)] {
                 assert!(core.key_right(&t, level, &key, Ts::MAX), "a thing under g lists g's step");
