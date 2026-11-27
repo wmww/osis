@@ -2143,22 +2143,29 @@ fn removing_a_node_spec_permissions_8() {
 fn unit_evidence(n: usize) -> [[u64; 3]; 2] {
     let (mut lp, acc) = account_nodes(n);
     let a = acc.thing;
-    let t = lp.peers[0].engine.mint_independent(&[osis_engine::MintAdmin::Thing(a)], |ts| {
+    let (ts, minting) = lp.peers[0].engine.mint_independent(&[osis_engine::MintAdmin::Thing(a)], |ts| {
         let mut m = Mutation::new();
         m.op(a, &ct::HOLDS, PathOp { path: Vec::new(), op: Op::Add(Value::Strong(ts[0])) })?;
         m.set(ts[0], &crate::common::REG, &s("new"))?;
         Ok(vec![m])
     })
-    .unwrap()
-    .0[0];
+    .unwrap();
+    let t = ts[0];
     let mut out = [[0; 3]; 2];
-    // T's minting, the rotation boxing it to A: what a node of A writes on T with
-    let minting: Vec<_> = lp.peers[0].engine.commit_ids().into_iter().filter(|c| lp.peers[0].engine.header(c).is_some_and(|h| h.kind.is_role() && h.aspects.iter().any(|x| x.tid == t))).collect();
-    let (unit, _) = bytes_of(&mut lp, 0, &minting);
+    // what a node of A writes on T with: node 0's and A's records, its own pairing (A's role
+    // commits are the pairings, in order), T's minting and A's strong to T (A's unit, which the
+    // node reads, carries T)
+    let e = &lp.peers[0].engine;
+    let n0 = e.tid();
+    let mut roles: Vec<_> = e.commit_ids().into_iter().filter(|c| e.header(c).is_some_and(|h| h.kind.is_role() && h.aspects.iter().any(|x| x.tid == a || x.tid == n0))).collect();
+    roles.retain(|c| !minting.commits.contains(c));
+    roles.sort_by_key(|c| e.header(c).map(|h| h.ts));
+    let (made, pairings) = roles.split_at(2);
+    assert_eq!(pairings.len(), n - 1, "a role commit per pairing");
     for k in 1..n {
-        lp.hold_at(k, t);
-        for pk in &unit {
-            lp.deliver(k, pk).unwrap();
+        for c in made.iter().chain([&pairings[k - 1]]).chain(&minting.commits) {
+            let pk = lp.peers[0].engine.package(c).unwrap().unwrap();
+            lp.peers[k].receive(&pk.bytes, pk.blobs.clone()).unwrap();
         }
         let mut m = Mutation::new();
         m.set(t, &crate::common::REG, &s(&format!("by {k}"))).unwrap();
@@ -2185,7 +2192,6 @@ fn unit_evidence(n: usize) -> [[u64; 3]; 2] {
 // writes (spec/crypto.md §4 Box records: a rotation's alone). So one writer's unit is flat in A's
 // nodes; with every node writing, linear in the writers.
 #[test]
-#[ignore = "stub rewrite: a paired node handed T's unit by hand knows no T (UnknownThing at its write; cause not sorted)"]
 fn evidence_per_unit_spec_permissions_4() {
     let [small, big] = NODES.map(unit_evidence);
     println!("unit certificates (copies, records, copy bytes), one writer then every node: {small:?} at n, {big:?} at 10n");
