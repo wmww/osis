@@ -791,13 +791,12 @@ impl Core {
         self.epochs(&a).is_some_and(|e| e.role(Role::Read).holds_any())
     }
 
-    /// Whether `y` is independent here (spec/sync-set.md §2): by the role commits held of it, or by
-    /// a secret of its own a held valid box gave, a step of its `sync.0` bearing a sync secret
-    /// so given (`Core::own_record`; not one derived from its mint admin's, nor a reading-only
-    /// one). Established or not: a grantee holds the grant's box before it syncs `y`, where the
-    /// rotation that made the epoch is.
+    /// Whether `y` is independent here (spec/sync-set.md §2): by the role commits held of it, or,
+    /// at a node reading none of them, by a sync secret of its own a held valid box gave that a
+    /// step of its `sync.0` bears (`Core::own_record`; not one derived from its mint admin's, nor
+    /// a reading-only one), established or not.
     pub(crate) fn counts_independent(&self, y: &Tid) -> bool {
-        self.is_independent(y) || self.own_record(y).is_some_and(|e| Role::ALL.iter().any(|r| e.role(*r).held().next().is_some())) || self.unread(y).holds_any()
+        self.is_independent(y) || self.own_record(y).is_some_and(|e| Role::ALL.iter().any(|r| e.role(*r).held().next().is_some())) || self.unread(y).holds_any() && self.reads_none(y)
     }
 
     /// How the walk enters independent thing `y` at a strong from a context that does not

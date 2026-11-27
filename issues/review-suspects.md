@@ -1,5 +1,5 @@
 # Small open questions from the review since the sync rewrite
-> Summary: Design questions left by the review since the sync rewrite, each with options: a writer's own signed card commit freezing a card field, the boxed/unboxed split after a demoted admin's plant, the public's role kept on a stale certificate; plus a revoked store never reopened, for the opening design.
+> Summary: Design questions left by the review since the sync rewrite, each with options: a writer's own signed card commit freezing a card field, the public's role kept on a stale certificate; plus a revoked store never reopened, for the opening design.
 > Priority: normal
 > Tags: engine, keys, security
 
@@ -10,14 +10,6 @@ Options:
 1. **Ignore card commits stamped ahead of the node's clock** (a commit ahead of the clock waits anywhere, spec/commits.md §4): the freeze lasts until an admin next writes the field.
 2. Count a commit for a field only where its signer ever held the role the field needs on A by an edge write held here (both sides of a fork hold both histories, so they agree), and a second-form key only where the signer's `signers.0` grants it.
 3. Accept the bound as stated.
-
-## Dependent box after a demoted admin's plant
-An admin's step and box on a dependent Y with no keyset, the admin demoted after the plant, stays valid (judged at its point): Y counts independent at the boxed node and dependent elsewhere, for good (`tests_planted::an_admins_step_counts_at_the_boxed_node_after_its_demotion_spec_sync_set_2`). Nothing reconciles the two (the planted epochs are never established, so nothing re-seals). Hostile admin only; a rotation by an honest admin makes Y independent everywhere.
-
-Options:
-1. **Step and box count only at a node that reads no role commits** (spec/sync-set.md §2 Counts as independent): the clause exists for a node keeping Y unread, which cannot read keyset parts. A node holding a read secret of Y counts it independent by a keyset alone, so the boxed reader counts Y dependent like everyone and the content split goes; a sync-only node keeps Y's planted sync ID, which splits storage, not reads.
-2. Keep as is: a stated, hostile-admin-only split (a low "strict model violation" issue).
-3. Make the step alone count everywhere: the nodes without a box then hold no secret of Y's independent epoch and read nothing of Y. Worse than the split.
 
 ## The public's role on a stale certificate
 `rotation::lost::role_here` counts the public's role wherever the node holds the public's grant, synced or not (spec/sync-set.md §2 Own things: "but for the public's"), and the lost-access drop judges by that role. A node that stops syncing A (unreached, unsynced), holding a public grant of A only as another commit's certificate, never receives the public's removal, so it keeps every secret of A for good: its own sealed history epochs included, which the public (granted without history) never had. The comment on `role_here` ("an outdated grant held gives only the open boxes") holds for boxes taken, not for secrets kept. Harm: no read (A's content goes with the unsync), but secrets of A stay with nothing synced to attribute them to, against "unsync all → zero". The exception exists so a node enters a public thing a strong reaches without a stub or signal.

@@ -124,9 +124,10 @@ impl Core {
     /// The opened epochs of `tid` when they make it an independent thing here: it is
     /// in `independent`, is minted with a key (independent from its minting) or no known thing,
     /// or, no keyset part of it held (`keyset_parts`), holds an epoch with a held valid rotation
-    /// commit or snapshot, or a sync secret a step of its `sync.0` bears (`stepped`). Not by this
-    /// node's own rotation alone: that commit may have turned invalid. Its `Rotated`
-    /// establishment is not computed: `own_epochs` is the view.
+    /// commit or snapshot, or, reading none of its role commits (`reads_none`), a sync secret a
+    /// step of its `sync.0` bears (`stepped`). Not by this node's own rotation alone: that commit
+    /// may have turned invalid. Its `Rotated` establishment is not computed: `own_epochs` is the
+    /// view.
     pub(crate) fn own_record(&self, tid: &Tid) -> Option<&ActorEpochs> {
         let e = self.ix.secrets.get(tid)?;
         let dependent_once = self.created(tid).is_some_and(|r| r.mint_admin().is_some());
@@ -140,7 +141,17 @@ impl Core {
             return None;
         }
         let rotated = || ROLES.iter().any(|r| e.role(*r).epochs().any(|(_, i)| i.rotated()));
-        (rotated() || self.stepped(tid, e)).then_some(e)
+        (rotated() || self.reads_none(tid) && self.stepped(tid, e)).then_some(e)
+    }
+
+    /// Whether this node reads none of `tid`'s role commits (spec/crypto.md §4 Roles secrets): it
+    /// holds no read secret of it, neither boxed nor through the thing its secrets would derive
+    /// from. Only such a node counts a box and a step independent (`stepped`, `Unread`): a reader
+    /// counts by a keyset alone, so a box no keyset follows splits no read
+    /// (`tests_planted::an_admins_plant_splits_no_read_after_its_demotion`).
+    pub(crate) fn reads_none(&self, tid: &Tid) -> bool {
+        let reads = |e: &ActorEpochs| e.role(Role::Read).holds_any();
+        !self.ix.secrets.get(tid).is_some_and(reads) && !self.created(tid).and_then(|r| r.mint_admin()).and_then(|m| self.epochs(&m)).is_some_and(|m| reads(&m))
     }
 
     /// Whether a step `tid`'s `sync.0` places bears the sync key of a sync secret of it held in
@@ -154,7 +165,7 @@ impl Core {
     /// box of its choosing (`tests_planted::box_on_a_dependent_thing_splits_nobody`), nor one
     /// demoted since by its old word: its `sync.0` write is judged at its point
     /// (`a_demoted_admins_step_splits_nobody`). An admin's step and box with no keyset count
-    /// at the boxed nodes alone: its word, as a rotation making the thing independent would be.
+    /// only at a boxed node keeping the thing unread (`reads_none`), which reads no keyset of it.
     fn stepped(&self, tid: &Tid, e: &ActorEpochs) -> bool {
         let Some(steps) = self.ix.steps.get(tid) else { return false };
         e.sync.held().any(|(_, s)| steps.bears_sync(&osis_crypto::role_key(osis_crypto::RoleKey::Sync, s).verifying_key().to_bytes()))

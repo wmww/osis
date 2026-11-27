@@ -277,11 +277,12 @@ fn box_on_a_dependent_thing_splits_nobody_spec_sync_set_2() {
     assert!(reads_key(&mut lp, 0, y, "by R"), "R's write on Y never reaches A");
 }
 
-// spec/sync-set.md §2: a grantee holds no rotation that made a granted epoch current. G (peer 1)
-// is granted read on g and holds everything of g but its keysets (each `keys.0` part on g withheld). g counts independent at G by its box and the
-// step of g's `sync.0` bearing its sync key, and G reads g once synced.
+// spec/sync-set.md §2 (Counts as independent): G (peer 1) is granted read on g and holds
+// everything of g but its keysets (each `keys.0` part on g withheld). A reader counts by a
+// keyset alone, so its box and g's step leave g dependent at G until one arrives, and G reads g
+// once synced.
 #[test]
-fn a_grantee_counts_its_target_independent_before_the_keyset_spec_permissions_4() {
+fn a_grantee_reads_its_target_once_the_keyset_arrives_spec_permissions_4() {
     let mut lp = super::tests::synced(2);
     let g = super::tests::target_thing(&mut lp, 0);
     put_on(&mut lp, 0, g, "k", 1);
@@ -297,9 +298,8 @@ fn a_grantee_counts_its_target_independent_before_the_keyset_spec_permissions_4(
     lp.settle_needs().unwrap();
     let e1 = &lp.peers[1].engine;
     assert!(!e1.core.is_independent(&g), "G holds a keyset of g");
-    assert!(e1.core.counts_independent(&g), "G's box and g's step leave g dependent at G");
+    assert!(!e1.core.counts_independent(&g), "G counts g independent by its box and g's step, reading g");
     lp.peers[1].restart(7).unwrap();
-    assert!(lp.peers[1].engine.core.counts_independent(&g), "a fresh load of G counts g dependent");
     lp.sync_all().unwrap();
     assert!(reads_key(&mut lp, 1, g, "k"));
 }
@@ -366,14 +366,15 @@ fn a_demoted_admins_step_splits_nobody_spec_sync_set_2() {
 }
 
 
-// spec/sync-set.md §2 (Counts as independent: a step is an admin's word), spec/permissions.md
-// §5.2: D (peer 1), an admin of g, writes a step and a box to R (peer 2) on Y, a dependent of g,
-// with no keyset, and is lowered to write after (its demoter holding the plant). The `sync.0`
-// write judged at its point stays valid, so the step places everywhere and counts at the boxed
-// node alone: Y independent at R, dependent at A (peer 0), a restart of R alike. Fails with the
-// step of a since-demoted admin dropped, or with a step not counting a box's thing independent.
+// spec/sync-set.md §2 (Counts as independent: a box and a step only at a node reading none of
+// its role commits), spec/permissions.md §5.2: D (peer 1), an admin of g, writes a step and a
+// read box to R (peer 2) on Y, a dependent of g, with no keyset, and is lowered to write after
+// (its demoter holding the plant). The step stays placed (its `sync.0` write judged at its
+// point), but R reads Y, so it waits for a keyset that never comes: Y dependent at R and A
+// (peer 0), a restart of R alike, and each reads the other's writes on it. Fails with a box and
+// a step counting at a reading node.
 #[test]
-fn an_admins_step_counts_at_the_boxed_node_after_its_demotion_spec_sync_set_2() {
+fn an_admins_plant_splits_no_read_after_its_demotion_spec_sync_set_2() {
     let (mut lp, g, tids) = granted(3, &[(1, Role::Admin), (2, Role::Write)]);
     let y = dependent_of(&mut lp, g);
     plant_step_box(&mut lp, 1, y, tids[2], 60);
@@ -381,9 +382,13 @@ fn an_admins_step_counts_at_the_boxed_node_after_its_demotion_spec_sync_set_2() 
     lp.peers[0].engine.demote(&g, &crate::flows::Demotion { holder: tids[1], new: Some(edge(Role::Write)), retain: None }).unwrap();
     lp.sync_all().unwrap();
     lp.peers[2].restart(7).unwrap();
+    assert!(lp.peers[2].engine.core.ix.secrets.get(&y).is_some_and(|e| e.sync.held().next().is_some()), "R opens no box of D's");
     for i in 0..3 {
         assert!(lp.peers[i].engine.core.ix.steps.get(&y).is_some(), "peer {i} places the step: valid at its point");
+        assert_eq!(lp.peers[i].engine.core.secret_actor(&y), Some(g), "peer {i} counts Y independent by a box and a step");
     }
-    assert_eq!(lp.peers[2].engine.core.secret_actor(&y), Some(y), "R counts Y independent by its box and the step");
-    assert_eq!(lp.peers[0].engine.core.secret_actor(&y), Some(g), "A, boxed nothing, counts Y dependent");
+    put_on(&mut lp, 2, y, "by R", 1);
+    put_on(&mut lp, 0, y, "by A", 1);
+    lp.sync_all().unwrap();
+    assert!(reads_key(&mut lp, 0, y, "by R") && reads_key(&mut lp, 2, y, "by A"), "A and R split on Y");
 }
