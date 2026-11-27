@@ -382,8 +382,8 @@ where
 
     /// The evidence of copies `seeds` alone (spec/permissions.md §4 Evidence of a commit): the
     /// closure from what each brings (its parts' known path edges, the edges its edge writes set,
-    /// the delete keys it lists), the seeds left out. What a fire or notice carries beside its
-    /// copy.
+    /// the delete keys it lists), the seeds left out. What a Prove's copies or a stranded fire carry
+    /// beside their copies.
     /// Beside the members, the copies recording a step placing a listed key (`stepped`), seeds
     /// included: a seed may record a step another places.
     pub fn closure_of(&self, seeds: &BTreeSet<CopyId<C, T>>) -> (Required<C, T, S, H>, Stepped<C, T>) {

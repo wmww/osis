@@ -1231,7 +1231,7 @@ fn removal_through_a_holder_it_cannot_open_rotates_spec_crypto_4() {
 }
 
 /// Delivers peer `from`'s commits `ids` to peer `to` without any `keys.0` or `secrets.0` delta on
-/// `x` (a notice of a role change without its rotation).
+/// `x` (a role change arriving without its rotation).
 fn deliver_edges_only(lp: &mut LocalPeer, from: usize, to: usize, x: Tid, ids: &[osis_base::CommitId]) {
     for pk in lp.packages_for(from, to).unwrap().into_iter().filter(|p| ids.contains(&p.id)) {
         let b = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();

@@ -28,10 +28,9 @@ pub(crate) fn recorded_path(steps: &BTreeMap<StepId, Step>) -> Option<Path> {
     Some(Path { steps: path })
 }
 
-/// The head a node reading S takes from its `sync.0` (spec/sync-ids.md §3 "the newest step its
-/// `sync.0` records"): of the tips whose path from genesis verifies, the deepest; ties (two admins
-/// stepping at once) by lowest step ID. The spec names no order for a forked tree: this is its
-/// simplest reading.
+/// The head a node reading S takes from its `sync.0` (spec/sync-ids.md §3 Head): of the tips whose
+/// path from genesis verifies, the deepest; equal depths (two admins stepping at once) by lowest
+/// step ID.
 pub(crate) fn head_of(steps: &BTreeMap<StepId, Step>) -> Option<StepId> {
     head_at(steps).map(|(k, _)| k)
 }
