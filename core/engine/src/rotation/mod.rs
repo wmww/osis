@@ -408,6 +408,19 @@ fn wrappable(epochs: &ActorEpochs, roles: &BTreeSet<Role>) -> bool {
     if roles.contains(&Role::Read) { epochs.read.newest_secret().is_some() } else { epochs.read.newest_held().is_some() }
 }
 
+/// The roles of `left` (those a departure from `a` leaves) that the departing commit `who`
+/// writes rotates: those it may rotate, where it can make the rotation now (`wrappable`, which
+/// also gives a sync keyset its claim epoch); else none, and the departure goes alone,
+/// uncovered, so `a`'s roles stay blocked until a rotation (`rotation_due`) covers it.
+pub(crate) fn departure_rotates(tx: &mut Tx<'_>, who: &Tid, a: &Tid, left: BTreeSet<Role>) -> BTreeSet<Role> {
+    let may = may_rotate(tx.core, who, a);
+    let roles: BTreeSet<Role> = left.into_iter().filter(|r| may.contains(r)).collect();
+    match tx.core.epochs(a) {
+        Some(e) if wrappable(&e, &roles) => roles,
+        _ => BTreeSet::new(),
+    }
+}
+
 /// The maker of an epoch as a node sees it (`maker`): whether it is this node, and whether it
 /// may rotate the role now.
 struct Maker {

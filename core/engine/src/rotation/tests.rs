@@ -1168,6 +1168,41 @@ fn finalize_without_secret_rotates_history_added_spec_permissions_2() {
     assert!(lp.peers[2].engine.epochs(&g).unwrap().write.secret(&lacked).is_some(), "X holds it by history");
 }
 
+// spec/permissions.md §2 (Finalize: it carries the rotation where its writer can make it now),
+// spec/crypto.md §3 (claim epoch: the newest current read epoch its rotator holds), §5 (Who
+// wraps under what: a node holding no current secret logs nothing): mint admin A (0) rotates read leaving out
+// writer W (1), so W holds no current read secret, then sets an `until` on sync holder S's (2)
+// edge. Past it, W's pass end finalizes S alone: a sync rotation W cannot make (no claim epoch,
+// nothing to wrap under) waits, the departure uncovered, until A re-seals W, whose next
+// rotation covers it. Fails if the finalize tries the rotation anyway (`NoEpoch(Read)`).
+#[test]
+fn a_finalize_rotates_only_what_its_writer_can_wrap_spec_permissions_2() {
+    let (mut lp, g, tids) = granted(3, &[(1, Role::Write), (2, Role::Sync)]);
+    rotate_leaving_out(&mut lp, 0, g, &BTreeSet::from([Role::Read]), &[1]);
+    let until = WallMs(lp.peers[0].engine.core.now().0 + 100);
+    let timed = ct::Edge { until: Some(until), ..edge(Role::Sync) };
+    lp.peers[0].engine.demote(&g, &Demotion { holder: tids[2], new: Some(timed), retain: None }).unwrap();
+    lp.sync_all().unwrap();
+    assert!(lp.peers[1].engine.epochs(&g).unwrap().read.newest_held().is_none(), "W holds no current read secret");
+    let sync_before = lp.peers[1].engine.epochs(&g).unwrap().sync.current();
+    lp.peers[1].clock.advance(1_000);
+    let done = lp.peers[1].engine.reseal_after_pass(&g).unwrap();
+    assert_eq!(done.commits.len(), 1, "W finalizes S alone");
+    assert_eq!(lp.peers[1].engine.epochs(&g).unwrap().sync.current(), sync_before, "no sync rotation");
+    assert!(lp.peers[1].engine.core.key_holders(&g).iter().all(|h| h.0 != tids[2]), "S is no holder at W");
+    lp.sync(1, 0).unwrap();
+    lp.peers[0].engine.reseal_after_pass(&g).unwrap();
+    lp.sync_all().unwrap();
+    lp.peers[1].engine.ensure_rotated(&g).unwrap();
+    lp.sync_all().unwrap();
+    let e = lp.peers[1].engine.epochs(&g).unwrap();
+    let s = lp.peers[2].engine.epochs(&g).unwrap();
+    assert!(e.read.newest_held().is_some(), "W re-sealed");
+    for x in e.sync.current() {
+        assert!(!sync_before.contains(&x) && s.sync.secret(&x).is_none(), "S's departure covered: S lacks current sync epoch {x:?}");
+    }
+}
+
 // spec/permissions.md §3 (Retain: a default set later changes no ending before it): A grants
 // reader X a timed read while G's default retains, so the grant carries retain; A then sets the
 // default to erase. Past the `until`, the ending still says retain: in the timeline every node

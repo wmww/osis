@@ -337,8 +337,7 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
         // finalize of an edge this commit removes; no rotation of a role of the target the
         // holders leave, which would box them at it: this commit rotates it)
         rotation::ensure_rotated_but(tx, who, target, &removing, &left, &mut done)?;
-        let may = rotation::may_rotate(tx.core, &who, &target);
-        roles = left.into_iter().filter(|r| may.contains(r)).collect();
+        roles = rotation::departure_rotates(tx, &who, &target, left);
         skip = std::iter::once((holder, new_role)).chain(gone.iter().map(|(x, _)| (*x, None))).collect();
         departs = match (pending.is_empty(), demotes) {
             (true, _) => rotation::Departs::No,
@@ -396,11 +395,11 @@ pub(crate) fn finalize_in(tx: &mut Tx<'_>, who: Tid, target: Tid, ended: &[(Tid,
             pending.push(dep);
         }
     }
-    let may = rotation::may_rotate(tx.core, &who, &target);
-    let mut roles: BTreeSet<Role> = left.into_iter().filter(|r| may.contains(r) && !kept.contains(r)).collect();
-    if !tx.core.is_independent(&target) {
-        roles.clear();
-    }
+    left.retain(|r| !kept.contains(r));
+    let roles = match tx.core.is_independent(&target) {
+        true => rotation::departure_rotates(tx, &who, &target, left),
+        false => BTreeSet::new(),
+    };
     let skip: Vec<(Tid, Option<Role>)> = ended.iter().map(|(x, _, _)| (*x, None)).collect();
     // a finalize demotes nobody (spec/permissions.md §5.1: it audits nothing)
     let departs = if pending.is_empty() { rotation::Departs::No } else { rotation::Departs::Holder };
