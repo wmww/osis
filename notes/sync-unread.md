@@ -7,7 +7,7 @@ Spec: spec/sync-judgement.md §6, spec/sync-set.md §3, spec/sync-opens.md §4 (
 
 ## The rule
 `unread::judge`, over plain values (`Judged`):
-- **Keep** while a held sync secret derives the head's sync key. Credentials: that key, its proof, the head's deposit key and claim set.
+- **Keep** while a held sync secret derives the head's sync key. Credentials: that key, its proof, the head's deposit key and head claims.
 - **Stranded**: at a head no held secret derives, the store holds and takes nothing (`Store::set_unheld`: every entry dropped, durable and in memory, with no deletion event; path and tombstones kept; stamped entries, deposits and Deletes refused as with no head). It shows only the held secrets whose sync key no step of its path bears.
 - **No head**: it shows every held secret.
 - Credentials show every eligible secret, not the newest alone: a box at a self-made epoch would otherwise hide the grant's key.

@@ -12,7 +12,7 @@ The definition of "forensically clean" (spec/requirements.md, Deletion). Evidenc
 - Tests: store `tests/it/shred.rs`; engine `tests/it/shred.rs`, `flows.rs` (removal erasure); osis-sync `deletes::a_purged_or_replaced_part_is_unrecoverable_from_the_sync_store_*`. On the sync harness the attack needs a recording world (`w.record = true` before nodes are added; `World::forensic`). Not covered: a synced dropped blob keeping its wraps or key row (one sync ID or several), a synced node's purge while away, a crash at every write of sync's forget (issues/sync-tests-owed.md).
 
 ## Metadata and negative tests
-- **Metadata**: claim sets padded to a power of two (osis-blob `step::claim_set_hides_count`). Not covered: what a node keeping S unread holds in clear on its device (values, map keys, AKs, role secrets, writers' node tids and signing keys), Padmé blob lengths at it, few size classes over value lengths, no blob ID, salt or wrap shared across sync IDs (issues/sync-tests-owed.md).
+- **Metadata**: not covered: entry blocks padded to a power of two with dummies (spec/wire.md §5 Entry blocks), what a node keeping S unread holds in clear on its device (values, map keys, AKs, role secrets, writers' node tids and signing keys), Padmé blob lengths at it, few size classes over value lengths, no blob ID, salt or wrap shared across sync IDs (issues/sync-tests-owed.md).
 - **Negative tests**: store refusals in core/sync/tests/it/store.rs, hostile peers in core/sync/tests/it (scripted peers and `harness/lies.rs`), decoder limits in osis-proto tests/it/limits.rs; perm refusals in osis-perm tests/it/scenarios.rs; node ones in osis-engine tests/it/flows.rs; QUIC mutual auth and no 0-RTT in osis-transport `quic::tests` (by hand).
 
 ## Security reviews

@@ -24,7 +24,7 @@ Spec it rebuilt from: spec/permissions.md §4, spec/sync-set.md §2, spec/sync-i
 
 ## For review
 Rulings the rewrite made that the review should check:
-- `sync.0` is a role part: a holder of a floor sees the steps from below its floor (step keys, claim sets, entry boxes), as a node keeping S unread is registered already (spec/sync-ids.md §5 Path); any holder encrypts a `sync.0` part under a roles secret it holds.
+- `sync.0` is a role part: a holder of a floor sees the steps from below its floor (step keys), as a node keeping S unread is registered already (spec/sync-ids.md §5 Path); any holder encrypts a `sync.0` part under a roles secret it holds.
 - A miskeyed part never drops as invalid: a writer of S listing made-up keys leaves parts its readers hold unapplied for good (bounded as any content it may write; an entry not stamped under S's head write key counts against the bounds on unvouched input, spec/commits.md §4 Pending storage). A permanent fork's other side reads so too.
 - An arrival outside a sealed fire that no pass brought (a record or commit by a live stream after the last pass ended) waits in `Core::pass_due` for the next pass end, held unneeded until then. Judging every arrival with no pass in flight judges hand-carried deliveries midway (14 tests of `osis`, the app and chat hold a delivered thing nothing needs).
 - Copies are keyed per thing, so a thing's record reaches a reader only by the record rule (`certblobs::minting_opens`) or an account's public record (`current_keys`), never by a copy made for another reason; state a reader lacks that way shows as a must-hold body a caught-up reader lacks (the harness's quiet check) or a commit pending on a record.

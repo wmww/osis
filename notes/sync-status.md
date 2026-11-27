@@ -28,7 +28,7 @@ One rule, as read's (notes/sync-read.md, State): what status follows of a peer i
 | `stranding_fx`, `strandings` | read S | node | read S | S not read |
 | elsewhere rows (durable) | an entry of N's held at a source by P's stream or report | node | own entries | with the entry |
 
-- Status sends no message of its own (a pass's fresh Pull goes through streams). What a peer controls reaches it only through streams and opens: an unproven peer is no member, a removed one's members close in the step of the change (notes/sync-opens.md, Standing), and a hostile reader can only claim positions (counted for held elsewhere, spec/sync-status.md §2).
+- Status sends no message of its own (a pass's fresh Pull goes through streams). What a peer controls reaches it only through streams and opens: a peer showing no credential is no member, a member whose credential stops being admissible ends or closes in the step of the change (notes/sync-opens.md, Judging), and a hostile reader can only claim positions (counted for held elsewhere, spec/sync-status.md §2).
 - A restart changes nothing a user sees: nothing but the elsewhere rows and pass starts is durable, and no peer is a source before its connection takes its record.
 - Seams: `status::Net` (read when asked) and `status::Ground: Net` (the settle's; `status/live.rs` the product's), so core/sync/tests/it/status.rs runs it on a fake.
 - Tests: status.rs `a_reconnect_moves_no_member_spec_sync_status_1` (n and 10n), `a_taken_record_is_caught_up_per_connection_spec_sync_status_1`, `a_release_keeps_no_report_spec_sync_status_2`, `lacking_is_kept_per_record_across_connections_spec_sync_status_1`; idle.rs counts `status: members moved` at an idle reconnect.
@@ -36,13 +36,12 @@ One rule, as read's (notes/sync-read.md, State): what status follows of a peer i
 ## Self-removals
 The rule is mod.rs's; the waits come from `Engine::waiting_removals` (notes/engine-lost-access.md Self-removal drops), "no peer but its own node" is `Ground::waited` (`Opens::waited` skipping a peer whose proven things include this node's node thing; notes/sync-opens.md Peers to wait for), and `Engine::removal_done` drops each thing lost that no other waiting removal is behind.
 - The same rule as leaving (notes/sync-leave.md): it waits only while a peer could take it. Own nodes leave by the same commit, so counting them would leave two nodes of one account waiting on each other for good. Skipping them is safe because they learn the removal from this account's own sync IDs and inbox (spec/permissions.md §2), never only from S.
-- A peer that applies the removal judges this node departed and closes S: told and not sharing S, it is not waited for, which also ends the wait where the same-step report was lost (a restart between).
 - `by_commit` is a plain map: a pair leaving it leaves `held_pairs`, which the judgement reads per (S, commit).
 - Own commits come by pair (`Engine::own_feed`, each pair read as it stands with `own_has`), so one more own commit costs one pair, never the S's set (osis `making::*`, `status: own commits taken`).
 - Tests: status.rs `self_removal_*`, flows.rs `a_self_removal_*`, siblings.rs `a_siblings_self_removal_*`.
 
 ## Stranded
-The rule is mod.rs's (the walk stop: `Opens::walk_stop`, notes/sync-opens.md Stops; the report from `Engine::stranding`). The judgement reads the engine's word and the walk stop first and S's sources only where either could strand it, so a reconnect judges no other S. `SyncStatus::stranded` is that or unread's stranded.
+The rule is mod.rs's (`judge_strandings`: heard out and the engine's word, the report from `Engine::stranding`). The judgement reads the engine's word first and S's sources only where it could strand S, so a reconnect judges no other S. `SyncStatus::stranded` is that or unread's stranded.
 
 ## Caught up and passes
 - **Caught up**: streams' `caught_since(conn, s)` gives the place (`Streams::pull_seq`) of the Pull the last reply answered, so a Pull answered moves only the passes. Two stamped parts: the connection's (`caught`, `SN_rearm`) and S's (`busy` per (connection, S), notes/sync-streams.md, Reports and caught up). One sync ID's traffic moves only its own key, so a commit judges one S's stranding, not every S shared on the connections its stream crosses. `track` keeps both: O(members busy there and events logged since its last read of the log).
@@ -60,7 +59,7 @@ The spec's words are spec/sync-status.md §1-§2. Why a sync ID held by no other
 Kept in code only:
 - Lacking applies to sources keeping S unread (a reader re-encrypts and judges what it keeps), counted as the stamped entries here its stream did not show (deposits offered are not counted).
 - The heard-out half of a pass is "every waited source caught up since it began" (with none: vacuous), so a pass with no source waits only on its records and, while any, the peers to be waited for on S (`Opens::waited`, own nodes counted: a sync ID just joined waits for its other holders). A full or refusing source is not waited on in a pass.
-- Stranded is per S (unread's for S kept unread, `strandings` for S read); a walk stop counts only while no source has S open (a source open: heard out decides), and of stops at several sources the report names one naming a step.
+- Stranded is per S (unread's for S kept unread, `strandings` for S read).
 - `wait(All)` is every S held; a wait whose scope holds a stranded S answers `Waiting::Stranded`, which the osis API fails `Stranded` naming the S's owners (notes/api-design.md).
 
 ## Costs

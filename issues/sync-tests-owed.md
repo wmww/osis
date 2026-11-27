@@ -21,7 +21,6 @@ Each readable with `git show e1bafb8ca^:issues/<name>.md` (`refused-memory-entry
 - refused-memory-entry-holds-sync-id-unsettled: an ephemeral entry refused for the memory cap holds no deletion or repair judgement of S unsettled.
 - relink-queue-lost-at-restart, pass-sources-restart: a restart forgets no chunk repair and drops no source a removal's wait counts.
 - pulled-refusal-lost: a refusal of a pulled entry lost with its connection is learned again on reconnect.
-- doubted-head-exhausted: a doubted open head whose Behind walk finds no earlier credential still learns the peer's later head without a reconnect.
 - stranded-holder-unread: a node holding a thing at sync only sends stranded reports and re-seals with no keyset it does not follow.
 - listing-horizon-tests-isolation: a listing past the deletion horizon is checked with an entry the reader cannot judge (a certificate copy) deleted while it is away.
 - lan-replaces-relay-flaky: a LAN route replacing a relayed connection comes up at the first announcement, not its 30 s repeat.

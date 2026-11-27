@@ -30,7 +30,7 @@ osis-sync's checks (core/sync/tests/it) count module work (`Work` counters, stor
 - a write's judgement flat in history at writer and reader, whatever the sources;
 - a role change judging only the sync IDs it touches;
 - a first sync by a node keeping S unread linear, nothing examined again;
-- a walk past missed rotations and filter arrivals flat in steps; one Behind item per rotation crossed;
+- a reader behind by many rotations caught up flat in steps (served each rotation it lacks once, spec/sync-opens.md §6);
 - role entries growing with churn, not with the members each change boxes;
 - cover work per write flat;
 - many sync IDs, idle ones costing nothing; a timed wait judging its sync ID alone;

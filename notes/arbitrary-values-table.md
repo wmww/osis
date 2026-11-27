@@ -28,14 +28,14 @@ Each only made a bug unlikely (class X); the code ends by a fixpoint, a window o
 | `MAX_DELTA_BARE` 2^18 | R | no content-less runs / a small delta creates unbounded records |
 | `MAX_PAGE_ITEMS` 2^21 | R (validity rule, every durable reader alike; honest worst case about 1.4 x 2^20, notes/crdt.md Page items) | every delta invalid / one blob decodes to GBs |
 | `MAX_RELAY_BLOB` 64 KiB | R | no relay-only blobs / relays as big as blobs |
-| `MAX_DRIFT_MS` 1 h, `ROLE_KEEP_MS` 90 days, `TOMBSTONE_LIFETIME_MS` 30 days, `MAX_CLAIMS` 65 536 | O | what each trades: issues/magic-number-review.md |
+| `MAX_DRIFT_MS` 1 h, `ROLE_KEEP_MS` 90 days, `TOMBSTONE_LIFETIME_MS` 30 days | O | what each trades: issues/magic-number-review.md |
 | `INBOX_LIFETIME` 90 days (spec: the history the account's creation sets for its inbox's signals, spec/sync-inbox.md §1: a stranded notice and a grant's offer) | O | no notice or offer is kept, so a writer that was away as a reader called for keys, or a node away when its account was offered a thing, never hears it / the inbox only grows |
 | `MAX_RETENTION_ENTRIES` 64 | R | no setting can say anything / `MAX_VALUE_BYTES` of AKs in every node's memory per `retention^.0` delta; past it the delta is no setting, a writer refuses it |
 | `MAX_CHAIN_DEPTH` 64 | R | only things minted with a key / unbounded chain walks; deeper is invalid everywhere alike |
 | `MAX_PATH_THINGS` 64 (format) | R (protocol constant: past it a writer refuses the path, a decoder rejects the header) | no write through a holder / a junk path of n made-up things parks a commit on n records and costs every reader a point query per hop, n set by the writer alone; any value well above real nesting (account, organization, a holder within it) serves; 64 matches `MAX_CHAIN_DEPTH` (notes/a1-spec/README.md, Why MAX_PATH_THINGS is 64) |
 | `MAX_VALUE_DEPTH` 64, `MAX_OBJECT_DEPTH` 512, `MAX_AK_BYTES` 1024, `MAX_URL_BYTES` 256, `MAX_RUN` 2^12 (keeps a run, one page element, far below `MAX_PAGE_ITEMS`), `MAX_STEP_BYTES` 323 | R (decoder limits, refuse) | nothing decodes / stack and memory on hostile input |
-| `MAX_MESSAGE` 9 MiB, `REPLY_BUDGET`/`MAX_CLAIM_SET` = it − 64 KiB | R (headroom derived) | no messages / unbounded frame buffers |
-| osis-proto `limits` per-message caps: `MAX_DELETE_ITEMS`, `MAX_FETCH_IDS`, `MAX_OFFER_ITEMS` 1024, `MAX_ITEM_HITS` 256, `MAX_MEMBERS` 4096, `MAX_CURSOR_BYTES` 256, `MAX_RESUME_TAGS` ⌊(`MAX_MESSAGE` − 64) / 34⌋ (spec/wire.md §2, §11.2) | R (refused as malformed) | nothing per message / unbounded per-message work |
+| `MAX_MESSAGE` 9 MiB, `REPLY_BUDGET` = it − 64 KiB | R (headroom derived) | no messages / unbounded frame buffers |
+| osis-proto `limits` per-message caps: `MAX_DELETE_ITEMS`, `MAX_FETCH_IDS`, `MAX_OFFER_ITEMS` 1024, `MAX_MEMBERS` 4096, `MAX_CURSOR_BYTES` 256, `MAX_RESUME_TAGS` ⌊(`MAX_MESSAGE` − 64) / 34⌋ (spec/wire.md §2, §11.2) | R (refused as malformed) | nothing per message / unbounded per-message work |
 | `MAX_HELLO_VERSIONS` 16, `MAX_HELLO_FRAME` 256 (length included) | R | no handshake / unbounded first frame |
 | `MAX_MESSAGE_ITEMS` 2^20 (osis-proto `msg`: CBOR items per message, counted before decoding) | R (densest engine reply about 760 000 items, densest §11.2-valid message about 1 021 000; a decoded item is 100-260 bytes, so at most about 270 MB per decode, one at a time in a hub) | no message decodes / about 2 GB of value tree per 9 MiB frame from any peer |
 

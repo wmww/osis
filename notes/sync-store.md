@@ -15,7 +15,7 @@ Spec: spec/sync-ids.md §5-§6, spec/sync-streams.md §3, spec/sync-inbox.md §3
 `Inner::find` says which part holds an entry, the blob's class which part takes a new one. Beyond entries.rs:
 - An ephemeral entry's charge goes with its source, never to an `heir`; the caps differ (`make_room`: S's entries/bytes and the durable total, kept counted in `Env::total`; S's bytes and the memory total, summed); a durable entry may wait for its bytes, an ephemeral one is taken with them only.
 - Path rows, the node log, records and every other row are the durable store's alone, so a read of the head or a peer's durable charge (`source_charge`) always opens the durable store.
-- **Paths kept parsed** (`path::Paths`, in `Env`): each S's path parsed at its first read, then changed by the writes that change its rows (`append`, `truncate`, `drop_claims`, each before its rows move), staged in the transaction and taken at its commit; a read stamps `PathOf` in `Memory::stamps`, a committed change moves it. A path read is O(1) however many steps it has; a new path writer must go through `change`.
+- **Paths kept parsed** (`path::Paths`, in `Env`): each S's path parsed at its first read, then changed by the writes that change its rows (`append`, `truncate`, each before its rows move), staged in the transaction and taken at its commit; a read stamps `PathOf` in `Memory::stamps`, a committed change moves it. A path read is O(1) however many steps it has; a new path writer must go through `change`.
 - Not the durable store's own memory overlay: the engine's suspended transaction (`CipherStore`) may hold no memory rows (`Transaction::suspend` refuses them), and in memory mode that store still writes its node log, records and `changed` rows durably.
 - The memory part's writes (log events, feeds, charges in `Memory`) are not undone when its transaction fails: nothing assumes a module's memory survived a store failure, which closes every connection and restarts the modules (notes/sync-driver.md, Failures).
 
@@ -42,13 +42,13 @@ The store's form of the one parking rule (notes/sync.md, Arriving early); what a
 The engine keeps a loose record only while a store entry names a blob carrying it, and a pending copy only while carried (notes/node-closure.md, Pending carriers). A blob unnamed also drops the loose records and lists only it carried (`forget_carrier`). A body not kept (past its peer's budget) is released at once (`streams::Ground::unkept`).
 
 ## Time
-`settle_at` expires entries (no tombstone, no event), ends tombstones and aged stand rows after `TOMBSTONE_LIFETIME`, drops claim sets superseded for `ROLE_KEEP`, sweeps the log's deletion events, and lets the unread sync ID using most give way past the total cap.
+`settle_at` expires entries (no tombstone, no event), ends tombstones and aged stand rows after `TOMBSTONE_LIFETIME`, sweeps the log's deletion events, and lets the unread sync ID using most give way past the total cap.
 
 ## Caps and policy
 - `Policy::from_caps` reads each value from `caps^.0`'s `policy` by field name; per-thing caps replace `entries` and `bytes`.
 - Caps apply to sync IDs kept unread only, but `memory_bytes`, which also bounds what a reader holds of S's ephemeral commits (`memory_room`; a held one's blob counts at `Engine::memory_charge`, at least its bytes, under every sync ID an entry of it is under, keyed by blob: `set_memory_charge`). Role entries count toward none.
 - A memory-part entry or tombstone counts what it holds there (`entries::overhead`, `tomb_overhead`: rows at their bytes and `osis_store::MEM_ROW_COST` each, a held-elsewhere row whether written or not, its blob's place, its log event, `memory::EVENT`/`REMOVAL`), so the memory caps bound what the memory part holds (`Store::memory_held`; at n and 10n by `store::memory_caps_count_what_memory_holds_spec_sync_ids_6`). Durable ones count `ENTRY_OVERHEAD`/`TOMB_OVERHEAD`, an approximation of disk. Uncounted: issues/sync-memory-uncounted.md.
-- The deposit budget is the policy's raised to `osis_proto::limits::deposit_budget` for the head's claim-set size. A child step past the caps is taken at most once per `register_every_ms` per sync ID (spec/sync-ids.md §6 Storage caps; why: notes/sync-reasons.md, Nodes).
+- The deposit budget is the policy's raised to `osis_proto::limits::deposit_budget` for the head claims' count. A child step past the caps is taken at most once per `register_every_ms` per sync ID (spec/sync-ids.md §6 Storage caps; why: notes/sync-reasons.md, Nodes).
 
 ## What peers can make it keep
 - **Tombstones**: a Delete of an entry not held writes nothing, so tombstones never outnumber what was held.
@@ -58,7 +58,7 @@ The engine keeps a loose record only while a store entry names a blob carrying i
 - **Deposits** per sync ID by the shared deposit budget (notes/sync-inbox.md).
 
 ## A reader's store of S
-Its served path is what its `sync.0` records (`path::serve`), but a superseded step's claim set is the store's to drop (the `ROLE_KEEP` sweep): one the store lacks that `sync.0` still records is no difference, else every start serves it again for the sweep to drop again (every thing has a superseded step from birth, its genesis step).
+Its served path is what its `sync.0` records (`path::serve`, replaced whole where it differs).
 
 Its own entries plus those it pulled:
 - one that opened to a commit held here (`Opening::Held`) is kept as it came, so readers pass the writer's blob on and encrypt afresh only where spec/crypto.md §5 requires. Charged to no one when it brought something new; a duplicate of what is held is charged to its bringer unless stamped, so a reader's fresh encryptions of held commits fill only its own peer budget;

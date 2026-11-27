@@ -15,7 +15,7 @@ One workspace, root `Cargo.toml`: members `core/*` (library crates in unprefixed
 | 2 | `osis-store` | `Backend`, `MemoryBackend`, `RedbBackend` and `FileRoot`, `RootStorage`, `Store`, `Transaction` |
 | 3 | `osis-commit` | commit header and blob, kinds, retention, delete keys, signatures, builder, verification, sections and prefix groups, chunk trees (the one writer and reader; osis-blob re-exports it) and header lists (notes/crdt.md) |
 | 3 | `osis-keys` | keysets, epochs, boxes, history boxes, role keys |
-| 4 | `osis-blob` | blob prefix and wraps, steps, claim sets, stamps and deposit signatures, holder keys, sealed fires, links, blob-backed tree and page sinks/sources, large values |
+| 4 | `osis-blob` | blob prefix and wraps, steps, stamps and deposit signatures, holder keys, sealed fires, links, blob-backed tree and page sinks/sources, large values |
 | 5 | `osis-proto` | the node-to-node protocol's bytes: frames, Hello, messages, proofs, the shared-set filter, the relay gate; no session |
 | 7 | `osis-engine` | engine, apply, retention, undo, events, identity, ephemeral, sync_ids, flows, rotation, `local_peer` (notes/engine.md); the persisted index tag (`build.rs`: a hash of the engine's and its osis dependencies' sources); phase timers `costs` (always compiled, recording on a thread once it calls `costs::take`) |
 | 8 | `osis-sync` | sync as one sans-I/O step (`Node::handle`, outputs carried out by `apply` through `Links`): modules session, opens, store (the store per sync ID, the engine's ciphertext door), read, unread, streams, inbox, status, driver (notes/sync.md); default feature `driver` (tokio driver) |

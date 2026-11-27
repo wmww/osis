@@ -14,5 +14,4 @@ Values no choice makes free; each is in the spec or should be. Listed with what 
 | `ROLE_KEEP` 90 days | how long an offline node can return and sync cleanly vs replaced rotations and steps kept | wire §2 |
 | `INBOX_LIFETIME` 90 days | how long an inbox keeps fires (grant offers, stranded notices) for an offline recipient vs its holders' storage | wire §2 |
 | `TOMBSTONE_LIFETIME` 30 days (recommended) | a holder offline longer logs a deleted entry again (re-deleted by the next writer that judges it) vs tombstone storage | wire §2, sync-ids §5 |
-| `MAX_CLAIMS` 65 536 | most claim keys per step: caps the holders of a sync ID that can catch up by claim at one step vs claim-set size | wire §2 |
 | schema limits `MAX_EXPAND` 64, `MAX_TYPE_DEPTH` 256, `MAX_INSTANCES` 10 000, `MAX_CHECK_WORK` 100 000, `MAX_NEST` 64 | decide whether a schema is valid but are not in the spec: another implementation could accept what osis refuses | `schema/` |
