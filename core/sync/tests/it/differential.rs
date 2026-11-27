@@ -377,22 +377,28 @@ fn grantees_of_concurrent_promotions_read_on_one_sync_id_spec_sync_ids_2() {
     holds_on(0, 3, 4, &script, String::new(), false);
 }
 
-// spec/sync-inbox.md §2 (delivery: it ends at the first peer taking it), spec/sync-set.md §3: node 1 grants node 0's account sync on its thing, told by a grant signal; node 0 removes
-// node 3 from the account before any run, so node 3, not yet knowing it, takes the fire and node
-// 1's delivery ends; node 3 then erases it. The grant is one nobody was told of: node 0 holds
-// nothing of the thing, as the model says of a signal no node of the account holds (failed: the
-// model held the signal for good and gave node 0 its stub). Control: no removal, node 0 holds
-// the stub.
+// spec/sync-inbox.md §2 (delivery: it ends at the first peer taking it), §5 (Grant signal:
+// followed while held), spec/sync-set.md §3: node 1 grants node 0's account sync on its thing,
+// told by a grant signal; node 0 removes node 3 from the account before any run, so node 3, not
+// yet knowing it, may take the fire, ending node 1's delivery, and erase it once it learns. A
+// removed node relaying what it took before it learned is honest: node 0 holds the thing's stub
+// exactly while its inbox holds the fire, as the model says of a signal some node of the account
+// holds (failed: the model held the signal for good and gave node 0 its stub with the fire held
+// nowhere). Control: no removal, node 0 holds the fire and the stub.
 #[test]
-fn a_signal_only_a_removed_node_took_is_lost_spec_sync_inbox_2() {
+fn a_signal_is_followed_while_its_account_holds_it_spec_sync_inbox_5() {
     use crate::harness::script::*;
+    let ak = osis_base::Ak::new(osis_schema::core_types::INBOX_SIGNALS[0]).unwrap();
     for removed in [true, false] {
         let mut script = vec![New(1), Give(1, 0, Holder::Node(0), Syncs)];
         script.extend(removed.then_some(Unpair(0, 3)));
         let mut w = holds_on(0, 3, 4, &script, String::new(), false);
         let t = w.history.things[0].0;
         let held = w.engine(0).sync_set().unwrap().ids.values().any(|(ts, _)| ts.contains(&t));
-        assert_eq!(held, !removed, "node 0 holds thing 0 (node 3 removed: {removed})");
+        let inbox = w.node(0).inbox.expect("an inbox");
+        let fire = w.engine(0).body_page(&inbox, &ak, true, 0, usize::MAX).unwrap().iter().any(|b| b.valid && b.value.is_some());
+        assert_eq!(held, fire, "node 0 holds thing 0 exactly while it holds the fire (node 3 removed: {removed})");
+        assert!(removed || held, "control: node 0 holds the fire and the stub");
     }
 }
 
@@ -485,3 +491,4 @@ fn a_node_keeping_a_thing_unread_takes_no_older_public_entry_spec_sync_ids_3() {
     use crate::harness::script::*;
     holds_on(0, 2, 3, &[New(0), Give(0, 0, Holder::Public, Reads), Revoke(0, 0, Holder::Public), Give(0, 0, Holder::Node(1), Syncs), Strong(1, None, 0)], String::new(), false);
 }
+
