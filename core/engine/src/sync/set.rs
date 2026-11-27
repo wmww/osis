@@ -410,9 +410,15 @@ impl Engine {
     /// `settings^.0` names, written only by this node, while its node thing holds a grant of
     /// write or admin on it (acts for it).
     pub fn settings_thing(&mut self) -> Result<Option<Tid>> {
-        let Some(root) = self.core.node_root else { return Ok(None) };
-        let Some(t) = self.get_typed(&root, &ct::SETTINGS)?.map(|w| w.0) else { return Ok(None) };
+        let Some(t) = self.settings_named()? else { return Ok(None) };
         Ok(self.core.edge_now(&t, &self.core.tid()).is_some_and(|e| e.role >= Role::Write).then_some(t))
+    }
+
+    /// The thing this node's root's `settings^.0` names, whatever this node holds of it: where a
+    /// node paired to an account keeps its settings before it enters it (spec/permissions.md §8).
+    pub fn settings_named(&mut self) -> Result<Option<Tid>> {
+        let Some(root) = self.core.node_root else { return Ok(None) };
+        Ok(self.get_typed(&root, &ct::SETTINGS)?.map(|w| w.0))
     }
 
     /// This node's caps: its node thing's entry in the `caps^.0` of the thing holding its

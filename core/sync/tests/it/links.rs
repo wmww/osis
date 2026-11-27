@@ -423,6 +423,26 @@ fn a_paired_node_restarted_before_first_contact_still_dials_the_pairer_spec_sync
     assert!(w.dials(1).why(&pairer).contains(&Why::Sync(s)), "the pairer dialed as the account's");
 }
 
+// spec/sync-inbox.md §6 (A redeemer not joined within a time of its node's choosing: a locator to
+// the thing its node root's settings name is followed until held),
+// spec/permissions.md §8 (Pairing): node 1, paired to node 0's account, is off for longer than a
+// redeem's follow time before it meets node 0; back on, it still enters its account. Failed with
+// the follow time ending the pairing's locator: the node gave it up at its start and never entered.
+#[test]
+fn a_paired_node_off_past_the_follow_time_still_enters_its_account_spec_sync_inbox_6() {
+    let mut w = World::new(0);
+    w.add_node();
+    w.run();
+    let j = w.pair(0);
+    w.power_off(j);
+    w.advance(2 * osis_sync::types::FOLLOW_LINK_MS);
+    w.power_on(j);
+    w.run();
+    let a = w.node(0).account.unwrap();
+    let e = w.engine(j);
+    assert!(e.closure_holds(&a) && e.role_on(&a) == Some(Role::Admin), "the paired node entered its account");
+}
+
 // spec/sync-opens.md §5 (ByRole: a side following S by a locator alone sends ByRole beside
 // its public entry's Hit), spec/permissions.md §8 (Pairing): node 0's account is public at sync,
 // so the node it pairs Hits the account's public entry, which it sends as noise (`Lie::Miss`: a

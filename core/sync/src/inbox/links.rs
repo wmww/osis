@@ -38,7 +38,8 @@
 //! closure holds the target: the strong brings it into the joiner's sync unit from then on, once
 //! the target's role entries are held here to carry it (spec/sync-set.md §2 Carriers). It is kept
 //! as a share link's is (a row `I/r/` under its target, not shredded: no secret), so a restart
-//! goes on with it. Its follow time is a share link's.
+//! goes on with it. Its follow time is a share link's, except that a locator to the thing the node
+//! root's `settings^.0` names (pairing) is followed until held: no time ends it.
 //!
 //! Pairing (spec/permissions.md §8) hands over the account's locator: redeemed like any, so a
 //! node paired and restarted before it entered the account still dials the pairer.
@@ -271,7 +272,8 @@ impl Redemptions {
             let stage = || match () {
                 _ if engine.closure_holds(&t) && engine.reaches(&t) => PublicStage::Held,
                 _ if engine.reaches(&t) => PublicStage::Ready,
-                _ if engine.reached(until) => PublicStage::GaveUp,
+                // the node's own settings thing (pairing) is followed until held: no time ends it
+                _ if engine.settings_named().ok().flatten() != Some(t) && engine.reached(until) => PublicStage::GaveUp,
                 _ => PublicStage::Waiting,
             };
             let Some((_, stage)) = self.public_ready.settle(&t, stage) else { continue };
