@@ -891,13 +891,16 @@ pub fn failure_class(msg: &str) -> String {
     out
 }
 
+/// A replay of a shrunk script somewhere else (`shrinking`): its name and how it plays.
+pub type Elsewhere<'a, A> = (&'a str, &'a dyn Fn(&[A]));
+
 /// Runs `run`, which records its steps in a `Script<A>`; with `shrink_var` set nonzero, a failing
 /// run's script is shrunk (`shrink_failure`), each smaller failing script printed as found, past
 /// libtest's capture. Each of `elsewhere` (a name and a replay, such as the script on another
 /// seed's world) then plays the shrunk script silent and once, and whether it fails the same way
 /// is printed. Then the shrunk run is replayed with `replay(steps, true)` and fails as the
 /// original failure, printing its script.
-pub fn shrinking<A: std::fmt::Debug + Clone + 'static>(shrink_var: &str, run: impl FnOnce(), replay: impl Fn(&[A], bool), simpler: impl Fn(&A) -> Vec<A>, elsewhere: &[(&str, &dyn Fn(&[A]))]) {
+pub fn shrinking<A: std::fmt::Debug + Clone + 'static>(shrink_var: &str, run: impl FnOnce(), replay: impl Fn(&[A], bool), simpler: impl Fn(&A) -> Vec<A>, elsewhere: &[Elsewhere<'_, A>]) {
     use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
     if !u64_var(shrink_var).is_some_and(|n| n != 0) {
         return run();

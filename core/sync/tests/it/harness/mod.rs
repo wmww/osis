@@ -1857,7 +1857,7 @@ pub fn capped<T>(cap: u64, f: impl FnOnce() -> T) -> Option<T> {
 /// run (`capped`; past it the candidate does not fail), the shrunk run by `replay(steps, true)`.
 /// Each of `elsewhere` plays the shrunk script under the same cap and says whether it fails the
 /// same way (the differential: on seed 0's world).
-pub fn shrinking(run: impl FnOnce(), replay: impl Fn(&[Step], bool), elsewhere: &[(&str, &dyn Fn(&[Step]))]) {
+pub fn shrinking(run: impl FnOnce(), replay: impl Fn(&[Step], bool), elsewhere: &[osis_base::testenv::Elsewhere<'_, Step>]) {
     MOST.set(0);
     let base = std::cell::Cell::new(None);
     // the run shrunk is measured before its first candidate plays
@@ -1872,9 +1872,8 @@ pub fn shrinking(run: impl FnOnce(), replay: impl Fn(&[Step], bool), elsewhere: 
         }
         let _ = capped(cap(), || replay(steps, false));
     };
-    let elsewhere: Vec<(&str, Box<dyn Fn(&[Step]) + '_>)> = elsewhere.iter().map(|&(name, play)| (name, Box::new(move |steps: &[Step]| {
-        let _ = capped(cap(), || play(steps));
-    }) as Box<dyn Fn(&[Step])>)).collect();
-    let elsewhere: Vec<(&str, &dyn Fn(&[Step]))> = elsewhere.iter().map(|(name, play)| (*name, &**play)).collect();
+    type Capped<'a> = Box<dyn Fn(&[Step]) + 'a>;
+    let capped_plays: Vec<(&str, Capped)> = elsewhere.iter().map(|&(name, play)| (name, Box::new(move |steps: &[Step]| { capped(cap(), || play(steps)); }) as Capped)).collect();
+    let elsewhere: Vec<osis_base::testenv::Elsewhere<Step>> = capped_plays.iter().map(|(name, play)| (*name, &**play)).collect();
     osis_base::testenv::shrinking(SHRINK_VAR, run, candidate, Step::simpler, &elsewhere);
 }
