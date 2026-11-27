@@ -315,11 +315,13 @@ fn reversed_range_reads_empty_spec_crdt_5_7() {
 fn range_under_removed_key_absent_spec_crdt_5_6() {
     let mut lp = net(1, 0);
     let t = new_thing(&mut lp, 0);
-    let big = |c: char| s(&std::iter::repeat_n(c, 30_000).collect::<String>());
+    // just past the stored state's page size (3 KiB)
+    let big = |c: char| s(&std::iter::repeat_n(c, 4_000).collect::<String>());
     let mut m = Mutation::new();
     m.op(t, &DOCS, PathOp { path: vec![PathSeg::Key(s("a"))], op: Op::Set(big('a')) }).unwrap();
     m.op(t, &DOCS, PathOp { path: vec![PathSeg::Key(s("b"))], op: Op::Set(big('b')) }).unwrap();
     lp.peers[0].commit(m).unwrap().unwrap();
+    assert!(lp.peers[0].engine.core.pages.contains_key(&(t, ak("t:docs.0"))), "paged");
     lp.peers[0].restart(0).unwrap();
     assert_eq!(lp.peers[0].engine.get_range(&t, &ak("t:docs.0"), &[PathSeg::Key(s("a"))], 0..5).unwrap(), Some(s("aaaaa")));
     let mut m = Mutation::new();

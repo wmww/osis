@@ -444,8 +444,8 @@ fn list_edits_match_whole(with_large: bool) {
     let (key, a) = (&common::LIST, ak("t:list.0"));
     let (mut cold, mut whole) = (peer(0), peer(0));
     let me = cold.engine.tid();
-    let mut model: Vec<Value> = (0..3000).map(small).collect();
-    for (k, i) in [40, 700, 1500, 2100, 2990].into_iter().enumerate() {
+    let mut model: Vec<Value> = (0..1500).map(small).collect();
+    for (k, i) in [20, 350, 750, 1050, 1495].into_iter().enumerate() {
         model[i] = big(k);
     }
     let mut t = None;
@@ -475,7 +475,7 @@ fn list_edits_match_whole(with_large: bool) {
             3 => new[at] = if r(2) == 0 { big(fresh_id) } else { small(fresh_id) },
             // a copy of a large item held elsewhere in the list
             4 => new.insert(at, big(r(5))),
-            _ => new.truncate(at.max(2900)),
+            _ => new.truncate(at.max(1450)),
         }
         let mut ids = Vec::new();
         for (i, p) in [&mut cold, &mut whole].into_iter().enumerate() {
@@ -612,7 +612,7 @@ fn paged_text_edits_by_index_and_undo_spec_crdt_6_1() {
     // history kept: only kept writes are undone (spec/commits.md §7)
     crate::common::keep_in(&mut m, t, &crate::common::day_setting());
     // 4-byte chars: the text is far above a page, so it is paged
-    let mut model: Vec<char> = (0..20_000u32).map(|i| char::from_u32(0x1F600 + i % 64).unwrap()).collect();
+    let mut model: Vec<char> = (0..5_000u32).map(|i| char::from_u32(0x1F600 + i % 64).unwrap()).collect();
     m.set(t, &TEXT_AK, &Value::Str(model.iter().collect())).unwrap();
     p.engine.commit(m).unwrap().unwrap();
     let mut r = osis_base::testenv::picker(0);

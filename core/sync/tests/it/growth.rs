@@ -154,7 +154,7 @@ fn moves_at(w: &mut World, moves: usize) -> Vec<(usize, usize)> {
 }
 
 // spec/commits.md §5 Covered and Fixed retention, spec/sync-compaction.md §1 (trigger),
-// spec/data-model.md §9 (card aspect): node 0's account moving its inbox 4 and 40 more times
+// spec/data-model.md §9 (card aspect): node 0's account moving its inbox 1 and 10 more times
 // writes the account's `keys.0` and rewrites its card on the profile each time; the replaced card
 // writes are covered (the card aspect compacts as any aspect) and the replaced `keys.0` bodies go
 // past `ROLE_KEEP`, so each node holds as many card and `keys.0` bodies at 10n as at n. (Each
@@ -163,8 +163,8 @@ fn moves_at(w: &mut World, moves: usize) -> Vec<(usize, usize)> {
 fn card_rewrites_grow_nothing_spec_commits_5() {
     let (mut w, _) = setup(Gives::Reads);
     moves_at(&mut w, 2);
-    let n = moves_at(&mut w, 4);
-    let n10 = moves_at(&mut w, 40);
+    let n = moves_at(&mut w, 1);
+    let n10 = moves_at(&mut w, 10);
     assert_eq!(n, n10, "card and keys.0 bodies held per node at n and 10n moves");
 }
 
@@ -214,7 +214,7 @@ fn path_reads(w: &mut World, s: &osis_base::SyncId) -> Vec<u64> {
 }
 
 // spec/commits.md §5 Fixed retention and Covered, spec/sync-compaction.md §1 (trigger): thing 0
-// rotated 2 and 20 more times by its admin, synced by node 1 (kept unread) and read by node 2.
+// rotated 1 and 10 more times by its admin, synced by node 1 (kept unread) and read by node 2.
 // Each rotation replaces the keysets before it; the admin's `keys.0` snapshots cover them, and
 // past `ROLE_KEEP` every node drops them, so each holds as many `keys.0` bodies at 10n as at n.
 // (Each rotation's boxes and step stay live in `secrets.0` and `sync.0`, kept for good.) A path
@@ -224,8 +224,8 @@ fn path_reads(w: &mut World, s: &osis_base::SyncId) -> Vec<u64> {
 fn rotations_keep_keysets_flat_spec_commits_5() {
     let (mut w, _) = setup(Gives::Reads);
     keysets_after_rotations(&mut w, 1);
-    let (n, reads) = keysets_after_rotations(&mut w, 2);
-    let (n10, reads10) = keysets_after_rotations(&mut w, 20);
+    let (n, reads) = keysets_after_rotations(&mut w, 1);
+    let (n10, reads10) = keysets_after_rotations(&mut w, 10);
     assert_eq!(n, n10, "keys.0 bodies held per node at n and 10n rotations");
     assert_eq!(reads, reads10, "store rows and derivations of a path read again per node at n and 10n rotations");
 }

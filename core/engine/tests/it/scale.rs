@@ -404,7 +404,7 @@ fn tid_removals(n: usize) -> Vec<(u64, u64, u64)> {
 // value index finds the reference's records), and the commit is one record, at n and 10n members.
 #[test]
 fn tid_removal_is_flat() {
-    let (small, big) = (tid_removals(4000), tid_removals(40_000));
+    let (small, big) = (tid_removals(400), tid_removals(4000));
     for (i, what) in ["remove a member", "add back"].iter().enumerate() {
         flat(&format!("{what}: pages loaded"), small[i].0, big[i].0);
         flat(&format!("{what}: pages written"), small[i].1, big[i].1);

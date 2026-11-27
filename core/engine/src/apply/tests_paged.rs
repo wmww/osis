@@ -1636,14 +1636,16 @@ fn internal_reads_hold_a_piece_at_a_time_spec_wire_12() {
 /// index moves off the replaced ones), and nothing fails.
 #[test]
 fn forged_copies_in_a_paged_nested_set_apply_as_whole_spec_crdt_4_1() {
-    let (c, outs) = both(|w| {
+    let small = osis_crdt::PageParams { target: 400, cut: osis_base::ChunkParams { min: 32, max: 160, mask_bits: 5 }, fanout: 3, ..osis_crdt::PageParams::FORMAT };
+    let _pages = osis_crdt::PageParams::set_test(Some(small));
+    let ((c, outs), _) = both_in(|whole| { let (lp, t) = build(0); of(lp, t, whole) }, |w| {
         let (t, a) = (w.t, aks()[1].clone());
         let weak = |i: u64| Value::Weak(Tid::from_bytes({
             let mut b = [0u8; 15];
             b[7..].copy_from_slice(&i.to_be_bytes());
             b
         }));
-        let n = 4000;
+        let n = 200;
         let fill = w.commit(0, |m| {
             m.set(t, &a, &Value::Map(osis_base::ValueMap::from([(Value::Str("refs".into()), Value::Set((1..=n).map(weak).collect())), (Value::Str("x".into()), Value::Int(1))]))).unwrap();
         });
