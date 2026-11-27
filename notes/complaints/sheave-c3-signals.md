@@ -1,0 +1,3 @@
+# sheave-c3-signals
+- The brief's premise (kit, app and chat enable external signals) came from notes/node-closure.md and notes/api.md, stale since 53aa53626 had turned them off. Reading the code first settled it; a note naming the code it describes is only as good as the last change that remembered it.
+- `cargo test -p osis-kit -p osis-app` fails `share::reach_through_someone_elses_tag` and `share::undo_is_mine_and_keeps_the_thing` on main, tracked nowhere (not in known_failures, no issue); they fail at fabba64b4~1 too. Two bin-at builds to show they were not this change. A GUI run in the gate, or a known_failures entry, would have said so.
