@@ -1,6 +1,6 @@
 //! The evidence derivation (`osis_engine::evidence`, notes/evidence-derivation.md;
-//! spec/permissions.md §4) against held-model `evidence` (`World::req` under `Rule::fixed`: every
-//! edge write on a stated path's edges), the oracle: at every step of a
+//! spec/permissions.md §4) against held-model `evidence` (`World::req` under `Rule::fixed` less
+//! chain stubs: every edge write on a stated path's edges), the oracle: at every step of a
 //! world, for every node's held set and every sync ID's held entries, under every sync ID, the
 //! copies the derivation keeps incrementally and computes from scratch equal the model's required
 //! copies. Hand worlds per model test naming a rule or finding; the derivation's own (a waiting path entry, delete-key steps); count tests.
@@ -106,10 +106,12 @@ impl Driver {
     }
 }
 
-/// The model's required copies of `s` over `h`: its required parts on things outside the unit,
-/// by (commit, thing).
+/// The model's evidence of `s`'s bodies over `h` (`rule` less chain stubs: spec/permissions.md §4
+/// Evidence of a sync ID is its bodies' alone; the engine adds the stubs a unit carries, each
+/// closed over the derivation, in `sync_ids/certs.rs`): its parts on things outside the unit, by
+/// (commit, thing).
 fn model_copies(w: &World, rule: &Rule, s: Thing, units: &BTreeMap<Thing, Things>, h: &Set) -> Copies {
-    w.req(rule, s, units, h).into_iter().filter(|&i| !units[&s].contains(&w.on(i))).map(|i| (w.w.cid(i), w.on(i))).collect()
+    w.req(&Rule { chain_stubs: false, ..*rule }, s, units, h).into_iter().filter(|&i| !units[&s].contains(&w.on(i))).map(|i| (w.w.cid(i), w.on(i))).collect()
 }
 
 /// What a run compared: disagreements, comparisons where the model required some copy; held sets
