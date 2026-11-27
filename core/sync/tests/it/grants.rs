@@ -289,7 +289,7 @@ fn a_grantee_gets_in_at_a_store_with_no_reader_online_spec_sync_ids_3() {
     assert_eq!(w.engine(2).get(&t, &ak()).unwrap(), Some(Value::Str("hi".into())), "Bob reads T, got in at Carol's store");
 }
 
-// spec/wire.md §5 (Entry pages), spec/sync-ids.md §3 (Entry block, Bound, Taking an entry),
+// spec/wire.md §5 (Entry pages), spec/sync-ids.md §3 (Entry block; Bound; Taking an entry),
 // spec/sync-opens.md §4: a rotation boxing more holders than one entry page holds goes with its
 // entries in pages, and the store holding them lets every holder in. Alice's node writes pages of
 // 2 entries; T has Carol's node keeping it unread, and Bob and Dave granted read but not told, so
