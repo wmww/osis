@@ -1,5 +1,5 @@
 # Test harnesses
-> Summary: How to run and replay seeded tests (env vars through `osis_base::testenv`, one test on origin/main, seed runners, coverage floors), copied worlds, skips that miss at random (`OSIS_QUIET_MISS`), the debug checks every test runs, why-kept and row dumps, loop guards, `LocalPeer` delivery by sync ID and sealed delivery, the store-contents differential, measuring (icount, cpuprof, memprof, callgrind, pertest), the default-test cost, mutation probes, and harness footguns.
+> Summary: How to run and replay seeded tests (env vars through `osis_base::testenv`, one test on origin/main, seed runners, coverage floors), copied worlds, skips that miss at random (`OSIS_QUIET_MISS`), the debug checks every test runs, why-kept and row dumps, loop guards, `LocalPeer` delivery by sync ID and sealed delivery, the store-contents differential, measuring (icount, cpuprof, memprof, callgrind, pertest), the default-test cost, forged writes (`commit_hostile`), mutation probes, and harness footguns.
 
 ## Env vars and seeds
 - Harness env vars (`OSIS_*_START`/`_SEEDS`, `OSIS_PERM_SEED`, ...) are read through `osis_base::testenv`, which panics on an unparsable value, zero seeds, or any set `OSIS_*` variable not in core/base/testenv-known.txt (add a new one at its end; read at run time, so adding one rebuilds nothing). Probe variables: notes/build.md, Footguns.
@@ -112,6 +112,9 @@ Each binary's budget is its line in tools/test_cost.txt (notes/gate.md, The summ
   - A rare case drawn on purpose, then histories run until a coverage tally is met (osis-crdt `snapshot_then_edit`); tally the path the test's name claims.
   - Debug checks that compare, never recompute (`Checks`, `memo::check_effects`, `engine/decoded.rs`).
   - Smaller data where the property is relative; independent pieces as separate tests or on the process's permits (`order::check`).
+
+## Forged writes
+A part no honest writer makes, to test how receivers judge it: `Engine::commit_hostile(m)` commits `m` past the writer's rules (role check, commit shape, the refusal to emit a delta it judges invalid); the writer's own copy may drop what it judges invalid, `Engine::take_forged(id)` gives the bytes as sent. `Engine::commit_forged(m, bad)` also replaces the deltas on the aspects `bad` by bytes that do not decode. Then `Engine::part_valid(id, ai)` per node. Both are `#[doc(hidden)] pub` (engine/testing.rs), so any crate's `tests/it` reaches them: engine and sync on a peer's or node's engine, osis through `osis::internals::Internals::engine` (`Mutation` as `osis::internals::engine::Mutation`). `Mutation::unchecked` stays crate-private; no test feature.
 
 ## Mutation probes
 `tools/mutate.py` (usage in its doc) plants a fault, builds once, runs the given tests and prints which failed; a plant no test fails is a test gap: add a focused test, or an issue. For many plants: `MUTATE_HEAVY=1 MUTATE_PER_HOLD=2`. Reference-graph rules, where caught at all, are caught by focused tests, never by a differential or sim alone. Open gaps: Debug checks (Planted faults); issues/strip-rule-gaps.md.
