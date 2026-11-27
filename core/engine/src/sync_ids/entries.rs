@@ -133,15 +133,17 @@ impl Engine {
 /// The step key of each sync key on a known path (`Engine::step_keys`).
 type StepKeys = BTreeMap<[u8; 32], [u8; 32]>;
 
-/// What an entry of a blob under S gives this node (spec/sync-ids.md §3 Taking an entry).
-pub(crate) enum Took {
-    /// A read holder's (the public's alike): the blob key and the key of the section holding the
-    /// commit's role parts on `thing`.
-    Read { thing: Tid, key: Secret32, section: Secret32 },
-    /// A sync holder's (`holder`; none: a link's key): the sync secret of `thing`'s epoch the
-    /// block is bound to, taken.
-    Sync { thing: Tid, holder: Option<Tid> },
-    Nothing,
+/// What the entries of a blob under S give this node (spec/sync-ids.md §3 Taking an entry): every
+/// entry of a holder it reaches S's thing through is taken, so one holder's entry never hides
+/// another's (an account's sync entry beside the public's read one).
+#[derive(Default)]
+pub(crate) struct Took {
+    /// A read holder's (the public's alike): S's thing, the blob key and the key of the section
+    /// holding the commit's role parts on it.
+    pub(crate) read: Option<(Tid, Secret32, Secret32)>,
+    /// Each sync holder's (none: a link's key) whose sync secret of S's thing's epoch the block is
+    /// bound to was taken, with the thing.
+    pub(crate) sync: Vec<(Tid, Option<Tid>)>,
 }
 
 impl Engine {
@@ -183,19 +185,20 @@ impl Engine {
         Ok((out, head.1))
     }
 
-    /// The entry of a holder this node reaches `s`'s thing through (`claimants`) in blob `bytes`
-    /// under `s`, opened and taken (spec/sync-ids.md §3 Taking an entry): found by its claim at the
+    /// Every entry of a holder this node reaches `s`'s thing through (`claimants`) in blob `bytes`
+    /// under `s`, opened and taken (spec/sync-ids.md §3 Taking an entry): each found by its claim at the
     /// step key of the sync key its block is bound to (a block that does not verify under `s`
     /// counts for nothing); a sync holder's secret kept only where it derives that sync key; the
     /// public's, where this node holds `s` without reading it, only in a block bound to its head.
     /// `path`: a path of `s` known beside this node's own (a store's).
     pub(crate) fn take_entry(&mut self, s: &SyncId, bytes: &[u8], path: &[osis_blob::Step]) -> Result<Took> {
-        let Ok(Some(prefix)) = osis_blob::clear_prefix(bytes) else { return Ok(Took::Nothing) };
+        let mut took = Took::default();
+        let Ok(Some(prefix)) = osis_blob::clear_prefix(bytes) else { return Ok(took) };
         if prefix.blocks().is_empty() {
-            return Ok(Took::Nothing);
+            return Ok(took);
         }
         let things = self.sync_things_of(s)?;
-        let Some(thing) = things.first().copied() else { return Ok(Took::Nothing) };
+        let Some(thing) = things.first().copied() else { return Ok(took) };
         let (steps, head) = self.step_keys(s, &things, path)?;
         let claimants = self.claimants(s, &things);
         for block in prefix.blocks() {
@@ -213,7 +216,7 @@ impl Engine {
                     None => osis_crypto::read_public_entry(&e.w),
                 };
                 match keys {
-                    Some(EntryKeys::Read { blob_key, section_key }) => return Ok(Took::Read { thing, key: blob_key, section: section_key }),
+                    Some(EntryKeys::Read { blob_key, section_key }) => took.read = took.read.or(Some((thing, blob_key, section_key))),
                     Some(EntryKeys::Sync { n, secret }) if derives(&secret, block.sync_pk()) => {
                         let Ok(epoch) = Epoch::derive(&thing, Role::Sync, n, &secret) else { continue };
                         self.run(|tx| {
@@ -221,13 +224,13 @@ impl Engine {
                             tx.core.touch();
                             Ok(())
                         })?;
-                        return Ok(Took::Sync { thing, holder });
+                        took.sync.push((thing, holder));
                     }
                     _ => {}
                 }
             }
         }
-        Ok(Took::Nothing)
+        Ok(took)
     }
 }
 

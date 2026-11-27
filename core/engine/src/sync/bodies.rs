@@ -1153,13 +1153,9 @@ impl Engine {
                 }
                 // else an entry of a holder this node reaches S's thing through (spec/sync-ids.md
                 // §3 Taking an entry)
-                match self.take_entry(s, bytes, &[])? {
-                    crate::sync_ids::entries::Took::Read { thing, key, section } => (thing, key, Some(section)),
-                    crate::sync_ids::entries::Took::Sync { thing, holder } => {
-                        self.took_sync_entry(s, thing, holder)?;
-                        return Ok(Opened::NotOpen);
-                    }
-                    crate::sync_ids::entries::Took::Nothing => return Ok(Opened::NotOpen),
+                match self.took(s, bytes, &[])? {
+                    Some((thing, key, section)) => (thing, key, Some(section)),
+                    None => return Ok(Opened::NotOpen),
                 }
             }
         };
@@ -1171,14 +1167,19 @@ impl Engine {
     /// path) or one known here, taken (spec/sync-ids.md §3 Taking an entry): a sync holder's
     /// secret kept, a read holder's commit opened as `open_entry` opens one.
     pub fn take_unread_entry(&mut self, s: &SyncId, blob: &BlobId, wrap: &Wrap, bytes: &[u8], path: &[osis_blob::Step]) -> Result<Opened> {
-        match self.take_entry(s, bytes, path)? {
-            crate::sync_ids::entries::Took::Read { thing, key, section } => self.opened_entry(s, blob, wrap, bytes, 0, thing, &key, &[section]),
-            crate::sync_ids::entries::Took::Sync { thing, holder } => {
-                self.took_sync_entry(s, thing, holder)?;
-                Ok(Opened::NotOpen)
-            }
-            crate::sync_ids::entries::Took::Nothing => Ok(Opened::NotOpen),
+        match self.took(s, bytes, path)? {
+            Some((thing, key, section)) => self.opened_entry(s, blob, wrap, bytes, 0, thing, &key, &[section]),
+            None => Ok(Opened::NotOpen),
         }
+    }
+
+    /// `take_entry`, each sync holder's secret noted: the read entry's thing and keys, if any.
+    fn took(&mut self, s: &SyncId, bytes: &[u8], path: &[osis_blob::Step]) -> Result<Option<(Tid, osis_crypto::Secret32, osis_crypto::Secret32)>> {
+        let took = self.take_entry(s, bytes, path)?;
+        for (thing, holder) in took.sync {
+            self.took_sync_entry(s, thing, holder)?;
+        }
+        Ok(took.read)
     }
 
     /// `open_entry` of a blob whose key `key` (and section keys `section`, an entry's) is found,
