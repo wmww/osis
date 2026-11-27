@@ -1,5 +1,5 @@
 # Sync differential: failure classes beyond the gate's seeds
-> Summary: the sync differential on held-model's stub closure (`Rule::BUILT`) at full size: 12 of 100 seeds fail, by class with a shrunk script or probe line each; the largest are reads unlike the reference (an inbox unheld by its maker, a promoted thing read through its mint admin) and storms; the gate seed tools/known_failures.txt lists.
+> Summary: the sync differential on held-model's stub closure (`Rule::BUILT`) at full size: 12 of 100 seeds fail, by class with a shrunk script or probe line each; the largest are reads unlike the reference (an inbox its account stops holding, a promoted thing read through its mint admin) and storms; the gate seed tools/known_failures.txt lists.
 > Priority: normal
 > Tags: sync, engine, tests
 
