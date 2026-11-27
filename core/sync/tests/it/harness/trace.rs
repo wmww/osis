@@ -23,6 +23,9 @@ struct Held {
     commits: BTreeSet<CommitId>,
 }
 
+/// A request on a traced connection: the node, its conn, whether it sent it, its id.
+type Asking = (usize, ConnId, bool, osis_proto::Id);
+
 /// One world's trace.
 #[derive(Clone)]
 pub struct Tracer {
@@ -32,6 +35,9 @@ pub struct Tracer {
     /// Frames per (node, its conn, sent), and whether the Hello went by.
     frames: BTreeMap<(usize, ConnId, bool), (FrameDecoder, bool)>,
     held: BTreeMap<usize, Held>,
+    /// Offers and Losts on traced connections not answered yet, per (node, its conn, whether it
+    /// sent the request, id): the request's kind and items, for its answer's line (`paired`).
+    asked: BTreeMap<Asking, (&'static str, Vec<String>)>,
     /// Lines of the step being traced.
     lines: Vec<String>,
 }
@@ -52,7 +58,7 @@ impl Tracer {
             ns => Some(ns.split(',').map(|n| n.trim().parse().unwrap_or_else(|_| panic!("{TRACE_VAR}: {n:?} is no node index"))).collect()),
         };
         let only = only.split(',').map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).collect();
-        Some(Tracer { nodes, only, frames: BTreeMap::new(), held: BTreeMap::new(), lines: Vec::new() })
+        Some(Tracer { nodes, only, frames: BTreeMap::new(), held: BTreeMap::new(), asked: BTreeMap::new(), lines: Vec::new() })
     }
 
     pub fn traces(&self, i: usize) -> bool {
@@ -98,6 +104,7 @@ impl Tracer {
                 Out::Dial(conn, to) => self.lines.push(format!("n{i} dial {} {}", c(*conn), hex(&to.key))),
                 Out::Close(conn) => {
                     self.frames.retain(|(n, c, _), _| (*n, *c) != (i, *conn));
+                    self.asked.retain(|(n, c, ..), _| (*n, *c) != (i, *conn));
                     self.lines.push(format!("n{i} close {}", c(*conn)));
                 }
                 Out::Read(conn, on) => self.lines.push(format!("n{i} read {} {on}", c(*conn))),
@@ -133,6 +140,7 @@ impl Tracer {
     /// Node `i` restarted: its connections' frames are gone.
     pub fn restarted(&mut self, i: usize) {
         self.frames.retain(|(n, ..), _| *n != i);
+        self.asked.retain(|(n, ..), _| *n != i);
         self.lines.push(format!("n{i} restarted"));
     }
 
@@ -154,18 +162,46 @@ impl Tracer {
     fn decode(&mut self, i: usize, conn: ConnId, sent: bool, bytes: &[u8]) -> Vec<String> {
         let (f, hello) = self.frames.entry((i, conn, sent)).or_insert_with(|| (FrameDecoder::default(), false));
         f.push(bytes);
-        let mut out = Vec::new();
+        let mut bodies = Vec::new();
         while let Ok(Some(body)) = f.next_frame() {
-            if !std::mem::replace(hello, true) {
-                out.push("Hello".to_string());
-                continue;
-            }
-            out.push(match Msg::decode(&body) {
-                Ok(m) => brief(&format!("{m:?}")),
-                Err(e) => format!("undecodable ({e:?}, {} bytes)", body.len()),
-            });
+            bodies.push((!std::mem::replace(hello, true), body));
         }
-        out
+        bodies
+            .into_iter()
+            .map(|(is_hello, body)| if is_hello { "Hello".to_string() } else { match Msg::decode(&body) {
+                Ok(m) => self.paired(i, conn, sent, &m).unwrap_or_else(|| brief(&format!("{m:?}"))),
+                Err(e) => format!("undecodable ({e:?}, {} bytes)", body.len()),
+            }})
+            .collect()
+    }
+
+    /// An Offer or Lost is kept for its answer; a Shared or Error answering one is printed with
+    /// it, each request item beside its answer (`<item> => <answer>`), so the answer's line holds
+    /// what the request named (a `t<k>` filter that keeps one keeps the other). `None`: any other
+    /// message, printed as it is.
+    fn paired(&mut self, i: usize, conn: ConnId, sent: bool, m: &Msg) -> Option<String> {
+        match m {
+            Msg::Offer { id, items } => {
+                self.asked.insert((i, conn, sent, *id), ("Offer", items.iter().map(|x| brief(&format!("{x:?}"))).collect()));
+                None
+            }
+            Msg::Lost { id, items } => {
+                self.asked.insert((i, conn, sent, *id), ("Lost", items.iter().map(|x| brief(&format!("{x:?}"))).collect()));
+                None
+            }
+            // an answer goes the other way from its request
+            Msg::Shared { id, items } => {
+                let (kind, asked) = self.asked.remove(&(i, conn, !sent, *id))?;
+                let n = asked.len().max(items.len());
+                let pairs: Vec<String> = (0..n).map(|k| format!("{} => {}", asked.get(k).map_or("(none)", String::as_str), items.get(k).map_or("(none)".to_string(), |x| brief(&format!("{x:?}"))))).collect();
+                Some(format!("Shared {{ id: {id} }} answers {kind}: [{}]", pairs.join("; ")))
+            }
+            Msg::Error { id, .. } => {
+                let (kind, asked) = self.asked.remove(&(i, conn, !sent, *id))?;
+                Some(format!("{} answers {kind}: [{}]", brief(&format!("{m:?}")), asked.join(", ")))
+            }
+            _ => None,
+        }
     }
 }
 
