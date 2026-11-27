@@ -2029,10 +2029,16 @@ impl Opens {
         let bind = c.bind;
         let mut accepted = BTreeSet::new();
         let mut crossed = Vec::new();
+        let mut refused_claims = Vec::new();
         for (i, x) in sent.into_iter().enumerate() {
             let a = items.get(i).cloned().unwrap_or(SharedItem::code(Code::DECLINED));
             let Sent::Hit { s, cred, beacon, own } = x;
             if a.code != Code::OK {
+                // a claim the peer's filter showed once and no longer holds at its head: its head
+                // is asked (spec/sync-ids.md §6 Head), as for claims its filter does not show
+                if matches!(*cred, Tested::Claim { .. }) && own != SourceClass::Store {
+                    refused_claims.push(s);
+                }
                 continue;
             }
             let m = cred.matched();
@@ -2071,6 +2077,9 @@ impl Opens {
         }
         for s in crossed {
             self.close_member(ctx, conn, s, Close::Class, moved);
+        }
+        for s in refused_claims {
+            self.ask_head(ctx, conn, s);
         }
         self.rise(conn);
         if let Some(c) = self.conns.get_mut(&conn) {
