@@ -384,12 +384,18 @@ fn check_signature(tx: &mut Tx<'_>, blob: &CommitBlob, id: &CommitId, vk: &Verif
 fn read_pending(tx: &mut Tx<'_>, id: &CommitId) -> Result<Option<CommitBlob>> {
     let _s = osis_base::costs::span("reexamine: read pending");
     expire_stored(tx, id)?;
-    let Some(osis_store::Pending { kind, bytes, .. }) = tx.txn.get_pending(id)? else {
+    let Some(p) = tx.txn.get_pending(id)? else {
         set_pending(tx.core, id, None);
         return Ok(None);
     };
-    let decode = if kind == PendingKind::Parked { CommitBlob::decode } else { CommitBlob::decode_stored };
-    Ok(decode(&bytes).ok())
+    Ok(decode_pending(&p))
+}
+
+/// A stored pending row decoded (`read_pending`): a parked row's bytes as a peer's, any other's as
+/// this node stores them; `None` when this build cannot read them.
+pub(crate) fn decode_pending(p: &osis_store::Pending) -> Option<CommitBlob> {
+    let decode = if p.kind == PendingKind::Parked { CommitBlob::decode } else { CommitBlob::decode_stored };
+    decode(&p.bytes).ok()
 }
 
 /// The things the node closure comes to read whole since the last call wake the parts waiting for them

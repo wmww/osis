@@ -873,12 +873,66 @@ pub(crate) fn sealed_key(c: &CommitId, a: &Tid) -> Vec<u8> {
 /// target's `created.0` and chain can open the target's sync ID and download them. Parts are
 /// decoded unverified, so what they yield is reading-only: never encrypted under, and replaced
 /// by an applied valid box (spec/crypto.md §4).
+/// Its openers noted (`Indexes::pend_opened`), so it is read again whenever one learns secrets
+/// (`reread_pending`).
 pub(crate) fn read_pending_boxes(tx: &mut Tx<'_>, blob: &osis_commit::CommitBlob, id: &CommitId) -> Result<()> {
-    for (a, s, from) in pending_boxes(tx, blob, id)? {
+    let reads = pending_boxes(tx, blob, id)?;
+    let openers = reads.iter().flat_map(|(a, s, _)| std::iter::once(*a).chain(s.boxes.keys().map(|k| k.holder.0))).collect();
+    note_pending_openers(tx.core, id, openers);
+    for (a, s, from) in reads {
         // what boxes to `a` opens with it, as for an invalid box (`read_invalid`): the same
         // secrets whatever the order the commits came in
         if read_for_reading(tx, &a, &s, from) {
             crate::flows::reopen_dependents(tx, a)?;
+        }
+    }
+    Ok(())
+}
+
+/// Sets pending commit `id`'s openers (`Indexes::pend_opened`) to `openers`: those its boxes'
+/// last read found, none once it pends no more (`waits::set_pending`).
+pub(crate) fn note_pending_openers(core: &mut Core, id: &CommitId, mut openers: Vec<Tid>) {
+    openers.sort();
+    openers.dedup();
+    if core.ix.pend_openers.get(id).map(|v| v.as_slice()) == Some(openers.as_slice()) {
+        return;
+    }
+    for t in core.ix.pend_openers.get(id).cloned().unwrap_or_default().iter() {
+        core.ix.pend_opened.remove(t, id);
+    }
+    for t in &openers {
+        core.ix.pend_opened.insert(*t, *id);
+    }
+    match openers.is_empty() {
+        true => core.ix.pend_openers.remove(id),
+        false => core.ix.pend_openers.insert(*id, std::sync::Arc::new(openers)),
+    };
+}
+
+/// The pending commits whose boxes `opener`'s secrets may open (`Indexes::pend_opened`), their
+/// boxes read again for reading (`read_for_reading`), after `opener` learned secrets
+/// (`flows::reopen_dependents`). O(those commits' `secrets.0` parts). The actors that learned.
+pub(crate) fn reread_pending(tx: &mut Tx<'_>, opener: &Tid) -> Result<Vec<Tid>> {
+    let ids: Vec<CommitId> = tx.core.ix.pend_opened.get(opener).into_iter().flatten().copied().collect();
+    let mut learned = Vec::new();
+    for c in ids {
+        let Some(blob) = tx.txn.get_pending(&c)?.as_ref().and_then(super::decode_pending) else { continue };
+        for (a, s, from) in pending_boxes(tx, &blob, &c)? {
+            if read_for_reading(tx, &a, &s, from) {
+                learned.push(a);
+            }
+        }
+    }
+    Ok(learned)
+}
+
+/// Every pending commit's boxes read (`read_pending_boxes`), its openers noted: the open's
+/// sweep (`flows::reopen_all`), as each arrival reads them.
+pub(crate) fn read_all_pending(tx: &mut Tx<'_>) -> Result<()> {
+    let ids: Vec<CommitId> = tx.core.ix.pending.keys().copied().collect();
+    for c in ids {
+        if let Some(blob) = tx.txn.get_pending(&c)?.as_ref().and_then(super::decode_pending) {
+            read_pending_boxes(tx, &blob, &c)?;
         }
     }
     Ok(())
@@ -1456,6 +1510,45 @@ mod tests {
             assert!(lp.deliver_sealed(i, &sealed).unwrap().is_empty(), "peer {i}: W's write opens");
             assert_eq!(lp.peers[i].engine.get(&t, &ak).unwrap(), Some(Value::Int(7)), "peer {i} reads W's write");
         }
+    }
+
+    // spec/crypto.md §4 (Reading-only secrets: a pending commit's boxes are read for reading
+    // only), notes/engine-roles.md Ingestion (what a node holds is what reading every input whole
+    // afterwards gives, whatever order they came in): O's grant of holder actor H on A, boxing H
+    // at A's read epoch, reaches N before A's record (pending); only then does N learn H's read
+    // secret by a grant on H. The pending box opens then, for reading, as it would had the grant on
+    // H come first; its store opened afresh says the same (`check_index`). Fails when a pending
+    // commit's boxes are read only at its arrival and at each reexamine.
+    #[test]
+    fn a_pending_box_opens_once_its_opener_is_held_spec_crypto_4() {
+        let mut lp = LocalPeer::fresh(2, WallMs(1_700_000_000_000));
+        lp.sync_all().unwrap();
+        let (o, n) = (0, 1);
+        let tids: Vec<Tid> = (0..2).map(|i| lp.peers[i].engine.tid()).collect();
+        let edge = |role| ct::Edge { role, until: None, may_grant: false, retain: false, floor: None };
+        let h = thing_of(&mut lp, o, tids[o]);
+        lp.peers[o].engine.make_independent(&h).unwrap();
+        lp.sync_all().unwrap();
+        let ids = |lp: &LocalPeer| lp.peers[o].engine.commit_ids().into_iter().collect::<std::collections::BTreeSet<_>>();
+        let before = ids(&lp);
+        let a = thing_of(&mut lp, o, tids[o]);
+        lp.peers[o].engine.make_independent(&a).unwrap();
+        let made = ids(&lp);
+        let g = *lp.peers[o].engine.grant(&a, &h, &edge(Role::Read)).unwrap().commits.last().unwrap();
+        assert!(made.difference(&before).all(|c| lp.peers[n].engine.header(c).is_none()), "N holds nothing of A");
+        lp.hold_fires(true);
+        send(&mut lp, o, n, &[g]);
+        assert!(lp.peers[n].engine.pending().iter().any(|(c, _)| *c == g), "the grant on A waits for A's record");
+        let read = |lp: &LocalPeer, t: &Tid| lp.peers[n].engine.core.epochs(t).map(|e| e.read.clone()).unwrap_or_default();
+        let e = lp.peers[o].engine.core.epochs(&a).unwrap().read.newest().unwrap();
+        assert!(read(&lp, &a).secret(&e).is_none(), "N cannot open the box to H yet");
+        let before = ids(&lp);
+        lp.peers[o].engine.grant(&h, &tids[n], &edge(Role::Read)).unwrap();
+        let on_h: Vec<CommitId> = ids(&lp).difference(&before).copied().collect();
+        send(&mut lp, o, n, &on_h);
+        assert!(read(&lp, &h).newest_held().is_some(), "N holds H's read secret");
+        assert!(read(&lp, &a).is_reading_only(&e), "the pending box to H opens: {e:?} is N's for reading");
+        lp.peers[n].engine.check_index();
     }
 
     // spec/crypto.md §4 (Reading-only secrets: a secret learned from an invalid commit's boxes, or

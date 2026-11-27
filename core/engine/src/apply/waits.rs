@@ -160,6 +160,7 @@ pub(crate) fn set_pending(core: &mut Core, id: &CommitId, r: Option<(Reason, Opt
             }
         }
         None => {
+            crate::apply::keys::note_pending_openers(core, id, Vec::new());
             if core.ix.pending.remove(id).is_some() {
                 // its carriers go with it unless it pends again in this transaction (`carriers::settle`)
                 core.carriers_due.insert(*id);

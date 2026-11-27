@@ -245,7 +245,8 @@ pub(crate) fn observe_secrets(tx: &mut Tx<'_>, actor: &Tid) -> Result<bool> {
 
 /// After this node learned secrets of `learned`, reads again everything they may open, to a
 /// fixpoint: of `learned` itself and of every actor with a box keyed to an actor that learned,
-/// `reread`. So what an actor holds is what reading its state and invalid commits whole after
+/// `reread`, and the pending commits with a box its secrets open (`apply::keys::reread_pending`).
+/// So what an actor holds is what reading its state, invalid and pending commits whole after
 /// gives (a rebuild: `reopen_all`), whichever input brought the secrets (a state, an invalid or
 /// pending commit's boxes, a take-up). Terminates without a step cap: an actor is pushed only
 /// when its held epochs grew, and they only grow, bounded by the boxes held (a cap would leave
@@ -267,6 +268,8 @@ pub(crate) fn reopen_dependents(tx: &mut Tx<'_>, learned: Tid) -> Result<()> {
                 work.push(a);
             }
         }
+        // the pending commits with a box `m`'s secrets open, `m`'s own history boxes among them
+        work.extend(crate::apply::keys::reread_pending(tx, &m)?);
     }
     Ok(())
 }
@@ -321,6 +324,9 @@ fn take_up_opener(tx: &mut Tx<'_>, h: Tid) -> Result<()> {
 pub(crate) fn reopen_all(tx: &mut Tx<'_>) -> Result<()> {
     let secrets_ak = ak("secrets.0")?;
     let actors: BTreeSet<Tid> = tx.core.ix.aspect_things.get(&secrets_ak).cloned().unwrap_or_default();
+    // the pending commits' boxes, as their arrival reads them (what they open reopens its
+    // dependents, pending ones included, so the order of the two reads is no matter)
+    crate::apply::keys::read_all_pending(tx)?;
     loop {
         let mut any = false;
         for a in &actors {

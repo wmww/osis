@@ -1065,12 +1065,12 @@ mod tests {
         const OWN: &[&str] = &["held", "commits", "snapshots", "derived_written"];
         // node-local or re-derived by an open, so they differ from a fresh load by design: a
         // transaction's work queues (`rekeyed`, `cover_waits`); what an open parks anew (`pending`, `pend_on`,
-        // `pend_keys`, `pend_by`, `pend_needs`: each examined again); rows not persisted for ephemeral aspects
+        // `pend_keys`, `pend_by`, `pend_needs`, `pend_opened`, `pend_openers`: each examined again); rows not persisted for ephemeral aspects
         // (`forgotten`); events, not the held set (`falls`, `passes`, `role_arrivals`,
         // `cause_at`, `reseal_asks`, `carriers`, `carrying`); the node closure, built again after an open (`closure`);
         // the removals to judge for addenda, all of them again at an open (`addenda_due`,
         // `addenda_gathered`, `addenda_wake`).
-        const LEFT_OUT: &[&str] = &["rekeyed", "keys_due", "fires_due", "cards_due", "cards_stale", "forgotten", "pending", "pend_on", "pend_keys", "pend_by", "pend_needs", "falls", "passes", "role_arrivals", "cause_at", "setting_waits", "reseal_asks", "carriers", "carrying", "cover_waits", "closure", "addenda_due", "addenda_gathered", "addenda_wake"];
+        const LEFT_OUT: &[&str] = &["rekeyed", "keys_due", "fires_due", "cards_due", "cards_stale", "forgotten", "pending", "pend_on", "pend_keys", "pend_by", "pend_needs", "pend_opened", "pend_openers", "falls", "passes", "role_arrivals", "cause_at", "setting_waits", "reseal_asks", "carriers", "carrying", "cover_waits", "closure", "addenda_due", "addenda_gathered", "addenda_wake"];
         let ix = super::super::Indexes::default();
         let compared: BTreeSet<&str> = tables(&ix).into_iter().map(|(n, _)| n).collect();
         for n in super::super::INDEX_NAMES {

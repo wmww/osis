@@ -574,6 +574,14 @@ indexes! {
     pub pend_by: JSetMap<Tid, CommitId>,
     /// `pend_by`'s keys per pending commit.
     pub pend_needs: JMap<CommitId, Arc<Vec<Tid>>>,
+    /// Pending commits per opener of their `secrets.0` boxes, as their boxes were last read
+    /// (`apply::keys::read_pending_boxes`): each actor a part is on (its history boxes) and each
+    /// box's holder, so a pending box is read again once its opener learns secrets
+    /// (`flows::reopen_dependents`). Derived from the pending rows (the open's `reopen_all` reads
+    /// each), never persisted.
+    pub pend_opened: JSetMap<Tid, CommitId>,
+    /// `pend_opened`'s keys per pending commit.
+    pub pend_openers: JMap<CommitId, Arc<Vec<Tid>>>,
     pub void: JSet<CommitId>,
     /// Per held commit, the things on which a delta of it lists a level-1 or level-3 delete key
     /// no step places before it (`sync_ids::steps`, spec/crypto.md §7 Checked keys): its deltas
@@ -3584,6 +3592,12 @@ impl Engine {
                     return Ok(None);
                 }
                 crate::apply::load(&mut tx, rebuild)?;
+                // then the open's sweep (`Engine::load`; a rebuild's load runs it): every
+                // `secrets.0` state and pending commit's boxes read whole again, so a live index
+                // lacking what they give now fails here, not only after a restart
+                if !rebuild {
+                    crate::flows::reopen_all(&mut tx)?;
+                }
                 // the persisted edges rows are what the role commits' records read, one each
                 #[cfg(debug_assertions)]
                 if rebuild {
