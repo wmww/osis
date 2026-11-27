@@ -1139,18 +1139,27 @@ impl Engine {
         }
         // judged for each of `s`'s things: the one whose held read secret opens the wrap
         let things = self.opening_things(s)?;
-        let Some((t, key)) = things.iter().find_map(|t| osis_blob::unwrap_any(self.read_secrets(t).iter(), blob, wrap).map(|(_, k)| (*t, k))) else {
-            // a wrap no held secret opens: a sealed fire's filler, opened by the read KEM key
-            // (spec/sync-inbox.md §4 A sealed fire) of whichever thing it is sealed to
-            for t in &things {
-                match self.open_sealed_fire(t, blob, bytes)? {
-                    Opened::NotOpen => {}
-                    o => return Ok(o),
+        let unwrapped = things.iter().find_map(|t| osis_blob::unwrap_any(self.read_secrets(t).iter(), blob, wrap).map(|(_, k)| (*t, k)));
+        let (t, key, section) = match unwrapped {
+            Some((t, key)) => (t, key, None),
+            None => {
+                // a wrap no held secret opens: a sealed fire's filler, opened by the read KEM key
+                // (spec/sync-inbox.md §4 A sealed fire) of whichever thing it is sealed to
+                for t in &things {
+                    match self.open_sealed_fire(t, blob, bytes)? {
+                        Opened::NotOpen => {}
+                        o => return Ok(o),
+                    }
+                }
+                // else an entry of a holder this node reaches S's thing through (spec/sync-ids.md
+                // §3 Taking an entry)
+                match self.take_entry(s, bytes, &[])? {
+                    crate::sync_ids::entries::Took::Read { thing, key, section } => (thing, key, Some(section)),
+                    crate::sync_ids::entries::Took::Sync | crate::sync_ids::entries::Took::Nothing => return Ok(Opened::NotOpen),
                 }
             }
-            return Ok(Opened::NotOpen);
         };
-        let opened = match self.open_commit(bytes, &key) {
+        let opened = match self.open_commit_by(bytes, &key, section.as_slice()) {
             Ok(o) => o,
             Err(e) if osis_base::Classified::class(&e) == osis_base::ErrorClass::Local => return Err(e),
             Err(_) => {

@@ -850,7 +850,7 @@ pub(crate) fn revalidated(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()
 
 /// Edits `actor`'s epochs. An edit that learns nothing leaves no entry: the
 /// index holds what is on disk.
-fn edit_epochs(tx: &mut Tx<'_>, actor: Tid, f: impl FnOnce(&mut osis_keys::ActorEpochs)) {
+pub(crate) fn edit_epochs(tx: &mut Tx<'_>, actor: Tid, f: impl FnOnce(&mut osis_keys::ActorEpochs)) {
     let before = tx.core.ix.secrets.get(&actor).cloned().unwrap_or_default();
     let mut e = before.clone();
     f(&mut e);

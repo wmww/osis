@@ -1098,6 +1098,10 @@ pub struct Core {
     /// open their boxes by their seed's secrets. Derived: each is held exactly while
     /// `held_link_keys` or a followed link names it (`Engine::settle_link_key`). In memory only.
     pub link_keys: memo::Stamped<Tid, Arc<Identity>>,
+    /// Per sync ID, the path a Head answer gave (spec/sync-ids.md §6 Head: verified from genesis by
+    /// sync, the answerer's word on its own head): the steps claims are computed at and entries
+    /// found by where this node records no path of its own. In memory only.
+    pub(crate) heard: memo::Stamped<SyncId, Arc<Vec<osis_blob::Step>>>,
     /// Link keys held by `Engine::hold_link_key` until `drop_link_key` (making a link, a redeem,
     /// bearer use).
     pub(crate) held_link_keys: BTreeMap<Tid, Arc<Identity>>,
@@ -1853,6 +1857,8 @@ impl Core {
             step_write_keys: _,
             setting_wants: _,
             links: _,
+            // heard paths: a Head answer's word, kept whatever is undone
+            heard: _,
             caught_up: _,
             unit_of: _,
             closure_follow: _,
@@ -2190,6 +2196,7 @@ impl Core {
             #[cfg(test)]
             whole_secrets_snapshots: false,
             link_keys: Default::default(),
+            heard: Default::default(),
             held_link_keys: Default::default(),
             followed_links: Default::default(),
             epochs_of: memo::Memo::new("epochs"),

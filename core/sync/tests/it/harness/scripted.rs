@@ -62,14 +62,14 @@ pub fn store(head: &StepKeys) -> Creds {
 /// `store` holding the sync secrets of `older` steps of its path too.
 pub fn store_with(head: &StepKeys, older: &[&StepKeys]) -> Creds {
     let keys = std::iter::once(head).chain(older.iter().copied()).map(|st| (st.sync.clone(), Secret32::from_bytes(st.proof))).collect();
-    Creds::kept_unread(&osis_sync::unread::UnreadCredentials { step: Some(head.id), keys, deposit: Some(SigningSecret::from_seed(&Secret32::from_bytes(head.proof)).verifying_key()), head: Some(head.pk()) })
+    Creds::kept_unread(&osis_sync::unread::UnreadCredentials { step: Some(head.id), keys, deposit: Some(SigningSecret::from_seed(&Secret32::from_bytes(head.proof)).verifying_key()), head: Some(head.pk()) }, &[])
 }
 
 /// What a node keeping S unread holds before any step is registered there, granted the sync
 /// secrets of `steps` (newest first): the product's own, with no head.
 pub fn store_no_head(steps: &[&StepKeys]) -> Creds {
     let keys = steps.iter().map(|st| (st.sync.clone(), Secret32::from_bytes(st.proof))).collect();
-    Creds::kept_unread(&osis_sync::unread::UnreadCredentials { step: None, keys, deposit: None, head: None })
+    Creds::kept_unread(&osis_sync::unread::UnreadCredentials { step: None, keys, deposit: None, head: None }, &[])
 }
 
 /// An honest side's view of what it holds (the `Holds` seam), set by the test.
@@ -78,11 +78,13 @@ pub struct Table {
     pub creds: BTreeMap<SyncId, Arc<Creds>>,
     due: BTreeSet<SyncId>,
     pub until: Position,
+    /// The paths Head answers gave (`Holds::hear_path`).
+    pub heard: BTreeMap<SyncId, Vec<osis_blob::Step>>,
 }
 
 impl Table {
     pub fn new(seed: u64) -> Table {
-        Table { rng: SeededRng::from_u64(seed), creds: BTreeMap::new(), due: BTreeSet::new(), until: 100 }
+        Table { rng: SeededRng::from_u64(seed), creds: BTreeMap::new(), due: BTreeSet::new(), until: 100, heard: BTreeMap::new() }
     }
 
     /// S's credentials are now `c` (none: S left the sync set).
@@ -121,6 +123,9 @@ impl Holds for Table {
     }
     fn deposit(&mut self, _src: osis_sync::store::Source, _item: &DepositItem) -> Code {
         Code::DECLINED
+    }
+    fn hear_path(&mut self, s: &SyncId, steps: Vec<osis_blob::Step>) {
+        self.heard.insert(*s, steps);
     }
 }
 

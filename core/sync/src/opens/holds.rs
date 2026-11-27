@@ -39,11 +39,14 @@ pub struct Creds {
 impl Creds {
     /// What a node keeping S unread holds (spec/sync-opens.md §4 Admissible): it shows and tests
     /// the sync proof of each sync secret it shows (`UnreadCredentials::keys`), and shows its
-    /// head's deposit key; its head's sync key, held, answers.
-    pub fn kept_unread(uc: &UnreadCredentials) -> Creds {
+    /// head claims (`claims`) and its head's deposit key; its head's sync key, held, answers.
+    pub fn kept_unread(uc: &UnreadCredentials, claims: &[[u8; 32]]) -> Creds {
         let mut c = Creds { holding: Some(Holding::Unread), ..Creds::default() };
         for (k, p) in &uc.keys {
             c.shows.push(Shown::Proof(*p.expose(), k.verifying_key().to_bytes()));
+        }
+        if uc.step.is_some() {
+            c.shows.extend(claims.iter().map(|x| Shown::Claim(*x)));
         }
         if let Some(d) = &uc.deposit {
             c.shows.push(Shown::Deposit(d.to_bytes()));
@@ -57,9 +60,10 @@ impl Creds {
     }
 
     /// What a reader of S holds (spec/sync-opens.md §4 Admissible): it shows the sync proof of
-    /// each distinct sync key on its path whose sync secret it holds and its head's deposit key,
-    /// and tests the sync proofs of the sync secrets it holds, newest first.
-    pub fn reader(rc: &ReadCredentials) -> Creds {
+    /// each distinct sync key on its path whose sync secret it holds, its head claims (`claims`)
+    /// and its head's deposit key, and tests the sync proofs of the sync secrets it holds, newest
+    /// first, then its claims (`ReadCredentials::claims`).
+    pub fn reader(rc: &ReadCredentials, claims: &[[u8; 32]]) -> Creds {
         let mut c = Creds::default();
         let mut keys = std::collections::BTreeSet::new();
         for (id, p) in &rc.proofs {
@@ -69,11 +73,13 @@ impl Creds {
             }
         }
         if let Some(head) = &rc.head {
+            c.shows.extend(claims.iter().map(|x| Shown::Claim(*x)));
             c.shows.push(Shown::Deposit(head.keys.deposit.to_bytes()));
             c.head = Some(head.keys.sync.to_bytes());
             c.step = rc.keys.get(&head.id()).and_then(|k| k.sync.clone());
         }
         c.tests = rc.held_proofs.iter().map(|(p, k)| Tested::Proof(*p, *k)).collect();
+        c.tests.extend(rc.claims.iter().map(|(sync, key)| Tested::Claim { key: key.clone(), sync: *sync }));
         c
     }
 
@@ -119,6 +125,8 @@ pub trait Holds {
     /// Takes a Deposit item (spec/sync-inbox.md §3) a peer offered; `src` is where its peer
     /// budget charge lives (the peer's record, else the connection).
     fn deposit(&mut self, src: crate::store::Source, item: &DepositItem) -> Code;
+    /// A verified path of S a Head answer gave (`Engine::hear_path`).
+    fn hear_path(&mut self, s: &SyncId, steps: Vec<osis_blob::Step>);
 }
 
 /// The memo effects opens follows (notes/sync-facade.md, Effects): the sync IDs this node syncs,
@@ -157,12 +165,16 @@ fn node_creds(cx: &mut Cx, unread: &Unread, s: &SyncId) -> Option<Arc<Creds>> {
         // held as a stub it opens as a reader does
         Holding::Read | Holding::Stub => {
             let rc = cx.engine.read_credentials(s).ok()??;
-            Creds { holding: Some(holding), ..Creds::reader(&rc) }
+            let claims = cx.store.head_claims(s).ok()?;
+            Creds { holding: Some(holding), ..Creds::reader(&rc, &claims) }
         }
         // at a head past its keys it holds S and shows only the secrets no step of its path
         // bears: S is still in the sync set, so its `changed_at` moves and the peer hears a
         // generation
-        Holding::Unread => unread.credentials(s).map_or_else(|| Creds { holding: Some(holding), ..Creds::default() }, |uc| Creds::kept_unread(&uc)),
+        Holding::Unread => match unread.credentials(s) {
+            Some(uc) => Creds::kept_unread(&uc, &cx.store.head_claims(s).ok()?),
+            None => Creds { holding: Some(holding), ..Creds::default() },
+        },
     };
     Some(Arc::new(c))
 }
@@ -245,5 +257,13 @@ impl Holds for NodeHolds<'_, '_> {
     fn deposit(&mut self, src: crate::store::Source, item: &DepositItem) -> Code {
         // a store failure refuses for now: the sender offers it again after its back-off
         self.cx.store.take_deposit(item, Some(src)).unwrap_or(Code::RATE_LIMITED)
+    }
+
+    fn hear_path(&mut self, s: &SyncId, steps: Vec<osis_blob::Step>) {
+        // the longest path heard stands: a shorter answer is a peer behind
+        let known = self.cx.engine.heard_len(s);
+        if steps.len() > known {
+            self.cx.engine.hear_path(s, steps);
+        }
     }
 }

@@ -416,6 +416,12 @@ impl Engine {
     /// the blob key (a copy's, `seal_to`), the rest left sealed; checks the prefix against the
     /// header and the sections' aspects (spec/commits.md §4).
     pub fn open_commit(&mut self, blob: &[u8], key: &Secret32) -> Result<OpenedBlob> {
+        self.open_commit_by(blob, key, &[])
+    }
+
+    /// `open_commit`, also opening a section by a section key of `section_keys` (an entry's,
+    /// spec/sync-ids.md §3 Taking an entry), whatever it holds of its thing.
+    pub(crate) fn open_commit_by(&mut self, blob: &[u8], key: &Secret32, section_keys: &[Secret32]) -> Result<OpenedBlob> {
         let (prefix, pt) = osis_blob::open(blob, key)?;
         let env = Envelope::decode(&pt)?;
         let id = env.id();
@@ -457,7 +463,7 @@ impl Engine {
         // parts the sync ID's own readers judge); the record of one whose record is not held is
         // taken alone (spec/sync-judgement.md §1 Sealed sections)
         let mut records = Vec::new();
-        let opened = env.open(|sec| {
+        let opened = env.open_by(|sec| {
             let mut v = match opens(sec) {
                 SectionOpens::Whole => own(sec),
                 SectionOpens::Record => {
@@ -475,7 +481,7 @@ impl Engine {
             };
             v.push(key.clone());
             v
-        })?;
+        }, section_keys)?;
         // the epoch each section under a read secret opened under (`sync_ids::opened`)
         if let Some(h) = &header {
             let mut under = Vec::new();

@@ -177,7 +177,17 @@ impl Engine {
             let Some(o) = self.owned_sync_ids(t)?.iter().find(|o| o.id == *s).cloned() else { continue };
             self.credentials_of(&mut c, t, &o)?;
         }
-        c.claimants = self.claimants(s, &things);
+        // claims at the recorded head and the heard one, where no held secret opens by proof
+        let held: BTreeSet<[u8; 32]> = c.held_proofs.iter().map(|(_, k)| *k).collect();
+        let heard = self.core.heard.get(s).and_then(|p| p.last().cloned());
+        let mut at: Vec<osis_blob::Step> = c.head.iter().cloned().chain(heard).filter(|st| !held.contains(&st.keys.sync.to_bytes())).collect();
+        at.dedup_by_key(|st| st.step_key);
+        if !at.is_empty() {
+            let claimants = self.claimants(s, &things);
+            for st in &at {
+                c.claims.extend(claimants.each().filter_map(|k| super::claim_at(k, s, &st.step_key)).map(|x| (st.keys.sync.to_bytes(), x)));
+            }
+        }
         Ok(Some(Arc::new(c)))
     }
 
@@ -189,7 +199,7 @@ impl Engine {
     pub(crate) fn claimants(&mut self, s: &SyncId, things: &[Tid]) -> super::Claimants {
         let me = self.core.tid();
         let mut holders: BTreeSet<Tid> = std::iter::once(me).chain(self.core.timelines().edges_at(None).targets(&me).copied()).collect();
-        let mut keys: Vec<osis_crypto::X25519Secret> = Vec::new();
+        let mut keys: Vec<osis_crypto::KemSecret> = Vec::new();
         let mut public = false;
         for t in things {
             let reader = self.core.reader_of(t);
@@ -202,14 +212,14 @@ impl Engine {
             holders.extend(self.core.followed_links.signal_holders(t, s));
             match self.core.followed_links.link_of(t, s) {
                 Some(None) => public = true,
-                Some(Some(l)) => keys.extend(l.link_read_kem().map(|k| k.x25519().clone())),
+                Some(Some(l)) => keys.extend(l.link_read_kem().cloned()),
                 None => {}
             }
         }
         for m in holders {
             let Some(e) = self.core.epochs(&m) else { continue };
             for (_, x) in e.role(Role::Read).held_newest_first() {
-                let k = x.kem().x25519();
+                let k = x.kem();
                 if !keys.iter().any(|y| y.public() == k.public()) {
                     keys.push(k.clone());
                 }

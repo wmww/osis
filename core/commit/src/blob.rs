@@ -404,9 +404,15 @@ impl Section {
 
     /// `open`, with the section key that opened it (what a seal keeps, `SectionSeal`).
     pub fn open_keyed(&self, commit: &CommitId, split: bool, secrets: &[Secret32]) -> Result<Option<(Contents, Secret32)>, Error> {
+        self.open_keyed_by(commit, split, secrets, &[])
+    }
+
+    /// `open_keyed`, also trying each of `keys` as the section key itself (an entry's, spec/wire.md
+    /// §5 Entry blocks).
+    pub fn open_keyed_by(&self, commit: &CommitId, split: bool, secrets: &[Secret32], keys: &[Secret32]) -> Result<Option<(Contents, Secret32)>, Error> {
         let mut opened = None;
-        for s in secrets {
-            let Ok(key) = osis_crypto::unwrap_section(s, commit, &self.wrap) else { continue };
+        let unwrapped = secrets.iter().filter_map(|s| osis_crypto::unwrap_section(s, commit, &self.wrap).ok());
+        for key in unwrapped.chain(keys.iter().filter(|k| osis_crypto::open_section(commit, k, &self.ciphertext).is_ok()).cloned()) {
             let pt = osis_crypto::open_section(commit, &key, &self.ciphertext);
             let ok = pt.is_ok();
             opened = Some(pt.map(|pt| (pt, key)));
@@ -512,7 +518,12 @@ impl Envelope {
     /// entry, so every section a reader takes carries the one key each entry accepts; the parts
     /// of a thing whose path key no opened section carries, or whose entry opens to a bad path,
     /// are dropped once the aspect list is resolved (`CommitBlob::settle_paths`).
-    pub fn open(&self, mut secrets: impl FnMut(&Section) -> Vec<Secret32>) -> Result<Opened, Error> {
+    pub fn open(&self, secrets: impl FnMut(&Section) -> Vec<Secret32>) -> Result<Opened, Error> {
+        self.open_by(secrets, &[])
+    }
+
+    /// `open`, also trying each of `keys` as a section key itself (`Section::open_keyed_by`).
+    pub fn open_by(&self, mut secrets: impl FnMut(&Section) -> Vec<Secret32>, section_keys: &[Secret32]) -> Result<Opened, Error> {
         let id = self.id();
         let h = &self.header;
         let split = h.is_split();
@@ -521,7 +532,7 @@ impl Envelope {
         let mut sealed = Vec::new();
         let mut seals = Vec::with_capacity(self.sections.len());
         for s in &self.sections {
-            let Some((c, key)) = s.open_keyed(&id, split, &secrets(s))? else {
+            let Some((c, key)) = s.open_keyed_by(&id, split, &secrets(s), section_keys)? else {
                 sealed.push(s.clone());
                 seals.push(SectionSeal::Verbatim(s.clone()));
                 continue;

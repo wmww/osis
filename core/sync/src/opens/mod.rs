@@ -256,6 +256,8 @@ enum Req {
     Beacons { generation: u64 },
     Offer,
     Lost,
+    /// A Head of S, with the steps its earlier answers gave (asked again from the last).
+    Head { s: SyncId, got: Vec<osis_blob::Step> },
 }
 
 /// An Offer item sent, to read its answer by.
@@ -325,6 +327,9 @@ struct Conn {
     /// Per S, the highest `until` an ended member reached on this connection: a Hit on an
     /// older step's sync proof opens S again here only for a later one (spec/sync-opens.md §6).
     served: BTreeMap<SyncId, Position>,
+    /// Per S, the `changed_at` position at which this side last asked the peer Head: asked once
+    /// per change of S, never again while S stands (spec/sync-ids.md §6 Head).
+    asked_head: BTreeMap<SyncId, u64>,
 }
 
 /// `changed_at` (spec/sync-opens.md §3): per S a position of this node's own sequence, with the
@@ -1315,6 +1320,7 @@ impl Opens {
             ending: BTreeSet::new(),
             lost_to: None,
             served: BTreeMap::new(),
+            asked_head: BTreeMap::new(),
         };
         if bind.dialer {
             if !c.named.is_empty() {
@@ -1496,6 +1502,7 @@ impl Opens {
             Msg::Beacons { generation, base, f, lo, hi, gcs, more, .. } => self.beacons(ctx, conn, id, generation, base, f, (lo, hi), &gcs, more),
             Msg::Offer { items, .. } => self.offered(ctx, conn, id, items, moved),
             Msg::Lost { items, .. } => self.lost(ctx, conn, id, items, moved),
+            Msg::Head { sync_id, after, .. } => head_answer(ctx, conn, id, &sync_id, after.as_ref()),
             _ => {}
         }
     }
@@ -1540,6 +1547,37 @@ impl Opens {
             (Req::Beacons { generation }, m) => self.beacons_answered(ctx, conn, id, generation, &m),
             (Req::Offer, Msg::Shared { items, .. }) => self.answered(ctx, conn, items, moved),
             (Req::Offer, _) => self.answered(ctx, conn, Vec::new(), moved),
+            (Req::Head { s, mut got }, Msg::HeadReply { steps, .. }) => {
+                let full = steps.len() == osis_proto::limits::MAX_HEAD_STEPS;
+                got.extend(steps);
+                // a full page: asked again from its last step
+                if full && let Some(last) = got.last().map(osis_blob::Step::id) {
+                    let id = ctx.wire.request(conn, Msg::Head { id: 0, sync_id: s, after: Some(last) });
+                    if let Some(c) = self.conns.get_mut(&conn) {
+                        c.reqs.insert(id, Req::Head { s, got });
+                    }
+                    return;
+                }
+                // taken only as a verified path from genesis: the answerer's word on its own head
+                if osis_blob::verify_path(&s, &got).is_ok() {
+                    ctx.holds.hear_path(&s, got);
+                }
+            }
+            (Req::Head { .. }, _) => {}
+        }
+    }
+
+    /// Asks the peer on `conn` Head of S (spec/sync-ids.md §6 Head), once per change of S there.
+    fn ask_head(&mut self, ctx: &mut Ctx, conn: ConnId, s: SyncId) {
+        let at = self.changed.at.get(&s).map_or(0, |(p, _, _)| *p);
+        let Some(c) = self.conns.get_mut(&conn) else { return };
+        if c.asked_head.get(&s).is_some_and(|x| *x >= at) {
+            return;
+        }
+        c.asked_head.insert(s, at);
+        let id = ctx.wire.request(conn, Msg::Head { id: 0, sync_id: s, after: None });
+        if let Some(c) = self.conns.get_mut(&conn) {
+            c.reqs.insert(id, Req::Head { s, got: Vec::new() });
         }
     }
 
@@ -1898,12 +1936,14 @@ impl Opens {
         let mut sent = Vec::new();
         let mut items = Vec::new();
         let mut cut = false;
+        let mut heads = Vec::new();
         for s in pending {
             if self.member(conn, &s).is_some() {
                 continue;
             }
             let Some(adm) = self.admissible(&s) else { continue };
             self.work.tested += 1;
+            let before = items.len();
             for t in &adm.tests {
                 // one it would not open by is not sent (spec/sync-opens.md §6)
                 if self.served_past(ctx, conn, &s, &adm, &t.credential()) {
@@ -1923,10 +1963,18 @@ impl Opens {
                 });
                 sent.push(Sent::Hit { s, cred: Box::new(t.clone()), beacon: b, own: adm.own });
             }
+            // following S with no path, or by claims the peer's filter does not show: its head
+            // is asked (spec/sync-ids.md §6 Head)
+            if items.len() == before && adm.own != SourceClass::Store && (adm.head.is_none() || adm.tests.iter().any(|t| matches!(t, Tested::Claim { .. }))) {
+                heads.push(s);
+            }
             if items.len() >= MAX_OFFER_ITEMS {
                 cut = true;
                 break;
             }
+        }
+        for s in heads {
+            self.ask_head(ctx, conn, s);
         }
         let Some(c) = self.conns.get_mut(&conn) else { return };
         if !cut {
@@ -2364,6 +2412,22 @@ fn replier_proved(bind: &Bind, s: &SyncId, cred: &Tested, a: &SharedItem) -> boo
         Tested::Proof(..) => true,
         Tested::Claim { sync, .. } => a.sig.as_ref().is_some_and(|sig| bind.peer_signed(sync, s, sig)),
     }
+}
+
+/// Answers a Head (spec/sync-ids.md §6 Head): the steps of this node's path of S after `after`
+/// (none: from genesis) through its head, at most `MAX_HEAD_STEPS`, whatever the connection
+/// proved; 13 for an S it does not hold or a step not on its path.
+fn head_answer(ctx: &mut Ctx, conn: ConnId, id: Id, s: &SyncId, after: Option<&osis_blob::StepId>) {
+    let path = ctx.store.synced(s).and_then(|_| ctx.store.path(s).ok().flatten());
+    let start = path.as_ref().and_then(|p| match after {
+        None => Some(0),
+        Some(a) => p.steps.iter().position(|st| st.id() == *a).map(|i| i + 1),
+    });
+    let reply = match (path, start) {
+        (Some(p), Some(i)) if !p.steps.is_empty() => Msg::HeadReply { id, steps: p.steps.iter().skip(i).take(osis_proto::limits::MAX_HEAD_STEPS).cloned().collect() },
+        _ => Msg::Error { id, code: Code::UNKNOWN_SYNC_ID },
+    };
+    ctx.wire.answer(conn, id, reply);
 }
 
 /// Answers a filter page breaking the format and closes the connection (spec/wire.md §11.2).
