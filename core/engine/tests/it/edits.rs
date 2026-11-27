@@ -203,9 +203,8 @@ fn a_valid_edit_of_an_invalid_original_stands_alone_spec_commits_5() {
 }
 
 // spec/commits.md §5 Signals: versions fall with their original and fold under it again when both
-// return (the kicker's kick falls)
+// return (the kicker's kick falls, and the kicker, removed, reads D no more)
 #[test]
-#[ignore = "stub rewrite: fails under rule 2, cause not sorted (R4)"]
 fn versions_return_folded_with_their_original_spec_commits_5() {
     let (mut lp, d, ids) = net_with(3);
     let r = purgeable();
@@ -225,9 +224,10 @@ fn versions_return_folded_with_their_original_spec_commits_5() {
     }
     assert_eq!(list(&mut lp, carol, d), vec![], "both fell at carol");
     lp.sync_all().unwrap();
-    for i in 0..3 {
+    for i in [0, bob] {
         assert_eq!(list(&mut lp, i, d), vec![(o, Some(v), body("two"))], "folded again at {i}");
     }
+    assert!(!lp.peers[carol].engine.closure_holds(&d), "carol, removed, holds D no more");
 }
 
 fn purge_commit(lp: &mut LocalPeer, i: usize, d: Tid, items: Vec<PurgeItem>) -> CommitId {
