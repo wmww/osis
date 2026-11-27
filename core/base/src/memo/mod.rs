@@ -22,7 +22,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::hash::{Hash, Hasher};
 use std::ops::Deref;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, Weak};
 
 mod cutoff;
 mod effects;
@@ -72,6 +72,24 @@ struct Table {
     born: &'static std::panic::Location<'static>,
     /// Every write of it inside an `Undoable` stretch is undone if the stretch is (`Stamps::undoable`).
     undoable: bool,
+    /// The cutoff whose rows these stamps are (`Lazy`), whose keys it reports stale.
+    lazy: Option<Weak<dyn Lazy>>,
+}
+
+/// The rows of a `Cutoff`, whose stamps move only when it is refreshed: a read of a row holds
+/// only while the row's key is not due there (its derivation's reads unmoved), so no reader
+/// holds over a row not yet refreshed, however it is checked (`Dep::holds`, a memo hit,
+/// `Effects::due`).
+trait Lazy: Send + Sync {
+    /// Whether the row of hash `key` (`None`: any row) may be stale: its key due.
+    fn stale(&self, key: Option<u64>) -> bool;
+    /// The hashes of the rows that may be stale.
+    fn stale_keys(&self) -> Vec<u64>;
+}
+
+/// The cutoff table `t`'s stamps lag, if any (`Lazy`).
+fn lazy_of(t: &Arc<Mutex<Table>>) -> Option<Arc<dyn Lazy>> {
+    lock(t).lazy.as_ref().and_then(Weak::upgrade)
 }
 
 /// One change in a `Table`'s log.
@@ -102,7 +120,7 @@ impl std::fmt::Debug for Logged {
 impl Default for Table {
     #[track_caller]
     fn default() -> Table {
-        Table { seq: 0, ver: 0, absent: [0; ABSENT_BUCKETS], keys: HashMap::default(), removed: Default::default(), prefixes: BTreeMap::new(), log: Default::default(), marks: BTreeMap::new(), name: None, born: std::panic::Location::caller(), undoable: false }
+        Table { seq: 0, ver: 0, absent: [0; ABSENT_BUCKETS], keys: HashMap::default(), removed: Default::default(), prefixes: BTreeMap::new(), log: Default::default(), marks: BTreeMap::new(), name: None, born: std::panic::Location::caller(), undoable: false, lazy: None }
     }
 }
 
@@ -212,7 +230,7 @@ fn bucket(h: u64) -> usize {
     (h % ABSENT_BUCKETS as u64) as usize
 }
 
-fn lock(t: &Mutex<Table>) -> MutexGuard<'_, Table> {
+fn lock<T>(t: &Mutex<T>) -> MutexGuard<'_, T> {
     t.lock().unwrap_or_else(|e| e.into_inner())
 }
 
@@ -730,6 +748,8 @@ fn copied(t: &Arc<Mutex<Table>>) -> Arc<Mutex<Table>> {
         // each reader copied with the world marks the copy again (`effects::cloned_table`)
         let mut t = lock(m).clone();
         t.marks.clear();
+        // a copied cutoff links its own (`Cutoff::clone`)
+        t.lazy = None;
         Mutex::new(t)
     })
 }
@@ -788,8 +808,14 @@ impl Dep {
     fn key(&self) -> Option<u64> {
         (!self.whole).then_some(self.key)
     }
+    /// Whether the read still has the stamp it saw, and, on a cutoff's rows, its row is not due
+    /// there (`Lazy`).
     fn holds(&self) -> bool {
-        lock(&self.table).stamp(self.key()) == self.seen
+        let (stamp, lazy) = {
+            let t = lock(&self.table);
+            (t.stamp(self.key()), t.lazy.clone())
+        };
+        stamp == self.seen && !lazy.and_then(|l| l.upgrade()).is_some_and(|l| l.stale(self.key()))
     }
     /// The container and key read, whatever the stamp.
     fn id(&self) -> (usize, Option<u64>) {
@@ -1172,15 +1198,18 @@ impl<V> Entry<V> {
         self.groups.iter().all(|g| {
             let deps = self.deps.get(g.start..g.end).unwrap_or_default();
             let Some(first) = deps.first() else { return true };
-            let t = lock(&first.table);
-            if g.held_at.get() == Some(t.ver) {
-                return true;
-            }
-            let holds = deps.iter().all(|d| t.stamp(d.key()) == d.seen);
-            if holds {
-                g.held_at.set(Some(t.ver));
-            }
-            holds
+            let lazy = {
+                let t = lock(&first.table);
+                if g.held_at.get() != Some(t.ver) {
+                    if !deps.iter().all(|d| t.stamp(d.key()) == d.seen) {
+                        return false;
+                    }
+                    g.held_at.set(Some(t.ver));
+                }
+                t.lazy.clone()
+            };
+            // a cutoff's rows hold only while not due there, whatever their stamps
+            lazy.and_then(|l| l.upgrade()).is_none_or(|l| deps.iter().all(|d| !l.stale(d.key())))
         })
     }
 }

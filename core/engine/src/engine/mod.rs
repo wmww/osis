@@ -850,8 +850,7 @@ pub struct Core {
     /// `Engine::sync_things` (`memo`): asked every sync step and every ephemeral write, built
     /// again only when a closure, the shared set or the sync root it read moved.
     pub(crate) sync_things: memo::Memo<(), Arc<BTreeSet<Tid>>>,
-    /// `Engine::thing_sync` per thing and `Engine::sync_set` (`memo`): sync reads them every step.
-    pub(crate) thing_sync: memo::Memo<Tid, crate::sync::ThingSync>,
+    /// `Engine::sync_set` (`memo`): sync reads it every step.
     pub(crate) sync_set: memo::Memo<(), Arc<crate::sync::SyncSet>>,
     /// `Engine::dial_peers` per sync ID (`memo`): sync's dials read it at each move of what it read.
     pub(crate) dial_peers: memo::Memo<SyncId, Arc<Vec<osis_base::Address>>>,
@@ -927,11 +926,10 @@ pub struct Core {
     /// copied under each sync ID).
     pub(crate) sync_body_rows: memo::Cutoff<(CommitId, SyncId, Option<Tid>), Option<crate::sync::BodyMeta>>,
     /// The per-thing facts every commit's bodies and their facts read (`memo::Cutoff`, refreshed
-    /// by `Engine::follow_thing_rows`): how a thing syncs (`thing_sync_row`), its secret actor
-    /// (`secret_actor_row`), whether an actor's keys open it (`opens_row`) and an actor's read
-    /// floor (`read_floor_row`). Each body reads
-    /// one row per thing, not the derivation's reads copied into every commit's
-    /// (issues/memory-per-commit.md).
+    /// first by `Engine::follow_thing_rows`): how a thing syncs (`Engine::thing_sync`, the one
+    /// copy of it), its secret actor (`secret_actor_row`), whether an actor's keys open it
+    /// (`opens_row`) and an actor's read floor (`read_floor_row`). Each body reads one row per
+    /// thing, not the derivation's reads copied into every commit's.
     pub(crate) thing_syncs: memo::Cutoff<Tid, crate::sync::ThingSync>,
     pub(crate) secret_actors: memo::Cutoff<Tid, Option<Tid>>,
     pub(crate) keys_opens: memo::Cutoff<(Tid, Tid), bool>,
@@ -1842,7 +1840,6 @@ impl Core {
             head_keys: _,
             read_credentials: _,
             sync_things: _,
-            thing_sync: _,
             sync_set: _,
             dial_peers: _,
             steps_needs: _,
@@ -2107,7 +2104,6 @@ impl Core {
             head_keys: memo::Memo::new("head keys: derive"),
             read_credentials: memo::Memo::new("sync: read credentials"),
             sync_things: memo::Memo::new("sync: things"),
-            thing_sync: memo::Memo::new("sync: thing sync"),
             sync_set: memo::Memo::new("sync: sync set"),
             dial_peers: memo::Memo::new("sync: dial peers"),
             steps_needs: memo::Memo::new("sync: steps needs"),

@@ -379,7 +379,7 @@ impl Engine {
     /// commit on it applied from elsewhere (spec/permissions.md §3 Complete pass: the re-seal
     /// trigger waits for one). False for an actor with no sync ID read here.
     pub(crate) fn complete_pass(&mut self, actor: &Tid) -> Result<bool> {
-        let ThingSync::Read(ids) = self.thing_sync_now(actor)? else { return Ok(false) };
+        let ThingSync::Read(ids) = self.thing_sync(actor)? else { return Ok(false) };
         let since = self.role_arrival(actor).max(self.asked_at(actor)).unwrap_or(0);
         Ok(!ids.is_empty() && self.passed_after(ids.iter(), since))
     }
@@ -396,7 +396,7 @@ impl Engine {
     pub(crate) fn carrying_now(&mut self, thing: &Tid, read: bool) -> Result<BTreeSet<SyncId>> {
         let mut ids = BTreeSet::new();
         for x in std::iter::once(*thing).chain(self.units_holding(thing)) {
-            match self.thing_sync_now(&x)? {
+            match self.thing_sync(&x)? {
                 ThingSync::Read(v) => ids.extend(v),
                 ThingSync::Unread(v) if !read => ids.extend(v),
                 _ => {}

@@ -1,26 +1,92 @@
 //! Early cutoff per key (`Cutoff`): a value derived per key whose readers move only when it
 //! does, not when what it read moved to the same value.
 
-use super::{Effects, Quiet, Stamped, Unrecorded, recorded_frame};
+use super::{Effects, Ids, Lazy, Quiet, Stamped, Unrecorded, lock, recorded_frame, writes};
 use std::cell::{Cell, RefCell};
+use std::collections::HashSet;
 use std::hash::Hash;
+use std::sync::{Arc, Mutex, MutexGuard};
 
 /// One derivation per key, kept as a stamped row (`Stamped`) and derived again (`Effects`) when
 /// what it read moved: a reader of a key depends on its row alone, so a key whose inputs move
 /// often to the same answer (an actor's whole timeline, read for one yes or no) moves none of its
 /// readers. A key is followed from its first `get_in` on. Brought up to date at each `get_in`
-/// (every key due, not only the one asked) and `refresh_in`: a memo or `Effects` key reading a
-/// row depends on the row as last refreshed, so whoever checks such a reader without asking the
-/// cutoff first (an `Effects` owner's `due`: sync's modules, through `Engine::follow`) refreshes
-/// it before.
+/// (every key due, not only the one asked) and `refresh_in`. No reader holds over a row not yet
+/// brought up to date: the rows' stamps are linked to the cutoff (`Lazy`), so a read of a row
+/// whose key is due here counts as moved however the reader is checked, and its rerun's
+/// `get_in` refreshes it. A refresh before the readers are checked (an `Effects` owner's `due`:
+/// sync's modules, through `Engine::follow`) only keeps the cutoff: a row that moved to the same
+/// value moves none of them.
 pub struct Cutoff<K, V> {
-    fx: RefCell<Effects<K, V>>,
+    fx: Arc<Shared<K, V>>,
     rows: RefCell<Stamped<K, V>>,
     /// The refresh's fixed point.
     quiet: Cell<Quiet>,
     /// Debug builds: amends per key (`amend_check`).
     #[cfg(debug_assertions)]
     amends: RefCell<std::collections::HashMap<K, u64>>,
+}
+
+/// A cutoff's followers, shared with its rows' stamps (`Lazy`).
+struct Shared<K, V>(Mutex<Inner<K, V>>);
+
+struct Inner<K, V> {
+    fx: Effects<K, V>,
+    /// `writes` when the keys due were last found, and their hashes (`Lazy::stale`); `None`:
+    /// since a use of `fx` that may have changed them.
+    stale: Option<(u64, HashSet<u64, Ids>)>,
+}
+
+/// `Cutoff`'s hold of its followers (`Cutoff::fx`).
+struct Fx<'a, K, V>(MutexGuard<'a, Inner<K, V>>);
+
+impl<K, V> std::ops::Deref for Fx<'_, K, V> {
+    type Target = Effects<K, V>;
+    fn deref(&self) -> &Effects<K, V> {
+        &self.0.fx
+    }
+}
+
+impl<K, V> std::ops::DerefMut for Fx<'_, K, V> {
+    fn deref_mut(&mut self) -> &mut Effects<K, V> {
+        &mut self.0.fx
+    }
+}
+
+impl<K: Hash + Eq + Clone + std::fmt::Debug + Send + 'static, V: Clone + PartialEq + std::fmt::Debug + Send + 'static> Shared<K, V> {
+    /// `f` of the hashes of the keys due now, the logs read (`Effects::find_pending`) only when
+    /// something was written since they last were.
+    fn with_stale<T>(&self, f: impl FnOnce(&HashSet<u64, Ids>) -> T) -> T {
+        let mut g = match self.0.try_lock() {
+            Ok(g) => g,
+            Err(std::sync::TryLockError::Poisoned(e)) => e.into_inner(),
+            // a derivation reading its own cutoff's rows: a cycle no refresh could settle
+            Err(std::sync::TryLockError::WouldBlock) => unreachable!("a cutoff's row read while that cutoff judged its keys"),
+        };
+        let at = writes();
+        if g.stale.as_ref().is_none_or(|(w, _)| *w != at) {
+            g.fx.find_pending();
+            let hashes = g.fx.pending_row_hashes().into_iter().collect();
+            g.stale = Some((at, hashes));
+        }
+        match &g.stale {
+            Some((_, s)) => f(s),
+            None => f(&HashSet::default()),
+        }
+    }
+}
+
+impl<K: Hash + Eq + Clone + std::fmt::Debug + Send + 'static, V: Clone + PartialEq + std::fmt::Debug + Send + 'static> Lazy for Shared<K, V> {
+    fn stale(&self, key: Option<u64>) -> bool {
+        self.with_stale(|s| match key {
+            Some(h) => s.contains(&h),
+            None => !s.is_empty(),
+        })
+    }
+
+    fn stale_keys(&self) -> Vec<u64> {
+        self.with_stale(|s| s.iter().copied().collect())
+    }
 }
 
 /// What an amend made of the value handed to it (`Cutoff::refresh_amended_in`).
@@ -31,15 +97,30 @@ pub enum Amended<V> {
     Not(V),
 }
 
-impl<K: Hash + Eq + Ord + Clone + std::fmt::Debug, V: Clone + PartialEq + std::fmt::Debug> Cutoff<K, V> {
+impl<K: Hash + Eq + Ord + Clone + std::fmt::Debug + Send + 'static, V: Clone + PartialEq + std::fmt::Debug + Send + 'static> Cutoff<K, V> {
     pub fn new(name: &'static str) -> Self {
+        Self::of(Effects::new(name), Stamped::named(name))
+    }
+
+    /// A cutoff of `fx` over `rows`, the rows' stamps linked to it (`Lazy`).
+    fn of(fx: Effects<K, V>, rows: Stamped<K, V>) -> Self {
+        let fx = Arc::new(Shared(Mutex::new(Inner { fx, stale: None })));
+        let link: Arc<dyn Lazy> = fx.clone();
+        lock(&rows.stamps.0).lazy = Some(Arc::downgrade(&link));
         Cutoff {
-            fx: RefCell::new(Effects::new(name)),
-            rows: RefCell::new(Stamped::named(name)),
+            fx,
+            rows: RefCell::new(rows),
             quiet: Cell::default(),
             #[cfg(debug_assertions)]
             amends: RefCell::default(),
         }
+    }
+
+    /// Its followers, for a use that may change which keys are due.
+    fn fx(&self) -> Fx<'_, K, V> {
+        let mut g = lock(&self.fx.0);
+        g.stale = None;
+        Fx(g)
     }
 
     /// Derives again (by `f`, over all of `ctx`, which holds this cutoff at `me`) every key whose
@@ -63,15 +144,18 @@ impl<K: Hash + Eq + Ord + Clone + std::fmt::Debug, V: Clone + PartialEq + std::f
 
     fn refresh<C, E>(ctx: &mut C, me: &impl Fn(&C) -> &Self, f: &impl Fn(&mut C, &K) -> Result<V, E>, amend: Option<&impl Fn(&mut C, &K, V) -> Result<Amended<V>, E>>) -> Result<bool, E> {
         let this = me(ctx);
-        if this.quiet.get().holds(this.fx.borrow().idle()) {
+        if this.quiet.get().holds(this.fx().idle()) {
             return Ok(false);
         }
         let _u = Unrecorded::start();
         let from = Quiet::begin();
-        let due = me(ctx).fx.borrow_mut().due();
+        let due = me(ctx).fx().due();
         let (mut moved, mut failed) = (false, None);
         for k in due {
-            let checking = me(ctx).fx.borrow().checking(&k);
+            let checking = me(ctx).fx().checking(&k);
+            if !checking && me(ctx).fx().holds_again(&k) {
+                continue;
+            }
             if let Some(amend) = amend.filter(|_| !checking) {
                 match Self::amended(ctx, me, f, amend, &k) {
                     Ok(Some(m)) => {
@@ -87,7 +171,7 @@ impl<K: Hash + Eq + Ord + Clone + std::fmt::Debug, V: Clone + PartialEq + std::f
             }
             let mut run = || recorded_frame(|| f(ctx, &k));
             let (out, frame) = if checking { crate::costs::paused(run) } else { run() };
-            match me(ctx).fx.borrow_mut().settled(&k, out, frame) {
+            match me(ctx).fx().settled(&k, out, frame) {
                 Ok(Some((_, now))) => {
                     me(ctx).rows.borrow_mut().insert(k, now);
                     moved = true;
@@ -106,7 +190,7 @@ impl<K: Hash + Eq + Ord + Clone + std::fmt::Debug, V: Clone + PartialEq + std::f
     /// must run (no value kept, the amend declined, or a moved read it does not account for; the
     /// kept value is back in place then unless the amend changed it).
     fn amended<C, E>(ctx: &mut C, me: &impl Fn(&C) -> &Self, f: &impl Fn(&mut C, &K) -> Result<V, E>, amend: &impl Fn(&mut C, &K, V) -> Result<Amended<V>, E>, k: &K) -> Result<Option<bool>, E> {
-        let Some(old) = me(ctx).fx.borrow_mut().take_value(k) else { return Ok(None) };
+        let Some(old) = me(ctx).fx().take_value(k) else { return Ok(None) };
         // the row's copy: the same value
         drop(me(ctx).rows.borrow_mut().map.remove(k));
         let (out, mut frame) = {
@@ -115,13 +199,13 @@ impl<K: Hash + Eq + Ord + Clone + std::fmt::Debug, V: Clone + PartialEq + std::f
         };
         let put_back = |ctx: &mut C, v: V| {
             me(ctx).rows.borrow_mut().map.insert(k.clone(), v.clone());
-            me(ctx).fx.borrow_mut().put_value(k, v);
+            me(ctx).fx().put_value(k, v);
         };
         let (value, changed) = match out {
             Err(e) => {
                 // the row goes, as a failed derivation leaves none
                 me(ctx).rows.borrow().stamps.wrote(k, false);
-                let r = me(ctx).fx.borrow_mut().settled(k, Err(e), frame);
+                let r = me(ctx).fx().settled(k, Err(e), frame);
                 return r.map(|_| None);
             }
             Ok(Amended::Not(old)) => {
@@ -130,7 +214,7 @@ impl<K: Hash + Eq + Ord + Clone + std::fmt::Debug, V: Clone + PartialEq + std::f
             }
             Ok(Amended::Kept(v, changed)) => (v, changed),
         };
-        let old_deps = me(ctx).fx.borrow().deps(k);
+        let old_deps = me(ctx).fx().deps(k);
         let again = |d: &super::Dep| d.accounted && frame.seen.get(&d.id()).and_then(|&i| frame.deps.get(i)).is_some_and(|n| n.accounted);
         let dropped = |d: &super::Dep| d.part.is_some_and(|p| frame.released.contains(&p));
         if !old_deps.iter().all(|d| d.holds() || again(d) || dropped(d)) {
@@ -150,12 +234,12 @@ impl<K: Hash + Eq + Ord + Clone + std::fmt::Debug, V: Clone + PartialEq + std::f
         if me(ctx).amend_check(k) {
             let fresh = crate::costs::paused(|| super::unrecorded(|| super::comparing_run(|| f(ctx, k))));
             if let Ok(fresh) = fresh {
-                assert!(fresh == value, "cutoff {}: amended {value:?}, a fresh run gives {fresh:?}", me(ctx).fx.borrow().name());
+                assert!(fresh == value, "cutoff {}: amended {value:?}, a fresh run gives {fresh:?}", me(ctx).fx().name());
             }
         }
         #[cfg(not(debug_assertions))]
         let _ = f;
-        let r = me(ctx).fx.borrow_mut().settled::<E>(k, Ok(value.clone()), frame);
+        let r = me(ctx).fx().settled::<E>(k, Ok(value.clone()), frame);
         drop(r);
         let mut rows = me(ctx).rows.borrow_mut();
         if changed {
@@ -178,7 +262,7 @@ impl<K: Hash + Eq + Ord + Clone + std::fmt::Debug, V: Clone + PartialEq + std::f
     /// Key `k`'s value, up to date (`refresh_amended_in`, `k` followed from now on): a read of
     /// its row alone.
     pub fn get_amended_in<C, E>(ctx: &mut C, me: impl Fn(&C) -> &Self, k: &K, f: impl Fn(&mut C, &K) -> Result<V, E>, amend: impl Fn(&mut C, &K, V) -> Result<Amended<V>, E>) -> Result<V, E> {
-        me(ctx).fx.borrow_mut().want(k.clone());
+        me(ctx).fx().want(k.clone());
         let failed = Self::refresh(ctx, &me, &f, Some(&amend)).err();
         Self::row(ctx, &me, k, failed)
     }
@@ -188,14 +272,14 @@ impl<K: Hash + Eq + Ord + Clone + std::fmt::Debug, V: Clone + PartialEq + std::f
         let row = me(ctx).rows.borrow().get(k).cloned();
         match row {
             // a key just followed whose derivation failed has no row: its failure is the answer
-            Some(v) if me(ctx).fx.borrow().settled_value(k) => Ok(v),
+            Some(v) if me(ctx).fx().settled_value(k) => Ok(v),
             _ => Err(failed.unwrap_or_else(|| unreachable!("a followed key settled without a row"))),
         }
     }
 
     /// The reads its rows' derivations hold (`Effects::reads_held`).
     pub fn reads_held(&self) -> usize {
-        self.fx.borrow().reads_held()
+        self.fx().reads_held()
     }
 
     /// How many rows it holds (unstamped: for counts of what it keeps).
@@ -206,7 +290,7 @@ impl<K: Hash + Eq + Ord + Clone + std::fmt::Debug, V: Clone + PartialEq + std::f
     /// Stops following `k`: its row goes (a reader of it moves), and a later `get_in` derives it
     /// anew.
     pub fn unfollow(&self, k: &K) {
-        self.fx.borrow_mut().unwant(k);
+        self.fx().unwant(k);
         if super::unrecorded(|| self.rows.borrow().get(k).is_some()) {
             self.rows.borrow_mut().remove(k);
         }
@@ -223,7 +307,7 @@ impl<K: Hash + Eq + Ord + Clone + std::fmt::Debug, V: Clone + PartialEq + std::f
 
     /// Stops following every key `drop` names (`unfollow`).
     pub fn unfollow_where(&self, drop: impl Fn(&K) -> bool) {
-        let keys = self.fx.borrow().followed_where(drop);
+        let keys = self.fx().followed_where(drop);
         for k in &keys {
             self.unfollow(k);
         }
@@ -232,27 +316,26 @@ impl<K: Hash + Eq + Ord + Clone + std::fmt::Debug, V: Clone + PartialEq + std::f
     /// Key `k`'s value, up to date (`refresh_in`, `k` followed from now on): a read of its row
     /// alone.
     pub fn get_in<C, E>(ctx: &mut C, me: impl Fn(&C) -> &Self, k: &K, f: impl Fn(&mut C, &K) -> Result<V, E>) -> Result<V, E> {
-        me(ctx).fx.borrow_mut().want(k.clone());
+        me(ctx).fx().want(k.clone());
         let failed = Self::refresh_in(ctx, &me, &f).err();
         Self::row(ctx, &me, k, failed)
     }
 }
 
-impl<K: Hash + Eq + Ord + Clone, V: Clone> Clone for Cutoff<K, V> {
+impl<K: Hash + Eq + Ord + Clone + std::fmt::Debug + Send + 'static, V: Clone + PartialEq + std::fmt::Debug + Send + 'static> Clone for Cutoff<K, V> {
     fn clone(&self) -> Self {
-        Cutoff {
-            fx: RefCell::new(self.fx.borrow().clone()),
-            rows: RefCell::new(Stamped::clone(&self.rows.borrow())),
-            quiet: self.quiet.clone(),
-            #[cfg(debug_assertions)]
-            amends: RefCell::new(self.amends.borrow().clone()),
-        }
+        let fx = lock(&self.fx.0).fx.clone();
+        let c = Self::of(fx, Stamped::clone(&self.rows.borrow()));
+        c.quiet.set(self.quiet.get());
+        #[cfg(debug_assertions)]
+        c.amends.replace(self.amends.borrow().clone());
+        c
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::super::Stamped;
+    use super::super::{Memo, Stamped};
     use super::*;
     use std::cell::Cell;
 
@@ -281,6 +364,52 @@ mod tests {
         assert_eq!(Cutoff::get_in(&mut &m, |_| &c, &3, |m, k| big(m, k)), Err(()), "no input: the failure");
         m.insert(3, 9);
         assert_eq!(Cutoff::get_in(&mut &m, |_| &c, &3, |m, k| big(m, k)), Ok(true), "tried again");
+    }
+
+    // spec: none (internal: notes/engine.md, Per-key rows). No reader holds over a row not yet
+    // refreshed: a memo hit and an `Effects` key that read a row whose inputs moved count it
+    // moved (the rerun's read refreshes it); a refresh before they are checked keeps the cutoff,
+    // a row derived again to the same value moving neither.
+    #[test]
+    fn no_reader_holds_over_a_row_not_refreshed() {
+        let mut m: Stamped<u8, u8> = Stamped::default();
+        m.insert(1, 10);
+        let c: Cutoff<u8, bool> = Cutoff::new("test cutoff");
+        let big = |m: &Stamped<u8, u8>, k: &u8| -> Result<bool, ()> { m.get(k).map(|v| *v > 5).ok_or(()) };
+        let row = |m: &Stamped<u8, u8>| Cutoff::get_in(&mut &*m, |_| &c, &1, |m, k| big(m, k)).unwrap();
+        let memo: Memo<u8, bool> = Memo::new("test reader memo");
+        let runs = Cell::new(0);
+        let ask = |m: &Stamped<u8, u8>| {
+            memo.get(&1, || {
+                runs.set(runs.get() + 1);
+                row(m)
+            })
+        };
+        let mut e: Effects<u8, bool> = Effects::new("test reader");
+        e.want(1);
+        e.due();
+        e.settle(&1, || row(&m));
+        assert!(ask(&m));
+        m.insert(1, 2);
+        assert_eq!(e.due(), [1], "an Effects key over the row not refreshed is due");
+        assert!(!ask(&m), "a memo over the row not refreshed runs again");
+        assert_eq!(e.settle(&1, || row(&m)), Some((Some(true), false)));
+        m.insert(1, 3);
+        assert!(!Cutoff::refresh_in(&mut &m, |_| &c, |m, k| big(m, k)).unwrap(), "the same value");
+        assert!(e.due().is_empty(), "refreshed first: the cutoff holds");
+        runs.set(0);
+        assert!(!ask(&m));
+        assert_eq!(runs.get(), 0, "refreshed first: a hit");
+        // two readers given over a row not refreshed: the first one's read refreshes it to the
+        // same value, so the second keeps its value unrun
+        e.want(2);
+        e.due();
+        e.settle(&2, || row(&m));
+        m.insert(1, 4);
+        assert_eq!(e.due(), [1, 2]);
+        assert_eq!(e.settle(&1, || row(&m)), None);
+        assert_eq!(e.settle(&2, || unreachable!("its read holds again")), None);
+        assert!(e.due().is_empty());
     }
 
     // spec: none (internal): a refresh at its fixed point (`Quiet`) returns at once, yet a key

@@ -498,10 +498,10 @@ impl Engine {
     /// `Core::wrap_blocks`, per actor and walk; each read
     /// thing's certificates per piece and commit, `certified`; its thing lists per rotation,
     /// `listed`; `Core::sync_bodies` and `Core::held_fates`, per commit; `Core::read_facts`, per sync ID and commit) up to date with what moved since
-    /// the last call: whether any entry moved. Each refreshes itself when asked, but an `Effects`
-    /// key that read an entry goes due only once the entry is written, so a module calls this
-    /// before its `due()` (the driver, once per settle round before the modules, and until it
-    /// moves nothing).
+    /// the last call: whether any entry moved. Each refreshes itself when asked, and a reader of an
+    /// entry not yet refreshed counts it moved (`memo::Cutoff`), so this keeps the cutoff: run
+    /// before the modules' `due()` (the driver, once per settle round, and until it moves
+    /// nothing), an entry derived again to the same value moves none of its readers.
     /// Not done at each transaction's end: the read things come from the sync set, a whole walk,
     /// so a burst of n transactions between two sync steps would cost n walks, not one
     /// (notes/engine.md).
@@ -521,9 +521,10 @@ impl Engine {
         Ok(osis_base::memo::Cutoff::refresh_in(self, |e| &e.core.held_fates, |e, c| e.held_fate_now(c))? | moved)
     }
 
-    /// Brings the read things kept per sync ID (`read_things_of`) up to date: whether any moved.
-    /// Before each memo reading them is asked (`follow_bodies`, `read_credentials`, `dial_peers`,
-    /// `may_hold`, `others_may_hold`): a hit asks none of them.
+    /// Brings the read things kept per sync ID (`read_things_of`) and the per-thing rows up to
+    /// date: whether any moved. Before each memo reading them is asked (`follow_bodies`,
+    /// `read_credentials`, `dial_peers`, `may_hold`, `others_may_hold`), so a row derived again
+    /// to the same value leaves the memo's answer standing (a row not refreshed reruns it).
     pub(crate) fn follow_read_things(&mut self) -> Result<bool> {
         let moved = self.follow_thing_rows()?;
         Ok(osis_base::memo::Cutoff::refresh_in(self, |e| &e.core.read_things, |e, s| e.read_things_now(s))? | moved)
@@ -696,9 +697,10 @@ impl Engine {
         osis_base::memo::Memo::get_in(self, |e| &e.core.sync_set, &(), |e| e.sync_set_now())
     }
 
-    /// How this node syncs thing `t` (read, kept unread, unsyncable, plain); reads only `t`'s keys.
+    /// How this node syncs thing `t` (read, kept unread, unsyncable, plain); reads only `t`'s keys:
+    /// a read of its row (`Core::thing_syncs`).
     pub fn thing_sync(&mut self, t: &Tid) -> Result<ThingSync> {
-        osis_base::memo::Memo::get_in(self, |e| &e.core.thing_sync, t, |e| e.thing_sync_now(t))
+        osis_base::memo::Cutoff::get_in(self, |e| &e.core.thing_syncs, t, |e, t| e.thing_sync_now(t))
     }
 
     /// The sync IDs held here carrying thing `t` (spec/sync-status.md §3: a wait on a thing):

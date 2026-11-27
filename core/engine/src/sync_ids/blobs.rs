@@ -571,11 +571,6 @@ impl Engine {
         r.unwrap_or_else(|e| match e {})
     }
 
-    /// `Engine::thing_sync_now` of `t`, a read of its row (`Core::thing_syncs`).
-    pub(crate) fn thing_sync_row(&mut self, t: &Tid) -> Result<crate::sync::ThingSync> {
-        osis_base::memo::Cutoff::get_in(self, |e| &e.core.thing_syncs, t, |e, t| e.thing_sync_now(t))
-    }
-
     /// The parts of held commit `c` among `parts` sealed below this node's floor
     /// (`rotation::floors::ReadFloor::below`), by the rows of their things' secret actors.
     pub(crate) fn parts_below_floor(&mut self, c: &CommitId, parts: impl IntoIterator<Item = usize>) -> std::collections::BTreeSet<usize> {
@@ -602,8 +597,8 @@ impl Engine {
     }
 
     /// Brings the per-thing rows (`Core::thing_syncs`, `secret_actors`, `keys_opens`,
-    /// `read_floors`) up to date: before any row reading them is (notes/engine.md, Derived
-    /// values: Per-key rows).
+    /// `read_floors`) up to date, before the rows reading them are, so those move only when a
+    /// per-thing value did (notes/engine.md, Per-key rows).
     pub(crate) fn follow_thing_rows(&mut self) -> Result<bool> {
         type Never = std::convert::Infallible;
         let moved = osis_base::memo::Cutoff::refresh_in(self, |e| &e.core.thing_syncs, |e, t| e.thing_sync_now(t))?;

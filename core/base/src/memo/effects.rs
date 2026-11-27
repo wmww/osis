@@ -5,7 +5,7 @@
 
 #[cfg(debug_assertions)]
 use super::at_power;
-use super::{Dep, Ids, Logged, Table, bucket, copied, lock, recorded_frame};
+use super::{Dep, Ids, Logged, Table, bucket, copied, lazy_of, lock, recorded_frame};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::hash::Hash;
 use std::marker::PhantomData;
@@ -19,19 +19,21 @@ use std::sync::{Arc, Mutex};
 /// the keys followed; a container nobody follows logs nothing.
 pub struct Effects<K, V> {
     name: &'static str,
-    followed: HashMap<K, Followed<V>>,
+    /// The followed keys by `seq`, each held here alone.
+    followed: HashMap<u64, Followed<K, V>, Ids>,
     /// Want order: `due` gives keys in it, so a run is the same whatever the hashes. A followed
-    /// key's `seq` is its name in the index (`Indexed`), which holds no copy of the key.
+    /// key's `seq` is its name in the index (`Indexed`) and `pending`, which hold no copy of it.
     seq: u64,
-    /// The followed keys by `seq`.
-    by_seq: HashMap<u64, K, Ids>,
-    /// Followed keys known due: wanted and not settled since, given by `due` and not settled
-    /// since, or moved while their settle read.
-    pending: HashSet<K>,
+    /// The followed keys' `seq`s by the key's hash (`key_hash`): one ordered set, as
+    /// `Indexed::keys`.
+    seqs: BTreeSet<(u64, u64)>,
+    /// Followed keys known due (by `seq`): wanted and not settled since, given by `due` and not
+    /// settled since, or moved while their settle read.
+    pending: HashSet<u64, Ids>,
     /// What the followed keys' last values read, per container (`Arc::as_ptr` of its table).
     tables: HashMap<usize, Indexed, Ids>,
     #[cfg(debug_assertions)]
-    checks: Checks<K>,
+    checks: Checks,
 }
 
 /// Debug builds, on a thread that turned them on (`memo::check_effects`): keys `due` gives
@@ -42,22 +44,18 @@ pub struct Effects<K, V> {
 /// read that moves with a stamped one); every followed key at the 16th, 256th, ... `due` (one
 /// that moves alone).
 #[cfg(debug_assertions)]
-#[derive(Clone)]
-struct Checks<K> {
+#[derive(Clone, Default)]
+struct Checks {
     /// `due` calls.
     calls: u64,
-    /// The keys the last `due` gave to compare.
-    keys: HashSet<K>,
+    /// The keys (by `seq`) the last `due` gave to compare.
+    keys: HashSet<u64, Ids>,
+    /// The keys (by `seq`) the `due` running found to compare (`find_due`).
+    found: Vec<u64>,
 }
 
-#[cfg(debug_assertions)]
-impl<K> Default for Checks<K> {
-    fn default() -> Self {
-        Checks { calls: 0, keys: HashSet::new() }
-    }
-}
-
-struct Followed<V> {
+struct Followed<K, V> {
+    key: K,
     seq: u64,
     /// The value last settled (`None`: never since it was wanted).
     value: Option<V>,
@@ -68,9 +66,10 @@ struct Followed<V> {
     moved: u64,
 }
 
-impl<V> Followed<V> {
-    fn new(seq: u64, value: Option<V>, deps: Vec<Dep>) -> Self {
+impl<K, V> Followed<K, V> {
+    fn new(key: K, seq: u64, value: Option<V>, deps: Vec<Dep>) -> Self {
         Followed {
+            key,
             seq,
             value,
             deps,
@@ -113,10 +112,10 @@ impl<K: Hash + Eq + Clone + std::fmt::Debug, V: Clone + PartialEq + std::fmt::De
     pub fn new(name: &'static str) -> Self {
         Effects {
             name,
-            followed: HashMap::new(),
+            followed: HashMap::default(),
             seq: 0,
-            by_seq: HashMap::default(),
-            pending: HashSet::new(),
+            seqs: BTreeSet::new(),
+            pending: HashSet::default(),
             tables: HashMap::default(),
             #[cfg(debug_assertions)]
             checks: Checks::default(),
@@ -126,22 +125,43 @@ impl<K: Hash + Eq + Clone + std::fmt::Debug, V: Clone + PartialEq + std::fmt::De
     /// Follows `k`: its next `settle` reports it (nothing was acted on yet). A key followed
     /// already stays as it is.
     pub fn want(&mut self, k: K) {
-        if self.followed.contains_key(&k) {
+        if self.seq_of(&k).is_some() {
             return;
         }
         self.seq += 1;
-        self.followed.insert(k.clone(), Followed::new(self.seq, None, Vec::new()));
-        self.by_seq.insert(self.seq, k.clone());
-        self.pending.insert(k);
+        self.seqs.insert((key_hash(&k), self.seq));
+        self.followed.insert(self.seq, Followed::new(k, self.seq, None, Vec::new()));
+        self.pending.insert(self.seq);
     }
 
     /// Stops following `k`: it is never due again until wanted again.
     pub fn unwant(&mut self, k: &K) {
-        if let Some(f) = self.followed.remove(k) {
-            self.unindex(f.seq, &f.deps);
-            self.by_seq.remove(&f.seq);
+        let Some(n) = self.seq_of(k) else { return };
+        if let Some(f) = self.followed.remove(&n) {
+            self.unindex(n, &f.deps);
         }
-        self.pending.remove(k);
+        self.seqs.remove(&(key_hash(k), n));
+        self.pending.remove(&n);
+    }
+
+    /// `k`'s `seq`, if followed.
+    fn seq_of(&self, k: &K) -> Option<u64> {
+        let h = key_hash(k);
+        self.seqs.range((h, 0)..=(h, u64::MAX)).map(|(_, n)| *n).find(|n| self.followed.get(n).is_some_and(|f| f.key == *k))
+    }
+
+    /// `k`'s record, if followed.
+    fn get(&self, k: &K) -> Option<&Followed<K, V>> {
+        self.seq_of(k).and_then(|n| self.followed.get(&n))
+    }
+
+    fn get_mut(&mut self, k: &K) -> Option<&mut Followed<K, V>> {
+        self.seq_of(k).and_then(|n| self.followed.get_mut(&n))
+    }
+
+    /// The keys known due (`pending`), as a cutoff's rows hash them (`Lazy`).
+    pub(super) fn pending_row_hashes(&self) -> Vec<u64> {
+        self.pending.iter().filter_map(|n| self.followed.get(n)).map(|f| super::hash(&f.key)).collect()
     }
 
     /// The reads the followed keys' last values hold (each a `Dep` and its index entry): what
@@ -159,19 +179,19 @@ impl<K: Hash + Eq + Clone + std::fmt::Debug, V: Clone + PartialEq + std::fmt::De
 
     /// The keys followed that `pick` names.
     pub(super) fn followed_where(&self, pick: impl Fn(&K) -> bool) -> Vec<K> {
-        self.followed.keys().filter(|k| pick(k)).cloned().collect()
+        self.followed.values().map(|f| &f.key).filter(|k| pick(k)).cloned().collect()
     }
 
     /// Whether `k` is followed.
     pub fn wants(&self, k: &K) -> bool {
-        self.followed.contains_key(k)
+        self.seq_of(k).is_some()
     }
 
     /// `k`'s value as last settled, when it holds now: followed, settled, not known due, and
     /// nothing it read written since (each read's stamp checked, no log read). `None`: settle it.
     pub fn current(&self, k: &K) -> Option<V> {
-        let f = self.followed.get(k)?;
-        if self.pending.contains(k) || !f.deps.iter().all(Dep::holds) {
+        let f = self.get(k)?;
+        if self.pending.contains(&f.seq) || !f.deps.iter().all(Dep::holds) {
             return None;
         }
         f.value.clone()
@@ -186,36 +206,75 @@ impl<K: Hash + Eq + Clone + std::fmt::Debug, V: Clone + PartialEq + std::fmt::De
     /// `k`'s settled value, taken out (`Cutoff::refresh_amended_in`): put back (`put_value`) or
     /// settled again.
     pub(super) fn take_value(&mut self, k: &K) -> Option<V> {
-        self.followed.get_mut(k)?.value.take()
+        self.get_mut(k)?.value.take()
     }
 
     /// Puts back `k`'s value taken out (`take_value`), unchanged.
     pub(super) fn put_value(&mut self, k: &K, v: V) {
-        if let Some(f) = self.followed.get_mut(k) {
+        if let Some(f) = self.get_mut(k) {
             f.value = Some(v);
         }
     }
 
     /// What `k`'s last value read.
     pub(super) fn deps(&self, k: &K) -> Vec<Dep> {
-        self.followed.get(k).map(|f| f.deps.clone()).unwrap_or_default()
+        self.get(k).map(|f| f.deps.clone()).unwrap_or_default()
     }
 
     /// Whether `k` is followed with a value settled (none since a failed settle).
     pub(super) fn settled_value(&self, k: &K) -> bool {
-        self.followed.get(k).is_some_and(|f| f.value.is_some())
+        self.get(k).is_some_and(|f| f.value.is_some())
     }
 
     /// The followed keys whose last value read a stamp written since, and those never settled,
     /// in want order. A key stays due until it is settled. Debug builds add, after them, keys
     /// whose settle compares with the value kept (`Checks`).
     pub fn due(&mut self) -> Vec<K> {
+        let due = self.find_due(true);
+        #[allow(unused_mut)]
+        let mut out: Vec<K> = due.iter().filter_map(|n| self.followed.get(n)).map(|f| f.key.clone()).collect();
+        #[cfg(debug_assertions)]
+        if super::effect_checks() {
+            let mut check = std::mem::take(&mut self.checks.found);
+            self.checks.calls += 1;
+            if self.checks.calls > 1 && at_power(self.checks.calls, 4) {
+                let given: HashSet<u64, Ids> = due.iter().chain(check.iter()).copied().collect();
+                let rest: Vec<u64> = self.followed.values().filter(|f| !given.contains(&f.seq) && !self.pending.contains(&f.seq) && f.value.is_some()).map(|f| f.seq).collect();
+                check.extend(rest);
+            }
+            check.sort_unstable();
+            let keys: Vec<K> = check.iter().filter_map(|n| self.followed.get(n)).map(|f| f.key.clone()).collect();
+            self.checks.keys = check.into_iter().collect();
+            out.extend(keys);
+        }
+        out
+    }
+
+    /// `due` for a cutoff's link (`Lazy`): brings `pending` up to date with the logs, giving
+    /// nothing, counting nothing and scheduling no comparison.
+    pub(super) fn find_pending(&mut self) {
+        self.find_due(false);
+    }
+
+    /// The keys now due, by `seq` in want order, put in `pending`; `full`: a `due`, which counts
+    /// causes and, in debug builds, leaves in `checks.found` the keys to compare.
+    fn find_due(&mut self, full: bool) -> Vec<u64> {
         let given = std::mem::take(&mut self.pending);
         let mut maybe: HashSet<u64, Ids> = HashSet::default();
         // per container a prune moved buckets of since the marks (and nothing moved whole), the
         // keys written, removed or pruned (by hash)
         let mut pruned: HashMap<usize, HashSet<u64, Ids>, Ids> = HashMap::default();
         for (p, ix) in self.tables.iter_mut() {
+            // a cutoff's rows not yet refreshed move their readers as a write would
+            if let Some(l) = lazy_of(&ix.table) {
+                let stale = l.stale_keys();
+                if !stale.is_empty() {
+                    maybe.extend(ix.whole.iter().cloned());
+                }
+                for h in stale {
+                    maybe.extend(ix.readers(h));
+                }
+            }
             let changes = lock(&ix.table).read_log(&mut ix.at);
             if changes.is_empty() {
                 continue;
@@ -248,8 +307,10 @@ impl<K: Hash + Eq + Clone + std::fmt::Debug, V: Clone + PartialEq + std::fmt::De
                 pruned.insert(*p, named.collect());
             }
         }
-        let maybe: Vec<K> = maybe.iter().filter_map(|n| self.by_seq.get(n)).filter(|k| !given.contains(*k)).cloned().collect();
-        crate::costs::count("effects: candidates", (given.len() + maybe.len()) as u64);
+        maybe.retain(|n| !given.contains(n));
+        if full {
+            crate::costs::count("effects: candidates", (given.len() + maybe.len()) as u64);
+        }
         // a logged write of a key read, before the read or by a key sharing its hash, moved
         // nothing: the stamps say which did. A key read at its bucket's absent stamp and named
         // by nothing since moved only with another key's pruned removal (`Table::prune`): its
@@ -258,13 +319,11 @@ impl<K: Hash + Eq + Clone + std::fmt::Debug, V: Clone + PartialEq + std::fmt::De
         let bucket_only = |d: &Dep| -> bool {
             let Some(h) = d.key() else { return false };
             let Some(named) = pruned.get(&(Arc::as_ptr(&d.table) as usize)) else { return false };
-            !named.contains(&h) && !lock(&d.table).keys.contains_key(&h)
+            !named.contains(&h) && !lock(&d.table).keys.contains_key(&h) && !lazy_of(&d.table).is_some_and(|l| l.stale(Some(h)))
         };
-        let mut due: Vec<(u64, K)> = Vec::new();
-        #[cfg(debug_assertions)]
-        let mut check: Vec<(u64, K)> = Vec::new();
-        for (k, was_given) in given.iter().map(|k| (k.clone(), true)).chain(maybe.into_iter().map(|k| (k, false))) {
-            let Some(f) = self.followed.get_mut(&k) else { continue };
+        let mut due: Vec<u64> = Vec::new();
+        for (n, was_given) in given.iter().map(|n| (*n, true)).chain(maybe.into_iter().map(|n| (n, false))) {
+            let Some(f) = self.followed.get_mut(&n) else { continue };
             let (mut moved, mut stale) = (f.value.is_none(), false);
             for d in f.deps.iter() {
                 if moved {
@@ -276,7 +335,7 @@ impl<K: Hash + Eq + Clone + std::fmt::Debug, V: Clone + PartialEq + std::fmt::De
                 }
             }
             if moved {
-                due.push((f.seq, k));
+                due.push(n);
             } else {
                 if stale {
                     for d in f.deps.iter_mut() {
@@ -284,34 +343,20 @@ impl<K: Hash + Eq + Clone + std::fmt::Debug, V: Clone + PartialEq + std::fmt::De
                     }
                 }
                 #[cfg(debug_assertions)]
-                if super::effect_checks() {
+                if full && super::effect_checks() {
                     f.moved += 1;
                     if at_power(f.moved, 2) {
-                        check.push((f.seq, k));
+                        self.checks.found.push(n);
                     }
                 }
             }
         }
-        if crate::costs::on() {
+        due.sort_unstable();
+        if full && crate::costs::on() {
             self.count_causes(&due);
         }
-        due.sort_by_key(|(s, _)| *s);
-        self.pending.extend(due.iter().map(|(_, k)| k.clone()));
-        #[allow(unused_mut)]
-        let mut out: Vec<K> = due.into_iter().map(|(_, k)| k).collect();
-        #[cfg(debug_assertions)]
-        if super::effect_checks() {
-            self.checks.calls += 1;
-            if self.checks.calls > 1 && at_power(self.checks.calls, 4) {
-                let given: HashSet<&K> = out.iter().chain(check.iter().map(|(_, k)| k)).collect();
-                let rest: Vec<(u64, K)> = self.followed.iter().filter(|(k, f)| !given.contains(k) && !self.pending.contains(*k) && f.value.is_some()).map(|(k, f)| (f.seq, k.clone())).collect();
-                check.extend(rest);
-            }
-            check.sort_by_key(|(s, _)| *s);
-            self.checks.keys = check.iter().map(|(_, k)| k.clone()).collect();
-            out.extend(check.into_iter().map(|(_, k)| k));
-        }
-        out
+        self.pending.extend(due.iter().copied());
+        due
     }
 
     /// Whether `k`'s settle is a debug comparison (`Checks`): given by the last `due` though
@@ -319,7 +364,7 @@ impl<K: Hash + Eq + Clone + std::fmt::Debug, V: Clone + PartialEq + std::fmt::De
     pub fn checking(&self, k: &K) -> bool {
         #[cfg(debug_assertions)]
         {
-            self.checks.keys.contains(k) && self.followed.get(k).is_some_and(|f| f.value.is_some() && f.deps.iter().all(Dep::holds))
+            self.get(k).is_some_and(|f| self.checks.keys.contains(&f.seq) && f.value.is_some() && f.deps.iter().all(Dep::holds))
         }
         #[cfg(not(debug_assertions))]
         {
@@ -336,8 +381,10 @@ impl<K: Hash + Eq + Clone + std::fmt::Debug, V: Clone + PartialEq + std::fmt::De
         }
         #[cfg(debug_assertions)]
         {
-            self.checks.keys.remove(k);
-            let kept = self.followed.get(k).and_then(|f| f.value.as_ref());
+            if let Some(n) = self.seq_of(k) {
+                self.checks.keys.remove(&n);
+            }
+            let kept = self.get(k).and_then(|f| f.value.as_ref());
             assert!(kept == Some(now), "effects {}: {k:?} kept {kept:?}, a settle with nothing it read written gives {now:?}: it read something unstamped", self.name);
         }
         #[cfg(not(debug_assertions))]
@@ -350,9 +397,26 @@ impl<K: Hash + Eq + Clone + std::fmt::Debug, V: Clone + PartialEq + std::fmt::De
     /// value is reported as new.
     pub fn settle(&mut self, k: &K, f: impl FnOnce() -> V) -> Option<(Option<V>, V)> {
         let checking = self.checking(k);
+        if !checking && self.holds_again(k) {
+            return None;
+        }
         let (now, frame) = self.run(checking, f);
         self.compared(k, checking, &now);
         self.record(k, now, frame, checking)
+    }
+
+    /// Whether `k`, known due and settled before, holds again: every read of its value has its stamp (a row
+    /// given stale by its cutoff refreshed since to the same value, `Lazy`), so it keeps its value
+    /// unrun and is due no more. A key given by `due` is settled so with nothing run once what
+    /// moved it came back: after one reader's read refreshed a cutoff, its other readers.
+    pub(super) fn holds_again(&mut self, k: &K) -> bool {
+        let Some(f) = self.get(k) else { return false };
+        if !self.pending.contains(&f.seq) || f.value.is_none() || !f.deps.iter().all(Dep::holds) {
+            return false;
+        }
+        let n = f.seq;
+        self.pending.remove(&n);
+        true
     }
 
     /// `f` run recorded; a debug comparison's run counts no costs.
@@ -369,6 +433,9 @@ impl<K: Hash + Eq + Clone + std::fmt::Debug, V: Clone + PartialEq + std::fmt::De
     /// at the next `due` with no retry kept by the caller.
     pub fn try_settle<E>(&mut self, k: &K, f: impl FnOnce() -> Result<V, E>) -> Result<Option<(Option<V>, V)>, E> {
         let checking = self.checking(k);
+        if !checking && self.holds_again(k) {
+            return Ok(None);
+        }
         let (out, frame) = self.run(checking, f);
         self.settled(k, out, frame)
     }
@@ -384,11 +451,11 @@ impl<K: Hash + Eq + Clone + std::fmt::Debug, V: Clone + PartialEq + std::fmt::De
                 Ok(self.record(k, now, frame, checking))
             }
             Err(e) => {
-                if let Some(old) = self.followed.get_mut(k) {
+                if let Some(old) = self.get_mut(k) {
                     old.value = None;
                     let (n, deps) = (old.seq, std::mem::take(&mut old.deps));
                     self.unindex(n, &deps);
-                    self.pending.insert(k.clone());
+                    self.pending.insert(n);
                 }
                 Err(e)
             }
@@ -399,7 +466,7 @@ impl<K: Hash + Eq + Clone + std::fmt::Debug, V: Clone + PartialEq + std::fmt::De
         if !checking && crate::costs::on() {
             self.count_unchanged(k, &now);
         }
-        let Some(old) = self.followed.get_mut(k) else { return Some((None, now)) };
+        let Some(old) = self.get_mut(k) else { return Some((None, now)) };
         let n = old.seq;
         let was = old.value.replace(now.clone());
         let old_deps = std::mem::replace(&mut old.deps, frame.deps.clone());
@@ -417,10 +484,10 @@ impl<K: Hash + Eq + Clone + std::fmt::Debug, V: Clone + PartialEq + std::fmt::De
             self.reindex_buckets(&kept);
             self.index(n, &came);
         }
-        self.pending.remove(k);
+        self.pending.remove(&n);
         // a write between a read and its index here is in no log this reader reads
         if !frame.deps.iter().all(Dep::holds) {
-            self.pending.insert(k.clone());
+            self.pending.insert(n);
         }
         (was.as_ref() != Some(&now)).then_some((was, now))
     }
@@ -492,9 +559,9 @@ impl<K: Hash + Eq + Clone + std::fmt::Debug, V: Clone + PartialEq + std::fmt::De
 
     /// Counts, per due key, what made it due (`costs::count_by`, under this effects' name): never
     /// settled, or each container whose stamp a read of its last value saw moved.
-    fn count_causes(&self, due: &[(u64, K)]) {
-        for (_, k) in due {
-            let Some(f) = self.followed.get(k) else { continue };
+    fn count_causes(&self, due: &[u64]) {
+        for n in due {
+            let Some(f) = self.followed.get(n) else { continue };
             if f.value.is_none() {
                 crate::costs::count_by(self.name, "unsettled", 1);
                 continue;
@@ -516,7 +583,7 @@ impl<K: Hash + Eq + Clone + std::fmt::Debug, V: Clone + PartialEq + std::fmt::De
     /// `"{name} unchanged"`, and per container whose stamp a read of the last value saw moved
     /// (`"{name} unchanged <- {container}"`; `"nothing moved"` for one given again unmoved).
     fn count_unchanged(&self, k: &K, now: &V) {
-        let Some(f) = self.followed.get(k).filter(|f| f.value.as_ref() == Some(now)) else { return };
+        let Some(f) = self.get(k).filter(|f| f.value.as_ref() == Some(now)) else { return };
         let name = unchanged_name(self.name);
         crate::costs::count(name, 1);
         let mut moved = false;
@@ -535,6 +602,13 @@ impl<K: Hash + Eq + Clone + std::fmt::Debug, V: Clone + PartialEq + std::fmt::De
     pub(crate) fn marks(&self) -> usize {
         self.tables.len()
     }
+}
+
+/// A followed key's name in `Effects::seqs`, keyed per process so a peer choosing keys cannot
+/// pick colliding ones.
+fn key_hash<K: Hash>(k: &K) -> u64 {
+    static KEY: std::sync::OnceLock<std::collections::hash_map::RandomState> = std::sync::OnceLock::new();
+    std::hash::BuildHasher::hash_one(KEY.get_or_init(std::collections::hash_map::RandomState::new), k)
 }
 
 /// `"{name} unchanged"`, made once per name and thread.
@@ -559,7 +633,7 @@ fn cloned_table(t: &Arc<Mutex<Table>>, at: u64) -> Arc<Mutex<Table>> {
 impl<K: Hash + Eq + Clone, V: Clone> Clone for Effects<K, V> {
     fn clone(&self) -> Self {
         let dep = |d: &Dep| Dep { table: if crate::copying::in_copy() { copied(&d.table) } else { d.table.clone() }, ..d.clone() };
-        let followed = self.followed.iter().map(|(k, f)| (k.clone(), Followed { seq: f.seq, value: f.value.clone(), deps: f.deps.iter().map(dep).collect(), #[cfg(debug_assertions)] moved: f.moved })).collect();
+        let followed = self.followed.iter().map(|(n, f)| (*n, Followed { key: f.key.clone(), seq: f.seq, value: f.value.clone(), deps: f.deps.iter().map(dep).collect(), #[cfg(debug_assertions)] moved: f.moved })).collect();
         let tables = self
             .tables
             .values()
@@ -572,7 +646,7 @@ impl<K: Hash + Eq + Clone, V: Clone> Clone for Effects<K, V> {
             name: self.name,
             followed,
             seq: self.seq,
-            by_seq: self.by_seq.clone(),
+            seqs: self.seqs.clone(),
             pending: self.pending.clone(),
             tables,
             #[cfg(debug_assertions)]
