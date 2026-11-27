@@ -228,19 +228,33 @@ pub(crate) fn secrets_alts(tx: &mut Tx<'_>, actor: &Tid) -> Result<osis_keys::Hi
     Ok(tx.state(actor, &ak("secrets.0")?)?.map(crate::engine::secrets::history_alts).unwrap_or_default())
 }
 
-/// Re-opens the `secrets.0` of every actor that boxes to `learned` after this node learned
-/// secrets of `learned` (an actor's boxes open only once its holder's epochs are held), to a
-/// fixpoint. Called by node-core's state observation (engine hook) and by a
-/// take-up (`take_up_opener`). Terminates without a step cap: an actor is pushed only when its
-/// held epochs grew, and they only grow, bounded by the boxes held (a cap would leave secrets of
-/// deep holder chains unopened).
+/// What `actor`'s whole `secrets.0` state gives under the secrets held now (`SecretsRead::State`),
+/// then what that opens in turn (`reopen_dependents`). Whether anything was learned. The read of
+/// an actor whose state moved (`apply::observe_state`), of one whose roles came to give what they
+/// kept out (`retake`), and of every actor at a load (`reopen_all`), live and rebuilt alike.
+pub(crate) fn observe_secrets(tx: &mut Tx<'_>, actor: &Tid) -> Result<bool> {
+    let s = secrets_in(tx, actor)?;
+    let alts = secrets_alts(tx, actor)?;
+    tx.core.touch();
+    let learned = tx.core.ingest_secrets(actor, &s, crate::engine::secrets::SecretsRead::State, &alts);
+    if learned {
+        reopen_dependents(tx, *actor)?;
+    }
+    Ok(learned)
+}
+
+/// After this node learned secrets of `learned`, reads again everything they may open, to a
+/// fixpoint: of `learned` itself and of every actor with a box keyed to an actor that learned,
+/// `reread`. So what an actor holds is what reading its state and invalid commits whole after
+/// gives (a rebuild: `reopen_all`), whichever input brought the secrets (a state, an invalid or
+/// pending commit's boxes, a take-up). Terminates without a step cap: an actor is pushed only
+/// when its held epochs grew, and they only grow, bounded by the boxes held (a cap would leave
+/// secrets of deep holder chains unopened).
 pub(crate) fn reopen_dependents(tx: &mut Tx<'_>, learned: Tid) -> Result<()> {
     let mut work = vec![learned];
     while let Some(m) = work.pop() {
-        // `m`'s own invalid commits: their history boxes open with what it learned
-        if crate::apply::keys::reread_invalid(tx, &m)? {
-            work.push(m);
-        }
+        // what `m`'s secrets open of its own `secrets.0`
+        while reread(tx, &m, &[])? {}
         // the boxes keyed to `m`, per actor: from the index of keyed `secrets.0` entries
         let mut per: std::collections::BTreeMap<Tid, Vec<osis_base::Value>> = std::collections::BTreeMap::new();
         for (a, k) in tx.core.ix.boxes_to.get(&m).into_iter().flatten() {
@@ -249,14 +263,22 @@ pub(crate) fn reopen_dependents(tx: &mut Tx<'_>, learned: Tid) -> Result<()> {
             }
         }
         for (a, keys) in per {
-            let learned = crate::apply::ingest_secrets_keys(tx, &a, &keys, &[])?;
-            // boxes of commits invalid here open for reading too (a box proves itself by what it opens)
-            if crate::apply::keys::reread_invalid(tx, &a)? | learned {
+            if reread(tx, &a, &keys)? {
                 work.push(a);
             }
         }
     }
     Ok(())
+}
+
+/// What `actor`'s held `secrets.0` gives under the secrets held now, its whole state aside: the
+/// applied boxes keyed `boxes`, the history box of every epoch whose secret is held, repeatedly
+/// (`apply::ingest_secrets_keys`), and its invalid commits' deltas, for reading (a box proves
+/// itself by what it opens: `keys::reread_invalid`). O(those boxes + held epochs + the commits
+/// invalid there). Whether anything was learned.
+fn reread(tx: &mut Tx<'_>, actor: &Tid, boxes: &[osis_base::Value]) -> Result<bool> {
+    let learned = crate::apply::ingest_secrets_keys(tx, actor, boxes, &[])?;
+    Ok(crate::apply::keys::reread_invalid(tx, actor)? | learned)
 }
 
 /// Re-opens the `secrets.0` of every actor whose applied boxes gave secrets `rotation::may_take_role`
@@ -277,12 +299,7 @@ pub(crate) fn retake(tx: &mut Tx<'_>) -> Result<bool> {
     let any = !due.is_empty();
     for a in due {
         tx.core.waits.retaken(&a);
-        let s = secrets_in(tx, &a)?;
-        let alts = secrets_alts(tx, &a)?;
-        tx.core.touch();
-        if tx.core.ingest_secrets(&a, &s, crate::engine::secrets::SecretsRead::State, &alts) {
-            reopen_dependents(tx, a)?;
-        }
+        observe_secrets(tx, &a)?;
     }
     Ok(any)
 }
@@ -308,13 +325,7 @@ pub(crate) fn reopen_all(tx: &mut Tx<'_>) -> Result<()> {
         let mut any = false;
         for a in &actors {
             osis_base::costs::count("reopen: actors", 1);
-            let s = secrets_in(tx, a)?;
-            let alts = secrets_alts(tx, a)?;
-            tx.core.touch();
-            if tx.core.ingest_secrets(a, &s, crate::engine::secrets::SecretsRead::State, &alts) {
-                reopen_dependents(tx, *a)?;
-                any = true;
-            }
+            any |= observe_secrets(tx, a)?;
         }
         if !any {
             break;

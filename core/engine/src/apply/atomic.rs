@@ -1030,20 +1030,12 @@ pub(crate) fn observe_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
     match ak.as_str() {
         "keys.0" => {
             crate::flows::cards::note_due(tx.core, *tid);
-            return Ok(());
+            Ok(())
         }
-        "secrets.0" => {}
-        _ => return Ok(()),
+        // no state (every delta stripped) holds no live entry
+        "secrets.0" => crate::flows::observe_secrets(tx, tid).map(drop),
+        _ => Ok(()),
     }
-    let v = tx.state(tid, ak)?.and_then(Fragment::read);
-    let alts = tx.state(tid, ak)?.map(crate::engine::secrets::history_alts).unwrap_or_default();
-    // no state (every delta stripped) holds no live entry
-    let s = v.as_ref().and_then(crate::engine::secrets::secrets_value).unwrap_or_default();
-    if tx.core.ingest_secrets(tid, &s, crate::engine::secrets::SecretsRead::State, &alts) {
-        // boxes sealed to this actor elsewhere open now (role flows hook)
-        crate::flows::reopen_dependents(tx, *tid)?;
-    }
-    Ok(())
 }
 
 /// Debug builds, at the end of every transaction (issues/drop-rejoin-robust.md, item 5): each

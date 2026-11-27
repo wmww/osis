@@ -1458,6 +1458,50 @@ mod tests {
         }
     }
 
+    // spec/crypto.md §4 (Reading-only secrets: a secret learned from an invalid commit's boxes, or
+    // from history boxes opened with such a secret, is kept for reading). Mint admin O of T rotates
+    // read twice (each applied history box lists the epoch below it); stranger N holds T's
+    // commits with no role, so none of its secrets. O removes admin A; A, unaware, grants N read
+    // (N never gets the grant) and rotates read to e, boxing N: its entry at e lists the epoch
+    // below, and further down only roles secrets. Invalid at N, so those two are N's for reading,
+    // and the applied history boxes give every earlier epoch for reading too. Its store loaded afresh says the same, rebuilt
+    // from the commit records too (`check_index`). Fails when a secret learned so re-reads only
+    // that commit and the boxes keyed to T elsewhere, not T's own applied history boxes: the live
+    // index lacks the lowest, which a rebuild (reading the state after) opens.
+    #[test]
+    fn a_reading_only_secret_opens_the_applied_history_spec_crypto_4() {
+        let mut lp = LocalPeer::fresh(3, WallMs(1_700_000_000_000));
+        lp.sync_all().unwrap();
+        let (o, a, n) = (0, 1, 2);
+        let tids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.tid()).collect();
+        let edge = |role| ct::Edge { role, until: None, may_grant: false, retain: false, floor: None };
+        let t = thing_of(&mut lp, o, tids[o]);
+        lp.peers[o].engine.grant(&t, &tids[a], &edge(Role::Admin)).unwrap();
+        for _ in 0..2 {
+            lp.peers[o].engine.rotate_leaving_out(&t, &[Role::Read], &[]).unwrap();
+        }
+        lp.sync_all().unwrap();
+        let read = |lp: &LocalPeer, i: usize| lp.peers[i].engine.core.epochs(&t).map(|e| e.read.clone()).unwrap_or_default();
+        let below: Vec<Epoch> = read(&lp, o).epochs().map(|(e, _)| *e).collect();
+        assert!(below.iter().all(|e| read(&lp, n).secret(e).is_none()), "N holds no read secret of T");
+        let ids = |lp: &LocalPeer, i: usize| lp.peers[i].engine.commit_ids().into_iter().collect::<std::collections::BTreeSet<_>>();
+        let before = ids(&lp, o);
+        lp.peers[o].engine.demote(&t, &Demotion { holder: tids[a], new: None, retain: None }).unwrap();
+        let dem: Vec<CommitId> = ids(&lp, o).difference(&before).copied().collect();
+        send(&mut lp, o, n, &dem);
+        // A's clock runs ahead: what it writes is stamped after its removal
+        lp.peers[a].clock.advance(120_000);
+        lp.peers[a].engine.grant(&t, &tids[n], &edge(Role::Read)).unwrap();
+        let rot = lp.peers[a].engine.rotate_leaving_out(&t, &[Role::Read], &[]).unwrap().unwrap();
+        send(&mut lp, a, n, &[rot]);
+        let r = read(&lp, n);
+        let e = read(&lp, a).newest().unwrap();
+        for e in below.iter().chain([&e]) {
+            assert!(r.is_reading_only(e), "{e:?} is N's for reading");
+        }
+        lp.peers[n].engine.check_index();
+    }
+
     // spec/crypto.md §3 (independent): a thing is independent while a valid `keys.0` part wrote a
     // keyset, §4 (Reading-only secrets): secrets of an invalid commit are kept for reading only: admin A of G grants
     // X on G's dependent thing T (T's first `keys.0`, a rotation from derived epochs) after G's mint
