@@ -167,16 +167,55 @@ impl Engine {
     /// step and the sync proofs and keys of the sync secrets held. `None` when `s` is no sync ID
     /// this node reads.
     pub(crate) fn read_credentials_now(&mut self, s: &SyncId) -> Result<Option<Arc<ReadCredentials>>> {
-        let things = self.opening_things(s)?;
+        let opening = self.opening_things(s)?;
+        let things = if opening.is_empty() { self.sync_things_of(s)? } else { opening.clone() };
         if things.is_empty() {
             return Ok(None);
         }
         let mut c = ReadCredentials::default();
-        for t in things {
-            let Some(o) = self.owned_sync_ids(&t)?.iter().find(|o| o.id == *s).cloned() else { continue };
-            self.credentials_of(&mut c, &t, &o)?;
+        for t in &opening {
+            let Some(o) = self.owned_sync_ids(t)?.iter().find(|o| o.id == *s).cloned() else { continue };
+            self.credentials_of(&mut c, t, &o)?;
         }
+        c.claimants = self.claimants(s, &things);
         Ok(Some(Arc::new(c)))
+    }
+
+    /// The holders this node reaches `s`'s things `things` through (spec/sync-opens.md §4
+    /// Admissible, tests): its own things (its node thing, the things it holds a grant on, its
+    /// link keys), each holder of a thing's independent it holds a read secret of (by the role
+    /// entries held), each thing naming `s` to it (a followed signal's holder, a followed link's
+    /// key), and the public where it redeems a locator or the public holds a role there.
+    pub(crate) fn claimants(&mut self, s: &SyncId, things: &[Tid]) -> super::Claimants {
+        let me = self.core.tid();
+        let mut holders: BTreeSet<Tid> = std::iter::once(me).chain(self.core.timelines().edges_at(None).targets(&me).copied()).collect();
+        let mut keys: Vec<osis_crypto::X25519Secret> = Vec::new();
+        let mut public = false;
+        for t in things {
+            let reader = self.core.reader_of(t);
+            for (m, _) in self.core.key_holders(&reader) {
+                match m.is_public() {
+                    true => public = true,
+                    false => drop(holders.insert(m)),
+                }
+            }
+            holders.extend(self.core.followed_links.signal_holders(t, s));
+            match self.core.followed_links.link_of(t, s) {
+                Some(None) => public = true,
+                Some(Some(l)) => keys.extend(l.link_read_kem().map(|k| k.x25519().clone())),
+                None => {}
+            }
+        }
+        for m in holders {
+            let Some(e) = self.core.epochs(&m) else { continue };
+            for (_, x) in e.role(Role::Read).held_newest_first() {
+                let k = x.kem().x25519();
+                if !keys.iter().any(|y| y.public() == k.public()) {
+                    keys.push(k.clone());
+                }
+            }
+        }
+        super::Claimants { keys, public }
     }
 
     /// The write key this node holds at step `step` of `s` (`read_credentials`' keys there,

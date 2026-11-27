@@ -267,6 +267,10 @@ fn charge(t: &mut Transaction<'_>, env: &mut Env<'_>, r: &EntryRow, s: &SyncId, 
 
 /// Stores a new entry `row` of S (no entry of `b` there yet), with `bytes` when they come with it.
 pub(crate) fn insert(t: &mut Transaction<'_>, env: &mut Env<'_>, s: &SyncId, b: &BlobId, mut row: EntryRow, bytes: Option<Vec<u8>>) -> Result<()> {
+    match &bytes {
+        Some(bytes) => super::claims::index(t, s, b, bytes)?,
+        None => index_held(t, s, b)?,
+    }
     let fresh = match bytes {
         Some(bytes) if stored_len(t, b)?.is_none() => {
             t.put_blob(b, bytes)?;
@@ -332,6 +336,7 @@ pub(crate) fn remove(t: &mut Transaction<'_>, env: &mut Env<'_>, s: &SyncId, b: 
             t.remove_local(&rows::deposited_key(s, b), Shred::No)?;
         }
         t.remove_local(&rows::elsewhere_key(s, b), Shred::No)?;
+        super::claims::drop_entry(t, s, b)?;
         // a source's refusal stands only for an entry held here (spec/sync-streams.md §4
         // Refused): it goes with the entry, however it left (an expiry serves no event)
         for rec in t.records_with_row(s, rows::tag::REFUSED, &b.0, usize::MAX)? {
@@ -390,12 +395,24 @@ pub(crate) fn unref(t: &mut Transaction<'_>, env: &mut Env<'_>, b: &BlobId) -> R
     Ok(())
 }
 
+/// Indexes entry `b` of S's claims (`claims::index`) from its bytes where they are held here.
+fn index_held(t: &mut Transaction<'_>, s: &SyncId, b: &BlobId) -> Result<()> {
+    if t.is_memory() {
+        return Ok(());
+    }
+    if let Some(bytes) = t.get_blob(b)? {
+        super::claims::index(t, s, b, &bytes)?;
+    }
+    Ok(())
+}
+
 /// Bytes of `b` arrived (the engine held them, an entry came with them): every entry naming `b`
 /// whose bytes were missing becomes servable, under every sync ID (spec/sync-ids.md §5: a blob
 /// fetched under one sync ID is taken under every other naming it).
 pub(crate) fn bytes_arrived(t: &mut Transaction<'_>, env: &mut Env<'_>, b: &BlobId) -> Result<()> {
     let Some(size) = stored_len(t, b)? else { return Ok(()) };
     for s in naming(t, b)? {
+        index_held(t, &s, b)?;
         if let Some(old) = get(t, &s, b)?
             && old.size == 0
         {
@@ -427,6 +444,10 @@ pub(crate) fn made_len(t: &mut Transaction<'_>, b: &BlobId) -> Result<Option<u64
 /// The engine makes blob `b` (`len` bytes) on demand (`CipherStore::made`): its bytes go unless the
 /// engine holds them too, and every entry naming it is servable.
 pub(crate) fn made(t: &mut Transaction<'_>, env: &mut Env<'_>, b: &BlobId, len: u64) -> Result<()> {
+    // its entries' claims, from the bytes before they go
+    for s in naming(t, b)? {
+        index_held(t, &s, b)?;
+    }
     t.put_local(&rows::made_key(b), &len.to_be_bytes(), Shred::No)?;
     // bytes never stored here (a blob sealed to be made) are no change to its readers
     if t.get_local(&rows::engine_key(b))?.is_none() && t.blob_len(b)?.is_some() {

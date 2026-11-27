@@ -376,6 +376,9 @@ fn spec_decode(body: &[u8]) -> Result<(), &'static str> {
                 ok(distinct.len() == ids.len(), "a commit ID twice")
             })
         }),
+        // Head: a sync ID and `Opt(step ID)`; HeadReply: at most ⌊REPLY_BUDGET / 292⌋ steps
+        49 => n(2).and_then(|_| b(&a[0], 16)).and_then(|_| opt_of(&a[1], |x| b(x, 32))),
+        50 => n(1).and_then(|_| list(&a[0], 0, (REPLY_BUDGET / 292) as usize, step)),
         _ => return Err("unknown kind"),
     };
     ok(id_ok, "id")?;

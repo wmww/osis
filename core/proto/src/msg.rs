@@ -232,6 +232,10 @@ pub enum Msg {
     Register { id: Id, sync_id: SyncId, steps: Vec<Step>, endorsement: Option<Signature> },
     /// One code per item of a Delete, in order.
     Status { id: Id, codes: Vec<Code> },
+    /// The answerer's path of S after `after` (none: from genesis; spec/sync-ids.md §6 Head).
+    Head { id: Id, sync_id: SyncId, after: Option<StepId> },
+    /// Steps of the answerer's path, in order, at most `MAX_HEAD_STEPS`.
+    HeadReply { id: Id, steps: Vec<Step> },
     Delete { id: Id, sync_id: SyncId, items: Vec<DeleteItem> },
     /// Blob IDs to fetch, grouped by sync ID (each blob ID once; at most `MAX_FETCH_IDS` in all).
     Fetch { id: Id, max_reply: u64, ids: Vec<(SyncId, Vec<BlobId>)> },
@@ -286,8 +290,8 @@ pub enum Flow {
 /// The flow of a kind version 1 knows, `None` for any other.
 pub fn flow(kind: u64) -> Option<Flow> {
     Some(match kind {
-        2 | 7 | 14 | 19 | 24 | 25 | 27 | 28 | 30 | 32 | 34 | 36 | 37 | 38 | 40 | 41 | 47 => Flow::Request,
-        0 | 1 | 3 | 11 | 20 | 26 | 33 | 35 | 39 | 42 | 48 => Flow::Reply,
+        2 | 7 | 14 | 19 | 24 | 25 | 27 | 28 | 30 | 32 | 34 | 36 | 37 | 38 | 40 | 41 | 47 | 49 => Flow::Request,
+        0 | 1 | 3 | 11 | 20 | 26 | 33 | 35 | 39 | 42 | 48 | 50 => Flow::Reply,
         29 | 43 | 44 | 45 | 46 => Flow::Push,
         _ => return None,
     })
@@ -308,6 +312,7 @@ pub fn answers(request: u64, reply: u64) -> bool {
             36 | 37 | 38 | 40 => reply == 39,
             41 => reply == 42,
             47 => reply == 48,
+            49 => reply == 50,
             _ => false,
         }
 }
@@ -410,6 +415,8 @@ impl Msg {
             Members { .. } => 46,
             Want { .. } => 47,
             Wanted { .. } => 48,
+            Head { .. } => 49,
+            HeadReply { .. } => 50,
         }
     }
 
@@ -417,7 +424,7 @@ impl Msg {
     pub fn id(&self) -> Id {
         use Msg::*;
         match self {
-            Error { id, .. } | Ok { id } | Ping { id, .. } | Pong { id, .. } | Register { id, .. } | Status { id, .. } | Delete { id, .. } | Fetch { id, .. } | FetchReply { id, .. } | Want { id, .. } | Wanted { id, .. } | Auth { id, .. } | Call { id, .. } | Reply { id, .. } | Sub { id, .. } | Unsub { id, .. } | Stranded { id, .. } | Prove { id, .. } | Proved { id, .. } | Resume { id, .. } | Resumed { id, .. } | Beacons { id, .. } | Offer { id, .. } | Lost { id, .. } | Shared { id, .. } | NoRecord { id } => *id,
+            Error { id, .. } | Ok { id } | Ping { id, .. } | Pong { id, .. } | Register { id, .. } | Status { id, .. } | Delete { id, .. } | Fetch { id, .. } | FetchReply { id, .. } | Want { id, .. } | Wanted { id, .. } | Auth { id, .. } | Call { id, .. } | Reply { id, .. } | Sub { id, .. } | Unsub { id, .. } | Stranded { id, .. } | Prove { id, .. } | Proved { id, .. } | Resume { id, .. } | Resumed { id, .. } | Beacons { id, .. } | Offer { id, .. } | Lost { id, .. } | Shared { id, .. } | NoRecord { id } | Head { id, .. } | HeadReply { id, .. } => *id,
             Pull(p) => p.id,
             PullReply(r) => r.id,
             Notify { .. } | Stream(_) | Applied { .. } | Digest { .. } | Members { .. } => 0,
@@ -432,7 +439,7 @@ impl Msg {
     pub fn set_id(&mut self, new: Id) {
         use Msg::*;
         match self {
-            Error { id, .. } | Ok { id } | Ping { id, .. } | Pong { id, .. } | Register { id, .. } | Status { id, .. } | Delete { id, .. } | Fetch { id, .. } | FetchReply { id, .. } | Want { id, .. } | Wanted { id, .. } | Auth { id, .. } | Call { id, .. } | Reply { id, .. } | Sub { id, .. } | Unsub { id, .. } | Stranded { id, .. } | Prove { id, .. } | Proved { id, .. } | Resume { id, .. } | Resumed { id, .. } | Beacons { id, .. } | Offer { id, .. } | Lost { id, .. } | Shared { id, .. } | NoRecord { id } => *id = new,
+            Error { id, .. } | Ok { id } | Ping { id, .. } | Pong { id, .. } | Register { id, .. } | Status { id, .. } | Delete { id, .. } | Fetch { id, .. } | FetchReply { id, .. } | Want { id, .. } | Wanted { id, .. } | Auth { id, .. } | Call { id, .. } | Reply { id, .. } | Sub { id, .. } | Unsub { id, .. } | Stranded { id, .. } | Prove { id, .. } | Proved { id, .. } | Resume { id, .. } | Resumed { id, .. } | Beacons { id, .. } | Offer { id, .. } | Lost { id, .. } | Shared { id, .. } | NoRecord { id } | Head { id, .. } | HeadReply { id, .. } => *id = new,
             Pull(p) => p.id = new,
             PullReply(r) => r.id = new,
             Notify { .. } | Stream(_) | Applied { .. } | Digest { .. } | Members { .. } => {}
@@ -487,6 +494,8 @@ impl Msg {
             M::Applied { cursor } => vec![k, id, Value::bytes(cursor.as_bytes())],
             M::Digest { digest } => vec![k, id, Value::bytes(digest)],
             M::Members { sync_ids, more } => vec![k, id, Value::List(sync_ids.iter().map(s).collect()), Value::Bool(*more)],
+            M::Head { sync_id, after, .. } => vec![k, id, s(sync_id), Value::opt(after.map(|x| Value::bytes(&x.0)))],
+            M::HeadReply { steps, .. } => vec![k, id, Value::List(steps.iter().map(step_value).collect())],
         };
         Value::List(items)
     }
@@ -637,6 +646,12 @@ fn decode_body(kind: u64, id: Id, v: Value, n: &Items) -> Result<Msg, Error> {
         44 => Msg::Applied { cursor: Cursor::new(f.bytes(MAX_CURSOR_BYTES)?)? },
         45 => Msg::Digest { digest: f.fixed()? },
         46 => Msg::Members { sync_ids: f.list(0, MAX_MEMBERS, "members")?.into_iter().map(|v| dec::fixed(v, "sync id").map(SyncId)).collect::<Result<_, _>>()?, more: f.bool()? },
+        49 => {
+            let sync_id = sync_id(&mut f)?;
+            let after = f.opt()?.map(|v| dec::fixed(v, "step id").map(StepId)).transpose()?;
+            Msg::Head { id, sync_id, after }
+        }
+        50 => Msg::HeadReply { id, steps: f.list(0, MAX_HEAD_STEPS, "head steps")?.into_iter().map(|v| step(v, n)).collect::<Result<_, _>>()? },
         _ => return Err(Error::UnknownKind(kind)),
     };
     f.end()?;

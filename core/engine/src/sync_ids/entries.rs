@@ -129,9 +129,3 @@ impl Engine {
         self.read(|tx| crate::apply::keys::keyset_kem(tx, m, Role::Read, &e))
     }
 }
-
-/// The claims of holder `m` at a step of key `step_key` of sync ID `sync_id`, one per read epoch
-/// of `m` whose secret `epochs` holds, newest first (spec/sync-ids.md §3: `m` tries each).
-pub(crate) fn claims_of(epochs: &osis_keys::ActorEpochs, sync_id: &SyncId, step_key: &[u8; 32]) -> Vec<osis_crypto::SigningSecret> {
-    epochs.read.held_newest_first().into_iter().filter_map(|(_, s)| osis_crypto::claim(s.kem().x25519(), step_key, sync_id, step_key).ok()).collect()
-}

@@ -20,6 +20,7 @@
 //! holds, and how, from the engine's sync set, and its caps from the engine's `caps^.0`.
 
 mod cipher;
+mod claims;
 mod entries;
 mod memory;
 mod path;
@@ -896,6 +897,15 @@ impl Store {
         self.lock().read(|t, env| Ok(path::head(t, env, s)?.map(|(_, st)| st)))
     }
 
+    /// S's head claims (spec/sync-ids.md §3 Bound): the claims of its entries' blocks bound to its
+    /// head's sync key; none with no head.
+    pub fn head_claims(&self, s: &SyncId) -> Result<Vec<[u8; 32]>> {
+        self.lock().read(|t, env| match path::head(t, env, s)? {
+            Some((_, head)) => claims::bound_to(t, s, &head.keys.sync.to_bytes()),
+            None => Ok(Vec::new()),
+        })
+    }
+
     /// The head's ID (`head`'s `Step::id`, without parsing it).
     pub fn head_id(&self, s: &SyncId) -> Result<Option<StepId>> {
         self.lock().read(|t, env| path::head_id(t, env, s))
@@ -1186,8 +1196,8 @@ impl Store {
             }
             let Ok(signed) = osis_blob::verify_deposit(&head.keys.deposit, &s, &b, &d.wrap, &d.sig) else { return Ok(Err(Code::DECLINED)) };
             let role = signed == osis_blob::Signed::RoleEntry;
-            // Interim (notes/opening-design.md): no head claims are held until entry blocks are
-            let (be, bb) = deposit_budget(&policy, 0);
+            let claims = claims::bound_to(t, &s, &head.keys.sync.to_bytes())?.len();
+            let (be, bb) = deposit_budget(&policy, claims);
             let u = entries::usage(t, &s)?;
             if u.deposits + mem_usage.deposits + 1 > be || u.deposit_bytes + mem_usage.deposit_bytes + size > bb {
                 return Ok(Err(Code::DEPOSIT_BUDGET_FULL));

@@ -410,6 +410,18 @@ impl FollowedLinks {
         self.refresh(*x);
     }
 
+    /// The holders of the followed signals naming `x` under `s` (spec/sync-opens.md §4: each
+    /// thing naming S to this node).
+    pub(crate) fn signal_holders(&self, x: &Tid, s: &SyncId) -> Vec<Tid> {
+        let held = self.held_signals.as_ref();
+        self.signals.get(x).and_then(|m| m.get(s)).into_iter().flatten().filter_map(|c| held?.get(c).map(|g| g.holder)).collect()
+    }
+
+    /// The link being redeemed for `k` under `s`: its key (none: a locator); `None` when none is.
+    pub(crate) fn link_of(&self, k: &Tid, s: &SyncId) -> Option<Option<&Arc<Identity>>> {
+        self.links.get(k).filter(|(x, _)| x == s).map(|(_, l)| l.as_ref())
+    }
+
     /// Whether signal `c` naming `x` under `s` is followed.
     pub(crate) fn follows_signal(&self, x: &Tid, s: &SyncId, c: &CommitId) -> bool {
         self.signals.get(x).and_then(|m| m.get(s)).is_some_and(|cs| cs.contains(c))

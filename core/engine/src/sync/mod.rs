@@ -405,13 +405,41 @@ pub struct ReadCredentials {
     /// The sync proof and sync key of each sync secret of S's thing held here, newest first:
     /// tested (spec/sync-opens.md §4 Admissible).
     pub held_proofs: Vec<([u8; 32], [u8; 32])>,
+    /// The holders this node reaches S's thing through (`Engine::claimants`), whose claims it
+    /// tests at a step whose sync key no held secret derives.
+    pub claimants: Claimants,
+}
+
+/// The holders a node reaches S's thing through (spec/sync-opens.md §4 Admissible, tests): the
+/// X25519 private key of each read keyset of each such holder it holds (newest first, each once),
+/// and whether the public is one (it tests the public's claim).
+#[derive(Clone, Default)]
+pub struct Claimants {
+    pub keys: Vec<osis_crypto::X25519Secret>,
+    pub public: bool,
+}
+
+impl Claimants {
+    /// The claims at a step of key `step_key` of `s` (spec/sync-ids.md §3 Claim): each holder's,
+    /// then the public's.
+    pub fn at(&self, s: &SyncId, step_key: &[u8; 32]) -> Vec<SigningSecret> {
+        let mut out: Vec<SigningSecret> = self.keys.iter().filter_map(|k| osis_crypto::claim(k, step_key, s, step_key).ok()).collect();
+        if self.public {
+            out.push(osis_crypto::public_claim(s, step_key));
+        }
+        out
+    }
+
+    fn public_keys(&self) -> (Vec<[u8; 32]>, bool) {
+        (self.keys.iter().map(osis_crypto::X25519Secret::public).collect(), self.public)
+    }
 }
 
 impl ReadCredentials {
     /// What tells two apart (`Engine::read_credentials` is a memo): its public values.
     #[allow(clippy::type_complexity)]
-    fn public(&self) -> (Option<StepId>, &BTreeMap<StepId, HeadKeys>, &[(StepId, [u8; 32])], &[([u8; 32], [u8; 32])]) {
-        (self.head.as_ref().map(Step::id), &self.keys, &self.proofs, &self.held_proofs)
+    fn public(&self) -> (Option<StepId>, &BTreeMap<StepId, HeadKeys>, &[(StepId, [u8; 32])], &[([u8; 32], [u8; 32])], (Vec<[u8; 32]>, bool)) {
+        (self.head.as_ref().map(Step::id), &self.keys, &self.proofs, &self.held_proofs, self.claimants.public_keys())
     }
 }
 

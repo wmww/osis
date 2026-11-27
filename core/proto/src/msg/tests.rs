@@ -6,7 +6,7 @@ use proptest::prelude::*;
 use std::collections::BTreeSet;
 
 /// Every kind version 1 names (spec/wire.md §11.2).
-const KINDS: [u64; 33] = [0, 1, 2, 3, 7, 11, 14, 19, 20, 24, 25, 26, 27, 28, 29, 30, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48];
+const KINDS: [u64; 35] = [0, 1, 2, 3, 7, 11, 14, 19, 20, 24, 25, 26, 27, 28, 29, 30, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50];
 
 fn enc(v: Value) -> Vec<u8> {
     cbor::encode(&v)
@@ -254,7 +254,7 @@ fn set_id_spec_wire_11_1() {
 // spec/wire.md §11.2: each request kind's answer kinds, an Error answering any
 #[test]
 fn answers_spec_wire_11_2() {
-    let pairs = [(2, 3), (7, 1), (14, 11), (19, 20), (24, 26), (25, 26), (27, 26), (28, 1), (30, 1), (31, 1), (32, 33), (34, 35), (36, 39), (37, 39), (38, 39), (40, 39), (41, 42), (47, 48)];
+    let pairs = [(2, 3), (7, 1), (14, 11), (19, 20), (24, 26), (25, 26), (27, 26), (28, 1), (30, 1), (31, 1), (32, 33), (34, 35), (36, 39), (37, 39), (38, 39), (40, 39), (41, 42), (47, 48), (49, 50)];
     for req in KINDS.into_iter().filter(|k| flow(*k) == Some(Flow::Request)) {
         assert!(answers(req, 0), "{req}");
         for rep in KINDS.into_iter().filter(|k| *k != 0 && flow(*k) == Some(Flow::Reply)) {
