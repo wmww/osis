@@ -27,3 +27,6 @@ Each is bounded per connection, per input or per thing at most; the total grows 
 - **Inbox deposits**: one deposit budget per sync ID (spec/sync-inbox.md §3), no node-wide total; ephemeral deposits are held in memory and grow with sync IDs held.
 - **The store's memory part** and per-entry module memory beyond it (streams' `Known`, follow's parked set, untombed removal events): issues/sync-memory-uncounted.md.
 - **Decode and write paths** that load a whole state: issues/durable-decode-bound.md; ephemeral decode ratio: issues/eph-node-cost-bounds.md.
+
+## Grant signals
+Nothing bounds how many grant signals a card holder fires beyond the inbox's lifetime and the deposit rate; each followed one adds a sync ID the node follows and names in ByRole to every peer it meets.
