@@ -1,7 +1,7 @@
 #!/bin/sh
-# Tests tools/land against a temp repo with a bare origin and a stub tools/policy.py (exits
-# $POLICY_RC): it pushes only from a clean tree containing origin/main whose policy passes; refused
-# behind origin/main, it names the files both sides changed; `--delete BRANCH` deletes only after a push.
+# Tests tools/land against a temp repo with a bare origin and a stub tools/policy.py (runs
+# $POLICY_HOOK, exits $POLICY_RC): it pushes only from a clean tree containing origin/main whose policy passes; refused
+# behind origin/main (also when it moved while policy ran), it names the files both sides changed; `--delete BRANCH` deletes only after a push.
 # Exit 1 on a mismatch.
 set -eu
 land=$(cd "$(dirname "$0")" && pwd)/land
@@ -14,7 +14,7 @@ git clone -q "$d/origin.git" "$d/a" 2> /dev/null
 cd "$d/a"
 git config user.email t@t && git config user.name t
 mkdir tools
-printf 'import os, sys\nsys.exit(int(os.environ.get("POLICY_RC", "0")))\n' > tools/policy.py
+printf 'import os, subprocess, sys\nif os.environ.get("POLICY_HOOK"): subprocess.run(os.environ["POLICY_HOOK"], shell=True, check=True)\nsys.exit(int(os.environ.get("POLICY_RC", "0")))\n' > tools/policy.py
 printf '1\n2\n3\n4\n5\n' > c
 git add -A && git commit -qm base && git push -q origin HEAD:main
 tip() { git --git-dir="$d/origin.git" rev-parse main; }
@@ -37,6 +37,10 @@ git push -q origin HEAD:refs/heads/coord-x
 POLICY_RC=0 "$land" --delete coord-x 2> /dev/null && rc=0 || rc=$?
 check "behind, --delete: branch kept" "$rc $(git ls-remote "$d/origin.git" coord-x | wc -l)" "1 1"
 git rebase -q origin/main
+# another landing while policy runs: refused at the second fetch
+POLICY_HOOK="cd $d/b && echo w > h && git add h && git commit -qm during && git push -q origin HEAD:main" "$land" 2> "$d/err" && rc=0 || rc=$?
+check "moved during policy: refused" "$rc $(grep -c 'landed while policy ran' "$d/err")" "1 1"
+git fetch -q origin && git rebase -q origin/main
 POLICY_RC=0 "$land" --delete coord-x 2> /dev/null && rc=0 || rc=$?
 check "clean, current, policy ok: pushed" "$rc $(tip)" "0 $(git rev-parse HEAD)"
 check "pushed, --delete: branch deleted" "$(git ls-remote "$d/origin.git" coord-x | wc -l)" "0"
