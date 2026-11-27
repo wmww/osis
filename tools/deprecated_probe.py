@@ -369,7 +369,8 @@ def main():
     test_only = sorted(k for k in uses if all(is_test(p, n) for p, n in uses[k]))
     show = lambda k: f"{k[0]}::{k[1]}  ({', '.join(items[k])})"
     # osis-android compiles only for target_os = "android", so the host clippy run sees none of its
-    # uses: an item its sources name is marked for a check by hand (issues/android-unchecked.md)
+    # uses: an item its sources name is marked for a check by hand (the gate's Android lint compiles
+    # them: notes/gate.md, Steps)
     android = "\n".join(open(f).read() for f in glob.glob(os.path.join(ROOT, "app/android/src/**/*.rs"), recursive=True))
     in_android = {k for k in unused if re.search(rf"\b{re.escape(k[1])}\b", android)}
     print(f"unused outside {crate_src} ({len(unused)}):")

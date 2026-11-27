@@ -171,7 +171,11 @@ passed() {
 # and build here reuses core's artifacts for the core crates (Feature unification).
 gui_pkgs="-p osis-kit -p osis-app -p osis-android"
 # shellcheck disable=SC2086
-gui_lint() { limited gate.gui-lint cargo clippy $gui_pkgs --all-targets --locked -- -D warnings; }
+gui_lint() { limited gate.gui-lint cargo clippy $gui_pkgs --all-targets --locked -- -D warnings; android_lint; }
+# osis-android is empty off Android, so the line above lints nothing of it: clippy again for one
+# Android triple (its own artifacts under target/aarch64-linux-android/, check only, the host's
+# build scripts and proc macros shared). No rust target or NDK fails here with what to install.
+android_lint() { limited gate.android app/android/with-ndk aarch64-linux-android cargo clippy -p osis-android --target aarch64-linux-android --locked -- -D warnings; }
 # the GUI's test binaries, built in the build stage so gate.gui-tests measures only the tests
 gui_build_cmd="cargo test $gui_pkgs --locked --no-fail-fast --no-run"
 # shellcheck disable=SC2086

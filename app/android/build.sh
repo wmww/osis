@@ -15,13 +15,9 @@ root=$here/../..
 bt=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
 jar=$ANDROID_HOME/platforms/android-36/android.jar
 llvm=$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin
-t=${target//-/_}
-T=${t^^}
-# NDK clang links (min SDK 28) and builds ring's C; NDK r28+ aligns to 16 KB pages.
-export "CARGO_TARGET_${T}_LINKER=$llvm/${target}28-clang" "CC_${t}=$llvm/${target}28-clang" "AR_${t}=$llvm/llvm-ar"
 # release: a debug build turns on wgpu's debug labels (they crash the emulator's Vulkan driver)
-# and masonry's debug log file, and is slow on a phone
-(cd "$root" && cargo build --release -p osis-android --target "$target")
+# and masonry's debug log file, and is slow on a phone; NDK r28+ aligns to 16 KB pages
+(cd "$root" && app/android/with-ndk "$target" cargo build --release -p osis-android --target "$target")
 out=$root/target/$target/release/apk
 rm -rf "$out" && mkdir -p "$out/lib/$dir"
 cp "$root/target/$target/release/libosis_android.so" "$out/lib/$dir/"

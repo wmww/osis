@@ -24,6 +24,7 @@ Limits are multiples of the box's base unit `u` (the CPU-s of one fixed work qua
 | `gate.checks` | 41 | 7.6 | `gate` | the instant checks with the tools' tests |
 | `gate.clippy` | 54 | 14 | `gate` | core clippy, warm |
 | `gate.gui-lint` | 8 | 10 |  | the GUI's clippy after core's (too small for a share) |
+| `gate.android` | 8 | 10 |  | osis-android's clippy for Android after the GUI's, as `gate.gui-lint` (an osis-base edit about 12 CPU-s; a worktree's first, cold, is over) |
 | `gate.unify` | 218 | 2.9 | `gate` | the unification check |
 | `gate.deny` | 4 | 5 |  | schema check, deny, core bans (too small for a share) |
 | `gate.properties` | 1614 | 92 | `gate.hold` | the selected properties |

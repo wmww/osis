@@ -199,7 +199,7 @@ GUI test footguns:
 - Touch-scroll tests relay out the page per pointer event: few long swipes (150 px, not 50).
 - Check each behaviour test against a negative (the behaviour disabled): a test passed with its flag off until the caret moved clear of the pinned bar.
 - guibox: `-s WxH` sets an exact window size; unset an inherited `WAYLAND_DISPLAY`/`SWAYSOCK` before `start`; wait about 4 s before the first shot (the store loads).
-- Android: a store from an older build fails to open (start fresh, or `adb shell pm clear net.osis.app`); `adb shell input` cannot double-tap inside 300 ms or fling, so those are kit-tested only; osis-android compiles only through `app/android/build.sh` (issues/android-unchecked.md).
+- Android: a store from an older build fails to open (start fresh, or `adb shell pm clear net.osis.app`); `adb shell input` cannot double-tap inside 300 ms or fling, so those are kit-tested only; osis-android compiles only for an Android target: the gate lints it for one (notes/gate.md, Steps), `app/android/build.sh` builds it.
 - Patches: a `.diff` is `-p0` against the crates.io source, its base the commit before it was added; check a chain by applying it in order to a scratch copy of `~/.cargo/registry/src/*/masonry*-0.4.0`.
 
 ### Core features the app has yet to adopt

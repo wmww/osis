@@ -1,0 +1,32 @@
+#!/bin/sh
+# app/android/with-ndk TARGET CMD...: runs CMD with cargo's TARGET (an Android triple) pointed at
+# the NDK's clang, min SDK 28, as linker and as CC and AR for ring's C. Without the rust target or
+# an NDK it prints what to install and exits 1. The NDK: ANDROID_NDK_ROOT, else the newest under
+# ANDROID_HOME/ndk, ~/Android/Sdk/ndk (Android Studio's) or ~/android/sdk/ndk.
+# notes/android.md, Build recipe.
+set -e
+[ $# -ge 2 ] || { echo "usage: $0 TARGET CMD..." >&2; exit 2; }
+target=$1
+shift
+if ! rustup target list --installed | grep -qx "$target"; then
+  echo "android: the rust target $target is not installed: rustup target add $target (notes/android.md, Build recipe)" >&2
+  exit 1
+fi
+if [ -n "$ANDROID_NDK_ROOT" ]; then
+  dirs=$ANDROID_NDK_ROOT
+else
+  dirs=$(ls -d "${ANDROID_HOME:-/nonexistent}"/ndk/* "$HOME"/Android/Sdk/ndk/* "$HOME"/android/sdk/ndk/* 2>/dev/null | sort -rV)
+fi
+llvm=
+for d in $dirs; do
+  b=$d/toolchains/llvm/prebuilt/linux-x86_64/bin
+  if [ -z "$llvm" ] && [ -x "$b/${target}28-clang" ]; then llvm=$b; fi
+done
+if [ -z "$llvm" ]; then
+  echo "android: no Android NDK${ANDROID_NDK_ROOT:+ at ANDROID_NDK_ROOT=$ANDROID_NDK_ROOT} for $target: install one with sdkmanager \"ndk;27.2.12479018\" (any later NDK works) and set ANDROID_NDK_ROOT=<sdk>/ndk/<version> (notes/android.md, Build recipe)" >&2
+  exit 1
+fi
+t=$(echo "$target" | tr - _)
+T=$(echo "$t" | tr a-z A-Z)
+export "CARGO_TARGET_${T}_LINKER=$llvm/${target}28-clang" "CC_${t}=$llvm/${target}28-clang" "AR_${t}=$llvm/llvm-ar"
+exec "$@"
