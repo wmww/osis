@@ -27,7 +27,7 @@ use std::sync::Arc;
 pub(crate) const SYNC_CUTS: &[u8] = b"su/";
 
 /// `se/` + thing (15 bytes) + holder (15 bytes): a holder's entry gave this node a sync secret of
-/// the thing (`Core::took_sync_entry`); its value the sync ID. Kept until the thing is forgotten:
+/// the thing (`Engine::took_sync_entry`); its value the sync ID. Kept until the thing is forgotten:
 /// the secret it tells of is never taken back (spec/permissions.md §3 Lost access: a sync secret
 /// held by no grant held is judged by its steps alone).
 pub(crate) const ENTRY_SYNCS: &[u8] = b"se/";

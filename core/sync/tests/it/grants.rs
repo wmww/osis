@@ -289,7 +289,7 @@ fn a_grantee_gets_in_at_a_store_with_no_reader_online_spec_sync_ids_3() {
     assert_eq!(w.engine(2).get(&t, &ak()).unwrap(), Some(Value::Str("hi".into())), "Bob reads T, got in at Carol's store");
 }
 
-// spec/sync-ids.md §3 (Entry; entries padded to a power of two), spec/sync-opens.md §4-§5 (shows:
+// spec/sync-ids.md §3 (Entry), spec/sync-opens.md §4-§5 (shows:
 // its head claims; tests: its claims at the source's step): one sync ID with n and 10n holders
 // (each granted apart, then a rotation boxing them all), what a node keeping it unread shows for
 // it (each head claim is a filter entry) and what one new grantee getting in at that store costs
