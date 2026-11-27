@@ -332,6 +332,16 @@ pub fn rotate_leaving_out(actor: &Tid, roles: &BTreeSet<Role>, held: &ActorEpoch
         let supersedes = listed.iter().copied().chain(earlier.iter().map(|(e, _)| *e)).collect();
         rotated.push(Rotated { role: r, epoch, secret, supersedes, floor });
     }
+    // the sync keyset's claim epoch (spec/crypto.md §3): the newest current read epoch the
+    // rotator holds with the rotation applied, the new read epoch where read rotates with it
+    if let Some(ks) = keys.keysets.get_mut(&Role::Sync) {
+        let read = held.role(Role::Read);
+        let claim = match rotated.iter().find(|x| x.role == Role::Read) {
+            Some(x) => Some(x.epoch),
+            None => newest_of(read.current().iter().filter(|e| read.secret(e).is_some())),
+        };
+        ks.claim = Some(to_schema(&claim.ok_or(Error::NoEpoch(Role::Read))?));
+    }
     secrets.removed = removals(&in_history, held_secrets);
     // a holder with no keyset known for a role it holds is left unboxed (re-sealed later)
     for m in holders {

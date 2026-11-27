@@ -89,7 +89,8 @@ impl KeysBody {
                     demotions.sort();
                     demotions.dedup();
                 }
-                Some(KeysetRec { role: *role, epoch, lists, kem, names: ks.names, left_out, demotions })
+                let claim = ks.claim.as_ref().and_then(|x| osis_keys::aspects::from_schema(x).ok());
+                Some(KeysetRec { role: *role, epoch, lists, kem, names: ks.names, left_out, demotions, claim })
             })
             .collect();
         // per role, the keyset the body writes and the commits that wrote it (a delta's: its own
@@ -219,6 +220,9 @@ pub(crate) fn note_keysets(core: &mut Core, h: &Header, id: &CommitId, actor: &T
         held.lists.extend(k.lists.iter().copied());
         if k.kem.is_some() {
             held.kem_in = Some(held.kem_in.map_or(at, |x| x.min(at)));
+        }
+        if held.since.is_none_or(|x| at < x) {
+            held.claim = k.claim;
         }
         held.since = Some(held.since.map_or(at, |x| x.min(at)));
         held.names.insert((k.names, h.signer));
@@ -556,14 +560,19 @@ pub(crate) fn keys_write(delta: &Fragment) -> KeysWrite {
 }
 
 /// A `keys.0` delta writing a keyset that records a holder actor left out at a keyset with no
-/// cause is bad input (spec/wire.md §7 Left out: nonempty; spec/commits.md §4): judged from the
-/// delta alone. Such a record would count for nothing (spec/crypto.md §4 Left out).
-pub(crate) fn check_left_out(h: &Header, (ai, d): &(usize, Decoded)) -> Result<()> {
+/// cause (spec/wire.md §7 Left out: nonempty), a sync keyset without its claim epoch or another
+/// keyset with one (spec/wire.md §7 Claim epoch) is bad input (spec/commits.md §4): judged from
+/// the delta alone.
+pub(crate) fn check_keysets(h: &Header, (ai, d): &(usize, Decoded)) -> Result<()> {
     if !h.aspects.get(*ai).is_some_and(|a| a.ak.as_str() == "keys.0") {
         return Ok(());
     }
-    if keys_write(d.fragment()).keysets.values().any(|ks| ks.left_out.values().any(|xs| xs.values().any(std::collections::BTreeSet::is_empty))) {
+    let w = keys_write(d.fragment());
+    if w.keysets.values().any(|ks| ks.left_out.values().any(|xs| xs.values().any(std::collections::BTreeSet::is_empty))) {
         return Err(crate::error::Error::BadInput("a keyset recording a keyset left out with no cause"));
+    }
+    if w.keysets.iter().any(|(r, ks)| ks.claim.is_some() != (*r == Role::Sync)) {
+        return Err(crate::error::Error::BadInput("a claim epoch on other than a sync keyset"));
     }
     Ok(())
 }

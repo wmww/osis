@@ -949,7 +949,7 @@ fn judge_part(tx: &mut Tx<'_>, h: &Header, id: &CommitId, p: &osis_commit::Part,
     }
     if rules && let Judged::Whole(part) = &judged {
         validity::check_holders_parts(h, id, std::slice::from_ref(part))?;
-        keys::check_left_out(h, part)?;
+        keys::check_keysets(h, part)?;
     }
     Ok(judged)
 }

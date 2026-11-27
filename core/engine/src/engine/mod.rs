@@ -188,6 +188,8 @@ pub struct KeysetRec {
     /// The commits whose demotions it carries: those it lists, and its rotation commit where it
     /// `demotes` (the commit its write names, `KeysBody::of`).
     pub demotions: Vec<CommitId>,
+    /// A sync keyset's claim epoch (spec/crypto.md §3).
+    pub claim: Option<osis_crypto::Epoch>,
 }
 
 /// A valid keyset body noted (`Indexes::keysets`): the epochs the supersedes lists of the bodies
@@ -210,6 +212,9 @@ pub struct HeldKeyset {
     pub names: BTreeSet<(osis_keys::NamesDigest, Tid)>,
     pub left_out: BTreeMap<Tid, BTreeMap<osis_crypto::Epoch, BTreeSet<CommitId>>>,
     pub demotions: BTreeSet<CommitId>,
+    /// A sync keyset's claim epoch (spec/crypto.md §3), as its earliest valid body names it
+    /// (`since`): every node reads the same one.
+    pub claim: Option<osis_crypto::Epoch>,
 }
 
 /// A box record a `keys.0` body writes with the keyset of its epoch (spec/crypto.md §4 Box

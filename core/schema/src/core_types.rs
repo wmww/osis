@@ -160,10 +160,10 @@ codec_struct! {
 codec_struct! {
     /// A keyset: epoch, KEM key, suite ID of the epoch, the epochs its rotation
     /// supersedes, names digest, the keysets of each holder actor its rotation left out at, and
-    /// the demotions it carries: other commits', and whether its own commit is one
-    /// (spec/crypto.md §3, §4, §8).
+    /// the demotions it carries: other commits', and whether its own commit is one, and a sync
+    /// keyset's claim epoch (spec/crypto.md §3, §4, §8).
     #[derive(Clone, Debug, PartialEq, Eq)]
-    pub struct Keyset { 0 epoch: Epoch, 1 kem_key: Option<KemKey>, 2 suite: u64, 3 supersedes: BTreeSet<Epoch>, 4 names: [u8; 32], 5 left_out: BTreeMap<Weak, BTreeMap<Epoch, BTreeSet<CommitId>>>, 6 demotions: BTreeSet<CommitId>, 7 demotes: bool }
+    pub struct Keyset { 0 epoch: Epoch, 1 kem_key: Option<KemKey>, 2 suite: u64, 3 supersedes: BTreeSet<Epoch>, 4 names: [u8; 32], 5 left_out: BTreeMap<Weak, BTreeMap<Epoch, BTreeSet<CommitId>>>, 6 demotions: BTreeSet<CommitId>, 7 demotes: bool, 8 claim: Option<Epoch> }
 }
 codec_struct! {
     /// A read epoch and its read-role KEM key (spec/crypto.md §3).

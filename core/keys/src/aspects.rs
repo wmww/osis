@@ -39,6 +39,7 @@ pub fn keyset(epoch: &Epoch, secret: &RoleSecret, supersedes: &BTreeSet<Epoch>, 
         left_out: BTreeMap::new(),
         demotions: BTreeSet::new(),
         demotes: false,
+        claim: None,
     }
 }
 
