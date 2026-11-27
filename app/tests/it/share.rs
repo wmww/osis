@@ -26,12 +26,14 @@ fn two_people() -> (Data, Data) {
     (a, b)
 }
 
-/// `d`'s home holds `t`, granted to it (a node writes only what it holds, spec/sync-set.md §2
-/// Writing).
-fn hold(d: &Data, t: osis::Tid) {
+/// `d` accepts `t`, granted to it: its home holds it (a node writes only what it holds,
+/// spec/sync-set.md §2 Writing), and a sync brings what it now reaches (`Osis::grant`: a told holder
+/// reaches the thing once it holds it).
+fn accept(d: &Data, other: &Data, t: osis::Tid) {
     let mut w = d.db.write();
     w.hold(d.home().unwrap(), t).unwrap();
     w.commit().unwrap();
+    sync(d, other);
 }
 
 /// A tag Alice made in the app and shared with Bob (`role`).
@@ -58,14 +60,14 @@ fn tagging_shares_nothing() {
 }
 
 /// Who can see a thing reached through someone else's tag (here a grant given by hand): Bob's
-/// note in Alice's tag names Alice (the tag's mint admin); Alice's note shared with Bob names her
-/// (its mint admin).
+/// note in Alice's tag names Alice (the tag's mint admin); Alice's note shared with Bob and
+/// accepted names her (its mint admin).
 #[test]
 fn reach_through_someone_elses_tag() {
     let (a, b) = two_people();
     let tag = shared_tag(&a, &b, Role::Write);
     sync(&a, &b);
-    hold(&b, tag);
+    accept(&b, &a, tag);
     let nb = osis_kit::facets::create(&b, "note").unwrap();
     b.add_tag(nb, tag).unwrap();
     b.db.grant(nb, tag, Role::Write, GrantOpts::default()).unwrap();
@@ -75,6 +77,7 @@ fn reach_through_someone_elses_tag() {
     let na = osis_kit::facets::create(&a, "note").unwrap();
     a.db.grant(na, crate::common::account(&b.db).unwrap(), Role::Read, GrantOpts::default()).unwrap();
     sync(&a, &b);
+    accept(&b, &a, na);
     assert_eq!(reach(&b, na).unwrap().people.len(), 1, "Alice, its mint admin");
 }
 
@@ -110,7 +113,7 @@ fn undo_is_mine_and_keeps_the_thing() {
     w.at(n, NAME).set(&"alice".to_string()).unwrap();
     w.commit().unwrap();
     sync(&a, &b);
-    hold(&b, tag);
+    accept(&b, &a, tag);
     let mut w = b.db.write();
     w.at(n, NAME).set(&"bob".to_string()).unwrap();
     w.commit().unwrap();
