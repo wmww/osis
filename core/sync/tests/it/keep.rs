@@ -406,7 +406,9 @@ fn a_register_lost_with_its_connection_goes_again_at_the_reconnect_spec_sync_ids
 // grant fire with the old deposit seed, which node 1 refuses under its new head). They reach
 // node 0 in the account's card on the public profile, which node 1 rewrites once its own
 // rotations end with no pass in flight (spec/sync-inbox.md §1 Card; fails if cards are
-// refreshed only at a pass's end).
+// refreshed only at a pass's end). Node 0 pulls the card by opening the profile whole by the
+// rotation's new sync proof before its path records the step (spec/sync-opens.md §4 One open
+// rule: a held sync secret newer than its head's is of the head).
 #[test]
 fn a_grant_from_outside_reaches_an_account_that_removed_a_node() {
     use crate::harness::Step::*;

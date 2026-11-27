@@ -571,11 +571,14 @@ struct Adm {
 
 impl Adm {
     /// Whether `by` is a credential of the head (spec/sync-opens.md §4 One open rule): the sync
-    /// proof of the head's sync key, or a head claim (shown: bound to the head here; tested: at
-    /// the source's step); with no head here, any proof.
+    /// proof of the head's sync key or of a sync secret held newer than the head's (a step past
+    /// this node's path: the head has not moved past it), or a head claim (shown: bound to the
+    /// head here; tested: at the source's step); with no head here, any proof.
     fn of_head(&self, by: &Credential) -> bool {
+        // tested proofs are newest first
+        let at = |k: &[u8; 32]| self.tests.iter().position(|t| matches!(t, Tested::Proof(_, x) if x == k));
         match by {
-            Credential::SyncProof(k) => self.head.is_none_or(|h| h == *k),
+            Credential::SyncProof(k) => self.head.is_none_or(|h| h == *k || at(k).zip(at(&h)).is_some_and(|(a, b)| a < b)),
             Credential::Claim(k) => self.shows.contains(&Shown::Claim(*k)) || self.tests.iter().any(|t| matches!(t, Tested::Claim { key, .. } if key.verifying_key().to_bytes() == *k)),
         }
     }
