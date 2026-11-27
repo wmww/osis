@@ -198,7 +198,7 @@ impl Engine {
                 };
                 match keys {
                     Some(EntryKeys::Read { blob_key, section_key }) => return Ok(Took::Read { thing, key: blob_key, section: section_key }),
-                    Some(EntryKeys::Sync { n, secret }) if role_key(RoleKey::Sync, &secret).verifying_key().to_bytes() == *block.sync_pk() => {
+                    Some(EntryKeys::Sync { n, secret }) if derives(&secret, block.sync_pk()) => {
                         let Ok(epoch) = Epoch::derive(&thing, Role::Sync, n, &secret) else { continue };
                         self.run(|tx| {
                             crate::apply::keys::edit_epochs(tx, thing, |ep| ep.role_mut(Role::Sync).set_secret(epoch, osis_crypto::RoleSecret::new(secret.clone())));
@@ -224,5 +224,29 @@ impl Engine {
         let Some(epochs) = self.core.epochs(x) else { return Ok(Vec::new()) };
         let Some(kem) = self.holder_kem_key(m)? else { return Ok(Vec::new()) };
         Ok(epochs.sync.current().iter().filter_map(|e| self.core.claim_key(x, e)).filter_map(|ck| osis_crypto::claim(&ck, &kem.x25519(), &sync_id, &ck.public()).ok()).map(|c| c.verifying_key().to_bytes()).collect())
+    }
+}
+
+/// Whether a sync holder's secret from an entry is kept: only where it derives the sync key of
+/// the block the entry is in (spec/sync-ids.md §3 Taking an entry), so an entry names no secret
+/// of another epoch, nor one a block's signer did not hold.
+pub(crate) fn derives(secret: &Secret32, sync_pk: &[u8; 32]) -> bool {
+    role_key(RoleKey::Sync, secret).verifying_key().to_bytes() == *sync_pk
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // spec/sync-ids.md §3 Taking an entry: a sync secret is kept only where it derives the
+    // block's sync key
+    #[test]
+    fn a_sync_secret_is_kept_only_where_it_derives_the_blocks_key_spec_sync_ids_3() {
+        let (a, b) = (Secret32::from_bytes([1; 32]), Secret32::from_bytes([2; 32]));
+        let pk = role_key(RoleKey::Sync, &a).verifying_key().to_bytes();
+        assert!(derives(&a, &pk));
+        assert!(!derives(&b, &pk), "another epoch's secret");
+        // the key of another role from the same secret is no sync key
+        assert!(!derives(&a, &role_key(RoleKey::Write, &a).verifying_key().to_bytes()));
     }
 }

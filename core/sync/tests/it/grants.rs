@@ -261,8 +261,8 @@ fn an_accepted_signals_peers_are_dial_hints_spec_sync_inbox_5() {
     assert!(!hinted(&w), "gone with the signal");
 }
 
-// spec/sync-ids.md §3 (Entry: grant and entry are one write; Taking an entry), §6 Head,
-// spec/sync-opens.md §4 (a claim among the head claims opens S whole): Alice grants Bob read and
+// spec/sync-ids.md §3 (Entry; Taking an entry), §6 Head, spec/sync-opens.md §4 (One open rule):
+// grant and entry are one write, and a claim among the head claims opens S whole. Alice grants Bob read and
 // tells him while Bob's node reaches only Carol's node, which keeps T unread; Alice's node goes
 // off. Bob asks Carol's node Head, opens T's sync ID there by his claim, finds his entry in the
 // grant's blob and reads T: no reader of T online.

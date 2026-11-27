@@ -1756,9 +1756,9 @@ fn claimant(head: &StepKeys, claim: &osis_crypto::SigningSecret) -> osis_sync::o
     osis_sync::opens::holds::Creds { holding: Some(osis_sync::types::Holding::Read), tests: vec![osis_sync::opens::cred::Tested::Claim { key: claim.clone(), sync: head.pk() }], ..Default::default() }
 }
 
-// spec/sync-opens.md §4 (a claim among the head claims opens S whole, proven by an open signature
-// by it; the answer by the replier's head sync key) and §6 (a claim no longer a head claim:
-// ended, served up to its step's end): a grantee holding no secret of S opens a store by its
+// spec/sync-opens.md §4 (One open rule) and §6 (a claim no longer a head claim): a claim among
+// the head claims opens S whole, proven by an open signature by it, its answer by the replier's
+// head sync key; one no longer a head claim is ended, served up to its step's end. A grantee holding no secret of S opens a store by its
 // claim, whole on both sides; the store's head moves past the claim's epoch and its member is
 // ended, not closed at once.
 #[test]
