@@ -2262,11 +2262,11 @@ fn a_refusing_page_refuses_as_it_is_held_spec_wire_6() {
 
 /// spec/commits.md §4 (Examined again), every path
 /// a blob wait goes through: a page held in a transaction that fails at each store write in
-/// turn, in a waking round that fails, and a reload midway (the walks derived again from what is
-/// held): the fill goes on, one page at a time as node-sync would ask, and the commit applies.
-/// Fails with a blob wait lost when its walk goes (nothing names the pages again).
+/// turn, and a reload midway (the walks derived again from what is held): the fill goes on, one
+/// page at a time as node-sync would ask, and the commit applies. Fails with a blob wait lost
+/// when its walk goes (nothing names the pages again).
 #[test]
-fn a_fill_goes_on_past_failed_writes_rounds_and_reloads_spec_commits_4() {
+fn a_fill_goes_on_past_failed_writes_and_reloads_spec_commits_4() {
     let params = small_pages();
     let _pages = osis_crdt::PageParams::set_test(Some(params));
     let [_, mix, _, _] = aks();
@@ -2295,7 +2295,7 @@ fn a_fill_goes_on_past_failed_writes_rounds_and_reloads_spec_commits_4() {
         }
         d
     };
-    for case in ["failed write", "failed write, the last page", "failed round", "reload"] {
+    for case in ["failed write", "failed write, the last page", "reload"] {
         let at = if case.ends_with("last page") { deliveries - 1 } else { 10 };
         for n in 0.. {
             let mut w = world_under(params);
@@ -2321,11 +2321,6 @@ fn a_fill_goes_on_past_failed_writes_rounds_and_reloads_spec_commits_4() {
                     // does (`engine_reloaded`)
                     assert!(r.is_err() || p.engine.reload_owed(), "{case} {n}");
                     p.engine.run(|_| Ok(())).unwrap();
-                }
-                "failed round" => {
-                    p.engine.fail_round = true;
-                    assert!(p.engine.put_blobs(vec![(b, held[&b].clone())]).is_err(), "{case}: the round failed");
-                    p.tick().unwrap();
                 }
                 _ => {
                     osis_base::costs::take();

@@ -221,9 +221,19 @@ pub(crate) fn unplaced(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
 /// The aspects whose timers are due by `now`, and when the first of the others is (`u64::MAX`:
 /// none).
 pub(crate) fn due(core: &Core, now: u64) -> (Vec<(Tid, Ak)>, u64) {
-    let due = core.ix.leave_due.range(..=now).flat_map(|(_, s)| s.iter().cloned()).collect();
+    let due = core.ix.leave_due.range(..=now).flat_map(|(_, s)| s.iter().cloned()).filter(|(t, a)| !aside(core, t, a)).collect();
     let next = core.ix.leave_due.range((Excluded(now), Unbounded)).next().map_or(u64::MAX, |x| *x.0);
     (due, next)
+}
+
+/// When the first aspect not set aside (`Core::ticks_aside`) leaves history.
+pub(crate) fn next_due(core: &Core) -> Option<u64> {
+    core.ix.leave_due.iter().find(|(_, s)| s.iter().any(|(t, a)| !aside(core, t, a))).map(|(at, _)| *at)
+}
+
+/// Whether `(tid, ak)`'s leaving was set aside for a fault (`Engine::tick`).
+fn aside(core: &Core, tid: &Tid, ak: &Ak) -> bool {
+    !core.ticks_aside.is_empty() && core.ticks_aside.contains(&super::TickUnit::Leave(*tid, ak.clone()))
 }
 
 /// A fire `p` of signal `(tid, ak)` held, kept past `now` by its setting: its place joins the

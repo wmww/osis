@@ -1065,6 +1065,20 @@ pub struct Core {
     /// full (`apply::ingest_blob`). Not carried over a reload.
     #[doc(hidden)]
     pub apply_fault: Option<CommitId>,
+    /// Tests: a transaction doing this work (`EndFault`) faults at its end, every time, outside
+    /// any step (as end work or a round's shared part erring would). Not carried over a reload.
+    #[cfg(test)]
+    pub(crate) end_fault: Option<EndFault>,
+    /// Tests: this transaction did `end_fault`'s work (set where it does, read at its end).
+    #[cfg(test)]
+    pub(crate) end_fault_due: bool,
+    /// The tick's units of work set aside for a fault (`Engine::take_units`): not run again
+    /// until the next open, which starts it empty.
+    pub(crate) ticks_aside: BTreeSet<crate::retention::TickUnit>,
+    /// The running transaction takes one unit alone (`Engine::split_units`; an arrival tried
+    /// again after a fault): the commits a thing entering the node closure wakes are left to
+    /// the next round (`apply::wake_entered`), so a fault of theirs is theirs alone.
+    pub(crate) alone: bool,
     /// Tests: the facts this node's snapshots state, over the true ones (`snapshot::facts_of`).
     #[cfg(test)]
     pub(crate) lie_facts: Option<osis_crdt::Facts>,
@@ -1897,6 +1911,9 @@ impl Core {
             redeliver: _,
             missed: _,
             timer_floor: _,
+            // written between transactions only (`Engine::take_units`)
+            ticks_aside: _,
+            alone: _,
             hlc: _,
             session: _,
             expiring: _,
@@ -1945,6 +1962,10 @@ impl Core {
             #[cfg(test)]
             step_fault: _,
             apply_fault: _,
+            #[cfg(test)]
+            end_fault: _,
+            #[cfg(test)]
+            end_fault_due: _,
             #[cfg(test)]
             lie_facts: _,
             #[cfg(test)]
@@ -2155,6 +2176,12 @@ impl Core {
             #[cfg(test)]
             step_fault: None,
             apply_fault: None,
+            #[cfg(test)]
+            end_fault: None,
+            #[cfg(test)]
+            end_fault_due: false,
+            ticks_aside: Default::default(),
+            alone: false,
             #[cfg(test)]
             lie_facts: None,
             #[cfg(test)]
@@ -2619,7 +2646,7 @@ pub struct Engine {
     /// The store's `Writes::failed` and `Writes::unknown` when this engine last read it whole
     /// (`load`): the next transaction reads it again once either moves (`reload_owed`).
     failed_seen: (u64, u64),
-    /// A transaction acting on in-memory work taken outside it failed (`run_taken`): the next
+    /// A transaction acting on in-memory work taken outside it failed (`take_units`): the next
     /// transaction reads the store again (`reload_owed`).
     taken_failed: bool,
     /// How many times the in-memory indexes were read from the store again (`load_fresh`): each
@@ -2658,10 +2685,16 @@ pub struct Engine {
     /// rolled back, not only at the end (to find the transaction that diverged).
     #[cfg(test)]
     pub(crate) check_every_tx: bool,
-    /// Tests: the next round of `reexamine` fails before examining what it took, as a round
-    /// erring does (`run_taken`).
-    #[cfg(test)]
-    pub(crate) fail_round: bool,
+}
+
+/// Tests: the work whose transaction faults at its end (`Core::end_fault`).
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum EndFault {
+    /// Examining this commit (`apply::ingest_blob`) or running a timer of it (`retention::run_timer`).
+    Commit(CommitId),
+    /// Learning this thing's record (`apply::learn_records_in`).
+    Record(Tid),
 }
 
 type Nonce = [u8; osis_crdt::SESSION_NONCE_LEN];
@@ -2852,6 +2885,10 @@ fn end_settle<T>(tx: &mut Tx<'_>, mut r: Result<T>) -> Result<T> {
     // every state written above stored in its form (`Tx::settle_states`)
     r = then(r, || tx.settle_placements().and_then(|()| tx.settle_states()));
     r = then(r, || Core::commit_changes(tx));
+    #[cfg(test)]
+    if std::mem::take(&mut tx.core.end_fault_due) {
+        r = r.and(Err(Error::Corrupt("an end-work fault (tests)")));
+    }
     r
 }
 
@@ -2869,22 +2906,61 @@ impl Engine {
     }
 
     /// A store write failed since the store was last read whole, or a transaction acting on work
-    /// taken outside it (`run_taken`): the next transaction reads it again (`run`), and a tick is
+    /// taken outside it (`take_units`): the next transaction reads it again (`run`), and a tick is
     /// due (`next_timer`) so one runs with no other event.
     pub fn reload_owed(&self) -> bool {
         let w = self.store.writes();
         (w.failed, w.unknown) != self.failed_seen || self.taken_failed
     }
 
-    /// `run` acting on in-memory work taken outside the transaction (what woke pending commits,
-    /// `apply::waits::wake`; loose records come to be awaited, `waits::Loose::take_due`): the
-    /// transaction failing, whatever failed (the store, or a round of examinations erring), owes a
-    /// reload, so what it took is derived again as an open derives it, never lost while the node
-    /// stays up (spec/commits.md §4: every arrival that applies examines again what waits for it).
-    pub(crate) fn run_taken<T>(&mut self, f: impl FnOnce(&mut Tx<'_>) -> Result<T>) -> Result<T> {
-        let r = self.run(f);
-        self.taken_failed |= r.is_err();
+    /// Takes `units` (the pieces of work a transaction does: a commit arriving or woken, a tick's
+    /// timer, a record learned) in one transaction, `take` doing a list of them. A fault there
+    /// (`Error::is_fault`: this build's, never a store failure) is a unit's: each is taken again
+    /// alone, in a transaction of its own (`Core::alone`), and one that faults so is set aside (`aside`,
+    /// given the fault): its work is left undone until the next open, and the app told. A fault
+    /// no unit brings alone is told as well. The outputs of the transactions that committed.
+    /// `taken`: the units were taken out of memory outside the transaction (what woke pending
+    /// commits, `apply::waits::wake`; loose records come to be awaited): an error left from here
+    /// (a store failure, an `aside` failing) owes a reload, so what was taken is derived again as
+    /// an open derives it, never lost while the node stays up (spec/commits.md §4: every arrival
+    /// that applies examines again what waits for it).
+    pub(crate) fn take_units<U: Clone, T>(&mut self, units: Vec<U>, taken: bool, mut take: impl FnMut(&mut Tx<'_>, Vec<U>) -> Result<T>, aside: impl FnMut(&mut Engine, U, Error) -> Result<()>) -> Result<Vec<T>> {
+        let r = match self.run(|tx| take(tx, units.clone())) {
+            Err(e) if e.is_fault() => self.split_units(units, e, take, aside),
+            r => r.map(|v| vec![v]),
+        };
+        self.taken_failed |= taken && r.is_err();
         r
+    }
+
+    /// `f` taking one unit alone (`Core::alone`).
+    pub(crate) fn alone<T>(&mut self, f: impl FnOnce(&mut Engine) -> T) -> T {
+        let was = std::mem::replace(&mut self.core.alone, true);
+        let r = f(self);
+        self.core.alone = was;
+        r
+    }
+
+    /// `take_units` past a transaction taking `units` together that failed for `fault`: each
+    /// taken alone (`alone`), set aside where that faults.
+    pub(crate) fn split_units<U: Clone, T>(&mut self, units: Vec<U>, fault: Error, mut take: impl FnMut(&mut Tx<'_>, Vec<U>) -> Result<T>, mut aside: impl FnMut(&mut Engine, U, Error) -> Result<()>) -> Result<Vec<T>> {
+        // one unit too: taken together it did the work of the commits it woke
+        let mut out = Vec::new();
+        let mut told = false;
+        for u in units {
+            match self.alone(|e| e.run(|tx| take(tx, vec![u.clone()]))) {
+                Ok(v) => out.push(v),
+                Err(e) if e.is_fault() => {
+                    aside(self, u, e)?;
+                    told = true;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        if !told {
+            crate::apply::tell_fault(&mut self.core, None, Vec::new(), &fault);
+        }
+        Ok(out)
     }
 
     /// While this stands (no commit changed the store, the indexes stand, the clock stands) a
@@ -2900,7 +2976,7 @@ impl Engine {
         let rows = store.row_changes();
         // its one writer is `run`, each transaction undone whole (`memo::Undoable`)
         let store = store.undoable();
-        Engine { store, store_rng, blobs, blob_stamps: Default::default(), blob_seq: 1, blobs_unsettled: false, failed_seen: (0, 0), taken_failed: false, loads: 0, rng, core: Core::new(id, clock.clone(), session, expiring, rows), eph: crate::ephemeral::Eph::default(), clock, cfg, #[cfg(debug_assertions)] index_unchecked: false, #[cfg(debug_assertions)] verdicts_unchecked: false, #[cfg(debug_assertions)] last_tx_wall: None, #[cfg(debug_assertions)] loading: false, #[cfg(test)] index_poked: false, #[cfg(test)] check_every_tx: false, #[cfg(test)] fail_round: false }
+        Engine { store, store_rng, blobs, blob_stamps: Default::default(), blob_seq: 1, blobs_unsettled: false, failed_seen: (0, 0), taken_failed: false, loads: 0, rng, core: Core::new(id, clock.clone(), session, expiring, rows), eph: crate::ephemeral::Eph::default(), clock, cfg, #[cfg(debug_assertions)] index_unchecked: false, #[cfg(debug_assertions)] verdicts_unchecked: false, #[cfg(debug_assertions)] last_tx_wall: None, #[cfg(debug_assertions)] loading: false, #[cfg(test)] index_poked: false, #[cfg(test)] check_every_tx: false }
     }
 
     /// A new node over an empty backend: a fresh signing key, its node thing and node root
@@ -3135,7 +3211,7 @@ impl Engine {
         #[cfg(debug_assertions)]
         let (trace_mark, caller) = (osis_base::trace::len(), std::panic::Location::caller());
         // a store write failed (the device staying up), or a transaction acting on work taken
-        // outside it (`run_taken`): everything is read again as an open reads it, so nothing kept
+        // outside it (`take_units`): everything is read again as an open reads it, so nothing kept
         // in memory beside the store (work an operation took outside the transaction that failed:
         // wakes, due lists) differs from what a restart derives. One
         // whose outcome was unknown (its sync failed) may have landed after all: read once the
@@ -3173,6 +3249,10 @@ impl Engine {
         }
         // changes made outside a transaction are not this one's to undo
         self.core.commit_journal();
+        #[cfg(test)]
+        {
+            self.core.end_fault_due = false;
+        }
         self.core.memory_tx = false;
         let start = self.core.mark();
         #[cfg(debug_assertions)]

@@ -394,7 +394,8 @@ fn read_pending(tx: &mut Tx<'_>, id: &CommitId) -> Result<Option<CommitBlob>> {
 
 /// The things the node closure comes to read whole since the last call wake the parts waiting for them
 /// (`Reason::Outside`, spec/commits.md §4 Outside the node closure): each such commit is
-/// examined again in this transaction, at its end (`Engine::run`), an ephemeral one woken for
+/// examined again in this transaction, at its end (`Engine::run`; in one taking a unit alone,
+/// `Core::alone`, in the next round instead), an ephemeral one woken for
 /// node-sync's room (`apply_waiting_memory`); each held commit on such a thing missing a part
 /// on it that a blob of it opened is named for redelivery (`Engine::take_redeliver`). How many
 /// were examined. The first call reads every thing awaited so and every held commit. O(what
@@ -420,6 +421,11 @@ pub(crate) fn wake_entered(tx: &mut Tx<'_>) -> Result<usize> {
         opened.extend(tx.core.on_thing(t).filter(|c| missing_opened(tx.core, c, t)));
     }
     tx.core.redeliver.extend(opened);
+    // a unit taken alone takes only its own work: what it wakes is the next round's
+    if tx.core.alone {
+        tx.core.waits.entered_due.extend(ids);
+        return Ok(0);
+    }
     let mut n = 0;
     for id in ids {
         if !tx.core.ix.pending.contains_key(&id) {
@@ -492,12 +498,51 @@ pub(crate) fn unreceive_outside(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
 fn learn_records_in(tx: &mut Tx<'_>, records: Vec<CreationRecord>) -> Result<usize> {
     let mut n = 0;
     for r in records {
+        #[cfg(test)]
+        {
+            tx.core.end_fault_due |= tx.core.end_fault == Some(crate::engine::EndFault::Record(r.tid()));
+        }
         n += usize::from(atomic::learn_record(tx, r)?);
     }
     if n > 0 {
         atomic::rejudged(tx, true)?;
     }
     Ok(n)
+}
+
+/// A round of `Engine::reexamine`: the blob waits `arrived` and `lost` reach taken on
+/// (`reach::round`), then the pending commits they and `woken` name examined, role commits first.
+/// Whether one applied.
+fn round(tx: &mut Tx<'_>, woken: &BTreeSet<CommitId>, arrived: &reach::Arrived, lost: &BTreeSet<CommitId>) -> Result<bool> {
+    let mut ids = reach::round(tx, arrived, lost)?;
+    ids.extend(woken);
+    if ids.is_empty() {
+        return Ok(false);
+    }
+    let mut blobs: Vec<(CommitId, CommitBlob)> = Vec::new();
+    let pending = &tx.core.ix.pending;
+    tx.core.memory_waits.retain(|id| pending.contains_key(id));
+    for id in ids {
+        // a memory commit waits for node-sync, which applies it within its sync ID's
+        // room (`apply_waiting_memory`): woken, it is stamped for it
+        if !tx.core.memory_waits.contains(&id) {
+            tx.core.waits.examined += 1;
+            let Some(b) = read_pending(tx, &id)? else { continue };
+            if b.header.ephemeral.is_none() {
+                blobs.push((id, b));
+                continue;
+            }
+            tx.core.memory_waits.insert(id);
+        }
+        tx.core.waits.memory_woken.wrote_added(&id, true, true);
+    }
+    blobs.sort_by_key(|(_, b)| (!b.header.kind.is_role(), b.header.ts));
+    tx.core.touch();
+    let mut progressed = false;
+    for (id, b) in blobs {
+        progressed |= matches!(retry_pending(tx, id, b)?, Some(Ingested::Applied(_)));
+    }
+    Ok(progressed)
 }
 
 /// Examines pending commit `id` (stored as `b`) again as one step: a commit refused leaves
@@ -1001,6 +1046,10 @@ pub(crate) fn unjudgeable(core: &crate::engine::Core, id: &CommitId, h: &Header,
 /// derives stays in the store's memory overlay, pending ones included.
 fn ingest_blob(tx: &mut Tx<'_>, blob: CommitBlob, origin: Origin) -> Result<Ingested> {
     let planted = tx.core.apply_fault.is_some_and(|c| c == blob.id());
+    #[cfg(test)]
+    {
+        tx.core.end_fault_due |= tx.core.end_fault == Some(crate::engine::EndFault::Commit(blob.id()));
+    }
     let out = ingest_blob_class(tx, blob, origin);
     if planted {
         return out.and(Err(Error::Corrupt("a planted fault (tests)")));
@@ -1017,6 +1066,15 @@ fn ingest_blob_class(tx: &mut Tx<'_>, blob: CommitBlob, origin: Origin) -> Resul
     }
 }
 
+/// What a received commit came with (`Engine::set_aside_arrival`): its bytes, the blobs and
+/// pages handed in with it, the records it carries sealed (`Engine::ingest_carrying`).
+struct Came<'a> {
+    bytes: &'a [u8],
+    blobs: Vec<(BlobId, Vec<u8>)>,
+    pages: &'a [Vec<u8>],
+    records: Vec<CreationRecord>,
+}
+
 /// Takes commit `blob` (ID `id`) as a carrier brings it, not as a re-examination: a copy that
 /// brings nothing (`rearrival`) costs a lookup, else `ingest_blob` judges it. `blobs`: blobs new
 /// here came with it (pages, header lists), which may be what it waits for.
@@ -1027,9 +1085,9 @@ fn arrive(tx: &mut Tx<'_>, id: &CommitId, blob: CommitBlob, blobs: bool) -> Resu
     ingest_blob(tx, blob, Origin::Remote)
 }
 
-/// Tells the app that received commit `id` (on `things`) failed to apply for fault `e` of this
-/// node (`set_aside`).
-fn tell_fault(core: &mut crate::engine::Core, id: Option<CommitId>, things: Vec<Tid>, e: &Error) {
+/// Tells the app that work on received commit `id` (on `things`; neither: a transaction whose
+/// units each took alone) failed for fault `e` of this node (`set_aside`, `Engine::take_units`).
+pub(crate) fn tell_fault(core: &mut crate::engine::Core, id: Option<CommitId>, things: Vec<Tid>, e: &Error) {
     core.events.diagnostic(Diagnostic { kind: DiagnosticKind::Fault, tids: things, commit: id, peer: None, detail: e.to_string() }, core.hlc.mono());
 }
 
@@ -1039,10 +1097,11 @@ fn tell_fault(core: &mut crate::engine::Core, id: Option<CommitId>, things: Vec<
 /// claims reads it, and examined again only at the next open (an upgrade may apply it); the
 /// app is told. Its stored copy stays if it had one, else `bytes` (as it came) are kept.
 ///
-/// Where: a round's examinations each run as a step (`retry_pending`), so a fault leaves the
-/// round's others applying; an arrival's transaction failing with a fault is followed by one that
-/// only sets the commit aside (`Engine::set_aside_arrival`: its transaction-end work included, and
-/// a streamed apply keeps spilling, which a step around it would stop).
+/// Where: a round's examination runs as a step (`retry_pending`), so its own fault sets it aside
+/// in place; a fault elsewhere in a transaction is its units' (`Engine::take_units`), and an
+/// arrival's transaction failing so is followed by one that only sets the commit aside
+/// (`Engine::set_aside_arrival`: a streamed apply keeps spilling, which a step around it would
+/// stop).
 fn set_aside(tx: &mut Tx<'_>, id: &CommitId, bytes: Option<&[u8]>, e: &Error) -> Result<Ingested> {
     let mut things = Vec::new();
     if !tx.core.ix.pending.contains_key(id) {
@@ -1742,21 +1801,34 @@ impl Engine {
         let id = blob.id();
         let ais: Vec<usize> = blob.parts.iter().map(|p| p.ai).collect();
         let mut refused = false;
-        let r = self.run(|tx| {
-            if !pages.is_empty() && !store_pages(tx, &blob, pages)? {
-                refused = true;
-                return Err(Error::Misuse("refused"));
-            }
-            let out = arrive(tx, &id, blob, false)?;
-            refused = refuse(tx.core, &id, &ais, &out);
-            if refused {
-                // rolled back
-                return Err(Error::Misuse("refused"));
-            }
-            crate::sync_ids::opened::persist(tx, &id)?;
-            carriers::taken(tx, &id, from)?;
-            Ok(out)
-        });
+        // the retry decodes it again
+        let mut first = Some(blob);
+        let mut attempt = |e: &mut Engine, refused: &mut bool| {
+            let blob = match first.take() {
+                Some(b) => b,
+                None => CommitBlob::decode(bytes)?,
+            };
+            e.run(|tx| {
+                if !pages.is_empty() && !store_pages(tx, &blob, pages)? {
+                    *refused = true;
+                    return Err(Error::Misuse("refused"));
+                }
+                let out = arrive(tx, &id, blob, false)?;
+                *refused = refuse(tx.core, &id, &ais, &out);
+                if *refused {
+                    // rolled back
+                    return Err(Error::Misuse("refused"));
+                }
+                crate::sync_ids::opened::persist(tx, &id)?;
+                carriers::taken(tx, &id, from)?;
+                Ok(out)
+            })
+        };
+        let mut r = attempt(self, &mut refused);
+        // a fault: taken again alone, as `ingest_class` does
+        if !refused && matches!(&r, Err(e) if e.is_fault()) {
+            r = self.alone(|e| attempt(e, &mut refused));
+        }
         let set_aside = Ingested::Pending(id, Reason::Fault);
         // (a refusal rolls back by an error of its own)
         let r = match r {
@@ -1766,7 +1838,7 @@ impl Engine {
                 refused = true;
                 Ok(set_aside)
             }
-            Err(e) if e.is_fault() => self.set_aside_arrival(&id, bytes, Vec::new(), from, &e),
+            Err(e) if e.is_fault() => self.set_aside_arrival(&id, Came { bytes, blobs: Vec::new(), pages, records: Vec::new() }, from, &e),
             r => r,
         };
         // written where kept, or nothing of it is kept (`sync_ids::opened`)
@@ -1774,7 +1846,7 @@ impl Engine {
         if refused {
             return Ok(None);
         }
-        if let Ok(Ingested::Applied(_)) = &r {
+        if matches!(&r, Ok(Ingested::Applied(_))) || !self.core.waits.entered_due.is_empty() {
             self.reexamine()?;
         }
         r.map(Some)
@@ -1811,28 +1883,62 @@ impl Engine {
             return Ok(false);
         }
         let recs = crate::sync::with_chains(&self.core, seeds, &BTreeMap::new());
-        // the due records were taken outside its transaction (`run_taken`)
-        let n = self.run_taken(|tx| learn_records_in(tx, recs));
-        Ok(n? > 0)
+        // the due records were taken outside its transaction; one whose learning faults stays
+        // loose until the next open
+        let n = self.take_units(recs, true, learn_records_in, |e, r, err| {
+            tell_fault(&mut e.core, None, vec![r.tid()], &err);
+            Ok(())
+        })?;
+        Ok(n.into_iter().sum::<usize>() > 0)
     }
 
-    /// The transaction taking received commit `id` (`bytes`, as it came) failed for fault `e` of
-    /// this node: one that only sets it aside (`set_aside`) with `records` (`ingest_carrying`'s),
-    /// carried by `carrier` (`None`: a memory commit, or by nothing). An error here (the same fault again, outside the commit)
-    /// is the node's.
-    fn set_aside_arrival(&mut self, id: &CommitId, bytes: &[u8], records: Vec<CreationRecord>, carrier: Option<carriers::Carrier>, e: &Error) -> Result<Ingested> {
-        let memory = CommitBlob::decode(bytes).is_ok_and(|b| b.header.ephemeral.is_some());
-        self.run(|tx| {
-            if memory {
-                tx.set_memory();
-            }
-            // the records it carries sealed are taken with it, set aside or not
-            learn_records_in(tx, records)?;
-            let out = set_aside(tx, id, Some(bytes), e)?;
-            crate::sync_ids::opened::persist(tx, id)?;
-            carriers::taken(tx, id, carrier)?;
-            Ok(out)
-        })
+    /// The transaction taking received commit `id` (as it `came`) failed for fault `e` of this
+    /// node: one that only sets it aside (`set_aside`), its blobs and pages stored (what it waits
+    /// for at the next open), with the records it carries, carried by `carrier` (`None`: a memory
+    /// commit, or by nothing). The commit and each record are its units (`take_units`): a record
+    /// whose learning faults is left unlearned, told; the commit's own setting aside faulting is a
+    /// fault of the node's, the error.
+    fn set_aside_arrival(&mut self, id: &CommitId, came: Came<'_>, carrier: Option<carriers::Carrier>, e: &Error) -> Result<Ingested> {
+        let Came { bytes, blobs, pages, records } = came;
+        let blob = CommitBlob::decode(bytes)?;
+        let memory = blob.header.ephemeral.is_some();
+        // `None`: the commit; each record its own unit
+        let units: Vec<Option<CreationRecord>> = std::iter::once(None).chain(records.into_iter().map(Some)).collect();
+        let outs = self.take_units(
+            units,
+            false,
+            |tx, units| {
+                if memory {
+                    tx.set_memory();
+                }
+                let commit = units.iter().any(Option::is_none);
+                // the records it carries sealed are taken with it, set aside or not
+                learn_records_in(tx, units.into_iter().flatten().collect())?;
+                if !commit {
+                    return Ok(None);
+                }
+                let fresh = !memory && !tx.store_blobs(blobs.clone())?.is_empty();
+                if !pages.is_empty() {
+                    store_pages(tx, &blob, pages)?;
+                }
+                let out = set_aside(tx, id, Some(bytes), e)?;
+                crate::sync_ids::opened::persist(tx, id)?;
+                carriers::taken(tx, id, carrier)?;
+                Ok(Some((out, fresh)))
+            },
+            |eng, unit, err| match unit {
+                None => Err(err),
+                Some(r) => {
+                    tell_fault(&mut eng.core, Some(*id), vec![r.tid()], &err);
+                    Ok(())
+                }
+            },
+        )?;
+        let (out, fresh) = outs.into_iter().flatten().next().ok_or(Error::Misuse("set aside: no outcome"))?;
+        if fresh {
+            self.blobs_stored();
+        }
+        Ok(out)
     }
 
     /// Receives a memory commit (session form, spec/commits.md §2-§3) through the commit path,
@@ -1853,13 +1959,14 @@ impl Engine {
     fn ingest_class(&mut self, bytes: &[u8], blobs: Vec<(BlobId, Vec<u8>)>, records: Vec<CreationRecord>, peer: Option<Tid>, room: Option<u64>) -> Result<Ingested> {
         let memory = room.is_some();
         let _s = osis_base::costs::span("ingest");
-        let mut fresh = false;
-        let mut seen = None;
-        let mut learned = 0;
-        self.core.memory_room = room;
-        let r = self.run(|tx| {
+        // (blobs new here, the commit's ID once decoded, records learned)
+        let mut st: (bool, Option<CommitId>, usize) = (false, None, 0);
+        let attempt = |e: &mut Engine, st: &mut (bool, Option<CommitId>, usize)| {
+            let (fresh, seen, learned) = (&mut st.0, &mut st.1, &mut st.2);
+            e.core.memory_room = room;
+            let r = e.run(|tx| {
             let decoded = CommitBlob::decode(bytes);
-            seen = decoded.as_ref().ok().map(CommitBlob::id);
+            *seen = decoded.as_ref().ok().map(CommitBlob::id);
             if matches!(&decoded, Ok(b) if b.header.ephemeral.is_some() != memory) {
                 return Err(Error::BadInput(if memory { "a durable commit on the memory path" } else { "an ephemeral commit on the durable path" }));
             }
@@ -1868,17 +1975,18 @@ impl Engine {
             if room.is_some() {
                 tx.set_memory();
             } else {
-                fresh = !tx.store_blobs(blobs)?.is_empty();
+                // kept for a set-aside's transaction (`set_aside_arrival`)
+                *fresh = !tx.store_blobs(blobs.clone())?.is_empty();
             }
             // each a minting the commit brings, its record held or not
             for r in &records {
                 tx.core.note_brought(r.tid());
             }
-            learned = learn_records_in(tx, records.clone())?;
+            *learned = learn_records_in(tx, records.clone())?;
             match decoded {
                 Ok(blob) => {
                     let id = blob.id();
-                    let out = arrive(tx, &id, blob, fresh)?;
+                    let out = arrive(tx, &id, blob, *fresh)?;
                     crate::sync_ids::opened::persist(tx, &id)?;
                     // an entry carries it (a memory commit's copy is the memory lane's)
                     if !memory {
@@ -1900,13 +2008,22 @@ impl Engine {
                 Err(e) => Err(e.into()),
             }
         });
-        self.core.memory_room = None;
+            e.core.memory_room = None;
+            r
+        };
+        let mut r = attempt(self, &mut st);
+        // a fault: taken again alone, what it wakes left to the next round (`Core::alone`), so
+        // a fault of a commit it brings in is that one's; set aside if it faults alone
+        if st.1.is_some() && matches!(&r, Err(e) if e.is_fault()) {
+            r = self.alone(|e| attempt(e, &mut st));
+        }
+        let (fresh, seen, learned) = st;
         if fresh && r.is_ok() {
             self.blobs_stored();
         }
         let r = match (r, seen) {
             // a memory commit's copy is the memory lane's
-            (Err(e), Some(id)) if e.is_fault() => self.set_aside_arrival(&id, bytes, records, (!memory).then_some(carriers::Carrier::Entry), &e),
+            (Err(e), Some(id)) if e.is_fault() => self.set_aside_arrival(&id, Came { bytes, blobs, pages: &[], records }, (!memory).then_some(carriers::Carrier::Entry), &e),
             (r, _) => r,
         };
         // written where kept, or nothing of it is kept (`sync_ids::opened`)
@@ -1921,7 +2038,7 @@ impl Engine {
             Ok(Ingested::Applied(_)) => self.reexamine()?,
             // it awaits a record kept loose: learned now (`promote_loose`); blobs it brought end
             // other commits' waits (`reach::Walks`)
-            _ if self.core.waits.loose.has_due() || self.core.walks.due() => self.reexamine()?,
+            _ if self.core.waits.loose.has_due() || self.core.walks.due() || !self.core.waits.entered_due.is_empty() => self.reexamine()?,
             _ => {}
         }
         r
@@ -1977,46 +2094,35 @@ impl Engine {
                 return Ok(());
             }
             let _s = osis_base::costs::span("reexamine: round");
-            #[cfg(test)]
-            let fail = std::mem::take(&mut self.fail_round);
-            let progressed = self.run_taken(|tx| {
-                #[cfg(test)]
-                if fail {
-                    return Err(Error::Corrupt("a round failing (tests)"));
-                }
-                let mut ids = ids;
-                ids.append(&mut reach::round(tx, arrived, lost)?);
-                if ids.is_empty() {
-                    return Ok(false);
-                }
-                let mut blobs: Vec<(CommitId, CommitBlob)> = Vec::new();
-                let pending = &tx.core.ix.pending;
-                tx.core.memory_waits.retain(|id| pending.contains_key(id));
-                for id in ids {
-                    // a memory commit waits for node-sync, which applies it within its sync ID's
-                    // room (`apply_waiting_memory`): woken, it is stamped for it
-                    if !tx.core.memory_waits.contains(&id) {
-                        tx.core.waits.examined += 1;
-                        let Some(b) = read_pending(tx, &id)? else { continue };
-                        if b.header.ephemeral.is_none() {
-                            blobs.push((id, b));
-                            continue;
-                        }
-                        tx.core.memory_waits.insert(id);
+            // each commit the round takes is a unit: one whose taking faults, its examination
+            // or the transaction's work it brings, is set aside alone
+            let units: Vec<CommitId> = ids.iter().chain(arrived.keys()).chain(&lost).copied().collect::<BTreeSet<_>>().into_iter().collect();
+            let all = units.len();
+            let progressed = self.take_units(
+                units,
+                true,
+                |tx, take| {
+                    if take.len() == all {
+                        return round(tx, &ids, &arrived, &lost);
                     }
-                    tx.core.waits.memory_woken.wrote_added(&id, true, true);
-                }
-                blobs.sort_by_key(|(_, b)| (!b.header.kind.is_role(), b.header.ts));
-                tx.core.touch();
-                let mut progressed = false;
-                for (id, b) in blobs {
-                    progressed |= matches!(retry_pending(tx, id, b)?, Some(Ingested::Applied(_)));
-                }
-                Ok(progressed)
-            })?;
+                    let take: BTreeSet<CommitId> = take.into_iter().collect();
+                    let arrived = arrived.iter().filter(|(c, _)| take.contains(c)).map(|(c, b)| (*c, b.clone())).collect();
+                    round(tx, &ids.intersection(&take).copied().collect(), &arrived, &lost.intersection(&take).copied().collect())
+                },
+                |e, c, err| {
+                    if !e.core.ix.pending.contains_key(&c) {
+                        // an applied memory commit's walk: walked again at the next open
+                        tell_fault(&mut e.core, Some(c), Vec::new(), &err);
+                        return Ok(());
+                    }
+                    e.run(|tx| set_aside(tx, &c, None, &err).map(drop))
+                },
+            )?
+            .into_iter()
+            .any(|p| p);
             // a commit examined again may now await a record kept loose (`set_pending` named it
             // due): learned at the next round's `promote_loose`, though nothing applied
-            if !progressed && !self.core.waits.loose.has_due() {
+            if !progressed && !self.core.waits.loose.has_due() && self.core.waits.entered_due.is_empty() {
                 return Ok(());
             }
         }

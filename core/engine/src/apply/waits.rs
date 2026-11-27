@@ -321,6 +321,10 @@ pub(crate) struct Waits {
     pub lists_moved: BTreeSet<Tid>,
     /// Things whose placed steps moved since the last `wake`: `Wake::Steps`.
     pub steps_moved: BTreeSet<Tid>,
+    /// Pending commits a thing entering the node closure woke in a transaction taking one unit
+    /// alone (`Core::alone`, `apply::wake_entered`): the next `wake` names them, each its own
+    /// unit. A superset is harmless (`wake` keeps those pending).
+    pub entered_due: BTreeSet<CommitId>,
     /// Tests: the next `wake` examines every pending commit, as a full scan (`Engine::lost_wakes`).
     pub every_due: bool,
     /// Actors whose applied boxes gave secrets the node's roles did not give then
@@ -497,6 +501,7 @@ pub(crate) fn wake(core: &mut Core) -> BTreeSet<CommitId> {
     if std::mem::take(&mut core.waits.every_due) {
         out.extend(core.ix.pending.keys().copied());
     }
+    out.append(&mut core.waits.entered_due);
     for w in &keys {
         out.extend(pend_on.get(w).into_iter().flatten().copied());
     }

@@ -98,8 +98,6 @@ impl Engine {
                 index_poked: self.index_poked,
                 #[cfg(test)]
                 check_every_tx: self.check_every_tx,
-                #[cfg(test)]
-                fail_round: self.fail_round,
             })
         })
     }

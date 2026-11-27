@@ -655,14 +655,14 @@ pub(crate) fn rolled_back(core: &mut crate::engine::Core, n: usize) {
 /// The start of a `reexamine` round: the walks the arrivals reached taken on, the lost commits'
 /// trees walked again. The pending commits to examine: a slot of theirs lacks nothing, or their
 /// walks were lost (examining derives them).
-pub(crate) fn round(tx: &mut Tx<'_>, arrived: Arrived, lost: BTreeSet<CommitId>) -> Result<BTreeSet<CommitId>> {
+pub(crate) fn round(tx: &mut Tx<'_>, arrived: &Arrived, lost: &BTreeSet<CommitId>) -> Result<BTreeSet<CommitId>> {
     let mut out = BTreeSet::new();
     for (c, blobs) in arrived {
-        if advance(tx, &c, &blobs)? {
-            out.insert(c);
+        if advance(tx, c, blobs)? {
+            out.insert(*c);
         }
     }
-    for c in lost {
+    for &c in lost {
         match tx.core.ix.pending.contains_key(&c) {
             true => drop(out.insert(c)),
             false => wait_trees(tx, &c)?,

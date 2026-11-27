@@ -1260,7 +1260,16 @@ fn purged_changed(tx: &mut Tx<'_>, purged: BTreeSet<(Tid, Ak)>, changed: &mut BT
 }
 
 /// A due timer: its time, commit, part index and kind (`T_EXPIRY`, `T_FLOOR`, `T_KEPT`).
-type Due = (u64, CommitId, usize, u8);
+pub(crate) type Due = (u64, CommitId, usize, u8);
+
+/// A unit of a tick's work (`Engine::tick`), set aside alone at a fault (`Engine::take_units`,
+/// `Core::ticks_aside`): a due timer row (its time, commit, part and kind), or an aspect whose
+/// history moved past a bound (`leaving::passed`).
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum TickUnit {
+    Timer(Due),
+    Leave(Tid, Ak),
+}
 
 /// The timers due by the wall clock, and when the first of the others is (`u64::MAX`: none).
 fn due_timers(tx: &mut Tx<'_>) -> Result<(Vec<Due>, u64)> {
@@ -1278,7 +1287,10 @@ fn due_timers(tx: &mut Tx<'_>) -> Result<(Vec<Due>, u64)> {
                 return Ok((due, t));
             }
             from = [tail, &[0]].concat();
-            due.push((t, c, ai, v.first().copied().unwrap_or(0)));
+            let d = (t, c, ai, v.first().copied().unwrap_or(0));
+            if !tx.core.ticks_aside.contains(&TickUnit::Timer(d)) {
+                due.push(d);
+            }
         }
         if n < 64 {
             return Ok((due, u64::MAX));
@@ -1286,8 +1298,37 @@ fn due_timers(tx: &mut Tx<'_>) -> Result<(Vec<Due>, u64)> {
     }
 }
 
+/// Runs a tick's `units` (`Engine::tick`), their rebuilds once per aspect (`run_batched`).
+fn tick_units(tx: &mut Tx<'_>, units: Vec<TickUnit>) -> Result<()> {
+    let mut changed = BTreeSet::new();
+    crate::apply::run_batched(tx, |tx| {
+        for u in units {
+            match u {
+                TickUnit::Timer((t, c, ai, kind)) => {
+                    // a memory commit's timer is memory work: what it writes stays in memory
+                    let memory = tx.is_memory_commit(&c);
+                    tx.in_class(memory, |tx| run_timer(tx, t, &c, ai, kind, &mut changed))?;
+                }
+                TickUnit::Leave(tid, ak) => {
+                    let memory = ak.ephemeral();
+                    tx.in_class(memory, |tx| leaving::passed(tx, &tid, &ak))?;
+                }
+            }
+        }
+        Ok(())
+    })?;
+    if !changed.is_empty() {
+        tx.core.events.queue(Event::Changed { cause: Cause::Expiry, changed: changed.into_iter().collect() });
+    }
+    Ok(())
+}
+
 /// Runs due timer `t` of part `ai` of `c`, of `kind`; the aspects it changed go to `changed`.
 fn run_timer(tx: &mut Tx<'_>, t: u64, c: &CommitId, ai: usize, kind: u8, changed: &mut BTreeSet<(Tid, Ak)>) -> Result<()> {
+    #[cfg(test)]
+    {
+        tx.core.end_fault_due |= tx.core.end_fault == Some(crate::engine::EndFault::Commit(*c));
+    }
     tx.remove_timer(t, c, ai)?;
     // a value part's keep bound changes nothing held, only its listing
     if kind == T_KEPT && tx.core.ix.commits.get(c).and_then(|m| m.view.aspects.get(ai)).is_some_and(|a| !a.ak.signal()) {
@@ -1355,8 +1396,10 @@ impl Engine {
         if !self.core.fallen.is_empty() {
             self.resnapshot_fallen()?;
         }
+        // each due timer and leaving aspect is a unit (`Engine::take_units`): one faulting is
+        // set aside alone, until the next open
+        let mut units = Vec::new();
         let r = self.run(|tx| {
-            let mut changed = BTreeSet::new();
             let (due, next) = due_timers(tx)?;
             let (leave, next_leave) = leaving::due(tx.core, tx.now().0);
             // live bounds passed: the trigger weighs those aspects
@@ -1364,30 +1407,27 @@ impl Engine {
             tx.core.compaction.passed(now);
             // the timers these put lower it again
             tx.core.timer_floor = next.min(next_leave).min(tx.core.compaction.next_at()).min(crate::apply::next_at(tx.core).unwrap_or(u64::MAX));
-            // their rebuilds once per aspect (`run_batched`)
-            crate::apply::run_batched(tx, |tx| {
-                for (t, c, ai, kind) in due {
-                    // a memory commit's timer is memory work: what it writes stays in memory
-                    let memory = tx.is_memory_commit(&c);
-                    tx.in_class(memory, |tx| run_timer(tx, t, &c, ai, kind, &mut changed))?;
-                }
-                for (tid, ak) in leave {
-                    let memory = ak.ephemeral();
-                    tx.in_class(memory, |tx| leaving::passed(tx, &tid, &ak))?;
-                }
-                Ok(())
-            })?;
-            if !changed.is_empty() {
-                tx.core.events.queue(Event::Changed { cause: Cause::Expiry, changed: changed.into_iter().collect() });
-            }
-            tx.core.timer_floor = tx.core.timer_floor.min(tx.core.compaction.next_at());
-            Ok(())
+            units = due.into_iter().map(TickUnit::Timer).chain(leave.into_iter().map(|(t, a)| TickUnit::Leave(t, a))).collect();
+            tick_units(tx, units.clone())
         });
+        let r = match r {
+            Err(e) if e.is_fault() => self.split_units(units, e, tick_units, |e, u, err| {
+                let (commit, things) = match &u {
+                    TickUnit::Timer((_, c, _, _)) => (Some(*c), Vec::new()),
+                    TickUnit::Leave(t, _) => (None, vec![*t]),
+                };
+                crate::apply::tell_fault(&mut e.core, commit, things, &err);
+                e.core.ticks_aside.insert(u);
+                Ok(())
+            }),
+            r => r.map(|()| Vec::new()),
+        };
         if r.is_err() {
             // the timers stay: due again
             self.core.timer_floor = 0;
         }
         r?;
+        self.core.timer_floor = self.core.timer_floor.min(self.core.compaction.next_at());
         self.reexamine()
     }
 
@@ -1403,10 +1443,12 @@ impl Engine {
     /// none of a read's in-memory work (`Engine::read`: a mark, an undo, its debug check), which
     /// a borrow cannot need.
     pub fn next_timer(&mut self) -> Result<Option<u64>> {
-        let first = self.scan_local(records::TIMER, 1)?;
-        let part = first.first().and_then(|(k, _)| k.get(records::TIMER.len()..)).and_then(|k| records::parse_timer(k).ok()).map(|(t, _, _)| t);
+        // past the rows set aside (`Core::ticks_aside`), each due already
+        let aside = self.core.ticks_aside.len();
+        let first = self.scan_local(records::TIMER, aside + 1)?;
         let core = &self.core;
-        let aspect = core.ix.leave_due.keys().next().copied();
+        let part = first.iter().filter_map(|(k, v)| Some((records::parse_timer(k.get(records::TIMER.len()..)?).ok()?, v.first().copied().unwrap_or(0)))).find(|((t, c, ai), kind)| !core.ticks_aside.contains(&TickUnit::Timer((*t, *c, *ai, *kind)))).map(|((t, _, _), _)| t);
+        let aspect = leaving::next_due(core);
         let live = Some(core.compaction.next_at()).filter(|t| *t != u64::MAX);
         let fallen = (!core.fallen.is_empty()).then(|| self.now().0);
         // a commit pending for its `ts` ahead (`apply::Wake::At`)

@@ -163,26 +163,6 @@ fn a_step_with_compactions_due() {
     );
 }
 
-// An arrival waking a wait whose round of examinations fails otherwise than by the store (an
-// engine fault erring the round): the arrival is held, and without a restart the next tick
-// applies the write it woke (`Engine::run_taken`), as a node opening again would.
-#[test]
-fn an_arrival_waking_a_wait_whose_round_fails() {
-    let (mut lp, t) = world(4);
-    let g = grant(&mut lp, 0, t, 3, Role::Write);
-    lp.sync(0, 3).unwrap();
-    let c = set(&mut lp, 3, t, "written");
-    let cp = lp.peers[3].engine.package(&c).unwrap().unwrap();
-    lp.peers[2].engine.ingest(&cp.bytes, cp.blobs).unwrap();
-    assert_eq!(pending(&lp, 2).len(), 1, "the write waits");
-    let gp = lp.peers[0].engine.package(&g).unwrap().unwrap();
-    lp.peers[2].engine.fail_round = true;
-    assert!(lp.peers[2].engine.ingest(&gp.bytes, gp.blobs.clone()).is_err(), "the round failed");
-    lp.peers[2].tick().unwrap();
-    assert_eq!(pending(&lp, 2), Vec::new(), "nothing waits");
-    assert_eq!(lp.peers[2].engine.get(&t, &Ak::new(X).unwrap()).unwrap(), Some(Value::Str("written".into())));
-}
-
 // spec/commits.md §4 (Apply: a transaction that fails or is refused leaves the node as it was,
 // waits included): a transaction or step that fails leaves nothing due that it brought, so the
 // next timer stays as it was. A wait kept for commit C, unknown here, its trees asked, and a
