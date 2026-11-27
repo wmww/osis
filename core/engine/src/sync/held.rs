@@ -124,9 +124,10 @@ pub(crate) fn note_arrival(tx: &mut Tx<'_>, c: &CommitId, h: &osis_commit::Heade
     Ok(())
 }
 
-/// Actor `a`'s secrets go (a loss, a destruction): its role arrival and its causes go with them,
-/// so nothing left names it.
+/// Actor `a`'s secrets go (a loss, a destruction, its thing forgotten): its role arrival, its
+/// causes and its timed-loss record go with them, so nothing left names it.
 pub(crate) fn forget_actor(tx: &mut Tx<'_>, a: &Tid) -> Result<()> {
+    crate::rotation::forget_timed(tx, a)?;
     if tx.core.ix.role_arrivals.remove(a).is_some() {
         tx.txn.remove_local(&[ARRIVALS, a.as_bytes()].concat(), Shred::No)?;
     }

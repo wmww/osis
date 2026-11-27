@@ -27,7 +27,7 @@ use std::sync::Arc;
 
 pub use departures::{departures_with_own, may_rotate};
 pub use lost::{Leaving, LostScope, TimedLoss, LOST_HEARD_WAIT_MS};
-pub(crate) use lost::{load_kept, without_frozen};
+pub(crate) use lost::{forget_timed, load_kept, without_frozen};
 #[cfg(debug_assertions)]
 pub(crate) use lost::explain_due;
 pub(crate) use departures::{departures, key_role, own_self_removal};

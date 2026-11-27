@@ -7,7 +7,8 @@
 //! (spec/permissions.md §5.1 Sides): R trusted where this node made it (its own), or where an
 //! update brought another party's seed of R while the reading before applied R (held first);
 //! with no order between R and its seeds, nothing, the dispute only told. A recorded side stays
-//! until chosen otherwise; a trusted write the walk cannot apply is void there.
+//! until chosen otherwise or until R is forgotten (`forget_commit`: a side's owner is R); a
+//! trusted write the walk cannot apply is void there.
 
 use crate::engine::journal::{JMap, Journaled};
 use crate::engine::{records, Core, Tx};
@@ -194,9 +195,28 @@ fn feed(core: &mut Core) {
     core.timelines_changed(changed);
 }
 
-/// Writes the record when the running transaction changed the sides.
+/// Commit `c` is forgotten: the sides recorded in its disputes go with it (a side's owner is its
+/// removal R; a node holding R again judges its side as one that never held it).
+pub(crate) fn forget_commit(core: &mut Core, c: &CommitId) {
+    let from = (WriteId(*c, 0), Holder::Thing(Tid::from_bytes([0; osis_base::format::TID_LEN])));
+    let gone: Vec<((WriteId, Holder), bool)> = core.sides.map.range(from..).take_while(|(k, _)| k.0 .0 == *c).map(|(k, s)| (*k, s.is_some_and(|s| s.trust))).collect();
+    let trusted = gone.iter().any(|(_, t)| *t);
+    for (k, _) in gone {
+        core.sides.map.remove(&k);
+    }
+    if trusted {
+        feed(core);
+    }
+}
+
+/// Writes the record when the running transaction changed the sides; none once no side is left.
 pub(crate) fn persist(tx: &mut Tx<'_>) -> Result<()> {
-    if tx.core.sides.changed() {
+    if !tx.core.sides.changed() {
+        return Ok(());
+    }
+    if tx.core.sides.map.is_empty() {
+        tx.txn.remove_local(records::SIDES, osis_store::Shred::No)?;
+    } else {
         let bytes = tx.core.sides.encode();
         tx.txn.put_local(records::SIDES, &bytes, osis_store::Shred::No)?;
     }
@@ -241,7 +261,7 @@ impl crate::engine::Engine {
     }
 
     /// Takes a side in the dispute over edge write `op` of `commit` lowering `holder`: trust
-    /// it (the author's side) or not (the walk's). Stays until chosen again. `UnknownCommit`
+    /// it (the author's side) or not (the walk's). Stays until chosen again or R is forgotten. `UnknownCommit`
     /// when no held edge write is that.
     pub fn choose(&mut self, commit: CommitId, op: u32, holder: Holder, trust: bool) -> Result<()> {
         let w = WriteId(commit, op);

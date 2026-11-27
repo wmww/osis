@@ -2465,6 +2465,8 @@ impl Core {
     pub(crate) fn take_meta(&mut self, id: &CommitId) -> Option<Meta> {
         let m = self.ix.commits.remove(id)?;
         self.ix.held.touch_commit(*id);
+        // the sides taken in its disputes go with it
+        crate::sides::forget_commit(self, id);
         osis_base::costs::count("meta: parts indexed", m.view.aspects.len() as u64);
         self.note_kept(id, &m);
         let had = missing_of(&m);

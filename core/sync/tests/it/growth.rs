@@ -1003,6 +1003,107 @@ fn a_redeemed_and_ended_link_returns_storage_to_a_fresh_worlds_spec_sync_set_3()
     grants_as_fresh(true, true, 4);
 }
 
+/// `grants_as_fresh`'s check of one world of `world_of(0, 2, 2)` after `settled`: each node as a
+/// fresh world's, with at most `removals` set removals a node.
+fn two_as_fresh(mut w: World, removals: usize, what: &str) {
+    let (mut wf, fresh) = fixture_with("growth grants fresh", || {
+        let mut w = world_of(0, 2, 2);
+        let held = settled(&mut w);
+        (w, held)
+    });
+    let held = settled(&mut w);
+    for (i, who) in ["the maker", "the other"].iter().enumerate() {
+        as_fresh(&held[i], &fresh[i], removals, &format!("{what}: {who}"), &mut |f| leaked(&mut w, i, &mut wf, i, f));
+        assert_eq!(w.engine(i).retake_listed(), wf.engine(i).retake_listed(), "{what}: {who}: actors listed for retake");
+    }
+}
+
+// Releasing everything, its purge arm (spec/commits.md §5 Purge, spec/sync-set.md §3): node 0
+// writes thing 0, replaces the write and purges it; node 1's account reads it and holds it; then
+// both let it go: each node as a fresh world's, the purge request gone with its thing.
+#[test]
+fn releasing_a_purged_thing_returns_storage_to_a_fresh_worlds_spec_commits_5() {
+    use osis_schema::core_types as ct;
+    let mut w = world_of(0, 2, 2);
+    let _ = play(&mut w, &[New(0), Grant(0, 0, 1, Gives::Reads), Run], String::new());
+    let t = w.history.things[0].0;
+    let c = w.write(0, |e| {
+        let mut m = Mutation::new();
+        m.set(t, &value_ak(), &Value::Str("purged".into())).unwrap();
+        e.commit(m).unwrap().unwrap()
+    });
+    let _ = play(&mut w, &[Run, Write(0, 0), Run], String::new());
+    w.write(0, |e| {
+        let mut m = Mutation::new();
+        let now = e.now();
+        m.set(t, &ct::PURGE, &now).unwrap();
+        m.purge_commit(c, t, value_ak());
+        e.commit(m).unwrap().unwrap();
+    });
+    w.run();
+    assert_eq!(w.engine(1).value_held_of(&c, &t, &value_ak()).unwrap(), None, "the purged write is gone at the reader");
+    let _ = play(&mut w, &[Unstrong(1, None, 0), Unstrong(0, None, 0), Run], String::new());
+    two_as_fresh(w, 2, "purged");
+}
+
+// Its admin dispute arm (spec/permissions.md §3, forks are permanent): nodes 0 and 1, of two
+// accounts each admin of thing 0, each remove the other's account while apart, then meet and
+// both let it go: each node as a fresh world's, whichever side it is on.
+#[test]
+fn releasing_a_disputed_thing_returns_storage_to_a_fresh_worlds_spec_permissions_3() {
+    let mut w = world_of(0, 2, 2);
+    let _ = play(&mut w, &[New(0), Grant(0, 0, 1, Gives::Writes), Run], String::new());
+    let t = w.history.things[0].0;
+    let (a0, a1) = (w.node(0).account.unwrap(), w.node(1).account.unwrap());
+    w.write(0, |e| e.grant(&t, &a1, &edge(Role::Admin))).unwrap();
+    let _ = play(&mut w, &[Run, Partition(0, 1)], String::new());
+    w.write(0, |e| e.demote(&t, &Demotion { holder: a1, new: None, retain: None })).unwrap();
+    w.write(1, |e| e.demote(&t, &Demotion { holder: a0, new: None, retain: None })).unwrap();
+    let _ = play(&mut w, &[Run, Heal, Run, Unstrong(1, None, 0), Unstrong(0, None, 0), Run], String::new());
+    two_as_fresh(w, 2, "disputed");
+}
+
+// Its retained copy arm (spec/permissions.md §3 Retain: the user may erase a copy at any time,
+// with what is kept only through it): node 0 removes node 1's account from thing 0 saying
+// retain, so node 1 keeps a copy; both let it go and node 1 erases its copy: each node as a
+// fresh world's.
+#[test]
+fn releasing_a_retained_copy_returns_storage_to_a_fresh_worlds_spec_permissions_3() {
+    let mut w = world_of(0, 2, 2);
+    let _ = play(&mut w, &[New(0), Write(0, 0), Grant(0, 0, 1, Gives::Reads), Run], String::new());
+    let t = w.history.things[0].0;
+    let a1 = w.node(1).account.unwrap();
+    w.write(0, |e| e.demote(&t, &Demotion { holder: a1, new: None, retain: Some(true) })).unwrap();
+    w.run();
+    assert_eq!(w.engine(1).kept_copies(), vec![t], "node 1 keeps a copy");
+    let _ = play(&mut w, &[Unstrong(1, None, 0), Unstrong(0, None, 0), Run], String::new());
+    w.write(1, |e| e.forget_lost(osis_engine::rotation::LostScope::Kept(&[t]))).unwrap();
+    w.run();
+    assert!(w.engine(1).kept_copies().is_empty(), "the copy erased");
+    two_as_fresh(w, 2, "retained");
+}
+
+// Its dependent arm (spec/sync-set.md §3 Released: a thing leaving the node closure goes though
+// the sync ID that carried it stays): node 0 mints U with thing 0 as admin, held from thing 0,
+// which node 1's account reads and holds; thing 0 lets U go: at node 1 no row names U while
+// thing 0's sync ID stays; then both let thing 0 go, each node as a fresh world's.
+#[test]
+fn a_dependent_thing_leaving_goes_while_its_sync_id_stays_spec_sync_set_3() {
+    let mut w = world_of(0, 2, 2);
+    let _ = play(&mut w, &[New(0), Grant(0, 0, 1, Gives::Reads), NewIn(0, 0), Write(0, 1), Run], String::new());
+    let (t, u) = (w.history.things[0].0, w.history.things[1].0);
+    assert!(w.engine(1).closure_holds(&u), "node 1 holds U");
+    let _ = play(&mut w, &[Unstrong(0, Some(0), 1), Run], String::new());
+    assert!(w.engine(1).closure_holds(&t) && !w.engine(1).closure_holds(&u), "U left, thing 0 stays");
+    #[cfg(debug_assertions)]
+    {
+        let named: Vec<String> = w.rows(1, "", Some(&u)).into_iter().filter(|(_, r)| r.key.contains(&format!("t:{u}"))).map(|(d, r)| format!("{d} {}{}", r.family, r.key)).collect();
+        assert!(named.is_empty(), "rows naming U at node 1: {named:?}\n{}", why_kept(&mut w, 1, &u));
+    }
+    let _ = play(&mut w, &[Unstrong(1, None, 0), Unstrong(0, None, 0), Run], String::new());
+    two_as_fresh(w, 2, "dependent");
+}
+
 // spec/sync-judgement.md §3 (Restart and forgetting: an own entry logs a commit held here),
 // spec/sync-set.md §3 (Nothing of R stays): node 0 makes an independent thing under its
 // account, held from D, grants the account admin on it by an edge write and releases it; no own

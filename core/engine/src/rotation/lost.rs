@@ -55,6 +55,14 @@ fn timed_since(tx: &mut Tx<'_>, a: Tid) -> Result<u64> {
     Ok(now)
 }
 
+/// Actor `a`'s secrets go: its timed-loss record goes with them (`sync::held::forget_actor`).
+pub(crate) fn forget_timed(tx: &mut Tx<'_>, a: &Tid) -> Result<()> {
+    if tx.core.ix.timed_lost.remove(a).is_some() {
+        tx.txn.remove_local(&[TIMED_LOST, a.as_bytes()].concat(), osis_store::Shred::No)?;
+    }
+    Ok(())
+}
+
 /// Drops the timed-loss records of actors read again or no longer held.
 fn prune_timed(tx: &mut Tx<'_>) -> Result<()> {
     let core = &*tx.core;
