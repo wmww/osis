@@ -2579,7 +2579,6 @@ fn a_removal_while_away_serves_nothing_after_it_spec_sync_opens_6() {
 // Node 1 restarts while node 2 is away and hears of the removal after: the record, read from its
 // rows at the take, is judged there.
 #[test]
-#[ignore = "stub rewrite: entry by references and stubs, pairing by values (R2, R3)"]
 fn a_removal_after_a_restart_serves_nothing_after_it_spec_sync_opens_6() {
     let restarted = |w: &mut crate::harness::World, t: osis_base::Tid| {
         w.power_off(1);
@@ -2595,7 +2594,6 @@ fn a_removal_after_a_restart_serves_nothing_after_it_spec_sync_opens_6() {
 // epoch still covers every departure node 1 knows of (§4 Departed): a credential open toward it
 // stays until the rotation, and what it is served is what it held the secret for.
 #[test]
-#[ignore = "stub rewrite: entry by references and stubs, pairing by values (R2, R3)"]
 fn an_until_passing_while_away_serves_nothing_after_it_spec_sync_opens_6() {
     let expire = |w: &mut crate::harness::World, t: osis_base::Tid| {
         let a2 = w.node(2).account.unwrap();
@@ -2623,7 +2621,6 @@ fn ended_departed(w: &crate::harness::World, rid: osis_sync::types::RecordId, s:
 // The same for a peer judged departed (§6: it is ended, served its role entries up to its
 // departure): node 2, away, is removed from t; the record keeps it a member, ended.
 #[test]
-#[ignore = "stub rewrite: entry by references and stubs, pairing by values (R2, R3)"]
 fn a_departed_peer_stays_a_member_ended_spec_sync_judgement_3() {
     let (mut w, (t, s)) = away_and_back(crate::harness::history::Gives::Reads);
     let conn = w.links_of(1).into_iter().find(|(_, j)| *j == 2).expect("node 2 is connected to node 1").0;
@@ -2640,7 +2637,6 @@ fn a_departed_peer_stays_a_member_ended_spec_sync_judgement_3() {
 // The same where node 1 restarted while node 2 was away (§6: re-judged whether or not a
 // connection holds its record, a restart's records included).
 #[test]
-#[ignore = "stub rewrite: entry by references and stubs, pairing by values (R2, R3)"]
 fn a_peer_departed_after_a_restart_stays_a_member_ended_spec_sync_judgement_3() {
     let (mut w, (t, s)) = away_and_back(crate::harness::history::Gives::Reads);
     let conn = w.links_of(1).into_iter().find(|(_, j)| *j == 2).expect("node 2 is connected to node 1").0;
@@ -2663,7 +2659,6 @@ fn a_peer_departed_after_a_restart_stays_a_member_ended_spec_sync_judgement_3() 
 // removal's rotation, logged after the write. Its report reaches past the write, which it was never
 // served: node 0 counts the write held at no source.
 #[test]
-#[ignore = "stub rewrite: entry by references and stubs, pairing by values (R2, R3)"]
 fn a_departed_peers_report_holds_nothing_elsewhere_spec_sync_status_2() {
     let (mut w, (t, s)) = away_and_back(crate::harness::history::Gives::Reads);
     w.partition(0, 1);

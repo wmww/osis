@@ -1,7 +1,7 @@
 //! Holding across nodes (spec/sync-set.md §1-§4): what a strong and a role each do once sync carries them. Each on a
 //! fixture copy; the closure's own rules are engine `closure::`, the whole by the differential.
 
-use crate::harness::{World, contacts, edge, fixture_with, siblings};
+use crate::harness::{World, contacts, edge, fixture_with, siblings, told};
 use osis_base::{Ak, Role, Tid, Value};
 use osis_crdt::{Op, PathOp};
 use osis_engine::Mutation;
@@ -33,7 +33,7 @@ fn granted() -> (World, (Tid, Tid)) {
         let mut w = contacts();
         let t = make(&mut w, 0, None, "hi");
         let bob = w.node(1).account.unwrap();
-        w.write(0, |e| e.grant(&t, &bob, &edge(Role::Read))).unwrap();
+        w.write(0, |e| told(e, &t, &bob, &edge(Role::Read))).unwrap();
         w.run();
         (w, (t, bob))
     })
@@ -46,7 +46,7 @@ fn alice_reads_t0() -> (World, (Tid, Tid, Tid)) {
         let mut w = siblings();
         let (alice, bob) = (w.node(0).account.unwrap(), w.node(1).account.unwrap());
         let t0 = make(&mut w, 1, None, "t0");
-        w.write(1, |e| e.grant(&t0, &alice, &edge(Role::Read))).unwrap();
+        w.write(1, |e| told(e, &t0, &alice, &edge(Role::Read))).unwrap();
         strong(&mut w, 0, None, t0, true);
         w.run();
         (w, (alice, bob, t0))
@@ -61,10 +61,10 @@ fn keyless_way() -> (World, (Tid, Tid, Tid)) {
         let mut w = contacts();
         let alice = w.node(0).account.unwrap();
         let t0 = make(&mut w, 1, None, "t0");
-        w.write(1, |e| e.grant(&t0, &alice, &edge(Role::Read))).unwrap();
+        w.write(1, |e| told(e, &t0, &alice, &edge(Role::Read))).unwrap();
         let t1 = make_in(&mut w, 1, t0, "t1");
-        w.write(1, |e| e.grant(&t0, &t1, &edge(Role::Read))).unwrap();
-        w.write(1, |e| e.grant(&t1, &alice, &edge(Role::Read))).unwrap();
+        w.write(1, |e| told(e, &t0, &t1, &edge(Role::Read))).unwrap();
+        w.write(1, |e| told(e, &t1, &alice, &edge(Role::Read))).unwrap();
         for t in [t0, t1] {
             strong(&mut w, 0, None, t, true);
         }
@@ -81,8 +81,8 @@ fn keyed_way() -> (World, (Tid, Tid, Tid)) {
         let alice = w.node(0).account.unwrap();
         let t0 = make(&mut w, 1, None, "t0");
         let t1 = make(&mut w, 1, None, "t1");
-        w.write(1, |e| e.grant(&t0, &t1, &edge(Role::Read))).unwrap();
-        w.write(1, |e| e.grant(&t1, &alice, &edge(Role::Read))).unwrap();
+        w.write(1, |e| told(e, &t0, &t1, &edge(Role::Read))).unwrap();
+        w.write(1, |e| told(e, &t1, &alice, &edge(Role::Read))).unwrap();
         for t in [t0, t1] {
             strong(&mut w, 0, None, t, true);
         }
@@ -127,7 +127,6 @@ fn holding(w: &mut World, i: usize, t: &Tid) -> Option<Holding> {
 // spec/sync-set.md §3: a thing goes when its last reference goes, waiting for no absent peer:
 // once Bob drops his strong too, T is gone at both.
 #[test]
-#[ignore = "stub rewrite: entry by references and stubs, pairing by values (R2, R3)"]
 fn a_strong_grants_nothing_and_its_removal_revokes_nothing_spec_sync_set_2() {
     let mut w = contacts();
     let t = make(&mut w, 0, None, "hi");
@@ -138,7 +137,7 @@ fn a_strong_grants_nothing_and_its_removal_revokes_nothing_spec_sync_set_2() {
     assert_eq!(holding(&mut w, 1, &t), None);
     assert!(w.engine(1).not_carried().unwrap().contains(&(d1, t)), "the strong is NotCarried");
     let bob = w.node(1).account.unwrap();
-    w.write(0, |e| e.grant(&t, &bob, &edge(Role::Read))).unwrap();
+    w.write(0, |e| told(e, &t, &bob, &edge(Role::Read))).unwrap();
     w.run();
     assert_eq!(value(&mut w, 1, &t), Some(Value::Str("hi".into())), "granted, his strong reads");
     w.write(0, |e| {
@@ -181,18 +180,16 @@ fn a_strong_to_a_thing_never_fetched_holds_nothing_spec_sync_set_3() {
     assert_eq!(w.engine(1).sync_set().unwrap().ids, before, "nothing synced for either");
 }
 
-// spec/sync-set.md §4 (nothing else makes a node hold a thing it is granted a role on),
-// spec/sync-inbox.md §5: a grant reaches Bob; until he holds T by a strong, nothing of T is fetched or synced
-// (his sync set and store hold nothing of it).
+// spec/sync-set.md §2 (First entry: a held grant signal), spec/sync-inbox.md §5 Grant signal: a
+// told grant reaches Bob; until he holds T by a strong he holds T's stub alone (its role entries,
+// none of its content).
 #[test]
-#[ignore = "stub rewrite: entry by references and stubs, pairing by values (R2, R3)"]
-fn nothing_is_fetched_before_the_strong_spec_sync_inbox_5() {
+fn a_told_grant_holds_a_stub_until_the_strong_spec_sync_inbox_5() {
     let (mut w, (t, _)) = granted();
-    let s = w.engine(0).sync_id_of(&t).unwrap().expect("T's sync ID");
     w.advance(10 * osis_sync::types::RESYNC_MS);
-    assert!(!w.engine(1).sync_set().unwrap().ids.contains_key(&s), "not synced before the strong");
-    assert!(w.store(1).entries(&s).unwrap().is_empty(), "nothing stored");
-    assert!(value(&mut w, 1, &t).is_none() && !w.engine(1).closure_holds(&t));
+    w.run();
+    assert_eq!(holding(&mut w, 1, &t), Some(Holding::Stub), "a stub before the strong");
+    assert!(value(&mut w, 1, &t).is_none() && !w.engine(1).closure_holds(&t), "none of its content");
     strong(&mut w, 1, None, t, true);
     w.run();
     assert_eq!(value(&mut w, 1, &t), Some(Value::Str("hi".into())), "held: read");
@@ -202,12 +199,12 @@ fn nothing_is_fetched_before_the_strong_spec_sync_inbox_5() {
 // Bob keeps T unread by a sync grant; Alice rotates T's keys
 // and writes: Bob still keeps it unread and his store takes the write.
 #[test]
-#[ignore = "stub rewrite: entry by references and stubs, pairing by values (R2, R3)"]
+#[ignore = "stub rewrite: a signalled sync-only holder holds S as Read (R3b)"]
 fn a_key_change_keeps_a_sync_only_holder_spec_sync_set_2() {
     let mut w = contacts();
     let t = make(&mut w, 0, None, "hi");
     let bob = w.node(1).account.unwrap();
-    w.write(0, |e| e.grant(&t, &bob, &edge(Role::Sync))).unwrap();
+    w.write(0, |e| told(e, &t, &bob, &edge(Role::Sync))).unwrap();
     w.run();
     strong(&mut w, 1, None, t, true);
     w.run();
@@ -231,15 +228,15 @@ fn a_key_change_keeps_a_sync_only_holder_spec_sync_set_2() {
 // He keeps T's sync secrets, and what he holds of their history is what a fresh load of his
 // store reads.
 #[test]
-#[ignore = "stub rewrite: entry by references and stubs, pairing by values (R2, R3)"]
+#[ignore = "stub rewrite: a signalled sync-only holder holds S as Read (R3b)"]
 fn a_reader_lowered_to_sync_keeps_its_sync_epochs_as_a_load_reads_them_spec_permissions_3() {
     let mut w = crate::harness::history::world_of(0, 3, 3);
     let t = make(&mut w, 0, None, "hi");
     let (bob, carol) = (w.node(1).account.unwrap(), w.node(2).account.unwrap());
-    w.write(0, |e| e.grant(&t, &bob, &edge(Role::Read))).unwrap();
+    w.write(0, |e| told(e, &t, &bob, &edge(Role::Read))).unwrap();
     w.run();
     strong(&mut w, 1, None, t, true);
-    w.write(0, |e| e.grant(&t, &carol, &edge(Role::Sync))).unwrap();
+    w.write(0, |e| told(e, &t, &carol, &edge(Role::Sync))).unwrap();
     w.write(0, |e| e.demote(&t, &osis_engine::flows::edges::Demotion { holder: carol, new: None, retain: None })).unwrap();
     w.run();
     assert_eq!(value(&mut w, 1, &t), Some(Value::Str("hi".into())));
@@ -290,9 +287,9 @@ fn t0_holding_t1(w: &mut World, of_t0: bool) -> (Tid, Tid, Tid) {
 fn shared_through_a_thing(of_t0: bool) -> (World, Tid, Tid) {
     let mut w = contacts();
     let (t0, t1, bob) = t0_holding_t1(&mut w, of_t0);
-    w.write(0, |e| e.grant(&t1, &bob, &edge(Role::Read))).unwrap();
+    w.write(0, |e| told(e, &t1, &bob, &edge(Role::Read))).unwrap();
     strong(&mut w, 1, None, t1, true);
-    w.write(0, |e| e.grant(&t0, &t1, &edge(Role::Read))).unwrap();
+    w.write(0, |e| told(e, &t0, &t1, &edge(Role::Read))).unwrap();
     (w, t0, t1)
 }
 
@@ -301,7 +298,6 @@ fn shared_through_a_thing(of_t0: bool) -> (World, Tid, Tid) {
 // was written on it before it was independent. T0's role commits reach him under T1's sync ID as
 // per-sync-ID copies, logged though a certificate copy of fewer parts was logged there first.
 #[test]
-#[ignore = "stub rewrite: entry by references and stubs, pairing by values (R2, R3)"]
 fn a_reader_of_a_thing_reads_what_it_is_granted_spec_sync_set_2() {
     let (mut w, t0, t1) = shared_through_a_thing(false);
     strong(&mut w, 0, Some(t1), t0, true);
@@ -315,11 +311,10 @@ fn a_reader_of_a_thing_reads_what_it_is_granted_spec_sync_set_2() {
 // on T1 to sync, her only path to a role on T1. She loses read access to T1: she reads none of
 // it and keeps it unread by the sync secret T0's sync role gives; Bob still reads it.
 #[test]
-#[ignore = "stub rewrite: entry by references and stubs, pairing by values (R2, R3)"]
 fn lowering_the_makers_only_path_to_sync_keeps_the_thing_unread_spec_permissions_3() {
     let mut w = contacts();
     let (t0, t1, bob) = t0_holding_t1(&mut w, true);
-    w.write(0, |e| e.grant(&t1, &bob, &edge(Role::Write))).unwrap();
+    w.write(0, |e| told(e, &t1, &bob, &edge(Role::Write))).unwrap();
     w.run();
     strong(&mut w, 1, None, t1, true);
     w.run();
@@ -336,11 +331,10 @@ fn lowering_the_makers_only_path_to_sync_keeps_the_thing_unread_spec_permissions
 // T1 unread by the sync secret held from her own reading, its store kept: Bob, holding it only
 // then, reads T1 from it.
 #[test]
-#[ignore = "stub rewrite: entry by references and stubs, pairing by values (R2, R3)"]
 fn the_last_reader_lowered_to_sync_keeps_the_store_for_a_later_reader_spec_sync_judgement_6() {
     let mut w = contacts();
     let (t0, t1, bob) = t0_holding_t1(&mut w, true);
-    w.write(0, |e| e.grant(&t1, &bob, &edge(Role::Read))).unwrap();
+    w.write(0, |e| told(e, &t1, &bob, &edge(Role::Read))).unwrap();
     w.run();
     lower_record_edge(&mut w, 0, t1, t0, Some(Role::Sync));
     w.run();
@@ -368,7 +362,7 @@ fn an_entry_whose_pending_commit_is_forgotten_is_parked_again_spec_sync_judgemen
     let bob = w.node(1).account.unwrap();
     strong(&mut w, 2, None, t, true);
     w.run();
-    let g = w.write(0, |e| e.grant(&t, &bob, &edge(Role::Read))).unwrap();
+    let g = w.write(0, |e| told(e, &t, &bob, &edge(Role::Read))).unwrap();
     strong(&mut w, 1, None, t, false);
     w.run();
     let pending: Vec<_> = g.commits.iter().copied().filter(|c| w.engine(1).pends(c)).collect();
@@ -389,7 +383,7 @@ fn removing_the_makers_only_path_parks_its_entries_spec_permissions_3() {
     let mut w = contacts();
     w.parks = true;
     let (t0, t1, bob) = t0_holding_t1(&mut w, true);
-    w.write(0, |e| e.grant(&t1, &bob, &edge(Role::Sync))).unwrap();
+    w.write(0, |e| told(e, &t1, &bob, &edge(Role::Sync))).unwrap();
     w.run();
     w.write(0, |e| {
         let mut m = Mutation::new();
@@ -410,11 +404,10 @@ fn removing_the_makers_only_path_parks_its_entries_spec_permissions_3() {
 // She removes T0's record edge on T1, her only path to T1, a self-removal: she keeps T1's
 // secrets and store until Bob holds the removal, so Bob's roster loses T0 as the reference's.
 #[test]
-#[ignore = "stub rewrite: entry by references and stubs, pairing by values (R2, R3)"]
 fn a_self_removal_of_the_makers_only_path_reaches_the_reader_spec_permissions_3() {
     let mut w = contacts();
     let (t0, t1, bob) = t0_holding_t1(&mut w, true);
-    w.write(0, |e| e.grant(&t1, &bob, &edge(Role::Read))).unwrap();
+    w.write(0, |e| told(e, &t1, &bob, &edge(Role::Read))).unwrap();
     strong(&mut w, 1, None, t1, true);
     w.run();
     assert!(w.engine(1).roster(&t1).contains_key(&t0), "Bob reads T0's record edge");
@@ -432,7 +425,6 @@ fn a_self_removal_of_the_makers_only_path_reaches_the_reader_spec_permissions_3(
 // removal under the epoch her grant boxed her, which it serves her alone: she applies the removal
 // and reads T no more.
 #[test]
-#[ignore = "stub rewrite: entry by references and stubs, pairing by values (R2, R3)"]
 fn a_removal_its_writer_made_blind_reaches_the_removed_reader_spec_permissions_4() {
     let mut w = siblings();
     let t = make(&mut w, 1, None, "v1");
@@ -441,7 +433,7 @@ fn a_removal_its_writer_made_blind_reaches_the_removed_reader_spec_permissions_4
     w.run();
     w.partition(1, 2);
     w.partition(0, 2);
-    w.write(1, |e| e.grant(&t, &alice, &edge(Role::Read))).unwrap();
+    w.write(1, |e| told(e, &t, &alice, &edge(Role::Read))).unwrap();
     // the removal orders after the grant (spec/permissions.md §5.1 key order)
     w.advance(10);
     w.write(2, |e| e.demote(&t, &osis_engine::flows::Demotion { holder: alice, new: None, retain: None })).unwrap();
@@ -470,7 +462,7 @@ fn a_reader_lowered_to_sync_opens_no_later_removals_notice_spec_permissions_4() 
     let t = make(&mut w, 0, None, "v1");
     let (bob, carol) = (w.node(1).account.unwrap(), w.node(2).account.unwrap());
     for (i, h) in [(1, bob), (2, carol)] {
-        w.write(0, |e| e.grant(&t, &h, &edge(Role::Read))).unwrap();
+        w.write(0, |e| told(e, &t, &h, &edge(Role::Read))).unwrap();
         strong(&mut w, i, None, t, true);
     }
     w.run();
@@ -501,18 +493,18 @@ fn a_reader_lowered_to_sync_opens_no_later_removals_notice_spec_permissions_4() 
 // removes her from T0 while the other grants her sync on T1, still boxing her T1's read secret;
 // Alice holds T1. Her role there shows only sync, so she keeps T1 unread and reads none of it.
 #[test]
-#[ignore = "stub rewrite: entry by references and stubs, pairing by values (R2, R3)"]
+#[ignore = "stub rewrite: a signalled sync-only holder holds S as Read (R3b)"]
 fn a_read_secret_boxed_beside_a_removal_goes_once_the_role_shows_sync_spec_permissions_3() {
     let mut w = siblings();
     let t0 = make(&mut w, 1, None, "v1");
     let t1 = make(&mut w, 1, Some(t0), "v2");
     strong(&mut w, 1, Some(t0), t1, true);
     let alice = w.node(0).account.unwrap();
-    w.write(1, |e| e.grant(&t0, &alice, &edge(Role::Read))).unwrap();
+    w.write(1, |e| told(e, &t0, &alice, &edge(Role::Read))).unwrap();
     w.run();
     w.partition(1, 2);
     w.write(2, |e| e.demote(&t0, &osis_engine::flows::Demotion { holder: alice, new: None, retain: None })).unwrap();
-    w.write(1, |e| e.grant(&t1, &alice, &edge(Role::Sync))).unwrap();
+    w.write(1, |e| told(e, &t1, &alice, &edge(Role::Sync))).unwrap();
     strong(&mut w, 0, None, t1, true);
     w.heal();
     w.run();
@@ -524,7 +516,7 @@ fn a_read_secret_boxed_beside_a_removal_goes_once_the_role_shows_sync_spec_permi
 /// independent) and removes T0's record edge on it.
 fn unlinked_t2(w: &mut World, t0: Tid, alice: Tid) -> Tid {
     let t2 = make_in(w, 2, t0, "t2");
-    w.write(2, |e| e.grant(&t2, &alice, &edge(Role::Sync))).unwrap();
+    w.write(2, |e| told(e, &t2, &alice, &edge(Role::Sync))).unwrap();
     lower_record_edge(w, 2, t2, t0, None);
     t2
 }
@@ -534,12 +526,11 @@ fn unlinked_t2(w: &mut World, t0: Tid, alice: Tid) -> Tid {
 // Alice holds both. Node 1 removes Alice from T0 while node 2, not yet knowing, grants her sync
 // on T1 (T1 made independent). Alice holds only sync on T1 and nothing on T0: she reads neither.
 #[test]
-#[ignore = "stub rewrite: entry by references and stubs, pairing by values (R2, R3)"]
 fn a_reader_removed_as_a_sibling_grants_on_a_dependent_reads_it_no_more_spec_permissions_3() {
     let mut w = siblings();
     let alice = w.node(0).account.unwrap();
     let t0 = make(&mut w, 2, None, "t0");
-    w.write(2, |e| e.grant(&t0, &alice, &edge(Role::Read))).unwrap();
+    w.write(2, |e| told(e, &t0, &alice, &edge(Role::Read))).unwrap();
     w.run();
     strong(&mut w, 0, None, t0, true);
     let t1 = make_in(&mut w, 1, t0, "t1");
@@ -547,7 +538,7 @@ fn a_reader_removed_as_a_sibling_grants_on_a_dependent_reads_it_no_more_spec_per
     w.run();
     assert_eq!(value(&mut w, 0, &t1), Some(Value::Str("t1".into())), "Alice reads T1 through T0");
     w.write(1, |e| e.demote(&t0, &osis_engine::flows::Demotion { holder: alice, new: None, retain: None })).unwrap();
-    w.write(2, |e| e.grant(&t1, &alice, &edge(Role::Sync))).unwrap();
+    w.write(2, |e| told(e, &t1, &alice, &edge(Role::Sync))).unwrap();
     w.run();
     assert_eq!(value(&mut w, 0, &t0), None, "Alice reads T0 no more");
     assert_eq!(value(&mut w, 0, &t1), None, "Alice reads T1 no more: {}", w.why_role(0, &t1));
@@ -574,14 +565,13 @@ fn make_in(w: &mut World, i: usize, admin: Tid, v: &str) -> Tid {
 // Its blob noted no more, the entry waits for T0's sync ID, so when Y -> X reaches her and T0's
 // sync ID is pulled anew, it opens again.
 #[test]
-#[ignore = "stub rewrite: entry by references and stubs, pairing by values (R2, R3)"]
 fn an_entry_of_a_commit_forgotten_whole_opens_again_at_a_pull_anew_spec_sync_judgement_3() {
     let mut w = siblings();
     let alice = w.node(0).account.unwrap();
     let t0 = make(&mut w, 1, None, "t0");
     let x = make_in(&mut w, 1, t0, "x");
     let y = make_in(&mut w, 1, t0, "y");
-    w.write(1, |e| e.grant(&t0, &alice, &edge(Role::Read))).unwrap();
+    w.write(1, |e| told(e, &t0, &alice, &edge(Role::Read))).unwrap();
     strong(&mut w, 0, None, t0, true);
     w.run();
     let minting: Vec<_> = w.engine(0).commit_ids().into_iter().filter(|c| w.engine(0).header(c).is_some_and(|h| h.aspects.iter().any(|a| a.tid == x))).collect();
@@ -617,13 +607,12 @@ fn make_beside(w: &mut World, admin: Tid, v: &str, x: Tid, by: osis_base::PurgeB
 // disk of hers holds the value: flows::a_section_of_a_thing_not_held_leaves_nothing_on_disk
 // (osis-engine), the forensic attack on a node of a smaller history.
 #[test]
-#[ignore = "stub rewrite: entry by references and stubs, pairing by values (R2, R3)"]
 fn a_section_of_a_thing_not_held_stays_sealed_spec_sync_judgement_1() {
     let mut w = contacts();
     let alice = w.node(0).account.unwrap();
     let t0 = make(&mut w, 1, None, "t0");
     let x = make_in(&mut w, 1, t0, "x");
-    w.write(1, |e| e.grant(&t0, &alice, &edge(Role::Read))).unwrap();
+    w.write(1, |e| told(e, &t0, &alice, &edge(Role::Read))).unwrap();
     strong(&mut w, 0, None, t0, true);
     w.run();
     let (y, c) = make_beside(&mut w, t0, "y", x, osis_base::PurgeBy::Writer);
@@ -654,13 +643,12 @@ fn a_section_of_a_thing_not_held_stays_sealed_spec_sync_judgement_1() {
 // after which the minting reaches her under T0's sync ID. Each time she takes the record, the
 // strong brings the thing in, and the section opens again: she reads both.
 #[test]
-#[ignore = "stub rewrite: entry by references and stubs, pairing by values (R2, R3)"]
 fn a_thing_made_beside_its_strong_opens_once_held_spec_sync_judgement_1() {
     for held_first in [true, false] {
         let mut w = contacts();
         let alice = w.node(0).account.unwrap();
         let t0 = make(&mut w, 1, None, "t0");
-        w.write(1, |e| e.grant(&t0, &alice, &edge(Role::Read))).unwrap();
+        w.write(1, |e| told(e, &t0, &alice, &edge(Role::Read))).unwrap();
         if held_first {
             strong(&mut w, 0, None, t0, true);
             w.run();
@@ -687,16 +675,15 @@ fn a_thing_made_beside_its_strong_opens_once_held_spec_sync_judgement_1() {
 // history entry carrying them (not only at sync, his key access before the grant), so he reads
 // T and X.
 #[test]
-#[ignore = "stub rewrite: entry by references and stubs, pairing by values (R2, R3)"]
 fn a_grant_after_its_thing_became_independent_brings_the_history_its_boxes_open_spec_crypto_4() {
     let mut w = contacts();
     let bob = w.node(1).account.unwrap();
     let t = make(&mut w, 0, None, "t");
     let x = make_in(&mut w, 0, t, "x");
-    w.write(0, |e| e.grant(&x, &bob, &edge(Role::Sync))).unwrap();
-    w.write(0, |e| e.grant(&t, &bob, &edge(Role::Sync))).unwrap();
-    w.write(0, |e| e.grant(&t, &x, &edge(Role::Sync))).unwrap();
-    w.write(0, |e| e.grant(&t, &bob, &edge(Role::Read))).unwrap();
+    w.write(0, |e| told(e, &x, &bob, &edge(Role::Sync))).unwrap();
+    w.write(0, |e| told(e, &t, &bob, &edge(Role::Sync))).unwrap();
+    w.write(0, |e| told(e, &t, &x, &edge(Role::Sync))).unwrap();
+    w.write(0, |e| told(e, &t, &bob, &edge(Role::Read))).unwrap();
     strong(&mut w, 1, None, t, true);
     w.run();
     assert_eq!(value(&mut w, 1, &t), Some(Value::Str("t".into())), "Bob reads T");
@@ -803,7 +790,7 @@ fn a_mint_admins_readers_read_a_thing_no_more_once_its_record_edge_goes_spec_syn
 fn a_mint_admins_readers_read_a_thing_again_once_granted_again_spec_permissions_3() {
     let (mut w, (_, bob, t0)) = alice_reads_t0();
     let t2 = make_in(&mut w, 2, t0, "t2");
-    w.write(2, |e| e.grant(&t2, &bob, &edge(Role::Admin))).unwrap();
+    w.write(2, |e| told(e, &t2, &bob, &edge(Role::Admin))).unwrap();
     w.run();
     assert_eq!(value(&mut w, 0, &t2), Some(Value::Str("t2".into())), "Alice reads T2 through T0");
     w.write(2, |e| e.demote(&t2, &osis_engine::flows::Demotion { holder: t0, new: None, retain: None })).unwrap();
@@ -816,7 +803,7 @@ fn a_mint_admins_readers_read_a_thing_again_once_granted_again_spec_permissions_
     w.run();
     assert_eq!(value(&mut w, 0, &t2), None, "Alice reads T2 no more");
     assert!(!holds_value(&mut w, 0, &t2), "Alice holds T2's value");
-    w.write(2, |e| e.grant(&t2, &t0, &edge(Role::Read))).unwrap();
+    w.write(2, |e| told(e, &t2, &t0, &edge(Role::Read))).unwrap();
     w.run();
     w.advance(osis_proto::limits::PASS_WAIT_MS);
     w.run();
@@ -835,7 +822,7 @@ fn repro_a_paired_nodes_grant_to_its_account_stands() {
     let t0 = w.write(1, |e| e.create_with_admin(&bob).unwrap().0);
     let t = w.write(1, |e| e.create_with_admin(&t0).unwrap().0);
     w.run();
-    w.write(2, |e| e.grant(&t, &bob, &edge(Role::Admin))).unwrap();
+    w.write(2, |e| told(e, &t, &bob, &edge(Role::Admin))).unwrap();
     w.run();
     for i in [1, 2] {
         assert!(w.engine(i).roster(&t).contains_key(&bob), "node {i}: Bob's grant on T stands");
@@ -855,10 +842,10 @@ fn record_chain_built(key1: bool) -> (World, (Tid, Tid, Tid)) {
     let (mut w, (_, bob, t0)) = alice_reads_t0();
     let t1 = make_in(&mut w, 1, t0, "t1");
     if key1 {
-        w.write(1, |e| e.grant(&t1, &bob, &edge(Role::Admin))).unwrap();
+        w.write(1, |e| told(e, &t1, &bob, &edge(Role::Admin))).unwrap();
     }
     let t2 = make_in(&mut w, 1, t1, "t2");
-    w.write(1, |e| e.grant(&t2, &bob, &edge(Role::Admin))).unwrap();
+    w.write(1, |e| told(e, &t2, &bob, &edge(Role::Admin))).unwrap();
     w.run();
     w.advance(osis_proto::limits::PASS_WAIT_MS);
     w.run();
@@ -870,7 +857,6 @@ fn record_chain_built(key1: bool) -> (World, (Tid, Tid, Tid)) {
 // admin on T2 by their record edges, each independent (or T1 left dependent): Alice, a reader of T0,
 // reads T1 and T2, and what is written on T2 after it was made independent.
 #[test]
-#[ignore = "stub rewrite: entry by references and stubs, pairing by values (R2, R3)"]
 fn a_reader_reads_down_a_chain_of_standing_record_edges_spec_sync_set_2() {
     for key1 in [false, true] {
         let (mut w, _t0, t1, t2) = record_chain_of_three(key1);
@@ -891,7 +877,6 @@ fn a_reader_reads_down_a_chain_of_standing_record_edges_spec_sync_set_2() {
 // none of its content, whatever T0's and T1's sync IDs carry (node 2 files them again), while
 // she reads T1 still.
 #[test]
-#[ignore = "stub rewrite: entry by references and stubs, pairing by values (R2, R3)"]
 fn a_reader_down_a_chain_lowered_to_sync_reads_the_thing_no_more_spec_permissions_3() {
     let (mut w, t0, t1, t2) = record_chain_of_three(true);
     assert_eq!(value(&mut w, 0, &t2), Some(Value::Str("t2".into())));
@@ -914,7 +899,7 @@ fn a_reader_down_a_chain_lowered_to_sync_reads_the_thing_no_more_spec_permission
 // store), spec/permissions.md §3 (Lost access): Bob reads T; lowered to sync he reads nothing and
 // keeps T unread, holding none of its content, and so across a restart.
 #[test]
-#[ignore = "stub rewrite: entry by references and stubs, pairing by values (R2, R3)"]
+#[ignore = "stub rewrite: a signalled sync-only holder holds S as Read (R3b)"]
 fn a_reader_lowered_to_sync_holds_no_content_across_a_restart_spec_permissions_3() {
     let (mut w, (t, bob)) = granted();
     strong(&mut w, 1, None, t, true);
@@ -943,12 +928,12 @@ fn a_reader_lowered_to_sync_holds_no_content_across_a_restart_spec_permissions_3
 // She reads T2 through T0. Bob removes T0's record edge: she keeps T2 unread by her own sync
 // grant and holds none of its content.
 #[test]
-#[ignore = "stub rewrite: entry by references and stubs, pairing by values (R2, R3)"]
+#[ignore = "stub rewrite: a signalled sync-only holder holds S as Read (R3b)"]
 fn a_thing_read_through_one_unit_and_kept_unread_directly_spec_sync_set_2() {
     let (mut w, (alice, bob, t0)) = alice_reads_t0();
     let t2 = make_in(&mut w, 1, t0, "t2");
-    w.write(1, |e| e.grant(&t2, &bob, &edge(Role::Admin))).unwrap();
-    w.write(1, |e| e.grant(&t2, &alice, &edge(Role::Sync))).unwrap();
+    w.write(1, |e| told(e, &t2, &bob, &edge(Role::Admin))).unwrap();
+    w.write(1, |e| told(e, &t2, &alice, &edge(Role::Sync))).unwrap();
     w.run();
     strong(&mut w, 0, None, t2, true);
     w.run();
@@ -971,11 +956,10 @@ fn a_thing_read_through_one_unit_and_kept_unread_directly_spec_sync_set_2() {
 // independent) and she holds it: she reads T2's minting value, and holds every part her siblings
 // judge must-hold.
 #[test]
-#[ignore = "stub rewrite: entry by references and stubs, pairing by values (R2, R3)"]
 fn a_grantee_reads_the_minting_value_of_a_dependent_made_independent_spec_sync_judgement_1() {
     let (mut w, (alice, _, t0)) = alice_reads_t0();
     let t2 = make_in(&mut w, 2, t0, "t2");
-    w.write(2, |e| e.grant(&t2, &alice, &edge(Role::Admin))).unwrap();
+    w.write(2, |e| told(e, &t2, &alice, &edge(Role::Admin))).unwrap();
     strong(&mut w, 0, None, t2, true);
     w.run();
     assert_eq!(value(&mut w, 0, &t2), Some(Value::Str("t2".into())), "Alice reads T2's minting value");
@@ -986,7 +970,6 @@ fn a_grantee_reads_the_minting_value_of_a_dependent_made_independent_spec_sync_j
 // derives from T0's) and Alice read on T1; she holds both. Bob removes her from T0: T1's keyless
 // grant reads nothing of T0, so it keeps her no copy, and she reads T0 no more.
 #[test]
-#[ignore = "stub rewrite: entry by references and stubs, pairing by values (R2, R3)"]
 fn a_keyless_grant_keeps_no_copy_spec_permissions_3() {
     let (mut w, (alice, t0, t1)) = keyless_way();
     assert_eq!(value(&mut w, 0, &t0), Some(Value::Str("t0".into())), "Alice reads T0");
@@ -1031,16 +1014,16 @@ fn an_ended_way_found_keyless_drops_its_copy_spec_permissions_3() {
     let alice = w.node(0).account.unwrap();
     let t0 = make(&mut w, 1, None, "t0");
     let t1 = make(&mut w, 1, None, "t1");
-    w.write(1, |e| e.grant(&t1, &alice, &edge(Role::Read))).unwrap();
+    w.write(1, |e| told(e, &t1, &alice, &edge(Role::Read))).unwrap();
     for t in [t0, t1] {
         strong(&mut w, 0, None, t, true);
     }
     w.run();
     w.partition(0, 2);
     w.partition(1, 2);
-    w.write(2, |e| e.grant(&t1, &t0, &edge(Role::Read))).unwrap();
+    w.write(2, |e| told(e, &t1, &t0, &edge(Role::Read))).unwrap();
     w.advance(1000);
-    w.write(1, |e| e.grant(&t0, &t1, &edge(Role::Read))).unwrap();
+    w.write(1, |e| told(e, &t0, &t1, &edge(Role::Read))).unwrap();
     w.run();
     assert_eq!(value(&mut w, 0, &t0), Some(Value::Str("t0".into())), "Alice reads T0 through T1");
     w.write(1, |e| e.demote(&t0, &osis_engine::flows::Demotion { holder: t1, new: None, retain: Some(true) })).unwrap();
@@ -1067,15 +1050,15 @@ fn a_reader_follows_a_forked_sync_id(cycle: bool) {
         w.run();
         w.partition(0, 2);
         w.partition(1, 2);
-        w.write(2, |e| e.grant(&t1, &t0, &edge(Role::Read))).unwrap();
+        w.write(2, |e| told(e, &t1, &t0, &edge(Role::Read))).unwrap();
         w.advance(1000);
         (w, (t0, t1))
     });
     let alice = w.node(0).account.unwrap();
     if cycle {
-        w.write(1, |e| e.grant(&t0, &t1, &edge(Role::Read))).unwrap();
+        w.write(1, |e| told(e, &t0, &t1, &edge(Role::Read))).unwrap();
     }
-    w.write(1, |e| e.grant(&t1, &alice, &edge(Role::Read))).unwrap();
+    w.write(1, |e| told(e, &t1, &alice, &edge(Role::Read))).unwrap();
     strong(&mut w, 0, None, t1, true);
     w.run();
     w.heal();
@@ -1126,7 +1109,7 @@ fn an_own_write_before_a_dropped_strong_reaches_its_peer_spec_sync_set_3() {
     let mut w = contacts();
     let alice = w.node(0).account.unwrap();
     let t = make(&mut w, 1, None, "bob");
-    w.write(1, |e| e.grant(&t, &alice, &edge(Role::Write))).unwrap();
+    w.write(1, |e| told(e, &t, &alice, &edge(Role::Write))).unwrap();
     strong(&mut w, 0, None, t, true);
     w.run();
     assert_eq!(value(&mut w, 0, &t), Some(Value::Str("bob".into())), "Alice reads T");
@@ -1150,7 +1133,6 @@ fn an_own_write_before_a_dropped_strong_reaches_its_peer_spec_sync_set_3() {
 // T1 read on T0 (keyless) and Alice read on T1; she holds both. Bob removes T1's grant saying retain,
 // then removes Alice from T0: the ended keyless grant read nothing of T0, so it keeps her no copy.
 #[test]
-#[ignore = "stub rewrite: entry by references and stubs, pairing by values (R2, R3)"]
 fn an_ended_keyless_grant_keeps_no_copy_spec_permissions_3() {
     let (mut w, (alice, t0, t1)) = keyless_way();
     assert_eq!(value(&mut w, 0, &t0), Some(Value::Str("t0".into())), "Alice reads T0");
@@ -1186,14 +1168,13 @@ fn inbox_grants(w: &mut World, i: usize, enabled: bool) {
 // Bob's node, which refuses it. Writes of Bob's own elsewhere open the refused deposit no more
 // often for being ten times as many; Bob enabling grant fires takes it: the grant is his.
 #[test]
-#[ignore = "stub rewrite: entry by references and stubs, pairing by values (R2, R3)"]
 fn a_refused_sealed_fire_is_opened_again_only_when_what_refused_it_moves_spec_sync_inbox_4() {
     let mut w = contacts();
     inbox_grants(&mut w, 1, false);
     w.run();
     let t = make(&mut w, 0, None, "hi");
     let bob = w.node(1).account.unwrap();
-    w.write(0, |e| e.grant(&t, &bob, &edge(Role::Read))).unwrap();
+    w.write(0, |e| told(e, &t, &bob, &edge(Role::Read))).unwrap();
     w.run();
     let inbox = w.engine(1).inbox_of(&bob).unwrap().unwrap();
     let s = w.engine(1).sync_id_of(&inbox).unwrap().unwrap();
@@ -1226,7 +1207,6 @@ fn a_refused_sealed_fire_is_opened_again_only_when_what_refused_it_moves_spec_sy
 // promotes the deposit in place. Node 2 holds the blob's bytes from the deposit, so the stamp
 // fetches nothing: it reads the fire only because it opened the deposit it took.
 #[test]
-#[ignore = "stub rewrite: entry by references and stubs, pairing by values (R2, R3)"]
 fn a_reader_opens_a_deposit_it_takes_spec_sync_inbox_3() {
     let mut w = siblings();
     w.lie(2, Some(crate::harness::lies::Lie::Declare(osis_proto::SourceClass::Store)));
@@ -1239,7 +1219,7 @@ fn a_reader_opens_a_deposit_it_takes_spec_sync_inbox_3() {
         e.commit(m).unwrap();
     });
     let bob = w.node(1).account.unwrap();
-    w.write(0, |e| e.grant(&t, &bob, &edge(Role::Read))).unwrap();
+    w.write(0, |e| told(e, &t, &bob, &edge(Role::Read))).unwrap();
     w.run();
     strong(&mut w, 1, None, t, true);
     w.run();
@@ -1254,14 +1234,17 @@ fn a_reader_opens_a_deposit_it_takes_spec_sync_inbox_3() {
 
 
 // spec/sync-set.md §2 Carriers: Bob makes T0 and T1 (minted with admin T0, held from T0) and gives
-// Alice's account write on T0, which it holds no strong to; Alice makes T2 and writes T2 -> T1.
+// Alice's account write on T0, untold, which it holds no strong to; Alice makes T2 and writes T2 -> T1.
 // T1 is in her account's unit (its keys open T1 through T0), but no node reading the account holds
 // T1 and none of Alice's syncs T0: nothing carries it, and Alice reads nothing of it.
 #[test]
 fn a_dependent_nobody_carries_into_a_unit_is_not_held_spec_sync_set_2() {
     use crate::harness::script::*;
     let mut w = contacts();
-    let _ = crate::harness::play(&mut w, &[New(0), NewIn(0, 0), Give(0, 0, Holder::Node(1), Writes), New(1), Strong(1, Some(2), 1), Run], String::new());
+    let _ = crate::harness::play(&mut w, &[New(0), NewIn(0, 0)], String::new());
+    let (t0, alice) = (w.history.things[0].0, w.node(1).account.unwrap());
+    w.write(0, |e| e.grant(&t0, &alice, &edge(Role::Write))).unwrap();
+    let _ = crate::harness::play(&mut w, &[New(1), Strong(1, Some(2), 1), Run], String::new());
     let t1 = w.history.things[1].0;
     assert!(crate::harness::history::reads(w.engine(0), &t1).value.is_some(), "Bob reads T1");
     assert!(crate::harness::history::reads(w.engine(1), &t1).value.is_none(), "nothing carries T1 to Alice");
@@ -1271,7 +1254,6 @@ fn a_dependent_nobody_carries_into_a_unit_is_not_held_spec_sync_set_2() {
 // on T0 (U holding write on Alice's T3 first, so its keysets carry the KEM keys a granter seals to), and U -> T1 written by Alice before she holds anything of T1. Bob reads U and holds T1
 // through T0: a bridge, logging T1 under U's sync ID, from which Alice reads it.
 #[test]
-#[ignore = "stub rewrite: entry by references and stubs, pairing by values (R2, R3)"]
 fn a_bridge_carries_a_dependent_into_another_unit_spec_sync_set_2() {
     use crate::harness::script::*;
     let mut w = contacts();

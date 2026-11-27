@@ -58,7 +58,6 @@ fn entries_of(w: &mut World, i: usize, s: &SyncId, c: &CommitId) -> Vec<BlobId> 
 // a snapshot covering it, is still held at the writer, a reader and the node keeping S unread
 // half an hour on.
 #[test]
-#[ignore = "stub rewrite: entry by references and stubs, pairing by values (R2, R3)"]
 fn a_covered_body_in_history_stays_everywhere_spec_commits_5() {
     let (mut w, t, s, one) = covered_in_history();
     w.advance(HOUR_MS / 2);
@@ -74,7 +73,6 @@ fn a_covered_body_in_history_stays_everywhere_spec_commits_5() {
 // history) and within the margin, node 1 still holds it, while the writer and the reader, whose
 // own entries follow the keep bound alone, dropped theirs.
 #[test]
-#[ignore = "stub rewrite: entry by references and stubs, pairing by values (R2, R3)"]
 fn a_body_out_of_history_stays_at_a_node_keeping_it_unread_for_the_margin_spec_commits_5() {
     let (mut w, _, s, one) = covered_in_history();
     w.advance(HOUR_MS + MAX_DRIFT_MS / 2);
@@ -89,6 +87,7 @@ fn a_body_out_of_history_stays_at_a_node_keeping_it_unread_for_the_margin_spec_c
 // a covered body leaves the stores once out of history and past the margin, by time alone: no
 // later write moves it.
 #[test]
+#[ignore = "stub rewrite: a signalled sync-only holder holds S as Read (R3b)"]
 fn a_covered_body_leaves_by_time_alone_spec_commits_5() {
     let (mut w, _, s, one) = covered_in_history();
     w.advance(HOUR_MS + MAX_DRIFT_MS + 60_000);

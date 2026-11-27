@@ -69,7 +69,7 @@ fn entries(w: &World, i: usize, s: &SyncId) -> BTreeSet<BlobId> {
 // of it, its bytes dropped. Healed, node 0 purges its large write; its pieces leave every store
 // and the engine's.
 #[test]
-#[ignore = "stub rewrite: entry by references and stubs, pairing by values (R2, R3)"]
+#[ignore = "stub rewrite: a signalled sync-only holder holds S as Read (R3b)"]
 fn a_large_value_reads_whole_through_a_node_keeping_it_unread_and_a_purge_deletes_its_pieces_spec_sync_judgement_1() {
     let (mut w, t, s) = three(Gives::Reads);
     w.partition(0, 2);
@@ -96,7 +96,7 @@ fn a_large_value_reads_whole_through_a_node_keeping_it_unread_and_a_purge_delete
 // deletes them at node 1. Node 2 comes back, finds the reused chunks deleted at every source, and
 // writes the value again with them re-encrypted; node 0, reaching only node 1, reads it whole.
 #[test]
-#[ignore = "stub rewrite: entry by references and stubs, pairing by values (R2, R3)"]
+#[ignore = "stub rewrite: a signalled sync-only holder holds S as Read (R3b)"]
 fn a_reused_chunk_a_purger_deleted_is_repaired_spec_sync_ids_1() {
     let (mut w, t, s) = three(Gives::Writes);
     let mut v = big(3);
@@ -159,7 +159,6 @@ fn edit_costs(kib: usize) -> (u64, u64, usize, usize) {
 // store row a piece reads shares its stamp with a 64th of the others, so a removal re-judges a
 // few).
 #[test]
-#[ignore = "stub rewrite: entry by references and stubs, pairing by values (R2, R3)"]
 fn a_small_edit_to_a_large_value_costs_its_new_pieces() {
     let (small, large) = (edit_costs(256), edit_costs(2560));
     // the chunker is unkeyed: these bytes are 3 and 33 chunks in every world, under one to three
@@ -201,7 +200,6 @@ fn one_write_entries(gives: Gives) -> Vec<[usize; 4]> {
 // write as its own store's entry and makes none of its own, so a node keeping S unread stores one
 // blob of the write, not one per reader; a reader that writes too likewise.
 #[test]
-#[ignore = "stub rewrite: entry by references and stubs, pairing by values (R2, R3)"]
 fn a_write_is_one_blob_however_many_read_it_spec_sync_judgement_3() {
     for gives in [Gives::Reads, Gives::Writes] {
         let got = one_write_entries(gives);
@@ -218,7 +216,6 @@ fn a_write_is_one_blob_however_many_read_it_spec_sync_judgement_3() {
 // blob. Fails if a blob opened before its lists resolve is never opened again (the reader reads
 // nothing of the commit, and keeps the framed blob as one of it).
 #[test]
-#[ignore = "stub rewrite: entry by references and stubs, pairing by values (R2, R3)"]
 fn a_blob_framed_under_other_commitments_is_dropped_once_its_lists_resolve_spec_commits_4() {
     let mut w = world_of(0, 2, 2);
     let _ = play(&mut w, &[New(0), Grant(0, 0, 1, Gives::Reads), Run], String::new());

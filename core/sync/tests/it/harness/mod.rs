@@ -543,6 +543,8 @@ pub struct World {
     /// Nodes that lied in their own log (`Lie::Withhold`, `Lie::Forget`) at some point: what
     /// their peers recorded of their logs stays as told after they tell the truth again.
     pub(crate) lied_log: BTreeSet<usize>,
+    /// Paired nodes not yet seen in their account, each with its pairer (`pairs_entered`).
+    pairing: BTreeMap<usize, usize>,
     /// Deliveries so far.
     pub deliveries: u64,
     /// `deliveries` when the last `run` began; past `cap` more the world panics as a storm (a
@@ -605,6 +607,7 @@ impl World {
             net,
             liars: BTreeMap::new(),
             lied_log: BTreeSet::new(),
+            pairing: BTreeMap::new(),
             deliveries: 0,
             run_from: 0,
             delivered: BTreeMap::new(),
@@ -690,7 +693,27 @@ impl World {
             n.inbox = inbox;
         }
         self.publish(j);
+        self.pairing.insert(j, i);
         j
+    }
+
+    /// At quiet, each paired node whose pairer it could reach this run (both on, no partition
+    /// between them, no loss, no liar) holds its account at a role (spec/permissions.md §8
+    /// Pairing): it entered by the account's public link.
+    fn pairs_entered(&mut self) {
+        let clean = self.net.loss.none() && self.liars.is_empty();
+        for (j, i) in self.pairing.clone() {
+            let Some(a) = self.node(j).account else {
+                self.pairing.remove(&j);
+                continue;
+            };
+            if !clean || !self.online(i) || !self.online(j) || self.net.cut_off.contains(&(i.min(j), i.max(j))) {
+                continue;
+            }
+            let e = self.engine(j);
+            assert!(e.closure_holds(&a) && e.role_on(&a).is_some(), "node {j}, paired by node {i}, holds no role on its account at quiet");
+            self.pairing.remove(&j);
+        }
     }
 
     /// Node `i` publishes its address as it listens (`Engine::publish_reach`: its entry in the
@@ -1146,6 +1169,7 @@ impl World {
         if osis_base::testenv::end_checks() {
             osis_base::costs::paused(|| {
                 self.sources_are_members();
+                self.pairs_entered();
                 self.unlogged_must_holds();
                 self.wanted_blobs_in_reach();
             });
@@ -1481,6 +1505,7 @@ impl World {
             net: self.net.clone(),
             liars: self.liars.clone(),
             lied_log: self.lied_log.clone(),
+            pairing: self.pairing.clone(),
             deliveries: 0,
             run_from: 0,
             delivered: BTreeMap::new(),
@@ -1529,6 +1554,14 @@ pub fn fixture_with<T: Clone + Send + 'static>(key: &str, build: impl FnOnce() -
 /// A plain edge of `role`: no `until`, may-grant flag, retain or floor.
 pub fn edge(role: osis_base::Role) -> osis_schema::core_types::Edge {
     osis_schema::core_types::Edge { role, until: None, may_grant: false, retain: false, floor: None }
+}
+
+/// A grant of `edge` on `t` to `holder`, told (`Engine::signal_grant`, as `Osis::grant` does by
+/// default): the holder's nodes learn of it.
+pub fn told(e: &mut Engine, t: &Tid, holder: &Tid, edge: &osis_schema::core_types::Edge) -> osis_engine::Result<osis_engine::flows::Done> {
+    let done = e.grant(t, holder, edge)?;
+    e.signal_grant(t, holder, &[])?;
+    Ok(done)
 }
 
 /// Two nodes, each with an account of its own, quiet.

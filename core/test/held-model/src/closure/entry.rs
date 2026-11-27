@@ -108,10 +108,17 @@ pub struct Rule {
     pub by_grants: bool,
     /// Control: a stub fetched by a signal stays with the node once the signal is gone.
     pub keep_fetched: bool,
+    /// The engine's reading of a strong (`Rule::BUILT`).
+    pub by_role: bool,
 }
 
 impl Rule {
-    pub const SPEC: Rule = Rule { fix: Fix::Least, chains: Chains::Spec, reader_view: false, log_units: true, by_grants: false, keep_fetched: false };
+    pub const SPEC: Rule = Rule { fix: Fix::Least, chains: Chains::Spec, reader_view: false, log_units: true, by_grants: false, keep_fetched: false, by_role: false };
+    /// As built (notes/stub-rewrite.md, R2 built: strongs enter by the node's role): a strong to
+    /// X that a unit carries as a stub (its owner at sync or above, its keys not opening X) brings
+    /// X by the node's own role over the role entries it holds: whole at read or above, kept
+    /// unread at sync (its store, `Held::unread`), a stub below.
+    pub const BUILT: Rule = Rule { by_role: true, ..Rule::SPEC };
     /// Control: what a node fetched stays with it and is logged nowhere but its local part.
     pub const PRIVATE: Rule = Rule { log_units: false, keep_fetched: true, ..Rule::SPEC };
 }
@@ -125,6 +132,8 @@ pub struct Carried {
     pub stubs: Set,
     /// The chain holders among `stubs` that no reference brings.
     pub chain: Set,
+    /// The things among `stubs` a strong brings.
+    pub strong: Set,
     /// The opened things carried (whole independents and opened stubs): a chain ends at one.
     pub opened: Set,
 }
@@ -138,6 +147,9 @@ pub struct Held {
     pub members: Set,
     /// The independent things it holds as a stub alone.
     pub stubs: Set,
+    /// `Rule::by_role`: the independent things it keeps unread (a strong brings them, the node
+    /// holding sync on them and no more).
+    pub unread: Set,
     /// The independent things its units' keys open (it holds their read secrets).
     pub opened: Set,
     /// The units it reads: its root, its node thing, every independent thing it reads.
@@ -149,7 +161,7 @@ pub struct Held {
 impl Held {
     /// The independent things whose role entries the node holds.
     pub fn entries(&self) -> Set {
-        self.whole.union(&self.stubs).copied().collect()
+        self.whole.iter().chain(&self.stubs).chain(&self.unread).copied().collect()
     }
 }
 
@@ -258,6 +270,9 @@ impl Net {
                         c.whole.extend([x, y]);
                     } else if at(x, Role::Sync) {
                         c.stubs.insert(x);
+                        if strong {
+                            c.strong.insert(x);
+                        }
                     }
                 }
             }
@@ -273,6 +288,7 @@ impl Net {
             }
             c.stubs.retain(|x| !c.whole.contains(x));
             c.chain.retain(|x| c.stubs.contains(x));
+            c.strong.retain(|x| c.stubs.contains(x));
             if c == before {
                 return c;
             }
@@ -290,8 +306,20 @@ impl Net {
         loop {
             let before = h.clone();
             let view = h.entries();
+            let own = if rule.by_role { self.roles(n.thing, &view) } else { BTreeMap::new() };
             for u in h.units.clone() {
                 let c = self.carry(rule, u, &view);
+                for &x in c.strong.iter().filter(|_| rule.by_role) {
+                    match own.get(&x) {
+                        Some(&r) if r >= Role::Read => {
+                            h.whole.insert(x);
+                            h.members.insert(x);
+                            h.units.insert(x);
+                        }
+                        Some(_) => drop(h.unread.insert(x)),
+                        None => {}
+                    }
+                }
                 for &x in &c.whole {
                     h.members.insert(x);
                     if self.w.independent(x) {
@@ -318,7 +346,9 @@ impl Net {
                 h.stubs.extend(named);
             }
             let whole = h.whole.clone();
-            h.stubs.retain(|x| !whole.contains(x));
+            h.unread.retain(|x| !whole.contains(x));
+            let unread = h.unread.clone();
+            h.stubs.retain(|x| !whole.contains(x) && !unread.contains(x));
             if h == before {
                 return h;
             }

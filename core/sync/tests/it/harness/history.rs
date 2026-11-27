@@ -17,6 +17,7 @@
 
 use super::{DiskFault, Loss, Step, World};
 use held_model::closure as hc;
+use held_model::closure::entry;
 use osis_base::{Ak, CommitId, Ref, Role, Tid, Value};
 use osis_crypto::{RngCore, SeededRng};
 use osis_engine::flows::Done;
@@ -127,16 +128,9 @@ pub struct Made {
     written: u64,
     /// Things whose record edge a removal took (the roster then shows no mint admin either).
     record_gone: BTreeSet<usize>,
-    // Stub rewrite (notes/stub-rewrite.md): `unoffered`, `pieces` and `named` model key-part
-    // delivery for held-model's old closure; they go with held-model's rewrite (M1, R4)
-    /// (thing, holder thing) edges standing that the holder's readers were never offered: no write of the edge since it last began
-    /// was by a node writing the holder (which logs it in the holder's key part), and the holder
-    /// did not take `grant@~0` when it was written (`inboxes`). An account is offered every grant:
-    /// its inbox enables the signal.
-    unoffered: BTreeSet<(usize, Tid)>,
-    /// History things made an account's inbox (`Step::Inbox`): their setting takes both inbox
-    /// signals from then on.
-    inboxes: BTreeSet<usize>,
+    /// The grants signalled (`give`): `(holder account, target)`, held for good (a history is
+    /// shorter than any signal's lifetime).
+    signals: BTreeSet<(Tid, Tid)>,
     /// Grants to accounts and changes of keys, in the order made.
     events: Vec<Event>,
     /// Per node, the events it surely received: its own, and each held by a node it shared a run
@@ -153,18 +147,13 @@ pub struct Made {
     /// Things held by no node at some quiet run (`ran`): gone for everyone, a strong to one
     /// holds nothing from then on (spec/sync-set.md §3 A thing goes when its last reference goes).
     gone: BTreeSet<usize>,
-    /// The public's pieces logged so far (held-model's old closure): `(t, x)`, `t`'s sync
-    /// ID carrying the public's edge piece on `x`, by the model at each quiet run (`model_now`),
-    /// and by each redeem done or pending (the redeeming node reads its account and holds the
-    /// public's grant by the link's sync ID as it writes the strong). Logged pieces stay: carriage
-    /// outlives its carrier. Where `t` names `x`'s sync ID (`named`) its readers follow `x` by the
-    /// public entry and log the piece whenever the public reads `x`, whatever was logged before;
-    /// elsewhere, not seen: a node holding `x` by a path of its own only between quiet runs.
-    pieces: BTreeSet<(Tid, Tid)>,
-    /// `(k, holder)`: an edge of the holder on thing `k` was written and offered to the holder's
-    /// readers (`unoffered`), so the holder's key part names `k`'s sync ID for good, the edge
-    /// since lowered or removed included (`entry::Net::named`).
-    named: BTreeSet<(usize, Tid)>,
+    /// The stubs logged so far (`entry::Net::logged`): `(u, x)`, the stub of `x`'s independent
+    /// thing under `u`'s sync ID (both as the model counts them, `Model::of`): by the model at
+    /// each quiet run (`model_now`), and by a node writing a strong from `u` to `x` holding `x`
+    /// (`make`, `strong`, `redeem`: the redeeming node holds `x`'s role entries by the link as it
+    /// writes the strong). A logged stub stays while rule 2 carries it: carriage outlives its
+    /// carrier.
+    logged: BTreeSet<(Tid, Tid)>,
     /// The reference `quiet_model` reads, fed what was handed since its last quiet run (made at
     /// the first; a copy of the world copies it).
     quiet: Option<QuietRef>,
@@ -285,8 +274,8 @@ pub fn ran(w: &mut World) {
     let synced: Vec<BTreeSet<usize>> = (0..w.len())
         .map(|i| {
             let Some((m, a)) = m.as_ref().and_then(|m| Some((m, m.account(&w.node(i).account?)?))) else { return BTreeSet::new() };
-            let (c, _) = m.closure(a);
-            (0..w.history.things.len()).filter(|k| c.held.contains(&m.thing(*k)) || c.stored.contains(&m.thing(*k))).collect()
+            let v = m.closure(a);
+            (0..w.history.things.len()).filter(|k| v.holds.contains(&m.thing(*k))).collect()
         })
         .collect();
     let n = w.len();
@@ -317,27 +306,21 @@ pub fn ran(w: &mut World) {
     }
 }
 
-/// The oracle is off (`closure`): R4 points it at held-model's stub closure.
-const MODEL_OFF: bool = true;
-
 /// The model at a quiet run with every node on and connected on a clean network, from the
 /// history alone (a reference of what was handed); `None` at any other run. Every node then
 /// holds its node closure: a thing made that no account's model closure holds or carries is held
 /// by no node, so it is gone (`Made::gone`).
 fn quiet_model(w: &mut World) -> Option<Model> {
-    // Stub rewrite (notes/stub-rewrite.md): no model at a quiet run until the oracle runs on
-    // held-model's stub closure (R4); a hand test's history plays without it (`played_on`)
-    if MODEL_OFF {
-        return None;
-    }
     if !w.net.cut_off.is_empty() || (0..w.len()).any(|i| !w.online(i)) {
         return None;
     }
     let m = model_now(w)?;
-    // held, or carried unread under a sync ID some node keeps: a later reader fetches it there
+    // held, as a stub too, or carried unread under a sync ID some node keeps: a later reader
+    // fetches it there
     let mut held = hc::Set::new();
     for a in 0..m.accounts.len() {
-        held.extend(m.closure(a).0.carried);
+        let v = m.closure(a);
+        held.extend(v.holds.iter().chain(&v.stubs));
     }
     for k in 0..w.history.things.len() {
         if !held.contains(&m.thing(k)) {
@@ -348,7 +331,7 @@ fn quiet_model(w: &mut World) -> Option<Model> {
 }
 
 /// The model of what was handed so far (the reference `Made::quiet`, fed what was handed since it
-/// was last read), as if every node held it; the public's pieces it logs kept (`Made::pieces`).
+/// was last read), as if every node held it; the stubs it logs kept (`Made::logged`).
 /// Read at a quiet run (`quiet_model`).
 fn model_now(w: &mut World) -> Option<Model> {
     if !w.history.harvest || w.history.things.is_empty() {
@@ -387,8 +370,10 @@ fn model_now(w: &mut World) -> Option<Model> {
         let _ = p.tick();
     }
     let m = Model::of(w, refs);
-    let pieces = m.pieces_of(w);
-    w.history.pieces.extend(pieces);
+    // a stub logged of a thing still dependent of its unit's is judged once it is independent
+    let unjudged: Vec<(Tid, Tid)> = w.history.logged.iter().copied().filter(|e| m.judges(w, e) == Some(false)).collect();
+    w.history.logged = m.logged_of(w);
+    w.history.logged.extend(unjudged);
     w.history.quiet = Some(qr);
     Some(m)
 }
@@ -565,24 +550,9 @@ fn redeem(w: &mut World, i: usize, k: usize) -> Result<String, String> {
     if matches!(done, osis_sync::types::Waiting::Done | osis_sync::types::Waiting::Pending)
         && let Some(a) = w.node(i).account
     {
-        let x = independent_of(w, k);
-        w.history.pieces.insert((a, w.history.things[x].0));
+        w.history.logged.insert((a, t));
     }
     Ok(format!("{done:?}"))
-}
-
-/// The history thing whose secrets thing `k`'s derive from (`Model::of`'s kinds): `k` where it is
-/// independent, else up its mint admins to the nearest independent one, or the last thing on the
-/// way made with an account as admin (its secrets derive from the account's: no history thing).
-fn independent_of(w: &World, k: usize) -> usize {
-    let h = &w.history;
-    let mut x = k;
-    while !h.independent[x]
-        && let MintAdmin::Thing(p) = h.minted_with[x]
-    {
-        x = p;
-    }
-    x
 }
 
 /// Node `i` writes its account's card on thing `k` (spec/sync-inbox.md §1 Card: valid only where
@@ -631,14 +601,6 @@ fn inbox(w: &mut World, i: usize, k: Option<usize>) -> Result<String, String> {
         };
         e.set_inbox(a, Some(to))
     });
-    // the setting's commit stands even where the move was refused
-    if let Some(k) = k
-        && w.online(i)
-        && let Some(t) = thing(w, k)
-        && w.engine(i).get_typed(&t, &ct::RETENTION).ok().flatten().is_some_and(|s: ct::RetentionSetting| s.enables(&Ak::new("grant@~0").expect("an external signal")))
-    {
-        w.history.inboxes.insert(k);
-    }
     r.map(|_| String::new()).map_err(|e| e.to_string())
 }
 
@@ -664,6 +626,7 @@ fn make(w: &mut World, i: usize, mint_admin: Option<usize>) -> Result<String, St
     }) {
         Ok((t, d, c)) => {
             let h = &mut w.history;
+            h.logged.insert((admin.unwrap_or(d), t));
             h.things.push((t, i));
             h.minted_with.push(mint_admin.map_or(MintAdmin::Root(d), MintAdmin::Thing));
             h.independent.push(false);
@@ -678,38 +641,18 @@ fn make(w: &mut World, i: usize, mint_admin: Option<usize>) -> Result<String, St
     }
 }
 
-/// Notes a write of holder `h`'s edge on thing `k` by node `i`, whose role on the holder was
-/// `on_holder` and which read the edge as standing or not (`stood`) before it: by a writer of the
-/// holder it reaches the holder's readers; from outside it stays as it was, unoffered where it
-/// begins the edge.
-fn note_offered(w: &mut World, k: usize, h: Holder, holder: Tid, on_holder: Option<Role>, stood: bool) {
-    if matches!(h, Holder::Node(_) | Holder::Public) {
-        return;
-    }
-    // a holder taking `grant@~0` is offered a grant from outside at itself (spec/sync-inbox.md §5)
-    if on_holder >= Some(Role::Write) || matches!(h, Holder::Thing(j) if w.history.inboxes.contains(&j)) {
-        w.history.unoffered.remove(&(k, holder));
-    } else if !stood {
-        w.history.unoffered.insert((k, holder));
-    }
-}
-
-/// Node `i`'s role on `holder` and whether it reads `holder`'s edge on `t`, before a write of it.
-fn before_edge(w: &mut World, i: usize, t: &Tid, holder: &Tid) -> (Option<Role>, bool) {
-    if !w.online(i) {
-        return (None, false);
-    }
-    (w.engine(i).role_on(holder), w.engine(i).roster(t).contains_key(holder))
-}
-
-/// Node `i` gives holder `h` role `g` on thing `k`.
+/// Node `i` gives holder `h` role `g` on thing `k`; a grant to another account is signalled
+/// (`Engine::signal_grant`, as `Osis::grant` does by default), one to a thing or the public is not.
 fn give(w: &mut World, i: usize, k: usize, h: Holder, g: Gives) -> Result<String, String> {
     let (Some(t), Some(holder)) = (thing(w, k), holder_tid(w, h)) else { return Ok("skipped: no such thing or holder".into()) };
     let edge = Edge { role: g.role(), until: None, may_grant: false, retain: false, floor: None };
-    let (on_holder, stood) = before_edge(w, i, &t, &holder);
-    let r = w.write(i, |e| e.grant(&t, &holder, &edge)).map_err(|e| e.to_string());
+    let own = w.node(i).account == Some(holder);
+    let tell = matches!(h, Holder::Node(_)) && !own;
+    let r = w.write(i, |e| e.grant(&t, &holder, &edge).and_then(|d| if tell { e.signal_grant(&t, &holder, &[]).map(|_| d) } else { Ok(d) })).map_err(|e| e.to_string());
     if r.is_ok() || stands(w, i, &t, &holder, Some(g.role())) {
-        note_offered(w, k, h, holder, on_holder, stood);
+        if tell && r.is_ok() {
+            w.history.signals.insert((holder, t));
+        }
         let account = matches!(h, Holder::Node(_)).then_some(holder);
         let hist = &mut w.history;
         hist.independent[k] = true;
@@ -720,9 +663,6 @@ fn give(w: &mut World, i: usize, k: usize, h: Holder, g: Gives) -> Result<String
         // a refused grant that stands made its commits unseen: none to lose
         let done = r.as_ref().cloned().unwrap_or_default();
         hist.event(k, account, account.is_none(), done, i);
-        if h != Holder::Public {
-            hist.named.insert((k, holder));
-        }
     }
     r.map(|_| String::new())
 }
@@ -731,12 +671,8 @@ fn give(w: &mut World, i: usize, k: usize, h: Holder, g: Gives) -> Result<String
 fn demote(w: &mut World, i: usize, k: usize, h: Holder, g: Option<Gives>) -> Result<String, String> {
     let (Some(t), Some(holder)) = (thing(w, k), holder_tid(w, h)) else { return Ok("skipped: no such thing or holder".into()) };
     let new = g.map(|g| Edge { role: g.role(), until: None, may_grant: false, retain: false, floor: None });
-    let (on_holder, stood) = before_edge(w, i, &t, &holder);
     let r = w.write(i, |e| e.demote(&t, &Demotion { holder, new, retain: None })).map_err(|e| e.to_string());
     let applied = r.is_ok() || stands(w, i, &t, &holder, g.map(Gives::role));
-    if g.is_some() && stood && applied {
-        note_offered(w, k, h, holder, on_holder, stood);
-    }
     if r.is_ok() && g.is_none() && matches!(h, Holder::Thing(p) if w.history.minted_with[k] == MintAdmin::Thing(p)) {
         w.history.record_gone.insert(k);
     }
@@ -764,14 +700,17 @@ fn strong(w: &mut World, i: usize, from: Option<usize>, k: usize, on: bool) -> R
         None => None,
     };
     let account = w.node(i).account.ok_or("no account")?;
-    w.write(i, |e| -> osis_engine::Result<_> {
-        let from = from.unwrap_or(account);
+    let from = from.unwrap_or(account);
+    let r = w.write(i, |e| -> osis_engine::Result<_> {
         let mut m = Mutation::new();
         strong_in(&mut m, from, t, on)?;
         e.commit(m)
-    })
-    .map(|_| String::new())
-    .map_err(|e| e.to_string())
+    });
+    // its writer, holding the thing, logs its stub under the source's sync ID
+    if r.is_ok() && on && w.online(i) && w.engine(i).closure_holds(&t) {
+        w.history.logged.insert((from, t));
+    }
+    r.map(|_| String::new()).map_err(|e| e.to_string())
 }
 
 /// Whether node `i` reads `holder` at `role` on `t` (`None`: no entry): a write refused with
@@ -968,18 +907,46 @@ pub fn reads_as(w: &mut World, refs: &mut Refs, k: usize, i: usize) {
 }
 
 /// The history as held-model sees it at the end, from the history and the reference alone:
-/// model things 0..A are the accounts, then the history's things. A node of an account acts for
-/// it at admin (its node thing paired so), so its node closure is the account's: held-model's
-/// node with the account its own thing and its root (the account's strongs are its `holds.0`).
+/// model things 0..A are the accounts, then the history's things, then per account a node thing
+/// and its node root. A node of an account acts for it at admin (its node thing paired so), so
+/// its node closure is the account's: held-model's node with the account its own thing's
+/// (`entry::Node`), its root strongly referencing its node thing and the account (the account's
+/// strongs are its `holds.0`).
 pub struct Model {
     accounts: Vec<Tid>,
     world: hc::World,
     edges: hc::Edges,
-    /// What the accounts' node closures log under the sync IDs they read: bridges and stubs (`entry::Net::logged`).
-    logged: hc::Edges,
-    /// The public's pieces under the sync IDs they read : those logged before
-    /// in the history (`Made::pieces`) and what the closures log now.
-    pieces: hc::Edges,
+    /// held-model's first entry, settled (`entry::Net::settle`, `Rule::BUILT`): every account's
+    /// node, the signals held, what is logged.
+    net: entry::Net,
+}
+
+/// What an account's node holds by the model (`Model::closure`).
+pub struct View {
+    /// The independent things it reads.
+    read: hc::Set,
+    /// Every thing it holds content of: read whole (dependents among them), kept unread, or
+    /// carried in the unit of a thing it keeps unread.
+    holds: hc::Set,
+    /// The independent things it keeps unread.
+    unread: hc::Set,
+    /// The independent things it holds as a stub alone (their role entries).
+    stubs: hc::Set,
+}
+
+impl View {
+    /// Whether the node reads thing `x` (independent or not).
+    fn reads(&self, m: &Model, x: usize) -> bool {
+        match m.world.independent(x) {
+            true => self.read.contains(&x),
+            false => self.holds.contains(&x) && !self.unread_unit(m, x),
+        }
+    }
+
+    /// Whether dependent `x` is held only inside a unit kept unread.
+    fn unread_unit(&self, m: &Model, x: usize) -> bool {
+        !self.read.contains(&m.net.indep(x))
+    }
 }
 
 impl Model {
@@ -1072,34 +1039,59 @@ impl Model {
         for r in refs.all() {
             keyless.extend(r.engine.keyless_grants().iter().filter_map(|(t, g)| Some((index(g)?, index(t)?))));
         }
-        let pieces = h.pieces.iter().filter_map(|(t, x)| Some((index(t)?, index(x)?))).collect();
-        let mut m = Model { accounts, world: hc::World { kinds, grants, keyless, public, public_sync }, edges, logged: hc::Edges::new(), pieces };
-        // Stub rewrite (notes/stub-rewrite.md): what the closures log, to their least fixpoint, on
-        // held-model's stub closure (R4)
-        m.logged = hc::Edges::new();
-        m
+        let world = hc::World { kinds, grants, keyless, public, public_sync };
+        // per account a node: its node thing admin of the account, its root holding both
+        let n = world.kinds.len();
+        let mut net = entry::Net { w: world.clone(), strongs: edges.clone(), ..entry::Net::default() };
+        // an account's inbox, named by its `keys.0` (spec/sync-inbox.md §1): a weak to it
+        for (b, acct) in accounts.iter().enumerate() {
+            let inbox = refs.all().find_map(|r| r.engine.inbox_of(acct).ok().flatten());
+            if let Some(x) = inbox.and_then(|t| index(&t)).filter(|x| *x != b) {
+                net.weaks.insert((b, x));
+            }
+        }
+        for b in 0..na {
+            let (thing, root) = (n + 2 * b, n + 2 * b + 1);
+            net.w.kinds.extend([hc::Kind::Independent, hc::Kind::Dependent(thing)]);
+            net.w.grants.insert((thing, b), hc::Role::Admin);
+            net.strongs.extend([(root, thing), (root, b)]);
+            net.nodes.push(entry::Node { thing, root });
+            // pairing gave the node the account's role entries, logged in its local part
+            net.logged.insert((root, b));
+        }
+        let signals = h.signals.iter().filter_map(|(holder, x)| Some((index(holder)?, index(x)?)));
+        net.signals = signals.filter(|(b, _)| *b < na).map(|(b, x)| entry::Signal { at: entry::At::Node(b), holder: b, target: x }).collect();
+        let logged: Vec<(usize, usize)> = h.logged.iter().filter_map(|(u, x)| Some((net.indep(index(u)?), net.indep(index(x)?)))).collect();
+        net.logged.extend(logged.into_iter().filter(|(u, x)| u != x));
+        net.settle(entry::Rule::BUILT);
+        Model { accounts, world, edges, net }
     }
 
-    /// The public's pieces logged (`pieces`) as the history's tids, for `Made::pieces`.
-    fn pieces_of(&self, w: &World) -> Vec<(Tid, Tid)> {
+    /// Whether the model judges logged entry `(u, x)` (`Made::logged`): `x`'s independent thing
+    /// is not `u`'s; `None` for a tid it does not know.
+    fn judges(&self, w: &World, (u, x): &(Tid, Tid)) -> Option<bool> {
+        let na = self.accounts.len();
+        let index = |t: &Tid| self.accounts.iter().position(|a| a == t).or_else(|| w.history.things.iter().position(|(y, _)| y == t).map(|k| na + k));
+        Some(self.net.indep(index(u)?) != self.net.indep(index(x)?))
+    }
+
+    /// The stubs logged under accounts and history things, as their tids, for `Made::logged`.
+    fn logged_of(&self, w: &World) -> BTreeSet<(Tid, Tid)> {
         let na = self.accounts.len();
         let tid = |x: usize| if x < na { Some(self.accounts[x]) } else { w.history.things.get(x - na).map(|t| t.0) };
-        self.pieces.iter().filter_map(|&(t, x)| Some((tid(t)?, tid(x)?))).collect()
+        self.net.logged.iter().filter_map(|&(u, x)| Some((tid(u)?, tid(x)?))).collect()
     }
 
-    /// Account `a`'s node closure and the keys it reads with (spec/sync-set.md §2): held-model's
-    /// first entry (`closure::entry`, `Rule::SPEC`) for a node of the account, its node thing N
-    /// (model thing `n + 2a`, `n` the accounts and history things) holding admin on the account by
-    /// its record edge and its node root (`n + 2a + 1`) holding strongs to N and the account. A
-    /// grant is its target's data: one its holder's readers were never offered (`unoffered`)
-    /// counts once the node reads the target by another way, and opens nothing before (no node of
-    /// the holder's learns the target's sync ID or box by it). The least such closure, as
-    /// `hc::Closure` (`carried`: what its read units and the units of what it keeps unread carry;
-    /// `for_keys`: holders held in the keys class alone) and the keys of what it reads, with what
-    /// every account's closure logs (`Model::logged`, spec/sync-set.md §2 Carriers).
-    fn closure(&self, a: usize) -> (hc::Closure, hc::Set) {
-        // Stub rewrite (notes/stub-rewrite.md): the oracle on held-model's stub closure (R4)
-        panic!("stub rewrite: the differential's oracle for account {a} waits for R4")
+    /// What account `a`'s node holds (spec/sync-set.md §2): held-model's first entry
+    /// (`entry::Net::held`, `Rule::BUILT`) for its node, with the content of each thing it keeps
+    /// unread carried in that thing's unit.
+    fn closure(&self, a: usize) -> View {
+        let h = self.net.held(entry::Rule::BUILT, a);
+        let mut holds: hc::Set = h.members.iter().chain(&h.unread).copied().collect();
+        for &x in &h.unread {
+            holds.extend(self.net.carry(entry::Rule::BUILT, x, &h.entries()).whole);
+        }
+        View { read: h.whole, holds, unread: h.unread, stubs: h.stubs }
     }
 
 
@@ -1144,10 +1136,7 @@ fn excused(w: &World, m: &Model, lost: &BTreeSet<CommitId>, a: Tid, k: usize) ->
 /// (`closure_clauses`).
 fn lost_writes(w: &mut World, m: &Model) -> BTreeSet<CommitId> {
     let holds = |a: Option<Tid>, k: usize| {
-        a.and_then(|a| m.account(&a)).is_some_and(|a| {
-            let (c, _) = m.closure(a);
-            c.held.contains(&m.thing(k)) || c.stored.contains(&m.thing(k))
-        })
+        a.and_then(|a| m.account(&a)).is_some_and(|a| m.closure(a).holds.contains(&m.thing(k)))
     };
     let mut lost = BTreeSet::new();
     for (n, e) in w.history.events.iter().enumerate() {
@@ -1235,7 +1224,7 @@ fn at_check(w: &mut World, refs: &mut Refs, m: &Model) -> String {
     let brief = |x: &Reads| format!("{} ({} roles)", x.value.as_ref().map_or("none".to_string(), |v| format!("{v:?}")), x.roles.len());
     let mut out = String::from("at the check:");
     let on: Vec<usize> = (0..w.len()).filter(|i| w.online(*i)).collect();
-    let views: Vec<Option<(hc::Closure, hc::Set)>> = (0..w.len()).map(|i| w.node(i).account.and_then(|a| m.account(&a)).map(|a| m.closure(a))).collect();
+    let views: Vec<Option<View>> = (0..w.len()).map(|i| w.node(i).account.and_then(|a| m.account(&a)).map(|a| m.closure(a))).collect();
     for (k, (t, maker)) in w.history.things.clone().iter().enumerate() {
         let x = m.thing(k);
         out.push_str(&format!("\n  thing {k} (made by node {maker}, {:?}): reference", m.world.kinds[x]));
@@ -1243,11 +1232,11 @@ fn at_check(w: &mut World, refs: &mut Refs, m: &Model) -> String {
             out.push_str(&format!(" {} {}", m.account(a).map_or("-".into(), |a| format!("a{a}")), brief(&reads(&mut r.engine, t))));
         }
         for &i in &on {
-            let said = views[i].as_ref().map_or("-", |(c, keys)| if c.read.contains(&x) || (c.held.contains(&x) && m.world.opens(keys, x)) { "read" } else if c.stored.contains(&x) || c.held.contains(&x) { "held unread" } else { "not held" });
+            let said = views[i].as_ref().map_or("-", |v| if v.reads(m, x) { "read" } else if v.holds.contains(&x) { "held unread" } else if v.stubs.contains(&x) { "stub" } else { "not held" });
             out.push_str(&format!("; node {i} {} (model: {said})", brief(&reads(w.engine(i), t))));
         }
     }
-    out.push_str(&format!("\n  grants {:?}\n  strongs {:?}\n  public {:?}, its pieces {:?}", m.world.grants, m.edges, m.world.public, m.pieces));
+    out.push_str(&format!("\n  grants {:?}\n  strongs {:?}\n  public {:?}\n  signals {:?}\n  logged {:?}", m.world.grants, m.edges, m.world.public, m.net.signals, m.net.logged));
     let handed = w.history.handed_ids.clone();
     for &i in &on {
         let held: BTreeSet<CommitId> = w.engine(i).commit_ids().into_iter().collect();
@@ -1281,13 +1270,13 @@ fn closure_clauses(w: &mut World, refs: &mut Refs, m: &Model, gone: &BTreeSet<St
             continue;
         };
         let a = m.account(&acct).expect("an account");
-        let (c, keys) = m.closure(a);
+        let v = m.closure(a);
         let set = w.engine(i).sync_set().expect("sync set");
         for (k, (t, _)) in things.iter().enumerate() {
             let x = m.thing(k);
             let excused = excused(w, m, lost, acct, k);
             let independent = m.world.independent(x);
-            let read = if independent { c.read.contains(&x) } else { c.held.contains(&x) && m.world.opens(&keys, x) };
+            let read = v.reads(m, x);
             let got = reads(w.engine(i), t);
             if !excused {
                 if got.value.is_some() && !read {
@@ -1302,9 +1291,23 @@ fn closure_clauses(w: &mut World, refs: &mut Refs, m: &Model, gone: &BTreeSet<St
                 }
             }
             if independent {
-                let want = if c.read.contains(&x) { Some(Holding::Read) } else if c.stored.contains(&x) { Some(Holding::Unread) } else { None };
-                let held: Vec<Holding> = set.ids.values().filter(|(ts, _)| ts.contains(t)).map(|(_, h)| *h).collect();
-                let held = held.iter().copied().max_by_key(|h| matches!(h, Holding::Read));
+                let want = if v.read.contains(&x) {
+                    Some(Holding::Read)
+                } else if v.unread.contains(&x) {
+                    Some(Holding::Unread)
+                } else if v.stubs.contains(&x) {
+                    Some(Holding::Stub)
+                } else {
+                    None
+                };
+                // under its own sync IDs (another's may carry its sync copies)
+                let own: BTreeSet<osis_base::SyncId> = w.engine(i).sync_ids(t).expect("sync ids").iter().map(|o| o.id).collect();
+                let held: Vec<Holding> = set.ids.iter().filter(|(s, (ts, _))| own.contains(s) && ts.contains(t)).map(|(_, (_, h))| *h).collect();
+                let held = held.iter().copied().max_by_key(|h| match h {
+                    Holding::Read => 2,
+                    Holding::Stub => 1,
+                    Holding::Unread => 0,
+                });
                 // a node keeping a thing unread cannot read its removal: it stops at the step its
                 // secrets no longer derive, its entries dropped and its path kept
                 // (spec/sync-judgement.md §6 Stops), which the store clause below checks
@@ -1406,10 +1409,10 @@ pub fn held_somewhere(w: &mut World, t: &Tid, v: &str, ids: &BTreeSet<CommitId>)
 /// as ciphertext kept unread, which shows no value: a later reader fetches it there).
 fn body_clauses(w: &mut World, refs: &mut Refs, m: &Model, gone: &BTreeSet<String>) {
     let things = w.history.things.clone();
-    let views: Vec<(hc::Closure, hc::Set)> = (0..m.accounts.len()).map(|a| m.closure(a)).collect();
+    let views: Vec<View> = (0..m.accounts.len()).map(|a| m.closure(a)).collect();
     for (k, (t, _)) in things.iter().enumerate() {
         let x = m.thing(k);
-        let reader = views.iter().position(|(c, keys)| if m.world.independent(x) { c.read.contains(&x) } else { c.held.contains(&x) && m.world.opens(keys, x) });
+        let reader = views.iter().position(|v| v.reads(m, x));
         let Some(reader) = reader.filter(|_| (0..w.len()).any(|i| w.engine(i).closure_holds(t))) else { continue };
         let r = refs.of(&m.accounts[reader]);
         if let Some(Value::Str(v)) = reads(&mut r.engine, t).value.filter(|v| !matches!(v, Value::Str(x) if gone.contains(x))) {

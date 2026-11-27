@@ -275,7 +275,6 @@ fn a_store_failure_restarts_in_place_once_per_stretch() {
 // node's steps go on and it takes what comes after (else each step failed at that commit, and
 // restarted, for good).
 #[test]
-#[ignore = "stub rewrite: entry by references and stubs, pairing by values (R2, R3)"]
 fn a_commit_faulting_on_apply_is_set_aside_and_sync_goes_on_spec_commits_4() {
     use crate::harness::history::{Gives, three, value_ak};
     use osis_base::{Ak, Value};
