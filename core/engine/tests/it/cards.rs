@@ -409,3 +409,27 @@ fn a_writers_own_card_commit_stamped_ahead_holds_back_no_admin_field_spec_sync_i
         assert!(carried(&card).contains(&r), "node {i}: A0's card on C carries the admin's rotation after the writer's own far-ahead commit");
     }
 }
+
+// spec/sync-inbox.md §1 (Card: stale), spec/commits.md §5 (Covered): A rotated, its `keys.0`
+// compacted and the covered parts dropped, the rotation still current by its write the snapshot
+// holds. A refresh carries the snapshot and settles: the rotation, whose part no card can carry,
+// leaves the card stale for nothing. Failed when every current commit had to be carried itself
+// (`refresh_cards` passed its loop bound).
+#[test]
+fn a_card_settles_once_its_things_keys_are_compacted_spec_sync_inbox_1() {
+    let (mut lp, acc) = one();
+    let keys = osis_base::Ak::new("keys.0").unwrap();
+    let e = &mut lp.peers[0].engine;
+    let r = e.rotate_leaving_out(&acc.thing, &[Role::Read], &[]).unwrap().unwrap();
+    lp.advance(1000);
+    let e = &mut lp.peers[0].engine;
+    let s = e.snapshot(&acc.thing, &keys).unwrap().unwrap();
+    lp.advance(osis_base::format::ROLE_KEEP_MS + 1);
+    let e = &mut lp.peers[0].engine;
+    e.drop_body(&r, &acc.thing, &keys).unwrap();
+    assert!(!e.body_not_dropped(&r, &acc.thing, &keys) && e.current_keys(&acc.thing).unwrap().contains(&r), "the rotation current, its part dropped");
+    e.refresh_cards().unwrap();
+    assert!(!e.refresh_cards().unwrap(), "settled: nothing left to rewrite");
+    let cards = e.cards_of(&acc.thing).unwrap();
+    assert!(cards.iter().all(|(_, card)| carried(card).contains(&s)), "the card carries the snapshot");
+}

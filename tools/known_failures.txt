@@ -11,4 +11,3 @@ osis-engine/retention::tests_carried::purge_by_id_reads_alike_forgotten_or_not_p
 held-model/props::late_commit_converges_after_repair_large_spec_commits_5 rate:OSIS_HELD_START=527365123558,OSIS_HELD_SEEDS=1 issues/held-model-late-commit-read-lost.md seed \d+: late Commit
 osis-sync/differential::histories_hold_their_closure_plain rate:OSIS_SYNC_START=527365123461,OSIS_SYNC_SEEDS=1 issues/differential-full-size-classes.md panicked: node \d+ reads thing \d+ unlike the reference
 osis-account/account::a_removed_node_no_longer_acts_through_its_client_spec_permissions_8 - issues/removed-node-walk-behind-held-set.md the walk read behind the held set
-osis-engine/rotation::tests_carried::rotation_judged_alike_by_a_node_joining_after_compaction_plain_spec_crypto_4 - issues/rotation-after-compaction-cards-loop.md refresh_cards

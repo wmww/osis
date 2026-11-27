@@ -148,7 +148,9 @@ fn certificates(keys: &[Vec<u8>], records: &[Vec<u8>]) -> Option<osis_blob::Cert
 
 /// Whether `a`'s card (`keys`, with its `records`) is stale here (spec/sync-inbox.md §1 Card):
 /// per `keys.0` field of `a` or of its inbox `inbox`, this node's current commit for it is newer
-/// than every signature-verified card commit writing it. An unverified commit counts for nothing.
+/// than every signature-verified card commit writing it (a current commit whose `keys.0` part
+/// dropped as covered writes nothing here: the covering snapshot, current too, holds its write).
+/// An unverified commit counts for nothing.
 /// A verified one this node holds valid writes no field newer than its current commit (that
 /// would be current here); one it does not (the other side of a fork, one waiting) counts as
 /// writing every field of its things whose role its signer ever held here
@@ -191,11 +193,16 @@ fn stale(tx: &mut Tx<'_>, a: &Tid, inbox: Option<Tid>, keys: &[Vec<u8>], records
     for t in [Some(*a), inbox].into_iter().flatten() {
         for c in crate::sync_ids::current_keys_in(tx, &t)? {
             let Some(m) = tx.core.ix.commits.get(&c) else { continue };
+            // a part dropped as covered: its write is the covering snapshot's, itself current
+            let held: Vec<usize> = m.header.aspect_parts(&t, "keys.0").filter(|ai| !m.body_gone(*ai)).collect();
+            if held.is_empty() {
+                continue;
+            }
             let ts = m.header.ts;
             let need = if m.header.kind.is_compaction() {
                 Role::Admin
             } else {
-                m.header.aspect_parts(&t, "keys.0").filter_map(|ai| tx.core.ix.rotation_role.get(&(c, ai)).copied()).max().unwrap_or(Role::Write)
+                held.iter().filter_map(|ai| tx.core.ix.rotation_role.get(&(c, *ai)).copied()).max().unwrap_or(Role::Write)
             };
             let newer = unknown.get(&t).into_iter().flatten().filter(|(r, _)| *r >= need).all(|(_, u)| ts > *u);
             if !carried.contains(&c) && newer {
