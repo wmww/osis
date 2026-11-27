@@ -1004,6 +1004,52 @@ fn a_retained_copy_stays_once_released_spec_commits_5() {
     assert_eq!([x, y].map(|t| e1.get(&t, &reg).unwrap()), before, "the copy reads as it did: {}", e1.why_kept(&y));
 }
 
+// spec/sync-set.md §3 Release, spec/commits.md §5 (a released thing; Covered): a release judges
+// each commit it reaches on the held set as it stood, never on what forgetting another changed.
+// Peer 1 keeps a retained copy of X and releases Y: its writes on Y alone go whole, and one
+// writing Y and X (its X part dropped as covered, so judged by whether X's copy would take it
+// back) is judged though others went first. Failed reading the walk behind the held set (an
+// engine assert).
+#[test]
+fn a_release_judges_every_commit_on_the_held_set_before_it_spec_sync_set_3() {
+    let (mut lp, ps) = people(2);
+    let x = crate::flows::thing_of(&mut lp, 0, ps[0]);
+    let y = crate::flows::thing_of(&mut lp, 0, ps[0]);
+    let e0 = &mut lp.peers[0].engine;
+    for t in [x, y] {
+        e0.grant(&t, &ps[1], &crate::flows::edge_of(osis_base::Role::Write)).unwrap();
+    }
+    crate::flows::spread(&mut lp);
+    let reg = crate::common::ak("t:reg.0");
+    let e1 = &mut lp.peers[1].engine;
+    let mut m = Mutation::new();
+    m.set(y, &crate::common::REG, &Value::Str("y".into())).unwrap();
+    m.set(x, &crate::common::REG, &Value::Str("x".into())).unwrap();
+    let both = e1.commit(m).unwrap().unwrap();
+    // writes on Y alone, one ordered before it (forgotten first)
+    let mut n = 0;
+    while !e1.commit_ids().iter().any(|c| *c < both && e1.header(c).is_some_and(|h| h.signer == ps[1] && h.aspects.iter().all(|a| a.tid == y))) {
+        let mut m = Mutation::new();
+        m.set(y, &crate::common::REG, &Value::Str(format!("y{n}"))).unwrap();
+        e1.commit(m).unwrap();
+        n += 1;
+    }
+    crate::flows::spread(&mut lp);
+    lp.peers[0].engine.snapshot(&x, &reg).unwrap().unwrap();
+    lp.peers[0].engine.demote(&x, &osis_engine::flows::Demotion { holder: ps[1], new: None, retain: Some(true) }).unwrap();
+    crate::flows::spread(&mut lp);
+    let e1 = &mut lp.peers[1].engine;
+    e1.drop_body(&both, &x, &reg).unwrap();
+    e1.role_duties().unwrap();
+    assert_eq!(e1.kept_copies(), vec![x], "a copy of X kept");
+    e1.unhold(osis_base::Strong(y)).unwrap();
+    let left: BTreeSet<Tid> = e1.left_closure().into_keys().collect();
+    assert!(left.contains(&x) && left.contains(&y), "X and Y left the node closure");
+    e1.released(&left).unwrap();
+    e1.settle_needs().unwrap();
+    assert!(e1.get(&y, &reg).unwrap().is_none(), "Y released: {}", e1.why_kept(&y));
+}
+
 // spec/commits.md §5 What a held thing needs (held for itself: under an own self-removal still to
 // be sealed), spec/permissions.md §3 Lost access: a thing released while the node's own leave from
 // it waits to be held elsewhere keeps that leave, so it still reaches the others. Peer 1 reads and

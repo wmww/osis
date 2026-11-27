@@ -259,14 +259,28 @@ pub(crate) fn forget(tx: &mut Tx<'_>, scope: Scope<'_>, held: &BTreeMap<Tid, u64
     let ids: BTreeSet<CommitId> = aspects.iter().flat_map(|k| tx.core.ix.by_aspect.get(k).into_iter().flatten().map(|x| x.1)).collect();
     osis_base::costs::count("forget: forgettings", u64::from(!things.is_empty()));
     osis_base::costs::count("forget: commits scanned", ids.len() as u64);
+    // each commit judged first, on the held set as it stands (the walk among it), then forgotten:
+    // no verdict reads what forgetting another commit changed
+    let mut judged: Vec<(CommitId, BTreeSet<usize>, bool)> = Vec::new();
     for id in ids {
-        let Some(m) = tx.core.ix.commits.get(&id).cloned() else { continue };
+        let Some(m) = tx.core.ix.commits.get(&id) else { continue };
         let ais = lost_aspects(tx.core, scope, m.view.aspects.iter().map(|a| (&a.tid, &a.ak)), &mut memo);
         // lost access forgets what was read: a commit holding no part it forgets (a header alone,
         // judged by its evidence) keeps as it is
         if ais.is_empty() || (matches!(scope, Scope::Lost(_)) && !ais.iter().any(|ai| m.holds(*ai))) {
             continue;
         }
+        // whole when no part it keeps stays (a leftover is held outside the blob's parts) and
+        // none it would take may come back: missing, or dropped while invalid or as covered
+        // (each comes back as missing, `retention::valid_again`, `uncover`), so a part on a held
+        // thing dropped while invalid is fetched again once a side taken makes it valid
+        // (spec/commits.md §5 A released thing, Invalid)
+        let returns = |ai: usize| m.missing(ai) || m.dropped(ai).is_some_and(|d| matches!(d.why, DropFor::Invalid | DropFor::Cover));
+        let keeps = m.view.aspects.iter().enumerate().any(|(ai, a)| !ais.contains(&ai) && (m.holds(ai) || (returns(ai) && super::needed::takes_part(tx.core, &a.tid, &a.ak))));
+        judged.push((id, ais, keeps));
+    }
+    for (id, ais, keeps) in judged {
+        let Some(m) = tx.core.ix.commits.get(&id).cloned() else { continue };
         for ai in ais.iter().copied().filter(|ai| m.holds(*ai)) {
             if let Some(a) = m.view.aspects.get(ai) {
                 let l = super::freed::part_links(tx, &id, ai)?;
@@ -275,13 +289,6 @@ pub(crate) fn forget(tx: &mut Tx<'_>, scope: Scope<'_>, held: &BTreeMap<Tid, u64
         }
         let blob = tx.get_commit(&id)?;
         let rest = blob.as_ref().map(|b| osis_commit::rewrite(b, |ai| ais.contains(&ai)));
-        // whole when no part it keeps stays (a leftover is held outside the blob's parts) and
-        // none it would take may come back: missing, or dropped while invalid or as covered
-        // (each comes back as missing, `retention::valid_again`, `uncover`), so a part on a held
-        // thing dropped while invalid is fetched again once a side taken makes it valid
-        // (spec/commits.md §5 A released thing, Invalid)
-        let returns = |ai: usize| m.missing(ai) || m.dropped(ai).is_some_and(|d| matches!(d.why, DropFor::Invalid | DropFor::Cover));
-        let keeps = m.view.aspects.iter().enumerate().any(|(ai, a)| !ais.contains(&ai) && (m.holds(ai) || (returns(ai) && super::needed::takes_part(tx.core, &a.tid, &a.ak))));
         if rest.is_some() && !keeps {
             whole.insert(id, m.view.aspects.iter().map(|a| a.tid).collect());
             crate::apply::unindex_unreceived(tx, &id)?;
