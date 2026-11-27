@@ -83,23 +83,28 @@ fn a_blob_under_another_expiry_is_refused_spec_sync_ids_1() {
 // section): a blob of no section, a header alone, holds a header-only body whichever kind it was
 // noted as. Opening it again (a peer relaying it under another sync ID, where nothing in its
 // bytes says copy) leaves it the body, so the node logs no fresh encryption of it each time.
+// The header-only body: the minting of D's mint admin X, a local thing of peer 0, which travels
+// with X's record under D's sync ID (spec/commits.md §5, A thing's mintings travel with its
+// record).
 #[test]
-#[ignore = "stub rewrite: fails under rule 2, cause not sorted (R4)"]
 fn a_header_alone_holds_a_header_only_body_of_either_kind_spec_sync_judgement_1() {
-    let (mut lp, _) = two_nodes();
+    let mut lp = LocalPeer::new(2, 0, T0).unwrap();
+    let me = lp.peers[0].engine.tid();
+    let mut m = Mutation::new();
+    let x = lp.peers[0].engine.new_thing(&mut m, me);
+    let made = lp.peers[0].commit(m).unwrap().unwrap();
+    let mut m = Mutation::new();
+    let d = lp.peers[0].engine.new_thing(&mut m, x);
+    lp.peers[0].commit(m).unwrap();
+    lp.sync_all().unwrap();
+    lp.share(0, d);
+    lp.sync_all().unwrap();
     let e = &mut lp.peers[0].engine;
-    let ids: Vec<osis_base::SyncId> = e.sync_set().unwrap().ids.keys().copied().collect();
-    let mut found = None;
-    for c in e.commit_ids() {
-        for s in &ids {
-            if e.sync_body(s, &crate::sync::BodyId::unit(c)).unwrap().is_some_and(|m| m.header_only && m.copy) {
-                found = found.or(Some((*s, c)));
-            }
-        }
-    }
-    let (s, c) = found.expect("a header-only certificate body under a held sync ID");
+    let s = e.sync_id_of(&d).unwrap().unwrap();
+    let body = e.sync_body(&s, &crate::sync::BodyId::unit(made)).unwrap().expect("X's minting under D's sync ID");
+    assert!(body.header_only && body.copy, "a header-only copy");
     for (b, copy) in [(7, true), (8, false)] {
-        let id = opened(&mut lp, 0, b, &c, &[], copy);
+        let id = opened(&mut lp, 0, b, &made, &[], copy);
         assert!(lp.peers[0].engine.holds_body(&s, &id).unwrap(), "a header alone noted as {}", if copy { "a copy" } else { "shared" });
     }
 }
