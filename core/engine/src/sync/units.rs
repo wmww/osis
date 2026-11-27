@@ -924,19 +924,22 @@ fn given_by(core: &Core, v: Vx, y: Tid, strong: bool) -> BTreeSet<Vx> {
             out.insert((e, y));
         }
     }
-    stubs_by(core, c, y, independent, strong, &mut out);
+    stubs_by(core, v, y, independent, strong, &mut out);
     out
 }
 
-/// The stubs a reference of a thing of unit `c` to `y` brings (spec/sync-set.md §2 Stubs), as
-/// vertices the node holds (Holding a stub: it holds a read secret of the thing), added to
+/// The stubs a reference of thing `x` of unit `c` to `y` brings (spec/sync-set.md §2 Stubs), as
+/// vertices the node holds whatever secrets it holds of their things (Holding a stub), added to
 /// `out`. Of `y`'s independent X (a reference to a dependent counts as one to the thing its
 /// secrets derive from), unless an owner is X: a weak's, or a strong's to a dependent of an X
 /// the unit's keys do not open, where the unit's keys open X or it holds sync or above there (any
-/// other strong brings X whole or enters it, never a stub); and, where
-/// the unit's keys open X, the stub of each holder on an owner's chains of read grants to X.
-fn stubs_by(core: &Core, c: Ctx, y: Tid, independent: bool, strong: bool, out: &mut BTreeSet<Vx>) {
-    let Some(a) = (if independent { Some(y) } else { core.secret_actor(&y) }) else { return };
+/// other strong brings X whole or enters it, never a stub), or where the weak is the fire of a
+/// grant signal on `x` the node follows (First entry: X named by its sync ID, record or none); and,
+/// where the unit's keys open X, the stub of each holder on an owner's chains of read grants to X.
+fn stubs_by(core: &Core, (c, x): Vx, y: Tid, independent: bool, strong: bool, out: &mut BTreeSet<Vx>) {
+    // a held signal followed names its thing as independent (by its sync ID), record or none
+    let fired = !strong && core.followed_links.fired_on(&y, &x);
+    let Some(a) = (if independent || fired { Some(y) } else { core.secret_actor(&y) }) else { return };
     // the unit's own thing, or the node's: no stub (read before the link keys, which the local
     // part's other owners are)
     if matches!(c, Ctx::Read(t) if t == a) || matches!(c, Ctx::Local if a == core.tid()) {
@@ -947,13 +950,13 @@ fn stubs_by(core: &Core, c: Ctx, y: Tid, independent: bool, strong: bool, out: &
         return;
     }
     let cl = &core.ix.closure;
-    let stub = |h: Tid| (core.enter(&h) == Some(Ctx::Read(h)) && !cl.carries_whole(c, &h)).then_some((Ctx::Stub(h), h));
+    let stub = |h: Tid| (!cl.carries_whole(c, &h)).then_some((Ctx::Stub(h), h));
     let opens: Vec<Tid> = own.iter().copied().filter(|o| core.keys_open(o, &a)).collect();
     // a strong brings X whole or enters it where it names X or the unit's keys open X; one to a
     // dependent of an X they do not open names nothing the unit's readers know of X (spec/sync-ids.md
     // §2 What a sync holder learns), so it brings X's stub as a weak does
     let enters = strong && (independent || !opens.is_empty());
-    if !enters && (!opens.is_empty() || own.iter().any(|o| core.keyed_role_now(o, &a) >= Some(Role::Sync))) {
+    if !enters && (!opens.is_empty() || own.iter().any(|o| core.keyed_role_now(o, &a) >= Some(Role::Sync)) || fired) {
         out.extend(stub(a));
     }
     for o in &opens {

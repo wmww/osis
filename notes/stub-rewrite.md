@@ -22,7 +22,6 @@ On main: spec, engine, osis-sync and the models. Tess approved the shape and too
 How many signals a card holder may fire: issues/resource-limits.md.
 
 ## Owed
-- **A sync-only stub as a closure vertex**: `Root::Signalled` and `thing_holdings`' signalled branch exist because a stub vertex needs a read secret. A stub at sync founded on the sync copies (or, before entry, on what came by role while a signal is held) lets the held signal's weak cover both and deletes the two branches. The next structural job.
 - **Tests**: a departed stub holder told of its removal (`stubs::a_two_hop_chain_*` asserts only that nothing written since is read); stopped-store ByRole on its own (`grants::a_stopped_sync_holder_catches_up_by_role_*` passes by the resumed member's notice): a store meeting a reader that keeps no record of it.
 - **Ignored, cause known**: `differential::a_removed_reader_keeps_the_publics_sync_secret_*` (`edge_carries` counts the public's sync by its grant alone; counting it by its heads too lets a locator's redeemer enter read before it holds the public's grant commit). Cause not sorted: `differential::a_node_lowered_with_the_public_reads_*` (three; the lowered node keeps the thing unread with no store path), `public::removing_the_public_ends_*`, and the rest `tools/ignores.py "stub rewrite: "` lists (engine 8, osis-sync 16).
 - **Full-size differential classes**, the sync ID fork among them: issues/differential-full-size-classes.md.

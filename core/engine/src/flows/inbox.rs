@@ -132,11 +132,13 @@ impl Engine {
             if !valid {
                 gone.push(*c);
             }
-            let follow = valid && crate::rotation::role_here(&self.core, &sig.holder) >= Some(Role::Read);
+            // the inbox its fire is on, whose held history holds the fire's weak (`units::stubs_by`)
+            let inbox = self.core.ix.commits.get(c).and_then(|m| m.view.aspects.iter().find(|a| a.ak.as_str() == GRANT_FIRE).map(|a| a.tid));
+            let follow = inbox.filter(|_| valid && crate::rotation::role_here(&self.core, &sig.holder) >= Some(Role::Read));
             let fl = &mut self.core.followed_links;
             match (follow, fl.follows_signal(&sig.thing, &sig.sync_id, c)) {
-                (true, false) => fl.follow_signal(sig.thing, sig.sync_id, *c),
-                (false, true) => {
+                (Some(inbox), false) => fl.follow_signal(sig.thing, sig.sync_id, *c, inbox),
+                (None, true) => {
                     fl.unfollow_signal(&sig.thing, &sig.sync_id, c);
                     self.core.lost_due.insert(sig.thing);
                 }
@@ -144,9 +146,11 @@ impl Engine {
             }
             moved = true;
         }
-        if gone.is_empty() {
-            return Ok(moved);
+        if gone.is_empty() && !moved {
+            return Ok(false);
         }
+        // the rows gone, and the node closure settled on what is followed: a followed signal's
+        // fire gives its thing's stub (`units::stubs_by`)
         self.run(|tx| {
             for c in &gone {
                 tx.txn.remove_local(&[SIGNALS, &c.0].concat(), Shred::No)?;

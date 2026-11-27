@@ -330,6 +330,10 @@ pub(crate) struct FollowedLinks {
     links: BTreeMap<Tid, (SyncId, Option<Arc<Identity>>)>,
     /// Per thing a followed grant signal names, per sync ID such signals name, the signals.
     signals: BTreeMap<Tid, BTreeMap<SyncId, BTreeSet<CommitId>>>,
+    /// Each followed signal's inbox: the thing its fire is on.
+    inboxes: BTreeMap<CommitId, Tid>,
+    /// Per thing a followed signal names, the inboxes holding such signals, read per thing.
+    fired_on: Stamped<Tid, BTreeSet<Tid>>,
     /// A count written at each change of `signals`: what a reader of them all reads
     /// (`signals_read`), so it moves as any signal is followed or let go.
     signals_moved: Stamped<(), u64>,
@@ -396,9 +400,10 @@ impl FollowedLinks {
         self.refresh(*k)
     }
 
-    /// Follows thing `x` under sync ID `s` for held grant signal `c`.
-    pub(crate) fn follow_signal(&mut self, x: Tid, s: SyncId, c: CommitId) {
+    /// Follows thing `x` under sync ID `s` for held grant signal `c`, fired on `inbox`.
+    pub(crate) fn follow_signal(&mut self, x: Tid, s: SyncId, c: CommitId, inbox: Tid) {
         self.signals.entry(x).or_default().entry(s).or_default().insert(c);
+        self.inboxes.insert(c, inbox);
         self.bump();
         self.refresh(x);
     }
@@ -416,6 +421,7 @@ impl FollowedLinks {
         if m.is_empty() {
             self.signals.remove(x);
         }
+        self.inboxes.remove(c);
         self.bump();
         self.refresh(*x);
     }
@@ -423,11 +429,6 @@ impl FollowedLinks {
     /// Whether signal `c` naming `x` under `s` is followed.
     pub(crate) fn follows_signal(&self, x: &Tid, s: &SyncId, c: &CommitId) -> bool {
         self.signals.get(x).and_then(|m| m.get(s)).is_some_and(|cs| cs.contains(c))
-    }
-
-    /// The followed grant signals, per thing and sync ID they name.
-    pub(crate) fn signals(&self) -> &BTreeMap<Tid, BTreeMap<SyncId, BTreeSet<CommitId>>> {
-        &self.signals
     }
 
     /// `signals`, read as a whole: a memo over it moves at any change.
@@ -441,14 +442,21 @@ impl FollowedLinks {
         self.signals_moved.insert((), n.wrapping_add(1));
     }
 
-    /// Whether `x` is followed for followed grant signals alone (no link being redeemed names it).
-    pub(crate) fn signalled_only(&self, x: &Tid) -> bool {
-        self.by_k.contains_key(x) && self.signals.contains_key(x) && !self.links.contains_key(x)
+    /// Whether a followed grant signal naming `x` is fired on `inbox` (read per thing).
+    pub(crate) fn fired_on(&self, x: &Tid, inbox: &Tid) -> bool {
+        self.fired_on.get(x).is_some_and(|is| is.contains(inbox))
     }
 
     /// Sets `k`'s entry from its link and signals: the same again moves nothing. Returns the key
     /// `k` was followed under before, if it moved.
     fn refresh(&mut self, k: Tid) -> Option<Tid> {
+        let on: BTreeSet<Tid> = self.signals.get(&k).into_iter().flat_map(|m| m.values().flatten()).filter_map(|c| self.inboxes.get(c)).copied().collect();
+        if self.fired_on.get(&k).map_or(!on.is_empty(), |was| *was != on) {
+            match on.is_empty() {
+                true => drop(self.fired_on.remove(&k)),
+                false => drop(self.fired_on.insert(k, on)),
+            }
+        }
         let link = self.links.get(&k).cloned();
         let mut ids: BTreeSet<SyncId> = self.signals.get(&k).map(|m| m.keys().copied().collect()).unwrap_or_default();
         ids.extend(link.as_ref().map(|(s, _)| *s));
@@ -568,7 +576,7 @@ mod tests {
             let mut f = FollowedLinks::default();
             let order = if forged_last { [(own, c_own), (forged, c_forged)] } else { [(forged, c_forged), (own, c_own)] };
             for (s, c) in order {
-                f.follow_signal(x, s, c);
+                f.follow_signal(x, s, c, Tid::from_bytes([6; 15]));
             }
             assert_eq!(f.get(&x).map(|(ids, _)| ids), Some([own, forged].into()), "forged last {forged_last}: X followed under both");
             assert!(f.naming(&own).contains(&x) && f.naming(&forged).contains(&x));
