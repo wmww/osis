@@ -988,11 +988,12 @@ pub(crate) fn reached_carried(core: &Core, y: &Tid) -> bool {
 /// Whether held vertex `v`'s unit carries `y`, a target of its thing's strongs (spec/sync-set.md
 /// §2 Stubs): `v` is in the read sync unit of a thing `u` other than `y`, or in the local part
 /// with `u` an own thing, whose keys open `y` (whole) or whose effective role on `y` is sync or
-/// above (its stub), as the role entries the node holds show it. Local to the edge, so the tree
+/// above, the public's sync by its grant counting as every party's (its stub), as the role
+/// entries the node holds show it. Local to the edge, so the tree
 /// founds it: an entry by `u`'s unit goes when `u`'s does, whatever `u` reaches back.
 /// Invariant: `y`'s own unit never carries it (`u != y`).
 fn edge_carries(core: &Core, v: Vx, y: &Tid) -> bool {
-    owners(core, v.0).iter().any(|u| u != y && (core.keys_open(u, y) || core.keyed_role_now(u, y) >= Some(Role::Sync) || core.syncs_by_copies(u, y)))
+    owners(core, v.0).iter().any(|u| u != y && (core.keys_open(u, y) || core.keyed_role_now(u, y) >= Some(Role::Sync) || core.public_syncs(y) || core.syncs_by_copies(u, y)))
 }
 
 /// Whether the node closure holds `t` within the local part or another thing's sync unit

@@ -578,7 +578,7 @@ fn a_holder_left_out_is_re_sealed_once_its_keyset_arrives_spec_permissions_3() {
 // Failed while lost access judged the sync secret by the grants alone: it dropped the public's
 // sync secret with the rest and followed the thing again, holding nothing.
 #[test]
-#[ignore = "stub rewrite: the account's unit carries the thing by the public's grant alone, not by its heads listing the public at sync (`edge_carries`), so node 0 holds it as its signal's stub; counting the heads makes a redeemer enter by the listing and miss the public's grant (issues/differential-full-size-classes.md)"]
+#[ignore = "stub rewrite: the account's unit carries the thing by the public's grant held, not by its heads listing the public (`edge_carries`), so node 0 holds it as its signal's stub; counting the listing makes a public thing's locator redeemer read it without ever holding the public's grant commit (issues/differential-full-size-classes.md)"]
 fn a_removed_reader_keeps_the_publics_sync_secret_through_its_loss_spec_permissions_3() {
     use crate::harness::script::*;
     holds_on(0, 3, 4, &[New(2), Give(2, 0, Holder::Node(0), Reads), Give(2, 0, Holder::Node(1), Reads), Revoke(2, 0, Holder::Node(1)), Give(2, 0, Holder::Public, Syncs), Strong(0, None, 0), Revoke(2, 0, Holder::Node(0))], String::new(), false);
@@ -716,4 +716,17 @@ fn a_strong_in_an_inboxs_held_history_holds_its_target_spec_data_model_8() {
     let mut w = holds_on(0, 3, 4, &[New(2), Inbox(2, Some(0)), New(0), Run, Strong(2, Some(0), 1), Give(3, 1, Holder::Node(2), Reads), Unstrong(2, Some(0), 1)], String::new(), false);
     let t = w.history.things[1].0;
     assert!(reads(w.engine(2), &t).value.is_some(), "node 2 reads thing 1");
+}
+
+// spec/sync-set.md §2 (Stubs: T holds sync or above on X; Own things: the public's role is every
+// party's, spec/permissions.md §1), held-model (a unit's roles count the public's sync on a thing
+// whose role entries it carries): node 2 grants node 0's account read on its thing and the public
+// sync; node 0's account strongs it and is removed, holding the public's grant. Its unit carries
+// the thing by the public's sync, so node 0 keeps it unread by the public's box, as the model says
+// (failed while a unit's carriage counted its own thing's role alone: node 0 held its signal's
+// stub).
+#[test]
+fn a_removed_reader_keeps_a_thing_the_public_syncs_unread_spec_sync_set_2() {
+    use crate::harness::script::*;
+    holds_on(0, 3, 4, &[New(2), Give(2, 0, Holder::Node(0), Reads), Give(2, 0, Holder::Public, Syncs), Strong(0, None, 0), Run, Revoke(2, 0, Holder::Node(0))], String::new(), false);
 }
