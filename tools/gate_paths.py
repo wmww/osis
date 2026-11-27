@@ -8,7 +8,7 @@
 A .toml file whose every changed line, removed or added, is blank or a whole-line `#` comment is
 left out first (`toml_quiet`); a diff of only such files is `core=docs`.
 gui=1: a path under libs/kit/ or app/. unify=1: a Cargo.toml, Cargo.lock or .cargo/ path.
-tooling=1: a path under tools/, .gitattributes or notes/time-limits.md (the tools' own tests run).
+tooling=1: a path under tools/, .gitattributes, notes/time-limits.md or core/test/tla/run.sh (the tools' own tests run).
 core: '' when every path is the GUI's; `docs` when the rest is Markdown under spec/, notes/ or
 issues/; `comments` when the rest is that Markdown and .rs files whose every changed line, removed
 or added, is a whole-line `//` comment (below); else 1. Under docs or comments, a Rust line that
@@ -41,7 +41,7 @@ from rustsrc import lex, sanitize
 GUI = ("libs/kit/", "app/")
 DOCS = re.compile(r"(spec|notes|issues)/.*\.md")
 # what the tools' own tests read: the tools, the union lists' attributes, the time-limit tables
-TOOLING = re.compile(r"tools/|\.gitattributes$|notes/time-limits\.md$")
+TOOLING = re.compile(r"tools/|\.gitattributes$|notes/time-limits\.md$|core/test/tla/run\.sh$")
 UNIFY = re.compile(r"(.*/)?Cargo\.toml|Cargo\.lock|\.cargo/.*", re.S)
 READERS = r"(include(_str|_bytes)?!|read_to_string|fs::read|File::open|\.join)\(.*(spec|notes|issues)/"
 SOURCE_READERS = r'(include_str!|include_bytes!|read_to_string|fs::read|File::open)\(.*\.rs"'
