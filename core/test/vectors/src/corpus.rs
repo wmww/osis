@@ -55,8 +55,7 @@ pub fn seeds() -> Vec<(&'static str, Vec<Vec<u8>>)> {
     let mut prefixes = field_bytes("blob", "prefix");
     prefixes.extend(field_bytes("blob", "blob"));
     prefixes.extend(field_bytes("blob", "padded"));
-    let mut steps = field_bytes("step", "step");
-    steps.extend(field_bytes("step", "claim-set"));
+    let steps = field_bytes("step", "step");
     let mut links = field_bytes("link", "bytes");
     links.extend(field_text("link", "text").into_iter().map(|t| [vec![0], t].concat()));
     vec![

@@ -147,7 +147,7 @@ impl World {
 
     /// Whether T reads X as the logger judges it holding every commit: a valid edge write gives T
     /// read (`Rule::AnyValidity`: any held one does). Else T
-    /// holds sync only: its pieces go as sync copies.
+    /// holds sync only: its pieces go in a sync-only cut.
     pub fn reads(&self, rule: Rule) -> bool {
         let all: Held = self.commits.iter().flat_map(|c| [(c.id, P::Header), (c.id, P::Roles)]).collect();
         let j = Judge::new(self, &all);

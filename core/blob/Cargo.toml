@@ -1,6 +1,6 @@
 [package]
 name = "osis-blob"
-description = "Blobs, sync ID steps and claim sets, stamps, chunk trees"
+description = "Blobs, sync ID steps, entry blocks, stamps, chunk trees"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

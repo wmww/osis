@@ -521,6 +521,16 @@ STUB_DEAD_WORDS = {w: re.compile(p) for w, p in {
     "deliver_copy": r"\bdeliver_copy\b",
     "sealed copy": r"(?i)\bsealed[ _-]cop(y|ies)\b",
     "EdgePiece": r"\bEdgePiece\b",
+    "claims_hash": r"\bclaims_hash\b",
+    "ClaimSet": r"\bClaimSet\w*",
+    "StaticEntry": r"\bStaticEntr\w*",
+    "EntryBox": r"\bEntryBox\w*",
+    "sync copy": r"(?i)\bsync[ _-]?cop(y|ies)\b",
+    "claim walk": r"(?i)\bclaim[ _-]walk\b",
+    "greatest wins": r"(?i)\bgreatest wins\b",
+    "read-secret credential": r"(?i)\bread[ _-]secret credentials?\b",
+    "sync-key credential": r"(?i)\bsync[ _-]key credentials?\b",
+    "holders by copies": r"(?i)\bholders? by copies\b",
 }.items()}
 
 

@@ -29,4 +29,4 @@ Each is bounded per connection, per input or per thing at most; the total grows 
 - **Decode and write paths** that load a whole state: issues/durable-decode-bound.md; ephemeral decode ratio: issues/eph-node-cost-bounds.md.
 
 ## Grant signals
-Nothing bounds how many grant signals a card holder fires beyond the inbox's lifetime and the deposit rate; each followed one adds a sync ID the node follows and names in ByRole to every peer it meets.
+Nothing bounds how many grant signals a card holder fires beyond the inbox's lifetime and the deposit rate; each followed one adds a sync ID the node follows and tests its holder's claims of at every peer it meets.

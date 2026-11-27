@@ -13,8 +13,8 @@ pub fn wrap_epoch(read: &RoleEpochs) -> Option<Epoch> {
 
 /// The epochs a registration uses: the newest (established) of each role in `Role::ALL` order,
 /// with its secret (spec/permissions.md §3): the sync, write and admin epochs derive the step's
-/// keys, the read epoch its claim set. None when a role's newest is not held (only an admin,
-/// holding every role, registers).
+/// role keys (its step key is the sync epoch's claim key, spec/sync-ids.md §3). None when a role's
+/// newest is not held (only an admin, holding every role, registers).
 pub fn registration_epochs(a: &ActorEpochs) -> Option<[(Epoch, &Secret32); 4]> {
     let get = |r: Role| -> Option<(Epoch, &Secret32)> {
         let re = a.role(r);

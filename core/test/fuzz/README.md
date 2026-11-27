@@ -33,7 +33,7 @@ Each target asserts no panic plus the parser's round-trip or consistency propert
 | `join` | `arbitrary` states, join laws | osis-crdt | planned |
 | `page` | page and link page | osis-crdt, osis-blob | planned |
 | `box` | sealed, `secrets.0`, symmetric and history box openers, wrap, blob decrypt, unpad (fixed keys); `secrets.0` and `keys.0` value decoders | osis-crypto, osis-schema | live |
-| `step` | step, claim set | osis-blob | live |
+| `step` | step | osis-blob | live |
 | `link` | link, text form | osis-blob | live |
 | `proto_frame` | frame codec, Hello, each message | osis-proto | live |
 | `schema_dsl` | schema DSL parser, schema-as-data | osis-schema | live |

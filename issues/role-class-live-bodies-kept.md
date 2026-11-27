@@ -1,5 +1,5 @@
 # Live role-class bodies are kept for good: rotations grow every holder's store
-> Summary: spec/commits.md §5 Kept while live keeps a live role-class delta for good, so each rotation's `secrets.0` boxes and history box and its `sync.0` step stay as bodies at every holder, beside the state (and a snapshot) that carries them too. Replaced role-class bodies are compacted (keysets, removed holders' boxes, dropped claim sets); live ones never are, so storage grows per rotation, not with current state.
+> Summary: spec/commits.md §5 Kept while live keeps a live role-class delta for good, so each rotation's `secrets.0` boxes and history box and its `sync.0` step stay as bodies at every holder, beside the state (and a snapshot) that carries them too. Replaced role-class bodies are compacted (keysets, removed holders' boxes); live ones never are, so storage grows per rotation, not with current state.
 > Priority: normal
 > Tags: retention, engine, keys, spec
 

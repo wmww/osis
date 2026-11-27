@@ -282,7 +282,7 @@ impl RoleEpochs {
     }
 
     /// Sets `e`'s secret, known from a source that is no pending commit (an applied valid box, a
-    /// history box opened with such a secret, an entry box, an own rotation, derivation): it may
+    /// history box opened with such a secret, an entry, an own rotation, derivation): it may
     /// be encrypted under once `e` is established.
     pub fn set_secret(&mut self, e: Epoch, secret: impl Into<RoleSecret>) {
         let info = self.observe(e);

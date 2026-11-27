@@ -1,0 +1,10 @@
+# TLA models still check the opening rules entries replaced
+> Summary: core/test/tla/net NetOpen (J, the Departed clause, static entries, link holders) and NetShared (a ByRole action) and core/test/tla/rotation Rotation.tla (claim sets dropped after ROLE_KEEP, MC_drop, AMBIGUITIES R2 and residue 2) model the deleted mechanisms, not the one open rule (spec/sync-opens.md §4) or entries (spec/sync-ids.md §3); run.sh still runs them and notes/sync-opens.md cites NetOpen as its model.
+> Priority: normal
+> Tags: tests, sync
+
+- **NetOpen** (`NetOpen.tla`, `MCOpen.tla`, `O_*`/`ON_*` cfgs, run.sh `netopen`, net/README.md and ASSUMPTIONS.md): credentials are sync keys, static entries and J; `Departed`, `LinkNewest`, `AdvLink` and the `ON_departed`, `ON_jnow`, `ON_endj`, `ON_linkold`, `ON_endlink` controls test rules that no longer exist. Still-valid parts to keep in a rewrite: side bytes (`ON_side`), a Hit on a public value (`ON_answer`), the dialer trusting its key (`ON_dialer`), `Private` and `ON_losttag`, the class from the declaration (`ON_class`), junk filter entries. The rewrite: credentials are a path step's sync proof (or a held newer sync secret's) and head claims; a head credential opens whole, an older step's proof up to that step's end; a removal ends opens by the head move alone.
+- **NetShared** (`ByRoleOn`, the ByRole action, `TN_byrole`, `T_rotdrop`'s "ByRole on"): the action and its constant go; the cfgs with `ByRoleOn = TRUE` rerun without it.
+- **Rotation.tla** (`steps`' `dr` flag, the claim-set drop store step, `MC_drop.cfg`, `MC_fork`/`MC_safety` "claim sets kept", ASSUMPTIONS "Claim-set drop", AMBIGUITIES R2 and residue 2, README rows): a holder now gets in by its entry in the commit boxing it, bound to a sync epoch, never dropped with a step.
+- Entry.tla stays: it is the checked rejected alternative notes/stubs.md cites (entry boxes in X's steps).
+- Once done, `ByRole`, `Departed`, "static entry" and "entry box" outside Entry.tla can join tools/policy.py `STUB_DEAD_WORDS` (issues/deprecated-terms.md, Gone).

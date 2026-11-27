@@ -18,10 +18,11 @@
 //!
 //! A node reads its node thing, its local part, and every thing a unit it reads carries whole
 //! (and that thing's own unit); it holds every stub those units carry. A held signal (rule 4, a
-//! value: its target, sync ID, entry credential, peer hints) gives its target's stub where the
-//! node reaches it (held directly, as pairing hands one over, or in a thing it reads whole) and
-//! opens its holder (a thing it reads, or one its units' keys open): the entry credential opens X's sync ID
-//! and the entry box, sealed to the holder, gives the secrets to read X's role entries.
+//! value: its target, sync ID, holder, peer hints) gives its target's stub where the node
+//! reaches it (held directly, as pairing hands one over, or in a thing it reads whole), followed
+//! where the node reads its holder (a thing it reads, or one its units' keys open): the holder's
+//! entry in the commit granting it opens X's sync ID and gives the secrets to read X's role
+//! entries.
 //!
 //! The model checks the rule's step at a fixpoint: `settle` logs what every node holding role
 //! entries may log, drops what the rule no longer carries, and repeats until nothing moves
@@ -54,7 +55,7 @@ pub enum At {
     Node(usize),
 }
 
-/// A grant signal's value: the target X and the holder whose entry box it opens.
+/// A grant signal's value: the target X and its holder.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Signal {
     pub at: At,
