@@ -293,8 +293,18 @@ pub fn frame_under(key: osis_crypto::BlobKey, prefix: &Prefix, plaintext: &[u8])
     })
 }
 
-/// Parses the prefix and decrypts; returns both.
+/// Parses the prefix and decrypts a blob that carries no entry block (a chunk, tree node, page,
+/// record blob or sync-only cut: one with blocks is bad input, spec/wire.md §5); returns both.
 pub fn open(blob: &[u8], key: &Secret32) -> Result<(Prefix, Vec<u8>), Error> {
+    let (p, pt) = open_commit(blob, key)?;
+    if !p.blocks().is_empty() {
+        return Err(Error::Malformed("entry blocks on a blob of no commit"));
+    }
+    Ok((p, pt))
+}
+
+/// `open` of a commit blob, whose prefix may carry entry blocks (spec/wire.md §5).
+pub fn open_commit(blob: &[u8], key: &Secret32) -> Result<(Prefix, Vec<u8>), Error> {
     check_size(blob)?;
     let p = Prefix::parse(blob)?;
     let pt = decrypt_blob(blob, p.len(), key)?;
@@ -363,6 +373,10 @@ mod tests {
         assert_eq!(Prefix::parse(&wb).unwrap(), with);
         assert!(Prefix::parse(&wb[..wb.len() - 1]).is_err());
         assert!(with.blocks().iter().all(|x| x.verifies(&osis_base::SyncId([1; 16]), with.salt())));
+        // a blob of no commit carrying blocks is bad input; a commit blob's open
+        let (key, framed) = frame(&with, b"pt", &mut rng).unwrap();
+        assert!(open(&framed, &key).is_err());
+        assert_eq!(open_commit(&framed, &key).unwrap().1, b"pt".to_vec());
         assert_eq!(p.key_at(0, 2), Some([9; 32]));
         assert_eq!(p.key_at(0, 3), None);
         assert_eq!(p.key_at(1, 2), None);

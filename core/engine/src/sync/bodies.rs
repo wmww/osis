@@ -881,7 +881,7 @@ impl Engine {
         // its parts it holds from another blob (spec/sync-compaction.md §1 Only what the node checked)
         let mut row = BlobOf { commit: *c, parts: sealed.parts.iter().copied().collect(), sealed: sealed.unopened.clone(), copy: b.to_sync_id, unchecked: false, salt: sealed.salt, ais: sealed.ais.iter().copied().collect(), seal: sealed.seal.clone() };
         if !unopened.is_empty() {
-            let env = osis_commit::Envelope::decode(&osis_blob::open(&sealed.blob, &sealed.key)?.1)?;
+            let env = osis_commit::Envelope::decode(&osis_blob::open_commit(&sealed.blob, &sealed.key)?.1)?;
             for sec in env.sections.iter().filter(|sec| unopened.contains(&sec.digest())) {
                 row.sealed.insert(sec.digest());
                 row.parts.retain(|ai| !sec.ais.contains(ai));
@@ -1037,7 +1037,7 @@ impl Engine {
             let Some(row) = self.core.ix.blob_parts.get(&b).filter(|x| x.commit == *c && !x.copy).cloned() else { continue };
             let Ok(things) = self.read_things_of(&h.sync_id) else { continue };
             let Some((_, key)) = things.iter().find_map(|t| osis_blob::unwrap_any(self.read_secrets(t).iter(), &b, &h.wrap)) else { continue };
-            let Ok((_, pt)) = osis_blob::open(&h.bytes, &key) else { continue };
+            let Ok((_, pt)) = osis_blob::open_commit(&h.bytes, &key) else { continue };
             let Ok(env) = osis_commit::Envelope::decode(&pt) else { continue };
             if env.id() != *c {
                 continue;

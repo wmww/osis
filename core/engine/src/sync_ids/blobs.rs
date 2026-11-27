@@ -422,7 +422,7 @@ impl Engine {
     /// `open_commit`, also opening a section by a section key of `section_keys` (an entry's,
     /// spec/sync-ids.md §3 Taking an entry), whatever it holds of its thing.
     pub(crate) fn open_commit_by(&mut self, blob: &[u8], key: &Secret32, section_keys: &[Secret32]) -> Result<OpenedBlob> {
-        let (prefix, pt) = osis_blob::open(blob, key)?;
+        let (prefix, pt) = osis_blob::open_commit(blob, key)?;
         let env = Envelope::decode(&pt)?;
         let id = env.id();
         // linked header lists: resolved from held blobs when they are here, else the sections

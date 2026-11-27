@@ -52,6 +52,9 @@ pub fn seal_fire(prefix: &Prefix, thing: &Tid, epoch: &Epoch, kem: &KemPublicKey
 pub fn open_fire(blob: &[u8], thing: &Tid, epoch: &Epoch, kem: &KemSecret) -> Result<(Prefix, Sealed), Error> {
     crate::blob::check_size(blob)?;
     let prefix = Prefix::parse(blob)?;
+    if !prefix.blocks().is_empty() {
+        return Err(Error::Malformed("entry blocks on a sealed fire"));
+    }
     let pt = osis_crypto::open_fire(blob, prefix.len(), thing, epoch, kem)?;
     Ok((prefix, Sealed::from_value(decode(&pt, &OBJECT_LIMITS)?)?))
 }
