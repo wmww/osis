@@ -184,7 +184,7 @@ fn lifecycle_errors() {
     assert!(matches!(t.put_aspect(&tid(1), &big_ak, &AspectUnit::default(), Shred::No), Err(Error::Misuse(_))));
 }
 
-// spec/requirements.md (what a node holds is a function of its data): a transaction that stores
+// spec: none (internal: notes/local-store.md, Versions and rollback): a transaction that stores
 // nothing (a read, or writes aborted before any spill) leaves the store's bytes as they would be
 // without it, so how many reads a node ran never shows in what it holds.
 #[test]
