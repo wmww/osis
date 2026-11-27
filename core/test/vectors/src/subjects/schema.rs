@@ -40,7 +40,7 @@ fn samples() -> Vec<(&'static str, &'static str, Value)> {
         ]),
         history: BTreeMap::from([(HistoryKey { role: Role::Read, epoch: epoch(1) }, vec![17; 64])]),
     };
-    let sync_ids: SyncIds = BTreeMap::from([(SyncId([22; 16]), SyncEntry { steps: BTreeMap::from([([23; 32], StepRecord { step: vec![24; 10], claims: None, endorsements: BTreeMap::new() })]) })]);
+    let sync_ids: SyncIds = BTreeMap::from([(SyncId([22; 16]), SyncEntry { steps: BTreeMap::from([([23; 32], StepRecord { step: vec![24; 10], endorsements: BTreeMap::new() })]) })]);
     vec![
         ("created thing", "created.0", CREATED.encode(&CreationRecord::with_admin(tid(1), [2; 32]))),
         ("created with a key", "created.0", CREATED.encode(&CreationRecord::with_key(osis_base::SignKey([3; 32]), [4; 32]))),

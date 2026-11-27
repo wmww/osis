@@ -1,116 +1,68 @@
-//! `step/`: registration steps and claim sets (spec/wire.md §8, spec/sync-ids.md §3). Generated.
-//! Group `07*15` with secrets: read `0a`, write `0b`, admin `09` (also the genesis seed), deposit
-//! seed `0c`, read epoch 0 (its nonce by spec/crypto.md §4). Randomness in draw order (`osis_blob::register`): `step-secret`, per sealed
-//! entry box `ephemeral` then `mlkem-m`, 32 bytes per `padding` key, 8 bytes per `shuffle` swap.
+//! `step/`: registration steps (spec/wire.md §8, spec/sync-ids.md §3). Generated.
+//! Secrets: write `0b`, admin `09` (also the genesis seed), deposit seed `0c`, sync `0d`; a child's
+//! step key is an input.
 
-use super::{FixedRng, case, generated_header, s32};
+use super::{case, generated_header, s32};
 use crate::file::{Record, VecFile};
 use crate::hex;
-use osis_base::{SyncId, Value, encode};
-use osis_crypto::{Epoch, KemSecret, RoleKey, X25519Secret, link_key_role_secret, role_kem, role_key, signing_key, static_entry};
-use osis_blob::{ClaimSet, Reader, Step, StepKeys, genesis, genesis_sync_id, open_entry_box, register};
-use osis_schema::Codec;
+use osis_base::SyncId;
+use osis_crypto::{RoleKey, X25519Secret, role_key};
+use osis_blob::{Step, StepKeys, genesis, genesis_sync_id, register};
 
 const SPEC: &str = "spec/wire.md §8";
 
-fn claims_field(c: &ClaimSet) -> String {
-    c.claims.iter().map(|k| hex(k)).collect::<Vec<_>>().join(",")
-}
-
-fn step_fields(r: Record, s: &Step, c: &ClaimSet) -> Record {
+fn step_fields(r: Record, s: &Step) -> Record {
     r.with("sync-id", hex(&s.sync_id.0))
         .with("sync-pk", hex(&s.keys.sync.to_bytes()))
         .with("write-pk", hex(&s.keys.write.to_bytes()))
         .with("delete-pk", hex(&s.keys.delete.to_bytes()))
         .with("deposit-pk", hex(&s.keys.deposit.to_bytes()))
         .with("step-key", hex(&s.step_key))
-        .with("claims", claims_field(c))
-        .with("claim-set", hex(&c.to_bytes()))
-        .with("claims-hash", hex(&c.hash()))
         .with("signed-digest", hex(&s.digest()))
         .with("step", hex(&s.to_bytes()))
         .with("step-id", hex(&s.id().0))
 }
 
 pub fn steps() -> VecFile {
-    let (read, write, admin, deposit, sync) = (s32(0x0a), s32(0x0b), s32(0x09), s32(0x0c), s32(0x0d));
+    let (write, admin, deposit, sync) = (s32(0x0b), s32(0x09), s32(0x0c), s32(0x0d));
     let sync_id = genesis_sync_id(&admin);
     let keys = StepKeys::derive(&sync, &write, &admin, &deposit, &sync_id);
-    let actor = osis_base::Tid::from_bytes([0x07; 15]);
-    let epoch = Epoch::derive(&actor, osis_base::Role::Read, 0, &read).unwrap();
-    let sync_epoch = Epoch::derive(&actor, osis_base::Role::Sync, 0, &sync).unwrap();
-    // two readers by the read KEM keys of secrets 05.. and 06.., a link key of seed 04..
-    let (m1, m2) = (KemSecret::derive(&s32(0x05)), KemSecret::derive(&s32(0x06)));
-    let (link, link_kem) = (signing_key(&s32(0x04)), role_kem(&link_key_role_secret(&s32(0x04), osis_base::Role::Read)));
-    let readers = [Reader::Dh(m1.public().x25519()), Reader::Dh(m2.public().x25519()), Reader::Static { signing: link.verifying_key(), kem: link_kem.public() }];
-    let (sk, eph, m, pad, shuf) = ([0x31u8; 32], [0x32u8; 32], [0x33u8; 32], [0x34u8; 32], [0x35u8; 24]);
     let delete0 = role_key(RoleKey::Delete, &admin);
     // the genesis step: deterministic from its genesis seed (spec/wire.md §8)
-    let (g0, gc) = genesis(&admin);
+    let g0 = genesis(&admin);
     g0.verify_genesis().unwrap();
     assert_eq!(g0.sync_id, sync_id);
-    let mut cases = vec![step_fields(case("genesis step", SPEC).with("genesis-seed", hex(admin.expose())), &g0, &gc)];
-    let mut rng = FixedRng::new(&[&sk, &eph, &m, &pad, &shuf]);
-    let (s0, c0) = register(&g0, &delete0, keys, &readers, (&actor, epoch, &read), (sync_epoch, &sync), &mut rng).unwrap();
-    drop(rng);
+    let mut cases = vec![step_fields(case("genesis step", SPEC).with("genesis-seed", hex(admin.expose())), &g0)];
+    let sk = X25519Secret::from_secret(&s32(0x31)).public();
+    let s0 = register(&g0, &delete0, keys, sk).unwrap();
     s0.verify_child(&g0).unwrap();
-    assert_eq!(s0.step_key, X25519Secret::from_secret(&osis_crypto::Secret32::from_bytes(sk)).public());
-    let k1 = s0.claim_key(m1.x25519()).unwrap().verifying_key().to_bytes();
-    let k2 = s0.claim_key(m2.x25519()).unwrap().verifying_key().to_bytes();
-    let entry = static_entry(&s0.sync_id, &link.verifying_key());
-    assert!(c0.contains(&k1) && c0.contains(&k2) && c0.contains(&entry));
-    let b = c0.entries.get(&entry).unwrap();
-    assert_eq!(open_entry_box(b, &s0, &link_kem, &actor).unwrap(), osis_crypto::EntryItem { read: Some(osis_crypto::EntryRead { epoch, secret: read.clone(), earlier: None }), sync: (sync_epoch, sync.clone()) });
     cases.push(step_fields(
-        case("first step with two DH readers and one static entry", SPEC)
+        case("first step", SPEC)
             .with("parent-step-id", hex(&g0.id().0))
             .with("signer-admin-secret", hex(admin.expose()))
-            .with("read-secret", hex(read.expose()))
             .with("sync-secret", hex(sync.expose()))
             .with("write-secret", hex(write.expose()))
             .with("admin-secret", hex(admin.expose()))
-            .with("deposit-seed", hex(deposit.expose()))
-            .with("actor", hex(actor.as_bytes()))
-            .with("read-epoch-n", "0")
-            .with("read-epoch-nonce", hex(epoch.nonce()))
-            .with("reader-1-seed", hex(&[0x05; 32]))
-            .with("reader-2-seed", hex(&[0x06; 32]))
-            .with("static-reader-seed", hex(&[0x04; 32]))
-            .with("step-secret", hex(&sk))
-            .with("ephemeral", hex(&eph))
-            .with("mlkem-m", hex(&m))
-            .with("padding", hex(&pad))
-            .with("shuffle", hex(&shuf))
-            .with("claim-key-1", hex(&k1))
-            .with("claim-key-2", hex(&k2))
-            .with("static-entry", hex(&entry))
-            .with("entry-box", hex(&encode(&b.to_value()))),
+            .with("deposit-seed", hex(deposit.expose())),
         &s0,
-        &c0,
     ));
 
-    // Child step: a rotation of every role (secrets 1a, 1b, 19, sync 1d), signed by the first
-    // step's delete key.
-    let (r1, w1, a1, y1) = (s32(0x1a), s32(0x1b), s32(0x19), s32(0x1d));
+    // Child step: a rotation of every role (secrets 1b, 19, sync 1d), signed by the first step's
+    // delete key.
+    let (w1, a1, y1) = (s32(0x1b), s32(0x19), s32(0x1d));
     let keys1 = StepKeys::derive(&y1, &w1, &a1, &deposit, &sync_id);
-    let sk1 = [0x41u8; 32];
-    let mut rng = FixedRng::new(&[&sk1]);
-    let (s1, c1) = register(&s0, &delete0, keys1, &[Reader::Dh(m1.public().x25519())], (&actor, Epoch::new(1, [0x0e; 32]).unwrap(), &r1), (Epoch::new(1, [0x0f; 32]).unwrap(), &y1), &mut rng).unwrap();
-    drop(rng);
+    let sk1 = X25519Secret::from_secret(&s32(0x41)).public();
+    let s1 = register(&s0, &delete0, keys1, sk1).unwrap();
     s1.verify_child(&s0).unwrap();
     cases.push(step_fields(
-        case("child step, one DH reader", SPEC)
+        case("child step", SPEC)
             .with("parent-step-id", hex(&s0.id().0))
             .with("signer-admin-secret", hex(admin.expose()))
-            .with("read-secret", hex(r1.expose()))
             .with("sync-secret", hex(y1.expose()))
             .with("write-secret", hex(w1.expose()))
             .with("admin-secret", hex(a1.expose()))
-            .with("deposit-seed", hex(deposit.expose()))
-            .with("reader-1-seed", hex(&[0x05; 32]))
-            .with("step-secret", hex(&sk1)),
+            .with("deposit-seed", hex(deposit.expose())),
         &s1,
-        &c1,
     ));
 
     // Rejections.
@@ -122,8 +74,5 @@ pub fn steps() -> VecFile {
     g.sync_id = SyncId([0; 16]);
     assert!(g.verify_genesis().is_err());
     cases.push(case("genesis step of another sync ID", SPEC).with("step", hex(&g.to_bytes())).with("reject", "sync-id"));
-    let three = encode(&Value::List(vec![Value::List((0..3u8).map(|i| Value::Bytes(vec![i; 32])).collect()), Value::Map(Default::default())]));
-    assert!(ClaimSet::parse(&three).is_err());
-    cases.push(case("claim set of three", SPEC).with("claim-set", hex(&three)).with("reject", "claim-count"));
     VecFile { header: generated_header("step", SPEC), cases }
 }

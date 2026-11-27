@@ -1,4 +1,4 @@
-//! Search driver for the roles model: `[samples] [proofs[-exh][-control] | leave[-exh][-control] | told[-exh][-control] | paths[-exh|-tiny[-flags|-detached][-honest[-writers]]][-control] [--from K | --only K] (paths::mode_rules)|paths-purge[-variant] (paths::purge_rules)]`.
+//! Search driver for the roles model: `[samples] [proofs[-exh][-control] | leave[-exh][-control] | paths[-exh|-tiny[-flags|-detached][-honest[-writers]]][-control] [--from K | --only K] (paths::mode_rules)|paths-purge[-variant] (paths::purge_rules)]`.
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -6,11 +6,6 @@ fn main() {
     match args.get(2).map(String::as_str) {
         Some(m) if m.starts_with("leave") => {
             if roles_model::leave::leave_run(samples, m) > 0 {
-                std::process::exit(1);
-            }
-        }
-        Some(m) if m.starts_with("told") => {
-            if roles_model::told::told_run(samples, m) > 0 {
                 std::process::exit(1);
             }
         }

@@ -1,8 +1,8 @@
-//! Connection proofs by claimed path (spec/sync-opens.md §2, §4 J; spec/wire.md §11.2 Prove):
+//! Connection proofs by claimed path (spec/sync-opens.md §2; spec/wire.md §11.2 Prove):
 //! a peer proves its node thing P and claims the path [P, A] to its account A, carrying
 //! certificate copies of edge writes it picks; a verifier V judges the claim on what it holds
 //! with the copies as received evidence, kept with the connection alone (no side recorded, nothing
-//! stored), and J reads the proven things' roles on S's thing. Findings: notes/accounts-switch-brief.md,
+//! stored), and the proven role reads the proven things' roles on S's thing. Findings: notes/accounts-switch-brief.md,
 //! Models.
 //!
 //! The world: A minted with N1 (its record edge), N1 granting N2 admin and N3 a role, then a few
@@ -14,7 +14,7 @@
 //!
 //! Rules (`ProofRules`): `spec`, with `guard` (a reading in which the copies
 //! undo a lowering V's own reading applies proves nothing: `undone`), `receipt` (the copies judged
-//! with the sides taking them in would record) and `j_path` (J reads a proven thing at the role
+//! with the sides taking them in would record) and `j_path` (the proven role reads a proven thing at the role
 //! its claimed path gives: the least of the path's role and the claimed thing's role on S); the
 //! control `draft`, without the three.
 //! Properties, each a message kind:
@@ -27,7 +27,7 @@
 //!   honest copies (every edge write on that edge, evidence closed) wherever its reading of
 //!   everything would, unless they undo a lowering its own reading applies; `waits`: then it does
 //!   once it holds what its own evidence brings.
-//! - `j-path`: J never trusts a peer above the role its claimed path gives it on S.
+//! - `j-path`: the proven role never trusts a peer above the role its claimed path gives it on S.
 //!
 //! Counted: proofs a guard denies that the reading of every commit would prove (`denied`: the
 //! verifier's own removal standing until its own reading changes), stale proofs (`stale`: V lacks
@@ -262,7 +262,7 @@ pub fn undone(w: &World, own: &Reading, rd: &Reading) -> Vec<Id> {
         .collect()
 }
 
-/// J's role for a peer whose path to A gives `path` (spec/sync-opens.md §4: A, proven, holds
+/// The proven role of a peer whose path to A gives `path` (spec/sync-opens.md §2: A, proven, holds
 /// `ON_S` on S).
 pub fn j(pr: ProofRules, path: Role) -> Role {
     match path {
@@ -311,7 +311,7 @@ pub fn proof_check(m: &ProofWorld, pr: ProofRules, st: &mut ProofStats, rng: &mu
             if c.is_empty() && got != path_role(&own, p) {
                 fails.push(format!("own: P {p} with no copies proven {got:?}, V's own reading {:?}", path_role(&own, p)));
             }
-            // j-path: J never above the path's role on S
+            // j-path: the proven role never above the path's role on S
             let jr = j(pr, got);
             if jr > got.min(ON_S) {
                 fails.push(format!("j-path: P {p} proven at {got:?} trusted as {jr:?} on S"));
@@ -476,7 +476,7 @@ mod tests {
         assert_eq!(proven(&w, &Rules::fixed(), ProofRules { receipt: false, ..ProofRules::spec() }, &held, &trust, &rd, N3, &c), Gone);
     }
 
-    /// J reads the proven thing's role on S whatever the path gives: N3 holding read on A is
+    /// Without `j_path` the proven role is the proven thing's role on S whatever the path gives: N3 holding read on A is
     /// trusted as a writer of S.
     #[test]
     fn j_reads_the_claimed_path_role() {

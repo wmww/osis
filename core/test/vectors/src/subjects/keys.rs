@@ -45,12 +45,6 @@ pub fn seed() -> VecFile {
             .with("sync-id", hex(&sync_id.0))
             .with("claim-public", hex(&claim.verifying_key().to_bytes())),
     );
-    cases.push(
-        case("static entry", "spec/wire.md §8")
-            .with("sync-id", hex(&sync_id.0))
-            .with("signing-key", hex(&signing.verifying_key().to_bytes()))
-            .with("entry", hex(&static_entry(&sync_id, &signing.verifying_key()))),
-    );
     {
         let mut c = case("role keys", "spec/sync-ids.md §2").with("secret", hex(seed.expose()));
         for (n, r) in [("sync", RoleKey::Sync), ("write", RoleKey::Write), ("delete", RoleKey::Delete)] {

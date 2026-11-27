@@ -1,11 +1,11 @@
-//! `box/`: hybrid sealed boxes, `secrets.0` boxes in both forms, entry boxes, history boxes, box names and the
+//! `box/`: hybrid sealed boxes, `secrets.0` boxes in both forms, history boxes, box names and the
 //! sealed fire (spec/crypto.md §1, §4, spec/wire.md §7, §9). Generated. Randomness a box
 //! draws is listed in draw order: `ephemeral` (X25519 private key), then `mlkem-m`.
 
 use super::{FixedRng, case, generated_header, s32};
 use crate::file::{Record, VecFile};
 use crate::hex;
-use osis_base::{SyncId, Role, Tid, Value, encode};
+use osis_base::{Role, Tid, Value, encode};
 use osis_crypto::*;
 
 const EPH: [u8; 32] = [0x0c; 32];
@@ -120,20 +120,6 @@ pub fn boxes() -> VecFile {
     cases.push(r.with("ad", hex(&ad)).with("s", hex(s32(0x0b).expose())).with("secret", hex(s32(0x09).expose())).with("wrap", hex(&w)));
     assert_eq!(open_symmetric_box(&s32(0x0c), &slot, epoch(7), &w), Err(Error::Decrypt));
     cases.push(case("secrets box symmetric wrong s", "spec/wire.md §7").with("ad", hex(&ad)).with("s", hex(s32(0x0c).expose())).with("wrap", hex(&w)).with("reject", "decrypt"));
-
-    // Entry box.
-    let sync_id = SyncId([0x0a; 16]);
-    let step_key = X25519Secret::from_secret(&s32(0x06)).public();
-    let actor = Tid::from_bytes([0x07; 15]);
-    let slot = BoxSlot::Entry { sync_id, step_key, actor };
-    let form = BoxForm::Sealed { keyset: None, suite: 1 };
-    let ad = slot.ad(form).unwrap();
-    let item = EntryItem { read: Some(EntryRead { epoch: named(&actor, Role::Read, 2, &s32(0x08)), secret: s32(0x08), earlier: Some((named(&actor, Role::Read, 1, &s32(0x0b)), s32(0x0b))) }), sync: (named(&actor, Role::Sync, 2, &s32(0x0d)), s32(0x0d)) };
-    let b = seal_entry(recipient.public(), &slot, &item, &mut FixedRng::new(&[&EPH, &M])).unwrap();
-    assert_eq!(open_entry(&recipient, &slot, form, &b).unwrap(), item);
-    let entry_payload = encode(&Value::List(vec![Value::Int(role_int(Role::Read)), Value::Int(2), Value::Bytes(s32(0x08).expose().to_vec()), Value::List(vec![Value::Int(1), Value::Bytes(s32(0x0b).expose().to_vec())]), Value::List(vec![Value::Int(2), Value::Bytes(s32(0x0d).expose().to_vec())])]));
-    let r = case("entry box", "spec/wire.md §7").with("recipient-kem-seed", hex(kem_seed.expose())).with("sync-id", hex(&sync_id.0)).with("step-key", hex(&step_key)).with("actor", hex(actor.as_bytes()));
-    cases.push(randomness(r.with("keyset", "none").with("suite", "1").with("ad", hex(&ad))).with("payload", hex(&entry_payload)).with("sealed", hex(&b)));
 
     // History box.
     let e3 = named(&actor, Role::Read, 3, &s32(0x09));

@@ -5,20 +5,15 @@
 //!   purge worlds (README.md, Paths; findings in notes/path-model-findings.md). osis-perm's
 //!   `paths::` differentials and held-model's judgment read it. Searches `paths`, `paths-exh`,
 //!   `paths-tiny*`, `paths-purge`.
-//! - `paths::proofs`: connection proofs by claimed path (spec/sync-opens.md §2, §4 J). Searches
+//! - `paths::proofs`: connection proofs by claimed path (spec/sync-opens.md §2). Searches
 //!   `proofs`, `proofs-exh`.
 //! - `leave`: the own self-removal exception of Encrypting under (spec/crypto.md §4) and held
 //!   elsewhere for a self-removal (spec/sync-status.md §2). Searches `leave`, `leave-exh`.
-//! - `told`: a removed node learns its removal from any member, a blind remover's included, and
-//!   gains nothing else; a reader lowered to sync opens no later removal's notice
-//!   (spec/sync-opens.md §4 Departed, §6; spec/permissions.md §4 Notices). Searches
-//!   `told`, `told-exh`.
 //! Binary: `cargo run --bin roles-model -- [samples] [mode]`; `cargo test` runs the hand worlds.
 
 pub mod idset;
 pub mod leave;
 pub mod paths;
-pub mod told;
 
 /// Roles, `None` below read. The build's sync role (below read) is not modelled: §5.1 judges it as
 /// read (neither writes nor audits).
