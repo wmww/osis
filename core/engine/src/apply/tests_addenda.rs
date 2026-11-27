@@ -527,9 +527,9 @@ struct BobWrite {
 // spec/requirements.md Convergence, spec/permissions.md §5.2 (Position; Addenda; re-grant): Alice
 // removes Bob while his writes reach her, Carol (a writer) or neither, his last one stamped before
 // the removal, in its very `ts` (the HLC tie) or after it, the three roles on random peers so
-// either tid order; maybe a re-grant after. Every peer, a restarted remover, and fresh nodes handed
-// every commit in random orders (twice, so a body dropped while invalid comes back) read what the
-// history gives: Bob's write counts iff re-granted, or stamped no later than the removal and
+// either tid order; maybe a re-grant after. Every peer holding t (Bob only if re-granted), a
+// restarted remover, and fresh nodes handed every commit in random orders (twice, so a body
+// dropped while invalid comes back) read what the history gives: Bob's write counts iff re-granted, or stamped no later than the removal and
 // received before it by Alice (her frontier) or Carol (her addendum), whatever the tids.
 #[test]
 #[ignore = "property"]
@@ -642,10 +642,14 @@ fn removed_writers_writes(seed: u64) -> (usize, bool) {
     let counts = |w: &BobWrite| regrant || w.ts <= r_ts && (w.to_alice || w.to_carol);
     let want = Some(Value::Int(bobs.iter().filter(|w| counts(w)).map(|w| w.ts).max().and_then(|ts| bobs.iter().position(|w| w.ts == ts)).map_or(0, |i| i as i64 + 1)));
     let at = format!("seed {seed}: Alice {a}, Bob {b}, Carol {c}, tie {tie}, regrant {regrant}, writes {:?}", bobs.iter().map(|w| (w.to_alice, w.to_carol)).collect::<Vec<_>>());
+    // Bob, removed and not granted again, holds t no more (spec/sync-set.md §2 First entry): he
+    // judges nothing of it, and what is written on t after reaches the holders alone
+    let peers = holding(&lp, t);
+    assert_eq!(peers.contains(&b), regrant, "{at}: Bob holds t iff granted again");
     // on t (each keeps its own roots' and the chains it needs)
-    let held: Vec<Vec<CommitId>> = (0..3).map(|i| lp.peers[i].engine.commit_ids().into_iter().filter(|c| lp.peers[i].engine.header(c).is_some_and(|h| h.aspects.iter().any(|x| x.tid == t))).collect()).collect();
-    assert!(held.iter().all(|h| *h == held[0]), "{at}: every peer holds the same commits on t");
-    for i in 0..3 {
+    let held: Vec<Vec<CommitId>> = peers.iter().map(|&i| lp.peers[i].engine.commit_ids().into_iter().filter(|c| lp.peers[i].engine.header(c).is_some_and(|h| h.aspects.iter().any(|x| x.tid == t))).collect()).collect();
+    assert!(held.iter().all(|h| *h == held[0]), "{at}: every peer holding t holds the same commits on it");
+    for i in peers {
         assert_eq!(reads(&mut lp, i, t, "x:v.0"), want, "{at}: peer {i}");
     }
     lp.peers[a].restart(seed).unwrap();
