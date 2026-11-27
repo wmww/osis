@@ -82,16 +82,16 @@ impl Engine {
     }
 
     /// Tells `holder` of its role on `target` (spec/sync-inbox.md §5 Grant signal): owes a
-    /// `grant@~0` fire on the holder's inbox (as its `keys.0` names it here, else the holder)
-    /// whose value names `target`, its independent's sync ID and `peers`. Nothing where `target`'s
-    /// independent owns no sync ID here, or the holder is the public or an own thing.
+    /// `grant@~0` fire on the holder's inbox (as its `keys.0` names it here) whose value names
+    /// `target`, its independent's sync ID and `peers`. Nothing where `target`'s independent owns
+    /// no sync ID here, the holder has no inbox here, or is the public or an own thing.
     pub fn signal_grant(&mut self, target: &Tid, holder: &Tid, peers: &[osis_blob::DialHint]) -> Result<()> {
         if holder.is_public() || self.core.is_own(holder) {
             return Ok(());
         }
         let Some(a) = self.core.secret_actor(target) else { return Ok(()) };
         let Some(s) = self.sync_id_of(&a)? else { return Ok(()) };
-        let inbox = self.inbox_of(holder)?.unwrap_or(*holder);
+        let Some(inbox) = self.inbox_of(holder)? else { return Ok(()) };
         let dials = Value::List(peers.iter().map(|p| osis_schema::Codec::to_value(&ct::Dial { key: p.dialable.to_vec(), urls: p.urls.clone() })).collect());
         let v = osis_schema::codec::rt::struct_value(vec![(0, Value::Weak(a)), (1, Value::Bytes(s.0.to_vec())), (2, dials), (3, Value::Bytes(holder.as_bytes().to_vec()))]);
         let ak = super::ak(GRANT_FIRE)?;

@@ -701,7 +701,7 @@ pub fn make_account(e: &mut Engine) -> Result<(Account, crate::flows::Done)> {
         for t in [inbox, profile] {
             held.op(*a, &ct::HOLDS, PathOp { path: Vec::new(), op: Op::Add(osis_base::Value::Strong(*t)) })?;
         }
-        crate::flows::cards::put_inbox(&mut held, *a, Some(*inbox))?;
+        crate::flows::cards::put_inbox(&mut held, *a, *inbox)?;
         let mut signals = Mutation::new();
         let mut setting = ct::RetentionSetting::default();
         setting.take_inbox_signals();
@@ -1123,10 +1123,11 @@ impl LocalPeer {
         }
     }
 
-    /// Peer `i`, an admin of thing `t`, writes `t`'s setting enabling its inbox signals as an
-    /// account's inbox has them and `t`'s card on `t` itself (spec/sync-inbox.md §1).
+    /// Peer `i`, an admin of thing `t`, writes `t`'s setting enabling the external signals as an
+    /// account's inbox has them (stranded notices on `t` reach its writers) and `t`'s card on `t`
+    /// itself (spec/sync-inbox.md §1), its keysets carrying KEM keys. `t` names no inbox.
     #[allow(clippy::panic, clippy::indexing_slicing)] // test harness: a setup that fails fails the test
-    pub fn takes_grants(&mut self, i: usize, t: Tid) {
+    pub fn takes_signals(&mut self, i: usize, t: Tid) {
         let mut setting = osis_schema::core_types::RetentionSetting::default();
         setting.take_inbox_signals();
         let mut m = Mutation::new();

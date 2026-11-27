@@ -638,7 +638,7 @@ fn inbox(w: &mut World, i: usize, k: Option<usize>) -> Result<String, String> {
             }
             None => made,
         };
-        e.set_inbox(a, Some(to))
+        e.set_inbox(a, to)
     });
     r.map(|_| String::new()).map_err(|e| e.to_string())
 }
@@ -687,10 +687,10 @@ fn give(w: &mut World, i: usize, k: usize, h: Holder, g: Gives) -> Result<String
     let edge = Edge { role: g.role(), until: None, may_grant: false, retain: false, floor: None };
     let own = w.node(i).account == Some(holder);
     let tell = matches!(h, Holder::Node(_)) && !own;
-    let inbox = if tell { w.engine(i).inbox_of(&holder).ok().flatten().unwrap_or(holder) } else { holder };
+    let inbox = if tell { w.engine(i).inbox_of(&holder).ok().flatten() } else { None };
     let r = w.write(i, |e| e.grant(&t, &holder, &edge).and_then(|d| if tell { e.signal_grant(&t, &holder, &[]).map(|_| d) } else { Ok(d) })).map_err(|e| e.to_string());
     if r.is_ok() || stands(w, i, &t, &holder, Some(g.role())) {
-        if tell && r.is_ok() {
+        if let Some(inbox) = inbox.filter(|_| r.is_ok()) {
             w.history.signals.insert((holder, t), (inbox, false));
         }
         let account = matches!(h, Holder::Node(_)).then_some(holder);

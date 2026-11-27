@@ -443,10 +443,10 @@ impl Osis {
     ///
     /// The grant is `target`'s: the holder's nodes learn of it only by being told or by a
     /// reference to `target` they already sync. Unless `GrantOpts::quiet`, the holder is told:
-    /// a signal to its inbox (`Write::set_inbox`, else the holder itself) names `target` and this
-    /// node, and its nodes reach `target` while their inbox keeps it (its setting enabling inbox
-    /// signals, `core::RetentionSetting::enable_inbox_signals`); a holder telling nothing reaches
-    /// nothing, and the grant stands all the same.
+    /// a signal to its inbox (`Write::set_inbox`; a holder naming none is not told) names `target`
+    /// and this node, and its nodes reach `target` while their inbox keeps it (its setting
+    /// enabling inbox signals, `core::RetentionSetting::enable_inbox_signals`); a holder telling
+    /// nothing reaches nothing, and the grant stands all the same.
     ///
     /// `Tid::PUBLIC` as holder makes `target` public: everyone may read it, from any node holding
     /// it (`locator`); a thing it holds by a strong is read with it. Read at most, no

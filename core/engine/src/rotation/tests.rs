@@ -153,7 +153,7 @@ fn rotation_missing_again_binds_nothing_spec_crypto_4() {
     assert!(blocked_at(&mut lp, 3, t).is_empty(), "covered by its own rotation");
 }
 
-/// An independent thing of peer `i`'s, taking grants from outside (`LocalPeer::takes_grants`,
+/// An independent thing of peer `i`'s, carded and taking signals (`LocalPeer::takes_signals`,
 /// set before it is made independent, so its keysets carry KEM keys from the first): a holder
 /// other peers grant roles to.
 pub(crate) fn independent_thing(lp: &mut LocalPeer, i: usize) -> Tid {
@@ -161,7 +161,7 @@ pub(crate) fn independent_thing(lp: &mut LocalPeer, i: usize) -> Tid {
     let mut m = Mutation::new();
     let g = lp.peers[i].engine.new_thing(&mut m, me);
     lp.peers[i].commit(m).unwrap();
-    lp.takes_grants(i, g);
+    lp.takes_signals(i, g);
     lp.peers[i].engine.make_independent(&g).unwrap();
     lp.hold(g);
     g

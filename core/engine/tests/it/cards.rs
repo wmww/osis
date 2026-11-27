@@ -79,6 +79,20 @@ fn a_card_written_off_its_path_is_invalid_spec_permissions_5_2() {
     assert_eq!(e.inbox_of(&acc.thing).unwrap(), Some(acc.inbox));
 }
 
+// spec/sync-inbox.md §1: an inbox is a thing of its own. A thing naming none has none; naming itself is refused, and a `keys.0` naming it anyway names none.
+#[test]
+fn an_inbox_is_a_thing_of_its_own_spec_sync_inbox_1() {
+    let (mut lp, acc) = one();
+    let b = thing(&mut lp, 0, acc.thing, true);
+    let e = &mut lp.peers[0].engine;
+    assert_eq!(e.inbox_of(&b).unwrap(), None, "naming none: no inbox");
+    assert!(matches!(e.set_inbox(b, b), Err(osis_engine::Error::Misuse(_))), "itself refused");
+    let mut m = Mutation::new();
+    cards::put_inbox(&mut m, b, b).unwrap();
+    lp.peers[0].commit(m).unwrap();
+    assert_eq!(lp.peers[0].engine.inbox_of(&b).unwrap(), None, "naming itself: no inbox");
+}
+
 // spec/sync-inbox.md §1: an admin moves A's inbox; A's cards on the profile and on C are
 // rewritten carrying it (A's newest `keys.0` and the new inbox's keys).
 #[test]
@@ -88,7 +102,7 @@ fn an_inbox_move_spreads_to_every_card_spec_sync_inbox_1() {
     let i2 = thing(&mut lp, 0, acc.thing, true);
     let e = &mut lp.peers[0].engine;
     assert!(e.write_card(c, acc.thing).unwrap());
-    e.set_inbox(acc.thing, Some(i2)).unwrap();
+    e.set_inbox(acc.thing, i2).unwrap();
     assert_eq!(e.inbox_of(&acc.thing).unwrap(), Some(i2));
     assert_eq!(e.cards_of(&acc.thing).unwrap().len(), 2);
     assert!(cards_current(e, &acc.thing), "every card carries the move");
@@ -106,9 +120,9 @@ fn a_writer_cannot_move_the_inbox_spec_permissions_3() {
     let i2 = thing(&mut lp, 1, accs[1], true);
     let inbox = lp.peers[0].engine.inbox_of(&accs[0]).unwrap().unwrap();
     assert_eq!(lp.peers[1].engine.inbox_of(&accs[0]).unwrap(), Some(inbox));
-    assert!(matches!(lp.peers[1].engine.set_inbox(accs[0], Some(i2)), Err(osis_engine::Error::Permission { needs: Role::Admin, .. })), "refused writer-side");
+    assert!(matches!(lp.peers[1].engine.set_inbox(accs[0], i2), Err(osis_engine::Error::Permission { needs: Role::Admin, .. })), "refused writer-side");
     let mut m = Mutation::new();
-    cards::put_inbox(&mut m, accs[0], Some(i2)).unwrap();
+    cards::put_inbox(&mut m, accs[0], i2).unwrap();
     // the plain write path too: a `keys.0` op outside a writer's keysets needs admin
     assert!(matches!(lp.peers[1].engine.write(m.clone()), Err(osis_engine::Error::Permission { needs: Role::Admin, .. })), "refused writer-side, written plainly");
     lp.peers[1].engine.core.skip_writer_rules = true;
@@ -120,7 +134,7 @@ fn a_writer_cannot_move_the_inbox_spec_permissions_3() {
         assert_eq!(lp.peers[i].engine.inbox_of(&accs[0]).unwrap(), Some(inbox), "node {i}: the inbox stays");
     }
     let i3 = thing(&mut lp, 0, accs[0], true);
-    lp.peers[0].engine.set_inbox(accs[0], Some(i3)).unwrap();
+    lp.peers[0].engine.set_inbox(accs[0], i3).unwrap();
     lp.sync_all().unwrap();
     assert_eq!(lp.peers[1].engine.inbox_of(&accs[0]).unwrap(), Some(i3), "control: an admin's move counts");
 }
@@ -138,7 +152,7 @@ fn a_writers_refresh_keeps_the_admins_inbox_spec_sync_inbox_1() {
     lp.hold_at(1, c);
     lp.sync_all().unwrap();
     let i2 = thing(&mut lp, 0, accs[0], true);
-    lp.peers[0].engine.set_inbox(accs[0], Some(i2)).unwrap();
+    lp.peers[0].engine.set_inbox(accs[0], i2).unwrap();
     lp.advance(1000);
     lp.peers[1].engine.rotate_leaving_out(&accs[0], &[Role::Read], &[]).unwrap();
     lp.peers[1].engine.refresh_cards().unwrap();

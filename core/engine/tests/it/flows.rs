@@ -2025,7 +2025,7 @@ fn vandal_with_second_path_recovered_spec_perm_3() {
     let (mut lp, ps) = people(3);
     let d = thing_of(&mut lp, 0, ps[0]);
     let t = thing_of(&mut lp, 1, ps[1]);
-    lp.takes_grants(1, t);
+    lp.takes_signals(1, t);
     lp.peers[1].engine.make_independent(&t).unwrap();
     spread(&mut lp);
     for p in [ps[1], ps[2], t] {
@@ -2053,7 +2053,7 @@ fn rekey_reseals_holder_actor_spec_perm_3() {
     let (mut lp, ps) = people(4);
     let t = thing_of(&mut lp, 3, ps[3]);
     lp.peers[3].engine.make_independent(&t).unwrap();
-    lp.takes_grants(3, t);
+    lp.takes_signals(3, t);
     spread(&mut lp);
     let (d, e0, _) = locked_out(&mut lp, &ps[..3], 0);
     lp.peers[0].engine.grant(&d, &t, &edge_of(Role::Read)).unwrap();

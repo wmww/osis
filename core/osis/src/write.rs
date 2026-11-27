@@ -322,8 +322,8 @@ impl<'d> Write<'d> {
     }
 
     /// Makes `inbox` the thing grants to `of` from outside go to (`Osis::grant`), carried by every
-    /// card of `of` (`Osis::put_card`): `of` itself, or another thing whose setting enables its
-    /// inbox signals. Needs admin on `of` (`Permission` at commit) and `of` made with its keys,
+    /// card of `of` (`Osis::put_card`): a thing of its own (`of` itself is `Invalid`) whose setting
+    /// enables its inbox signals. Needs admin on `of` (`Permission` at commit) and `of` made with its keys,
     /// here or before (`create_with_keys`, a grant to it, a card of it), else `Invalid`. Written
     /// with `of`'s making, it goes in that thing's minting; otherwise in a commit of its own in
     /// the same transaction. It does not expire (`Invalid` in a write that does).
@@ -473,8 +473,9 @@ impl<'d> Write<'d> {
                     m.create_independent(rec);
                 }
                 WriteOp::Inbox { .. } if expires.is_some() => return Err(Error::Invalid("a thing's inbox does not expire: this write has an expiry, so name it in a write of its own".into())),
+                WriteOp::Inbox { of, inbox } if of == inbox => return Err(Error::Invalid(format!("{of} cannot be its own inbox: name a thing of its own"))),
                 WriteOp::Inbox { of, inbox } => {
-                    osis_engine::flows::cards::put_inbox(&mut m, of, (inbox != of).then_some(inbox))?;
+                    osis_engine::flows::cards::put_inbox(&mut m, of, inbox)?;
                 }
                 WriteOp::PurgeThing(_) if expires.is_some() => return Err(Error::Invalid("a purge of a thing does not expire: this write has an expiry, so write it as a commit of its own".into())),
                 // a dynamic key's kind is known only now: a write of the other kind never

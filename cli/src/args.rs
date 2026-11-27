@@ -666,7 +666,7 @@ pub enum CardCmd {
     Put { on: String, of: String },
     /// Removes OF's card from ON
     Rm { on: String, of: String },
-    /// Makes INBOX (OF itself, or a thing taking its inbox signals) where grants to OF from
+    /// Makes INBOX (a thing other than OF, taking its inbox signals) where grants to OF from
     /// outside go, on every card of OF; needs admin on OF
     Inbox { of: String, inbox: String },
 }

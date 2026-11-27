@@ -646,7 +646,7 @@ mod tests {
         let mut m = Mutation::new();
         let t = lp.peers[0].engine.new_thing(&mut m, a);
         lp.peers[0].commit(m).unwrap();
-        lp.takes_grants(0, t);
+        lp.takes_signals(0, t);
         lp.peers[0].engine.make_independent(&t).unwrap();
         (lp, a, t, k, rot)
     }

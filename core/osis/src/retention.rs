@@ -104,7 +104,7 @@ pub struct RetentionSetting {
 }
 
 impl RetentionSetting {
-    /// Enables the external signals a thing takes as its own inbox, as an account's inbox has them:
+    /// Enables the external signals as an account's inbox has them:
     /// word of a grant to it from outside and a reader's call for the keys it cannot read, each
     /// from parties that cannot write it, kept as long as an account's inbox keeps them. A grant
     /// stands on the thing granted whatever becomes of its signal. An entry already here stays as
