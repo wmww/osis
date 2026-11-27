@@ -141,6 +141,7 @@ A part no honest writer makes, to test how receivers judge it: `Engine::commit_h
 - A hand-again-until-quiet loop must not count every non-`Duplicate` result as progress (a pending commit comes back `Pending` every round): stop once a round applies nothing and leaves `Engine::pending` as it was.
 - A world built under `PageParams::set_test` must not go into `LocalPeer::cached`.
 - `PageParams::set_test` shrinks wire and commit pages only: a stored state pages past `PAGE_BYTES` (3 KiB, engine/pages.rs) whatever is set, so a test of a paged stored state needs a value just past it.
+- `Engine::set_entry_page(n)` (`#[doc(hidden)]`, engine/write.rs) sets the entries per entry page that engine writes (spec/wire.md §5 Entry pages), so a few holders page (osis-sync it `grants::a_rotation_boxing_*`). In memory only: a power cycle puts it back to `ENTRY_PAGE`, so set it after the last `power_off` of that node.
 - `Core::timer_floor = 0` does not wake a sync daemon: node-sync wakes at `next_timer` (`Node::next_wake`).
 
 **Sync `World`**
