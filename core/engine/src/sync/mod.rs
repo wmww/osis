@@ -414,12 +414,16 @@ pub struct ReadCredentials {
 
 /// The holders a node reaches S's thing through (spec/sync-opens.md §4 Admissible, tests): the
 /// read KEM key pair of each read keyset of each such holder it holds (newest first, each once),
-/// and whether the public is one (it tests the public's claim).
+/// and whether the public is one (it tests the public's claim): at every step, or at its head
+/// alone where it holds S without reading it.
 #[derive(Clone, Default)]
 pub(crate) struct Claimants {
     /// Each holder's read KEM key pair, with the holder (none: a link's key).
     pub(crate) keys: Vec<(Option<Tid>, osis_crypto::KemSecret)>,
     pub(crate) public: bool,
+    /// S held without reading it (kept unread, or its thing as a stub): the public's entry at its
+    /// head is its one word of the public's role (spec/sync-ids.md §3 Taking an entry).
+    pub(crate) public_at_head: bool,
 }
 
 /// A claim of a holder (`key`, its read KEM key pair; none: the public's) at a step of key
@@ -432,9 +436,10 @@ pub(crate) fn claim_at(key: Option<&osis_crypto::KemSecret>, s: &SyncId, step_ke
 }
 
 impl Claimants {
-    /// Each holder's key with the holder, then the public's (`None`) where it is one.
+    /// Each holder's key with the holder, then the public's (`None`) where it is one (at any
+    /// step or at the head alone).
     pub(crate) fn each(&self) -> impl Iterator<Item = (Option<Tid>, Option<&osis_crypto::KemSecret>)> {
-        self.keys.iter().map(|(h, k)| (*h, Some(k))).chain(self.public.then_some((Some(Tid::PUBLIC), None)))
+        self.keys.iter().map(|(h, k)| (*h, Some(k))).chain((self.public || self.public_at_head).then_some((Some(Tid::PUBLIC), None)))
     }
 }
 

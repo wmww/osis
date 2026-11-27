@@ -206,13 +206,16 @@ impl Engine {
     /// Admissible, tests): its own things (its node thing, the things it holds a grant on, its
     /// link keys), each holder of a thing's independent it holds a read secret of (by the role
     /// entries held), each thing naming `s` to it (a followed signal's holder, a followed link's
-    /// key), and the public where it redeems a locator or the public holds a role there.
+    /// key), and the public where it redeems a locator or the public holds a role there (at any
+    /// step), or where it holds `s` without reading it (at its head).
     pub(crate) fn claimants(&mut self, s: &SyncId, things: &[Tid]) -> super::Claimants {
         let me = self.core.tid();
         let mut holders: BTreeSet<Tid> = std::iter::once(me).chain(self.core.timelines().edges_at(None).targets(&me).copied()).collect();
         let mut keys: Vec<(Option<Tid>, osis_crypto::KemSecret)> = Vec::new();
         let mut public = false;
+        let mut public_at_head = false;
         for t in things {
+            public_at_head |= self.kept_unread(t) || self.core.ix.closure.stub_only(t);
             let reader = self.core.reader_of(t);
             for (m, _) in self.core.key_holders(&reader) {
                 match m.is_public() {
@@ -240,7 +243,7 @@ impl Engine {
                 }
             }
         }
-        super::Claimants { keys, public }
+        super::Claimants { keys, public, public_at_head }
     }
 
     /// The write key this node holds at step `step` of `s` (`read_credentials`' keys there,

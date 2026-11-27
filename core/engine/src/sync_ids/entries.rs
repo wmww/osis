@@ -159,22 +159,32 @@ impl Engine {
 
     /// The step key of each sync key on a path of `s` this node knows: the recorded paths of `s`'s
     /// things, the heard one, and `more` (a store's path), by sync key.
-    fn step_keys(&mut self, s: &SyncId, things: &[Tid], more: &[osis_blob::Step]) -> Result<BTreeMap<[u8; 32], [u8; 32]>> {
+    /// With the sync key of the head: the last step of the longest of those paths.
+    fn step_keys(&mut self, s: &SyncId, things: &[Tid], more: &[osis_blob::Step]) -> Result<(BTreeMap<[u8; 32], [u8; 32]>, Option<[u8; 32]>)> {
         let mut out = BTreeMap::new();
+        let mut head: (usize, Option<[u8; 32]>) = (0, None);
+        let mut take = |out: &mut BTreeMap<[u8; 32], [u8; 32]>, steps: &[osis_blob::Step]| {
+            out.extend(steps.iter().map(|st| (st.keys.sync.to_bytes(), st.step_key)));
+            if steps.len() > head.0 {
+                head = (steps.len(), steps.last().map(|st| st.keys.sync.to_bytes()));
+            }
+        };
         for t in things {
             for o in self.owned_sync_ids(t)?.iter().filter(|o| o.id == *s) {
-                out.extend(o.path.steps.iter().map(|st| (st.keys.sync.to_bytes(), st.step_key)));
+                take(&mut out, &o.path.steps);
             }
         }
         let heard = self.core.heard.get(s).cloned().unwrap_or_default();
-        out.extend(heard.iter().chain(more).map(|st| (st.keys.sync.to_bytes(), st.step_key)));
-        Ok(out)
+        take(&mut out, &heard);
+        take(&mut out, more);
+        Ok((out, head.1))
     }
 
     /// The entry of a holder this node reaches `s`'s thing through (`claimants`) in blob `bytes`
     /// under `s`, opened and taken (spec/sync-ids.md §3 Taking an entry): found by its claim at the
     /// step key of the sync key its block is bound to (a block that does not verify under `s`
-    /// counts for nothing); a sync holder's secret kept only where it derives that sync key.
+    /// counts for nothing); a sync holder's secret kept only where it derives that sync key; the
+    /// public's, where this node holds `s` without reading it, only in a block bound to its head.
     /// `path`: a path of `s` known beside this node's own (a store's).
     pub(crate) fn take_entry(&mut self, s: &SyncId, bytes: &[u8], path: &[osis_blob::Step]) -> Result<Took> {
         let Ok(Some(prefix)) = osis_blob::clear_prefix(bytes) else { return Ok(Took::Nothing) };
@@ -183,14 +193,16 @@ impl Engine {
         }
         let things = self.sync_things_of(s)?;
         let Some(thing) = things.first().copied() else { return Ok(Took::Nothing) };
-        let steps = self.step_keys(s, &things, path)?;
+        let (steps, head) = self.step_keys(s, &things, path)?;
         let claimants = self.claimants(s, &things);
         for block in prefix.blocks() {
             let Some(step_key) = steps.get(block.sync_pk()) else { continue };
             if !block.verifies(s, prefix.salt()) {
                 continue;
             }
-            for (holder, k) in claimants.each() {
+            // the public's claim held without reading S: in the blocks bound to the head alone
+            let public = claimants.public || (claimants.public_at_head && head.as_ref() == Some(block.sync_pk()));
+            for (holder, k) in claimants.each().filter(|(_, k)| k.is_some() || public) {
                 let Some(claim) = crate::sync::claim_at(k, s, step_key) else { continue };
                 let Some(e) = block.find(&claim.verifying_key().to_bytes()) else { continue };
                 let keys = match k {

@@ -464,3 +464,24 @@ fn a_learned_sync_secret_opens_the_history_held_spec_crypto_4() {
         w.engine(i).check_index();
     }
 }
+
+// spec/sync-opens.md §4 (Admissible, tests: the public's claim where a node holds S without
+// reading it), spec/sync-ids.md §3 Taking an entry: node 0 grants node 1's account sync on its
+// thing, node 1 holds it by a strong (kept unread), then node 0 grants the public read. Node 1
+// holds no read grant, but anyone computes the public's claim: it takes the public's entry at its
+// head and reads the thing.
+#[test]
+fn a_node_keeping_a_thing_unread_reads_it_once_the_public_reads_spec_sync_opens_4() {
+    use crate::harness::script::*;
+    holds_on(0, 2, 3, &[New(0), Give(0, 0, Holder::Node(1), Syncs), Strong(1, None, 0), Give(0, 0, Holder::Public, Reads)], String::new(), false);
+}
+
+// spec/sync-ids.md §3 Taking an entry (the public's entry held without reading S: in the blocks
+// bound to its head alone): node 0 grants the public read and removes it, then grants node 1's
+// account sync, which keeps the thing unread. The grant's block carries the public's entry at an
+// older step: node 1 takes nothing from it and reads nothing.
+#[test]
+fn a_node_keeping_a_thing_unread_takes_no_older_public_entry_spec_sync_ids_3() {
+    use crate::harness::script::*;
+    holds_on(0, 2, 3, &[New(0), Give(0, 0, Holder::Public, Reads), Revoke(0, 0, Holder::Public), Give(0, 0, Holder::Node(1), Syncs), Strong(1, None, 0)], String::new(), false);
+}
