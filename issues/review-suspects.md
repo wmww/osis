@@ -28,10 +28,10 @@ Options:
 
 Options:
 1. **The public counts where A's grants count**, like any holder: drop the exception, and give entry to a public thing reached by a strong another way (its stub in the carrying unit, as for any granted thing). Removes a carve-out; needs checking that every route into a public thing still brings its stub.
-2. Keep the exception for entry and the closure walk, but judge the lost-access drop by `role_by_grants` without it: the node keeps only what A's grants as synced give. Two roles where there was one.
+2. Keep the exception for entry and the closure walk, but judge the lost-access drop by the role A's grants as synced give, without it: the node keeps only what A's grants as synced give. Two roles where there was one.
 3. Keep as is and correct the comment.
 
-The opening design (notes/opening-design.md) changes the public's other source of role (`public_listed`, Holders by copies): decide after it lands.
+The public's role now has this one source, its grant (a head listing it is gone, spec/sync-set.md §2 Own things).
 
 ## A revoked store never reopened (latent, no reproducer)
 After a revocation nothing reopens S at a store whose credentials and `changed_at(S)` did not move, so it is never tested again (spec/sync-opens.md §5 Testing) and keeps S's entries. Rewritten by the opening design (notes/opening-design.md): judge against its open rule once it lands.
