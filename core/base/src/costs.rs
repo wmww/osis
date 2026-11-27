@@ -182,15 +182,15 @@ pub fn take() -> Vec<(&'static str, Duration, u64)> {
 
 /// Runs `f` with this thread's recording off (debug checks: their work is not the measured code's).
 pub fn paused<T>(f: impl FnOnce() -> T) -> T {
-    struct Resume(bool);
-    impl Drop for Resume {
+    struct Unpause(bool);
+    impl Drop for Unpause {
         fn drop(&mut self) {
             ON.with(|on| on.set(self.0));
             PAUSED.with(|p| p.set(p.get() - 1));
         }
     }
     PAUSED.with(|p| p.set(p.get() + 1));
-    let _r = Resume(ON.with(|on| on.replace(false)));
+    let _r = Unpause(ON.with(|on| on.replace(false)));
     f()
 }
 
