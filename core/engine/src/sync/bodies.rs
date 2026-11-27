@@ -1132,15 +1132,15 @@ impl Engine {
     /// waiting for, stored.
     /// A blob opening bad is no blob of its commit here, whatever an earlier opening noted (one
     /// opened again once its parts can be checked, `BlobOf::unchecked`).
-    pub fn open_entry(&mut self, s: &SyncId, blob: &BlobId, wrap: &Wrap, bytes: &[u8], room: u64) -> Result<Opened> {
-        let o = self.open_entry_once(s, blob, wrap, bytes, room)?;
+    pub fn open_entry(&mut self, s: &SyncId, blob: &BlobId, wrap: &Wrap, bytes: &[u8], pages: &[Vec<u8>], room: u64) -> Result<Opened> {
+        let o = self.open_entry_once(s, blob, wrap, bytes, pages, room)?;
         if matches!(o, Opened::Bad) && self.core.ix.blob_parts.contains_key(blob) {
             self.run(|tx| unnote_blob(tx, blob))?;
         }
         Ok(o)
     }
 
-    fn open_entry_once(&mut self, s: &SyncId, blob: &BlobId, wrap: &Wrap, bytes: &[u8], room: u64) -> Result<Opened> {
+    fn open_entry_once(&mut self, s: &SyncId, blob: &BlobId, wrap: &Wrap, bytes: &[u8], pages: &[Vec<u8>], room: u64) -> Result<Opened> {
         if osis_blob::blob_id(bytes) != *blob {
             return Ok(Opened::Bad);
         }
@@ -1165,7 +1165,7 @@ impl Engine {
                 }
                 // else an entry of a holder this node reaches S's thing through (spec/sync-ids.md
                 // §3 Taking an entry)
-                match self.took(s, bytes, &[])? {
+                match self.took(s, bytes, &[], pages)? {
                     Some((thing, key, section)) => (thing, key, Some(section)),
                     None => return Ok(Opened::NotOpen),
                 }
@@ -1176,18 +1176,19 @@ impl Engine {
 
     /// Entry `blob` of S kept unread here, its bytes `bytes`: an entry of a holder this node
     /// reaches S's thing through found in it by its claim at a step of `path` (S's registered
-    /// path) or one known here, taken (spec/sync-ids.md §3 Taking an entry): a sync holder's
+    /// path) or one known here, in it or its entry pages `pages` (spec/wire.md §5), taken
+    /// (spec/sync-ids.md §3 Taking an entry): a sync holder's
     /// secret kept, a read holder's commit opened as `open_entry` opens one.
-    pub fn take_unread_entry(&mut self, s: &SyncId, blob: &BlobId, wrap: &Wrap, bytes: &[u8], path: &[osis_blob::Step]) -> Result<Opened> {
-        match self.took(s, bytes, path)? {
+    pub fn take_unread_entry(&mut self, s: &SyncId, blob: &BlobId, wrap: &Wrap, bytes: &[u8], pages: &[Vec<u8>], path: &[osis_blob::Step]) -> Result<Opened> {
+        match self.took(s, bytes, path, pages)? {
             Some((thing, key, section)) => self.opened_entry(s, blob, wrap, bytes, 0, thing, &key, &[section]),
             None => Ok(Opened::NotOpen),
         }
     }
 
     /// `take_entry`, each sync holder's secret noted: the read entry's thing and keys, if any.
-    fn took(&mut self, s: &SyncId, bytes: &[u8], path: &[osis_blob::Step]) -> Result<Option<(Tid, osis_crypto::Secret32, osis_crypto::Secret32)>> {
-        let took = self.take_entry(s, bytes, path)?;
+    fn took(&mut self, s: &SyncId, bytes: &[u8], path: &[osis_blob::Step], pages: &[Vec<u8>]) -> Result<Option<(Tid, osis_crypto::Secret32, osis_crypto::Secret32)>> {
+        let took = self.take_entry(s, bytes, path, pages)?;
         for (thing, holder) in took.sync {
             self.took_sync_entry(s, thing, holder)?;
         }

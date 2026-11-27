@@ -29,7 +29,7 @@ pub(crate) mod source;
 mod follow;
 
 pub use follow::Follow;
-pub use follow::blob_bytes;
+pub use follow::{blob_bytes, page_bytes};
 pub(crate) use follow::{open_entry, pends, release};
 pub use rows::{Source, Tombstone, Usage};
 
@@ -916,6 +916,17 @@ impl Store {
 
     /// S's entries with an entry block bound to sync key `pk` (a heard head's, spec/sync-ids.md
     /// §3 Bound).
+    /// The entry pages entry `b` of S names (spec/wire.md §5 Entry pages), as indexed from its
+    /// bytes: they go with it.
+    pub fn pages_of(&self, s: &SyncId, b: &BlobId) -> Result<Vec<BlobId>> {
+        self.lock().read(|t, _| claims::pages_of(t, s, b))
+    }
+
+    /// The entry of S whose blocks name entry page `p`, if one is indexed here.
+    pub fn page_owner(&self, s: &SyncId, p: &BlobId) -> Result<Option<BlobId>> {
+        self.lock().read(|t, _| claims::page_owner(t, s, p))
+    }
+
     pub fn entries_bound_to(&self, s: &SyncId, pk: &[u8; 32]) -> Result<Vec<BlobId>> {
         self.lock().read(|t, _| claims::entries_bound_to(t, s, pk))
     }
@@ -1088,6 +1099,10 @@ impl Store {
 
     /// Entry `b` of S gives this node something held: its charge to the peer that brought it ends.
     pub fn uncharge(&mut self, s: &SyncId, b: &BlobId) -> Result<()> {
+        // its entry pages with it (spec/wire.md §5 Entry pages: a page gives what its blob does)
+        for p in self.pages_of(s, b)? {
+            self.uncharge(s, &p)?;
+        }
         let mut g = self.lock();
         let Some((memory, old)) = g.find(s, b)? else { return Ok(()) };
         if old.charged.is_none() {

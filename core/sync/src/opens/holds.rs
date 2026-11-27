@@ -272,7 +272,8 @@ impl Holds for NodeHolds<'_, '_> {
         if self.cx.store.synced(s).is_some_and(|(_, h)| h == Holding::Stub) {
             for b in self.cx.store.entries_bound_to(s, &head).unwrap_or_default() {
                 let (Ok(Some(e)), Ok(Some(bytes))) = (self.cx.store.entry(s, &b), crate::store::blob_bytes(self.cx.engine, self.cx.store, &b)) else { continue };
-                let _ = self.cx.engine.open_entry(s, &b, &e.wrap, &bytes, 0);
+                let pages = crate::store::page_bytes(self.cx.engine, self.cx.store, &bytes).unwrap_or_default();
+                let _ = self.cx.engine.open_entry(s, &b, &e.wrap, &bytes, &pages, 0);
             }
         }
     }

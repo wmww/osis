@@ -567,7 +567,7 @@ impl Engine {
     /// Takes sealed fire `f` as a peer offers it (spec/sync-inbox.md §3 Sending): what a caller
     /// with no sync (a harness carrying fires by hand) does with one.
     pub fn offer_fire(&mut self, f: &SealedFireOut) -> Result<crate::sync::Opened> {
-        self.open_entry(&f.sync_id, &osis_blob::blob_id(&f.blob), &[0; 57], &f.blob, u64::MAX)
+        self.open_entry(&f.sync_id, &osis_blob::blob_id(&f.blob), &[0; 57], &f.blob, &[], u64::MAX)
     }
 
     /// Writes each fire owed on a thing this node holds and reads, where the thing's setting

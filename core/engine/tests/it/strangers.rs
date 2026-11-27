@@ -57,7 +57,7 @@ fn open(lp: &mut LocalPeer, i: usize, inbox: Tid, ak: &str, v: osis_base::Value)
     let out = e.sealed_fire(&id).unwrap().expect("sealed");
     e.fire_taken(&id).unwrap();
     let b = osis_blob::blob_id(&out.blob);
-    lp.peers[0].engine.open_entry(&out.sync_id, &b, &[0; 57], &out.blob, u64::MAX).unwrap()
+    lp.peers[0].engine.open_entry(&out.sync_id, &b, &[0; 57], &out.blob, &[], u64::MAX).unwrap()
 }
 
 /// Stranger `i` fires `ak`, which `inbox`'s setting does not enable: peer 0 refuses it whole

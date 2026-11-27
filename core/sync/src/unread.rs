@@ -191,7 +191,8 @@ fn judge_s(cx: &mut Cx, s: &SyncId) -> Result<Kept> {
     let mut took = false;
     for b in cx.store.head_bound_entries(s)? {
         let (Some(e), Some(bytes)) = (cx.store.entry(s, &b)?, crate::store::blob_bytes(cx.engine, cx.store, &b)?) else { continue };
-        took |= !matches!(cx.engine.take_unread_entry(s, &b, &e.wrap, &bytes, steps)?, osis_engine::sync::Opened::NotOpen);
+        let pages = crate::store::page_bytes(cx.engine, cx.store, &bytes)?;
+        took |= !matches!(cx.engine.take_unread_entry(s, &b, &e.wrap, &bytes, &pages, steps)?, osis_engine::sync::Opened::NotOpen);
         took |= cx.engine.kept_sync_secrets(s).iter().any(|(_, x)| steps.last().is_some_and(|h| osis_crypto::role_key(RoleKey::Sync, x).verifying_key() == h.keys.sync));
         if took {
             break;

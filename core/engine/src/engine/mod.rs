@@ -1132,6 +1132,9 @@ pub struct Core {
     /// sync, the answerer's word on its own head): the steps claims are computed at and entries
     /// found by where this node records no path of its own. In memory only.
     pub(crate) heard: memo::Stamped<SyncId, Arc<Vec<osis_blob::Step>>>,
+    /// Entries per entry page this node writes (spec/wire.md §5 Entry pages): `ENTRY_PAGE`, a
+    /// smaller power of two in tests (`Engine::set_entry_page`).
+    pub(crate) entry_page: usize,
     /// Link keys held by `Engine::hold_link_key` until `drop_link_key` (making a link, a redeem,
     /// bearer use).
     pub(crate) held_link_keys: BTreeMap<Tid, Arc<Identity>>,
@@ -1881,6 +1884,7 @@ impl Core {
             links: _,
             // heard paths: a Head answer's word, kept whatever is undone
             heard: _,
+            entry_page: _,
             caught_up: _,
             unit_of: _,
             closure_follow: _,
@@ -2220,6 +2224,7 @@ impl Core {
             whole_secrets_snapshots: false,
             link_keys: Default::default(),
             heard: Default::default(),
+            entry_page: osis_blob::ENTRY_PAGE,
             held_link_keys: Default::default(),
             followed_links: Default::default(),
             epochs_of: memo::Memo::new("epochs"),

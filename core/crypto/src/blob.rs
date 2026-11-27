@@ -76,6 +76,14 @@ impl BlobKey {
         BlobKey(key)
     }
 
+    /// The key of an entry page of the blob of key `blob_key` and of salt `salt`:
+    /// `kdf("entry page", blob key, salt)` (spec/wire.md §5 Entry pages). Its plaintext is empty
+    /// and nobody opens it; derived, so the page is made again byte for byte from its commit
+    /// blob's seal, and distinct per page, so no key encrypts two plaintexts.
+    pub fn entry_page(blob_key: &Secret32, salt: &[u8; 16]) -> BlobKey {
+        BlobKey(crate::kdf::kdf(crate::kdf::ENTRY_PAGE, blob_key.expose(), salt))
+    }
+
     /// `encrypt_blob` under this key.
     pub fn encrypt(self, prefix: &[u8], plaintext: &[u8]) -> Result<(Secret32, Vec<u8>), Error> {
         let total = blob_len(prefix.len(), plaintext.len());

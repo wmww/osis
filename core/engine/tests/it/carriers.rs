@@ -49,7 +49,7 @@ fn fire(lp: &mut LocalPeer, inbox: Tid, v: &str) -> CommitId {
     let out = e.sealed_fire(&id).unwrap().expect("sealed");
     e.fire_taken(&id).unwrap();
     let b = osis_blob::blob_id(&out.blob);
-    match lp.peers[1].engine.open_entry(&out.sync_id, &b, &[0; 57], &out.blob, u64::MAX).unwrap() {
+    match lp.peers[1].engine.open_entry(&out.sync_id, &b, &[0; 57], &out.blob, &[], u64::MAX).unwrap() {
         osis_engine::sync::Opened::Commit(c, _) => c,
         o => panic!("not opened: {o:?}"),
     }

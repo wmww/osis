@@ -153,11 +153,23 @@ pub fn blob_bytes(engine: &mut Engine, store: &Store, b: &BlobId) -> Result<Opti
     store.kept_bytes(b)
 }
 
+/// The bytes of the entry pages held here that blob `bytes` names (spec/wire.md §5 Entry pages):
+/// what taking an entry of it reads beside it. None for a blob of no paged block.
+pub fn page_bytes(engine: &mut Engine, store: &Store, bytes: &[u8]) -> Result<Vec<Vec<u8>>> {
+    let Ok(Some(prefix)) = osis_blob::clear_prefix(bytes) else { return Ok(Vec::new()) };
+    let mut out = Vec::new();
+    for p in prefix.blocks().iter().flat_map(|b| b.pages()) {
+        out.extend(blob_bytes(engine, store, p)?);
+    }
+    Ok(out)
+}
+
 /// `Engine::open_entry` of entry `b` of read S, an ephemeral commit within the room S's memory
 /// cap leaves (`Store::memory_room`); one held, its entry here counts at what it costs held. The
 /// one way sync opens an entry.
 pub(crate) fn open_entry(engine: &mut Engine, store: &Store, s: &SyncId, b: &BlobId, wrap: &crate::types::Wrap, bytes: &[u8]) -> Result<Opened> {
-    let o = engine.open_entry(s, b, wrap, bytes, store.memory_room(s)?)?;
+    let pages = page_bytes(engine, store, bytes)?;
+    let o = engine.open_entry(s, b, wrap, bytes, &pages, store.memory_room(s)?)?;
     if let Opened::Commit(c, _) = &o
         && engine.holds_memory(c)
     {
@@ -322,8 +334,15 @@ impl Follow {
         // so a secret that came after an entry failed to open finds it parked
         match self.entries.as_mut() {
             Some(f) => {
+                let mut woken = Vec::new();
                 for (s, b) in f.added() {
                     park_read(engine, store, &self.read, &mut self.parked, &mut self.creds, s, b)?;
+                    // an entry page come after its blob: the blob, parked, may open by it now
+                    // (spec/wire.md §5 Entry pages)
+                    woken.extend(store.page_owner(&s, &b)?.map(|o| (s, o)).filter(|k| self.parked.of.contains_key(k)));
+                }
+                if !woken.is_empty() {
+                    open_these(engine, store, &mut self.parked, &mut self.creds, woken)?;
                 }
             }
             None => self.entries = Some(store.entry_feed()),

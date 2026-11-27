@@ -1516,7 +1516,7 @@ fn record_with_strong(orders: &[&[&str]]) -> Vec<End> {
                 (Some(b), _) => drop(lp.peers[1].receive(b, blobs.clone())),
                 (None, "restart") => lp.peers[1].restart(0).unwrap(),
                 (None, "D gone") => assert!(lp.peers[1].engine.release_entry(&d).unwrap(), "{name}: D pends"),
-                (None, "W's record") => drop(lp.peers[1].engine.open_entry(&sx, &record.0, &record.2, &record.1, u64::MAX).unwrap()),
+                (None, "W's record") => drop(lp.peers[1].engine.open_entry(&sx, &record.0, &record.2, &record.1, &[], u64::MAX).unwrap()),
                 (None, _) => pass_end(&mut lp.peers[1].engine),
             }
         }

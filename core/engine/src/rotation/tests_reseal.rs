@@ -148,7 +148,7 @@ fn sealed_fire_passes_on_only_once_its_keyset_is_established_spec_crypto_5() {
     assert_eq!(s.fire_epoch(&id).unwrap(), Some(e_r), "sealed to e_R");
     let out = s.sealed_fire(&id).unwrap().unwrap();
     let v = &mut lp.peers[V].engine;
-    let fire = match v.open_entry(&out.sync_id, &osis_blob::blob_id(&out.blob), &[0; 57], &out.blob, u64::MAX).unwrap() {
+    let fire = match v.open_entry(&out.sync_id, &osis_blob::blob_id(&out.blob), &[0; 57], &out.blob, &[], u64::MAX).unwrap() {
         crate::sync::Opened::Commit(c, _) => c,
         o => panic!("V takes the fire: {o:?}"),
     };
@@ -428,7 +428,7 @@ fn r_held(lp: &mut LocalPeer, g: Tid, w: CommitId, entry: &[SealedPackage]) -> (
 /// V takes R's entry through the facade (`open_entry`, as sync takes an entry it pulled).
 fn v_takes(lp: &mut LocalPeer, s: &SyncId, w: CommitId, h: &HeldBlob) {
     let id = osis_blob::blob_id(&h.bytes);
-    let o = lp.peers[V].engine.open_entry(s, &id, &h.wrap, &h.bytes, u64::MAX).unwrap();
+    let o = lp.peers[V].engine.open_entry(s, &id, &h.wrap, &h.bytes, &[], u64::MAX).unwrap();
     assert!(matches!(o, crate::sync::Opened::Commit(c, _) if c == w), "V opens R's entry: {o:?}");
 }
 
@@ -648,7 +648,7 @@ fn planted_copy_unlocks_no_reseal_spec_crypto_5() {
     let mk = lp.peers[M].engine.epochs(&g).unwrap().read.newest_held().unwrap().1.clone();
     let s = lp.peers[V].engine.sync_id_of(&g).unwrap().unwrap();
     let planted = HeldBlob { sync_id: s, wrap: osis_crypto::wrap(&mk, &f.id, &f.key, 1).unwrap(), bytes: f.blob.clone() };
-    let o = lp.peers[V].engine.open_entry(&s, &f.id, &planted.wrap, &planted.bytes, u64::MAX).unwrap();
+    let o = lp.peers[V].engine.open_entry(&s, &f.id, &planted.wrap, &planted.bytes, &[], u64::MAX).unwrap();
     assert!(matches!(o, crate::sync::Opened::Commit(c, _) if c == w) && !reads(&mut lp, V, g, "w"), "V takes the planted copy, its junk delta refused: {o:?}");
     let (_, held) = r_held(&mut lp, g, w, &entry);
     v_takes(&mut lp, &s, w, &held);
@@ -671,7 +671,7 @@ fn copy_opening_of_a_pending_write_survives_a_restart_spec_crypto_5() {
     let w2 = put(&mut lp, R, g, "w2");
     let s = lp.peers[V].engine.sync_id_of(&g).unwrap().unwrap();
     let held = r_copy(&mut lp, g, s, w2, 32);
-    let _ = lp.peers[V].engine.open_entry(&s, &osis_blob::blob_id(&held.bytes), &held.wrap, &held.bytes, u64::MAX).unwrap();
+    let _ = lp.peers[V].engine.open_entry(&s, &osis_blob::blob_id(&held.bytes), &held.wrap, &held.bytes, &[], u64::MAX).unwrap();
     assert!(lp.peers[V].engine.core.ix.pending.contains_key(&w2), "w2 waits for V's clock");
     lp.peers[V].restart(33).unwrap();
     lp.peers[V].clock.advance(2 * osis_base::format::MAX_DRIFT_MS);
@@ -708,7 +708,7 @@ fn copy_read_below_a_cut_keeps_its_floor_spec_crypto_5() {
     send_skipping(&mut lp, a, p, &BTreeSet::from([w0]));
     send_skipping(&mut lp, a, n, &BTreeSet::from([w0]));
     // P takes the copy once it holds the cut: the opening is e0's, not P's newest epoch's
-    assert!(matches!(lp.peers[p].engine.open_entry(&s, &copy.id, &copied.wrap, &copied.bytes, u64::MAX).unwrap(), crate::sync::Opened::Commit(c, _) if c == w0));
+    assert!(matches!(lp.peers[p].engine.open_entry(&s, &copy.id, &copied.wrap, &copied.bytes, &[], u64::MAX).unwrap(), crate::sync::Opened::Commit(c, _) if c == w0));
     assert!(reads(&mut lp, p, g, "w0"), "P reads w0 from A's copy");
     let e = &entry.iter().find(|x| x.id == w0).unwrap().entries[0];
     let held = HeldBlob { sync_id: s, wrap: e.wraps.iter().find(|(t, _)| *t == g).unwrap().1, bytes: e.blob.clone() };

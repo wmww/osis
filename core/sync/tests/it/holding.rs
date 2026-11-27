@@ -695,7 +695,7 @@ fn refile(w: &mut World, from: usize, to: usize, s: &osis_base::SyncId, back: bo
     }
     for e in es {
         let Some(bytes) = w.bytes(from, &e.blob) else { continue };
-        w.engine(to).open_entry(s, &e.blob, &e.wrap, &bytes, u64::MAX).unwrap();
+        w.engine(to).open_entry(s, &e.blob, &e.wrap, &bytes, &[], u64::MAX).unwrap();
     }
     w.run();
 }

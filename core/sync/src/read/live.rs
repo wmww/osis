@@ -99,6 +99,31 @@ fn own_entry(cx: &mut Cx, s: &SyncId, blob: BlobId, wrap: crate::types::Wrap, cl
 }
 
 impl Live<'_, '_> {
+    /// Logs a blob's entry pages `pages` under S before the blob (spec/wire.md §5 Entry pages),
+    /// each as its own entry with a filler wrap, of the blob's class and role: a page held under S
+    /// becomes own, else logged from the bytes given or held here (none: left out, its holders'
+    /// entries in it not served from here).
+    fn log_pages(&mut self, s: &SyncId, pages: Vec<(BlobId, Option<Vec<u8>>)>, class: Class, role: bool) -> Result<()> {
+        for (p, bytes) in pages {
+            if let Some(e) = self.cx.store.entry(s, &p)? {
+                if !e.own {
+                    self.cx.store.log(s, Entry { own: true, ..e }, None, None)?;
+                    self.cx.store.uncharge(s, &p)?;
+                }
+                continue;
+            }
+            let bytes = match bytes {
+                Some(b) => Some(b),
+                None => crate::store::blob_bytes(self.cx.engine, self.cx.store, &p)?,
+            };
+            let Some(bytes) = bytes else { continue };
+            let wrap = osis_crypto::filler_wrap(&mut *self.cx.rng);
+            let e = own_entry(self.cx, s, p, wrap, class, role)?;
+            self.cx.store.log(s, e, Some(bytes), None)?;
+        }
+        Ok(())
+    }
+
     /// Of `at`, the read sync IDs whose own store holds an entry of blob `b` (all of them when
     /// `None`), each with the body `b` is of there where this node holds its commit
     /// (`entries_added`).
@@ -413,11 +438,19 @@ impl Ground for Live<'_, '_> {
         let Some(w) = w.or(stamp_key(self.cx, s)?) else { return Ok(()) };
         // judged here, whoever logged it first: a pulled entry's row does not say
         let role = self.cx.engine.role_entry(s, b);
-        let stamp = osis_blob::sign_stamp(&w, s, b, &e.wrap, role);
-        let own = e.own;
-        self.cx.store.log(s, Entry { stamp: Some(stamp), deposited: false, own: true, role, ..e }, None, None)?;
-        if !own {
-            self.cx.store.uncharge(s, b)?;
+        // its entry pages first, under the same key (spec/wire.md §5 Entry pages)
+        let mut all = Vec::new();
+        for p in self.cx.store.pages_of(s, b)? {
+            all.extend(self.cx.store.entry(s, &p)?.map(|e| (p, e)));
+        }
+        all.push((*b, e));
+        for (x, e) in all {
+            let stamp = osis_blob::sign_stamp(&w, s, &x, &e.wrap, role);
+            let own = e.own;
+            self.cx.store.log(s, Entry { stamp: Some(stamp), deposited: false, own: true, role, ..e }, None, None)?;
+            if !own {
+                self.cx.store.uncharge(s, &x)?;
+            }
         }
         Ok(())
     }
@@ -546,6 +579,8 @@ impl Ground for Live<'_, '_> {
                     let Some(e) = self.cx.store.entry(from, b)?.filter(|e| from != s || !e.deposited || e.own) else { continue };
                     let Some(wrap) = self.cx.engine.rewrap(c, b, from, &e.wrap, s)? else { continue };
                     let role = self.cx.engine.role_commit(&c.commit);
+                    let pages: Vec<_> = self.cx.store.pages_of(from, b)?.into_iter().map(|p| (p, None)).collect();
+                    self.log_pages(s, pages, e.class, role)?;
                     let e = own_entry(self.cx, s, *b, wrap, e.class, role)?;
                     let code = self.cx.store.log(s, e, None, None)?;
                     return Ok((code == osis_proto::Code::OK).then_some(*b));
@@ -554,6 +589,8 @@ impl Ground for Live<'_, '_> {
         }
         let Some((sealed, wrap)) = self.fresh(s, c)? else { return Ok(None) };
         let role = self.cx.engine.role_commit(&c.commit);
+        let pages: Vec<_> = sealed.pages.into_iter().map(|p| (osis_blob::blob_id(&p), Some(p))).collect();
+        self.log_pages(s, pages, class, role)?;
         let e = own_entry(self.cx, s, sealed.id, wrap, class, role)?;
         let code = self.cx.store.log(s, e, Some(sealed.blob), None)?;
         Ok((code == osis_proto::Code::OK).then_some(sealed.id))

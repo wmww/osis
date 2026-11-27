@@ -625,7 +625,8 @@ impl Ground for EngineGround<'_> {
 
     fn take_unread(&mut self, store: &crate::store::Store, s: &SyncId, e: &Entry, bytes: &[u8]) -> Result<()> {
         let path = store.path(s)?;
-        self.engine.take_unread_entry(s, &e.blob, &e.wrap, bytes, path.as_ref().map(|p| p.steps.as_slice()).unwrap_or_default())?;
+        let pages = crate::store::page_bytes(self.engine, store, bytes)?;
+        self.engine.take_unread_entry(s, &e.blob, &e.wrap, bytes, &pages, path.as_ref().map(|p| p.steps.as_slice()).unwrap_or_default())?;
         Ok(())
     }
 

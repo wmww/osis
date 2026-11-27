@@ -215,7 +215,7 @@ fn a_writer_taking_a_stranded_notice_reseals_its_holder_spec_sync_inbox_5() {
     lp.peers[1].engine.fire_stranded(&s, &m).unwrap();
     let id = *lp.peers[1].engine.fires_owed().first().expect("a stranded notice owed");
     let out = lp.peers[1].engine.sealed_fire(&id).unwrap().expect("sealed");
-    let opened = lp.peers[0].engine.open_entry(&out.sync_id, &osis_blob::blob_id(&out.blob), &[0; 57], &out.blob, u64::MAX).unwrap();
+    let opened = lp.peers[0].engine.open_entry(&out.sync_id, &osis_blob::blob_id(&out.blob), &[0; 57], &out.blob, &[], u64::MAX).unwrap();
     assert!(matches!(opened, crate::sync::Opened::Bad), "g does not enable stranded notices: refused, {opened:?}");
     assert_eq!(asks(&mut lp, g), vec![], "nothing asked");
     assert!(lp.peers[1].engine.stranded(&s).unwrap().is_some(), "not enabled: m stays stranded, and says so");
@@ -225,7 +225,7 @@ fn a_writer_taking_a_stranded_notice_reseals_its_holder_spec_sync_inbox_5() {
     let stranded = osis_base::Ak::new(crate::flows::inbox::STRANDED_FIRE).unwrap();
     x.set(g, &osis_schema::core_types::RETENTION, &osis_schema::core_types::RetentionSetting::from(std::collections::BTreeMap::from([(stranded, osis_schema::core_types::RetentionEntry::default())]))).unwrap();
     lp.peers[0].commit(x).unwrap();
-    let opened = lp.peers[0].engine.open_entry(&out.sync_id, &osis_blob::blob_id(&out.blob), &[0; 57], &out.blob, u64::MAX).unwrap();
+    let opened = lp.peers[0].engine.open_entry(&out.sync_id, &osis_blob::blob_id(&out.blob), &[0; 57], &out.blob, &[], u64::MAX).unwrap();
     assert!(matches!(opened, crate::sync::Opened::Commit(..)), "the writer takes the notice: {opened:?}");
     assert_eq!(asks(&mut lp, g), vec![(m, false)], "m's re-seal asked");
     lp.peers[0].engine.reseal_run(&g).unwrap();
@@ -279,7 +279,7 @@ fn a_fire_sent_between_a_rotation_and_its_step_is_taken_spec_crypto_7() {
     lp.peers[0].engine.issue_step(&g, &sync_id).unwrap().expect("the step is due");
     assert_eq!(lp.peers[0].engine.core.listed_step(&g).map(|s| s.delete), Some(rotated), "the step registers the rotation");
     assert_eq!(published(&mut lp, 0), Some(ct::SigningKey::Ed25519(rotated.to_vec())), "published with the step");
-    let opened = lp.peers[0].engine.open_entry(&out.sync_id, &osis_blob::blob_id(&out.blob), &[0; 57], &out.blob, u64::MAX).unwrap();
+    let opened = lp.peers[0].engine.open_entry(&out.sync_id, &osis_blob::blob_id(&out.blob), &[0; 57], &out.blob, &[], u64::MAX).unwrap();
     assert!(matches!(opened, crate::sync::Opened::Commit(..)), "the admin takes the fire: {opened:?}");
 }
 
@@ -322,7 +322,7 @@ fn a_writers_junk_step_keys_change_no_outside_fire_spec_permissions_3() {
     s.fire_open(&g, f.as_str(), Value::Int(5)).unwrap();
     let id = *s.fires_owed().first().expect("a sealed fire owed");
     let out = s.sealed_fire(&id).unwrap().expect("sealed");
-    let opened = lp.peers[0].engine.open_entry(&out.sync_id, &osis_blob::blob_id(&out.blob), &[0; 57], &out.blob, u64::MAX).unwrap();
+    let opened = lp.peers[0].engine.open_entry(&out.sync_id, &osis_blob::blob_id(&out.blob), &[0; 57], &out.blob, &[], u64::MAX).unwrap();
     assert!(matches!(opened, crate::sync::Opened::Commit(..)), "the admin takes the fire: {opened:?}");
 }
 
@@ -349,7 +349,7 @@ fn outside_fire(lp: &mut LocalPeer, i: usize, g: Tid, f: &osis_base::Ak, v: i64)
 }
 
 fn opened_by(lp: &mut LocalPeer, i: usize, out: &crate::sync::SealedFireOut) -> crate::sync::Opened {
-    lp.peers[i].engine.open_entry(&out.sync_id, &osis_blob::blob_id(&out.blob), &[0; 57], &out.blob, u64::MAX).unwrap()
+    lp.peers[i].engine.open_entry(&out.sync_id, &osis_blob::blob_id(&out.blob), &[0; 57], &out.blob, &[], u64::MAX).unwrap()
 }
 
 /// Peer 1 writes `ks` as `g`'s read keyset, bypassing its own writer rules (as a hostile writer
@@ -534,7 +534,7 @@ fn a_sealed_fire_is_one_fire_of_its_thing_spec_sync_inbox_4() {
         .unwrap();
         let id = *e1.fires_owed().iter().find(|x| !before.contains(x)).expect("owed");
         let out = e1.sealed_fire(&id).unwrap().expect("sealed");
-        let opened = lp.peers[0].engine.open_entry(&out.sync_id, &osis_blob::blob_id(&out.blob), &[0; 57], &out.blob, u64::MAX).unwrap();
+        let opened = lp.peers[0].engine.open_entry(&out.sync_id, &osis_blob::blob_id(&out.blob), &[0; 57], &out.blob, &[], u64::MAX).unwrap();
         assert_eq!(matches!(opened, crate::sync::Opened::Commit(..)), taken, "{row}: {opened:?}");
         if !taken {
             assert!(matches!(opened, crate::sync::Opened::Bad), "{row}: bad, {opened:?}");
@@ -658,7 +658,7 @@ fn a_sealed_fire_carries_its_chain_until_it_goes_spec_commits_4() {
     let commit = osis_base::decode(&fire.encode(), &limits).unwrap();
     let blob = osis_blob::seal_fire(&prefix, &inbox, &epoch, &kem, &osis_blob::Sealed { commit, evidence: chain, records, pages: Vec::new() }, &mut rng).unwrap();
     let e1 = &mut lp.peers[1].engine;
-    let f = match e1.open_entry(&sync_id, &osis_blob::blob_id(&blob), &[0; 57], &blob, u64::MAX).unwrap() {
+    let f = match e1.open_entry(&sync_id, &osis_blob::blob_id(&blob), &[0; 57], &blob, &[], u64::MAX).unwrap() {
         crate::sync::Opened::Commit(f, _) => f,
         o => panic!("taken whole: {o:?}"),
     };

@@ -326,6 +326,11 @@ pub(crate) fn change(t: &mut Transaction<'_>, env: &mut Env<'_>, s: &SyncId, b: 
 /// With a tombstone, the tombstone is made whether or not the entry was held. Whether it was.
 pub(crate) fn remove(t: &mut Transaction<'_>, env: &mut Env<'_>, s: &SyncId, b: &BlobId, how: Removal) -> Result<bool> {
     let held = get(t, s, b)?;
+    // its entry pages go with it, however it left (spec/wire.md §5 Entry pages)
+    let pages = match held {
+        Some(_) => super::claims::pages_of(t, s, b)?,
+        None => Vec::new(),
+    };
     if let Some(row) = &held {
         t.remove_local(&rows::entry_key(s, b), Shred::Yes)?;
         t.remove_local(&rows::by_blob_key(b, s), Shred::No)?;
@@ -351,6 +356,9 @@ pub(crate) fn remove(t: &mut Transaction<'_>, env: &mut Env<'_>, s: &SyncId, b: 
         };
         log(t, env, s, b, ev)?;
         unref(t, env, b)?;
+    }
+    for p in &pages {
+        remove(t, env, s, p, how.clone())?;
     }
     if let Removal::Tomb(tomb) = how {
         put_tomb(t, env, s, b, tomb)?;

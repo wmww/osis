@@ -692,7 +692,7 @@ fn strips_of_two_parts_by_nodes_apart_meet_at_a_node_reading_neither_spec_sync_j
     let h = w.engine(0).header(&x).unwrap();
     let ai = |t: Tid| h.aspects.iter().position(|e| e.tid == t && e.ak == value_ak()).unwrap();
     for (id, r) in [(ra, &by_1), (rb, &by_2)] {
-        w.engine(3).open_entry(&s, &id, &r.wrap, &r.bytes, u64::MAX).unwrap();
+        w.engine(3).open_entry(&s, &id, &r.wrap, &r.bytes, &[], u64::MAX).unwrap();
         assert!(w.engine(3).blob_of(&id).is_some(), "node 3 opened a rewrite");
     }
     let rng = &mut osis_crypto::SeededRng::from_u64(1);

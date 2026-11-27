@@ -289,6 +289,58 @@ fn a_grantee_gets_in_at_a_store_with_no_reader_online_spec_sync_ids_3() {
     assert_eq!(w.engine(2).get(&t, &ak()).unwrap(), Some(Value::Str("hi".into())), "Bob reads T, got in at Carol's store");
 }
 
+// spec/wire.md §5 (Entry pages), spec/sync-ids.md §3 (Entry block, Bound, Taking an entry),
+// spec/sync-opens.md §4: a rotation boxing more holders than one entry page holds goes with its
+// entries in pages, and the store holding them lets every holder in. Alice's node writes pages of
+// 2 entries; T has Carol's node keeping it unread, and Bob and Dave granted read but not told, so
+// each grant's entries go as 2 pages and the rotation's 8 as 4. Told after the rotation, with
+// Alice's node off, Bob's and Dave's nodes, holding nothing of T, each get in at Carol's store by
+// a claim only a page holds, take its entry from a page and read the write after the rotation.
+// Carol's node takes the new sync secret by its sync entry in a page.
+#[test]
+fn a_rotation_boxing_more_holders_than_a_page_lets_each_in_at_a_store_spec_wire_5() {
+    let mut w = crate::harness::history::world_of(0, 4, 4);
+    let t = make(&mut w, 0, "before");
+    let [carol, bob, dave] = [1, 2, 3].map(|i| w.node(i).account.unwrap());
+    w.write(0, |e| e.grant(&t, &carol, &edge(Role::Sync)).and_then(|_| e.signal_grant(&t, &carol, &[]))).unwrap();
+    w.run();
+    for i in 1..4 {
+        root_strong(&mut w, i, t, true);
+    }
+    let s = w.engine(0).sync_id_of(&t).unwrap().expect("T's sync ID");
+    assert_eq!(w.engine(1).sync_holder(&s).unwrap().map(|x| x.1), Some(Holding::Unread), "Carol's node keeps T unread");
+    // from here every entry of Bob and Dave is in a page: a grant's 2 pad to 4
+    w.write(0, |e| e.set_entry_page(2));
+    for h in [bob, dave] {
+        w.write(0, |e| e.grant(&t, &h, &edge(Role::Read))).unwrap();
+    }
+    w.write(0, |e| e.rotate_leaving_out(&t, &[Role::Sync, Role::Read, Role::Write, Role::Admin], &[])).unwrap().expect("a rotation");
+    w.write(0, |e| {
+        let mut m = Mutation::new();
+        m.set(t, &ak(), &Value::Str("after".into())).unwrap();
+        e.commit(m).unwrap();
+    });
+    w.run();
+    // the rotation's entries went in pages to Carol's store
+    let paged = w.store(1).entries(&s).unwrap().into_iter().map(|e| w.store(1).pages_of(&s, &e.blob).unwrap().len()).max();
+    assert_eq!(paged, Some(4), "8 entries in 4 pages of 2");
+    assert!(w.store(1).head_claims(&s).unwrap().len() >= 8, "the store shows the claims in the pages at the head");
+    let head = w.store(1).path(&s).unwrap().expect("a path").steps.last().unwrap().keys.sync;
+    assert!(w.engine(1).kept_sync_secrets(&s).iter().any(|(_, x)| osis_crypto::role_key(osis_crypto::RoleKey::Sync, x).verifying_key() == head), "Carol's node took the head's sync secret from a page");
+    for (i, h) in [(2, bob), (3, dave)] {
+        assert_eq!(w.engine(i).sync_holder(&s).unwrap(), None, "node {i} holds nothing of T yet");
+        w.write(0, |e| e.signal_grant(&t, &h, &[])).unwrap();
+    }
+    while [2, 3].iter().any(|i| w.engine(*i).sync_holder(&s).unwrap().is_none()) {
+        assert!(w.step_or_wake(), "the signals reach Bob and Dave");
+    }
+    w.power_off(0);
+    w.run();
+    for i in [2, 3] {
+        assert_eq!(w.engine(i).get(&t, &ak()).unwrap(), Some(Value::Str("after".into())), "node {i} got in at Carol's store");
+    }
+}
+
 // spec/sync-ids.md §3 (Entry), spec/sync-opens.md §4-§5 (shows:
 // its head claims; tests: its claims at the source's step): one sync ID with n and 10n holders
 // (each granted apart, then a rotation boxing them all), what a node keeping it unread shows for

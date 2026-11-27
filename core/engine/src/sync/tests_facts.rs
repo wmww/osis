@@ -164,11 +164,11 @@ fn a_blob_opened_before_its_lists_resolve_is_checked_once_they_do_spec_commits_4
             e.header_list_blobs(&c).unwrap().into_iter().map(|x| (x, e.blob(&x).unwrap().unwrap())).collect()
         };
         let e = &mut lp.peers[1].engine;
-        assert!(matches!(e.open_entry(&s, &b, &wrap, &bytes, u64::MAX).unwrap(), super::Opened::Commit(..)), "opened as a carrier");
+        assert!(matches!(e.open_entry(&s, &b, &wrap, &bytes, &[], u64::MAX).unwrap(), super::Opened::Commit(..)), "opened as a carrier");
         assert!(e.pends(&c), "waits for its lists");
         e.put_blobs(lists).unwrap();
         assert!(e.take_redeliver().contains(&c), "junk {junk}: its carriers open again once the lists resolve");
-        let again = e.open_entry(&s, &b, &wrap, &bytes, u64::MAX).unwrap();
+        let again = e.open_entry(&s, &b, &wrap, &bytes, &[], u64::MAX).unwrap();
         e.redelivered(&c).unwrap();
         match junk {
             true => {

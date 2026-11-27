@@ -106,12 +106,14 @@ pub const SYNC_PROOF: &str = "sync proof";
 pub const PATH: &str = "path";
 /// A split entry's commitment to its path key (spec/crypto.md §5 Path entry).
 pub const PATH_COMMIT: &str = "path commit";
+/// An entry page's blob key, from its commit blob's key and its own salt (spec/wire.md §5 Entry pages).
+pub const ENTRY_PAGE: &str = "entry page";
 
 /// Every kdf purpose, for distinctness checks and vectors.
-pub const PURPOSES: [&str; 39] = [
+pub const PURPOSES: [&str; 40] = [
     THING_SYNC, THING_READ, THING_WRITE, THING_ADMIN, ROLE_SYNC, ROLE_READ, ROLE_WRITE, ROLE_ADMIN, SIGN, KEM, CREATION_NONCE, BOX, HISTORY, EPOCH, ROLES, WRAP, SECTION,
     DELTA, LINK, LINK_TREE, DELETE_BLIND, DELETE_NONCE, LINK_BLIND, THING_BLIND, SYNC_KEY, SYNC_WRITE, SYNC_DELETE, SYNC_DEPOSIT, SYNC_CLAIM, CLAIM_KEY, PUBLIC_CLAIM, SYNC_GENESIS, GENESIS_STEP,
-    BEACON, BEACON_HIT, BEACON_REPLY, SYNC_PROOF, PATH, PATH_COMMIT,
+    BEACON, BEACON_HIT, BEACON_REPLY, SYNC_PROOF, PATH, PATH_COMMIT, ENTRY_PAGE,
 ];
 
 // Full derive_key contexts used directly (not through `kdf`).

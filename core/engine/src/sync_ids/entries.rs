@@ -95,8 +95,9 @@ impl Engine {
     /// where at sync at that epoch (the public's one), each sealed to the KEM key of the keyset
     /// its box of that role is to (the newest read box's; one with no KEM key here left out),
     /// signed by that epoch's sync key; a block of dummies alone where this node holds no claim
-    /// key of the epoch.
-    pub(crate) fn entry_blocks(&mut self, boxing: &[Boxing], blob_key: &Secret32, salt: &[u8; 16], rng: &mut dyn CryptoRngCore) -> Result<Vec<EntryBlock>> {
+    /// key of the epoch; paged where they are more than an entry page holds (`frame` makes each
+    /// page).
+    pub(crate) fn entry_blocks(&mut self, boxing: &[Boxing], blob_key: &Secret32, salt: &[u8; 16], frame: &mut crate::sync_ids::blobs::PageFrame<'_>, rng: &mut dyn CryptoRngCore) -> Result<Vec<EntryBlock>> {
         let mut out = Vec::new();
         for b in boxing {
             let Some(epochs) = self.core.epochs(&b.thing) else { continue };
@@ -120,7 +121,7 @@ impl Engine {
                         }
                     }
                 }
-                out.push(EntryBlock::sign(&sync_key, &b.sync_id, salt, entries, rng)?);
+                out.push(EntryBlock::sign_paged(&sync_key, &b.sync_id, salt, entries, self.core.entry_page, frame, rng)?.block);
             }
         }
         Ok(out)
@@ -213,13 +214,17 @@ impl Engine {
     /// step key of the sync key its block is bound to (a block that does not verify under `s`
     /// counts for nothing); a sync holder's secret kept only where it derives that sync key; the
     /// public's, where this node holds `s` without reading it, only in a block bound to its head.
-    /// `path`: a path of `s` known beside this node's own (a store's).
-    pub(crate) fn take_entry(&mut self, s: &SyncId, bytes: &[u8], path: &[osis_blob::Step]) -> Result<Took> {
+    /// `path`: a path of `s` known beside this node's own (a store's); `pages`: the bytes of the
+    /// blob's entry pages held (spec/wire.md §5 Entry pages), an entry in a page not given not
+    /// found.
+    pub(crate) fn take_entry(&mut self, s: &SyncId, bytes: &[u8], path: &[osis_blob::Step], pages: &[Vec<u8>]) -> Result<Took> {
         let mut took = Took::default();
         let Ok(Some(prefix)) = osis_blob::clear_prefix(bytes) else { return Ok(took) };
-        if prefix.blocks().is_empty() {
+        if prefix.blocks().is_empty() || osis_blob::is_entry_page(bytes) {
             return Ok(took);
         }
+        // the entry pages at hand, by blob ID (spec/wire.md §5 Entry pages)
+        let pages: BTreeMap<osis_base::BlobId, (EntryBlock, [u8; 16])> = pages.iter().filter_map(|p| osis_blob::read_page(p)).map(|(id, b, salt)| (id, (b, salt))).collect();
         let things = self.sync_things_of(s)?;
         let Some(thing) = things.first().copied() else { return Ok(took) };
         let (steps, head) = self.step_keys(s, &things, path)?;
@@ -231,10 +236,15 @@ impl Engine {
             }
             // the public's claim held without reading S: in the blocks bound to the head alone
             let public = claimants.public || (claimants.public_at_head && head.as_ref() == Some(block.sync_pk()));
+            // its entries: inline, or those of each page it names that verifies under S by the
+            // same sync key
+            let paged = block.pages().iter().filter_map(|id| pages.get(id)).filter(|(b, salt)| b.sync_pk() == block.sync_pk() && b.verifies(s, salt));
+            let entries: Vec<&osis_blob::Entry> = block.entries().iter().chain(paged.flat_map(|(b, _)| b.entries())).collect();
             let mut found: Vec<(Option<Tid>, EntryKeys)> = Vec::new();
             for (holder, k) in claimants.each().filter(|(_, k)| k.is_some() || public) {
                 let Some(claim) = crate::sync::claim_at(k, s, step_key) else { continue };
-                let Some(e) = block.find(&claim.verifying_key().to_bytes()) else { continue };
+                let claim = claim.verifying_key().to_bytes();
+                let Some(e) = entries.iter().find(|e| e.claim == claim) else { continue };
                 let keys = match k {
                     Some(kem) => osis_crypto::open_entry(kem, s, &e.claim, &e.w),
                     None => osis_crypto::read_public_entry(&e.w),
