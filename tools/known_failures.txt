@@ -12,7 +12,7 @@ held-model/props::late_commit_converges_after_repair_large_spec_commits_5 rate:O
 osis-sync/differential::histories_hold_their_closure_plain rate:OSIS_SYNC_START=527365123461,OSIS_SYNC_SEEDS=1 issues/differential-full-size-classes.md panicked: node \d+ reads thing \d+ unlike the reference
 osis-sync/first::a_blob_is_fetched_once_whatever_sync_ids_carry_it_spec_sync_streams_4 - issues/entries-open-failures.md .
 osis-sync/first::what_a_reader_fetches_and_drops_does_not_grow_spec_permissions_4 - issues/entries-open-failures.md .
-osis-engine/closure::a_take_up_costs_what_the_opener_opens_spec_sync_set_2 - issues/entries-open-failures.md .
+osis-engine/closure::a_take_up_costs_what_the_opener_opens_spec_sync_set_2 - issues/link-take-up-cost.md .
 osis-sync/differential::a_signal_only_a_removed_node_took_is_lost_spec_sync_inbox_2 - issues/entries-open-failures.md .
 osis-sync/differential::the_public_granted_again_is_read_again_spec_permissions_3 - issues/entries-open-failures.md .
 osis-sync/differential::the_publics_read_through_a_holder_is_every_nodes_spec_sync_set_2 - issues/entries-open-failures.md .
