@@ -207,6 +207,15 @@ impl<K: Hash + Eq + Ord + Clone + std::fmt::Debug, V: Clone + PartialEq + std::f
         }
     }
 
+    /// Stops following every key with a row from `from` on while `within` holds (`unfollow`):
+    /// O(those).
+    pub fn unfollow_from(&self, from: &K, within: impl Fn(&K) -> bool) {
+        let keys: Vec<K> = self.rows.borrow().map.range(from..).map(|(k, _)| k).take_while(|k| within(k)).cloned().collect();
+        for k in &keys {
+            self.unfollow(k);
+        }
+    }
+
     /// Stops following every key `drop` names (`unfollow`).
     pub fn unfollow_where(&self, drop: impl Fn(&K) -> bool) {
         let keys = self.fx.borrow().followed_where(drop);

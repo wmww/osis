@@ -346,7 +346,7 @@ impl<K: Hash + Eq + Clone + std::fmt::Debug, V: Clone + PartialEq + std::fmt::De
         let checking = self.checking(k);
         let (now, frame) = self.run(checking, f);
         self.compared(k, checking, &now);
-        self.record(k, now, frame)
+        self.record(k, now, frame, checking)
     }
 
     /// `f` run recorded; a debug comparison's run counts no costs.
@@ -375,7 +375,7 @@ impl<K: Hash + Eq + Clone + std::fmt::Debug, V: Clone + PartialEq + std::fmt::De
         match out {
             Ok(now) => {
                 self.compared(k, checking, &now);
-                Ok(self.record(k, now, frame))
+                Ok(self.record(k, now, frame, checking))
             }
             Err(e) => {
                 if let Some(old) = self.followed.get_mut(k) {
@@ -389,7 +389,10 @@ impl<K: Hash + Eq + Clone + std::fmt::Debug, V: Clone + PartialEq + std::fmt::De
         }
     }
 
-    fn record(&mut self, k: &K, now: V, frame: super::Frame) -> Option<(Option<V>, V)> {
+    fn record(&mut self, k: &K, now: V, frame: super::Frame, checking: bool) -> Option<(Option<V>, V)> {
+        if !checking && crate::costs::on() {
+            self.count_unchanged(k, &now);
+        }
         let Some(old) = self.followed.get_mut(k) else { return Some((None, now)) };
         let n = old.seq;
         let was = old.value.replace(now.clone());
@@ -503,11 +506,37 @@ impl<K: Hash + Eq + Clone + std::fmt::Debug, V: Clone + PartialEq + std::fmt::De
         }
     }
 
+    /// A settle of `k` giving the value it held (a re-run that changed nothing): counted under
+    /// `"{name} unchanged"`, and per container whose stamp a read of the last value saw moved
+    /// (`"{name} unchanged <- {container}"`; `"nothing moved"` for one given again unmoved).
+    fn count_unchanged(&self, k: &K, now: &V) {
+        let Some(f) = self.followed.get(k).filter(|f| f.value.as_ref() == Some(now)) else { return };
+        let name = unchanged_name(self.name);
+        crate::costs::count(name, 1);
+        let mut moved = false;
+        for d in f.deps.iter().filter(|d| !d.holds()) {
+            let t = lock(&d.table);
+            crate::costs::count_by(name, t.cause(d.whole), 1);
+            moved = true;
+        }
+        if !moved {
+            crate::costs::count_by(name, "nothing moved", 1);
+        }
+    }
+
     /// Keys followed (tests).
     #[cfg(test)]
     pub(crate) fn marks(&self) -> usize {
         self.tables.len()
     }
+}
+
+/// `"{name} unchanged"`, made once per name and thread.
+fn unchanged_name(name: &'static str) -> &'static str {
+    thread_local! {
+        static NAMES: std::cell::RefCell<HashMap<&'static str, &'static str>> = std::cell::RefCell::default();
+    }
+    NAMES.with(|n| *n.borrow_mut().entry(name).or_insert_with(|| Box::leak(format!("{name} unchanged").into_boxed_str())))
 }
 
 /// A table of this reader's, as a clone holds it, marked at `at` for the clone: inside a world

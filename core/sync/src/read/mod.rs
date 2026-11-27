@@ -631,6 +631,7 @@ impl Read {
         }
         for s in unread {
             self.owed.forget(&s);
+            g.unread(&s);
         }
         // what is owed each source goes on its record's connection: a new act, or a take,
         // agreement or `full` moving where it goes

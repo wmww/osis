@@ -479,6 +479,9 @@ indexes! {
     /// Held commits with a part not held (`Hold::Missing`), per aspect, AK first: among
     /// them the commits a removal of a reference there must cover (`write::seeing`).
     pub missing: JSetMap<(Ak, Tid), CommitId>,
+    /// `missing`'s keys, thing first: whether a thing holds a missing part is read per thing
+    /// (`Engine::unit_settled`).
+    pub missing_things: JSetMap<Tid, Ak>,
     /// Held commits per aspect their header lists: (`ts`, commit), whatever the part's validity
     /// and whether its body is held. Invariant (also for `by_thing`): it finds
     /// commits, never decides anything alone, since any signer's header can list any aspect.
@@ -918,6 +921,11 @@ pub struct Core {
     /// reader of a commit's bodies (sync read's, `read_facts`) reads one row, not the ~45 reads
     /// of a derivation.
     pub(crate) sync_bodies: memo::Cutoff<CommitId, Arc<crate::sync::Bodies>>,
+    /// `Engine::sync_body` per (commit, sync ID, thing) (`memo::Cutoff`), each of `sync_bodies`'
+    /// row, refreshed by `Engine::follow`: a body's reader moves only when that body does, not
+    /// when the commit comes to have a body under another sync ID (an account's certificates,
+    /// copied under each sync ID).
+    pub(crate) sync_body_rows: memo::Cutoff<(CommitId, SyncId, Option<Tid>), Option<crate::sync::BodyMeta>>,
     /// `Engine::held_fate` per commit (`memo::Cutoff`), refreshed by `Engine::follow`.
     pub(crate) held_fates: memo::Cutoff<CommitId, Option<crate::sync::HeldFate>>,
     /// Page indexes of the cached states kept paged in the store.
@@ -1825,6 +1833,7 @@ impl Core {
             own_roles: _,
             read_facts: _,
             sync_bodies: _,
+            sync_body_rows: _,
             held_fates: _,
             sync_ids: _,
             sync_rows: _,
@@ -2078,6 +2087,7 @@ impl Core {
             wrap_blocks: memo::Cutoff::new("wrap blocked"),
             read_facts: memo::Cutoff::new("sync: read facts"),
             sync_bodies: memo::Cutoff::new("sync: bodies"),
+            sync_body_rows: memo::Cutoff::new("sync: body"),
             held_fates: memo::Cutoff::new("sync: held fate"),
             pages: HashMap::new(),
             timelines: held::Timelines::default(),
@@ -2430,9 +2440,13 @@ impl Core {
         }
         for k in was.difference(now) {
             self.ix.missing.remove(k, id);
+            if !self.ix.missing.contains_key(k) {
+                self.ix.missing_things.remove(&k.1, &k.0);
+            }
         }
         for k in now.difference(was) {
             self.ix.missing.insert(k.clone(), *id);
+            self.ix.missing_things.insert(k.1, k.0.clone());
         }
     }
 

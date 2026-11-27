@@ -390,6 +390,10 @@ pub trait Ground {
     fn unfollow_fate(&mut self, c: &CommitId) {
         let _ = c;
     }
+    /// S is read no more: what is kept per S for its judgements may go.
+    fn unread(&mut self, s: &SyncId) {
+        let _ = s;
+    }
     /// Each blob of `c` as a body (`Engine::blob_body`) under each sync ID where an entry or a
     /// tombstone of it is held here (`Store::naming`, `Store::tombstoned_under`) and under each
     /// of `at`, whatever sync IDs carry a body of it now.

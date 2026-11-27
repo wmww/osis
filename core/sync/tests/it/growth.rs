@@ -822,9 +822,10 @@ fn settled(w: &mut World) -> Vec<Held> {
     (0..w.len()).map(|i| held(w, i)).collect()
 }
 
-/// What read does in a round, both nodes together: judgements of a body (`read: judged`) and
-/// store rows it reads (`store rows read <- read`).
-type Work = [u64; 2];
+/// What read does in a round, both nodes together: judgements of a body (`read: judged`), store
+/// rows it reads (`store rows read <- read`) and judgements giving the value already held (`read:
+/// judged unchanged`: a read moved under the answer).
+type Work = [u64; 3];
 
 /// Round `k`: node 0 mints a thing with its account as admin, writes it, and gives node 1's
 /// account read on it: node 1 holds it (`held`, a strong from its account) or declines (no
@@ -859,7 +860,7 @@ fn grant_rounds(held: bool, redeem: bool) -> ([(World, Vec<Held>); 2], Vec<Work>
 fn round_work() -> Work {
     let taken = osis_base::costs::take();
     let n = |name: &str| taken.iter().filter(|(k, ..)| *k == name).map(|(.., n)| n).sum::<u64>();
-    [n("read: judged"), n("store rows read <- read")]
+    [n("read: judged"), n("store rows read <- read"), n("read: judged unchanged")]
 }
 
 /// spec/requirements.md Scale (each operation costs in proportion to what it changes, never to
@@ -872,10 +873,10 @@ fn round_work() -> Work {
 fn flat_work(work: &[Work], who: &str) {
     let window = |r: std::ops::Range<usize>| -> Work {
         let w = &work[r];
-        [w.iter().map(|x| x[0]).sum(), w.iter().map(|x| x[1]).sum()]
+        std::array::from_fn(|i| w.iter().map(|x| x[i]).sum())
     };
     let (early, late) = (window(1..4), window(work.len() - 3..work.len()));
-    for (i, what) in ["judgements", "store rows read"].iter().enumerate() {
+    for (i, what) in ["judgements", "store rows read", "judgements giving the value held"].iter().enumerate() {
         assert!(late[i] <= early[i], "{who}: read's {what} per round grow with the rounds played: rounds 2-4 {}, the last three {} ({work:?})", early[i], late[i]);
     }
 }

@@ -33,6 +33,7 @@ pub struct Feeds {
     entries: Option<EntryFeeds>,
     syncs: Option<Feed<SyncId>>,
     blobs: BlobsAt,
+    stamp_keys: StampKeys,
 }
 
 /// Per judged (S, body), the blobs of the body (`Engine::blob_body`) S has an entry, a tombstone
@@ -44,6 +45,18 @@ struct BlobsAt(Cutoff<(SyncId, BodyId), Arc<Vec<BlobId>>>);
 impl Default for BlobsAt {
     fn default() -> Self {
         BlobsAt(Cutoff::new("read: blobs at S"))
+    }
+}
+
+/// Per S, the key of `stamp_key` (`Live::stamp_vk`): a row each, so a head move moves the
+/// judgements of S only where the key this node stamps under moved (never a reader's, which
+/// holds no write key at either head).
+#[derive(Clone)]
+struct StampKeys(Cutoff<SyncId, Option<osis_crypto::VerifyingKey>>);
+
+impl Default for StampKeys {
+    fn default() -> Self {
+        StampKeys(Cutoff::new("read: stamp keys"))
     }
 }
 
@@ -118,8 +131,17 @@ impl Live<'_, '_> {
     /// where it holds it (`stamp_key`, the key `own_entry` and `restamp` sign with, so a
     /// restamped entry stands at once), any entry anywhere else.
     fn under_head(&mut self, s: &SyncId, e: &Entry) -> Result<bool> {
-        let Some(w) = stamp_key(self.cx, s)? else { return Ok(true) };
-        Ok(e.stamp.is_some() && self.cx.store.stamp_under(s, &e.blob, &[w.verifying_key()])?)
+        let Some(w) = self.stamp_vk(s)? else { return Ok(true) };
+        Ok(e.stamp.is_some() && self.cx.store.stamp_under(s, &e.blob, &[w])?)
+    }
+
+    /// `stamp_key`'s verifying key: a read of S's row alone (`StampKeys`).
+    fn stamp_vk(&mut self, s: &SyncId) -> Result<Option<osis_crypto::VerifyingKey>> {
+        Cutoff::get_in(self, |l| &l.feeds.stamp_keys.0, s, |l, s| l.derive_stamp_vk(s))
+    }
+
+    fn derive_stamp_vk(&mut self, s: &SyncId) -> Result<Option<osis_crypto::VerifyingKey>> {
+        Ok(stamp_key(self.cx, s)?.map(|w| w.verifying_key()))
     }
 
     /// Where an entry of role commit `c` that a recorded step of S waits on is stamped: that
@@ -285,10 +307,14 @@ impl Ground for Live<'_, '_> {
         self.feeds.blobs.0.unfollow(&(*s, *c));
     }
     fn refresh(&mut self) -> Result<()> {
-        Cutoff::refresh_in(self, |l| &l.feeds.blobs.0, |l, (s, c)| l.derive_blobs_at(s, c)).map(drop)
+        Cutoff::refresh_in(self, |l| &l.feeds.blobs.0, |l, (s, c)| l.derive_blobs_at(s, c))?;
+        Cutoff::refresh_in(self, |l| &l.feeds.stamp_keys.0, |l, s| l.derive_stamp_vk(s)).map(drop)
     }
     fn unfollow_fate(&mut self, c: &CommitId) {
         self.cx.engine.unfollow_fate(c);
+    }
+    fn unread(&mut self, s: &SyncId) {
+        self.feeds.stamp_keys.0.unfollow(s);
     }
     fn mintings(&mut self, t: &Tid) -> Arc<Vec<osis_engine::retention::Minting>> {
         Arc::new(self.cx.engine.mintings_of(t))

@@ -1330,7 +1330,7 @@ impl Engine {
     /// strong as a header only (spec/sync-judgement.md §2).
     pub fn unit_settled(&mut self, t: &Tid) -> crate::error::Result<bool> {
         let unit = self.sync_unit(t);
-        Ok(!self.core.ix.missing.keys().any(|(_, x)| unit.contains(x)))
+        Ok(!unit.iter().any(|x| self.core.ix.missing_things.contains_key(x)))
     }
 
     /// The things whose sync unit holds `t`, read here (spec/sync-set.md §2).

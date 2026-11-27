@@ -428,7 +428,8 @@ pub(crate) fn made_len(t: &mut Transaction<'_>, b: &BlobId) -> Result<Option<u64
 /// engine holds them too, and every entry naming it is servable.
 pub(crate) fn made(t: &mut Transaction<'_>, env: &mut Env<'_>, b: &BlobId, len: u64) -> Result<()> {
     t.put_local(&rows::made_key(b), &len.to_be_bytes(), Shred::No)?;
-    if t.get_local(&rows::engine_key(b))?.is_none() {
+    // bytes never stored here (a blob sealed to be made) are no change to its readers
+    if t.get_local(&rows::engine_key(b))?.is_none() && t.blob_len(b)?.is_some() {
         t.delete_blob(b);
     }
     // one no entry names (sealed and never logged) is told as one whose last entry went, so the

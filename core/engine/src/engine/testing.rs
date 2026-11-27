@@ -714,6 +714,7 @@ fn tables(ix: &super::Indexes) -> Vec<(&'static str, &dyn Table)> {
         ("versions", &*ix.versions),
         ("invalid", &*ix.invalid),
         ("missing", &*ix.missing),
+        ("missing_things", &*ix.missing_things),
         ("ranges", &*ix.ranges),
         ("rotation_role", &*ix.rotation_role),
         ("overreach", &*ix.overreach),

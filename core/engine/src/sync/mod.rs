@@ -539,6 +539,7 @@ impl Engine {
         let moved = osis_base::memo::Cutoff::refresh_in(self, |e| &e.core.wrap_blocks, |e, (a, walk)| e.wrap_blocked_read(a, *walk))? | moved;
         let moved = self.follow_cert_records()? | moved;
         let moved = osis_base::memo::Cutoff::refresh_in(self, |e| &e.core.sync_bodies, |e, c| e.sync_bodies_read(c))? | moved;
+        let moved = osis_base::memo::Cutoff::refresh_in(self, |e| &e.core.sync_body_rows, |e, k| e.sync_body_read(k))? | moved;
         // a body's facts read every value above
         let moved = osis_base::memo::Cutoff::refresh_in(self, |e| &e.core.read_facts, |e, (s, c)| e.read_facts_now(s, c))? | moved;
         Ok(osis_base::memo::Cutoff::refresh_in(self, |e| &e.core.held_fates, |e, c| e.held_fate_now(c))? | moved)
@@ -582,6 +583,7 @@ impl Engine {
     pub fn unfollow_fate(&mut self, c: &CommitId) {
         self.core.held_fates.unfollow(c);
         self.core.sync_bodies.unfollow(c);
+        self.core.sync_body_rows.unfollow_from(&(*c, SyncId([0; 16]), None), |k| k.0 == *c);
     }
 
     /// `held_fate` derived anew.

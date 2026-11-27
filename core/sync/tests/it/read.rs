@@ -2068,6 +2068,37 @@ fn judged_per_event(n: usize) -> [u64; 2] {
     taken(["read: judged", "read: toward"])
 }
 
+/// The judgements (`read: judged`) and those giving the value held (`read: judged unchanged`)
+/// node 0 and node 1 make for a thing node 0 makes, writes and grants node 1 read on, after `n`
+/// such things (each its own sync ID, carrying the accounts' certificates as copies), run to quiet.
+fn judged_per_sync_id(n: usize) -> [u64; 2] {
+    use crate::harness::Step::*;
+    use crate::harness::history::{Gives, world_of};
+    let mut w = world_of(0, 2, 2);
+    let round = |k: usize| [New(0), Write(0, k), Grant(0, k, 1, Gives::Reads), Run];
+    for k in 0..n {
+        for s in &round(k) {
+            crate::harness::step(&mut w, s);
+        }
+    }
+    osis_base::costs::take();
+    for s in &round(n) {
+        crate::harness::step(&mut w, s);
+    }
+    taken(["read: judged", "read: judged unchanged"])
+}
+
+// spec/sync.md §2 (work in proportion to change): a sync ID coming to be read re-judges nothing
+// under the others, though a commit has a body under each (an account's certificates go as a
+// copy under every sync ID): the same judgements, and the same judgements giving the value
+// already held, after n and 10n other sync IDs. A judgement reading what decides another sync
+// ID's body (the commit's bodies whole, its blobs under every sync ID) grows with them.
+#[test]
+fn a_new_sync_id_judges_nothing_again_under_the_others() {
+    let (a, b) = (judged_per_sync_id(1), judged_per_sync_id(10));
+    assert_eq!(a, b, "(judgements, unchanged) for a new sync ID grow with the sync IDs read");
+}
+
 // spec/sync.md §2 (work in proportion to change): over the real engine, a write and a role
 // change on one thing re-judge the (sync ID, commit) pairs they moved, never every pair held: the
 // same judgements after n and 10n commits under other sync IDs (the engine's values kept per key

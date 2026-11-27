@@ -439,9 +439,16 @@ impl Engine {
         Ok(Arc::new(out.into_iter().collect()))
     }
 
-    /// Body `b` at read sync ID `s`: its entry in `sync_bodies`, a read of its commit's row.
+    /// Body `b` at read sync ID `s`: its entry in `sync_bodies`, a read of its own row
+    /// (`Core::sync_body_rows`), unfollowed with the commit's (`unfollow_fate`).
     pub fn sync_body(&mut self, s: &SyncId, b: &BodyId) -> Result<Option<BodyMeta>> {
-        Ok(self.sync_bodies(&b.commit)?.get(&(*s, b.on)).cloned())
+        self.follow_bodies()?;
+        osis_base::memo::Cutoff::get_in(self, |e| &e.core.sync_body_rows, &(b.commit, *s, b.on), |e, k| e.sync_body_read(k))
+    }
+
+    /// `sync_body` read anew from its commit's row.
+    pub(super) fn sync_body_read(&mut self, (c, s, on): &(CommitId, SyncId, Option<Tid>)) -> Result<Option<BodyMeta>> {
+        Ok(self.sync_bodies(c)?.get(&(*s, *on)).cloned())
     }
 
     /// Whether `x` is outside `s`'s sync unit as its bodies read it: no thing reading `s` carries
