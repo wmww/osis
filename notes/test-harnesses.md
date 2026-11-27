@@ -168,3 +168,6 @@ Each binary's budget is its line in tools/test_cost.txt (notes/gate.md, The summ
 - A redb store's clean close commits its allocator state; `std::mem::forget` of a store as a power cut fails the reopen (the file lock stays held).
 - osis-perm's `paths/hand*.rs` mirror roles-model's hand worlds by name: grep `core/` before renaming a model test. A helper swapped for a "superset" one can pass the default tests and fail a `_plain` property: run the crate's `_plain` properties after a helper change.
 - Ephemeral bodies do not survive a restart: a restart case of an ephemeral rule needs a durable aspect. A scale test's small size must page as its large size does.
+
+## Un-ignoring
+`tools/ignores.py --run` runs each ignored test alone: a count-based osis-sync test can pass alone and fail in the full run, so confirm an un-ignore in the crate's full run before landing.
