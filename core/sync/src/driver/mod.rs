@@ -788,6 +788,16 @@ impl Node {
             let mut cx = cx!(self, out);
             let sessions = &mut self.driver.sessions;
             acted |= acts.by(Act::Inbox, osis_base::costs::scoped("inbox", || self.inbox.settle(&mut cx, sessions, &self.opens, &self.streams, &self.status))?);
+            // the registrar's word on what it owes each store source: an ended member there owed
+            // nothing closes at its `until`
+            let owed = self.inbox.take_owed();
+            if !owed.is_empty() {
+                self.opens.on_owed(&mut cx, sessions, &self.unread, owed, &mut moved);
+                acted |= acts.by(Act::Opens, !moved.is_empty());
+                self.moved(&mut moved, out);
+            }
+            let mut cx = cx!(self, out);
+            let sessions = &mut self.driver.sessions;
             acted |= acts.by(Act::Streams, self.streams.settle(&mut cx, sessions, &self.opens, &mut self.driver.reported)?);
             self.reports(out);
             let mut cx = cx!(self, out);

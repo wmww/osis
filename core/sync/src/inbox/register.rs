@@ -50,6 +50,8 @@ type Key = (Source, SyncId);
 pub enum Plan {
     Nothing,
     Wait,
+    /// Refused while the source stood at its step: nothing goes until it moves, nothing owed.
+    Stuck,
     /// The steps of one Register, in order, and the endorsement of the last by the source's
     /// step's delete key when it needs one.
     Send(Vec<Step>, Option<Signature>),
@@ -70,11 +72,11 @@ pub struct Progress {
 #[derive(Clone)]
 pub(super) struct Register {
     plans: Effects<Key, Plan>,
-    /// The keys `plans` follows, by record: what a record going lets go; each with the sync key
-    /// S opened there by (none: a claim). A key stays followed after its member closes, while
-    /// what its source showed is kept (spec/sync-ids.md §6: Register needs no open), so a store an
-    /// ended member reached its `until` at is still moved.
-    followed: BTreeMap<Key, Option<[u8; 32]>>,
+    /// The keys `plans` follows (store members open), by record: what a record going lets go.
+    followed: BTreeSet<Key>,
+    /// Each key judged since the last `take_owed`, with whether a Register is owed there: an
+    /// ended member at a store source stays open while one is (spec/sync-opens.md §6).
+    owed: Vec<(Source, SyncId, bool)>,
     progress: Stamped<Key, Progress>,
     /// Register requests out: their key, last step and the source's step when sent.
     out: BTreeMap<(ConnId, RequestId), (Key, StepId, Option<StepId>)>,
@@ -83,16 +85,15 @@ pub(super) struct Register {
 
 impl Default for Register {
     fn default() -> Self {
-        Register { plans: Effects::new("inbox: register"), followed: BTreeMap::new(), progress: Stamped::default(), out: BTreeMap::new(), wakes: BTreeSet::new() }
+        Register { plans: Effects::new("inbox: register"), followed: BTreeSet::new(), owed: Vec::new(), progress: Stamped::default(), out: BTreeMap::new(), wakes: BTreeSet::new() }
     }
 }
 
 impl Register {
-    /// S became a store member of the record at `src`, opened by `by` (a sync proof's sync key;
-    /// none: a claim).
-    pub(super) fn joined(&mut self, src: Source, s: SyncId, by: Option<[u8; 32]>) {
+    /// S became a store member of the record at `src`.
+    pub(super) fn joined(&mut self, src: Source, s: SyncId) {
         self.plans.want((src, s));
-        self.followed.insert((src, s), by);
+        self.followed.insert((src, s));
     }
 
     /// S left the record at `src`.
@@ -119,7 +120,7 @@ impl Register {
 
     /// The record at `src` went (evicted, dropped, or kept nowhere and its connection ended).
     pub(super) fn gone(&mut self, src: Source) {
-        let keys: Vec<Key> = self.followed.range((src, SyncId([0; 16]))..=(src, SyncId([0xff; 16]))).map(|(k, _)| *k).collect();
+        let keys: Vec<Key> = self.followed.range((src, SyncId([0; 16]))..=(src, SyncId([0xff; 16]))).copied().collect();
         for (src, s) in keys {
             self.left(src, &s);
         }
@@ -141,8 +142,19 @@ impl Register {
         }
         for k in self.plans.due() {
             let (engine, progress) = (&mut *h.engine, &self.progress);
-            let Some(by) = self.followed.get(&k).copied() else { continue };
-            let Some((_, plan)) = self.plans.try_settle(&k, || judge(engine, &*net, progress, &k, by))? else { continue };
+            if !self.followed.contains(&k) {
+                continue;
+            }
+            let mut judged = None;
+            let moved = self.plans.try_settle(&k, || {
+                let p = judge(engine, &*net, progress, &k)?;
+                judged = Some(matches!(p, Plan::Send(..) | Plan::Wait));
+                Ok::<_, crate::types::Error>(p)
+            })?;
+            if let Some(owed) = judged {
+                self.owed.push((k.0, k.1, owed));
+            }
+            let Some((_, plan)) = moved else { continue };
             let Plan::Send(steps, endorsement) = plan else { continue };
             let Some(last) = steps.last().map(Step::id) else { continue };
             let (src, s) = k;
@@ -186,20 +198,23 @@ impl Register {
     pub(super) fn next_wake(&self) -> Option<Mono> {
         self.wakes.first().map(|(t, _)| *t)
     }
+
+    /// The keys judged since the last call, each with whether a Register is owed there.
+    pub(super) fn take_owed(&mut self) -> Vec<(Source, SyncId, bool)> {
+        std::mem::take(&mut self.owed)
+    }
 }
 
-fn judge(engine: &mut Engine, net: &impl Net, progress: &Stamped<Key, Progress>, k: &Key, by: Option<[u8; 32]>) -> Result<Plan> {
+fn judge(engine: &mut Engine, net: &impl Net, progress: &Stamped<Key, Progress>, k: &Key) -> Result<Plan> {
     osis_base::costs::count("inbox: register judged", 1);
     let (src, s) = k;
-    // open there as a store, or closed there with what its source showed kept
+    // open there as a store (spec/sync-ids.md §6 Walk, Moving it)
     let key = match net.member_at(*src, s) {
-        Some(m) if m.class != SourceClass::Store => return Ok(Plan::Nothing),
-        Some(m) => match m.by {
+        Some(m) if m.class == SourceClass::Store => match m.by {
             Credential::SyncProof(k) => Some(k),
             Credential::Claim(_) => None,
         },
-        None if net.head(*src, s).is_some() => by,
-        None => return Ok(Plan::Nothing),
+        _ => return Ok(Plan::Nothing),
     };
     // S's recorded path and tree: a sync ID only a hint names records none
     let mut owned = None;
@@ -235,7 +250,10 @@ fn judge(engine: &mut Engine, net: &impl Net, progress: &Stamped<Key, Progress>,
 /// step, at once. Nothing goes when the steps do not fit `MAX_MESSAGE`.
 pub fn plan(source: Option<StepId>, o: &OwnedSyncId, p: &Progress, key: Option<[u8; 32]>, held: &mut dyn FnMut(&StepId) -> Result<bool>) -> Result<Plan> {
     let (path, tree): (&Path, &BTreeMap<StepId, Step>) = (&o.path, &o.tree);
-    if p.out || p.backoff.is_some() || p.stuck.is_some_and(|x| x == source) {
+    if p.stuck.is_some_and(|x| x == source) {
+        return Ok(Plan::Stuck);
+    }
+    if p.out || p.backoff.is_some() {
         return Ok(Plan::Wait);
     }
     let index = |id: &Option<StepId>| id.and_then(|id| path.steps.iter().position(|st| st.id() == id));

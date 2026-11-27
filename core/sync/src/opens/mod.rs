@@ -321,12 +321,17 @@ struct Conn {
     reported: Positions,
     /// Members with an `until`: what a reported position may close.
     ending: BTreeSet<SyncId>,
+    /// Ended members at a store source the registrar judged owed no Register since they ended
+    /// (inbox's `take_owed`): only these close at their `until` (spec/sync-opens.md §6).
+    unowed: BTreeSet<SyncId>,
     /// It lost its record to this connection (spec/sync-opens.md §1 One connection per pair):
     /// it closes, and acts on nothing meanwhile.
     lost_to: Option<ConnId>,
-    /// Per S, the highest `until` an ended member reached on this connection: a Hit on an
-    /// older step's sync proof opens S again here only for a later one (spec/sync-opens.md §6).
-    served: BTreeMap<SyncId, Position>,
+    /// Per S and the classes (own, peer's) it was open with, the highest `until` an ended member
+    /// reached on this connection: a Hit declaring those classes on an older step's sync proof
+    /// opens S again here only for a later one (spec/sync-opens.md §6); a class moved since (a
+    /// reader that came to keep S unread) opens it anew.
+    served: BTreeMap<(SyncId, SourceClass, SourceClass), Position>,
     /// Per S, the `changed_at` position at which this side last asked the peer Head: asked once
     /// per change of S, never again while S stands (spec/sync-ids.md §6 Head).
     asked_head: BTreeMap<SyncId, u64>,
@@ -949,9 +954,30 @@ impl Opens {
         }
     }
 
-    /// An ended member whose reported position is at or past its `until` closes with a Lost.
+    /// The registrar's word (inbox's `take_owed`): whether a Register is owed at the store source
+    /// at `src` for S. An ended member there owed none closes at its `until` once reached.
+    pub fn on_owed(&mut self, cx: &mut Cx, sessions: &mut Sessions, unread: &Unread, owed: Vec<(Source, SyncId, bool)>, moved: &mut Vec<Moved>) {
+        self.live(cx, sessions, unread, |o, ctx| {
+            for (src, s, owed) in owed {
+                let Some(conn) = o.conn_of(src) else { continue };
+                let Some(c) = o.conns.get_mut(&conn) else { continue };
+                if owed || !c.ending.contains(&s) {
+                    c.unowed.remove(&s);
+                } else if c.unowed.insert(s) {
+                    o.close_if_reached(ctx, conn, s, moved);
+                }
+            }
+        });
+    }
+
+    /// An ended member whose reported position is at or past its `until` closes with a Lost; at
+    /// a store source only once no Register is owed there (spec/sync-opens.md §6).
     fn close_if_reached(&mut self, ctx: &mut Ctx, conn: ConnId, s: SyncId, moved: &mut Vec<Moved>) {
-        let Some(until) = self.member(conn, &s).and_then(|m| m.until) else { return };
+        let Some(m) = self.member(conn, &s) else { return };
+        let Some(until) = m.until else { return };
+        if m.class == SourceClass::Store && !self.conns.get(&conn).is_some_and(|c| c.unowed.contains(&s)) {
+            return;
+        }
         if self.reported_at(conn, &s).is_some_and(|(p, _)| *p >= until) {
             self.close_member(ctx, conn, s, Close::Until, moved);
         }
@@ -1319,6 +1345,7 @@ impl Opens {
             offer: None,
             reported: Positions::default(),
             ending: BTreeSet::new(),
+            unowed: BTreeSet::new(),
             lost_to: None,
             served: BTreeMap::new(),
             asked_head: BTreeMap::new(),
@@ -1947,7 +1974,7 @@ impl Opens {
             let before = items.len();
             for t in &adm.tests {
                 // one it would not open by is not sent (spec/sync-opens.md §6)
-                if self.served_past(ctx, conn, &s, &adm, &t.credential()) {
+                if self.served_past(ctx, conn, &s, &adm, &t.credential(), None) {
                     continue;
                 }
                 let m = t.matched();
@@ -2029,7 +2056,7 @@ impl Opens {
                 continue;
             }
             let by = cred.credential();
-            if self.served_past(ctx, conn, &s, &adm, &by) {
+            if self.served_past(ctx, conn, &s, &adm, &by, Some(a.class)) {
                 continue;
             }
             if self.open(conn, s, Member { class: a.class, own, by, until: None }, beacon, moved) {
@@ -2080,10 +2107,16 @@ impl Opens {
         ctx.wire.answer(conn, id, Msg::Shared { id, items: answers });
     }
 
-    /// Whether `by`, an older step's sync proof, opens nothing on `conn`: an ended member reached
-    /// its `until` there already, and `by`'s is no later (spec/sync-opens.md §6).
-    fn served_past(&self, ctx: &mut Ctx, conn: ConnId, s: &SyncId, adm: &Adm, by: &Credential) -> bool {
-        !adm.of_head(by) && self.conns.get(&conn).and_then(|c| c.served.get(s)).copied().is_some_and(|u| u >= ctx.holds.until(s, by))
+    /// Whether `by`, an older step's sync proof, opens nothing on `conn` with this side's class and
+    /// the peer's (`peer`; none: any): an ended member open with those classes reached its `until`
+    /// there already, and `by`'s is no later (spec/sync-opens.md §6).
+    fn served_past(&self, ctx: &mut Ctx, conn: ConnId, s: &SyncId, adm: &Adm, by: &Credential, peer: Option<SourceClass>) -> bool {
+        if adm.of_head(by) {
+            return false;
+        }
+        let Some(c) = self.conns.get(&conn) else { return false };
+        let reached = c.served.range((*s, adm.own, SourceClass::Reader)..=(*s, adm.own, SourceClass::Stub)).filter(|((_, _, p), _)| peer.is_none_or(|x| x == *p)).map(|(_, u)| *u).max();
+        reached.is_some_and(|u| u >= ctx.holds.until(s, by))
     }
 
     /// A Hit (spec/sync-opens.md §5 Opening); `class`: the class the peer declared in it.
@@ -2109,7 +2142,7 @@ impl Opens {
             }
             Shown::Deposit(_) => return refuse,
         };
-        if self.served_past(ctx, conn, &s, &adm, &by) {
+        if self.served_past(ctx, conn, &s, &adm, &by, Some(class)) {
             return refuse;
         }
         let m = Member { class, own: adm.own, by, until: None };
@@ -2229,6 +2262,7 @@ impl Opens {
             && let Some(k) = self.conns.get_mut(&c)
         {
             k.ending.insert(*s);
+            k.unowed.remove(s);
             moved.push(Moved::Until(c, *s));
         }
         self.member_changed(rid, s);
@@ -2251,7 +2285,7 @@ impl Opens {
     fn close_member(&mut self, ctx: &mut Ctx, conn: ConnId, s: SyncId, why: Close, moved: &mut Vec<Moved>) {
         let Some(m) = self.member(conn, &s).cloned() else { return };
         if let (Close::Until, Some(u), Some(c)) = (why, m.until, self.conns.get_mut(&conn)) {
-            let at = c.served.entry(s).or_insert(u);
+            let at = c.served.entry((s, m.own, m.class)).or_insert(u);
             *at = (*at).max(u);
         }
         let cursor = match why {
@@ -2286,6 +2320,7 @@ impl Opens {
         c.reported.forget(&s);
         self.reports.wrote(&conn, true);
         c.ending.remove(&s);
+        c.unowed.remove(&s);
         r.basis.remove(&s);
         match stop {
             Some(j) => r.stopped.insert(s, j),

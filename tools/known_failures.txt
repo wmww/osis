@@ -10,12 +10,8 @@ osis-engine/retention::tests_carried::purge_by_id_reads_alike_forgotten_or_not_p
 osis-engine/retention::tests_carried::purge_by_id_reads_alike_forgotten_or_not_plain_spec_commits_5 rate:OSIS_PURGE_BY_ID_START=532945376426 issues/purge-by-id-forgetting.md purges through a name: 1 over \d+ seeds
 held-model/props::late_commit_converges_after_repair_large_spec_commits_5 rate:OSIS_HELD_START=527365123558,OSIS_HELD_SEEDS=1 issues/held-model-late-commit-read-lost.md seed \d+: late Commit
 osis-sync/differential::histories_hold_their_closure_plain rate:OSIS_SYNC_START=527365123461,OSIS_SYNC_SEEDS=1 issues/differential-full-size-classes.md panicked: node \d+ reads thing \d+ unlike the reference
-osis-sync/again::a_head_move_after_a_restart_logs_again_once_more_spec_sync_judgement_4 - issues/entries-open-failures.md .
 osis-engine/closure::a_take_up_costs_what_the_opener_opens_spec_sync_set_2 - issues/entries-open-failures.md .
-osis-sync/delete_keys::a_demoted_writers_old_keys_keep_its_writes_out_of_an_unread_store_spec_permissions_6 - issues/entries-open-failures.md .
 osis-sync/destruction::a_node_away_past_the_floor_learns_the_destruction_spec_commits_5 - issues/entries-open-failures.md .
-osis-sync/differential::a_holder_left_out_is_re_sealed_once_its_keyset_arrives_spec_permissions_3 - issues/entries-open-failures.md .
-osis-sync/differential::a_removed_reader_keeps_a_thing_the_public_syncs_unread_spec_sync_set_2 - issues/entries-open-failures.md .
 osis-sync/differential::a_signal_only_a_removed_node_took_is_lost_spec_sync_inbox_2 - issues/entries-open-failures.md .
 osis-sync/differential::grantees_of_concurrent_promotions_read_on_one_sync_id_spec_sync_ids_2 - issues/entries-open-failures.md .
 osis-sync/differential::the_public_granted_again_is_read_again_spec_permissions_3 - issues/entries-open-failures.md .
@@ -24,6 +20,3 @@ osis-sync/flows::a_raced_grant_is_resealed_at_a_complete_passs_end_spec_perm_3 -
 osis-sync/grants::a_reader_granted_again_reads_again_spec_sync_set_2 - issues/entries-open-failures.md .
 osis-sync/growth::rotations_keep_keysets_flat_spec_commits_5 - issues/entries-open-failures.md .
 osis-sync/keep::a_grant_from_outside_reaches_an_account_that_removed_a_node - issues/entries-open-failures.md .
-osis-sync/keep::a_reader_moves_a_removed_store_it_never_showed_its_step_spec_sync_opens_6 - issues/entries-open-failures.md .
-osis-sync/keep::a_reader_moves_a_store_departed_before_it_kept_s_unread_spec_sync_opens_6 - issues/entries-open-failures.md .
-osis-sync/opens::a_removal_while_away_serves_nothing_after_it_spec_sync_opens_6 - issues/entries-open-failures.md .

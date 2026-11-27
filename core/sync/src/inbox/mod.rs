@@ -234,12 +234,14 @@ impl Inbox {
                 self.offers.joined(conn, &s, net);
                 let (src, m) = (net.source(conn), net.member(conn, &s));
                 // only a store keeping S unread registers steps (spec/sync-ids.md §6 Steps)
-                if let Some(m) = m.filter(|m| m.class == SourceClass::Store) {
-                    self.register.joined(src, s, by_key(&m.by));
+                if m.is_some_and(|m| m.class == SourceClass::Store) {
+                    self.register.joined(src, s);
                 }
             }
-            // a store closed ended is registered at while what its source showed is kept
-            Moved::Left(..) => osis_base::costs::count("inbox: members moved", 1),
+            Moved::Left(_, s, ref at) => {
+                osis_base::costs::count("inbox: members moved", 1);
+                self.register.left(at.src, &s);
+            }
             Moved::Forgot(conn, s) => self.register.left(net.source(conn), &s),
             Moved::Gone(rid, s) => self.register.left(Source::Record(rid), &s),
             // read from its rows: its members are learned now
@@ -249,8 +251,7 @@ impl Inbox {
                 for (s, class) in net.members(conn) {
                     osis_base::costs::count("inbox: members moved", 1);
                     if class == SourceClass::Store {
-                        let by = net.member(conn, &s).and_then(|m| by_key(&m.by));
-                        self.register.joined(src, s, by);
+                        self.register.joined(src, s);
                     }
                 }
             }
@@ -307,15 +308,13 @@ impl Inbox {
         self.offers.may_land(conn)
     }
 
+    /// The store sources judged since the last call, each with whether a Register is owed there
+    /// (opens' `owed`: an ended member there stays while one is).
+    pub fn take_owed(&mut self) -> Vec<(Source, SyncId, bool)> {
+        self.register.take_owed()
+    }
+
     pub fn next_wake(&self) -> Option<Mono> {
         [self.offers.next_wake(), self.register.next_wake()].into_iter().flatten().min()
-    }
-}
-
-/// The sync key a member opened by (none: a claim).
-fn by_key(c: &crate::types::Credential) -> Option<[u8; 32]> {
-    match c {
-        crate::types::Credential::SyncProof(k) => Some(*k),
-        crate::types::Credential::Claim(_) => None,
     }
 }

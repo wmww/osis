@@ -587,7 +587,7 @@ fn registers_steps_after_source_step_spec_sync_ids_6() {
 fn a_source_holding_no_step_gets_genesis_first_spec_sync_ids_6() {
     let st = Steps::new(3);
     assert_eq!(sends(&plan_at(&st, None, Progress::default(), &[])), Some(st.id(0)), "genesis, at once");
-    assert_eq!(plan_at(&st, None, Progress { stuck: Some(None), ..Progress::default() }, &[]), Plan::Wait, "refused: waits for a head event");
+    assert_eq!(plan_at(&st, None, Progress { stuck: Some(None), ..Progress::default() }, &[]), Plan::Stuck, "refused: waits for a head event");
     let all = [st.id(0), st.id(1), st.id(2)];
     let at = Progress { at: Some(st.id(0)), ..Progress::default() };
     assert_eq!(sends(&plan_at(&st, None, at, &all)), Some(st.id(1)), "then the next");
@@ -626,7 +626,7 @@ fn registers_a_branch_at_a_sibling_spec_sync_ids_6() {
     let done = Progress { at: Some(st.id(2)), ..Progress::default() };
     assert_eq!(sends(&plan_in(&st, &tree, Some(a.id()), done, &all)), Some(st.id(3)), "registered there: the next alone");
     let stuck = Progress { stuck: Some(Some(a.id())), ..Progress::default() };
-    assert_eq!(plan_in(&st, &tree, Some(a.id()), stuck, &all), Plan::Wait, "refused: waits for the source to move");
+    assert_eq!(plan_in(&st, &tree, Some(a.id()), stuck, &all), Plan::Stuck, "refused: waits for the source to move");
     // a branch two deep off step 0: the recorded path through its depth plus one
     let mut b = Steps { steps: st.steps[..1].to_vec() };
     b.steps.push(a.clone());
@@ -677,7 +677,7 @@ fn register_refusals_spec_sync_ids_6() {
     assert_eq!(plan_at(&st, at0, Progress { out: true, ..Progress::default() }, &all), Plan::Wait);
     assert_eq!(plan_at(&st, at0, Progress { backoff: Some((osis_base::Mono(T0), 0)), ..Progress::default() }, &all), Plan::Wait);
     let stuck = Progress { stuck: Some(at0), ..Progress::default() };
-    assert_eq!(plan_at(&st, at0, stuck, &all), Plan::Wait, "refused: waits");
+    assert_eq!(plan_at(&st, at0, stuck, &all), Plan::Stuck, "refused: waits");
     assert_eq!(sends(&plan_at(&st, Some(st.id(1)), stuck, &all)), Some(st.id(2)), "the head event moved it");
 }
 
