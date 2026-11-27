@@ -52,7 +52,7 @@
 - Nothing else makes a node hold a thing it is granted a role on: syncing it is the holder's own choice, a strong.
 
 ## 5. Source
-- A link's sync ID is in the redeemer's sync set, read, while it redeems the link (from the link text until a held `sync.0` records it, spec/sync-inbox.md §6), whatever it holds of K; a locator's (its target's) likewise, until the link reaches the target and the node closure holds it.
+- A link's sync ID is in the redeemer's sync set, read, while it redeems the link (from the link text until a held `sync.0` records it, spec/sync-inbox.md §6), whatever it holds of K; a locator's (its target's) likewise, until the link reaches the target and the node closure holds it; so too each sync ID a followed grant signal names (spec/sync-inbox.md §5). A sync ID so named counts for its thing only while no other thing owns it at the node (spec/sync-ids.md §4 Owner): a `sync.0` of another thing recording it without such a step changes nothing.
 - A node MAY read and write an independent thing, with its sync unit, through another node it is a client of (its source, spec/sync-transport.md §6).
 - A thing of a sync unit sourced at another node is read and written there, whatever else holds it; the copy this node holds never answers.
 - **The node thing is never sourced away**: it is never cut from the sync set.

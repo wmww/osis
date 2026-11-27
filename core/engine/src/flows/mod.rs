@@ -416,3 +416,5 @@ impl Engine {
 
 #[cfg(test)]
 mod tests_notices;
+#[cfg(test)]
+mod tests_signals;

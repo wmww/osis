@@ -83,20 +83,24 @@ impl Engine {
         self.sealed_notice(n, &kem, &blob_key)
     }
 
-    /// Takes notice `bytes` sent under `s` (spec/permissions.md §4 Notices): opened by a read KEM
-    /// secret held here of a holder of one of `s`'s things or of a thing on this node's own chains
-    /// (a holder holding nothing of the thing yet), its copy taken on its own thing. Whether it
-    /// gave anything.
-    pub fn take_notice(&mut self, s: &SyncId, bytes: &[u8]) -> Result<bool> {
-        let things: Vec<Option<Tid>> = self.sync_things_of(s)?.into_iter().map(Some).chain([None]).collect();
-        for t in things {
-            match self.open_notice(t, bytes)? {
-                crate::sync::Opened::NotOpen => {}
-                crate::sync::Opened::Commit(_, crate::Ingested::Duplicate(_)) | crate::sync::Opened::Bad => return Ok(false),
-                _ => return Ok(true),
-            }
+    /// Takes notice `bytes` sent under `s` to `holder`, sealed to its read keyset at `epoch`
+    /// (spec/permissions.md §4 Notices, spec/wire.md §11.2 Notice): opened by that keyset's read
+    /// KEM secret where held here, its copy taken on its own thing, one of `s`'s things (held, or
+    /// followed by a locator or signal). Whether it gave anything.
+    ///
+    /// Invariant (cost): a notice costs at most one decapsulation, and none unless `s` is held or
+    /// followed here and the keyset it names is held. Who writes each input: `s`, `holder`,
+    /// `epoch` and `bytes` are the sending peer's (any connected peer, proving nothing); the
+    /// keysets held are this node's, by its own roles; `s`'s things, this node's sync set. So a
+    /// peer's junk costs one decapsulation per message whatever this node holds, and the same
+    /// path serves a notice on a fresh connection and after a restart (nothing of it is kept).
+    pub fn take_notice(&mut self, s: &SyncId, holder: &Tid, epoch: &Epoch, bytes: &[u8]) -> Result<bool> {
+        let things = self.sync_things_of(s)?;
+        if things.is_empty() {
+            return Ok(false);
         }
-        Ok(false)
+        use crate::sync::Opened;
+        Ok(!matches!(self.open_notice(&things, holder, epoch, bytes)?, Opened::NotOpen | Opened::Bad | Opened::Commit(_, crate::Ingested::Duplicate(_))))
     }
 
     /// Whether removal `c` of `holder` from `t` reaches a peer proving `proven`: `holder` is among

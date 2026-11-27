@@ -197,7 +197,7 @@ pub fn messages() -> Vec<(&'static str, Msg)> {
         ("stream with no cursor", Msg::Stream(Box::new(Stream { events: vec![(l, Event::Full(true)), (l, Event::Refused(id(0xb1), Code::NOT_HEAD_KEY)), (l, added)], cursor: None, report: false, seq: 0 }))),
         ("applied", Msg::Applied { cursor: cursor(0x30) }),
         ("digest", Msg::Digest { digest: [0x31; 32] }),
-        ("notice", Msg::Notice { sync_id: l, notice: vec![0x33; 4] }),
+        ("notice", Msg::Notice { sync_id: l, holder: Tid::from_bytes([0x34; 15]), epoch: Epoch::new(2, [0x35; 32]).expect("small epoch"), notice: vec![0x33; 4] }),
         ("members", Msg::Members { sync_ids: vec![l, other], more: false }),
     ]
 }

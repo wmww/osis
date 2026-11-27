@@ -124,14 +124,17 @@ impl Engine {
                 return Ok(ThingSync::Unread(ids));
             }
         }
-        // a link or signal followed, where no secret held syncs it: its sync ID read while
-        // followed, whatever is held of K yet, while it is K's (`followable`; from the link text
-        // until K's own `sync.0` records it)
-        if let Some((s, _)) = self.core.followed_links.get(t)
+        // a link or signals followed, where no secret held syncs it: each sync ID followed read
+        // while followed, whatever is held of K yet, while it is K's (`followable`, and no other
+        // thing's by the owner rule; from the link text until K's own `sync.0` records it)
+        if let Some((ids, _)) = self.core.followed_links.get(t)
             && crate::sync_ids::actors::followable(&self.core, t)
-            && self.owned_sync_ids(t)?.iter().any(|o| o.id == s)
         {
-            return Ok(ThingSync::Read(vec![s]));
+            let owned = self.owned_sync_ids(t)?;
+            let ids: Vec<SyncId> = ids.into_iter().filter(|s| owned.iter().any(|o| o.id == *s)).collect();
+            if !ids.is_empty() {
+                return Ok(ThingSync::Read(ids));
+            }
         }
         Ok(if self.core.is_independent(t) { ThingSync::Unsyncable } else { ThingSync::Dependent })
     }
@@ -239,7 +242,7 @@ impl Engine {
         c.tests_public |= listed;
         c.lapsed_public |= !public && self.core.ix.held.is_named(&Tid::PUBLIC, t);
         if let Some((fs, l)) = self.core.followed_links.get(t)
-            && fs == *s
+            && fs.contains(s)
         {
             match l.and_then(|l| self.core.link_keys.get(&l)) {
                 Some(id) => c.acting.push(id.signing().clone()),

@@ -18,15 +18,15 @@ pub const GRANT_FIRE: &str = ct::INBOX_SIGNALS[0];
 /// Stranded notices.
 pub const STRANDED_FIRE: &str = ct::INBOX_SIGNALS[1];
 
-/// `sg/` + fire commit: a held grant signal followed (`Engine::take_fire`): the thing it
-/// names and that thing's sync ID.
+/// `sg/` + fire commit: a held grant signal (`Engine::take_fire`): the thing it names, that
+/// thing's sync ID and the holder it tells.
 const SIGNALS: &[u8] = b"sg/";
 
 impl Engine {
     /// Takes what each due fire carries (`Indexes::fires_due`, `take_fire`) and what each card
     /// due a look does (`take_cards`): whether any was due.
     pub fn take_carried(&mut self) -> Result<bool> {
-        let cards = self.take_cards()? | self.drop_signals()?;
+        let cards = self.take_cards()? | self.judge_signals()?;
         let due: Vec<CommitId> = self.core.ix.fires_due.iter().copied().collect();
         if due.is_empty() {
             return Ok(cards);
@@ -56,16 +56,19 @@ impl Engine {
     }
 
     /// Takes what fire `fire` carries while it is held valid here (spec/sync-inbox.md §5): a
-    /// stranded notice's report; a grant signal's thing, followed while the fire is held
-    /// (`follow_signal`).
+    /// stranded notice's report; a grant signal's values, kept while the fire is held and
+    /// followed while this node also reads its holder (`judge_signals`).
     pub(crate) fn take_fire(&mut self, fire: &CommitId) -> Result<()> {
         let id = *fire;
         if self.read(|tx| Ok(held_valid(tx.core, &id, GRANT_FIRE)))?
             && let Some(v) = self.read(|tx| fire_value(tx, &id, GRANT_FIRE))?
-            && let Some((x, s, _)) = signal_of(&v)
+            && let Some((sig, _)) = signal_of(&v)
         {
-            self.run(|tx| tx.txn.put_local(&[SIGNALS, &id.0].concat(), &[x.as_bytes().as_slice(), &s.0].concat(), Shred::No).map_err(Into::into))?;
-            self.core.followed_links.follow_signal(x, s, id);
+            self.load_signals()?;
+            let row = [sig.thing.as_bytes().as_slice(), &sig.sync_id.0, sig.holder.as_bytes()].concat();
+            self.run(|tx| tx.txn.put_local(&[SIGNALS, &id.0].concat(), &row, Shred::No).map_err(Into::into))?;
+            self.core.followed_links.held_signals.get_or_insert_default().insert(id, sig);
+            self.judge_signals()?;
         }
         // a stranded notice that applied after it was opened (one ahead of the clock): acted on
         // as one taken at its opening is
@@ -90,47 +93,82 @@ impl Engine {
         let Some(s) = self.sync_id_of(&a)? else { return Ok(()) };
         let inbox = self.inbox_of(holder)?.unwrap_or(*holder);
         let dials = Value::List(peers.iter().map(|p| osis_schema::Codec::to_value(&ct::Dial { key: p.dialable.to_vec(), urls: p.urls.clone() })).collect());
-        let v = osis_schema::codec::rt::struct_value(vec![(0, Value::Weak(a)), (1, Value::Bytes(s.0.to_vec())), (2, dials)]);
+        let v = osis_schema::codec::rt::struct_value(vec![(0, Value::Weak(a)), (1, Value::Bytes(s.0.to_vec())), (2, dials), (3, Value::Bytes(holder.as_bytes().to_vec()))]);
         let ak = super::ak(GRANT_FIRE)?;
         let to = BTreeSet::from([*holder]);
         self.run(|tx| save(tx, OwedFire { thing: inbox, ak, what: Fire::Value(v), to, commit: None, pages: Default::default() }))
     }
 
-    /// Lets go each followed grant signal no longer held valid here (spec/sync-inbox.md §5: held
-    /// while the inbox's setting keeps it): whether any went.
-    fn drop_signals(&mut self) -> Result<bool> {
-        if !self.core.followed_links.signals_loaded {
+    /// The held grant signals, read from their rows once per engine (a restart reads them anew).
+    fn load_signals(&mut self) -> Result<()> {
+        if self.core.followed_links.held_signals.is_none() {
             let rows = self.read(load_signals)?;
-            for (c, x, s) in rows {
-                self.core.followed_links.follow_signal(x, s, c);
-            }
-            self.core.followed_links.signals_loaded = true;
+            self.core.followed_links.held_signals = Some(rows.into_iter().collect());
         }
-        let gone: Vec<(Tid, CommitId)> = self.core.followed_links.signals().iter().flat_map(|(x, (_, cs))| cs.iter().map(move |c| (*x, *c))).filter(|(_, c)| !held_valid(&self.core, c, GRANT_FIRE)).collect();
+        Ok(())
+    }
+
+    /// Judges each held grant signal (spec/sync-inbox.md §5 Grant signal): its row goes once it
+    /// is held valid here no more (the inbox's setting keeps it no longer); it is followed while
+    /// held and this node reads its holder (its role there, as it holds the holder's grants), and
+    /// let go when either ends. Whether any moved.
+    ///
+    /// Invariant: a node follows a signal only where it could take the notice its entry needs
+    /// (sealed to the holder's read keyset), so a node reading the inbox but not the holder
+    /// follows nothing for it; and every held signal naming a thing is followed under its own
+    /// sync ID beside the others (`FollowedLinks`), so which signals are followed turns on what
+    /// is held, never on arrival or commit ID order. Who writes each input: the signal's values
+    /// are its sender's (anyone holding the holder's card); its validity and keeping are the
+    /// inbox's admins' setting; this node's role on the holder, the holder's admins' grants. Rows
+    /// and memory agree on every path: a fire taken now, rows read after a restart, a read gained
+    /// or lost.
+    fn judge_signals(&mut self) -> Result<bool> {
+        self.load_signals()?;
+        let held = self.core.followed_links.held_signals.clone().unwrap_or_default();
+        let mut gone = Vec::new();
+        let mut moved = false;
+        for (c, sig) in &held {
+            let valid = held_valid(&self.core, c, GRANT_FIRE);
+            if !valid {
+                gone.push(*c);
+            }
+            let follow = valid && crate::rotation::role_here(&self.core, &sig.holder) >= Some(Role::Read);
+            let fl = &mut self.core.followed_links;
+            match (follow, fl.follows_signal(&sig.thing, &sig.sync_id, c)) {
+                (true, false) => fl.follow_signal(sig.thing, sig.sync_id, *c),
+                (false, true) => {
+                    fl.unfollow_signal(&sig.thing, &sig.sync_id, c);
+                    self.core.lost_due.insert(sig.thing);
+                }
+                _ => continue,
+            }
+            moved = true;
+        }
         if gone.is_empty() {
-            return Ok(false);
+            return Ok(moved);
         }
         self.run(|tx| {
-            for (_, c) in &gone {
+            for c in &gone {
                 tx.txn.remove_local(&[SIGNALS, &c.0].concat(), Shred::No)?;
             }
             Ok(())
         })?;
-        for (x, c) in &gone {
-            self.core.followed_links.unfollow_signal(x, c);
-            self.core.lost_due.insert(*x);
+        if let Some(h) = self.core.followed_links.held_signals.as_mut() {
+            for c in &gone {
+                h.remove(c);
+            }
         }
         Ok(true)
     }
 
-    /// The peers the held grant signals name, as dial hints (spec/sync-inbox.md §5 Grant
+    /// The peers the followed grant signals name, as dial hints (spec/sync-inbox.md §5 Grant
     /// signal), read so a memo over them moves as signals are followed or let go.
     pub fn signal_hints(&mut self) -> Result<Vec<osis_blob::DialHint>> {
-        let cs: Vec<CommitId> = self.core.followed_links.signals_read().values().flat_map(|(_, cs)| cs.iter().copied()).collect();
+        let cs: Vec<CommitId> = self.core.followed_links.signals_read().values().flat_map(|m| m.values().flatten().copied()).collect();
         let mut out = Vec::new();
         for c in cs {
             if let Some(v) = self.read(|tx| fire_value(tx, &c, GRANT_FIRE))?
-                && let Some((_, _, peers)) = signal_of(&v)
+                && let Some((_, peers)) = signal_of(&v)
             {
                 out.extend(peers);
             }
@@ -159,24 +197,28 @@ pub(crate) fn carries(ak: &str) -> bool {
 }
 
 /// What grant signal value `v` names (`Engine::signal_grant`): the thing, its sync ID and the
-/// peers to dial.
-fn signal_of(v: &Value) -> Option<(Tid, osis_base::SyncId, Vec<osis_blob::DialHint>)> {
+/// holder told; and the peers to dial.
+fn signal_of(v: &Value) -> Option<(crate::sync_ids::actors::Signal, Vec<osis_blob::DialHint>)> {
     let Value::Map(m) = v else { return None };
-    let (Some(Value::Weak(x)), Some(Value::Bytes(s))) = (m.get(&Value::Int(0)), m.get(&Value::Int(1))) else { return None };
+    let (Some(Value::Weak(x)), Some(Value::Bytes(s)), Some(Value::Bytes(h))) = (m.get(&Value::Int(0)), m.get(&Value::Int(1)), m.get(&Value::Int(3))) else { return None };
     let peers = match m.get(&Value::Int(2)) {
         Some(Value::List(l)) => l.iter().filter_map(|d| <ct::Dial as osis_schema::Codec>::from_value(d).ok()).filter_map(|d| Some(osis_blob::DialHint { dialable: d.key.as_slice().try_into().ok()?, urls: d.urls })).collect(),
         _ => Vec::new(),
     };
-    Some((*x, osis_base::SyncId(s.as_slice().try_into().ok()?), peers))
+    let sig = crate::sync_ids::actors::Signal { thing: *x, sync_id: osis_base::SyncId(s.as_slice().try_into().ok()?), holder: Tid::from_bytes(h.as_slice().try_into().ok()?) };
+    Some((sig, peers))
 }
 
-/// The held grant signals followed (`SIGNALS` rows), read at this engine's first take.
-fn load_signals(tx: &mut Tx<'_>) -> Result<Vec<(CommitId, Tid, osis_base::SyncId)>> {
+/// The held grant signals (`SIGNALS` rows), read at this engine's first take.
+fn load_signals(tx: &mut Tx<'_>) -> Result<Vec<(CommitId, crate::sync_ids::actors::Signal)>> {
+    use osis_base::format::TID_LEN;
     let bad = || Error::Corrupt("grant signal row");
     let rows = tx.scan_rows(SIGNALS, |k, v| {
         let c = CommitId(k.try_into().map_err(|_| bad())?);
-        let (x, s) = v.split_at_checked(osis_base::format::TID_LEN).ok_or_else(bad)?;
-        Ok((c, Tid::from_bytes(x.try_into().map_err(|_| bad())?), osis_base::SyncId(s.try_into().map_err(|_| bad())?)))
+        let (x, rest) = v.split_at_checked(TID_LEN).ok_or_else(bad)?;
+        let (s, h) = rest.split_at_checked(16).ok_or_else(bad)?;
+        let sig = crate::sync_ids::actors::Signal { thing: Tid::from_bytes(x.try_into().map_err(|_| bad())?), sync_id: osis_base::SyncId(s.try_into().map_err(|_| bad())?), holder: Tid::from_bytes(h.try_into().map_err(|_| bad())?) };
+        Ok((c, sig))
     })?;
     Ok(rows)
 }
@@ -677,66 +719,28 @@ impl Engine {
         self.take_sealed(t, b, prefix, fire, Some(under), false)
     }
 
-    /// Opens entry `b` (`bytes`) of thing `t`'s sync ID as a notice (spec/permissions.md §4
-    /// Opens notice `bytes` (spec/permissions.md §4 Notices, spec/wire.md §9) by the read KEM
-    /// secrets this node holds of a holder of `t` or a thing on its own chains
-    /// (`notice_key_held`; no `t`: a node holding nothing of the thing yet, the latter alone) and
-    /// takes the copy it carries, on its own thing. `NotOpen` when nothing held
-    /// opens it.
-    pub(crate) fn open_notice(&mut self, t: Option<Tid>, bytes: &[u8]) -> Result<crate::sync::Opened> {
-        self.bringing(|e| e.open_notice_in(t, bytes))
+    /// Opens notice `bytes` (spec/permissions.md §4 Notices, spec/wire.md §9) to `holder` at its
+    /// read epoch `epoch` by that keyset's read KEM secret held here, one decapsulation, and takes
+    /// the copy it carries on its own thing, which must be one of `things`. `NotOpen` when that
+    /// secret is not held or opens nothing; `Bad` when what it opens names another holder or
+    /// epoch, or a thing not of `things`.
+    pub(crate) fn open_notice(&mut self, things: &[Tid], holder: &Tid, epoch: &osis_crypto::Epoch, bytes: &[u8]) -> Result<crate::sync::Opened> {
+        self.bringing(|e| e.open_notice_in(things, holder, epoch, bytes))
     }
 
-    fn open_notice_in(&mut self, t: Option<Tid>, bytes: &[u8]) -> Result<crate::sync::Opened> {
+    fn open_notice_in(&mut self, things: &[Tid], holder: &Tid, epoch: &osis_crypto::Epoch, bytes: &[u8]) -> Result<crate::sync::Opened> {
         use crate::sync::Opened;
-        let Some(key) = self.notice_key_held(t, bytes)? else { return Ok(Opened::NotOpen) };
-        let kem_of = |h: &Tid, e: &osis_crypto::Epoch| {
-            let own = self.epochs(h).and_then(|x| x.read.secret(e).map(|s| s.kem().public().clone()));
-            own.or_else(|| self.read(|tx| crate::apply::keys::keyset_kem(tx, h, Role::Read, e)).ok().flatten())
-        };
-        match osis_blob::open_notice(bytes, &key, kem_of) {
-            Err(_) => Ok(Opened::Bad),
-            Ok(None) => Ok(Opened::NotOpen),
+        let Some(kem) = self.epochs(holder).and_then(|x| x.read.secret(epoch).map(|s| s.kem().clone())) else { return Ok(Opened::NotOpen) };
+        osis_base::costs::count("notices: decapsulations", 1);
+        let Ok(key) = osis_blob::notice_key(bytes, holder, epoch, &kem) else { return Ok(Opened::NotOpen) };
+        let named = |h: &Tid, e: &osis_crypto::Epoch| (h == holder && e == epoch).then(|| kem.public().clone());
+        match osis_blob::open_notice(bytes, &key, named) {
+            Err(_) | Ok(None) => Ok(Opened::Bad),
             Ok(Some((prefix, body))) => {
-                let Some(t) = osis_commit::CommitBlob::decode(&osis_base::encode(&body.copy.commit)).ok().and_then(|c| CertCopy::target(&c)) else { return Ok(Opened::Bad) };
+                let Some(t) = osis_commit::CommitBlob::decode(&osis_base::encode(&body.copy.commit)).ok().and_then(|c| CertCopy::target(&c)).filter(|t| things.contains(t)) else { return Ok(Opened::Bad) };
                 self.take_sealed(&t, &osis_blob::blob_id(bytes), prefix, body.copy, None, true)
             }
         }
-    }
-
-    /// The blob key of notice `bytes` under `t`'s sync ID that a read KEM secret held here of a
-    /// holder of `t` for keys opens, or of a thing on this node's own chains (`own_chains`): a
-    /// departed holder learns its removal so, holding no epoch of `t` its notice's wrap is under,
-    /// and a holder that cannot open a commit boxing it (a grantee entering `t`, holding none of
-    /// its roster yet) its box.
-    /// Cost: one decapsulation per read epoch held of each such holder, per notice sent here.
-    fn notice_key_held(&mut self, t: Option<Tid>, bytes: &[u8]) -> Result<Option<osis_crypto::Secret32>> {
-        let mut holders: BTreeSet<Tid> = t.map(|t| self.core.key_holders(&t)).unwrap_or_default().into_iter().map(|(h, _)| h).collect();
-        holders.extend(self.own_chains());
-        holders.retain(|h| Some(*h) != t && !h.is_public());
-        for h in holders {
-            for (e, s) in self.epochs(&h).map(|x| x.read.held().map(|(e, s)| (e, s.clone())).collect::<Vec<_>>()).unwrap_or_default().into_iter().rev() {
-                if let Ok(k) = osis_blob::notice_key(bytes, &h, &e, s.kem()) {
-                    return Ok(Some(k));
-                }
-            }
-        }
-        Ok(None)
-    }
-
-    /// The things on this node's own chains whose read epochs it holds: its own things, then each
-    /// thing one of these holds a role on, transitively (what a notice to a holder this node
-    /// reads through may be sealed to).
-    fn own_chains(&self) -> BTreeSet<Tid> {
-        let mut out = BTreeSet::new();
-        let mut work: Vec<Tid> = std::iter::once(self.core.tid()).chain(self.core.link_keys.keys().copied()).collect();
-        while let Some(h) = work.pop() {
-            if !out.insert(h) {
-                continue;
-            }
-            work.extend(self.core.ix.held.named_on(&h).copied().filter(|x| self.epochs(x).is_some_and(|e| e.read.held().next().is_some())));
-        }
-        out
     }
 
     /// Takes sealed fire or notice copy `fire` opened from entry `b` of `t`'s sync ID behind `prefix`

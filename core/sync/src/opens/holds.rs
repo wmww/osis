@@ -159,8 +159,8 @@ pub trait Holds {
     /// The notices S's things tell a peer proving `proven` (`Engine::notices_for`), each sealed
     /// afresh for this connection: its content key, its bytes, and whether it tells a departure.
     fn notices(&mut self, s: &SyncId, proven: &BTreeSet<osis_base::Tid>) -> Vec<Told>;
-    /// Takes a notice a peer sent under S (`Engine::take_notice`).
-    fn take_notice(&mut self, s: &SyncId, notice: &[u8]);
+    /// Takes a notice a peer sent under S to `holder` at `epoch` (`Engine::take_notice`).
+    fn take_notice(&mut self, s: &SyncId, holder: &osis_base::Tid, epoch: &Epoch, notice: &[u8]);
     /// The cursor naming `pos` of this node's log, for a Lost.
     fn cursor_at(&mut self, pos: Position) -> Option<Cursor>;
     /// The grant a static entry's answer carries (spec/sync-opens.md §5): the head's entry box
@@ -336,15 +336,25 @@ pub(crate) fn member_until(cx: &mut Cx, s: &SyncId, by: &Credential) -> crate::t
     }
 }
 
-/// A notice sealed for one connection: its content key, its bytes, whether it tells a departure.
-pub type Told = ([u8; 32], Vec<u8>, bool);
+/// A notice sealed for one connection (`Holds::notices`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Told {
+    /// Its content key: one of each sent per connection.
+    pub key: [u8; 32],
+    /// The holder it is sealed to, and that holder's read epoch it is sealed at.
+    pub holder: osis_base::Tid,
+    pub epoch: Epoch,
+    pub bytes: Vec<u8>,
+    /// Whether it tells a departure.
+    pub departs: bool,
+}
 
 /// `Holds::notices`.
 fn notices(cx: &mut Cx, s: &SyncId, proven: &BTreeSet<osis_base::Tid>) -> crate::types::Result<Vec<Told>> {
     let mut out = Vec::new();
     for n in cx.engine.notices_for(s, proven)? {
         if let Some(b) = cx.engine.seal_notice(&n, cx.rng)? {
-            out.push((n.content(), b, n.departs));
+            out.push(Told { key: n.content(), holder: n.holder, epoch: n.epoch, bytes: b, departs: n.departs });
         }
     }
     Ok(out)
@@ -457,8 +467,8 @@ impl Holds for NodeHolds<'_, '_> {
         notices(self.cx, s, proven).unwrap_or_default()
     }
 
-    fn take_notice(&mut self, s: &SyncId, notice: &[u8]) {
-        let _ = self.cx.engine.take_notice(s, notice);
+    fn take_notice(&mut self, s: &SyncId, holder: &osis_base::Tid, epoch: &Epoch, notice: &[u8]) {
+        let _ = self.cx.engine.take_notice(s, holder, epoch, notice);
     }
 
     fn cursor_at(&mut self, pos: Position) -> Option<Cursor> {

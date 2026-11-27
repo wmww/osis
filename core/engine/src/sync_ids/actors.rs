@@ -3,7 +3,7 @@
 //! thing (`sync.0`).
 
 use osis_base::memo::{Memo, Stamped};
-use crate::engine::{Core, Engine};
+use crate::engine::{Core, Engine, Tx};
 use crate::error::Result;
 use osis_base::{ChainStep, CommitId, SyncId, Role, Tid};
 use crate::sync::{OwnedSyncId, Path};
@@ -262,92 +262,108 @@ impl Engine {
     /// per write of the `sync.0` or of what its copies carry (`Core::sync_ids`), a destroyed
     /// thing's too. A `sync.0` the store refuses to read is the error, read again at the next ask.
     pub(crate) fn owned_sync_ids(&mut self, g: &Tid) -> Result<Arc<Vec<OwnedSyncId>>> {
-        Memo::get_in(self, |e| &e.core.sync_ids, g, |e| {
-            // none of `g`'s admins' word held (spec/sync-ids.md §2: a sync holder learns none):
-            // the steps its sync copies carry alone (`Core::copies_speak`)
-            if e.core.copies_speak(g) {
-                return Ok(Arc::new(held_sync_ids(&e.core, g, &e.core.unread(g).steps)));
-            }
-            use osis_schema::RawKey;
-            // a destroyed thing's too: its `sync.0` stays (`retention::destroy`), read past `exists`
-            let ak = crate::flows::ak(ct::SYNC.ak())?;
-            let v = e.read(|tx| Ok(tx.state(g, &ak)?.and_then(osis_crdt::Fragment::read)))?;
-            // the state alone: a sync copy's steps speak for `g` only beside none of its admins'
-            // word (`Core::copies_speak`)
-            let m = match v {
-                Some(v) => ct::SYNC.decode(&v)?,
-                None => Default::default(),
-            };
-            Ok::<_, crate::error::Error>(Arc::new(held_sync_ids(&e.core, g, &m)))
-        })
+        Memo::get_in(self, |e| &e.core.sync_ids, g, |e| e.read(|tx| held_sync_ids(tx, g)).map(Arc::new))
     }
 }
 
-/// The sync IDs this node holds for `g`, its `sync.0` recording `m`: those `m` records that `g`
-/// owns here (`owned_in`), else a followed link's (`followed`), else, `g` kept unread by the
-/// public entry its head lists
-/// (`Core::public_listed`), each `m` records as hints: the secrets its entry box gave bear the
-/// newest steps, which the recorded `sync.0` reaches only once the pass brings them.
-pub(crate) fn held_sync_ids(core: &Core, g: &Tid, m: &ct::SyncIds) -> Vec<OwnedSyncId> {
-    let out = owned_in(core, g, m);
+/// `g`'s sync IDs as recorded here: the steps its sync copies carry where they speak for it
+/// (`Core::copies_speak`: none of its admins' word held), else its `sync.0` state (a destroyed
+/// thing's too: it stays, `retention::destroy`).
+fn recorded(tx: &mut Tx<'_>, g: &Tid) -> Result<ct::SyncIds> {
+    if tx.core.copies_speak(g) {
+        return Ok(tx.core.unread(g).steps.clone());
+    }
+    use osis_schema::RawKey;
+    let ak = crate::flows::ak(ct::SYNC.ak())?;
+    Ok(match tx.state(g, &ak)?.and_then(osis_crdt::Fragment::read) {
+        Some(v) => ct::SYNC.decode(&v)?,
+        None => Default::default(),
+    })
+}
+
+/// The sync IDs this node holds for `g` (`recorded`): those recorded that `g` owns here
+/// (`owned_in`), else those followed for it (`followed`), else, `g` kept unread by the public
+/// entry its head lists (`Core::public_listed`), each recorded as hints: the secrets its entry
+/// box gave bear the newest steps, which the recorded `sync.0` reaches only once the pass brings
+/// them.
+pub(crate) fn held_sync_ids(tx: &mut Tx<'_>, g: &Tid) -> Result<Vec<OwnedSyncId>> {
+    let m = recorded(tx, g)?;
+    let out = owned_in(tx.core, g, &m);
     if !out.is_empty() {
-        return out;
+        return Ok(out);
     }
-    if let Some(h) = followed(core, g) {
-        return vec![h];
+    let out = followed(tx, g)?;
+    if !out.is_empty() {
+        return Ok(out);
     }
-    match core.public_listed(g).is_some() {
-        true => recorded_in(core, g, m, true),
+    Ok(match tx.core.public_listed(g).is_some() {
+        true => recorded_in(tx.core, g, &m, true),
         false => Vec::new(),
-    }
+    })
 }
 
-/// The links this node redeems (`Engine::follow_link`, `follow_public`): a share link's K, or a
-/// locator's target, to its sync ID from the link text and a share link's key L, read per key
-/// three ways (by K; by L, an author this node writes as; by sync ID), so a reader asking about
-/// one link, actor or sync ID moves only when that one does, not at every link followed or let
-/// go. Each key L is kept exactly while some followed link names it, so it goes with the last link
-/// naming it (`Engine::settle_link_key`). In memory only (`Core::followed_links`).
+/// The things this node follows by a locator or link being redeemed (`Engine::follow_link`,
+/// `follow_public`) or by held grant signals (`Engine::take_fire`): per thing, the sync IDs it is
+/// followed under and a share link's key L, read per key three ways (by thing; by L, an author
+/// this node writes as; by sync ID), so a reader asking about one thing, actor or sync ID moves
+/// only when that one does. Each key L is kept exactly while some followed link names it, so it
+/// goes with the last link naming it (`Engine::settle_link_key`). In memory only
+/// (`Core::followed_links`); the held signals' rows are the engine's (`flows::inbox`).
+///
+/// Invariant (spec/sync-inbox.md §5 Grant signal): a thing is followed under every sync ID that
+/// a link being redeemed for it or a followed signal naming it names, none displacing another,
+/// so what is followed depends on which values are held, never on the order they came in. Who
+/// writes them: a link text is its sharer's; a signal is anyone's holding its holder's card. A
+/// sync ID none of them gives is judged by the owner rule (`held_sync_ids`).
 #[derive(Clone, Default)]
 pub(crate) struct FollowedLinks {
-    /// Per link K (a locator: its target), its sync ID and key (a locator: none).
-    by_k: Stamped<Tid, (SyncId, Option<Tid>)>,
+    /// Per thing followed, its sync IDs and its link's key (none: a locator or signals alone).
+    by_k: Stamped<Tid, (BTreeSet<SyncId>, Option<Tid>)>,
     /// Per link key L, the links K it is the key of.
     by_actor: Stamped<Tid, BTreeSet<Tid>>,
     /// Per link key L, its identity from the seed: kept exactly while `by_actor` names L.
     keys: BTreeMap<Tid, Arc<Identity>>,
-    /// Per sync ID, the links K whose text names it.
+    /// Per sync ID, the things followed under it.
     by_sync: Stamped<SyncId, BTreeSet<Tid>>,
-    /// The things followed for a link being redeemed (`insert`).
-    linked: BTreeSet<Tid>,
-    /// Per thing a held grant signal names (`Engine::take_fire`), its sync ID as the newest
-    /// such signal names it and the signals naming it: followed as a locator's target while
-    /// any is held.
-    signals: BTreeMap<Tid, (SyncId, BTreeSet<CommitId>)>,
+    /// The links being redeemed (`insert`): per K (a locator: its target), its sync ID from the
+    /// link text and its key (a locator: none).
+    links: BTreeMap<Tid, (SyncId, Option<Arc<Identity>>)>,
+    /// Per thing a followed grant signal names, per sync ID such signals name, the signals.
+    signals: BTreeMap<Tid, BTreeMap<SyncId, BTreeSet<CommitId>>>,
     /// A count written at each change of `signals`: what a reader of them all reads
     /// (`signals_read`), so it moves as any signal is followed or let go.
     signals_moved: Stamped<(), u64>,
-    /// Whether `signals` was read from its rows (`Engine::take_carried`, once per engine).
-    pub(crate) signals_loaded: bool,
+    /// The held grant signals (`flows::inbox` rows), followed or not: read from their rows at the
+    /// engine's first take (`Engine::take_carried`), `None` until then.
+    pub(crate) held_signals: Option<BTreeMap<CommitId, Signal>>,
+}
+
+/// A held grant signal's values (spec/data-model.md §9 `grant@~0`): the thing it names, that
+/// thing's sync ID as it names it, and the holder told.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Signal {
+    pub thing: Tid,
+    pub sync_id: SyncId,
+    pub holder: Tid,
 }
 
 impl FollowedLinks {
-    /// Link `k`'s sync ID and key (none: a locator), read per K.
-    pub(crate) fn get(&self, k: &Tid) -> Option<(SyncId, Option<Tid>)> {
-        self.by_k.get(k).copied()
+    /// Thing `k`'s sync IDs and link key (none: a locator or signals alone), read per K.
+    pub(crate) fn get(&self, k: &Tid) -> Option<(BTreeSet<SyncId>, Option<Tid>)> {
+        self.by_k.get(k).cloned()
     }
 
     pub(crate) fn contains(&self, k: &Tid) -> bool {
         self.by_k.contains_key(k)
     }
 
-    /// A cursor over the links followed from now on, each as it is followed (`Feed`).
+    /// A cursor over the things followed from now on, each as it is followed (`Feed`).
     pub(crate) fn followed_feed(&self) -> osis_base::memo::Feed<Tid> {
         self.by_k.feed()
     }
 
-    /// Every link followed: a read of all of them.
-    pub(crate) fn all(&self) -> &BTreeMap<Tid, (SyncId, Option<Tid>)> {
+    /// Every thing followed: a read of all of them.
+    pub(crate) fn all(&self) -> &BTreeMap<Tid, (BTreeSet<SyncId>, Option<Tid>)> {
         &self.by_k
     }
 
@@ -361,7 +377,7 @@ impl FollowedLinks {
         self.keys.get(l)
     }
 
-    /// The links whose text names sync ID `s`, read per sync ID.
+    /// The things followed under sync ID `s`, read per sync ID.
     pub(crate) fn naming(&self, s: &SyncId) -> BTreeSet<Tid> {
         self.by_sync.get(s).cloned().unwrap_or_default()
     }
@@ -369,55 +385,53 @@ impl FollowedLinks {
     /// Follows link `k` under sync ID `s` and key `l` (none: a locator); the same again moves
     /// nothing. Returns the key `k` was followed under before, if any.
     pub(crate) fn insert(&mut self, k: Tid, s: SyncId, l: Option<Arc<Identity>>) -> Option<Tid> {
-        self.linked.insert(k);
-        self.set(k, s, l)
+        self.links.insert(k, (s, l));
+        self.refresh(k)
     }
 
-    /// Lets link `k` go: its key, if it was followed with one (gone here with the last link naming
-    /// it). A thing a held grant signal names stays followed as a locator's target.
+    /// Lets link `k` go: returns its key, if it was followed with one (gone here with the last
+    /// link naming it). A thing a followed signal names stays followed under the signals' IDs.
     pub(crate) fn remove(&mut self, k: &Tid) -> Option<Tid> {
-        self.linked.remove(k);
-        let old = self.unset(k);
-        if let Some((s, _)) = self.signals.get(k).cloned() {
-            self.set(*k, s, None);
-        }
-        old
+        self.links.remove(k);
+        self.refresh(*k)
     }
 
-    /// Follows thing `x` under sync ID `s` for held grant signal `c`, as a locator's target
-    /// unless a link being redeemed follows it.
+    /// Follows thing `x` under sync ID `s` for held grant signal `c`.
     pub(crate) fn follow_signal(&mut self, x: Tid, s: SyncId, c: CommitId) {
-        let e = self.signals.entry(x).or_insert_with(|| (s, BTreeSet::new()));
-        e.0 = s;
-        e.1.insert(c);
+        self.signals.entry(x).or_default().entry(s).or_default().insert(c);
         self.bump();
-        if !self.linked.contains(&x) {
-            self.set(x, s, None);
-        }
+        self.refresh(x);
     }
 
-    /// Grant signal `c` naming `x` is held no more: `x` goes unless another held signal or a
-    /// link follows it.
-    pub(crate) fn unfollow_signal(&mut self, x: &Tid, c: &CommitId) {
-        let Some(e) = self.signals.get_mut(x) else { return };
-        e.1.remove(c);
-        let empty = e.1.is_empty();
-        self.bump();
-        if empty {
-            self.signals.remove(x);
-            if !self.linked.contains(x) {
-                self.unset(x);
+    /// Grant signal `c` naming `x` under `s` is followed no more: `s` goes unless another
+    /// followed signal or a link names it for `x`.
+    pub(crate) fn unfollow_signal(&mut self, x: &Tid, s: &SyncId, c: &CommitId) {
+        let Some(m) = self.signals.get_mut(x) else { return };
+        if let Some(cs) = m.get_mut(s) {
+            cs.remove(c);
+            if cs.is_empty() {
+                m.remove(s);
             }
         }
+        if m.is_empty() {
+            self.signals.remove(x);
+        }
+        self.bump();
+        self.refresh(*x);
     }
 
-    /// The held grant signals followed, per thing they name.
-    pub(crate) fn signals(&self) -> &BTreeMap<Tid, (SyncId, BTreeSet<CommitId>)> {
+    /// Whether signal `c` naming `x` under `s` is followed.
+    pub(crate) fn follows_signal(&self, x: &Tid, s: &SyncId, c: &CommitId) -> bool {
+        self.signals.get(x).and_then(|m| m.get(s)).is_some_and(|cs| cs.contains(c))
+    }
+
+    /// The followed grant signals, per thing and sync ID they name.
+    pub(crate) fn signals(&self) -> &BTreeMap<Tid, BTreeMap<SyncId, BTreeSet<CommitId>>> {
         &self.signals
     }
 
     /// `signals`, read as a whole: a memo over it moves at any change.
-    pub(crate) fn signals_read(&self) -> &BTreeMap<Tid, (SyncId, BTreeSet<CommitId>)> {
+    pub(crate) fn signals_read(&self) -> &BTreeMap<Tid, BTreeMap<SyncId, BTreeSet<CommitId>>> {
         let _ = self.signals_moved.get(&());
         &self.signals
     }
@@ -427,29 +441,44 @@ impl FollowedLinks {
         self.signals_moved.insert((), n.wrapping_add(1));
     }
 
-    /// Whether `x` is followed for held grant signals alone (no link being redeemed names it).
+    /// Whether `x` is followed for followed grant signals alone (no link being redeemed names it).
     pub(crate) fn signalled_only(&self, x: &Tid) -> bool {
-        self.by_k.contains_key(x) && self.signals.contains_key(x) && !self.linked.contains(x)
+        self.by_k.contains_key(x) && self.signals.contains_key(x) && !self.links.contains_key(x)
     }
 
-    fn set(&mut self, k: Tid, s: SyncId, l: Option<Arc<Identity>>) -> Option<Tid> {
+    /// Sets `k`'s entry from its link and signals: the same again moves nothing. Returns the key
+    /// `k` was followed under before, if it moved.
+    fn refresh(&mut self, k: Tid) -> Option<Tid> {
+        let link = self.links.get(&k).cloned();
+        let mut ids: BTreeSet<SyncId> = self.signals.get(&k).map(|m| m.keys().copied().collect()).unwrap_or_default();
+        ids.extend(link.as_ref().map(|(s, _)| *s));
+        let l = link.and_then(|(_, l)| l);
         let lt = l.as_ref().map(|l| l.tid());
-        if self.by_k.get(&k) == Some(&(s, lt)) {
-            return None;
+        match self.by_k.get(&k) {
+            Some((i, t)) if *i == ids && *t == lt => return None,
+            None if ids.is_empty() => return None,
+            _ => {}
         }
         let old = self.unset(&k);
-        self.by_k.update_fed(k, |_| Some((s, lt)));
+        if ids.is_empty() {
+            return old;
+        }
+        for s in &ids {
+            Self::add(&mut self.by_sync, *s, k);
+        }
+        self.by_k.update_fed(k, |_| Some((ids, lt)));
         if let Some(l) = l {
             Self::add(&mut self.by_actor, l.tid(), k);
             self.keys.insert(l.tid(), l);
         }
-        Self::add(&mut self.by_sync, s, k);
         old
     }
 
     fn unset(&mut self, k: &Tid) -> Option<Tid> {
-        let (s, l) = self.by_k.remove(k)?;
-        Self::take(&mut self.by_sync, &s, k);
+        let (ids, l) = self.by_k.remove(k)?;
+        for s in &ids {
+            Self::take(&mut self.by_sync, s, k);
+        }
         let l = l?;
         Self::take(&mut self.by_actor, &l, k);
         if !self.by_actor.contains_key(&l) {
@@ -474,17 +503,39 @@ impl FollowedLinks {
     }
 }
 
-/// A link being redeemed (`Engine::follow_link`): K's sync ID from its link text, followed with no
-/// recorded path while the link text is all this node has of it (spec/sync-set.md §2). The link
-/// text is untrusted: its K must be a link's K or unknown here (`followable`), and its sync ID no
-/// other thing's here (no applied `sync.0` records it, no other followed link names it), else it
-/// is nobody's.
-fn followed(core: &Core, k: &Tid) -> Option<OwnedSyncId> {
-    let (s, _) = core.followed_links.get(k)?;
-    let ix = &core.ix;
-    let elsewhere = ix.sync_recorders.get(&s).is_some_and(|x| x.iter().any(|t| t != k))
-        || core.followed_links.naming(&s).iter().any(|t| t != k);
-    (followable(core, k) && !elsewhere).then(|| OwnedSyncId { id: s, path: Arc::new(crate::sync::Path::default()), tree: Arc::default(), endorsed: Arc::default(), hint: true })
+/// The sync IDs followed for thing `k` (a link being redeemed, a locator, held grant signals:
+/// `FollowedLinks`), each a hint with no recorded path while followed values are all this node
+/// has of it (spec/sync-set.md §2), where `k` may be followed here (`followable`).
+///
+/// Invariant: a followed sync ID counts for `k` unless another thing owns it here by the owner
+/// rule (`owns`: a step bearing a key this node holds), and nothing else displaces it: a link
+/// text or signal naming a sync ID another thing proves its own changes nothing of that thing
+/// (it moves no kept-unread store to read), and a forged `sync.0` or signal naming `k`'s sync ID
+/// for another thing takes nothing from `k`. Who writes each input: the followed values are a
+/// link's sharer's or a signal's sender's (anyone holding the holder's card); another thing's
+/// `sync.0` is its admins'; the keys judged are this node's.
+fn followed(tx: &mut Tx<'_>, k: &Tid) -> Result<Vec<OwnedSyncId>> {
+    let Some((ids, _)) = tx.core.followed_links.get(k) else { return Ok(Vec::new()) };
+    if !followable(tx.core, k) {
+        return Ok(Vec::new());
+    }
+    let mut out = Vec::new();
+    for s in ids {
+        let ix = &tx.core.ix;
+        let others: BTreeSet<Tid> = ix.sync_recorders.get(&s).into_iter().flatten().chain(ix.sync_copy_ids.get(&s).into_iter().flatten()).filter(|t| *t != k).copied().collect();
+        let mut theirs = false;
+        for t in others {
+            let m = recorded(tx, &t)?;
+            if owned_in(tx.core, &t, &m).iter().any(|o| o.id == s && !o.hint) {
+                theirs = true;
+                break;
+            }
+        }
+        if !theirs {
+            out.push(OwnedSyncId { id: s, path: Arc::new(crate::sync::Path::default()), tree: Arc::default(), endorsed: Arc::default(), hint: true });
+        }
+    }
+    Ok(out)
 }
 
 /// Whether followed link `k` may be a link's K here: a thing this node holds only as a link's K
@@ -505,20 +556,25 @@ mod tests {
 
     // spec/sync-inbox.md §5 (Grant signal), spec/sync-hostile.md (a forged signal names a sync ID
     // that gives nothing): two held grant signals name X, one by X's own sync ID, the other by
-    // another (a forger's: anyone holding the holder's card may fire one). X stays followed under
-    // its own, whichever comes first. Fails with the newest signal's sync ID displacing the other.
+    // another (a forger's: anyone holding the holder's card may fire one). X is followed under
+    // both, whichever comes first, and under its own still once the forged one goes. Fails with
+    // the newest signal's sync ID displacing the other.
     #[test]
-    #[ignore = "issues/signal-sync-id-displaced.md"]
     fn a_signals_sync_id_is_never_displaced_by_another_spec_sync_inbox_5() {
         let x = Tid::from_bytes([1; 15]);
         let (own, forged) = (SyncId([2; 16]), SyncId([3; 16]));
+        let (c_own, c_forged) = (CommitId([4; 32]), CommitId([5; 32]));
         for forged_last in [false, true] {
             let mut f = FollowedLinks::default();
-            let order = if forged_last { [(own, CommitId([4; 32])), (forged, CommitId([5; 32]))] } else { [(forged, CommitId([5; 32])), (own, CommitId([4; 32]))] };
+            let order = if forged_last { [(own, c_own), (forged, c_forged)] } else { [(forged, c_forged), (own, c_own)] };
             for (s, c) in order {
                 f.follow_signal(x, s, c);
             }
-            assert!(f.naming(&own).contains(&x), "forged last {forged_last}: X followed under its own sync ID");
+            assert_eq!(f.get(&x).map(|(ids, _)| ids), Some([own, forged].into()), "forged last {forged_last}: X followed under both");
+            assert!(f.naming(&own).contains(&x) && f.naming(&forged).contains(&x));
+            f.unfollow_signal(&x, &forged, &c_forged);
+            assert_eq!(f.get(&x).map(|(ids, _)| ids), Some([own].into()), "forged last {forged_last}: its own stays");
+            assert!(f.naming(&forged).is_empty());
         }
     }
 }

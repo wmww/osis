@@ -299,9 +299,9 @@ pub enum Msg {
     Applied { cursor: Cursor },
     Digest { digest: [u8; 32] },
     Members { sync_ids: Vec<SyncId>, more: bool },
-    /// A notice to a holder of S's thing, sealed by the sender for this connection alone
-    /// (spec/wire.md §9 Notice, spec/sync-opens.md §6).
-    Notice { sync_id: SyncId, notice: Vec<u8> },
+    /// A notice to `holder` of S's thing, sealed to its read keyset at `epoch` by the sender for
+    /// this connection alone (spec/wire.md §9 Notice, spec/sync-opens.md §6).
+    Notice { sync_id: SyncId, holder: Tid, epoch: osis_crypto::Epoch, notice: Vec<u8> },
 }
 
 /// How a kind travels (spec/wire.md §11.1).
@@ -520,7 +520,7 @@ impl Msg {
             M::Applied { cursor } => vec![k, id, Value::bytes(cursor.as_bytes())],
             M::Digest { digest } => vec![k, id, Value::bytes(digest)],
             M::Members { sync_ids, more } => vec![k, id, Value::List(sync_ids.iter().map(s).collect()), Value::Bool(*more)],
-            M::Notice { sync_id, notice } => vec![k, id, s(sync_id), Value::bytes(notice)],
+            M::Notice { sync_id, holder, epoch, notice } => vec![k, id, s(sync_id), Value::bytes(holder.as_bytes()), Value::List(vec![Value::uint(epoch.n()), Value::bytes(epoch.nonce())]), Value::bytes(notice)],
         };
         Value::List(items)
     }
@@ -671,7 +671,14 @@ fn decode_body(kind: u64, id: Id, v: Value, n: &Items) -> Result<Msg, Error> {
         44 => Msg::Applied { cursor: Cursor::new(f.bytes(MAX_CURSOR_BYTES)?)? },
         45 => Msg::Digest { digest: f.fixed()? },
         46 => Msg::Members { sync_ids: f.list(0, MAX_MEMBERS, "members")?.into_iter().map(|v| dec::fixed(v, "sync id").map(SyncId)).collect::<Result<_, _>>()?, more: f.bool()? },
-        49 => Msg::Notice { sync_id: sync_id(&mut f)?, notice: f.bytes(MAX_BLOB)? },
+        49 => {
+            let sync_id = sync_id(&mut f)?;
+            let holder = Tid::from_bytes(f.fixed()?);
+            let bad = || Error::Malformed("notice epoch");
+            let Ok::<[Value; 2], _>([n, nonce]) = f.list(2, 2, "notice epoch")?.try_into() else { return Err(bad()) };
+            let epoch = osis_crypto::Epoch::new(dec::uint(n, "epoch n")?, dec::fixed(nonce, "epoch nonce")?).map_err(|_| bad())?;
+            Msg::Notice { sync_id, holder, epoch, notice: f.bytes(MAX_BLOB)? }
+        }
         _ => return Err(Error::UnknownKind(kind)),
     };
     f.end()?;

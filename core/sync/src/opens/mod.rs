@@ -1793,7 +1793,7 @@ impl Opens {
             Msg::Digest { digest } => self.digest(ctx, conn, digest),
             Msg::Members { sync_ids, more } => self.members_page(ctx, conn, sync_ids, more, moved),
             // taken whatever is shared: the notice is judged by what it carries alone
-            Msg::Notice { sync_id, notice } => ctx.holds.take_notice(&sync_id, &notice),
+            Msg::Notice { sync_id, holder, epoch, notice } => ctx.holds.take_notice(&sync_id, &holder, &epoch, &notice),
             _ => {}
         }
     }
@@ -2621,11 +2621,11 @@ impl Opens {
         let proven = self.proven_on(ctx, conn);
         let notices = ctx.holds.notices(&s, &proven);
         let Some(c) = self.conns.get_mut(&conn) else { return false };
-        for (key, notice, departs) in notices.into_iter().filter(|n| n.2 == departed) {
-            if c.told.insert((s, key)) {
-                ctx.wire.push(conn, Msg::Notice { sync_id: s, notice });
+        for n in notices.into_iter().filter(|n| n.departs == departed) {
+            if c.told.insert((s, n.key)) {
+                ctx.wire.push(conn, Msg::Notice { sync_id: s, holder: n.holder, epoch: n.epoch, notice: n.bytes });
             }
-            if departs {
+            if n.departs {
                 c.told_departed.insert(s);
             }
         }

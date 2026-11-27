@@ -205,9 +205,10 @@ impl Holds for Table {
     }
     fn notices(&mut self, s: &SyncId, proven: &std::collections::BTreeSet<osis_base::Tid>) -> Vec<osis_sync::opens::holds::Told> {
         let departed = proven.iter().any(|p| self.j.get(&(*s, *p)) == Some(&J::Departed));
-        if self.departure_logged && departed { vec![([0; 32], vec![0], true)] } else { Vec::new() }
+        let told = osis_sync::opens::holds::Told { key: [0; 32], holder: osis_base::Tid::from_bytes([0; 15]), epoch: osis_crypto::Epoch::new(1, [0; 32]).expect("small epoch"), bytes: vec![0], departs: true };
+        if self.departure_logged && departed { vec![told] } else { Vec::new() }
     }
-    fn take_notice(&mut self, _s: &SyncId, _notice: &[u8]) {}
+    fn take_notice(&mut self, _s: &SyncId, _holder: &osis_base::Tid, _epoch: &osis_crypto::Epoch, _notice: &[u8]) {}
     fn cursor_at(&mut self, pos: Position) -> Option<Cursor> {
         Some(pos.to_be_bytes().to_vec())
     }
