@@ -232,7 +232,9 @@ pub(crate) enum Root {
     /// enters, so what came for it pends, kept while carried. An entry is awaited only until the
     /// node holds the commit minting it (`uncarried`).
     Awaited,
-    /// A held grant signal names it (spec/sync-set.md §2 First entry): its stub is held.
+    /// A held grant signal follows it (spec/sync-set.md §2 First entry): what came of it by role
+    /// is kept before any unit carries it, as entry is judged from it (a sync-only holder's
+    /// stub is no closure vertex, so nothing else keeps it).
     Signalled,
 }
 

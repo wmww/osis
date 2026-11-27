@@ -337,9 +337,11 @@ impl RetentionSetting {
 
     /// Enables the external signals an inbox takes (`INBOX_SIGNALS`, spec/sync-inbox.md §1) as
     /// an account's creation sets its inbox's: each kept `INBOX_LIFETIME` after it is fired (a
-    /// grant's fire is an offer, spec/sync-inbox.md §5); an entry this setting has already stays
-    /// as it is.
+    /// grant's fire is an offer, spec/sync-inbox.md §5), its history holding its targets (a held
+    /// grant signal's weak holds its thing's stub); an entry this setting has already stays as it
+    /// is.
     pub fn take_inbox_signals(&mut self) {
+        self.history_holds_targets = true;
         let lifetime = crate::History::Keep { until: None, after: Some(osis_base::format::INBOX_LIFETIME_MS) };
         // each a valid AK, checked at build time
         for (k, history) in INBOX_SIGNALS.map(|k| (k, lifetime)) {

@@ -33,7 +33,7 @@ use crate::engine::journal::{JMap, JSet, JSetMap, Journaled};
 use crate::engine::{Core, Engine, Tx};
 use crate::error::Result;
 use osis_base::memo::Effects;
-use osis_base::{Role, SyncId, Tid};
+use osis_base::{RefKind, Role, SyncId, Tid};
 use std::collections::{BTreeSet, VecDeque};
 use std::sync::Arc;
 
@@ -838,8 +838,8 @@ impl Core {
 }
 
 /// What `x` references, `x` aside, each with whether a strong does: its current values'
-/// strongs and weaks (a fire's weaks are history) and its held history's strongs, held fires
-/// included (`refs::kept`).
+/// strongs and weaks (a fire's are history) and its held history's, held fires included
+/// (`refs::kept`).
 fn refs_from(tx: &mut Tx<'_>, x: &Tid) -> Result<std::collections::BTreeMap<Tid, bool>> {
     let mut out = std::collections::BTreeMap::new();
     for r in crate::engine::refs::from(tx, x)? {
@@ -849,7 +849,12 @@ fn refs_from(tx: &mut Tx<'_>, x: &Tid) -> Result<std::collections::BTreeMap<Tid,
             out.entry(r.target).or_insert(false);
         }
     }
-    out.extend(crate::engine::refs::kept::from(tx, x)?.into_iter().map(|r| (r.0, true)));
+    for (t, k, _) in crate::engine::refs::kept::from(tx, x)? {
+        match k {
+            RefKind::Strong => drop(out.insert(t, true)),
+            RefKind::Weak => drop(out.entry(t).or_insert(false)),
+        }
+    }
     out.remove(x);
     Ok(out)
 }
@@ -860,10 +865,11 @@ fn ref_to(tx: &mut Tx<'_>, x: &Tid, y: &Tid) -> Result<Option<bool>> {
     if x == y {
         return Ok(None);
     }
-    if crate::engine::refs::strong_from(tx, x, y)? || crate::engine::refs::kept::strong_from(tx, x, y)? {
+    let kept = |tx: &mut Tx<'_>, k| crate::engine::refs::kept::holds_from(tx, x, y, k);
+    if crate::engine::refs::strong_from(tx, x, y)? || kept(tx, RefKind::Strong)? {
         return Ok(Some(true));
     }
-    Ok(crate::engine::refs::weak_from(tx, x, y)?.then_some(false))
+    Ok((crate::engine::refs::weak_from(tx, x, y)? || kept(tx, RefKind::Weak)?).then_some(false))
 }
 
 /// Whether `x` holds a strong to `y` now, in a current value or its held history.

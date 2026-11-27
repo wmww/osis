@@ -259,7 +259,6 @@ Choices taken (simpler option; Tess may revise):
 - **An entering node names S in ByRole to every peer it meets** (it can judge none): a stated leak of interest in S (spec/sync-hostile.md §2). Restricting to the value's peers would make a stale hint final.
 
 Owed:
-- Weaks in held history holding stubs (spec/data-model.md §8 Held history, rule 4; `refs::kept` follows strongs alone): a held signal holds its stub by its own root instead (`Root::Signalled`).
 - Stopped-store ByRole (`Creds::stopped`) has no test of its own: `grants::a_stopped_sync_holder_catches_up_by_role_*` passes by the resumed member's notice; a test where the store meets a reader keeping no record of it is owed.
 
 ## R4 built
@@ -276,3 +275,4 @@ Still owed:
 
 Choices taken (Tess may revise):
 - **Roles are not references**: a role-class aspect's weaks (`roles.0`'s holders, box keys', `left_out`'s, `keys.0`'s inbox) bring no stub (spec/sync-set.md §2 Stubs; engine `refs::holds_stub`). Counted, a unit carrying X held the stub of every holder in X's roster its keys open or it holds sync on: grant-driven, which the model has none of (held-model's `Chains::Up` control). Chain stubs are the one way up from a thing (`stubs::a_holder_on_no_chain_is_no_stub_*`; the two- and three-hop chain tests fail with chain stubs given nowhere). They stay known references (backlinks). `keys.0`'s inbox is among them: an inbox is held by the strong of what takes grants there (rule 5), so the differential's oracle gives a moved inbox no weak.
+- **Rule 4 built; a signal's own root and holding branch stay**: weaks in held history bring stubs (`refs::kept` rows by kind; spec/data-model.md §8 Held history), and an account's inbox setting holds its targets (`RetentionSetting::take_inbox_signals`), so once entered a held signal's thing is held as a stub by its fire's weak, as the model has it, and that stub is logged under the account's unit. Two signal pieces the general rule cannot cover, both before entry: `Root::Signalled` (what came of X by role is kept while the signal follows it; a stub is founded on X's role entries and a sync-only holder's is no closure vertex, so without it a sync-only signalled holder lost what it needed to keep X unread: `holding::a_key_change_keeps_a_sync_only_holder_*`, `grants::a_stopped_sync_holder_*`), and `thing_holdings`' branch giving a signalled thing no unit carries the stub class while the node holds no read secret (a closure stub vertex needs one).

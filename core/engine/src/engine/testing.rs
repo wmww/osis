@@ -327,7 +327,7 @@ impl Engine {
     #[doc(hidden)]
     pub fn history_strongs_from(&mut self, source: &Tid) -> Result<Vec<(Tid, Ak)>> {
         let s = *source;
-        self.read(|tx| super::refs::kept::from(tx, &s))
+        self.read(|tx| Ok(super::refs::kept::from(tx, &s)?.into_iter().filter(|r| r.1 == osis_base::RefKind::Strong).map(|r| (r.0, r.2)).collect()))
     }
 
     /// How many bodies of `(tid, ak)` are held.

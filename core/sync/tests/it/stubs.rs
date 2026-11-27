@@ -175,6 +175,37 @@ fn a_weak_brings_a_stub_kept_current_spec_sync_set_2() {
     assert_eq!(holding(&mut w, 1, &x), Some(Holding::Stub), "still a stub");
 }
 
+// spec/data-model.md §8 (Held history: a weak in a held body brings its stub as one in a current
+// value does): U, whose setting keeps its history and holds its targets, weaks X (which grants U
+// read), then replaces the weak with text. Node 1 holds X as a stub by the replaced body alone,
+// and holds nothing of X once U's setting no longer holds its targets (fails with history's weaks
+// counted for nothing: X never held).
+#[test]
+fn a_weak_in_held_history_brings_a_stub_spec_data_model_8() {
+    let keep = osis_schema::History::Keep { until: None, after: Some(10 * 60_000) };
+    let setting = |holds| ct::RetentionSetting { default: Some(ct::RetentionEntry { history: Some(keep), ..Default::default() }), history_holds_targets: holds, ..Default::default() };
+    let put = |w: &mut World, u: Tid, s: ct::RetentionSetting| {
+        w.write(0, |e| {
+            let mut m = Mutation::new();
+            m.set(u, &ct::RETENTION, &s).unwrap();
+            e.commit(m).unwrap();
+        });
+    };
+    let mut x = Tid::PUBLIC;
+    let (mut w, u) = redeemed(|w, u| {
+        x = make(w, "x");
+        grant(w, x, u, Some(Role::Read));
+        put(w, u, setting(true));
+        refer(w, u, Value::Weak(x));
+        refer(w, u, Value::Str("no reference".into()));
+    });
+    assert_eq!(holding(&mut w, 1, &x), Some(Holding::Stub), "X held as a stub by U's history");
+    assert_eq!(reads(&mut w, 1, &x), None, "none of its content");
+    put(&mut w, u, setting(false));
+    w.run();
+    assert_eq!(holding(&mut w, 1, &x), None, "nothing of X once U's history holds no targets");
+}
+
 // spec/sync-set.md §2 (Stubs: a reference to a thing the unit's keys do not open where the unit
 // holds sync; Node closure: kept unread): U strongs X, which grants U sync. Node 1 keeps X unread
 // (it stores X's sync ID) and reads none of it.
