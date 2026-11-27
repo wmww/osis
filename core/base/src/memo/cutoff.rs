@@ -64,7 +64,7 @@ impl<K: Hash + Eq + Clone + std::fmt::Debug + Send + 'static, V: Clone + Partial
             Err(std::sync::TryLockError::WouldBlock) => unreachable!("a cutoff's row read while that cutoff judged its keys"),
         };
         let at = writes();
-        if g.stale.as_ref().is_none_or(|(w, _)| *w != at) {
+        if g.stale.as_ref().is_none_or(|(w, _)| *w != at) || !super::skip_allowed() {
             g.fx.find_pending();
             let hashes = g.fx.pending_row_hashes().into_iter().collect();
             g.stale = Some((at, hashes));

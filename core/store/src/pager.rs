@@ -339,7 +339,10 @@ impl DirtyUnit {
 /// A transaction's uncommitted changes.
 #[derive(Clone, Default)]
 pub(crate) struct Dirty {
-    ver: u64,
+    /// Its version, taken when it first puts rows on the backend (a spill or its commit): a
+    /// transaction that stores nothing takes none, so the versions and the rows named by them
+    /// are a function of what was stored, not of how many transactions ran.
+    ver: Option<u64>,
     pub meta: Meta,
     units: HashMap<u64, DirtyUnit>,
     plain_bytes: usize,
@@ -507,7 +510,8 @@ pub(crate) struct Pager {
     epoch: u64,
     root_key: Secret32,
     top_ver: u64,
-    /// Next transaction version: never repeats within a session, aborted ones included.
+    /// Next transaction version (`Dirty::ver`): never repeats within a session, aborted ones that
+    /// spilled included.
     next_ver: u64,
     /// Versions of transactions that spilled and have not committed (aborted unless running).
     open_spills: BTreeSet<u64>,
@@ -832,9 +836,16 @@ impl Pager {
         for ver in std::mem::take(&mut self.open_spills) {
             rollback(&mut *self.backend, &W::new().u8(JOURNAL).u64(ver).take()).inspect_err(|e| self.write_failed(e))?;
         }
-        let ver = self.next_ver;
-        self.next_ver += 1;
-        Ok(Dirty { ver, meta: self.meta, ..Dirty::default() })
+        Ok(Dirty { meta: self.meta, ..Dirty::default() })
+    }
+
+    /// `d`'s version, taken now if it has none (`Dirty::ver`).
+    fn ver(&mut self, d: &mut Dirty) -> u64 {
+        *d.ver.get_or_insert_with(|| {
+            let v = self.next_ver;
+            self.next_ver += 1;
+            v
+        })
     }
 
     pub fn alloc(&self, d: &mut Dirty) -> Result<u64, Error> {
@@ -850,7 +861,7 @@ impl Pager {
             Some(u @ (DirtyUnit::Plain { .. } | DirtyUnit::Page { .. })) => Ok(u.plain().map(|b| b.into_owned())),
             Some(DirtyUnit::Deleted { .. }) => Ok(None),
             Some(DirtyUnit::Spilled { key, .. }) => {
-                let row = unit_row(slot, d.ver);
+                let row = unit_row(slot, d.ver.ok_or(Error::Corrupt("spilled with no version"))?);
                 let v = self.backend.get(&row)?.ok_or(Error::Corrupt("spilled unit missing"))?;
                 open(key, &row, &v).map(Some)
             }
@@ -921,13 +932,14 @@ impl Pager {
 
     /// Writes plain units and blobs early, under a journal record.
     fn spill(&mut self, d: &mut Dirty, rng: &mut dyn CryptoRngCore) -> Result<(), Error> {
+        let ver = self.ver(d);
         let mut batch = WriteBatch::new();
         let mut j = Journal::default();
         // a page out for change stays: the operation that took it writes it back
         for (slot, u) in d.units.iter_mut() {
             let Some(data) = u.plain() else { continue };
             let key = Secret32::random(rng);
-            let row = unit_row(*slot, d.ver);
+            let row = unit_row(*slot, ver);
             let sealed = self.seal(&key, &row, &data, rng)?;
             drop(data);
             batch.put(row.clone(), sealed);
@@ -944,8 +956,8 @@ impl Pager {
             }
             batch.put_blob(id, bytes);
         }
-        batch.put(journal_row(d.ver, d.spills), j.encode());
-        self.open_spills.insert(d.ver);
+        batch.put(journal_row(ver, d.spills), j.encode());
+        self.open_spills.insert(ver);
         d.spills += 1;
         d.plain_bytes = 0;
         self.backend.commit(batch).map_err(Error::from).inspect_err(|e| self.write_failed(e))?;
@@ -957,7 +969,7 @@ impl Pager {
     /// rotation whose root record was stored is committed: `Ok`). If a backend sync failed, or
     /// that recovery fails too, the outcome is unknown: `Err`, and every call fails `Broken`
     /// until the store is opened again.
-    pub fn commit(&mut self, d: Dirty, rng: &mut dyn CryptoRngCore) -> Result<(), Error> {
+    pub fn commit(&mut self, mut d: Dirty, rng: &mut dyn CryptoRngCore) -> Result<(), Error> {
         self.check()?;
         if d.is_empty() && d.meta == self.meta {
             return Ok(());
@@ -965,8 +977,8 @@ impl Pager {
         if d.units.values().any(|u| matches!(u, DirtyUnit::Taken { .. })) {
             return Err(Error::Corrupt("table page left out for change"));
         }
-        let ver = d.ver;
-        let Err(e) = self.commit_inner(d, rng) else {
+        let ver = self.ver(&mut d);
+        let Err(e) = self.commit_inner(d, ver, rng) else {
             self.writes.committed += 1;
             return Ok(());
         };
@@ -988,8 +1000,7 @@ impl Pager {
         }
     }
 
-    fn commit_inner(&mut self, mut d: Dirty, rng: &mut dyn CryptoRngCore) -> Result<(), Error> {
-        let ver = d.ver;
+    fn commit_inner(&mut self, mut d: Dirty, ver: u64, rng: &mut dyn CryptoRngCore) -> Result<(), Error> {
         let arity = self.arity();
         let mut batch = WriteBatch::new();
         let mut j = Journal::default();

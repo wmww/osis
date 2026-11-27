@@ -1792,7 +1792,7 @@ mod tests {
         lp.peers[0].commit(m).unwrap().unwrap()
     }
 
-    // spec: none (internal: issues/derived-state-recomputed.md step 4). Dating a replaced body
+    // spec: none (internal: issues/derived-state-recomputed.md item 1). Dating a replaced body
     // reads its aspect's held writes, amended by each join: a write decodes its own body however
     // many the aspect holds (read anew, the aspect's every body: n at n, 10n at 10n).
     #[test]

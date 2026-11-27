@@ -1277,10 +1277,6 @@ pub struct Core {
     /// Stored commit records and their parts, decoded once per write of the record
     /// (`decoded::DecodedCommits`).
     pub(crate) decoded: decoded::DecodedCommits,
-    /// Bumped whenever a transaction changes the indexes or a state, or the caches reload (it
-    /// never goes back): `Certified`'s follow runs only once it moved (`certificates_quiet`),
-    /// a fixed point per engine (issues/derived-state-recomputed.md).
-    pub generation: u64,
     /// The running transaction is a memory one (`Tx::set_memory`).
     pub memory_tx: bool,
     /// The room node-sync gave the memory commit being ingested (spec/sync-compaction.md §2 caps,
@@ -1649,7 +1645,6 @@ impl Core {
 
     /// Notes that the running transaction changes the indexes or a state (drops derived caches).
     pub fn touch(&mut self) {
-        self.generation += 1;
         self.dirty = true;
     }
 
@@ -1905,7 +1900,6 @@ impl Core {
             pages: _,
             waits: _,
             touches: _,
-            generation: _,
             // the store's count, read by `changed_since`
             store_rows: _,
             // work lists and hints a superset of which is harmless (the consumer re-checks each
@@ -2281,7 +2275,6 @@ impl Core {
             rebuilds: 0,
             decoded: Default::default(),
             memory_tx: false,
-            generation: 0,
             memory_room: None,
             memory_waits: BTreeSet::new(),
             walks: Default::default(),
@@ -3508,8 +3501,6 @@ impl Engine {
         fresh.refs_watched = self.core.refs_watched;
         fresh.commit_listeners = self.core.commit_listeners.clone();
         fresh.skip_writer_rules = self.core.skip_writer_rules;
-        // `Certified` never takes an old value for current
-        fresh.generation = self.core.generation.wrapping_add(1);
         #[cfg(test)]
         {
             fresh.check_ingest = self.core.check_ingest;

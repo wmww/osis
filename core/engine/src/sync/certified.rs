@@ -5,14 +5,14 @@
 //! Each read thing's certificates are followed by what deriving them read (`memo::Effects`: the
 //! kept evidence derivation's rows, `evidence::kept`, and the engine's indexes), so a follow
 //! derives those of the things whose inputs moved since the last and writes the rows that
-//! changed. It runs whenever the engine's state moved since the last follow (`Core::generation`).
+//! changed. It returns at once at its fixed point (`memo::Quiet`).
 
 use super::ThingSync;
 use crate::Engine;
 use crate::error::Result;
 use crate::evidence::held::Ev;
 use crate::sync_ids::{Certs, Parts};
-use osis_base::memo::{Effects, Feed, Stamped, StampedSet, Unrecorded};
+use osis_base::memo::{Effects, Feed, Quiet, Stamped, StampedSet, Unrecorded};
 use osis_base::{CommitId, Tid};
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -67,8 +67,8 @@ impl Default for Follow {
 /// The certificates of the things this node reads, indexed by commit and by read thing.
 #[derive(Clone, Default)]
 pub(crate) struct Certified {
-    /// `Core::generation` at the last follow that succeeded.
-    at: Option<u64>,
+    /// The follow's fixed point.
+    quiet: Quiet,
     follow: Follow,
     /// Read things whose certificates were derived so far: what a count test reads.
     pub(crate) derived: u64,
@@ -165,26 +165,28 @@ impl Engine {
         if self.certificates_quiet()? {
             return Ok(false);
         }
-        osis_base::costs::count("certified: follows", 1);
+        osis_base::costs::count("certified: follows", u64::from(!self.certificates_settled(Quiet::holds_here)));
         let _u = Unrecorded::start();
-        let at = self.generations();
+        let from = Quiet::begin();
         let r = self.follow_due();
-        self.core.certified.at = r.is_ok().then_some(at);
+        let mut quiet = self.core.certified.quiet;
+        quiet.ended(from, r.is_ok());
+        self.core.certified.quiet = quiet;
         r
     }
 
-    /// Whether `follow_certificates` would do nothing: neither the engine's state nor the read
-    /// things (`SyncRows::read`, which a link followed or a holding moving changes with no
-    /// transaction) moved since the last.
+    /// Whether `follow_certificates` would do nothing: the sync set's rows are at their fixed
+    /// point (the follow runs theirs) and so is it (`Quiet`).
     pub(crate) fn certificates_quiet(&mut self) -> Result<bool> {
         self.follow_rows()?;
-        // the follow's own check: what reads the rows follows them, not this
-        let _u = Unrecorded::start();
-        Ok(self.core.certified.at == Some(self.generations()) && self.core.certified.read.iter().eq(self.core.sync_rows.read.iter()))
+        Ok(self.certificates_settled(Quiet::holds))
     }
 
-    fn generations(&self) -> u64 {
-        self.core.generation
+    /// `certificates_quiet` after the rows' follow, by `at` (`Quiet::holds`, or `holds_here` to
+    /// count a follow).
+    fn certificates_settled(&self, at: fn(&Quiet, bool) -> bool) -> bool {
+        let c = &self.core.certified;
+        at(&c.quiet, c.follow.certs.idle())
     }
 
     /// The certificates of each read thing whose inputs moved since the last follow derived

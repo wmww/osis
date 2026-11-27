@@ -84,14 +84,19 @@ fn runs() -> Vec<(&'static str, u64)> {
     osis_base::costs::take().into_iter().map(|(k, _, n)| (k, n)).collect()
 }
 
-// spec: none (internal: notes/test-harnesses.md, Copied worlds). A copied world goes on exactly as the
-// original: the same further steps make the same commits, reads, indexes, timelines, events,
-// stored bytes and memo runs.
+// spec: none (internal: notes/test-harnesses.md, Copied worlds and Skips that miss;
+// spec/requirements.md: what a node reads and holds is a function of its data). A copied world
+// goes on exactly as the original: the same further steps make the same commits, reads, indexes,
+// timelines, events, stored bytes and memo runs. So does a copy whose skips on process-wide
+// writes miss at random (`memo::missing_skips`, as other threads' writes make them): a skip
+// saves work alone, and a count is of what the world's own history owes.
 #[test]
 fn a_copied_world_goes_on_as_the_original() {
     let (mut lp, t, x) = history();
-    let mut copy = lp.copy().unwrap();
-    assert_eq!(observe(&mut lp, t), observe(&mut copy, t), "as copied");
+    let (mut copy, mut missing) = (lp.copy().unwrap(), lp.copy().unwrap());
+    let copied = observe(&mut lp, t);
+    assert_eq!(copied, observe(&mut copy, t), "as copied");
+    assert_eq!(copied, observe(&mut missing, t), "as copied");
     runs();
     let a = further(&mut lp, t, &x);
     let ran = runs();
@@ -99,7 +104,13 @@ fn a_copied_world_goes_on_as_the_original() {
     assert_eq!(ran, runs(), "memo and phase runs");
     assert_eq!(a, b);
     assert!(a.iter().filter(|c| c.is_some()).count() >= 4, "{a:?}");
-    assert_eq!(observe(&mut lp, t), observe(&mut copy, t), "after the same steps");
+    let seen = observe(&mut lp, t);
+    assert_eq!(seen, observe(&mut copy, t), "after the same steps");
+    let _m = osis_base::memo::missing_skips();
+    runs();
+    assert_eq!(a, further(&mut missing, t, &x), "skips missing");
+    assert_eq!(ran, runs(), "skips missing: memo and phase runs");
+    assert_eq!(seen, observe(&mut missing, t), "skips missing: after the same steps");
 }
 
 // spec: none (internal: notes/test-harnesses.md, Copied worlds). A copy shares nothing with its

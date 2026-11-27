@@ -13,6 +13,8 @@ use std::time::{Duration, Instant};
 
 thread_local! {
     static ON: Cell<bool> = const { Cell::new(false) };
+    /// `paused` calls running on this thread.
+    static PAUSED: Cell<u32> = const { Cell::new(0) };
     static COSTS: RefCell<BTreeMap<&'static str, (Duration, u64)>> = const { RefCell::new(BTreeMap::new()) };
     static SCOPE: Cell<Option<&'static str>> = const { Cell::new(None) };
     static NODE: Cell<Option<usize>> = const { Cell::new(None) };
@@ -180,10 +182,22 @@ pub fn take() -> Vec<(&'static str, Duration, u64)> {
 
 /// Runs `f` with this thread's recording off (debug checks: their work is not the measured code's).
 pub fn paused<T>(f: impl FnOnce() -> T) -> T {
-    let was = ON.with(|on| on.replace(false));
-    let r = f();
-    ON.with(|on| on.set(was));
-    r
+    struct Resume(bool);
+    impl Drop for Resume {
+        fn drop(&mut self) {
+            ON.with(|on| on.set(self.0));
+            PAUSED.with(|p| p.set(p.get() - 1));
+        }
+    }
+    PAUSED.with(|p| p.set(p.get() + 1));
+    let _r = Resume(ON.with(|on| on.replace(false)));
+    f()
+}
+
+/// Whether this thread runs inside `paused` (a debug check): what it does there changes no count
+/// of the measured code's, including which follows that code's own writes owe (`memo::Quiet`).
+pub fn pausing() -> bool {
+    PAUSED.with(|p| p.get() > 0)
 }
 
 

@@ -43,7 +43,7 @@ pub(crate) fn unindex_unreceived(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
 /// `marks`: forgotten as covered, purged, spent or invalid, so it leaves its marks and its
 /// blobs' rows go; else as never received.
 fn unindex(tx: &mut Tx<'_>, id: &CommitId, marks: bool) -> Result<()> {
-    // the held set changes: what is derived from it (`Core::generation`) is derived again
+    // the indexes change
     tx.core.touch();
     // its bodies leave with the record
     let held: Vec<usize> = tx.core.ix.commits.get(id).map(|m| (0..m.view.aspects.len()).filter(|ai| m.holds(*ai) && !m.stripped(*ai)).collect()).unwrap_or_default();

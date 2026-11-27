@@ -184,6 +184,31 @@ fn lifecycle_errors() {
     assert!(matches!(t.put_aspect(&tid(1), &big_ak, &AspectUnit::default(), Shred::No), Err(Error::Misuse(_))));
 }
 
+// spec/requirements.md (what a node holds is a function of its data): a transaction that stores
+// nothing (a read, or writes aborted before any spill) leaves the store's bytes as they would be
+// without it, so how many reads a node ran never shows in what it holds.
+#[test]
+fn a_transaction_storing_nothing_leaves_the_bytes_as_without_it() {
+    let unit = AspectUnit { state: b"state".to_vec() };
+    let bytes = |idle: bool| {
+        let (_dev, mut rng, mut s) = fresh(cfg());
+        if idle {
+            let mut t = s.transaction(&mut rng).unwrap();
+            assert_eq!(t.get_aspect(&tid(1), &ak("a.0")).unwrap(), None);
+            drop(t);
+            let mut t = s.transaction(&mut rng).unwrap();
+            t.put_aspect(&tid(2), &ak("a.0"), &unit, Shred::No).unwrap();
+            drop(t);
+            s.transaction(&mut rng).unwrap().commit().unwrap();
+        }
+        let mut t = s.transaction(&mut rng).unwrap();
+        t.put_aspect(&tid(1), &ak("a.0"), &unit, Shred::No).unwrap();
+        t.commit().unwrap();
+        s.backend().scan_prefix(b"", usize::MAX).unwrap()
+    };
+    assert_eq!(bytes(true), bytes(false));
+}
+
 // spec/commits.md §4: an aborted transaction that spilled leaves nothing that harms later commits.
 #[test]
 fn abort_after_spill() {

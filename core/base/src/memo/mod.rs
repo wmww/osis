@@ -170,7 +170,10 @@ impl Table {
     /// Logs change `e` at `ver`, while some reader holds a mark; counts it in `writes`.
     fn log(&mut self, e: Logged) {
         WRITES.fetch_add(1, Ordering::Relaxed);
-        WRITES_HERE.set(WRITES_HERE.get() + 1);
+        // a debug check's writes owe the measured code no follow
+        if !crate::costs::pausing() {
+            WRITES_HERE.set(WRITES_HERE.get() + 1);
+        }
         if !self.marks.is_empty() {
             self.log.push_back((self.seq, e));
         }
@@ -913,7 +916,7 @@ fn current_part(frames: &[Frame]) -> Option<Part> {
 static WRITES: AtomicU64 = AtomicU64::new(0);
 
 thread_local! {
-    /// The changes of `WRITES` made on this thread.
+    /// The changes of `WRITES` made on this thread, outside debug checks (`costs::pausing`).
     static WRITES_HERE: Cell<u64> = const { Cell::new(0) };
 }
 
@@ -923,6 +926,57 @@ thread_local! {
 /// count too: they cost a follow, never a missed change.
 pub fn writes() -> u64 {
     WRITES.load(Ordering::Relaxed)
+}
+
+/// Whether a skip on `writes` (`Quiet::holds`, `Cutoff`'s due keys) may be taken now. Debug
+/// builds: false at random while skips miss (`OSIS_QUIET_MISS=1`, or `missing_skips` on this
+/// thread), so a test shows any state that depends on whether a skip was taken, which other
+/// threads' writes decide (notes/test-harnesses.md, Skips that miss).
+pub fn skip_allowed() -> bool {
+    #[cfg(debug_assertions)]
+    {
+        static ENV: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        if MISSING.get() || *ENV.get_or_init(|| crate::testenv::u64_var("OSIS_QUIET_MISS") == Some(1)) {
+            return MISS_RNG.with(|r| {
+                // xorshift64, seeded per thread from the process's random hasher
+                let mut x = r.get();
+                if x == 0 {
+                    x = std::hash::BuildHasher::hash_one(&std::collections::hash_map::RandomState::new(), 0u8) | 1;
+                }
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                r.set(x);
+                x & 1 == 0
+            });
+        }
+    }
+    true
+}
+
+#[cfg(debug_assertions)]
+thread_local! {
+    /// `missing_skips` holds on this thread.
+    static MISSING: Cell<bool> = const { Cell::new(false) };
+    static MISS_RNG: Cell<u64> = const { Cell::new(0) };
+}
+
+/// While held, skips on `writes` miss at random on this thread (`skip_allowed`; debug builds).
+pub struct MissingSkips(#[cfg(debug_assertions)] bool);
+
+/// Makes skips on `writes` miss at random on this thread until the guard drops (debug builds).
+pub fn missing_skips() -> MissingSkips {
+    MissingSkips(
+        #[cfg(debug_assertions)]
+        MISSING.replace(true),
+    )
+}
+
+#[cfg(debug_assertions)]
+impl Drop for MissingSkips {
+    fn drop(&mut self) {
+        MISSING.set(self.0);
+    }
 }
 
 /// A follower's fixed point (`Engine::follow`'s parts, `Cutoff`): `writes` when one of its
@@ -947,7 +1001,7 @@ pub struct Begun {
 impl Quiet {
     /// Whether a follow of an `idle` follower has nothing to do.
     pub fn holds(&self, idle: bool) -> bool {
-        idle && self.all == Some(writes())
+        idle && self.all == Some(writes()) && skip_allowed()
     }
 
     /// `holds` counting this thread's writes alone: what decides whether a follow is counted. A
@@ -1859,7 +1913,8 @@ mod tests {
 
     // spec: none (internal: a count of follows is a function of the follower's history). A
     // fixed point (`Quiet`) breaks at any thread's write, so the follow runs; only this
-    // thread's writes owe it (`holds_here`), so another thread's leave the count as it was.
+    // thread's writes outside debug checks owe it (`holds_here`), so another thread's, or a
+    // check's whose schedule other threads move, leave the count as it was.
     #[test]
     fn another_threads_write_runs_a_follow_but_owes_none() {
         let (mut quiet, mine) = (Quiet::default(), Stamps::default());
@@ -1870,6 +1925,11 @@ mod tests {
         std::thread::spawn(|| Stamps::default().wrote(&1u8, true)).join().unwrap();
         assert!(!quiet.holds(true), "any thread's write breaks the fixed point");
         assert!(quiet.holds_here(true), "another thread's write owes no follow");
+        let from = Quiet::begin();
+        quiet.ended(from, true);
+        crate::costs::paused(|| mine.wrote(&3u8, true));
+        assert!(!quiet.holds(true), "a debug check's write breaks the fixed point");
+        assert!(quiet.holds_here(true), "a debug check's write owes no follow");
         mine.wrote(&1u8, true);
         assert!(!quiet.holds_here(true), "this thread's write owes one");
         let from = Quiet::begin();
