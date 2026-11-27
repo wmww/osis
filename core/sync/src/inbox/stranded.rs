@@ -19,8 +19,10 @@
 //! only when one is added, changes or goes); the connections proven are told by `proved` and
 //! `closed`. A send pass runs only on such a move, over the strandings (normally none) and the
 //! connections. Durable: per S reported, the latest report key and whom it went to (store rows
-//! `I/x/`), so neither a restart nor a source reconnecting sends it again; a row goes when S is
-//! no longer read here (checked at a start and as strandings move), a new key replacing it.
+//! `I/x/`), so neither a restart nor a source reconnecting sends it again. A row's owner is S
+//! being read here (`Engine::read_credentials`, followed per S): it goes when that ends, a new
+//! key replacing it; not on S merely judged not stranded, which is also status not having judged
+//! it yet (a restart, a source reconnecting), and the report goes once per key.
 
 use super::{Here, Net};
 use crate::session::RequestId;
@@ -89,6 +91,8 @@ fn report_key(st: &Stranding) -> [u8; 32] {
 #[derive(Clone)]
 pub(super) struct Reports {
     seen: Effects<(), Arc<BTreeMap<SyncId, Arc<Stranding>>>>,
+    /// Whether each S of `sent` is read here: its row's owner.
+    read: Effects<SyncId, bool>,
     now: Arc<BTreeMap<SyncId, Arc<Stranding>>>,
     sent: BTreeMap<SyncId, Sent>,
     /// Stranded messages awaiting their answer: S, the report key, the account told.
@@ -103,7 +107,7 @@ impl Default for Reports {
     fn default() -> Self {
         let mut seen = Effects::new("inbox: stranded");
         seen.want(());
-        Reports { seen, now: Arc::default(), sent: BTreeMap::new(), out: BTreeMap::new(), unsaved: BTreeSet::new(), conns: BTreeSet::new(), dirty: false }
+        Reports { seen, read: Effects::new("inbox: stranded read"), now: Arc::default(), sent: BTreeMap::new(), out: BTreeMap::new(), unsaved: BTreeSet::new(), conns: BTreeSet::new(), dirty: false }
     }
 }
 
@@ -112,23 +116,20 @@ impl Reports {
     pub(super) fn start(&mut self, h: &mut Here<'_>) -> Result<()> {
         for (row, v) in h.store.with_tx(|t| t.scan_local(ROWS, b"", usize::MAX))? {
             let (Some(s), Some(sent)) = (row.get(ROWS.len()..).and_then(|x| Some(SyncId(x.try_into().ok()?))), Sent::decode(&v)) else { continue };
+            self.read.want(s);
             self.sent.insert(s, sent);
-        }
-        for s in self.sent.keys().copied().collect::<Vec<_>>() {
-            self.forget_unread(h, s)?;
         }
         Ok(())
     }
 
-    /// Drops what S's report was sent to once S is no longer read here. Not on S merely judged
-    /// not stranded: that is also status not having judged it yet (a restart, a source
-    /// reconnecting), and the report goes once per key (spec/permissions.md §4).
-    fn forget_unread(&mut self, h: &mut Here<'_>, s: SyncId) -> Result<()> {
-        if h.engine.read_credentials(&s)?.is_some() {
-            return Ok(());
+    /// Drops what each S's report was sent to once S is no longer read here.
+    fn forget_unread(&mut self, h: &mut Here<'_>) -> Result<()> {
+        for s in self.read.due() {
+            let Some((_, false)) = self.read.try_settle(&s, || h.engine.read_credentials(&s).map(|c| c.is_some()))? else { continue };
+            self.read.unwant(&s);
+            self.sent.remove(&s);
+            h.store.with_tx(|t| t.remove_local(&[ROWS, &s.0[..]].concat(), Shred::No))?;
         }
-        self.sent.remove(&s);
-        h.store.with_tx(|t| t.remove_local(&[ROWS, &s.0[..]].concat(), Shred::No))?;
         Ok(())
     }
 
@@ -162,11 +163,8 @@ impl Reports {
         {
             self.now = now;
             self.dirty = true;
-            let unjudged: Vec<SyncId> = self.sent.keys().filter(|s| !self.now.contains_key(*s)).copied().collect();
-            for s in unjudged {
-                self.forget_unread(h, s)?;
-            }
         }
+        self.forget_unread(h)?;
         let mut acted = false;
         for s in std::mem::take(&mut self.unsaved) {
             if let Some(sent) = self.sent.get(&s) {
@@ -217,6 +215,7 @@ impl Reports {
             return Ok(false);
         }
         h.store.with_tx(|t| t.put_local(&[ROWS, &s.0[..]].concat(), &sent.encode(), Shred::No))?;
+        self.read.want(s);
         self.sent.insert(s, sent);
         Ok(true)
     }

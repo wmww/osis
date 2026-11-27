@@ -428,9 +428,20 @@ impl Waits {
 
 
     /// Reading `actor`'s `secrets.0` gave `roles` otherwise than the node holds them, which its
-    /// roles kept as they were (`Core::ingest_view`).
-    pub fn untaken(&mut self, actor: Tid, roles: BTreeSet<Role>) {
-        self.untaken.entry(actor).or_default().extend(roles);
+    /// roles kept as they were (`Core::ingest_view`); `whole`: the state was read whole, so these
+    /// are all it keeps out (none once the state goes).
+    pub fn untaken(&mut self, actor: Tid, roles: BTreeSet<Role>, whole: bool) {
+        if whole {
+            self.untaken.remove(&actor);
+        }
+        if !roles.is_empty() {
+            self.untaken.entry(actor).or_default().extend(roles);
+        }
+    }
+
+    /// How many actors are listed (`Engine::retake_listed`).
+    pub fn untaken_len(&self) -> usize {
+        self.untaken.len()
     }
 
     /// The untaken actors where `may` allows a role kept out.

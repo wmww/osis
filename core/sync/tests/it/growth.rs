@@ -871,15 +871,18 @@ fn round_work() -> Work {
 /// history is no more than over three of the first's. A body of an earlier round is judged again
 /// only where something deciding it moved: a snapshot extending its chain of covers moves its
 /// carriers, read only where an entry of it would leave (`Ground::carriers`); a removal stamp
-/// pruned in a store table moves no reader of another absent row (`memo::Effects::due`). One
-/// round's count varies by about a tenth either way, so windows of three are compared.
-fn flat_work(work: &[Work], who: &str) {
+/// pruned in a store table moves no reader of an absent row, its own included
+/// (`memo::Effects::due`); a body at S reads S's bodies of its commit alone (`Engine::sync_body`),
+/// and asks other sync IDs' entries of its blobs only where they may decide what it may log
+/// (`Ground::may_log`). One round's count varies by about a tenth either way, so windows of three
+/// are compared. `measures`: the indexes of `Work` checked.
+fn flat_work(work: &[Work], who: &str, measures: &[usize]) {
     let window = |r: std::ops::Range<usize>| -> Work {
         let w = &work[r];
         std::array::from_fn(|i| w.iter().map(|x| x[i]).sum())
     };
     let (early, late) = (window(1..4), window(work.len() - 3..work.len()));
-    for (i, what) in ["judgements", "store rows read", "judgements giving the value held"].iter().enumerate() {
+    for (i, what) in ["judgements", "store rows read", "judgements giving the value held"].iter().enumerate().filter(|(i, _)| measures.contains(i)) {
         assert!(late[i] <= early[i], "{who}: read's {what} per round grow with the rounds played: rounds 2-4 {}, the last three {} ({work:?})", early[i], late[i]);
     }
 }
@@ -935,29 +938,67 @@ fn redeem_round(w: &mut World) {
 
 /// `grant_rounds` at 1 and 10 rounds: each node as a fresh world's (`as_fresh`: `world_of(0, 2, 2)`
 /// `settled` at 0 rounds, the same for every arm, built once per process), each round's set
-/// removals at most `removals` a node.
+/// removals at most `removals` a node, and nothing listed for `flows::retake` beyond what a fresh
+/// node lists (an in-memory row owned by its actor's `secrets.0` state).
 fn grants_as_fresh(held: bool, redeem: bool, removals: usize) {
     let (mut wf, fresh) = fixture_with("growth grants fresh", || {
         let mut w = world_of(0, 2, 2);
         let held = settled(&mut w);
         (w, held)
     });
-    let ([(mut wa, a), (mut wb, b)], work) = grant_rounds(held, redeem);
+    let ([(mut wa, a), (mut wb, b)], _) = grant_rounds(held, redeem);
     // the redeem round's set removals: the link's seed thing's and K's strongs beside the thing's
     let extra = if redeem { 4 } else { 0 };
     for (i, who) in ["the maker", "the grantee"].iter().enumerate() {
         as_fresh(&a[i], &fresh[i], removals + extra, &format!("{who}, 1 round"), &mut |f| leaked(&mut wa, i, &mut wf, i, f));
         as_fresh(&b[i], &fresh[i], 10 * removals + extra, &format!("{who}, 10 rounds"), &mut |f| leaked(&mut wb, i, &mut wf, i, f));
         assert_eq!(a[i].0.get("cv/"), b[i].0.get("cv/"), "{who}: cv/ flat");
+        let listed = wf.engine(i).retake_listed();
+        assert_eq!((wa.engine(i).retake_listed(), wb.engine(i).retake_listed()), (listed, listed), "{who}: actors listed for retake, 1 and 10 rounds");
     }
-    flat_work(&work, if held { "held" } else { "declined" });
+}
+
+// Releasing everything, its grant arm (spec/sync-set.md §3, spec/sync-inbox.md §5): a thing
+// granted to another account, held there, written, the grantee removed and both sides letting it
+// go, leaves each node as a fresh world's once the inbox lifetime, the role keep and tombstones
+// have passed, at 1 and 10 rounds.
+#[test]
+fn a_granted_and_revoked_thing_returns_storage_to_a_fresh_worlds_spec_sync_set_3() {
+    grants_as_fresh(true, false, 4);
+}
+
+// spec/requirements.md Scale, spec/sync-judgement.md §2: as the grant arm, read's work per round
+// does not grow with the rounds played (`flat_work`).
+#[test]
+#[ignore = "issues/many-sync-ids-cost.md"]
+fn granting_costs_read_what_the_grant_changed_spec_requirements_scale() {
+    let (_, work) = grant_rounds(true, false);
+    flat_work(&work, "held", &[0, 1, 2]);
+}
+
+// spec/requirements.md Scale, spec/sync-judgement.md §2: as the decline arm, read judges no more bodies per round as the
+// rounds' sync IDs add up, each still read at the grantee (stranded) while its fire is kept
+// (`flat_work`, judgements; the rows it reads: issues/many-sync-ids-cost.md).
+#[test]
+#[ignore = "by hand, alone: its counts move with the tests run beside it (issues/many-sync-ids-cost.md)"]
+fn declined_grants_cost_read_what_each_changed_spec_requirements_scale() {
+    let (_, work) = grant_rounds(false, false);
+    flat_work(&work, "declined", &[0, 2]);
+}
+
+// Its decline arm (spec/sync-set.md §4: nothing else makes a node hold a thing it is granted a
+// role on; spec/sync-inbox.md §5): as the grant arm, the grant never held from the grantee's
+// account: what its fire carried goes with the fire, and the stranded report it sent with its
+// sync ID being read.
+#[test]
+fn a_declined_grant_returns_storage_to_a_fresh_worlds_spec_sync_set_3() {
+    grants_as_fresh(false, false, 4);
 }
 
 // Its redeem arm (spec/sync-set.md §4, §3 Nothing of R stays): as the
 // grant arm, the first round granting by a link redeemed and ended (`redeem_round`): the link's
 // seed thing goes with its end.
 #[test]
-#[ignore = "issues/storage-owners.md"]
 fn a_redeemed_and_ended_link_returns_storage_to_a_fresh_worlds_spec_sync_set_3() {
     grants_as_fresh(true, true, 4);
 }

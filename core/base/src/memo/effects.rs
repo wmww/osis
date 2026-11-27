@@ -328,8 +328,9 @@ impl<K: Hash + Eq + Clone + std::fmt::Debug, V: Clone + PartialEq + std::fmt::De
                 maybe.extend(ix.readers(*x));
             }
             if !changes.iter().any(|c| matches!(c, Logged::All)) {
+                // keys written: a prune (`Logged::Bucket`) writes none, its keys absent before and after
                 let named = changes.iter().filter_map(|c| match c {
-                    Logged::Key { h, .. } | Logged::Bucket(h) => Some(*h),
+                    Logged::Key { h, .. } => Some(*h),
                     _ => None,
                 });
                 pruned.insert(*p, named.collect());
@@ -340,9 +341,10 @@ impl<K: Hash + Eq + Clone + std::fmt::Debug, V: Clone + PartialEq + std::fmt::De
             crate::costs::count("effects: candidates", (given.len() + maybe.len()) as u64);
         }
         // a logged write of a key read, before the read or by a key sharing its hash, moved
-        // nothing: the stamps say which did. A key read at its bucket's absent stamp and named
-        // by nothing since moved only with another key's pruned removal (`Table::prune`): its
-        // value stands, read again at the bucket's stamp now. Not for a key given before: the
+        // nothing: the stamps say which did. A key absent now and written by nothing since moved
+        // only with a pruned removal (`Table::prune`), its own or another key's: it was absent at
+        // the read too (read present, its removal is a write since), so its value stands, read
+        // again at the bucket's stamp now. Not for a key given before: the
         // write that moved it may be in an earlier `due`'s log
         let bucket_only = |d: &Dep| -> bool {
             let Some(h) = d.key() else { return false };
@@ -969,7 +971,8 @@ mod tests {
 
     // spec: none (internal). Removal stamps stay as many as the keys stamped otherwise (at least
     // the buckets): past that they are pruned, which moves each pruned key's bucket. A reader of
-    // an absent key nothing wrote moves not (its value stands); one of a key present with no
+    // an absent key nothing wrote since moves not (its value stands), its own removal pruned
+    // included; one of a key present with no
     // stamp of its own (since `wrote_all`) that was written, removed and pruned moves, at the
     // `due` after and at each later one until settled, whatever prunes came between.
     #[test]
@@ -996,6 +999,16 @@ mod tests {
         assert_ne!(m.stamps.stamp(&5000u16), was, "its bucket moved");
         m.insert(5000, 1);
         assert_eq!(e.due(), [1], "read again at its bucket's stamp: its own write moves it");
+        let mut m: Stamped<u16, u8> = Stamped::default();
+        let mut e: Effects<u16, u8> = Effects::new("test pruned own");
+        m.insert(9, 1);
+        m.remove(&9);
+        settle_once(&mut e, || m.get(&9).copied().unwrap_or(0));
+        churn(&mut m, 1000);
+        assert!(!lock(&m.stamps.0).keys.contains_key(&super::super::hash(&9u16)), "its removal pruned");
+        assert_eq!(e.due(), Vec::<u16>::new(), "read absent at its removal, which a prune dropped");
+        m.insert(9, 1);
+        assert_eq!(e.due(), [1], "its own write moves it");
         let mut m: Stamped<u16, u8> = Stamped::default();
         let mut e: Effects<u16, u8> = Effects::new("test pruned present");
         m.insert(7, 1);

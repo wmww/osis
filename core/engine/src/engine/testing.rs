@@ -26,6 +26,13 @@ pub(crate) fn family(k: &[u8]) -> &[u8] {
 }
 
 impl Engine {
+    /// How many actors `flows::retake` lists (`Waits::untaken`): each entry is owned by its
+    /// actor's `secrets.0` state, so none outlives it.
+    #[doc(hidden)]
+    pub fn retake_listed(&self) -> usize {
+        self.core.waits.untaken_len()
+    }
+
     /// The edge writes held role commit `id` makes, whatever the delete keys it lists (none while
     /// a reset names a write not held, `validity::edge_writes_of`, nor for a split commit): the
     /// applied ones (`ix.held`) less a miskeyed commit's left out.

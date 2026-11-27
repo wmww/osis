@@ -222,10 +222,9 @@ impl Core {
     /// (spec/crypto.md §4), `secrets` read as `read` says. Returns whether anything changed.
     /// `alts`: the live entries of history keys holding several (each tried).
     pub(crate) fn ingest_secrets(&mut self, actor: &Tid, secrets: &Secrets, read: SecretsRead<'_>, alts: &HistoryAlts) -> bool {
+        let whole = matches!(read, SecretsRead::State);
         let (epochs, untaken) = self.ingest_view(actor, secrets, read, alts);
-        if !untaken.is_empty() {
-            self.waits.untaken(*actor, untaken);
-        }
+        self.waits.untaken(*actor, untaken, whole);
         let Some(epochs) = epochs else { return false };
         self.ix.secrets.insert(*actor, epochs);
         true

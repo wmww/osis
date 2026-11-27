@@ -366,6 +366,7 @@ pub(crate) fn forget(tx: &mut Tx<'_>, scope: Scope<'_>, held: &BTreeMap<Tid, u64
         crate::apply::rebuild(tx, t, ak)?;
         crate::engine::refs::clear(tx, t, ak)?;
         tx.txn.drop_aspect(t, ak)?;
+        crate::apply::observe_state(tx, t, ak)?;
         super::destroy::forget_aspect_rows(tx, t, ak)?;
     }
     // the things' history cursors and rows (`leaving`)

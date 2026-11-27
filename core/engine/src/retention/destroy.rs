@@ -299,6 +299,8 @@ fn destroy_thing(tx: &mut Tx<'_>, t: &Tid, changed: &mut BTreeSet<(Tid, Ak)>) ->
         crate::apply::rebuild(tx, t, ak)?;
         crate::engine::refs::clear(tx, t, ak)?;
         tx.txn.drop_aspect(t, ak)?;
+        // what the state gave goes with it
+        crate::apply::observe_state(tx, t, ak)?;
         for p in [records::FORGOTTEN, records::RESNAPSHOTS_OWED] {
             tx.txn.remove_local(&records::aspect_key(p, t, ak), Shred::Yes)?;
         }

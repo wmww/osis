@@ -393,6 +393,17 @@ impl Ground for Live<'_, '_> {
         if !own.is_empty() && self.cx.engine.may_log(s, c, &own)? {
             return Ok(true);
         }
+        // nor where every blob of the commit held here logs nothing (S stranded here): whether
+        // any other sync ID's entry names one is asked only where it may decide
+        let mut bytes = Vec::new();
+        for b in self.cx.engine.commit_blobs(&c.commit)?.iter() {
+            if self.cx.store.blob_len(b)?.is_some() {
+                bytes.push(*b);
+            }
+        }
+        if !self.cx.engine.may_log(s, c, &bytes)? {
+            return Ok(false);
+        }
         let held: Vec<BlobId> = self.held_blobs(&c.commit)?.into_iter().map(|(b, _, _)| b).collect();
         Ok(self.cx.engine.may_log(s, c, &held)?)
     }

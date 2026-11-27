@@ -469,9 +469,11 @@ impl Engine {
         osis_base::memo::Cutoff::get_in(self, |e| &e.core.sync_body_rows, &(b.commit, *s, b.on), |e, k| e.sync_body_read(k))
     }
 
-    /// `sync_body` read anew from its commit's row.
+    /// `sync_body` read anew: `bodies_at` S alone, so a commit carried under many sync IDs (an
+    /// account's chain, certified in each unit it holds a role in) costs a row what its own S
+    /// holds, never every S of the commit.
     pub(super) fn sync_body_read(&mut self, (c, s, on): &(CommitId, SyncId, Option<Tid>)) -> Result<Option<BodyMeta>> {
-        Ok(self.sync_bodies(c)?.get(&(*s, *on)).cloned())
+        Ok(self.bodies_at(s, c)?.remove(on))
     }
 
     /// Whether `x` is outside `s`'s sync unit as its bodies read it: no thing reading `s` carries
