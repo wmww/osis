@@ -36,7 +36,6 @@ osis-sync's module reviews (about 50 product bugs) split the same way. Reading a
 
 **Small items**:
 - Which of several fixes a test needs: `tools/mutate.py` with a revert-to-old expression per fix answers it in one build.
-- A world-level dump of one node's view of one thing (roster, held commits on it, sync holding, opens members): debugging sync otherwise needs ad-hoc prints across engine and osis-sync.
 - A deterministic test of `close` on `Runtime::Tokio` (notes/api.md Handle and lifecycle: after `close` returns no driver poll touches a timer of a shut-down runtime). The one test, osis `runtime::close_then_runtime_shutdown_polls_no_dead_timer`, is a by-hand race caught about a third of runs; `num_alive_tasks() == 0` after `close` is wrong (the task is released after the guard drops). Needs a seam: a hook holding the driver inside an engine call while `close` runs, released after shutdown began.
 - Judgment vectors still missing: linked header lists (an aspect list past `CHUNK_THRESHOLD`) and the secrets-side rotation scenarios (core/test/vectors/README.md).
 - held-model's comparison leaves out every aspect when a role commit carries parts outside the model (notes/test-properties.md, held-model comparison): a carve-out to close by modelling those role commits.

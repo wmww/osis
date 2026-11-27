@@ -867,18 +867,50 @@ impl World {
     /// (`Engine::sync_ids`, `hint` marked) and those carrying it (`Engine::carrying`). Sync IDs as
     /// the trace prints them, so a reader syncing another sync ID than its writers shows at once.
     pub fn sync_ids_of(&mut self, t: &Tid) -> String {
+        (0..self.nodes.len()).map(|i| self.sync_line(i, t)).collect::<Vec<_>>().join("\n")
+    }
+
+    /// Node `i`'s line of `sync_ids_of`.
+    fn sync_line(&mut self, i: usize, t: &Tid) -> String {
         let s = trace::short;
-        let mut out = Vec::new();
-        for i in 0..self.nodes.len() {
-            let synced: Vec<String> = self.store(i).syncs().into_iter().filter(|(_, (ts, _))| ts.contains(t)).map(|(x, (_, h))| format!("{} {h:?}", s(&x))).collect();
-            let e = self.engine(i);
-            let line = osis_base::costs::paused(|| {
-                let owned: Vec<String> = e.sync_ids(t).map(|v| v.iter().map(|o| format!("{}{}", s(&o.id), if o.hint { " hint" } else { "" })).collect()).unwrap_or_else(|x| vec![format!("{x:?}")]);
-                let carrying: Vec<String> = e.carrying(t).map(|v| v.iter().map(s).collect()).unwrap_or_else(|x| vec![format!("{x:?}")]);
-                format!("n{i}: syncs [{}]; owns [{}]; carrying [{}]", synced.join(", "), owned.join(", "), carrying.join(", "))
-            });
-            out.push(line);
+        let synced: Vec<String> = self.store(i).syncs().into_iter().filter(|(_, (ts, _))| ts.contains(t)).map(|(x, (_, h))| format!("{} {h:?}", s(&x))).collect();
+        let e = self.engine(i);
+        osis_base::costs::paused(|| {
+            let owned: Vec<String> = e.sync_ids(t).map(|v| v.iter().map(|o| format!("{}{}", s(&o.id), if o.hint { " hint" } else { "" })).collect()).unwrap_or_else(|x| vec![format!("{x:?}")]);
+            let carrying: Vec<String> = e.carrying(t).map(|v| v.iter().map(s).collect()).unwrap_or_else(|x| vec![format!("{x:?}")]);
+            format!("n{i}: syncs [{}]; owns [{}]; carrying [{}]", synced.join(", "), owned.join(", "), carrying.join(", "))
+        })
+    }
+
+    /// Debug builds: node `i`'s view of thing `t`, for a sync failure that would otherwise need
+    /// prints across engine and osis-sync: the roster it reads, each held commit writing `t`
+    /// (`describe_commit`), how it syncs `t` (`sync_ids_of`'s line) and its open members of
+    /// `t`'s sync IDs (`members_of`'s lines). Node tids are marked `(n<j>)`, accounts `(account of n<j>)`.
+    #[cfg(debug_assertions)]
+    pub fn view(&mut self, i: usize, t: &Tid) -> String {
+        let mut names: Vec<(String, String)> = (0..self.nodes.len()).map(|j| (self.engine(j).tid().to_string(), format!("n{j}"))).collect();
+        for j in 0..self.nodes.len() {
+            if let Some(a) = self.node(j).account.map(|a| a.to_string())
+                && !names.iter().any(|(x, _)| *x == a)
+            {
+                names.push((a, format!("account of n{j}")));
+            }
         }
+        let name = |x: String| names.iter().fold(x, |d, (tid, n)| d.replace(tid, &format!("{tid} ({n})")));
+        let mut out = vec![format!("n{i}'s view of {}:", name(t.to_string()))];
+        let roster = self.engine(i).roster(t);
+        out.push(format!("  roster ({}):", roster.len()));
+        out.extend(roster.iter().map(|(h, e)| name(format!("    {h}: {e:?}"))));
+        let on = t.to_string();
+        let e = self.engine(i);
+        let commits: Vec<String> = e.commit_ids().iter().filter_map(|c| e.describe_commit(c)).filter(|d| d.split_once(" on [").is_some_and(|(_, parts)| parts.contains(&on))).collect();
+        out.push(format!("  held commits writing it ({}):", commits.len()));
+        out.extend(commits.into_iter().map(|d| name(format!("    {d}"))));
+        out.push(format!("  {}", self.sync_line(i, t)));
+        let ss: BTreeSet<osis_base::SyncId> = self.store(i).syncs().into_iter().filter(|(_, (ts, _))| ts.contains(t)).map(|(x, _)| x).collect();
+        let members = self.open_members(i, &ss);
+        out.push(format!("  open members ({}):", members.len()));
+        out.extend(members.into_iter().map(|l| format!("    {l}")));
         out.join("\n")
     }
 

@@ -51,6 +51,7 @@ Debug builds only, for a count, retention, role or read test that fails; each re
 - `Engine::why_role(t)`: roles, paths, secrets and `lost_due`'s clauses (`rotation::lost::explain_due`); its `kept copy` line is the retain decision (`retention::forget`). Dump the unshrunk history too: a shrink drops words and grants that matter.
 - `Engine::describe_commit(c)` names a trace's `C..`. `World::sync_ids_of(t)` (any build): how each node syncs `t`.
 - `World::members_of(t)`: each node's open members of `t`'s sync IDs, a line per (connection, sync ID): `n<i> <conn> n<peer> S..: Member { class, own, by, until, departed }` (the member's `Debug`, so it follows the opens code as it changes).
+- `World::view(i, t)`: node i's view of `t` in one dump: its roster, each held commit writing `t` (`describe_commit`), its `sync_ids_of` line and its open members; node tids marked `(n<j>)`, accounts `(account of n<j>)`. Start a sync failure here before adding prints across engine and osis-sync.
 - Printed on failure: S1 (`growth::releasing_own_things_*`) prints the rows a fresh world's node lacks and `why_kept` of each thing they name (`growth::leaked`); the sync differential's role and read clauses (`history::closure_clauses`) print `why_role` and `members_of`.
 - **Replaying without the end checks**: `OSIS_NO_END_CHECKS=1` (by hand only) also skips `World::run`'s quiet checks, so `differential::holds` and scenarios calling `check` return their world for inspection. Never set it while shrinking: a candidate whose failure is the check then passes.
 
