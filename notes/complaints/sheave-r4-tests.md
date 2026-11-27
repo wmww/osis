@@ -1,3 +1,0 @@
-# sheave-r4-tests
-- The differential's check failures printed no script and never shrank: `played_on` dropped the play's `Script` before `history::check` ran, so a panic in the check had no steps to print (`OSIS_SYNC_SHRINK=1` did nothing). Fixed (`differential::played_with` keeps it through the check); a harness test that a check failure prints its script would have caught it.
-- Many default tests passed vacuously: their grantee never entered (grants untold after R1), so assertions of "nothing reaches it" held trivially. A pass that a grantee reads first (as most tests do) is the cheap guard; tests asserting only absence need one.
