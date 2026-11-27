@@ -23,7 +23,7 @@ osis-engine/it 2100
 osis-engine/osis_engine 1700
 osis-keys/it 5.5
 osis-keys/osis_keys 2.4
-osis-kit/it 150
+osis-kit/it 240
 osis-perm/it 49
 osis-proto/it 7.3
 osis-proto/osis_proto 7.9
