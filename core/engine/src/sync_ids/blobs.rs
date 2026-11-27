@@ -82,6 +82,8 @@ pub struct OpenedBlob {
     pub copy: bool,
     /// Every section as a seal keeps it (`crate::sync::BlobSeal`).
     pub seals: Vec<osis_commit::SectionSeal>,
+    /// Its prefix's entry blocks, as they came (`crate::sync::BlobSeal`).
+    pub blocks: Vec<osis_blob::EntryBlock>,
 }
 
 /// How a section opens here (`Engine::section_opens`).
@@ -103,19 +105,22 @@ impl OpenedBlob {
 /// Frames an envelope: random salt and key, prefix from the header and the sections' aspects
 /// (spec/sync-ids.md §1, spec/wire.md §5).
 pub fn frame_envelope(env: &Envelope, resolved: &osis_commit::Header, class: osis_blob::Class, rng: &mut dyn CryptoRngCore, from: &CommitBlob) -> Result<Sealed> {
-    framed(osis_crypto::BlobKey::fresh(rng), env, None, resolved, class, rng, from)
+    framed(osis_crypto::BlobKey::fresh(rng), env, None, resolved, class, rng, from, |_, _, _| Ok(Vec::new()))
 }
 
-/// `frame_envelope` under `key`, its sections as `seals` keeps them where known.
-fn framed(key: osis_crypto::BlobKey, env: &Envelope, seals: Option<Vec<osis_commit::SectionSeal>>, resolved: &osis_commit::Header, class: osis_blob::Class, rng: &mut dyn CryptoRngCore, from: &CommitBlob) -> Result<Sealed> {
+/// `frame_envelope` under `key`, its sections as `seals` keeps them where known, carrying the
+/// entry blocks `blocks` makes.
+#[allow(clippy::too_many_arguments)]
+fn framed(key: osis_crypto::BlobKey, env: &Envelope, seals: Option<Vec<osis_commit::SectionSeal>>, resolved: &osis_commit::Header, class: osis_blob::Class, rng: &mut dyn CryptoRngCore, from: &CommitBlob, blocks: impl FnOnce(&Secret32, &[u8; 16], &mut dyn CryptoRngCore) -> Result<Vec<osis_blob::EntryBlock>>) -> Result<Sealed> {
     let ais = env.ais();
     let groups = osis_commit::prefix_groups(resolved, ais.iter().copied())?;
     let salt = osis_blob::Prefix::random_salt(rng);
-    let prefix = osis_blob::Prefix::for_delete_keys(salt, &env.header.blind, osis_commit::prefix_expiry(resolved, &ais).map(WallMs), &groups)?.with_class(class);
+    let blocks = blocks(key.secret(), &salt, rng)?;
+    let prefix = osis_blob::Prefix::for_delete_keys(salt, &env.header.blind, osis_commit::prefix_expiry(resolved, &ais).map(WallMs), &groups)?.with_class(class).with_blocks(blocks.clone())?;
     let (key, blob) = osis_blob::frame_under(key, &prefix, &env.encode())?;
     let parts: Vec<usize> = from.parts.iter().filter(|p| ais.contains(&p.ai)).map(|p| p.ai).collect();
     let unopened = env.sections.iter().filter(|s| !s.ais.iter().any(|ai| parts.contains(ai))).map(|s| s.digest()).collect();
-    let seal = seals.map(|sections| Arc::new(crate::sync::BlobSeal { len: blob.len() as u64, key: key.clone(), sections }));
+    let seal = seals.map(|sections| Arc::new(crate::sync::BlobSeal { len: blob.len() as u64, key: key.clone(), sections, blocks }));
     Ok(Sealed { id: osis_blob::blob_id(&blob), blob, key, salt, ais, parts, unopened, seal })
 }
 
@@ -261,7 +266,7 @@ impl Engine {
         } else {
             osis_commit::seal_commit_keyed(&c, &resolved, |_| (), |_, _| Some((key.secret().clone(), Vec::new())), &[], rng)?
         };
-        framed(key, &env, Some(seals), &resolved, class, rng, &c).map(Some)
+        framed(key, &env, Some(seals), &resolved, class, rng, &c, |_, _, _| Ok(Vec::new())).map(Some)
     }
 
     /// The derivation chain a section lists for thing `t` (spec/wire.md §4): from its mint admin
@@ -378,7 +383,9 @@ impl Engine {
             &whole,
             rng,
         )?;
-        let s = framed(osis_crypto::BlobKey::fresh(rng), &env, Some(seals), &resolved, class, rng, &c)?;
+        // its entries (spec/sync-ids.md §3 Entry block): a fresh encryption of a body, never a copy
+        let boxing = self.boxing(&c, &resolved, &seals)?;
+        let s = framed(osis_crypto::BlobKey::fresh(rng), &env, Some(seals), &resolved, class, rng, &c, |k, salt, rng| self.entry_blocks(&boxing, k, salt, rng))?;
         if b.parts.iter().any(|p| !s.parts.contains(p)) {
             return Ok(None);
         }
@@ -482,7 +489,7 @@ impl Engine {
             }
             self.note_opened(h, &under);
         }
-        Ok(OpenedBlob { plaintext: opened.commit.encode(), commit: opened.commit, ais, salt: *prefix.salt(), sealed: opened.sealed, records, sections: env.sections, copy, seals: opened.seals })
+        Ok(OpenedBlob { plaintext: opened.commit.encode(), commit: opened.commit, ais, salt: *prefix.salt(), sealed: opened.sealed, records, sections: env.sections, copy, seals: opened.seals, blocks: prefix.blocks().to_vec() })
     }
 
     /// How a section of a commit blob of header `h` opens here (spec/sync-judgement.md §1

@@ -319,7 +319,7 @@ fn plant_step_box(lp: &mut LocalPeer, i: usize, y: Tid, to: Tid, seed: u8) -> Co
         let w = osis_keys::box_holder(&y, &fake, &osis_keys::HistoryBoxes::new(), &rcpt, &[Role::Sync, Role::Read].into(), &mut *tx.rng)?.unwrap();
         let g = Secret32::from_bytes([seed.wrapping_add(9); 32]);
         let genesis = osis_blob::genesis(&g);
-        let issued = crate::flows::sync_ids::issue(tx, &fake, (&genesis, &g), &Secret32::from_bytes([seed; 32]), None)?;
+        let issued = crate::flows::sync_ids::issue(tx, &y, &fake, (&genesis, &g), &Secret32::from_bytes([seed; 32]), None, fake.read.newest())?;
         let mut m = Mutation::new();
         crate::flows::put_secrets(&mut m, y, &w, true)?;
         crate::flows::sync_ids::put_steps(&mut m, y, genesis.sync_id, &[&genesis])?;

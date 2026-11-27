@@ -49,6 +49,10 @@ fn encode_row(row: &BlobOf) -> Vec<u8> {
     if let Some(seal) = &row.seal {
         v.extend(seal.len.to_be_bytes());
         v.extend(seal.key.expose());
+        v.extend((seal.blocks.len() as u32).to_be_bytes());
+        for b in &seal.blocks {
+            b.write(&mut v);
+        }
         for s in &seal.sections {
             seal_bytes(&mut v, s);
         }
@@ -91,6 +95,13 @@ fn decode_row(commit: CommitId, v: &[u8]) -> Option<BlobOf> {
         None => return None,
         Some((len, r)) => {
             let (key, r) = r.split_first_chunk::<32>()?;
+            let (n, mut r) = r.split_first_chunk::<4>()?;
+            let mut blocks = Vec::new();
+            for _ in 0..u32::from_be_bytes(*n) {
+                let (b, len) = osis_blob::EntryBlock::parse(r).ok()?;
+                blocks.push(b);
+                r = r.get(len..)?;
+            }
             rest = r;
             let mut sections = Vec::new();
             while let Some((tag, r)) = rest.split_first() {
@@ -114,7 +125,7 @@ fn decode_row(commit: CommitId, v: &[u8]) -> Option<BlobOf> {
                 sections.push(s);
                 rest = r;
             }
-            Some(Arc::new(super::BlobSeal { len: u64::from_be_bytes(*len), key: osis_crypto::Secret32::from_bytes(*key), sections }))
+            Some(Arc::new(super::BlobSeal { len: u64::from_be_bytes(*len), key: osis_crypto::Secret32::from_bytes(*key), sections, blocks }))
         }
     };
     Some(BlobOf { commit, parts, sealed, copy: flags & 1 != 0, unchecked: flags & 2 != 0, salt: *salt, ais, seal })
@@ -302,7 +313,7 @@ pub(crate) fn regenerate_in(tx: &mut Tx<'_>, b: &BlobId, row: &BlobOf) -> Result
     let Ok(env) = osis_commit::regenerate(&cb, &resolved, &seal.sections) else { return Ok(None) };
     let ais = env.ais();
     let groups = osis_commit::prefix_groups(&resolved, ais.iter().copied())?;
-    let prefix = osis_blob::Prefix::for_delete_keys(row.salt, &cb.header.blind, osis_commit::prefix_expiry(&resolved, &ais).map(WallMs), &groups)?.with_class(osis_blob::Class::of_marker(resolved.ephemeral));
+    let prefix = osis_blob::Prefix::for_delete_keys(row.salt, &cb.header.blind, osis_commit::prefix_expiry(&resolved, &ais).map(WallMs), &groups)?.with_class(osis_blob::Class::of_marker(resolved.ephemeral)).with_blocks(seal.blocks.clone())?;
     let (_, blob) = osis_blob::frame_under(osis_crypto::BlobKey::of_blob(seal.key.clone()), &prefix, &env.encode())?;
     Ok((osis_blob::blob_id(&blob) == *b).then_some(blob))
 }
@@ -1232,7 +1243,7 @@ impl Engine {
         }
         // a blob opened before its header lists resolve here checked no commitment of its prefix
         // and opened no section (spec/commits.md §4): it opens again, checked, once they do
-        let seal = Some(Arc::new(super::BlobSeal { len: bytes.len() as u64, key: key.clone(), sections: opened.seals.clone() }));
+        let seal = Some(Arc::new(super::BlobSeal { len: bytes.len() as u64, key: key.clone(), sections: opened.seals.clone(), blocks: opened.blocks.clone() }));
         let row = BlobOf { commit: id, parts, sealed, copy: opened.copy, unchecked: !unchecked.is_empty() || h.is_none(), salt: opened.salt, ais: opened.ais.iter().copied().collect(), seal };
         let b = *blob;
         self.run(|tx| note_blob(tx, &b, row))?;

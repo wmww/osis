@@ -10,7 +10,7 @@ use crate::error::{Error, Result};
 use crate::Mutation;
 use osis_base::{SyncId, Role, Tid, Value};
 use osis_crdt::{Fragment, Op, PathOp, PathSeg};
-use osis_crypto::{Epoch, RoleKey, Secret32, X25519Secret, role_key};
+use osis_crypto::{Epoch, RoleKey, Secret32, role_key};
 use osis_keys::{ActorEpochs, registration_epochs};
 use osis_blob::{Step, StepKeys, sync_steps, register, step_record};
 use osis_schema::core_types::{self as ct, KemKey};
@@ -50,17 +50,19 @@ pub(crate) struct Issued {
 /// (spec/crypto.md §3, Read key in force).
 ///
 /// `keyset`: the read keyset `t`'s `keys.0` holds once the step's commit is applied (one the same
-/// commit writes, where it writes one).
-pub(crate) fn issue(tx: &mut Tx<'_>, epochs: &ActorEpochs, parent: (&Step, &Secret32), deposit: &Secret32, keyset: Option<&ct::Keyset>) -> Result<Issued> {
-    let [(_, ss), _, (_, ws), (_, adm)] = registration_epochs(epochs).ok_or(Error::Misuse("an admin registers: every role's newest secret is needed"))?;
+/// commit writes, where it writes one); `claim`: the claim epoch of the sync epoch it registers,
+/// where that commit writes its keyset (else read from the keyset held, `Core::keyset`). Its step
+/// key is the public half of that sync epoch's claim key (spec/sync-ids.md §3).
+pub(crate) fn issue(tx: &mut Tx<'_>, t: &Tid, epochs: &ActorEpochs, parent: (&Step, &Secret32), deposit: &Secret32, keyset: Option<&ct::Keyset>, claim: Option<Epoch>) -> Result<Issued> {
+    let [(se, ss), _, (_, ws), (_, adm)] = registration_epochs(epochs).ok_or(Error::Misuse("an admin registers: every role's newest secret is needed"))?;
+    let claim = claim.or_else(|| tx.core.keyset(t, Role::Sync, &se).and_then(|k| k.claim)).ok_or(Error::Misuse("the sync epoch's claim epoch is not held"))?;
+    let roles = epochs.read.checked_roles(&claim).ok_or(Error::Misuse("the claim epoch's roles secret is not held"))?;
+    let step_key = osis_crypto::claim_key(ss, &roles).public();
     let keys = StepKeys::derive(ss, ws, adm, deposit, &parent.0.sync_id);
     let del = role_key(RoleKey::Delete, parent.1);
     // its KEM key only beside a read keyset carrying one (spec/crypto.md §3, Published KEM keys)
     let kem = keyset.is_some_and(|k| k.kem_key.is_some());
     let read = vouched(epochs, keyset).map(|(e, s)| ct::ReadKey { epoch: osis_keys::aspects::to_schema(&e), kem_key: kem.then(|| KemKey::X25519MlKem768(s.kem().public().as_bytes().to_vec())) });
-    // Interim (notes/opening-design.md): a random step key until the step key is the public half
-    // of the sync epoch's claim key (spec/sync-ids.md §3)
-    let step_key = X25519Secret::random(&mut *tx.rng).public();
     let step = register(parent.0, &del, keys, step_key)?;
     Ok(Issued { step, read })
 }
@@ -99,10 +101,11 @@ pub(crate) fn put_steps(m: &mut Mutation, t: Tid, sync_id: SyncId, steps: &[&Ste
 /// What making `t` independent writes in `sync.0` (spec/sync-ids.md §2), in `m`: the genesis
 /// step of its sync ID, from its genesis seed `g` (the same bytes at every node making it
 /// independent), and a child of it at its new epochs `epochs`. Returns the sync ID.
-pub(crate) fn independent_steps(tx: &mut Tx<'_>, m: &mut Mutation, t: Tid, g: &Secret32, epochs: &ActorEpochs, deposit: &Secret32, keyset: Option<&ct::Keyset>) -> Result<SyncId> {
+pub(crate) fn independent_steps(tx: &mut Tx<'_>, m: &mut Mutation, t: Tid, g: &Secret32, epochs: &ActorEpochs, deposit: &Secret32, keysets: &osis_keys::KeysWrite) -> Result<SyncId> {
     let genesis = osis_blob::genesis(g);
     let sync_id = genesis.sync_id;
-    let issued = issue(tx, epochs, (&genesis, g), deposit, keyset)?;
+    let claim = keysets.keysets.get(&Role::Sync).and_then(|k| k.claim.as_ref()).and_then(|e| osis_keys::aspects::from_schema(e).ok());
+    let issued = issue(tx, &t, epochs, (&genesis, g), deposit, keysets.keysets.get(&Role::Read), claim)?;
     publish_keys(m, t, &issued)?;
     put_steps(m, t, sync_id, &[&genesis, &issued.step])?;
     // named in its `keys.0` too: the public key record a sender fires by (spec/crypto.md §3)
@@ -222,7 +225,7 @@ pub(crate) fn step_due(tx: &mut Tx<'_>, g: &Tid, l: &SyncId) -> Result<Option<Du
 fn step_into(tx: &mut Tx<'_>, m: &mut Mutation, g: Tid, l: SyncId) -> Result<Option<Step>> {
     let Some(due) = step_due(tx, &g, &l)? else { return Ok(None) };
     let keyset = Core::keys_in(tx, &g)?.and_then(|k| k.read);
-    let issued = issue(tx, &due.epochs, (&due.head, &due.admin), &due.deposit, keyset.as_ref())?;
+    let issued = issue(tx, &g, &due.epochs, (&due.head, &due.admin), &due.deposit, keyset.as_ref(), None)?;
     put_step(m, g, l, &issued)?;
     Ok(Some(issued.step))
 }

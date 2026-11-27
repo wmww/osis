@@ -82,14 +82,15 @@ pub struct BlobOf {
     pub seal: Option<Arc<BlobSeal>>,
 }
 
-/// A commit blob's seal: its length, blob key and each section as kept
-/// (`osis_commit::SectionSeal`). With the prefix salt (`BlobOf::salt`) and the commit as held it
-/// gives the blob byte for byte.
+/// A commit blob's seal: its length, blob key, each section as kept (`osis_commit::SectionSeal`)
+/// and its entry blocks (spec/sync-ids.md §5: a blob made again carries them). With the prefix
+/// salt (`BlobOf::salt`) and the commit as held it gives the blob byte for byte.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BlobSeal {
     pub len: u64,
     pub key: Secret32,
     pub sections: Vec<osis_commit::SectionSeal>,
+    pub blocks: Vec<osis_blob::EntryBlock>,
 }
 
 impl BlobOf {

@@ -4,12 +4,15 @@
 use crate::Error;
 use osis_base::format::{BLOB_FRAMING_VERSION, COMMITMENT_LEN, DELETE_ADMIN, DELETE_WRITER, MAX_BLOB, PREFIX_FIXED_LEN};
 use osis_base::{BlobId, WallMs};
+use crate::entry::EntryBlock;
 use osis_crypto::{CryptoRngCore, Secret32, VerifyingKey, commitment, decrypt_blob};
 
 /// At most one commitment per level in a group.
 const MAX_LEVELS: usize = 3;
 /// Most groups a prefix lists: its le16 count (spec/wire.md §5).
 const MAX_GROUPS: usize = u16::MAX as usize;
+/// Most entry blocks a prefix lists: its count byte.
+const MAX_BLOCKS: usize = u8::MAX as usize;
 
 /// A delete level (spec/wire.md §1): 1 thing admin, 2 the commit's purge author, 3 thing write.
 pub type Level = u8;
@@ -45,15 +48,16 @@ impl Class {
 /// levels (spec/wire.md §5).
 pub type Group = Vec<[u8; COMMITMENT_LEN]>;
 
-/// The clear prefix of a blob: salt, optional expiry, class, commitment groups. A Delete needs
-/// a delete-key signature per group (spec/sync-ids.md §6): an empty
-/// group (a `nobody` delta's) blocks deletion by level.
+/// The clear prefix of a blob: salt, optional expiry, class, commitment groups, entry blocks. A
+/// Delete needs a delete-key signature per group (spec/sync-ids.md §6): an empty group (a
+/// `nobody` delta's) blocks deletion by level.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Prefix {
     salt: [u8; 16],
     expiry: Option<WallMs>,
     class: Class,
     groups: Vec<Group>,
+    blocks: Vec<EntryBlock>,
 }
 
 impl Prefix {
@@ -64,7 +68,7 @@ impl Prefix {
         for g in &mut groups {
             g.sort();
         }
-        let p = Prefix { salt, expiry, class: Class::Durable, groups };
+        let p = Prefix { salt, expiry, class: Class::Durable, groups, blocks: Vec::new() };
         p.validate()?;
         Ok(p)
     }
@@ -109,10 +113,26 @@ impl Prefix {
                 return Err(Error::Malformed("commitment levels not strictly ascending"));
             }
         }
+        if self.blocks.len() > MAX_BLOCKS {
+            return Err(Error::Malformed("more than 255 entry blocks"));
+        }
         if self.expiry == Some(WallMs(0)) {
             return Err(Error::Malformed("expiry 0"));
         }
         Ok(())
+    }
+
+    /// This prefix with entry blocks `blocks`, in their order (spec/wire.md §5); `Malformed`
+    /// past 255.
+    pub fn with_blocks(mut self, blocks: Vec<EntryBlock>) -> Result<Prefix, Error> {
+        self.blocks = blocks;
+        self.validate()?;
+        Ok(self)
+    }
+
+    /// Its entry blocks, as they came (each counts under a sync ID only where it verifies there).
+    pub fn blocks(&self) -> &[EntryBlock] {
+        &self.blocks
     }
 
     /// This prefix with class `c`.
@@ -147,7 +167,7 @@ impl Prefix {
 
     /// Encoded length.
     pub fn len(&self) -> usize {
-        PREFIX_FIXED_LEN + self.groups.iter().map(|g| 1 + COMMITMENT_LEN * g.len()).sum::<usize>()
+        PREFIX_FIXED_LEN + self.groups.iter().map(|g| 1 + COMMITMENT_LEN * g.len()).sum::<usize>() + 1 + self.blocks.iter().map(EntryBlock::len).sum::<usize>()
     }
 
     /// Never empty; for clippy's `len` convention.
@@ -169,6 +189,11 @@ impl Prefix {
             for c in g {
                 out.extend_from_slice(c);
             }
+        }
+        // at most MAX_BLOCKS by construction
+        out.push(u8::try_from(self.blocks.len()).unwrap_or(u8::MAX));
+        for b in &self.blocks {
+            b.write(&mut out);
         }
         out
     }
@@ -196,22 +221,30 @@ impl Prefix {
             groups.push(body.as_chunks::<COMMITMENT_LEN>().0.to_vec());
             at += 1 + COMMITMENT_LEN * m;
         }
+        let b = *blob.get(at).ok_or(Error::Malformed("short prefix"))?;
+        at += 1;
+        let mut blocks = Vec::with_capacity(usize::from(b));
+        for _ in 0..b {
+            let (block, len) = EntryBlock::parse(blob.get(at..).ok_or(Error::Malformed("short prefix"))?)?;
+            blocks.push(block);
+            at += len;
+        }
         let mut s = [0u8; 16];
         s.copy_from_slice(salt);
         let mut e = [0u8; 8];
         e.copy_from_slice(expiry);
         let t = u64::from_le_bytes(e);
-        let p = Prefix { salt: s, expiry: (t != 0).then_some(WallMs(t)), class, groups };
+        let p = Prefix { salt: s, expiry: (t != 0).then_some(WallMs(t)), class, groups, blocks };
         p.validate()?;
         Ok(p)
     }
 
     /// Whether this prefix is what an encryption of a commit's deltas computes (spec/commits.md
     /// §4, spec/sync-ids.md §1): the same expiry, exactly the commitment groups of `groups` under
-    /// this salt and the header's blind `hb`, and the class of the header's ephemeral marker. A
-    /// mismatch makes the commit blob bad input.
+    /// this salt and the header's blind `hb`, and the class of the header's ephemeral marker (its
+    /// entry blocks are its maker's, judged apart). A mismatch makes the commit blob bad input.
     pub fn agrees(&self, expiry: Option<WallMs>, hb: &[u8; 16], groups: &[Vec<osis_commit::DeleteKey>], class: Class) -> bool {
-        Prefix::for_delete_keys(self.salt, hb, expiry, groups).is_ok_and(|p| p.with_class(class) == *self)
+        Prefix::for_delete_keys(self.salt, hb, expiry, groups).is_ok_and(|p| p.groups == self.groups && p.expiry == self.expiry && class == self.class)
     }
 }
 
@@ -303,7 +336,7 @@ mod tests {
     fn layout() {
         let p = Prefix::new([7; 16], Some(WallMs(0x0102)), vec![vec![c(2, 9), c(1, 5)], vec![], vec![c(3, 4)]]).unwrap();
         let b = p.to_bytes();
-        assert_eq!(b.len(), 28 + (1 + 66) + 1 + (1 + 33));
+        assert_eq!(b.len(), 28 + (1 + 66) + 1 + (1 + 33) + 1);
         assert_eq!(b[0], 1);
         assert_eq!(b[1..17], [7; 16]);
         assert_eq!(b[17..25], [2, 1, 0, 0, 0, 0, 0, 0]);
@@ -315,7 +348,21 @@ mod tests {
         assert_eq!(b[95], 0);
         assert_eq!(b[96], 1);
         assert_eq!(b[97..130], c(3, 4));
+        assert_eq!(b[130], 0, "no entry blocks");
         assert_eq!(Prefix::parse(&b).unwrap(), p);
+        // entry blocks after the groups, counted by a byte
+        let mut rng = SeededRng::from_u64(0);
+        let k = osis_crypto::SigningSecret::from_seed(&Secret32::from_bytes([1; 32]));
+        let block = EntryBlock::sign(&k, &osis_base::SyncId([1; 16]), &[7; 16], vec![], &mut rng).unwrap();
+        let with = p.clone().with_blocks(vec![block.clone(), block.clone()]).unwrap();
+        let wb = with.to_bytes();
+        assert_eq!(wb.len(), with.len());
+        assert_eq!(wb.len(), 131 + 2 * block.len());
+        assert_eq!(wb[130], 2);
+        assert_eq!(wb[131..131 + 32], *block.sync_pk());
+        assert_eq!(Prefix::parse(&wb).unwrap(), with);
+        assert!(Prefix::parse(&wb[..wb.len() - 1]).is_err());
+        assert!(with.blocks().iter().all(|x| x.verifies(&osis_base::SyncId([1; 16]), with.salt())));
         assert_eq!(p.key_at(0, 2), Some([9; 32]));
         assert_eq!(p.key_at(0, 3), None);
         assert_eq!(p.key_at(1, 2), None);
@@ -454,7 +501,7 @@ mod tests {
             if expiry == Some(WallMs(0)) {
                 return None;
             }
-            Some(Prefix { salt, expiry, class: Class::Durable, groups: out })
+            Some(Prefix { salt, expiry, class: Class::Durable, groups: out, blocks: Vec::new() })
         };
         let pool: Vec<VerifyingKey> = (1..=3u8).map(|i| osis_crypto::DeleteSecret::write(&Secret32::from_bytes([i; 32])).verifying_key()).collect();
         let off_curve = (0..=255u8).map(|b| [b; 32]).find(|b| VerifyingKey::from_bytes(b).is_err()).unwrap();

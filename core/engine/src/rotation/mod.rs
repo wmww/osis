@@ -845,7 +845,7 @@ fn own_secrets_rot(tx: &mut Tx<'_>, t: Tid, rec: Option<osis_base::CreationRecor
     // registering them, in this one commit
     let after = rot.preview(&held)?;
     let g = rot.genesis.clone().ok_or(Error::Misuse("the genesis seed it derives from is not held"))?;
-    crate::flows::sync_ids::independent_steps(tx, &mut m, t, &g, &after, &deposit, rot.keys.keysets.get(&Role::Read))?;
+    crate::flows::sync_ids::independent_steps(tx, &mut m, t, &g, &after, &deposit, &rot.keys)?;
     for op in keys {
         m.op(t, &osis_schema::core_types::KEYS, op)?;
     }
