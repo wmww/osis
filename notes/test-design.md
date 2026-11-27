@@ -37,6 +37,8 @@ osis-sync's module reviews (about 50 product bugs) split the same way. Reading a
 **Paged property cost**: `paged_apply_matches_whole_plain` seeds take 90-200 CPU-s each (ingest with its purge-on-replace snapshots about 30%, stored-state reloads after every step about 20%); the goal is the slowest large seed under a minute.
 
 **Small items**:
+- `tools/merge-branch gate` without a branch prints tools/claim's usage, not its own; say merge-branch's usage and point at `tools/gate.sh --plan` for a plan.
+- A test-only public way to forge a write (an invalid part) for integration tests: `Mutation::unchecked` is crate-private, so such reproducers take a roundabout route.
 - A `LocalPeer` helper that follows held grant signals as the sync layer does, so a cli or sync failure that needs a followed signal moves to an engine test cheaply. Built on the entries design (spec/sync-ids.md §3): a followed signal's holder gets into S by its entry, so a helper on notices would follow what that design deletes.
 - A deterministic test of `close` on `Runtime::Tokio` (notes/api.md Handle and lifecycle: after `close` returns no driver poll touches a timer of a shut-down runtime). The one test, osis `runtime::close_then_runtime_shutdown_polls_no_dead_timer`, is a by-hand race caught about a third of runs; `num_alive_tasks() == 0` after `close` is wrong (the task is released after the guard drops). Needs a seam: a hook holding the driver inside an engine call while `close` runs, released after shutdown began.
 - Judgment vectors still missing: linked header lists (an aspect list past `CHUNK_THRESHOLD`) and the secrets-side rotation scenarios (core/test/vectors/README.md).
