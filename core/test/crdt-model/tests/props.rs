@@ -1494,7 +1494,7 @@ proptest! {
 fn cut_from_the_state_now_misses_revived_writes() {
     let tys = cut_types();
     for (i, ty) in tys.iter().enumerate() {
-        let failed = (0..200u64).map(|s| s * 4 + i as u64).any(|seed| cut_reads_as_history(&timed_history(seed, ty), Cut::Now, &mut Rng(seed ^ 7)).is_err());
+        let failed = (0..200u64).map(|s| crdt_model::gen::seed_at(&[s, i as u64])).any(|seed| cut_reads_as_history(&timed_history(seed, ty), Cut::Now, &mut Rng(seed ^ 7)).is_err());
         assert!(failed, "{ty:?}: the control finds no world");
     }
 }

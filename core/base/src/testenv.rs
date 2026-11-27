@@ -168,6 +168,22 @@ pub fn visible(uncaptured: bool, line: &str) {
     }
 }
 
+/// The seed of one iteration of a loop of random runs, from its coordinates (the run's seed, the
+/// round, the index, ...): a hash, so no two iterations share a seed, as `round * k + i` does
+/// once `i` reaches `k`, and no iteration's seed is another run's. crdt-model's `gen::seed_at` is
+/// the same function (the models depend on no osis crate).
+pub fn seed_at(coords: &[u64]) -> u64 {
+    coords.iter().fold(0x5eed, |h, c| splitmix(splitmix(h) ^ c))
+}
+
+/// splitmix64's output step: a bijection on `u64` scattering nearby inputs.
+fn splitmix(x: u64) -> u64 {
+    let mut z = x.wrapping_add(0x9e37_79b9_7f4a_7c15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    z ^ (z >> 31)
+}
+
 // The seed runner (notes/test-harnesses.md, Seed runners).
 
 /// A thread per core, or the number in env `var`.
@@ -697,6 +713,20 @@ mod tests {
     }
 
     // a failure's kind drops which node, list or id found it; a shrink keeps to the original's
+    // spec: none (test infrastructure): iterations' seeds never collide where `round * k + i`
+    // does (a grid wider than k), nor with a run's own seed
+    #[test]
+    fn seed_at_gives_each_iteration_its_own_seed() {
+        let mut seen = std::collections::BTreeSet::new();
+        for s in 0..64u64 {
+            assert!(seen.insert(seed_at(&[s])));
+            for k in 0..64u64 {
+                assert!(seen.insert(seed_at(&[s, k])), "{s} {k}");
+            }
+        }
+        assert!((0..64u64).all(|s| !seen.contains(&s)), "a derived seed is a plain run's seed");
+    }
+
     // kind: a candidate failing another check is not kept (spec: none, test infrastructure)
     #[test]
     fn shrink_keeps_to_the_failures_kind() {

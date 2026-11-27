@@ -41,7 +41,7 @@ fn alike_in_every_order(rule: ExternalFires, seeds: u64) -> Result<(), String> {
         for h in held_sets(w, ADMIN, rule) {
             let want = fires(&h, &evaluate(&h));
             for k in 0..3 {
-                let s = shuffle(&h, seed * 31 + k);
+                let s = shuffle(&h, crdt_model::gen::seed_at(&[seed, k]));
                 if fires(&s, &evaluate(&s)) != want {
                     return Err(format!("seed {seed}: order {k} judges the fires otherwise than {want:?}"));
                 }

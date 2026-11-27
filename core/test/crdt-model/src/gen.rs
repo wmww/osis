@@ -5,6 +5,19 @@ use crate::state::{BagKind, Content, Frag};
 use crate::value::Value;
 use std::collections::BTreeMap;
 
+/// The seed of one iteration of a loop of random runs, from its coordinates (the run's seed, the
+/// round, the index, ...): a hash, never `round * k + i` arithmetic that collides. The same
+/// function as `osis_base::testenv::seed_at` (the models depend on no osis crate).
+pub fn seed_at(coords: &[u64]) -> u64 {
+    fn splitmix(x: u64) -> u64 {
+        let mut z = x.wrapping_add(0x9e37_79b9_7f4a_7c15);
+        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        z ^ (z >> 31)
+    }
+    coords.iter().fold(0x5eed, |h, c| splitmix(splitmix(h) ^ c))
+}
+
 pub struct Rng(pub u64);
 impl Rng {
     pub fn next(&mut self) -> u64 {

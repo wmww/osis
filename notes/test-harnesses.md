@@ -4,6 +4,7 @@
 ## Env vars and seeds
 - Harness env vars (`OSIS_*_START`/`_SEEDS`, `OSIS_PERM_SEED`, ...) are read through `osis_base::testenv`, which panics on an unparsable value, zero seeds, or any set `OSIS_*` variable not in core/base/testenv-known.txt (add a new one at its end; read at run time, so adding one rebuilds nothing). Probe variables: notes/build.md, Footguns.
 - A set variable and an overridden range are echoed past libtest's capture: check that line on a passing run, not only `1 passed`. Per-seed output needs `-- --nocapture`. Sizes: notes/testing.md, Sizes.
+- **Per-iteration seeds**: a loop drawing a seed per iteration (an order per world, a seal per round and writer) takes `osis_base::testenv::seed_at(&[seed, round, i])`, a hash of its coordinates; crdt-model's `gen::seed_at` is the same function for the models. Never `seed * k + i`: it collides once `i` reaches `k` and lands on other runs' seeds.
 - **Every property and its variable**: `python3 tools/test_select.py --all`. Each harness prints its own replay line for a failing seed: use it as printed.
 - **`_plain` and `_large`**: a seed runner's `_plain` runs the gate-sized sample: a fixed covering set chosen by planted faults (reading no environment), or a seed range the gate offsets; its `_large` reads the range at full size. The replay line names the `_large` where it checks a seed as the `_plain` does, else the `_plain`.
 - Engine lib harnesses: `cargo test -p osis-engine --lib <path> -- --ignored --exact`; a copied binary from `tools/bin-at REV OUT --lib osis-engine` runs from `core/engine`.

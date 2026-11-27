@@ -55,7 +55,7 @@ fn output_is_a_function_of_the_held_set(seeds: Vec<u64>) {
         let h = history(seed, LEN);
         let o = evaluate(&h);
         for k in 0..3 {
-            assert_eq!(evaluate(&shuffle(&h, seed.wrapping_mul(7).wrapping_add(k))), o, "seed {seed}");
+            assert_eq!(evaluate(&shuffle(&h, crdt_model::gen::seed_at(&[seed, k]))), o, "seed {seed}");
         }
     });
 }
@@ -307,7 +307,7 @@ fn arrival_orders_read_alike_after_repair(seeds: Vec<u64>) {
         let mut gone = first.gone;
         for k in 0..2 {
             let mut order: Vec<usize> = (0..full.commits.len()).collect();
-            Rng::new(seed.wrapping_mul(5).wrapping_add(k)).shuffle(&mut order);
+            Rng::new(crdt_model::gen::seed_at(&[seed, k])).shuffle(&mut order);
             let mut h = Held { commits: vec![], ..full.clone() };
             let mut seen = Seen::default();
             for i in order {

@@ -1135,7 +1135,7 @@ mod tests {
                 held.sync.set_established(Epoch::new(1, [0; 32]).unwrap(), osis_keys::Provenance::Fixed);
                 held.read.set_established(Epoch::new(1, [0; 32]).unwrap(), osis_keys::Provenance::Fixed);
                 let rcpt = osis_keys::Recipient { holder: b, role: Role::Read, keys: keys.clone(), floor: 0 };
-                let mut rng = osis_crypto::SeededRng::from_u64((x * 10_000 + i) as u64);
+                let mut rng = osis_crypto::SeededRng::from_u64(osis_base::testenv::seed_at(&[x as u64, i as u64]));
                 let rot = osis_keys::rotate(&t, &[Role::Sync, Role::Read].into(), &held, &ct::Secrets::default(), &[rcpt], &osis_keys::Names::default(), &mut rng).unwrap();
                 let v = ct::Secrets { boxes: rot.secrets.boxes, history: rot.secrets.history.into_iter().collect() }.to_value();
                 let bytes = forge_role_commit(lp, x, t, &rec, &v);

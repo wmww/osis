@@ -157,7 +157,7 @@ fn settled_reads_like_creation_first_spec_commits_4() {
         grants += u64::from(keys.len() > lib.keys.len());
         let want = present(&creation_first(&lib, &keys));
         for k in 0..4 {
-            let mut o = Rng::new(seed * 8 + k);
+            let mut o = Rng::new(crdt_model::gen::seed_at(&[seed, k]));
             let f = settle(&lib, &mut |es| o.shuffle(es), true);
             let got = present(&f.held);
             assert_eq!(got, want, "seed {seed} order {k}");

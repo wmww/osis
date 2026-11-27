@@ -143,7 +143,7 @@ fn close_then_runtime_shutdown_polls_no_dead_timer() {
                 for i in 0..40 {
                     let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
                     let mut c = osis::internals::Opening::memory();
-                    c.app.internals.seed = Some(t * 1000 + i);
+                    c.app.internals.seed = Some(osis_base::testenv::seed_at(&[t, i]));
                     c.runtime = Runtime::Tokio(rt.handle().clone());
                     let db = osis::internals::create(c).unwrap();
                     let _ = within(Duration::from_millis(1), db.wait_synced(osis::SyncScope::All));

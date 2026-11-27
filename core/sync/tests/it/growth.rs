@@ -1026,7 +1026,7 @@ fn record_blobs_at_a_store_stay_flat_spec_sync_ids_6() {
             for b in noted.keys() {
                 w.store(i).clone().unlog_entry(&s, b).unwrap();
             }
-            let mut rng = osis_crypto::SeededRng::from_u64((round * 4 + i) as u64);
+            let mut rng = osis_crypto::SeededRng::from_u64(osis_base::testenv::seed_at(&[round as u64, i as u64]));
             let (blob, bytes, wrap) = w.engine(i).seal_records(&s, &records, &mut rng).unwrap().expect("sealed");
             let e = osis_sync::types::Entry { blob, wrap, stamp: None, deposited: false, own: true, role: false, class: osis_blob::Class::Durable, expires: None };
             w.store(i).clone().log(&s, e, Some(bytes), None).unwrap();
