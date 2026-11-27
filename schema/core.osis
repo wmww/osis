@@ -148,6 +148,9 @@ type keyset = struct {
     demotions 6: set<blob>,
     /// Whether this keyset's own commit is such a demotion.
     demotes 7: bool,
+    /// A sync keyset's claim epoch: the read epoch whose roles secret its claim key takes
+    /// (spec/sync-ids.md §3); absent in every other keyset.
+    claim 8: option<epoch>,
 };
 
 /// A read epoch with its read-role KEM key, derived from its secret by whoever wrote it; none
@@ -237,8 +240,6 @@ aspect secrets.0: struct {
 /// One step: tells nodes keeping the sync ID unread which keys may use it from now on (spec/wire.md §8).
 type step_record = struct {
     step 0: blob,
-    /// The readers it lets in.
-    claims 1: option<blob>,
     /// Endorsements of this step by other steps' delete keys, by delete key: a node keeping the
     /// sync ID unread on such a step may move here (spec/sync-ids.md §6 Register).
     endorsements 2: map<blob, blob>,
