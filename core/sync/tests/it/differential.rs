@@ -599,7 +599,7 @@ fn a_removed_reader_keeps_the_publics_sync_secret_through_its_loss_spec_permissi
 // node not holding the `sync.0` write placing that head): node 1 redeems a public link to thing 0
 // and reads it by the public entry's box, then is granted sync of its own; node 0 lowers the
 // public to sync and writes. Lowering rotates read alone, so node 1 sees no new head but holds the
-// lowering: it reads no more.
+// lowering: it reads nothing, not even what it read before.
 #[test]
 fn a_reader_by_the_publics_box_reads_no_more_once_lowered_spec_sync_3() {
     use crate::harness::history::{Gives, Holder, reads};
@@ -608,7 +608,9 @@ fn a_reader_by_the_publics_box_reads_no_more_once_lowered_spec_sync_3() {
     let mut w = played_on(0, accounts, n, &script, String::new(), false);
     let t = w.history.things[0].0;
     let (latest, read) = (reads(w.engine(0), &t).value, reads(w.engine(1), &t).value);
-    assert!(read != latest, "node 1 reads the latest write no more");
+    assert!(latest.is_some(), "node 0 reads its write");
+    // control (the listing counted whatever its head): node 1 reads on by the stale listing
+    assert_eq!(read, None, "node 1 reads no more");
 }
 
 // spec/sync.md §3 (Holders by copies): node 1, granted sync, reads thing 0 by its head's public
