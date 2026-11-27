@@ -2423,14 +2423,16 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
     // each examined once by the open's `reexamine`
     tx.core.waits.open_due = true;
     crate::retention::destroy::load(tx, fast)?;
-    // derived indexes from states (secrets: persisted, read again on a rebuild)
+    // derived indexes from states (secrets: persisted, read again on a rebuild once its
+    // re-judge settled the node's roles they are judged by, below)
     let aspects = tx.txn.all_aspects()?;
+    let mut secrets = Vec::new();
     for (tid, ak) in aspects {
         match ak.as_str() {
             // what observing a `keys.0` state derives is the delete hints it ends, which a load
             // reads from the index or not at all (a rebuild holds none to end)
             "keys.0" => {}
-            "secrets.0" if fast => {}
+            "secrets.0" => secrets.push(tid),
             // seeds are judged by D's epochs established, known only once loaded: the open
             // takes them up after (`Engine::take_account`), a reload keeps those held
             "account.0" => {}
@@ -2468,6 +2470,16 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
         // (nothing judges by them before)
         let actors: BTreeSet<Tid> = tx.core.ix.commits.values().flat_map(|m| m.view.aspects.iter().filter(|a| matches!(a.ak.as_str(), "keys.0" | "secrets.0")).map(|a| a.tid)).collect();
         keys::rebuild_keysets(tx, &actors)?;
+        // the `secrets.0` states read again under the roles the re-judge settled: before it, a
+        // removal whose delete keys were not yet judged removes nobody, and its boxes would give
+        // back what the node dropped on losing access; what they open is judged in turn
+        let ak = crate::flows::ak("secrets.0")?;
+        for t in secrets {
+            atomic::observe_state(tx, &t, &ak)?;
+        }
+        if tx.core.stale() {
+            validity::rejudge_all(tx, false, &mut BTreeSet::new())?;
+        }
     }
     // the split commits' paths the loaded secrets open (`paths::refresh`); persisted, as decided
     if fast {

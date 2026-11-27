@@ -2745,6 +2745,40 @@ fn served_secrets(lp: &mut LocalPeer, g: Tid) -> (std::sync::Arc<ct::Secrets>, c
         .unwrap()
 }
 
+// spec/permissions.md §3 (Lost access; No secret taken back): the account A of a node is G's
+// one admin and leaves it. The node follows G (a locator of it redeemed), so G's grants count
+// here, and A's `holds.0` still names G, so the node keeps G's role commits: it holds G by no
+// role, so none of G's secrets, though its boxes to A open by A's. Its store loaded afresh says
+// the same, rebuilt from the commit records too (`check_index`). Fails when the rebuild reads
+// G's `secrets.0` before its re-judge settles the leave (its delete keys judged): A then still
+// reads as G's admin, and the boxes give back what the node dropped.
+#[test]
+fn a_left_thing_stays_without_secrets_when_rebuilt_spec_permissions_3() {
+    let (mut lp, acc) = LocalPeer::one_account(1, 0, T0).unwrap();
+    let a = acc.thing;
+    let e = &mut lp.peers[0].engine;
+    let mut m = Mutation::new();
+    let g = e.new_thing(&mut m, a);
+    m.op(a, &ct::HOLDS, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Add(osis_base::Value::Strong(g)) }).unwrap();
+    e.commit(m).unwrap();
+    // G's own secrets, boxed to A
+    e.grant(&g, &a, &edge(Role::Admin)).unwrap();
+    let on_g: Vec<_> = e.commit_ids().into_iter().filter(|c| e.header(c).is_some_and(|h| h.aspects.iter().any(|x| x.tid == g))).collect();
+    let pks: Vec<_> = on_g.iter().map(|c| e.package(c).unwrap().unwrap()).collect();
+    let s = e.sync_id_of(&g).unwrap().unwrap();
+    e.core.followed_links.insert(g, s, None);
+    e.leaving_adminless(|e| e.demote(&g, &Demotion { holder: a, new: None, retain: None })).unwrap();
+    for c in e.waiting_removals().iter() {
+        e.removal_done(c).unwrap();
+    }
+    for pk in &pks {
+        lp.deliver(0, pk).unwrap();
+    }
+    let e = &mut lp.peers[0].engine;
+    assert!(e.core.ix.secrets.get(&g).is_none_or(|x| !x.holds_any()), "no secret of G held once left");
+    e.check_index();
+}
+
 // spec/permissions.md §3 (Lost access), spec/crypto.md §4: what this node serves of a thing's
 // `secrets.0` is the state it holds, whatever route a held commit comes again by. Writer W (1),
 // restarted (its rows present with no stamp of their own), reads its secrets of `g`, leaves `g`
