@@ -12,7 +12,7 @@
 - **Pushed, awaiting review and gate**: `spar-slim-c2` (echo removed, anchored by a log cursor of the requester's own log; the NetStream TLA model passes with the anchor, its controls fail; return direction per dependent make 403 → 180 B). Streams only: nothing the stub rewrite touches, so it can be reviewed now.
 
 ## First: the stub rewrite (Tess: go-ahead)
-Copies of every grant naming a holder, kept under the holder's sync ID, contradict Tess's model: grants belong to the granted thing; signal → reference → sync → permissions; a grant nobody is told of is valid. The rewrite deletes them and builds reference-driven stubs: plan, working answers and job state in notes/stub-rewrite.md. Sheave coordinates it, staying on this one refactor. Until it lands, brief nothing that builds on the words issues/deprecated-terms.md lists for it, and judge differential classes and issues touching them after it.
+Reference-driven stubs are on main (Tess's model: grants belong to the granted thing; signal → reference → sync → permissions; a grant nobody is told of is valid). What it still owes and its 13 open questions for Tess: notes/stub-rewrite.md. Sheave coordinates it, staying on this one refactor. Brief nothing that builds on the words issues/deprecated-terms.md lists for it.
 
 ## The route (Tess)
 Target: osis basically works, the big pieces in place, the architecture sensible and mostly settled; what is left is fixes, tweaks and verification. In order:
