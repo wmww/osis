@@ -224,18 +224,12 @@ fn record_blobs(w: &mut World, s: &osis_base::SyncId, i: usize) -> Vec<osis_base
     w.store(i).entries(s).unwrap().into_iter().map(|e| e.blob).filter(|b| noted.contains_key(b)).collect()
 }
 
-/// Node `i` seals `records` with `rng` and logs the record blob in its own store.
-fn log_own_records(w: &mut World, s: &osis_base::SyncId, i: usize, records: &std::collections::BTreeSet<osis_base::Tid>, rng: &mut osis_crypto::SeededRng) {
-    let (blob, bytes, wrap) = w.engine(i).seal_records(s, records, rng).unwrap().expect("sealed");
-    let e = osis_sync::types::Entry { blob, wrap, stamp: None, deposited: true, own: true, role: false, class: osis_blob::Class::Durable, expires: None };
-    w.store(i).clone().log(s, e, Some(bytes), None).unwrap();
-}
-
 // spec/permissions.md §4 (Logging certificates: a record blob logged by any node counts once
 // opened, while held in the own store): two readers of S each sealing a record blob of the same
 // records at once (each before it saw the other's) settle, with the writer, on one record blob in
-// every own store: one carrying all another carries, and more or under a lower ID, wins; none
-// logs another of its own.
+// every own store: of the same records the lower ID wins, whoever holds it. Built so the writer's
+// is the highest and reader 2's the lowest: the writer and reader 1 each take another's in place
+// of their own. None logs another of its own.
 #[test]
 fn readers_logging_the_same_records_settle_on_one_record_blob_spec_permissions_4() {
     use crate::harness::Step::*;
@@ -247,8 +241,18 @@ fn readers_logging_the_same_records_settle_on_one_record_blob_spec_permissions_4
     let records: std::collections::BTreeSet<osis_base::Tid> = w.engine(0).cert_blobs(&s).values().flat_map(|c| c.tids.iter()).copied().collect();
     assert!(!records.is_empty(), "S carries records");
     let held = |w: &mut World, i: usize| record_blobs(w, &s, i);
-    for i in [1, 2] {
-        log_own_records(&mut w, &s, i, &records, &mut osis_crypto::SeededRng::from_u64(i as u64));
+    // sealed until reader 2's < reader 1's < the writer's
+    let writer = held(&mut w, 0);
+    assert_eq!(writer.len(), 1, "one record blob at the writer: {writer:?}");
+    let below = |i: usize, w: &mut World, than: osis_base::BlobId| {
+        (0u64..).map(|n| w.engine(i).seal_records(&s, &records, &mut osis_crypto::SeededRng::from_u64(n)).unwrap().expect("sealed")).find(|x| x.0 < than).unwrap()
+    };
+    let one_blob = below(1, &mut w, writer[0]);
+    let two_blob = below(2, &mut w, one_blob.0);
+    let lowest = two_blob.0;
+    for (i, (blob, bytes, wrap)) in [(1, one_blob), (2, two_blob)] {
+        let e = osis_sync::types::Entry { blob, wrap, stamp: None, deposited: true, own: true, role: false, class: osis_blob::Class::Durable, expires: None };
+        w.store(i).clone().log(&s, e, Some(bytes), None).unwrap();
     }
     // each reader comes back holding its own
     for i in [1, 2] {
@@ -257,7 +261,7 @@ fn readers_logging_the_same_records_settle_on_one_record_blob_spec_permissions_4
     }
     w.run();
     let one = held(&mut w, 0);
-    assert_eq!(one.len(), 1, "one record blob at the writer: {one:?}");
+    assert_eq!(one, vec![lowest], "the writer holds reader 2's, the lowest");
     for i in [1, 2] {
         assert_eq!(held(&mut w, i), one, "node {i} holds the same one record blob");
         let noted = w.engine(i).cert_blobs(&s);
