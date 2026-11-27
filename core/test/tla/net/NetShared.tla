@@ -3,8 +3,8 @@
    "a" and its peer "b" (or "c", a copy of b's store). A credential is the
    sync ID's current epoch; the rule is a function of what each node holds.
    Beacons (whole and additions, generations, pending set), Hit and its tag,
-   ByRole, Lost, a removal learned on one side, rotations carried through their
-   event (`until`), record loss. A rule of the design is a flag. *)
+   Lost, a removal (the removed side applies no later rotation), rotations carried
+   through their event (`until`), record loss. A rule of the design is a flag. *)
 EXTENDS Naturals, Sequences, FiniteSets, TLC
 
 CONSTANTS
@@ -17,7 +17,6 @@ CONSTANTS
     GenBase,                        \* additions are taken only on the generation they extend
     SReconcile,                     \* the digest of S, first message of each direction of a connection: a member on one side only is closed and pending again on both
     DeclineLost,                    \* a tester declining an accepted Hit sends Lost
-    ByRoleOn,                       \* a judged holder is offered by role
     LostRetest,                     \* a member lost for a reason other than a credential change is pending again in this record, on both sides
     RepTested,                      \* that re-marking lowers tested_pos with acked_pos, so an ack in flight cannot raise it back
     OfferGate,                      \* no Offer before the peer's digest is read, so this side's list precedes it
@@ -30,9 +29,9 @@ CONSTANTS
 A == "a"
 Other(x, l) == CHOOSE y \in l : y # x
 Rec0 == [rid |-> 0, stored |-> {}, gen |-> 0, sentGen |-> 0, ackedGen |-> 0, ackRecv |-> 0, acked |-> 0, sentPos |-> 0,
-         tested |-> 0, ranPos |-> 0, ranGen |-> 0, open |-> FALSE, proof |-> "none", proofEp |-> 0,
-         outst |-> FALSE, rejected |-> FALSE, sentRot |-> 0, past |-> 0, seen |-> 0, digRead |-> FALSE]
-Node0(role, ep) == [ep |-> ep, view |-> "unknown", pos |-> IF ep > 0 THEN 1 ELSE 0,
+         tested |-> 0, ranPos |-> 0, ranGen |-> 0, open |-> FALSE, proofEp |-> 0,
+         outst |-> FALSE, sentRot |-> 0, past |-> 0, seen |-> 0, digRead |-> FALSE]
+Node0(role, ep) == [ep |-> ep, pos |-> IF ep > 0 THEN 1 ELSE 0,
                     changed |-> [c \in 1..MaxEp |-> IF c = ep THEN 1 ELSE 0], rec |-> Rec0]
 
 VARIABLES st, role, removed, epoch, link, q, active, cloned, cnt
@@ -50,7 +49,7 @@ Init ==
     /\ cnt = [drop |-> 0, recloss |-> 0, clone |-> 0, rot |-> 0, remove |-> 0, grant |-> 0, rid |-> 0, hostile |-> 0, rotOpen |-> FALSE]
 
 \* What a node's filter holds: its admissible credentials for this connection.
-Creds(s) == IF s.view = "departed" \/ s.ep = 0 THEN {} ELSE {s.ep}
+Creds(s) == IF s.ep = 0 THEN {} ELSE {s.ep}
 Min(a, b) == IF a < b THEN a ELSE b
 \* acked_pos: nothing below it is pending. It moves only with no Offer unanswered, to what
 \* is both acknowledged and tested.
@@ -90,8 +89,8 @@ Repend(s) ==
     ELSE LET b == s.changed[s.ep] - 1
          IN [s EXCEPT !.rec.acked = Min(@, b), !.rec.tested = IF RepTested THEN Min(@, b) ELSE @, !.rec.ranPos = 0]
 Close(s) == Repend([s EXCEPT !.rec.open = FALSE])
-\* The open ends at this node's rotation: proved by a credential no longer current, not judged a holder.
-Stale(s) == s.rec.proof = "cred" /\ s.rec.proofEp # s.ep /\ s.view # "holder"
+\* The open ends at this node's rotation: proved by a credential no longer current.
+Stale(s) == s.rec.open /\ s.rec.proofEp # s.ep
 
 Connect(x, y) ==
     LET same == st[x].rec.rid # 0 /\ st[x].rec.rid = st[y].rec.rid
@@ -116,7 +115,7 @@ Drop ==
     /\ cnt.drop < MaxDrop
     /\ link' = {}
     /\ q' = [s \in Stores |-> <<>>]
-    /\ st' = [s \in Stores |-> [st[s] EXCEPT !.rec.outst = FALSE, !.rec.rejected = FALSE, !.rec.sentRot = 0, !.rec.past = 0, !.rec.digRead = FALSE,
+    /\ st' = [s \in Stores |-> [st[s] EXCEPT !.rec.outst = FALSE, !.rec.sentRot = 0, !.rec.past = 0, !.rec.digRead = FALSE,
                                                  !.rec.ackRecv = st[s].rec.acked, !.rec.tested = st[s].rec.acked,
                                                  !.rec.ranPos = 0, !.rec.ranGen = 0]]
     /\ cnt' = [cnt EXCEPT !.drop = @ + 1]
@@ -202,7 +201,7 @@ RecvHit(n) ==
     LET m == Head(q[n]) p == Other(n, link) s == st[n] ok == m.c \in Creds(s) IN
     /\ n \in link
     /\ q[n] # <<>> /\ m.t = "Hit"
-    /\ st' = IF ok THEN [st EXCEPT ![n].rec.open = TRUE, ![n].rec.proof = "cred", ![n].rec.proofEp = m.c]
+    /\ st' = IF ok THEN [st EXCEPT ![n].rec.open = TRUE, ![n].rec.proofEp = m.c]
              ELSE st
     /\ q' = [q EXCEPT ![n] = Tail(@), ![p] = Append(@, [t |-> "Reply", ok |-> ok, c |-> m.c, tag |-> ok])]
     /\ UNCHANGED <<role, removed, epoch, link, active, cloned, cnt>>
@@ -211,7 +210,7 @@ RecvReply(n) ==
     LET m == Head(q[n]) s == st[n] p == Other(n, link)
         accepted == m.ok /\ (m.tag \/ ~TagCheck)
         ok == accepted /\ m.c \in Creds(s)
-        s2 == [s EXCEPT !.rec.open = @ \/ ok, !.rec.proof = IF ok THEN "cred" ELSE @, !.rec.proofEp = IF ok THEN m.c ELSE @]
+        s2 == [s EXCEPT !.rec.open = @ \/ ok, !.rec.proofEp = IF ok THEN m.c ELSE @]
         decline == IF accepted /\ ~ok /\ ~s.rec.open /\ DeclineLost THEN <<[t |-> "Lost"]>> ELSE <<>> IN
     /\ n \in link
     /\ q[n] # <<>> /\ m.t = "Reply"
@@ -239,49 +238,14 @@ HostileFilter(n) ==
     /\ st' = [st EXCEPT ![n] = Sent(@, [gen |-> st[n].rec.sentGen + 1, pos |-> st[n].rec.sentPos])]
     /\ UNCHANGED <<role, removed, epoch, link, active, cloned>>
 
-\* ByRole: the sender judges the peer a holder; the receiver's own judgment decides.
-OfferRole(n) ==
-    LET s == st[n] p == Other(n, link) IN
-    /\ ByRoleOn
-    /\ n \in link
-    /\ s.rec.digRead \/ ~OfferGate
-    /\ ~s.rec.open /\ ~s.rec.outst /\ s.view = "holder" /\ s.ep > 0
-    /\ ~s.rec.rejected
-    /\ st' = [st EXCEPT ![n].rec.outst = TRUE]
-    /\ q' = [q EXCEPT ![p] = Append(@, [t |-> "Role", cs |-> Creds(s)])]
-    /\ UNCHANGED <<role, removed, epoch, link, active, cloned, cnt>>
-
-RecvRole(n) ==
-    LET m == Head(q[n]) p == Other(n, link) s == st[n]
-        ok == s.ep > 0 /\ (s.view = "holder" \/ (m.cs \cap Creds(s) # {})) IN
-    /\ n \in link
-    /\ q[n] # <<>> /\ m.t = "Role"
-    /\ st' = IF ok THEN [st EXCEPT ![n].rec.open = TRUE, ![n].rec.proof = "holder", ![n].rec.proofEp = s.ep]
-             ELSE st
-    /\ q' = [q EXCEPT ![n] = Tail(@), ![p] = Append(@, [t |-> "RoleOk", ok |-> ok])]
-    /\ UNCHANGED <<role, removed, epoch, link, active, cloned, cnt>>
-
-RecvRoleOk(n) ==
-    LET m == Head(q[n]) s == st[n] p == Other(n, link)
-        s2 == [s EXCEPT !.rec.open = @ \/ m.ok, !.rec.proof = IF m.ok THEN "holder" ELSE @,
-                        !.rec.proofEp = IF m.ok THEN s.ep ELSE @, !.rec.rejected = ~m.ok] IN
-    /\ n \in link
-    /\ q[n] # <<>> /\ m.t = "RoleOk"
-    /\ st' = [st EXCEPT ![n] = Finish(s2)]
-    /\ q' = [q EXCEPT ![n] = Tail(@), ![p] = @ \o FinishMsg(s2)]
-    /\ UNCHANGED <<role, removed, epoch, link, active, cloned, cnt>>
-
 \* The event that ends sharing: the open is judged again on what n holds. After a
 \* rotation Lost waits until the peer's Pull cursor has passed the rotation (`until`).
 Judge(n) ==
     LET s == st[n] p == Other(n, link)
-        gone == s.view = "departed"
-        stale == Stale(s)
     IN
     /\ n \in link
-    /\ s.rec.open
-    /\ gone \/ stale
-    /\ gone \/ ~Until \/ s.rec.past >= s.ep
+    /\ Stale(s)
+    /\ ~Until \/ s.rec.past >= s.ep
     /\ st' = [st EXCEPT ![n] = Close(@)]
     /\ q' = [q EXCEPT ![p] = Append(@, [t |-> "Lost"])]
     /\ UNCHANGED <<role, removed, epoch, link, active, cloned, cnt>>
@@ -373,21 +337,11 @@ Remove(n) ==
     /\ cnt' = [cnt EXCEPT !.remove = @ + 1]
     /\ UNCHANGED <<st, epoch, link, q, active, cloned>>
 
-\* A node's view of its peer's actor, learned at any time from the role commits of the sync ID's thing.
-LearnView(n, p) ==
-    LET v == IF removed[p] THEN "departed" ELSE IF role[p] THEN "holder" ELSE "unknown" IN
-    /\ n \in active /\ p \in active /\ n # p
-    /\ {n, p} \subseteq {A, "b"} \/ {n, p} \subseteq {A, "c"}
-    /\ st[n].view # v
-    /\ st' = [st EXCEPT ![n].view = v, ![n].rec.rejected = FALSE]
-    /\ UNCHANGED <<role, removed, epoch, link, q, active, cloned, cnt>>
-
 Honest ==
     \/ \E n \in Stores :
         \/ SendAdd(n) \/ RecvB(n) \/ RecvAck(n) \/ RecvUnk(n) \/ Test(n) \/ RecvHit(n) \/ RecvReply(n)
-        \/ OfferRole(n) \/ RecvRole(n) \/ RecvRoleOk(n) \/ Judge(n) \/ RecvLost(n)
+        \/ Judge(n) \/ RecvLost(n)
         \/ SendRot(n) \/ RecvRot(n) \/ RecvPast(n) \/ RecvDig(n) \/ RecvList(n)
-    \/ \E n, p \in Stores : LearnView(n, p)
     \/ \E y \in Stores : Connect(A, y)
     \/ Activate
 
@@ -400,11 +354,10 @@ Next ==
 Spec == Init /\ [][Next]_vars /\ WF_vars(Honest)
 
 \* Properties, in what the pair of nodes can observe. ------------------------
-\* The rule on what each holds: judged from each node's view and credentials.
+\* The rule on what each holds: a credential of its head, shown by the other.
 RuleAt(n, p) ==
     /\ st[n].ep > 0
-    /\ st[n].view # "departed"
-    /\ st[n].view = "holder" \/ st[n].ep = st[p].ep
+    /\ st[n].ep = st[p].ep
 \* Shared requires both sides' rules (each judges independently).
 Rule(n, p) == RuleAt(n, p) /\ RuleAt(p, n)
 
@@ -416,16 +369,14 @@ Quiet ==
         /\ ~s.rec.outst
         /\ ~ENABLED Judge(n)
         /\ ~ENABLED Test(n)
-        /\ ~ENABLED OfferRole(n)
         /\ ~ENABLED SendAdd(n)
         /\ ~ENABLED SendRot(n)
-        /\ \A v \in {"departed","holder"} : ~ENABLED LearnView(n, p)
 
 \* (1, 3) Once quiet, the pair share L exactly when the rule says so.
 RuleHolds ==
     Quiet =>
       \A n \in link : LET p == Other(n, link) IN
-        st[n].rec.open <=> (Rule(n, p) /\ (st[n].view # "unknown" \/ st[p].view # "unknown" \/ st[n].ep = st[p].ep))
+        st[n].rec.open <=> Rule(n, p)
 
 \* (3) An open ended by a rotation does not stand: once quiet, no open rests on a stale proof, so the
 \* requester's report of passing `until` always arrives.

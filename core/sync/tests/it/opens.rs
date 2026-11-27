@@ -193,8 +193,7 @@ fn a_reader_opens_a_store_at_its_step_spec_sync_opens_4() {
 // secret it holds) and spec/sync-ids.md §6 (Walk): a node granted sync that starts keeping S
 // after the reader tested it there (nothing shown then) opens S by its own test when it does;
 // the reader tests S again once, for the store's filter showing a credential of S (§5 Testing),
-// and nothing else. NetOpen `ON_shownkey` (a store with no step shows and tests nothing) fails
-// this.
+// and nothing else. A store with no step showing and testing nothing fails this.
 #[test]
 fn a_store_granted_later_opens_with_no_head_spec_sync_opens_4() {
     let st = StepKeys::new(1, 0);
@@ -582,7 +581,7 @@ fn hit_once(h: &mut Side, adv: &mut Adv) {
     assert_eq!(adv.offer(h, vec![OfferItem::Hit { hit: [0; 32], sig: None, class: osis_proto::SourceClass::Reader }])[0].code, Code::DECLINED);
 }
 
-// ON_proofold (spec/sync-opens.md §4): an older step's sync proof proves nothing.
+// spec/sync-opens.md §4: the sync proof of a step off this side's path proves nothing.
 #[test]
 fn an_older_steps_proof_proves_nothing_spec_sync_opens_4() {
     let (s0, s1) = (StepKeys::new(1, 0), StepKeys::new(1, 1));
@@ -616,7 +615,7 @@ fn an_ended_member_closes_when_the_stream_passes_until_spec_sync_opens_6() {
     assert!(matches!(&of_kind(&k.sent(), 38)[..], [Msg::Lost { items, .. }] if items[0] == (S, osis_proto::Cursor::new(until.to_be_bytes().to_vec()).ok())));
 }
 
-// ON_endproof (spec/sync-opens.md §6): an open by a sync proof is re-judged at a rotation.
+// ON_endhead (spec/sync-opens.md §6): an open by a sync proof is re-judged at a rotation.
 #[test]
 fn a_proof_open_ends_at_a_rotation_spec_sync_opens_6() {
     let (s0, s1) = (StepKeys::new(1, 0), StepKeys::new(1, 1));

@@ -1,8 +1,7 @@
 //! Records, agreement and the shared set (spec/sync-opens.md §2-§6).
 //!
 //! **Principle:** each side opens S toward a peer only on its own proof, judged on what it holds
-//! now, that the peer may hold S; who dialed proves nothing (model core/test/tla/net/NetOpen.tla:
-//! every rule it flags is one function here, named in that function's comment).
+//! now, that the peer may hold S; who dialed proves nothing (model core/test/tla/net/NetOpen.tla).
 //!
 //! State: records (spec/sync-opens.md §3: pair key, proven claims, the shared set with each
 //! member's credential and beacon, `acked_pos`, this side's filter generations and the peer's

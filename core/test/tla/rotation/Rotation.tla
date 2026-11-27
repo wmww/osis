@@ -14,15 +14,16 @@ CONSTANTS Admins,     \* may rotate, register, grant, write content
           Departing,  \* holders it may remove
           MaxE,       \* epoch ids 0..MaxE (0 = the initial epoch)
           Writes,     \* content writes in a run
-          DropClaims, \* TRUE: the store may drop superseded steps' claim sets
           Offs,       \* offline transitions in a run
           Plants,     \* adversary: boxes planted by a non-holder in a run
           InOrder,    \* TRUE: one source, the store's log order (cursor sync);
                       \* FALSE: any order, and co-reader peers serve rotations
           Withhold,   \* admins the store and peers withhold every removal
                       \* from, forever
-          NoBoxCovers \* TRUE: negative control, a holder with no box at e
+          NoBoxCovers, \* TRUE: negative control, a holder with no box at e
                       \* counts as covered
+          GrantEntries \* FALSE: negative control, a grant or re-seal carries
+                      \* no entry (claims from rotation commits alone)
 
 Nodes == Admins \cup Readers
 Ids == 0..MaxE
@@ -44,10 +45,10 @@ VARIABLES ep,       \* ep[e] = [n, sup, ob, hist, rem, nm]; ob = holders the
           bx,       \* grant and re-seal commits under the sync ID:
                     \* [m: holder boxed, eps: epochs boxed, w: wrap epoch, g: grant]
           rd,       \* rd[x]: the commits of bx that x has read
-          steps,    \* registration path: <<[ep, cl, dr]>>; dr = claim set dropped
-          sealed,   \* grant and re-seal boxes whose commit's blob key is sealed
-                    \* to the holder, served by role (Entry.tla): <<holder, epoch>>
-          sealedRot, \* rotations sealed so: <<holder, rotation>>
+          steps,    \* registration path: <<[ep]>>
+          sealed,   \* grant and re-seal boxes the holder takes by its entry
+                    \* (its W carries the commit's blob key): <<holder, epoch>>
+          sealedRot, \* rotations taken so: <<holder, rotation>>
           via,      \* via[x]: co-reader peers x received rotation commits from
           stranded, \* holders whose stranded notice is under the sync ID
           enc,      \* content written: <<epoch, departures the writer knew>>
@@ -102,15 +103,18 @@ Holding == (Nodes \ Late) \cup granted
 \* sync §5 re-registration: an admin that holds the head's epoch and an
 \* established epoch newer than it issues a child at its newest (crypto §4).
 NeedsReg(a) == Top.ep \in Enc(a) /\ HeldCur(a) # {} /\ Newer(EncEp(a), Top.ep)
-\* sync §2/§5 open: a sync key of the head, or of the newest superseded step
-\* bearing it, answered with its child; then claims at each later step (the
-\* n round trips are one step here); a dropped claim set refuses the claim.
+\* sync-ids §3 entries: the claims bound to epoch e at the store are those of
+\* the holders boxed at e by the commits it holds (the rotation commit making e,
+\* each grant and re-seal boxing e); never dropped.
+Claims(e) == (IF e = 0 \/ e \in storeRot THEN ep[e].ob ELSE {})
+             \cup (IF GrantEntries THEN {b.m : b \in {c \in bx : e \in c.eps}} ELSE {})
+\* sync-opens §4, the one open rule: the sync proof of a step on the path
+\* (the head's whole, an older one's up to that step's end, which serves the
+\* rotations superseding it: abstracted, ASSUMPTIONS.md) or a head claim.
 \* Opening is not encrypting under (crypto §4): any held secret opens.
 CanOpen(x) ==
-  \E j \in 1..Len(steps) :
-    /\ steps[j].ep \in sec[x]
-    /\ \A k \in (j + 1)..Len(steps) :
-         steps[k].ep \in sec[x] \/ (x \in steps[k].cl /\ ~steps[k].dr)
+  \/ \E j \in 1..Len(steps) : steps[j].ep \in sec[x]
+  \/ x \in Claims(Top.ep)
 
 \* Download of rotation commit k: readable under its wrap epoch. From the
 \* store (after an open; InOrder: in log order) or, if ~InOrder, from an
@@ -154,7 +158,7 @@ Init ==
   /\ hld = [x \in Nodes |-> Nodes \ Late]
   /\ removed = {} /\ granted = {}
   /\ storeRot = {} /\ before = [k \in Ids |-> {}] /\ bx = {} /\ rd = [x \in Nodes |-> {}]
-  /\ steps = <<[ep |-> 0, cl |-> Nodes \ Late, dr |-> FALSE]>>
+  /\ steps = <<[ep |-> 0]>>
   /\ sealed = {} /\ sealedRot = {} /\ via = [x \in Nodes |-> {}] /\ stranded = {}
   /\ enc = {} /\ leakP = FALSE
   /\ online = [x \in Nodes |-> TRUE]
@@ -165,8 +169,8 @@ Init ==
 \* every established secret it holds. R: the removals this commit carries
 \* (commits §2: a removal and the rotation it requires are one commit).
 \* permissions §3: a holder it boxes that holds no box at a current read epoch
-\* before it (as the rotator knows) also opens the rotation: its blob key
-\* is sealed to it (Entry.tla).
+\* before it (as the rotator knows) also opens the rotation: by its entry,
+\* whose W carries the blob key (spec/sync-ids.md §3).
 \* crypto §4 names: the removals the rotator holds (its applied rotation
 \* commits carrying one).
 RotateR(a, R) ==
@@ -205,7 +209,7 @@ RotateForced(a) ==
 \* store lacks (LogRot), then register.
 Register(a) ==
   /\ online[a] /\ NeedsReg(a) /\ kn[a] \ {0} \subseteq storeRot
-  /\ steps' = Append(steps, [ep |-> EncEp(a), cl |-> Holders(a, EncEp(a)), dr |-> FALSE])
+  /\ steps' = Append(steps, [ep |-> EncEp(a)])
   /\ leakP' = (leakP \/ ~({Top.ep, EncEp(a)} \subseteq sec[a]))
   /\ UNCHANGED <<ep, made, kn, sec, fsec, dep, hld, removed, granted, storeRot, before, bx, rd,
                  sealed, sealedRot, via, stranded, enc, online, budget>>
@@ -222,7 +226,7 @@ LogRot(a, k) ==
                  sealedRot, via, stranded, enc, leakP, online, budget>>
 
 \* A grant or re-seal commit b by a: logged under the sync ID (wrapped under a's
-\* newest epoch), read by a at once, its blob key sealed to b.m.
+\* newest epoch), read by a at once, b.m's entry carrying its blob key.
 LogBox(a, b) ==
   /\ bx' = bx \cup {b}
   /\ rd' = [rd EXCEPT ![a] = @ \cup {b}]
@@ -230,7 +234,7 @@ LogBox(a, b) ==
   /\ leakP' = (leakP \/ ~(b.eps \cup {b.w} \subseteq sec[a]))
 
 \* crypto §4: a grant writes the grantee's boxes at each current epoch (with
-\* their history boxes), the commit's blob key sealed to it; the grant commit goes under the
+\* their history boxes), its entry carrying the commit's blob key; the grant commit goes under the
 \* sync ID wrapped under the granter's newest epoch. Unfair (a choice).
 Grant(a, m) ==
   /\ online[a] /\ m \in Late \ granted /\ ~NeedsReg(a) /\ HeldCur(a) # {}
@@ -278,10 +282,11 @@ RecvPeer(x, y, k) ==
   /\ via' = [via EXCEPT ![x] = @ \cup {y}]
   /\ UNCHANGED <<ep, made, fsec, hld, removed, granted, storeRot, before, bx, rd, steps, sealed,
                  sealedRot, stranded, enc, leakP, online, budget>>
-\* permissions §3: a rotation whose blob key is sealed to the holder, served to
-\* it by role (Entry.tla; nothing kept with the holder).
+\* spec/sync-ids.md §3 Taking an entry: a holder that cannot open a rotation by
+\* its wrap opens it by its entry, pulled once it opens S (nothing kept with the
+\* holder).
 TakeSealedRot(x, k) ==
-  /\ online[x] /\ <<x, k>> \in sealedRot /\ ~Withheld(x, k) /\ Apply(x, k)
+  /\ online[x] /\ CanOpen(x) /\ <<x, k>> \in sealedRot /\ ~Withheld(x, k) /\ Apply(x, k)
   /\ sealedRot' = sealedRot \ {<<x, k>>}
   /\ UNCHANGED <<ep, made, fsec, hld, removed, granted, storeRot, before, bx, rd, steps, sealed,
                  via, stranded, enc, leakP, online, budget>>
@@ -300,9 +305,10 @@ Reseal(a, m) ==
   /\ UNCHANGED <<ep, made, kn, sec, fsec, dep, hld, removed, granted, storeRot, before, steps,
                  sealedRot, via, enc, online, budget>>
 
-\* crypto §4: the grant or re-seal re-writes each boxed epoch's history box.
+\* crypto §4: the grant or re-seal re-writes each boxed epoch's history box;
+\* the holder takes it by its entry once it opens S (spec/sync-ids.md §3).
 TakeSealed(m, e) ==
-  /\ online[m] /\ <<m, e>> \in sealed
+  /\ online[m] /\ CanOpen(m) /\ <<m, e>> \in sealed
   /\ sec' = [sec EXCEPT ![m] = @ \cup {e} \cup ep[e].hist]
   /\ sealed' = sealed \ {<<m, e>>}
   /\ UNCHANGED <<ep, made, kn, fsec, dep, hld, removed, granted, storeRot, before, bx, rd, steps,
@@ -320,7 +326,7 @@ Plant(x, e) ==
 
 \* permissions §4: MUST fire a stranded notice when it cannot read the
 \* current epoch: it reached the head and after a complete pass there cannot
-\* open the epoch it registers, or a claim on the way was refused. By deposit
+\* open the epoch it registers, or it cannot open at all. By deposit
 \* (no open needed), wrapped under the newest established held secret.
 \* Rotations here never refresh the deposit seed (crypto §3 allows it: then a
 \* node that has not read the rotation's keys.0 is refused, AMBIGUITIES.md
@@ -334,13 +340,6 @@ Notice(x) ==
   /\ leakP' = (leakP \/ NewestOf(Enc(x) \cap Est(x)) \notin sec[x])
   /\ UNCHANGED <<ep, made, kn, sec, fsec, dep, hld, removed, granted, storeRot, before, bx, rd,
                  steps, sealed, sealedRot, via, enc, online, budget>>
-
-\* sync §4: a superseded step's claim set is kept ROLE_KEEP, then may go.
-Drop(i) ==
-  /\ DropClaims /\ i < Len(steps) /\ ~steps[i].dr
-  /\ steps' = [steps EXCEPT ![i].dr = TRUE]
-  /\ UNCHANGED <<ep, made, kn, sec, fsec, dep, hld, removed, granted, storeRot, before, bx, rd,
-                 sealed, sealedRot, via, stranded, enc, leakP, online, budget>>
 
 GoOff(x) == /\ online[x] /\ budget.off < Offs
             /\ online' = [online EXCEPT ![x] = FALSE] /\ budget' = [budget EXCEPT !.off = @ + 1]
@@ -359,10 +358,9 @@ Next ==
                       \/ (\E k \in Ids : Recv(x, k) \/ TakeSealed(x, k) \/ TakeSealedRot(x, k)
                                          \/ Plant(x, k))
                       \/ (\E b \in bx : RecvBox(x, b))
-  \/ \E i \in 1..Len(steps) : Drop(i)
 
 \* Weak fairness of honest steps; eager rotation, removal, grants, writes,
-\* claim-set drops, going offline and planting are unfair.
+\* going offline and planting are unfair.
 Fairness ==
   /\ \A a \in Admins : /\ WF_vars(RotateForced(a)) /\ WF_vars(Register(a))
                        /\ \A k \in Ids : WF_vars(LogRot(a, k))

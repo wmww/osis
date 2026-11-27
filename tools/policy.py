@@ -531,7 +531,13 @@ STUB_DEAD_WORDS = {w: re.compile(p) for w, p in {
     "read-secret credential": r"(?i)\bread[ _-]secret credentials?\b",
     "sync-key credential": r"(?i)\bsync[ _-]key credentials?\b",
     "holders by copies": r"(?i)\bholders? by copies\b",
+    "ByRole": r"\bByRole\w*",
+    "Departed rule": r"(?i)\bdeparted (rule|clause)\b",
+    "static entry": r"(?i)\bstatic[ _-]entr(y|ies)\b",
+    "entry box": r"(?i)\bentry[ _-]box(es)?\b",
 }.items()}
+# Entry.tla is the checked rejected alternative notes/stubs.md cites: it keeps its own words.
+STUB_DEAD_WORDS_OK = ("core/test/tla/rotation/Entry.tla",)
 
 
 def dead_words():
@@ -545,7 +551,7 @@ def dead_words():
                 if pat.search(line):
                     yield f"{rel}:{n}: uses \"{word}\", a removed concept (issues/deprecated-terms.md, Gone)"
             for word, pat in STUB_DEAD_WORDS.items():
-                if pat.search(line):
+                if pat.search(line) and rel not in STUB_DEAD_WORDS_OK:
                     yield f"{rel}:{n}: uses \"{word}\", a removed concept (issues/deprecated-terms.md, Gone)"
 
 

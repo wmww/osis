@@ -40,6 +40,7 @@ instances=(
   "rotation rotation Rotation MC_reorder.cfg pass"
   "rotation rotation Rotation MC_fork.cfg pass"
   "rotation rotation Rotation MC_c2_boxcovers.cfg fail" # negative control: a box-less holder covered
+  "rotation rotation Rotation MC_grant_noentry.cfg fail:temporal" # negative control: a grant carries no entry: the late grantee never opens S
   "reseal rotation Reseal RS_build.cfg pass"       # another's content encrypted under the node's epoch only while an epoch it opened it under is established (spec/crypto.md §5 Passing on)
   "reseal rotation Reseal RS_build_live.cfg pass"  # ... and once W arrives, it is
   "reseal rotation Reseal RS_openedest.cfg pass"   # sealing again under the opened epoch itself is safe too
@@ -176,14 +177,14 @@ instances=(
   "entry rotation Entry NT_sig_sync.cfg pass"             # ... a signalled sync-only holder
   "entry rotation Entry NT_rem.cfg pass"                  # ... a removed holder holds no later epoch
   "entry rotation Entry NT_rem_nojudge.cfg fail:NoGain"   # negative control: a rotation sealing to a removed holder
-  "entry rotation Entry EN_left.cfg pass"                 # entry boxes in X's steps (Q1(a)/Q2(a)): a stranded reader's own static entry, sent with its Stranded message, gets it in
+  "entry rotation Entry EN_left.cfg pass"                 # per-holder boxes in X's steps (Q1(a)/Q2(a)): a stranded reader's own held credential, sent with its Stranded message, gets it in
   "entry rotation Entry EN_left_next.cfg fail:temporal"   # finding: Q2(a) as written, a claim-keyed box in the next step: the reader stuck at the step past its keys never finds it
-  "entry rotation Entry EN_sync.cfg pass"                 # entry boxes: sync-only holders boxed in every step
+  "entry rotation Entry EN_sync.cfg pass"                 # boxes in steps: sync-only holders boxed in every step
   "entry rotation Entry EN_sync_next.cfg fail:temporal"   # finding: boxed only where a step bears a new sync key: a left-out sync-only store stays stopped
-  "entry rotation Entry EN_sig.cfg pass"                  # entry boxes: a signal's static entry standing in every step while the signal does
+  "entry rotation Entry EN_sig.cfg pass"                  # boxes in steps: a signal's held credential standing in every step while the signal does
   "entry rotation Entry EN_sig_once.cfg fail:temporal"    # negative control: the signal's entry in one step only
-  "entry rotation Entry EN_sig_bare.cfg fail:StepsBare"   # finding: entry boxes put a box per signalled grant in X's steps, which a store keeping X unread counts
-  "entry rotation Entry EN_rem.cfg pass"                  # entry boxes: a removed holder (signalled, requesting) holds no later epoch
+  "entry rotation Entry EN_sig_bare.cfg fail:StepsBare"   # finding: boxes in steps put a box per signalled grant in X's steps, which a store keeping X unread counts
+  "entry rotation Entry EN_rem.cfg pass"                  # boxes in steps: a removed holder (signalled, requesting) holds no later epoch
   "entry rotation Entry EN_rem_nojudge.cfg fail:NoGain"   # negative control: entries listed for a removed holder's seed
   "entry rotation Entry EN_copies.cfg fail:NothingKept"   # negative control: the deleted design, copies kept under the holder
   "netstream net MCStream S_loss.cfg pass"
@@ -233,7 +234,6 @@ instances=(
   "netshared net MCShared TN_tag.cfg fail"
   "netshared net MCShared TN_until.cfg fail"
   "netshared net MCShared TN_genbase.cfg fail"
-  "netshared net MCShared TN_byrole.cfg fail"
   "netshared net MCShared TN_reconcile.cfg fail"
   "netshared net MCShared TN_retest.cfg fail"
   "netshared net MCShared TN_decline.cfg fail"
@@ -241,30 +241,21 @@ instances=(
   "netshared net MCShared TN_cursorrep.cfg fail"
   "netshared net MCShared TN_offergate.cfg fail"
   "netshared net MCShared TN_reptested.cfg fail"
-  "netopen net MCOpen O_rk.cfg pass"               # spec/sync-opens.md §4, the open rule: a reader and a store
+  "netopen net MCOpen O_rk.cfg pass"               # spec/sync-opens.md §4, the one open rule: a reader and a store granted later
   "netopen net MCOpen O_kk.cfg pass"               # ... two stores
-  "netopen net MCOpen O_rx.cfg pass"               # ... a reader and a link holder
   "netopen net MCOpen O_pub.cfg pass"              # ... Adv holds only public values
-  "netopen net MCOpen ON_side.cfg fail"            # negative control: no side byte, a signature is reflected
-  "netopen net MCOpen ON_answer.cfg fail"          # negative control: a Hit on a public value opens
-  "netopen net MCOpen ON_old.cfg fail"             # negative control: an older step's sync key answers
-  "netopen net MCOpen ON_proofpub.cfg fail"        # negative control: the proof from the public sync key
-  "netopen net MCOpen ON_proofold.cfg fail"        # negative control: an older step's proof counts
-  "netopen net MCOpen ON_linkold.cfg fail"         # negative control: a removed static entry counts
-  "netopen net MCOpen ON_jnow.cfg fail"            # negative control: J from the roster the node started with
-  "netopen net MCOpen ON_endj.cfg fail"            # negative control: an open by J outlives the removal's rotation
-  "netopen net MCOpen ON_peermoves.cfg fail"       # negative control: an open not re-judged at its peer's removal outlives it until the rotation (SafeGone)
-  "netopen net MCOpen ON_endsync.cfg fail"         # negative control: an open by sync key outlives the head's event
-  "netopen net MCOpen ON_endproof.cfg fail"        # negative control: an open by proof outlives the rotation
-  "netopen net MCOpen ON_endlink.cfg fail"         # negative control: an open by static entry outlives its removal
-  "netopen net MCOpen ON_departed.cfg fail"        # finding: without the departed clause a removal does not stop opens at once
-  "netopen net MCOpen ON_dialer.cfg fail"          # negative control: the dialer trusts the key it dialed
-  "netopen net MCOpen ON_nolisten.cfg fail"        # negative control (Live): listeners never sign
   "netopen net MCOpen O_none.cfg pass"             # Adv holds no value of S, shows junk: no Lost names S to it (Private)
-  "netopen net MCOpen O_rkjunk.cfg pass"           # O_rk with junk filter entries Hit
-  "netopen net MCOpen ON_losttag.cfg fail"         # negative control: a Lost on an acceptance without a valid tag (Private)
-  "netopen net MCOpen ON_shownkey.cfg fail"        # negative control (Live): a store with no step shows nothing
-  "netopen net MCOpen ON_class.cfg fail"           # negative control: the class from the credential, two stores (ClassRight)
+  "netopen net MCOpen ON_side.cfg fail:Safe"       # negative control: no side byte, a claim signature is reflected
+  "netopen net MCOpen ON_answer.cfg fail:Safe"     # negative control: a tester opens without a valid answer
+  "netopen net MCOpen ON_old.cfg fail:Safe"        # negative control: an older step's proof opens whole
+  "netopen net MCOpen ON_endhead.cfg fail:Safe"    # negative control: a head move ends no open
+  "netopen net MCOpen ON_claimold.cfg fail:Safe"   # negative control: a claim bound to an older epoch counts
+  "netopen net MCOpen ON_proofpub.cfg fail:Safe"   # negative control: the proof from the public sync key
+  "netopen net MCOpen ON_deposit.cfg fail:Safe"    # negative control: a deposit key's Hit opens
+  "netopen net MCOpen ON_dialer.cfg fail:Safe"     # negative control: the dialer trusts the key it dialed
+  "netopen net MCOpen ON_losttag.cfg fail:Private" # negative control: a Lost on an acceptance without a valid answer
+  "netopen net MCOpen ON_class.cfg fail:ClassRight" # negative control: the class from the credential
+  "netopen net MCOpen ON_noclaim.cfg fail:temporal" # negative control: no claims, a holder granted later never opens
   "nethold net MCHold H_quiet.cfg pass"            # hold/log/delete per sync ID (net/README.md)
   "nethold net MCHold H_head.cfg pass"
   "nethold net MCHold H_meet.cfg pass"
@@ -370,7 +361,7 @@ for r in "${runs[@]}"; do
   else verdict=ok; fi
   printf '%-24s %-5s (expected %-4s) %10s states %5ss  %s\n' \
     "$cfg" "$got" "$expect" "${states:-?}" "$secs" "$verdict"
-  if [ "$verdict" = FAILED ]; then grep -E 'Error|violated' "$log" | head -n 5 | sed 's/^/    /'; fi
+  if [ "$verdict" = FAILED ]; then grep -E 'Error|violated' "$log" | head -n 5 | sed 's/^/    /' || true; fi
   if [ -n "${TLC_KEEP_LOGS:-}" ]; then mkdir -p "$TLC_KEEP_LOGS" && cp "$log" "$TLC_KEEP_LOGS/$dir-$cfg.log"; fi
 done
 echo "$module: $(( $(date +%s) - total ))s at $workers worker(s)"

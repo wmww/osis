@@ -37,7 +37,7 @@ Each rule is stated once, in the spec; this note restates none. Words: notes/ter
 - **Claiming as every holder whose keys the node holds** (to find a chain no cut names): claims per stub then scale with every thing held, not with the stub's holders.
 - **A read holder's one entry sealed to its sync keyset, carrying the read keys**: a node holding only its sync secrets would read the roster.
 - **A grant list kept with the holder** (every grant naming a holder copied under the holder's sync ID, searched down from the account): it needs a judgement of which grants count that only the holder's readers can make, fires kept as proof, and a standing read of every holder reached. Asking the granted thing dissolves it. Gone with it: taken or accepted grants, a path a role commit states for its holders, any rule whose job is to make sure a holder hears of a grant.
-- **A per-grant entry box in X's steps** (the signal carrying an entry credential): every store keeping X unread sees each box, so counts sync-only holders, standing signals and stranded requests (Entry.tla `EN_sig_bare` fails `StepsBare`). A stranded reader's box in a later step is also never found (`EN_left_next`).
+- **A per-grant box in X's steps** (the signal carrying an entry credential): every store keeping X unread sees each box, so counts sync-only holders, standing signals and stranded requests (Entry.tla `EN_sig_bare` fails `StepsBare`). A stranded reader's box in a later step is also never found (`EN_left_next`).
 - **Claims signed apart from the grant**: a copy that lags and needs repair.
 - **Claim-only child steps** (a step listing new readers): concurrent ones are siblings needing a fix-up; a claim set per step strands a grantee at a step without a rotation.
 - **Claim key from the sync secret alone**: stores hold it and could link a holder's card to the thing.
@@ -46,7 +46,7 @@ Each rule is stated once, in the spec; this note restates none. Words: notes/ter
 - **An entry carrying the earlier epoch's secret**: breaks floors for a grant without history.
 - **W from the claim's X25519 alone**: loses post-quantum protection.
 - **Notices** (a role commit's copy sealed per connection by a reader to a holder that cannot open it by its wrap): a holder then gets in only by meeting a reader, so a store alone never serves it; entries put the same way in into the commit, served by any node.
-- **Entry by role** (opening S toward a peer whose proven things hold a role, ByRole) and **judging departed peers**: a second open rule beside credentials, needing a reader online and the roster at the judge; the older step's sync proof served to its end does the departed peer's job.
+- **Entry by role** (opening S toward a peer whose proven things hold a role) and **judging departed peers**: a second open rule beside credentials, needing a reader online and the roster at the judge; the older step's sync proof served to its end does the departed peer's job.
 - **The blob key sealed to each holder with no claim** (the form Entry.tla checks, `NT_*`): a holder finds its box by trial over every blob or by a flag that counts told commits. Entries add the claim, so a holder finds its entry by index.
 - **A signal carrying commits or boxes** (the holder's boxes sealed into the fire): it makes delivery a duty of the granter and a second entry path; values plus entries are one mechanism with locators and pairing.
 - **Delivering the public's grant to each sync holder**: notes/public-and-cards-brief.md.

@@ -207,7 +207,7 @@ impl Held {
 
 impl Net {
     /// The things whose role entries node `h` reads: what it holds whole, a stub its units' keys
-    /// open, and a signal's target its holder reads (the entry box gives the secrets to read the
+    /// open, and a signal's target its holder reads (its entry gives the secrets to read the
     /// target's role entries).
     pub fn rosters(&self, h: &Held) -> Set {
         let signalled = h.fetched.iter().filter(|s| self.w.grants.get(&(s.holder, s.target)).is_some_and(|&r| r >= Role::Read)).map(|s| s.target);

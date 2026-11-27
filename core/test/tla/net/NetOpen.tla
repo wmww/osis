@@ -1,194 +1,177 @@
 ---- MODULE NetOpen ----
-(* Who may open sync ID S on a connection (spec/sync-opens.md §4, the open rule): S is in a
-   connection's shared set exactly while each side syncs S and holds proof, judged by itself on
-   what it holds now, that the other may hold S: J (a proven actor holds sync or above), a secret
-   credential shown on this connection (the sync-key proof), or an open signature by a credential
-   key (sync key, a link key's static entry) of the newest step of S it knows, bound to the
-   signer's side and this connection. Who dialed proves nothing. Opens are re-judged when a node
-   learns a change of its credentials or sync set (a rotation, its own grant or removal, a grant
-   or removal of a link holder, whose static entry is shown), and an open when the node learns a
-   grant or removal of its peer (what J judges of the peer's proof moved, PeerMoves); an open on
-   a basis no longer accepted ends, with a Lost that closes the other side too.
-   Honest nodes: readers (hold the roster, every seed of a step they held, show the proof of their
-   newest step and the static entries the roster lists; Hit a store's sync key, older steps too
-   by their walk), stores (hold S unread: the head's seed only, show its sync key, its proof and
-   the listed static entries; Hit a sync key or proof at their head), link holders (hold
-   a link key whose static entry S lists, no seed; Hit their own static entry). Events (a fixed
-   order, each at any time; each honest node learns them in order at its own pace): a grant, a
-   removal (roster and static entries) and a rotation (a new step and seed, given to every member
-   that learns it). Adv knows every event at once, holds every public value of S (each step's sync
-   public key, every static entry), the seed and proof of every step it was an account member
-   at, its link key if it has one; it picks its Hello challenges from those it has seen, dials
-   and is dialed by anyone, Hits anything a peer ever showed it (a stored filter keeps removed
-   entries), answers any Hit with any token it holds or makes, and replays any token it was sent.
-   A token (a signature, or a Hit or tag keyed by a secret match value, always bound to its
-   sender's side) is modelled by its key, side, the verifier's challenge and the listener's key.
-   An answer to a Hit on a sync key or static entry is signed by the sync key of the replier's
-   step (a store's head, a reader's newest known step), made only while it holds that seed.
-   With AdvPublic FALSE, Adv holds no value of S at all; with AdvJunk its filter may show an entry
+(* Who may open sync ID S on a connection (spec/sync-opens.md §4, the one open rule): S is in a
+   connection's shared set exactly while each side syncs S and holds, judged by itself on what it
+   holds now, a credential of S the other showed on this connection: the sync proof of a step's
+   sync key on its path, or a claim among its head claims proven by an open signature bound to the
+   signer's side and this connection. A credential of the head opens S whole; an older step's sync
+   proof opens S served up to that step's end. Nothing else opens S: which side dialed, a deposit
+   key (public), a claim bound to an older epoch.
+   Steps are a chain (step = sync epoch); events in a fixed order, each at any time, each honest
+   node learning them in order at its own pace: a grant (an entry bound to the current epoch, no
+   new step), a removal (it rotates: a new step whose seed and entries reach every other holder),
+   a rotation. Removal ends opens by the head move alone: at a head move a node ends each whole
+   open whose credential is of an older step, served up to that step's end (`until`); an ended
+   open closes (its Lost) at any time after.
+   Honest nodes are readers or stores (the class only: both hold the seeds of the steps they were
+   holders at once they took their entries, show the sync proof of each step on their path whose
+   seed they hold, their head claims (every holder's claim at the head) and the head's deposit key,
+   and test their held seeds' proofs newest first and, while no held seed derives the source's
+   step's key, their own claim at the source's head). A holder granted later takes its entries
+   (its seeds) only once it is open whole toward an honest peer (pulling S; the store's head
+   registered by that peer, abstracted): before, it shows and accepts nothing and opens by its
+   claim alone.
+   Adv knows every event at once. It holds the seed and proof of every step it was a holder at,
+   its claim at every step it knows (a claim derives from the public step key and its own key)
+   and, with AdvPublic, every public value of S (each step and deposit key, every claim public key
+   in S's clear entry blocks). It picks its Hello challenges from those it has seen or the other
+   side's fresh one, dials and is dialed by anyone, answers Head with any step, Hits anything a
+   peer ever showed it (a stored filter keeps removed entries), answers any Hit with any token it
+   holds or makes, and replays any token it was sent. A token (a Hit keyed by a proof, an open
+   signature by a claim key, a tag keyed by a proof, an answer signature by a sync key) is
+   modelled by its key, its signer's side, the verifier's challenge and the listener's key.
+   With AdvPublic FALSE, Adv holds no value of S; with AdvJunk its filter may show an entry
    matching anything an honest tester tests (a false positive), which the tester Hits. A tester
-   ends with Lost only an acceptance that carries a valid tag (LostTag): one keyed by the Hit's
-   match, which Adv can make only for a value it holds.
-   A store granted later keeps S with no step until a reader registers its genesis there, which
-   a reader does once S is open both ways and the store holds no step. With no head (ShownKey)
-   it shows and tests the sync key and proof of the step its grant names, the newest it learned,
-   so its own Hit opens S; a reader tests nothing again at a change of the store's filter.
-   Each open records the class of its peer (store: keeps S unread; reader: a reader or link
-   holder), as the peer declared it in its Hit or answer (Declared), never from the credential
-   or which side's Hit opened S.
+   ends with Lost only an acceptance whose answer is valid (LostTag).
+   Each open records the class of its peer as the peer declared it (Declared).
    A rule of the design is a flag. *)
 EXTENDS Naturals, FiniteSets, Sequences, TLC
 
 CONSTANTS
     Nodes, Adv,
-    Role,           \* Role[n] \in {"reader", "store", "link"} for n # Adv
-    AdvLink,        \* Adv's role on S is by a link key (a static entry), else by its account
-    InitMembers,    \* who holds sync on S at the start
+    Role,           \* Role[n] \in {"reader", "store"} for n # Adv: the class it declares
+    InitMembers,    \* the holders at the start (holding their entries)
     Events,         \* [op |-> "grant" | "rm" | "rot", n |-> node or "-"], in order
     MaxConn,
-    SideByte,       \* an open signature's digest holds the signer's side (dialer 0, listener 1)
-    AnswerSig,      \* a tester opens only on J or the replier's proof (answer signature or secret tag)
-    ListenerSigns,  \* FALSE: a listener never makes an open signature (the rejected option)
+    SideByte,       \* a claim's open signature (and an answer signature) holds the signer's side
+    AnswerSig,      \* a tester opens only on a valid answer (FALSE: on its own credential alone)
     ProofSecret,    \* the proof derives from the seed, not from the public sync key
-    NewestOnly,     \* a sync key counts only at the newest step the verifier knows
-    ProofNewest,    \* a proof counts only at the newest step the verifier knows
-    LinkNewest,     \* a static entry counts only if the newest roster the verifier knows lists it
-    JNow,           \* J reads the roster the node holds now (FALSE: the roster it started with)
-    Rejudge,        \* the bases ("J", "sync", "proof", "link") an open is re-judged on at a change
-    Departed,       \* a credential of a peer J judges departed counts only at a step covering it
-    PeerMoves,      \* an open is re-judged when its node learns a grant or removal of its peer
+    OlderEnds,      \* an older step's proof opens S served up to that step's end (FALSE: whole)
+    HeadEnds,       \* a head move ends each whole open by an older step's credential
+    ClaimOld,       \* TRUE: a claim bound to an older epoch counts (the rejected rule)
+    DepositOpens,   \* TRUE: a Hit on the head's deposit key opens (the rejected rule)
+    Claims,         \* a holder holding no seed of the source's step tests its claim there
     DialProves,     \* TRUE: the dialer opens toward the key it dialed (who dialed proves nothing)
-    AdvPublic,      \* Adv holds S's public values (each step's sync key, every static entry)
+    AdvPublic,      \* Adv holds S's public values
     AdvJunk,        \* Adv's filter may show junk matching any value a tester tests
-    LostTag,        \* a Lost answers only an acceptance with a valid tag (FALSE: any acceptance)
-    ShownKey,       \* a store with no step shows and tests its grant's step's sync key and proof
+    LostTag,        \* a Lost answers only an acceptance with a valid answer (FALSE: any acceptance)
     Declared        \* an open's class of its peer is the peer's declaration (FALSE: from the credential)
 
 Honest == Nodes \ {Adv}
 NE == Len(Events)
-IsRm(e, n) == e.op = "rm" /\ e.n = n
 
-\* The roster and the step after the first k events.
+\* The holders and the step after the first k events.
 Mem[k \in 0..NE] ==
     IF k = 0 THEN InitMembers
     ELSE IF Events[k].op = "grant" THEN Mem[k - 1] \cup {Events[k].n}
     ELSE IF Events[k].op = "rm" THEN Mem[k - 1] \ {Events[k].n}
     ELSE Mem[k - 1]
-St[k \in 0..NE] == IF k = 0 THEN 0 ELSE St[k - 1] + (IF Events[k].op = "rot" THEN 1 ELSE 0)
-LinkNodes == {n \in Honest : Role[n] = "link"} \cup (IF AdvLink THEN {Adv} ELSE {})
-Account(k) == Mem[k] \ LinkNodes
-Listed(k) == Mem[k] \cap LinkNodes
-IsReader(n) == n \in Honest /\ Role[n] = "reader"
-IsStore(n) == n \in Honest /\ Role[n] = "store"
-\* p departed in the first k events (a removal of p, not granted again), and whether a rotation
-\* after every removal covers it.
-Gone(p, k) == p \notin Mem[k] /\ \E j \in 1..k : IsRm(Events[j], p)
-Covers(k) == \E j \in 1..k : Events[j].op = "rot" /\ \A j2 \in 1..k : Events[j2].op = "rm" => j2 < j
+St[k \in 0..NE] == IF k = 0 THEN 0 ELSE St[k - 1] + (IF Events[k].op \in {"rm", "rot"} THEN 1 ELSE 0)
+\* The holders boxed at step s by the first k events (each with an entry bound to s).
+HoldersAt(s, k) == {a \in Nodes : \E j \in 0..k : St[j] = s /\ a \in Mem[j]}
 
 \* Keys and tokens are records of one shape (TLC compares only like values).
 Key(c, s, a) == [c |-> c, s |-> s, a |-> a]
 SyncK(s) == Key("sync", s, "-")
 ProofK(s) == Key("proof", s, "-")
-LinkK(a) == Key("link", 0, a)
-JB == Key("J", 0, "-")
+ClaimK(a, s) == Key("claim", s, a)
+DepK(s) == Key("dep", s, "-")
 DialB == Key("dial", 0, "-")
-Secret(key) == key.c = "proof"
 Tok(key, sd, ch, lk) == [k |-> key, sd |-> sd, ch |-> ch, lk |-> lk]
-\* What n declares of itself: whether it keeps S unread; Adv declares what it likes ("adv").
-Cls(n) == IF n = Adv THEN "adv" ELSE IF Role[n] = "store" THEN "store" ELSE "reader"
-\* The rejected rule: the class from the credential that opened S, tested here or by the peer.
-FromCred(v, testedHere) ==
-    IF testedHere THEN (IF v.c \in {"sync", "link"} THEN "store" ELSE "reader")
-    ELSE (IF v.c = "proof" THEN "store" ELSE "reader")
-\* The class n records of its peer p, S opened on credential v (JB: by J).
-ClassOf(p, v, testedHere) == IF Declared THEN Cls(p) ELSE IF v = JB THEN "reader" ELSE FromCred(v, testedHere)
 NoTok == Tok(Key("none", 0, "-"), 0, 0, "-")
+\* The key an answer to a Hit on v carries: the tag keyed by the proof, else a signature by the
+\* sync key of the replier's head (the claim's step).
+AnsKey(v) == IF v.c = "proof" THEN v ELSE SyncK(v.s)
+\* What n declares of itself; Adv declares what it likes ("adv").
+Cls(n) == IF n = Adv THEN "adv" ELSE Role[n]
+\* The rejected rule: the class from the credential that opened S.
+ClassOf(p, v) == IF Declared THEN Cls(p) ELSE IF v.c = "proof" THEN "store" ELSE "reader"
+\* An open: connection, node, mode ("whole" or "until"), the credential's step, until, class.
+Open(i, n, m, s, cl) == [i |-> i, n |-> n, m |-> m, s |-> s, u |-> s, cl |-> cl]
 
 VARIABLES conns, opens, known, seen, next, happened, know,
     leak,       \* a Lost named S to Adv while Adv held no value of S
-    head        \* head[n]: a store holds a step of S (its genesis registered there)
-vars == <<conns, opens, known, seen, next, happened, know, leak, head>>
+    took        \* took[n]: n holds its entries (its seeds and S's entry blocks)
+vars == <<conns, opens, known, seen, next, happened, know, leak, took>>
 
-KnowOf(n) == IF n = Adv THEN happened ELSE know[n]
-\* The steps whose seed n holds (and so their sync key and proof).
+HeadOf(n) == IF n = Adv THEN St[happened] ELSE St[know[n]]
+\* The steps whose seed n holds.
 Seeds(n) ==
-    IF n = Adv THEN {St[j] : j \in {j \in 0..happened : Adv \in Account(j)}}
-    ELSE IF Role[n] = "reader" THEN {St[j] : j \in {j \in 0..know[n] : n \in Mem[j]}}
-    ELSE IF Role[n] = "store" /\ n \in Mem[know[n]] /\ (head[n] \/ ShownKey) THEN {St[know[n]]}
+    IF n = Adv THEN {St[j] : j \in {j \in 0..happened : Adv \in Mem[j]}}
+    ELSE IF took[n] THEN {St[j] : j \in {j \in 0..know[n] : n \in Mem[j]}}
     ELSE {}
+\* The steps Adv knows the public step key of.
+AdvSteps == IF AdvPublic THEN 0..St[happened] ELSE Seeds(Adv)
 HoldsKeys(n) ==
     {SyncK(s) : s \in Seeds(n)} \cup {ProofK(s) : s \in Seeds(n)}
-    \cup (IF n \in LinkNodes THEN {LinkK(n)} ELSE {})
-    \cup (IF n = Adv /\ ~ProofSecret THEN {ProofK(s) : s \in 0..St[happened]} ELSE {})
+    \cup {ClaimK(n, s) : s \in (IF n = Adv THEN AdvSteps ELSE 0..HeadOf(n))}
+    \cup (IF n = Adv /\ AdvPublic /\ ~ProofSecret THEN {ProofK(s) : s \in 0..St[happened]} ELSE {})
+    \cup (IF n = Adv /\ AdvPublic THEN {DepK(s) : s \in 0..St[happened]} ELSE {})
 Syncs(n) == n \in Mem[know[n]]
-\* What honest n's filter shows when it knows k events; what a stored copy of it holds (nothing
-\* is removed from a stored filter); what Adv shows.
+HeadClaims(n, k) == {ClaimK(a, St[k]) : a \in HoldersAt(St[k], k)}
+\* What honest n's filter shows knowing k events.
 ShowsAt(n, k) ==
-    IF Role[n] = "store" /\ ~head[n] /\ ~ShownKey THEN {} ELSE
-    (IF Role[n] = "store" THEN {SyncK(St[k]), ProofK(St[k])} ELSE IF Role[n] = "reader" THEN {ProofK(St[k])} ELSE {})
-    \cup (IF Role[n] = "link" THEN {} ELSE {LinkK(a) : a \in Listed(k)})
+    IF ~took[n] THEN {}
+    ELSE {ProofK(s) : s \in {St[j] : j \in {j \in 0..k : n \in Mem[j]}}} \cup HeadClaims(n, k) \cup {DepK(St[k])}
 ShowsEver(n) == UNION {ShowsAt(n, j) : j \in 0..know[n]}
-PubValues == IF AdvPublic THEN {SyncK(s) : s \in 0..St[happened]} \cup {LinkK(a) : a \in LinkNodes} ELSE {}
-\* the values of S Adv holds: it can make a tag keyed by any of them
+PubValues ==
+    IF AdvPublic THEN {DepK(s) : s \in 0..St[happened]} \cup {ClaimK(a, s) : a \in Nodes, s \in 0..St[happened]}
+    ELSE {}
+\* the values of S Adv holds
 AdvValues == PubValues \cup HoldsKeys(Adv)
-AdvShows == PubValues \cup {key \in HoldsKeys(Adv) : key.c = "proof"}
-\* What honest t Hits in a peer's filter: a reader a sync key it holds (its walk: older steps
-\* too); a store its head's sync key or proof; a link holder its own static entry.
-Tests(t, v) ==
-    CASE Role[t] = "reader" -> v.c = "sync" /\ v \in HoldsKeys(t)
-      [] Role[t] = "store" -> v.c \in {"sync", "proof"} /\ v.s = St[know[t]] /\ v \in HoldsKeys(t)
-      [] OTHER -> v = LinkK(t)
+AdvShows == PubValues \cup {key \in HoldsKeys(Adv) : key.c \in {"proof", "claim"}}
 
-\* J: a reader judges a proven actor by the roster it holds.
-J(v, p, k) == IsReader(v) /\ p \in Account(IF JNow THEN k ELSE 0)
-\* v, knowing k events, accepts key shown by peer p (a Hit on its filter or an answer to its Hit).
-Accept(v, k, key, p) ==
-    /\ CASE key.c = "sync" -> IF NewestOnly THEN key.s = St[k] ELSE key.s <= St[k]
-         [] key.c = "proof" -> (IF ProofNewest THEN key.s = St[k] ELSE key.s <= St[k])
-                               /\ key.s \in {St[j] : j \in {j \in 0..k : v \in Mem[j]}}
-         [] key.c = "link" -> key.a \in (IF LinkNewest THEN Listed(k) ELSE UNION {Listed(j) : j \in 0..k})
-         [] OTHER -> FALSE
-    /\ (Departed /\ IsReader(v) /\ Gone(p, k)) => Covers(k)
+\* How v, knowing k events, takes credential key shown by its peer: "whole", "until" (an older
+\* step's proof: served up to that step's end) or "no".
+Accept(v, k, key) ==
+    IF ~took[v] THEN "no"
+    ELSE CASE key.c = "proof" /\ key.s \in Seeds(v) ->
+                IF key.s = St[k] \/ ~OlderEnds THEN "whole" ELSE "until"
+           [] key.c = "claim" /\ (IF ClaimOld THEN key.s <= St[k] ELSE key.s = St[k])
+                /\ key.a \in HoldersAt(key.s, k) -> "whole"
+           [] key.c = "dep" /\ DepositOpens /\ key.s = St[k] -> "whole"
+           [] OTHER -> "no"
+\* How tester t takes its own credential v once the peer's answer proves it: a proof by where its
+\* step lies on t's path; a claim at t's head whole, at an older step of t's up to its end, at a
+\* step t holds no entry block of not at all.
+TesterMode(t, v) ==
+    CASE v.c = "proof" -> IF v.s = HeadOf(t) \/ ~OlderEnds THEN "whole" ELSE "until"
+      [] v.c = "claim" /\ t \in HoldersAt(v.s, know[t]) -> IF v.s = HeadOf(t) THEN "whole" ELSE "until"
+      [] OTHER -> "no"
+\* What honest t tests toward peer p, whose head it learned (Adv answers Head with any step).
+Tests(t, p, v) ==
+    \/ v.c = "proof" /\ v.s \in Seeds(t)
+       /\ (p # Adv => \A s \in Seeds(t) : ProofK(s) \in ShowsAt(p, know[p]) => s <= v.s)
+    \/ v.c = "claim" /\ Claims /\ v.a = t
+       /\ v.s \in (IF p = Adv THEN 0..St[happened] ELSE {HeadOf(p)})
+       /\ v.s \notin Seeds(t)
 
 Side(c, n) == IF n = c.d THEN 0 ELSE 1
 Peer(c, n) == IF n = c.d THEN c.l ELSE c.d
 Ch(c, n) == IF n = c.d THEN c.cd ELSE c.cl
-CanSign(n, c, key) == ListenerSigns \/ Secret(key) \/ n = c.d
 \* Token s, verified by n on c as made by the other side with key.
 Valid(s, key, c, n) ==
     /\ s.k = key
-    /\ (SideByte \/ Secret(key)) => s.sd = Side(c, Peer(c, n))
+    /\ (SideByte \/ key.c = "proof") => s.sd = Side(c, Peer(c, n))
     /\ s.ch = Ch(c, n)
     /\ s.lk = c.l
-    /\ CanSign(Peer(c, n), c, key)
 \* The tokens Adv makes on c for verifier n.
 Forge(c, n) == {Tok(key, Side(c, Adv), Ch(c, n), c.l) : key \in HoldsKeys(Adv)}
-IsOpen(i, n) == \E o \in opens : o[1] = i /\ o[2] = n
+IsOpen(i, n) == \E o \in opens : o.i = i /\ o.n = n
+Served(o) == IF o.m = "whole" THEN HeadOf(o.n) ELSE o.u
 
-\* Tester t's open toward p on the answer a to its Hit on v: on J, else on the answer, a proof
-\* t accepts of the class the Hit asks (the tag on a proof, else an open signature by a sync
-\* key); else Lost, closing both sides.
+\* Tester t's open toward p on the answer a to its Hit on v; else, the peer having accepted, Lost
+\* closing both sides.
 Finish(i, t, p, v, a, base) ==
     LET c == conns[i]
-        \* the peer accepted (an honest one always, with a valid tag); Adv answering with any token
-        \* accepted, its tag valid only on a match it holds
         accepted == p # Adv \/ a # NoTok
-        tagOK == p # Adv \/ v \in AdvValues
-        lost == accepted /\ (LostTag => tagOK)
-        opensT == IF J(t, p, know[t]) \/ ~AnswerSig THEN TRUE
-                  ELSE /\ a # NoTok /\ Valid(a, a.k, c, t)
-                       /\ a.k.c = (IF v.c = "proof" THEN "proof" ELSE "sync")
-                       /\ Accept(t, know[t], a.k, p)
+        answerOK == a # NoTok /\ Valid(a, AnsKey(v), c, t)
+        mode == IF ~AnswerSig \/ answerOK THEN TesterMode(t, v) ELSE "no"
+        lost == accepted /\ mode = "no" /\ (LostTag => answerOK)
     IN
-    /\ leak' = (leak \/ (p = Adv /\ ~opensT /\ lost /\ AdvValues = {}))
-    /\ opens' = IF ~AnswerSig THEN base \cup {<<i, t, v, ClassOf(p, v, TRUE)>>}
-             ELSE IF J(t, p, know[t]) THEN base \cup {<<i, t, JB, ClassOf(p, JB, TRUE)>>}
-             ELSE IF /\ a # NoTok /\ Valid(a, a.k, c, t)
-                     /\ a.k.c = (IF v.c = "proof" THEN "proof" ELSE "sync")
-                     /\ Accept(t, know[t], a.k, p)
-                  THEN base \cup {<<i, t, a.k, ClassOf(p, v, TRUE)>>}
-             ELSE IF lost THEN {o \in base : o[1] # i}
-             ELSE base
+    /\ leak' = (leak \/ (p = Adv /\ lost /\ AdvValues = {}))
+    /\ opens' = IF mode # "no" THEN base \cup {Open(i, t, mode, v.s, ClassOf(p, v))}
+                ELSE IF lost THEN {o \in base : o.i # i}
+                ELSE base
 
 Init ==
     /\ conns = <<>>
@@ -199,7 +182,7 @@ Init ==
     /\ happened = 0
     /\ know = [n \in Honest |-> 0]
     /\ leak = FALSE
-    /\ head = [n \in Honest |-> Role[n] # "store" \/ n \in InitMembers]
+    /\ took = [n \in Honest |-> n \in InitMembers]
 
 \* A connection: honest sides draw a fresh challenge; Adv any it has seen, the other side's of
 \* this connection, or a fresh one.
@@ -211,108 +194,93 @@ Connect(d, l) ==
         /\ conns' = Append(conns, [d |-> d, l |-> l, cd |-> cd, cl |-> cl])
         /\ seen' = IF Adv \in {d, l} THEN seen \cup {cd, cl} ELSE seen
     /\ next' = next + 2
-    /\ UNCHANGED <<opens, known, happened, know, leak, head>>
+    /\ UNCHANGED <<opens, known, happened, know, leak, took>>
 
 Happen ==
     /\ happened < NE
     /\ happened' = happened + 1
-    /\ UNCHANGED <<conns, opens, known, seen, next, know, leak, head>>
+    /\ UNCHANGED <<conns, opens, known, seen, next, know, leak, took>>
 
-\* Honest n learns the next event. When it moves n's credentials or sync set (Moves) n re-judges
-\* every open it holds on what it holds now, and when it grants or removes an open's peer
-\* (PeerMoves) that open; an open whose basis it no longer accepts ends (with its Lost, both
-\* sides). A node that stops syncing S ends them all.
+\* Honest n learns the next event. At a head move each whole open of n by an older step's
+\* credential is ended, served up to that step's end.
 Learn(n) ==
     LET k == know[n] + 1
-        Moves == Events[k].op = "rot" \/ Events[k].n = n \/ Events[k].n \in LinkNodes
-        Keep(o) == LET p == Peer(conns[o[1]], n) b == o[3] IN
-            /\ n \in Mem[k]
-            /\ CASE b.c = "J" -> "J" \notin Rejudge \/ J(n, p, k)
-                 [] b.c \in {"sync", "proof", "link"} -> b.c \notin Rejudge \/ Accept(n, k, b, p)
-                 [] OTHER -> TRUE
-        Touched(o) == Moves \/ (PeerMoves /\ Events[k].n = Peer(conns[o[1]], n))
-        Drop == {o[1] : o \in {o \in opens : o[2] = n /\ Touched(o) /\ ~Keep(o)}}
+        End(o) == IF HeadEnds /\ o.n = n /\ o.m = "whole" /\ o.s < St[k] THEN [o EXCEPT !.m = "until"] ELSE o
     IN
     /\ know[n] < happened
     /\ know' = [know EXCEPT ![n] = k]
-    /\ opens' = {o \in opens : o[1] \notin Drop}
-    /\ UNCHANGED <<conns, known, seen, next, happened, leak, head>>
+    /\ opens' = {End(o) : o \in opens}
+    /\ UNCHANGED <<conns, known, seen, next, happened, leak, took>>
 
-\* Honest t Hits v in its peer's filter with a token made over its own side, the peer's challenge
-\* and the listener's key. An honest peer opens if it accepts v and answers with its proof: the tag
-\* on a proof, else its open signature by the sync key of the step the open is at. Adv collects
-\* the token and answers with any token it holds or makes.
+\* An ended open closes (its Lost, past `until`): both sides of the connection's S.
+Close(i, n) ==
+    /\ \E o \in opens : o.i = i /\ o.n = n /\ o.m = "until"
+    /\ opens' = {o \in opens : o.i # i}
+    /\ UNCHANGED <<conns, known, seen, next, happened, know, leak, took>>
+
+\* Honest t Hits v with a token over its own side, the peer's challenge and the listener's key. An
+\* honest peer opens if it takes v and answers (the tag keyed by a proof, else its signature by its
+\* head's sync key). Adv collects the token and answers with any token it holds or makes.
 HonestHit(i, t, v) ==
     LET c == conns[i]
         p == Peer(c, t)
         s == Tok(v, Side(c, t), Ch(c, p), c.l)
     IN
-    /\ t \in Honest /\ t \in {c.d, c.l}
+    /\ t \in {c.d, c.l}
     /\ ~IsOpen(i, t)
-    /\ Syncs(t) /\ Tests(t, v) /\ CanSign(t, c, v)
+    /\ Syncs(t) /\ Tests(t, p, v)
     /\ IF p = Adv
        THEN /\ v \in AdvShows \/ AdvJunk
+            \* (a token keyed by a key Adv holds adds nothing: it makes its own)
             /\ known' = IF v \in HoldsKeys(Adv) THEN known ELSE known \cup {s}
             /\ \E a \in known' \cup Forge(c, t) \cup {NoTok} : Finish(i, t, p, v, a, opens)
-       ELSE LET ak == IF v.c = "proof" THEN v
-                      ELSE SyncK(IF v.c = "sync" THEN v.s ELSE St[know[p]])
-                a == IF ak \in HoldsKeys(p) /\ CanSign(p, c, ak)
-                     THEN Tok(ak, Side(c, p), Ch(c, t), c.l) ELSE NoTok
+       ELSE LET mp == Accept(p, know[p], v)
+                a == IF AnsKey(v) \in HoldsKeys(p) THEN Tok(AnsKey(v), Side(c, p), Ch(c, t), c.l) ELSE NoTok
             IN /\ v \in ShowsAt(p, know[p])
-               /\ Syncs(p) /\ Accept(p, know[p], v, t)
-               /\ Finish(i, t, p, v, a, IF IsOpen(i, p) THEN opens ELSE opens \cup {<<i, p, v, ClassOf(t, v, FALSE)>>})
+               /\ Syncs(p) /\ mp # "no"
+               /\ Finish(i, t, p, v, a, IF IsOpen(i, p) THEN opens ELSE opens \cup {Open(i, p, mp, v.s, ClassOf(t, v))})
                /\ UNCHANGED known
-    /\ UNCHANGED <<conns, seen, next, happened, know, head>>
+    /\ UNCHANGED <<conns, seen, next, happened, know, took>>
 
 \* Adv Hits v, anything h ever showed it, with any token it holds or makes; h opens toward Adv when
-\* it accepts, and answers with its proof, which Adv keeps.
+\* it takes v, and answers, which Adv keeps.
 AdvHit(i, v) ==
     LET c == conns[i]
         h == Peer(c, Adv)
-        ak == IF v.c = "proof" THEN v ELSE SyncK(IF v.c = "sync" THEN v.s ELSE St[know[h]])
+        mh == Accept(h, know[h], v)
     IN
     /\ Adv \in {c.d, c.l}
     /\ ~IsOpen(i, h)
     /\ v \in ShowsEver(h)
-    /\ Syncs(h) /\ Accept(h, know[h], v, Adv)
+    /\ Syncs(h) /\ mh # "no"
     /\ \E s \in known \cup Forge(c, h) : Valid(s, v, c, h)
-    /\ opens' = opens \cup {<<i, h, v, ClassOf(Adv, v, FALSE)>>}
-    /\ known' = IF ak \in HoldsKeys(h) /\ CanSign(h, c, ak) /\ ak \notin HoldsKeys(Adv)
-                THEN known \cup {Tok(ak, Side(c, h), Ch(c, Adv), c.l)} ELSE known
-    /\ UNCHANGED <<conns, seen, next, happened, know, leak, head>>
-
-\* A reader opens toward a peer J judges a holder (ByRole); Adv proves its account to anyone.
-JOpen(i, v) ==
-    LET c == conns[i] IN
-    /\ v \in {c.d, c.l} /\ ~IsOpen(i, v)
-    /\ Syncs(v) /\ J(v, Peer(c, v), know[v])
-    /\ opens' = opens \cup {<<i, v, JB, ClassOf(Peer(c, v), JB, TRUE)>>}
-    /\ UNCHANGED <<conns, known, seen, next, happened, know, leak, head>>
+    /\ opens' = opens \cup {Open(i, h, mh, v.s, ClassOf(Adv, v))}
+    /\ known' = IF AnsKey(v) \in HoldsKeys(h) /\ AnsKey(v) \notin HoldsKeys(Adv) THEN known \cup {Tok(AnsKey(v), Side(c, h), Ch(c, Adv), c.l)} ELSE known
+    /\ UNCHANGED <<conns, seen, next, happened, know, leak, took>>
 
 \* The rejected rule: a dialer opens toward the key it dialed.
 DialOpen(i) ==
     LET c == conns[i] IN
     /\ DialProves /\ c.d \in Honest /\ ~IsOpen(i, c.d) /\ Syncs(c.d)
-    /\ opens' = opens \cup {<<i, c.d, DialB, "reader">>}
-    /\ UNCHANGED <<conns, known, seen, next, happened, know, leak, head>>
+    /\ opens' = opens \cup {Open(i, c.d, "whole", 0, "reader")}
+    /\ UNCHANGED <<conns, known, seen, next, happened, know, leak, took>>
 
-\* Reader r, S open both ways on connection i toward a store p holding no step (spec/sync-ids.md
-\* §6 Walk, Moving it): r registers its genesis there.
-Register(i, r) ==
-    LET p == Peer(conns[i], r) IN
-    /\ IsReader(r) /\ IsStore(p) /\ ~head[p]
-    /\ IsOpen(i, r) /\ IsOpen(i, p)
-    /\ head' = [head EXCEPT ![p] = TRUE]
+\* A holder granted later, open whole toward an honest peer, pulls S and takes its entries.
+Take(n) ==
+    /\ ~took[n] /\ Syncs(n)
+    /\ \E o \in opens : o.n = n /\ o.m = "whole" /\ Peer(conns[o.i], n) # Adv
+    /\ took' = [took EXCEPT ![n] = TRUE]
     /\ UNCHANGED <<conns, opens, known, seen, next, happened, know, leak>>
 
-Values == {SyncK(s) : s \in 0..St[NE]} \cup {ProofK(s) : s \in 0..St[NE]} \cup {LinkK(a) : a \in LinkNodes}
+Values ==
+    {ProofK(s) : s \in 0..St[NE]} \cup {DepK(s) : s \in 0..St[NE]}
+    \cup {ClaimK(a, s) : a \in Nodes, s \in 0..St[NE]}
 
 HonestNext ==
-    \/ \E n \in Honest : Learn(n)
+    \/ \E n \in Honest : Learn(n) \/ Take(n)
     \/ \E i \in 1..Len(conns), t \in Honest, v \in Values : HonestHit(i, t, v)
-    \/ \E i \in 1..Len(conns), v \in Honest : JOpen(i, v)
+    \/ \E i \in 1..Len(conns), n \in Honest : Close(i, n)
     \/ \E i \in 1..Len(conns) : DialOpen(i)
-    \/ \E i \in 1..Len(conns), r \in Honest : Register(i, r)
 
 Next ==
     \/ HonestNext
@@ -320,41 +288,35 @@ Next ==
     \/ Happen
     \/ \E i \in 1..Len(conns), v \in Values : AdvHit(i, v)
 
-Spec == Init /\ [][Next]_vars /\ WF_vars(HonestNext)
+\* Honest steps on one connection; each connection progresses on its own (weak fairness per
+\* connection, so a loop with Adv on one starves no other).
+HonestOn(i) == i <= Len(conns) /\ \/ \E t \in Honest, v \in Values : HonestHit(i, t, v)
+                                  \/ \E n \in Honest : Close(i, n)
+Fairness == /\ \A n \in Honest : WF_vars(Learn(n)) /\ WF_vars(Take(n))
+            /\ \A i \in 1..MaxConn : WF_vars(HonestOn(i))
+Spec == Init /\ [][Next]_vars /\ Fairness
 
-\* No honest node opens S toward Adv unless Adv holds sync on S in the roster it knows, or holds
-\* the seed of the newest step it knows (removed, the rotation not yet known). Adv holding only
-\* public values of S, it never opens.
+\* No honest node serves Adv a step Adv was not a holder at: a whole open serves the node's head,
+\* an ended one up to its `until`. So a removed holder is served nothing past its removal's step
+\* once the node knows the removal, and a node holding only S's public values is served nothing.
+Entitled(s) == \E j \in 0..NE : St[j] = s /\ Adv \in Mem[j]
 Safe == \A o \in opens :
-    LET n == o[2] IN
-    (n \in Honest /\ Peer(conns[o[1]], n) = Adv) =>
-        (Adv \in Mem[know[n]] \/ St[know[n]] \in Seeds(Adv))
+    (o.n \in Honest /\ Peer(conns[o.i], o.n) = Adv) => Entitled(Served(o))
 
 \* Adv holding no value of S learns nothing of S from a Lost: no Lost names S to it.
 Private == ~leak
 
-\* A removal stops opens at once: no reader opens toward Adv once it knows Adv's removal, rotation
-\* or not (an open made before ends at the rotation: Safe).
-SafeRmStep == \A o \in opens' \ opens :
-    LET n == o[2] IN
-    (IsReader(n) /\ Peer(conns'[o[1]], n) = Adv) => ~Gone(Adv, know'[n])
-SafeRm == [][SafeRmStep]_vars
-
-\* A removal ends opens at once: no reader holds an open toward Adv once it knows Adv's removal,
-\* before any rotation (not only that none opens anew: SafeRm).
-SafeGone == \A o \in opens :
-    LET n == o[2] IN
-    (IsReader(n) /\ Peer(conns[o[1]], n) = Adv) => ~Gone(Adv, know[n])
-
-\* An open between honest nodes records the class its peer holds S by, whichever side's Hit opened
+\* An open between honest nodes records the class its peer declared, whichever side's Hit opened
 \* it and on whichever credential.
 ClassRight == \A o \in opens :
-    LET n == o[2] p == Peer(conns[o[1]], n) IN
-    (n \in Honest /\ p \in Honest) => o[4] = Cls(p)
+    LET p == Peer(conns[o.i], o.n) IN
+    (o.n \in Honest /\ p \in Honest) => o.cl = Cls(p)
 
-\* Two honest holders connected, every event known to all, end up open both ways, whichever dialed.
+\* Two honest holders connected, every event known to both, end up open whole both ways, whichever
+\* dialed.
 Stable == happened = NE /\ \A n \in Honest : know[n] = NE
 HonestPair(i) == i <= Len(conns) /\ {conns[i].d, conns[i].l} \subseteq Honest \cap Mem[NE]
+WholeOpen(i, n) == \E o \in opens : o.i = i /\ o.n = n /\ o.m = "whole"
 Live == \A i \in 1..MaxConn :
-    (HonestPair(i) /\ Stable) ~> (i <= Len(conns) /\ IsOpen(i, conns[i].d) /\ IsOpen(i, conns[i].l))
+    (HonestPair(i) /\ Stable) ~> (i <= Len(conns) /\ WholeOpen(i, conns[i].d) /\ WholeOpen(i, conns[i].l))
 ====

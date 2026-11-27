@@ -1,7 +1,7 @@
 # Sync: opens
 > Summary: osis-sync's `opens` module (core/sync/src/opens/): per-peer records, agreement, filters and Hits, the shared set per connection, members' judging and ending, one connection per pair, durability and eviction, peers to wait for, and the policy seam.
 
-Spec: spec/sync-opens.md §2-§6. Model: core/test/tla/net/NetOpen.tla (each rule it flags is one function here, named in its comment). Overview: notes/sync.md.
+Spec: spec/sync-opens.md §2-§6. Model: core/test/tla/net/NetOpen.tla (the one open rule, ending at a head move, claims, side bytes, answers and Lost tags; core/sync/tests/it/opens.rs holds its hostile cases). Overview: notes/sync.md.
 
 **Principle:** each side opens S toward a peer only on its own proof, judged on what it holds now (spec/sync-opens.md §4 One open rule); every judgement follows by change, and what a source showed of S lives exactly as long as S is a member of that source's record or a stop of it is kept on the connection up.
 
