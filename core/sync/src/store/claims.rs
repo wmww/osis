@@ -55,6 +55,12 @@ pub(crate) fn drop_entry(t: &mut Transaction<'_>, s: &SyncId, b: &BlobId) -> Res
     Ok(())
 }
 
+/// S's entries with a block bound to sync key `pk` (a head move to `pk` looks for its entries there).
+pub(crate) fn entries_bound_to(t: &mut Transaction<'_>, s: &SyncId, pk: &[u8; 32]) -> Result<Vec<BlobId>> {
+    let prefix = [CLAIMS, &s.0, pk].concat();
+    Ok(t.scan_local(&prefix, b"", usize::MAX)?.into_iter().filter_map(|(k, _)| Some(BlobId(k.get(prefix.len()..)?.try_into().ok()?))).collect())
+}
+
 /// The claims of S's entries' blocks bound to sync key `pk` (spec/sync-ids.md §3: at the head's,
 /// its head claims), in blob order.
 pub(crate) fn bound_to(t: &mut Transaction<'_>, s: &SyncId, pk: &[u8; 32]) -> Result<Vec<[u8; 32]>> {

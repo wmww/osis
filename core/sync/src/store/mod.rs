@@ -906,6 +906,14 @@ impl Store {
         })
     }
 
+    /// S's entries with an entry block bound to its head's sync key (spec/sync-ids.md §3 Bound).
+    pub fn head_bound_entries(&self, s: &SyncId) -> Result<Vec<BlobId>> {
+        self.lock().read(|t, env| match path::head(t, env, s)? {
+            Some((_, head)) => claims::entries_bound_to(t, s, &head.keys.sync.to_bytes()),
+            None => Ok(Vec::new()),
+        })
+    }
+
     /// The head's ID (`head`'s `Step::id`, without parsing it).
     pub fn head_id(&self, s: &SyncId) -> Result<Option<StepId>> {
         self.lock().read(|t, env| path::head_id(t, env, s))

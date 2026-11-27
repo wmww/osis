@@ -178,9 +178,24 @@ impl Unread {
     }
 }
 
-/// One S's judgement, reading its own keys only.
+/// One S's judgement, reading its own keys only. At a head past its keys, its entries bound to the
+/// head's sync key are taken first (spec/sync-ids.md §3 Taking an entry: a step registered after
+/// an entry came binds its block to the head; only those blocks are read again).
 fn judge_s(cx: &mut Cx, s: &SyncId) -> Result<Kept> {
-    let secrets = cx.engine.kept_sync_secrets(s);
     let path = cx.store.path(s)?;
-    Ok(judge(&Judged { secrets: &secrets, steps: path.as_ref().map(|p| p.steps.as_slice()).unwrap_or_default() }))
+    let steps = path.as_ref().map(|p| p.steps.as_slice()).unwrap_or_default();
+    let k = judge(&Judged { secrets: &cx.engine.kept_sync_secrets(s), steps });
+    if !k.stranded {
+        return Ok(k);
+    }
+    let mut took = false;
+    for b in cx.store.head_bound_entries(s)? {
+        let (Some(e), Some(bytes)) = (cx.store.entry(s, &b)?, crate::store::blob_bytes(cx.engine, cx.store, &b)?) else { continue };
+        took |= !matches!(cx.engine.take_unread_entry(s, &b, &e.wrap, &bytes, steps)?, osis_engine::sync::Opened::NotOpen);
+        took |= cx.engine.kept_sync_secrets(s).iter().any(|(_, x)| steps.last().is_some_and(|h| osis_crypto::role_key(RoleKey::Sync, x).verifying_key() == h.keys.sync));
+        if took {
+            break;
+        }
+    }
+    Ok(if took { judge(&Judged { secrets: &cx.engine.kept_sync_secrets(s), steps }) } else { k })
 }

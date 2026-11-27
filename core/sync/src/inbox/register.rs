@@ -70,8 +70,11 @@ pub struct Progress {
 #[derive(Clone)]
 pub(super) struct Register {
     plans: Effects<Key, Plan>,
-    /// The keys `plans` follows, by record: what a record going lets go.
-    followed: BTreeSet<Key>,
+    /// The keys `plans` follows, by record: what a record going lets go; each with the sync key
+    /// S opened there by (none: a claim). A key stays followed after its member closes, while
+    /// what its source showed is kept (spec/sync-ids.md §6: Register needs no open), so a store an
+    /// ended member reached its `until` at is still moved.
+    followed: BTreeMap<Key, Option<[u8; 32]>>,
     progress: Stamped<Key, Progress>,
     /// Register requests out: their key, last step and the source's step when sent.
     out: BTreeMap<(ConnId, RequestId), (Key, StepId, Option<StepId>)>,
@@ -80,15 +83,16 @@ pub(super) struct Register {
 
 impl Default for Register {
     fn default() -> Self {
-        Register { plans: Effects::new("inbox: register"), followed: BTreeSet::new(), progress: Stamped::default(), out: BTreeMap::new(), wakes: BTreeSet::new() }
+        Register { plans: Effects::new("inbox: register"), followed: BTreeMap::new(), progress: Stamped::default(), out: BTreeMap::new(), wakes: BTreeSet::new() }
     }
 }
 
 impl Register {
-    /// S became a store member of the record at `src` (one followed already stays as it is).
-    pub(super) fn joined(&mut self, src: Source, s: SyncId) {
+    /// S became a store member of the record at `src`, opened by `by` (a sync proof's sync key;
+    /// none: a claim).
+    pub(super) fn joined(&mut self, src: Source, s: SyncId, by: Option<[u8; 32]>) {
         self.plans.want((src, s));
-        self.followed.insert((src, s));
+        self.followed.insert((src, s), by);
     }
 
     /// S left the record at `src`.
@@ -115,7 +119,7 @@ impl Register {
 
     /// The record at `src` went (evicted, dropped, or kept nowhere and its connection ended).
     pub(super) fn gone(&mut self, src: Source) {
-        let keys: Vec<Key> = self.followed.range((src, SyncId([0; 16]))..=(src, SyncId([0xff; 16]))).copied().collect();
+        let keys: Vec<Key> = self.followed.range((src, SyncId([0; 16]))..=(src, SyncId([0xff; 16]))).map(|(k, _)| *k).collect();
         for (src, s) in keys {
             self.left(src, &s);
         }
@@ -137,7 +141,8 @@ impl Register {
         }
         for k in self.plans.due() {
             let (engine, progress) = (&mut *h.engine, &self.progress);
-            let Some((_, plan)) = self.plans.try_settle(&k, || judge(engine, &*net, progress, &k))? else { continue };
+            let Some(by) = self.followed.get(&k).copied() else { continue };
+            let Some((_, plan)) = self.plans.try_settle(&k, || judge(engine, &*net, progress, &k, by))? else { continue };
             let Plan::Send(steps, endorsement) = plan else { continue };
             let Some(last) = steps.last().map(Step::id) else { continue };
             let (src, s) = k;
@@ -183,10 +188,19 @@ impl Register {
     }
 }
 
-fn judge(engine: &mut Engine, net: &impl Net, progress: &Stamped<Key, Progress>, k: &Key) -> Result<Plan> {
+fn judge(engine: &mut Engine, net: &impl Net, progress: &Stamped<Key, Progress>, k: &Key, by: Option<[u8; 32]>) -> Result<Plan> {
     osis_base::costs::count("inbox: register judged", 1);
     let (src, s) = k;
-    let Some(m) = net.member_at(*src, s).filter(|m| m.class == SourceClass::Store) else { return Ok(Plan::Nothing) };
+    // open there as a store, or closed there with what its source showed kept
+    let key = match net.member_at(*src, s) {
+        Some(m) if m.class != SourceClass::Store => return Ok(Plan::Nothing),
+        Some(m) => match m.by {
+            Credential::SyncProof(k) => Some(k),
+            Credential::Claim(_) => None,
+        },
+        None if net.head(*src, s).is_some() => by,
+        None => return Ok(Plan::Nothing),
+    };
     // S's recorded path and tree: a sync ID only a hint names records none
     let mut owned = None;
     for t in engine.sync_owners(s)? {
@@ -201,11 +215,6 @@ fn judge(engine: &mut Engine, net: &impl Net, progress: &Stamped<Key, Progress>,
             }
         }
         Ok(true)
-    };
-    // the sync key S opened there by: a store shows only its head's while it holds it
-    let key = match m.by {
-        Credential::SyncProof(k) => Some(k),
-        Credential::Claim(_) => None,
     };
     let plan = plan(net.head(*src, s), &o, &p, key, &mut needs_held)?;
     // the connection is read only where a step is to go: up again, it goes

@@ -232,16 +232,15 @@ impl Inbox {
             Moved::Joined(conn, s, _) => {
                 osis_base::costs::count("inbox: members moved", 1);
                 self.offers.joined(conn, &s, net);
-                let (src, class) = (net.source(conn), net.member(conn, &s).map(|m| m.class));
+                let (src, m) = (net.source(conn), net.member(conn, &s));
                 // only a store keeping S unread registers steps (spec/sync-ids.md §6 Steps)
-                if class == Some(SourceClass::Store) {
-                    self.register.joined(src, s);
+                if let Some(m) = m.filter(|m| m.class == SourceClass::Store) {
+                    self.register.joined(src, s, by_key(&m.by));
                 }
             }
-            Moved::Left(_, s, at) => {
-                osis_base::costs::count("inbox: members moved", 1);
-                self.register.left(at.src, &s);
-            }
+            // a store closed ended is registered at while what its source showed is kept
+            Moved::Left(..) => osis_base::costs::count("inbox: members moved", 1),
+            Moved::Forgot(conn, s) => self.register.left(net.source(conn), &s),
             Moved::Gone(rid, s) => self.register.left(Source::Record(rid), &s),
             // read from its rows: its members are learned now
             Moved::Taken(conn, rid, true) => {
@@ -250,14 +249,14 @@ impl Inbox {
                 for (s, class) in net.members(conn) {
                     osis_base::costs::count("inbox: members moved", 1);
                     if class == SourceClass::Store {
-                        self.register.joined(src, s);
+                        let by = net.member(conn, &s).and_then(|m| by_key(&m.by));
+                        self.register.joined(src, s, by);
                     }
                 }
             }
             Moved::Taken(conn, ..) | Moved::Released(conn, _) => self.offers.record_moved(conn),
             // an ended member takes no offer; its `until` cleared, S's offers may go there again
             Moved::Until(conn, s) => self.offers.joined(conn, &s, net),
-            Moved::Forgot(..) => {}
         }
     }
 
@@ -310,5 +309,13 @@ impl Inbox {
 
     pub fn next_wake(&self) -> Option<Mono> {
         [self.offers.next_wake(), self.register.next_wake()].into_iter().flatten().min()
+    }
+}
+
+/// The sync key a member opened by (none: a claim).
+fn by_key(c: &crate::types::Credential) -> Option<[u8; 32]> {
+    match c {
+        crate::types::Credential::SyncProof(k) => Some(*k),
+        crate::types::Credential::Claim(_) => None,
     }
 }
