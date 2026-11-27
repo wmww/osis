@@ -122,6 +122,7 @@ Each binary's budget is its line in tools/test_cost.txt (notes/gate.md, The summ
 - A kept copy syncs nothing: a test of a recorded holder leaving uses an ended way whose holder the node still syncs.
 - A hand-again-until-quiet loop must not count every non-`Duplicate` result as progress (a pending commit comes back `Pending` every round): stop once a round applies nothing and leaves `Engine::pending` as it was.
 - A world built under `PageParams::set_test` must not go into `LocalPeer::cached`.
+- `PageParams::set_test` shrinks wire and commit pages only: a stored state pages past `PAGE_BYTES` (3 KiB, engine/pages.rs) whatever is set, so a test of a paged stored state needs a value just past it.
 - `Core::timer_floor = 0` does not wake a sync daemon: node-sync wakes at `next_timer` (`Node::next_wake`).
 
 **Sync `World`**
