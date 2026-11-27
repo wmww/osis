@@ -616,3 +616,18 @@ fn a_reader_by_the_publics_box_reads_across_a_start_spec_sync_3() {
     let (latest, read) = (reads(w.engine(0), &t).value, reads(w.engine(1), &t).value);
     assert!(read.is_some() && read == latest, "started again: node 1 reads the latest write");
 }
+
+// spec/sync-set.md §2 (T's keys open: a chain through a dependent admin), held-model (a dependent
+// thing's role entries are its independent's): node 0 mints thing 1 with thing 0, its account's
+// dependent, as admin, held from thing 0, then grants node 1's account read on it, making it
+// independent; node 1 holds it by a strong. Node 0 still reads thing 1 through thing 0, as its
+// node closure says (failed: the model knew thing 0's roster only under its own tid, so the chain
+// account, thing 0, thing 1 was missed and the model held thing 1 at node 0 not at all).
+#[test]
+fn a_thing_minted_with_a_dependent_is_read_through_it_once_independent_spec_sync_set_2() {
+    use crate::harness::history::{Gives, Holder, reads};
+    let script = [Step::New(0), Step::NewIn(0, 0), Step::Give(0, 1, Holder::Node(1), Gives::Reads), Step::Strong(1, None, 1)];
+    let mut w = holds_on(0, 2, 3, &script, String::new(), false);
+    let t = w.history.things[1].0;
+    assert!(reads(w.engine(0), &t).value.is_some(), "node 0 reads thing 1");
+}

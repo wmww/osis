@@ -186,13 +186,15 @@ impl Net {
     }
 
     /// `from`'s role on each thing over the grants on `known` things (keyed, best chain, lowest
-    /// hop), then the public's read and sync on `known` things.
+    /// hop), then the public's read and sync on `known` things. A dependent thing's role entries
+    /// are its independent's data: known with it (a chain through a dependent admin, such as a
+    /// thing minted with a dependent, is read where its independent is).
     pub fn roles(&self, from: T, known: &Set) -> BTreeMap<T, Role> {
         let mut best = BTreeMap::from([(from, Role::Admin)]);
         loop {
             let mut changed = false;
             for (&(a, b), &r) in &self.w.grants {
-                if self.w.keyless.contains(&(a, b)) || !known.contains(&b) {
+                if self.w.keyless.contains(&(a, b)) || !known.contains(&self.indep(b)) {
                     continue;
                 }
                 if let Some(&ra) = best.get(&a) {
