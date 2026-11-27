@@ -1609,8 +1609,9 @@ fn play_in(seed: u64, steps: &[Step], addenda: bool, written: bool) -> Played {
     }
     // the nodes under test are sent what the sync IDs they come to sync carry, as each author
     // sees it (`LocalPeer::trimmed`), never another thing's content, which would wait there
-    // (spec/commits.md §4 Outside the node closure): what they sync once given everything
-    // (twice over: a pack taken before what it waits on comes again); the probe as it took the
+    // (spec/commits.md §4 Outside the node closure): what they sync at any point while given
+    // everything (twice over: a pack taken before what it waits on comes again), so a thing
+    // read only for a while is sent too; the probe as it took the
     // setup's packs the first time kept for a written history
     let setup = written.then(|| format!("{seed}/{addenda}/{}/{tops:?}/{:?}/{:?}", now.0, access.iter().map(|(t, pk)| (*t, pk.id)).collect::<Vec<_>>(), packs[..base].iter().map(|pk| pk.id).collect::<Vec<_>>()));
     let synced: BTreeSet<osis_base::SyncId> = {
@@ -1626,10 +1627,12 @@ fn play_in(seed: u64, steps: &[Step], addenda: bool, written: bool) -> Played {
             None => build(),
             Some(key) => kept(&format!("order::probe/{key}"), build),
         };
+        let mut ever: BTreeSet<osis_base::SyncId> = probe.engine.sync_set().unwrap().ids.keys().copied().collect();
         for pk in packs[base..].iter().chain(&packs) {
             let _ = probe.receive(&pk.bytes, pk.blobs.clone());
+            ever.extend(probe.engine.sync_set().unwrap().ids.keys().copied());
         }
-        probe.engine.sync_set().unwrap().ids.keys().copied().collect()
+        ever
     };
     let packs: Vec<Package> = packs.iter().zip(&authors).map(|(pk, a)| {
         // by its author's node, else a node of the three holding it
@@ -4901,7 +4904,6 @@ fn a_strong_after_a_lowering_waits_for_its_grant_spec_commits_4() {
 // never takes them. So a pass end runs the lost-access drop (`pass_end`): then both read T as
 // the node holding every commit does, as absent.
 #[test]
-#[ignore = "stub rewrite: fails under rule 2, cause not sorted (R4)"]
 fn secrets_of_a_removed_grant_drop_at_the_pass_end_spec_permissions_3() {
     use Step::*;
     let h = vec![
