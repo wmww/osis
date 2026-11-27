@@ -241,3 +241,36 @@ fn an_unsignalled_grant_holds_nothing_spec_sync_set_2() {
     assert_eq!(reads(&mut w, 1, &x), None, "nothing of X");
     assert_eq!(holding(&mut w, 1, &x), None, "X's sync ID not synced");
 }
+
+// spec/sync-set.md §2 (Stubs: the holders on a unit's chains; Role entries a unit's chains read),
+// spec/permissions.md §4 Stub (a sync-only cut names the holders on its unit's chains): node 0
+// makes H0 (public, granting node 1's account A sync), H2 and X minted with H0, X granting A sync
+// and H2 sync. A holds sync on X directly and through H0 and H2, the hop from H0 to H2 being H2's
+// record edge; node 1, told of X and H0 by their signals, holds both as stubs but nothing of H2: it
+// knows of that hop only from evidence (H2 named holder on X), which no logger of A's unit holds
+// as H2's role entries (fails with a sync chain judged from every grant held: H2 a chain stub).
+#[test]
+fn a_chain_hop_only_evidence_shows_is_no_chain_spec_sync_set_2() {
+    let mut w = crate::harness::contacts();
+    let a = w.node(1).account.expect("an account");
+    let h0 = make(&mut w, "h0");
+    let tell = |w: &mut World, t: Tid, to: Tid, r: Role| drop(w.write(0, |e| e.grant(&t, &to, &edge(r)).and_then(|_| e.signal_grant(&t, &to, &[]))).unwrap());
+    tell(&mut w, h0, a, Role::Sync);
+    grant(&mut w, h0, Tid::PUBLIC, Some(Role::Read));
+    let made_in = |w: &mut World, v: &str| {
+        w.write(0, |e| {
+            let mut m = Mutation::new();
+            let t = m.create(e.thing_record(h0, None));
+            m.set(t, &value_ak(), &Value::Str(v.into())).unwrap();
+            m.op(h0, &ct::HOLDS, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Add(Value::Strong(t)) }).unwrap();
+            e.commit(m).unwrap();
+            t
+        })
+    };
+    let (h2, x) = (made_in(&mut w, "h2"), made_in(&mut w, "x"));
+    tell(&mut w, x, a, Role::Sync);
+    grant(&mut w, x, h2, Some(Role::Sync));
+    w.run();
+    assert_eq!(holding(&mut w, 1, &x), Some(Holding::Stub), "X a stub, by its signal");
+    assert_eq!(holding(&mut w, 1, &h2), None, "nothing of H2");
+}

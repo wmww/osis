@@ -347,6 +347,7 @@ fn text_session_refused_commit_keeps_edits() {
         bob.settle();
     };
     role(osis::Role::Read);
+    crate::common::told(&alice, &bob, t);
     { let mut w = bob.write(); w.hold(bob.node_root().unwrap(), t).unwrap(); w.commit().unwrap(); }
     let s = open(&bob, t, &k);
     s.edit("", "kept").unwrap();

@@ -216,6 +216,7 @@ fn an_until_passing_tells_tracked_role_reads_spec_permissions_2() {
     let until = osis::GrantOpts { until: Some(osis::Time(T0 + 60_000)), ..Default::default() };
     alice.grant(g, bob.author(), osis::Role::Read, until).unwrap();
     deliver(&alice, &bob);
+    crate::common::told(&alice, &bob, g);
     { let mut w = bob.write(); w.hold(bob.node_root().unwrap(), g).unwrap(); w.commit().unwrap(); }
     let ((_s1, roles, h1), (_s2, holders, h2)) = (tracked(&bob), tracked(&bob));
     assert_eq!(h1.role_on(g).unwrap(), Some(osis::Role::Read));

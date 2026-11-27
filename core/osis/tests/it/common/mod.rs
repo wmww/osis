@@ -247,6 +247,13 @@ pub fn home(db: &Osis) -> Tid {
     db.settings_thing().unwrap().unwrap_or(db.node())
 }
 
+/// `from` hands `to` a locator of `t`, which `to` redeems (spec/sync-set.md §2 First entry): a
+/// grant to a node thing with no inbox tells nobody, and its commits handed over are no entry.
+pub fn told(from: &Osis, to: &Osis, t: Tid) {
+    let link = from.engine(|e| e.locator(&t, Vec::new())).unwrap().expect("a sync ID");
+    to.engine(|e| e.follow_public(&link));
+}
+
 /// `db` keeps thing `who` (a peer it grants): a strong in its home's `holds.0`, so `who`'s chain
 /// stays once received (spec/commits.md §5 What a held thing needs). Nothing when it keeps it
 /// already.
@@ -303,6 +310,10 @@ pub fn shared_in(sa: MemStore, sb: MemStore) -> (Osis, Osis, Arc<ManualClock>) {
     };
     settle_on(&a);
     deliver(&a, &b);
+    // A hands B G's locator, which B redeems (spec/sync-set.md §2 First entry: a grant handed over
+    // is no entry)
+    let link = a.engine(|e| e.locator(&g, Vec::new())).unwrap().unwrap();
+    b.engine(|e| e.follow_public(&link));
     { let mut w = b.write(); w.hold(b.node_root().unwrap(), g).unwrap(); w.commit().unwrap(); }
     settle_on(&b);
     (a, b, c)

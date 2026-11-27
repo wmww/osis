@@ -123,6 +123,7 @@ fn leave_ends_only_own_ways_and_refuses_before_writing() {
     deliver(&alice, &bob);
     let t = bob.commit_with(|w| w.create_held()).unwrap();
     bob.grant(t, alice.author(), Role::Admin, Default::default()).unwrap();
+    crate::common::told(&bob, &alice, t);
     { let mut w = alice.write(); w.hold(alice.node_root().unwrap(), t).unwrap(); w.commit().unwrap(); }
     deliver(&bob, &alice);
     alice.make_link(t, Role::Read, alice.node(), Default::default()).unwrap();
@@ -147,6 +148,7 @@ fn purge_without_the_right_is_refused_spec_permissions_6() {
     let (alice, bob) = alice_knows_bob();
     let g = alice.commit_with(|w| w.create_held()).unwrap();
     alice.grant(g, bob.author(), Role::Write, Default::default()).unwrap();
+    crate::common::told(&alice, &bob, g);
     { let mut w = bob.write(); w.hold(bob.node_root().unwrap(), g).unwrap(); w.commit().unwrap(); }
     let k = || untyped("t:m.0");
     let hers = commit_with(&alice, |w| w.at(g, k()).set(&s("hers"))).stamp.id;
@@ -192,7 +194,9 @@ fn disputes_listed_told_and_chosen_spec_permissions_5_1() {
     deliver(&a, &b);
     deliver(&a, &c);
     // each writes only what it holds
+    crate::common::told(&a, &b, g);
     { let mut w = b.write(); w.hold(b.node_root().unwrap(), g).unwrap(); w.commit().unwrap(); }
+    crate::common::told(&a, &c, g);
     { let mut w = c.write(); w.hold(c.node_root().unwrap(), g).unwrap(); w.commit().unwrap(); }
     b.set_role(g, a.author(), None, SetRoleOpts::default()).unwrap();
     a.set_role(g, b.author(), None, SetRoleOpts::default()).unwrap();
@@ -241,9 +245,13 @@ fn the_owners_rule_one_write_through_different_actors_is_one_commit_spec_wire_4(
     bob.grant(o, carol.author(), Role::Read, Default::default()).unwrap();
     mesh(&all);
     // Bob holds what he writes (spec/sync-set.md §2 Writing): H, which he acts through, and G
+    crate::common::told(&alice, &bob, h);
     { let mut w = bob.write(); w.hold(bob.node_root().unwrap(), h).unwrap(); w.commit().unwrap(); }
+    crate::common::told(&alice, &bob, g);
     { let mut w = bob.write(); w.hold(bob.node_root().unwrap(), g).unwrap(); w.commit().unwrap(); }
+    crate::common::told(&alice, &carol, g);
     { let mut w = carol.write(); w.hold(carol.node_root().unwrap(), g).unwrap(); w.commit().unwrap(); }
+    crate::common::told(&bob, &carol, o);
     { let mut w = carol.write(); w.hold(carol.node_root().unwrap(), o).unwrap(); w.commit().unwrap(); }
     mesh(&all);
     let k = || untyped("t:x.0");
@@ -324,12 +332,14 @@ fn a_parents_reader_sees_no_roster_of_its_member_org_spec_crypto_4() {
     bob.grant(m, alice.author(), Role::Read, Default::default()).unwrap();
     mesh(&all);
     // alice holds the organization she reads
+    crate::common::told(&bob, &alice, m);
     { let mut w = alice.write(); w.hold(alice.node_root().unwrap(), m).unwrap(); w.commit().unwrap(); }
     mesh(&all);
     let g = alice.commit_with(|w| w.create_held()).unwrap();
     alice.grant(g, m, Role::Write, Default::default()).unwrap();
     alice.grant(g, carol.author(), Role::Read, Default::default()).unwrap();
     mesh(&all);
+    crate::common::told(&alice, &carol, g);
     { let mut w = carol.write(); w.hold(carol.node_root().unwrap(), g).unwrap(); w.commit().unwrap(); }
     mesh(&all);
     assert!(carol.grants(g).unwrap().contains_key(&m), "G's roster shows to its reader");
