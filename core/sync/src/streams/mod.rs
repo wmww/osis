@@ -115,6 +115,13 @@ pub trait Ground {
     fn open(&mut self, s: &SyncId, e: &Entry, bytes: &[u8]) -> Result<Opening>;
     /// The body's place in the fill order.
     fn rank(&mut self, s: &SyncId, b: &BlobId, wrap: &Wrap) -> Rank;
+    /// An entry of S kept unread here, taken: an entry of a holder this node reaches S's thing
+    /// through in its blob's blocks (`Engine::take_unread_entry`, spec/sync-ids.md §3 Taking an
+    /// entry), at a step of S's registered path.
+    fn take_unread(&mut self, store: &crate::store::Store, s: &SyncId, e: &Entry, bytes: &[u8]) -> Result<()> {
+        let _ = (store, s, e, bytes);
+        Ok(())
+    }
     /// Whether what blob `b` carries under S is known here with no entry needed: a record or
     /// list blob opened before (spec/permissions.md §4: it counts while held here or shown at a
     /// source), which a fetch would only open again. Not fetched; a source's showing of it is
@@ -614,6 +621,12 @@ struct EngineGround<'a> {
 impl Ground for EngineGround<'_> {
     fn open(&mut self, s: &SyncId, e: &Entry, bytes: &[u8]) -> Result<Opening> {
         opening(self.engine, &self.store, s, e, bytes)
+    }
+
+    fn take_unread(&mut self, store: &crate::store::Store, s: &SyncId, e: &Entry, bytes: &[u8]) -> Result<()> {
+        let path = store.path(s)?;
+        self.engine.take_unread_entry(s, &e.blob, &e.wrap, bytes, path.as_ref().map(|p| p.steps.as_slice()).unwrap_or_default())?;
+        Ok(())
     }
 
     fn own_relays(&mut self) -> Result<Vec<osis_engine::sync::Relay>> {

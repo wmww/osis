@@ -1159,7 +1159,26 @@ impl Engine {
                 }
             }
         };
-        let opened = match self.open_commit_by(bytes, &key, section.as_slice()) {
+        self.opened_entry(s, blob, wrap, bytes, room, t, &key, section.as_slice())
+    }
+
+    /// Entry `blob` of S kept unread here, its bytes `bytes`: an entry of a holder this node
+    /// reaches S's thing through found in it by its claim at a step of `path` (S's registered
+    /// path) or one known here, taken (spec/sync-ids.md §3 Taking an entry): a sync holder's
+    /// secret kept, a read holder's commit opened as `open_entry` opens one.
+    pub fn take_unread_entry(&mut self, s: &SyncId, blob: &BlobId, wrap: &Wrap, bytes: &[u8], path: &[osis_blob::Step]) -> Result<Opened> {
+        match self.take_entry(s, bytes, path)? {
+            crate::sync_ids::entries::Took::Read { thing, key, section } => self.opened_entry(s, blob, wrap, bytes, 0, thing, &key, &[section]),
+            crate::sync_ids::entries::Took::Sync | crate::sync_ids::entries::Took::Nothing => Ok(Opened::NotOpen),
+        }
+    }
+
+    /// `open_entry` of a blob whose key `key` (and section keys `section`, an entry's) is found,
+    /// opened for S's thing `t`.
+    #[allow(clippy::too_many_arguments)]
+    fn opened_entry(&mut self, s: &SyncId, blob: &BlobId, wrap: &Wrap, bytes: &[u8], room: u64, t: Tid, key: &osis_crypto::Secret32, section: &[osis_crypto::Secret32]) -> Result<Opened> {
+        let key = key.clone();
+        let opened = match self.open_commit_by(bytes, &key, section) {
             Ok(o) => o,
             Err(e) if osis_base::Classified::class(&e) == osis_base::ErrorClass::Local => return Err(e),
             Err(_) => {

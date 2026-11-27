@@ -1134,7 +1134,15 @@ impl Streams {
         match ctx.store.holding(&s) {
             // refused for room, a room mark at each source whose place passes it once settled
             Some(Holding::Unread) if stamp.is_some() => match ctx.store.take_stamped(&s, &e, bytes.to_vec(), &self.settling_at(s, conn)) {
-                Ok(code) => self.refused(ctx, conn, s, b, code),
+                Ok(code) => {
+                    // its entry for this node, if it holds one (a role entry's blocks)
+                    if code == Code::OK
+                        && let Err(x) = ctx.ground.take_unread(ctx.store, &s, &e, bytes)
+                    {
+                        return self.failed(Err(x));
+                    }
+                    self.refused(ctx, conn, s, b, code)
+                }
                 Err(e) => return self.failed(Err(e)),
             },
             Some(Holding::Read | Holding::Stub) => match ctx.ground.open(&s, &e, bytes) {
