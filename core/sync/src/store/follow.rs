@@ -234,7 +234,7 @@ impl Carriers {
                     engine.forget_carrier(&b);
                     if !store.named(&b)? {
                         engine.unnamed_blob(&b, !store.tombstoned_under(&b)?.is_empty())?;
-                        engine.unnamed_copy(&b)?;
+                        engine.unnamed_cut(&b)?;
                     }
                     if let Some(c) = engine.blob_commit(&b) {
                         release(engine, store, &c)?;
@@ -243,10 +243,10 @@ impl Carriers {
             }
             None => {
                 self.unnamed = Some(store.unnamed_feed());
-                // a sync copy row whose entry went before a crash let the engine follow
-                for b in engine.copy_blobs() {
+                // a sync-only cut row whose entry went before a crash let the engine follow
+                for b in engine.cut_blobs() {
                     if !store.named(&b)? {
-                        engine.unnamed_copy(&b)?;
+                        engine.unnamed_cut(&b)?;
                     }
                 }
                 for (c, _) in engine.pending() {
@@ -603,7 +603,7 @@ fn open_these(engine: &mut Engine, store: &mut Store, parked: &mut Parked, creds
         if pends(engine, &b, &o) {
             continue;
         }
-        // a sync copy stays charged unless stamped (`streams::opening`)
+        // a sync-only cut stays charged unless stamped (`streams::opening`)
         if matches!(o, Opened::Commit(..) | Opened::Linked | Opened::Records(_)) {
             store.uncharge(&s, &b)?;
             opened = true;

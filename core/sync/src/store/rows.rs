@@ -19,8 +19,7 @@
 //! - `T/ s b` a tombstone (`Tomb`); `t/ at s b` tombstones by when they end, for the sweep;
 //!   `Y/ b s` the sync IDs holding a tombstone of blob `b` (whether a delete of it is recent here).
 //! - `x/ T s b` entries by prefix expiry, for the sweep.
-//! - `P/ s i` step `i` of S's path from genesis (`StepRow`); `Q/ s i` its claim set while held;
-//!   `q/ at s i` claim sets by when they may go.
+//! - `P/ s i` step `i` of S's path from genesis: its bytes.
 //! - `H/ s` the length of S's path.
 //! - `U/ s` S's usage (`Usage`); `u/ !bytes s` sync IDs by bytes used, most first, for "the one using most".
 //! - `w/ at s tag key src` rows a source holds of S that age out (stands, deletes seen), in the
@@ -44,9 +43,6 @@
 //!   and the latest expiry of one (`u64::MAX`: one has none), 8 bytes each (`Store::room_grew`).
 //!   Stands only while some source's room mark of S does (`tag::ROOM_AT`, a connection's in
 //!   memory).
-//! - `L/ s` S kept unread was lowered to it from opening S (`Store::set_holdings`): value the head's
-//!   step ID then, which gives it nothing (`Store::lowered_at`, spec/sync-opens.md §4); gone once
-//!   S opens again, or with S (`shred`).
 //! - `F/ s` S's first sync here ended (spec/sync-streams.md §5): a source's stream of S stood at
 //!   the end of a listing from the start; gone with S (`shred`).
 
@@ -68,8 +64,6 @@ pub(crate) const TOMB_AT: &[u8] = b"t/";
 pub(crate) const TOMB_BY_BLOB: &[u8] = b"Y/";
 pub(crate) const EXPIRY: &[u8] = b"x/";
 pub(crate) const STEP: &[u8] = b"P/";
-pub(crate) const CLAIMS: &[u8] = b"Q/";
-pub(crate) const CLAIMS_DUE: &[u8] = b"q/";
 pub(crate) const USAGE: &[u8] = b"U/";
 pub(crate) const BY_USE: &[u8] = b"u/";
 pub(crate) const AGING: &[u8] = b"w/";
@@ -89,7 +83,6 @@ pub(crate) const ROOM_STANDS: u8 = 0;
 pub(crate) const ROOM_OWED: u8 = 1;
 pub(crate) const ROOM: &[u8] = b"R/";
 pub(crate) const FIRST: &[u8] = b"F/";
-pub(crate) const LOWERED: &[u8] = b"L/";
 
 /// The tags of the rows each module keeps of a source: in a peer's record (`osis_store::
 /// Transaction::record_put_row`, `record_put_wide_row` for a row about the record as a whole) or
@@ -104,11 +97,10 @@ pub(crate) mod tag {
     pub(crate) const SEEN: u8 = b'd';
     pub(crate) const ROOM_AT: u8 = b'f';
     // opens: the record's own state (record-wide), the peer's filter by generation (record-wide),
-    // a member of the shared set, where a walk stopped
+    // a member of the shared set
     pub(crate) const OPENS: u8 = b'R';
     pub(crate) const FILTER: u8 = b'F';
     pub(crate) const MEMBER: u8 = b'M';
-    pub(crate) const WALK: u8 = b'W';
     // streams: the stream's cursor (record-wide), a member at it, where a member not at it
     // joins from (joining, or stopped where it left: one row, so a member leaving one connection
     // and joining another from where it stood writes nothing); what the source showed: an entry
@@ -180,20 +172,11 @@ pub(crate) fn expiry_key(t: WallMs, s: &SyncId, b: &BlobId) -> Vec<u8> {
 pub(crate) fn step_key(s: &SyncId, i: u32) -> Vec<u8> {
     [STEP, &s.0, &i.to_be_bytes()].concat()
 }
-pub(crate) fn claims_key(s: &SyncId, i: u32) -> Vec<u8> {
-    [CLAIMS, &s.0, &i.to_be_bytes()].concat()
-}
-pub(crate) fn claims_due_key(at: WallMs, s: &SyncId, i: u32) -> Vec<u8> {
-    [CLAIMS_DUE, &at.0.to_be_bytes(), &s.0, &i.to_be_bytes()].concat()
-}
 pub(crate) fn anew_key(s: &SyncId) -> Vec<u8> {
     [ANEW, &s.0].concat()
 }
 pub(crate) fn first_key(s: &SyncId) -> Vec<u8> {
     [FIRST, &s.0].concat()
-}
-pub(crate) fn lowered_key(s: &SyncId) -> Vec<u8> {
-    [LOWERED, &s.0].concat()
 }
 pub(crate) fn usage_key(s: &SyncId) -> Vec<u8> {
     [USAGE, &s.0].concat()
@@ -454,23 +437,5 @@ impl Usage {
         let u = Usage { entries: r.u64()?, bytes: r.u64()?, entry_bytes: r.u64()?, deposits: r.u64()?, deposit_bytes: r.u64()? };
         r.end()?;
         Ok(u)
-    }
-}
-
-/// A step of a path as stored: when its child came (the claim set's `ROLE_KEEP` counts from it;
-/// 0 while it is the head) and its bytes.
-pub(crate) struct StepRow {
-    pub superseded: Option<WallMs>,
-    pub step: Vec<u8>,
-}
-
-impl StepRow {
-    pub(crate) fn encode(&self) -> Vec<u8> {
-        W::default().u64(self.superseded.map_or(0, |t| t.0)).raw(&self.step).take()
-    }
-    pub(crate) fn decode(v: &[u8]) -> Result<StepRow> {
-        let mut r = R::new(v);
-        let t = r.u64()?;
-        Ok(StepRow { superseded: (t != 0).then_some(WallMs(t)), step: r.rest().to_vec() })
     }
 }

@@ -5,9 +5,8 @@
 use crate::types::Credential;
 use osis_base::SyncId;
 use osis_crypto::kdf::{beacon, beacon_hit, beacon_reply};
-use osis_crypto::{public_entry, sign_open, static_entry, verify_open};
-use osis_crypto::{Epoch, Secret32, Signature, SigningSecret, VerifyingKey};
-use osis_blob::StepId;
+use osis_crypto::{sign_open, verify_open};
+use osis_crypto::{Signature, SigningSecret, VerifyingKey};
 
 /// One connection as opens binds to it (spec/wire.md §11.1-§11.2): this side's role, both Hello
 /// challenges and the listener's static key.
@@ -82,14 +81,10 @@ pub fn beacon_of(m: &[u8; 32], s: &SyncId, r: &[u8; 32]) -> [u8; 32] {
 /// A credential this node shows in its filter (spec/sync-opens.md §4 Admissible), by its match value.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Shown {
-    Read(Epoch, [u8; 32]),
     /// A sync proof, with the sync key it is of.
     Proof([u8; 32], [u8; 32]),
-    SyncKey([u8; 32]),
+    /// A head claim (its public key).
     Claim([u8; 32]),
-    Static([u8; 32]),
-    /// S's public entry: its Hit carries no proof (spec/sync-opens.md §5 Proof).
-    Public([u8; 32]),
     /// Shown so a sealed fire's sender finds a peer that may hold S (spec/sync-inbox.md §3); its
     /// Hit opens nothing (spec/sync-opens.md §5 Proof).
     Deposit([u8; 32]),
@@ -99,19 +94,15 @@ impl Shown {
     /// The match value (spec/sync-opens.md §5 Beacon).
     pub fn matched(&self) -> &[u8; 32] {
         match self {
-            Shown::Read(_, m) | Shown::Proof(m, _) | Shown::SyncKey(m) | Shown::Claim(m) | Shown::Static(m) | Shown::Public(m) | Shown::Deposit(m) => m,
+            Shown::Proof(m, _) | Shown::Claim(m) | Shown::Deposit(m) => m,
         }
     }
 
     /// What S opens by on a Hit on it; none for a deposit key.
     pub fn credential(&self) -> Option<Credential> {
         Some(match self {
-            Shown::Read(e, _) => Credential::ReadSecret(*e),
             Shown::Proof(_, k) => Credential::SyncProof(*k),
-            Shown::SyncKey(k) => Credential::SyncKey(*k),
-            Shown::Claim(_) => Credential::Claim,
-            Shown::Static(e) => Credential::Static(*e),
-            Shown::Public(_) => Credential::Public,
+            Shown::Claim(k) => Credential::Claim(*k),
             Shown::Deposit(_) => return None,
         })
     }
@@ -120,50 +111,26 @@ impl Shown {
 /// A credential this node tests against a peer's filter, with what it proves itself by.
 #[derive(Clone, Debug)]
 pub enum Tested {
-    Read(Epoch, Secret32),
     /// A sync proof, with the sync key it is of.
     Proof([u8; 32], [u8; 32]),
-    /// A sync key (`step`'s, none at a node keeping S unread with no head) and its secret: the
-    /// Hit carries an open signature by it.
-    SyncKey { step: Option<StepId>, key: SigningSecret },
-    /// A claim of `step`'s claim set; `sync` that step's sync key, which signs the answer.
-    Claim { step: StepId, key: SigningSecret, sync: [u8; 32] },
-    /// A link key's static entry this node acts for, with that key.
-    Static { step: Option<StepId>, key: SigningSecret },
-    /// S's public entry, while this node redeems a locator of S's thing: its Hit carries no
-    /// proof.
-    Public,
+    /// A claim and its key: the Hit carries an open signature by it; `sync` the sync key of the
+    /// step it is a claim at, which signs the answer.
+    Claim { key: SigningSecret, sync: [u8; 32] },
 }
 
 impl Tested {
     /// The match value (spec/sync-opens.md §5 Beacon).
-    pub fn matched(&self, s: &SyncId) -> [u8; 32] {
+    pub fn matched(&self) -> [u8; 32] {
         match self {
-            Tested::Read(_, k) => *k.expose(),
             Tested::Proof(p, _) => *p,
-            Tested::SyncKey { key, .. } | Tested::Claim { key, .. } => key.verifying_key().to_bytes(),
-            Tested::Static { key, .. } => static_entry(s, &key.verifying_key()),
-            Tested::Public => public_entry(s),
+            Tested::Claim { key, .. } => key.verifying_key().to_bytes(),
         }
     }
 
-    pub fn credential(&self, s: &SyncId) -> Credential {
+    pub fn credential(&self) -> Credential {
         match self {
-            Tested::Read(e, _) => Credential::ReadSecret(*e),
             Tested::Proof(_, k) => Credential::SyncProof(*k),
-            Tested::SyncKey { key, .. } => Credential::SyncKey(key.verifying_key().to_bytes()),
-            Tested::Claim { .. } => Credential::Claim,
-            Tested::Static { key, .. } => Credential::Static(static_entry(s, &key.verifying_key())),
-            Tested::Public => Credential::Public,
-        }
-    }
-
-    /// The step a walk credential belongs to (spec/sync-ids.md §6 Walk).
-    pub fn step(&self) -> Option<StepId> {
-        match self {
-            Tested::Claim { step, .. } => Some(*step),
-            Tested::SyncKey { step, .. } | Tested::Static { step, .. } => *step,
-            _ => None,
+            Tested::Claim { key, .. } => Credential::Claim(key.verifying_key().to_bytes()),
         }
     }
 }

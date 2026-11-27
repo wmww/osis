@@ -42,7 +42,7 @@ use crate::error::Result;
 use crate::sync_ids::{Certs, HeadKeys};
 use crate::{Engine, Ingested};
 use osis_base::{Ak, BlobId, CommitId, Role, SyncId, Tid, WallMs};
-use osis_crypto::{Epoch, Secret32, SigningSecret, WRAP_LEN};
+use osis_crypto::{Secret32, SigningSecret, WRAP_LEN};
 use osis_blob::{Address, Step, StepId};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -401,19 +401,16 @@ pub struct ReadCredentials {
     /// The sync proof (spec/sync-ids.md §2) of each recorded step whose sync key this node holds,
     /// deepest first.
     pub proofs: Vec<(StepId, [u8; 32])>,
-    /// The sync key of each sync secret of S's thing held here, newest first, with its epoch:
-    /// tested (spec/sync-ids.md §6 Test).
-    pub sync_keys: Vec<(Epoch, SigningSecret)>,
+    /// The sync proof and sync key of each sync secret of S's thing held here, newest first:
+    /// tested (spec/sync-opens.md §4 Admissible).
+    pub held_proofs: Vec<([u8; 32], [u8; 32])>,
 }
 
-type PublicCredentials<'a> = (Option<StepId>, &'a BTreeMap<StepId, HeadKeys>, &'a [(StepId, [u8; 32])], Vec<(Epoch, osis_crypto::VerifyingKey)>);
-
 impl ReadCredentials {
-    /// What tells two apart (`Engine::read_credentials` is a memo): signing keys by their public
-    /// halves.
-    fn public(&self) -> PublicCredentials<'_> {
-        let sync_keys = self.sync_keys.iter().map(|(e, k)| (*e, k.verifying_key())).collect();
-        (self.head.as_ref().map(Step::id), &self.keys, &self.proofs, sync_keys)
+    /// What tells two apart (`Engine::read_credentials` is a memo): its public values.
+    #[allow(clippy::type_complexity)]
+    fn public(&self) -> (Option<StepId>, &BTreeMap<StepId, HeadKeys>, &[(StepId, [u8; 32])], &[([u8; 32], [u8; 32])]) {
+        (self.head.as_ref().map(Step::id), &self.keys, &self.proofs, &self.held_proofs)
     }
 }
 

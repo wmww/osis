@@ -3,7 +3,7 @@
 //! failing in the middle of a settle fails the node's step, closing every connection.
 
 use super::{Ask, Why};
-use super::ground::{BlobInfo, CertBlobsMissing, SyncCopiesDue, Facts, Ground, PieceAt, Seen, SrcView, StepReady};
+use super::ground::{BlobInfo, CertBlobsMissing, SyncCutsDue, Facts, Ground, PieceAt, Seen, SrcView, StepReady};
 use osis_engine::sync::PieceLink;
 use osis_blob::StepId;
 use crate::opens::Opens;
@@ -594,7 +594,7 @@ impl Ground for Live<'_, '_> {
         if e.deposited {
             return Ok(false);
         }
-        let write = self.cx.store.path(s)?.and_then(|p| p.steps.iter().find(|(st, _)| st.id() == *head).map(|(st, _)| st.keys.write));
+        let write = self.cx.store.path(s)?.and_then(|p| p.steps.iter().find(|st| st.id() == *head).map(|st| st.keys.write));
         if let Some(w) = write
             && e.stamp.is_some()
             && self.cx.store.stamp_under(s, b, &[w])?
@@ -693,12 +693,12 @@ impl Ground for Live<'_, '_> {
         });
         Ok(out)
     }
-    fn sync_copies_due(&mut self, s: &SyncId) -> Result<SyncCopiesDue> {
-        let carried: BTreeSet<[u8; 32]> = self.cx.engine.sync_copies_carried(s)?.keys().copied().collect();
-        let rows = self.cx.engine.sync_copy_rows(s);
-        let mut out = SyncCopiesDue::default();
+    fn sync_cuts_due(&mut self, s: &SyncId) -> Result<SyncCutsDue> {
+        let carried: BTreeSet<[u8; 32]> = self.cx.engine.sync_cuts_carried(s)?.keys().copied().collect();
+        let rows = self.cx.engine.sync_cut_rows(s);
+        let mut out = SyncCutsDue::default();
         // per content, its log: the lowest blob ID held in the own store (rows in blob order).
-        // Keyed by content, so a forged copy of the same commit (another box) never displaces
+        // Keyed by content, so a forged cut never displaces
         // the real one's log
         let mut logs: BTreeMap<[u8; 32], BlobId> = BTreeMap::new();
         for (b, k) in rows.iter() {
@@ -725,8 +725,8 @@ impl Ground for Live<'_, '_> {
         }
         Ok(out)
     }
-    fn log_sync_copy(&mut self, s: &SyncId, key: &[u8; 32]) -> Result<()> {
-        let Some((blob, bytes, wrap)) = self.cx.engine.seal_sync_copy(s, key, self.cx.rng)? else { return Ok(()) };
+    fn log_sync_cut(&mut self, s: &SyncId, key: &[u8; 32]) -> Result<()> {
+        let Some((blob, bytes, wrap)) = self.cx.engine.seal_sync_cut(s, key, self.cx.rng)? else { return Ok(()) };
         let e = own_entry(self.cx, s, blob, wrap, Class::Durable, true)?;
         self.cx.store.log(s, e, Some(bytes), None)?;
         Ok(())

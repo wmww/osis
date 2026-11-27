@@ -40,7 +40,7 @@ use osis_base::{Mono, SyncId};
 use osis_engine::Engine;
 use osis_crypto::Signature;
 use osis_engine::sync::{OwnedSyncId, Path};
-use osis_blob::{ClaimSet, Step, StepId};
+use osis_blob::{Step, StepId};
 use osis_proto::{Code, Msg};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -51,9 +51,9 @@ type Key = (Source, SyncId);
 pub enum Plan {
     Nothing,
     Wait,
-    /// The steps of one Register, in order, each with its claim set when it goes, and the
-    /// endorsement of the last by the source's step's delete key when it needs one.
-    Send(Vec<(Step, Option<ClaimSet>)>, Option<Signature>),
+    /// The steps of one Register, in order, and the endorsement of the last by the source's
+    /// step's delete key when it needs one.
+    Send(Vec<Step>, Option<Signature>),
 }
 
 /// This node's registering at one source of S.
@@ -140,7 +140,7 @@ impl Register {
             let (engine, progress) = (&mut *h.engine, &self.progress);
             let Some((_, plan)) = self.plans.try_settle(&k, || judge(engine, &*net, progress, &k))? else { continue };
             let Plan::Send(steps, endorsement) = plan else { continue };
-            let Some(last) = steps.last().map(|(st, _)| st.id()) else { continue };
+            let Some(last) = steps.last().map(Step::id) else { continue };
             let (src, s) = k;
             // a Send judged reads the connection holding the record: one is up
             let Some(conn) = net.conn_of(src) else { continue };
@@ -195,12 +195,7 @@ fn judge(engine: &mut Engine, net: &impl Net, progress: &Stamped<Key, Progress>,
     }
     let Some(o) = owned else { return Ok(Plan::Nothing) };
     let p = progress.get(k).copied().unwrap_or_default();
-    // a departed peer's store stops at the first step past its keys and drops everything: its
-    // holding the step's role commits serves no one (spec/sync-opens.md §6)
     let mut needs_held = |step: &StepId| -> Result<bool> {
-        if m.departed.is_some() {
-            return Ok(true);
-        }
         for c in engine.step_needs(s, step)?.iter() {
             if !engine.commit_blobs(c)?.iter().any(|b| net.present(*src, s, b)) {
                 return Ok(false);
@@ -210,8 +205,8 @@ fn judge(engine: &mut Engine, net: &impl Net, progress: &Stamped<Key, Progress>,
     };
     // the sync key S opened there by: a store shows only its head's while it holds it
     let key = match m.by {
-        Credential::SyncKey(k) | Credential::SyncProof(k) => Some(k),
-        _ => None,
+        Credential::SyncProof(k) => Some(k),
+        Credential::Claim(_) => None,
     };
     let plan = plan(net.head(*src, s), &o, &p, key, &mut needs_held)?;
     // the connection is read only where a step is to go: up again, it goes
@@ -229,21 +224,20 @@ fn judge(engine: &mut Engine, net: &impl Net, progress: &Stamped<Key, Progress>,
 /// deepest step the two share through the first deeper than the source's step when the shared
 /// step's delete key is the source's step's, else through the first deeper recorded step
 /// endorsed by that key, with the endorsement; at a source whose step is not known, its genesis
-/// step, at once. Claim sets go while the message fits `MAX_MESSAGE`, the earliest dropped first;
-/// nothing goes when the steps alone do not fit.
+/// step, at once. Nothing goes when the steps do not fit `MAX_MESSAGE`.
 pub fn plan(source: Option<StepId>, o: &OwnedSyncId, p: &Progress, key: Option<[u8; 32]>, held: &mut dyn FnMut(&StepId) -> Result<bool>) -> Result<Plan> {
     let (path, tree): (&Path, &BTreeMap<StepId, Step>) = (&o.path, &o.tree);
     if p.out || p.backoff.is_some() || p.stuck.is_some_and(|x| x == source) {
         return Ok(Plan::Wait);
     }
-    let index = |id: &Option<StepId>| id.and_then(|id| path.steps.iter().position(|(st, _)| st.id() == id));
+    let index = |id: &Option<StepId>| id.and_then(|id| path.steps.iter().position(|st| st.id() == id));
     // a source on a step past its keys: S opened there by a sync key that step does not bear
     let past = |st: &Step| key.is_some_and(|k| st.keys.sync.to_bytes() != k);
     // the recorded steps `from..=to`, once the source holds what each depends on; at once from a
     // step past its keys, where it takes nothing, so holds nothing they depend on
     let mut send = |from: usize, to: usize, endorsement: Option<Signature>, at_once: bool| -> Result<Plan> {
         let Some(steps) = path.steps.get(from..=to) else { return Ok(Plan::Nothing) };
-        for (st, _) in steps {
+        for st in steps {
             if !at_once && !held(&st.id())? {
                 return Ok(Plan::Wait);
             }
@@ -252,12 +246,12 @@ pub fn plan(source: Option<StepId>, o: &OwnedSyncId, p: &Progress, key: Option<[
     };
     // the source's step: its head event's, or a later one this node registered there
     if let Some(i) = index(&source).max(index(&p.at)) {
-        let at_once = path.steps.get(i).is_some_and(|(st, _)| past(st));
+        let at_once = path.steps.get(i).is_some_and(past);
         return send(i + 1, i + 1, None, at_once);
     }
     let Some(at) = source else {
         return Ok(match path.steps.first() {
-            Some((genesis, claims)) if p.at.is_none() => fit(vec![(genesis.clone(), claims.clone())], None),
+            Some(genesis) if p.at.is_none() => fit(vec![genesis.clone()], None),
             _ => Plan::Nothing,
         });
     };
@@ -276,9 +270,9 @@ pub fn plan(source: Option<StepId>, o: &OwnedSyncId, p: &Progress, key: Option<[
     // a store moves off a step bearing its head's delete key, or to a step that key endorsed
     let d = source_step.keys.delete;
     match path.steps.get(fork) {
-        Some((f, _)) if f.keys.delete == d => send(fork + 1, fork + up + 1, None, past(source_step)),
+        Some(f) if f.keys.delete == d => send(fork + 1, fork + up + 1, None, past(source_step)),
         Some(_) => {
-            let endorsed = path.steps.iter().enumerate().skip(fork + up + 1).find_map(|(j, (st, _))| o.endorsed.get(&st.id()).and_then(|e| e.get(&d.to_bytes())).map(|e| (j, *e)));
+            let endorsed = path.steps.iter().enumerate().skip(fork + up + 1).find_map(|(j, st)| o.endorsed.get(&st.id()).and_then(|e| e.get(&d.to_bytes())).map(|e| (j, *e)));
             match endorsed {
                 Some((j, e)) => send(fork + 1, j, Some(e), past(source_step)),
                 None => Ok(Plan::Nothing),
@@ -288,15 +282,10 @@ pub fn plan(source: Option<StepId>, o: &OwnedSyncId, p: &Progress, key: Option<[
     }
 }
 
-/// A Register's steps with their claim sets while its body fits `MAX_MESSAGE`, the earliest set
-/// dropped first; nothing when the steps alone do not fit.
-fn fit(mut steps: Vec<(Step, Option<ClaimSet>)>, endorsement: Option<Signature>) -> Plan {
-    let size = |steps: &[(Step, Option<ClaimSet>)]| Msg::Register { id: u32::MAX, sync_id: SyncId([0; 16]), steps: steps.to_vec(), endorsement }.encode().len();
-    let mut i = 0;
-    while size(&steps) > osis_base::format::MAX_MESSAGE {
-        let Some((_, c)) = steps.get_mut(i) else { return Plan::Nothing };
-        *c = None;
-        i += 1;
+/// A Register of `steps` while its body fits `MAX_MESSAGE`; nothing when it does not.
+fn fit(steps: Vec<Step>, endorsement: Option<Signature>) -> Plan {
+    if (Msg::Register { id: u32::MAX, sync_id: SyncId([0; 16]), steps: steps.clone(), endorsement }).encode().len() > osis_base::format::MAX_MESSAGE {
+        return Plan::Nothing;
     }
     Plan::Send(steps, endorsement)
 }

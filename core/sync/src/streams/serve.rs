@@ -178,18 +178,15 @@ impl Page {
 }
 
 /// Whether the peer on `conn` is shown part of S alone (`shown`): it holds S's thing as a stub, as
-/// it declared opening S (spec/sync-opens.md §4 Source), or its member is ended for its departure
-/// (§6).
+/// it declared opening S (spec/sync-opens.md §4 Source).
 pub(super) fn as_stub(ctx: &Ctx, conn: ConnId, s: &SyncId) -> bool {
-    ctx.shared.members(conn).get(s).is_some_and(|m| m.class == SourceClass::Stub || m.departed.is_some())
+    ctx.shared.members(conn).get(s).is_some_and(|m| m.class == SourceClass::Stub)
 }
 
 /// Whether entry `e` of S is shown the peer on `conn`: to one held as a stub, a role entry alone
-/// (`role_entry`); to one ended for its departure, none (it is told by notices alone:
-/// spec/sync-opens.md §6).
+/// (`role_entry`).
 fn shown(ctx: &mut Ctx, conn: ConnId, s: &SyncId, e: &Entry) -> bool {
     match ctx.shared.members(conn).get(s) {
-        Some(m) if m.departed.is_some() => false,
         Some(m) if m.class == SourceClass::Stub => role_entry(ctx, s, e),
         _ => true,
     }
@@ -420,9 +417,6 @@ impl Streams {
                 let inlined = blob.is_some();
                 Some((s, Event::Added { blob_id: b, blob, wrap: entry.wrap, stamp: entry.stamp }, inlined))
             }
-            // a departed peer is shown nothing: no delete and no head, so when S deletes or rotates
-            // tells it nothing
-            NodeEvent::Deleted { sync_id: s, .. } | NodeEvent::Head(s) if ctx.shared.members(conn).get(&s).is_some_and(|m| m.departed.is_some()) => None,
             NodeEvent::Deleted { sync_id, blob, .. } => Some((sync_id, Event::Deleted(blob), false)),
             NodeEvent::Head(s) => ctx.store.head(&s)?.map(|st| (s, Event::Head(st), false)),
         })

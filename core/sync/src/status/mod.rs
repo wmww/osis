@@ -36,8 +36,7 @@
 //!   no recorded peer and no clock (`heard_since`); nothing durable, as leave's wait is not;
 //! - per read S, whether this node is stranded there (spec/permissions.md §4, `stranding`): the
 //!   engine's word (a current read epoch of S's thing known, none held) once S is heard out, the
-//!   reading of "after a complete pass there"; or, with no source, opens' walk stopped at a
-//!   source (`walk_stop`); inbox sends the report.
+//!   reading of "after a complete pass there"; inbox sends the report.
 //!
 //! Only `handle` makes outputs: reading status or a wait changes nothing.
 
@@ -248,11 +247,6 @@ pub trait Ground: Net {
     /// Whether this node holds no current read secret of read S's thing though one is known
     /// (`Engine::stranded`), with what its report names.
     fn stranding(&mut self, s: &SyncId) -> Result<Option<Arc<Stranding>>>;
-    /// Where this node's walk of S stopped at a source (`Opens::walk_stop`, stamped).
-    fn walk_stop(&self, s: &SyncId) -> Option<crate::opens::Stop>;
-    /// The report of this node stranded on read S, its walk stopped at `step`
-    /// (`Engine::stranding`).
-    fn walk_stranding(&mut self, s: &SyncId, step: crate::opens::Stop) -> Result<Option<Arc<Stranding>>>;
     /// The complete passes read wants, each after its judgements outside S's required set
     /// (`Read::passes_wanted`).
     fn module_passes(&mut self) -> Arc<BTreeMap<SyncId, u64>> {
@@ -382,7 +376,7 @@ pub struct Status {
     resumed: bool,
     /// Sources that left since the last settle: what their streams showed still counts for held
     /// elsewhere at that settle (a source closing S in the step that showed an entry, as a peer
-    /// judging this node departed by the self-removal it just applied does).
+    /// whose credential the self-removal it just applied ended does).
     leaving: BTreeMap<SyncId, BTreeMap<ConnId, (Src, LeftAt)>>,
     work: Work,
 }
@@ -638,27 +632,16 @@ impl Status {
 
     /// Per read S, whether this node is stranded there (spec/permissions.md §4): heard out (the
     /// reading of "after a complete pass there": every unrefusing source caught up) and the
-    /// engine holding no current read secret of S's thing though one is known; or no source
-    /// has S open and its walk stopped at one (spec/sync-ids.md §6 Stranded there: every source
-    /// it reached refused every open it had to try). O(keys moved): S's sources are read only
-    /// where the engine's word or a walk stop could make it stranded, so a source joining or
-    /// leaving (a reconnect) judges no other S again.
+    /// engine holding no current read secret of S's thing though one is known. O(keys moved):
+    /// S's sources are read only where the engine's word could make it stranded, so a source
+    /// joining or leaving (a reconnect) judges no other S again.
     fn judge_strandings(&mut self, g: &mut impl Ground) -> Result<()> {
         for s in self.stranding_fx.due() {
             let (members, up) = (&self.members, &self.up);
             let r = self.stranding_fx.try_settle(&s, || {
-                let (engine, walk) = (g.stranding(&s)?, g.walk_stop(&s));
-                if engine.is_none() && walk.is_none() {
-                    return Ok(None);
-                }
+                let Some(engine) = g.stranding(&s)? else { return Ok::<_, crate::types::Error>(None) };
                 let srcs = sources_of(members, up, &s);
-                if srcs.is_empty() {
-                    return match walk {
-                        Some(step) => g.walk_stranding(&s, step),
-                        None => Ok(None),
-                    };
-                }
-                Ok(if heard_out_at(&*g, &s, &srcs) { engine } else { None })
+                Ok((!srcs.is_empty() && heard_out_at(&*g, &s, &srcs)).then_some(engine))
             })?;
             match r {
                 Some((_, Some(x))) => {
@@ -1159,8 +1142,7 @@ fn pass_now(g: &mut impl Ground, clock: &Clock, work: &mut Work, s: &SyncId, p: 
     let fresh_all = fresh_all(&*g, work, s, p.pulled, sources);
     let deadline = p.deadline.0;
     let timed_out = clock.until(Some(deadline)) >= deadline;
-    // a record that no longer holds S has nothing of S left to read (closed: a Lost, or
-    // its peer judged this node departed)
+    // a record that no longer holds S has nothing of S left to read (closed: a Lost)
     let holding = g.records_holding(s).unwrap_or_default();
     let records = p.waits.iter().all(|r| read.contains(r) || !holding.contains(r));
     let done = timed_out || (fresh_all && records && !(sources.is_empty() && g.waited(s, true).unwrap_or(true)));

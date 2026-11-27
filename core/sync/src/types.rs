@@ -4,7 +4,7 @@
 
 use crate::store::Store;
 use osis_base::{BlobId, Mono, SyncId, Tid, WallMs};
-use osis_crypto::{Epoch, NodeRng, Signature};
+use osis_crypto::{NodeRng, Signature};
 use osis_engine::Engine;
 use osis_blob::{Address, Class};
 
@@ -59,19 +59,10 @@ pub fn class_of(h: Holding) -> SourceClass {
 /// What a side opened S by (spec/sync-opens.md §4).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Credential {
-    /// A read secret of this epoch shown on the connection.
-    ReadSecret(Epoch),
-    /// A sync key, by itself (its public bytes).
-    SyncKey([u8; 32]),
     /// The sync proof of this sync key.
     SyncProof([u8; 32]),
-    Claim,
-    /// A static entry of S's roster.
-    Static([u8; 32]),
-    /// S's public entry: S's thing is read by the public, so anyone may hold S.
-    Public,
-    /// J, judged by roles.
-    J,
+    /// A claim (its public key).
+    Claim([u8; 32]),
 }
 
 /// One entry of a store of S (spec/sync-ids.md §5).

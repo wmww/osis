@@ -1,17 +1,15 @@
 //! Opens' rows in a peer's record (spec/sync-opens.md §3): the record's own state (`acked_pos`,
 //! this side's filter generations, the peer's filter's shape), the peer's filter by generation,
-//! each member of the shared set with the beacon it was opened by, and where this side's walk
-//! of a sync ID stopped at the peer. Where a closed member stopped lasts its connection and is
+//! each member of the shared set with the beacon it was opened by. Where a closed member stopped lasts its connection and is
 //! never written. A record in use is held in memory while a connection holds it; its changes are
 //! written at the end of the node's step (`Opens::flush`), after streams wrote the positions
 //! they move, so a crash between the two leaves opens' older word, which streams' rows cover
 //! (a member left is where streams stopped it).
 
 use super::{Member, OwnFilter, PeerFilter, Record, Shape};
-use crate::store::rows::tag::{FILTER, MEMBER, OPENS, WALK};
+use crate::store::rows::tag::{FILTER, MEMBER, OPENS};
 use crate::types::{Credential, RecordId, SourceClass};
 use osis_base::SyncId;
-use osis_crypto::Epoch;
 use osis_store::{Error, Transaction};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -26,8 +24,6 @@ pub(super) struct Dirty {
     pub members: BTreeSet<SyncId>,
     /// Generations of the peer's filter arrived, each encoded.
     pub filter: Option<Arrived>,
-    /// Walk stops to write as memory holds them.
-    pub walk: BTreeSet<SyncId>,
 }
 
 /// Generations of the peer's filter arrived (`true`: the first was whole, replacing every row
@@ -57,21 +53,8 @@ impl<'a> Rd<'a> {
     fn a32(&mut self) -> Res<[u8; 32]> {
         self.take(32)?.try_into().map_err(|_| corrupt())
     }
-    fn opt32(&mut self) -> Res<Option<[u8; 32]>> {
-        Ok(if self.u8()? == 1 { Some(self.a32()?) } else { None })
-    }
     fn end(&self) -> Res<()> {
         if self.0.is_empty() { Ok(()) } else { Err(corrupt()) }
-    }
-}
-
-fn opt32(w: &mut Vec<u8>, v: Option<&[u8; 32]>) {
-    match v {
-        Some(b) => {
-            w.push(1);
-            w.extend_from_slice(b);
-        }
-        None => w.push(0),
     }
 }
 
@@ -121,82 +104,42 @@ fn class_of(b: u8) -> Res<SourceClass> {
     }
 }
 
-fn encode_member(m: &Member, basis: Option<&[u8; 32]>) -> Vec<u8> {
+fn encode_member(m: &Member, basis: &[u8; 32]) -> Vec<u8> {
     let mut w = vec![class_byte(m.class), class_byte(m.own)];
-    match m.by {
-        Credential::ReadSecret(e) => {
-            w.push(0);
-            w.extend_from_slice(&e.n().to_be_bytes());
-            w.extend_from_slice(e.nonce());
-        }
-        Credential::SyncKey(k) => {
-            w.push(1);
-            w.extend_from_slice(&k);
-        }
-        Credential::SyncProof(k) => {
-            w.push(2);
-            w.extend_from_slice(&k);
-        }
-        Credential::Claim => w.push(3),
-        Credential::Static(k) => {
-            w.push(4);
-            w.extend_from_slice(&k);
-        }
-        Credential::J => w.push(5),
-        Credential::Public => w.push(6),
-    }
+    let (tag, k) = match m.by {
+        Credential::SyncProof(k) => (0, k),
+        Credential::Claim(k) => (1, k),
+    };
+    w.push(tag);
+    w.extend_from_slice(&k);
     match m.until {
         Some(p) => {
-            w.push(if m.departed.is_some() { 2 } else { 1 });
+            w.push(1);
             w.extend_from_slice(&p.to_be_bytes());
         }
-        None => w.push(if m.departed.is_some() { 3 } else { 0 }),
+        None => w.push(0),
     }
-    opt32(&mut w, basis);
-    // a departed peer's proven things, to the end
-    for t in m.departed.iter().flat_map(|p| p.iter()) {
-        w.extend_from_slice(t.as_bytes());
-    }
+    w.extend_from_slice(basis);
     w
 }
 
-fn decode_member(v: &[u8]) -> Res<(Member, Option<[u8; 32]>)> {
+fn decode_member(v: &[u8]) -> Res<(Member, [u8; 32])> {
     let mut r = Rd(v);
     let class = class_of(r.u8()?)?;
     let own = class_of(r.u8()?)?;
     let by = match r.u8()? {
-        0 => {
-            let n = r.u64()?;
-            Credential::ReadSecret(Epoch::new(n, r.a32()?).map_err(|_| corrupt())?)
-        }
-        1 => Credential::SyncKey(r.a32()?),
-        2 => Credential::SyncProof(r.a32()?),
-        3 => Credential::Claim,
-        4 => Credential::Static(r.a32()?),
-        5 => Credential::J,
-        6 => Credential::Public,
+        0 => Credential::SyncProof(r.a32()?),
+        1 => Credential::Claim(r.a32()?),
         _ => return Err(corrupt()),
     };
-    let (until, departed) = match r.u8()? {
-        0 => (None, false),
-        1 => (Some(r.u64()?), false),
-        2 => (Some(r.u64()?), true),
-        3 => (None, true),
+    let until = match r.u8()? {
+        0 => None,
+        1 => Some(r.u64()?),
         _ => return Err(corrupt()),
     };
-    let basis = r.opt32()?;
-    let departed = match departed {
-        false => None,
-        true => {
-            let mut p = BTreeSet::new();
-            while !r.0.is_empty() {
-                p.insert(osis_base::Tid::from_bytes(r.take(15)?.try_into().map_err(|_| corrupt())?));
-            }
-            Some(std::sync::Arc::new(p))
-        }
-    };
+    let basis = r.a32()?;
     r.end()?;
-    Ok((Member { class, own, by, until, departed }, basis))
+    Ok((Member { class, own, by, until }, basis))
 }
 
 /// Record `id` as its rows hold it: none once it is gone. O(its members, and with `filter` its
@@ -204,7 +147,7 @@ fn decode_member(v: &[u8]) -> Res<(Member, Option<[u8; 32]>)> {
 /// read at a take).
 pub(super) fn load(t: &mut Transaction<'_>, id: &RecordId, filter: bool) -> Res<Option<Record>> {
     let Some(rec) = t.record(id)? else { return Ok(None) };
-    let mut r = Record { r: rec.r, named: rec.named, kept: true, members: BTreeMap::new(), basis: BTreeMap::new(), stopped: BTreeMap::new(), walk: BTreeMap::new(), acked_pos: 0, own: OwnFilter::default(), peer: None, told: false };
+    let mut r = Record { r: rec.r, named: rec.named, kept: true, members: BTreeMap::new(), basis: BTreeMap::new(), stopped: BTreeMap::new(), acked_pos: 0, own: OwnFilter::default(), peer: None, told: false };
     if let Some(v) = t.record_get_wide_row(id, OPENS, b"")? {
         let mut d = Rd(&v);
         r.acked_pos = d.u64()?;
@@ -226,11 +169,6 @@ pub(super) fn load(t: &mut Transaction<'_>, id: &RecordId, filter: bool) -> Res<
         let (m, basis) = decode_member(&v)?;
         r.members.insert(s, m);
         r.basis.insert(s, basis);
-    }
-    for (s, _, v) in t.record_tag_rows(id, WALK)? {
-        let mut d = Rd(&v);
-        r.walk.insert(s, d.opt32()?);
-        d.end()?;
     }
     Ok(Some(r))
 }
@@ -275,18 +213,11 @@ pub(super) fn write(t: &mut Transaction<'_>, id: &RecordId, r: &Record, d: Dirty
     }
     for s in d.members {
         match r.members.get(&s) {
-            Some(m) => t.record_put_row(id, MEMBER, &s, b"", encode_member(m, r.basis.get(&s).copied().flatten().as_ref()))?,
+            Some(m) => match r.basis.get(&s) {
+                Some(b) => t.record_put_row(id, MEMBER, &s, b"", encode_member(m, b))?,
+                None => drop(t.record_remove_row(id, MEMBER, &s, b"")?),
+            },
             None => drop(t.record_remove_row(id, MEMBER, &s, b"")?),
-        }
-    }
-    for s in d.walk {
-        match r.walk.get(&s) {
-            Some(x) => {
-                let mut w = Vec::new();
-                opt32(&mut w, x.as_ref());
-                t.record_put_row(id, WALK, &s, b"", w)?
-            }
-            None => drop(t.record_remove_row(id, WALK, &s, b"")?),
         }
     }
     Ok(())

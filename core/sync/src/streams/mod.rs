@@ -592,11 +592,9 @@ pub fn opening(engine: &mut Engine, store: &crate::store::Store, s: &SyncId, e: 
         // one, as a start's open of it does (spec/permissions.md §4 Logging certificates: one
         // logged by any node counts; read keeps one per set of certificates, `cert_blobs`)
         Ok(Opened::Records(_)) => Ok(Opening::Held { gave: true }),
-        // a sync copy is its bringer's word (anyone sealing to the holder or depositing under
-        // its sync ID makes one, a forged genesis counting where none of the thing's admins' word
-        // is held, `Core::copies_speak`):
+        // a sync-only cut is its bringer's word (anyone logging under the sync ID makes one):
         // charged to its bringer unless stamped (spec/sync-ids.md §5 Peer budget)
-        Ok(Opened::SyncCopy) => Ok(Opening::Held { gave: false }),
+        Ok(Opened::SyncOnlyCut) => Ok(Opening::Held { gave: false }),
         Ok(Opened::Linked) => Ok(Opening::Taken),
         Ok(Opened::NotOpen) => Ok(Opening::NotOpen),
         Ok(Opened::Bad) => Ok(Opening::Bad),
@@ -634,7 +632,7 @@ impl Ground for EngineGround<'_> {
     fn unkept(&mut self, store: &crate::store::Store, b: &BlobId) -> Result<()> {
         self.engine.forget_carrier(b);
         if !store.named(b)? {
-            self.engine.unnamed_copy(b)?;
+            self.engine.unnamed_cut(b)?;
         }
         if let Some(c) = self.engine.blob_commit(b) {
             crate::store::release(self.engine, store, &c)?;
@@ -651,8 +649,8 @@ impl Ground for EngineGround<'_> {
     }
 
     fn rank(&mut self, s: &SyncId, b: &BlobId, wrap: &Wrap) -> Rank {
-        let Ok(Some(c)) = self.engine.read_credentials(s) else { return Rank::Unopened };
-        match osis_blob::wrap_order(c.read_secrets.iter().map(|(_, k)| k), b, wrap) {
+        let Ok(secrets) = self.engine.current_read_secrets(s) else { return Rank::Unopened };
+        match osis_blob::wrap_order(&secrets, b, wrap) {
             Some(o) => Rank::Order(o),
             None => Rank::Unopened,
         }

@@ -284,15 +284,15 @@ pub trait Ground {
         let _ = (s, tids);
         Ok(())
     }
-    /// The sync copies S carries (spec/permissions.md §4 Logging certificates,
-    /// Notices) set against those the own store holds under S (`SyncCopiesDue`).
-    fn sync_copies_due(&mut self, s: &SyncId) -> Result<SyncCopiesDue> {
+    /// The sync-only cuts S carries (spec/permissions.md §4 Logging certificates,
+    /// Stub) set against those the own store holds under S (`SyncCutsDue`).
+    fn sync_cuts_due(&mut self, s: &SyncId) -> Result<SyncCutsDue> {
         let _ = s;
-        Ok(SyncCopiesDue::default())
+        Ok(SyncCutsDue::default())
     }
-    /// Logs the sync copy of content `key` S carries under S in the own store (a
+    /// Logs the sync-only cut of content `key` S carries under S in the own store (a
     /// fresh encryption).
-    fn log_sync_copy(&mut self, s: &SyncId, key: &[u8; 32]) -> Result<()> {
+    fn log_sync_cut(&mut self, s: &SyncId, key: &[u8; 32]) -> Result<()> {
         let _ = (s, key);
         Ok(())
     }
@@ -457,13 +457,13 @@ pub enum PieceAt {
     Tombstoned,
 }
 
-/// `Ground::sync_copies_due` under one S: per sync copy S carries (by content), its
+/// `Ground::sync_cuts_due` under one S: per sync-only cut S carries (by content), its
 /// log here.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct SyncCopiesDue {
+pub struct SyncCutsDue {
     /// Carried, with no entry of its content in the own store: each logged.
     pub missing: BTreeSet<[u8; 32]>,
-    /// The entry standing as a carried copy's log (of its content, the lowest blob ID) where
+    /// The entry standing as a carried cut's log (of its content, the lowest blob ID) where
     /// not stamped under S's head write key that this node holds: stamped in place.
     pub stale: BTreeSet<osis_base::BlobId>,
     /// Entries that leave the own store, no tombstone: one of a carried content beside its

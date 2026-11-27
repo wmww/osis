@@ -151,11 +151,6 @@ impl Proven {
     pub fn is_empty(&self) -> bool {
         self.named.is_empty()
     }
-
-    /// The keys its proofs were signed by (a link key's static entry is checked against them).
-    pub fn keys(&self) -> impl Iterator<Item = &[u8; 32]> + '_ {
-        self.named.claims.iter().map(|c| &c.key)
-    }
 }
 
 /// What binds a signature or tag to this connection (spec/wire.md §11.1 Static key,

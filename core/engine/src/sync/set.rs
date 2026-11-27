@@ -210,35 +210,52 @@ impl Engine {
             c.keys.insert(step.id(), self.head_keys(t, step)?);
         }
         if let Some(e) = self.core.epochs(t) {
-            // each held sync secret's key derived once (a curve multiplication), then matched per step
-            let held: Vec<(Epoch, Secret32, SigningSecret)> = e
+            // each held sync secret's key and proof derived once (a curve multiplication), then
+            // matched per step
+            let held: Vec<([u8; 32], [u8; 32])> = e
                 .role(Role::Sync)
                 .held_newest_first()
                 .into_iter()
-                .map(|(ep, x)| {
+                .map(|(_, x)| {
                     let seed = osis_crypto::role_key_seed(osis_crypto::RoleKey::Sync, x);
-                    (ep, seed.clone(), SigningSecret::from_seed(&seed))
+                    (osis_crypto::kdf::sync_proof(&seed), SigningSecret::from_seed(&seed).verifying_key().to_bytes())
                 })
                 .collect();
             for step in o.path.steps.iter().rev() {
-                if let Some((_, seed, _)) = held.iter().find(|(_, _, k)| k.verifying_key() == step.keys.sync) {
-                    c.proofs.push((step.id(), osis_crypto::kdf::sync_proof(seed)));
+                if let Some((p, _)) = held.iter().find(|(_, k)| *k == step.keys.sync.to_bytes()) {
+                    c.proofs.push((step.id(), *p));
                 }
             }
-            c.sync_keys.extend(held.into_iter().map(|(ep, _, k)| (ep, k)));
+            c.held_proofs.extend(held);
         }
         Ok(())
     }
 
+    /// The read secrets of each thing opening `s` at its current epochs (history-less floors),
+    /// else its newest held: what orders the wraps of `s`'s entries (`osis_blob::wrap_order`).
+    pub fn current_read_secrets(&mut self, s: &SyncId) -> Result<Vec<Secret32>> {
+        let mut out = Vec::new();
+        for t in self.opening_things(s)? {
+            let Some(e) = self.core.epochs(&t) else { continue };
+            let read = e.role(Role::Read);
+            let current: Vec<Secret32> = read.current().into_iter().filter_map(|ep| Some(read.secret(&ep)?.secret().clone())).collect();
+            match current.is_empty() {
+                true => out.extend(read.held_newest_first().into_iter().take(1).map(|(_, s)| s.secret().clone())),
+                false => out.extend(current),
+            }
+        }
+        Ok(out)
+    }
+
     /// The held valid rotation commits of read sync ID `s`'s things whose established epoch
-    /// supersedes read epoch `e` (spec/sync-opens.md §6: an ended member's `until`); empty when
+    /// supersedes sync epoch `e` (spec/sync-opens.md §6: an ended member's `until`); empty when
     /// `s` is not read here or none does.
     pub fn rotations_superseding(&mut self, s: &SyncId, e: &Epoch) -> Result<Vec<CommitId>> {
         let mut out = Vec::new();
         for t in self.opening_things(s)? {
             let Some(ep) = self.core.epochs(&t) else { continue };
-            let read = ep.role(Role::Read);
-            out.extend(read.epochs().filter(|(_, i)| i.established.is_some() && i.superseded_epochs().contains(e)).flat_map(|(_, i)| i.rotations.keys().copied()));
+            let sync = ep.role(Role::Sync);
+            out.extend(sync.epochs().filter(|(_, i)| i.established.is_some() && i.superseded_epochs().contains(e)).flat_map(|(_, i)| i.rotations.keys().copied()));
         }
         Ok(out)
     }

@@ -112,10 +112,6 @@ impl Ground for Live<'_, '_> {
         self.streams.knows(at, self.opens.conn_of(at), s, b)
     }
     fn reported(&self, conn: ConnId, s: &SyncId) -> Option<Position> {
-        // a member ended for its departure is shown nothing: its position tells nothing
-        if self.opens.member(conn, s).is_some_and(|m| m.departed.is_some()) {
-            return None;
-        }
         self.opens.reported_at(conn, s).map(|(p, _)| *p)
     }
     fn until(&self, conn: ConnId, s: &SyncId) -> Option<Position> {
@@ -180,12 +176,6 @@ impl Ground for Live<'_, '_> {
     }
     fn stranding(&mut self, s: &SyncId) -> Result<Option<Arc<osis_engine::sync::Stranding>>> {
         Ok(self.cx.engine.stranded(s)?.map(Arc::new))
-    }
-    fn walk_stop(&self, s: &SyncId) -> Option<crate::opens::Stop> {
-        self.opens.walk_stop(s)
-    }
-    fn walk_stranding(&mut self, s: &SyncId, step: crate::opens::Stop) -> Result<Option<Arc<osis_engine::sync::Stranding>>> {
-        Ok(self.cx.engine.stranding(s, step)?.map(Arc::new))
     }
     fn begin_pass(&mut self) -> u64 {
         self.cx.engine.begin_pass()

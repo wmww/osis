@@ -30,7 +30,6 @@ mod follow;
 pub use follow::Follow;
 pub use follow::blob_bytes;
 pub(crate) use follow::{open_entry, pends, release};
-pub use path::{Behind, Cred};
 pub use rows::{Source, Tombstone, Usage};
 
 /// The members a log read serves: each with its `until` (none: not served).
@@ -55,7 +54,7 @@ use osis_base::format::{MAX_BLOB, TOMBSTONE_LIFETIME_MS};
 use osis_base::memo::{Clock, Effects};
 use osis_base::{BlobId, Mono, SyncId, WallMs};
 use osis_engine::sync::{Caps, Held, Holding, Path, SyncSet};
-use osis_blob::{Class, ClaimSet, DeleteItem, Prefix, Step, StepId};
+use osis_blob::{Class, DeleteItem, Prefix, Step, StepId};
 use osis_proto::{Code, DepositItem};
 use osis_store::{Ciphertext, LogRead, LoggedEvent, NodeEvent, Shred, Suspended, Transaction};
 use rows::{EntryRow, R, Vouch, W};
@@ -479,7 +478,7 @@ fn expired(at: Option<WallMs>, now: WallMs) -> bool {
 }
 
 /// The deposit budget of S (spec/sync-inbox.md §3 Budget): entries and bytes, the policy's
-/// raised to the recommended minimum for the head's claim-set size.
+/// raised to the recommended minimum for `claims` head claims.
 fn deposit_budget(policy: &Policy, claims: usize) -> (u64, u64) {
     let (e, b) = osis_proto::limits::deposit_budget(claims);
     (policy.deposit_entries.max(e as u64), policy.deposit_bytes.max(b as u64))
@@ -595,30 +594,10 @@ impl Store {
     /// Caps); only the sync IDs whose entry moved stamp. One raised (`raised`) is
     /// fetched anew (spec/sync-judgement.md §6 Read and unread move), marked durably (`N/`) until
     /// streams moved every source's place of S back to the start (`reset_anew`), so a restart
-    /// between still fetches it (`anew_feed`). One lowered from opening S to keeping it unread
-    /// marks its head then durably (`L/`, `lowered_at`); opening S again, the mark goes. Written
-    /// after the engine's drop: a crash between leaves S read once more by that head's public
-    /// entry, and lowered again as its role entries open.
+    /// between still fetches it (`anew_feed`).
     pub fn set_holdings(&mut self, moved: &[(SyncId, Option<Held>)]) -> Result<()> {
         let mut g = self.lock();
         let unread = |h: Option<&Held>| h.is_some_and(|(_, h)| *h == Holding::Unread);
-        let opens = |h: Option<&Held>| h.is_some_and(|(_, h)| h.opens());
-        let marks: Vec<(SyncId, bool)> = moved.iter().filter(|(s, now)| opens(g.holdings.get(s)) && unread(now.as_ref()) || opens(now.as_ref()) && !opens(g.holdings.get(s))).map(|(s, now)| (*s, unread(now.as_ref()))).collect();
-        if !marks.is_empty() {
-            g.write(|t, env| {
-                for (s, lowered) in &marks {
-                    match path::head_id(t, env, s)?.filter(|_| *lowered) {
-                        Some(h) => {
-                            t.put_local(&rows::lowered_key(s), &h.0, Shred::No)?;
-                        }
-                        None => {
-                            t.remove_local(&rows::lowered_key(s), Shred::No)?;
-                        }
-                    }
-                }
-                Ok(())
-            })?;
-        }
         let anew: Vec<SyncId> = moved.iter().filter(|(s, now)| raised(g.holdings.get(s), now.as_ref()) && !g.unheld.contains(s)).map(|(s, _)| *s).collect();
         if !anew.is_empty() {
             // a dropped copy's mark stands as it is: it is fetched anew once judged (`set_unheld`);
@@ -1201,14 +1180,14 @@ impl Store {
         let unheld = g.unheld.contains(&s);
         let checked = g.read(|t, env| {
             let Some(path) = path::kept(t, env, &s)?.filter(|_| !unheld) else { return Ok(Err(Code::RATE_LIMITED)) };
-            let Some((head, claims)) = path.path.steps.last() else { return Ok(Err(Code::RATE_LIMITED)) };
+            let Some(head) = path.path.steps.last() else { return Ok(Err(Code::RATE_LIMITED)) };
             if held {
                 return Ok(Err(Code::OK));
             }
             let Ok(signed) = osis_blob::verify_deposit(&head.keys.deposit, &s, &b, &d.wrap, &d.sig) else { return Ok(Err(Code::DECLINED)) };
             let role = signed == osis_blob::Signed::RoleEntry;
-            let claims = claims.as_ref().map_or(0, |c| c.claims.len());
-            let (be, bb) = deposit_budget(&policy, claims);
+            // Interim (notes/opening-design.md): no head claims are held until entry blocks are
+            let (be, bb) = deposit_budget(&policy, 0);
             let u = entries::usage(t, &s)?;
             if u.deposits + mem_usage.deposits + 1 > be || u.deposit_bytes + mem_usage.deposit_bytes + size > bb {
                 return Ok(Err(Code::DEPOSIT_BUDGET_FULL));
@@ -1315,14 +1294,14 @@ impl Store {
         Ok(out)
     }
 
-    /// A Register of `steps`, each with its claim set when carried (spec/sync-ids.md §6 Register,
-    /// spec/wire.md §11.2; `path::register`). 14: S not kept unread here (a reader's path comes
-    /// from `sync.0` alone); 2: a step of another sync ID or a claim set not hashing to its
-    /// step's; into an empty path 1 for a genesis that does not verify, 13 for a list from a child;
-    /// 0 for a list ending at the head; 9: not a deeper branch off a step bearing the head's delete
-    /// key nor ending at a step `endorsement` endorses under it; 12: past the caps (into an empty path; else past them even without the claim sets,
-    /// more than once per interval, on the monotonic clock: `mono` is its reading now).
-    pub fn take_register(&mut self, s: &SyncId, steps: &[(&Step, Option<&ClaimSet>)], endorsement: Option<&osis_crypto::Signature>, mono: Mono) -> Result<Code> {
+    /// A Register of `steps` (spec/sync-ids.md §6 Register, spec/wire.md §11.2;
+    /// `path::register`). 14: S not kept unread here (a reader's path comes from `sync.0` alone);
+    /// 2: a step of another sync ID; into an empty path 1 for a genesis that does not verify, 13
+    /// for a list from a child; 0 for a list ending at the head; 9: not a deeper branch off a step
+    /// bearing the head's delete key nor ending at a step `endorsement` endorses under it; 12: past
+    /// the caps (into an empty path; else more than once per interval, on the monotonic clock:
+    /// `mono` is its reading now).
+    pub fn take_register(&mut self, s: &SyncId, steps: &[Step], endorsement: Option<&osis_crypto::Signature>, mono: Mono) -> Result<Code> {
         let mut g = self.lock();
         let last = g.past_cap.get(s).copied();
         let policy = g.policy.clone();
@@ -1337,18 +1316,6 @@ impl Store {
             g.past_cap.insert(*s, mono);
         }
         Ok(code)
-    }
-
-    /// A Behind item's answer (spec/sync-ids.md §6 Behind), its open signature by `cred`
-    /// verified by the caller; at most `max_steps` steps.
-    pub fn behind(&self, s: &SyncId, named: Option<&StepId>, cred: &Cred, max_steps: usize) -> Result<Behind> {
-        self.lock().read(|t, env| path::behind(t, env, s, named, cred, max_steps))
-    }
-
-    /// The code a Behind of S carrying nothing is answered with (one whose open signature did
-    /// not verify): 13 where this node does not keep S, else 14.
-    pub fn behind_refusal(&self, s: &SyncId) -> Result<Code> {
-        self.lock().read(|t, env| path::behind_refusal(t, env, s))
     }
 
     // The node log
@@ -1484,7 +1451,6 @@ impl Store {
             t.changed_forget(s)?;
             t.remove_local(&rows::anew_key(s), Shred::No)?;
             t.remove_local(&rows::first_key(s), Shred::No)?;
-            t.remove_local(&rows::lowered_key(s), Shred::No)?;
             remove_room_rows(t, s)
         })?;
         g.forget_room(s);
@@ -1501,13 +1467,6 @@ impl Store {
     /// (row `F/`).
     pub fn first_synced(&self, s: &SyncId) -> Result<bool> {
         self.lock().read(|t, _| Ok(t.get_local(&rows::first_key(s))?.is_some()))
-    }
-
-    /// The head S kept unread here was lowered to it at from opening S (`set_holdings`), whose
-    /// public entry gives it nothing (spec/sync-opens.md §4 Admissible). Stamped (row `L/`).
-    pub fn lowered_at(&self, s: &SyncId) -> Result<Option<StepId>> {
-        let v = self.lock().read(|t, _| Ok(t.get_local(&rows::lowered_key(s))?))?;
-        v.map(|v| v.as_slice().try_into().map(StepId).map_err(|_| crate::types::Error::Store(osis_store::Error::Corrupt("lowered row")))).transpose()
     }
 
     /// S's first sync here ended: kept until S is shredded or raised (`first_synced`).
@@ -1778,8 +1737,7 @@ impl Store {
     // Time
 
     /// Time is `now`: entries past their expiry go (no tombstone, no event), tombstones and the
-    /// rows of deletes seen and stands end after `TOMBSTONE_LIFETIME`, claim sets after
-    /// `ROLE_KEEP` superseded, deletion events leave the log, and the caps give way if the total
+    /// rows of deletes seen and stands end after `TOMBSTONE_LIFETIME`, deletion events leave the log, and the caps give way if the total
     /// is past them. At most `PAGE` of each a call; whether anything acted.
     pub fn settle_at(&mut self, now: WallMs) -> Result<bool> {
         let mut g = self.lock();
@@ -1820,13 +1778,6 @@ impl Store {
         acted |= g.write_in(true, entry_sweep)?;
         acted |= g.write(|t, env| {
             let mut acted = entry_sweep(t, env)?;
-            for (k, _) in due(t, rows::CLAIMS_DUE, Some(now.0))? {
-                let mut r = R::new(k.get(rows::CLAIMS_DUE.len() + 8..).unwrap_or_default());
-                let (s, i) = (SyncId(r.array()?), r.u32()?);
-                t.remove_local(&k, Shred::No)?;
-                path::drop_claims(t, env, &s, i)?;
-                acted = true;
-            }
             acted |= t.log_sweep(now.0)?;
             let total = env.total(t)?;
             if total > env.policy.total_bytes {
@@ -1844,7 +1795,7 @@ impl Store {
         let d = g
             .each(|t, _| {
                 let first = |t: &mut Transaction<'_>, p: &[u8], add: u64| -> Result<Option<u64>> { Ok(t.scan_local(p, b"", 1)?.first().map(|(k, _)| time_of(k)).transpose()?.map(|x| x.saturating_add(add))) };
-                let all = [first(t, rows::EXPIRY, 0)?, first(t, rows::TOMB_AT, 0)?, first(t, rows::CLAIMS_DUE, 0)?, first(t, rows::AGING, TOMBSTONE_LIFETIME_MS)?, if t.is_memory() { None } else { t.log_next_due()? }];
+                let all = [first(t, rows::EXPIRY, 0)?, first(t, rows::TOMB_AT, 0)?, first(t, rows::AGING, TOMBSTONE_LIFETIME_MS)?, if t.is_memory() { None } else { t.log_next_due()? }];
                 Ok(all.into_iter().flatten().min().map(WallMs))
             })
             .ok()

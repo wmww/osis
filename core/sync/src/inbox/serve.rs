@@ -3,19 +3,20 @@
 
 use super::{Here, Net};
 use crate::session::RequestId;
-use crate::types::{ConnId, Credential};
+use crate::types::ConnId;
 use osis_proto::{Code, Msg};
 
 pub(super) fn request(h: &mut Here<'_>, net: &mut impl Net, conn: ConnId, id: RequestId, m: Msg) {
     let reply = match m {
         Msg::Register { sync_id, steps, endorsement, .. } => {
             // a store failure answers refused: the node reopens from its store
-            let steps: Vec<_> = steps.iter().map(|(st, c)| (st, c.as_ref())).collect();
             let code = h.store.take_register(&sync_id, &steps, endorsement.as_ref(), h.mono).unwrap_or(Code::REFUSED);
             if code == Code::OK { Msg::Ok { id } } else { Msg::Error { id, code } }
         }
         Msg::Delete { sync_id, items, .. } => {
-            let by_store = net.member(conn, &sync_id).is_some_and(|m| store_credential(m.by));
+            // open by a credential of this node's head: a member not ended (spec/sync-ids.md §6
+            // Delete)
+            let by_store = net.member(conn, &sync_id).is_some_and(|m| m.until.is_none());
             // a blob the engine makes on demand shows its prefix made again
             let mut made = std::collections::BTreeMap::new();
             for d in &items {
@@ -41,11 +42,4 @@ pub(super) fn request(h: &mut Here<'_>, net: &mut impl Net, conn: ConnId, id: Re
         _ => Msg::Error { id, code: Code::UNSUPPORTED },
     };
     net.answer(conn, id, reply);
-}
-
-/// A store credential: the head's sync key, a sync proof (the peer's answer to this node's own
-/// proof is keyed by S's sync proof), a claim or a static entry (spec/sync-ids.md §6 Delete,
-/// spec/sync-opens.md §4).
-fn store_credential(c: Credential) -> bool {
-    matches!(c, Credential::SyncKey(_) | Credential::SyncProof(_) | Credential::Claim | Credential::Static(_))
 }
