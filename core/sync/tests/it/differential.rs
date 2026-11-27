@@ -153,9 +153,12 @@ fn a_history_is_a_function_of_its_seed() {
 }
 
 // spec/sync-set.md §2 (T's keys open: what the public reads), §4 (Redeeming a locator: the
-// strong): node 0 makes a thing public; node 1, of another account holding no role on it,
-// redeems a locator of it and reads it as the reference does, as held-model's closure says.
-// Control: never made public, the redeem writes nothing and node 1 reads nothing.
+// strong, reached by the grants held), §5: node 0 makes a thing public; node 1, of another
+// account holding no role on it, redeems a locator of it and reads it as the reference does, as
+// held-model's closure says, the public's grant in its roster. Failed while a head listing the
+// public counted as the link reaching the thing: node 1 stopped following the locator's sync ID
+// before it held any of the thing's role commits, so nothing synced it and the public's grant
+// never came. Control: never made public, the redeem writes nothing and node 1 reads nothing.
 #[test]
 fn a_public_thing_redeemed_is_read_until_the_public_goes_spec_sync_set_4() {
     use crate::harness::history::{Gives, Holder, reads};
@@ -576,9 +579,10 @@ fn a_holder_left_out_is_re_sealed_once_its_keyset_arrives_spec_permissions_3() {
 // takes the public's box, the sync secret alone, while it still holds the read secrets its loss
 // has not dropped: the drop keeps that sync secret, so it keeps the thing unread as the model says.
 // Failed while lost access judged the sync secret by the grants alone: it dropped the public's
-// sync secret with the rest and followed the thing again, holding nothing.
+// sync secret with the rest and followed the thing again, holding nothing; and while a unit
+// carried the thing by the public's grant held alone, not by its head listing the public: node 0
+// held it as its signal's stub.
 #[test]
-#[ignore = "stub rewrite: the account's unit carries the thing by the public's grant held, not by its heads listing the public (`edge_carries`), so node 0 holds it as its signal's stub; counting the listing makes a public thing's locator redeemer read it without ever holding the public's grant commit (issues/differential-full-size-classes.md)"]
 fn a_removed_reader_keeps_the_publics_sync_secret_through_its_loss_spec_permissions_3() {
     use crate::harness::script::*;
     holds_on(0, 3, 4, &[New(2), Give(2, 0, Holder::Node(0), Reads), Give(2, 0, Holder::Node(1), Reads), Revoke(2, 0, Holder::Node(1)), Give(2, 0, Holder::Public, Syncs), Strong(0, None, 0), Revoke(2, 0, Holder::Node(0))], String::new(), false);

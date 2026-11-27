@@ -170,10 +170,11 @@ impl Engine {
         self.core.secret_actor(t).is_some_and(|a| self.core.public_reads(&a))
     }
 
-    /// Whether a locator of `t` reaches it here (spec/sync-set.md §4): the public reads it,
-    /// or this node holds a role on it.
+    /// Whether a locator of `t` reaches it here (spec/sync-set.md §4): the public's grant on
+    /// `t`'s independent is held, or this node holds a role on it, by its grants as held: a
+    /// head listing the public entry gives the public's role but holds none of its role commits.
     pub fn reaches(&self, t: &Tid) -> bool {
-        self.public_reads(t) || self.role_on(t).is_some()
+        self.public_reads(t) || self.core.exists(t) && crate::rotation::role_by_grants(&self.core, t).is_some()
     }
 
     /// Whether the held role history shows `holder` put on `thing` and its edge over: removed, or

@@ -32,7 +32,7 @@ pub(crate) use lost::{load_kept, without_frozen};
 pub(crate) use lost::explain_due;
 pub(crate) use departures::{departures, key_role, own_self_removal};
 pub(crate) use members::{Boxing, Sealed, grant_keyless, sealed, sealed_granted};
-pub(crate) use lost::{boxes_kept, load_lost, may_learn, may_take_role, role_here, keys_write_unapplied, touch_held};
+pub(crate) use lost::{boxes_kept, load_lost, may_learn, may_take_role, role_by_grants, role_here, keys_write_unapplied, touch_held};
 
 /// How far `blocked_epoch` follows boxes to holder actors (spec/crypto.md §4, Encrypting under).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]

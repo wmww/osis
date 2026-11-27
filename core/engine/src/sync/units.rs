@@ -777,10 +777,12 @@ impl Core {
         self.roster_of(a).get(&Tid::PUBLIC).is_some_and(|e| e.role >= Role::Read)
     }
 
-    /// Whether the public holds a role on `a` by its own grant there (sync or read), as `a`'s role
-    /// commits held here show it (`public_reads`): its sync ID's steps list it (spec/sync-ids.md §3).
+    /// Whether the public holds a role on `a` (sync or read) as this node knows it: by its own
+    /// grant there, as `a`'s role commits held here show it (`public_reads`), or by a head of
+    /// `a`'s sync ID listing the public entry (`public_listed`); its sync ID's steps list it
+    /// (spec/sync-ids.md §3).
     pub(crate) fn public_syncs(&self, a: &Tid) -> bool {
-        self.roster_of(a).get(&Tid::PUBLIC).is_some_and(|e| e.role >= Role::Sync)
+        self.roster_of(a).get(&Tid::PUBLIC).is_some_and(|e| e.role >= Role::Sync) || self.public_listed(a).is_some()
     }
 
     /// The public's role on `a` by the heads of `a`'s sync IDs, as this node holds them, listing
@@ -988,8 +990,8 @@ pub(crate) fn reached_carried(core: &Core, y: &Tid) -> bool {
 /// Whether held vertex `v`'s unit carries `y`, a target of its thing's strongs (spec/sync-set.md
 /// §2 Stubs): `v` is in the read sync unit of a thing `u` other than `y`, or in the local part
 /// with `u` an own thing, whose keys open `y` (whole) or whose effective role on `y` is sync or
-/// above, the public's sync by its grant counting as every party's (its stub), as the role
-/// entries the node holds show it. Local to the edge, so the tree
+/// above, the public's sync (by its grant or a head's listing, `public_syncs`) counting as every
+/// party's (its stub), as the role entries the node holds show it. Local to the edge, so the tree
 /// founds it: an entry by `u`'s unit goes when `u`'s does, whatever `u` reaches back.
 /// Invariant: `y`'s own unit never carries it (`u != y`).
 fn edge_carries(core: &Core, v: Vx, y: &Tid) -> bool {

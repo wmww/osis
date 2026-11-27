@@ -95,7 +95,13 @@ fn holds_at(core: &Core, a: &Tid, min: Role) -> bool {
 /// ID lists the public entry at the role its box gives (`Core::public_listed`, spec/sync.md §3
 /// Holders by copies).
 pub(crate) fn role_here(core: &Core, a: &Tid) -> Option<Role> {
-    let public = core.keyed_role_now(&Tid::PUBLIC, a).max(core.public_listed(a));
+    role_by_grants(core, a).max(core.public_listed(a))
+}
+
+/// `role_here` by `a`'s grants as held alone, no head's listing: what a locator's reach is
+/// judged by (spec/sync-set.md §4: `a`'s role commits held).
+pub(crate) fn role_by_grants(core: &Core, a: &Tid) -> Option<Role> {
+    let public = core.keyed_role_now(&Tid::PUBLIC, a);
     if !grants_count(core, a) {
         return public;
     }
