@@ -152,12 +152,12 @@ fn a_history_is_a_function_of_its_seed() {
     }
 }
 
-// spec/sync-set.md §2 (T's keys open: what the public reads), §4 (Redeeming a public link: the
+// spec/sync-set.md §2 (T's keys open: what the public reads), §4 (Redeeming a locator: the
 // strong): node 0 makes a thing public; node 1, of another account holding no role on it,
-// redeems a public link to it and reads it as the reference does, as held-model's closure says.
+// redeems a locator of it and reads it as the reference does, as held-model's closure says.
 // Control: never made public, the redeem writes nothing and node 1 reads nothing.
 #[test]
-#[ignore = "stub rewrite: a public link's redeemer reads nothing of the thing at quiet, the oracle says it reads (cause not sorted)"]
+#[ignore = "stub rewrite: a locator's redeemer reads nothing of the thing at quiet, the oracle says it reads (cause not sorted)"]
 fn a_public_thing_redeemed_is_read_until_the_public_goes_spec_sync_set_4() {
     use crate::harness::history::{Gives, Holder, reads};
     let (n, accounts, ..) = size();
@@ -171,7 +171,7 @@ fn a_public_thing_redeemed_is_read_until_the_public_goes_spec_sync_set_4() {
 }
 
 // spec/sync-opens.md §4 (lapsed secrets), §6 (A reader tells a public reader the public's removal):
-// node 0 makes a thing public, node 1 of another account redeems a public link to it, then node 0
+// node 0 makes a thing public, node 1 of another account redeems a locator of it, then node 0
 // removes the public and writes again while node 1 is off. Node 1 holds the removal and reads the
 // thing no more (fails without the lapsed read secrets: no reader opens the thing's sync ID toward
 // it again).
@@ -213,14 +213,14 @@ fn a_redeemer_misses_a_rotation_and_hears_the_public_removed_spec_sync_opens_6()
     holds_on(0, accounts, n, &script, String::new(), false);
 }
 
-// spec/sync-opens.md §4 (lapsed secrets), spec/sync-hostile.md §2: a public link made while
+// spec/sync-opens.md §4 (lapsed secrets), spec/sync-hostile.md §2: a locator made while
 // the public read a thing, redeemed by a stranger (node 1) only after the public's removal, opens
 // nothing: holding no read secret of the thing, node 1 hits nothing, and no store entry of the thing
 // reaches it (failed with a lapsed public entry, which every holder of the sync ID hits: node 1 was
 // served the thing up to the removal, the public's open boxes with it). Control: with the public
 // not removed, the same redeem is served the thing.
 #[test]
-fn a_public_link_redeemed_after_the_removal_opens_nothing_spec_sync_opens_4() {
+fn a_locator_redeemed_after_the_removal_opens_nothing_spec_sync_opens_4() {
     use crate::harness::history::{Gives, Holder};
     let (n, accounts, ..) = size();
     for removed in [true, false] {
@@ -229,7 +229,7 @@ fn a_public_link_redeemed_after_the_removal_opens_nothing_spec_sync_opens_4() {
         play(&mut w, &[Step::New(0), Step::Give(0, 0, Holder::Public, Gives::Reads), Step::Run], String::new());
         let t = w.history.things[0].0;
         let s = w.engine(0).sync_id_of(&t).unwrap().expect("a sync ID");
-        let link = w.public_link(0, t).expect("the public reads it");
+        let link = w.locator(0, t).expect("the public reads it");
         if removed {
             play(&mut w, &[Step::Revoke(0, 0, Holder::Public), Step::Write(0, 0), Step::Run], String::new());
         }
@@ -325,7 +325,7 @@ fn a_store_granted_past_genesis_is_moved_spec_sync_ids_6() {
 // alone: thing 0 dependent on its mint admin, of which node 1 holds nothing, so nothing fetched the
 // role commits and it dropped thing 0 for good).
 #[test]
-#[ignore = "stub rewrite: a public link's redeemer reads nothing of the thing at quiet, the oracle says it reads (cause not sorted)"]
+#[ignore = "stub rewrite: a locator's redeemer reads nothing of the thing at quiet, the oracle says it reads (cause not sorted)"]
 fn a_public_reader_keeps_a_thing_on_taking_its_record_spec_sync_3() {
     use crate::harness::history::{Gives, Holder};
     let (n, accounts, ..) = size();
@@ -377,12 +377,12 @@ fn the_publics_removal_keeps_what_a_nodes_own_role_gives_spec_permissions_3() {
     assert!(reads(w.engine(0), &t).value.is_some(), "node 0 reads thing 0 by its account's grant");
 }
 
-// spec/permissions.md §3 (Lost access), spec/sync-set.md §4: a node that redeemed a public link
+// spec/permissions.md §3 (Lost access), spec/sync-set.md §4: a node that redeemed a locator
 // reads the thing by the public alone, so the public's removal is its loss too, the removal
 // coming after a quiet run or while the redemption is in flight. Control: no removal, it reads.
 #[test]
-#[ignore = "stub rewrite: a public link's redeemer reads nothing of the thing at quiet, the oracle says it reads (cause not sorted)"]
-fn a_public_links_redeemer_loses_the_thing_with_the_public_spec_permissions_3() {
+#[ignore = "stub rewrite: a locator's redeemer reads nothing of the thing at quiet, the oracle says it reads (cause not sorted)"]
+fn a_locators_redeemer_loses_the_thing_with_the_public_spec_permissions_3() {
     use crate::harness::history::{Gives, Holder, reads};
     let (n, accounts, ..) = size();
     let start = [Step::New(0), Step::Give(0, 0, Holder::Public, Gives::Reads), Step::Run, Step::Redeem(1, 0)];
@@ -498,7 +498,7 @@ fn a_node_lowered_with_the_public_reads_no_more_after_a_start_spec_sync_opens_4(
 // moves it): node 1, lowered with the public as above, reads the thing again once the public is
 // granted read again (a new step listing the public entry is registered with it).
 #[test]
-#[ignore = "stub rewrite: a public link's redeemer reads nothing of the thing at quiet, the oracle says it reads (cause not sorted)"]
+#[ignore = "stub rewrite: a locator's redeemer reads nothing of the thing at quiet, the oracle says it reads (cause not sorted)"]
 fn a_node_lowered_with_the_public_reads_again_on_its_regrant_spec_sync_opens_4() {
     use crate::harness::history::{Gives, Holder};
     let script = [Step::New(2), Step::Run, Step::Give(2, 0, Holder::Public, Gives::Reads), Step::Give(0, 0, Holder::Node(1), Gives::Syncs), Step::Run, Step::Strong(1, None, 0), Step::Lower(0, 0, Holder::Public, Gives::Syncs), Step::Run, Step::Give(0, 0, Holder::Public, Gives::Reads), Step::Run];
@@ -589,7 +589,7 @@ fn a_removed_reader_keeps_the_publics_sync_secret_through_its_loss_spec_permissi
 }
 
 // spec/sync.md §3 (Holders by copies: the head listing the public is the word of its role only to a
-// node not holding the `sync.0` write placing that head): node 1 redeems a public link to thing 0
+// node not holding the `sync.0` write placing that head): node 1 redeems a locator of thing 0
 // and reads it by the public entry's box, then is granted sync of its own; node 0 lowers the
 // public to sync and writes. Lowering rotates read alone, so node 1 sees no new head but holds the
 // lowering: it reads nothing, not even what it read before.

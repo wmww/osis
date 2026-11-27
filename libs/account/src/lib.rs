@@ -73,12 +73,12 @@ impl Realm {
         Ok(db.at(self.thing, PROFILE).get()?.map(|w| w.0))
     }
 
-    /// The realm's contact card: a public link to its profile, naming this node to reach it
-    /// (`Osis::public_link`). Whoever imports it can grant the realm roles.
+    /// The realm's contact card: a locator of its profile, naming this node to reach it
+    /// (`Osis::locator`). Whoever imports it can grant the realm roles.
     pub fn contact_card(&self, db: &Osis) -> Result<Link> {
         let p = self.profile(db)?.ok_or_else(|| Error::Invalid("the realm's profile is not here yet".into()))?;
         publish_profile(db, p)?;
-        db.public_link(p)
+        db.locator(p)
     }
 
     /// Imports a contact card into the realm: holds the profile it names, records it, and returns
@@ -369,8 +369,8 @@ impl Offering {
         }
         let node = db.take_keys(&keys)?;
         db.grant(a, node, Role::Admin, GrantOpts::default())?;
-        // the account's public link: the new node reaches the account by it, as its holder
-        let link = db.public_link(a)?;
+        // the account's locator: the new node reaches the account by it, as its holder
+        let link = db.locator(a)?;
         Ok((node, PairReply(seal(REPLY, &self.secret, "osis pair reply", vec![Value::Str(link.to_string())]))))
     }
 }

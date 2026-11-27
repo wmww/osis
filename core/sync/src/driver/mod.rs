@@ -424,7 +424,7 @@ impl Node {
     /// Redeems a link (spec/sync-inbox.md §6) for `joiner` (an own thing or a thing its own
     /// things administer, such as the node's account, spec/permissions.md §7): a share link's
     /// first contact, kept until the join is held elsewhere, `Done` once the join is written; a
-    /// public link's, `Done` once the node closure holds its target (spec/sync-set.md §4).
+    /// locator's, `Done` once the node closure holds its target (spec/sync-set.md §4).
     pub fn redeem(&mut self, link: &osis_blob::Link, joiner: osis_base::Tid) -> Waiting {
         // its follow time runs from now (`Policy::follow_link_ms`)
         self.read_clocks();
@@ -434,7 +434,7 @@ impl Node {
         w
     }
 
-    /// Whether link K (a public link: its target) is being redeemed here (`redeem`): not joined
+    /// Whether link K (a locator: its target) is being redeemed here (`redeem`): not joined
     /// yet or the join not yet held at a source, and not ended or given up
     /// (`Policy::follow_link_ms`).
     pub fn redeeming(&self, k: &osis_base::Tid) -> bool {

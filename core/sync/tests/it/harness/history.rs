@@ -537,14 +537,14 @@ fn holder_tid(w: &World, h: Holder) -> Option<Tid> {
     }
 }
 
-/// Node `i` redeems a public link to thing `k` for its account (spec/sync-set.md §4): the link
+/// Node `i` redeems a locator of thing `k` for its account (spec/sync-set.md §4): the link
 /// made at an online node where the public reads `k`, its maker first. It writes the strong once
 /// the public's grant is held here, else gives up after its follow time (`Node::redeem`).
 fn redeem(w: &mut World, i: usize, k: usize) -> Result<String, String> {
     let Some(t) = thing(w, k) else { return Ok("skipped: no such thing".into()) };
     let maker = w.history.things[k].1;
     let at = std::iter::once(maker).chain(0..w.len()).find(|&m| m < w.len() && w.online(m) && w.engine(m).public_reads(&t));
-    let Some(link) = at.and_then(|m| w.public_link(m, t)) else { return Ok("skipped: the public reads it at no online node".into()) };
+    let Some(link) = at.and_then(|m| w.locator(m, t)) else { return Ok("skipped: the public reads it at no online node".into()) };
     let done = w.redeem_any(i, &link);
     // done, or following the link until it writes the strong
     if matches!(done, osis_sync::types::Waiting::Done | osis_sync::types::Waiting::Pending)
@@ -805,7 +805,7 @@ pub fn world_of(seed: u64, accounts: usize, nodes: usize) -> World {
 }
 
 /// Every account becomes every other's contact by contact cards (spec/sync-inbox.md §5): each
-/// account's first node makes a public link to its profile (public from its making), a node of
+/// account's first node makes a locator of its profile (public from its making), a node of
 /// every other account redeems it, holding the profile from that account (a redeem writes the
 /// strong, spec/sync-set.md §4). Before any history only; nothing is handed by hand.
 pub fn introduce(w: &mut World) {
@@ -818,7 +818,7 @@ pub fn introduce(w: &mut World) {
         }
     }
     let ones: Vec<usize> = first.values().copied().collect();
-    let cards: BTreeMap<usize, osis_blob::Link> = ones.iter().filter_map(|&i| w.public_link(i, w.node(i).profile?).map(|l| (i, l))).collect();
+    let cards: BTreeMap<usize, osis_blob::Link> = ones.iter().filter_map(|&i| w.locator(i, w.node(i).profile?).map(|l| (i, l))).collect();
     let pairs: Vec<(usize, usize)> = ones.iter().flat_map(|&j| ones.iter().map(move |&i| (j, i))).filter(|(j, i)| j != i).collect();
     for &(j, i) in &pairs {
         if let Some(c) = cards.get(&i) {
@@ -1522,7 +1522,7 @@ pub fn history(seed: u64, n: usize, accounts: usize, len: usize, faults: bool) -
                 }
             }
             43..=58 if things[k].given.get(&Holder::Public) == Some(&Gives::Reads) && pick(3) == 0 => {
-                // any node redeems a public link to it for its account
+                // any node redeems a locator of it for its account
                 strongs.push((None, k, node));
                 Step::Redeem(node, k)
             }

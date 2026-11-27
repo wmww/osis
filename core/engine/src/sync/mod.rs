@@ -414,14 +414,14 @@ pub struct ReadCredentials {
     pub shows_public: bool,
     /// The public reads S's thing (else, shown, it holds only sync there).
     pub public_reads: bool,
-    /// The public holds a role on S's thing as held here, this node redeems a public link to it,
+    /// The public holds a role on S's thing as held here, this node redeems a locator of it,
     /// or it follows S's thing by the public entry: its public entry is tested.
     pub tests_public: bool,
     /// The public is named on S's thing and reads it no more (its removal held): its read secrets
     /// at superseded epochs are shown lapsed, to every peer, each opening a member ended at once
     /// (spec/sync-opens.md §4, §6).
     pub lapsed_public: bool,
-    /// S's thing is followed by a public link (its value: the thing, its sync ID, where it is
+    /// S's thing is followed by a locator (its value: the thing, its sync ID, where it is
     /// served) and this node holds none of its read secrets yet: it asks every peer to open S
     /// by its role there (spec/sync-opens.md §5 ByRole).
     pub by_role: bool,
@@ -754,7 +754,7 @@ impl Engine {
     /// Opens a static or the public entry's grant (spec/sync-opens.md §5): `steps` verify from S's
     /// genesis step (`verify_path`: its delete key hashes to `s`) and pass through the newest step
     /// of S recorded here; a link key this node holds has static entry `entry` and opens the head's
-    /// entry box, or `entry` is S's public entry and this node redeems a public link to S's thing
+    /// entry box, or `entry` is S's public entry and this node redeems a locator of S's thing
     /// (the box open, read by anyone) (spec/sync-ids.md §3 Entry boxes), each secret naming its
     /// epoch of S's thing; the box's sync secret derives the head's sync key. Returns that key and the box, learning nothing: the
     /// caller verifies the answer's signature under the key, then `learn_grant`. `None` when any
@@ -774,7 +774,7 @@ impl Engine {
         let Some((things, _)) = self.sync_holder(s)? else { return Ok(None) };
         // the box names the thing it is of: whichever of S's things opens it
         let (party, opened) = if *entry == osis_crypto::public_entry(s) {
-            // the public entry, tested only while a public link to S's thing is redeemed here
+            // the public entry, tested only while a locator of S's thing is redeemed here
             if !c.tests_public {
                 return Ok(None);
             }

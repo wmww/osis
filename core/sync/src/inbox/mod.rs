@@ -274,17 +274,17 @@ impl Inbox {
     }
 
     /// First contact through a link (spec/sync-inbox.md §6): a share link durable until the join
-    /// is held elsewhere, `Done` once the join is written; a public link durable until the strong
+    /// is held elsewhere, `Done` once the join is written; a locator durable until the strong
     /// to its target is written (`Done` once the node closure holds it, spec/sync-set.md §4).
     pub fn redeem(&mut self, cx: &mut Cx, link: &osis_blob::Link, joiner: Tid) -> Waiting {
         let mut here = Here::of(cx, None);
         match link {
             osis_blob::Link::Share(l) => self.links.redeem(&mut here, l, joiner).unwrap_or(Waiting::Never("the link could not be kept")),
-            osis_blob::Link::Public(l) => self.links.redeem_public(&mut here, l, joiner).unwrap_or(Waiting::Never("the link could not be kept")),
+            osis_blob::Link::Locator(l) => self.links.redeem_public(&mut here, l, joiner).unwrap_or(Waiting::Never("the link could not be kept")),
         }
     }
 
-    /// Whether link K (a public link: its target) is being redeemed here: a redeem not joined and
+    /// Whether link K (a locator: its target) is being redeemed here: a redeem not joined and
     /// not ended, nor given up (`Policy::follow_link_ms`).
     pub fn redeeming(&self, k: &Tid) -> bool {
         self.links.redeeming(k)

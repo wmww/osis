@@ -206,8 +206,8 @@ macro_rules! secret_text {
 
 secret_text!(
     /// A link (`osis://link/...`) that `Osis::redeem` takes: a share link (`Osis::make_link`),
-    /// which whoever holds this text can redeem, so hand it over as a secret; or a public link
-    /// (`Osis::public_link`) to a thing everyone reads, which is no secret.
+    /// which whoever holds this text can redeem, so hand it over as a secret; or a locator
+    /// (`Osis::locator`), which names a thing and where to find it and grants nothing.
     Link, osis_blob::Link, |s| osis_blob::Link::from_text(s).map_err(bad("link"))
 );
 impl Link {
@@ -449,7 +449,7 @@ impl Osis {
     /// nothing, and the grant stands all the same.
     ///
     /// `Tid::PUBLIC` as holder makes `target` public: everyone may read it, from any node holding
-    /// it (`public_link`); a thing it holds by a strong is read with it. Read at most, no
+    /// it (`locator`); a thing it holds by a strong is read with it. Read at most, no
     /// `may_grant` (`Invalid`); `set_role(target, Tid::PUBLIC, None, ..)` makes it private again,
     /// for what is written from then on.
     ///
@@ -685,18 +685,18 @@ impl Osis {
         Ok(Link(link.to_text().map_err(bad("link"))?))
     }
 
-    /// A link to `target` that holds no secret: it names `target` and the nodes `make_link`'s
-    /// would. Whoever holds it can `redeem` it and reach `target` there if it may: everyone while
+    /// A locator of `target`: a link that holds no secret and grants nothing, naming `target` and
+    /// the nodes `make_link`'s would. Whoever holds it can `redeem` it and reach `target` there if it may: everyone while
     /// the public reads it (`grant` to `Tid::PUBLIC`), and a holder of a role on it (an account's
     /// new node, a grantee told of its grant) at any node reading it. `Invalid` while `target` has
     /// no keys of its own here yet.
-    pub fn public_link(&self, target: Tid) -> Result<Link> {
-        if let Some(at) = self.process_at("public_link")? {
-            return self.forward(&at, crate::port::method::PUBLIC_LINK, (target,));
+    pub fn locator(&self, target: Tid) -> Result<Link> {
+        if let Some(at) = self.process_at("locator")? {
+            return self.forward(&at, crate::port::method::LOCATOR, (target,));
         }
-        self.local_at(target, "public_link")?;
+        self.local_at(target, "locator")?;
         let peers = self.link_peers();
-        let link = self.engine(|e| e.public_link(&target, peers))?;
+        let link = self.engine(|e| e.locator(&target, peers))?;
         let link = link.ok_or_else(|| Error::Invalid(format!("{target} has no keys of its own yet")))?;
         Ok(Link(link.to_text().map_err(bad("link"))?))
     }
@@ -883,14 +883,14 @@ fn redeem_started<R>(db: &Osis, link: &osis_blob::Link, joiner: Tid, started: &m
 fn redeem_over<R>(db: &Osis, link: &osis_blob::Link, what: &str) -> Option<Result<R>> {
     let k = match link {
         osis_blob::Link::Share(l) => l.k,
-        osis_blob::Link::Public(l) => l.target,
+        osis_blob::Link::Locator(l) => l.target,
     };
     if db.locked(|l| l.node.redeeming(&k)) {
         return None;
     }
     let ended = match link {
         osis_blob::Link::Share(l) => db.engine(|e| e.link_ended(l)),
-        osis_blob::Link::Public(_) => false,
+        osis_blob::Link::Locator(_) => false,
     };
     Some(Err(if ended {
         Error::Invalid(format!("{what}: the link has ended"))

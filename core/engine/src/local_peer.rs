@@ -298,7 +298,7 @@ impl Peer {
     /// profile whose commits it has received: the strong from its account (its node thing where
     /// it acts for none) that redeeming writes (`Engine::redeem_public`), then what the profile
     /// carries taken (its cards).
-    pub fn import_contact(&mut self, link: &osis_blob::PublicLink) -> Result<()> {
+    pub fn import_contact(&mut self, link: &osis_blob::Locator) -> Result<()> {
         let joiner = self.engine.settings_thing()?.unwrap_or_else(|| self.engine.tid());
         self.engine.redeem_public(link, &joiner)?;
         self.engine.take_carried()?;
@@ -753,7 +753,7 @@ impl LocalPeer {
                         lp.deliver(j, &pk)?;
                     }
                 }
-                let link = lp.peers[i].engine.public_link(&a.profile, Vec::new())?.ok_or(crate::Error::Misuse("the profile is not public"))?;
+                let link = lp.peers[i].engine.locator(&a.profile, Vec::new())?.ok_or(crate::Error::Misuse("the profile is not public"))?;
                 lp.peers[j].import_contact(&link)?;
             }
         }
@@ -914,7 +914,7 @@ impl LocalPeer {
                 self.deliver(admin, &pk).unwrap_or_else(|e| panic!("deliver: {e}"));
             }
         }
-        let link = p.engine.public_link(&acc.profile, Vec::new()).ok().flatten().unwrap_or_else(|| panic!("the profile is not public"));
+        let link = p.engine.locator(&acc.profile, Vec::new()).ok().flatten().unwrap_or_else(|| panic!("the profile is not public"));
         self.peers[admin].import_contact(&link).unwrap_or_else(|e| panic!("the account's contact card: {e}"));
         let mut m = Mutation::new();
         m.op(acc.thing, &osis_schema::core_types::HOLDS, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Add(osis_base::Value::Strong(t)) }).unwrap_or_else(|e| panic!("hold {t:?}: {e}"));
@@ -1492,7 +1492,7 @@ impl Engine {
 
     /// Pairs node thing `node`, shown by `keys` (`node_keys`), into account `a` at `role`: its
     /// grant on A. `Permission` unless this node holds admin on A; `BadInput` unless `keys` show
-    /// `node`'s keys. What the new node is handed besides is A's public link (`public_link`).
+    /// `node`'s keys. What the new node is handed besides is A's locator (`locator`).
     pub fn pair(&mut self, a: &Tid, node: &Tid, keys: &osis_blob::Certificates, role: osis_base::Role) -> Result<crate::flows::Done> {
         let me = self.core.tid();
         if self.core.role_now(&me, a) != Some(osis_base::Role::Admin) {
@@ -1507,7 +1507,7 @@ impl Engine {
     }
 
     /// Holds account `a` by a strong from the node root and names it in `settings^.0`: the new
-    /// node's half of pairing beside redeeming A's public link, by which it reaches A.
+    /// node's half of pairing beside redeeming A's locator, by which it reaches A.
     pub fn take_pairing(&mut self, a: &Tid) -> Result<crate::flows::Done> {
         let root = self.core.node_root.ok_or(crate::error::Error::Misuse("no node root"))?;
         let mut done = crate::flows::Done::default();

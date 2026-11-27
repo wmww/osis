@@ -506,7 +506,7 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
         Cmd::Link(LinkCmd::Make { t, role, until, single_use }) => make_link(ctx, &t, &role, LinkOpts { until: opt_ts(&until)?, single_use }),
         Cmd::Link(LinkCmd::Public { t }) => {
             let t = ctx.tid(&t)?;
-            let l = db.public_link(t)?;
+            let l = db.locator(t)?;
             ctx.one("link", l)?;
             delivered(ctx, &[t])
         }
@@ -534,7 +534,7 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             Ok(())
         }
         Cmd::Contact(ContactCmd::Show) => {
-            // a contact card is a public link to the profile
+            // a contact card is a locator of the profile
             let a = ctx.account()?.realm();
             let c = a.contact_card(&db)?;
             ctx.one("card", c)?;

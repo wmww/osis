@@ -88,7 +88,7 @@ fn pairing_and_removing_a_node_spec_permissions_8() {
     assert_eq!(a.remove_node(db, b.node(), SetRoleOpts::default()).unwrap(), [], "no node of the account: nothing to do");
 }
 
-// spec/sync-inbox.md §5 (contact card), spec/sync-set.md §4: a contact card is a public link to the
+// spec/sync-inbox.md §5 (contact card), spec/sync-set.md §4: a contact card is a locator of the
 // profile; a stranger importing it reads the profile, gets its account, whose keys are then here
 // (a grant to it goes through), and records the profile.
 #[test]

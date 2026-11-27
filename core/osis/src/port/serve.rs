@@ -386,7 +386,7 @@ fn row(h: &crate::Osis, method: u64, args: Value, limit: usize) -> Result<Value>
             h.commit_told_here(&a, id, None)
         }),
         method::MAKE_LINK => on(args, |(t, role, admin, until, single_use): (Tid, crate::Role, Tid, Option<crate::Time>, bool)| h.make_link(t, role, admin, crate::LinkOpts { until, single_use })),
-        method::PUBLIC_LINK => on(args, |(t,): (Tid,)| h.public_link(t)),
+        method::LOCATOR => on(args, |(t,): (Tid,)| h.locator(t)),
         m => Err(Error::Unsupported(format!("unknown method {m}"))),
     }
 }

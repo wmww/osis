@@ -3,7 +3,7 @@
 //! chains, logged under its sync ID by a node holding their role entries; a node reading the unit
 //! holds each stub and follows its role entries from the thing's own sync IDs. Node 0 makes every
 //! thing here; node 1, of another account holding no grant of its own, reaches them only by
-//! redeeming a public link to U, the referrer, so whatever it holds of the rest it found by U.
+//! redeeming a locator of U, the referrer, so whatever it holds of the rest it found by U.
 
 use crate::harness::history::value_ak;
 use crate::harness::{World, edge};
@@ -59,17 +59,17 @@ fn holding(w: &mut World, i: usize, t: &Tid) -> Option<Holding> {
     w.engine(i).sync_set().unwrap().ids.get(&s).map(|h| h.1)
 }
 
-/// U, made public, set up by `arrange`; node 1 redeems a public link to U and runs.
+/// U, made public, set up by `arrange`; node 1 redeems a locator of U and runs.
 fn redeemed(arrange: impl FnOnce(&mut World, Tid)) -> (World, Tid) {
     let mut w = crate::harness::contacts();
     let u = make(&mut w, "u");
     grant(&mut w, u, Tid::PUBLIC, Some(Role::Read));
     arrange(&mut w, u);
     w.run();
-    let link = w.public_link(0, u).expect("U is public");
+    let link = w.locator(0, u).expect("U is public");
     w.redeem_any(1, &link);
     w.run();
-    assert!(reads(&mut w, 1, &u).is_some(), "node 1 reads U by the public link");
+    assert!(reads(&mut w, 1, &u).is_some(), "node 1 reads U by the locator");
     (w, u)
 }
 

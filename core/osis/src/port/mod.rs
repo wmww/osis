@@ -64,8 +64,8 @@ pub mod method {
     pub const LISTED_COMMIT: u64 = 17;
     /// `[tid, role, admin, Opt(until), single_use] -> link text` (`make_link`)
     pub const MAKE_LINK: u64 = 18;
-    /// `[tid] -> link text` (`public_link`)
-    pub const PUBLIC_LINK: u64 = 23;
+    /// `[tid] -> link text` (`locator`)
+    pub const LOCATOR: u64 = 23;
 
     // Rows that wait: never a Call, only as a Sub `[filter::WAIT, method, [arg*]]`.
 

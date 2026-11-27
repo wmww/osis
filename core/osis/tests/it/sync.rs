@@ -313,9 +313,9 @@ fn a_revoked_links_joiner_stays_until_removed_spec_permissions_7() {
     assert!(!joined(&a), "removed");
 }
 
-// spec/permissions.md §1, §2 (the public), spec/wire.md §10 (public link), spec/sync-judgement.md
+// spec/permissions.md §1, §2 (the public), spec/wire.md §10 (locator), spec/sync-judgement.md
 // §1 (entitlement): a grant to the public lets every party read: a client's thing of the node
-// granted nothing, and a stranger node by a public link, which a private thing has none of. The
+// granted nothing, and a stranger node by a locator, which a private thing has none of. The
 // public holds read at most, and removing its grant makes the thing private again.
 #[test]
 fn the_publics_grant_round_trip_spec_permissions_1() {
@@ -337,7 +337,7 @@ fn the_publics_grant_round_trip_spec_permissions_1() {
     a.grant(t, Tid::PUBLIC, Role::Read, GrantOpts::default()).unwrap();
     assert!(a.holders(t).unwrap().iter().any(|h| h.thing == Tid::PUBLIC && h.kind == HolderKind::Public && h.role == Role::Read));
     assert_eq!(client.at(t, osis::core::NAME).get().unwrap().as_deref(), Some("open"), "every party reads it");
-    let link = a.public_link(t).unwrap();
+    let link = a.locator(t).unwrap();
     assert_eq!(link.target().unwrap(), t);
     assert_eq!(drive(&net, b.redeem(&link, b.node())).unwrap(), t);
     assert_eq!(b.at(t, osis::core::NAME).get().unwrap().as_deref(), Some("open"), "a stranger reads it by the link");
@@ -382,7 +382,7 @@ fn put_card_needs_keys_and_a_path_through_the_thing_spec_sync_inbox_1() {
     a.put_card(p, g).unwrap();
     a.grant(p, Tid::PUBLIC, Role::Read, GrantOpts::default()).unwrap();
     let b = on(&net, 51, &c);
-    assert_eq!(drive(&net, b.redeem(&a.public_link(p).unwrap(), b.node())).unwrap(), p);
+    assert_eq!(drive(&net, b.redeem(&a.locator(p).unwrap(), b.node())).unwrap(), p);
     let mut w = b.write();
     let t = w.create_held().unwrap();
     w.commit().unwrap();

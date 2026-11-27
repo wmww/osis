@@ -303,14 +303,14 @@ pub(crate) fn held_sync_ids(core: &Core, g: &Tid, m: &ct::SyncIds) -> Vec<OwnedS
 }
 
 /// The links this node redeems (`Engine::follow_link`, `follow_public`): a share link's K, or a
-/// public link's target, to its sync ID from the link text and a share link's key L, read per key
+/// locator's target, to its sync ID from the link text and a share link's key L, read per key
 /// three ways (by K; by L, an author this node writes as; by sync ID), so a reader asking about
 /// one link, actor or sync ID moves only when that one does, not at every link followed or let
 /// go. Each key L is kept exactly while some followed link names it, so it goes with the last link
 /// naming it (`Engine::settle_link_key`). In memory only (`Core::followed_links`).
 #[derive(Clone, Default)]
 pub(crate) struct FollowedLinks {
-    /// Per link K (a public link: its target), its sync ID and key (a public link: none).
+    /// Per link K (a locator: its target), its sync ID and key (a locator: none).
     by_k: Stamped<Tid, (SyncId, Option<Tid>)>,
     /// Per link key L, the links K it is the key of.
     by_actor: Stamped<Tid, BTreeSet<Tid>>,
@@ -321,7 +321,7 @@ pub(crate) struct FollowedLinks {
     /// The things followed for a link being redeemed (`insert`).
     linked: BTreeSet<Tid>,
     /// Per thing a held grant signal names (`Engine::take_fire`), its sync ID as the newest
-    /// such signal names it and the signals naming it: followed as a public link's target while
+    /// such signal names it and the signals naming it: followed as a locator's target while
     /// any is held.
     signals: BTreeMap<Tid, (SyncId, BTreeSet<CommitId>)>,
     /// A count written at each change of `signals`: what a reader of them all reads
@@ -332,7 +332,7 @@ pub(crate) struct FollowedLinks {
 }
 
 impl FollowedLinks {
-    /// Link `k`'s sync ID and key (none: a public link), read per K.
+    /// Link `k`'s sync ID and key (none: a locator), read per K.
     pub(crate) fn get(&self, k: &Tid) -> Option<(SyncId, Option<Tid>)> {
         self.by_k.get(k).copied()
     }
@@ -366,7 +366,7 @@ impl FollowedLinks {
         self.by_sync.get(s).cloned().unwrap_or_default()
     }
 
-    /// Follows link `k` under sync ID `s` and key `l` (none: a public link); the same again moves
+    /// Follows link `k` under sync ID `s` and key `l` (none: a locator); the same again moves
     /// nothing. Returns the key `k` was followed under before, if any.
     pub(crate) fn insert(&mut self, k: Tid, s: SyncId, l: Option<Arc<Identity>>) -> Option<Tid> {
         self.linked.insert(k);
@@ -374,7 +374,7 @@ impl FollowedLinks {
     }
 
     /// Lets link `k` go: its key, if it was followed with one (gone here with the last link naming
-    /// it). A thing a held grant signal names stays followed as a public link's target.
+    /// it). A thing a held grant signal names stays followed as a locator's target.
     pub(crate) fn remove(&mut self, k: &Tid) -> Option<Tid> {
         self.linked.remove(k);
         let old = self.unset(k);
@@ -384,7 +384,7 @@ impl FollowedLinks {
         old
     }
 
-    /// Follows thing `x` under sync ID `s` for held grant signal `c`, as a public link's target
+    /// Follows thing `x` under sync ID `s` for held grant signal `c`, as a locator's target
     /// unless a link being redeemed follows it.
     pub(crate) fn follow_signal(&mut self, x: Tid, s: SyncId, c: CommitId) {
         let e = self.signals.entry(x).or_insert_with(|| (s, BTreeSet::new()));
@@ -489,7 +489,7 @@ fn followed(core: &Core, k: &Tid) -> Option<OwnedSyncId> {
 
 /// Whether followed link `k` may be a link's K here: a thing this node holds only as a link's K
 /// (its creation record has the `link` field), or one it knows nothing of yet (no record). A link text naming any other thing as K changes nothing of it.
-/// A public link's target may be any thing: its sync ID counts only where no held `sync.0` of the
+/// A locator's target may be any thing: its sync ID counts only where no held `sync.0` of the
 /// target's records one (`held_sync_ids`) and no other's records it (`followed`).
 pub(crate) fn followable(core: &Core, k: &Tid) -> bool {
     match core.followed_links.get(k) {

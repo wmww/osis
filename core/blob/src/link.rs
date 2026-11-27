@@ -43,7 +43,7 @@ impl DialHint {
 const MAX_PEERS: usize = 4;
 const MAX_URLS: usize = 4;
 const FORMAT: i64 = 1;
-/// A public link's format (spec/wire.md §10).
+/// A locator's format (spec/wire.md §10).
 const PUBLIC_FORMAT: i64 = 2;
 const LINK_PREFIX: &str = "osis://link/";
 /// Far above the largest layout the caps allow.
@@ -97,7 +97,7 @@ fn check_url(u: &str) -> Result<(), Error> {
     Ok(())
 }
 
-/// A link's format: 1 a share link, 2 a public link (spec/wire.md §10).
+/// A link's format: 1 a share link, 2 a locator (spec/wire.md §10).
 fn format_of(v: &Value) -> Result<u64, Error> {
     match get_uint(v, "format")? {
         n @ (1 | 2) => Ok(n),
@@ -145,7 +145,7 @@ fn value_of_text(s: &str) -> Result<Value, Error> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Link {
     Share(ShareLink),
-    Public(PublicLink),
+    Locator(Locator),
 }
 
 impl Link {
@@ -153,14 +153,14 @@ impl Link {
     pub fn target(&self) -> Tid {
         match self {
             Link::Share(l) => l.target,
-            Link::Public(l) => l.target,
+            Link::Locator(l) => l.target,
         }
     }
 
     pub fn to_text(&self) -> Result<String, Error> {
         match self {
             Link::Share(l) => l.to_text(),
-            Link::Public(l) => l.to_text(),
+            Link::Locator(l) => l.to_text(),
         }
     }
 
@@ -168,7 +168,7 @@ impl Link {
         let Value::List(items) = v else { return Err(Error::Malformed("link")) };
         match format_of(items.first().ok_or(Error::Malformed("link"))?)? {
             1 => Ok(Link::Share(ShareLink::from_value(v)?)),
-            _ => Ok(Link::Public(PublicLink::from_value(v)?)),
+            _ => Ok(Link::Locator(Locator::from_value(v)?)),
         }
     }
 
@@ -182,7 +182,7 @@ impl Link {
 /// thing the sync ID is of where the target is a dependent of it. Its redeemer opens the sync ID by
 /// its public entry (spec/sync-opens.md §4).
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PublicLink {
+pub struct Locator {
     pub target: Tid,
     pub sync_id: SyncId,
     pub peers: Vec<DialHint>,
@@ -190,7 +190,7 @@ pub struct PublicLink {
     pub independent: Option<Tid>,
 }
 
-impl PublicLink {
+impl Locator {
     /// The thing whose sync ID the redeemer follows: the target's independent.
     pub fn followed(&self) -> Tid {
         self.independent.unwrap_or(self.target)
@@ -202,7 +202,7 @@ impl PublicLink {
         Ok(Value::List(v))
     }
 
-    pub fn from_value(v: &Value) -> Result<PublicLink, Error> {
+    pub fn from_value(v: &Value) -> Result<Locator, Error> {
         let Value::List(items) = v else { return Err(Error::Malformed("link")) };
         let (f, target, sync_id, peers, independent) = match items.as_slice() {
             [f, t, s, Value::List(p)] => (f, t, s, p, None),
@@ -210,14 +210,14 @@ impl PublicLink {
             _ => return Err(Error::Malformed("link")),
         };
         if format_of(f)? != 2 {
-            return Err(Error::Malformed("not a public link"));
+            return Err(Error::Malformed("not a locator"));
         }
         let target = get_tid(target, "link target")?;
         let independent = independent.map(|i| get_tid(i, "link independent")).transpose()?;
         if independent == Some(target) {
             return Err(Error::Malformed("link independent is its target"));
         }
-        Ok(PublicLink { target, sync_id: SyncId(get_bytes(sync_id, "link sync ID")?), peers: peers_from(peers)?, independent })
+        Ok(Locator { target, sync_id: SyncId(get_bytes(sync_id, "link sync ID")?), peers: peers_from(peers)?, independent })
     }
 
     pub fn to_text(&self) -> Result<String, Error> {
@@ -279,7 +279,7 @@ impl ShareLink {
         Ok(text_of(&self.to_value()?))
     }
 
-    /// A share link's text (a public link's is no share link: `Link::from_text` reads either).
+    /// A share link's text (a locator's is no share link: `Link::from_text` reads either).
     pub fn from_text(s: &str) -> Result<ShareLink, Error> {
         ShareLink::from_value(&value_of_text(s)?)
     }
@@ -368,23 +368,23 @@ pub(crate) mod tests {
         assert!(ShareLink::from_text("osis://link/!!").is_err());
     }
 
-    // spec/wire.md §10 (public link): format 2, target, its sync ID and peers, no seed, and a
-    // dependent target's independent; read as a public link only, its text round trips.
+    // spec/wire.md §10 (locator): format 2, target, its sync ID and peers, no seed, and a
+    // dependent target's independent; read as a locator only, its text round trips.
     #[test]
-    fn public_links() {
+    fn locators() {
         let l = link();
         let k = l.k;
-        let p = PublicLink { target: l.target, sync_id: l.k_sync_id, peers: l.peers.clone(), independent: None };
+        let p = Locator { target: l.target, sync_id: l.k_sync_id, peers: l.peers.clone(), independent: None };
         let t = p.to_text().unwrap();
-        assert_eq!(Link::from_text(&t).unwrap(), Link::Public(p.clone()));
+        assert_eq!(Link::from_text(&t).unwrap(), Link::Locator(p.clone()));
         assert_eq!(Link::from_text(&l.to_text().unwrap()).unwrap(), Link::Share(l));
-        assert!(ShareLink::from_text(&t).is_err(), "a public link is no share link");
+        assert!(ShareLink::from_text(&t).is_err(), "a locator is no share link");
         let Value::List(mut items) = p.to_value().unwrap() else { panic!() };
         items.push(Value::Int(1));
         assert!(Link::from_value(&Value::List(items.clone())).is_err(), "no flags");
-        let d = PublicLink { independent: Some(k), ..p.clone() };
-        assert_eq!(Link::from_text(&d.to_text().unwrap()).unwrap(), Link::Public(d.clone()), "a dependent target names its independent");
-        let same = PublicLink { independent: Some(p.target), ..p };
+        let d = Locator { independent: Some(k), ..p.clone() };
+        assert_eq!(Link::from_text(&d.to_text().unwrap()).unwrap(), Link::Locator(d.clone()), "a dependent target names its independent");
+        let same = Locator { independent: Some(p.target), ..p };
         assert!(Link::from_text(&same.to_text().unwrap()).is_err(), "an independent target names none");
         let Value::List(mut items) = d.to_value().unwrap() else { panic!() };
         items.push(Value::Int(1));

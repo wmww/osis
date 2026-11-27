@@ -31,7 +31,7 @@
 //!
 //! Finalize is the sharer's engine's, on a complete pass of K's sync ID (status tells it).
 //!
-//! A public link (spec/sync-set.md §4) has no join: `redeem_public` follows it in the engine
+//! A locator (spec/sync-set.md §4) has no join: `redeem_public` follows it in the engine
 //! (`Engine::follow_public`: the target's sync ID from the text read in the sync set, its public
 //! entry tested) until the public's grant on the target is held here, then writes the strong to
 //! the target in the joiner's `holds.0` (`Engine::redeem_public`) and forgets it: the strong brings
@@ -39,7 +39,7 @@
 //! `I/r/` under its target, not shredded: no secret), so a restart goes on with it. Its follow
 //! time is a share link's.
 //!
-//! Pairing (spec/permissions.md §8) hands over the account's public link: redeemed like any, so a
+//! Pairing (spec/permissions.md §8) hands over the account's locator: redeemed like any, so a
 //! node paired and restarted before it entered the account still dials the pairer.
 
 use super::Here;
@@ -47,7 +47,7 @@ use crate::types::{Result, Waiting};
 use osis_base::memo::{Effects, Stamped};
 use osis_base::{CommitId, Tid, WallMs};
 use osis_engine::Engine;
-use osis_blob::{DialHint, Link, PublicLink, ShareLink};
+use osis_blob::{DialHint, Link, Locator, ShareLink};
 use osis_store::Shred;
 use std::collections::BTreeMap;
 
@@ -71,7 +71,7 @@ fn link_hints(link: &ShareLink) -> Vec<DialHint> {
     link.peers.clone()
 }
 
-/// A redeem's durable row (`I/r/`, keyed by K or a public link's target), either kind of link:
+/// A redeem's durable row (`I/r/`, keyed by K or a locator's target), either kind of link:
 /// `[joined: 0 | 1 commit][since][joiner][link text]`.
 fn encode_row(link: &Link, since: WallMs, joiner: &Tid, joined: Option<CommitId>) -> Result<Vec<u8>> {
     let text = link.to_text().map_err(|_| crate::types::Error::NotBuilt("link text"))?;
@@ -98,7 +98,7 @@ impl Pending {
 
 impl PublicPending {
     fn encode(&self) -> Result<Vec<u8>> {
-        encode_row(&Link::Public(self.link.clone()), self.since, &self.joiner, None)
+        encode_row(&Link::Locator(self.link.clone()), self.since, &self.joiner, None)
     }
 }
 
@@ -135,15 +135,15 @@ enum Stage {
     GaveUp,
 }
 
-/// A public link being redeemed (`redeem_public`).
+/// A locator being redeemed (`redeem_public`).
 #[derive(Clone, Debug)]
 struct PublicPending {
-    link: PublicLink,
+    link: Locator,
     since: WallMs,
     joiner: Tid,
 }
 
-/// What a public link being redeemed waits on.
+/// What a locator being redeemed waits on.
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum PublicStage {
     /// The public's grant on the target is not held here yet.
@@ -159,7 +159,7 @@ enum PublicStage {
 #[derive(Clone)]
 pub(super) struct Redemptions {
     pending: BTreeMap<Tid, Pending>,
-    /// Public links being redeemed, by target.
+    /// Locators being redeemed, by target.
     public: BTreeMap<Tid, PublicPending>,
     public_ready: Effects<Tid, PublicStage>,
     /// Stamped: the driver follows the dial hints as they move.
@@ -174,7 +174,7 @@ pub(super) struct Redemptions {
 
 impl Default for Redemptions {
     fn default() -> Self {
-        Redemptions { pending: BTreeMap::new(), public: BTreeMap::new(), public_ready: Effects::new("inbox: public link ready"), hints: Stamped::default(), ready: Effects::new("inbox: link ready"), held: Effects::new("inbox: join held"), kept: Effects::new("inbox: joined link's peers") }
+        Redemptions { pending: BTreeMap::new(), public: BTreeMap::new(), public_ready: Effects::new("inbox: locator ready"), hints: Stamped::default(), ready: Effects::new("inbox: link ready"), held: Effects::new("inbox: join held"), kept: Effects::new("inbox: joined link's peers") }
     }
 }
 
@@ -185,7 +185,7 @@ impl Redemptions {
             let Some(k) = k.get(ROWS.len()..).and_then(|x| <[u8; 15]>::try_from(x).ok()).map(Tid::from_bytes) else { continue };
             match decode_row(&v) {
                 Some((Link::Share(link), since, joiner, joined)) => self.follow(h, k, Pending { link, since, joiner, joined })?,
-                Some((Link::Public(link), since, joiner, None)) => self.follow_public(h, PublicPending { link, since, joiner }),
+                Some((Link::Locator(link), since, joiner, None)) => self.follow_public(h, PublicPending { link, since, joiner }),
                 _ => {}
             }
         }
@@ -235,8 +235,8 @@ impl Redemptions {
         Ok(Waiting::Pending)
     }
 
-    /// Redeems a public link (module doc): `Done` once the node closure holds its target.
-    pub(super) fn redeem_public(&mut self, h: &mut Here<'_>, link: &PublicLink, joiner: Tid) -> Result<Waiting> {
+    /// Redeems a locator (module doc): `Done` once the node closure holds its target.
+    pub(super) fn redeem_public(&mut self, h: &mut Here<'_>, link: &Locator, joiner: Tid) -> Result<Waiting> {
         let t = link.target;
         if h.engine.closure_holds(&t) {
             return Ok(Waiting::Done);
@@ -283,7 +283,7 @@ impl Redemptions {
             self.public_ready.unwant(&t);
             self.public.remove(&t);
             self.hints.remove(&t);
-            // the independent it follows, unless another public link being redeemed follows it
+            // the independent it follows, unless another locator being redeemed follows it
             let f = p.link.followed();
             if !self.public.values().any(|o| o.link.followed() == f) {
                 h.engine.unfollow_link(&f);
@@ -362,7 +362,7 @@ impl Redemptions {
         Ok(())
     }
 
-    /// Whether link K, or a public link to target `k`, is being redeemed here.
+    /// Whether link K, or a locator of target `k`, is being redeemed here.
     pub(super) fn redeeming(&self, k: &Tid) -> bool {
         self.pending.contains_key(k) || self.public.contains_key(k)
     }

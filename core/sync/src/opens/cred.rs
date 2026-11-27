@@ -130,7 +130,7 @@ pub enum Tested {
     Claim { step: StepId, key: SigningSecret, sync: [u8; 32] },
     /// A link key's static entry this node acts for, with that key.
     Static { step: Option<StepId>, key: SigningSecret },
-    /// S's public entry, while this node redeems a public link to S's thing: its Hit carries no
+    /// S's public entry, while this node redeems a locator of S's thing: its Hit carries no
     /// proof.
     Public,
 }

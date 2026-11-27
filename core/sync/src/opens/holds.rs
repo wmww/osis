@@ -50,7 +50,7 @@ pub struct Creds {
     /// hits none, so learns nothing of who holds S and is served nothing once the public is
     /// removed.
     pub lapsed: Vec<Shown>,
-    /// S's thing is followed by a public link's value and none of its read secrets is held: S is
+    /// S's thing is followed by a locator's value and none of its read secrets is held: S is
     /// asked of every peer by role, opened on its acceptance (spec/sync-opens.md §5 ByRole).
     pub by_role: bool,
     /// S is kept unread at a head past its keys (spec/sync-judgement.md §6 Stops): S is asked of
@@ -247,7 +247,7 @@ fn node_creds(cx: &mut Cx, unread: &Unread, s: &SyncId) -> Option<Arc<Creds>> {
             // S's public entry: shown where the public holds a role on S's thing, at the epoch of
             // the box it gives (the newest read epoch held where the public reads, else the head's
             // sync epoch), so Departed judges it as any credential; tested where this node redeems
-            // a public link to it; once the public's read is removed, the superseded read secrets
+            // a locator of it; once the public's read is removed, the superseded read secrets
             // lapsed instead (spec/sync-opens.md §4)
             if rc.shows_public {
                 let at = match rc.public_reads {

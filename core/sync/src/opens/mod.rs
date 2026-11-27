@@ -382,7 +382,7 @@ struct Changed {
     end: u64,
     at: BTreeMap<SyncId, (u64, [u8; 32], Arc<Creds>)>,
     order: BTreeMap<u64, SyncId>,
-    /// The sync IDs whose credentials test the public entry without showing it (a public link
+    /// The sync IDs whose credentials test the public entry without showing it (a locator
     /// redeemed: spec/sync-opens.md §5 Testing): tested at each
     /// filter arrival, since a peer's filter shows the entry once the public reads S's thing,
     /// whatever this node's own credentials did.
@@ -579,7 +579,7 @@ impl crate::store::Members for BTreeMap<SyncId, Member> {
 /// What a connection may open S by, judged now (spec/sync-opens.md §4 Admissible).
 struct Adm {
     j: J,
-    /// This node follows S by a public link's value alone, holding none of its thing's secrets
+    /// This node follows S by a locator's value alone, holding none of its thing's secrets
     /// (`Creds::by_role`): it asks every peer to open S by role and judges none of them.
     by_role: bool,
     /// Kept unread past its keys (`Creds::stopped`): it asks every peer to open S by role, beside
@@ -2202,7 +2202,7 @@ impl Opens {
             }
             if adm.j == J::Reader || (adm.by_role && !hit) || adm.stopped {
                 // ByRole for S still not open that J judges the peer reads, or that this side
-                // follows by a public link's value alone and Hits nothing of there (the public
+                // follows by a locator's value alone and Hits nothing of there (the public
                 // entry's box comes only with its Hit's answer), with this side's Hits of its
                 // read secrets and static entries (a Hit may be a false positive of the filter).
                 let hits = adm.tests.iter().filter(|t| matches!(t, Tested::Read(..) | Tested::Static { .. })).take(osis_proto::limits::MAX_ITEM_HITS).map(|t| {

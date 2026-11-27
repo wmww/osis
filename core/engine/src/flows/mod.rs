@@ -350,16 +350,16 @@ impl Engine {
         Ok(l)
     }
 
-    /// Follows a public link being redeemed (spec/sync-set.md §4, §5): keeps the sync ID of its
-    /// target's independent (`PublicLink::followed`) from the link text in the sync set, read,
+    /// Follows a locator being redeemed (spec/sync-set.md §4, §5): keeps the sync ID of its
+    /// target's independent (`Locator::followed`) from the link text in the sync set, read,
     /// testing the public entry (spec/sync-opens.md §4), until `unfollow_link` of that thing. The
     /// link text is untrusted: its sync ID counts only where nothing held records another's
     /// (`sync_ids::actors::followed`).
-    pub fn follow_public(&mut self, link: &osis_blob::PublicLink) {
+    pub fn follow_public(&mut self, link: &osis_blob::Locator) {
         self.core.followed_links.insert(link.followed(), link.sync_id, None);
     }
 
-    /// Stops following link K (its join is held elsewhere), or a public link's target; a share
+    /// Stops following link K (its join is held elsewhere), or a locator's target; a share
     /// link's key goes with the last link naming it (spec/permissions.md §7).
     pub fn unfollow_link(&mut self, k: &Tid) {
         if let Some(l) = self.core.followed_links.remove(k) {

@@ -133,12 +133,12 @@ impl Engine {
         })
     }
 
-    /// Redeems a public link (spec/sync-set.md §4): a strong to its target in `joiner`'s
+    /// Redeems a locator (spec/sync-set.md §4): a strong to its target in `joiner`'s
     /// `holds.0`, unless the node closure holds the target, and nothing else. Written once the
     /// link reaches the target here (`reaches`): the strong then brings the target into
     /// `joiner`'s sync unit (spec/sync-set.md §2 T's keys open). Who writes it: this node, for a
     /// joiner it writes.
-    pub fn redeem_public(&mut self, link: &osis_blob::PublicLink, joiner: &Tid) -> Result<Done> {
+    pub fn redeem_public(&mut self, link: &osis_blob::Locator, joiner: &Tid) -> Result<Done> {
         let (t, d) = (link.target, *joiner);
         if !self.reaches(&t) {
             return Err(Error::Misuse("the link's target is not reached here"));
@@ -156,12 +156,12 @@ impl Engine {
         Ok(done)
     }
 
-    /// A public link to `t` naming `peers` (spec/wire.md §10): its sync ID that of `t`'s
+    /// A locator of `t` naming `peers` (spec/wire.md §10): its sync ID that of `t`'s
     /// independent, named where it is not `t`, which the redeemer opens by the public entry or
     /// by its role. `None` while `t`'s independent owns no sync ID here.
-    pub fn public_link(&mut self, t: &Tid, peers: Vec<osis_blob::DialHint>) -> Result<Option<osis_blob::PublicLink>> {
+    pub fn locator(&mut self, t: &Tid, peers: Vec<osis_blob::DialHint>) -> Result<Option<osis_blob::Locator>> {
         let Some(a) = self.core.secret_actor(t) else { return Ok(None) };
-        Ok(self.sync_id_of(&a)?.map(|sync_id| osis_blob::PublicLink { target: *t, sync_id, peers, independent: (a != *t).then_some(a) }))
+        Ok(self.sync_id_of(&a)?.map(|sync_id| osis_blob::Locator { target: *t, sync_id, peers, independent: (a != *t).then_some(a) }))
     }
 
     /// Whether the public reads `t`'s independent by its own grant there, as held here
@@ -170,7 +170,7 @@ impl Engine {
         self.core.secret_actor(t).is_some_and(|a| self.core.public_reads(&a))
     }
 
-    /// Whether a public link to `t` reaches it here (spec/sync-set.md §4): the public reads it,
+    /// Whether a locator of `t` reaches it here (spec/sync-set.md §4): the public reads it,
     /// or this node holds a role on it.
     pub fn reaches(&self, t: &Tid) -> bool {
         self.public_reads(t) || self.role_on(t).is_some()

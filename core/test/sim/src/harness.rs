@@ -241,16 +241,16 @@ impl Sim {
             s.nodes.push(Node { peer, account: made.thing, profile: made.profile, faults, clock, up: true });
         }
         // each account is every other's contact (spec/sync-inbox.md §5): its profile is public and
-        // its contact card a public link to it, which each other node follows until the profile
+        // its contact card a locator of it, which each other node follows until the profile
         // is here, then redeems (a strong from its account, spec/sync-set.md §4); the profile
         // carries the account's card, so a fire reaches the inbox its keys name
         let mut links = Vec::new();
         for i in 0..s.nodes.len() {
             let profile = s.node(i)?.profile;
-            let l = s.engine(i)?.public_link(&profile, Vec::new());
+            let l = s.engine(i)?.locator(&profile, Vec::new());
             links.push(l.map_err(|e| s.fail(format!("node {i} contact card: {e}")))?.ok_or_else(|| s.fail(format!("node {i}'s profile is not public")))?);
         }
-        let pairs: Vec<(usize, usize, osis_blob::PublicLink)> = (0..links.len()).flat_map(|j| links.iter().enumerate().filter(move |(i, _)| *i != j).map(move |(i, l)| (j, i, l.clone()))).collect();
+        let pairs: Vec<(usize, usize, osis_blob::Locator)> = (0..links.len()).flat_map(|j| links.iter().enumerate().filter(move |(i, _)| *i != j).map(move |(i, l)| (j, i, l.clone()))).collect();
         for (j, _, l) in &pairs {
             s.engine(*j)?.follow_public(l);
         }

@@ -668,7 +668,7 @@ impl World {
 
     /// A new node paired at admin as a node of node `i`'s account (spec/permissions.md §8
     /// Pairing, as osis-account's `Account::offer_pairing`/`Offering::accept`): it shows its node
-    /// thing's public key record, node `i` grants it and hands back A's public link, which it
+    /// thing's public key record, node `i` grants it and hands back A's locator, which it
     /// redeems for its node root; then it publishes where it is dialed.
     pub fn pair(&mut self, i: usize) -> usize {
         let j = self.add_bare_node();
@@ -679,9 +679,9 @@ impl World {
             Err(osis_engine::Error::Store(_)) => drop(self.write(i, pair).expect("pairing again after a store failure")),
             r => drop(r.expect("pair")),
         }
-        // A's public link, naming where the pairer is dialed: the new node redeems it for its
+        // A's locator, naming where the pairer is dialed: the new node redeems it for its
         // node root, entering A by its role at the pairer
-        let link = self.public_link(i, acc).expect("A's public link");
+        let link = self.locator(i, acc).expect("A's locator");
         self.write(j, |e| e.take_pairing(&acc)).expect("name the account");
         let root = self.write(j, |e| e.node_root()).expect("a node root");
         let n = self.nodes.get_mut(j).expect("no such node");
@@ -699,7 +699,7 @@ impl World {
 
     /// At quiet, each paired node whose pairer it could reach this run (both on, no partition
     /// between them, no loss, no liar) holds its account at a role (spec/permissions.md §8
-    /// Pairing): it entered by the account's public link.
+    /// Pairing): it entered by the account's locator.
     fn pairs_entered(&mut self) {
         let clean = self.net.loss.none() && self.liars.is_empty();
         for (j, i) in self.pairing.clone() {
@@ -734,12 +734,12 @@ impl World {
         self.write(i, |e| e.create_link(&me, &spec)).expect("a link").0
     }
 
-    /// Node `i`'s public link to `target` (`Engine::public_link`, as the product's `public_link`
+    /// Node `i`'s locator of `target` (`Engine::locator`, as the product's `locator`
     /// makes it: the node's dialable key and where it is reached, as first-contact hints); `None`
     /// while `target`'s independent owns no sync ID at node `i`.
-    pub fn public_link(&mut self, i: usize, target: Tid) -> Option<osis_blob::Link> {
+    pub fn locator(&mut self, i: usize, target: Tid) -> Option<osis_blob::Link> {
         let peers = osis_blob::link_peers(self.node(i).key.0, &self.net.reach.items(i), &self.node(i).node.config().dial);
-        self.write(i, |e| e.public_link(&target, peers)).expect("a public link").map(osis_blob::Link::Public)
+        self.write(i, |e| e.locator(&target, peers)).expect("a locator").map(osis_blob::Link::Locator)
     }
 
     /// Where node `i`'s wait on `scope` stands (`Node::wait`).
@@ -1662,7 +1662,7 @@ pub enum Step {
     Unstrong(usize, Option<usize>, usize),
     Pair(usize),
     Unpair(usize, usize),
-    /// Node i redeems a public link to thing k for its account (`Node::redeem`), the link made at
+    /// Node i redeems a locator of thing k for its account (`Node::redeem`), the link made at
     /// an online node where the public reads it, preferably the thing's maker.
     Redeem(usize, usize),
     /// Node i writes its account's card on thing k (spec/sync-inbox.md §1 Card).

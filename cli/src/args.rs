@@ -359,7 +359,7 @@ pub enum Cmd {
     /// Share links
     #[command(subcommand)]
     Link(LinkCmd),
-    /// Contact cards: a public link to an account's profile, which gives its keys
+    /// Contact cards: a locator of an account's profile, which gives its keys
     #[command(subcommand)]
     Contact(ContactCmd),
     /// Cards: a thing's keys put on another thing, so whoever reads that one can grant it roles;
@@ -535,7 +535,7 @@ pub enum LinkCmd {
         #[arg(long)]
         single_use: bool,
     },
-    /// A public link to T, which the public reads (`grant T public read`); prints it, then waits
+    /// A locator of T, which the public reads (`grant T public read`); prints it, then waits
     /// as `make` does
     Public { t: String },
     /// Join what LINK names; prints the thing
@@ -651,7 +651,7 @@ pub enum ChatCmd {
 
 #[derive(Subcommand, Debug)]
 pub enum ContactCmd {
-    /// This account's contact card (a public link to its profile): prints it, then waits as
+    /// This account's contact card (a locator of its profile): prints it, then waits as
     /// `link make` does on the profile
     Show,
     /// Imports a contact card: prints its account, which can then be granted roles

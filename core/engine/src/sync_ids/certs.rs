@@ -283,7 +283,7 @@ impl Engine {
     /// `cut`'s parts of commit `c` on thing `x` (spec/permissions.md §4 Copies: S's cut, each
     /// part whole): evidence, its edge-class parts and, recording a step placing a listed key, its
     /// `sync.0`; keys, its `keys.0`. Beside a `keys.0` part, the commit's edge-class parts on
-    /// `x`: they carry the edge writes its rotation makes (a removal: a public link's redeemer
+    /// `x`: they carry the edge writes its rotation makes (a removal: a locator's redeemer
     /// learns the public's removal so).
     /// Invariant (security): nothing outside `x`; a box part only beside its edge-class parts.
     /// A stub's cut: `stub_parts`.

@@ -505,6 +505,7 @@ DEAD_WORDS = {w: re.compile(p) for w, p in {
     "own actor": r"(?i)\bown[ _-]?actors?\b",
     "link actor": r"(?i)\blink[ _-]?actors?\b",
     "UnknownActor": r"\bUnknownActor\b|\bUNKNOWN_ACTOR\b",
+    "public link": r"(?i)\bpublic[ _-]?links?\b|\bPUBLIC_LINKS?\b",
 }.items()}
 
 # Words of key parts (notes/stub-rewrite.md), refused in prose now; widen to every tracked file once
