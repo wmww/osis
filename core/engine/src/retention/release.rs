@@ -17,13 +17,14 @@ impl Engine {
         self.core.ix.closure.left().iter().map(|(t, cs)| (*t, units(cs))).collect()
     }
 
-    /// Releases each of `ts` still outside the node closure (spec/sync-set.md §3): it and what
+    /// Releases each of `ts` still outside the node closure (spec/sync-set.md §3; one a unit it
+    /// reads carries as a stub is held as that stub from then on): it and what
     /// it was named holder on are judged in the same transaction by what the node holds of a
     /// thing outside its node closure (`retention::needed::Holding`): its content goes as never
     /// received, its certificates stay while a held thing needs them, and the store's own
     /// entries of the commits it deleted whole go (`sync::bodies::forget`).
     pub fn released(&mut self, ts: &BTreeSet<Tid>) -> Result<()> {
-        let out: BTreeSet<Tid> = ts.iter().filter(|t| !self.core.ix.closure.holds_any(t)).copied().collect();
+        let out: BTreeSet<Tid> = ts.iter().filter(|t| !self.core.ix.closure.holds(t)).copied().collect();
         if out.is_empty() {
             return Ok(());
         }

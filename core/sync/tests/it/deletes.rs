@@ -477,14 +477,13 @@ fn set_value(w: &mut World, i: usize, t: Tid, v: &str) {
 // may be under purge on replace), spec/commits.md §5 (Covered): node 1 makes a thing with a value
 // (the making commit also holds its record and the strong from its account), replaces the
 // value, and with its sibling node 2 replaces it again at once, after node 2 grants node 0's
-// account read; node 0 holds the thing. The making commit's value part is dropped as covered, its cover
+// account read (told by a grant signal); node 0 holds the thing. The making commit's value part is dropped as covered, its cover
 // covered in turn by a snapshot whose tables no longer name the part's session (no write of it
 // is left). A blob stripped of it would leave node 0 counting it never received with no source
 // for it; unstripped, node 0 receives the making commit whole (the harness checks every must-hold
 // body reached at quiet). It passes with that strip too: node 0 counts the part covered either way
 // (the next test), so no test catches it (issues/strip-rule-gaps.md).
 #[test]
-#[ignore = "stub rewrite: told: the reader never holds the making commit (cause not sorted)"]
 fn a_reader_receives_a_part_whose_cover_was_covered_whole_spec_sync_judgement_2() {
     covers_cover(false);
 }
@@ -496,7 +495,6 @@ fn a_reader_receives_a_part_whose_cover_was_covered_whole_spec_sync_judgement_2(
 // making commit, held by its writer, so node 0, receiving the commit stripped, counts the part
 // covered, not missing, and reads the value. Fails if a snapshot lists only what occurs in it.
 #[test]
-#[ignore = "stub rewrite: told: the reader never holds the making commit (cause not sorted)"]
 fn a_reader_counts_a_stripped_part_covered_by_its_covers_cover_spec_crdt_8() {
     covers_cover(true);
 }
@@ -519,7 +517,7 @@ fn covers_cover(purge_on_replace: bool) {
     });
     set_value(&mut w, 1, t, "v1");
     w.run();
-    w.write(2, |e| e.grant(&t, &a0, &edge(Role::Read))).unwrap();
+    w.write(2, |e| e.grant(&t, &a0, &edge(Role::Read)).and_then(|_| e.signal_grant(&t, &a0, &[]))).unwrap();
     set_value(&mut w, 2, t, "v2");
     set_value(&mut w, 1, t, "v3");
     let d = w.node(0).account.unwrap();
@@ -554,7 +552,6 @@ fn make_held(w: &mut World) -> Tid {
 // rewrites the blob. Each node makes again every held blob it keeps a seal of, and some at each.
 // Fails if a seal leaves out what its blob carries (a wrap, a key, a section, the prefix).
 #[test]
-#[ignore = "stub rewrite: UnknownCommit at the reader making a blob again (cause not sorted)"]
 fn every_held_blob_is_made_again_from_its_seal() {
     let mut w = world_of(0, 3, 3);
     w.cap = crate::harness::WIDE_CAP;
@@ -562,7 +559,7 @@ fn every_held_blob_is_made_again_from_its_seal() {
     for (i, ts) in [(1, vec![a, c]), (2, vec![c])] {
         let to = w.node(i).account.unwrap();
         for t in ts {
-            w.write(0, |e| e.grant(&t, &to, &edge(Role::Write))).unwrap();
+            w.write(0, |e| e.grant(&t, &to, &edge(Role::Write)).and_then(|_| e.signal_grant(&t, &to, &[]))).unwrap();
             let d = w.node(i).account.unwrap();
             w.write(i, |e| {
                 let mut m = Mutation::new();
@@ -647,7 +644,6 @@ fn a_reader_keeps_no_bytes_of_what_it_makes_again() {
 // as a blob it opened lacks each, its bytes held or not. Fails if only the held blobs' lists
 // count (two strips of different parts never meet at a node opening neither).
 #[test]
-#[ignore = "stub rewrite: a node reading neither part holds no entry to look at (cause not sorted)"]
 fn strips_of_two_parts_by_nodes_apart_meet_at_a_node_reading_neither_spec_sync_judgement_1() {
     let mut w = world_of(0, 4, 4);
     w.cap = crate::harness::WIDE_CAP;
@@ -655,7 +651,7 @@ fn strips_of_two_parts_by_nodes_apart_meet_at_a_node_reading_neither_spec_sync_j
     for (i, ts) in [(1, vec![a, c]), (2, vec![b, c]), (3, vec![c])] {
         let to = w.node(i).account.unwrap();
         for t in ts {
-            w.write(0, |e| e.grant(&t, &to, &edge(Role::Write))).unwrap();
+            w.write(0, |e| e.grant(&t, &to, &edge(Role::Write)).and_then(|_| e.signal_grant(&t, &to, &[]))).unwrap();
             let d = w.node(i).account.unwrap();
             w.write(i, |e| {
                 let mut m = Mutation::new();

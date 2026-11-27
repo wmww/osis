@@ -443,9 +443,15 @@ impl Closure {
     }
 
     /// Whether the node holds `t` as a stub alone (spec/sync-set.md §2 Holding a stub): a unit it
-    /// reads carries `t`'s stub and the node closure does not hold `t`.
+    /// reads carries `t`'s stub and the node closure does not hold `t`, nor holds it leaving (kept
+    /// as it was until released, spec/sync-set.md §3 Release).
     pub(crate) fn stub_only(&self, t: &Tid) -> bool {
-        !self.holds(t) && self.tree.held.get(t).is_some_and(|cs| !cs.is_empty())
+        !self.holds(t) && !self.leaving(t) && self.tree.held.get(t).is_some_and(|cs| !cs.is_empty())
+    }
+
+    /// Whether `t` left the node closure from a context other than a stub's and is not released.
+    fn leaving(&self, t: &Tid) -> bool {
+        self.left.get(t).is_some_and(|cs| cs.iter().any(|c| !matches!(c, Ctx::Stub(_))))
     }
 
     /// Whether the node holds `t` at all: in the node closure or as a stub.
@@ -1077,7 +1083,8 @@ fn settle_with(tx: &mut Tx<'_>, f: &mut Follow, rv: Vx) -> Result<()> {
             // from in this transaction: the sync units that carried it when it left
             let cl = &mut tx.core.ix.closure;
             for (t, cs) in std::mem::take(&mut f.gone) {
-                if !cl.holds_any(&t) {
+                // out of the node closure, whether or not a unit it reads still carries its stub
+                if !cl.holds(&t) {
                     let mut was = cl.left.get(&t).cloned().unwrap_or_default();
                     was.extend(cs);
                     cl.left.insert(t, was);

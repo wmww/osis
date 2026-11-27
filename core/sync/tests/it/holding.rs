@@ -74,7 +74,8 @@ fn keyless_way() -> (World, (Tid, Tid, Tid)) {
 }
 
 /// On `contacts`, Bob (node 1) makes T0 and T1, grants T1 read on T0 (with key access) and Alice read on
-/// T1 only; she holds both. Built once per process (`fixture_with`): the world, Alice, T0 and T1.
+/// T1 only, and strongs T0 from T1 (T1's unit carries T0, by which Alice reaches it); she holds
+/// both. Built once per process (`fixture_with`): the world, Alice, T0 and T1.
 fn keyed_way() -> (World, (Tid, Tid, Tid)) {
     fixture_with("holding keyed way", || {
         let mut w = contacts();
@@ -83,6 +84,7 @@ fn keyed_way() -> (World, (Tid, Tid, Tid)) {
         let t1 = make(&mut w, 1, None, "t1");
         w.write(1, |e| told(e, &t0, &t1, &edge(Role::Read))).unwrap();
         w.write(1, |e| told(e, &t1, &alice, &edge(Role::Read))).unwrap();
+        strong(&mut w, 1, Some(t1), t0, true);
         for t in [t0, t1] {
             strong(&mut w, 0, None, t, true);
         }
@@ -928,11 +930,11 @@ fn a_keyed_live_grant_from_a_kept_holder_keeps_a_copy_spec_permissions_3() {
 
 // spec/permissions.md §3 (Retain: an ended way judged over the writes before its removal),
 // spec/crypto.md §4 Key access: Bob grants Alice read on T1 only; his offline sibling grants T0 read
-// on T1, then Bob T1 read on T0 (with key access at Bob). Bob removes T1's grant saying retain: Alice keeps a
+// on T1, then Bob T1 read on T0 (with key access at Bob) and strongs T0 from T1, by which Alice
+// reaches it. Bob removes T1's grant saying retain: Alice keeps a
 // copy of T0. The sibling's grant arrives, ordered first: T1's grant was keyless before its removal,
 // so the copy goes, as at a node that held every write together.
 #[test]
-#[ignore = "stub rewrite: told: Alice reads nothing of T0 through T1 (a grant to a thing, untold to its readers; rewrite with a signal to T1 or a reference)"]
 fn an_ended_way_found_keyless_drops_its_copy_spec_permissions_3() {
     let mut w = siblings();
     let alice = w.node(0).account.unwrap();
@@ -948,6 +950,7 @@ fn an_ended_way_found_keyless_drops_its_copy_spec_permissions_3() {
     w.write(2, |e| told(e, &t1, &t0, &edge(Role::Read))).unwrap();
     w.advance(1000);
     w.write(1, |e| told(e, &t0, &t1, &edge(Role::Read))).unwrap();
+    strong(&mut w, 1, Some(t1), t0, true);
     w.run();
     assert_eq!(value(&mut w, 0, &t0), Some(Value::Str("t0".into())), "Alice reads T0 through T1");
     w.write(1, |e| e.demote(&t0, &osis_engine::flows::Demotion { holder: t1, new: None, retain: Some(true) })).unwrap();
@@ -1012,7 +1015,7 @@ fn a_reader_takes_a_concurrent_promotions_grant_through_a_rotation_spec_sync_ids
 // keeps): Bob grants T1 read on T0 (both his own, the grant with key access) and Alice read on T1 only; she
 // holds both. Bob removes T1's grant saying retain: she keeps a copy of T0 and still reads T1.
 #[test]
-#[ignore = "stub rewrite: told: Alice reads nothing of T0 through T1 (a grant to a thing, untold to its readers; rewrite with a signal to T1 or a reference)"]
+#[ignore = "issues/kept-copy-through-a-holder.md"]
 fn an_ended_keyed_grant_keeps_a_copy_spec_permissions_3() {
     let (mut w, (_, t0, t1)) = keyed_way();
     assert_eq!(value(&mut w, 0, &t0), Some(Value::Str("t0".into())), "Alice reads T0 through T1");
@@ -1029,7 +1032,6 @@ fn an_ended_keyed_grant_keeps_a_copy_spec_permissions_3() {
 // a complete pass): Bob grants Alice write on T, which she holds; she writes and drops her
 // strong before syncing. Her write reaches Bob before she lets T go.
 #[test]
-#[ignore = "stub rewrite: told: the peer never holds Alice's write made before the dropped strong (cause not sorted)"]
 fn an_own_write_before_a_dropped_strong_reaches_its_peer_spec_sync_set_3() {
     let mut w = contacts();
     let alice = w.node(0).account.unwrap();

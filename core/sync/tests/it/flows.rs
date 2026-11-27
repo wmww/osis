@@ -76,10 +76,9 @@ fn a_paired_node_pairs_another_spec_sync_inbox_1() {
 
 // spec/crypto.md §4 (State at a cut), §5 (Passing on: floors), notes/history-less-grant.md (From
 // now means current state): node 0 writes t twice, then grants node 1's account read without
-// history; node 1 holds t. Through only sync it reads t's current value, holds no body carrying
+// history (told by a grant signal); node 1 holds t. Through only sync it reads t's current value, holds no body carrying
 // an earlier write of it, and reads what node 0 writes next.
 #[test]
-#[ignore = "stub rewrite: a from-now grantee reads nothing (cause not sorted)"]
 fn a_from_now_grantee_reads_the_current_state_and_no_earlier_write_spec_crypto_4() {
     use crate::harness::Step::*;
     use crate::harness::history::{value_ak, world_of};
@@ -90,7 +89,7 @@ fn a_from_now_grantee_reads_the_current_state_and_no_earlier_write_spec_crypto_4
     assert_eq!(before.len(), 2, "two writes before the grant");
     let now = w.engine(0).get(&t, &value_ak()).unwrap().expect("a current value");
     let a1 = w.node(1).account.unwrap();
-    w.write(0, |e| e.grant_with(&t, &a1, &edge(Role::Read), osis_engine::flows::edges::History::None)).unwrap();
+    w.write(0, |e| e.grant_with(&t, &a1, &edge(Role::Read), osis_engine::flows::edges::History::None).and_then(|_| e.signal_grant(&t, &a1, &[]))).unwrap();
     w.run();
     let _ = crate::harness::play(&mut w, &[Strong(1, None, 0), Run], String::new());
     assert_eq!(w.engine(1).get(&t, &value_ak()).unwrap(), Some(now), "the current state");
@@ -136,11 +135,10 @@ fn a_reader_joining_after_role_compaction_judges_alike_spec_commits_5() {
 
 // spec/crypto.md §4 (State at a cut), spec/sync-inbox.md §1 (Card), spec/data-model.md §9 (card
 // aspect): node 0 writes its account's card on t, then grants node 1's account read on t without
-// history. The card's write lies below node 1's floor; node 0, a writer of t through its account,
+// history (told by a grant signal). The card's write lies below node 1's floor; node 0, a writer of t through its account,
 // owes the card aspect's snapshot like any aspect's, so node 1 reads the card on t through sync
 // alone, carrying the account's keys.
 #[test]
-#[ignore = "stub rewrite: a from-now grantee reads nothing (cause not sorted)"]
 fn a_from_now_grantee_reads_a_card_written_before_its_cut_spec_crypto_4() {
     use crate::harness::Step::*;
     use crate::harness::history::world_of;
@@ -150,7 +148,7 @@ fn a_from_now_grantee_reads_a_card_written_before_its_cut_spec_crypto_4() {
     let a0 = w.node(0).account.unwrap();
     let want = w.engine(0).cards_of(&a0).unwrap().into_iter().find(|(h, _)| *h == t).expect("node 0's card on t").1;
     let a1 = w.node(1).account.unwrap();
-    w.write(0, |e| e.grant_with(&t, &a1, &edge(Role::Read), osis_engine::flows::edges::History::None)).unwrap();
+    w.write(0, |e| e.grant_with(&t, &a1, &edge(Role::Read), osis_engine::flows::edges::History::None).and_then(|_| e.signal_grant(&t, &a1, &[]))).unwrap();
     w.run();
     let _ = crate::harness::play(&mut w, &[Strong(1, None, 0), Run], String::new());
     let got = w.engine(1).cards_of(&a0).unwrap().into_iter().find(|(h, _)| *h == t).map(|x| x.1);
@@ -160,12 +158,11 @@ fn a_from_now_grantee_reads_a_card_written_before_its_cut_spec_crypto_4() {
 // spec/crypto.md §4 (State at a cut: a record whose minting lies below the cut goes as a
 // certificate), spec/commits.md §4 (Records: a held strong awaits its target's record): a dependent
 // thing p under t (carried under t's sync ID, as a chat's messages are) written before node 1's
-// grant without history on t: node 1 reads p's current value through t's sync ID, and no earlier
+// grant without history on t (told by a grant signal): node 1 reads p's current value through t's sync ID, and no earlier
 // write of it. Its record rides in p's minting, below the cut, so it reaches node 1 only by a
 // record blob, which node 1 learns for t's strong to p. A thing q made after the cut is minted
 // above it: its record goes in its minting alone.
 #[test]
-#[ignore = "stub rewrite: a from-now grantee reads nothing (cause not sorted)"]
 fn a_from_now_grantee_reads_a_dependent_thing_minted_with_it_spec_crypto_4() {
     use crate::harness::Step::*;
     use crate::harness::history::{value_ak, world_of};
@@ -176,7 +173,7 @@ fn a_from_now_grantee_reads_a_dependent_thing_minted_with_it_spec_crypto_4() {
     let before: Vec<osis_base::CommitId> = w.history.values.values().copied().collect();
     let now = w.engine(0).get(&p, &value_ak()).unwrap().expect("a current value");
     let a1 = w.node(1).account.unwrap();
-    w.write(0, |e| e.grant_with(&t, &a1, &edge(Role::Read), osis_engine::flows::edges::History::None)).unwrap();
+    w.write(0, |e| e.grant_with(&t, &a1, &edge(Role::Read), osis_engine::flows::edges::History::None).and_then(|_| e.signal_grant(&t, &a1, &[]))).unwrap();
     w.run();
     let _ = crate::harness::play(&mut w, &[Strong(1, None, 0), Run], String::new());
     assert_eq!(w.engine(1).get(&p, &value_ak()).unwrap(), Some(now), "p's current state");
