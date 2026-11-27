@@ -1,5 +1,5 @@
 # Test harnesses
-> Summary: How to run and replay seeded tests (env vars through `osis_base::testenv`, seed runners, coverage floors), copied worlds, the debug checks every test runs, why-kept and row dumps, loop guards, `LocalPeer` delivery by sync ID and sealed delivery, the store-contents differential, measuring (icount, cpuprof, memprof, callgrind, pertest), the default-test cost, mutation probes, and harness footguns.
+> Summary: How to run and replay seeded tests (env vars through `osis_base::testenv`, one test on origin/main, seed runners, coverage floors), copied worlds, the debug checks every test runs, why-kept and row dumps, loop guards, `LocalPeer` delivery by sync ID and sealed delivery, the store-contents differential, measuring (icount, cpuprof, memprof, callgrind, pertest), the default-test cost, mutation probes, and harness footguns.
 
 ## Env vars and seeds
 - Harness env vars (`OSIS_*_START`/`_SEEDS`, `OSIS_PERM_SEED`, ...) are read through `osis_base::testenv`, which panics on an unparsable value, zero seeds, or any set `OSIS_*` variable not in core/base/testenv-known.txt (add a new one at its end; read at run time, so adding one rebuilds nothing). Probe variables: notes/build.md, Footguns.
@@ -16,6 +16,11 @@ Crate-wide seeds:
   - `OSIS_ORDER_SHRINK=1` shrinks each failure (`order::shrink`) and prints the history as Rust a scripted test compiles (`rust_of`). A candidate counts only when it fails as the original did (`failure_class`); `OSIS_SHRINK_MATCH=<text>` keeps to failures containing the text, `OSIS_SHRINK_ANY=1` to any.
   - `OSIS_ORDER_STATS=1` prints each history and the tallies; `OSIS_ORDER_DUMP=1` explains a failing node (order.rs docs). For a node-holds-or-drops difference, a dump of the shrunk history usually names the cause; probe the drop decision rather than shrinking further.
 - **sim**: notes/test-sim.md, Running and replaying.
+
+## One test on origin/main
+Whether a test failing in a task worktree fails on main too. Both ways build in a task worktree's own target (notes/build.md: no new target dir, no `CARGO_TARGET_DIR`, never a build in /home/ai/osis).
+- **Once**: in your worktree, wip-commit, then `tools/bin-at origin/main $SCRATCH/<task>-main-it -p <crate>` (`--lib <crate>` for lib tests; `$SCRATCH` a directory of your task in the scratchpad) and run `$SCRATCH/<task>-main-it <module>::<name> --exact` from the crate's directory in your worktree (`core/sync`: the binary reads its fixtures from there). It rebuilds what main changed twice (to main and back); while it builds your tree is main's: edit nothing.
+- **Repeatedly, or several crates**: a second worktree with a warm target of its own, `M=$(tools/claim <task>-main)` from /home/ai/osis (at origin/main), the command form there (`cargo test -p <crate> --test it -- <module>::<name>`, run in `$M`), then `wt release` in `$M` and `git branch -D <task>-main` (a stale local branch is what a later claim of that name checks out). Never point a build at your worktree's target from another checkout, nor `git worktree add` one of your own: two checkouts on one target read each other's builds as fresh.
 
 ## Seed runners
 - `osis_base::testenv`'s `run_seeds` (and `Seeds::run`, which announces an env range) runs a seed per thread per core (`OSIS_SEED_THREADS` overrides); `run_jobs` is the general runner. A multi-seed or multi-case run goes through them, not a serial loop or hand-rolled `thread::scope` workers: a panic ends such a worker, so every case it would have taken after its first failure never runs and a run reports about one failure per thread (a by-hand shred run read as cases changing path between processes).
