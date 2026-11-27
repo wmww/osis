@@ -1155,7 +1155,11 @@ impl Engine {
                 // §3 Taking an entry)
                 match self.take_entry(s, bytes, &[])? {
                     crate::sync_ids::entries::Took::Read { thing, key, section } => (thing, key, Some(section)),
-                    crate::sync_ids::entries::Took::Sync | crate::sync_ids::entries::Took::Nothing => return Ok(Opened::NotOpen),
+                    crate::sync_ids::entries::Took::Sync { thing, holder } => {
+                        self.took_sync_entry(s, thing, holder)?;
+                        return Ok(Opened::NotOpen);
+                    }
+                    crate::sync_ids::entries::Took::Nothing => return Ok(Opened::NotOpen),
                 }
             }
         };
@@ -1169,7 +1173,11 @@ impl Engine {
     pub fn take_unread_entry(&mut self, s: &SyncId, blob: &BlobId, wrap: &Wrap, bytes: &[u8], path: &[osis_blob::Step]) -> Result<Opened> {
         match self.take_entry(s, bytes, path)? {
             crate::sync_ids::entries::Took::Read { thing, key, section } => self.opened_entry(s, blob, wrap, bytes, 0, thing, &key, &[section]),
-            crate::sync_ids::entries::Took::Sync | crate::sync_ids::entries::Took::Nothing => Ok(Opened::NotOpen),
+            crate::sync_ids::entries::Took::Sync { thing, holder } => {
+                self.took_sync_entry(s, thing, holder)?;
+                Ok(Opened::NotOpen)
+            }
+            crate::sync_ids::entries::Took::Nothing => Ok(Opened::NotOpen),
         }
     }
 

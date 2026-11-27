@@ -107,9 +107,9 @@ impl Engine {
                 return Ok(ThingSync::Read(ids));
             }
         }
-        // kept unread: in the node closure by a sync secret alone, or followed or held as a stub
-        // holding one (an entry's) and no read secret (spec/sync.md §3: one predicate, by secrets)
-        if self.kept_unread(t) || (!self.holds_read(t) && !self.core.unread(t).candidates.is_empty()) {
+        // kept unread: the node closure keeps it unread (spec/sync-set.md §2: a strong reaches it
+        // at sync); a thing held as a stub alone is followed as one, whatever secrets it holds
+        if self.kept_unread(t) {
             // the sync ID kept for it (spec/sync.md §3 Kept for T)
             let ids: Vec<SyncId> = self.owned_sync_ids(t)?.iter().map(|o| o.id).collect();
             if !ids.is_empty() {
@@ -196,7 +196,7 @@ impl Engine {
         if !at.is_empty() {
             let claimants = self.claimants(s, &things);
             for st in &at {
-                c.claims.extend(claimants.each().filter_map(|k| super::claim_at(k, s, &st.step_key)).map(|x| (st.keys.sync.to_bytes(), x)));
+                c.claims.extend(claimants.each().filter_map(|(_, k)| super::claim_at(k, s, &st.step_key)).map(|x| (st.keys.sync.to_bytes(), x)));
             }
         }
         Ok(Some(Arc::new(c)))
@@ -210,7 +210,7 @@ impl Engine {
     pub(crate) fn claimants(&mut self, s: &SyncId, things: &[Tid]) -> super::Claimants {
         let me = self.core.tid();
         let mut holders: BTreeSet<Tid> = std::iter::once(me).chain(self.core.timelines().edges_at(None).targets(&me).copied()).collect();
-        let mut keys: Vec<osis_crypto::KemSecret> = Vec::new();
+        let mut keys: Vec<(Option<Tid>, osis_crypto::KemSecret)> = Vec::new();
         let mut public = false;
         for t in things {
             let reader = self.core.reader_of(t);
@@ -223,9 +223,11 @@ impl Engine {
             holders.extend(self.core.followed_links.signal_holders(t, s));
             // a held stub's carrying unit's thing: the thing a sync-only cut naming `s` came under
             holders.extend(self.core.ix.sync_cuts.values().filter(|c| c.cut.thing == *t && c.cut.sync_id == *s).map(|c| c.under));
+            // a holder whose entry gave this node a sync secret of it
+            holders.extend(self.core.ix.entry_syncs.get(t).into_iter().flatten().filter(|(_, x)| x == s).map(|(h, _)| *h));
             match self.core.followed_links.link_of(t, s) {
                 Some(None) => public = true,
-                Some(Some(l)) => keys.extend(l.link_read_kem().cloned()),
+                Some(Some(l)) => keys.extend(l.link_read_kem().cloned().map(|k| (None, k))),
                 None => {}
             }
         }
@@ -233,8 +235,8 @@ impl Engine {
             let Some(e) = self.core.epochs(&m) else { continue };
             for (_, x) in e.role(Role::Read).held_newest_first() {
                 let k = x.kem();
-                if !keys.iter().any(|y| y.public() == k.public()) {
-                    keys.push(k.clone());
+                if !keys.iter().any(|(_, y)| y.public() == k.public()) {
+                    keys.push((Some(m), k.clone()));
                 }
             }
         }

@@ -596,6 +596,9 @@ indexes! {
     pub sync_cut_ids: JSetMap<Tid, SyncId>,
     /// `sync_cut_ids` the other way: per sync ID, the things cuts give it.
     pub sync_cut_things: JSetMap<SyncId, Tid>,
+    /// Per thing, each holder whose entry gave this node a sync secret of it, with the sync ID
+    /// (`sync_ids::unread`, rows `se/`): a sync-only cut of it under that holder.
+    pub entry_syncs: JSetMap<Tid, (Tid, SyncId)>,
     /// The certificate blobs sealed here per sync ID, each with what it carries
     /// (`sync::certblobs`).
     pub cert_blobs: JMap<SyncId, Arc<crate::sync::CertBlobs>>,

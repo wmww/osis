@@ -192,11 +192,11 @@ impl Total {
 /// Whether S moving from `was` to `now` is raised (spec/sync-judgement.md §6 Read and unread
 /// move): it takes entries its sources showed it before and it did not take, so they are pulled
 /// from the start: from kept unread to opened (read or as a stub), or from held as a stub (role
-/// entries alone) to read.
+/// entries alone) to read or kept unread.
 fn raised(was: Option<&Held>, now: Option<&Held>) -> bool {
     match (was.map(|(_, h)| *h), now.map(|(_, h)| *h)) {
         (Some(Holding::Unread), Some(h)) => h.opens(),
-        (Some(Holding::Stub), Some(Holding::Read)) => true,
+        (Some(Holding::Stub), Some(Holding::Read | Holding::Unread)) => true,
         _ => false,
     }
 }

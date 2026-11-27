@@ -417,7 +417,8 @@ pub struct ReadCredentials {
 /// and whether the public is one (it tests the public's claim).
 #[derive(Clone, Default)]
 pub(crate) struct Claimants {
-    pub(crate) keys: Vec<osis_crypto::KemSecret>,
+    /// Each holder's read KEM key pair, with the holder (none: a link's key).
+    pub(crate) keys: Vec<(Option<Tid>, osis_crypto::KemSecret)>,
     pub(crate) public: bool,
 }
 
@@ -431,9 +432,9 @@ pub(crate) fn claim_at(key: Option<&osis_crypto::KemSecret>, s: &SyncId, step_ke
 }
 
 impl Claimants {
-    /// Each holder's key, then the public (`None`) where it is one.
-    pub(crate) fn each(&self) -> impl Iterator<Item = Option<&osis_crypto::KemSecret>> {
-        self.keys.iter().map(Some).chain(self.public.then_some(None))
+    /// Each holder's key with the holder, then the public's (`None`) where it is one.
+    pub(crate) fn each(&self) -> impl Iterator<Item = (Option<Tid>, Option<&osis_crypto::KemSecret>)> {
+        self.keys.iter().map(|(h, k)| (*h, Some(k))).chain(self.public.then_some((Some(Tid::PUBLIC), None)))
     }
 }
 

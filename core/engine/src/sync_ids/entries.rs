@@ -135,8 +135,9 @@ pub(crate) enum Took {
     /// A read holder's (the public's alike): the blob key and the key of the section holding the
     /// commit's role parts on `thing`.
     Read { thing: Tid, key: Secret32, section: Secret32 },
-    /// A sync holder's: the sync secret of `thing`'s epoch the block is bound to, taken.
-    Sync,
+    /// A sync holder's (`holder`; none: a link's key): the sync secret of `thing`'s epoch the
+    /// block is bound to, taken.
+    Sync { thing: Tid, holder: Option<Tid> },
     Nothing,
 }
 
@@ -189,7 +190,7 @@ impl Engine {
             if !block.verifies(s, prefix.salt()) {
                 continue;
             }
-            for k in claimants.each() {
+            for (holder, k) in claimants.each() {
                 let Some(claim) = crate::sync::claim_at(k, s, step_key) else { continue };
                 let Some(e) = block.find(&claim.verifying_key().to_bytes()) else { continue };
                 let keys = match k {
@@ -205,7 +206,7 @@ impl Engine {
                             tx.core.touch();
                             Ok(())
                         })?;
-                        return Ok(Took::Sync);
+                        return Ok(Took::Sync { thing, holder });
                     }
                     _ => {}
                 }

@@ -26,6 +26,12 @@ use std::sync::Arc;
 /// budget, a writer's stamp aside.
 pub(crate) const SYNC_CUTS: &[u8] = b"su/";
 
+/// `se/` + thing (15 bytes) + holder (15 bytes): a holder's entry gave this node a sync secret of
+/// the thing (`Core::took_sync_entry`); its value the sync ID. Kept until the thing is forgotten:
+/// the secret it tells of is never taken back (spec/permissions.md §3 Lost access: a sync secret
+/// held by no grant held is judged by its steps alone).
+pub(crate) const ENTRY_SYNCS: &[u8] = b"se/";
+
 /// What two blobs of one sync-only cut share: the hash of its canonical plaintext.
 pub type ContentKey = [u8; 32];
 
@@ -63,6 +69,31 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
     for (b, c) in rows {
         index(tx, b, c);
     }
+    let bad = || Error::Corrupt("entry sync row");
+    let rows = tx.scan_rows(ENTRY_SYNCS, |k, v| {
+        let (t, u) = k.split_at_checked(15).ok_or_else(bad)?;
+        let tid = |x: &[u8]| x.try_into().map(Tid::from_bytes).map_err(|_| bad());
+        Ok((tid(t)?, tid(u)?, SyncId(v.try_into().map_err(|_| bad())?)))
+    })?;
+    for (t, u, s) in rows {
+        index_entry(tx, t, u, s);
+    }
+    Ok(())
+}
+
+fn index_entry(tx: &mut Tx<'_>, thing: Tid, under: Tid, s: SyncId) {
+    tx.core.ix.entry_syncs.insert(thing, (under, s));
+    tx.core.ix.sync_cut_ids.insert(thing, s);
+    tx.core.ix.sync_cut_things.insert(s, thing);
+}
+
+/// Notes that `under`'s entry under `s` gave this node a sync secret of `thing`.
+pub(crate) fn note_entry(tx: &mut Tx<'_>, thing: Tid, under: Tid, s: SyncId) -> Result<()> {
+    if tx.core.ix.entry_syncs.get(&thing).is_some_and(|x| x.contains(&(under, s))) {
+        return Ok(());
+    }
+    tx.txn.put_local(&[ENTRY_SYNCS, thing.as_bytes().as_slice(), under.as_bytes()].concat(), &s.0, Shred::No)?;
+    index_entry(tx, thing, under, s);
     Ok(())
 }
 
@@ -90,7 +121,7 @@ pub(crate) fn drop_blob(tx: &mut Tx<'_>, b: &BlobId) -> Result<()> {
     tx.txn.remove_local(&[SYNC_CUTS, &b.0].concat(), Shred::No)?;
     tx.core.ix.sync_cuts.remove(b);
     tx.core.ix.sync_cuts_under.remove(&c.under, b);
-    let left = tx.core.ix.sync_cuts.values().any(|x| x.cut == c.cut);
+    let left = tx.core.ix.sync_cuts.values().any(|x| x.cut == c.cut) || tx.core.ix.entry_syncs.get(&c.cut.thing).is_some_and(|x| x.iter().any(|(_, s)| *s == c.cut.sync_id));
     if !left {
         tx.core.ix.sync_cut_ids.remove(&c.cut.thing, &c.cut.sync_id);
         tx.core.ix.sync_cut_things.remove(&c.cut.sync_id, &c.cut.thing);
@@ -105,6 +136,13 @@ pub(crate) fn forget(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
         tx.txn.remove_local(&[SYNC_CUTS, &b.0].concat(), Shred::No)?;
         tx.core.ix.sync_cuts.remove(&b);
         tx.core.ix.sync_cuts_under.remove(&c.under, &b);
+    }
+    let entries: Vec<(Tid, SyncId)> = tx.core.ix.entry_syncs.get(t).into_iter().flatten().copied().collect();
+    for (u, _) in entries.iter() {
+        tx.txn.remove_local(&[ENTRY_SYNCS, t.as_bytes().as_slice(), u.as_bytes()].concat(), Shred::No)?;
+    }
+    for e in entries {
+        tx.core.ix.entry_syncs.remove(t, &e);
     }
     let ids: Vec<SyncId> = tx.core.ix.sync_cut_ids.get(t).into_iter().flatten().copied().collect();
     for s in ids {
@@ -160,7 +198,7 @@ impl Core {
     /// Whether a sync-only cut of `x` was taken under `u` (spec/permissions.md §4 Stub: `u`'s unit
     /// holds only sync on `x`, as a reader of `u` holding `x`'s role entries logged it).
     pub(crate) fn cut_under(&self, u: &Tid, x: &Tid) -> bool {
-        self.ix.sync_cuts_under.get(u).into_iter().flatten().any(|b| self.ix.sync_cuts.get(b).is_some_and(|c| c.cut.thing == *x))
+        self.ix.sync_cuts_under.get(u).into_iter().flatten().any(|b| self.ix.sync_cuts.get(b).is_some_and(|c| c.cut.thing == *x)) || self.ix.entry_syncs.get(x).is_some_and(|e| e.iter().any(|(h, _)| h == u))
     }
 
     /// The sync IDs the sync-only cuts taken here give `t` (`SYNC_CUTS`).
@@ -177,6 +215,17 @@ impl crate::engine::Engine {
         let b = *b;
         self.run(|tx| note(tx, &b, c))?;
         Ok(true)
+    }
+
+    /// A sync holder's entry under `s` gave this node a sync secret of `thing` (spec/sync-ids.md
+    /// §3 Taking an entry): holder `under` holds sync on `thing`, as a sync-only cut of `thing`
+    /// under `under` says (spec/sync-set.md §2 Holding a stub: a sync holder's stub is the
+    /// sync-only cut and what its entries give it). The public's entry and a link key's name no
+    /// holder.
+    pub(crate) fn took_sync_entry(&mut self, s: &SyncId, thing: Tid, under: Option<Tid>) -> Result<()> {
+        let Some(under) = under.filter(|u| !u.is_public() && *u != thing) else { return Ok(()) };
+        let s = *s;
+        self.run(|tx| note_entry(tx, thing, under, s))
     }
 
     /// No store entry names blob `b` any more: its sync-only cut row (`SYNC_CUTS`), if any, goes.
