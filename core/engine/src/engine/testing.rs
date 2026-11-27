@@ -735,11 +735,11 @@ fn tables(ix: &super::Indexes) -> Vec<(&'static str, &dyn Table)> {
         ("blob_parts", &*ix.blob_parts),
         ("commit_blobs", &*ix.commit_blobs),
         ("cert_blobs", &*ix.cert_blobs),
-        ("sync_copies", &*ix.sync_copies),
-        ("sync_copy_on", &*ix.sync_copy_on),
-        ("sync_copies_under", &*ix.sync_copies_under),
-        ("sync_copy_ids", &*ix.sync_copy_ids),
-        ("sync_copy_holders", &*ix.sync_copy_holders),
+        ("sync_cuts", &*ix.sync_cuts),
+        ("sync_cuts_under", &*ix.sync_cuts_under),
+        ("sync_cut_ids", &*ix.sync_cut_ids),
+        ("sync_cut_things", &*ix.sync_cut_things),
+        ("keys_sync_id", &*ix.keys_sync_id),
         ("gone", &*ix.gone),
         ("sync_recorded", &*ix.sync_recorded),
         ("sync_recorders", &*ix.sync_recorders),
@@ -1061,9 +1061,8 @@ mod tests {
         // (`forgotten`); events, not the held set (`falls`, `passes`, `role_arrivals`,
         // `cause_at`, `reseal_asks`, `carriers`, `carrying`); the node closure, built again after an open (`closure`);
         // the removals to judge for addenda, all of them again at an open (`addenda_due`,
-        // `addenda_gathered`, `addenda_wake`); the heads listing the public, fed again after an open
-        // (`public_listed`).
-        const LEFT_OUT: &[&str] = &["rekeyed", "keys_due", "fires_due", "cards_due", "cards_stale", "forgotten", "pending", "pend_on", "pend_keys", "pend_by", "pend_needs", "falls", "passes", "role_arrivals", "cause_at", "setting_waits", "reseal_asks", "carriers", "carrying", "cover_waits", "closure", "addenda_due", "addenda_gathered", "addenda_wake", "public_listed"];
+        // `addenda_gathered`, `addenda_wake`).
+        const LEFT_OUT: &[&str] = &["rekeyed", "keys_due", "fires_due", "cards_due", "cards_stale", "forgotten", "pending", "pend_on", "pend_keys", "pend_by", "pend_needs", "falls", "passes", "role_arrivals", "cause_at", "setting_waits", "reseal_asks", "carriers", "carrying", "cover_waits", "closure", "addenda_due", "addenda_gathered", "addenda_wake"];
         let ix = super::super::Indexes::default();
         let compared: BTreeSet<&str> = tables(&ix).into_iter().map(|(n, _)| n).collect();
         for n in super::super::INDEX_NAMES {

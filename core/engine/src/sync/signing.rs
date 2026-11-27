@@ -18,7 +18,7 @@ impl Engine {
     pub fn signers(&mut self, s: &SyncId, actor: Option<&Tid>) -> Result<Signers> {
         let mut out = Signers::default();
         if let Some((t, o)) = self.recorded_owner(s)?
-            && let Some((head, _)) = o.path.steps.last()
+            && let Some(head) = o.path.steps.last()
         {
             let k = self.head_keys(&t, head)?;
             out.stamp = k.write;
@@ -69,14 +69,14 @@ impl Engine {
         };
         // per role, the step that brought the newest step's key
         let mut brought = [0usize; 3];
-        if let Some((last, _)) = o.path.steps.last() {
+        if let Some(last) = o.path.steps.last() {
             for (r, b) in brought.iter_mut().enumerate() {
-                *b = o.path.steps.iter().rposition(|(st, _)| key(st, r) != key(last, r)).map_or(0, |i| i + 1);
+                *b = o.path.steps.iter().rposition(|st| key(st, r) != key(last, r)).map_or(0, |i| i + 1);
             }
         }
         let mut seen = BTreeSet::new();
         let mut parent: Option<&Step> = None;
-        for (i, (st, _)) in o.path.steps.iter().enumerate() {
+        for (i, st) in o.path.steps.iter().enumerate() {
             let needs: Vec<CommitId> = self.needs_of(&t, &ep, st, brought.map(|b| b == i))?.difference(&seen).copied().collect();
             seen.extend(needs.iter().copied());
             if let Some(p) = parent {

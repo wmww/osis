@@ -147,7 +147,7 @@ pub(crate) fn mint_independent_in(tx: &mut Tx<'_>, recs: Vec<osis_base::Creation
     for rec in recs {
         let t = rec.tid();
         let ops = muts.iter_mut().filter_map(|m| m.aspects.remove(&(t, keys.clone()))).flat_map(|a| a.ops).collect();
-        rotation::own_secrets_new(tx, rec, &[], None, ops, done)?;
+        rotation::own_secrets_new(tx, rec, None, ops, done)?;
     }
     Ok(())
 }

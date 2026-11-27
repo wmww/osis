@@ -160,12 +160,6 @@ impl Recorded {
         self.keys.contains_key(&(level, *key))
     }
 
-    /// The newest step of each recorded sync ID (`head`).
-    pub(crate) fn heads(&self) -> impl Iterator<Item = (&StepId, &Placed)> + '_ {
-        let ids: BTreeSet<SyncId> = self.steps.values().map(|s| s.sync_id).collect();
-        ids.into_iter().filter_map(|id| self.head(&id))
-    }
-
     /// The newest step of sync ID `id`: the deepest, ties by lowest step ID (spec/sync-ids.md §3
     /// head, as `sync_ids::actors::head_of` reads a forked tree).
     fn head(&self, id: &SyncId) -> Option<(&StepId, &Placed)> {
@@ -290,27 +284,11 @@ impl Core {
     }
 
     /// The step whose keys a write lists for delete base `b` (spec/crypto.md §7 Header list): the
-    /// newest step of `b`'s sync ID its `sync.0` records here (spec/sync-ids.md §4 Owner: one a
-    /// step of which bears a sync key of a sync secret of `b` held here; every placed one while
-    /// this node holds no sync secret of `b`'s own; `Core::pick_sync_id`). `None`: none recorded,
-    /// and this node cannot write under `b`.
+    /// newest step of `b`'s sync ID (spec/sync-ids.md §4 Owner, `Core::named_sync_id`) its
+    /// `sync.0` records here. `None`: none recorded, and this node cannot write under `b`.
     pub(crate) fn listed_step(&self, b: &Tid) -> Option<Placed> {
-        let r = self.ix.steps.get(b)?;
-        let held = self.holds_own_sync(b).then(|| self.held_sync_keys(b));
-        let owned = |id: &SyncId| held.as_ref().is_none_or(|h| r.steps.values().any(|s| s.sync_id == *id && h.contains(&s.sync)));
-        let ids: BTreeSet<SyncId> = r.steps.values().map(|s| s.sync_id).filter(owned).collect();
-        let id = self.pick_sync_id(b, ids.into_iter())?;
-        r.head(&id).map(|(_, s)| s.clone())
-    }
-
-    /// Of sync IDs `ids` that `t` owns here, its sync ID (spec/sync-ids.md §2): the one its
-    /// genesis seed gives where this node holds that seed; else the greatest (a thing owns one:
-    /// more come only of an admin naming another, which a node without the seed cannot tell
-    /// from it, spec/sync-hostile.md §2).
-    pub(crate) fn pick_sync_id(&self, t: &Tid, ids: impl Iterator<Item = SyncId>) -> Option<SyncId> {
-        let ids: BTreeSet<SyncId> = ids.collect();
-        let seeded = self.epochs(t).and_then(|e| e.genesis().map(osis_blob::genesis_sync_id)).filter(|s| ids.contains(s));
-        seeded.or_else(|| ids.last().copied())
+        let (id, _) = self.named_sync_id(b).flatten()?;
+        self.ix.steps.get(b)?.head(&id).map(|(_, s)| s.clone())
     }
 
     /// The admin and write delete keys of `listed_step(b)`, parsed (`memo`: every write on a

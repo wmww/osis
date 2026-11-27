@@ -158,7 +158,7 @@ impl Engine {
         let Some((t, o)) = self.read_sync_id(s)? else { return Ok(None) };
         let actor = self.core.reader_of(&t);
         let holder = self.own_holder(&actor);
-        let step = step.unwrap_or_else(|| o.path.steps.last().map_or([0; 32], |(st, _)| st.keys.sync.to_bytes()));
+        let step = step.unwrap_or_else(|| o.path.steps.last().map_or([0; 32], |st| st.keys.sync.to_bytes()));
         let me = self.core.tid();
         let admins = self.core.key_holders(&actor).into_iter().filter(|(m, r)| *r == Role::Admin && *m != me).map(|(m, _)| m).collect();
         Ok(Some(Stranding { actor, holder, step, keys: self.current_keys(&holder)?, admins }))
@@ -190,9 +190,7 @@ impl Engine {
             }
             own.commits.entry(k).or_default().extend(self.cut_parts(&k, holder, crate::sync_ids::Cut::Keys));
             // and its `sync.0` there: a commit recording a step writes its step keys beside it,
-            // and a receiver judges a step by the record they key (spec/wire.md §9 Holder keys: a
-            // holder of only sync that also holds these keysets has its sync copies judged by a
-            // recorded step alone, `Core::copies_speak`)
+            // and a receiver judges a step by the record they key (spec/wire.md §9 Holder keys)
             own.commits.entry(k).or_default().extend(h.aspect_parts(holder, "sync.0"));
             evidence.records.insert(h.signer);
             self.add_closure(&ev, &BTreeSet::from([(k, *holder)]), &mut evidence);

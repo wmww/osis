@@ -292,8 +292,7 @@ impl Core {
         // Invariant: a history entry gives only earlier epochs of its own role, each naming its
         // epoch (osis-crypto refuses a later one), so what the history of a secret held before
         // this ingest gives is taken whatever the node's roles: a holder of that secret was given
-        // every earlier epoch and roles secret its history lists (an entry box's newest epochs,
-        // taken before the role commits under earlier ones that give the role are read).
+        // every earlier epoch and roles secret its history lists.
         // Opened from those alone: a secret this ingest gave and the role does not keep (a box
         // concurrent with the node's removal) opens nothing, else a removed node takes the epochs
         // it was never boxed. A node that lost the role's secrets holds none to open from.

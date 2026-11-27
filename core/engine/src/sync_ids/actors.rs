@@ -8,42 +8,20 @@ use crate::error::Result;
 use osis_base::{ChainStep, CommitId, SyncId, Role, Tid};
 use crate::sync::{OwnedSyncId, Path};
 use osis_crypto::{RoleKey, role_key};
-use osis_blob::{ClaimSet, Step, StepId};
+use osis_blob::{Step, StepId};
 use osis_schema::core_types as ct;
 use crate::identity::Identity;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-/// Whether sync ID `id`, its steps as `steps` records them, belongs to the thing whose epochs held
-/// here are `epochs` (spec/sync-ids.md §4 Owner; `Core::owns_sync_id`).
-///
-/// Invariant: an entry of g's `sync.0` counts as g's sync ID, on every path that reads it, only
-/// when some step on a verified path from the sync ID's genesis step bears a sync key that a sync
-/// secret of g held here derives. Any admin of g writes g's `sync.0` and may name any sync ID
-/// there; the steps chain by signature to the genesis delete key, which the sync ID commits to and
-/// only the owner's admins held, so a step bearing g's sync key is an owner admin's own word that g
-/// owns it. An entry failing this is ignored here, never judged invalid: the check turns on the
-/// secrets this node holds. While this node holds no sync secret of g's own (it reads g by derived
-/// secrets, which no step bears) the entries are hints (`OwnedSyncId::hint`).
-pub(crate) fn owns(held: &BTreeSet<[u8; 32]>, id: &SyncId, steps: &BTreeMap<StepId, (Step, Option<ClaimSet>)>) -> bool {
-    // the genesis step bears no sync key a sync secret derives (spec/sync-ids.md §2): a step
-    // below it, the tree verified once (`verified_depths`), not a path per bearing step
-    let bearing: Vec<(&StepId, &Step)> = steps.iter().map(|(k, (s, _))| (k, s)).filter(|(_, s)| s.sync_id == *id && held.contains(&s.keys.sync.to_bytes())).collect();
-    if bearing.is_empty() {
-        return false;
-    }
-    let depth = verified_depths(steps);
-    bearing.iter().any(|(k, _)| depth.contains_key(*k))
-}
-
 /// The recorded path of a sync ID from its steps (spec/sync-ids.md §5 Path): genesis to head, the
 /// head being the newest recorded step (`head_of`). `None` when no step's path verifies.
-pub(crate) fn recorded_path(steps: &BTreeMap<StepId, (Step, Option<ClaimSet>)>) -> Option<Path> {
+pub(crate) fn recorded_path(steps: &BTreeMap<StepId, Step>) -> Option<Path> {
     let head = head_of(steps)?;
     let mut path = Vec::new();
     let mut at = Some(head);
-    while let Some((s, c)) = at.and_then(|id| steps.get(&id)) {
-        path.push((s.clone(), c.clone()));
+    while let Some(s) = at.and_then(|id| steps.get(&id)) {
+        path.push(s.clone());
         at = s.prev;
     }
     path.reverse();
@@ -54,13 +32,13 @@ pub(crate) fn recorded_path(steps: &BTreeMap<StepId, (Step, Option<ClaimSet>)>) 
 /// `sync.0` records"): of the tips whose path from genesis verifies, the deepest; ties (two admins
 /// stepping at once) by lowest step ID. The spec names no order for a forked tree: this is its
 /// simplest reading.
-pub(crate) fn head_of(steps: &BTreeMap<StepId, (Step, Option<ClaimSet>)>) -> Option<StepId> {
+pub(crate) fn head_of(steps: &BTreeMap<StepId, Step>) -> Option<StepId> {
     head_at(steps).map(|(k, _)| k)
 }
 
 /// `head_of` with its depth (its path's steps after the genesis).
-pub(crate) fn head_at(steps: &BTreeMap<StepId, (Step, Option<ClaimSet>)>) -> Option<(StepId, usize)> {
-    let parents: BTreeSet<StepId> = steps.values().filter_map(|(s, _)| s.prev).collect();
+pub(crate) fn head_at(steps: &BTreeMap<StepId, Step>) -> Option<(StepId, usize)> {
+    let parents: BTreeSet<StepId> = steps.values().filter_map(|s| s.prev).collect();
     let depth = verified_depths(steps);
     steps.keys().filter(|k| !parents.contains(k)).filter_map(|k| Some((*k, *depth.get(k)?))).min_by_key(|(k, n)| (std::cmp::Reverse(*n), *k))
 }
@@ -68,10 +46,10 @@ pub(crate) fn head_at(steps: &BTreeMap<StepId, (Step, Option<ClaimSet>)>) -> Opt
 /// The depth of each step whose path from its genesis step verifies (`osis_blob::verify_path`:
 /// each step under its own ID, the genesis by its own delete key, each child by its parent's),
 /// each signature checked once, from the genesis steps down.
-pub(crate) fn verified_depths(steps: &BTreeMap<StepId, (Step, Option<ClaimSet>)>) -> BTreeMap<StepId, usize> {
+pub(crate) fn verified_depths(steps: &BTreeMap<StepId, Step>) -> BTreeMap<StepId, usize> {
     let mut children: BTreeMap<StepId, Vec<StepId>> = BTreeMap::new();
     let mut todo: Vec<(StepId, usize)> = Vec::new();
-    for (id, (s, _)) in steps {
+    for (id, s) in steps {
         if s.id() != *id {
             continue;
         }
@@ -84,9 +62,9 @@ pub(crate) fn verified_depths(steps: &BTreeMap<StepId, (Step, Option<ClaimSet>)>
     let mut out = BTreeMap::new();
     while let Some((id, d)) = todo.pop() {
         out.insert(id, d);
-        let Some((parent, _)) = steps.get(&id) else { continue };
+        let Some(parent) = steps.get(&id) else { continue };
         for c in children.remove(&id).unwrap_or_default() {
-            if steps.get(&c).is_some_and(|(s, _)| s.verify_child(parent).is_ok()) {
+            if steps.get(&c).is_some_and(|s| s.verify_child(parent).is_ok()) {
                 todo.push((c, d + 1));
             }
         }
@@ -100,7 +78,7 @@ pub(crate) fn verified_depths(steps: &BTreeMap<StepId, (Step, Option<ClaimSet>)>
 /// than every such step of that key carries an endorsement by it. A store on such a step takes no
 /// branch of the recorded path but by one (§6 Register).
 pub(crate) fn endorsements_owed(o: &OwnedSyncId) -> BTreeSet<[u8; 32]> {
-    let at: BTreeMap<StepId, usize> = o.path.steps.iter().enumerate().map(|(i, (st, _))| (st.id(), i)).collect();
+    let at: BTreeMap<StepId, usize> = o.path.steps.iter().enumerate().map(|(i, st)| (st.id(), i)).collect();
     // per off-path step: its fork's index and its depth, filled down each branch once
     let mut placed: BTreeMap<StepId, (usize, usize)> = BTreeMap::new();
     let mut deepest: BTreeMap<[u8; 32], usize> = BTreeMap::new();
@@ -127,7 +105,7 @@ pub(crate) fn endorsements_owed(o: &OwnedSyncId) -> BTreeSet<[u8; 32]> {
             placed.insert(*cid, (fork, depth));
         }
         let Some(&(fork, depth)) = placed.get(id) else { continue };
-        let Some((f, _)) = o.path.steps.get(fork) else { continue };
+        let Some(f) = o.path.steps.get(fork) else { continue };
         if depth < o.path.steps.len() && f.keys.delete != x.keys.delete {
             let d = deepest.entry(x.keys.delete.to_bytes()).or_default();
             *d = (*d).max(depth);
@@ -135,31 +113,20 @@ pub(crate) fn endorsements_owed(o: &OwnedSyncId) -> BTreeSet<[u8; 32]> {
     }
     deepest
         .into_iter()
-        .filter(|(d, depth)| !o.path.steps.iter().skip(*depth).any(|(st, _)| o.endorsed.get(&st.id()).is_some_and(|e| e.contains_key(d))))
+        .filter(|(d, depth)| !o.path.steps.iter().skip(*depth).any(|st| o.endorsed.get(&st.id()).is_some_and(|e| e.contains_key(d))))
         .map(|(d, _)| d)
         .collect()
 }
 
-/// The sync IDs decoded `sync.0` `m` of `g` records that `g` owns here (`Core::owns_sync_id`),
-/// each with its recorded path; records that do not parse are skipped.
-pub(crate) fn owned_in(core: &Core, g: &Tid, m: &ct::SyncIds) -> Vec<OwnedSyncId> {
-    recorded_in(core, g, m, false)
-}
-
-/// `owned_in`, or with `any` every sync ID `m` records, judged or not, as hints.
-fn recorded_in(core: &Core, g: &Tid, m: &ct::SyncIds, any: bool) -> Vec<OwnedSyncId> {
-    let hint = any || !core.holds_own_sync(g);
-    m.iter()
-        .filter_map(|(id, l)| {
-            let steps = osis_blob::sync_steps(l).ok()?;
-            if !any && !core.owns_sync_id(g, id, &steps) {
-                return None;
-            }
-            let tree = steps.iter().map(|(k, (s, _))| (*k, s.clone())).collect();
-            let endorsed = Arc::new(osis_blob::sync_endorsements(l, &steps));
-            Some(OwnedSyncId { id: *id, path: Arc::new(recorded_path(&steps)?), tree: Arc::new(tree), endorsed, hint })
-        })
-        .collect()
+/// Sync ID `id` of `g` with its recorded path from decoded `sync.0` `m` (none recorded, or none
+/// whose path verifies: an empty path), `hint` as given.
+fn owned(m: &ct::SyncIds, id: SyncId, hint: bool) -> OwnedSyncId {
+    let steps = m.get(&id).and_then(|l| Some((l, osis_blob::sync_steps(l).ok()?)));
+    let (path, tree, endorsed) = match steps {
+        Some((l, steps)) => (recorded_path(&steps).unwrap_or_default(), steps.clone(), osis_blob::sync_endorsements(l, &steps)),
+        None => Default::default(),
+    };
+    OwnedSyncId { id, path: Arc::new(path), tree: Arc::new(tree), endorsed: Arc::new(endorsed), hint }
 }
 
 impl Core {
@@ -169,10 +136,36 @@ impl Core {
         self.own_record(g).is_some_and(|e| e.sync.holds_any()) || self.unread(g).holds_any()
     }
 
-    /// Whether `g` owns sync ID `id` here (`owns`): judged once this node holds a sync secret of
-    /// `g`'s own, else taken as a hint.
-    pub(crate) fn owns_sync_id(&self, g: &Tid, id: &SyncId, steps: &BTreeMap<StepId, (Step, Option<ClaimSet>)>) -> bool {
-        !self.holds_own_sync(g) || owns(&self.held_sync_keys(g), id, steps)
+    /// `g`'s sync ID by its seed or its `keys.0` (spec/sync-ids.md §4 Owner), with whether it is
+    /// a hint: the one `g`'s genesis seed gives where this node holds the seed; else the one its
+    /// `keys.0` names, a hint while this node holds no sync secret of `g`'s own (it reads `g` by
+    /// derived secrets, which no step bears), else only once a step on a verified path of it
+    /// (`Indexes::steps`) bears the sync key of one held here (`Some(None)` until then). `None`
+    /// where neither names one.
+    ///
+    /// Invariant: the sync ID `g`'s `keys.0` names counts as `g`'s, on every path that reads it,
+    /// only so. Any admin of `g` writes `g`'s `keys.0` and may name any sync ID there; the steps
+    /// chain by signature to the genesis delete key, which the sync ID commits to and only the
+    /// owner's admins held, so a step bearing `g`'s sync key is an owner admin's own word that
+    /// `g` owns it. One failing this is ignored here, never judged invalid: the check turns on
+    /// the secrets this node holds.
+    pub(crate) fn named_sync_id(&self, g: &Tid) -> Option<Option<(SyncId, bool)>> {
+        if let Some(id) = self.seeded_sync_id(g) {
+            return Some(Some((id, false)));
+        }
+        let id = *self.ix.keys_sync_id.get(g)?;
+        if !self.holds_own_sync(g) {
+            return Some(Some((id, true)));
+        }
+        let held = self.held_sync_keys(g);
+        let bears = self.ix.steps.get(g).is_some_and(|r| r.steps.values().any(|s| s.sync_id == id && held.contains(&s.sync)));
+        Some(bears.then_some((id, false)))
+    }
+
+    /// The sync ID `g`'s genesis seed gives, where this node holds the seed (spec/sync-ids.md §4
+    /// Owner).
+    pub(crate) fn seeded_sync_id(&self, g: &Tid) -> Option<SyncId> {
+        self.epochs(g).and_then(|e| e.genesis().map(osis_blob::genesis_sync_id))
     }
 
     /// The sync keys (spec/sync-ids.md §3) of the sync secrets of `g` held here, reading-only
@@ -181,8 +174,8 @@ impl Core {
         self.held_sync_keys.get(g, || {
             let e = self.epochs(g);
             let mut out: BTreeSet<[u8; 32]> = e.iter().flat_map(|e| e.sync.held_newest_first()).map(|(_, s)| role_key(RoleKey::Sync, s).verifying_key().to_bytes()).collect();
-            // kept unread: the sync secrets a step bears (`sync_ids::unread`)
-            out.extend(self.unread(g).secrets.values().map(crate::sync_ids::unread::sync_key));
+            // kept unread: the sync secrets held (`sync_ids::unread`)
+            out.extend(self.unread(g).candidates.values().map(crate::sync_ids::unread::sync_key));
             Arc::new(out)
         })
     }
@@ -254,22 +247,15 @@ impl Engine {
         self.core.ix.sync_recorded.iter().copied().collect()
     }
 
-    /// The sync IDs `g` owns as its `sync.0` records them (`owns`), each with its recorded path;
-    /// hints while this node holds no sync secret of `g`'s own (`held_sync_ids`). Decoded once
-    /// per write of the `sync.0` or of what its copies carry (`Core::sync_ids`), a destroyed
-    /// thing's too. A `sync.0` the store refuses to read is the error, read again at the next ask.
+    /// `g`'s sync ID by the owner rule (`held_sync_ids`), with its recorded path. Decoded once per
+    /// write of what it reads (`Core::sync_ids`), a destroyed thing's too. A `sync.0` the store refuses to read is the error, read again at the next ask.
     pub(crate) fn owned_sync_ids(&mut self, g: &Tid) -> Result<Arc<Vec<OwnedSyncId>>> {
         Memo::get_in(self, |e| &e.core.sync_ids, g, |e| e.read(|tx| held_sync_ids(tx, g)).map(Arc::new))
     }
 }
 
-/// `g`'s sync IDs as recorded here: the steps its sync copies carry where they speak for it
-/// (`Core::copies_speak`: none of its admins' word held), else its `sync.0` state (a destroyed
-/// thing's too: it stays, `retention::destroy`).
+/// `g`'s `sync.0` state as held here (a destroyed thing's too: it stays, `retention::destroy`).
 fn recorded(tx: &mut Tx<'_>, g: &Tid) -> Result<ct::SyncIds> {
-    if tx.core.copies_speak(g) {
-        return Ok(tx.core.unread(g).steps.clone());
-    }
     use osis_schema::RawKey;
     let ak = crate::flows::ak(ct::SYNC.ak())?;
     Ok(match tx.state(g, &ak)?.and_then(osis_crdt::Fragment::read) {
@@ -278,25 +264,23 @@ fn recorded(tx: &mut Tx<'_>, g: &Tid) -> Result<ct::SyncIds> {
     })
 }
 
-/// The sync IDs this node holds for `g` (`recorded`): those recorded that `g` owns here
-/// (`owned_in`), else those followed for it (`followed`), else, `g` kept unread by the public
-/// entry its head lists (`Core::public_listed`), each recorded as hints: the secrets its entry
-/// box gave bear the newest steps, which the recorded `sync.0` reaches only once the pass brings
-/// them.
+/// `g`'s sync ID here (spec/sync-ids.md §4 Owner), at most one but for what `g` is followed by:
+/// the one its seed or `keys.0` names (`Core::named_sync_id`); else the sync IDs it follows `g` by
+/// (`followed`), as hints. Any other `sync.0` entry is ignored.
 pub(crate) fn held_sync_ids(tx: &mut Tx<'_>, g: &Tid) -> Result<Vec<OwnedSyncId>> {
     let m = recorded(tx, g)?;
-    let out = owned_in(tx.core, g, &m);
-    if !out.is_empty() {
-        return Ok(out);
+    match tx.core.named_sync_id(g) {
+        Some(o) => Ok(o.into_iter().map(|(id, hint)| owned(&m, id, hint)).collect()),
+        None => followed(tx, g),
     }
-    let out = followed(tx, g)?;
-    if !out.is_empty() {
-        return Ok(out);
-    }
-    Ok(match tx.core.public_listed(g).is_some() {
-        true => recorded_in(tx.core, g, &m, true),
-        false => Vec::new(),
-    })
+}
+
+/// `g`'s sync ID by its seed or its `keys.0` (`Core::named_sync_id`), hints included, never one
+/// it is followed by.
+pub(crate) fn owner_sync_id(tx: &mut Tx<'_>, g: &Tid) -> Result<Option<OwnedSyncId>> {
+    let Some((id, hint)) = tx.core.named_sync_id(g).flatten() else { return Ok(None) };
+    let m = recorded(tx, g)?;
+    Ok(Some(owned(&m, id, hint)))
 }
 
 /// The things this node follows by a locator or link being redeemed (`Engine::follow_link`,
@@ -512,32 +496,39 @@ impl FollowedLinks {
 /// `FollowedLinks`), each a hint with no recorded path while followed values are all this node
 /// has of it (spec/sync-set.md §2), where `k` may be followed here (`followable`).
 ///
+/// The sync IDs `k` is followed by here: those of a link, locator or held grant signals
+/// (`FollowedLinks`), where `k` may be followed here (`followable`), and those the sync-only
+/// cuts taken here give it (spec/sync.md §3 Kept for T), each a hint with its recorded path
+/// (spec/sync-set.md §2).
+///
 /// Invariant: a followed sync ID counts for `k` unless another thing owns it here by the owner
-/// rule (`owns`: a step bearing a key this node holds), and nothing else displaces it: a link
-/// text or signal naming a sync ID another thing proves its own changes nothing of that thing
-/// (it moves no kept-unread store to read), and a forged `sync.0` or signal naming `k`'s sync ID
-/// for another thing takes nothing from `k`. Who writes each input: the followed values are a
-/// link's sharer's or a signal's sender's (anyone holding the holder's card); another thing's
-/// `sync.0` is its admins'; the keys judged are this node's.
+/// rule (`held_sync_ids`, not as a hint), and nothing else displaces it: a link text, signal or
+/// cut naming a sync ID another thing proves its own changes nothing of that thing (it moves no
+/// kept-unread store to read), and a forged `sync.0`, signal or cut naming `k`'s sync ID for
+/// another thing takes nothing from `k`. Who writes each input: the followed values are a link's
+/// sharer's or a signal's sender's (anyone holding the holder's card); a cut is anyone's who may
+/// log under a sync ID of a holder; another thing's `keys.0` is its admins'; the keys judged are
+/// this node's.
 fn followed(tx: &mut Tx<'_>, k: &Tid) -> Result<Vec<OwnedSyncId>> {
-    let Some((ids, _)) = tx.core.followed_links.get(k) else { return Ok(Vec::new()) };
-    if !followable(tx.core, k) {
-        return Ok(Vec::new());
+    let mut ids = tx.core.cut_sync_ids(k);
+    if let Some((f, _)) = tx.core.followed_links.get(k)
+        && followable(tx.core, k)
+    {
+        ids.extend(f);
     }
+    let m = recorded(tx, k)?;
     let mut out = Vec::new();
     for s in ids {
-        let ix = &tx.core.ix;
-        let others: BTreeSet<Tid> = ix.sync_recorders.get(&s).into_iter().flatten().chain(ix.sync_copy_ids.get(&s).into_iter().flatten()).filter(|t| *t != k).copied().collect();
+        let others: BTreeSet<Tid> = tx.core.ix.sync_recorders.get(&s).into_iter().flatten().filter(|t| *t != k).copied().collect();
         let mut theirs = false;
         for t in others {
-            let m = recorded(tx, &t)?;
-            if owned_in(tx.core, &t, &m).iter().any(|o| o.id == s && !o.hint) {
+            if tx.core.named_sync_id(&t).flatten() == Some((s, false)) {
                 theirs = true;
                 break;
             }
         }
         if !theirs {
-            out.push(OwnedSyncId { id: s, path: Arc::new(crate::sync::Path::default()), tree: Arc::default(), endorsed: Arc::default(), hint: true });
+            out.push(owned(&m, s, true));
         }
     }
     Ok(out)
@@ -545,8 +536,8 @@ fn followed(tx: &mut Tx<'_>, k: &Tid) -> Result<Vec<OwnedSyncId>> {
 
 /// Whether followed link `k` may be a link's K here: a thing this node holds only as a link's K
 /// (its creation record has the `link` field), or one it knows nothing of yet (no record). A link text naming any other thing as K changes nothing of it.
-/// A locator's target may be any thing: its sync ID counts only where no held `sync.0` of the
-/// target's records one (`held_sync_ids`) and no other's records it (`followed`).
+/// A locator's target may be any thing: its sync ID counts only where the owner rule gives the
+/// target none (`held_sync_ids`) and no other thing owns it (`followed`).
 pub(crate) fn followable(core: &Core, k: &Tid) -> bool {
     match core.followed_links.get(k) {
         None => false,

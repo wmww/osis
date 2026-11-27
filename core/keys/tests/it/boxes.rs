@@ -200,7 +200,7 @@ fn box_checks() {
     assert!(got.is_empty());
     assert!(matches!(failed[0].1, Error::Crypto(osis_crypto::Error::Malformed(_))), "{:?}", failed[0].1);
     // An item naming its own epoch but not the key's is refused by the sealer.
-    let slot = BoxSlot::Secrets { actor: f.a, holder: m, role: Role::Read, epoch: f.forks[0] };
+    let slot = BoxSlot { actor: f.a, holder: m, role: Role::Read, epoch: f.forks[0] };
     let other = Secret32::from_bytes([1; 32]);
     let item = BoxItem { role: Role::Read, epoch: osis_crypto::Epoch::derive(&f.a, Role::Read, 7, &other).unwrap(), secret: other };
     assert!(seal_box(kem.public(), &slot, Some(ep(1, 0x30)), &item, &mut f.rng).is_err());
@@ -210,7 +210,7 @@ fn box_checks() {
 /// (built by hand: the sealer refuses it), to the KEM key of `keyset`.
 fn lying_box(f: &mut Forked, holder: osis_base::Tid, keyset: Option<(osis_crypto::Epoch, &osis_crypto::KemPublicKey)>) -> Secrets {
     let (ks, pk) = keyset.unwrap();
-    let slot = BoxSlot::Secrets { actor: f.a, holder, role: Role::Read, epoch: f.forks[0] };
+    let slot = BoxSlot { actor: f.a, holder, role: Role::Read, epoch: f.forks[0] };
     let form = osis_crypto::BoxForm::Sealed { keyset: Some(ks), suite: 1 };
     let payload = osis_base::cbor::encode(&osis_base::Value::List(vec![
         osis_base::Value::Int(0),

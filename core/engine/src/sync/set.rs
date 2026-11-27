@@ -1,13 +1,12 @@
 //! The sync set and what a reader of S acts with (spec/sync-ids.md §3, spec/sync-opens.md §4):
-//! the node closure filtered by the secrets held, the recorded
-//! path and the keys held per step, current read secrets, static entries, the claim key; and
-//! this node's caps.
+//! the node closure filtered by the secrets held, the recorded path and the keys held per step;
+//! and this node's caps.
 
 use super::{Caps, Holding, OwnedSyncId, ReadCredentials, SyncSet, ThingCaps, ThingSync};
 use crate::engine::Engine;
 use crate::error::Result;
 use osis_base::{CommitId, Role, SyncId, Tid};
-use osis_crypto::{Epoch, Secret32, SigningSecret, X25519Secret};
+use osis_crypto::{Epoch, Secret32, SigningSecret};
 use osis_blob::StepId;
 use osis_schema::core_types as ct;
 use std::collections::{BTreeMap, BTreeSet};
@@ -102,9 +101,7 @@ impl Engine {
         // read: by its own secrets, independent by a box alone (a grantee holds no rotation that
         // made a granted epoch current: it is a body under the sync ID the box opens)
         if self.core.counts_independent(t) && self.holds_read(t) {
-            // every sync ID it owns (spec/sync-ids.md §4 Owner), as kept unread: a thing has one,
-            // and one an admin or a forged sync copy names besides stands beside it, never in its
-            // place; with the one a followed link names that no held `sync.0` records yet
+            // its sync ID (spec/sync-ids.md §4 Owner), or the ones a followed link names
             let ids: Vec<SyncId> = self.owned_sync_ids(t)?.iter().map(|o| o.id).collect();
             if !ids.is_empty() {
                 return Ok(ThingSync::Read(ids));
@@ -112,10 +109,8 @@ impl Engine {
         }
         // kept unread: in the node closure by a sync secret alone (spec/sync.md §3)
         if self.kept_unread(t) {
-            // every sync ID kept for it (spec/sync.md §3): one a forged copy names never
-            // displaces the thing's own (`sync_ids::unread`); the one whose head lists the public
-            // entry (a path verified from its genesis, `public_listed`)
-            let ids: Vec<SyncId> = self.owned_sync_ids(t)?.iter().filter(|o| !o.hint || self.core.public_listed_on(t, &o.id)).map(|o| o.id).collect();
+            // the sync ID kept for it (spec/sync.md §3 Kept for T)
+            let ids: Vec<SyncId> = self.owned_sync_ids(t)?.iter().map(|o| o.id).collect();
             if !ids.is_empty() {
                 return Ok(ThingSync::Unread(ids));
             }
@@ -168,10 +163,9 @@ impl Engine {
     }
 
     /// What a reader of `s` opens and acts with: per thing whose read secrets open `s`
-    /// (`opening_things`, each one judged), its recorded path's head and the keys held per
-    /// recorded step, its current read secrets (the engine's Current with
-    /// its history-less floors; with none current, the newest held, spec/sync-opens.md §4), and
-    /// the static entries of its read roster. `None` when `s` is no sync ID this node reads.
+    /// (`opening_things`, each one judged), its recorded path's head, the keys held per recorded
+    /// step and the sync proofs and keys of the sync secrets held. `None` when `s` is no sync ID
+    /// this node reads.
     pub(crate) fn read_credentials_now(&mut self, s: &SyncId) -> Result<Option<Arc<ReadCredentials>>> {
         let things = self.opening_things(s)?;
         if things.is_empty() {
@@ -180,7 +174,7 @@ impl Engine {
         let mut c = ReadCredentials::default();
         for t in things {
             let Some(o) = self.owned_sync_ids(&t)?.iter().find(|o| o.id == *s).cloned() else { continue };
-            self.credentials_of(&mut c, s, &t, &o)?;
+            self.credentials_of(&mut c, &t, &o)?;
         }
         Ok(Some(Arc::new(c)))
     }
@@ -200,7 +194,7 @@ impl Engine {
         let mut out = None;
         for t in self.opening_things(s)? {
             let Some(o) = self.owned_sync_ids(&t)?.iter().find(|o| o.id == *s).cloned() else { continue };
-            if let Some((st, _)) = o.path.steps.iter().find(|(st, _)| st.id() == *step) {
+            if let Some(st) = o.path.steps.iter().find(|st| st.id() == *step) {
                 out = self.head_write_key(&t, st);
             }
         }
@@ -208,42 +202,12 @@ impl Engine {
     }
 
     /// Adds what thing `t` of `s` (owning it as `o`) opens and acts with to `c`.
-    fn credentials_of(&mut self, c: &mut ReadCredentials, s: &SyncId, t: &Tid, o: &OwnedSyncId) -> Result<()> {
-        if let Some((st, _)) = o.path.steps.last() {
+    fn credentials_of(&mut self, c: &mut ReadCredentials, t: &Tid, o: &OwnedSyncId) -> Result<()> {
+        if let Some(st) = o.path.steps.last() {
             c.head = Some(st.clone());
         }
-        for (step, _) in &o.path.steps {
+        for step in &o.path.steps {
             c.keys.insert(step.id(), self.head_keys(t, step)?);
-        }
-        let current = self.current_read_secrets(t);
-        if let Some(e) = self.core.epochs(t) {
-            let read = e.role(Role::Read);
-            c.old_read_secrets.extend(read.held_newest_first().into_iter().filter(|(ep, _)| !current.iter().any(|(x, _)| x == ep)).map(|(ep, x)| (ep, x.secret().clone())));
-        }
-        c.read_secrets.extend(current);
-        for k in self.static_listed(t)? {
-            c.statics.insert(osis_crypto::static_entry(s, &k));
-        }
-        // the public entry shown and tested while the public holds a role on S's thing (its box
-        // that role's secrets), tested while S's thing is followed by it; once the public's read
-        // is removed, the superseded read secrets lapsed (spec/sync-opens.md §4)
-        let public = self.core.public_reads(t);
-        let listed = self.core.public_syncs(t);
-        c.shows_public |= listed;
-        c.public_reads |= public;
-        c.tests_public |= listed;
-        c.lapsed_public |= !public && self.core.ix.held.is_named(&Tid::PUBLIC, t);
-        if let Some((fs, l)) = self.core.followed_links.get(t)
-            && fs.contains(s)
-        {
-            match l.and_then(|l| self.core.link_keys.get(&l)) {
-                Some(id) => c.acting.push(id.signing().clone()),
-                None if l.is_none() => {
-                    c.tests_public = true;
-                    c.by_role |= !self.holds_read(t);
-                }
-                None => {}
-            }
         }
         if let Some(e) = self.core.epochs(t) {
             // each held sync secret's key derived once (a curve multiplication), then matched per step
@@ -256,7 +220,7 @@ impl Engine {
                     (ep, seed.clone(), SigningSecret::from_seed(&seed))
                 })
                 .collect();
-            for (step, _) in o.path.steps.iter().rev() {
+            for step in o.path.steps.iter().rev() {
                 if let Some((_, seed, _)) = held.iter().find(|(_, _, k)| k.verifying_key() == step.keys.sync) {
                     c.proofs.push((step.id(), osis_crypto::kdf::sync_proof(seed)));
                 }
@@ -264,19 +228,6 @@ impl Engine {
             c.sync_keys.extend(held.into_iter().map(|(ep, _, k)| (ep, k)));
         }
         Ok(())
-    }
-
-    /// Thing `t`'s read secrets at its current epochs (history-less floors), else its newest
-    /// held: what an open of its sync ID proves and what a commit on it shows (spec/sync-inbox.md
-    /// §2 Re-send).
-    pub(crate) fn current_read_secrets(&self, t: &Tid) -> Vec<(Epoch, Secret32)> {
-        let Some(e) = self.core.epochs(t) else { return Vec::new() };
-        let read = e.role(Role::Read);
-        let current: Vec<(Epoch, Secret32)> = read.current().into_iter().filter_map(|ep| Some((ep, read.secret(&ep)?.secret().clone()))).collect();
-        match current.is_empty() {
-            true => read.held_newest_first().into_iter().take(1).map(|(ep, s)| (ep, s.secret().clone())).collect(),
-            false => current,
-        }
     }
 
     /// The held valid rotation commits of read sync ID `s`'s things whose established epoch
@@ -292,17 +243,6 @@ impl Engine {
         Ok(out)
     }
 
-    /// The commits of the public's edge on `s`'s things (its grants, removals and the rotations
-    /// boxing it, steps aside): a member opened on S's public entry
-    /// is served up to the last of them logged (spec/sync-opens.md §6).
-    pub fn public_edge(&mut self, s: &SyncId) -> Result<BTreeSet<CommitId>> {
-        let mut out = BTreeSet::new();
-        for t in self.opening_things(s)? {
-            out.extend(self.edge_on(&Tid::PUBLIC, &t));
-        }
-        Ok(out)
-    }
-
     /// The thing whose recorded path `s` is (an entry of its `sync.0`, no hint), read here or by
     /// the read secrets of it still held (`opening_things`: a sync ID sync still syncs after it
     /// left the sync set), with that record. A rule reading S's steps or its actor's keys acts on
@@ -311,31 +251,6 @@ impl Engine {
         for t in self.opening_things(s)? {
             if let Some(o) = self.owned_sync_ids(&t)?.iter().find(|o| o.id == *s && !o.hint) {
                 return Ok(Some((t, o.clone())));
-            }
-        }
-        Ok(None)
-    }
-
-    /// The claim key of this node for step `step` of `s` (spec/sync-ids.md §3): from the X25519
-    /// half of a read KEM key it holds (its node thing's read keysets, those of the things holding
-    /// the thing's independent that it holds), the one the step's claim set lists. `None` when no held key is listed (or the claim set is not held).
-    pub fn claim_key(&mut self, s: &SyncId, step: &StepId) -> Result<Option<SigningSecret>> {
-        let Some((t, o)) = self.read_sync_id(s)? else { return Ok(None) };
-        let Some((st, Some(claims))) = o.path.steps.iter().find(|(x, _)| x.id() == *step) else { return Ok(None) };
-        let listed: BTreeSet<[u8; 32]> = claims.claims.iter().copied().collect();
-        let mut keys: Vec<X25519Secret> = Vec::new();
-        let reader = self.core.reader_of(&t);
-        let me = self.core.tid();
-        for m in std::iter::once(me).chain(self.core.key_holders(&reader).into_iter().map(|(m, _)| m).filter(|m| *m != me)) {
-            if let Some(e) = self.core.epochs(&m) {
-                keys.extend(e.role(Role::Read).held_newest_first().into_iter().map(|(_, s)| s.kem().x25519().clone()));
-            }
-        }
-        for k in &keys {
-            if let Ok(c) = st.claim_key(k)
-                && listed.contains(&c.verifying_key().to_bytes())
-            {
-                return Ok(Some(c));
             }
         }
         Ok(None)
@@ -376,8 +291,8 @@ impl Engine {
             if let Some(e) = self.core.epochs(&t) {
                 out.extend(e.role(osis_base::Role::Sync).held_newest_first().into_iter().map(|(ep, x)| (ep, x.secret().clone())));
             }
-            // those its sync copies gave (`sync_ids::unread`), judged by the caller against the
-            // steps registered with this node
+            // those held kept unread (`sync_ids::unread`), judged by the caller against the steps
+            // registered with this node
             out.extend(self.core.unread(&t).candidates.iter().rev().map(|(e, x)| (*e, x.clone())));
         }
         out.sort_by_key(|x| std::cmp::Reverse(x.0));
@@ -386,12 +301,11 @@ impl Engine {
     }
 
     /// `s`'s things: every thing owning sync ID `s` here (`owned_sync_ids` lists it), by a held
-    /// `sync.0` or as a followed link's.
+    /// `sync.0`, as a followed link's or by a sync-only cut.
     pub(crate) fn sync_things_of(&mut self, s: &SyncId) -> Result<Vec<Tid>> {
         let mut things: BTreeSet<Tid> = self.core.ix.sync_recorders.get(s).into_iter().flatten().copied().collect();
         things.extend(self.core.followed_links.naming(s));
-        // a thing whose sync copies speak (`Core::copies_speak`): their steps (`owned_sync_ids` judges)
-        things.extend(self.core.ix.sync_copy_ids.get(s).into_iter().flatten().copied());
+        things.extend(self.core.ix.sync_cut_things.get(s).into_iter().flatten().copied());
         let mut out = Vec::new();
         for t in things {
             if self.owned_sync_ids(&t)?.iter().any(|o| o.id == *s) {

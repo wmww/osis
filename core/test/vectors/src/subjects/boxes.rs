@@ -89,7 +89,7 @@ pub fn boxes() -> VecFile {
     let item = BoxItem { role: Role::Write, epoch: ew, secret: s32(0x09) };
     {
         let keyset = Some(epoch(3));
-        let slot = BoxSlot::Secrets { actor, holder, role: Role::Write, epoch: ew };
+        let slot = BoxSlot { actor, holder, role: Role::Write, epoch: ew };
         let form = BoxForm::Sealed { keyset, suite: 1 };
         let ad = slot.ad(form).unwrap();
         let b = seal_box(recipient.public(), &slot, keyset, &item, &mut FixedRng::new(&[&EPH, &M])).unwrap();
@@ -101,7 +101,7 @@ pub fn boxes() -> VecFile {
     }
 
     // A box whose item names another epoch than its key's is refused.
-    let slot = BoxSlot::Secrets { actor, holder, role: Role::Write, epoch: ew };
+    let slot = BoxSlot { actor, holder, role: Role::Write, epoch: ew };
     let form = BoxForm::Sealed { keyset: Some(epoch(3)), suite: 1 };
     let ad = slot.ad(form).unwrap();
     let lie = encode(&Value::List(vec![Value::Int(1), Value::Int(4), Value::Bytes(s32(0x0a).expose().to_vec())]));
@@ -112,7 +112,7 @@ pub fn boxes() -> VecFile {
 
     // Symmetric form.
     let e1 = named(&actor, Role::Read, 1, &s32(0x09));
-    let slot = BoxSlot::Secrets { actor, holder, role: Role::Read, epoch: e1 };
+    let slot = BoxSlot { actor, holder, role: Role::Read, epoch: e1 };
     let ad = slot.ad(BoxForm::Symmetric { epoch_s: epoch(7) }).unwrap();
     let w = wrap_symmetric_box(&s32(0x0b), &slot, epoch(7), &s32(0x09)).unwrap();
     assert_eq!(open_symmetric_box(&s32(0x0b), &slot, epoch(7), &w), Ok(s32(0x09)));

@@ -82,7 +82,7 @@ struct Item<'a> {
 fn box_items(actor: &Tid, rcpt: &Recipient, items: &[Item], rng: &mut dyn CryptoRngCore, out: &mut SecretsWrite) -> Result<bool, Error> {
     let holder = rcpt.holder;
     for i in items {
-        let slot = BoxSlot::Secrets { actor: *actor, holder, role: i.role, epoch: i.epoch };
+        let slot = BoxSlot { actor: *actor, holder, role: i.role, epoch: i.epoch };
         let key = box_key(holder, i.role, &i.epoch);
         // the public: the secret in clear, and no record (it is no holder actor, spec/crypto.md
         // §4 Boxes). Invariant: the open form is written only to the zero tid, so a secret is

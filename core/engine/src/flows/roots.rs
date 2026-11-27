@@ -37,7 +37,7 @@ pub(crate) fn first_start(tx: &mut Tx<'_>) -> Result<()> {
     let node = tx.core.id.record().clone();
     let n = node.tid();
     let mut done = crate::flows::Done::default();
-    crate::rotation::own_secrets_new(tx, node, &[], None, Vec::new(), &mut done)?;
+    crate::rotation::own_secrets_new(tx, node, None, Vec::new(), &mut done)?;
     let rec = crate::identity::thing_record(n, None, &mut *tx.rng);
     let root = rec.tid();
     tx.core.node_root = Some(root);

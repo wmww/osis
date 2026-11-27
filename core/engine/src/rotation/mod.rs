@@ -32,7 +32,7 @@ pub(crate) use lost::{load_kept, without_frozen};
 pub(crate) use lost::explain_due;
 pub(crate) use departures::{departures, key_role, own_self_removal};
 pub(crate) use members::{Boxing, Sealed, grant_keyless, sealed, sealed_granted};
-pub(crate) use lost::{boxes_kept, load_lost, may_learn, may_take_role, role_by_grants, role_here, keys_write_unapplied, touch_held};
+pub(crate) use lost::{boxes_kept, load_lost, may_take_role, role_here, keys_write_unapplied, touch_held};
 
 /// How far `blocked_epoch` follows boxes to holder actors (spec/crypto.md §4, Encrypting under).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -239,23 +239,6 @@ fn walk_from(tx: &mut Tx<'_>, who: &Tid, a: &Tid, r: Role, root: (Tid, osis_cryp
 /// (`uncovered_by`).
 pub(crate) fn uncovered(tx: &mut Tx<'_>, x: &Tid, r: Role, k: &osis_crypto::Epoch, deps: &[Departure]) -> Result<bool> {
     Ok(!uncovered_by(tx, x, r, k, deps)?.is_empty())
-}
-
-/// Whether epoch `k` of role `r` of `x` covers every departure from `x` known here, as this node
-/// can tell (`uncovered_by`; spec/crypto.md §4): what a source shows a departed peer
-/// (spec/sync-opens.md §4 Departed). An epoch of no held keyset covers by it.
-pub(crate) fn covers_known(tx: &mut Tx<'_>, x: &Tid, r: Role, k: &osis_crypto::Epoch) -> Result<bool> {
-    let deps = departures(tx, x)?;
-    Ok(!uncovered(tx, x, r, k, &deps)?)
-}
-
-/// `covers_known` of `holder`'s departures alone: what an entry box admitting `holder` (the
-/// public, a link key) gives whoever takes it (spec/permissions.md §3 No secret taken back). An
-/// epoch of no held keyset covers by it: what is taken so is judged again by its keyset once the
-/// role entries it opens apply.
-pub(crate) fn covers_known_of(tx: &mut Tx<'_>, x: &Tid, r: Role, k: &osis_crypto::Epoch, holder: &Tid) -> Result<bool> {
-    let deps: Vec<Departure> = departures(tx, x)?.into_iter().filter(|d| d.holder == *holder).collect();
-    Ok(!uncovered(tx, x, r, k, &deps)?)
 }
 
 /// The departures of `deps` epoch `k` of role `r` of `x` does not cover as this node can tell
@@ -589,8 +572,7 @@ pub(crate) fn commit_rotating(tx: &mut Tx<'_>, mut m: Mutation, who: Tid, a: Tid
     Ok(c)
 }
 
-/// Records rotation `rot` of `a`, committed as `c`, into `done`. A holder that cannot open it by
-/// its wrap takes it by its notice (`sync::notices`), as any role commit boxing it.
+/// Records rotation `rot` of `a`, committed as `c`, into `done`.
 pub(crate) fn recorded(tx: &mut Tx<'_>, a: Tid, c: Option<osis_base::CommitId>, rot: &Rotation, done: &mut Done) -> Result<()> {
     record(tx, a, rot)?;
     done.add(c);
@@ -776,24 +758,18 @@ fn finalize_due(tx: &mut Tx<'_>, who: Tid, a: Tid, keep: Option<Keep<'_>>, done:
 /// `keys.0` carrying the keysets and a fresh deposit seed (spec/permissions.md §3, Own secrets
 /// add only). Nothing when it has them already.
 pub(crate) fn own_secrets(tx: &mut Tx<'_>, t: Tid, done: &mut Done) -> Result<()> {
-    own_secrets_listing(tx, t, &[], done)
-}
-
-/// `own_secrets`, its genesis step listing `also` besides the holders it boxes (a link's key,
-/// granted next).
-pub(crate) fn own_secrets_listing(tx: &mut Tx<'_>, t: Tid, also: &[crate::flows::sync_ids::ReaderKey], done: &mut Done) -> Result<()> {
-    if let Some((c, rot)) = own_secrets_rot(tx, t, None, also, None, Vec::new(), done)? {
+    if let Some((c, rot)) = own_secrets_rot(tx, t, None, None, Vec::new(), done)? {
         recorded(tx, t, c, &rot, done)?;
     }
     Ok(())
 }
 
-/// Makes the thing of `rec` independent (`own_secrets_listing`): its record goes in
+/// Makes the thing of `rec` independent (`own_secrets`): its record goes in
 /// the rotation commit (spec/permissions.md §3), held here ahead of it so the rotation is built
 /// as for a held dependent thing. A thing minted with a key is minted so, its rotation from none
 /// signed by that key as it, its secrets random or, for a link key, `seed`'s (spec/crypto.md §3).
 /// `keys`: more of its `keys.0` its minter writes in that commit (its inbox). Its tid.
-pub(crate) fn own_secrets_new(tx: &mut Tx<'_>, rec: osis_base::CreationRecord, also: &[crate::flows::sync_ids::ReaderKey], seed: Option<&osis_crypto::Secret32>, keys: Vec<osis_crdt::PathOp>, done: &mut Done) -> Result<Tid> {
+pub(crate) fn own_secrets_new(tx: &mut Tx<'_>, rec: osis_base::CreationRecord, seed: Option<&osis_crypto::Secret32>, keys: Vec<osis_crdt::PathOp>, done: &mut Done) -> Result<Tid> {
     let t = rec.tid();
     if tx.core.created(&t).is_some() {
         return Err(Error::Misuse("thing already exists"));
@@ -803,7 +779,7 @@ pub(crate) fn own_secrets_new(tx: &mut Tx<'_>, rec: osis_base::CreationRecord, a
     let creates = BTreeMap::from([(t, rec.clone())]);
     let signer = if rec.key().is_some() { t } else { tx.core.tid() };
     crate::engine::write::check_authority(tx.core, signer, &|x| creates.get(x), &t, osis_commit::retention::CREATED, tx.core.hlc.peek())?;
-    let Some((c, rot)) = own_secrets_rot(tx, t, Some(rec), also, seed, keys, done)? else { return Err(Error::Misuse("a new thing is made independent")) };
+    let Some((c, rot)) = own_secrets_rot(tx, t, Some(rec), seed, keys, done)? else { return Err(Error::Misuse("a new thing is made independent")) };
     recorded(tx, t, c, &rot, done)?;
     Ok(t)
 }
@@ -813,8 +789,7 @@ type OwnRot = (Option<osis_base::CommitId>, Rotation);
 /// `rec`: the record of a new `t`, held from here and carried by the rotation commit
 /// (`own_secrets_new`); `seed`: a new link key's; `keys`: more `keys.0` ops of `t` the commit
 /// carries.
-#[allow(clippy::too_many_arguments)]
-fn own_secrets_rot(tx: &mut Tx<'_>, t: Tid, rec: Option<osis_base::CreationRecord>, also: &[crate::flows::sync_ids::ReaderKey], seed: Option<&osis_crypto::Secret32>, keys: Vec<osis_crdt::PathOp>, done: &mut Done) -> Result<Option<OwnRot>> {
+fn own_secrets_rot(tx: &mut Tx<'_>, t: Tid, rec: Option<osis_base::CreationRecord>, seed: Option<&osis_crypto::Secret32>, keys: Vec<osis_crdt::PathOp>, done: &mut Done) -> Result<Option<OwnRot>> {
     if let Some(r) = &rec {
         crate::apply::atomic::learn_record(tx, r.clone())?;
     }
@@ -868,14 +843,9 @@ fn own_secrets_rot(tx: &mut Tx<'_>, t: Tid, rec: Option<osis_base::CreationRecor
     let deposit = fresh_deposit_seed(tx, &mut m, t)?;
     // the rule (spec/sync-ids.md §2): its own role secrets, its genesis step and the step
     // registering them, in this one commit
-    let mut readers = Vec::new();
-    for r in &holders.holders {
-        readers.extend(crate::flows::sync_ids::reader_key(tx, &t, &r.holder)?);
-    }
     let after = rot.preview(&held)?;
-    let readers: Vec<_> = readers.into_iter().chain(also.iter().cloned()).collect();
     let g = rot.genesis.clone().ok_or(Error::Misuse("the genesis seed it derives from is not held"))?;
-    crate::flows::sync_ids::independent_steps(tx, &mut m, t, &g, &after, &readers, &deposit, rot.keys.keysets.get(&Role::Read))?;
+    crate::flows::sync_ids::independent_steps(tx, &mut m, t, &g, &after, &deposit, rot.keys.keysets.get(&Role::Read))?;
     for op in keys {
         m.op(t, &osis_schema::core_types::KEYS, op)?;
     }
@@ -1048,7 +1018,6 @@ pub(crate) fn reseal_one_into(tx: &mut Tx<'_>, a: Tid, holder: Tid, roles: &BTre
     };
     let mut m = Mutation::new();
     put_secrets(&mut m, a, &w, false)?;
-    // a holder holding no box at the epoch it is wrapped under takes it by its notice
     done.add(Engine::commit_tx(tx, m)?);
     Ok(())
 }

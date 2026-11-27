@@ -82,8 +82,8 @@ pub(crate) struct Certified {
     records: Stamped<Tid, Arc<BTreeSet<Tid>>>,
     /// Per record, the read things whose certificates name it (`records` the other way).
     pub(crate) namers: Stamped<Tid, Arc<BTreeSet<Tid>>>,
-    /// Per read thing, the sync copies its certificates name (`Certs::sync_copies`).
-    pub(crate) sync_copies: Stamped<Tid, Arc<BTreeSet<crate::sync_ids::unread::CopyName>>>,
+    /// Per read thing, the stubs whose sync-only cut its certificates carry (`Certs::sync_cuts`).
+    pub(crate) sync_cuts: Stamped<Tid, Arc<BTreeSet<Tid>>>,
 }
 
 /// Adds `t` to the set at `k` (`add`) or takes it out, an emptied set leaving; `fed`: a key new
@@ -137,9 +137,9 @@ impl Certified {
         for r in now.records.difference(&was.records) {
             member(&mut self.namers, r, g, true, true);
         }
-        if was.sync_copies != now.sync_copies {
-            let v = (!now.sync_copies.is_empty()).then(|| Arc::new(now.sync_copies.clone()));
-            self.sync_copies.update(*g, |_| v);
+        if was.sync_cuts != now.sync_cuts {
+            let v = (!now.sync_cuts.is_empty()).then(|| Arc::new(now.sync_cuts.clone()));
+            self.sync_cuts.update(*g, |_| v);
         }
     }
 }
@@ -245,7 +245,7 @@ impl Engine {
         if !c.read.iter().eq(read.iter()) {
             return Some(format!("the rows' read things {:?}, read {read:?}", c.read.iter().collect::<Vec<_>>()));
         }
-        (!c.of.iter().eq(anew.of.iter()) || !c.naming.iter().eq(anew.naming.iter()) || !c.records.iter().eq(anew.records.iter()) || !c.namers.iter().eq(anew.namers.iter()) || !c.sync_copies.iter().eq(anew.sync_copies.iter())).then(|| "a certificate row is not the one written from nothing".to_string())
+        (!c.of.iter().eq(anew.of.iter()) || !c.naming.iter().eq(anew.naming.iter()) || !c.records.iter().eq(anew.records.iter()) || !c.namers.iter().eq(anew.namers.iter()) || !c.sync_cuts.iter().eq(anew.sync_cuts.iter())).then(|| "a certificate row is not the one written from nothing".to_string())
     }
 
     /// `certified_differs` of the state as followed (tests: `check_evidence`).

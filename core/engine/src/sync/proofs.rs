@@ -1,5 +1,5 @@
 //! Connection proofs (spec/sync-opens.md §2): what this node proves (`Engine::proving`), how a
-//! peer's proofs are judged (`Engine::proven`), and what the proven roles decide: J (§4), who a
+//! peer's proofs are judged (`Engine::proven`), and what the proven roles decide: who a
 //! peer may be (spec/sync-set.md §3 To be waited for), whom a Stranded message goes to
 //! (spec/permissions.md §4), and whether some other node may hold a sync ID
 //! (spec/sync-status.md §3).
@@ -20,7 +20,6 @@
 //! - the role on S: this node's reading alone (no copy reaches it): a proven thing is trusted at
 //!   most at the role its path gives (the proven role), never at the claimed thing's role alone.
 
-use super::J;
 use crate::Engine;
 use crate::engine::Core;
 use crate::error::Result;
@@ -129,7 +128,7 @@ impl Core {
 
     /// The role proven thing `p` is trusted at on `a` (spec/sync-opens.md §2 proven role): the
     /// least of what its path gives and its own role on `a` here. The public's grant proves
-    /// nothing of the peer: where it reads `a`, any party may hold it by the public entry.
+    /// nothing of the peer: where it reads `a`, any party may hold it.
     pub(crate) fn proven_role(&self, p: &ProvenThing, a: &Tid) -> Option<Role> {
         let on = if p.thing == *a { Some(Role::Admin) } else { self.role_now(&p.thing, a) };
         p.role.min(on)
@@ -249,28 +248,6 @@ impl Engine {
         Ok(out)
     }
 
-    /// J of a peer whose proofs prove `proven` for `s` (spec/sync-opens.md §4): reader if a
-    /// proven thing's proven role on one of `s`'s things is read or above, sync holder if one's
-    /// is sync, departed if one once held a role there and none holds one now, else unknown.
-    /// `Unknown` for a sync ID this node does not read.
-    pub fn judge_peer(&mut self, s: &SyncId, proven: &[ProvenThing]) -> Result<J> {
-        let mut out = J::Unknown;
-        for t in self.sync_things_of(s)? {
-            let a = self.core.reader_of(&t);
-            let best = proven.iter().map(|p| self.core.proven_role(p, &a)).max().flatten();
-            let j = match best {
-                Some(r) if r >= Role::Read => J::Reader,
-                Some(_) => J::SyncHolder,
-                None if proven.iter().any(|p| p.thing == a || self.core.timelines().get(&p.thing).is_some_and(|tl| tl.roles_ever(&p.thing).contains_key(&a))) => J::Departed,
-                None => J::Unknown,
-            };
-            if rank(j) > rank(out) {
-                out = j;
-            }
-        }
-        Ok(out)
-    }
-
     /// The proven thing among `proven` whose proven role on read sync ID `s`'s thing is write or
     /// above (spec/permissions.md §4: whom a Stranded message goes to).
     pub fn writer_of(&mut self, s: &SyncId, proven: &[ProvenThing]) -> Result<Option<Tid>> {
@@ -307,14 +284,5 @@ impl Engine {
             let a = self.core.reader_of(t);
             !self.core.held_here_only(&a, &mut BTreeSet::new())
         }))
-    }
-}
-
-fn rank(j: J) -> u8 {
-    match j {
-        J::Reader => 3,
-        J::SyncHolder => 2,
-        J::Departed => 1,
-        J::Unknown => 0,
     }
 }

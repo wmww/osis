@@ -476,31 +476,6 @@ fn sealing_at(tx: &mut Tx<'_>, who: &Tid, a: &Tid, m: &Tid, role: Role) -> Resul
     Ok(top.map_or(Sealed::Out, |role| Sealed::Boxed(Recipient { holder: *m, role, keys: HolderKeys { keysets, own: secrets }, floor: 0 })))
 }
 
-/// The read keyset of holder actor `m` of `a` a notice of its removal from `a` is sealed to
-/// (spec/permissions.md §4 Notices): as Seal gives it with no anchor (the newest candidate: held
-/// valid, not foreign or tainted, carrying a KEM key or whose secret is held here), none where
-/// that is blocked here (`seal_blocked`): its epoch and read KEM key. The public, holding no
-/// keys, has none.
-pub(crate) fn notice_keyset(tx: &mut Tx<'_>, a: &Tid, m: &Tid) -> Result<Option<(Epoch, osis_crypto::KemPublicKey)>> {
-    if m.is_public() {
-        return Ok(None);
-    }
-    let r = Role::Read;
-    let own = tx.core.own_epochs(m);
-    let deps = super::departures(tx, m)?;
-    let held = keysets_of(tx, m, r, None)?;
-    let mut foreign = Foreign::default();
-    let foreign: BTreeSet<Epoch> = held.valid.keys().filter(|k| foreign.is(tx.core, m, r, k)).copied().collect();
-    let secret = |k: &Epoch| own.as_ref().filter(|e| e.role(r).is_established(k)).and_then(|e| e.role(r).secret(k)).cloned();
-    let bare: BTreeSet<Epoch> = held.valid.keys().filter(|k| tx.core.keyset(m, r, k).is_none_or(|x| x.kem_in.is_none()) && secret(k).is_none()).copied().collect();
-    let skip: BTreeSet<Epoch> = tainted(tx, m, r)?.union(&foreign).chain(&bare).copied().collect();
-    let Seal::At(ks) = osis_keys::seal_keyset(&held, &BTreeSet::new(), &skip) else { return Ok(None) };
-    let me = tx.core.tid();
-    let (Some(k), true) = (ks.first().copied(), seal_blocked(tx, &me, a, m, r, &ks, &deps)?.is_empty()) else { return Ok(None) };
-    let kem = crate::apply::keys::keyset_kem(tx, m, r, &k)?.or_else(|| secret(&k).map(|s| s.kem().public().clone()));
-    Ok(kem.map(|kem| (k, kem)))
-}
-
 /// The keysets `ks` Seal gives for `m` at `r` that leave `m` out of `a` (`super::joint_blocked`):
 /// a box naming them is encrypting under each (`super::blocking`), and a joint one opens only for
 /// a holder of every one, so it waits on a missed departure only when every keyset misses one; a

@@ -91,16 +91,8 @@ fn holds_at(core: &Core, a: &Tid, min: Role) -> bool {
 /// do not. A role through the public is one of secrets: no path lists the public, so it lets the
 /// node write nothing. It counts wherever the node holds the grant, synced or not: it is every party's,
 /// so it gives no node a secret anyone else lacks, and an outdated grant held gives only the open
-/// boxes of epochs that were every party's. The public's role also where the head of `a`'s sync
-/// ID lists the public entry at the role its box gives (`Core::public_listed`, spec/sync.md §3
-/// Holders by copies).
+/// boxes of epochs that were every party's.
 pub(crate) fn role_here(core: &Core, a: &Tid) -> Option<Role> {
-    role_by_grants(core, a).max(core.public_listed(a))
-}
-
-/// `role_here` by `a`'s grants as held alone, no head's listing: what a locator's reach is
-/// judged by (spec/sync-set.md §4: `a`'s role commits held).
-pub(crate) fn role_by_grants(core: &Core, a: &Tid) -> Option<Role> {
     let public = core.keyed_role_now(&Tid::PUBLIC, a);
     if !grants_count(core, a) {
         return public;
@@ -111,8 +103,7 @@ pub(crate) fn role_by_grants(core: &Core, a: &Tid) -> Option<Role> {
 /// Whether the grants the node holds of `a` count for its role (spec/sync-set.md §2 Own things:
 /// grants belong to the thing granted): the node syncs `a` or holds an offer of it (`syncs`), or
 /// `a` is a holder found from such a thing up: one holding a role now, with key access, on a
-/// thing whose grants count, by a held edge write or, holding only sync, by counted sync copies
-/// (`Core::copies_naming`). A grant of any other thing is held as some commit's certificate
+/// thing whose grants count, by a held edge write. A grant of any other thing is held as some commit's certificate
 /// and gives the node nothing, whoever it names. The walk down from `a` through what it is
 /// named on, stopping at the first thing synced: O(the things reached, each once).
 pub(crate) fn grants_count(core: &Core, a: &Tid) -> bool {
@@ -126,12 +117,6 @@ pub(crate) fn grants_count(core: &Core, a: &Tid) -> bool {
             if !seen.contains(y) && core.keyed_role_now(&x, y).is_some() {
                 seen.insert(*y);
                 todo.push(*y);
-            }
-        }
-        // a holder of only sync: its counted sync copies are the node's record of its grant
-        for y in core.copies_naming(&x) {
-            if seen.insert(y) {
-                todo.push(y);
             }
         }
     }
@@ -189,28 +174,6 @@ pub(crate) fn may_take(core: &Core, a: &Tid) -> bool {
 /// give only sync.
 pub(crate) fn may_take_role(core: &Core, a: &Tid, r: Role) -> bool {
     may_take(core, a) || r == Role::Sync && holds_sync(core, a)
-}
-
-/// Whether an entry box admitting `party` (the public, or a link key: spec/sync-ids.md §3) may
-/// give this node `a`'s secret of role `r` at epoch `e`: as a box may (`may_take_role`), or while
-/// nothing held says the node lost `a` (`ended_ours`: a link's redeemer opens the sync ID before
-/// it holds the grant to its key; the trigger judges `a` once role commits on it apply), or at an
-/// epoch covering every departure of `party` from `a` known here (`covers_known_of`). The box is
-/// every holder of its entry's alike (the public's: every party's), so the node takes what any
-/// of them takes, its own departures aside: a removed party reads as the public as any party
-/// does, the superseded epoch its rotation commit is wrapped under included. The trigger judges
-/// `a` once the role entries it opens apply, keeping it only where a role (the public's) gives it.
-pub(crate) fn may_learn(tx: &mut Tx<'_>, a: &Tid, r: Role, e: &osis_crypto::Epoch, party: &Tid) -> Result<bool> {
-    if may_take_role(tx.core, a, r) || !ended_ours(tx.core, a) {
-        return Ok(true);
-    }
-    super::covers_known_of(tx, a, r, e, party)
-}
-
-/// Whether an edge on `a` of the node, a held link key, a thing it reads or the public (every
-/// party's: after its removal an old public entry box gives back only an epoch covering it) ended.
-fn ended_ours(core: &Core, a: &Tid) -> bool {
-    core.timelines().get(a).is_some_and(|tl| tl.ended(a, now_ts(core)).keys().any(|h| *h == Tid::PUBLIC || was_ours(core, h)))
 }
 
 /// Whether the node holds secrets of `a` no current role of its there covers (lost access): a
@@ -625,8 +588,6 @@ fn reaching(core: &Core, a: &Tid) -> BTreeSet<Tid> {
 /// party's, so this node's too: spec/permissions.md §1) ended or lowered on an actor whose roles
 /// reach `a` (`reaching`), or reading-only secrets of it outlived their source commit, or
 /// its role commits show it a role on `a` (`role_here`: they show what it may hold).
-/// Secrets taken with no role yet (an entry box a link's redeemer opens before its grant
-/// applies, `may_learn`) are no loss until such an edge ends or lowers, or a role shows.
 fn loss_seen(core: &Core, a: &Tid) -> bool {
     let ts = now_ts(core);
     // reading-only secrets whose source commit is judged no more (dropped as bad input): what

@@ -2536,8 +2536,15 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
     for (tid, ak) in aspects {
         match ak.as_str() {
             // what observing a `keys.0` state derives is the delete hints it ends, which a load
-            // reads from the index or not at all (a rebuild holds none to end)
-            "keys.0" => {}
+            // reads from the index or not at all (a rebuild holds none to end); and the sync ID it
+            // names (`Indexes::keys_sync_id`)
+            "keys.0" => {
+                use osis_schema::RawKey;
+                let named = tx.state(&tid, &ak)?.and_then(osis_crdt::Fragment::read).and_then(|v| osis_schema::core_types::KEYS.decode(&v).ok()).and_then(|k| k.sync_id);
+                if let Some(s) = named {
+                    tx.core.ix.keys_sync_id.insert(tid, s);
+                }
+            }
             "secrets.0" => secrets.push(tid),
             // seeds are judged by D's epochs established, known only once loaded: the open
             // takes them up after (`Engine::take_account`), a reload keeps those held

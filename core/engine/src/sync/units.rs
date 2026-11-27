@@ -33,7 +33,7 @@ use crate::engine::journal::{JMap, JSet, JSetMap, Journaled};
 use crate::engine::{Core, Engine, Tx};
 use crate::error::Result;
 use osis_base::memo::Effects;
-use osis_base::{RefKind, Role, SyncId, Tid};
+use osis_base::{RefKind, Role, Tid};
 use std::collections::{BTreeSet, VecDeque};
 use std::sync::Arc;
 
@@ -777,30 +777,10 @@ impl Core {
         self.roster_of(a).get(&Tid::PUBLIC).is_some_and(|e| e.role >= Role::Read)
     }
 
-    /// Whether the public holds a role on `a` (sync or read) as this node knows it: by its own
-    /// grant there, as `a`'s role commits held here show it (`public_reads`), or by a head of
-    /// `a`'s sync ID listing the public entry (`public_listed`); its sync ID's steps list it
-    /// (spec/sync-ids.md §3).
+    /// Whether the public holds sync or read on `a` by its own grant there, as `a`'s role commits
+    /// held here show it.
     pub(crate) fn public_syncs(&self, a: &Tid) -> bool {
-        self.roster_of(a).get(&Tid::PUBLIC).is_some_and(|e| e.role >= Role::Sync) || self.public_listed(a).is_some()
-    }
-
-    /// The public's role on `a` by the heads of `a`'s sync IDs, as this node holds them, listing
-    /// the public entry with a box whose sync secret the head's sync key comes from
-    /// (`Indexes::public_listed`): the role the box gives, the best of them (spec/sync.md §3
-    /// Holders by copies), each while it is the node's word of the public's role: while `a`'s
-    /// `sync.0` as held here does not place its head. A node holding the write that placed a step
-    /// holds the grants that step reflects, and has the public's role by them: a reader's head
-    /// moves on unseen (its step under read epochs it may lack), its grants do not. Who writes
-    /// it: `a`'s admins, the step (a path verified from genesis).
-    pub(crate) fn public_listed(&self, a: &Tid) -> Option<Role> {
-        let placed = |h: &osis_blob::StepId| self.ix.steps.get(a).is_some_and(|r| r.steps.contains_key(h));
-        self.ix.public_listed.get(a).and_then(|m| m.values().filter(|l| !placed(&l.head)).map(|l| l.role).max())
-    }
-
-    /// Whether the head of `a`'s sync ID `s` lists the public entry here (`public_listed`).
-    pub(crate) fn public_listed_on(&self, a: &Tid, s: &SyncId) -> bool {
-        self.ix.public_listed.get(a).is_some_and(|m| m.contains_key(s))
+        self.roster_of(a).get(&Tid::PUBLIC).is_some_and(|e| e.role >= Role::Sync)
     }
 
     /// Whether the node opens dependent thing `y` (spec/sync-set.md §2 local part): it holds a read
@@ -817,7 +797,7 @@ impl Core {
     /// one). Established or not: a grantee holds the grant's box before it syncs `y`, where the
     /// rotation that made the epoch is.
     pub(crate) fn counts_independent(&self, y: &Tid) -> bool {
-        self.is_independent(y) || self.public_listed(y).is_some() || self.own_record(y).is_some_and(|e| Role::ALL.iter().any(|r| e.role(*r).held().next().is_some())) || self.unread(y).holds_any()
+        self.is_independent(y) || self.own_record(y).is_some_and(|e| Role::ALL.iter().any(|r| e.role(*r).held().next().is_some())) || self.unread(y).holds_any()
     }
 
     /// How the walk enters independent thing `y` at a strong from a context that does not
@@ -829,9 +809,8 @@ impl Core {
         let e = self.own_record(y).and_then(|_| self.epochs(y));
         if e.as_ref().is_some_and(|e| e.role(Role::Read).holds_any()) {
             Some(Ctx::Read(*y))
-        } else if e.as_ref().is_some_and(|e| e.role(Role::Sync).holds_any()) || self.unread(y).holds_any() || self.public_listed(y).is_some() && self.ix.secrets.get(y).is_some_and(|e| e.role(Role::Sync).holds_any()) {
-            // kept unread: a sync secret alone, given by a box applied, a sync copy
-            // (`sync_ids::unread`) or the public entry its head lists (`public_listed`)
+        } else if e.as_ref().is_some_and(|e| e.role(Role::Sync).holds_any()) || self.unread(y).holds_any() {
+            // kept unread: a sync secret alone, given by a box applied (`sync_ids::unread`)
             Some(Ctx::Unread(*y))
         } else {
             None
@@ -990,12 +969,12 @@ pub(crate) fn reached_carried(core: &Core, y: &Tid) -> bool {
 /// Whether held vertex `v`'s unit carries `y`, a target of its thing's strongs (spec/sync-set.md
 /// §2 Stubs): `v` is in the read sync unit of a thing `u` other than `y`, or in the local part
 /// with `u` an own thing, whose keys open `y` (whole) or whose effective role on `y` is sync or
-/// above, the public's sync (by its grant or a head's listing, `public_syncs`) counting as every
+/// above, the public's sync (by its grant, `public_syncs`) counting as every
 /// party's (its stub), as the role entries the node holds show it. Local to the edge, so the tree
 /// founds it: an entry by `u`'s unit goes when `u`'s does, whatever `u` reaches back.
 /// Invariant: `y`'s own unit never carries it (`u != y`).
 fn edge_carries(core: &Core, v: Vx, y: &Tid) -> bool {
-    owners(core, v.0).iter().any(|u| u != y && (core.keys_open(u, y) || core.keyed_role_now(u, y) >= Some(Role::Sync) || core.public_syncs(y) || core.syncs_by_copies(u, y)))
+    owners(core, v.0).iter().any(|u| u != y && (core.keys_open(u, y) || core.keyed_role_now(u, y) >= Some(Role::Sync) || core.public_syncs(y)))
 }
 
 /// Whether the node closure holds `t` within the local part or another thing's sync unit

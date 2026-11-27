@@ -69,8 +69,7 @@ impl Identity {
     pub fn link_epochs(&self) -> Option<ActorEpochs> {
         self.link.clone()
     }
-    /// A link key's first read keyset's KEM key, which its entry boxes are sealed to
-    /// (spec/sync-ids.md §3).
+    /// A link key's first read keyset's KEM key.
     pub fn link_read_kem(&self) -> Option<&osis_crypto::KemSecret> {
         self.link.as_ref()?.read.held().next().map(|(_, s)| s.kem())
     }

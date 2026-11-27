@@ -582,26 +582,15 @@ indexes! {
     pub blob_parts: JMap<osis_base::BlobId, Arc<crate::sync::BlobOf>>,
     /// `blob_parts`' blobs per commit: they go with it (`sync::bodies::forget`).
     pub commit_blobs: JSetMap<CommitId, osis_base::BlobId>,
-    /// The sync copies taken here per thing (`sync_ids::unread`, rows `su/`): what a node keeping
-    /// the thing unread keeps it by.
-    pub sync_copies: JMap<Tid, Arc<crate::sync_ids::unread::SyncCopies>>,
-    /// `sync_copies`' thing per blob: a row goes with its blob's last entry.
-    pub sync_copy_on: JMap<osis_base::BlobId, Tid>,
-    /// `sync_copies`' blobs per thing they came under: what a sync ID of it logs.
-    pub sync_copies_under: JSetMap<Tid, osis_base::BlobId>,
-    /// The things whose `sync_copies` carry a step of each sync ID: what keeps a thing whose copies
-    /// speak (`Core::copies_speak`) among a sync ID's things (`Engine::sync_things_of`).
-    pub sync_copy_ids: JSetMap<SyncId, Tid>,
-    /// Per thing, each sync ID of it whose head, as this node keeps or follows it, lists the public
-    /// entry with a box whose sync secret the head's sync key comes from (spec/sync.md §3 Holders
-    /// by copies: the public holds the box's role there). Fed by an open by the public entry
-    /// (`Engine::learn_grant`) and the unread judgement at each head move (`Engine::public_head`),
-    /// each sync ID's by its own path; counted while it is the node's word of the public's role
-    /// (`Core::public_listed`). In memory, fed again after an open.
-    pub public_listed: JNested<Tid, SyncId, PublicListing>,
-    /// Per holder, the things `sync_copies` hold a copy of it on (counted or not: readers ask
-    /// `Unread::holders`).
-    pub sync_copy_holders: JSetMap<Tid, Tid>,
+    /// The sync-only cuts taken here by blob (`sync_ids::unread`, rows `su/`): a row goes with its
+    /// blob's last entry.
+    pub sync_cuts: JMap<osis_base::BlobId, crate::sync_ids::unread::HeldCut>,
+    /// `sync_cuts`' blobs per thing they came under: what a sync ID of it logs.
+    pub sync_cuts_under: JSetMap<Tid, osis_base::BlobId>,
+    /// Per thing, the sync IDs `sync_cuts` give it: sync IDs it is followed by.
+    pub sync_cut_ids: JSetMap<Tid, SyncId>,
+    /// `sync_cut_ids` the other way: per sync ID, the things cuts give it.
+    pub sync_cut_things: JSetMap<SyncId, Tid>,
     /// The certificate blobs sealed here per sync ID, each with what it carries
     /// (`sync::certblobs`).
     pub cert_blobs: JMap<SyncId, Arc<crate::sync::CertBlobs>>,
@@ -661,6 +650,9 @@ indexes! {
     pub sync_recorders: JSetMap<SyncId, Tid>,
     /// Per thing with a `sync.0` state, the sync IDs it records (`sync_recorders` inverted).
     pub sync_recorded_ids: JMap<Tid, BTreeSet<SyncId>>,
+    /// Per thing, the sync ID its `keys.0` state names (field `sync_id`): an index derived from the
+    /// state (`Tx::derive`), read by the owner rule (`Core::named_sync_id`).
+    pub keys_sync_id: JMap<Tid, SyncId>,
     /// Per thing with a `sync.0` state, the steps it places (`sync_ids::steps`, `Tx::derive`):
     /// what delete keys are listed from and checked against (spec/crypto.md §7).
     pub steps: JMap<Tid, Arc<crate::sync_ids::steps::Recorded>>,
@@ -3963,12 +3955,4 @@ mod tests {
         p.restart(0).unwrap();
         assert_eq!(rev(&p).map(|r| r.0), Some(3), "registered again after a failed transaction");
     }
-}
-
-/// A head listing the public entry (`Indexes::public_listed`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct PublicListing {
-    pub head: osis_blob::StepId,
-    /// The role the box gives: read where it carries read secrets, only sync else.
-    pub role: osis_base::Role,
 }

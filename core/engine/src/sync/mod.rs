@@ -21,7 +21,6 @@ pub(crate) mod proofs;
 pub use proofs::{Claim, ProvenThing, Prover, Proving};
 pub use pieces::PieceLink;
 pub(crate) mod certblobs;
-pub mod notices;
 pub use certblobs::{CertBlob, CertBlobs};
 pub(crate) use certblobs::with_chains;
 mod relay;
@@ -125,11 +124,10 @@ pub struct HeldBlob {
     pub bytes: Vec<u8>,
 }
 
-/// The steps of a sync ID from its genesis step to its head, each with its claim set while held
-/// (spec/sync-ids.md §5 Path).
+/// The steps of a sync ID from its genesis step to its head (spec/sync-ids.md §5 Path).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Path {
-    pub steps: Vec<(Step, Option<osis_blob::ClaimSet>)>,
+    pub steps: Vec<Step>,
 }
 
 /// What `open_entry` did with an entry's blob.
@@ -141,8 +139,8 @@ pub enum Opened {
     Linked,
     /// A record blob (spec/wire.md §3): its records learned.
     Records(BTreeSet<Tid>),
-    /// A sync copy (spec/wire.md §4): taken for its box and steps (`sync_ids::unread`).
-    SyncCopy,
+    /// A sync-only cut (spec/wire.md §4): read for its sync ID alone.
+    SyncOnlyCut,
     /// No held secret opens it (or nothing held links it).
     NotOpen,
     /// It opened and is bad (its sender is to blame).
@@ -400,49 +398,22 @@ pub struct ReadCredentials {
     pub head: Option<Step>,
     /// The role keys held per recorded step.
     pub keys: BTreeMap<StepId, HeadKeys>,
-    /// Current read secrets (the engine's history-less floors).
-    pub read_secrets: Vec<(Epoch, Secret32)>,
-    /// The read secrets held at superseded epochs: shown to a peer J judges departed alone, they
-    /// open S toward it ended (spec/sync-opens.md §4 Admissible, §6).
-    pub old_read_secrets: Vec<(Epoch, Secret32)>,
-    /// Static entries of S's roster (link keys).
-    pub statics: BTreeSet<[u8; 32]>,
-    /// The signing keys of the link keys this node acts for on S (the link it redeems): their
-    /// static entries are tested (spec/sync-opens.md §4).
-    pub acting: Vec<osis_crypto::SigningSecret>,
-    /// The public holds a role on S's thing: its public entry is shown (spec/sync-opens.md §4).
-    pub shows_public: bool,
-    /// The public reads S's thing (else, shown, it holds only sync there).
-    pub public_reads: bool,
-    /// The public holds a role on S's thing as held here, this node redeems a locator of it,
-    /// or it follows S's thing by the public entry: its public entry is tested.
-    pub tests_public: bool,
-    /// The public is named on S's thing and reads it no more (its removal held): its read secrets
-    /// at superseded epochs are shown lapsed, to every peer, each opening a member ended at once
-    /// (spec/sync-opens.md §4, §6).
-    pub lapsed_public: bool,
-    /// S's thing is followed by a locator (its value: the thing, its sync ID, where it is
-    /// served) and this node holds none of its read secrets yet: it asks every peer to open S
-    /// by its role there (spec/sync-opens.md §5 ByRole).
-    pub by_role: bool,
     /// The sync proof (spec/sync-ids.md §2) of each recorded step whose sync key this node holds,
-    /// deepest first: the head's is what a reader shows, the rest what the walk tests
-    /// (spec/sync-ids.md §6 Walk).
+    /// deepest first.
     pub proofs: Vec<(StepId, [u8; 32])>,
     /// The sync key of each sync secret of S's thing held here, newest first, with its epoch:
-    /// tested after the recorded steps' credentials (spec/sync-ids.md §6 Test).
+    /// tested (spec/sync-ids.md §6 Test).
     pub sync_keys: Vec<(Epoch, SigningSecret)>,
 }
 
-type PublicCredentials<'a> = (Option<StepId>, &'a BTreeMap<StepId, HeadKeys>, [&'a [(Epoch, Secret32)]; 2], &'a BTreeSet<[u8; 32]>, Vec<osis_crypto::VerifyingKey>, &'a [(StepId, [u8; 32])], Vec<(Epoch, osis_crypto::VerifyingKey)>, (bool, bool, bool, bool, bool));
+type PublicCredentials<'a> = (Option<StepId>, &'a BTreeMap<StepId, HeadKeys>, &'a [(StepId, [u8; 32])], Vec<(Epoch, osis_crypto::VerifyingKey)>);
 
 impl ReadCredentials {
     /// What tells two apart (`Engine::read_credentials` is a memo): signing keys by their public
-    /// halves, read secrets as they are (`Secret32` compares, and prints redacted).
+    /// halves.
     fn public(&self) -> PublicCredentials<'_> {
-        let acting = self.acting.iter().map(SigningSecret::verifying_key).collect();
         let sync_keys = self.sync_keys.iter().map(|(e, k)| (*e, k.verifying_key())).collect();
-        (self.head.as_ref().map(Step::id), &self.keys, [&self.read_secrets, &self.old_read_secrets], &self.statics, acting, &self.proofs, sync_keys, (self.shows_public, self.public_reads, self.tests_public, self.lapsed_public, self.by_role))
+        (self.head.as_ref().map(Step::id), &self.keys, &self.proofs, sync_keys)
     }
 }
 
@@ -458,21 +429,6 @@ impl std::fmt::Debug for ReadCredentials {
     }
 }
 
-/// A static entry's grant opened, not yet learned (`Engine::open_grant`).
-#[derive(Clone)]
-pub struct OpenedGrant {
-    /// S's thing.
-    pub thing: Tid,
-    /// The head's sync key the box's sync secret derives: the answer's `sig` verifies under it.
-    pub key: [u8; 32],
-    /// S and that head.
-    pub head: (SyncId, osis_blob::StepId),
-    /// The secrets the entry box held (spec/sync-ids.md §3 Entry boxes).
-    pub secrets: osis_crypto::EntryItem,
-    /// The party the entry admits: the public, or the link key whose static entry it is.
-    pub party: Tid,
-}
-
 /// The keys this node signs entries of a sync ID with (spec/sync-inbox.md §2-§4).
 #[derive(Clone, Default)]
 pub struct Signers {
@@ -482,15 +438,6 @@ pub struct Signers {
     pub deposit: Option<SigningSecret>,
     /// Its head's delete key, established here: clearing deposits.
     pub delete: Option<SigningSecret>,
-}
-
-/// J of a peer for S (spec/sync-opens.md §4).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum J {
-    Reader,
-    SyncHolder,
-    Departed,
-    Unknown,
 }
 
 /// `caps^.0` of this node (spec/sync-ids.md §5 Caps).
@@ -753,130 +700,6 @@ impl Engine {
         osis_base::memo::Memo::get_in(self, |e| &e.core.read_credentials, s, |e| e.read_credentials_now(s))
     }
 
-    /// Opens a static or the public entry's grant (spec/sync-opens.md §5): `steps` verify from S's
-    /// genesis step (`verify_path`: its delete key hashes to `s`) and pass through the newest step
-    /// of S recorded here; a link key this node holds has static entry `entry` and opens the head's
-    /// entry box, or `entry` is S's public entry and this node redeems a locator of S's thing
-    /// (the box open, read by anyone) (spec/sync-ids.md §3 Entry boxes), each secret naming its
-    /// epoch of S's thing; the box's sync secret derives the head's sync key. Returns that key and the box, learning nothing: the
-    /// caller verifies the answer's signature under the key, then `learn_grant`. `None` when any
-    /// check fails or S is no sync ID this node reads.
-    pub fn open_grant(&mut self, s: &SyncId, entry: &[u8; 32], steps: &[Step], b: &osis_schema::core_types::SecretBox) -> Result<Option<OpenedGrant>> {
-        if osis_blob::verify_path(s, steps).is_err() {
-            return Ok(None);
-        }
-        let Some(head) = steps.last() else { return Ok(None) };
-        let Some(c) = self.read_credentials(s)? else { return Ok(None) };
-        // a step older than the newest known here proves nothing (spec/sync-opens.md §4)
-        if let Some(known) = &c.head
-            && !steps.iter().any(|st| st.id() == known.id())
-        {
-            return Ok(None);
-        }
-        let Some((things, _)) = self.sync_holder(s)? else { return Ok(None) };
-        // the box names the thing it is of: whichever of S's things opens it
-        let (party, opened) = if *entry == osis_crypto::public_entry(s) {
-            // the public entry, tested only while a locator of S's thing is redeemed here
-            if !c.tests_public {
-                return Ok(None);
-            }
-            (Tid::PUBLIC, things.iter().find_map(|t| osis_blob::read_public_entry_box(b, head, t).ok().map(|i| (*t, i))))
-        } else {
-            let ids: Vec<(Tid, Arc<crate::identity::Identity>)> = self.core.link_keys.iter().map(|(k, id)| (*k, id.clone())).collect();
-            let Some((k, id)) = ids.iter().find(|(_, id)| osis_crypto::static_entry(s, &id.signing().verifying_key()) == *entry) else { return Ok(None) };
-            let Some(kem) = id.link_read_kem() else { return Ok(None) };
-            (*k, things.iter().find_map(|t| osis_blob::open_entry_box(b, head, kem, t).ok().map(|i| (*t, i))))
-        };
-        let Some((thing, item)) = opened else { return Ok(None) };
-        let key = osis_crypto::role_key(osis_crypto::RoleKey::Sync, &item.sync.1).verifying_key().to_bytes();
-        if key != head.keys.sync.to_bytes() {
-            return Ok(None);
-        }
-        Ok(Some(OpenedGrant { thing, key, head: (*s, head.id()), secrets: item, party }))
-    }
-
-    /// Learns an opened grant's secrets (`learn_secret`), once its answer's signature verified.
-    /// The public's: its head lists the public entry, so the public holds there, as this node
-    /// knows it, the role the box gives (`Core::public_listed`): read where it carries read
-    /// secrets (a box taken where the head is not current for reading carries none here), sync
-    /// alone else; noted first so that role lets it take the secrets.
-    pub fn learn_grant(&mut self, g: &OpenedGrant) -> Result<()> {
-        if g.party.is_public() {
-            let (t, (s, head)) = (g.thing, g.head);
-            let role = if g.secrets.read.is_some() { osis_base::Role::Read } else { osis_base::Role::Sync };
-            let l = crate::engine::PublicListing { head, role };
-            self.run(|tx| {
-                if tx.core.ix.public_listed.get(&t).and_then(|m| m.get(&s)) != Some(&l) {
-                    tx.core.ix.public_listed.insert(t, s, l);
-                }
-                Ok(())
-            })?;
-        }
-        let x = &g.secrets;
-        // the public's box where it holds only sync carries no read secret
-        if let Some(r) = &x.read {
-            self.learn_secret(&g.thing, osis_base::Role::Read, r.epoch, r.secret.clone(), &g.party)?;
-            if let Some((e, v)) = &r.earlier {
-                self.learn_secret(&g.thing, osis_base::Role::Read, *e, v.clone(), &g.party)?;
-            }
-        }
-        self.learn_secret(&g.thing, osis_base::Role::Sync, x.sync.0, x.sync.1.clone(), &g.party)?;
-        Ok(())
-    }
-
-    /// A node keeping `s` unread judged its head (spec/sync.md §3 Holders by copies,
-    /// spec/sync-opens.md §4 Admissible, keeping S unread): `head` its head with its claim set,
-    /// none where the head lists no public entry. Where the set lists S's public entry with a box
-    /// whose sync secret derives the head's sync key and no sync epoch held here has a later
-    /// number, the public holds sync on S's thing as this node knows it (`Core::public_listed`)
-    /// and it takes the box's sync secret (a head past its keys moves to it); `read` (the head is
-    /// its step, current, not the one it was lowered at) also its read secrets. Else, where `path`
-    /// (S's verified path as registered here, its head last) passes the head this node knew on S
-    /// listing the public, the public holds nothing there as this node knows it: a head past the
-    /// public's box is its removal; a head behind it says nothing. Whether it took read secrets.
-    pub fn public_head(&mut self, s: &SyncId, head: Option<(&Step, &osis_blob::ClaimSet)>, read: bool, path: &[osis_blob::StepId]) -> Result<bool> {
-        let things = self.sync_things_of(s)?;
-        let b = head.and_then(|(_, c)| c.entries.get(&osis_crypto::public_entry(s)));
-        for t in things {
-            let opened = head.zip(b).and_then(|((h, _), b)| osis_blob::read_public_entry_box(b, h, &t).ok().map(|i| (h, i)));
-            let current = |e: &Engine, i: &osis_crypto::EntryItem| e.core.epochs(&t).is_none_or(|x| x.role(osis_base::Role::Sync).held().all(|(ep, _)| ep.n() <= i.sync.0.n()));
-            let Some((h, item)) = opened.filter(|(h, i)| osis_crypto::role_key(osis_crypto::RoleKey::Sync, &i.sync.1).verifying_key() == h.keys.sync && current(self, i)) else {
-                self.run(|tx| {
-                    if tx.core.ix.public_listed.get(&t).and_then(|m| m.get(s)).is_some_and(|l| path.contains(&l.head)) {
-                        tx.core.ix.public_listed.remove(&t, s);
-                    }
-                    Ok(())
-                })?;
-                continue;
-            };
-            let reads = read && item.read.is_some();
-            let item = if reads { item } else { osis_crypto::EntryItem { read: None, ..item } };
-            let g = OpenedGrant { thing: t, key: h.keys.sync.to_bytes(), head: (*s, h.id()), secrets: item, party: Tid::PUBLIC };
-            self.learn_grant(&g)?;
-            return Ok(reads);
-        }
-        Ok(false)
-    }
-
-    // Grants, removals, peers
-
-    /// Whether `epoch` of one of `s`'s things, of the role it is an epoch of (a read secret's read,
-    /// a sync key's or proof's sync), covers every departure this node knows from it
-    /// (spec/sync-opens.md §4 Departed: a departed peer opens only by a credential at an epoch
-    /// covering its departure). False for a sync ID this node does not read.
-    pub fn covers_departures(&mut self, s: &SyncId, epoch: Epoch) -> Result<bool> {
-        use osis_base::Role;
-        for t in self.sync_things_of(s)? {
-            let a = self.core.reader_of(&t);
-            // an epoch is of one role: the other finds it uncovering nothing
-            let covers = |tx: &mut crate::engine::Tx<'_>, r: Role| crate::rotation::covers_known(tx, &a, r, &epoch);
-            if self.read(|tx| Ok(covers(tx, Role::Read)? && covers(tx, Role::Sync)?))? {
-                return Ok(true);
-            }
-        }
-        Ok(false)
-    }
-
     /// Whether this node publishes a `dial.0` entry (a reader can pull from it,
     /// spec/sync-judgement.md §3 Own store; `publish_reach`: its node root's list keeps it).
     pub fn publishes_dial(&mut self) -> Result<bool> {
@@ -950,7 +773,7 @@ impl Engine {
     pub fn due_step(&mut self, s: &SyncId) -> Result<Option<DueStep>> {
         let Some((t, _)) = self.recorded_owner(s)? else { return Ok(None) };
         // the head and deposit seed as `issue_due_step` reads them (one derivation, `step_due`)
-        let Some(due) = self.read(|tx| crate::flows::sync_ids::step_due(tx, &t, s, false))? else { return Ok(None) };
+        let Some(due) = self.read(|tx| crate::flows::sync_ids::step_due(tx, &t, s))? else { return Ok(None) };
         let (epochs, deposit_only) = (due.epochs, due.deposit_only);
         let mut out = std::collections::BTreeSet::new();
         for r in [Role::Sync, Role::Write, Role::Admin] {
@@ -969,7 +792,7 @@ impl Engine {
     /// Issues the step due of `s` (`due_step`, `issue_step`), recorded in its thing's `sync.0`.
     pub fn issue_due_step(&mut self, s: &SyncId) -> Result<Option<Step>> {
         let Some((t, _)) = self.recorded_owner(s)? else { return Ok(None) };
-        Ok(self.issue_step(&t, s, false)?.map(|(st, _)| st))
+        self.issue_step(&t, s)
     }
 
     /// The commits logged with role commit `c` wherever it is logged (spec/crypto.md §4 Carried).

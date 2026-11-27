@@ -208,11 +208,10 @@ pub(crate) fn recipient(tx: &mut Tx<'_>, holder: Tid, role: Role) -> Result<Reci
     Ok(Recipient { holder, role, keys, floor: 0 })
 }
 
-/// The sync ID of `tid` (spec/sync-ids.md §2): of those it owns (`sync_ids::owned_in`), the one
-/// its genesis seed gives (`Core::pick_sync_id`).
+/// The sync ID of `tid` by its seed or its `keys.0` (spec/sync-ids.md §4 Owner,
+/// `sync_ids::actors::owner_sync_id`), a hint included.
 pub(crate) fn sync_id_of(tx: &mut Tx<'_>, tid: &Tid) -> Result<Option<SyncId>> {
-    let owned = sync_ids::owned_in(tx, tid)?;
-    Ok(tx.core.pick_sync_id(tid, owned.into_keys()))
+    Ok(crate::sync_ids::actors::owner_sync_id(tx, tid)?.map(|o| o.id))
 }
 
 /// `secrets.0` of `actor`, decoded (`Core::secrets_read`).
@@ -353,7 +352,7 @@ impl Engine {
 
     /// Follows a locator being redeemed (spec/sync-set.md §4, §5): keeps the sync ID of its
     /// target's independent (`Locator::followed`) from the link text in the sync set, read,
-    /// testing the public entry (spec/sync-opens.md §4), until `unfollow_link` of that thing. The
+    /// until `unfollow_link` of that thing. The
     /// link text is untrusted: its sync ID counts only where nothing held records another's
     /// (`sync_ids::actors::followed`).
     pub fn follow_public(&mut self, link: &osis_blob::Locator) {
@@ -415,7 +414,5 @@ impl Engine {
     }
 }
 
-#[cfg(test)]
-mod tests_notices;
 #[cfg(test)]
 mod tests_signals;

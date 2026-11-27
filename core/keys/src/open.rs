@@ -53,7 +53,7 @@ pub fn has_box(actor: &Tid, secrets: &Secrets, k: &BoxKey) -> bool {
     match b {
         SecretBox::Open(payload) => {
             k.holder.0.is_public()
-                && from_schema(&k.epoch).is_ok_and(|epoch| read_open_box(&BoxSlot::Secrets { actor: *actor, holder: k.holder.0, role: k.role, epoch }, payload).is_ok())
+                && from_schema(&k.epoch).is_ok_and(|epoch| read_open_box(&BoxSlot { actor: *actor, holder: k.holder.0, role: k.role, epoch }, payload).is_ok())
         }
         _ => !k.holder.0.is_public(),
     }
@@ -62,7 +62,7 @@ pub fn has_box(actor: &Tid, secrets: &Secrets, k: &BoxKey) -> bool {
 /// `Ok(None)`: the opener holds no key for this box.
 fn open_one(actor: &Tid, k: &BoxKey, b: &SecretBox, opener: &Opener) -> Result<Option<Opened>, Error> {
     let epoch = from_schema(&k.epoch)?;
-    let slot = BoxSlot::Secrets { actor: *actor, holder: k.holder.0, role: k.role, epoch };
+    let slot = BoxSlot { actor: *actor, holder: k.holder.0, role: k.role, epoch };
     // the open form is the public's alone, and the public's boxes are of it alone (spec/crypto.md
     // §4 Boxes): any other pairing is ignored
     if k.holder.0.is_public() != matches!(b, SecretBox::Open(_)) {

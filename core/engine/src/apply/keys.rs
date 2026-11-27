@@ -956,36 +956,6 @@ fn pending_deltas(blob: &osis_commit::CommitBlob, id: &CommitId, keep: impl Fn(&
     out
 }
 
-impl crate::engine::Engine {
-    /// Records a read or sync secret learned from an entry box admitting `party` (the public, or
-    /// a link key opening by static entry, spec/sync-ids.md §3) when it is the secret of epoch `e`
-    /// of `g`'s role `r` (spec/crypto.md §4; anyone holding the head's step key, a removed admin
-    /// among them, can write the box, so it establishes nothing). False when it is not, or when
-    /// the box may not give it here (`rotation::may_learn`, spec/permissions.md §3).
-    pub fn learn_secret(&mut self, g: &Tid, r: Role, e: osis_crypto::Epoch, secret: osis_crypto::Secret32, party: &Tid) -> Result<bool> {
-        let (g, party) = (*g, *party);
-        self.run(|tx| learn_secret_in(tx, &g, r, e, secret, &party))
-    }
-}
-
-/// `Engine::learn_secret` in a transaction.
-pub(crate) fn learn_secret_in(tx: &mut Tx<'_>, g: &Tid, r: Role, e: osis_crypto::Epoch, secret: osis_crypto::Secret32, party: &Tid) -> Result<bool> {
-    if !e.names(g, r, &secret) || !crate::rotation::may_learn(tx, g, r, &e, party)? {
-        return Ok(false);
-    }
-    let g = *g;
-    if tx.core.epochs(&g).is_some_and(|x| x.role(r).secret(&e).is_some()) {
-        return Ok(false);
-    }
-    tx.core.touch();
-    tx.core.ix.secrets.entry_or_default(g).role_mut(r).set_secret(e, secret);
-    // what the secret opens: `g`'s own history boxes, then the boxes sealed to `g`
-    let (s, alts) = (crate::flows::secrets_in(tx, &g)?, crate::flows::secrets_alts(tx, &g)?);
-    tx.core.ingest_secrets(&g, &s, crate::engine::secrets::SecretsRead::State, &alts);
-    crate::flows::reopen_dependents(tx, g)?;
-    Ok(true)
-}
-
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::indexing_slicing)]

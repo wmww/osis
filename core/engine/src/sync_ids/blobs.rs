@@ -561,8 +561,8 @@ impl Engine {
     /// their own thing's sync ID, which read fetches as missing once this node may hold it.
     /// Invariant: no part taken from a copy gives a node anything of an actor it cannot read now.
     /// Content is left out here; a role-class part is taken because each is judged as it is used:
-    /// `secrets.0` boxes by `rotation::may_take` as they open, `sync.0` entry boxes by
-    /// `may_learn`; `roles.0`, `keys.0`, `listing.0` and `account.0` are certificate material.
+    /// `secrets.0` boxes by `rotation::may_take` as they open; `sync.0`, `roles.0`, `keys.0`,
+    /// `listing.0` and `account.0` are certificate material.
     pub fn copy_stale(&self, g: &Tid, c: &CommitBlob) -> BTreeSet<usize> {
         let actor = self.core.reader_of(g);
         let h = &c.header;
@@ -692,15 +692,6 @@ impl Engine {
             return Ok(None);
         }
         Ok(Some((ep, k)))
-    }
-
-    /// The read epoch role commit `c`'s blob is wrapped under at a sync ID of `g` here
-    /// (`epoch_under`, its parts on `g`'s secret actor): what a holder opens it by its wrap with.
-    pub(crate) fn wrapped_at(&mut self, g: &Tid, c: &CommitId) -> Result<Option<Epoch>> {
-        let Some(a) = self.core.secret_actor(g) else { return Ok(None) };
-        let Some(h) = self.header(c) else { return Ok(None) };
-        let parts: Vec<usize> = h.aspects.iter().enumerate().filter(|(_, x)| x.tid == a).map(|(i, _)| i).collect();
-        Ok(self.epoch_under(g, Some((c, &parts)))?.map(|(e, _)| e))
     }
 
     /// The epoch this node encrypts parts `c` names (all on `g`'s secret actor's things, for a
@@ -892,7 +883,7 @@ impl Engine {
                 k.epochs[2] = Some(ep);
             }
         }
-        // kept unread: a sync secret a sync copy gave, the head bearing its key, is established
+        // kept unread: a sync secret held, the head bearing its key, is established
         // under S (spec/crypto.md §4 Established)
         if k.sync.is_none()
             && let Some((ep, s)) = self.core.unread(g).candidates.iter().find(|(_, s)| crate::sync_ids::unread::sync_key(s) == head.keys.sync.to_bytes())

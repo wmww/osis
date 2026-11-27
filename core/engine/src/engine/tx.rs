@@ -600,6 +600,17 @@ impl Tx<'_> {
     /// Keeps the index derived from states at the state `f` of `(tid, ak)`, whatever wrote it:
     /// `Indexes::sync_recorded`, `Indexes::steps`.
     fn derive(&mut self, tid: &Tid, ak: &Ak, f: Option<&Fragment>) {
+        if ak.as_str() == "keys.0" {
+            use osis_schema::RawKey;
+            let named = f.and_then(Fragment::read).and_then(|v| osis_schema::core_types::KEYS.decode(&v).ok()).and_then(|k| k.sync_id);
+            if self.core.ix.keys_sync_id.get(tid) != named.as_ref() {
+                match named {
+                    Some(s) => self.core.ix.keys_sync_id.insert(*tid, s),
+                    None => self.core.ix.keys_sync_id.remove(tid),
+                };
+            }
+            return;
+        }
         if derives(ak) {
             let before = self.core.ix.sync_recorded_ids.get(tid).cloned().unwrap_or_default();
             let after = f.map(crate::sync::recorded_ids).unwrap_or_default();
@@ -845,7 +856,7 @@ pub(crate) fn clear_table(txn: &mut Transaction<'_>, t: osis_store::Table, start
 }
 
 /// Whether an index derives from the state of aspect `ak` (`Tx::derive`): `sync.0`'s recorded
-/// sync IDs, read from the whole state.
+/// sync IDs and `keys.0`'s named one, read from the whole state.
 fn derives(ak: &Ak) -> bool {
-    ak.as_str() == "sync.0"
+    matches!(ak.as_str(), "sync.0" | "keys.0")
 }

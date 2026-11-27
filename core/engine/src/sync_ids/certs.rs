@@ -23,9 +23,6 @@ pub(crate) enum Cut {
     Evidence { step: bool },
     /// Keys: a public key record, a carried cause, holder keys.
     Keys,
-    /// What a notice to `holder` of a commit boxing it carries (spec/permissions.md §4 Notices):
-    /// the edge-class parts, the `secrets.0` piece boxing `holder` and the rest piece.
-    Told { holder: Tid },
 }
 
 /// Chain material a verifier needs (spec/permissions.md §4): parts of commits to copy, commits
@@ -39,9 +36,9 @@ pub struct Certs {
     pub headers: BTreeSet<CommitId>,
     pub mintings: BTreeMap<CommitId, BTreeSet<Tid>>,
     pub records: BTreeSet<Tid>,
-    /// Sync copies (spec/wire.md §4), as (commit, thing, holder): no header, record or evidence
-    /// goes with them; a stub's sync-only cut (spec/permissions.md §4 Stub).
-    pub sync_copies: BTreeSet<(CommitId, Tid, Tid)>,
+    /// The things whose stub's sync-only cut goes (spec/permissions.md §4 Stub, spec/wire.md §4):
+    /// no header, record or evidence goes with it.
+    pub sync_cuts: BTreeSet<Tid>,
 }
 
 impl Certs {
@@ -63,7 +60,7 @@ impl Certs {
             self.mintings.entry(*c).or_default().extend(ts.iter().copied());
         }
         self.records.extend(other.records.iter().copied());
-        self.sync_copies.extend(other.sync_copies.iter().copied());
+        self.sync_cuts.extend(other.sync_cuts.iter().copied());
     }
 
     /// Adds `other`'s commits, headers, mintings and records.
@@ -76,7 +73,7 @@ impl Certs {
             self.mintings.entry(c).or_default().extend(ts);
         }
         self.records.extend(other.records);
-        self.sync_copies.extend(other.sync_copies);
+        self.sync_cuts.extend(other.sync_cuts);
     }
 }
 
@@ -166,12 +163,12 @@ impl Engine {
     /// X the walk gives from `g`'s unit, outside it. Where `g`'s keys open X: each held commit
     /// with a role-class part on X, cut to the stub (`stub_parts`: the pieces boxing `g`, the
     /// holders on its chains to X or the public), with its evidence, and X's public key record
-    /// (its sync ID and step keys); else, `g` holding sync on X, the sync copies for holder `g`.
+    /// (its sync ID and step keys); else, `g` holding sync on X, X's sync-only cut.
     fn stub_certificates(&mut self, ev: &Ev, g: &Tid, out: &mut Certs) {
         for x in self.core.ix.closure.unit_stubs(g) {
-            let role = |ak: &str| matches!(ak, "roles.0" | "signers.0" | "secrets.0" | "sync.0");
-            let cs: BTreeSet<CommitId> = self.core.aspects_of(&x).filter(|((_, ak), _)| role(ak.as_str())).flat_map(|(_, cs)| cs.iter().map(|(_, c)| *c).collect::<Vec<_>>()).collect();
             if self.core.keys_open(g, &x) {
+                let role = |ak: &str| matches!(ak, "roles.0" | "signers.0" | "secrets.0" | "sync.0");
+                let cs: BTreeSet<CommitId> = self.core.aspects_of(&x).filter(|((_, ak), _)| role(ak.as_str())).flat_map(|(_, cs)| cs.iter().map(|(_, c)| *c).collect::<Vec<_>>()).collect();
                 let mut open = crate::sync::units::chain_holders(&self.core, g, &x);
                 open.extend([*g, Tid::PUBLIC]);
                 let mut seeds = BTreeSet::new();
@@ -187,14 +184,7 @@ impl Engine {
                 self.add_closure(ev, &seeds, out);
                 self.public_key_record_into(ev, &x, out);
             } else if self.core.keyed_role_now(g, &x) >= Some(osis_base::Role::Sync) {
-                for c in cs {
-                    let boxes = self.header(&c).map(|h| h.aspect_parts(&x, "secrets.0")).unwrap_or_default();
-                    let named = self.holders_named(&c);
-                    let steps = self.header(&c).is_some_and(|h| !h.aspect_parts(&x, "sync.0").is_empty());
-                    if steps || boxes.into_iter().any(|ai| named.get(&ai).is_some_and(|hs| hs.contains(g))) {
-                        out.sync_copies.insert((c, x, *g));
-                    }
-                }
+                out.sync_cuts.insert(x);
             }
         }
     }
@@ -239,29 +229,6 @@ impl Engine {
         Ok(self.sync_certificates(&ev, g))
     }
 
-    /// The commits writing `g`'s edge on `x` or boxing `g` there, while `g` is named on `x`.
-    pub(crate) fn edge_on(&mut self, g: &Tid, x: &Tid) -> BTreeSet<CommitId> {
-        let mut out = BTreeSet::new();
-        if !self.core.ix.held.is_named(g, x) {
-            return out;
-        }
-        for ak in ["roles.0", "secrets.0"] {
-            let Ok(k) = osis_base::Ak::new(ak) else { continue };
-            let cs: Vec<CommitId> = self.core.ix.by_aspect.get(&(*x, k)).into_iter().flatten().map(|(_, c)| *c).collect();
-            for c in cs {
-                let named = {
-                    let parts = self.header(&c).map(|h| h.aspect_parts(x, ak)).unwrap_or_default();
-                    let named = self.holders_named(&c);
-                    parts.into_iter().any(|ai| named.get(&ai).is_some_and(|hs| hs.contains(g)))
-                };
-                if named {
-                    out.insert(c);
-                }
-            }
-        }
-        out
-    }
-
     /// The evidence of parts `parts` of commit `c` (spec/permissions.md §4 Evidence of a commit):
     /// the copies the derivation closes them over, the demotions a `keys.0` part's keysets carry,
     /// and the records `close_records` brings; `c` itself not among them.
@@ -292,16 +259,11 @@ impl Engine {
         let edge = |ak: &str| crate::apply::validity::edge_ak(ak);
         let mut out = Parts::new();
         let mut boxes = false;
-        let named = match cut {
-            Cut::Told { .. } => self.holders_named(c),
-            _ => Arc::default(),
-        };
         for (i, a) in h.aspects.iter().enumerate().filter(|(_, a)| a.tid == *x) {
             let ak = a.ak.as_str();
             let take = match cut {
                 Cut::Evidence { step } => edge(ak) || (step && ak == "sync.0"),
                 Cut::Keys => ak == "keys.0",
-                Cut::Told { holder } => edge(ak) || (ak == "secrets.0" && named.get(&i).is_none_or(|hs| hs.is_empty() || hs.contains(&holder))),
             };
             if take {
                 boxes |= matches!(ak, "secrets.0" | "keys.0");

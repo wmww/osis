@@ -1336,7 +1336,7 @@ impl LocalPeer {
     /// earlier pass end goes only once which of its things `to` needs moved since, checked again
     /// after the rest (what arrived may need it: a thing whose record awaits its parent's).
     fn sync_under(&mut self, from: usize, to: usize, synced: &BTreeSet<osis_base::SyncId>) -> Result<bool> {
-        let mut changed = self.send_sync_copies(from, to, synced)?;
+        let mut changed = self.send_sync_cuts(from, to, synced)?;
         let pks = self.packages_hashed(from, synced)?;
         let dropped: Vec<&Sent> = pks.iter().map(|pk| &**pk).filter(|pk| self.memo.dropped.contains_key(&(to, pk.1))).collect();
         let still = self.still_dropped(to, &dropped)?;
@@ -1361,25 +1361,25 @@ impl LocalPeer {
         }
     }
 
-    /// The sync copies `from` carries under the sync IDs `to` syncs (`Engine::sync_copies_carried`)
-    /// taken at `to` under the thing reading each there, one blob per content (its key standing
-    /// for its blob ID): whether any was new there.
-    fn send_sync_copies(&mut self, from: usize, to: usize, synced: &BTreeSet<osis_base::SyncId>) -> Result<bool> {
+    /// The sync-only cuts `from` carries under the sync IDs `to` syncs
+    /// (`Engine::sync_cuts_carried`) taken at `to` under the thing reading each there, one blob
+    /// per content (its key standing for its blob ID): whether any was new there.
+    fn send_sync_cuts(&mut self, from: usize, to: usize, synced: &BTreeSet<osis_base::SyncId>) -> Result<bool> {
         let mut changed = false;
         for s in synced {
             let Some(p) = self.peers.get_mut(from) else { return Ok(false) };
-            let carried = p.engine.sync_copies_carried(s)?;
+            let carried = p.engine.sync_cuts_carried(s)?;
             if carried.is_empty() {
                 continue;
             }
             let Some(q) = self.peers.get_mut(to) else { return Ok(false) };
             let reading = q.engine.read_things_of(s)?;
-            for (k, (t, plain)) in carried.iter() {
+            for (k, (t, cut)) in carried.iter() {
                 let b = osis_base::BlobId(*k);
-                if !reading.contains(t) || q.engine.core.ix.sync_copy_on.contains_key(&b) {
+                if !reading.contains(t) || q.engine.core.ix.sync_cuts.contains_key(&b) {
                     continue;
                 }
-                changed |= q.engine.take_sync_copy(t, &b, plain)?;
+                changed |= q.engine.take_sync_cut(t, &b, &cut.encode())?;
             }
         }
         Ok(changed)
