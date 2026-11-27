@@ -197,21 +197,37 @@ fn twin(w: &mut World, i: usize) -> Peer {
 /// every commit any node wrote. Each reads what a node of its account reads with nothing
 /// missing: a thing enters it only as the account's node closure enters it (spec/sync-set.md
 /// §2 First entry), so no one engine could read every account's things.
-pub struct Refs(Vec<(Tid, Peer)>);
+pub struct Refs {
+    /// The world's number (`World::id`), naming each twin handed out (`Refs::accounts`).
+    world: u32,
+    twins: Vec<(Tid, Peer)>,
+}
 
 impl Refs {
     /// Account `a`'s twin.
     pub fn of(&mut self, a: &Tid) -> &mut Peer {
-        &mut self.0.iter_mut().find(|(x, _)| x == a).expect("a twin of every account").1
+        self.accounts().find(|(x, _)| *x == a).expect("a twin of every account").1
     }
 
     /// A twin whose node closure holds `t`.
     fn holding(&mut self, t: &Tid) -> Option<&mut Peer> {
-        self.0.iter_mut().map(|(_, p)| p).find(|p| p.engine.closure_holds(t))
+        self.all().find(|p| p.engine.closure_holds(t))
     }
 
     fn all(&mut self) -> impl Iterator<Item = &mut Peer> {
-        self.0.iter_mut().map(|(_, p)| p)
+        self.accounts().map(|(_, p)| p)
+    }
+
+    /// Every twin with its account, each named as the engine copy this thread runs as it is
+    /// handed out (debug builds, `osis_base::trace::copy`: `w<world>.r<k>`, the k-th account's).
+    fn accounts(&mut self) -> impl Iterator<Item = (&Tid, &mut Peer)> {
+        let world = self.world;
+        self.twins.iter_mut().enumerate().map(move |(k, (a, p))| {
+            #[cfg(debug_assertions)]
+            osis_base::trace::set_copy(osis_base::trace::Copy { world, kind: 'r', index: k as u32 });
+            let _ = (world, k);
+            (&*a, p)
+        })
     }
 }
 
@@ -222,7 +238,7 @@ struct QuietRef(std::sync::Mutex<Quiet>);
 impl Clone for QuietRef {
     fn clone(&self) -> QuietRef {
         let mut q = self.0.lock().unwrap();
-        let refs = Refs(q.refs.0.iter_mut().map(|(a, p)| (*a, p.copy().expect("reference copy"))).collect());
+        let refs = Refs { world: q.refs.world, twins: q.refs.twins.iter_mut().map(|(a, p)| (*a, p.copy().expect("reference copy"))).collect() };
         QuietRef(std::sync::Mutex::new(Quiet { refs, fed: q.fed, waiting: q.waiting.clone() }))
     }
 }
@@ -345,6 +361,8 @@ fn model_now(w: &mut World) -> Option<Model> {
     let now = w.now();
     let mut qr = w.history.quiet.take().unwrap_or_else(|| QuietRef(std::sync::Mutex::new(Quiet { refs: twins(w), fed: 0, waiting: Vec::new() })));
     let q = qr.0.get_mut().unwrap();
+    // a copied world's reference is its own
+    q.refs.world = w.id;
     learn_all(w, &mut q.refs);
     let new: Vec<Package> = w.history.handed[q.fed..].to_vec();
     q.fed = w.history.handed.len();
@@ -899,7 +917,7 @@ pub fn reference(w: &mut World, lost: &BTreeSet<CommitId>) -> Refs {
 
 /// Fresh copies of the world's twins (`Made::twins`).
 fn twins(w: &World) -> Refs {
-    Refs(w.history.twins.as_ref().expect("a history world's twins").copies())
+    Refs { world: w.id, twins: w.history.twins.as_ref().expect("a history world's twins").copies() }
 }
 
 /// Each twin learns every read secret of a history thing or account that a node holds and it
@@ -989,7 +1007,7 @@ impl Model {
     /// admin as admin), strongs (the `holds.0` of every account and thing as a twin reads it).
     pub fn of(w: &mut World, refs: &mut Refs) -> Model {
         let mut accounts: Vec<Tid> = Vec::new();
-        for (a, _) in &refs.0 {
+        for (a, _) in &refs.twins {
             if !accounts.contains(a) {
                 accounts.push(*a);
             }
@@ -1248,13 +1266,13 @@ pub fn check(w: &mut World) {
 /// it lacks; the frame census (`Net::census`).
 fn at_check(w: &mut World, refs: &mut Refs, m: &Model) -> String {
     let brief = |x: &Reads| format!("{} ({} roles)", x.value.as_ref().map_or("none".to_string(), |v| format!("{v:?}")), x.roles.len());
-    let mut out = String::from("at the check:");
+    let mut out = format!("at the check of world {} (probes: `osis_base::trace::copy`, `w{}.n<i>`):", w.id, w.id);
     let on: Vec<usize> = (0..w.len()).filter(|i| w.online(*i)).collect();
     let views: Vec<Option<View>> = (0..w.len()).map(|i| w.node(i).account.and_then(|a| m.account(&a)).map(|a| m.closure(a))).collect();
     for (k, (t, maker)) in w.history.things.clone().iter().enumerate() {
         let x = m.thing(k);
         out.push_str(&format!("\n  thing {k} (made by node {maker}, {:?}): reference", m.world.kinds[x]));
-        for (a, r) in refs.0.iter_mut() {
+        for (a, r) in refs.accounts() {
             out.push_str(&format!(" {} {}", m.account(a).map_or("-".into(), |a| format!("a{a}")), brief(&reads(&mut r.engine, t))));
         }
         for &i in &on {

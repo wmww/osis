@@ -60,3 +60,35 @@ pub fn mark_since(mark: usize, tag: &str) {
 pub fn take() -> Vec<String> {
     LINES.with(|l| std::mem::take(&mut *l.borrow_mut()))
 }
+
+/// Which engine copy this thread runs, as a harness names it: copies of one node (a world played
+/// twice, a shrink's candidates, the differential's reference twins) share its tid and session,
+/// so a hand probe prints `trace::copy()` to tell their lines apart. Shown as `w<world>.<kind><index>`
+/// (`w3.n1`: node 1 of the thread's third world; `w3.r0`: its reference twin of account 0);
+/// `w0` before a harness names one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Copy {
+    pub world: u32,
+    pub kind: char,
+    pub index: u32,
+}
+
+impl std::fmt::Display for Copy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "w{}.{}{}", self.world, self.kind, self.index)
+    }
+}
+
+thread_local! {
+    static COPY: Cell<Copy> = const { Cell::new(Copy { world: 0, kind: '?', index: 0 }) };
+}
+
+/// Names the engine copy this thread runs from now on (`Copy`).
+pub fn set_copy(c: Copy) {
+    COPY.with(|x| x.set(c));
+}
+
+/// The engine copy this thread runs, as its harness last named it.
+pub fn copy() -> Copy {
+    COPY.with(Cell::get)
+}

@@ -130,6 +130,24 @@ fn a_grant_released_before_anyone_received_it_is_lost_spec_sync_set_3() {
     holds_on(0, 3, 4, &script, String::new(), false);
 }
 
+// spec: none (test harness): a hand probe tells the engine copies apart (`osis_base::trace::copy`):
+// a node the world hands out or steps is named by the world's number and its index, each
+// reference twin by the world's number and its account's, and a copy of a world is a world of
+// its own number.
+#[test]
+fn each_engine_copy_is_named_for_probes() {
+    use osis_base::trace::{Copy, copy};
+    let mut w = world_of(0, 2, 3);
+    w.engine(1);
+    assert_eq!(copy(), Copy { world: w.id, kind: 'n', index: 1 });
+    let a = w.node(2).account.expect("an account");
+    assert_eq!(copy(), Copy { world: w.id, kind: 'n', index: 2 });
+    let mut refs = crate::harness::history::reference(&mut w, &Default::default());
+    refs.of(&a);
+    assert_eq!((copy().world, copy().kind), (w.id, 'r'));
+    assert_ne!(w.copy().id, w.id);
+}
+
 // spec: none (test harness): a history is a function of its seed, faults included, and the
 // property's seeds at small size draw every kind of step the oracle judges.
 #[test]

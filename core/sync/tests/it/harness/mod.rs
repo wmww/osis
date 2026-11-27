@@ -575,12 +575,25 @@ pub struct World {
     fixture: Option<String>,
     /// The per-node trace (`OSIS_SYNC_TRACE`, `trace`); none when off.
     tracer: Option<Box<trace::Tracer>>,
+    /// This world's number on its thread, a copy's its own (`next_world`): the world part of
+    /// the engine copy id hand probes print (`osis_base::trace::copy`).
+    pub id: u32,
 }
 
 thread_local! {
     /// Fixtures copied and still live on this thread (one test): a second live copy of one
     /// fixture is refused (one node twice would reuse nonces).
     static LIVE: RefCell<BTreeSet<String>> = const { RefCell::new(BTreeSet::new()) };
+    /// Worlds made or copied on this thread so far (`World::id`).
+    static WORLDS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// A fresh world number on this thread (`World::id`), from 1.
+fn next_world() -> u32 {
+    WORLDS.with(|n| {
+        n.set(n.get() + 1);
+        n.get()
+    })
 }
 
 impl Drop for World {
@@ -622,6 +635,7 @@ impl World {
             history: history::Made::default(),
             fixture: None,
             tracer: trace::Tracer::from_env().map(Box::new),
+            id: next_world(),
         }
     }
 
@@ -684,7 +698,7 @@ impl World {
         let link = self.locator(i, acc).expect("A's locator");
         self.write(j, |e| e.take_pairing(&acc)).expect("name the account");
         let root = self.write(j, |e| e.node_root()).expect("a node root");
-        let n = self.nodes.get_mut(j).expect("no such node");
+        let n = self.node_mut(j);
         assert!(!matches!(n.node.redeem(&link, root), osis_sync::types::Waiting::Never(_)), "A's link redeemed");
         self.deliver(j, Input::Wrote);
         if let Some(n) = self.nodes.get_mut(j) {
@@ -744,7 +758,7 @@ impl World {
 
     /// Where node `i`'s wait on `scope` stands (`Node::wait`).
     pub fn wait(&mut self, i: usize, scope: osis_sync::types::Scope) -> osis_sync::types::Waiting {
-        self.nodes.get_mut(i).expect("no such node").node.wait(scope)
+        self.node_mut(i).node.wait(scope)
     }
 
     /// Node `i` redeems `link` (`Node::redeem`), then it is stepped.
@@ -754,7 +768,7 @@ impl World {
 
     /// Node `i` redeems a link of either format for its account (else its node thing).
     pub fn redeem_any(&mut self, i: usize, link: &osis_blob::Link) -> osis_sync::types::Waiting {
-        let n = self.nodes.get_mut(i).expect("no such node");
+        let n = self.node_mut(i);
         let joiner = n.account.unwrap_or_else(|| n.node.engine().tid());
         let w = n.node.redeem(link, joiner);
         self.deliver(i, Input::Wrote);
@@ -789,7 +803,22 @@ impl World {
     }
 
     pub fn node(&self, i: usize) -> &WNode {
+        self.name_copy(i);
         self.nodes.get(i).expect("no such node")
+    }
+
+    /// Node `i`, named as the engine copy this thread runs (`name_copy`).
+    fn node_mut(&mut self, i: usize) -> &mut WNode {
+        self.name_copy(i);
+        self.nodes.get_mut(i).expect("no such node")
+    }
+
+    /// Debug builds: names node `i` of this world as the engine copy this thread runs
+    /// (`osis_base::trace::copy`), at every place the world hands out a node or steps one.
+    fn name_copy(&self, i: usize) {
+        #[cfg(debug_assertions)]
+        osis_base::trace::set_copy(osis_base::trace::Copy { world: self.id, kind: 'n', index: i as u32 });
+        let _ = i;
     }
 
     pub fn online(&self, i: usize) -> bool {
@@ -798,14 +827,14 @@ impl World {
 
     /// Node `i`'s engine, for reads. A write goes through `write`.
     pub fn engine(&mut self, i: usize) -> &mut Engine {
-        self.nodes.get_mut(i).expect("no such node").node.engine()
+        self.node_mut(i).node.engine()
     }
 
     /// What an attacker holding node `i`'s device recovers (`Engine::forensic`: every row and
     /// blob its engine's and store's disks were given since it was added under `record`).
     pub fn forensic(&mut self, i: usize) -> Vec<osis_store::Recovered> {
         assert!(self.record, "forensic needs a recording world");
-        let n = self.nodes.get_mut(i).expect("no such node");
+        let n = self.node_mut(i);
         let (eb, sb) = (n.disks.engine.0.clone(), n.disks.store.0.clone());
         n.node.engine().forensic(&eb, &sb).expect("forensic")
     }
@@ -887,7 +916,7 @@ impl World {
     /// Blob `b`'s bytes at node `i` (`osis_sync::store::blob_bytes`: made again where its engine
     /// keeps the blob's seal).
     pub fn bytes(&mut self, i: usize, b: &osis_base::BlobId) -> Option<Vec<u8>> {
-        self.nodes.get_mut(i).expect("no such node").node.blob_bytes(b).expect("bytes")
+        self.node_mut(i).node.blob_bytes(b).expect("bytes")
     }
 
     /// Runs `f` on node `i`'s engine, then tells the node it wrote (or, when the write crashed
@@ -958,7 +987,7 @@ impl World {
                 _ => {}
             }
         }
-        let n = self.nodes.get_mut(i).expect("no such node");
+        let n = self.node_mut(i);
         let restarts = n.node.restarts();
         let mut out = n.node.handle(input);
         let (restarted, rounds) = (n.node.restarts() > restarts, n.node.rounds());
@@ -1002,7 +1031,7 @@ impl World {
             if !self.online(i) {
                 continue;
             }
-            let lost = self.nodes.get_mut(i).expect("no such node").node.lost_parks().expect("a full scan");
+            let lost = self.node_mut(i).node.lost_parks().expect("a full scan");
             assert!(lost.is_empty(), "node {i}: entries waiting for a read secret, not parked: {lost:?} (after {} deliveries)", self.deliveries);
         }
     }
@@ -1063,7 +1092,7 @@ impl World {
 
     /// Changes node `i`'s sync configuration, then steps it (`Input::Wrote`).
     pub fn configure(&mut self, i: usize, f: impl FnOnce(&mut SyncConfig)) {
-        let n = self.nodes.get_mut(i).expect("no such node");
+        let n = self.node_mut(i);
         let mut cfg = n.node.config().clone();
         f(&mut cfg);
         n.node.set_config(cfg);
@@ -1465,6 +1494,7 @@ impl World {
             *o = false;
         }
         let seed = self.seed();
+        self.name_copy(i);
         let n = self.nodes.get_mut(i).expect("no such node");
         n.disks.faults.revive();
         n.disks.power_cut();
@@ -1525,6 +1555,7 @@ impl World {
             history: self.history.clone(),
             fixture: None,
             tracer: self.tracer.clone(),
+            id: next_world(),
         }
     }
 }
