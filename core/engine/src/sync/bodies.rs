@@ -437,7 +437,7 @@ impl Engine {
         things.extend(self.certified(c)?.into_iter().map(|x| x.0));
         let mut ids = BTreeSet::new();
         for g in things {
-            if let ThingSync::Read(x) = self.thing_sync_now(&g)? {
+            if let ThingSync::Read(x) = self.thing_sync_row(&g)? {
                 ids.extend(x);
             }
         }
@@ -592,7 +592,7 @@ impl Engine {
     pub(crate) fn read_things_now(&mut self, s: &SyncId) -> Result<Arc<Vec<Tid>>> {
         let mut out = Vec::new();
         for t in self.sync_things_of(s)? {
-            if matches!(self.thing_sync_now(&t)?, ThingSync::Read(ids) if ids.contains(s)) {
+            if matches!(self.thing_sync_row(&t)?, ThingSync::Read(ids) if ids.contains(s)) {
                 out.push(t);
             }
         }

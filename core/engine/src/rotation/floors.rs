@@ -87,27 +87,47 @@ pub(crate) fn set(core: &Core, a: &Tid, view: &mut ActorEpochs) {
     view.role_mut(Role::Read).set_floors(makers, own);
 }
 
-/// Whether part `ak` on thing `t` of held commit `c` lies sealed below this node's floor
-/// (spec/crypto.md §4 State at a cut, Roles secrets: a holder of a floor opens a role commit's
-/// role parts from below it, nothing else): it never opens here, so missing it is lacking nothing
-/// (spec/sync-judgement.md §1). Known where `c` is a read rotation of `t`'s secret actor to an
-/// epoch of n at most this node's floor: its sections lie under an epoch it supersedes (spec/wire.md
-/// §4), of lower n, so below the floor, and this node holds no read secret of lower n (every read
-/// secret it is handed below its floor is one it read before, a re-add; the module invariant).
-/// Any other commit's section epoch is not known here: its part counts as it is.
-pub(crate) fn sealed_below_floor(core: &Core, c: &osis_base::CommitId, t: &Tid, ak: &str) -> bool {
-    if osis_keys::under_roles(ak) {
-        return false;
-    }
-    let Some(a) = core.secret_actor(t) else { return false };
-    let Some(view) = core.epochs(&a) else { return false };
+/// What tells whether a part on a thing of secret actor `a` lies sealed below this node's floor
+/// (`ReadFloor::below`): `None` without a floor of its own on `a`'s read role.
+pub(crate) fn read_floor(core: &Core, a: &Tid) -> Option<ReadFloor> {
+    let view = core.epochs(a)?;
     let re = view.role(Role::Read);
     let own = re.own_floor();
     if own == 0 {
-        return false;
+        return None;
     }
-    let Some(made) = re.epochs().find_map(|(e, i)| i.rotations.contains_key(c).then_some(e.n())) else { return false };
-    made <= own && re.held().all(|(e, _)| e.n() >= made)
+    let mut made = BTreeMap::new();
+    for (e, i) in re.epochs() {
+        for c in i.rotations.keys() {
+            made.entry(*c).or_insert(e.n());
+        }
+    }
+    Some(ReadFloor { own, held_from: re.held().map(|(e, _)| e.n()).min().unwrap_or(u64::MAX), made })
+}
+
+/// An actor's read floor here, as `read_floor` gives it.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ReadFloor {
+    own: u64,
+    /// The lowest n of a read secret held (`u64::MAX`: none).
+    held_from: u64,
+    /// Per read rotation, the n of the epoch it made.
+    made: BTreeMap<osis_base::CommitId, u64>,
+}
+
+impl ReadFloor {
+    /// Whether a part (not under roles) of held commit `c` on a thing of this actor lies sealed
+    /// below this node's floor (spec/crypto.md §4 State at a cut, Roles secrets: a holder of a
+    /// floor opens a role commit's role parts from below it, nothing else): it never opens here,
+    /// so missing it is lacking nothing (spec/sync-judgement.md §1). Known where `c` is a read
+    /// rotation to an epoch of n at most this node's floor: its sections lie under an epoch it
+    /// supersedes (spec/wire.md §4), of lower n, so below the floor, and this node holds no read
+    /// secret of lower n (every read secret it is handed below its floor is one it read before, a
+    /// re-add; the module invariant). Any other commit's section epoch is not known here: its
+    /// part counts as it is.
+    pub(crate) fn below(&self, c: &osis_base::CommitId) -> bool {
+        self.made.get(c).is_some_and(|made| *made <= self.own && self.held_from >= *made)
+    }
 }
 
 /// The greatest floor of a holder of `a`.

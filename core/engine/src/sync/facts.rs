@@ -13,14 +13,15 @@ use std::sync::Arc;
 
 impl Engine {
     /// Whether a part of `parts` (a body of `c`) counts as never received here, other than one
-    /// sealed below this node's floor (`rotation::floors::sealed_below_floor`): it never opens
+    /// sealed below this node's floor (`rotation::floors::ReadFloor::below`): it never opens
     /// here, so it is fetched for nothing. Judged by the shared blob's sections also where the
     /// body is a copy: its readers make that copy from what they open, so one sharing this node's
     /// floor never has the part.
     /// With it, the parts held as leftovers that may count so too (`part_short`).
-    fn body_missing(&self, c: &CommitId, m: &crate::engine::Meta, parts: impl IntoIterator<Item = usize>) -> (bool, Vec<usize>) {
-        let below = |ai: usize| m.view.aspects.get(ai).is_some_and(|a| crate::rotation::floors::sealed_below_floor(&self.core, c, &a.tid, a.ak.as_str()));
-        let parts: Vec<usize> = parts.into_iter().filter(|ai| !below(*ai)).collect();
+    fn body_missing(&mut self, c: &CommitId, parts: &[usize]) -> (bool, Vec<usize>) {
+        let below = self.parts_below_floor(c, parts.iter().copied());
+        let Some(m) = self.core.ix.commits.get(c) else { return (false, Vec::new()) };
+        let parts: Vec<usize> = parts.iter().copied().filter(|ai| !below.contains(ai)).collect();
         (parts.iter().any(|ai| m.missing(*ai)), parts.into_iter().filter(|ai| m.stripped(*ai)).collect())
     }
 
@@ -39,8 +40,8 @@ impl Engine {
     /// whether or not it would then leave (spec/sync-judgement.md §3 Dropped bodies).
     pub fn blob_gives_missing(&mut self, b: &BlobId) -> bool {
         let Some(x) = self.blob_of(b) else { return false };
-        let Some(m) = self.core.ix.commits.get(&x.commit).cloned() else { return false };
-        let (missing, leftovers) = self.body_missing(&x.commit, &m, x.parts.iter().copied());
+        let parts: Vec<usize> = x.parts.iter().copied().collect();
+        let (missing, leftovers) = self.body_missing(&x.commit, &parts);
         missing || leftovers.into_iter().any(|ai| self.part_short(&x.commit, ai))
     }
 
@@ -54,9 +55,9 @@ impl Engine {
     /// opening. Reads no record: the meta's view.
     pub fn blob_awaits_secrets(&mut self, b: &BlobId) -> BTreeSet<Tid> {
         let Some(o) = self.blob_of(b).filter(|o| !o.sealed.is_empty()) else { return BTreeSet::new() };
-        let Some(m) = self.core.ix.commits.get(&o.commit).cloned() else { return BTreeSet::new() };
-        let below = |ai: usize| m.view.aspects.get(ai).is_some_and(|a| crate::rotation::floors::sealed_below_floor(&self.core, &o.commit, &a.tid, a.ak.as_str()));
-        o.ais.iter().filter(|ai| !o.parts.contains(ai) && !below(**ai)).filter_map(|ai| m.view.aspects.get(*ai).map(|a| a.tid)).collect()
+        let Some(v) = self.core.ix.commits.get(&o.commit).map(|m| m.view.clone()) else { return BTreeSet::new() };
+        let below = self.parts_below_floor(&o.commit, o.ais.iter().copied());
+        o.ais.iter().filter(|ai| !o.parts.contains(ai) && !below.contains(ai)).filter_map(|ai| v.aspects.get(*ai).map(|a| a.tid)).collect()
     }
 
     /// spec/sync-judgement.md §2 must-not-hold (the clauses only the engine judges), §3 Role
@@ -68,7 +69,7 @@ impl Engine {
     ///   whether it was dropped as invalid, on the aspects of its parts established uncovered.
     /// - `missing`: a part of the body counts as never received (dropped as covered, its cover
     ///   gone, or found valid again), other than one sealed below this node's floor
-    ///   (`rotation::floors::sealed_below_floor`): it never opens here, so it is fetched for
+    ///   (`rotation::floors::ReadFloor::below`): it never opens here, so it is fetched for
     ///   nothing, and the body is judged with it as every reader judges it.
     ///
     /// Its carriers are a call of their own (`carriers`): they move with every snapshot
@@ -78,11 +79,12 @@ impl Engine {
         let body: BodyFacts = self.body_facts(s, id)?;
         let mut f = ReadFacts { body, must_not: None, own: false, repair_fresh: Arc::default(), role: false, later_unheld: Vec::new(), missing: false };
         let (Some(b), Some(h)) = (self.sync_body(s, id)?, self.header(c)) else { return Ok(f) };
+        let parts: Vec<usize> = b.parts.iter().copied().collect();
+        let (missing, leftovers) = self.body_missing(c, &parts);
         let Some(m) = self.core.ix.commits.get(c) else { return Ok(f) };
         f.own = m.origin == crate::events::Origin::Local;
         f.repair_fresh = m.repair().cloned().unwrap_or_default();
         f.role = h.kind.is_role() || m.view.purges;
-        let (missing, leftovers) = self.body_missing(c, m, b.parts.iter().copied());
         // a snapshot held as its leftover lacking a write no longer gone counts so too, its
         // leftover read meanwhile
         f.missing = missing || leftovers.into_iter().any(|ai| self.part_short(c, ai));

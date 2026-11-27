@@ -45,3 +45,44 @@ fn memory_per_commit_probe() {
     eprintln!("{n} commits: disks (both nodes, rows and blobs) {disk} B");
     std::mem::forget(w);
 }
+
+/// The reads both nodes' followers of held commits hold (engine rows and sync read).
+fn reads_held(w: &mut World) -> usize {
+    (0..2).map(|i| w.engine(i).sync_reads_held() + w.node(i).node.read().reads_held()).sum()
+}
+
+/// Node 0 writes `n` small values on `t`, each synced to node 1 a second apart.
+fn write_values(w: &mut World, t: Tid, from: u64, n: u64) {
+    for i in from..from + n {
+        w.write(0, |e| {
+            let mut m = Mutation::new();
+            m.set(t, &value_ak(), &Value::Str(format!("v{i}"))).unwrap();
+            e.commit(m).unwrap();
+        });
+        w.run();
+        w.advance(1_000);
+    }
+}
+
+// spec: none (measurement: spec/requirements.md Scale; issues/memory-per-commit.md).
+/// What a held commit's followers keep is its own facts: per commit, a node's rows and sync
+/// read hold the reads of that commit's bodies, facts and judgements, each reading one row per
+/// thing for what is the thing's (how it syncs, its secret actor, whether its keys open it, the
+/// read floor), never that derivation's reads copied in. Counted at 10, 40 and 100 commits: the
+/// same reads per commit in both stretches, under what a copy of the per-thing derivations makes.
+#[test]
+fn a_held_commit_keeps_the_reads_of_its_own_facts() {
+    let (mut w, t) = world();
+    write_values(&mut w, t, 0, 10);
+    let a = reads_held(&mut w);
+    write_values(&mut w, t, 10, 30);
+    let b = reads_held(&mut w);
+    write_values(&mut w, t, 40, 60);
+    let c = reads_held(&mut w);
+    let (first, second) = ((b - a) as f64 / 30.0 / 2.0, (c - b) as f64 / 60.0 / 2.0);
+    eprintln!("reads held per commit per node: {first:.1}, then {second:.1}");
+    assert!((first - second).abs() <= 2.0, "flat per commit: {first:.1} then {second:.1}");
+    // a commit's own facts are about 46 reads a node; with each per-thing derivation's reads
+    // copied into its rows, 120
+    assert!(second <= 70.0, "{second:.1} reads per commit per node: a per-thing derivation copied into each commit's rows");
+}

@@ -144,6 +144,12 @@ impl<K: Hash + Eq + Clone + std::fmt::Debug, V: Clone + PartialEq + std::fmt::De
         self.pending.remove(k);
     }
 
+    /// The reads the followed keys' last values hold (each a `Dep` and its index entry): what
+    /// following costs in memory beside the keys and values.
+    pub fn reads_held(&self) -> usize {
+        self.followed.values().map(|f| f.deps.len()).sum()
+    }
+
     /// Whether no key is known due (wanted and never settled, given by `due` and not settled
     /// since, or moved while its settle read): with nothing written since its last `due`, the
     /// next is empty.

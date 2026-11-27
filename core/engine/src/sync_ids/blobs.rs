@@ -554,14 +554,69 @@ impl Engine {
 
     /// What `commit_bodies_under` needs of a sync unit's root: the unit and its actor.
     pub fn body_ctx(&mut self, g: &Tid) -> BodyCtx {
-        BodyCtx { unit: *g, actor: self.core.reader_of(g) }
+        BodyCtx { unit: *g, actor: self.secret_actor_row(g).unwrap_or(*g) }
+    }
+
+    /// `Core::secret_actor` of `t`, a read of its row (`Core::secret_actors`): what each body on
+    /// `t` reads of it.
+    pub(crate) fn secret_actor_row(&mut self, t: &Tid) -> Option<Tid> {
+        let r: std::result::Result<_, std::convert::Infallible> = osis_base::memo::Cutoff::get_in(self, |e| &e.core.secret_actors, t, |e, t| Ok(e.core.secret_actor(t)));
+        r.unwrap_or_else(|e| match e {})
+    }
+
+    /// `Core::keys_open` of (`actor`, `t`), a read of its row (`Core::keys_opens`): what each body
+    /// on `t` reads of whether `actor` reads it.
+    pub(crate) fn opens_row(&mut self, actor: &Tid, t: &Tid) -> bool {
+        let r: std::result::Result<_, std::convert::Infallible> = osis_base::memo::Cutoff::get_in(self, |e| &e.core.keys_opens, &(*actor, *t), |e, (a, t)| Ok(e.core.keys_open(a, t)));
+        r.unwrap_or_else(|e| match e {})
+    }
+
+    /// `Engine::thing_sync_now` of `t`, a read of its row (`Core::thing_syncs`).
+    pub(crate) fn thing_sync_row(&mut self, t: &Tid) -> Result<crate::sync::ThingSync> {
+        osis_base::memo::Cutoff::get_in(self, |e| &e.core.thing_syncs, t, |e, t| e.thing_sync_now(t))
+    }
+
+    /// The parts of held commit `c` among `parts` sealed below this node's floor
+    /// (`rotation::floors::ReadFloor::below`), by the rows of their things' secret actors.
+    pub(crate) fn parts_below_floor(&mut self, c: &CommitId, parts: impl IntoIterator<Item = usize>) -> std::collections::BTreeSet<usize> {
+        let Some(v) = self.core.ix.commits.get(c).map(|m| m.view.clone()) else { return Default::default() };
+        let mut out = std::collections::BTreeSet::new();
+        for ai in parts {
+            let Some(a) = v.aspects.get(ai) else { continue };
+            if osis_keys::under_roles(a.ak.as_str()) {
+                continue;
+            }
+            if let Some(x) = self.secret_actor_row(&a.tid)
+                && self.read_floor_row(&x).is_some_and(|f| f.below(c))
+            {
+                out.insert(ai);
+            }
+        }
+        out
+    }
+
+    /// `rotation::floors::read_floor` of actor `a`, a read of its row (`Core::read_floors`).
+    fn read_floor_row(&mut self, a: &Tid) -> Option<crate::rotation::floors::ReadFloor> {
+        let r: std::result::Result<_, std::convert::Infallible> = osis_base::memo::Cutoff::get_in(self, |e| &e.core.read_floors, a, |e, a| Ok(crate::rotation::floors::read_floor(&e.core, a)));
+        r.unwrap_or_else(|e| match e {})
+    }
+
+    /// Brings the per-thing rows (`Core::thing_syncs`, `secret_actors`, `keys_opens`,
+    /// `read_floors`) up to date: before any row reading them is (notes/engine.md, Derived
+    /// values: Per-key rows).
+    pub(crate) fn follow_thing_rows(&mut self) -> Result<bool> {
+        type Never = std::convert::Infallible;
+        let moved = osis_base::memo::Cutoff::refresh_in(self, |e| &e.core.thing_syncs, |e, t| e.thing_sync_now(t))?;
+        let a = osis_base::memo::Cutoff::refresh_in(self, |e| &e.core.secret_actors, |e, t| Ok::<_, Never>(e.core.secret_actor(t)));
+        let b = osis_base::memo::Cutoff::refresh_in(self, |e| &e.core.keys_opens, |e, (a, t)| Ok::<_, Never>(e.core.keys_open(a, t)));
+        let f = osis_base::memo::Cutoff::refresh_in(self, |e| &e.core.read_floors, |e, a| Ok::<_, Never>(crate::rotation::floors::read_floor(&e.core, a)));
+        Ok(moved | a.unwrap_or_else(|e| match e {}) | b.unwrap_or_else(|e| match e {}) | f.unwrap_or_else(|e| match e {}))
     }
 
     /// The parts of commit `id` (its held parts, or `parts`) the actor of `ctx` may read
     /// (spec/sync-judgement.md §1): those on things whose independent it may read.
-    pub fn readable_parts(&self, ctx: &BodyCtx, id: &CommitId, parts: &[usize]) -> Vec<usize> {
-        let Some(m) = self.core.ix.commits.get(id) else { return Vec::new() };
-        let h = &m.header;
+    pub fn readable_parts(&mut self, ctx: &BodyCtx, id: &CommitId, parts: &[usize]) -> Vec<usize> {
+        let Some(h) = self.core.ix.commits.get(id).map(|m| m.header.clone()) else { return Vec::new() };
         parts.iter().filter(|ai| h.aspects.get(**ai).is_some_and(|a| self.reads(ctx, &a.tid))).copied().collect()
     }
 
@@ -585,8 +640,8 @@ impl Engine {
 
 
     /// Whether the actor of `ctx` may read `t` (spec/sync-judgement.md §1): its keys open `t`.
-    pub(crate) fn reads(&self, ctx: &BodyCtx, t: &Tid) -> bool {
-        self.actor_reads(&ctx.actor, t)
+    pub(crate) fn reads(&mut self, ctx: &BodyCtx, t: &Tid) -> bool {
+        self.opens_row(&ctx.actor, t)
     }
 
     /// Whether `actor`'s keys open `t` (`Core::keys_open`): what its sync IDs carry.
@@ -597,7 +652,7 @@ impl Engine {
     /// The parts of `h` a sync ID of `ctx`'s sync unit carries in its bodies (spec/sync-judgement.md
     /// §1): those on things of the sync unit its independent may read. A part on any other thing that
     /// evidence needs goes there as a certificate copy (spec/permissions.md §4).
-    pub fn body_carried(&self, ctx: &BodyCtx, h: &osis_commit::Header) -> std::collections::BTreeSet<usize> {
+    pub fn body_carried(&mut self, ctx: &BodyCtx, h: &osis_commit::Header) -> std::collections::BTreeSet<usize> {
         h.aspects.iter().enumerate().filter(|(_, a)| ctx.holds(&self.core, &a.tid) && self.reads(ctx, &a.tid)).map(|(i, _)| i).collect()
     }
 
@@ -648,7 +703,7 @@ impl Engine {
                 // (certificate blobs are copies for the same reason), or a part whose thing's
                 // secret neither derives from the actor's nor comes through the closure (a destroyed
                 // actor's boxes went with it: its secrets come through nothing)
-                let derivable = |ai: usize| h.aspects.get(ai).is_some_and(|a| self.core.secret_actor(&a.tid).is_some_and(|x| x == ctx.actor || (ctx.holds(&self.core, &x) && !self.core.destroyed(&x))));
+                let mut derivable = |ai: usize| h.aspects.get(ai).is_some_and(|a| self.secret_actor_row(&a.tid).is_some_and(|x| x == ctx.actor || (ctx.holds(&self.core, &x) && !self.core.destroyed(&x))));
                 // (a `created.0` part carries no boxes: a records-only role commit is shared)
                 let role_elsewhere = h.kind.is_role() && readable.iter().any(|ai| h.aspects.get(*ai).is_some_and(|a| a.tid != ctx.actor && a.ak.as_str() != "created.0"));
                 b.to_sync_id = role_elsewhere || readable.iter().any(|ai| !derivable(*ai));

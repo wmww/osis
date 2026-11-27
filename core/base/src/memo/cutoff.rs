@@ -193,6 +193,11 @@ impl<K: Hash + Eq + Ord + Clone + std::fmt::Debug, V: Clone + PartialEq + std::f
         }
     }
 
+    /// The reads its rows' derivations hold (`Effects::reads_held`).
+    pub fn reads_held(&self) -> usize {
+        self.fx.borrow().reads_held()
+    }
+
     /// How many rows it holds (unstamped: for counts of what it keeps).
     pub fn rows_held(&self) -> usize {
         self.rows.borrow().map.len()

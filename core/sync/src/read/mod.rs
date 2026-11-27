@@ -197,6 +197,12 @@ fn note<K: Ord, V>(moved: &mut Moved<K, V>, k: K, was: Option<V>, now: V) {
 }
 
 impl Read {
+    /// The reads its per-commit and per-body followers hold (`Effects::reads_held`), for counts
+    /// of what following a held commit costs (issues/memory-per-commit.md).
+    pub fn reads_held(&self) -> usize {
+        self.bodies.reads_held() + self.judged.reads_held() + self.toward.reads_held() + self.freed.reads_held() + self.local.reads_held()
+    }
+
     /// The product's step: over the engine, store, opens' members and streams' `known`. Entries
     /// to fetch again (a body counting missing again) go to `fetches`, for streams; entries given
     /// a source as deposits to `gives`, for inbox.

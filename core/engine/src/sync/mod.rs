@@ -524,7 +524,16 @@ impl Engine {
     /// Before each memo reading them is asked (`follow_bodies`, `read_credentials`, `dial_peers`,
     /// `may_hold`, `others_may_hold`): a hit asks none of them.
     pub(crate) fn follow_read_things(&mut self) -> Result<bool> {
-        osis_base::memo::Cutoff::refresh_in(self, |e| &e.core.read_things, |e, s| e.read_things_now(s))
+        let moved = self.follow_thing_rows()?;
+        Ok(osis_base::memo::Cutoff::refresh_in(self, |e| &e.core.read_things, |e, s| e.read_things_now(s))? | moved)
+    }
+
+    /// The reads the per-commit and per-body rows (`Core::sync_bodies`, `sync_body_rows`,
+    /// `read_facts`, `held_fates`) hold, for counts of what following a held commit costs
+    /// (issues/memory-per-commit.md).
+    pub fn sync_reads_held(&self) -> usize {
+        let c = &self.core;
+        c.sync_bodies.reads_held() + c.sync_body_rows.reads_held() + c.read_facts.reads_held() + c.held_fates.reads_held()
     }
 
     /// What `read` judges `c`'s body under `s` on beside `BodyFacts` (`ReadFacts`). Kept per

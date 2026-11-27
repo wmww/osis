@@ -915,7 +915,7 @@ pub struct Core {
     /// its aspects.
     pub(crate) read_facts: memo::Cutoff<(SyncId, crate::sync::BodyId), crate::sync::ReadFacts>,
     /// `Engine::sync_bodies` per commit (`memo::Cutoff`), refreshed by `Engine::follow`: each
-    /// reader of a commit's bodies (sync read's, `read_facts`) reads one row, not the ~45 reads
+    /// reader of a commit's bodies (sync read's, `read_facts`) reads one row, not the ~13 reads
     /// of a derivation.
     pub(crate) sync_bodies: memo::Cutoff<CommitId, Arc<crate::sync::Bodies>>,
     /// `Engine::sync_body` per (commit, sync ID, thing) (`memo::Cutoff`), each of `sync_bodies`'
@@ -923,6 +923,16 @@ pub struct Core {
     /// when the commit comes to have a body under another sync ID (an account's certificates,
     /// copied under each sync ID).
     pub(crate) sync_body_rows: memo::Cutoff<(CommitId, SyncId, Option<Tid>), Option<crate::sync::BodyMeta>>,
+    /// The per-thing facts every commit's bodies and their facts read (`memo::Cutoff`, refreshed
+    /// by `Engine::follow_thing_rows`): how a thing syncs (`thing_sync_row`), its secret actor
+    /// (`secret_actor_row`), whether an actor's keys open it (`opens_row`) and an actor's read
+    /// floor (`read_floor_row`). Each body reads
+    /// one row per thing, not the derivation's reads copied into every commit's
+    /// (issues/memory-per-commit.md).
+    pub(crate) thing_syncs: memo::Cutoff<Tid, crate::sync::ThingSync>,
+    pub(crate) secret_actors: memo::Cutoff<Tid, Option<Tid>>,
+    pub(crate) keys_opens: memo::Cutoff<(Tid, Tid), bool>,
+    pub(crate) read_floors: memo::Cutoff<Tid, Option<crate::rotation::floors::ReadFloor>>,
     /// `Engine::held_fate` per commit (`memo::Cutoff`), refreshed by `Engine::follow`.
     pub(crate) held_fates: memo::Cutoff<CommitId, Option<crate::sync::HeldFate>>,
     /// Page indexes of the cached states kept paged in the store.
@@ -1849,6 +1859,10 @@ impl Core {
             read_facts: _,
             sync_bodies: _,
             sync_body_rows: _,
+            thing_syncs: _,
+            secret_actors: _,
+            keys_opens: _,
+            read_floors: _,
             held_fates: _,
             sync_ids: _,
             sync_rows: _,
@@ -2112,6 +2126,10 @@ impl Core {
             read_facts: memo::Cutoff::new("sync: read facts"),
             sync_bodies: memo::Cutoff::new("sync: bodies"),
             sync_body_rows: memo::Cutoff::new("sync: body"),
+            thing_syncs: memo::Cutoff::new("sync: thing sync"),
+            secret_actors: memo::Cutoff::new("sync: secret actor"),
+            keys_opens: memo::Cutoff::new("sync: keys open"),
+            read_floors: memo::Cutoff::new("sync: read floor"),
             held_fates: memo::Cutoff::new("sync: held fate"),
             pages: HashMap::new(),
             timelines: held::Timelines::default(),
