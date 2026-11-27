@@ -465,7 +465,7 @@ fn a_learned_sync_secret_opens_the_history_held_spec_crypto_4() {
     }
 }
 
-// spec/sync-opens.md §4 (Admissible, tests: the public's claim where a node holds S without
+// spec/sync-opens.md §4 (Admissible: the public's claim also where a node holds S without
 // reading it), spec/sync-ids.md §3 Taking an entry: node 0 grants node 1's account sync on its
 // thing, node 1 holds it by a strong (kept unread), then node 0 grants the public read. Node 1
 // holds no read grant, but anyone computes the public's claim: it takes the public's entry at its

@@ -130,6 +130,9 @@ impl Engine {
     }
 }
 
+/// The step key of each sync key on a known path (`Engine::step_keys`).
+type StepKeys = BTreeMap<[u8; 32], [u8; 32]>;
+
 /// What an entry of a blob under S gives this node (spec/sync-ids.md §3 Taking an entry).
 pub(crate) enum Took {
     /// A read holder's (the public's alike): the blob key and the key of the section holding the
@@ -160,10 +163,10 @@ impl Engine {
     /// The step key of each sync key on a path of `s` this node knows: the recorded paths of `s`'s
     /// things, the heard one, and `more` (a store's path), by sync key.
     /// With the sync key of the head: the last step of the longest of those paths.
-    fn step_keys(&mut self, s: &SyncId, things: &[Tid], more: &[osis_blob::Step]) -> Result<(BTreeMap<[u8; 32], [u8; 32]>, Option<[u8; 32]>)> {
+    fn step_keys(&mut self, s: &SyncId, things: &[Tid], more: &[osis_blob::Step]) -> Result<(StepKeys, Option<[u8; 32]>)> {
         let mut out = BTreeMap::new();
         let mut head: (usize, Option<[u8; 32]>) = (0, None);
-        let mut take = |out: &mut BTreeMap<[u8; 32], [u8; 32]>, steps: &[osis_blob::Step]| {
+        let mut take = |out: &mut StepKeys, steps: &[osis_blob::Step]| {
             out.extend(steps.iter().map(|st| (st.keys.sync.to_bytes(), st.step_key)));
             if steps.len() > head.0 {
                 head = (steps.len(), steps.last().map(|st| st.keys.sync.to_bytes()));
