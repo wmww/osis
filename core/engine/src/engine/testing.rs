@@ -669,23 +669,39 @@ impl Engine {
     }
 }
 
-/// One index of `IndexDigest::tables`: compared typed (`Core::same_index`), shown as its `Debug`
-/// text.
-trait Table: std::fmt::Debug {
+/// One index of `IndexDigest::tables`: compared typed (`Core::same_index`), shown entry by entry.
+trait Table {
     fn same(&self, o: &dyn Table) -> bool;
     fn any(&self) -> &dyn std::any::Any;
+    /// Each entry in key order as text: its key's `Debug`, and its value's (empty for a set).
+    fn entries(&self) -> Vec<(String, String)>;
 }
 
-impl<T: std::fmt::Debug + PartialEq + 'static> Table for T {
+impl<K: std::fmt::Debug + PartialEq + 'static, V: std::fmt::Debug + PartialEq + 'static> Table for BTreeMap<K, V> {
     fn same(&self, o: &dyn Table) -> bool {
-        o.any().downcast_ref::<T>().is_some_and(|o| self == o)
+        o.any().downcast_ref::<Self>().is_some_and(|o| self == o)
     }
     fn any(&self) -> &dyn std::any::Any {
         self
     }
+    fn entries(&self) -> Vec<(String, String)> {
+        self.iter().map(|(k, v)| (format!("{k:?}"), format!("{v:?}"))).collect()
+    }
 }
 
-/// The indexes `IndexDigest::tables` holds as text, by name (a list, no count to keep in step).
+impl<T: std::fmt::Debug + PartialEq + 'static> Table for BTreeSet<T> {
+    fn same(&self, o: &dyn Table) -> bool {
+        o.any().downcast_ref::<Self>().is_some_and(|o| self == o)
+    }
+    fn any(&self) -> &dyn std::any::Any {
+        self
+    }
+    fn entries(&self) -> Vec<(String, String)> {
+        self.iter().map(|t| (format!("{t:?}"), String::new())).collect()
+    }
+}
+
+/// The indexes `IndexDigest::tables` holds as entries, by name (a list, no count to keep in step).
 fn tables(ix: &super::Indexes) -> Vec<(&'static str, &dyn Table)> {
     vec![
         ("by_thing", &*ix.by_thing),
@@ -753,8 +769,8 @@ fn tables(ix: &super::Indexes) -> Vec<(&'static str, &dyn Table)> {
 }
 
 /// `Indexes::derived_written` as an open loads it: an emptied entry stays in memory until then.
-fn derived_written(ix: &super::Indexes) -> BTreeMap<Tid, &std::collections::BTreeSet<osis_crypto::Epoch>> {
-    ix.derived_written.iter().filter(|(_, s)| !s.is_empty()).map(|(t, s)| (*t, s)).collect()
+fn derived_written(ix: &super::Indexes) -> BTreeMap<Tid, std::collections::BTreeSet<osis_crypto::Epoch>> {
+    ix.derived_written.iter().filter(|(_, s)| !s.is_empty()).map(|(t, s)| (*t, s.clone())).collect()
 }
 
 /// A commit's `CommitDigest`, its `rest` empty, and what `rest` shows.
@@ -784,8 +800,8 @@ impl super::Core {
                 snapshots.entry(s.1).or_default().push((*t, a.clone(), format!("{s:?}")));
             }
         }
-        let mut tables: BTreeMap<&'static str, String> = tables(ix).into_iter().map(|(n, t)| (n, format!("{t:?}"))).collect();
-        tables.insert("derived_written", format!("{:?}", derived_written(ix)));
+        let mut tables: BTreeMap<&'static str, Vec<(String, String)>> = tables(ix).into_iter().map(|(n, t)| (n, t.entries())).collect();
+        tables.insert("derived_written", derived_written(ix).entries());
         IndexDigest { commits, held: self.held_digest(), snapshots, tables }
     }
 
@@ -864,7 +880,8 @@ impl super::Core {
 }
 
 /// The indexes open rebuilds (`Engine::index_digest`): the parts harnesses tell apart typed,
-/// keyed by commit, snapshot or thing; every other index as its `Debug` text, by name.
+/// keyed by commit, snapshot or thing; every other index by name, as its entries in key order
+/// (each its key's and its value's `Debug` text, `Table::entries`).
 #[doc(hidden)]
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct IndexDigest {
@@ -874,7 +891,7 @@ pub struct IndexDigest {
     pub held: BTreeMap<Tid, (Vec<CommitId>, bool)>,
     /// Per compaction snapshot: its `snapshots` entries, with their aspect.
     pub snapshots: BTreeMap<CommitId, Vec<(Tid, Ak, String)>>,
-    pub tables: BTreeMap<&'static str, String>,
+    pub tables: BTreeMap<&'static str, Vec<(String, String)>>,
 }
 
 /// One commit of `IndexDigest::commits`.
@@ -895,19 +912,16 @@ pub struct CommitDigest {
     pub rest: String,
 }
 
-/// Where two `IndexDigest`s differ: one entry per commit, thing, snapshot or named index.
+/// Where two `IndexDigest`s differ: one entry per commit, thing, snapshot, or key of a named
+/// index (its `Debug` text).
 #[doc(hidden)]
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum IndexField {
     Commit(CommitId),
     Held(Tid),
     Snapshots(CommitId),
-    Table(&'static str),
+    Table(&'static str, String),
 }
-
-/// The characters of each side `IndexDigest::first_diff` shows: enough for a few entries of a
-/// table around the difference, short of the whole table (some are hundreds of KB on one line).
-const SHOWN: usize = 1_200;
 
 impl IndexDigest {
     /// Every field where `self` and `other` differ, in field order.
@@ -918,39 +932,32 @@ impl IndexDigest {
         keyed(commits, &other.commits, IndexField::Commit, &mut out);
         keyed(held, &other.held, IndexField::Held, &mut out);
         keyed(snapshots, &other.snapshots, IndexField::Snapshots, &mut out);
-        keyed(tables, &other.tables, IndexField::Table, &mut out);
+        let names: BTreeSet<&'static str> = tables.keys().chain(other.tables.keys()).copied().collect();
+        for n in names {
+            let (a, b) = (table_entries(tables.get(n)), table_entries(other.tables.get(n)));
+            keyed(&a, &b, |k: &str| IndexField::Table(n, k.to_string()), &mut out);
+        }
         out
     }
 
-    /// Field `f` of this digest as text (`None`: absent), for a failure message.
+    /// Field `f` of this digest as text (`None`: absent), for a failure message: a table's field
+    /// is its key's whole entry.
     pub fn show(&self, f: &IndexField) -> Option<String> {
         let s = |x: Option<&dyn std::fmt::Debug>| x.map(|x| format!("{x:?}"));
         match f {
             IndexField::Commit(c) => s(self.commits.get(c).map(|x| x as _)),
             IndexField::Held(t) => s(self.held.get(t).map(|x| x as _)),
             IndexField::Snapshots(c) => s(self.snapshots.get(c).map(|x| x as _)),
-            IndexField::Table(n) => self.tables.get(n).cloned(),
+            IndexField::Table(n, k) => table_entries(self.tables.get(n)).get(k.as_str()).map(|v| v.join(", ")),
         }
     }
 
-    /// The first difference from `other` (`None`: equal), described: a long field (a whole
-    /// table's `Debug`) is shown from shortly before its first differing byte.
+    /// The first difference from `other` (`None`: equal), described: the field's whole entry on
+    /// each side (a table's: its key's).
     pub fn first_diff(&self, other: &Self) -> Option<String> {
         let f = self.diff(other).into_iter().next()?;
         let (want, got) = (self.show(&f).unwrap_or("<none>".into()), other.show(&f).unwrap_or("<none>".into()));
-        let at = want.bytes().zip(got.bytes()).position(|(a, b)| a != b).unwrap_or(want.len().min(got.len()));
-        let floor = |t: &str, mut i: usize| {
-            while !t.is_char_boundary(i) {
-                i -= 1;
-            }
-            i
-        };
-        let cut = |t: &str| {
-            let from = floor(t, at.saturating_sub(SHOWN / 4).min(t.len()));
-            let to = floor(t, (from + SHOWN).min(t.len()));
-            format!("{}{}{}", if from > 0 { "..." } else { "" }, &t[from..to], if to < t.len() { "..." } else { "" })
-        };
-        Some(format!("index {f:?} (first differing at byte {at} of {} and {}):\n  want {}\n  got  {}", want.len(), got.len(), cut(&want), cut(&got)))
+        Some(format!("index {f:?}:\n  want {want}\n  got  {got}"))
     }
 
     /// Without the held set (`held`): what validity tests compare.
@@ -998,6 +1005,16 @@ impl osis_store::Section for ForensicSection {
     }
 }
 
+/// A table's entries by key text: the values of every key whose `Debug` reads alike (one,
+/// unless two keys print alike), so a difference is found whatever the keys print.
+fn table_entries(t: Option<&Vec<(String, String)>>) -> BTreeMap<&str, Vec<&str>> {
+    let mut out: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    for (k, v) in t.into_iter().flatten() {
+        out.entry(k.as_str()).or_default().push(v.as_str());
+    }
+    out
+}
+
 /// The keys of `a` and `b` whose values differ (or that one lacks), as fields.
 fn keyed<K: Ord + Clone, V: PartialEq>(a: &BTreeMap<K, V>, b: &BTreeMap<K, V>, f: impl Fn(K) -> IndexField, out: &mut Vec<IndexField>) {
     let keys: std::collections::BTreeSet<&K> = a.keys().chain(b.keys()).collect();
@@ -1017,6 +1034,21 @@ mod tests {
         let names: Vec<_> = tables(&ix).into_iter().map(|(n, _)| n).collect();
         let set: BTreeSet<_> = names.iter().collect();
         assert_eq!(set.len(), names.len(), "{names:?}");
+    }
+
+    // spec: none (test support): the index check's message names the differing table key and
+    // shows that key's whole entry on each side, however long, and no other entry.
+    #[test]
+    fn first_diff_shows_the_differing_keys_whole_entry() {
+        let long = "x".repeat(5_000);
+        let table = |v: &str| IndexDigest { tables: [("versions", vec![("a".into(), "same".into()), ("b".into(), format!("{long}{v}")), ("c".into(), "same".into())])].into(), ..Default::default() };
+        let d = table("1").first_diff(&table("2")).unwrap();
+        assert!(d.starts_with("index Table(\"versions\", \"b\"):"), "{d}");
+        assert!(d.contains(&format!("want {long}1\n")) && d.ends_with(&format!("got  {long}2")), "{d}");
+        assert!(!d.contains("same"), "{d}");
+        let gone = IndexDigest { tables: [("versions", vec![("a".into(), "same".into())])].into(), ..Default::default() };
+        let d = table("1").first_diff(&gone).unwrap();
+        assert!(d.starts_with("index Table(\"versions\", \"b\"):") && d.ends_with("got  <none>"), "{d}");
     }
 
     // spec: none (test support): every index is in `tables`, compared on its own in

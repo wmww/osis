@@ -35,7 +35,6 @@ osis-sync's module reviews (about 50 product bugs) split the same way. Reading a
 **Paged property cost**: `paged_apply_matches_whole_plain` seeds take 90-200 CPU-s each (ingest with its purge-on-replace snapshots about 30%, stored-state reloads after every step about 20%); the goal is the slowest large seed under a minute.
 
 **Small items**:
-- The engine index check's diff shows the differing key's whole entry, not ~1200 bytes around the first differing byte of a table's `Debug`.
 - A `LocalPeer` helper that follows held grant signals as the sync layer does, so a cli or sync failure that needs a followed signal moves to an engine test cheaply.
 - A trace of record-blob judgements per node (rows, held, shown, unneeded, gone, deletes sent) in `harness::trace`.
 - Per-iteration seeds from a hash of the iteration's coordinates (a helper), never `round * k + i` arithmetic that collides.
