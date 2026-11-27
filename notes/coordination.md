@@ -56,6 +56,7 @@ Seed breadth belongs to the release checks, not to jobs: reading and targeted ne
 ## Briefs
 A brief is the only context its agent has. Say the goal and why, what is already ruled out, where to read, and what done looks like; then get out of the way.
 - **No waiting on another job.** A brief never has its agent wait for another job's landing: it lands what stands alone, or reports and stops (a watch for a landing sat silent for hours once).
+- **An engine change lands with the gate stages it selects run** (properties, test cost; `tools/merge-branch gate --plan` names them): a failure or cost overrun it leaves unlisted shows as NEW at the next branch's gate and costs that reviewer a replay on main.
 - **One agent per worktree**: two agents in one tree share one git index, so one's staged `git rm` lands in the other's commit. A worker that spawns helpers gives each its own claimed worktree.
 - **A test that fails without each fix**: with several fixes, `tools/mutate.py` with a revert-to-old expression per fix checks which a test needs, in one build.
 - **Main keeps compiling**, even while broken in behaviour: a job that changes an API other crates use (a test model included) runs `cargo test --workspace --no-run` before landing.

@@ -1,7 +1,7 @@
 # A record edge's removal never reaches the mint admin's readers who took the thing under its unit
 > Summary: Bob's node mints T2 in T0's unit, makes it independent and removes T0's record edge before syncing. T2's record, value and grants reached T0's readers under T0's sync ID; the removal goes only under T2's own, which nobody keeps once they apply it. Own siblings, a peer told S2 before it shared it, and any later reader of T0 keep reading T2 through the record edge.
 > Priority: normal
-> Tags: security, sync, tess-call
+> Tags: security, sync
 
 Shown by `holding::a_mint_admins_readers_read_a_thing_no_more_once_its_record_edge_goes_spec_sync_set_2` (osis-sync, ignored). At the end nodes 0 (Alice, reads T0) and 1 (Bob's sibling) hold T0's record edge on T2 and read T2.
 
@@ -13,3 +13,5 @@ Options (a spec/model question: where the edge's removal travels):
 1. A removal that takes X out of T's unit also has a body under T's sync ID (the writer's view before the write), leaving S0 with X's other parts once readers agree. T0's readers then learn it from S0, where they took the stale state.
 2. X's role entries travel with X's record: wherever a sync ID carries X's record, it carries X's stub (role entries cut to its readers), whether or not T's keys open X now.
 3. Waiting alone (count told peers and siblings): not enough, since a reader of T0 arriving after everyone dropped S2 still reads T2.
+
+For the dependent/independent pass (notes/priorities.md; Tess: later). Leaning option 2: it is the stub rule (a unit carrying X's record carries X's stub, which its readers follow), so no carriage of its own.

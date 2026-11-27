@@ -37,6 +37,7 @@ osis-sync's module reviews (about 50 product bugs) split the same way. Reading a
 **Paged property cost**: `paged_apply_matches_whole_plain` seeds take 90-200 CPU-s each (ingest with its purge-on-replace snapshots about 30%, stored-state reloads after every step about 20%); the goal is the slowest large seed under a minute.
 
 **Small items**:
+- `OSIS_SYNC_TRACE` lines carry a world label: a test on a cached fixture prints the fixture's deliveries and its own both from d1.
 - The engine index-check panic names the engine copy that failed (`osis_base::trace::copy()`), as differential probes do.
 - A memo probe showing, per followed key, which containers its held reads come from (finding what a commit keeps in memory took a hand-written dump).
 - A note on `growth::one_and_ten`/`round_work`: its counters reset per round (`costs::take`), so a `take` around `grant_rounds` reads only the last round and the settle tail.
