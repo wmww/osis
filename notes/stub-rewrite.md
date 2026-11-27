@@ -10,7 +10,8 @@ Tess approved building this shape, taking the recommendations below as working a
 | R1 delete | landed |
 | M2 TLA | done (Model findings M2); Q1/Q2 answer changed: notice form, for Tess |
 | R2 stubs | landed; what it owes and the choices it made: R2 built, below |
-| R3 entry, R4 tests/notes | not started; placeholders owed below |
+| R3 entry | landed; what it built, its choices and what it owes: R3 built, below |
+| R4 tests/notes | not started; owed below |
 
 
 ## 0. In short
@@ -61,46 +62,14 @@ Tess approved building this shape, taking the recommendations below as working a
    - Whether anyone sends a signal is the API's or app's choice (the `osis` API may do it by default).
    - A holder with no signal and no reference to X holds nothing of X. That is correct.
    - Removals likewise: stub holders see a removal in X's role entries. Others need nothing.
-6. **A grant signal carries values only:**
-   - a weak reference to X (its tid);
-   - X's sync ID;
-   - an entry credential;
-   - peer hints (addresses, as a link's `peer`).
-
-   The receiver: the weak reference holds X's stub (rule 4). It opens X's sync ID by the entry credential and takes the entry box. With the secrets that box gives, it reads X's role entries from X's own sync ID and judges its grant by X's record (the tid certifies it) and X's role commits. That fetched cut is the stub. Q1 explains why the entry credential is needed.
+6. **A grant signal carries values only:** X (a weak reference), X's sync ID, peer hints: X's public link's values. The receiver follows X's sync ID by role while the signal is held, enters at a reader of X by its grant's notice (point 10), and holds X's stub.
 7. **Public things.** Covered by the stub (point 1). The public entry in X's own steps stays.
-8. **Second node of an account.** Pairing hands over A's values by hand (the same fields as a signal). The node strongs A from its root, syncs A, and A's unit carries everything A references, whole or as stubs, with the chain-holder stubs. A's inbox is a thing A references (rule 5), so held signals come with it.
+8. **Second node of an account.** Pairing hands over A's public link by hand (the signal's values). The node strongs A from its root, enters A by role at any reader of A, and A's unit carries everything A references, whole or as stubs, with the chain-holder stubs. A's inbox is a thing A references (rule 5), so held signals come with it.
 9. **Local part.** The node root's references keep their stubs in the node's own store. This replaces the record-edge piece.
-10. **Departed members** (Q6) and holders that cannot open a re-seal or sync rotation by its wrap (Q2): both through X's own sync ID, never the holder's.
+10. **Notices** tell departed members (Q6) and holders that cannot open a commit boxing them by its wrap (grantees, re-sealed holders, sync-only holders): X's own entries, sealed to the holder, served by role; never under the holder's sync ID.
 
 ## 3. Questions (working answer: each recommendation; Tess may revise)
-**Q1. What a grant signal's value must hold, and how the receiver gets in.**
-What I found (read):
-- Everything under X's sync ID is wrapped under X's secrets, so a node holding none reads nothing there.
-- The receiver's box is inside X's role commit, under that wrap.
-- Opening X's sync ID needs proof both ways (spec/sync-opens.md §4):
-  - the receiver can show a secret, a claim of a step it knows (it knows none), a static entry, or the public entry;
-  - it can judge the serving peer only by X's roster (it holds none) or by that peer's proof.
-- X's tid certifies X's record, but X's sync ID is X's own only by a step bearing the sync key of a secret the node holds (§4 Owner).
-
-So tid + sync ID + addresses are not enough: the node can neither open the sync ID nor find its box. Links already solve this exact problem: a link key's **static entry** in X's step claim set, with an entry box (spec/sync-ids.md §3, wire §8). The redeemer opens by the entry and takes the box.
-
-Options:
-- (a) **A grant entry, as a link's** [recommend].
-  - The granter adds a fresh entry for this grant to X's claim set. Its entry box is sealed to H's read KEM key, so the entry alone gives no secret.
-  - The signal's value carries the entry's signing seed (a value: bytes).
-  - Signal → weak reference → open X's sync ID by the entry → box → role entries → stub.
-  - One mechanism with links and the public entry.
-  - Cost: one sealed entry box per signalled grant, in each step while the entry stands (the claim set already lists every reader).
-  - Sub-question: does the entry stand while the grant does, or for the signal's lifetime? Recommend the signal's lifetime, since after that nothing holds the value.
-- (b) Every holder gets an entry box in every step, and the value carries the current step's public key. Stale after the next step; boxes for every holder at every step.
-- (c) Keep a commit copy in the value (today's offer). Ruled out by Tess's correction.
-- Every option has a remaining gap: a value naming a forged sync ID wastes a fetch but gives nothing. The entry box must open and its sync secret must derive the head's key.
-
-**Q2. Holders that cannot open a re-seal or sync rotation by its wrap** (a holder left out of a rotation, then re-sealed; a sync-only holder's new sync secret). Today these go as sealed copies under H's sync ID (a kept list on the holder: delete). Options:
-- (a) An entry box for that holder in X's next step, the Q1 mechanism [recommend].
-- (b) Notice-form entries under X's sync ID sealed to the holder.
-- Risk for both: a store whose head moves to a step past its keys before it takes the box stops (sync-judgement §6). M2 models this.
+**Q1, Q2 (how a signalled holder gets in; holders that cannot open a re-seal or rotation by its wrap)**: answered by M2 (Model findings M2): the notice form served by role, for Tess. Built as R3 built says; one deviation from the model: each told (commit, holder) is a notice entry of its own beside the commit, not a sealed key inside the commit's blob, so a store sees one more entry (the commit's blob keys its sections under read secrets, so the holder needs a copy openable by the blob key: a notice is that copy). Rejected: entry boxes in X's steps (M2: every store counts holders and grants by them).
 
 **Q3. Weak references bring stubs, and each stub is followed.** That is one followed sync ID per distinct weakly referenced independent thing (for example, one per author profile in a chat).
 - (a) As decided [recommend], with an n/10n counting test.
@@ -270,29 +239,37 @@ Choices taken (simpler option; Tess may revise):
 - **Chain holders carried whole** are no stubs (the model's rule): without it a chain of local dependents made independent re-gave every holder at each rotation (`scale::a_deep_dependent_made_independent_costs_its_depth_per_rotation`).
 
 Owed by R2 (not built):
-- Weaks in held history holding stubs (spec/data-model.md §8 Held history, rule 4): `refs::kept` follows strongs alone; R3 with the signal's weak reference.
 - The osis-sync differential's oracle on held-model's stub closure: `harness/history.rs` `MODEL_OFF` skips the model at quiet runs, so World tests play; every test calling `history::check` stays ignored (R4).
-- A departed stub holder told of its removal (the two-hop chain's U removed from R reaches node 1 only as a departed member: notices, Q6, R3); `stubs::a_two_hop_chain_*` asserts only that nothing written since is read.
+- A departed stub holder told of its removal (the two-hop chain's U removed from R reaches node 1 only as a departed member, by notices); `stubs::a_two_hop_chain_*` asserts only that nothing written since is read.
 - `stubs::a_two_hop_chain_*` still passes with chain stubs given nowhere: node 1 reaches R's role entries another way not yet found. R4: find it, and give the test a control that fails.
-- `differential::a_reader_by_the_publics_box_*` (the public's listing role by its box, `Core::public_listed`, ported from `spar-public-listing-role`): reached by a public redeem, they pass with the listing counted whatever its head; the case the branch's test reached (a node holding sync of its own learning the head) needs a signal (R3).
+- `differential::a_reader_by_the_publics_box_*` (the public's listing role by its box, `Core::public_listed`, ported from `spar-public-listing-role`): reached by a public redeem, they pass with the listing counted whatever its head.
 
-## Owed by R1, for R3/R4
-Placeholders left in the spec, each `[Stub rewrite (notes/stub-rewrite.md): ...]`, for R3:
-- spec/permissions.md: §3 Re-seal (Q2); §4 the grant signal and its receiver's entry (Q1); §8 Pairing (A's values).
-- spec/sync-set.md: First entry (held signal, rule 4).
-- spec/sync-inbox.md §5: the grant signal (values, held while the setting keeps it; pairing by hand).
-- spec/sync-hostile.md §2: the grant signal; what a holder lacks until it takes its entry box (Q2).
-- spec/commits.md §5: what a held grant signal needs.
-- spec/data-model.md §9: the `grant@~0` value.
+## R3 built
+Rules (each once): spec/permissions.md §4 Notices (a role commit **tells** a holder its departure or its boxes), §3 (a holder that cannot open a commit boxing it takes it by its notice), §8 Pairing (A's public link, redeemed for the node root); spec/sync-inbox.md §5 Grant signal; spec/data-model.md §9 (`grant@~0` value); spec/sync-set.md §2 First entry, §4 Redeeming (a public link **reaches** its target: public reads, or the node holds a role), §5 Source; spec/sync-opens.md §4 J, §5 ByRole, §6 (a member by J stays while its side follows S by a public link alone); spec/crypto.md §3 (KEM keys sticky), §5; spec/wire.md §10; spec/commits.md §5 (a signalled thing is held for itself); spec/sync-hostile.md §2. Words: notes/terms.md (Notice, Public link, Grant signal).
 
-Code sites marked `// Stub rewrite (notes/stub-rewrite.md): ...`, for R3/R4:
-- engine `flows/inbox.rs` `take_fire` (a grant signal of values) and `open_fire_in` (a sealed sync copy is no fire: entry boxes, Q2).
-- engine `rotation/mod.rs` `recorded`, `reseal_one`, and `flows/sync_ids.rs` `issue_step`: a holder that cannot open a rotation, re-seal or step by its wrap gets an entry box (Q2).
-- engine `local_peer.rs` `pair`/`take_pairing`, osis-sync `driver/mod.rs` and `harness/mod.rs`, libs/account `Offering::accept`/`Joining::finish`: pairing hands over A's values. The reply carries nothing now; the new node holds A from its root but has no way to sync it. Pairing also handed over the pairer's trust records (dispute sides on A, `Sides::adopt_trust`, deleted with offers): R3 decides how a new node gets them.
-- Tests: engine `apply/tests_validity.rs` (a stub cut covering as the whole snapshot does), `tests/it/scale.rs` (a stub's bytes per node), osis-sync `tests/it/harness/history.rs` (`unoffered`/`pieces`/`named`, the oracle, `MODEL_OFF`).
-- Ignored tests carry `#[ignore = "stub rewrite: ..."]` (`tools/ignores.py "stub rewrite: "`): engine 14 (pairing and the signal, R3; removed holders asserted on, which hold nothing under the model; a keyless grant carries nothing; 6 not sorted), osis-sync 137 (entry by references and stubs, pairing by values: most need a signal or pairing to reach another node, or call the oracle), osis-account, osis-chat and osis-app (pairing). R4 re-judges each.
+Code:
+- Notices (`sync/notices.rs` `boxed_unopened`): every reader of X computes, per held role commit c on X and current holder M it boxes, whether M opens c by its wrap here (`wrapped_at`): some other held commit boxes M at read at that epoch after M's newest removal, or boxes the public there, or the epoch is derived from X's mint admin's and M is that mint admin. Else c's notice to M (cut `Cut::Told`: edge-class parts, M's piece, the rest piece) is carried. A node opening a notice by its wrap notes its row and takes nothing (`open_notice_in`: a reader taking a holder's cut before the commit itself broke its reading); one opening it by KEM takes it. The KEM keys tried are those of X's holders here and of the node's own chains (`own_chains`).
+- Entry by role: a public link followed with no read secret of its thing held sets `ReadCredentials::by_role` / `Creds::by_role`; osis-sync sends ByRole for such S to every peer where no Hit on S goes (the public entry's box comes only with its Hit), opens on acceptance, and keeps that member while `by_role`; a receiver accepts ByRole from J reader or sync holder.
+- Pairing: the pairer hands over A's public link (`Engine::public_link` no longer requires the public's read); the new node writes the strong and settings (`take_pairing`, `Joining::finish`, now async) and redeems the link for its node root; the redeem is Held once the closure holds A and the link reaches it (`Engine::reaches`). `Driver::offered` and its rows' entry point are gone.
+- Grant signal: `Engine::signal_grant` owes a `grant@~0` fire on the holder's inbox; `Osis::grant` sends it unless `GrantOpts::quiet` (doc rewritten: promises nothing of holders learning). A held valid signal is followed (`FollowedLinks::follow_signal`, rows `sg/`, loaded at the first `take_carried`), let go when no longer held valid (`drop_signals`), rooted for retention (`Root::Signalled`), and its thing held as a stub once entered (`thing_holdings`).
+- KEM keys: `rotation::kem::publishes` also where the current keyset of the role carries one.
 
-Also owed: `tools/policy.py` `STUB_DEAD_WORDS` refuses the deleted words in spec/, notes/ and issues/ only; widen it to every file once code and core/test/held-model are clean. The notes still describing engine and held-model code being rewritten (notes/closure-model.md, core/test/held-model/README.md) are R4's.
+Choices taken (simpler option; Tess may revise):
+- **Notices are the one mechanism** for departures and for boxes a holder cannot open by the wrap; logged by every reader judging it, as departures were. A store sees one more entry per told (commit, holder) beside the commit; a reader's judgement of "opens by its wrap" can differ from another's (extra notices cost bytes only).
+- **The pairing and signal values are a public link**: one form (thing, sync ID, peers); redeeming one enters by the public entry or by role. `Osis::public_link` names any thing with keys of its own.
+- **Trust records are not handed over in pairing**: a new node takes sides by spec/permissions.md §5.1 as commits reach it. Open for Tess under "one side per fork, sides stick": a dispute the pairer had settled may show again at the new node.
+- **An entering node names S in ByRole to every peer it meets** (it can judge none): a stated leak of interest in S (spec/sync-hostile.md §2). Restricting to the value's peers would make a stale hint final.
+
+Owed (R4, or a fresh R3b):
+- Sync-only holders and stopped stores catching up by role (spec/sync-judgement.md §6 Stops: a store past its keys opening S by role at a reader and taking its rotation's notice by KEM): not built; `Unread` takes no notice. TLA `NT_sync_next` says it is needed.
+- Grant signal peers as dial hints (`Engine::signal_hints` exists; osis-sync `Inbox::dial_hints` does not read it).
+- Weaks in held history holding stubs (spec/data-model.md §8 Held history, rule 4; `refs::kept` follows strongs alone): a held signal holds its stub by its own root instead (`Root::Signalled`).
+- `differential::a_reader_by_the_publics_box_reads_across_a_start_*` (ignored): once node 2 (paired) enters account 0 by role, node 1, redeeming a public link to thing 0, holds its minting and no role entry of it; passes when node 2 never enters. Cause not found.
+- `grants::a_reader_granted_again_reads_again_*` (ignored): a holder removed, told, re-granted and told again is not served its new grant's notice (its peer still judges it departed where served).
+- `app sync::remote_delete_of_the_open_thing` (ignored): fails once paired by the account's link; cause not sorted.
+- The ignored tests R3 did not bring back (`tools/ignores.py "stub rewrite: "`): most osis-sync ones call the differential oracle (`history::check`, R4) or grant without a signal (call `signal_grant` where a test means a told grant); engine ones are R4's (removed holders, keyless grants, unsorted).
+- Code sites still marked: osis-sync `harness/history.rs` (the oracle), engine `apply/tests_validity.rs`, `tests/it/scale.rs`.
+- `tools/policy.py` `STUB_DEAD_WORDS` refuses the deleted words in spec/, notes/ and issues/ only; widen it to every file once code and core/test/held-model are clean. notes/closure-model.md and core/test/held-model/README.md are R4's.
 
 ## Appendix 0: inventory tables
 (spec/notes rows, then code rows; Q numbers refer to §3 above)

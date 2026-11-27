@@ -371,7 +371,6 @@ fn build_replaced() -> (World, (Tid, CommitId, String)) {
 // stores included; the parts beside them still read, and the same attack recovers the kept one
 // (it finds live content). One world for both: an attack per device.
 #[test]
-#[ignore = "stub rewrite: entry by references and stubs, pairing by values (R2, R3)"]
 fn a_purged_or_replaced_part_is_unrecoverable_from_the_sync_store_spec_commits_5() {
     let (mut w, t, _, replaced) = replaced_beside_a_kept_part();
     let (gone, stays) = (Ak::new("u:p.0").unwrap(), Ak::new("u:k.0").unwrap());
@@ -404,7 +403,6 @@ fn a_purged_or_replaced_part_is_unrecoverable_from_the_sync_store_spec_commits_5
 // nodes; the part beside it still reads. Fails if a blob keeps a purged part it carried while
 // its part was dropped as covered.
 #[test]
-#[ignore = "stub rewrite: entry by references and stubs, pairing by values (R2, R3)"]
 fn a_purge_strips_a_part_dropped_as_covered_from_its_blobs_spec_commits_5() {
     let mut w = World::new(0);
     w.record = true;
@@ -461,7 +459,6 @@ fn a_purge_strips_a_part_dropped_as_covered_from_its_blobs_spec_commits_5() {
 // strip left out counts missing for good. (That no store it reads holds the part is
 // `a_purged_or_replaced_part_is_unrecoverable_from_the_sync_store_spec_commits_5`.)
 #[test]
-#[ignore = "stub rewrite: entry by references and stubs, pairing by values (R2, R3)"]
 fn a_new_reader_of_a_cover_stripped_commit_misses_nothing_spec_commits_5() {
     let (mut w, t, c, _) = replaced_beside_a_kept_part();
     // t is a dependent of the account: its sync unit's sync ID is the account's
@@ -726,7 +723,6 @@ fn strips_of_two_parts_by_nodes_apart_meet_at_a_node_reading_neither_spec_sync_j
 // Rejoined, node 2 receives the making commit, so the thing's record. Fails if a part dropped
 // here that strips nothing makes the rest unloggable.
 #[test]
-#[ignore = "stub rewrite: entry by references and stubs, pairing by values (R2, R3)"]
 fn a_making_commit_stripped_before_a_siblings_fetch_reaches_the_sibling_spec_sync_judgement_2() {
     let mut w = crate::harness::siblings();
     w.partition(1, 2);

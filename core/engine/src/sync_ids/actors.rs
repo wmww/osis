@@ -5,7 +5,7 @@
 use osis_base::memo::{Memo, Stamped};
 use crate::engine::{Core, Engine};
 use crate::error::Result;
-use osis_base::{ChainStep, SyncId, Role, Tid};
+use osis_base::{ChainStep, CommitId, SyncId, Role, Tid};
 use crate::sync::{OwnedSyncId, Path};
 use osis_crypto::{RoleKey, role_key};
 use osis_blob::{ClaimSet, Step, StepId};
@@ -318,6 +318,14 @@ pub(crate) struct FollowedLinks {
     keys: BTreeMap<Tid, Arc<Identity>>,
     /// Per sync ID, the links K whose text names it.
     by_sync: Stamped<SyncId, BTreeSet<Tid>>,
+    /// The things followed for a link being redeemed (`insert`).
+    linked: BTreeSet<Tid>,
+    /// Per thing a held grant signal names (`Engine::take_fire`), its sync ID as the newest
+    /// such signal names it and the signals naming it: followed as a public link's target while
+    /// any is held.
+    signals: BTreeMap<Tid, (SyncId, BTreeSet<CommitId>)>,
+    /// Whether `signals` was read from its rows (`Engine::take_carried`, once per engine).
+    pub(crate) signals_loaded: bool,
 }
 
 impl FollowedLinks {
@@ -358,11 +366,61 @@ impl FollowedLinks {
     /// Follows link `k` under sync ID `s` and key `l` (none: a public link); the same again moves
     /// nothing. Returns the key `k` was followed under before, if any.
     pub(crate) fn insert(&mut self, k: Tid, s: SyncId, l: Option<Arc<Identity>>) -> Option<Tid> {
+        self.linked.insert(k);
+        self.set(k, s, l)
+    }
+
+    /// Lets link `k` go: its key, if it was followed with one (gone here with the last link naming
+    /// it). A thing a held grant signal names stays followed as a public link's target.
+    pub(crate) fn remove(&mut self, k: &Tid) -> Option<Tid> {
+        self.linked.remove(k);
+        let old = self.unset(k);
+        if let Some((s, _)) = self.signals.get(k).cloned() {
+            self.set(*k, s, None);
+        }
+        old
+    }
+
+    /// Follows thing `x` under sync ID `s` for held grant signal `c`, as a public link's target
+    /// unless a link being redeemed follows it.
+    pub(crate) fn follow_signal(&mut self, x: Tid, s: SyncId, c: CommitId) {
+        let e = self.signals.entry(x).or_insert_with(|| (s, BTreeSet::new()));
+        e.0 = s;
+        e.1.insert(c);
+        if !self.linked.contains(&x) {
+            self.set(x, s, None);
+        }
+    }
+
+    /// Grant signal `c` naming `x` is held no more: `x` goes unless another held signal or a
+    /// link follows it.
+    pub(crate) fn unfollow_signal(&mut self, x: &Tid, c: &CommitId) {
+        let Some(e) = self.signals.get_mut(x) else { return };
+        e.1.remove(c);
+        if e.1.is_empty() {
+            self.signals.remove(x);
+            if !self.linked.contains(x) {
+                self.unset(x);
+            }
+        }
+    }
+
+    /// The held grant signals followed, per thing they name.
+    pub(crate) fn signals(&self) -> &BTreeMap<Tid, (SyncId, BTreeSet<CommitId>)> {
+        &self.signals
+    }
+
+    /// Whether `x` is followed for held grant signals alone (no link being redeemed names it).
+    pub(crate) fn signalled_only(&self, x: &Tid) -> bool {
+        self.by_k.contains_key(x) && self.signals.contains_key(x) && !self.linked.contains(x)
+    }
+
+    fn set(&mut self, k: Tid, s: SyncId, l: Option<Arc<Identity>>) -> Option<Tid> {
         let lt = l.as_ref().map(|l| l.tid());
         if self.by_k.get(&k) == Some(&(s, lt)) {
             return None;
         }
-        let old = self.remove(&k);
+        let old = self.unset(&k);
         self.by_k.update_fed(k, |_| Some((s, lt)));
         if let Some(l) = l {
             Self::add(&mut self.by_actor, l.tid(), k);
@@ -372,9 +430,7 @@ impl FollowedLinks {
         old
     }
 
-    /// Lets link `k` go: its key, if it was followed with one (gone here with the last link naming
-    /// it).
-    pub(crate) fn remove(&mut self, k: &Tid) -> Option<Tid> {
+    fn unset(&mut self, k: &Tid) -> Option<Tid> {
         let (s, l) = self.by_k.remove(k)?;
         Self::take(&mut self.by_sync, &s, k);
         let l = l?;

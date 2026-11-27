@@ -1492,8 +1492,7 @@ impl Engine {
 
     /// Pairs node thing `node`, shown by `keys` (`node_keys`), into account `a` at `role`: its
     /// grant on A. `Permission` unless this node holds admin on A; `BadInput` unless `keys` show
-    /// `node`'s keys.
-    // Stub rewrite (notes/stub-rewrite.md): pairing hands over A's values (R3)
+    /// `node`'s keys. What the new node is handed besides is A's public link (`public_link`).
     pub fn pair(&mut self, a: &Tid, node: &Tid, keys: &osis_blob::Certificates, role: osis_base::Role) -> Result<crate::flows::Done> {
         let me = self.core.tid();
         if self.core.role_now(&me, a) != Some(osis_base::Role::Admin) {
@@ -1507,8 +1506,8 @@ impl Engine {
         self.grant(a, node, &edge)
     }
 
-    /// Holds account `a` by a strong from the node root and names it in `settings^.0`.
-    // Stub rewrite (notes/stub-rewrite.md): the node syncs A by the values pairing hands over (R3)
+    /// Holds account `a` by a strong from the node root and names it in `settings^.0`: the new
+    /// node's half of pairing beside redeeming A's public link, by which it reaches A.
     pub fn take_pairing(&mut self, a: &Tid) -> Result<crate::flows::Done> {
         let root = self.core.node_root.ok_or(crate::error::Error::Misuse("no node root"))?;
         let mut done = crate::flows::Done::default();

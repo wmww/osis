@@ -54,7 +54,6 @@ fn making_an_account_spec_permissions_8() {
 // makes for the account reaches the other both ways; a removed node is its node no more, its dial
 // entries gone. A request to another offer pairs nothing.
 #[test]
-#[ignore = "stub rewrite: pairing hands over the account's values (R3)"]
 fn pairing_and_removing_a_node_spec_permissions_8() {
     let (net, c, first, b) = paired();
     let (db, a, _) = &first;
@@ -116,7 +115,6 @@ fn a_stranger_importing_a_card_grants_its_account_spec_sync_inbox_5() {
 // another node of it lists and ends it, and a node leaving its own grant on the target leaves
 // the link to the account, which stays its admin.
 #[test]
-#[ignore = "stub rewrite: pairing hands over the account's values (R3)"]
 fn links_are_the_accounts_spec_permissions_7() {
     let (net, _, first, b) = paired();
     let (db, a, _) = &first;
@@ -154,7 +152,6 @@ fn a_realm_made_in_the_account() {
 // spec/permissions.md §8 Removing: a node removing itself drops its own dial entries while it may
 // still write the account, then its role (retaining a copy, read here).
 #[test]
-#[ignore = "stub rewrite: pairing hands over the account's values (R3)"]
 fn a_node_removing_itself_drops_its_entries_spec_permissions_8() {
     let (net, _, first, b) = paired();
     let (db, a, _) = &first;
@@ -171,7 +168,6 @@ fn a_node_removing_itself_drops_its_entries_spec_permissions_8() {
 // Minting the thing writes its keys and steps, so naming the account takes administering it: a
 // node lowered to writing the account is told so up front (`Permission` on the account).
 #[test]
-#[ignore = "stub rewrite: pairing hands over the account's values (R3)"]
 fn a_removed_node_no_longer_acts_through_its_client_spec_permissions_8() {
     let (net, _, first, b) = paired();
     let (db, a, _) = &first;
@@ -205,7 +201,6 @@ fn a_removed_node_no_longer_acts_through_its_client_spec_permissions_8() {
 // removed (erasing), it acts for none, at a client of it alike, live and after a restart, and it
 // makes an account of its own.
 #[test]
-#[ignore = "stub rewrite: pairing hands over the account's values (R3)"]
 fn a_removed_node_acts_for_no_account_spec_permissions_8() {
     let c = clock();
     let net = ManualNet::new(c.clone());
@@ -216,7 +211,7 @@ fn a_removed_node_acts_for_no_account_spec_permissions_8() {
     let offering = a.offer_pairing(db).unwrap();
     let join = osis_account::pair(o.store, offering.offer(), o.cfg.clone()).unwrap();
     let (_, reply) = offering.accept(db, join.request()).unwrap();
-    let (b, _) = join.finish(&reply).unwrap();
+    let (b, _) = drive(&net, join.finish(&reply)).unwrap();
     drive(&net, b.wait_synced(SyncScope::All)).unwrap();
     // a client of b's (its thing b's node thing's, so it outlives the removal) reads as b
     let (_, secret) = b.add_client(b.node(), None).unwrap();
@@ -254,7 +249,6 @@ fn a_removed_node_acts_for_no_account_spec_permissions_8() {
 // write or admin, as `nodes` counts it: from pairing on (before it syncs), until a timed grant's
 // `until` passes, or until it is lowered to read.
 #[test]
-#[ignore = "stub rewrite: pairing hands over the account's values (R3)"]
 fn a_node_acts_for_the_account_while_it_may_write_spec_permissions_8() {
     let c = clock();
     let net = ManualNet::new(c.clone());
@@ -264,7 +258,7 @@ fn a_node_acts_for_the_account_while_it_may_write_spec_permissions_8() {
     let offering = a.offer_pairing(db).unwrap();
     let join = osis_account::pair(o.store, offering.offer(), o.cfg).unwrap();
     let (_, reply) = offering.accept(db, join.request()).unwrap();
-    let (b, _) = join.finish(&reply).unwrap();
+    let (b, _) = drive(&net, join.finish(&reply)).unwrap();
     assert_eq!(Account::of(&b).unwrap(), Some(*a), "paired, before it syncs");
     drive(&net, b.wait_synced(SyncScope::All)).unwrap();
     // far beyond what the syncs below run the clock on

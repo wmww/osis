@@ -96,15 +96,92 @@ impl Engine {
             }
             let deps = self.read(|tx| crate::rotation::departures::departures(tx, &t))?;
             let deps: Vec<_> = deps.iter().filter(|d| d.concerns(Role::Read) && !self.core.is_own(&d.holder)).cloned().collect();
+            let mut told: Vec<(CommitId, Tid)> = Vec::new();
             for d in deps {
                 let Some(c) = d.edge.as_ref().and_then(taking) else { continue };
-                if !self.core.ix.commits.contains_key(&c) {
-                    continue;
+                if self.core.ix.commits.contains_key(&c) {
+                    told.push((c, d.holder));
                 }
-                let Some((epoch, _)) = self.read(|tx| crate::rotation::members::notice_keyset(tx, &t, &d.holder))? else { continue };
-                let n = Notice { thing: t, commit: c, holder: d.holder, epoch };
+            }
+            told.extend(self.boxed_unopened(&t)?);
+            for (c, holder) in told {
+                let Some((epoch, _)) = self.read(|tx| crate::rotation::members::notice_keyset(tx, &t, &holder))? else { continue };
+                let n = Notice { thing: t, commit: c, holder, epoch };
                 out.insert(n.content(), n);
             }
+        }
+        Ok(out)
+    }
+
+    /// The held role commits on independent thing `t` with each current holder of `t` they box
+    /// that cannot open them by their wrap as this node wraps them (`wrapped_at`): one that no
+    /// other held commit boxes at read at that epoch (a grantee, a re-sealed holder left out
+    /// before, a sync-only holder, one a rotation boxes after leaving it out of the epoch it
+    /// supersedes; `t`'s mint admin reads an epoch derived from its own), where no commit boxes
+    /// the public there (its box is every party's). Never the public nor an own thing.
+    /// Cost: every `secrets.0` piece of `t` held, read once per call.
+    fn boxed_unopened(&mut self, t: &Tid) -> Result<Vec<(CommitId, Tid)>> {
+        let mut out = Vec::new();
+        let current: BTreeSet<Tid> = self.core.key_holders(t).into_iter().map(|(m, _)| m).filter(|m| !m.is_public() && m != t && !self.core.is_own(m)).collect();
+        if current.is_empty() {
+            return Ok(out);
+        }
+        let Ok(ak) = osis_base::Ak::new("secrets.0") else { return Ok(out) };
+        let cs: Vec<CommitId> = self.core.ix.by_aspect.get(&(*t, ak)).into_iter().flatten().map(|(_, c)| *c).collect();
+        // per commit, the read epochs it boxes each holder at
+        let mut boxes: BTreeMap<CommitId, BTreeMap<Tid, BTreeSet<Epoch>>> = BTreeMap::new();
+        for c in &cs {
+            let Some(h) = self.header(c) else { continue };
+            let pieces: Vec<usize> = h.aspect_parts(t, "secrets.0").collect();
+            let id = *c;
+            let at = self.read(|tx| {
+                let mut w: BTreeMap<Tid, BTreeSet<Epoch>> = BTreeMap::new();
+                for ai in &pieces {
+                    let Some(f) = crate::apply::held_fragment(tx, &id, *ai)? else { continue };
+                    for k in crate::apply::keys::secrets_write(&f).boxes.keys() {
+                        let e = osis_keys::aspects::from_schema(&k.epoch);
+                        if let (Role::Read, Ok(e)) = (k.role, e) {
+                            w.entry(k.holder.0).or_default().insert(e);
+                        }
+                    }
+                }
+                Ok(w)
+            })?;
+            boxes.insert(id, at);
+        }
+        // per holder, the newest removal of it from `t` here (its `ts`): a box written before it is
+        // no secret it holds (it dropped what the removal took)
+        let mut removed: BTreeMap<Tid, osis_base::Ts> = BTreeMap::new();
+        if let Some(tl) = self.core.timelines().get(t) {
+            for (mc, o) in tl.applied_on(t) {
+                if let (Some(h), true) = (o.holder.thing(), o.edge.as_ref().is_none_or(|e| e.role < Role::Read)) {
+                    let ts = self.header(&mc.id).map(|x| x.ts);
+                    if let Some(ts) = ts {
+                        let e = removed.entry(h).or_insert(ts);
+                        *e = (*e).max(ts);
+                    }
+                }
+            }
+        }
+        let ts_of: BTreeMap<CommitId, osis_base::Ts> = boxes.keys().filter_map(|c| Some((*c, self.header(c)?.ts))).collect();
+        let boxed_by_another = |c: &CommitId, m: &Tid, e: &Epoch| boxes.iter().any(|(o, w)| o != c && w.get(m).is_some_and(|es| es.contains(e)) && removed.get(m).is_none_or(|r| ts_of.get(o).is_some_and(|ts| ts > r)));
+        for c in &cs {
+            let named = self.holders_named(c);
+            let Some(h) = self.header(c) else { continue };
+            let boxed: BTreeSet<Tid> = h.aspect_parts(t, "secrets.0").filter_map(|ai| named.get(&ai)).flatten().filter(|m| current.contains(*m)).copied().collect();
+            if boxed.is_empty() {
+                continue;
+            }
+            let Some(e) = self.wrapped_at(t, c)? else { continue };
+            // an epoch derived from the mint admin's is no epoch of `t`'s own: its holders read it
+            // by derivation
+            if boxed_by_another(c, &Tid::PUBLIC, &e) {
+                continue;
+            }
+            // an epoch derived from the mint admin's: the mint admin reads it so
+            let up = self.core.created(t).and_then(osis_base::CreationRecord::mint_admin);
+            let derived = up.and_then(|up| self.epochs(&up)).is_some_and(|x| osis_keys::ActorEpochs::derived(&x, t).read.secret(&e).is_some());
+            out.extend(boxed.into_iter().filter(|m| !boxed_by_another(c, m, &e) && !(derived && Some(*m) == up)).map(|m| (*c, m)));
         }
         Ok(out)
     }

@@ -369,9 +369,9 @@ impl Offering {
         }
         let node = db.take_keys(&keys)?;
         db.grant(a, node, Role::Admin, GrantOpts::default())?;
-        // Stub rewrite (notes/stub-rewrite.md): the reply carries the account's values (its
-        // tid, sync ID, an entry credential, peer hints) for the new node to sync it (R3)
-        Ok((node, PairReply(seal(REPLY, &self.secret, "osis pair reply", Vec::new()))))
+        // the account's public link: the new node reaches the account by it, as its holder
+        let link = db.public_link(a)?;
+        Ok((node, PairReply(seal(REPLY, &self.secret, "osis pair reply", vec![Value::Str(link.to_string())]))))
     }
 }
 
@@ -411,20 +411,25 @@ impl Joining {
     }
 
     /// Takes the offering node's reply and returns the node, now a node of the account, with
-    /// the account.
-    pub fn finish(self, reply: &PairReply) -> Result<(Osis, Account)> {
+    /// the account: once it reaches the account by the reply's link (`Osis::redeem`, which holds
+    /// it from the node root), at the offering node or any other of the account's.
+    pub async fn finish(self, reply: &PairReply) -> Result<(Osis, Account)> {
         let items = unpack(&reply.0, REPLY)?;
-        let [_, Value::Bytes(_)] = items.as_slice() else { return Err(Error::Invalid("malformed pairing reply".into())) };
+        let malformed = || Error::Invalid("malformed pairing reply".into());
+        let [_, Value::Str(link), Value::Bytes(_)] = items.as_slice() else { return Err(malformed()) };
         if !tag_ok(&self.secret, "osis pair reply", &items) {
             return Err(Error::Invalid("pairing reply does not match the offer".into()));
         }
-        // Stub rewrite (notes/stub-rewrite.md): the new node syncs the account by the values the
-        // reply carries (R3)
+        let link: osis::Link = link.parse()?;
+        if link.target()? != self.account {
+            return Err(malformed());
+        }
         let root = self.db.node_root()?;
         let mut w = self.db.write();
         w.hold(root, self.account)?;
         w.at(root, SETTINGS).set(&Weak(self.account))?;
         w.commit()?;
+        self.db.redeem(&link, root).await?;
         self.db.publish_dial_on(&[self.account, self.profile])?;
         Ok((self.db, Account { thing: self.account }))
     }

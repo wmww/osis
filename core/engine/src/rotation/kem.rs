@@ -5,7 +5,8 @@
 //! Invariant: a keyset carries a KEM key wherever something may seal to it: the thing is minted
 //! with a key, holds that role or above on some thing for keys (or is granted it in this
 //! transaction), a card of it stands, or, for read, its current setting enables an external
-//! signal. Nothing seals to a keyset without one (`members::sealing_at`: no candidate, so a newer
+//! signal; and wherever the keyset it supersedes carries one (core/test/tla/rotation/KemKeys.tla
+//! `sticky`: a grant the rotator never learned of keeps its holder sealable). Nothing seals to a keyset without one (`members::sealing_at`: no candidate, so a newer
 //! KEM-less keyset leaves the holder out rather than sealing at an older one, which a party
 //! removed since may hold).
 //! Who writes each input: the grants are their writers' (judged by the timelines, with key
@@ -24,14 +25,15 @@ use std::collections::BTreeSet;
 /// Whether a keyset of role `r` of `t` written now carries its KEM key (spec/crypto.md §3,
 /// Published KEM keys), judged by what this node holds and what the transaction gives things
 /// (`Tx::publishing`): minted with a key, holding `r` or above for keys, a card of it standing
-/// here (`flows::cards`), or for read a setting enabling an external signal.
+/// here (`flows::cards`), for read a setting enabling an external signal, or its current keyset
+/// of `r` carrying one (sticky: a holder granted beside this node's knowledge stays sealable).
 pub(crate) fn publishes(tx: &mut Tx<'_>, t: &Tid, r: Role) -> Result<bool> {
     let core = &*tx.core;
     let cheap = core.created(t).is_some_and(|c| c.key().is_some())
         || tx.publishing.iter().any(|(h, role)| h == t && *role >= r)
         || holds_for_keys(core, t, r)
         || crate::apply::validity::setting_now(core, t).and_then(|s| by_setting(&s)).is_some_and(|x| x >= r);
-    Ok(cheap || crate::flows::cards::stands(tx, t)?)
+    Ok(cheap || crate::flows::cards::stands(tx, t)? || carries(tx, t, r)?)
 }
 
 /// Whether `t` holds `r` or above on some thing for keys, with key access (an edge or a record

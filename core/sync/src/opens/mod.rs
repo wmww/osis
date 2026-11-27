@@ -572,6 +572,9 @@ impl crate::store::Members for BTreeMap<SyncId, Member> {
 /// What a connection may open S by, judged now (spec/sync-opens.md §4 Admissible).
 struct Adm {
     j: J,
+    /// This node follows S by a public link's value alone, holding none of its thing's secrets
+    /// (`Creds::by_role`): it asks every peer to open S by role and judges none of them.
+    by_role: bool,
     /// This node's class for S now (spec/sync-opens.md §4 Source).
     own: SourceClass,
     shows: Vec<Shown>,
@@ -2098,7 +2101,7 @@ impl Opens {
         let tests = creds.tests.iter().filter(|(_, e)| ok(e)).map(|(x, _)| x.clone()).collect();
         let step = creds.step.as_ref().filter(|(_, e)| ok(e)).map(|(k, _)| k.clone());
         let own = crate::types::class_of(creds.holding?);
-        Some(Adm { j, own, shows, tests, walk, step })
+        Some(Adm { j, by_role: creds.by_role, own, shows, tests, walk, step })
     }
 
     /// Tests the pending sync IDs against the peer's latest filter and sends one Offer
@@ -2167,10 +2170,11 @@ impl Opens {
                     break;
                 }
             }
-            if adm.j == J::Reader {
-                // ByRole for S still not open that J judges the peer reads (a Hit may be a false
-                // positive of the filter), with this side's Hits of its read secrets and static
-                // entries.
+            if adm.j == J::Reader || (adm.by_role && !hit) {
+                // ByRole for S still not open that J judges the peer reads, or that this side
+                // follows by a public link's value alone and Hits nothing of there (the public
+                // entry's box comes only with its Hit's answer), with this side's Hits of its
+                // read secrets and static entries (a Hit may be a false positive of the filter).
                 let hits = adm.tests.iter().filter(|t| matches!(t, Tested::Read(..) | Tested::Static { .. })).take(osis_proto::limits::MAX_ITEM_HITS).map(|t| {
                     let m = t.matched(&s);
                     bind.hit(&m, &s, &beacon_of(&m, &s, &rr))
@@ -2306,8 +2310,9 @@ impl Opens {
                 Sent::ByRole(s, own) if a.code == Code::OK => {
                     accepted.insert(s);
                     crossed.extend(self.crossed(conn, s, own, a.class));
-                    // An accepted ByRole opens S at its sender while J is still reader there.
-                    if self.member(conn, &s).is_none() && self.admissible(ctx, conn, &s).is_some_and(|a| a.j == J::Reader && a.own == own) {
+                    // An accepted ByRole opens S at its sender while J is still reader there, or
+                    // while it follows S by a value alone (it judges nobody).
+                    if self.member(conn, &s).is_none() && self.admissible(ctx, conn, &s).is_some_and(|a| (a.j == J::Reader || a.by_role) && a.own == own) {
                         self.open(ctx, conn, s, Member { class: a.class, own, by: Credential::J, until: None, departed: None }, None, moved);
                     }
                 }
@@ -2507,7 +2512,7 @@ impl Opens {
     fn accept_by_role(&mut self, ctx: &mut Ctx, conn: ConnId, s: SyncId, hits: &[[u8; 32]], class: SourceClass, moved: &mut Vec<Moved>) -> SharedItem {
         let Some(adm) = self.admissible(ctx, conn, &s) else { return SharedItem::code(Code::DECLINED) };
         let ok = SharedItem { class: adm.own, ..SharedItem::code(Code::OK) };
-        if adm.j == J::Reader {
+        if matches!(adm.j, J::Reader | J::SyncHolder) {
             self.open(ctx, conn, s, Member { class, own: adm.own, by: Credential::J, until: None, departed: None }, None, moved);
             return ok;
         }
@@ -2607,7 +2612,8 @@ impl Opens {
             self.end_member(ctx, rid, conn, s, Close::AtOnce, moved);
             return;
         }
-        let holder = matches!(adm.j, J::Reader | J::SyncHolder);
+        // a member by J at a side following S by a value alone stays while it does
+        let holder = matches!(adm.j, J::Reader | J::SyncHolder) || (adm.by_role && m.by == Credential::J);
         let admissible = m.by != Credential::J
             && basis.is_some_and(|b| adm.shows.iter().any(|x| beacon_of(x.matched(), &s, &rr) == b) || adm.tests.iter().any(|t| beacon_of(&t.matched(&s), &s, &rr) == b));
         let stays = holder || admissible;

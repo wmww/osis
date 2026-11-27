@@ -284,12 +284,6 @@ impl Inbox {
         }
     }
 
-    /// An offer of `target` taken by hand, its offering node at `peers` (first-contact hints,
-    /// kept while this node holds `target` by a grant: `links::Redemptions::offered`).
-    pub fn offered(&mut self, cx: &mut Cx, target: Tid, peers: Vec<DialHint>) -> Result<()> {
-        self.links.offered(&mut Here::of(cx, None), target, peers)
-    }
-
     /// Whether link K (a public link: its target) is being redeemed here: a redeem not joined and
     /// not ended, nor given up (`Policy::follow_link_ms`).
     pub fn redeeming(&self, k: &Tid) -> bool {

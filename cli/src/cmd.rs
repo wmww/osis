@@ -244,7 +244,7 @@ pub fn dispatch(cli: Cli, store: Option<Store>, stdin: &mut dyn BufRead, out: &m
             out.flush()?;
             let mut line = String::new();
             stdin.read_line(&mut line)?;
-            join.finish(&line.parse()?)?.0
+            race_until(None, join.finish(&line.parse()?)).ok_or_else(|| anyhow::anyhow!("pairing did not finish"))??.0
         }
         c => open(&sel, &g, network(c), !matches!(c, Cmd::Inspect(_) | Cmd::Serve { .. }))?,
     };
@@ -483,7 +483,7 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
                 Some(r) => parse_role(&r)?,
                 None => db.grants(t)?.get(&m).map(|e| e.role).ok_or_else(|| exit(3, "no such grant"))?,
             };
-            db.grant(t, m, role, GrantOpts { until: opt_ts(&until)?, retain_copy: None, may_grant, reads: parse_reads(reads.as_deref())?, leave_adminless })?;
+            db.grant(t, m, role, GrantOpts { until: opt_ts(&until)?, retain_copy: None, may_grant, reads: parse_reads(reads.as_deref())?, leave_adminless, quiet: false })?;
             delivered(ctx, &[t])
         }
         Cmd::SetRole { t, holder, role, d, leave_adminless } => {

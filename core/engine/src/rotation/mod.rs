@@ -589,9 +589,8 @@ pub(crate) fn commit_rotating(tx: &mut Tx<'_>, mut m: Mutation, who: Tid, a: Tid
     Ok(c)
 }
 
-/// Records rotation `rot` of `a`, committed as `c`, into `done`.
-// Stub rewrite (notes/stub-rewrite.md): a holder that cannot open the rotation by its wrap gets
-// an entry box in `a`'s next step (Q2, R3)
+/// Records rotation `rot` of `a`, committed as `c`, into `done`. A holder that cannot open it by
+/// its wrap takes it by its notice (`sync::notices`), as any role commit boxing it.
 pub(crate) fn recorded(tx: &mut Tx<'_>, a: Tid, c: Option<osis_base::CommitId>, rot: &Rotation, done: &mut Done) -> Result<()> {
     record(tx, a, rot)?;
     done.add(c);
@@ -1050,8 +1049,7 @@ pub(crate) fn reseal_one_into(tx: &mut Tx<'_>, a: Tid, holder: Tid, roles: &BTre
     };
     let mut m = Mutation::new();
     put_secrets(&mut m, a, &w, false)?;
-    // Stub rewrite (notes/stub-rewrite.md): the holder holds no box at the epoch the re-seal is
-    // wrapped under: an entry box in `a`'s next step (Q2, R3)
+    // a holder holding no box at the epoch it is wrapped under takes it by its notice
     done.add(Engine::commit_tx(tx, m)?);
     Ok(())
 }

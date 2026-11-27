@@ -80,6 +80,7 @@ fn root(core: &Core, x: &Tid, r: &Root) -> String {
         Root::Copy(a) => format!("the retained copy of {}", label(core, a)),
         Root::SelfRemoval(c) => format!("an own self-removal from it (c:{}) waits to be sealed", short(c)),
         Root::Awaited => "a pending part awaits its record or its entry into the node closure".into(),
+        Root::Signalled => "a held grant signal names it".into(),
     }
 }
 

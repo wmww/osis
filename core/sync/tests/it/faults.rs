@@ -196,16 +196,16 @@ fn a_crash_restarts_the_node_in_place() {
 
 // spec: none (test harness): a store failure at the old node's first write of a pairing (failed,
 // unsynced, or a power loss restarting it in place) fails its part, and the pairing tried again
-// makes the new node a node of the account. Every write of the pairing's own transaction:
-// osis-engine `a_failed_pairing_keeps_no_seed_of_its_rotation`.
+// makes the new node a node of the account once it enters the account at the old node. Every
+// write of the pairing's own transaction: osis-engine `a_failed_pairing_keeps_no_seed_of_its_rotation`.
 #[test]
-#[ignore = "stub rewrite: entry by references and stubs, pairing by values (R2, R3)"]
 fn a_pairing_hit_by_a_store_failure_pairs_when_tried_again() {
     for f in [DiskFault::Fail, DiskFault::Unsynced, DiskFault::Crash] {
         let mut w = two_nodes();
         let account = w.node(0).account;
         w.disk_fault(0, 0, f);
         let n = w.pair(0);
+        w.run();
         assert!(w.store_faults(0).writes() > 0, "{f:?}: the planned write came");
         assert_eq!(w.engine(n).settings_thing().unwrap(), account, "{f:?}");
         assert!(w.engine(0).roster(&account.unwrap()).contains_key(&w.engine(n).tid()), "{f:?}: granted");

@@ -68,7 +68,6 @@ fn a_removal_is_logged_before_what_was_written_after_it_spec_permissions_3() {
 // (pairing): the third node is on D's roster and joins (`paired`), reading the rotation that
 // added the second by the creating node's card.
 #[test]
-#[ignore = "stub rewrite: entry by references and stubs, pairing by values (R2, R3)"]
 fn a_paired_node_pairs_another_spec_sync_inbox_1() {
     let mut w = crate::harness::siblings();
     let n = w.pair(2);

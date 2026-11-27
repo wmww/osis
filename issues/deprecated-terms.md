@@ -30,7 +30,9 @@ Nothing searches for these: a word here may come back with a new, legitimate sen
 - **signing chain**, account **epochs** and **sides** (refused): a node signs as its node thing; a removal is an ordinary role change (spec/permissions.md §8).
 - `Engine::me`: `Engine::tid`, the node thing.
 - **device** for a node: a node (one machine may run many nodes); its node thing, node root, the node's key.
-- **ticket** (the reference kind, the tickets aspect, key-change tickets), `ticket@~0`: grants belong to the thing granted and sync with it; a grant from outside reaches its holder as an offer (a `grant@~0` fire) that proves nothing. TLS session tickets are another sense.
+- **offer** (a `grant@~0` fire carrying the holder's boxes, and the by-hand pairing offer of the same): the **grant signal** (values alone) and, by hand, a **public link** (spec/wire.md §10); the receiver enters by role and its grant's **notice**.
+- **entry credential**, a per-grant **entry box** in a thing's steps (a design never built: entry boxes count holders to a store): the grant's notice, served by role.
+- **ticket** (the reference kind, the tickets aspect, key-change tickets), `ticket@~0`: grants belong to the thing granted and sync with it; a grant from outside reaches its holder as a grant signal (a `grant@~0` fire of values) that proves nothing. TLS session tickets are another sense.
 - **removal notice**, `removal@~0`: a removal is evidence wherever a held write's path uses the removed hop; nothing delivers it elsewhere.
 - **chain certificate**, the **author's chain**, "closed under authors", the search for any path giving a write its right: a commit states its path and is judged along it; its evidence is certificate copies per (commit, thing), read off one derivation (notes/evidence-derivation.md).
 - **sole certificate**: a certificate copy is judged as any entry (spec/sync-judgement.md §2).

@@ -232,6 +232,8 @@ pub(crate) enum Root {
     /// enters, so what came for it pends, kept while carried. An entry is awaited only until the
     /// node holds the commit minting it (`uncarried`).
     Awaited,
+    /// A held grant signal names it (spec/sync-set.md §2 First entry): its stub is held.
+    Signalled,
 }
 
 /// Why `x` needs `t` held (the module doc, `needs`).
@@ -260,6 +262,9 @@ pub(crate) fn rooted(core: &Core, t: &Tid) -> Option<Root> {
     }
     if let Some(a) = super::forget::copy_of(core, t) {
         return Some(Root::Copy(a));
+    }
+    if core.followed_links.signals().contains_key(t) {
+        return Some(Root::Signalled);
     }
     if core.ix.pend_on.contains_key(&crate::apply::Wake::Record(*t)) || (core.ix.pend_on.contains_key(&crate::apply::Wake::Enters(*t)) && !minted_here(core, t)) {
         return Some(Root::Awaited);

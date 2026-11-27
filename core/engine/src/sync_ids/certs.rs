@@ -23,6 +23,9 @@ pub(crate) enum Cut {
     Evidence { step: bool },
     /// Keys: a public key record, a carried cause, holder keys.
     Keys,
+    /// What a notice to `holder` of a commit boxing it carries (spec/permissions.md §4 Notices):
+    /// the edge-class parts, the `secrets.0` piece boxing `holder` and the rest piece.
+    Told { holder: Tid },
 }
 
 /// Chain material a verifier needs (spec/permissions.md §4): parts of commits to copy, commits
@@ -289,11 +292,16 @@ impl Engine {
         let edge = |ak: &str| crate::apply::validity::edge_ak(ak);
         let mut out = Parts::new();
         let mut boxes = false;
+        let named = match cut {
+            Cut::Told { .. } => self.holders_named(c),
+            _ => Arc::default(),
+        };
         for (i, a) in h.aspects.iter().enumerate().filter(|(_, a)| a.tid == *x) {
             let ak = a.ak.as_str();
             let take = match cut {
                 Cut::Evidence { step } => edge(ak) || (step && ak == "sync.0"),
                 Cut::Keys => ak == "keys.0",
+                Cut::Told { holder } => edge(ak) || (ak == "secrets.0" && named.get(&i).is_none_or(|hs| hs.is_empty() || hs.contains(&holder))),
             };
             if take {
                 boxes |= matches!(ak, "secrets.0" | "keys.0");

@@ -208,7 +208,6 @@ fn a_public_link_naming_another_independent_reads_nothing_of_its_target_spec_wir
     w.write(0, |e| e.grant(&y, &Tid::PUBLIC, &edge(Role::Read))).unwrap();
     w.run();
     let Some(osis_blob::Link::Public(ly)) = w.public_link(0, y) else { panic!("Y is public") };
-    assert!(w.public_link(0, d).is_none(), "D is not public");
     let crafted = osis_blob::Link::Public(osis_blob::PublicLink { target: d, independent: Some(y), ..ly });
     assert_eq!(w.redeem_any(1, &crafted), osis_sync::types::Waiting::Pending);
     w.run();

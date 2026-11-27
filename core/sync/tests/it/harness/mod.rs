@@ -664,9 +664,9 @@ impl World {
     }
 
     /// A new node paired at admin as a node of node `i`'s account (spec/permissions.md §8
-    /// Pairing, as osis-account's `Account::offer_pairing`/`Offering::accept`): it shows its node thing's public
-    /// key record, node `i` grants it and hands back the offer with where it is dialed, which it
-    /// takes; then it publishes where it is dialed.
+    /// Pairing, as osis-account's `Account::offer_pairing`/`Offering::accept`): it shows its node
+    /// thing's public key record, node `i` grants it and hands back A's public link, which it
+    /// redeems for its node root; then it publishes where it is dialed.
     pub fn pair(&mut self, i: usize) -> usize {
         let j = self.add_bare_node();
         let (acc, profile, inbox) = (self.node(i).account.expect("an account"), self.node(i).profile, self.node(i).inbox);
@@ -676,12 +676,14 @@ impl World {
             Err(osis_engine::Error::Store(_)) => drop(self.write(i, pair).expect("pairing again after a store failure")),
             r => drop(r.expect("pair")),
         }
-        // Stub rewrite (notes/stub-rewrite.md): pairing hands over A's values (R3)
+        // A's public link, naming where the pairer is dialed: the new node redeems it for its
+        // node root, entering A by its role at the pairer
+        let link = self.public_link(i, acc).expect("A's public link");
         self.write(j, |e| e.take_pairing(&acc)).expect("name the account");
-        // where the pairer is dialed, as a link names its peers: the new node holds none of A's
-        // content (its `dial.0`) before it syncs A
-        let peers = osis_blob::link_peers(self.node(i).key.0, &self.net.reach.items(i), &self.node(i).node.config().dial);
-        self.nodes.get_mut(j).expect("no such node").node.offered(acc, peers).expect("the pairer's peers kept");
+        let root = self.write(j, |e| e.node_root()).expect("a node root");
+        let n = self.nodes.get_mut(j).expect("no such node");
+        assert!(!matches!(n.node.redeem(&link, root), osis_sync::types::Waiting::Never(_)), "A's link redeemed");
+        self.deliver(j, Input::Wrote);
         if let Some(n) = self.nodes.get_mut(j) {
             n.account = Some(acc);
             n.profile = profile;
@@ -711,7 +713,7 @@ impl World {
 
     /// Node `i`'s public link to `target` (`Engine::public_link`, as the product's `public_link`
     /// makes it: the node's dialable key and where it is reached, as first-contact hints); `None`
-    /// unless the public reads `target` at node `i`.
+    /// while `target`'s independent owns no sync ID at node `i`.
     pub fn public_link(&mut self, i: usize, target: Tid) -> Option<osis_blob::Link> {
         let peers = osis_blob::link_peers(self.node(i).key.0, &self.net.reach.items(i), &self.node(i).node.config().dial);
         self.write(i, |e| e.public_link(&target, peers)).expect("a public link").map(osis_blob::Link::Public)

@@ -676,7 +676,6 @@ fn removed_writers_writes(seed: u64) -> (usize, bool) {
 // commit in either order read alike: Bob's write stands by Carol's addendum when she had it, and
 // Bob's own snapshot never stands, whatever the tids (both orders of the tied pair's).
 #[test]
-#[ignore = "stub rewrite: a removed holder judges nothing of the thing; which peers to assert on (R4)"]
 fn a_compaction_around_a_write_at_its_removals_ts_reads_alike_spec_perm_5_2() {
     for [a, b, c] in [[0, 1, 2], [1, 0, 2]] {
         for bob_compacts in [false, true] {

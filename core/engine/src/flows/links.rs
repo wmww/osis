@@ -135,13 +135,13 @@ impl Engine {
 
     /// Redeems a public link (spec/sync-set.md §4): a strong to its target in `joiner`'s
     /// `holds.0`, unless the node closure holds the target, and nothing else. Written once the
-    /// public's grant on the target is held (`public_reads`): the strong then brings the target
-    /// into `joiner`'s sync unit (spec/sync-set.md §2 T's keys open), whose keys need no grant of
-    /// `joiner`'s. Who writes it: this node, for a joiner it writes.
+    /// link reaches the target here (`reaches`): the strong then brings the target into
+    /// `joiner`'s sync unit (spec/sync-set.md §2 T's keys open). Who writes it: this node, for a
+    /// joiner it writes.
     pub fn redeem_public(&mut self, link: &osis_blob::PublicLink, joiner: &Tid) -> Result<Done> {
         let (t, d) = (link.target, *joiner);
-        if !self.public_reads(&t) {
-            return Err(Error::Misuse("the public's grant on the link's target is not held here"));
+        if !self.reaches(&t) {
+            return Err(Error::Misuse("the link's target is not reached here"));
         }
         let mut done = Done::default();
         let c = self.run(|tx| {
@@ -157,17 +157,23 @@ impl Engine {
     }
 
     /// A public link to `t` naming `peers` (spec/wire.md §10): its sync ID that of `t`'s
-    /// independent, named where it is not `t`, which the redeemer opens by the public entry.
-    /// `None` unless the public reads `t` here (`public_reads`).
+    /// independent, named where it is not `t`, which the redeemer opens by the public entry or
+    /// by its role. `None` while `t`'s independent owns no sync ID here.
     pub fn public_link(&mut self, t: &Tid, peers: Vec<osis_blob::DialHint>) -> Result<Option<osis_blob::PublicLink>> {
-        let Some(a) = self.core.secret_actor(t).filter(|a| self.core.public_reads(a)) else { return Ok(None) };
+        let Some(a) = self.core.secret_actor(t) else { return Ok(None) };
         Ok(self.sync_id_of(&a)?.map(|sync_id| osis_blob::PublicLink { target: *t, sync_id, peers, independent: (a != *t).then_some(a) }))
     }
 
     /// Whether the public reads `t`'s independent by its own grant there, as held here
-    /// (spec/permissions.md §1, `Core::public_reads`): a public link to `t` can be redeemed.
+    /// (spec/permissions.md §1, `Core::public_reads`).
     pub fn public_reads(&self, t: &Tid) -> bool {
         self.core.secret_actor(t).is_some_and(|a| self.core.public_reads(&a))
+    }
+
+    /// Whether a public link to `t` reaches it here (spec/sync-set.md §4): the public reads it,
+    /// or this node holds a role on it.
+    pub fn reaches(&self, t: &Tid) -> bool {
+        self.public_reads(t) || self.role_on(t).is_some()
     }
 
     /// Whether the held role history shows `holder` put on `thing` and its edge over: removed, or

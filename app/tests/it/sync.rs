@@ -18,12 +18,26 @@ fn two() -> (Data, Data) {
 /// `two`, with the clock both read.
 fn two_clocked() -> (Data, Data, Arc<ManualClock>) {
     let clock = crate::common::clock();
-    let a = crate::common::node(1, &clock);
+    // pairing reaches the account over a connection; everything after is delivered by hand
+    let net = osis::internals::ManualNet::new(clock.clone());
+    let on = |seed| {
+        let mut o = cfg(seed, &clock);
+        o.app.internals.net = Some(net.clone());
+        o
+    };
+    let a = crate::common::created(on(1));
+    a.listen(&["peer://127.0.0.1:1".parse().unwrap()]).unwrap();
     let offering = osis_account::Account::of(&a).unwrap().unwrap().offer_pairing(&a).unwrap();
-    let o = cfg(2, &clock);
+    let o = on(2);
     let j = osis_account::pair(o.store, offering.offer(), o.cfg).unwrap();
     let (_, reply) = offering.accept(&a, j.request()).unwrap();
-    let b = j.finish(&reply).unwrap().0;
+    let mut f = std::pin::pin!(j.finish(&reply));
+    let b = loop {
+        if let std::task::Poll::Ready(r) = f.as_mut().poll(&mut std::task::Context::from_waker(std::task::Waker::noop())) {
+            break r.unwrap().0;
+        }
+        net.run();
+    };
     (osis_app::store::data(a).unwrap(), osis_app::store::data(b).unwrap(), clock)
 }
 
@@ -40,7 +54,6 @@ fn views_in(d: &Data, v: &[Tid]) -> Vec<String> {
 /// synced both nodes show the account's views once each and its favorite, which either may
 /// remove or move.
 #[test]
-#[ignore = "stub rewrite: pairing hands over the account's values (R3)"]
 fn a_paired_node_writes_home_before_it_syncs() {
     let (a, b) = two();
     assert_eq!(a.home().unwrap(), b.home().unwrap(), "home is the account");
@@ -70,7 +83,6 @@ fn a_paired_node_writes_home_before_it_syncs() {
 /// Concurrent reorders and a concurrent delete merge into one list without duplicates or gone
 /// things.
 #[test]
-#[ignore = "stub rewrite: pairing hands over the account's values (R3)"]
 fn concurrent_reorder_and_delete() {
     let (a, b) = two();
     let ns: Vec<Tid> = (0..3).map(|_| a.create_note().unwrap()).collect();
@@ -99,7 +111,6 @@ fn concurrent_reorder_and_delete() {
 
 /// The open thing of a node paired a moment ago stays open when the account's home arrives.
 #[test]
-#[ignore = "stub rewrite: pairing hands over the account's values (R3)"]
 fn open_survives_the_home_arriving() {
     let (a, b) = two();
     let n = b.create_note().unwrap();
@@ -112,7 +123,6 @@ fn open_survives_the_home_arriving() {
 
 /// Demo data once per account: a second node sees it and adds none; existing favorites stay.
 #[test]
-#[ignore = "stub rewrite: pairing hands over the account's values (R3)"]
 fn demo_once_per_account() {
     let (a, b) = two();
     let n = a.create_note().unwrap();
@@ -127,7 +137,6 @@ fn demo_once_per_account() {
 
 /// A deleted tag leaves no ghost behind (every strong to it goes too).
 #[test]
-#[ignore = "stub rewrite: pairing hands over the account's values (R3)"]
 fn deleted_tag_is_gone() {
     let (a, _) = two();
     osis_app::demo::add(&a).unwrap();
@@ -142,7 +151,7 @@ fn deleted_tag_is_gone() {
 /// The other node deletes the open thing: this one goes home, and the open editor's sessions,
 /// dropped then, do not bring it back.
 #[test]
-#[ignore = "stub rewrite: pairing hands over the account's values (R3)"]
+#[ignore = "stub rewrite: fails once paired by the account's link, cause not sorted (R4)"]
 fn remote_delete_of_the_open_thing() {
     let (a, b) = two();
     let n = a.create_note().unwrap();
@@ -162,7 +171,6 @@ fn remote_delete_of_the_open_thing() {
 /// make treats such an aspect as absent instead of failing the whole screen.
 /// (Not core aspects: a commit whose value does not fit a core type is malformed.)
 #[test]
-#[ignore = "stub rewrite: pairing hands over the account's values (R3)"]
 fn malformed_aspects_do_not_break_reads() {
     let (a, _) = two();
     osis_app::demo::add(&a).unwrap();
@@ -210,7 +218,6 @@ fn malformed_aspects_do_not_break_reads() {
 
 /// Concurrent favorites, before the first sync and after: both nodes settle on one list.
 #[test]
-#[ignore = "stub rewrite: pairing hands over the account's values (R3)"]
 fn concurrent_favorites_converge() {
     let (a, b) = two();
     let na = a.create_note().unwrap();
@@ -237,7 +244,6 @@ fn concurrent_favorites_converge() {
 
 /// One node unfavorites a thing the other favorited while the other favorites something else.
 #[test]
-#[ignore = "stub rewrite: pairing hands over the account's values (R3)"]
 fn unfavorite_survives_a_concurrent_favorite() {
     let (a, b) = two();
     let (small, big) = (&a, &b);
@@ -259,7 +265,6 @@ fn unfavorite_survives_a_concurrent_favorite() {
 /// another shape or an unknown mode reads as unset, an unknown theme id is only a string (the UI
 /// falls back to the default theme).
 #[test]
-#[ignore = "stub rewrite: pairing hands over the account's values (R3)"]
 fn look_merges_and_tolerates_odd_values() {
     use osis_kit::schema::Mode;
     let (a, b) = two();
@@ -282,7 +287,6 @@ fn look_merges_and_tolerates_odd_values() {
 /// Reordering is a sequence move: a favorite one node moves while the other removes it stays
 /// removed, and both nodes end with the same order.
 #[test]
-#[ignore = "stub rewrite: pairing hands over the account's values (R3)"]
 fn reorder_against_concurrent_unfavorite() {
     let (a, b) = two();
     let n1 = a.create_note().unwrap();
@@ -312,7 +316,6 @@ fn reorder_against_concurrent_unfavorite() {
 /// fields survive, whichever node writes later (a whole-struct write with defaults would
 /// overwrite the other's field with an empty one).
 #[test]
-#[ignore = "stub rewrite: pairing hands over the account's values (R3)"]
 fn contact_fields_of_an_absent_struct_race() {
     use osis_app::contact::{NAMES, ORG};
     use crate::common::save;
@@ -345,7 +348,6 @@ fn contact_fields_of_an_absent_struct_race() {
 /// address. (The relabel is a field write into the renamed-away entry, which stays removed:
 /// removal is final, notes/crdt.md Tess's decisions.)
 #[test]
-#[ignore = "stub rewrite: pairing hands over the account's values (R3)"]
 fn email_rename_against_concurrent_edits() {
     use osis_app::contact::EMAILS;
     use crate::common::save;
@@ -376,7 +378,6 @@ fn email_rename_against_concurrent_edits() {
 /// An "All fields" edit of one field and a nudge of the same aspect on the other node: both
 /// survive (the nudge's whole-value write diffs against what it read).
 #[test]
-#[ignore = "stub rewrite: pairing hands over the account's values (R3)"]
 fn field_edit_and_nudge_merge() {
     use osis_app::event::{START, Start};
     let (a, b, clock) = two_clocked();
@@ -399,7 +400,6 @@ fn field_edit_and_nudge_merge() {
 /// remove-and-re-add, moves onto entries the other node added. Both nodes end with one order,
 /// without duplicates, and a removal is never undone by a move.
 #[test]
-#[ignore = "stub rewrite: pairing hands over the account's values (R3)"]
 fn favorites_moves_adversarial() {
     for round in 0..4 {
         let (a, b, clock) = two_clocked();
@@ -470,7 +470,6 @@ fn favorites_moves_adversarial() {
 /// A form saved on focus loss after its thing was deleted (here, or concurrently on the other
 /// node) must not bring the thing back into the app.
 #[test]
-#[ignore = "stub rewrite: pairing hands over the account's values (R3)"]
 fn form_save_after_a_delete() {
     use crate::common::save;
     use osis_app::facets::contact::contact_form;
@@ -497,7 +496,6 @@ fn form_save_after_a_delete() {
 
 /// A window is per node: a state write on one node's window does not touch another's open thing.
 #[test]
-#[ignore = "stub rewrite: pairing hands over the account's values (R3)"]
 fn windows_do_not_interfere() {
     use osis_kit::schema::WEEK;
     use osis_kit::view::{Act, Cx, WindowState};

@@ -28,6 +28,8 @@ pub struct GrantOpts {
     /// The grant may leave `target` with no admin: an `until` on its last admin whose grant has
     /// none (`Error::LeavesNoAdmin` without it).
     pub leave_adminless: bool,
+    /// The holder is not told: its nodes reach `target` only by a reference they already sync.
+    pub quiet: bool,
 }
 
 /// What a grant's holder reads of what was written on the thing before its first grant
@@ -439,10 +441,12 @@ impl Osis {
     /// A thing's first grant to anyone but its mint admin also gives it its keys, so every
     /// holder of a role on it can read it.
     ///
-    /// A grant to a thing as holder reaches that thing's readers through it; from a node that does
-    /// not read the holder it goes as a grant fire to the holder's inbox (`Write::set_inbox`, else the
-    /// holder itself), taken only once that thing's setting enables its inbox
-    /// signals (`core::RetentionSetting::enable_inbox_signals`), waiting until then.
+    /// The grant is `target`'s: the holder's nodes learn of it only by being told or by a
+    /// reference to `target` they already sync. Unless `GrantOpts::quiet`, the holder is told:
+    /// a signal to its inbox (`Write::set_inbox`, else the holder itself) names `target` and this
+    /// node, and its nodes reach `target` while their inbox keeps it (its setting enabling inbox
+    /// signals, `core::RetentionSetting::enable_inbox_signals`); a holder telling nothing reaches
+    /// nothing, and the grant stands all the same.
     ///
     /// `Tid::PUBLIC` as holder makes `target` public: everyone may read it, from any node holding
     /// it (`public_link`); a thing it holds by a strong is read with it. Read at most, no
@@ -476,6 +480,10 @@ impl Osis {
                 (Reads::Kept | Reads::All, _) => e.grant(&target, &holder, &new).map_err(Error::from),
             })
         })?;
+        if !opts.quiet {
+            let peers = self.link_peers();
+            self.engine(|e| e.signal_grant(&target, &holder, &peers))?;
+        }
         Ok(())
     }
 
@@ -540,7 +548,7 @@ impl Osis {
                     let cur = self.grants(target)?.get(&holder).copied().ok_or(Error::Invalid(format!("{holder} is no holder of {target}")))?;
                     match role {
                         Some(r) if r == cur.role => return Ok(()),
-                        Some(r) if r > cur.role => return self.grant(target, holder, r, GrantOpts { until: cur.until, retain_copy: cur.until.map(|_| cur.retain_copy), may_grant: cur.may_grant, reads: Reads::Kept, leave_adminless: false }),
+                        Some(r) if r > cur.role => return self.grant(target, holder, r, GrantOpts { until: cur.until, retain_copy: cur.until.map(|_| cur.retain_copy), may_grant: cur.may_grant, reads: Reads::Kept, leave_adminless: false, quiet: true }),
                         _ => self.lower(target, holder, role, o)?,
                     }
                 }
@@ -677,10 +685,11 @@ impl Osis {
         Ok(Link(link.to_text().map_err(bad("link"))?))
     }
 
-    /// A link to `target`, which everyone reads by the public's grant (`grant` to
-    /// `Tid::PUBLIC`): whoever holds it can `redeem` it and read `target` and what it holds by
-    /// strongs, as long as it stays public. It holds no secret and names the nodes `make_link`'s
-    /// would. `Invalid` while the public does not read `target`.
+    /// A link to `target` that holds no secret: it names `target` and the nodes `make_link`'s
+    /// would. Whoever holds it can `redeem` it and reach `target` there if it may: everyone while
+    /// the public reads it (`grant` to `Tid::PUBLIC`), and a holder of a role on it (an account's
+    /// new node, a grantee told of its grant) at any node reading it. `Invalid` while `target` has
+    /// no keys of its own here yet.
     pub fn public_link(&self, target: Tid) -> Result<Link> {
         if let Some(at) = self.process_at("public_link")? {
             return self.forward(&at, crate::port::method::PUBLIC_LINK, (target,));
@@ -688,7 +697,7 @@ impl Osis {
         self.local_at(target, "public_link")?;
         let peers = self.link_peers();
         let link = self.engine(|e| e.public_link(&target, peers))?;
-        let link = link.ok_or_else(|| Error::Invalid(format!("{target} is not public")))?;
+        let link = link.ok_or_else(|| Error::Invalid(format!("{target} has no keys of its own yet")))?;
         Ok(Link(link.to_text().map_err(bad("link"))?))
     }
 
@@ -753,7 +762,7 @@ impl Osis {
     /// link to a thing this node already reaches joins nothing. What a share link holds is kept
     /// until the join is held elsewhere or the node gives up, a dropped call included. A public
     /// link joins nothing: `joiner` holds the thing by its strong, written once the thing is
-    /// found public; until then a dropped call or a restart leaves nothing behind.
+    /// found public or this node is found to hold a role on it.
     pub async fn redeem(&self, link: &Link, joiner: Tid) -> Result<Tid> {
         if let Some(at) = self.process_at("redeem")? {
             return self.remote_wait(&at, crate::port::method::REDEEM, (link.clone(), joiner))?.await;

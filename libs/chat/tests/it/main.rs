@@ -47,7 +47,7 @@ pub fn paired(net: &ManualNet, c: &Arc<ManualClock>, seed: u64) -> (Osis, Osis, 
     let offering = acc.offer_pairing(&a).unwrap();
     let join = osis_account::pair(o.store, offering.offer(), o.cfg).unwrap();
     let (_, reply) = offering.accept(&a, join.request()).unwrap();
-    (a, join.finish(&reply).unwrap().0, acc.thing())
+    (a, drive(net, join.finish(&reply)).unwrap().0, acc.thing())
 }
 
 /// Runs `f` to its end, running `net` between polls.

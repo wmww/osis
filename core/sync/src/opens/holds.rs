@@ -50,6 +50,9 @@ pub struct Creds {
     /// hits none, so learns nothing of who holds S and is served nothing once the public is
     /// removed.
     pub lapsed: Vec<Shown>,
+    /// S's thing is followed by a public link's value and none of its read secrets is held: S is
+    /// asked of every peer by role, opened on its acceptance (spec/sync-opens.md §5 ByRole).
+    pub by_role: bool,
 }
 
 impl Creds {
@@ -100,6 +103,7 @@ impl Creds {
         for c in &self.lapsed {
             h.update(b"l").update(c.matched());
         }
+        h.update(&[u8::from(self.by_role)]);
         h.finalize()
     }
 }
@@ -250,6 +254,7 @@ fn node_creds(cx: &mut Cx, unread: &Unread, s: &SyncId) -> Option<Arc<Creds>> {
             if rc.tests_public {
                 c.tests.push((Tested::Public, None));
             }
+            c.by_role = rc.by_role;
             // the sync proof of the newest recorded step's sync key (spec/sync-opens.md §4)
             if let (Some(head), Some((id, p))) = (&rc.head, rc.proofs.first())
                 && head.id() == *id

@@ -33,7 +33,7 @@ fn granted() -> (World, Tid) {
         let mut w = contacts();
         let t = make(&mut w, 0, "hi");
         let bob = w.node(1).account.unwrap();
-        w.write(0, |e| e.grant(&t, &bob, &edge(Role::Read))).unwrap();
+        w.write(0, |e| e.grant(&t, &bob, &edge(Role::Read)).and_then(|_| e.signal_grant(&t, &bob, &[]))).unwrap();
         w.run();
         (w, t)
     })
@@ -42,7 +42,6 @@ fn granted() -> (World, Tid) {
 // spec/sync-inbox.md §5, spec/sync-set.md §2: Alice grants Bob read on T; Bob holds T by a strong
 // in his account, syncs T's sync ID over real connections and reads T.
 #[test]
-#[ignore = "stub rewrite: entry by references and stubs, pairing by values (R2, R3)"]
 fn a_granted_thing_held_by_a_strong_syncs_spec_sync_inbox_5() {
     let (mut w, t) = granted();
     root_strong(&mut w, 1, t, true);
@@ -56,7 +55,6 @@ fn a_granted_thing_held_by_a_strong_syncs_spec_sync_inbox_5() {
 // shows each node syncing T's sync ID; `describe_commit` names Alice's next write on T and its
 // signer, her node thing; the settle round counters count that write's steps.
 #[test]
-#[ignore = "stub rewrite: entry by references and stubs, pairing by values (R2, R3)"]
 fn debug_dumps_name_sync_ids_commits_and_rounds() {
     let (mut w, t) = granted();
     root_strong(&mut w, 1, t, true);
@@ -87,7 +85,6 @@ fn debug_dumps_name_sync_ids_commits_and_rounds() {
 // secrets its account's boxes give read the profile as derived from the account until the
 // profile's keyset arrives: it holds the profile and syncs its sync ID, across a restart.
 #[test]
-#[ignore = "stub rewrite: entry by references and stubs, pairing by values (R2, R3)"]
 fn a_paired_node_enters_the_profile_spec_sync_set_1() {
     let mut w = crate::harness::siblings();
     let p = w.node(1).profile.unwrap();
@@ -107,7 +104,6 @@ fn a_paired_node_enters_the_profile_spec_sync_set_1() {
 // its contact card was made is reached all the same: its contact knows its inbox, and a grant to
 // it reaches it: held by a strong, the thing is read.
 #[test]
-#[ignore = "stub rewrite: entry by references and stubs, pairing by values (R2, R3)"]
 fn a_card_made_after_pairing_carries_the_inbox_spec_sync_inbox_5() {
     let mut w = World::new(0);
     w.add_node();
@@ -118,7 +114,7 @@ fn a_card_made_after_pairing_carries_the_inbox_spec_sync_inbox_5() {
     let a0 = w.node(0).account.unwrap();
     assert!(w.engine(1).inbox_of(&a0).unwrap().is_some(), "node 1 knows account 0's inbox");
     let t = make(&mut w, 1, "hi");
-    w.write(1, |e| e.grant(&t, &a0, &edge(Role::Read))).unwrap();
+    w.write(1, |e| e.grant(&t, &a0, &edge(Role::Read)).and_then(|_| e.signal_grant(&t, &a0, &[]))).unwrap();
     w.run();
     root_strong(&mut w, 0, t, true);
     assert_eq!(w.engine(0).get(&t, &ak()).unwrap(), Some(Value::Str("hi".into())), "the grant reached account 0");
@@ -129,7 +125,6 @@ fn a_card_made_after_pairing_carries_the_inbox_spec_sync_inbox_5() {
 // a granted thing (the write's outcome unknown) and restarts in place. With its strong, as the
 // store holds it or written again, it enters the thing and reads it.
 #[test]
-#[ignore = "stub rewrite: entry by references and stubs, pairing by values (R2, R3)"]
 fn a_crash_after_holding_keeps_the_thing_entered_spec_sync_set_2() {
     let (mut w, t) = granted();
     w.disk_fault(1, 1, crate::harness::DiskFault::Crash);
@@ -154,7 +149,7 @@ fn held(role: Role) -> (World, Tid) {
     let mut w = contacts();
     let t = make(&mut w, 0, "hi");
     let bob = w.node(1).account.unwrap();
-    w.write(0, |e| e.grant(&t, &bob, &ct::Edge { role, until: None, may_grant: false, retain: false, floor: None })).unwrap();
+    w.write(0, |e| e.grant(&t, &bob, &ct::Edge { role, until: None, may_grant: false, retain: false, floor: None }).and_then(|_| e.signal_grant(&t, &bob, &[]))).unwrap();
     w.run();
     root_strong(&mut w, 1, t, true);
     (w, t)
@@ -174,10 +169,10 @@ fn root_strong(w: &mut World, i: usize, t: Tid, on: bool) {
 
 // spec/permissions.md §2, spec/sync-set.md §2: a re-granted reader reads again; the node enters
 // at its role as the role commits it holds show. Alice removes Bob from T (or lowers
-// him to sync), then grants him read again; Bob, his strong kept, reads her next write: the new
-// grant reaches him, so the role commits he holds give read again.
+// him to sync), then grants him read again and tells him; Bob, his strong kept, reads her next
+// write: the new grant's notice reaches him, so the role commits he holds give read again.
 #[test]
-#[ignore = "stub rewrite: entry by references and stubs, pairing by values (R2, R3)"]
+#[ignore = "stub rewrite: told again after its removal, the re-granted holder is not served its new grant's notice (cause not sorted, R4)"]
 fn a_reader_granted_again_reads_again_spec_sync_set_2() {
     for lowered in [false, true] {
         let (mut w, t) = held(Role::Read);
@@ -185,7 +180,7 @@ fn a_reader_granted_again_reads_again_spec_sync_set_2() {
         let new = lowered.then_some(edge(Role::Sync));
         w.write(0, |e| e.demote(&t, &osis_engine::flows::edges::Demotion { holder: bob, new, retain: None })).unwrap();
         w.run();
-        w.write(0, |e| e.grant(&t, &bob, &edge(Role::Read))).unwrap();
+        w.write(0, |e| e.grant(&t, &bob, &edge(Role::Read)).and_then(|_| e.signal_grant(&t, &bob, &[]))).unwrap();
         w.run();
         w.write(0, |e| {
             let mut m = Mutation::new();
@@ -195,4 +190,43 @@ fn a_reader_granted_again_reads_again_spec_sync_set_2() {
         w.run();
         assert_eq!(w.engine(1).get(&t, &ak()).unwrap(), Some(Value::Str("again".into())), "lowered {lowered}: Bob reads again");
     }
+}
+
+/// Node 0 makes T and grants node 1's account read on it, telling it or not; run.
+fn granted_told(tell: bool) -> (World, Tid) {
+    let mut w = contacts();
+    let t = make(&mut w, 0, "hi");
+    let bob = w.node(1).account.unwrap();
+    w.write(0, |e| e.grant(&t, &bob, &edge(Role::Read)).and_then(|_| if tell { e.signal_grant(&t, &bob, &[]) } else { Ok(()) })).unwrap();
+    w.run();
+    (w, t)
+}
+
+// spec/sync-inbox.md §5 (Grant signal), spec/sync-set.md §2 First entry: a grant nobody is told
+// of is valid and gives its holder's nodes nothing: Bob, holding T by a strong, reads nothing of
+// it; told, he enters T by role at Alice's node and reads it.
+#[test]
+fn an_untold_grant_holds_nothing_spec_sync_set_2() {
+    for tell in [false, true] {
+        let (mut w, t) = granted_told(tell);
+        root_strong(&mut w, 1, t, true);
+        let read = w.engine(1).get(&t, &ak()).unwrap();
+        assert_eq!(read.is_some(), tell, "told {tell}: Bob reads T");
+        assert_eq!(w.engine(1).role_on(&t).is_some(), tell, "told {tell}: Bob holds T's grant");
+    }
+}
+
+// spec/sync-inbox.md §5 (Grant signal: held while the inbox's setting keeps it): told and holding
+// no reference of his own, Bob's node holds T's stub while the signal is held, and nothing of T
+// once it expires.
+#[test]
+fn a_signal_holds_its_stub_until_it_expires_spec_sync_inbox_5() {
+    let (mut w, t) = granted_told(true);
+    let s = w.engine(0).sync_id_of(&t).unwrap().expect("T's sync ID");
+    assert_eq!(w.engine(1).sync_holder(&s).unwrap(), Some(([t].into(), Holding::Stub)), "held as a stub");
+    assert_eq!(w.engine(1).get(&t, &ak()).unwrap(), None, "none of its content");
+    w.advance(osis_base::format::INBOX_LIFETIME_MS + 1);
+    w.run();
+    assert_eq!(w.engine(1).sync_holder(&s).unwrap(), None, "the signal expired: nothing held");
+    assert_eq!(w.engine(1).role_on(&t), None);
 }

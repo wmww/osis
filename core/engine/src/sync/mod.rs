@@ -423,6 +423,10 @@ pub struct ReadCredentials {
     /// at superseded epochs are shown lapsed, to every peer, each opening a member ended at once
     /// (spec/sync-opens.md §4, §6).
     pub lapsed_public: bool,
+    /// S's thing is followed by a public link (its value: the thing, its sync ID, where it is
+    /// served) and this node holds none of its read secrets yet: it asks every peer to open S
+    /// by its role there (spec/sync-opens.md §5 ByRole).
+    pub by_role: bool,
     /// The sync proof (spec/sync-ids.md §2) of each recorded step whose sync key this node holds,
     /// deepest first: the head's is what a reader shows, the rest what the walk tests
     /// (spec/sync-ids.md §6 Walk).
@@ -432,7 +436,7 @@ pub struct ReadCredentials {
     pub sync_keys: Vec<(Epoch, SigningSecret)>,
 }
 
-type PublicCredentials<'a> = (Option<StepId>, &'a BTreeMap<StepId, HeadKeys>, [&'a [(Epoch, Secret32)]; 2], &'a BTreeSet<[u8; 32]>, Vec<osis_crypto::VerifyingKey>, &'a [(StepId, [u8; 32])], Vec<(Epoch, osis_crypto::VerifyingKey)>, (bool, bool, bool, bool));
+type PublicCredentials<'a> = (Option<StepId>, &'a BTreeMap<StepId, HeadKeys>, [&'a [(Epoch, Secret32)]; 2], &'a BTreeSet<[u8; 32]>, Vec<osis_crypto::VerifyingKey>, &'a [(StepId, [u8; 32])], Vec<(Epoch, osis_crypto::VerifyingKey)>, (bool, bool, bool, bool, bool));
 
 impl ReadCredentials {
     /// What tells two apart (`Engine::read_credentials` is a memo): signing keys by their public
@@ -440,7 +444,7 @@ impl ReadCredentials {
     fn public(&self) -> PublicCredentials<'_> {
         let acting = self.acting.iter().map(SigningSecret::verifying_key).collect();
         let sync_keys = self.sync_keys.iter().map(|(e, k)| (*e, k.verifying_key())).collect();
-        (self.head.as_ref().map(Step::id), &self.keys, [&self.read_secrets, &self.old_read_secrets], &self.statics, acting, &self.proofs, sync_keys, (self.shows_public, self.public_reads, self.tests_public, self.lapsed_public))
+        (self.head.as_ref().map(Step::id), &self.keys, [&self.read_secrets, &self.old_read_secrets], &self.statics, acting, &self.proofs, sync_keys, (self.shows_public, self.public_reads, self.tests_public, self.lapsed_public, self.by_role))
     }
 }
 

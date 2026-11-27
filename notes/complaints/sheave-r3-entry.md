@@ -1,0 +1,3 @@
+# sheave-r3-entry
+- `differential::a_reader_by_the_publics_box_reads_across_a_start_*` passed on main only because the harness's pairing left the new node outside its account (R1 broke it silently): `World::pair` asserts nothing of the new node holding its account, so every world with a paired node ran with a dead node. A check in `World::pair` (or at the first `run` after it) that the paired node holds its account's grant would have caught it at R1 and saved a long hunt here.
+- Debugging needed ad-hoc `eprintln!` behind env vars across engine and osis-sync; a world-level dump of a node's view of one thing (roster, held commits on it, sync holding, opens members) would have cut that.

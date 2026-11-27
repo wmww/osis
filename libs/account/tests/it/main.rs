@@ -40,7 +40,7 @@ pub fn pair(net: &ManualNet, (db, a, _): &(Osis, Account, osis::Address), seed: 
     let offering = a.offer_pairing(db).unwrap();
     let join = osis_account::pair(o.store, offering.offer(), o.cfg).unwrap();
     let (node, reply) = offering.accept(db, join.request()).unwrap();
-    let (b, got) = join.finish(&reply).unwrap();
+    let (b, got) = drive(net, join.finish(&reply)).unwrap();
     assert_eq!((got, node), (*a, b.node()));
     drive(net, b.wait_synced(osis::SyncScope::All)).unwrap();
     b

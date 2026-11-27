@@ -39,10 +39,8 @@
 //! `I/r/` under its target, not shredded: no secret), so a restart goes on with it. Its follow
 //! time is a share link's.
 //!
-//! An offer handed over (a pairing's, spec/permissions.md §8) is first contact too: its peers
-//! (`offered`) are kept as a joined link's (rows `I/p/`) while a joiner this node acts as holds
-//! its target by a grant (`Engine::joiner_of`), so a node paired and restarted before it holds
-//! where the account's nodes are still dials the pairer.
+//! Pairing (spec/permissions.md §8) hands over the account's public link: redeemed like any, so a
+//! node paired and restarted before it entered the account still dials the pairer.
 
 use super::Here;
 use crate::types::{Result, Waiting};
@@ -260,20 +258,6 @@ impl Redemptions {
         self.public_ready.want(t);
     }
 
-    /// First contact by peers handed over by hand: the granting node's peers stay dial hints,
-    /// durably, while a joiner this node acts as holds `target` by a grant
-    /// (`kept`), as a joined link's do.
-    pub(super) fn offered(&mut self, h: &mut Here<'_>, target: Tid, peers: Vec<DialHint>) -> Result<()> {
-        if peers.is_empty() {
-            return Ok(());
-        }
-        let row = encode_peers(&peers);
-        h.store.with_tx(|t| t.put_local(&peers_key(&target), &row, Shred::No))?;
-        self.hints.insert(target, peers);
-        self.kept.want(target);
-        Ok(())
-    }
-
     pub(super) fn settle(&mut self, h: &mut Here<'_>) -> Result<bool> {
         let mut acted = false;
         for t in self.public_ready.due() {
@@ -284,8 +268,8 @@ impl Redemptions {
             let engine = &mut *h.engine;
             let until = WallMs(p.since.0.saturating_add(h.policy.follow_link_ms()));
             let stage = || match () {
-                _ if engine.closure_holds(&t) => PublicStage::Held,
-                _ if engine.public_reads(&t) => PublicStage::Ready,
+                _ if engine.closure_holds(&t) && engine.reaches(&t) => PublicStage::Held,
+                _ if engine.reaches(&t) => PublicStage::Ready,
                 _ if engine.reached(until) => PublicStage::GaveUp,
                 _ => PublicStage::Waiting,
             };

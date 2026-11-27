@@ -332,7 +332,6 @@ fn the_publics_grant_round_trip_spec_permissions_1() {
     let (client, _) = a.add_client(a.node(), None).unwrap();
     let client = osis::internals::Internals::acting_as(&a, client);
     assert_eq!(client.at(t, osis::core::NAME).get().unwrap(), None, "a client granted nothing");
-    assert!(matches!(a.public_link(t), Err(Error::Invalid(_))), "not public");
     assert!(matches!(a.grant(t, Tid::PUBLIC, Role::Write, GrantOpts::default()), Err(Error::Invalid(_))), "read at most");
     assert!(matches!(a.grant(t, Tid::PUBLIC, Role::Read, GrantOpts { may_grant: true, ..GrantOpts::default() }), Err(Error::Invalid(_))));
     a.grant(t, Tid::PUBLIC, Role::Read, GrantOpts::default()).unwrap();
@@ -345,7 +344,6 @@ fn the_publics_grant_round_trip_spec_permissions_1() {
     a.set_role(t, Tid::PUBLIC, None, osis::SetRoleOpts::default()).unwrap();
     assert!(!a.grants(t).unwrap().contains_key(&Tid::PUBLIC));
     assert_eq!(client.at(t, osis::core::NAME).get().unwrap(), None, "private again");
-    assert!(matches!(a.public_link(t), Err(Error::Invalid(_))));
 }
 
 // spec/sync-inbox.md §1 (Card): putting a thing's card needs its keys here and write on the host

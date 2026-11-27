@@ -138,9 +138,11 @@ impl Engine {
     /// The sync IDs thing `t` of `sync_things` is synced under, each with how it is held
     /// (spec/sync.md §3): read by a read secret of a thing the node closure reads, as a stub by a
     /// read secret of a thing held as a stub alone (spec/sync-set.md §2 Holding a stub: its role
-    /// entries alone), kept unread by a sync secret alone. Reads `t`'s keys.
+    /// entries alone; so too a thing a held grant signal alone names, once entered, spec/sync-set.md
+    /// §2 First entry), kept unread by a sync secret alone. Reads `t`'s keys.
     pub(crate) fn thing_holdings(&mut self, t: &Tid) -> Result<Vec<(SyncId, Holding)>> {
-        let read = if self.core.ix.closure.stub_only(t) { Holding::Stub } else { Holding::Read };
+        let signalled = self.core.followed_links.signalled_only(t) && !self.core.ix.closure.synced(t) && self.holds_read(t);
+        let read = if self.core.ix.closure.stub_only(t) || signalled { Holding::Stub } else { Holding::Read };
         Ok(match self.thing_sync(t)? {
             ThingSync::Read(ids) => ids.into_iter().map(|s| (s, read)).collect(),
             ThingSync::Unread(ids) => ids.into_iter().map(|s| (s, Holding::Unread)).collect(),
@@ -238,7 +240,11 @@ impl Engine {
         {
             match l.and_then(|l| self.core.link_keys.get(&l)) {
                 Some(id) => c.acting.push(id.signing().clone()),
-                None => c.tests_public |= l.is_none(),
+                None if l.is_none() => {
+                    c.tests_public = true;
+                    c.by_role |= !self.holds_read(t);
+                }
+                None => {}
             }
         }
         if let Some(e) = self.core.epochs(t) {

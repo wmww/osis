@@ -420,8 +420,7 @@ impl Engine {
             let Some(out) = step_into(tx, &mut m, g, l, fresh)? else { return Ok(None) };
             drop_old_claims(tx, &mut m, g)?;
             Engine::commit_tx(tx, m)?;
-            // Stub rewrite (notes/stub-rewrite.md): a sync-only holder that cannot open a step
-            // by its wrap gets an entry box (Q2, R3)
+            // a store takes the step by Register; the sync secret its rotation gave by its notice
             Ok(Some(out))
         })
     }
