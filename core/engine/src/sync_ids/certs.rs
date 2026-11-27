@@ -36,6 +36,10 @@ pub struct Certs {
     pub headers: BTreeSet<CommitId>,
     pub mintings: BTreeMap<CommitId, BTreeSet<Tid>>,
     pub records: BTreeSet<Tid>,
+    /// Of `records`, those the evidence of the read thing's role entries names: a holder of its
+    /// stub judges those entries and takes no other body (spec/sync-set.md §2 Holding a stub), so
+    /// each goes as a record whatever body carries it (spec/permissions.md §4 Logging certificates).
+    pub role_records: BTreeSet<Tid>,
     /// The things whose stub's sync-only cut goes (spec/permissions.md §4 Stub, spec/wire.md §4):
     /// no header, record or evidence goes with it.
     pub sync_cuts: BTreeSet<Tid>,
@@ -60,6 +64,7 @@ impl Certs {
             self.mintings.entry(*c).or_default().extend(ts.iter().copied());
         }
         self.records.extend(other.records.iter().copied());
+        self.role_records.extend(other.role_records.iter().copied());
         self.sync_cuts.extend(other.sync_cuts.iter().copied());
     }
 
@@ -73,6 +78,7 @@ impl Certs {
             self.mintings.entry(c).or_default().extend(ts);
         }
         self.records.extend(other.records);
+        self.role_records.extend(other.role_records);
         self.sync_cuts.extend(other.sync_cuts);
     }
 }
@@ -131,7 +137,8 @@ impl Engine {
     /// sync ID), from `ev` holding `g` as a sync ID: its required copies; the records of both ends
     /// of each edge its evidence reads; the records and mintings `shared` adds; and the public
     /// key records of `g`'s holders, with their evidence; and the stubs `g`'s unit carries, each
-    /// cut to its readers (`stub_certificates`).
+    /// cut to its readers (`stub_certificates`). The records its role entries' evidence names are
+    /// its `role_records` (`role_records_into`).
     pub(crate) fn sync_certificates(&mut self, ev: &Ev, g: &Tid) -> Certs {
         let mut out = Certs::default();
         let req: BTreeSet<(CommitId, Tid)> = ev.required(g).map(|r| r.keys().copied().collect()).unwrap_or_default();
@@ -154,8 +161,25 @@ impl Engine {
             self.public_key_record_into(ev, h, &mut out);
         }
         self.stub_certificates(ev, g, &mut out);
+        self.role_records_into(ev, g, &mut out);
         self.close_records(ev, &mut out);
         out
+    }
+
+    /// The records the evidence of `g`'s role entries names (spec/permissions.md §4 Evidence of a
+    /// commit: `g`'s, each signer's, those the evidence closes over, and those up their record
+    /// chains), as `out`'s `role_records` and among its records.
+    fn role_records_into(&mut self, ev: &Ev, g: &Tid, out: &mut Certs) {
+        // a read of each role-class aspect's key alone, so a write elsewhere moves nothing here
+        let aks = osis_schema::core_types::ROLE_CLASS.into_iter().filter_map(|ak| Ak::new(ak).ok());
+        let seeds: BTreeSet<(CommitId, Tid)> = aks.flat_map(|ak| self.core.ix.by_aspect.get(&(*g, ak)).into_iter().flatten().map(|(_, c)| (*c, *g)).collect::<Vec<_>>()).collect();
+        let mut of = Certs::default();
+        of.records.insert(*g);
+        of.records.extend(seeds.iter().filter_map(|(c, _)| self.header(c).map(|h| h.signer)));
+        self.add_closure(ev, &seeds, &mut of);
+        self.close_records(ev, &mut of);
+        out.records.extend(of.records.iter().copied());
+        out.role_records = of.records;
     }
 
     /// The stubs `g`'s unit carries as this node holds their role entries (spec/permissions.md

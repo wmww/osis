@@ -82,6 +82,8 @@ pub(crate) struct Certified {
     records: Stamped<Tid, Arc<BTreeSet<Tid>>>,
     /// Per record, the read things whose certificates name it (`records` the other way).
     pub(crate) namers: Stamped<Tid, Arc<BTreeSet<Tid>>>,
+    /// Per read thing, the records its role entries' evidence names (`Certs::role_records`).
+    pub(crate) role_records: Stamped<Tid, Arc<BTreeSet<Tid>>>,
     /// Per read thing, the stubs whose sync-only cut its certificates carry (`Certs::sync_cuts`).
     pub(crate) sync_cuts: Stamped<Tid, Arc<BTreeSet<Tid>>>,
 }
@@ -130,6 +132,10 @@ impl Certified {
         if was.records != now.records {
             let v = (!now.records.is_empty()).then(|| Arc::new(now.records.clone()));
             self.records.update(*g, |_| v);
+        }
+        if was.role_records != now.role_records {
+            let v = (!now.role_records.is_empty()).then(|| Arc::new(now.role_records.clone()));
+            self.role_records.update(*g, |_| v);
         }
         for r in was.records.difference(&now.records) {
             member(&mut self.namers, r, g, false, true);
@@ -245,7 +251,7 @@ impl Engine {
         if !c.read.iter().eq(read.iter()) {
             return Some(format!("the rows' read things {:?}, read {read:?}", c.read.iter().collect::<Vec<_>>()));
         }
-        (!c.of.iter().eq(anew.of.iter()) || !c.naming.iter().eq(anew.naming.iter()) || !c.records.iter().eq(anew.records.iter()) || !c.namers.iter().eq(anew.namers.iter()) || !c.sync_cuts.iter().eq(anew.sync_cuts.iter())).then(|| "a certificate row is not the one written from nothing".to_string())
+        (!c.of.iter().eq(anew.of.iter()) || !c.naming.iter().eq(anew.naming.iter()) || !c.records.iter().eq(anew.records.iter()) || !c.namers.iter().eq(anew.namers.iter()) || !c.role_records.iter().eq(anew.role_records.iter()) || !c.sync_cuts.iter().eq(anew.sync_cuts.iter())).then(|| "a certificate row is not the one written from nothing".to_string())
     }
 
     /// `certified_differs` of the state as followed (tests: `check_evidence`).

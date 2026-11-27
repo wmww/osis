@@ -504,3 +504,18 @@ fn a_node_keeping_a_thing_unread_takes_no_older_public_entry_spec_sync_ids_3() {
     holds_on(0, 2, 3, &[New(0), Give(0, 0, Holder::Public, Reads), Revoke(0, 0, Holder::Public), Give(0, 0, Holder::Node(1), Syncs), Strong(1, None, 0)], String::new(), false);
 }
 
+// spec/permissions.md §4 (Logging certificates: a record a role entry's evidence names goes as a
+// record), spec/sync-set.md §2 (Holding a stub: role entries alone): node 1 makes thing 1 in
+// thing 0 and grants node 0's account read on it (thing 1 independent); thing 1 holds thing 0 by
+// a strong and the public reads thing 0, so thing 1's readers open its minting from thing 0.
+// Node 0 holds thing 1 as a stub until its grant applies, shown role entries alone, and reads it
+// once the record blob carries thing 1's record (failed: the record went in the minting alone,
+// node 0's grant pended for it, and node 0 read neither thing).
+#[test]
+fn a_grantee_judges_a_thing_minted_in_another_by_its_record_blob_spec_permissions_4() {
+    use crate::harness::script::*;
+    let script = [New(1), NewIn(1, 0), Give(1, 1, Holder::Node(0), Reads), Strong(0, None, 1), Strong(1, Some(1), 0), Give(1, 0, Holder::Public, Reads), Run];
+    let mut w = holds_on(0, 2, 3, &script, String::new(), false);
+    let t = w.history.things[1].0;
+    assert!(crate::harness::history::reads(w.engine(0), &t).value.is_some(), "node 0 reads thing 1 by its account's grant");
+}

@@ -219,7 +219,9 @@ impl Engine {
     /// The records sync ID `s` carries as certificates (spec/permissions.md §4): those its
     /// certificates name (`certified_records`) whose `created.0` no closure body there carries
     /// (a thing of the closure its actor reads, minted by no commit giving it epochs:
-    /// `minted_dependent`), held here. A read of the rows of `s`'s read things alone.
+    /// `minted_dependent`) or that its role entries' evidence names (`Certs::role_records`: a
+    /// holder of the stub takes role entries alone), held here. A read of the rows of `s`'s read
+    /// things alone.
     pub fn certificate_records(&mut self, s: &SyncId) -> Result<Arc<BTreeSet<Tid>>> {
         self.follow_cert_records()?;
         let mut out = BTreeSet::new();
@@ -230,8 +232,8 @@ impl Engine {
     }
 
     /// The read things naming record `x` (`Certified::namers`) whose sync IDs carry it as a
-    /// certificate: held here, and no closure body of the thing carries it (`certificate_records`).
-    /// Reads per (namer, `x`).
+    /// certificate: held here, and named by the thing's role entries' evidence or carried by no
+    /// closure body of the thing (`certificate_records`). Reads per (namer, `x`).
     fn cert_carriers(&mut self, x: &Tid) -> Arc<BTreeSet<Tid>> {
         // counted: tests read that a make judges the records it moved, not every record named
         osis_base::costs::count("certificate records: judged", 1);
@@ -242,6 +244,10 @@ impl Engine {
         let plain = self.minted_dependent(x);
         let mut out = BTreeSet::new();
         for t in namers {
+            if self.core.certified.role_records.get(&t).is_some_and(|r| r.contains(x)) {
+                out.insert(t);
+                continue;
+            }
             let ctx = self.body_ctx(&t);
             if !(plain && ctx.holds(&self.core, x) && self.reads(&ctx, x) && self.minting_opens(x, &ctx) && self.minted_above_floor(x, &t)) {
                 out.insert(t);
@@ -291,10 +297,11 @@ impl Engine {
     #[cfg(test)]
     pub(crate) fn cert_records_whole(&mut self, t: &Tid) -> Result<BTreeSet<Tid>> {
         let records = self.certified_records(t)?;
+        let role = self.core.certified.role_records.get(t).cloned().unwrap_or_default();
         let ctx = self.body_ctx(t);
         let mut out = BTreeSet::new();
         for x in records.iter() {
-            if self.core.created(x).is_some() && !(ctx.holds(&self.core, x) && self.reads(&ctx, x) && self.minted_dependent(x) && self.minting_opens(x, &ctx) && self.minted_above_floor(x, t)) {
+            if self.core.created(x).is_some() && (role.contains(x) || !(ctx.holds(&self.core, x) && self.reads(&ctx, x) && self.minted_dependent(x) && self.minting_opens(x, &ctx) && self.minted_above_floor(x, t))) {
                 out.insert(*x);
             }
         }

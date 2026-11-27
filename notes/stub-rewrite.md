@@ -15,7 +15,7 @@ On main: spec, engine, osis-sync and the models. Tess approved the shape and too
 - **Later (Tess)**: a pass over dependent and independent things, a weak to a dependent thing its independent's unit does not hold among them.
 
 ## Owed
-- **Failing since entries landed**: issues/entries-open-failures.md. Entries do not page: issues/entry-blocks-unpaged.md.
+- Entries do not page: issues/entry-blocks-unpaged.md.
 - **Tests**: a removed stub holder served its removal by its older proof (`stubs::a_two_hop_chain_*` asserts only that nothing written since is read); a new node syncing a unit catching up from the stub it carries.
 - **Ignored, cause not sorted**: what `tools/ignores.py "stub rewrite: "` lists.
 - **Full-size differential classes**: issues/differential-full-size-classes.md.
