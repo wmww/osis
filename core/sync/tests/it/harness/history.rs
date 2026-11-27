@@ -935,7 +935,7 @@ pub struct Model {
     accounts: Vec<Tid>,
     world: hc::World,
     edges: hc::Edges,
-    /// held-model's first entry, settled (`entry::Net::settle`, `Rule::BUILT`): every account's
+    /// held-model's first entry, settled (`entry::Net::settle`, `Rule::SPEC`): every account's
     /// node, the signals held, what is logged.
     net: entry::Net,
 }
@@ -1084,7 +1084,7 @@ impl Model {
         net.signals = signals.filter(|(b, _)| *b < na).map(|(b, x)| entry::Signal { at: entry::At::Node(b), holder: b, target: x }).collect();
         let logged: Vec<(usize, usize)> = h.logged.iter().filter_map(|(u, x)| Some((net.indep(index(u)?), net.indep(index(x)?)))).collect();
         net.logged.extend(logged.into_iter().filter(|(u, x)| u != x));
-        net.settle(entry::Rule::BUILT);
+        net.settle(entry::Rule::SPEC);
         Model { accounts, world, edges, net }
     }
 
@@ -1104,13 +1104,13 @@ impl Model {
     }
 
     /// What account `a`'s node holds (spec/sync-set.md §2): held-model's first entry
-    /// (`entry::Net::held`, `Rule::BUILT`) for its node, with the content of each thing it keeps
+    /// (`entry::Net::held`, `Rule::SPEC`) for its node, with the content of each thing it keeps
     /// unread carried in that thing's unit.
     fn closure(&self, a: usize) -> View {
-        let h = self.net.held(entry::Rule::BUILT, a);
+        let h = self.net.held(entry::Rule::SPEC, a);
         let mut holds: hc::Set = h.members.iter().chain(&h.unread).copied().collect();
         for &x in &h.unread {
-            holds.extend(self.net.carry(entry::Rule::BUILT, x, &h.entries()).whole);
+            holds.extend(self.net.carry(entry::Rule::SPEC, x, &h.entries()).whole);
         }
         let by: hc::Set = h.opened.iter().copied().chain(h.fetched.iter().map(|s| s.target)).collect();
         let followed = h.stubs.intersection(&by).copied().collect();

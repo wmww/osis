@@ -9,7 +9,7 @@ On main: spec, engine, osis-sync and the models. Tess approved the shape and too
 - **A stub is a starting point**: a node holding X's stub follows X's sync ID (any stub, sync-only included); a new node syncing a unit catches up from the stub it carries. One rule, no mixed following.
 - **Holders a node reads through** (accounts, realms on a chain) are synced for their role entries: the node's permissions depend on them.
 - **Stores may learn a padded holder count**: spec/requirements.md privacy line to change (Tess: not worried); wording owed for her sign-off, with "the grant's notice" → the grant signal.
-- **Settled without her**: pairing hands over no trust records (each node sides by its own trust set); the test model's `Rule::BUILT` becomes its rule (access by the node's own grants); the public's role from one source, not grant and head listing.
+- **Settled without her**: pairing hands over no trust records (each node sides by its own trust set); the public's role from one source, not grant and head listing.
 - **Later (Tess)**: a pass over dependent and independent things, a weak to a dependent thing its independent's unit does not hold among them.
 
 ## Owed

@@ -151,9 +151,10 @@ fn entry_a_public_thing_referenced_is_read() {
     assert_eq!(holds(&net, Rule::SPEC, 1), (true, false));
 }
 
-/// Held at sync only through a holder: the reference brings the stub, never the content.
+/// Held at sync only through a holder: the strong keeps the thing unread by the node's own role,
+/// never its content.
 #[test]
-fn entry_a_reference_at_sync_brings_the_stub() {
+fn entry_a_strong_at_sync_keeps_the_thing_unread() {
     let mut net = account(1);
     net.w.grants.insert((A, X), Role::Sync);
     net.signals.insert(Signal { at: At::Node(0), holder: A, target: X });
@@ -161,7 +162,8 @@ fn entry_a_reference_at_sync_brings_the_stub() {
     net.settle(Rule::SPEC);
     net.signals.clear();
     net.settle(Rule::SPEC);
-    assert_eq!(holds(&net, Rule::SPEC, 1), (false, true));
+    let h = net.held(Rule::SPEC, 1);
+    assert!(h.unread.contains(&X) && !h.whole.contains(&X), "{h:?}");
 }
 
 const SEEDS: u64 = 120;

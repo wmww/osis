@@ -1,7 +1,7 @@
 # Closure model
 > Summary: held-model's reference-graph models: the readable closure (held_model::closure, `spec_closure`: sync units, carrying per sync ID, release, P1-P6 with each test, the P5 work counts, the Hole of carrying without stubs) and first entry by stubs and signals (`closure::entry`, `spec_entry`, the sync differential's oracle).
 
-First entry (what a node holds when a grant is its target's data: units carry by rule 2, chain-holder stubs, held signals): `closure::entry`, its properties and controls in core/test/held-model/README.md and notes/stubs.md (Models). It is the sync differential's oracle under `Rule::BUILT` (notes/test-properties.md, Reference-graph differential). `closure` below walks by the own things' roles over the world's grants: the sync-unit and release model, with no stubs.
+First entry (what a node holds when a grant is its target's data: units carry by rule 2, chain-holder stubs, held signals): `closure::entry`, its properties and controls in core/test/held-model/README.md and notes/stubs.md (Models). It is the sync differential's oracle under `Rule::SPEC` (notes/test-properties.md, Reference-graph differential). `closure` below walks by the own things' roles over the world's grants: the sync-unit and release model, with no stubs.
 
 ## The readable-closure model (held_model::closure, tests `spec_closure`)
 The model is an oracle written from the design's rules (spec/data-model.md §8, spec/sync-set.md), not from code: plain data, pure functions, 24 tests in about 0.8 s (debug, parallel). Its module doc lists what it leaves out (validity, disputes, key rotation, the wire, sealing, `@` signals, purge, storage rows).

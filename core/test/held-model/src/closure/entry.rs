@@ -108,17 +108,13 @@ pub struct Rule {
     pub by_grants: bool,
     /// Control: a stub fetched by a signal stays with the node once the signal is gone.
     pub keep_fetched: bool,
-    /// The engine's reading of a strong (`Rule::BUILT`).
-    pub by_role: bool,
 }
 
 impl Rule {
-    pub const SPEC: Rule = Rule { fix: Fix::Least, chains: Chains::Spec, reader_view: false, log_units: true, by_grants: false, keep_fetched: false, by_role: false };
-    /// As built (notes/stub-rewrite.md, Decided (Tess), to build: strongs enter by the node's role): a strong to
-    /// X that a unit carries as a stub (its owner at sync or above, its keys not opening X) brings
-    /// X by the node's own role over the role entries it holds: whole at read or above, kept
-    /// unread at sync (its store, `Held::unread`), a stub below.
-    pub const BUILT: Rule = Rule { by_role: true, ..Rule::SPEC };
+    /// The design: a strong to X that a unit carries as a stub (its owner at sync or above, its
+    /// keys not opening X) brings X by the node's own role over the role entries it holds: whole
+    /// at read or above, kept unread at sync (`Held::unread`), a stub below.
+    pub const SPEC: Rule = Rule { fix: Fix::Least, chains: Chains::Spec, reader_view: false, log_units: true, by_grants: false, keep_fetched: false };
     /// Control: what a node fetched stays with it and is logged nowhere but its local part.
     pub const PRIVATE: Rule = Rule { log_units: false, keep_fetched: true, ..Rule::SPEC };
 }
@@ -147,7 +143,7 @@ pub struct Held {
     pub members: Set,
     /// The independent things it holds as a stub alone.
     pub stubs: Set,
-    /// `Rule::by_role`: the independent things it keeps unread (a strong brings them, the node
+    /// The independent things it keeps unread (a strong brings them, the node
     /// holding sync on them and no more).
     pub unread: Set,
     /// The independent things its units' keys open (it holds their read secrets).
@@ -310,10 +306,10 @@ impl Net {
         loop {
             let before = h.clone();
             let view = h.entries();
-            let own = if rule.by_role { self.roles(n.thing, &view) } else { BTreeMap::new() };
+            let own = self.roles(n.thing, &view);
             for u in h.units.clone() {
                 let c = self.carry(rule, u, &view);
-                for &x in c.strong.iter().filter(|_| rule.by_role) {
+                for &x in &c.strong {
                     match own.get(&x) {
                         Some(&r) if r >= Role::Read => {
                             h.whole.insert(x);
