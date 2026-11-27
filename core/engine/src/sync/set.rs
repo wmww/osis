@@ -225,7 +225,7 @@ impl Engine {
             }
             holders.extend(self.core.followed_links.signal_holders(t, s));
             // a held stub's carrying unit's thing: the thing a sync-only cut naming `s` came under
-            holders.extend(self.core.ix.sync_cuts.values().filter(|c| c.cut.thing == *t && c.cut.sync_id == *s).map(|c| c.under));
+            holders.extend(self.core.ix.sync_cuts_of.get(t).into_iter().flatten().filter_map(|b| self.core.ix.sync_cuts.get(b)).filter(|c| c.cut.sync_id == *s).map(|c| c.under));
             // a holder whose entry gave this node a sync secret of it
             holders.extend(self.core.ix.entry_syncs.get(t).into_iter().flatten().filter(|(_, x)| x == s).map(|(h, _)| *h));
             match self.core.followed_links.link_of(t, s) {

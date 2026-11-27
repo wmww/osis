@@ -592,6 +592,8 @@ indexes! {
     pub sync_cuts: JMap<osis_base::BlobId, crate::sync_ids::unread::HeldCut>,
     /// `sync_cuts`' blobs per thing they came under: what a sync ID of it logs.
     pub sync_cuts_under: JSetMap<Tid, osis_base::BlobId>,
+    /// `sync_cuts`' blobs per thing they cut: the holders a cut of it came under (`cut_holders`).
+    pub sync_cuts_of: JSetMap<Tid, osis_base::BlobId>,
     /// Per thing, the sync IDs `sync_cuts` give it: sync IDs it is followed by.
     pub sync_cut_ids: JSetMap<Tid, SyncId>,
     /// `sync_cut_ids` the other way: per sync ID, the things cuts give it.

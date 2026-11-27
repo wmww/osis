@@ -100,6 +100,7 @@ pub(crate) fn note_entry(tx: &mut Tx<'_>, thing: Tid, under: Tid, s: SyncId) -> 
 fn index(tx: &mut Tx<'_>, b: BlobId, c: HeldCut) {
     tx.core.ix.sync_cuts.insert(b, c);
     tx.core.ix.sync_cuts_under.insert(c.under, b);
+    tx.core.ix.sync_cuts_of.insert(c.cut.thing, b);
     tx.core.ix.sync_cut_ids.insert(c.cut.thing, c.cut.sync_id);
     tx.core.ix.sync_cut_things.insert(c.cut.sync_id, c.cut.thing);
 }
@@ -121,7 +122,8 @@ pub(crate) fn drop_blob(tx: &mut Tx<'_>, b: &BlobId) -> Result<()> {
     tx.txn.remove_local(&[SYNC_CUTS, &b.0].concat(), Shred::No)?;
     tx.core.ix.sync_cuts.remove(b);
     tx.core.ix.sync_cuts_under.remove(&c.under, b);
-    let left = tx.core.ix.sync_cuts.values().any(|x| x.cut == c.cut) || tx.core.ix.entry_syncs.get(&c.cut.thing).is_some_and(|x| x.iter().any(|(_, s)| *s == c.cut.sync_id));
+    tx.core.ix.sync_cuts_of.remove(&c.cut.thing, b);
+    let left = tx.core.ix.sync_cuts_of.get(&c.cut.thing).into_iter().flatten().any(|x| tx.core.ix.sync_cuts.get(x).is_some_and(|x| x.cut == c.cut)) || tx.core.ix.entry_syncs.get(&c.cut.thing).is_some_and(|x| x.iter().any(|(_, s)| *s == c.cut.sync_id));
     if !left {
         tx.core.ix.sync_cut_ids.remove(&c.cut.thing, &c.cut.sync_id);
         tx.core.ix.sync_cut_things.remove(&c.cut.sync_id, &c.cut.thing);
@@ -131,11 +133,12 @@ pub(crate) fn drop_blob(tx: &mut Tx<'_>, b: &BlobId) -> Result<()> {
 
 /// The sync-only cuts of `t` go (it is forgotten whole).
 pub(crate) fn forget(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
-    let blobs: Vec<(BlobId, HeldCut)> = tx.core.ix.sync_cuts.iter().filter(|(_, c)| c.cut.thing == *t).map(|(b, c)| (*b, *c)).collect();
+    let blobs: Vec<(BlobId, HeldCut)> = tx.core.ix.sync_cuts_of.get(t).into_iter().flatten().filter_map(|b| tx.core.ix.sync_cuts.get(b).map(|c| (*b, *c))).collect();
     for (b, c) in blobs {
         tx.txn.remove_local(&[SYNC_CUTS, &b.0].concat(), Shred::No)?;
         tx.core.ix.sync_cuts.remove(&b);
         tx.core.ix.sync_cuts_under.remove(&c.under, &b);
+        tx.core.ix.sync_cuts_of.remove(t, &b);
     }
     let entries: Vec<(Tid, SyncId)> = tx.core.ix.entry_syncs.get(t).into_iter().flatten().copied().collect();
     for (u, _) in entries.iter() {
@@ -198,7 +201,13 @@ impl Core {
     /// Whether a sync-only cut of `x` was taken under `u` (spec/permissions.md §4 Stub: `u`'s unit
     /// holds only sync on `x`, as a reader of `u` holding `x`'s role entries logged it).
     pub(crate) fn cut_under(&self, u: &Tid, x: &Tid) -> bool {
-        self.ix.sync_cuts_under.get(u).into_iter().flatten().any(|b| self.ix.sync_cuts.get(b).is_some_and(|c| c.cut.thing == *x)) || self.ix.entry_syncs.get(x).is_some_and(|e| e.iter().any(|(h, _)| h == u))
+        self.cut_holders(x).any(|h| h == *u)
+    }
+
+    /// The holders a sync-only cut of `x` was taken under (`cut_under`), each once or more.
+    pub(crate) fn cut_holders(&self, x: &Tid) -> impl Iterator<Item = Tid> + '_ {
+        let cuts = self.ix.sync_cuts_of.get(x).into_iter().flatten().filter_map(|b| self.ix.sync_cuts.get(b).map(|c| c.under));
+        cuts.chain(self.ix.entry_syncs.get(x).into_iter().flatten().map(|(h, _)| *h))
     }
 
     /// The sync IDs the sync-only cuts taken here give `t` (`SYNC_CUTS`).

@@ -549,7 +549,10 @@ fn a_take_up_costs_what_the_opener_opens_spec_sync_set_2() {
         let counted = |e: &mut Engine, f: &dyn Fn(&mut Engine)| {
             osis_base::costs::take();
             f(e);
-            osis_base::costs::take().into_iter().filter(|(k, _, _)| k.starts_with("closure:") || k.starts_with("reopen:")).map(|(_, _, c)| c).sum::<u64>()
+            // the totals alone: a split by cause (` <- `) recounts a judgement per read it finds
+            // moved, a diagnostic and no count of work
+            let counted = |k: &str| (k.starts_with("closure:") || k.starts_with("reopen:")) && !k.contains(" <- ");
+            osis_base::costs::take().into_iter().filter(|(k, _, _)| counted(k)).map(|(_, _, c)| c).sum::<u64>()
         };
         let take_up = counted(e, &|e| { e.hold_link_key(osis_crypto::Secret32::from_bytes([0x5a; 32]), things[0]).unwrap(); });
         let spec = osis_engine::flows::LinkSpec { target: things[0], role: osis_base::Role::Read, until: None, peers: vec![], single_use: false };

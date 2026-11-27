@@ -761,6 +761,25 @@ impl Closure {
 }
 
 impl Core {
+    /// The own things holding something on `t` (spec/sync-set.md §2 Own things): `t` itself or
+    /// the actor its secrets derive from, a role on either (by chains of grants: `roles_now`
+    /// names every holder reaching it), or a sync-only cut of `t` taken under it. Whatever own
+    /// thing `keys_open`, `keyed_role_now` or `cut_under` find on `t` is one of them. Read per
+    /// thing, never every own thing.
+    pub(crate) fn own_on(&self, t: &Tid) -> BTreeSet<Tid> {
+        let actor = self.secret_actor(t);
+        let mut on: BTreeSet<Tid> = [*t].into_iter().chain(actor).chain(self.cut_holders(t)).collect();
+        for x in [Some(*t), actor].into_iter().flatten() {
+            let roles = self.time.at(|now| {
+                let (r, until) = self.timelines().roles_now(&x, crate::flows::ts_at(now));
+                (r, until.map(|u| u.0))
+            });
+            on.extend(roles.keys().copied());
+        }
+        on.retain(|o| self.is_own(o));
+        on
+    }
+
     /// Whether `t`'s keys open `x` (spec/sync-set.md §2): `x`'s secrets derive from `t`'s (`t` is
     /// `x`'s independent, the actor they derive from), or `t` holds read or above on that actor,
     /// by chains of grants with key access (`reads_now`), or the public does by its own grant on
@@ -863,12 +882,16 @@ fn strong_to(tx: &mut Tx<'_>, x: &Tid, y: &Tid) -> Result<bool> {
     Ok(ref_to(tx, x, y)? == Some(true))
 }
 
-/// The owners of the unit vertex `v` is in (spec/sync-set.md §2 Stubs): a read sync unit's
-/// thing; the local part's, the node's own things (its node thing, each held link key).
-fn owners(core: &Core, c: Ctx) -> Vec<Tid> {
+/// The owners of unit `c` (spec/sync-set.md §2 Stubs) that may bear on what a reference to
+/// `on` brings: a read sync unit's thing; of the local part's (the node's own things: its node
+/// thing, each held link key), the node thing and the own things holding something on one of
+/// `on` (`Core::own_on`). An own thing holding nothing there opens, carries and cuts none of
+/// them, so leaving it out changes no answer, and a link key taken up moves only the edges onto
+/// what it holds something on.
+fn owners(core: &Core, c: Ctx, on: &[Tid]) -> Vec<Tid> {
     match c {
         Ctx::Read(t) => vec![t],
-        Ctx::Local => std::iter::once(core.tid()).chain(core.link_keys.keys().copied()).collect(),
+        Ctx::Local => std::iter::once(core.tid()).chain(on.iter().flat_map(|t| core.own_on(t))).collect::<BTreeSet<_>>().into_iter().collect(),
         Ctx::Unread(_) | Ctx::Stub(_) => Vec::new(),
     }
 }
@@ -927,14 +950,14 @@ fn stubs_by(core: &Core, (c, x): Vx, y: Tid, independent: bool, strong: bool, ou
     let fired = !strong && core.followed_links.fired_on(&y, &x);
     // a sync-only cut of `y` under the unit's thing names `y` as independent (by its sync ID),
     // record or none (spec/permissions.md §4 Stub)
-    let cut = owners(core, c).iter().any(|o| core.cut_under(o, &y));
+    let cut = owners(core, c, &[y]).iter().any(|o| core.cut_under(o, &y));
     let Some(a) = (if independent || fired || cut { Some(y) } else { core.secret_actor(&y) }) else { return };
     // the unit's own thing, or the node's: no stub (read before the link keys, which the local
     // part's other owners are)
     if matches!(c, Ctx::Read(t) if t == a) || matches!(c, Ctx::Local if a == core.tid()) {
         return;
     }
-    let own = owners(core, c);
+    let own = owners(core, c, &[y, a]);
     if own.contains(&a) || own.is_empty() {
         return;
     }
@@ -983,7 +1006,7 @@ pub(crate) fn reached_carried(core: &Core, y: &Tid) -> bool {
 /// founds it: an entry by `u`'s unit goes when `u`'s does, whatever `u` reaches back.
 /// Invariant: `y`'s own unit never carries it (`u != y`).
 fn edge_carries(core: &Core, v: Vx, y: &Tid) -> bool {
-    owners(core, v.0).iter().any(|u| u != y && (core.keys_open(u, y) || core.keyed_role_now(u, y) >= Some(Role::Sync) || core.public_syncs(y) || core.cut_under(u, y)))
+    owners(core, v.0, &[*y]).iter().any(|u| u != y && (core.keys_open(u, y) || core.keyed_role_now(u, y) >= Some(Role::Sync) || core.public_syncs(y) || core.cut_under(u, y)))
 }
 
 /// Whether the node closure holds `t` within the local part or another thing's sync unit
@@ -1065,11 +1088,13 @@ fn settle_with(tx: &mut Tx<'_>, f: &mut Follow, rv: Vx) -> Result<()> {
         want_edges(tx, f, rv)?;
     }
     loop {
-        // the strongs that appeared, followed from each vertex of their source
-        let rows: Vec<(Tid, Tid)> = tx.core.ix.closure.rows.iter().flat_map(|(y, xs)| xs.iter().map(|x| (*x, *y))).collect();
-        for (x, y) in &rows {
+        // the strongs that appeared, followed from each vertex of their source held as they are
+        // taken: a vertex held since was walked whole by the growth holding it, which read them
+        let cl = &tx.core.ix.closure;
+        let rows: Vec<(Tid, Tid, _)> = cl.rows.iter().flat_map(|(y, xs)| xs.iter().map(|x| (*x, *y, cl.contexts(x)))).collect();
+        for (x, y, cs) in &rows {
             tx.core.ix.closure.rows.remove(y, x);
-            for c in tx.core.ix.closure.contexts(x) {
+            for c in cs.iter().copied() {
                 let v = (c, *x);
                 if tx.core.ix.closure.is_held(&v) {
                     let now = judge(tx, f, v, *y)?;
@@ -1392,3 +1417,4 @@ impl Engine {
         c.contains(&Ctx::Unread(*t)) && !c.contains(&Ctx::Read(*t))
     }
 }
+
