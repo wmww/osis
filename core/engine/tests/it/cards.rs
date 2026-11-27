@@ -369,3 +369,43 @@ fn an_unverified_card_commit_counts_for_nothing_spec_sync_inbox_1() {
         assert!(carried(&card).contains(&r), "node {i}: A0's card on C carries the rotation after the forged copy");
     }
 }
+
+// spec/sync-inbox.md §1 (Card: a commit not held valid counts only for the fields whose role its
+// signer ever held): node 1, a writer of A0, writes A0's card on C carrying A0's current `keys.0`
+// commits and a move of A0's inbox it signs itself, stamped far ahead (judged nowhere: it waits
+// for the clock): a stranger taking the card's commits as a report's holder keys (which keep
+// what pends) keeps nothing of it. Node 0, A0's admin, then
+// rotates A0's admin keyset: the card at both nodes carries that rotation. Fails with a commit
+// not held valid counted for every field whoever signed it (the card newer than any honest
+// commit, for good), and, at the stranger, with it taken whoever signed it (pending).
+#[test]
+fn a_writers_own_card_commit_stamped_ahead_holds_back_no_admin_field_spec_sync_inbox_1() {
+    let (mut lp, accs, c, i1, i2, _) = moved_then_rotated();
+    let mut ahead = lp.peers[1].copy().unwrap();
+    ahead.clock.advance(1 << 40);
+    let mut m = Mutation::new();
+    cards::put_inbox(&mut m, accs[0], i1).unwrap();
+    ahead.engine.core.skip_writer_rules = true;
+    let f = ahead.commit(m).unwrap().unwrap();
+    let pk = ahead.engine.package(&f).unwrap().unwrap();
+    let forged = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
+    assert_eq!(forged.header.signer, lp.peers[1].engine.tid(), "premise: signed by node 1 itself");
+    let e1 = &mut lp.peers[1].engine;
+    let mut keys = e1.holder_keys(&accs[0]).unwrap();
+    let limits = osis_base::Limits::new(osis_base::format::MAX_OBJECT_DEPTH, osis_base::format::MAX_BLOB);
+    keys.commits.push(osis_base::decode(&forged.encode(), &limits).unwrap());
+    let inbox = e1.holder_keys(&i2).unwrap();
+    let card = card_of(&[keys, inbox]);
+    let mut q = osis_engine::local_peer::Peer::new(8, lp.peers[0].engine.now()).unwrap();
+    q.engine.take_holder_keys(&accs[0], &certs_of(&card), Some(osis_engine::Carrier::Report { actor: accs[0], sync_id: osis_base::SyncId([0; 16]), holder: accs[0] })).unwrap();
+    assert!(!q.engine.core.ix.pending.contains_key(&f), "a stranger taking the card's commits keeps nothing of the writer's own");
+    put_card(&mut lp, c, accs[0], &card);
+    settle(&mut lp);
+    lp.advance(1000);
+    let r = lp.peers[0].engine.rotate_leaving_out(&accs[0], &[Role::Admin], &[]).unwrap().unwrap();
+    settle(&mut lp);
+    for i in 0..2 {
+        let card = lp.peers[i].engine.cards_of(&accs[0]).unwrap().into_iter().find(|(h, _)| *h == c).unwrap().1;
+        assert!(carried(&card).contains(&r), "node {i}: A0's card on C carries the admin's rotation after the writer's own far-ahead commit");
+    }
+}

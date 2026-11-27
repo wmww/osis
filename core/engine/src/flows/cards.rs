@@ -151,20 +151,25 @@ fn certificates(keys: &[Vec<u8>], records: &[Vec<u8>]) -> Option<osis_blob::Cert
 /// than every signature-verified card commit writing it. An unverified commit counts for nothing.
 /// A verified one this node holds valid writes no field newer than its current commit (that
 /// would be current here); one it does not (the other side of a fork, one waiting) counts as
-/// writing every field of its things, its fields unread. So a rewrite raises some field's newest,
+/// writing every field of its things whose role its signer ever held here
+/// (`validity::signer_role_ever`), its fields unread: so a current commit is stale against it
+/// where it needs more than that role (`rotation_role`). So a rewrite raises some field's newest,
 /// and no side's own verdict on the other's commits enters: the sides of a fork leave a card the
 /// other wrote newer, never rewriting each other's.
 ///
 /// Invariant: who writes each input. The card, any writer of `a` (a writer's card may omit or
 /// add commits); its commits, their signers (verified here, `apply::signed_by_author`); the
-/// current commits, this node's own judged state. A writer omitting an admin's later commit
-/// leaves that field's current commit newer than the card's (stale); one adding a commit it did
-/// not sign moves nothing.
+/// current commits and every signer's roles, this node's own judged state. A writer omitting an
+/// admin's later commit leaves that field's current commit newer than the card's (stale); one
+/// adding a commit it did not sign moves nothing; one adding its own, stamped however far
+/// ahead, counts only for the fields a writer may write (what it could write validly anyway), so
+/// holds back none only an admin may.
 fn stale(tx: &mut Tx<'_>, a: &Tid, inbox: Option<Tid>, keys: &[Vec<u8>], records: &[Vec<u8>]) -> Result<bool> {
     let k = certificates(keys, records).unwrap_or_default();
     let recs: BTreeMap<Tid, &osis_base::CreationRecord> = k.records.iter().map(|r| (r.tid(), r)).collect();
     let mut carried: BTreeSet<osis_base::CommitId> = BTreeSet::new();
-    let mut unknown: BTreeMap<Tid, osis_base::Ts> = BTreeMap::new();
+    // per thing, the newest `ts` of a commit not held valid here, by its signer's role
+    let mut unknown: BTreeMap<Tid, Vec<(Role, osis_base::Ts)>> = BTreeMap::new();
     for v in &k.commits {
         let Ok(b) = osis_commit::CommitBlob::decode(&osis_base::encode(v)) else { continue };
         let id = b.id();
@@ -175,16 +180,25 @@ fn stale(tx: &mut Tx<'_>, a: &Tid, inbox: Option<Tid>, keys: &[Vec<u8>], records
         carried.insert(id);
         for t in [Some(*a), inbox].into_iter().flatten() {
             let parts: Vec<usize> = b.header.aspect_parts(&t, "keys.0").collect();
-            if b.parts.iter().any(|p| parts.contains(&p.ai)) && !crate::sync_ids::judged_valid(tx.core, &id, &parts) {
-                let e = unknown.entry(t).or_insert(b.header.ts);
-                *e = (*e).max(b.header.ts);
+            if b.parts.iter().any(|p| parts.contains(&p.ai))
+                && !crate::sync_ids::judged_valid(tx.core, &id, &parts)
+                && let Some(r) = crate::apply::validity::signer_role_ever(tx.core, &b.header, &t)
+            {
+                unknown.entry(t).or_default().push((r, b.header.ts));
             }
         }
     }
     for t in [Some(*a), inbox].into_iter().flatten() {
         for c in crate::sync_ids::current_keys_in(tx, &t)? {
-            let Some(ts) = tx.core.ix.commits.get(&c).map(|m| m.header.ts) else { continue };
-            if !carried.contains(&c) && unknown.get(&t).is_none_or(|u| ts > *u) {
+            let Some(m) = tx.core.ix.commits.get(&c) else { continue };
+            let ts = m.header.ts;
+            let need = if m.header.kind.is_compaction() {
+                Role::Admin
+            } else {
+                m.header.aspect_parts(&t, "keys.0").filter_map(|ai| tx.core.ix.rotation_role.get(&(c, ai)).copied()).max().unwrap_or(Role::Write)
+            };
+            let newer = unknown.get(&t).into_iter().flatten().filter(|(r, _)| *r >= need).all(|(_, u)| ts > *u);
+            if !carried.contains(&c) && newer {
                 return Ok(true);
             }
         }

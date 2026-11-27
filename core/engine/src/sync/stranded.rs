@@ -259,8 +259,10 @@ impl Engine {
     /// extends it): records of chain things, `keys.0` deltas on the holder and on the authors of
     /// the holder's `keys.0` commits carried (their cards), `sync.0` deltas on chain things (the
     /// steps placing the keys those commits list), `roles.0` deltas on chain things; each
-    /// commit, projected to those deltas, kept only if judged valid with every edge write it makes
-    /// applied (`ingest_valid`), carried by `from` while it pends. Everything else is ignored.
+    /// commit, projected to those deltas, taken only where its signer ever held here the role
+    /// each `keys.0` delta needs (`validity::signer_role_ever`, retried as what is taken extends
+    /// the roles) and kept only if judged valid with every edge write it makes applied
+    /// (`ingest_valid`), carried by `from` while it pends. Everything else is ignored.
     /// Returns the commits taken.
     pub fn take_holder_keys(&mut self, holder: &Tid, keys: &Certificates, from: Option<Carrier>) -> Result<usize> {
         let blobs: Vec<CommitBlob> = keys.commits.iter().filter_map(|v| CommitBlob::decode(&osis_base::encode(v)).ok()).collect();
@@ -301,6 +303,16 @@ impl Engine {
                 }
                 let mut p = b.clone();
                 p.parts.retain(|x| on(x.ai));
+                // a `keys.0` delta counts only where its signer ever held here the role it needs
+                // (spec/sync-inbox.md §1 Card): one it never did waits for what is taken next
+                let id = b.id();
+                let counts = |x: &osis_commit::Part| {
+                    let Some(a) = b.header.aspects.get(x.ai).filter(|a| a.ak.as_str() == "keys.0") else { return true };
+                    crate::apply::validity::signer_role_ever(&self.core, &b.header, &a.tid).is_some_and(|r| r >= crate::apply::validity::keys_part_role(&self.core, &b.header, &id, x))
+                };
+                if !p.parts.iter().all(counts) {
+                    continue;
+                }
                 done.insert(i);
                 osis_base::costs::count("stranded: holder keys judged", 1);
                 // a commit that is bad input (a bad signature, a malformed part) counts for

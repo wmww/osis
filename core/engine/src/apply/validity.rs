@@ -709,6 +709,36 @@ fn rotation_required(ak: &str, f: &Fragment) -> Option<Role> {
     Some(top)
 }
 
+/// The role `keys.0` part `p` of commit `h` (`id`) needs (`rotation_required`; a compaction's,
+/// admin), judged from its bytes alone: admin where it does not decode here.
+pub(crate) fn keys_part_role(core: &Core, h: &Header, id: &CommitId, p: &osis_commit::Part) -> Role {
+    if h.kind.is_compaction() {
+        return crate::engine::write::snapshot_role("keys.0");
+    }
+    let Some(a) = h.aspects.get(p.ai).filter(|a| a.ak.as_str() == "keys.0") else { return Role::Admin };
+    let Some(dedup) = core.dedup(&a.tid) else { return Role::Admin };
+    let mut interner = osis_crdt::Interner::new();
+    osis_commit::verify_part(h, id, p, &dedup, &mut interner, None).ok().and_then(|d| rotation_required("keys.0", d.fragment())).unwrap_or(Role::Admin)
+}
+
+/// The best role commit header `h`'s signing key ever held on `t` here (spec/sync-inbox.md §1
+/// Card): the least of its key's on its signer (a first form's, the signer's record key: admin)
+/// and the signer's on `t`, each over every edge write applied here, ended ones included
+/// (`Timeline::roles_ever`). `None`: no role.
+///
+/// Invariant: who writes each input. The header, the commit's signer (its signature verified by
+/// the caller); the roles, this node's own judged state, so a signer gains here no role it never
+/// held by what it signs.
+pub(crate) fn signer_role_ever(core: &Core, h: &Header, t: &Tid) -> Option<Role> {
+    let tl = core.timelines().get(&h.signer)?;
+    let key = match h.key {
+        None => Role::Admin,
+        Some(k) => tl.key_role_ever(&k, &h.signer)?,
+    };
+    let on = if h.signer == *t { Some(Role::Admin) } else { tl.roles_ever(&h.signer).get(t).copied() };
+    on.map(|r| r.min(key))
+}
+
 /// The role a `secrets.0` delta needs (spec/permissions.md §3, spec/crypto.md §4): at least
 /// write, and for each entry record (a put, a write into an entry, a removal) the role its key
 /// names; a record acts only on the entry of its key (spec/crdt.md §5.6), so this is judged
