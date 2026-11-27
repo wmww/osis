@@ -198,3 +198,52 @@ fn a_may_grant_holder_makes_a_thing_public_spec_permissions_2() {
     lp.sync_all().unwrap();
     assert_eq!(public(&lp, 1), None, "the admin removes it");
 }
+
+// spec/crypto.md §4 (Epochs; Reading-only secrets: a box while the node's roles do not give its
+// role gives nothing): what an epoch's history says is what its history box says now, whatever
+// the node's roles. G, minted in P after P rotated twice, is dependent, its derived epochs
+// superseding one another. P's admin, its clock ahead, makes G independent, then gives the
+// public sync on P and on G. Stranger S (1) holds both and gets all three ahead of its clock: it
+// reads their boxes for reading only (P's secrets, so G's derived epochs), and the grant on G
+// waits for G's keys too. S's clock reaches G's independence alone: G's epochs start again from
+// the derived ones (`refresh_independent`), whose history is P's, and S reads G's state with no
+// role giving it G's secrets. Its store loaded afresh says the same, rebuilt from the commit
+// records too (`check_index`). Fails when the role kept skips the read's clearing: the live
+// index keeps the derived history, which a rebuild never records.
+#[test]
+fn an_epochs_history_is_its_states_whatever_the_roles_spec_crypto_4() {
+    let mut lp = super::tests::synced(2);
+    let p = super::tests::target_thing(&mut lp, 0);
+    let all = [Role::Sync, Role::Read, Role::Write, Role::Admin];
+    for _ in 0..2 {
+        lp.peers[0].engine.rotate_leaving_out(&p, &all, &[]).unwrap();
+    }
+    let me = lp.peers[0].engine.tid();
+    let mut m = crate::Mutation::new();
+    let g = lp.peers[0].engine.new_thing(&mut m, p);
+    m.op(me, &ct::HOLDS, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Add(osis_base::Value::Strong(g)) }).unwrap();
+    lp.peers[0].commit(m).unwrap();
+    lp.hold_at(1, g);
+    lp.sync_all().unwrap();
+    let drift = osis_base::format::MAX_DRIFT_MS;
+    lp.peers[0].clock.advance(3 * drift);
+    let mut late = lp.peers[0].engine.make_independent(&g).unwrap().commits;
+    lp.peers[0].clock.advance(2 * drift);
+    late.extend(lp.peers[0].engine.grant(&p, &Tid::PUBLIC, &edge(Role::Sync)).unwrap().commits);
+    late.extend(lp.peers[0].engine.grant(&g, &Tid::PUBLIC, &edge(Role::Sync)).unwrap().commits);
+    for c in &late {
+        let pk = lp.peers[0].engine.package(c).unwrap().unwrap();
+        assert!(matches!(lp.deliver(1, &pk).unwrap(), crate::Ingested::Pending(..)), "each waits");
+    }
+    // G's independence applies, P's grant still ahead of S's clock: S holds P's secrets for
+    // reading only and no role on G
+    lp.peers[1].clock.advance(5 * drift / 2);
+    lp.peers[1].reexamine().unwrap();
+    assert!(lp.peers[1].engine.commit_ids().contains(&late[0]), "G made independent here");
+    assert!(!late[1..].iter().any(|c| lp.peers[1].engine.commit_ids().contains(c)), "the grants wait");
+    lp.peers[1].engine.check_index();
+    lp.peers[1].clock.advance(3 * drift);
+    lp.peers[1].reexamine().unwrap();
+    assert!(late.iter().all(|c| lp.peers[1].engine.commit_ids().contains(c)), "all applied");
+    lp.peers[1].engine.check_index();
+}

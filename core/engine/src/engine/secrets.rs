@@ -257,11 +257,10 @@ impl Core {
         if unchecked.is_some() && self.reading_full(actor) {
             return (None, Default::default());
         }
-        let mut epochs = before.clone().unwrap_or_default();
         // an epoch whose history key the read stands for names and lists only what its live
-        // entries there say once opened under its held secret (`open_histories` sets that below)
-        for r in ROLES {
-            let re = epochs.role_mut(r);
+        // entries there say once opened under its held secret (`open_histories` sets that below),
+        // whether or not the node's roles give the role now
+        let clear_covered = |re: &mut osis_keys::RoleEpochs, r: Role| {
             let covered: Vec<Epoch> = re
                 .epochs()
                 .map(|(e, _)| *e)
@@ -274,6 +273,10 @@ impl Core {
             for e in &covered {
                 re.clear_history(e);
             }
+        };
+        let mut epochs = before.clone().unwrap_or_default();
+        for r in ROLES {
+            clear_covered(epochs.role_mut(r), r);
         }
         // only a holder with a box here opens anything: not O(actors known) per ingest
         let holders: std::collections::BTreeSet<Tid> = secrets.boxes.keys().map(|k| k.holder.0).filter(|t| t != actor).collect();
@@ -296,10 +299,12 @@ impl Core {
         // (`may_take_role`: reading, every role's; only sync, the sync secret), whatever the box
         // (a forgotten part rejoining, a late rotation, a holder actor's chain); a pending one's
         // are a grant's still to be judged, read until it is (`keys::forget_unchecked`). The role
-        // is kept as it was, and read again once the node's roles give it (`flows::retake`)
-        // wherever the state says otherwise: a box may apply before the grant that makes it ours,
-        // or after the lowering to sync it survives, and a held epoch's history may change
-        // meanwhile (an entry stripped, another opened).
+        // keeps the secrets it held, and is read again once the node's roles give it
+        // (`flows::retake`) wherever the state says otherwise: a box may apply before the grant
+        // that makes it ours, or after the lowering to sync it survives. What its epochs' history
+        // says is still the state's (cleared as above, opened from the secrets kept), as a
+        // rebuild reads it: a held epoch's history may change meanwhile (an entry stripped,
+        // another opened), and a record started again from derived epochs carries their base's.
         // Invariant: a history entry gives only earlier epochs of its own role, each naming its
         // epoch (osis-crypto refuses a later one), so what the history of a secret held before
         // this ingest gives is taken whatever the node's roles: a holder of that secret was given
@@ -312,6 +317,7 @@ impl Core {
             for r in ROLES.into_iter().filter(|r| !crate::rotation::may_take_role(self, actor, *r)) {
                 let mut held = ActorEpochs::default();
                 *held.role_mut(r) = before.as_ref().map(|b| b.role(r).clone()).unwrap_or_default();
+                clear_covered(held.role_mut(r), r);
                 let _ = osis_keys::open_histories(actor, secrets, alts, &mut held, None);
                 let kept = std::mem::take(held.role_mut(r));
                 // listed only where an epoch whose secret either holds differs (epochs observed
