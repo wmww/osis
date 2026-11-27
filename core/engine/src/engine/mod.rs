@@ -3523,8 +3523,11 @@ impl Engine {
         assert!(r.is_ok(), "check_index: {:?}", r.err());
     }
 
-    /// `check_index`, a store failure returned (every other failure panics).
+    /// `check_index`, a store failure returned (every other failure panics, naming the engine
+    /// copy: `NamesCopy`).
     fn checked_index(&mut self) -> Result<()> {
+        #[cfg(debug_assertions)]
+        let _named = NamesCopy("index check");
         #[cfg(debug_assertions)]
         {
             self.checked_verdicts();
@@ -3715,6 +3718,21 @@ impl Drop for Engine {
             // every strip due is written, but on an aspect whose re-judge waits (`Core::none_due`)
             let unwritten = self.unwritten_strips();
             assert!(unwritten.is_empty(), "strips due and not written at the end of history: {unwritten:?}");
+        }
+    }
+}
+
+/// Debug builds: a check failing past it prints which engine copy it failed in
+/// (`osis_base::trace::copy()`), as the panic unwinds: copies of one node (a world played twice, a
+/// shrink's candidates, the reference twins) share its tid and session.
+#[cfg(debug_assertions)]
+struct NamesCopy(&'static str);
+
+#[cfg(debug_assertions)]
+impl Drop for NamesCopy {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            eprintln!("{} failed in engine copy {}", self.0, osis_base::trace::copy());
         }
     }
 }

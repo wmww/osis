@@ -38,7 +38,6 @@ osis-sync's module reviews (about 50 product bugs) split the same way. Reading a
 
 **Small items**:
 - A by-hand probe printing a short caller line (osis frames, generics stripped) for each store transaction begun and each counted stamp write: backtraces of generic closures print kilobytes of type names.
-- The engine index-check panic names the engine copy that failed (`osis_base::trace::copy()`), as differential probes do.
 - A memo probe showing, per followed key, which containers its held reads come from (finding what a commit keeps in memory took a hand-written dump).
 - A note on `growth::one_and_ten`/`round_work`: its counters reset per round (`costs::take`), so a `take` around `grant_rounds` reads only the last round and the settle tail.
 - A `LocalPeer` helper that follows held grant signals as the sync layer does, so a cli or sync failure that needs a followed signal moves to an engine test cheaply. Built on the entries design (spec/sync-ids.md §3): a followed signal's holder gets into S by its entry, so a helper on notices would follow what that design deletes.
