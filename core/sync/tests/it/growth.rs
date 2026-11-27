@@ -1192,6 +1192,28 @@ fn a_node_restored_from_a_backup_is_counted_holding_nothing_it_lacks_spec_sync_s
     assert!(lacked(&w, false).is_empty(), "at quiet");
 }
 
+// spec/sync-ids.md §5 (Across sync IDs: a commit blob held as what makes it again), notes/slim-design.md B
+// (a part leaving the record keeps its section in the seal), spec/requirements.md Scale: a dependent make's commit writes the thing's value and A's `holds.0` part; a compaction
+// snapshot of A's `holds.0` covers that part, which leaves the record, while the value stays live.
+// Over 10 makes after 3, A's compactions among them, neither node keeps any blob's bytes: each
+// blob is made again from its record and seal.
+#[test]
+fn a_dependent_make_keeps_no_blob_bytes_once_its_holds_part_is_covered_spec_sync_ids_5() {
+    let mut w = World::new(0);
+    w.add_node();
+    w.pair(0);
+    w.run();
+    makes(&mut w, 3, a_dependent);
+    let before = [w.disk_use(0), w.disk_use(1)];
+    makes(&mut w, 10, a_dependent);
+    for (i, b) in before.iter().enumerate() {
+        let a = w.disk_use(i);
+        for d in [0, 1] {
+            assert_eq!((a[d].2, a[d].3), (b[d].2, b[d].3), "node {i} disk {d}: blobs (count, bytes) after 10 makes, before");
+        }
+    }
+}
+
 /// A dependent of `a` held by `a`'s `holds.0` (`Engine::new_thing`), with a small value.
 fn a_dependent(e: &mut osis_engine::Engine, a: Tid) {
     let mut m = Mutation::new();

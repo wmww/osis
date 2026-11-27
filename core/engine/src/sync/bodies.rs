@@ -232,32 +232,44 @@ fn sealed_any(tx: &Tx<'_>, c: &CommitId) -> bool {
 }
 
 /// Commit `c` is about to be held as `future` (`None`: neither its record nor a pending copy
-/// stays): a blob of `c` whose seal reads of it anything that changes (`reads_same`), or any blob
-/// of a commit no longer held, is made again here no more, so its seal goes (`note_blob`: made a
-/// last time first), shredded: its keys would open the blob's bytes wherever they still are, so a
-/// purged part, or a commit no longer held, stays unrecoverable. Called before the record or
-/// pending copy is written.
+/// stays): each seal of `c`'s blobs keeps keyed only the sections whose parts stay as held, each
+/// other one verbatim as it is made now (`kept_seal`), so a part leaving the record (dropped as
+/// covered or invalid, stripped) leaves its blob made again from the record and its section's
+/// ciphertext; where the header, signatures or path keys change, or `c` is no longer held, the
+/// seal goes (`note_blob`: made a last time first), shredded: its keys would open the blob's
+/// bytes wherever they still are, so a commit no longer held stays unrecoverable. Called before
+/// the record or pending copy is written.
 fn unseal(tx: &mut Tx<'_>, c: &CommitId, future: Option<&osis_commit::CommitBlob>) -> Result<()> {
     let now = held_commit_whole(tx, c)?;
     let blobs: Vec<BlobId> = tx.core.ix.commit_blobs.get(c).into_iter().flatten().copied().collect();
     for b in blobs {
         let Some(row) = tx.core.ix.blob_parts.get(&b).cloned() else { continue };
         let Some(s) = &row.seal else { continue };
-        if let (Some(n), Some(f)) = (&now, future)
-            && reads_same(n, f, s)
-        {
+        let seal = match (&now, future) {
+            (Some(n), Some(f)) if n.header == f.header && n.sigs == f.sigs && n.keys == f.keys => kept_seal(tx, c, s, n, f),
+            _ => None,
+        };
+        if seal.as_ref() == Some(s) {
             continue;
         }
-        note_blob(tx, &b, BlobOf { seal: None, ..(*row).clone() })?;
+        note_blob(tx, &b, BlobOf { seal, ..(*row).clone() })?;
     }
     Ok(())
 }
 
-/// Whether making a blob again under seal `s` reads the same of commit forms `a` and `b`: their
-/// header, signatures and path keys, and each part a section it keyed lists.
-fn reads_same(a: &osis_commit::CommitBlob, b: &osis_commit::CommitBlob, s: &super::BlobSeal) -> bool {
-    let keyed = s.sections.iter().filter(|x| matches!(x, osis_commit::SectionSeal::Keyed { .. })).flat_map(|x| x.ais().iter().copied());
-    a.header == b.header && a.sigs == b.sigs && a.keys == b.keys && { keyed.collect::<Vec<_>>() }.into_iter().all(|ai| a.part(ai).is_some() && a.part(ai) == b.part(ai))
+/// Seal `s` of a blob of commit `c`, held as `now`, for `c` about to be held as `future` with the
+/// same header, signatures and path keys: each keyed section listing a part `future` lacks or
+/// holds otherwise is kept verbatim, its ciphertext as made from `now`. `None` where `now` does
+/// not make the blob's sections.
+fn kept_seal(tx: &mut Tx<'_>, c: &CommitId, s: &Arc<super::BlobSeal>, now: &osis_commit::CommitBlob, future: &osis_commit::CommitBlob) -> Option<Arc<super::BlobSeal>> {
+    let moves = |x: &osis_commit::SectionSeal| matches!(x, osis_commit::SectionSeal::Keyed { .. }) && x.ais().iter().any(|ai| now.part(*ai).is_none() || now.part(*ai) != future.part(*ai));
+    if !s.sections.iter().any(moves) {
+        return Some(s.clone());
+    }
+    let resolved = resolved_header(tx, c, now)?;
+    let env = osis_commit::regenerate(now, &resolved, &s.sections).ok()?;
+    let sections = s.sections.iter().zip(env.sections).map(|(x, made)| if moves(x) { osis_commit::SectionSeal::Verbatim(made) } else { x.clone() }).collect();
+    Some(Arc::new(super::BlobSeal { sections, ..(**s).clone() }))
 }
 
 /// Commit `c`'s pending copy, decoded (a parked one as received).
@@ -294,28 +306,28 @@ fn remove_row(tx: &mut Tx<'_>, b: &BlobId, row: &BlobOf) -> Result<()> {
 /// commit blob, or none kept), or the commit as held does not give `b`.
 pub(crate) fn regenerate_in(tx: &mut Tx<'_>, b: &BlobId, row: &BlobOf) -> Result<Option<Vec<u8>>> {
     let Some(seal) = row.seal.clone() else { return Ok(None) };
-    let c = row.commit;
-    let Some(cb) = held_commit_whole(tx, &c)? else { return Ok(None) };
-    let resolved = match tx.core.ix.commits.get(&c) {
-        Some(m) if !cb.header.is_resolved() => m.header.clone(),
-        _ => Arc::new(cb.header.clone()),
-    };
-    let resolved = match resolved.is_resolved() {
-        true => resolved,
-        false => {
-            let mut h = (*resolved).clone();
-            if !crate::apply::resolve_held(tx, &mut h) {
-                return Ok(None);
-            }
-            Arc::new(h)
-        }
-    };
+    let Some(cb) = held_commit_whole(tx, &row.commit)? else { return Ok(None) };
+    let Some(resolved) = resolved_header(tx, &row.commit, &cb) else { return Ok(None) };
     let Ok(env) = osis_commit::regenerate(&cb, &resolved, &seal.sections) else { return Ok(None) };
     let ais = env.ais();
     let groups = osis_commit::prefix_groups(&resolved, ais.iter().copied())?;
     let prefix = osis_blob::Prefix::for_delete_keys(row.salt, &cb.header.blind, osis_commit::prefix_expiry(&resolved, &ais).map(WallMs), &groups)?.with_class(osis_blob::Class::of_marker(resolved.ephemeral)).with_blocks(seal.blocks.clone())?;
     let (_, blob) = osis_blob::frame_under(osis_crypto::BlobKey::of_blob(seal.key.clone()), &prefix, &env.encode())?;
     Ok((osis_blob::blob_id(&blob) == *b).then_some(blob))
+}
+
+/// Commit `c`'s header, held as `cb`, with its lists resolved: the held meta's, else resolved
+/// here (`None`: not resolvable).
+fn resolved_header(tx: &mut Tx<'_>, c: &CommitId, cb: &osis_commit::CommitBlob) -> Option<Arc<osis_commit::Header>> {
+    let resolved = match tx.core.ix.commits.get(c) {
+        Some(m) if !cb.header.is_resolved() => m.header.clone(),
+        _ => Arc::new(cb.header.clone()),
+    };
+    if resolved.is_resolved() {
+        return Some(resolved);
+    }
+    let mut h = (*resolved).clone();
+    crate::apply::resolve_held(tx, &mut h).then(|| Arc::new(h))
 }
 
 /// Commit `c` as held here (`whole`).

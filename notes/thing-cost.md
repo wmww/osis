@@ -67,7 +67,7 @@ Every figure is marked: **[M]** measured, **[C]** computed from spec/wire.md, **
 
 | row | maker | second | what | per |
 |---|---|---|---|---|
-| sync store blob | 0 | 0 | none while the record holds its parts: made again from its seal in `bp/` (`M/` 42 B marks it, notes/slim-design.md B); handed back as bytes once a compaction covers its `holds.0` part (notes/slim-design.md, Today) | blob |
+| sync store blob | 0 | 0 | none: made again from its seal in `bp/` (`M/` 42 B marks it, notes/slim-design.md B), for good: once a compaction covers its `holds.0` part, that part's section stays in the seal as ciphertext | blob |
 | `c/` | 637 | 637 | key 34, record head, the opened commit | commit |
 | `node/metas` | 39 | 39 | key 32, part count 4, a judgment byte per part (the view is the header's, decoded at open) | commit, part |
 | `bp/` | 117 | 117 | key commit ID and blob ID; the prefix salt again, the aspects its sections list, the parts held | commit |
@@ -81,7 +81,7 @@ Every figure is marked: **[M]** measured, **[C]** computed from spec/wire.md, **
 | `dw/` | 59 | – | the derived epoch t was sealed under while dependent | dependent thing |
 | counters | 102 | – | 51 per (aspect, session); memory rows, the census counts them | aspect per session |
 
-Totals as surveyed, with the blob stored: maker 1557 engine + 324 sync store + 846 blob = 2727 B logical; second node 1876 + 274 + 846 = 2996 logical. The blob is now its seal in `bp/` (about 170 B more there) and `M/` 42 B: about 2090 and 2360 [E] (notes/slim-design.md, Today).
+Totals as surveyed, with the blob stored: maker 1557 engine + 324 sync store + 846 blob = 2727 B logical; second node 1876 + 274 + 846 = 2996 logical. The blob is its seal in `bp/` (about 370 B there once A's `holds.0` section is verbatim) and `M/` 42 B: 1775 and 2057 measured (notes/slim-design.md, Today).
 
 ### Marginal units [M]
 Wire is maker to second node (back in brackets); stored is logical, engine rows + sync store rows + sealed blob. The engine rows are the sync-world measurement less what slim design D deleted (notes/slim-design.md; `a/`, `node/metas` down to its part bytes), each measured in the engine census (`thing_cost::`); the 100-commit row's estimate is marked.
