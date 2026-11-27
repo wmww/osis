@@ -22,7 +22,7 @@ pub(crate) fn synced(n: usize) -> LocalPeer {
     .0
 }
 
-/// `synced(n)` and `g`, an independent thing of peer 0's its inbox signals enabled (`target_thing`), granting each of `grants` (peer, role), synced: built
+/// `synced(n)` and `g`, an independent thing of peer 0's taking stranded notices (`target_thing`), granting each of `grants` (peer, role), synced: built
 /// once per shape, a copy each call. Returns the peers, `g` and every peer's tid.
 pub(super) fn granted(n: usize, grants: &[(usize, Role)]) -> (LocalPeer, Tid, Vec<Tid>) {
     let (lp, (g, tids)) = LocalPeer::cached(&format!("rotation::granted/{n}/{grants:?}"), || {
@@ -167,14 +167,13 @@ pub(crate) fn independent_thing(lp: &mut LocalPeer, i: usize) -> Tid {
     g
 }
 
-/// `independent_thing` with its signals enabled (fires reach it),
-/// no card of it.
+/// `independent_thing` taking stranded notices, no card of it.
 pub(crate) fn target_thing(lp: &mut LocalPeer, i: usize) -> Tid {
     let me = lp.peers[i].engine.tid();
     let mut m = Mutation::new();
     let g = lp.peers[i].engine.new_thing(&mut m, me);
     let mut setting = ct::RetentionSetting::default();
-    setting.take_inbox_signals();
+    setting.take_signal(crate::flows::inbox::STRANDED_FIRE);
     m.set(g, &ct::RETENTION, &setting).unwrap();
     lp.peers[i].commit(m).unwrap();
     lp.peers[i].engine.make_independent(&g).unwrap();

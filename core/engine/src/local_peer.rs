@@ -1123,13 +1123,13 @@ impl LocalPeer {
         }
     }
 
-    /// Peer `i`, an admin of thing `t`, writes `t`'s setting enabling the external signals as an
-    /// account's inbox has them (stranded notices on `t` reach its writers) and `t`'s card on `t`
-    /// itself (spec/sync-inbox.md §1), its keysets carrying KEM keys. `t` names no inbox.
+    /// Peer `i`, an admin of thing `t`, writes `t`'s setting enabling stranded notices (its
+    /// non-writers' reach its writers) and `t`'s card on `t` itself (spec/sync-inbox.md §1), its
+    /// keysets carrying KEM keys. `t` names no inbox, so takes no grant signal.
     #[allow(clippy::panic, clippy::indexing_slicing)] // test harness: a setup that fails fails the test
     pub fn takes_signals(&mut self, i: usize, t: Tid) {
         let mut setting = osis_schema::core_types::RetentionSetting::default();
-        setting.take_inbox_signals();
+        setting.take_signal(crate::flows::inbox::STRANDED_FIRE);
         let mut m = Mutation::new();
         m.set(t, &osis_schema::core_types::RETENTION, &setting).unwrap_or_else(|e| panic!("setting of {t:?}: {e}"));
         self.peers[i].commit(m).unwrap_or_else(|e| panic!("setting of {t:?}: {e}"));

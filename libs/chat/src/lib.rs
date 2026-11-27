@@ -53,9 +53,8 @@ impl Default for Options {
 
 /// A new chat, minted with admin `holder` (its mint admin: the app's home, such as the account) and held by
 /// it, its settings written before anyone is granted: every message kept for good (expiry ends a
-/// disappearing one), replacements refused when editing is off, who may delete a message, and its
-/// inbox signals enabled (a shared thing's readers reach it by them). One
-/// commit makes it whole (record, `retention^.0`, settings, the strong in `holder`'s `holds.0`).
+/// disappearing one), replacements refused when editing is off, and who may delete a message;
+/// no external signal enabled. One commit makes it whole (record, `retention^.0`, settings, the strong in `holder`'s `holds.0`).
 /// Until its first grant or link it is dependent, read by whoever reads `holder`; that first share
 /// makes it independent. Changing a setting later writes `retention^.0` whole; a participant
 /// who has not seen it writes as before (its messages keep the expiry they were written with).

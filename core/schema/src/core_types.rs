@@ -342,12 +342,18 @@ impl RetentionSetting {
     /// is.
     pub fn take_inbox_signals(&mut self) {
         self.history_holds_targets = true;
-        let lifetime = crate::History::Keep { until: None, after: Some(osis_base::format::INBOX_LIFETIME_MS) };
-        // each a valid AK, checked at build time
-        for (k, history) in INBOX_SIGNALS.map(|k| (k, lifetime)) {
-            if let Ok(k) = Ak::new(k) {
-                self.rules.entry(k).or_insert(RetentionEntry { history: Some(history), ..RetentionEntry::default() });
-            }
+        for k in INBOX_SIGNALS {
+            self.take_signal(k);
+        }
+    }
+
+    /// Enables external signal `ak` (one of `INBOX_SIGNALS`) as an inbox has it, kept
+    /// `INBOX_LIFETIME` after it is fired; an entry this setting has already stays as it is.
+    pub fn take_signal(&mut self, ak: &str) {
+        let history = crate::History::Keep { until: None, after: Some(osis_base::format::INBOX_LIFETIME_MS) };
+        // a valid AK, checked at build time
+        if let Ok(k) = Ak::new(ak) {
+            self.rules.entry(k).or_insert(RetentionEntry { history: Some(history), ..RetentionEntry::default() });
         }
     }
 }

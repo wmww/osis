@@ -104,12 +104,11 @@ pub struct RetentionSetting {
 }
 
 impl RetentionSetting {
-    /// Enables the external signals as an account's inbox has them:
-    /// word of a grant to it from outside and a reader's call for the keys it cannot read, each
-    /// from parties that cannot write it, kept as long as an account's inbox keeps them. A grant
-    /// stands on the thing granted whatever becomes of its signal. An entry already here stays as
-    /// it is. A thing others will read, or that will be granted roles on other things, needs them
-    /// to learn of these without one of its writers connected.
+    /// Enables the external signals an inbox (`Write::set_inbox`) takes, as an account's inbox has
+    /// them: word of a grant from outside to the thing naming it, and its own reader's call for
+    /// the keys it cannot read, each from parties that cannot write it, kept as long as an
+    /// account's inbox keeps them. A grant stands on the thing granted whatever becomes of its
+    /// signal. An entry already here stays as it is.
     pub fn enable_inbox_signals(&mut self) {
         let mut x = osis_schema::core_types::RetentionSetting::default();
         x.take_inbox_signals();
