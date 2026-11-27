@@ -250,3 +250,122 @@ fn holder_keys_rebuild_the_whole_keys_state_after_a_rotation_spec_permissions_4(
     q.engine.take_holder_keys(&acc.inbox, &keys, None).unwrap();
     assert_eq!(q.engine.get_typed(&acc.inbox, &ct::KEYS).unwrap(), Some(want), "the inbox's keys.0 rebuilt whole from its holder keys");
 }
+
+/// A card carrying `certs` (spec/wire.md §9 Holder keys), as `card_keys` writes one.
+fn card_of(certs: &[osis_blob::Certificates]) -> ct::Card {
+    let mut card = ct::Card::default();
+    let mut recs = std::collections::BTreeMap::new();
+    for c in certs {
+        card.keys.extend(c.commits.iter().map(osis_base::encode));
+        recs.extend(c.records.iter().map(|r| (r.tid(), osis_base::encode(&r.to_value()))));
+    }
+    card.records = recs.into_values().collect();
+    card
+}
+
+/// What a party holding `card` takes as `a`'s holder keys (`take_cards`).
+fn certs_of(card: &ct::Card) -> osis_blob::Certificates {
+    let limits = osis_base::Limits::new(osis_base::format::MAX_OBJECT_DEPTH, osis_base::format::MAX_BLOB);
+    let values = |l: &[Vec<u8>]| Value::List(l.iter().map(|b| osis_base::decode(b, &limits).unwrap()).collect());
+    osis_blob::Certificates::from_values(&values(&card.keys), &values(&card.records), usize::MAX).unwrap()
+}
+
+/// The commit ID of each commit a card carries.
+fn carried(card: &ct::Card) -> std::collections::BTreeSet<osis_base::CommitId> {
+    card.keys.iter().filter_map(|b| osis_commit::CommitBlob::decode(b).ok()).map(|b| b.id()).collect()
+}
+
+/// Node 1 writes `card` as `a`'s on `c` (a writer of `a`: along a path through it).
+fn put_card(lp: &mut LocalPeer, c: Tid, a: Tid, card: &ct::Card) {
+    lp.peers[1].commit(cards::put(c, a, card).unwrap()).unwrap().unwrap();
+}
+
+/// Syncs and refreshes every node's cards until quiet (a few rounds).
+fn settle(lp: &mut LocalPeer) {
+    for _ in 0..3 {
+        lp.sync_all().unwrap();
+        for p in lp.peers.iter_mut() {
+            p.engine.refresh_cards().unwrap();
+        }
+    }
+}
+
+/// Accounts A0 (node 0, its admin) and A1 (node 1, a writer of A0); A0's card on C, held at
+/// both; A0's inbox moved by node 0 (to `i2`) and A0 rotated after it. Returns C, A0's first
+/// inbox, `i2` and the move's commit.
+fn moved_then_rotated() -> (LocalPeer, Vec<Tid>, Tid, Tid, Tid, osis_base::CommitId) {
+    let (mut lp, accs) = LocalPeer::accounts(2, 0, T0).unwrap();
+    let c = thing(&mut lp, 0, accs[0], false);
+    lp.peers[0].engine.write_card(c, accs[0]).unwrap();
+    writer(&mut lp, &accs);
+    lp.hold_at(1, c);
+    lp.sync_all().unwrap();
+    let i1 = lp.peers[0].engine.inbox_of(&accs[0]).unwrap().unwrap();
+    let i2 = thing(&mut lp, 0, accs[0], true);
+    let before = lp.peers[0].engine.current_keys(&accs[0]).unwrap();
+    lp.peers[0].engine.set_inbox(accs[0], i2).unwrap();
+    let after = lp.peers[0].engine.current_keys(&accs[0]).unwrap();
+    let mv: Vec<_> = after.difference(&before).copied().collect();
+    assert_eq!(mv.len(), 1, "the move is one commit");
+    lp.advance(1000);
+    lp.peers[0].engine.rotate_leaving_out(&accs[0], &[Role::Read], &[]).unwrap().unwrap();
+    settle(&mut lp);
+    (lp, accs, c, i1, i2, mv[0])
+}
+
+// spec/sync-inbox.md §1 (Card: stale per `keys.0` field, by the newest signature-verified commit
+// writing it): node 1, a writer of A0, writes A0's card on C carrying A0's current `keys.0`
+// commits but node 0's move of A0's inbox (so the commit naming the first inbox and the newer
+// rotation), with both inboxes' keys: a stranger taking it fires at the first inbox. Node 0
+// rewrites it, and a stranger
+// taking the card then fires at the moved inbox. Fails with staleness judged per thing by the
+// newest commit carried (the rotation is newer than the move: nothing newer to carry).
+#[test]
+fn a_writers_card_points_no_stranger_at_an_earlier_inbox_spec_sync_inbox_1() {
+    let (mut lp, accs, c, i1, i2, mv) = moved_then_rotated();
+    let e1 = &mut lp.peers[1].engine;
+    let mut keys = e1.holder_keys(&accs[0]).unwrap();
+    keys.commits.retain(|v| osis_commit::CommitBlob::decode(&osis_base::encode(v)).unwrap().id() != mv);
+    let old = card_of(&[keys, e1.holder_keys(&i1).unwrap(), e1.holder_keys(&i2).unwrap()]);
+    let mut q = osis_engine::local_peer::Peer::new(8, lp.peers[0].engine.now()).unwrap();
+    q.engine.take_holder_keys(&accs[0], &certs_of(&old), None).unwrap();
+    assert_eq!(q.engine.inbox_of(&accs[0]).unwrap(), Some(i1), "premise: a stranger taking the writer's card fires at the first inbox");
+    put_card(&mut lp, c, accs[0], &old);
+    settle(&mut lp);
+    for i in 0..2 {
+        let card = lp.peers[i].engine.cards_of(&accs[0]).unwrap().into_iter().find(|(h, _)| *h == c).unwrap().1;
+        assert!(carried(&card).contains(&mv), "node {i}: A0's card on C carries the inbox move");
+    }
+    let card = lp.peers[0].engine.cards_of(&accs[0]).unwrap().into_iter().find(|(h, _)| *h == c).unwrap().1;
+    let mut q = osis_engine::local_peer::Peer::new(9, lp.peers[0].engine.now()).unwrap();
+    q.engine.take_holder_keys(&accs[0], &certs_of(&card), None).unwrap();
+    assert_eq!(q.engine.inbox_of(&accs[0]).unwrap(), Some(i2), "a stranger taking the card fires at the moved inbox");
+}
+
+// spec/sync-inbox.md §1 (Card: an unverified commit counts for nothing): node 1, a writer of A0,
+// writes A0's card on C carrying A0's current `keys.0` commits and a copy of one of them stamped
+// far ahead, its signature no longer its commit's. Node 0 rotates A0 after: honest nodes ignore
+// the copy, rewrite the card and it carries the rotation. Fails with the copy's `ts` counted
+// (the card newer than anything a rewrite carries, for good).
+#[test]
+fn an_unverified_card_commit_counts_for_nothing_spec_sync_inbox_1() {
+    let (mut lp, accs, c, _, _, _) = moved_then_rotated();
+    let e1 = &mut lp.peers[1].engine;
+    let mut keys = e1.holder_keys(&accs[0]).unwrap();
+    let i2 = e1.inbox_of(&accs[0]).unwrap().unwrap();
+    let inbox = e1.holder_keys(&i2).unwrap();
+    let on_keys = |b: &osis_commit::CommitBlob| b.header.aspect_index(&accs[0], "keys.0").is_some();
+    let mut forged = keys.commits.iter().map(|v| osis_commit::CommitBlob::decode(&osis_base::encode(v)).unwrap()).find(on_keys).unwrap();
+    forged.header.ts = osis_base::Ts::from_u64(forged.header.ts.to_u64() + (1 << 50)).unwrap();
+    let limits = osis_base::Limits::new(osis_base::format::MAX_OBJECT_DEPTH, osis_base::format::MAX_BLOB);
+    keys.commits.push(osis_base::decode(&forged.encode(), &limits).unwrap());
+    put_card(&mut lp, c, accs[0], &card_of(&[keys, inbox]));
+    settle(&mut lp);
+    lp.advance(1000);
+    let r = lp.peers[0].engine.rotate_leaving_out(&accs[0], &[Role::Read], &[]).unwrap().unwrap();
+    settle(&mut lp);
+    for i in 0..2 {
+        let card = lp.peers[i].engine.cards_of(&accs[0]).unwrap().into_iter().find(|(h, _)| *h == c).unwrap().1;
+        assert!(carried(&card).contains(&r), "node {i}: A0's card on C carries the rotation after the forged copy");
+    }
+}

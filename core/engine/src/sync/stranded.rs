@@ -303,9 +303,16 @@ impl Engine {
                 p.parts.retain(|x| on(x.ai));
                 done.insert(i);
                 osis_base::costs::count("stranded: holder keys judged", 1);
-                if self.ingest_valid(&p.encode(), from)?.is_some() {
-                    taken += 1;
-                    moved = true;
+                // a commit that is bad input (a bad signature, a malformed part) counts for
+                // nothing: the rest are taken all the same
+                match self.ingest_valid(&p.encode(), from) {
+                    Ok(Some(_)) => {
+                        taken += 1;
+                        moved = true;
+                    }
+                    Ok(None) => {}
+                    Err(e) if osis_base::Classified::class(&e) == osis_base::ErrorClass::BadInput => {}
+                    Err(e) => return Err(e),
                 }
             }
             if !moved {

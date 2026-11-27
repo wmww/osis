@@ -4,8 +4,8 @@
 //! one the `inbox` field of A's `keys.0` names (an admin's write, `Engine::set_inbox`), never A;
 //! with none named A has no inbox and its card carries A's keys alone. A node reading C takes
 //! those commits as holder keys (`Engine::take_cards`); at a pass's end a node that may write C
-//! along a path through A rewrites the card when a rewrite would carry newer `keys.0` parts on A
-//! or its inbox. A card aspect is retained, snapshotted and covered as any content aspect: its
+//! along a path through A rewrites the card when it is stale (`stale`: per field, a current
+//! commit here newer than every signature-verified one the card carries). A card aspect is retained, snapshotted and covered as any content aspect: its
 //! snapshots, as its writes, state a path through A.
 //!
 //! Invariant: a card counts only written along a path through A (`apply::validity::note_cards`),
@@ -146,18 +146,50 @@ fn certificates(keys: &[Vec<u8>], records: &[Vec<u8>]) -> Option<osis_blob::Cert
     osis_blob::Certificates::from_values(&Value::List(values(keys)?), &Value::List(values(records)?), usize::MAX).ok()
 }
 
-/// Per thing, the newest `ts` of the `keys.0` parts on it among a card's commits (`keys`,
-/// with its `records`).
-fn carried(keys: &[Vec<u8>], records: &[Vec<u8>]) -> BTreeMap<Tid, osis_base::Ts> {
-    let mut out: BTreeMap<Tid, osis_base::Ts> = BTreeMap::new();
-    for v in certificates(keys, records).map(|k| k.commits).unwrap_or_default() {
-        let Ok(b) = osis_commit::CommitBlob::decode(&osis_base::encode(&v)) else { continue };
-        for a in b.parts.iter().filter_map(|p| b.header.aspects.get(p.ai)).filter(|a| a.ak.as_str() == "keys.0") {
-            let e = out.entry(a.tid).or_insert(b.header.ts);
-            *e = (*e).max(b.header.ts);
+/// Whether `a`'s card (`keys`, with its `records`) is stale here (spec/sync-inbox.md §1 Card):
+/// per `keys.0` field of `a` or of its inbox `inbox`, this node's current commit for it is newer
+/// than every signature-verified card commit writing it. An unverified commit counts for nothing.
+/// A verified one this node holds valid writes no field newer than its current commit (that
+/// would be current here); one it does not (the other side of a fork, one waiting) counts as
+/// writing every field of its things, its fields unread. So a rewrite raises some field's newest,
+/// and no side's own verdict on the other's commits enters: the sides of a fork leave a card the
+/// other wrote newer, never rewriting each other's.
+///
+/// Invariant: who writes each input. The card, any writer of `a` (a writer's card may omit or
+/// add commits); its commits, their signers (verified here, `apply::signed_by_author`); the
+/// current commits, this node's own judged state. A writer omitting an admin's later commit
+/// leaves that field's current commit newer than the card's (stale); one adding a commit it did
+/// not sign moves nothing.
+fn stale(tx: &mut Tx<'_>, a: &Tid, inbox: Option<Tid>, keys: &[Vec<u8>], records: &[Vec<u8>]) -> Result<bool> {
+    let k = certificates(keys, records).unwrap_or_default();
+    let recs: BTreeMap<Tid, &osis_base::CreationRecord> = k.records.iter().map(|r| (r.tid(), r)).collect();
+    let mut carried: BTreeSet<osis_base::CommitId> = BTreeSet::new();
+    let mut unknown: BTreeMap<Tid, osis_base::Ts> = BTreeMap::new();
+    for v in &k.commits {
+        let Ok(b) = osis_commit::CommitBlob::decode(&osis_base::encode(v)) else { continue };
+        let id = b.id();
+        let record = tx.core.created(&b.header.signer).or(recs.get(&b.header.signer).copied());
+        if crate::apply::signed_by_author(tx.core, &b, &id, record, None) != Some(true) {
+            continue;
+        }
+        carried.insert(id);
+        for t in [Some(*a), inbox].into_iter().flatten() {
+            let parts: Vec<usize> = b.header.aspect_parts(&t, "keys.0").collect();
+            if b.parts.iter().any(|p| parts.contains(&p.ai)) && !crate::sync_ids::judged_valid(tx.core, &id, &parts) {
+                let e = unknown.entry(t).or_insert(b.header.ts);
+                *e = (*e).max(b.header.ts);
+            }
         }
     }
-    out
+    for t in [Some(*a), inbox].into_iter().flatten() {
+        for c in crate::sync_ids::current_keys_in(tx, &t)? {
+            let Some(ts) = tx.core.ix.commits.get(&c).map(|m| m.header.ts) else { continue };
+            if !carried.contains(&c) && unknown.get(&t).is_none_or(|u| ts > *u) {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
 }
 
 impl Engine {
@@ -212,9 +244,8 @@ impl Engine {
     /// At a pass's end, once this node holds what the pass brought (`settle_needs`): rewrites
     /// the cards due a refresh (`Indexes::cards_stale`) that are stale and this node may
     /// (spec/sync-inbox.md §1 Card): where it may write the card's host along a path through A
-    /// and a rewrite would carry newer `keys.0` parts on A or A's inbox than the card does, the
-    /// card written again with the holder keys of A and that inbox held here. Whether any card
-    /// moved.
+    /// and the card is stale (`stale`), the card written again with the holder keys of A and that
+    /// inbox held here. Whether any card moved.
     pub fn refresh_cards(&mut self) -> Result<bool> {
         let mut moved = false;
         let mut guard = osis_base::loop_guard::LoopGuard::new("Engine::refresh_cards (rewritten cards due again)");
@@ -240,9 +271,8 @@ impl Engine {
     }
 
     /// Writes `a`'s card on `host` (`card`, as held) again where it is stale and this node may
-    /// (`take_cards`): whether it did. Stale by what a rewrite would carry (`card_keys`), never by
-    /// what is merely known here, so a rewrite is not stale again by construction: a `keys.0`
-    /// commit whose header is held but whose `keys.0` part is not cannot be carried.
+    /// (`take_cards`): whether it did. Stale by the current commits here (`stale`), which a
+    /// rewrite carries (`card_keys`, signed by their signers), so a rewrite is not stale again.
     fn refresh_card(&mut self, host: &Tid, a: &Tid, card: &ct::Card) -> Result<bool> {
         if !self.core.ix.closure.holds(host) {
             return Ok(false);
@@ -252,10 +282,7 @@ impl Engine {
         if !may_write_through(&self.core, &a, &host) {
             return Ok(false);
         }
-        // newer `keys.0` parts on `a` or its inbox among what a rewrite carries than the card's
-        let Some((keys, records)) = self.card_keys(&a, inbox)? else { return Ok(false) };
-        let have = carried(&card.keys, &card.records);
-        if !carried(&keys, &records).iter().any(|(t, ts)| (*t == a || Some(*t) == inbox) && have.get(t).is_none_or(|x| ts > x)) {
+        if !self.read(|tx| stale(tx, &a, inbox, &card.keys, &card.records))? {
             return Ok(false);
         }
         self.write_card(host, a)
