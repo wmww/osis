@@ -36,7 +36,7 @@
 (*            "next": a left-out reader learned by the admin gets a         *)
 (*            claim-keyed box in X's next step (Q2(a) as written).         *)
 (*   SyncBox  "every": every step boxes every current sync-only holder      *)
-(*            (claim-keyed, as the public's box where it holds sync alone);*)
+(*            (claim-keyed, as the public's box where it holds sync only);*)
 (*            "next": only a step bearing a new sync key does (Q2(a) as    *)
 (*            written); under "notice", "next" seals a rotation to no      *)
 (*            sync-only holder it boxed before (control).                   *)

@@ -520,7 +520,6 @@ STUB_DEAD_WORDS = {w: re.compile(p) for w, p in {
     "by_public": r"\bby_public\w*",
     "deliver_copy": r"\bdeliver_copy\b",
 }.items()}
-STUB_DEAD_IN = ("spec/", "notes/", "issues/")
 
 
 def dead_words():
@@ -533,7 +532,7 @@ def dead_words():
             for word, pat in DEAD_WORDS.items():
                 if pat.search(line):
                     yield f"{rel}:{n}: uses \"{word}\", a removed concept (issues/deprecated-terms.md, Gone)"
-            if rel.startswith(STUB_DEAD_IN) and rel != "notes/stub-rewrite.md":
+            if rel != "notes/stub-rewrite.md":
                 for word, pat in STUB_DEAD_WORDS.items():
                     if pat.search(line):
                         yield f"{rel}:{n}: uses \"{word}\", a removed concept (issues/deprecated-terms.md, Gone)"

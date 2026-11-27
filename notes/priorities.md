@@ -12,7 +12,7 @@
 ## Failing on main
 Found by random seeds, each with its issue and a line in tools/known_failures.txt. They run beside the primary work, not before it; each starts with a hand-written minimal reproducer (notes/principles.md, Never pin a seed):
 - Purge by ID read differently forgotten or not (purge-by-id-forgetting: three seeds).
-- The sync differential at small size (differential-full-size-classes: three seeds, re-judged after the stub rewrite).
+- The sync differential (differential-full-size-classes: at full size most seeds fail on the held-signal-as-Read bug, R3b; two gate seeds known).
 - Held-model's late-commit property (held-model-late-commit-read-lost: a tess-call, not a code bug).
 
 ## Core, in order

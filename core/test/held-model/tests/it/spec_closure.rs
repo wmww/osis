@@ -494,7 +494,7 @@ fn p3_grant_chains() {
         assert_eq!(unit(&w, 0, &e), if opens { set(&[0, 2]) } else { set(&[0]) }, "{g:?}");
         let c = closure(&w, &e, &reader, Walk::Units);
         assert_eq!(c.read.contains(&2), opens, "{g:?}");
-        // a role of sync alone gives Y's sync secret: kept unread
+        // a role of sync only gives Y's sync secret: kept unread
         assert_eq!(c.held.contains(&2), w.roles_from(0).contains_key(&2), "{g:?}");
         assert!(!unit(&w, 0, &e).contains(&1));
     }

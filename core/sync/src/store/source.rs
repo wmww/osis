@@ -131,7 +131,7 @@ pub(crate) fn tag_rows(t: &mut Transaction<'_>, tag: u8) -> Result<Vec<(Source, 
     Ok(out)
 }
 
-/// A memory row's key parts after `C/`: source, S, tag and key.
+/// A memory row's key fields after `C/`: source, S, tag and key.
 fn parse(k: &[u8]) -> Result<(Source, SyncId, u8, &[u8]), Error> {
     let bad = || Error::Corrupt("sync source row");
     let mut r = R::new(k.get(ROW.len()..).unwrap_or_default());

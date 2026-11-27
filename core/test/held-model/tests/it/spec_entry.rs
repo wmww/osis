@@ -151,7 +151,7 @@ fn entry_a_public_thing_referenced_is_read() {
     assert_eq!(holds(&net, Rule::SPEC, 1), (true, false));
 }
 
-/// Held at sync alone through a holder: the reference brings the stub, never the content.
+/// Held at sync only through a holder: the reference brings the stub, never the content.
 #[test]
 fn entry_a_reference_at_sync_brings_the_stub() {
     let mut net = account(1);

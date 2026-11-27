@@ -6,21 +6,21 @@
 //! (its box proves itself by the step bearing its secret's sync key; notes/stub-rewrite.md §2 point 1).
 //! A history box at (role, e) carries every earlier secret of the role and the rotation's names
 //! (the holders it saw removed): opened by a holder of e's secret, so it gives a grantee the
-//! epochs before its grant, and a holder of sync alone opening the sync role's would learn
+//! epochs before its grant, and a holder of sync only opening the sync role's would learn
 //! departed holders. Greenfield: the question is which boxes a reader of S, the
 //! sync ID of a holder T of X, takes and which of X's holders it learns, and, for a holder of
-//! sync alone, whether it judges T holding sync on X as X's admins made it: its removal is told by
+//! sync only, whether it judges T holding sync on X as X's admins made it: its removal is told by
 //! the step past its keys (the newest step bearing no sync key its boxes give), never by a
 //! header.
 //!
-//! The world: X (mint admin XA) grants T (sync alone or read, per world), H and others, by XA or
+//! The world: X (mint admin XA) grants T (sync only or read, per world), H and others, by XA or
 //! by a holder with the may-grant flag, sometimes with a junk box beside the grantee's; its
 //! admins and writers rotate X boxing every holder; anyone may write a box to T (a forged one at
 //! an epoch no step bears, or a re-seal at the current one while T holds a role); XA records
 //! steps, H junk ones; an admin removes holders. Sync and read
 //! share one epoch counter. R reads T's unit, which references X: X's stub there, T the holder on
 //! the unit's chain to X, as the rule cuts it, closed over evidence (the edge writes on each copied
-//! commit's hop (signer, X)), but for a holder of sync alone (the sync-only cut: no evidence). Which T holds is the
+//! commit's hop (signer, X)), but for a holder of sync only (the sync-only cut: no evidence). Which T holds is the
 //! sender's judgement of what it holds (it holds every commit): T reads X where a valid edge write
 //! gives it read, so a forged edge write naming T read (by a holder neither admin nor may-grant,
 //! or by one holding no role: invalid or pending) changes nothing R receives.
@@ -107,34 +107,34 @@ pub type Held = BTreeSet<(Cid, P)>;
 #[derive(Clone, Debug, Default)]
 pub struct World {
     pub commits: Vec<Commit>,
-    /// The role X's admins grant T (the generator's): sync alone, or read. What R receives
+    /// The role X's admins grant T (the generator's): sync only, or read. What R receives
     /// follows `World::reads`, never this.
-    pub t_sync_alone: bool,
+    pub t_sync_only: bool,
 }
 
 /// Which copies R holds, and how it judges a `secrets.0` write.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Rule {
-    /// The spec: T's piece and the rest, each piece judged alone; a holder of sync alone its
+    /// The spec: T's piece and the rest, each piece judged alone; a holder of sync only its
     /// piece only, no header.
     Spec,
     /// Control, today's copies: the whole `secrets.0` part beside T's box (every holder's piece),
-    /// with its header, a holder of sync alone's included.
+    /// with its header, a holder of sync only's included.
     WholePart,
     /// Control: T's piece alone, but a `secrets.0` write judged as one over the pieces held.
     AspectVerdict,
-    /// Control: T's piece alone, a holder of sync alone's copies keeping their header.
+    /// Control: T's piece alone, a holder of sync only's copies keeping their header.
     SyncHeader,
-    /// Control: a holder of sync alone takes a box's secret without a step bearing its sync key.
+    /// Control: a holder of sync only takes a box's secret without a step bearing its sync key.
     NoStepCheck,
     /// Control: T's piece without the rest beside it.
     NoRest,
-    /// Control: the rest beside a holder of sync alone's piece too.
+    /// Control: the rest beside a holder of sync only's piece too.
     RestToSync,
-    /// Control: a holder of sync alone's removal keeps its header (a certificate copy in its
+    /// Control: a holder of sync only's removal keeps its header (a certificate copy in its
     /// stub).
     RemovalHeader,
-    /// Control: a holder of sync alone holds sync while any box to it opens, the steps aside.
+    /// Control: a holder of sync only holds sync while any box to it opens, the steps aside.
     HolderKept,
     /// Control: T reads X where any held edge write gives it read, whatever its validity.
     AnyValidity,
@@ -147,7 +147,7 @@ impl World {
 
     /// Whether T reads X as the logger judges it holding every commit: a valid edge write gives T
     /// read (`Rule::AnyValidity`: any held one does). Else T
-    /// holds sync alone: its pieces go as sync copies.
+    /// holds sync only: its pieces go as sync copies.
     pub fn reads(&self, rule: Rule) -> bool {
         let all: Held = self.commits.iter().flat_map(|c| [(c.id, P::Header), (c.id, P::Roles)]).collect();
         let j = Judge::new(self, &all);
@@ -175,7 +175,7 @@ impl World {
 
     /// The parts a reader of T's unit holds of X's stub under `rule`.
     pub fn cut(&self, rule: Rule) -> Held {
-        let sync_alone = !self.reads(rule);
+        let sync_only = !self.reads(rule);
         let mut held = Held::new();
         for c in self.named() {
             let pieces: Vec<Id> = match rule {
@@ -187,7 +187,7 @@ impl World {
                     Rule::WholePart => true,
                     Rule::NoRest => false,
                     Rule::RestToSync => pieces.contains(&T),
-                    _ => pieces.contains(&T) && !sync_alone,
+                    _ => pieces.contains(&T) && !sync_only,
                 };
             held.extend(pieces.into_iter().map(|h| (c.id, P::Piece(h))));
             if rest {
@@ -196,7 +196,7 @@ impl World {
             if c.step.is_some() {
                 held.insert((c.id, P::Sync));
             }
-            if sync_alone {
+            if sync_only {
                 // no edge write, no evidence; the header only where the rule keeps it
                 let removal = c.roles.as_ref().is_some_and(|es| es.iter().any(|e| e.holder == T && e.role.is_none()));
                 if matches!(rule, Rule::WholePart | Rule::SyncHeader) || (rule == Rule::RemovalHeader && removal) {
@@ -209,7 +209,7 @@ impl World {
                 held.insert((c.id, P::Roles));
             }
         }
-        if !sync_alone {
+        if !sync_only {
             // closed over evidence
             let mut work: Vec<Cid> = held.iter().map(|(c, _)| *c).collect();
             while let Some(c) = work.pop() {
@@ -224,7 +224,7 @@ impl World {
         held
     }
 
-    /// The reference for a holder of sync alone: whether T holds sync on X as X's admins made it,
+    /// The reference for a holder of sync only: whether T holds sync on X as X's admins made it,
     /// boxed (granted, rotated or re-sealed while on the roster) at the epoch of X's newest
     /// verified step.
     pub fn t_holds(&self) -> bool {
@@ -233,9 +233,9 @@ impl World {
     }
 
     /// The reference: whole copies of every commit X's stub names (every part, header
-    /// included), closed over evidence, but for a holder of sync alone (no evidence).
+    /// included), closed over evidence, but for a holder of sync only (no evidence).
     pub fn whole(&self) -> Held {
-        let sync_alone = !self.reads(Rule::Spec);
+        let sync_only = !self.reads(Rule::Spec);
         let mut held = Held::new();
         for c in self.named() {
             held.insert((c.id, P::Header));
@@ -250,7 +250,7 @@ impl World {
                 held.insert((c.id, P::Sync));
             }
         }
-        if !sync_alone {
+        if !sync_only {
             let mut work: Vec<Cid> = held.iter().map(|(c, _)| *c).collect();
             while let Some(c) = work.pop() {
                 for d in self.evidence_of(self.commit(c)) {
@@ -281,7 +281,7 @@ pub struct Seen {
     pub learned: BTreeSet<Id>,
     /// other holders' pieces R carries
     pub others_pieces: usize,
-    /// (sync alone) whether R judges T holding sync on X: the newest verified step it holds bears
+    /// (sync only) whether R judges T holding sync on X: the newest verified step it holds bears
     /// the sync key of a secret a box to T gave
     pub holds: bool,
 }
@@ -498,8 +498,8 @@ fn boxes_for(h: Id, role: Role, epoch: u32) -> Vec<BoxAt> {
 /// A random world of `seed`: four to fourteen events on X.
 pub fn world(seed: u64) -> World {
     let mut r = Rng::new(seed ^ 0xB0C5);
-    let mut w = World { t_sync_alone: seed % 2 == 0, ..World::default() };
-    let t_role = if w.t_sync_alone { Role::Sync } else { Role::Read };
+    let mut w = World { t_sync_only: seed % 2 == 0, ..World::default() };
+    let t_role = if w.t_sync_only { Role::Sync } else { Role::Read };
     let mut x: BTreeMap<Id, (Role, bool)> = BTreeMap::from([(XA, (Role::Admin, true))]);
     let mut epoch: u32 = 0;
     let mut fake: u32 = 1000;
