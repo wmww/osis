@@ -36,6 +36,9 @@ osis-sync's module reviews (about 50 product bugs) split the same way. Reading a
 
 **Small items**:
 - The osis-sync differential shrinker accepts any panic and keeps world-dependent failures near full length: a shrink often lands on another class's first panic. Wanted: keep only runs ending in the same panic kind, and print whether the shrunk script fails on seed 0's world (replaying it there by hand was faster each time).
+- Sync trace: an option printing a delivery's whole Offer/Shared pairing; `t<k>` alone hides `Shared`, `Lost` and `Notice` answers (add `Shared,Notice,Lost` to `<only>` meanwhile).
+- A probe line per open member at each reader (class, opened by, departed, `until`): `why_role` shows no member state at the serving side.
+- Which of several fixes a test needs: `tools/mutate.py` with a revert-to-old expression per fix answers it in one build.
 - A per-engine-copy id (world and order index) the differential harness sets and probes print: every copy `holds_on` plays of node i shares its tid and session, so a probe cannot tell the checked copy's lines from the others'.
 - A world-level dump of one node's view of one thing (roster, held commits on it, sync holding, opens members): debugging sync otherwise needs ad-hoc prints across engine and osis-sync.
 - A deterministic test of `close` on `Runtime::Tokio` (notes/api.md Handle and lifecycle: after `close` returns no driver poll touches a timer of a shut-down runtime). The one test, osis `runtime::close_then_runtime_shutdown_polls_no_dead_timer`, is a by-hand race caught about a third of runs; `num_alive_tasks() == 0` after `close` is wrong (the task is released after the guard drops). Needs a seam: a hook holding the driver inside an engine call while `close` runs, released after shutdown began.
