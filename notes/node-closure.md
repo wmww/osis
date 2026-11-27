@@ -30,7 +30,7 @@ Links between owners are counts over acyclic structure (entry → blob `X/`; blo
 
 ## Roots
 - The node root: made at the first start with the node thing (`flows::roots::first_start`; local record `records::NODE_ROOT`), holding a strong to it. The node writes it as its node thing, in commits of its own (a commit writing it beside a shared thing travels with that thing: issues/node-root-independent.md). Making an account (osis-account) adds the root's strong to the account A.
-- **First entry** (spec/sync-set.md §2): the walk enters an independent thing at a strong only where a unit it syncs carries it, whole or as a stub (notes/stub-rewrite.md §2, R2). Own things enter unconditionally.
+- **First entry** (spec/sync-set.md §2): the walk enters an independent thing at a strong only where a unit it syncs carries it, whole or as a stub. Own things enter unconditionally.
 
 ## The structure (`Closure`: journaled, built again by an open)
 The vertices, contexts (`Ctx`) and out-lists are units.rs's module doc and `given_by`; the rule is spec/sync-set.md §2. Beside it:
@@ -43,8 +43,8 @@ The vertices, contexts (`Ctx`) and out-lists are units.rs's module doc and `give
 
 ## The node's role
 spec/sync-set.md §2 Own things. Oracle: held-model `closure` (`hc::closure`: the walk by the own things' roles over the world's grants), which the sync differential's `Model::closure` runs over its history.
-- `rotation::role_here` (and `Engine::role_on`): the best the node's own things (spec/permissions.md §1: the node thing, a link key it redeems by) hold by the thing's grants as the node holds them, with key access, where those grants count (`rotation::lost::grants_count`: the node syncs the thing or holds its stub, notes/stub-rewrite.md §2). What the node does as one of its actors reads that actor's role (`Core::role_now`), as a judgement of any other party does.
-- A role that grew opens the boxes kept out for want of it (`flows::retake`): after every re-judge, and as an offer is taken. The closure reads the role and the role reads the closure, so `units::settle` loops with `retake` until no box is due.
+- `rotation::role_here` (and `Engine::role_on`): the best the node's own things (spec/permissions.md §1: the node thing, a link key it redeems by) hold by the thing's grants as the node holds them, with key access, where those grants count (`rotation::lost::grants_count`: the node syncs the thing or holds its stub). What the node does as one of its actors reads that actor's role (`Core::role_now`), as a judgement of any other party does.
+- A role that grew opens the boxes kept out for want of it (`flows::retake`): after every re-judge, and as a notice is taken. The closure reads the role and the role reads the closure, so `units::settle` loops with `retake` until no box is due.
 - Lost access keeps what that same role reads (`retention::forget::read_path`). An ended edge's holder (`lost::was_ours`, read by `loss_seen` and `may_learn`) is an own thing or one an own thing reads by the held grants, read without `grants_count`: once the edge naming a holder ended nothing finds it from below, its own secrets go, and a rule asking whether it still counts would never see the loss.
 - Load order: `apply::load` derives which things are independent (`keys::refresh_independent`) before any box opens, since the role reads the thing a dependent's secrets derive from; opened first, a rebuild counted a not-yet-independent thing through its mint admin and held secrets the live index did not (`Engine::checked_index` fails on it).
 - A role read moves with the edge writes on the things on its way (`Timelines`' `Held(thing)` stamp, `osis_perm::Changed::held`), never with its signer's other commits (osis `making::making_an_independent_thing_costs_what_it_changed`, `tracking::tracked_role_reads_follow_their_thing_at_n_and_10n`).
@@ -52,7 +52,7 @@ spec/sync-set.md §2 Own things. Oracle: held-model `closure` (`hc::closure`: th
 
 ## Learning a grant
 - **By syncing the target**: a grant is the target's own data.
-- **Before the target syncs, by a held signal** (notes/stub-rewrite.md §2, R3): optional; a grant nobody is told of is a valid state.
+- **Before the target syncs, by a held grant signal** (spec/sync-inbox.md §5): optional; a grant nobody is told of is a valid state.
 - **Independent here**: `Core::counts_independent` (doc comment).
 - **Openers**: a holder that can open more (`flows::take_up_opener`, `reopen_dependents`) opens the boxes keyed to it and, in turn, to what they give; boxes the node's roles kept out are taken where the roles now give them (`flows::retake`).
 - **S's things** (`Engine::sync_things_of`): the sync set's entry is all of them (`rows::fold`), never one by tid. Per-S rules run for each: `read_things_of`/`opening_things` (opening, credentials, bodies joined by `join_body`, lists, records), `body_thing` (sealing, logging, promotion), `judge_peer` the best of each. Path rules use `recorded_owner`/`read_sync_id`.

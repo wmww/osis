@@ -1,5 +1,5 @@
 //! Which things count as independent at a node (spec/sync-set.md §2 Counts as independent;
-//! a stub, notes/stub-rewrite.md §2 point 1, holds no keyset). Greenfield: the question is what a node holding some of Y's
+//! a stub, spec/permissions.md §4 Stub, holds no keyset). Greenfield: the question is what a node holding some of Y's
 //! parts may take as "Y has role secrets of its own", when the rotation making Y independent
 //! (its keyset) may not be among them.
 //!

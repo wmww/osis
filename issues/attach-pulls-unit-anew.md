@@ -7,6 +7,6 @@ A thing made by another node pulls nothing anew (its minting arrives in the pass
 
 **Attach**: a pull limited to the attached thing's entries, if it meets the spec's reason for the pull anew (what was forgotten of the thing is fetched again); else state why the spec needs the whole unit. The pass rule does not reach it: nothing local says what of the thing went, and notes/certificates.md rejects a durable mark per forgotten thing.
 
-Re-measure once stubs are built (notes/stub-rewrite.md §9 Issues).
+Re-measure under stubs (spec/sync-set.md §2).
 
 Tests to add: an attach at n and 10n members of the enclosing unit and of the attached thing, in default tests (as sync `growth::an_independent_thing_another_node_makes_pulls_nothing_anew_*` for makes).

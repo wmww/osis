@@ -8,7 +8,7 @@ G holds sync on T (no read), G -> T strongly. Whoever syncs G should hold T kept
 
 ## What the built rules give (checked: spec/sync-set.md §2)
 - T is not in G's sync unit: G's keys open T only at read or above (T's keys open). So T is not carried under G's sync ID.
-- A reader of G meeting the strong enters T's own sync unit kept unread when it holds a sync secret of T: G's unit carries T's stub (§2 Stub, rule 2 of notes/stub-rewrite.md §2: T's role entries cut to G's readers, the sync-only cut; Node closure, kept unread). So for an independent T a reader of G gets it.
+- A reader of G meeting the strong enters T's own sync unit kept unread when it holds a sync secret of T: G's unit carries T's stub (§2 Stubs: T's role entries cut to G's readers, the sync-only cut; Node closure, kept unread). So for an independent T a reader of G gets it.
 - A node keeping G unread reads none of G's strongs and stops at G: it never holds T.
 - A dependent target (X, a dependent of T): "a strong in a sync unit to a dependent thing the sync unit's keys do not open is not followed", so not even a reader of G holds X.
 - spec/requirements.md Data model asks only that a reference from something that cannot read its target does not keep the target; it promises nothing here, so this is a wish beyond the requirement.

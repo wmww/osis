@@ -631,7 +631,7 @@ LearnPl(x, p) ==
   /\ UNCHANGED <<kg, ep, rs, kn, krs, ha, wr, done, evd, nw, dst, pl>>
 
 \* x logs dp under sync ID l: dp is a role entry of dp[2], a holder on l's
-\* chain, so in dp[2]'s stub in l's unit (notes/stub-rewrite.md \S 2 rule 2;
+\* chain, so in dp[2]'s stub in l's unit (spec/sync-set.md \S 2 Stubs;
 \* spec/sync-judgement.md \S 2 required set). The stub carries every role
 \* entry of dp[2]; the model logs only the removals of authors of epochs of l,
 \* the ones a judgement under l reads (the rest only add states)

@@ -5,6 +5,6 @@
 
 **Decided (Tess):** accepted, a violation of the strict model not acted on before shipping (only H's own writers can do it); fix it if a way comes up with no added complexity or other tradeoff.
 
-- Stated in spec/sync-hostile.md §2. Shape: T's admin grants G write on D (T's), then signs an invalid body on D stating [T, G]; peer 0 (G's admin, a reader of T) carries G's grant to T and G's record under T's sync ID. Its test went with the delivery tests; re-judged and re-tested in the stub rewrite (notes/stub-rewrite.md §9, R4).
+- Stated in spec/sync-hostile.md §2. Shape: T's admin grants G write on D (T's), then signs an invalid body on D stating [T, G]; peer 0 (G's admin, a reader of T) carries G's grant to T and G's record under T's sync ID. Its test went with the delivery tests; re-judged and re-tested in the stub rewrite.
 - Who writes the input: any writer of H (no role on X needed; the path's last hop (X, D) needs only a grant D's admin may write). Who learns: H's readers, the writer among them: who granted H sync on X and along what path.
 - Such a body is never valid (sync on X gives no authority through it), so its readers need the edge's writes only to judge it invalid. A fix likely makes a hop through an edge of a sync-only holder bring its sync-only cut only, the body pending or invalid at H's readers; that puts a verdict into evidence of a commit (validity-free by design, spec/permissions.md §4), so it needs the same care as the read graph's.

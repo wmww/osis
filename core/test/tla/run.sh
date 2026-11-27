@@ -169,7 +169,7 @@ instances=(
   "kemkeys rotation KemKeys KK_untold.cfg fail:temporal"  # finding: "due" with M's rotator never told of the grant (no signal or stub): a KEM-less keyset leaves M out of A for good
   "kemkeys rotation KemKeys KK_sticky_untold.cfg pass"    # ... a keyset carrying a KEM key wherever the one it supersedes does: M boxed for good, untold
   "kemkeys rotation KemKeys KK_sticky_stale.cfg pass"     # ... from a stale card
-  "entry rotation Entry NT_left.cfg pass"                 # a holder that cannot open X's newest rotation by its wrap (notes/stub-rewrite.md Q1/Q2), the design: the role commit boxing it also seals its blob key to it, served by a reader opening S toward it by role: a left-out reader, one past a dropped claim set, catch up; steps carry no per-holder box
+  "entry rotation Entry NT_left.cfg pass"                 # a holder that cannot open X's newest rotation by its wrap (spec/permissions.md §4 Notices; notes/stubs.md, Rejected), the design: the role commit boxing it also seals its blob key to it, served by a reader opening S toward it by role: a left-out reader, one past a dropped claim set, catch up; steps carry no per-holder box
   "entry rotation Entry NT_sync.cfg pass"                 # ... sync-only holders (one left out at first): no store stops for good
   "entry rotation Entry NT_sync_next.cfg fail:temporal" # negative control: a rotation not sealed to the sync-only holders it boxes: their stores stop
   "entry rotation Entry NT_sig.cfg pass"                  # ... a signalled reader enters while its signal stands

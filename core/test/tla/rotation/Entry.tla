@@ -1,6 +1,6 @@
 -------------------------------- MODULE Entry --------------------------------
 (* How a holder that cannot open X's newest rotation by its wrap gets X's  *)
-(* current secrets (notes/stub-rewrite.md Q1, Q2): entry boxes in X's steps*)
+(* current secrets (notes/stubs.md, Rejected): entry boxes in X's steps*)
 (* or commits sealed to it as notices, nothing kept with the holder. One X, *)
 (* one admin (it rotates, removes, issues steps and registers them),       *)
 (* holders H: readers                                                     *)

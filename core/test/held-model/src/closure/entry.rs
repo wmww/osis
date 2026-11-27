@@ -1,4 +1,4 @@
-//! First entry under stubs (notes/stub-rewrite.md §2; notes/stubs.md), a greenfield model: what a
+//! First entry under stubs (notes/stubs.md; spec/sync-set.md §2), a greenfield model: what a
 //! node holds when a grant is its target's data, a node finds what it cares about by references,
 //! and the only way in from outside is a held signal (signal → reference → sync → permissions).
 //! Properties and hand worlds in tests/it/spec_entry.rs.
@@ -114,7 +114,7 @@ pub struct Rule {
 
 impl Rule {
     pub const SPEC: Rule = Rule { fix: Fix::Least, chains: Chains::Spec, reader_view: false, log_units: true, by_grants: false, keep_fetched: false, by_role: false };
-    /// As built (notes/stub-rewrite.md, R2 built: strongs enter by the node's role): a strong to
+    /// As built (notes/stub-rewrite.md, Open for Tess 7: strongs enter by the node's role): a strong to
     /// X that a unit carries as a stub (its owner at sync or above, its keys not opening X) brings
     /// X by the node's own role over the role entries it holds: whole at read or above, kept
     /// unread at sync (its store, `Held::unread`), a stub below.

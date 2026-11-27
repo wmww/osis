@@ -8,7 +8,7 @@ Bounded leftovers once a node releases everything (notes/node-closure.md, Storag
 
 ## Failing arms (ignored on this issue, osis-sync `growth::`)
 Each node acts for an account (its own node thing signing); the first symptom of each, not probed further:
-- The grant and declined-grant arms: [Stub rewrite (notes/stub-rewrite.md): written again on grant signals and stubs, R4; the grantee kept an `ou/` row (`records::OPENED_UNDER`) of a commit opened under its account's epoch]
+- The grant and declined-grant arms: [to write again on grant signals and stubs (notes/stubs.md); the grantee kept an `ou/` row (`records::OPENED_UNDER`) of a commit opened under its account's epoch]
 - `a_redeemed_and_ended_link_returns_storage_to_a_fresh_worlds_spec_sync_set_3`: the maker, after 1 round, keeps a `bp/` row (`sync::bodies::BLOB_PARTS`) of the grantee's account's minting commit (its record, which the redeem brought).
 
 ## Owed

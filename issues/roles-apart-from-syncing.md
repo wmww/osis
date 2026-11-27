@@ -1,5 +1,5 @@
 # A role through holders, with only the target synced: untested
-> Summary: Tess: "a role counts wherever its grants are held; syncing is a separate choice". Under the stub rewrite (notes/stub-rewrite.md §2): a unit carrying C carries the stubs of the holders on its chains to C. The multi-hop case has no test.
+> Summary: Tess: "a role counts wherever its grants are held; syncing is a separate choice". A unit carrying C carries the stubs of (spec/sync-set.md §2 Stubs) the holders on its chains to C. The multi-hop case has no test.
 > Priority: normal
 > Tags: sync, engine, tests
 

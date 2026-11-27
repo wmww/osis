@@ -21,7 +21,7 @@
 //!   (`paths::evidence`: every held edge write on a seed's key hop, on an edge of its path and on
 //!   each edge its commit's edge writes on its thing set, closed under the same for what it adds:
 //!   spec/permissions.md §4 Evidence of a commit) of the seeds: the bodies, and the chain stubs'
-//!   role entries (notes/stub-rewrite.md §2 rule 2: every holder on a chain by which S's keys open
+//!   role entries (spec/sync-set.md §2 Stubs: every holder on a chain by which S's keys open
 //!   a thing of S's unit is a stub in it): each edge write on an edge of such a chain, a path of
 //!   read edges from S's thing to a thing of the unit (a held write giving read that the node
 //!   judges valid over what it holds, at any time, or a record: `World::read_edges`; an edge

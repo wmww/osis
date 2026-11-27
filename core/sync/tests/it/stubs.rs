@@ -92,7 +92,7 @@ fn a_public_thing_referenced_is_read_by_the_referrers_reader_spec_sync_set_2() {
 // and holds R as a stub, a chain holder's (X's roster naming R brings nothing: a role-class
 // aspect's weaks bring no stub), reading nothing of R's content. R then removes U, and node 0 writes X
 // again: node 1 reads nothing written since. (How a departed stub holder is told its removal is
-// notes/stub-rewrite.md R3, Q6.)
+// notes/stub-rewrite.md, Owed.)
 #[test]
 fn a_two_hop_chain_is_read_by_its_holders_stub_and_ends_at_its_removal_spec_sync_set_2() {
     let (mut x, mut r) = (Tid::PUBLIC, Tid::PUBLIC);

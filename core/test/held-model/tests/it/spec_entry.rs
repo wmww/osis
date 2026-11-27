@@ -1,4 +1,4 @@
-//! First entry under stubs (held_model::closure::entry; notes/stub-rewrite.md §2): hand worlds
+//! First entry under stubs (held_model::closure::entry; notes/stubs.md): hand worlds
 //! for the stub rules, and the properties over random histories, each failing under its control.
 use held_model::closure::entry::*;
 use held_model::closure::{Kind, Role, World, T};

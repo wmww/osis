@@ -1,4 +1,4 @@
-//! The joint property (held_model::evidence `joint`; notes/stub-rewrite.md §2 rule 2): a node
+//! The joint property (held_model::evidence `joint`; spec/sync-set.md §2 Stubs): a node
 //! acting as a signer and holding one sync ID plus the stubs of the holders on its paths judges
 //! and acts as the node holding everything. Over the evidence family, random and wide worlds under the spec's
 //! rule (`Rule::fixed`), with a control per check. spec: none (modelled before any spec).

@@ -3,7 +3,7 @@
 //! (and the rest: history boxes, keyed with no holder), each bound by its own hash and judged
 //! alone; X's stub in a unit carries the piece of each holder on the unit's chains to X and the
 //! rest, and the sync-only cut (readers reaching X only at sync) the piece only, with no header
-//! (its box proves itself by the step bearing its secret's sync key; notes/stub-rewrite.md §2 point 1).
+//! (its box proves itself by the step bearing its secret's sync key; spec/permissions.md §4 Stub).
 //! A history box at (role, e) carries every earlier secret of the role and the rotation's names
 //! (the holders it saw removed): opened by a holder of e's secret, so it gives a grantee the
 //! epochs before its grant, and a holder of sync only opening the sync role's would learn
