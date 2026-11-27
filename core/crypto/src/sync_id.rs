@@ -1,8 +1,8 @@
-//! Role keys, the sync ID, claim keys and the open signature (spec/sync-ids.md §2, §3, spec/sync-opens.md §4,
+//! Role keys, the sync ID and the open signature (spec/sync-ids.md §2, §3, spec/sync-opens.md §4,
 //! spec/wire.md §8, §11.2).
 
 use crate::kdf::{self, SYNC_ID, kdf};
-use crate::{Domain, Error, Secret32, Signature, SigningSecret, VerifyingKey, X25519Secret};
+use crate::{Domain, Error, Secret32, Signature, SigningSecret, VerifyingKey};
 use osis_base::{SyncId, Role, Value, encode};
 
 /// A role key and the role secret of the sync ID's thing it derives from (`role`).
@@ -64,17 +64,6 @@ pub fn sync_id(genesis_delete: &VerifyingKey) -> SyncId {
     SyncId(id)
 }
 
-/// Claim key pair: seed `kdf("sync claim", DH(own, their), sync_id || step_key)`. The registrar
-/// passes the step private key and M's X25519 key; M passes its private key and the step key.
-/// A non-contributory DH omits M.
-pub fn claim_key(own: &X25519Secret, their: &[u8; 32], sync_id: &SyncId, step_key: &[u8; 32]) -> Result<SigningSecret, Error> {
-    let dh = own.dh(their)?;
-    let mut input = Vec::with_capacity(48);
-    input.extend_from_slice(&sync_id.0);
-    input.extend_from_slice(step_key);
-    Ok(SigningSecret::from_seed(&kdf(kdf::SYNC_CLAIM, dh.expose(), &input)))
-}
-
 /// Digest of an open: BLAKE3(canonical `[side, sync_id, challenge, static_key]`) (spec/wire.md
 /// §11.2), `side` the signer's (`by_listener`: 0 the dialer, 1 the listener), `challenge` the
 /// other side's Hello challenge. Invariant, as for `proof_digest`: an open signature made as one
@@ -108,7 +97,6 @@ pub fn verify_open(key: &VerifyingKey, by_listener: bool, sync_id: &SyncId, chal
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{KemSecret, SeededRng};
 
     // spec/sync-ids.md §2: role keys differ per role and secret; deposit keys per sync ID.
     #[test]
@@ -126,21 +114,6 @@ mod tests {
         let mut h = blake3::Hasher::new();
         h.update(b"osis v1 sync id").update(&pk(RoleKey::Delete).to_bytes());
         assert_eq!(id.0, h.finalize().as_bytes()[..16]);
-    }
-
-    // spec/sync-ids.md §3: registrar and holder derive the same claim key; non-contributory omits.
-    #[test]
-    fn claim_keys() {
-        let mut rng = SeededRng::from_u64(0);
-        let step = X25519Secret::random(&mut rng);
-        let kem = KemSecret::derive(&Secret32::from_bytes([6; 32]));
-        let sync_id = SyncId([7; 16]);
-        let by_registrar = claim_key(&step, &kem.public().x25519(), &sync_id, &step.public()).unwrap();
-        let by_holder = claim_key(kem.x25519(), &step.public(), &sync_id, &step.public()).unwrap();
-        assert_eq!(by_registrar.verifying_key(), by_holder.verifying_key());
-        let other = claim_key(&step, &kem.public().x25519(), &SyncId([8; 16]), &step.public()).unwrap();
-        assert_ne!(other.verifying_key(), by_holder.verifying_key());
-        assert_eq!(claim_key(&step, &[0; 32], &sync_id, &step.public()).err(), Some(Error::NonContributory));
     }
 
     // spec/wire.md §11.2: an open signature binds sync ID, challenge and static key.

@@ -24,10 +24,12 @@ pub enum Domain {
     RoleEntry,
     /// A boxes payload's signature by its role commit's author (spec/wire.md §9).
     InboxBoxes,
+    /// An entry block's signature by the sync key it is bound to (spec/wire.md §5).
+    EntryBlock,
 }
 
 impl Domain {
-    pub const ALL: [Domain; 10] = [
+    pub const ALL: [Domain; 11] = [
         Domain::Commit,
         Domain::SyncStep,
         Domain::SyncEndorse,
@@ -38,6 +40,7 @@ impl Domain {
         Domain::ConnectionProof,
         Domain::RoleEntry,
         Domain::InboxBoxes,
+        Domain::EntryBlock,
     ];
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -51,6 +54,7 @@ impl Domain {
             Domain::ConnectionProof => "osis v1 connection proof",
             Domain::RoleEntry => "osis v1 role entry",
             Domain::InboxBoxes => "osis v1 inbox boxes",
+            Domain::EntryBlock => "osis v1 entry block",
         }
     }
     /// The `osis_base::costs` count a verification in this domain adds to.
@@ -66,6 +70,7 @@ impl Domain {
             Domain::ConnectionProof => "verify: connection proof",
             Domain::RoleEntry => "verify: role entry",
             Domain::InboxBoxes => "verify: inbox boxes",
+            Domain::EntryBlock => "verify: entry block",
         }
     }
     fn message(self, digest: &[u8; 32]) -> Vec<u8> {
