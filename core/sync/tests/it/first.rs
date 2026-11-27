@@ -5,9 +5,10 @@
 
 use crate::harness::Step::*;
 use crate::harness::history::{Gives, Holder, world_of};
-use crate::harness::{World, fixture, fixture_with, play};
+use crate::harness::{Fetches, World, fixture, fixture_with, play};
 use osis_base::BlobId;
-use std::collections::BTreeMap;
+use osis_engine::sync::Holding;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Mutex;
 
 const N: usize = 1;
@@ -39,13 +40,13 @@ fn exact() {
 }
 
 /// What node 2's first sync of the closure costs: deliveries, the frames each node sent each other
-/// node per kind (count, bytes), each blob fetched per node pair (with how many times), and the
-/// named counters.
+/// node per kind (count, bytes), each blob fetched per node pair (how the fetcher held the sync ID
+/// it asked it under, once per fetch: `Net::fetched`), and the named counters.
 #[derive(Clone)]
 struct Cost {
     deliveries: u64,
     frames: BTreeMap<(usize, usize, &'static str), (u64, u64)>,
-    fetched: BTreeMap<(usize, usize), BTreeMap<BlobId, u64>>,
+    fetched: BTreeMap<(usize, usize), Fetches>,
     /// Blobs a node fetched and holds no entry of at the end (under any sync ID), per fetcher.
     unkept: BTreeMap<usize, Vec<BlobId>>,
     /// Per node, the sync IDs it holds entries of, and those of them with no head logged.
@@ -131,17 +132,25 @@ fn a_first_sync_of_n_sync_ids_takes_the_same_round_trips_spec_sync_streams_4() {
     assert!(b <= a + 1, "the reader sent {a} Fetches at n members, {b} at 5n");
 }
 
+/// The blobs fetched more than once under one holding (`Cost::fetched`), with how each fetch held.
+fn again(fetches: &Fetches) -> Vec<(&BlobId, &Vec<Option<Holding>>)> {
+    fetches.iter().filter(|(_, hs)| hs.iter().collect::<BTreeSet<_>>().len() < hs.len()).collect()
+}
+
 // spec/sync-streams.md §4 (Bodies: only blob IDs its store lacks are fetched; an entry whose
 // blob's bytes it holds under another sync ID is taken with them, under the entry's wrap; a
 // blob counts as asked while a fetch of it from some source is unanswered): a blob carried under
-// every member's sync ID (a certificate copy of the root's roles) is fetched once, whatever the
-// number of sync IDs announcing it.
+// every member's sync ID (a certificate copy of the root's roles) is fetched once per holding,
+// whatever the number of sync IDs announcing it. Once per holding, as spec/sync-judgement.md §6
+// (Read and unread move: a stub raised to read pulls S anew) has it: the reader follows its grant
+// signal as the root's stub first, and what the stub's sources showed goes with that member, so
+// a record blob it fetched and dropped as a stub it may fetch again as a reader.
 #[test]
-fn a_blob_is_fetched_once_whatever_sync_ids_carry_it_spec_sync_streams_4() {
+fn a_blob_is_fetched_once_per_holding_whatever_sync_ids_carry_it_spec_sync_streams_4() {
     let large = cost(LARGE);
     for ((a, b), blobs) in &large.fetched {
-        let again: Vec<_> = blobs.iter().filter(|(_, n)| **n > 1).collect();
-        assert!(again.is_empty(), "node {b} fetched from node {a} again: {again:?}");
+        let again = again(blobs);
+        assert!(again.is_empty(), "node {b} fetched from node {a} again under one holding: {again:?}");
     }
     assert!(!large.fetched.is_empty(), "nothing fetched: the closure is not first synced");
 }
@@ -150,18 +159,18 @@ fn a_blob_is_fetched_once_whatever_sync_ids_carry_it_spec_sync_streams_4() {
 // held here or at a source, and one losing to another leaves the own store), spec/sync-streams.md §4
 // (Bodies: nor one it counts is fetched): what a new reader fetches and does not keep is only
 // what it could judge by opening it alone (the maker's record blob that the grant made lose, which
-// the store keeping the root unread still lists until the maker's Delete reaches it), once each
-// and as many at 5n members as at n.
+// the store keeping the root unread still lists until the maker's Delete reaches it), once per
+// holding of the sync ID it is under (spec/sync-judgement.md §6 Read and unread move: a raise
+// pulls S anew) and as many at 5n members as at n.
 #[test]
 fn what_a_reader_fetches_and_drops_does_not_grow_spec_permissions_4() {
     let (small, large) = (cost(N), cost(LARGE));
     let count = |c: &Cost| c.unkept.values().map(Vec::len).sum::<usize>();
     assert!(count(&large) <= count(&small), "fetched and not kept: {:?} at n, {:?} at 5n", small.unkept, large.unkept);
     for (to, blobs) in &large.unkept {
-        for b in blobs {
-            let n: u64 = large.fetched.iter().filter(|((_, t), _)| t == to).filter_map(|(_, m)| m.get(b)).sum();
-            assert_eq!(n, 1, "node {to} fetched {b:?}, which it does not keep, {n} times");
-        }
+        let fetches: Fetches = blobs.iter().map(|b| (*b, large.fetched.iter().filter(|((_, t), _)| t == to).filter_map(|(_, m)| m.get(b)).flatten().copied().collect())).collect();
+        let again = again(&fetches);
+        assert!(again.is_empty(), "node {to} fetched what it does not keep again under one holding: {again:?}");
     }
 }
 
@@ -246,7 +255,7 @@ fn probe_first() {
         let c = first(&mut w);
         println!("F{n} deliveries {}", c.deliveries);
         println!("F{n} unkept {:?}", c.unkept);
-        println!("F{n} fetched twice {:?}", c.fetched.iter().map(|(k, v)| (k, v.values().filter(|x| **x > 1).count())).collect::<Vec<_>>());
+        println!("F{n} fetched twice {:?}", c.fetched.iter().map(|(k, v)| (k, v.values().filter(|x| x.len() > 1).count())).collect::<Vec<_>>());
         for ((a, b, k), (count, bytes)) in &c.frames {
             println!("  F{n} {a}->{b} {k} {count} {bytes}");
         }

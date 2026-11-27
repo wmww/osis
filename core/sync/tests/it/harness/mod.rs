@@ -219,6 +219,9 @@ impl DiskFault {
     }
 }
 
+/// Each blob a node fetched from one peer: how it held the sync ID it asked it under, per fetch.
+pub type Fetches = BTreeMap<osis_base::BlobId, Vec<Option<osis_engine::sync::Holding>>>;
+
 /// The network: links between world nodes, the inputs in flight (queued now, or held back to a
 /// time), the wakes asked.
 #[derive(Clone, Default)]
@@ -248,10 +251,14 @@ pub struct Net {
     /// The frames each node sent each other node, per message kind (`Hello`, a `Msg` variant):
     /// (count, bytes with the length prefix). `census` prints it.
     pub frames: BTreeMap<(usize, usize, &'static str), (u64, u64)>,
-    /// Set: each blob each node was sent with its entry in a FetchReply by each other node, and
-    /// how many times (`fetched`); off, no frame is decoded for it.
+    /// Set: each blob each node was sent with its entry in a FetchReply by each other node, with
+    /// how the receiver held the sync ID it asked it under when it asked, once per fetch
+    /// (`fetched`); off, no frame is decoded for it.
     pub count_fetched: bool,
-    pub fetched: BTreeMap<(usize, usize), BTreeMap<osis_base::BlobId, u64>>,
+    pub fetched: BTreeMap<(usize, usize), Fetches>,
+    /// Each Fetch out, by its asker's end and id: per blob, how the asker held the sync ID it
+    /// asked it under (`fetched`).
+    asks: BTreeMap<(usize, ConnId, u32), BTreeMap<osis_base::BlobId, Option<osis_engine::sync::Holding>>>,
     /// Each end's sent bytes split into frames for `frames`, and whether its Hello went by.
     splitters: BTreeMap<(usize, ConnId), (FrameDecoder, bool)>,
     /// Bytes each end sent on each connection: the transport takes them at once (no buffer), so
@@ -387,7 +394,7 @@ impl Net {
         self.queue.push_back((target, Input::Up { conn: accepted, peer: eph, rank, dialed: false, listener: NodeKey(to.key) }));
     }
 
-    fn send(&mut self, from: usize, conn: ConnId, bytes: &[u8]) {
+    fn send(&mut self, from: usize, conn: ConnId, bytes: &[u8], store: &Store) {
         // bytes on a connection the peer already closed are lost, as on a transport
         let Some((to, tc)) = self.links.get(&(from, conn)).copied() else { return };
         self.bytes += bytes.len() as u64;
@@ -399,13 +406,20 @@ impl Net {
             let t = self.frames.entry((from, to, kind)).or_default();
             t.0 += 1;
             t.1 += 4 + body.len() as u64;
-            if self.count_fetched
-                && kind == "FetchReply"
-                && let Ok(osis_proto::Msg::FetchReply { items, .. }) = osis_proto::Msg::decode(&body)
-            {
-                let per = self.fetched.entry((from, to)).or_default();
-                for f in items.iter().filter(|f| f.entry.is_some()) {
-                    *per.entry(f.blob_id).or_default() += 1;
+            if self.count_fetched && (kind == "Fetch" || kind == "FetchReply") {
+                match osis_proto::Msg::decode(&body) {
+                    Ok(osis_proto::Msg::Fetch { id, ids, .. }) => {
+                        let asked = ids.iter().flat_map(|(s, bs)| bs.iter().map(move |b| (*b, store.holding(s)))).collect();
+                        self.asks.insert((from, conn, id), asked);
+                    }
+                    Ok(osis_proto::Msg::FetchReply { id, items }) => {
+                        let asked = self.asks.get(&(to, tc, id));
+                        let per = self.fetched.entry((from, to)).or_default();
+                        for f in items.iter().filter(|f| f.entry.is_some()) {
+                            per.entry(f.blob_id).or_default().push(asked.and_then(|a| a.get(&f.blob_id).copied()).flatten());
+                        }
+                    }
+                    _ => {}
                 }
             }
         }
@@ -505,6 +519,8 @@ impl Net {
 struct NodeLinks<'a> {
     net: &'a mut Net,
     node: usize,
+    /// The node's store: how it holds what it fetches (`Net::fetched`).
+    store: &'a Store,
     /// The node's `NodeClock::boot`: its monotonic clock plus this is the world's.
     boot: u64,
 }
@@ -515,7 +531,7 @@ impl Links for NodeLinks<'_> {
     }
 
     fn send(&mut self, conn: ConnId, bytes: &[u8]) {
-        self.net.send(self.node, conn, bytes);
+        self.net.send(self.node, conn, bytes, self.store);
     }
 
     fn read(&mut self, conn: ConnId, on: bool) {
@@ -1078,7 +1094,8 @@ impl World {
             t.sent(i, &out, |c| links.get(&(i, c)).map(|x| x.0));
         }
         let boot = self.node(i).clock.boot();
-        apply(out, &mut NodeLinks { net: &mut self.net, node: i, boot });
+        let store = &self.nodes[i].store;
+        apply(out, &mut NodeLinks { net: &mut self.net, node: i, store, boot });
         self.crashed(i);
         if traced {
             self.traced(i);
@@ -1193,7 +1210,8 @@ impl World {
     /// Tests of the harness only: carries out `out` as node `i`'s outputs.
     pub fn apply_as(&mut self, i: usize, out: Vec<Out>) {
         let boot = self.node(i).clock.boot();
-        apply(out, &mut NodeLinks { net: &mut self.net, node: i, boot });
+        let store = &self.nodes[i].store;
+        apply(out, &mut NodeLinks { net: &mut self.net, node: i, store, boot });
     }
 
     /// Delivers the next input in flight now; whether there was one.

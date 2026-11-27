@@ -1064,7 +1064,7 @@ fn key_record_wire(k: usize, held: bool) -> (u64, u64, u64) {
     for ((_, to), m) in &w.net.fetched {
         if *to == 1 {
             for (b, n) in m {
-                *per_blob.entry(*b).or_default() += n;
+                *per_blob.entry(*b).or_default() += n.len() as u64;
             }
         }
     }
