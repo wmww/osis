@@ -758,3 +758,19 @@ fn a_removed_sync_holder_is_told_the_publics_sync_granted_meanwhile_spec_sync_op
     use crate::harness::script::*;
     holds_on(0, 2, 3, &[New(0), NewIn(0, 0), Give(0, 0, Holder::Node(1), Syncs), Strong(1, None, 0), Run, Give(2, 0, Holder::Public, Syncs), Revoke(0, 0, Holder::Node(1)), Give(0, 1, Holder::Node(1), Reads)], String::new(), false);
 }
+
+// spec/crypto.md §4 (History box: what a node holds is a function of the secrets it holds,
+// however it learned them), spec/sync-opens.md §6: node 0 grants node 1's account sync on its thing (a signal; no
+// strong) and the public sync, then removes node 1's account. Node 1 is told the public's edge,
+// the box's history under the public's sync epoch with it, and learns that epoch's secret from
+// the public entry: it opens the history it holds, as an open of its store does. Failed while a
+// sync secret learned by a node reading nothing of the thing opened nothing: the live index
+// lacked the epoch's superseded epochs and names a rebuild gave.
+#[test]
+fn a_learned_sync_secret_opens_the_history_held_spec_crypto_4() {
+    use crate::harness::script::*;
+    let mut w = played_on(0, 2, 3, &[New(0), Give(0, 0, Holder::Node(1), Syncs), Give(0, 0, Holder::Public, Syncs), Revoke(0, 0, Holder::Node(1))], String::new(), false);
+    for i in 0..w.len() {
+        w.engine(i).check_index();
+    }
+}

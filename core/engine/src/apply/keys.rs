@@ -970,12 +970,6 @@ pub(crate) fn learn_secret_in(tx: &mut Tx<'_>, g: &Tid, r: Role, e: osis_crypto:
         return Ok(false);
     }
     tx.core.touch();
-    // a sync secret of a thing not read (a holder of only sync's, spec/sync.md §3): held as its epoch's,
-    // nothing of the thing opened by it
-    if r == Role::Sync && !tx.core.epochs(&g).is_some_and(|x| x.role(Role::Read).holds_any()) {
-        tx.core.ix.secrets.entry_or_default(g).role_mut(r).set_secret(e, secret);
-        return Ok(true);
-    }
     tx.core.ix.secrets.entry_or_default(g).role_mut(r).set_secret(e, secret);
     // what the secret opens: `g`'s own history boxes, then the boxes sealed to `g`
     let (s, alts) = (crate::flows::secrets_in(tx, &g)?, crate::flows::secrets_alts(tx, &g)?);
