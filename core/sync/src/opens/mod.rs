@@ -335,6 +335,51 @@ struct Conn {
     /// Per S, the `changed_at` position at which this side last asked the peer Head: asked once
     /// per change of S, never again while S stands (spec/sync-ids.md §6 Head).
     asked_head: BTreeMap<SyncId, u64>,
+    /// The beacons of this side's tested credentials of each S, by beacon, as last tested here:
+    /// what a filter arrival's new entries are looked up in (spec/sync-opens.md §5 Testing).
+    /// Built at the first arrival that needs it, then kept by each test of S.
+    tested_ix: Option<TestedBeacons>,
+    /// Sync IDs a filter arrival's new entries name: tested at the next test, whatever their
+    /// `changed_at`.
+    retest: BTreeSet<SyncId>,
+}
+
+/// `Conn::tested_ix`: beacon -> S, and per S its beacons.
+#[derive(Clone, Debug, Default)]
+struct TestedBeacons {
+    by_beacon: BTreeMap<[u8; 32], SyncId>,
+    of: BTreeMap<SyncId, Vec<[u8; 32]>>,
+}
+
+impl TestedBeacons {
+    fn set(&mut self, s: SyncId, beacons: Vec<[u8; 32]>) {
+        for b in self.of.remove(&s).unwrap_or_default() {
+            self.by_beacon.remove(&b);
+        }
+        for b in &beacons {
+            self.by_beacon.insert(*b, s);
+        }
+        if !beacons.is_empty() {
+            self.of.insert(s, beacons);
+        }
+    }
+
+    /// The sync IDs with a beacon whose first `f` bits are `v`.
+    fn named(&self, v: u64, f: u8) -> impl Iterator<Item = SyncId> + '_ {
+        let shift = 64 - u32::from(f.clamp(1, 64));
+        let key = |x: u64| {
+            let mut k = [0u8; 32];
+            k[..8].copy_from_slice(&x.to_be_bytes());
+            k
+        };
+        let lo = v.checked_shl(shift).unwrap_or(0);
+        let hi = v.checked_add(1).and_then(|x| x.checked_shl(shift)).filter(|x| *x > lo);
+        let range = match hi {
+            Some(h) => self.by_beacon.range(key(lo)..key(h)),
+            None => self.by_beacon.range(key(lo)..),
+        };
+        range.map(|(_, s)| *s)
+    }
 }
 
 /// `changed_at` (spec/sync-opens.md §3): per S a position of this node's own sequence, with the
@@ -1349,6 +1394,8 @@ impl Opens {
             lost_to: None,
             served: BTreeMap::new(),
             asked_head: BTreeMap::new(),
+            tested_ix: None,
+            retest: BTreeSet::new(),
         };
         if bind.dialer {
             if !c.named.is_empty() {
@@ -1903,6 +1950,9 @@ impl Opens {
             return;
         }
         let values = p.values;
+        // its entries new against the filter held: a credential tested and refused before may be
+        // shown now (a claim written since), so the sync IDs they name are tested again
+        let fresh: Vec<u64> = values.iter().filter(|v| r.peer.as_ref().is_none_or(|o| o.f != p.f || !o.values.contains(*v))).collect();
         // the generation's row: its run, as the filter's own coding (`encode_gcs`) of its values
         let row = values.gcs().to_vec();
         let whole = match (&mut r.peer, p.base) {
@@ -1936,6 +1986,33 @@ impl Opens {
                 f => *f = Some((whole, vec![(p.generation, row)])),
             }
         }
+        self.retest_named(conn, p.f, &fresh);
+    }
+
+    /// The sync IDs a filter arrival's new entries `fresh` (`f` bits wide) may show a tested
+    /// credential of are tested again (spec/sync-opens.md §5 Testing), from the tested beacons
+    /// (built here first: every S this side syncs, one beacon per tested credential).
+    fn retest_named(&mut self, conn: ConnId, f: u8, fresh: &[u64]) {
+        if fresh.is_empty() {
+            return;
+        }
+        let Some(rr) = self.record_on(conn).map(|r| r.r) else { return };
+        if self.conns.get(&conn).is_some_and(|c| c.tested_ix.is_none()) {
+            let mut ix = TestedBeacons::default();
+            let all: Vec<SyncId> = self.changed.at.keys().copied().collect();
+            for s in all {
+                let Some(adm) = self.admissible(&s) else { continue };
+                self.work.beacons += adm.tests.len() as u64;
+                ix.set(s, adm.tests.iter().map(|t| beacon_of(&t.matched(), &s, &rr)).collect());
+            }
+            if let Some(c) = self.conns.get_mut(&conn) {
+                c.tested_ix = Some(ix);
+            }
+        }
+        let Some(c) = self.conns.get_mut(&conn) else { return };
+        let Some(ix) = c.tested_ix.as_ref() else { return };
+        let named: BTreeSet<SyncId> = fresh.iter().flat_map(|v| ix.named(*v, f)).collect();
+        c.retest.extend(named);
     }
 
     // ---- testing and Offer (§5) ----
@@ -1959,8 +2036,11 @@ impl Opens {
         let Some(r) = self.records.get(&rid) else { return };
         let Some(pf) = r.peer.clone() else { return };
         let (rr, bind, from) = (r.r, c.bind, c.tested_pos);
-        let pending = self.changed.after(from);
+        let mut pending = self.changed.after(from);
+        // those a filter arrival named (`retest_named`) not pending already
+        pending.extend(c.retest.iter().filter(|s| self.changed.pos(s) <= from).copied());
         let end = self.changed.end;
+        let mut tested: Vec<(SyncId, Vec<[u8; 32]>)> = Vec::new();
         let mut sent = Vec::new();
         let mut items = Vec::new();
         let mut cut = false;
@@ -1972,14 +2052,18 @@ impl Opens {
             let Some(adm) = self.admissible(&s) else { continue };
             self.work.tested += 1;
             let before = items.len();
+            tested.push((s, Vec::new()));
             for t in &adm.tests {
+                let m = t.matched();
+                let b = beacon_of(&m, &s, &rr);
+                self.work.beacons += 1;
+                if let Some((_, bs)) = tested.last_mut() {
+                    bs.push(b);
+                }
                 // one it would not open by is not sent (spec/sync-opens.md §6)
                 if self.served_past(ctx, conn, &s, &adm, &t.credential(), None) {
                     continue;
                 }
-                let m = t.matched();
-                let b = beacon_of(&m, &s, &rr);
-                self.work.beacons += 1;
                 if !pf.values.contains(beacon_value(&b, pf.f)) {
                     continue;
                 }
@@ -2005,6 +2089,12 @@ impl Opens {
             self.ask_head(ctx, conn, s);
         }
         let Some(c) = self.conns.get_mut(&conn) else { return };
+        for (s, bs) in tested {
+            c.retest.remove(&s);
+            if let Some(ix) = c.tested_ix.as_mut() {
+                ix.set(s, bs);
+            }
+        }
         if !cut {
             c.tested_pos = end;
             c.test_due = false;

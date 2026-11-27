@@ -244,7 +244,7 @@ impl Run {
         (k < self.index.len()).then_some(first).into_iter().chain(rest)
     }
 
-    fn iter(&self) -> impl Iterator<Item = u64> + '_ {
+    pub fn iter(&self) -> impl Iterator<Item = u64> + '_ {
         self.from(0)
     }
 

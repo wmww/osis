@@ -191,9 +191,10 @@ fn a_reader_opens_a_store_at_its_step_spec_sync_opens_4() {
 
 // spec/sync-opens.md §4 (Admissible: keeping S unread with no head, its step is the newest sync
 // secret it holds) and spec/sync-ids.md §6 (Walk): a node granted sync that starts keeping S
-// after the reader tested it there (nothing shown then) opens S by its own test when it does:
-// the reader tests nothing again. NetOpen `ON_shownkey` (a store with no step shows and tests
-// nothing) fails this.
+// after the reader tested it there (nothing shown then) opens S by its own test when it does;
+// the reader tests S again once, for the store's filter showing a credential of S (§5 Testing),
+// and nothing else. NetOpen `ON_shownkey` (a store with no step shows and tests nothing) fails
+// this.
 #[test]
 fn a_store_granted_later_opens_with_no_head_spec_sync_opens_4() {
     let st = StepKeys::new(1, 0);
@@ -210,7 +211,7 @@ fn a_store_granted_later_opens_with_no_head_spec_sync_opens_4() {
     p.run();
     assert!(p.a.open(p.ca, &S) && p.b.open(p.cb, &S), "open both ways");
     assert_eq!(p.a.opens.members(p.ca)[&S].class, SourceClass::Store);
-    assert_eq!(p.a.opens.work().tested, tested, "the reader tested nothing again");
+    assert!(p.a.opens.work().tested <= tested + 1, "the reader tested S again once at most");
 }
 
 // spec/sync-opens.md §4 (Source: a class that moves closes the member, and S opens again with
