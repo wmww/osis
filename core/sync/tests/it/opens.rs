@@ -248,6 +248,51 @@ fn crossing_offers_leave_both_sides_one_class_spec_sync_opens_4() {
     }
 }
 
+// spec/sync-opens.md §6 (Where it stopped: a member declared a stub keeps nothing once this side
+// holds S otherwise), spec/sync-streams.md §4 (Toward a peer holding S's thing as a stub): a holds S as a
+// stub, open with b, b having stored a's log at 7; a comes to read S, with its member open
+// (closed as its class moved) or ended by a's head moving (closed at its `until`). Its stream
+// stood where b served it role entries alone, so a rejoins from the start, whatever b's Lost
+// names (failed while either close kept where the stub's stream stood: content it was never
+// served was never pulled).
+#[test]
+fn a_stub_coming_to_read_rejoins_from_the_start_spec_sync_opens_6() {
+    use osis_sync::types::Holding;
+    let (s0, s1) = (StepKeys::new(1, 0), StepKeys::new(1, 1));
+    for ended in [false, true] {
+        let creds = |h: Holding, at: &StepKeys, older: &[StepKeys]| osis_sync::opens::holds::Creds { holding: Some(h), ..reader(at, older) };
+        let mut a = Side::new(1);
+        let mut b = Side::new(2);
+        a.table.set(S, Some(creds(Holding::Stub, &s0, &[])));
+        b.table.set(S, Some(creds(Holding::Read, &s0, &[])));
+        let mut p = Pair::new(a, b, account(1), account(2));
+        p.run();
+        assert!(p.a.open(p.ca, &S) && p.b.open(p.cb, &S));
+        assert_eq!(p.a.opens.members(p.ca)[&S].own, SourceClass::Stub);
+        p.b.reported(p.cb, S, 7);
+        p.a.moved.clear();
+        let at = if ended { &s1 } else { &s0 };
+        let older: &[StepKeys] = if ended { std::slice::from_ref(&s0) } else { &[] };
+        if ended {
+            p.a.table.until = 3;
+            p.a.table.set(S, Some(creds(Holding::Stub, at, older)));
+            p.a.settle();
+            assert!(p.a.opens.members(p.ca)[&S].until.is_some(), "ended");
+        }
+        p.a.table.set(S, Some(creds(Holding::Read, at, older)));
+        p.a.settle();
+        if ended {
+            p.a.reported(p.ca, S, 3);
+            p.a.settle();
+            p.b.table.set(S, Some(creds(Holding::Read, &s1, std::slice::from_ref(&s0))));
+            p.b.settle();
+        }
+        p.run();
+        assert!(p.a.open(p.ca, &S), "ended {ended}: open again as a reader");
+        assert!(p.a.moved.contains(&Moved::Joined(p.ca, S, Rejoin::From(None))), "ended {ended}: rejoined from the start: {:?}", p.a.moved);
+    }
+}
+
 // spec/sync-opens.md §3 (agreement): a member only one side's record holds closes there, with
 // no position kept, and is tested again: the two sides open it again.
 #[test]

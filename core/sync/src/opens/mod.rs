@@ -115,7 +115,8 @@ enum Close {
     AtOnce,
     /// S left this node's sync set: nothing kept, and its Lost names no position.
     Left,
-    /// This side's class moved: kept as at `Until`, and S opens again by testing.
+    /// This side's class moved: kept as at `Until`, and S opens again by testing. Either, for a
+    /// member this side declared a stub that no longer holds S so: as `AtOnce`.
     Class,
 }
 
@@ -2395,6 +2396,11 @@ impl Opens {
     /// where it stopped this side keeps.
     fn close_member(&mut self, ctx: &mut Ctx, conn: ConnId, s: SyncId, why: Close, moved: &mut Vec<Moved>) {
         let Some(m) = self.member(conn, &s).cloned() else { return };
+        // a member this side held as a stub was served role entries alone: where its stream stood
+        // says nothing of the rest, so once this side holds S otherwise, whatever closes it keeps
+        // nothing (spec/sync-opens.md §6)
+        let moved_on = m.own == SourceClass::Stub && self.admissible(&s).is_none_or(|a| a.own != SourceClass::Stub);
+        let why = if moved_on && matches!(why, Close::Class | Close::Until) { Close::AtOnce } else { why };
         if let (Close::Until, Some(u), Some(c)) = (why, m.until, self.conns.get_mut(&conn)) {
             let at = c.served.entry((s, m.own, m.class)).or_insert(u);
             *at = (*at).max(u);
