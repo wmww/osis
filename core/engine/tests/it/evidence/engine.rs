@@ -177,8 +177,10 @@ fn a_write_listing_an_old_step_after_sync_is_compacted_requires_the_snapshot_spe
     let sid = lp.peers[0].engine.sync_id_of(&g).unwrap().unwrap();
     let issue = |lp: &mut LocalPeer| -> CommitId {
         lp.advance(1000);
+        // a refreshed deposit seed makes a step due
+        lp.peers[0].engine.refresh_deposit_seed(&g).unwrap();
         let before: BTreeSet<CommitId> = lp.peers[0].engine.commit_ids().into_iter().collect();
-        lp.peers[0].engine.issue_step(&g, &sid, true).unwrap().unwrap();
+        lp.peers[0].engine.issue_step(&g, &sid).unwrap().unwrap();
         let new: Vec<CommitId> = lp.peers[0].engine.commit_ids().into_iter().filter(|c| !before.contains(c)).collect();
         assert_eq!(new.len(), 1, "one commit records the step");
         new[0]

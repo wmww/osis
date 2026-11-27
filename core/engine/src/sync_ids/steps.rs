@@ -486,7 +486,7 @@ mod tests {
         let rot = lp.peers[0].engine.rotate_leaving_out(&g, &[Role::Admin], &[]).unwrap().expect("rotated");
         lp.advance(1_000);
         let before = lp.commit_ids(0);
-        lp.peers[0].engine.issue_step(&g, &sync_id, false).unwrap().expect("the step is due");
+        lp.peers[0].engine.issue_step(&g, &sync_id).unwrap().expect("the step is due");
         let step = *lp.commit_ids(0).difference(&before).next().expect("the step's commit");
         lp.advance(1_000);
         let mut m = Mutation::new();
@@ -529,7 +529,7 @@ mod tests {
         let rot = lp.peers[0].engine.rotate_leaving_out(&g, &[Role::Admin], &[]).unwrap().expect("rotated");
         lp.advance(1_000);
         let before = lp.commit_ids(0);
-        lp.peers[0].engine.issue_step(&g, &sync_id, false).unwrap().expect("the step is due");
+        lp.peers[0].engine.issue_step(&g, &sync_id).unwrap().expect("the step is due");
         let step = *lp.commit_ids(0).difference(&before).next().expect("the step's commit");
         lp.advance(1_000);
         let mut m = Mutation::new();

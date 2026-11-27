@@ -209,7 +209,7 @@ fn a_writer_taking_a_stranded_notice_reseals_its_holder_spec_sync_inbox_5() {
     lp.peers[0].engine.rotate_leaving_out(&g, &[Role::Read], &[m]).unwrap().unwrap();
     let e = super::tests::newest_read(&lp, 0, g).unwrap();
     let s = lp.peers[0].engine.sync_ids(&g).unwrap()[0].id;
-    lp.peers[0].engine.issue_step(&g, &s, false).unwrap().expect("a step due");
+    lp.peers[0].engine.issue_step(&g, &s).unwrap().expect("a step due");
     lp.sync(0, 1).unwrap();
     assert!(lp.peers[1].engine.stranded(&s).unwrap().is_some(), "m is stranded");
     lp.peers[1].engine.fire_stranded(&s, &m).unwrap();
@@ -276,7 +276,7 @@ fn a_fire_sent_between_a_rotation_and_its_step_is_taken_spec_crypto_7() {
     assert_eq!(listed, vec![head.delete], "the fire lists the recorded step's key");
     lp.advance(1_000);
     let sync_id = head.sync_id;
-    lp.peers[0].engine.issue_step(&g, &sync_id, false).unwrap().expect("the step is due");
+    lp.peers[0].engine.issue_step(&g, &sync_id).unwrap().expect("the step is due");
     assert_eq!(lp.peers[0].engine.core.listed_step(&g).map(|s| s.delete), Some(rotated), "the step registers the rotation");
     assert_eq!(published(&mut lp, 0), Some(ct::SigningKey::Ed25519(rotated.to_vec())), "published with the step");
     let opened = lp.peers[0].engine.open_entry(&out.sync_id, &osis_blob::blob_id(&out.blob), &[0; 57], &out.blob, u64::MAX).unwrap();
@@ -399,10 +399,10 @@ fn a_writers_junk_read_keyset_swallows_no_outside_fire_spec_crypto_3() {
     assert!(outside_fire(&mut lp, 2, g, &f, 5).is_none(), "no read key in force: the fire waits");
     lp.advance(1_000);
     let sync_id = lp.peers[0].engine.sync_ids(&g).unwrap()[0].id;
-    assert!(lp.peers[0].engine.issue_step(&g, &sync_id, false).unwrap().is_none(), "no step due: the admin vouches for no epoch it lacks");
+    assert!(lp.peers[0].engine.issue_step(&g, &sync_id).unwrap().is_none(), "no step due: the admin vouches for no epoch it lacks");
     lp.peers[0].engine.demote(&g, &crate::flows::Demotion { holder: tids[1], new: None, retain: None }).unwrap();
     lp.advance(1_000);
-    lp.peers[0].engine.issue_step(&g, &sync_id, false).unwrap().expect("a step due after the removal's rotation");
+    lp.peers[0].engine.issue_step(&g, &sync_id).unwrap().expect("a step due after the removal's rotation");
     lp.sync_all().unwrap();
     let out = outside_fire(&mut lp, 2, g, &f, 5).expect("sealed to the step's read key");
     let removal = super::tests::newest_read(&lp, 0, g).unwrap();
@@ -428,7 +428,7 @@ fn a_junk_kem_key_at_the_steps_epoch_holds_no_fire_back_spec_crypto_3() {
     let out = outside_fire(&mut lp, 2, g, &f, 5).expect("the read key stays in force");
     sealed_to(&mut lp, &out, e, &[0, 1]);
     let sync_id = lp.peers[0].engine.sync_ids(&g).unwrap()[0].id;
-    assert!(lp.peers[0].engine.issue_step(&g, &sync_id, false).unwrap().is_none(), "no step due");
+    assert!(lp.peers[0].engine.issue_step(&g, &sync_id).unwrap().is_none(), "no step due");
 }
 
 // spec/crypto.md §3 (Read key in force), spec/permissions.md §5.2: peer 1, a writer of g, is
@@ -446,7 +446,7 @@ fn a_removed_writers_keyset_holds_no_fire_back_spec_crypto_3() {
     lp.peers[0].engine.demote(&g, &crate::flows::Demotion { holder: tids[1], new: None, retain: None }).unwrap();
     let sync_id = lp.peers[0].engine.sync_ids(&g).unwrap()[0].id;
     lp.advance(1_000);
-    lp.peers[0].engine.issue_step(&g, &sync_id, false).unwrap().expect("a step due after the removal's rotation");
+    lp.peers[0].engine.issue_step(&g, &sync_id).unwrap().expect("a step due after the removal's rotation");
     lp.sync_all().unwrap();
     let e = super::tests::newest_read(&lp, 0, g).unwrap();
     assert!(lp.peers[1].engine.epochs(&g).is_none_or(|x| x.read.secret(&e).is_none()), "peer 1 left out of the removal's epoch");
@@ -480,40 +480,13 @@ fn an_outside_fire_waits_for_the_step_after_a_writers_rotation_spec_crypto_3() {
     assert!(outside_fire(&mut lp, 2, g, &f, 5).is_none(), "a read keyset written after the step keys: the fire waits");
     lp.advance(1_000);
     let sync_id = lp.peers[0].engine.sync_ids(&g).unwrap()[0].id;
-    lp.peers[0].engine.issue_step(&g, &sync_id, false).unwrap().expect("a step due");
+    lp.peers[0].engine.issue_step(&g, &sync_id).unwrap().expect("a step due");
     lp.sync_all().unwrap();
     let out = outside_fire(&mut lp, 2, g, &f, 5).expect("sealed after the step");
     let id = *lp.peers[2].engine.fires_owed().first().unwrap();
     assert_eq!(lp.peers[2].engine.fire_epoch(&id).unwrap(), Some(new));
     assert!(matches!(opened_by(&mut lp, 3, &out), crate::sync::Opened::NotOpen), "peer 3 opens nothing");
     assert!(matches!(opened_by(&mut lp, 0, &out), crate::sync::Opened::Commit(..)), "the admin opens it");
-}
-
-// spec/crypto.md §3 (Read key in force: only over the keyset its issuer had received): peer 1, a
-// writer of g, rotates read leaving reader peer 3 out; the admin, not yet holding that rotation,
-// issues a step after it. Peer 2, holding both, holds back its fire from outside: the step names
-// the keyset before the rotation. Once the admin holds the rotation its step is due and the fire
-// goes sealed to the new epoch, which peer 3 does not open. Fails if a step written later counts
-// whatever keyset its issuer held (the old epoch back in force for the party left out).
-#[test]
-fn a_step_unaware_of_a_writers_rotation_puts_no_old_key_in_force_spec_crypto_3() {
-    let (mut lp, g, tids) = granted(4, &[(1, Role::Write), (3, Role::Read)]);
-    let f = fires_kept(&mut lp, g);
-    lp.advance(1_000);
-    lp.peers[1].engine.rotate_leaving_out(&g, &[Role::Read], &[tids[3]]).unwrap().expect("rotated");
-    let new = super::tests::newest_read(&lp, 1, g).unwrap();
-    lp.advance(1_000);
-    let sync_id = lp.peers[0].engine.sync_ids(&g).unwrap()[0].id;
-    lp.peers[0].engine.issue_step(&g, &sync_id, true).unwrap().expect("a step without the rotation");
-    lp.sync_all().unwrap();
-    assert!(outside_fire(&mut lp, 2, g, &f, 5).is_none(), "the step names the keyset before the rotation: the fire waits");
-    lp.advance(1_000);
-    lp.peers[0].engine.issue_step(&g, &sync_id, false).unwrap().expect("a step due once the admin holds the rotation");
-    lp.sync_all().unwrap();
-    let out = outside_fire(&mut lp, 2, g, &f, 5).expect("sealed after the step");
-    let id = *lp.peers[2].engine.fires_owed().first().unwrap();
-    assert_eq!(lp.peers[2].engine.fire_epoch(&id).unwrap(), Some(new));
-    assert!(matches!(opened_by(&mut lp, 3, &out), crate::sync::Opened::NotOpen), "peer 3 opens nothing");
 }
 
 // spec/sync-inbox.md §4 (A sealed fire: one holding any delta but one fire of an external signal of
@@ -683,7 +656,7 @@ fn a_sealed_fire_carries_its_chain_until_it_goes_spec_commits_4() {
     let mut rng = osis_crypto::SeededRng::from_seed([7; 32]);
     let prefix = osis_blob::Prefix::for_delete_keys(osis_blob::Prefix::random_salt(&mut rng), &h.blind, osis_commit::prefix_expiry(&h, &ais).map(osis_base::WallMs), &groups).unwrap();
     let commit = osis_base::decode(&fire.encode(), &limits).unwrap();
-    let blob = osis_blob::seal_fire(&prefix, &inbox, &epoch, &kem, &osis_blob::Sealed::Fire(osis_blob::SealedFire { copy: false, commit, evidence: chain, records, pages: Vec::new() }), &mut rng).unwrap();
+    let blob = osis_blob::seal_fire(&prefix, &inbox, &epoch, &kem, &osis_blob::Sealed { commit, evidence: chain, records, pages: Vec::new() }, &mut rng).unwrap();
     let e1 = &mut lp.peers[1].engine;
     let f = match e1.open_entry(&sync_id, &osis_blob::blob_id(&blob), &[0; 57], &blob, u64::MAX).unwrap() {
         crate::sync::Opened::Commit(f, _) => f,
@@ -718,10 +691,10 @@ fn a_step_naming_a_keyset_its_issuer_lacks_puts_no_old_key_in_force_spec_crypto_
     super::tests::deliver_without_secrets(&mut lp, 1, 0, g);
     lp.advance(1_000);
     let sync_id = lp.peers[0].engine.sync_ids(&g).unwrap()[0].id;
-    let _ = lp.peers[0].engine.issue_step(&g, &sync_id, false).unwrap();
+    let _ = lp.peers[0].engine.issue_step(&g, &sync_id).unwrap();
     lp.sync_all().unwrap();
     lp.advance(1_000);
-    let _ = lp.peers[0].engine.issue_step(&g, &sync_id, false).unwrap();
+    let _ = lp.peers[0].engine.issue_step(&g, &sync_id).unwrap();
     lp.sync_all().unwrap();
     let out = outside_fire(&mut lp, 2, g, &f, 5).expect("sealed once the admin holds the rotation whole");
     let id = *lp.peers[2].engine.fires_owed().first().unwrap();

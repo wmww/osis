@@ -851,7 +851,7 @@ fn nodes_and_alice() -> (LocalPeer, Tid, Tid, SyncId) {
 /// The head step of sync ID `s` of actor `a` at peer `k`: the one no other names as its parent.
 fn head_step(lp: &mut LocalPeer, k: usize, a: &Tid, s: &SyncId) -> osis_blob::Step {
     let ids = lp.peers[k].engine.get_typed(a, &ct::SYNC).unwrap().unwrap();
-    let steps: Vec<osis_blob::Step> = ids.get(s).unwrap().steps.values().map(|r| osis_blob::parse_record(r).unwrap().0).collect();
+    let steps: Vec<osis_blob::Step> = ids.get(s).unwrap().steps.values().map(|r| osis_blob::parse_record(r).unwrap()).collect();
     steps.iter().find(|x| !steps.iter().any(|y| y.prev == Some(x.id()))).unwrap().clone()
 }
 
@@ -1323,21 +1323,18 @@ fn dependent_mint_admin_gets_secrets_before_its_thing_spec_perm_3() {
     assert_eq!(sealed_write(&mut lp, 1, doc, "by H's writer"), BTreeSet::from([0, 2]), "H's writer writes the doc; its admin and reader read it");
 }
 
-// spec/sync-ids.md §2, spec/sync-ids.md §6: after a rotation an admin issues a child of the peer's head at the
-// newest epochs; the removed node has no claim key in it, the remaining one has.
+// spec/sync-ids.md §2, spec/sync-ids.md §6: after a rotation an admin issues a child of the peer's
+// head at the newest epochs.
 #[test]
 fn registration_step_after_rotation_spec_sync_5() {
     let (mut lp, p, _pa, card) = nodes_and_alice();
     let d1 = lp.peers[0].engine.tid();
     let parent = head_step(&mut lp, 1, &p, &card);
     let had = lp.peers[1].engine.get_typed(&p, &ct::SYNC).unwrap().unwrap().get(&card).unwrap().steps.len();
-    assert!(lp.peers[1].engine.issue_step(&p, &card, false).unwrap().is_none(), "nothing newer");
+    assert!(lp.peers[1].engine.issue_step(&p, &card).unwrap().is_none(), "nothing newer");
     lp.peers[1].engine.demote(&p, &Demotion { holder: d1, new: None, retain: None }).unwrap();
-    let (step, set) = lp.peers[1].engine.issue_step(&p, &card, false).unwrap().unwrap();
+    let step = lp.peers[1].engine.issue_step(&p, &card).unwrap().unwrap();
     step.verify_child(&parent).unwrap();
-    let claims = |i: usize| step.claim_key(lp.peers[i].engine.node_read_kem().unwrap().x25519()).unwrap().verifying_key().to_bytes();
-    assert!(set.contains(&claims(1)));
-    assert!(!set.contains(&claims(0)));
     let now = lp.peers[1].engine.get_typed(&p, &ct::SYNC).unwrap().unwrap();
     assert_eq!(now.get(&card).unwrap().steps.len(), had + 1);
 }
@@ -1362,7 +1359,7 @@ fn removal_refreshes_deposit_seed_spec_crypto_3() {
     let removal = *done.commits.last().unwrap();
     let h = lp.peers[2].engine.header(&removal).unwrap();
     assert!(h.aspects.iter().any(|a| a.tid == t && a.ak.as_str() == "roles.0") && h.aspects.iter().any(|a| a.tid == t && a.ak.as_str() == "keys.0"), "in the removal's rotation commit");
-    let (step, _) = lp.peers[2].engine.issue_step(&t, &card, false).unwrap().unwrap();
+    let step = lp.peers[2].engine.issue_step(&t, &card).unwrap().unwrap();
     assert_eq!(step.keys.deposit, osis_crypto::deposit_key(&new, &card).verifying_key());
 }
 
@@ -1372,15 +1369,15 @@ fn removal_refreshes_deposit_seed_spec_crypto_3() {
 fn refreshed_deposit_seed_issues_step_spec_sync_5() {
     let (mut lp, p, _pa, card) = nodes_and_alice();
     let parent = head_step(&mut lp, 1, &p, &card);
-    assert!(lp.peers[1].engine.issue_step(&p, &card, false).unwrap().is_none(), "nothing newer");
+    assert!(lp.peers[1].engine.issue_step(&p, &card).unwrap().is_none(), "nothing newer");
     lp.peers[1].engine.refresh_deposit_seed(&p).unwrap();
     let new = lp.peers[1].engine.deposit_seed(&p).unwrap().unwrap();
-    let (step, _) = lp.peers[1].engine.issue_step(&p, &card, false).unwrap().unwrap();
+    let step = lp.peers[1].engine.issue_step(&p, &card).unwrap().unwrap();
     step.verify_child(&parent).unwrap();
     assert_eq!(step.keys.deposit, osis_crypto::deposit_key(&new, &card).verifying_key());
     assert_ne!(step.keys.deposit, parent.keys.deposit);
     assert_eq!((step.keys.sync, step.keys.write, step.keys.delete), (parent.keys.sync, parent.keys.write, parent.keys.delete));
-    assert!(lp.peers[1].engine.issue_step(&p, &card, false).unwrap().is_none(), "registered: nothing due");
+    assert!(lp.peers[1].engine.issue_step(&p, &card).unwrap().is_none(), "registered: nothing due");
 }
 
 // spec/crypto.md §4 (forks): two admins removing different holders concurrently fork the read
@@ -1547,9 +1544,9 @@ fn issue_step_after_inside_removal_spec_sync_5() {
     let t0 = newest_read(&lp, 1, t).unwrap();
     let sync_id = lp.peers[1].engine.sync_id_of(&t).unwrap().unwrap();
     lp.peers[1].engine.demote(&p, &Demotion { holder: d1, new: None, retain: None }).unwrap();
-    assert!(lp.peers[1].engine.issue_step(&t, &sync_id, false).unwrap().is_none(), "the holder has not rotated: nothing");
+    assert!(lp.peers[1].engine.issue_step(&t, &sync_id).unwrap().is_none(), "the holder has not rotated: nothing");
     lp.peers[1].engine.ensure_rotated(&t).unwrap();
-    let (step, _) = lp.peers[1].engine.issue_step(&t, &sync_id, false).unwrap().unwrap();
+    let step = lp.peers[1].engine.issue_step(&t, &sync_id).unwrap().unwrap();
     let t1 = newest_read(&lp, 1, t).unwrap();
     assert_ne!(t0, t1);
     let (_, sync) = lp.peers[1].engine.epochs(&t).unwrap().sync.newest_held().map(|(e, s)| (e, s.clone())).unwrap();

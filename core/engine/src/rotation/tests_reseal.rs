@@ -135,7 +135,7 @@ fn sealed_fire_passes_on_only_once_its_keyset_is_established_spec_crypto_5() {
     m.set(g, &osis_schema::core_types::RETENTION, &osis_schema::core_types::RetentionSetting::of(f.clone(), osis_schema::History::FOREVER)).unwrap();
     lp.peers[A].commit(m).unwrap().unwrap();
     let sid = lp.peers[R].engine.sync_ids(&g).unwrap()[0].id;
-    lp.peers[R].engine.issue_step(&g, &sid, false).unwrap().expect("R's step registers e_R");
+    lp.peers[R].engine.issue_step(&g, &sid).unwrap().expect("R's step registers e_R");
     lp.hold_at(S, g);
     for from in [A, R] {
         send_skipping(&mut lp, from, S, &skip);
@@ -909,25 +909,3 @@ fn access_down_a_holder_chain_is_lost_at_its_until_spec_permissions_2() {
     assert!(!e1.lost_due(&g).unwrap() && e1.lost_timed(&g).unwrap().is_some(), "lost by the until alone");
 }
 
-// spec/sync-opens.md §4 (judged on the rosters held here now), spec/permissions.md §2 (the grant
-// counts as removed): J of a holder whose grant has an `until` is reader before
-// it and departed after; a follower of J is due when the clock passes it, nothing else moving.
-#[test]
-fn j_moves_at_an_until_spec_sync_opens_4() {
-    let (mut lp, g, tids) = granted(2, &[]);
-    let until = osis_base::WallMs(lp.peers[0].engine.core.now().0 + 1_000);
-    lp.peers[0].engine.grant(&g, &tids[1], &osis_schema::core_types::Edge { until: Some(until), ..edge(Role::Read) }).unwrap();
-    lp.sync_all().unwrap();
-    let e0 = &mut lp.peers[0].engine;
-    let s = e0.sync_id_of(&g).unwrap().expect("g's sync ID");
-    let mut fx: osis_base::memo::Effects<(), crate::sync::J> = osis_base::memo::Effects::new("J at now");
-    fx.want(());
-    assert_eq!(fx.settle(&(), || e0.judge_peer(&s, &[crate::sync::ProvenThing { thing: tids[1], role: Some(Role::Admin) }]).unwrap()), Some((None, crate::sync::J::Reader)));
-    assert!(fx.due().is_empty());
-    lp.peers[0].clock.advance(2_000);
-    let e0 = &mut lp.peers[0].engine;
-    let now = e0.now();
-    e0.set_now(now);
-    assert_eq!(fx.due(), vec![()], "due at the until");
-    assert_eq!(fx.settle(&(), || e0.judge_peer(&s, &[crate::sync::ProvenThing { thing: tids[1], role: Some(Role::Admin) }]).unwrap()), Some((Some(crate::sync::J::Reader), crate::sync::J::Departed)));
-}

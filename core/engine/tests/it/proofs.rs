@@ -6,7 +6,7 @@ use crate::disputes::{admins, fight};
 use crate::flows::{edge_of, people, send_carried, thing_of};
 use osis_base::{Role, Tid};
 use osis_engine::local_peer::LocalPeer;
-use osis_engine::sync::{Claim, J, ProvenThing};
+use osis_engine::sync::{Claim, ProvenThing};
 
 /// Peer `i`'s node thing's claim, signed by its key, claiming `path`.
 fn claim(lp: &mut LocalPeer, i: usize, path: &[Tid]) -> Claim {
@@ -73,7 +73,7 @@ fn honest_copies_prove_a_path_the_verifier_lacks_spec_sync_opens_2() {
 }
 
 // spec/sync-opens.md §2 (proven role: the least of the path's and the claimed thing's role on S),
-// §4 J, spec/permissions.md §4 (Stranded): peer 0 holds read on t and t
+// spec/permissions.md §4 (Stranded): peer 0 holds read on t and t
 // write on s. Peer 0 proving [t] is s's reader, never its writer, though t writes s.
 #[test]
 fn the_proven_role_is_capped_by_the_path_spec_sync_opens_2() {
@@ -84,7 +84,6 @@ fn the_proven_role_is_capped_by_the_path_spec_sync_opens_2() {
     let sid = e.sync_id_of(&s).unwrap().expect("s's sync ID");
     let p = e.proven(&[c], &pr.copies).unwrap();
     assert_eq!(role_of(&p, &t), Some(Role::Read));
-    assert_eq!(e.judge_peer(&sid, &p).unwrap(), J::Reader);
     assert_eq!(e.writer_of(&sid, &p).unwrap(), None, "read on t: no writer of s");
 }
 

@@ -12,12 +12,11 @@ use osis_engine::Mutation;
 use osis_schema::core_types as ct;
 use std::collections::BTreeSet;
 
-// spec/sync-ids.md §3 (claim key: a listed reader derives it from its own key and the step key),
-// §4 (owner), spec/sync-opens.md §4 (admissible: read secrets at a current epoch, the head's sync
-// proof): of the node thing D's sync ID, its genesis step and the first, which lists no reader
-// (its minting boxes nobody: spec/permissions.md §3), so the node derives no claim key there.
+// spec/sync-ids.md §4 (owner), spec/sync-opens.md §4 (admissible: the head's sync proof, the
+// sync proofs of the sync secrets held): of the node thing D's sync ID, its genesis step and the
+// first.
 #[test]
-fn read_credentials_and_claim_key_spec_sync_ids_3() {
+fn read_credentials_spec_sync_opens_4() {
     let (mut lp, _) = people(1);
     let e = &mut lp.peers[0].engine;
     let d = e.tid();
@@ -25,16 +24,14 @@ fn read_credentials_and_claim_key_spec_sync_ids_3() {
     let ids = e.sync_ids(&d).unwrap();
     assert_eq!(ids.len(), 1);
     assert!(!ids[0].hint);
-    let [(genesis, _), (head, _)] = ids[0].path.steps.as_slice() else { panic!("the genesis step and the first") };
+    let [genesis, head] = ids[0].path.steps.as_slice() else { panic!("the genesis step and the first") };
     genesis.verify_genesis().unwrap();
     head.verify_child(genesis).unwrap();
     let head = head.clone();
     let rc = e.read_credentials(&ds).unwrap().expect("a reader of D");
     assert_eq!(rc.head.as_ref().map(|s| s.id()), Some(head.id()));
-    assert!(!rc.read_secrets.is_empty(), "a current read secret");
     assert_eq!(rc.proofs.first().map(|p| p.0), Some(head.id()), "the head's sync proof first");
-    assert!(e.claim_key(&ds, &head.id()).unwrap().is_none(), "nobody is listed at the first step");
-    assert!(matches!(&ids[0].path.steps[1], (_, Some(_))), "its claim set held");
+    assert_eq!(rc.held_proofs.first().map(|p| p.1), Some(head.keys.sync.to_bytes()), "the newest sync secret's proof, of the head's sync key");
 }
 
 // spec/data-model.md §9 (`caps^.0`: each node's entry, on the thing its node root's
@@ -68,7 +65,7 @@ fn caps_read_from_the_nodes_entry_spec_sync_ids_5() {
 // recorded head registers, a child of that head, after logging the rotation commits it registers):
 // nothing is due until a removal rotates; then the step is due, naming the removal's rotation
 // among what it registers, and its issue records a child of the recorded head at the new sync
-// epoch, after which nothing is due; a fresh step is a further child. A refreshed deposit seed
+// epoch, after which nothing is due. A refreshed deposit seed
 // makes a step due, and `issue_due_step` issues it (both read the head and seed one way).
 #[test]
 fn a_step_is_due_after_a_rotation_spec_sync_ids_6() {
@@ -76,7 +73,7 @@ fn a_step_is_due_after_a_rotation_spec_sync_ids_6() {
     let t = thing_of(&mut lp, 0, ps[0]);
     lp.peers[0].engine.grant(&t, &ps[1], &edge_of(Role::Read)).unwrap();
     let s = lp.peers[0].engine.sync_id_of(&t).unwrap().unwrap();
-    let head = |lp: &mut LocalPeer| lp.peers[0].engine.sync_ids(&t).unwrap().iter().find(|o| o.id == s).unwrap().path.steps.last().unwrap().0.clone();
+    let head = |lp: &mut LocalPeer| lp.peers[0].engine.sync_ids(&t).unwrap().iter().find(|o| o.id == s).unwrap().path.steps.last().unwrap().clone();
     assert!(lp.peers[0].engine.due_step(&s).unwrap().is_none(), "nothing newer");
     let before = head(&mut lp);
     let done = lp.peers[0].engine.demote(&t, &Demotion { holder: ps[1], new: None, retain: None }).unwrap();
@@ -87,13 +84,11 @@ fn a_step_is_due_after_a_rotation_spec_sync_ids_6() {
     let sync = lp.peers[0].engine.epochs(&t).unwrap().sync.newest_held().map(|(_, x)| x.clone()).unwrap();
     assert_eq!(step.keys.sync, osis_crypto::role_key(osis_crypto::RoleKey::Sync, &sync).verifying_key(), "at the new sync epoch");
     assert!(lp.peers[0].engine.due_step(&s).unwrap().is_none(), "nothing due after it");
-    let (fresh, _) = lp.peers[0].engine.issue_step(&t, &s, true).unwrap().expect("a fresh step");
-    assert_eq!((fresh.prev, head(&mut lp).id()), (Some(step.id()), fresh.id()));
     // a refreshed deposit seed: due by the seed `issue_due_step` reads, and issued from it
     lp.peers[0].engine.refresh_deposit_seed(&t).unwrap();
     assert!(lp.peers[0].engine.due_step(&s).unwrap().is_some_and(|d| d.deposit_only), "a new deposit key is due");
     let seeded = lp.peers[0].engine.issue_due_step(&s).unwrap().expect("issued by the same reading");
-    assert_eq!(seeded.prev, Some(fresh.id()));
+    assert_eq!(seeded.prev, Some(step.id()));
     assert!(lp.peers[0].engine.due_step(&s).unwrap().is_none(), "nothing due after it");
 }
 
@@ -292,10 +287,10 @@ fn a_step_needs_its_epochs_rotations_spec_sync_ids_6() {
     };
     let d = e.mint_independent(&[osis_engine::MintAdmin::Thing(me)], |ts| Ok(vec![hold(ts[0])?])).unwrap().0[0];
     let ids = e.sync_ids(&d).unwrap();
-    let step = ids[0].path.steps[1].0.id();
+    let step = ids[0].path.steps[1].id();
     let needs = e.step_needs(&ids[0].id, &step).unwrap();
     assert!(!needs.is_empty());
-    assert!(e.step_needs(&ids[0].id, &ids[0].path.steps[0].0.id()).unwrap().is_empty());
+    assert!(e.step_needs(&ids[0].id, &ids[0].path.steps[0].id()).unwrap().is_empty());
     assert!(needs.iter().all(|c| e.core.ix.commits.contains_key(c)));
 }
 
@@ -712,8 +707,10 @@ fn a_step_on_the_delete_base_travels_as_a_certificate_copy_spec_permissions_4() 
     lp.peers[0].engine.make_independent(&g).unwrap();
     let gs = lp.peers[0].engine.sync_id_of(&g).unwrap().unwrap();
     lp.advance(1000);
+    // a refreshed deposit seed makes a step due
+    lp.peers[0].engine.refresh_deposit_seed(&g).unwrap();
     let before: BTreeSet<_> = lp.peers[0].engine.commit_ids().into_iter().collect();
-    lp.peers[0].engine.issue_step(&g, &gs, true).unwrap().unwrap();
+    lp.peers[0].engine.issue_step(&g, &gs).unwrap().unwrap();
     let step: Vec<_> = lp.peers[0].engine.commit_ids().into_iter().filter(|c| !before.contains(c)).collect();
     let [step] = step[..] else { panic!("one commit records the step: {step:?}") };
     let d = thing_of(&mut lp, 0, g);
@@ -743,8 +740,10 @@ fn a_follower_of_a_commits_bodies_moves_after_follow_alone_spec_permissions_4() 
     lp.peers[0].engine.make_independent(&g).unwrap();
     let gs = lp.peers[0].engine.sync_id_of(&g).unwrap().unwrap();
     lp.advance(1000);
+    // a refreshed deposit seed makes a step due
+    lp.peers[0].engine.refresh_deposit_seed(&g).unwrap();
     let before: BTreeSet<_> = lp.peers[0].engine.commit_ids().into_iter().collect();
-    lp.peers[0].engine.issue_step(&g, &gs, true).unwrap().unwrap();
+    lp.peers[0].engine.issue_step(&g, &gs).unwrap().unwrap();
     let step: Vec<_> = lp.peers[0].engine.commit_ids().into_iter().filter(|c| !before.contains(c)).collect();
     let [step] = step[..] else { panic!("one commit records the step: {step:?}") };
     let ids = |e: &mut osis_engine::Engine| e.sync_bodies(&step).unwrap().keys().map(|k| k.0).collect::<BTreeSet<_>>();
