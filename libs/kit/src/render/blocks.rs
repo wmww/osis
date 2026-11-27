@@ -41,10 +41,12 @@ pub struct Built {
     ids: Vec<WidgetId>,
 }
 
-/// A list's widget and, row by row, its key and what the row registered.
+/// A list's widget and, row by row, its key and what the row registered; its more row's label
+/// and side, and what it registered.
 pub struct RowList {
     pub widget: WidgetId,
     pub rows: Vec<(String, Built)>,
+    pub more: Option<(String, bool, Built)>,
 }
 
 impl RowList {
@@ -73,6 +75,24 @@ impl RowList {
                 _ => {}
             }
         }
+    }
+
+    /// Makes the more row match `l`'s, when its label or side changed.
+    pub fn update_more(&mut self, list: &mut WidgetMut<'_, VirtualList>, maker: &mut Maker, l: &List) {
+        if self.more.as_ref().map(|(label, before, _)| (label.clone(), *before)) == more_of(l) {
+            return;
+        }
+        if let Some((_, _, b)) = self.more.take() {
+            maker.acts.forget(&b);
+        }
+        let (row, before) = match maker.more(l) {
+            Some((row, label, before, built)) => {
+                self.more = Some((label, before, built));
+                (Some(row), before)
+            }
+            None => (None, false),
+        };
+        VirtualList::set_more(list, row, before);
     }
 }
 
@@ -115,8 +135,10 @@ impl Acts {
         self.0.iter().find(|(_, h)| h.editor.as_ref() == Some(key)).map(|(id, _)| *id)
     }
     pub fn forget(&mut self, b: &Built) {
-        for (_, row) in b.lists.values().flat_map(|l| &l.rows) {
-            self.forget(row);
+        for l in b.lists.values() {
+            for row in l.rows.iter().map(|(_, b)| b).chain(l.more.as_ref().map(|(_, _, b)| b)) {
+                self.forget(row);
+            }
         }
         for id in &b.ids {
             self.0.remove(id);
@@ -164,6 +186,13 @@ pub fn blocks(data: &Data, window: &WindowState, look: &Arc<Look>, acts: &mut Ac
         }
     }
     (NewWidget::new(col).erased(), r.built)
+}
+
+/// A list's more row, offered while rows remain past its window and it can open them
+/// (`Shape::open`): its label, and whether those rows are before the window.
+pub fn more_of(l: &List) -> Option<(String, bool)> {
+    l.shape.open.as_ref().filter(|_| l.more_before || l.more_after)?;
+    Some((l.left().map_or_else(|| "More".to_string(), |n| format!("+{n} more")), !l.more_after))
 }
 
 fn tint(c: &Option<String>) -> Option<crate::masonry::peniko::Color> {
@@ -336,6 +365,17 @@ impl Maker<'_> {
         }
     }
 
+    /// A list's more row (`more_of`): its widget, label, whether it goes above the rows, and what
+    /// it registered.
+    pub fn more(&mut self, l: &List) -> Option<(NewWidget<dyn Widget>, String, bool, Built)> {
+        let ((label, before), open) = more_of(l).zip(l.shape.open.clone())?;
+        let outer = std::mem::take(&mut self.built);
+        let w = NewWidget::new(KChip::new(&label, None, ChipMark::Icon(Icon::List), self.look.clone()).flat(true));
+        self.press(w.id(), open);
+        let built = std::mem::replace(&mut self.built, outer);
+        Some((w.erased(), label, before, built))
+    }
+
     /// A windowed list.
     fn list(&mut self, l: &List) -> NewWidget<dyn Widget> {
         let look = self.look.clone();
@@ -358,9 +398,14 @@ impl Maker<'_> {
             w = w.reorderable(fixed);
         }
         w = w.anchored(l.anchor, l.first.unwrap_or(0), l.total, l.more_before, l.more_after);
+        let mut kept = None;
+        if let Some((m, label, before, built)) = self.more(l) {
+            w = w.with_more(m, before);
+            kept = Some((label, before, built));
+        }
         let w = NewWidget::new(w);
         if let (Some(i), Some(slot)) = (listing, self.list_slot.clone()) {
-            self.built.lists.insert(i, RowList { widget: w.id(), rows: keyed });
+            self.built.lists.insert(i, RowList { widget: w.id(), rows: keyed, more: kept });
             self.hook(w.id()).list = Some((l.id.clone(), slot, i));
         }
         if let Some(d) = &l.shape.reorder {

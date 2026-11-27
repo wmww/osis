@@ -181,7 +181,7 @@ Each only made a bug unlikely (class X); the code ends by a fixpoint, a window o
 ### Kit (`libs/kit/`)
 | value | class | 0 / ∞ |
 |---|---|---|
-| `WINDOW` 64, `MIN_SIDE` 16, `MARGIN` 1, `DAY_ROWS` 24; `MAX_SIDE` 512 | M (a list loads a little more or less often; a day says how many more; `WINDOW` is also all a list that is no page's scroller shows, the rest reached by opening its thing); `MAX_SIDE`: R (a widget asks at most a screenful of rows; past it clamped) | nothing shown / the whole list built |
+| `WINDOW` 64, `MIN_SIDE` 16, `MARGIN` 1, `DAY_ROWS` 24; `MAX_SIDE` 512 | M (a list loads a little more or less often; a day says how many more; `WINDOW` is also all a list that is no page's scroller shows, its more row opening the rest: at 0 it shows only that row); `MAX_SIDE`: R (a widget asks at most a screenful of rows; past it clamped) | nothing shown / the whole list built |
 | `Page`: head and foot pinned while the page keeps at least their height (a 1:1 split) | M (on a short page they scroll with it a little sooner or later; the rail's half-the-room rule) | always scrolled: a composer leaves the screen on every page / always pinned: at a short height they take it all |
 | `GUTTER` 12 px, `MIN_THUMB` 24 px, `LINE` 60 px | M (the bar's size, a scroll step) | no bar or no room / no scroll |
 | `ROW_MIN` 220 px (before spacing) | M (lists put rows side by side only at this width each; the rail is this wide plus its sides, and shows when it and a page as wide fit) | rows squeezed to their icons, the rail always shown / rows never side by side, the rail never shown |

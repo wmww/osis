@@ -89,6 +89,7 @@ impl Facet for HoldsFacet {
             cols: cfg.get("cols").and_then(|c| c.parse().ok()).unwrap_or(0),
             new: (favorites && cfg.get("cols").is_none()).then(toggle_creating),
             reorder: favorites.then(|| Do::new(MoveFavorite)),
+            open: Some(Do::new(crate::view::Open(Some(t)))),
             ..Shape::new(Style::Card)
         };
         let choices = [(Arrange::Cards, "Cards", Icon::Tag), (Arrange::Rows, "Rows", Icon::List), (Arrange::Days, "Days", Icon::Calendar), (Arrange::Outline, "Outline", Icon::Tags), (Arrange::Stream, "Stream", Icon::Recent)];

@@ -228,7 +228,7 @@ impl Facet for LogFacet {
         let node = cx.path();
         let reply = reply_of(cx, &node)?;
         let mut blocks = Vec::new();
-        let list = stream(cx, vec![t], "log")?;
+        let list = stream(cx, vec![t], "log", Some(Do::new(osis_kit::view::Open(Some(t)))))?;
         if matches!(&list, Block::List(l) if l.is_empty()) {
             blocks.push(Block::Line("No messages yet.".into()));
         }

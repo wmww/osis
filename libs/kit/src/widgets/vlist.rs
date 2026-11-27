@@ -4,7 +4,8 @@
 //! `Cx::list`), keeps its place by the part at the top (the head, the first row of a line, the
 //! foot) so a row arriving above does not move the view, and pins to the end while following it.
 //! A list that is not a scroller (in another list's row, or a page's second list) is laid out
-//! whole: the rows of the window it was built with, at their own height. As the viewport nears the edge of what is
+//! whole: the rows of the window it was built with, at their own height, and its more row (one
+//! that opens the list on a page of its own) past them where rows remain. As the viewport nears the edge of what is
 //! loaded it asks for a new window (`ListAction::Moved`); the shell asks the graph and applies
 //! the difference. Rows go in columns like a tile grid (a row marked `span` runs the full width).
 //! Dragging a row (a mouse drag, or a touch after a long press picks it up) emits
@@ -145,11 +146,14 @@ pub struct VirtualList {
     vh: f64,
     /// The page this list holds (`Page`), from the last layout.
     page: Option<LinkRef>,
+    /// What stands for the rows past the window while the list is laid out whole (stashed while
+    /// it scrolls), and whether those rows are before it.
+    more: Option<(WidgetPod<dyn Widget>, bool)>,
 }
 
 impl VirtualList {
     pub fn new(look: Arc<Look>, min: f64, max_cols: usize, gap: f64, follow: bool) -> VirtualList {
-        VirtualList { children: Vec::new(), spans: Vec::new(), look, min, max_cols, gap, fixed: None, rects: Vec::new(), press: None, drop: None, first: 0, more_before: false, more_after: false, part: Part::Head, anchor: 0, offset: 0.0, follow, stuck: follow, asked: None, total: None, jump: None, jumped: false, bar: None, grab: None, to_head: None, scroller: false, t: 0.0, t_min: 0.0, t_max: 0.0, v: 0.0, vh: 0.0, page: None }
+        VirtualList { children: Vec::new(), spans: Vec::new(), look, min, max_cols, gap, fixed: None, rects: Vec::new(), press: None, drop: None, first: 0, more_before: false, more_after: false, part: Part::Head, anchor: 0, offset: 0.0, follow, stuck: follow, asked: None, total: None, jump: None, jumped: false, bar: None, grab: None, to_head: None, scroller: false, t: 0.0, t_min: 0.0, t_max: 0.0, v: 0.0, vh: 0.0, page: None, more: None }
     }
 
     pub fn reorderable(mut self, fixed: usize) -> Self {
@@ -161,6 +165,22 @@ impl VirtualList {
         self.children.push(child.to_pod());
         self.spans.push(span);
         self
+    }
+
+    /// The more row: `before` puts it above the rows.
+    pub fn with_more(mut self, more: NewWidget<dyn Widget>, before: bool) -> Self {
+        self.more = Some((more.to_pod(), before));
+        self
+    }
+
+    /// Replaces the more row.
+    pub(crate) fn set_more(this: &mut WidgetMut<'_, Self>, more: Option<NewWidget<dyn Widget>>, before: bool) {
+        if let Some((old, _)) = this.widget.more.take() {
+            this.ctx.remove_child(old);
+        }
+        this.widget.more = more.map(|m| (m.to_pod(), before));
+        this.ctx.children_changed();
+        this.ctx.request_layout();
     }
 
     /// Where a list made fresh starts: the row at `anchor` at the top, when a window names one.
@@ -562,6 +582,9 @@ impl Widget for VirtualList {
         for c in &mut self.children {
             ctx.register_child(c);
         }
+        if let Some((m, _)) = &mut self.more {
+            ctx.register_child(m);
+        }
     }
 
     fn layout(&mut self, ctx: &mut LayoutCtx<'_>, _props: &mut PropertiesMut<'_>, bc: &BoxConstraints) -> Size {
@@ -580,18 +603,38 @@ impl Widget for VirtualList {
         });
         let measuring = self.page.as_ref().is_some_and(|p| lock(p).measuring);
         self.scroller = self.page.is_some() || bc.is_height_bounded();
-        if measuring || !self.scroller {
-            // whole: every row it holds at its own height
+        let whole = !self.scroller;
+        if let Some((m, _)) = &mut self.more {
+            ctx.set_stashed(m, !whole);
+        }
+        if measuring || whole {
+            // whole: every row it holds at its own height, and the more row past them
             let (tops, y) = self.place_rows(ctx, width, gap);
-            for (c, t) in self.children.iter_mut().zip(tops) {
-                ctx.place_child(c, Point::new(0.0, t));
+            let mut content = height(y, self.children.len());
+            let mut lead = 0.0;
+            if let Some((m, before)) = self.more.as_mut().filter(|_| whole) {
+                let mh = ctx.run_layout(m, &BoxConstraints::new(Size::new(0.0, 0.0), Size::new(width, f64::INFINITY))).height;
+                let sep = if content > 0.0 { gap } else { 0.0 };
+                if *before {
+                    lead = mh + sep;
+                    ctx.place_child(m, Point::ORIGIN);
+                    content += lead;
+                } else {
+                    ctx.place_child(m, Point::new(0.0, content + sep));
+                    content += sep + mh;
+                }
             }
-            let content = height(y, self.children.len());
+            for r in &mut self.rects {
+                *r = *r + masonry::kurbo::Vec2::new(0.0, lead);
+            }
+            for (c, t) in self.children.iter_mut().zip(tops) {
+                ctx.place_child(c, Point::new(0.0, t + lead));
+            }
             if let Some(p) = &self.page {
                 let mut l = lock(p);
                 (l.rows, l.whole) = (content, !(self.more_before || self.more_after));
             }
-            if !self.scroller {
+            if whole {
                 self.bar = None;
                 ctx.set_clip_path(Size::new(width, content).to_rect());
             }
@@ -738,6 +781,6 @@ impl Widget for VirtualList {
     }
 
     fn children_ids(&self) -> ChildrenIds {
-        self.children.iter().map(|c| c.id()).collect()
+        self.children.iter().chain(self.more.as_ref().map(|(m, _)| m)).map(|c| c.id()).collect()
     }
 }

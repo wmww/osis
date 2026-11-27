@@ -268,10 +268,12 @@ pub fn stream_page(cx: &Reader, things: &[Tid], at: &At, n: usize) -> Result<Pag
 }
 
 /// A stream list over `things`: rows one per entry, decorated per node by their facets. Its keys
-/// sort by time (`sort_key`), so the page cursor is positional.
-pub fn stream(cx: &Cx, things: Vec<Tid>, id: &str) -> Result<Block> {
+/// sort by time (`sort_key`), so the page cursor is positional. `open` opens it on its own page
+/// (`Shape::open`).
+pub fn stream(cx: &Cx, things: Vec<Tid>, id: &str, open: Option<Do>) -> Result<Block> {
     let mut shape = Shape::new(Style::Stream);
     shape.follow_end = true;
+    shape.open = open;
     cx.list(
         id,
         shape,
@@ -321,7 +323,7 @@ pub fn place(cx: &Cx, t: Tid, view: &Collection, arrange: &Arrange, week: i64, m
         }
         Arrange::Stream => {
             let items = source::items(cx, t)?;
-            stream(cx, (*items).clone(), "stream")
+            stream(cx, (*items).clone(), "stream", shape.open)
         }
         Arrange::Outline => outline(cx, t, shape),
         Arrange::Cards | Arrange::Rows => {

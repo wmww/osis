@@ -4,7 +4,7 @@
 //! height and width: one scrollable reaches all of it at any height, nothing scrolls when
 //! everything fits, and a wider window adds columns.
 use crate::view_tree::{data, name, note};
-use osis_kit::schema::{Arrange, COLLECTION, Collection, CollectionOrder as Order, CollectionSource as Source};
+use osis_kit::schema::{Arrange, COLLECTION, Collection, CollectionOrder as Order, CollectionSource as Source, ElementSpec};
 use osis_kit::masonry::accesskit::{Action, ActionRequest, Node, NodeId, Role};
 use osis_kit::masonry::app::{RenderRoot, RenderRootSignal};
 use osis_kit::masonry::core::{PointerEvent, PointerId, PointerInfo, PointerScrollEvent, PointerState, PointerType, ScrollDelta, Widget, WidgetId, WidgetRef, WindowEvent};
@@ -598,6 +598,46 @@ fn one_scroll_reaches_every_part() {
         }
         assert_eq!(seen.len(), n + 2, "height {h}: reached {seen:?}");
     }
+}
+
+/// A list in a row is laid out whole with its window's rows; past them its more row opens its
+/// thing, whose page reaches every row, the last too. The page's own list offers none.
+#[test]
+fn a_list_in_a_row_opens_what_is_past_its_window() {
+    let n = 100;
+    let d = data();
+    d.set_theme("glass").unwrap();
+    let (outer, inner) = (osis_kit::views::sample_offer(&d, "tag"), osis_kit::views::sample_offer(&d, "tag"));
+    for i in 0..n {
+        d.add_tag(note(&d, &format!("fav {i}")), inner).unwrap();
+    }
+    d.add_tag(inner, outer).unwrap();
+    let mut w = d.db.write();
+    let element = Some(ElementSpec { view_type: "collection".into(), config: Default::default() });
+    w.at(outer, COLLECTION).set(&Collection { source: Source::Holds, having: Default::default(), order: Order::Own, arrange: Arrange::Cards, element }).unwrap();
+    w.commit().unwrap();
+    d.set_open(Some(outer)).unwrap();
+    let mut s = Screen::show(d, 360, 700);
+    let more = format!("+{} more", n - osis_kit::view::paged::WINDOW);
+    let mut seen = Vec::new();
+    press(&mut s.ui, &mut s.rr, &s.signals, &mut seen, &more);
+    assert_eq!(s.d.opened().unwrap(), Some(inner));
+    // a screen reader's tree from the start (`press` left only updates coming)
+    let mut s = Screen::show(s.d.clone(), 360, 700);
+    let at = Point::new(180.0, 350.0);
+    let mut shown = BTreeSet::new();
+    for _ in 0..400 {
+        let nodes = s.nodes();
+        assert!(!nodes.values().any(|n| n.label().is_some_and(|l| l.ends_with(" more"))), "the page's list offers no more row");
+        shown.extend(seen_in(&s, &nodes, &|l: &str| l.starts_with("fav "), window(&s)));
+        if shown.len() == n {
+            break;
+        }
+        s.wheel(at, 200.0);
+        // the list asks for the next window
+        pump(&mut s.ui, &mut s.rr, &s.signals);
+    }
+    assert!(shown.contains(&format!("fav {}", n - 1)) && shown.len() == n, "reached {} rows", shown.len());
 }
 
 /// The topmost row that shows, of those named `fav ...`, and its top in the window (where what

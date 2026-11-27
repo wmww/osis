@@ -699,6 +699,7 @@ impl Ui {
                 let fixed = usize::from(matches!(m.rows.last(), Some(ListRow { item: Item::New(_), .. })));
                 VirtualList::set_window(&mut w, m.first.unwrap_or(0), m.total, m.more_before, m.more_after, spans, fixed);
                 VirtualList::set_anchor(&mut w, at);
+                list.update_more(&mut w, &mut maker, m);
             });
             made.extend(maker.children());
         }

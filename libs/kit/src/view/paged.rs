@@ -6,9 +6,10 @@
 use super::{Cx, Do, Entry, Local, ViewSpec};
 use osis::{Result, Tid};
 
-/// Rows a list holds before the widget has said how much it wants, and the window's unit for
-/// everything the harness bounds (Minor: past the shown rows a little extra is built, or a tall
-/// list loads once more; 0 would show nothing, infinity builds the whole list).
+/// Rows a list holds before the widget has said how much it wants, all a list laid out whole
+/// shows before its more row, and the window's unit for everything the harness bounds (Minor:
+/// past the shown rows a little extra is built, or a tall list loads once more; 0 would show
+/// nothing, or only a whole list's more row, infinity builds the whole list).
 pub const WINDOW: usize = 64;
 /// The most rows on one side of a window a list ever asks for (Resource bound: a viewport cannot
 /// use more; 0 would never scroll, infinity lets a widget ask for a whole history).
@@ -130,6 +131,9 @@ pub struct Shape {
     pub reorder: Option<Do>,
     /// A "new" tile at the end.
     pub new: Option<Do>,
+    /// Opens what this list lists on a page of its own. A list laid out whole (not its page's
+    /// scroller) offers it as a row past its window while rows remain there.
+    pub open: Option<Do>,
     /// Opens at the end, and stays at the end while scrolled there.
     pub follow_end: bool,
     /// What this list lists, where that can change under one id (a search's query): a new scope
@@ -139,7 +143,7 @@ pub struct Shape {
 
 impl Shape {
     pub fn new(style: Style) -> Shape {
-        Shape { style, cols: 0, reorder: None, new: None, follow_end: false, scope: String::new() }
+        Shape { style, cols: 0, reorder: None, new: None, open: None, follow_end: false, scope: String::new() }
     }
 }
 
@@ -183,6 +187,8 @@ pub struct List {
     pub(crate) more_after: bool,
     pub(crate) first: Option<usize>,
     pub(crate) total: Option<usize>,
+    /// Rows past the window on the side it has more (after, else before), when known.
+    pub(crate) left: Option<usize>,
     /// The row at the top when built, for a widget made fresh (a rebuild keeps the place).
     pub(crate) anchor: Option<usize>,
 }
@@ -202,6 +208,10 @@ impl List {
     /// The index in the whole list of the first row shown, when known.
     pub fn first(&self) -> Option<usize> {
         self.first
+    }
+    /// Rows past the window on the side it has more (after, else before), when known.
+    pub fn left(&self) -> Option<usize> {
+        self.left
     }
     /// Nothing to show.
     pub fn is_empty(&self) -> bool {
@@ -245,6 +255,7 @@ impl Cx {
             rows.extend(ab);
             (rows, before.more, more_after, first, total, Some(n))
         };
+        let left = if more_after { total.zip(first).map(|(t, f)| t.saturating_sub(f + rows.len())) } else if more_before { first } else { None };
         let mut out = Vec::with_capacity(rows.len() + 1);
         // what `row` leaves out moves the anchor up with it
         let mut anchor = before_n;
@@ -261,6 +272,6 @@ impl Cx {
         if let Some(n) = shape.new.clone().filter(|_| !more_after) {
             out.push(ListRow { key: "new".into(), item: Item::New(n) });
         }
-        Ok(super::Block::List(List { id: path, shape, rows: out, more_before, more_after, first, total, anchor }))
+        Ok(super::Block::List(List { id: path, shape, rows: out, more_before, more_after, first, total, left, anchor }))
     }
 }
