@@ -178,6 +178,11 @@ fn sample(shape: Shape) -> usize {
         }
         _ => {}
     }
+    // B's writes reach A and C before B hears of its demotion: a node that loses its role on a
+    // thing drops its writes there that it has not sent (spec/sync-set.md §3 Release)
+    for to in [0, 2] {
+        lp.sync(1, to).unwrap();
+    }
     lp.sync_all().unwrap();
     // what A, B and C send D (a reader of G: its sync set as it stands)
     let synced = fresh.engine.sync_set().unwrap().ids.keys().copied().collect();
@@ -206,7 +211,6 @@ fn sample(shape: Shape) -> usize {
 // actor created in one commit, a grandchild in a later commit or in theirs; a demotion by an admin other than the
 // mint admin; a commit naming a former leaf; B's last write at the demotion's `ts` (§5.2, Position).
 #[test]
-#[ignore = "stub rewrite: fails under rule 2, cause not sorted (R4)"]
 fn validity_alike_in_every_arrival_order_spec_permissions_5_2() {
     let cases = [(1, 0, 0, 1, 0, false), (1, 1, 2, 1, 0, false), (2, 1, 2, 2, 0, false), (2, 1, 0, 0, 0, false), (1, 0, 2, 0, 3, false), (2, 2, 2, 2, 0, true)];
     for (writes, at, by, sub, tail, tie) in cases {
