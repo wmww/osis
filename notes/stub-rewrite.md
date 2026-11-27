@@ -13,7 +13,7 @@ On main: spec, engine, osis-sync and the models. Tess approved the shape and too
 - **Later (Tess)**: a pass over dependent and independent things, a weak to a dependent thing its independent's unit does not hold among them.
 
 ## Owed
-- **Tests**: a departed stub holder told of its removal (`stubs::a_two_hop_chain_*` asserts only that nothing written since is read); stopped-store ByRole on its own (`grants::a_stopped_sync_holder_catches_up_by_role_*` passes by the resumed member's notice): a store meeting a reader that keeps no record of it.
+- **Tests**: a removed stub holder served its removal by its older proof (`stubs::a_two_hop_chain_*` asserts only that nothing written since is read); a stopped store getting back in by its entry at a store alone.
 - **Ignored, cause not sorted**: `public::removing_the_public_ends_*` and the rest `tools/ignores.py "stub rewrite: "` lists (engine 8, osis-sync 15).
 - **Full-size differential classes**: issues/differential-full-size-classes.md.
 - An external signal on a dependent thing: issues/behaviour-depends-on-own-keys.md. Each stub one more followed sync ID: issues/many-sync-ids-cost.md.

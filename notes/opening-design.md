@@ -14,7 +14,7 @@
 - **With it (Tess)**: a node holding X's stub follows X's sync ID; holders a node reads through are synced for their role entries; stores may learn a padded holder count.
 
 ## Deletes
-J as an open proof and the Departed rule; read-secret credentials; static and public entries; ByRole in every form; notices in every form; claim sets, `claims_hash`, entry boxes; the step without rotation listing readers; step-key erasure; Behind and the claim walk; lapsed secrets and the reader-tells-departed rules; sync copies and holders by copies; message kinds ByRole, Static, Notice, Behind; `ROLE_KEEP` for claim sets.
+J as an open proof and the Departed rule; read-secret credentials; static and public entries; ByRole in every form; notices in every form; claim sets and their hash in steps, entry boxes; the step without rotation listing readers; step-key erasure; Behind and the claim walk; lapsed secrets and the reader-tells-departed rules; sync copies and holders by copies; message kinds ByRole, Static, Notice, Behind; `ROLE_KEEP` for claim sets.
 
 ## Checked
 Explicit-state model over every interleaving of grant, rotation removing a sync-only node, re-seal, step without rotation, logging to two stores, Register and store-to-store sync, public or not, with only stores serving: a store holding the grantee's entry lets it in alone; after an admin's pass the grantee holds the current epoch; the removed node gets nothing past its removal; public X: the removed node reads its removal and the public's grant. Controls fail as they should: no entry in the grant, claims bound to the step, no public entry. Not modelled: forks, holder actors and joint boxes, floors and cuts, compaction, padding, filters.
