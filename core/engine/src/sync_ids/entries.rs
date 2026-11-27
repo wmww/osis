@@ -214,3 +214,15 @@ impl Engine {
         Ok(Took::Nothing)
     }
 }
+
+impl Engine {
+    /// The claims a writer of `x`'s entries computes for holder `m` here, one per current sync
+    /// epoch of `x` it holds a claim key of: none where `m` has no read KEM key held.
+    #[doc(hidden)]
+    pub fn holder_claims(&mut self, x: &Tid, m: &Tid) -> Result<Vec<[u8; 32]>> {
+        let Some((sync_id, _)) = self.core.named_sync_id(x).flatten() else { return Ok(Vec::new()) };
+        let Some(epochs) = self.core.epochs(x) else { return Ok(Vec::new()) };
+        let Some(kem) = self.holder_kem_key(m)? else { return Ok(Vec::new()) };
+        Ok(epochs.sync.current().iter().filter_map(|e| self.core.claim_key(x, e)).filter_map(|ck| osis_crypto::claim(&ck, &kem.x25519(), &sync_id, &ck.public()).ok()).map(|c| c.verifying_key().to_bytes()).collect())
+    }
+}

@@ -24,14 +24,18 @@ use std::collections::BTreeSet;
 
 /// Whether a keyset of role `r` of `t` written now carries its KEM key (spec/crypto.md §3,
 /// Published KEM keys), judged by what this node holds and what the transaction gives things
-/// (`Tx::publishing`): minted with a key, holding `r` or above for keys, a card of it standing
+/// (`Tx::publishing`): minted with a key, holding `r` or above for keys (read: any role), a card
+/// of it standing
 /// here (`flows::cards`), for read a setting enabling an external signal, or its current keyset
 /// of `r` carrying one (sticky: a holder granted beside this node's knowledge stays sealable).
 pub(crate) fn publishes(tx: &mut Tx<'_>, t: &Tid, r: Role) -> Result<bool> {
     let core = &*tx.core;
+    // a read keyset wherever the thing holds any role: its entries are sealed to its read KEM key
+    // and its claims computed with it (spec/crypto.md §3 Independent thing)
+    let needs = if r == Role::Read { Role::Sync } else { r };
     let cheap = core.created(t).is_some_and(|c| c.key().is_some())
-        || tx.publishing.iter().any(|(h, role)| h == t && *role >= r)
-        || holds_for_keys(core, t, r)
+        || tx.publishing.iter().any(|(h, role)| h == t && *role >= needs)
+        || holds_for_keys(core, t, needs)
         || crate::apply::validity::setting_now(core, t).and_then(|s| by_setting(&s)).is_some_and(|x| x >= r);
     Ok(cheap || crate::flows::cards::stands(tx, t)? || carries(tx, t, r)?)
 }
@@ -144,7 +148,8 @@ pub(crate) fn grant_holder(tx: &mut Tx<'_>, h: Tid, role: Role) -> Result<()> {
 }
 
 /// The granter's check, second half (after `grant_holder`, `h` independent and its due
-/// rotations made): `h`'s current keyset of each role the write boxes it at carries a KEM key,
+/// rotations made): `h`'s current keyset of each role the write boxes it at, and its read keyset
+/// where this node may rotate it, carries a KEM key,
 /// or this node rotates those roles of `h` now, in the grant's transaction (their keysets then
 /// carry KEM keys); else refused.
 ///
@@ -153,16 +158,22 @@ pub(crate) fn grant_holder(tx: &mut Tx<'_>, h: Tid, role: Role) -> Result<()> {
 /// rotation of `h` made before it learns the grant still may, and KEM key due ends that.
 pub(crate) fn grant_keys(tx: &mut Tx<'_>, h: Tid, role: Role, done: &mut crate::flows::Done) -> Result<()> {
     let me = tx.core.tid();
+    let may = may_rotate(tx.core, &me, &h);
     let mut lacking = BTreeSet::new();
     for r in ROLES.into_iter().filter(|r| *r <= role) {
         if !carries(tx, &h, r)? {
             lacking.insert(r);
         }
     }
+    // the read keyset too, where this node may rotate it: the grant's entry is sealed to its KEM
+    // key (spec/sync-ids.md §3 Entry; one left out is written by a re-seal)
+    if role == Role::Sync && may.contains(&Role::Read) && !carries(tx, &h, Role::Read)? {
+        lacking.insert(Role::Read);
+    }
     if lacking.is_empty() {
         return Ok(());
     }
-    if !lacking.is_subset(&may_rotate(tx.core, &me, &h)) {
+    if !lacking.is_subset(&may) {
         return Err(Error::Misuse("the holder's keys carry no KEM key and this node may not rotate them"));
     }
     super::rotate_alone(tx, me, h, &lacking, done)

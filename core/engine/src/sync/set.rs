@@ -107,8 +107,9 @@ impl Engine {
                 return Ok(ThingSync::Read(ids));
             }
         }
-        // kept unread: in the node closure by a sync secret alone (spec/sync.md §3)
-        if self.kept_unread(t) {
+        // kept unread: in the node closure by a sync secret alone, or followed or held as a stub
+        // holding one (an entry's) and no read secret (spec/sync.md §3: one predicate, by secrets)
+        if self.kept_unread(t) || (!self.holds_read(t) && self.core.unread(t).holds_any()) {
             // the sync ID kept for it (spec/sync.md §3 Kept for T)
             let ids: Vec<SyncId> = self.owned_sync_ids(t)?.iter().map(|o| o.id).collect();
             if !ids.is_empty() {
@@ -123,6 +124,16 @@ impl Engine {
         {
             let owned = self.owned_sync_ids(t)?;
             let ids: Vec<SyncId> = ids.into_iter().filter(|s| owned.iter().any(|o| o.id == *s)).collect();
+            if !ids.is_empty() {
+                return Ok(ThingSync::Read(ids));
+            }
+        }
+        // held as a stub by a sync-only cut: the sync ID it names is followed (spec/sync.md §3
+        // Kept for T), its holders' claims open it (spec/permissions.md §4 Stub)
+        let cut = self.core.cut_sync_ids(t);
+        if !cut.is_empty() && self.core.ix.closure.stub_only(t) {
+            let owned = self.owned_sync_ids(t)?;
+            let ids: Vec<SyncId> = cut.into_iter().filter(|s| owned.iter().any(|o| o.id == *s)).collect();
             if !ids.is_empty() {
                 return Ok(ThingSync::Read(ids));
             }
@@ -210,6 +221,8 @@ impl Engine {
                 }
             }
             holders.extend(self.core.followed_links.signal_holders(t, s));
+            // a held stub's carrying unit's thing: the thing a sync-only cut naming `s` came under
+            holders.extend(self.core.ix.sync_cuts.values().filter(|c| c.cut.thing == *t && c.cut.sync_id == *s).map(|c| c.under));
             match self.core.followed_links.link_of(t, s) {
                 Some(None) => public = true,
                 Some(Some(l)) => keys.extend(l.link_read_kem().cloned()),

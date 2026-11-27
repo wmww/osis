@@ -144,12 +144,23 @@ impl Core {
     }
 
     fn unread_derived(&self, t: &Tid) -> Unread {
-        // what role commits gave (a box applied, a lowering), where they make `t` independent
-        // here (`own_record`: a held keyset part decides)
-        let candidates: BTreeMap<Epoch, Secret32> = self.own_record(t).map(|e| e.role(Role::Sync).held().map(|(e, s)| (e, s.secret().clone())).collect()).unwrap_or_default();
+        // what role commits gave (a box applied, a lowering) and entries gave (a sync holder's,
+        // spec/sync-ids.md §3 Taking an entry): `t`'s own sync secrets, never derived ones
+        let candidates: BTreeMap<Epoch, Secret32> = self.ix.secrets.get(t).map(|e| e.role(Role::Sync).held().map(|(e, s)| (e, s.secret().clone())).collect()).unwrap_or_default();
+        // borne by a step of its `sync.0`, or of the path heard of a sync ID it is followed by or its
+        // `keys.0` names (spec/sync-ids.md §4 Owner)
         let recorded = self.ix.steps.get(t);
-        let secrets = candidates.iter().filter(|(_, s)| recorded.as_ref().is_some_and(|r| r.bears_sync(&sync_key(s)))).map(|(e, s)| (*e, s.clone())).collect();
+        let followed: BTreeSet<SyncId> = self.followed_links.get(t).map(|(ids, _)| ids).unwrap_or_default().into_iter().chain(self.cut_sync_ids(t)).chain(self.ix.keys_sync_id.get(t).copied()).collect();
+        let heard: Vec<[u8; 32]> = followed.iter().filter_map(|s| self.heard.get(s)).flat_map(|p| p.iter().map(|st| st.keys.sync.to_bytes()).collect::<Vec<_>>()).collect();
+        let bears = |k: &[u8; 32]| recorded.as_ref().is_some_and(|r| r.bears_sync(k)) || heard.contains(k);
+        let secrets = candidates.iter().filter(|(_, s)| bears(&sync_key(s))).map(|(e, s)| (*e, s.clone())).collect();
         Unread { secrets, candidates }
+    }
+
+    /// Whether a sync-only cut of `x` was taken under `u` (spec/permissions.md §4 Stub: `u`'s unit
+    /// holds only sync on `x`, as a reader of `u` holding `x`'s role entries logged it).
+    pub(crate) fn cut_under(&self, u: &Tid, x: &Tid) -> bool {
+        self.ix.sync_cuts_under.get(u).into_iter().flatten().any(|b| self.ix.sync_cuts.get(b).is_some_and(|c| c.cut.thing == *x))
     }
 
     /// The sync IDs the sync-only cuts taken here give `t` (`SYNC_CUTS`).

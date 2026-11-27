@@ -920,7 +920,10 @@ fn given_by(core: &Core, v: Vx, y: Tid, strong: bool) -> BTreeSet<Vx> {
 fn stubs_by(core: &Core, (c, x): Vx, y: Tid, independent: bool, strong: bool, out: &mut BTreeSet<Vx>) {
     // a held signal followed names its thing as independent (by its sync ID), record or none
     let fired = !strong && core.followed_links.fired_on(&y, &x);
-    let Some(a) = (if independent || fired { Some(y) } else { core.secret_actor(&y) }) else { return };
+    // a sync-only cut of `y` under the unit's thing names `y` as independent (by its sync ID),
+    // record or none (spec/permissions.md §4 Stub)
+    let cut = owners(core, c).iter().any(|o| core.cut_under(o, &y));
+    let Some(a) = (if independent || fired || cut { Some(y) } else { core.secret_actor(&y) }) else { return };
     // the unit's own thing, or the node's: no stub (read before the link keys, which the local
     // part's other owners are)
     if matches!(c, Ctx::Read(t) if t == a) || matches!(c, Ctx::Local if a == core.tid()) {
@@ -937,7 +940,7 @@ fn stubs_by(core: &Core, (c, x): Vx, y: Tid, independent: bool, strong: bool, ou
     // dependent of an X they do not open names nothing the unit's readers know of X (spec/sync-ids.md
     // §2 What a sync holder learns), so it brings X's stub as a weak does
     let enters = strong && (independent || !opens.is_empty());
-    if !enters && (!opens.is_empty() || own.iter().any(|o| core.keyed_role_now(o, &a) >= Some(Role::Sync)) || fired) {
+    if !enters && (!opens.is_empty() || own.iter().any(|o| core.keyed_role_now(o, &a) >= Some(Role::Sync) || core.cut_under(o, &a)) || fired) {
         out.extend(stub(a));
     }
     for o in &opens {
@@ -970,11 +973,12 @@ pub(crate) fn reached_carried(core: &Core, y: &Tid) -> bool {
 /// §2 Stubs): `v` is in the read sync unit of a thing `u` other than `y`, or in the local part
 /// with `u` an own thing, whose keys open `y` (whole) or whose effective role on `y` is sync or
 /// above, the public's sync (by its grant, `public_syncs`) counting as every
-/// party's (its stub), as the role entries the node holds show it. Local to the edge, so the tree
+/// party's (its stub), as the role entries the node holds show it, or a sync-only cut of `y` taken
+/// under `u` says (spec/permissions.md §4 Stub). Local to the edge, so the tree
 /// founds it: an entry by `u`'s unit goes when `u`'s does, whatever `u` reaches back.
 /// Invariant: `y`'s own unit never carries it (`u != y`).
 fn edge_carries(core: &Core, v: Vx, y: &Tid) -> bool {
-    owners(core, v.0).iter().any(|u| u != y && (core.keys_open(u, y) || core.keyed_role_now(u, y) >= Some(Role::Sync) || core.public_syncs(y)))
+    owners(core, v.0).iter().any(|u| u != y && (core.keys_open(u, y) || core.keyed_role_now(u, y) >= Some(Role::Sync) || core.public_syncs(y) || core.cut_under(u, y)))
 }
 
 /// Whether the node closure holds `t` within the local part or another thing's sync unit
