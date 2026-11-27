@@ -118,7 +118,7 @@ impl EntryBlock {
             return Err(Error::Malformed("entry count not a power of two at least 2"));
         }
         let body = b.get(34..34 + ENTRY_LEN * k).ok_or_else(short)?;
-        let entries = body.chunks_exact(ENTRY_LEN).map(|c| {
+        let entries = body.as_chunks::<ENTRY_LEN>().0.iter().map(|c| {
             let (claim, w) = c.split_at(32);
             Entry { claim: claim.try_into().unwrap_or([0; 32]), w: w.to_vec() }
         });
