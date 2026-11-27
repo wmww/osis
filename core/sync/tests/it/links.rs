@@ -38,69 +38,6 @@ fn three_nodes() -> World {
     })
 }
 
-// spec/sync-inbox.md §6 (First contact), spec/sync-set.md §2 (Sync set: a link's sync ID while
-// its redeemer redeems it), spec/sync-opens.md §5 (Opening: a static entry's answer carries the
-// head's entry box and the path): K, listed in the sharer's D, opens at node 1 by L's static entry, and node 1
-// takes K's read secret from the head's entry box.
-#[test]
-fn a_link_opens_k_by_its_static_entry_spec_sync_inbox_6() {
-    let (mut w, link) = redeemed();
-    let s = link.k_sync_id;
-    assert!(matches!(w.engine(0).sync_holder(&s).unwrap(), Some((_, osis_engine::sync::Holding::Read))), "the sharer syncs K");
-    assert!(matches!(w.engine(1).sync_holder(&s).unwrap(), Some((t, osis_engine::sync::Holding::Read)) if t == [link.k].into()), "the redeemer follows K's sync ID");
-    assert!(w.status(1).get(&s).is_some_and(|st| !st.sources.is_empty()), "K open at the sharer");
-    assert!(!w.engine(1).read_credentials(&s).unwrap().unwrap().read_secrets.is_empty(), "K's read secret from the entry box");
-}
-
-/// Node 0's read link to its profile, followed at node 1 (not run): node 1 knows K only from the
-/// link text.
-fn followed() -> (World, ShareLink) {
-    let mut w = two_nodes();
-    let p0 = w.node(0).profile.unwrap();
-    let link = w.make_link(0, p0, Role::Read);
-    w.write(1, |e| e.follow_link(&link)).unwrap();
-    (w, link)
-}
-
-fn learned_nothing(w: &mut World, s: &osis_base::SyncId) -> bool {
-    w.engine(1).read_credentials(s).unwrap().unwrap().read_secrets.is_empty()
-}
-
-// spec/sync-opens.md §5 (Opening: for a static entry the tester takes the box's secrets only when
-// the path verifies from its genesis step, the box's sync secret derives the head's sync key and
-// `sig` verifies under it): a box sealed to L with secrets of the forger's choosing, on K's real
-// path, opens nothing; nor does the real box on a path of another sync ID; the real one opens the
-// head's sync key and learns nothing until `learn_grant`.
-#[test]
-fn a_static_grant_is_verified_before_it_is_learned_spec_sync_opens_5() {
-    use osis_crypto::{BoxSlot, EntryItem, EntryRead, Epoch, Secret32, SeededRng};
-    let (mut w, link) = followed();
-    let s = link.k_sync_id;
-    let path = w.engine(0).sync_ids(&link.k).unwrap().iter().find(|o| o.id == s).unwrap().path.steps.clone();
-    let steps: Vec<osis_blob::Step> = path.iter().map(|(st, _)| st.clone()).collect();
-    let head = steps.last().unwrap().clone();
-    let lkey = osis_engine::Identity::link_key(link.seed.clone(), link.k);
-    let entry = osis_crypto::static_entry(&s, &lkey.signing().verifying_key());
-    let real = path.last().unwrap().1.as_ref().unwrap().entries.get(&entry).unwrap().clone();
-    let (x, y) = (Secret32::from_bytes([9; 32]), Secret32::from_bytes([8; 32]));
-    let item = EntryItem { read: Some(EntryRead { epoch: Epoch::derive(&link.k, Role::Read, 1, &x).unwrap(), secret: x, earlier: None }), sync: (Epoch::derive(&link.k, Role::Sync, 1, &y).unwrap(), y) };
-    let slot = BoxSlot::Entry { sync_id: s, step_key: head.step_key, actor: link.k };
-    let sealed = osis_crypto::seal_entry(lkey.link_read_kem().unwrap().public(), &slot, &item, &mut SeededRng::from_u64(1)).unwrap();
-    let osis_schema::core_types::SecretBox::Sealed(mut sb) = real.clone() else { panic!("a sealed entry box") };
-    sb.sealed = osis_schema::core_types::Sealed::X25519MlKem768(sealed);
-    let forged = osis_schema::core_types::SecretBox::Sealed(sb);
-    assert!(w.engine(1).open_grant(&s, &entry, &steps, &forged).unwrap().is_none(), "a forged box opens nothing");
-    let p0 = w.node(0).profile.unwrap();
-    let other: Vec<osis_blob::Step> = w.engine(0).sync_ids(&p0).unwrap()[0].path.steps.iter().map(|(st, _)| st.clone()).collect();
-    assert!(w.engine(1).open_grant(&s, &entry, &other, &real).unwrap().is_none(), "a path of another sync ID opens nothing");
-    assert!(learned_nothing(&mut w, &s));
-    let g = w.engine(1).open_grant(&s, &entry, &steps, &real).unwrap().expect("the real grant opens");
-    assert_eq!(g.key, head.keys.sync.to_bytes());
-    assert!(learned_nothing(&mut w, &s), "opened, not learned before the signature verifies");
-    w.write(1, |e| e.learn_grant(&g)).unwrap();
-    assert!(!learned_nothing(&mut w, &s), "learned once the caller takes it");
-}
-
 // spec/sync-set.md §2 (Sync set: a link's sync ID while its redeemer redeems it): the link text is untrusted. A link
 // naming a thing node 1 syncs as K, or naming that thing's sync ID as K's, changes nothing of how
 // node 1 syncs it.
@@ -137,10 +74,7 @@ fn an_ended_link_is_not_redeemed_spec_permissions_7() {
     w.write(0, |e| e.finalize_link(&link.k, &l)).unwrap();
     assert!(w.engine(0).link_ended(&link));
     assert!(matches!(w.redeem(0, &link), Waiting::Never(_)));
-    assert!(w.engine(0).read_credentials(&link.k_sync_id).unwrap().is_none_or(|c| c.acting.is_empty()), "L not acted for");
 }
-
-
 
 // spec/permissions.md §7 (Redeem: the join waits for K's history, then seals K's secrets to the
 // redeemer): accounts 1 and 2 join K0 by node 0's link, account 0 joins K1 by node 1's link; node
@@ -354,7 +288,6 @@ fn a_held_join_forgets_the_link_and_k_stays_synced_spec_permissions_7() {
     assert!(w.engine(0).roster(&link.k).contains_key(&a1), "the join held at the sharer");
     assert!(!w.node(1).node.redeeming(&link.k), "forgotten once held");
     let s = link.k_sync_id;
-    assert!(w.engine(1).read_credentials(&s).unwrap().is_some_and(|c| c.acting.is_empty()), "K read, L acted for no more");
     assert!(matches!(w.engine(1).sync_holder(&s).unwrap(), Some((t, osis_engine::sync::Holding::Read)) if t == [link.k].into()), "K synced read");
     let on_k = w.engine(1).core.on_thing(&link.k).count();
     assert_eq!(w.redeem(1, &link), Waiting::Done, "joined: done");
@@ -439,26 +372,6 @@ fn a_paired_node_off_past_the_follow_time_still_enters_its_account_spec_sync_inb
     w.power_on(j);
     w.run();
     let a = w.node(0).account.unwrap();
-    let e = w.engine(j);
-    assert!(e.closure_holds(&a) && e.role_on(&a) == Some(Role::Admin), "the paired node entered its account");
-}
-
-// spec/sync-opens.md §5 (ByRole: a side following S by a locator alone sends ByRole beside
-// its public entry's Hit), spec/permissions.md §8 (Pairing): node 0's account is public at sync,
-// so the node it pairs Hits the account's public entry, which it sends as noise (`Lie::Miss`: a
-// filter's false positive, refused); it enters by role all the same. Failed with ByRole sent only
-// where no Hit on S went: the node never entered and gave the locator up.
-#[test]
-fn a_paired_node_whose_public_hit_is_refused_enters_by_role_spec_sync_opens_5() {
-    let mut w = World::new(0);
-    w.add_node();
-    let a = w.node(0).account.unwrap();
-    w.write(0, |e| e.grant(&a, &osis_base::Tid::PUBLIC, &edge(Role::Sync))).unwrap();
-    w.run();
-    let j = w.pair(0);
-    w.lie(j, Some(crate::harness::lies::Lie::Miss));
-    w.run();
-    assert!(w.missed_hits(j) > 0, "the paired node Hit the public entry");
     let e = w.engine(j);
     assert!(e.closure_holds(&a) && e.role_on(&a) == Some(Role::Admin), "the paired node entered its account");
 }

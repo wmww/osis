@@ -199,7 +199,7 @@ fn path_reads(w: &mut World, s: &osis_base::SyncId) -> Vec<u64> {
         let ask = |w: &mut World| {
             let path = w.store(i).path(s).unwrap();
             let _ = (w.store(i).head(s).unwrap(), w.store(i).head_id(s).unwrap());
-            for (st, _) in path.iter().flat_map(|p| p.steps.iter()) {
+            for st in path.iter().flat_map(|p| p.steps.iter()) {
                 for c in w.engine(i).step_needs(s, &st.id()).unwrap().iter() {
                     w.engine(i).step_parent(s, c).unwrap();
                 }

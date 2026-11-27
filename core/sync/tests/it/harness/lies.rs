@@ -30,9 +30,6 @@ pub enum Lie {
     /// Declares this class for every sync ID it opens (`class` in its Offer items and its
     /// accepting answers, spec/wire.md §11.2), whatever it holds.
     Declare(osis_proto::SourceClass),
-    /// Sends every Hit item it offers as noise, so its peer refuses it as it refuses a filter's
-    /// false positive (spec/sync-opens.md §5 Testing).
-    Miss,
 }
 
 /// One connection's frames each way.
@@ -53,8 +50,6 @@ pub struct Liar {
     told: BTreeSet<(ConnId, SyncId)>,
     /// Messages the lie sends next on each connection.
     owed: BTreeMap<ConnId, Vec<Msg>>,
-    /// Hit items sent as noise so far (`Miss`).
-    pub missed: usize,
 }
 
 /// Each (S, entry added) of a message.
@@ -81,7 +76,7 @@ fn bare_stream(events: Vec<(SyncId, Event)>) -> Msg {
 
 impl Liar {
     pub fn new(lie: Lie) -> Liar {
-        Liar { lie, conns: BTreeMap::new(), told: BTreeSet::new(), owed: BTreeMap::new(), missed: 0 }
+        Liar { lie, conns: BTreeMap::new(), told: BTreeSet::new(), owed: BTreeMap::new() }
     }
 
     /// The node hears `bytes` on `conn`; `role(S, blob)` says whether an entry is a role entry.
@@ -123,17 +118,8 @@ impl Liar {
             (Lie::Declare(class), Msg::Offer { id, mut items }) => {
                 for i in &mut items {
                     match i {
-                        OfferItem::Hit { class: u, .. } | OfferItem::ByRole { class: u, .. } | OfferItem::Static { class: u, .. } => *u = class,
+                        OfferItem::Hit { class: u, .. } => *u = class,
                         _ => {}
-                    }
-                }
-                vec![Msg::Offer { id, items }]
-            }
-            (Lie::Miss, Msg::Offer { id, mut items }) => {
-                for i in &mut items {
-                    if let OfferItem::Hit { hit, .. } = i {
-                        *hit = [0x5a; 32];
-                        self.missed += 1;
                     }
                 }
                 vec![Msg::Offer { id, items }]

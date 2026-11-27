@@ -7,9 +7,9 @@
 use osis_base::format::INBOX_LIFETIME_MS;
 use osis_base::memo::{Stamped, StampedSet};
 use osis_base::{BlobId, SyncId, Tid, WallMs};
-use osis_crypto::{Epoch, RoleKey, Secret32, SeededRng, SigningSecret, deposit_key, role_key};
+use osis_crypto::{RoleKey, Secret32, SeededRng, SigningSecret, deposit_key, role_key};
 use osis_engine::sync::{Holding, Path, SyncSet};
-use osis_blob::{ClaimSet, Class, Prefix, Step, StepId, StepKeys};
+use osis_blob::{Class, Prefix, Step, StepId, StepKeys};
 use osis_proto::{Code, Msg, OfferItem, SharedItem};
 use osis_store::{MemoryBackend, MemoryRoot};
 use osis_sync::Result;
@@ -221,7 +221,7 @@ impl T {
     }
 
     fn join(&mut self, c: ConnId, s: SyncId, class: SourceClass) {
-        self.net.members.insert((c, s), Member { class, own: SourceClass::Reader, by: Credential::SyncKey([0; 32]), until: None, departed: None });
+        self.net.members.insert((c, s), Member { class, own: SourceClass::Reader, by: Credential::SyncProof([0; 32]), until: None });
         self.offers.joined(c, &s, &self.net);
         self.settle();
     }
@@ -490,7 +490,7 @@ fn one_stamped_copy_per_delta_spec_sync_inbox_4() {
 /// Steps of one sync ID: genesis (the admin secret its genesis seed) and children, as an admin
 /// issues them.
 struct Steps {
-    steps: Vec<(Step, ClaimSet)>,
+    steps: Vec<Step>,
 }
 
 impl Steps {
@@ -498,23 +498,20 @@ impl Steps {
         let admin = Secret32::from_bytes([0xab; 32]);
         let id = osis_blob::genesis_sync_id(&admin);
         let d = role_key(RoleKey::Delete, &admin);
-        let mut steps: Vec<(Step, ClaimSet)> = vec![osis_blob::genesis(&admin)];
+        let mut steps: Vec<Step> = vec![osis_blob::genesis(&admin)];
         for i in 1..n {
             let (sync, write) = (Secret32::from_bytes([i as u8; 32]), Secret32::from_bytes([i as u8 + 0x40; 32]));
             let keys = StepKeys::derive(&sync, &write, &admin, &deposit_seed(0), &id);
-            let read = Epoch::derive(&THING, osis_base::Role::Read, i as u64, &write).unwrap();
-            let se = Epoch::derive(&THING, osis_base::Role::Sync, i as u64, &sync).unwrap();
-            let (parent, _) = steps.last().unwrap();
-            let mut rng = SeededRng::from_u64(i as u64);
-            steps.push(osis_blob::register(parent, &d, keys, &[], (&THING, read, &write), (se, &sync), &mut rng).unwrap());
+            let parent = steps.last().unwrap();
+            steps.push(osis_blob::register(parent, &d, keys, [i as u8; 32]).unwrap());
         }
         Steps { steps }
     }
     fn path(&self) -> Arc<Path> {
-        Arc::new(Path { steps: self.steps.iter().map(|(s, c)| (s.clone(), Some(c.clone()))).collect() })
+        Arc::new(Path { steps: self.steps.clone() })
     }
     fn id(&self, i: usize) -> StepId {
-        self.steps[i].0.id()
+        self.steps[i].id()
     }
     /// A sibling of step `i + 1`: a child of step `i` with the same role keys (another admin
     /// stepping for the same epochs), or under a new admin secret's delete key (`admin`).
@@ -523,14 +520,11 @@ impl Steps {
         let id = osis_blob::genesis_sync_id(&a);
         let (sync, write) = (Secret32::from_bytes([i as u8 + 1; 32]), Secret32::from_bytes([i as u8 + 0x41; 32]));
         let keys = StepKeys::derive(&sync, &write, &admin.map_or(a.clone(), |b| Secret32::from_bytes([b; 32])), &deposit_seed(0), &id);
-        let read = Epoch::derive(&THING, osis_base::Role::Read, i as u64 + 1, &write).unwrap();
-        let se = Epoch::derive(&THING, osis_base::Role::Sync, i as u64 + 1, &sync).unwrap();
-        let mut rng = SeededRng::from_u64(0x5000 + i as u64);
-        osis_blob::register(&self.steps[i].0, &role_key(RoleKey::Delete, &a), keys, &[], (&THING, read, &write), (se, &sync), &mut rng).unwrap().0
+        osis_blob::register(&self.steps[i], &role_key(RoleKey::Delete, &a), keys, [0x50 ^ i as u8; 32]).unwrap()
     }
     /// Every recorded step: the path's and `more`.
     fn tree(&self, more: &[&Step]) -> BTreeMap<StepId, Step> {
-        self.steps.iter().map(|(s, _)| s).chain(more.iter().copied()).map(|s| (s.id(), s.clone())).collect()
+        self.steps.iter().map(|s| s).chain(more.iter().copied()).map(|s| (s.id(), s.clone())).collect()
     }
 }
 
@@ -551,14 +545,14 @@ fn plan_endorsed(st: &Steps, tree: &BTreeMap<StepId, Step>, endorsed: &BTreeMap<
 
 /// As `plan_endorsed`, S open at the source by sync key `key`.
 fn plan_by(st: &Steps, tree: &BTreeMap<StepId, Step>, endorsed: &BTreeMap<StepId, BTreeMap<[u8; 32], osis_crypto::Signature>>, at: Option<StepId>, p: Progress, key: Option<[u8; 32]>, held: &[StepId]) -> Plan {
-    let o = osis_engine::sync::OwnedSyncId { id: st.steps[0].0.sync_id, path: st.path(), tree: Arc::new(tree.clone()), endorsed: Arc::new(endorsed.clone()), hint: false };
+    let o = osis_engine::sync::OwnedSyncId { id: st.steps[0].sync_id, path: st.path(), tree: Arc::new(tree.clone()), endorsed: Arc::new(endorsed.clone()), hint: false };
     plan(at, &o, &p, key, &mut |x: &StepId| Ok(held.contains(x))).unwrap()
 }
 
 /// The single step a plan sends.
 fn sends(p: &Plan) -> Option<StepId> {
     match p {
-        Plan::Send(s, _) if s.len() == 1 => s.first().map(|(st, _)| st.id()),
+        Plan::Send(s, _) if s.len() == 1 => s.first().map(Step::id),
         _ => None,
     }
 }
@@ -566,7 +560,7 @@ fn sends(p: &Plan) -> Option<StepId> {
 /// The steps a plan sends.
 fn sends_all(p: &Plan) -> Vec<StepId> {
     match p {
-        Plan::Send(s, _) => s.iter().map(|(st, _)| st.id()).collect(),
+        Plan::Send(s, _) => s.iter().map(Step::id).collect(),
         _ => vec![],
     }
 }
@@ -607,13 +601,13 @@ fn a_source_holding_no_step_gets_genesis_first_spec_sync_ids_6() {
 #[test]
 fn a_source_past_its_keys_is_moved_at_once_spec_sync_ids_6() {
     let st = Steps::new(4);
-    let k2 = Some(st.steps[2].0.keys.sync.to_bytes());
+    let k2 = Some(st.steps[2].keys.sync.to_bytes());
     let by = |at: usize, p: Progress, key: Option<[u8; 32]>| plan_by(&st, &st.tree(&[]), &BTreeMap::new(), Some(st.id(at)), p, key, &[]);
     assert_eq!(sends(&by(0, Progress::default(), k2)), Some(st.id(1)), "past its keys: at once");
     let at1 = Progress { at: Some(st.id(1)), ..Progress::default() };
     assert_eq!(sends(&by(0, at1, k2)), Some(st.id(2)), "still past them: at once");
     assert_eq!(by(2, Progress::default(), k2), Plan::Wait, "at the step bearing its key: the role commits first");
-    assert_eq!(by(0, Progress::default(), Some(st.steps[0].0.keys.sync.to_bytes())), Plan::Wait, "open by its step's key: the role commits first");
+    assert_eq!(by(0, Progress::default(), Some(st.steps[0].keys.sync.to_bytes())), Plan::Wait, "open by its step's key: the role commits first");
 }
 
 // spec/sync-ids.md §6 (register: a branch): at a source on a recorded sibling of the recorded
@@ -635,7 +629,7 @@ fn registers_a_branch_at_a_sibling_spec_sync_ids_6() {
     assert_eq!(plan_in(&st, &tree, Some(a.id()), stuck, &all), Plan::Wait, "refused: waits for the source to move");
     // a branch two deep off step 0: the recorded path through its depth plus one
     let mut b = Steps { steps: st.steps[..1].to_vec() };
-    b.steps.push((a.clone(), st.steps[0].1.clone()));
+    b.steps.push(a.clone());
     let a2 = b.sibling(1, None);
     let tree2 = st.tree(&[&a, &a2]);
     assert_eq!(sends_all(&plan_in(&st, &tree2, Some(a2.id()), Progress::default(), &all)), vec![st.id(1), st.id(2), st.id(3)]);
@@ -659,7 +653,7 @@ fn registers_an_endorsed_branch_at_a_rotated_sibling_spec_sync_ids_6() {
     let tree = st.tree(&[&rotated]);
     let by = |k: u8, i: usize| {
         let key = role_key(RoleKey::Delete, &Secret32::from_bytes([k; 32]));
-        BTreeMap::from([(st.id(i), BTreeMap::from([(key.verifying_key().to_bytes(), st.steps[i].0.endorse(&key))]))])
+        BTreeMap::from([(st.id(i), BTreeMap::from([(key.verifying_key().to_bytes(), st.steps[i].endorse(&key))]))])
     };
     let e = by(0xcd, 2);
     let plan = plan_endorsed(&st, &tree, &e, Some(rotated.id()), Progress::default(), &all);
@@ -977,7 +971,7 @@ fn losing_sibling(admin: bool) {
     let b = w.store(2).head(&s).unwrap().map(|h| h.id());
     assert!(b.is_some() && b != a, "node 2 stepped a sibling");
     let delete = |w: &mut crate::harness::World, i: usize| w.store(i).head(&s).unwrap().map(|h| h.keys.delete);
-    let fork = w.store(1).path(&s).unwrap().and_then(|p| p.steps.iter().rev().nth(1).map(|(st, _)| st.keys.delete));
+    let fork = w.store(1).path(&s).unwrap().and_then(|p| p.steps.iter().rev().nth(1).map(|st| st.keys.delete));
     assert_eq!(fork != delete(&mut w, 1), admin, "node 1's head bears a new delete key alone by an admin rotation");
     // node 2 grants node 1 sync again (at A's epoch too) and removes it (C, a child of B)
     let _ = crate::harness::play(&mut w, &[Give(2, 0, Holder::Node(1), Syncs)], String::new());

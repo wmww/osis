@@ -7,17 +7,16 @@
 
 use osis_base::{SyncId, Tid};
 use osis_crypto::kdf::{beacon, sync_proof};
-use osis_crypto::{Epoch, RoleKey, NodeRng, Secret32, SeededRng, SigningSecret, role_key, role_key_seed, static_entry};
-use osis_engine::sync::{J, ProvenThing};
+use osis_crypto::{RoleKey, NodeRng, Secret32, SeededRng, SigningSecret, role_key, role_key_seed};
 use osis_blob::StepId;
-use osis_proto::{BehindItem, Code, DepositItem, Flow, Grant, Id, Msg, SharedItem};
+use osis_proto::{Code, DepositItem, Flow, Id, Msg, SharedItem};
 use osis_sync::opens::cred::{Bind, Shown, Tested};
 use osis_sync::opens::holds::{Creds, Holds};
 use osis_sync::opens::{Ctx, Moved, Opens, Reported, Wire};
 use osis_sync::session::{Incoming, Proven};
 use osis_store::{MemoryBackend, MemoryRoot};
 use osis_sync::Store;
-use osis_sync::types::{ConnId, Credential, Cursor, Holding, Position, RecordId};
+use osis_sync::types::{ConnId, Credential, Cursor, Holding, Position};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -25,7 +24,6 @@ use std::sync::Arc;
 #[derive(Clone)]
 pub struct StepKeys {
     pub id: StepId,
-    pub epoch: Epoch,
     pub sync: SigningSecret,
     pub proof: [u8; 32],
 }
@@ -35,7 +33,7 @@ impl StepKeys {
     pub fn new(seed: u8, n: u8) -> StepKeys {
         let secret = Secret32::from_bytes([seed ^ 0x5a, n, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
         let s = role_key_seed(RoleKey::Sync, &secret);
-        StepKeys { id: StepId([seed.wrapping_add(n); 32]), epoch: epoch(n), sync: role_key(RoleKey::Sync, &secret), proof: sync_proof(&s) }
+        StepKeys { id: StepId([seed.wrapping_add(n); 32]), sync: role_key(RoleKey::Sync, &secret), proof: sync_proof(&s) }
     }
 
     pub fn pk(&self) -> [u8; 32] {
@@ -43,55 +41,29 @@ impl StepKeys {
     }
 }
 
-pub fn epoch(n: u8) -> Epoch {
-    Epoch::new(u64::from(n), [n; 32]).unwrap()
-}
-
-/// A read secret at epoch `n`.
-pub fn read_secret(seed: u8, n: u8) -> (Epoch, Secret32) {
-    (epoch(n), Secret32::from_bytes([seed, n, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7]))
-}
-
-/// A link key's signing key.
-pub fn link_key(n: u8) -> SigningSecret {
-    SigningSecret::from_seed(&Secret32::from_bytes([n; 32]))
-}
-
-/// What a node reading S at `step` holds: its read secret, the static entries its roster lists,
-/// the link keys it acts for, and the walk's sync keys of the steps it holds (newest first).
-pub fn reader(s: &SyncId, read: &(Epoch, Secret32), step: &StepKeys, older: &[StepKeys], roster_links: &[&SigningSecret], own_links: &[&SigningSecret]) -> Creds {
+/// What a node reading S at head `step` holds, the sync secrets of `older` steps too: it shows and
+/// tests the sync proof of each (spec/sync-opens.md §4 Admissible).
+pub fn reader(step: &StepKeys, older: &[StepKeys]) -> Creds {
     let mut c = Creds { holding: Some(Holding::Read), ..Creds::default() };
-    c.shows.push((Shown::Read(read.0, *read.1.expose()), Some(read.0)));
-    c.shows.push((Shown::Proof(step.proof, step.pk()), Some(step.epoch)));
-    c.shows.extend(roster_links.iter().map(|k| (Shown::Static(static_entry(s, &k.verifying_key())), None)));
-    c.tests.push((Tested::Read(read.0, read.1.clone()), Some(read.0)));
-    c.tests.extend(own_links.iter().map(|k| (Tested::Static { step: None, key: (*k).clone() }, None)));
     for st in std::iter::once(step).chain(older) {
-        c.tests.push((Tested::SyncKey { step: Some(st.id), key: st.sync.clone() }, Some(st.epoch)));
+        c.shows.push(Shown::Proof(st.proof, st.pk()));
+        c.tests.push(Tested::Proof(st.proof, st.pk()));
     }
-    c.step = Some((step.sync.clone(), Some(step.epoch)));
+    c.step = Some(step.sync.clone());
+    c.head = Some(step.pk());
     c
 }
 
-/// What a node keeping S unread at head `head` holds: the product's own (`Creds::kept_unread`),
-/// with no claim set.
+/// What a node keeping S unread at head `head` holds: the product's own (`Creds::kept_unread`).
 pub fn store(head: &StepKeys) -> Creds {
-    // with no claim set, which sync ID it is says nothing
-    Creds::kept_unread(&SyncId([0; 16]), &osis_sync::unread::UnreadCredentials { step: Some(head.id), keys: vec![(head.sync.clone(), Secret32::from_bytes(head.proof))], deposit: Some(SigningSecret::from_seed(&Secret32::from_bytes(head.proof)).verifying_key()), claims: None, stopped: false })
+    Creds::kept_unread(&osis_sync::unread::UnreadCredentials { step: Some(head.id), keys: vec![(head.sync.clone(), Secret32::from_bytes(head.proof))], deposit: Some(SigningSecret::from_seed(&Secret32::from_bytes(head.proof)).verifying_key()), head: Some(head.pk()) })
 }
 
 /// What a node keeping S unread holds before any step is registered there, granted the sync
 /// secrets of `steps` (newest first): the product's own, with no head.
 pub fn store_no_head(steps: &[&StepKeys]) -> Creds {
     let keys = steps.iter().map(|st| (st.sync.clone(), Secret32::from_bytes(st.proof))).collect();
-    Creds::kept_unread(&SyncId([0; 16]), &osis_sync::unread::UnreadCredentials { step: None, keys, deposit: None, claims: None, stopped: false })
-}
-
-/// What a link holder holds: its own static entry to test, no secret of S.
-pub fn link_holder(link: &SigningSecret) -> Creds {
-    let mut c = Creds { holding: Some(Holding::Read), ..Creds::default() };
-    c.tests.push((Tested::Static { step: None, key: link.clone() }, None));
-    c
+    Creds::kept_unread(&osis_sync::unread::UnreadCredentials { step: None, keys, deposit: None, head: None })
 }
 
 /// An honest side's view of what it holds (the `Holds` seam), set by the test.
@@ -99,31 +71,12 @@ pub struct Table {
     pub rng: SeededRng,
     pub creds: BTreeMap<SyncId, Arc<Creds>>,
     due: BTreeSet<SyncId>,
-    /// J per (S, proven actor); `Unknown` otherwise.
-    pub j: BTreeMap<(SyncId, Tid), J>,
-    /// Epochs covering every departure, per S.
-    pub covering: BTreeSet<(SyncId, Epoch)>,
     pub until: Position,
-    /// Whether a departure notice can be sealed (`Holds::notices`).
-    pub departure_logged: bool,
-    /// What `take_grant` gives: the head's sync key, per S.
-    pub grants: BTreeMap<SyncId, [u8; 32]>,
-    pub gives_grant: bool,
-    /// The sync IDs whose grant was taken (its secrets learned).
-    pub taken: BTreeSet<SyncId>,
-    /// The recorded path per S: what a source's steps verify under.
-    pub recorded: BTreeMap<SyncId, Vec<osis_blob::Step>>,
-    /// The members whose J is followed (`Holds::standing`), with the actors their peer names.
-    pub followed: BTreeMap<(RecordId, SyncId), Vec<Tid>>,
-    standing_due: BTreeSet<(RecordId, SyncId)>,
-    /// Actors that may be no one (spec/sync-opens.md §3 who it may be: a revoked key, a removed
-    /// node): a peer naming only these is no one.
-    no_one: BTreeSet<Tid>,
 }
 
 impl Table {
     pub fn new(seed: u64) -> Table {
-        Table { rng: SeededRng::from_u64(seed), creds: BTreeMap::new(), due: BTreeSet::new(), j: BTreeMap::new(), covering: BTreeSet::new(), until: 100, departure_logged: true, grants: BTreeMap::new(), gives_grant: false, taken: BTreeSet::new(), recorded: BTreeMap::new(), followed: BTreeMap::new(), standing_due: BTreeSet::new(), no_one: BTreeSet::new() }
+        Table { rng: SeededRng::from_u64(seed), creds: BTreeMap::new(), due: BTreeSet::new(), until: 100 }
     }
 
     /// S's credentials are now `c` (none: S left the sync set).
@@ -138,23 +91,6 @@ impl Table {
     /// Every sync ID held comes due again (a restart: the memos start over).
     pub fn redue(&mut self) {
         self.due.extend(self.creds.keys().copied());
-    }
-
-    /// J of `actor` for S is now `j`: each member of S whose peer names `actor` comes due
-    /// (spec/sync-opens.md §6), as the engine's memo follows the rosters.
-    pub fn judge_as(&mut self, s: SyncId, actor: Tid, j: J) {
-        self.j.insert((s, actor), j);
-        let due = self.followed.iter().filter(|((_, x), a)| *x == s && a.contains(&actor)).map(|(k, _)| *k);
-        self.standing_due.extend(due);
-    }
-}
-
-impl Table {
-    /// `actor` may be no one now: each member whose peer names it comes due.
-    pub fn no_one(&mut self, actor: Tid) {
-        self.no_one.insert(actor);
-        let due = self.followed.iter().filter(|(_, a)| a.contains(&actor)).map(|(k, _)| *k);
-        self.standing_due.extend(due);
     }
 }
 
@@ -171,80 +107,14 @@ impl Holds for Table {
     fn named(&mut self, proven: &Proven) -> osis_store::Named {
         proven.named.clone()
     }
-    /// Each thing a claim names (signed as, or on its path), proven at admin: the table judges it.
-    fn counts(&mut self, named: &osis_store::Named, _copies: &osis_blob::Certificates) -> Vec<ProvenThing> {
-        let things: BTreeSet<Tid> = named.claims.iter().flat_map(|c| std::iter::once(c.thing).chain(c.path.iter().copied())).collect();
-        things.into_iter().map(|thing| ProvenThing { thing, role: Some(osis_base::Role::Admin) }).collect()
-    }
-    fn judge(&mut self, s: &SyncId, proven: &[ProvenThing]) -> J {
-        let js: Vec<J> = proven.iter().filter_map(|p| self.j.get(&(*s, p.thing)).copied()).collect();
-        [J::Reader, J::SyncHolder, J::Departed].into_iter().find(|j| js.contains(j)).unwrap_or(J::Unknown)
-    }
-    fn standing(&mut self, rec: RecordId, s: &SyncId, named: &osis_store::Named, _copies: &osis_blob::Certificates) -> Option<J> {
-        let proven = self.counts(named, &osis_blob::Certificates::default());
-        let j = self.judge(s, &proven);
-        let actors: Vec<Tid> = proven.iter().map(|p| p.thing).collect();
-        let no_one = !actors.is_empty() && actors.iter().all(|a| self.no_one.contains(a));
-        self.followed.insert((rec, *s), actors);
-        (!no_one).then_some(j)
-    }
-    fn standing_due(&mut self) -> Vec<(RecordId, SyncId)> {
-        std::mem::take(&mut self.standing_due).into_iter().collect()
-    }
-    fn unfollow(&mut self, rec: RecordId, s: &SyncId) {
-        self.followed.remove(&(rec, *s));
-    }
-    fn covers_departures(&mut self, s: &SyncId, epoch: &Epoch) -> bool {
-        self.covering.contains(&(*s, *epoch))
-    }
     fn until(&mut self, _s: &SyncId, _by: &Credential) -> Position {
         self.until
     }
-    fn notices(&mut self, s: &SyncId, proven: &std::collections::BTreeSet<osis_base::Tid>) -> Vec<osis_sync::opens::holds::Told> {
-        let departed = proven.iter().any(|p| self.j.get(&(*s, *p)) == Some(&J::Departed));
-        let told = osis_sync::opens::holds::Told { key: [0; 32], holder: osis_base::Tid::from_bytes([0; 15]), epoch: osis_crypto::Epoch::new(1, [0; 32]).expect("small epoch"), bytes: vec![0], departs: true };
-        if self.departure_logged && departed { vec![told] } else { Vec::new() }
-    }
-    fn take_notice(&mut self, _s: &SyncId, _holder: &osis_base::Tid, _epoch: &osis_crypto::Epoch, _notice: &[u8]) {}
     fn cursor_at(&mut self, pos: Position) -> Option<Cursor> {
         Some(pos.to_be_bytes().to_vec())
     }
-    fn grant(&mut self, s: &SyncId, _entry: &[u8; 32]) -> Option<Grant> {
-        // a path of one step (its bytes are never verified here: `take_grant` is the table's)
-        let k = link_key(1).verifying_key();
-        let keys = osis_blob::StepKeys { sync: k, write: k, delete: k, deposit: k };
-        let step = osis_blob::Step { sync_id: *s, prev: None, keys, step_key: [0; 32], claims_hash: [0; 32], sig: osis_crypto::Signature([0; 64]) };
-        self.gives_grant.then(|| Grant { entry_box: None, steps: vec![step] })
-    }
-    fn take_grant(&mut self, s: &SyncId, _entry: &[u8; 32], _grant: &Grant, signed: &dyn Fn(&[u8; 32]) -> bool) -> bool {
-        let ok = self.grants.get(s).is_some_and(signed);
-        if ok {
-            self.taken.insert(*s);
-        }
-        ok
-    }
-    fn behind(&mut self, _item: &BehindItem) -> SharedItem {
-        SharedItem::code(Code::DECLINED)
-    }
-    fn behind_unsigned(&mut self, _s: &SyncId) -> SharedItem {
-        SharedItem::code(Code::DECLINED)
-    }
     fn deposit(&mut self, _src: osis_sync::store::Source, _item: &DepositItem) -> Code {
         Code::DECLINED
-    }
-    fn verify_steps(&mut self, s: &SyncId, known: &[osis_blob::Step], steps: &[osis_blob::Step]) -> Vec<osis_blob::Step> {
-        let recorded = self.recorded.get(s).cloned().unwrap_or_default();
-        let mut out = osis_sync::opens::holds::known_steps(s, recorded.iter().chain(known), steps);
-        out.retain(|st| !recorded.iter().any(|r| r.id() == st.id()));
-        out
-    }
-    fn step_creds(&mut self, s: &SyncId, step: &osis_blob::Step) -> Vec<(Tested, Option<Epoch>)> {
-        let pk = step.keys.sync.to_bytes();
-        let held = self.creds.get(s).and_then(|c| c.tests.iter().find_map(|(t, e)| match t {
-            Tested::SyncKey { key, .. } if key.verifying_key().to_bytes() == pk => Some((key.clone(), *e)),
-            _ => None,
-        }));
-        held.map(|(key, e)| (Tested::SyncKey { step: Some(step.id()), key }, e)).into_iter().collect()
     }
 }
 
@@ -323,7 +193,6 @@ impl Side {
         self.pipe = Pipe::default();
         self.moved.clear();
         self.table.redue();
-        self.table.followed.clear();
         self.settle();
     }
 

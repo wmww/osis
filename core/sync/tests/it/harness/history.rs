@@ -363,7 +363,6 @@ fn model_now(w: &mut World) -> Option<Model> {
     let q = qr.0.get_mut().unwrap();
     // a copied world's reference is its own
     q.refs.world = w.id;
-    learn_all(w, &mut q.refs);
     let new: Vec<Package> = w.history.handed[q.fed..].to_vec();
     q.fed = w.history.handed.len();
     for pk in new {
@@ -876,16 +875,13 @@ pub fn introduce(w: &mut World) {
 /// The reference (`Refs`): each twin handed every commit any node wrote, again while one
 /// applies. Every commit any node holds now is handed too (what sync wrote), each node's copy of
 /// it: `harvest` keeps one copy per commit, perhaps a certificate copy (its header and some
-/// parts), and the engine joins the parts a later copy carries (spec/commits.md §4). Each twin
-/// learns every read secret any node holds of a history thing or account (as a link key gives
-/// one, `Engine::learn_secret`), so a box left out of a node's reach (the excuse) does not hide
-/// a value from the reference. It is handed no commit in `lost`.
+/// parts), and the engine joins the parts a later copy carries (spec/commits.md §4). It is
+/// handed no commit in `lost`.
 pub fn reference(w: &mut World, lost: &BTreeSet<CommitId>) -> Refs {
     for i in 0..w.len() {
         harvest(w, i);
     }
     let mut refs = twins(w);
-    learn_all(w, &mut refs);
     let on: Vec<usize> = (0..w.len()).filter(|i| w.online(*i)).collect();
     let mut handed = Vec::new();
     for pk in w.history.handed.clone().into_iter().filter(|pk| !lost.contains(&pk.id)) {
@@ -918,23 +914,6 @@ pub fn reference(w: &mut World, lost: &BTreeSet<CommitId>) -> Refs {
 /// Fresh copies of the world's twins (`Made::twins`).
 fn twins(w: &World) -> Refs {
     Refs { world: w.id, twins: w.history.twins.as_ref().expect("a history world's twins").copies() }
-}
-
-/// Each twin learns every read secret of a history thing or account that a node holds and it
-/// does not (taken as from the public's entry box: whatever the twin's own departures).
-fn learn_all(w: &mut World, refs: &mut Refs) {
-    let mut all: Vec<Tid> = w.history.things.iter().map(|x| x.0).collect();
-    all.extend((0..w.len()).filter_map(|i| w.node(i).account));
-    for t in &all {
-        for i in 0..w.len() {
-            let Some(es) = w.engine(i).epochs(t) else { continue };
-            for (e, s) in es.role(Role::Read).held() {
-                for r in refs.all() {
-                    let _ = r.engine.learn_secret(t, Role::Read, e, s.secret().clone(), &Tid::PUBLIC);
-                }
-            }
-        }
-    }
 }
 
 /// Node `i` reads thing `k` as its account's twin.
@@ -1374,7 +1353,7 @@ fn closure_clauses(w: &mut World, refs: &mut Refs, m: &Model, gone: &BTreeSet<St
                     && want == Some(Holding::Unread)
                     && let Some((depth, recorded)) = recorded_steps(w, t, s)
                 {
-                    let path = w.store(i).path(s).expect("path").map(|p| p.steps.iter().map(|(st, _)| st.id()).collect::<Vec<_>>()).unwrap_or_default();
+                    let path = w.store(i).path(s).expect("path").map(|p| p.steps.iter().map(|st| st.id()).collect::<Vec<_>>()).unwrap_or_default();
                     if path.len() != depth || !path.last().is_some_and(|h| recorded.contains(h)) {
                         panic!("node {i} keeps thing {k} unread at step {:?} ({} deep), its readers' head is {depth} deep\n{}", path.last(), path.len(), why_role(w, i, t));
                     }

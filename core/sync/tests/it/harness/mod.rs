@@ -1533,11 +1533,6 @@ impl World {
         };
     }
 
-    /// Hit items node `i`'s lie sent as noise so far (`Lie::Miss`).
-    pub fn missed_hits(&self, i: usize) -> usize {
-        self.liars.get(&i).map_or(0, |l| l.missed)
-    }
-
     /// Node `i` loses power: its connections are cut (peers told), its wake and inputs in flight
     /// to it are lost, and so is all it held in memory: it reopens over what reached its disks
     /// (`MemoryBackend::power_cut`; a crashed device powers up again) with its monotonic clock at

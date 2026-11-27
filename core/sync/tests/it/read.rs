@@ -53,7 +53,6 @@ fn step(e: u64) -> Step {
         prev: None,
         keys: StepKeys { sync: vk(RoleKey::Sync), write: vk(RoleKey::Write), delete: vk(RoleKey::Delete), deposit: vk(RoleKey::Write) },
         step_key: [e as u8; 32],
-        claims_hash: [0; 32],
         sig: Signature([0; 64]),
     }
 }
@@ -70,7 +69,7 @@ fn creds(e: u64, writer: bool, delete: bool) -> Arc<ReadCredentials> {
     for i in 0..=e {
         keys.insert(step(i).id(), hk.clone());
     }
-    Arc::new(ReadCredentials { head: Some(step(e)), keys, read_secrets: Vec::new(), statics: BTreeSet::new(), ..Default::default() })
+    Arc::new(ReadCredentials { head: Some(step(e)), keys, ..Default::default() })
 }
 
 fn meta() -> BodyMeta {

@@ -175,7 +175,7 @@ impl Shared for Open {
 }
 
 fn member() -> Member {
-    Member { class: SourceClass::Reader, own: SourceClass::Reader, by: Credential::J, until: None, departed: None }
+    Member { class: SourceClass::Reader, own: SourceClass::Reader, by: Credential::SyncProof([0; 32]), until: None }
 }
 
 struct Side {
@@ -487,7 +487,7 @@ impl OnSide for Sid {
     /// A side keeping this sync ID unread, its genesis registered.
     fn keep(&self, side: &mut Side) {
         side.hold(self.id, Holding::Unread);
-        assert_eq!(side.store.reg(self, &[(&self.genesis().0, Some(&self.genesis().1))]), Code::OK);
+        assert_eq!(side.store.reg(self, &[self.genesis().clone()]), Code::OK);
     }
 
     /// A stamped entry of a fresh blob taken into `side`'s store.
@@ -539,37 +539,6 @@ fn listed_then_pushed_spec_sync_streams_4() {
     assert!(streams.iter().any(|m| matches!(m, Msg::Stream(st) if added(&st.events) == [y] && st.seq == 0 && st.cursor.is_some())));
     assert!(p.b.streams.caught_up(C, &s));
     assert!(p.b.streams.known().present(&s, &y));
-}
-
-// spec/sync-opens.md §6, spec/sync-streams.md §4: a's log holds a role entry, a plain entry and
-// the deletion of another entry. Toward a departed peer a lists nothing (it is told by notices
-// alone): no role entry (a role commit made knowing the removal leaked), no `Deleted` (when S
-// deletes) and no head event (when S's sync ID steps); toward a member, the deletion and the head
-// go.
-#[test]
-fn a_departed_peer_is_served_nothing_spec_sync_opens_6() {
-    let mut p = Pair::new();
-    let k = Sid::new(10);
-    let s = k.id;
-    // S's genesis registered (a head event in a's log), then read
-    k.keep(&mut p.a);
-    p.a.hold(s, Holding::Read);
-    let peer = osis_base::Tid::from_bytes([1; 15]);
-    let role = p.a.log(s, 100);
-    p.a.log(s, 101);
-    let gone = p.a.log(s, 104);
-    p.a.store.drop_entry(&s, &gone, Vec::new()).unwrap();
-    p.a.table.role.insert(role);
-    let head = |r: &osis_proto::PullReply| r.events.iter().any(|(x, e)| *x == s && matches!(e, Event::Head(_)));
-    p.a.open.members.entry(C).or_default().insert(s, Member { departed: Some(std::sync::Arc::new([peer].into())), ..member() });
-    let r = pull_at(&mut p.a, 0, plain_pull(None, vec![], 1 << 20));
-    assert!(added(&r.events).is_empty(), "no entry");
-    assert!(!r.events.contains(&(s, Event::Deleted(gone))), "no deletion");
-    assert!(!head(&r), "no head");
-    p.a.open.members.entry(C).or_default().insert(s, member());
-    let r = pull_at(&mut p.a, 1, plain_pull(None, vec![], 1 << 20));
-    assert!(r.events.contains(&(s, Event::Deleted(gone))), "a member is told the deletion");
-    assert!(head(&r), "a member is told the head");
 }
 
 // spec/sync-streams.md §4 (Stream: both sides pull), SN_bothpull: whoever dialed, each side pulls
@@ -1015,7 +984,7 @@ fn the_class_a_source_joined_lasts_with_what_it_showed_spec_sync_opens_3() {
     let mut p = Pair::sharing(&[s]);
     let src = p.b.src();
     let join = |side: &mut Side, now: u64, class: SourceClass| {
-        side.open.members.entry(C).or_default().insert(s, Member { class, own: SourceClass::Reader, by: Credential::J, until: None, departed: None });
+        side.open.members.entry(C).or_default().insert(s, Member { class, own: SourceClass::Reader, by: Credential::SyncProof([0; 32]), until: None });
         side.with(now, |st, ctx| st.member_moved(ctx, Moved::Joined(C, s, Rejoin::Held)));
     };
     assert!(!p.b.streams.known().kept(src, &s), "joined as a reader");
@@ -1351,7 +1320,7 @@ fn a_shredded_full_s_untells_full_spec_sync_streams_4() {
     assert!(p.a.streams.known().full(C, &k.id));
     p.b.store.shred(&k.id).unwrap();
     p.b.store.set_caps(&caps(&[("bytes", 1_000_000)]));
-    assert_eq!(p.b.store.reg(&k, &[(&k.genesis().0, Some(&k.genesis().1))]), Code::OK);
+    assert_eq!(p.b.store.reg(&k, &[k.genesis().clone()]), Code::OK);
     p.run();
     assert!(!p.b.store.waits_room(&k.id));
     assert!(!p.a.streams.known().full(C, &k.id), "full false told after the shred");
@@ -1589,8 +1558,8 @@ fn a_head_move_while_dropped_keeps_the_fetch_anew_spec_sync_judgement_6() {
     p.run();
     p.b.store.set_unheld(&k.id, true).unwrap();
     // a step under the same write key: x verifies under it
-    let one = k.child(&k.genesis().0, 1, 10);
-    assert_eq!(p.b.store.reg(&k, &[(&one.0, Some(&one.1))]), Code::OK);
+    let one = k.child(&k.genesis(), 1, 10);
+    assert_eq!(p.b.store.reg(&k, &[one.clone()]), Code::OK);
     p.run();
     assert!(p.b.store.entry(&k.id, &x).unwrap().is_none(), "dropped");
     p.b.restart_all(7);
@@ -1686,8 +1655,8 @@ fn a_refusal_ends_with_its_ground_spec_sync_streams_4() {
     p.join(k.id);
     p.run();
     assert!(refused(&p, &k), "refused under its head");
-    let one = k.child(&k.genesis().0, 1, 0xf0);
-    assert_eq!(p.b.store.reg(&k, &[(&one.0, Some(&one.1))]), Code::OK);
+    let one = k.child(&k.genesis(), 1, 0xf0);
+    assert_eq!(p.b.store.reg(&k, &[one.clone()]), Code::OK);
     p.run_with(|ab, m| !ab && m.kind() == 41);
     assert!(!refused(&p, &k), "b's head moved");
     assert!(p.a.streams.caught_up(C, &k.id));
@@ -1772,8 +1741,8 @@ fn a_moved_head_shows_a_refused_entry_again_spec_sync_streams_4() {
     assert!(!held(&p, &x), "refused under its head");
     assert_eq!(p.a.streams.known().refusal(p.a.src(), &k.id, &x), Some(Code::REFUSED));
     let pulls = p.sent_by_b(41).len();
-    let one = k.child(&k.genesis().0, 1, 0xee);
-    assert_eq!(p.b.store.reg(&k, &[(&one.0, Some(&one.1))]), Code::OK);
+    let one = k.child(&k.genesis(), 1, 0xee);
+    assert_eq!(p.b.store.reg(&k, &[one.clone()]), Code::OK);
     p.run();
     assert!(held(&p, &x), "taken once its head moved");
     assert_eq!(anew(&p, pulls), 1, "pulled again from the start once");
@@ -1781,16 +1750,16 @@ fn a_moved_head_shows_a_refused_entry_again_spec_sync_streams_4() {
     let y = k.stamped_by(&mut p.a, 501, Secret32::from_bytes([0xf0; 32]));
     p.run();
     assert!(!held(&p, &y));
-    let two = k.child(&one.0, 2, 0xf0);
-    assert_eq!(p.b.store.reg(&k, &[(&two.0, Some(&two.1))]), Code::OK);
+    let two = k.child(&one, 2, 0xf0);
+    assert_eq!(p.b.store.reg(&k, &[two.clone()]), Code::OK);
     p.b.restart_all(7);
     p.a.streams.closed(C);
     p.join(k.id);
     p.run();
     assert!(held(&p, &y), "taken after the restart");
     let pulls = p.sent_by_b(41).len();
-    let three = k.child(&two.0, 3, 0xf1);
-    assert_eq!(p.b.store.reg(&k, &[(&three.0, Some(&three.1))]), Code::OK);
+    let three = k.child(&two, 3, 0xf1);
+    assert_eq!(p.b.store.reg(&k, &[three.clone()]), Code::OK);
     p.run();
     assert_eq!(anew(&p, pulls), 0, "nothing refused under the head before: nothing pulled");
 }
@@ -1812,12 +1781,12 @@ fn places_after_head_moves(n: u8) -> usize {
         p.b.streams.record_left(rec);
     }
     assert_eq!(p.b.streams.places(), 0);
-    let mut parent = k.genesis().0.clone();
+    let mut parent = k.genesis().clone();
     for h in 1..4u64 {
         let next = k.child(&parent, h, 0xe0 + h as u8);
-        assert_eq!(p.b.store.reg(&k, &[(&next.0, Some(&next.1))]), Code::OK);
+        assert_eq!(p.b.store.reg(&k, &[next.clone()]), Code::OK);
         p.run();
-        parent = next.0;
+        parent = next;
     }
     p.b.streams.places()
 }
@@ -1839,8 +1808,8 @@ fn a_moved_head_pulls_nothing_anew_over_a_tombstone_refusal_spec_sync_streams_4(
     p.run();
     assert!(p.sent_by_b(43).iter().any(|m| matches!(m, Msg::Stream(st) if st.events.contains(&(k.id, Event::Refused(gone, Code::TOMBSTONED))))));
     let pulls = p.sent_by_b(41).len();
-    let one = k.child(&k.genesis().0, 1, 0xee);
-    assert_eq!(p.b.store.reg(&k, &[(&one.0, Some(&one.1))]), Code::OK);
+    let one = k.child(&k.genesis(), 1, 0xee);
+    assert_eq!(p.b.store.reg(&k, &[one.clone()]), Code::OK);
     p.run();
     let anew = p.sent_by_b(41).iter().skip(pulls).filter(|m| matches!(m, Msg::Pull(q) if q.joins == vec![(k.id, None)])).count();
     assert_eq!(anew, 0, "a tombstone refusal is no reason to pull S again");

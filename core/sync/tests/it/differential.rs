@@ -192,124 +192,6 @@ fn a_public_thing_redeemed_is_read_until_the_public_goes_spec_sync_set_4() {
     assert!(reads(w.engine(1), &t).value.is_none(), "control: not public, not read");
 }
 
-// spec/sync-opens.md §4 (lapsed secrets), §6 (A reader tells a public reader the public's removal):
-// node 0 makes a thing public, node 1 of another account redeems a locator of it, then node 0
-// removes the public and writes again while node 1 is off. Node 1 holds the removal and reads the
-// thing no more (fails without the lapsed read secrets: no reader opens the thing's sync ID toward
-// it again).
-#[test]
-fn a_redeemer_hears_the_public_removed_spec_sync_opens_6() {
-    use crate::harness::history::{Gives, Holder, reads};
-    let (n, accounts, ..) = size();
-    let script = [Step::New(0), Step::Give(0, 0, Holder::Public, Gives::Reads), Step::Run, Step::Redeem(1, 0), Step::Run, Step::PowerOff(1), Step::Revoke(0, 0, Holder::Public), Step::Write(0, 0), Step::Run];
-    let mut w = holds_on(0, accounts, n, &script, String::new(), false);
-    let t = w.history.things[0].0;
-    assert!(reads(w.engine(1), &t).value.is_none(), "node 1 reads the thing no more");
-}
-
-// spec/sync-opens.md §6 (A reader tells a public reader the public's removal; Lost: a member
-// opened after the first Pull has no reported position until a join names it): as above, but
-// while node 1 is off node 0 first removes another reader (thing 1), rotating the thing's read
-// keys with the public boxed again, and writes. Node 1 hears the removal: the member opened on its
-// lapsed secret is served from where the public entry's member stopped (failed: closed at once on
-// the stream's position, past both, node 1 reading v1 for good).
-#[test]
-fn a_redeemer_misses_a_rotation_and_hears_the_public_removed_spec_sync_opens_6() {
-    use crate::harness::history::{Gives, Holder};
-    let (n, accounts, ..) = size();
-    let script = [
-        Step::New(0),
-        Step::Give(0, 0, Holder::Public, Gives::Reads),
-        Step::Run,
-        Step::Redeem(1, 0),
-        Step::Run,
-        Step::PowerOff(1),
-        Step::New(0),
-        Step::Give(0, 0, Holder::Thing(1), Gives::Reads),
-        Step::Revoke(0, 0, Holder::Thing(1)),
-        Step::Write(0, 0),
-        Step::Revoke(0, 0, Holder::Public),
-        Step::Write(0, 0),
-        Step::Run,
-    ];
-    holds_on(0, accounts, n, &script, String::new(), false);
-}
-
-// spec/sync-opens.md §4 (lapsed secrets), spec/sync-hostile.md §2: a locator made while
-// the public read a thing, redeemed by a stranger (node 1) only after the public's removal, opens
-// nothing: holding no read secret of the thing, node 1 hits nothing, and no store entry of the thing
-// reaches it (failed with a lapsed public entry, which every holder of the sync ID hits: node 1 was
-// served the thing up to the removal, the public's open boxes with it). Control: with the public
-// not removed, the same redeem is served the thing.
-#[test]
-fn a_locator_redeemed_after_the_removal_opens_nothing_spec_sync_opens_4() {
-    use crate::harness::history::{Gives, Holder};
-    let (n, accounts, ..) = size();
-    for removed in [true, false] {
-        let mut w = world_of(0, accounts, n);
-        w.cap = crate::harness::STORM_CAP;
-        play(&mut w, &[Step::New(0), Step::Give(0, 0, Holder::Public, Gives::Reads), Step::Run], String::new());
-        let t = w.history.things[0].0;
-        let s = w.engine(0).sync_id_of(&t).unwrap().expect("a sync ID");
-        let link = w.locator(0, t).expect("the public reads it");
-        if removed {
-            play(&mut w, &[Step::Revoke(0, 0, Holder::Public), Step::Write(0, 0), Step::Run], String::new());
-        }
-        w.redeem_any(1, &link);
-        let mut most = 0;
-        while w.step_or_wake() {
-            most = most.max(w.store(1).entries(&s).unwrap().len());
-        }
-        assert_eq!(most == 0, removed, "node 1 held {most} entries of the thing (removed: {removed})");
-    }
-}
-
-// spec/sync-opens.md §4 (Admissible: a node keeping S unread takes its head's public entry): node 1's
-// account holds thing 0 at sync and holds it by a strong; node 0 makes it public and writes, and
-// node 1 reads it by its head's public entry box, as the reference does (failed without: it kept
-// it unread, never holding the public's grant). Then (second) node 0 removes the public and
-// writes: node 1 reads the removal, drops its read secrets and keeps it unread again at the head
-// it held while reading, which lists the public but bears a sync epoch the removal superseded, so
-// it takes nothing there (failed taking any head's box: it read again, dropped again, and the pair
-// churned past the storm cap).
-#[test]
-fn a_sync_holder_reads_a_thing_made_public_spec_sync_opens_4() {
-    use crate::harness::history::{Gives, Holder};
-    let (n, accounts, ..) = size();
-    let made = [Step::New(0), Step::Give(0, 0, Holder::Node(1), Gives::Syncs), Step::Strong(1, None, 0), Step::Run, Step::Give(0, 0, Holder::Public, Gives::Reads), Step::Write(0, 0), Step::Run];
-    holds_on(0, accounts, n, &made, String::new(), false);
-    let removed: Vec<Step> = made.iter().cloned().chain([Step::Revoke(0, 0, Holder::Public), Step::Write(0, 0), Step::Run]).collect();
-    holds_on(0, accounts, n, &removed, String::new(), false);
-}
-
-// spec/permissions.md §3 (No secret taken back: a held epoch's history boxes): thing 0 is made
-// public, node 1's account given sync on it, and thing 0 then granted read on thing 1, which
-// moves thing 0's epochs on; node 1 strongs thing 0 and reads it by its head's public entry box.
-// That box gives the newest epochs alone; the public's grant is under an earlier one, which only
-// their history boxes give. Taking those only once node 1's roles give read (known
-// only from that grant) left it holding read secrets of a thing it judged it could not read: its
-// loss due for good, the pair churned past the storm cap.
-#[test]
-fn an_entry_box_epochs_history_is_taken_spec_permissions_3() {
-    use crate::harness::history::{Gives, Holder};
-    let (n, accounts, ..) = size();
-    let script = [Step::New(0), Step::Give(0, 0, Holder::Public, Gives::Reads), Step::New(0), Step::Give(0, 0, Holder::Node(1), Gives::Syncs), Step::Give(0, 1, Holder::Thing(0), Gives::Reads), Step::Run, Step::Strong(1, None, 0), Step::Run];
-    holds_on(0, accounts, n, &script, String::new(), false);
-}
-
-// spec/permissions.md §3 (Sync ID role keys: a step due for the public; Left out): node 1
-// grants thing 1 read on its thing 0 while node 0, the admin of thing 1, makes thing 1 public;
-// node 1, a writer of thing 1, rotates its read keys for the grant before seeing the public's,
-// so the public is left out of thing 1's newest read epoch. Every node settles (failed: thing 1's
-// admin issued a step per settle round, due for the public that no step could list before its
-// re-seal, past the settle loop's bound).
-#[test]
-fn a_public_left_out_of_a_rotation_is_listed_once_re_sealed_spec_permissions_3() {
-    use crate::harness::history::{Gives, Holder};
-    let script = [Step::New(1), Step::New(0), Step::Give(0, 1, Holder::Node(1), Gives::Writes), Step::Strong(1, None, 1), Step::Run, Step::Give(1, 0, Holder::Thing(1), Gives::Reads), Step::Give(0, 1, Holder::Public, Gives::Reads)];
-    holds_on(0, 2, 3, &script, String::new(), false);
-}
-
 // spec/sync-set.md §2 (Own things: the public's role is every party's), spec/permissions.md §1:
 // thing 0 is public and holds read on thing 1; node 1's account holds both at sync and by
 // strongs. Every party reads thing 1 through thing 0: node 1, reading thing 0 (holding the public's
@@ -335,21 +217,6 @@ fn a_store_granted_past_genesis_is_moved_spec_sync_ids_6() {
     use crate::harness::history::{Gives, Holder};
     let (n, accounts, ..) = size();
     let script = [Step::New(0), Step::New(0), Step::Give(0, 0, Holder::Thing(1), Gives::Syncs), Step::Revoke(0, 0, Holder::Thing(1)), Step::Give(0, 0, Holder::Node(1), Gives::Syncs), Step::Run, Step::Strong(1, None, 0), Step::Write(0, 0), Step::Run];
-    holds_on(0, accounts, n, &script, String::new(), false);
-}
-
-// spec/sync-opens.md §4 (Admissible: a node keeping S unread takes its head's public entry),
-// spec/sync.md §3 (Holders by copies: a record alone is none of the admins' word): as above with
-// thing 0 public and its epochs moved on by its read grant on thing 1. Node 1's store is moved to
-// the head listing the public and reads thing 0 by its entry box; it takes thing 0's record before
-// the role commits placing its steps, and reads it once they come (failed judging by the record
-// alone: thing 0 dependent on its mint admin, of which node 1 holds nothing, so nothing fetched the
-// role commits and it dropped thing 0 for good).
-#[test]
-fn a_public_reader_keeps_a_thing_on_taking_its_record_spec_sync_3() {
-    use crate::harness::history::{Gives, Holder};
-    let (n, accounts, ..) = size();
-    let script = [Step::New(0), Step::Give(0, 0, Holder::Public, Gives::Reads), Step::New(0), Step::Give(0, 1, Holder::Thing(0), Gives::Reads), Step::Give(0, 0, Holder::Node(1), Gives::Syncs), Step::Run, Step::Strong(1, None, 0), Step::Write(0, 0), Step::Run];
     holds_on(0, accounts, n, &script, String::new(), false);
 }
 
@@ -467,112 +334,6 @@ fn a_store_moved_at_once_takes_the_next_step_spec_sync_ids_6() {
     holds_on(0, 3, 4, &script, String::new(), false);
 }
 
-// spec/sync-opens.md §4 (Admissible: keeping S unread, the head it was lowered to sync at gives
-// nothing): node 2 makes a thing the public reads; node 0, of its account, grants node 1's account
-// sync and node 1 holds the thing, reading it by the public's grant; node 0 lowers the public to
-// sync, which rotates read and no sync epoch. Node 1 drops its read secrets and keeps the thing
-// unread at the head it read, whose claim set lists the public entry: taking that entry's box it
-// would read again, drop again on the role entries, and refuse while reading each Register moving
-// its head, a storm past the world's cap. It reaches quiet, keeping the thing unread as the model
-// says, and its index rebuilds from what it holds once the role commits it read are forgotten.
-#[test]
-fn a_node_lowered_with_the_public_reads_no_more_by_its_head_spec_sync_opens_4() {
-    use crate::harness::history::{Gives, Holder};
-    let script = [Step::New(2), Step::Run, Step::Give(2, 0, Holder::Public, Gives::Reads), Step::Run, Step::Give(0, 0, Holder::Node(1), Gives::Syncs), Step::Run, Step::Strong(1, None, 0), Step::Lower(0, 0, Holder::Public, Gives::Syncs)];
-    holds_on(0, 2, 3, &script, String::new(), false);
-}
-
-// spec/sync-opens.md §4 (Admissible: keeping S unread, the head it was lowered to sync at gives
-// nothing), across a start: node 1 holds node 0's thing at sync, node 2 makes it public and node 1
-// reads it by its head's public entry; node 0 lowers the public to sync, and node 1 is powered off
-// and on while it keeps the thing unread at the head it read, before the Register moving it
-// arrives. Started, it keeps the thing unread, never reading it by that head's public entry again
-// (a start judges as the live node did).
-#[test]
-fn a_node_lowered_with_the_public_reads_no_more_after_a_start_spec_sync_opens_4() {
-    use crate::harness::history::{Gives, Holder, reads};
-    const TAKEN: &str = "unread: read by its head's public entry @node 1";
-    let taken = || osis_base::costs::take().iter().find(|x| x.0 == TAKEN).map_or(0, |x| x.2);
-    let script = [Step::New(2), Step::Run, Step::Give(0, 0, Holder::Node(1), Gives::Syncs), Step::Run, Step::Strong(1, None, 0), Step::Run, Step::Give(2, 0, Holder::Public, Gives::Reads), Step::Run];
-    let mut w = world_of(0, 2, 3);
-    w.cap = crate::harness::STORM_CAP;
-    osis_base::costs::take();
-    play(&mut w, &script, String::new());
-    assert_eq!(taken(), 1, "node 1 reads by its head's public entry");
-    let t = w.history.things[0].0;
-    let s = w.engine(0).sync_id_of(&t).unwrap().unwrap();
-    play(&mut w, &[Step::Lower(0, 0, Holder::Public, Gives::Syncs)], String::new());
-    let at_read_head = |w: &mut World| reads(w.engine(1), &t).value.is_none() && w.store(1).path(&s).unwrap().and_then(|p| p.steps.last().and_then(|x| x.1.clone())).is_some_and(|c| c.lists_public(&s));
-    while !at_read_head(&mut w) {
-        assert!(w.step_or_wake(), "node 1 is lowered at the head it read");
-    }
-    taken();
-    play(&mut w, &[Step::PowerOff(1), Step::PowerOn(1), Step::Run], String::new());
-    assert_eq!(taken(), 0, "started, it reads no more by the head it was lowered at");
-    check(&mut w);
-}
-
-// spec/sync-opens.md §4 (Admissible: the head it was lowered at gives nothing until a Register
-// moves it): node 1, lowered with the public as above, reads the thing again once the public is
-// granted read again (a new step listing the public entry is registered with it).
-#[test]
-fn a_node_lowered_with_the_public_reads_again_on_its_regrant_spec_sync_opens_4() {
-    use crate::harness::history::{Gives, Holder};
-    let script = [Step::New(2), Step::Run, Step::Give(2, 0, Holder::Public, Gives::Reads), Step::Run, Step::Give(0, 0, Holder::Node(1), Gives::Syncs), Step::Run, Step::Strong(1, None, 0), Step::Lower(0, 0, Holder::Public, Gives::Syncs), Step::Run, Step::Give(0, 0, Holder::Public, Gives::Reads), Step::Run];
-    let mut w = holds_on(0, 2, 3, &script, String::new(), false);
-    let t = w.history.things[0].0;
-    assert!(crate::harness::history::reads(w.engine(1), &t).value.is_some(), "node 1 reads the thing again by the public's grant");
-}
-
-
-// spec/permissions.md §3 (No secret taken back): a removed reader takes the public's
-// box as any party does, and no more. Node 0's account reads node 1's public thing and strongs
-// it; it is removed and a write follows (read by the public), then the public is removed and a
-// write follows: node 0 reads neither that write nor any secret of the epoch the public's removal
-// minted, whether the removals have a run between them or node 0 is off through both.
-// Control: the public not removed, node 0 reads the last write by the public.
-#[test]
-fn a_removed_reader_takes_from_the_publics_box_no_more_than_a_stranger_spec_permissions_3() {
-    use crate::harness::history::{Gives, Holder, reads};
-    let start = [Step::New(1), Step::Give(1, 0, Holder::Node(0), Gives::Reads), Step::Give(1, 0, Holder::Public, Gives::Reads), Step::Strong(0, None, 0), Step::Run];
-    for (case, mid, off) in [("a run between", vec![Step::Run], false), ("node 0 off", vec![], true)] {
-        for ended in [true, false].into_iter().filter(|e| *e || !off) {
-            let mut s: Vec<Step> = start.to_vec();
-            s.extend(off.then_some(Step::PowerOff(0)));
-            s.extend([Step::Revoke(1, 0, Holder::Node(0)), Step::Write(1, 0)].into_iter().chain(mid.clone()));
-            s.extend(ended.then_some(Step::Revoke(1, 0, Holder::Public)));
-            s.extend([Step::Write(1, 0), Step::PowerOn(0), Step::Run]);
-            let mut w = world_of(0, 2, 3);
-            w.cap = crate::harness::STORM_CAP;
-            play(&mut w, &s, String::new());
-            let t = w.history.things[0].0;
-            let last = reads(w.engine(1), &t).value;
-            let newest = w.engine(1).epochs(&t).unwrap().read.newest().unwrap();
-            let got = w.engine(0).epochs(&t).is_some_and(|e| e.read.secret(&newest).is_some());
-            match ended {
-                true => assert!(reads(w.engine(0), &t).value != last && !got, "{case}: node 0 reads nothing written after the public's read ended"),
-                false => assert!(reads(w.engine(0), &t).value == last && got, "{case}: control: node 0 reads the last write by the public"),
-            }
-        }
-    }
-}
-
-// spec/sync-opens.md §6 (A member whose peer J judges departed is ended too: told its removal
-// and the public's edge by notices): node 0's account reads node 1's public thing and strongs it;
-// both removed (the public's first, with no run between; or node 0's, a run, then the public's),
-// node 0 is departed at every reader, so notices tell it its own removal and the public's: it
-// reads the thing no more, as the model says. Failed while a departed member was told its own
-// removal alone: node 0 kept reading at the public's role, its roster still listing the public.
-#[test]
-fn a_departed_public_reader_holds_the_publics_removal_spec_sync_opens_6() {
-    use crate::harness::history::{Gives, Holder};
-    let start = [Step::New(1), Step::Give(1, 0, Holder::Node(0), Gives::Reads), Step::Give(1, 0, Holder::Public, Gives::Reads), Step::Strong(0, None, 0), Step::Run];
-    let ends = [vec![Step::Revoke(1, 0, Holder::Public), Step::Revoke(1, 0, Holder::Node(0))], vec![Step::Revoke(1, 0, Holder::Node(0)), Step::Run, Step::Revoke(1, 0, Holder::Public)]];
-    for end in ends {
-        let script: Vec<Step> = start.iter().cloned().chain(end).collect();
-        holds_on(0, 2, 3, &script, String::new(), false);
-    }
-}
 
 // spec/permissions.md §3 (Complete pass: a holder's keyset arriving), spec/crypto.md §4 (Seal: a
 // holder actor left out is re-sealed once a keyset exists): node 1 grants node 0's account sync on its
@@ -587,54 +348,6 @@ fn a_departed_public_reader_holds_the_publics_removal_spec_sync_opens_6() {
 fn a_holder_left_out_is_re_sealed_once_its_keyset_arrives_spec_permissions_3() {
     use crate::harness::script::*;
     holds_on(0, 2, 3, &[New(1), Give(1, 0, Holder::Node(0), Syncs), Pair(0), Run, Strong(3, None, 0), Unpair(3, 2)], String::new(), false);
-}
-
-// spec/permissions.md §3 (Lost access: its role there counts the public's sync its head lists),
-// spec/sync.md §3 (Holders by copies): node 0's account, a reader, is removed after the public is
-// given only sync and node 0's strong names the thing. Node 0 follows it by the public entry and
-// takes the public's box, the sync secret alone, while it still holds the read secrets its loss
-// has not dropped: the drop keeps that sync secret, so it keeps the thing unread as the model says.
-// Failed while lost access judged the sync secret by the grants alone: it dropped the public's
-// sync secret with the rest and followed the thing again, holding nothing; and while a unit
-// carried the thing by the public's grant held alone, not by its head listing the public: node 0
-// held it as its signal's stub.
-#[test]
-fn a_removed_reader_keeps_the_publics_sync_secret_through_its_loss_spec_permissions_3() {
-    use crate::harness::script::*;
-    holds_on(0, 3, 4, &[New(2), Give(2, 0, Holder::Node(0), Reads), Give(2, 0, Holder::Node(1), Reads), Revoke(2, 0, Holder::Node(1)), Give(2, 0, Holder::Public, Syncs), Strong(0, None, 0), Revoke(2, 0, Holder::Node(0))], String::new(), false);
-}
-
-// spec/sync.md §3 (Holders by copies: the head listing the public is the word of its role only to a
-// node not holding the `sync.0` write placing that head): node 1 redeems a locator of thing 0
-// and reads it by the public entry's box, then is granted sync of its own; node 0 lowers the
-// public to sync and writes. Lowering rotates read alone, so node 1 sees no new head but holds the
-// lowering: it reads nothing, not even what it read before.
-#[test]
-fn a_reader_by_the_publics_box_reads_no_more_once_lowered_spec_sync_3() {
-    use crate::harness::history::{Gives, Holder, reads};
-    let (n, accounts, ..) = size();
-    let script = [Step::New(0), Step::Give(0, 0, Holder::Public, Gives::Reads), Step::Run, Step::Redeem(1, 0), Step::Run, Step::Give(0, 0, Holder::Node(1), Gives::Syncs), Step::Write(0, 0), Step::Run, Step::Lower(0, 0, Holder::Public, Gives::Syncs), Step::Write(0, 0), Step::Run];
-    let mut w = played_on(0, accounts, n, &script, String::new(), false);
-    let t = w.history.things[0].0;
-    let (latest, read) = (reads(w.engine(0), &t).value, reads(w.engine(1), &t).value);
-    assert!(latest.is_some(), "node 0 reads its write");
-    // control (the listing counted whatever its head): node 1 reads on by the stale listing
-    assert_eq!(read, None, "node 1 reads no more");
-}
-
-// spec/sync.md §3 (Holders by copies): node 1, granted sync, reads thing 0 by its head's public
-// entry box, and started again still reads its latest write.
-#[test]
-fn a_reader_by_the_publics_box_reads_across_a_start_spec_sync_3() {
-    use crate::harness::history::{Gives, Holder, reads};
-    let (n, accounts, ..) = size();
-    let script = [Step::New(0), Step::Give(0, 0, Holder::Public, Gives::Reads), Step::Run, Step::Redeem(1, 0), Step::Run, Step::Give(0, 0, Holder::Node(1), Gives::Syncs), Step::Write(0, 0), Step::Run];
-    let mut w = played_on(0, accounts, n, &script, String::new(), false);
-    let t = w.history.things[0].0;
-    assert!(reads(w.engine(1), &t).value.is_some(), "node 1 reads the thing by the public's box");
-    play(&mut w, &[Step::PowerOff(1), Step::PowerOn(1), Step::Write(0, 0), Step::Run], String::new());
-    let (latest, read) = (reads(w.engine(0), &t).value, reads(w.engine(1), &t).value);
-    assert!(read.is_some() && read == latest, "started again: node 1 reads the latest write");
 }
 
 // spec/sync-set.md §2 (T's keys open: a chain through a dependent admin), held-model (a dependent
@@ -682,19 +395,6 @@ fn a_signal_only_a_removed_node_took_is_lost_spec_sync_inbox_2() {
         let held = w.engine(0).sync_set().unwrap().ids.values().any(|(ts, _)| ts.contains(&t));
         assert_eq!(held, !removed, "node 0 holds thing 0 (node 3 removed: {removed})");
     }
-}
-
-// spec/permissions.md §4 (Notices: a role commit tells a holder its boxes), spec/sync-opens.md
-// §5 (ByRole): node 2 grants node 0's account sync on its thing (told), then grants node 1's
-// account read and removes it, a rotation boxing node 0's account again; node 0 holds it by a
-// strong. Node 0 enters by
-// role, is told the rotation (the newest box) and the grant (its role, which the rotation does not
-// carry), and keeps the thing unread as the model says (failed told the newest box alone: node 0
-// held no roster of the thing, judged it dependent and held it as a stub).
-#[test]
-fn a_grantee_entering_by_role_is_told_its_grant_beside_a_later_box_spec_permissions_4() {
-    use crate::harness::script::*;
-    holds_on(0, 3, 4, &[New(2), Give(2, 0, Holder::Node(0), Syncs), Give(2, 0, Holder::Node(1), Reads), Revoke(2, 0, Holder::Node(1)), Strong(0, None, 0)], String::new(), false);
 }
 
 // spec/sync-ids.md §2 (What a sync holder learns: never the tids of what its sync unit holds),
@@ -748,34 +448,6 @@ fn a_strong_in_an_inboxs_held_history_holds_its_target_spec_data_model_8() {
 fn a_removed_reader_keeps_a_thing_the_public_syncs_unread_spec_sync_set_2() {
     use crate::harness::script::*;
     holds_on(0, 3, 4, &[New(2), Give(2, 0, Holder::Node(0), Reads), Give(2, 0, Holder::Public, Syncs), Strong(0, None, 0), Run, Revoke(2, 0, Holder::Node(0))], String::new(), false);
-}
-
-// spec/sync-opens.md §6 (A member whose peer J judges departed: told the public's edge by
-// notices), spec/sync-set.md §2 (Own things: the public's role where the node holds its grant):
-// node 0 makes thing 0 and thing 1 under it, gives node 1's account sync on thing 0, which node
-// 1 strongs; node 0 gives the public sync, removes node 1's account, then grants it read on thing
-// 1, so node 1 holds thing 0 as a stub (thing 0 is thing 1's admin) as well as by its strong. A
-// sync-only holder opens none of thing 0's role commits, so it learns the public's grant only from
-// a notice sealed to it: it keeps thing 0 unread by the public's sync, as the model says. Failed
-// while a departed peer was served the public's edge as stream entries (it holds no read epoch
-// they are wrapped under) and told its notices only on a member ended for its departure (node 1
-// opened thing 0's sync ID by the public entry): node 1 held thing 0 as a stub alone.
-#[test]
-fn a_removed_sync_holder_is_told_the_publics_sync_spec_sync_opens_6() {
-    use crate::harness::script::*;
-    holds_on(0, 2, 3, &[New(0), NewIn(0, 0), Give(0, 0, Holder::Node(1), Syncs), Strong(1, None, 0), Run, Give(0, 0, Holder::Public, Syncs), Revoke(0, 0, Holder::Node(1)), Give(0, 1, Holder::Node(1), Reads)], String::new(), false);
-}
-
-// spec/sync-opens.md §6 (whatever opened S toward it): as above,
-// but node 2 (node 0's account) gives the public sync while node 0 removes node 1's account, no
-// run between, so the removal's rotation leaves the public out until a re-seal. Node 1 opens thing
-// 0's sync ID at node 2 by the public entry and is told there; it keeps thing 0 unread, as the
-// model says. Failed while the public's edge went as stream entries, and while a departed peer
-// was told nothing on a member the public entry opened.
-#[test]
-fn a_removed_sync_holder_is_told_the_publics_sync_granted_meanwhile_spec_sync_opens_6() {
-    use crate::harness::script::*;
-    holds_on(0, 2, 3, &[New(0), NewIn(0, 0), Give(0, 0, Holder::Node(1), Syncs), Strong(1, None, 0), Run, Give(2, 0, Holder::Public, Syncs), Revoke(0, 0, Holder::Node(1)), Give(0, 1, Holder::Node(1), Reads)], String::new(), false);
 }
 
 // spec/crypto.md §4 (History box: what a node holds is a function of the secrets it holds,

@@ -5,55 +5,48 @@
 
 use crate::harness::scripted::*;
 use osis_base::SyncId;
-use osis_engine::sync::J;
 use osis_proto::{Code, Msg, OfferItem};
-use osis_base::memo::Effects;
-use osis_sync::opens::{Leaving, Member, Moved, Peer, Rejoin};
+use osis_sync::opens::{Leaving, Moved, Peer, Rejoin};
 use osis_sync::session::Proven;
 use osis_sync::types::{Credential, SourceClass};
 
 const S: SyncId = SyncId([5; 16]);
 
-/// Two readers of S holding one read secret, met (`reader_pair`).
+/// Two readers of S at one step, met (`reader_pair`).
 fn readers() -> Pair {
     let mut p = reader_pair(account(1), account(2));
     p.run();
     p
 }
 
-/// Two readers of S holding one read secret, settled, `a` dialing `b` proving `pa` and `pb`;
-/// nothing routed yet.
+/// Two readers of S at one step, settled, `a` dialing `b` proving `pa` and `pb`; nothing routed
+/// yet.
 fn reader_pair(pa: Proven, pb: Proven) -> Pair {
-    let (st, rs) = (StepKeys::new(1, 0), read_secret(1, 0));
+    let st = StepKeys::new(1, 0);
     let mut a = Side::new(1);
     let mut b = Side::new(2);
-    a.table.set(S, Some(reader(&S, &rs, &st, &[], &[], &[])));
-    b.table.set(S, Some(reader(&S, &rs, &st, &[], &[], &[])));
+    a.table.set(S, Some(reader(&st, &[])));
+    b.table.set(S, Some(reader(&st, &[])));
     a.settle();
     b.settle();
     Pair::new(a, b, pa, pb)
 }
 
-/// S's read secret at `side` moves to epoch `n`, covering every departure: J is read when S's
-/// credentials move (spec/sync-opens.md §6), as a removal's rotation moves the remover's and a
-/// grant the grantee's.
+/// S's head at `side` moves to step `n`, the sync secret of step 0 held still (spec/sync-opens.md
+/// §6), as a removal's rotation moves the remover's and a grant the grantee's.
 fn rotated(side: &mut Side, n: u8) {
-    let rs = read_secret(1, n);
-    side.table.covering.insert((S, rs.0));
-    side.table.set(S, Some(reader(&S, &rs, &StepKeys::new(1, 0), &[], &[], &[])));
+    side.table.set(S, Some(reader(&StepKeys::new(1, n), &[StepKeys::new(1, 0)])));
 }
 
-/// `a` rotates while J judges `b` unknown (its account's key revoked): `b`'s credential no
-/// longer admissible, its member is ended at `until`; `b` is granted again later.
+/// `a`'s head moves past the step `b`'s member opened by: that member is ended at `until`; `b` is
+/// granted again later.
 fn ends(p: &mut Pair) {
-    p.a.table.judge_as(S, tid(2), J::Unknown);
     rotated(&mut p.a, 1);
     p.a.settle();
 }
 
-/// `a` grants `b`'s account again: `b` takes the box of the current epoch.
+/// `b` takes the sync secret of `a`'s head.
 fn regranted(p: &mut Pair) {
-    p.a.table.judge_as(S, tid(2), J::Reader);
     rotated(&mut p.b, 1);
     p.b.settle();
 }
@@ -64,7 +57,7 @@ fn one_hit_opens_both_ways_spec_sync_opens_5() {
     let p = readers();
     assert!(p.a.open(p.ca, &S) && p.b.open(p.cb, &S));
     let m = &p.a.opens.members(p.ca)[&S];
-    assert_eq!((m.class, m.by), (SourceClass::Reader, Credential::ReadSecret(epoch(0))));
+    assert_eq!((m.class, m.by), (SourceClass::Reader, Credential::SyncProof(StepKeys::new(1, 0).pk())));
     assert!(p.a.opens.record(p.ca).is_some() && p.b.opens.record(p.cb).is_some());
 }
 
@@ -113,7 +106,7 @@ fn a_sync_id_just_joined_waits_for_a_peer_the_rosters_name_spec_sync_set_3() {
     let may = |_: &osis_store::Named| Peer::MayHold;
     let wait = |p: &Pair, f: &dyn Fn(&osis_store::Named) -> Peer| p.a.opens.wait_for(&p.a.store, &sid(7), f).unwrap();
     let st = StepKeys::new(2, 0);
-    p.a.table.set(s2, Some(reader(&s2, &read_secret(2, 0), &st, &[], &[], &[])));
+    p.a.table.set(s2, Some(reader(&st, &[])));
     p.a.settle();
     assert!(wait(&p, &may), "b away, its record not told of S");
     assert!(!wait(&p, &|_| Peer::Unlisted), "a peer the rosters do not name");
@@ -136,10 +129,10 @@ fn a_sync_id_just_joined_waits_for_a_peer_the_rosters_name_spec_sync_set_3() {
     p.a.restart();
     assert!(wait(&p, &may) && !wait(&p, &|a| if a.things().contains(&tid(3)) { Peer::Unlisted } else { Peer::MayHold }), "another peer, never told");
     let st3 = StepKeys::new(3, 0);
-    p.a.table.set(s2, Some(reader(&s2, &read_secret(3, 0), &st3, &[], &[], &[])));
+    p.a.table.set(s2, Some(reader(&st3, &[])));
     p.a.settle();
     assert!(wait(&p, &may), "S's credentials moved: b not told of them");
-    p.b.table.set(s2, Some(reader(&s2, &read_secret(3, 0), &st3, &[], &[], &[])));
+    p.b.table.set(s2, Some(reader(&st3, &[])));
     p.b.settle();
     p.connect(3, account(1), account(2));
     p.run();
@@ -155,7 +148,7 @@ fn an_evicted_record_ends_its_wait_spec_sync_set_3() {
     let mut p = readers();
     p.close();
     let st = StepKeys::new(2, 0);
-    p.a.table.set(s2, Some(reader(&s2, &read_secret(2, 0), &st, &[], &[], &[])));
+    p.a.table.set(s2, Some(reader(&st, &[])));
     p.a.settle();
     let wait = |p: &Pair| p.a.opens.wait_for(&p.a.store, &s2, |_| Peer::MayHold).unwrap();
     assert!(wait(&p) && wait_s(&p), "b's record: not told of s2, holding S");
@@ -175,7 +168,7 @@ fn sid(n: u8) -> SyncId {
 /// The Hits of every Offer among `sent`.
 fn offered_hits(sent: &[(osis_sync::types::ConnId, Msg)]) -> usize {
     of_kind(sent, 37).iter().map(|m| match m {
-        Msg::Offer { items, .. } => items.iter().filter(|i| matches!(i, OfferItem::Hit { .. } | OfferItem::Static { .. })).count(),
+        Msg::Offer { items, .. } => items.iter().filter(|i| matches!(i, OfferItem::Hit { .. })).count(),
         _ => 0,
     }).sum()
 }
@@ -187,7 +180,7 @@ fn a_reader_opens_a_store_at_its_step_spec_sync_opens_4() {
     let st = StepKeys::new(1, 0);
     let mut r = Side::new(1);
     let mut k = Side::new(2);
-    r.table.set(S, Some(reader(&S, &read_secret(1, 0), &st, &[], &[], &[])));
+    r.table.set(S, Some(reader(&st, &[])));
     k.table.set(S, Some(store(&st)));
     let mut p = Pair::new(r, k, Proven::default(), Proven::default());
     p.run();
@@ -206,8 +199,7 @@ fn a_store_granted_later_opens_with_no_head_spec_sync_opens_4() {
     let st = StepKeys::new(1, 0);
     let mut r = Side::new(1);
     let k = Side::new(2);
-    r.table.set(S, Some(reader(&S, &read_secret(1, 0), &st, &[], &[], &[])));
-    r.table.judge_as(S, tid(2), J::SyncHolder);
+    r.table.set(S, Some(reader(&st, &[])));
     r.settle();
     let mut p = Pair::new(r, k, account(1), account(2));
     p.run();
@@ -221,81 +213,6 @@ fn a_store_granted_later_opens_with_no_head_spec_sync_opens_4() {
     assert_eq!(p.a.opens.work().tested, tested, "the reader tested nothing again");
 }
 
-// spec/sync-opens.md §4 (Admissible: keeping S unread with no head, each sync secret it holds is
-// its step), §5 (Proof an answer carries: a sync key's Hit by that key), spec/sync-hostile.md (a
-// box at a self-made epoch blocks no other open): a store with no head holding its grant's secret
-// and a newer one (a hostile box's) opens toward a reader of the grant's step that neither knows
-// nor shows a proof to it: the reader's sync key Hit is answered by that key, which it verifies.
-#[test]
-fn a_store_with_no_head_opens_by_its_grant_under_a_newer_box_spec_sync_opens_4() {
-    let (st, junk) = (StepKeys::new(1, 0), StepKeys::new(7, 9));
-    let mut r = Side::new(1);
-    let mut k = Side::new(2);
-    let mut rc = reader(&S, &read_secret(1, 0), &st, &[], &[], &[]);
-    rc.shows.retain(|(x, _)| !matches!(x, osis_sync::opens::cred::Shown::Proof(..)));
-    r.table.set(S, Some(rc));
-    k.table.set(S, Some(store_no_head(&[&junk, &st])));
-    let mut p = Pair::new(r, k, Proven::default(), Proven::default());
-    p.run();
-    assert!(p.a.open(p.ca, &S) && p.b.open(p.cb, &S), "open both ways");
-    assert_eq!(p.a.opens.members(p.ca)[&S].by, Credential::SyncKey(st.pk()));
-}
-
-// spec/sync-ids.md §6 (Walk: a refused Hit counts as none shown): a reader whose walk Hit at a
-// sync holder is refused (a false positive of the filter) asks Behind next.
-#[test]
-fn a_refused_walk_hit_asks_behind_spec_sync_ids_6() {
-    let st = StepKeys::new(1, 0);
-    let mut r = Side::new(1);
-    r.table.set(S, Some(reader(&S, &read_secret(1, 0), &st, &[], &[], &[])));
-    r.table.judge_as(S, tid(9), J::SyncHolder);
-    r.settle();
-    let (mut adv, _) = Adv::dials(&mut r, account(9), [2; 32]);
-    adv.filter(&mut r, &[st.pk()], &S);
-    let sent = r.sent();
-    let Some(Msg::Offer { id, items }) = of_kind(&sent, 37).pop() else { panic!("an Offer") };
-    assert!(matches!(items.as_slice(), [OfferItem::Hit { .. }]), "the walk's sync key shown: Hit, {items:?}");
-    adv.send(&mut r, Msg::Shared { id, items: vec![osis_proto::SharedItem::code(Code::DECLINED)] });
-    let sent = r.sent();
-    let Some(Msg::Offer { items, .. }) = of_kind(&sent, 37).pop() else { panic!("a Behind follows") };
-    assert!(matches!(items.as_slice(), [OfferItem::Behind(b)] if b.sync_id == S), "{items:?}");
-}
-
-// spec/sync-opens.md §5 (Proof an answer carries: its head at a node keeping S unread): a node
-// keeping S unread answers a Hit on its head's sync key, so a reader whose filter shows nothing
-// the store tests (no sync proof yet) still opens S by its walk's sync key.
-#[test]
-fn a_store_answers_a_hit_on_its_heads_sync_key_spec_sync_opens_5() {
-    let st = StepKeys::new(1, 0);
-    let mut r = Side::new(1);
-    let mut k = Side::new(2);
-    let mut rc = reader(&S, &read_secret(1, 0), &st, &[], &[], &[]);
-    rc.shows.retain(|(x, _)| !matches!(x, osis_sync::opens::cred::Shown::Proof(..)));
-    r.table.set(S, Some(rc));
-    k.table.set(S, Some(store(&st)));
-    let mut p = Pair::new(r, k, Proven::default(), Proven::default());
-    p.run();
-    assert!(p.a.open(p.ca, &S) && p.b.open(p.cb, &S));
-    assert_eq!(p.b.opens.members(p.cb)[&S].by, Credential::SyncKey(st.pk()));
-}
-
-// spec/sync-opens.md §5 (ByRole): J judging the peer a reader opens S with no credential in
-// common.
-#[test]
-fn byrole_opens_on_j_spec_sync_opens_5() {
-    let st = StepKeys::new(1, 0);
-    let mut a = Side::new(1);
-    let mut b = Side::new(2);
-    a.table.set(S, Some(reader(&S, &read_secret(1, 0), &st, &[], &[], &[])));
-    b.table.set(S, Some(reader(&S, &read_secret(9, 0), &StepKeys::new(9, 0), &[], &[], &[])));
-    a.table.judge_as(S, tid(2), J::Reader);
-    b.table.judge_as(S, tid(1), J::Reader);
-    let mut p = Pair::new(a, b, account(1), account(2));
-    p.run();
-    assert!(p.a.open(p.ca, &S) && p.b.open(p.cb, &S));
-    assert_eq!(p.a.opens.members(p.ca)[&S].by, Credential::J);
-}
-
 // spec/sync-opens.md §4 (Source: a class that moves closes the member, and S opens again with
 // both classes declared anew): a, open with b on S by J, comes to hold S for keys and back to
 // read before its Offer declaring keys is answered; b, told of the close, offers S declaring
@@ -307,13 +224,11 @@ fn crossing_offers_leave_both_sides_one_class_spec_sync_opens_4() {
     use osis_sync::types::Holding;
     for back in [true, false] {
         let st = StepKeys::new(1, 0);
-        let creds = |h: Holding| osis_sync::opens::holds::Creds { holding: Some(h), ..reader(&S, &read_secret(1, 0), &st, &[], &[], &[]) };
+        let creds = |h: Holding| osis_sync::opens::holds::Creds { holding: Some(h), ..reader(&st, &[]) };
         let mut a = Side::new(1);
         let mut b = Side::new(2);
         a.table.set(S, Some(creds(Holding::Read)));
         b.table.set(S, Some(creds(Holding::Read)));
-        a.table.judge_as(S, tid(2), J::Reader);
-        b.table.judge_as(S, tid(1), J::Reader);
         let mut p = Pair::new(a, b, account(1), account(2));
         p.run();
         assert!(p.a.open(p.ca, &S) && p.b.open(p.cb, &S));
@@ -351,99 +266,6 @@ fn a_digest_difference_closes_one_sided_members_spec_sync_opens_3() {
     assert!(p.b.moved.iter().any(|m| matches!(m, Moved::Left(c, S, _) if *c == p.cb)), "the one-sided member closed: {:?}", p.b.moved);
     assert!(p.a.open(p.ca, &S) && p.b.open(p.cb, &S), "tested again and open");
     assert!(p.b.moved.contains(&Moved::Joined(p.cb, S, Rejoin::From(None))), "rejoined from the start: {:?}", p.b.moved);
-}
-
-// spec/sync-opens.md §4 Admissible, §6 (A reader tells a removed reader its departure): b, away
-// at its removal, comes back holding the read secret of the epoch a's rotation superseded. a shows
-// it toward b alone (J departed): b's Hit opens S ended at once, `until` 0 (told by notices,
-// served nothing); closed once b's join names a position, b's next Hit on it opens nothing on
-// that connection. Control: a peer a judges unknown,
-// holding the same secret, opens nothing.
-#[test]
-fn a_departed_reader_opens_ended_on_its_superseded_epoch_spec_sync_opens_6() {
-    for j in [J::Departed, J::Unknown] {
-        let mut p = reader_pair(account(1), account(2));
-        p.a.table.judge_as(S, tid(2), j);
-        let (old, new) = (read_secret(1, 0), read_secret(1, 1));
-        p.a.table.covering.insert((S, new.0));
-        let mut c = reader(&S, &new, &StepKeys::new(1, 0), &[], &[], &[]);
-        c.walk.push(osis_sync::opens::cred::Shown::Read(old.0, *old.1.expose()));
-        p.a.table.set(S, Some(c));
-        p.a.settle();
-        p.run();
-        if j == J::Unknown {
-            assert!(!p.a.open(p.ca, &S) && !p.b.open(p.cb, &S), "control: nothing opens toward a peer not departed");
-            continue;
-        }
-        let m = p.a.opens.members(p.ca)[&S].clone();
-        assert!(m.departed.is_some() && m.until == Some(0) && m.by == Credential::ReadSecret(old.0), "ended at once: {m:?}");
-        assert!(p.b.open(p.cb, &S), "b opens on a's answer");
-        p.a.reported(p.ca, S, 0);
-        p.run();
-        assert!(!p.a.open(p.ca, &S) && !p.b.open(p.cb, &S), "closed at its until, and not opened again on this connection");
-    }
-}
-
-// spec/sync-opens.md §6 (Lost: a member opened after the first Pull has no reported position
-// until a join names it; A reader tells a public reader the public's removal): b's stream already
-// stands past S's `until` (it took a's log there while S was closed) when it hits a lapsed read
-// secret a shows. The member opens ended and closes only once b's join names a position at or past
-// `until`, never on the stream's: b never held S's entries the stream passed (failed: closed at
-// once with a Lost at `until`, b served nothing it lacked). Closed there, b's next Hit on it
-// opens nothing on that connection.
-#[test]
-fn an_ended_member_closes_on_its_join_not_the_streams_position_spec_sync_opens_6() {
-    {
-        let departed = false;
-        let mut p = reader_pair(account(1), account(2));
-        p.a.reported_stream(p.ca, 20);
-        p.a.table.judge_as(S, tid(2), if departed { J::Departed } else { J::Unknown });
-        let (old, new) = (read_secret(1, 0), read_secret(1, 1));
-        p.a.table.covering.insert((S, new.0));
-        p.a.table.until = 7;
-        let mut c = reader(&S, &new, &StepKeys::new(1, 0), &[], &[], &[]);
-        let shown = osis_sync::opens::cred::Shown::Read(old.0, *old.1.expose());
-        if departed {
-            c.walk.push(shown);
-        } else {
-            c.lapsed.push(shown);
-        }
-        p.a.table.set(S, Some(c));
-        p.a.settle();
-        p.run();
-        let m = p.a.opens.members(p.ca)[&S].clone();
-        assert!(m.until == Some(7) && m.departed.is_some() == departed && m.by == Credential::ReadSecret(old.0), "ended at once (departed: {departed}): {m:?}");
-        assert!(p.b.open(p.cb, &S), "open past the stream's position, its join not named (departed: {departed})");
-        p.a.reported(p.ca, S, 5);
-        assert!(p.a.open(p.ca, &S), "joined below its until (departed: {departed})");
-        p.a.reported(p.ca, S, 7);
-        p.run();
-        assert!(!p.a.open(p.ca, &S) && !p.b.open(p.cb, &S), "closed at its until, and not opened again on this connection (departed: {departed})");
-    }
-}
-
-// spec/sync-opens.md §6 (A member whose peer J judges departed is ended too; Lost): b, judged
-// departed before any rotation is logged here, is ended with no `until` and
-// shown S's role entries alone; its stream moves past the rest. Granted again (judged a reader),
-// it closes at once with a Lost naming no position, and b rejoins from the start: a member kept
-// open, or one closing at a position, would leave b past entries it was never shown.
-#[test]
-fn a_departed_reader_granted_again_rejoins_from_the_start_spec_sync_opens_6() {
-    let mut p = readers();
-    p.a.reported(p.ca, S, 7);
-    p.a.table.departure_logged = false;
-    p.a.table.judge_as(S, tid(2), J::Departed);
-    p.a.settle();
-    let m = p.a.opens.members(p.ca)[&S].clone();
-    assert!(m.departed.is_some() && m.until.is_none(), "ended for its departure, no rotation logged: {m:?}");
-    p.a.table.judge_as(S, tid(2), J::Reader);
-    p.a.settle();
-    assert!(!p.a.open(p.ca, &S), "closed at once");
-    p.b.moved.clear();
-    p.run();
-    assert!(p.log.iter().any(|(by_a, m)| *by_a && matches!(m, Msg::Lost { items, .. } if items[0] == (S, None))), "its Lost names no position: {:?}", p.log);
-    assert!(p.a.open(p.ca, &S) && p.b.open(p.cb, &S), "opened again");
-    assert!(p.b.moved.contains(&Moved::Joined(p.cb, S, Rejoin::From(None))), "from the start: {:?}", p.b.moved);
 }
 
 // spec/sync-opens.md §6 (Where it stopped): the receiver keeps the Lost's cursor (where the member
@@ -508,9 +330,8 @@ fn no_shared_set_yet_answers_14_spec_sync_opens_4() {
 #[test]
 fn no_offer_before_the_peers_digest_spec_sync_opens_3() {
     let st = StepKeys::new(1, 0);
-    let rs = read_secret(1, 0);
     let mut r = Side::new(1);
-    r.table.set(S, Some(reader(&S, &rs, &st, &[], &[], &[])));
+    r.table.set(S, Some(reader(&st, &[])));
     r.settle();
     // `r` dials Adv, which it knows: Resume.
     let mut adv = Adv::connect(&mut r, true, [1; 32], [2; 32], account(9));
@@ -519,7 +340,7 @@ fn no_offer_before_the_peers_digest_spec_sync_opens_3() {
     let an = [3; 32];
     adv.send(&mut r, Msg::Resumed { id, nonce: an, tag: None });
     let rr = *osis_crypto::kdf::pair_key(&nonce, &an).expose();
-    let b = osis_crypto::kdf::beacon(rs.1.expose(), &S.0, &rr);
+    let b = osis_crypto::kdf::beacon(&st.proof, &S.0, &rr);
     let f = 8;
     let gcs = osis_proto::filter::encode_gcs(&[osis_proto::filter::beacon_value(&b, f)], 0);
     let fid = adv.id();
@@ -535,7 +356,7 @@ fn no_offer_before_the_peers_digest_spec_sync_opens_3() {
 fn every_beacon_goes_to_every_peer_spec_sync_opens_5() {
     let st = StepKeys::new(1, 0);
     let mut r = Side::new(1);
-    r.table.set(S, Some(reader(&S, &read_secret(1, 0), &st, &[], &[], &[])));
+    r.table.set(S, Some(reader(&st, &[])));
     r.settle();
     let (_adv, sent) = Adv::dials(&mut r, Proven::default(), [2; 32]);
     assert_eq!(filter_values(&sent).0.len(), 2, "the read secret and the proof");
@@ -581,13 +402,13 @@ fn answer_lost(stored: bool) -> Pair {
     let mut b = Side::new(2);
     for i in 1..=4 {
         for x in [&mut a, &mut b] {
-            x.table.set(sid(i), Some(reader(&sid(i), &read_secret(i, 0), &st, &[], &[], &[])));
+            x.table.set(sid(i), Some(reader(&st, &[])));
             x.settle();
         }
     }
     let mut p = Pair::new(a, b, account(1), account(2));
     p.run();
-    p.a.table.set(sid(5), Some(reader(&sid(5), &read_secret(5, 0), &st, &[], &[], &[])));
+    p.a.table.set(sid(5), Some(reader(&st, &[])));
     p.a.settle();
     let sent = p.a.sent();
     assert!(!of_kind(&sent, 36).is_empty(), "a sent additions");
@@ -647,7 +468,7 @@ fn additions_after_a_lost_answer_keep_both_counts_alike_spec_sync_opens_5() {
     // counted apart, the additions of sync ID 8 fill `a`'s room but pass `b`'s on every
     // connection: never taken
     for i in 6..=12 {
-        p.a.table.set(sid(i), Some(reader(&sid(i), &read_secret(i, 0), &st, &[], &[], &[])));
+        p.a.table.set(sid(i), Some(reader(&st, &[])));
         p.a.settle();
         p.run();
         if i == 8 {
@@ -667,9 +488,8 @@ fn additions_after_a_lost_answer_keep_both_counts_alike_spec_sync_opens_5() {
 #[test]
 fn a_refused_hit_is_tried_again_only_when_remarked_spec_sync_opens_5() {
     let st = StepKeys::new(1, 0);
-    let rs = read_secret(1, 0);
     let mut r = Side::new(1);
-    r.table.set(S, Some(reader(&S, &rs, &st, &[], &[], &[])));
+    r.table.set(S, Some(reader(&st, &[])));
     r.settle();
     let (mut adv, sent) = Adv::dials(&mut r, account(9), [2; 32]);
     // Adv acknowledges r's filter and shows r's read secret: r Hits, Adv refuses.
@@ -677,7 +497,7 @@ fn a_refused_hit_is_tried_again_only_when_remarked_spec_sync_opens_5() {
         let id = m.id();
         adv.send(&mut r, Msg::Shared { id, items: vec![osis_proto::SharedItem::code(Code::OK)] });
     }
-    adv.filter(&mut r, &[*rs.1.expose()], &S);
+    adv.filter(&mut r, &[st.proof], &S);
     let sent = r.sent();
     assert_eq!(offered_hits(&sent), 1);
     let oid = of_kind(&sent, 37)[0].id();
@@ -688,7 +508,7 @@ fn a_refused_hit_is_tried_again_only_when_remarked_spec_sync_opens_5() {
     adv.send(&mut r, Msg::Beacons { id, generation: 2, base: Some(1), f: 8, lo: 0, hi: 256, gcs: Vec::new(), more: false });
     assert_eq!(offered_hits(&r.sent()), 0, "not tried again without a re-mark");
     // `changed_at(S)` moving tries it again
-    r.table.set(S, Some(reader(&S, &rs, &StepKeys::new(1, 1), &[], &[], &[])));
+    r.table.set(S, Some(reader(&StepKeys::new(1, 1), &[])));
     r.settle();
     assert_eq!(offered_hits(&r.sent()), 1, "tried again once changed_at(S) moved");
 }
@@ -705,33 +525,15 @@ fn store_dialed_by_adv(head: &StepKeys, ch_adv: [u8; 32]) -> (Side, Adv) {
     (k, adv)
 }
 
+/// Adv's Hit on the sync proof of a step it holds the secret of.
+fn proof_hit(adv: &Adv, st: &StepKeys) -> OfferItem {
+    OfferItem::Hit { hit: adv.hit_on(&st.proof, &S), sig: None, class: osis_proto::SourceClass::Reader }
+}
+
 /// Adv Hits nothing K shows, so K indexes the Hits its filter makes possible now: what it shows
 /// later must not take an entry of that index for proof.
 fn hit_once(h: &mut Side, adv: &mut Adv) {
     assert_eq!(adv.offer(h, vec![OfferItem::Hit { hit: [0; 32], sig: None, class: osis_proto::SourceClass::Reader }])[0].code, Code::DECLINED);
-}
-
-/// Adv's Hit on a sync key it holds the secret of, with its open signature.
-fn sync_key_hit(adv: &Adv, st: &StepKeys) -> OfferItem {
-    OfferItem::Hit { hit: adv.hit_on(&st.pk(), &S), sig: Some(adv.bind.sign(&st.sync, &S)), class: osis_proto::SourceClass::Reader }
-}
-
-// ON_old (spec/sync-opens.md §4, shared set): a step older than the newest the judge knows
-// proves nothing: after K's head moves, Adv's Hit by the old step's sync key (an entry K's
-// stored filter at Adv still holds) opens nothing.
-#[test]
-fn an_older_steps_sync_key_proves_nothing_spec_sync_opens_4() {
-    let (s0, s1) = (StepKeys::new(1, 0), StepKeys::new(1, 1));
-    let (mut k, mut adv) = store_dialed_by_adv(&s0, [2; 32]);
-    k.table.set(S, Some(store(&s1)));
-    k.settle();
-    let a = adv.offer(&mut k, vec![sync_key_hit(&adv, &s0)]);
-    assert_eq!(a[0].code, Code::DECLINED);
-    assert!(!k.open(adv.peer, &S));
-    // At the newest step it opens (the Hit is Adv's to make while it holds that seed).
-    let a = adv.offer(&mut k, vec![sync_key_hit(&adv, &s1)]);
-    assert_eq!(a[0].code, Code::OK);
-    assert!(k.open(adv.peer, &S));
 }
 
 // ON_proofold (spec/sync-opens.md §4): an older step's sync proof proves nothing.
@@ -746,74 +548,6 @@ fn an_older_steps_proof_proves_nothing_spec_sync_opens_4() {
     assert!(!k.open(adv.peer, &S));
 }
 
-// ON_proofpub (spec/sync-ids.md §2, spec/sync-opens.md §4): the sync proof derives from the sync
-// secret's seed; a node holding only the public sync key computes no proof K accepts.
-#[test]
-fn a_proof_from_the_public_key_proves_nothing_spec_sync_opens_4() {
-    let s0 = StepKeys::new(1, 0);
-    let (mut k, mut adv) = store_dialed_by_adv(&s0, [2; 32]);
-    // The proof's derivation applied to the public key in place of the seed.
-    let fake = *osis_crypto::kdf::kdf(osis_crypto::kdf::SYNC_PROOF, &s0.pk(), b"").expose();
-    let a = adv.offer(&mut k, vec![OfferItem::Hit { hit: adv.hit_on(&fake, &S), sig: None, class: osis_proto::SourceClass::Reader }]);
-    assert_eq!(a[0].code, Code::DECLINED);
-    assert!(!k.open(adv.peer, &S));
-}
-
-// ON_answer (spec/sync-opens.md §4-§5): a tag on a public value proves nothing: K Hits its head's
-// sync key in Adv's filter, Adv answers with the tag (computable from the public key) and no
-// signature; K opens nothing and ends with Lost.
-#[test]
-fn an_answer_on_a_public_value_opens_nothing_spec_sync_opens_5() {
-    let s0 = StepKeys::new(1, 0);
-    let (mut k, mut adv) = store_dialed_by_adv(&s0, [2; 32]);
-    adv.filter(&mut k, &[s0.pk()], &S);
-    let sent = k.sent();
-    let offer = of_kind(&sent, 37).pop().expect("K Hits the sync key Adv shows");
-    let tag = adv.tag_on(&s0.pk(), &S);
-    adv.send(&mut k, Msg::Shared { id: offer.id(), items: vec![osis_proto::SharedItem { code: Code::OK, tag: Some(tag), grant: None, sig: None, class: osis_proto::SourceClass::Reader }] });
-    assert!(!k.open(adv.peer, &S));
-    assert_eq!(of_kind(&k.sent(), 38).len(), 1, "Lost for what Adv accepted");
-}
-
-// ON_side (spec/wire.md §11.2): an open signature binds its signer's side: Adv copies K's Hello
-// challenge and reflects K's own Hit signature as its answer; K opens nothing.
-#[test]
-fn a_reflected_open_signature_opens_nothing_spec_wire_11_2() {
-    let s0 = StepKeys::new(1, 0);
-    let mut k = Side::new(3);
-    k.table.set(S, Some(store(&s0)));
-    k.settle();
-    // K dials Adv, whose challenge is K's own.
-    let ch = [0x33; 32];
-    let mut adv = Adv::connect(&mut k, true, ch, ch, Proven::default());
-    k.sent();
-    adv.filter(&mut k, &[s0.pk()], &S);
-    let sent = k.sent();
-    let Some(Msg::Offer { id, items }) = of_kind(&sent, 37).pop() else { panic!("an Offer") };
-    let Some(OfferItem::Hit { sig: Some(reflected), .. }) = items.into_iter().next() else { panic!("a signed Hit") };
-    let tag = adv.tag_on(&s0.pk(), &S);
-    adv.send(&mut k, Msg::Shared { id, items: vec![osis_proto::SharedItem { code: Code::OK, tag: Some(tag), grant: None, sig: Some(reflected), class: osis_proto::SourceClass::Reader }] });
-    assert!(!k.open(adv.peer, &S));
-}
-
-// ON_endsync (spec/sync-opens.md §6): an open by a sync key is re-judged when the head moves: it
-// is ended (`until`) and closes with a Lost once the peer reported it.
-#[test]
-fn a_sync_key_open_ends_when_the_head_moves_spec_sync_opens_6() {
-    let (s0, s1) = (StepKeys::new(1, 0), StepKeys::new(1, 1));
-    let (mut k, mut adv) = store_dialed_by_adv(&s0, [2; 32]);
-    assert_eq!(adv.offer(&mut k, vec![sync_key_hit(&adv, &s0)])[0].code, Code::OK);
-    assert!(k.open(adv.peer, &S));
-    k.table.set(S, Some(store(&s1)));
-    k.settle();
-    assert_eq!(k.opens.members(adv.peer)[&S].until, Some(k.table.until));
-    k.sent();
-    k.reported(adv.peer, S, k.table.until);
-    assert!(!k.open(adv.peer, &S));
-    let lost = of_kind(&k.sent(), 38);
-    assert!(matches!(&lost[..], [Msg::Lost { items, .. }] if items[0].0 == S && items[0].1.is_some()));
-}
-
 // spec/sync-opens.md §6 (reported positions): an Applied moves every member at the stream (its
 // join merged); an ended member there closes with a Lost naming `until` once the stream passes
 // it, and not before.
@@ -821,7 +555,7 @@ fn a_sync_key_open_ends_when_the_head_moves_spec_sync_opens_6() {
 fn an_ended_member_closes_when_the_stream_passes_until_spec_sync_opens_6() {
     let (s0, s1) = (StepKeys::new(1, 0), StepKeys::new(1, 1));
     let (mut k, mut adv) = store_dialed_by_adv(&s0, [2; 32]);
-    adv.offer(&mut k, vec![sync_key_hit(&adv, &s0)]);
+    adv.offer(&mut k, vec![proof_hit(&adv, &s0)]);
     k.table.set(S, Some(store(&s1)));
     k.settle();
     let until = k.table.until;
@@ -845,227 +579,6 @@ fn a_proof_open_ends_at_a_rotation_spec_sync_opens_6() {
     k.table.set(S, Some(store(&s1)));
     k.settle();
     assert!(k.opens.members(adv.peer)[&S].until.is_some(), "ended");
-}
-
-/// A reader R of S whose roster lists Adv's link `l`, dialed by Adv keeping no record.
-fn reader_with_link(l: &osis_crypto::SigningSecret) -> (Side, Adv) {
-    let st = StepKeys::new(1, 0);
-    let mut r = Side::new(4);
-    r.table.set(S, Some(reader(&S, &read_secret(1, 0), &st, &[], &[l], &[])));
-    r.settle();
-    let (mut adv, _) = Adv::dials(&mut r, Proven::default(), [2; 32]);
-    hit_once(&mut r, &mut adv);
-    (r, adv)
-}
-
-fn static_item(adv: &Adv, l: &osis_crypto::SigningSecret) -> OfferItem {
-    let e = osis_crypto::static_entry(&S, &l.verifying_key());
-    OfferItem::Static { hit: adv.hit_on(&e, &S), signing_pk: l.verifying_key().to_bytes(), sig: adv.bind.sign(l, &S), class: osis_proto::SourceClass::Reader }
-}
-
-// ON_linkold (spec/sync-opens.md §4): a static entry counts only while the roster held now lists
-// it: Adv Hits its removed entry, left in R's filter as Adv stored it.
-#[test]
-fn a_removed_static_entry_proves_nothing_spec_sync_opens_4() {
-    let l = link_key(7);
-    let (mut r, mut adv) = reader_with_link(&l);
-    r.table.set(S, Some(reader(&S, &read_secret(1, 0), &StepKeys::new(1, 0), &[], &[], &[])));
-    r.settle();
-    assert_eq!(adv.offer(&mut r, vec![static_item(&adv, &l)])[0].code, Code::DECLINED);
-    assert!(!r.open(adv.peer, &S));
-}
-
-// ON_endlink (spec/sync-opens.md §6): an open by a static entry is re-judged when the roster
-// drops it.
-#[test]
-fn a_static_open_ends_when_the_roster_drops_it_spec_sync_opens_6() {
-    let l = link_key(7);
-    let (mut r, mut adv) = reader_with_link(&l);
-    assert_eq!(adv.offer(&mut r, vec![static_item(&adv, &l)])[0].code, Code::OK);
-    assert!(r.open(adv.peer, &S));
-    r.table.set(S, Some(reader(&S, &read_secret(1, 0), &StepKeys::new(1, 0), &[], &[], &[])));
-    r.settle();
-    assert!(r.opens.members(adv.peer)[&S].until.is_some(), "ended");
-}
-
-/// A reader R of S knowing Adv's account 9, dialed by Adv keeping no record, J of Adv `j`.
-fn reader_judging(j: J) -> (Side, Adv) {
-    let mut r = Side::new(4);
-    r.table.set(S, Some(reader(&S, &read_secret(1, 0), &StepKeys::new(1, 0), &[], &[], &[])));
-    r.table.judge_as(S, tid(9), j);
-    r.settle();
-    let (adv, _) = Adv::dials(&mut r, account(9), [2; 32]);
-    (r, adv)
-}
-
-// ON_jnow (spec/sync-opens.md §4 J): J reads the roster held now, not the one the connection
-// started with: Adv's ByRole after its removal opens nothing.
-#[test]
-fn j_is_judged_on_the_roster_held_now_spec_sync_opens_4() {
-    let (mut r, mut adv) = reader_judging(J::Reader);
-    r.table.judge_as(S, tid(9), J::Departed);
-    assert_eq!(adv.offer(&mut r, vec![OfferItem::ByRole { sync_id: S, hits: Vec::new(), class: osis_proto::SourceClass::Reader }])[0].code, Code::DECLINED);
-    assert!(!r.open(adv.peer, &S));
-}
-
-// ON_endj, ON_peermoves (spec/sync-opens.md §6): an open by J closes at once with a Lost when
-// its peer's standing moves to unknown (its account's key revoked), with no credential of S
-// moving; one demoted to sync holder stays; one judged departed (its removal held) is ended, its
-// Lost going once the peer reports its `until`.
-#[test]
-fn a_j_open_closes_when_its_peer_stops_counting_spec_sync_opens_6() {
-    for (j, stays) in [(J::Departed, true), (J::Unknown, false), (J::SyncHolder, true)] {
-        let (mut r, mut adv) = reader_judging(J::Reader);
-        assert_eq!(adv.offer(&mut r, vec![OfferItem::ByRole { sync_id: S, hits: Vec::new(), class: osis_proto::SourceClass::Reader }])[0].code, Code::OK);
-        assert!(r.open(adv.peer, &S));
-        r.sent();
-        r.table.judge_as(S, tid(9), j);
-        r.settle();
-        assert_eq!(r.open(adv.peer, &S), stays, "{j:?}");
-        assert_eq!(of_kind(&r.sent(), 38).len(), usize::from(!stays), "{j:?}: a Lost");
-        if j == J::Departed {
-            let m = &r.opens.members(adv.peer)[&S];
-            assert!(m.departed.is_some() && m.until == Some(0), "ended for its departure: {m:?}");
-            r.reported(adv.peer, S, 0);
-            assert!(!r.open(adv.peer, &S) && of_kind(&r.sent(), 38).len() == 1, "closed at its until with a Lost");
-        }
-    }
-}
-
-// ON_peermoves (spec/sync-opens.md §4 Departed, §6): a peer removed while connected, its removal
-// held here before any rotation (no credential of S moves), is ended: told by notices and served
-// nothing, it closes once it reports a position, and its Hit on the read
-// secret it holds, at an epoch not covering its departure, opens nothing again. Across a restart
-// the record keeps the member ended for its departure; with no connection to send its notice on,
-// it has no `until` yet (the next connection tells it, then closes it there).
-#[test]
-fn a_removal_held_here_ends_a_credential_open_spec_sync_opens_6() {
-    let mut p = readers();
-    p.a.table.judge_as(S, tid(2), J::Departed);
-    p.a.settle();
-    let m = p.a.opens.members(p.ca)[&S].clone();
-    assert!(m.departed.is_some() && m.until == Some(0), "ended, before any rotation: {m:?}");
-    p.a.reported(p.ca, S, 0);
-    p.run();
-    assert!(!p.a.open(p.ca, &S) && !p.b.open(p.cb, &S), "closed at its until; b's Hit refused: a judges it departed");
-    // held while away (the record keeps the member), then a restart: the reconnect closes it
-    let mut p = readers();
-    let at = osis_sync::store::Source::Record(p.a.opens.record(p.ca).unwrap());
-    p.close();
-    p.a.table.judge_as(S, tid(2), J::Departed);
-    p.a.restart();
-    assert!(p.a.opens.member_at(at, &S).is_some_and(|m| m.departed.is_some() && m.until.is_none()), "kept ended across the restart, untold");
-}
-
-// spec/sync-opens.md §6 (whether or not a connection holds its record; a connection taking a
-// record re-judges nothing that did not change): a member's J is followed per record, across its
-// connections, so a reconnect judges nothing of it again; a move while no connection holds the
-// record is judged in its step: b, removed while away, is ended from then (its `until` waits for a
-// connection to send its notice on).
-#[test]
-fn standing_is_followed_per_record_across_connections_spec_sync_opens_6() {
-    let mut p = readers();
-    let followed = |p: &Pair| p.a.table.followed.keys().any(|(_, s)| *s == S);
-    assert!(followed(&p));
-    let at = osis_sync::store::Source::Record(p.a.opens.record(p.ca).unwrap());
-    assert_eq!(p.a.opens.conn_of(at), Some(p.ca));
-    p.close();
-    p.a.settle();
-    assert!(followed(&p), "followed while away");
-    assert!(p.a.opens.member_at(at, &S).is_some() && p.a.opens.conn_of(at).is_none(), "the record keeps its member, connected nowhere");
-    p.a.table.judge_as(S, tid(2), J::Departed);
-    p.a.settle();
-    assert!(p.a.opens.member_at(at, &S).is_some_and(|m| m.departed.is_some() && m.until.is_none()), "moved while away: ended in its step");
-}
-
-// spec/sync-opens.md §6 (closes once no connection holds its record; while one does, that
-// session's proofs stand): b's open by a's read secret stays while b's connection lasts, its session's proofs
-// standing; once it ends, the member closes and what the modules keep of it goes. Away first,
-// it closes in the step of the change.
-#[test]
-fn a_peer_that_is_no_one_closes_once_no_connection_holds_its_record_spec_sync_opens_6() {
-    use osis_sync::store::Source;
-    let mut p = readers();
-    let rid = p.a.opens.record(p.ca).unwrap();
-    p.a.table.no_one(tid(2));
-    p.a.settle();
-    assert!(p.a.open(p.ca, &S), "connected: its session's proofs stand");
-    p.close();
-    p.a.moved.clear();
-    p.a.settle();
-    assert!(p.a.opens.member_at(Source::Record(rid), &S).is_none(), "closed once its connection ended");
-    assert!(p.a.moved.contains(&Moved::Gone(rid, S)), "{:?}", p.a.moved);
-    let mut p = readers();
-    let rid = p.a.opens.record(p.ca).unwrap();
-    p.close();
-    p.a.settle();
-    assert!(p.a.opens.member_at(Source::Record(rid), &S).is_some(), "away, a member stays");
-    p.a.moved.clear();
-    p.a.table.no_one(tid(2));
-    p.a.settle();
-    assert!(p.a.opens.member_at(Source::Record(rid), &S).is_none(), "closed in the step of the change");
-    assert!(p.a.moved.contains(&Moved::Gone(rid, S)), "{:?}", p.a.moved);
-}
-
-// spec/sync-opens.md §6 (whether or not a connection holds its record), §1
-// (one connection per pair): b's node holds two records at a (its first one lost to it, so it met a
-// as a first contact again). After a's restart b's new record is taken on one connection and its
-// old one resumed on another, which loses the pair: the record read for that take leaves memory as
-// it came. Else it stays there unjudged and unfollowed: b departing while away closes nothing of it,
-// and the next take, of a record in memory, judges nothing, serving S to a departed peer.
-#[test]
-fn a_take_refused_for_its_pair_leaves_nothing_unjudged_spec_sync_opens_6() {
-    use osis_sync::types::ConnId;
-    // node thing `k` of account `n`
-    let node = |n: u8, k: u8| Proven { named: osis_store::Named { claims: vec![osis_store::Claim { thing: tid(k), key: [k; 32], path: vec![tid(n)] }] }, ..Proven::default() };
-    let st = StepKeys::new(1, 0);
-    let rs = read_secret(1, 0);
-    let side = |seed| {
-        let mut x = Side::new(seed);
-        x.table.set(S, Some(reader(&S, &rs, &st, &[], &[], &[])));
-        x.settle();
-        x
-    };
-    let mut p = Pair::new(side(1), side(2), node(1, 11), node(2, 12));
-    p.run();
-    assert!(p.a.open(p.ca, &S));
-    p.close();
-    // the same node, its records lost: a keeps the old record and makes another
-    let old_b = std::mem::replace(&mut p.b, side(3));
-    p.connect(2, node(1, 11), node(2, 12));
-    p.run();
-    assert!(p.a.open(p.ca, &S));
-    p.close();
-    p.a.restart();
-    p.connect(3, node(1, 11), node(2, 12));
-    p.run();
-    assert!(p.a.open(p.ca, &S), "the new record taken");
-    let newer = p.ca;
-    // the old one, b dialing at a worse route: it loses the pair
-    p.b = old_b;
-    let (cb, ca) = (ConnId(4), ConnId(ConnId::ACCEPTED | 4));
-    let (bb, ba) = binds_at([0x5c; 32], [0x6d; 32], [0x4a; 32], 2);
-    p.b.pipe.binds.insert(cb, (bb, node(1, 11)));
-    p.a.pipe.binds.insert(ca, (ba, node(2, 12)));
-    p.a.take(ca, osis_sync::session::Incoming::Proved);
-    p.b.take(cb, osis_sync::session::Incoming::Proved);
-    route_all(&mut p);
-    assert_eq!(p.a.opens.lost_to(ca), Some(newer), "the old record's take lost its pair");
-    p.a.closed(ca);
-    p.a.closed(newer);
-    p.a.settle();
-    p.a.table.judge_as(S, tid(2), J::Departed);
-    p.a.settle();
-    // the old record again, nothing else up
-    let (cb, ca) = (ConnId(5), ConnId(ConnId::ACCEPTED | 5));
-    let (bb, ba) = binds([0x5d; 32], [0x6e; 32], [0x4a; 32]);
-    p.b.pipe.binds.insert(cb, (bb, node(1, 11)));
-    p.a.pipe.binds.insert(ca, (ba, node(2, 12)));
-    p.a.take(ca, osis_sync::session::Incoming::Proved);
-    p.b.take(cb, osis_sync::session::Incoming::Proved);
-    route_all(&mut p);
-    assert!(p.a.opens.record(ca).is_some(), "the old record resumed");
-    assert!(!p.a.open(ca, &S), "departed while away: nothing of S open");
 }
 
 // spec/sync-opens.md §6 (judged in the step that applies the change; for every record holding
@@ -1144,7 +657,7 @@ fn s_shredded_and_synced_again_rejoins_from_the_start_spec_sync_set_3() {
 
 /// The work done at a side since `before`.
 fn since(w: osis_sync::opens::Work, before: osis_sync::opens::Work) -> osis_sync::opens::Work {
-    osis_sync::opens::Work { rejudged: w.rejudged - before.rejudged, standing: w.standing - before.standing, beacons: w.beacons - before.beacons, tested: w.tested - before.tested, creds: w.creds - before.creds }
+    osis_sync::opens::Work { rejudged: w.rejudged - before.rejudged, beacons: w.beacons - before.beacons, tested: w.tested - before.tested, creds: w.creds - before.creds }
 }
 
 /// Two readers sharing `n` sync IDs at step keys `st`, all open.
@@ -1152,121 +665,13 @@ fn two_readers(n: u8, st: &StepKeys) -> Pair {
     let mut a = Side::new(1);
     let mut b = Side::new(2);
     for i in 0..n {
-        let rs = read_secret(i, 0);
-        a.table.set(sid(i), Some(reader(&sid(i), &rs, st, &[], &[], &[])));
-        b.table.set(sid(i), Some(reader(&sid(i), &rs, st, &[], &[], &[])));
+        a.table.set(sid(i), Some(reader(st, &[])));
+        b.table.set(sid(i), Some(reader(st, &[])));
     }
     let mut p = Pair::new(a, b, account(1), account(2));
     p.run();
     assert!((0..n).all(|i| p.a.open(p.ca, &sid(i))));
     p
-}
-
-// spec/sync-opens.md §6: a move of one peer's standing for one sync ID re-judges that member
-// alone: the same work at n and 10n sync IDs open on the connection.
-fn standing_moves_one_of(n: u8) -> osis_sync::opens::Work {
-    let mut p = two_readers(n, &StepKeys::new(1, 0));
-    let before = p.a.opens.work();
-    p.a.table.judge_as(sid(0), tid(2), J::SyncHolder);
-    p.a.settle();
-    since(p.a.opens.work(), before)
-}
-
-#[test]
-fn a_standing_move_costs_the_same_at_n_and_10n_spec_sync_opens_6() {
-    let (small, large) = (standing_moves_one_of(10), standing_moves_one_of(100));
-    assert_eq!(small, large);
-    assert_eq!((small.standing, small.rejudged), (1, 1), "{small:?}");
-}
-
-// ON_departed (spec/sync-opens.md §4 (departed)): a side MUST NOT open S toward a peer J judges
-// departed by a credential at an epoch not covering every departure: Adv, removed, still holds
-// R's current read secret and proof (no rotation yet); R shows it nothing and accepts none of it.
-#[test]
-fn nothing_opens_toward_a_departed_peer_spec_sync_opens_4() {
-    let rs = read_secret(1, 0);
-    let st = StepKeys::new(1, 0);
-    let (mut r, mut adv) = reader_judging(J::Departed);
-    let a = adv.offer(&mut r, vec![OfferItem::Hit { hit: adv.hit_on(rs.1.expose(), &S), sig: None, class: osis_proto::SourceClass::Reader }, OfferItem::Hit { hit: adv.hit_on(&st.proof, &S), sig: None, class: osis_proto::SourceClass::Reader }]);
-    assert!(a.iter().all(|x| x.code == Code::DECLINED), "{a:?}");
-    adv.filter(&mut r, &[*rs.1.expose(), st.pk()], &S);
-    assert_eq!(offered_hits(&r.sent()), 0, "R tests nothing toward Adv");
-    assert!(!r.open(adv.peer, &S));
-    // At an epoch covering the departure, R's credentials of it count again.
-    let rs1 = read_secret(1, 1);
-    r.table.covering.insert((S, rs1.0));
-    r.table.set(S, Some(reader(&S, &rs1, &st, &[], &[], &[])));
-    r.settle();
-    assert_eq!(adv.offer(&mut r, vec![OfferItem::Hit { hit: adv.hit_on(rs1.1.expose(), &S), sig: None, class: osis_proto::SourceClass::Reader }])[0].code, Code::OK);
-}
-
-// ON_dialer (spec/sync-opens.md §4): which side dialed proves nothing. K dials Adv, which holds
-// only S's public values and proves nothing: Adv claiming K reads S (ByRole) opens nothing, and
-// K's Hit on the sync key Adv shows, answered with the tag anyone holding the key computes and no
-// signature, opens nothing either; K sends Adv the same as when Adv dials it.
-#[test]
-fn dialing_proves_nothing_spec_sync_opens_4() {
-    let s0 = StepKeys::new(1, 0);
-    let mut outcome = Vec::new();
-    for k_dials in [true, false] {
-        let mut k = Side::new(3);
-        k.table.set(S, Some(store(&s0)));
-        k.settle();
-        let mut adv = Adv::connect(&mut k, k_dials, [1; 32], [2; 32], Proven::default());
-        if !k_dials {
-            let id = osis_proto::limits::NO_RECORD_ID;
-            adv.send(&mut k, Msg::NoRecord { id });
-        }
-        k.sent();
-        assert_eq!(adv.offer(&mut k, vec![OfferItem::ByRole { sync_id: S, hits: Vec::new(), class: osis_proto::SourceClass::Reader }])[0].code, Code::DECLINED);
-        adv.filter(&mut k, &[s0.pk()], &S);
-        let sent = k.sent();
-        let Some(Msg::Offer { id, .. }) = of_kind(&sent, 37).pop() else { panic!("K Hits the sync key Adv shows") };
-        let tag = adv.tag_on(&s0.pk(), &S);
-        adv.send(&mut k, Msg::Shared { id, items: vec![osis_proto::SharedItem { code: Code::OK, tag: Some(tag), grant: None, sig: None, class: osis_proto::SourceClass::Reader }] });
-        assert!(!k.open(adv.peer, &S), "k dials: {k_dials}");
-        outcome.push((k.opens.record(adv.peer).is_some(), of_kind(&k.sent(), 38).len()));
-    }
-    assert_eq!(outcome[0], outcome[1], "the dialer and the dialed act alike");
-}
-
-// ON_nolisten (spec/sync-opens.md §5): a listener signs its answer: a link holder X dials reader
-// R (the listener); R answers X's static entry Hit with its step's open signature and the grant,
-// and both open.
-#[test]
-fn a_listener_signs_its_answer_spec_sync_opens_5() {
-    let l = link_key(7);
-    let st = StepKeys::new(1, 0);
-    let mut x = Side::new(5);
-    x.table.set(S, Some(link_holder(&l)));
-    x.table.grants.insert(S, st.pk());
-    let mut r = Side::new(4);
-    r.table.set(S, Some(reader(&S, &read_secret(1, 0), &st, &[], &[&l], &[])));
-    r.table.gives_grant = true;
-    let mut p = Pair::new(x, r, Proven::default(), Proven::default());
-    p.run();
-    assert!(p.b.open(p.cb, &S), "the listener opened");
-    assert!(p.a.open(p.ca, &S), "the dialer opened on the listener's signature");
-    assert!(p.a.table.taken.contains(&S), "the grant taken once its signature verified");
-}
-
-// spec/sync-opens.md §5 (Opening: for a static entry the tester takes the box's secrets, and
-// opens, only when `sig` verifies under the head's sync key): the grant's box and path name a
-// head sync key the replier's signature is not by; the tester takes nothing and opens nothing.
-#[test]
-fn a_static_grant_is_taken_only_once_its_signature_verifies_spec_sync_opens_5() {
-    let l = link_key(7);
-    let st = StepKeys::new(1, 0);
-    let mut x = Side::new(5);
-    x.table.set(S, Some(link_holder(&l)));
-    x.table.grants.insert(S, StepKeys::new(2, 0).pk());
-    let mut r = Side::new(4);
-    r.table.set(S, Some(reader(&S, &read_secret(1, 0), &st, &[], &[&l], &[])));
-    r.table.gives_grant = true;
-    let mut p = Pair::new(x, r, Proven::default(), Proven::default());
-    p.run();
-    assert!(p.a.table.taken.is_empty(), "no secret learned before the signature verifies");
-    assert!(!p.a.open(p.ca, &S), "the tester opened nothing");
 }
 
 // ---- work in proportion to change (notes/principles.md, Check scaling) ----
@@ -1277,9 +682,9 @@ fn change_one_of(n: u8) -> osis_sync::opens::Work {
     let st = StepKeys::new(1, 0);
     let mut p = two_readers(n, &st);
     let before = p.a.opens.work();
-    let rs = read_secret(0, 1);
-    p.a.table.set(sid(0), Some(reader(&sid(0), &rs, &st, &[], &[], &[])));
-    p.b.table.set(sid(0), Some(reader(&sid(0), &rs, &st, &[], &[], &[])));
+    let next = StepKeys::new(1, 1);
+    p.a.table.set(sid(0), Some(reader(&next, std::slice::from_ref(&st))));
+    p.b.table.set(sid(0), Some(reader(&next, std::slice::from_ref(&st))));
     p.settle();
     assert!(p.a.open(p.ca, &sid(0)));
     since(p.a.opens.work(), before)
@@ -1300,7 +705,7 @@ fn change_with_conns(n: u8, c: u64) -> u64 {
     let st = StepKeys::new(1, 0);
     let mut r = Side::new(1);
     for i in 0..n {
-        r.table.set(sid(i), Some(reader(&sid(i), &read_secret(i, 0), &st, &[], &[], &[])));
+        r.table.set(sid(i), Some(reader(&st, &[])));
     }
     r.settle();
     for k in 0..c {
@@ -1312,7 +717,7 @@ fn change_with_conns(n: u8, c: u64) -> u64 {
     }
     r.sent();
     let before = r.opens.work().beacons;
-    r.table.set(sid(0), Some(reader(&sid(0), &read_secret(0, 1), &st, &[], &[], &[])));
+    r.table.set(sid(0), Some(reader(&st, &[])));
     r.settle();
     r.opens.work().beacons - before
 }
@@ -1333,7 +738,7 @@ fn a_lost_for_an_open_member_is_answered_with_a_lost_spec_sync_opens_6() {
     for ending in [false, true] {
         let (s0, s1) = (StepKeys::new(1, 0), StepKeys::new(1, 1));
         let (mut k, mut adv) = store_dialed_by_adv(&s0, [2; 32]);
-        adv.offer(&mut k, vec![sync_key_hit(&adv, &s0)]);
+        adv.offer(&mut k, vec![proof_hit(&adv, &s0)]);
         k.reported(adv.peer, S, 3);
         if ending {
             k.table.set(S, Some(store(&s1)));
@@ -1360,7 +765,7 @@ fn a_lost_for_an_open_member_is_answered_with_a_lost_spec_sync_opens_6() {
 fn an_ended_member_admissible_again_stays_ended_spec_sync_opens_6() {
     let (s0, s1) = (StepKeys::new(1, 0), StepKeys::new(1, 1));
     let (mut k, mut adv) = store_dialed_by_adv(&s0, [2; 32]);
-    adv.offer(&mut k, vec![sync_key_hit(&adv, &s0)]);
+    adv.offer(&mut k, vec![proof_hit(&adv, &s0)]);
     k.table.set(S, Some(store(&s1)));
     k.settle();
     let until = k.opens.members(adv.peer)[&S].until.expect("ended");
@@ -1374,37 +779,20 @@ fn an_ended_member_admissible_again_stays_ended_spec_sync_opens_6() {
     assert!(matches!(&of_kind(&k.sent(), 38)[..], [Msg::Lost { items, .. }] if items[0] == (S, osis_proto::Cursor::new(until.to_be_bytes().to_vec()).ok())));
 }
 
-// spec/sync-opens.md §4 (the rule: a secret credential), §5 (ByRole): a Hit or a ByRole Hit on a
-// read secret opens S whoever the peer proved, none at all included.
-#[test]
-fn a_read_secret_hit_opens_whoever_proved_spec_sync_opens_4() {
-    let rs = read_secret(1, 0);
-    for byrole in [false, true] {
-        let mut r = Side::new(4);
-        r.table.set(S, Some(reader(&S, &rs, &StepKeys::new(1, 0), &[], &[], &[])));
-        r.settle();
-        let (mut adv, _) = Adv::dials(&mut r, Proven::default(), [2; 32]);
-        let hit = adv.hit_on(rs.1.expose(), &S);
-        let item = if byrole { OfferItem::ByRole { sync_id: S, hits: vec![hit], class: osis_proto::SourceClass::Reader } } else { OfferItem::Hit { hit, sig: None, class: osis_proto::SourceClass::Reader } };
-        assert_eq!(adv.offer(&mut r, vec![item])[0].code, Code::OK, "byrole {byrole}");
-        assert!(r.open(adv.peer, &S));
-    }
-}
-
 // spec/sync-opens.md §5 (opening): a Lost after an Offer names only a sync ID whose Hit the peer
 // answered with a valid tag: an OK with no valid tag (a hostile answer to a filter's false
 // positive) learns no sync ID.
 #[test]
 fn no_lost_names_s_without_a_valid_tag_spec_sync_opens_5() {
-    let rs = read_secret(1, 0);
+    let st = StepKeys::new(1, 0);
     let mut r = Side::new(1);
-    r.table.set(S, Some(reader(&S, &rs, &StepKeys::new(1, 0), &[], &[], &[])));
+    r.table.set(S, Some(reader(&st, &[])));
     r.settle();
     let (mut adv, _) = Adv::dials(&mut r, account(9), [2; 32]);
-    adv.filter(&mut r, &[*rs.1.expose()], &S);
+    adv.filter(&mut r, &[st.proof], &S);
     let sent = r.sent();
     let Some(Msg::Offer { id, .. }) = of_kind(&sent, 37).pop() else { panic!("an Offer") };
-    adv.send(&mut r, Msg::Shared { id, items: vec![osis_proto::SharedItem { code: Code::OK, tag: Some([0; 32]), grant: None, sig: None, class: osis_proto::SourceClass::Reader }] });
+    adv.send(&mut r, Msg::Shared { id, items: vec![osis_proto::SharedItem { code: Code::OK, tag: Some([0; 32]), sig: None, class: osis_proto::SourceClass::Reader }] });
     assert!(!r.open(adv.peer, &S));
     assert!(of_kind(&r.sent(), 38).is_empty(), "no Lost");
 }
@@ -1480,12 +868,12 @@ fn a_peers_filter_is_held_as_sent_spec_wire_11_2() {
 // sync ID this node does not sync, or S not open) re-marks nothing.
 #[test]
 fn a_lost_for_no_member_open_here_remarks_nothing_spec_sync_opens_5() {
-    let rs = read_secret(1, 0);
+    let st = StepKeys::new(1, 0);
     let mut r = Side::new(1);
-    r.table.set(S, Some(reader(&S, &rs, &StepKeys::new(1, 0), &[], &[], &[])));
+    r.table.set(S, Some(reader(&st, &[])));
     r.settle();
     let (mut adv, _) = Adv::dials(&mut r, account(9), [2; 32]);
-    adv.filter(&mut r, &[*rs.1.expose()], &S);
+    adv.filter(&mut r, &[st.proof], &S);
     let oid = of_kind(&r.sent(), 37)[0].id();
     adv.send(&mut r, Msg::Shared { id: oid, items: vec![osis_proto::SharedItem::code(Code::DECLINED)] });
     // Adv acknowledged no generation of r's filter: still no Hit again at the answer.
@@ -1528,9 +916,9 @@ fn reconnect_with(n: u8) -> osis_sync::opens::Work {
     let mut a = Side::new(1);
     let mut b = Side::new(2);
     for i in 0..n {
-        a.table.set(sid(i), Some(reader(&sid(i), &read_secret(i, 0), &st, &[], &[], &[])));
+        a.table.set(sid(i), Some(reader(&st, &[])));
     }
-    b.table.set(sid(0), Some(reader(&sid(0), &read_secret(0, 0), &st, &[], &[], &[])));
+    b.table.set(sid(0), Some(reader(&st, &[])));
     let mut p = Pair::new(a, b, account(1), account(2));
     p.run();
     assert!(p.a.open(p.ca, &sid(0)));
@@ -1776,7 +1164,7 @@ pub(crate) fn restart_reconnect_bytes(n: u8) -> usize {
     let mut b = Side::new(2);
     for i in 1..=n {
         for x in [&mut a, &mut b] {
-            x.table.set(sid(i), Some(reader(&sid(i), &read_secret(i, 0), &st, &[], &[], &[])));
+            x.table.set(sid(i), Some(reader(&st, &[])));
         }
     }
     let mut p = Pair::new(a, b, account(1), account(2));
@@ -1834,7 +1222,6 @@ fn an_evicted_record_goes_whole_and_is_a_first_contact_spec_sync_opens_3() {
     }).unwrap();
     assert_eq!(p.a.store.stand(Source::Record(rid), &S, b"body").unwrap(), None, "read's stand");
     p.a.settle();
-    assert!(!p.a.table.followed.contains_key(&(rid, S)), "its members' J followed no more");
     assert!(p.a.opens.member_at(Source::Record(rid), &S).is_none(), "gone from memory too");
     p.log.clear();
     p.connect(2, account(1), account(2));
@@ -1878,7 +1265,7 @@ fn eviction_spares_a_record_a_resume_lists_spec_sync_opens_3() {
 /// stops reading S once the two share it (a Lost naming where S stopped), `a` crashing at that
 /// Lost instead. Both connect again twice, `b` reading S again. Whether `a` crashed.
 fn crash_before_flush(k: usize, leave: bool) -> bool {
-    let (st, rs) = (StepKeys::new(1, 0), read_secret(1, 0));
+    let st = StepKeys::new(1, 0);
     let mut p = reader_pair(account(1), account(2));
     let mut n = 0;
     let mut crashed = false;
@@ -1920,7 +1307,7 @@ fn crash_before_flush(k: usize, leave: bool) -> bool {
     p.b.sent();
     p.a.closed(p.ca);
     if leave {
-        p.b.table.set(S, Some(reader(&S, &rs, &st, &[], &[], &[])));
+        p.b.table.set(S, Some(reader(&st, &[])));
         p.b.settle();
     }
     for c in [2, 3] {
@@ -1965,229 +1352,6 @@ fn a_crash_before_a_step_writes_its_records_spec_sync_opens_3() {
     }
 }
 
-/// Behind items a reader sends at each of three arrivals of Adv's filter (whole, then empty
-/// additions), Adv an account J judges a sync holder of `n` sync IDs it does not keep (each
-/// Behind answered 13).
-fn behinds_per_arrival(n: u8) -> Vec<usize> {
-    let mut r = Side::new(1);
-    for i in 0..n {
-        let s = SyncId([i; 16]);
-        r.table.set(s, Some(reader(&s, &read_secret(i, 0), &StepKeys::new(i, 0), &[], &[], &[])));
-        r.table.judge_as(s, tid(9), J::SyncHolder);
-    }
-    r.settle();
-    let (mut adv, sent) = Adv::dials(&mut r, account(9), [2; 32]);
-    for m in of_kind(&sent, 36) {
-        let id = m.id();
-        adv.send(&mut r, Msg::Shared { id, items: vec![osis_proto::SharedItem::code(Code::OK)] });
-    }
-    let behinds = |sent: &[(osis_sync::types::ConnId, Msg)]| -> Vec<(osis_proto::Id, usize)> {
-        of_kind(sent, 37).iter().map(|m| match m {
-            Msg::Offer { id, items } => (*id, items.iter().filter(|i| matches!(i, OfferItem::Behind(_))).count()),
-            _ => unreachable!(),
-        }).collect()
-    };
-    // Adv's filter arrives (generation 1 whole, then empty additions); r's Offers are each
-    // answered 13 (Adv keeps none of them).
-    let mut per = Vec::new();
-    for g in 1..=3u64 {
-        let id = adv.id();
-        let base = (g > 1).then_some(g - 1);
-        adv.send(&mut r, Msg::Beacons { id, generation: g, base, f: 8, lo: 0, hi: 256, gcs: Vec::new(), more: false });
-        let mut count = 0;
-        let mut offers = behinds(&r.sent());
-        while let Some((oid, k)) = offers.pop() {
-            count += k;
-            let items = vec![osis_proto::SharedItem::code(Code::UNKNOWN_SYNC_ID); osis_proto::limits::MAX_OFFER_ITEMS];
-            adv.send(&mut r, Msg::Shared { id: oid, items });
-            offers.extend(behinds(&r.sent()));
-        }
-        per.push(count);
-    }
-    per
-}
-
-// spec/sync-ids.md §6 (Walk: tested as spec/sync-opens.md §5 Testing says, on this node's own
-// changes): a reader asks Behind once per sync ID its own change made due; an arrival of the
-// peer's filter asks nothing again, at n and 10n walks alike.
-#[test]
-fn an_unchanged_filter_asks_behind_on_nothing_spec_sync_ids_6() {
-    assert_eq!(behinds_per_arrival(2), vec![2, 0, 0]);
-    assert_eq!(behinds_per_arrival(20), vec![20, 0, 0]);
-}
-
-// spec/sync-ids.md §6 (Walk: Test): a reader tests its recorded steps' credentials deepest first,
-// then the sync key of each sync secret it holds, newest first, each distinct credential once: a
-// held sync key no recorded step bears is tested (by no step), one a step bears only at its step.
-#[test]
-fn a_reader_tests_each_held_sync_key_after_its_steps_spec_sync_ids_6() {
-    use osis_crypto::{Epoch, RoleKey, Secret32, SeededRng, role_key};
-    use osis_engine::sync_ids::HeadKeys;
-    use osis_engine::sync::{Path, ReadCredentials};
-    use osis_blob::StepKeys;
-    use osis_sync::opens::cred::Tested;
-    use osis_sync::opens::holds::walk_tests;
-    let thing = osis_base::Tid::from_bytes([3; 15]);
-    let admin = Secret32::from_bytes([0xab; 32]);
-    let (old, new) = (Secret32::from_bytes([1; 32]), Secret32::from_bytes([2; 32]));
-    let id = osis_blob::genesis_sync_id(&admin);
-    let keys = StepKeys::derive(&old, &old, &admin, &Secret32::from_bytes([9; 32]), &id);
-    let read = Epoch::derive(&thing, osis_base::Role::Read, 0, &old).unwrap();
-    let se = |n: u64, x: &Secret32| Epoch::derive(&thing, osis_base::Role::Sync, n, x).unwrap();
-    let d = role_key(RoleKey::Delete, &admin);
-    let (genesis, _) = osis_blob::genesis(&admin);
-    let (first, _) = osis_blob::register(&genesis, &d, keys, &[], (&thing, read, &old), (se(0, &old), &old), &mut SeededRng::from_u64(0)).unwrap();
-    let k = |x: &Secret32| role_key(RoleKey::Sync, x);
-    let mut rc = ReadCredentials::default();
-    rc.keys.insert(first.id(), HeadKeys { sync: Some(k(&old)), epochs: [Some(se(0, &old)), None, None], ..HeadKeys::default() });
-    rc.sync_keys = vec![(se(1, &new), k(&new)), (se(0, &old), k(&old))];
-    let path = Path { steps: vec![(genesis.clone(), None), (first.clone(), None)] };
-    let tests = walk_tests(&rc, &path, &mut |_| None);
-    let got: Vec<(Option<osis_blob::StepId>, [u8; 32])> = tests
-        .iter()
-        .map(|(t, _)| match t {
-            Tested::SyncKey { step, key } => (*step, key.verifying_key().to_bytes()),
-            other => panic!("only sync keys: {other:?}"),
-        })
-        .collect();
-    let pk = |x: &Secret32| k(x).verifying_key().to_bytes();
-    assert_eq!(got, vec![(Some(first.id()), pk(&old)), (None, pk(&new))]);
-    // no recorded path: every held sync key, newest first
-    let bare: Vec<_> = walk_tests(&rc, &Path::default(), &mut |_| None).into_iter().map(|(t, _)| t.step()).collect();
-    assert_eq!(bare, vec![None, None]);
-}
-
-/// S's recorded genesis step (its sync key `st`'s) and a child step under it whose sync key the
-/// reader does not hold, signed by the genesis delete key (`bad`: signed by another key).
-fn path_past(st: &StepKeys, bad: bool) -> (osis_blob::Step, osis_blob::Step) {
-    use osis_crypto::{Domain, Secret32, Signature, SigningSecret};
-    let d0 = SigningSecret::from_seed(&Secret32::from_bytes([0xd0; 32]));
-    let keys = |sync: osis_crypto::VerifyingKey, d: &SigningSecret| osis_blob::StepKeys { sync, write: d.verifying_key(), delete: d.verifying_key(), deposit: d.verifying_key() };
-    let g0 = osis_blob::Step { sync_id: S, prev: None, keys: keys(st.sync.verifying_key(), &d0), step_key: [1; 32], claims_hash: [0; 32], sig: Signature([0; 64]) };
-    let d1 = SigningSecret::from_seed(&Secret32::from_bytes([0xd1; 32]));
-    let mut g1 = osis_blob::Step { sync_id: S, prev: Some(g0.id()), keys: keys(StepKeys::new(1, 1).sync.verifying_key(), &d1), step_key: [2; 32], claims_hash: [0; 32], sig: Signature([0; 64]) };
-    g1.sig = if bad { &d1 } else { &d0 }.sign(Domain::SyncStep, &g1.digest());
-    (g0, g1)
-}
-
-/// A reader at recorded step `st` whose only peer, Adv, J judges a sync holder, its filter
-/// showing nothing of the reader's; Adv answers the reader's first Behind with `answer`.
-fn walk_answered(answer: osis_proto::SharedItem, bad: bool) -> (Side, Adv, osis_blob::Step) {
-    let st = StepKeys::new(1, 0);
-    let (g0, g1) = path_past(&st, bad);
-    let mut r = Side::new(1);
-    r.table.set(S, Some(reader(&S, &read_secret(1, 0), &st, &[], &[], &[])));
-    r.table.recorded.insert(S, vec![g0]);
-    r.table.judge_as(S, tid(9), J::SyncHolder);
-    r.settle();
-    let (mut adv, _) = Adv::dials(&mut r, account(9), [2; 32]);
-    adv.filter(&mut r, &[[0xee; 32]], &S);
-    let sent = r.sent();
-    let Some(Msg::Offer { id, items }) = of_kind(&sent, 37).pop() else { panic!("an Offer") };
-    assert!(matches!(items.as_slice(), [OfferItem::Behind(b)] if b.sync_id == S), "nothing shown: Behind, {items:?}");
-    let answer = match answer.code {
-        Code::OK => osis_proto::SharedItem { grant: Some(osis_proto::Grant { entry_box: None, steps: vec![g1.clone()] }), ..answer },
-        _ => answer,
-    };
-    adv.send(&mut r, Msg::Shared { id, items: vec![answer] });
-    (r, adv, g1)
-}
-
-// spec/sync-ids.md §6 (Walk: Known steps, Stranded there), spec/permissions.md §4 (stranded): a
-// reader whose Behind is answered with a step verifying under its recorded head, whose
-// credential it does not hold, stops there naming that step's sync key; one refused on every
-// step it had to try stops at its recorded head; an answer that does not verify teaches no step
-// and stops nothing; a source not keeping S (13) stops nothing; the stop goes with the
-// connection, and with S opened there by the peer's test.
-#[test]
-fn a_walk_stops_past_its_keys_or_refused_spec_sync_ids_6() {
-    let ok = osis_proto::SharedItem::code(Code::OK);
-    let (mut r, adv, g1) = walk_answered(ok.clone(), false);
-    assert_eq!(r.opens.walk_stop(&S), Some(Some(g1.keys.sync.to_bytes())), "stopped at the step it learned");
-    assert!(of_kind(&r.sent(), 37).is_empty(), "nothing more asked");
-    r.closed(adv.peer);
-    assert_eq!(r.opens.walk_stop(&S), None, "the stop goes with the connection");
-    let (mut r, mut adv, _) = walk_answered(ok.clone(), false);
-    let hit = adv.hit_on(read_secret(1, 0).1.expose(), &S);
-    assert_eq!(adv.offer(&mut r, vec![OfferItem::Hit { hit, sig: None, class: osis_proto::SourceClass::Reader }])[0].code, Code::OK);
-    assert!(r.open(adv.peer, &S));
-    assert_eq!(r.opens.walk_stop(&S), None, "S opened there by the peer's test: no stop");
-    let (mut r, ..) = walk_answered(osis_proto::SharedItem::code(Code::DECLINED), false);
-    assert_eq!(r.opens.walk_stop(&S), Some(None), "refused on its only step: stopped at its head");
-    assert!(of_kind(&r.sent(), 37).is_empty(), "each step asked once per walk");
-    let (r, ..) = walk_answered(ok, true);
-    assert_eq!(r.opens.walk_stop(&S), None, "a step that does not verify is not known");
-    let (r, ..) = walk_answered(osis_proto::SharedItem::code(Code::UNKNOWN_SYNC_ID), false);
-    assert_eq!(r.opens.walk_stop(&S), None, "13: the source does not keep S");
-}
-
-// spec/sync-ids.md §6 (Behind: refused for now, code 4: asked again after a back-off): a
-// Behind answered 4 is not asked again before its back-off, which wakes the node, stops nothing
-// and is not counted off the path; once over it is asked again, and a second 4 backs off longer;
-// S opened there meanwhile, the back-off's end leaves no wake due (the node would spin).
-#[test]
-fn a_behind_refused_for_now_is_asked_again_after_a_back_off_spec_sync_ids_6() {
-    use osis_base::Mono;
-    use osis_sync::inbox::{BACKOFF_MIN_MS, backoff_ms};
-    let behind = |r: &mut Side| of_kind(&r.sent(), 37).into_iter().find_map(|m| match m {
-        Msg::Offer { id, items } if matches!(items.as_slice(), [OfferItem::Behind(b)] if b.sync_id == S) => Some(id),
-        _ => None,
-    });
-    let (mut r, mut adv, _) = walk_answered(osis_proto::SharedItem::code(Code::RATE_LIMITED), false);
-    assert_eq!(r.opens.walk_stop(&S), None, "refused for now: no stop");
-    assert_eq!(r.opens.next_wake(), Some(Mono(r.mono.0 + BACKOFF_MIN_MS)), "its back-off wakes the node");
-    r.mono = Mono(r.mono.0 + BACKOFF_MIN_MS - 1);
-    r.settle();
-    assert_eq!(behind(&mut r), None, "not asked within its back-off");
-    r.mono = Mono(r.mono.0 + 1);
-    r.settle();
-    let Some(id) = behind(&mut r) else { panic!("asked again once its back-off is over") };
-    adv.send(&mut r, Msg::Shared { id, items: vec![osis_proto::SharedItem::code(Code::RATE_LIMITED)] });
-    assert_eq!(r.opens.next_wake(), Some(Mono(r.mono.0 + backoff_ms(1))), "a second 4: a longer back-off");
-    // S opened there meanwhile: its back-off ending asks nothing and leaves no wake past
-    let hit = adv.hit_on(read_secret(1, 0).1.expose(), &S);
-    assert_eq!(adv.offer(&mut r, vec![OfferItem::Hit { hit, sig: None, class: osis_proto::SourceClass::Reader }])[0].code, Code::OK);
-    assert!(r.open(adv.peer, &S));
-    r.mono = Mono(r.mono.0 + backoff_ms(1));
-    r.settle();
-    assert_eq!(behind(&mut r), None, "S open: no Behind");
-    assert!(r.opens.next_wake().is_none_or(|t| t > r.mono), "no wake left due: {:?} at {:?}", r.opens.next_wake(), r.mono);
-}
-
-// spec/sync-ids.md §6 (Walk: Stranded there), spec/sync-opens.md §3 (record: it keeps the
-// source's step): where a walk stopped is kept in the peer's record, so after both sides restart
-// the record's next connection starts stopped there, testing nothing again; a test there that
-// opens S ends the stop.
-#[test]
-fn a_walk_stop_is_kept_in_the_record_across_a_restart_spec_sync_ids_6() {
-    let (st, head) = (StepKeys::new(1, 0), StepKeys::new(1, 1));
-    let mut r = Side::new(1);
-    let mut k = Side::new(2);
-    r.table.set(S, Some(reader(&S, &read_secret(1, 0), &st, &[], &[], &[])));
-    r.table.judge_as(S, tid(2), J::SyncHolder);
-    k.table.set(S, Some(store(&head)));
-    r.settle();
-    k.settle();
-    let mut p = Pair::new(r, k, account(1), account(2));
-    p.run();
-    assert!(!p.a.open(p.ca, &S));
-    assert_eq!(p.a.opens.walk_stop(&S), Some(None), "refused (the store's Behind answers 14): stopped");
-    p.close();
-    assert_eq!(p.a.opens.walk_stop(&S), None);
-    p.a.restart();
-    p.b.restart();
-    p.log.clear();
-    p.connect(2, account(1), account(2));
-    p.run();
-    assert!(p.log.iter().any(|(_, m)| matches!(m, Msg::Resumed { tag: Some(_), .. })), "the record resumed");
-    assert_eq!(p.a.opens.walk_stop(&S), Some(None), "stopped there again");
-    assert!(!p.log.iter().any(|(_, m)| matches!(m, Msg::Offer { .. })), "nothing tested: {:?}", p.log);
-    p.a.table.set(S, Some(reader(&S, &read_secret(1, 0), &head, &[st], &[], &[])));
-    p.settle();
-    assert!(p.a.open(p.ca, &S), "granted the head's key: open");
-    assert_eq!(p.a.opens.walk_stop(&S), None, "open: no stop");
-}
-
 // ---- where a closed member stopped (spec/sync-opens.md §6 Where it stopped) ----
 
 fn left_how(moved: &[Moved], c: osis_sync::types::ConnId, s: SyncId) -> Option<Leaving> {
@@ -2209,7 +1373,7 @@ fn a_member_closed_at_its_until_rejoins_from_the_peers_lost_spec_sync_opens_6() 
     for answered in [false, true] {
         let (s0, s1) = (StepKeys::new(1, 0), StepKeys::new(1, 1));
         let (mut k, mut adv) = store_dialed_by_adv(&s0, [2; 32]);
-        adv.offer(&mut k, vec![sync_key_hit(&adv, &s0)]);
+        adv.offer(&mut k, vec![proof_hit(&adv, &s0)]);
         k.table.set(S, Some(store(&s1)));
         k.settle();
         k.reported(adv.peer, S, k.table.until);
@@ -2220,7 +1384,7 @@ fn a_member_closed_at_its_until_rejoins_from_the_peers_lost_spec_sync_opens_6() 
             adv.send(&mut k, Msg::Lost { id, items: vec![(S, cursor(5))] });
         }
         k.moved.clear();
-        assert_eq!(adv.offer(&mut k, vec![sync_key_hit(&adv, &s1)])[0].code, Code::OK);
+        assert_eq!(adv.offer(&mut k, vec![proof_hit(&adv, &s1)])[0].code, Code::OK);
         let want = if answered { Rejoin::From(Some(5u64.to_be_bytes().to_vec())) } else { Rejoin::Held };
         assert!(k.moved.contains(&Moved::Joined(adv.peer, S, want.clone())), "answered {answered}: {want:?} in {:?}", k.moved);
     }
@@ -2268,7 +1432,7 @@ fn a_node_leaving_s_tells_each_connection_keeping_its_stop_spec_sync_opens_6() {
     // forgets it
     let (s0, s1) = (StepKeys::new(1, 0), StepKeys::new(1, 1));
     let (mut k, mut adv) = store_dialed_by_adv(&s0, [2; 32]);
-    adv.offer(&mut k, vec![sync_key_hit(&adv, &s0)]);
+    adv.offer(&mut k, vec![proof_hit(&adv, &s0)]);
     k.table.set(S, Some(store(&s1)));
     k.settle();
     k.reported(adv.peer, S, k.table.until);
@@ -2279,7 +1443,7 @@ fn a_node_leaving_s_tells_each_connection_keeping_its_stop_spec_sync_opens_6() {
     assert!(k.moved.contains(&Moved::Forgot(adv.peer, S)), "{:?}", k.moved);
     // and k, leaving S with a stop kept, tells the peer
     let (mut k, mut adv) = store_dialed_by_adv(&s0, [2; 32]);
-    adv.offer(&mut k, vec![sync_key_hit(&adv, &s0)]);
+    adv.offer(&mut k, vec![proof_hit(&adv, &s0)]);
     k.table.set(S, Some(store(&s1)));
     k.settle();
     k.reported(adv.peer, S, k.table.until);
@@ -2297,7 +1461,7 @@ fn a_node_leaving_s_tells_each_connection_keeping_its_stop_spec_sync_opens_6() {
 fn a_sources_class_is_its_declaration_whichever_hit_opens_spec_sync_opens_4() {
     use SourceClass::{Reader, Store};
     let st = StepKeys::new(1, 0);
-    let rd = || reader(&S, &read_secret(1, 0), &st, &[], &[], &[]);
+    let rd = || reader(&st, &[]);
     let class = |c: &osis_sync::opens::holds::Creds| if c.holding == Some(osis_sync::types::Holding::Unread) { Store } else { Reader };
     for (x, y) in [(store(&st), store(&st)), (rd(), store(&st)), (store(&st), rd())] {
         let mut a = Side::new(1);
@@ -2377,7 +1541,7 @@ fn a_sources_class_follows_what_the_peer_holds_spec_sync_opens_4() {
 }
 
 // spec/sync-opens.md §4 (Source: a side opens S only while its class is still the one it
-// declared in that exchange): store K Hits the sync key Adv shows, declaring it keeps S unread;
+// declared in that exchange): store K Hits the sync proof Adv shows, declaring it keeps S unread;
 // K comes to read S before Adv's valid answer arrives. K opens nothing at the class it declared
 // (Adv would class it a store for the member's life): a member there, if any, is at its new class.
 #[test]
@@ -2385,82 +1549,21 @@ fn an_answer_after_the_testers_class_moved_opens_nothing_at_the_old_class_spec_s
     let s0 = StepKeys::new(1, 0);
     for moved in [false, true] {
         let (mut k, mut adv) = store_dialed_by_adv(&s0, [2; 32]);
-        adv.filter(&mut k, &[s0.pk()], &S);
+        adv.filter(&mut k, &[s0.proof], &S);
         let sent = k.sent();
-        let Some(Msg::Offer { id, items }) = of_kind(&sent, 37).pop() else { panic!("K Hits the sync key Adv shows") };
+        let Some(Msg::Offer { id, items }) = of_kind(&sent, 37).pop() else { panic!("K Hits the sync proof Adv shows") };
         assert!(matches!(items[..], [OfferItem::Hit { class: osis_proto::SourceClass::Store, .. }]), "{items:?}");
         if moved {
-            k.table.set(S, Some(reader(&S, &read_secret(1, 0), &s0, &[], &[], &[])));
+            k.table.set(S, Some(reader(&s0, &[])));
             k.settle();
             k.sent();
         }
-        let tag = adv.tag_on(&s0.pk(), &S);
-        adv.send(&mut k, Msg::Shared { id, items: vec![osis_proto::SharedItem { code: Code::OK, tag: Some(tag), grant: None, sig: Some(adv.bind.sign(&s0.sync, &S)), class: osis_proto::SourceClass::Reader }] });
+        let tag = adv.tag_on(&s0.proof, &S);
+        adv.send(&mut k, Msg::Shared { id, items: vec![osis_proto::SharedItem { code: Code::OK, tag: Some(tag), sig: None, class: osis_proto::SourceClass::Reader }] });
         let own = k.opens.members(adv.peer).get(&S).map(|m| m.own);
         let want = if moved { None } else { Some(SourceClass::Store) };
         assert_eq!(own, want, "moved {moved}");
     }
-}
-
-// spec/sync-opens.md §6 (A member whose peer J judges departed is ended too), spec/sync-ids.md
-// §6 (Register): what inbox's register plan reads of a member
-// (`Opens::member`) moves when only its departure flips. A reader's store peer, ended at its
-// `until` (its step left behind, J unknown), is judged departed: `departed` alone moves, and a
-// judgement that read the member is due.
-#[test]
-fn a_departure_alone_moves_what_read_the_member_spec_sync_opens_6() {
-    let st = StepKeys::new(1, 0);
-    let mut r = Side::new(1);
-    let mut k = Side::new(2);
-    r.table.set(S, Some(reader(&S, &read_secret(1, 0), &st, &[], &[], &[])));
-    k.table.set(S, Some(store(&st)));
-    let mut p = Pair::new(r, k, account(1), account(2));
-    p.run();
-    // the reader's step moves on: the store's sync key no longer admissible, J unknown
-    p.a.table.judge_as(S, tid(2), J::Unknown);
-    p.a.table.set(S, Some(reader(&S, &read_secret(1, 0), &StepKeys::new(1, 1), &[], &[], &[])));
-    p.a.settle();
-    let was = p.a.opens.member(p.ca, &S).cloned().expect("ended, open");
-    assert!(was.until.is_some() && was.departed.is_none());
-    let mut fx: Effects<(), Option<Member>> = Effects::new("test: member read");
-    fx.want(());
-    for key in fx.due() {
-        fx.settle(&key, || p.a.opens.member(p.ca, &S).cloned());
-    }
-    assert!(fx.due().is_empty());
-    p.a.table.judge_as(S, tid(2), J::Departed);
-    p.a.settle();
-    let now = p.a.opens.member(p.ca, &S).cloned().expect("open");
-    assert!(now.departed.is_some() && Member { departed: None, ..now.clone() } == was, "only the departure moved");
-    assert_eq!(fx.due(), [()], "a judgement of the member is due");
-}
-
-// spec/sync-opens.md §6 (whose peer J judges departed is ended too; closes only on the peer's Lost)
-// (judged holder or not departed again, it closes at once; Lost): a reader
-// judges its store peer departed, then a sync holder again (granted anew). Its stream, shown role
-// entries alone, is past what it skipped: the member closes without waiting for the peer's Lost,
-// with a Lost naming no position, so the store rejoins from the start.
-#[test]
-fn a_departed_store_granted_again_closes_at_once_naming_nothing_spec_sync_opens_6() {
-    let st = StepKeys::new(1, 0);
-    let mut r = Side::new(1);
-    let mut k = Side::new(2);
-    r.table.set(S, Some(reader(&S, &read_secret(1, 0), &st, &[], &[], &[])));
-    k.table.set(S, Some(store(&st)));
-    let mut p = Pair::new(r, k, account(1), account(2));
-    p.run();
-    assert_eq!(p.a.opens.members(p.ca)[&S].class, SourceClass::Store);
-    p.a.table.judge_as(S, tid(2), J::Departed);
-    p.a.settle();
-    let until = p.a.table.until;
-    assert_eq!(p.a.opens.members(p.ca)[&S].until, Some(until));
-    p.a.reported(p.ca, S, until);
-    assert!(p.a.open(p.ca, &S), "departed: closes on the peer's Lost alone");
-    p.a.sent();
-    p.a.table.judge_as(S, tid(2), J::SyncHolder);
-    p.a.settle();
-    assert!(!p.a.open(p.ca, &S));
-    assert!(matches!(&of_kind(&p.a.sent(), 38)[..], [Msg::Lost { items, .. }] if items[0] == (S, None)));
 }
 
 /// The entries of S node `at` holds.
@@ -2604,80 +1707,6 @@ fn an_until_passing_while_away_serves_nothing_after_it_spec_sync_opens_6() {
         assert!(w.now() >= until);
     };
     assert!(!served_after_a_change_while_away(crate::harness::history::Gives::Reads, expire));
-}
-
-/// Node 1's rows of what record `rid`'s source showed of S (presence, spec/sync-judgement.md §3
-/// `known`), and whether S is a member there.
-fn shown_rows(w: &crate::harness::World, rid: osis_sync::types::RecordId, s: &SyncId) -> (usize, bool) {
-    w.store(1)
-        .with_read(|t| Ok((t.record_tag_rows(&rid, b'k')?.into_iter().filter(|(x, ..)| x == s).count(), t.record_tag_rows(&rid, b'M')?.into_iter().any(|(x, ..)| x == *s))))
-        .unwrap()
-}
-
-fn ended_departed(w: &crate::harness::World, rid: osis_sync::types::RecordId, s: &SyncId) -> bool {
-    w.node(1).node.opens().member_at(osis_sync::store::Source::Record(rid), s).is_some_and(|m| m.departed.is_some())
-}
-
-// The same for a peer judged departed (§6: it is ended, told its departure once a connection holds
-// its record): node 2, away, is removed from t; the record keeps it a member, ended.
-#[test]
-fn a_departed_peer_stays_a_member_ended_spec_sync_judgement_3() {
-    let (mut w, (t, s)) = away_and_back(crate::harness::history::Gives::Reads);
-    let conn = w.links_of(1).into_iter().find(|(_, j)| *j == 2).expect("node 2 is connected to node 1").0;
-    let rid = w.node(1).node.opens().record(conn).expect("node 2's record");
-    w.partition(0, 2);
-    w.partition(1, 2);
-    w.run();
-    let (shown, member) = shown_rows(&w, rid, &s);
-    assert!(shown > 0 && member, "away, a member keeps what it showed");
-    removed(&mut w, t);
-    assert!(ended_departed(&w, rid, &s), "departed: ended, kept a member");
-}
-
-// The same where node 1 restarted while node 2 was away (§6: re-judged whether or not a
-// connection holds its record, a restart's records included).
-#[test]
-fn a_peer_departed_after_a_restart_stays_a_member_ended_spec_sync_judgement_3() {
-    let (mut w, (t, s)) = away_and_back(crate::harness::history::Gives::Reads);
-    let conn = w.links_of(1).into_iter().find(|(_, j)| *j == 2).expect("node 2 is connected to node 1").0;
-    let rid = w.node(1).node.opens().record(conn).expect("node 2's record");
-    w.partition(0, 2);
-    w.partition(1, 2);
-    w.run();
-    w.power_off(1);
-    w.power_on(1);
-    w.run();
-    let (shown, member) = shown_rows(&w, rid, &s);
-    assert!(shown > 0 && member, "away across a restart, a member keeps what it showed");
-    removed(&mut w, t);
-    assert!(ended_departed(&w, rid, &s), "departed: ended, kept a member");
-}
-
-// spec/sync-status.md §2 (Held elsewhere: a source shown role entries alone counts by its stream
-// alone), spec/sync-opens.md §6: node 0 writes t while away from both, then removes node 2; node 2
-// meets node 0 alone, is ended for its departure and served S's role entries alone up to the
-// removal's rotation, logged after the write. Its report reaches past the write, which it was never
-// served: node 0 counts the write held at no source.
-#[test]
-fn a_departed_peers_report_holds_nothing_elsewhere_spec_sync_status_2() {
-    let (mut w, (t, s)) = away_and_back(crate::harness::history::Gives::Reads);
-    w.partition(0, 1);
-    w.partition(0, 2);
-    w.partition(1, 2);
-    w.advance(1000);
-    let write = write_value(&mut w, t, &s, 3);
-    removed(&mut w, t);
-    assert!(write.is_subset(&held_of(&w, 0, &s)), "node 0 logged its write");
-    w.rejoin(0, 2);
-    let (start, mut served) = (w.now().0, false);
-    while w.step_or_wake() && w.now().0 < start + 3_600_000 {
-        served |= !write.is_disjoint(&held_of(&w, 2, &s));
-    }
-    w.advance(60_000);
-    w.run();
-    assert!(w.engine(2).role_on(&t).is_none() && w.engine(2).read_secrets(&t).is_empty(), "node 2 learned its removal");
-    assert!(!served, "node 2 was served none of the write");
-    assert!(write.iter().all(|b| !w.store(0).elsewhere(&s, b).unwrap()), "held at no source");
 }
 
 // spec/sync-opens.md §4 Departed, §6 (at each change of J of its peer): node 2's account

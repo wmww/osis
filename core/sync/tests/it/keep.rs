@@ -52,7 +52,7 @@ fn a_head_move_restamps_own_entries_and_readers_deposit_nothing_spec_sync_judgem
     w.run();
     let p = path(&mut w);
     assert_eq!(p.steps.len(), before + 1, "the rotation's step issued");
-    let (parent, head) = (&p.steps[before - 1].0, &p.steps[before].0);
+    let (parent, head) = (&p.steps[before - 1], &p.steps[before]);
     let needs = w.engine(0).step_needs(&s, &head.id()).unwrap();
     assert!(!needs.is_empty());
     for e in w.store(0).entries(&s).unwrap().into_iter().filter(|e| e.own) {
@@ -123,21 +123,21 @@ fn a_store_moved_step_by_step_holds_what_each_step_waits_on_spec_sync_ids_6() {
     assert_eq!(p.steps.len(), before + 2, "a step per rotation");
     w.power_on(1);
     w.run();
-    assert_eq!(w.store(1).head(&s).unwrap().map(|h| h.id()), p.steps.last().map(|(st, _)| st.id()));
+    assert_eq!(w.store(1).head(&s).unwrap().map(|h| h.id()), p.steps.last().map(|st| st.id()));
     for i in [0, 2] {
         let mut seen = std::collections::BTreeSet::new();
-        for (k, (st, _)) in p.steps.iter().enumerate() {
+        for (k, st) in p.steps.iter().enumerate() {
             for c in w.engine(i).step_needs(&s, &st.id()).unwrap().iter() {
                 assert!(seen.insert(*c), "node {i}: {c:?} waited on by two steps");
                 let parent = w.engine(i).step_parent(&s, c).unwrap().map(|x| x.id());
-                assert_eq!(parent, k.checked_sub(1).map(|j| p.steps[j].0.id()), "node {i}: {c:?} under step {k}'s parent");
+                assert_eq!(parent, k.checked_sub(1).map(|j| p.steps[j].id()), "node {i}: {c:?} under step {k}'s parent");
             }
         }
     }
-    let (first, second) = (p.steps[before].0.id(), p.steps[before + 1].0.id());
+    let (first, second) = (p.steps[before].id(), p.steps[before + 1].id());
     let firsts = w.engine(0).step_needs(&s, &first).unwrap();
     assert!(!firsts.is_empty() && !w.engine(0).step_needs(&s, &second).unwrap().is_empty());
-    for (k, (st, _)) in p.steps.iter().enumerate().skip(1) {
+    for (k, st) in p.steps.iter().enumerate().skip(1) {
         for c in w.engine(0).step_needs(&s, &st.id()).unwrap().iter() {
             let blobs = w.engine(0).commit_blobs(c).unwrap();
             let held: Vec<_> = blobs.iter().map(|b| w.store(1).entry(&s, b).unwrap()).collect();
@@ -364,8 +364,8 @@ fn a_step_issued_while_a_store_is_away_is_registered_when_it_is_back_spec_sync_i
     let a0 = w.node(0).account.unwrap();
     w.write(0, |e| e.rotate_boxing_only(&[t], &[Role::Write], &[a0])).unwrap().expect("a rotation");
     w.run();
-    let head = w.engine(0).sync_ids(&t).unwrap().iter().find(|o| o.id == s).unwrap().path.steps.last().unwrap().0.id();
-    let at1 = |w: &World| w.store(1).path(&s).unwrap().and_then(|p| p.steps.last().map(|(st, _)| st.id()));
+    let head = w.engine(0).sync_ids(&t).unwrap().iter().find(|o| o.id == s).unwrap().path.steps.last().unwrap().id();
+    let at1 = |w: &World| w.store(1).path(&s).unwrap().and_then(|p| p.steps.last().map(|st| st.id()));
     assert_ne!(at1(&w), Some(head), "away: not registered");
     w.heal();
     w.run();
@@ -392,8 +392,8 @@ fn a_register_lost_with_its_connection_goes_again_at_the_reconnect_spec_sync_ids
     }
     assert!(sent, "node 0 sent a Register");
     w.cut(0, 1);
-    let head = w.engine(0).sync_ids(&t).unwrap().iter().find(|o| o.id == s).unwrap().path.steps.last().unwrap().0.id();
-    let at1 = |w: &World| w.store(1).path(&s).unwrap().and_then(|p| p.steps.last().map(|(st, _)| st.id()));
+    let head = w.engine(0).sync_ids(&t).unwrap().iter().find(|o| o.id == s).unwrap().path.steps.last().unwrap().id();
+    let at1 = |w: &World| w.store(1).path(&s).unwrap().and_then(|p| p.steps.last().map(|st| st.id()));
     assert_ne!(at1(&w), Some(head), "the Register was lost");
     w.run();
     assert_eq!(at1(&w), Some(head), "registered once they met again");
