@@ -909,7 +909,6 @@ fn purge_whose_only_part_is_parked_applies_spec_commits_4() {
 // It cannot be decoded, so it goes, whichever came first: no copy of its bytes is left on the device,
 // its writes having no effect anywhere (spec/crdt.md §4.7).
 #[test]
-#[ignore = "stub rewrite: fails under rule 2, cause not sorted (R4)"]
 fn parked_part_goes_at_its_purge_spec_commits_5() {
     use crate::common::*;
     for parked_first in [true, false] {
@@ -923,11 +922,14 @@ fn parked_part_goes_at_its_purge_spec_commits_5() {
         m.purge(crate::common::stamp_item(&b.header, b.id(), x, ak("t:future.0")));
         let rq = f.lp.peers[0].commit(m).unwrap().unwrap();
         let rq = f.lp.peers[0].engine.package(&rq).unwrap().unwrap();
-        // a node of 0's account
+        // a node of 0's account, given the setup and its pairing (A's grant to it, which reaches
+        // a paired node by sync)
         let mut p = crate::flows::forensic_peer(87, &osis_store::Faults::new());
+        let before = f.lp.peers[0].engine.commit_ids();
         pair_into(&mut f.lp, 0, &mut p);
+        let pairing: Vec<_> = f.lp.peers[0].engine.commit_ids().into_iter().filter(|c| !before.contains(c)).map(|c| f.lp.peers[0].engine.package(&c).unwrap().unwrap()).collect();
         p.clock.set(now);
-        for pk in &f.setup {
+        for pk in f.setup.iter().chain(&pairing) {
             crate::common::unless_refused(p.engine.ingest(&pk.bytes, pk.blobs.clone()));
         }
         let parked = || b.encode();
