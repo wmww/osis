@@ -417,7 +417,7 @@ fn the_public_granted_again_is_read_again_spec_permissions_3() {
 // spec/sync-ids.md §6 (Walk: a Hit refused counts as that credential not shown): node 1 grants
 // node 0's account sync on thing 0, a thing made in thing 0 beside it; node 0 holds thing 0 and
 // removes its account's other node, so node 1 rotates thing 0's sync role and issues a step.
-// Node 0 takes the step's sealed copy before the box under it, judges itself past its keys, stops
+// Node 0 takes the step's sync copy before the box under it, judges itself past its keys, stops
 // S (its store shredded) and syncs it again before its sync modules see it leave. Node 0 keeps
 // thing 0 unread at its readers' head. Failed without either rule: node 1 kept node 0's old head
 // and registered onto an empty path (13), or tested the newest step's key first forever, a beacon

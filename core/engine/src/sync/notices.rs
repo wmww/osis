@@ -6,7 +6,7 @@
 //! M takes one by its own read KEM key (`take_notice`).
 //!
 //! Who writes the input: c and the giving write are applied edge writes (X's admins); M's keysets
-//! are M's rotators'. The sender is any reader of X: a notice counts as the sealed copy it carries
+//! are M's rotators'. The sender is any reader of X: a notice counts as the copy it carries
 //! is judged (`Engine::open_notice`), so a forged one gives nothing.
 
 use crate::engine::Engine;

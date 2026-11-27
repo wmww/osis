@@ -58,3 +58,36 @@ fn a_grantee_is_told_its_grant_alone_spec_permissions_4() {
     assert!(lp.peers[1].engine.take_notice(&s, &bytes).unwrap(), "peer 1 takes it");
     assert!(lp.peers[1].engine.epochs(&x).is_some_and(|ep| ep.read.held().next().is_some()), "and holds X's epoch its grant gives");
 }
+
+// spec/permissions.md §4 (Notices), spec/sync-set.md §2 (First entry): a notice is no reference
+// and no signal. Peer 1 takes the notice of its grant on X, unasked (a granter pushing it), with
+// no reference to X and no signal held: once its needs settle it holds nothing of X and syncs
+// nothing for it. Control: the same with peer 1 holding a strong to X keeps it. Fails with a
+// taken notice founding a hold (grant-driven holding).
+#[test]
+fn a_notice_alone_holds_nothing_spec_permissions_4() {
+    for referenced in [false, true] {
+        let mut lp = synced(2);
+        let n = lp.peers[1].engine.tid();
+        let me = lp.peers[0].engine.tid();
+        let mut m = crate::engine::Mutation::new();
+        let x = lp.peers[0].engine.new_thing(&mut m, me);
+        lp.peers[0].commit(m).unwrap();
+        lp.peers[0].engine.make_independent(&x).unwrap();
+        lp.hold_at(0, x);
+        if referenced {
+            lp.hold_at(1, x);
+        }
+        lp.peers[0].engine.grant(&x, &n, &edge(Role::Read)).unwrap();
+        let e = &mut lp.peers[0].engine;
+        let s = e.sync_id_of(&x).unwrap().expect("X's sync ID");
+        let told = e.notices_for(&s, &[n].into()).unwrap();
+        let mut rng = osis_crypto::SeededRng::from_u64(7);
+        let bytes = e.seal_notice(&told[0], &mut rng).unwrap().expect("sealed");
+        assert!(lp.peers[1].engine.take_notice(&s, &bytes).unwrap(), "referenced {referenced}: peer 1 takes it");
+        lp.settle_needs().unwrap();
+        let p1 = &mut lp.peers[1].engine;
+        assert_eq!(p1.sync_set().unwrap().ids.contains_key(&s), referenced, "referenced {referenced}: peer 1 syncs X only by its reference");
+        assert_eq!(p1.knows(&x), referenced, "referenced {referenced}: peer 1 holds X only by its reference");
+    }
+}

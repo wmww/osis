@@ -53,7 +53,7 @@
 (*            that holder, as a notice does, under X's sync ID; a reader   *)
 (*            opening S toward the holder by its role (ByRole, judged on   *)
 (*            X's roster) serves it; "copies": the deleted design, those   *)
-(*            boxes as sealed copies under the holder (control).           *)
+(*            boxes as copies under the holder (control).                  *)
 (* Properties: Live (no current holder that has entered stops for good: it  *)
 (* holds the current epoch and, sync-only, its store stands at the head);  *)
 (* SigLive (a signalled holder enters while its signal stands); NoGain (a  *)

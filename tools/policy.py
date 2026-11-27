@@ -508,8 +508,7 @@ DEAD_WORDS = {w: re.compile(p) for w, p in {
     "public link": r"(?i)\bpublic[ _-]?links?\b|\bPUBLIC_LINKS?\b",
 }.items()}
 
-# Words of key parts (notes/stub-rewrite.md), refused in prose now; widen to every tracked file once
-# code and core/test/held-model are rid of them (notes/stub-rewrite.md, Owed by R1).
+# Words of key parts (notes/stub-rewrite.md), refused in every tracked file but the rewrite's note.
 STUB_DEAD_WORDS = {w: re.compile(p) for w, p in {
     "edge piece": r"(?i)\bedge[ _-]?pieces?\b",
     "key part": r"(?i)\bkey[ _-]parts?\b|\bkey_part\w*",
@@ -520,6 +519,8 @@ STUB_DEAD_WORDS = {w: re.compile(p) for w, p in {
     "follows_public": r"\bfollows_public\b",
     "by_public": r"\bby_public\w*",
     "deliver_copy": r"\bdeliver_copy\b",
+    "sealed copy": r"(?i)\bsealed[ _-]cop(y|ies)\b",
+    "EdgePiece": r"\bEdgePiece\b",
 }.items()}
 
 

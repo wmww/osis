@@ -681,7 +681,7 @@ impl Engine {
     /// Opens notice `bytes` (spec/permissions.md §4 Notices, spec/wire.md §9) by the read KEM
     /// secrets this node holds of a holder of `t` or a thing on its own chains
     /// (`notice_key_held`; no `t`: a node holding nothing of the thing yet, the latter alone) and
-    /// takes the copy it carries, on its own thing, as a sealed copy. `NotOpen` when nothing held
+    /// takes the copy it carries, on its own thing. `NotOpen` when nothing held
     /// opens it.
     pub(crate) fn open_notice(&mut self, t: Option<Tid>, bytes: &[u8]) -> Result<crate::sync::Opened> {
         self.bringing(|e| e.open_notice_in(t, bytes))

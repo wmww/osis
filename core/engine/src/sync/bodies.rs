@@ -1146,7 +1146,7 @@ impl Engine {
                 // a sync copy under `t` (spec/wire.md §4, framed as a record blob is):
                 // taken under `t`, for its box and steps alone (`sync_ids::unread`)
                 if osis_commit::SyncCopy::is_shaped(&pt) {
-                    return Ok(if self.take_sync_copy(&t, blob, &pt, false)? { Opened::SyncCopy } else { Opened::Bad });
+                    return Ok(if self.take_sync_copy(&t, blob, &pt)? { Opened::SyncCopy } else { Opened::Bad });
                 }
                 if let Some(tids) = self.take_record_blob(blob, &pt)? {
                     let Some(c) = super::certblobs::CertBlob::of(bytes, &key, tids.clone()) else { return Ok(Opened::Bad) };

@@ -1378,7 +1378,7 @@ impl LocalPeer {
                 if !reading.contains(t) || q.engine.core.ix.sync_copy_on.contains_key(&b) {
                     continue;
                 }
-                changed |= q.engine.take_sync_copy(t, &b, plain, false)?;
+                changed |= q.engine.take_sync_copy(t, &b, plain)?;
             }
         }
         Ok(changed)

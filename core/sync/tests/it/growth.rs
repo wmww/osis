@@ -169,8 +169,7 @@ fn card_rewrites_grow_nothing_spec_commits_5() {
 }
 
 /// `n` rotations of every role of thing 0 by node 0, its admin, a second apart, node 1 keeping
-/// each sync secret as it comes (its sealed copies past `DEPOSITS_WAITING`: a sealed copy logged
-/// leaves the deposits waiting, so clearing never drops one not yet taken); then `ROLE_KEEP`
+/// each sync secret as it comes; then `ROLE_KEEP`
 /// passes (a replaced role-class body's keep bound): the `keys.0` bodies of thing 0 each node
 /// holds then, and what reading S's path costs there (`path_reads`).
 fn keysets_after_rotations(w: &mut World, n: usize) -> (Vec<usize>, Vec<u64>) {

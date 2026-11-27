@@ -35,22 +35,20 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 /// `su/` + blob ID: a sync copy taken here (`HeldSyncCopy`): the thing it came under (15 bytes),
-/// whether it came sealed (one byte, 1), then its `SyncCopyPlaintext` bytes.
+/// then its `SyncCopyPlaintext` bytes.
 /// Invariant (bounds; spec/sync-ids.md §5 Peer budget): a row lives exactly as long as the store
 /// holds an entry of its blob (`Engine::unnamed_copy`), and that entry is charged to its
 /// bringer unless stamped (`Opened::SyncCopy`), so what a party makes this node keep is bounded
 /// by its budget, a writer's stamp aside.
 pub(crate) const SYNC_COPIES: &[u8] = b"su/";
 
-/// A sync copy as taken here: the thing it came under (whose sync ID it is an entry of, or whose
-/// inbox it was sealed to), the holder whose copy it is (its piece's, else that thing), whether
-/// it came sealed (a sealed copy, never a log under the sync ID), the copy, its content key, and
-/// what its deltas say: its boxes and its steps.
+/// A sync copy as taken here: the thing it came under (whose sync ID it is an entry of), the
+/// holder whose copy it is (its piece's, else that thing), the copy, its content key, and what
+/// its deltas say: its boxes and its steps.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HeldSyncCopy {
     pub under: Tid,
     pub holder: Tid,
-    pub sealed: bool,
     pub copy: osis_commit::SyncCopy,
     pub key: ContentKey,
     pub boxes: BTreeMap<BoxKey, SecretBox>,
@@ -92,7 +90,7 @@ fn read_headerless(bytes: &[u8], commit: &CommitId) -> Option<osis_crdt::Fragmen
 /// keyed with two holders, or one keyed with none: a history box; a delta that does not decode).
 /// Its holder is its piece's, else `under`: whether `under` may carry that holder's copy is the
 /// taker's check (`Engine::take_sync_copy`).
-pub(crate) fn parse(under: Tid, sealed: bool, plain: &[u8]) -> Option<HeldSyncCopy> {
+pub(crate) fn parse(under: Tid, plain: &[u8]) -> Option<HeldSyncCopy> {
     let copy = osis_commit::SyncCopy::decode(plain).ok().filter(|c| c.thing != under)?;
     let mut boxes = BTreeMap::new();
     let mut holder = under;
@@ -112,7 +110,7 @@ pub(crate) fn parse(under: Tid, sealed: bool, plain: &[u8]) -> Option<HeldSyncCo
         Some(s) => super::steps::written_steps(&read_headerless(s, &copy.commit)?),
         None => ct::SyncIds::default(),
     };
-    Some(HeldSyncCopy { under, holder, sealed, key: content_key(plain), copy, boxes, steps })
+    Some(HeldSyncCopy { under, holder, key: content_key(plain), copy, boxes, steps })
 }
 
 /// Loads the sync copies taken (an open or reload).
@@ -121,8 +119,7 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
     let rows = tx.scan_rows(SYNC_COPIES, |k, v| {
         let b = BlobId(k.try_into().map_err(|_| bad())?);
         let (u, rest) = v.split_at_checked(15).ok_or_else(bad)?;
-        let (sealed, plain) = rest.split_first().ok_or_else(bad)?;
-        Ok((b, parse(Tid::from_bytes(u.try_into().map_err(|_| bad())?), *sealed == 1, plain).ok_or_else(bad)?))
+        Ok((b, parse(Tid::from_bytes(u.try_into().map_err(|_| bad())?), rest).ok_or_else(bad)?))
     })?;
     for (b, c) in rows {
         index(tx, b, c);
@@ -153,7 +150,7 @@ pub(crate) fn note(tx: &mut Tx<'_>, b: &BlobId, c: HeldSyncCopy) -> Result<()> {
     if tx.core.ix.sync_copy_on.contains_key(b) {
         return Ok(());
     }
-    let v = [c.under.as_bytes().as_slice(), &[u8::from(c.sealed)], &c.copy.encode()].concat();
+    let v = [c.under.as_bytes().as_slice(), &c.copy.encode()].concat();
     tx.txn.put_local(&[SYNC_COPIES, &b.0].concat(), &v, Shred::No)?;
     index(tx, *b, c);
     Ok(())
@@ -451,8 +448,8 @@ impl crate::engine::Engine {
     /// `note`): `false` when it is bad input, or the copy of a holder other than `under` that
     /// `under` holds no sync on with key access (a stub's copy, spec/sync-set.md §2: `under`'s
     /// readers open that holder's box by its keys).
-    pub(crate) fn take_sync_copy(&mut self, under: &Tid, b: &BlobId, plain: &[u8], sealed: bool) -> Result<bool> {
-        let Some(c) = parse(*under, sealed, plain) else { return Ok(false) };
+    pub(crate) fn take_sync_copy(&mut self, under: &Tid, b: &BlobId, plain: &[u8]) -> Result<bool> {
+        let Some(c) = parse(*under, plain) else { return Ok(false) };
         if c.holder != c.under && self.core.keyed_role_now(&c.under, &c.holder) < Some(Role::Sync) {
             return Ok(false);
         }
@@ -478,8 +475,7 @@ impl crate::engine::Engine {
     /// The sync copies read sync ID `s` carries (spec/wire.md §4), by content
     /// (`ContentKey`), each with the thing reading `s` it is under and its plaintext: those its
     /// read things' certificates name (`Certs::sync_copies`, of commits held here), and each
-    /// counted copy taken under one of them (`Unread::counted`), a sealed copy's included (H's
-    /// writers log what it carries, spec/sync-inbox.md §2).
+    /// counted copy taken under one of them (`Unread::counted`).
     /// Invariant (security): what a node with no commit of the thing logs is a copy that counts
     /// here, so a forged copy is logged only where its own steps bear its box (a genesis of the
     /// forger's at a node holding none of the thing's admins' word), which gives nothing a reader of the
@@ -509,15 +505,14 @@ impl crate::engine::Engine {
         Ok(Arc::new(out))
     }
 
-    /// The sync copy rows taken under the things reading `s`: per blob, its content and whether
-    /// it came sealed.
-    pub fn sync_copy_rows(&mut self, s: &osis_base::SyncId) -> BTreeMap<BlobId, (ContentKey, bool)> {
+    /// The sync copy rows taken under the things reading `s`: per blob, its content.
+    pub fn sync_copy_rows(&mut self, s: &osis_base::SyncId) -> BTreeMap<BlobId, ContentKey> {
         let mut out = BTreeMap::new();
         for t in self.read_things_of(s).unwrap_or_default() {
             for b in self.core.ix.sync_copies_under.get(&t).into_iter().flatten() {
                 let Some(x) = self.core.ix.sync_copy_on.get(b) else { continue };
                 if let Some(c) = self.core.ix.sync_copies.get(x).and_then(|m| m.get(b).cloned()) {
-                    out.insert(*b, (c.key, c.sealed));
+                    out.insert(*b, c.key);
                 }
             }
         }
@@ -534,7 +529,7 @@ impl crate::engine::Engine {
         let Some(w) = self.wrap_secret(&t, None)? else { return Ok(None) };
         let Some(dk) = self.read(|tx| crate::engine::secrets::writer_delete_key_in(tx, &t))? else { return Ok(None) };
         let (id, blob, wrap, _) = crate::sync::certblobs::seal_cert_blob(&w, &dk, &plain, BTreeSet::new(), rng)?;
-        let Some(c) = parse(t, false, &plain) else { return Ok(None) };
+        let Some(c) = parse(t, &plain) else { return Ok(None) };
         self.run(|tx| note(tx, &id, c))?;
         Ok(Some((id, blob, wrap)))
     }

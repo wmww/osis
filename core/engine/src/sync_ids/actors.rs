@@ -498,3 +498,27 @@ pub(crate) fn followable(core: &Core, k: &Tid) -> bool {
         Some((_, Some(_))) => core.created(k).is_none_or(|r| r.link_target().is_some()),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // spec/sync-inbox.md §5 (Grant signal), spec/sync-hostile.md (a forged signal names a sync ID
+    // that gives nothing): two held grant signals name X, one by X's own sync ID, the other by
+    // another (a forger's: anyone holding the holder's card may fire one). X stays followed under
+    // its own, whichever comes first. Fails with the newest signal's sync ID displacing the other.
+    #[test]
+    #[ignore = "issues/signal-sync-id-displaced.md"]
+    fn a_signals_sync_id_is_never_displaced_by_another_spec_sync_inbox_5() {
+        let x = Tid::from_bytes([1; 15]);
+        let (own, forged) = (SyncId([2; 16]), SyncId([3; 16]));
+        for forged_last in [false, true] {
+            let mut f = FollowedLinks::default();
+            let order = if forged_last { [(own, CommitId([4; 32])), (forged, CommitId([5; 32]))] } else { [(forged, CommitId([5; 32])), (own, CommitId([4; 32]))] };
+            for (s, c) in order {
+                f.follow_signal(x, s, c);
+            }
+            assert!(f.naming(&own).contains(&x), "forged last {forged_last}: X followed under its own sync ID");
+        }
+    }
+}

@@ -1,6 +1,7 @@
-//! Sealed fires and sealed copies (spec/sync-inbox.md §2, spec/wire.md §9): a fire of an external
-//! signal (a commit by the sender's own account) or a certificate copy, sealed to the receiving
-//! thing's read KEM key, delivered as a deposit. The commit travels as its `CommitBlobPlaintext`
+//! Sealed fires and notices (spec/sync-inbox.md §2, spec/wire.md §9): a fire of an external
+//! signal (a commit by the sender's own account), sealed to the receiving thing's read KEM key
+//! and delivered as a deposit, or a notice's certificate copy, sealed to its holder and sent on a
+//! connection alone. The commit travels as its `CommitBlobPlaintext`
 //! value; osis-commit parses it.
 
 use crate::blob::Prefix;
@@ -40,7 +41,7 @@ impl Sealed {
 }
 
 /// `Sealed := [form, CommitBlobPlaintext, [CommitBlobPlaintext*], [creation*], [blob*]]`
-/// (spec/wire.md §9): `form` 0 a sealed fire, 1 a sealed copy (`copy`); the fire's commit or the
+/// (spec/wire.md §9): `form` 0 a sealed fire, 1 a notice's copy (`copy`); the fire's commit or the
 /// certificate copy; its evidence as certificate copies; their creation records, ascending by
 /// tid, distinct; the blobs its commit's deltas link (their pages), whole.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -88,7 +89,7 @@ pub fn open_fire(blob: &[u8], thing: &Tid, epoch: &Epoch, kem: &KemSecret) -> Re
 }
 
 /// A notice's payload (spec/wire.md §9 `Notice := [holder, n, nonce, Sealed]`): the holder and
-/// its read keyset's epoch the notice's key is sealed to, and the sealed copy it carries.
+/// its read keyset's epoch the notice's key is sealed to, and the copy it carries.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NoticeBody {
     pub holder: Tid,
