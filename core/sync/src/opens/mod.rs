@@ -521,11 +521,12 @@ struct Adm {
 
 impl Adm {
     /// Whether `by` is a credential of the head (spec/sync-opens.md §4 One open rule): the sync
-    /// proof of the head's sync key, or a head claim; with no head here, any.
+    /// proof of the head's sync key, or a head claim (shown: bound to the head here; tested: at
+    /// the source's step); with no head here, any proof.
     fn of_head(&self, by: &Credential) -> bool {
         match by {
             Credential::SyncProof(k) => self.head.is_none_or(|h| h == *k),
-            Credential::Claim(_) => true,
+            Credential::Claim(k) => self.shows.contains(&Shown::Claim(*k)) || self.tests.iter().any(|t| matches!(t, Tested::Claim { key, .. } if key.verifying_key().to_bytes() == *k)),
         }
     }
 }
@@ -2168,7 +2169,10 @@ impl Opens {
             self.end_member(ctx, rid, conn, s, Close::Left, moved);
             return;
         };
-        let admissible = basis.is_some_and(|b| adm.shows.iter().any(|x| beacon_of(x.matched(), &s, &rr) == b) || adm.tests.iter().any(|t| beacon_of(&t.matched(), &s, &rr) == b));
+        // a claim opened by its open signature stays admissible here once its block is bound to
+        // an older step (the head moved): ended, as an older step's proof is (§6)
+        let claimed = matches!(m.by, Credential::Claim(_)) && adm.head.is_some();
+        let admissible = claimed || basis.is_some_and(|b| adm.shows.iter().any(|x| beacon_of(x.matched(), &s, &rr) == b) || adm.tests.iter().any(|t| beacon_of(&t.matched(), &s, &rr) == b));
         if !admissible {
             self.end_member(ctx, rid, conn, s, Close::AtOnce, moved);
         } else if !adm.of_head(&m.by) {

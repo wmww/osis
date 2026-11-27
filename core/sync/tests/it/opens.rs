@@ -1743,3 +1743,74 @@ fn a_record_with_no_member_leaves_memory_with_its_connection_spec_sync_opens_3()
     assert_eq!(p.a.opens.records_in_memory(), 1, "the strangers' records left memory");
 }
 
+
+/// A store of S at head `head` showing `claims` as its head claims (spec/sync-ids.md §3 Bound).
+fn store_claiming(head: &StepKeys, claims: &[[u8; 32]]) -> osis_sync::opens::holds::Creds {
+    let mut c = store(head);
+    c.shows.extend(claims.iter().map(|k| osis_sync::opens::cred::Shown::Claim(*k)));
+    c
+}
+
+/// A node holding no secret of S that tests `claim` at the store's head `head` (a grantee).
+fn claimant(head: &StepKeys, claim: &osis_crypto::SigningSecret) -> osis_sync::opens::holds::Creds {
+    osis_sync::opens::holds::Creds { holding: Some(osis_sync::types::Holding::Read), tests: vec![osis_sync::opens::cred::Tested::Claim { key: claim.clone(), sync: head.pk() }], ..Default::default() }
+}
+
+// spec/sync-opens.md §4 (a claim among the head claims opens S whole, proven by an open signature
+// by it; the answer by the replier's head sync key) and §6 (a claim no longer a head claim:
+// ended, served up to its step's end): a grantee holding no secret of S opens a store by its
+// claim, whole on both sides; the store's head moves past the claim's epoch and its member is
+// ended, not closed at once.
+#[test]
+fn a_claim_opens_whole_and_ends_at_a_head_move_spec_sync_opens_6() {
+    let (s0, s1) = (StepKeys::new(1, 0), StepKeys::new(1, 1));
+    let claim = osis_crypto::SigningSecret::from_seed(&osis_crypto::Secret32::from_bytes([3; 32]));
+    let mut g = Side::new(1);
+    let mut k = Side::new(2);
+    g.table.set(S, Some(claimant(&s0, &claim)));
+    k.table.set(S, Some(store_claiming(&s0, &[claim.verifying_key().to_bytes()])));
+    let mut p = Pair::new(g, k, Proven::default(), Proven::default());
+    p.run();
+    assert!(p.a.open(p.ca, &S) && p.b.open(p.cb, &S), "opened by the claim both ways");
+    let at_store = p.b.opens.members(p.cb)[&S].clone();
+    assert_eq!((at_store.by, at_store.until), (Credential::Claim(claim.verifying_key().to_bytes()), None), "whole");
+    // the head moves: the claim is bound to an older step now
+    p.b.table.set(S, Some(store_with(&s1, &[&s0])));
+    p.b.settle();
+    assert!(p.b.opens.members(p.cb).get(&S).is_some_and(|m| m.until.is_some()), "ended at its step's end");
+}
+
+// spec/sync-opens.md §5 (Proof an answer carries: for a claim an open signature by the sync key of
+// the replier's head): a claim's Hit answered by a store whose head sync key is not the one the
+// claim was computed at opens nothing at the tester.
+#[test]
+fn a_claims_answer_signed_by_another_head_opens_nothing_spec_sync_opens_5() {
+    let (s0, s1) = (StepKeys::new(1, 0), StepKeys::new(1, 1));
+    let claim = osis_crypto::SigningSecret::from_seed(&osis_crypto::Secret32::from_bytes([3; 32]));
+    let mut g = Side::new(1);
+    let mut k = Side::new(2);
+    g.table.set(S, Some(claimant(&s0, &claim)));
+    k.table.set(S, Some(store_claiming(&s1, &[claim.verifying_key().to_bytes()])));
+    let mut p = Pair::new(g, k, Proven::default(), Proven::default());
+    p.run();
+    assert!(!p.a.open(p.ca, &S), "the tester opens nothing on an answer by another head's key");
+}
+
+// spec/sync-ids.md §6 Head: a node following S with no path asks Head; a node holding S answers
+// with its path from genesis, whatever the connection proved, and the asker takes the path.
+#[test]
+fn a_node_with_no_path_asks_head_spec_sync_ids_6() {
+    let st = StepKeys::new(1, 0);
+    let claim = osis_crypto::SigningSecret::from_seed(&osis_crypto::Secret32::from_bytes([3; 32]));
+    let mut g = Side::new(1);
+    let k = Side::new(2);
+    g.table.set(S, Some(claimant(&st, &claim)));
+    let mut p = Pair::new(g, k, Proven::default(), Proven::default());
+    p.run();
+    let heads = |p: &Pair| p.log.iter().filter(|(by_a, m)| *by_a && matches!(m, Msg::Head { sync_id, after: None, .. } if *sync_id == S)).count();
+    assert_eq!(heads(&p), 1, "asked Head once");
+    let answered = p.log.iter().any(|(by_a, m)| !*by_a && matches!(m, Msg::Error { code: Code::UNKNOWN_SYNC_ID, .. }));
+    assert!(answered, "a node not holding S answers 13");
+    p.run();
+    assert_eq!(heads(&p), 1, "never again while S stands");
+}

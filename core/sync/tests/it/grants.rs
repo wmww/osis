@@ -260,3 +260,31 @@ fn an_accepted_signals_peers_are_dial_hints_spec_sync_inbox_5() {
     w.run();
     assert!(!hinted(&w), "gone with the signal");
 }
+
+// spec/sync-ids.md §3 (Entry: grant and entry are one write; Taking an entry), §6 Head,
+// spec/sync-opens.md §4 (a claim among the head claims opens S whole): Alice grants Bob read and
+// tells him while Bob's node reaches only Carol's node, which keeps T unread; Alice's node goes
+// off. Bob asks Carol's node Head, opens T's sync ID there by his claim, finds his entry in the
+// grant's blob and reads T: no reader of T online.
+#[test]
+fn a_grantee_gets_in_at_a_store_with_no_reader_online_spec_sync_ids_3() {
+    let mut w = crate::harness::history::world_of(0, 3, 3);
+    let t = make(&mut w, 0, "hi");
+    let (carol, bob) = (w.node(1).account.unwrap(), w.node(2).account.unwrap());
+    w.write(0, |e| e.grant(&t, &carol, &edge(Role::Sync)).and_then(|_| e.signal_grant(&t, &carol, &[]))).unwrap();
+    w.run();
+    root_strong(&mut w, 1, t, true);
+    root_strong(&mut w, 2, t, true);
+    let s = w.engine(0).sync_id_of(&t).unwrap().expect("T's sync ID");
+    assert_eq!(w.engine(1).sync_holder(&s).unwrap().map(|x| x.1), Some(Holding::Unread), "Carol's node keeps T unread");
+    // the grant reaches Carol's store; Alice's node goes off as soon as Bob's holds the signal
+    let claims = w.store(1).head_claims(&s).unwrap().len();
+    w.write(0, |e| e.grant(&t, &bob, &edge(Role::Read)).and_then(|_| e.signal_grant(&t, &bob, &[]))).unwrap();
+    while w.engine(2).sync_holder(&s).unwrap().is_none() || w.store(1).head_claims(&s).unwrap().len() == claims {
+        assert!(w.step_or_wake(), "the signal reaches Bob");
+    }
+    w.power_off(0);
+    assert_eq!(w.engine(2).get(&t, &ak()).unwrap(), None, "Bob reads nothing of T yet");
+    w.run();
+    assert_eq!(w.engine(2).get(&t, &ak()).unwrap(), Some(Value::Str("hi".into())), "Bob reads T, got in at Carol's store");
+}

@@ -177,10 +177,14 @@ pub(crate) fn may_take_role(core: &Core, a: &Tid, r: Role) -> bool {
 }
 
 /// Whether the node holds secrets of `a` no current role of its there covers (lost access): a
-/// sync secret below sync (`holds_at`), any other below read (`may_hold`).
+/// sync secret below sync (`holds_at`), any other below read (`may_hold`). A sync secret of a thing
+/// whose grants the node holds none of is judged by no role: kept unread, it follows only its own
+/// entries and the steps registered with it (spec/sync.md §3 Kept sync IDs), its removal the step
+/// past its keys (spec/sync-judgement.md §6 Stops).
 fn over_held(core: &Core, a: &Tid) -> bool {
     let Some(e) = core.ix.secrets.get(a) else { return false };
-    ROLES.iter().any(|r| e.role(*r).holds_any() && !if *r == Role::Sync { holds_sync(core, a) } else { holds_at(core, a, Role::Read) })
+    let judged = core.timelines().get(a).is_some();
+    ROLES.iter().any(|r| e.role(*r).holds_any() && !if *r == Role::Sync { !judged || holds_sync(core, a) } else { holds_at(core, a, Role::Read) })
 }
 
 /// Whether all that ended the node's (or a held link key's) role on `a` is an `until` passing:
