@@ -40,7 +40,6 @@ osis-sync's module reviews (about 50 product bugs) split the same way. Reading a
 - A trace of record-blob judgements per node (rows, held, shown, unneeded, gone, deletes sent) in `harness::trace`.
 - Per-iteration seeds from a hash of the iteration's coordinates (a helper), never `round * k + i` arithmetic that collides.
 - A documented recipe for running one test on origin/main beside a task worktree (which worktree, which target).
-- `testenv::shrinking` says nothing when it cannot shrink (a panic after the run's `Script` dropped, no steps recorded): print "not shrunk: no script recorded" on stderr. An entry here is trimmed when part of it lands.
 - A deterministic test of `close` on `Runtime::Tokio` (notes/api.md Handle and lifecycle: after `close` returns no driver poll touches a timer of a shut-down runtime). The one test, osis `runtime::close_then_runtime_shutdown_polls_no_dead_timer`, is a by-hand race caught about a third of runs; `num_alive_tasks() == 0` after `close` is wrong (the task is released after the guard drops). Needs a seam: a hook holding the driver inside an engine call while `close` runs, released after shutdown began.
 - Judgment vectors still missing: linked header lists (an aspect list past `CHUNK_THRESHOLD`) and the secrets-side rotation scenarios (core/test/vectors/README.md).
 - held-model's comparison leaves out every aspect when a role commit carries parts outside the model (notes/test-properties.md, held-model comparison): a carve-out to close by modelling those role commits.

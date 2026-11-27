@@ -899,14 +899,18 @@ pub type Elsewhere<'a, A> = (&'a str, &'a dyn Fn(&[A]));
 /// libtest's capture. Each of `elsewhere` (a name and a replay, such as the script on another
 /// seed's world) then plays the shrunk script silent and once, and whether it fails the same way
 /// is printed. Then the shrunk run is replayed with `replay(steps, true)` and fails as the
-/// original failure, printing its script.
+/// original failure, printing its script. A panic with no `Script` of `A` dropped while unwinding
+/// (one after the run's script dropped) prints "not shrunk: no script recorded".
 pub fn shrinking<A: std::fmt::Debug + Clone + 'static>(shrink_var: &str, run: impl FnOnce(), replay: impl Fn(&[A], bool), simpler: impl Fn(&A) -> Vec<A>, elsewhere: &[Elsewhere<'_, A>]) {
     use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
     if !u64_var(shrink_var).is_some_and(|n| n != 0) {
         return run();
     }
     let Err(first) = catch_unwind(AssertUnwindSafe(run)) else { return };
-    let Some(steps) = FAILED.take().and_then(|b| b.downcast::<Vec<A>>().ok()).map(|b| *b) else { resume_unwind(first) };
+    let Some(steps) = FAILED.take().and_then(|b| b.downcast::<Vec<A>>().ok()).map(|b| *b) else {
+        visible(true, "not shrunk: no script recorded");
+        resume_unwind(first)
+    };
     let n = steps.len();
     let Some(shrunk) = shrink_failure(panic_message(&*first), steps, &replay, simpler) else { resume_unwind(first) };
     let cut = if shrunk.candidates >= SHRINK_CANDIDATES { " (budget spent: SHRINK_CANDIDATES)" } else { "" };
