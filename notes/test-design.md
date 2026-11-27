@@ -37,6 +37,7 @@ osis-sync's module reviews (about 50 product bugs) split the same way. Reading a
 **Paged property cost**: `paged_apply_matches_whole_plain` seeds take 90-200 CPU-s each (ingest with its purge-on-replace snapshots about 30%, stored-state reloads after every step about 20%); the goal is the slowest large seed under a minute.
 
 **Small items**:
+- The engine index-check panic names the engine copy that failed (`osis_base::trace::copy()`), as differential probes do.
 - A memo probe showing, per followed key, which containers its held reads come from (finding what a commit keeps in memory took a hand-written dump).
 - A note on `growth::one_and_ten`/`round_work`: its counters reset per round (`costs::take`), so a `take` around `grant_rounds` reads only the last round and the settle tail.
 - A `LocalPeer` helper that follows held grant signals as the sync layer does, so a cli or sync failure that needs a followed signal moves to an engine test cheaply. Built on the entries design (spec/sync-ids.md §3): a followed signal's holder gets into S by its entry, so a helper on notices would follow what that design deletes.
