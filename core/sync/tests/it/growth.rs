@@ -832,7 +832,9 @@ type Work = [u64; 3];
 /// strong, the fire left in its inbox); node 0 writes again, removes node 1's account, and both
 /// let the thing go (each its strong). The first by `redeem_round` with
 /// `redeem`. 1 and 10 rounds (`one_and_ten`), each ended by `settled`, with read's work per round
-/// of the ten.
+/// of the ten. Each round starts and ends with a `costs::take`, which resets every counter: a
+/// `take` around the call reads only the last round and the settle tail; the whole call's work is
+/// the sum of the rounds' `Work`.
 fn grant_rounds(held: bool, redeem: bool) -> ([(World, Vec<Held>); 2], Vec<Work>) {
     use crate::harness::history::Holder;
     let mut work = Vec::new();
@@ -856,7 +858,8 @@ fn grant_rounds(held: bool, redeem: bool) -> ([(World, Vec<Held>); 2], Vec<Work>
     (worlds, work)
 }
 
-/// Read's work since the last `costs::take` (`Work`).
+/// Read's work since the last `costs::take` (`Work`), taken: every `osis_base::costs` counter
+/// starts again from 0.
 fn round_work() -> Work {
     let taken = osis_base::costs::take();
     let n = |name: &str| taken.iter().filter(|(k, ..)| *k == name).map(|(.., n)| n).sum::<u64>();
