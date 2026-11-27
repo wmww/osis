@@ -109,7 +109,7 @@ impl Engine {
         }
         // kept unread: in the node closure by a sync secret alone, or followed or held as a stub
         // holding one (an entry's) and no read secret (spec/sync.md §3: one predicate, by secrets)
-        if self.kept_unread(t) || (!self.holds_read(t) && self.core.unread(t).holds_any()) {
+        if self.kept_unread(t) || (!self.holds_read(t) && !self.core.unread(t).candidates.is_empty()) {
             // the sync ID kept for it (spec/sync.md §3 Kept for T)
             let ids: Vec<SyncId> = self.owned_sync_ids(t)?.iter().map(|o| o.id).collect();
             if !ids.is_empty() {
