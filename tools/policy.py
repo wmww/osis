@@ -508,7 +508,7 @@ DEAD_WORDS = {w: re.compile(p) for w, p in {
     "public link": r"(?i)\bpublic[ _-]?links?\b|\bPUBLIC_LINKS?\b",
 }.items()}
 
-# Words of key parts (notes/stub-rewrite.md), refused in every tracked file but the rewrite's note.
+# Words of key parts (notes/stub-rewrite.md), refused in every tracked file.
 STUB_DEAD_WORDS = {w: re.compile(p) for w, p in {
     "edge piece": r"(?i)\bedge[ _-]?pieces?\b",
     "key part": r"(?i)\bkey[ _-]parts?\b|\bkey_part\w*",
@@ -534,10 +534,9 @@ def dead_words():
             for word, pat in DEAD_WORDS.items():
                 if pat.search(line):
                     yield f"{rel}:{n}: uses \"{word}\", a removed concept (issues/deprecated-terms.md, Gone)"
-            if rel != "notes/stub-rewrite.md":
-                for word, pat in STUB_DEAD_WORDS.items():
-                    if pat.search(line):
-                        yield f"{rel}:{n}: uses \"{word}\", a removed concept (issues/deprecated-terms.md, Gone)"
+            for word, pat in STUB_DEAD_WORDS.items():
+                if pat.search(line):
+                    yield f"{rel}:{n}: uses \"{word}\", a removed concept (issues/deprecated-terms.md, Gone)"
 
 
 # the slowest first, so the pool balances
