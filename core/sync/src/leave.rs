@@ -9,7 +9,8 @@
 //! The rule, read or kept unread alike, whatever made S leave: S that left waits for a pass of
 //! it over the sources connected then, begun after it left (every source but those full or
 //! refusing caught up from a Pull sent after: `Status::heard_since`; no recorded peer and no
-//! clock is waited for), unless it has no source (no absent peer is waited for; what
+//! clock is waited for), unless it has no source (no absent peer is waited for, but an own
+//! self-removal with a body under S keeps S until sync is done waiting for it; what
 //! made it leave may be undone by what that pass brings, such as a rotation's thing list arriving
 //! after the rotation), then judges again: the node's keys must still let it hold S as it did
 //! (`Engine::sync_holder`), else it stops at once (its secrets lost, a removal). Then it stops:
@@ -46,6 +47,9 @@ pub trait Ground {
     fn stored(&mut self) -> Result<BTreeSet<SyncId>>;
     /// S's thing and how this node's keys let it hold S, whatever lists it (`Engine::sync_holder`).
     fn holder(&mut self, s: &SyncId) -> Result<Option<Held>>;
+    /// Whether an own self-removal sync waits on has a body under S
+    /// (`Engine::removal_waits_under`): S stops only once none does.
+    fn removal_waits(&mut self, s: &SyncId) -> Result<bool>;
     /// Whether S has a source now (`Status::sourced`): a pass with none ends at once.
     fn sourced(&mut self, s: &SyncId) -> bool;
     /// Shreds S's rows (`Store::shred`), the engine's notes of S's copies first (`Engine::shredding`).
@@ -273,8 +277,9 @@ fn judge(g: &mut impl Ground, s: &SyncId, leaving: &mut Stamped<SyncId, Left>) -
             x
         }
     };
-    // a pass with no source ends at once: no absent peer is waited for
-    if g.sourced(s) && !g.passed(s, left.since) {
+    // a pass with no source ends at once: no absent peer is waited for, but an own self-removal
+    // waits for the peers it is to reach (spec/permissions.md §3 Lost access)
+    if g.sourced(s) && !g.passed(s, left.since) || g.removal_waits(s)? {
         return Ok(Wait::Waiting);
     }
     Ok(if holder.as_ref() == Some(&left.held) { Wait::Done } else { Wait::Lost })
@@ -306,6 +311,9 @@ impl Ground for Live<'_, '_> {
     }
     fn holder(&mut self, s: &SyncId) -> Result<Option<Held>> {
         Ok(self.cx.engine.sync_holder(s)?)
+    }
+    fn removal_waits(&mut self, s: &SyncId) -> Result<bool> {
+        Ok(self.cx.engine.removal_waits_under(s)?)
     }
     fn sourced(&mut self, s: &SyncId) -> bool {
         self.status.sourced(s)

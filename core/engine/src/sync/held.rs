@@ -159,6 +159,14 @@ impl Engine {
         Arc::new(self.core.ix.held_wait.iter().copied().collect())
     }
 
+    /// Whether an own self-removal sync waits on has a body under `s` (`own_commits`): a sync ID
+    /// leaving the sync set stops only once none does (spec/sync-set.md §3 Release), so the
+    /// removal still reaches the peers it waits for there.
+    pub fn removal_waits_under(&mut self, s: &SyncId) -> Result<bool> {
+        let own = self.own_commits(s)?;
+        Ok(own.iter().any(|c| self.core.ix.held_wait.contains(c)))
+    }
+
     /// Whether a peer that proved node thing `peer` counts toward own commit `c` being held
     /// elsewhere (spec/sync-status.md §2): where `c` is a self-removal this node waits on, only
     /// if `peer` holds a role, by this node's reading (the leave applied), on every thing `c`

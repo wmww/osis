@@ -33,6 +33,8 @@ struct Fake {
     stored: Stamped<(), BTreeSet<SyncId>>,
     /// Sync IDs with no source now.
     unsourced: StampedSet<SyncId>,
+    /// Sync IDs an own self-removal waiting for sync has a body under.
+    removals: StampedSet<SyncId>,
     /// What left the node closure, with the sync units that held it.
     left: BTreeMap<Tid, BTreeSet<Tid>>,
     /// The passes begun so far, and per sync ID the place of its last complete pass.
@@ -76,6 +78,9 @@ impl Ground for Fake {
     }
     fn holder(&mut self, s: &SyncId) -> Result<Option<Held>> {
         Ok(self.holders.get(s).map(|h| ([tid(s.0[0])].into(), *h)))
+    }
+    fn removal_waits(&mut self, s: &SyncId) -> Result<bool> {
+        Ok(self.removals.contains(s))
     }
     fn sourced(&mut self, s: &SyncId) -> bool {
         !self.unsourced.contains(s)
@@ -152,6 +157,24 @@ fn a_left_sync_id_stops_after_the_pass_in_flight_spec_sync_set_3() {
     assert_eq!((g.syncs(1), g.syncs(3)), (None, None));
     l.settle(&mut g).unwrap();
     assert_eq!(g.shredded.len(), 2, "once");
+}
+
+// spec/sync-set.md §3 (Release), spec/permissions.md §3 (Lost access: an own self-removal waits
+// until held elsewhere): a sync ID that left with an own self-removal waiting under it stays
+// synced, with no source or after its pass, until the wait ends; then it stops.
+#[test]
+fn a_left_sync_id_stops_once_no_own_self_removal_waits_under_it_spec_sync_set_3() {
+    let (mut g, mut l) = settled();
+    g.unsourced.insert(sid(1));
+    g.removals.insert(sid(1));
+    g.closure(&[2, 3]);
+    l.settle(&mut g).unwrap();
+    assert!(g.shredded.is_empty(), "the removal waits");
+    assert_eq!(g.syncs(1), Some(Holding::Read), "still synced while it waits");
+    g.removals.remove(&sid(1));
+    l.settle(&mut g).unwrap();
+    assert_eq!(g.shredded, vec![sid(1)]);
+    assert_eq!(g.syncs(1), None);
 }
 
 // spec/sync-set.md §3 (Release): a thing that left the node closure is released once a complete

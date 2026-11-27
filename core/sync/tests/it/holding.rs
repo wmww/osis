@@ -418,6 +418,28 @@ fn a_self_removal_of_the_makers_only_path_reaches_the_reader_spec_permissions_3(
     assert_eq!(roster, vec![bob], "Bob holds the removal");
 }
 
+// spec/sync-set.md §3 (Release; Stopping), spec/permissions.md §3 (Lost access): as above, but
+// Alice removes the record edge while cut off from Bob, so T1's sync ID has no source: she still
+// keeps syncing it until Bob, back, holds the removal.
+#[test]
+fn a_self_removal_made_cut_off_reaches_the_reader_once_back_spec_permissions_3() {
+    let mut w = contacts();
+    let (t0, t1, bob) = t0_holding_t1(&mut w, true);
+    w.write(0, |e| told(e, &t1, &bob, &edge(Role::Read))).unwrap();
+    strong(&mut w, 1, None, t1, true);
+    w.run();
+    w.partition(0, 1);
+    lower_record_edge(&mut w, 0, t1, t0, None);
+    w.run();
+    w.advance(osis_proto::limits::PASS_WAIT_MS + 1);
+    w.run();
+    w.heal();
+    w.run();
+    assert_eq!(value(&mut w, 0, &t1), None, "Alice lost T1");
+    let roster: Vec<Tid> = w.engine(1).roster(&t1).into_keys().collect();
+    assert_eq!(roster, vec![bob], "Bob holds the removal");
+}
+
 // spec/permissions.md §3 (Lost access; No secret taken back): Bob mints T1 with admin T0 and grants
 // Alice read on T0, so she reads T1 through T0. Cut off from his sibling, one of Bob's nodes
 // removes her from T0 while the other grants her sync on T1, still boxing her T1's read secret;
@@ -684,7 +706,7 @@ fn refile(w: &mut World, from: usize, to: usize, s: &osis_base::SyncId, back: bo
 // no reader of T0 reads T2, its maker's nodes included, and every entry under T0's sync ID filed
 // again after the loss by a writer of T0 (who holds them all) gives none of T2's content back.
 #[test]
-#[ignore = "stub rewrite: told: a mint admin's reader reads T2 on after its record edge goes (cause not sorted)"]
+#[ignore = "issues/record-edge-removal-carriage.md"]
 fn a_mint_admins_readers_read_a_thing_no_more_once_its_record_edge_goes_spec_sync_set_2() {
     // in either order the entries are filed again in
     for back in [false, true] {
