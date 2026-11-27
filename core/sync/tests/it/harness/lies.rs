@@ -117,9 +117,8 @@ impl Liar {
             }
             (Lie::Declare(class), Msg::Offer { id, mut items }) => {
                 for i in &mut items {
-                    match i {
-                        OfferItem::Hit { class: u, .. } => *u = class,
-                        _ => {}
+                    if let OfferItem::Hit { class: u, .. } = i {
+                        *u = class;
                     }
                 }
                 vec![Msg::Offer { id, items }]

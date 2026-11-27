@@ -524,7 +524,7 @@ impl Steps {
     }
     /// Every recorded step: the path's and `more`.
     fn tree(&self, more: &[&Step]) -> BTreeMap<StepId, Step> {
-        self.steps.iter().map(|s| s).chain(more.iter().copied()).map(|s| (s.id(), s.clone())).collect()
+        self.steps.iter().chain(more.iter().copied()).map(|s| (s.id(), s.clone())).collect()
     }
 }
 
