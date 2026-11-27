@@ -27,6 +27,8 @@ Over about 200 merged tasks: reading in review, audits and simplification passes
 
 osis-sync's module reviews (about 50 product bugs) split the same way. Reading against the spec and asking what a hostile peer or removed party controls found most, in four shapes: state a peer or time grows without bound, authority or information from unproven input, clock, restart and ordering, plain spec mismatch; seams between modules (a wrong key passed in, two logs' cursors mixed) the rest. Mutation found no product bug but about 8 tests passing with their rule removed.
 
+- A check of one property never rides on a test ignored for another: an ignore takes every assertion in the test with it (`growth::flat_work` went unrun for days under a storage-leak ignore while work per round grew). Split the guard out first.
+
 ## Open work
 **Ephemeral property**, inside the ephemeral redesign, not before: one node-level property (holders sharing peers that are not lossy read alike, caps respected); the sim scenarios for liveness only; rates as a counted-work check, never timed.
 
@@ -35,6 +37,7 @@ osis-sync's module reviews (about 50 product bugs) split the same way. Reading a
 **Paged property cost**: `paged_apply_matches_whole_plain` seeds take 90-200 CPU-s each (ingest with its purge-on-replace snapshots about 30%, stored-state reloads after every step about 20%); the goal is the slowest large seed under a minute.
 
 **Small items**:
+- A note on `growth::one_and_ten`/`round_work`: its counters reset per round (`costs::take`), so a `take` around `grant_rounds` reads only the last round and the settle tail.
 - A `LocalPeer` helper that follows held grant signals as the sync layer does, so a cli or sync failure that needs a followed signal moves to an engine test cheaply. Built on the entries design (notes/opening-design.md): a followed signal's holder gets into S by its entry, so a helper on notices would follow what that design deletes.
 - A deterministic test of `close` on `Runtime::Tokio` (notes/api.md Handle and lifecycle: after `close` returns no driver poll touches a timer of a shut-down runtime). The one test, osis `runtime::close_then_runtime_shutdown_polls_no_dead_timer`, is a by-hand race caught about a third of runs; `num_alive_tasks() == 0` after `close` is wrong (the task is released after the guard drops). Needs a seam: a hook holding the driver inside an engine call while `close` runs, released after shutdown began.
 - Judgment vectors still missing: linked header lists (an aspect list past `CHUNK_THRESHOLD`) and the secrets-side rotation scenarios (core/test/vectors/README.md).
