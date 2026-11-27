@@ -288,3 +288,66 @@ fn a_grantee_gets_in_at_a_store_with_no_reader_online_spec_sync_ids_3() {
     w.run();
     assert_eq!(w.engine(2).get(&t, &ak()).unwrap(), Some(Value::Str("hi".into())), "Bob reads T, got in at Carol's store");
 }
+
+// spec/sync-ids.md §3 (Entry; entries padded to a power of two), spec/sync-opens.md §4-§5 (shows:
+// its head claims; tests: its claims at the source's step): one sync ID with n and 10n holders
+// (each granted apart, then a rotation boxing them all), what a node keeping it unread shows for
+// it (each head claim is a filter entry) and what one new grantee getting in at that store costs
+// (claims indexed, entry blocks verified, beacons, decapsulations), counted: each grows at most
+// linearly with the holders, and the grantee's own work not at all.
+#[test]
+fn an_open_at_a_store_costs_at_most_linear_in_holders_spec_sync_ids_3() {
+    let measure = |n: usize| {
+        let mut w = crate::harness::history::world_of(0, 3, 3);
+        let t = make(&mut w, 0, "hi");
+        let (carol, bob) = (w.node(1).account.unwrap(), w.node(2).account.unwrap());
+        w.write(0, |e| e.grant(&t, &carol, &edge(Role::Sync)).and_then(|_| e.signal_grant(&t, &carol, &[]))).unwrap();
+        w.run();
+        root_strong(&mut w, 1, t, true);
+        root_strong(&mut w, 2, t, true);
+        let s = w.engine(0).sync_id_of(&t).unwrap().expect("T's sync ID");
+        for _ in 0..n {
+            w.write(0, |e| {
+                let mut m = Mutation::new();
+                let me = e.tid();
+                let x = e.new_thing(&mut m, me);
+                e.commit(m).unwrap();
+                e.grant(&t, &x, &edge(Role::Read)).unwrap();
+            });
+        }
+        w.run();
+        w.write(0, |e| e.rotate_leaving_out(&t, &[Role::Sync, Role::Read, Role::Write, Role::Admin], &[])).unwrap().expect("a rotation");
+        w.run();
+        let shown = w.store(1).head_claims(&s).unwrap().len();
+        // one new grantee, getting in at the store alone (as `a_grantee_gets_in_at_a_store_*`)
+        let beacons = w.node(2).node.opens().work().beacons;
+        osis_base::costs::take();
+        let claims = w.store(1).head_claims(&s).unwrap().len();
+        w.write(0, |e| e.grant(&t, &bob, &edge(Role::Read)).and_then(|_| e.signal_grant(&t, &bob, &[]))).unwrap();
+        while w.engine(2).sync_holder(&s).unwrap().is_none() || w.store(1).head_claims(&s).unwrap().len() == claims {
+            assert!(w.step_or_wake(), "the signal reaches Bob");
+        }
+        w.power_off(0);
+        w.run();
+        assert_eq!(w.engine(2).get(&t, &ak()).unwrap(), Some(Value::Str("hi".into())), "Bob reads T, got in at Carol's store");
+        let costs: std::collections::BTreeMap<&str, u64> = osis_base::costs::take().into_iter().map(|(k, _, c)| (k, c)).collect();
+        let at = |name: &str| costs.get(name).copied().unwrap_or(0);
+        let open = [
+            ("claims indexed at the store", (w.store(1).head_claims(&s).unwrap().len() - claims) as u64),
+            ("blocks verified at the store", at("store: entry blocks verified @node 1")),
+            ("blocks verified at the grantee", at("store: entry blocks verified @node 2")),
+            ("beacons at the grantee", w.node(2).node.opens().work().beacons - beacons),
+            ("decapsulations at the grantee", at("kem: decapsulate @node 2")),
+        ];
+        (shown as u64, open)
+    };
+    let (small, large) = (measure(2), measure(20));
+    eprintln!("holders 2 then 20: filter entries for S {} / {}", small.0, large.0);
+    for ((name, a), (_, b)) in small.1.iter().zip(large.1.iter()) {
+        eprintln!("  {name}: {a} / {b}");
+    }
+    assert!(large.0 <= 10 * small.0 + 8, "filter entries for S: {} at n, {} at 10n", small.0, large.0);
+    for ((name, a), (_, b)) in small.1.iter().zip(large.1.iter()) {
+        assert!(*b <= 10 * a + 8, "{name}: {a} at n, {b} at 10n");
+    }
+}

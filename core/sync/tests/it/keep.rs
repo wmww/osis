@@ -443,3 +443,76 @@ fn a_wait_on_all_waits_for_a_sealed_fire_owed_spec_sync_status_3() {
     assert!(w.engine(1).fires_owed().is_empty(), "node 0 took the fire");
     assert_eq!(w.wait(1, Scope::All), Waiting::Done);
 }
+
+// spec/sync-opens.md §4 (One open rule), §6, spec/sync-judgement.md §6 (Stops): node 1 keeps t
+// unread and is removed; node 0 writes t after: node 1's store takes no entry of that write and
+// node 1 holds no sync secret its removal's rotation made.
+#[test]
+fn a_removed_sync_holder_gets_nothing_past_its_removal_spec_sync_opens_4() {
+    use crate::harness::Step::*;
+    use crate::harness::history::{Gives, Holder, three, value_ak};
+    let (mut w, t, s) = three(Gives::Reads, 2);
+    assert_eq!(w.engine(1).sync_holder(&s).unwrap(), Some(([t].into(), Holding::Unread)));
+    let kept = w.engine(1).kept_sync_secrets(&s).len();
+    let _ = crate::harness::play(&mut w, &[Revoke(0, 0, Holder::Node(1)), Run], String::new());
+    let c = w.write(0, |e| {
+        let mut m = Mutation::new();
+        m.set(t, &value_ak(), &Value::Str("after".into())).unwrap();
+        e.commit(m).unwrap().unwrap()
+    });
+    w.run();
+    let blobs = w.engine(0).commit_blobs(&c).unwrap();
+    assert!(!blobs.is_empty(), "the write is logged");
+    assert!(w.store(1).entries(&s).unwrap().iter().all(|e| !blobs.contains(&e.blob)), "node 1 took none of the write");
+    assert_eq!(w.engine(1).kept_sync_secrets(&s).len(), kept, "nor the removal's sync secret");
+}
+
+// spec/sync-opens.md §4 (One open rule: an older step's sync proof opens S served up to that
+// step's end), §6 (a reader behind is served the rotations it lacks, then opens S whole by its new
+// proof): node 2 reads t and is away while node 0 rotates t and writes it; back, it reads the
+// write, and every member of S it has open is open whole (no `until`).
+#[test]
+fn a_reader_behind_catches_up_by_its_older_proof_then_opens_whole_spec_sync_opens_6() {
+    use crate::harness::history::{Gives, three, value_ak};
+    let (mut w, t, s) = three(Gives::Reads, 2);
+    w.partition(0, 2);
+    w.partition(1, 2);
+    w.write(0, |e| e.rotate_leaving_out(&t, &[Role::Sync, Role::Read, Role::Write, Role::Admin], &[])).unwrap().expect("a rotation");
+    w.write(0, |e| {
+        let mut m = Mutation::new();
+        m.set(t, &value_ak(), &Value::Str("rotated".into())).unwrap();
+        e.commit(m).unwrap();
+    });
+    w.run();
+    w.rejoin(0, 2);
+    w.rejoin(1, 2);
+    w.run();
+    assert_eq!(w.engine(2).get(&t, &value_ak()).unwrap(), Some(Value::Str("rotated".into())), "node 2 caught up");
+    let sources: Vec<_> = w.node(2).node.status_of(&s).map(|x| x.sources.into_keys().collect()).unwrap_or_default();
+    assert!(!sources.is_empty(), "node 2 shares S");
+    for c in sources {
+        let m = w.node(2).node.opens().members(c).get(&s).cloned().expect("a member");
+        assert_eq!(m.until, None, "S open whole");
+    }
+}
+
+// spec/sync-set.md §2 (Holding a stub: a sync holder's stub is the sync-only cut and what its
+// entries give it; Sync set: a stub's sync ID, followed in the stub class): node 1's account is
+// granted sync on t and told, holding no strong: node 1 holds t as a stub, follows S, and takes
+// the sync secret each rotation's entry gives it.
+#[test]
+fn a_sync_only_stub_holder_follows_the_stubs_sync_id_spec_sync_set_2() {
+    use crate::harness::Step::*;
+    use crate::harness::history::{Gives, Holder, world_of};
+    let mut w = world_of(0, 3, 3);
+    let _ = crate::harness::play(&mut w, &[New(0), Give(0, 0, Holder::Node(1), Gives::Syncs), Run], String::new());
+    let t = w.history.things[0].0;
+    let s = w.engine(0).sync_id_of(&t).unwrap().unwrap();
+    assert_eq!(w.engine(1).sync_holder(&s).unwrap(), Some(([t].into(), Holding::Stub)), "held as a stub");
+    let kept = w.engine(1).kept_sync_secrets(&s).len();
+    assert!(kept > 0, "its entry gave it a sync secret");
+    w.write(0, |e| e.rotate_leaving_out(&t, &[Role::Sync, Role::Read, Role::Write, Role::Admin], &[])).unwrap().expect("a rotation");
+    w.run();
+    assert_eq!(w.engine(1).kept_sync_secrets(&s).len(), kept + 1, "the rotation's sync secret, from its entry");
+    assert_eq!(w.engine(1).sync_holder(&s).unwrap(), Some(([t].into(), Holding::Stub)), "still a stub");
+}

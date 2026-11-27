@@ -262,8 +262,18 @@ impl Holds for NodeHolds<'_, '_> {
     fn hear_path(&mut self, s: &SyncId, steps: Vec<osis_blob::Step>) {
         // the longest path heard stands: a shorter answer is a peer behind
         let known = self.cx.engine.heard_len(s);
-        if steps.len() > known {
-            self.cx.engine.hear_path(s, steps);
+        let Some(head) = steps.last().map(|st| st.keys.sync.to_bytes()) else { return };
+        if steps.len() <= known {
+            return;
+        }
+        self.cx.engine.hear_path(s, steps);
+        // held as a stub: its entries bound to the heard head, come before the step was known,
+        // are taken now (spec/sync-ids.md §3 Taking an entry), as a store's at a head move
+        if self.cx.store.synced(s).is_some_and(|(_, h)| h == Holding::Stub) {
+            for b in self.cx.store.entries_bound_to(s, &head).unwrap_or_default() {
+                let (Ok(Some(e)), Ok(Some(bytes))) = (self.cx.store.entry(s, &b), crate::store::blob_bytes(self.cx.engine, self.cx.store, &b)) else { continue };
+                let _ = self.cx.engine.open_entry(s, &b, &e.wrap, &bytes, 0);
+            }
         }
     }
 }
