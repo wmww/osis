@@ -212,15 +212,15 @@ fn store_dir_init_lock_plan_cli_2() {
 // Through the daemon: beside a node serving the store's socket, every command the dogfood runs
 // works there as on the store itself (none refused, as `Unsupported` would be): reads, writes,
 // holds, chat read and watch (listings and a commit listener), contact show, profile and import
-// (a row that waits), sync (a wait timing out), diag, sharing (grant, set-role, chat add, kick,
-// link, relay and join, link ls), clients, pairing and nodes.
+// (a row that waits), sync, diag, sharing (grant, set-role, chat add, kick, link, relay (a wait
+// timing out) and join, link ls), clients, pairing and nodes.
 #[test]
 fn commands_run_through_the_daemon_plan_cli() {
     let d = tmp("daemon");
     let s = S::dir(&d);
     let ok = |args: &[&str]| s.ok(args).out;
-    // a link's wait (a link, a card, a relay to a link's K), with no peer: it runs to the timeout
-    // (notes/cli.md Delivering commands), a bound that also covers reaching the daemon
+    // a relay's grant on a link's K, which any node may hold, with no peer: it runs to the
+    // timeout (notes/cli.md Delivering commands), a bound that also covers reaching the daemon
     let waits = |args: &[&str]| {
         let o = s.call(&[&["--timeout", "1s"][..], args].concat(), "");
         assert_eq!(o.code, 6, "{args:?}: {}", o.err);
@@ -250,11 +250,10 @@ fn commands_run_through_the_daemon_plan_cli() {
     assert!(after.contains(&format!("{two} ")) && !after.contains(": one"), "{after}");
     let watched = ok(&["chat", "watch", &c, "--after", &cursor, "--count", "1", "--timeout", "60s"]);
     assert!(watched.contains(": two"), "{watched}");
-    // a one-node account's chat: nothing of it is held by another node (spec/sync-status.md §3);
-    // its public profile may be, by anyone (the contact card's wait, below)
+    // a one-node account's chat: nothing of it is held by another node (spec/sync-status.md §3)
     ok(&["sync", "--thing", &c, "--timeout", "60s"]);
-    // the profile is public, so anyone may hold it: the card's wait runs to the timeout
-    let card = waits(&["contact", "show"]).trim().to_string();
+    // a card names this node as where to find the profile: it waits for no other node
+    let card = ok(&["contact", "show"]).trim().to_string();
     let acc = osis_account::Account::of(&held).unwrap().unwrap().realm();
     assert_eq!(card, acc.contact_card(&held).unwrap().to_string());
     assert_eq!(ok(&["contact", "profile"]).trim(), acc.profile(&held).unwrap().unwrap().to_uri());
@@ -271,7 +270,7 @@ fn commands_run_through_the_daemon_plan_cli() {
     let y = ok(&["clients", "add"]).split_whitespace().next().unwrap().to_string();
     assert!(ok(&["clients", "ls"]).contains(&y));
     ok(&["chat", "kick", &c, &y]);
-    let link = waits(&["chat", "link", &c]).trim().to_string();
+    let link = ok(&["chat", "link", &c]).trim().to_string();
     let k = ok(&["link", "ls", &c]).split_whitespace().next().unwrap().to_string();
     waits(&["chat", "relay", &c, &x]);
     assert!(ok(&["grants", &k]).contains(&format!("{x} sync")), "relay grants sync on the link's K");
@@ -457,8 +456,9 @@ fn commits_undo_redo_plan_cli_4() {
 
 // CLI Sharing and roles, Sync, Identity and nodes: the local half of the
 // sharing commands on one store (nobody to dial): links, cards, nodes, grants by error
-// category, status. A link's wait runs to `--timeout` on a node alone: whoever holds the link
-// may take its thing (spec/sync-status.md §3).
+// category, status. A link or card names this node and waits for no other (notes/cli.md
+// Delivering commands); a grant whose thing any node may hold runs to `--timeout` on a node alone,
+// saying no such node is connected.
 #[test]
 fn sharing_commands_local_plan_cli_4() {
     let s = S::mem();
@@ -472,14 +472,19 @@ fn sharing_commands_local_plan_cli_4() {
     // spec/sync-inbox.md §6: `make_link` works on every node; the link names this node
     let l = s.thing();
     let o = s.call(&["--timeout", "10ms", "link", "make", &l, "write", "--single-use"], "");
-    assert_eq!(o.code, 6, "{}", o.err);
+    assert_eq!(o.code, 0, "{}", o.err);
     assert!(o.line().starts_with("osis://link/"), "{}", o.out);
     assert!(s.ok(&["--json", "link", "ls", &l]).line().contains("\"single_use\":true"));
     let o = s.call(&["--timeout", "10ms", "link", "make", &l, "read", "--until", "1900000000000"], "");
-    assert_eq!(o.code, 6, "{}", o.err);
+    assert_eq!(o.code, 0, "{}", o.err);
     assert!(s.ok(&["--raw", "link", "ls", &l]).out.lines().any(|x| x.contains(" read 1900000000000 - ")), "a link's expiry is listed");
     let o = s.call(&["--timeout", "10ms", "contact", "show"], "");
-    assert!(o.code == 6 && o.line().starts_with("osis://link/"), "{}", o.err);
+    assert!(o.code == 0 && o.line().starts_with("osis://link/"), "{}", o.err);
+    // the public, granted, may hold L at any node: none is connected, and the grant says so
+    let o = s.call(&["--timeout", "10ms", "grant", &l, "public", "read"], "");
+    assert!(o.code == 6 && o.err.contains("no node that may hold it is connected"), "{}", o.err);
+    let o = s.call(&["--timeout", "10ms", "link", "locator", &l], "");
+    assert!(o.code == 0 && o.line().starts_with("osis://link/"), "{}", o.err);
     let stranger = S::mem().me();
     assert_eq!(s.code(&["grant", &g, &stranger, "read"]), 3, "keys unknown: import a card first");
     // `chat relay` (notes/dogfood.md) grants as `grant` does
@@ -635,9 +640,9 @@ fn chat_commands_plan_cli() {
     let s = S::mem();
     let c = s.ok(&["chat", "create", "--name", "room"]).line().to_string();
     // spec/permissions.md §7, notes/cli.md Delivering commands: with no peer to dial a chat link
-    // is made; its wait runs to `--timeout`, as whoever holds the link may take the chat
+    // is made, waiting for no other node
     let o = s.call(&["--timeout", "10ms", "chat", "link", &c], "");
-    assert!(o.code == 6 && o.line().starts_with("osis://link/"), "{}", o.err);
+    assert!(o.code == 0 && o.line().starts_with("osis://link/"), "{}", o.err);
     // an empty chat's cursor is null; given back empty, everything is after it
     assert!(s.ok(&["--json", "chat", "read", &c]).out.contains("\"cursor\":null"));
     let one = s.ok(&["chat", "post", &c, "--from", "ann", "--subject", "head", "body"]).line().to_string();

@@ -119,14 +119,19 @@ fn synced(ctx: &Ctx<'_>, scopes: &[SyncScope]) -> anyhow::Result<bool> {
     Ok(true)
 }
 
-/// The end of a delivering command (notes/cli.md Delivering commands): the things it gave another
-/// account a way to (a grant or link on each) are synced within `--timeout`, else `Network`, exit
-/// 6, after its output.
+/// The end of a grant (notes/cli.md Delivering commands): the things it granted a role on are
+/// synced within `--timeout`, else `Network`, exit 6, after its output, saying whether a node
+/// that may hold them was connected.
 pub(crate) fn delivered(ctx: &Ctx<'_>, things: &[Tid]) -> anyhow::Result<()> {
-    match synced(ctx, &things.iter().map(|t| SyncScope::Thing(*t)).collect::<Vec<_>>())? {
-        true => Ok(()),
-        false => Err(Error::Network("done here, not yet held where it goes: it goes on as this node syncs".into()).into()),
+    if synced(ctx, &things.iter().map(|t| SyncScope::Thing(*t)).collect::<Vec<_>>())? {
+        return Ok(());
     }
+    let alone = ctx.db.status().is_ok_and(|s| things.iter().any(|t| s.units.get(t).is_none_or(|u| u.state == osis::SyncState::NotConnected)));
+    let why = match alone {
+        true => "done here; no node that may hold it is connected: it goes out as this node syncs",
+        false => "done here, not yet held where it goes: it goes on as this node syncs",
+    };
+    Err(Error::Network(why.into()).into())
 }
 
 fn links_j(ls: &[osis::LinkInfo]) -> J {
@@ -501,9 +506,7 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
         Cmd::Link(LinkCmd::Make { t, role, until, single_use }) => make_link(ctx, &t, &role, LinkOpts { until: opt_ts(&until)?, single_use }),
         Cmd::Link(LinkCmd::Locator { t }) => {
             let t = ctx.tid(&t)?;
-            let l = db.locator(t)?;
-            ctx.one("link", l)?;
-            delivered(ctx, &[t])
+            ctx.one("link", db.locator(t)?)
         }
         Cmd::Link(LinkCmd::Redeem { link }) => redeem(ctx, &link),
         Cmd::Link(LinkCmd::Ls { t }) => {
@@ -532,9 +535,7 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             // a contact card is a locator of the profile
             let a = ctx.account()?.realm();
             let c = a.contact_card(&db)?;
-            ctx.one("card", c)?;
-            let p = a.profile(&db)?.ok_or_else(|| exit(3, "the account's profile is not here yet"))?;
-            delivered(ctx, &[p])
+            ctx.one("card", c)
         }
         Cmd::Contact(ContactCmd::Profile { account }) => {
             let a = ctx.account()?.realm();
@@ -612,12 +613,12 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
     }
 }
 
-/// `link make` (and `chat link`): prints the link, then waits until it works.
+/// `link make` (and `chat link`): prints the link; it waits for nobody (notes/cli.md Delivering
+/// commands).
 pub(crate) fn make_link(ctx: &mut Ctx<'_>, t: &str, role: &str, o: LinkOpts) -> anyhow::Result<()> {
     let t = ctx.tid(t)?;
     let l = ctx.db.make_link(t, parse_role(role)?, ctx.me()?, o)?;
-    ctx.one("link", l)?;
-    delivered(ctx, &[t])
+    ctx.one("link", l)
 }
 
 /// `link redeem` (and `chat join`): prints the thing joined.

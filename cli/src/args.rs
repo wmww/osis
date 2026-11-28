@@ -525,8 +525,8 @@ pub enum ClientsCmd {
 #[derive(Subcommand, Debug)]
 pub enum LinkCmd {
     /// Make a link giving ROLE (read, write or admin) on T, and sync T if it does not yet; prints
-    /// the link, then waits until T's other holders hold what this node wrote to it (exit 6 past
-    /// --timeout: the link works once they do)
+    /// the link. It waits for no other node: the link names this node, and works while it runs
+    /// (`sync` waits until T's other holders hold it too)
     Make {
         t: String,
         role: String,
@@ -535,8 +535,8 @@ pub enum LinkCmd {
         #[arg(long)]
         single_use: bool,
     },
-    /// A locator of T, which the public reads (`grant T public read`); prints it, then waits
-    /// as `make` does
+    /// A locator of T, which the public reads (`grant T public read`); prints it, waiting for no
+    /// other node as `make`
     Locator { t: String },
     /// Join what LINK names; prints the thing
     Redeem { link: String },
@@ -574,7 +574,7 @@ pub enum ChatCmd {
         #[arg(long, default_value = "write")]
         role: String,
     },
-    /// A link to join by: prints it, then waits as `link make` does
+    /// A link to join by: prints it, as `link make`
     Link {
         chat: String,
         #[arg(long, default_value = "write")]
@@ -653,8 +653,8 @@ pub enum ChatCmd {
 
 #[derive(Subcommand, Debug)]
 pub enum ContactCmd {
-    /// This account's contact card (a locator of its profile): prints it, then waits as
-    /// `link make` does on the profile
+    /// This account's contact card (a locator of its profile): prints it, waiting for no other
+    /// node as `link make`
     Show,
     /// Imports a contact card: prints its account, which can then be granted roles
     Import { card: String },
