@@ -106,6 +106,7 @@ Compare old and new code by instruction counts, never wall time; no timing runs 
 - Exact call counts by caller (valgrind is on fastbox-0, not ostrich): `valgrind --tool=callgrind` on one test (`--test-threads=1`), `callgrind_annotate --tree=caller`; a recursive function's inclusive cost (`name'2`) counts each level again.
 - Per-test wall times: `RUSTC_BOOTSTRAP=1 <binary> -Z unstable-options --report-time` from its package dir (on the binary: through cargo it builds a second artifact set).
 - **What a make costs** (notes/slim-design.md, Today): osis-sync `growth::today_table` (by hand) prints, per dependent make, 1-byte change and independent minting, frames each way by kind, stored rows by family at the minting node and the second node, and kept blob bytes. At a base: `tools/bin-at BASE OUT -p osis-sync --take core/sync/tests/it/growth.rs` (the probe from this tree on the base's code), then `OUT growth::today_table --ignored --nocapture` from `core/sync`.
+- **What grows per round**: osis-sync `growth::probe_counts` (by hand, `--nocapture`; `OSIS_GROWTH_ARM=own|expiry|history|held|declined|redeemed`, default every arm) prints every `costs` counter for each of ten rounds of an arm, those growing most (the last three rounds less rounds 2-4) first.
 - **Every default test, or every module, alone**: `tools/pertest.py` (its header). `--modules` shows what a gate pays and where to cut; per test, which test moved. A compare against the last profile also catches a storm that landed passing (a test 20x its old count).
 
 ## Default-test cost

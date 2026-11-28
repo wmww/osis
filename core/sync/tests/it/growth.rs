@@ -835,26 +835,68 @@ type Work = [u64; 3];
 /// `take` around the call reads only the last round and the settle tail; the whole call's work is
 /// the sum of the rounds' `Work`.
 fn grant_rounds(held: bool, redeem: bool) -> ([(World, Vec<Held>); 2], Vec<Work>) {
-    use crate::harness::history::Holder;
     let mut work = Vec::new();
     let round = |w: &mut World, k: usize| {
         osis_base::costs::take();
-        if redeem && k == 0 {
-            redeem_round(w);
-        } else {
-            let give = if held { Grant(0, k, 1, Gives::Reads) } else { Give(0, k, Holder::Node(1), Gives::Reads) };
-            let mut steps = vec![New(0), Write(0, k), give, Run, Write(0, k), Run, Remove(0, k, 1), Run];
-            if held {
-                steps.push(Unstrong(1, None, k));
-            }
-            steps.extend([Unstrong(0, None, k), Run]);
-            let _ = play(w, &steps, String::new());
-            w.advance(1_000);
-        }
+        grant_round(w, k, held, redeem);
         work.push(round_work());
     };
     let worlds = one_and_ten(world_of(0, 2, 2), round, settled);
     (worlds, work)
+}
+
+/// `grant_rounds`' round `k`, uncounted.
+fn grant_round(w: &mut World, k: usize, held: bool, redeem: bool) {
+    use crate::harness::history::Holder;
+    if redeem && k == 0 {
+        return redeem_round(w);
+    }
+    let give = if held { Grant(0, k, 1, Gives::Reads) } else { Give(0, k, Holder::Node(1), Gives::Reads) };
+    let mut steps = vec![New(0), Write(0, k), give, Run, Write(0, k), Run, Remove(0, k, 1), Run];
+    if held {
+        steps.push(Unstrong(1, None, k));
+    }
+    steps.extend([Unstrong(0, None, k), Run]);
+    let _ = play(w, &steps, String::new());
+    w.advance(1_000);
+}
+
+// spec: none (by hand: finds what grows). Every `osis_base::costs` counter per round over ten
+// rounds of an arm (`OSIS_GROWTH_ARM`: own, expiry, history, held, declined, redeemed; default
+// every arm), the growing ones first: by the last three rounds' sum less rounds 2-4's (as
+// `flat_work` windows), then by name.
+#[test]
+#[ignore = "by hand: prints counts"]
+fn probe_counts() {
+    type Arm = (&'static str, fn() -> World, fn(&mut World, usize));
+    let arms: [Arm; 6] = [
+        ("own", || world_of(0, 1, 1), |w, _| own_round(w)),
+        ("expiry", || world_of(0, 1, 1), |w, _| expiry_round(w)),
+        ("history", || world_of(0, 1, 1), |w, _| history_round(w)),
+        ("held", || world_of(0, 2, 2), |w, k| grant_round(w, k, true, false)),
+        ("declined", || world_of(0, 2, 2), |w, k| grant_round(w, k, false, false)),
+        ("redeemed", || world_of(0, 2, 2), |w, k| grant_round(w, k, true, true)),
+    ];
+    let pick = osis_base::testenv::str_var("OSIS_GROWTH_ARM");
+    assert!(pick.as_ref().is_none_or(|p| arms.iter().any(|a| a.0 == p)), "OSIS_GROWTH_ARM: one of {:?}", arms.map(|a| a.0));
+    for (name, world, round) in arms.into_iter().filter(|a| pick.as_ref().is_none_or(|p| a.0 == p)) {
+        let mut w = world();
+        let mut per: std::collections::BTreeMap<&str, [u64; 10]> = Default::default();
+        osis_base::costs::take();
+        for k in 0..10 {
+            round(&mut w, k);
+            for (c, _, n) in osis_base::costs::take() {
+                per.entry(c).or_default()[k] += n;
+            }
+        }
+        let growth = |v: &[u64; 10]| v[7..].iter().sum::<u64>() as i128 - v[1..4].iter().sum::<u64>() as i128;
+        let mut rows: Vec<_> = per.into_iter().collect();
+        rows.sort_by_key(|(c, v)| (std::cmp::Reverse(growth(v)), *c));
+        println!("{name}: growth (last three less rounds 2-4) counter: rounds 1-10");
+        for (c, v) in rows {
+            println!("  {name} {:+} {c}: {v:?}", growth(&v));
+        }
+    }
 }
 
 /// Read's work since the last `costs::take` (`Work`), taken: every `osis_base::costs` counter
