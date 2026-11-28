@@ -135,6 +135,14 @@ impl Core {
         self.own_record(g).is_some_and(|e| e.sync.holds_any()) || self.unread(g).holds_any()
     }
 
+    /// Whether the secrets of `g` held here are sync secrets alone (one at least): it reads no
+    /// grant of `g`, so it keeps `g` unread, judged by its steps (spec/sync.md §3, spec/sync-judgement.md
+    /// §6), what it holds of `g`'s roster and `keys.0` being from when it read.
+    pub(crate) fn holds_sync_alone(&self, g: &Tid) -> bool {
+        let others = self.ix.secrets.get(g).is_some_and(|e| osis_keys::ROLES.iter().any(|r| *r != osis_base::Role::Sync && e.role(*r).holds_any()));
+        self.holds_own_sync(g) && !others
+    }
+
     /// `g`'s sync ID by its seed or its `keys.0` (spec/sync-ids.md §4 Owner), with whether it is
     /// a hint: the one `g`'s genesis seed gives where this node holds the seed; else the one its
     /// `keys.0` names, a hint while this node holds no sync secret of `g`'s own (it reads `g` by
@@ -268,11 +276,23 @@ fn recorded(tx: &mut Tx<'_>, g: &Tid) -> Result<ct::SyncIds> {
 
 /// `g`'s sync ID here (spec/sync-ids.md §4 Owner), at most one but for what `g` is followed by:
 /// the one its seed or `keys.0` names (`Core::named_sync_id`); else the sync IDs it follows `g` by
-/// (`followed`), as hints. Any other `sync.0` entry is ignored.
+/// (`followed`), as hints. Keeping `g` unread (`Core::holds_sync_alone`) with no recorded step
+/// bearing a held sync key, the one its `keys.0` names (of its own reading) is a hint beside
+/// those. Any other `sync.0` entry is ignored.
 pub(crate) fn held_sync_ids(tx: &mut Tx<'_>, g: &Tid) -> Result<Vec<OwnedSyncId>> {
     let m = recorded(tx, g)?;
     match tx.core.named_sync_id(g) {
-        Some(o) => Ok(o.into_iter().map(|(id, hint)| owned(&m, id, hint)).collect()),
+        Some(Some((id, hint))) => Ok(vec![owned(&m, id, hint)]),
+        Some(None) if tx.core.holds_sync_alone(g) => {
+            let mut out = followed(tx, g)?;
+            if let Some(id) = tx.core.ix.keys_sync_id.get(g).copied()
+                && !out.iter().any(|o| o.id == id)
+            {
+                out.push(owned(&m, id, true));
+            }
+            Ok(out)
+        }
+        Some(None) => Ok(Vec::new()),
         None => followed(tx, g),
     }
 }

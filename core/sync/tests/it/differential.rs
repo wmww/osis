@@ -633,3 +633,15 @@ fn a_stopped_store_granted_again_reads_spec_sync_judgement_6() {
     use crate::harness::script::*;
     holds_on(0, 3, 4, &[New(0), Give(0, 0, Holder::Node(2), Syncs), Strong(2, None, 0), Run, Revoke(0, 0, Holder::Node(2)), Give(0, 0, Holder::Node(2), Reads)], String::new(), false);
 }
+
+// spec/sync-ids.md §4 (Owner: kept unread, the sync ID of its own reading is a hint while no step
+// bears a held key), spec/permissions.md §3 (Lost access): node 0 grants node 1's account read on
+// its thing, removes it, then grants it sync, and node 1 strongs it. Node 1 learned its removal
+// while it read; its new sync secret comes by the claim alone, which no step it recorded bears.
+// It keeps the thing unread, as the model says (failed: the `keys.0` it read named the thing no
+// sync ID until a recorded step bore a held key).
+#[test]
+fn a_reader_removed_then_granted_sync_keeps_it_unread_spec_sync_ids_4() {
+    use crate::harness::script::*;
+    holds_on(0, 3, 4, &[New(0), Give(0, 0, Holder::Node(1), Reads), Revoke(0, 0, Holder::Node(1)), Give(0, 0, Holder::Node(1), Syncs), Strong(1, None, 0)], String::new(), false);
+}
