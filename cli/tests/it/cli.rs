@@ -219,9 +219,10 @@ fn commands_run_through_the_daemon_plan_cli() {
     let d = tmp("daemon");
     let s = S::dir(&d);
     let ok = |args: &[&str]| s.ok(args).out;
-    // a command waiting for delivery, with no peer: its wait runs to the timeout
+    // a link's wait (a link, a card, a relay to a link's K), with no peer: it runs to the timeout
+    // (notes/cli.md Delivering commands), a bound that also covers reaching the daemon
     let waits = |args: &[&str]| {
-        let o = s.call(&[&["--timeout", "200ms"][..], args].concat(), "");
+        let o = s.call(&[&["--timeout", "1s"][..], args].concat(), "");
         assert_eq!(o.code, 6, "{args:?}: {}", o.err);
         o.out
     };
@@ -259,16 +260,17 @@ fn commands_run_through_the_daemon_plan_cli() {
     assert_eq!(ok(&["contact", "profile"]).trim(), acc.profile(&held).unwrap().unwrap().to_uri());
     assert_eq!(ok(&["contact", "import", &card, "--timeout", "60s"]).trim(), acc.thing().to_uri());
     ok(&["diag"]);
-    // sharing, to a holder whose keys this node knows: a client's thing it minted (after the
-    // syncs above: a holder with no node to deliver to keeps them waiting)
-    let add = ok(&["clients", "add"]);
-    let x = add.split_whitespace().next().unwrap().to_string();
-    assert!(ok(&["clients", "ls"]).contains(&x));
-    waits(&["grant", &t, &x, "read"]);
-    waits(&["set-role", &t, &x, "write"]);
+    // sharing, to a holder no other node holds, so a grant waits for nothing: this node's thing
+    let x = s.node();
+    ok(&["grant", &t, &x, "read"]);
+    ok(&["set-role", &t, &x, "write"]);
     assert!(ok(&["grants", &t]).contains(&format!("{x} write")));
-    waits(&["chat", "add", &c, &x]);
-    ok(&["chat", "kick", &c, &x]);
+    ok(&["chat", "add", &c, &x]);
+    assert!(ok(&["grants", &c]).contains(&format!("{x} write")));
+    // a kick of one who is no participant removes nothing; a client's thing has keys here
+    let y = ok(&["clients", "add"]).split_whitespace().next().unwrap().to_string();
+    assert!(ok(&["clients", "ls"]).contains(&y));
+    ok(&["chat", "kick", &c, &y]);
     let link = waits(&["chat", "link", &c]).trim().to_string();
     let k = ok(&["link", "ls", &c]).split_whitespace().next().unwrap().to_string();
     waits(&["chat", "relay", &c, &x]);
@@ -278,7 +280,7 @@ fn commands_run_through_the_daemon_plan_cli() {
     pair_through(&s, &d);
     assert_eq!(ok(&["node", "ls"]).lines().count(), 2, "the paired node");
     // a removal's role change is set-role's, above: here a thing that is no node of the account
-    ok(&["node", "rm", &x]);
+    ok(&["node", "rm", &y]);
     drop(held);
 }
 
