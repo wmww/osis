@@ -1,4 +1,4 @@
-//! Edge writes (spec/permissions.md §2, §3, §5.3): grants with the grantee's boxes, changes,
+//! Grant writes (spec/permissions.md §2, §3, §5.3): grants with the grantee's boxes, changes,
 //! removals and demotions carrying the target's rotation, may-grant grants and self-removals,
 //! the frontier (spec/crypto.md §5).
 
@@ -12,15 +12,15 @@ use crate::apply::validity::Grants;
 use osis_base::{CommitId, Holder, Role, Tid, Time};
 use osis_keys::{Departure, ROLES, box_holder, roles_up_to};
 
-use osis_perm::{At, Edge as PermEdge};
-use osis_schema::core_types::{self as ct, Edge};
+use osis_perm::{At, Grant as PermGrant};
+use osis_schema::core_types::{self as ct, Grant};
 use std::collections::BTreeSet;
 
 /// A role-lowering edge write: `holder`'s new edge on the target (`None` removes it).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Demotion {
     pub holder: Tid,
-    pub new: Option<Edge>,
+    pub new: Option<Grant>,
     /// A removal's word (`new` `None`): retain or erase; `None`: the thing's default in force
     /// (spec/permissions.md §3, Retain).
     pub retain: Option<bool>,
@@ -28,7 +28,7 @@ pub struct Demotion {
 
 /// What `d` writes on the holder's edge on `target`, standing at `old`: `d.new`, or for a removal
 /// saying retain the value that says so (spec/permissions.md §3, Retain).
-fn written(core: &crate::engine::Core, target: &Tid, old: Option<&PermEdge>, d: &Demotion) -> Result<Option<Edge>> {
+fn written(core: &crate::engine::Core, target: &Tid, old: Option<&PermGrant>, d: &Demotion) -> Result<Option<Grant>> {
     if d.new.is_some() {
         return match d.retain.is_some() || d.new.as_ref().is_some_and(|n| n.until == Some(osis_base::Time(0))) {
             true => Err(Error::Misuse("only a removal says retain or erase, by `retain`")),
@@ -38,7 +38,7 @@ fn written(core: &crate::engine::Core, target: &Tid, old: Option<&PermEdge>, d: 
     // only a grant at read or above retains a copy (spec/permissions.md §3 Retain): a removal of
     // a lower one is the plain reset whatever it says
     let retain = old.is_some_and(|o| o.role >= Role::Read) && d.retain.unwrap_or_else(|| crate::apply::validity::retain_default(core, target));
-    Ok(retain.then_some(Edge { role: Role::Read, until: Some(osis_base::Time(0)), may_grant: false, retain: false, floor: None }))
+    Ok(retain.then_some(Grant { role: Role::Read, until: Some(osis_base::Time(0)), may_grant: false, retain: false, floor: None }))
 }
 
 /// What a grant hands its holder of what was written before it (spec/crypto.md §4, Floors).
@@ -59,7 +59,7 @@ pub enum History {
 /// `frontier`: the one a grant that audits carries (`Engine::grant_signed_then`). `history`:
 /// what it hands the holder of what was written before it.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn grant_history(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, holder: Tid, edge: &Edge, leave: bool, frontier: Option<osis_perm::Frontier>, history: History) -> Result<Done> {
+pub(crate) fn grant_history(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, holder: Tid, edge: &Grant, leave: bool, frontier: Option<osis_perm::Frontier>, history: History) -> Result<Done> {
     let who = signer.unwrap_or(tx.core.tid());
     if edge.until == Some(osis_base::Time(0)) {
         return Err(Error::Misuse("`until` 0 is a removal's saying retain"));
@@ -277,7 +277,7 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
         return Err(Error::Misuse("not a lowering write (use grant)"));
     }
     // the other holders removed in the same commit: distinct present edges, not the author's
-    let mut gone: Vec<(Tid, PermEdge)> = Vec::new();
+    let mut gone: Vec<(Tid, PermGrant)> = Vec::new();
     for o in others {
         let e = tl.edges_at(None).get(o, &target).copied().ok_or(Error::Misuse("no edge to remove"))?;
         if d.new.is_some() || *o == holder || *o == who || gone.iter().any(|(x, _)| x == o) {
@@ -355,7 +355,7 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
 /// (spec/permissions.md §2), each with whether its finalize says retain: past their `until` by
 /// this node's clock (an edge the timeline holds with every applied write in effect), of a role
 /// at most `who`'s own there, `who` holding write; not its own (that is a self-removal).
-pub(crate) fn finalizable(core: &crate::engine::Core, who: &Tid, target: &Tid) -> Vec<(Tid, PermEdge, bool)> {
+pub(crate) fn finalizable(core: &crate::engine::Core, who: &Tid, target: &Tid) -> Vec<(Tid, PermGrant, bool)> {
     let ts = now_ts(core);
     // read by the edges into `target` and what reaches it (`Timelines::on`, `role`)
     let Some(on) = core.timelines().on(target) else { return Vec::new() };
@@ -363,7 +363,7 @@ pub(crate) fn finalizable(core: &crate::engine::Core, who: &Tid, target: &Tid) -
     if role < Some(Role::Write) {
         return Vec::new();
     }
-    let ended: Vec<(Tid, PermEdge)> = on.holders().into_iter().filter(|(m, e)| m != who && e.until.is_some() && !e.says_retain() && !e.alive_at(Some(ts)) && Some(e.role) <= role).collect();
+    let ended: Vec<(Tid, PermGrant)> = on.holders().into_iter().filter(|(m, e)| m != who && e.until.is_some() && !e.says_retain() && !e.alive_at(Some(ts)) && Some(e.role) <= role).collect();
     if ended.is_empty() {
         return Vec::new();
     }
@@ -377,7 +377,7 @@ pub(crate) fn finalizable(core: &crate::engine::Core, who: &Tid, target: &Tid) -
 /// rotation of the roles they held that `who` may rotate, in one role commit, none of `kept`
 /// (the roles a removal of the same act rotates, `rotation::Keep`). The cascade below
 /// `target` is the caller's (`rotation::ensure_rotated`).
-pub(crate) fn finalize_in(tx: &mut Tx<'_>, who: Tid, target: Tid, ended: &[(Tid, PermEdge, bool)], kept: &BTreeSet<Role>, done: &mut Done) -> Result<()> {
+pub(crate) fn finalize_in(tx: &mut Tx<'_>, who: Tid, target: Tid, ended: &[(Tid, PermGrant, bool)], kept: &BTreeSet<Role>, done: &mut Done) -> Result<()> {
     let mut m = Mutation::new();
     if who != tx.core.tid() {
         m.sign_as(who);
@@ -387,7 +387,7 @@ pub(crate) fn finalize_in(tx: &mut Tx<'_>, who: Tid, target: Tid, ended: &[(Tid,
     for (x, e, keep) in ended {
         removal(tx, &mut m, target, *x)?;
         if *keep {
-            put_edge(&mut m, target, *x, &Edge { role: Role::Read, until: Some(Time(0)), may_grant: false, retain: false, floor: None })?;
+            put_edge(&mut m, target, *x, &Grant { role: Role::Read, until: Some(Time(0)), may_grant: false, retain: false, floor: None })?;
         }
         if let Some(dep) = Departure::of_change(*x, Some(e.role), None) {
             left.extend(ROLES.into_iter().filter(|r| *r <= e.role));
@@ -410,7 +410,7 @@ pub(crate) fn finalize_in(tx: &mut Tx<'_>, who: Tid, target: Tid, ended: &[(Tid,
 impl Engine {
     /// Whether a removal from `t`, or a grant on it ending by `until`, retains a read-only copy
     /// unless its writer says otherwise: the `retain` of `t`'s current setting (spec/permissions.md
-    /// §3, Retain). A timed grant carries what it was written with (`Edge::retain`).
+    /// §3, Retain). A timed grant carries what it was written with (`Grant::retain`).
     pub fn retains_by_default(&self, t: &Tid) -> bool {
         crate::apply::validity::retain_default(&self.core, t)
     }
@@ -419,14 +419,14 @@ impl Engine {
     /// as an admin of the target or by a may-grant. Gives the target (and a dependent holder) secrets of
     /// their own first where needed. Sends the holder a grant signal where `signal_grants` says so
     /// (spec/sync-inbox.md §5).
-    pub fn grant(&mut self, target: &Tid, holder: &Tid, edge: &Edge) -> Result<Done> {
+    pub fn grant(&mut self, target: &Tid, holder: &Tid, edge: &Grant) -> Result<Done> {
         self.grant_with(target, holder, edge, History::All)
     }
 
     /// `grant` handing `history` of what was written before it (spec/crypto.md §4, Floors): a
     /// grant without it is a cut, so `holder` reads only what is written under its epoch and
     /// those after it. An admin's grant to a holder holding no role on the target.
-    pub fn grant_with(&mut self, target: &Tid, holder: &Tid, edge: &Edge, history: History) -> Result<Done> {
+    pub fn grant_with(&mut self, target: &Tid, holder: &Tid, edge: &Grant, history: History) -> Result<Done> {
         let done = self.grant_signed_then(None, *target, *holder, edge, false, history, |_| Ok(()))?;
         if self.core.signal_grants {
             self.signal_grant(target, holder, &[])?;
@@ -447,7 +447,7 @@ impl Engine {
     /// this node received of the commits signed as `target`, those `key` signed among them), or a
     /// may-grant grant of a key holding none. Nothing is sealed to a key: no boxes, no rotation, no
     /// delivery. `key` then signs as `target` (`Mutation::sign_as`) where its key store holds it.
-    pub fn grant_key(&mut self, target: &Tid, key: &osis_base::SignKey, edge: Option<&Edge>) -> Result<Done> {
+    pub fn grant_key(&mut self, target: &Tid, key: &osis_base::SignKey, edge: Option<&Grant>) -> Result<Done> {
         if edge.is_some_and(|e| e.retain || e.floor.is_some() || e.until == Some(Time(0))) {
             return Err(Error::Misuse("a key's grant carries no retain, no floor and no until 0"));
         }
@@ -455,7 +455,7 @@ impl Engine {
         let me = self.core.tid();
         let admin = self.core.role_now(&me, &t) == Some(Role::Admin);
         let (frontier, covers) = match admin && self.needs_frontier_of(&t, &holder, edge) {
-            true => self.demotion_frontier(t, vec![osis_perm::EdgeOp { target: t, holder, edge: edge.map(perm_edge) }])?,
+            true => self.demotion_frontier(t, vec![osis_perm::GrantOp { target: t, holder, edge: edge.map(perm_edge) }])?,
             false => (None, Vec::new()),
         };
         let edge = edge.cloned();
@@ -498,13 +498,13 @@ impl Engine {
     /// explicit write that audits carries its author's frontier, else every write of the holder's
     /// it puts in question drops, received or not. `then` runs in the same transaction.
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn grant_signed_then(&mut self, signer: Option<Tid>, target: Tid, holder: Tid, edge: &Edge, leave: bool, history: History, then: impl FnOnce(&mut Tx<'_>) -> Result<()>) -> Result<Done> {
+    pub(crate) fn grant_signed_then(&mut self, signer: Option<Tid>, target: Tid, holder: Tid, edge: &Grant, leave: bool, history: History, then: impl FnOnce(&mut Tx<'_>) -> Result<()>) -> Result<Done> {
         let who = signer.unwrap_or(self.core.tid());
         let new = Some(perm_edge(edge));
         let audits = self.core.role_now(&who, &target) == Some(Role::Admin) && self.needs_frontier(&target, &holder, Some(edge));
         let frontier = match audits {
             true => {
-                let ops: Vec<osis_perm::EdgeOp> = std::iter::once((holder, new)).chain(leave.then_some((who, None))).map(|(holder, edge)| osis_perm::EdgeOp { target, holder: osis_base::Holder::Thing(holder), edge }).collect();
+                let ops: Vec<osis_perm::GrantOp> = std::iter::once((holder, new)).chain(leave.then_some((who, None))).map(|(holder, edge)| osis_perm::GrantOp { target, holder: osis_base::Holder::Thing(holder), edge }).collect();
                 self.demotion_frontier(target, ops)?
             }
             false => (None, Vec::new()),
@@ -528,12 +528,12 @@ impl Engine {
     /// always (without one it is a finalize), another write when the edge as restored exceeds it
     /// (an `until` alive then takes nothing). The writer rule refuses either way of getting it
     /// wrong (`check_content_rules`).
-    pub fn needs_frontier(&self, target: &Tid, holder: &Tid, edge: Option<&Edge>) -> bool {
+    pub fn needs_frontier(&self, target: &Tid, holder: &Tid, edge: Option<&Grant>) -> bool {
         self.needs_frontier_of(target, &Holder::Thing(*holder), edge)
     }
 
     /// `needs_frontier` of a thing's grant or a key's.
-    fn needs_frontier_of(&self, target: &Tid, holder: &Holder, edge: Option<&Edge>) -> bool {
+    fn needs_frontier_of(&self, target: &Tid, holder: &Holder, edge: Option<&Grant>) -> bool {
         let new = edge.map(perm_edge);
         new.is_none() || self.core.timelines().get(target).is_some_and(|tl| tl.audits(holder, target, new, self.core.hlc.peek()))
     }
@@ -558,7 +558,7 @@ impl Engine {
     /// (`receipt::scope_of`), and its own cover of what it no longer holds the ID of
     /// (`own_cover`). Returns the frontier and the own covers, which the caller's `Done` carries
     /// before the lowering. `None`: an unknown target.
-    fn demotion_frontier(&mut self, target: Tid, ops: Vec<osis_perm::EdgeOp>) -> Result<(Option<osis_perm::Frontier>, Vec<CommitId>)> {
+    fn demotion_frontier(&mut self, target: Tid, ops: Vec<osis_perm::GrantOp>) -> Result<(Option<osis_perm::Frontier>, Vec<CommitId>)> {
         let as_of = self.now();
         if self.core.timelines().get(&target).is_none() {
             return Ok((None, Vec::new()));
@@ -587,7 +587,7 @@ impl Engine {
     /// Whether writing `new` (`None`: a removal) on `holder`'s edge on `target` would leave
     /// `target` with no standing admin here, so that it is refused unless marked
     /// (`leaving_adminless`): for a caller writing several commits that checks before the first.
-    pub fn leaves_no_admin(&self, target: &Tid, holder: &Tid, new: Option<&Edge>) -> bool {
+    pub fn leaves_no_admin(&self, target: &Tid, holder: &Tid, new: Option<&Grant>) -> bool {
         crate::apply::validity::leaves_no_admin(&self.core, target, &[(Holder::Thing(*holder), new.map(perm_edge))])
     }
 
@@ -616,7 +616,7 @@ impl Engine {
         };
         let audits = self.needs_frontier(&t, &d.holder, new.as_ref());
         let new = new.as_ref().map(perm_edge);
-        let ops: Vec<osis_perm::EdgeOp> = std::iter::once((d.holder, new)).chain(others.iter().map(|x| (*x, None))).map(|(holder, edge)| osis_perm::EdgeOp { target: t, holder: osis_base::Holder::Thing(holder), edge }).collect();
+        let ops: Vec<osis_perm::GrantOp> = std::iter::once((d.holder, new)).chain(others.iter().map(|x| (*x, None))).map(|(holder, edge)| osis_perm::GrantOp { target: t, holder: osis_base::Holder::Thing(holder), edge }).collect();
         let (frontier, covers) = if audits { self.demotion_frontier(t, ops)? } else { (None, Vec::new()) };
         let d = d.clone();
         let mut done = self.run(|tx| {

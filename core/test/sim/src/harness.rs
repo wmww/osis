@@ -387,7 +387,7 @@ impl Sim {
     /// (spec/sync-set.md §2).
     pub fn grant(&mut self, i: usize, thing: Tid, j: usize, role: Role) -> Res<CommitId> {
         let holder = self.account(j)?;
-        let edge = ct::Edge { role, until: None, may_grant: false, retain: false, floor: None };
+        let edge = ct::Grant { role, until: None, may_grant: false, retain: false, floor: None };
         // the grant and its signal to the holder, as the `osis` library's grant (spec/sync-set.md
         // §2 First entry: a grant reaches its holder by a signal or a reference)
         let e = self.engine(i)?;

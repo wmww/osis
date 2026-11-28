@@ -155,7 +155,7 @@ fn until_granted() -> (LocalPeer, Tid, Vec<Tid>) {
         let tids: Vec<Tid> = (0..2).map(|i| lp.peers[i].engine.tid()).collect();
         let g = independent_thing(&mut lp, 0);
         let until = lp.peers[0].engine.now().0 + 1_000;
-        lp.peers[0].engine.grant(&g, &tids[1], &osis_schema::core_types::Edge { until: Some(osis_base::Time(until)), ..edge(Role::Read) }).unwrap();
+        lp.peers[0].engine.grant(&g, &tids[1], &osis_schema::core_types::Grant { until: Some(osis_base::Time(until)), ..edge(Role::Read) }).unwrap();
         lp.sync_all().unwrap();
         (lp, (g, tids))
     });

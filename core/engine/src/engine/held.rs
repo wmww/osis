@@ -101,7 +101,7 @@ impl Held {
         self.rest.read(&Row::Holders);
         self.holders.keys()
     }
-    /// Edge commits with a write on `t`, of any validity.
+    /// Role commits with a write on `t`, of any validity.
     pub fn commits_on(&self, t: &Tid) -> &[Arc<RoleCommit>] {
         self.rest.read(&Row::Commits(t));
         self.commits.get(t).map(Vec::as_slice).unwrap_or_default()
@@ -662,7 +662,7 @@ impl<'a> On<'a> {
         self.tl
     }
     /// The edge writes held on it, applied or not (`Timeline::held_on`).
-    pub fn held(&self) -> impl Iterator<Item = (osis_perm::WriteId, &'a RoleCommit, &'a osis_perm::EdgeOp)> + 'a {
+    pub fn held(&self) -> impl Iterator<Item = (osis_perm::WriteId, &'a RoleCommit, &'a osis_perm::GrantOp)> + 'a {
         self.stamps.read(&Read::Held(self.thing));
         let (tl, thing) = (self.tl, self.thing);
         tl.held_on_owned(thing)
@@ -673,15 +673,15 @@ impl<'a> On<'a> {
         self.tl.is_applied(w)
     }
     /// `holder`'s edge on it just before `point` (`None`: now).
-    pub fn edge_at(&self, holder: &Tid, point: Option<osis_perm::Point>) -> Option<osis_perm::Edge> {
+    pub fn edge_at(&self, holder: &Tid, point: Option<osis_perm::Point>) -> Option<osis_perm::Grant> {
         self.tl.edges_at(point).get(holder, &self.thing).copied()
     }
     /// Its holders by their current edges, its record edge included while it stands.
-    pub fn holders(&self) -> Vec<(Tid, osis_perm::Edge)> {
+    pub fn holders(&self) -> Vec<(Tid, osis_perm::Grant)> {
         self.tl.edges_at(None).holders(&self.thing).map(|(m, e)| (*m, *e)).collect()
     }
     /// Its roster at `at` (`Timeline::roster`).
-    pub fn roster(&self, at: osis_perm::At) -> BTreeMap<Tid, osis_perm::Edge> {
+    pub fn roster(&self, at: osis_perm::At) -> BTreeMap<Tid, osis_perm::Grant> {
         self.tl.roster(&self.thing, at)
     }
     /// The edge write on it in force for `holder` (`Timeline::in_force`).
@@ -689,7 +689,7 @@ impl<'a> On<'a> {
         self.tl.in_force(&osis_base::Holder::Thing(*holder), &self.thing)
     }
     /// The applied edge writes on it (`Timeline::applied_on`).
-    pub fn applied(&self) -> impl Iterator<Item = (&'a RoleCommit, &'a osis_perm::EdgeOp)> + 'a {
+    pub fn applied(&self) -> impl Iterator<Item = (&'a RoleCommit, &'a osis_perm::GrantOp)> + 'a {
         self.stamps.read(&Read::Held(self.thing));
         let (tl, thing) = (self.tl, self.thing);
         tl.held_on_owned(thing).filter(move |(w, _, _)| tl.is_applied(w)).map(|(_, c, o)| (c, o))
@@ -898,7 +898,7 @@ fn walk(from: &BTreeSet<Tid>, next: impl Fn(&Tid, &mut Vec<Tid>)) -> BTreeSet<Ti
 mod tests {
     use super::*;
     use osis_base::Ts;
-    use osis_perm::{Edge, EdgeOp};
+    use osis_perm::{Grant, GrantOp};
 
     fn thing(admin: Tid, n: u8) -> CreationRecord {
         CreationRecord::with_admin(admin, [n; 32])
@@ -909,7 +909,7 @@ mod tests {
     fn grant(id: u64, by: Tid, on: Tid, to: Tid, role: Role) -> RoleCommit {
         let mut c = [0; 32];
         c[..8].copy_from_slice(&id.to_be_bytes());
-        RoleCommit { id: CommitId(c), ts: Ts::make(osis_base::Time(1), 0).unwrap(), signer: by, key: osis_base::SignKey([0; 32]), listed: Vec::new(), direct: 0, frontier: None, ops: vec![EdgeOp { target: on, holder: Holder::Thing(to), edge: Some(Edge::new(role)) }] }
+        RoleCommit { id: CommitId(c), ts: Ts::make(osis_base::Time(1), 0).unwrap(), signer: by, key: osis_base::SignKey([0; 32]), listed: Vec::new(), direct: 0, frontier: None, ops: vec![GrantOp { target: on, holder: Holder::Thing(to), edge: Some(Grant::new(role)) }] }
     }
 
     /// The held set alone as the walk reads it: each counting edge commit along the empty path.
@@ -1174,9 +1174,9 @@ mod tests {
                         let (by, on, to) = (pick(&mut rng), pick(&mut rng), pick(&mut rng));
                         let edge = match rng(6) {
                             0 => None,
-                            1 => Some(Edge::kept_end()),
-                            2 => Some(Edge { until: Some(osis_base::Time(3 + rng(5) as u64)), ..Edge::new(roles[rng(3)]) }),
-                            _ => Some(Edge::new(roles[rng(3)])),
+                            1 => Some(Grant::kept_end()),
+                            2 => Some(Grant { until: Some(osis_base::Time(3 + rng(5) as u64)), ..Grant::new(roles[rng(3)]) }),
+                            _ => Some(Grant::new(roles[rng(3)])),
                         };
                         let mut c = grant(next, by, on, to, Role::Read);
                         c.ts = Ts::make(osis_base::Time(1 + rng(4) as u64), next).unwrap();

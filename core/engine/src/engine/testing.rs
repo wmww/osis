@@ -37,7 +37,7 @@ impl Engine {
     /// a reset names a write not held, `validity::edge_writes_of`, nor for a split commit): the
     /// applied ones (`ix.held`) less a miskeyed commit's left out.
     #[doc(hidden)]
-    pub fn edge_writes(&mut self, id: &CommitId) -> Result<Vec<osis_perm::EdgeOp>> {
+    pub fn edge_writes(&mut self, id: &CommitId) -> Result<Vec<osis_perm::GrantOp>> {
         let id = *id;
         self.read(|tx| {
             let Some(v) = tx.core.ix.commits.get(&id).filter(|m| matches!(m.header.path, osis_commit::Paths::One(_))).map(|m| m.view.clone()) else { return Ok(Vec::new()) };
@@ -792,7 +792,7 @@ fn commit_digest(m: &super::Meta) -> (CommitDigest, (&osis_base::Time, &crate::e
 /// The role timelines' verdicts `Core::perm_digest` shows: per held thing its roster (`None`: no
 /// timeline), then every applied edge write and every held one not applied, and the keyless actor
 /// grants.
-type PermParts = (Vec<(Tid, Option<BTreeMap<Tid, osis_perm::Edge>>)>, BTreeMap<osis_perm::WriteId, osis_perm::paths::Applied>, BTreeSet<osis_perm::WriteId>, BTreeSet<(Tid, Tid)>);
+type PermParts = (Vec<(Tid, Option<BTreeMap<Tid, osis_perm::Grant>>)>, BTreeMap<osis_perm::WriteId, osis_perm::paths::Applied>, BTreeSet<osis_perm::WriteId>, BTreeSet<(Tid, Tid)>);
 
 impl super::Core {
     /// `Engine::index_digest`.

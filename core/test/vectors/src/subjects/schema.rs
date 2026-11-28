@@ -20,8 +20,8 @@ fn epoch(n: u64) -> Epoch {
 /// (case, AK, value) per core aspect a commit writes; inputs are repeated bytes.
 fn samples() -> Vec<(&'static str, &'static str, Value)> {
     let holders: Holders = BTreeMap::from([
-        (tid(5).into(), Edge { role: Role::Write, until: Some(Time(1_700_000_000_000)), may_grant: true, retain: false, floor: None }),
-        (tid(7).into(), Edge { role: Role::Admin, until: None, may_grant: false, retain: false, floor: None }),
+        (tid(5).into(), Grant { role: Role::Write, until: Some(Time(1_700_000_000_000)), may_grant: true, retain: false, floor: None }),
+        (tid(7).into(), Grant { role: Role::Admin, until: None, may_grant: false, retain: false, floor: None }),
     ]);
     let keys = Keys {
         read: Some(Keyset { epoch: epoch(1), kem_key: Some(KemKey::X25519MlKem768(vec![9; 1216])), suite: 1, supersedes: BTreeSet::from([epoch(0)]), names: [6; 32], left_out: BTreeMap::from([(tid(11).into(), BTreeMap::from([(epoch(2), BTreeSet::from([CommitId([14; 32])]))]))]), demotions: BTreeSet::from([CommitId([7; 32])]), demotes: true, claim: None }),

@@ -623,7 +623,7 @@ fn a_destroyed_thing_owes_no_role_commit_spec_commits_5() {
     let (mut lp, ps) = people(2);
     let t = thing_of(&mut lp, 0, ps[0]);
     let until = osis_base::Time(lp.peers[0].engine.now().0 + 100);
-    lp.peers[0].engine.grant(&t, &ps[1], &ct::Edge { until: Some(until), ..edge_of(Role::Read) }).unwrap();
+    lp.peers[0].engine.grant(&t, &ps[1], &ct::Grant { until: Some(until), ..edge_of(Role::Read) }).unwrap();
     let e = &mut lp.peers[0].engine;
     let mut m = Mutation::new();
     let now = e.now();

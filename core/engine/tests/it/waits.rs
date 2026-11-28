@@ -1029,16 +1029,16 @@ fn a_record_examines_only_what_awaits_it_spec_commits_4() {
 /// or above it, so either part may be examined first.
 fn record_and_reach(x_below: bool) -> (Reason, Tid, Option<Value>) {
     use osis_base::Role;
-    use osis_schema::core_types::Edge;
+    use osis_schema::core_types::Grant;
     let mut lp = net(3, 0);
     let a = lp.peers[0].engine.tid();
     sync(&mut lp, 0, 1);
     let y = new_thing(&mut lp, 1);
     // 2 reads y
     let r = lp.peers[2].engine.tid();
-    lp.peers[1].engine.grant(&y, &r, &Edge { role: Role::Read, until: None, may_grant: false, retain: false, floor: None }).unwrap();
+    lp.peers[1].engine.grant(&y, &r, &Grant { role: Role::Read, until: None, may_grant: false, retain: false, floor: None }).unwrap();
     sync(&mut lp, 1, 0);
-    let grant = *lp.peers[1].engine.grant(&y, &a, &Edge { role: Role::Write, until: None, may_grant: false, retain: false, floor: None }).unwrap().commits.last().unwrap();
+    let grant = *lp.peers[1].engine.grant(&y, &a, &Grant { role: Role::Write, until: None, may_grant: false, retain: false, floor: None }).unwrap().commits.last().unwrap();
     let grant = package_for(&mut lp, 1, 2, grant);
     sync(&mut lp, 1, 0);
     // 2 reads x too: else no sync ID it syncs carries the commit's part on x
@@ -1058,7 +1058,7 @@ fn record_and_reach(x_below: bool) -> (Reason, Tid, Option<Value>) {
     // 2 takes its grant on y; x's grant fire carries x's record: held back with it
     lp.pass_fires(2).unwrap();
     lp.hold_fires(true);
-    lp.peers[0].engine.grant(&x, &r, &Edge { role: Role::Read, until: None, may_grant: false, retain: false, floor: None }).unwrap();
+    lp.peers[0].engine.grant(&x, &r, &Grant { role: Role::Read, until: None, may_grant: false, retain: false, floor: None }).unwrap();
     let mut m = Mutation::new();
     m.set(y, &REG, &s("y")).unwrap();
     m.set(x, &REG, &s("x")).unwrap();

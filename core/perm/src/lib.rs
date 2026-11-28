@@ -14,4 +14,4 @@ pub use count::{commits_walked, roles_reached, uncounted};
 pub use graph::{Edges, Need, Records};
 pub use osis_base::PurgeBy;
 pub use timeline::{At, Changed, Held, HeldSet, Timeline};
-pub use types::{Edge, EdgeOp, Frontier, RoleCommit, Point, WriteId};
+pub use types::{Grant, GrantOp, Frontier, RoleCommit, Point, WriteId};

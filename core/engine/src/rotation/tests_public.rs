@@ -82,7 +82,7 @@ fn removing_the_public_rotates_it_out() {
 #[test]
 fn the_public_is_granted_at_most_read_without_may_grant() {
     let (mut lp, g, _) = granted(2, &[]);
-    for e in [edge(Role::Write), edge(Role::Admin), ct::Edge { may_grant: true, ..edge(Role::Read) }] {
+    for e in [edge(Role::Write), edge(Role::Admin), ct::Grant { may_grant: true, ..edge(Role::Read) }] {
         assert!(lp.peers[0].engine.grant(&g, &Tid::PUBLIC, &e).is_err(), "{e:?} refused");
     }
     assert!(open_boxes(&mut lp, 0, g).is_empty());
@@ -170,14 +170,14 @@ fn a_replayed_open_box_is_resealed_over_once() {
 #[test]
 fn a_may_grant_holder_makes_a_thing_public_spec_permissions_2() {
     let (mut lp, g, tids) = granted(3, &[]);
-    lp.peers[0].engine.grant(&g, &tids[1], &ct::Edge { may_grant: true, ..edge(Role::Write) }).unwrap();
+    lp.peers[0].engine.grant(&g, &tids[1], &ct::Grant { may_grant: true, ..edge(Role::Write) }).unwrap();
     put_on(&mut lp, 0, g, "open", 1);
     lp.sync_all().unwrap();
-    for e in [edge(Role::Write), ct::Edge { may_grant: true, ..edge(Role::Read) }] {
+    for e in [edge(Role::Write), ct::Grant { may_grant: true, ..edge(Role::Read) }] {
         assert!(lp.peers[1].engine.grant(&g, &Tid::PUBLIC, &e).is_err(), "{e:?} refused");
     }
     let until = osis_base::Time(lp.peers[1].engine.core.now().0 + 100);
-    lp.peers[1].engine.grant(&g, &Tid::PUBLIC, &ct::Edge { until: Some(until), ..edge(Role::Read) }).unwrap();
+    lp.peers[1].engine.grant(&g, &Tid::PUBLIC, &ct::Grant { until: Some(until), ..edge(Role::Read) }).unwrap();
     lp.sync_all().unwrap();
     let public = |lp: &LocalPeer, i: usize| lp.peers[i].engine.roster(&g).get(&Tid::PUBLIC).map(|e| e.role);
     assert_eq!(public(&lp, 0), Some(Role::Read), "the may-grant grant applies");

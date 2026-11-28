@@ -157,7 +157,7 @@ fn held(role: Role) -> (World, Tid) {
     let mut w = contacts();
     let t = make(&mut w, 0, "hi");
     let bob = w.node(1).account.unwrap();
-    w.write(0, |e| e.grant(&t, &bob, &ct::Edge { role, until: None, may_grant: false, retain: false, floor: None }).and_then(|_| e.signal_grant(&t, &bob, &[]))).unwrap();
+    w.write(0, |e| e.grant(&t, &bob, &ct::Grant { role, until: None, may_grant: false, retain: false, floor: None }).and_then(|_| e.signal_grant(&t, &bob, &[]))).unwrap();
     w.run();
     root_strong(&mut w, 1, t, true);
     (w, t)

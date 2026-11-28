@@ -4,7 +4,7 @@
 ## Principle
 Role-class data is held data like any other: perm reads `roles.0` as edge writes from the held set, epochs are established only from held valid role commits, and everything the node owes because of roles (addenda, finalizes, rotations, re-seals) is derived from what it holds, never queued by arrival. Every encrypting path runs the rotation cascade first, so nothing is encrypted to a holder the timeline has removed.
 
-## Edge writes from `roles.0` deltas (spec/permissions.md §2)
+## Grant writes from `roles.0` deltas (spec/permissions.md §2)
 - An entry the delta creates (it carries the entry's dot) sets the grant it reads; a reset of a known entry dot removes it (keys learned from the creating deltas, `ix.holder_keys`); a delta writing inside an entry it did not create is bad input (`check_holders_parts`, in `examine`, so the writer refuses it too).
 - A reset whose key is unknown (its creation not held) names no holder: the commit's other writes go to perm and the commit stays in `unresolved`, derived again when keys arrive (`resolve_unresolved`) and once after an open has read every commit (it reads them in `ts` order).
 - A grant writes a new entry (`flows::put_edge`, `Op::Put`: crdt `put_new`) beside the reset of the holder's current entry (`edges::reset_current`), never into a held entry: nested field writes would compose two changes wrongly (a role raise losing an `until`), and one into an entry the walk dropped (still live in the state) left the grantee unresolved for good. Entries the walk dropped stay live in the state; nothing reads it.

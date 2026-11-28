@@ -460,7 +460,7 @@ pub(crate) enum Stated {
 /// so that one path serves all. A role commit states `role_path`. A commit where no path gives the role on a thing it writes states
 /// `plain_path` (a fire valid by its thing's setting); acting as a thing through which no path
 /// gives the role is refused. A path listing more than `MAX_PATH_THINGS` things is refused.
-pub(crate) fn stated_paths(core: &Core, plan: &CommitPlan, writes: &[AspectWrite], edges: &[(Tid, Holder, Option<osis_perm::Edge>)]) -> Result<Stated> {
+pub(crate) fn stated_paths(core: &Core, plan: &CommitPlan, writes: &[AspectWrite], edges: &[(Tid, Holder, Option<osis_perm::Grant>)]) -> Result<Stated> {
     let (node, actor) = (plan.signer, plan.actor);
     let fallback = Stated::One(plain_path(node, actor));
     if plan.kind.is_role() {
@@ -534,14 +534,14 @@ enum RoleWay {
 }
 
 /// The way of `edges` (a role commit's edge writes, (target, holder, new edge)) on thing `t`.
-fn role_way(core: &Core, plan: &CommitPlan, t: &Tid, edges: &[(Tid, Holder, Option<osis_perm::Edge>)]) -> Option<RoleWay> {
-    let on: Vec<(Holder, Option<osis_perm::Edge>)> = edges.iter().filter(|(x, _, _)| x == t).map(|(_, h, e)| (*h, *e)).collect();
+fn role_way(core: &Core, plan: &CommitPlan, t: &Tid, edges: &[(Tid, Holder, Option<osis_perm::Grant>)]) -> Option<RoleWay> {
+    let on: Vec<(Holder, Option<osis_perm::Grant>)> = edges.iter().filter(|(x, _, _)| x == t).map(|(_, h, e)| (*h, *e)).collect();
     let (h, _) = on.first()?;
     let node = plan.signer;
     let old = |m: &Holder| match (core.timelines().get(t), m) {
         (Some(tl), Holder::Thing(m)) => tl.edges_at(None).get(m, t).copied(),
         (_, Holder::Key(k)) => core.timelines().key_grant(k, t),
-        (None, Holder::Thing(m)) => (core.mint_admin(t) == Some(*m)).then(|| osis_perm::Edge::new(Role::Admin)),
+        (None, Holder::Thing(m)) => (core.mint_admin(t) == Some(*m)).then(|| osis_perm::Grant::new(Role::Admin)),
     };
     // a removal of an absent grant lowers (spec/permissions.md §2 Self-removal)
     let lowers = on.iter().all(|(m, e)| m == h && osis_perm::types::lowers(e.as_ref(), old(m).as_ref()));
@@ -571,7 +571,7 @@ fn role_way(core: &Core, plan: &CommitPlan, t: &Tid, edges: &[(Tid, Holder, Opti
 /// (which would make it a self-removal): the path to the thing's mint admin, then the mint admin
 /// (its record edge the last hop). One `Path` serves every thing a role commit writes
 /// (`Path::one_of`). `None` where no path gives what a thing needs.
-fn role_path(core: &Core, plan: &CommitPlan, writes: &[AspectWrite], edges: &[(Tid, Holder, Option<osis_perm::Edge>)]) -> Result<Option<osis_commit::Path>> {
+fn role_path(core: &Core, plan: &CommitPlan, writes: &[AspectWrite], edges: &[(Tid, Holder, Option<osis_perm::Grant>)]) -> Result<Option<osis_commit::Path>> {
     let node = plan.signer;
     let records: Records<'_> = &|t| plan.creates.get(t);
     let things: BTreeSet<Tid> = writes.iter().map(|w| w.tid).collect();

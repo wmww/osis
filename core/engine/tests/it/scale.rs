@@ -1355,7 +1355,7 @@ fn role_history_join(n: usize) -> [Work; 4] {
     [join, grant, removal, arrive]
 }
 
-/// Edge writes on other holders before a role history (`role_history_join`): `roles.0` (an entry
+/// Grant writes on other holders before a role history (`role_history_join`): `roles.0` (an entry
 /// each) pages from about 3 KB of entries.
 const PAGED_HISTORY: usize = 64;
 

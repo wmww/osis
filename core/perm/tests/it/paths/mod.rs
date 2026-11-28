@@ -21,8 +21,8 @@ mod single;
 
 use crate::common::{seeded, sharded};
 use osis_base::{Ak, CommitId, Holder, PurgeBy, Role, SignKey, Tid, Ts, Time};
-use osis_perm::paths::{Commit, Content, Delta, DeltaClass, EdgeWrite, List, Names, Part, PartKind, Paths, Stated, Status};
-use osis_perm::{Edge, Frontier, WriteId};
+use osis_perm::paths::{Commit, Content, Delta, DeltaClass, GrantWrite, List, Names, Part, PartKind, Paths, Stated, Status};
+use osis_perm::{Grant, Frontier, WriteId};
 use roles_model::paths::{self as m, Honesty, Id, Kind, Reading, Rules, Thing, TinyMode, View, World};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -170,10 +170,10 @@ pub fn input(w: &World, v: &View) -> Input {
             let seen = |t: &Thing| v.leaves.as_ref().is_none_or(|l| l.contains(t));
             let kind = match &k.kind {
                 Kind::Edge { holder, role: r, until, frontier, may_grant, finalize } => {
-                    let value = role(*r).map(|v| Edge { role: v, until: until.map(|u| Time(u as u64)), may_grant: *may_grant, retain: false, floor: None });
+                    let value = role(*r).map(|v| Grant { role: v, until: until.map(|u| Time(u as u64)), may_grant: *may_grant, retain: false, floor: None });
                     let listed = frontier.iter().filter(|(t, _)| seen(t)).flat_map(|(t, l)| l.iter().map(|&j| (tid(*t), model_cid(w, j))));
                     let frontier = (!finalize).then(|| Arc::new(List::new(listed)));
-                    PartKind::Edge(EdgeWrite { holder: self::holder(*holder), value, frontier })
+                    PartKind::Grant(GrantWrite { holder: self::holder(*holder), value, frontier })
                 }
                 _ => PartKind::Delta(delta(w, i)),
             };

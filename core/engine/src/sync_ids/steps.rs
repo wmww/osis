@@ -342,7 +342,7 @@ mod tests {
         let g = lp.peers[0].engine.new_thing(&mut m, alice);
         lp.peers[0].commit(m).unwrap();
         lp.hold(g);
-        lp.peers[0].engine.grant(&g, &bob, &ct::Edge { role: Role::Write, until: None, may_grant: false, retain: false, floor: None }).unwrap();
+        lp.peers[0].engine.grant(&g, &bob, &ct::Grant { role: Role::Write, until: None, may_grant: false, retain: false, floor: None }).unwrap();
         let mut m = Mutation::new();
         let t = lp.peers[0].engine.new_thing(&mut m, g);
         lp.peers[0].commit(m).unwrap();
@@ -445,13 +445,13 @@ mod tests {
     fn a_may_grant_writers_grant_listing_its_own_key_is_wrong_spec_crypto_7() {
         let (mut lp, g, _) = world();
         let bob = lp.peers[1].engine.tid();
-        lp.peers[0].engine.grant(&g, &bob, &ct::Edge { role: Role::Write, until: None, may_grant: true, retain: false, floor: None }).unwrap();
+        lp.peers[0].engine.grant(&g, &bob, &ct::Grant { role: Role::Write, until: None, may_grant: true, retain: false, floor: None }).unwrap();
         lp.sync_all().unwrap();
         let mut m = Mutation::new();
         let to = lp.peers[1].engine.new_thing(&mut m, bob);
         lp.peers[1].commit(m).unwrap();
         let before = lp.commit_ids(1);
-        lp.peers[1].engine.grant(&g, &to, &ct::Edge { role: Role::Read, until: None, may_grant: false, retain: false, floor: None }).unwrap();
+        lp.peers[1].engine.grant(&g, &to, &ct::Grant { role: Role::Read, until: None, may_grant: false, retain: false, floor: None }).unwrap();
         lp.sync_all().unwrap();
         let roles = osis_base::Ak::new("roles.0").unwrap();
         let core = &lp.peers[0].engine.core;
@@ -522,7 +522,7 @@ mod tests {
         let h = lp.peers[0].engine.new_thing(&mut m, alice);
         lp.peers[0].commit(m).unwrap();
         lp.hold(h);
-        lp.peers[0].engine.grant(&h, &bob, &ct::Edge { role: Role::Read, until: None, may_grant: false, retain: false, floor: None }).unwrap();
+        lp.peers[0].engine.grant(&h, &bob, &ct::Grant { role: Role::Read, until: None, may_grant: false, retain: false, floor: None }).unwrap();
         lp.sync_all().unwrap();
         let x = osis_base::Ak::new("x:v.0").unwrap();
         let sync_id = lp.peers[0].engine.core.listed_step(&g).unwrap().sync_id;

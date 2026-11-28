@@ -111,7 +111,7 @@ fn only_an_admin_grants_a_key_spec_permissions_2() {
     let e = lp.peers[1].engine.grant_key(&t, &other, Some(&edge_of(Role::Read)));
     assert!(matches!(e, Err(osis_engine::Error::Permission { .. })), "{e:?}");
     // a key's grant carries nothing a key cannot hold
-    let e = lp.peers[0].engine.grant_key(&t, &k, Some(&osis_schema::core_types::Edge { floor: Some(1), ..edge_of(Role::Read) }));
+    let e = lp.peers[0].engine.grant_key(&t, &k, Some(&osis_schema::core_types::Grant { floor: Some(1), ..edge_of(Role::Read) }));
     assert!(matches!(e, Err(osis_engine::Error::Misuse(_))), "{e:?}");
 }
 
@@ -147,7 +147,7 @@ fn a_key_grant_holding_a_floor_grants_nothing_spec_data_model_9() {
     spread(&mut lp);
     let k = key_of(&lp, 1);
     let mut m = Mutation::new();
-    let e = osis_schema::core_types::Edge { floor: Some(1), ..edge_of(Role::Write) };
+    let e = osis_schema::core_types::Grant { floor: Some(1), ..edge_of(Role::Write) };
     m.op(t, &osis_schema::core_types::SIGNERS, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(k.to_value())], op: osis_crdt::Op::Put(osis_schema::Codec::to_value(&e)) }).unwrap();
     let c = lp.peers[0].engine.commit_hostile(m).unwrap().unwrap();
     let pk = lp.peers[0].engine.package(&c).unwrap().unwrap();

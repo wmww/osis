@@ -42,7 +42,7 @@
 - Ephemeral writes (spec/data-model.md §2) need the role the durable write would need.
 
 ## 2. Role grant writes
-- **Edge writes**: granting, changing and removing a grant are writes to the target's `roles.0`, or for a key's grant its `signers.0`, each in its own role commit (spec/commits.md §2), along a path giving admin on the target (§1 Path), but a self-removal, a finalize and a may-grant grant (below). An edge write that is none of those three is **explicit**.
+- **Grant writes**: granting, changing and removing a grant are writes to the target's `roles.0`, or for a key's grant its `signers.0`, each in its own role commit (spec/commits.md §2), along a path giving admin on the target (§1 Path), but a self-removal, a finalize and a may-grant grant (below). An edge write that is none of those three is **explicit**.
   - Every edge write resets the holder's **current entry**: the entry created by the edge write in force on that grant in its writer's walk (§5.1: the last applied write on it, when it put an entry), whatever the `roles.0` state holds of it.
   - A removal of a holder with no current entry (a record edge, §1, or a grant already removed) resets an entry of its own delta: a record keyed by the holder at a fresh counter of the delta, holding the reset alone (spec/crdt.md §5.6). Its creation is that delta, so it is never waited for. A removal of an absent grant is an edge write too.
   - A grant or change also writes a new entry holding the whole grant (spec/crdt.md §5.6 `put_new`).

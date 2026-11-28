@@ -548,7 +548,7 @@ fn rotation_history(seed: u64) -> Reached {
                 5 if ri == Role::Admin && j != o && j != i => {
                     let until = Time(run.lp.peers[i].engine.core.now().0 + 1 + run.rng.next(500));
                     if let Some(r) = run.lp.peers[i].engine.core.role_now(&run.tids[j], &t) {
-                        lowered = run.lp.peers[i].engine.demote(&t, &Demotion { holder: run.tids[j], new: Some(ct::Edge { role: r, until: Some(until), may_grant: false, retain: false, floor: None }), retain: None }).is_ok();
+                        lowered = run.lp.peers[i].engine.demote(&t, &Demotion { holder: run.tids[j], new: Some(ct::Grant { role: r, until: Some(until), may_grant: false, retain: false, floor: None }), retain: None }).is_ok();
                     }
                 }
                 // re-grants of every holder it sees, or one, at its role (re-writing their boxes)
@@ -1041,7 +1041,7 @@ fn departure_point(run: &Run, o: usize, t: Tid, d: usize, r: Role) -> Option<osi
     let h = run.tids[d];
     // the edge value write `w` sets on `d`'s edge into `t`, if it is one
     let on_edge = |w: &osis_perm::WriteId| tl.role_commit(&w.0).and_then(|mc| mc.ops.get(w.1 as usize)).filter(|op| op.target == t && op.holder == osis_base::Holder::Thing(h)).map(|op| op.edge.as_ref());
-    let gives = |e: Option<&osis_perm::Edge>| super::key_role(e) >= Some(r);
+    let gives = |e: Option<&osis_perm::Grant>| super::key_role(e) >= Some(r);
     let applied = tl.applied_writes().into_iter().filter(|(w, p)| on_edge(w).is_some_and(|e| !gives(e)) && gives(tl.edges_at(Some(*p)).get(&h, &t))).map(|(_, p)| p);
     let dropped = tl.dropped_writes().into_iter().filter(|(w, _)| on_edge(w).is_some_and(gives)).map(|(_, p)| p);
     applied.chain(dropped).max()
@@ -1245,7 +1245,7 @@ fn a_removal_boxes_none_it_removes_through_a_finalize_first_spec_permissions_3()
     lp.peers[0].engine.grant(&g, &e, &edge(Role::Read)).unwrap();
     lp.peers[0].engine.grant(&g, &m, &edge(Role::Read)).unwrap();
     let until = Time(lp.peers[0].engine.core.now().0 + 100);
-    lp.peers[0].engine.demote(&g, &Demotion { holder: e, new: Some(ct::Edge { until: Some(until), ..edge(Role::Read) }), retain: None }).unwrap();
+    lp.peers[0].engine.demote(&g, &Demotion { holder: e, new: Some(ct::Grant { until: Some(until), ..edge(Role::Read) }), retain: None }).unwrap();
     lp.sync_all().unwrap();
     let mut run = Run::new(lp, vec![(g, 0)], Rng(1));
     removal_rotates_once(&mut run, g, Role::Read, m, 2_000, 3);

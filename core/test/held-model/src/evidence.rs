@@ -395,15 +395,15 @@ impl World {
     pub fn grant(&self, i: Id) -> bool {
         matches!(&self.w.commits[i].kind, Kind::Edge { role, finalize: false, .. } if *role > Role::None) && !self.w.leave(i)
     }
-    /// Edge write `i` leaves its holder no grant (no role, or `until` 0: a removal, a self-removal,
+    /// Grant write `i` leaves its holder no grant (no role, or `until` 0: a removal, a self-removal,
     /// a finalize): a commit with one applies none of its edge writes on its thing until the
     /// creation of the entry it resets is held; a reset beside a put of a live grant is not waited
-    /// for (spec/permissions.md §2 Edge writes; finding 25).
+    /// for (spec/permissions.md §2 Grant writes; finding 25).
     pub fn ends_grant(&self, i: Id) -> bool {
         matches!(&self.w.commits[i].kind, Kind::Edge { role, until, .. } if *role == Role::None || *until == Some(0))
     }
     /// The creation of the entry edge write `i` resets, as its writer names it (spec/permissions.md
-    /// §2 Edge writes): the entry of the write in force on its edge in its writer's walk, the last
+    /// §2 Grant writes): the entry of the write in force on its edge in its writer's walk, the last
     /// applied write on it there, where that write put an entry (a grant); None where none did (a
     /// record edge, a grant already removed: `i` resets an entry of its own, never waited for). The
     /// writer's walk is over everything written before `i`'s commit (it can know no later write).
@@ -676,7 +676,7 @@ impl World {
 
     /// `i` pends over `h` (spec/commits.md §4 Unjudgeable): its path entry has not opened, a keyset
     /// lacks a demotion it carries, a held part of its commit on its thing removing a holder resets
-    /// an entry whose creation `h` lacks (the model writes a commit's parts as events of their own) (spec/permissions.md §2 Edge writes), or a hop it rests on
+    /// an entry whose creation `h` lacks (the model writes a commit's parts as events of their own) (spec/permissions.md §2 Grant writes), or a hop it rests on
     /// (`paths::World::rests`, its key hop first), no record hop, has no held edge write ordered
     /// before it that does not itself pend.
     pub fn pend(&self, h: &Set, i: Id) -> bool {

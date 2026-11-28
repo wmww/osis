@@ -9,11 +9,11 @@
 
 use super::{cid, own, t};
 use osis_base::{Ak, CommitId, Holder, PurgeBy, Role, Tid, Ts, Time};
-use osis_perm::paths::{By, Commit, Content, Counts, Delta, DeltaClass, EdgeWrite, Fact, List, Holding, Key, MemStore, NameKey, Names, Pair, Part, PartKind, Paths, Right, Status, Store};
+use osis_perm::paths::{By, Commit, Content, Counts, Delta, DeltaClass, GrantWrite, Fact, List, Holding, Key, MemStore, NameKey, Names, Pair, Part, PartKind, Paths, Right, Status, Store};
 use std::cell::Cell;
 use std::ops::Bound;
 use std::rc::Rc;
-use osis_perm::{Edge, Frontier, WriteId};
+use osis_perm::{Grant, Frontier, WriteId};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -42,8 +42,8 @@ fn records() -> BTreeMap<Tid, Holder> {
 /// `holder`'s edge to `role` (none: a removal listing nothing).
 fn write(id: u64, signer: u32, ts: u64, path: &[u32], on: u32, holder: u32, role: Option<Role>) -> Commit {
     let frontier = Some(Arc::new(List::default()));
-    let ew = EdgeWrite { holder: Holder::Thing(t(holder)), value: role.map(Edge::new), frontier };
-    Commit { id: cid(id), ts: Ts::make(Time(ts), 0).unwrap(), signer: t(signer), key: own(t(signer)), parts: vec![Part { on: t(on), path: path.iter().map(|&x| t(x)).collect(), direct: 0, kind: PartKind::Edge(ew) }] }
+    let ew = GrantWrite { holder: Holder::Thing(t(holder)), value: role.map(Grant::new), frontier };
+    Commit { id: cid(id), ts: Ts::make(Time(ts), 0).unwrap(), signer: t(signer), key: own(t(signer)), parts: vec![Part { on: t(on), path: path.iter().map(|&x| t(x)).collect(), direct: 0, kind: PartKind::Grant(ew) }] }
 }
 
 fn delta(a: Counts, b: Counts) -> Counts {
@@ -393,7 +393,7 @@ fn a_removal_cutting_n_deltas_costs_nothing_per_delta() {
         let before = p.counts();
         // listing the first delta: it stays, by the list; the rest fall
         let mut r = write(2, H, end, &[], A, X, None);
-        if let PartKind::Edge(ew) = &mut r.parts[0].kind {
+        if let PartKind::Grant(ew) = &mut r.parts[0].kind {
             ew.frontier = Some(Arc::new(List::new([(t(C), cid(200_000))])));
         }
         let ch = p.add(&[r]);
@@ -498,7 +498,7 @@ fn a_delta_every_cut_answers_reads_each_cut_once() {
         let mut c = vec![write(1, H, 1, &[], A, X, Some(Role::Admin)), content(9, X, 5, &[A], C, None)];
         for i in 0..k {
             let mut cut = write(10 + 2 * i, H, 10 + 2 * i, &[], A, X, None);
-            if let PartKind::Edge(ew) = &mut cut.parts[0].kind {
+            if let PartKind::Grant(ew) = &mut cut.parts[0].kind {
                 ew.frontier = Some(Arc::new(List::new([(t(C), cid(9))])));
             }
             c.push(cut);
@@ -510,7 +510,7 @@ fn a_delta_every_cut_answers_reads_each_cut_once() {
         let mut q = Counts::default();
         assert_eq!(p.content_counted(&WriteId(cid(9), 0), &mut q), Some(Content::Invalid), "k {k}: the last cut lists nothing");
         let mut c2 = c.clone();
-        if let Some(PartKind::Edge(ew)) = c2.last_mut().map(|x| &mut x.parts[0].kind) {
+        if let Some(PartKind::Grant(ew)) = c2.last_mut().map(|x| &mut x.parts[0].kind) {
             ew.frontier = Some(Arc::new(List::new([(t(C), cid(9))])));
         }
         let p = Paths::evaluate(&records(), BTreeSet::new(), &c2);

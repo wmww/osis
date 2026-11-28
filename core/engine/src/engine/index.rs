@@ -385,7 +385,7 @@ impl<T: Rec> Rec for Option<T> {
         }
     }
 }
-impl Rec for osis_perm::Edge {
+impl Rec for osis_perm::Grant {
     fn to(&self) -> Value {
         Value::List(vec![self.role.to(), self.until.map(|u| u.0).to(), Value::Bool(self.may_grant), Value::Bool(self.retain), self.floor.to()])
     }
@@ -393,7 +393,7 @@ impl Rec for osis_perm::Edge {
         let Value::List(x) = v else { return None };
         let [role, until, Value::Bool(may_grant), Value::Bool(retain), floor] = x.as_slice() else { return None };
         let until = <Option<u64> as Rec>::from(until)?.map(Time);
-        Some(osis_perm::Edge { role: Rec::from(role)?, until, may_grant: *may_grant, retain: *retain, floor: Rec::from(floor)? })
+        Some(osis_perm::Grant { role: Rec::from(role)?, until, may_grant: *may_grant, retain: *retain, floor: Rec::from(floor)? })
     }
 }
 impl Rec for u64 {

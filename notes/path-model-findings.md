@@ -208,7 +208,7 @@ Against notes/account-membership-design.md (membership) and notes/write-path-des
 19. Membership §4, What a list leaves out (the result names them): open (Open, 1).
 21. Write-path §1, Disputes; spec/permissions.md §5.1: modelled.
 23. Write-path §1, Each lowering is judged once, G5: judged where it takes h down in role or flag (adopted), modelled; seeds by need (32).
-24. Write-path §1, Edge writes (may-grant, finalize): modelled.
+24. Write-path §1, Grant writes (may-grant, finalize): modelled.
 25. Write-path §1, Disputes: grants below admin are candidates; holds with honest explicit writes carrying their frontier (spec/permissions.md §5.1 step 4): modelled (the candidates narrowed to explicit lowerings: 31).
 26. Membership §1 (Cutoff and Carrying), §2 step 2; spec/permissions.md §5.2 Copies, §5.3: the window accepted, modelled (copies; facts rejected).
 27. Write-path §1, Each lowering is judged once ("applied, it applies whatever earlier writes now give its author"): fails with values below admin; a raise needs admin, modelled.

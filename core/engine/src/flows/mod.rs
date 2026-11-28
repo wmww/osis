@@ -115,7 +115,7 @@ pub(crate) fn put_keysets(m: &mut Mutation, actor: Tid, w: &KeysWrite) -> Result
 /// A new entry holding `holder`'s whole edge on `target` (spec/crdt.md §5.6 `put_new`): never
 /// written into a held entry. The reset of the holder's current entry is the caller's
 /// (`edges::reset_current`, spec/permissions.md §2).
-pub(crate) fn put_edge(m: &mut Mutation, target: Tid, holder: impl Into<osis_base::Holder>, e: &ct::Edge) -> Result<()> {
+pub(crate) fn put_edge(m: &mut Mutation, target: Tid, holder: impl Into<osis_base::Holder>, e: &ct::Grant) -> Result<()> {
     let holder = holder.into();
     let path = vec![PathSeg::Key(crate::apply::validity::Grants::key(&holder))];
     match holder {

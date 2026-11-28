@@ -657,7 +657,7 @@ fn void_grant_by_leaver_keeps_no_secrets_spec_perm_3() {
         d
     };
     let (b, c) = (lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
-    let flagged = osis_schema::core_types::Edge { may_grant: true, ..edge(Role::Read) };
+    let flagged = osis_schema::core_types::Grant { may_grant: true, ..edge(Role::Read) };
     lp.peers[0].engine.grant(&d, &b, &flagged).unwrap();
     lp.peers[0].engine.grant(&d, &c, &edge(Role::Read)).unwrap();
     lp.sync_all().unwrap();
@@ -1273,14 +1273,14 @@ fn edge_change_is_remove_and_put_spec_perm_2() {
     let until = Some(Time(T0.0 + 30 * DAY));
     set_edge(&mut lp.peers[0].engine, d, c, Some(edge(Role::Write)), None);
     lp.advance(1_000);
-    set_edge(&mut lp.peers[0].engine, d, c, Some(osis_schema::core_types::Edge { until, ..edge(Role::Write) }), None);
+    set_edge(&mut lp.peers[0].engine, d, c, Some(osis_schema::core_types::Grant { until, ..edge(Role::Write) }), None);
     lp.advance(1_000);
     // the role field alone, into the entry the last change created
     let mut m = Mutation::new();
     let path = vec![osis_crdt::PathSeg::Key(Value::Weak(c))];
     m.op(d, &osis_schema::core_types::ROLES, osis_crdt::PathOp { path, op: osis_crdt::Op::Set(edge(Role::Admin).to_value()) }).unwrap();
     assert_eq!(lp.peers[0].engine.commit(m).unwrap_err().class(), osis_base::ErrorClass::BadInput);
-    set_edge(&mut lp.peers[0].engine, d, c, Some(osis_schema::core_types::Edge { until, ..edge(Role::Admin) }), None);
+    set_edge(&mut lp.peers[0].engine, d, c, Some(osis_schema::core_types::Grant { until, ..edge(Role::Admin) }), None);
     let e = lp.peers[0].engine.roster(&d).get(&c).cloned().unwrap();
     assert_eq!((e.role, e.until), (Role::Admin, until));
 }
@@ -3486,7 +3486,7 @@ fn frontier_iff_the_write_audits_spec_wire_4() {
     use osis_crdt::{Op, PathOp, PathSeg};
     use osis_schema::core_types as ct;
     let (mut lp, d, b, _) = setup();
-    let write = |e: &mut osis_engine::Engine, x: ct::Edge, frontier: bool| {
+    let write = |e: &mut osis_engine::Engine, x: ct::Grant, frontier: bool| {
         let mut m = Mutation::new();
         m.op(d, &ct::ROLES, PathOp { path: Vec::new(), op: Op::Remove(Value::Weak(b)) }).unwrap();
         m.op(d, &ct::ROLES, PathOp { path: vec![PathSeg::Key(Value::Weak(b))], op: Op::Set(x.to_value()) }).unwrap();
@@ -3501,7 +3501,7 @@ fn frontier_iff_the_write_audits_spec_wire_4() {
     let r = write(e, read.clone(), false);
     assert!(matches!(&r, Err(osis_engine::Error::BadInput(m)) if m.contains("audits with no frontier")), "{r:?}");
     write(e, read.clone(), true).unwrap().unwrap();
-    let timed = ct::Edge { until: Some(Time(e.now().0 + DAY)), ..read };
+    let timed = ct::Grant { until: Some(Time(e.now().0 + DAY)), ..read };
     assert!(!e.needs_frontier(&d, &b, Some(&timed)));
     let r = write(e, timed.clone(), true);
     assert!(matches!(&r, Err(osis_engine::Error::BadInput(m)) if m.contains("audits nothing")), "{r:?}");
@@ -4991,7 +4991,7 @@ fn a_writes_path_follows_its_edges_and_their_ends_spec_wire_4() {
     let (mut lp, chain, t, _) = holders_world(1);
     let b = lp.peers[1].engine.tid();
     let until = Time(lp.peers[0].engine.now().0 + 5_000);
-    set_edge(&mut lp.peers[0].engine, t, b, Some(osis_schema::core_types::Edge { until: Some(until), ..edge(Role::Write) }), None);
+    set_edge(&mut lp.peers[0].engine, t, b, Some(osis_schema::core_types::Grant { until: Some(until), ..edge(Role::Write) }), None);
     lp.sync_all().unwrap();
     let write = |lp: &mut LocalPeer, v: &str| {
         let mut m = Mutation::new();

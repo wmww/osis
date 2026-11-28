@@ -20,16 +20,16 @@ pub struct Departure {
     pub holder: Tid,
     pub from: Role,
     pub upto: Role,
-    pub edge: Option<EdgeLog>,
+    pub edge: Option<GrantLog>,
 }
 
-/// A holder's edge into an actor as a node holds it (spec/crypto.md §4, Edge writes): its grant
+/// A holder's edge into an actor as a node holds it (spec/crypto.md §4, Grant writes): its grant
 /// for keys before the first held write (`start`: the record edge, else none) and the held
 /// writes on it, their commits resolved, in key order.
 #[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct EdgeLog {
+pub struct GrantLog {
     pub start: Option<Role>,
-    pub writes: Vec<EdgeWrite>,
+    pub writes: Vec<GrantWrite>,
 }
 
 /// One held write on a holder's edge: its commit's key, the role it gives for keys (none for a
@@ -41,7 +41,7 @@ pub struct EdgeLog {
 /// `Held::met`); `counts`: it applies nothing here and its author held write on the actor just
 /// before its point.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct EdgeWrite {
+pub struct GrantWrite {
     pub key: Key,
     pub role: Option<Role>,
     pub applied: bool,
@@ -50,7 +50,7 @@ pub struct EdgeWrite {
     pub counts: bool,
 }
 
-impl EdgeLog {
+impl GrantLog {
     /// The holder's grant for keys now: the role the newest applied write gives, else `start`.
     pub fn now(&self) -> Option<Role> {
         self.writes.iter().rev().find(|w| w.applied).map_or(self.start, |w| w.role)
@@ -80,7 +80,7 @@ impl EdgeLog {
     /// The tail for role `r` (spec/crypto.md §4, Covers): the writes after the newest applied
     /// one giving `r` or more (all of them when none does), and whether one does or `start` gives
     /// `r` (so a tail write must take the holder below `r`).
-    fn tail(&self, r: Role) -> (&[EdgeWrite], bool) {
+    fn tail(&self, r: Role) -> (&[GrantWrite], bool) {
         match self.writes.iter().rposition(|w| w.applied && w.role >= Some(r)) {
             Some(i) => (self.writes.get(i + 1..).unwrap_or_default(), true),
             None => (&self.writes, self.start >= Some(r)),
@@ -95,7 +95,7 @@ impl Departure {
     }
 
     /// The same departure, shown by `edge`.
-    pub fn edge(self, edge: EdgeLog) -> Departure {
+    pub fn edge(self, edge: GrantLog) -> Departure {
         Departure { edge: Some(edge), ..self }
     }
 
@@ -144,7 +144,7 @@ impl Departure {
 /// Whether names `n` of an epoch pin `d`'s holder below `r` (spec/crypto.md §4, Covers): over
 /// the tail of its edge for `r`, every write giving `r` or more that counts is named void, and,
 /// unless the edge held the holder below `r` before the tail, a tail write taking it below `r`
-/// (`EdgeWrite::takes`) is named applied, or is the rotation commit's own (its departs mark, by
+/// (`GrantWrite::takes`) is named applied, or is the rotation commit's own (its departs mark, by
 /// the commit's `ts`, author and `blind`), that author holding `r` under `held`.
 ///
 /// Invariant: a node where the names are met, the rotator included, holds the holder at `r` or
@@ -157,7 +157,7 @@ impl Departure {
 pub fn pins(n: &Names, r: Role, d: &Departure, held: &dyn Held) -> bool {
     let Some(edge) = &d.edge else { return false };
     let (tail, held_r) = edge.tail(r);
-    let named = |w: &EdgeWrite| n.list.contains(&Name::applied(w.key, d.holder)) || (n.departs.is_some_and(|o| held.marks(&o, &w.key)) && held.holds(&w.key.node, r));
+    let named = |w: &GrantWrite| n.list.contains(&Name::applied(w.key, d.holder)) || (n.departs.is_some_and(|o| held.marks(&o, &w.key)) && held.holds(&w.key.node, r));
     let below = !held_r || tail.iter().any(|w| w.role < Some(r) && w.takes && named(w));
     below && tail.iter().filter(|w| w.role >= Some(r) && w.counts).all(|w| n.list.contains(&Name::void(w.key, d.holder)))
 }

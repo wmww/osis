@@ -1682,13 +1682,13 @@ pub fn fixture_with<T: Clone + Send + 'static>(key: &str, build: impl FnOnce() -
 }
 
 /// A plain edge of `role`: no `until`, may-grant flag, retain or floor.
-pub fn edge(role: osis_base::Role) -> osis_schema::core_types::Edge {
-    osis_schema::core_types::Edge { role, until: None, may_grant: false, retain: false, floor: None }
+pub fn edge(role: osis_base::Role) -> osis_schema::core_types::Grant {
+    osis_schema::core_types::Grant { role, until: None, may_grant: false, retain: false, floor: None }
 }
 
 /// A grant of `edge` on `t` to `holder`, told (`Engine::signal_grant`, as `Osis::grant` does by
 /// default): the holder's nodes learn of it.
-pub fn told(e: &mut Engine, t: &Tid, holder: &Tid, edge: &osis_schema::core_types::Edge) -> osis_engine::Result<osis_engine::flows::Done> {
+pub fn told(e: &mut Engine, t: &Tid, holder: &Tid, edge: &osis_schema::core_types::Grant) -> osis_engine::Result<osis_engine::flows::Done> {
     let done = e.grant(t, holder, edge)?;
     e.signal_grant(t, holder, &[])?;
     Ok(done)

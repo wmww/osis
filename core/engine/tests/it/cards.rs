@@ -37,7 +37,7 @@ fn cards_current(e: &mut Engine, a: &Tid) -> bool {
 
 /// Write on `accs[0]` for `accs[1]`, `accs[0]` held at node 1.
 fn writer(lp: &mut LocalPeer, accs: &[Tid]) {
-    lp.peers[0].engine.grant(&accs[0], &accs[1], &ct::Edge { role: Role::Write, until: None, may_grant: false, retain: false, floor: None }).unwrap();
+    lp.peers[0].engine.grant(&accs[0], &accs[1], &ct::Grant { role: Role::Write, until: None, may_grant: false, retain: false, floor: None }).unwrap();
     lp.sync_all().unwrap();
     lp.hold_at(1, accs[0]);
     lp.sync_all().unwrap();
@@ -178,7 +178,7 @@ fn a_card_snapshot_off_its_path_is_invalid_spec_permissions_5_2() {
     let c = thing(&mut lp, 0, accs[0], true);
     let ak = ct::card_ak(&accs[0]);
     lp.peers[0].engine.write_card(c, accs[0]).unwrap();
-    lp.peers[0].engine.grant(&c, &accs[1], &ct::Edge { role: Role::Write, until: None, may_grant: false, retain: false, floor: None }).unwrap();
+    lp.peers[0].engine.grant(&c, &accs[1], &ct::Grant { role: Role::Write, until: None, may_grant: false, retain: false, floor: None }).unwrap();
     lp.sync_all().unwrap();
     lp.hold_at(1, c);
     lp.sync_all().unwrap();

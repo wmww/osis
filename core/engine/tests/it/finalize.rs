@@ -30,7 +30,7 @@ fn shared_built(role: Role) -> (LocalPeer, Tid, Vec<Tid>, Time) {
         lp.peers[0].engine.grant(&t, &ps[w], &edge_of(Role::Write)).unwrap();
     }
     let until = Time(lp.peers[0].engine.now().0 + 5_000);
-    lp.peers[0].engine.grant(&t, &ps[2], &ct::Edge { until: Some(until), ..edge_of(role) }).unwrap();
+    lp.peers[0].engine.grant(&t, &ps[2], &ct::Grant { until: Some(until), ..edge_of(role) }).unwrap();
     spread(&mut lp);
     assert_eq!(sealed_write(&mut lp, 1, t, "before"), BTreeSet::from([0, 2, 3]));
     (lp, t, ps, until)
@@ -103,7 +103,7 @@ fn a_finalize_of_an_unended_edge_does_nothing_spec_permissions_2() {
         assert!(holds(&lp, i, t, ps[2]), "peer {i}: the early removal applies nothing");
     }
     // a renewal keeps it a holder by the clock too
-    lp.peers[0].engine.grant(&t, &ps[2], &ct::Edge { until: Some(Time(until.0 + 3_600_000)), ..edge_of(Role::Read) }).unwrap();
+    lp.peers[0].engine.grant(&t, &ps[2], &ct::Grant { until: Some(Time(until.0 + 3_600_000)), ..edge_of(Role::Read) }).unwrap();
     spread(&mut lp);
     reseal(&mut lp, t);
     assert!(sealed_write(&mut lp, 0, t, "later").contains(&2));
@@ -153,7 +153,7 @@ fn a_writer_cannot_finalize_an_ended_admin_edge_spec_permissions_2() {
 fn a_renewal_before_the_finalize_wins_spec_permissions_2() {
     let (mut lp, t, ps, until) = shared(Role::Read);
     past(&mut lp, until, 1_000);
-    let renewed = lp.peers[0].engine.grant(&t, &ps[2], &ct::Edge { until: Some(Time(until.0 + 3_600_000)), ..edge_of(Role::Read) }).unwrap();
+    let renewed = lp.peers[0].engine.grant(&t, &ps[2], &ct::Grant { until: Some(Time(until.0 + 3_600_000)), ..edge_of(Role::Read) }).unwrap();
     assert_eq!(renewed.commits.len(), 1, "a renewal finalizes nothing first");
     lp.peers[1].clock.set(Time(until.0 + 2_000));
     assert_eq!(sealed_write(&mut lp, 1, t, "unaware"), BTreeSet::from([0, 3]), "the writer finalized, not knowing");

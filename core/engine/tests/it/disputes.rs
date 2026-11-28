@@ -213,7 +213,7 @@ fn planted_removal_counts_from_when_it_applies_spec_permissions_5_1() {
     spread(&mut lp);
     lp.advance(1000);
     let before = ids(&lp, 0);
-    lp.peers[0].engine.grant(&t, &b, &ct::Edge { may_grant: true, ..edge_of(Role::Admin) }).unwrap();
+    lp.peers[0].engine.grant(&t, &b, &ct::Grant { may_grant: true, ..edge_of(Role::Admin) }).unwrap();
     let e = new_ids(&lp, 0, &before);
     lp.peers[0].clock.advance(5000);
     let before = ids(&lp, 0);

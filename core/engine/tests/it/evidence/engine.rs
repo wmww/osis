@@ -100,7 +100,7 @@ fn hand(lp: &mut LocalPeer, from: usize, to: usize, ids: &[CommitId]) {
     }
 }
 
-// Finding 9 (spec/permissions.md §2 Edge writes: a removal applies only once the creations of
+// Finding 9 (spec/permissions.md §2 Grant writes: a removal applies only once the creations of
 // the entries it resets are held; §4 Evidence of a commit: a commit's evidence takes the writes on
 // each edge its edge writes set): X removes K and Q from A in one commit; K wrote D through [A]
 // before it (listed) and after it. Under D (its unit D alone) the evidence holds the removal and

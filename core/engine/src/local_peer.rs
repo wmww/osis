@@ -790,7 +790,7 @@ pub fn make_account(e: &mut Engine) -> Result<(Account, crate::flows::Done)> {
     // the card carries A's keys and the inbox's
     e.refresh_cards()?;
     // the profile is public (spec/permissions.md §8), as the library's `Account::make` grants it
-    let read = ct::Edge { role: osis_base::Role::Read, until: None, may_grant: false, retain: false, floor: None };
+    let read = ct::Grant { role: osis_base::Role::Read, until: None, may_grant: false, retain: false, floor: None };
     let mut done = done;
     done.commits.extend(e.grant(profile, &Tid::PUBLIC, &read)?.commits);
     Ok((Account { thing: *thing, inbox: *inbox, profile: *profile }, done))
@@ -957,7 +957,7 @@ impl LocalPeer {
         for j in (0..self.peers.len()).filter(|j| *j != admin) {
             let who = self.peers[j].engine.tid();
             if self.peers[admin].engine.key_role(&t, &who).is_none() {
-                let edge = osis_schema::core_types::Edge { role: osis_base::Role::Read, until: None, may_grant: false, retain: false, floor: None };
+                let edge = osis_schema::core_types::Grant { role: osis_base::Role::Read, until: None, may_grant: false, retain: false, floor: None };
                 self.peers[admin].engine.grant(&t, &who, &edge).unwrap_or_else(|e| panic!("grant {t:?}: {e}"));
             }
         }
@@ -985,7 +985,7 @@ impl LocalPeer {
         m.op(acc.thing, &osis_schema::core_types::HOLDS, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Add(osis_base::Value::Strong(t)) }).unwrap_or_else(|e| panic!("hold {t:?}: {e}"));
         p.commit(m).unwrap_or_else(|e| panic!("hold {t:?}: {e}"));
         let who = acc.thing;
-        let edge = osis_schema::core_types::Edge { role: osis_base::Role::Read, until: None, may_grant: false, retain: false, floor: None };
+        let edge = osis_schema::core_types::Grant { role: osis_base::Role::Read, until: None, may_grant: false, retain: false, floor: None };
         let done = self.peers[admin].engine.grant(&t, &who, &edge).unwrap_or_else(|e| panic!("grant {t:?}: {e}"));
         self.pass_fires_to(admin, &mut p).unwrap_or_else(|e| panic!("grant fire to the reader: {e}"));
         for c in &done.commits {
@@ -1015,7 +1015,7 @@ impl LocalPeer {
     /// thing, a peer writing `holder` refers it to `t` (`refer`): a grant to a plain thing tells
     /// nobody, so its readers find `t` by that reference.
     #[allow(clippy::panic)] // test harness: a grant that fails fails the test
-    pub fn grant_through(&mut self, i: usize, t: osis_base::Tid, holder: osis_base::Tid, edge: &osis_schema::core_types::Edge) -> crate::flows::Done {
+    pub fn grant_through(&mut self, i: usize, t: osis_base::Tid, holder: osis_base::Tid, edge: &osis_schema::core_types::Grant) -> crate::flows::Done {
         let Some(p) = self.peers.get_mut(i) else { panic!("no peer {i}") };
         let done = p.engine.grant(&t, &holder, edge).unwrap_or_else(|e| panic!("grant {t:?}: {e}"));
         if holder != osis_base::Tid::PUBLIC && !self.peers.iter().any(|p| p.engine.tid() == holder) {
@@ -1559,7 +1559,7 @@ impl Engine {
         if self.current_keys(node)?.is_empty() {
             return Err(crate::error::Error::BadInput("pairing: the keys shown are not the node's"));
         }
-        let edge = osis_schema::core_types::Edge { role, until: None, may_grant: false, retain: false, floor: None };
+        let edge = osis_schema::core_types::Grant { role, until: None, may_grant: false, retain: false, floor: None };
         self.grant(a, node, &edge)
     }
 

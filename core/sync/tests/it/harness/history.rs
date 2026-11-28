@@ -25,7 +25,7 @@ use osis_engine::flows::edges::Demotion;
 use osis_engine::local_peer::{Package, Peer};
 use osis_engine::sync::Holding;
 use osis_engine::{Engine, Ingested, Mutation};
-use osis_schema::core_types::{self as ct, Edge};
+use osis_schema::core_types::{self as ct, Grant};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// The role a history grants.
@@ -680,7 +680,7 @@ fn make(w: &mut World, i: usize, mint_admin: Option<usize>) -> Result<String, St
 /// (`Engine::signal_grant`, as `Osis::grant` does by default), one to a thing or the public is not.
 fn give(w: &mut World, i: usize, k: usize, h: Holder, g: Gives) -> Result<String, String> {
     let (Some(t), Some(holder)) = (thing(w, k), holder_tid(w, h)) else { return Ok("skipped: no such thing or holder".into()) };
-    let edge = Edge { role: g.role(), until: None, may_grant: false, retain: false, floor: None };
+    let edge = Grant { role: g.role(), until: None, may_grant: false, retain: false, floor: None };
     let own = w.node(i).account == Some(holder);
     let tell = matches!(h, Holder::Node(_)) && !own;
     let inbox = if tell { w.engine(i).inbox_of(&holder).ok().flatten() } else { None };
@@ -709,7 +709,7 @@ fn give(w: &mut World, i: usize, k: usize, h: Holder, g: Gives) -> Result<String
 /// Node `i` lowers holder `h` on thing `k` to `g`, or removes it (`None`).
 fn demote(w: &mut World, i: usize, k: usize, h: Holder, g: Option<Gives>) -> Result<String, String> {
     let (Some(t), Some(holder)) = (thing(w, k), holder_tid(w, h)) else { return Ok("skipped: no such thing or holder".into()) };
-    let new = g.map(|g| Edge { role: g.role(), until: None, may_grant: false, retain: false, floor: None });
+    let new = g.map(|g| Grant { role: g.role(), until: None, may_grant: false, retain: false, floor: None });
     let r = w.write(i, |e| e.demote(&t, &Demotion { holder, new, retain: None }));
     let unknown = r.as_ref().is_err_and(osis_engine::Error::is_store);
     let r = r.map_err(|e| e.to_string());

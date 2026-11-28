@@ -4,14 +4,14 @@
 //! creation record (`Records`) unless an edge write set it (`Edges` holds the value written, or
 //! that it was removed), so dependent things cost the edge state nothing.
 
-use crate::types::{earliest, mark, Edge};
+use crate::types::{earliest, mark, Grant};
 use osis_base::format::{PathMarks, MAX_CHAIN_DEPTH};
 use osis_base::{CreationRecord, Holder, RecordLink, Role, SignKey, Tid, Ts, Time};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 /// The value of a record edge in force (spec/permissions.md §1): admin, no `until`.
-pub const RECORD_EDGE: Edge = Edge { role: Role::Admin, until: None, may_grant: false, retain: false, floor: None };
+pub const RECORD_EDGE: Grant = Grant { role: Role::Admin, until: None, may_grant: false, retain: false, floor: None };
 
 /// Record links of every thing with a verified `created.0`: each thing's mint admin (or that
 /// it holds a key), and the things each actor is mint admin of.
@@ -86,7 +86,7 @@ impl Records {
 /// holders), not O(edges)).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Edges {
-    by_target: BTreeMap<Tid, Arc<BTreeMap<Tid, Edge>>>,
+    by_target: BTreeMap<Tid, Arc<BTreeMap<Tid, Grant>>>,
     by_holder: BTreeMap<Tid, Arc<BTreeSet<Tid>>>,
     /// Record edges (holder, target) a write removed, with no value written since.
     cut: BTreeSet<(Tid, Tid)>,
@@ -95,7 +95,7 @@ pub struct Edges {
 impl Edges {
     /// The value an edge write set (holder, target) to, if one is in force (a record edge in
     /// force by the record alone is not here: `get`).
-    pub fn explicit(&self, holder: &Tid, target: &Tid) -> Option<&Edge> {
+    pub fn explicit(&self, holder: &Tid, target: &Tid) -> Option<&Grant> {
         self.by_target.get(target).and_then(|m| m.get(holder))
     }
     /// Whether a write removed the record edge (holder, target).
@@ -103,12 +103,12 @@ impl Edges {
         self.cut.contains(&(*holder, *target))
     }
     /// The edge (holder, target) in force: the value written, else the record edge unless cut.
-    pub fn get(&self, records: &Records, holder: &Tid, target: &Tid) -> Option<&Edge> {
+    pub fn get(&self, records: &Records, holder: &Tid, target: &Tid) -> Option<&Grant> {
         self.explicit(holder, target).or_else(|| (records.is_record_edge(holder, target) && !self.is_cut(holder, target)).then_some(&RECORD_EDGE))
     }
     /// Sets (holder, target) to `edge`; a record edge set to its record value is in force by
     /// the record again.
-    pub fn set(&mut self, records: &Records, holder: Tid, target: Tid, edge: Option<Edge>) {
+    pub fn set(&mut self, records: &Records, holder: Tid, target: Tid, edge: Option<Grant>) {
         if records.is_record_edge(&holder, &target) {
             mark(&mut self.cut, (holder, target), edge.is_none());
             self.set_explicit(holder, target, edge.filter(|e| *e != RECORD_EDGE));
@@ -116,7 +116,7 @@ impl Edges {
             self.set_explicit(holder, target, edge);
         }
     }
-    fn set_explicit(&mut self, holder: Tid, target: Tid, edge: Option<Edge>) {
+    fn set_explicit(&mut self, holder: Tid, target: Tid, edge: Option<Grant>) {
         match edge {
             Some(e) => {
                 if self.explicit(&holder, &target) == Some(&e) {
@@ -147,7 +147,7 @@ impl Edges {
         }
     }
     /// Written edges on `target`, by holder.
-    fn holders(&self, target: &Tid) -> impl Iterator<Item = (&Tid, &Edge)> {
+    fn holders(&self, target: &Tid) -> impl Iterator<Item = (&Tid, &Grant)> {
         self.by_target.get(target).into_iter().flat_map(|m| m.iter())
     }
     /// Targets of `holder`'s written edges.
@@ -161,7 +161,7 @@ impl Edges {
 /// the holders and targets present so most lookups skip them.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Overlay {
-    set: Vec<(Tid, Tid, Option<Edge>)>,
+    set: Vec<(Tid, Tid, Option<Grant>)>,
     holders: [u64; 4],
     targets: [u64; 4],
 }
@@ -185,7 +185,7 @@ fn set_bit(mask: &mut [u64; 4], t: &Tid) {
 }
 
 impl Overlay {
-    pub fn set(&mut self, holder: Tid, target: Tid, edge: Option<Edge>) {
+    pub fn set(&mut self, holder: Tid, target: Tid, edge: Option<Grant>) {
         match self.set.binary_search_by(|x| (x.0, x.1).cmp(&(holder, target))) {
             Ok(i) => {
                 if let Some(x) = self.set.get_mut(i) {
@@ -201,7 +201,7 @@ impl Overlay {
         self.set.is_empty()
     }
     /// The edges of `holder` set here, by target.
-    fn of_holder(&self, holder: &Tid) -> &[(Tid, Tid, Option<Edge>)] {
+    fn of_holder(&self, holder: &Tid) -> &[(Tid, Tid, Option<Grant>)] {
         if !has(&self.holders, holder) {
             return &[];
         }
@@ -210,11 +210,11 @@ impl Overlay {
         self.set.get(lo..hi).unwrap_or_default()
     }
     /// The edges on `target` set here, by holder.
-    fn of_target<'s>(&'s self, target: &'s Tid) -> impl Iterator<Item = (&'s Tid, &'s Option<Edge>)> + 's {
+    fn of_target<'s>(&'s self, target: &'s Tid) -> impl Iterator<Item = (&'s Tid, &'s Option<Grant>)> + 's {
         let any = has(&self.targets, target);
         self.set.iter().filter(move |x| any && x.1 == *target).map(|x| (&x.0, &x.2))
     }
-    fn get(&self, holder: &Tid, target: &Tid) -> Option<&Option<Edge>> {
+    fn get(&self, holder: &Tid, target: &Tid) -> Option<&Option<Grant>> {
         let m = self.of_holder(holder);
         m.binary_search_by(|x| x.1.cmp(target)).ok().and_then(|i| m.get(i)).map(|x| &x.2)
     }
@@ -233,10 +233,10 @@ impl<'a> EdgesAt<'a> {
     pub fn new(records: &'a Records, base: &'a Edges) -> EdgesAt<'a> {
         EdgesAt { records, base, over: Overlay::default() }
     }
-    pub fn set(&mut self, holder: Tid, target: Tid, edge: Option<Edge>) {
+    pub fn set(&mut self, holder: Tid, target: Tid, edge: Option<Grant>) {
         self.over.set(holder, target, edge);
     }
-    pub fn get(&self, holder: &Tid, target: &Tid) -> Option<&Edge> {
+    pub fn get(&self, holder: &Tid, target: &Tid) -> Option<&Grant> {
         match self.over.get(holder, target) {
             Some(e) => e.as_ref(),
             None => self.base.get(self.records, holder, target),
@@ -248,7 +248,7 @@ impl<'a> EdgesAt<'a> {
         self.over.get(holder, target).is_some() || self.base.explicit(holder, target).is_some() || self.base.is_cut(holder, target)
     }
     /// Edges on `target`, by holder.
-    pub fn holders<'s>(&'s self, target: &'s Tid) -> impl Iterator<Item = (&'s Tid, &'s Edge)> + 's {
+    pub fn holders<'s>(&'s self, target: &'s Tid) -> impl Iterator<Item = (&'s Tid, &'s Grant)> + 's {
         let over = &self.over;
         let base = self.base.holders(target).filter(move |(m, _)| over.get(m, target).is_none());
         let record = self.records.mint_admin_ref(target).filter(|a| !self.written(a, target)).map(|a| (a, &RECORD_EDGE));
@@ -264,7 +264,7 @@ impl<'a> EdgesAt<'a> {
 }
 
 /// One edge set to a value over an edge state: (holder, target, value).
-type Patch = (Tid, Tid, Option<Edge>);
+type Patch = (Tid, Tid, Option<Grant>);
 
 /// Authority queries over the records and an edge state (optionally a base with an overlay),
 /// with edges alive at `ts` (`None`: the end of time), and optionally one edge patched.
@@ -287,7 +287,7 @@ impl<'a> View<'a> {
         View { records: edges.records, edges: edges.base, over, ts, patch: None }
     }
     /// The same view with edge (holder, target) set to `edge`.
-    pub fn patched(self, holder: Tid, target: Tid, edge: Option<Edge>) -> View<'a> {
+    pub fn patched(self, holder: Tid, target: Tid, edge: Option<Grant>) -> View<'a> {
         View { patch: Some((holder, target, edge)), ..self }
     }
 
@@ -301,7 +301,7 @@ impl<'a> View<'a> {
     }
 
     /// `f` on each edge of `holder`: (target, value).
-    fn each_target(&self, holder: &Tid, mut f: impl FnMut(&Tid, &Edge)) {
+    fn each_target(&self, holder: &Tid, mut f: impl FnMut(&Tid, &Grant)) {
         let patch = self.patch.as_ref().filter(|p| p.0 == *holder);
         let over = self.over.map_or(&[][..], |o| o.of_holder(holder));
         for t in self.edges.targets(holder) {
@@ -328,7 +328,7 @@ impl<'a> View<'a> {
     }
 
     /// `f` on each edge on `target`: (holder, value).
-    fn each_holder(&self, target: &Tid, mut f: impl FnMut(&Tid, &Edge)) {
+    fn each_holder(&self, target: &Tid, mut f: impl FnMut(&Tid, &Grant)) {
         let patch = self.patch.as_ref().filter(|p| p.1 == *target);
         let over = self.over.filter(|o| has(&o.targets, target));
         for (m, e) in self.edges.holders(target) {

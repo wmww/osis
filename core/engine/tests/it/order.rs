@@ -58,9 +58,9 @@ pub(crate) enum Step {
     /// when `op` has a keep bound (`generate`'s parts group draws it under purge on replace).
     Mixed { by: usize, t: usize, op: u8, k: u8, v: u8 },
     /// `holder`'s edge on `t` set to `role` (a grant, re-grant or demotion without frontier).
-    Edge { by: usize, t: usize, holder: usize, role: Option<Role> },
+    SetGrant { by: usize, t: usize, holder: usize, role: Option<Role> },
     /// `by` grants `holder` `role` on `t` with an `until` (`ms` after the author's clock) and an
-    /// the may-grant flag: a bare edge write like `Edge`, or with `flow` through `Engine::grant` (its
+    /// the may-grant flag: a bare edge write like `SetGrant`, or with `flow` through `Engine::grant` (its
     /// authority checks, secrets, boxes, rotations). Scripted only (`random_step` never draws
     /// it): a refusal panics. A may-grant grant needs the flow, which first makes G (dependent
     /// in the setup) independent, about 12 KB.
@@ -137,7 +137,7 @@ pub(crate) enum Step {
     /// `Demote` to no role with a frontier padded past `CHUNK_THRESHOLD`, linked.
     BigDemote { by: usize, t: usize, holder: usize },
     // for the judgment vectors and scripted examples (`generate` draws `NewTop`, `Setting`,
-    // `PurgeSet`, `Two` and `TwoEdges` too):
+    // `PurgeSet`, `Two` and `TwoGrants` too):
     /// A new thing whose mint admin is peer `by` itself: no edge of G reaches it.
     NewTop { by: usize },
     /// A bare edge write past the writer's rules (`Engine::commit_hostile`):
@@ -158,7 +158,7 @@ pub(crate) enum Step {
     /// `Two` on three things.
     Three { by: usize, a: usize, b: usize, c: usize, v: u8 },
     /// One role commit setting `holder`'s edge on both things `a` and `b`, unchecked.
-    TwoEdges { by: usize, a: usize, b: usize, holder: usize, role: Role },
+    TwoGrants { by: usize, a: usize, b: usize, holder: usize, role: Role },
     /// `by` puts `item("v1", 1)` at key `k` of `t:map.0`, sends that commit to `other` alone,
     /// which sets the entry's field 1 to 7 and compacts. `Nested` writes untyped, so its entries
     /// hold a map encoding where a field write holds a struct's.
@@ -431,9 +431,9 @@ fn aim(st: &Step, lp: &mut LocalPeer, things: &[Tid], ids: &[Tid], own: &[Vec<Co
     let aimed = match st.clone() {
         Write { by, t, op, k, v } => pick(lp, by, t, &write).map(|(by, t)| Write { by, t, op, k, v }),
         Typed { by, t, op, k, v } => pick(lp, by, t, &write).map(|(by, t)| Typed { by, t, op, k, v }),
-        Edge { by, t, holder, role } => {
+        SetGrant { by, t, holder, role } => {
             let held = |lp: &LocalPeer, b: usize, x: &Tid| admin(lp, b, x) && (role.is_some() || lp.peers[b].engine.roster(x).contains_key(&ids[holder]));
-            pick(lp, by, t, &held).map(|(by, t)| Edge { by, t, holder, role })
+            pick(lp, by, t, &held).map(|(by, t)| SetGrant { by, t, holder, role })
         }
         Demote { by, t, holder, at, to_read } => {
             let above = |lp: &LocalPeer, b: usize, x: &Tid| admin(lp, b, x) && lp.peers[b].engine.roster(x).get(&ids[holder]).is_some_and(|e| !to_read || e.role > Role::Read);
@@ -485,7 +485,7 @@ fn random_step(rng: &mut Rng) -> Step {
         }
         41..=43 => Step::Forged { by, a: t, b: rng.below(8) as usize, how: rng.below(4) as u8, op: rng.below(DRAWN as u64) as u8, k: rng.below(3) as u8, v: rng.below(10) as u8 },
         44 => Step::NewTop { by },
-        11..=13 => aim(Step::Edge { by: rng.pick(&[0, 0, 2]), t, holder: rng.pick(&[1, 2]), role: rng.pick(&[None, Some(Role::Read), Some(Role::Write), Some(Role::Write), Some(Role::Admin)]) }),
+        11..=13 => aim(Step::SetGrant { by: rng.pick(&[0, 0, 2]), t, holder: rng.pick(&[1, 2]), role: rng.pick(&[None, Some(Role::Read), Some(Role::Write), Some(Role::Write), Some(Role::Admin)]) }),
         14..=17 => aim(Step::Demote { by: rng.pick(&[0, 0, 2]), t, holder: rng.pick(&[1, 2]), at: rng.below(6) as u8, to_read: rng.below(3) == 0 }),
         18 => aim(Step::Leave { by: rng.pick(&[1, 2]), t }),
         19..=21 => aim(Step::Compact { by, t, op: rng.below(DRAWN as u64) as u8 }),
@@ -543,7 +543,7 @@ fn write_op(m: &mut Mutation, e: &mut osis_engine::Engine, t: Tid, op: u8, k: u8
 }
 
 /// `holder`'s edge on `t` as remove + put (`None`: removed), spec/permissions.md §2.
-fn edge_write(by: &osis_engine::Engine, t: Tid, holder: Tid, e: Option<osis_schema::core_types::Edge>) -> Mutation {
+fn edge_write(by: &osis_engine::Engine, t: Tid, holder: Tid, e: Option<osis_schema::core_types::Grant>) -> Mutation {
     let mut m = Mutation::new();
     m.op(t, &osis_schema::core_types::ROLES, PathOp { path: vec![], op: Op::Remove(Value::Weak(holder)) }).unwrap();
     if let Some(e) = &e {
@@ -1036,13 +1036,13 @@ fn play_in(seed: u64, steps: &[Step], addenda: bool, written: bool) -> Played {
                 }
                 Some(by)
             }
-            Step::Edge { by, t, holder, role } => {
+            Step::SetGrant { by, t, holder, role } => {
                 let m = edge_write(&lp.peers[by].engine, th(t), ids[holder], role.map(edge));
                 no = why(&lp.peers[by].commit(m));
                 Some(by)
             }
             Step::Grant { by, t, holder, role, until, may_grant, flow } => {
-                let e = osis_schema::core_types::Edge { until: until.map(|ms| Time(lp.peers[by].engine.now().0 + ms)), may_grant, ..edge(role) };
+                let e = osis_schema::core_types::Grant { until: until.map(|ms| Time(lp.peers[by].engine.now().0 + ms)), may_grant, ..edge(role) };
                 if flow {
                     lp.peers[by].engine.grant(&th(t), &ids[holder], &e).unwrap();
                 } else {
@@ -1233,7 +1233,7 @@ fn play_in(seed: u64, steps: &[Step], addenda: bool, written: bool) -> Played {
                 }
                 let other = ids[(by + 1 + v as usize % 2) % 3];
                 let mut m = Mutation::new();
-                let edge_on = |m: &mut Mutation, t: Tid, holder: Tid, e: osis_schema::core_types::Edge| {
+                let edge_on = |m: &mut Mutation, t: Tid, holder: Tid, e: osis_schema::core_types::Grant| {
                     m.op(t, &osis_schema::core_types::ROLES, PathOp { path: vec![], op: Op::Remove(Value::Weak(holder)) }).unwrap();
                     m.op(t, &osis_schema::core_types::ROLES, PathOp { path: vec![PathSeg::Key(Value::Weak(holder))], op: Op::Set(e.to_value()) }).unwrap();
                 };
@@ -1259,7 +1259,7 @@ fn play_in(seed: u64, steps: &[Step], addenda: bool, written: bool) -> Played {
                         edge_on(&mut m, a, other, edge(Role::Write));
                         edge_on(&mut m, b, other, edge(Role::Write));
                     }
-                    _ => edge_on(&mut m, a, ids[by], osis_schema::core_types::Edge { may_grant: v % 2 == 0, ..edge(Role::Admin) }),
+                    _ => edge_on(&mut m, a, ids[by], osis_schema::core_types::Grant { may_grant: v % 2 == 0, ..edge(Role::Admin) }),
                 }
                 no = why(&noting(lp.peers[by].engine.commit_hostile(m), &mut unchecked));
                 Some(by)
@@ -1386,7 +1386,7 @@ fn play_in(seed: u64, steps: &[Step], addenda: bool, written: bool) -> Played {
                 Some(by)
             }
             Step::Hostile { by, t, holder, role, may_grant } => {
-                let m = edge_write(&lp.peers[by].engine, th(t), ids[holder], role.map(|r| osis_schema::core_types::Edge { may_grant, ..edge(r) }));
+                let m = edge_write(&lp.peers[by].engine, th(t), ids[holder], role.map(|r| osis_schema::core_types::Grant { may_grant, ..edge(r) }));
                 noting(lp.peers[by].engine.commit_hostile(m), &mut unchecked).unwrap().expect("an edge write writes");
                 Some(by)
             }
@@ -1465,7 +1465,7 @@ fn play_in(seed: u64, steps: &[Step], addenda: bool, written: bool) -> Played {
                 noting(lp.peers[by].engine.commit_hostile(m), &mut unchecked).unwrap();
                 Some(by)
             }
-            Step::TwoEdges { by, a, b, holder, role } => {
+            Step::TwoGrants { by, a, b, holder, role } => {
                 let mut m = Mutation::new();
                 for x in [th(a), th(b)] {
                     m.op(x, &osis_schema::core_types::ROLES, PathOp { path: vec![], op: Op::Remove(Value::Weak(ids[holder])) }).unwrap();
@@ -3503,7 +3503,7 @@ fn generate(seed: u64, len: usize) -> (Emphasis, Vec<Step>) {
         Emphasis::Addenda => {
             // Bob's write reaches Carol, Alice demotes him with a frontier before it, Carol applies
             // the demotion and vouches for the write, and grants Bob write again
-            h.extend([Write { by: 1, t: 0, op: 0, k: 0, v: 0 }, Sync { from: 1, to: 2 }, Advance { who: None, ms: 1_000 }, Demote { by: 0, t: 0, holder: 1, at: 0, to_read: false }, Sync { from: 0, to: 2 }, Edge { by: 2, t: 0, holder: 1, role: Some(Role::Write) }]);
+            h.extend([Write { by: 1, t: 0, op: 0, k: 0, v: 0 }, Sync { from: 1, to: 2 }, Advance { who: None, ms: 1_000 }, Demote { by: 0, t: 0, holder: 1, at: 0, to_read: false }, Sync { from: 0, to: 2 }, SetGrant { by: 2, t: 0, holder: 1, role: Some(Role::Write) }]);
         }
         _ => {}
     }
@@ -3587,7 +3587,7 @@ fn generate(seed: u64, len: usize) -> (Emphasis, Vec<Step>) {
                     10 | 11 => aim(Compact { by, t: a % 2, op: r.pick(&[op, 15, 0]) }),
                     4 => Two { by, a, b: (a + 1 + b % 2) % 3, v: r.below(10) as u8 },
                     // one role commit on two things
-                    5 => TwoEdges { by, a, b: (a + 1 + b % 2) % 3, holder: (by + 1) % 3, role: r.pick(&[Role::Read, Role::Write]) },
+                    5 => TwoGrants { by, a, b: (a + 1 + b % 2) % 3, holder: (by + 1) % 3, role: r.pick(&[Role::Read, Role::Write]) },
                     6 => BadPart { by, a, b: (a + 1) % 3, how: r.below(2) as u8 },
                     7 => aim(Nested { by, other: (by + 1 + r.below(2) as usize) % 3, t: a, k: r.below(3) as u8, text: r.below(2) == 0, compact: r.below(2) == 0, also: true }),
                     8 => Forged { by, a, b, how: 1, op: 27 + r.below(3) as u8, k: 2, v: r.below(10) as u8 },
@@ -3748,8 +3748,8 @@ fn shrink_keeps_the_failures_kind_and_prints_rust() {
     assert_eq!(a, "held-model differs: commit # … on Tid… t:reg.#: the node holds its body, a held right holder's snapshot covers it");
     assert_ne!(a, failure_class("held [0] of 3 commits (base 2), order #0 [0]: later: the permission index differs from its walk from scratch"));
     assert_eq!(failure_class("on the way to Order(0, 1): panicked: receiving fails the node: Corrupt(\"x\")"), "panicked: receiving fails the node: Corrupt…");
-    let h = vec![Aim(Box::new(Edge { by: 0, t: 1, holder: 2, role: Some(Role::Write) })), Write { by: 1, t: 0, op: 3, k: 0, v: 2 }, Old(Box::new(Sync { from: 0, to: 1 })), TwoEdges { by: 0, a: 0, b: 1, holder: 2, role: Role::Sync }];
-    assert_eq!(rust_of(&h), "vec![Aim(Box::new(Edge { by: 0, t: 1, holder: 2, role: Some(Role::Write) })), Write { by: 1, t: 0, op: 3, k: 0, v: 2 }, Old(Box::new(Sync { from: 0, to: 1 })), TwoEdges { by: 0, a: 0, b: 1, holder: 2, role: Role::Sync }]");
+    let h = vec![Aim(Box::new(SetGrant { by: 0, t: 1, holder: 2, role: Some(Role::Write) })), Write { by: 1, t: 0, op: 3, k: 0, v: 2 }, Old(Box::new(Sync { from: 0, to: 1 })), TwoGrants { by: 0, a: 0, b: 1, holder: 2, role: Role::Sync }];
+    assert_eq!(rust_of(&h), "vec![Aim(Box::new(SetGrant { by: 0, t: 1, holder: 2, role: Some(Role::Write) })), Write { by: 1, t: 0, op: 3, k: 0, v: 2 }, Old(Box::new(Sync { from: 0, to: 1 })), TwoGrants { by: 0, a: 0, b: 1, holder: 2, role: Role::Sync }]");
     assert!(rust_of(&ORDERS).contains("split: Twins::First(2)"));
 }
 
@@ -3891,7 +3891,7 @@ fn held_set_decides_exhaustive() {
 #[test]
 fn seq_stripped_copies_leave_no_records_spec_crdt_4_6() {
     use Step::*;
-    let h = vec![Nested { by: 1, other: 2, t: 0, k: 1, text: true, compact: true, also: false }, Edge { by: 0, t: 0, holder: 2, role: Some(Role::Read) }];
+    let h = vec![Nested { by: 1, other: 2, t: 0, k: 1, text: true, compact: true, also: false }, SetGrant { by: 0, t: 0, holder: 2, role: Some(Role::Read) }];
     let played = play(0, &h);
     // without 1's put: the entry's creation is held only through 2's snapshot
     let held: Vec<usize> = (0..played.packs.len()).filter(|i| *i != played.base).collect();
@@ -4266,14 +4266,14 @@ fn snapshot_after_late_dated_death_not_credited_spec_commits_5() {
 #[test]
 fn snapshot_dropped_before_flip_joins_again_spec_commits_5() {
     use Step::*;
-    let h = vec![Write { by: 0, t: 3, op: 18, k: 0, v: 2 }, Compact { by: 0, t: 4, op: 18 }, Edge { by: 0, t: 6, holder: 1, role: Some(Role::Admin) }, Write { by: 1, t: 7, op: 15, k: 2, v: 7 }, Nested { by: 0, other: 2, t: 4, k: 0, text: false, compact: true, also: true }, Demote { by: 0, t: 0, holder: 1, at: 4, to_read: false }, Edge { by: 2, t: 2, holder: 2, role: Some(Role::Admin) }, Write { by: 2, t: 4, op: 0, k: 1, v: 8 }, Demote { by: 0, t: 4, holder: 2, at: 1, to_read: true }, Write { by: 1, t: 0, op: 18, k: 2, v: 5 }];
+    let h = vec![Write { by: 0, t: 3, op: 18, k: 0, v: 2 }, Compact { by: 0, t: 4, op: 18 }, SetGrant { by: 0, t: 6, holder: 1, role: Some(Role::Admin) }, Write { by: 1, t: 7, op: 15, k: 2, v: 7 }, Nested { by: 0, other: 2, t: 4, k: 0, text: false, compact: true, also: true }, Demote { by: 0, t: 0, holder: 1, at: 4, to_read: false }, SetGrant { by: 2, t: 2, holder: 2, role: Some(Role::Admin) }, Write { by: 2, t: 4, op: 0, k: 1, v: 8 }, Demote { by: 0, t: 4, holder: 2, at: 1, to_read: true }, Write { by: 1, t: 0, op: 18, k: 2, v: 5 }];
     let played = play(0, &h);
     let made: Vec<usize> = (0..played.packs.len()).collect();
     let order = [15, 7, 19, 12, 5, 8, 20, 1, 10, 0, 17, 18, 9, 14, 3, 13, 6, 2, 16, 11, 4];
     assert_eq!(order_checks(&played, &made), Ok(()));
     assert_eq!(order_checks(&played, &order), Ok(()));
     // the seed's longer shrink: the dropped snapshot leaves the carried-writes index too
-    let h2 = vec![Nested { by: 1, other: 2, t: 0, k: 1, text: false, compact: false, also: false }, Demote { by: 2, t: 6, holder: 2, at: 4, to_read: true }, Demote { by: 0, t: 6, holder: 2, at: 1, to_read: false }, Write { by: 0, t: 3, op: 18, k: 0, v: 2 }, Compact { by: 0, t: 4, op: 18 }, Write { by: 1, t: 0, op: 15, k: 0, v: 3 }, Edge { by: 0, t: 4, holder: 1, role: Some(Role::Read) }, Edge { by: 0, t: 6, holder: 1, role: Some(Role::Admin) }, Advance { who: None, ms: 3721574 }, Write { by: 1, t: 7, op: 15, k: 2, v: 7 }, Nested { by: 0, other: 2, t: 4, k: 0, text: false, compact: true, also: true }, Demote { by: 0, t: 0, holder: 1, at: 4, to_read: false }, Edge { by: 0, t: 7, holder: 2, role: Some(Role::Write) }, Compact { by: 1, t: 7, op: 4 }, Sync { from: 0, to: 2 }, Write { by: 1, t: 1, op: 4, k: 1, v: 3 }, Write { by: 2, t: 4, op: 0, k: 1, v: 8 }, Demote { by: 0, t: 4, holder: 2, at: 1, to_read: true }, Edge { by: 0, t: 7, holder: 1, role: Some(Role::Write) }, Write { by: 1, t: 0, op: 18, k: 2, v: 5 }];
+    let h2 = vec![Nested { by: 1, other: 2, t: 0, k: 1, text: false, compact: false, also: false }, Demote { by: 2, t: 6, holder: 2, at: 4, to_read: true }, Demote { by: 0, t: 6, holder: 2, at: 1, to_read: false }, Write { by: 0, t: 3, op: 18, k: 0, v: 2 }, Compact { by: 0, t: 4, op: 18 }, Write { by: 1, t: 0, op: 15, k: 0, v: 3 }, SetGrant { by: 0, t: 4, holder: 1, role: Some(Role::Read) }, SetGrant { by: 0, t: 6, holder: 1, role: Some(Role::Admin) }, Advance { who: None, ms: 3721574 }, Write { by: 1, t: 7, op: 15, k: 2, v: 7 }, Nested { by: 0, other: 2, t: 4, k: 0, text: false, compact: true, also: true }, Demote { by: 0, t: 0, holder: 1, at: 4, to_read: false }, SetGrant { by: 0, t: 7, holder: 2, role: Some(Role::Write) }, Compact { by: 1, t: 7, op: 4 }, Sync { from: 0, to: 2 }, Write { by: 1, t: 1, op: 4, k: 1, v: 3 }, Write { by: 2, t: 4, op: 0, k: 1, v: 8 }, Demote { by: 0, t: 4, holder: 2, at: 1, to_read: true }, SetGrant { by: 0, t: 7, holder: 1, role: Some(Role::Write) }, Write { by: 1, t: 0, op: 18, k: 2, v: 5 }];
     let played = play(0, &h2);
     let held = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 14, 15, 16, 18, 20, 23, 24, 25, 27];
     let order = [3, 8, 27, 4, 24, 0, 10, 2, 25, 23, 12, 14, 16, 9, 5, 6, 18, 1, 15, 7, 20];
@@ -4527,7 +4527,7 @@ fn expired_late_part_reads_alike_spec_crdt_4_7() {
 fn invalid_snapshot_key_erased_copies_go_spec_permissions_5_2() {
     use Step::*;
     let old = |x: Step| Old(Box::new(x));
-    let h = vec![Demote { by: 0, t: 0, holder: 2, at: 3, to_read: true }, Demote { by: 2, t: 3, holder: 2, at: 0, to_read: false }, Write { by: 1, t: 3, op: 28, k: 1, v: 0 }, Sync { from: 1, to: 0 }, old(Nested { by: 0, other: 1, t: 0, k: 1, text: false, compact: true, also: true }), Compact { by: 1, t: 4, op: 5 }, old(Write { by: 0, t: 2, op: 7, k: 1, v: 9 }), old(Nested { by: 0, other: 2, t: 7, k: 2, text: false, compact: true, also: true }), Edge { by: 0, t: 4, holder: 2, role: Some(Role::Write) }, old(Write { by: 0, t: 3, op: 1, k: 0, v: 4 }), Edge { by: 0, t: 7, holder: 1, role: Some(Role::Write) }, old(Write { by: 0, t: 7, op: 5, k: 2, v: 3 }), Edge { by: 0, t: 0, holder: 1, role: None }];
+    let h = vec![Demote { by: 0, t: 0, holder: 2, at: 3, to_read: true }, Demote { by: 2, t: 3, holder: 2, at: 0, to_read: false }, Write { by: 1, t: 3, op: 28, k: 1, v: 0 }, Sync { from: 1, to: 0 }, old(Nested { by: 0, other: 1, t: 0, k: 1, text: false, compact: true, also: true }), Compact { by: 1, t: 4, op: 5 }, old(Write { by: 0, t: 2, op: 7, k: 1, v: 9 }), old(Nested { by: 0, other: 2, t: 7, k: 2, text: false, compact: true, also: true }), SetGrant { by: 0, t: 4, holder: 2, role: Some(Role::Write) }, old(Write { by: 0, t: 3, op: 1, k: 0, v: 4 }), SetGrant { by: 0, t: 7, holder: 1, role: Some(Role::Write) }, old(Write { by: 0, t: 7, op: 5, k: 2, v: 3 }), SetGrant { by: 0, t: 0, holder: 1, role: None }];
     let played = play(0, &h);
     // the held set `check` failed on: neither the put (11) nor its author's nested write (13)
     // (as positions past the setup)
@@ -4837,7 +4837,7 @@ fn harness_judges_a_drop_of_a_body_seen_out_of_scope_spec_commits_5() {
 #[test]
 fn removals_judged_whatever_else_waits() {
     use Step::*;
-    let h = vec![Removals { by: 1, other: 2, v: 5 }, NewTop { by: 0 }, Edge { by: 0, t: 2, holder: 1, role: Some(Role::Write) }];
+    let h = vec![Removals { by: 1, other: 2, v: 5 }, NewTop { by: 0 }, SetGrant { by: 0, t: 2, holder: 1, role: Some(Role::Write) }];
     let seen = check(0, &h, Cfg { all_up_to: 0, random: 0, partial: 2, split: Twins::First(0), clock: 0, reopens: 0, away: true, ..ORDERS }).unwrap();
     assert!(seen.pending.contains_key("UnknownCreated"), "{:?}", seen.pending);
     for k in crate::held::REMOVALS {
@@ -4856,7 +4856,7 @@ fn compaction_dropped_while_invalid_repairs_nothing_spec_commits_5() {
     let h = settled(vec![
         Demote { by: 0, t: 0, holder: 1, at: 9, to_read: true },
         Sync { from: 0, to: 2 },
-        Edge { by: 2, t: 0, holder: 1, role: Some(Role::Write) },
+        SetGrant { by: 2, t: 0, holder: 1, role: Some(Role::Write) },
         Write { by: 1, t: 0, op: 0, k: 0, v: 1 },
         Sync { from: 1, to: 0 },
         Sync { from: 2, to: 0 },
@@ -4887,7 +4887,7 @@ fn compaction_dropped_while_invalid_repairs_nothing_spec_commits_5() {
 #[test]
 fn strong_dropped_while_invalid_comes_back_by_a_holds_compaction_spec_commits_5() {
     use Step::*;
-    let h = settled(vec![Edge { by: 0, t: 0, holder: 2, role: Some(Role::Read) }, Edge { by: 0, t: 0, holder: 2, role: Some(Role::Write) }, New { by: 2, admin: 0, write: false }, Typed { by: 2, t: 1, op: 26, k: 2, v: 4 }]);
+    let h = settled(vec![SetGrant { by: 0, t: 0, holder: 2, role: Some(Role::Read) }, SetGrant { by: 0, t: 0, holder: 2, role: Some(Role::Write) }, New { by: 2, admin: 0, write: false }, Typed { by: 2, t: 1, op: 26, k: 2, v: 4 }]);
     let played = settling(play(0, &h), &h);
     let docs = (format!("{:?}", played.things[1]), "t:docs.0".to_string());
     assert!(played.settled_last.contains(&docs), "every writer compacts T's docs last: {:?}", played.tally);
@@ -4914,7 +4914,7 @@ fn strong_dropped_while_invalid_comes_back_by_a_holds_compaction_spec_commits_5(
 #[test]
 fn a_strong_after_a_lowering_waits_for_its_grant_spec_commits_4() {
     use Step::*;
-    let h = settled(vec![New { by: 2, admin: 0, write: false }, Typed { by: 2, t: 1, op: 26, k: 2, v: 4 }, Edge { by: 0, t: 0, holder: 2, role: Some(Role::Write) }]);
+    let h = settled(vec![New { by: 2, admin: 0, write: false }, Typed { by: 2, t: 1, op: 26, k: 2, v: 4 }, SetGrant { by: 0, t: 0, holder: 2, role: Some(Role::Write) }]);
     let played = settling(play(0, &h), &h);
     let docs = (format!("{:?}", played.things[1]), "t:docs.0".to_string());
     assert!(played.settled_last.contains(&docs), "every writer compacts T's docs last: {:?}", played.tally);
@@ -4945,7 +4945,7 @@ fn secrets_of_a_removed_grant_drop_at_the_pass_end_spec_permissions_3() {
     use Step::*;
     let h = vec![
         New { by: 0, admin: 0, write: false },
-        Edge { by: 0, t: 1, holder: 0, role: Some(Role::Admin) },
+        SetGrant { by: 0, t: 1, holder: 0, role: Some(Role::Admin) },
         RemoveFlow { by: 0, t: 1, holder: 3, lower: false },
         GrantFlow { by: 0, t: 1, holder: 3, role: Role::Read },
         Typed { by: 0, t: 1, op: 26, k: 2, v: 1 },
@@ -5034,7 +5034,7 @@ fn record_held_when_a_waiting_commit_applies_fetches_its_thrown_out_part_spec_co
 #[test]
 fn record_after_a_waiting_role_commit_applies_fetches_its_thrown_out_part_spec_commits_4() {
     use Step::*;
-    caught_up(&[NewTop { by: 0 }, TwoEdges { by: 0, a: 0, b: 1, holder: 1, role: Role::Write }], 1, 0, false);
+    caught_up(&[NewTop { by: 0 }, TwoGrants { by: 0, a: 0, b: 1, holder: 1, role: Role::Write }], 1, 0, false);
 }
 
 // The order harness's parts-away node (`covered_away`) leaves out what the keep-everything node's
@@ -5044,7 +5044,7 @@ fn record_after_a_waiting_role_commit_applies_fetches_its_thrown_out_part_spec_c
 #[test]
 fn covered_away_judged_on_the_walks_side() {
     use Step::*;
-    let h = vec![Mixed { by: 0, t: 0, op: 17, k: 0, v: 8 }, Mixed { by: 2, t: 0, op: 18, k: 2, v: 1 }, Aim(Box::new(Compact { by: 2, t: 0, op: 24 })), Aim(Box::new(RemoveFlow { by: 1, t: 1, holder: 0, lower: false })), Aim(Box::new(Setting { by: 2, t: 0, op: 18, rule: 3 })), Aim(Box::new(Edge { by: 0, t: 7, holder: 2, role: Some(Role::Read) })), Aim(Box::new(Nested { by: 0, other: 1, t: 1, k: 2, text: true, compact: true, also: true })), RecordOnly { by: 2, admin: None }];
+    let h = vec![Mixed { by: 0, t: 0, op: 17, k: 0, v: 8 }, Mixed { by: 2, t: 0, op: 18, k: 2, v: 1 }, Aim(Box::new(Compact { by: 2, t: 0, op: 24 })), Aim(Box::new(RemoveFlow { by: 1, t: 1, holder: 0, lower: false })), Aim(Box::new(Setting { by: 2, t: 0, op: 18, rule: 3 })), Aim(Box::new(SetGrant { by: 0, t: 7, holder: 2, role: Some(Role::Read) })), Aim(Box::new(Nested { by: 0, other: 1, t: 1, k: 2, text: true, compact: true, also: true })), RecordOnly { by: 2, admin: None }];
     check(0, &h, Cfg { away: true, ..NAMED }).unwrap();
 }
 
@@ -5079,7 +5079,7 @@ fn expired_part_given_before_its_record_reads_what_came_before_spec_crdt_4_7() {
 #[test]
 fn a_purged_write_reads_as_never_held_whatever_reaches_first_spec_crdt_4_7() {
     use Step::*;
-    let h = vec![Message { by: 0, t: 0, v: 4 }, Advance { who: None, ms: 1000 }, Message { by: 1, t: 0, v: 8 }, Advance { who: None, ms: 1000 }, Demote { by: 0, t: 0, holder: 1, at: 0, to_read: false }, Edge { by: 0, t: 0, holder: 1, role: Some(Role::Write) }, Advance { who: None, ms: 1000 }, PurgeAuthor { by: 2, t: 0, of: 1 }];
+    let h = vec![Message { by: 0, t: 0, v: 4 }, Advance { who: None, ms: 1000 }, Message { by: 1, t: 0, v: 8 }, Advance { who: None, ms: 1000 }, Demote { by: 0, t: 0, holder: 1, at: 0, to_read: false }, SetGrant { by: 0, t: 0, holder: 1, role: Some(Role::Write) }, Advance { who: None, ms: 1000 }, PurgeAuthor { by: 2, t: 0, of: 1 }];
     let played = play(0, &h);
     let n = played.packs.len();
     // the last four packs: m8, the demotion, the re-grant, the purge
@@ -5156,7 +5156,7 @@ fn a_part_held_and_dropped_in_one_transaction_is_dated_out_spec_commits_5() {
 fn record_after_a_waiting_commit_applied_fetches_its_thrown_out_part_spec_commits_4() {
     use Step::*;
     caught_up(&[NewTop { by: 0 }, Two { by: 0, a: 0, b: 1, v: 3 }], 1, 0, true);
-    caught_up(&[NewTop { by: 0 }, TwoEdges { by: 0, a: 0, b: 1, holder: 1, role: Role::Write }], 1, 0, true);
+    caught_up(&[NewTop { by: 0 }, TwoGrants { by: 0, a: 0, b: 1, holder: 1, role: Role::Write }], 1, 0, true);
 }
 
 // spec/commits.md §5 Purge, Never received, spec/crdt.md §4.7: the keep-everything node judges 2's
@@ -5224,7 +5224,7 @@ fn a_creation_pruned_under_a_later_delete_is_replaced_spec_commits_5() {
 #[test]
 fn a_thing_held_for_a_while_reads_as_one_never_held_once_the_pass_ends_spec_sync_set_3() {
     use Step::*;
-    let h = vec![New { by: 2, admin: 0, write: true }, Edge { by: 0, t: 0, holder: 2, role: None }];
+    let h = vec![New { by: 2, admin: 0, write: true }, SetGrant { by: 0, t: 0, holder: 2, role: None }];
     check(0, &h, NAMED).unwrap();
 }
 
@@ -5253,7 +5253,7 @@ fn a_delete_splitting_a_held_range_delete_kills_nothing_of_its_other_elements_sp
 #[test]
 fn a_path_opened_up_a_released_things_record_chain_waits_spec_wire_4() {
     use Step::*;
-    let h = vec![Aim(Box::new(Edge { by: 0, t: 6, holder: 2, role: None })), Aim(Box::new(RecordOnly { by: 2, admin: Some(0) })), Aim(Box::new(New { by: 0, admin: 1, write: false })), Forged { by: 1, a: 1, b: 2, how: 1, op: 28, k: 2, v: 5 }, Sync { from: 1, to: 0 }];
+    let h = vec![Aim(Box::new(SetGrant { by: 0, t: 6, holder: 2, role: None })), Aim(Box::new(RecordOnly { by: 2, admin: Some(0) })), Aim(Box::new(New { by: 0, admin: 1, write: false })), Forged { by: 1, a: 1, b: 2, how: 1, op: 28, k: 2, v: 5 }, Sync { from: 1, to: 0 }];
     check(0, &h, Cfg { away: true, ..NAMED }).unwrap();
 }
 

@@ -457,7 +457,7 @@ pub(crate) struct NamesHeld<'c> {
     core: &'c Core,
     actor: Tid,
     /// Each holder's edge into the actor as this node holds it, read once (`departures::edge_logs`).
-    logs: std::cell::OnceCell<std::collections::BTreeMap<Tid, osis_keys::EdgeLog>>,
+    logs: std::cell::OnceCell<std::collections::BTreeMap<Tid, osis_keys::GrantLog>>,
 }
 
 impl NamesHeld<'_> {
@@ -485,7 +485,7 @@ impl NamesHeld<'_> {
     }
 
     /// The held edge writes on the actor of the commit at `key` (on `holder`'s edge, or on any)
-    /// all stand here (`EdgeWrite::stands`: apply, or would over some edge before them; only
+    /// all stand here (`GrantWrite::stands`: apply, or would over some edge before them; only
     /// their author's authority is judged), and there is one.
     fn stands(&self, key: &osis_keys::Key, holder: Option<&Tid>) -> bool {
         let logs = self.logs.get_or_init(|| self.core.timelines().on(&self.actor).map(|on| crate::rotation::departures::edge_logs(self.core, &on, &self.actor)).unwrap_or_default());
@@ -498,7 +498,7 @@ impl osis_keys::Held for NamesHeld<'_> {
     /// Applied: the commit held with its `roles.0` part on the actor, if it has one (a copy of
     /// some of it, a certificate copy or another sync ID's parts, may lack the write), and
     /// `resolved`; then judged as its rotator judged it: an applied name only while its write
-    /// on its holder's edge stands here (`EdgeWrite::stands`: applies, or would over some edge
+    /// on its holder's edge stands here (`GrantWrite::stands`: applies, or would over some edge
     /// before it: a finalize of a grant renewed since is met), a void name only while that
     /// write applies nothing here.
     ///

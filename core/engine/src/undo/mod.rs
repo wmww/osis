@@ -870,7 +870,7 @@ mod tests {
         let keep = osis_schema::PurgeBy::Writer;
         let (t, _) = lp.peers[0].engine.create_with_admin(&a).unwrap();
         lp.hold(t);
-        lp.peers[0].engine.grant(&t, &c, &ct::Edge { role: Role::Write, until: None, may_grant: false, retain: false, floor: None }).unwrap();
+        lp.peers[0].engine.grant(&t, &c, &ct::Grant { role: Role::Write, until: None, may_grant: false, retain: false, floor: None }).unwrap();
         // history kept a day after replaced on `x:m.0` and `x:r.0`
         let day = osis_schema::History::Keep { until: None, after: Some(86_400_000) };
         let mut setting = ct::RetentionSetting::of(Ak::new("x:m.0").unwrap(), day);
@@ -965,7 +965,7 @@ mod tests {
         let (t, _) = lp.peers[0].engine.create_with_admin(&a).unwrap();
         lp.hold(t);
         let r = lp.peers[1].engine.tid();
-        lp.peers[0].engine.grant(&t, &r, &ct::Edge { role: Role::Read, until: None, may_grant: false, retain: false, floor: None }).unwrap();
+        lp.peers[0].engine.grant(&t, &r, &ct::Grant { role: Role::Read, until: None, may_grant: false, retain: false, floor: None }).unwrap();
         let x = Ak::new("x:m.0").unwrap();
         let day = osis_schema::History::Keep { until: None, after: Some(86_400_000) };
         let mut m = Mutation::new();
@@ -1022,7 +1022,7 @@ mod tests {
         let day = osis_schema::History::Keep { until: None, after: Some(86_400_000) };
         let setting = ct::RetentionSetting { default: Some(ct::RetentionEntry { history: Some(day), ..Default::default() }), ..Default::default() };
         for t in &ts {
-            lp.peers[0].engine.grant(t, &b, &ct::Edge { role: Role::Write, until: None, may_grant: false, retain: false, floor: None }).unwrap();
+            lp.peers[0].engine.grant(t, &b, &ct::Grant { role: Role::Write, until: None, may_grant: false, retain: false, floor: None }).unwrap();
             let mut m = Mutation::new();
             m.set(*t, &ct::RETENTION, &setting).unwrap();
             lp.peers[0].commit(m).unwrap();

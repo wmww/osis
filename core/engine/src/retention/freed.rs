@@ -686,7 +686,7 @@ mod tests {
     fn lose_t1(t1_value: impl Fn(&Link) -> Value) -> (usize, bool) {
         use crate::flows::Demotion;
         use osis_base::Role;
-        use osis_schema::core_types::Edge;
+        use osis_schema::core_types::Grant;
         let mut lp = LocalPeer::fresh(2, osis_base::Time(1_700_000_000_000));
         lp.sync_all().unwrap();
         let (me, v) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
@@ -695,7 +695,7 @@ mod tests {
         let t2 = lp.peers[0].engine.new_thing(&mut m, me);
         lp.peers[0].commit(m).unwrap();
         lp.hold(t2);
-        let read = Edge { role: Role::Read, until: None, may_grant: false, retain: false, floor: None };
+        let read = Grant { role: Role::Read, until: None, may_grant: false, retain: false, floor: None };
         for t in [t1, t2] {
             lp.hold(t);
             lp.peers[0].engine.grant(&t, &v, &read).unwrap();

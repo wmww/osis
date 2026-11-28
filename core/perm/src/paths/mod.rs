@@ -15,7 +15,7 @@ mod content;
 mod path;
 mod walk;
 
-use crate::types::{Edge, Frontier, WriteId};
+use crate::types::{Grant, Frontier, WriteId};
 use osis_base::{Ak, CommitId, Holder, PurgeBy, Role, SignKey, Tid, Ts};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -60,7 +60,7 @@ pub struct Part {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum PartKind {
-    Edge(EdgeWrite),
+    Grant(GrantWrite),
     /// Any other delta, judged as content (draft §5.2).
     Delta(Delta),
     /// A part nothing is read of, keeping its place among the commit's parts (the caller's
@@ -108,10 +108,10 @@ impl List {
 
 /// A write on `holder`'s grant: a `roles.0` write, or a `signers.0` write on a key's.
 #[derive(Clone, Debug, PartialEq)]
-pub struct EdgeWrite {
+pub struct GrantWrite {
     pub holder: Holder,
     /// `None`: a removal.
-    pub value: Option<Edge>,
+    pub value: Option<Grant>,
     /// A removal of another holder's grant with none that is no self-removal is a finalize.
     pub frontier: Option<Arc<List>>,
 }
@@ -263,7 +263,7 @@ pub enum By {
 /// or (a copy) a snapshot carrying it changed its verdict.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Changed {
-    /// Edge-class parts whose status changed, every new part, addenda whose validity changed.
+    /// Grant-class parts whose status changed, every new part, addenda whose validity changed.
     pub parts: BTreeSet<WriteId>,
     /// Per edge (holder, target), the earliest key from which its history changed.
     pub edges: BTreeMap<(Holder, Tid), Key>,
@@ -384,7 +384,7 @@ impl<S: Store> Paths<S> {
         // a list read further names more with the walk unchanged: what it names is reported
         for c in &given {
             for p in &c.parts {
-                if let PartKind::Edge(EdgeWrite { frontier: Some(f), .. }) = &p.kind {
+                if let PartKind::Grant(GrantWrite { frontier: Some(f), .. }) = &p.kind {
                     taken.listed.extend(f.keys().map(|(_, c)| c));
                 }
             }
@@ -419,7 +419,7 @@ impl<S: Store> Paths<S> {
     /// changed), and `carriers` are the held snapshots carrying it:
     /// giving it again would change nothing.
     pub fn reads(&self, c: &Commit, carriers: &[WriteId]) -> bool {
-        self.timeline.parts_of(&c.id).is_empty() && !c.parts.iter().any(|p| matches!(p.kind, PartKind::Edge(_))) && self.facts.reads(c) && self.facts.carriers_moved(&c.id, carriers).is_empty()
+        self.timeline.parts_of(&c.id).is_empty() && !c.parts.iter().any(|p| matches!(p.kind, PartKind::Grant(_))) && self.facts.reads(c) && self.facts.carriers_moved(&c.id, carriers).is_empty()
     }
 
     /// Whether commit `c` is held: by its edge-class parts, its role facts or its deltas.
@@ -484,7 +484,7 @@ impl<S: Store> Paths<S> {
 
     /// Whether held edge-class part `id` would apply at its key were its edge's value `old`
     /// there, the rest as the settled walk has it.
-    pub fn would_apply(&self, id: &WriteId, old: Option<Edge>) -> bool {
+    pub fn would_apply(&self, id: &WriteId, old: Option<Grant>) -> bool {
         self.timeline.would_apply(id, old)
     }
 
@@ -666,7 +666,7 @@ impl<S: Store> Paths<S> {
 
     /// The value of (holder, target) just before `key`: the last applied write before it, else
     /// the record edge's admin, else none.
-    pub fn value_before(&self, holder: &Holder, target: &Tid, key: &Key) -> Option<Edge> {
+    pub fn value_before(&self, holder: &Holder, target: &Tid, key: &Key) -> Option<Grant> {
         self.timeline.value_before(holder, target, key)
     }
 

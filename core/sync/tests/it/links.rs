@@ -120,7 +120,7 @@ fn a_joiner_leaves_k_once_its_edge_on_the_target_expired_spec_permissions_7() {
     let (mut w, link) = redeemed();
     let a1 = w.node(1).account.unwrap();
     let until = osis_base::Time(w.now().0 + 60_000);
-    let edge = osis_schema::core_types::Edge { role: Role::Read, until: Some(until), may_grant: false, retain: false, floor: None };
+    let edge = osis_schema::core_types::Grant { role: Role::Read, until: Some(until), may_grant: false, retain: false, floor: None };
     w.write(0, |e| e.grant(&link.target, &link.k, &edge)).unwrap();
     w.run();
     assert!(w.now() >= until, "the run reached the expiry");
@@ -156,7 +156,7 @@ fn a_joiner_leaves_k_by_its_clock_alone_spec_permissions_7() {
     let (mut w, link) = redeemed();
     let a1 = w.node(1).account.unwrap();
     let until = osis_base::Time(w.now().0 + 60_000);
-    let edge = osis_schema::core_types::Edge { role: Role::Read, until: Some(until), may_grant: false, retain: false, floor: None };
+    let edge = osis_schema::core_types::Grant { role: Role::Read, until: Some(until), may_grant: false, retain: false, floor: None };
     w.write(0, |e| e.grant(&link.target, &link.k, &edge)).unwrap();
     w.advance(1000);
     assert!(w.engine(1).roster(&link.target).contains_key(&link.k) && w.engine(1).roster(&link.k).contains_key(&a1), "node 1 holds the edge, joined");

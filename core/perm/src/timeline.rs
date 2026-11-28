@@ -9,7 +9,7 @@
 
 use crate::graph::{Edges, EdgesAt, Need, Records, View, RECORD_EDGE};
 use crate::paths::{self, Key, MemStore, Paths, Status, Store, Way};
-use crate::types::{Edge, EdgeOp, Point, RoleCommit, WriteId};
+use crate::types::{Grant, GrantOp, Point, RoleCommit, WriteId};
 use osis_base::format::MAX_CHAIN_DEPTH;
 use osis_base::{CommitId, CreationRecord, Holder, RecordLink, Role, SignKey, Tid, Ts, Time};
 use std::collections::{BTreeMap, BTreeSet};
@@ -48,7 +48,7 @@ impl Held {
         let mut parts = self.parts.clone();
         if let Some(r) = &self.role {
             let list = r.frontier.as_ref().map(|f| Arc::new(paths::List::whole((**f).clone())));
-            parts.extend(r.ops.iter().map(|o| paths::Part { on: o.target, path: r.path_to(&o.target).to_vec(), direct: r.direct, kind: paths::PartKind::Edge(paths::EdgeWrite { holder: o.holder, value: o.edge, frontier: list.clone() }) }));
+            parts.extend(r.ops.iter().map(|o| paths::Part { on: o.target, path: r.path_to(&o.target).to_vec(), direct: r.direct, kind: paths::PartKind::Grant(paths::GrantWrite { holder: o.holder, value: o.edge, frontier: list.clone() }) }));
         }
         paths::Commit { id: self.id, ts: self.ts, signer: self.signer, key: self.key, parts }
     }
@@ -433,17 +433,17 @@ impl<S: Store> Timeline<S> {
     }
 
     /// The edge writes held on `t`, applied or not, each with its ID, commit and op.
-    pub fn held_on<'t>(&'t self, t: &'t Tid) -> impl Iterator<Item = (WriteId, &'t RoleCommit, &'t EdgeOp)> + 't {
+    pub fn held_on<'t>(&'t self, t: &'t Tid) -> impl Iterator<Item = (WriteId, &'t RoleCommit, &'t GrantOp)> + 't {
         self.on.get(t).into_iter().flatten().filter_map(|id| self.roles.get(id)).flat_map(move |(c, _)| (0u32..).zip(&c.ops).filter(move |(_, o)| o.target == *t).map(move |(k, o)| (WriteId(c.id, k), &**c, o)))
     }
 
     /// `held_on` of `t` by value.
-    pub fn held_on_owned(&self, t: Tid) -> impl Iterator<Item = (WriteId, &RoleCommit, &EdgeOp)> + '_ {
+    pub fn held_on_owned(&self, t: Tid) -> impl Iterator<Item = (WriteId, &RoleCommit, &GrantOp)> + '_ {
         self.on.get(&t).into_iter().flatten().filter_map(|id| self.roles.get(id)).flat_map(move |(c, _)| (0u32..).zip(&c.ops).filter(move |(_, o)| o.target == t).map(move |(k, o)| (WriteId(c.id, k), &**c, o)))
     }
 
     /// The edge writes applied on `t`, each with its commit and op.
-    pub fn applied_on<'t>(&'t self, t: &'t Tid) -> impl Iterator<Item = (&'t RoleCommit, &'t EdgeOp)> + 't {
+    pub fn applied_on<'t>(&'t self, t: &'t Tid) -> impl Iterator<Item = (&'t RoleCommit, &'t GrantOp)> + 't {
         self.held_on(t).filter(|(w, _, _)| self.is_applied(w)).map(|(_, c, o)| (c, o))
     }
 
@@ -474,7 +474,7 @@ impl<S: Store> Timeline<S> {
     /// Whether held edge write `w` would apply at its key were its holder's edge `old` there, the
     /// rest as the walk has it: its verdict over another state of its own edge, such as a second
     /// removal of a holder another write removed first (spec/crypto.md §4, Covers).
-    pub fn applies_over(&self, w: &WriteId, old: Option<Edge>) -> bool {
+    pub fn applies_over(&self, w: &WriteId, old: Option<Grant>) -> bool {
         self.part_of(w).is_some_and(|p| self.paths.would_apply(&p, old))
     }
 
@@ -514,7 +514,7 @@ impl<S: Store> Timeline<S> {
 
     /// The grant `key` holds on `thing` after every applied write (§1 Key grant): its last applied
     /// write's value, else the record's key's admin from the start. `until` is not judged here.
-    pub fn key_grant(&self, key: &SignKey, thing: &Tid) -> Option<Edge> {
+    pub fn key_grant(&self, key: &SignKey, thing: &Tid) -> Option<Grant> {
         match self.paths.last(&Holder::Key(*key), thing) {
             Some((_, a)) => a.value,
             None => (self.records.holder(thing) == Some(Holder::Key(*key))).then_some(RECORD_EDGE),
@@ -523,7 +523,7 @@ impl<S: Store> Timeline<S> {
 
     /// The keys holding a grant on `thing` alive at `ts` (`None`: whatever its `until`), with it
     /// (`key_grant`).
-    pub fn key_grants(&self, thing: &Tid, ts: Option<Ts>) -> BTreeMap<SignKey, Edge> {
+    pub fn key_grants(&self, thing: &Tid, ts: Option<Ts>) -> BTreeMap<SignKey, Grant> {
         let record = self.records.holder(thing).and_then(|h| match h {
             Holder::Key(k) => Some(k),
             Holder::Thing(_) => None,
@@ -559,7 +559,7 @@ impl<S: Store> Timeline<S> {
 
     /// Whether an explicit write of `new` on (`holder`, `target`) at `ts`, after every held
     /// write, takes the edge down (§5.1): the edge as restored gives or lets grant more.
-    pub fn audits(&self, holder: &Holder, target: &Tid, new: Option<Edge>, ts: Ts) -> bool {
+    pub fn audits(&self, holder: &Holder, target: &Tid, new: Option<Grant>, ts: Ts) -> bool {
         let role = new.filter(|v| v.alive_at(Some(ts))).map(|v| v.role);
         let grant = role.filter(|r| *r == Role::Admin || new.is_some_and(|v| v.may_grant));
         let (r, g) = self.paths.restored(holder, target);
@@ -599,14 +599,14 @@ impl<S: Store> Timeline<S> {
     }
 
     /// The applied writes on the edges into `thing`, in key order: (key, holder, value).
-    fn writes_on(&self, thing: &Tid) -> Vec<(Key, Tid, Option<Edge>)> {
-        let mut out: Vec<(Key, Tid, Option<Edge>)> = self.into.get(thing).into_iter().flatten().flat_map(|h| self.paths.history(&Holder::Thing(*h), thing).into_iter().map(|(k, v)| (k, *h, v))).collect();
+    fn writes_on(&self, thing: &Tid) -> Vec<(Key, Tid, Option<Grant>)> {
+        let mut out: Vec<(Key, Tid, Option<Grant>)> = self.into.get(thing).into_iter().flatten().flat_map(|h| self.paths.history(&Holder::Thing(*h), thing).into_iter().map(|(k, v)| (k, *h, v))).collect();
         out.sort_by_key(|x| x.0);
         out
     }
 
     /// The roster of `thing` (§5.1): its edges alive at `at`.
-    pub fn roster(&self, thing: &Tid, at: At) -> BTreeMap<Tid, Edge> {
+    pub fn roster(&self, thing: &Tid, at: At) -> BTreeMap<Tid, Grant> {
         let edges = self.edges_at(at.point);
         edges.holders(thing).filter(|(_, e)| e.alive_at(at.ts)).map(|(m, e)| (*m, *e)).collect()
     }
@@ -663,7 +663,7 @@ impl<S: Store> Timeline<S> {
     }
 
     /// The holders with no edge alive on `thing` at `ts` that the walk saw one of: whether each
-    /// one's edge ended saying retain (`Edge::ends_retaining`), the point of its last write
+    /// one's edge ended saying retain (`Grant::ends_retaining`), the point of its last write
     /// (`None`: its record edge, never written) and the role the edge last gave (a removal's
     /// value saying retain gives none: the role before it).
     pub fn ended(&self, thing: &Tid, ts: Ts) -> BTreeMap<Tid, (bool, Option<Point>, Role)> {
@@ -743,7 +743,7 @@ impl<S: Store> Timeline<S> {
             for h in hs {
                 let best = self.paths.history(&Holder::Thing(*h), t).into_iter().filter_map(|(_, v)| v.filter(|e| !e.says_retain())).max_by_key(|e| e.role);
                 if let Some(e) = best {
-                    ever.set(&self.records, *h, *t, Some(Edge { until: None, ..e }));
+                    ever.set(&self.records, *h, *t, Some(Grant { until: None, ..e }));
                 }
             }
         }

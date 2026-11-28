@@ -87,7 +87,7 @@ fn f9_a_removal_of_two_holders_waits_for_each_creation_spec_permissions_2() {
     assert!(f.iter().any(|f| f.prop == "P1" && f.id == c && f.reader == Some(Verdict::Valid) && f.full == Some(Verdict::Invalid)), "{f:?}");
 }
 
-/// The entry a reset names (spec/permissions.md §2 Edge writes): the one the write in force on its
+/// The entry a reset names (spec/permissions.md §2 Grant writes): the one the write in force on its
 /// edge put in its writer's walk. X grants Q read (g1) and changes it to write (g2); K, a writer of
 /// A without admin, grants Q admin (junk, applied nowhere); X's removal of Q names g2's entry. A
 /// second removal finds no grant in force: it resets an entry of its own (none named), as does a

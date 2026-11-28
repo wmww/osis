@@ -71,7 +71,7 @@ fn build(seed: u64) -> (LocalPeer, Tid) {
     lp.hold(t);
     for w in [1, 2, 3] {
         let w = lp.peers[w].engine.tid();
-        lp.peers[0].engine.grant(&t, &w, &ct::Edge { role: Role::Write, until: None, may_grant: false, retain: false, floor: None }).unwrap();
+        lp.peers[0].engine.grant(&t, &w, &ct::Grant { role: Role::Write, until: None, may_grant: false, retain: false, floor: None }).unwrap();
     }
     lp.sync_all().unwrap();
     (lp, t)

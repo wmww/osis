@@ -338,7 +338,7 @@ impl Conv<'_> {
         out
     }
     /// A role edge write (`floor` dropped: it gives keys, never a role).
-    fn edge(&mut self, holder: &Tid, e: Option<&osis_perm::Edge>) -> hm::EdgeWrite {
+    fn edge(&mut self, holder: &Tid, e: Option<&osis_perm::Grant>) -> hm::EdgeWrite {
         hm::EdgeWrite { holder: self.id(holder), role: e.map(|e| role_of(e.role)), may_grant: e.is_some_and(|e| e.may_grant), until: e.and_then(|e| e.until).map(|u| u.0) }
     }
     /// An `addenda.0` body as its entries: per removal (a 32-byte commit ID key), the commits its

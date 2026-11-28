@@ -10,9 +10,9 @@ use super::{cid, commit, input, ms, rules, t, MODES};
 use crate::common::{seeded, sharded};
 use osis_base::Tid;
 use osis_base::{Ak, CommitId, Holder, PurgeBy, Role, Ts};
-use osis_perm::paths::{Commit, Delta, DeltaClass, EdgeWrite, Fact, Holding, Key, MemStore, NameKey, Names, Pair, Part, PartKind, Paths, Right, Status, Store};
+use osis_perm::paths::{Commit, Delta, DeltaClass, GrantWrite, Fact, Holding, Key, MemStore, NameKey, Names, Pair, Part, PartKind, Paths, Right, Status, Store};
 use std::ops::Bound;
-use osis_perm::{Edge, WriteId};
+use osis_perm::{Grant, WriteId};
 use std::sync::Arc;
 use roles_model::paths as m;
 use roles_model::Rng;
@@ -240,7 +240,7 @@ fn any_lookup_order_reads_alike() {
 /// listing `list`.
 fn ew(on: u32, path: &[u32], holder: u32, role: Option<Role>, list: &[u64]) -> Part {
     let frontier = Some(Arc::new(super::whole(&[H, M, X, Y, Z, W, A, B, C, N].map(t), list.iter().map(|&c| cid(c)))));
-    Part { on: t(on), path: path.iter().map(|&x| t(x)).collect(), direct: 0, kind: PartKind::Edge(EdgeWrite { holder: Holder::Thing(t(holder)), value: role.map(Edge::new), frontier }) }
+    Part { on: t(on), path: path.iter().map(|&x| t(x)).collect(), direct: 0, kind: PartKind::Grant(GrantWrite { holder: Holder::Thing(t(holder)), value: role.map(Grant::new), frontier }) }
 }
 
 fn role_delta(on: u32, path: &[u32]) -> Part {

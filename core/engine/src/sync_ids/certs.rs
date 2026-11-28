@@ -625,7 +625,7 @@ mod tests {
         m.set(t, &ak, &Value::Int(1)).unwrap();
         let good = lp.peers[0].commit(m).unwrap().unwrap();
         lp.hold(t);
-        let edge = ct::Edge { role: Role::Read, until: None, may_grant: false, retain: false, floor: None };
+        let edge = ct::Grant { role: Role::Read, until: None, may_grant: false, retain: false, floor: None };
         lp.peers[0].engine.grant(&t, &b, &edge).unwrap();
         let c = lp.peers[2].engine.tid();
         lp.peers[0].engine.grant(&t, &c, &edge).unwrap();

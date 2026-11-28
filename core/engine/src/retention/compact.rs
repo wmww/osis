@@ -1105,7 +1105,7 @@ mod tests {
             let (t, _) = lp.peers[0].engine.create_with_admin(&a).unwrap();
             lp.hold(t);
             for w in [b, x] {
-                lp.peers[0].engine.grant(&t, &w, &ct::Edge { role: Role::Write, until: None, may_grant: false, retain: false, floor: None }).unwrap();
+                lp.peers[0].engine.grant(&t, &w, &ct::Grant { role: Role::Write, until: None, may_grant: false, retain: false, floor: None }).unwrap();
             }
             lp.sync_all().unwrap();
             put(&mut lp.peers[2].engine, t, "x", "withheld");
@@ -1167,7 +1167,7 @@ mod tests {
         let [a, b] = [0, 1].map(|i| lp.peers[i].engine.tid());
         let (t, _) = lp.peers[0].engine.create_with_admin(&a).unwrap();
         lp.hold(t);
-        lp.peers[0].engine.grant(&t, &b, &ct::Edge { role: Role::Write, until: None, may_grant: false, retain: false, floor: None }).unwrap();
+        lp.peers[0].engine.grant(&t, &b, &ct::Grant { role: Role::Write, until: None, may_grant: false, retain: false, floor: None }).unwrap();
         lp.sync_all().unwrap();
         let ak = Ak::new("x:m+.0").unwrap();
         let w: Vec<CommitId> = ["k1", "k2", "k3"].iter().map(|k| put(&mut lp.peers[0].engine, t, k, "v")).collect();
@@ -1249,7 +1249,7 @@ mod tests {
             let [a, b] = [0, 1].map(|i| lp.peers[i].engine.tid());
             let (t, _) = lp.peers[0].engine.create_with_admin(&a).unwrap();
             lp.hold(t);
-            let edge = |role| ct::Edge { role, until: None, may_grant: false, retain: false, floor: None };
+            let edge = |role| ct::Grant { role, until: None, may_grant: false, retain: false, floor: None };
             lp.peers[0].engine.grant(&t, &b, &edge(Role::Write)).unwrap();
             lp.sync_all().unwrap();
             let (m_ak, n_ak) = (Ak::new("x:m.0").unwrap(), Ak::new("x:n.0").unwrap());

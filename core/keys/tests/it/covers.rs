@@ -4,7 +4,7 @@
 use crate::common::*;
 use osis_base::{Role, Tid};
 use osis_keys::{
-    ActorEpochs, AllHeld, Departure, EdgeLog, EdgeWrite, Holder, Key, Name, Names, Opener, Own, box_holder, ingest, pins,
+    ActorEpochs, AllHeld, Departure, GrantLog, GrantWrite, Holder, Key, Name, Names, Opener, Own, box_holder, ingest, pins,
     reseal_needed, roles_up_to, rotate, uncovered,
 };
 use std::collections::BTreeSet;
@@ -21,7 +21,7 @@ fn key(b: u8) -> Key {
 
 /// Reader `m` removed by commit `b`: its departure, and the name a rotation knowing it writes.
 fn removal(m: Tid, b: u8) -> (Departure, Name) {
-    let edge = EdgeLog { start: Some(Role::Read), writes: vec![EdgeWrite { key: key(b), role: None, applied: true, takes: true, stands: true, counts: false }] };
+    let edge = GrantLog { start: Some(Role::Read), writes: vec![GrantWrite { key: key(b), role: None, applied: true, takes: true, stands: true, counts: false }] };
     (Departure::holder(m, Role::Sync).upto(Role::Read).edge(edge), Name::applied(key(b), m))
 }
 
@@ -132,8 +132,8 @@ fn missing_box_covers_nothing() {
 /// Held writes `ws` (commit, role, applied, takes, counts) on holder `m`'s edge (`start` its
 /// grant before them): its departure from every role above `now`.
 fn edge_dep(m: Tid, start: Option<Role>, ws: &[(u8, Option<Role>, bool, bool, bool)]) -> Departure {
-    let writes = ws.iter().map(|(b, role, applied, takes, counts)| EdgeWrite { key: key(*b), role: *role, applied: *applied, takes: *takes, stands: *takes, counts: *counts }).collect();
-    let edge = EdgeLog { start, writes };
+    let writes = ws.iter().map(|(b, role, applied, takes, counts)| GrantWrite { key: key(*b), role: *role, applied: *applied, takes: *takes, stands: *takes, counts: *counts }).collect();
+    let edge = GrantLog { start, writes };
     let from = match edge.now() {
         None => Role::Sync,
         Some(Role::Sync) => Role::Read,

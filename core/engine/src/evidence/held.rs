@@ -103,7 +103,7 @@ pub(crate) fn copy_parts(tx: &mut Tx<'_>, id: &CommitId) -> Result<CopyParts> {
             let on = parts.entry(t).or_default();
             // an edge aspect's parts: one per edge write there, things' on `roles.0`, keys' on
             // `signers.0`
-            let writes: Vec<(usize, &osis_perm::EdgeOp)> = match (&rc, crate::apply::validity::Grants::of(a.ak.as_str())) {
+            let writes: Vec<(usize, &osis_perm::GrantOp)> = match (&rc, crate::apply::validity::Grants::of(a.ak.as_str())) {
                 (Some(rc), Some(g)) => rc.ops.iter().enumerate().filter(|(_, o)| o.target == t && crate::apply::validity::Grants::of_holder(&o.holder) == g).collect(),
                 _ => Vec::new(),
             };
@@ -264,7 +264,7 @@ impl crate::Engine {
                     let r = ids.get(&w).copied().unwrap_or(w);
                     let (a, b) = match p.kind {
                         PartKind::Delta(_) => (format!("{:?}", full.content(&w)), format!("{:?}", reader.content(&r))),
-                        PartKind::Edge(_) => (format!("{:?}", full.status(&w)), format!("{:?}", reader.status(&r))),
+                        PartKind::Grant(_) => (format!("{:?}", full.status(&w)), format!("{:?}", reader.status(&r))),
                         PartKind::None => continue,
                     };
                     if a != b {

@@ -419,7 +419,7 @@ fn models() -> Vec<Scenario> {
             name: "revoked writer re-granted",
             spec: "spec/permissions.md §5.2",
             source: "hand-picked: a demoted writer re-granted (re-granted: both stand)",
-            steps: vec![w(1, 1), Sync { from: 1, to: 0 }, tick.clone(), revoke.clone(), tick.clone(), w(1, 2), tick.clone(), Edge { by: 0, t: 0, holder: 1, role: Some(Role::Write) }],
+            steps: vec![w(1, 1), Sync { from: 1, to: 0 }, tick.clone(), revoke.clone(), tick.clone(), w(1, 2), tick.clone(), SetGrant { by: 0, t: 0, holder: 1, role: Some(Role::Write) }],
             orders: None,
         },
         Scenario {
@@ -440,14 +440,14 @@ fn models() -> Vec<Scenario> {
             name: "concurrent cross removals, the earlier wins",
             spec: "spec/permissions.md §5.1",
             source: "hand-picked: two admins removing each other concurrently (the earlier wins)",
-            steps: vec![Edge { by: 0, t: 0, holder: 1, role: Some(Role::Admin) }, Sync { from: 0, to: 1 }, tick.clone(), Edge { by: 1, t: 0, holder: 2, role: None }, tick.clone(), Edge { by: 2, t: 0, holder: 1, role: None }],
+            steps: vec![SetGrant { by: 0, t: 0, holder: 1, role: Some(Role::Admin) }, Sync { from: 0, to: 1 }, tick.clone(), SetGrant { by: 1, t: 0, holder: 2, role: None }, tick.clone(), SetGrant { by: 2, t: 0, holder: 1, role: None }],
             orders: None,
         },
         Scenario {
             name: "concurrent cross removals, the mint admin removes the earlier unseen",
             spec: "spec/permissions.md §5.1",
             source: "hand-picked: two admins removing each other concurrently (the mint admin's removal of x drops x's removal of y)",
-            steps: vec![Edge { by: 0, t: 0, holder: 1, role: Some(Role::Admin) }, Sync { from: 0, to: 1 }, tick.clone(), Edge { by: 1, t: 0, holder: 2, role: None }, tick.clone(), Edge { by: 2, t: 0, holder: 1, role: None }, tick.clone(), Edge { by: 0, t: 0, holder: 1, role: None }],
+            steps: vec![SetGrant { by: 0, t: 0, holder: 1, role: Some(Role::Admin) }, Sync { from: 0, to: 1 }, tick.clone(), SetGrant { by: 1, t: 0, holder: 2, role: None }, tick.clone(), SetGrant { by: 2, t: 0, holder: 1, role: None }, tick.clone(), SetGrant { by: 0, t: 0, holder: 1, role: None }],
             orders: None,
         },
     ]
@@ -483,7 +483,7 @@ fn rules() -> Vec<Scenario> {
             name: "re-grant: a write in the gap",
             spec: "spec/permissions.md §5.2",
             source: "hand-picked: 0 removes 1, 1 (not knowing) writes, 0 grants 1 write again (the gap write valid)",
-            steps: vec![Edge { by: 0, t: 0, holder: 1, role: None }, tick.clone(), Write { by: 1, t: 0, op: 0, k: 0, v: 1 }, tick.clone(), Edge { by: 0, t: 0, holder: 1, role: Some(Role::Write) }],
+            steps: vec![SetGrant { by: 0, t: 0, holder: 1, role: None }, tick.clone(), Write { by: 1, t: 0, op: 0, k: 0, v: 1 }, tick.clone(), SetGrant { by: 0, t: 0, holder: 1, role: Some(Role::Write) }],
             orders: None,
         },
         Scenario {
@@ -504,14 +504,14 @@ fn rules() -> Vec<Scenario> {
             name: "purge on replace, killer removed",
             spec: "spec/commits.md §5",
             source: "hand-picked: purge on replace; W1 by 1, W2 by 2 kills it, 2 is removed (W2 invalid): W1 is the value again in either order",
-            steps: vec![Write { by: 1, t: 0, op: 18, k: 0, v: 1 }, tick.clone(), Write { by: 2, t: 0, op: 18, k: 0, v: 2 }, tick.clone(), Edge { by: 0, t: 0, holder: 2, role: None }],
+            steps: vec![Write { by: 1, t: 0, op: 18, k: 0, v: 1 }, tick.clone(), Write { by: 2, t: 0, op: 18, k: 0, v: 2 }, tick.clone(), SetGrant { by: 0, t: 0, holder: 2, role: None }],
             orders: None,
         },
         Scenario {
             name: "un-merge of a write nested under an invalid creation",
             spec: "spec/crdt.md §4.6, spec/permissions.md §5.2",
             source: "order harness, shrunk: C puts an entry, B (sent it alone) writes inside it and compacts, A lowers C to read (an audit with no frontier)",
-            steps: vec![Nested { by: 2, other: 1, t: 6, k: 0, text: false, compact: true, also: false }, New { by: 2, admin: 1, write: true }, Send { from: 1, to: 0, back: 1 }, Edge { by: 0, t: 2, holder: 2, role: Some(Role::Read) }],
+            steps: vec![Nested { by: 2, other: 1, t: 6, k: 0, text: false, compact: true, also: false }, New { by: 2, admin: 1, write: true }, Send { from: 1, to: 0, back: 1 }, SetGrant { by: 0, t: 2, holder: 2, role: Some(Role::Read) }],
             orders: None,
         },
     ]
@@ -536,7 +536,7 @@ fn edges() -> Vec<Scenario> {
             name: "may-grant grant",
             spec: "spec/permissions.md §2, §5.1",
             source: "hand-picked: 0 removes 2 and grants 1 write with may-grant; 1 grants 2 write by may-grant (applies); 2 writes (valid)",
-            steps: vec![Edge { by: 0, t: 0, holder: 2, role: None }, Grant { by: 0, t: 0, holder: 1, role: Role::Write, until: None, may_grant: true, flow: true }, Sync { from: 0, to: 1 }, tick.clone(), Grant { by: 1, t: 0, holder: 2, role: Role::Write, until: None, may_grant: false, flow: true }, Sync { from: 1, to: 2 }, tick.clone(), Write { by: 2, t: 0, op: 0, k: 0, v: 1 }],
+            steps: vec![SetGrant { by: 0, t: 0, holder: 2, role: None }, Grant { by: 0, t: 0, holder: 1, role: Role::Write, until: None, may_grant: true, flow: true }, Sync { from: 0, to: 1 }, tick.clone(), Grant { by: 1, t: 0, holder: 2, role: Role::Write, until: None, may_grant: false, flow: true }, Sync { from: 1, to: 2 }, tick.clone(), Write { by: 2, t: 0, op: 0, k: 0, v: 1 }],
             orders: None,
         },
     ]
@@ -548,7 +548,7 @@ fn edges() -> Vec<Scenario> {
 fn may_grants() -> Vec<Scenario> {
     use Step::*;
     let tick = Advance { who: None, ms: 1000 };
-    let start = |role: Role| vec![Edge { by: 0, t: 0, holder: 2, role: None }, Grant { by: 0, t: 0, holder: 1, role, until: None, may_grant: true, flow: false }, Sync { from: 0, to: 1 }, tick.clone()];
+    let start = |role: Role| vec![SetGrant { by: 0, t: 0, holder: 2, role: None }, Grant { by: 0, t: 0, holder: 1, role, until: None, may_grant: true, flow: false }, Sync { from: 0, to: 1 }, tick.clone()];
     let then = |base: Vec<Step>, more: Vec<Step>| base.into_iter().chain(more).collect::<Vec<_>>();
     let w2 = HostileWrite { by: 2, t: 0, v: 1 };
     vec![
@@ -570,7 +570,7 @@ fn may_grants() -> Vec<Scenario> {
             name: "may-grant grant over a current edge",
             spec: "spec/permissions.md §2, §5.1",
             source: "hand-built: 2 holds read; 1 (write, may-grant) writes 2's edge to write: may-grant adds edges only, not applied",
-            steps: then(start(Role::Write), vec![Edge { by: 0, t: 0, holder: 2, role: Some(Role::Read) }, Sync { from: 0, to: 1 }, tick.clone(), Hostile { by: 1, t: 0, holder: 2, role: Some(Role::Write), may_grant: false }]),
+            steps: then(start(Role::Write), vec![SetGrant { by: 0, t: 0, holder: 2, role: Some(Role::Read) }, Sync { from: 0, to: 1 }, tick.clone(), Hostile { by: 1, t: 0, holder: 2, role: Some(Role::Write), may_grant: false }]),
             orders: None,
         },
         Scenario {
@@ -584,7 +584,7 @@ fn may_grants() -> Vec<Scenario> {
             name: "a holder by may-grant removes another edge",
             spec: "spec/permissions.md §2, §5.1",
             source: "hand-built: 2 holds read; 1 (write, may-grant) removes 2's edge: holders by may-grant change no other edge, not applied",
-            steps: then(start(Role::Write), vec![Edge { by: 0, t: 0, holder: 2, role: Some(Role::Read) }, Sync { from: 0, to: 1 }, tick.clone(), Hostile { by: 1, t: 0, holder: 2, role: None, may_grant: false }]),
+            steps: then(start(Role::Write), vec![SetGrant { by: 0, t: 0, holder: 2, role: Some(Role::Read) }, Sync { from: 0, to: 1 }, tick.clone(), Hostile { by: 1, t: 0, holder: 2, role: None, may_grant: false }]),
             orders: None,
         },
         // §5.1 step 3: a lowering clearing the flag puts the grants made by it in question
@@ -607,7 +607,7 @@ fn may_grants() -> Vec<Scenario> {
             name: "may-grant grant through the flow after the flag went",
             spec: "spec/permissions.md §2, §5.1, §5.2",
             source: "hand-picked: 1 holds read with may-grant; 0 rewrites it to read without, unseen by 1, which grants 2 read through the flow: the edge is not applied and its `secrets.0` delta, no longer exempt, needs write: invalid",
-            steps: vec![Edge { by: 0, t: 0, holder: 2, role: None }, Edge { by: 0, t: 0, holder: 1, role: None }, Grant { by: 0, t: 0, holder: 1, role: Role::Read, until: None, may_grant: true, flow: true }, Sync { from: 0, to: 1 }, tick.clone(), Grant { by: 0, t: 0, holder: 1, role: Role::Read, until: None, may_grant: false, flow: false }, tick.clone(), Grant { by: 1, t: 0, holder: 2, role: Role::Read, until: None, may_grant: false, flow: true }],
+            steps: vec![SetGrant { by: 0, t: 0, holder: 2, role: None }, SetGrant { by: 0, t: 0, holder: 1, role: None }, Grant { by: 0, t: 0, holder: 1, role: Role::Read, until: None, may_grant: true, flow: true }, Sync { from: 0, to: 1 }, tick.clone(), Grant { by: 0, t: 0, holder: 1, role: Role::Read, until: None, may_grant: false, flow: false }, tick.clone(), Grant { by: 1, t: 0, holder: 2, role: Role::Read, until: None, may_grant: false, flow: true }],
             orders: None,
         },
     ]
@@ -635,7 +635,7 @@ fn remerges() -> Vec<Scenario> {
         name: "re-merge of an entry's creation",
         spec: "spec/permissions.md §5.2, spec/crdt.md §4.6",
         source: "order harness histories, simplified by hand",
-        steps: vec![NestedTyped { by: 1, other: 2, t: 0, k: 2 }, Sync { from: 2, to: 0 }, TypedField { by: 0, t: 0, k: 2, v: 3 }, Compact { by: 0, t: 0, op: 3 }, Edge { by: 0, t: 0, holder: 2, role: Some(Role::Read) }],
+        steps: vec![NestedTyped { by: 1, other: 2, t: 0, k: 2 }, Sync { from: 2, to: 0 }, TypedField { by: 0, t: 0, k: 2, v: 3 }, Compact { by: 0, t: 0, op: 3 }, SetGrant { by: 0, t: 0, holder: 2, role: Some(Role::Read) }],
         orders: Some(orders),
     }]
 }
@@ -681,28 +681,28 @@ fn sync_ids() -> Vec<Scenario> {
             name: "content commit over two sync IDs",
             spec: "spec/commits.md §4, spec/sync-judgement.md §1",
             source: "hand-built: 1 writes both G (it holds write) and H (it holds read) in one commit: each delta judged alone; nothing waits for a part",
-            steps: vec![NewTop { by: 0 }, tick.clone(), Edge { by: 0, t: 1, holder: 1, role: Some(Role::Read) }, Sync { from: 0, to: 1 }, tick.clone(), Two { by: 1, a: 0, b: 1, v: 1 }],
+            steps: vec![NewTop { by: 0 }, tick.clone(), SetGrant { by: 0, t: 1, holder: 1, role: Some(Role::Read) }, Sync { from: 0, to: 1 }, tick.clone(), Two { by: 1, a: 0, b: 1, v: 1 }],
             orders: Some(orders),
         },
         Scenario {
             name: "role commit over two sync IDs",
             spec: "spec/commits.md §4, spec/permissions.md §5.1",
             source: "hand-built: 0 grants 1 read on both G and H in one role commit: a role commit never waits for its other deltas",
-            steps: vec![NewTop { by: 0 }, tick.clone(), TwoEdges { by: 0, a: 0, b: 1, holder: 1, role: Role::Read }],
+            steps: vec![NewTop { by: 0 }, tick.clone(), TwoGrants { by: 0, a: 0, b: 1, holder: 1, role: Role::Read }],
             orders: Some(orders),
         },
         Scenario {
             name: "content commit, its path to H away",
             spec: "spec/commits.md §4, spec/requirements.md Decentralization",
             source: "hand-built: 1 writes both G and H, the edge giving it a path to H withheld: H's part waits alone in either order; the edge arriving ends as in order",
-            steps: vec![NewTop { by: 0 }, tick.clone(), Edge { by: 0, t: 1, holder: 1, role: Some(Role::Read) }, Sync { from: 0, to: 1 }, tick.clone(), Two { by: 1, a: 0, b: 1, v: 1 }],
+            steps: vec![NewTop { by: 0 }, tick.clone(), SetGrant { by: 0, t: 1, holder: 1, role: Some(Role::Read) }, Sync { from: 0, to: 1 }, tick.clone(), Two { by: 1, a: 0, b: 1, v: 1 }],
             orders: Some(chainless),
         },
         Scenario {
             name: "role commit, its path to H away",
             spec: "spec/commits.md §4, spec/requirements.md Decentralization",
             source: "hand-built: 2 (admin on G) sets 1's edge on G and H, the edge giving it a path to H withheld: G's roster changes in either order",
-            steps: vec![NewTop { by: 0 }, tick.clone(), Edge { by: 0, t: 1, holder: 2, role: Some(Role::Read) }, Sync { from: 0, to: 2 }, tick.clone(), TwoEdges { by: 2, a: 0, b: 1, holder: 1, role: Role::Read }],
+            steps: vec![NewTop { by: 0 }, tick.clone(), SetGrant { by: 0, t: 1, holder: 2, role: Some(Role::Read) }, Sync { from: 0, to: 2 }, tick.clone(), TwoGrants { by: 2, a: 0, b: 1, holder: 1, role: Role::Read }],
             orders: Some(chainless),
         },
     ]
@@ -936,8 +936,8 @@ fn judgment_vectors_blobs_spec_commits_4() {
 fn chainless_part_order_spec_commits_4() {
     use Step::*;
     let tick = Advance { who: None, ms: 1000 };
-    for (by, last) in [(1, Two { by: 1, a: 0, b: 1, v: 1 }), (2, TwoEdges { by: 2, a: 0, b: 1, holder: 1, role: Role::Read })] {
-        let played = play(0, &[NewTop { by: 0 }, tick.clone(), Edge { by: 0, t: 1, holder: by, role: Some(Role::Write) }, Sync { from: 0, to: by }, tick.clone(), last.clone()]);
+    for (by, last) in [(1, Two { by: 1, a: 0, b: 1, v: 1 }), (2, TwoGrants { by: 2, a: 0, b: 1, holder: 1, role: Role::Read })] {
+        let played = play(0, &[NewTop { by: 0 }, tick.clone(), SetGrant { by: 0, t: 1, holder: by, role: Some(Role::Write) }, Sync { from: 0, to: by }, tick.clone(), last.clone()]);
         let laid = lay(&played, true);
         let (rest, [g, h], _) = chainless_entries(&played, &laid.of);
         let judge = |parts: [usize; 2]| replay(&laid.bytes, laid.setup, &read_secrets(true), played.now, &rest.iter().chain(&parts).map(|e| Tok::In(*e)).collect::<Vec<_>>());

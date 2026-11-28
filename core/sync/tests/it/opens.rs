@@ -1733,7 +1733,7 @@ fn an_until_passing_while_away_serves_nothing_after_it_spec_sync_opens_6() {
     let expire = |w: &mut crate::harness::World, t: osis_base::Tid| {
         let a2 = w.node(2).account.unwrap();
         let until = osis_base::Time(w.now().0 + 60_000);
-        let edge = osis_schema::core_types::Edge { role: osis_base::Role::Read, until: Some(until), may_grant: false, retain: false, floor: None };
+        let edge = osis_schema::core_types::Grant { role: osis_base::Role::Read, until: Some(until), may_grant: false, retain: false, floor: None };
         w.write(0, |e| e.grant(&t, &a2, &edge)).unwrap();
         w.advance(120_000);
         assert!(w.now() >= until);

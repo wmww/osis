@@ -3,7 +3,7 @@
 (* Finalize, spec/crypto.md §4 Names, Met, Established; notes/timed-ends.md). *)
 (* One thing, read role only. Writers (admins) set, renew, *)
 (* finalize, rotate, re-seal and write; readers D1, D2 are passive holders.   *)
-(* Edge writes are entries (spec/crdt.md §5.6): a change resets the entry its *)
+(* Grant writes are entries (spec/crdt.md §5.6): a change resets the entry its *)
 (* author held live and puts a new one; a finalize resets the live entry of   *)
 (* each ended edge (erase) and, saying keep, puts an `until` 0 entry. A reset *)
 (* of an entry whose creation a node does not hold is unknown there. Each     *)

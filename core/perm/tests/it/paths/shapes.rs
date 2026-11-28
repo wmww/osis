@@ -10,15 +10,15 @@
 use super::incremental::{reading, Reading, Tracked};
 use super::{cid, commit, ms, own, t};
 use osis_base::{Ak, Holder, PurgeBy, Role, SignKey, Tid, Ts, Time};
-use osis_perm::paths::{Changed, Commit, Content, Delta, DeltaClass, EdgeWrite, List, Names, Part, PartKind, Paths, Status};
-use osis_perm::{Edge, Frontier, WriteId};
+use osis_perm::paths::{Changed, Commit, Content, Delta, DeltaClass, GrantWrite, List, Names, Part, PartKind, Paths, Status};
+use osis_perm::{Grant, Frontier, WriteId};
 use roles_model::Rng;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-fn edge(on: u32, path: &[u32], holder: u32, value: Option<Edge>, frontier: Option<&[u64]>) -> Part {
+fn edge(on: u32, path: &[u32], holder: u32, value: Option<Grant>, frontier: Option<&[u64]>) -> Part {
     let frontier = frontier.map(|f| Arc::new(super::whole(&[H, Y, Z, A, LK, T1].map(t), f.iter().map(|&c| cid(c)))));
-    Part { on: t(on), path: path.iter().map(|&x| t(x)).collect(), direct: 0, kind: PartKind::Edge(EdgeWrite { holder: Holder::Thing(t(holder)), value, frontier }) }
+    Part { on: t(on), path: path.iter().map(|&x| t(x)).collect(), direct: 0, kind: PartKind::Grant(GrantWrite { holder: Holder::Thing(t(holder)), value, frontier }) }
 }
 
 /// Commits arriving one at a time in `order`: each `Changed` equals the readings' difference, and
@@ -100,8 +100,8 @@ fn records() -> BTreeMap<Tid, Holder> {
 // path; the grant is taken first and applies.
 #[test]
 fn a_part_is_taken_before_its_commits_own_path_part() {
-    let grant = commit(1, ms(1), H, vec![edge(LK, &[A], Y, Some(Edge::new(Role::Admin)), Some(&[]))]);
-    let both = commit(2, ms(3), Y, vec![edge(LK, &[], Y, None, None), edge(LK, &[], Z, Some(Edge::new(Role::Admin)), Some(&[]))]);
+    let grant = commit(1, ms(1), H, vec![edge(LK, &[A], Y, Some(Grant::new(Role::Admin)), Some(&[]))]);
+    let both = commit(2, ms(3), Y, vec![edge(LK, &[], Y, None, None), edge(LK, &[], Z, Some(Grant::new(Role::Admin)), Some(&[]))]);
     let p = Paths::evaluate(&records(), BTreeSet::new(), &[grant, both]);
     assert_eq!(p.status(&WriteId(cid(2), 0)), Some(Status::Applied), "the self-removal");
     assert_eq!(p.status(&WriteId(cid(2), 1)), Some(Status::Applied), "the grant");
@@ -114,11 +114,11 @@ fn a_part_is_taken_before_its_commits_own_path_part() {
 #[test]
 fn a_frontier_less_removal_of_the_signers_own_grant_is_explicit() {
     const N5: u32 = 4;
-    let timed = Some(Edge { until: Some(Time(3)), ..Edge::new(Role::Admin) });
+    let timed = Some(Grant { until: Some(Time(3)), ..Grant::new(Role::Admin) });
     let commits = [
-        commit(1, ms(1), H, vec![edge(A, &[], Z, Some(Edge::new(Role::Admin)), Some(&[]))]),
+        commit(1, ms(1), H, vec![edge(A, &[], Z, Some(Grant::new(Role::Admin)), Some(&[]))]),
         commit(2, ms(1), H, vec![edge(T1, &[A], Z, timed, Some(&[]))]),
-        commit(3, ms(2), Z, vec![edge(T1, &[], N5, Some(Edge::new(Role::Write)), Some(&[]))]),
+        commit(3, ms(2), Z, vec![edge(T1, &[], N5, Some(Grant::new(Role::Write)), Some(&[]))]),
         commit(4, ms(5), Z, vec![edge(T1, &[A], Z, None, None)]),
     ];
     let p = robust(&records(), &commits, &mut Rng(1));
@@ -131,7 +131,7 @@ fn a_frontier_less_removal_of_the_signers_own_grant_is_explicit() {
 #[test]
 fn hostile_shapes_judge_alike_without_panicking() {
     let mut rng = Rng(7);
-    let admin = Some(Edge::new(Role::Admin));
+    let admin = Some(Grant::new(Role::Admin));
     let made_up = |n: u32| (0..n).map(|i| 5000 + i).collect::<Vec<u32>>();
     let gy = commit(1, ms(1), H, vec![edge(A, &[], Y, admin, Some(&[]))]);
 
@@ -149,10 +149,10 @@ fn hostile_shapes_judge_alike_without_panicking() {
     // a part setting an edge of its own path (the record edge its descent ends with), alone and
     // beside another part
     let own = commit(2, ms(2), H, vec![edge(T1, &[A], A, None, Some(&[]))]);
-    let mixed = commit(3, ms(3), H, vec![edge(T1, &[A], A, Some(Edge::new(Role::Write)), Some(&[])), edge(T1, &[A], Z, admin, Some(&[]))]);
+    let mixed = commit(3, ms(3), H, vec![edge(T1, &[A], A, Some(Grant::new(Role::Write)), Some(&[])), edge(T1, &[A], Z, admin, Some(&[]))]);
     robust(&records(), &[gy.clone(), own, mixed], &mut rng);
     // a repeated holder makes the whole commit bad input
-    let rep = commit(2, ms(2), Y, vec![edge(A, &[], Z, admin, Some(&[])), edge(A, &[], Z, Some(Edge::new(Role::Read)), Some(&[])), edge(A, &[], 77, admin, Some(&[]))]);
+    let rep = commit(2, ms(2), Y, vec![edge(A, &[], Z, admin, Some(&[])), edge(A, &[], Z, Some(Grant::new(Role::Read)), Some(&[])), edge(A, &[], 77, admin, Some(&[]))]);
     let p = robust(&records(), &[gy.clone(), rep], &mut rng);
     assert!((0..3).all(|i| p.status(&WriteId(cid(2), i)) == Some(Status::Unapplied)));
     // holders holding each other, and a record cycle (descent bounded by MAX_CHAIN_DEPTH)
@@ -166,7 +166,7 @@ fn hostile_shapes_judge_alike_without_panicking() {
     ];
     robust(&cyc, &holders, &mut rng);
     // extreme times: ts 0 and the greatest; an `until` in the past, at the ts, far ahead
-    let until = |u: u64| Some(Edge { until: Some(Time(u)), ..Edge::new(Role::Admin) });
+    let until = |u: u64| Some(Grant { until: Some(Time(u)), ..Grant::new(Role::Admin) });
     let times = [
         commit(1, Ts::ZERO, H, vec![edge(A, &[], Y, until(0), Some(&[]))]),
         commit(2, Ts::ZERO, H, vec![edge(A, &[], Z, until(u64::MAX), Some(&[]))]),
@@ -221,7 +221,7 @@ pub(super) fn soup(i: u64) -> (BTreeMap<Tid, Holder>, Vec<Commit>) {
                 let needs = [Role::Write, Role::Admin][r.below(2)];
                 PartKind::Delta(Delta { aspect: Ak::new(["doc.0", "addenda.0"][r.below(2)]).unwrap(), needs, purge_author: r.below(3) as u32, purge_by: PurgeBy::AuthorOrAdmin, class })
             } else {
-                let value = (r.below(4) > 0).then(|| Edge {
+                let value = (r.below(4) > 0).then(|| Grant {
                     role: role(&mut r),
                     until: (r.below(3) == 0).then(|| Time(r.below(8) as u64)),
                     may_grant: r.below(2) == 0,
@@ -230,7 +230,7 @@ pub(super) fn soup(i: u64) -> (BTreeMap<Tid, Holder>, Vec<Commit>) {
                 });
                 let frontier = (r.below(4) > 0).then(|| Arc::new(List::new((0..r.below(4)).map(|_| (t(thing(&mut r)), cid(r.below(40) as u64))))));
                 let holder = if r.below(4) == 0 { Holder::Key(key(&mut r)) } else { Holder::Thing(t(thing(&mut r))) };
-                PartKind::Edge(EdgeWrite { holder, value, frontier })
+                PartKind::Grant(GrantWrite { holder, value, frontier })
             };
             parts.push(Part { on, path, direct: 0, kind });
         }
@@ -266,7 +266,7 @@ fn ids(l: &[u64]) -> Frontier {
 #[test]
 fn hostile_addenda_and_snapshots_judge_alike_without_panicking() {
     let mut rng = Rng(11);
-    let admin = Some(Edge::new(Role::Admin));
+    let admin = Some(Grant::new(Role::Admin));
     let gy = commit(1, ms(1), H, vec![edge(A, &[], Y, admin, Some(&[]))]);
     let gz = commit(2, ms(2), Y, vec![edge(A, &[], Z, admin, Some(&[]))]);
     let zc = commit(3, ms(3), Z, vec![delta(T1, &[A], Role::Write, DeltaClass::Plain)]);
@@ -311,7 +311,7 @@ fn hostile_addenda_and_snapshots_judge_alike_without_panicking() {
 // spec/permissions.md §5.2: thousands of addenda naming one commit: judging it reads each once.
 #[test]
 fn thousands_of_addenda_naming_one_commit_cost_one_read_each() {
-    let admin = Some(Edge::new(Role::Admin));
+    let admin = Some(Grant::new(Role::Admin));
     let mut per = vec![];
     for k in [200u64, 2000] {
         let mut c = vec![
@@ -350,7 +350,7 @@ fn request(on: u32, path: &[u32], names: Names, purge_by: PurgeBy) -> Part {
 #[test]
 fn hostile_requests_judge_alike_without_panicking() {
     let mut rng = Rng(12);
-    let admin = Some(Edge::new(Role::Admin));
+    let admin = Some(Grant::new(Role::Admin));
     let base = [
         commit(1, ms(1), H, vec![edge(A, &[], Y, admin, Some(&[]))]),
         commit(2, ms(2), H, vec![edge(A, &[], Z, admin, Some(&[]))]),
@@ -398,8 +398,8 @@ fn hostile_requests_judge_alike_without_panicking() {
 // writing requests of its own.
 #[test]
 fn thousands_of_requests_naming_one_delta_cost_what_none_do() {
-    let admin = Some(Edge::new(Role::Admin));
-    let write = Some(Edge::new(Role::Write));
+    let admin = Some(Grant::new(Role::Admin));
+    let write = Some(Grant::new(Role::Write));
     let mut per = vec![];
     for k in [0u64, 200, 2000] {
         let mut c = vec![

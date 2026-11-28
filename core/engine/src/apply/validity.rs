@@ -11,7 +11,7 @@ use osis_commit::{Decoded, Header, Kind};
 use osis_base::{Ak, CommitId, CreationRecord, Holder, Role, SignKey, Tid, Value};
 use osis_crdt::{Dot, Fragment};
 use osis_perm::paths::{Content, Delta, DeltaClass, Part, PartKind, Way};
-use osis_perm::{At, Edge, EdgeOp, Frontier, Point, RoleCommit, WriteId};
+use osis_perm::{At, Grant, GrantOp, Frontier, Point, RoleCommit, WriteId};
 use osis_schema::core_types as ct;
 use osis_schema::{Codec, Type, typed_read};
 use std::collections::{BTreeMap, BTreeSet};
@@ -23,18 +23,18 @@ fn typed(v: &Value, name: &str) -> Option<Value> {
 
 /// The edge a `roles.0` value reads as: `None` when it is not one, which makes the delta bad by
 /// itself (`check_holders_parts`).
-pub(crate) fn edge_of(v: &Value) -> Option<Edge> {
-    Some(perm_edge(&ct::Edge::from_value(&typed(v, "edge")?).ok()?))
+pub(crate) fn edge_of(v: &Value) -> Option<Grant> {
+    Some(perm_edge(&ct::Grant::from_value(&typed(v, "edge")?).ok()?))
 }
 
 /// A grant's value as the walk reads it.
-pub(crate) fn perm_edge(e: &ct::Edge) -> Edge {
-    Edge { role: e.role, until: e.until, may_grant: e.may_grant, retain: e.retain, floor: e.floor }
+pub(crate) fn perm_edge(e: &ct::Grant) -> Grant {
+    Grant { role: e.role, until: e.until, may_grant: e.may_grant, retain: e.retain, floor: e.floor }
 }
 
 /// The value a walk's edge reads back as (`perm_edge`).
-pub(crate) fn schema_edge(e: &Edge) -> ct::Edge {
-    ct::Edge { role: e.role, until: e.until, may_grant: e.may_grant, retain: e.retain, floor: e.floor }
+pub(crate) fn schema_edge(e: &Grant) -> ct::Grant {
+    ct::Grant { role: e.role, until: e.until, may_grant: e.may_grant, retain: e.retain, floor: e.floor }
 }
 
 /// The header's frontier (inline, or resolved from its link), sharing its IDs.
@@ -94,7 +94,7 @@ impl Grants {
     }
     /// Whether `e` is a grant this aspect may hold: a key's carries no `retain` and no `floor`, and
     /// is no `until` 0 removal (spec/data-model.md §9 `signers.0`).
-    fn fits(self, e: &Edge) -> bool {
+    fn fits(self, e: &Grant) -> bool {
         self == Grants::Things || !e.retain && e.floor.is_none() && e.until != Some(osis_base::Time(0))
     }
 }
@@ -240,7 +240,7 @@ fn entries(f: &Fragment) -> Vec<(Dot, Option<Value>, Option<Fragment>)> {
 /// An edge aspect's entry as perm's adaptation reads it: dot, the holder its key names (`None`:
 /// a key naming no holder), and the edge its fragment reads (`None`: no fragment, an entry
 /// reset; a fragment reading no edge is bad input, `check_holders_parts`).
-pub(crate) type Entry = (Dot, Option<Holder>, Option<Edge>);
+pub(crate) type Entry = (Dot, Option<Holder>, Option<Grant>);
 
 /// What perm's adaptation reads of a role commit's held `roles.0` parts, by part index: a
 /// function of the commit record, persisted per commit in the index (`engine::index`,
@@ -317,8 +317,8 @@ pub(crate) fn unkey_holders(tx: &mut Tx<'_>, id: &CommitId, on: &dyn Fn(&Tid) ->
 /// it ends by the entries it resets, so each such reset's creation must be held; if not, the
 /// commit applies nothing yet (`add_role_commit`). A reset beside a put of a live edge for its
 /// key decides nothing: the put sets the edge whatever it replaces.
-fn edge_ops(core: &Core, target: &Tid, g: Grants, es: &[Entry], own: Option<&Owned>) -> (Vec<EdgeOp>, bool) {
-    let mut per: BTreeMap<Holder, Option<Edge>> = BTreeMap::new();
+fn edge_ops(core: &Core, target: &Tid, g: Grants, es: &[Entry], own: Option<&Owned>) -> (Vec<GrantOp>, bool) {
+    let mut per: BTreeMap<Holder, Option<Grant>> = BTreeMap::new();
     for (d, k, v) in es {
         if let (Some(m), Some(e)) = (k, v)
             && own.is_some_and(|o| o.owns(d.origin()))
@@ -348,7 +348,7 @@ fn edge_ops(core: &Core, target: &Tid, g: Grants, es: &[Entry], own: Option<&Own
     for m in removed {
         per.entry(m).or_insert(None);
     }
-    (per.into_iter().map(|(holder, edge)| EdgeOp { target: *target, holder, edge }).collect(), known)
+    (per.into_iter().map(|(holder, edge)| GrantOp { target: *target, holder, edge }).collect(), known)
 }
 
 /// Holders whose edge on `target` a delta of edge aspect `g` writes: an entry it creates names
@@ -450,7 +450,7 @@ pub(crate) fn hold_role_commit(core: &mut Core, h: &View, path: &osis_commit::Pa
 /// chain is held whole at apply (`apply::thing_wait`) and a record goes only with every part on
 /// its thing, once nothing held needs it, a thing it minted included (`retention::needed`), so
 /// this never changes while the part is held.
-pub(crate) fn edge_writes_of(core: &Core, h: &View, id: &CommitId, parts: &PermParts) -> Vec<(Tid, Vec<EdgeOp>, bool)> {
+pub(crate) fn edge_writes_of(core: &Core, h: &View, id: &CommitId, parts: &PermParts) -> Vec<(Tid, Vec<GrantOp>, bool)> {
     let mut out = Vec::new();
     for (ai, es) in &parts.edges {
         let Some(a) = h.aspects.get(*ai) else { continue };
@@ -541,7 +541,7 @@ pub(crate) fn unreached(core: &Core, signer: Tid, key: Option<SignKey>, along: &
 struct Reach<'a> {
     core: &'a Core,
     record: &'a dyn Fn(&Tid) -> Option<CreationRecord>,
-    /// Edge (holder, thing) -> its writes judged: the first not itself unjudgeable (`Ok`), or the
+    /// A grant (holder, thing) -> its writes judged: the first not itself unjudgeable (`Ok`), or the
     /// last of those before it judged so far (`Err`), all unjudgeable.
     first: BTreeMap<(Holder, Tid), std::result::Result<Point, Point>>,
 }
@@ -1508,8 +1508,8 @@ pub(crate) fn self_removal(core: &Core, author: &Tid, target: &Tid, holder: &Tid
 /// The edge writes of a role commit's parts `(thing, ak, fragment)`, each `(target, holder, new
 /// edge)` once (`None`: removed): a change is a reset and a put of one entry, the put the
 /// holder's new edge.
-pub(crate) fn edge_writes<'f>(core: &Core, parts: impl IntoIterator<Item = (Tid, &'f Ak, &'f Fragment)>) -> Vec<(Tid, Holder, Option<Edge>)> {
-    let mut changed: Vec<(Tid, Holder, Option<Edge>)> = Vec::new();
+pub(crate) fn edge_writes<'f>(core: &Core, parts: impl IntoIterator<Item = (Tid, &'f Ak, &'f Fragment)>) -> Vec<(Tid, Holder, Option<Grant>)> {
+    let mut changed: Vec<(Tid, Holder, Option<Grant>)> = Vec::new();
     for (t, ak, f) in parts {
         let Some(g) = Grants::of(ak.as_str()) else { continue };
         for (dot, k, frag) in entries(f) {
@@ -1524,7 +1524,7 @@ pub(crate) fn edge_writes<'f>(core: &Core, parts: impl IntoIterator<Item = (Tid,
         }
     }
     // a change is remove + put of one entry: the put is the holder's new edge
-    let mut net: BTreeMap<(Tid, Holder), Option<Edge>> = BTreeMap::new();
+    let mut net: BTreeMap<(Tid, Holder), Option<Grant>> = BTreeMap::new();
     for (t, m, e) in changed {
         let slot = net.entry((t, m)).or_insert(None);
         if e.is_some() {
@@ -1540,12 +1540,12 @@ pub(crate) fn edge_writes<'f>(core: &Core, parts: impl IntoIterator<Item = (Tid,
 /// has them. Reads `t`'s own edges alone: an audit a write makes drops none of the writes its
 /// writer holds (its frontier lists them, `Engine::demotion_frontier`), so it leaves no other
 /// thing so at the writer.
-pub(crate) fn leaves_no_admin(core: &Core, t: &Tid, writes: &[(Holder, Option<Edge>)]) -> bool {
-    let standing = |e: &Edge| e.role == Role::Admin && e.until.is_none();
+pub(crate) fn leaves_no_admin(core: &Core, t: &Tid, writes: &[(Holder, Option<Grant>)]) -> bool {
+    let standing = |e: &Grant| e.role == Role::Admin && e.until.is_none();
     // the things' grants and the keys' (a key's grant is a standing admin as any: §1)
-    let mut now: Vec<(Holder, Edge)> = match core.timelines().on(t) {
+    let mut now: Vec<(Holder, Grant)> = match core.timelines().on(t) {
         Some(on) => on.holders().into_iter().map(|(m, e)| (Holder::Thing(m), e)).collect(),
-        None => core.mint_admin(t).map(|a| (Holder::Thing(a), Edge::new(Role::Admin))).into_iter().collect(),
+        None => core.mint_admin(t).map(|a| (Holder::Thing(a), Grant::new(Role::Admin))).into_iter().collect(),
     };
     now.extend(core.timelines().key_grants(t, None).into_iter().map(|(k, e)| (Holder::Key(k), e)));
     let lowered = |m: &Holder| writes.iter().find(|(x, _)| x == m).map(|(_, e)| *e);
@@ -1554,10 +1554,10 @@ pub(crate) fn leaves_no_admin(core: &Core, t: &Tid, writes: &[(Holder, Option<Ed
 }
 
 /// The first thing edge writes `changed` leave with no standing admin (`leaves_no_admin`).
-fn left_adminless(core: &Core, changed: &[(Tid, Holder, Option<Edge>)]) -> Option<Tid> {
+fn left_adminless(core: &Core, changed: &[(Tid, Holder, Option<Grant>)]) -> Option<Tid> {
     let targets: BTreeSet<Tid> = changed.iter().map(|c| c.0).collect();
     targets.into_iter().find(|t| {
-        let writes: Vec<(Holder, Option<Edge>)> = changed.iter().filter(|c| c.0 == *t).map(|c| (c.1, c.2)).collect();
+        let writes: Vec<(Holder, Option<Grant>)> = changed.iter().filter(|c| c.0 == *t).map(|c| (c.1, c.2)).collect();
         leaves_no_admin(core, t, &writes)
     })
 }

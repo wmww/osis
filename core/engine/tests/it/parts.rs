@@ -23,9 +23,9 @@ fn reg() -> osis_base::Ak {
 fn histories() -> Vec<Played> {
     use Step::*;
     let tick = || Advance { who: None, ms: 1000 };
-    let content = play(0, &[NewTop { by: 0 }, tick(), Edge { by: 0, t: 1, holder: 1, role: Some(Role::Read) }, Sync { from: 0, to: 1 }, tick(), Two { by: 1, a: 0, b: 1, v: 1 }]);
-    let role = play(0, &[NewTop { by: 0 }, tick(), Edge { by: 0, t: 1, holder: 2, role: Some(Role::Read) }, Sync { from: 0, to: 2 }, tick(), TwoEdges { by: 2, a: 0, b: 1, holder: 1, role: Role::Read }]);
-    let three = play(0, &[NewTop { by: 0 }, NewTop { by: 0 }, tick(), Edge { by: 0, t: 1, holder: 1, role: Some(Role::Read) }, Edge { by: 0, t: 2, holder: 1, role: Some(Role::Write) }, Sync { from: 0, to: 1 }, tick(), Three { by: 1, a: 0, b: 1, c: 2, v: 1 }]);
+    let content = play(0, &[NewTop { by: 0 }, tick(), SetGrant { by: 0, t: 1, holder: 1, role: Some(Role::Read) }, Sync { from: 0, to: 1 }, tick(), Two { by: 1, a: 0, b: 1, v: 1 }]);
+    let role = play(0, &[NewTop { by: 0 }, tick(), SetGrant { by: 0, t: 1, holder: 2, role: Some(Role::Read) }, Sync { from: 0, to: 2 }, tick(), TwoGrants { by: 2, a: 0, b: 1, holder: 1, role: Role::Read }]);
+    let three = play(0, &[NewTop { by: 0 }, NewTop { by: 0 }, tick(), SetGrant { by: 0, t: 1, holder: 1, role: Some(Role::Read) }, SetGrant { by: 0, t: 2, holder: 1, role: Some(Role::Write) }, Sync { from: 0, to: 1 }, tick(), Three { by: 1, a: 0, b: 1, c: 2, v: 1 }]);
     let honest = play(0, &[New { by: 0, admin: 0, write: true }, tick(), Two { by: 0, a: 0, b: 1, v: 7 }]);
     vec![content, role, three, honest]
 }

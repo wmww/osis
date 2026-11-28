@@ -805,7 +805,7 @@ fn a_wrap_waits_for_a_rotation_covering_a_known_removal_spec_crypto_4() {
 fn a_write_after_a_passed_until_waits_for_the_finalize_spec_permissions_2() {
     let (mut lp, g, tids) = granted(2, &[]);
     let until = osis_base::Time(lp.peers[0].engine.core.now().0 + 100);
-    lp.peers[0].engine.grant(&g, &tids[1], &osis_schema::core_types::Edge { until: Some(until), ..edge(Role::Read) }).unwrap();
+    lp.peers[0].engine.grant(&g, &tids[1], &osis_schema::core_types::Grant { until: Some(until), ..edge(Role::Read) }).unwrap();
     lp.sync_all().unwrap();
     let old = newest_read(&lp, 0, g);
     lp.peers[0].clock.advance(1_000);
@@ -826,7 +826,7 @@ fn a_write_after_a_passed_until_waits_for_the_finalize_spec_permissions_2() {
 fn roles_at_now_move_at_an_until_spec_permissions_2() {
     let (mut lp, g, tids) = granted(2, &[]);
     let until = osis_base::Time(lp.peers[0].engine.core.now().0 + 1_000);
-    lp.peers[0].engine.grant(&g, &tids[1], &osis_schema::core_types::Edge { until: Some(until), ..edge(Role::Read) }).unwrap();
+    lp.peers[0].engine.grant(&g, &tids[1], &osis_schema::core_types::Grant { until: Some(until), ..edge(Role::Read) }).unwrap();
     lp.sync_all().unwrap();
     let mut fx: osis_base::memo::Effects<u8, Option<Role>> = osis_base::memo::Effects::new("roles at now");
     fx.want(0);
@@ -865,7 +865,7 @@ fn a_duty_down_a_holder_chain_is_due_at_its_until_spec_permissions_2() {
     lp.grant_through(0, m1, m2, &edge(Role::Read));
     let e0 = &mut lp.peers[0].engine;
     let until = osis_base::Time(e0.core.now().0 + 1_000);
-    e0.grant(&m2, &tids[1], &osis_schema::core_types::Edge { until: Some(until), ..edge(Role::Read) }).unwrap();
+    e0.grant(&m2, &tids[1], &osis_schema::core_types::Grant { until: Some(until), ..edge(Role::Read) }).unwrap();
     lp.sync_all().unwrap();
     let mut fx: osis_base::memo::Effects<(), bool> = osis_base::memo::Effects::new("duty on g");
     fx.want(());
@@ -893,7 +893,7 @@ fn access_down_a_holder_chain_is_lost_at_its_until_spec_permissions_2() {
     lp.grant_through(0, m1, m2, &edge(Role::Read));
     let e0 = &mut lp.peers[0].engine;
     let until = osis_base::Time(e0.core.now().0 + 1_000);
-    e0.grant(&m2, &tids[1], &osis_schema::core_types::Edge { until: Some(until), ..edge(Role::Read) }).unwrap();
+    e0.grant(&m2, &tids[1], &osis_schema::core_types::Grant { until: Some(until), ..edge(Role::Read) }).unwrap();
     lp.sync_all().unwrap();
     let mut fx: osis_base::memo::Effects<(), bool> = osis_base::memo::Effects::new("lost g");
     fx.want(());

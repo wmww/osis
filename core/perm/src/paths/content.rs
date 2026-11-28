@@ -422,7 +422,7 @@ impl<S: Store> Facts<S> {
             for (ix, p) in (0u32..).zip(c.parts.iter()) {
                 let id = WriteId(c.id, ix);
                 match &p.kind {
-                    PartKind::Edge(ew) => {
+                    PartKind::Grant(ew) => {
                         role = true;
                         if let Some(f) = &ew.frontier {
                             cf.lists.push((id, f.clone()));

@@ -773,7 +773,7 @@ fn grant_to_unrotated_holder_stated_limit_spec_permissions_3() {
             lp.peers[2].engine.grant(&m, &p0, &edge(Role::Read)).unwrap();
             let t = independent_thing(&mut lp, first);
             if first != g {
-                lp.peers[first].engine.grant(&t, &p0, &ct::Edge { may_grant: true, ..edge(Role::Write) }).unwrap();
+                lp.peers[first].engine.grant(&t, &p0, &ct::Grant { may_grant: true, ..edge(Role::Write) }).unwrap();
             }
             lp.sync_all().unwrap();
             (lp, (m, t))
@@ -1598,7 +1598,7 @@ fn reseal_candidates_follow_the_finalize_before_them_spec_permissions_3() {
     lp.peers[0].engine.grant(&h, &x, &edge(Role::Write)).unwrap();
     lp.peers[0].engine.grant(&m, &h, &edge(Role::Write)).unwrap();
     let until = Time(lp.peers[0].engine.core.now().0 + 100);
-    lp.peers[0].engine.grant(&m, &y, &ct::Edge { until: Some(until), ..edge(Role::Read) }).unwrap();
+    lp.peers[0].engine.grant(&m, &y, &ct::Grant { until: Some(until), ..edge(Role::Read) }).unwrap();
     lp.peers[0].engine.grant(&g, &m, &edge(Role::Read)).unwrap();
     lp.peers[0].engine.grant(&g, &x, &edge(Role::Admin)).unwrap();
     lp.sync_all().unwrap();
@@ -1627,7 +1627,7 @@ fn reseal_candidates_follow_the_clock_spec_permissions_2() {
     let mut lp = synced(1);
     let (g, m) = (independent_thing(&mut lp, 0), independent_thing(&mut lp, 0));
     let until = Time(lp.peers[0].engine.core.now().0 + 1_000);
-    lp.peers[0].engine.grant(&g, &m, &ct::Edge { until: Some(until), ..edge(Role::Read) }).unwrap();
+    lp.peers[0].engine.grant(&g, &m, &ct::Grant { until: Some(until), ..edge(Role::Read) }).unwrap();
     rotate_skipping(&mut lp, 0, g, &BTreeSet::from([Role::Read]), &[m]);
     let cands = |lp: &mut LocalPeer| lp.peers[0].engine.run(|tx| super::reseal_candidates(tx, &g)).unwrap();
     assert!(cands(&mut lp).iter().any(|c| c.0 == m), "M lacks its box at G's newest epoch");

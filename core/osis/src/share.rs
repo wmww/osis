@@ -327,12 +327,12 @@ impl Address {
 
 /// The edge `o` grants `role` with on `t`: a timed one retains as `o` says, else as `t`'s default
 /// now (spec/permissions.md §3, Retain).
-fn edge(e: &osis_engine::Engine, t: &Tid, role: Role, o: GrantOpts) -> Result<ct::Edge> {
+fn edge(e: &osis_engine::Engine, t: &Tid, role: Role, o: GrantOpts) -> Result<ct::Grant> {
     if o.until.is_none() && o.retain_copy.is_some() {
         return Err(Error::Invalid("retain_copy is for a grant with an until".into()));
     }
     let retain = o.until.is_some() && o.retain_copy.unwrap_or_else(|| e.retains_by_default(t));
-    Ok(ct::Edge { role, until: o.until, may_grant: o.may_grant, retain, floor: None })
+    Ok(ct::Grant { role, until: o.until, may_grant: o.may_grant, retain, floor: None })
 }
 
 /// Whether an admin's grant of `role` to `h` on `t` would lower `h`'s grant still in the state (a
@@ -470,7 +470,7 @@ impl Osis {
                 (Reads::FromNow, None) => e.grant_with(&target, &holder, &new, flows::edges::History::None).map_err(Error::from),
                 (Reads::FromNow, Some(None)) => Err(Error::Invalid(format!("{holder} already reads what was written on {target} before"))),
                 // a change keeps the floor: still from its first grant on
-                (Reads::FromNow | Reads::Kept, Some(floor)) => e.grant(&target, &holder, &ct::Edge { floor, ..new }).map_err(Error::from),
+                (Reads::FromNow | Reads::Kept, Some(floor)) => e.grant(&target, &holder, &ct::Grant { floor, ..new }).map_err(Error::from),
                 (Reads::Kept | Reads::All, _) => e.grant(&target, &holder, &new).map_err(Error::from),
             })
         })?;
@@ -566,11 +566,11 @@ impl Osis {
 
     /// The edge `m` holds on `t` after lowering it to `role` (`None`: removed): `until` and what
     /// its passing says kept, `may_grant` as it is.
-    fn lowered_edge(&self, t: Tid, m: Tid, role: Option<Role>) -> Result<Option<ct::Edge>> {
+    fn lowered_edge(&self, t: Tid, m: Tid, role: Option<Role>) -> Result<Option<ct::Grant>> {
         let Some(role) = role else { return Ok(None) };
         let cur = self.grants(t)?.get(&m).copied().ok_or(Error::Invalid(format!("{m} is no holder of {t}")))?;
         let held = self.engine(|e| e.roster(&t).get(&m).copied());
-        Ok(Some(ct::Edge { role, until: cur.until, may_grant: cur.may_grant, retain: cur.until.is_some() && cur.retain_copy, floor: held.and_then(|x| x.floor) }))
+        Ok(Some(ct::Grant { role, until: cur.until, may_grant: cur.may_grant, retain: cur.until.is_some() && cur.retain_copy, floor: held.and_then(|x| x.floor) }))
     }
 
     /// Lowers or removes the grant of `m` on `t`: the demotion with this node's frontier and the

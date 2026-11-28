@@ -155,7 +155,7 @@ codec_struct! {
     /// Retain); `floor`: the read n its holder reads from, granted without history
     /// (spec/crypto.md §4, Floors).
     #[derive(Clone, Debug, PartialEq, Eq)]
-    pub struct Edge { 0 role: Role, 1 until: Option<Time>, 2 may_grant: bool, 3 retain: bool, 4 floor: Option<u64> }
+    pub struct Grant { 0 role: Role, 1 until: Option<Time>, 2 may_grant: bool, 3 retain: bool, 4 floor: Option<u64> }
 }
 codec_struct! {
     /// A keyset: epoch, KEM key, suite ID of the epoch, the epochs its rotation
@@ -391,13 +391,13 @@ codec_struct! {
     pub struct Tag { 0 color: Option<String> }
 }
 
-pub type Holders = BTreeMap<Weak, Edge>;
+pub type Holders = BTreeMap<Weak, Grant>;
 pub type SyncIds = BTreeMap<SyncId, SyncEntry>;
 
 pub const CREATED: Aspect<CreationRecord> = Aspect::new("created.0", &CORE);
 pub const ROLES: Aspect<Holders> = Aspect::new("roles.0", &CORE);
 /// Key grants by key (spec/data-model.md §9 `signers.0`).
-pub type KeyGrants = BTreeMap<SigningKey, Edge>;
+pub type KeyGrants = BTreeMap<SigningKey, Grant>;
 pub const SIGNERS: Aspect<KeyGrants> = Aspect::new("signers.0", &CORE);
 /// Removal commit ID -> what the author vouches for (spec/permissions.md §5.2, Addenda).
 pub type Addenda = BTreeMap<Vec<u8>, Frontier>;

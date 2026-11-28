@@ -23,7 +23,7 @@
 //!   not mark the pair direct (`World::push_marked`), else by their direct edge. The end is the thing written, except for an edge write whose path ends at the
 //!   holder of the edge it sets: a **self-removal**, needing admin on the holder (a signer
 //!   leaving by itself states no hop).
-//! - **Walk** (§5.1 along one path). Edge writes in key order
+//! - **Walk** (§5.1 along one path). Grant writes in key order
 //!   (`ts`, signer, ID), skipping the drop set D. One applies iff every edge of its path gives
 //!   admin at its `ts`; a self-removal only lowers. An applied explicit write taking an edge h
 //!   from admin, **as restored** (the highest role since the last explicit write on h, values an
@@ -925,7 +925,7 @@ pub struct Reading {
     pub applied: Set,
     /// Applied edge writes that lowered their edge.
     pub lowered: Set,
-    /// Edge writes the settled walk applies as may-grant grants (G2).
+    /// Grant writes the settled walk applies as may-grant grants (G2).
     pub by_flag: Set,
     /// Valid content-class commits.
     pub valid: Set,

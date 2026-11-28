@@ -154,7 +154,7 @@ fn removal_setup() -> (LocalPeer, Tid, CommitId) {
     lp.hold(t);
     for p in [1, 2] {
         let who = lp.peers[p].engine.tid();
-        lp.peers[0].engine.grant(&t, &who, &ct::Edge { role: Role::Write, until: None, may_grant: false, retain: false, floor: None }).unwrap();
+        lp.peers[0].engine.grant(&t, &who, &ct::Grant { role: Role::Write, until: None, may_grant: false, retain: false, floor: None }).unwrap();
     }
     lp.sync_all().unwrap();
     lp.advance(1000);

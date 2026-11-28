@@ -131,7 +131,7 @@ fn pending_until_created_spec_commits_4() {
 fn a_removal_ordered_before_a_part_is_evidence_spec_commits_4() {
     use osis_crdt::{Op, PathOp, PathSeg};
     use osis_schema::Codec;
-    use osis_schema::core_types::{Edge, ROLES};
+    use osis_schema::core_types::{Grant, ROLES};
     let mut lp = net_apart(3, 0);
     let a = lp.peers[0].engine.tid();
     sync(&mut lp, 0, 1);
@@ -147,7 +147,7 @@ fn a_removal_ordered_before_a_part_is_evidence_spec_commits_4() {
     lp.hold(u);
     lp.peers[1].engine.demote(&t, &osis_engine::flows::Demotion { holder: a, new: None, retain: None }).unwrap();
     // the grant that makes 0 able to sign, held back from 2 till the end
-    let grant = *lp.peers[1].engine.grant(&t, &a, &Edge { role: Role::Read, until: None, may_grant: false, retain: false, floor: None }).unwrap().commits.last().unwrap();
+    let grant = *lp.peers[1].engine.grant(&t, &a, &Grant { role: Role::Read, until: None, may_grant: false, retain: false, floor: None }).unwrap().commits.last().unwrap();
     let grant = package_for(&mut lp, 1, 2, grant);
     for p in packages_to(&mut lp, 1, 0) {
         lp.deliver(0, &p).unwrap();
@@ -155,7 +155,7 @@ fn a_removal_ordered_before_a_part_is_evidence_spec_commits_4() {
     let mut m = Mutation::new();
     for x in [t, u] {
         m.op(x, &ROLES, PathOp { path: vec![], op: Op::Remove(Value::Weak(r)) }).unwrap();
-        m.op(x, &ROLES, PathOp { path: vec![PathSeg::Key(Value::Weak(r))], op: Op::Set(Edge { role: Role::Admin, until: None, may_grant: false, retain: false, floor: None }.to_value()) }).unwrap();
+        m.op(x, &ROLES, PathOp { path: vec![PathSeg::Key(Value::Weak(r))], op: Op::Set(Grant { role: Role::Admin, until: None, may_grant: false, retain: false, floor: None }.to_value()) }).unwrap();
     }
     let forged = lp.peers[0].engine.commit_hostile(m).unwrap().unwrap();
     let forged = package_for(&mut lp, 0, 2, forged);

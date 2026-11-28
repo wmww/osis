@@ -17,7 +17,7 @@ pub struct Point {
 
 /// A `roles.0` edge value (spec/data-model.md §9 `edge`).
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub struct Edge {
+pub struct Grant {
     pub role: Role,
     /// The edge counts as removed from `wall_ms(t) >= until` (spec/permissions.md §2).
     pub until: Option<Time>,
@@ -30,14 +30,14 @@ pub struct Edge {
     pub floor: Option<u64>,
 }
 
-impl Edge {
-    pub fn new(role: Role) -> Edge {
-        Edge { role, until: None, may_grant: false, retain: false, floor: None }
+impl Grant {
+    pub fn new(role: Role) -> Grant {
+        Grant { role, until: None, may_grant: false, retain: false, floor: None }
     }
     /// The value a removal saying retain writes (spec/permissions.md §3): `until` 0, gone at every
     /// clock.
-    pub fn kept_end() -> Edge {
-        Edge { until: Some(osis_base::Time(0)), ..Edge::new(osis_base::Role::Read) }
+    pub fn kept_end() -> Grant {
+        Grant { until: Some(osis_base::Time(0)), ..Grant::new(osis_base::Role::Read) }
     }
     /// Whether this value is a removal's saying retain.
     pub fn says_retain(&self) -> bool {
@@ -60,7 +60,7 @@ impl Edge {
 
 /// `new` removes `old` or lowers it in every component (role, may-grant flag, `until`; a floor at least
 /// the old one: a lower floor hands history): the shape of a self-removal (spec/permissions.md §2).
-pub fn lowers(new: Option<&Edge>, old: Option<&Edge>) -> bool {
+pub fn lowers(new: Option<&Grant>, old: Option<&Grant>) -> bool {
     match (new, old) {
         (None, _) => true,
         (Some(_), None) => false,
@@ -113,11 +113,11 @@ impl Frontier {
 /// One `roles.0` edge write of a role commit: the edge of `holder` on `target`, `None`
 /// for a removal.
 #[derive(Clone, PartialEq, Eq, Debug)]
-pub struct EdgeOp {
+pub struct GrantOp {
     pub target: Tid,
     /// A thing (`roles.0`) or a key (`signers.0`).
     pub holder: Holder,
-    pub edge: Option<Edge>,
+    pub edge: Option<Grant>,
 }
 
 /// The edge writes of a role commit (spec/commits.md §2).
@@ -135,7 +135,7 @@ pub struct RoleCommit {
     /// Its frontier (an explicit lowering's list, spec/permissions.md §5.1), resolved from its
     /// link if large.
     pub frontier: Option<Arc<Frontier>>,
-    pub ops: Vec<EdgeOp>,
+    pub ops: Vec<GrantOp>,
 }
 
 impl RoleCommit {

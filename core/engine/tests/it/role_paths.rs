@@ -21,7 +21,7 @@ pub(crate) struct World {
 }
 
 /// Peer `by` grants `to` `e` on `t` (`LocalPeer::grant_through`: a holder thing refers to `t`).
-fn grant(lp: &mut LocalPeer, by: usize, t: Tid, to: Tid, e: ct::Edge) {
+fn grant(lp: &mut LocalPeer, by: usize, t: Tid, to: Tid, e: ct::Grant) {
     lp.grant_through(by, t, to, &e);
     lp.advance(1000);
     spread(lp);
@@ -33,8 +33,8 @@ fn remove(lp: &mut LocalPeer, by: usize, t: Tid, holder: Tid) {
     spread(lp);
 }
 
-fn may_grant(role: Role) -> ct::Edge {
-    ct::Edge { may_grant: true, ..edge_of(role) }
+fn may_grant(role: Role) -> ct::Grant {
+    ct::Grant { may_grant: true, ..edge_of(role) }
 }
 
 /// Four accounts A (0), B (1), C (2), D (3). B grants through one holder (H1 on T1) and through
@@ -77,7 +77,7 @@ pub(crate) fn world() -> World {
     grant(&mut lp, 2, t4, pb, edge_of(Role::Read));
     // a finalize of an ended grant
     let until = osis_base::Time(lp.peers[0].engine.now().0 + 500);
-    grant(&mut lp, 0, t1, pd, ct::Edge { until: Some(until), ..edge_of(Role::Read) });
+    grant(&mut lp, 0, t1, pd, ct::Grant { until: Some(until), ..edge_of(Role::Read) });
     lp.advance(2000);
     lp.peers[1].engine.ensure_rotated(&t1).unwrap();
     spread(&mut lp);
@@ -156,7 +156,7 @@ fn every_stated_role_path_is_a_chain_of_held_edges_spec_wire_4() {
             let listed = p.to(&t).to_vec();
             let end = listed.last().copied().unwrap_or(h.signer);
             let tl = e.core.timelines().get(&t);
-            let ops: Vec<(osis_base::Holder, Option<osis_perm::Edge>)> = tl.map(|tl| tl.held_on(&t).filter(|(w, _, _)| w.0 == id).map(|(_, _, op)| (op.holder, op.edge)).collect()).unwrap_or_default();
+            let ops: Vec<(osis_base::Holder, Option<osis_perm::Grant>)> = tl.map(|tl| tl.held_on(&t).filter(|(w, _, _)| w.0 == id).map(|(_, _, op)| (op.holder, op.edge)).collect()).unwrap_or_default();
             let leave = !ops.is_empty() && ops.iter().any(|(m, _)| *m == osis_base::Holder::Thing(end));
             // a thing signed as writing itself: [S] (spec/permissions.md §1 Path)
             let members: Vec<Tid> = std::iter::once(h.signer).chain(listed.iter().copied()).chain((!leave && t != h.signer).then_some(t)).collect();
@@ -205,7 +205,7 @@ fn every_stated_role_path_is_a_chain_of_held_edges_spec_wire_4() {
 /// value and frontier as `e`'s timeline reads them); `e`'s trust set; records for every thing
 /// named. With each part's ID in `e`'s timeline and its target.
 pub(crate) fn walk_afresh(e: &osis_engine::Engine) -> (osis_perm::paths::Paths, BTreeMap<osis_perm::WriteId, (osis_perm::WriteId, Tid)>) {
-    use osis_perm::paths::{Commit, EdgeWrite, Part, PartKind};
+    use osis_perm::paths::{Commit, GrantWrite, Part, PartKind};
     let mut commits = Vec::new();
     let mut ids = BTreeMap::new();
     let mut named: std::collections::BTreeSet<Tid> = std::collections::BTreeSet::new();
@@ -238,7 +238,7 @@ pub(crate) fn walk_afresh(e: &osis_engine::Engine) -> (osis_perm::paths::Paths, 
                         let things = |x: &osis_base::CommitId| e.header(x).map(|lh| lh.aspects.iter().map(|a| a.tid).collect::<Vec<Tid>>()).unwrap_or_default();
                         std::sync::Arc::new(osis_perm::paths::List::new(f.commits().iter().flat_map(|x| things(x).into_iter().map(move |t| (t, *x))).collect::<Vec<_>>()))
                     });
-                    parts.push(Part { on: t, path: path.clone(), direct: p.direct, kind: PartKind::Edge(EdgeWrite { holder: op.holder, value: op.edge, frontier }) });
+                    parts.push(Part { on: t, path: path.clone(), direct: p.direct, kind: PartKind::Grant(GrantWrite { holder: op.holder, value: op.edge, frontier }) });
                 }
             }
         }

@@ -8,8 +8,8 @@
 
 use super::{agree, agree_all, all, cid, commit, may_grant_world, model_cid, ms, paired, t, verdict, walk};
 use osis_base::{Ak, Holder, PurgeBy, Role as R, SignKey, Tid};
-use osis_perm::paths::{By, Commit, Content, Delta, DeltaClass, EdgeWrite, List, Part, PartKind, Paths, Status};
-use osis_perm::{Edge, Frontier, WriteId};
+use osis_perm::paths::{By, Commit, Content, Delta, DeltaClass, GrantWrite, List, Part, PartKind, Paths, Status};
+use osis_perm::{Grant, Frontier, WriteId};
 use roles_model::paths::*;
 use roles_model::Role::{Admin, None as Gone, Write};
 use roles_model::Rng;
@@ -380,9 +380,9 @@ fn role_class(on: u32, path: &[u32]) -> Part {
     Part { on: t(on), path: path.iter().map(|&x| t(x)).collect(), direct: 0, kind: PartKind::Delta(d) }
 }
 
-fn edge(on: u32, path: &[u32], holder: u32, value: Option<Edge>, listing: Option<&[u64]>) -> Part {
+fn edge(on: u32, path: &[u32], holder: u32, value: Option<Grant>, listing: Option<&[u64]>) -> Part {
     let frontier = listing.map(|l| Arc::new(super::whole(&[KH, KX, KB, KA, KT, KS, KZ, KY, KG].map(t), l.iter().map(|&i| cid(i)))));
-    Part { on: t(on), path: path.iter().map(|&x| t(x)).collect(), direct: 0, kind: PartKind::Edge(EdgeWrite { holder: Holder::Thing(t(holder)), value, frontier }) }
+    Part { on: t(on), path: path.iter().map(|&x| t(x)).collect(), direct: 0, kind: PartKind::Grant(GrantWrite { holder: Holder::Thing(t(holder)), value, frontier }) }
 }
 
 const KH: u32 = 1;
@@ -396,8 +396,8 @@ fn recs() -> BTreeMap<Tid, Holder> {
     super::hand_records([(t(KA), t(KH)), (t(KT), t(KA)), (t(KS), t(KA))])
 }
 
-fn admin() -> Option<Edge> {
-    Some(Edge::new(R::Admin))
+fn admin() -> Option<Grant> {
+    Some(Grant::new(R::Admin))
 }
 
 // spec/permissions.md §1: a commit signed as S on S, nothing listed, has the members [S] and rests
@@ -430,8 +430,8 @@ fn a_late_record_reaches_every_part_resting_on_its_edge() {
     }
 }
 
-fn key_edge(on: u32, key: SignKey, value: Option<Edge>) -> Part {
-    Part { on: t(on), path: vec![], direct: 0, kind: PartKind::Edge(EdgeWrite { holder: Holder::Key(key), value, frontier: Some(Arc::new(List::default())) }) }
+fn key_edge(on: u32, key: SignKey, value: Option<Grant>) -> Part {
+    Part { on: t(on), path: vec![], direct: 0, kind: PartKind::Grant(GrantWrite { holder: Holder::Key(key), value, frontier: Some(Arc::new(List::default())) }) }
 }
 
 /// A plain delta on `on` by `on` itself, nothing listed.
@@ -455,7 +455,7 @@ fn a_key_hop_is_an_edge_like_any() {
     let rk = super::own(t(KX));
     let commits = [
         commit(1, ms(2), KX, vec![edge(KX, &[], KB, admin(), Some(&[]))]),
-        commit(2, ms(3), KX, vec![key_edge(KX, k2, Some(Edge::new(R::Write)))]),
+        commit(2, ms(3), KX, vec![key_edge(KX, k2, Some(Grant::new(R::Write)))]),
         signed(3, 4, k2, KX, vec![role_class(KX, &[]), own_doc(KX)]),
         signed(4, 5, k2, KX, vec![edge(KX, &[], KZ, admin(), Some(&[]))]),
         signed(5, 6, rk, KX, vec![key_edge(KX, rk, None)]),
@@ -495,7 +495,7 @@ fn an_edge_write_whose_holder_is_its_target_is_not_applied() {
 fn a_retain_removal_restores_read_as_the_draft_reads_it() {
     let commits = [
         commit(1, ms(1), KH, vec![edge(KA, &[], KX, admin(), Some(&[]))]),
-        commit(2, ms(5), KH, vec![edge(KA, &[], KX, Some(Edge::kept_end()), Some(&[]))]),
+        commit(2, ms(5), KH, vec![edge(KA, &[], KX, Some(Grant::kept_end()), Some(&[]))]),
         commit(3, ms(6), KH, vec![edge(KA, &[], KX, None, Some(&[]))]),
     ];
     let p = Paths::evaluate(&recs(), BTreeSet::new(), &commits);
@@ -521,11 +521,11 @@ fn an_addendum_vouches_for_admin_only_content_only_by_admin() {
     let base = vec![
         commit(1, ms(1), KH, vec![edge(KA, &[], KX, admin(), Some(&[]))]),
         commit(2, ms(1), KH, vec![edge(KA, &[], KB, admin(), Some(&[]))]),
-        commit(3, ms(1), KH, vec![edge(KA, &[], KN, Some(Edge::new(R::Write)), Some(&[]))]),
+        commit(3, ms(1), KH, vec![edge(KA, &[], KN, Some(Grant::new(R::Write)), Some(&[]))]),
         commit(4, ms(2), KX, vec![admin_only(KT, &[KA], DeltaClass::Plain)]),
         commit(5, ms(2), KX, vec![role_class(KT, &[KA])]),
         commit(6, ms(2), KX, vec![Part { direct: 0, kind: PartKind::Delta(Delta { aspect: Ak::new("doc.0").unwrap(), needs: R::Write, purge_author: 0, purge_by: PurgeBy::AuthorOrAdmin, class: DeltaClass::Plain }), ..role_class(KT, &[KA]) }]),
-        commit(7, ms(5), KH, vec![edge(KA, &[], KX, Some(Edge::new(R::Write)), Some(&[]))]),
+        commit(7, ms(5), KH, vec![edge(KA, &[], KX, Some(Grant::new(R::Write)), Some(&[]))]),
     ];
     let by = |signer, id| commit(id, ms(6), signer, vec![admin_only(KT, &[KA], DeltaClass::Addendum { removal: cid(7), list: Frontier::new([cid(4), cid(5)]) })]);
     let p = Paths::evaluate(&recs(), BTreeSet::new(), &[base.clone(), vec![by(KN, 8)]].concat());

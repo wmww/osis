@@ -1692,7 +1692,7 @@ fn a_commits_parts_on_two_things_are_judged_each_on_its_own() {
     }
 }
 
-// ---- May-grant and finalizes (spec/permissions.md §2 along one path; notes/write-path-design.md §1 G1 to G5, Edge writes) ----
+// ---- May-grant and finalizes (spec/permissions.md §2 along one path; notes/write-path-design.md §1 G1 to G5, Grant writes) ----
 
 /// A with H; A2 (K's) shares T1 at write, and GU (A2's guests, minted with A2) holds read with the
 /// may-grant flag on T1 (by H, through A): the arrangement letting a writer of A2 add readers of T1

@@ -12,7 +12,7 @@
 
 use super::path::shape;
 use super::{Changed, Commit, List, Part, PartKind, Status};
-use crate::types::{Edge, WriteId};
+use crate::types::{Grant, WriteId};
 use osis_base::{CommitId, Holder, Role, Tid, Ts};
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Bound::{self, Excluded, Included, Unbounded};
@@ -25,7 +25,7 @@ type Slot = u32;
 /// A role; `None` is no role.
 type Lvl = Option<Role>;
 /// An edge's history: the applied writes, in key order.
-pub type History = Vec<(Key, Option<Edge>)>;
+pub type History = Vec<(Key, Option<Grant>)>;
 
 const ADMIN: Lvl = Some(Role::Admin);
 /// The two levels a cut is counted at (spec/permissions.md §5.2: write, admin).
@@ -36,9 +36,9 @@ const LEVELS: [Role; 2] = [Role::Write, Role::Admin];
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Applied {
     pub key: Key,
-    pub value: Option<Edge>,
+    pub value: Option<Grant>,
     /// The edge's value just before it (its last change, else the record value, else none).
-    pub before: Option<Edge>,
+    pub before: Option<Grant>,
     /// An explicit write (§2): not a self-removal, a finalize or a may-grant grant.
     pub explicit: bool,
     /// What the edge as restored just before it gave (§5.1).
@@ -175,12 +175,12 @@ impl Need {
 }
 
 /// The role a value gives at `ts`.
-fn alive(v: Option<&Edge>, ts: Ts) -> Lvl {
+fn alive(v: Option<&Grant>, ts: Ts) -> Lvl {
     v.filter(|v| v.alive_at(Some(ts))).map(|v| v.role)
 }
 
 /// A value's may-grant flag.
-fn flag(v: Option<&Edge>) -> bool {
+fn flag(v: Option<&Grant>) -> bool {
     v.is_some_and(|v| v.may_grant)
 }
 
@@ -199,7 +199,7 @@ struct Item {
     on: Tid,
     /// The edge it sets.
     e: E,
-    value: Option<Edge>,
+    value: Option<Grant>,
     frontier: Option<Arc<List>>,
     /// Its path's edges; none where not `well`.
     hops: Vec<E>,
@@ -470,20 +470,20 @@ impl Walk {
         let mut twice = false;
         for p in c.parts.iter().filter(|p| !matches!(p.kind, PartKind::None)) {
             own.extend(shape(&self.mint, c.key, c.signer, &p.path, p.direct, p.on, None, true).hops);
-            if let PartKind::Edge(w) = &p.kind {
+            if let PartKind::Grant(w) = &p.kind {
                 twice |= !sets.insert((w.holder, p.on));
             }
         }
         let mut parts: Vec<(bool, Tid, Holder, u32)> = vec![];
         for (n, p) in c.parts.iter().enumerate() {
-            if let PartKind::Edge(w) = &p.kind {
+            if let PartKind::Grant(w) = &p.kind {
                 parts.push((own.contains(&(w.holder, p.on)), p.on, w.holder, n as u32));
             }
         }
         parts.sort();
         let mut out = vec![];
         for (place, (_, on, holder, n)) in parts.into_iter().enumerate() {
-            let Some(Part { path, direct, kind: PartKind::Edge(w), .. }) = c.parts.get(n as usize) else { continue };
+            let Some(Part { path, direct, kind: PartKind::Grant(w), .. }) = c.parts.get(n as usize) else { continue };
             let sh = shape(&self.mint, c.key, c.signer, path, *direct, on, Some(holder), true);
             let well = sh.well && !twice;
             let hops = if well { sh.hops.iter().map(|&h| self.intern(h)).collect() } else { vec![] };
@@ -811,18 +811,18 @@ impl Walk {
 
     // ---- the pass ----
 
-    /// Edge `e` just before `k`: its value (`None`: never set), and the edge as restored, in
+    /// The grant `e` just before `k`: its value (`None`: never set), and the edge as restored, in
     /// what it gives and lets grant.
-    fn state(&self, e: E, k: Key) -> (Option<Option<Edge>>, Lvl, Lvl) {
+    fn state(&self, e: E, k: Key) -> (Option<Option<Grant>>, Lvl, Lvl) {
         let ed = self.ed(e);
         match ed.hist.range(..k).next_back() {
             Some((_, en)) => (Some(en.a.value), en.restored, en.rgrant),
-            None if ed.record => (Some(Some(Edge::new(Role::Admin))), ADMIN, ADMIN),
+            None if ed.record => (Some(Some(Grant::new(Role::Admin))), ADMIN, ADMIN),
             None => (None, None, None),
         }
     }
 
-    fn value(&self, e: E, k: Key) -> Option<Edge> {
+    fn value(&self, e: E, k: Key) -> Option<Grant> {
         self.state(e, k).0.flatten()
     }
 
@@ -1136,7 +1136,7 @@ impl Walk {
         self.edges.iter().filter(|e| e.record || !e.hist.is_empty()).map(|e| (e.name, e.hist.values().map(|en| (en.a.key, en.a.value)).collect())).collect()
     }
 
-    pub(super) fn value_before(&self, holder: &Holder, target: &Tid, key: &Key) -> Option<Edge> {
+    pub(super) fn value_before(&self, holder: &Holder, target: &Tid, key: &Key) -> Option<Grant> {
         self.edge_ids.get(&(*holder, *target)).and_then(|&e| self.value(e, *key))
     }
 
@@ -1167,7 +1167,7 @@ impl Walk {
     /// Whether held part `id` would apply at its key were its edge's value `old` there, the rest
     /// as the settled walk has it (§5.1 step 2; a lowering's judging is not run: a dropped or void
     /// part applies nowhere).
-    pub(super) fn would_apply(&self, id: &WriteId, old: Option<Edge>) -> bool {
+    pub(super) fn would_apply(&self, id: &WriteId, old: Option<Grant>) -> bool {
         let Some(it) = self.ids.get(id).map(|&s| self.it(s)) else { return false };
         if !it.live || !it.well || it.dropped.is_some() || it.seeded || it.verdict == Some(Verdict::Void) {
             return false;
@@ -1227,7 +1227,7 @@ impl Walk {
     /// What `e` gives and lets grant in the end, every `until` counted removed.
     fn final_pair(&self, e: E) -> (Lvl, Lvl) {
         let ed = self.ed(e);
-        let last = ed.hist.values().next_back().map_or(ed.record.then(|| Edge::new(Role::Admin)), |en| en.a.value);
+        let last = ed.hist.values().next_back().map_or(ed.record.then(|| Grant::new(Role::Admin)), |en| en.a.value);
         let v = last.filter(|v| v.until.is_none());
         (v.map(|v| v.role), grantable(v.map(|v| v.role), flag(v.as_ref())))
     }
@@ -1242,7 +1242,7 @@ impl Walk {
         self.edge_ids.get(&(*holder, *target)).and_then(|&e| self.final_pair(e).0)
     }
 
-    /// Edge `e`'s first points for write and admin (§5.2 Re-grant): the key of the first held part
+    /// The grant `e`'s first points for write and admin (§5.2 Re-grant): the key of the first held part
     /// setting it at the role or above (`until` disregarded) made by right; a record edge's is
     /// the start.
     fn firsts(&self, e: E) -> [Option<Key>; 2] {
@@ -1296,7 +1296,7 @@ impl Walk {
 
 /// `n` lowers `o` in every component (§2 Self-removal): no role, may-grant flag or `until` above
 /// it, no `floor` below it.
-fn leaves(n: &Edge, o: &Edge) -> bool {
+fn leaves(n: &Grant, o: &Grant) -> bool {
     let until = match (n.until, o.until) {
         (_, None) => true,
         (None, Some(_)) => false,

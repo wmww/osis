@@ -127,7 +127,7 @@ impl Names {
 pub trait Held {
     /// `n`'s commit is applied here with its `roles.0` part on the actor, every entry its edge
     /// writes reset known, and its write on `n.holder`'s edge judged as the rotator judged it:
-    /// standing here (`EdgeWrite::stands`) for an applied name, applying nothing for a void one.
+    /// standing here (`GrantWrite::stands`) for an applied name, applying nothing for a void one.
     fn met(&self, n: &Name) -> bool;
     /// `node` holds role `r` on the actor now, for keys (spec/crypto.md §4, Holds): a departure
     /// a rotation commit itself makes is covered by it while its signer does.

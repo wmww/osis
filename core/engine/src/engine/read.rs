@@ -6,7 +6,7 @@ use super::{Core, Engine};
 use crate::error::{Error, Result};
 use osis_base::{Ak, Role, Tid, Value};
 use osis_crdt::Fragment;
-use osis_perm::{At, Edge};
+use osis_perm::{At, Grant};
 use osis_schema::RawKey;
 use osis_schema::Codec;
 use osis_schema::core_types as ct;
@@ -18,7 +18,7 @@ fn synthetic_ak(ak: &str) -> bool {
     matches!(ak, "aspects.0" | "roles.0" | "signers.0")
 }
 
-fn edge_value(e: &Edge) -> Value {
+fn edge_value(e: &Grant) -> Value {
     crate::apply::validity::schema_edge(e).to_value()
 }
 
@@ -26,7 +26,7 @@ impl Core {
     /// `thing`'s roster now, read on the memo clock up to the earliest `until` ahead in it, so a
     /// memo or follower reading it moves when the clock alone ends a role there, with a wake then
     /// (`Engine::clock_next`).
-    pub(crate) fn roster_of(&self, thing: &Tid) -> BTreeMap<Tid, Edge> {
+    pub(crate) fn roster_of(&self, thing: &Tid) -> BTreeMap<Tid, Grant> {
         self.time.at(|now| {
             let r = self.timelines().on(thing).map(|on| on.roster(At::now(crate::flows::ts_at(now)))).unwrap_or_default();
             let until = r.values().filter_map(|e| e.until).map(|u| u.0).filter(|u| *u > now).min();
@@ -35,7 +35,7 @@ impl Core {
     }
 
     /// `holder`'s edge on `thing` now, as `roster_of` reads it, without reading the rest.
-    pub(crate) fn edge_now(&self, thing: &Tid, holder: &Tid) -> Option<Edge> {
+    pub(crate) fn edge_now(&self, thing: &Tid, holder: &Tid) -> Option<Grant> {
         if !self.exists(thing) {
             return None;
         }
@@ -201,7 +201,7 @@ impl Engine {
     }
 
     /// The role timeline's roster of `thing` (spec/permissions.md §2).
-    pub fn roster(&self, thing: &Tid) -> BTreeMap<Tid, Edge> {
+    pub fn roster(&self, thing: &Tid) -> BTreeMap<Tid, Grant> {
         if !self.core.exists(thing) {
             return BTreeMap::new();
         }

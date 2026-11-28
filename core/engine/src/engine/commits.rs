@@ -518,7 +518,7 @@ mod tests {
         let mut m = Mutation::new();
         let t = lp.peers[0].engine.new_thing(&mut m, a);
         lp.peers[0].commit(m).unwrap();
-        let read = osis_schema::core_types::Edge { role: osis_base::Role::Read, until: None, may_grant: false, retain: false, floor: None };
+        let read = osis_schema::core_types::Grant { role: osis_base::Role::Read, until: None, may_grant: false, retain: false, floor: None };
         lp.peers[0].engine.grant(&t, &b, &read).unwrap();
         let g = *lp.peers[0].engine.grant(&t, &c, &read).unwrap().commits.last().unwrap();
         let secrets = Ak::new("secrets.0").unwrap();

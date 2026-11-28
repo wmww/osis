@@ -267,14 +267,14 @@ pub fn share(lp: &mut LocalPeer, admin: usize, t: Tid) {
     }
 }
 
-pub fn edge(role: Role) -> ct::Edge {
-    ct::Edge { role, until: None, may_grant: false, retain: false, floor: None }
+pub fn edge(role: Role) -> ct::Grant {
+    ct::Grant { role, until: None, may_grant: false, retain: false, floor: None }
 }
 
 /// Writes `holder`'s edge on `thing`: a grant by the flow (`Engine::grant`: the holder's secrets
 /// with it, so a holder holding the thing keeps it) when the write needs no frontier and is given
 /// none, else `edge_write`. Its edge commit.
-pub fn set_edge(e: &mut Engine, thing: Tid, holder: Tid, edge: Option<ct::Edge>, frontier: Option<ct::Frontier>) -> CommitId {
+pub fn set_edge(e: &mut Engine, thing: Tid, holder: Tid, edge: Option<ct::Grant>, frontier: Option<ct::Frontier>) -> CommitId {
     match &edge {
         Some(x) if frontier.is_none() && !e.needs_frontier(&thing, &holder, edge.as_ref()) => *e.grant(&thing, &holder, x).unwrap().commits.last().unwrap(),
         _ => edge_write(e, thing, holder, edge, frontier),
@@ -287,7 +287,7 @@ pub fn set_edge(e: &mut Engine, thing: Tid, holder: Tid, edge: Option<ct::Edge>,
 /// finalize, or a write that audits, spec/permissions.md §2, §5.1). A hand-built frontier says
 /// exactly what this node lists: it answers the write with no addendum of its own
 /// (`Engine::write_addenda`), which would list the rest.
-pub fn edge_write(e: &mut Engine, thing: Tid, holder: Tid, edge: Option<ct::Edge>, frontier: Option<ct::Frontier>) -> CommitId {
+pub fn edge_write(e: &mut Engine, thing: Tid, holder: Tid, edge: Option<ct::Grant>, frontier: Option<ct::Frontier>) -> CommitId {
     if frontier.is_some() || e.needs_frontier(&thing, &holder, edge.as_ref()) {
         e.write_addenda(false);
     }

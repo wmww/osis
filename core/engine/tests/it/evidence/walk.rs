@@ -6,8 +6,8 @@
 //! minimal adapter (`Node`) from it to the derivation's `Part`s.
 use osis_base::{Ak, CommitId, Holder, PurgeBy, Role, SignKey, Tid, Ts, Time};
 use osis_engine::evidence::{CopyId, Evidence, Kind, Part, Write};
-use osis_perm::paths::{Commit, Content, Delta, DeltaClass, EdgeWrite, Key, List, Part as PPart, PartKind, Paths};
-use osis_perm::{Edge, WriteId};
+use osis_perm::paths::{Commit, Content, Delta, DeltaClass, GrantWrite, Key, List, Part as PPart, PartKind, Paths};
+use osis_perm::{Grant, WriteId};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -53,7 +53,7 @@ impl World {
     /// An edge write along the empty path (the signer the target's mint admin, or holding admin
     /// on it directly).
     fn set(&mut self, t: u64, signer: u8, on: u8, holder: u8, role: Option<Role>, frontier: &[CommitId]) -> CommitId {
-        let value = role.map(Edge::new);
+        let value = role.map(Grant::new);
         // A1's single list: each commit in the leaf of every thing it writes
         let entries = frontier.iter().flat_map(|x| self.commits.iter().filter(move |c| c.id == *x).flat_map(|c| c.parts.iter().map(|p| (p.on, c.id))));
         let frontier = Some(Arc::new(List::new(entries.collect::<Vec<_>>())));
@@ -79,8 +79,8 @@ fn own(t: Tid) -> SignKey {
     SignKey(b)
 }
 
-fn edge_part(path: &[u8], on: u8, holder: u8, value: Option<Edge>, frontier: Option<Arc<List>>) -> PPart {
-    PPart { on: tid(on), path: path.iter().map(|&t| tid(t)).collect(), direct: 0, kind: PartKind::Edge(EdgeWrite { holder: Holder::Thing(tid(holder)), value, frontier }) }
+fn edge_part(path: &[u8], on: u8, holder: u8, value: Option<Grant>, frontier: Option<Arc<List>>) -> PPart {
+    PPart { on: tid(on), path: path.iter().map(|&t| tid(t)).collect(), direct: 0, kind: PartKind::Grant(GrantWrite { holder: Holder::Thing(tid(holder)), value, frontier }) }
 }
 fn content_part(path: &[u8], on: u8) -> PPart {
     let delta = Delta { aspect: Ak::new("doc.0").unwrap(), needs: Role::Write, purge_author: 0, purge_by: PurgeBy::AuthorOrAdmin, class: DeltaClass::Plain };
@@ -105,7 +105,7 @@ fn joins(records: &BTreeMap<Tid, Tid>, p: Tid, q: Tid) -> Vec<(Tid, Tid)> {
 /// A part's hops: members [signer, path.., on] (a self-removal ends at its holder).
 fn hops(records: &BTreeMap<Tid, Tid>, c: &Commit, p: &PPart) -> Vec<(Tid, Tid)> {
     let ak = *p.path.last().unwrap_or(&c.signer);
-    let leave = matches!(&p.kind, PartKind::Edge(w) if w.holder == Holder::Thing(ak));
+    let leave = matches!(&p.kind, PartKind::Grant(w) if w.holder == Holder::Thing(ak));
     let mut members = vec![c.signer];
     members.extend(&p.path);
     if !leave {
@@ -135,7 +135,7 @@ impl Node {
             let mut by: BTreeMap<Tid, Vec<Part<Tid, Key>>> = BTreeMap::new();
             for p in &c.parts {
                 let kind = match &p.kind {
-                    PartKind::Edge(e) => {
+                    PartKind::Grant(e) => {
                         let Holder::Thing(holder) = e.holder else { continue };
                         Kind::Write(Write { holder })
                     }

@@ -175,13 +175,13 @@ impl Default for Closure {
 }
 
 /// An edge followed: a held vertex and a target of its thing's strongs.
-type Edge = (Vx, Tid);
+type Grant = (Vx, Tid);
 
 /// The follower of each held vertex's edges (`Closure`), outside the journal: a rollback
 /// moves the stamps of what it restores, and `reset` follows every held vertex's edges afresh.
 #[derive(Clone)]
 pub(crate) struct Follow {
-    fx: Effects<Edge, BTreeSet<Vx>>,
+    fx: Effects<Grant, BTreeSet<Vx>>,
     reset: bool,
     /// A settle ran in the open transaction: a rollback of it undoes what the follower acted on.
     acted: bool,
@@ -190,7 +190,7 @@ pub(crate) struct Follow {
     /// The edges followed before this settle's refollow (`reset` after a rollback), so an edge
     /// is new only when neither follows it (`refetch`). `known` false: an open's first settle,
     /// whose edges are all old (a refetch was durable before the transaction adding its strong).
-    before: Option<Effects<Edge, BTreeSet<Vx>>>,
+    before: Option<Effects<Grant, BTreeSet<Vx>>>,
     known: bool,
 }
 

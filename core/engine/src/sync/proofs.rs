@@ -77,7 +77,7 @@ impl Core {
         let tl = self.timelines();
         let key = SignKey(c.key);
         let mut until: Option<u64> = None;
-        let mut alive = |e: &osis_perm::Edge| {
+        let mut alive = |e: &osis_perm::Grant| {
             if let Some(u) = e.until {
                 until = Some(until.map_or(u.0, |x| x.min(u.0)));
             }
