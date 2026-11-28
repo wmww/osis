@@ -1,3 +1,0 @@
-# sheave-c16-steps
-- The arrival-order known line (b8e03b1f10) had a pattern its replay could never match: the gate matches a failure's seed line only, and the test printed the property after its event log, on later lines. Every branch's gate then failed NEW-TEXT on it (one extra gate, about 14 min). A check when a `rate:` line is added (replay it once and match the pattern, as the gate will) would have caught it; fixed here by putting the property on the seed line.
-- The same gate's NEW-COST on osis-proto (11.55 G, 1.56x its 7.4 line) comes from main's proto test commits (osis-proto does not depend on the engine); its line was not raised or the tests slimmed with them.
