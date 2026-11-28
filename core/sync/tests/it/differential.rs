@@ -645,3 +645,14 @@ fn a_reader_removed_then_granted_sync_keeps_it_unread_spec_sync_ids_4() {
     use crate::harness::script::*;
     holds_on(0, 3, 4, &[New(0), Give(0, 0, Holder::Node(1), Reads), Revoke(0, 0, Holder::Node(1)), Give(0, 0, Holder::Node(1), Syncs), Strong(1, None, 0)], String::new(), false);
 }
+
+// spec/sync-opens.md §5 (Testing: a Head unanswered tested nothing), §1 (one connection per pair):
+// node 2 grants node 1's account sync on its thing twice, node 1 strongs it, and node 2's disk
+// fails. Node 1 asks Head of the thing's sync ID on a connection that then loses the pair rule to
+// one dialed meanwhile; the survivor takes the record, which counted S tested. Node 1 keeps the
+// thing unread, as the model says (failed: it never asked Head again and held a stub).
+#[test]
+fn a_head_unanswered_on_a_released_connection_is_asked_again_spec_sync_opens_5() {
+    use crate::harness::script::*;
+    holds_on(0, 3, 4, &[New(2), Give(2, 0, Holder::Node(1), Syncs), Strong(1, None, 0), Give(2, 0, Holder::Node(1), Syncs), Disk(2, 0, Fail)], String::new(), false);
+}

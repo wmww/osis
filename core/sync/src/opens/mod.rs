@@ -1144,7 +1144,13 @@ impl Opens {
     /// one kept nowhere goes, each member closing with it.
     fn release(&mut self, conn: ConnId, moved: &mut Vec<Moved>) {
         let Some(c) = self.conns.get_mut(&conn) else { return };
+        // a Head unanswered tested nothing yet: S is tested again where the record goes next
+        let heads: Vec<SyncId> = c.reqs.values().filter_map(|r| if let Req::Head { s, .. } = r { Some(*s) } else { None }).collect();
         let Some(rid) = c.rec.take() else { return };
+        for s in &heads {
+            self.unack(rid, s);
+        }
+        let Some(c) = self.conns.get(&conn) else { return };
         if self.on.get(&rid) == Some(&conn) {
             self.on.remove(&rid);
         }
@@ -2354,7 +2360,13 @@ impl Opens {
             moved.push(Moved::Gone(rid, s));
         }
         // re-marked (§5 Testing): the next connection tests S again
-        if let Some(pos) = self.changed.at.get(&s).map(|(p, ..)| p.saturating_sub(1))
+        self.unack(rid, &s);
+    }
+
+    /// Record `rid`'s `acked_pos` drops below `changed_at(S)` (§5 Testing): the next connection
+    /// taking it tests S again.
+    fn unack(&mut self, rid: RecordId, s: &SyncId) {
+        if let Some(pos) = self.changed.at.get(s).map(|(p, ..)| p.saturating_sub(1))
             && self.records.get(&rid).is_some_and(|r| r.acked_pos > pos)
         {
             self.set_acked(rid, pos);
