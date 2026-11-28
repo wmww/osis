@@ -65,7 +65,6 @@ Not format constants. A value marked recommended is advice.
 | `INCARNATIONS_KEPT` | recommended 4096 ended incarnations of a node log (spec/sync-streams.md §3), oldest evicted: a cursor naming an evicted one names no position |
 | `MAX_DELIVERED` | 2^16 delivered relay-only commit IDs remembered (spec/sync-compaction.md §2) |
 | `LOST_HEARD_WAIT_MS` | `ROLE_KEEP`: how long after a node first found a role gone by an `until` alone it drops anyway (spec/permissions.md §2) |
-| `SETTLE_MS` | local policy, 30 s: how long a node leaves another node's fresh demotion or `keys.0` to its signer before copying it (spec/permissions.md §2, §4) |
 | `PASS_WAIT_MS` | local policy, recommended 1 hour: how long a complete pass waits for a peer whose record holds the sync ID (spec/sync-status.md §1) |
 
 ## 3. Creation records and agility enums
@@ -400,8 +399,7 @@ Steps (§8) are their canonical bytes as byte strings; blobs are byte strings; `
   - **Payload**: `[0, ..]` is a delivery, `[1]` the subscription lapsed (its id is free), `[2, source]` a delivery above `max_reply`.
   - **Flow control**: spec/sync-streams.md §1; Notifies follow the push rule (spec/sync-streams.md §2).
   - **Subscriptions**: at most `MAX_SUBS` live subscriptions per connection (Error 4 past it).
-- Once one signature of a message verifies under no key the receiver tries (code 1), it MAY check the message's later signatures against the head's keys only (code 1 where 9 would be due).
-- Code 9 refuses a signature under an earlier key of the sync ID's role (a node answers it for some recent earlier keys, 1 past them) and carries nothing more, never the head.
+- Code 9 refuses a signature under an earlier key of the sync ID's role and carries nothing more, never the head.
 - **Status codes**:
 
   | code | meaning |

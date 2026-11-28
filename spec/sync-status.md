@@ -23,4 +23,4 @@
 - **History complete** for a thing: a complete pass (§1) of every sync ID carrying it.
 - `set_role` writes at once.
 - A wait on a thing that never arrives, or was left and forgotten, runs to its timeout; status names the thing unknown meanwhile.
-- `SETTLE_MS` and `PASS_WAIT_MS` (spec/wire.md §2) are the only waits on others' liveness, and only for decisions taken at the end of a complete pass or about role commits.
+- `PASS_WAIT_MS` (spec/wire.md §2) is the only wait on others' liveness, and only for decisions taken at the end of a complete pass.

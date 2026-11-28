@@ -27,13 +27,12 @@ fn a_raced_grant_is_resealed_at_a_complete_passs_end_spec_perm_3() {
     check(&mut w);
 }
 
-// spec/permissions.md §3 (removal logged in its sync),
 // spec/sync-judgement.md §3 (own store: what is logged together goes in `ts` order): node 0 writes
 // an aspect of t, removes node 2's account from t, and writes other aspects of t (none covering
 // another), all before its sync steps: one sync logs them all under S, in the order made. Enough writes that their commit IDs
 // do not sort in that order (asserted), so logging in ID order fails this.
 #[test]
-fn a_removal_is_logged_before_what_was_written_after_it_spec_permissions_3() {
+fn a_removal_is_logged_before_what_was_written_after_it_spec_sync_judgement_3() {
     use crate::harness::history::{Gives, three};
     let (mut w, t, s) = three(Gives::Reads, 1);
     let a2 = w.node(2).account.unwrap();

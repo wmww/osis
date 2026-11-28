@@ -263,9 +263,7 @@ pub(crate) fn removal(tx: &Tx<'_>, m: &mut Mutation, target: Tid, holder: impl I
 /// to the history). A self-removal carries no frontier and no rotation (the next node that may
 /// rotate does), and the leaver drops what it lost. An explicit removal of an absent edge resets
 /// its dead entries (spec/permissions.md §2). With `others`, an explicit removal of those
-/// holders' edges too, under the same frontier and one rotation (spec/commits.md §2). Then the
-/// inbox copy to each holder, logged before any other entry under every sync ID the removed
-/// parties could read.
+/// holders' edges too, under the same frontier and one rotation (spec/commits.md §2).
 pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &Demotion, others: &[Tid], frontier: Option<osis_perm::Frontier>) -> Result<Done> {
     let who = signer.unwrap_or(tx.core.tid());
     let holder = d.holder;

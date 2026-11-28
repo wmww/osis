@@ -822,8 +822,8 @@ fn must_hold_is_logged_once_and_pulled() {
     assert_eq!(w.at_k(S, cid(1)), 1);
 }
 
-// spec/sync-judgement.md §3 (own store: what is logged together goes in `ts` order),
-// spec/permissions.md §3 (removal logged in its sync): two own commits held at once, the one made
+// spec/sync-judgement.md §3 (own store: what is logged together goes in `ts` order): two own
+// commits held at once, the one made
 // later with the smaller commit ID, are logged in the order made under each sync ID.
 #[test]
 fn what_is_logged_together_goes_in_the_order_made_spec_sync_judgement_3() {
