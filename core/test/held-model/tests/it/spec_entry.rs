@@ -30,6 +30,27 @@ fn holds(net: &Net, rule: Rule, i: usize) -> (bool, bool) {
     (h.whole.contains(&X), h.stubs.contains(&X))
 }
 
+/// A record edge is the thing's own data: R is X's mint admin, A holds sync on X and read on R,
+/// each told, and A strongly references X. Node 0 holds X kept unread (by A's grant) and R as the
+/// signal's stub (A reads its role entries): X's record names R, so node 0 reads X through R.
+/// Without the record edges known (X's roster is no read of A's), it keeps X unread.
+#[test]
+fn entry_a_record_edge_is_known_where_its_thing_is_held() {
+    for records in [true, false] {
+        let mut net = account(2);
+        net.w.grants.extend([((R, X), Role::Admin), ((A, X), Role::Sync), ((A, R), Role::Read)]);
+        if records {
+            net.w.records.insert((R, X));
+        }
+        net.signals.extend([Signal { at: At::Node(0), holder: A, target: X }, Signal { at: At::Node(0), holder: A, target: R }]);
+        net.strongs.insert((A, X));
+        net.settle(Rule::SPEC);
+        let h = net.held(Rule::SPEC, 0);
+        assert_eq!((h.whole.contains(&X), h.unread.contains(&X)), (records, !records), "record edges known: {records}");
+        assert!(check(&net, Rule::SPEC).is_empty());
+    }
+}
+
 /// Pairing: each node takes A in from the values alone and keeps it once they are gone.
 #[test]
 fn entry_pairing_takes_the_account_in() {

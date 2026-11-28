@@ -132,8 +132,8 @@ impl Rule {
 /// The grants a judge can learn (spec/sync-set.md §2: a thing's grants count where its role
 /// entries are held; spec/permissions.md §4 Stub): every grant on a thing of `full` (its roster
 /// read), each grant of `edges` (an entry of its holder taken, or a sync-only cut naming its holder
-/// on the judge's chain), and the public's on a thing of `ids` (its sync ID held: the public's
-/// entry is at the head).
+/// on the judge's chain), and on a thing of `ids` (its sync ID held) the public's (its entry is at
+/// the head) and the record edge (in the thing's record, held with anything of it).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Know {
     pub full: Set,
@@ -148,7 +148,7 @@ impl Know {
     }
 
     fn grant(&self, net: &Net, a: T, b: T) -> bool {
-        self.full.contains(&net.indep(b)) || self.edges.contains(&(a, net.indep(b)))
+        self.full.contains(&net.indep(b)) || self.edges.contains(&(a, net.indep(b))) || (self.ids.contains(&b) && net.w.records.contains(&(a, b)))
     }
 
     fn extend(&mut self, other: &Know) {

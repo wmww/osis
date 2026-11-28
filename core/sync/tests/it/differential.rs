@@ -595,3 +595,20 @@ fn the_reference_takes_writes_at_the_worlds_time_spec_permissions_6() {
     script.push(NewIn(1, 0));
     holds_on(0, 2, 3, &script, String::new(), false);
 }
+
+// spec/sync-set.md §2 (Own things: the node's role by the grants of what it holds, read or kept
+// unread, and of the holders on the way; Role entries a unit's chains read: a chain at read counts
+// every grant held), spec/permissions.md §3 (Own secrets add only: the mint admin a holder for keys
+// by its record edge): node 1 mints thing 1 in thing 0, grants node 2's account sync on thing 1
+// (independent then) and read on thing 0, each told; node 2 holds thing 1 by a strong and thing 0
+// as the signal's stub. Thing 1's record names thing 0 its mint admin, so node 2 reads thing 1
+// through thing 0, its account's read there, as the model says (failed while the model counted a
+// record edge only where the thing's roster is read: it had node 2 keep thing 1 unread).
+#[test]
+fn a_record_edge_is_read_through_where_its_thing_is_held_spec_sync_set_2() {
+    use crate::harness::history::reads;
+    use crate::harness::script::*;
+    let mut w = holds_on(0, 3, 3, &[New(1), NewIn(1, 0), Give(1, 1, Holder::Node(2), Syncs), Strong(2, None, 1), Give(1, 0, Holder::Node(2), Reads)], String::new(), false);
+    let t = w.history.things[1].0;
+    assert!(reads(w.engine(2), &t).value.is_some(), "node 2 reads thing 1");
+}

@@ -1085,7 +1085,9 @@ impl Model {
         for r in refs.all() {
             keyless.extend(r.engine.keyless_grants().iter().filter_map(|(t, g)| Some((index(g)?, index(t)?))));
         }
-        let world = hc::World { kinds, grants, keyless, public, public_sync };
+        // an independent thing's record edge, standing while its roster shows it
+        let records = (0..things.len()).filter(|&k| kinds[na + k] == hc::Kind::Independent).map(|k| (mint_admin(k), na + k)).filter(|e| grants.contains_key(e)).collect();
+        let world = hc::World { kinds, grants, keyless, public, public_sync, records };
         // per account a node: its node thing admin of the account, its root holding both
         let n = world.kinds.len();
         let mut net = entry::Net { w: world.clone(), strongs: edges.clone(), ..entry::Net::default() };

@@ -56,6 +56,9 @@ pub struct World {
     /// The independent things the public holds sync on, by its own grant: every party's role
     /// there is sync (`entry`: a reference to one brings its stub).
     pub public_sync: Set,
+    /// The record edges `(mint admin, t)` among `grants` that stand, of independent things: in
+    /// `t`'s record, so known wherever anything of `t` is held (`entry::Know`).
+    pub records: BTreeSet<(T, T)>,
 }
 
 /// The keyless grants among actor grants `(g, t)` (holder `g` on target `t`) taken in `order`
