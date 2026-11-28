@@ -2,7 +2,7 @@
 //! (`toward`), from the ground's values alone. Pure reads: `Read`
 //! runs these inside its effects and acts on what a new value adds.
 
-use super::ground::{Facts, Ground, PieceAt, Seen, SrcView};
+use super::ground::{BlobInfo, Facts, Ground, PieceAt, Seen, SrcView};
 use super::{Verdict, Why};
 use crate::inbox::Promotion;
 use crate::store::{Source, Stand};
@@ -11,7 +11,7 @@ use osis_base::format::MAX_DRIFT_MS;
 use osis_base::memo::{Clock, Stamped};
 use osis_base::{BlobId, CommitId, SyncId, Tid};
 use osis_engine::retention::Minting;
-use osis_engine::sync::{BodyId, BodyMeta, Loss, PieceLink, ReadCredentials};
+use osis_engine::sync::{BodyId, BodyMeta, Dup, Loss, PieceLink, ReadCredentials};
 use osis_blob::StepId;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -872,32 +872,25 @@ fn deletes(g: &mut impl Ground, mine: &Mine, t: &mut Toward, src: &SrcView, full
     Ok(())
 }
 
-/// spec/sync-compaction.md §1 Duplicates: of entries of one commit with the same delta set, both
-/// copies or both not, all but the lowest blob ID go; where S's body is a per-sync-ID copy, a
-/// shared blob beside a copy goes whatever its ID. The same delta set as this node checked it: the
-/// same parts opened and the same unopened sections byte for byte. An entry whose bytes are not
-/// held is none.
+/// spec/sync-compaction.md §1 Duplicates: the entries there that are a duplicate of another
+/// (`Dup::duplicate_of`); `copy_body`: S's body is a per-sync-ID copy. An entry whose bytes are
+/// not held is none.
 fn duplicates(g: &mut impl Ground, seen: &Seen, copy_body: bool) -> Result<Vec<BlobId>> {
     if seen.present.len() < 2 {
         return Ok(Vec::new());
     }
-    let mut groups: BTreeMap<_, (Vec<BlobId>, Vec<BlobId>)> = BTreeMap::new();
+    let mut infos = Vec::new();
     for b in &seen.present {
         if let Some(info) = g.blob(b)? {
-            let (copies, shared) = groups.entry((info.parts, info.sealed)).or_default();
-            if info.copy { copies } else { shared }.push(*b);
+            infos.push((*b, info));
         }
     }
-    let mut out = Vec::new();
-    for (copies, shared) in groups.into_values() {
-        out.extend(copies.iter().skip(1));
-        if copy_body && !copies.is_empty() {
-            out.extend(shared);
-        } else {
-            out.extend(shared.iter().skip(1));
-        }
-    }
-    Ok(out)
+    Ok(infos.iter().filter(|e| infos.iter().any(|o| dup(e).duplicate_of(&dup(o), copy_body))).map(|e| e.0).collect())
+}
+
+/// A held blob as duplicates compare it.
+fn dup((b, x): &(BlobId, BlobInfo)) -> Dup<'_> {
+    Dup { id: b, parts: &x.parts, sealed: &x.sealed, copy: x.copy }
 }
 
 /// A must-hold body the source lacks (§3 Giving a body; §4 Logged again once).

@@ -58,6 +58,28 @@ pub type PartSet = BTreeSet<usize>;
 /// node checked of them (spec/sync-compaction.md §1 Duplicates).
 pub type SealedSet = BTreeSet<[u8; 32]>;
 
+/// A held blob of a commit as duplicates compare it: its ID, the parts this node opened and
+/// checked, its other sections by their bytes, and whether it is a per-sync-ID copy.
+#[derive(Clone, Copy, Debug)]
+pub struct Dup<'a> {
+    pub id: &'a BlobId,
+    pub parts: &'a PartSet,
+    pub sealed: &'a SealedSet,
+    pub copy: bool,
+}
+
+impl Dup<'_> {
+    /// Whether this blob is a duplicate of `o`, both blobs of one body under a sync ID, that body
+    /// a per-sync-ID copy or not (`body_copy`): the same delta set as this node checked it, and
+    /// `o` of its kind (a blob of no section, a header alone, is of either) under a lower blob
+    /// ID, or `o` a copy beside this shared blob where the body is a copy
+    /// (spec/sync-compaction.md §1 Duplicates).
+    pub fn duplicate_of(&self, o: &Dup<'_>, body_copy: bool) -> bool {
+        let header = self.parts.is_empty() && self.sealed.is_empty();
+        self.parts == o.parts && self.sealed == o.sealed && if self.copy == o.copy || header { o.id < self.id } else { body_copy && o.copy }
+    }
+}
+
 /// A blob of a commit as this node opened or sealed it (`bp/` row, `Engine::blob_of`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BlobOf {

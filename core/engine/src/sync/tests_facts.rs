@@ -219,6 +219,33 @@ fn a_blob_loses_to_another_by_what_each_carries_spec_sync_judgement_2() {
     assert_eq!(lp.peers[0].engine.blob_loses(&s, &b7, &b8, (true, true)).unwrap(), None, "the part it adds overwritten: no blob alone carries it");
 }
 
+// spec/sync-compaction.md §1 (Duplicates), spec/sync-judgement.md §1 (Per-sync-ID copies): where
+// S's body of a commit is a per-sync-ID copy (a grant: a role part on a thing other than S's
+// actor), a shared blob of the same parts beside the copy is its duplicate whatever its ID, and
+// leaves the own log as spare; the copy never loses to it.
+#[test]
+fn a_shared_blob_beside_a_copy_is_its_duplicate_spec_sync_compaction_1() {
+    use super::Loss::Spare;
+    let (mut lp, d) = two_nodes();
+    let (t, _) = wide_commit(&mut lp, d, 1);
+    let other = lp.peers[1].engine.tid();
+    let e = &mut lp.peers[0].engine;
+    let done = e.grant(&t, &other, &ct::Grant { role: osis_base::Role::Read, until: None, may_grant: false, retain: false, floor: None }).unwrap();
+    let c = *done.commits.iter().find(|c| e.header(c).unwrap().aspects.iter().any(|a| a.tid == t && a.ak.as_str() == "roles.0")).expect("the grant");
+    let s = e.sync_id_of(&d).unwrap().unwrap();
+    let body = e.sync_body(&s, &crate::sync::BodyId::unit(c)).unwrap().expect("a body under S");
+    assert!(body.copy, "a grant's body is a per-sync-ID copy");
+    let mut noted = |b: u8, copy: bool| {
+        let id = BlobId([b; 32]);
+        e.run(|tx| note_blob(tx, &id, super::BlobOf { commit: c, parts: body.parts.clone(), sealed: Default::default(), copy, unchecked: false, salt: [0; 16], ais: body.parts.clone(), seal: None })).unwrap();
+        id
+    };
+    let (shared, copy) = (noted(1, false), noted(2, true));
+    let e = &mut lp.peers[0].engine;
+    assert_eq!(e.blob_loses(&s, &shared, &copy, (true, true)).unwrap(), Some(Spare), "the shared blob, lower ID, goes beside the copy");
+    assert_eq!(e.blob_loses(&s, &copy, &shared, (true, true)).unwrap(), None, "the copy stays");
+}
+
 // spec/sync-judgement.md §2 (Per blob: a strip), spec/sync-compaction.md §1 (Carriers): a blob
 // stripping here is deleted at a peer only once each part of it held here (`live`) has another
 // carrier there, and each part it strips as covered has a snapshot reaching it there (`covers`).

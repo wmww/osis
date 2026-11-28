@@ -5,7 +5,7 @@
 //! a deposit. The must-hold / may-hold / must-not-hold rule itself is `read`'s; these are its
 //! inputs.
 
-use super::{BlobOf, BodyFacts, BodyId, BodyMeta, HeldBlob, Loss, Opened, PartSet, Promote, SealedSet, Strip, ThingSync, Wrap};
+use super::{BlobOf, BodyFacts, BodyId, BodyMeta, Dup, HeldBlob, Loss, Opened, PartSet, Promote, SealedSet, Strip, ThingSync, Wrap};
 use crate::engine::{DropFor, Engine, Tx};
 use crate::error::{Error, Result};
 use osis_base::{BlobId, CommitId, Role, SyncId, Tid, Time};
@@ -794,18 +794,19 @@ impl Engine {
     }
 
     /// How held blob `b` of a commit loses to held blob `o` of it under `s` (spec/sync-judgement.md
-    /// §2 Per blob), neither stripping (`blob_gone`), `o` of `b`'s kind and carrying every part of
-    /// `b` this node holds; `stands`: whether each may stand as the body's log (an entry holding
-    /// the body, no deposit awaiting promotion). `Needed`: `o` also carries each part of `b` and
-    /// each section of `b` this node did not open (over what it checked, spec/sync-compaction.md
-    /// §1 Duplicates) and a part only a blob carries (`blob_only`) that `b` lacks: `b` is
-    /// must-not-hold, deleted at a source showing `o`. `Spare`: `o` may stand and lacks a section
-    /// of `b` this node did not open, or carries the same sections under a lower blob ID (readers
-    /// logging one rewrite at once), or under any where `b` may not stand: `b` leaves the own log
-    /// and is no blob logged verbatim, never deleted at a peer for it.
+    /// §2 Per blob), neither stripping (`blob_gone`), `o` carrying every part of `b` this node
+    /// holds; `stands`: whether each may stand as the body's log (an entry holding the body, no
+    /// deposit awaiting promotion). `Needed` (`o` of `b`'s kind): `o` also carries each part of
+    /// `b` and each section of `b` this node did not open (over what it checked,
+    /// spec/sync-compaction.md §1 Duplicates) and a part only a blob carries (`blob_only`) that
+    /// `b` lacks: `b` is must-not-hold, deleted at a source showing `o`. `Spare`: `o` may stand
+    /// and `b` is its duplicate (`Dup::duplicate_of`: readers logging one rewrite at once), or,
+    /// `o` of `b`'s kind, lacks a section of `b` this node did not open, or carries the same
+    /// sections where `b` may not stand: `b` leaves the own log and is no blob logged verbatim
+    /// (a duplicate is deleted at a peer by judging there, never for losing here).
     pub fn blob_loses(&mut self, s: &SyncId, b: &BlobId, o: &BlobId, stands: (bool, bool)) -> Result<Option<Loss>> {
         let (Some(x), Some(y)) = (self.core.ix.blob_parts.get(b).cloned(), self.core.ix.blob_parts.get(o).cloned()) else { return Ok(None) };
-        if o == b || y.commit != x.commit || !y.of_kind(x.copy) || self.blob_gone(b) || self.blob_gone(o) {
+        if o == b || y.commit != x.commit || self.blob_gone(b) || self.blob_gone(o) {
             return Ok(None);
         }
         let c = x.commit;
@@ -814,18 +815,23 @@ impl Engine {
         if self.blob_body(s, o)? != Some(id) {
             return Ok(None);
         }
+        let meta = self.sync_body(s, &id)?;
+        let dup = Dup { id: b, parts: &x.parts, sealed: &x.sealed, copy: x.copy }.duplicate_of(&Dup { id: o, parts: &y.parts, sealed: &y.sealed, copy: y.copy }, meta.as_ref().is_some_and(|m| m.copy));
+        if !y.of_kind(x.copy) {
+            return Ok((stands.1 && dup).then_some(Loss::Spare));
+        }
         let Some(m) = self.core.ix.commits.get(&c) else { return Ok(None) };
         if x.parts.iter().any(|ai| m.holds(*ai) && !strips(m, *ai) && !y.parts.contains(ai)) {
             return Ok(None);
         }
         // a blob of the other kind holds no body here (a certificate copy beside the shared blob
         // carries parts S's readers cannot open there, whatever this node opens of it)
-        let body_kind = self.sync_body(s, &id)?.is_some_and(|meta| x.of_kind(meta.copy));
+        let body_kind = meta.is_some_and(|meta| x.of_kind(meta.copy));
         if body_kind && x.parts.is_subset(&y.parts) && y.parts.len() > x.parts.len() && x.sealed.is_subset(&y.sealed) && let Some(only) = self.blob_only(s, &id)? && y.parts.difference(&x.parts).any(|ai| only.contains(ai)) {
             return Ok(Some(Loss::Needed));
         }
-        let same = y.parts == x.parts && y.sealed == x.sealed && y.ais == x.ais;
-        Ok((stands.1 && (!x.sealed.is_subset(&y.sealed) || (same && (!stands.0 || o < b)))).then_some(Loss::Spare))
+        let same = y.parts == x.parts && y.sealed == x.sealed;
+        Ok((stands.1 && (dup || !x.sealed.is_subset(&y.sealed) || (same && !stands.0))).then_some(Loss::Spare))
     }
 
     /// Whether held blob `b` loses to another of `others` (`blob_loses`, each taken to stand).
