@@ -285,7 +285,7 @@ mod tests {
         assert_eq!(pk.verify(Domain::Commit, &digest, &sig), Err(Error::BadSignature));
     }
 
-    // spec/wire.md §3: signing_key and signature are enum values; another case parks.
+    // spec/wire.md §3: signing_key and signature are enum values; spec/crypto.md §8: another case parks.
     #[test]
     fn agility_values() {
         let sk = SigningSecret::from_seed(&Secret32::from_bytes([5; 32]));

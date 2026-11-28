@@ -60,7 +60,7 @@ Encoding: spec/wire.md §4. Fields:
   - an AK that is not an ephemeral aspect (`+` and `.`) in an ephemeral commit that is not relay-only;
   - an AK that is not an ephemeral signal (`+` and `~`) in a relay-only commit;
   - an AK with `+` in a durable commit;
-  - a signal AK in a compaction snapshot (§5 Signals);
+  - a signal AK in a compaction snapshot that is not relay-only (§5 Signals);
   - an AK other than a durable signal (`~` without `+`), or a commit with an ephemeral marker, with `replaces` (§5 Signals).
 
   For such a part: a writer MUST NOT write one, and a receiver drops it alone, as a part not matching its header entry (§4).

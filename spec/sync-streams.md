@@ -12,7 +12,7 @@
 - **Flow control**:
   - **Requester**: either side of a connection, whoever dialed, keeps at most `WINDOW` in flight on it, counting per request it sent and that is not answered (the Stream's and the shared set's included) its frame length plus a reply allowance:
     - `MAX_MESSAGE` for Prove;
-    - its `max_reply` for a Fetch, Pull, Call or Sub (spec/wire.md §11.2);
+    - its `max_reply` for a Fetch, Want, Pull, Call or Sub (spec/wire.md §11.2);
     - `SMALL_REPLY` for every other kind.
     - It sends the next request while below `WINDOW`, in the order it made them.
   - **Pushes**: §2.

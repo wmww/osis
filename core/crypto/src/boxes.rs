@@ -485,7 +485,7 @@ mod tests {
     }
 
     // spec/wire.md §7: sealed secrets.0 box round trip; AD binds actor, holder, role, epoch, form;
-    // the item names its key's epoch.
+    // the item names its key's epoch; spec/crypto.md §8: an unknown suite parks.
     #[test]
     fn sealed_box() {
         let mut rng = SeededRng::from_u64(0);
