@@ -749,6 +749,36 @@ fn serve_survives_a_bad_socket_dir() {
     assert!(line.starts_with(xdg.join("osis").to_str().unwrap()) && line.ends_with(".sock"), "{line}");
 }
 
+// notes/sync-test-harness.md Trace: debug builds, `OSIS_NODE_TRACE` on a daemon prints its node's steps on stderr from its start, a client's request on the socket decoded
+#[cfg(debug_assertions)]
+#[test]
+fn node_trace_prints_a_daemons_frames() {
+    use std::io::BufRead;
+    use std::process::{Command, Stdio};
+    let d = tmp("nodetrace");
+    let ds = d.to_str().unwrap();
+    S::dir(&d).ok(&["init"]);
+    let xdg = tmp("nodetrace-xdg");
+    std::fs::create_dir_all(&*xdg).unwrap();
+    let bin = env!("CARGO_BIN_EXE_osis");
+    let mut c = Command::new(bin).env("XDG_RUNTIME_DIR", &*xdg).env("OSIS_NODE_TRACE", "all").args(["--no-lan", "-s", ds, "serve"]).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    let out = std::io::BufReader::new(c.stdout.take().unwrap());
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || tx.send(out.lines().map_while(Result::ok).next()));
+    let socket = rx.recv_timeout(std::time::Duration::from_secs(60)).ok().flatten();
+    let err = std::io::BufReader::new(c.stderr.take().unwrap());
+    let (tx, rx) = std::sync::mpsc::channel();
+    // the reader stops at the first: a closed stderr ends no daemon
+    std::thread::spawn(move || tx.send(err.lines().map_while(Result::ok).find(|l| l.contains(" <- ") && l.contains(": Call {"))));
+    let client = Command::new(bin).env("XDG_RUNTIME_DIR", &*xdg).args(["-s", ds, "whoami"]).output().unwrap();
+    let line = rx.recv_timeout(std::time::Duration::from_secs(60)).ok().flatten();
+    let _ = c.kill();
+    let _ = c.wait();
+    assert!(socket.is_some() && client.status.success(), "{socket:?} {client:?}");
+    let line = line.expect("a traced Call");
+    assert!(line.starts_with('d') && line.contains("ms <- "), "{line}");
+}
+
 // CLI `writes`, `fired`, `purge`: pages by place, each part in its line, a purged part, purge by
 // commit and by author; a signal's fires; `--follow`; a thing destroyed.
 #[test]

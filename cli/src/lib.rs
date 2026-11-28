@@ -163,6 +163,19 @@ fn config(g: &Global, net: Network) -> anyhow::Result<Config> {
     if net != Network::Node || g.no_lan {
         c.lan = osis::Lan::Off;
     }
+    // debug builds: `OSIS_NODE_TRACE=all|<only>` prints the node's trace on stderr from its start
+    // (notes/sync-test-harness.md, Trace); the known-variables file is read only once it is set
+    #[cfg(debug_assertions)]
+    if net != Network::None
+        && std::env::var_os("OSIS_NODE_TRACE").is_some()
+        && let Some(v) = osis_schema::osis_base::testenv::str_var("OSIS_NODE_TRACE")
+    {
+        let only = osis::internals::sync_trace::Only::parse(if v == "all" { "" } else { &v });
+        c.app.internals.trace = Some((only, std::sync::Arc::new(|l: &str| {
+            // best effort: a closed stderr ends nothing
+            let _ = writeln!(std::io::stderr(), "{l}");
+        })));
+    }
     Ok(c)
 }
 

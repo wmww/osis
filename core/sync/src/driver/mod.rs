@@ -170,6 +170,9 @@ pub struct Node {
     status: Status,
     leave: Leave,
     life: Life,
+    /// Debug builds: the node's own trace (`Node::trace`), printed as each step ends.
+    #[cfg(debug_assertions)]
+    trace: Option<Box<crate::trace::Own>>,
 }
 
 /// What acted in one settle round (`Node::settle`), shown when its loop guard fires.
@@ -225,12 +228,38 @@ impl Node {
         let store_handle = store.clone();
         let mut driver = Driver { engine_loads: engine.loads(), ..Driver::default() };
         driver.dials.set_node(cfg.key.map(|k| k.0), &cfg.policy);
-        Node { engine, store, rng, cfg, now, mono, rounds: 0, driver, opens: Opens::default(), read: Read::default(), unread: Unread::default(), streams: Streams::new(store_handle), inbox: Inbox::default(), status: Status::default(), leave: Leave::default(), life: Life::default() }
+        Node { engine, store, rng, cfg, now, mono, rounds: 0, driver, opens: Opens::default(), read: Read::default(), unread: Unread::default(), streams: Streams::new(store_handle), inbox: Inbox::default(), status: Status::default(), leave: Leave::default(), life: Life::default(), #[cfg(debug_assertions)] trace: None }
+    }
+
+    /// Debug builds: traces this node from now on (notes/sync-test-harness.md, Trace), each step's
+    /// lines that `only` keeps handed to `sink` as the step ends (`d<step> +<ms>ms <line>`). Turns
+    /// `osis_base::trace`'s sink on for each thread that steps the node.
+    #[cfg(debug_assertions)]
+    pub fn trace(&mut self, only: crate::trace::Only, sink: Box<dyn FnMut(&str) + Send>) {
+        let own = crate::trace::Own { trace: Default::default(), only, peers: Default::default(), steps: 0, since: self.mono, restarts: self.driver.restarts, sink };
+        self.trace = Some(Box::new(own));
+    }
+
+    /// Debug builds: hands the node's own trace (if any) a step's input and outputs.
+    #[cfg(debug_assertions)]
+    fn traced(&mut self, input: Option<&Input>, out: &[Out]) {
+        let Some(t) = self.trace.as_mut() else { return };
+        if !osis_base::trace::on() {
+            osis_base::trace::set(true);
+        }
+        let (store, engine) = (&self.store, &self.engine);
+        let held = || {
+            let entries = store.held_ids().unwrap_or_default().into_iter().flat_map(|s| store.entries(&s).unwrap_or_default().into_iter().map(move |e| (s, e.blob))).collect();
+            (entries, engine.commit_ids().into_iter().collect())
+        };
+        t.stepped(input, out, held, self.mono, self.driver.restarts);
     }
 
     /// One step: `input` taken, every module settled. The outputs must all reach `apply`.
     #[must_use = "every output must reach `apply`"]
     pub fn handle(&mut self, input: Input) -> Vec<Out> {
+        #[cfg(debug_assertions)]
+        let traced = self.trace.is_some().then(|| input.clone());
         let mut out = std::mem::take(&mut self.driver.pending);
         self.read_clocks();
         self.rounds = 0;
@@ -259,6 +288,8 @@ impl Node {
         if let Some(at) = osis_base::costs::scoped("next wake", || self.next_wake()).map(|at| floor.map_or(at, |f| at.max(f))) {
             out.push(Out::Wake(at));
         }
+        #[cfg(debug_assertions)]
+        self.traced(traced.as_ref(), &out);
         out
     }
 
@@ -357,7 +388,10 @@ impl Node {
         let Some(s) = self.driver.sessions.get_mut(conn) else { return Vec::new() };
         s.answer(id, m);
         let bytes = s.take_bytes();
-        if bytes.is_empty() { Vec::new() } else { vec![Out::Send(conn, bytes)] }
+        let out = if bytes.is_empty() { Vec::new() } else { vec![Out::Send(conn, bytes)] };
+        #[cfg(debug_assertions)]
+        self.traced(None, &out);
+        out
     }
 
     /// Dials `to` as a client connection (spec/sync-transport.md §6), the owner's own: it proves
@@ -373,6 +407,8 @@ impl Node {
         self.driver.sessions.dialing(conn);
         let mut out = vec![Out::Dial(conn, to)];
         self.wake(&mut out);
+        #[cfg(debug_assertions)]
+        self.traced(None, &out);
         (conn, out)
     }
 
@@ -385,6 +421,8 @@ impl Node {
             self.closed(conn, "disconnected by the owner", &mut out);
             self.wake(&mut out);
         }
+        #[cfg(debug_assertions)]
+        self.traced(None, &out);
         out
     }
 
@@ -401,6 +439,8 @@ impl Node {
         let mut out = Vec::new();
         self.driver.sessions.take_sends(&mut out);
         self.wake(&mut out);
+        #[cfg(debug_assertions)]
+        self.traced(None, &out);
         Some((id, out))
     }
 
@@ -417,6 +457,8 @@ impl Node {
         }
         let mut out = Vec::new();
         self.driver.sessions.take_sends(&mut out);
+        #[cfg(debug_assertions)]
+        self.traced(None, &out);
         Some(out)
     }
 
@@ -974,6 +1016,9 @@ impl Node {
                 status: self.status.clone(),
                 leave: self.leave.clone(),
                 life: self.life.clone(),
+                // a copy prints nothing: its trace is its world's
+                #[cfg(debug_assertions)]
+                trace: None,
             })
         })
     }

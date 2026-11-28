@@ -569,7 +569,12 @@ impl Osis {
         let events = engine.subscribe();
         let secret = node_secret(&mut engine, cfg, salt)?;
         let key = secret.public_key();
-        let sync = osis_sync::Node::open(engine, sync, sync_config(cfg, key), rng(cfg, salt ^ 2));
+        #[cfg_attr(not(debug_assertions), allow(unused_mut))]
+        let mut sync = osis_sync::Node::open(engine, sync, sync_config(cfg, key), rng(cfg, salt ^ 2));
+        #[cfg(debug_assertions)]
+        if let Some((only, sink)) = cfg.app.internals.trace.clone() {
+            sync.trace(only, Box::new(move |l| sink(l)));
+        }
         let dispatch = Dispatch::new(&cfg.app.dispatch);
         let (mut net, driver) = crate::net::Net::new(&cfg.runtime, cfg.app.internals.net.as_ref())?;
         if let crate::net::Net::Manual { net: m, index } = &mut net {

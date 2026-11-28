@@ -13,6 +13,7 @@ pub use osis_engine as engine;
 pub use osis_base as base;
 pub use osis_crypto as crypto;
 pub use osis_crdt as crdt;
+pub use osis_sync::trace as sync_trace;
 pub use osis_schema as schema;
 pub use osis_schema::core_types;
 pub use osis_store::{Fault, Faults};
@@ -126,6 +127,10 @@ impl MemStoreMeasures for crate::MemStore {
     }
 }
 
+/// Where a node's trace lines go (`Knobs::trace`).
+#[cfg(debug_assertions)]
+pub type TraceSink = std::sync::Arc<dyn Fn(&str) + Send + Sync>;
+
 /// What tests set on `AppConfig`.
 #[derive(Clone, Default)]
 pub struct Knobs {
@@ -143,6 +148,10 @@ pub struct Knobs {
     /// only with those it dials (`Config::dial`): a thin client's scratch node, and a test that
     /// serves its socket on a real runtime without opening a network port.
     pub no_listen: bool,
+    /// Debug builds: the node's own trace from its start (`osis_sync::Node::trace`; the daemon's
+    /// `OSIS_NODE_TRACE`): its filter and where each line goes.
+    #[cfg(debug_assertions)]
+    pub trace: Option<(sync_trace::Only, TraceSink)>,
 }
 
 /// The hooks on `Osis` (`use osis::internals::Internals;`).

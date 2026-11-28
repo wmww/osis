@@ -17,6 +17,9 @@ pub mod set;
 pub mod status;
 pub mod store;
 pub mod streams;
+// one node's trace lines (`OSIS_SYNC_TRACE` in the harness; debug builds: `Node::trace`)
+#[doc(hidden)]
+pub mod trace;
 pub mod types;
 pub mod unread;
 

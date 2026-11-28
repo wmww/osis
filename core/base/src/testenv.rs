@@ -35,7 +35,7 @@ pub fn check_known() {
             .filter(|k| k.starts_with("OSIS_") && !k.starts_with(PROBE_PREFIX) && !is_known(k))
             .collect()
     });
-    assert!(unknown.is_empty(), "unknown environment variables {unknown:?} (known: core/base/testenv-known.txt)");
+    assert!(unknown.is_empty(), "unknown environment variables {unknown:?}: use a file, or add it to core/base/testenv-known.txt (a throwaway probe: name it {PROBE_PREFIX}*)");
 }
 
 /// `var` as a decimal u64, `None` when unset or empty; panics when unparsable or not in `known()`,
