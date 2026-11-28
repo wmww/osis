@@ -442,3 +442,32 @@ fn an_open_at_a_store_costs_at_most_linear_in_holders_spec_sync_ids_3() {
         assert!(*b <= 10 * a + 8, "{name}: {a} at n, {b} at 10n");
     }
 }
+
+// spec/commits.md §4 (Unjudgeable: a part waits for each listed thing's record and those up its
+// chain), spec/permissions.md §4 Evidence of a commit: node 2 joins T by node 0's write link and
+// writes on it, signed by its node thing along node, account, K. Node 1, a told grantee holding T
+// and connected only to node 0, learns node 2's account from the record blob node 0 logs beside
+// the write, and reads the write.
+#[test]
+fn a_link_joiners_write_reaches_another_reader_spec_commits_4() {
+    let mut w = contacts();
+    w.add_node();
+    let t = make(&mut w, 0, "hi");
+    let bob = w.node(1).account.unwrap();
+    w.write(0, |e| e.grant(&t, &bob, &edge(Role::Write)).and_then(|_| e.signal_grant(&t, &bob, &[]))).unwrap();
+    w.run();
+    root_strong(&mut w, 1, t, true);
+    let link = w.make_link(0, t, Role::Write);
+    w.redeem(2, &link);
+    w.run();
+    assert_eq!(w.redeem(2, &link), osis_sync::types::Waiting::Done, "node 2 joined");
+    w.write(2, |e| {
+        let mut m = Mutation::new();
+        m.set(t, &ak(), &Value::Str("from 2".into())).unwrap();
+        e.commit(m).unwrap();
+    });
+    w.run();
+    for i in [0, 1] {
+        assert_eq!(w.engine(i).get(&t, &ak()).unwrap(), Some(Value::Str("from 2".into())), "node {i} reads node 2's write");
+    }
+}

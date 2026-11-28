@@ -962,9 +962,8 @@ fn judge_part(tx: &mut Tx<'_>, h: &Header, id: &CommitId, p: &osis_commit::Part,
 
 /// The signer's record of commit `h`, else what it waits for whole: that record, or the record
 /// of its purge author, a member of every thing's path.
-// Interim (issues/stated-path-certificates.md): the spec waits for every listed thing's record
-// and those up its chain; this waits for the purge author's alone (`thing_wait`'s hops read a
-// listed thing's record only where a hop needs it)
+// the other listed things' records, and those up their chains, are each part's wait
+// (`thing_wait`)
 fn header_wait(h: &Header, record: &dyn Fn(&Tid) -> Option<CreationRecord>) -> std::result::Result<CreationRecord, Reason> {
     let author = record(&h.signer).ok_or(Reason::MissingChain(h.signer))?;
     let acting = h.purge_author();
@@ -1008,6 +1007,20 @@ fn thing_wait(
     // self-removal after every grant write of its commit, the least any grant write needs (its path
     // to the holder it ends at): `examine` reads its writes once decoded (`edge_unreached`)
     let (along, direct) = path.filter(|_| !a.ak.external())?;
+    // every listed thing's record and those up its chain first (spec/commits.md §4
+    // Unjudgeable): a wait by record wakes, and learns, the record a record blob brings
+    for m in along {
+        if chain_rec(m, core).is_none() {
+            return Some(Reason::UnknownCreated(*m));
+        }
+        for step in osis_base::record_chain(*m, |t| chain_rec(t, core).map(|r| r.record_link())) {
+            match step {
+                ChainStep::Unknown(t) => return Some(Reason::UnknownCreated(t)),
+                ChainStep::TooDeep => return None,
+                ChainStep::Up { .. } | ChainStep::Key(_) => {}
+            }
+        }
+    }
     let edge = validity::edge_ak(a.ak.as_str());
     let at = if edge { validity::Place::Write(osis_perm::Point { ts: h.ts, node: h.signer, commit: *id }, None) } else { validity::Place::Start(h.ts) };
     validity::unreached(core, h.signer, h.key, along, direct, &a.tid, edge, edge, at, &|t| chain_rec(t, core)).then_some(Reason::MissingChain(h.signer))

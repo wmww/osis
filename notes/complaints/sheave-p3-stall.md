@@ -1,0 +1,6 @@
+# sheave-p3-stall
+> Summary: Snags from debugging a two-daemon sync stall: no way to trace a real daemon's frames and engine decisions, an env-var allowlist that panics a debug probe, and an engine API with a twin of a core rule.
+
+- **No product-side trace.** `OSIS_SYNC_TRACE` and `osis_base::trace` lines exist only in the harness, so a stall that the harness did not reproduce (its inbox is built through the core type) needed hand patches in `session.rs`, `handle.rs` and `osis_base::trace::note` gated on a flag file, each an engine relink of minutes. A debug-build `serve` flag (or env var) that prints decoded frames and `osis_base::trace` notes from process start would have found it in one run.
+- **New env vars panic the binary** (`testenv-known.txt`): a throwaway probe variable killed the daemon at start; a flag file worked. Fine as a guard, but the panic text could say "use a file or add it to testenv-known.txt for a probe".
+- **Twin of a core rule in the API**: `osis::RetentionSetting::enable_inbox_signals` re-implemented `take_inbox_signals` field by field and dropped one; the harness never goes through the `osis` copy, so no sync test could see it. osis-account's told-grant test covers it now; other `osis` wrappers that copy a core rule's fields deserve the same look.
